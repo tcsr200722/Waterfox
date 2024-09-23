@@ -8,9 +8,11 @@
 
 #include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject
 #include "js/JSON.h"
+#include "js/PropertyAndElement.h"  // JS_GetElement
 #include "mozilla/dom/ReportingBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/SimpleGlobalObject.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/OriginAttributes.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
@@ -30,8 +32,7 @@
 #define REPORTING_PURGE_ALL "reporting:purge-all"
 #define REPORTING_PURGE_HOST "reporting:purge-host"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -166,8 +167,7 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
   }
 
   nsAutoCString headerValue;
-  rv =
-      aChannel->GetResponseHeader(NS_LITERAL_CSTRING("Report-To"), headerValue);
+  rv = aChannel->GetResponseHeader("Report-To"_ns, headerValue);
   if (NS_FAILED(rv)) {
     return;
   }
@@ -195,7 +195,7 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
   }
 
   // Here we override the previous data.
-  mOrigins.Put(origin, client.release());
+  mOrigins.InsertOrUpdate(origin, std::move(client));
 
   MaybeCreateCleanupTimer();
 }
@@ -226,8 +226,7 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
 
   JSContext* cx = jsapi.cx();
   JS::Rooted<JS::Value> jsonValue(cx);
-  bool ok = JS_ParseJSON(cx, PromiseFlatString(json).get(), json.Length(),
-                         &jsonValue);
+  bool ok = JS_ParseJSON(cx, json.BeginReading(), json.Length(), &jsonValue);
   if (!ok) {
     LogToConsoleInvalidJSON(aChannel, aURI);
     return nullptr;
@@ -286,18 +285,10 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
       continue;
     }
 
-    bool found = false;
-    nsTObserverArray<Group>::ForwardIterator iter(client->mGroups);
-    while (iter.HasMore()) {
-      const Group& group = iter.GetNext();
-
-      if (group.mName == groupName) {
-        found = true;
-        break;
-      }
-    }
-
-    if (found) {
+    const auto [begin, end] = client->mGroups.NonObservingRange();
+    if (std::any_of(begin, end, [&groupName](const Group& group) {
+          return group.mName == groupName;
+        })) {
       LogToConsoleDuplicateGroup(aChannel, aURI, groupName);
       continue;
     }
@@ -472,8 +463,7 @@ void ReportingHeader::LogToConsoleInternal(nsIHttpChannel* aChannel,
   }
 
   rv = nsContentUtils::ReportToConsoleByWindowID(
-      localizedMsg, nsIScriptError::infoFlag, NS_LITERAL_CSTRING("Reporting"),
-      windowID, aURI);
+      localizedMsg, nsIScriptError::infoFlag, "Reporting"_ns, windowID, aURI);
   Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 
@@ -512,15 +502,15 @@ void ReportingHeader::GetEndpointForReport(const nsAString& aGroupName,
     return;
   }
 
-  nsTObserverArray<Group>::ForwardIterator iter(client->mGroups);
-  while (iter.HasMore()) {
-    const Group& group = iter.GetNext();
-
-    if (group.mName == aGroupName) {
-      GetEndpointForReportInternal(group, aEndpointURI);
-      break;
-    }
+  const auto [begin, end] = client->mGroups.NonObservingRange();
+  const auto foundIt = std::find_if(
+      begin, end,
+      [&aGroupName](const Group& group) { return group.mName == aGroupName; });
+  if (foundIt != end) {
+    GetEndpointForReportInternal(*foundIt, aEndpointURI);
   }
+
+  // XXX More explicitly report an error if not found?
 }
 
 /* static */
@@ -539,10 +529,7 @@ void ReportingHeader::GetEndpointForReportInternal(
   int64_t minPriority = -1;
   uint32_t totalWeight = 0;
 
-  nsTObserverArray<Endpoint>::ForwardIterator iter(aGroup.mEndpoints);
-  while (iter.HasMore()) {
-    const Endpoint& endpoint = iter.GetNext();
-
+  for (const Endpoint& endpoint : aGroup.mEndpoints.NonObservingRange()) {
     if (minPriority == -1 || minPriority > endpoint.mPriority) {
       minPriority = endpoint.mPriority;
       totalWeight = endpoint.mWeight;
@@ -559,27 +546,23 @@ void ReportingHeader::GetEndpointForReportInternal(
 
   uint32_t randomNumber = 0;
 
-  uint8_t* buffer;
-  nsresult rv =
-      randomGenerator->GenerateRandomBytes(sizeof(randomNumber), &buffer);
+  nsresult rv = randomGenerator->GenerateRandomBytesInto(randomNumber);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
 
-  memcpy(&randomNumber, buffer, sizeof(randomNumber));
-  free(buffer);
-
   totalWeight = randomNumber % totalWeight;
 
-  nsTObserverArray<Endpoint>::ForwardIterator iter2(aGroup.mEndpoints);
-  while (iter2.HasMore()) {
-    const Endpoint& endpoint = iter2.GetNext();
-
-    if (minPriority == endpoint.mPriority && totalWeight < endpoint.mWeight) {
-      Unused << NS_WARN_IF(NS_FAILED(endpoint.mUrl->GetSpec(aEndpointURI)));
-      break;
-    }
+  const auto [begin, end] = aGroup.mEndpoints.NonObservingRange();
+  const auto foundIt = std::find_if(
+      begin, end, [minPriority, totalWeight](const Endpoint& endpoint) {
+        return minPriority == endpoint.mPriority &&
+               totalWeight < endpoint.mWeight;
+      });
+  if (foundIt != end) {
+    Unused << NS_WARN_IF(NS_FAILED(foundIt->mUrl->GetSpec(aEndpointURI)));
   }
+  // XXX More explicitly report an error if not found?
 }
 
 /* static */
@@ -743,6 +726,12 @@ ReportingHeader::Notify(nsITimer* aTimer) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+ReportingHeader::GetName(nsACString& aName) {
+  aName.AssignLiteral("ReportingHeader");
+  return NS_OK;
+}
+
 void ReportingHeader::MaybeCreateCleanupTimer() {
   if (mCleanupTimer) {
     return;
@@ -776,10 +765,10 @@ NS_INTERFACE_MAP_BEGIN(ReportingHeader)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
+  NS_INTERFACE_MAP_ENTRY(nsINamed)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_ADDREF(ReportingHeader)
 NS_IMPL_RELEASE(ReportingHeader)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

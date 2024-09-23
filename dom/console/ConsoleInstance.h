@@ -9,14 +9,14 @@
 
 #include "mozilla/dom/Console.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ConsoleInstance final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ConsoleInstance)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ConsoleInstance)
 
+  MOZ_CAN_RUN_SCRIPT
   explicit ConsoleInstance(JSContext* aCx,
                            const ConsoleInstanceOptions& aOptions);
 
@@ -97,6 +97,8 @@ class ConsoleInstance final : public nsISupports, public nsWrapperCache {
   MOZ_CAN_RUN_SCRIPT
   void Clear(JSContext* aCx);
 
+  bool ShouldLog(ConsoleLogLevel aLevel);
+
   // For testing only.
   void ReportForServiceWorkerScope(const nsAString& aScope,
                                    const nsAString& aMessage,
@@ -107,10 +109,15 @@ class ConsoleInstance final : public nsISupports, public nsWrapperCache {
  private:
   ~ConsoleInstance();
 
+  void SetLogLevel();
+  static void MaxLogLevelPrefChangedCallback(const char* /* aPrefName */,
+                                             void* /* aClosure */);
+
+  ConsoleLogLevel mMaxLogLevel;
+  nsCString mMaxLogLevelPref;
   RefPtr<Console> mConsole;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ConsoleInstance_h

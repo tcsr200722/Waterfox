@@ -5,9 +5,7 @@
 #ifndef mozilla_dom_CanvasPattern_h
 #define mozilla_dom_CanvasPattern_h
 
-#include "mozilla/Attributes.h"
 #include "mozilla/dom/CanvasRenderingContext2DBinding.h"
-#include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/RefPtr.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
@@ -20,28 +18,22 @@ class SourceSurface;
 }  // namespace gfx
 
 namespace dom {
-class SVGMatrix;
+class CanvasRenderingContext2D;
+struct DOMMatrix2DInit;
 
 class CanvasPattern final : public nsWrapperCache {
-  ~CanvasPattern() = default;
+  ~CanvasPattern();
 
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(CanvasPattern)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(CanvasPattern)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(CanvasPattern)
 
   enum class RepeatMode : uint8_t { REPEAT, REPEATX, REPEATY, NOREPEAT };
 
   CanvasPattern(CanvasRenderingContext2D* aContext,
                 gfx::SourceSurface* aSurface, RepeatMode aRepeat,
                 nsIPrincipal* principalForSecurityCheck, bool forceWriteOnly,
-                bool CORSUsed)
-      : mContext(aContext),
-        mSurface(aSurface),
-        mPrincipal(principalForSecurityCheck),
-        mTransform(),
-        mForceWriteOnly(forceWriteOnly),
-        mCORSUsed(CORSUsed),
-        mRepeat(aRepeat) {}
+                bool CORSUsed);
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override {
@@ -51,7 +43,7 @@ class CanvasPattern final : public nsWrapperCache {
   CanvasRenderingContext2D* GetParentObject() { return mContext; }
 
   // WebIDL
-  void SetTransform(SVGMatrix& matrix);
+  void SetTransform(const DOMMatrix2DInit& aInit, ErrorResult& aError);
 
   RefPtr<CanvasRenderingContext2D> mContext;
   RefPtr<gfx::SourceSurface> mSurface;

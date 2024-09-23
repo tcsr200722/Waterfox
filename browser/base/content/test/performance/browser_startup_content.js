@@ -1,11 +1,12 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-/* This test records which services, JS components, frame scripts, process
- * scripts, and JS modules are loaded when creating a new content process.
+/* This test records which services, frame scripts, process scripts, and
+ * JS modules are loaded when creating a new content process.
  *
  * If you made changes that cause this test to fail, it's likely because you
- * are loading more JS code during content process startup.
+ * are loading more JS code during content process startup. Please try to
+ * avoid this.
  *
  * If your code isn't strictly required to show a page, consider loading it
  * lazily. If you can't, consider delaying its load until after we have started
@@ -17,96 +18,77 @@
 /* Set this to true only for debugging purpose; it makes the output noisy. */
 const kDumpAllStacks = false;
 
-const whitelist = {
+const known_scripts = {
   modules: new Set([
-    "chrome://mochikit/content/ShutdownLeaksCollector.jsm",
-
-    "resource://gre/modules/ContentProcessSingleton.jsm",
+    "chrome://mochikit/content/ShutdownLeaksCollector.sys.mjs",
 
     // General utilities
-    "resource://gre/modules/AppConstants.jsm",
-    "resource://gre/modules/AsyncShutdown.jsm",
-    "resource://gre/modules/DeferredTask.jsm",
-    "resource://gre/modules/PromiseUtils.jsm",
-    "resource://gre/modules/Services.jsm", // bug 1464542
-    "resource://gre/modules/Timer.jsm",
-    "resource://gre/modules/XPCOMUtils.jsm",
+    "resource://gre/modules/AppConstants.sys.mjs",
+    "resource://gre/modules/Timer.sys.mjs",
+    "resource://gre/modules/XPCOMUtils.sys.mjs",
 
     // Logging related
-    "resource://gre/modules/Log.jsm",
-
-    // Session store
-    "resource:///modules/sessionstore/ContentSessionStore.jsm",
+    // eslint-disable-next-line mozilla/use-console-createInstance
+    "resource://gre/modules/Log.sys.mjs",
 
     // Browser front-end
-    "resource:///actors/AboutReaderChild.jsm",
-    "resource:///actors/BrowserTabChild.jsm",
-    "resource:///actors/LinkHandlerChild.jsm",
-    "resource:///actors/SearchTelemetryChild.jsm",
-    "resource://gre/actors/AutoCompleteChild.jsm",
-    "resource://gre/modules/ActorChild.jsm",
-    "resource://gre/modules/ActorManagerChild.jsm",
-    "resource://gre/modules/E10SUtils.jsm",
-    "resource://gre/modules/Readerable.jsm",
+    "resource:///actors/AboutReaderChild.sys.mjs",
+    "resource:///actors/InteractionsChild.sys.mjs",
+    "resource:///actors/LinkHandlerChild.sys.mjs",
+    "resource:///actors/SearchSERPTelemetryChild.sys.mjs",
+    "resource://gre/actors/ContentMetaChild.sys.mjs",
+    "resource://gre/modules/Readerable.sys.mjs",
 
     // Telemetry
-    "resource://gre/modules/TelemetryController.jsm", // bug 1470339
-    "resource://gre/modules/TelemetryUtils.jsm", // bug 1470339
+    "resource://gre/modules/TelemetryControllerBase.sys.mjs", // bug 1470339
+    "resource://gre/modules/TelemetryControllerContent.sys.mjs", // bug 1470339
 
     // Extensions
-    "resource://gre/modules/ExtensionProcessScript.jsm",
-    "resource://gre/modules/ExtensionUtils.jsm",
-    "resource://gre/modules/MessageChannel.jsm",
+    "resource://gre/modules/ExtensionProcessScript.sys.mjs",
+    "resource://gre/modules/ExtensionUtils.sys.mjs",
   ]),
   frameScripts: new Set([
     // Test related
     "chrome://mochikit/content/shutdown-leaks-collector.js",
-
-    // Browser front-end
-    "chrome://global/content/browser-content.js",
-
-    // Extensions
-    "resource://gre/modules/addons/Content.js",
   ]),
   processScripts: new Set([
     "chrome://global/content/process-content.js",
-    "resource:///modules/ContentObservers.js",
     "resource://gre/modules/extensionProcessScriptLoader.js",
-    "resource://devtools/client/jsonview/converter-observer.js",
   ]),
 };
 
-// Items on this list are allowed to be loaded but not
-// required, as opposed to items in the main whitelist,
-// which are all required.
-const intermittently_loaded_whitelist = {
+// Items on this list *might* load when creating the process, as opposed to
+// items in the main list, which we expect will always load.
+const intermittently_loaded_scripts = {
   modules: new Set([
-    "resource://gre/modules/nsAsyncShutdown.jsm",
-    "resource://gre/modules/sessionstore/Utils.jsm",
+    "resource://gre/modules/nsAsyncShutdown.sys.mjs",
+
+    // Translations code which may be preffed on.
+    "resource://gre/actors/TranslationsChild.sys.mjs",
+    "resource://gre/modules/translation/LanguageDetector.sys.mjs",
+    "resource://gre/modules/ConsoleAPIStorage.sys.mjs", // Logging related.
 
     // Session store.
-    "resource://gre/modules/sessionstore/SessionHistory.jsm",
+    "resource://gre/modules/sessionstore/SessionHistory.sys.mjs",
 
-    "resource://specialpowers/SpecialPowersChild.jsm",
-    "resource://specialpowers/WrapPrivileged.jsm",
-
-    // Webcompat about:config front-end. This is presently nightly-only and
-    // part of a system add-on which may not load early enough for the test.
-    "resource://webcompat/AboutCompat.jsm",
+    // Cookie banner handling.
+    "resource://gre/actors/CookieBannerChild.sys.mjs",
+    "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 
     // Test related
-    "resource://testing-common/BrowserTestUtilsChild.jsm",
-    "resource://testing-common/ContentEventListenerChild.jsm",
+    "chrome://remote/content/marionette/actors/MarionetteEventsChild.sys.mjs",
+    "chrome://remote/content/shared/Log.sys.mjs",
+    "resource://testing-common/BrowserTestUtilsChild.sys.mjs",
+    "resource://testing-common/ContentEventListenerChild.sys.mjs",
+    "resource://specialpowers/AppTestDelegateChild.sys.mjs",
+    "resource://testing-common/SpecialPowersChild.sys.mjs",
+    "resource://testing-common/WrapPrivileged.sys.mjs",
   ]),
   frameScripts: new Set([]),
-  processScripts: new Set([
-    // Webcompat about:config front-end. This is presently nightly-only and
-    // part of a system add-on which may not load early enough for the test.
-    "resource://webcompat/aboutPageProcessScript.js",
-  ]),
+  processScripts: new Set([]),
 };
 
-const blacklist = {
+const forbiddenScripts = {
   services: new Set([
     "@mozilla.org/base/telemetry-startup;1",
     "@mozilla.org/embedcomp/default-tooltiptextprovider;1",
@@ -114,54 +96,58 @@ const blacklist = {
   ]),
 };
 
-add_task(async function() {
+add_task(async function () {
   SimpleTest.requestCompleteLog();
 
   let tab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
+    url:
+      getRootDirectory(gTestPath).replace(
+        "chrome://mochitests/content",
+        "https://example.com"
+      ) + "file_empty.html",
     forceNewProcess: true,
   });
 
   let mm = gBrowser.selectedBrowser.messageManager;
   let promise = BrowserTestUtils.waitForMessage(mm, "Test:LoadedScripts");
 
-  // Load a custom frame script to avoid using ContentTask which loads Task.jsm
+  // Load a custom frame script to avoid using SpecialPowers.spawn which may
+  // load other modules.
   mm.loadFrameScript(
     "data:text/javascript,(" +
-      function() {
+      function () {
         /* eslint-env mozilla/frame-script */
         const Cm = Components.manager;
         Cm.QueryInterface(Ci.nsIServiceManager);
-        const { AppConstants } = ChromeUtils.import(
-          "resource://gre/modules/AppConstants.jsm"
+        const { AppConstants } = ChromeUtils.importESModule(
+          "resource://gre/modules/AppConstants.sys.mjs"
         );
         let collectStacks = AppConstants.NIGHTLY_BUILD || AppConstants.DEBUG;
-        let components = {};
-        for (let component of Cu.loadedComponents) {
-          /* Keep only the file name for components, as the path is an absolute file
-         URL rather than a resource:// URL like for modules. */
-          components[component.replace(/.*\//, "")] = collectStacks
-            ? Cu.getComponentLoadStack(component)
-            : "";
+        let modules = new Map();
+        for (let module of Cu.loadedJSModules) {
+          modules.set(
+            module,
+            collectStacks ? Cu.getModuleImportStack(module) : ""
+          );
         }
-        let modules = {};
-        for (let module of Cu.loadedModules) {
-          modules[module] = collectStacks
-            ? Cu.getModuleImportStack(module)
-            : "";
+        for (let module of Cu.loadedESModules) {
+          modules.set(
+            module,
+            collectStacks ? Cu.getModuleImportStack(module) : ""
+          );
         }
-        let services = {};
+        let services = new Map();
         for (let contractID of Object.keys(Cc)) {
           try {
             if (
               Cm.isServiceInstantiatedByContractID(contractID, Ci.nsISupports)
             ) {
-              services[contractID] = "";
+              services.set(contractID, "");
             }
           } catch (e) {}
         }
         sendAsyncMessage("Test:LoadedScripts", {
-          components,
           modules,
           services,
         });
@@ -173,87 +159,24 @@ add_task(async function() {
   let loadedInfo = await promise;
 
   // Gather loaded frame scripts.
-  loadedInfo.frameScripts = {};
+  loadedInfo.frameScripts = new Map();
   for (let [uri] of Services.mm.getDelayedFrameScripts()) {
-    loadedInfo.frameScripts[uri] = "";
+    loadedInfo.frameScripts.set(uri, "");
   }
 
   // Gather loaded process scripts.
-  loadedInfo.processScripts = {};
+  loadedInfo.processScripts = new Map();
   for (let [uri] of Services.ppmm.getDelayedProcessScripts()) {
-    loadedInfo.processScripts[uri] = "";
+    loadedInfo.processScripts.set(uri, "");
   }
 
-  let loadedList = {};
-
-  for (let scriptType in whitelist) {
-    loadedList[scriptType] = Object.keys(loadedInfo[scriptType]).filter(c => {
-      if (!whitelist[scriptType].has(c)) {
-        return true;
-      }
-      whitelist[scriptType].delete(c);
-      return false;
-    });
-
-    loadedList[scriptType] = loadedList[scriptType].filter(c => {
-      return !intermittently_loaded_whitelist[scriptType].has(c);
-    });
-
-    is(
-      loadedList[scriptType].length,
-      0,
-      `should have no unexpected ${scriptType} loaded on content process startup`
-    );
-
-    for (let script of loadedList[scriptType]) {
-      record(
-        false,
-        `Unexpected ${scriptType} loaded during content process startup: ${script}`,
-        undefined,
-        loadedInfo[scriptType][script]
-      );
-    }
-
-    is(
-      whitelist[scriptType].size,
-      0,
-      `all ${scriptType} whitelist entries should have been used`
-    );
-
-    for (let script of whitelist[scriptType]) {
-      ok(
-        false,
-        `${scriptType} is whitelisted for content process startup but wasn't used: ${script}`
-      );
-    }
-
-    if (kDumpAllStacks) {
-      info(`Stacks for all loaded ${scriptType}:`);
-      for (let file in loadedInfo[scriptType]) {
-        if (loadedInfo[scriptType][file]) {
-          info(
-            `${file}\n------------------------------------\n` +
-              loadedInfo[scriptType][file] +
-              "\n"
-          );
-        }
-      }
-    }
-  }
-
-  for (let scriptType in blacklist) {
-    for (let script of blacklist[scriptType]) {
-      let loaded = script in loadedInfo[scriptType];
-      if (loaded) {
-        record(
-          false,
-          `Unexpected ${scriptType} loaded during content process startup: ${script}`,
-          undefined,
-          loadedInfo[scriptType][script]
-        );
-      }
-    }
-  }
+  await checkLoadedScripts({
+    loadedInfo,
+    known: known_scripts,
+    intermittent: intermittently_loaded_scripts,
+    forbidden: forbiddenScripts,
+    dumpAllStacks: kDumpAllStacks,
+  });
 
   BrowserTestUtils.removeTab(tab);
 });

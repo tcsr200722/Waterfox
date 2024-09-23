@@ -66,7 +66,7 @@ const lameMultiWindowState = {
 };
 
 function getOuterWindowID(aWindow) {
-  return aWindow.windowUtils.outerWindowID;
+  return aWindow.docShell.outerWindowID;
 }
 
 function test() {
@@ -84,14 +84,14 @@ function test() {
   // waitForBrowserState does it's own observing for windows, but doesn't attach
   // the listeners we want here, so do it ourselves.
   let newWindow;
-  function windowObserver(aSubject, aTopic, aData) {
+  function windowObserver(aSubject, aTopic) {
     if (aTopic == "domwindowopened") {
       Services.ww.unregisterNotification(windowObserver);
 
       newWindow = aSubject;
       newWindow.addEventListener(
         "load",
-        function() {
+        function () {
           windowEvents[getOuterWindowID(newWindow)] = {
             busyEventCount: 0,
             readyEventCount: 0,
@@ -120,7 +120,7 @@ function test() {
   window.addEventListener("SSWindowStateReady", onSSWindowStateReady);
   Services.ww.registerNotification(windowObserver);
 
-  waitForBrowserState(lameMultiWindowState, function() {
+  waitForBrowserState(lameMultiWindowState, function () {
     let checkedWindows = 0;
     for (let id of Object.keys(windowEvents)) {
       let winEvents = windowEvents[id];

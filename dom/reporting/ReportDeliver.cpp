@@ -4,14 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/JSONStringWriteFuncs.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/EndpointForReportChild.h"
 #include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/ReportBody.h"
 #include "mozilla/dom/ReportDeliver.h"
 #include "mozilla/dom/Request.h"
 #include "mozilla/dom/RequestBinding.h"
 #include "mozilla/dom/Response.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
@@ -21,8 +25,7 @@
 #include "nsNetUtil.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -36,7 +39,8 @@ class ReportFetchHandler final : public PromiseNativeHandler {
       const nsTArray<ReportDeliver::ReportData>& aReportData)
       : mReports(aReportData.Clone()) {}
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     if (!gReportDeliver) {
       return;
     }
@@ -73,7 +77,8 @@ class ReportFetchHandler final : public PromiseNativeHandler {
     }
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     if (gReportDeliver) {
       for (auto& report : mReports) {
         ++report.mFailures;
@@ -90,26 +95,16 @@ class ReportFetchHandler final : public PromiseNativeHandler {
 
 NS_IMPL_ISUPPORTS0(ReportFetchHandler)
 
-struct StringWriteFunc final : public JSONWriteFunc {
-  nsACString&
-      mBuffer;  // The lifetime of the struct must be bound to the buffer
-  explicit StringWriteFunc(nsACString& aBuffer) : mBuffer(aBuffer) {}
-
-  void Write(const char* aStr) override { mBuffer.Append(aStr); }
-  void Write(const char* aStr, size_t aLen) override {
-    mBuffer.Append(aStr, aLen);
-  }
-};
-
 class ReportJSONWriter final : public JSONWriter {
  public:
-  explicit ReportJSONWriter(nsACString& aOutput)
-      : JSONWriter(MakeUnique<StringWriteFunc>(aOutput)) {}
+  explicit ReportJSONWriter(JSONStringWriteFunc<nsAutoCString>& aOutput)
+      : JSONWriter(aOutput) {}
 
-  void JSONProperty(const char* aProperty, const char* aJSON) {
+  void JSONProperty(const Span<const char>& aProperty,
+                    const Span<const char>& aJSON) {
     Separator();
     PropertyNameAndColon(aProperty);
-    mWriter->Write(aJSON);
+    mWriter.Write(aJSON);
   }
 };
 
@@ -146,7 +141,7 @@ void SendReports(nsTArray<ReportDeliver::ReportData>& aReports,
   }
 
   // The body
-  nsAutoCString body;
+  JSONStringWriteFunc<nsAutoCString> body;
   ReportJSONWriter w(body);
 
   w.StartArrayElement();
@@ -156,25 +151,26 @@ void SendReports(nsTArray<ReportDeliver::ReportData>& aReports,
     w.StartObjectElement();
     w.IntProperty("age",
                   (TimeStamp::Now() - report.mCreationTime).ToMilliseconds());
-    w.StringProperty("type", NS_ConvertUTF16toUTF8(report.mType).get());
-    w.StringProperty("url", NS_ConvertUTF16toUTF8(report.mURL).get());
-    w.StringProperty("user_agent",
-                     NS_ConvertUTF16toUTF8(report.mUserAgent).get());
-    w.JSONProperty("body", report.mReportBodyJSON.get());
+    w.StringProperty("type", NS_ConvertUTF16toUTF8(report.mType));
+    w.StringProperty("url", NS_ConvertUTF16toUTF8(report.mURL));
+    w.StringProperty("user_agent", NS_ConvertUTF16toUTF8(report.mUserAgent));
+    w.JSONProperty(MakeStringSpan("body"),
+                   Span<const char>(report.mReportBodyJSON.Data(),
+                                    report.mReportBodyJSON.Length()));
     w.EndObject();
   }
   w.EndArray();
 
   // The body as stream
   nsCOMPtr<nsIInputStream> streamBody;
-  nsresult rv = NS_NewCStringInputStream(getter_AddRefs(streamBody), body);
+  nsresult rv =
+      NS_NewCStringInputStream(getter_AddRefs(streamBody), body.StringCRef());
 
   // Headers
   IgnoredErrorResult error;
   RefPtr<InternalHeaders> internalHeaders =
       new InternalHeaders(HeadersGuardEnum::Request);
-  internalHeaders->Set(NS_LITERAL_CSTRING("Content-Type"),
-                       NS_LITERAL_CSTRING("application/reports+json"), error);
+  internalHeaders->Set("Content-Type"_ns, "application/reports+json"_ns, error);
   if (NS_WARN_IF(error.Failed())) {
     return;
   }
@@ -206,8 +202,8 @@ void SendReports(nsTArray<ReportDeliver::ReportData>& aReports,
 
   auto internalRequest = MakeSafeRefPtr<InternalRequest>(uriSpec, uriFragment);
 
-  internalRequest->SetMethod(NS_LITERAL_CSTRING("POST"));
-  internalRequest->SetBody(streamBody, body.Length());
+  internalRequest->SetMethod("POST"_ns);
+  internalRequest->SetBody(streamBody, body.StringCRef().Length());
   internalRequest->SetHeaders(internalHeaders);
   internalRequest->SetSkipServiceWorker();
   // TODO: internalRequest->SetContentPolicyType(TYPE_REPORT);
@@ -217,11 +213,12 @@ void SendReports(nsTArray<ReportDeliver::ReportData>& aReports,
   RefPtr<Request> request =
       new Request(globalObject, std::move(internalRequest), nullptr);
 
-  RequestOrUSVString fetchInput;
+  RequestOrUTF8String fetchInput;
   fetchInput.SetAsRequest() = request;
 
-  RefPtr<Promise> promise = FetchRequest(
-      globalObject, fetchInput, RequestInit(), CallerType::NonSystem, error);
+  RootedDictionary<RequestInit> requestInit(RootingCx());
+  RefPtr<Promise> promise = FetchRequest(globalObject, fetchInput, requestInit,
+                                         CallerType::NonSystem, error);
   if (error.Failed()) {
     for (auto& report : aReports) {
       ++report.mFailures;
@@ -246,7 +243,7 @@ void ReportDeliver::Record(nsPIDOMWindowInner* aWindow, const nsAString& aType,
   MOZ_ASSERT(aWindow);
   MOZ_ASSERT(aBody);
 
-  nsAutoCString reportBodyJSON;
+  JSONStringWriteFunc<nsAutoCString> reportBodyJSON;
   ReportJSONWriter w(reportBodyJSON);
 
   w.Start();
@@ -280,7 +277,7 @@ void ReportDeliver::Record(nsPIDOMWindowInner* aWindow, const nsAString& aType,
   data.mGroupName = aGroupName;
   data.mURL = aURL;
   data.mCreationTime = TimeStamp::Now();
-  data.mReportBodyJSON = reportBodyJSON;
+  data.mReportBodyJSON = std::move(reportBodyJSON).StringRRef();
   data.mPrincipal = principal;
   data.mFailures = 0;
 
@@ -340,8 +337,7 @@ NS_IMETHODIMP
 ReportDeliver::Notify(nsITimer* aTimer) {
   mTimer = nullptr;
 
-  nsTArray<ReportData> reports;
-  reports.SwapElements(mReportQueue);
+  nsTArray<ReportData> reports = std::move(mReportQueue);
 
   // group reports by endpoint and nsIPrincipal
   std::map<std::pair<nsCString, nsCOMPtr<nsIPrincipal>>, nsTArray<ReportData>>
@@ -367,6 +363,12 @@ ReportDeliver::Notify(nsITimer* aTimer) {
     SendReports(value, url, principal);
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+ReportDeliver::GetName(nsACString& aName) {
+  aName.AssignLiteral("ReportDeliver");
   return NS_OK;
 }
 
@@ -399,10 +401,10 @@ NS_INTERFACE_MAP_BEGIN(ReportDeliver)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
+  NS_INTERFACE_MAP_ENTRY(nsINamed)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_ADDREF(ReportDeliver)
 NS_IMPL_RELEASE(ReportDeliver)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

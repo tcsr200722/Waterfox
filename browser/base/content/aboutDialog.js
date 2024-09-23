@@ -7,37 +7,36 @@
 /* import-globals-from aboutDialog-appUpdater.js */
 
 // Services = object with smart getters for common XPCOM services
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+var { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
+if (AppConstants.MOZ_UPDATER) {
+  Services.scriptloader.loadSubScript(
+    "chrome://browser/content/aboutDialog-appUpdater.js",
+    this
+  );
+}
 
-async function init(aEvent) {
-  if (aEvent.target != document) {
-    return;
-  }
-
-  var distroId = Services.prefs.getCharPref("distribution.id", "");
+function init() {
+  let defaults = Services.prefs.getDefaultBranch(null);
+  let distroId = defaults.getCharPref("distribution.id", "");
   if (distroId) {
-    var distroAbout = Services.prefs.getStringPref("distribution.about", "");
+    let distroAbout = defaults.getStringPref("distribution.about", "");
     // If there is about text, we always show it.
     if (distroAbout) {
-      var distroField = document.getElementById("distribution");
+      let distroField = document.getElementById("distribution");
       distroField.value = distroAbout;
       distroField.style.display = "block";
     }
     // If it's not a mozilla distribution, show the rest,
     // unless about text exists, then we always show.
     if (!distroId.startsWith("mozilla-") || distroAbout) {
-      var distroVersion = Services.prefs.getCharPref(
-        "distribution.version",
-        ""
-      );
+      let distroVersion = defaults.getCharPref("distribution.version", "");
       if (distroVersion) {
         distroId += " - " + distroVersion;
       }
 
-      var distroIdField = document.getElementById("distributionId");
+      let distroIdField = document.getElementById("distributionId");
       distroIdField.value = distroId;
       distroIdField.style.display = "block";
     }
@@ -68,14 +67,14 @@ async function init(aEvent) {
 
   document.l10n.setAttributes(versionField, versionId, versionAttributes);
 
-  await document.l10n.translateElements([versionField]);
-
   // Show a release notes link if we have a URL.
   let relNotesLink = document.getElementById("releasenotes");
-  let relNotesPrefType = Services.prefs.getPrefType("app.releaseNotesURL");
+  let relNotesPrefType = Services.prefs.getPrefType(
+    "app.releaseNotesURL.aboutDialog"
+  );
   if (relNotesPrefType != Services.prefs.PREF_INVALID) {
     let relNotesURL = Services.urlFormatter.formatURLPref(
-      "app.releaseNotesURL"
+      "app.releaseNotesURL.aboutDialog"
     );
     if (relNotesURL != "about:blank") {
       relNotesLink.href = relNotesURL;
@@ -86,24 +85,21 @@ async function init(aEvent) {
   if (AppConstants.MOZ_UPDATER) {
     gAppUpdater = new appUpdater({ buttonAutoFocus: true });
 
-    let channelLabel = document.getElementById("currentChannel");
-    let currentChannelText = document.getElementById("currentChannelText");
-    channelLabel.value = UpdateUtils.UpdateChannel;
-    if (/^release($|\-)/.test(channelLabel.value)) {
-      currentChannelText.hidden = true;
+    let channelLabel = document.getElementById("currentChannelText");
+    let channelAttrs = document.l10n.getAttributes(channelLabel);
+    let channel = UpdateUtils.UpdateChannel;
+    document.l10n.setAttributes(channelLabel, channelAttrs.id, { channel });
+    if (
+      /^release($|\-)/.test(channel) ||
+      Services.sysinfo.getProperty("isPackagedApp")
+    ) {
+      channelLabel.hidden = true;
     }
   }
 
-  if (AppConstants.MOZ_APP_VERSION_DISPLAY.endsWith("esr")) {
+  if (AppConstants.IS_ESR) {
     document.getElementById("release").hidden = false;
   }
-
-  window.sizeToContent();
-
-  if (AppConstants.platform == "macosx") {
-    window.moveTo(
-      screen.availWidth / 2 - window.outerWidth / 2,
-      screen.availHeight / 5
-    );
-  }
 }
+
+init();

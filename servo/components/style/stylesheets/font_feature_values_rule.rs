@@ -10,7 +10,7 @@ use crate::error_reporting::ContextualParseError;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::bindings::Gecko_AppendFeatureValueHashEntry;
 #[cfg(feature = "gecko")]
-use crate::gecko_bindings::structs::{self, gfxFontFeatureValueSet, nsTArray};
+use crate::gecko_bindings::structs::{self, gfxFontFeatureValueSet};
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::str::CssStringWriter;
@@ -18,11 +18,13 @@ use crate::stylesheets::CssRuleType;
 use crate::values::computed::font::FamilyName;
 use crate::values::serialize_atom_identifier;
 use crate::Atom;
-use cssparser::{AtRuleParser, AtRuleType, BasicParseErrorKind, CowRcStr};
-use cssparser::{DeclarationListParser, DeclarationParser, Parser};
-use cssparser::{QualifiedRuleParser, RuleListParser, SourceLocation, Token};
+use cssparser::{
+    AtRuleParser, BasicParseErrorKind, CowRcStr, DeclarationParser, Parser, ParserState,
+    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation, Token,
+};
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
+use thin_vec::ThinVec;
 
 /// A @font-feature-values block declaration.
 /// It is `<ident>: <integer>+`.
@@ -46,15 +48,15 @@ impl<T: ToCss> ToCss for FFVDeclaration<T> {
         serialize_atom_identifier(&self.name, dest)?;
         dest.write_str(": ")?;
         self.value.to_css(dest)?;
-        dest.write_str(";")
+        dest.write_char(';')
     }
 }
 
 /// A trait for @font-feature-values rule to gecko values conversion.
 #[cfg(feature = "gecko")]
 pub trait ToGeckoFontFeatureValues {
-    /// Sets the equivalent of declaration to gecko `nsTArray<u32>` array.
-    fn to_gecko_font_feature_values(&self, array: &mut nsTArray<u32>);
+    /// Sets the equivalent of declaration to gecko `ThinVec<u32>` array.
+    fn to_gecko_font_feature_values(&self) -> ThinVec<u32>;
 }
 
 /// A @font-feature-values block declaration value that keeps one value.
@@ -78,11 +80,8 @@ impl Parse for SingleValue {
 
 #[cfg(feature = "gecko")]
 impl ToGeckoFontFeatureValues for SingleValue {
-    fn to_gecko_font_feature_values(&self, array: &mut nsTArray<u32>) {
-        unsafe {
-            array.set_len_pod(1);
-        }
-        array[0] = self.0 as u32;
+    fn to_gecko_font_feature_values(&self) -> ThinVec<u32> {
+        thin_vec::thin_vec![self.0 as u32]
     }
 }
 
@@ -117,16 +116,12 @@ impl Parse for PairValues {
 
 #[cfg(feature = "gecko")]
 impl ToGeckoFontFeatureValues for PairValues {
-    fn to_gecko_font_feature_values(&self, array: &mut nsTArray<u32>) {
-        let len = if self.1.is_some() { 2 } else { 1 };
-
-        unsafe {
-            array.set_len_pod(len);
-        }
-        array[0] = self.0 as u32;
+    fn to_gecko_font_feature_values(&self) -> ThinVec<u32> {
+        let mut result = thin_vec::thin_vec![self.0 as u32];
         if let Some(second) = self.1 {
-            array[1] = second as u32;
-        };
+            result.push(second as u32);
+        }
+        result
     }
 }
 
@@ -164,8 +159,8 @@ impl Parse for VectorValues {
 
 #[cfg(feature = "gecko")]
 impl ToGeckoFontFeatureValues for VectorValues {
-    fn to_gecko_font_feature_values(&self, array: &mut nsTArray<u32>) {
-        array.assign_from_iter_pod(self.0.iter().map(|v| *v));
+    fn to_gecko_font_feature_values(&self) -> ThinVec<u32> {
+        self.0.iter().copied().collect()
     }
 }
 
@@ -188,9 +183,14 @@ struct FFVDeclarationsParser<'a, 'b: 'a, T: 'a> {
 
 /// Default methods reject all at rules.
 impl<'a, 'b, 'i, T> AtRuleParser<'i> for FFVDeclarationsParser<'a, 'b, T> {
-    type PreludeNoBlock = ();
-    type PreludeBlock = ();
+    type Prelude = ();
     type AtRule = ();
+    type Error = StyleParseErrorKind<'i>;
+}
+
+impl<'a, 'b, 'i, T> QualifiedRuleParser<'i> for FFVDeclarationsParser<'a, 'b, T> {
+    type Prelude = ();
+    type QualifiedRule = ();
     type Error = StyleParseErrorKind<'i>;
 }
 
@@ -209,10 +209,23 @@ where
         let value = input.parse_entirely(|i| T::parse(self.context, i))?;
         let new = FFVDeclaration {
             name: Atom::from(&*name),
-            value: value,
+            value,
         };
         update_or_push(&mut self.declarations, new);
         Ok(())
+    }
+}
+
+impl<'a, 'b, 'i, T> RuleBodyItemParser<'i, (), StyleParseErrorKind<'i>>
+    for FFVDeclarationsParser<'a, 'b, T>
+where
+    T: Parse,
+{
+    fn parse_declarations(&self) -> bool {
+        true
+    }
+    fn parse_qualified(&self) -> bool {
+        false
     }
 }
 
@@ -259,38 +272,19 @@ macro_rules! font_feature_values_blocks {
                 location: SourceLocation,
             ) -> Self {
                 let mut rule = FontFeatureValuesRule::new(family_names, location);
-
-                {
-                    let mut iter = RuleListParser::new_for_nested_rule(input, FontFeatureValuesRuleParser {
-                        context: context,
-                        rule: &mut rule,
-                    });
-                    while let Some(result) = iter.next() {
-                        if let Err((error, slice)) = result {
-                            let location = error.location;
-                            let error = ContextualParseError::UnsupportedRule(slice, error);
-                            context.log_css_error(location, error);
-                        }
+                let mut parser = FontFeatureValuesRuleParser {
+                    context,
+                    rule: &mut rule,
+                };
+                let mut iter = RuleBodyParser::new(input, &mut parser);
+                while let Some(result) = iter.next() {
+                    if let Err((error, slice)) = result {
+                        let location = error.location;
+                        let error = ContextualParseError::UnsupportedRule(slice, error);
+                        context.log_css_error(location, error);
                     }
                 }
                 rule
-            }
-
-            /// Prints font family names.
-            pub fn font_family_to_css<W>(
-                &self,
-                dest: &mut CssWriter<W>,
-            ) -> fmt::Result
-            where
-                W: Write,
-            {
-                let mut iter = self.family_names.iter();
-                iter.next().unwrap().to_css(dest)?;
-                for val in iter {
-                    dest.write_str(", ")?;
-                    val.to_css(dest)?;
-                }
-                Ok(())
             }
 
             /// Prints inside of `@font-feature-values` block.
@@ -338,7 +332,7 @@ macro_rules! font_feature_values_blocks {
                                     )
                                 };
                                 unsafe {
-                                    val.value.to_gecko_font_feature_values(&mut *array);
+                                    *array = val.value.to_gecko_font_feature_values();
                                 }
                             }
                         }
@@ -350,18 +344,17 @@ macro_rules! font_feature_values_blocks {
         impl ToCssWithGuard for FontFeatureValuesRule {
             fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
                 dest.write_str("@font-feature-values ")?;
-                self.font_family_to_css(&mut CssWriter::new(dest))?;
+                self.family_names.to_css(&mut CssWriter::new(dest))?;
                 dest.write_str(" {\n")?;
                 self.value_to_css(&mut CssWriter::new(dest))?;
-                dest.write_str("}")
+                dest.write_char('}')
             }
         }
 
         /// Updates with new value if same `ident` exists, otherwise pushes to the vector.
         fn update_or_push<T>(vec: &mut Vec<FFVDeclaration<T>>, element: FFVDeclaration<T>) {
-            let position = vec.iter().position(|ref val| val.name == element.name);
-            if let Some(index) = position {
-                vec[index].value = element.value;
+            if let Some(item) = vec.iter_mut().find(|item| item.name == element.name) {
+                item.value = element.value;
             } else {
                 vec.push(element);
             }
@@ -393,18 +386,18 @@ macro_rules! font_feature_values_blocks {
         }
 
         impl<'a, 'i> AtRuleParser<'i> for FontFeatureValuesRuleParser<'a> {
-            type PreludeNoBlock = ();
-            type PreludeBlock = BlockType;
+            type Prelude = BlockType;
             type AtRule = ();
             type Error = StyleParseErrorKind<'i>;
 
-            fn parse_prelude<'t>(&mut self,
-                                 name: CowRcStr<'i>,
-                                 input: &mut Parser<'i, 't>)
-                                 -> Result<AtRuleType<(), BlockType>, ParseError<'i>> {
+            fn parse_prelude<'t>(
+                &mut self,
+                name: CowRcStr<'i>,
+                input: &mut Parser<'i, 't>,
+            ) -> Result<BlockType, ParseError<'i>> {
                 match_ignore_ascii_case! { &*name,
                     $(
-                        $name => Ok(AtRuleType::WithBlock(BlockType::$ident_camel)),
+                        $name => Ok(BlockType::$ident_camel),
                     )*
                     _ => Err(input.new_error(BasicParseErrorKind::AtRuleBodyInvalid)),
                 }
@@ -413,19 +406,19 @@ macro_rules! font_feature_values_blocks {
             fn parse_block<'t>(
                 &mut self,
                 prelude: BlockType,
-                _location: SourceLocation,
+                _: &ParserState,
                 input: &mut Parser<'i, 't>
             ) -> Result<Self::AtRule, ParseError<'i>> {
-                debug_assert_eq!(self.context.rule_type(), CssRuleType::FontFeatureValues);
+                debug_assert!(self.context.rule_types().contains(CssRuleType::FontFeatureValues));
                 match prelude {
                     $(
                         BlockType::$ident_camel => {
-                            let parser = FFVDeclarationsParser {
+                            let mut parser = FFVDeclarationsParser {
                                 context: &self.context,
                                 declarations: &mut self.rule.$ident,
                             };
 
-                            let mut iter = DeclarationListParser::new(input, parser);
+                            let mut iter = RuleBodyParser::new(input, &mut parser);
                             while let Some(declaration) = iter.next() {
                                 if let Err((error, slice)) = declaration {
                                     let location = error.location;
@@ -441,6 +434,16 @@ macro_rules! font_feature_values_blocks {
 
                 Ok(())
             }
+        }
+
+        impl<'a, 'i> DeclarationParser<'i> for FontFeatureValuesRuleParser<'a> {
+            type Declaration = ();
+            type Error = StyleParseErrorKind<'i>;
+        }
+
+        impl<'a, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind<'i>> for FontFeatureValuesRuleParser<'a> {
+            fn parse_declarations(&self) -> bool { false }
+            fn parse_qualified(&self) -> bool { true }
         }
     }
 }

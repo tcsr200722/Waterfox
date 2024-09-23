@@ -9,18 +9,15 @@
  * least two native frames are collected.
  */
 add_task(async () => {
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
   const entries = 10000;
   const interval = 1;
   const threads = [];
   const features = ["stackwalk"];
 
-  Services.profiler.StartProfiler(entries, interval, features, threads);
+  await Services.profiler.StartProfiler(entries, interval, features, threads);
   const sampleIndex = await captureAtLeastOneJsSample();
 
-  const profile = await Services.profiler.getProfileDataAsync();
+  const profile = await stopNowAndGetProfile();
   const [thread] = profile.threads;
   const { samples } = thread;
 

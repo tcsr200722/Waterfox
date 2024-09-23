@@ -19,6 +19,8 @@ class RemoteSandboxBrokerParent
   friend class PRemoteSandboxBrokerParent;
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(RemoteSandboxBrokerParent, override)
+
   bool DuplicateFromLauncher(HANDLE aLauncherHandle, LPHANDLE aOurHandle);
 
   void Shutdown();
@@ -26,9 +28,14 @@ class RemoteSandboxBrokerParent
   // Asynchronously launches the launcher process.
   // Note: we rely on the caller to keep this instance alive
   // until this promise resolves.
-  RefPtr<GenericPromise> Launch(const nsTArray<uint64_t>& aHandlesToShare);
+  // aThread is the thread to use to resolve the promise on if needed.
+  RefPtr<GenericPromise> Launch(uint32_t aLaunchArch,
+                                const nsTArray<uint64_t>& aHandlesToShare,
+                                nsISerialEventTarget* aThread);
 
  private:
+  ~RemoteSandboxBrokerParent() = default;
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   RemoteSandboxBrokerProcessParent* mProcess = nullptr;

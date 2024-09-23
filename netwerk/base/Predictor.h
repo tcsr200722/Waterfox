@@ -56,7 +56,7 @@ class Predictor final : public nsINetworkPredictor,
 
   nsresult Init();
   void Shutdown();
-  static nsresult Create(nsISupports* outer, const nsIID& iid, void** result);
+  static nsresult Create(const nsIID& iid, void** result);
 
   // Used to update whether a particular URI was cacheable or not.
   // sourceURI and targetURI are the same as the arguments to Learn
@@ -64,7 +64,7 @@ class Predictor final : public nsINetworkPredictor,
   static void UpdateCacheability(nsIURI* sourceURI, nsIURI* targetURI,
                                  uint32_t httpStatus,
                                  nsHttpRequestHead& requestHead,
-                                 nsHttpResponseHead* reqponseHead,
+                                 nsHttpResponseHead* responseHead,
                                  nsILoadContextInfo* lci, bool isTracking);
 
  private:
@@ -427,7 +427,7 @@ class Predictor final : public nsINetworkPredictor,
   uint32_t ClampedPrefetchRollingLoadCount();
 
   // Our state
-  bool mInitialized;
+  bool mInitialized{false};
 
   nsTArray<nsCString> mKeysToOperateOn;
   nsTArray<nsCString> mValuesToOperateOn;
@@ -437,9 +437,9 @@ class Predictor final : public nsINetworkPredictor,
   nsCOMPtr<nsISpeculativeConnect> mSpeculativeService;
 
   nsCOMPtr<nsIURI> mStartupURI;
-  uint32_t mStartupTime;
-  uint32_t mLastStartupTime;
-  int32_t mStartupCount;
+  uint32_t mStartupTime{0};
+  uint32_t mLastStartupTime{0};
+  int32_t mStartupCount{1};
 
   nsCOMPtr<nsIDNSService> mDnsService;
 

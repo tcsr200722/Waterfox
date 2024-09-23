@@ -21,28 +21,27 @@ class XULMenuitemAccessible : public AccessibleWrap {
 
   XULMenuitemAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
-  virtual void Description(nsString& aDescription) override;
+  // LocalAccessible
+  virtual void Description(nsString& aDescription) const override;
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
   virtual uint64_t NativeInteractiveState() const override;
-  virtual int32_t GetLevelInternal() override;
 
   // ActionAccessible
-  virtual uint8_t ActionCount() const override;
+  virtual bool HasPrimaryAction() const override;
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t aIndex) const override;
   virtual KeyBinding AccessKey() const override;
   virtual KeyBinding KeyboardShortcut() const override;
 
   // Widgets
   virtual bool IsActiveWidget() const override;
   virtual bool AreItemsOperable() const override;
-  virtual Accessible* ContainerWidget() const override;
+  virtual LocalAccessible* ContainerWidget() const override;
 
  protected:
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
+  virtual int32_t GetLevel(bool aFast) const override;
 };
 
 /**
@@ -52,17 +51,15 @@ class XULMenuSeparatorAccessible : public XULMenuitemAccessible {
  public:
   XULMenuSeparatorAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
 
   // ActionAccessible
-  virtual uint8_t ActionCount() const override;
-  virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t aIndex) const override;
+  virtual bool HasPrimaryAction() const override;
 
  protected:
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 };
 
@@ -73,7 +70,7 @@ class XULMenupopupAccessible : public XULSelectControlAccessible {
  public:
   XULMenupopupAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
 
@@ -82,10 +79,10 @@ class XULMenupopupAccessible : public XULSelectControlAccessible {
   virtual bool IsActiveWidget() const override;
   virtual bool AreItemsOperable() const override;
 
-  virtual Accessible* ContainerWidget() const override;
+  virtual LocalAccessible* ContainerWidget() const override;
 
  protected:
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 };
 
@@ -96,17 +93,17 @@ class XULMenubarAccessible : public AccessibleWrap {
  public:
   XULMenubarAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override;
 
   // Widget
   virtual bool IsActiveWidget() const override;
   virtual bool AreItemsOperable() const override;
-  virtual Accessible* CurrentItem() const override;
-  virtual void SetCurrentItem(const Accessible* aItem) override;
+  virtual LocalAccessible* CurrentItem() const override;
+  virtual void SetCurrentItem(const LocalAccessible* aItem) override;
 
  protected:
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 };
 

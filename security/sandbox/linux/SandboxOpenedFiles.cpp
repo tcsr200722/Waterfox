@@ -24,8 +24,8 @@ SandboxOpenedFile::SandboxOpenedFile(SandboxOpenedFile&& aMoved)
       mDup(aMoved.mDup),
       mExpectError(aMoved.mExpectError) {}
 
-SandboxOpenedFile::SandboxOpenedFile(const char* aPath, bool aDup)
-    : mPath(aPath), mDup(aDup), mExpectError(false) {
+SandboxOpenedFile::SandboxOpenedFile(const char* aPath, Dup aDup)
+    : mPath(aPath), mDup(aDup == Dup::YES), mExpectError(false) {
   MOZ_ASSERT(aPath[0] == '/', "path should be absolute");
 
   int fd = open(aPath, O_RDONLY | O_CLOEXEC);
@@ -35,6 +35,9 @@ SandboxOpenedFile::SandboxOpenedFile(const char* aPath, bool aDup)
   mMaybeFd = fd;
 }
 
+SandboxOpenedFile::SandboxOpenedFile(const char* aPath, Error)
+    : mPath(aPath), mMaybeFd(-1), mDup(false), mExpectError(true) {}
+
 int SandboxOpenedFile::GetDesc() const {
   int fd;
   if (mDup) {
@@ -42,14 +45,14 @@ int SandboxOpenedFile::GetDesc() const {
     if (fd >= 0) {
       fd = dup(fd);
       if (fd < 0) {
-        SANDBOX_LOG_ERROR("dup: %s", strerror(errno));
+        SANDBOX_LOG_ERRNO("dup");
       }
     }
   } else {
     fd = TakeDesc();
   }
   if (fd < 0 && !mExpectError) {
-    SANDBOX_LOG_ERROR("unexpected multiple open of file %s", Path());
+    SANDBOX_LOG("unexpected multiple open of file %s", Path());
   }
   return fd;
 }
@@ -67,7 +70,7 @@ int SandboxOpenedFiles::GetDesc(const char* aPath) const {
       return file.GetDesc();
     }
   }
-  SANDBOX_LOG_ERROR("attempt to open unexpected file %s", aPath);
+  SANDBOX_LOG("attempt to open unexpected file %s", aPath);
   return -1;
 }
 

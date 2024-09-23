@@ -9,15 +9,14 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/IDBTransactionBinding.h"
-#include "mozilla/dom/StorageTypeBinding.h"
 #include "mozilla/dom/indexedDB/PBackgroundIDBSharedTypes.h"
 #include "mozilla/dom/quota/PersistenceType.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/UniquePtr.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsString.h"
-#include "nsTHashtable.h"
+#include "nsTHashSet.h"
 
 class nsIEventTarget;
 class nsIGlobalObject;
@@ -32,7 +31,6 @@ namespace dom {
 class Blob;
 class DOMStringList;
 class IDBFactory;
-class IDBMutableFile;
 class IDBObjectStore;
 struct IDBObjectStoreParameters;
 class IDBOpenDBRequest;
@@ -48,9 +46,8 @@ class PBackgroundIDBDatabaseFileChild;
 }  // namespace indexedDB
 
 class IDBDatabase final : public DOMEventTargetHelper {
-  typedef mozilla::dom::indexedDB::DatabaseSpec DatabaseSpec;
-  typedef mozilla::dom::StorageType StorageType;
-  typedef mozilla::dom::quota::PersistenceType PersistenceType;
+  using DatabaseSpec = mozilla::dom::indexedDB::DatabaseSpec;
+  using PersistenceType = mozilla::dom::quota::PersistenceType;
 
   class Observer;
   friend class Observer;
@@ -70,18 +67,13 @@ class IDBDatabase final : public DOMEventTargetHelper {
 
   indexedDB::BackgroundDatabaseChild* mBackgroundActor;
 
-  nsTHashtable<nsPtrHashKey<IDBTransaction>> mTransactions;
+  nsTHashSet<IDBTransaction*> mTransactions;
 
-  nsDataHashtable<nsISupportsHashKey,
-                  indexedDB::PBackgroundIDBDatabaseFileChild*>
+  nsTHashMap<nsISupportsHashKey, indexedDB::PBackgroundIDBDatabaseFileChild*>
       mFileActors;
 
   RefPtr<Observer> mObserver;
 
-  // Weak refs, IDBMutableFile strongly owns this IDBDatabase object.
-  nsTArray<IDBMutableFile*> mLiveMutableFiles;
-
-  const bool mFileHandleDisabled;
   bool mClosed;
   bool mInvalidated;
   bool mQuotaExceeded;
@@ -163,16 +155,6 @@ class IDBDatabase final : public DOMEventTargetHelper {
 
   void NoteInactiveTransaction();
 
-  // XXX This doesn't really belong here... It's only needed for IDBMutableFile
-  //     serialization and should be removed or fixed someday.
-  nsresult GetQuotaInfo(nsACString& aOrigin, PersistenceType* aPersistenceType);
-
-  bool IsFileHandleDisabled() const { return mFileHandleDisabled; }
-
-  void NoteLiveMutableFile(IDBMutableFile* aMutableFile);
-
-  void NoteFinishedMutableFile(IDBMutableFile* aMutableFile);
-
   [[nodiscard]] RefPtr<DOMStringList> ObjectStoreNames() const;
 
   [[nodiscard]] RefPtr<IDBObjectStore> CreateObjectStore(
@@ -184,18 +166,13 @@ class IDBDatabase final : public DOMEventTargetHelper {
   // This will be called from the DOM.
   [[nodiscard]] RefPtr<IDBTransaction> Transaction(
       JSContext* aCx, const StringOrStringSequence& aStoreNames,
-      IDBTransactionMode aMode, ErrorResult& aRv);
-
-  StorageType Storage() const;
+      IDBTransactionMode aMode, const IDBTransactionOptions& aOptions,
+      ErrorResult& aRv);
 
   IMPL_EVENT_HANDLER(abort)
   IMPL_EVENT_HANDLER(close)
   IMPL_EVENT_HANDLER(error)
   IMPL_EVENT_HANDLER(versionchange)
-
-  [[nodiscard]] RefPtr<IDBRequest> CreateMutableFile(
-      JSContext* aCx, const nsAString& aName, const Optional<nsAString>& aType,
-      ErrorResult& aRv);
 
   void ClearBackgroundActor() {
     AssertIsOnOwningThread();
@@ -225,8 +202,6 @@ class IDBDatabase final : public DOMEventTargetHelper {
 
   virtual void LastRelease() override;
 
-  virtual nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
-
   // nsWrapperCache
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -251,8 +226,6 @@ class IDBDatabase final : public DOMEventTargetHelper {
   void RefreshSpec(bool aMayDelete);
 
   void ExpireFileActors(bool aExpireAll);
-
-  void InvalidateMutableFiles();
 
   void NoteInactiveTransactionDelayed();
 

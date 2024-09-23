@@ -23,7 +23,6 @@
 #include "nsContentUtils.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
 #include "nsIContentSecurityPolicy.h"
-#include "mozilla/TaskCategory.h"
 
 class nsIDOMWindow;
 
@@ -64,9 +63,7 @@ nsContentPolicy::~nsContentPolicy() = default;
 inline nsresult nsContentPolicy::CheckPolicy(CPMethod policyMethod,
                                              nsIURI* contentLocation,
                                              nsILoadInfo* loadInfo,
-                                             const nsACString& mimeType,
                                              int16_t* decision) {
-  nsContentPolicyType contentType = loadInfo->InternalContentPolicyType();
   nsCOMPtr<nsISupports> requestingContext = loadInfo->GetLoadingContext();
   // sanity-check passed-through parameters
   MOZ_ASSERT(decision, "Null out pointer");
@@ -92,48 +89,24 @@ inline nsresult nsContentPolicy::CheckPolicy(CPMethod policyMethod,
     doc = do_QueryInterface(requestingContext);
   }
 
-  nsContentPolicyType externalType =
-      nsContentUtils::InternalContentPolicyTypeToExternal(contentType);
-
   /*
    * Enumerate mPolicies and ask each of them, taking the logical AND of
    * their permissions.
    */
   nsresult rv;
   const nsCOMArray<nsIContentPolicy>& entries = mPolicies.GetCachedEntries();
-
-  nsCOMPtr<nsPIDOMWindowOuter> window;
-  if (nsCOMPtr<nsINode> node = do_QueryInterface(requestingContext)) {
-    window = node->OwnerDoc()->GetWindow();
-  } else {
-    window = do_QueryInterface(requestingContext);
-  }
-
   if (doc) {
-    nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp();
-    if (csp && window) {
-      csp->EnsureEventTarget(
-          window->EventTargetFor(mozilla::TaskCategory::Other));
+    if (nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp()) {
+      csp->EnsureEventTarget(mozilla::GetMainThreadSerialEventTarget());
     }
   }
 
   int32_t count = entries.Count();
   for (int32_t i = 0; i < count; i++) {
     /* check the appropriate policy */
-    rv = (entries[i]->*policyMethod)(contentLocation, loadInfo, mimeType,
-                                     decision);
+    rv = (entries[i]->*policyMethod)(contentLocation, loadInfo, decision);
 
     if (NS_SUCCEEDED(rv) && NS_CP_REJECTED(*decision)) {
-      // If we are blocking an image, we have to let the
-      // ImageLoadingContent know that we blocked the load.
-      if (externalType == nsIContentPolicy::TYPE_IMAGE ||
-          externalType == nsIContentPolicy::TYPE_IMAGESET) {
-        nsCOMPtr<nsIImageLoadingContent> img =
-            do_QueryInterface(requestingContext);
-        if (img) {
-          img->SetBlockedRequest(*decision);
-        }
-      }
       /* policy says no, no point continuing to check */
       return NS_OK;
     }
@@ -166,11 +139,11 @@ inline nsresult nsContentPolicy::CheckPolicy(CPMethod policyMethod,
 
 NS_IMETHODIMP
 nsContentPolicy::ShouldLoad(nsIURI* contentLocation, nsILoadInfo* loadInfo,
-                            const nsACString& mimeType, int16_t* decision) {
+                            int16_t* decision) {
   // ShouldProcess does not need a content location, but we do
   MOZ_ASSERT(contentLocation, "Must provide request location");
   nsresult rv = CheckPolicy(&nsIContentPolicy::ShouldLoad, contentLocation,
-                            loadInfo, mimeType, decision);
+                            loadInfo, decision);
   LOG_CHECK("ShouldLoad");
 
   return rv;
@@ -178,9 +151,9 @@ nsContentPolicy::ShouldLoad(nsIURI* contentLocation, nsILoadInfo* loadInfo,
 
 NS_IMETHODIMP
 nsContentPolicy::ShouldProcess(nsIURI* contentLocation, nsILoadInfo* loadInfo,
-                               const nsACString& mimeType, int16_t* decision) {
+                               int16_t* decision) {
   nsresult rv = CheckPolicy(&nsIContentPolicy::ShouldProcess, contentLocation,
-                            loadInfo, mimeType, decision);
+                            loadInfo, decision);
   LOG_CHECK("ShouldProcess");
 
   return rv;

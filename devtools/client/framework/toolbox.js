@@ -4,230 +4,245 @@
 
 "use strict";
 
-const SOURCE_MAP_WORKER =
-  "resource://devtools/client/shared/source-map/worker.js";
-const SOURCE_MAP_WORKER_ASSETS =
-  "resource://devtools/client/shared/source-map/assets/";
-
 const MAX_ORDINAL = 99;
-const SPLITCONSOLE_ENABLED_PREF = "devtools.toolbox.splitconsoleEnabled";
+const SPLITCONSOLE_OPEN_PREF = "devtools.toolbox.splitconsole.open";
+const SPLITCONSOLE_ENABLED_PREF = "devtools.toolbox.splitconsole.enabled";
 const SPLITCONSOLE_HEIGHT_PREF = "devtools.toolbox.splitconsoleHeight";
+const DEVTOOLS_ALWAYS_ON_TOP = "devtools.toolbox.alwaysOnTop";
 const DISABLE_AUTOHIDE_PREF = "ui.popup.disable_autohide";
+const PSEUDO_LOCALE_PREF = "intl.l10n.pseudo";
 const HOST_HISTOGRAM = "DEVTOOLS_TOOLBOX_HOST";
 const CURRENT_THEME_SCALAR = "devtools.current_theme";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
+const REGEX_4XX_5XX = /^[4,5]\d\d$/;
 
-var { Ci, Cc } = require("chrome");
-var promise = require("promise");
-const { debounce } = require("devtools/shared/debounce");
-var Services = require("Services");
-var ChromeUtils = require("ChromeUtils");
-var { gDevTools } = require("devtools/client/framework/devtools");
-var EventEmitter = require("devtools/shared/event-emitter");
-const Selection = require("devtools/client/framework/selection");
-var Telemetry = require("devtools/client/shared/telemetry");
-const { getUnicodeUrl } = require("devtools/client/shared/unicode-url");
-var { DOMHelpers } = require("devtools/shared/dom-helpers");
-const { KeyCodes } = require("devtools/client/shared/keycodes");
+const BROWSERTOOLBOX_SCOPE_PREF = "devtools.browsertoolbox.scope";
+const BROWSERTOOLBOX_SCOPE_EVERYTHING = "everything";
+const BROWSERTOOLBOX_SCOPE_PARENTPROCESS = "parent-process";
+
+const { debounce } = require("resource://devtools/shared/debounce.js");
+const { throttle } = require("resource://devtools/shared/throttle.js");
+const {
+  safeAsyncMethod,
+} = require("resource://devtools/shared/async-utils.js");
+var { gDevTools } = require("resource://devtools/client/framework/devtools.js");
+var EventEmitter = require("resource://devtools/shared/event-emitter.js");
+const Selection = require("resource://devtools/client/framework/selection.js");
+var Telemetry = require("resource://devtools/client/shared/telemetry.js");
+const {
+  getUnicodeUrl,
+} = require("resource://devtools/client/shared/unicode-url.js");
+var { DOMHelpers } = require("resource://devtools/shared/dom-helpers.js");
+const { KeyCodes } = require("resource://devtools/client/shared/keycodes.js");
+const {
+  FluentL10n,
+} = require("resource://devtools/client/shared/fluent-l10n/fluent-l10n.js");
+
 var Startup = Cc["@mozilla.org/devtools/startup-clh;1"].getService(
   Ci.nsISupports
 ).wrappedJSObject;
 
-const { TargetList } = require("devtools/shared/resources/target-list");
-const {
-  ResourceWatcher,
-} = require("devtools/shared/resources/resource-watcher");
-
-const { BrowserLoader } = ChromeUtils.import(
-  "resource://devtools/client/shared/browser-loader.js"
+const { BrowserLoader } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/browser-loader.sys.mjs"
 );
 
-const { LocalizationHelper } = require("devtools/shared/l10n");
-const L10N = new LocalizationHelper(
-  "devtools/client/locales/toolbox.properties"
+const {
+  MultiLocalizationHelper,
+} = require("resource://devtools/shared/l10n.js");
+const L10N = new MultiLocalizationHelper(
+  "devtools/client/locales/toolbox.properties",
+  "chrome://branding/locale/brand.properties"
 );
 
 loader.lazyRequireGetter(
   this,
   "registerStoreObserver",
-  "devtools/client/shared/redux/subscriber",
+  "resource://devtools/client/shared/redux/subscriber.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "createToolboxStore",
-  "devtools/client/framework/store",
+  "resource://devtools/client/framework/store.js",
   true
 );
 loader.lazyRequireGetter(
   this,
-  "registerWalkerListeners",
-  "devtools/client/framework/actions/index",
+  ["registerWalkerListeners", "removeTarget"],
+  "resource://devtools/client/framework/actions/index.js",
   true
 );
 loader.lazyRequireGetter(
   this,
-  "registerTarget",
-  "devtools/client/framework/actions/index",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "unregisterTarget",
-  "devtools/client/framework/actions/index",
+  ["selectTarget"],
+  "resource://devtools/shared/commands/target/actions/targets.js",
   true
 );
 
-loader.lazyRequireGetter(
-  this,
-  "selectTarget",
-  "devtools/client/framework/actions/index",
-  true
-);
-
-loader.lazyRequireGetter(
-  this,
-  "AppConstants",
-  "resource://gre/modules/AppConstants.jsm",
-  true
-);
-loader.lazyRequireGetter(this, "flags", "devtools/shared/flags");
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  AppConstants: "resource://gre/modules/AppConstants.sys.mjs",
+});
+loader.lazyRequireGetter(this, "flags", "resource://devtools/shared/flags.js");
 loader.lazyRequireGetter(
   this,
   "KeyShortcuts",
-  "devtools/client/shared/key-shortcuts"
+  "resource://devtools/client/shared/key-shortcuts.js"
 );
-loader.lazyRequireGetter(this, "ZoomKeys", "devtools/client/shared/zoom-keys");
 loader.lazyRequireGetter(
   this,
-  "settleAll",
-  "devtools/shared/ThreadSafeDevToolsUtils",
-  true
+  "ZoomKeys",
+  "resource://devtools/client/shared/zoom-keys.js"
 );
 loader.lazyRequireGetter(
   this,
   "ToolboxButtons",
-  "devtools/client/definitions",
+  "resource://devtools/client/definitions.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "SourceMapURLService",
-  "devtools/client/framework/source-map-url-service",
+  "resource://devtools/client/framework/source-map-url-service.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "BrowserConsoleManager",
-  "devtools/client/webconsole/browser-console-manager",
+  "resource://devtools/client/webconsole/browser-console-manager.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "viewSource",
-  "devtools/client/shared/view-source"
+  "resource://devtools/client/shared/view-source.js"
 );
 loader.lazyRequireGetter(
   this,
   "buildHarLog",
-  "devtools/client/netmonitor/src/har/har-builder-utils",
+  "resource://devtools/client/netmonitor/src/har/har-builder-utils.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "NetMonitorAPI",
-  "devtools/client/netmonitor/src/api",
+  "resource://devtools/client/netmonitor/src/api.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "sortPanelDefinitions",
-  "devtools/client/framework/toolbox-tabs-order-manager",
+  "resource://devtools/client/framework/toolbox-tabs-order-manager.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "createEditContextMenu",
-  "devtools/client/framework/toolbox-context-menu",
+  "resource://devtools/client/framework/toolbox-context-menu.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "getSelectedTarget",
-  "devtools/client/framework/reducers/targets",
+  "resource://devtools/shared/commands/target/selectors/targets.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "remoteClientManager",
-  "devtools/client/shared/remote-debugging/remote-client-manager.js",
+  "resource://devtools/client/shared/remote-debugging/remote-client-manager.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
-  "devtools/client/responsive/manager"
+  "resource://devtools/client/responsive/manager.js"
 );
 loader.lazyRequireGetter(
   this,
   "DevToolsUtils",
-  "devtools/shared/DevToolsUtils"
+  "resource://devtools/shared/DevToolsUtils.js"
 );
 loader.lazyRequireGetter(
   this,
   "NodePicker",
-  "devtools/client/inspector/node-picker"
+  "resource://devtools/client/inspector/node-picker.js"
 );
 
 loader.lazyGetter(this, "domNodeConstants", () => {
-  return require("devtools/shared/dom-node-constants");
+  return require("resource://devtools/shared/dom-node-constants.js");
 });
-
-loader.lazyGetter(this, "DEBUG_TARGET_TYPES", () => {
-  return require("devtools/client/shared/remote-debugging/constants")
-    .DEBUG_TARGET_TYPES;
-});
-
-loader.lazyGetter(this, "registerHarOverlay", () => {
-  return require("devtools/client/netmonitor/src/har/toolbox-overlay").register;
-});
-
-loader.lazyRequireGetter(
-  this,
-  "defaultThreadOptions",
-  "devtools/client/shared/thread-utils",
-  true
-);
 
 loader.lazyRequireGetter(
   this,
   "NodeFront",
-  "devtools/client/fronts/node",
+  "resource://devtools/client/fronts/node.js",
   true
 );
 
 loader.lazyRequireGetter(
   this,
   "PICKER_TYPES",
-  "devtools/shared/picker-constants"
+  "resource://devtools/shared/picker-constants.js"
 );
 
 loader.lazyRequireGetter(
   this,
-  "getF12SessionId",
-  "devtools/client/framework/enable-devtools-popup",
+  "HarAutomation",
+  "resource://devtools/client/netmonitor/src/har/har-automation.js",
   true
 );
 
-const DEVTOOLS_F12_DISABLED_PREF = "devtools.experiment.f12.shortcut_disabled";
+loader.lazyRequireGetter(
+  this,
+  "getThreadOptions",
+  "resource://devtools/client/shared/thread-utils.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "SourceMapLoader",
+  "resource://devtools/client/shared/source-map-loader/index.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "openProfilerTab",
+  "resource://devtools/client/performance-new/shared/browser.js",
+  true
+);
+loader.lazyGetter(this, "ProfilerBackground", () => {
+  return ChromeUtils.importESModule(
+    "resource://devtools/client/performance-new/shared/background.sys.mjs"
+  );
+});
+
+const BOOLEAN_CONFIGURATION_PREFS = {
+  "devtools.cache.disabled": {
+    name: "cacheDisabled",
+  },
+  "devtools.custom-formatters.enabled": {
+    name: "customFormatters",
+  },
+  "devtools.serviceWorkers.testing.enabled": {
+    name: "serviceWorkersTestingEnabled",
+  },
+  "devtools.inspector.simple-highlighters-reduced-motion": {
+    name: "useSimpleHighlightersForReducedMotion",
+  },
+  "devtools.debugger.features.overlay": {
+    name: "pauseOverlay",
+    thread: true,
+  },
+};
 
 /**
  * A "Toolbox" is the component that holds all the tools for one specific
  * target. Visually, it's a document that includes the tools tabs and all
  * the iframes where the tool panels will be living in.
  *
- * @param {object} target
- *        The object the toolbox is debugging.
+ * @param {object} commands
+ *        The context to inspect identified by this commands.
  * @param {string} selectedTool
  *        Tool to select initially
  * @param {Toolbox.HostType} hostType
@@ -237,57 +252,27 @@ const DEVTOOLS_F12_DISABLED_PREF = "devtools.experiment.f12.shortcut_disabled";
  * @param {string} frameId
  *        A unique identifier to differentiate toolbox documents from the
  *        chrome codebase when passing DOM messages
- * @param {Number} msSinceProcessStart
- *        the number of milliseconds since process start using monotonic
- *        timestamps (unaffected by system clock changes).
  */
-function Toolbox(
-  target,
-  selectedTool,
-  hostType,
-  contentWindow,
-  frameId,
-  msSinceProcessStart
-) {
+function Toolbox(commands, selectedTool, hostType, contentWindow, frameId) {
   this._win = contentWindow;
   this.frameId = frameId;
   this.selection = new Selection();
-  this.telemetry = new Telemetry();
+  this.telemetry = new Telemetry({ useSessionId: true });
+  // This attribute helps identify one particular toolbox instance.
+  this.sessionId = this.telemetry.sessionId;
 
-  this.targetList = new TargetList(target.client.mainRoot, target);
-  this.resourceWatcher = new ResourceWatcher(this.targetList);
-
-  // The session ID is used to determine which telemetry events belong to which
-  // toolbox session. Because we use Amplitude to analyse the telemetry data we
-  // must use the time since the system wide epoch as the session ID.
-  this.sessionId = msSinceProcessStart;
-
-  // If the user opened the toolbox, we can now enable the F12 shortcut.
-  if (Services.prefs.getBoolPref(DEVTOOLS_F12_DISABLED_PREF, false)) {
-    // If the toolbox is opening while F12 was disabled, the user might have
-    // pressed F12 and seen the "enable devtools" notification.
-    // A telemetry session_id was generated for the f12_popup_displayed event.
-    // Reuse it here in order to link the toolbox session to the
-    // f12_popup_displayed events.
-    // getF12SessionId() might return null if the popup was never displayed.
-    // In this case, fallback on the provided `msSinceProcessStart`.
-    this.sessionId = getF12SessionId() || msSinceProcessStart;
-
-    this.telemetry.recordEvent("f12_enabled", "tools", null, {
-      session_id: this.sessionId,
-    });
-
-    // Flip the preference.
-    Services.prefs.setBoolPref(DEVTOOLS_F12_DISABLED_PREF, false);
-  }
+  // This attribute is meant to be a public attribute on the Toolbox object
+  // It exposes commands modules listed in devtools/shared/commands/index.js
+  // which are an abstraction on top of RDP methods.
+  // See devtools/shared/commands/README.md
+  this.commands = commands;
+  this._descriptorFront = commands.descriptorFront;
 
   // Map of the available DevTools WebExtensions:
   //   Map<extensionUUID, extensionName>
   this._webExtensions = new Map();
 
   this._toolPanels = new Map();
-  // Map of tool startup components for given tool id.
-  this._toolStartups = new Map();
   this._inspectorExtensionSidebars = new Map();
 
   this._netMonitorAPI = null;
@@ -296,8 +281,8 @@ function Toolbox(
   this.frameMap = new Map();
   this.selectedFrameId = null;
 
-  // Set of paused threads to determine whether the toolbox is paused
-  this._pausedThreads = new Set();
+  // Number of targets currently paused
+  this._pausedTargets = 0;
 
   /**
    * KeyShortcuts instance specific to WINDOW host type.
@@ -309,22 +294,20 @@ function Toolbox(
 
   this._toolRegistered = this._toolRegistered.bind(this);
   this._toolUnregistered = this._toolUnregistered.bind(this);
-  this._onWillNavigate = this._onWillNavigate.bind(this);
   this._refreshHostTitle = this._refreshHostTitle.bind(this);
   this.toggleNoAutohide = this.toggleNoAutohide.bind(this);
+  this.toggleAlwaysOnTop = this.toggleAlwaysOnTop.bind(this);
+  this.disablePseudoLocale = () => this.changePseudoLocale("none");
+  this.enableAccentedPseudoLocale = () => this.changePseudoLocale("accented");
+  this.enableBidiPseudoLocale = () => this.changePseudoLocale("bidi");
   this._updateFrames = this._updateFrames.bind(this);
   this._splitConsoleOnKeypress = this._splitConsoleOnKeypress.bind(this);
   this.closeToolbox = this.closeToolbox.bind(this);
   this.destroy = this.destroy.bind(this);
-  this._applyCacheSettings = this._applyCacheSettings.bind(this);
-  this._applyServiceWorkersTestingSettings = this._applyServiceWorkersTestingSettings.bind(
-    this
-  );
   this._saveSplitConsoleHeight = this._saveSplitConsoleHeight.bind(this);
   this._onFocus = this._onFocus.bind(this);
+  this._onBlur = this._onBlur.bind(this);
   this._onBrowserMessage = this._onBrowserMessage.bind(this);
-  this._updateTextBoxMenuItems = this._updateTextBoxMenuItems.bind(this);
-  this._onPerformanceFrontEvent = this._onPerformanceFrontEvent.bind(this);
   this._onTabsOrderUpdated = this._onTabsOrderUpdated.bind(this);
   this._onToolbarFocus = this._onToolbarFocus.bind(this);
   this._onToolbarArrowKeypress = this._onToolbarArrowKeypress.bind(this);
@@ -341,23 +324,34 @@ function Toolbox(
   this._onToolSelected = this._onToolSelected.bind(this);
   this._onContextMenu = this._onContextMenu.bind(this);
   this._onMouseDown = this._onMouseDown.bind(this);
-  this.updateToolboxButtonsVisibility = this.updateToolboxButtonsVisibility.bind(
-    this
-  );
+  this.updateToolboxButtonsVisibility =
+    this.updateToolboxButtonsVisibility.bind(this);
   this.updateToolboxButtons = this.updateToolboxButtons.bind(this);
   this.selectTool = this.selectTool.bind(this);
   this._pingTelemetrySelectTool = this._pingTelemetrySelectTool.bind(this);
   this.toggleSplitConsole = this.toggleSplitConsole.bind(this);
   this.toggleOptions = this.toggleOptions.bind(this);
-  this.togglePaintFlashing = this.togglePaintFlashing.bind(this);
-  this.toggleDragging = this.toggleDragging.bind(this);
-  this._onPausedState = this._onPausedState.bind(this);
-  this._onResumedState = this._onResumedState.bind(this);
   this._onTargetAvailable = this._onTargetAvailable.bind(this);
   this._onTargetDestroyed = this._onTargetDestroyed.bind(this);
-  this._onNavigate = this._onNavigate.bind(this);
+  this._onTargetSelected = this._onTargetSelected.bind(this);
+  this._onResourceAvailable = this._onResourceAvailable.bind(this);
+  this._onResourceUpdated = this._onResourceUpdated.bind(this);
+  this._onToolSelectedStopPicker = this._onToolSelectedStopPicker.bind(this);
 
-  this.isPaintFlashing = false;
+  // `component` might be null if the toolbox was destroying during the throttling
+  this._throttledSetToolboxButtons = throttle(
+    () => this.component?.setToolboxButtons(this.toolbarButtons),
+    500,
+    this
+  );
+
+  this._debounceUpdateFocusedState = debounce(
+    () => {
+      this.component?.setFocusedState(this._isToolboxFocused);
+    },
+    500,
+    this
+  );
 
   if (!selectedTool) {
     selectedTool = Services.prefs.getCharPref(this._prefs.LAST_TOOL);
@@ -367,7 +361,7 @@ function Toolbox(
   this._hostType = hostType;
 
   this.isOpen = new Promise(
-    function(resolve) {
+    function (resolve) {
       this._resolveIsOpen = resolve;
     }.bind(this)
   );
@@ -417,12 +411,11 @@ Toolbox.prototype = {
 
   _prefs: {
     LAST_TOOL: "devtools.toolbox.selectedTool",
-    SIDE_ENABLED: "devtools.toolbox.sideEnabled",
   },
 
   get nodePicker() {
     if (!this._nodePicker) {
-      this._nodePicker = new NodePicker(this.targetList, this.selection);
+      this._nodePicker = new NodePicker(this.commands, this.selection);
       this._nodePicker.on("picker-starting", this._onPickerStarting);
       this._nodePicker.on("picker-started", this._onPickerStarted);
       this._nodePicker.on("picker-stopped", this._onPickerStopped);
@@ -437,7 +430,6 @@ Toolbox.prototype = {
   get store() {
     if (!this._store) {
       this._store = createToolboxStore();
-      registerStoreObserver(this._store, this._onToolboxStateChange.bind(this));
     }
     return this._store;
   },
@@ -500,14 +492,14 @@ Toolbox.prototype = {
    * @return {Map} panels
    *         All the running panels in the toolbox
    */
-  getToolPanels: function() {
+  getToolPanels() {
     return new Map(this._toolPanels);
   },
 
   /**
    * Access the panel for a given tool
    */
-  getPanel: function(id) {
+  getPanel(id) {
     return this._toolPanels.get(id);
   },
 
@@ -524,7 +516,7 @@ Toolbox.prototype = {
    * @returns Promise
    *          A promise that resolves once the panel is ready.
    */
-  getPanelWhenReady: function(id) {
+  getPanelWhenReady(id) {
     const panel = this.getPanel(id);
     return new Promise(resolve => {
       if (panel) {
@@ -542,48 +534,22 @@ Toolbox.prototype = {
    * likely that we're going to want to get the panel that we've just made
    * visible
    */
-  getCurrentPanel: function() {
+  getCurrentPanel() {
     return this._toolPanels.get(this.currentToolId);
-  },
-
-  toggleDragging: function() {
-    this.doc.querySelector("window").classList.toggle("dragging");
-  },
-
-  /**
-   * Instruct the toolbox to switch to a new top-level target.
-   * It means that the currently debugged target is destroyed in favor of a new one.
-   * This typically happens when navigating to a new URL which has to be loaded
-   * in a distinct process.
-   */
-  async switchToTarget(newTarget) {
-    // Notify gDevTools that the toolbox will be hooked to another target.
-    this.emit("switch-target", newTarget);
-
-    // TargetList.switchToTarget won't wait for all target listeners, like
-    // Toolbox._onTargetAvailable to be finished before resolving.
-    // But, we do expect the target to be attached before calling listFrames
-    // and initPerformance. So wait for this via an internal event.
-    const onAttached = this.once("top-target-attached");
-    await this.targetList.switchToTarget(newTarget);
-    await onAttached;
-
-    // Attach the toolbox to this new target
-    await this._listFrames();
-    await this.initPerformance();
-
-    this.emit("switched-target", newTarget);
   },
 
   /**
    * Get the current top level target the toolbox is debugging.
+   *
+   * This will only be defined *after* calling Toolbox.open(),
+   * after it has called `targetCommands.startListening`.
    */
   get target() {
-    return this.targetList.targetFront;
+    return this.commands.targetCommand.targetFront;
   },
 
   get threadFront() {
-    return this._threadFront;
+    return this.commands.targetCommand.targetFront.threadFront;
   },
 
   /**
@@ -631,7 +597,7 @@ Toolbox.prototype = {
   /**
    * Get the focused state of the split console
    */
-  isSplitConsoleFocused: function() {
+  isSplitConsoleFocused() {
     if (!this._splitConsole) {
       return false;
     }
@@ -643,8 +609,24 @@ Toolbox.prototype = {
     );
   },
 
-  isBrowserToolbox: function() {
+  /**
+   * Get the enabled split console setting, and if it's not set, set it with updateIsSplitConsoleEnabled
+   * @returns {boolean} devtools.toolbox.splitconsole.enabled option
+   */
+  isSplitConsoleEnabled() {
+    if (typeof this._splitConsoleEnabled !== "boolean") {
+      this.updateIsSplitConsoleEnabled();
+    }
+
+    return this._splitConsoleEnabled;
+  },
+
+  get isBrowserToolbox() {
     return this.hostType === Toolbox.HostType.BROWSERTOOLBOX;
+  },
+
+  get isMultiProcessBrowserToolbox() {
+    return this.isBrowserToolbox;
   },
 
   /**
@@ -654,23 +636,34 @@ Toolbox.prototype = {
    */
   selectTarget(targetActorID) {
     if (this.getSelectedTargetFront()?.actorID !== targetActorID) {
-      this.store.dispatch(selectTarget(targetActorID));
+      // The selected target is managed by the TargetCommand's store.
+      // So dispatch this action against that other store.
+      this.commands.targetCommand.store.dispatch(selectTarget(targetActorID));
     }
   },
 
   /**
    * @returns {ThreadFront|null} The selected thread front, or null if there is none.
    */
-  getSelectedTargetFront: function() {
-    const selectedTarget = getSelectedTarget(this.store.getState());
+  getSelectedTargetFront() {
+    // The selected target is managed by the TargetCommand's store.
+    // So pull the state from that other store.
+    const selectedTarget = getSelectedTarget(
+      this.commands.targetCommand.store.getState()
+    );
     if (!selectedTarget) {
       return null;
     }
 
-    return this.target.client.getFrontByID(selectedTarget.actorID);
+    return this.commands.client.getFrontByID(selectedTarget.actorID);
   },
 
-  _onToolboxStateChange(state, oldState) {
+  /**
+   * For now, the debugger isn't hooked to TargetCommand's store
+   * to display its thread list. So manually forward target selection change
+   * to the debugger via a dedicated action
+   */
+  _onTargetCommandStateChange(state, oldState) {
     if (getSelectedTarget(state) !== getSelectedTarget(oldState)) {
       const dbg = this.getPanel("jsdebugger");
       if (!dbg) {
@@ -686,35 +679,82 @@ Toolbox.prototype = {
     }
   },
 
-  _onPausedState: function(packet, threadFront) {
+  /**
+   * Called on each new THREAD_STATE resource
+   *
+   * @param {Object} resource The THREAD_STATE resource
+   */
+  _onThreadStateChanged(resource) {
+    if (resource.state == "paused") {
+      this._pauseToolbox(resource.why.type);
+    } else if (resource.state == "resumed") {
+      this._resumeToolbox();
+    }
+  },
+
+  /**
+   * Called on each new JSTRACER_STATE resource
+   *
+   * @param {Object} resource The JSTRACER_STATE resource
+   */
+  async _onTracingStateChanged(resource) {
+    const { profile } = resource;
+    if (!profile) {
+      return;
+    }
+    const browser = await openProfilerTab();
+
+    const profileCaptureResult = {
+      type: "SUCCESS",
+      profile,
+    };
+    ProfilerBackground.registerProfileCaptureForBrowser(
+      browser,
+      profileCaptureResult,
+      null
+    );
+  },
+
+  /**
+   * Be careful, this method is synchronous, but highlightTool, raise, selectTool
+   * are all async.
+   */
+  _pauseToolbox(reason) {
     // Suppress interrupted events by default because the thread is
     // paused/resumed a lot for various actions.
-    if (packet.why.type === "interrupted") {
+    if (reason === "interrupted") {
       return;
     }
 
     this.highlightTool("jsdebugger");
 
     if (
-      packet.why.type === "debuggerStatement" ||
-      packet.why.type === "mutationBreakpoint" ||
-      packet.why.type === "eventBreakpoint" ||
-      packet.why.type === "breakpoint" ||
-      packet.why.type === "exception"
+      reason === "debuggerStatement" ||
+      reason === "mutationBreakpoint" ||
+      reason === "eventBreakpoint" ||
+      reason === "breakpoint" ||
+      reason === "exception" ||
+      reason === "resumeLimit" ||
+      reason === "XHR" ||
+      reason === "breakpointConditionThrown"
     ) {
       this.raise();
-      this.selectTool("jsdebugger", packet.why.type);
-      this._pausedThreads.add(threadFront);
+      this.selectTool("jsdebugger", reason);
+      // Each Target/Thread can be paused only once at a time,
+      // so, for each pause, we should have a related resumed event.
+      // But we may have multiple targets paused at the same time
+      this._pausedTargets++;
       this.emit("toolbox-paused");
     }
   },
 
-  _onResumedState: function(threadFront) {
-    this._pausedThreads.delete(threadFront);
-
-    if (this._pausedThreads.size == 0) {
-      this.emit("toolbox-resumed");
-      this.unhighlightTool("jsdebugger");
+  _resumeToolbox() {
+    if (this.isHighlighted("jsdebugger")) {
+      this._pausedTargets--;
+      if (this._pausedTargets == 0) {
+        this.emit("toolbox-resumed");
+        this.unhighlightTool("jsdebugger");
+      }
     }
   },
 
@@ -722,108 +762,124 @@ Toolbox.prototype = {
    * This method will be called for the top-level target, as well as any potential
    * additional targets we may care about.
    */
-  async _onTargetAvailable({ targetFront }) {
+  async _onTargetAvailable({ targetFront, isTargetSwitching }) {
     if (targetFront.isTopLevel) {
       // Attach to a new top-level target.
       // For now, register these event listeners only on the top level target
-      targetFront.on("will-navigate", this._onWillNavigate);
-      targetFront.on("navigate", this._onNavigate);
-      targetFront.on("frame-update", this._updateFrames);
-      targetFront.on("inspect-object", this._onInspectObject);
+      if (!targetFront.targetForm.ignoreSubFrames) {
+        targetFront.on("frame-update", this._updateFrames);
+      }
+      const consoleFront = await targetFront.getFront("console");
+      consoleFront.on("inspectObject", this._onInspectObject);
+    }
 
-      targetFront.watchFronts("inspector", async inspectorFront => {
-        registerWalkerListeners(this.store, inspectorFront.walker);
+    // Walker listeners allow to monitor DOM Mutation breakpoint updates.
+    // All targets should be monitored.
+    targetFront.watchFronts("inspector", async inspectorFront => {
+      registerWalkerListeners(this.store, inspectorFront.walker);
+    });
+
+    if (targetFront.isTopLevel && isTargetSwitching) {
+      // These methods expect the target to be attached, which is guaranteed by the time
+      // _onTargetAvailable is called by the targetCommand.
+      await this._listFrames();
+      // The target may have been destroyed while calling _listFrames if we navigate quickly
+      if (targetFront.isDestroyed()) {
+        return;
+      }
+    }
+
+    if (targetFront.targetForm.ignoreSubFrames) {
+      this._updateFrames({
+        frames: [
+          {
+            id: targetFront.actorID,
+            targetFront,
+            url: targetFront.url,
+            title: targetFront.title,
+            isTopLevel: targetFront.isTopLevel,
+          },
+        ],
       });
     }
 
-    await this._attachTarget(targetFront);
-
-    if (this.hostType !== Toolbox.HostType.PAGE) {
-      await this.store.dispatch(registerTarget(targetFront));
+    // If a new popup is debugged, automagically switch the toolbox to become
+    // an independant window so that we can easily keep debugging the new tab.
+    // Only do that if that's not the current top level, otherwise it means
+    // we opened a toolbox dedicated to the popup.
+    if (
+      targetFront.targetForm.isPopup &&
+      !targetFront.isTopLevel &&
+      this._descriptorFront.isLocalTab
+    ) {
+      await this.switchHostToTab(targetFront.targetForm.browsingContextID);
     }
+  },
 
-    if (targetFront.isTopLevel) {
-      this.emit("top-target-attached");
-    }
+  async _onTargetSelected({ targetFront }) {
+    this._updateFrames({ selected: targetFront.actorID });
+    this.selectTarget(targetFront.actorID);
   },
 
   _onTargetDestroyed({ targetFront }) {
+    removeTarget(this.store, targetFront);
+
     if (targetFront.isTopLevel) {
-      this.detachTarget();
-    }
-
-    if (this.hostType !== Toolbox.HostType.PAGE) {
-      this.store.dispatch(unregisterTarget(targetFront));
-    }
-  },
-
-  /**
-   * This method focuses on attaching to one particular target.
-   * It ensure that the target actor is fully initialized and is watching for
-   * resources. We do that by calling its `attach` method.
-   * And we listen for thread actor events in order to update toolbox UI when
-   * we hit a breakpoint.
-   */
-  async _attachTarget(targetFront) {
-    await targetFront.attach();
-
-    // Start tracking network activity on toolbox open for targets such as tabs.
-    const webConsoleFront = await targetFront.getFront("console");
-    await webConsoleFront.startListeners(["NetworkActivity"]);
-
-    // Do not attach to the thread of additional Frame targets, as they are
-    // already tracked by the content process targets. At least in the context
-    // of the Browser Toolbox.
-    // We would have to revisit that for the content toolboxes.
-    if (
-      targetFront.isTopLevel ||
-      targetFront.targetType != TargetList.TYPES.FRAME
-    ) {
-      const threadFront = await this._attachAndResumeThread(targetFront);
-      this._startThreadFrontListeners(threadFront);
-      if (targetFront.isTopLevel) {
-        this._threadFront = threadFront;
+      const consoleFront = targetFront.getCachedFront("console");
+      // If the target has already been destroyed, its console front will
+      // also already be destroyed and so we won't be able to retrieve it.
+      // Nor is it important to clear its listener as fronts automatically clears
+      // all their listeners on destroy.
+      if (consoleFront) {
+        consoleFront.off("inspectObject", this._onInspectObject);
       }
+      targetFront.off("frame-update", this._updateFrames);
+    } else if (this.selection) {
+      this.selection.onTargetDestroyed(targetFront);
+    }
+
+    // When navigating the old (top level) target can get destroyed before the thread state changed
+    // event for the target is received, so it gets lost. This currently happens with bf-cache
+    // navigations when paused, so lets make sure we resumed if not.
+    //
+    // We should also resume if a paused non-top-level target is destroyed
+    if (targetFront.isTopLevel || targetFront.threadFront?.paused) {
+      this._resumeToolbox();
+    }
+
+    if (targetFront.targetForm.ignoreSubFrames) {
+      this._updateFrames({
+        frames: [
+          {
+            id: targetFront.actorID,
+            destroy: true,
+          },
+        ],
+      });
     }
   },
 
-  _startThreadFrontListeners: function(threadFront) {
-    // threadFront listeners are removed when the thread is destroyed
-    threadFront.on("paused", packet =>
-      this._onPausedState(packet, threadFront)
+  _onTargetThreadFrontResumeWrongOrder() {
+    const box = this.getNotificationBox();
+    box.appendNotification(
+      L10N.getStr("toolbox.resumeOrderWarning"),
+      "wrong-resume-order",
+      "",
+      box.PRIORITY_WARNING_HIGH
     );
-    threadFront.on("resumed", () => this._onResumedState(threadFront));
-  },
-
-  _attachAndResumeThread: async function(target) {
-    const options = defaultThreadOptions();
-    const threadFront = await target.attachThread(options);
-
-    try {
-      await threadFront.resume();
-    } catch (ex) {
-      // Interpret a possible error thrown by ThreadActor.resume
-      if (ex.error === "wrongOrder") {
-        const box = this.getNotificationBox();
-        box.appendNotification(
-          L10N.getStr("toolbox.resumeOrderWarning"),
-          "wrong-resume-order",
-          "",
-          box.PRIORITY_WARNING_HIGH
-        );
-      } else {
-        throw ex;
-      }
-    }
-
-    return threadFront;
   },
 
   /**
    * Open the toolbox
    */
-  open: function() {
-    return async function() {
+  open() {
+    return async function () {
+      // Kick off async loading the Fluent bundles.
+      const fluentL10n = new FluentL10n();
+      const fluentInitPromise = fluentL10n.init([
+        "devtools/client/toolbox.ftl",
+      ]);
+
       const isToolboxURL = this.win.location.href.startsWith(this._URL);
       if (isToolboxURL) {
         // Update the URL so that onceDOMReady watch for the right url.
@@ -840,14 +896,73 @@ Toolbox.prototype = {
         );
       });
 
-      await this.targetList.startListening();
+      this.commands.targetCommand.on(
+        "target-thread-wrong-order-on-resume",
+        this._onTargetThreadFrontResumeWrongOrder.bind(this)
+      );
+      registerStoreObserver(
+        this.commands.targetCommand.store,
+        this._onTargetCommandStateChange.bind(this)
+      );
+
+      // Bug 1709063: Use commands.resourceCommand instead of toolbox.resourceCommand
+      this.resourceCommand = this.commands.resourceCommand;
 
       // Optimization: fire up a few other things before waiting on
       // the iframe being ready (makes startup faster)
-      await this.targetList.watchTargets(
-        TargetList.ALL_TYPES,
-        this._onTargetAvailable,
-        this._onTargetDestroyed
+      await this.commands.targetCommand.startListening();
+
+      // Transfer settings early, before watching resources as it may impact them.
+      // (this is the case for custom formatter pref and console messages)
+      await this._listenAndApplyConfigurationPref();
+
+      // The targetCommand is created right before this code.
+      // It means that this call to watchTargets is the first,
+      // and we are registering the first target listener, which means
+      // Toolbox._onTargetAvailable will be called first, before any other
+      // onTargetAvailable listener that might be registered on targetCommand.
+      await this.commands.targetCommand.watchTargets({
+        types: this.commands.targetCommand.ALL_TYPES,
+        onAvailable: this._onTargetAvailable,
+        onSelected: this._onTargetSelected,
+        onDestroyed: this._onTargetDestroyed,
+      });
+
+      const watchedResources = [
+        // Watch for console API messages, errors and network events in order to populate
+        // the error count icon in the toolbox.
+        this.resourceCommand.TYPES.CONSOLE_MESSAGE,
+        this.resourceCommand.TYPES.ERROR_MESSAGE,
+        this.resourceCommand.TYPES.DOCUMENT_EVENT,
+        this.resourceCommand.TYPES.THREAD_STATE,
+      ];
+
+      let tracerInitialization;
+      if (
+        Services.prefs.getBoolPref(
+          "devtools.debugger.features.javascript-tracing",
+          false
+        )
+      ) {
+        watchedResources.push(this.resourceCommand.TYPES.JSTRACER_STATE);
+        tracerInitialization = this.commands.tracerCommand.initialize();
+      }
+
+      if (!this.isBrowserToolbox) {
+        // Independently of watching network event resources for the error count icon,
+        // we need to start tracking network activity on toolbox open for targets such
+        // as tabs, in order to ensure there is always at least one listener existing
+        // for network events across the lifetime of the various panels, so stopping
+        // the resource command from clearing out its cache of network event resources.
+        watchedResources.push(this.resourceCommand.TYPES.NETWORK_EVENT);
+      }
+
+      const onResourcesWatched = this.resourceCommand.watchResources(
+        watchedResources,
+        {
+          onAvailable: this._onResourceAvailable,
+          onUpdated: this._onResourceUpdated,
+        }
       );
 
       await domReady;
@@ -862,25 +977,24 @@ Toolbox.prototype = {
       const framesPromise = this._listFrames();
 
       Services.prefs.addObserver(
-        "devtools.cache.disabled",
-        this._applyCacheSettings
-      );
-      Services.prefs.addObserver(
-        "devtools.serviceWorkers.testing.enabled",
-        this._applyServiceWorkersTestingSettings
+        BROWSERTOOLBOX_SCOPE_PREF,
+        this._refreshHostTitle
       );
 
       // Get the DOM element to mount the ToolboxController to.
       this._componentMount = this.doc.getElementById("toolbox-toolbar-mount");
 
-      this._mountReactComponent();
+      await fluentInitPromise;
+
+      // Mount the ToolboxController component and update all its state
+      // that can be updated synchronousl
+      this._mountReactComponent(fluentL10n.getBundles());
       this._buildDockOptions();
-      this._buildTabs();
-      this._applyCacheSettings();
-      this._applyServiceWorkersTestingSettings();
+      this._buildInitialPanelDefinitions();
+      this._setDebugTargetData();
+
       this._addWindowListeners();
       this._addChromeEventHandlerEvents();
-      this._registerOverlays();
 
       // Get the tab bar of the ToolboxController to attach the "keypress" event listener to.
       this._tabBar = this.doc.querySelector(".devtools-tabbar");
@@ -891,15 +1005,11 @@ Toolbox.prototype = {
         L10N.getStr("toolbox.label")
       );
 
-      // Set debug target data on the ToolboxController component.
-      this._setDebugTargetData();
-
       this.webconsolePanel = this.doc.querySelector(
         "#toolbox-panel-webconsole"
       );
-      this.webconsolePanel.height = Services.prefs.getIntPref(
-        SPLITCONSOLE_HEIGHT_PREF
-      );
+      this.webconsolePanel.style.height =
+        Services.prefs.getIntPref(SPLITCONSOLE_HEIGHT_PREF) + "px";
       this.webconsolePanel.addEventListener(
         "resize",
         this._saveSplitConsoleHeight
@@ -909,13 +1019,16 @@ Toolbox.prototype = {
 
       this._pingTelemetry();
 
-      // The isTargetSupported check needs to happen after the target is
+      // The isToolSupported check needs to happen after the target is
       // remoted, otherwise we could have done it in the toolbox constructor
       // (bug 1072764).
       const toolDef = gDevTools.getToolDefinition(this._defaultToolId);
-      if (!toolDef || !toolDef.isTargetSupported(this.target)) {
+      if (!toolDef || !toolDef.isToolSupported(this)) {
         this._defaultToolId = "webconsole";
       }
+
+      // Update all ToolboxController state that can only be done asynchronously
+      await this._setInitialMeatballState();
 
       // Start rendering the toolbox toolbar before selecting the tool, as the tools
       // can take a few hundred milliseconds seconds to start up.
@@ -937,8 +1050,8 @@ Toolbox.prototype = {
 
       // Wait until the original tool is selected so that the split
       // console input will receive focus.
-      let splitConsolePromise = promise.resolve();
-      if (Services.prefs.getBoolPref(SPLITCONSOLE_ENABLED_PREF)) {
+      let splitConsolePromise = Promise.resolve();
+      if (Services.prefs.getBoolPref(SPLITCONSOLE_OPEN_PREF)) {
         splitConsolePromise = this.openSplitConsole();
         this.telemetry.addEventProperty(
           this.topWindow,
@@ -959,7 +1072,12 @@ Toolbox.prototype = {
         );
       }
 
-      await promise.all([splitConsolePromise, framesPromise]);
+      await Promise.all([
+        splitConsolePromise,
+        framesPromise,
+        onResourcesWatched,
+        tracerInitialization,
+      ]);
 
       // We do not expect the focus to be restored when using about:debugging toolboxes
       // Otherwise, when reloading the toolbox, the debugged tab will be focused.
@@ -967,23 +1085,12 @@ Toolbox.prototype = {
         // Request the actor to restore the focus to the content page once the
         // target is detached. This typically happens when the console closes.
         // We restore the focus as it may have been stolen by the console input.
-        await this.target.reconfigure({
-          options: {
-            restoreFocus: true,
-          },
+        await this.commands.targetConfigurationCommand.updateConfiguration({
+          restoreFocus: true,
         });
       }
 
-      // Lazily connect to the profiler here and don't wait for it to complete,
-      // used to intercept console.profile calls before the performance tools are open.
-      const performanceFrontConnection = this.initPerformance();
-
-      // If in testing environment, wait for performance connection to finish,
-      // so we don't have to explicitly wait for this in tests; ideally, all tests
-      // will handle this on their own, but each have their own tear down function.
-      if (flags.testing) {
-        await performanceFrontConnection;
-      }
+      await this.initHarAutomation();
 
       this.emit("ready");
       this._resolveIsOpen();
@@ -995,16 +1102,6 @@ Toolbox.prototype = {
         // passing `e` to console.error, it is not on the stdout, so print it via dump.
         dump(e.stack + "\n");
       });
-  },
-
-  detachTarget() {
-    this.target.off("inspect-object", this._onInspectObject);
-    this.target.off("will-navigate", this._onWillNavigate);
-    this.target.off("navigate", this._onNavigate);
-    this.target.off("frame-update", this._updateFrames);
-
-    // Detach the thread
-    this._threadFront = null;
   },
 
   /**
@@ -1030,7 +1127,7 @@ Toolbox.prototype = {
    * moments in the lifecycle of the toolbox, so all the events relying on it should be
    * grouped here.
    */
-  _addChromeEventHandlerEvents: function() {
+  _addChromeEventHandlerEvents() {
     // win.docShell.chromeEventHandler might not be accessible anymore when removing the
     // events, so we can't rely on a dynamic getter here.
     // Keep a reference on the chromeEventHandler used to addEventListener to be sure we
@@ -1049,6 +1146,7 @@ Toolbox.prototype = {
       this._splitConsoleOnKeypress
     );
     this._chromeEventHandler.addEventListener("focus", this._onFocus, true);
+    this._chromeEventHandler.addEventListener("blur", this._onBlur, true);
     this._chromeEventHandler.addEventListener(
       "contextmenu",
       this._onContextMenu
@@ -1056,7 +1154,7 @@ Toolbox.prototype = {
     this._chromeEventHandler.addEventListener("mousedown", this._onMouseDown);
   },
 
-  _removeChromeEventHandlerEvents: function() {
+  _removeChromeEventHandlerEvents() {
     if (!this._chromeEventHandler) {
       return;
     }
@@ -1071,6 +1169,7 @@ Toolbox.prototype = {
       this._splitConsoleOnKeypress
     );
     this._chromeEventHandler.removeEventListener("focus", this._onFocus, true);
+    this._chromeEventHandler.removeEventListener("focus", this._onBlur, true);
     this._chromeEventHandler.removeEventListener(
       "contextmenu",
       this._onContextMenu
@@ -1083,7 +1182,7 @@ Toolbox.prototype = {
     this._chromeEventHandler = null;
   },
 
-  _addShortcuts: function() {
+  _addShortcuts() {
     // Create shortcuts instance for the toolbox
     if (!this.shortcuts) {
       this.shortcuts = new KeyShortcuts({
@@ -1118,29 +1217,33 @@ Toolbox.prototype = {
     // List for Help/Settings key.
     this.shortcuts.on(L10N.getStr("toolbox.help.key"), this.toggleOptions);
 
-    // Listen for Reload shortcuts
-    [
-      ["reload", false],
-      ["reload2", false],
-      ["forceReload", true],
-      ["forceReload2", true],
-    ].forEach(([id, force]) => {
-      const key = L10N.getStr("toolbox." + id + ".key");
-      this.shortcuts.on(key, event => {
-        this.reloadTarget(force);
+    if (!this.isBrowserToolbox) {
+      // Listen for Reload shortcuts
+      [
+        ["reload", false],
+        ["reload2", false],
+        ["forceReload", true],
+        ["forceReload2", true],
+      ].forEach(([id, force]) => {
+        const key = L10N.getStr("toolbox." + id + ".key");
+        this.shortcuts.on(key, event => {
+          this.commands.targetCommand.reloadTopLevelTarget(force);
 
-        // Prevent Firefox shortcuts from reloading the page
-        event.preventDefault();
+          // Prevent Firefox shortcuts from reloading the page
+          event.preventDefault();
+        });
       });
-    });
+    }
 
     // Add zoom-related shortcuts.
-    if (!this._hostOptions || this._hostOptions.zoom === true) {
+    if (this.hostType != Toolbox.HostType.PAGE) {
+      // When the toolbox is rendered in a tab (ie host type is PAGE), the
+      // zoom should be handled by the default browser shortcuts.
       ZoomKeys.register(this.win, this.shortcuts);
     }
   },
 
-  _removeShortcuts: function() {
+  _removeShortcuts() {
     if (this.shortcuts) {
       this.shortcuts.destroy();
       this.shortcuts = null;
@@ -1150,7 +1253,7 @@ Toolbox.prototype = {
   /**
    * Adds the keys and commands to the Toolbox Window in window mode.
    */
-  _addWindowHostShortcuts: function() {
+  _addWindowHostShortcuts() {
     if (this.hostType != Toolbox.HostType.WINDOW) {
       // Those shortcuts are only valid for host type WINDOW.
       return;
@@ -1198,7 +1301,7 @@ Toolbox.prototype = {
       L10N.getStr("toolbox.toggleToolboxF12.key"),
       this.closeToolbox
     );
-    if (AppConstants.platform == "macosx") {
+    if (lazy.AppConstants.platform == "macosx") {
       shortcuts.on(
         L10N.getStr("toolbox.toggleToolboxOSX.key"),
         this.closeToolbox
@@ -1208,14 +1311,14 @@ Toolbox.prototype = {
     }
   },
 
-  _removeWindowHostShortcuts: function() {
+  _removeWindowHostShortcuts() {
     if (this._windowHostShortcuts) {
       this._windowHostShortcuts.destroy();
       this._windowHostShortcuts = null;
     }
   },
 
-  _onContextMenu: function(e) {
+  _onContextMenu(e) {
     // Handle context menu events in standard input elements: <input> and <textarea>.
     // Also support for custom input elements using .devtools-input class
     // (e.g. CodeMirror instances).
@@ -1245,7 +1348,7 @@ Toolbox.prototype = {
     }
   },
 
-  _onMouseDown: function(e) {
+  _onMouseDown(e) {
     const isMiddleClick = e.button === 1;
     if (isMiddleClick) {
       // Middle clicks will trigger the scroll lock feature to turn on.
@@ -1256,23 +1359,22 @@ Toolbox.prototype = {
     }
   },
 
-  _getDebugTargetData: function() {
+  _getDebugTargetData() {
     const url = new URL(this.win.location);
-    const searchParams = new this.win.URLSearchParams(url.search);
-
-    const targetType = searchParams.get("type") || DEBUG_TARGET_TYPES.TAB;
-
-    const remoteId = searchParams.get("remoteId");
+    const remoteId = url.searchParams.get("remoteId");
     const runtimeInfo = remoteClientManager.getRuntimeInfoByRemoteId(remoteId);
-    const connectionType = remoteClientManager.getConnectionTypeByRemoteId(
-      remoteId
-    );
+    const connectionType =
+      remoteClientManager.getConnectionTypeByRemoteId(remoteId);
 
     return {
       connectionType,
       runtimeInfo,
-      targetType,
+      descriptorType: this._descriptorFront.descriptorType,
     };
+  },
+
+  isDebugTargetFenix() {
+    return this._getDebugTargetData()?.runtimeInfo?.isFenix;
   },
 
   /**
@@ -1298,139 +1400,56 @@ Toolbox.prototype = {
   },
 
   /**
-   * Unconditionally create and get the source map service.
-   */
-  _createSourceMapService: function() {
-    if (this._sourceMapService) {
-      return this._sourceMapService;
-    }
-    // Uses browser loader to access the `Worker` global.
-    const service = this.browserRequire(
-      "devtools/client/shared/source-map/index"
-    );
-
-    // Provide a wrapper for the service that reports errors more nicely.
-    this._sourceMapService = new Proxy(service, {
-      get: (target, name) => {
-        switch (name) {
-          case "getOriginalURLs":
-            return urlInfo => {
-              return target.getOriginalURLs(urlInfo).catch(text => {
-                const message = L10N.getFormatStr(
-                  "toolbox.sourceMapFailure",
-                  text,
-                  urlInfo.url,
-                  urlInfo.sourceMapURL
-                );
-                this.target.logWarningInPage(message, "source map");
-                // It's ok to swallow errors here, because a null
-                // result just means that no source map was found.
-                return null;
-              });
-            };
-
-          case "getOriginalSourceText":
-            return originalSourceId => {
-              return target
-                .getOriginalSourceText(originalSourceId)
-                .catch(error => {
-                  const message = L10N.getFormatStr(
-                    "toolbox.sourceMapSourceFailure",
-                    error.message,
-                    error.metadata ? error.metadata.url : "<unknown>"
-                  );
-                  this.target.logWarningInPage(message, "source map");
-                  // Also replace the result with the error text.
-                  // Note that this result has to have the same form
-                  // as whatever the upstream getOriginalSourceText
-                  // returns.
-                  return {
-                    text: message,
-                    contentType: "text/plain",
-                  };
-                });
-            };
-
-          case "applySourceMap":
-            return (generatedId, url, code, mappings) => {
-              return target
-                .applySourceMap(generatedId, url, code, mappings)
-                .then(result => {
-                  // If a tool has changed or introduced a source map
-                  // (e.g, by pretty-printing a source), tell the
-                  // source map URL service about the change, so that
-                  // subscribers to that service can be updated as
-                  // well.
-                  if (this._sourceMapURLService) {
-                    this._sourceMapURLService.sourceMapChanged(
-                      generatedId,
-                      url
-                    );
-                  }
-                  return result;
-                });
-            };
-
-          default:
-            return target[name];
-        }
-      },
-    });
-
-    this._sourceMapService.startSourceMapWorker(
-      SOURCE_MAP_WORKER,
-      SOURCE_MAP_WORKER_ASSETS
-    );
-    return this._sourceMapService;
-  },
-
-  /**
    * A common access point for the client-side mapping service for source maps that
    * any panel can use.  This is a "low-level" API that connects to
    * the source map worker.
    */
-  get sourceMapService() {
-    return this._createSourceMapService();
+  get sourceMapLoader() {
+    if (this._sourceMapLoader) {
+      return this._sourceMapLoader;
+    }
+    this._sourceMapLoader = new SourceMapLoader(this.commands.targetCommand);
+    return this._sourceMapLoader;
   },
 
   /**
-   * A common access point for the client-side parser service that any panel can use.
+   * Expose the "Parser" debugger worker to both webconsole and debugger.
+   *
+   * Note that the Browser Console will also self-instantiate it as it doesn't involve a toolbox.
    */
-  get parserService() {
-    if (this._parserService) {
-      return this._parserService;
+  get parserWorker() {
+    if (this._parserWorker) {
+      return this._parserWorker;
     }
 
     const {
       ParserDispatcher,
-    } = require("devtools/client/debugger/src/workers/parser/index");
+    } = require("resource://devtools/client/debugger/src/workers/parser/index.js");
 
-    this._parserService = new ParserDispatcher();
-    this._parserService.start(
-      "resource://devtools/client/debugger/dist/parser-worker.js",
-      this.win
-    );
-    return this._parserService;
+    this._parserWorker = new ParserDispatcher();
+    return this._parserWorker;
   },
 
   /**
    * Clients wishing to use source maps but that want the toolbox to
    * track the source and style sheet actor mapping can use this
    * source map service.  This is a higher-level service than the one
-   * returned by |sourceMapService|, in that it automatically tracks
+   * returned by |sourceMapLoader|, in that it automatically tracks
    * source and style sheet actor IDs.
    */
   get sourceMapURLService() {
     if (this._sourceMapURLService) {
       return this._sourceMapURLService;
     }
-    const sourceMaps = this._createSourceMapService();
-    this._sourceMapURLService = new SourceMapURLService(this, sourceMaps);
+    this._sourceMapURLService = new SourceMapURLService(
+      this.commands,
+      this.sourceMapLoader
+    );
     return this._sourceMapURLService;
   },
 
   // Return HostType id for telemetry
-  _getTelemetryHostId: function() {
+  _getTelemetryHostId() {
     switch (this.hostType) {
       case Toolbox.HostType.BOTTOM:
         return 0;
@@ -1450,7 +1469,7 @@ Toolbox.prototype = {
   },
 
   // Return HostType string for telemetry
-  _getTelemetryHostString: function() {
+  _getTelemetryHostString() {
     switch (this.hostType) {
       case Toolbox.HostType.BOTTOM:
         return "bottom";
@@ -1469,8 +1488,9 @@ Toolbox.prototype = {
     }
   },
 
-  _pingTelemetry: function() {
-    this.telemetry.toolOpened("toolbox", this.sessionId, this);
+  _pingTelemetry() {
+    Services.prefs.setBoolPref("devtools.everOpened", true);
+    this.telemetry.toolOpened("toolbox", this);
 
     this.telemetry
       .getHistogramById(HOST_HISTOGRAM)
@@ -1489,7 +1509,6 @@ Toolbox.prototype = {
       "shortcut",
       "splitconsole",
       "width",
-      "session_id",
     ]);
     this.telemetry.addEventProperty(
       browserWin,
@@ -1528,8 +1547,8 @@ Toolbox.prototype = {
    *                      unregister listeners set when `setup` was called and avoid
    *                      memory leaks. The same arguments than `setup` function are
    *                      passed to `teardown`.
-   * @property {Function} isTargetSupported - Function to automatically enable/disable
-   *                      the button based on the target. If the target don't support
+   * @property {Function} isToolSupported - Function to automatically enable/disable
+   *                      the button based on the toolbox. If the toolbox don't support
    *                      the button feature, this method should return false.
    * @property {Function} isCurrentlyVisible - Function to automatically
    *                      hide/show the button based on current state.
@@ -1537,7 +1556,7 @@ Toolbox.prototype = {
    *                      is toggled or not. The function should return true when
    *                      the button should be displayed as toggled on.
    */
-  _createButtonState: function(options) {
+  _createButtonState(options) {
     let isCheckedValue = false;
     const {
       id,
@@ -1548,9 +1567,10 @@ Toolbox.prototype = {
       isInStartContainer,
       setup,
       teardown,
-      isTargetSupported,
+      isToolSupported,
       isCurrentlyVisible,
       isChecked,
+      isToggle,
       onKeyDown,
       experimentalURL,
     } = options;
@@ -1571,7 +1591,7 @@ Toolbox.prototype = {
           onKeyDown(event, toolbox);
         }
       },
-      isTargetSupported,
+      isToolSupported,
       isCurrentlyVisible,
       get isChecked() {
         if (typeof isChecked == "function") {
@@ -1584,6 +1604,7 @@ Toolbox.prototype = {
         isCheckedValue = value;
         this.emit("updatechecked");
       },
+      isToggle,
       // The preference for having this button visible.
       visibilityswitch: `devtools.${id}.enabled`,
       // The toolbar has a container at the start and end of the toolbar for
@@ -1608,17 +1629,31 @@ Toolbox.prototype = {
     return button;
   },
 
-  _splitConsoleOnKeypress: function(e) {
-    if (e.keyCode === KeyCodes.DOM_VK_ESCAPE) {
-      this.toggleSplitConsole();
-      // If the debugger is paused, don't let the ESC key stop any pending navigation.
-      // If the host is page, don't let the ESC stop the load of the webconsole frame.
-      if (
-        this._threadFront.state == "paused" ||
-        this.hostType === Toolbox.HostType.PAGE
-      ) {
-        e.preventDefault();
+  _splitConsoleOnKeypress(e) {
+    if (e.keyCode !== KeyCodes.DOM_VK_ESCAPE || !this.isSplitConsoleEnabled()) {
+      return;
+    }
+
+    const currentPanel = this.getCurrentPanel();
+    if (
+      typeof currentPanel.onToolboxChromeEventHandlerEscapeKeyDown ===
+      "function"
+    ) {
+      const ac = new this.win.AbortController();
+      currentPanel.onToolboxChromeEventHandlerEscapeKeyDown(ac);
+      if (ac.signal.aborted) {
+        return;
       }
+    }
+
+    this.toggleSplitConsole();
+    // If the debugger is paused, don't let the ESC key stop any pending navigation.
+    // If the host is page, don't let the ESC stop the load of the webconsole frame.
+    if (
+      this.threadFront.state == "paused" ||
+      this.hostType === Toolbox.HostType.PAGE
+    ) {
+      e.preventDefault();
     }
   },
 
@@ -1634,7 +1669,7 @@ Toolbox.prototype = {
    *        The tool the key belongs to. The corresponding handler will only be triggered
    *        if this tool is active.
    */
-  useKeyWithSplitConsole: function(key, handler, whichTool) {
+  useKeyWithSplitConsole(key, handler, whichTool) {
     this.shortcuts.on(key, event => {
       if (this.currentToolId === whichTool && this.isSplitConsoleFocused()) {
         handler();
@@ -1643,12 +1678,12 @@ Toolbox.prototype = {
     });
   },
 
-  _addWindowListeners: function() {
+  _addWindowListeners() {
     this.win.addEventListener("unload", this.destroy);
     this.win.addEventListener("message", this._onBrowserMessage, true);
   },
 
-  _removeWindowListeners: function() {
+  _removeWindowListeners() {
     // The host iframe's contentDocument may already be gone.
     if (this.win) {
       this.win.removeEventListener("unload", this.destroy);
@@ -1657,21 +1692,23 @@ Toolbox.prototype = {
   },
 
   // Called whenever the chrome send a message
-  _onBrowserMessage: function(event) {
-    if (event.data && event.data.name === "switched-host") {
+  _onBrowserMessage(event) {
+    if (event.data?.name === "switched-host") {
       this._onSwitchedHost(event.data);
+    }
+    if (event.data?.name === "switched-host-to-tab") {
+      this._onSwitchedHostToTab(event.data.browsingContextID);
+    }
+    if (event.data?.name === "host-raised") {
+      this.emit("host-raised");
     }
   },
 
-  _registerOverlays: function() {
-    registerHarOverlay(this);
-  },
-
-  _saveSplitConsoleHeight: function() {
-    Services.prefs.setIntPref(
-      SPLITCONSOLE_HEIGHT_PREF,
-      this.webconsolePanel.height
-    );
+  _saveSplitConsoleHeight() {
+    const height = parseInt(this.webconsolePanel.style.height, 10);
+    if (!isNaN(height)) {
+      Services.prefs.setIntPref(SPLITCONSOLE_HEIGHT_PREF, height);
+    }
   },
 
   /**
@@ -1686,25 +1723,24 @@ Toolbox.prototype = {
    *      then we should hide the console and splitter, and show the deck
    *      at full height.
    */
-  _refreshConsoleDisplay: function() {
+  _refreshConsoleDisplay() {
     const deck = this.doc.getElementById("toolbox-deck");
     const webconsolePanel = this.webconsolePanel;
     const splitter = this.doc.getElementById("toolbox-console-splitter");
     const openedConsolePanel = this.currentToolId === "webconsole";
 
     if (openedConsolePanel) {
-      deck.setAttribute("collapsed", "true");
-      splitter.setAttribute("hidden", "true");
-      webconsolePanel.removeAttribute("collapsed");
+      deck.collapsed = true;
+      deck.removeAttribute("expanded");
+      splitter.hidden = true;
+      webconsolePanel.collapsed = false;
+      webconsolePanel.setAttribute("expanded", "");
     } else {
-      deck.removeAttribute("collapsed");
-      if (this.splitConsole) {
-        webconsolePanel.removeAttribute("collapsed");
-        splitter.removeAttribute("hidden");
-      } else {
-        webconsolePanel.setAttribute("collapsed", "true");
-        splitter.setAttribute("hidden", "true");
-      }
+      deck.collapsed = false;
+      deck.toggleAttribute("expanded", !this.splitConsole);
+      splitter.hidden = !this.splitConsole;
+      webconsolePanel.collapsed = !this.splitConsole;
+      webconsolePanel.removeAttribute("expanded");
     }
   },
 
@@ -1714,7 +1750,7 @@ Toolbox.prototype = {
    * @param {string} toolId Which tool to run the command on (skip if not
    * current)
    */
-  fireCustomKey: function(toolId) {
+  fireCustomKey(toolId) {
     const toolDefinition = gDevTools.getToolDefinition(toolId);
 
     if (
@@ -1751,8 +1787,8 @@ Toolbox.prototype = {
    * Build the options for changing hosts. Called every time
    * the host changes.
    */
-  _buildDockOptions: function() {
-    if (!this.target.isLocalTab) {
+  _buildDockOptions() {
+    if (!this._descriptorFront.isLocalTab) {
       this.component.setDockOptionsEnabled(false);
       this.component.setCanCloseToolbox(false);
       return;
@@ -1763,17 +1799,12 @@ Toolbox.prototype = {
       this.hostType !== Toolbox.HostType.WINDOW
     );
 
-    const sideEnabled = Services.prefs.getBoolPref(this._prefs.SIDE_ENABLED);
-
     const hostTypes = [];
     for (const type in Toolbox.HostType) {
       const position = Toolbox.HostType[type];
       if (
         position == Toolbox.HostType.BROWSERTOOLBOX ||
-        position == Toolbox.HostType.PAGE ||
-        (!sideEnabled &&
-          (position == Toolbox.HostType.LEFT ||
-            position == Toolbox.HostType.RIGHT))
+        position == Toolbox.HostType.PAGE
       ) {
         continue;
       }
@@ -1788,7 +1819,7 @@ Toolbox.prototype = {
     this.component.setHostTypes(hostTypes);
   },
 
-  postMessage: function(msg) {
+  postMessage(msg) {
     // We sometime try to send messages in middle of destroy(), where the
     // toolbox iframe may already be detached.
     if (!this._destroyer) {
@@ -1800,9 +1831,10 @@ Toolbox.prototype = {
   },
 
   /**
-   * Initiate ToolboxTabs React component and all it's properties. Do the initial render.
+   * This will fetch the panel definitions from the constants in definitions module
+   * and populate the state within the ToolboxController component.
    */
-  _buildTabs: async function() {
+  async _buildInitialPanelDefinitions() {
     // Get the initial list of tab definitions. This list can be amended at a later time
     // by tools registering themselves.
     const definitions = gDevTools.getToolDefinitionArray();
@@ -1811,25 +1843,63 @@ Toolbox.prototype = {
     // Get the definitions that will only affect the main tab area.
     this.panelDefinitions = definitions.filter(
       definition =>
-        definition.isTargetSupported(this.target) && definition.id !== "options"
+        definition.isToolSupported(this) && definition.id !== "options"
     );
+  },
 
-    // Do async lookup of disable pop-up auto-hide state.
-    if (this.disableAutohideAvailable) {
-      const disable = await this._isDisableAutohideEnabled();
-      this.component.setDisableAutohide(disable);
+  async _setInitialMeatballState() {
+    let disableAutohide, pseudoLocale;
+    // Popup auto-hide disabling is only available in browser toolbox and webextension toolboxes.
+    if (
+      this.isBrowserToolbox ||
+      this._descriptorFront.isWebExtensionDescriptor
+    ) {
+      disableAutohide = await this._isDisableAutohideEnabled();
+    }
+    // Pseudo locale items are only displayed in the browser toolbox
+    if (this.isBrowserToolbox) {
+      pseudoLocale = await this.getPseudoLocale();
+    }
+    // Parallelize the asynchronous calls, so that the DOM is only updated once when
+    // updating the React components.
+    if (typeof disableAutohide == "boolean") {
+      this.component.setDisableAutohide(disableAutohide);
+    }
+    if (typeof pseudoLocale == "string") {
+      this.component.setPseudoLocale(pseudoLocale);
+    }
+    if (
+      this._descriptorFront.isWebExtensionDescriptor &&
+      this.hostType === Toolbox.HostType.WINDOW
+    ) {
+      const alwaysOnTop = Services.prefs.getBoolPref(
+        DEVTOOLS_ALWAYS_ON_TOP,
+        false
+      );
+      this.component.setAlwaysOnTop(alwaysOnTop);
     }
   },
 
-  _mountReactComponent: function() {
+  /**
+   * Initiate ToolboxController React component and all it's properties. Do the initial render.
+   *
+   * @param {Object} fluentBundles
+   *        A FluentBundle instance used to display any localized text in the React component.
+   */
+  _mountReactComponent(fluentBundles) {
     // Ensure the toolbar doesn't try to render until the tool is ready.
     const element = this.React.createElement(this.ToolboxController, {
       L10N,
+      fluentBundles,
       currentToolId: this.currentToolId,
       selectTool: this.selectTool,
       toggleOptions: this.toggleOptions,
       toggleSplitConsole: this.toggleSplitConsole,
       toggleNoAutohide: this.toggleNoAutohide,
+      toggleAlwaysOnTop: this.toggleAlwaysOnTop,
+      disablePseudoLocale: this.disablePseudoLocale,
+      enableAccentedPseudoLocale: this.enableAccentedPseudoLocale,
+      enableBidiPseudoLocale: this.enableBidiPseudoLocale,
       closeToolbox: this.closeToolbox,
       focusButton: this._onToolbarFocus,
       toolbox: this,
@@ -1845,7 +1915,7 @@ Toolbox.prototype = {
    * results in navigating away from the toolbar container.
    * @param  {FocusEvent} event
    */
-  _onToolbarFocus: function(id) {
+  _onToolbarFocus(id) {
     this.component.setFocusedButton(id);
   },
 
@@ -1857,7 +1927,7 @@ Toolbox.prototype = {
    * for if they are the focused element.
    * @param  {KeyboardEvent} event
    */
-  _onToolbarArrowKeypress: function(event) {
+  _onToolbarArrowKeypress(event) {
     const { key, target, ctrlKey, shiftKey, altKey, metaKey } = event;
 
     // If any of the modifier keys are pressed do not attempt navigation as it
@@ -1918,7 +1988,11 @@ Toolbox.prototype = {
    */
   _buildButtons() {
     // Beyond the normal preference filtering
-    this.toolbarButtons = [this._buildPickerButton(), this._buildFrameButton()];
+    this.toolbarButtons = [
+      this._buildErrorCountButton(),
+      this._buildPickerButton(),
+      this._buildFrameButton(),
+    ];
 
     ToolboxButtons.forEach(definition => {
       const button = this._createButtonState(definition);
@@ -1935,8 +2009,8 @@ Toolbox.prototype = {
     this.frameButton = this._createButtonState({
       id: "command-button-frames",
       description: L10N.getStr("toolbox.frames.tooltip"),
-      isTargetSupported: target => {
-        return target.traits.frames;
+      isToolSupported: toolbox => {
+        return toolbox.target.getTrait("frames");
       },
       isCurrentlyVisible: () => {
         const hasFrames = this.frameMap.size > 1;
@@ -1949,6 +2023,23 @@ Toolbox.prototype = {
   },
 
   /**
+   * Button to display the number of errors.
+   */
+  _buildErrorCountButton() {
+    this.errorCountButton = this._createButtonState({
+      id: "command-button-errorcount",
+      isInStartContainer: false,
+      isToolSupported: () => true,
+      description: L10N.getStr("toolbox.errorCountButton.description"),
+    });
+    // Use updateErrorCountButton to set some properties so we don't have to repeat
+    // the logic here.
+    this.updateErrorCountButton();
+
+    return this.errorCountButton;
+  },
+
+  /**
    * Toggle the picker, but also decide whether or not the highlighter should
    * focus the window. This is only desirable when the toolbox is mounted to the
    * window. When devtools is free floating, then the target window should not
@@ -1957,7 +2048,7 @@ Toolbox.prototype = {
    * Note: Toggle picker can be overwritten by panel other than the inspector to
    * allow for custom picker behaviour.
    */
-  _onPickerClick: async function() {
+  async _onPickerClick() {
     const focus =
       this.hostType === Toolbox.HostType.BOTTOM ||
       this.hostType === Toolbox.HostType.LEFT ||
@@ -1974,54 +2065,64 @@ Toolbox.prototype = {
    * If the picker is activated, then allow the Escape key to deactivate the
    * functionality instead of the default behavior of toggling the console.
    */
-  _onPickerKeypress: function(event) {
+  _onPickerKeypress(event) {
     if (event.keyCode === KeyCodes.DOM_VK_ESCAPE) {
       const currentPanel = this.getCurrentPanel();
       if (currentPanel.cancelPicker) {
         currentPanel.cancelPicker();
       } else {
-        this.nodePicker.cancel();
+        this.nodePicker.stop({ canceled: true });
       }
       // Stop the console from toggling.
       event.stopImmediatePropagation();
     }
   },
 
-  _onPickerStarting: async function() {
+  async _onPickerStarting() {
+    if (this.isDestroying()) {
+      return;
+    }
     this.tellRDMAboutPickerState(true, PICKER_TYPES.ELEMENT);
     this.pickerButton.isChecked = true;
     await this.selectTool("inspector", "inspect_dom");
     // turn off color picker when node picker is starting
     this.getPanel("inspector").hideEyeDropper();
-    this.on("select", this.nodePicker.stop);
+    this.on("select", this._onToolSelectedStopPicker);
   },
 
-  _onPickerStarted: async function() {
+  async _onPickerStarted() {
     this.doc.addEventListener("keypress", this._onPickerKeypress, true);
   },
 
-  _onPickerStopped: function() {
+  _onPickerStopped() {
+    if (this.isDestroying()) {
+      return;
+    }
     this.tellRDMAboutPickerState(false, PICKER_TYPES.ELEMENT);
-    this.off("select", this.nodePicker.stop);
+    this.off("select", this._onToolSelectedStopPicker);
     this.doc.removeEventListener("keypress", this._onPickerKeypress, true);
     this.pickerButton.isChecked = false;
+  },
+
+  _onToolSelectedStopPicker() {
+    this.nodePicker.stop({ canceled: true });
   },
 
   /**
    * When the picker is canceled, make sure the toolbox
    * gets the focus.
    */
-  _onPickerCanceled: function() {
+  _onPickerCanceled() {
     if (this.hostType !== Toolbox.HostType.WINDOW) {
       this.win.focus();
     }
   },
 
-  _onPickerPicked: function(nodeFront) {
+  _onPickerPicked(nodeFront) {
     this.selection.setNodeFront(nodeFront, { reason: "picker-node-picked" });
   },
 
-  _onPickerPreviewed: function(nodeFront) {
+  _onPickerPreviewed(nodeFront) {
     this.selection.setNodeFront(nodeFront, { reason: "picker-node-previewed" });
   },
 
@@ -2034,13 +2135,10 @@ Toolbox.prototype = {
    * @param {String} pickerType
    *        One of devtools/shared/picker-constants
    */
-  tellRDMAboutPickerState: async function(state, pickerType) {
+  async tellRDMAboutPickerState(state, pickerType) {
     const { localTab } = this.target;
 
-    if (
-      !ResponsiveUIManager.isActiveForTab(localTab) ||
-      (await !this.target.actorHasMethod("responsive", "setElementPickerState"))
-    ) {
+    if (!ResponsiveUIManager.isActiveForTab(localTab)) {
       return;
     }
 
@@ -2055,15 +2153,24 @@ Toolbox.prototype = {
   _buildPickerButton() {
     this.pickerButton = this._createButtonState({
       id: "command-button-pick",
+      className: this._getPickerAdditionalClassName(),
       description: this._getPickerTooltip(),
       onClick: this._onPickerClick,
       isInStartContainer: true,
-      isTargetSupported: target => {
-        return target.traits.frames;
+      isToolSupported: toolbox => {
+        return toolbox.target.getTrait("frames");
       },
+      isToggle: true,
     });
 
     return this.pickerButton;
+  },
+
+  _getPickerAdditionalClassName() {
+    if (this.isDebugTargetFenix()) {
+      return "remote-fenix";
+    }
+    return null;
   },
 
   /**
@@ -2078,49 +2185,87 @@ Toolbox.prototype = {
     shortcut = KeyShortcuts.stringify(shortcut);
     const shortcutMac = L10N.getStr("toolbox.elementPicker.mac.key");
     const isMac = Services.appinfo.OS === "Darwin";
-    const label = isMac
-      ? "toolbox.elementPicker.mac.tooltip"
-      : "toolbox.elementPicker.tooltip";
+
+    let label;
+    if (this.isDebugTargetFenix()) {
+      label = isMac
+        ? "toolbox.androidElementPicker.mac.tooltip"
+        : "toolbox.androidElementPicker.tooltip";
+    } else {
+      label = isMac
+        ? "toolbox.elementPicker.mac.tooltip"
+        : "toolbox.elementPicker.tooltip";
+    }
 
     return isMac
       ? L10N.getFormatStr(label, shortcut, shortcutMac)
       : L10N.getFormatStr(label, shortcut);
   },
 
-  /**
-   * Apply the current cache setting from devtools.cache.disabled to this
-   * toolbox's tab.
-   */
-  _applyCacheSettings: async function() {
-    const pref = "devtools.cache.disabled";
-    const cacheDisabled = Services.prefs.getBoolPref(pref);
+  async _listenAndApplyConfigurationPref() {
+    this._onBooleanConfigurationPrefChange =
+      this._onBooleanConfigurationPrefChange.bind(this);
 
-    await this.target.reconfigure({
-      options: {
-        cacheDisabled: cacheDisabled,
-      },
-    });
+    // We have two configurations:
+    //  * target specific configurations, which are set on all target actors, themself easily accessible from any actor.
+    //    Most configurations should be set this way.
+    //  * thread specific configurations, which are set on directly on the thread actor.
+    //    Only configuration used by the thread actor should be set this way.
+    const targetConfiguration = {};
 
-    // This event is only emitted for tests in order to know when to reload
-    if (flags.testing) {
-      this.emit("cache-reconfigured");
+    // Get the current thread settings from the prefs as well as debugger internal storage for breakpoints.
+    const threadConfiguration = await getThreadOptions();
+
+    for (const prefName in BOOLEAN_CONFIGURATION_PREFS) {
+      const { name, thread } = BOOLEAN_CONFIGURATION_PREFS[prefName];
+      const value = Services.prefs.getBoolPref(prefName, false);
+
+      // Based on the pref name, this will be stored in either target or thread specific configuration
+      if (thread) {
+        threadConfiguration[name] = value;
+      } else {
+        targetConfiguration[name] = value;
+      }
+
+      // Also listen for any future change
+      Services.prefs.addObserver(
+        prefName,
+        this._onBooleanConfigurationPrefChange
+      );
     }
+
+    // Now communicate the configurations to the server
+    await this.commands.targetConfigurationCommand.updateConfiguration(
+      targetConfiguration
+    );
+    await this.commands.threadConfigurationCommand.updateConfiguration(
+      threadConfiguration
+    );
   },
 
   /**
-   * Apply the current service workers testing setting from
-   * devtools.serviceWorkers.testing.enabled to this toolbox's tab.
+   * Called whenever a preference registered in BOOLEAN_CONFIGURATION_PREFS
+   * changes.
+   * This is used to communicate the new setting's value to the server.
+   *
+   * @param {String} subject
+   * @param {String} topic
+   * @param {String} prefName
+   *        The preference name which changed
    */
-  _applyServiceWorkersTestingSettings: function() {
-    const pref = "devtools.serviceWorkers.testing.enabled";
-    const serviceWorkersTestingEnabled =
-      Services.prefs.getBoolPref(pref) || false;
+  async _onBooleanConfigurationPrefChange(subject, topic, prefName) {
+    const { name, thread } = BOOLEAN_CONFIGURATION_PREFS[prefName];
+    const value = Services.prefs.getBoolPref(prefName, false);
 
-    this.target.reconfigure({
-      options: {
-        serviceWorkersTestingEnabled: serviceWorkersTestingEnabled,
-      },
+    const configurationCommand = thread
+      ? this.commands.threadConfigurationCommand
+      : this.commands.targetConfigurationCommand;
+    await configurationCommand.updateConfiguration({
+      [name]: value,
     });
+
+    // This event is only emitted for tests in order to know when the setting has been applied by the backend.
+    this.emitForTests("new-configuration-applied", prefName);
   },
 
   /**
@@ -2144,32 +2289,10 @@ Toolbox.prototype = {
       inspectorFront &&
       (inspectorFront.hasHighlighter("RulersHighlighter") ||
         inspectorFront.hasHighlighter("MeasuringToolHighlighter"));
-    if (hasHighlighters || this.isPaintFlashing) {
-      if (this.isPaintFlashing) {
-        this.togglePaintFlashing();
-      }
-      if (hasHighlighters) {
-        inspectorFront.destroyHighlighters();
-      }
+    if (hasHighlighters) {
+      inspectorFront.destroyHighlighters();
       this.component.setToolboxButtons(this.toolbarButtons);
     }
-  },
-
-  /**
-   * Set paintflashing to enabled or disabled for this toolbox's tab.
-   */
-  togglePaintFlashing: function() {
-    if (this.isPaintFlashing) {
-      this.telemetry.toolOpened("paintflashing", this.sessionId, this);
-    } else {
-      this.telemetry.toolClosed("paintflashing", this.sessionId, this);
-    }
-    this.isPaintFlashing = !this.isPaintFlashing;
-    return this.target.reconfigure({
-      options: {
-        paintFlashing: this.isPaintFlashing,
-      },
-    });
   },
 
   /**
@@ -2188,7 +2311,7 @@ Toolbox.prototype = {
       // If the current panel doesn't define a custom updatePickerButton,
       // revert the button to its default state
       button.description = this._getPickerTooltip();
-      button.className = null;
+      button.className = this._getPickerAdditionalClassName();
       button.disabled = null;
     }
   },
@@ -2197,6 +2320,10 @@ Toolbox.prototype = {
    * Update the visual state of the Frame picker button.
    */
   updateFrameButton() {
+    if (this.isDestroying()) {
+      return;
+    }
+
     if (this.currentToolId === "options" && this.frameMap.size <= 1) {
       // If the button is only visible because the user is on the Options panel, disable
       // the button and set an appropriate description.
@@ -2212,26 +2339,56 @@ Toolbox.prototype = {
 
     // Highlight the button when a child frame is selected and visible.
     const selectedFrame = this.frameMap.get(this.selectedFrameId) || {};
-    const isVisible = this._commandIsVisible(this.frameButton);
+
+    // We need to do something a bit different to avoid some test failures. This function
+    // can be called from onWillNavigate, and the current target might have this `traits`
+    // property nullifed, which is unfortunate as that's what isToolSupported is checking,
+    // so it will throw.
+    // So here, we check first if the button isn't going to be visible anyway (it only checks
+    // for this.frameMap size) so we don't call _commandIsVisible.
+    const isVisible = !this.frameButton.isCurrentlyVisible()
+      ? false
+      : this._commandIsVisible(this.frameButton);
 
     this.frameButton.isVisible = isVisible;
 
     if (isVisible) {
-      this.frameButton.isChecked = selectedFrame.parentID != null;
+      this.frameButton.isChecked = !selectedFrame.isTopLevel;
+    }
+  },
+
+  updateErrorCountButton() {
+    this.errorCountButton.isVisible =
+      this._commandIsVisible(this.errorCountButton) && this._errorCount > 0;
+    this.errorCountButton.errorCount = this._errorCount;
+  },
+
+  /**
+   * Setup the _splitConsoleEnabled, reflecting the enabled/disabled state of the Enable Split
+   * Console setting, and close the split console if it's open and the setting is turned off
+   */
+  updateIsSplitConsoleEnabled() {
+    this._splitConsoleEnabled = Services.prefs.getBoolPref(
+      SPLITCONSOLE_ENABLED_PREF,
+      true
+    );
+
+    if (!this._splitConsoleEnabled && this.splitConsole) {
+      this.closeSplitConsole();
     }
   },
 
   /**
    * Ensure the visibility of each toolbox button matches the preference value.
    */
-  _commandIsVisible: function(button) {
-    const { isTargetSupported, isCurrentlyVisible, visibilityswitch } = button;
+  _commandIsVisible(button) {
+    const { isToolSupported, isCurrentlyVisible, visibilityswitch } = button;
 
     if (!Services.prefs.getBoolPref(visibilityswitch, true)) {
       return false;
     }
 
-    if (isTargetSupported && !isTargetSupported(this.target)) {
+    if (isToolSupported && !isToolSupported(this)) {
       return false;
     }
 
@@ -2248,8 +2405,8 @@ Toolbox.prototype = {
    * @param {string} toolDefinition
    *        Tool definition of the tool to build a tab for.
    */
-  _buildPanelForTool: function(toolDefinition) {
-    if (!toolDefinition.isTargetSupported(this.target)) {
+  _buildPanelForTool(toolDefinition) {
+    if (!toolDefinition.isToolSupported(this)) {
       return;
     }
 
@@ -2272,10 +2429,6 @@ Toolbox.prototype = {
     }
 
     deck.appendChild(panel);
-
-    if (toolDefinition.buildToolStartup && !this._toolStartups.has(id)) {
-      this._toolStartups.set(id, toolDefinition.buildToolStartup(this));
-    }
   },
 
   /**
@@ -2390,6 +2543,10 @@ Toolbox.prototype = {
     }
 
     const inspector = this.getPanel("inspector");
+    if (!inspector) {
+      return;
+    }
+
     inspector.addExtensionSidebar(id, options);
   },
 
@@ -2454,8 +2611,10 @@ Toolbox.prototype = {
    *
    * @param {string} id
    *        The id of the tool to load.
+   * @param {Object} options
+   *        Object that will be passed to the panel `open` method.
    */
-  loadTool: function(id) {
+  loadTool(id, options) {
     let iframe = this.doc.getElementById("toolbox-panel-iframe-" + id);
     if (iframe) {
       const panel = this._toolPanels.get(id);
@@ -2508,7 +2667,7 @@ Toolbox.prototype = {
         // be fired with the panel as an argument. However, in order to keep
         // backward compatibility with existing extensions do a check
         // for a promise return value.
-        let built = definition.build(iframe.contentWindow, this);
+        let built = definition.build(iframe.contentWindow, this, this.commands);
 
         if (!(typeof built.then == "function")) {
           const panel = built;
@@ -2529,7 +2688,7 @@ Toolbox.prototype = {
           // The panel can implement an 'open' method for asynchronous
           // initialization sequence.
           if (typeof panel.open == "function") {
-            built = panel.open();
+            built = panel.open(options);
           } else {
             built = new Promise(resolve => {
               resolve(panel);
@@ -2538,7 +2697,7 @@ Toolbox.prototype = {
         }
 
         // Wait till the panel is fully ready and fire 'ready' events.
-        promise.resolve(built).then(panel => {
+        Promise.resolve(built).then(panel => {
           this._toolPanels.set(id, panel);
 
           // Make sure to decorate panel object with event API also in case
@@ -2585,7 +2744,7 @@ Toolbox.prototype = {
    *
    * @param {IFrameElement} iframe
    */
-  setIframeDocumentDir: function(iframe) {
+  setIframeDocumentDir(iframe) {
     const docEl = iframe.contentWindow?.document.documentElement;
     if (!docEl || docEl.namespaceURI !== HTML_NS) {
       // Bail out if the content window or document is not ready or if the document is not
@@ -2606,7 +2765,7 @@ Toolbox.prototype = {
    * @param {string} id
    *        The Id of the item within the collection to select
    */
-  selectSingleNode: function(collection, id) {
+  selectSingleNode(collection, id) {
     [...collection].forEach(node => {
       if (node.id === id) {
         node.setAttribute("selected", "true");
@@ -2642,7 +2801,7 @@ Toolbox.prototype = {
    * It will help panel react differently depending on them being displayed or in
    * background.
    */
-  setIframeVisible: function(iframe, visible) {
+  setIframeVisible(iframe, visible) {
     const state = visible ? "visible" : "hidden";
     const win = iframe.contentWindow;
     const doc = win.document;
@@ -2666,8 +2825,10 @@ Toolbox.prototype = {
    *        The id of the tool to switch to
    * @param {string} reason
    *        Reason the tool was opened
+   * @param {Object} options
+   *        Object that will be passed to the panel
    */
-  selectTool: function(id, reason = "unknown") {
+  selectTool(id, reason = "unknown", options) {
     this.emit("panel-changed");
 
     if (this.currentToolId == id) {
@@ -2679,12 +2840,12 @@ Toolbox.prototype = {
         this.focusTool(id);
 
         // Return the existing panel in order to have a consistent return value.
-        return promise.resolve(panel);
+        return Promise.resolve(panel);
       }
       // Otherwise, if there is no panel instance, it is still loading,
       // so we are racing another call to selectTool with the same id.
       return this.once("select").then(() =>
-        promise.resolve(this._toolPanels.get(id))
+        Promise.resolve(this._toolPanels.get(id))
       );
     }
 
@@ -2699,7 +2860,7 @@ Toolbox.prototype = {
       this.additionalToolDefinitions.get(id)
     ) {
       if (this.currentToolId) {
-        this.telemetry.toolClosed(this.currentToolId, this.sessionId, this);
+        this.telemetry.toolClosed(this.currentToolId, this);
       }
 
       this._pingTelemetrySelectTool(id, reason);
@@ -2718,7 +2879,7 @@ Toolbox.prototype = {
       Services.prefs.setCharPref(this._prefs.LAST_TOOL, id);
     }
 
-    return this.loadTool(id).then(panel => {
+    return this.loadTool(id, options).then(panel => {
       // focus the tool's frame to start receiving key events
       this.focusTool(id);
 
@@ -2733,31 +2894,22 @@ Toolbox.prototype = {
     const panelName = this.getTelemetryPanelNameOrOther(id);
     const prevPanelName = this.getTelemetryPanelNameOrOther(this.currentToolId);
     const cold = !this.getPanel(id);
-    const pending = [
-      "host",
-      "width",
-      "start_state",
-      "panel_name",
-      "cold",
-      "session_id",
-    ];
+    const pending = ["host", "width", "start_state", "panel_name", "cold"];
 
     // On first load this.currentToolId === undefined so we need to skip sending
     // a devtools.main.exit telemetry event.
     if (this.currentToolId) {
       this.telemetry.recordEvent("exit", prevPanelName, null, {
         host: this._hostType,
-        width: width,
+        width,
         panel_name: prevPanelName,
         next_panel: panelName,
-        reason: reason,
-        session_id: this.sessionId,
+        reason,
       });
     }
 
     this.telemetry.addEventProperties(this.topWindow, "open", "tools", null, {
-      width: width,
-      session_id: this.sessionId,
+      width,
     });
 
     if (id === "webconsole") {
@@ -2770,8 +2922,7 @@ Toolbox.prototype = {
       host: this._hostType,
       start_state: reason,
       panel_name: panelName,
-      cold: cold,
-      session_id: this.sessionId,
+      cold,
     });
 
     if (reason !== "initial_panel") {
@@ -2799,7 +2950,7 @@ Toolbox.prototype = {
       );
     }
 
-    this.telemetry.toolOpened(id, this.sessionId, this);
+    this.telemetry.toolOpened(id, this);
   },
 
   /**
@@ -2807,7 +2958,7 @@ Toolbox.prototype = {
    * @param  {string} id
    *         The id of tool to focus
    */
-  focusTool: function(id, state = true) {
+  focusTool(id, state = true) {
     const iframe = this.doc.getElementById("toolbox-panel-iframe-" + id);
 
     if (state) {
@@ -2820,7 +2971,7 @@ Toolbox.prototype = {
   /**
    * Focus split console's input line
    */
-  focusConsoleInput: function() {
+  focusConsoleInput() {
     const consolePanel = this.getPanel("webconsole");
     if (consolePanel) {
       consolePanel.focusInput();
@@ -2828,11 +2979,24 @@ Toolbox.prototype = {
   },
 
   /**
+   * Disable all network logs in the console
+   */
+  disableAllConsoleNetworkLogs() {
+    const consolePanel = this.getPanel("webconsole");
+    if (consolePanel) {
+      consolePanel.hud.ui.disableAllNetworkMessages();
+    }
+  },
+
+  /**
    * If the console is split and we are focusing an element outside
    * of the console, then store the newly focused element, so that
    * it can be restored once the split console closes.
+   *
+   * @param Element originalTarget
+   *        The DOM Element that just got focused.
    */
-  _onFocus: function({ originalTarget }) {
+  _updateLastFocusedElementForSplitConsole(originalTarget) {
     // Ignore any non element nodes, or any elements contained
     // within the webconsole frame.
     const webconsoleURL = gDevTools.getToolDefinition("webconsole").url;
@@ -2846,19 +3010,46 @@ Toolbox.prototype = {
     this._lastFocusedElement = originalTarget;
   },
 
-  _onTabsOrderUpdated: function() {
+  // Report if the toolbox is currently focused,
+  // or the focus in elsewhere in the browser or another app.
+  _isToolboxFocused: false,
+
+  _onFocus({ originalTarget }) {
+    this._isToolboxFocused = true;
+    this._debounceUpdateFocusedState();
+
+    this._updateLastFocusedElementForSplitConsole(originalTarget);
+  },
+
+  _onBlur() {
+    this._isToolboxFocused = false;
+    this._debounceUpdateFocusedState();
+  },
+
+  _onTabsOrderUpdated() {
     this._combineAndSortPanelDefinitions();
   },
 
   /**
    * Opens the split console.
    *
+   * @param {boolean} focusConsoleInput
+   *        By default, the console input will be focused.
+   *        Pass false in order to prevent this.
+   *
    * @returns {Promise} a promise that resolves once the tool has been
    *          loaded and focused.
    */
-  openSplitConsole: function() {
+  openSplitConsole({ focusConsoleInput = true } = {}) {
+    if (!this.isSplitConsoleEnabled()) {
+      return this.selectTool(
+        "webconsole",
+        "use_in_console_with_disabled_split_console"
+      );
+    }
+
     this._splitConsole = true;
-    Services.prefs.setBoolPref(SPLITCONSOLE_ENABLED_PREF, true);
+    Services.prefs.setBoolPref(SPLITCONSOLE_OPEN_PREF, true);
     this._refreshConsoleDisplay();
 
     // Ensure split console is visible if console was already loaded in background
@@ -2872,10 +3063,11 @@ Toolbox.prototype = {
       this.telemetry.recordEvent("activate", "split_console", null, {
         host: this._getTelemetryHostString(),
         width: Math.ceil(this.win.outerWidth / 50) * 50,
-        session_id: this.sessionId,
       });
       this.emit("split-console");
-      this.focusConsoleInput();
+      if (focusConsoleInput) {
+        this.focusConsoleInput();
+      }
     });
   },
 
@@ -2885,16 +3077,15 @@ Toolbox.prototype = {
    * @returns {Promise} a promise that resolves once the tool has been
    *          closed.
    */
-  closeSplitConsole: function() {
+  closeSplitConsole() {
     this._splitConsole = false;
-    Services.prefs.setBoolPref(SPLITCONSOLE_ENABLED_PREF, false);
+    Services.prefs.setBoolPref(SPLITCONSOLE_OPEN_PREF, false);
     this._refreshConsoleDisplay();
     this.component.setIsSplitConsoleActive(false);
 
     this.telemetry.recordEvent("deactivate", "split_console", null, {
       host: this._getTelemetryHostString(),
       width: Math.ceil(this.win.outerWidth / 50) * 50,
-      session_id: this.sessionId,
     });
 
     this.emit("split-console");
@@ -2902,7 +3093,7 @@ Toolbox.prototype = {
     if (this._lastFocusedElement) {
       this._lastFocusedElement.focus();
     }
-    return promise.resolve();
+    return Promise.resolve();
   },
 
   /**
@@ -2912,21 +3103,21 @@ Toolbox.prototype = {
    * @returns {Promise} a promise that resolves once the tool has been
    *          opened or closed.
    */
-  toggleSplitConsole: function() {
+  toggleSplitConsole() {
     if (this.currentToolId !== "webconsole") {
       return this.splitConsole
         ? this.closeSplitConsole()
         : this.openSplitConsole();
     }
 
-    return promise.resolve();
+    return Promise.resolve();
   },
 
   /**
    * Toggles the options panel.
    * If the option panel is already selected then select the last selected panel.
    */
-  toggleOptions: function(event) {
+  toggleOptions(event) {
     // Flip back to the last used panel if we are already
     // on the options panel.
     if (
@@ -2944,16 +3135,9 @@ Toolbox.prototype = {
   },
 
   /**
-   * Tells the target tab to reload.
-   */
-  reloadTarget: function(force) {
-    this.target.reload({ force: force });
-  },
-
-  /**
    * Loads the tool next to the currently selected tool.
    */
-  selectNextTool: function() {
+  selectNextTool() {
     const definitions = this.component.panelDefinitions;
     const index = definitions.findIndex(({ id }) => id === this.currentToolId);
     const definition =
@@ -2966,7 +3150,7 @@ Toolbox.prototype = {
   /**
    * Loads the tool just left to the currently selected tool.
    */
-  selectPreviousTool: function() {
+  selectPreviousTool() {
     const definitions = this.component.panelDefinitions;
     const index = definitions.findIndex(({ id }) => id === this.currentToolId);
     const definition =
@@ -2977,16 +3161,14 @@ Toolbox.prototype = {
   },
 
   /**
-   * Check if the tool's tab is highlighted.
+   * Tells if the given tool is currently highlighted.
+   * (doesn't mean selected, its tab header will be green)
    *
    * @param {string} id
-   *        The id of the tool to be checked
+   *        The id of the tool to check.
    */
-  async isToolHighlighted(id) {
-    if (!this.component) {
-      await this.isOpen;
-    }
-    return this.component.isToolHighlighted(id);
+  isHighlighted(id) {
+    return this.component.state.highlightedTools.has(id);
   },
 
   /**
@@ -3018,21 +3200,41 @@ Toolbox.prototype = {
   /**
    * Raise the toolbox host.
    */
-  raise: function() {
+  raise() {
     this.postMessage({ name: "raise-host" });
+
+    return this.once("host-raised");
   },
 
   /**
    * Fired when user just started navigating away to another web page.
    */
-  async _onWillNavigate() {
+  async _onWillNavigate({ isFrameSwitching } = {}) {
+    // On navigate, the server will resume all paused threads, but due to an
+    // issue which can cause loosing outgoing messages/RDP packets, the THREAD_STATE
+    // resources for the resumed state might not get received. So let assume it happens
+    // make use the UI is the appropriate state.
+    if (this._pausedTargets > 0) {
+      this.emit("toolbox-resumed");
+      this._pausedTargets = 0;
+      if (this.isHighlighted("jsdebugger")) {
+        this.unhighlightTool("jsdebugger");
+      }
+    }
+
+    // Clearing the error count and the iframe list as soon as we navigate
+    this.setErrorCount(0);
+    if (!isFrameSwitching) {
+      this._updateFrames({ destroyAll: true });
+    }
     this.updateToolboxButtons();
     const toolId = this.currentToolId;
-    // For now, only inspector, webconsole and netmonitor fire "reloaded" event
+    // For now, only inspector, webconsole, netmonitor and accessibility fire "reloaded" event
     if (
       toolId != "inspector" &&
       toolId != "webconsole" &&
-      toolId != "netmonitor"
+      toolId != "netmonitor" &&
+      toolId != "accessibility"
     ) {
       return;
     }
@@ -3043,7 +3245,12 @@ Toolbox.prototype = {
     if (!panel) {
       return;
     }
+
     await panel.once("reloaded");
+    // The toolbox may have been destroyed while the panel was reloading
+    if (this.isDestroying()) {
+      return;
+    }
     const delay = this.win.performance.now() - start;
 
     const telemetryKey = "DEVTOOLS_TOOLBOX_PAGE_RELOAD_DELAY_MS";
@@ -3053,15 +3260,22 @@ Toolbox.prototype = {
   /**
    * Refresh the host's title.
    */
-  _refreshHostTitle: function() {
+  _refreshHostTitle() {
     let title;
 
-    const isMultiProcessBrowserToolbox =
-      this.target.isParentProcess &&
-      Services.prefs.getBoolPref("devtools.browsertoolbox.fission", false);
-
-    if (isMultiProcessBrowserToolbox) {
-      title = L10N.getStr("toolbox.multiProcessBrowserToolboxTitle");
+    if (this.target.isXpcShellTarget) {
+      // This will only be displayed for local development and can remain
+      // hardcoded in english.
+      title = "XPCShell Toolbox";
+    } else if (this.isMultiProcessBrowserToolbox) {
+      const scope = Services.prefs.getCharPref(BROWSERTOOLBOX_SCOPE_PREF);
+      if (scope == BROWSERTOOLBOX_SCOPE_EVERYTHING) {
+        title = L10N.getStr("toolbox.multiProcessBrowserToolboxTitle");
+      } else if (scope == BROWSERTOOLBOX_SCOPE_PARENTPROCESS) {
+        title = L10N.getStr("toolbox.parentProcessBrowserToolboxTitle");
+      } else {
+        throw new Error("Unsupported scope: " + scope);
+      }
     } else if (this.target.name && this.target.name != this.target.url) {
       const url = this.target.isWebExtension
         ? this.target.getExtensionPathName(this.target.url)
@@ -3089,19 +3303,52 @@ Toolbox.prototype = {
    * client. See the definition of the preference actor for more information.
    */
   get preferenceFront() {
-    const frontPromise = this.target.client.mainRoot.getFront("preference");
-    frontPromise.then(front => {
-      // Set the _preferenceFront property to allow the resetPreferences toolbox method
-      // to cleanup the preference set when the toolbox is closed.
-      this._preferenceFront = front;
-    });
-
-    return frontPromise;
+    if (!this._preferenceFrontRequest) {
+      // Set the _preferenceFrontRequest property to allow the resetPreference toolbox
+      // method to cleanup the preference set when the toolbox is closed.
+      this._preferenceFrontRequest =
+        this.commands.client.mainRoot.getFront("preference");
+    }
+    return this._preferenceFrontRequest;
   },
 
-  // Is the disable auto-hide of pop-ups feature available in this context?
-  get disableAutohideAvailable() {
-    return this.target.chrome;
+  /**
+   * See: https://firefox-source-docs.mozilla.org/l10n/fluent/tutorial.html#manually-testing-ui-with-pseudolocalization
+   *
+   * @param {"bidi" | "accented" | "none"} pseudoLocale
+   */
+  async changePseudoLocale(pseudoLocale) {
+    await this.isOpen;
+    const prefFront = await this.preferenceFront;
+    if (pseudoLocale === "none") {
+      await prefFront.clearUserPref(PSEUDO_LOCALE_PREF);
+    } else {
+      await prefFront.setCharPref(PSEUDO_LOCALE_PREF, pseudoLocale);
+    }
+    this.component.setPseudoLocale(pseudoLocale);
+    this._pseudoLocaleChanged = true;
+  },
+
+  /**
+   * Returns the pseudo-locale when the target is browser chrome, otherwise undefined.
+   *
+   * @returns {"bidi" | "accented" | "none" | undefined}
+   */
+  async getPseudoLocale() {
+    if (!this.isBrowserToolbox) {
+      return undefined;
+    }
+
+    const prefFront = await this.preferenceFront;
+    const locale = await prefFront.getCharPref(PSEUDO_LOCALE_PREF);
+
+    switch (locale) {
+      case "bidi":
+      case "accented":
+        return locale;
+      default:
+        return "none";
+    }
   },
 
   async toggleNoAutohide() {
@@ -3111,17 +3358,39 @@ Toolbox.prototype = {
 
     front.setBoolPref(DISABLE_AUTOHIDE_PREF, toggledValue);
 
-    if (this.disableAutohideAvailable) {
+    if (
+      this.isBrowserToolbox ||
+      this._descriptorFront.isWebExtensionDescriptor
+    ) {
       this.component.setDisableAutohide(toggledValue);
     }
     this._autohideHasBeenToggled = true;
   },
 
+  /**
+   * Toggling "always on top" behavior is a bit special.
+   *
+   * We toggle the preference and then destroy and re-create the toolbox
+   * as there is no way to change this behavior on an existing window
+   * (see bug 1788946).
+   */
+  async toggleAlwaysOnTop() {
+    const currentValue = Services.prefs.getBoolPref(
+      DEVTOOLS_ALWAYS_ON_TOP,
+      false
+    );
+    Services.prefs.setBoolPref(DEVTOOLS_ALWAYS_ON_TOP, !currentValue);
+
+    const addonId = this._descriptorFront.id;
+    await this.destroy();
+    gDevTools.showToolboxForWebExtension(addonId);
+  },
+
   async _isDisableAutohideEnabled() {
-    // Ensure that the tools are open and the feature is available in this
-    // context.
-    await this.isOpen;
-    if (!this.disableAutohideAvailable) {
+    if (
+      !this.isBrowserToolbox &&
+      !this._descriptorFront.isWebExtensionDescriptor
+    ) {
       return false;
     }
 
@@ -3129,11 +3398,14 @@ Toolbox.prototype = {
     return prefFront.getBoolPref(DISABLE_AUTOHIDE_PREF);
   },
 
-  _listFrames: async function(event) {
-    if (!this.target.traits.frames) {
-      // We are not targetting a regular BrowsingContextTargetActor
-      // it can be either an addon or browser toolbox actor
-      return promise.resolve();
+  async _listFrames() {
+    if (
+      !this.target.getTrait("frames") ||
+      this.target.targetForm.ignoreSubFrames
+    ) {
+      // We are not targetting a regular WindowGlobalTargetActor (it can be either an
+      // addon or browser toolbox actor), or EFT is enabled.
+      return;
     }
 
     try {
@@ -3145,47 +3417,96 @@ Toolbox.prototype = {
   },
 
   /**
-   * Select a frame by sending 'switchToFrame' packet to the backend.
+   * Called by the iframe picker when the user selected a frame.
+   *
+   * @param {String} frameIdOrTargetActorId
    */
-  onSelectFrame: function(frameId) {
-    // Send packet to the backend to select specified frame and
-    // wait for 'frameUpdate' event packet to update the UI.
-    this.target.switchToFrame({ windowId: frameId });
+  onIframePickerFrameSelected(frameIdOrTargetActorId) {
+    if (!this.frameMap.has(frameIdOrTargetActorId)) {
+      console.error(
+        `Can't focus on frame "${frameIdOrTargetActorId}", it is not a known frame`
+      );
+      return;
+    }
+
+    const frameInfo = this.frameMap.get(frameIdOrTargetActorId);
+    // If there is no targetFront in the frameData, this means EFT is not enabled.
+    // Send packet to the backend to select specified frame and  wait for 'frameUpdate'
+    // event packet to update the UI.
+    if (!frameInfo.targetFront) {
+      this.target.switchToFrame({ windowId: frameIdOrTargetActorId });
+      return;
+    }
+
+    // Here, EFT is enabled, so we want to focus the toolbox on the specific targetFront
+    // that was selected by the user. This will trigger this._onTargetSelected which will
+    // take care of updating the iframe picker state.
+    this.commands.targetCommand.selectTarget(frameInfo.targetFront);
   },
 
   /**
    * Highlight a frame in the page
+   *
+   * @param {String} frameIdOrTargetActorId
    */
-  onHighlightFrame: async function(frameId) {
-    const inspectorFront = await this.target.getFront("inspector");
-
+  async onHighlightFrame(frameIdOrTargetActorId) {
     // Only enable frame highlighting when the top level document is targeted
-    if (this.rootFrameSelected) {
-      const frameActor = await inspectorFront.walker.getNodeActorFromWindowID(
-        frameId
-      );
-      inspectorFront.highlighter.highlight(frameActor);
+    if (!this.rootFrameSelected) {
+      return null;
     }
+
+    const frameInfo = this.frameMap.get(frameIdOrTargetActorId);
+    if (!frameInfo) {
+      return null;
+    }
+
+    let nodeFront;
+    if (frameInfo.targetFront) {
+      const inspectorFront = await frameInfo.targetFront.getFront("inspector");
+      nodeFront = await inspectorFront.walker.documentElement();
+    } else {
+      const inspectorFront = await this.target.getFront("inspector");
+      nodeFront = await inspectorFront.walker.getNodeActorFromWindowID(
+        frameIdOrTargetActorId
+      );
+    }
+    const highlighter = this.getHighlighter();
+    return highlighter.highlight(nodeFront);
   },
 
   /**
-   * A handler for 'frameUpdate' packets received from the backend.
-   * Following properties might be set on the packet:
+   * Handles changes in document frames.
    *
-   * destroyAll {Boolean}: All frames have been destroyed.
-   * selected {Number}: A frame has been selected
-   * frames {Array}: list of frames. Every frame can have:
-   *                 id {Number}: frame ID
-   *                 url {String}: frame URL
-   *                 title {String}: frame title
-   *                 destroy {Boolean}: Set to true if destroyed
-   *                 parentID {Number}: ID of the parent frame (not set
-   *                                    for top level window)
+   * @param {Object} data
+   * @param {Boolean} data.destroyAll: All frames have been destroyed.
+   * @param {Number} data.selected: A frame has been selected
+   * @param {Object} data.frameData: Some frame data were updated
+   * @param {String} data.frameData.url: new frame URL (it might have been blank or about:blank)
+   * @param {String} data.frameData.title: new frame title
+   * @param {Number|String} data.frameData.id: frame ID / targetFront actorID when EFT is enabled.
+   * @param {Array<Object>} data.frames: List of frames. Every frame can have:
+   * @param {Number|String} data.frames[].id: frame ID / targetFront actorID when EFT is enabled.
+   * @param {String} data.frames[].url: frame URL
+   * @param {String} data.frames[].title: frame title
+   * @param {Boolean} data.frames[].destroy: Set to true if destroyed
+   * @param {Boolean} data.frames[].isTopLevel: true for top level window
    */
-  _updateFrames: function(data) {
-    // We may receive this event before the toolbox is ready.
-    if (!this.isReady) {
-      return;
+  _updateFrames(data) {
+    // At the moment, frames `id` can either be outerWindowID (a Number),
+    // or a targetActorID (a String).
+    // In order to have the same type of data as a key of `frameMap`, we transform any
+    // outerWindowID into a string.
+    // This can be removed once EFT is enabled by default
+    if (data.selected) {
+      data.selected = data.selected.toString();
+    } else if (data.frameData) {
+      data.frameData.id = data.frameData.id.toString();
+    } else if (data.frames) {
+      data.frames.forEach(frame => {
+        if (frame.id) {
+          frame.id = frame.id.toString();
+        }
+      });
     }
 
     // Store (synchronize) data about all existing frames on the backend
@@ -3193,7 +3514,26 @@ Toolbox.prototype = {
       this.frameMap.clear();
       this.selectedFrameId = null;
     } else if (data.selected) {
-      this.selectedFrameId = data.selected;
+      // If we select the top level target, default back to no particular selected document.
+      if (data.selected == this.target.actorID) {
+        this.selectedFrameId = null;
+      } else {
+        this.selectedFrameId = data.selected;
+      }
+    } else if (data.frameData && this.frameMap.has(data.frameData.id)) {
+      const existingFrameData = this.frameMap.get(data.frameData.id);
+      if (
+        existingFrameData.title == data.frameData.title &&
+        existingFrameData.url == data.frameData.url
+      ) {
+        return;
+      }
+
+      this.frameMap.set(data.frameData.id, {
+        ...existingFrameData,
+        url: data.frameData.url,
+        title: data.frameData.title,
+      });
     } else if (data.frames) {
       data.frames.forEach(frame => {
         if (frame.destroy) {
@@ -3214,32 +3554,18 @@ Toolbox.prototype = {
     // frames in case of the BrowserToolbox.
     if (!this.selectedFrameId) {
       const frames = [...this.frameMap.values()];
-      const topFrames = frames.filter(frame => !frame.parentID);
+      const topFrames = frames.filter(frame => frame.isTopLevel);
       this.selectedFrameId = topFrames.length ? topFrames[0].id : null;
     }
 
-    // We may need to hide/show the frames button now.
-    const wasVisible = this.frameButton.isVisible;
-    const wasDisabled = this.frameButton.disabled;
-    this.updateFrameButton();
-
-    const toolbarUpdate = () => {
-      if (
-        this.frameButton.isVisible === wasVisible &&
-        this.frameButton.disabled === wasDisabled
-      ) {
-        return;
-      }
-      this.component.setToolboxButtons(this.toolbarButtons);
-    };
-
-    // If we are navigating/reloading, however (in which case data.destroyAll
-    // will be true), we should debounce the update to avoid unnecessary
-    // flickering/rendering.
-    if (data.destroyAll && !this.debouncedToolbarUpdate) {
+    // Debounce the update to avoid unnecessary flickering/rendering.
+    if (!this.debouncedToolbarUpdate) {
       this.debouncedToolbarUpdate = debounce(
         () => {
-          toolbarUpdate();
+          // Toolbox may have been destroyed in the meantime
+          if (this.component) {
+            this.component.setToolboxButtons(this.toolbarButtons);
+          }
           this.debouncedToolbarUpdate = null;
         },
         200,
@@ -3247,45 +3573,41 @@ Toolbox.prototype = {
       );
     }
 
-    if (this.debouncedToolbarUpdate) {
-      this.debouncedToolbarUpdate();
-    } else {
-      toolbarUpdate();
-    }
-  },
+    const updateUiElements = () => {
+      // We may need to hide/show the frames button now.
+      this.updateFrameButton();
 
-  /**
-   * Returns a 0-based selected frame depth.
-   *
-   * For example, if the root frame is selected, the returned value is 0.  For a sub-frame
-   * of the root document, the returned value is 1, and so on.
-   */
-  get selectedFrameDepth() {
-    // If the frame switcher is disabled, we won't have a selected frame ID.
-    // In this case, we're always showing the root frame.
-    if (!this.selectedFrameId) {
-      return 0;
+      if (this.debouncedToolbarUpdate) {
+        this.debouncedToolbarUpdate();
+      }
+    };
+
+    // This may have been called before the toolbox is ready (= the dom elements for
+    // the iframe picker don't exist yet).
+    if (!this.isReady) {
+      this.once("ready").then(() => updateUiElements);
+    } else {
+      updateUiElements();
     }
-    let depth = 0;
-    let frame = this.frameMap.get(this.selectedFrameId);
-    while (frame) {
-      depth++;
-      frame = this.frameMap.get(frame.parentID);
-    }
-    return depth - 1;
   },
 
   /**
    * Returns whether a root frame (with no parent frame) is selected.
    */
   get rootFrameSelected() {
-    return this.selectedFrameDepth == 0;
+    // If the frame switcher is disabled, we won't have a selected frame ID.
+    // In this case, we're always showing the root frame.
+    if (!this.selectedFrameId) {
+      return true;
+    }
+
+    return this.frameMap.get(this.selectedFrameId).isTopLevel;
   },
 
   /**
    * Switch to the last used host for the toolbox UI.
    */
-  switchToPreviousHost: function() {
+  switchToPreviousHost() {
     return this.switchHost("previous");
   },
 
@@ -3296,8 +3618,8 @@ Toolbox.prototype = {
    * @param {string} hostType
    *        The host type of the new host object
    */
-  switchHost: function(hostType) {
-    if (hostType == this.hostType || !this.target.isLocalTab) {
+  switchHost(hostType) {
+    if (hostType == this.hostType || !this._descriptorFront.isLocalTab) {
       return null;
     }
 
@@ -3321,7 +3643,26 @@ Toolbox.prototype = {
     return this.once("host-changed");
   },
 
-  _onSwitchedHost: function({ hostType }) {
+  /**
+   * Request to Firefox UI to move the toolbox to another tab.
+   * This is used when we move a toolbox to a new popup opened by the tab we were currently debugging.
+   * We also move the toolbox back to the original tab we were debugging if we select it via Firefox tabs.
+   *
+   * @param {String} tabBrowsingContextID
+   *        The BrowsingContext ID of the tab we want to move to.
+   * @returns {Promise<undefined>}
+   *        This will resolve only once we moved to the new tab.
+   */
+  switchHostToTab(tabBrowsingContextID) {
+    this.postMessage({
+      name: "switch-host-to-tab",
+      tabBrowsingContextID,
+    });
+
+    return this.once("switched-host-to-tab");
+  },
+
+  _onSwitchedHost({ hostType }) {
     this._hostType = hostType;
 
     this._buildDockOptions();
@@ -3342,6 +3683,27 @@ Toolbox.prototype = {
   },
 
   /**
+   * Event handler fired when the toolbox was moved to another tab.
+   * This fires when the toolbox itself requests to be moved to another tab,
+   * but also when we select the original tab where the toolbox originally was.
+   *
+   * @param {String} browsingContextID
+   *        The BrowsingContext ID of the tab the toolbox has been moved to.
+   */
+  _onSwitchedHostToTab(browsingContextID) {
+    const targets = this.commands.targetCommand.getAllTargets([
+      this.commands.targetCommand.TYPES.FRAME,
+    ]);
+    const target = targets.find(
+      target => target.browsingContextID == browsingContextID
+    );
+
+    this.commands.targetCommand.selectTarget(target);
+
+    this.emit("switched-host-to-tab");
+  },
+
+  /**
    * Test the availability of a tool (both globally registered tools and
    * additional tools registered to this toolbox) by tool id.
    *
@@ -3352,7 +3714,7 @@ Toolbox.prototype = {
    * @returns {bool}
    *         Returns true if the tool is registered globally or on this toolbox.
    */
-  isToolRegistered: function(toolId) {
+  isToolRegistered(toolId) {
     return !!this.getToolDefinition(toolId);
   },
 
@@ -3367,7 +3729,7 @@ Toolbox.prototype = {
    * @returns {object}
    *         The plain javascript object that represents the requested tool definition.
    */
-  getToolDefinition: function(toolId) {
+  getToolDefinition(toolId) {
     return (
       gDevTools.getToolDefinition(toolId) ||
       this.additionalToolDefinitions.get(toolId)
@@ -3382,7 +3744,7 @@ Toolbox.prototype = {
    * @param  {string} toolId
    *         Id of the tool to be removed.
    */
-  unloadTool: function(toolId) {
+  unloadTool(toolId) {
     if (typeof toolId != "string") {
       throw new Error("Unexpected non-string toolId received.");
     }
@@ -3436,30 +3798,11 @@ Toolbox.prototype = {
   },
 
   /**
-   * Get a startup component for a given tool.
-   * @param  {string} toolId
-   *         Id of the tool to get the startup component for.
-   */
-  getToolStartup: function(toolId) {
-    return this._toolStartups.get(toolId);
-  },
-
-  _unloadToolStartup: async function(toolId) {
-    const startup = this.getToolStartup(toolId);
-    if (!startup) {
-      return;
-    }
-
-    this._toolStartups.delete(toolId);
-    await startup.destroy();
-  },
-
-  /**
    * Handler for the tool-registered event.
    * @param  {string} toolId
    *         Id of the tool that was registered
    */
-  _toolRegistered: function(toolId) {
+  _toolRegistered(toolId) {
     // Tools can either be in the global devtools, or added to this specific toolbox
     // as an additional tool.
     let definition = gDevTools.getToolDefinition(toolId);
@@ -3469,7 +3812,7 @@ Toolbox.prototype = {
       isAdditionalTool = true;
     }
 
-    if (definition.isTargetSupported(this.target)) {
+    if (definition.isToolSupported(this)) {
       if (isAdditionalTool) {
         this.visibleAdditionalTools = [...this.visibleAdditionalTools, toolId];
         this._combineAndSortPanelDefinitions();
@@ -3489,9 +3832,8 @@ Toolbox.prototype = {
    * @param  {string} toolId
    *         id of the tool that was unregistered
    */
-  _toolUnregistered: function(toolId) {
+  _toolUnregistered(toolId) {
     this.unloadTool(toolId);
-    this._unloadToolStartup(toolId);
 
     // Emit the event so tools can listen to it from the toolbox level
     // instead of gDevTools
@@ -3499,26 +3841,68 @@ Toolbox.prototype = {
   },
 
   /**
-   * An helper function that returns an object contain a highlighter and unhighlighter
-   * function.
+   * A helper function that returns an object containing methods to show and hide the
+   * Box Model Highlighter on a given NodeFront or node grip (object with metadata which
+   * can be used to obtain a NodeFront for a node), as well as helpers to listen to the
+   * higligher show and hide events. The event helpers are used in tests where it is
+   * cumbersome to load the Inspector panel in order to listen to highlighter events.
    *
    * @returns {Object} an object of the following shape:
-   *   - {AsyncFunction} highlight: A function that will initialize the highlighter front
-   *                                and call highlighter.highlight with the provided node
-   *                                front (which will be retrieved from a grip, if
-   *                                `fromGrip` is true.)
-   *   - {AsyncFunction} unhighlight: A function that will unhighlight the node that is
-   *                                  currently highlighted. If the `highlight` function
-   *                                  isn't settled yet, it will wait until it's done and
-   *                                  then unhighlight to prevent zombie highlighters.
+   *   - {AsyncFunction} highlight: A function that will show a Box Model Highlighter
+   *                     for the provided NodeFront or node grip.
+   *   - {AsyncFunction} unhighlight: A function that will hide any Box Model Highlighter
+   *                     that is visible. If the `highlight` promise isn't settled yet,
+   *                     it will wait until it's done and then unhighlight to prevent
+   *                     zombie highlighters.
+   *   - {AsyncFunction} waitForHighlighterShown: Returns a promise which resolves with
+   *                     the "highlighter-shown" event data once the highlighter is shown.
+   *   - {AsyncFunction} waitForHighlighterHidden: Returns a promise which resolves with
+   *                     the "highlighter-hidden" event data once the highlighter is
+   *                     hidden.
    *
    */
   getHighlighter() {
     let pendingHighlight;
-    let currentHighlighterFront;
+
+    /**
+     * Return a promise wich resolves with a reference to the Inspector panel.
+     */
+    const _getInspector = async () => {
+      const inspector = this.getPanel("inspector");
+      if (inspector) {
+        return inspector;
+      }
+
+      return this.loadTool("inspector");
+    };
+
+    /**
+     * Returns a promise which resolves when a Box Model Highlighter emits the given event
+     *
+     * @param  {String} eventName
+     *         Name of the event to listen to.
+     * @return {Promise}
+     *         Promise which resolves when the highlighter event occurs.
+     *         Resolves with the data payload attached to the event.
+     */
+    async function _waitForHighlighterEvent(eventName) {
+      const inspector = await _getInspector();
+      return new Promise(resolve => {
+        function _handler(data) {
+          if (data.type === inspector.highlighters.TYPES.BOXMODEL) {
+            inspector.highlighters.off(eventName, _handler);
+            resolve(data);
+          }
+        }
+
+        inspector.highlighters.on(eventName, _handler);
+      });
+    }
 
     return {
-      highlight: async (object, options) => {
+      // highlight might be triggered right before a test finishes. Wrap it
+      // with safeAsyncMethod to avoid intermittents.
+      highlight: this._safeAsyncAfterDestroy(async (object, options) => {
         pendingHighlight = (async () => {
           let nodeFront = object;
 
@@ -3531,30 +3915,47 @@ Toolbox.prototype = {
             return null;
           }
 
-          // We cache the highlighter front so we can unhighlight easily.
-          currentHighlighterFront = nodeFront.highlighterFront;
-          return nodeFront.highlighterFront.highlight(nodeFront, options);
+          const inspector = await _getInspector();
+          return inspector.highlighters.showHighlighterTypeForNode(
+            inspector.highlighters.TYPES.BOXMODEL,
+            nodeFront,
+            options
+          );
         })();
         return pendingHighlight;
-      },
-      unhighlight: async forceHide => {
+      }),
+      unhighlight: this._safeAsyncAfterDestroy(async () => {
         if (pendingHighlight) {
           await pendingHighlight;
           pendingHighlight = null;
         }
 
-        if (!currentHighlighterFront) {
-          return null;
-        }
+        const inspector = await _getInspector();
+        return inspector.highlighters.hideHighlighterType(
+          inspector.highlighters.TYPES.BOXMODEL
+        );
+      }),
 
-        const unHighlight = currentHighlighterFront.unhighlight(forceHide);
-        currentHighlighterFront = null;
-        return unHighlight;
-      },
+      waitForHighlighterShown: this._safeAsyncAfterDestroy(async () => {
+        return _waitForHighlighterEvent("highlighter-shown");
+      }),
+
+      waitForHighlighterHidden: this._safeAsyncAfterDestroy(async () => {
+        return _waitForHighlighterEvent("highlighter-hidden");
+      }),
     };
   },
 
-  _onNewSelectedNodeFront: async function() {
+  /**
+   * Shortcut to avoid throwing errors when an async method fails after toolbox
+   * destroy. Should be used with methods that might be triggered by a user
+   * input, regardless of the toolbox lifecycle.
+   */
+  _safeAsyncAfterDestroy(fn) {
+    return safeAsyncMethod(fn, () => !!this._destroyer);
+  },
+
+  async _onNewSelectedNodeFront() {
     // Emit a "selection-changed" event when the toolbox.selection has been set
     // to a new node (or cleared). Currently used in the WebExtensions APIs (to
     // provide the `devtools.panels.elements.onSelectionChanged` event).
@@ -3566,21 +3967,25 @@ Toolbox.prototype = {
     }
   },
 
-  _onInspectObject: function(packet) {
-    this.inspectObjectActor(packet.objectActor, packet.inspectFromAnnotation);
-  },
-
-  _onToolSelected: function() {
+  _onToolSelected() {
     this._refreshHostTitle();
 
     this.updatePickerButton();
     this.updateFrameButton();
+    this.updateErrorCountButton();
 
     // Calling setToolboxButtons in case the visibility of a button changed.
     this.component.setToolboxButtons(this.toolbarButtons);
   },
 
-  inspectObjectActor: async function(objectActor, inspectFromAnnotation) {
+  /**
+   * Listener for "inspectObject" event on console top level target actor.
+   */
+  _onInspectObject(packet) {
+    this.inspectObjectActor(packet.objectActor, packet.inspectFromAnnotation);
+  },
+
+  async inspectObjectActor(objectActor, inspectFromAnnotation) {
     const objectGrip = objectActor?.getGrip
       ? objectActor.getGrip()
       : objectActor;
@@ -3589,7 +3994,8 @@ Toolbox.prototype = {
       objectGrip.preview &&
       objectGrip.preview.nodeType === domNodeConstants.ELEMENT_NODE
     ) {
-      return this.viewElementInInspector(objectGrip, inspectFromAnnotation);
+      await this.viewElementInInspector(objectGrip, inspectFromAnnotation);
+      return;
     }
 
     if (objectGrip.class == "Function") {
@@ -3599,7 +4005,8 @@ Toolbox.prototype = {
       }
 
       const { url, line, column } = objectGrip.location;
-      return this.viewSourceInDebugger(url, line, column);
+      await this.viewSourceInDebugger(url, line, column);
+      return;
     }
 
     if (objectGrip.type !== "null" && objectGrip.type !== "undefined") {
@@ -3619,25 +4026,25 @@ Toolbox.prototype = {
    *
    * @return The notification box component.
    */
-  getNotificationBox: function() {
+  getNotificationBox() {
     return this.notificationBox;
   },
 
-  closeToolbox: async function() {
+  async closeToolbox() {
     await this.destroy();
   },
 
   /**
    * Public API to check is the current toolbox is currently being destroyed.
    */
-  isDestroying: function() {
+  isDestroying() {
     return this._destroyer;
   },
 
   /**
    * Remove all UI elements, detach from target and clear up
    */
-  destroy: function() {
+  destroy() {
     // If several things call destroy then we give them all the same
     // destruction promise so we're sure to destroy only once
     if (this._destroyer) {
@@ -3653,16 +4060,12 @@ Toolbox.prototype = {
     return this._destroyer;
   },
 
-  _destroyToolbox: async function() {
+  async _destroyToolbox() {
     this.emit("destroy");
 
     // This flag will be checked by Fronts in order to decide if they should
     // skip their destroy.
-    if (this.target.client) {
-      // Note: this.target.client might be null if the target was already
-      // destroyed (eg: tab is closed during remote debugging).
-      this.target.client.isToolboxDestroy = true;
-    }
+    this.commands.client.isToolboxDestroy = true;
 
     this.off("select", this._onToolSelected);
     this.off("host-changed", this._refreshHostTitle);
@@ -3670,35 +4073,32 @@ Toolbox.prototype = {
     gDevTools.off("tool-registered", this._toolRegistered);
     gDevTools.off("tool-unregistered", this._toolUnregistered);
 
+    for (const prefName in BOOLEAN_CONFIGURATION_PREFS) {
+      Services.prefs.removeObserver(
+        prefName,
+        this._onBooleanConfigurationPrefChange
+      );
+    }
     Services.prefs.removeObserver(
-      "devtools.cache.disabled",
-      this._applyCacheSettings
-    );
-    Services.prefs.removeObserver(
-      "devtools.serviceWorkers.testing.enabled",
-      this._applyServiceWorkersTestingSettings
+      BROWSERTOOLBOX_SCOPE_PREF,
+      this._refreshHostTitle
     );
 
     // We normally handle toolClosed from selectTool() but in the event of the
     // toolbox closing we need to handle it here instead.
-    this.telemetry.toolClosed(this.currentToolId, this.sessionId, this);
+    this.telemetry.toolClosed(this.currentToolId, this);
 
     this._lastFocusedElement = null;
-    this._pausedThreads = null;
+    this._pausedTargets = null;
 
-    if (this._sourceMapURLService) {
-      this._sourceMapURLService.destroy();
-      this._sourceMapURLService = null;
+    if (this._sourceMapLoader) {
+      this._sourceMapLoader.destroy();
+      this._sourceMapLoader = null;
     }
 
-    if (this._sourceMapService) {
-      this._sourceMapService.stopSourceMapWorker();
-      this._sourceMapService = null;
-    }
-
-    if (this._parserService) {
-      this._parserService.stop();
-      this._parserService = null;
+    if (this._parserWorker) {
+      this._parserWorker.stop();
+      this._parserWorker = null;
     }
 
     if (this.webconsolePanel) {
@@ -3715,40 +4115,58 @@ Toolbox.prototype = {
         this._onToolbarArrowKeypress
       );
       this.ReactDOM.unmountComponentAtNode(this._componentMount);
+      this.component = null;
       this._componentMount = null;
       this._tabBar = null;
     }
+    this.destroyHarAutomation();
 
-    const outstanding = [];
     for (const [id, panel] of this._toolPanels) {
       try {
         gDevTools.emit(id + "-destroy", this, panel);
         this.emit(id + "-destroy", panel);
 
-        outstanding.push(panel.destroy());
+        const rv = panel.destroy();
+        if (rv) {
+          console.error(
+            `Panel ${id}'s destroy method returned something whereas it shouldn't (and should be synchronous).`
+          );
+        }
       } catch (e) {
         // We don't want to stop here if any panel fail to close.
         console.error("Panel " + id + ":", e);
       }
     }
 
-    for (const id of this._toolStartups.keys()) {
-      outstanding.push(this._unloadToolStartup(id));
-    }
-
     this.browserRequire = null;
     this._toolNames = null;
 
-    // Reset preferences set by the toolbox
-    outstanding.push(this.resetPreference());
+    // Reset preferences set by the toolbox, then remove the preference front.
+    const onResetPreference = this.resetPreference().then(() => {
+      this._preferenceFrontRequest = null;
+    });
 
-    this.targetList.unwatchTargets(
-      TargetList.ALL_TYPES,
-      this._onTargetAvailable,
-      this._onTargetDestroyed
-    );
+    this.commands.targetCommand.unwatchTargets({
+      types: this.commands.targetCommand.ALL_TYPES,
+      onAvailable: this._onTargetAvailable,
+      onSelected: this._onTargetSelected,
+      onDestroyed: this._onTargetDestroyed,
+    });
 
-    this.targetList.stopListening();
+    const watchedResources = [
+      this.resourceCommand.TYPES.CONSOLE_MESSAGE,
+      this.resourceCommand.TYPES.ERROR_MESSAGE,
+      this.resourceCommand.TYPES.DOCUMENT_EVENT,
+      this.resourceCommand.TYPES.THREAD_STATE,
+    ];
+
+    if (!this.isBrowserToolbox) {
+      watchedResources.push(this.resourceCommand.TYPES.NETWORK_EVENT);
+    }
+
+    this.resourceCommand.unwatchResources(watchedResources, {
+      onAvailable: this._onResourceAvailable,
+    });
 
     // Unregister buttons listeners
     this.toolbarButtons.forEach(button => {
@@ -3764,29 +4182,31 @@ Toolbox.prototype = {
     const width = Math.ceil(win.outerWidth / 50) * 50;
     const prevPanelName = this.getTelemetryPanelNameOrOther(this.currentToolId);
 
-    this.telemetry.toolClosed("toolbox", this.sessionId, this);
+    this.telemetry.toolClosed("toolbox", this);
     this.telemetry.recordEvent("exit", prevPanelName, null, {
-      host: host,
-      width: width,
+      host,
+      width,
       panel_name: this.getTelemetryPanelNameOrOther(this.currentToolId),
       next_panel: "none",
       reason: "toolbox_close",
-      session_id: this.sessionId,
     });
     this.telemetry.recordEvent("close", "tools", null, {
-      host: host,
-      width: width,
-      session_id: this.sessionId,
+      host,
+      width,
     });
 
-    // Finish all outstanding tasks (which means finish destroying panels and
-    // then destroying the host, successfully or not) before destroying the
-    // target.
+    // Wait for the preferences to be reset before destroying the target descriptor (which will destroy the preference front)
     const onceDestroyed = new Promise(resolve => {
       resolve(
-        settleAll(outstanding)
+        onResetPreference
           .catch(console.error)
           .then(async () => {
+            // Destroy the node picker *after* destroying the panel,
+            // which may still try to access it. (And might spawn a new one)
+            if (this._nodePicker) {
+              this._nodePicker.destroy();
+              this._nodePicker = null;
+            }
             this.selection.destroy();
             this.selection = null;
 
@@ -3795,33 +4215,28 @@ Toolbox.prototype = {
               this._netMonitorAPI = null;
             }
 
+            if (this._sourceMapURLService) {
+              await this._sourceMapURLService.waitForSourcesLoading();
+              this._sourceMapURLService.destroy();
+              this._sourceMapURLService = null;
+            }
+
             this._removeWindowListeners();
             this._removeChromeEventHandlerEvents();
 
-            // `location` may already be 'invalid' if the toolbox document is
-            // already in process of destruction. Otherwise if it is still
-            // around, ensure releasing toolbox document and triggering cleanup
-            // thanks to unload event. We do that precisely here, before
-            // nullifying the target as various cleanup code depends on the
-            // target attribute to be still
-            // defined.
-            try {
-              // If this toolbox displayed as a page, avoid to move to `about:blank`.
-              // For example in case of reloading, when the thread of processing of
-              // destroying the toolbox arrives at here after starting reloading process,
-              // although we should display same page, `about:blank` will display.
-              if (this.hostType !== Toolbox.HostType.PAGE) {
-                win.location.replace("about:blank");
-              }
-            } catch (e) {
-              // Do nothing;
-            }
+            this._store = null;
 
-            // Targets need to be notified that the toolbox is being torn down.
+            // All Commands need to be destroyed.
             // This is done after other destruction tasks since it may tear down
             // fronts and the debugger transport which earlier destroy methods may
             // require to complete.
-            return this.target.destroy();
+            // (i.e. avoid exceptions about closing connection with pending requests)
+            //
+            // For similar reasons, only destroy the TargetCommand after every
+            // other outstanding cleanup is done. Destroying the target list
+            // will lead to destroy frame targets which can temporarily make
+            // some fronts unresponsive and block the cleanup.
+            return this.commands.destroy();
           }, console.error)
           .then(() => {
             this.emit("destroyed");
@@ -3831,6 +4246,9 @@ Toolbox.prototype = {
             this._host = null;
             this._win = null;
             this._toolPanels.clear();
+            this._descriptorFront = null;
+            this.resourceCommand = null;
+            this.commands = null;
 
             // Force GC to prevent long GC pauses when running tests and to free up
             // memory in general when the toolbox is closed.
@@ -3859,28 +4277,13 @@ Toolbox.prototype = {
   },
 
   /**
-   * Enable / disable necessary textbox menu items using globalOverlay.js.
-   */
-  _updateTextBoxMenuItems: function() {
-    const window = this.win;
-    [
-      "cmd_undo",
-      "cmd_delete",
-      "cmd_cut",
-      "cmd_copy",
-      "cmd_paste",
-      "cmd_selectAll",
-    ].forEach(window.goUpdateCommand);
-  },
-
-  /**
    * Open the textbox context menu at given coordinates.
    * Panels in the toolbox can call this on contextmenu events with event.screenX/Y
    * instead of having to implement their own copy/paste/selectAll menu.
    * @param {Number} x
    * @param {Number} y
    */
-  openTextBoxContextMenu: function(x, y) {
+  openTextBoxContextMenu(x, y) {
     const menu = createEditContextMenu(this.topWindow, "toolbox-menu");
 
     // Fire event for tests
@@ -3893,74 +4296,50 @@ Toolbox.prototype = {
   /**
    *  Retrieve the current textbox context menu, if available.
    */
-  getTextBoxContextMenu: function() {
+  getTextBoxContextMenu() {
     return this.topDoc.getElementById("toolbox-menu");
-  },
-
-  /**
-   * Connects to the Gecko Profiler when the developer tools are open. This is
-   * necessary because of the WebConsole's `profile` and `profileEnd` methods.
-   */
-  async initPerformance() {
-    // If:
-    // - target does not have performance actor (addons)
-    // - or client uses the new performance panel (incompatible with console.profile())
-    // do not even register the shared performance connection.
-    const isNewPerfPanel = Services.prefs.getBoolPref(
-      "devtools.performance.new-panel-enabled",
-      false
-    );
-    if (isNewPerfPanel || !this.target.hasActor("performance")) {
-      return promise.resolve();
-    }
-
-    const performanceFront = await this.target.getFront("performance");
-    performanceFront.once("console-profile-start", () =>
-      this._onPerformanceFrontEvent(performanceFront)
-    );
-
-    return performanceFront;
-  },
-
-  /**
-   * Called when a "console-profile-start" event comes from the PerformanceFront. If
-   * the performance tool is already loaded when the first event comes in, immediately
-   * unbind this handler, as this is only used to load the tool for the first time when
-   * `console.profile()` recordings are started before the tool loads.
-   */
-  async _onPerformanceFrontEvent(performanceFront) {
-    if (this.getPanel("performance")) {
-      // the performance panel is already recording all performance, we no longer
-      // need the queue, if it was started
-      performanceFront.flushQueuedRecordings();
-      return;
-    }
-
-    // Before any console recordings, we'll get a `console-profile-start` event
-    // warning us that a recording will come later (via `recording-started`), so
-    // start to boot up the tool and populate the tool with any other recordings
-    // observed during that time.
-    const panel = await this.loadTool("performance");
-    const recordings = performanceFront.flushQueuedRecordings();
-    panel.panelWin.PerformanceController.populateWithRecordings(recordings);
-    await panel.open();
   },
 
   /**
    * Reset preferences set by the toolbox.
    */
   async resetPreference() {
-    if (!this._preferenceFront) {
+    if (
+      // No preferences have been changed, so there is nothing to reset.
+      !this._preferenceFrontRequest ||
+      // Did any pertinent prefs actually change? For autohide and the pseudo-locale,
+      // only reset prefs in the Browser Toolbox if it's been toggled in the UI
+      // (don't reset the pref if it was already set before opening)
+      (!this._autohideHasBeenToggled && !this._pseudoLocaleChanged)
+    ) {
       return;
     }
 
-    // Only reset the autohide pref in the Browser Toolbox if it's been toggled
-    // in the UI (don't reset the pref if it was already set before opening)
-    if (this._autohideHasBeenToggled) {
-      await this._preferenceFront.clearUserPref(DISABLE_AUTOHIDE_PREF);
-    }
+    const preferenceFront = await this.preferenceFront;
 
-    this._preferenceFront = null;
+    if (this._autohideHasBeenToggled) {
+      await preferenceFront.clearUserPref(DISABLE_AUTOHIDE_PREF);
+    }
+    if (this._pseudoLocaleChanged) {
+      await preferenceFront.clearUserPref(PSEUDO_LOCALE_PREF);
+    }
+  },
+
+  // HAR Automation
+
+  async initHarAutomation() {
+    const autoExport = Services.prefs.getBoolPref(
+      "devtools.netmonitor.har.enableAutoExportToFile"
+    );
+    if (autoExport) {
+      this.harAutomation = new HarAutomation();
+      await this.harAutomation.initialize(this);
+    }
+  },
+  destroyHarAutomation() {
+    if (this.harAutomation) {
+      this.harAutomation.destroy();
+    }
   },
 
   /**
@@ -3971,29 +4350,98 @@ Toolbox.prototype = {
   },
 
   /**
-   * Opens source in style editor. Falls back to plain "view-source:".
-   * @see devtools/client/shared/source-utils.js
+   * Open a CSS file when there is no line or column information available.
+   *
+   * @param {string} url The URL of the CSS file to open.
    */
-  viewSourceInStyleEditor: function(sourceURL, sourceLine, sourceColumn) {
+  async viewGeneratedSourceInStyleEditor(url) {
+    if (typeof url !== "string") {
+      console.warn("Failed to open generated source, no url given");
+      return false;
+    }
+
+    // The style editor hides the generated file if the file has original
+    // sources, so we have no choice but to open whichever original file
+    // corresponds to the first line of the generated file.
+    return viewSource.viewSourceInStyleEditor(this, url, 1);
+  },
+
+  /**
+   * Given a URL for a stylesheet (generated or original), open in the style
+   * editor if possible. Falls back to plain "view-source:".
+   * If the stylesheet has a sourcemap, we will attempt to open the original
+   * version of the file instead of the generated version.
+   */
+  async viewSourceInStyleEditorByURL(url, line, column) {
+    if (typeof url !== "string") {
+      console.warn("Failed to open source, no url given");
+      return false;
+    }
+    if (typeof line !== "number") {
+      console.warn(
+        "No line given when navigating to source. If you're seeing this, there is a bug."
+      );
+
+      // This is a fallback in case of programming errors, but in a perfect
+      // world, viewSourceInStyleEditorByURL would always get a line/colum.
+      line = 1;
+      column = null;
+    }
+
+    return viewSource.viewSourceInStyleEditor(this, url, line, column);
+  },
+
+  /**
+   * Opens source in style editor. Falls back to plain "view-source:".
+   * If the stylesheet has a sourcemap, we will attempt to open the original
+   * version of the file instead of the generated version.
+   */
+  async viewSourceInStyleEditorByResource(stylesheetResource, line, column) {
+    if (!stylesheetResource || typeof stylesheetResource !== "object") {
+      console.warn("Failed to open source, no stylesheet given");
+      return false;
+    }
+    if (typeof line !== "number") {
+      console.warn(
+        "No line given when navigating to source. If you're seeing this, there is a bug."
+      );
+
+      // This is a fallback in case of programming errors, but in a perfect
+      // world, viewSourceInStyleEditorByResource would always get a line/colum.
+      line = 1;
+      column = null;
+    }
+
     return viewSource.viewSourceInStyleEditor(
       this,
-      sourceURL,
-      sourceLine,
-      sourceColumn
+      stylesheetResource,
+      line,
+      column
     );
   },
 
-  viewElementInInspector: async function(objectActor, inspectFromAnnotation) {
+  async viewElementInInspector(objectGrip, reason) {
     // Open the inspector and select the DOM Element.
     await this.loadTool("inspector");
     const inspector = this.getPanel("inspector");
-    const nodeFound = await inspector.inspectNodeActor(
-      objectActor.actor,
-      inspectFromAnnotation
-    );
+    const nodeFound = await inspector.inspectNodeActor(objectGrip, reason);
     if (nodeFound) {
-      await this.selectTool("inspector");
+      await this.selectTool("inspector", reason);
     }
+  },
+
+  /**
+   * Open a JS file when there is no line or column information available.
+   *
+   * @param {string} url The URL of the JS file to open.
+   */
+  async viewGeneratedSourceInDebugger(url) {
+    if (typeof url !== "string") {
+      console.warn("Failed to open generated source, no url given");
+      return false;
+    }
+
+    return viewSource.viewSourceInDebugger(this, url, null, null, null, null);
   },
 
   /**
@@ -4004,30 +4452,26 @@ Toolbox.prototype = {
    *
    * @see devtools/client/shared/source-utils.js
    */
-  viewSourceInDebugger: async function(
+  async viewSourceInDebugger(
     sourceURL,
     sourceLine,
     sourceColumn,
     sourceId,
     reason
   ) {
-    try {
-      const sourceMappedLoc = await this.sourceMapURLService.originalPositionFor(
-        sourceURL,
-        sourceLine,
-        sourceColumn
+    if (typeof sourceURL !== "string" && typeof sourceId !== "string") {
+      console.warn("Failed to open generated source, no url/id given");
+      return false;
+    }
+    if (typeof sourceLine !== "number") {
+      console.warn(
+        "No line given when navigating to source. If you're seeing this, there is a bug."
       );
-      if (sourceMappedLoc) {
-        sourceURL = sourceMappedLoc.sourceUrl;
-        sourceLine = sourceMappedLoc.line;
-        sourceColumn = sourceMappedLoc.column;
-      }
-    } catch (err) {
-      console.error(
-        "Failed to resolve sourcemapped location for the given source location",
-        { sourceURL, sourceLine, sourceColumn, sourceId, reason },
-        err
-      );
+
+      // This is a fallback in case of programming errors, but in a perfect
+      // world, viewSourceInDebugger would always get a line/colum.
+      sourceLine = 1;
+      sourceColumn = null;
     }
 
     return viewSource.viewSourceInDebugger(
@@ -4044,8 +4488,8 @@ Toolbox.prototype = {
    * Opens source in plain "view-source:".
    * @see devtools/client/shared/source-utils.js
    */
-  viewSource: function(sourceURL, sourceLine) {
-    return viewSource.viewSource(this, sourceURL, sourceLine);
+  viewSource(sourceURL, sourceLine, sourceColumn) {
+    return viewSource.viewSource(this, sourceURL, sourceLine, sourceColumn);
   },
 
   // Support for WebExtensions API (`devtools.network.*`)
@@ -4054,7 +4498,7 @@ Toolbox.prototype = {
    * Return Netmonitor API object. This object offers Network monitor
    * public API that can be consumed by other panels or WE API.
    */
-  getNetMonitorAPI: async function() {
+  async getNetMonitorAPI() {
     const netPanel = this.getPanel("netmonitor");
 
     // Return Net panel if it exists.
@@ -4077,7 +4521,7 @@ Toolbox.prototype = {
   /**
    * Returns data (HAR) collected by the Network panel.
    */
-  getHARFromNetMonitor: async function() {
+  async getHARFromNetMonitor() {
     const netMonitor = await this.getNetMonitorAPI();
     let har = await netMonitor.getHar();
 
@@ -4097,12 +4541,12 @@ Toolbox.prototype = {
    *        a function that takes ({harEntry, requestId})
    *        as first argument.
    */
-  addRequestFinishedListener: async function(listener) {
+  async addRequestFinishedListener(listener) {
     const netMonitor = await this.getNetMonitorAPI();
     netMonitor.addRequestFinishedListener(listener);
   },
 
-  removeRequestFinishedListener: async function(listener) {
+  async removeRequestFinishedListener(listener) {
     const netMonitor = await this.getNetMonitorAPI();
     netMonitor.removeRequestFinishedListener(listener);
 
@@ -4127,7 +4571,7 @@ Toolbox.prototype = {
    *        Id of the request for which the response content
    *        should be fetched.
    */
-  fetchResponseContent: async function(requestId) {
+  async fetchResponseContent(requestId) {
     const netMonitor = await this.getNetMonitorAPI();
     return netMonitor.fetchResponseContent(requestId);
   },
@@ -4140,7 +4584,7 @@ Toolbox.prototype = {
    * WebExtensions).
    * @see devtools/client/framework/toolbox-options.js
    */
-  listWebExtensions: function() {
+  listWebExtensions() {
     // Return the array of the enabled webextensions (we can't use the prefs list here,
     // because some of them may be disabled by the Addon Manager and still have a devtools
     // preference).
@@ -4156,7 +4600,7 @@ Toolbox.prototype = {
    * to refresh the listed tools accordingly.
    * @see browser/components/extensions/ext-devtools.js
    */
-  registerWebExtension: function(extensionUUID, { name, pref }) {
+  registerWebExtension(extensionUUID, { name, pref }) {
     // Ensure that an installed extension (active in the AddonManager) which
     // provides a devtools page is going to be listed in the toolbox options
     // (and refresh its name if it was already listed).
@@ -4171,7 +4615,7 @@ Toolbox.prototype = {
    * to refresh the listed tools accordingly.
    * @see browser/components/extensions/ext-devtools.js
    */
-  unregisterWebExtension: function(extensionUUID) {
+  unregisterWebExtension(extensionUUID) {
     // Ensure that an extension that has been disabled/uninstalled from the AddonManager
     // is going to be removed from the toolbox options.
     this._webExtensions.delete(extensionUUID);
@@ -4184,7 +4628,7 @@ Toolbox.prototype = {
    * to true.
    * @see browser/components/extensions/ext-devtools.js
    */
-  isWebExtensionEnabled: function(extensionUUID) {
+  isWebExtensionEnabled(extensionUUID) {
     const extInfo = this._webExtensions.get(extensionUUID);
     return extInfo && Services.prefs.getBoolPref(extInfo.pref, false);
   },
@@ -4198,7 +4642,7 @@ Toolbox.prototype = {
    * @param {String} id
    *        The panel id we would like to process.
    */
-  getTelemetryPanelNameOrOther: function(id) {
+  getTelemetryPanelNameOrOther(id) {
     if (!this._toolNames) {
       const definitions = gDevTools.getToolDefinitionArray();
       const definitionIds = definitions.map(definition => definition.id);
@@ -4214,22 +4658,140 @@ Toolbox.prototype = {
   },
 
   /**
-   * Fired when the user navigates to another page.
-   */
-  _onNavigate: function() {
-    this._refreshHostTitle();
-    this._setDebugTargetData();
-  },
-
-  /**
    * Sets basic information on the DebugTargetInfo component
    */
   _setDebugTargetData() {
-    if (this.hostType === Toolbox.HostType.PAGE) {
+    // Note that local WebExtension are debugged via WINDOW host,
+    // but we still want to display target data.
+    if (
+      this.hostType === Toolbox.HostType.PAGE ||
+      this._descriptorFront.isWebExtensionDescriptor
+    ) {
       // Displays DebugTargetInfo which shows the basic information of debug target,
       // if `about:devtools-toolbox` URL opens directly.
       // DebugTargetInfo requires this._debugTargetData to be populated
       this.component.setDebugTargetData(this._getDebugTargetData());
     }
+  },
+
+  _onResourceAvailable(resources) {
+    let errors = this._errorCount || 0;
+
+    const { TYPES } = this.resourceCommand;
+    for (const resource of resources) {
+      const { resourceType } = resource;
+      if (
+        resourceType === TYPES.ERROR_MESSAGE &&
+        // ERROR_MESSAGE resources can be warnings/info, but here we only want to count errors
+        resource.pageError.error
+      ) {
+        errors++;
+        continue;
+      }
+
+      if (resourceType === TYPES.CONSOLE_MESSAGE) {
+        const { level } = resource.message;
+        if (level === "error" || level === "exception" || level === "assert") {
+          errors++;
+        }
+
+        // Reset the count on console.clear
+        if (level === "clear") {
+          errors = 0;
+        }
+      }
+
+      // Only consider top level document, and ignore remote iframes top document
+      if (
+        resourceType === TYPES.DOCUMENT_EVENT &&
+        resource.name === "will-navigate" &&
+        resource.targetFront.isTopLevel
+      ) {
+        this._onWillNavigate({
+          isFrameSwitching: resource.isFrameSwitching,
+        });
+        // While we will call `setErrorCount(0)` from onWillNavigate, we also need to reset
+        // `errors` local variable in order to clear previous errors processed in the same
+        // throttling bucket as this will-navigate resource.
+        errors = 0;
+      }
+
+      if (
+        resourceType === TYPES.DOCUMENT_EVENT &&
+        !resource.isFrameSwitching &&
+        // `url` is set on the targetFront when we receive dom-loading, and `title` when
+        // `dom-interactive` is received. Here we're only updating the window title in
+        // the "newer" event.
+        resource.name === "dom-interactive"
+      ) {
+        // the targetFront title and url are updated on dom-interactive, so delay refreshing
+        // the host title a bit in order for the event listener in targetCommand to be
+        // executed.
+        setTimeout(() => {
+          if (resource.targetFront.isDestroyed()) {
+            // The resource's target might have been destroyed in between and
+            // would no longer have a valid actorID available.
+            return;
+          }
+
+          this._updateFrames({
+            frameData: {
+              id: resource.targetFront.actorID,
+              url: resource.targetFront.url,
+              title: resource.targetFront.title,
+            },
+          });
+
+          if (resource.targetFront.isTopLevel) {
+            this._refreshHostTitle();
+            this._setDebugTargetData();
+          }
+        }, 0);
+      }
+
+      if (resourceType == TYPES.THREAD_STATE) {
+        this._onThreadStateChanged(resource);
+      }
+      if (resourceType == TYPES.JSTRACER_STATE) {
+        this._onTracingStateChanged(resource);
+      }
+    }
+
+    this.setErrorCount(errors);
+  },
+
+  _onResourceUpdated(resources) {
+    let errors = this._errorCount || 0;
+
+    for (const { update } of resources) {
+      // In order to match webconsole behaviour, we treat 4xx and 5xx network calls as errors.
+      if (
+        update.resourceType === this.resourceCommand.TYPES.NETWORK_EVENT &&
+        update.resourceUpdates.status &&
+        update.resourceUpdates.status.toString().match(REGEX_4XX_5XX)
+      ) {
+        errors++;
+      }
+    }
+
+    this.setErrorCount(errors);
+  },
+
+  /**
+   * Set the number of errors in the toolbar icon.
+   *
+   * @param {Number} count
+   */
+  setErrorCount(count) {
+    // Don't re-render if the number of errors changed
+    if (!this.component || this._errorCount === count) {
+      return;
+    }
+
+    this._errorCount = count;
+
+    // Update button properties and trigger a render of the toolbox
+    this.updateErrorCountButton();
+    this._throttledSetToolboxButtons();
   },
 };

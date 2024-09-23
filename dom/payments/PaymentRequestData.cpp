@@ -5,15 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/PaymentRequestBinding.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "nsArrayUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIMutableArray.h"
 #include "nsUnicharUtils.h"
 #include "PaymentRequestData.h"
 #include "PaymentRequestUtils.h"
 
-namespace mozilla {
-namespace dom {
-namespace payments {
+namespace mozilla::dom::payments {
 
 /* PaymentMethodData */
 
@@ -39,7 +39,7 @@ PaymentMethodData::GetSupportedMethods(nsAString& aSupportedMethods) {
 }
 
 NS_IMETHODIMP
-PaymentMethodData::GetData(JSContext* aCx, JS::MutableHandleValue aData) {
+PaymentMethodData::GetData(JSContext* aCx, JS::MutableHandle<JS::Value> aData) {
   if (mData.IsEmpty()) {
     aData.set(JS::NullValue());
     return NS_OK;
@@ -205,7 +205,8 @@ PaymentDetailsModifier::GetAdditionalDisplayItems(
 }
 
 NS_IMETHODIMP
-PaymentDetailsModifier::GetData(JSContext* aCx, JS::MutableHandleValue aData) {
+PaymentDetailsModifier::GetData(JSContext* aCx,
+                                JS::MutableHandle<JS::Value> aData) {
   if (mData.IsEmpty()) {
     aData.set(JS::NullValue());
     return NS_OK;
@@ -415,7 +416,7 @@ PaymentDetails::GetError(nsAString& aError) {
 
 NS_IMETHODIMP
 PaymentDetails::GetShippingAddressErrors(JSContext* aCx,
-                                         JS::MutableHandleValue aErrors) {
+                                         JS::MutableHandle<JS::Value> aErrors) {
   AddressErrors errors;
   errors.Init(mShippingAddressErrors);
   if (!ToJSValue(aCx, errors, aErrors)) {
@@ -425,7 +426,8 @@ PaymentDetails::GetShippingAddressErrors(JSContext* aCx,
 }
 
 NS_IMETHODIMP
-PaymentDetails::GetPayerErrors(JSContext* aCx, JS::MutableHandleValue aErrors) {
+PaymentDetails::GetPayerErrors(JSContext* aCx,
+                               JS::MutableHandle<JS::Value> aErrors) {
   PayerErrors errors;
   errors.Init(mPayerErrors);
   if (!ToJSValue(aCx, errors, aErrors)) {
@@ -436,7 +438,7 @@ PaymentDetails::GetPayerErrors(JSContext* aCx, JS::MutableHandleValue aErrors) {
 
 NS_IMETHODIMP
 PaymentDetails::GetPaymentMethodErrors(JSContext* aCx,
-                                       JS::MutableHandleValue aErrors) {
+                                       JS::MutableHandle<JS::Value> aErrors) {
   if (mPaymentMethodErrors.IsEmpty()) {
     aErrors.set(JS::NullValue());
     return NS_OK;
@@ -804,6 +806,4 @@ PaymentAddress::GetPhone(nsAString& aPhone) {
   return NS_OK;
 }
 
-}  // namespace payments
-}  // end of namespace dom
-}  // end of namespace mozilla
+}  // namespace mozilla::dom::payments

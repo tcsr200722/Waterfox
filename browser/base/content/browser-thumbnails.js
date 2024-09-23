@@ -44,7 +44,7 @@ var gBrowserThumbnails = {
       this.PREF_DISK_CACHE_SSL
     );
 
-    this._tabEvents.forEach(function(aEvent) {
+    this._tabEvents.forEach(function (aEvent) {
       gBrowser.tabContainer.addEventListener(aEvent, this);
     }, this);
 
@@ -60,7 +60,7 @@ var gBrowserThumbnails = {
       this._topSiteURLsRefreshTimer = null;
     }
 
-    this._tabEvents.forEach(function(aEvent) {
+    this._tabEvents.forEach(function (aEvent) {
       gBrowser.tabContainer.removeEventListener(aEvent, this);
     }, this);
   },
@@ -100,10 +100,10 @@ var gBrowserThumbnails = {
     }
     // Delete the defined property
     delete this._topSiteURLs;
-    XPCOMUtils.defineLazyGetter(this, "_topSiteURLs", getTopSiteURLs);
+    ChromeUtils.defineLazyGetter(this, "_topSiteURLs", getTopSiteURLs);
   },
 
-  notify: function Thumbnails_notify(timer) {
+  notify: function Thumbnails_notify() {
     gBrowserThumbnails._topSiteURLsRefreshTimer = null;
     gBrowserThumbnails.clearTopSiteURLCache();
   },
@@ -116,7 +116,7 @@ var gBrowserThumbnails = {
     aWebProgress,
     aRequest,
     aStateFlags,
-    aStatus
+    _aStatus
   ) {
     if (
       aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
@@ -221,4 +221,8 @@ async function getTopSiteURLs() {
   }, []);
 }
 
-XPCOMUtils.defineLazyGetter(gBrowserThumbnails, "_topSiteURLs", getTopSiteURLs);
+ChromeUtils.defineLazyGetter(
+  gBrowserThumbnails,
+  "_topSiteURLs",
+  getTopSiteURLs
+);

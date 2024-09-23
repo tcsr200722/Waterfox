@@ -8,24 +8,14 @@
 
 #include "mozilla/dom/SVGAnimatedIntegerBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_SVG_VAL_IMPL_CYCLE_COLLECTION_WRAPPERCACHED(DOMSVGAnimatedInteger,
                                                mSVGElement)
-
-NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMSVGAnimatedInteger)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMSVGAnimatedInteger)
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGAnimatedInteger)
-  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-NS_INTERFACE_MAP_END
 
 JSObject* DOMSVGAnimatedInteger::WrapObject(JSContext* aCx,
                                             JS::Handle<JSObject*> aGivenProto) {
   return SVGAnimatedInteger_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

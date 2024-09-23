@@ -14,12 +14,11 @@
 #include "mozilla/dom/cache/CacheStreamControlChild.h"
 #include "mozilla/dom/cache/CacheWorkerRef.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 // XXX Move this to ToJSValue.h
 template <typename T>
-MOZ_MUST_USE bool ToJSValue(JSContext* aCx, const SafeRefPtr<T>& aArgument,
-                            JS::MutableHandle<JS::Value> aValue) {
+[[nodiscard]] bool ToJSValue(JSContext* aCx, const SafeRefPtr<T>& aArgument,
+                             JS::MutableHandle<JS::Value> aValue) {
   return ToJSValue(aCx, *aArgument.unsafeGetRawPtr(), aValue);
 }
 
@@ -33,7 +32,7 @@ void AddWorkerRefToStreamChild(const CacheReadStream& aReadStream,
                                const SafeRefPtr<CacheWorkerRef>& aWorkerRef) {
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
   CacheStreamControlChild* cacheControl =
-      static_cast<CacheStreamControlChild*>(aReadStream.controlChild());
+      static_cast<CacheStreamControlChild*>(aReadStream.control().AsChild());
   if (cacheControl) {
     cacheControl->SetWorkerRef(aWorkerRef.clonePtr());
   }
@@ -65,8 +64,11 @@ void AddWorkerRefToStreamChild(const CacheRequest& aRequest,
 
 CacheOpChild::CacheOpChild(SafeRefPtr<CacheWorkerRef> aWorkerRef,
                            nsIGlobalObject* aGlobal, nsISupports* aParent,
-                           Promise* aPromise)
-    : mGlobal(aGlobal), mParent(aParent), mPromise(aPromise) {
+                           Promise* aPromise, ActorChild* aParentActor)
+    : mGlobal(aGlobal),
+      mParent(aParent),
+      mPromise(aPromise),
+      mParentActor(aParentActor) {
   MOZ_DIAGNOSTIC_ASSERT(mGlobal);
   MOZ_DIAGNOSTIC_ASSERT(mParent);
   MOZ_DIAGNOSTIC_ASSERT(mPromise);
@@ -91,7 +93,7 @@ void CacheOpChild::ActorDestroy(ActorDestroyReason aReason) {
     mPromise->MaybeReject(NS_ERROR_FAILURE);
     mPromise = nullptr;
   }
-
+  mParentActor->NoteDeletedActor();
   RemoveWorkerRef();
 }
 
@@ -137,7 +139,7 @@ mozilla::ipc::IPCResult CacheOpChild::Recv__delete__(
     }
     case CacheOpResult::TStorageOpenResult: {
       auto result = aResult.get_StorageOpenResult();
-      auto actor = static_cast<CacheChild*>(result.actorChild());
+      auto actor = static_cast<CacheChild*>(result.actor().AsChild());
 
       // If we have a success status then we should have an actor.  Gracefully
       // reject instead of crashing, though, if we get a nullptr here.
@@ -231,5 +233,4 @@ void CacheOpChild::HandleRequestList(
 }
 
 }  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

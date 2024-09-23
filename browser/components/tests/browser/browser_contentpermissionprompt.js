@@ -6,11 +6,6 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-ChromeUtils.import("resource://gre/modules/Integration.jsm", this);
-
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "ContentPermissionPrompt",
@@ -31,7 +26,7 @@ function MockContentPermissionType(type) {
 }
 
 MockContentPermissionType.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionType]),
+  QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionType"]),
   // We expose the wrappedJSObject so that we can be sure
   // in some of our tests that we're passing the right
   // nsIContentPermissionType around.
@@ -54,7 +49,7 @@ function MockContentPermissionRequest(typesArray) {
 }
 
 MockContentPermissionRequest.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionRequest]),
+  QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionRequest"]),
   // We expose the wrappedJSObject so that we can be sure
   // in some of our tests that we're passing the right
   // nsIContentPermissionRequest around.
@@ -156,7 +151,7 @@ add_task(async function test_working_request() {
     },
   };
 
-  let integration = base => ({
+  let integration = () => ({
     createPermissionPrompt(type, request) {
       Assert.equal(type, "test-permission-type");
       Assert.ok(

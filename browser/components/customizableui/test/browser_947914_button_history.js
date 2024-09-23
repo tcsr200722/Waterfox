@@ -9,7 +9,7 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
   "http://example.com"
 );
 
-add_task(async function() {
+add_task(async function () {
   info("Check history button existence and functionality");
   // The TabContextMenu initializes its strings only on a focus or mouseover event.
   // Calls focus event on the TabContextMenu early in the test.
@@ -36,9 +36,10 @@ add_task(async function() {
   let historyButton = document.getElementById("history-panelmenu");
   ok(historyButton, "History button appears in Panel Menu");
 
+  historyButton.click();
+
   let historyPanel = document.getElementById("PanelUI-history");
   let promise = BrowserTestUtils.waitForEvent(historyPanel, "ViewShown");
-  historyButton.click();
   await promise;
   ok(historyPanel.getAttribute("visible"), "History Panel is in view");
 

@@ -7,19 +7,18 @@
 #include "DOMSVGPathSegList.h"
 
 #include "DOMSVGPathSeg.h"
-#include "mozAutoDocUpdate.h"
 #include "nsError.h"
 #include "SVGAnimatedPathSegList.h"
 #include "SVGAttrTearoffTable.h"
 #include "SVGPathSegUtils.h"
 #include "mozilla/dom/SVGElement.h"
+#include "mozilla/dom/SVGPathElement.h"
 #include "mozilla/dom/SVGPathSegListBinding.h"
 #include "mozilla/RefPtr.h"
 
 // See the comment in this file's header.
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static inline SVGAttrTearoffTable<void, DOMSVGPathSegList>&
 SVGPathSegListTearoffTable() {
@@ -51,41 +50,14 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGPathSegList)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-//----------------------------------------------------------------------
-// Helper class: AutoChangePathSegListNotifier
-// Stack-based helper class to pair calls to WillChangePathSegList and
-// DidChangePathSegList.
-class MOZ_RAII AutoChangePathSegListNotifier : public mozAutoDocUpdate {
- public:
-  explicit AutoChangePathSegListNotifier(
-      DOMSVGPathSegList* aPathSegList MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mozAutoDocUpdate(aPathSegList->Element()->GetComposedDoc(), true),
-        mPathSegList(aPathSegList) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    MOZ_ASSERT(mPathSegList, "Expecting non-null pathSegList");
-    mEmptyOrOldValue = mPathSegList->Element()->WillChangePathSegList(*this);
-  }
-
-  ~AutoChangePathSegListNotifier() {
-    mPathSegList->Element()->DidChangePathSegList(mEmptyOrOldValue, *this);
-    if (mPathSegList->AttrIsAnimating()) {
-      mPathSegList->Element()->AnimationNeedsResample();
-    }
-  }
-
- private:
-  DOMSVGPathSegList* const mPathSegList;
-  nsAttrValue mEmptyOrOldValue;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-};
-
 /* static */
 already_AddRefed<DOMSVGPathSegList> DOMSVGPathSegList::GetDOMWrapper(
-    void* aList, SVGElement* aElement, bool aIsAnimValList) {
+    void* aList, SVGPathElement* aElement) {
   RefPtr<DOMSVGPathSegList> wrapper =
       SVGPathSegListTearoffTable().GetTearoff(aList);
   if (!wrapper) {
-    wrapper = new DOMSVGPathSegList(aElement, aIsAnimValList);
+    wrapper = new DOMSVGPathSegList(
+        aElement, aElement->GetAnimPathSegList()->GetAnimValKey() == aList);
     SVGPathSegListTearoffTable().AddTearoff(aList, wrapper);
   }
   return wrapper.forget();
@@ -562,5 +534,4 @@ void DOMSVGPathSegList::UpdateListIndicesFromIndex(
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

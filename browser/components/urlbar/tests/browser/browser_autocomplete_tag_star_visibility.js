@@ -8,8 +8,8 @@
  * tags.
  */
 
-add_task(async function() {
-  registerCleanupFunction(async function() {
+add_task(async function () {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.eraseEverything();
   });
 
@@ -111,19 +111,25 @@ add_task(async function() {
       );
     }
 
-    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: testcase.input,
     });
 
+    // If testcase.input triggers local search mode, there won't be a heuristic.
+    let resultIndex =
+      context.searchMode && !context.searchMode.engineName ? 0 : 1;
+
     Assert.greaterOrEqual(
       UrlbarTestUtils.getResultCount(window),
-      2,
-      "Should be at least two results"
+      resultIndex + 1,
+      `Should be at least ${resultIndex + 1} results`
     );
 
-    let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
+    let result = await UrlbarTestUtils.getDetailsOfResultAt(
+      window,
+      resultIndex
+    );
 
     Assert.equal(
       result.type,
@@ -156,5 +162,6 @@ add_task(async function() {
     }
 
     await UrlbarTestUtils.promisePopupClose(window);
+    gURLBar.handleRevert();
   }
 });

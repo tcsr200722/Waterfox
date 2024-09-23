@@ -1,8 +1,4 @@
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-// This url must sync with the table, url in SafeBrowsing.jsm addMozEntries
+// This url must sync with the table, url in SafeBrowsing.sys.mjs addMozEntries
 const PHISH_TABLE = "moztest-phish-simple";
 const PHISH_URL = "https://www.itisatrap.org/firefox/its-a-trap.html";
 
@@ -48,7 +44,7 @@ function promiseTabLoadEvent(tab, url, eventType = "load") {
   }
 
   if (url) {
-    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;

@@ -5,7 +5,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf8,<script>
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html><script>
     console.log({
       a:1,
       b:2,
@@ -13,20 +13,28 @@ const TEST_URI = `data:text/html;charset=utf8,<script>
     });
   </script>`;
 
-add_task(async function() {
+add_task(async function () {
   // Should be removed when sidebar work is complete
   await pushPref("devtools.webconsole.sidebarToggle", true);
   const isMacOS = Services.appinfo.OS === "Darwin";
 
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const message = findMessage(hud, "Object");
+  const message = findConsoleAPIMessage(hud, "Object");
   const object = message.querySelector(".object-inspector .objectBox-object");
 
   info("Ctrl+click on an object to put it in the sidebar");
   const onSidebarShown = waitFor(() =>
     hud.ui.document.querySelector(".sidebar")
   );
+  AccessibilityUtils.setEnv({
+    // Component that renders an object handles keyboard interactions on the
+    // container level.
+    mustHaveAccessibleRule: false,
+    interactiveRule: false,
+    focusableRule: false,
+    labelRule: false,
+  });
   EventUtils.sendMouseEvent(
     {
       type: "click",
@@ -35,6 +43,7 @@ add_task(async function() {
     object,
     hud.ui.window
   );
+  AccessibilityUtils.resetEnv();
   await onSidebarShown;
   ok(true, "sidebar is displayed after user Ctrl+clicked on it");
 
@@ -76,6 +85,13 @@ add_task(async function() {
   );
   message.querySelector(".node").click();
   const cNode = await waitFor(() => message.querySelectorAll(".node")[3]);
+  AccessibilityUtils.setEnv({
+    // Component that renders an object handles keyboard interactions on the
+    // container level.
+    focusableRule: false,
+    interactiveRule: false,
+    labelRule: false,
+  });
   EventUtils.sendMouseEvent(
     {
       type: "click",
@@ -84,6 +100,7 @@ add_task(async function() {
     cNode,
     hud.ui.window
   );
+  AccessibilityUtils.resetEnv();
 
   objectInspectors = [...sidebarContents.querySelectorAll(".tree")];
   is(objectInspectors.length, 1, "There is still only one object inspector");

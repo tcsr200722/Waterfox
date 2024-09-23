@@ -7,14 +7,14 @@
 #include "nsIInputStream.h"
 #include "nsIChannel.h"
 #include "nsError.h"
-#include "GeckoProfiler.h"
+#include "mozilla/ProfilerLabels.h"
 
 #include <limits>
 
 namespace mozilla {
 namespace net {
 
-nsStreamLoader::nsStreamLoader() : mData() {}
+nsStreamLoader::nsStreamLoader() = default;
 
 NS_IMETHODIMP
 nsStreamLoader::Init(nsIStreamLoaderObserver* aStreamObserver,
@@ -25,10 +25,7 @@ nsStreamLoader::Init(nsIStreamLoaderObserver* aStreamObserver,
   return NS_OK;
 }
 
-nsresult nsStreamLoader::Create(nsISupports* aOuter, REFNSIID aIID,
-                                void** aResult) {
-  if (aOuter) return NS_ERROR_NO_AGGREGATION;
-
+nsresult nsStreamLoader::Create(REFNSIID aIID, void** aResult) {
   RefPtr<nsStreamLoader> it = new nsStreamLoader();
   return it->QueryInterface(aIID, aResult);
 }
@@ -38,7 +35,7 @@ NS_IMPL_ISUPPORTS(nsStreamLoader, nsIStreamLoader, nsIRequestObserver,
 
 NS_IMETHODIMP
 nsStreamLoader::GetNumBytesRead(uint32_t* aNumBytes) {
-  *aNumBytes = mData.length();
+  *aNumBytes = mBytesRead;
   return NS_OK;
 }
 
@@ -118,7 +115,6 @@ nsresult nsStreamLoader::WriteSegmentFun(nsIInputStream* inStr, void* closure,
   }
 
   *writeCount = count;
-
   return NS_OK;
 }
 
@@ -126,13 +122,19 @@ NS_IMETHODIMP
 nsStreamLoader::OnDataAvailable(nsIRequest* request, nsIInputStream* inStr,
                                 uint64_t sourceOffset, uint32_t count) {
   uint32_t countRead;
-  return inStr->ReadSegments(WriteSegmentFun, this, count, &countRead);
+  nsresult rv = inStr->ReadSegments(WriteSegmentFun, this, count, &countRead);
+  NS_ENSURE_SUCCESS(rv, rv);
+  mBytesRead += countRead;
+  return NS_OK;
 }
 
 void nsStreamLoader::ReleaseData() { mData.clearAndFree(); }
 
 NS_IMETHODIMP
 nsStreamLoader::CheckListenerChain() { return NS_OK; }
+
+NS_IMETHODIMP
+nsStreamLoader::OnDataFinished(nsresult) { return NS_OK; }
 
 }  // namespace net
 }  // namespace mozilla

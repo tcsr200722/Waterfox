@@ -1,9 +1,10 @@
-add_task(async function() {
+add_task(async function () {
   await SpecialPowers.flushPrefEnv();
   await SpecialPowers.pushPrefEnv({
     set: [
       ["dom.storage_access.enabled", true],
       ["network.cookie.cookieBehavior", BEHAVIOR_REJECT],
+      ["network.cookie.cookieBehavior.pbmode", BEHAVIOR_REJECT],
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.pbmode.enabled", false],
       ["privacy.trackingprotection.annotate_channels", true],
@@ -51,7 +52,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(tab2);
 
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

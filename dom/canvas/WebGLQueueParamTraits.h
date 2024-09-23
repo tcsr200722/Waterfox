@@ -1,3 +1,4 @@
+
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,346 +9,132 @@
 
 #include <type_traits>
 
-#include "mozilla/dom/ProducerConsumerQueue.h"
+#include "ipc/EnumSerializer.h"
 #include "TexUnpackBlob.h"
-#include "WebGLContext.h"
 #include "WebGLTypes.h"
 
 namespace mozilla {
-
 namespace webgl {
 template <typename T>
 struct QueueParamTraits;
 
-template <>
-struct IsTriviallySerializable<FloatOrInt> : std::true_type {};
+// -
 
-template <>
-struct IsTriviallySerializable<webgl::ShaderPrecisionFormat> : std::true_type {
-};
+#define USE_TIED_FIELDS(T) \
+  template <>              \
+  struct QueueParamTraits<T> : QueueParamTraits_TiedFields<T> {};
 
-template <>
-struct IsTriviallySerializable<WebGLContextOptions> : std::true_type {};
+// -
 
-template <>
-struct IsTriviallySerializable<WebGLPixelStore> : std::true_type {};
+USE_TIED_FIELDS(layers::RemoteTextureId)
+USE_TIED_FIELDS(layers::RemoteTextureOwnerId)
+USE_TIED_FIELDS(WebGLContextOptions)
+USE_TIED_FIELDS(webgl::PixelUnpackStateWebgl)
+USE_TIED_FIELDS(webgl::SwapChainOptions)
+USE_TIED_FIELDS(webgl::ReadPixelsDesc)
+USE_TIED_FIELDS(webgl::VertAttribPointerDesc)
+USE_TIED_FIELDS(webgl::PackingInfo)
+USE_TIED_FIELDS(webgl::TypedQuad)
+USE_TIED_FIELDS(webgl::PixelPackingState)
+USE_TIED_FIELDS(FloatOrInt)
 
+}  // namespace webgl
 template <>
-struct IsTriviallySerializable<WebGLTexImageData> : std::true_type {};
+inline auto TiedFields<gfx::IntSize>(gfx::IntSize& a) {
+  return std::tie(a.width, a.height);
+}
+namespace webgl {
+USE_TIED_FIELDS(gfx::IntSize)
 
-template <>
-struct IsTriviallySerializable<WebGLTexPboOffset> : std::true_type {};
+// -
 
-template <>
-struct IsTriviallySerializable<webgl::ExtensionBits> : std::true_type {};
-template <>
-struct IsTriviallySerializable<webgl::GetUniformData> : std::true_type {};
+#undef USE_TIED_FIELDS
 
-template <>
-struct IsTriviallySerializable<ICRData> : std::true_type {};
+// -
 
-template <>
-struct IsTriviallySerializable<gfx::IntSize> : std::true_type {};
+template <class T>
+struct QueueParamTraits<avec2<T>> : QueueParamTraits_TiedFields<avec2<T>> {};
+
+template <class T>
+struct QueueParamTraits<avec3<T>> : QueueParamTraits_TiedFields<avec3<T>> {};
+
+// ---------------------------------------------------------------------
+// Enums!
+
+}  // namespace webgl
+
+inline constexpr bool IsEnumCase(const webgl::AttribBaseType raw) {
+  switch (raw) {
+    case webgl::AttribBaseType::Boolean:
+    case webgl::AttribBaseType::Float:
+    case webgl::AttribBaseType::Int:
+    case webgl::AttribBaseType::Uint:
+      return true;
+  }
+  return false;
+}
+static_assert(IsEnumCase(webgl::AttribBaseType(3)));
+static_assert(!IsEnumCase(webgl::AttribBaseType(4)));
+static_assert(!IsEnumCase(webgl::AttribBaseType(5)));
+
+namespace webgl {
+
+#define USE_IS_ENUM_CASE(T) \
+  template <>               \
+  struct QueueParamTraits<T> : QueueParamTraits_IsEnumCase<T> {};
+
+USE_IS_ENUM_CASE(webgl::AttribBaseType)
+USE_IS_ENUM_CASE(webgl::ProvokingVertex)
+
+#undef USE_IS_ENUM_CASE
+
+// ---------------------------------------------------------------------
+// Custom QueueParamTraits
 
 template <typename T>
-struct IsTriviallySerializable<avec2<T>> : std::true_type {};
-template <typename T>
-struct IsTriviallySerializable<avec3<T>> : std::true_type {};
-
-template <>
-struct IsTriviallySerializable<webgl::TexUnpackBlob> : std::true_type {};
-
-template <>
-struct IsTriviallySerializable<webgl::TypedQuad> : std::true_type {};
-template <>
-struct IsTriviallySerializable<webgl::VertAttribPointerDesc> : std::true_type {
-};
-template <>
-struct IsTriviallySerializable<webgl::ReadPixelsDesc> : std::true_type {};
-
-/*
-template <>
-struct QueueParamTraits<WebGLActiveInfo> {
-  using ParamType = WebGLActiveInfo;
-
-  static QueueStatus Write(ProducerView& aProducerView, const ParamType& aArg) {
-    aProducerView.WriteParam(aArg.mElemCount);
-    aProducerView.WriteParam(aArg.mElemType);
-    aProducerView.WriteParam(aArg.mBaseUserName);
-    aProducerView.WriteParam(aArg.mIsArray);
-    aProducerView.WriteParam(aArg.mElemSize);
-    aProducerView.WriteParam(aArg.mBaseMappedName);
-    return aProducerView.WriteParam(aArg.mBaseType);
-  }
-
-  static QueueStatus Read(ConsumerView& aConsumerView, ParamType* aArg) {
-    aConsumerView.ReadParam(aArg ? &aArg->mElemCount : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mElemType : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mBaseUserName : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mIsArray : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mElemSize : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mBaseMappedName : nullptr);
-    return aConsumerView.ReadParam(aArg ? &aArg->mBaseType : nullptr);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeParam(aArg ? &aArg->mElemCount : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mElemType : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mBaseUserName : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mIsArray : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mElemSize : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mBaseMappedName : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mBaseType : nullptr);
-  }
-};
-*/
-template <typename T>
-struct QueueParamTraits<RawBuffer<T>> {
-  using ParamType = RawBuffer<T>;
-
+struct QueueParamTraits<Span<T>> {
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    aProducerView.WriteParam(aArg.mLength);
-    return (aArg.mLength > 0)
-               ? aProducerView.Write(aArg.mData, aArg.mLength * sizeof(T))
-               : aProducerView.GetStatus();
-  }
-
-  template <typename U, typename ElementType = typename std::remove_cv_t<
-                            typename ParamType::ElementType>>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    size_t len;
-    QueueStatus status = aConsumerView.ReadParam(&len);
-    if (!status) {
-      return status;
-    }
-
-    if (len == 0) {
-      if (aArg) {
-        aArg->mLength = 0;
-        aArg->mData = nullptr;
-      }
-      return QueueStatus::kSuccess;
-    }
-
-    if (!aArg) {
-      return aConsumerView.Read(nullptr, len * sizeof(T));
-    }
-
-    struct RawBufferReadMatcher {
-      QueueStatus operator()(RefPtr<mozilla::ipc::SharedMemoryBasic>& smem) {
-        if (!smem) {
-          return QueueStatus::kFatalError;
-        }
-        mArg->mSmem = smem;
-        mArg->mData = static_cast<ElementType*>(smem->memory());
-        mArg->mLength = mLength;
-        mArg->mOwnsData = false;
-        return QueueStatus::kSuccess;
-      }
-      QueueStatus operator()() {
-        mArg->mSmem = nullptr;
-        ElementType* buf = new ElementType[mLength];
-        mArg->mData = buf;
-        mArg->mLength = mLength;
-        mArg->mOwnsData = true;
-        return mConsumerView.Read(buf, mLength * sizeof(T));
-      }
-
-      ConsumerView<U>& mConsumerView;
-      ParamType* mArg;
-      size_t mLength;
-    };
-
-    return aConsumerView.ReadVariant(
-        len * sizeof(T), RawBufferReadMatcher{aConsumerView, aArg, len});
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.template MinSizeParam<size_t>() +
-           aView.MinSizeBytes(aArg ? aArg->mLength * sizeof(T) : 0);
-  }
-};
-
-/*
-enum TexUnpackTypes : uint8_t { Bytes, Surface, Image, Pbo };
-
-template <>
-struct QueueParamTraits<webgl::TexUnpackBytes> {
-  using ParamType = webgl::TexUnpackBytes;
-
-  static QueueStatus Write(ProducerView& aProducerView, const ParamType& aArg) {
-    // Write TexUnpackBlob base class, then the RawBuffer.
-    aProducerView.WriteParam(static_cast<const webgl::TexUnpackBlob&>(aArg));
-    return aProducerView.WriteParam(aArg.mPtr);
-  }
-
-  static QueueStatus Read(ConsumerView& aConsumerView, ParamType* aArg) {
-    // Read TexUnpackBlob base class, then the RawBuffer.
-    aConsumerView.ReadParam(static_cast<webgl::TexUnpackBlob*>(aArg));
-    return aConsumerView.ReadParam(aArg ? &aArg->mPtr : nullptr);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeParam(static_cast<const webgl::TexUnpackBlob*>(aArg)) +
-           aView.MinSizeParam(aArg ? &aArg->mPtr : nullptr);
-  }
-};
-
-template <>
-struct QueueParamTraits<webgl::TexUnpackSurface> {
-  using ParamType = webgl::TexUnpackSurface;
-
-  static QueueStatus Write(ProducerView& aProducerView, const ParamType& aArg) {
-    aProducerView.WriteParam(static_cast<const webgl::TexUnpackBlob&>(aArg));
-    aProducerView.WriteParam(aArg.mSize);
-    aProducerView.WriteParam(aArg.mFormat);
-    aProducerView.WriteParam(aArg.mData);
-    return aProducerView.WriteParam(aArg.mStride);
-  }
-
-  static QueueStatus Read(ConsumerView& aConsumerView, ParamType* aArg) {
-    aConsumerView.ReadParam(static_cast<webgl::TexUnpackBlob*>(aArg));
-    aConsumerView.ReadParam(aArg ? &aArg->mSize : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mFormat : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->mData : nullptr);
-    return aConsumerView.ReadParam(aArg ? &aArg->mStride : nullptr);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeParam(static_cast<const webgl::TexUnpackBlob*>(aArg)) +
-           aView.MinSizeParam(aArg ? &aArg->mSize : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mFormat : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mData : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->mStride : nullptr);
-  }
-};
-
-// Specialization of QueueParamTraits that adapts the TexUnpack type in order to
-// efficiently convert types.  For example, a TexUnpackSurface may deserialize
-// as a TexUnpackBytes.
-template <>
-struct QueueParamTraits<WebGLTexUnpackVariant> {
-  using ParamType = WebGLTexUnpackVariant;
-
-  static QueueStatus Write(ProducerView& aProducerView, const ParamType& aArg) {
-    struct TexUnpackWriteMatcher {
-      QueueStatus operator()(const UniquePtr<webgl::TexUnpackBytes>& x) {
-        mProducerView.WriteParam(TexUnpackTypes::Bytes);
-        return mProducerView.WriteParam(x);
-      }
-      QueueStatus operator()(const UniquePtr<webgl::TexUnpackSurface>& x) {
-        mProducerView.WriteParam(TexUnpackTypes::Surface);
-        return mProducerView.WriteParam(x);
-      }
-      QueueStatus operator()(const UniquePtr<webgl::TexUnpackImage>& x) {
-        MOZ_ASSERT_UNREACHABLE("TODO:");
-        return QueueStatus::kFatalError;
-      }
-      QueueStatus operator()(const WebGLTexPboOffset& x) {
-        mProducerView.WriteParam(TexUnpackTypes::Pbo);
-        return mProducerView.WriteParam(x);
-      }
-      ProducerView& mProducerView;
-    };
-    return aArg.match(TexUnpackWriteMatcher{aProducerView});
-  }
-
-  static QueueStatus Read(ConsumerView& aConsumerView, ParamType* aArg) {
-    if (!aArg) {
-      // Not a great estimate but we can't do much better.
-      return aConsumerView.template ReadParam<TexUnpackTypes>();
-    }
-    TexUnpackTypes unpackType;
-    if (!aConsumerView.ReadParam(&unpackType)) {
-      return aConsumerView.GetStatus();
-    }
-    switch (unpackType) {
-      case TexUnpackTypes::Bytes:
-        *aArg = AsVariant(UniquePtr<webgl::TexUnpackBytes>());
-        return aConsumerView.ReadParam(
-            &aArg->as<UniquePtr<webgl::TexUnpackBytes>>());
-      case TexUnpackTypes::Surface:
-        *aArg = AsVariant(UniquePtr<webgl::TexUnpackSurface>());
-        return aConsumerView.ReadParam(
-            &aArg->as<UniquePtr<webgl::TexUnpackSurface>>());
-      case TexUnpackTypes::Image:
-        MOZ_ASSERT_UNREACHABLE("TODO:");
-        return QueueStatus::kFatalError;
-      case TexUnpackTypes::Pbo:
-        *aArg = AsVariant(WebGLTexPboOffset());
-        return aConsumerView.ReadParam(&aArg->as<WebGLTexPboOffset>());
-    }
-    MOZ_ASSERT_UNREACHABLE("Illegal texture unpack type");
-    return QueueStatus::kFatalError;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t ret = aView.template MinSizeParam<TexUnpackTypes>();
-    if (!aArg) {
-      return ret;
-    }
-
-    struct TexUnpackMinSizeMatcher {
-      size_t operator()(const UniquePtr<webgl::TexUnpackBytes>& x) {
-        return mView.MinSizeParam(&x);
-      }
-      size_t operator()(const UniquePtr<webgl::TexUnpackSurface>& x) {
-        return mView.MinSizeParam(&x);
-      }
-      size_t operator()(const UniquePtr<webgl::TexUnpackImage>& x) {
-        MOZ_ASSERT_UNREACHABLE("TODO:");
-        return 0;
-      }
-      size_t operator()(const WebGLTexPboOffset& x) {
-        return mView.MinSizeParam(&x);
-      }
-      View& mView;
-    };
-    return ret + aArg->match(TexUnpackMinSizeMatcher{aView});
-  }
-};
-*/
-template <>
-struct QueueParamTraits<webgl::ContextLossReason> {
-  using ParamType = webgl::ContextLossReason;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    return aProducerView.WriteParam(static_cast<uint8_t>(aArg));
-  }
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    uint8_t val;
-    auto status = aConsumerView.ReadParam(&val);
+  static bool Write(ProducerView<U>& view, const Span<T>& in) {
+    const auto& elemCount = in.size();
+    auto status = view.WriteParam(elemCount);
     if (!status) return status;
-    if (!ReadContextLossReason(val, aArg)) {
-      MOZ_ASSERT_UNREACHABLE("Invalid ContextLossReason");
-      return QueueStatus::kFatalError;
-    }
+
+    if (!elemCount) return status;
+    status = view.WriteFromRange(Range<const T>{in});
+
     return status;
   }
 
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.template MinSizeParam<uint8_t>();
+  template <typename U>
+  static bool Read(ConsumerView<U>& view, Span<const T>* const out) {
+    size_t elemCount = 0;
+    auto status = view.ReadParam(&elemCount);
+    if (!status) return status;
+
+    if (!elemCount) {
+      *out = {};
+      return true;
+    }
+
+    auto data = view.template ReadRange<const T>(elemCount);
+    if (!data) return false;
+    *out = Span{*data};
+    return true;
   }
 };
+
+template <>
+struct QueueParamTraits<webgl::ContextLossReason>
+    : public ContiguousEnumSerializerInclusive<
+          webgl::ContextLossReason, webgl::ContextLossReason::None,
+          webgl::ContextLossReason::Guilty> {};
 
 template <typename V, typename E>
 struct QueueParamTraits<Result<V, E>> {
   using T = Result<V, E>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const T& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const T& aArg) {
     const auto ok = aArg.isOk();
     auto status = aProducerView.WriteParam(ok);
     if (!status) return status;
@@ -360,7 +147,7 @@ struct QueueParamTraits<Result<V, E>> {
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, T* const aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, T* aArg) {
     bool ok;
     auto status = aConsumerView.ReadParam(&ok);
     if (!status) return status;
@@ -375,21 +162,6 @@ struct QueueParamTraits<Result<V, E>> {
     }
     return status;
   }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    auto size = aView.template MinSizeParam<bool>();
-    if (aArg) {
-      if (aArg->isOk()) {
-        const auto& val = aArg->unwrap();
-        size += aView.MinSizeParam(&val);
-      } else {
-        const auto& val = aArg->unwrapErr();
-        size += aView.MinSizeParam(&val);
-      }
-    }
-    return size;
-  }
 };
 
 template <>
@@ -397,37 +169,24 @@ struct QueueParamTraits<std::string> {
   using T = std::string;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const T& aArg) {
-    auto status = aProducerView.WriteParam(aArg.size());
+  static bool Write(ProducerView<U>& aProducerView, const T& aArg) {
+    const auto size = aArg.size();
+    auto status = aProducerView.WriteParam(size);
     if (!status) return status;
-    status = aProducerView.Write(aArg.data(), aArg.size());
+    status = aProducerView.WriteFromRange(Range<const char>{aArg.data(), size});
     return status;
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, T* const aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, T* aArg) {
     size_t size;
     auto status = aConsumerView.ReadParam(&size);
     if (!status) return status;
 
-    const UniqueBuffer temp = malloc(size);
-    const auto dest = static_cast<char*>(temp.get());
-    if (!dest) return QueueStatus::kFatalError;
-
-    status = aConsumerView.Read(dest, size);
-    if (aArg) {
-      aArg->assign(dest, size);
-    }
+    const auto view = aConsumerView.template ReadRange<char>(size);
+    if (!view) return false;
+    aArg->assign(view->begin().get(), size);
     return status;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    auto size = aView.template MinSizeParam<size_t>();
-    if (aArg) {
-      size += aArg->size();
-    }
-    return size;
   }
 };
 
@@ -436,70 +195,44 @@ struct QueueParamTraits<std::vector<U>> {
   using T = std::vector<U>;
 
   template <typename V>
-  static QueueStatus Write(ProducerView<V>& aProducerView, const T& aArg) {
+  static bool Write(ProducerView<V>& aProducerView, const T& aArg) {
     auto status = aProducerView.WriteParam(aArg.size());
     if (!status) return status;
-    status = aProducerView.Write(aArg.data(), aArg.size());
+
+    for (const auto& cur : aArg) {
+      status = aProducerView.WriteParam(cur);
+      if (!status) return status;
+    }
     return status;
   }
 
   template <typename V>
-  static QueueStatus Read(ConsumerView<V>& aConsumerView, T* const aArg) {
-    MOZ_CRASH("no way to fallibly resize vectors without exceptions");
+  static bool Read(ConsumerView<V>& aConsumerView, T* aArg) {
     size_t size;
     auto status = aConsumerView.ReadParam(&size);
     if (!status) return status;
-
     aArg->resize(size);
-    status = aConsumerView.Read(aArg->data(), aArg->size());
-    return status;
-  }
 
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    auto size = aView.template MinSizeParam<size_t>();
-    if (aArg) {
-      size += aArg->size() * sizeof(U);
+    for (auto& cur : *aArg) {
+      status = aConsumerView.ReadParam(&cur);
+      if (!status) return status;
     }
-    return size;
+    return status;
   }
 };
 
 template <>
-struct QueueParamTraits<WebGLExtensionID> {
-  using T = WebGLExtensionID;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const T& aArg) {
-    return aProducerView.WriteParam(mozilla::EnumValue(aArg));
-  }
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, T* const aArg) {
-    QueueStatus status = QueueStatus::kSuccess;
-    if (aArg) {
-      status = aConsumerView.ReadParam(
-          reinterpret_cast<typename std::underlying_type<T>::type*>(aArg));
-      if (*aArg >= WebGLExtensionID::Max) {
-        MOZ_ASSERT(false);
-        return QueueStatus::kFatalError;
-      }
-    }
-    return status;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    return sizeof(T);
-  }
-};
+struct QueueParamTraits<WebGLExtensionID>
+    : public ContiguousEnumSerializer<WebGLExtensionID,
+                                      WebGLExtensionID::ANGLE_instanced_arrays,
+                                      WebGLExtensionID::Max> {};
 
 template <>
 struct QueueParamTraits<CompileResult> {
   using T = CompileResult;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const T& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const T& aArg) {
     aProducerView.WriteParam(aArg.pending);
     aProducerView.WriteParam(aArg.log);
     aProducerView.WriteParam(aArg.translatedSource);
@@ -507,56 +240,44 @@ struct QueueParamTraits<CompileResult> {
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, T* const aArg) {
-    aConsumerView.ReadParam(aArg ? &aArg->pending : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->log : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->translatedSource : nullptr);
-    return aConsumerView.ReadParam(aArg ? &aArg->success : nullptr);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    return aView.MinSizeParam(aArg ? &aArg->pending : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->log : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->translatedSource : nullptr) +
-           aView.MinSizeParam(aArg ? &aArg->success : nullptr);
+  static bool Read(ConsumerView<U>& aConsumerView, T* aArg) {
+    aConsumerView.ReadParam(&aArg->pending);
+    aConsumerView.ReadParam(&aArg->log);
+    aConsumerView.ReadParam(&aArg->translatedSource);
+    return aConsumerView.ReadParam(&aArg->success);
   }
 };
 
-#if 0
-// TODO: QueueParamTraits for LinkActiveResult and friends.
 template <>
-struct QueueParamTraits<LinkResult> {
-  using T = LinkResult;
+struct QueueParamTraits<mozilla::layers::TextureType>
+    : public ContiguousEnumSerializer<mozilla::layers::TextureType,
+                                      mozilla::layers::TextureType::Unknown,
+                                      mozilla::layers::TextureType::Last> {};
 
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const T& aArg) {
-    aProducerView.WriteParam(aArg.pending);
-    aProducerView.WriteParam(aArg.log);
-    aProducerView.WriteParam(aArg.active);
-    aProducerView.WriteParam(aArg.tfBufferMode);
-    return aProducerView.WriteParam(aArg.success);
-  }
+template <>
+struct QueueParamTraits<mozilla::gfx::SurfaceFormat>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::gfx::SurfaceFormat, mozilla::gfx::SurfaceFormat::B8G8R8A8,
+          mozilla::gfx::SurfaceFormat::UNKNOWN> {};
 
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, T* const aArg) {
-    aConsumerView.ReadParam(aArg ? &aArg->pending : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->log : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->active : nullptr);
-    aConsumerView.ReadParam(aArg ? &aArg->tfBufferMode : nullptr);
-    return aConsumerView.ReadParam(aArg ? &aArg->success : nullptr);
-  }
+template <>
+struct QueueParamTraits<gfxAlphaType>
+    : public ContiguousEnumSerializerInclusive<
+          gfxAlphaType, gfxAlphaType::Opaque, gfxAlphaType::NonPremult> {};
 
-  template <typename View>
-  static size_t MinSize(View& aView, const T* const aArg) {
-    return aView.MinSizeParam(aArg ? &aArg->pending : nullptr) +
-        aView.MinSizeParam(aArg ? &aArg->log : nullptr) +
-        aView.MinSizeParam(aArg ? &aArg->active : nullptr) +
-        aView.MinSizeParam(aArg ? &aArg->tfBufferMode : nullptr) +
-        aView.MinSizeParam(aArg ? &aArg->success : nullptr);
-  }
-};
-#endif
+// -
+
+template <class Enum>
+using WebIDLEnumQueueSerializer =
+    ContiguousEnumSerializerInclusive<Enum, ContiguousEnumValues<Enum>::min,
+                                      ContiguousEnumValues<Enum>::max>;
+
+template <>
+struct QueueParamTraits<dom::WebGLPowerPreference>
+    : public WebIDLEnumQueueSerializer<dom::WebGLPowerPreference> {};
+template <>
+struct QueueParamTraits<dom::PredefinedColorSpace>
+    : public WebIDLEnumQueueSerializer<dom::PredefinedColorSpace> {};
 
 }  // namespace webgl
 }  // namespace mozilla

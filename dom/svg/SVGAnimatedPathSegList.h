@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDPATHSEGLIST_H__
-#define MOZILLA_SVGANIMATEDPATHSEGLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDPATHSEGLIST_H_
+#define DOM_SVG_SVGANIMATEDPATHSEGLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
@@ -44,6 +44,14 @@ class SVGAnimatedPathSegList final {
 
  public:
   SVGAnimatedPathSegList() = default;
+
+  SVGAnimatedPathSegList& operator=(const SVGAnimatedPathSegList& aOther) {
+    mBaseVal = aOther.mBaseVal;
+    if (aOther.mAnimVal) {
+      mAnimVal = MakeUnique<SVGPathData>(*aOther.mAnimVal);
+    }
+    return *this;
+  }
 
   /**
    * Because it's so important that mBaseVal and its DOMSVGPathSegList wrapper
@@ -109,15 +117,16 @@ class SVGAnimatedPathSegList final {
     dom::SVGElement* mElement;
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
-        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aValue) override;
   };
 };
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDPATHSEGLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDPATHSEGLIST_H_

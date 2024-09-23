@@ -65,12 +65,15 @@ media-dimension =
     .value = Dimensions:
 media-long-desc =
     .value = Long Description:
+media-select-all =
+    .label = Select All
+    .accesskey = e
 media-save-as =
     .label = Save As…
     .accesskey = A
 media-save-image-as =
     .label = Save As…
-    .accesskey = e
+    .accesskey = v
 
 perm-tab =
     .label = Permissions
@@ -122,11 +125,14 @@ help-button =
 ## Variables:
 ##   $value (number) - Amount of data being stored
 ##   $unit (string) - The unit of data being stored (Usually KB)
+
 security-site-data-cookies = Yes, cookies and { $value } { $unit } of site data
 security-site-data-only = Yes, { $value } { $unit } of site data
 
 security-site-data-cookies-only = Yes, cookies
 security-site-data-no = No
+
+##
 
 image-size-unknown = Unknown
 page-info-not-specified =
@@ -235,19 +241,18 @@ media-dimensions =
 #   $size (number) - The size of the media file in kilobytes
 media-file-size = { $size } KB
 
+## Variables:
+##   $website (string) — The url of the website pageInfo is getting info for
+
 # This string is used to display the website name next to the
 # "Block Images" checkbox in the media tab
-# Variables:
-#   $website (string) - The website name
 media-block-image =
     .label = Block Images from { $website }
     .accesskey = B
 
 # This string is used to display the URL of the website on top of the
 # pageInfo dialog box
-# Variables:
-#   $website (string) - The url of the website pageInfo is getting info for
 page-info-page =
-    .title = Page Info - { $website }
+    .title = Page Info — { $website }
 page-info-frame =
-    .title = Frame Info - { $website }
+    .title = Frame Info — { $website }

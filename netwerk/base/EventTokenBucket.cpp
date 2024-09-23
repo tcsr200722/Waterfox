@@ -12,6 +12,9 @@
 #include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
 #include "nsSocketTransportService2.h"
+
+#include "mozilla/Components.h"
+
 #ifdef DEBUG
 #  include "MainThreadUtils.h"
 #endif
@@ -90,8 +93,9 @@ EventTokenBucket::EventTokenBucket(uint32_t eventsPerSecond, uint32_t burstSize)
   nsresult rv;
   nsCOMPtr<nsIEventTarget> sts;
   nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
-  if (NS_SUCCEEDED(rv))
-    sts = do_GetService(NS_SOCKETTRANSPORTSERVICE_CONTRACTID, &rv);
+  if (NS_SUCCEEDED(rv)) {
+    sts = mozilla::components::SocketTransport::Service(&rv);
+  }
   if (NS_SUCCEEDED(rv)) mTimer = NS_NewTimer(sts);
   SetRate(eventsPerSecond, burstSize);
 }
@@ -104,8 +108,7 @@ EventTokenBucket::~EventTokenBucket() {
 
   // Complete any queued events to prevent hangs
   while (mEvents.GetSize()) {
-    RefPtr<TokenBucketCancelable> cancelable =
-        dont_AddRef(static_cast<TokenBucketCancelable*>(mEvents.PopFront()));
+    RefPtr<TokenBucketCancelable> cancelable = mEvents.PopFront();
     cancelable->Fire();
   }
 }
@@ -197,8 +200,7 @@ void EventTokenBucket::Stop() {
 
   // Complete any queued events to prevent hangs
   while (mEvents.GetSize()) {
-    RefPtr<TokenBucketCancelable> cancelable =
-        dont_AddRef(static_cast<TokenBucketCancelable*>(mEvents.PopFront()));
+    RefPtr<TokenBucketCancelable> cancelable = mEvents.PopFront();
     cancelable->Fire();
   }
 }
@@ -221,7 +223,7 @@ nsresult EventTokenBucket::SubmitEvent(ATokenBucketEvent* event,
   if (mPaused || !TryImmediateDispatch(cancelEvent.get())) {
     // queue it
     SOCKET_LOG(("   queued\n"));
-    mEvents.Push(cancelEvent.forget().take());
+    mEvents.Push(cancelEvent.forget());
     UpdateTimer();
   } else {
     SOCKET_LOG(("   dispatched synchronously\n"));
@@ -244,8 +246,7 @@ void EventTokenBucket::DispatchEvents() {
   if (mPaused || mStopped) return;
 
   while (mEvents.GetSize() && mUnitCost <= mCredit) {
-    RefPtr<TokenBucketCancelable> cancelable =
-        dont_AddRef(static_cast<TokenBucketCancelable*>(mEvents.PopFront()));
+    RefPtr<TokenBucketCancelable> cancelable = mEvents.PopFront();
     if (cancelable->mEvent) {
       SOCKET_LOG(
           ("EventTokenBucket::DispachEvents [%p] "
@@ -264,8 +265,9 @@ void EventTokenBucket::DispatchEvents() {
 
 void EventTokenBucket::UpdateTimer() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  if (mTimerArmed || mPaused || mStopped || !mEvents.GetSize() || !mTimer)
+  if (mTimerArmed || mPaused || mStopped || !mEvents.GetSize() || !mTimer) {
     return;
+  }
 
   if (mCredit >= mUnitCost) return;
 
@@ -276,10 +278,11 @@ void EventTokenBucket::UpdateTimer() {
   uint64_t deficit = mUnitCost - mCredit;
   uint64_t msecWait = (deficit + (kUsecPerMsec - 1)) / kUsecPerMsec;
 
-  if (msecWait < 4)  // minimum wait
+  if (msecWait < 4) {  // minimum wait
     msecWait = 4;
-  else if (msecWait > 60000)  // maximum wait
+  } else if (msecWait > 60000) {  // maximum wait
     msecWait = 60000;
+  }
 
 #ifdef XP_WIN
   FineGrainTimers();
@@ -395,7 +398,7 @@ void EventTokenBucket::WantNormalTimers() {
 }
 
 void EventTokenBucket::FineGrainResetTimerNotify() {
-  SOCKET_LOG(("EventTokenBucket::FineGrainResetTimerNotify() events = %d\n",
+  SOCKET_LOG(("EventTokenBucket::FineGrainResetTimerNotify(%p) events = %zd\n",
               this, mEvents.GetSize()));
   mFineGrainResetTimerArmed = false;
 

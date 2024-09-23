@@ -6,7 +6,7 @@
 /**
  * Tests if "Referrer Policy" is displayed in the header panel.
  */
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(POST_RAW_URL, {
     requestCount: 1,
   });
@@ -43,8 +43,17 @@ add_task(async function() {
     '"Referrer Policy" header is displayed in the header panel.'
   );
 
+  const defaultPolicy = Services.prefs.getIntPref(
+    "network.http.referer.defaultPolicy"
+  );
+  const stringMap = {
+    0: "no-referrer",
+    1: "same-origin",
+    2: "strict-origin-when-cross-origin",
+    3: "no-referrer-when-downgrade",
+  };
   is(
-    referrerPolicyValue.textContent === "no-referrer-when-downgrade",
+    referrerPolicyValue.textContent === stringMap[defaultPolicy],
     true,
     "The referrer policy value is reflected correctly."
   );

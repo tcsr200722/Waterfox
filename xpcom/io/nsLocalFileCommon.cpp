@@ -23,34 +23,53 @@
 // Extensions that should be considered 'executable', ie will not allow users
 // to open immediately without first saving to disk, and potentially provoke
 // other warnings. PLEASE read the longer comment in
-// toolkit/components/reputationservice/ApplicationReputation.h
+// toolkit/components/reputationservice/ApplicationReputation.cpp
 // before modifying this list!
+// If you update this list, make sure to update the length of sExecutableExts
+// in nsLocalFileCommmon.h.
 /* static */
 const char* const sExecutableExts[] = {
     // clang-format off
+  ".accda",       // MS Access database
+  ".accdb",       // MS Access database
+  ".accde",       // MS Access database
+  ".accdr",       // MS Access database
   ".ad",
   ".ade",         // access project extension
   ".adp",
+  ".afploc",      // Apple Filing Protocol Location
   ".air",         // Adobe AIR installer
   ".app",         // executable application
   ".application", // from bug 348763
+  ".appref-ms",   // ClickOnce link
+  ".appx",
+  ".appxbundle",
   ".asp",
+  ".atloc",       // Appletalk Location
   ".bas",
   ".bat",
+  ".cer",         // Signed certificate file
   ".chm",
   ".cmd",
   ".com",
   ".cpl",
   ".crt",
+  ".der",
+  ".diagcab",     // Windows archive
   ".exe",
+  ".fileloc",     // Apple finder internet location data file
+  ".ftploc",      // Apple FTP Location
   ".fxp",         // FoxPro compiled app
   ".hlp",
   ".hta",
+  ".inetloc",     // Apple finder internet location data file
   ".inf",
   ".ins",
   ".isp",
   ".jar",         // java application bundle
+#ifndef MOZ_ESR
   ".jnlp",
+#endif
   ".js",
   ".jse",
   ".lnk",
@@ -79,6 +98,8 @@ const char* const sExecutableExts[] = {
   ".msh2xml",     // Microsoft Shell
   ".mshxml",      // Microsoft Shell
   ".msi",
+  ".msix",
+  ".msixbundle",
   ".msp",
   ".mst",
   ".ops",         // Office Profile Settings
@@ -113,10 +134,13 @@ const char* const sExecutableExts[] = {
   ".vsw",
   ".vsx",
   ".vtx",
+  ".webloc",       // MacOS website location file
   ".ws",
   ".wsc",
   ".wsf",
-  ".wsh"
+  ".wsh",
+  ".xll",         // MS Excel dynamic link library
+  ".xrm-ms"
     // clang-format on
 };
 
@@ -339,13 +363,14 @@ nsLocalFile::GetRelativeDescriptor(nsIFile* aFromFile, nsACString& aResult) {
   for (nodeIndex = branchIndex; nodeIndex < fromNodes.Length(); ++nodeIndex) {
     aResult.AppendLiteral("../");
   }
-  for (nodeIndex = branchIndex; nodeIndex < thisNodes.Length(); ++nodeIndex) {
-    NS_ConvertUTF16toUTF8 nodeStr(thisNodes[nodeIndex]);
-    aResult.Append(nodeStr);
-    if (nodeIndex + 1 < thisNodes.Length()) {
-      aResult.Append('/');
-    }
-  }
+  StringJoinAppend(aResult, "/"_ns, mozilla::Span{thisNodes}.From(branchIndex),
+                   [](nsACString& dest, const auto& thisNode) {
+                     // XXX(Bug 1682869) We wouldn't need to reconstruct a
+                     // nsDependentString here if SplitPath already returned
+                     // nsDependentString. In fact, it seems SplitPath might be
+                     // replaced by ParseString?
+                     AppendUTF16toUTF8(nsDependentString{thisNode}, dest);
+                   });
 
   return NS_OK;
 }
@@ -353,7 +378,7 @@ nsLocalFile::GetRelativeDescriptor(nsIFile* aFromFile, nsACString& aResult) {
 NS_IMETHODIMP
 nsLocalFile::SetRelativeDescriptor(nsIFile* aFromFile,
                                    const nsACString& aRelativeDesc) {
-  NS_NAMED_LITERAL_CSTRING(kParentDirStr, "../");
+  constexpr auto kParentDirStr = "../"_ns;
 
   nsCOMPtr<nsIFile> targetFile;
   nsresult rv = aFromFile->Clone(getter_AddRefs(targetFile));

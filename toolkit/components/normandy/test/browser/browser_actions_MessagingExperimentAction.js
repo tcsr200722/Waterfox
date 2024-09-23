@@ -1,21 +1,23 @@
 "use strict";
 
-const { BaseAction } = ChromeUtils.import(
-  "resource://normandy/actions/BaseAction.jsm"
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
 );
-const { Uptake } = ChromeUtils.import("resource://normandy/lib/Uptake.jsm");
-const { MessagingExperimentAction } = ChromeUtils.import(
-  "resource://normandy/actions/MessagingExperimentAction.jsm"
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
+const { MessagingExperimentAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/MessagingExperimentAction.sys.mjs"
 );
 
-const { _ExperimentManager, ExperimentManager } = ChromeUtils.import(
-  "resource://messaging-system/experiments/ExperimentManager.jsm"
+const { _ExperimentManager, ExperimentManager } = ChromeUtils.importESModule(
+  "resource://nimbus/lib/ExperimentManager.sys.mjs"
 );
 
 decorate_task(
-  withStudiesEnabled,
+  withStudiesEnabled(),
   withStub(Uptake, "reportRecipe"),
-  async function arguments_are_validated(reportRecipe) {
+  async function arguments_are_validated({ reportRecipeStub }) {
     const action = new MessagingExperimentAction();
 
     is(
@@ -55,7 +57,7 @@ decorate_task(
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     await action.finalize();
 
-    Assert.deepEqual(reportRecipe.args, [[recipe, Uptake.RECIPE_SUCCESS]]);
+    Assert.deepEqual(reportRecipeStub.args, [[recipe, Uptake.RECIPE_SUCCESS]]);
     Assert.deepEqual(
       onRecipeStub.args,
       [[recipe.arguments, "normandy"]],

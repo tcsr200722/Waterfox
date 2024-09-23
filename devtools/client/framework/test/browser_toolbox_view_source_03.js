@@ -6,16 +6,16 @@
  * yet opened.
  */
 
-var URL = `${URL_ROOT}doc_viewsource.html`;
-var CSS_URL = `${URL_ROOT}doc_theme.css`;
+var URL = `${URL_ROOT_SSL}doc_viewsource.html`;
+var CSS_URL = `${URL_ROOT_SSL}doc_theme.css`;
 
 async function viewSource() {
   const toolbox = await openNewTabAndToolbox(URL);
 
-  const fileFound = await toolbox.viewSourceInStyleEditor(CSS_URL, 2);
+  const fileFound = await toolbox.viewSourceInStyleEditorByURL(CSS_URL, 2);
   ok(
     fileFound,
-    "viewSourceInStyleEditor should resolve to true if source found."
+    "viewSourceInStyleEditorByURL should resolve to true if source found."
   );
 
   const stylePanel = toolbox.getPanel("styleeditor");

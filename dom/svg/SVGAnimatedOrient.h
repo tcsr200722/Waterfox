@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGORIENT_H__
-#define __NS_SVGORIENT_H__
+#ifndef DOM_SVG_SVGANIMATEDORIENT_H_
+#define DOM_SVG_SVGANIMATEDORIENT_H_
 
 #include "DOMSVGAnimatedEnumeration.h"
 #include "nsError.h"
@@ -32,9 +32,9 @@ class SVGElement;
 
 class SVGAnimatedOrient {
   friend class AutoChangeOrientNotifier;
-  friend class mozilla::dom::DOMSVGAngle;
-  friend class mozilla::dom::DOMSVGAnimatedAngle;
-  typedef mozilla::dom::SVGElement SVGElement;
+  friend class dom::DOMSVGAngle;
+  friend class dom::DOMSVGAnimatedAngle;
+  using SVGElement = dom::SVGElement;
 
  public:
   void Init() {
@@ -79,6 +79,8 @@ class SVGAnimatedOrient {
       SVGElement* aSVGElement);
   UniquePtr<SMILAttr> ToSMILAttr(SVGElement* aSVGElement);
 
+  static bool IsValidUnitType(uint16_t aUnitType);
+
   static bool GetValueFromString(const nsAString& aString, float& aValue,
                                  uint16_t* aUnitType);
   static float GetDegreesPerUnit(uint8_t aUnit);
@@ -110,8 +112,8 @@ class SVGAnimatedOrient {
 
     SVGAnimatedOrient* mVal;  // kept alive because it belongs to content
 
-    using mozilla::dom::DOMSVGAnimatedEnumeration::SetBaseVal;
-    uint16_t BaseVal() override { return Sanitize(mVal->mBaseType); }
+    using dom::DOMSVGAnimatedEnumeration::SetBaseVal;
+    uint16_t BaseVal() override { return mVal->mBaseType; }
     void SetBaseVal(uint16_t aBaseVal, ErrorResult& aRv) override {
       mVal->SetBaseType(aBaseVal, mSVGElement, aRv);
     }
@@ -120,11 +122,8 @@ class SVGAnimatedOrient {
       // getters need to flush any resample requests to reflect these
       // modifications.
       mSVGElement->FlushAnimations();
-      return Sanitize(mVal->mAnimType);
+      return mVal->mAnimType;
     }
-
-   private:
-    uint16_t Sanitize(uint16_t aValue);
   };
 
   struct SMILOrient final : public SMILAttr {
@@ -139,15 +138,16 @@ class SVGAnimatedOrient {
     SVGElement* mSVGElement;
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
-        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aValue) override;
   };
 };
 
 }  // namespace mozilla
 
-#endif  //__NS_SVGORIENT_H__
+#endif  // DOM_SVG_SVGANIMATEDORIENT_H_

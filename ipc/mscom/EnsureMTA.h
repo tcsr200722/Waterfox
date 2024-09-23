@@ -40,140 +40,44 @@ struct PreservedStreamDeleter;
 
 }  // namespace detail
 
+class ProcessRuntime;
+
 // This class is OK to use as a temporary on the stack.
 class MOZ_STACK_CLASS EnsureMTA final {
  public:
-  /**
-   * This constructor just ensures that the MTA thread is up and running.
-   */
-  EnsureMTA() {
-    nsCOMPtr<nsIThread> thread = GetMTAThread();
-    MOZ_ASSERT(thread);
-    Unused << thread;
-  }
-
   enum class Option {
     Default,
-    // Forcibly dispatch to the thread returned by GetMTAThread(), even if the
-    // current thread is already inside a MTA.
-    ForceDispatch,
+    // Forcibly dispatch to the thread returned by GetPersistentMTAThread(),
+    // even if the current thread is already inside a MTA.
+    ForceDispatchToPersistentThread,
   };
 
   /**
    * Synchronously run |aClosure| on a thread living in the COM multithreaded
    * apartment. If the current thread lives inside the COM MTA, then it runs
-   * |aClosure| immediately unless |aOpt| == Option::ForceDispatch.
+   * |aClosure| immediately unless |aOpt| ==
+   * Option::ForceDispatchToPersistentThread.
    */
   template <typename FuncT>
   explicit EnsureMTA(FuncT&& aClosure, Option aOpt = Option::Default) {
-    if (aOpt != Option::ForceDispatch && IsCurrentThreadMTA()) {
+    if (aOpt != Option::ForceDispatchToPersistentThread &&
+        IsCurrentThreadMTA()) {
       // We're already on the MTA, we can run aClosure directly
       aClosure();
       return;
     }
 
     // In this case we need to run aClosure on a background thread in the MTA
-    nsCOMPtr<nsIThread> thread = GetMTAThread();
-    MOZ_ASSERT(thread);
-    if (!thread) {
-      return;
-    }
-
-    // Note that we might reenter the EnsureMTA constructor while we wait on
-    // this event due to APC dispatch, therefore we need a unique event object
-    // for each entry. If perf becomes an issue then we will want to maintain
-    // an array of events where the Nth event is unique to the Nth reentry.
-    nsAutoHandle event(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
-    if (!event) {
-      return;
-    }
-
-    HANDLE eventHandle = event.get();
-
-    auto eventSetter = [&aClosure, eventHandle]() -> void {
-      aClosure();
-      ::SetEvent(eventHandle);
-    };
-
-    nsresult rv = thread->Dispatch(
-        NS_NewRunnableFunction("EnsureMTA", std::move(eventSetter)),
-        NS_DISPATCH_NORMAL);
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
-    if (NS_FAILED(rv)) {
-      return;
-    }
-
-    DWORD waitResult;
-    while ((waitResult = ::WaitForSingleObjectEx(event, INFINITE, TRUE)) ==
-           WAIT_IO_COMPLETION) {
-    }
-    MOZ_ASSERT(waitResult == WAIT_OBJECT_0);
+    nsCOMPtr<nsIRunnable> runnable(
+        NS_NewRunnableFunction("EnsureMTA::EnsureMTA", std::move(aClosure)));
+    SyncDispatch(std::move(runnable), aOpt);
   }
 
-  using CreateInstanceAgileRefPromise =
-      MozPromise<AgileReference, HRESULT, false>;
-
-  /**
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   *
-   * Asynchronously instantiate a new COM object from a MTA thread, unless the
-   * current thread is already living inside the multithreaded apartment, in
-   * which case the object is immediately instantiated.
-   *
-   * This function only supports the most common configurations for creating
-   * a new object, so it only supports in-process servers. Furthermore, this
-   * function does not support aggregation (ie. the |pUnkOuter| parameter to
-   * CoCreateInstance).
-   *
-   * Given that attempting to instantiate an Apartment-threaded COM object
-   * inside the MTA results in a *loss* of performance, we assert when that
-   * situation arises.
-   *
-   * The resulting promise, once resolved, provides an AgileReference that may
-   * be passed between any COM-initialized thread in the current process.
-   *
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   *
-   * WARNING:
-   * Some COM objects do not support creation in the multithreaded apartment,
-   * in which case this function is not available as an option. In this case,
-   * the promise will always be rejected. In debug builds we will assert.
-   *
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   *
-   * WARNING:
-   * Any in-process COM objects whose interfaces accept HWNDs are probably
-   * *not* safe to instantiate in the multithreaded apartment! Even if this
-   * function succeeds when creating such an object, you *MUST NOT* do so, as
-   * these failures might not become apparent until your code is running out in
-   * the wild on the release channel!
-   *
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   *
-   * WARNING:
-   * When you obtain an interface from the AgileReference, it may or may not be
-   * a proxy to the real object. This depends entirely on the implementation of
-   * the underlying class and the multithreading capabilities that the class
-   * declares to the COM runtime. If the interface is proxied, it might be
-   * expensive to invoke methods on that interface! *Always* test the
-   * performance of your method calls when calling interfaces that are resolved
-   * via this function!
-   *
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   *
-   * (Despite this myriad of warnings, it is still *much* safer to use this
-   * function to asynchronously create COM objects than it is to roll your own!)
-   *
-   *       *** A MSCOM PEER SHOULD REVIEW ALL NEW USES OF THIS API! ***
-   */
-  static RefPtr<CreateInstanceAgileRefPromise> CreateInstance(REFCLSID aClsid,
-                                                              REFIID aIid);
-
  private:
-  static RefPtr<CreateInstanceAgileRefPromise> CreateInstanceInternal(
-      REFCLSID aClsid, REFIID aIid);
+  static nsCOMPtr<nsIThread> GetPersistentMTAThread();
 
-  static nsCOMPtr<nsIThread> GetMTAThread();
+  static void SyncDispatch(nsCOMPtr<nsIRunnable>&& aRunnable, Option aOpt);
+  static void SyncDispatchToPersistentThread(nsIRunnable* aRunnable);
 
   // The following function is private in order to force any consumers to be
   // declared as friends of EnsureMTA. The intention is to prevent
@@ -186,7 +90,7 @@ class MOZ_STACK_CLASS EnsureMTA final {
       return;
     }
 
-    nsCOMPtr<nsIThread> thread(GetMTAThread());
+    nsCOMPtr<nsIThread> thread(GetPersistentMTAThread());
     MOZ_ASSERT(thread);
     if (!thread) {
       return;
@@ -198,6 +102,14 @@ class MOZ_STACK_CLASS EnsureMTA final {
         NS_DISPATCH_NORMAL);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
+
+  /**
+   * This constructor just ensures that the MTA is up and running. This should
+   * only be called by ProcessRuntime.
+   */
+  EnsureMTA();
+
+  friend class mozilla::mscom::ProcessRuntime;
 
   template <typename T>
   friend struct mozilla::mscom::detail::MTADelete;

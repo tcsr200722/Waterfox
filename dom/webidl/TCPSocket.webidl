@@ -10,6 +10,8 @@
  * event handler based interface.
  */
 
+interface nsISocketTransport;
+
 enum TCPSocketBinaryType {
   "arraybuffer",
   "string"
@@ -27,7 +29,7 @@ enum TCPReadyState {
   "closed",
 };
 
-[NoInterfaceObject,
+[LegacyNoInterfaceObject,
  Exposed=Window]
 interface LegacyMozTCPSocket {
   /**
@@ -50,7 +52,12 @@ interface TCPSocket : EventTarget {
   /**
    * Upgrade an insecure connection to use TLS. Throws if the ready state is not OPEN.
    */
-  [Throws] void upgradeToSecure();
+  [Throws] undefined upgradeToSecure();
+
+  /**
+   * The raw internal socket transport.
+   */
+  readonly attribute nsISocketTransport? transport;
 
   /**
    * The UTF16 host of this socket object.
@@ -77,7 +84,7 @@ interface TCPSocket : EventTarget {
    * Pause reading incoming data and invocations of the ondata handler until
    * resume is called. Can be called multiple times without resuming.
    */
-  void suspend();
+  undefined suspend();
 
   /**
    * Resume reading incoming data and invoking ondata as usual. There must be
@@ -85,17 +92,17 @@ interface TCPSocket : EventTarget {
    * socket is not suspended.
    */
   [Throws]
-  void resume();
+  undefined resume();
 
   /**
    * Close the socket.
    */
-  void close();
+  undefined close();
 
   /**
    * Close the socket immediately without waiting for unsent data.
    */
-  [ChromeOnly] void closeImmediately();
+  [ChromeOnly] undefined closeImmediately();
 
   /**
    * Write data to the socket.
@@ -112,7 +119,7 @@ interface TCPSocket : EventTarget {
    *         and the caller may wish to wait until the ondrain event
    *         handler has been called before buffering more data by more
    *         calls to send.
-   * 
+   *
    * @throws Throws if the ready state is not OPEN.
    */
   [Throws]
@@ -137,7 +144,7 @@ interface TCPSocket : EventTarget {
    *         and the caller may wish to wait until the ondrain event
    *         handler has been called before buffering more data by more
    *         calls to send.
-   * 
+   *
    * @throws Throws if the ready state is not OPEN.
    */
   [Throws]
@@ -210,5 +217,5 @@ interface TCPSocket : EventTarget {
    * If the "error" event was not dispatched before "close", then one of
    * the sides cleanly closed the connection.
    */
-  attribute EventHandler onclose;  
+  attribute EventHandler onclose;
 };

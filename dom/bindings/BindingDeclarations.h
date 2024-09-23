@@ -14,11 +14,9 @@
 #define mozilla_dom_BindingDeclarations_h__
 
 #include "js/RootingAPI.h"
-#include "js/Value.h"
+#include "js/TypeDecls.h"
 
 #include "mozilla/Maybe.h"
-#include "mozilla/RootedOwningNonNull.h"
-#include "mozilla/RootedRefPtr.h"
 
 #include "mozilla/dom/DOMString.h"
 
@@ -28,10 +26,19 @@
 
 #include <type_traits>
 
+#include "js/Value.h"
+#include "mozilla/RootedOwningNonNull.h"
+#include "mozilla/RootedRefPtr.h"
+
 class nsIPrincipal;
 class nsWrapperCache;
 
 namespace mozilla {
+
+class ErrorResult;
+class OOMReporter;
+class CopyableErrorResult;
+
 namespace dom {
 
 class BindingCallContext;
@@ -64,34 +71,65 @@ struct DictionaryBase {
   bool IsAnyMemberPresent() const { return mIsAnyMemberPresent; }
 };
 
+template <class T>
+constexpr bool is_dom_dictionary = std::is_base_of_v<DictionaryBase, T>;
+
 template <typename T>
-inline std::enable_if_t<std::is_base_of<DictionaryBase, T>::value, void>
-ImplCycleCollectionUnlink(T& aDictionary) {
+inline std::enable_if_t<is_dom_dictionary<T>, void> ImplCycleCollectionUnlink(
+    T& aDictionary) {
   aDictionary.UnlinkForCC();
 }
 
 template <typename T>
-inline std::enable_if_t<std::is_base_of<DictionaryBase, T>::value, void>
-ImplCycleCollectionTraverse(nsCycleCollectionTraversalCallback& aCallback,
-                            T& aDictionary, const char* aName,
-                            uint32_t aFlags = 0) {
+inline std::enable_if_t<is_dom_dictionary<T>, void> ImplCycleCollectionTraverse(
+    nsCycleCollectionTraversalCallback& aCallback, T& aDictionary,
+    const char* aName, uint32_t aFlags = 0) {
   aDictionary.TraverseForCC(aCallback, aFlags);
 }
 
+template <typename T>
+inline std::enable_if_t<is_dom_dictionary<T>, void> ImplCycleCollectionUnlink(
+    UniquePtr<T>& aDictionary) {
+  aDictionary.reset();
+}
+
+template <typename T>
+inline std::enable_if_t<is_dom_dictionary<T>, void> ImplCycleCollectionTraverse(
+    nsCycleCollectionTraversalCallback& aCallback, UniquePtr<T>& aDictionary,
+    const char* aName, uint32_t aFlags = 0) {
+  if (aDictionary) {
+    ImplCycleCollectionTraverse(aCallback, *aDictionary, aName, aFlags);
+  }
+}
 // Struct that serves as a base class for all typed arrays and array buffers and
 // array buffer views.  Particularly useful so we can use std::is_base_of to
 // detect typed array/buffer/view template arguments.
 struct AllTypedArraysBase {};
 
+template <class T>
+constexpr bool is_dom_typed_array = std::is_base_of_v<AllTypedArraysBase, T>;
+
+// Struct that serves as a base class for all unions.
+// Particularly useful so we can use std::is_base_of to detect union
+// template arguments.
+struct AllUnionBase {};
+
+template <class T>
+constexpr bool is_dom_union = std::is_base_of_v<AllUnionBase, T>;
+
 // Struct that serves as a base class for all owning unions.
 // Particularly useful so we can use std::is_base_of to detect owning union
 // template arguments.
-struct AllOwningUnionBase {};
+struct AllOwningUnionBase : public AllUnionBase {};
 
-struct EnumEntry {
-  const char* value;
-  size_t length;
-};
+template <class T>
+constexpr bool is_dom_owning_union = std::is_base_of_v<AllOwningUnionBase, T>;
+
+struct UnionWithTypedArraysBase {};
+
+template <class T>
+constexpr bool is_dom_union_with_typedarray_members =
+    std::is_base_of_v<UnionWithTypedArraysBase, T>;
 
 enum class CallerType : uint32_t;
 
@@ -134,7 +172,11 @@ class Optional_base {
  public:
   Optional_base() = default;
 
+  Optional_base(Optional_base&&) = default;
+  Optional_base& operator=(Optional_base&&) = default;
+
   explicit Optional_base(const T& aValue) { mImpl.emplace(aValue); }
+  explicit Optional_base(T&& aValue) { mImpl.emplace(std::move(aValue)); }
 
   bool operator==(const Optional_base<T, InternalType>& aOther) const {
     return mImpl == aOther.mImpl;
@@ -187,6 +229,7 @@ class Optional : public Optional_base<T, T> {
   MOZ_ALLOW_TEMPORARY Optional() : Optional_base<T, T>() {}
 
   explicit Optional(const T& aValue) : Optional_base<T, T>(aValue) {}
+  Optional(Optional&&) = default;
 };
 
 template <typename T>
@@ -505,14 +548,40 @@ class SystemCallerGuarantee {
   operator CallerType() const { return CallerType::System; }
 };
 
+enum class DefineInterfaceProperty {
+  No,
+  CheckExposure,
+  Always,
+};
+
 class ProtoAndIfaceCache;
-typedef void (*CreateInterfaceObjectsMethod)(JSContext* aCx,
-                                             JS::Handle<JSObject*> aGlobal,
-                                             ProtoAndIfaceCache& aCache,
-                                             bool aDefineOnGlobal);
+using CreateInterfaceObjectsMethod =
+    void (*)(JSContext*, JS::Handle<JSObject*>, ProtoAndIfaceCache&,
+             DefineInterfaceProperty aDefineOnGlobal);
+
+// GetPerInterfaceObjectHandle has 3 possible behaviours for defining the named
+// properties on the global for an interface or namespace when it creates an
+// interface or namespace object. aDefineOnGlobal can be used to pick the
+// behaviour. GetPerInterfaceObjectHandle either:
+//
+//  * does not define any properties on the global object
+//    (for DefineInterfaceProperty::No),
+//  * checks whether the interface is exposed in the global object before
+//    defining properties (for DefineInterfaceProperty::CheckExposure),
+//  * always defines properties (for DefineInterfaceProperty::Always).
+//
+// Callers should be careful when passing DefineInterfaceProperty::Always and
+// make sure to check exposure themselves if needed.
 JS::Handle<JSObject*> GetPerInterfaceObjectHandle(
     JSContext* aCx, size_t aSlotId, CreateInterfaceObjectsMethod aCreator,
-    bool aDefineOnGlobal);
+    DefineInterfaceProperty aDefineOnGlobal);
+
+namespace binding_detail {
+
+template <typename Enum>
+struct EnumStrings;
+
+}  // namespace binding_detail
 
 }  // namespace dom
 }  // namespace mozilla

@@ -5,34 +5,33 @@
 
 const {
   STUBS_UPDATE_ENV,
-  createResourceWatcherForTab,
+  createCommandsForTab,
   getStubFile,
   getCleanedPacket,
   getSerializedPacket,
   writeStubsToFile,
-} = require("chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/stub-generator-helpers");
+} = require(`${CHROME_URL_ROOT}stub-generator-helpers`);
 
 const TEST_URI =
-  "http://example.com/browser/devtools/client/webconsole/test/browser/test-console-api.html";
+  "https://example.com/browser/devtools/client/webconsole/test/browser/test-console-api.html";
 const STUB_FILE = "consoleApi.js";
 
-add_task(async function() {
-  const isStubsUpdate = env.get(STUBS_UPDATE_ENV) == "true";
+add_task(async function () {
+  const isStubsUpdate = Services.env.get(STUBS_UPDATE_ENV) == "true";
   info(`${isStubsUpdate ? "Update" : "Check"} ${STUB_FILE}`);
 
   const generatedStubs = await generateConsoleApiStubs();
 
   if (isStubsUpdate) {
-    await writeStubsToFile(env, STUB_FILE, generatedStubs);
+    await writeStubsToFile(STUB_FILE, generatedStubs);
     ok(true, `${STUB_FILE} was updated`);
     return;
   }
   const existingStubs = getStubFile(STUB_FILE);
   const FAILURE_MSG =
-    "The consoleApi stubs file needs to be updated by running " +
-    "`mach test devtools/client/webconsole/test/browser/" +
-    "browser_webconsole_stubs_console_api.js --headless " +
-    "--setenv WEBCONSOLE_STUBS_UPDATE=true`";
+    "The consoleApi stubs file needs to be updated by running `" +
+    `mach test ${getCurrentTestFilePath()} --headless --setenv WEBCONSOLE_STUBS_UPDATE=true` +
+    "`";
 
   if (generatedStubs.size !== existingStubs.rawPackets.size) {
     ok(false, FAILURE_MSG);
@@ -41,9 +40,13 @@ add_task(async function() {
 
   let failed = false;
   for (const [key, packet] of generatedStubs) {
-    const packetStr = getSerializedPacket(packet);
+    const packetStr = getSerializedPacket(packet, {
+      sortKeys: true,
+      replaceActorIds: true,
+    });
     const existingPacketStr = getSerializedPacket(
-      existingStubs.rawPackets.get(key)
+      existingStubs.rawPackets.get(key),
+      { sortKeys: true, replaceActorIds: true }
     );
 
     is(packetStr, existingPacketStr, `"${key}" packet has expected value`);
@@ -55,26 +58,33 @@ add_task(async function() {
   } else {
     ok(true, "Stubs are up to date");
   }
-
-  await closeTabAndToolbox().catch(() => {});
 });
 
 async function generateConsoleApiStubs() {
   const stubs = new Map();
 
   const tab = await addTab(TEST_URI);
-  const resourceWatcher = await createResourceWatcherForTab(tab);
+  const commands = await createCommandsForTab(tab);
+  await commands.targetCommand.startListening();
+  const resourceCommand = commands.resourceCommand;
+
+  // Ensure waiting for sources in order to populate message.sourceId correctly.
+  await resourceCommand.watchResources([resourceCommand.TYPES.SOURCE], {
+    onAvailable() {},
+  });
 
   // The resource-watcher only supports a single call to watch/unwatch per
   // instance, so we attach a unique watch callback, which will forward the
   // resource to `handleConsoleMessage`, dynamically updated for each command.
-  let handleConsoleMessage = function() {};
+  let handleConsoleMessage = function () {};
 
-  const onConsoleMessage = ({ resource }) => {
-    handleConsoleMessage(resource);
+  const onConsoleMessage = resources => {
+    for (const resource of resources) {
+      handleConsoleMessage(resource);
+    }
   };
-  await resourceWatcher.watchResources(
-    [resourceWatcher.TYPES.CONSOLE_MESSAGE],
+  await resourceCommand.watchResources(
+    [resourceCommand.TYPES.CONSOLE_MESSAGE],
     {
       onAvailable: onConsoleMessage,
     }
@@ -94,24 +104,30 @@ async function generateConsoleApiStubs() {
       };
     });
 
-    await SpecialPowers.spawn(gBrowser.selectedBrowser, [code], function(
-      subCode
-    ) {
-      const script = content.document.createElement("script");
-      script.append(
-        content.document.createTextNode(`function triggerPacket() {${subCode}}`)
-      );
-      content.document.body.append(script);
-      content.wrappedJSObject.triggerPacket();
-      script.remove();
-    });
+    await SpecialPowers.spawn(
+      gBrowser.selectedBrowser,
+      [code],
+      function (subCode) {
+        const script = content.document.createElement("script");
+        script.append(
+          content.document.createTextNode(
+            `function triggerPacket() {${subCode}}`
+          )
+        );
+        content.document.body.append(script);
+        content.wrappedJSObject.triggerPacket();
+        script.remove();
+      }
+    );
 
     await received;
   }
 
-  resourceWatcher.unwatchResources([resourceWatcher.TYPES.CONSOLE_MESSAGE], {
+  resourceCommand.unwatchResources([resourceCommand.TYPES.CONSOLE_MESSAGE], {
     onAvailable: onConsoleMessage,
   });
+
+  await commands.destroy();
 
   return stubs;
 }
@@ -186,6 +202,17 @@ function getCommands() {
   `,
     },
     {
+      keys: ['console.trace("%cHello%c|%cWorld")'],
+      code: `
+    console.trace(
+      "%cHello%c|%cWorld",
+      "color:red",
+      "",
+      "color: blue"
+    );
+  `,
+    },
+    {
       keys: [
         "console.time('bar')",
         "timerAlreadyExists",
@@ -243,8 +270,8 @@ function getCommands() {
       code: `
   console.log(
     "%cfoo%cbar",
-    "color:blue; font-size:1.3em; background:url('http://example.com/test'); position:absolute; top:10px; ",
-    "color:red; line-height: 1.5; background:\\165rl('http://example.com/test')"
+    "color:blue; font-size:1.3em; background:url('data:image/png,base64,iVBORw0KGgoAAAAN'), url('https://example.com/test'); position:absolute; top:10px; ",
+    "color:red; line-height: 1.5; background:\\165rl('https://example.com/test')"
   );
   `,
     },
@@ -264,8 +291,8 @@ function getCommands() {
       code: `
   console.group(
     "%cfoo%cbar",
-    "color:blue;font-size:1.3em;background:url('http://example.com/test');position:absolute;top:10px",
-    "color:red;background:\\165rl('http://example.com/test')");
+    "color:blue;font-size:1.3em;background:url('https://example.com/test');position:absolute;top:10px",
+    "color:red;background:\\165rl('https://example.com/test')");
   console.groupEnd();
   `,
     },
@@ -277,8 +304,8 @@ function getCommands() {
       code: `
   console.groupCollapsed(
     "%cfoo%cbaz",
-    "color:blue;font-size:1.3em;background:url('http://example.com/test');position:absolute;top:10px",
-    "color:red;background:\\165rl('http://example.com/test')");
+    "color:blue;font-size:1.3em;background:url('https://example.com/test');position:absolute;top:10px",
+    "color:red;background:\\165rl('https://example.com/test')");
   console.groupEnd();
   `,
     },

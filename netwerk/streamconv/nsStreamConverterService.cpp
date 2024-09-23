@@ -15,10 +15,10 @@
 #include "nsICategoryManager.h"
 #include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
-#include "nsCOMArray.h"
 #include "nsTArray.h"
 #include "nsServiceManagerUtils.h"
 #include "nsISimpleEnumerator.h"
+#include "mozilla/Components.h"
 #include "mozilla/UniquePtr.h"
 
 ///////////////////////////////////////////////////////////////////
@@ -66,7 +66,7 @@ nsresult nsStreamConverterService::BuildGraph() {
   nsresult rv;
 
   nsCOMPtr<nsICategoryManager> catmgr(
-      do_GetService(NS_CATEGORYMANAGER_CONTRACTID, &rv));
+      mozilla::components::CategoryManager::Service(&rv));
   if (NS_FAILED(rv)) return rv;
 
   nsCOMPtr<nsISimpleEnumerator> entries;
@@ -118,17 +118,10 @@ nsresult nsStreamConverterService::AddAdjacency(const char* aContractID) {
   // Each MIME-type is a vertex in the graph, so first lets make sure
   // each MIME-type is represented as a key in our hashtable.
 
-  nsTArray<RefPtr<nsAtom>>* fromEdges = mAdjacencyList.Get(fromStr);
-  if (!fromEdges) {
-    // There is no fromStr vertex, create one.
-    fromEdges = new nsTArray<RefPtr<nsAtom>>();
-    mAdjacencyList.Put(fromStr, fromEdges);
-  }
+  nsTArray<RefPtr<nsAtom>>* const fromEdges =
+      mAdjacencyList.GetOrInsertNew(fromStr);
 
-  if (!mAdjacencyList.Get(toStr)) {
-    // There is no toStr vertex, create one.
-    mAdjacencyList.Put(toStr, new nsTArray<RefPtr<nsAtom>>());
-  }
+  mAdjacencyList.GetOrInsertNew(toStr);
 
   // Now we know the FROM and TO types are represented as keys in the hashtable.
   // Let's "connect" the verticies, making an edge.
@@ -168,16 +161,13 @@ nsresult nsStreamConverterService::ParseFromTo(const char* aContractID,
   return NS_OK;
 }
 
-typedef nsClassHashtable<nsCStringHashKey, BFSTableData> BFSHashTable;
+using BFSHashTable = nsClassHashtable<nsCStringHashKey, BFSTableData>;
 
 // nsObjectHashtable enumerator functions.
 
-class CStreamConvDeallocator : public nsDequeFunctor {
+class CStreamConvDeallocator : public nsDequeFunctor<nsCString> {
  public:
-  void operator()(void* anObject) override {
-    nsCString* string = (nsCString*)anObject;
-    delete string;
-  }
+  void operator()(nsCString* anObject) override { delete anObject; }
 };
 
 // walks the graph using a breadth-first-search algorithm which generates a
@@ -199,10 +189,10 @@ nsresult nsStreamConverterService::FindConverter(
 
   // Create a corresponding color table for each vertex in the graph.
   BFSHashTable lBFSTable;
-  for (auto iter = mAdjacencyList.Iter(); !iter.Done(); iter.Next()) {
-    const nsACString& key = iter.Key();
-    MOZ_ASSERT(iter.UserData(), "no data in the table iteration");
-    lBFSTable.Put(key, new BFSTableData(key));
+  for (const auto& entry : mAdjacencyList) {
+    const nsACString& key = entry.GetKey();
+    MOZ_ASSERT(entry.GetWeak(), "no data in the table iteration");
+    lBFSTable.InsertOrUpdate(key, mozilla::MakeUnique<BFSTableData>(key));
   }
 
   NS_ASSERTION(lBFSTable.Count() == vertexCount,
@@ -380,8 +370,9 @@ nsStreamConverterService::Convert(nsIInputStream* aFromStream,
                                   const char* aFromType, const char* aToType,
                                   nsISupports* aContext,
                                   nsIInputStream** _retval) {
-  if (!aFromStream || !aFromType || !aToType || !_retval)
+  if (!aFromStream || !aFromType || !aToType || !_retval) {
     return NS_ERROR_NULL_POINTER;
+  }
   nsresult rv;
 
   // first determine whether we can even handle this conversion
@@ -458,8 +449,9 @@ nsStreamConverterService::AsyncConvertData(const char* aFromType,
                                            nsIStreamListener* aListener,
                                            nsISupports* aContext,
                                            nsIStreamListener** _retval) {
-  if (!aFromType || !aToType || !aListener || !_retval)
+  if (!aFromType || !aToType || !aListener || !_retval) {
     return NS_ERROR_NULL_POINTER;
+  }
 
   nsresult rv;
 

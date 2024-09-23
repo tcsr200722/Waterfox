@@ -5,6 +5,7 @@
 #ifndef CacheEntry__h__
 #define CacheEntry__h__
 
+#include "mozilla/LinkedList.h"
 #include "nsICacheEntry.h"
 #include "CacheFile.h"
 
@@ -12,10 +13,10 @@
 #include "nsIOutputStream.h"
 #include "nsICacheEntryOpenCallback.h"
 #include "nsICacheEntryDoomCallback.h"
+#include "nsITransportSecurityInfo.h"
 
 #include "nsCOMPtr.h"
 #include "nsRefPtrHashtable.h"
-#include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsString.h"
 #include "nsCOMArray.h"
@@ -42,7 +43,10 @@ class CacheStorage;
 class CacheOutputCloseListener;
 class CacheEntryHandle;
 
-class CacheEntry final : public nsIRunnable, public CacheFileListener {
+class CacheEntry final : public nsIRunnable,
+                         public CacheFileListener,
+                         // Used by CacheStorageService::MemoryPool
+                         public LinkedListElement<RefPtr<CacheEntry>> {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
@@ -63,26 +67,27 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   // Forwarded to from CacheEntryHandle : nsICacheEntry
   nsresult GetKey(nsACString& aKey);
   nsresult GetCacheEntryId(uint64_t* aCacheEntryId);
-  nsresult GetPersistent(bool* aPersistent);
-  nsresult GetFetchCount(int32_t* aFetchCount);
+  nsresult GetPersistent(bool* aPersistToDisk);
+  nsresult GetFetchCount(uint32_t* aFetchCount);
   nsresult GetLastFetched(uint32_t* aLastFetched);
   nsresult GetLastModified(uint32_t* aLastModified);
   nsresult GetExpirationTime(uint32_t* aExpirationTime);
   nsresult SetExpirationTime(uint32_t expirationTime);
-  nsresult GetOnStartTime(uint64_t* aOnStartTime);
-  nsresult GetOnStopTime(uint64_t* aOnStopTime);
+  nsresult GetOnStartTime(uint64_t* aTime);
+  nsresult GetOnStopTime(uint64_t* aTime);
   nsresult SetNetworkTimes(uint64_t onStartTime, uint64_t onStopTime);
   nsresult SetContentType(uint8_t aContentType);
   nsresult ForceValidFor(uint32_t aSecondsToTheFuture);
   nsresult GetIsForcedValid(bool* aIsForcedValid);
+  nsresult MarkForcedValidUse();
   nsresult OpenInputStream(int64_t offset, nsIInputStream** _retval);
   nsresult OpenOutputStream(int64_t offset, int64_t predictedSize,
                             nsIOutputStream** _retval);
-  nsresult GetSecurityInfo(nsISupports** aSecurityInfo);
-  nsresult SetSecurityInfo(nsISupports* aSecurityInfo);
+  nsresult GetSecurityInfo(nsITransportSecurityInfo** aSecurityInfo);
+  nsresult SetSecurityInfo(nsITransportSecurityInfo* aSecurityInfo);
   nsresult GetStorageDataSize(uint32_t* aStorageDataSize);
-  nsresult AsyncDoom(nsICacheEntryDoomCallback* listener);
-  nsresult GetMetaDataElement(const char* key, char** _retval);
+  nsresult AsyncDoom(nsICacheEntryDoomCallback* aCallback);
+  nsresult GetMetaDataElement(const char* key, char** aRetval);
   nsresult SetMetaDataElement(const char* key, const char* value);
   nsresult VisitMetaData(nsICacheEntryMetaDataVisitor* visitor);
   nsresult MetaDataReady(void);
@@ -90,18 +95,14 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   nsresult GetDiskStorageSizeInKB(uint32_t* aDiskStorageSizeInKB);
   nsresult Recreate(bool aMemoryOnly, nsICacheEntry** _retval);
   nsresult GetDataSize(int64_t* aDataSize);
-  nsresult GetAltDataSize(int64_t* aAltDataSize);
+  nsresult GetAltDataSize(int64_t* aDataSize);
   nsresult GetAltDataType(nsACString& aAltDataType);
   nsresult OpenAlternativeOutputStream(const nsACString& type,
                                        int64_t predictedSize,
                                        nsIAsyncOutputStream** _retval);
   nsresult OpenAlternativeInputStream(const nsACString& type,
                                       nsIInputStream** _retval);
-  nsresult GetLoadContextInfo(nsILoadContextInfo** aLoadContextInfo);
-  nsresult Close(void);
-  nsresult MarkValid(void);
-  nsresult MaybeMarkValid(void);
-  nsresult HasWriteAccess(bool aWriteAllowed, bool* _retval);
+  nsresult GetLoadContextInfo(nsILoadContextInfo** aInfo);
 
  public:
   uint32_t GetMetadataMemoryConsumption();
@@ -110,7 +111,7 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   nsCString const& GetURI() const { return mURI; }
   // Accessible at any time
   bool IsUsingDisk() const { return mUseDisk; }
-  bool IsReferenced() const;
+  bool IsReferenced() const MOZ_NO_THREAD_SAFETY_ANALYSIS;
   bool IsFileDoomed();
   bool IsDoomed() const { return mIsDoomed; }
   bool IsPinned() const { return mPinned; }
@@ -152,12 +153,13 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
                              const nsACString& aURISpec, nsACString& aResult);
 
   // Accessed only on the service management thread
-  double mFrecency;
-  ::mozilla::Atomic<uint32_t, ::mozilla::Relaxed> mSortingExpirationTime;
+  double mFrecency{0};
+  ::mozilla::Atomic<uint32_t, ::mozilla::Relaxed> mSortingExpirationTime{
+      uint32_t(-1)};
 
   // Memory reporting
-  size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
-  size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
 
  private:
   virtual ~CacheEntry();
@@ -184,10 +186,11 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
 
     // Called when this callback record changes it's owning entry,
     // mainly during recreation.
-    void ExchangeEntry(CacheEntry* aEntry);
+    void ExchangeEntry(CacheEntry* aEntry) MOZ_REQUIRES(aEntry->mLock);
 
     // Returns true when an entry is about to be "defer" doomed and this is
-    // a "defer" callback.
+    // a "defer" callback.  The caller must hold a lock (this entry is in the
+    // caller's mCallback array)
     bool DeferDoom(bool* aDoom) const;
 
     // We are raising reference count here to take into account the pending
@@ -265,7 +268,7 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   // Loads from disk asynchronously
   bool Load(bool aTruncate, bool aPriority);
 
-  void RememberCallback(Callback& aCallback);
+  void RememberCallback(Callback& aCallback) MOZ_REQUIRES(mLock);
   void InvokeCallbacksLock();
   void InvokeCallbacks();
   bool InvokeCallbacks(bool aReadOnly);
@@ -282,10 +285,10 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
  private:
   friend class CacheEntryHandle;
   // Increment/decrements the number of handles keeping this entry.
-  void AddHandleRef() { ++mHandlesCount; }
-  void ReleaseHandleRef() { --mHandlesCount; }
+  void AddHandleRef() MOZ_REQUIRES(mLock) { ++mHandlesCount; }
+  void ReleaseHandleRef() MOZ_REQUIRES(mLock) { --mHandlesCount; }
   // Current number of handles keeping this entry.
-  uint32_t HandlesCount() const { return mHandlesCount; }
+  uint32_t HandlesCount() const MOZ_REQUIRES(mLock) { return mHandlesCount; }
 
  private:
   friend class CacheOutputCloseListener;
@@ -299,7 +302,7 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   void StoreFrecency(double aFrecency);
 
   // Called only from DoomAlreadyRemoved()
-  void DoomFile();
+  void DoomFile() MOZ_REQUIRES(mLock);
   // When this entry is doomed the first time, this method removes
   // any force-valid timing info for this entry.
   void RemoveForcedValidity();
@@ -308,23 +311,26 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
       bool aMemoryOnly, nsICacheEntryOpenCallback* aCallback);
   void TransferCallbacks(CacheEntry& aFromEntry);
 
-  mozilla::Mutex mLock;
+  mozilla::Mutex mLock{"CacheEntry"};
 
   // Reflects the number of existing handles for this entry
-  ::mozilla::ThreadSafeAutoRefCnt mHandlesCount;
+  ::mozilla::ThreadSafeAutoRefCnt mHandlesCount MOZ_GUARDED_BY(mLock);
 
-  nsTArray<Callback> mCallbacks;
+  nsTArray<Callback> mCallbacks MOZ_GUARDED_BY(mLock);
   nsCOMPtr<nsICacheEntryDoomCallback> mDoomCallback;
 
+  // Set in CacheEntry::Load(), only - shouldn't need to be under lock
+  // XXX FIX?  is this correct?
   RefPtr<CacheFile> mFile;
 
   // Using ReleaseAcquire since we only control access to mFile with this.
   // When mFileStatus is read and found success it is ensured there is mFile and
   // that it is after a successful call to Init().
-  ::mozilla::Atomic<nsresult, ::mozilla::ReleaseAcquire> mFileStatus;
-  nsCString mURI;
-  nsCString mEnhanceID;
-  nsCString mStorageID;
+  Atomic<nsresult, ReleaseAcquire> mFileStatus{NS_ERROR_NOT_INITIALIZED};
+  // Set in constructor
+  nsCString const mURI;
+  nsCString const mEnhanceID;
+  nsCString const mStorageID;
 
   // mUseDisk, mSkipSizeCheck, mIsDoomed are plain "bool", not "bool:1",
   // so as to avoid bitfield races with the byte containing
@@ -335,14 +341,16 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   // Whether it should skip max size check.
   bool const mSkipSizeCheck;
   // Set when entry is doomed with AsyncDoom() or DoomAlreadyRemoved().
-  bool mIsDoomed;
+  Atomic<bool, Relaxed> mIsDoomed{false};
+  // The indication of pinning this entry was open with
+  Atomic<bool, Relaxed> mPinned;
 
   // Following flags are all synchronized with the cache entry lock.
 
   // Whether security info has already been looked up in metadata.
-  bool mSecurityInfoLoaded : 1;
+  bool mSecurityInfoLoaded : 1 MOZ_GUARDED_BY(mLock);
   // Prevents any callback invocation
-  bool mPreventCallbacks : 1;
+  bool mPreventCallbacks : 1 MOZ_GUARDED_BY(mLock);
   // true: after load and an existing file, or after output stream has been
   //       opened.
   //       note - when opening an input stream, and this flag is false, output
@@ -350,12 +358,10 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   //       behave correctly when EOF is reached (WOULD_BLOCK is returned).
   // false: after load and a new file, or dropped to back to false when a
   //        writer fails to open an output stream.
-  bool mHasData : 1;
-  // The indication of pinning this entry was open with
-  bool mPinned : 1;
+  bool mHasData : 1 MOZ_GUARDED_BY(mLock);
   // Whether the pinning state of the entry is known (equals to the actual state
   // of the cache file)
-  bool mPinningKnown : 1;
+  bool mPinningKnown : 1 MOZ_GUARDED_BY(mLock);
 
   static char const* StateString(uint32_t aState);
 
@@ -369,7 +375,7 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
   };
 
   // State of this entry.
-  EState mState;
+  EState mState MOZ_GUARDED_BY(mLock){NOTLOADED};
 
   enum ERegistration {
     NEVERREGISTERED = 0,  // The entry has never been registered
@@ -379,18 +385,18 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
 
   // Accessed only on the management thread.  Records the state of registration
   // this entry in the memory pool intermediate cache.
-  ERegistration mRegistration;
+  ERegistration mRegistration{NEVERREGISTERED};
 
   // If a new (empty) entry is requested to open an input stream before
   // output stream has been opened, we must open output stream internally
   // on CacheFile and hold until writer releases the entry or opens the output
   // stream for read (then we trade him mOutputStream).
-  nsCOMPtr<nsIOutputStream> mOutputStream;
+  nsCOMPtr<nsIOutputStream> mOutputStream MOZ_GUARDED_BY(mLock);
 
   // Weak reference to the current writter.  There can be more then one
   // writer at a time and OnHandleClosed() must be processed only for the
   // current one.
-  CacheEntryHandle* mWriter;
+  CacheEntryHandle* mWriter MOZ_GUARDED_BY(mLock){nullptr};
 
   // Background thread scheduled operation.  Set (under the lock) one
   // of this flags to tell the background thread what to do.
@@ -401,7 +407,7 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
     static uint32_t const CALLBACKS = 1 << 2;
     static uint32_t const UNREGISTER = 1 << 3;
 
-    Ops() : mFlags(0) {}
+    Ops() = default;
     uint32_t Grab() {
       uint32_t flags = mFlags;
       mFlags = 0;
@@ -414,12 +420,12 @@ class CacheEntry final : public nsIRunnable, public CacheFileListener {
     }
 
    private:
-    uint32_t mFlags;
+    uint32_t mFlags{0};
   } mBackgroundOperations;
 
-  nsCOMPtr<nsISupports> mSecurityInfo;
+  nsCOMPtr<nsITransportSecurityInfo> mSecurityInfo;
   mozilla::TimeStamp mLoadStart;
-  uint32_t mUseCount;
+  uint32_t mUseCount{0};
 
   const uint64_t mCacheEntryId;
 };
@@ -439,7 +445,7 @@ class CacheEntryHandle final : public nsICacheEntry {
   NS_IMETHOD GetPersistent(bool* aPersistent) override {
     return mEntry->GetPersistent(aPersistent);
   }
-  NS_IMETHOD GetFetchCount(int32_t* aFetchCount) override {
+  NS_IMETHOD GetFetchCount(uint32_t* aFetchCount) override {
     return mEntry->GetFetchCount(aFetchCount);
   }
   NS_IMETHOD GetLastFetched(uint32_t* aLastFetched) override {
@@ -473,6 +479,9 @@ class CacheEntryHandle final : public nsICacheEntry {
   NS_IMETHOD GetIsForcedValid(bool* aIsForcedValid) override {
     return mEntry->GetIsForcedValid(aIsForcedValid);
   }
+  NS_IMETHOD MarkForcedValidUse() override {
+    return mEntry->MarkForcedValidUse();
+  }
   NS_IMETHOD OpenInputStream(int64_t offset,
                              nsIInputStream** _retval) override {
     return mEntry->OpenInputStream(offset, _retval);
@@ -481,10 +490,11 @@ class CacheEntryHandle final : public nsICacheEntry {
                               nsIOutputStream** _retval) override {
     return mEntry->OpenOutputStream(offset, predictedSize, _retval);
   }
-  NS_IMETHOD GetSecurityInfo(nsISupports** aSecurityInfo) override {
+  NS_IMETHOD GetSecurityInfo(
+      nsITransportSecurityInfo** aSecurityInfo) override {
     return mEntry->GetSecurityInfo(aSecurityInfo);
   }
-  NS_IMETHOD SetSecurityInfo(nsISupports* aSecurityInfo) override {
+  NS_IMETHOD SetSecurityInfo(nsITransportSecurityInfo* aSecurityInfo) override {
     return mEntry->SetSecurityInfo(aSecurityInfo);
   }
   NS_IMETHOD GetStorageDataSize(uint32_t* aStorageDataSize) override {
@@ -532,12 +542,6 @@ class CacheEntryHandle final : public nsICacheEntry {
       nsILoadContextInfo** aLoadContextInfo) override {
     return mEntry->GetLoadContextInfo(aLoadContextInfo);
   }
-  NS_IMETHOD Close(void) override { return mEntry->Close(); }
-  NS_IMETHOD MarkValid(void) override { return mEntry->MarkValid(); }
-  NS_IMETHOD MaybeMarkValid(void) override { return mEntry->MaybeMarkValid(); }
-  NS_IMETHOD HasWriteAccess(bool aWriteAllowed, bool* _retval) override {
-    return mEntry->HasWriteAccess(aWriteAllowed, _retval);
-  }
 
   // Specific implementation:
   NS_IMETHOD Dismiss() override;
@@ -548,7 +552,7 @@ class CacheEntryHandle final : public nsICacheEntry {
 
   // This is |false| until Dismiss() was called and prevents OnHandleClosed
   // being called more than once.
-  Atomic<bool, ReleaseAcquire> mClosed;
+  Atomic<bool, ReleaseAcquire> mClosed{false};
 };
 
 class CacheOutputCloseListener final : public Runnable {

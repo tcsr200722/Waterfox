@@ -5,20 +5,29 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ScheduledTask.h"
+#include "ScheduledTaskRemove.h"
 
 #include <string>
 #include <time.h>
 
+#include <comutil.h>
 #include <taskschd.h>
 
+#include "EventLog.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
 
-const wchar_t* kTaskVendor = L"" MOZ_APP_VENDOR;
-// kTaskName should have the unique token appended before being used.
-const wchar_t* kTaskName = L"" MOZ_APP_DISPLAYNAME " Default Browser Agent ";
+#include "DefaultBrowser.h"
+
+#include "mozilla/ErrorResult.h"
+#include "mozilla/intl/Localization.h"
+#include "nsString.h"
+#include "nsTArray.h"
+using mozilla::intl::Localization;
+
+namespace mozilla::default_agent {
 
 // The task scheduler requires its time values to come in the form of a string
 // in the format YYYY-MM-DDTHH:MM:SSZ. This format string is used to get that
@@ -34,15 +43,42 @@ const size_t kTimeStrMaxLen = 20;
     return hr;            \
   }
 
-struct SysFreeStringDeleter {
-  void operator()(BSTR aPtr) { ::SysFreeString(aPtr); }
-};
-using BStrPtr = mozilla::UniquePtr<OLECHAR, SysFreeStringDeleter>;
+bool GetTaskDescription(mozilla::UniquePtr<wchar_t[]>& description) {
+  mozilla::UniquePtr<wchar_t[]> installPath;
+  bool success = GetInstallDirectory(installPath);
+  if (!success) {
+    LOG_ERROR_MESSAGE(L"Failed to get install directory");
+    return false;
+  }
+  nsTArray<nsCString> resIds = {"branding/brand.ftl"_ns,
+                                "browser/backgroundtasks/defaultagent.ftl"_ns};
+  RefPtr<Localization> l10n = Localization::Create(resIds, true);
+  nsAutoCString daTaskDesc;
+  mozilla::ErrorResult rv;
+  l10n->FormatValueSync("default-browser-agent-task-description"_ns, {},
+                        daTaskDesc, rv);
+  if (rv.Failed()) {
+    LOG_ERROR_MESSAGE(L"Failed to read task description");
+    return false;
+  }
+  NS_ConvertUTF8toUTF16 daTaskDescW(daTaskDesc);
+  description = mozilla::MakeUnique<wchar_t[]>(daTaskDescW.Length() + 1);
+  wcsncpy(description.get(), daTaskDescW.get(), daTaskDescW.Length() + 1);
+  return true;
+}
 
 HRESULT RegisterTask(const wchar_t* uniqueToken,
                      BSTR startTime /* = nullptr */) {
+  // Do data migration during the task installation. This might seem like it
+  // belongs in UpdateTask, but we want to be able to call
+  //    RemoveTasks();
+  //    RegisterTask();
+  // and still have data migration happen. Also, UpdateTask calls this function,
+  // so migration will still get run in that case.
+  MaybeMigrateCurrentDefault();
+
   // Make sure we don't try to register a task that already exists.
-  RemoveTask(uniqueToken);
+  RemoveTasks(uniqueToken, WhichTasks::WdbaTaskOnly);
 
   // If we create a folder and then fail to create the task, we need to
   // remember to delete the folder so that whatever set of permissions it ends
@@ -68,17 +104,29 @@ HRESULT RegisterTask(const wchar_t* uniqueToken,
                                    getter_AddRefs(taskFolder)))) {
     hr = rootFolder->CreateFolder(vendorBStr.get(), VARIANT{},
                                   getter_AddRefs(taskFolder));
+
     if (SUCCEEDED(hr)) {
       createdFolder = true;
-    } else if (hr != HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
-      // The folder already existing isn't an error, but anything else is.
+    } else if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
+      // `CreateFolder` doesn't assign to the out pointer on
+      // `ERROR_ALREADY_EXISTS`, so try to get the folder again. This behavior
+      // is undocumented but was verified in a debugger.
+      HRESULT priorHr = hr;
+      hr = rootFolder->GetFolder(vendorBStr.get(), getter_AddRefs(taskFolder));
+
+      if (FAILED(hr)) {
+        LOG_ERROR(priorHr);
+        LOG_ERROR(hr);
+        return hr;
+      }
+    } else {
       LOG_ERROR(hr);
       return hr;
     }
   }
 
   auto cleanupFolder =
-      mozilla::MakeScopeExit([hr, createdFolder, &rootFolder, &vendorBStr] {
+      mozilla::MakeScopeExit([&hr, createdFolder, &rootFolder, &vendorBStr] {
         if (createdFolder && FAILED(hr)) {
           // If this fails, we can't really handle that intelligently, so
           // don't even bother to check the return code.
@@ -89,15 +137,28 @@ HRESULT RegisterTask(const wchar_t* uniqueToken,
   RefPtr<ITaskDefinition> newTask;
   ENSURE(scheduler->NewTask(0, getter_AddRefs(newTask)));
 
+  mozilla::UniquePtr<wchar_t[]> description;
+  if (!GetTaskDescription(description)) {
+    return E_FAIL;
+  }
+  BStrPtr descriptionBstr = BStrPtr(SysAllocString(description.get()));
+
+  RefPtr<IRegistrationInfo> taskRegistration;
+  ENSURE(newTask->get_RegistrationInfo(getter_AddRefs(taskRegistration)));
+  ENSURE(taskRegistration->put_Description(descriptionBstr.get()));
+
   RefPtr<ITaskSettings> taskSettings;
   ENSURE(newTask->get_Settings(getter_AddRefs(taskSettings)));
   ENSURE(taskSettings->put_DisallowStartIfOnBatteries(VARIANT_FALSE));
   ENSURE(taskSettings->put_MultipleInstances(TASK_INSTANCES_IGNORE_NEW));
   ENSURE(taskSettings->put_StartWhenAvailable(VARIANT_TRUE));
   ENSURE(taskSettings->put_StopIfGoingOnBatteries(VARIANT_FALSE));
-  // This cryptic string means "5 minutes". So, if the task runs for longer
-  // than that, the process will be killed, because that should never happen.
-  BStrPtr execTimeLimitBStr = BStrPtr(SysAllocString(L"PT5M"));
+  // This cryptic string means "12 hours 5 minutes". So, if the task runs for
+  // longer than that, the process will be killed, because that should never
+  // happen. See
+  // https://docs.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
+  // for a detailed explanation of these strings.
+  BStrPtr execTimeLimitBStr = BStrPtr(SysAllocString(L"PT12H5M"));
   ENSURE(taskSettings->put_ExecutionTimeLimit(execTimeLimitBStr.get()));
 
   RefPtr<IRegistrationInfo> regInfo;
@@ -149,9 +210,6 @@ HRESULT RegisterTask(const wchar_t* uniqueToken,
 
     mozilla::UniquePtr<wchar_t[]> timeStr =
         mozilla::MakeUnique<wchar_t[]>(kTimeStrMaxLen + 1);
-    if (!timeStr) {
-      return E_OUTOFMEMORY;
-    }
 
     if (wcsftime(timeStr.get(), kTimeStrMaxLen + 1, kTimeFormat, &now_tm) ==
         0) {
@@ -175,11 +233,21 @@ HRESULT RegisterTask(const wchar_t* uniqueToken,
   RefPtr<IExecAction> execAction;
   ENSURE(action->QueryInterface(IID_IExecAction, getter_AddRefs(execAction)));
 
-  BStrPtr binaryPathBStr =
-      BStrPtr(SysAllocString(mozilla::GetFullBinaryPath().get()));
+  // Register proxy instead of Firefox background task.
+  mozilla::UniquePtr<wchar_t[]> installPath = mozilla::GetFullBinaryPath();
+  if (!PathRemoveFileSpecW(installPath.get())) {
+    return E_FAIL;
+  }
+  std::wstring proxyPath(installPath.get());
+  proxyPath += L"\\default-browser-agent.exe";
+
+  BStrPtr binaryPathBStr = BStrPtr(SysAllocString(proxyPath.c_str()));
   ENSURE(execAction->put_Path(binaryPathBStr.get()));
 
-  BStrPtr argsBStr = BStrPtr(SysAllocString(L"do-task"));
+  std::wstring taskArgs = L"do-task \"";
+  taskArgs += uniqueToken;
+  taskArgs += L"\"";
+  BStrPtr argsBStr = BStrPtr(SysAllocString(taskArgs.c_str()));
   ENSURE(execAction->put_Arguments(argsBStr.get()));
 
   std::wstring taskName(kTaskName);
@@ -254,56 +322,4 @@ HRESULT UpdateTask(const wchar_t* uniqueToken) {
   return RegisterTask(uniqueToken, startTime.get());
 }
 
-HRESULT RemoveTask(const wchar_t* uniqueToken) {
-  RefPtr<ITaskService> scheduler;
-  HRESULT hr = S_OK;
-  ENSURE(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ITaskService, getter_AddRefs(scheduler)));
-
-  ENSURE(scheduler->Connect(VARIANT{}, VARIANT{}, VARIANT{}, VARIANT{}));
-
-  RefPtr<ITaskFolder> taskFolder;
-  BStrPtr folderBStr = BStrPtr(SysAllocString(kTaskVendor));
-
-  hr = scheduler->GetFolder(folderBStr.get(), getter_AddRefs(taskFolder));
-  if (FAILED(hr)) {
-    if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-      // Don't return an error code if our folder doesn't exist,
-      // because that just means it's been removed already.
-      return S_OK;
-    } else {
-      return hr;
-    }
-  }
-
-  std::wstring taskName(kTaskName);
-  taskName += uniqueToken;
-  BStrPtr taskNameBStr = BStrPtr(SysAllocString(taskName.c_str()));
-
-  hr = taskFolder->DeleteTask(taskNameBStr.get(), 0);
-  if (FAILED(hr)) {
-    if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-      // Failing to delete the task because it didn't exist also isn't fatal.
-      return S_OK;
-    } else {
-      return hr;
-    }
-  }
-
-  // See if there are any tasks left in our folder, and delete it if not.
-  RefPtr<IRegisteredTaskCollection> tasksInFolder;
-  ENSURE(taskFolder->GetTasks(TASK_ENUM_HIDDEN, getter_AddRefs(tasksInFolder)));
-
-  LONG numTasks = 0;
-  ENSURE(tasksInFolder->get_Count(&numTasks));
-
-  if (numTasks <= 0) {
-    RefPtr<ITaskFolder> rootFolder;
-    BStrPtr rootFolderBStr = BStrPtr(SysAllocString(L"\\"));
-    ENSURE(
-        scheduler->GetFolder(rootFolderBStr.get(), getter_AddRefs(rootFolder)));
-    ENSURE(rootFolder->DeleteFolder(folderBStr.get(), 0));
-  }
-
-  return hr;
-}
+}  // namespace mozilla::default_agent

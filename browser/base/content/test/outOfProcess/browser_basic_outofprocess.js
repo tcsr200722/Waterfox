@@ -121,9 +121,7 @@ add_task(async function test_subframes_function() {
   let browser = tab.linkedBrowser;
 
   let counter = 0;
-  let browsingContexts = await initChildFrames(browser, function(
-    browsingContext
-  ) {
+  let browsingContexts = await initChildFrames(browser, function () {
     return "<p>Text " + ++counter + "</p>";
   });
 

@@ -1,6 +1,6 @@
 .ds-dismiss.ds-dismiss-ds-collection {
   .ds-dismiss-button {
-    margin: 26px 0 0;
+    margin: 15px 0 0;
     inset-inline-end: 25px;
   }
 
@@ -19,24 +19,17 @@
 
   .ds-header {
     padding: 0 40px 0 0;
+    margin-bottom: 12px;
 
     .title {
-      @include dark-theme-only {
-        color: $grey-30;
-      }
-
-      color: $grey-90;
+      color: var(--newtab-text-primary-color);
       font-weight: 600;
       font-size: 17px;
       line-height: 24px;
     }
 
     .ds-context {
-      @include dark-theme-only {
-        color: $grey-40;
-      }
-
-      color: $grey-50;
+      color: var(--newtab-text-secondary-color);
       font-weight: normal;
       font-size: 13px;
       line-height: 24px;

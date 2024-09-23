@@ -37,7 +37,7 @@ const {
       },
     },
   },
-} = require("devtools/shared/constants");
+} = require("resource://devtools/shared/constants.js");
 
 // Used in accessible component for properties tree rendering.
 exports.TREE_ROW_HEIGHT = 21;
@@ -62,7 +62,6 @@ exports.SELECT = "SELECT";
 exports.HIGHLIGHT = "HIGHLIGHT";
 exports.UNHIGHLIGHT = "UNHIGHLIGHT";
 exports.ENABLE = "ENABLE";
-exports.DISABLE = "DISABLE";
 exports.UPDATE_CAN_BE_DISABLED = "UPDATE_CAN_BE_DISABLED";
 exports.UPDATE_CAN_BE_ENABLED = "UPDATE_CAN_BE_ENABLED";
 exports.UPDATE_PREF = "UPDATE_PREF";
@@ -71,6 +70,7 @@ exports.AUDIT = "AUDIT";
 exports.AUDITING = "AUDITING";
 exports.AUDIT_PROGRESS = "AUDIT_PROGRESS";
 exports.SIMULATE = "SIMULATE";
+exports.UPDATE_DISPLAY_TABBING_ORDER = "UPDATE_DISPLAY_TABBING_ORDER";
 
 // List of filters for accessibility checks.
 exports.FILTERS = {
@@ -115,17 +115,15 @@ exports.ACCESSIBLE_EVENTS = [
 // Telemetry name constants.
 exports.A11Y_SERVICE_DURATION =
   "DEVTOOLS_ACCESSIBILITY_SERVICE_TIME_ACTIVE_SECONDS";
-exports.A11Y_SERVICE_ENABLED_COUNT =
-  "devtools.accessibility.service_enabled_count";
 
 // URL constants
 exports.A11Y_LEARN_MORE_LINK =
-  "https://developer.mozilla.org/docs/Tools/Accessibility_inspector";
+  "https://firefox-source-docs.mozilla.org/devtools-user/accessibility_inspector/";
 exports.A11Y_CONTRAST_LEARN_MORE_LINK =
   "https://developer.mozilla.org/docs/Web/Accessibility/Understanding_WCAG/Perceivable/" +
   "Color_contrast?utm_source=devtools&utm_medium=a11y-panel-checks-color-contrast";
 exports.A11Y_SIMULATION_DOCUMENTATION_LINK =
-  "https://developer.mozilla.org/docs/Tools/Accessibility_inspector/Simulation";
+  "https://firefox-source-docs.mozilla.org/devtools-user/accessibility_inspector/simulation/";
 
 const A11Y_TEXT_LABEL_LINK_BASE =
   "https://developer.mozilla.org/docs/Web/Accessibility/Understanding_WCAG/Text_labels_and_names" +

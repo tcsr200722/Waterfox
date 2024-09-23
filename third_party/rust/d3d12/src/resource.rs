@@ -1,10 +1,8 @@
 //! GPU Resource
 
-use com::WeakPtr;
-use std::ops::Range;
-use std::ptr;
+use crate::{com::ComPtr, D3DResult, Rect};
+use std::{ops::Range, ptr};
 use winapi::um::d3d12;
-use {D3DResult, Rect};
 
 pub type Subresource = u32;
 
@@ -13,10 +11,9 @@ pub struct DiscardRegion<'a> {
     pub subregions: Range<Subresource>,
 }
 
-pub type Resource = WeakPtr<d3d12::ID3D12Resource>;
+pub type Resource = ComPtr<d3d12::ID3D12Resource>;
 
 impl Resource {
-    ///
     pub fn map(
         &self,
         subresource: Subresource,

@@ -3,17 +3,23 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const Services = require("Services");
-const { L10nRegistry } = require("resource://gre/modules/L10nRegistry.jsm");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
-const EventEmitter = require("devtools/shared/event-emitter");
-
-const Telemetry = require("devtools/client/shared/telemetry");
-
-const { Picker } = require("devtools/client/accessibility/picker");
+loader.lazyRequireGetter(
+  this,
+  "AccessibilityProxy",
+  "resource://devtools/client/accessibility/accessibility-proxy.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "Picker",
+  "resource://devtools/client/accessibility/picker.js",
+  true
+);
 const {
   A11Y_SERVICE_DURATION,
-} = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/client/accessibility/constants.js");
 
 // The panel's window global is an EventEmitter firing the following events:
 const EVENTS = {
@@ -27,6 +33,11 @@ const EVENTS = {
   // When the accessibility inspector is updated.
   ACCESSIBILITY_INSPECTOR_UPDATED:
     "Accessibility:AccessibilityInspectorUpdated",
+  // When accessibility panel UI is initialized (rendered).
+  INITIALIZED: "Accessibility:Initialized",
+  // When accessibile object properties are updated in the panel sidebar for a
+  // new accessible object.
+  PROPERTIES_UPDATED: "Accessibility:PropertiesUpdated",
 };
 
 /**
@@ -34,24 +45,20 @@ const EVENTS = {
  * render Accessibility Tree of the current debugger target and the sidebar that
  * displays current relevant accessible details.
  */
-function AccessibilityPanel(iframeWindow, toolbox, startup) {
+function AccessibilityPanel(iframeWindow, toolbox, commands) {
   this.panelWin = iframeWindow;
   this._toolbox = toolbox;
-  this.startup = startup;
+  this._commands = commands;
 
-  this.onTabNavigated = this.onTabNavigated.bind(this);
-  this.onTargetAvailable = this.onTargetAvailable.bind(this);
   this.onPanelVisibilityChange = this.onPanelVisibilityChange.bind(this);
-  this.onNewAccessibleFrontSelected = this.onNewAccessibleFrontSelected.bind(
-    this
-  );
-  this.onAccessibilityInspectorUpdated = this.onAccessibilityInspectorUpdated.bind(
-    this
-  );
-  this.updateA11YServiceDurationTimer = this.updateA11YServiceDurationTimer.bind(
-    this
-  );
+  this.onNewAccessibleFrontSelected =
+    this.onNewAccessibleFrontSelected.bind(this);
+  this.onAccessibilityInspectorUpdated =
+    this.onAccessibilityInspectorUpdated.bind(this);
+  this.updateA11YServiceDurationTimer =
+    this.updateA11YServiceDurationTimer.bind(this);
   this.forceUpdatePickerButton = this.forceUpdatePickerButton.bind(this);
+  this.onLifecycleEvent = this.onLifecycleEvent.bind(this);
 
   EventEmitter.decorate(this);
 }
@@ -71,7 +78,7 @@ AccessibilityPanel.prototype = {
       resolver = resolve;
     });
 
-    this._telemetry = new Telemetry();
+    this._telemetry = this._toolbox.telemetry;
     this.panelWin.gTelemetry = this._telemetry;
 
     this._toolbox.on("select", this.onPanelVisibilityChange);
@@ -87,19 +94,11 @@ AccessibilityPanel.prototype = {
       this.onAccessibilityInspectorUpdated
     );
 
-    this.shouldRefresh = true;
+    this.accessibilityProxy = new AccessibilityProxy(this._commands, this);
+    await this.accessibilityProxy.initialize();
 
-    await this.startup.initAccessibility();
-
-    await this._toolbox.targetList.watchTargets(
-      [this._toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable
-    );
-
-    // Bug 1602075: if auto init feature is enabled, enable accessibility
-    // service if necessary.
+    // Enable accessibility service if necessary.
     if (
-      this.accessibilityProxy.supports.autoInit &&
       this.accessibilityProxy.canBeEnabled &&
       !this.accessibilityProxy.enabled
     ) {
@@ -111,15 +110,16 @@ AccessibilityPanel.prototype = {
 
     this.updateA11YServiceDurationTimer();
     this.accessibilityProxy.startListeningForLifecycleEvents({
-      init: [this.updateA11YServiceDurationTimer, this.forceUpdatePickerButton],
-      shutdown: [
-        this.updateA11YServiceDurationTimer,
-        this.forceUpdatePickerButton,
-      ],
+      init: this.onLifecycleEvent,
+      shutdown: this.onLifecycleEvent,
     });
 
-    this.isReady = true;
-    this.emit("ready");
+    // Force refresh to render the UI and wait for the INITIALIZED event.
+    const onInitialized = this.panelWin.once(EVENTS.INITIALIZED);
+    this.shouldRefresh = true;
+    this.refresh();
+    await onInitialized;
+
     resolver(this);
     return this._opening;
   },
@@ -130,7 +130,7 @@ AccessibilityPanel.prototype = {
    */
   async createFluentBundles() {
     const locales = Services.locale.appLocalesAsBCP47;
-    const generator = L10nRegistry.generateBundles(locales, [
+    const generator = L10nRegistry.getInstance().generateBundles(locales, [
       "devtools/client/accessibility.ftl",
     ]);
 
@@ -142,6 +142,11 @@ AccessibilityPanel.prototype = {
     }
 
     return contexts;
+  },
+
+  onLifecycleEvent() {
+    this.updateA11YServiceDurationTimer();
+    this.forceUpdatePickerButton();
   },
 
   onNewAccessibleFrontSelected(selected) {
@@ -157,20 +162,16 @@ AccessibilityPanel.prototype = {
    * refreshed immediatelly if it's currently selected or lazily when the user
    * actually selects it.
    */
-  onTabNavigated() {
+  async forceRefresh() {
     this.shouldRefresh = true;
-    this._opening.then(() => this.refresh());
-  },
+    await this._opening;
 
-  async onTargetAvailable({ targetFront, isTargetSwitching }) {
-    if (targetFront.isTopLevel) {
-      await this.accessibilityProxy.initializeProxyForPanel(targetFront);
-      this.accessibilityProxy.currentTarget.on("navigate", this.onTabNavigated);
-    }
+    await this.accessibilityProxy.accessibilityFrontGetPromise;
+    const onUpdated = this.panelWin.once(EVENTS.INITIALIZED);
+    this.refresh();
+    await onUpdated;
 
-    if (isTargetSwitching) {
-      this.onTabNavigated();
-    }
+    this.emit("reloaded");
   },
 
   /**
@@ -201,8 +202,8 @@ AccessibilityPanel.prototype = {
       stopListeningForAccessibilityEvents,
       audit,
       simulate,
+      toggleDisplayTabbingOrder,
       enableAccessibility,
-      disableAccessibility,
       resetAccessiblity,
       startListeningForLifecycleEvents,
       stopListeningForLifecycleEvents,
@@ -220,8 +221,8 @@ AccessibilityPanel.prototype = {
       stopListeningForAccessibilityEvents,
       audit,
       simulate,
+      toggleDisplayTabbingOrder,
       enableAccessibility,
-      disableAccessibility,
       resetAccessiblity,
       startListeningForLifecycleEvents,
       stopListeningForLifecycleEvents,
@@ -285,7 +286,7 @@ AccessibilityPanel.prototype = {
     this._toolbox.component.setToolboxButtons(this._toolbox.toolbarButtons);
   },
 
-  togglePicker(focus) {
+  togglePicker() {
     this.picker && this.picker.toggle();
   },
 
@@ -295,10 +296,6 @@ AccessibilityPanel.prototype = {
 
   stopPicker() {
     this.picker && this.picker.stop();
-  },
-
-  get accessibilityProxy() {
-    return this.startup.accessibilityProxy;
   },
 
   /**
@@ -314,14 +311,17 @@ AccessibilityPanel.prototype = {
     }
     this._destroyed = true;
 
-    this._toolbox.targetList.unwatchTargets(
-      [this._toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable
-    );
-
     this.postContentMessage("destroy");
 
-    this.accessibilityProxy.currentTarget.off("navigate", this.onTabNavigated);
+    if (this.accessibilityProxy) {
+      this.accessibilityProxy.stopListeningForLifecycleEvents({
+        init: this.onLifecycleEvent,
+        shutdown: this.onLifecycleEvent,
+      });
+      this.accessibilityProxy.destroy();
+      this.accessibilityProxy = null;
+    }
+
     this._toolbox.off("select", this.onPanelVisibilityChange);
 
     this.panelWin.off(
@@ -338,14 +338,6 @@ AccessibilityPanel.prototype = {
       this.picker.release();
       this.picker = null;
     }
-
-    this.accessibilityProxy.stopListeningForLifecycleEvents({
-      init: [this.updateA11YServiceDurationTimer, this.forceUpdatePickerButton],
-      shutdown: [
-        this.updateA11YServiceDurationTimer,
-        this.forceUpdatePickerButton,
-      ],
-    });
 
     this._telemetry = null;
     this.panelWin.gTelemetry = null;

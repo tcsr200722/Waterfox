@@ -12,7 +12,7 @@ This document is intended as a guideline for developers and reviewers when
 working with FTL (Fluent) files. As such, it’s not meant to replace the
 `existing extensive documentation`__ about Fluent.
 
-__ ./fluent_tutorial.html
+__ ./tutorial.html
 
 `Herald`_ is used to set the group `fluent-reviewers`_ as blocking reviewer for
 any patch modifying FTL files committed to Phabricator. The person from this
@@ -231,10 +231,39 @@ it’s a standard plural, you should use the :js:`one` category for singular.
 Also make sure to always pass the variable to these messages as a number, not
 as a string.
 
+Access Keys
+===========
+
+The following is a simple potential example of an access key:
+
+.. code-block:: fluent
+
+  example-menu-item =
+      .label = Menu Item
+      .accesskey = M
+
+Access keys are used in menus in order to help provide easy keyboard shortcut access. They
+are useful for both power users, and for users who have accessibility needs. It is
+helpful to first read the `Access keys`__ guide in the Windows Developer documentation,
+as it outlines the best practices for Windows applications.
+
+__ https://docs.microsoft.com/en-us/windows/uwp/design/input/access-keys
+
+There are some differences between operating systems. Linux mostly follows the same
+practices as Windows. However, macOS in general does not have good support for accesskeys,
+especially in menus.
+
+When choosing an access key, it's important that it's unique relative to the current level
+of UI. It's preferable to avoid letters with descending parts, such as :code:`g`,
+:code:`j`, :code:`p`, and :code:`q` as these will not be underlined nicely in Windows or
+Linux. Other problematic characters are ones which are narrow, such as :code:`l`,
+:code:`i` and :code:`I`. The underline may not be as visible as other letters in
+sans-serif fonts.
+
 Linter
 ======
 
-:bash:`mach lint` includes a `l10n linter`_, called :bash:`moz-l10n-lint`. It
+:bash:`mach lint` includes a :ref:`l10n linter <L10n>`, called :bash:`moz-l10n-lint`. It
 can be run locally by developers but also runs on Treeherder: in the Build
 Status section of the diff on Phabricator, open the Treeherder Jobs link and
 look for the :js:`l1nt` job.
@@ -272,4 +301,3 @@ __ ./fluent_migrations.html
 .. _fluent-reviewers: https://phabricator.services.mozilla.com/tag/fluent-reviewers/
 .. _fluent-react: https://github.com/projectfluent/fluent.js/wiki/React-Bindings
 .. _term: https://projectfluent.org/fluent/guide/terms.html
-.. _l10n linter: https://firefox-source-docs.mozilla.org/code-quality/lint/linters/l10n.html

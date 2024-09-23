@@ -93,15 +93,12 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   // KnowsCompositor
   TextureForwarder* GetTextureForwarder() override;
   LayersIPCActor* GetLayersIPCActor() override;
-  void SyncWithCompositor() override;
-  ActiveResourceTracker* GetActiveResourceTracker() override {
-    return mActiveResourceTracker.get();
-  }
+  void SyncWithCompositor(
+      const Maybe<uint64_t>& aWindowID = Nothing()) override;
 
-  void AddPipelineIdForAsyncCompositable(const wr::PipelineId& aPipelineId,
-                                         const CompositableHandle& aHandlee);
   void AddPipelineIdForCompositable(const wr::PipelineId& aPipelineId,
-                                    const CompositableHandle& aHandlee);
+                                    const CompositableHandle& aHandle,
+                                    CompositableHandleOwner aOwner);
   void RemovePipelineIdForCompositable(const wr::PipelineId& aPipelineId);
 
   /// Release TextureClient that is bounded to ImageKey.
@@ -123,6 +120,14 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
     mIdNamespace = aIdNamespace;
   }
 
+  bool MatchesNamespace(const wr::ImageKey& aImageKey) const {
+    return aImageKey.mNamespace == mIdNamespace;
+  }
+
+  bool MatchesNamespace(const wr::BlobImageKey& aBlobKey) const {
+    return MatchesNamespace(aBlobKey._0);
+  }
+
   wr::FontKey GetNextFontKey() {
     return wr::FontKey{GetNamespace(), GetNextResourceId()};
   }
@@ -136,6 +141,7 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   }
 
   void PushGlyphs(wr::DisplayListBuilder& aBuilder,
+                  wr::IpcResourceUpdateQueue& aResources,
                   Range<const wr::GlyphInstance> aGlyphs,
                   gfx::ScaledFont* aFont, const wr::ColorF& aColor,
                   const StackingContextHelper& aSc,
@@ -144,11 +150,9 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
                   const wr::GlyphOptions* aGlyphOptions = nullptr);
 
   Maybe<wr::FontInstanceKey> GetFontKeyForScaledFont(
-      gfx::ScaledFont* aScaledFont,
-      wr::IpcResourceUpdateQueue* aResources = nullptr);
+      gfx::ScaledFont* aScaledFont, wr::IpcResourceUpdateQueue& aResources);
   Maybe<wr::FontKey> GetFontKeyForUnscaledFont(
-      gfx::UnscaledFont* aUnscaledFont,
-      wr::IpcResourceUpdateQueue* aResources = nullptr);
+      gfx::UnscaledFont* aUnscaledFont, wr::IpcResourceUpdateQueue& aResources);
   void RemoveExpiredFontKeys(wr::IpcResourceUpdateQueue& aResources);
 
   void BeginClearCachedResources();
@@ -174,7 +178,8 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   void DeallocResourceShmem(RefCountedShmem& aShm);
 
   void Capture();
-  void ToggleCaptureSequence();
+  void StartCaptureSequence(const nsCString& path, uint32_t aFlags);
+  void StopCaptureSequence();
 
  private:
   friend class CompositorBridgeChild;
@@ -186,12 +191,6 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   // CompositableForwarder
   void Connect(CompositableClient* aCompositable,
                ImageContainer* aImageContainer = nullptr) override;
-  void UseTiledLayerBuffer(
-      CompositableClient* aCompositable,
-      const SurfaceDescriptorTiles& aTiledDescriptor) override;
-  void UpdateTextureRegion(CompositableClient* aCompositable,
-                           const ThebesBufferData& aThebesBufferData,
-                           const nsIntRegion& aUpdatedRegion) override;
   void ReleaseCompositable(const CompositableHandle& aHandle) override;
   bool DestroyInTransaction(PTextureChild* aTexture) override;
   bool DestroyInTransaction(const CompositableHandle& aHandle);
@@ -199,11 +198,13 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
                                      TextureClient* aTexture) override;
   void UseTextures(CompositableClient* aCompositable,
                    const nsTArray<TimedTextureClient>& aTextures) override;
-  void UseComponentAlphaTextures(CompositableClient* aCompositable,
-                                 TextureClient* aClientOnBlack,
-                                 TextureClient* aClientOnWhite) override;
-  void UpdateFwdTransactionId() override;
-  uint64_t GetFwdTransactionId() override;
+  void UseRemoteTexture(CompositableClient* aCompositable,
+                        const RemoteTextureId aTextureId,
+                        const RemoteTextureOwnerId aOwnerId,
+                        const gfx::IntSize aSize, const TextureFlags aFlags,
+                        const RefPtr<FwdTransactionTracker>& aTracker) override;
+  FwdTransactionCounter& GetFwdTransactionCounter() override;
+
   bool InForwarderThread() override;
 
   void ActorDestroy(ActorDestroyReason why) override;
@@ -231,7 +232,7 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
 
   nsTArray<OpDestroy> mDestroyedActors;
   nsTArray<WebRenderParentCommand> mParentCommands;
-  nsDataHashtable<nsUint64HashKey, CompositableClient*> mCompositables;
+  nsTHashMap<nsUint64HashKey, CompositableClient*> mCompositables;
   bool mIsInTransaction;
   bool mIsInClearCachedResources;
   wr::IdNamespace mIdNamespace;
@@ -246,12 +247,10 @@ class WebRenderBridgeChild final : public PWebRenderBridgeChild,
   bool mSentDisplayList;
 
   uint32_t mFontKeysDeleted;
-  nsDataHashtable<UnscaledFontHashKey, wr::FontKey> mFontKeys;
+  nsTHashMap<UnscaledFontHashKey, wr::FontKey> mFontKeys;
 
   uint32_t mFontInstanceKeysDeleted;
-  nsDataHashtable<ScaledFontHashKey, wr::FontInstanceKey> mFontInstanceKeys;
-
-  UniquePtr<ActiveResourceTracker> mActiveResourceTracker;
+  nsTHashMap<ScaledFontHashKey, wr::FontInstanceKey> mFontInstanceKeys;
 
   RefCountedShmem mResourceShm;
 };

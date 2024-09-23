@@ -3,9 +3,8 @@
 
 "use strict";
 
-ChromeUtils.import(
-  "resource://testing-common/CustomizableUITestUtils.jsm",
-  this
+const { CustomizableUITestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/CustomizableUITestUtils.sys.mjs"
 );
 let gCUITestUtils = new CustomizableUITestUtils(window);
 
@@ -23,14 +22,9 @@ add_task(async function test_panelview_bookmarks_delete() {
 
   await gCUITestUtils.openMainMenu();
 
-  let libraryView = document.getElementById("appMenu-libraryView");
-  let promise = BrowserTestUtils.waitForEvent(libraryView, "ViewShown");
-  document.getElementById("appMenu-library-button").click();
-  await promise;
-
+  document.getElementById("appMenu-bookmarks-button").click();
   let bookmarksView = document.getElementById("PanelUI-bookmarks");
-  promise = BrowserTestUtils.waitForEvent(bookmarksView, "ViewShown");
-  document.getElementById("appMenu-library-bookmarks-button").click();
+  let promise = BrowserTestUtils.waitForEvent(bookmarksView, "ViewShown");
   await promise;
 
   let list = document.getElementById("panelMenu_bookmarksMenu");
@@ -45,7 +39,7 @@ add_task(async function test_panelview_bookmarks_delete() {
   await promise;
 
   promise = new Promise(resolve => {
-    let observer = new MutationObserver(mutations => {
+    let observer = new MutationObserver(() => {
       if (listItem.parentNode == null) {
         Assert.ok(true, "The bookmarks list item was removed.");
         observer.disconnect();
@@ -54,8 +48,10 @@ add_task(async function test_panelview_bookmarks_delete() {
     });
     observer.observe(list, { childList: true });
   });
-  let placesContextDelete = document.getElementById("placesContext_delete");
-  EventUtils.synthesizeMouseAtCenter(placesContextDelete, {});
+  let placesContextDelete = document.getElementById(
+    "placesContext_deleteBookmark"
+  );
+  placesContext.activateItem(placesContextDelete, {});
   await promise;
 
   await gCUITestUtils.hideMainMenu();

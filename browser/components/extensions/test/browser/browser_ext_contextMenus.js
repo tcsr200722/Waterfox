@@ -12,7 +12,7 @@ Services.scriptloader.loadSubScript(
 const PAGE =
   "http://mochi.test:8888/browser/browser/components/extensions/test/browser/context.html";
 
-add_task(async function() {
+add_task(async function () {
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
 
   gBrowser.selectedTab = tab1;
@@ -22,7 +22,12 @@ add_task(async function() {
       permissions: ["contextMenus"],
     },
 
-    background: function() {
+    background: function () {
+      browser.test.assertEq(
+        browser.contextMenus.ContextType.TAB,
+        "tab",
+        "ContextType is available"
+      );
       browser.contextMenus.create({
         id: "clickme-image",
         title: "Click me!",
@@ -62,7 +67,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(tab1);
 });
 
-add_task(async function() {
+add_task(async function () {
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
 
   gBrowser.selectedTab = tab1;
@@ -72,7 +77,7 @@ add_task(async function() {
       permissions: ["contextMenus"],
     },
 
-    background: async function() {
+    background: async function () {
       browser.test.onMessage.addListener(msg => {
         if (msg == "removeall") {
           browser.contextMenus.removeAll();
@@ -386,7 +391,7 @@ add_task(async function() {
   checkClickInfo(result);
 
   // Select some text
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function(arg) {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     let doc = content.document;
     let range = doc.createRange();
     let selection = content.getSelection();
@@ -454,7 +459,7 @@ add_task(async function() {
   checkClickInfo(result);
 
   // Select a lot of text
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function(arg) {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     let doc = content.document;
     let range = doc.createRange();
     let selection = content.getSelection();
@@ -496,7 +501,7 @@ add_task(async function() {
 
   // Select a lot of text, excercise the editable element code path in
   // the Browser:GetSelection handler.
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function(arg) {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     let doc = content.document;
     let node = doc.getElementById("editabletext");
     // content.js handleContentContextMenu fails intermittently without focus.
@@ -602,7 +607,7 @@ add_task(async function testRemoveAllWithTwoExtensions() {
       const expected = items.includes(id);
       const found = menu.getElementsByAttribute("label", id);
       is(
-        found.length,
+        !!found.length,
         expected,
         `menu item ${id} ${expected ? "" : "not "}found`
       );
@@ -719,7 +724,7 @@ add_task(async function test_bookmark_sidebar_contextmenu() {
     await extension.startup();
     let bookmarkGuid = await extension.awaitMessage("bookmark-created");
 
-    let sidebar = window.SidebarUI.browser;
+    let sidebar = window.SidebarController.browser;
     let menu = sidebar.contentDocument.getElementById("placesContext");
     tree.selectItems([bookmarkGuid]);
     let shown = BrowserTestUtils.waitForEvent(menu, "popupshown");

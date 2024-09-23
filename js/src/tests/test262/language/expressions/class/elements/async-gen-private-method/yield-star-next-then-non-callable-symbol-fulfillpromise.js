@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-methods-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/async-generators/yield-star-next-then-non-callable-symbol-fulfillpromise.case
 // - src/async-generators/default/async-class-expr-private-method.template
@@ -84,9 +84,18 @@ var C = class {
 const c = new C();
 
 // Test the private fields do not appear as properties before set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(c, "#gen"), false, 'Object.hasOwnProperty.call(c, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "#gen"),
+  "#gen does not appear as an own property on C instance"
+);
 
 var iter = c.gen();
 
@@ -98,6 +107,15 @@ iter.next().then(({ value, done }) => {
 assert.sameValue(callCount, 1);
 
 // Test the private fields do not appear as properties after set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(c, "#gen"), false, 'Object.hasOwnProperty.call(c, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "#gen"),
+  "#gen does not appear as an own property on C instance"
+);

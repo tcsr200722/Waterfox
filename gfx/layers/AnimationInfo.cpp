@@ -13,13 +13,16 @@
 #include "mozilla/dom/CSSTransition.h"
 #include "mozilla/dom/KeyframeEffect.h"
 #include "mozilla/EffectSet.h"
-#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/MotionPathUtils.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "nsIContent.h"
+#include "nsLayoutUtils.h"
+#include "nsRefreshDriver.h"
 #include "nsStyleTransformMatrix.h"
 #include "PuppetWidget.h"
 
-namespace mozilla {
-namespace layers {
+namespace mozilla::layers {
 
 using TransformReferenceBox = nsStyleTransformMatrix::TransformReferenceBox;
 
@@ -80,53 +83,33 @@ void AnimationInfo::ClearAnimationsForNextTransaction() {
   mPendingAnimations->Clear();
 }
 
-void AnimationInfo::SetCompositorAnimations(
-    const CompositorAnimations& aCompositorAnimations) {
-  mCompositorAnimationsId = aCompositorAnimations.id();
-
-  mStorageData =
-      AnimationHelper::ExtractAnimations(aCompositorAnimations.animations());
-}
-
-bool AnimationInfo::StartPendingAnimations(const TimeStamp& aReadyTime) {
-  bool updated = false;
-  for (size_t animIdx = 0, animEnd = mAnimations.Length(); animIdx < animEnd;
-       animIdx++) {
-    Animation& anim = mAnimations[animIdx];
-
-    // If the animation is doing an async update of its playback rate, then we
-    // want to match whatever its current time would be at *aReadyTime*.
-    if (!std::isnan(anim.previousPlaybackRate()) && anim.startTime().isSome() &&
-        !anim.originTime().IsNull() && !anim.isNotPlaying()) {
-      TimeDuration readyTime = aReadyTime - anim.originTime();
-      anim.holdTime() = dom::Animation::CurrentTimeFromTimelineTime(
-          readyTime, anim.startTime().ref(), anim.previousPlaybackRate());
-      // Make start time null so that we know to update it below.
-      anim.startTime() = Nothing();
-    }
-
-    // If the animation is play-pending, resolve the start time.
-    if (anim.startTime().isNothing() && !anim.originTime().IsNull() &&
-        !anim.isNotPlaying()) {
-      TimeDuration readyTime = aReadyTime - anim.originTime();
-      anim.startTime() = Some(dom::Animation::StartTimeFromTimelineTime(
-          readyTime, anim.holdTime(), anim.playbackRate()));
-      updated = true;
-    }
+void AnimationInfo::MaybeStartPendingAnimation(Animation& aAnimation,
+                                               const TimeStamp& aReadyTime) {
+  // If the animation is doing an async update of its playback rate, then we
+  // want to match whatever its current time would be at *aReadyTime*.
+  if (!std::isnan(aAnimation.previousPlaybackRate()) &&
+      aAnimation.startTime().isSome() && !aAnimation.originTime().IsNull() &&
+      !aAnimation.isNotPlaying()) {
+    TimeDuration readyTime = aReadyTime - aAnimation.originTime();
+    aAnimation.holdTime() = dom::Animation::CurrentTimeFromTimelineTime(
+        readyTime, aAnimation.startTime().ref(),
+        aAnimation.previousPlaybackRate());
+    // Make start time null so that we know to update it below.
+    aAnimation.startTime() = Nothing();
   }
-  return updated;
-}
 
-void AnimationInfo::TransferMutatedFlagToLayer(Layer* aLayer) {
-  if (mMutated) {
-    aLayer->Mutated();
-    mMutated = false;
+  // If the aAnimationation is play-pending, resolve the start time.
+  if (aAnimation.startTime().isNothing() && !aAnimation.originTime().IsNull() &&
+      !aAnimation.isNotPlaying()) {
+    const TimeDuration readyTime = aReadyTime - aAnimation.originTime();
+    aAnimation.startTime() = Some(dom::Animation::StartTimeFromTimelineTime(
+        readyTime, aAnimation.holdTime(), aAnimation.playbackRate()));
   }
 }
 
 bool AnimationInfo::ApplyPendingUpdatesForThisTransaction() {
   if (mPendingAnimations) {
-    mPendingAnimations->SwapElements(mAnimations);
+    mAnimations = std::move(*mPendingAnimations);
     mPendingAnimations = nullptr;
     return true;
   }
@@ -137,8 +120,8 @@ bool AnimationInfo::ApplyPendingUpdatesForThisTransaction() {
 bool AnimationInfo::HasTransformAnimation() const {
   const nsCSSPropertyIDSet& transformSet =
       LayerAnimationInfo::GetCSSPropertiesFor(DisplayItemType::TYPE_TRANSFORM);
-  for (uint32_t i = 0; i < mAnimations.Length(); i++) {
-    if (transformSet.HasProperty(mAnimations[i].property())) {
+  for (const auto& animation : mAnimations) {
+    if (transformSet.HasProperty(animation.property())) {
       return true;
     }
   }
@@ -150,12 +133,6 @@ Maybe<uint64_t> AnimationInfo::GetGenerationFromFrame(
     nsIFrame* aFrame, DisplayItemType aDisplayItemKey) {
   MOZ_ASSERT(aFrame->IsPrimaryFrame() ||
              nsLayoutUtils::IsFirstContinuationOrIBSplitSibling(aFrame));
-
-  layers::Layer* layer =
-      FrameLayerBuilder::GetDedicatedLayer(aFrame, aDisplayItemKey);
-  if (layer) {
-    return layer->GetAnimationInfo().GetAnimationGeneration();
-  }
 
   // In case of continuation, KeyframeEffectReadOnly uses its first frame,
   // whereas nsDisplayItem uses its last continuation, so we have to use the
@@ -178,59 +155,47 @@ void AnimationInfo::EnumerateGenerationOnFrame(
     const nsIFrame* aFrame, const nsIContent* aContent,
     const CompositorAnimatableDisplayItemTypes& aDisplayItemTypes,
     AnimationGenerationCallback aCallback) {
-  if (XRE_IsContentProcess()) {
-    if (nsIWidget* widget = nsContentUtils::WidgetForContent(aContent)) {
-      // In case of child processes, we might not have yet created the layer
-      // manager.  That means there is no animation generation we have, thus
-      // we call the callback function with |Nothing()| for the generation.
-      //
-      // Note that we need to use nsContentUtils::WidgetForContent() instead of
-      // BrowserChild::GetFrom(aFrame->PresShell())->WebWidget() because in the
-      // case of child popup content PuppetWidget::mBrowserChild is the same as
-      // the parent's one, which means mBrowserChild->IsLayersConnected() check
-      // in PuppetWidget::GetLayerManager queries the parent state, it results
-      // the assertion in the function failure.
-      if (widget->GetOwningBrowserChild() &&
-          !static_cast<widget::PuppetWidget*>(widget)->HasLayerManager()) {
-        for (auto displayItem : LayerAnimationInfo::sDisplayItemTypes) {
-          aCallback(Nothing(), displayItem);
-        }
-        return;
-      }
-    }
+  nsIWidget* widget = nsContentUtils::WidgetForContent(aContent);
+  if (!widget) {
+    return;
   }
-
-  RefPtr<LayerManager> layerManager =
-      nsContentUtils::LayerManagerForContent(aContent);
-
-  if (layerManager &&
-      layerManager->GetBackendType() == layers::LayersBackend::LAYERS_WR) {
-    // In case of continuation, nsDisplayItem uses its last continuation, so we
-    // have to use the last continuation frame here.
-    if (nsLayoutUtils::IsFirstContinuationOrIBSplitSibling(aFrame)) {
-      aFrame = nsLayoutUtils::LastContinuationOrIBSplitSibling(aFrame);
-    }
-
+  // If we haven't created a window renderer there's no animation generation
+  // that we can have, thus we call the callback function with |Nothing()| for
+  // the generation.
+  if (!widget->HasWindowRenderer()) {
     for (auto displayItem : LayerAnimationInfo::sDisplayItemTypes) {
-      // For transform animations, the animation is on the primary frame but
-      // |aFrame| is the style frame.
-      const nsIFrame* frameToQuery =
-          displayItem == DisplayItemType::TYPE_TRANSFORM
-              ? nsLayoutUtils::GetPrimaryFrameFromStyleFrame(aFrame)
-              : aFrame;
-      RefPtr<WebRenderAnimationData> animationData =
-          GetWebRenderUserData<WebRenderAnimationData>(frameToQuery,
-                                                       (uint32_t)displayItem);
-      Maybe<uint64_t> generation;
-      if (animationData) {
-        generation = animationData->GetAnimationInfo().GetAnimationGeneration();
-      }
-      aCallback(generation, displayItem);
+      aCallback(Nothing(), displayItem);
     }
     return;
   }
+  WindowRenderer* renderer = widget->GetWindowRenderer();
+  MOZ_ASSERT(renderer);
+  if (!renderer->AsWebRender()) {
+    return;
+  }
 
-  FrameLayerBuilder::EnumerateGenerationForDedicatedLayers(aFrame, aCallback);
+  // In case of continuation, nsDisplayItem uses its last continuation, so we
+  // have to use the last continuation frame here.
+  if (nsLayoutUtils::IsFirstContinuationOrIBSplitSibling(aFrame)) {
+    aFrame = nsLayoutUtils::LastContinuationOrIBSplitSibling(aFrame);
+  }
+
+  for (auto displayItem : LayerAnimationInfo::sDisplayItemTypes) {
+    // For transform animations, the animation is on the primary frame but
+    // |aFrame| is the style frame.
+    const nsIFrame* frameToQuery =
+        displayItem == DisplayItemType::TYPE_TRANSFORM
+            ? nsLayoutUtils::GetPrimaryFrameFromStyleFrame(aFrame)
+            : aFrame;
+    RefPtr<WebRenderAnimationData> animationData =
+        GetWebRenderUserData<WebRenderAnimationData>(frameToQuery,
+                                                     (uint32_t)displayItem);
+    Maybe<uint64_t> generation;
+    if (animationData) {
+      generation = animationData->GetAnimationInfo().GetAnimationGeneration();
+    }
+    aCallback(generation, displayItem);
+  }
 }
 
 static StyleTransformOperation ResolveTranslate(
@@ -343,31 +308,23 @@ static StyleTransform ResolveTransformOperations(
   return transform;
 }
 
-static TimingFunction ToTimingFunction(
-    const Maybe<ComputedTimingFunction>& aCTF) {
-  if (aCTF.isNothing()) {
-    return TimingFunction(null_t());
+static Maybe<ScrollTimelineOptions> GetScrollTimelineOptions(
+    dom::AnimationTimeline* aTimeline) {
+  if (!aTimeline || !aTimeline->IsScrollTimeline()) {
+    return Nothing();
   }
 
-  if (aCTF->HasSpline()) {
-    const SMILKeySpline* spline = aCTF->GetFunction();
-    return TimingFunction(CubicBezierFunction(
-        static_cast<float>(spline->X1()), static_cast<float>(spline->Y1()),
-        static_cast<float>(spline->X2()), static_cast<float>(spline->Y2())));
-  }
+  const dom::ScrollTimeline* timeline = aTimeline->AsScrollTimeline();
+  MOZ_ASSERT(timeline->IsActive(),
+             "We send scroll animation to the compositor only if its timeline "
+             "is active");
 
-  return TimingFunction(StepFunction(
-      aCTF->GetSteps().mSteps, static_cast<uint8_t>(aCTF->GetSteps().mPos)));
-}
+  ScrollableLayerGuid::ViewID source = ScrollableLayerGuid::NULL_SCROLL_ID;
+  DebugOnly<bool> success =
+      nsLayoutUtils::FindIDFor(timeline->SourceElement(), &source);
+  MOZ_ASSERT(success, "We should have a valid ViewID for the scroller");
 
-// FIXME: Bug 1489392: We don't have to normalize the path here if we accept
-// the spec issue which would like to normalize svg paths at computed time.
-static StyleOffsetPath NormalizeOffsetPath(const StyleOffsetPath& aOffsetPath) {
-  if (aOffsetPath.IsPath()) {
-    return StyleOffsetPath::Path(
-        MotionPathUtils::NormalizeSVGPathData(aOffsetPath.AsPath()));
-  }
-  return StyleOffsetPath(aOffsetPath);
+  return Some(ScrollTimelineOptions(source, timeline->Axis()));
 }
 
 static void SetAnimatable(nsCSSPropertyID aProperty,
@@ -408,8 +365,8 @@ static void SetAnimatable(nsCSSPropertyID aProperty,
           aAnimationValue.GetTransformProperty(), aRefBox);
       break;
     case eCSSProperty_offset_path:
-      aAnimatable =
-          NormalizeOffsetPath(aAnimationValue.GetOffsetPathProperty());
+      aAnimatable = StyleOffsetPath::None();
+      aAnimationValue.GetOffsetPathProperty(aAnimatable.get_StyleOffsetPath());
       break;
     case eCSSProperty_offset_distance:
       aAnimatable = aAnimationValue.GetOffsetDistanceProperty();
@@ -419,6 +376,9 @@ static void SetAnimatable(nsCSSPropertyID aProperty,
       break;
     case eCSSProperty_offset_anchor:
       aAnimatable = aAnimationValue.GetOffsetAnchorProperty();
+      break;
+    case eCSSProperty_offset_position:
+      aAnimatable = aAnimationValue.GetOffsetPositionProperty();
       break;
     default:
       MOZ_ASSERT_UNREACHABLE("Unsupported property");
@@ -431,8 +391,7 @@ void AnimationInfo::AddAnimationForProperty(
     Send aSendFlag) {
   MOZ_ASSERT(aAnimation->GetEffect(),
              "Should not be adding an animation without an effect");
-  MOZ_ASSERT(!aAnimation->GetCurrentOrPendingStartTime().IsNull() ||
-                 !aAnimation->IsPlaying() ||
+  MOZ_ASSERT(!aAnimation->GetStartTime().IsNull() || !aAnimation->IsPlaying() ||
                  (aAnimation->GetTimeline() &&
                   aAnimation->GetTimeline()->TracksWallclockTime()),
              "If the animation has an unresolved start time it should either"
@@ -440,11 +399,11 @@ void AnimationInfo::AddAnimationForProperty(
              " timeline capable of converting TimeStamps (so we can calculate"
              " one later");
 
-  layers::Animation* animation = (aSendFlag == Send::NextTransaction)
-                                     ? AddAnimationForNextTransaction()
-                                     : AddAnimation();
+  Animation* animation = (aSendFlag == Send::NextTransaction)
+                             ? AddAnimationForNextTransaction()
+                             : AddAnimation();
 
-  const TimingParams& timing = aAnimation->GetEffect()->SpecifiedTiming();
+  const TimingParams& timing = aAnimation->GetEffect()->NormalizedTiming();
 
   // If we are starting a new transition that replaces an existing transition
   // running on the compositor, it is possible that the animation on the
@@ -459,8 +418,7 @@ void AnimationInfo::AddAnimationForProperty(
   // since after generating the new transition other requestAnimationFrame
   // callbacks may run that introduce further lag between the main thread and
   // the compositor.
-  dom::CSSTransition* cssTransition = aAnimation->AsCSSTransition();
-  if (cssTransition) {
+  if (dom::CSSTransition* cssTransition = aAnimation->AsCSSTransition()) {
     cssTransition->UpdateStartValueFromReplacedTransition();
   }
 
@@ -469,8 +427,7 @@ void AnimationInfo::AddAnimationForProperty(
           ? TimeStamp()
           : aAnimation->GetTimeline()->ToTimeStamp(TimeDuration());
 
-  dom::Nullable<TimeDuration> startTime =
-      aAnimation->GetCurrentOrPendingStartTime();
+  dom::Nullable<TimeDuration> startTime = aAnimation->GetStartTime();
   if (startTime.IsNull()) {
     animation->startTime() = Nothing();
   } else {
@@ -489,7 +446,9 @@ void AnimationInfo::AddAnimationForProperty(
       static_cast<float>(computedTiming.mIterationStart);
   animation->direction() = static_cast<uint8_t>(timing.Direction());
   animation->fillMode() = static_cast<uint8_t>(computedTiming.mFill);
-  animation->property() = aProperty.mProperty;
+  MOZ_ASSERT(!aProperty.mProperty.IsCustom(),
+             "We don't animate custom properties in the compositor");
+  animation->property() = aProperty.mProperty.mID;
   animation->playbackRate() =
       static_cast<float>(aAnimation->CurrentOrPendingPlaybackRate());
   animation->previousPlaybackRate() =
@@ -497,11 +456,13 @@ void AnimationInfo::AddAnimationForProperty(
           ? static_cast<float>(aAnimation->PlaybackRate())
           : std::numeric_limits<float>::quiet_NaN();
   animation->transformData() = aTransformData;
-  animation->easingFunction() = ToTimingFunction(timing.TimingFunction());
+  animation->easingFunction() = timing.TimingFunction();
   animation->iterationComposite() = static_cast<uint8_t>(
       aAnimation->GetEffect()->AsKeyframeEffect()->IterationComposite());
   animation->isNotPlaying() = !aAnimation->IsPlaying();
   animation->isNotAnimating() = false;
+  animation->scrollTimelineOptions() =
+      GetScrollTimelineOptions(aAnimation->GetTimeline());
 
   TransformReferenceBox refBox(aFrame);
 
@@ -512,19 +473,17 @@ void AnimationInfo::AddAnimationForProperty(
       aAnimation->GetEffect()->AsKeyframeEffect()->BaseStyle(
           aProperty.mProperty);
   if (!baseStyle.IsNull()) {
-    SetAnimatable(aProperty.mProperty, baseStyle, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mID, baseStyle, aFrame, refBox,
                   animation->baseStyle());
   } else {
     animation->baseStyle() = null_t();
   }
 
-  for (uint32_t segIdx = 0; segIdx < aProperty.mSegments.Length(); segIdx++) {
-    const AnimationPropertySegment& segment = aProperty.mSegments[segIdx];
-
+  for (const AnimationPropertySegment& segment : aProperty.mSegments) {
     AnimationSegment* animSegment = animation->segments().AppendElement();
-    SetAnimatable(aProperty.mProperty, segment.mFromValue, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mID, segment.mFromValue, aFrame, refBox,
                   animSegment->startState());
-    SetAnimatable(aProperty.mProperty, segment.mToValue, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mID, segment.mToValue, aFrame, refBox,
                   animSegment->endState());
 
     animSegment->startPortion() = segment.mFromKey;
@@ -532,7 +491,20 @@ void AnimationInfo::AddAnimationForProperty(
     animSegment->startComposite() =
         static_cast<uint8_t>(segment.mFromComposite);
     animSegment->endComposite() = static_cast<uint8_t>(segment.mToComposite);
-    animSegment->sampleFn() = ToTimingFunction(segment.mTimingFunction);
+    animSegment->sampleFn() = segment.mTimingFunction;
+  }
+
+  if (aAnimation->Pending()) {
+    TimeStamp readyTime = aAnimation->GetPendingReadyTime();
+    if (readyTime.IsNull()) {
+      // TODO(emilio): This should generally not happen anymore, can we remove
+      // this SetPendingReadyTime call?
+      readyTime = aFrame->PresContext()->RefreshDriver()->MostRecentRefresh(
+          /* aEnsureTimerStarted= */ false);
+      MOZ_ASSERT(!readyTime.IsNull());
+      aAnimation->SetPendingReadyTime(readyTime);
+    }
+    MaybeStartPendingAnimation(*animation, readyTime);
   }
 }
 
@@ -575,14 +547,16 @@ GroupAnimationsByProperty(const nsTArray<RefPtr<dom::Animation>>& aAnimations,
     const dom::KeyframeEffect* effect = anim->GetEffect()->AsKeyframeEffect();
     MOZ_ASSERT(effect);
     for (const AnimationProperty& property : effect->Properties()) {
+      // TODO(zrhoffman, bug 1869475): Handle custom properties
       if (!aPropertySet.HasProperty(property.mProperty)) {
         continue;
       }
 
-      auto animsForPropertyPtr = groupedAnims.lookupForAdd(property.mProperty);
+      auto animsForPropertyPtr =
+          groupedAnims.lookupForAdd(property.mProperty.mID);
       if (!animsForPropertyPtr) {
         DebugOnly<bool> rv =
-            groupedAnims.add(animsForPropertyPtr, property.mProperty,
+            groupedAnims.add(animsForPropertyPtr, property.mProperty.mID,
                              nsTArray<RefPtr<dom::Animation>>());
         MOZ_ASSERT(rv, "Should have enough memory");
       }
@@ -596,7 +570,7 @@ bool AnimationInfo::AddAnimationsForProperty(
     nsIFrame* aFrame, const EffectSet* aEffects,
     const nsTArray<RefPtr<dom::Animation>>& aCompositorAnimations,
     const Maybe<TransformData>& aTransformData, nsCSSPropertyID aProperty,
-    Send aSendFlag) {
+    Send aSendFlag, WebRenderLayerManager* aLayerManager) {
   bool addedAny = false;
   // Add from first to last (since last overrides)
   for (dom::Animation* anim : aCompositorAnimations) {
@@ -604,12 +578,12 @@ bool AnimationInfo::AddAnimationsForProperty(
       continue;
     }
 
-    dom::KeyframeEffect* keyframeEffect =
-        anim->GetEffect() ? anim->GetEffect()->AsKeyframeEffect() : nullptr;
-    MOZ_ASSERT(keyframeEffect,
+    MOZ_ASSERT(anim->GetEffect() && anim->GetEffect()->AsKeyframeEffect(),
                "A playing animation should have a keyframe effect");
+    dom::KeyframeEffect* keyframeEffect = anim->GetEffect()->AsKeyframeEffect();
     const AnimationProperty* property =
-        keyframeEffect->GetEffectiveAnimationOfProperty(aProperty, *aEffects);
+        keyframeEffect->GetEffectiveAnimationOfProperty(
+            AnimatedPropertyID(aProperty), *aEffects);
     if (!property) {
       continue;
     }
@@ -624,9 +598,10 @@ bool AnimationInfo::AddAnimationsForProperty(
         "GetEffectiveAnimationOfProperty already tested the property "
         "is not overridden by !important rules");
 
-    // Don't add animations that are pending if their timeline does not
-    // track wallclock time. This is because any pending animations on layers
-    // will have their start time updated with the current wallclock time.
+    // Don't add animations that are pending if their timeline does not track
+    // wallclock time. This is because any pending animations on layers will
+    // have their start time updated with the current wallclock time.
+    //
     // If we can't convert that wallclock time back to an equivalent timeline
     // time, we won't be able to update the content animation and it will end
     // up being out of sync with the layer animation.
@@ -634,16 +609,134 @@ bool AnimationInfo::AddAnimationsForProperty(
     // Currently this only happens when the timeline is driven by a refresh
     // driver under test control. In this case, the next time the refresh
     // driver is advanced it will trigger any pending animations.
-    if (anim->Pending() &&
-        (anim->GetTimeline() && !anim->GetTimeline()->TracksWallclockTime())) {
+    if (anim->Pending() && anim->GetTimeline() &&
+        !anim->GetTimeline()->TracksWallclockTime()) {
       continue;
     }
 
     AddAnimationForProperty(aFrame, *property, anim, aTransformData, aSendFlag);
     keyframeEffect->SetIsRunningOnCompositor(aProperty, true);
     addedAny = true;
+    if (aTransformData && aTransformData->partialPrerenderData() &&
+        aLayerManager) {
+      aLayerManager->AddPartialPrerenderedAnimation(GetCompositorAnimationsId(),
+                                                    anim);
+    }
   }
   return addedAny;
+}
+
+// Returns which pre-rendered area's sides are overflowed from the pre-rendered
+// rect.
+//
+// We don't need to make jank animations when we are going to composite the
+// area where there is no overflowed area even if it's outside of the
+// pre-rendered area.
+static SideBits GetOverflowedSides(const nsRect& aOverflow,
+                                   const nsRect& aPartialPrerenderArea) {
+  SideBits sides = SideBits::eNone;
+  if (aOverflow.X() < aPartialPrerenderArea.X()) {
+    sides |= SideBits::eLeft;
+  }
+  if (aOverflow.Y() < aPartialPrerenderArea.Y()) {
+    sides |= SideBits::eTop;
+  }
+  if (aOverflow.XMost() > aPartialPrerenderArea.XMost()) {
+    sides |= SideBits::eRight;
+  }
+  if (aOverflow.YMost() > aPartialPrerenderArea.YMost()) {
+    sides |= SideBits::eBottom;
+  }
+  return sides;
+}
+
+static std::pair<ParentLayerRect, gfx::Matrix4x4>
+GetClipRectAndTransformForPartialPrerender(
+    const nsIFrame* aFrame, int32_t aDevPixelsToAppUnits,
+    const nsIFrame* aClipFrame,
+    const ScrollContainerFrame* aScrollContainerFrame) {
+  MOZ_ASSERT(aClipFrame);
+
+  gfx::Matrix4x4 transformInClip =
+      nsLayoutUtils::GetTransformToAncestor(RelativeTo{aFrame->GetParent()},
+                                            RelativeTo{aClipFrame})
+          .GetMatrix();
+  if (aScrollContainerFrame) {
+    transformInClip.PostTranslate(
+        LayoutDevicePoint::FromAppUnits(
+            aScrollContainerFrame->GetScrollPosition(), aDevPixelsToAppUnits)
+            .ToUnknownPoint());
+  }
+
+  // We don't necessarily use nsLayoutUtils::CalculateCompositionSizeForFrame
+  // since this is a case where we don't use APZ at all.
+  return std::make_pair(
+      LayoutDeviceRect::FromAppUnits(
+          aScrollContainerFrame ? aScrollContainerFrame->GetScrollPortRect()
+                                : aClipFrame->GetRectRelativeToSelf(),
+          aDevPixelsToAppUnits) *
+          LayoutDeviceToLayerScale2D() * LayerToParentLayerScale(),
+      transformInClip);
+}
+
+static PartialPrerenderData GetPartialPrerenderData(
+    const nsIFrame* aFrame, const nsDisplayItem* aItem) {
+  const nsRect& partialPrerenderedRect = aItem->GetUntransformedPaintRect();
+  nsRect overflow = aFrame->InkOverflowRectRelativeToSelf();
+
+  ScrollableLayerGuid::ViewID scrollId = ScrollableLayerGuid::NULL_SCROLL_ID;
+
+  const nsIFrame* clipFrame =
+      nsLayoutUtils::GetNearestOverflowClipFrame(aFrame->GetParent());
+  const ScrollContainerFrame* scrollContainerFrame = do_QueryFrame(clipFrame);
+
+  if (!clipFrame) {
+    // If there is no suitable clip frame in the same document, use the
+    // root one.
+    scrollContainerFrame = aFrame->PresShell()->GetRootScrollContainerFrame();
+    if (scrollContainerFrame) {
+      clipFrame = scrollContainerFrame;
+    } else {
+      // If there is no root scroll frame, use the viewport frame.
+      clipFrame = aFrame->PresShell()->GetRootFrame();
+    }
+  }
+
+  // If the scroll frame is asyncronously scrollable, try to find the scroll id.
+  if (scrollContainerFrame &&
+      !scrollContainerFrame->GetScrollStyles().IsHiddenInBothDirections() &&
+      nsLayoutUtils::AsyncPanZoomEnabled(aFrame)) {
+    const bool isInPositionFixed =
+        nsLayoutUtils::IsInPositionFixedSubtree(aFrame);
+    const ActiveScrolledRoot* asr = aItem->GetActiveScrolledRoot();
+    if (!isInPositionFixed && asr &&
+        aFrame->PresContext() == asr->mScrollContainerFrame->PresContext()) {
+      scrollId = asr->GetViewId();
+      MOZ_ASSERT(clipFrame == asr->mScrollContainerFrame);
+    } else {
+      // Use the root scroll id in the same document if the target frame is in
+      // position:fixed subtree or there is no ASR or the ASR is in a different
+      // ancestor document.
+      scrollId =
+          nsLayoutUtils::ScrollIdForRootScrollFrame(aFrame->PresContext());
+      MOZ_ASSERT(clipFrame ==
+                 aFrame->PresShell()->GetRootScrollContainerFrame());
+    }
+  }
+
+  int32_t devPixelsToAppUnits = aFrame->PresContext()->AppUnitsPerDevPixel();
+
+  auto [clipRect, transformInClip] = GetClipRectAndTransformForPartialPrerender(
+      aFrame, devPixelsToAppUnits, clipFrame, scrollContainerFrame);
+
+  return PartialPrerenderData{
+      LayoutDeviceRect::FromAppUnits(partialPrerenderedRect,
+                                     devPixelsToAppUnits),
+      GetOverflowedSides(overflow, partialPrerenderedRect),
+      scrollId,
+      clipRect,
+      transformInClip,
+      LayoutDevicePoint()};  // will be set by caller.
 }
 
 enum class AnimationDataType {
@@ -652,7 +745,8 @@ enum class AnimationDataType {
 };
 static Maybe<TransformData> CreateAnimationData(
     nsIFrame* aFrame, nsDisplayItem* aItem, DisplayItemType aType,
-    layers::LayersBackend aLayersBackend, AnimationDataType aDataType) {
+    layers::LayersBackend aLayersBackend, AnimationDataType aDataType,
+    const Maybe<LayoutDevicePoint>& aPosition) {
   if (aType != DisplayItemType::TYPE_TRANSFORM) {
     return Nothing();
   }
@@ -671,9 +765,6 @@ static Maybe<TransformData> CreateAnimationData(
   gfx::Point3D offsetToTransformOrigin =
       nsDisplayTransform::GetDeltaToTransformOrigin(aFrame, refBox, scale);
   nsPoint origin;
-  float scaleX = 1.0f;
-  float scaleY = 1.0f;
-  bool hasPerspectiveParent = false;
   if (aLayersBackend == layers::LayersBackend::LAYERS_WR) {
     // leave origin empty, because we are sending it separately on the
     // stacking context that we are pushing to WR, and WR will automatically
@@ -689,7 +780,7 @@ static Maybe<TransformData> CreateAnimationData(
     // is also reference frame too, so the parent's reference frame
     // are used.
     nsIFrame* referenceFrame = nsLayoutUtils::GetReferenceFrame(
-        nsLayoutUtils::GetCrossDocParentFrame(aFrame));
+        nsLayoutUtils::GetCrossDocParentFrameInProcess(aFrame));
     origin = aFrame->GetOffsetToCrossDoc(referenceFrame);
   }
 
@@ -701,14 +792,38 @@ static Maybe<TransformData> CreateAnimationData(
         styleOrigin.horizontal, styleOrigin.vertical, refBox);
     CSSPoint anchorAdjustment =
         MotionPathUtils::ComputeAnchorPointAdjustment(*aFrame);
+    // Note: If there is no containing block or coord-box is empty, we still
+    // pass it to the compositor. Just render them as no path on the compositor
+    // thread.
+    nsRect coordBox;
+    const nsIFrame* containingBlockFrame =
+        MotionPathUtils::GetOffsetPathReferenceBox(aFrame, coordBox);
+    nsTArray<nscoord> radii;
+    if (containingBlockFrame) {
+      radii = MotionPathUtils::ComputeBorderRadii(
+          containingBlockFrame->StyleBorder()->mBorderRadius, coordBox);
+    }
+    motionPathData.emplace(
+        std::move(motionPathOrigin), std::move(anchorAdjustment),
+        std::move(coordBox),
+        containingBlockFrame ? aFrame->GetOffsetTo(containingBlockFrame)
+                             : aFrame->GetPosition(),
+        MotionPathUtils::GetRayContainReferenceSize(aFrame), std::move(radii));
+  }
 
-    motionPathData = Some(layers::MotionPathData(
-        motionPathOrigin, anchorAdjustment, RayReferenceData(aFrame)));
+  Maybe<PartialPrerenderData> partialPrerenderData;
+  if (aItem && static_cast<nsDisplayTransform*>(aItem)->IsPartialPrerender()) {
+    partialPrerenderData = Some(GetPartialPrerenderData(aFrame, aItem));
+
+    if (aLayersBackend == layers::LayersBackend::LAYERS_WR) {
+      MOZ_ASSERT(aPosition);
+      partialPrerenderData->position() = *aPosition;
+    }
   }
 
   return Some(TransformData(origin, offsetToTransformOrigin, bounds,
-                            devPixelsToAppUnits, scaleX, scaleY,
-                            hasPerspectiveParent, motionPathData));
+                            devPixelsToAppUnits, motionPathData,
+                            partialPrerenderData));
 }
 
 void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
@@ -721,14 +836,13 @@ void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
                                        : AddAnimation();
     animation->property() = aProperty;
     animation->baseStyle() = std::move(aBaseStyle);
-    animation->easingFunction() = null_t();
+    animation->easingFunction() = Nothing();
     animation->isNotAnimating() = true;
   };
 
   const nsStyleDisplay* display = aFrame->StyleDisplay();
   // A simple optimization. We don't need to send offset-* properties if we
   // don't have offset-path and offset-position.
-  // FIXME: Bug 1559232: Add offset-position here.
   bool hasMotion =
       !display->mOffsetPath.IsNone() ||
       !aNonAnimatingProperties.HasProperty(eCSSProperty_offset_path);
@@ -761,7 +875,7 @@ void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
         break;
       case eCSSProperty_offset_path:
         if (!display->mOffsetPath.IsNone()) {
-          appendFakeAnimation(id, NormalizeOffsetPath(display->mOffsetPath));
+          appendFakeAnimation(id, display->mOffsetPath);
         }
         break;
       case eCSSProperty_offset_distance:
@@ -780,6 +894,11 @@ void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
           appendFakeAnimation(id, display->mOffsetAnchor);
         }
         break;
+      case eCSSProperty_offset_position:
+        if (hasMotion && !display->mOffsetPosition.IsAuto()) {
+          appendFakeAnimation(id, display->mOffsetPosition);
+        }
+        break;
       default:
         MOZ_ASSERT_UNREACHABLE("Unsupported transform-like properties");
     }
@@ -788,7 +907,8 @@ void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
 
 void AnimationInfo::AddAnimationsForDisplayItem(
     nsIFrame* aFrame, nsDisplayListBuilder* aBuilder, nsDisplayItem* aItem,
-    DisplayItemType aType, layers::LayersBackend aLayersBackend) {
+    DisplayItemType aType, WebRenderLayerManager* aLayerManager,
+    const Maybe<LayoutDevicePoint>& aPosition) {
   Send sendFlag = !aBuilder ? Send::NextTransaction : Send::Immediate;
   if (sendFlag == Send::NextTransaction) {
     ClearAnimationsForNextTransaction();
@@ -801,7 +921,7 @@ void AnimationInfo::AddAnimationsForDisplayItem(
   // layer, we still need to mark it as up-to-date with regards to animations.
   // Otherwise, in RestyleManager we'll notice the discrepancy between the
   // animation generation numbers and update the layer indefinitely.
-  EffectSet* effects = EffectSet::GetEffectSetForFrame(aFrame, aType);
+  EffectSet* effects = EffectSet::GetForFrame(aFrame, aType);
   uint64_t animationGeneration =
       effects ? effects->GetAnimationGeneration() : 0;
   SetAnimationGeneration(animationGeneration);
@@ -833,16 +953,13 @@ void AnimationInfo::AddAnimationsForDisplayItem(
       compositorAnimations =
           GroupAnimationsByProperty(matchedAnimations, propertySet);
   Maybe<TransformData> transformData =
-      CreateAnimationData(aFrame, aItem, aType, aLayersBackend,
+      CreateAnimationData(aFrame, aItem, aType, aLayerManager->GetBackendType(),
                           compositorAnimations.has(eCSSProperty_offset_path) ||
                                   !aFrame->StyleDisplay()->mOffsetPath.IsNone()
                               ? AnimationDataType::WithMotionPath
-                              : AnimationDataType::WithoutMotionPath);
-  // Bug 1424900: Drop this pref check after shipping individual transforms.
-  // Bug 1582554: Drop this pref check after shipping motion path.
+                              : AnimationDataType::WithoutMotionPath,
+                          aPosition);
   const bool hasMultipleTransformLikeProperties =
-      (StaticPrefs::layout_css_individual_transform_enabled() ||
-       StaticPrefs::layout_css_motion_path_enabled()) &&
       aType == DisplayItemType::TYPE_TRANSFORM;
   nsCSSPropertyIDSet nonAnimatingProperties =
       nsCSSPropertyIDSet::TransformLikeProperties();
@@ -853,9 +970,9 @@ void AnimationInfo::AddAnimationsForDisplayItem(
     // structure, 2) AddAnimationsForProperty() marks these animations as
     // running on the composiror, so CanThrottle() returns true for them, and
     // we avoid running these animations on the main thread.
-    bool added =
-        AddAnimationsForProperty(aFrame, effects, iter.get().value(),
-                                 transformData, iter.get().key(), sendFlag);
+    bool added = AddAnimationsForProperty(aFrame, effects, iter.get().value(),
+                                          transformData, iter.get().key(),
+                                          sendFlag, aLayerManager);
     if (added && transformData) {
       // Only copy TransformLikeMetaData in the first animation property.
       transformData.reset();
@@ -886,5 +1003,4 @@ void AnimationInfo::AddAnimationsForDisplayItem(
   }
 }
 
-}  // namespace layers
-}  // namespace mozilla
+}  // namespace mozilla::layers

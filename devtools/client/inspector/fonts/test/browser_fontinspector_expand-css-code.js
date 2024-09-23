@@ -7,7 +7,7 @@
 
 const TEST_URI = URL_ROOT + "doc_browser_fontinspector.html";
 
-add_task(async function() {
+add_task(async function () {
   const { view, inspector } = await openFontInspectorForURL(TEST_URI);
   const viewDoc = view.document;
   await selectNode("div", inspector);
@@ -22,10 +22,7 @@ add_task(async function() {
   const onExpanded = BrowserTestUtils.waitForCondition(() => {
     return (
       codeEl.textContent ===
-      `@font-face {
-  font-family: bar;
-  src: url("bad/font/name.ttf"), url("ostrich-regular.ttf") format("truetype");
-}`
+      `@font-face { font-family: bar; src: url("bad/font/name.ttf"), url("ostrich-regular.ttf") format("truetype"); }`
     );
   }, "Waiting for the font-face rule 1");
 

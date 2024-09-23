@@ -1,12 +1,11 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
- * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
+ * See https://firefox-source-docs.mozilla.org/performance/bestpractices.html
  * for tips on how to do that.
  */
 const EXPECTED_REFLOWS = [
@@ -21,7 +20,7 @@ const EXPECTED_REFLOWS = [
  * window is closed, the test waits until the original window
  * has activated.
  */
-add_task(async function() {
+add_task(async function () {
   // Ensure that this browser window starts focused. This seems to be
   // necessary to avoid intermittent failures when running this test
   // on repeat.
@@ -44,7 +43,7 @@ add_task(async function() {
   );
 
   await withPerfObserver(
-    async function() {
+    async function () {
       let promiseOrigBrowserFocused = TestUtils.waitForCondition(() => {
         return Services.focus.activeWindow == window;
       });
@@ -53,6 +52,15 @@ add_task(async function() {
     },
     {
       expectedReflows: EXPECTED_REFLOWS,
+      frames: {
+        filter(rects, frame) {
+          // Ignore the focus-out animation.
+          if (isLikelyFocusChange(rects, frame)) {
+            return [];
+          }
+          return rects;
+        },
+      },
     },
     win
   );

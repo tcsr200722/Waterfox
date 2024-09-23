@@ -8,14 +8,15 @@
 #define mozilla_dom_PerformanceServerTiming_h
 
 #include "mozilla/Attributes.h"
+#include "nsCOMPtr.h"
+#include "nsDOMNavigationTiming.h"
 #include "nsWrapperCache.h"
 #include "nsString.h"
 
 class nsIServerTiming;
 class nsISupports;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PerformanceServerTiming final : public nsISupports,
                                       public nsWrapperCache {
@@ -26,7 +27,7 @@ class PerformanceServerTiming final : public nsISupports,
   }
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(PerformanceServerTiming)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PerformanceServerTiming)
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -46,7 +47,6 @@ class PerformanceServerTiming final : public nsISupports,
   nsCOMPtr<nsIServerTiming> mServerTiming;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PerformanceServerTiming_h

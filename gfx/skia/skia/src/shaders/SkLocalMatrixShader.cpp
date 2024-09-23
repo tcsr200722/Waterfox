@@ -4,21 +4,27 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
-#include "src/core/SkTLazy.h"
 #include "src/shaders/SkLocalMatrixShader.h"
 
-#if SK_SUPPORT_GPU
-#include "src/gpu/GrFragmentProcessor.h"
-#endif
+#include "src/core/SkReadBuffer.h"
+#include "src/core/SkWriteBuffer.h"
 
-#if SK_SUPPORT_GPU
-std::unique_ptr<GrFragmentProcessor> SkLocalMatrixShader::asFragmentProcessor(
-        const GrFPArgs& args) const {
-    return as_SB(fProxyShader)->asFragmentProcessor(
-        GrFPArgs::WithPreLocalMatrix(args, this->getLocalMatrix()));
+class SkImage;
+enum class SkTileMode;
+struct SkStageRec;
+
+bool SkLocalMatrixShader::isConstant() const {
+    return as_SB(fWrappedShader)->isConstant();
 }
-#endif
+
+SkShaderBase::GradientType SkLocalMatrixShader::asGradient(GradientInfo* info,
+                                                           SkMatrix* localMatrix) const {
+    GradientType type = as_SB(fWrappedShader)->asGradient(info, localMatrix);
+    if (type != SkShaderBase::GradientType::kNone && localMatrix) {
+        *localMatrix = ConcatLocalMatrices(fLocalMatrix, *localMatrix);
+    }
+    return type;
+}
 
 sk_sp<SkFlattenable> SkLocalMatrixShader::CreateProc(SkReadBuffer& buffer) {
     SkMatrix lm;
@@ -31,76 +37,51 @@ sk_sp<SkFlattenable> SkLocalMatrixShader::CreateProc(SkReadBuffer& buffer) {
 }
 
 void SkLocalMatrixShader::flatten(SkWriteBuffer& buffer) const {
-    buffer.writeMatrix(this->getLocalMatrix());
-    buffer.writeFlattenable(fProxyShader.get());
+    buffer.writeMatrix(fLocalMatrix);
+    buffer.writeFlattenable(fWrappedShader.get());
 }
 
 #ifdef SK_ENABLE_LEGACY_SHADERCONTEXT
-SkShaderBase::Context* SkLocalMatrixShader::onMakeContext(
-    const ContextRec& rec, SkArenaAlloc* alloc) const
-{
-    SkTCopyOnFirstWrite<SkMatrix> lm(this->getLocalMatrix());
-    if (rec.fLocalMatrix) {
-        lm.writable()->preConcat(*rec.fLocalMatrix);
-    }
-
-    ContextRec newRec(rec);
-    newRec.fLocalMatrix = lm;
-
-    return as_SB(fProxyShader)->makeContext(newRec, alloc);
+SkShaderBase::Context* SkLocalMatrixShader::onMakeContext(const ContextRec& rec,
+                                                          SkArenaAlloc* alloc) const {
+    return as_SB(fWrappedShader)->makeContext(ContextRec::Concat(rec, fLocalMatrix), alloc);
 }
 #endif
 
 SkImage* SkLocalMatrixShader::onIsAImage(SkMatrix* outMatrix, SkTileMode* mode) const {
     SkMatrix imageMatrix;
-    SkImage* image = fProxyShader->isAImage(&imageMatrix, mode);
+    SkImage* image = fWrappedShader->isAImage(&imageMatrix, mode);
     if (image && outMatrix) {
-        // Local matrix must be applied first so it is on the right side of the concat.
-        *outMatrix = SkMatrix::Concat(imageMatrix, this->getLocalMatrix());
+        *outMatrix = ConcatLocalMatrices(fLocalMatrix, imageMatrix);
     }
 
     return image;
 }
 
-SkPicture* SkLocalMatrixShader::isAPicture(SkMatrix* matrix,
-                                           SkTileMode tileModes[2],
-                                           SkRect* tile) const {
-    SkMatrix proxyMatrix;
-    SkPicture* picture = as_SB(fProxyShader)->isAPicture(&proxyMatrix, tileModes, tile);
-    if (picture && matrix) {
-        *matrix = SkMatrix::Concat(proxyMatrix, this->getLocalMatrix());
-    }
-    return picture;
+bool SkLocalMatrixShader::appendStages(const SkStageRec& rec,
+                                       const SkShaders::MatrixRec& mRec) const {
+    return as_SB(fWrappedShader)->appendStages(rec, mRec.concat(fLocalMatrix));
 }
 
-bool SkLocalMatrixShader::onAppendStages(const SkStageRec& rec) const {
-    SkTCopyOnFirstWrite<SkMatrix> lm(this->getLocalMatrix());
-    if (rec.fLocalM) {
-        lm.writable()->preConcat(*rec.fLocalM);
-    }
+////////////////////////////////////////////////////////////////////
 
-    SkStageRec newRec = rec;
-    newRec.fLocalM = lm;
-    return as_SB(fProxyShader)->appendStages(newRec);
+SkCTMShader::SkCTMShader(sk_sp<SkShader> proxy, const SkMatrix& ctm)
+        : fProxyShader(std::move(proxy)), fCTM(ctm) {}
+
+bool SkCTMShader::isConstant() const {
+    return as_SB(fProxyShader)->isConstant();
 }
 
-sk_sp<SkShader> SkShader::makeWithLocalMatrix(const SkMatrix& localMatrix) const {
-    if (localMatrix.isIdentity()) {
-        return sk_ref_sp(const_cast<SkShader*>(this));
-    }
+SkShaderBase::GradientType SkCTMShader::asGradient(GradientInfo* info,
+                                                   SkMatrix* localMatrix) const {
+    return as_SB(fProxyShader)->asGradient(info, localMatrix);
+}
 
-    const SkMatrix* lm = &localMatrix;
+bool SkCTMShader::appendStages(const SkStageRec& rec, const SkShaders::MatrixRec&) const {
+    return as_SB(fProxyShader)->appendRootStages(rec, fCTM);
+}
 
-    sk_sp<SkShader> baseShader;
-    SkMatrix otherLocalMatrix;
-    sk_sp<SkShader> proxy(as_SB(this)->makeAsALocalMatrixShader(&otherLocalMatrix));
-    if (proxy) {
-        otherLocalMatrix.preConcat(localMatrix);
-        lm = &otherLocalMatrix;
-        baseShader = proxy;
-    } else {
-        baseShader = sk_ref_sp(const_cast<SkShader*>(this));
-    }
-
-    return sk_make_sp<SkLocalMatrixShader>(std::move(baseShader), *lm);
+sk_sp<SkFlattenable> SkCTMShader::CreateProc(SkReadBuffer& buffer) {
+    SkASSERT(false);
+    return nullptr;
 }

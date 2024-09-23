@@ -8,12 +8,32 @@
 #include "libssl_internals.h"
 
 #include "nss.h"
+#include "pk11hpke.h"
 #include "pk11pub.h"
 #include "pk11priv.h"
+#include "tls13ech.h"
 #include "seccomon.h"
 #include "selfencrypt.h"
 #include "secmodti.h"
 #include "sslproto.h"
+
+SECStatus SSLInt_RemoveServerCertificates(PRFileDesc *fd) {
+  if (!fd) {
+    return SECFailure;
+  }
+  sslSocket *ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+
+  PRCList *cursor;
+  while (!PR_CLIST_IS_EMPTY(&ss->serverCerts)) {
+    cursor = PR_LIST_TAIL(&ss->serverCerts);
+    PR_REMOVE_LINK(cursor);
+    ssl_FreeServerCert((sslServerCert *)cursor);
+  }
+  return SECSuccess;
+}
 
 SECStatus SSLInt_SetDCAdvertisedSigSchemes(PRFileDesc *fd,
                                            const SSLSignatureScheme *schemes,
@@ -127,6 +147,8 @@ PRBool SSLInt_ExtensionNegotiated(PRFileDesc *fd, PRUint16 ext) {
   return (PRBool)(ss && ssl3_ExtensionNegotiated(ss, ext));
 }
 
+// Tests should not use this function directly, because the keys may
+// still be in cache. Instead, use TlsConnectTestBase::ClearServerCache.
 void SSLInt_ClearSelfEncryptKey() { ssl_ResetSelfEncryptKeys(); }
 
 sslSelfEncryptKeys *ssl_GetSelfEncryptKeysInt();
@@ -197,6 +219,17 @@ SECStatus SSLInt_ShiftDtlsTimers(PRFileDesc *fd, PRIntervalTime shift) {
       ss->ssl3.hs.timers[i].started -= shift;
     }
   }
+  return SECSuccess;
+}
+
+/* Instead of waiting the ACK timer to expire, we send the ack immediately*/
+SECStatus SSLInt_SendImmediateACK(PRFileDesc *fd) {
+  sslSocket *ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+  PORT_Assert(IS_DTLS(ss));
+  dtls13_SendAck(ss);
   return SECSuccess;
 }
 
@@ -375,8 +408,8 @@ SECStatus SSLInt_AdvanceWriteSeqNum(PRFileDesc *fd, PRUint64 to) {
       pk11ctxt->ivFixedBits = cipher_def->iv_size * BPB;
       pk11ctxt->ivGen = CKG_GENERATE_COUNTER;
     }
-    /* DTLS included the epoch in the fixed portion of the IV */
-    if (IS_DTLS(ss)) {
+    /* DTLS1.2 and below included the epoch in the fixed portion of the IV */
+    if (IS_DTLS_1_OR_12(ss)) {
       pk11ctxt->ivFixedBits += 2 * BPB;
     }
   }
@@ -385,6 +418,50 @@ SECStatus SSLInt_AdvanceWriteSeqNum(PRFileDesc *fd, PRUint64 to) {
   pk11ctxt->ivCounter = to;
 
   ssl_ReleaseSpecWriteLock(ss);
+  return SECSuccess;
+}
+
+/* The next two functions are responsible for replacing the epoch count with the
+  one given as the parameter. Important: It does not modify any other data, i.e.
+  keys. Used in ssl_keyupdate_unittests.cc,
+  DTLSKeyUpdateClient_KeyUpdateMaxEpoch TV.
+   */
+SECStatus SSLInt_AdvanceWriteEpochNum(PRFileDesc *fd, PRUint64 to) {
+  sslSocket *ss;
+  ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+  // As currently the epoch is presented as a uint16, the max_epoch is the
+  // maximum value of the type
+  PRUint64 max_epoch = UINT16_MAX;
+  if (to > max_epoch) {
+    PORT_SetError(SEC_ERROR_INVALID_ARGS);
+    return SECFailure;
+  }
+
+  ssl_GetSpecWriteLock(ss);
+  ss->ssl3.cwSpec->epoch = to;
+  ssl_ReleaseSpecWriteLock(ss);
+  return SECSuccess;
+}
+
+SECStatus SSLInt_AdvanceReadEpochNum(PRFileDesc *fd, PRUint64 to) {
+  sslSocket *ss;
+  ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+
+  PRUint64 max_epoch = UINT16_MAX;
+  if (to > max_epoch) {
+    PORT_SetError(SEC_ERROR_INVALID_ARGS);
+    return SECFailure;
+  }
+
+  ssl_GetSpecReadLock(ss);
+  ss->ssl3.crSpec->epoch = to;
+  ssl_ReleaseSpecReadLock(ss);
   return SECSuccess;
 }
 
@@ -400,6 +477,24 @@ SECStatus SSLInt_AdvanceWriteSeqByAWindow(PRFileDesc *fd, PRInt32 extra) {
   to = ss->ssl3.cwSpec->nextSeqNum + DTLS_RECVD_RECORDS_WINDOW + extra;
   ssl_ReleaseSpecReadLock(ss);
   return SSLInt_AdvanceWriteSeqNum(fd, to);
+}
+
+SECStatus SSLInt_AdvanceDtls13DecryptFailures(PRFileDesc *fd, PRUint64 to) {
+  sslSocket *ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+
+  ssl_GetSpecWriteLock(ss);
+  ssl3CipherSpec *spec = ss->ssl3.crSpec;
+  if (spec->cipherDef->type != type_aead) {
+    ssl_ReleaseSpecWriteLock(ss);
+    return SECFailure;
+  }
+
+  spec->deprotectionFailures = to;
+  ssl_ReleaseSpecWriteLock(ss);
+  return SECSuccess;
 }
 
 SSLKEAType SSLInt_GetKEAType(SSLNamedGroup group) {
@@ -442,4 +537,60 @@ SECStatus SSLInt_HasPendingHandshakeData(PRFileDesc *fd, PRBool *pending) {
   *pending = ss->ssl3.hs.msg_body.len > 0;
   ssl_ReleaseSSL3HandshakeLock(ss);
   return SECSuccess;
+}
+
+SECStatus SSLInt_SetRawEchConfigForRetry(PRFileDesc *fd, const uint8_t *buf,
+                                         size_t len) {
+  sslSocket *ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure;
+  }
+
+  sslEchConfig *cfg = (sslEchConfig *)PR_LIST_HEAD(&ss->echConfigs);
+  SECITEM_FreeItem(&cfg->raw, PR_FALSE);
+  SECITEM_AllocItem(NULL, &cfg->raw, len);
+  PORT_Memcpy(cfg->raw.data, buf, len);
+  return SECSuccess;
+}
+
+PRBool SSLInt_IsIp(PRUint8 *s, unsigned int len) { return tls13_IsIp(s, len); }
+
+SECStatus SSLInt_GetCertificateCompressionAlgorithm(
+    PRFileDesc *fd, SSLCertificateCompressionAlgorithm *alg) {
+  sslSocket *ss = ssl_FindSocket(fd);
+  if (!ss) {
+    return SECFailure; /* Code already set. */
+  }
+
+  PRBool algFound = PR_FALSE;
+
+  if (!ssl_HaveXmitBufLock(ss)) {
+    ssl_GetSSL3HandshakeLock(ss);
+  }
+
+  if (!ss->xtnData.compressionAlg) {
+    if (!ssl_HaveXmitBufLock(ss)) {
+      ssl_ReleaseSSL3HandshakeLock(ss);
+    }
+
+    PORT_SetError(SEC_ERROR_INVALID_ARGS);
+    return SECFailure;
+  }
+  for (int i = 0; i < ss->ssl3.supportedCertCompressionAlgorithmsCount; i++) {
+    if (ss->ssl3.supportedCertCompressionAlgorithms[i].id ==
+        ss->xtnData.compressionAlg) {
+      *alg = ss->ssl3.supportedCertCompressionAlgorithms[i];
+      algFound = PR_TRUE;
+      break;
+    }
+  }
+
+  if (!ssl_HaveXmitBufLock(ss)) {
+    ssl_ReleaseSSL3HandshakeLock(ss);
+  }
+
+  if (algFound) {
+    return SECSuccess;
+  }
+  return SECFailure;
 }

@@ -1,5 +1,5 @@
 // eslint-disable-next-line complexity
-onfetch = function(ev) {
+onfetch = function (ev) {
   if (ev.request.url.includes("ignore")) {
     return;
   }
@@ -224,24 +224,31 @@ onfetch = function(ev) {
   } else if (ev.request.url.includes("nonexistent_worker_script.js")) {
     ev.respondWith(
       Promise.resolve(
-        new Response("postMessage('worker-intercept-success')", {})
+        new Response("postMessage('worker-intercept-success')", {
+          headers: { "Content-Type": "text/javascript" },
+        })
       )
     );
   } else if (ev.request.url.includes("nonexistent_imported_script.js")) {
     ev.respondWith(
-      Promise.resolve(new Response("check_intercepted_script();", {}))
+      Promise.resolve(
+        new Response("check_intercepted_script();", {
+          headers: { "Content-Type": "text/javascript" },
+        })
+      )
     );
   } else if (ev.request.url.includes("deliver-gzip")) {
     // Don't handle the request, this will make Necko perform a network request, at
     // which point SetApplyConversion must be re-enabled, otherwise the request
     // will fail.
+    // eslint-disable-next-line no-useless-return
     return;
   } else if (ev.request.url.includes("hello.gz")) {
     ev.respondWith(fetch("fetch/deliver-gzip.sjs"));
   } else if (ev.request.url.includes("hello-after-extracting.gz")) {
     ev.respondWith(
-      fetch("fetch/deliver-gzip.sjs").then(function(res) {
-        return res.text().then(function(body) {
+      fetch("fetch/deliver-gzip.sjs").then(function (res) {
+        return res.text().then(function (body) {
           return new Response(body, {
             status: res.status,
             statusText: res.statusText,
@@ -276,7 +283,7 @@ onfetch = function(ev) {
     ev.respondWith(fetch(ev.request));
   } else if (ev.request.url.includes("body-")) {
     ev.respondWith(
-      ev.request.text().then(function(body) {
+      ev.request.text().then(function (body) {
         return new Response(body + body);
       })
     );

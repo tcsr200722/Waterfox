@@ -6,15 +6,9 @@
 
 // Checks for the AccessibleActor events
 
-add_task(async function() {
-  const {
-    target,
-    walker,
-    a11yWalker,
-    parentAccessibility,
-  } = await initAccessibilityFrontsForUrl(
-    MAIN_DOMAIN + "doc_accessibility.html"
-  );
+add_task(async function () {
+  const { target, walker, a11yWalker, parentAccessibility } =
+    await initAccessibilityFrontsForUrl(MAIN_DOMAIN + "doc_accessibility.html");
   const modifiers =
     Services.appinfo.OS === "Darwin" ? "\u2303\u2325" : "Alt+Shift+";
 
@@ -28,7 +22,7 @@ add_task(async function() {
 
   checkA11yFront(accessibleFront, {
     name: "Accessible Button",
-    role: "pushbutton",
+    role: "button",
     childCount: 1,
   });
 
@@ -36,14 +30,14 @@ add_task(async function() {
 
   checkA11yFront(accessibleFront, {
     name: "Accessible Button",
-    role: "pushbutton",
+    role: "button",
     value: "",
     description: "Accessibility Test",
     keyboardShortcut: modifiers + "b",
     childCount: 1,
     domNodeType: 1,
     indexInParent: 1,
-    states: ["focusable", "selectable text", "opaque", "enabled", "sensitive"],
+    states: ["focusable", "opaque", "enabled", "sensitive"],
     actions: ["Press"],
     attributes: {
       "margin-top": "0px",
@@ -88,7 +82,7 @@ add_task(async function() {
   );
 
   info("State change event");
-  const expectedStates = ["unavailable", "selectable text", "opaque"];
+  const expectedStates = ["unavailable", "opaque"];
   await emitA11yEvent(
     accessibleFront,
     "states-change",
@@ -111,7 +105,6 @@ add_task(async function() {
         attributes: {
           "container-live": "polite",
           display: "inline-block",
-          "event-from-input": "false",
           "explicit-name": "true",
           id: "button",
           live: "polite",

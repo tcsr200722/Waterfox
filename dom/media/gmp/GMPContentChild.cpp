@@ -11,14 +11,7 @@
 #include "base/task.h"
 #include "GMPUtils.h"
 
-namespace mozilla {
-namespace gmp {
-
-GMPContentChild::GMPContentChild(GMPChild* aChild) : mGMPChild(aChild) {
-  MOZ_COUNT_CTOR(GMPContentChild);
-}
-
-GMPContentChild::~GMPContentChild() { MOZ_COUNT_DTOR(GMPContentChild); }
+namespace mozilla::gmp {
 
 MessageLoop* GMPContentChild::GMPMessageLoop() {
   return mGMPChild->GMPMessageLoop();
@@ -27,6 +20,17 @@ MessageLoop* GMPContentChild::GMPMessageLoop() {
 void GMPContentChild::CheckThread() {
   MOZ_ASSERT(mGMPChild->mGMPMessageLoop == MessageLoop::current());
 }
+
+#if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
+mozilla::ipc::IPCResult GMPContentChild::RecvInitSandboxTesting(
+    Endpoint<PSandboxTestingChild>&& aEndpoint) {
+  if (!SandboxTestingChild::Initialize(std::move(aEndpoint))) {
+    return IPC_FAIL(
+        this, "InitSandboxTesting failed to initialise the child process.");
+  }
+  return IPC_OK();
+}
+#endif
 
 void GMPContentChild::ActorDestroy(ActorDestroyReason aWhy) {
   mGMPChild->GMPContentChildActorDestroy(this);
@@ -37,7 +41,7 @@ void GMPContentChild::ProcessingError(Result aCode, const char* aReason) {
 }
 
 already_AddRefed<PGMPVideoDecoderChild>
-GMPContentChild::AllocPGMPVideoDecoderChild(const uint32_t& aDecryptorId) {
+GMPContentChild::AllocPGMPVideoDecoderChild() {
   return MakeAndAddRef<GMPVideoDecoderChild>(this);
 }
 
@@ -46,20 +50,19 @@ GMPContentChild::AllocPGMPVideoEncoderChild() {
   return MakeAndAddRef<GMPVideoEncoderChild>(this);
 }
 
-already_AddRefed<PChromiumCDMChild> GMPContentChild::AllocPChromiumCDMChild() {
+already_AddRefed<PChromiumCDMChild> GMPContentChild::AllocPChromiumCDMChild(
+    const nsACString& aKeySystem) {
   return MakeAndAddRef<ChromiumCDMChild>(this);
 }
 
 mozilla::ipc::IPCResult GMPContentChild::RecvPGMPVideoDecoderConstructor(
-    PGMPVideoDecoderChild* aActor, const uint32_t& aDecryptorId) {
+    PGMPVideoDecoderChild* aActor) {
   auto vdc = static_cast<GMPVideoDecoderChild*>(aActor);
 
   void* vd = nullptr;
-  GMPErr err =
-      mGMPChild->GetAPI(GMP_API_VIDEO_DECODER, &vdc->Host(), &vd, aDecryptorId);
+  GMPErr err = mGMPChild->GetAPI(GMP_API_VIDEO_DECODER, &vdc->Host(), &vd);
   if (err != GMPNoErr || !vd) {
-    NS_WARNING("GMPGetAPI call failed trying to construct decoder.");
-    return IPC_FAIL_NO_REASON(this);
+    return IPC_FAIL(this, "GMPGetAPI call failed trying to construct decoder.");
   }
 
   vdc->Init(static_cast<GMPVideoDecoder*>(vd));
@@ -74,8 +77,7 @@ mozilla::ipc::IPCResult GMPContentChild::RecvPGMPVideoEncoderConstructor(
   void* ve = nullptr;
   GMPErr err = mGMPChild->GetAPI(GMP_API_VIDEO_ENCODER, &vec->Host(), &ve);
   if (err != GMPNoErr || !ve) {
-    NS_WARNING("GMPGetAPI call failed trying to construct encoder.");
-    return IPC_FAIL_NO_REASON(this);
+    return IPC_FAIL(this, "GMPGetAPI call failed trying to construct encoder.");
   }
 
   vec->Init(static_cast<GMPVideoEncoder*>(ve));
@@ -84,15 +86,14 @@ mozilla::ipc::IPCResult GMPContentChild::RecvPGMPVideoEncoderConstructor(
 }
 
 mozilla::ipc::IPCResult GMPContentChild::RecvPChromiumCDMConstructor(
-    PChromiumCDMChild* aActor) {
+    PChromiumCDMChild* aActor, const nsACString& aKeySystem) {
   ChromiumCDMChild* child = static_cast<ChromiumCDMChild*>(aActor);
   cdm::Host_10* host10 = child;
 
   void* cdm = nullptr;
-  GMPErr err = mGMPChild->GetAPI(CHROMIUM_CDM_API, host10, &cdm);
+  GMPErr err = mGMPChild->GetAPI(CHROMIUM_CDM_API, host10, &cdm, aKeySystem);
   if (err != GMPNoErr || !cdm) {
-    NS_WARNING("GMPGetAPI call failed trying to get CDM.");
-    return IPC_FAIL_NO_REASON(this);
+    return IPC_FAIL(this, "GMPGetAPI call failed trying to get CDM.");
   }
 
   child->Init(static_cast<cdm::ContentDecryptionModule_10*>(cdm),
@@ -105,19 +106,19 @@ void GMPContentChild::CloseActive() {
   // Invalidate and remove any remaining API objects.
   const ManagedContainer<PGMPVideoDecoderChild>& videoDecoders =
       ManagedPGMPVideoDecoderChild();
-  for (auto iter = videoDecoders.ConstIter(); !iter.Done(); iter.Next()) {
-    iter.Get()->GetKey()->SendShutdown();
+  for (const auto& key : videoDecoders) {
+    key->SendShutdown();
   }
 
   const ManagedContainer<PGMPVideoEncoderChild>& videoEncoders =
       ManagedPGMPVideoEncoderChild();
-  for (auto iter = videoEncoders.ConstIter(); !iter.Done(); iter.Next()) {
-    iter.Get()->GetKey()->SendShutdown();
+  for (const auto& key : videoEncoders) {
+    key->SendShutdown();
   }
 
   const ManagedContainer<PChromiumCDMChild>& cdms = ManagedPChromiumCDMChild();
-  for (auto iter = cdms.ConstIter(); !iter.Done(); iter.Next()) {
-    iter.Get()->GetKey()->SendShutdown();
+  for (const auto& key : cdms) {
+    key->SendShutdown();
   }
 }
 
@@ -127,5 +128,4 @@ bool GMPContentChild::IsUsed() {
          !ManagedPChromiumCDMChild().IsEmpty();
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp

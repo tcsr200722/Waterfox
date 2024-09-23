@@ -3,9 +3,9 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import sys
+from pathlib import Path
 
 from glean_parser import lint
-from pathlib import Path
 
 
 def main(output, *filenames):
@@ -13,5 +13,5 @@ def main(output, *filenames):
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main(sys.stdout, *sys.argv[1:])

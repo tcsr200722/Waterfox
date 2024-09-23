@@ -6,50 +6,70 @@
 const {
   createElement,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const ReactDOM = require("devtools/client/shared/vendor/react-dom");
-const { Provider } = require("devtools/client/shared/vendor/react-redux");
-const ToolboxProvider = require("devtools/client/framework/store-provider");
-const Services = require("Services");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const ReactDOM = require("resource://devtools/client/shared/vendor/react-dom.js");
+const {
+  Provider,
+  createProvider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
-const actions = require("devtools/client/webconsole/actions/index");
-const { configureStore } = require("devtools/client/webconsole/store");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
+const {
+  configureStore,
+} = require("resource://devtools/client/webconsole/store.js");
 
 const {
   isPacketPrivate,
-} = require("devtools/client/webconsole/utils/messages");
+} = require("resource://devtools/client/webconsole/utils/messages.js");
 const {
-  getAllMessagesById,
+  getMutableMessagesById,
   getMessage,
-} = require("devtools/client/webconsole/selectors/messages");
-const Telemetry = require("devtools/client/shared/telemetry");
+  getAllNetworkMessagesUpdateById,
+} = require("resource://devtools/client/webconsole/selectors/messages.js");
 
-const EventEmitter = require("devtools/shared/event-emitter");
-const App = createFactory(require("devtools/client/webconsole/components/App"));
-const DataProvider = require("devtools/client/netmonitor/src/connector/firefox-data-provider");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
+const App = createFactory(
+  require("resource://devtools/client/webconsole/components/App.js")
+);
+const {
+  getAllFilters,
+} = require("resource://devtools/client/webconsole/selectors/filters.js");
+
+loader.lazyGetter(this, "AppErrorBoundary", () =>
+  createFactory(
+    require("resource://devtools/client/shared/components/AppErrorBoundary.js")
+  )
+);
 
 const {
   setupServiceContainer,
-} = require("devtools/client/webconsole/service-container");
+} = require("resource://devtools/client/webconsole/service-container.js");
 
 loader.lazyRequireGetter(
   this,
   "Constants",
-  "devtools/client/webconsole/constants"
+  "resource://devtools/client/webconsole/constants.js"
 );
 
-function renderApp({ app, store, toolbox, root }) {
-  return ReactDOM.render(
-    createElement(
-      Provider,
-      { store },
-      toolbox
-        ? createElement(ToolboxProvider, { store: toolbox.store }, app)
-        : app
-    ),
-    root
-  );
-}
+// Localized strings for (devtools/client/locales/en-US/startup.properties)
+loader.lazyGetter(this, "L10N", function () {
+  const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
+  return new LocalizationHelper("devtools/client/locales/startup.properties");
+});
+
+// Only Browser Console needs Fluent bundles at the moment
+loader.lazyRequireGetter(
+  this,
+  "FluentL10n",
+  "resource://devtools/client/shared/fluent-l10n/fluent-l10n.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "LocalizationProvider",
+  "resource://devtools/client/shared/vendor/fluent-react.js",
+  true
+);
 
 let store = null;
 
@@ -60,6 +80,7 @@ class WebConsoleWrapper {
    * @param {WebConsoleUI} webConsoleUI
    * @param {Toolbox} toolbox
    * @param {Document} document
+   *
    */
   constructor(parentNode, webConsoleUI, toolbox, document) {
     EventEmitter.decorate(this);
@@ -76,20 +97,21 @@ class WebConsoleWrapper {
     this.queuedMessageUpdates = [];
     this.queuedRequestUpdates = [];
     this.throttledDispatchPromise = null;
-    this.telemetry = new Telemetry();
+
+    this.telemetry = this.hud.telemetry;
   }
+
+  #serviceContainer;
 
   async init() {
     const { webConsoleUI } = this;
 
-    const webConsoleFront = await this.hud.currentTarget.getFront("console");
-
-    this.networkDataProvider = new DataProvider({
-      actions: {
-        updateRequest: (id, data) => this.batchedRequestUpdates({ id, data }),
-      },
-      webConsoleFront,
-    });
+    let fluentBundles;
+    if (webConsoleUI.isBrowserConsole) {
+      const fluentL10n = new FluentL10n();
+      await fluentL10n.init(["devtools/client/toolbox.ftl"]);
+      fluentBundles = fluentL10n.getBundles();
+    }
 
     return new Promise(resolve => {
       store = configureStore(this.webConsoleUI, {
@@ -99,45 +121,70 @@ class WebConsoleWrapper {
           webConsoleUI,
           hud: this.hud,
           toolbox: this.toolbox,
-          client: this.webConsoleUI._commands,
+          commands: this.hud.commands,
         },
       });
 
-      const serviceContainer = setupServiceContainer({
-        webConsoleUI,
-        toolbox: this.toolbox,
-        hud: this.hud,
-        webConsoleWrapper: this,
-      });
-
-      const app = App({
-        serviceContainer,
-        webConsoleUI,
-        onFirstMeaningfulPaint: resolve,
-        closeSplitConsole: this.closeSplitConsole.bind(this),
-        hidePersistLogsCheckbox:
-          webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole,
-        hideShowContentMessagesCheckbox:
-          !webConsoleUI.isBrowserConsole &&
-          !webConsoleUI.isBrowserToolboxConsole,
-        inputEnabled:
-          !webConsoleUI.isBrowserConsole ||
-          Services.prefs.getBoolPref("devtools.chrome.enabled"),
-      });
+      const app = AppErrorBoundary(
+        {
+          componentName: "Console",
+          panel: L10N.getStr("ToolboxTabWebconsole.label"),
+        },
+        App({
+          serviceContainer: this.getServiceContainer(),
+          webConsoleUI,
+          onFirstMeaningfulPaint: resolve,
+          closeSplitConsole: this.closeSplitConsole.bind(this),
+          inputEnabled:
+            !webConsoleUI.isBrowserConsole ||
+            Services.prefs.getBoolPref("devtools.chrome.enabled"),
+        })
+      );
 
       // Render the root Application component.
       if (this.parentNode) {
-        this.body = renderApp({
-          app,
-          store,
-          root: this.parentNode,
-          toolbox: this.toolbox,
-        });
+        const maybeLocalizedElement = fluentBundles
+          ? createElement(LocalizationProvider, { bundles: fluentBundles }, app)
+          : app;
+
+        this.body = ReactDOM.render(
+          createElement(
+            Provider,
+            { store },
+            createElement(
+              createProvider(this.hud.commands.targetCommand.storeId),
+              { store: this.hud.commands.targetCommand.store },
+              maybeLocalizedElement
+            )
+          ),
+          this.parentNode
+        );
       } else {
         // If there's no parentNode, we are in a test. So we can resolve immediately.
         resolve();
       }
     });
+  }
+
+  destroy() {
+    // This component can be instantiated from jest test, in which case we don't have
+    // a parentNode reference.
+    if (this.parentNode) {
+      ReactDOM.unmountComponentAtNode(this.parentNode);
+    }
+  }
+
+  /**
+   * Query the reducer store for the current state of filtering
+   * a given type of message
+   *
+   * @param {String} filter
+   *        Type of message to be filtered.
+   * @return {Boolean}
+   *         True if this type of message should be displayed.
+   */
+  getFilterState(filter) {
+    return getAllFilters(this.getStore().getState())[filter];
   }
 
   dispatchMessageAdd(packet) {
@@ -148,14 +195,28 @@ class WebConsoleWrapper {
     this.batchedMessagesAdd(messages);
   }
 
+  dispatchNetworkMessagesDisable() {
+    const networkMessageIds = Object.keys(
+      getAllNetworkMessagesUpdateById(store.getState())
+    );
+    store.dispatch(actions.messagesDisable(networkMessageIds));
+  }
+
   dispatchMessagesClear() {
     // We might still have pending message additions and updates when the clear action is
     // triggered, so we need to flush them to make sure we don't have unexpected behavior
-    // in the ConsoleOutput.
-    this.queuedMessageAdds = [];
-    this.queuedMessageUpdates = [];
-    this.queuedRequestUpdates = [];
-    store.dispatch(actions.messagesClear());
+    // in the ConsoleOutput. *But* we want to keep any pending navigation request,
+    // as we want to keep displaying them even if we received a clear request.
+    function filter(l) {
+      return l.filter(update => update.isNavigationRequest);
+    }
+    this.queuedMessageAdds = filter(this.queuedMessageAdds);
+    this.queuedMessageUpdates = filter(this.queuedMessageUpdates);
+    this.queuedRequestUpdates = this.queuedRequestUpdates.filter(
+      update => update.data.isNavigationRequest
+    );
+
+    store?.dispatch(actions.messagesClear());
     this.webConsoleUI.emitForTests("messages-cleared");
   }
 
@@ -166,11 +227,9 @@ class WebConsoleWrapper {
 
     // For (network) message updates, we need to check both messages queue and the state
     // since we can receive updates even if the message isn't rendered yet.
-    const messages = [...getAllMessagesById(store.getState()).values()];
+    const messages = [...getMutableMessagesById(store.getState()).values()];
     this.queuedMessageUpdates = this.queuedMessageUpdates.filter(
-      ({ networkInfo }) => {
-        const { actor } = networkInfo;
-
+      ({ actor }) => {
         const queuedNetworkMessage = this.queuedMessageAdds.find(
           p => p.actor === actor
         );
@@ -210,25 +269,41 @@ class WebConsoleWrapper {
     store.dispatch(actions.privateMessagesClear());
   }
 
-  dispatchMessageUpdate(message, res) {
-    // network-message-updated will emit when all the update message arrives.
-    // Since we can't ensure the order of the network update, we check
-    // that networkInfo.updates has all we need.
-    // Note that 'requestPostData' is sent only for POST requests, so we need
-    // to count with that.
-    const NUMBER_OF_NETWORK_UPDATE = 8;
+  dispatchTargetMessagesRemove(targetFront) {
+    // We might still have pending packets in the queues from the target that we need to remove
+    // to prevent messages appearing in the output.
 
-    let expectedLength = NUMBER_OF_NETWORK_UPDATE;
-    if (res.networkInfo.updates.includes("responseCache")) {
-      expectedLength++;
-    }
-    if (res.networkInfo.updates.includes("requestPostData")) {
-      expectedLength++;
+    for (let i = this.queuedMessageUpdates.length - 1; i >= 0; i--) {
+      const packet = this.queuedMessageUpdates[i];
+      if (packet.targetFront == targetFront) {
+        this.queuedMessageUpdates.splice(i, 1);
+      }
     }
 
-    if (res.networkInfo.updates.length === expectedLength) {
-      this.batchedMessageUpdates({ res, message });
+    for (let i = this.queuedRequestUpdates.length - 1; i >= 0; i--) {
+      const packet = this.queuedRequestUpdates[i];
+      if (packet.data.targetFront == targetFront) {
+        this.queuedRequestUpdates.splice(i, 1);
+      }
     }
+
+    for (let i = this.queuedMessageAdds.length - 1; i >= 0; i--) {
+      const packet = this.queuedMessageAdds[i];
+      // Keep in sync with the check done in the reducer for the TARGET_MESSAGES_REMOVE action.
+      if (
+        packet.targetFront == targetFront &&
+        packet.type !== Constants.MESSAGE_TYPE.COMMAND &&
+        packet.type !== Constants.MESSAGE_TYPE.RESULT
+      ) {
+        this.queuedMessageAdds.splice(i, 1);
+      }
+    }
+
+    store.dispatch(actions.targetMessagesRemove(targetFront));
+  }
+
+  dispatchMessagesUpdate(messages) {
+    this.batchedMessagesUpdates(messages);
   }
 
   dispatchSidebarClose() {
@@ -254,10 +329,8 @@ class WebConsoleWrapper {
       // Add a type in order for this event packet to be identified by
       // utils/messages.js's `transformPacket`
       packet.type = "will-navigate";
-      packet.timeStamp = Date.now();
       this.dispatchMessageAdd(packet);
     } else {
-      this.webConsoleUI.clearNetworkRequests();
       this.dispatchMessagesClear();
       store.dispatch({
         type: Constants.WILL_NAVIGATE,
@@ -265,9 +338,11 @@ class WebConsoleWrapper {
     }
   }
 
-  batchedMessageUpdates(info) {
-    this.queuedMessageUpdates.push(info);
-    this.setTimeoutIfNeeded();
+  batchedMessagesUpdates(messages) {
+    if (messages.length) {
+      this.queuedMessageUpdates.push(...messages);
+      this.setTimeoutIfNeeded();
+    }
   }
 
   batchedRequestUpdates(message) {
@@ -276,16 +351,10 @@ class WebConsoleWrapper {
   }
 
   batchedMessagesAdd(messages) {
-    this.queuedMessageAdds = this.queuedMessageAdds.concat(messages);
-    this.setTimeoutIfNeeded();
-  }
-
-  requestData(id, type) {
-    this.networkDataProvider.requestData(id, type);
-  }
-
-  dispatchClearLogpointMessages(logpointId) {
-    store.dispatch(actions.messagesClearLogpoint(logpointId));
+    if (messages.length) {
+      this.queuedMessageAdds.push(...messages);
+      this.setTimeoutIfNeeded();
+    }
   }
 
   dispatchClearHistory() {
@@ -300,6 +369,10 @@ class WebConsoleWrapper {
     store.dispatch(actions.evaluateExpression(expression));
   }
 
+  dispatchUpdateInstantEvaluationResultForCurrentExpression() {
+    store.dispatch(actions.updateInstantEvaluationResultForCurrentExpression());
+  }
+
   /**
    * Returns a Promise that resolves once any async dispatch is finally dispatched.
    */
@@ -307,7 +380,13 @@ class WebConsoleWrapper {
     if (!this.throttledDispatchPromise) {
       return Promise.resolve();
     }
-    return this.throttledDispatchPromise;
+    // When closing the console during initialization,
+    // setTimeoutIfNeeded may never resolve its promise
+    // as window.setTimeout will be disabled on document destruction.
+    const onUnload = new Promise(r =>
+      window.addEventListener("unload", r, { once: true })
+    );
+    return Promise.race([this.throttledDispatchPromise, onUnload]);
   }
 
   setTimeoutIfNeeded() {
@@ -322,10 +401,14 @@ class WebConsoleWrapper {
           // The store is not initialized yet, we can call setTimeoutIfNeeded so the
           // messages will be handled in the next timeout when the store is ready.
           this.setTimeoutIfNeeded();
+          done();
           return;
         }
 
-        store.dispatch(actions.messagesAdd(this.queuedMessageAdds));
+        const { ui } = store.getState();
+        store.dispatch(
+          actions.messagesAdd(this.queuedMessageAdds, null, ui.persistLogs)
+        );
 
         const { length } = this.queuedMessageAdds;
 
@@ -344,19 +427,18 @@ class WebConsoleWrapper {
 
         this.queuedMessageAdds = [];
 
-        if (this.queuedMessageUpdates.length > 0) {
-          for (const { message, res } of this.queuedMessageUpdates) {
-            await store.dispatch(
-              actions.networkMessageUpdate(message, null, res)
-            );
-            this.webConsoleUI.emitForTests("network-message-updated", res);
-          }
+        if (this.queuedMessageUpdates.length) {
+          await store.dispatch(
+            actions.networkMessageUpdates(this.queuedMessageUpdates, null)
+          );
+          this.webConsoleUI.emitForTests("network-messages-updated");
           this.queuedMessageUpdates = [];
         }
-        if (this.queuedRequestUpdates.length > 0) {
-          for (const { id, data } of this.queuedRequestUpdates) {
-            await store.dispatch(actions.networkUpdateRequest(id, data));
-          }
+        if (this.queuedRequestUpdates.length) {
+          await store.dispatch(
+            actions.networkUpdateRequests(this.queuedRequestUpdates)
+          );
+          const updateCount = this.queuedRequestUpdates.length;
           this.queuedRequestUpdates = [];
 
           // Fire an event indicating that all data fetched from
@@ -366,7 +448,11 @@ class WebConsoleWrapper {
           // (netmonitor/src/connector/firefox-data-provider).
           // This event might be utilized in tests to find the right
           // time when to finish.
-          this.webConsoleUI.emitForTests("network-request-payload-ready");
+
+          this.webConsoleUI.emitForTests(
+            "network-request-payload-ready",
+            updateCount
+          );
         }
         done();
       }, 50);
@@ -376,6 +462,18 @@ class WebConsoleWrapper {
 
   getStore() {
     return store;
+  }
+
+  getServiceContainer() {
+    if (!this.#serviceContainer) {
+      this.#serviceContainer = setupServiceContainer({
+        webConsoleUI: this.webConsoleUI,
+        toolbox: this.toolbox,
+        hud: this.hud,
+        webConsoleWrapper: this,
+      });
+    }
+    return this.#serviceContainer;
   }
 
   subscribeToStore(callback) {
@@ -389,6 +487,14 @@ class WebConsoleWrapper {
   // Called by pushing close button.
   closeSplitConsole() {
     this.toolbox.closeSplitConsole();
+  }
+
+  toggleOriginalVariableMappingEvaluationNotification(show) {
+    store.dispatch(
+      actions.showEvaluationNotification(
+        show ? Constants.ORIGINAL_VARIABLE_MAPPING : ""
+      )
+    );
   }
 }
 

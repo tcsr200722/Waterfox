@@ -2,8 +2,29 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
+const ERROR_LINE_NUMBERS = {
+  jsm: 31,
+  "sys.mjs": 28,
+};
+const EXCEPTION_LINE_NUMBERS = {
+  jsm: ERROR_LINE_NUMBERS.jsm + 3,
+  "sys.mjs": ERROR_LINE_NUMBERS["sys.mjs"] + 3,
+};
+const ERROR_COLUMN_NUMBERS = {
+  jsm: 31,
+  "sys.mjs": 31,
+};
+const EXCEPTION_COLUMN_NUMBERS = {
+  jsm: 22,
+  "sys.mjs": 22,
+};
+
 function maybeAsyncStack(offset, column) {
-  if (!Services.prefs.getBoolPref("javascript.options.asyncstack")) {
+  if (
+    Services.prefs.getBoolPref(
+      "javascript.options.asyncstack_capture_debuggee_only"
+    )
+  ) {
     return "";
   }
 
@@ -18,8 +39,8 @@ function maybeAsyncStack(offset, column) {
 }
 
 declTest("sendQuery Error", {
-  async test(browser) {
-    let parent = browser.browsingContext.currentWindowGlobal.contentParent;
+  async test(browser, _window, fileExt) {
+    let parent = browser.browsingContext.currentWindowGlobal.domProcess;
     let actorParent = parent.getActor("TestProcessActor");
 
     let asyncStack = maybeAsyncStack(2, 8);
@@ -31,7 +52,7 @@ declTest("sendQuery Error", {
     is(error.name, "SyntaxError", "Error should have the correct name");
     is(
       error.stack,
-      "receiveMessage@resource://testing-common/TestProcessActorChild.jsm:33:31\n" +
+      `receiveMessage@resource://testing-common/TestProcessActorChild.${fileExt}:${ERROR_LINE_NUMBERS[fileExt]}:${ERROR_COLUMN_NUMBERS[fileExt]}\n` +
         asyncStack,
       "Error should have the correct stack"
     );
@@ -39,8 +60,8 @@ declTest("sendQuery Error", {
 });
 
 declTest("sendQuery Exception", {
-  async test(browser) {
-    let parent = browser.browsingContext.currentWindowGlobal.contentParent;
+  async test(browser, _window, fileExt) {
+    let parent = browser.browsingContext.currentWindowGlobal.domProcess;
     let actorParent = parent.getActor("TestProcessActor");
 
     let asyncStack = maybeAsyncStack(2, 8);
@@ -59,7 +80,7 @@ declTest("sendQuery Exception", {
     );
     is(
       error.stack,
-      "receiveMessage@resource://testing-common/TestProcessActorChild.jsm:36:22\n" +
+      `receiveMessage@resource://testing-common/TestProcessActorChild.${fileExt}:${EXCEPTION_LINE_NUMBERS[fileExt]}:${EXCEPTION_COLUMN_NUMBERS[fileExt]}\n` +
         asyncStack,
       "Error should have the correct stack"
     );
@@ -68,7 +89,7 @@ declTest("sendQuery Exception", {
 
 declTest("sendQuery testing", {
   async test(browser) {
-    let parent = browser.browsingContext.currentWindowGlobal.contentParent;
+    let parent = browser.browsingContext.currentWindowGlobal.domProcess;
     let actorParent = parent.getActor("TestProcessActor");
     ok(actorParent, "JSWindowActorParent should have value.");
 

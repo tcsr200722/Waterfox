@@ -3,12 +3,12 @@
 
 "use strict";
 
-const { MatchURLFilters } = ChromeUtils.import(
-  "resource://gre/modules/MatchURLFilters.jsm"
+const { MatchURLFilters } = ChromeUtils.importESModule(
+  "resource://gre/modules/MatchURLFilters.sys.mjs"
 );
 
-const { Preferences } = ChromeUtils.import(
-  "resource://gre/modules/Preferences.jsm"
+const { Preferences } = ChromeUtils.importESModule(
+  "resource://gre/modules/Preferences.sys.mjs"
 );
 
 function createTestFilter({ url, filters }) {
@@ -119,19 +119,12 @@ add_task(async function test_match_url_filters() {
     // Port filter: standard (implicit) ports.
     { shouldPass, filters: [{ ports: [443] }], url: "https://mozilla.org" },
     { shouldPass, filters: [{ ports: [80] }], url: "http://mozilla.org" },
-    {
-      shouldPass,
-      filters: [{ ports: [21] }],
-      url: "ftp://ftp.mozilla.org",
-      prefs: [["network.ftp.enabled", true]],
-    },
 
     // Port matching unknown protocols will fail.
     {
       shouldFail,
       filters: [{ ports: [21] }],
       url: "ftp://ftp.mozilla.org",
-      prefs: [["network.ftp.enabled", false]],
     },
 
     // Port filter: schemes without a default port.
@@ -233,14 +226,14 @@ add_task(async function test_match_url_filters() {
     // TODO: should we explicitly cover hostContains, hostPrefix, hostSuffix for
     // these sub-cases?
     { shouldFail, filters: [{ hostEquals: "blank" }], url: "about:blank" },
-    { shouldFail, filters: [{ hostEquals: "blank" }], url: "about://blank" },
+    { shouldPass, filters: [{ hostEquals: "blank" }], url: "about://blank" },
     {
       shouldFail,
       filters: [{ hostEquals: "testDataURL" }],
       url: "data:,testDataURL",
     },
     { shouldPass, filters: [{ hostEquals: "" }], url: "about:blank" },
-    { shouldPass, filters: [{ hostEquals: "" }], url: "about://blank" },
+    { shouldFail, filters: [{ hostEquals: "" }], url: "about://blank" },
     { shouldPass, filters: [{ hostEquals: "" }], url: "data:,testDataURL" },
 
     // Path filters (pathEquals, pathContains, pathPrefix, pathSuffix).
@@ -664,16 +657,16 @@ add_task(async function test_match_url_filters() {
           pathContains: "b/p",
           pathPrefix: "/sub",
           pathSuffix: "/path",
-          queryEquals: "p=v",
+          queryEquals: "p1=v",
           queryContains: "1=",
           queryPrefix: "p1",
           querySuffix: "=v",
           urlEquals: "https://www.mozilla.org/sub/path?p1=v#ref",
           urlContains: "org/sub",
-          urlPrefix: "https://moz",
+          urlPrefix: "https://www.moz",
           urlSuffix: "#ref",
-          urlMatches: "v#ref$",
-          originAndPathMatches: ".*://moz.*/",
+          urlMatches: "p1=v$",
+          originAndPathMatches: ".*://www.moz.*/",
         },
       ],
       url: "https://www.mozilla.org/sub/path?p1=v#ref",

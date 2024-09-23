@@ -17,18 +17,23 @@ async function run_test() {
   writeUpdatesToXMLFile(getLocalUpdatesXMLString(updates), true);
   writeVersionFile("99.9");
 
-  // Check that there is no activeUpdate first so the updates directory is
+  // Check that there are no active updates first so the updates directory is
   // cleaned up by the UpdateManager before the remaining tests.
   Assert.ok(
-    !gUpdateManager.activeUpdate,
-    "there should not be an active update"
+    !(await gUpdateManager.getDownloadingUpdate()),
+    "there should not be a downloading update"
   );
+  Assert.ok(
+    !(await gUpdateManager.getReadyUpdate()),
+    "there should not be a ready update"
+  );
+  const history = await gUpdateManager.getHistory();
   Assert.equal(
-    gUpdateManager.updateCount,
+    history.length,
     1,
     "the update manager update count" + MSG_SHOULD_EQUAL
   );
-  let update = gUpdateManager.getUpdateAt(0);
+  let update = history[0];
   Assert.equal(
     update.state,
     STATE_FAILED,

@@ -4,25 +4,21 @@
 
 "use strict";
 
-const { Ci, Cc } = require("chrome");
-const Services = require("Services");
-const protocol = require("devtools/shared/protocol");
-const { LongStringActor } = require("devtools/server/actors/string");
+const { Actor } = require("resource://devtools/shared/protocol.js");
+const { deviceSpec } = require("resource://devtools/shared/specs/device.js");
+
 const {
-  addDebugServiceWorkersListener,
-  canDebugServiceWorkers,
-  isParentInterceptEnabled,
-  removeDebugServiceWorkersListener,
-} = require("devtools/shared/service-workers-debug-helper");
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
+const { getSystemInfo } = require("resource://devtools/shared/system.js");
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs",
+  { global: "contextual" }
+);
 
-const { DevToolsServer } = require("devtools/server/devtools-server");
-const { getSystemInfo } = require("devtools/shared/system");
-const { deviceSpec } = require("devtools/shared/specs/device");
-const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
-
-exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
-  initialize: function(conn) {
-    protocol.Actor.prototype.initialize.call(this, conn);
+exports.DeviceActor = class DeviceActor extends Actor {
+  constructor(conn) {
+    super(conn, deviceSpec);
     // pageshow and pagehide event release wake lock, so we have to acquire
     // wake lock again by pageshow event
     this._onPageShow = this._onPageShow.bind(this);
@@ -30,56 +26,23 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
       this._window.addEventListener("pageshow", this._onPageShow, true);
     }
     this._acquireWakeLock();
+  }
 
-    this._onDebugServiceWorkersUpdated = this._onDebugServiceWorkersUpdated.bind(
-      this
-    );
-    addDebugServiceWorkersListener(this._onDebugServiceWorkersUpdated);
-  },
-
-  destroy: function() {
-    protocol.Actor.prototype.destroy.call(this);
+  destroy() {
+    super.destroy();
     this._releaseWakeLock();
     if (this._window) {
       this._window.removeEventListener("pageshow", this._onPageShow, true);
     }
-    removeDebugServiceWorkersListener(this._onDebugServiceWorkersUpdated);
-  },
+  }
 
-  _onDebugServiceWorkersUpdated: function() {
-    this.emit("can-debug-sw-updated", canDebugServiceWorkers());
-  },
-
-  getDescription: function() {
+  getDescription() {
     return Object.assign({}, getSystemInfo(), {
-      canDebugServiceWorkers: canDebugServiceWorkers(),
-      isParentInterceptEnabled: isParentInterceptEnabled(),
+      canDebugServiceWorkers: true,
     });
-  },
+  }
 
-  screenshotToDataURL: function() {
-    const window = this._window;
-    const { devicePixelRatio } = window;
-    const canvas = window.document.createElementNS(
-      "http://www.w3.org/1999/xhtml",
-      "canvas"
-    );
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    canvas.setAttribute("width", Math.round(width * devicePixelRatio));
-    canvas.setAttribute("height", Math.round(height * devicePixelRatio));
-    const context = canvas.getContext("2d");
-    const flags =
-      context.DRAWWINDOW_DRAW_CARET |
-      context.DRAWWINDOW_DRAW_VIEW |
-      context.DRAWWINDOW_USE_WIDGET_LAYERS;
-    context.scale(devicePixelRatio, devicePixelRatio);
-    context.drawWindow(window, 0, 0, width, height, "rgb(255,255,255)", flags);
-    const dataURL = canvas.toDataURL("image/png");
-    return new LongStringActor(this.conn, dataURL);
-  },
-
-  _acquireWakeLock: function() {
+  _acquireWakeLock() {
     if (AppConstants.platform !== "android") {
       return;
     }
@@ -88,9 +51,9 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
       Ci.nsIPowerManagerService
     );
     this._wakelock = pm.newWakeLock("screen", this._window);
-  },
+  }
 
-  _releaseWakeLock: function() {
+  _releaseWakeLock() {
     if (this._wakelock) {
       try {
         this._wakelock.unlock();
@@ -99,14 +62,14 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
       }
       this._wakelock = null;
     }
-  },
+  }
 
-  _onPageShow: function() {
+  _onPageShow() {
     this._releaseWakeLock();
     this._acquireWakeLock();
-  },
+  }
 
   get _window() {
     return Services.wm.getMostRecentWindow(DevToolsServer.chromeWindowType);
-  },
-});
+  }
+};

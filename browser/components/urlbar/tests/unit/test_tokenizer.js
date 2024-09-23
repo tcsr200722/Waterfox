@@ -32,6 +32,12 @@ add_task(async function test_tokenizer() {
       ],
     },
     {
+      desc: "do not separate restriction char at beginning in search mode",
+      searchMode: { engineName: "testEngine" },
+      searchString: `${UrlbarTokenizer.RESTRICT.SEARCH}test`,
+      expectedTokens: [{ value: "?test", type: UrlbarTokenizer.TYPE.TEXT }],
+    },
+    {
       desc: "separate restriction char at end",
       searchString: `test ${UrlbarTokenizer.RESTRICT.BOOKMARK}`,
       expectedTokens: [
@@ -232,8 +238,7 @@ add_task(async function test_tokenizer() {
       ],
     },
     {
-      desc:
-        "bogus protocol with host (we allow visits to http://///example.com)",
+      desc: "bogus protocol with host (we allow visits to http://///example.com)",
       searchString: "http:///test",
       expectedTokens: [
         { value: "http:///test", type: UrlbarTokenizer.TYPE.POSSIBLE_URL },
@@ -431,6 +436,7 @@ add_task(async function test_tokenizer() {
 
   for (let queryContext of testContexts) {
     info(queryContext.desc);
+    queryContext.trimmedSearchString = queryContext.searchString.trim();
     for (let token of queryContext.expectedTokens) {
       token.lowerCaseValue = token.value.toLocaleLowerCase();
     }

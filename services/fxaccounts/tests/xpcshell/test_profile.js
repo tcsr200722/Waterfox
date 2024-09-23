@@ -3,21 +3,20 @@
 
 "use strict";
 
-const { ON_PROFILE_CHANGE_NOTIFICATION, log } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsCommon.js"
+const { ON_PROFILE_CHANGE_NOTIFICATION, log } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsCommon.sys.mjs"
 );
-const { FxAccountsProfileClient } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsProfileClient.jsm"
+const { FxAccountsProfileClient } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsProfileClient.sys.mjs"
 );
-const { FxAccountsProfile } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsProfile.jsm"
+const { FxAccountsProfile } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsProfile.sys.mjs"
 );
-const { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm"
+const { setTimeout } = ChromeUtils.importESModule(
+  "resource://gre/modules/Timer.sys.mjs"
 );
-const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
 
-let mockClient = function(fxa) {
+let mockClient = function (fxa) {
   let options = {
     serverURL: "http://127.0.0.1:1111/v1",
     fxa,
@@ -32,7 +31,7 @@ const ACCOUNT_DATA = {
   email: ACCOUNT_EMAIL,
 };
 
-let mockFxa = function() {
+let mockFxa = function () {
   let fxa = {
     // helpers to make the tests using this mock less verbose...
     set _testProfileCache(profileCache) {
@@ -102,7 +101,7 @@ add_test(function cacheProfile_change() {
   };
   let profile = CreateFxAccountsProfile(fxa);
 
-  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function(subject, topic, data) {
+  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function (subject, topic, data) {
     Assert.equal(data, ACCOUNT_DATA.uid);
     Assert.ok(setProfileCacheCalled);
     run_next_test();
@@ -116,13 +115,13 @@ add_test(function cacheProfile_change() {
 
 add_test(function fetchAndCacheProfile_ok() {
   let client = mockClient(mockFxa());
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     return Promise.resolve({ body: { uid: ACCOUNT_UID, avatar: "myimg" } });
   };
   let profile = CreateFxAccountsProfile(null, client);
   profile._cachedAt = 12345;
 
-  profile._cacheProfile = function(toCache) {
+  profile._cacheProfile = function (toCache) {
     Assert.equal(toCache.body.avatar, "myimg");
     return Promise.resolve(toCache.body);
   };
@@ -136,17 +135,17 @@ add_test(function fetchAndCacheProfile_ok() {
 
 add_test(function fetchAndCacheProfile_always_bumps_cachedAt() {
   let client = mockClient(mockFxa());
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     return Promise.reject(new Error("oops"));
   };
   let profile = CreateFxAccountsProfile(null, client);
   profile._cachedAt = 12345;
 
   return profile._fetchAndCacheProfile().then(
-    result => {
+    () => {
       do_throw("Should not succeed");
     },
-    err => {
+    () => {
       Assert.notEqual(profile._cachedAt, 12345, "cachedAt has been bumped");
       run_next_test();
     }
@@ -157,7 +156,7 @@ add_test(function fetchAndCacheProfile_sendsETag() {
   let fxa = mockFxa();
   fxa._testProfileCache = { profile: {}, etag: "bogusETag" };
   let client = mockClient(fxa);
-  client.fetchProfile = function(etag) {
+  client.fetchProfile = function (etag) {
     Assert.equal(etag, "bogusETag");
     return Promise.resolve({
       body: { uid: ACCOUNT_UID, email: ACCOUNT_EMAIL, avatar: "myimg" },
@@ -165,7 +164,7 @@ add_test(function fetchAndCacheProfile_sendsETag() {
   };
   let profile = CreateFxAccountsProfile(fxa, client);
 
-  return profile._fetchAndCacheProfile().then(result => {
+  return profile._fetchAndCacheProfile().then(() => {
     run_next_test();
   });
 });
@@ -181,7 +180,7 @@ add_task(async function fetchAndCacheProfileOnce() {
   });
   let numFetches = 0;
   let client = mockClient(mockFxa());
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     numFetches += 1;
     return promiseProfile;
   };
@@ -222,7 +221,7 @@ add_task(async function fetchAndCacheProfileOnce() {
   });
   let numFetches = 0;
   let client = mockClient(mockFxa());
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     numFetches += 1;
     return promiseProfile;
   };
@@ -259,7 +258,7 @@ add_task(async function fetchAndCacheProfileOnce() {
   }
 
   // but a new request should works.
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     return Promise.resolve({
       body: { uid: ACCOUNT_UID, email: ACCOUNT_EMAIL, avatar: "myimg" },
     });
@@ -277,13 +276,13 @@ add_test(function fetchAndCacheProfile_alreadyCached() {
     etag: "bogusETag",
   };
   let client = mockClient(fxa);
-  client.fetchProfile = function(etag) {
+  client.fetchProfile = function (etag) {
     Assert.equal(etag, "bogusETag");
     return Promise.resolve(null);
   };
 
   let profile = CreateFxAccountsProfile(fxa, client);
-  profile._cacheProfile = function(toCache) {
+  profile._cacheProfile = function () {
     do_throw("This method should not be called.");
   };
 
@@ -309,7 +308,7 @@ add_task(async function fetchAndCacheProfileAfterThreshold() {
 
   let numFetches = 0;
   let client = mockClient(mockFxa());
-  client.fetchProfile = async function() {
+  client.fetchProfile = async function () {
     numFetches += 1;
     return {
       body: { uid: ACCOUNT_UID, email: ACCOUNT_EMAIL, avatar: "myimg" },
@@ -337,7 +336,7 @@ add_task(async function fetchAndCacheProfileAfterThreshold() {
   });
 
   let origFetchAndCatch = profile._fetchAndCacheProfile;
-  let backgroundFetchDone = PromiseUtils.defer();
+  let backgroundFetchDone = Promise.withResolvers();
   profile._fetchAndCacheProfile = async () => {
     await origFetchAndCatch.call(profile);
     backgroundFetchDone.resolve();
@@ -347,13 +346,179 @@ add_task(async function fetchAndCacheProfileAfterThreshold() {
   Assert.equal(numFetches, 2);
 });
 
+add_task(async function test_ensureProfile() {
+  let client = new FxAccountsProfileClient({
+    serverURL: "http://127.0.0.1:1111/v1",
+    fxa: mockFxa(),
+  });
+  let profile = CreateFxAccountsProfile(null, client);
+
+  const testCases = [
+    // profile retrieval when there is no cached profile info
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: null,
+      fetchedProfile: {
+        uid: ACCOUNT_UID,
+        email: ACCOUNT_EMAIL,
+        avatar: "myimg",
+      },
+    },
+    // profile retrieval when the cached profile is recent
+    {
+      // Note: The threshold for this test case is being set to an arbitrary value that will
+      // be greater than Date.now() so the retrieved cached profile will be deemed recent.
+      threshold: Date.now() + 5000,
+      expectsCachedProfileReturned: true,
+      cachedProfile: {
+        uid: `${ACCOUNT_UID}2`,
+        email: `${ACCOUNT_EMAIL}2`,
+        avatar: "myimg2",
+      },
+    },
+    // profile retrieval when the cached profile is old and a new profile is fetched
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: {
+        uid: `${ACCOUNT_UID}3`,
+        email: `${ACCOUNT_EMAIL}3`,
+        avatar: "myimg3",
+      },
+      fetchAndCacheProfileResolves: true,
+      fetchedProfile: {
+        uid: `${ACCOUNT_UID}4`,
+        email: `${ACCOUNT_EMAIL}4`,
+        avatar: "myimg4",
+      },
+    },
+    // profile retrieval when the cached profile is old and a null profile is fetched
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: {
+        uid: `${ACCOUNT_UID}5`,
+        email: `${ACCOUNT_EMAIL}5`,
+        avatar: "myimg5",
+      },
+      fetchAndCacheProfileResolves: true,
+      fetchedProfile: null,
+    },
+    // profile retrieval when the cached profile is old and fetching a new profile errors
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: {
+        uid: `${ACCOUNT_UID}6`,
+        email: `${ACCOUNT_EMAIL}6`,
+        avatar: "myimg6",
+      },
+      fetchAndCacheProfileResolves: false,
+    },
+    // profile retrieval when we've cached a failure to fetch profile data
+    {
+      // Note: The threshold for this test case is being set to an arbitrary value that will
+      // be greater than Date.now() so the retrieved cached profile will be deemed recent.
+      threshold: Date.now() + 5000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: null,
+      fetchedProfile: {
+        uid: `${ACCOUNT_UID}7`,
+        email: `${ACCOUNT_EMAIL}7`,
+        avatar: "myimg7",
+      },
+      fetchAndCacheProfileResolves: true,
+    },
+    // profile retrieval when the cached profile is old but staleOk is true.
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: true,
+      cachedProfile: {
+        uid: `${ACCOUNT_UID}8`,
+        email: `${ACCOUNT_EMAIL}8`,
+        avatar: "myimg8",
+      },
+      fetchAndCacheProfileResolves: false,
+      options: { staleOk: true },
+    },
+    // staleOk but no cached profile
+    {
+      threshold: 1000,
+      expectsCachedProfileReturned: false,
+      cachedProfile: null,
+      fetchedProfile: {
+        uid: `${ACCOUNT_UID}9`,
+        email: `${ACCOUNT_EMAIL}9`,
+        avatar: "myimg9",
+      },
+      options: { staleOk: true },
+    },
+    // fresh profile but forceFresh = true
+    {
+      // Note: The threshold for this test case is being set to an arbitrary value that will
+      // be greater than Date.now() so the retrieved cached profile will be deemed recent.
+      threshold: Date.now() + 5000,
+      expectsCachedProfileReturned: false,
+      fetchedProfile: {
+        uid: `${ACCOUNT_UID}10`,
+        email: `${ACCOUNT_EMAIL}10`,
+        avatar: "myimg10",
+      },
+      options: { forceFresh: true },
+    },
+  ];
+
+  for (const tc of testCases) {
+    print(`test case: ${JSON.stringify(tc)}`);
+    let mockProfile = sinon.mock(profile);
+    mockProfile
+      .expects("_getProfileCache")
+      .once()
+      .returns(
+        tc.cachedProfile
+          ? {
+              profile: tc.cachedProfile,
+            }
+          : null
+      );
+    profile.PROFILE_FRESHNESS_THRESHOLD = tc.threshold;
+
+    let options = tc.options || {};
+    if (tc.expectsCachedProfileReturned) {
+      mockProfile.expects("_fetchAndCacheProfile").never();
+      let actualProfile = await profile.ensureProfile(options);
+      mockProfile.verify();
+      Assert.equal(actualProfile, tc.cachedProfile);
+    } else if (tc.fetchAndCacheProfileResolves) {
+      mockProfile
+        .expects("_fetchAndCacheProfile")
+        .once()
+        .resolves(tc.fetchedProfile);
+
+      let actualProfile = await profile.ensureProfile(options);
+      let expectedProfile = tc.fetchedProfile
+        ? tc.fetchedProfile
+        : tc.cachedProfile;
+      mockProfile.verify();
+      Assert.equal(actualProfile, expectedProfile);
+    } else {
+      mockProfile.expects("_fetchAndCacheProfile").once().rejects();
+
+      let actualProfile = await profile.ensureProfile(options);
+      mockProfile.verify();
+      Assert.equal(actualProfile, tc.cachedProfile);
+    }
+  }
+});
+
 // Check that a new profile request within PROFILE_FRESHNESS_THRESHOLD of the
 // last one *does* kick off a new request if ON_PROFILE_CHANGE_NOTIFICATION
 // is sent.
 add_task(async function fetchAndCacheProfileBeforeThresholdOnNotification() {
   let numFetches = 0;
   let client = mockClient(mockFxa());
-  client.fetchProfile = async function() {
+  client.fetchProfile = async function () {
     numFetches += 1;
     return {
       body: { uid: ACCOUNT_UID, email: ACCOUNT_EMAIL, avatar: "myimg" },
@@ -375,7 +540,7 @@ add_task(async function fetchAndCacheProfileBeforeThresholdOnNotification() {
   Services.obs.notifyObservers(null, ON_PROFILE_CHANGE_NOTIFICATION);
 
   let origFetchAndCatch = profile._fetchAndCacheProfile;
-  let backgroundFetchDone = PromiseUtils.defer();
+  let backgroundFetchDone = Promise.withResolvers();
   profile._fetchAndCacheProfile = async () => {
     await origFetchAndCatch.call(profile);
     backgroundFetchDone.resolve();
@@ -406,7 +571,7 @@ add_task(async function getProfile_ok() {
   fxa._testProfileCache = { profile: { uid: ACCOUNT_UID, avatar: cachedUrl } };
   let profile = CreateFxAccountsProfile(fxa);
 
-  profile._fetchAndCacheProfile = function() {
+  profile._fetchAndCacheProfile = function () {
     didFetch = true;
     return Promise.resolve();
   };
@@ -422,7 +587,7 @@ add_task(async function getProfile_no_cache() {
   let fxa = mockFxa();
   let profile = CreateFxAccountsProfile(fxa);
 
-  profile._fetchAndCacheProfileInternal = function() {
+  profile._fetchAndCacheProfileInternal = function () {
     return Promise.resolve({ uid: ACCOUNT_UID, avatar: fetchedUrl });
   };
 
@@ -436,7 +601,7 @@ add_test(function getProfile_has_cached_fetch_deleted() {
 
   let fxa = mockFxa();
   let client = mockClient(fxa);
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     return Promise.resolve({
       body: { uid: ACCOUNT_UID, email: ACCOUNT_EMAIL, avatar: null },
     });
@@ -449,7 +614,7 @@ add_test(function getProfile_has_cached_fetch_deleted() {
 
   // instead of checking this in a mocked "save" function, just check after the
   // observer
-  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function(subject, topic, data) {
+  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function () {
     profile.getProfile().then(profileData => {
       Assert.equal(null, profileData.avatar);
       run_next_test();
@@ -479,7 +644,7 @@ add_test(function getProfile_fetchAndCacheProfile_throws() {
 add_test(function getProfile_email_changed() {
   let fxa = mockFxa();
   let client = mockClient(fxa);
-  client.fetchProfile = function() {
+  client.fetchProfile = function () {
     return Promise.resolve({
       body: { uid: ACCOUNT_UID, email: "newemail@bar.com" },
     });
@@ -494,7 +659,7 @@ add_test(function getProfile_email_changed() {
 });
 
 function makeObserver(aObserveTopic, aObserveFunc) {
-  let callback = function(aSubject, aTopic, aData) {
+  let callback = function (aSubject, aTopic, aData) {
     log.debug("observed " + aTopic + " " + aData);
     if (aTopic == aObserveTopic) {
       removeMe();

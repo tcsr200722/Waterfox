@@ -10,7 +10,7 @@ const {
   RetVal,
   generateActorSpec,
   types,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 types.addDictType("netevent.headers-cookies", {
   name: "string",
@@ -92,6 +92,10 @@ types.addDictType("netevent.secinfo", {
   hsts: "boolean",
   hpkp: "boolean",
   errorMessage: "nullable:string",
+  usedEch: "boolean",
+  usedDelegatedCredentials: "boolean",
+  usedOcsp: "boolean",
+  usedPrivateDns: "boolean",
 });
 
 const networkEventSpec = generateActorSpec({
@@ -122,7 +126,6 @@ const networkEventSpec = generateActorSpec({
       updateType: Arg(0, "string"),
 
       dataSize: Option(1, "number"),
-      discardRequestBody: Option(1, "boolean"),
     },
 
     "network-event-update:response-start": {
@@ -148,7 +151,6 @@ const networkEventSpec = generateActorSpec({
       contentSize: Option(1, "number"),
       encoding: Option(1, "string"),
       transferredSize: Option(1, "number"),
-      discardResponseBody: Option(1, "boolean"),
       blockedReason: Option(1, "number"),
       blockingExtension: Option(1, "string"),
     },

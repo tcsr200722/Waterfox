@@ -41,6 +41,7 @@ locales = [
     "ff",
     "fi",
     "fr",
+    "fur",
     "fy-NL",
     "ga-IE",
     "gd",
@@ -88,16 +89,22 @@ locales = [
     "rm",
     "ro",
     "ru",
+    "sat",
+    "sc",
     "scn",
+    "sco",
     "si",
     "sk",
+    "skr",
     "sl",
     "son",
     "sq",
     "sr",
     "sv-SE",
+    "szl",
     "ta",
     "te",
+    "tg",
     "th",
     "tl",
     "tr",
@@ -121,28 +128,16 @@ locales = [
     l10n = "{l}browser/**"
 
 [[paths]]
-    reference = "browser/branding/official/locales/en-US/**"
-    l10n = "{l}browser/branding/official/**"
+    reference = "waterfox/browser/branding/locales/en-US/**"
+    l10n = "{l}waterfox/browser/branding/**"
 
 [[paths]]
     reference = "browser/extensions/formautofill/locales/en-US/**"
     l10n = "{l}browser/extensions/formautofill/**"
 
 [[paths]]
-    reference = "browser/extensions/fxmonitor/locales/en-US/**"
-    l10n = "{l}browser/extensions/fxmonitor/**"
-
-[[paths]]
-    reference = "browser/extensions/webcompat-reporter/locales/en-US/**"
-    l10n = "{l}browser/extensions/webcompat-reporter/**"
-
-[[paths]]
     reference = "browser/extensions/report-site-issue/locales/en-US/**"
     l10n = "{l}browser/extensions/report-site-issue/**"
-
-[[paths]]
-    reference = "services/sync/locales/en-US/**"
-    l10n = "{l}services/sync/**"
 
 
 [[includes]]
@@ -151,14 +146,12 @@ locales = [
 [[includes]]
     path = "devtools/client/locales/l10n.toml"
 
+[[includes]]
+    path = "waterfox/browser/locales/l10n.toml"
+
 [[paths]]
     reference = "devtools/startup/locales/en-US/**"
     l10n = "{l}devtools/startup/**"
-
-# for Firefox 60 and older and cross-channel
-[[paths]]
-    reference = "devtools/shim/locales/en-US/**"
-    l10n = "{l}devtools/shim/**"
 
 # Filters
 # The filters below are evaluated one after the other, in the given order.
@@ -170,22 +163,7 @@ locales = [
 # key: the key/id of the entity
 # If key isn't specified, the complete file can be missing.
 [[filters]]
-    path = "{l}browser/defines.inc"
-    key = "MOZ_LANGPACK_CONTRIBUTORS"
-    action = "ignore"
-
-[[filters]]
     path = [
-        "{l}browser/defines.inc",
         "{l}browser/firefox-l10n.js",
-    ]
-    action = "ignore"
-
-[[filters]]
-    path = "{l}browser/chrome/browser-region/region.properties"
-    key = [
-        "re:^browser\\.contentHandlers\\.types\\.[0-5]\\..*$",
-        "re:^gecko\\.handlerService\\.schemes\\..*$",
-        "re:^gecko\\.handlerService\\.defaultHandlersVersion$"
     ]
     action = "ignore"

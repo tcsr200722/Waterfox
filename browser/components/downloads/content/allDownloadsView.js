@@ -3,20 +3,18 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 /* eslint-env mozilla/browser-window */
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
-  Downloads: "resource://gre/modules/Downloads.jsm",
-  DownloadsCommon: "resource:///modules/DownloadsCommon.jsm",
-  DownloadsViewUI: "resource:///modules/DownloadsViewUI.jsm",
-  FileUtils: "resource://gre/modules/FileUtils.jsm",
-  NetUtil: "resource://gre/modules/NetUtil.jsm",
-  OS: "resource://gre/modules/osfile.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  Downloads: "resource://gre/modules/Downloads.sys.mjs",
+  DownloadsCommon: "resource:///modules/DownloadsCommon.sys.mjs",
+  DownloadsViewUI: "resource:///modules/DownloadsViewUI.sys.mjs",
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
 /**
@@ -48,8 +46,6 @@ function HistoryDownloadElementShell(download) {
 }
 
 HistoryDownloadElementShell.prototype = {
-  __proto__: DownloadsViewUI.DownloadElementShell.prototype,
-
   /**
    * Overrides the base getter to return the Download or HistoryDownload object
    * for displaying information and executing commands in the user interface.
@@ -103,6 +99,9 @@ HistoryDownloadElementShell.prototype = {
   downloadsCmd_unblock() {
     this.confirmUnblock(window, "unblock");
   },
+  downloadsCmd_unblockAndSave() {
+    this.confirmUnblock(window, "unblock");
+  },
 
   downloadsCmd_chooseUnblock() {
     this.confirmUnblock(window, "chooseUnblock");
@@ -123,7 +122,9 @@ HistoryDownloadElementShell.prototype = {
     let displayName = DownloadsViewUI.getDisplayName(this.download);
     return (
       displayName.toLowerCase().includes(aTerm) ||
-      this.download.source.url.toLowerCase().includes(aTerm)
+      (this.download.source.originalUrl || this.download.source.url)
+        .toLowerCase()
+        .includes(aTerm)
     );
   },
 
@@ -140,7 +141,7 @@ HistoryDownloadElementShell.prototype = {
       // be opened.
       let browserWin = BrowserWindowTracker.getTopWindow();
       let openWhere = browserWin
-        ? browserWin.whereToOpenLink(event, false, true)
+        ? BrowserUtils.whereToOpenLink(event, false, true)
         : "window";
       if (["window", "tabshifted", "tab"].includes(openWhere)) {
         command += ":" + openWhere;
@@ -174,7 +175,7 @@ HistoryDownloadElementShell.prototype = {
     if (!this._targetFileChecked) {
       this.download
         .refresh()
-        .catch(Cu.reportError)
+        .catch(console.error)
         .then(() => {
           // Do not try to check for existence again even if this failed.
           this._targetFileChecked = true;
@@ -182,6 +183,10 @@ HistoryDownloadElementShell.prototype = {
     }
   },
 };
+Object.setPrototypeOf(
+  HistoryDownloadElementShell.prototype,
+  DownloadsViewUI.DownloadElementShell.prototype
+);
 
 /**
  * Relays commands from the download.xml binding to the selected items.
@@ -206,7 +211,11 @@ var DownloadsView = {
  * as they exist they "collapses" their history "counterpart" (So we don't show two
  * items for every download).
  */
-function DownloadsPlacesView(aRichListBox, aActive = true) {
+function DownloadsPlacesView(
+  aRichListBox,
+  aActive = true,
+  aSuppressionFlag = DownloadsCommon.SUPPRESS_ALL_DOWNLOADS_OPEN
+) {
   this._richlistbox = aRichListBox;
   this._richlistbox._placesView = this;
   window.controllers.insertControllerAt(0, this);
@@ -225,16 +234,21 @@ function DownloadsPlacesView(aRichListBox, aActive = true) {
   this._waitingForInitialData = true;
   this._downloadsData.addView(this);
 
-  // Get the Download button out of the attention state since we're about to
-  // view all downloads.
-  DownloadsCommon.getIndicatorData(window).attention =
-    DownloadsCommon.ATTENTION_NONE;
+  // Pause the download indicator as user is interacting with downloads. This is
+  // skipped on about:downloads because it handles this by itself.
+  if (aSuppressionFlag === DownloadsCommon.SUPPRESS_ALL_DOWNLOADS_OPEN) {
+    DownloadsCommon.getIndicatorData(window).attentionSuppressed |=
+      aSuppressionFlag;
+  }
 
   // Make sure to unregister the view if the window is closed.
   window.addEventListener(
     "unload",
     () => {
       window.controllers.removeController(this);
+      // Unpause the main window's download indicator.
+      DownloadsCommon.getIndicatorData(window).attentionSuppressed &=
+        ~aSuppressionFlag;
       this._downloadsData.removeView(this);
       this.result = null;
     },
@@ -251,8 +265,6 @@ function DownloadsPlacesView(aRichListBox, aActive = true) {
 }
 
 DownloadsPlacesView.prototype = {
-  __proto__: DownloadsViewUI.BaseView.prototype,
-
   get associatedElement() {
     return this._richlistbox;
   },
@@ -265,7 +277,6 @@ DownloadsPlacesView.prototype = {
     if (this._active) {
       this._ensureVisibleElementsAreActive(true);
     }
-    return this._active;
   },
 
   /**
@@ -394,12 +405,16 @@ DownloadsPlacesView.prototype = {
   },
   set searchTerm(aValue) {
     if (this._searchTerm != aValue) {
+      // Always clear selection on a new search, since the user is starting a
+      // different workflow. This also solves the fact we could end up
+      // retaining selection on hidden elements.
+      this._richlistbox.clearSelection();
       for (let element of this._richlistbox.childNodes) {
         element.hidden = !element._shell.matchesSearchTerm(aValue);
       }
       this._ensureVisibleElementsAreActive();
     }
-    return (this._searchTerm = aValue);
+    this._searchTerm = aValue;
   },
 
   /**
@@ -578,6 +593,13 @@ DownloadsPlacesView.prototype = {
   isCommandEnabled(aCommand) {
     switch (aCommand) {
       case "cmd_copy":
+        return Array.prototype.some.call(
+          this._richlistbox.selectedItems,
+          element => {
+            const { source } = element._shell.download;
+            return !!(source?.originalUrl || source?.url);
+          }
+        );
       case "downloadsCmd_openReferrer":
       case "downloadShowMenuItem":
         return this._richlistbox.selectedItems.length == 1;
@@ -596,10 +618,10 @@ DownloadsPlacesView.prototype = {
   },
 
   _copySelectedDownloadsToClipboard() {
-    let urls = Array.from(
-      this._richlistbox.selectedItems,
-      element => element._shell.download.source.url
-    );
+    let urls = Array.from(this._richlistbox.selectedItems, element => {
+      const { source } = element._shell.download;
+      return source?.originalUrl || source?.url;
+    }).filter(Boolean);
 
     Cc["@mozilla.org/widget/clipboardhelper;1"]
       .getService(Ci.nsIClipboardHelper)
@@ -612,7 +634,7 @@ DownloadsPlacesView.prototype = {
     );
     trans.init(null);
 
-    let flavors = ["text/x-moz-url", "text/unicode"];
+    let flavors = ["text/x-moz-url", "text/plain"];
     flavors.forEach(trans.addDataFlavor);
 
     Services.clipboard.getData(trans, Services.clipboard.kGlobalClipboard);
@@ -675,7 +697,23 @@ DownloadsPlacesView.prototype = {
   },
 
   cmd_selectAll() {
-    this._richlistbox.selectAll();
+    if (!this.searchTerm) {
+      this._richlistbox.selectAll();
+      return;
+    }
+    // If there is a filtering search term, some rows are hidden and should not
+    // be selected.
+    let oldSuppressOnSelect = this._richlistbox.suppressOnSelect;
+    this._richlistbox.suppressOnSelect = true;
+    this._richlistbox.clearSelection();
+    var item = this._richlistbox.getItemAtIndex(0);
+    while (item) {
+      if (!item.hidden) {
+        this._richlistbox.addItemToSelection(item);
+      }
+      item = this._richlistbox.getNextItem(item, 1);
+    }
+    this._richlistbox.suppressOnSelect = oldSuppressOnSelect;
   },
 
   cmd_paste() {
@@ -689,29 +727,32 @@ DownloadsPlacesView.prototype = {
         .removeVisitsByFilter({
           transition: PlacesUtils.history.TRANSITIONS.DOWNLOAD,
         })
-        .catch(Cu.reportError);
+        .catch(console.error);
     }
     // There may be no selection or focus change as a result
     // of these change, and we want the command updated immediately.
     goUpdateCommand("downloadsCmd_clearDownloads");
   },
 
-  onContextMenu(aEvent) {
+  onContextMenu() {
     let element = this._richlistbox.selectedItem;
     if (!element || !element._shell) {
       return false;
     }
 
-    // Set the state attribute so that only the appropriate items are displayed.
     let contextMenu = document.getElementById("downloadsContextMenu");
-    let download = element._shell.download;
-    contextMenu.setAttribute(
-      "state",
-      DownloadsCommon.stateOfDownload(download)
-    );
-    contextMenu.setAttribute("exists", "true");
-    contextMenu.classList.toggle("temporary-block", !!download.hasBlockedData);
+    DownloadsViewUI.updateContextMenuForElement(contextMenu, element);
+    // Hide the copy location item if there is somehow no URL. We have to do
+    // this here instead of in DownloadsViewUI because DownloadsView doesn't
+    // allow selecting multiple downloads, so in that view the menuitem will be
+    // shown according to whether just the selected item has a source URL.
+    contextMenu.querySelector(".downloadCopyLocationMenuItem").hidden =
+      !Array.prototype.some.call(
+        this._richlistbox.selectedItems,
+        el => !!el._shell.download.source?.url
+      );
 
+    let download = element._shell.download;
     if (!download.stopped) {
       // The hasPartialData property of a download may change at any time after
       // it has started, so ensure we update the related command now.
@@ -734,11 +775,17 @@ DownloadsPlacesView.prototype = {
         }
       }
     } else if (aEvent.charCode == " ".charCodeAt(0)) {
+      let atLeastOneDownloadToggled = false;
       // Pause/Resume every selected download
       for (let element of selectedElements) {
         if (element._shell.isCommandEnabled("downloadsCmd_pauseResume")) {
           element._shell.doCommand("downloadsCmd_pauseResume");
+          atLeastOneDownloadToggled = true;
         }
+      }
+
+      if (atLeastOneDownloadToggled) {
+        aEvent.preventDefault();
       }
     }
   },
@@ -836,9 +883,13 @@ DownloadsPlacesView.prototype = {
     }
   },
 };
+Object.setPrototypeOf(
+  DownloadsPlacesView.prototype,
+  DownloadsViewUI.BaseView.prototype
+);
 
 for (let methodName of ["load", "applyFilter", "selectNode", "selectItems"]) {
-  DownloadsPlacesView.prototype[methodName] = function() {
+  DownloadsPlacesView.prototype[methodName] = function () {
     throw new Error(
       "|" + methodName + "| is not implemented by the downloads view."
     );
@@ -857,21 +908,21 @@ function goUpdateDownloadCommands() {
   updateCommandsForObject(HistoryDownloadElementShell.prototype);
 }
 
-document.addEventListener("DOMContentLoaded", function() {
-  let richListBox = document.getElementById("downloadsRichListBox");
-  richListBox.addEventListener("scroll", function(event) {
+document.addEventListener("DOMContentLoaded", function () {
+  let richListBox = document.getElementById("downloadsListBox");
+  richListBox.addEventListener("scroll", function () {
     return this._placesView.onScroll();
   });
-  richListBox.addEventListener("keypress", function(event) {
+  richListBox.addEventListener("keypress", function (event) {
     return this._placesView.onKeyPress(event);
   });
-  richListBox.addEventListener("dblclick", function(event) {
+  richListBox.addEventListener("dblclick", function (event) {
     return this._placesView.onDoubleClick(event);
   });
-  richListBox.addEventListener("contextmenu", function(event) {
+  richListBox.addEventListener("contextmenu", function (event) {
     return this._placesView.onContextMenu(event);
   });
-  richListBox.addEventListener("dragstart", function(event) {
+  richListBox.addEventListener("dragstart", function (event) {
     this._placesView.onDragStart(event);
   });
   let dropNode = richListBox;
@@ -881,13 +932,13 @@ document.addEventListener("DOMContentLoaded", function() {
   if (document.documentElement.id == "contentAreaDownloadsView") {
     dropNode = richListBox.parentNode;
   }
-  dropNode.addEventListener("dragover", function(event) {
+  dropNode.addEventListener("dragover", function (event) {
     richListBox._placesView.onDragOver(event);
   });
-  dropNode.addEventListener("drop", function(event) {
+  dropNode.addEventListener("drop", function (event) {
     richListBox._placesView.onDrop(event);
   });
-  richListBox.addEventListener("select", function(event) {
+  richListBox.addEventListener("select", function () {
     this._placesView.onSelect();
   });
   richListBox.addEventListener("focus", goUpdateDownloadCommands);

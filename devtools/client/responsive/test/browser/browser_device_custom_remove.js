@@ -25,7 +25,7 @@ const device2 = Object.assign({}, device, {
 
 addRDMTask(
   TEST_URL,
-  async function({ ui }) {
+  async function ({ ui }) {
     const { toolWindow } = ui;
     const { store, document } = toolWindow;
 
@@ -97,12 +97,12 @@ addRDMTask(
       ok(!deviceItem2, "Test device 2 menu item removed");
     });
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );
 
 addRDMTask(
   TEST_URL,
-  async function({ ui }) {
+  async function ({ ui }) {
     const { toolWindow } = ui;
     const { document } = toolWindow;
 
@@ -135,5 +135,5 @@ addRDMTask(
     const deviceCb2 = deviceCbs.find(cb => cb.value == device2.name);
     ok(!deviceCb2, "Test device 2 checkbox does not exist");
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );

@@ -7,22 +7,31 @@
 #ifndef MOZILLA_DOMRECT_H_
 #define MOZILLA_DOMRECT_H_
 
-#include "js/StructuredClone.h"
-#include "nsTArray.h"
-#include "nsCOMPtr.h"
-#include "nsWrapperCache.h"
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
+#include <algorithm>
+#include <cstdint>
+#include <new>
+#include <utility>
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/RefPtr.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
+#include "nsTArray.h"
+#include "nsWrapperCache.h"
 
-struct nsRect;
+class JSObject;
 class nsIGlobalObject;
+struct JSContext;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
+struct nsRect;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+class GlobalObject;
 struct DOMRectInit;
 
 class DOMRectReadOnly : public nsISupports, public nsWrapperCache {
@@ -31,7 +40,7 @@ class DOMRectReadOnly : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMRectReadOnly)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DOMRectReadOnly)
 
   explicit DOMRectReadOnly(nsISupports* aParent, double aX = 0, double aY = 0,
                            double aWidth = 0, double aHeight = 0)
@@ -141,14 +150,16 @@ class DOMRectList final : public nsISupports, public nsWrapperCache {
   explicit DOMRectList(nsISupports* aParent) : mParent(aParent) {}
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMRectList)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DOMRectList)
 
   virtual JSObject* WrapObject(JSContext* cx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
   nsISupports* GetParentObject() { return mParent; }
 
-  void Append(DOMRect* aElement) { mArray.AppendElement(aElement); }
+  void Append(RefPtr<DOMRect>&& aElement) {
+    mArray.AppendElement(std::move(aElement));
+  }
 
   uint32_t Length() { return mArray.Length(); }
   DOMRect* Item(uint32_t aIndex) { return mArray.SafeElementAt(aIndex); }
@@ -165,7 +176,6 @@ class DOMRectList final : public nsISupports, public nsWrapperCache {
   nsCOMPtr<nsISupports> mParent;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /*MOZILLA_DOMRECT_H_*/

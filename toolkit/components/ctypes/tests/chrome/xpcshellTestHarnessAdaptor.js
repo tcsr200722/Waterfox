@@ -44,6 +44,16 @@ var Assert = {
     }
   },
 
+  strictEqual(left, right, stack) {
+    if (left !== right) {
+      var text = "Assert.strictEqual failed";
+      try {
+        text += ": " + left + " !== " + right;
+      } catch (e) {}
+      do_throw(text, stack);
+    }
+  },
+
   ok(condition, stack) {
     this.equal(condition, true, stack);
   },
@@ -73,7 +83,7 @@ FileFaker.prototype = {
   },
 };
 
-function do_get_file(path, allowNonexistent) {
+function do_get_file(path) {
   if (!_WORKINGDIR_) {
     do_throw("No way to fake files if working directory is unknown!");
   }

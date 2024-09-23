@@ -6,12 +6,13 @@
 #ifndef WEBGL_FRAMEBUFFER_H_
 #define WEBGL_FRAMEBUFFER_H_
 
+#include <bitset>
 #include <vector>
 
 #include "mozilla/WeakPtr.h"
 
+#include "GLScreenBuffer.h"
 #include "WebGLObjectModel.h"
-#include "WebGLRenderbuffer.h"
 #include "WebGLStrongTypes.h"
 #include "WebGLTexture.h"
 #include "WebGLTypes.h"
@@ -58,11 +59,9 @@ class WebGLFBAttachPoint final {
 
   ////
 
-  WebGLFBAttachPoint() = default;
+  WebGLFBAttachPoint();
+  explicit WebGLFBAttachPoint(WebGLFBAttachPoint&);  // Make this private.
   WebGLFBAttachPoint(const WebGLContext* webgl, GLenum attachmentPoint);
-
-  explicit WebGLFBAttachPoint(WebGLFBAttachPoint&) =
-      default;  // Make this private.
 
  public:
   ~WebGLFBAttachPoint();
@@ -70,7 +69,7 @@ class WebGLFBAttachPoint final {
   ////
 
   bool HasAttachment() const {
-    return bool(mTexturePtr) | bool(mRenderbufferPtr);
+    return bool(mTexturePtr) || bool(mRenderbufferPtr);
   }
 
   void Clear();
@@ -79,6 +78,12 @@ class WebGLFBAttachPoint final {
 
   WebGLTexture* Texture() const { return mTexturePtr; }
   WebGLRenderbuffer* Renderbuffer() const { return mRenderbufferPtr; }
+
+  Maybe<size_t> ColorAttachmentId() const {
+    const size_t id = mAttachmentPoint - LOCAL_GL_COLOR_ATTACHMENT0;
+    if (id >= webgl::kMaxDrawBuffers) return {};
+    return Some(id);
+  }
 
   auto Layer() const { return mTexImageLayer; }
   auto ZLayerCount() const { return mTexImageZLayerCount; }
@@ -97,7 +102,7 @@ class WebGLFBAttachPoint final {
                              GLenum pname) const;
 
   bool IsEquivalentForFeedback(const WebGLFBAttachPoint& other) const {
-    if (!HasAttachment() | !other.HasAttachment()) return false;
+    if (!HasAttachment() || !other.HasAttachment()) return false;
 
 #define _(X) (X == other.X)
     return (_(mRenderbufferPtr) && _(mTexturePtr) && _(mTexImageLevel) &&
@@ -131,16 +136,18 @@ class WebGLFBAttachPoint final {
 };
 
 class WebGLFramebuffer final : public WebGLContextBoundObject,
-                               public SupportsWeakPtr<WebGLFramebuffer>,
+                               public SupportsWeakPtr,
                                public CacheInvalidator {
  public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(WebGLFramebuffer, override)
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(WebGLFramebuffer)
 
   const GLuint mGLName;
   bool mHasBeenBound = false;
   const UniquePtr<gl::MozFramebuffer> mOpaque;
   bool mInOpaqueRAF = false;
+  // Swap chain that may be used to present this framebuffer, for opaque
+  // framebuffers or other use cases. (e.g. DrawTargetWebgl)
+  gl::SwapChain mSwapChain;
 
  private:
   mutable uint64_t mNumFBStatusInvals = 0;
@@ -152,14 +159,8 @@ class WebGLFramebuffer final : public WebGLContextBoundObject,
   WebGLFBAttachPoint mStencilAttachment;
   WebGLFBAttachPoint mDepthStencilAttachment;
 
-  // In theory, this number can be unbounded based on the driver. However, no
-  // driver appears to expose more than 8. We might as well stop there too, for
-  // now.
-  // (http://opengl.gpuinfo.org/gl_stats_caps_single.php?listreportsbycap=GL_MAX_COLOR_ATTACHMENTS)
-  static const size_t kMaxColorAttachments =
-      8;  // jgilbert's MacBook Pro exposes 8.
-  WebGLFBAttachPoint mColorAttachments[kMaxColorAttachments];
-
+  std::array<WebGLFBAttachPoint, webgl::kMaxDrawBuffers> mColorAttachments = {};
+  std::bitset<webgl::kMaxDrawBuffers> mDrawBufferEnabled = {1};
   ////
 
   std::vector<WebGLFBAttachPoint*> mAttachments;  // Non-null.
@@ -174,7 +175,8 @@ class WebGLFramebuffer final : public WebGLContextBoundObject,
 
     uint32_t width = 0;
     uint32_t height = 0;
-    bool hasFloat32 = false;
+    std::bitset<webgl::kMaxDrawBuffers> hasAttachment = 0;
+    std::bitset<webgl::kMaxDrawBuffers> isAttachmentF32 = 0;
     uint8_t zLayerCount = 1;
     bool isMultiview = false;
 
@@ -238,7 +240,7 @@ class WebGLFramebuffer final : public WebGLContextBoundObject,
 #undef GETTER
 
   const auto& ColorAttachment0() const { return mColorAttachments[0]; }
-  bool IsDrawBufferEnabled(uint32_t slotId) const;
+  const auto& DrawBufferEnabled() const { return mDrawBufferEnabled; }
 
   ////////////////
   // Invalidation

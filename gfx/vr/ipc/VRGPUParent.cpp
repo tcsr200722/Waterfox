@@ -5,8 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRGPUParent.h"
+#include "VRPuppetCommandBuffer.h"
 
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/ProcessChild.h"
+#include "mozilla/StaticPrefs_dom.h"
 
 namespace mozilla {
 namespace gfx {
@@ -14,13 +17,12 @@ namespace gfx {
 using namespace ipc;
 
 VRGPUParent::VRGPUParent(ProcessId aChildProcessId) : mClosed(false) {
-  MOZ_COUNT_CTOR(VRGPUParent);
   MOZ_ASSERT(NS_IsMainThread());
 
   SetOtherProcessId(aChildProcessId);
 }
 
-VRGPUParent::~VRGPUParent() { MOZ_COUNT_DTOR(VRGPUParent); }
+VRGPUParent::~VRGPUParent() = default;
 
 void VRGPUParent::ActorDestroy(ActorDestroyReason aWhy) {
 #if !defined(MOZ_WIDGET_ANDROID)
@@ -31,19 +33,20 @@ void VRGPUParent::ActorDestroy(ActorDestroyReason aWhy) {
 #endif
 
   mClosed = true;
-  MessageLoop::current()->PostTask(
-      NewRunnableMethod("gfx::VRGPUParent::DeferredDestroy", this,
-                        &VRGPUParent::DeferredDestroy));
 }
-
-void VRGPUParent::DeferredDestroy() { mSelfRef = nullptr; }
 
 /* static */
 RefPtr<VRGPUParent> VRGPUParent::CreateForGPU(
     Endpoint<PVRGPUParent>&& aEndpoint) {
+  if (!StaticPrefs::dom_vr_enabled() && !StaticPrefs::dom_vr_webxr_enabled()) {
+    return nullptr;
+  }
+
   RefPtr<VRGPUParent> vcp = new VRGPUParent(aEndpoint.OtherPid());
-  MessageLoop::current()->PostTask(NewRunnableMethod<Endpoint<PVRGPUParent>&&>(
-      "gfx::VRGPUParent::Bind", vcp, &VRGPUParent::Bind, std::move(aEndpoint)));
+  GetCurrentSerialEventTarget()->Dispatch(
+      NewRunnableMethod<Endpoint<PVRGPUParent>&&>("gfx::VRGPUParent::Bind", vcp,
+                                                  &VRGPUParent::Bind,
+                                                  std::move(aEndpoint)));
 
   return vcp;
 }
@@ -52,8 +55,6 @@ void VRGPUParent::Bind(Endpoint<PVRGPUParent>&& aEndpoint) {
   if (!aEndpoint.Bind(this)) {
     return;
   }
-
-  mSelfRef = this;
 }
 
 mozilla::ipc::IPCResult VRGPUParent::RecvStartVRService() {
@@ -75,6 +76,30 @@ mozilla::ipc::IPCResult VRGPUParent::RecvStopVRService() {
   }
 #endif
 
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult VRGPUParent::RecvPuppetReset() {
+#if !defined(MOZ_WIDGET_ANDROID)
+  VRPuppetCommandBuffer::Get().Reset();
+#endif
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult VRGPUParent::RecvPuppetSubmit(
+    const nsTArray<uint64_t>& aBuffer) {
+#if !defined(MOZ_WIDGET_ANDROID)
+  VRPuppetCommandBuffer::Get().Submit(aBuffer);
+#endif
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult VRGPUParent::RecvPuppetCheckForCompletion() {
+#if !defined(MOZ_WIDGET_ANDROID)
+  if (VRPuppetCommandBuffer::Get().HasEnded()) {
+    Unused << SendNotifyPuppetComplete();
+  }
+#endif
   return IPC_OK();
 }
 

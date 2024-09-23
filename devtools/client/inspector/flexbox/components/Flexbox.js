@@ -9,62 +9,56 @@ const {
   createFactory,
   Fragment,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { getStr } = require("devtools/client/inspector/layout/utils/l10n");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  getStr,
+} = require("resource://devtools/client/inspector/layout/utils/l10n.js");
 
-loader.lazyGetter(this, "FlexItemList", function() {
+loader.lazyGetter(this, "FlexItemList", function () {
   return createFactory(
-    require("devtools/client/inspector/flexbox/components/FlexItemList")
+    require("resource://devtools/client/inspector/flexbox/components/FlexItemList.js")
   );
 });
-loader.lazyGetter(this, "FlexItemSizingOutline", function() {
+loader.lazyGetter(this, "FlexItemSizingOutline", function () {
   return createFactory(
-    require("devtools/client/inspector/flexbox/components/FlexItemSizingOutline")
+    require("resource://devtools/client/inspector/flexbox/components/FlexItemSizingOutline.js")
   );
 });
-loader.lazyGetter(this, "FlexItemSizingProperties", function() {
+loader.lazyGetter(this, "FlexItemSizingProperties", function () {
   return createFactory(
-    require("devtools/client/inspector/flexbox/components/FlexItemSizingProperties")
+    require("resource://devtools/client/inspector/flexbox/components/FlexItemSizingProperties.js")
   );
 });
-loader.lazyGetter(this, "Header", function() {
+loader.lazyGetter(this, "Header", function () {
   return createFactory(
-    require("devtools/client/inspector/flexbox/components/Header")
+    require("resource://devtools/client/inspector/flexbox/components/Header.js")
   );
 });
 
-const Types = require("devtools/client/inspector/flexbox/types");
+const Types = require("resource://devtools/client/inspector/flexbox/types.js");
 
 class Flexbox extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       flexbox: PropTypes.shape(Types.flexbox).isRequired,
       flexContainer: PropTypes.shape(Types.flexContainer).isRequired,
       getSwatchColorPickerTooltip: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
       onSetFlexboxOverlayColor: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
-      onToggleFlexboxHighlighter: PropTypes.func.isRequired,
       scrollToTop: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
     };
   }
 
   renderFlexItemList() {
-    const {
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
-      scrollToTop,
-      setSelectedNode,
-    } = this.props;
+    const { dispatch, scrollToTop, setSelectedNode } = this.props;
     const { flexItems } = this.props.flexContainer;
 
     return FlexItemList({
+      dispatch,
       flexItems,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
       scrollToTop,
       setSelectedNode,
     });
@@ -96,12 +90,11 @@ class Flexbox extends PureComponent {
 
   render() {
     const {
+      dispatch,
+      flexbox,
       flexContainer,
       getSwatchColorPickerTooltip,
-      onHideBoxModelHighlighter,
       onSetFlexboxOverlayColor,
-      onShowBoxModelHighlighterForNode,
-      onToggleFlexboxHighlighter,
       setSelectedNode,
     } = this.props;
 
@@ -113,16 +106,17 @@ class Flexbox extends PureComponent {
     }
 
     const { flexItemShown } = flexContainer;
+    const { color, highlighted } = flexbox;
 
     return dom.div(
       { className: "layout-flexbox-wrapper" },
       Header({
+        color,
+        dispatch,
         flexContainer,
         getSwatchColorPickerTooltip,
-        onHideBoxModelHighlighter,
+        highlighted,
         onSetFlexboxOverlayColor,
-        onShowBoxModelHighlighterForNode,
-        onToggleFlexboxHighlighter,
         setSelectedNode,
       }),
       !flexItemShown ? this.renderFlexItemList() : null,

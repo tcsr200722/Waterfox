@@ -1,12 +1,21 @@
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
 function openIdentityPopup() {
+  gIdentityHandler._initializePopup();
   let mainView = document.getElementById("identity-popup-mainView");
   let viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
-  gIdentityHandler._identityBox.click();
+  gIdentityHandler._identityIconBox.click();
   return viewShown;
+}
+
+function openPermissionPopup() {
+  gPermissionPanel._initializePopup();
+  let mainView = document.getElementById("permission-popup-mainView");
+  let viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
+  gPermissionPanel.openPopup();
+  return viewShown;
+}
+
+function getIdentityMode(aWindow = window) {
+  return aWindow.document.getElementById("identity-box").className;
 }
 
 /**
@@ -37,7 +46,7 @@ function promiseTabLoadEvent(tab, url) {
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
 
   if (url) {
-    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;
@@ -155,25 +164,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   );
 
   if (stateInsecure) {
-    const insecureConnectionIcon = Services.prefs.getBoolPref(
-      "security.insecure_connection_icon.enabled"
+    // HTTP request, there should be a broken padlock shown always.
+    ok(classList.contains("notSecure"), "notSecure on HTTP page");
+    ok(
+      !BrowserTestUtils.isHidden(identityIcon),
+      "information icon should be visible"
     );
-    if (!insecureConnectionIcon) {
-      // HTTP request, there should be no MCB classes for the identity box and the non secure icon
-      // should always be visible regardless of MCB state.
-      ok(classList.contains("unknownIdentity"), "unknownIdentity on HTTP page");
-      ok(
-        BrowserTestUtils.is_visible(identityIcon),
-        "information icon should be still visible"
-      );
-    } else {
-      // HTTP request, there should be a broken padlock shown always.
-      ok(classList.contains("notSecure"), "notSecure on HTTP page");
-      ok(
-        !BrowserTestUtils.is_hidden(identityIcon),
-        "information icon should be visible"
-      );
-    }
 
     ok(!classList.contains("mixedActiveContent"), "No MCB icon on HTTP page");
     ok(!classList.contains("mixedActiveBlocked"), "No MCB icon on HTTP page");
@@ -206,34 +202,34 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     );
 
     ok(
-      !BrowserTestUtils.is_hidden(identityIcon),
+      !BrowserTestUtils.isHidden(identityIcon),
       "information icon should be visible"
     );
     if (activeLoaded) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+        'url("chrome://global/skin/icons/security-broken.svg")',
         "Using active loaded icon"
       );
     }
     if (activeBlocked && !passiveLoaded) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-secure.svg")',
+        'url("chrome://global/skin/icons/security.svg")',
         "Using active blocked icon"
       );
     }
     if (passiveLoaded && !(activeLoaded || activeBlocked)) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/security-warning.svg")',
         "Using passive loaded icon"
       );
     }
     if (passiveLoaded && activeBlocked) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/security-warning.svg")',
         "Using active blocked and passive loaded icon"
       );
     }
@@ -241,17 +237,19 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
   // Make sure the identity popup has the correct mixedcontent states
   let promisePanelOpen = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    tabbrowser.ownerGlobal,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
-  gIdentityHandler._identityBox.click();
+  gIdentityHandler._identityIconBox.click();
   await promisePanelOpen;
-  let popupAttr = doc
-    .getElementById("identity-popup")
-    .getAttribute("mixedcontent");
-  let bodyAttr = doc
-    .getElementById("identity-popup-securityView-body")
-    .getAttribute("mixedcontent");
+  let popupAttr =
+    doc.getElementById("identity-popup").getAttribute("mixedcontent") || "";
+  let bodyAttr =
+    doc
+      .getElementById("identity-popup-securityView-extended-info")
+      .getAttribute("mixedcontent") || "";
 
   is(
     popupAttr.includes("active-loaded"),
@@ -294,24 +292,24 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
         .getElementById("identity-popup-securityView")
         .getElementsByClassName("identity-popup-security-connection")[0]
     )
-    .getPropertyValue("background-image");
+    .getPropertyValue("list-style-image");
   let securityContentBG = tabbrowser.ownerGlobal
     .getComputedStyle(
       document
         .getElementById("identity-popup-mainView")
         .getElementsByClassName("identity-popup-security-connection")[0]
     )
-    .getPropertyValue("background-image");
+    .getPropertyValue("list-style-image");
 
   if (stateInsecure) {
     is(
       securityViewBG,
-      'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+      'url("chrome://global/skin/icons/security-broken.svg")',
       "CC using 'not secure' icon"
     );
     is(
       securityContentBG,
-      'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+      'url("chrome://global/skin/icons/security-broken.svg")',
       "CC using 'not secure' icon"
     );
   }
@@ -319,12 +317,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   if (stateSecure) {
     is(
       securityViewBG,
-      'url("chrome://browser/skin/connection-secure.svg")',
+      'url("chrome://global/skin/icons/security.svg")',
       "CC using secure icon"
     );
     is(
       securityContentBG,
-      'url("chrome://browser/skin/connection-secure.svg")',
+      'url("chrome://global/skin/icons/security.svg")',
       "CC using secure icon"
     );
   }
@@ -344,24 +342,24 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     } else if (activeBlocked || passiveLoaded) {
       is(
         securityViewBG,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/security-warning.svg")',
         "CC using degraded icon"
       );
       is(
         securityContentBG,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/security-warning.svg")',
         "CC using degraded icon"
       );
     } else {
       // There is a case here with weak ciphers, but no bc tests are handling this yet.
       is(
         securityViewBG,
-        'url("chrome://browser/skin/connection-secure.svg")',
+        'url("chrome://global/skin/icons/security.svg")',
         "CC using degraded icon"
       );
       is(
         securityContentBG,
-        'url("chrome://browser/skin/connection-secure.svg")',
+        'url("chrome://global/skin/icons/security.svg")',
         "CC using degraded icon"
       );
     }
@@ -372,14 +370,14 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
       gIdentityHandler._identityPopup,
       "ViewShown"
     );
-    doc.getElementById("identity-popup-security-expander").click();
+    doc.getElementById("identity-popup-security-button").click();
     await promiseViewShown;
     is(
       Array.prototype.filter.call(
         doc
           .getElementById("identity-popup-securityView")
           .querySelectorAll(".identity-popup-mcb-learn-more"),
-        element => !BrowserTestUtils.is_hidden(element)
+        element => !BrowserTestUtils.isHidden(element)
       ).length,
       1,
       "The 'Learn more' link should be visible once."
@@ -399,11 +397,26 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
 async function loadBadCertPage(url) {
   let loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, url);
   await loaded;
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     content.document.getElementById("exceptionDialogButton").click();
   });
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+}
+
+// nsITLSServerSocket needs a certificate with a corresponding private key
+// available. In mochitests, the certificate with the common name "Mochitest
+// client" has such a key.
+function getTestServerCertificate() {
+  const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
+  );
+  for (const cert of certDB.getCerts()) {
+    if (cert.commonName == "Mochitest client") {
+      return cert;
+    }
+  }
+  return null;
 }

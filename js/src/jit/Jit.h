@@ -7,7 +7,9 @@
 #ifndef jit_Jit_h
 #define jit_Jit_h
 
-#include "vm/JSContext.h"
+#include "jstypes.h"
+
+struct JS_PUBLIC_API JSContext;
 
 namespace js {
 
@@ -29,6 +31,8 @@ enum class EnterJitStatus {
   NotEntered,
 };
 
+extern bool EnterInterpreterEntryTrampoline(uint8_t* code, JSContext* cx,
+                                            RunState* state);
 extern EnterJitStatus MaybeEnterJit(JSContext* cx, RunState& state);
 
 }  // namespace jit

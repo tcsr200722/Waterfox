@@ -8,15 +8,20 @@
 #define nsDOMStringMap_h
 
 #include "nsCycleCollectionParticipant.h"
+#include "nsStubMutationObserver.h"
 #include "nsTArray.h"
 #include "nsString.h"
 #include "nsWrapperCache.h"
+#include "js/friend/DOMProxy.h"  // JS::ExpandoAndGeneration
+#include "js/RootingAPI.h"       // JS::Handle
+
+// XXX Avoid including this here by moving function bodies to the cpp file
 #include "mozilla/dom/Element.h"
-#include "jsfriendapi.h"  // For js::ExpandoAndGeneration
 
 namespace mozilla {
 class ErrorResult;
 namespace dom {
+class DOMString;
 class DocGroup;
 }  // namespace dom
 }  // namespace mozilla
@@ -24,7 +29,7 @@ class DocGroup;
 class nsDOMStringMap : public nsStubMutationObserver, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsDOMStringMap)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsDOMStringMap)
 
   NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
 
@@ -44,7 +49,7 @@ class nsDOMStringMap : public nsStubMutationObserver, public nsWrapperCache {
   void NamedDeleter(const nsAString& aProp, bool& found);
   void GetSupportedNames(nsTArray<nsString>& aNames);
 
-  js::ExpandoAndGeneration mExpandoAndGeneration;
+  JS::ExpandoAndGeneration mExpandoAndGeneration;
 
  private:
   virtual ~nsDOMStringMap();

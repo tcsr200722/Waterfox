@@ -6,8 +6,10 @@
  * Tests that log points in a worker are correctly logged to the console
  */
 
-add_task(async function() {
-  Services.prefs.setBoolPref("devtools.toolbox.splitconsoleEnabled", true);
+"use strict";
+
+add_task(async function () {
+  Services.prefs.setBoolPref("devtools.toolbox.splitconsole.open", true);
 
   const dbg = await initDebugger("doc-windowless-workers.html");
 
@@ -19,7 +21,7 @@ add_task(async function() {
 
   await getDebuggerSplitConsole(dbg);
   await hasConsoleMessage(dbg, "timer");
-  const { link } = await await findConsoleMessage(dbg, "timer");
+  const { link } = await findConsoleMessage(dbg, "timer");
   is(
     link,
     "simple-worker.js:4:9",

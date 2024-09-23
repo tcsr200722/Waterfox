@@ -9,7 +9,7 @@
 const TEST_URL = URL_ROOT + "doc_inspector_add_node.html";
 const PARENT_TREE_LEVEL = 3;
 
-add_task(async function() {
+add_task(async function () {
   const { inspector } = await openInspectorForURL(TEST_URL);
 
   info("Adding a node in an element that has no children and is collapsed");
@@ -44,7 +44,7 @@ async function testAddNode(parentNode, inspector) {
   const parentContainer = inspector.markup.getContainer(parentNode);
 
   is(
-    parentContainer.tagLine.getAttribute("aria-level"),
+    parseInt(parentContainer.tagLine.getAttribute("aria-level"), 10),
     PARENT_TREE_LEVEL,
     "The parent aria-level is up to date."
   );
@@ -81,7 +81,7 @@ async function testAddNode(parentNode, inspector) {
   const newNodeContainer = inspector.markup.getContainer(newNode);
 
   is(
-    newNodeContainer.tagLine.getAttribute("aria-level"),
+    parseInt(newNodeContainer.tagLine.getAttribute("aria-level"), 10),
     PARENT_TREE_LEVEL + 1,
     "The child aria-level is up to date."
   );

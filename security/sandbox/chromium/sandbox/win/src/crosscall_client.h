@@ -42,9 +42,7 @@
 // return codes indicate that the IPC transport failed to deliver it.
 namespace sandbox {
 
-// this is the assumed channel size. This can be overridden in a given
-// IPC implementation.
-const uint32_t kIPCChannelSize = 1024;
+enum class IpcTag;
 
 // The copy helper uses templates to deduce the appropriate copy function to
 // copy the input parameters in the buffer that is going to be send across the
@@ -210,6 +208,32 @@ class InOutCountedBuffer : public CountedBuffer {
 };
 
 // This copy helper template specialization catches the cases where the
+// parameter is a an input buffer.
+template <>
+class CopyHelper<CountedBuffer> {
+ public:
+  CopyHelper(const CountedBuffer t) : t_(t) {}
+
+  // Returns the pointer to the start of the string.
+  const void* GetStart() const { return t_.Buffer(); }
+
+  // Update not required so just return true;
+  bool Update(void* buffer) { return true; }
+
+  // Returns the size of the string in bytes. We define a nullptr string to
+  // be of zero length.
+  uint32_t GetSize() const { return t_.Size(); }
+
+  // Returns true if the current type is used as an In or InOut parameter.
+  bool IsInOut() { return false; }
+
+  ArgType GetType() { return INPTR_TYPE; }
+
+ private:
+  const CountedBuffer t_;
+};
+
+// This copy helper template specialization catches the cases where the
 // parameter is a an input/output buffer.
 template <>
 class CopyHelper<InOutCountedBuffer> {
@@ -224,7 +248,7 @@ class CopyHelper<InOutCountedBuffer> {
     // We are touching user memory, this has to be done from inside a try
     // except.
     __try {
-      memcpy(t_.Buffer(), buffer, t_.Size());
+      memcpy_wrapper(t_.Buffer(), buffer, t_.Size());
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       return false;
     }
@@ -272,7 +296,7 @@ class CopyHelper<InOutCountedBuffer> {
 // CrossCall template with one input parameter
 template <typename IPCProvider, typename Par1>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      CrossCallReturn* answer) {
   XCALL_GEN_PARAMS_OBJ(1, call_params);
@@ -291,7 +315,7 @@ ResultCode CrossCall(IPCProvider& ipc_provider,
 // CrossCall template with two input parameters.
 template <typename IPCProvider, typename Par1, typename Par2>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      CrossCallReturn* answer) {
@@ -312,7 +336,7 @@ ResultCode CrossCall(IPCProvider& ipc_provider,
 // CrossCall template with three input parameters.
 template <typename IPCProvider, typename Par1, typename Par2, typename Par3>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      const Par3& p3,
@@ -340,7 +364,7 @@ template <typename IPCProvider,
           typename Par3,
           typename Par4>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      const Par3& p3,
@@ -372,7 +396,7 @@ template <typename IPCProvider,
           typename Par4,
           typename Par5>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      const Par3& p3,
@@ -408,7 +432,7 @@ template <typename IPCProvider,
           typename Par5,
           typename Par6>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      const Par3& p3,
@@ -448,7 +472,7 @@ template <typename IPCProvider,
           typename Par6,
           typename Par7>
 ResultCode CrossCall(IPCProvider& ipc_provider,
-                     uint32_t tag,
+                     IpcTag tag,
                      const Par1& p1,
                      const Par2& p2,
                      const Par3& p3,

@@ -12,32 +12,54 @@
 
 [Pref="fuzzing.enabled",
  Exposed=Window]
-interface FuzzingFunctions {
+namespace FuzzingFunctions {
   /**
    * Synchronously perform a garbage collection.
    */
-  static void garbageCollect();
+  undefined garbageCollect();
+
+  /**
+   * Synchronously perform a compacting garbage collection.
+   */
+  undefined garbageCollectCompacting();
+
+  /**
+   * Trigger a forced crash.
+   */
+  undefined crash(optional DOMString reason = "");
 
   /**
    * Synchronously perform a cycle collection.
    */
-  static void cycleCollect();
+  undefined cycleCollect();
+
+  /**
+   * Send a memory pressure event, causes shrinking GC, cycle collection and
+   * other actions.
+   */
+  undefined memoryPressure();
 
   /**
    * Enable accessibility.
    */
   [Throws]
-  static void enableAccessibility();
+  undefined enableAccessibility();
+
+  /**
+   * Send IPC fuzzing ready event to parent.
+   */
+  undefined signalIPCReady();
 
   /**
    * synthesizeKeyboardEvents() synthesizes a set of "keydown",
-   * "keypress" (only when it's necessary) and "keyup" events on focused
-   * widget.  This is currently not aware of APZ since this dispatches the
-   * events into focused PresShell in current process.  I.e., dispatched
-   * events won't be handled by some default action handlers which are only
-   * in the main process.  Note that this does not allow to synthesize
-   * keyboard events if this is called from a keyboard event or composition
-   * event listener.
+   * "keypress" (only when it's necessary) and "keyup" events in top DOM window
+   * in current process (and the synthesized events will be retargeted to
+   * focused window/document/element).  I.e, this is currently not dispatched
+   * via the main process if you call this in a content process.  Therefore, in
+   * the case, some default action handlers which are only in the main process
+   * will never run.  Note that this does not allow to synthesize keyboard
+   * events if this is called from a keyboard event or composition event
+   * listener.
    *
    * @param aKeyValue          If you want to synthesize non-printable key
    *                           events, you need to set one of key values
@@ -81,7 +103,7 @@ interface FuzzingFunctions {
    *                           want to emulate key press with another keyboard
    *                           layout, you should specify both values.
    *
-   * For example: 
+   * For example:
    *   // Synthesize "Tab" key events.
    *   synthesizeKeyboardEvents("Tab");
    *   // Synthesize Shift + Tab key events.
@@ -108,6 +130,6 @@ interface FuzzingFunctions {
    *                                   keyCode: KeyboardEvent.DOM_VK_COLON });
    */
   [Throws]
-  static void synthesizeKeyboardEvents(DOMString aKeyValue,
-                                       optional KeyboardEventInit aDictionary = {});
+  undefined synthesizeKeyboardEvents(DOMString aKeyValue,
+                                     optional KeyboardEventInit aDictionary = {});
 };

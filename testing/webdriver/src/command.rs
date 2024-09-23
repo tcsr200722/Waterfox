@@ -1,14 +1,20 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use crate::actions::ActionSequence;
 use crate::capabilities::{
     BrowserCapabilities, Capabilities, CapabilitiesMatching, LegacyNewSessionParameters,
     SpecNewSessionParameters,
 };
-use crate::common::{Date, FrameId, LocatorStrategy, WebElement, MAX_SAFE_INTEGER};
+use crate::common::{
+    CredentialParameters, Date, FrameId, LocatorStrategy, ShadowRoot, WebElement, MAX_SAFE_INTEGER,
+};
 use crate::error::{ErrorStatus, WebDriverError, WebDriverResult};
 use crate::httpapi::{Route, VoidWebDriverExtensionRoute, WebDriverExtensionRoute};
 use crate::Parameters;
 use serde::de::{self, Deserialize, Deserializer};
-use serde_json::{self, Value};
+use serde_json::Value;
 
 #[derive(Debug, PartialEq)]
 pub enum WebDriverCommand<T: WebDriverExtensionCommand> {
@@ -37,7 +43,12 @@ pub enum WebDriverCommand<T: WebDriverExtensionCommand> {
     FindElements(LocatorParameters),
     FindElementElement(WebElement, LocatorParameters),
     FindElementElements(WebElement, LocatorParameters),
+    FindShadowRootElement(ShadowRoot, LocatorParameters),
+    FindShadowRootElements(ShadowRoot, LocatorParameters),
     GetActiveElement,
+    GetComputedLabel(WebElement),
+    GetComputedRole(WebElement),
+    GetShadowRoot(WebElement),
     IsDisplayed(WebElement),
     IsSelected(WebElement),
     GetElementAttribute(WebElement, String),
@@ -68,15 +79,23 @@ pub enum WebDriverCommand<T: WebDriverExtensionCommand> {
     TakeScreenshot,
     TakeElementScreenshot(WebElement),
     Print(PrintParameters),
+    SetPermission(SetPermissionParameters),
     Status,
     Extension(T),
+    WebAuthnAddVirtualAuthenticator(AuthenticatorParameters),
+    WebAuthnRemoveVirtualAuthenticator,
+    WebAuthnAddCredential(CredentialParameters),
+    WebAuthnGetCredentials,
+    WebAuthnRemoveCredential,
+    WebAuthnRemoveAllCredentials,
+    WebAuthnSetUserVerified(UserVerificationParameters),
 }
 
-pub trait WebDriverExtensionCommand: Clone + Send + PartialEq {
+pub trait WebDriverExtensionCommand: Clone + Send {
     fn parameters_json(&self) -> Option<Value>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct VoidWebDriverExtensionCommand;
 
 impl WebDriverExtensionCommand for VoidWebDriverExtensionCommand {
@@ -162,7 +181,58 @@ impl<U: WebDriverExtensionRoute> WebDriverMessage<U> {
                 let element = WebElement(element_id.as_str().into());
                 WebDriverCommand::FindElementElements(element, serde_json::from_str(raw_body)?)
             }
+            Route::FindShadowRootElement => {
+                let shadow_id = try_opt!(
+                    params.get("shadowId"),
+                    ErrorStatus::InvalidArgument,
+                    "Missing shadowId parameter"
+                );
+                let shadow_root = ShadowRoot(shadow_id.as_str().into());
+                WebDriverCommand::FindShadowRootElement(
+                    shadow_root,
+                    serde_json::from_str(raw_body)?,
+                )
+            }
+            Route::FindShadowRootElements => {
+                let shadow_id = try_opt!(
+                    params.get("shadowId"),
+                    ErrorStatus::InvalidArgument,
+                    "Missing shadowId parameter"
+                );
+                let shadow_root = ShadowRoot(shadow_id.as_str().into());
+                WebDriverCommand::FindShadowRootElements(
+                    shadow_root,
+                    serde_json::from_str(raw_body)?,
+                )
+            }
             Route::GetActiveElement => WebDriverCommand::GetActiveElement,
+            Route::GetShadowRoot => {
+                let element_id = try_opt!(
+                    params.get("elementId"),
+                    ErrorStatus::InvalidArgument,
+                    "Missing elementId parameter"
+                );
+                let element = WebElement(element_id.as_str().into());
+                WebDriverCommand::GetShadowRoot(element)
+            }
+            Route::GetComputedLabel => {
+                let element_id = try_opt!(
+                    params.get("elementId"),
+                    ErrorStatus::InvalidArgument,
+                    "Missing elementId parameter"
+                );
+                let element = WebElement(element_id.as_str().into());
+                WebDriverCommand::GetComputedLabel(element)
+            }
+            Route::GetComputedRole => {
+                let element_id = try_opt!(
+                    params.get("elementId"),
+                    ErrorStatus::InvalidArgument,
+                    "Missing elementId parameter"
+                );
+                let element = WebElement(element_id.as_str().into());
+                WebDriverCommand::GetComputedRole(element)
+            }
             Route::IsDisplayed => {
                 let element_id = try_opt!(
                     params.get("elementId"),
@@ -339,8 +409,26 @@ impl<U: WebDriverExtensionRoute> WebDriverMessage<U> {
                 WebDriverCommand::TakeElementScreenshot(element)
             }
             Route::Print => WebDriverCommand::Print(serde_json::from_str(raw_body)?),
+            Route::SetPermission => {
+                WebDriverCommand::SetPermission(serde_json::from_str(raw_body)?)
+            }
             Route::Status => WebDriverCommand::Status,
             Route::Extension(ref extension) => extension.command(params, &body_data)?,
+            Route::WebAuthnAddVirtualAuthenticator => {
+                WebDriverCommand::WebAuthnAddVirtualAuthenticator(serde_json::from_str(raw_body)?)
+            }
+            Route::WebAuthnRemoveVirtualAuthenticator => {
+                WebDriverCommand::WebAuthnRemoveVirtualAuthenticator
+            }
+            Route::WebAuthnAddCredential => {
+                WebDriverCommand::WebAuthnAddCredential(serde_json::from_str(raw_body)?)
+            }
+            Route::WebAuthnGetCredentials => WebDriverCommand::WebAuthnGetCredentials,
+            Route::WebAuthnRemoveCredential => WebDriverCommand::WebAuthnRemoveCredential,
+            Route::WebAuthnRemoveAllCredentials => WebDriverCommand::WebAuthnRemoveAllCredentials,
+            Route::WebAuthnSetUserVerified => {
+                WebDriverCommand::WebAuthnSetUserVerified(serde_json::from_str(raw_body)?)
+            }
         };
         Ok(WebDriverMessage::new(session_id, command))
     }
@@ -398,6 +486,7 @@ pub struct AddCookieParameters {
     pub httpOnly: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiry: Option<Date>,
+    pub sameSite: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for AddCookieParameters {
@@ -488,6 +577,13 @@ pub struct NewWindowParameters {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PrintPageRange {
+    Integer(u64),
+    Range(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PrintParameters {
     pub orientation: PrintOrientation,
@@ -496,7 +592,7 @@ pub struct PrintParameters {
     pub background: bool,
     pub page: PrintPage,
     pub margin: PrintMargins,
-    pub page_ranges: Vec<String>,
+    pub page_ranges: Vec<PrintPageRange>,
     pub shrink_to_fit: bool,
 }
 
@@ -514,17 +610,12 @@ impl Default for PrintParameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrintOrientation {
     Landscape,
+    #[default]
     Portrait,
-}
-
-impl Default for PrintOrientation {
-    fn default() -> Self {
-        PrintOrientation::Portrait
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -569,6 +660,71 @@ impl Default for PrintMargins {
     }
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct SetPermissionParameters {
+    pub descriptor: SetPermissionDescriptor,
+    pub state: SetPermissionState,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SetPermissionDescriptor {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SetPermissionState {
+    Denied,
+    Granted,
+    Prompt,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum WebAuthnProtocol {
+    #[serde(rename = "ctap1/u2f")]
+    Ctap1U2f,
+    #[serde(rename = "ctap2")]
+    Ctap2,
+    #[serde(rename = "ctap2_1")]
+    Ctap2_1,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthenticatorTransport {
+    Usb,
+    Nfc,
+    Ble,
+    SmartCard,
+    Hybrid,
+    Internal,
+}
+
+fn default_as_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticatorParameters {
+    pub protocol: WebAuthnProtocol,
+    pub transport: AuthenticatorTransport,
+    #[serde(default)]
+    pub has_resident_key: bool,
+    #[serde(default)]
+    pub has_user_verification: bool,
+    #[serde(default = "default_as_true")]
+    pub is_user_consenting: bool,
+    #[serde(default)]
+    pub is_user_verified: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UserVerificationParameters {
+    #[serde(rename = "isUserVerified")]
+    pub is_user_verified: bool,
+}
+
 fn deserialize_to_positive_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
@@ -585,7 +741,7 @@ where
     D: Deserializer<'de>,
 {
     let val = f64::deserialize(deserializer)?;
-    if val < 0.1 || val > 2.0 {
+    if !(0.1..=2.0).contains(&val) {
         return Err(de::Error::custom(format!("{} is outside range 0.1-2", val)));
     };
     Ok(val)
@@ -598,7 +754,7 @@ pub struct SendKeysParameters {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct SwitchToFrameParameters {
-    pub id: Option<FrameId>,
+    pub id: FrameId,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -640,7 +796,7 @@ fn deserialize_to_nullable_u64<'de, D>(deserializer: D) -> Result<Option<Option<
 where
     D: Deserializer<'de>,
 {
-    let opt = Option::deserialize(deserializer)?.map(|value: f64| value);
+    let opt: Option<f64> = Option::deserialize(deserializer)?;
     let value = match opt {
         Some(n) => {
             if n < 0.0 || n.fract() != 0.0 {
@@ -667,7 +823,7 @@ fn deserialize_to_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let opt = Option::deserialize(deserializer)?.map(|value: f64| value);
+    let opt: Option<f64> = Option::deserialize(deserializer)?;
     let value = match opt {
         Some(n) => {
             if n < 0.0 || n.fract() != 0.0 {
@@ -808,6 +964,7 @@ mod tests {
             "expiry": 123,
             "secure": true,
             "httpOnly": false,
+            "sameSite": "Lax",
         }});
         let cookie = AddCookieParameters {
             name: "foo".into(),
@@ -817,6 +974,7 @@ mod tests {
             expiry: Some(Date(123)),
             secure: true,
             httpOnly: false,
+            sameSite: Some("Lax".into()),
         };
 
         assert_de(&cookie, json);
@@ -832,6 +990,7 @@ mod tests {
             "expiry": null,
             "secure": true,
             "httpOnly": false,
+            "sameSite": null,
         }});
         let cookie = AddCookieParameters {
             name: "foo".into(),
@@ -841,6 +1000,7 @@ mod tests {
             expiry: None,
             secure: true,
             httpOnly: false,
+            sameSite: None,
         };
 
         assert_de(&cookie, json);
@@ -862,6 +1022,7 @@ mod tests {
             expiry: None,
             secure: true,
             httpOnly: false,
+            sameSite: None,
         };
 
         assert_de(&cookie, json);
@@ -889,6 +1050,7 @@ mod tests {
             expiry: None,
             secure: true,
             httpOnly: false,
+            sameSite: None,
         };
 
         assert_de(&cookie, json);
@@ -1240,7 +1402,93 @@ mod tests {
 
     #[test]
     fn test_json_scale_invalid() {
-        assert!(serde_json::from_value::<AddonInstallParameters>(json!({"scale": 3})).is_err());
+        assert!(serde_json::from_value::<PrintParameters>(json!({"scale": 3})).is_err());
+    }
+
+    #[test]
+    fn test_json_permission() {
+        let params: SetPermissionParameters = SetPermissionParameters {
+            descriptor: SetPermissionDescriptor {
+                name: "push".into(),
+            },
+            state: SetPermissionState::Granted,
+        };
+        assert_de(
+            &params,
+            json!({"descriptor": {"name": "push"}, "state": "granted"}),
+        );
+    }
+
+    #[test]
+    fn test_json_permission_parameters_invalid() {
+        assert!(serde_json::from_value::<SetPermissionParameters>(json!({"test": 3})).is_err());
+    }
+
+    #[test]
+    fn test_json_permission_descriptor_invalid_type() {
+        assert!(serde_json::from_value::<SetPermissionParameters>(
+            json!({"descriptor": "test", "state": "granted"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_json_permission_state_invalid_type() {
+        assert!(serde_json::from_value::<SetPermissionParameters>(
+            json!({"descriptor": {"name": "push"}, "state": 3})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_json_permission_state_invalid_value() {
+        assert!(serde_json::from_value::<SetPermissionParameters>(
+            json!({"descriptor": {"name": "push"}, "state": "invalid"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_json_authenticator() {
+        let params = AuthenticatorParameters {
+            protocol: WebAuthnProtocol::Ctap1U2f,
+            transport: AuthenticatorTransport::Usb,
+            has_resident_key: false,
+            has_user_verification: false,
+            is_user_consenting: false,
+            is_user_verified: false,
+        };
+        assert_de(
+            &params,
+            json!({"protocol": "ctap1/u2f", "transport": "usb", "hasResidentKey": false, "hasUserVerification": false, "isUserConsenting": false, "isUserVerified": false}),
+        );
+    }
+
+    #[test]
+    fn test_json_credential() {
+        use base64::{engine::general_purpose::URL_SAFE, Engine};
+
+        let encoded_string = URL_SAFE.encode(b"hello internet~");
+        let params = CredentialParameters {
+            credential_id: r"c3VwZXIgcmVhZGVy".to_string(),
+            is_resident_credential: true,
+            rp_id: "valid.rpid".to_string(),
+            private_key: encoded_string.clone(),
+            user_handle: encoded_string.clone(),
+            sign_count: 0,
+        };
+        assert_de(
+            &params,
+            json!({"credentialId": r"c3VwZXIgcmVhZGVy", "isResidentCredential": true, "rpId": "valid.rpid", "privateKey": encoded_string, "userHandle": encoded_string, "signCount": 0}),
+        );
+    }
+
+    #[test]
+    fn test_json_user_verification() {
+        let params = UserVerificationParameters {
+            is_user_verified: false,
+        };
+        assert_de(&params, json!({"isUserVerified": false}));
     }
 
     #[test]
@@ -1273,23 +1521,36 @@ mod tests {
     }
 
     #[test]
-    fn test_json_switch_to_frame_parameters_with_value() {
+    fn test_json_switch_to_frame_parameters_with_number() {
         assert_de(
             &SwitchToFrameParameters {
-                id: Some(FrameId::Short(3)),
+                id: FrameId::Short(3),
             },
             json!({"id": 3}),
         );
     }
 
     #[test]
-    fn test_json_switch_to_frame_parameters_with_optional_null_field() {
-        assert_de(&SwitchToFrameParameters { id: None }, json!({ "id": null }));
+    fn test_json_switch_to_frame_parameters_with_null() {
+        assert_de(
+            &SwitchToFrameParameters { id: FrameId::Top },
+            json!({"id": null}),
+        );
     }
 
     #[test]
-    fn test_json_switch_to_frame_parameters_without_optional_null_field() {
-        assert_de(&SwitchToFrameParameters { id: None }, json!({}));
+    fn test_json_switch_to_frame_parameters_with_web_element() {
+        assert_de(
+            &SwitchToFrameParameters {
+                id: FrameId::Element(WebElement("foo".to_string())),
+            },
+            json!({"id": {"element-6066-11e4-a52e-4f735466cecf": "foo"}}),
+        );
+    }
+
+    #[test]
+    fn test_json_switch_to_frame_parameters_with_missing_id() {
+        assert!(serde_json::from_value::<SwitchToFrameParameters>(json!({})).is_err())
     }
 
     #[test]
@@ -1304,7 +1565,7 @@ mod tests {
             "foo": "bar",
         });
         let switch_to_frame = SwitchToFrameParameters {
-            id: Some(FrameId::Short(3)),
+            id: FrameId::Short(3),
         };
 
         assert_de(&switch_to_frame, json);

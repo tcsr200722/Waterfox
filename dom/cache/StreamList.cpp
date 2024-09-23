@@ -6,14 +6,21 @@
 
 #include "mozilla/dom/cache/StreamList.h"
 
+#include <algorithm>
 #include "mozilla/dom/cache/CacheStreamControlParent.h"
 #include "mozilla/dom/cache/Context.h"
 #include "mozilla/dom/cache/Manager.h"
 #include "nsIInputStream.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
+
+namespace {
+
+auto MatchById(const nsID& aId) {
+  return [aId](const auto& entry) { return entry.mId == aId; };
+}
+
+}  // namespace
 
 StreamList::StreamList(SafeRefPtr<Manager> aManager,
                        SafeRefPtr<Context> aContext)
@@ -23,7 +30,7 @@ StreamList::StreamList(SafeRefPtr<Manager> aManager,
       mStreamControl(nullptr),
       mActivated(false) {
   MOZ_DIAGNOSTIC_ASSERT(mManager);
-  mContext->AddActivity(this);
+  mContext->AddActivity(*this);
 }
 
 Manager& StreamList::GetManager() const {
@@ -34,13 +41,7 @@ Manager& StreamList::GetManager() const {
 bool StreamList::ShouldOpenStreamFor(const nsID& aId) const {
   NS_ASSERT_OWNINGTHREAD(StreamList);
 
-  for (auto entry : mList) {
-    if (entry.mId == aId) {
-      return true;
-    }
-  }
-
-  return false;
+  return std::any_of(mList.cbegin(), mList.cend(), MatchById(aId));
 }
 
 void StreamList::SetStreamControl(CacheStreamControlParent* aStreamControl) {
@@ -73,7 +74,7 @@ void StreamList::Activate(CacheId aCacheId) {
   mActivated = true;
   mCacheId = aCacheId;
   mManager->AddRefCacheId(mCacheId);
-  mManager->AddStreamList(this);
+  mManager->AddStreamList(*this);
 
   for (uint32_t i = 0; i < mList.Length(); ++i) {
     mManager->AddRefBodyId(mList[i].mId);
@@ -84,27 +85,34 @@ void StreamList::Add(const nsID& aId, nsCOMPtr<nsIInputStream>&& aStream) {
   // All streams should be added on IO thread before we set the stream
   // control on the owning IPC thread.
   MOZ_DIAGNOSTIC_ASSERT(!mStreamControl);
-  mList.AppendElement(Entry(aId, std::move(aStream)));
+
+  // Removal of the stream will be triggered when the stream is closed,
+  // which happens only once, so let's ensure nobody adds us twice.
+  MOZ_ASSERT_DEBUG_OR_FUZZING(
+      std::find_if(mList.begin(), mList.end(), MatchById(aId)) == mList.end());
+
+  mList.EmplaceBack(aId, std::move(aStream));
 }
 
 already_AddRefed<nsIInputStream> StreamList::Extract(const nsID& aId) {
   NS_ASSERT_OWNINGTHREAD(StreamList);
-  for (uint32_t i = 0; i < mList.Length(); ++i) {
-    if (mList[i].mId == aId) {
-      return mList[i].mStream.forget();
-    }
-  }
-  return nullptr;
+
+  const auto it = std::find_if(mList.begin(), mList.end(), MatchById(aId));
+
+  // Note that if the stream has not been opened with OpenMode::Eager we will
+  // find it nullptr here and it will have to be opened by the consumer.
+
+  return it != mList.end() ? it->mStream.forget() : nullptr;
 }
 
 void StreamList::NoteClosed(const nsID& aId) {
   NS_ASSERT_OWNINGTHREAD(StreamList);
-  for (uint32_t i = 0; i < mList.Length(); ++i) {
-    if (mList[i].mId == aId) {
-      mList.RemoveElementAt(i);
-      mManager->ReleaseBodyId(aId);
-      break;
-    }
+
+  const auto it = std::find_if(mList.begin(), mList.end(), MatchById(aId));
+  if (it != mList.end()) {
+    MOZ_ASSERT(!it->mStream, "We expect to find mStream already extracted.");
+    mList.RemoveElementAt(it);
+    mManager->ReleaseBodyId(aId);
   }
 
   if (mList.IsEmpty() && mStreamControl) {
@@ -124,25 +132,24 @@ void StreamList::NoteClosedAll() {
   }
 }
 
-void StreamList::Close(const nsID& aId) {
-  NS_ASSERT_OWNINGTHREAD(StreamList);
-  if (mStreamControl) {
-    mStreamControl->Close(aId);
-  }
-}
-
 void StreamList::CloseAll() {
   NS_ASSERT_OWNINGTHREAD(StreamList);
-  if (mStreamControl) {
-    auto streamControl = mStreamControl;
-    mStreamControl = nullptr;
 
-    streamControl->CloseAll();
-
-    mStreamControl = streamControl;
-    streamControl = nullptr;
-
-    mStreamControl->Shutdown();
+  if (mStreamControl && mStreamControl->CanSend()) {
+    // CloseAll will kick off everything needed for shutdown.
+    // mStreamControl may go away immediately or async.
+    mStreamControl->CloseAll();
+  } else {
+    // We cannot interact with the child, let's just clear our lists of
+    // streams to unblock shutdown.
+    if (NS_WARN_IF(mStreamControl)) {
+      // TODO: Check if this case is actually possible. We might see a late
+      // delivery of the CSCP::ActorDestroy? What would that mean for CanSend?
+      mStreamControl->LostIPCCleanup(SafeRefPtrFromThis());
+      mStreamControl = nullptr;
+    } else {
+      NoteClosedAll();
+    }
   }
 }
 
@@ -156,19 +163,42 @@ bool StreamList::MatchesCacheId(CacheId aCacheId) const {
   return aCacheId == mCacheId;
 }
 
+void StreamList::DoStringify(nsACString& aData) {
+  aData.Append("StreamList "_ns + kStringifyStartInstance +
+               //
+               "List:"_ns +
+               IntToCString(static_cast<uint64_t>(mList.Length())) +
+               kStringifyDelimiter +
+               //
+               "Activated:"_ns + IntToCString(mActivated) + ")"_ns +
+               kStringifyDelimiter +
+               //
+               "Manager:"_ns + IntToCString(static_cast<bool>(mManager)));
+  if (mManager) {
+    aData.Append(" "_ns);
+    mManager->Stringify(aData);
+  }
+  aData.Append(kStringifyDelimiter +
+               //
+               "Context:"_ns + IntToCString(static_cast<bool>(mContext)));
+  if (mContext) {
+    aData.Append(" "_ns);
+    mContext->Stringify(aData);
+  }
+  aData.Append(kStringifyEndInstance);
+}
+
 StreamList::~StreamList() {
   NS_ASSERT_OWNINGTHREAD(StreamList);
   MOZ_DIAGNOSTIC_ASSERT(!mStreamControl);
   if (mActivated) {
-    mManager->RemoveStreamList(this);
+    mManager->RemoveStreamList(*this);
     for (uint32_t i = 0; i < mList.Length(); ++i) {
       mManager->ReleaseBodyId(mList[i].mId);
     }
     mManager->ReleaseCacheId(mCacheId);
   }
-  mContext->RemoveActivity(this);
+  mContext->RemoveActivity(*this);
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

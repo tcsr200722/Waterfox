@@ -7,18 +7,19 @@
 loader.lazyRequireGetter(
   this,
   "WebConsole",
-  "devtools/client/webconsole/webconsole"
+  "resource://devtools/client/webconsole/webconsole.js"
 );
 loader.lazyGetter(this, "EventEmitter", () =>
-  require("devtools/shared/event-emitter")
+  require("resource://devtools/shared/event-emitter.js")
 );
 
 /**
  * A DevToolPanel that controls the Web Console.
  */
-function WebConsolePanel(iframeWindow, toolbox) {
+function WebConsolePanel(iframeWindow, toolbox, commands) {
   this._frameWindow = iframeWindow;
   this._toolbox = toolbox;
+  this._commands = commands;
   EventEmitter.decorate(this);
 }
 
@@ -32,7 +33,7 @@ WebConsolePanel.prototype = {
    * If the WebConsole is opened, check if the JSTerm's input line has focus.
    * If not, focus it.
    */
-  focusInput: function() {
+  focusInput() {
     this.hud.jsterm.focus();
   },
 
@@ -42,7 +43,7 @@ WebConsolePanel.prototype = {
    * @return object
    *         A promise that is resolved when the Web Console completes opening.
    */
-  open: async function() {
+  async open() {
     try {
       const parentDoc = this._toolbox.doc;
       const iframe = parentDoc.getElementById(
@@ -67,6 +68,7 @@ WebConsolePanel.prototype = {
       // Open the Web Console.
       this.hud = new WebConsole(
         this._toolbox,
+        this._commands,
         webConsoleUIWindow,
         chromeWindow
       );
@@ -77,9 +79,6 @@ WebConsolePanel.prototype = {
       this.hud.ui.on("reloaded", () => {
         this.emit("reloaded");
       });
-
-      this._isReady = true;
-      this.emit("ready");
     } catch (e) {
       const msg = "WebConsolePanel open failed. " + e.error + ": " + e.message;
       dump(msg + "\n");
@@ -93,12 +92,7 @@ WebConsolePanel.prototype = {
     return this._toolbox.target;
   },
 
-  _isReady: false,
-  get isReady() {
-    return this._isReady;
-  },
-
-  destroy: function() {
+  destroy() {
     if (!this._toolbox) {
       return;
     }

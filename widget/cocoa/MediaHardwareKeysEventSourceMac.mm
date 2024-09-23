@@ -37,7 +37,7 @@ static const char* ToMediaControlKeyStr(int aKeyCode) {
     case NX_KEYTYPE_REWIND:
       return "Rewind";
     default:
-      MOZ_ASSERT_UNREACHABLE("Invalid action.");
+      MOZ_ASSERT_UNREACHABLE("Invalid key code.");
       return "UNKNOWN";
   }
 }
@@ -52,25 +52,27 @@ static bool IsSupportedKeyCode(int aKeyCode) {
          aKeyCode == NX_KEYTYPE_REWIND;
 }
 
-static MediaControlKeysEvent ToMediaControlKeysEvent(int aKeyCode) {
+static MediaControlKey ToMediaControlKey(int aKeyCode) {
   MOZ_ASSERT(IsSupportedKeyCode(aKeyCode));
   switch (aKeyCode) {
     case NX_KEYTYPE_NEXT:
     case NX_KEYTYPE_FAST:
-      return MediaControlKeysEvent::eNextTrack;
+      return MediaControlKey::Nexttrack;
     case NX_KEYTYPE_PREVIOUS:
     case NX_KEYTYPE_REWIND:
-      return MediaControlKeysEvent::ePrevTrack;
+      return MediaControlKey::Previoustrack;
     default:
       MOZ_ASSERT(aKeyCode == NX_KEYTYPE_PLAY);
-      return MediaControlKeysEvent::ePlayPause;
+      return MediaControlKey::Playpause;
   }
 }
 
 namespace mozilla {
 namespace widget {
 
-bool MediaHardwareKeysEventSourceMac::IsOpened() const { return mEventTap && mEventTapSource; }
+bool MediaHardwareKeysEventSourceMac::IsOpened() const {
+  return mEventTap && mEventTapSource;
+}
 
 bool MediaHardwareKeysEventSourceMac::Open() {
   LOG("Open MediaHardwareKeysEventSourceMac");
@@ -80,7 +82,7 @@ bool MediaHardwareKeysEventSourceMac::Open() {
 void MediaHardwareKeysEventSourceMac::Close() {
   LOG("Close MediaHardwareKeysEventSourceMac");
   StopEventTap();
-  MediaControlKeysEventSource::Close();
+  MediaControlKeySource::Close();
 }
 
 bool MediaHardwareKeysEventSourceMac::StartEventTap() {
@@ -89,22 +91,24 @@ bool MediaHardwareKeysEventSourceMac::StartEventTap() {
   MOZ_ASSERT(!mEventTapSource);
 
   // Add an event tap to intercept the system defined media key events.
-  mEventTap =
-      CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
-                       CGEventMaskBit(NX_SYSDEFINED), EventTapCallback, this);
+  mEventTap = CGEventTapCreate(
+      kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
+      CGEventMaskBit(NX_SYSDEFINED), EventTapCallback, this);
   if (!mEventTap) {
     LOG("Fail to create event tap");
     return false;
   }
 
-  mEventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mEventTap, 0);
+  mEventTapSource =
+      CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mEventTap, 0);
   if (!mEventTapSource) {
     LOG("Fail to create an event tap source.");
     return false;
   }
 
   LOG("Add an event tap source to current loop");
-  CFRunLoopAddSource(CFRunLoopGetCurrent(), mEventTapSource, kCFRunLoopCommonModes);
+  CFRunLoopAddSource(CFRunLoopGetCurrent(), mEventTapSource,
+                     kCFRunLoopCommonModes);
   return true;
 }
 
@@ -115,18 +119,20 @@ void MediaHardwareKeysEventSourceMac::StopEventTap() {
     mEventTap = nullptr;
   }
   if (mEventTapSource) {
-    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), mEventTapSource, kCFRunLoopCommonModes);
+    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), mEventTapSource,
+                          kCFRunLoopCommonModes);
     CFRelease(mEventTapSource);
     mEventTapSource = nullptr;
   }
 }
 
-CGEventRef MediaHardwareKeysEventSourceMac::EventTapCallback(CGEventTapProxy proxy,
-                                                             CGEventType type, CGEventRef event,
-                                                             void* refcon) {
+CGEventRef MediaHardwareKeysEventSourceMac::EventTapCallback(
+    CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* refcon) {
   // Re-enable event tap when receiving disabled events.
-  MediaHardwareKeysEventSourceMac* source = static_cast<MediaHardwareKeysEventSourceMac*>(refcon);
-  if (type == kCGEventTapDisabledByUserInput || type == kCGEventTapDisabledByTimeout) {
+  MediaHardwareKeysEventSourceMac* source =
+      static_cast<MediaHardwareKeysEventSourceMac*>(refcon);
+  if (type == kCGEventTapDisabledByUserInput ||
+      type == kCGEventTapDisabledByTimeout) {
     MOZ_ASSERT(source->mEventTap);
     CGEventTapEnable(source->mEventTap, true);
     return event;
@@ -138,7 +144,7 @@ CGEventRef MediaHardwareKeysEventSourceMac::EventTapCallback(CGEventTapProxy pro
   }
 
   // Ignore not system defined media keys event.
-  if ([nsEvent type] != NSSystemDefined ||
+  if ([nsEvent type] != NSEventTypeSystemDefined ||
       [nsEvent subtype] != kSystemDefinedEventMediaKeysSubtype) {
     return event;
   }
@@ -151,8 +157,9 @@ CGEventRef MediaHardwareKeysEventSourceMac::EventTapCallback(CGEventTapProxy pro
   // - keyRepeat = (keyFlags & 0x1);
   const NSInteger data1 = [nsEvent data1];
   int keyCode = (data1 & 0xFFFF0000) >> 16;
-  if (keyCode != NX_KEYTYPE_PLAY && keyCode != NX_KEYTYPE_NEXT && keyCode != NX_KEYTYPE_PREVIOUS &&
-      keyCode != NX_KEYTYPE_FAST && keyCode != NX_KEYTYPE_REWIND) {
+  if (keyCode != NX_KEYTYPE_PLAY && keyCode != NX_KEYTYPE_NEXT &&
+      keyCode != NX_KEYTYPE_PREVIOUS && keyCode != NX_KEYTYPE_FAST &&
+      keyCode != NX_KEYTYPE_REWIND) {
     return event;
   }
 
@@ -173,8 +180,9 @@ CGEventRef MediaHardwareKeysEventSourceMac::EventTapCallback(CGEventTapProxy pro
   }
 
   LOG2("Get media key %s", source, ToMediaControlKeyStr(keyCode));
-  for (auto iter = source->mListeners.begin(); iter != source->mListeners.end(); ++iter) {
-    (*iter)->OnKeyPressed(ToMediaControlKeysEvent(keyCode));
+  for (auto iter = source->mListeners.begin(); iter != source->mListeners.end();
+       ++iter) {
+    (*iter)->OnActionPerformed(MediaControlAction(ToMediaControlKey(keyCode)));
   }
   return event;
 }

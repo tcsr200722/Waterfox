@@ -21,9 +21,7 @@
 #  include <unistd.h>
 #endif
 
-namespace mozilla {
-namespace dom {
-namespace power {
+namespace mozilla::dom::power {
 
 using namespace hal;
 
@@ -137,46 +135,4 @@ PowerManagerService::NewWakeLock(const nsAString& aTopic,
   return NS_OK;
 }
 
-already_AddRefed<WakeLock> PowerManagerService::NewWakeLockOnBehalfOfProcess(
-    const nsAString& aTopic, ContentParent* aContentParent) {
-  RefPtr<WakeLock> wakelock = new WakeLock();
-  nsresult rv = wakelock->Init(aTopic, aContentParent);
-  NS_ENSURE_SUCCESS(rv, nullptr);
-  return wakelock.forget();
-}
-
-}  // namespace power
-}  // namespace dom
-}  // namespace mozilla
-
-NS_DEFINE_NAMED_CID(NS_POWERMANAGERSERVICE_CID);
-
-NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(
-    nsIPowerManagerService,
-    mozilla::dom::power::PowerManagerService::GetInstance)
-
-static const mozilla::Module::CIDEntry kPowerManagerCIDs[] = {
-    // clang-format off
-  { &kNS_POWERMANAGERSERVICE_CID, false, nullptr, nsIPowerManagerServiceConstructor, mozilla::Module::ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS },
-  { nullptr }
-    // clang-format on
-};
-
-static const mozilla::Module::ContractIDEntry kPowerManagerContracts[] = {
-    // clang-format off
-  { POWERMANAGERSERVICE_CONTRACTID, &kNS_POWERMANAGERSERVICE_CID, mozilla::Module::ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS },
-  { nullptr }
-    // clang-format on
-};
-
-// We mark the power module as being available in the GPU process because the
-// appshell depends on the power manager service.
-extern const mozilla::Module kPowerManagerModule = {
-    mozilla::Module::kVersion,
-    kPowerManagerCIDs,
-    kPowerManagerContracts,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    mozilla::Module::ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS};
+}  // namespace mozilla::dom::power

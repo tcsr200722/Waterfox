@@ -18,8 +18,7 @@ class DOMMediaStream;
 /**
  * See MediaTrackGraph::CreateAudioCaptureTrack.
  */
-class AudioCaptureTrack : public ProcessedMediaTrack,
-                          public MixerCallbackReceiver {
+class AudioCaptureTrack : public ProcessedMediaTrack {
  public:
   explicit AudioCaptureTrack(TrackRate aRate);
   virtual ~AudioCaptureTrack();
@@ -28,10 +27,9 @@ class AudioCaptureTrack : public ProcessedMediaTrack,
 
   void ProcessInput(GraphTime aFrom, GraphTime aTo, uint32_t aFlags) override;
 
+  uint32_t NumberOfChannels() const override;
+
  protected:
-  void MixerCallback(AudioDataValue* aMixedBuffer, AudioSampleFormat aFormat,
-                     uint32_t aChannels, uint32_t aFrames,
-                     uint32_t aSampleRate) override;
   AudioMixer mMixer;
   bool mStarted;
   bool mTrackCreated;

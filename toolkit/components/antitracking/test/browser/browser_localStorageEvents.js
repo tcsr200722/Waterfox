@@ -1,4 +1,4 @@
-add_task(async function() {
+add_task(async function () {
   info("Starting subResources test");
 
   await SpecialPowers.flushPrefEnv();
@@ -7,6 +7,10 @@ add_task(async function() {
       ["dom.storage_access.enabled", true],
       [
         "network.cookie.cookieBehavior",
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+      ],
+      [
+        "network.cookie.cookieBehavior.pbmode",
         Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
       ],
       ["privacy.trackingprotection.enabled", false],
@@ -41,7 +45,7 @@ add_task(async function testLocalStorageEventPropagation() {
       ifr.src = obj.page;
 
       await new content.Promise(resolve => {
-        ifr.onload = function() {
+        ifr.onload = function () {
           resolve();
         };
         content.document.body.appendChild(ifr);
@@ -88,7 +92,7 @@ add_task(async function testLocalStorageEventPropagation() {
 
   info("Cleaning up.");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });
@@ -126,7 +130,7 @@ add_task(async function testBlockedLocalStorageEventPropagation() {
       ifr.src = obj.page;
 
       await new content.Promise(resolve => {
-        ifr.onload = function() {
+        ifr.onload = function () {
           resolve();
         };
         content.document.body.appendChild(ifr);
@@ -175,7 +179,7 @@ add_task(async function testBlockedLocalStorageEventPropagation() {
 
   info("Cleaning up.");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

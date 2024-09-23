@@ -334,3 +334,41 @@ NSSUTIL_AddNSSFlagToModuleSpec;
 ;+    local:
 ;+       *;
 ;+};
+;+NSSUTIL_3.59 {         # NSS Utilities 3.59 release
+;+    global:
+NSS_IsPolicyLocked;
+NSS_LockPolicy;
+;+    local:
+;+       *;
+;+};
+;+NSSUTIL_3.82 {         # NSS Utilities 3.82 release
+;+    global:
+PK11URI_GetPathAttributeItem;
+PK11URI_GetQueryAttributeItem;
+;+    local:
+;+       *;
+;+};
+;+NSSUTIL_3.90 {         # NSS Utilities 3.90 release
+;+    global:
+NSS_SecureSelect;
+;+    local:
+;+       *;
+;+};
+;+NSSUTIL_3.94 {         # NSS Utilities 3.94 release
+;+    global:
+NSS_GetSystemFIPSEnabled;
+;+    local:
+;+       *;
+;+};
+;+NSSUTIL_3.101 {         # NSS Utilities 3.101 release
+;+    global:
+HASH_GetHashTypeByOidTag_Util;
+HASH_GetHashOidTagByHashType_Util;
+HASH_GetHashOidTagByHMACOidTag_Util;
+HASH_GetHMACOidTagByHashOidTag_Util;
+SECOID_GetTotalTags;
+NSS_GetAlgorithmPolicyAll;
+NSS_SetAlgorithmPolicyAll;
+;+    local:
+;+       *;
+;+};

@@ -46,7 +46,7 @@ void URIUtils::resolveHref(const nsAString& href, const nsAString& base,
 void URIUtils::ResetWithSource(Document* aNewDoc, nsINode* aSourceNode) {
   nsCOMPtr<Document> sourceDoc = aSourceNode->OwnerDoc();
   nsIPrincipal* sourcePrincipal = sourceDoc->NodePrincipal();
-  nsIPrincipal* sourceStoragePrincipal = sourceDoc->EffectiveStoragePrincipal();
+  nsIPrincipal* sourcePartitionedPrincipal = sourceDoc->PartitionedPrincipal();
 
   // Copy the channel and loadgroup from the source document.
   nsCOMPtr<nsILoadGroup> loadGroup = sourceDoc->GetDocumentLoadGroup();
@@ -67,8 +67,11 @@ void URIUtils::ResetWithSource(Document* aNewDoc, nsINode* aSourceNode) {
   }
 
   aNewDoc->Reset(channel, loadGroup);
-  aNewDoc->SetPrincipals(sourcePrincipal, sourceStoragePrincipal);
+  aNewDoc->SetPrincipals(sourcePrincipal, sourcePartitionedPrincipal);
   aNewDoc->SetBaseURI(sourceDoc->GetDocBaseURI());
+  aNewDoc->SetSandboxFlags(sourceDoc->GetSandboxFlags());
+  aNewDoc->SetReferrerInfo(sourceDoc->GetReferrerInfo());
+  aNewDoc->SetEmbedderPolicy(sourceDoc->GetEmbedderPolicy());
 
   // Inherit the csp if there is one
   nsCOMPtr<nsIContentSecurityPolicy> csp = sourceDoc->GetCsp();

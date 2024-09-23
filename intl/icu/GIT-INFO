@@ -1,7 +1,5 @@
-commit 125e29d54990e74845e1546851b5afa3efab06ce
+commit 5861e1fd52f1d7673eee38bc3c965aa18b336062
 Author: Peter Edberg <pedberg@unicode.org>
-Date:   Wed Apr 15 23:30:01 2020 -0700
+Date:   Tue Apr 11 10:32:35 2023 -0700
 
-    ICU-21061 integrate CLDR release-37-beta3 to master
-    
-    (cherry-picked from 71fa037844dbee3f58b7928097437b2fc635db61)
+    ICU-22221 update cldr-icu instructions, and ICU tag for integration

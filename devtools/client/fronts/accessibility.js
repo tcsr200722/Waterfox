@@ -7,20 +7,15 @@
 const {
   FrontClassWithSpec,
   registerFront,
-} = require("devtools/shared/protocol.js");
+} = require("resource://devtools/shared/protocol.js");
 const {
   accessibleSpec,
   accessibleWalkerSpec,
   accessibilitySpec,
   parentAccessibilitySpec,
   simulatorSpec,
-} = require("devtools/shared/specs/accessibility");
-const events = require("devtools/shared/event-emitter");
-const Services = require("Services");
-const BROWSER_TOOLBOX_FISSION_ENABLED = Services.prefs.getBoolPref(
-  "devtools.browsertoolbox.fission",
-  false
-);
+} = require("resource://devtools/shared/specs/accessibility.js");
+const events = require("resource://devtools/shared/event-emitter.js");
 
 class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
   constructor(client, targetFront, parentFront) {
@@ -43,8 +38,8 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
     return this.getParent();
   }
 
-  get remoteFrame() {
-    return BROWSER_TOOLBOX_FISSION_ENABLED && this._form.remoteFrame;
+  get useChildTargetToFetchChildren() {
+    return this._form.useChildTargetToFetchChildren;
   }
 
   get role() {
@@ -170,7 +165,7 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
   }
 
   async children() {
-    if (!this.remoteFrame) {
+    if (!this.useChildTargetToFetchChildren) {
       return super.children();
     }
 
@@ -192,7 +187,6 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
     const accessibilityFront = await documentNodeFront.targetFront.getFront(
       "accessibility"
     );
-    await accessibilityFront.bootstrap();
 
     return accessibilityFront.accessibleWalkerFront.children();
   }
@@ -210,7 +204,7 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
    *         Complete snapshot of current accessible front.
    */
   async _accumulateSnapshot(snapshot) {
-    const { childCount, remoteFrame } = snapshot;
+    const { childCount, useChildTargetToFetchChildren } = snapshot;
     // No children, we are done.
     if (childCount === 0) {
       return snapshot;
@@ -218,7 +212,7 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
 
     // If current accessible is not a remote frame, continue accumulating inside
     // its children.
-    if (!remoteFrame) {
+    if (!useChildTargetToFetchChildren) {
       const childSnapshots = [];
       for (const childSnapshot of snapshot.children) {
         childSnapshots.push(this._accumulateSnapshot(childSnapshot));
@@ -230,12 +224,13 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
     // When we have a remote frame, we need to obtain an accessible front for a
     // remote frame document and retrieve its snapshot.
     const inspectorFront = await this.targetFront.getFront("inspector");
-    const frameNodeFront = await inspectorFront.getNodeActorFromContentDomReference(
-      snapshot.contentDOMReference
-    );
-    // Remove contentDOMReference and remoteFrame properties.
+    const frameNodeFront =
+      await inspectorFront.getNodeActorFromContentDomReference(
+        snapshot.contentDOMReference
+      );
+    // Remove contentDOMReference and useChildTargetToFetchChildren properties.
     delete snapshot.contentDOMReference;
-    delete snapshot.remoteFrame;
+    delete snapshot.useChildTargetToFetchChildren;
     if (!frameNodeFront) {
       return snapshot;
     }
@@ -268,8 +263,26 @@ class AccessibleFront extends FrontClassWithSpec(accessibleSpec) {
 }
 
 class AccessibleWalkerFront extends FrontClassWithSpec(accessibleWalkerSpec) {
+  constructor(client, targetFront, parentFront) {
+    super(client, targetFront, parentFront);
+
+    this.documentReady = this.documentReady.bind(this);
+    this.on("document-ready", this.documentReady);
+  }
+
+  destroy() {
+    this.off("document-ready", this.documentReady);
+    super.destroy();
+  }
+
   form(json) {
     this.actorID = json.actor;
+  }
+
+  documentReady() {
+    if (this.targetFront.isTopLevel) {
+      this.emit("top-level-document-ready");
+    }
   }
 
   pick(doFocus) {
@@ -282,9 +295,7 @@ class AccessibleWalkerFront extends FrontClassWithSpec(accessibleWalkerSpec) {
 
   /**
    * Get the accessible object ancestry starting from the given accessible to
-   * the top level document. BROWSER_TOOLBOX_FISSION_ENABLED is false, the top
-   * level document is bound by current target's document. Otherwise, the top
-   * level document is in the top level content process.
+   * the top level document. The top level document is in the top level content process.
    * @param  {Object} accessible
    *         Accessible front to determine the ancestry for.
    *
@@ -294,10 +305,6 @@ class AccessibleWalkerFront extends FrontClassWithSpec(accessibleWalkerSpec) {
    */
   async getAncestry(accessible) {
     const ancestry = await super.getAncestry(accessible);
-    if (!BROWSER_TOOLBOX_FISSION_ENABLED) {
-      // Do not try to get the ancestry across the remote frame hierarchy.
-      return ancestry;
-    }
 
     const parentTarget = await this.targetFront.getParentTarget();
     if (!parentTarget) {
@@ -312,11 +319,17 @@ class AccessibleWalkerFront extends FrontClassWithSpec(accessibleWalkerSpec) {
     );
     const frameNodeFront = (await domWalkerFront.getRootNode()).parentNode();
     const accessibilityFront = await parentTarget.getFront("accessibility");
-    await accessibilityFront.bootstrap();
     const { accessibleWalkerFront } = accessibilityFront;
     const frameAccessibleFront = await accessibleWalkerFront.getAccessibleFor(
       frameNodeFront
     );
+
+    if (!frameAccessibleFront) {
+      // Most likely we are inside a hidden frame.
+      return Promise.reject(
+        `Can't get the ancestry for an accessible front ${accessible.actorID}. It is in the detached tree.`
+      );
+    }
 
     // Compose the final ancestry out of ancestry for the given accessible in
     // the current process and recursively get the ancestry for the frame
@@ -330,6 +343,163 @@ class AccessibleWalkerFront extends FrontClassWithSpec(accessibleWalkerSpec) {
     );
 
     return ancestry;
+  }
+
+  /**
+   * Run an accessibility audit for a document that accessibility walker is
+   * responsible for (in process). In addition to plainly running an audit (in
+   * cases when the document is in the OOP frame), this method also updates
+   * relative ancestries of audited accessible objects all the way up to the top
+   * level document for the toolbox.
+   * @param {Object} options
+   *                 - {Array}    types
+   *                   types of the accessibility issues to audit for
+   *                 - {Function} onProgress
+   *                   callback function for a progress audit-event
+   *                 - {Boolean} retrieveAncestries (defaults to true)
+   *                   Set to false to _not_ retrieve ancestries of audited accessible objects.
+   *                   This is used when a specific document is selected in the iframe picker
+   *                   and we want to treat it as the root of the accessibility panel tree.
+   */
+  async audit({ types, onProgress, retrieveAncestries = true }) {
+    const onAudit = new Promise(resolve => {
+      const auditEventHandler = ({ type, ancestries, progress }) => {
+        switch (type) {
+          case "error":
+            this.off("audit-event", auditEventHandler);
+            resolve({ error: true });
+            break;
+          case "completed":
+            this.off("audit-event", auditEventHandler);
+            resolve({ ancestries });
+            break;
+          case "progress":
+            onProgress(progress);
+            break;
+          default:
+            break;
+        }
+      };
+
+      this.on("audit-event", auditEventHandler);
+      super.startAudit({ types });
+    });
+
+    const audit = await onAudit;
+    // If audit resulted in an error, if there's nothing to report or if the callsite
+    // explicitly asked to not retrieve ancestries, we are done.
+    // (no need to check for ancestry across the remote frame hierarchy).
+    // See also https://bugzilla.mozilla.org/show_bug.cgi?id=1641551 why the rest of
+    // the code path is only supported when content toolbox fission is enabled.
+    if (audit.error || audit.ancestries.length === 0 || !retrieveAncestries) {
+      return audit;
+    }
+
+    const parentTarget = await this.targetFront.getParentTarget();
+    // If there is no parent target, we do not need to update ancestries as we
+    // are in the top level document.
+    if (!parentTarget) {
+      return audit;
+    }
+
+    // Retrieve an ancestry (cross process) for a current root document and make
+    // audit report ancestries relative to it.
+    const [docAccessibleFront] = await this.children();
+    let docAccessibleAncestry;
+    try {
+      docAccessibleAncestry = await this.getAncestry(docAccessibleFront);
+    } catch (e) {
+      // We are in a detached subtree. We do not consider this an error, instead
+      // we need to ignore the audit for this frame and return an empty report.
+      return { ancestries: [] };
+    }
+    for (const ancestry of audit.ancestries) {
+      // Compose the final ancestries out of the ones in the audit report
+      // relative to this document and the ancestry of the document itself
+      // (cross process).
+      ancestry.push(...docAccessibleAncestry);
+    }
+
+    return audit;
+  }
+
+  /**
+   * A helper wrapper function to show tabbing order overlay for a given target.
+   * The only additional work done is resolving domnode front from a
+   * ContentDOMReference received from a remote target.
+   *
+   * @param  {Object} startElm
+   *         domnode front to be used as the starting point for generating the
+   *         tabbing order.
+   * @param  {Number} startIndex
+   *         Starting index for the tabbing order.
+   */
+  async _showTabbingOrder(startElm, startIndex) {
+    const { contentDOMReference, index } = await super.showTabbingOrder(
+      startElm,
+      startIndex
+    );
+    let elm;
+    if (contentDOMReference) {
+      const inspectorFront = await this.targetFront.getFront("inspector");
+      elm = await inspectorFront.getNodeActorFromContentDomReference(
+        contentDOMReference
+      );
+    }
+
+    return { elm, index };
+  }
+
+  /**
+   * Show tabbing order overlay for a given target.
+   *
+   * @param  {Object} startElm
+   *         domnode front to be used as the starting point for generating the
+   *         tabbing order.
+   * @param  {Number} startIndex
+   *         Starting index for the tabbing order.
+   *
+   * @return {JSON}
+   *         Tabbing order information for the last element in the tabbing
+   *         order. It includes a domnode front and a tabbing index. If we are
+   *         at the end of the tabbing order for the top level content document,
+   *         the domnode front will be null. If focus manager discovered a
+   *         remote IFRAME, then the domnode front is for the IFRAME itself.
+   */
+  async showTabbingOrder(startElm, startIndex) {
+    let { elm: currentElm, index: currentIndex } = await this._showTabbingOrder(
+      startElm,
+      startIndex
+    );
+
+    // If no remote frames were found, currentElm will be null.
+    while (currentElm) {
+      // Safety check to ensure that the currentElm is a remote frame.
+      if (currentElm.useChildTargetToFetchChildren) {
+        const { walker: domWalkerFront } =
+          await currentElm.targetFront.getFront("inspector");
+        const {
+          nodes: [childDocumentNodeFront],
+        } = await domWalkerFront.children(currentElm);
+        const { accessibleWalkerFront } =
+          await childDocumentNodeFront.targetFront.getFront("accessibility");
+        // Show tabbing order in the remote target, while updating the tabbing
+        // index.
+        ({ index: currentIndex } = await accessibleWalkerFront.showTabbingOrder(
+          childDocumentNodeFront,
+          currentIndex
+        ));
+      }
+
+      // Finished with the remote frame, continue in tabbing order, from the
+      // remote frame.
+      ({ elm: currentElm, index: currentIndex } = await this._showTabbingOrder(
+        currentElm,
+        currentIndex
+      ));
+    }
+
+    return { elm: currentElm, index: currentIndex };
   }
 }
 
@@ -345,20 +515,22 @@ class AccessibilityFront extends FrontClassWithSpec(accessibilitySpec) {
     this.formAttributeName = "accessibilityActor";
   }
 
-  // We purposefully do not use initialize here and separate accessiblity
-  // front/actor initialization into two parts: getting the front from target
-  // and then separately bootstrapping the front. The reason for that is because
-  // accessibility front is always created as part of the accessibility panel
-  // startup when the toolbox is opened. If initialize was used, in rare cases,
-  // when the toolbox is destroyed before the accessibility tool startup is
-  // complete, the toolbox destruction would hang because the accessibility
-  // front will indefinitely wait for its initialize method to complete before
-  // being destroyed. With custom bootstrapping the front will be destroyed
-  // correctly.
-  async bootstrap() {
+  async initialize() {
     this.accessibleWalkerFront = await super.getWalker();
     this.simulatorFront = await super.getSimulator();
-    ({ enabled: this.enabled } = await super.bootstrap());
+    const { enabled } = await super.bootstrap();
+    this.enabled = enabled;
+
+    try {
+      this._traits = await this.getTraits();
+    } catch (e) {
+      // @backward-compat { version 84 } getTraits isn't available on older server.
+      this._traits = {};
+    }
+  }
+
+  get traits() {
+    return this._traits;
   }
 
   init() {
@@ -384,10 +556,8 @@ class ParentAccessibilityFront extends FrontClassWithSpec(
   }
 
   async initialize() {
-    ({
-      canBeEnabled: this.canBeEnabled,
-      canBeDisabled: this.canBeDisabled,
-    } = await super.bootstrap());
+    ({ canBeEnabled: this.canBeEnabled, canBeDisabled: this.canBeDisabled } =
+      await super.bootstrap());
   }
 
   canBeEnabled(canBeEnabled) {

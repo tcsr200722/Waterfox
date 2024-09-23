@@ -18,6 +18,9 @@
 class nsIURI;
 
 namespace mozilla {
+
+enum CORSMode : uint8_t;
+
 namespace image {
 
 /**
@@ -30,8 +33,7 @@ namespace image {
  */
 class ImageCacheKey final {
  public:
-  ImageCacheKey(nsIURI* aURI, const OriginAttributes& aAttrs,
-                dom::Document* aDocument);
+  ImageCacheKey(nsIURI*, CORSMode, const OriginAttributes&, dom::Document*);
 
   ImageCacheKey(const ImageCacheKey& aOther);
   ImageCacheKey(ImageCacheKey&& aOther);
@@ -47,12 +49,13 @@ class ImageCacheKey final {
   /// A weak pointer to the URI.
   nsIURI* URI() const { return mURI; }
 
+  CORSMode GetCORSMode() const { return mCORSMode; }
+
   const OriginAttributes& OriginAttributesRef() const {
     return mOriginAttributes;
   }
 
-  /// Is this cache entry for a chrome image?
-  bool IsChrome() const { return mIsChrome; }
+  const nsCString& IsolationKeyRef() const { return mIsolationKey; }
 
   /// A token indicating which service worker controlled document this entry
   /// belongs to, if any.
@@ -64,21 +67,18 @@ class ImageCacheKey final {
   static void* GetSpecialCaseDocumentToken(dom::Document* aDocument);
 
   // For anti-tracking we need to use an isolation key. It can be the suffix of
-  // the IntrinsicStoragePrincipal (see StoragePrincipalHelper.h) or the
-  // top-level document's base domain. This is handled by this method.
+  // the PatitionedPrincipal (see StoragePrincipalHelper.h) or the top-level
+  // document's base domain. This is handled by this method.
   static nsCString GetIsolationKey(dom::Document* aDocument, nsIURI* aURI);
 
   void EnsureHash() const;
-  void EnsureBlobRef() const;
 
   nsCOMPtr<nsIURI> mURI;
-  Maybe<uint64_t> mBlobSerial;
-  mutable nsCString mBlobRef;
-  OriginAttributes mOriginAttributes;
+  const OriginAttributes mOriginAttributes;
   void* mControlledDocument;
   nsCString mIsolationKey;
   mutable Maybe<PLDHashNumber> mHash;
-  bool mIsChrome;
+  const CORSMode mCORSMode;
 };
 
 }  // namespace image

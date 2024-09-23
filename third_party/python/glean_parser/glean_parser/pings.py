@@ -8,41 +8,49 @@
 Classes for managing the description of pings.
 """
 
-import sys
+from typing import Dict, List, Optional
 
 
-# Import a backport of PEP487 to support __init_subclass__
-if sys.version_info < (3, 6):
-    import pep487
-
-    base_object = pep487.PEP487Object
-else:
-    base_object = object
+from . import util
 
 
-RESERVED_PING_NAMES = ["baseline", "metrics", "events", "deletion_request"]
+RESERVED_PING_NAMES = ["baseline", "metrics", "events", "deletion-request", "default"]
 
 
-class Ping(base_object):
+class Ping:
     def __init__(
         self,
-        name,
-        description,
-        bugs,
-        notification_emails,
-        data_reviews=None,
-        include_client_id=False,
-        send_if_empty=False,
-        reasons=None,
-        _validated=False,
+        name: str,
+        description: str,
+        bugs: List[str],
+        notification_emails: List[str],
+        metadata: Optional[Dict] = None,
+        data_reviews: Optional[List[str]] = None,
+        include_client_id: bool = False,
+        send_if_empty: bool = False,
+        reasons: Optional[Dict[str, str]] = None,
+        defined_in: Optional[Dict] = None,
+        no_lint: Optional[List[str]] = None,
+        enabled: Optional[bool] = None,
+        _validated: bool = False,
     ):
         # Avoid cyclical import
         from . import parser
 
         self.name = name
         self.description = description
+
         self.bugs = bugs
         self.notification_emails = notification_emails
+        if metadata is None:
+            metadata = {}
+        self.metadata = metadata
+        self.precise_timestamps = self.metadata.get("precise_timestamps", True)
+        self.include_info_sections = self.metadata.get("include_info_sections", True)
+        if enabled is None:
+            enabled = True
+        self.enabled = enabled
+        self.schedules_pings: List[str] = []
         if data_reviews is None:
             data_reviews = []
         self.data_reviews = data_reviews
@@ -51,28 +59,51 @@ class Ping(base_object):
         if reasons is None:
             reasons = {}
         self.reasons = reasons
+        self.defined_in = defined_in
+        if no_lint is None:
+            no_lint = []
+        self.no_lint = no_lint
 
-        # _validated indicates whether this metric has already been jsonschema
+        # _validated indicates whether this ping has already been jsonschema
         # validated (but not any of the Python-level validation).
         if not _validated:
-            data = {"$schema": parser.PINGS_ID, self.name: self.serialize()}
+            data: Dict[str, util.JSONType] = {
+                "$schema": parser.PINGS_ID,
+                self.name: self._serialize_input(),
+            }
             for error in parser.validate(data):
                 raise ValueError(error)
 
     _generate_enums = [("reason_codes", "ReasonCodes")]
 
     @property
-    def type(self):
+    def type(self) -> str:
         return "ping"
 
     @property
-    def reason_codes(self):
+    def reason_codes(self) -> List[str]:
         return sorted(list(self.reasons.keys()))
 
-    def serialize(self):
+    def serialize(self) -> Dict[str, util.JSONType]:
         """
         Serialize the metric back to JSON object model.
         """
         d = self.__dict__.copy()
         del d["name"]
         return d
+
+    def _serialize_input(self) -> Dict[str, util.JSONType]:
+        d = self.serialize()
+        modified_dict = util.remove_output_params(d, "defined_in")
+        modified_dict = util.remove_output_params(modified_dict, "precise_timestamps")
+        modified_dict = util.remove_output_params(
+            modified_dict, "include_info_sections"
+        )
+        modified_dict = util.remove_output_params(modified_dict, "schedules_pings")
+        return modified_dict
+
+    def identifier(self) -> str:
+        """
+        Used for the "generated from ..." comment in the output.
+        """
+        return self.name

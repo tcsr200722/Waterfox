@@ -5,16 +5,24 @@
 
 #include "WSRunObject.h"
 
+#include "EditorDOMPoint.h"
+#include "EditorUtils.h"
+#include "ErrorList.h"
+#include "HTMLEditHelpers.h"  // for MoveNodeResult, SplitNodeResult
+#include "HTMLEditor.h"
+#include "HTMLEditorNestedClasses.h"  // for AutoMoveOneLineHandler
 #include "HTMLEditUtils.h"
+#include "SelectionState.h"
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Casting.h"
-#include "mozilla/EditorDOMPoint.h"
-#include "mozilla/HTMLEditor.h"
+#include "mozilla/SelectionState.h"
 #include "mozilla/mozalloc.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/RangeUtils.h"
-#include "mozilla/SelectionState.h"
+#include "mozilla/StaticPrefs_dom.h"     // for StaticPrefs::dom_*
+#include "mozilla/StaticPrefs_editor.h"  // for StaticPrefs::editor_*
+#include "mozilla/InternalMutationEvent.h"
 #include "mozilla/dom/AncestorIterator.h"
 
 #include "nsAString.h"
@@ -33,258 +41,995 @@ namespace mozilla {
 
 using namespace dom;
 
-using ChildBlockBoundary = HTMLEditUtils::ChildBlockBoundary;
+using LeafNodeType = HTMLEditUtils::LeafNodeType;
+using LeafNodeTypes = HTMLEditUtils::LeafNodeTypes;
+using WalkTreeOption = HTMLEditUtils::WalkTreeOption;
 
-const char16_t kNBSP = 160;
-
-template WSRunScanner::WSRunScanner(const HTMLEditor* aHTMLEditor,
-                                    const EditorDOMPoint& aScanStartPoint,
-                                    const EditorDOMPoint& aScanEndPoint);
-template WSRunScanner::WSRunScanner(const HTMLEditor* aHTMLEditor,
-                                    const EditorRawDOMPoint& aScanStartPoint,
-                                    const EditorRawDOMPoint& aScanEndPoint);
-template WSRunObject::WSRunObject(HTMLEditor& aHTMLEditor,
-                                  const EditorDOMPoint& aScanStartPoint,
-                                  const EditorDOMPoint& aScanEndPoint);
-template WSRunObject::WSRunObject(HTMLEditor& aHTMLEditor,
-                                  const EditorRawDOMPoint& aScanStartPoint,
-                                  const EditorRawDOMPoint& aScanEndPoint);
 template WSScanResult WSRunScanner::ScanPreviousVisibleNodeOrBlockBoundaryFrom(
     const EditorDOMPoint& aPoint) const;
 template WSScanResult WSRunScanner::ScanPreviousVisibleNodeOrBlockBoundaryFrom(
     const EditorRawDOMPoint& aPoint) const;
-template WSScanResult WSRunScanner::ScanNextVisibleNodeOrBlockBoundaryFrom(
+template WSScanResult
+WSRunScanner::ScanInclusiveNextVisibleNodeOrBlockBoundaryFrom(
     const EditorDOMPoint& aPoint) const;
-template WSScanResult WSRunScanner::ScanNextVisibleNodeOrBlockBoundaryFrom(
+template WSScanResult
+WSRunScanner::ScanInclusiveNextVisibleNodeOrBlockBoundaryFrom(
     const EditorRawDOMPoint& aPoint) const;
+template EditorDOMPoint WSRunScanner::GetAfterLastVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter);
+template EditorRawDOMPoint WSRunScanner::GetAfterLastVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter);
+template EditorDOMPoint WSRunScanner::GetFirstVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter);
+template EditorRawDOMPoint WSRunScanner::GetFirstVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter);
 
-template <typename PT, typename CT>
-WSRunScanner::WSRunScanner(const HTMLEditor* aHTMLEditor,
-                           const EditorDOMPointBase<PT, CT>& aScanStartPoint,
-                           const EditorDOMPointBase<PT, CT>& aScanEndPoint)
-    : mScanStartPoint(aScanStartPoint),
-      mScanEndPoint(aScanEndPoint),
-      mEditingHost(aHTMLEditor->GetActiveEditingHost()),
-      mPRE(false),
-      mStartOffset(0),
-      mEndOffset(0),
-      mFirstNBSPOffset(0),
-      mLastNBSPOffset(0),
-      mStartRun(nullptr),
-      mEndRun(nullptr),
-      mHTMLEditor(aHTMLEditor),
-      mStartReason(WSType::NotInitialized),
-      mEndReason(WSType::NotInitialized) {
+template nsresult WhiteSpaceVisibilityKeeper::NormalizeVisibleWhiteSpacesAt(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aScanStartPoint);
+template nsresult WhiteSpaceVisibilityKeeper::NormalizeVisibleWhiteSpacesAt(
+    HTMLEditor& aHTMLEditor, const EditorDOMPointInText& aScanStartPoint);
+
+template WSRunScanner::TextFragmentData::TextFragmentData(
+    const EditorDOMPoint& aPoint, const Element* aEditingHost,
+    BlockInlineCheck aBlockInlineCheck);
+template WSRunScanner::TextFragmentData::TextFragmentData(
+    const EditorRawDOMPoint& aPoint, const Element* aEditingHost,
+    BlockInlineCheck aBlockInlineCheck);
+template WSRunScanner::TextFragmentData::TextFragmentData(
+    const EditorDOMPointInText& aPoint, const Element* aEditingHost,
+    BlockInlineCheck aBlockInlineCheck);
+
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetInclusiveNextEditableCharPoint,
+    const EditorDOMPoint& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetInclusiveNextEditableCharPoint,
+    const EditorRawDOMPoint& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetInclusiveNextEditableCharPoint,
+    const EditorDOMPointInText& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetInclusiveNextEditableCharPoint,
+    const EditorRawDOMPointInText& aPoint);
+
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetPreviousEditableCharPoint,
+    const EditorDOMPoint& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetPreviousEditableCharPoint,
+    const EditorRawDOMPoint& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetPreviousEditableCharPoint,
+    const EditorDOMPointInText& aPoint);
+NS_INSTANTIATE_CONST_METHOD_RETURNING_ANY_EDITOR_DOM_POINT(
+    WSRunScanner::TextFragmentData::GetPreviousEditableCharPoint,
+    const EditorRawDOMPointInText& aPoint);
+
+Result<EditorDOMPoint, nsresult>
+WhiteSpaceVisibilityKeeper::PrepareToSplitBlockElement(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPointToSplit,
+    const Element& aSplittingBlockElement) {
+  if (NS_WARN_IF(!aPointToSplit.IsInContentNode()) ||
+      NS_WARN_IF(!HTMLEditUtils::IsSplittableNode(aSplittingBlockElement)) ||
+      NS_WARN_IF(!EditorUtils::IsEditableContent(
+          *aPointToSplit.ContainerAs<nsIContent>(), EditorType::HTML))) {
+    return Err(NS_ERROR_FAILURE);
+  }
+
+  // The container of aPointToSplit may be not splittable, e.g., selection
+  // may be collapsed **in** a `<br>` element or a comment node.  So, look
+  // for splittable point with climbing the tree up.
+  EditorDOMPoint pointToSplit(aPointToSplit);
+  for (nsIContent* content : aPointToSplit.ContainerAs<nsIContent>()
+                                 ->InclusiveAncestorsOfType<nsIContent>()) {
+    if (content == &aSplittingBlockElement) {
+      break;
+    }
+    if (HTMLEditUtils::IsSplittableNode(*content)) {
+      break;
+    }
+    pointToSplit.Set(content);
+  }
+
+  {
+    AutoTrackDOMPoint tracker(aHTMLEditor.RangeUpdaterRef(), &pointToSplit);
+
+    nsresult rv = WhiteSpaceVisibilityKeeper::
+        MakeSureToKeepVisibleWhiteSpacesVisibleAfterSplit(aHTMLEditor,
+                                                          pointToSplit);
+    if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
+      return Err(NS_ERROR_EDITOR_DESTROYED);
+    }
+    if (NS_FAILED(rv)) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::"
+          "MakeSureToKeepVisibleWhiteSpacesVisibleAfterSplit() failed");
+      return Err(rv);
+    }
+  }
+
+  if (NS_WARN_IF(!pointToSplit.IsInContentNode()) ||
+      NS_WARN_IF(
+          !pointToSplit.ContainerAs<nsIContent>()->IsInclusiveDescendantOf(
+              &aSplittingBlockElement)) ||
+      NS_WARN_IF(!HTMLEditUtils::IsSplittableNode(aSplittingBlockElement)) ||
+      NS_WARN_IF(!HTMLEditUtils::IsSplittableNode(
+          *pointToSplit.ContainerAs<nsIContent>()))) {
+    return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+  }
+
+  return pointToSplit;
+}
+
+// static
+Result<EditActionResult, nsresult> WhiteSpaceVisibilityKeeper::
+    MergeFirstLineOfRightBlockElementIntoDescendantLeftBlockElement(
+        HTMLEditor& aHTMLEditor, Element& aLeftBlockElement,
+        Element& aRightBlockElement, const EditorDOMPoint& aAtRightBlockChild,
+        const Maybe<nsAtom*>& aListElementTagName,
+        const HTMLBRElement* aPrecedingInvisibleBRElement,
+        const Element& aEditingHost) {
   MOZ_ASSERT(
-      *nsContentUtils::ComparePoints(aScanStartPoint.ToRawRangeBoundary(),
-                                     aScanEndPoint.ToRawRangeBoundary()) <= 0);
-  DebugOnly<nsresult> rvIgnored = GetWSNodes();
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
-                       "WSRunScanner::GetWSNodes() failed, but ignored");
-  GetRuns();
+      EditorUtils::IsDescendantOf(aLeftBlockElement, aRightBlockElement));
+  MOZ_ASSERT(&aRightBlockElement == aAtRightBlockChild.GetContainer());
+
+  // NOTE: This method may extend deletion range:
+  // - to delete invisible white-spaces at end of aLeftBlockElement
+  // - to delete invisible white-spaces at start of
+  //   afterRightBlockChild.GetChild()
+  // - to delete invisible white-spaces before afterRightBlockChild.GetChild()
+  // - to delete invisible `<br>` element at end of aLeftBlockElement
+
+  {
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
+            aHTMLEditor, EditorDOMPoint::AtEndOf(aLeftBlockElement));
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces() "
+          "failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+  }
+
+  // Check whether aLeftBlockElement is a descendant of aRightBlockElement.
+  if (aHTMLEditor.MayHaveMutationEventListeners()) {
+    EditorDOMPoint leftBlockContainingPointInRightBlockElement;
+    if (aHTMLEditor.MayHaveMutationEventListeners() &&
+        MOZ_UNLIKELY(!EditorUtils::IsDescendantOf(
+            aLeftBlockElement, aRightBlockElement,
+            &leftBlockContainingPointInRightBlockElement))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at end of left block element caused "
+          "moving the left block element outside the right block element");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(leftBlockContainingPointInRightBlockElement !=
+                     aAtRightBlockChild)) {
+      NS_WARNING(
+          "Deleting invisible whitespace at end of left block element caused "
+          "changing the left block element in the right block element");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(!EditorUtils::IsEditableContent(aRightBlockElement,
+                                                     EditorType::HTML))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at end of left block element caused "
+          "making the right block element non-editable");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(!EditorUtils::IsEditableContent(aLeftBlockElement,
+                                                     EditorType::HTML))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at end of left block element caused "
+          "making the left block element non-editable");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+  }
+
+  OwningNonNull<Element> rightBlockElement = aRightBlockElement;
+  EditorDOMPoint afterRightBlockChild = aAtRightBlockChild.NextPoint();
+  {
+    // We can't just track rightBlockElement because it's an Element.
+    AutoTrackDOMPoint tracker(aHTMLEditor.RangeUpdaterRef(),
+                              &afterRightBlockChild);
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
+            aHTMLEditor, afterRightBlockChild);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces() "
+          "failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+
+    // XXX AutoTrackDOMPoint instance, tracker, hasn't been destroyed here.
+    //     Do we really need to do update rightBlockElement here??
+    // XXX And afterRightBlockChild.GetContainerAs<Element>() always returns
+    //     an element pointer so that probably here should not use
+    //     accessors of EditorDOMPoint, should use DOM API directly instead.
+    if (afterRightBlockChild.GetContainerAs<Element>()) {
+      rightBlockElement = *afterRightBlockChild.ContainerAs<Element>();
+    } else if (NS_WARN_IF(
+                   !afterRightBlockChild.GetContainerParentAs<Element>())) {
+      return Err(NS_ERROR_UNEXPECTED);
+    } else {
+      rightBlockElement = *afterRightBlockChild.GetContainerParentAs<Element>();
+    }
+  }
+
+  // Do br adjustment.
+  RefPtr<HTMLBRElement> invisibleBRElementAtEndOfLeftBlockElement =
+      WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
+          aHTMLEditor.ComputeEditingHost(),
+          EditorDOMPoint::AtEndOf(aLeftBlockElement),
+          BlockInlineCheck::UseComputedDisplayStyle);
+  NS_ASSERTION(
+      aPrecedingInvisibleBRElement == invisibleBRElementAtEndOfLeftBlockElement,
+      "The preceding invisible BR element computation was different");
+  auto ret = EditActionResult::IgnoredResult();
+  AutoTransactionsConserveSelection dontChangeMySelection(aHTMLEditor);
+  // NOTE: Keep syncing with CanMergeLeftAndRightBlockElements() of
+  //       AutoInclusiveAncestorBlockElementsJoiner.
+  if (NS_WARN_IF(aListElementTagName.isSome())) {
+    // Since 2002, here was the following comment:
+    // > The idea here is to take all children in rightListElement that are
+    // > past offset, and pull them into leftlistElement.
+    // However, this has never been performed because we are here only when
+    // neither left list nor right list is a descendant of the other but
+    // in such case, getting a list item in the right list node almost
+    // always failed since a variable for offset of
+    // rightListElement->GetChildAt() was not initialized.  So, it might be
+    // a bug, but we should keep this traditional behavior for now.  If you
+    // find when we get here, please remove this comment if we don't need to
+    // do it.  Otherwise, please move children of the right list node to the
+    // end of the left list node.
+
+    // XXX Although, we do nothing here, but for keeping traditional
+    //     behavior, we should mark as handled.
+    ret.MarkAsHandled();
+  } else {
+    // XXX Why do we ignore the result of AutoMoveOneLineHandler::Run()?
+    NS_ASSERTION(rightBlockElement == afterRightBlockChild.GetContainer(),
+                 "The relation is not guaranteed but assumed");
+#ifdef DEBUG
+    Result<bool, nsresult> firstLineHasContent =
+        HTMLEditor::AutoMoveOneLineHandler::CanMoveOrDeleteSomethingInLine(
+            EditorDOMPoint(rightBlockElement, afterRightBlockChild.Offset()),
+            aEditingHost);
+#endif  // #ifdef DEBUG
+    HTMLEditor::AutoMoveOneLineHandler lineMoverToEndOfLeftBlock(
+        aLeftBlockElement);
+    nsresult rv = lineMoverToEndOfLeftBlock.Prepare(
+        aHTMLEditor,
+        EditorDOMPoint(rightBlockElement, afterRightBlockChild.Offset()),
+        aEditingHost);
+    if (NS_FAILED(rv)) {
+      NS_WARNING("AutoMoveOneLineHandler::Prepare() failed");
+      return Err(rv);
+    }
+    Result<MoveNodeResult, nsresult> moveNodeResult =
+        lineMoverToEndOfLeftBlock.Run(aHTMLEditor, aEditingHost);
+    if (MOZ_UNLIKELY(moveNodeResult.isErr())) {
+      NS_WARNING("AutoMoveOneLineHandler::Run() failed");
+      return moveNodeResult.propagateErr();
+    }
+
+#ifdef DEBUG
+    MOZ_ASSERT(!firstLineHasContent.isErr());
+    if (firstLineHasContent.inspect()) {
+      NS_ASSERTION(moveNodeResult.inspect().Handled(),
+                   "Failed to consider whether moving or not something");
+    } else {
+      NS_ASSERTION(moveNodeResult.inspect().Ignored(),
+                   "Failed to consider whether moving or not something");
+    }
+#endif  // #ifdef DEBUG
+
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.inspect().IgnoreCaretPointSuggestion();
+    ret |= moveNodeResult.unwrap();
+    // Now, all children of rightBlockElement were moved to leftBlockElement.
+    // So, afterRightBlockChild is now invalid.
+    afterRightBlockChild.Clear();
+  }
+
+  if (!invisibleBRElementAtEndOfLeftBlockElement ||
+      !invisibleBRElementAtEndOfLeftBlockElement->IsInComposedDoc()) {
+    return ret;
+  }
+
+  nsresult rv = aHTMLEditor.DeleteNodeWithTransaction(
+      *invisibleBRElementAtEndOfLeftBlockElement);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed, but ignored");
+    return Err(rv);
+  }
+  return EditActionResult::HandledResult();
 }
-
-WSRunScanner::~WSRunScanner() { ClearRuns(); }
-
-template <typename PT, typename CT>
-WSRunObject::WSRunObject(HTMLEditor& aHTMLEditor,
-                         const EditorDOMPointBase<PT, CT>& aScanStartPoint,
-                         const EditorDOMPointBase<PT, CT>& aScanEndPoint)
-    : WSRunScanner(&aHTMLEditor, aScanStartPoint, aScanEndPoint),
-      mHTMLEditor(aHTMLEditor) {}
 
 // static
-nsresult WSRunObject::Scrub(HTMLEditor& aHTMLEditor,
-                            const EditorDOMPoint& aPoint) {
-  MOZ_ASSERT(aPoint.IsSet());
+Result<EditActionResult, nsresult> WhiteSpaceVisibilityKeeper::
+    MergeFirstLineOfRightBlockElementIntoAncestorLeftBlockElement(
+        HTMLEditor& aHTMLEditor, Element& aLeftBlockElement,
+        Element& aRightBlockElement, const EditorDOMPoint& aAtLeftBlockChild,
+        nsIContent& aLeftContentInBlock,
+        const Maybe<nsAtom*>& aListElementTagName,
+        const HTMLBRElement* aPrecedingInvisibleBRElement,
+        const Element& aEditingHost) {
+  MOZ_ASSERT(
+      EditorUtils::IsDescendantOf(aRightBlockElement, aLeftBlockElement));
+  MOZ_ASSERT(
+      &aLeftBlockElement == &aLeftContentInBlock ||
+      EditorUtils::IsDescendantOf(aLeftContentInBlock, aLeftBlockElement));
+  MOZ_ASSERT(&aLeftBlockElement == aAtLeftBlockChild.GetContainer());
 
-  WSRunObject wsRunObject(aHTMLEditor, aPoint);
-  nsresult rv = wsRunObject.Scrub();
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
+  // NOTE: This method may extend deletion range:
+  // - to delete invisible white-spaces at start of aRightBlockElement
+  // - to delete invisible white-spaces before aRightBlockElement
+  // - to delete invisible white-spaces at start of aAtLeftBlockChild.GetChild()
+  // - to delete invisible white-spaces before aAtLeftBlockChild.GetChild()
+  // - to delete invisible `<br>` element before aAtLeftBlockChild.GetChild()
+
+  {
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
+            aHTMLEditor, EditorDOMPoint(&aRightBlockElement, 0));
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces() "
+          "failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
   }
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "WSRunObject::Scrub() failed");
-  return rv;
+
+  // Check whether aRightBlockElement is a descendant of aLeftBlockElement.
+  if (aHTMLEditor.MayHaveMutationEventListeners()) {
+    EditorDOMPoint rightBlockContainingPointInLeftBlockElement;
+    if (aHTMLEditor.MayHaveMutationEventListeners() &&
+        MOZ_UNLIKELY(!EditorUtils::IsDescendantOf(
+            aRightBlockElement, aLeftBlockElement,
+            &rightBlockContainingPointInLeftBlockElement))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at start of right block element "
+          "caused moving the right block element outside the left block "
+          "element");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(rightBlockContainingPointInLeftBlockElement !=
+                     aAtLeftBlockChild)) {
+      NS_WARNING(
+          "Deleting invisible whitespace at start of right block element "
+          "caused changing the right block element position in the left block "
+          "element");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(!EditorUtils::IsEditableContent(aLeftBlockElement,
+                                                     EditorType::HTML))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at start of right block element "
+          "caused making the left block element non-editable");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+
+    if (MOZ_UNLIKELY(!EditorUtils::IsEditableContent(aRightBlockElement,
+                                                     EditorType::HTML))) {
+      NS_WARNING(
+          "Deleting invisible whitespace at start of right block element "
+          "caused making the right block element non-editable");
+      return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+    }
+  }
+
+  OwningNonNull<Element> originalLeftBlockElement = aLeftBlockElement;
+  OwningNonNull<Element> leftBlockElement = aLeftBlockElement;
+  EditorDOMPoint atLeftBlockChild(aAtLeftBlockChild);
+  {
+    // We can't just track leftBlockElement because it's an Element, so track
+    // something else.
+    AutoTrackDOMPoint tracker(aHTMLEditor.RangeUpdaterRef(), &atLeftBlockChild);
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
+            aHTMLEditor, EditorDOMPoint(atLeftBlockChild.GetContainer(),
+                                        atLeftBlockChild.Offset()));
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces() "
+          "failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+  }
+  if (MOZ_UNLIKELY(!atLeftBlockChild.IsSetAndValid())) {
+    NS_WARNING(
+        "WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces() caused "
+        "unexpected DOM tree");
+    return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+  }
+  // XXX atLeftBlockChild.GetContainerAs<Element>() should always return
+  //     an element pointer so that probably here should not use
+  //     accessors of EditorDOMPoint, should use DOM API directly instead.
+  if (Element* nearestAncestor =
+          atLeftBlockChild.GetContainerOrContainerParentElement()) {
+    leftBlockElement = *nearestAncestor;
+  } else {
+    return Err(NS_ERROR_UNEXPECTED);
+  }
+
+  // Do br adjustment.
+  RefPtr<HTMLBRElement> invisibleBRElementBeforeLeftBlockElement =
+      WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
+          aHTMLEditor.ComputeEditingHost(), atLeftBlockChild,
+          BlockInlineCheck::UseComputedDisplayStyle);
+  NS_ASSERTION(
+      aPrecedingInvisibleBRElement == invisibleBRElementBeforeLeftBlockElement,
+      "The preceding invisible BR element computation was different");
+  auto ret = EditActionResult::IgnoredResult();
+  AutoTransactionsConserveSelection dontChangeMySelection(aHTMLEditor);
+  // NOTE: Keep syncing with CanMergeLeftAndRightBlockElements() of
+  //       AutoInclusiveAncestorBlockElementsJoiner.
+  if (aListElementTagName.isSome()) {
+    // XXX Why do we ignore the error from MoveChildrenWithTransaction()?
+    MOZ_ASSERT(originalLeftBlockElement == atLeftBlockChild.GetContainer(),
+               "This is not guaranteed, but assumed");
+#ifdef DEBUG
+    Result<bool, nsresult> rightBlockHasContent =
+        aHTMLEditor.CanMoveChildren(aRightBlockElement, aLeftBlockElement);
+#endif  // #ifdef DEBUG
+    // TODO: Stop using HTMLEditor::PreserveWhiteSpaceStyle::No due to no tests.
+    Result<MoveNodeResult, nsresult> moveNodeResult =
+        aHTMLEditor.MoveChildrenWithTransaction(
+            aRightBlockElement,
+            EditorDOMPoint(atLeftBlockChild.GetContainer(),
+                           atLeftBlockChild.Offset()),
+            HTMLEditor::PreserveWhiteSpaceStyle::No,
+            HTMLEditor::RemoveIfCommentNode::Yes);
+    if (MOZ_UNLIKELY(moveNodeResult.isErr())) {
+      if (NS_WARN_IF(moveNodeResult.inspectErr() ==
+                     NS_ERROR_EDITOR_DESTROYED)) {
+        return Err(moveNodeResult.unwrapErr());
+      }
+      NS_WARNING(
+          "HTMLEditor::MoveChildrenWithTransaction() failed, but ignored");
+    } else {
+#ifdef DEBUG
+      MOZ_ASSERT(!rightBlockHasContent.isErr());
+      if (rightBlockHasContent.inspect()) {
+        NS_ASSERTION(moveNodeResult.inspect().Handled(),
+                     "Failed to consider whether moving or not children");
+      } else {
+        NS_ASSERTION(moveNodeResult.inspect().Ignored(),
+                     "Failed to consider whether moving or not children");
+      }
+#endif  // #ifdef DEBUG
+      // We don't need to update selection here because of dontChangeMySelection
+      // above.
+      moveNodeResult.inspect().IgnoreCaretPointSuggestion();
+      ret |= moveNodeResult.unwrap();
+    }
+    // atLeftBlockChild was moved to rightListElement.  So, it's invalid now.
+    atLeftBlockChild.Clear();
+  } else {
+    // Left block is a parent of right block, and the parent of the previous
+    // visible content.  Right block is a child and contains the contents we
+    // want to move.
+
+    EditorDOMPoint pointToMoveFirstLineContent;
+    if (&aLeftContentInBlock == leftBlockElement) {
+      // We are working with valid HTML, aLeftContentInBlock is a block element,
+      // and is therefore allowed to contain aRightBlockElement.  This is the
+      // simple case, we will simply move the content in aRightBlockElement
+      // out of its block.
+      pointToMoveFirstLineContent = atLeftBlockChild;
+      MOZ_ASSERT(pointToMoveFirstLineContent.GetContainer() ==
+                 &aLeftBlockElement);
+    } else {
+      if (NS_WARN_IF(!aLeftContentInBlock.IsInComposedDoc())) {
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+      // We try to work as well as possible with HTML that's already invalid.
+      // Although "right block" is a block, and a block must not be contained
+      // in inline elements, reality is that broken documents do exist.  The
+      // DIRECT parent of "left NODE" might be an inline element.  Previous
+      // versions of this code skipped inline parents until the first block
+      // parent was found (and used "left block" as the destination).
+      // However, in some situations this strategy moves the content to an
+      // unexpected position.  (see bug 200416) The new idea is to make the
+      // moving content a sibling, next to the previous visible content.
+      pointToMoveFirstLineContent.SetAfter(&aLeftContentInBlock);
+      if (NS_WARN_IF(!pointToMoveFirstLineContent.IsInContentNode())) {
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+    }
+
+    MOZ_ASSERT(pointToMoveFirstLineContent.IsSetAndValid());
+
+    // Because we don't want the moving content to receive the style of the
+    // previous content, we split the previous content's style.
+
+#ifdef DEBUG
+    Result<bool, nsresult> firstLineHasContent =
+        HTMLEditor::AutoMoveOneLineHandler::CanMoveOrDeleteSomethingInLine(
+            EditorDOMPoint(&aRightBlockElement, 0u), aEditingHost);
+#endif  // #ifdef DEBUG
+
+    if (&aLeftContentInBlock != &aEditingHost) {
+      Result<SplitNodeResult, nsresult> splitNodeResult =
+          aHTMLEditor.SplitAncestorStyledInlineElementsAt(
+              pointToMoveFirstLineContent, EditorInlineStyle::RemoveAllStyles(),
+              HTMLEditor::SplitAtEdges::eDoNotCreateEmptyContainer);
+      if (MOZ_UNLIKELY(splitNodeResult.isErr())) {
+        NS_WARNING("HTMLEditor::SplitAncestorStyledInlineElementsAt() failed");
+        return splitNodeResult.propagateErr();
+      }
+      SplitNodeResult unwrappedSplitNodeResult = splitNodeResult.unwrap();
+      nsresult rv = unwrappedSplitNodeResult.SuggestCaretPointTo(
+          aHTMLEditor, {SuggestCaret::OnlyIfHasSuggestion,
+                        SuggestCaret::OnlyIfTransactionsAllowedToDoIt});
+      if (NS_FAILED(rv)) {
+        NS_WARNING("SplitNodeResult::SuggestCaretPointTo() failed");
+        return Err(rv);
+      }
+      if (!unwrappedSplitNodeResult.DidSplit()) {
+        // If nothing was split, we should move the first line content to after
+        // the parent inline elements.
+        for (EditorDOMPoint parentPoint = pointToMoveFirstLineContent;
+             pointToMoveFirstLineContent.IsEndOfContainer() &&
+             pointToMoveFirstLineContent.IsInContentNode();
+             pointToMoveFirstLineContent = EditorDOMPoint::After(
+                 *pointToMoveFirstLineContent.ContainerAs<nsIContent>())) {
+          if (pointToMoveFirstLineContent.GetContainer() ==
+                  &aLeftBlockElement ||
+              NS_WARN_IF(pointToMoveFirstLineContent.GetContainer() ==
+                         &aEditingHost)) {
+            break;
+          }
+        }
+        if (NS_WARN_IF(!pointToMoveFirstLineContent.IsInContentNode())) {
+          return Err(NS_ERROR_FAILURE);
+        }
+      } else if (unwrappedSplitNodeResult.Handled()) {
+        // If se split something, we should move the first line contents before
+        // the right elements.
+        if (nsIContent* nextContentAtSplitPoint =
+                unwrappedSplitNodeResult.GetNextContent()) {
+          pointToMoveFirstLineContent.Set(nextContentAtSplitPoint);
+          if (NS_WARN_IF(!pointToMoveFirstLineContent.IsInContentNode())) {
+            return Err(NS_ERROR_FAILURE);
+          }
+        } else {
+          pointToMoveFirstLineContent =
+              unwrappedSplitNodeResult.AtSplitPoint<EditorDOMPoint>();
+          if (NS_WARN_IF(!pointToMoveFirstLineContent.IsInContentNode())) {
+            return Err(NS_ERROR_FAILURE);
+          }
+        }
+      }
+      MOZ_DIAGNOSTIC_ASSERT(pointToMoveFirstLineContent.IsSetAndValid());
+    }
+
+    HTMLEditor::AutoMoveOneLineHandler lineMoverToPoint(
+        pointToMoveFirstLineContent);
+    nsresult rv = lineMoverToPoint.Prepare(
+        aHTMLEditor, EditorDOMPoint(&aRightBlockElement, 0u), aEditingHost);
+    if (NS_FAILED(rv)) {
+      NS_WARNING("AutoMoveOneLineHandler::Prepare() failed");
+      return Err(rv);
+    }
+    Result<MoveNodeResult, nsresult> moveNodeResult =
+        lineMoverToPoint.Run(aHTMLEditor, aEditingHost);
+    if (moveNodeResult.isErr()) {
+      NS_WARNING("AutoMoveOneLineHandler::Run() failed");
+      return moveNodeResult.propagateErr();
+    }
+
+#ifdef DEBUG
+    MOZ_ASSERT(!firstLineHasContent.isErr());
+    if (firstLineHasContent.inspect()) {
+      NS_ASSERTION(moveNodeResult.inspect().Handled(),
+                   "Failed to consider whether moving or not something");
+    } else {
+      NS_ASSERTION(moveNodeResult.inspect().Ignored(),
+                   "Failed to consider whether moving or not something");
+    }
+#endif  // #ifdef DEBUG
+
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.inspect().IgnoreCaretPointSuggestion();
+    ret |= moveNodeResult.unwrap();
+  }
+
+  if (!invisibleBRElementBeforeLeftBlockElement ||
+      !invisibleBRElementBeforeLeftBlockElement->IsInComposedDoc()) {
+    return ret;
+  }
+
+  nsresult rv = aHTMLEditor.DeleteNodeWithTransaction(
+      *invisibleBRElementBeforeLeftBlockElement);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed, but ignored");
+    return Err(rv);
+  }
+  return EditActionResult::HandledResult();
 }
 
 // static
-nsresult WSRunObject::PrepareToJoinBlocks(HTMLEditor& aHTMLEditor,
-                                          Element& aLeftBlockElement,
-                                          Element& aRightBlockElement) {
-  WSRunObject leftWSObj(aHTMLEditor,
-                        EditorRawDOMPoint::AtEndOf(aLeftBlockElement));
-  WSRunObject rightWSObj(aHTMLEditor,
-                         EditorRawDOMPoint(&aRightBlockElement, 0));
+Result<EditActionResult, nsresult> WhiteSpaceVisibilityKeeper::
+    MergeFirstLineOfRightBlockElementIntoLeftBlockElement(
+        HTMLEditor& aHTMLEditor, Element& aLeftBlockElement,
+        Element& aRightBlockElement, const Maybe<nsAtom*>& aListElementTagName,
+        const HTMLBRElement* aPrecedingInvisibleBRElement,
+        const Element& aEditingHost) {
+  MOZ_ASSERT(
+      !EditorUtils::IsDescendantOf(aLeftBlockElement, aRightBlockElement));
+  MOZ_ASSERT(
+      !EditorUtils::IsDescendantOf(aRightBlockElement, aLeftBlockElement));
 
-  nsresult rv = leftWSObj.PrepareToDeleteRangePriv(&rightWSObj);
-  if (NS_WARN_IF(aHTMLEditor.Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
+  // NOTE: This method may extend deletion range:
+  // - to delete invisible white-spaces at end of aLeftBlockElement
+  // - to delete invisible white-spaces at start of aRightBlockElement
+  // - to delete invisible `<br>` element at end of aLeftBlockElement
+
+  // Adjust white-space at block boundaries
+  {
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::
+            MakeSureToKeepVisibleStateOfWhiteSpacesAroundDeletingRange(
+                aHTMLEditor,
+                EditorDOMRange(EditorDOMPoint::AtEndOf(aLeftBlockElement),
+                               EditorDOMPoint(&aRightBlockElement, 0)),
+                aEditingHost);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::"
+          "MakeSureToKeepVisibleStateOfWhiteSpacesAroundDeletingRange() "
+          "failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret point suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
   }
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "WSRunObject::PrepareToDeleteRangePriv() failed");
-  return rv;
+  // Do br adjustment.
+  RefPtr<HTMLBRElement> invisibleBRElementAtEndOfLeftBlockElement =
+      WSRunScanner::GetPrecedingBRElementUnlessVisibleContentFound(
+          aHTMLEditor.ComputeEditingHost(),
+          EditorDOMPoint::AtEndOf(aLeftBlockElement),
+          BlockInlineCheck::UseComputedDisplayStyle);
+  NS_ASSERTION(
+      aPrecedingInvisibleBRElement == invisibleBRElementAtEndOfLeftBlockElement,
+      "The preceding invisible BR element computation was different");
+  auto ret = EditActionResult::IgnoredResult();
+  AutoTransactionsConserveSelection dontChangeMySelection(aHTMLEditor);
+  if (aListElementTagName.isSome() ||
+      // TODO: We should stop merging entire blocks even if they have same
+      // white-space style because Chrome behave so.  However, it's risky to
+      // change our behavior in the major cases so that we should do it in
+      // a bug to manage only the change.
+      (aLeftBlockElement.NodeInfo()->NameAtom() ==
+           aRightBlockElement.NodeInfo()->NameAtom() &&
+       EditorUtils::GetComputedWhiteSpaceStyles(aLeftBlockElement) ==
+           EditorUtils::GetComputedWhiteSpaceStyles(aRightBlockElement))) {
+    // Nodes are same type.  merge them.
+    EditorDOMPoint atFirstChildOfRightNode;
+    nsresult rv = aHTMLEditor.JoinNearestEditableNodesWithTransaction(
+        aLeftBlockElement, aRightBlockElement, &atFirstChildOfRightNode);
+    if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
+      return Err(NS_ERROR_EDITOR_DESTROYED);
+    }
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "HTMLEditor::JoinNearestEditableNodesWithTransaction()"
+                         " failed, but ignored");
+    if (aListElementTagName.isSome() && atFirstChildOfRightNode.IsSet()) {
+      Result<CreateElementResult, nsresult> convertListTypeResult =
+          aHTMLEditor.ChangeListElementType(
+              aRightBlockElement, MOZ_KnownLive(*aListElementTagName.ref()),
+              *nsGkAtoms::li);
+      if (MOZ_UNLIKELY(convertListTypeResult.isErr())) {
+        if (NS_WARN_IF(convertListTypeResult.inspectErr() ==
+                       NS_ERROR_EDITOR_DESTROYED)) {
+          return Err(NS_ERROR_EDITOR_DESTROYED);
+        }
+        NS_WARNING("HTMLEditor::ChangeListElementType() failed, but ignored");
+      } else {
+        // There is AutoTransactionConserveSelection above, therefore, we don't
+        // need to update selection here.
+        convertListTypeResult.inspect().IgnoreCaretPointSuggestion();
+      }
+    }
+    ret.MarkAsHandled();
+  } else {
+#ifdef DEBUG
+    Result<bool, nsresult> firstLineHasContent =
+        HTMLEditor::AutoMoveOneLineHandler::CanMoveOrDeleteSomethingInLine(
+            EditorDOMPoint(&aRightBlockElement, 0u), aEditingHost);
+#endif  // #ifdef DEBUG
+
+    // Nodes are dissimilar types.
+    HTMLEditor::AutoMoveOneLineHandler lineMoverToEndOfLeftBlock(
+        aLeftBlockElement);
+    nsresult rv = lineMoverToEndOfLeftBlock.Prepare(
+        aHTMLEditor, EditorDOMPoint(&aRightBlockElement, 0u), aEditingHost);
+    if (NS_FAILED(rv)) {
+      NS_WARNING("AutoMoveOneLineHandler::Prepare() failed");
+      return Err(rv);
+    }
+    Result<MoveNodeResult, nsresult> moveNodeResult =
+        lineMoverToEndOfLeftBlock.Run(aHTMLEditor, aEditingHost);
+    if (MOZ_UNLIKELY(moveNodeResult.isErr())) {
+      NS_WARNING("AutoMoveOneLineHandler::Run() failed");
+      return moveNodeResult.propagateErr();
+    }
+
+#ifdef DEBUG
+    MOZ_ASSERT(!firstLineHasContent.isErr());
+    if (firstLineHasContent.inspect()) {
+      NS_ASSERTION(moveNodeResult.inspect().Handled(),
+                   "Failed to consider whether moving or not something");
+    } else {
+      NS_ASSERTION(moveNodeResult.inspect().Ignored(),
+                   "Failed to consider whether moving or not something");
+    }
+#endif  // #ifdef DEBUG
+
+    // We don't need to update selection here because of dontChangeMySelection
+    // above.
+    moveNodeResult.inspect().IgnoreCaretPointSuggestion();
+    ret |= moveNodeResult.unwrap();
+  }
+
+  if (!invisibleBRElementAtEndOfLeftBlockElement ||
+      !invisibleBRElementAtEndOfLeftBlockElement->IsInComposedDoc()) {
+    ret.MarkAsHandled();
+    return ret;
+  }
+
+  nsresult rv = aHTMLEditor.DeleteNodeWithTransaction(
+      *invisibleBRElementAtEndOfLeftBlockElement);
+  // XXX In other top level if blocks, the result of
+  //     DeleteNodeWithTransaction() is ignored.  Why does only this result
+  //     is respected?
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed");
+    return Err(rv);
+  }
+  return EditActionResult::HandledResult();
 }
 
-nsresult WSRunObject::PrepareToDeleteRange(HTMLEditor& aHTMLEditor,
-                                           EditorDOMPoint* aStartPoint,
-                                           EditorDOMPoint* aEndPoint) {
-  MOZ_ASSERT(aStartPoint);
-  MOZ_ASSERT(aEndPoint);
-
-  if (NS_WARN_IF(!aStartPoint->IsSet()) || NS_WARN_IF(!aEndPoint->IsSet())) {
-    return NS_ERROR_INVALID_ARG;
-  }
-
-  AutoTrackDOMPoint trackerStart(aHTMLEditor.RangeUpdaterRef(), aStartPoint);
-  AutoTrackDOMPoint trackerEnd(aHTMLEditor.RangeUpdaterRef(), aEndPoint);
-
-  WSRunObject leftWSObj(aHTMLEditor, *aStartPoint);
-  WSRunObject rightWSObj(aHTMLEditor, *aEndPoint);
-
-  nsresult rv = leftWSObj.PrepareToDeleteRangePriv(&rightWSObj);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "WSRunObject::PrepareToDeleteRangePriv() failed");
-  return rv;
-}
-
-nsresult WSRunObject::PrepareToDeleteNode(HTMLEditor& aHTMLEditor,
-                                          nsIContent* aContent) {
-  if (NS_WARN_IF(!aContent)) {
-    return NS_ERROR_INVALID_ARG;
-  }
-
-  EditorRawDOMPoint atContent(aContent);
-  if (!atContent.IsSet()) {
-    NS_WARNING("aContent was an orphan node");
-    return NS_ERROR_INVALID_ARG;
-  }
-
-  WSRunObject leftWSObj(aHTMLEditor, atContent);
-  WSRunObject rightWSObj(aHTMLEditor, atContent.NextPoint());
-
-  nsresult rv = leftWSObj.PrepareToDeleteRangePriv(&rightWSObj);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "WSRunObject::PrepareToDeleteRangePriv() failed");
-  return rv;
-}
-
-nsresult WSRunObject::PrepareToSplitAcrossBlocks(HTMLEditor& aHTMLEditor,
-                                                 nsCOMPtr<nsINode>* aSplitNode,
-                                                 int32_t* aSplitOffset) {
-  if (NS_WARN_IF(!aSplitNode) || NS_WARN_IF(!*aSplitNode) ||
-      NS_WARN_IF(!aSplitOffset)) {
-    return NS_ERROR_INVALID_ARG;
-  }
-
-  AutoTrackDOMPoint tracker(aHTMLEditor.RangeUpdaterRef(), aSplitNode,
-                            aSplitOffset);
-
-  WSRunObject wsObj(aHTMLEditor, MOZ_KnownLive(*aSplitNode), *aSplitOffset);
-
-  nsresult rv = wsObj.PrepareToSplitAcrossBlocksPriv();
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "WSRunObject::PrepareToSplitAcrossBlocksPriv() failed");
-  return rv;
-}
-
-already_AddRefed<Element> WSRunObject::InsertBreak(
-    Selection& aSelection, const EditorDOMPoint& aPointToInsert,
-    nsIEditor::EDirection aSelect) {
-  if (NS_WARN_IF(!aPointToInsert.IsSet())) {
-    return nullptr;
+// static
+Result<CreateElementResult, nsresult>
+WhiteSpaceVisibilityKeeper::InsertBRElement(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPointToInsert,
+    const Element& aEditingHost) {
+  if (MOZ_UNLIKELY(NS_WARN_IF(!aPointToInsert.IsSet()))) {
+    return Err(NS_ERROR_INVALID_ARG);
   }
 
   // MOOSE: for now, we always assume non-PRE formatting.  Fix this later.
   // meanwhile, the pre case is handled in HandleInsertText() in
   // HTMLEditSubActionHandler.cpp
 
-  WSFragment* beforeRun = FindNearestRun(aPointToInsert, false);
-  WSFragment* afterRun = FindNearestRun(aPointToInsert, true);
+  TextFragmentData textFragmentDataAtInsertionPoint(
+      aPointToInsert, &aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (MOZ_UNLIKELY(
+          NS_WARN_IF(!textFragmentDataAtInsertionPoint.IsInitialized()))) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  EditorDOMRange invisibleLeadingWhiteSpaceRangeOfNewLine =
+      textFragmentDataAtInsertionPoint
+          .GetNewInvisibleLeadingWhiteSpaceRangeIfSplittingAt(aPointToInsert);
+  EditorDOMRange invisibleTrailingWhiteSpaceRangeOfCurrentLine =
+      textFragmentDataAtInsertionPoint
+          .GetNewInvisibleTrailingWhiteSpaceRangeIfSplittingAt(aPointToInsert);
+  const Maybe<const VisibleWhiteSpacesData> visibleWhiteSpaces =
+      !invisibleLeadingWhiteSpaceRangeOfNewLine.IsPositioned() ||
+              !invisibleTrailingWhiteSpaceRangeOfCurrentLine.IsPositioned()
+          ? Some(textFragmentDataAtInsertionPoint.VisibleWhiteSpacesDataRef())
+          : Nothing();
+  const PointPosition pointPositionWithVisibleWhiteSpaces =
+      visibleWhiteSpaces.isSome() && visibleWhiteSpaces.ref().IsInitialized()
+          ? visibleWhiteSpaces.ref().ComparePoint(aPointToInsert)
+          : PointPosition::NotInSameDOMTree;
 
   EditorDOMPoint pointToInsert(aPointToInsert);
-  {
-    // Some scoping for AutoTrackDOMPoint.  This will track our insertion
-    // point while we tweak any surrounding whitespace
-    AutoTrackDOMPoint tracker(mHTMLEditor.RangeUpdaterRef(), &pointToInsert);
+  EditorDOMPoint atNBSPReplaceableWithSP;
+  if (!invisibleLeadingWhiteSpaceRangeOfNewLine.IsPositioned() &&
+      (pointPositionWithVisibleWhiteSpaces == PointPosition::MiddleOfFragment ||
+       pointPositionWithVisibleWhiteSpaces == PointPosition::EndOfFragment)) {
+    atNBSPReplaceableWithSP =
+        textFragmentDataAtInsertionPoint
+            .GetPreviousNBSPPointIfNeedToReplaceWithASCIIWhiteSpace(
+                pointToInsert)
+            .To<EditorDOMPoint>();
+  }
 
-    // Handle any changes needed to ws run after inserted br
-    if (!afterRun || afterRun->IsEndOfHardLine()) {
-      // Don't need to do anything.  Just insert break.  ws won't change.
-    } else if (afterRun->IsStartOfHardLine()) {
-      // Delete the leading ws that is after insertion point.  We don't
-      // have to (it would still not be significant after br), but it's
-      // just more aesthetically pleasing to.
-      nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                        .DeleteTextAndTextNodesWithTransaction(
-                            pointToInsert, afterRun->EndPoint());
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-        return nullptr;
+  {
+    if (invisibleTrailingWhiteSpaceRangeOfCurrentLine.IsPositioned()) {
+      if (!invisibleTrailingWhiteSpaceRangeOfCurrentLine.Collapsed()) {
+        // XXX Why don't we remove all of the invisible white-spaces?
+        MOZ_ASSERT(invisibleTrailingWhiteSpaceRangeOfCurrentLine.StartRef() ==
+                   pointToInsert);
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        AutoTrackDOMPoint trackEndOfLineNBSP(aHTMLEditor.RangeUpdaterRef(),
+                                             &atNBSPReplaceableWithSP);
+        AutoTrackDOMRange trackLeadingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleLeadingWhiteSpaceRangeOfNewLine);
+        Result<CaretPoint, nsresult> caretPointOrError =
+            aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+                invisibleTrailingWhiteSpaceRangeOfCurrentLine.StartRef(),
+                invisibleTrailingWhiteSpaceRangeOfCurrentLine.EndRef(),
+                HTMLEditor::TreatEmptyTextNodes::
+                    KeepIfContainerOfRangeBoundaries);
+        if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+          NS_WARNING(
+              "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+          return caretPointOrError.propagateErr();
+        }
+        nsresult rv = caretPointOrError.unwrap().SuggestCaretPointTo(
+            aHTMLEditor, {SuggestCaret::OnlyIfHasSuggestion,
+                          SuggestCaret::OnlyIfTransactionsAllowedToDoIt,
+                          SuggestCaret::AndIgnoreTrivialError});
+        if (NS_FAILED(rv)) {
+          NS_WARNING("CaretPoint::SuggestCaretPointTo() failed");
+          return Err(rv);
+        }
+        NS_WARNING_ASSERTION(
+            rv != NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR,
+            "CaretPoint::SuggestCaretPointTo() failed, but ignored");
+        // Don't refer the following variables anymore unless tracking the
+        // change.
+        invisibleTrailingWhiteSpaceRangeOfCurrentLine.Clear();
       }
-    } else if (afterRun->IsVisibleAndMiddleOfHardLine()) {
-      // Need to determine if break at front of non-nbsp run.  If so, convert
-      // run to nbsp.
-      EditorDOMPointInText atNextCharOfInsertionPoint =
-          GetInclusiveNextEditableCharPoint(pointToInsert);
+    }
+    // If new line will start with visible white-spaces, it needs to be start
+    // with an NBSP.
+    else if (pointPositionWithVisibleWhiteSpaces ==
+                 PointPosition::StartOfFragment ||
+             pointPositionWithVisibleWhiteSpaces ==
+                 PointPosition::MiddleOfFragment) {
+      auto atNextCharOfInsertionPoint =
+          textFragmentDataAtInsertionPoint
+              .GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+                  pointToInsert);
       if (atNextCharOfInsertionPoint.IsSet() &&
           !atNextCharOfInsertionPoint.IsEndOfContainer() &&
-          atNextCharOfInsertionPoint.IsCharASCIISpace()) {
-        EditorDOMPointInText atPreviousCharOfNextCharOfInsertionPoint =
-            GetPreviousEditableCharPoint(atNextCharOfInsertionPoint);
+          atNextCharOfInsertionPoint.IsCharCollapsibleASCIISpace()) {
+        const EditorDOMPointInText atPreviousCharOfNextCharOfInsertionPoint =
+            textFragmentDataAtInsertionPoint.GetPreviousEditableCharPoint(
+                atNextCharOfInsertionPoint);
         if (!atPreviousCharOfNextCharOfInsertionPoint.IsSet() ||
             atPreviousCharOfNextCharOfInsertionPoint.IsEndOfContainer() ||
             !atPreviousCharOfNextCharOfInsertionPoint.IsCharASCIISpace()) {
+          AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                               &pointToInsert);
+          AutoTrackDOMPoint trackEndOfLineNBSP(aHTMLEditor.RangeUpdaterRef(),
+                                               &atNBSPReplaceableWithSP);
+          AutoTrackDOMRange trackLeadingWhiteSpaceRange(
+              aHTMLEditor.RangeUpdaterRef(),
+              &invisibleLeadingWhiteSpaceRangeOfNewLine);
           // We are at start of non-nbsps.  Convert to a single nbsp.
+          const EditorDOMPointInText endOfCollapsibleASCIIWhiteSpaces =
+              textFragmentDataAtInsertionPoint
+                  .GetEndOfCollapsibleASCIIWhiteSpaces(
+                      atNextCharOfInsertionPoint, nsIEditor::eNone);
           nsresult rv =
-              ReplaceASCIIWhitespacesWithOneNBSP(atNextCharOfInsertionPoint);
-          if (NS_FAILED(rv)) {
+              WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+                  aHTMLEditor,
+                  EditorDOMRangeInTexts(atNextCharOfInsertionPoint,
+                                        endOfCollapsibleASCIIWhiteSpaces),
+                  nsDependentSubstring(&HTMLEditUtils::kNBSP, 1));
+          if (MOZ_UNLIKELY(NS_FAILED(rv))) {
             NS_WARNING(
-                "WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP() failed");
-            return nullptr;
+                "WhiteSpaceVisibilityKeeper::"
+                "ReplaceTextAndRemoveEmptyTextNodes() failed");
+            return Err(rv);
           }
+          // Don't refer the following variables anymore unless tracking the
+          // change.
+          invisibleTrailingWhiteSpaceRangeOfCurrentLine.Clear();
         }
       }
     }
 
-    // Handle any changes needed to ws run before inserted br
-    if (!beforeRun || beforeRun->IsStartOfHardLine()) {
-      // Don't need to do anything.  Just insert break.  ws won't change.
-    } else if (beforeRun->IsEndOfHardLine()) {
-      // Need to delete the trailing ws that is before insertion point, because
-      // it would become significant after break inserted.
-      nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                        .DeleteTextAndTextNodesWithTransaction(
-                            beforeRun->StartPoint(), pointToInsert);
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "WSRunObject::DeleteTextAndTextNodesWithTransaction() failed");
-        return nullptr;
+    if (invisibleLeadingWhiteSpaceRangeOfNewLine.IsPositioned()) {
+      if (!invisibleLeadingWhiteSpaceRangeOfNewLine.Collapsed()) {
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        // XXX Why don't we remove all of the invisible white-spaces?
+        MOZ_ASSERT(invisibleLeadingWhiteSpaceRangeOfNewLine.EndRef() ==
+                   pointToInsert);
+        Result<CaretPoint, nsresult> caretPointOrError =
+            aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+                invisibleLeadingWhiteSpaceRangeOfNewLine.StartRef(),
+                invisibleLeadingWhiteSpaceRangeOfNewLine.EndRef(),
+                HTMLEditor::TreatEmptyTextNodes::
+                    KeepIfContainerOfRangeBoundaries);
+        if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+          NS_WARNING(
+              "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+          return caretPointOrError.propagateErr();
+        }
+        nsresult rv = caretPointOrError.unwrap().SuggestCaretPointTo(
+            aHTMLEditor, {SuggestCaret::OnlyIfHasSuggestion,
+                          SuggestCaret::OnlyIfTransactionsAllowedToDoIt,
+                          SuggestCaret::AndIgnoreTrivialError});
+        if (NS_FAILED(rv)) {
+          NS_WARNING("CaretPoint::SuggestCaretPointTo() failed");
+          return Err(rv);
+        }
+        NS_WARNING_ASSERTION(
+            rv != NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR,
+            "CaretPoint::SuggestCaretPointTo() failed, but ignored");
+        // Don't refer the following variables anymore unless tracking the
+        // change.
+        atNBSPReplaceableWithSP.Clear();
+        invisibleLeadingWhiteSpaceRangeOfNewLine.Clear();
+        invisibleTrailingWhiteSpaceRangeOfCurrentLine.Clear();
       }
-    } else if (beforeRun->IsVisibleAndMiddleOfHardLine()) {
-      // Try to change an nbsp to a space, just to prevent nbsp proliferation
-      nsresult rv = MaybeReplacePreviousNBSPWithASCIIWhitespace(*beforeRun,
-                                                                pointToInsert);
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "WSRunObject::MaybeReplacePreviousNBSPWithASCIIWhitespace() "
-            "failed");
-        return nullptr;
+    }
+    // If the `<br>` element is put immediately after an NBSP, it should be
+    // replaced with an ASCII white-space.
+    else if (atNBSPReplaceableWithSP.IsInTextNode()) {
+      const EditorDOMPointInText atNBSPReplacedWithASCIIWhiteSpace =
+          atNBSPReplaceableWithSP.AsInText();
+      if (!atNBSPReplacedWithASCIIWhiteSpace.IsEndOfContainer() &&
+          atNBSPReplacedWithASCIIWhiteSpace.IsCharNBSP()) {
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        Result<InsertTextResult, nsresult> replaceTextResult =
+            aHTMLEditor.ReplaceTextWithTransaction(
+                MOZ_KnownLive(
+                    *atNBSPReplacedWithASCIIWhiteSpace.ContainerAs<Text>()),
+                atNBSPReplacedWithASCIIWhiteSpace.Offset(), 1, u" "_ns);
+        if (MOZ_UNLIKELY(replaceTextResult.isErr())) {
+          NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed failed");
+          return replaceTextResult.propagateErr();
+        }
+        // Ignore caret suggestion because there was
+        // AutoTransactionsConserveSelection.
+        replaceTextResult.unwrap().IgnoreCaretPointSuggestion();
+        // Don't refer the following variables anymore unless tracking the
+        // change.
+        atNBSPReplaceableWithSP.Clear();
+        invisibleLeadingWhiteSpaceRangeOfNewLine.Clear();
+        invisibleTrailingWhiteSpaceRangeOfCurrentLine.Clear();
       }
     }
   }
 
-  RefPtr<Element> newBRElement =
-      MOZ_KnownLive(mHTMLEditor)
-          .InsertBRElementWithTransaction(pointToInsert, aSelect);
-  NS_WARNING_ASSERTION(newBRElement,
-                       "HTMLEditor::InsertBRElementWithTransaction() failed");
-  return newBRElement.forget();
+  Result<CreateElementResult, nsresult> insertBRElementResult =
+      aHTMLEditor.InsertBRElement(WithTransaction::Yes, pointToInsert);
+  NS_WARNING_ASSERTION(
+      insertBRElementResult.isOk(),
+      "HTMLEditor::InsertBRElement(WithTransaction::Yes, eNone) failed");
+  return insertBRElementResult;
 }
 
-nsresult WSRunObject::InsertText(Document& aDocument,
-                                 const nsAString& aStringToInsert,
-                                 EditorRawDOMPoint* aPointAfterInsertedString) {
+// static
+Result<InsertTextResult, nsresult> WhiteSpaceVisibilityKeeper::ReplaceText(
+    HTMLEditor& aHTMLEditor, const nsAString& aStringToInsert,
+    const EditorDOMRange& aRangeToBeReplaced, InsertTextTo aInsertTextTo,
+    const Element& aEditingHost) {
   // MOOSE: for now, we always assume non-PRE formatting.  Fix this later.
   // meanwhile, the pre case is handled in HandleInsertText() in
   // HTMLEditSubActionHandler.cpp
@@ -294,147 +1039,356 @@ nsresult WSRunObject::InsertText(Document& aDocument,
   // text sink here that does the minimal amount of searching/replacing/copying
 
   if (aStringToInsert.IsEmpty()) {
-    if (aPointAfterInsertedString) {
-      *aPointAfterInsertedString = mScanStartPoint;
-    }
-    return NS_OK;
+    MOZ_ASSERT(aRangeToBeReplaced.Collapsed());
+    return InsertTextResult();
   }
 
-  WSFragment* beforeRun = FindNearestRun(mScanStartPoint, false);
-  // If mScanStartPoint isn't equal to mScanEndPoint, it will replace text (i.e.
-  // committing composition). And afterRun will be end point of replaced range.
-  // So we want to know this white space type (trailing whitespace etc) of
-  // this end point, not inserted (start) point, so we re-scan white space type.
-  WSRunObject afterRunObject(MOZ_KnownLive(mHTMLEditor), mScanEndPoint);
-  WSFragment* afterRun = afterRunObject.FindNearestRun(mScanEndPoint, true);
+  TextFragmentData textFragmentDataAtStart(
+      aRangeToBeReplaced.StartRef(), &aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (MOZ_UNLIKELY(NS_WARN_IF(!textFragmentDataAtStart.IsInitialized()))) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  const bool isInsertionPointEqualsOrIsBeforeStartOfText =
+      aRangeToBeReplaced.StartRef().EqualsOrIsBefore(
+          textFragmentDataAtStart.StartRef());
+  TextFragmentData textFragmentDataAtEnd =
+      aRangeToBeReplaced.Collapsed()
+          ? textFragmentDataAtStart
+          : TextFragmentData(aRangeToBeReplaced.EndRef(), &aEditingHost,
+                             BlockInlineCheck::UseComputedDisplayStyle);
+  if (MOZ_UNLIKELY(NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized()))) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  const bool isInsertionPointEqualsOrAfterEndOfText =
+      textFragmentDataAtEnd.EndRef().EqualsOrIsBefore(
+          aRangeToBeReplaced.EndRef());
 
-  EditorDOMPoint pointToInsert(mScanStartPoint);
+  EditorDOMRange invisibleLeadingWhiteSpaceRangeAtStart =
+      textFragmentDataAtStart
+          .GetNewInvisibleLeadingWhiteSpaceRangeIfSplittingAt(
+              aRangeToBeReplaced.StartRef());
+  const bool isInvisibleLeadingWhiteSpaceRangeAtStartPositioned =
+      invisibleLeadingWhiteSpaceRangeAtStart.IsPositioned();
+  EditorDOMRange invisibleTrailingWhiteSpaceRangeAtEnd =
+      textFragmentDataAtEnd.GetNewInvisibleTrailingWhiteSpaceRangeIfSplittingAt(
+          aRangeToBeReplaced.EndRef());
+  const bool isInvisibleTrailingWhiteSpaceRangeAtEndPositioned =
+      invisibleTrailingWhiteSpaceRangeAtEnd.IsPositioned();
+  const Maybe<const VisibleWhiteSpacesData> visibleWhiteSpacesAtStart =
+      !isInvisibleLeadingWhiteSpaceRangeAtStartPositioned
+          ? Some(textFragmentDataAtStart.VisibleWhiteSpacesDataRef())
+          : Nothing();
+  const PointPosition pointPositionWithVisibleWhiteSpacesAtStart =
+      visibleWhiteSpacesAtStart.isSome() &&
+              visibleWhiteSpacesAtStart.ref().IsInitialized()
+          ? visibleWhiteSpacesAtStart.ref().ComparePoint(
+                aRangeToBeReplaced.StartRef())
+          : PointPosition::NotInSameDOMTree;
+  const Maybe<const VisibleWhiteSpacesData> visibleWhiteSpacesAtEnd =
+      !isInvisibleTrailingWhiteSpaceRangeAtEndPositioned
+          ? Some(textFragmentDataAtEnd.VisibleWhiteSpacesDataRef())
+          : Nothing();
+  const PointPosition pointPositionWithVisibleWhiteSpacesAtEnd =
+      visibleWhiteSpacesAtEnd.isSome() &&
+              visibleWhiteSpacesAtEnd.ref().IsInitialized()
+          ? visibleWhiteSpacesAtEnd.ref().ComparePoint(
+                aRangeToBeReplaced.EndRef())
+          : PointPosition::NotInSameDOMTree;
+
+  EditorDOMPoint pointToPutCaret;
+  EditorDOMPoint pointToInsert(aRangeToBeReplaced.StartRef());
+  EditorDOMPoint atNBSPReplaceableWithSP;
+  if (!invisibleTrailingWhiteSpaceRangeAtEnd.IsPositioned() &&
+      (pointPositionWithVisibleWhiteSpacesAtStart ==
+           PointPosition::MiddleOfFragment ||
+       pointPositionWithVisibleWhiteSpacesAtStart ==
+           PointPosition::EndOfFragment)) {
+    atNBSPReplaceableWithSP =
+        textFragmentDataAtStart
+            .GetPreviousNBSPPointIfNeedToReplaceWithASCIIWhiteSpace(
+                pointToInsert)
+            .To<EditorDOMPoint>();
+  }
   nsAutoString theString(aStringToInsert);
   {
-    // Some scoping for AutoTrackDOMPoint.  This will track our insertion
-    // point while we tweak any surrounding whitespace
-    AutoTrackDOMPoint tracker(mHTMLEditor.RangeUpdaterRef(), &pointToInsert);
-
-    // Handle any changes needed to ws run after inserted text
-    if (!afterRun || afterRun->IsEndOfHardLine()) {
-      // Don't need to do anything.  Just insert text.  ws won't change.
-    } else if (afterRun->IsStartOfHardLine()) {
-      // Delete the leading ws that is after insertion point, because it
-      // would become significant after text inserted.
-      nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                        .DeleteTextAndTextNodesWithTransaction(
-                            pointToInsert, afterRun->EndPoint());
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-        return rv;
+    if (invisibleTrailingWhiteSpaceRangeAtEnd.IsPositioned()) {
+      if (!invisibleTrailingWhiteSpaceRangeAtEnd.Collapsed()) {
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        AutoTrackDOMPoint trackPrecedingNBSP(aHTMLEditor.RangeUpdaterRef(),
+                                             &atNBSPReplaceableWithSP);
+        AutoTrackDOMRange trackInvisibleLeadingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleLeadingWhiteSpaceRangeAtStart);
+        AutoTrackDOMRange trackInvisibleTrailingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleTrailingWhiteSpaceRangeAtEnd);
+        // XXX Why don't we remove all of the invisible white-spaces?
+        MOZ_ASSERT(invisibleTrailingWhiteSpaceRangeAtEnd.StartRef() ==
+                   pointToInsert);
+        Result<CaretPoint, nsresult> caretPointOrError =
+            aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+                invisibleTrailingWhiteSpaceRangeAtEnd.StartRef(),
+                invisibleTrailingWhiteSpaceRangeAtEnd.EndRef(),
+                HTMLEditor::TreatEmptyTextNodes::
+                    KeepIfContainerOfRangeBoundaries);
+        if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+          NS_WARNING(
+              "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+          return caretPointOrError.propagateErr();
+        }
+        caretPointOrError.unwrap().MoveCaretPointTo(
+            pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
       }
-    } else if (afterRun->IsVisibleAndMiddleOfHardLine()) {
-      // Try to change an nbsp to a space, if possible, just to prevent nbsp
-      // proliferation
-      nsresult rv = MaybeReplaceInclusiveNextNBSPWithASCIIWhitespace(
-          *afterRun, pointToInsert);
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "WSRunObject::MaybeReplaceInclusiveNextNBSPWithASCIIWhitespace() "
-            "failed");
-        return rv;
+    }
+    // Replace an NBSP at inclusive next character of replacing range to an
+    // ASCII white-space if inserting into a visible white-space sequence.
+    // XXX With modifying the inserting string later, this creates a line break
+    //     opportunity after the inserting string, but this causes
+    //     inconsistent result with inserting order.  E.g., type white-space
+    //     n times with various order.
+    else if (pointPositionWithVisibleWhiteSpacesAtEnd ==
+                 PointPosition::StartOfFragment ||
+             pointPositionWithVisibleWhiteSpacesAtEnd ==
+                 PointPosition::MiddleOfFragment) {
+      EditorDOMPointInText atNBSPReplacedWithASCIIWhiteSpace =
+          textFragmentDataAtEnd
+              .GetInclusiveNextNBSPPointIfNeedToReplaceWithASCIIWhiteSpace(
+                  aRangeToBeReplaced.EndRef());
+      if (atNBSPReplacedWithASCIIWhiteSpace.IsSet()) {
+        AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                               &pointToPutCaret);
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        AutoTrackDOMPoint trackPrecedingNBSP(aHTMLEditor.RangeUpdaterRef(),
+                                             &atNBSPReplaceableWithSP);
+        AutoTrackDOMRange trackInvisibleLeadingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleLeadingWhiteSpaceRangeAtStart);
+        AutoTrackDOMRange trackInvisibleTrailingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleTrailingWhiteSpaceRangeAtEnd);
+        Result<InsertTextResult, nsresult> replaceTextResult =
+            aHTMLEditor.ReplaceTextWithTransaction(
+                MOZ_KnownLive(
+                    *atNBSPReplacedWithASCIIWhiteSpace.ContainerAs<Text>()),
+                atNBSPReplacedWithASCIIWhiteSpace.Offset(), 1, u" "_ns);
+        if (MOZ_UNLIKELY(replaceTextResult.isErr())) {
+          NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
+          return replaceTextResult.propagateErr();
+        }
+        // Ignore caret suggestion because there was
+        // AutoTransactionsConserveSelection.
+        replaceTextResult.unwrap().IgnoreCaretPointSuggestion();
       }
     }
 
-    // Handle any changes needed to ws run before inserted text
-    if (!beforeRun || beforeRun->IsStartOfHardLine()) {
-      // Don't need to do anything.  Just insert text.  ws won't change.
-    } else if (beforeRun->IsEndOfHardLine()) {
-      // Need to delete the trailing ws that is before insertion point, because
-      // it would become significant after text inserted.
-      nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                        .DeleteTextAndTextNodesWithTransaction(
-                            beforeRun->StartPoint(), pointToInsert);
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-        return rv;
-      }
-    } else if (beforeRun->IsVisibleAndMiddleOfHardLine()) {
-      // Try to change an nbsp to a space, if possible, just to prevent nbsp
-      // proliferation
-      nsresult rv = MaybeReplacePreviousNBSPWithASCIIWhitespace(*beforeRun,
-                                                                pointToInsert);
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "WSRunObject::MaybeReplacePreviousNBSPWithASCIIWhitespace() "
-            "failed");
-        return rv;
+    if (invisibleLeadingWhiteSpaceRangeAtStart.IsPositioned()) {
+      if (!invisibleLeadingWhiteSpaceRangeAtStart.Collapsed()) {
+        AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                               &pointToPutCaret);
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        AutoTrackDOMRange trackInvisibleTrailingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleTrailingWhiteSpaceRangeAtEnd);
+        // XXX Why don't we remove all of the invisible white-spaces?
+        MOZ_ASSERT(invisibleLeadingWhiteSpaceRangeAtStart.EndRef() ==
+                   pointToInsert);
+        Result<CaretPoint, nsresult> caretPointOrError =
+            aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+                invisibleLeadingWhiteSpaceRangeAtStart.StartRef(),
+                invisibleLeadingWhiteSpaceRangeAtStart.EndRef(),
+                HTMLEditor::TreatEmptyTextNodes::
+                    KeepIfContainerOfRangeBoundaries);
+        if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+          NS_WARNING(
+              "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+          return caretPointOrError.propagateErr();
+        }
+        trackPointToPutCaret.FlushAndStopTracking();
+        caretPointOrError.unwrap().MoveCaretPointTo(
+            pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+        // Don't refer the following variables anymore unless tracking the
+        // change.
+        atNBSPReplaceableWithSP.Clear();
+        invisibleLeadingWhiteSpaceRangeAtStart.Clear();
       }
     }
-
-    // After this block, pointToInsert is modified by AutoTrackDOMPoint.
+    // Replace an NBSP at previous character of insertion point to an ASCII
+    // white-space if inserting into a visible white-space sequence.
+    // XXX With modifying the inserting string later, this creates a line break
+    //     opportunity before the inserting string, but this causes
+    //     inconsistent result with inserting order.  E.g., type white-space
+    //     n times with various order.
+    else if (atNBSPReplaceableWithSP.IsInTextNode()) {
+      EditorDOMPointInText atNBSPReplacedWithASCIIWhiteSpace =
+          atNBSPReplaceableWithSP.AsInText();
+      if (!atNBSPReplacedWithASCIIWhiteSpace.IsEndOfContainer() &&
+          atNBSPReplacedWithASCIIWhiteSpace.IsCharNBSP()) {
+        AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                               &pointToPutCaret);
+        AutoTrackDOMPoint trackPointToInsert(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToInsert);
+        AutoTrackDOMRange trackInvisibleTrailingWhiteSpaceRange(
+            aHTMLEditor.RangeUpdaterRef(),
+            &invisibleTrailingWhiteSpaceRangeAtEnd);
+        Result<InsertTextResult, nsresult> replaceTextResult =
+            aHTMLEditor.ReplaceTextWithTransaction(
+                MOZ_KnownLive(
+                    *atNBSPReplacedWithASCIIWhiteSpace.ContainerAs<Text>()),
+                atNBSPReplacedWithASCIIWhiteSpace.Offset(), 1, u" "_ns);
+        if (MOZ_UNLIKELY(replaceTextResult.isErr())) {
+          NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed failed");
+          return replaceTextResult.propagateErr();
+        }
+        // Ignore caret suggestion because there was
+        // AutoTransactionsConserveSelection.
+        replaceTextResult.unwrap().IgnoreCaretPointSuggestion();
+        // Don't refer the following variables anymore unless tracking the
+        // change.
+        atNBSPReplaceableWithSP.Clear();
+        invisibleLeadingWhiteSpaceRangeAtStart.Clear();
+      }
+    }
   }
 
-  // Next up, tweak head and tail of string as needed.  First the head: there
-  // are a variety of circumstances that would require us to convert a leading
-  // ws char into an nbsp:
-
-  if (nsCRT::IsAsciiSpace(theString[0])) {
-    // We have a leading space
-    if (beforeRun) {
-      if (beforeRun->IsStartOfHardLine()) {
-        theString.SetCharAt(kNBSP, 0);
-      } else if (beforeRun->IsVisible()) {
-        EditorDOMPointInText atPreviousChar =
-            GetPreviousEditableCharPoint(pointToInsert);
+  // If white-space and/or linefeed characters are collapsible, and inserting
+  // string starts and/or ends with a collapsible characters, we need to
+  // replace them with NBSP for making sure the collapsible characters visible.
+  // FYI: There is no case only linefeeds are collapsible.  So, we need to
+  //      do the things only when white-spaces are collapsible.
+  MOZ_DIAGNOSTIC_ASSERT(!theString.IsEmpty());
+  if (NS_WARN_IF(!pointToInsert.IsInContentNode()) ||
+      !EditorUtils::IsWhiteSpacePreformatted(
+          *pointToInsert.ContainerAs<nsIContent>())) {
+    const bool isNewLineCollapsible =
+        !pointToInsert.IsInContentNode() ||
+        !EditorUtils::IsNewLinePreformatted(
+            *pointToInsert.ContainerAs<nsIContent>());
+    auto IsCollapsibleChar = [&isNewLineCollapsible](char16_t aChar) -> bool {
+      return nsCRT::IsAsciiSpace(aChar) &&
+             (isNewLineCollapsible || aChar != HTMLEditUtils::kNewLine);
+    };
+    if (IsCollapsibleChar(theString[0])) {
+      // If inserting string will follow some invisible leading white-spaces,
+      // the string needs to start with an NBSP.
+      if (isInvisibleLeadingWhiteSpaceRangeAtStartPositioned) {
+        theString.SetCharAt(HTMLEditUtils::kNBSP, 0);
+      }
+      // If inserting around visible white-spaces, check whether the previous
+      // character of insertion point is an NBSP or an ASCII white-space.
+      else if (pointPositionWithVisibleWhiteSpacesAtStart ==
+                   PointPosition::MiddleOfFragment ||
+               pointPositionWithVisibleWhiteSpacesAtStart ==
+                   PointPosition::EndOfFragment) {
+        const auto atPreviousChar =
+            textFragmentDataAtStart
+                .GetPreviousEditableCharPoint<EditorRawDOMPointInText>(
+                    pointToInsert);
         if (atPreviousChar.IsSet() && !atPreviousChar.IsEndOfContainer() &&
             atPreviousChar.IsCharASCIISpace()) {
-          theString.SetCharAt(kNBSP, 0);
+          theString.SetCharAt(HTMLEditUtils::kNBSP, 0);
         }
       }
-    } else if (StartsFromHardLineBreak()) {
-      theString.SetCharAt(kNBSP, 0);
+      // If the insertion point is (was) before the start of text and it's
+      // immediately after a hard line break, the first ASCII white-space should
+      // be replaced with an NBSP for making it visible.
+      else if ((textFragmentDataAtStart.StartsFromHardLineBreak() ||
+                textFragmentDataAtStart
+                    .StartsFromInlineEditingHostBoundary()) &&
+               isInsertionPointEqualsOrIsBeforeStartOfText) {
+        theString.SetCharAt(HTMLEditUtils::kNBSP, 0);
+      }
     }
-  }
 
-  // Then the tail
-  uint32_t lastCharIndex = theString.Length() - 1;
-
-  if (nsCRT::IsAsciiSpace(theString[lastCharIndex])) {
-    // We have a leading space
-    if (afterRun) {
-      if (afterRun->IsEndOfHardLine()) {
-        theString.SetCharAt(kNBSP, lastCharIndex);
-      } else if (afterRun->IsVisible()) {
-        EditorDOMPointInText atNextChar =
-            GetInclusiveNextEditableCharPoint(pointToInsert);
+    // Then the tail.  Note that it may be the first character.
+    const uint32_t lastCharIndex = theString.Length() - 1;
+    if (IsCollapsibleChar(theString[lastCharIndex])) {
+      // If inserting string will be followed by some invisible trailing
+      // white-spaces, the string needs to end with an NBSP.
+      if (isInvisibleTrailingWhiteSpaceRangeAtEndPositioned) {
+        theString.SetCharAt(HTMLEditUtils::kNBSP, lastCharIndex);
+      }
+      // If inserting around visible white-spaces, check whether the inclusive
+      // next character of end of replaced range is an NBSP or an ASCII
+      // white-space.
+      if (pointPositionWithVisibleWhiteSpacesAtEnd ==
+              PointPosition::StartOfFragment ||
+          pointPositionWithVisibleWhiteSpacesAtEnd ==
+              PointPosition::MiddleOfFragment) {
+        const auto atNextChar =
+            textFragmentDataAtEnd
+                .GetInclusiveNextEditableCharPoint<EditorRawDOMPointInText>(
+                    pointToInsert);
         if (atNextChar.IsSet() && !atNextChar.IsEndOfContainer() &&
             atNextChar.IsCharASCIISpace()) {
-          theString.SetCharAt(kNBSP, lastCharIndex);
+          theString.SetCharAt(HTMLEditUtils::kNBSP, lastCharIndex);
         }
       }
-    } else if (afterRunObject.EndsByBlockBoundary()) {
-      // When afterRun is null, it means that mScanEndPoint is last point in
-      // editing host or editing block.
-      // If this text insertion replaces composition, this.mEndReason is
-      // start position of compositon. So we have to use afterRunObject's
-      // reason instead.
-      theString.SetCharAt(kNBSP, lastCharIndex);
-    }
-  }
-
-  // Next, scan string for adjacent ws and convert to nbsp/space combos
-  // MOOSE: don't need to convert tabs here since that is done by
-  // WillInsertText() before we are called.  Eventually, all that logic will be
-  // pushed down into here and made more efficient.
-  bool prevWS = false;
-  for (uint32_t i = 0; i <= lastCharIndex; i++) {
-    if (nsCRT::IsAsciiSpace(theString[i])) {
-      if (prevWS) {
-        // i - 1 can't be negative because prevWS starts out false
-        theString.SetCharAt(kNBSP, i - 1);
-      } else {
-        prevWS = true;
+      // If the end of replacing range is (was) after the end of text and it's
+      // immediately before block boundary, the last ASCII white-space should
+      // be replaced with an NBSP for making it visible.
+      else if ((textFragmentDataAtEnd.EndsByBlockBoundary() ||
+                textFragmentDataAtEnd.EndsByInlineEditingHostBoundary()) &&
+               isInsertionPointEqualsOrAfterEndOfText) {
+        theString.SetCharAt(HTMLEditUtils::kNBSP, lastCharIndex);
       }
-    } else {
-      prevWS = false;
+    }
+
+    // Next, scan string for adjacent ws and convert to nbsp/space combos
+    // MOOSE: don't need to convert tabs here since that is done by
+    // WillInsertText() before we are called.  Eventually, all that logic will
+    // be pushed down into here and made more efficient.
+    enum class PreviousChar {
+      NonCollapsibleChar,
+      CollapsibleChar,
+      PreformattedNewLine,
+    };
+    PreviousChar previousChar = PreviousChar::NonCollapsibleChar;
+    for (uint32_t i = 0; i <= lastCharIndex; i++) {
+      if (IsCollapsibleChar(theString[i])) {
+        // If current char is collapsible and 2nd or latter character of
+        // collapsible characters, we need to make the previous character an
+        // NBSP for avoiding current character to be collapsed to it.
+        if (previousChar == PreviousChar::CollapsibleChar) {
+          MOZ_ASSERT(i > 0);
+          theString.SetCharAt(HTMLEditUtils::kNBSP, i - 1);
+          // Keep previousChar as PreviousChar::CollapsibleChar.
+          continue;
+        }
+
+        // If current character is a collapsbile white-space and the previous
+        // character is a preformatted linefeed, we need to replace the current
+        // character with an NBSP for avoiding collapsed with the previous
+        // linefeed.
+        if (previousChar == PreviousChar::PreformattedNewLine) {
+          MOZ_ASSERT(i > 0);
+          theString.SetCharAt(HTMLEditUtils::kNBSP, i);
+          previousChar = PreviousChar::NonCollapsibleChar;
+          continue;
+        }
+
+        previousChar = PreviousChar::CollapsibleChar;
+        continue;
+      }
+
+      if (theString[i] != HTMLEditUtils::kNewLine) {
+        previousChar = PreviousChar::NonCollapsibleChar;
+        continue;
+      }
+
+      // If current character is a preformatted linefeed and the previous
+      // character is collapbile white-space, the previous character will be
+      // collapsed into current linefeed.  Therefore, we need to replace the
+      // previous character with an NBSP.
+      MOZ_ASSERT(!isNewLineCollapsible);
+      if (previousChar == PreviousChar::CollapsibleChar) {
+        MOZ_ASSERT(i > 0);
+        theString.SetCharAt(HTMLEditUtils::kNBSP, i - 1);
+      }
+      previousChar = PreviousChar::PreformattedNewLine;
     }
   }
 
@@ -443,854 +1397,1545 @@ nsresult WSRunObject::InsertText(Document& aDocument,
   //     runtime cost.  So, perhaps, we should return error code which couldn't
   //     modify it and make each caller of this method decide whether it should
   //     keep or stop handling the edit action.
-  nsresult rv =
-      MOZ_KnownLive(mHTMLEditor)
-          .InsertTextWithTransaction(aDocument, theString, pointToInsert,
-                                     aPointAfterInsertedString);
-  if (NS_SUCCEEDED(rv)) {
-    return NS_OK;
+  if (MOZ_UNLIKELY(!aHTMLEditor.GetDocument())) {
+    NS_WARNING(
+        "WhiteSpaceVisibilityKeeper::ReplaceText() lost proper document");
+    return Err(NS_ERROR_UNEXPECTED);
   }
-
-  NS_WARNING("HTMLEditor::InsertTextWithTransaction() failed, but ignored");
-
-  // XXX Temporarily, set new insertion point to the original point.
-  if (aPointAfterInsertedString) {
-    *aPointAfterInsertedString = pointToInsert;
+  AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                         &pointToPutCaret);
+  OwningNonNull<Document> document = *aHTMLEditor.GetDocument();
+  Result<InsertTextResult, nsresult> insertTextResult =
+      aHTMLEditor.InsertTextWithTransaction(document, theString, pointToInsert,
+                                            aInsertTextTo);
+  if (MOZ_UNLIKELY(insertTextResult.isErr())) {
+    NS_WARNING("HTMLEditor::InsertTextWithTransaction() failed");
+    return insertTextResult.propagateErr();
   }
-  return NS_OK;
+  trackPointToPutCaret.FlushAndStopTracking();
+  if (insertTextResult.inspect().HasCaretPointSuggestion()) {
+    return insertTextResult;
+  }
+  return InsertTextResult(insertTextResult.unwrap(),
+                          std::move(pointToPutCaret));
 }
 
-nsresult WSRunObject::DeleteWSBackward() {
-  EditorDOMPointInText atPreviousCharOfStart =
-      GetPreviousEditableCharPoint(mScanStartPoint);
+// static
+Result<CaretPoint, nsresult>
+WhiteSpaceVisibilityKeeper::DeletePreviousWhiteSpace(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint,
+    const Element& aEditingHost) {
+  TextFragmentData textFragmentDataAtDeletion(
+      aPoint, &aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtDeletion.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  const EditorDOMPointInText atPreviousCharOfStart =
+      textFragmentDataAtDeletion.GetPreviousEditableCharPoint(aPoint);
   if (!atPreviousCharOfStart.IsSet() ||
       atPreviousCharOfStart.IsEndOfContainer()) {
-    return NS_OK;
+    return CaretPoint(EditorDOMPoint());
   }
 
-  // Easy case, preformatted ws.
-  if (mPRE) {
-    if (!atPreviousCharOfStart.IsCharASCIISpace() &&
-        !atPreviousCharOfStart.IsCharNBSP()) {
-      return NS_OK;
-    }
-    nsresult rv =
-        MOZ_KnownLive(mHTMLEditor)
-            .DeleteTextAndTextNodesWithTransaction(
-                atPreviousCharOfStart, atPreviousCharOfStart.NextPoint());
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
-  }
-
-  // Caller's job to ensure that previous char is really ws.  If it is normal
-  // ws, we need to delete the whole run.
-  if (atPreviousCharOfStart.IsCharASCIISpace()) {
-    EditorDOMPointInText start, end;
-    Tie(start, end) =
-        GetASCIIWhitespacesBounds(eBoth, atPreviousCharOfStart.NextPoint());
-    NS_WARNING_ASSERTION(start.IsSet(),
-                         "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                         "return start position, but ignored");
-    NS_WARNING_ASSERTION(end.IsSet(),
-                         "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                         "return end position, but ignored");
-
-    // adjust surrounding ws
-    EditorDOMPoint startToDelete(start), endToDelete(end);
-    nsresult rv = WSRunObject::PrepareToDeleteRange(
-        MOZ_KnownLive(mHTMLEditor), &startToDelete, &endToDelete);
-    if (NS_FAILED(rv)) {
-      NS_WARNING("WSRunObject::PrepareToDeleteRange() failed");
-      return rv;
+  // If the char is a collapsible white-space or a non-collapsible new line
+  // but it can collapse adjacent white-spaces, we need to extend the range
+  // to delete all invisible white-spaces.
+  if (atPreviousCharOfStart.IsCharCollapsibleASCIISpace() ||
+      atPreviousCharOfStart
+          .IsCharPreformattedNewLineCollapsedWithWhiteSpaces()) {
+    auto startToDelete =
+        textFragmentDataAtDeletion
+            .GetFirstASCIIWhiteSpacePointCollapsedTo<EditorDOMPoint>(
+                atPreviousCharOfStart, nsIEditor::ePrevious);
+    auto endToDelete = textFragmentDataAtDeletion
+                           .GetEndOfCollapsibleASCIIWhiteSpaces<EditorDOMPoint>(
+                               atPreviousCharOfStart, nsIEditor::ePrevious);
+    EditorDOMPoint pointToPutCaret;
+    {
+      Result<CaretPoint, nsresult> caretPointOrError =
+          WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints(
+              aHTMLEditor, &startToDelete, &endToDelete, aEditingHost);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints() "
+            "failed");
+        return caretPointOrError;
+      }
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
     }
 
-    // finally, delete that ws
-    rv = MOZ_KnownLive(mHTMLEditor)
-             .DeleteTextAndTextNodesWithTransaction(startToDelete, endToDelete);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
+    {
+      AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToPutCaret);
+      Result<CaretPoint, nsresult> caretPointOrError =
+          aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+              startToDelete, endToDelete,
+              HTMLEditor::TreatEmptyTextNodes::
+                  KeepIfContainerOfRangeBoundaries);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+        return caretPointOrError;
+      }
+      trackPointToPutCaret.FlushAndStopTracking();
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    }
+    return CaretPoint(std::move(pointToPutCaret));
   }
 
-  if (atPreviousCharOfStart.IsCharNBSP()) {
-    EditorDOMPoint startToDelete(atPreviousCharOfStart);
-    EditorDOMPoint endToDelete(startToDelete.NextPoint());
-    nsresult rv = WSRunObject::PrepareToDeleteRange(
-        MOZ_KnownLive(mHTMLEditor), &startToDelete, &endToDelete);
-    if (NS_FAILED(rv)) {
-      NS_WARNING("WSRunObject::PrepareToDeleteRange() failed");
-      return rv;
+  if (atPreviousCharOfStart.IsCharCollapsibleNBSP()) {
+    auto startToDelete = atPreviousCharOfStart.To<EditorDOMPoint>();
+    auto endToDelete = startToDelete.NextPoint<EditorDOMPoint>();
+    EditorDOMPoint pointToPutCaret;
+    {
+      Result<CaretPoint, nsresult> caretPointOrError =
+          WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints(
+              aHTMLEditor, &startToDelete, &endToDelete, aEditingHost);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints() "
+            "failed");
+        return caretPointOrError;
+      }
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
     }
 
-    // finally, delete that ws
-    rv = MOZ_KnownLive(mHTMLEditor)
-             .DeleteTextAndTextNodesWithTransaction(startToDelete, endToDelete);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
+    {
+      AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToPutCaret);
+      Result<CaretPoint, nsresult> caretPointOrError =
+          aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+              startToDelete, endToDelete,
+              HTMLEditor::TreatEmptyTextNodes::
+                  KeepIfContainerOfRangeBoundaries);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+        return caretPointOrError;
+      }
+      trackPointToPutCaret.FlushAndStopTracking();
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    }
+    return CaretPoint(std::move(pointToPutCaret));
   }
 
-  return NS_OK;
+  Result<CaretPoint, nsresult> caretPointOrError =
+      aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+          atPreviousCharOfStart, atPreviousCharOfStart.NextPoint(),
+          HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+  NS_WARNING_ASSERTION(
+      caretPointOrError.isOk(),
+      "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+  return caretPointOrError;
 }
 
-nsresult WSRunObject::DeleteWSForward() {
-  EditorDOMPointInText atNextCharOfStart =
-      GetInclusiveNextEditableCharPoint(mScanStartPoint);
+// static
+Result<CaretPoint, nsresult>
+WhiteSpaceVisibilityKeeper::DeleteInclusiveNextWhiteSpace(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint,
+    const Element& aEditingHost) {
+  TextFragmentData textFragmentDataAtDeletion(
+      aPoint, &aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtDeletion.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  auto atNextCharOfStart =
+      textFragmentDataAtDeletion
+          .GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(aPoint);
   if (!atNextCharOfStart.IsSet() || atNextCharOfStart.IsEndOfContainer()) {
-    return NS_OK;
+    return CaretPoint(EditorDOMPoint());
   }
 
-  // Easy case, preformatted ws.
-  if (mPRE) {
-    if (!atNextCharOfStart.IsCharASCIISpace() &&
-        !atNextCharOfStart.IsCharNBSP()) {
-      return NS_OK;
+  // If the char is a collapsible white-space or a non-collapsible new line
+  // but it can collapse adjacent white-spaces, we need to extend the range
+  // to delete all invisible white-spaces.
+  if (atNextCharOfStart.IsCharCollapsibleASCIISpace() ||
+      atNextCharOfStart.IsCharPreformattedNewLineCollapsedWithWhiteSpaces()) {
+    auto startToDelete =
+        textFragmentDataAtDeletion
+            .GetFirstASCIIWhiteSpacePointCollapsedTo<EditorDOMPoint>(
+                atNextCharOfStart, nsIEditor::eNext);
+    auto endToDelete = textFragmentDataAtDeletion
+                           .GetEndOfCollapsibleASCIIWhiteSpaces<EditorDOMPoint>(
+                               atNextCharOfStart, nsIEditor::eNext);
+    EditorDOMPoint pointToPutCaret;
+    {
+      Result<CaretPoint, nsresult> caretPointOrError =
+          WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints(
+              aHTMLEditor, &startToDelete, &endToDelete, aEditingHost);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints() "
+            "failed");
+        return caretPointOrError;
+      }
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
     }
-    nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                      .DeleteTextAndTextNodesWithTransaction(
-                          atNextCharOfStart, atNextCharOfStart.NextPoint());
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
+
+    {
+      AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToPutCaret);
+      Result<CaretPoint, nsresult> caretPointOrError =
+          aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+              startToDelete, endToDelete,
+              HTMLEditor::TreatEmptyTextNodes::
+                  KeepIfContainerOfRangeBoundaries);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+        return caretPointOrError;
+      }
+      trackPointToPutCaret.FlushAndStopTracking();
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    }
+    return CaretPoint(std::move(pointToPutCaret));
   }
 
-  // Caller's job to ensure that next char is really ws.  If it is normal ws,
-  // we need to delete the whole run.
-  if (atNextCharOfStart.IsCharASCIISpace()) {
-    EditorDOMPointInText start, end;
-    Tie(start, end) =
-        GetASCIIWhitespacesBounds(eBoth, atNextCharOfStart.NextPoint());
-    NS_WARNING_ASSERTION(start.IsSet(),
-                         "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                         "return start position, but ignored");
-    NS_WARNING_ASSERTION(end.IsSet(),
-                         "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                         "return end position, but ignored");
-    // Adjust surrounding ws
-    EditorDOMPoint startToDelete(start), endToDelete(end);
-    nsresult rv = WSRunObject::PrepareToDeleteRange(
-        MOZ_KnownLive(mHTMLEditor), &startToDelete, &endToDelete);
+  if (atNextCharOfStart.IsCharCollapsibleNBSP()) {
+    auto startToDelete = atNextCharOfStart.To<EditorDOMPoint>();
+    auto endToDelete = startToDelete.NextPoint<EditorDOMPoint>();
+    EditorDOMPoint pointToPutCaret;
+    {
+      Result<CaretPoint, nsresult> caretPointOrError =
+          WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints(
+              aHTMLEditor, &startToDelete, &endToDelete, aEditingHost);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::PrepareToDeleteRangeAndTrackPoints() "
+            "failed");
+        return caretPointOrError;
+      }
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    }
+
+    {
+      AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                             &pointToPutCaret);
+      Result<CaretPoint, nsresult> caretPointOrError =
+          aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+              startToDelete, endToDelete,
+              HTMLEditor::TreatEmptyTextNodes::
+                  KeepIfContainerOfRangeBoundaries);
+      if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+        NS_WARNING(
+            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+        return caretPointOrError;
+      }
+      trackPointToPutCaret.FlushAndStopTracking();
+      caretPointOrError.unwrap().MoveCaretPointTo(
+          pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    }
+    return CaretPoint(std::move(pointToPutCaret));
+  }
+
+  Result<CaretPoint, nsresult> caretPointOrError =
+      aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+          atNextCharOfStart, atNextCharOfStart.NextPoint(),
+          HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+  NS_WARNING_ASSERTION(
+      caretPointOrError.isOk(),
+      "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+  return caretPointOrError;
+}
+
+// static
+Result<CaretPoint, nsresult>
+WhiteSpaceVisibilityKeeper::DeleteContentNodeAndJoinTextNodesAroundIt(
+    HTMLEditor& aHTMLEditor, nsIContent& aContentToDelete,
+    const EditorDOMPoint& aCaretPoint, const Element& aEditingHost) {
+  EditorDOMPoint atContent(&aContentToDelete);
+  if (!atContent.IsSet()) {
+    NS_WARNING("Deleting content node was an orphan node");
+    return Err(NS_ERROR_FAILURE);
+  }
+  if (!HTMLEditUtils::IsRemovableNode(aContentToDelete)) {
+    NS_WARNING("Deleting content node wasn't removable");
+    return Err(NS_ERROR_FAILURE);
+  }
+  EditorDOMPoint pointToPutCaret(aCaretPoint);
+  {
+    AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                           &pointToPutCaret);
+    Result<CaretPoint, nsresult> caretPointOrError =
+        WhiteSpaceVisibilityKeeper::
+            MakeSureToKeepVisibleStateOfWhiteSpacesAroundDeletingRange(
+                aHTMLEditor, EditorDOMRange(atContent, atContent.NextPoint()),
+                aEditingHost);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::"
+          "MakeSureToKeepVisibleStateOfWhiteSpacesAroundDeletingRange() "
+          "failed");
+      return caretPointOrError;
+    }
+    trackPointToPutCaret.FlushAndStopTracking();
+    caretPointOrError.unwrap().MoveCaretPointTo(
+        pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+  }
+
+  nsCOMPtr<nsIContent> previousEditableSibling =
+      HTMLEditUtils::GetPreviousSibling(
+          aContentToDelete, {WalkTreeOption::IgnoreNonEditableNode});
+  // Delete the node, and join like nodes if appropriate
+  {
+    AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                           &pointToPutCaret);
+    nsresult rv = aHTMLEditor.DeleteNodeWithTransaction(aContentToDelete);
     if (NS_FAILED(rv)) {
-      NS_WARNING("WSRunObject::PrepareToDeleteRange() failed");
-      return rv;
+      NS_WARNING("EditorBase::DeleteNodeWithTransaction() failed");
+      return Err(rv);
     }
-
-    // Finally, delete that ws
-    rv = MOZ_KnownLive(mHTMLEditor)
-             .DeleteTextAndTextNodesWithTransaction(startToDelete, endToDelete);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
   }
 
-  if (atNextCharOfStart.IsCharNBSP()) {
-    EditorDOMPoint startToDelete(atNextCharOfStart);
-    EditorDOMPoint endToDelete(startToDelete.NextPoint());
-    nsresult rv = WSRunObject::PrepareToDeleteRange(
-        MOZ_KnownLive(mHTMLEditor), &startToDelete, &endToDelete);
-    if (NS_FAILED(rv)) {
-      NS_WARNING("WSRunObject::PrepareToDeleteRange() failed");
-      return rv;
-    }
-
-    // Finally, delete that ws
-    rv = MOZ_KnownLive(mHTMLEditor)
-             .DeleteTextAndTextNodesWithTransaction(startToDelete, endToDelete);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
+  // Are they both text nodes?  If so, join them!
+  // XXX This may cause odd behavior if there is non-editable nodes
+  //     around the atomic content.
+  if (!aCaretPoint.IsInTextNode() || !previousEditableSibling ||
+      !previousEditableSibling->IsText()) {
+    return CaretPoint(std::move(pointToPutCaret));
   }
 
-  return NS_OK;
+  nsIContent* nextEditableSibling = HTMLEditUtils::GetNextSibling(
+      *previousEditableSibling, {WalkTreeOption::IgnoreNonEditableNode});
+  if (aCaretPoint.GetContainer() != nextEditableSibling) {
+    return CaretPoint(std::move(pointToPutCaret));
+  }
+
+  nsresult rv = aHTMLEditor.JoinNearestEditableNodesWithTransaction(
+      *previousEditableSibling, MOZ_KnownLive(*aCaretPoint.ContainerAs<Text>()),
+      &pointToPutCaret);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("HTMLEditor::JoinNearestEditableNodesWithTransaction() failed");
+    return Err(rv);
+  }
+  if (!pointToPutCaret.IsSet()) {
+    NS_WARNING(
+        "HTMLEditor::JoinNearestEditableNodesWithTransaction() didn't return "
+        "right node position");
+    return Err(NS_ERROR_FAILURE);
+  }
+  return CaretPoint(std::move(pointToPutCaret));
 }
 
 template <typename PT, typename CT>
 WSScanResult WSRunScanner::ScanPreviousVisibleNodeOrBlockBoundaryFrom(
     const EditorDOMPointBase<PT, CT>& aPoint) const {
-  // Find first visible thing before the point.  Position
-  // outVisNode/outVisOffset just _after_ that thing.  If we don't find
-  // anything return start of ws.
   MOZ_ASSERT(aPoint.IsSet());
+  MOZ_ASSERT(aPoint.IsInComposedDoc());
 
-  WSFragment* run = FindNearestRun(aPoint, false);
+  if (MOZ_UNLIKELY(!aPoint.IsSet())) {
+    return WSScanResult::Error();
+  }
 
-  // Is there a visible run there or earlier?
-  for (; run; run = run->mLeft) {
-    if (run->IsVisibleAndMiddleOfHardLine()) {
-      EditorDOMPointInText atPreviousChar =
-          GetPreviousEditableCharPoint(aPoint);
-      // When it's a non-empty text node, return it.
-      if (atPreviousChar.IsSet() && !atPreviousChar.IsContainerEmpty()) {
-        MOZ_ASSERT(!atPreviousChar.IsEndOfContainer());
-        return WSScanResult(
-            atPreviousChar.NextPoint(),
-            atPreviousChar.IsCharASCIISpace() || atPreviousChar.IsCharNBSP()
-                ? WSType::NormalWhiteSpaces
-                : WSType::NormalText);
-      }
-      // If no text node, keep looking.  We should eventually fall out of loop
+  // We may not be able to check editable state in uncomposed tree as expected.
+  // For example, only some descendants in an editing host is temporarily
+  // removed from the tree, they are not editable unless nested contenteditable
+  // attribute is set to "true".
+  if (MOZ_UNLIKELY(!aPoint.IsInComposedDoc())) {
+    return WSScanResult(WSScanResult::ScanDirection::Backward,
+                        *aPoint.template ContainerAs<nsIContent>(),
+                        WSType::InUncomposedDoc, mBlockInlineCheck);
+  }
+
+  if (!TextFragmentDataAtStartRef().IsInitialized()) {
+    return WSScanResult::Error();
+  }
+
+  // If the range has visible text and start of the visible text is before
+  // aPoint, return previous character in the text.
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      TextFragmentDataAtStartRef().VisibleWhiteSpacesDataRef();
+  if (visibleWhiteSpaces.IsInitialized() &&
+      visibleWhiteSpaces.StartRef().IsBefore(aPoint)) {
+    // If the visible things are not editable, we shouldn't scan "editable"
+    // things now.  Whether keep scanning editable things or not should be
+    // considered by the caller.
+    if (aPoint.GetChild() && !aPoint.GetChild()->IsEditable()) {
+      return WSScanResult(WSScanResult::ScanDirection::Backward,
+                          *aPoint.GetChild(), WSType::SpecialContent,
+                          mBlockInlineCheck);
+    }
+    const auto atPreviousChar =
+        GetPreviousEditableCharPoint<EditorRawDOMPointInText>(aPoint);
+    // When it's a non-empty text node, return it.
+    if (atPreviousChar.IsSet() && !atPreviousChar.IsContainerEmpty()) {
+      MOZ_ASSERT(!atPreviousChar.IsEndOfContainer());
+      return WSScanResult(WSScanResult::ScanDirection::Backward,
+                          atPreviousChar.template NextPoint<EditorDOMPoint>(),
+                          atPreviousChar.IsCharCollapsibleASCIISpaceOrNBSP()
+                              ? WSType::CollapsibleWhiteSpaces
+                          : atPreviousChar.IsCharPreformattedNewLine()
+                              ? WSType::PreformattedLineBreak
+                              : WSType::NonCollapsibleCharacters,
+                          mBlockInlineCheck);
     }
   }
 
-  if (mStartReasonContent != mStartNode) {
-    // In this case, mStartOffset is not meaningful.
-    return WSScanResult(mStartReasonContent, mStartReason);
+  if (NS_WARN_IF(TextFragmentDataAtStartRef().StartRawReason() ==
+                 WSType::UnexpectedError)) {
+    return WSScanResult::Error();
   }
-  return WSScanResult(EditorDOMPoint(mStartReasonContent, mStartOffset),
-                      mStartReason);
+
+  switch (TextFragmentDataAtStartRef().StartRawReason()) {
+    case WSType::CollapsibleWhiteSpaces:
+    case WSType::NonCollapsibleCharacters:
+    case WSType::PreformattedLineBreak:
+      MOZ_ASSERT(TextFragmentDataAtStartRef().StartRef().IsSet());
+      // XXX: If we find the character at last of a text node and we started
+      // scanning from following text node of it, some callers may work with the
+      // point in the following text node instead of end of the found text node.
+      return WSScanResult(WSScanResult::ScanDirection::Backward,
+                          TextFragmentDataAtStartRef().StartRef(),
+                          TextFragmentDataAtStartRef().StartRawReason(),
+                          mBlockInlineCheck);
+    default:
+      break;
+  }
+
+  // Otherwise, return the start of the range.
+  if (TextFragmentDataAtStartRef().GetStartReasonContent() !=
+      TextFragmentDataAtStartRef().StartRef().GetContainer()) {
+    if (NS_WARN_IF(!TextFragmentDataAtStartRef().GetStartReasonContent())) {
+      return WSScanResult::Error();
+    }
+    // In this case, TextFragmentDataAtStartRef().StartRef().Offset() is not
+    // meaningful.
+    return WSScanResult(WSScanResult::ScanDirection::Backward,
+                        *TextFragmentDataAtStartRef().GetStartReasonContent(),
+                        TextFragmentDataAtStartRef().StartRawReason(),
+                        mBlockInlineCheck);
+  }
+  if (NS_WARN_IF(!TextFragmentDataAtStartRef().StartRef().IsSet())) {
+    return WSScanResult::Error();
+  }
+  return WSScanResult(WSScanResult::ScanDirection::Backward,
+                      TextFragmentDataAtStartRef().StartRef(),
+                      TextFragmentDataAtStartRef().StartRawReason(),
+                      mBlockInlineCheck);
 }
 
 template <typename PT, typename CT>
-WSScanResult WSRunScanner::ScanNextVisibleNodeOrBlockBoundaryFrom(
+WSScanResult WSRunScanner::ScanInclusiveNextVisibleNodeOrBlockBoundaryFrom(
     const EditorDOMPointBase<PT, CT>& aPoint) const {
-  // Find first visible thing after the point.  Position
-  // outVisNode/outVisOffset just _before_ that thing.  If we don't find
-  // anything return end of ws.
   MOZ_ASSERT(aPoint.IsSet());
+  MOZ_ASSERT(aPoint.IsInComposedDoc());
 
-  WSFragment* run = FindNearestRun(aPoint, true);
+  if (MOZ_UNLIKELY(!aPoint.IsSet())) {
+    return WSScanResult::Error();
+  }
 
-  // Is there a visible run there or later?
-  for (; run; run = run->mRight) {
-    if (run->IsVisibleAndMiddleOfHardLine()) {
-      EditorDOMPointInText atNextChar =
-          GetInclusiveNextEditableCharPoint(aPoint);
-      // When it's a non-empty text node, return it.
-      if (atNextChar.IsSet() && !atNextChar.IsContainerEmpty()) {
-        return WSScanResult(
-            atNextChar,
-            !atNextChar.IsEndOfContainer() &&
-                    (atNextChar.IsCharASCIISpace() || atNextChar.IsCharNBSP())
-                ? WSType::NormalWhiteSpaces
-                : WSType::NormalText);
-      }
-      // If no text node, keep looking.  We should eventually fall out of loop
+  // We may not be able to check editable state in uncomposed tree as expected.
+  // For example, only some descendants in an editing host is temporarily
+  // removed from the tree, they are not editable unless nested contenteditable
+  // attribute is set to "true".
+  if (MOZ_UNLIKELY(!aPoint.IsInComposedDoc())) {
+    return WSScanResult(WSScanResult::ScanDirection::Forward,
+                        *aPoint.template ContainerAs<nsIContent>(),
+                        WSType::InUncomposedDoc, mBlockInlineCheck);
+  }
+
+  if (!TextFragmentDataAtStartRef().IsInitialized()) {
+    return WSScanResult::Error();
+  }
+
+  // If the range has visible text and aPoint equals or is before the end of the
+  // visible text, return inclusive next character in the text.
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      TextFragmentDataAtStartRef().VisibleWhiteSpacesDataRef();
+  if (visibleWhiteSpaces.IsInitialized() &&
+      aPoint.EqualsOrIsBefore(visibleWhiteSpaces.EndRef())) {
+    // If the visible things are not editable, we shouldn't scan "editable"
+    // things now.  Whether keep scanning editable things or not should be
+    // considered by the caller.
+    if (aPoint.GetChild() && !aPoint.GetChild()->IsEditable()) {
+      return WSScanResult(WSScanResult::ScanDirection::Forward,
+                          *aPoint.GetChild(), WSType::SpecialContent,
+                          mBlockInlineCheck);
+    }
+    const auto atNextChar =
+        GetInclusiveNextEditableCharPoint<EditorDOMPoint>(aPoint);
+    // When it's a non-empty text node, return it.
+    if (atNextChar.IsSet() && !atNextChar.IsContainerEmpty()) {
+      return WSScanResult(WSScanResult::ScanDirection::Forward, atNextChar,
+                          !atNextChar.IsEndOfContainer() &&
+                                  atNextChar.IsCharCollapsibleASCIISpaceOrNBSP()
+                              ? WSType::CollapsibleWhiteSpaces
+                          : !atNextChar.IsEndOfContainer() &&
+                                  atNextChar.IsCharPreformattedNewLine()
+                              ? WSType::PreformattedLineBreak
+                              : WSType::NonCollapsibleCharacters,
+                          mBlockInlineCheck);
     }
   }
 
-  if (mEndReasonContent != mEndNode) {
-    // In this case, mEndOffset is not meaningful.
-    return WSScanResult(mEndReasonContent, mEndReason);
+  if (NS_WARN_IF(TextFragmentDataAtStartRef().EndRawReason() ==
+                 WSType::UnexpectedError)) {
+    return WSScanResult::Error();
   }
-  return WSScanResult(EditorDOMPoint(mEndReasonContent, mEndOffset),
-                      mEndReason);
-}
 
-nsresult WSRunObject::AdjustWhitespace() {
-  // this routine examines a run of ws and tries to get rid of some unneeded
-  // nbsp's, replacing them with regualr ascii space if possible.  Keeping
-  // things simple for now and just trying to fix up the trailing ws in the run.
-  if (!mLastNBSPNode) {
-    // nothing to do!
-    return NS_OK;
-  }
-  for (WSFragment* run = mStartRun; run; run = run->mRight) {
-    if (!run->IsVisibleAndMiddleOfHardLine()) {
-      continue;
-    }
-    nsresult rv = NormalizeWhitespacesAtEndOf(*run);
-    if (NS_FAILED(rv)) {
-      NS_WARNING("WSRunObject::NormalizeWhitespacesAtEndOf() failed");
-      return rv;
-    }
-  }
-  return NS_OK;
-}
-
-//--------------------------------------------------------------------------------------------
-//   protected methods
-//--------------------------------------------------------------------------------------------
-
-nsIContent* WSRunScanner::GetEditableBlockParentOrTopmotEditableInlineContent(
-    nsIContent* aContent) const {
-  if (NS_WARN_IF(!aContent)) {
-    return nullptr;
-  }
-  NS_ASSERTION(EditorUtils::IsEditableContent(*aContent, EditorType::HTML),
-               "Given content is not editable");
-  // XXX What should we do if scan range crosses block boundary?  Currently,
-  //     it's not collapsed only when inserting composition string so that
-  //     it's possible but shouldn't occur actually.
-  nsIContent* editableBlockParentOrTopmotEditableInlineContent = nullptr;
-  for (nsIContent* content : aContent->InclusiveAncestorsOfType<nsIContent>()) {
-    if (!EditorUtils::IsEditableContent(*content, EditorType::HTML)) {
+  switch (TextFragmentDataAtStartRef().EndRawReason()) {
+    case WSType::CollapsibleWhiteSpaces:
+    case WSType::NonCollapsibleCharacters:
+    case WSType::PreformattedLineBreak:
+      MOZ_ASSERT(TextFragmentDataAtStartRef().StartRef().IsSet());
+      // XXX: If we find the character at start of a text node and we
+      // started scanning from preceding text node of it, some callers may want
+      // to work with the point at end of the preceding text node instead of
+      // start of the found text node.
+      return WSScanResult(WSScanResult::ScanDirection::Forward,
+                          TextFragmentDataAtStartRef().EndRef(),
+                          TextFragmentDataAtStartRef().EndRawReason(),
+                          mBlockInlineCheck);
+    default:
       break;
-    }
-    editableBlockParentOrTopmotEditableInlineContent = content;
-    if (HTMLEditUtils::IsBlockElement(
-            *editableBlockParentOrTopmotEditableInlineContent)) {
-      break;
-    }
   }
-  return editableBlockParentOrTopmotEditableInlineContent;
+
+  // Otherwise, return the end of the range.
+  if (TextFragmentDataAtStartRef().GetEndReasonContent() !=
+      TextFragmentDataAtStartRef().EndRef().GetContainer()) {
+    if (NS_WARN_IF(!TextFragmentDataAtStartRef().GetEndReasonContent())) {
+      return WSScanResult::Error();
+    }
+    // In this case, TextFragmentDataAtStartRef().EndRef().Offset() is not
+    // meaningful.
+    return WSScanResult(WSScanResult::ScanDirection::Forward,
+                        *TextFragmentDataAtStartRef().GetEndReasonContent(),
+                        TextFragmentDataAtStartRef().EndRawReason(),
+                        mBlockInlineCheck);
+  }
+  if (NS_WARN_IF(!TextFragmentDataAtStartRef().EndRef().IsSet())) {
+    return WSScanResult::Error();
+  }
+  return WSScanResult(WSScanResult::ScanDirection::Forward,
+                      TextFragmentDataAtStartRef().EndRef(),
+                      TextFragmentDataAtStartRef().EndRawReason(),
+                      mBlockInlineCheck);
 }
 
-nsresult WSRunScanner::GetWSNodes() {
-  // collect up an array of nodes that are contiguous with the insertion point
-  // and which contain only whitespace.  Stop if you reach non-ws text or a new
-  // block boundary.
-  EditorDOMPoint start(mScanStartPoint), end(mScanStartPoint);
-  nsIContent* scanStartContent = mScanStartPoint.GetContainerAsContent();
-  if (NS_WARN_IF(!scanStartContent)) {
-    // Meaning container of mScanStartPoint is a Document or DocumentFragment.
+template <typename EditorDOMPointType>
+WSRunScanner::TextFragmentData::TextFragmentData(
+    const EditorDOMPointType& aPoint, const Element* aEditingHost,
+    BlockInlineCheck aBlockInlineCheck)
+    : mEditingHost(aEditingHost), mBlockInlineCheck(aBlockInlineCheck) {
+  if (!aPoint.IsSetAndValid()) {
+    NS_WARNING("aPoint was invalid");
+    return;
+  }
+  if (!aPoint.IsInContentNode()) {
+    NS_WARNING("aPoint was in Document or DocumentFragment");
     // I.e., we're try to modify outside of root element.  We don't need to
     // support such odd case because web apps cannot append text nodes as
     // direct child of Document node.
-    return NS_ERROR_FAILURE;
-  }
-  nsIContent* editableBlockParentOrTopmotEditableInlineContent =
-      GetEditableBlockParentOrTopmotEditableInlineContent(scanStartContent);
-  if (NS_WARN_IF(!editableBlockParentOrTopmotEditableInlineContent)) {
-    // Meaning that the container of `mScanStartPoint` is not editable.
-    editableBlockParentOrTopmotEditableInlineContent = scanStartContent;
+    return;
   }
 
-  // first look backwards to find preceding ws nodes
-  if (Text* textNode = mScanStartPoint.GetContainerAsText()) {
-    const nsTextFragment* textFrag = &textNode->TextFragment();
-    if (!mScanStartPoint.IsStartOfContainer()) {
-      for (uint32_t i = mScanStartPoint.Offset(); i; i--) {
-        // sanity bounds check the char position.  bug 136165
-        if (i > textFrag->GetLength()) {
-          MOZ_ASSERT_UNREACHABLE("looking beyond end of text fragment");
-          continue;
-        }
-        char16_t theChar = textFrag->CharAt(i - 1);
-        if (!nsCRT::IsAsciiSpace(theChar)) {
-          if (theChar != kNBSP) {
-            mStartNode = textNode;
-            mStartOffset = i;
-            mStartReason = WSType::NormalText;
-            mStartReasonContent = textNode;
-            break;
-          }
-          // as we look backwards update our earliest found nbsp
-          mFirstNBSPNode = textNode;
-          mFirstNBSPOffset = i - 1;
-          // also keep track of latest nbsp so far
-          if (!mLastNBSPNode) {
-            mLastNBSPNode = textNode;
-            mLastNBSPOffset = i - 1;
-          }
-        }
-        start.Set(textNode, i - 1);
-      }
-    }
+  mScanStartPoint = aPoint.template To<EditorDOMPoint>();
+  NS_ASSERTION(
+      EditorUtils::IsEditableContent(*mScanStartPoint.ContainerAs<nsIContent>(),
+                                     EditorType::HTML),
+      "Given content is not editable");
+  NS_ASSERTION(
+      mScanStartPoint.ContainerAs<nsIContent>()->GetAsElementOrParentElement(),
+      "Given content is not an element and an orphan node");
+  if (NS_WARN_IF(!EditorUtils::IsEditableContent(
+          *mScanStartPoint.ContainerAs<nsIContent>(), EditorType::HTML))) {
+    return;
+  }
+  const Element* editableBlockElementOrInlineEditingHost =
+      HTMLEditUtils::GetInclusiveAncestorElement(
+          *mScanStartPoint.ContainerAs<nsIContent>(),
+          HTMLEditUtils::ClosestEditableBlockElementOrInlineEditingHost,
+          aBlockInlineCheck);
+  if (!editableBlockElementOrInlineEditingHost) {
+    NS_WARNING(
+        "HTMLEditUtils::GetInclusiveAncestorElement(HTMLEditUtils::"
+        "ClosestEditableBlockElementOrInlineEditingHost) couldn't find "
+        "editing host");
+    return;
   }
 
-  while (!mStartNode) {
-    // we haven't found the start of ws yet.  Keep looking
-    nsIContent* previousLeafContentOrBlock =
-        HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-            start, *editableBlockParentOrTopmotEditableInlineContent,
-            mEditingHost);
-    if (previousLeafContentOrBlock) {
-      if (HTMLEditUtils::IsBlockElement(*previousLeafContentOrBlock)) {
-        mStartNode = start.GetContainer();
-        mStartOffset = start.Offset();
-        mStartReason = WSType::OtherBlockBoundary;
-        mStartReasonContent = previousLeafContentOrBlock;
-      } else if (previousLeafContentOrBlock->IsText() &&
-                 previousLeafContentOrBlock->IsEditable()) {
-        RefPtr<Text> textNode = previousLeafContentOrBlock->AsText();
-        const nsTextFragment* textFrag = &textNode->TextFragment();
-        uint32_t len = textNode->TextLength();
-
-        if (len < 1) {
-          // Zero length text node. Set start point to it
-          // so we can get past it!
-          start.Set(previousLeafContentOrBlock, 0);
-        } else {
-          for (int32_t pos = len - 1; pos >= 0; pos--) {
-            // sanity bounds check the char position.  bug 136165
-            if (uint32_t(pos) >= textFrag->GetLength()) {
-              MOZ_ASSERT_UNREACHABLE("looking beyond end of text fragment");
-              continue;
-            }
-            char16_t theChar = textFrag->CharAt(pos);
-            if (!nsCRT::IsAsciiSpace(theChar)) {
-              if (theChar != kNBSP) {
-                mStartNode = textNode;
-                mStartOffset = pos + 1;
-                mStartReason = WSType::NormalText;
-                mStartReasonContent = textNode;
-                break;
-              }
-              // as we look backwards update our earliest found nbsp
-              mFirstNBSPNode = textNode;
-              mFirstNBSPOffset = pos;
-              // also keep track of latest nbsp so far
-              if (!mLastNBSPNode) {
-                mLastNBSPNode = textNode;
-                mLastNBSPOffset = pos;
-              }
-            }
-            start.Set(textNode, pos);
-          }
-        }
-      } else {
-        // it's a break or a special node, like <img>, that is not a block and
-        // not a break but still serves as a terminator to ws runs.
-        mStartNode = start.GetContainer();
-        mStartOffset = start.Offset();
-        if (previousLeafContentOrBlock->IsHTMLElement(nsGkAtoms::br)) {
-          mStartReason = WSType::BRElement;
-        } else {
-          mStartReason = WSType::SpecialContent;
-        }
-        mStartReasonContent = previousLeafContentOrBlock;
-      }
-    } else {
-      // no prior node means we exhausted
-      // editableBlockParentOrTopmotEditableInlineContent
-      mStartNode = start.GetContainer();
-      mStartOffset = start.Offset();
-      mStartReason = WSType::CurrentBlockBoundary;
-      // mStartReasonContent can be either a block element or any non-editable
-      // content in this case.
-      mStartReasonContent = editableBlockParentOrTopmotEditableInlineContent;
-    }
-  }
-
-  // then look ahead to find following ws nodes
-  if (Text* textNode = end.GetContainerAsText()) {
-    // don't need to put it on list. it already is from code above
-    const nsTextFragment* textFrag = &textNode->TextFragment();
-    if (!end.IsEndOfContainer()) {
-      for (uint32_t i = end.Offset(); i < textNode->TextLength(); i++) {
-        // sanity bounds check the char position.  bug 136165
-        if (i >= textFrag->GetLength()) {
-          MOZ_ASSERT_UNREACHABLE("looking beyond end of text fragment");
-          continue;
-        }
-        char16_t theChar = textFrag->CharAt(i);
-        if (!nsCRT::IsAsciiSpace(theChar)) {
-          if (theChar != kNBSP) {
-            mEndNode = textNode;
-            mEndOffset = i;
-            mEndReason = WSType::NormalText;
-            mEndReasonContent = textNode;
-            break;
-          }
-          // as we look forwards update our latest found nbsp
-          mLastNBSPNode = textNode;
-          mLastNBSPOffset = i;
-          // also keep track of earliest nbsp so far
-          if (!mFirstNBSPNode) {
-            mFirstNBSPNode = textNode;
-            mFirstNBSPOffset = i;
-          }
-        }
-        end.Set(textNode, i + 1);
-      }
-    }
-  }
-
-  while (!mEndNode) {
-    // we haven't found the end of ws yet.  Keep looking
-    nsIContent* nextLeafContentOrBlock =
-        HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-            end, *editableBlockParentOrTopmotEditableInlineContent,
-            mEditingHost);
-    if (nextLeafContentOrBlock) {
-      if (HTMLEditUtils::IsBlockElement(*nextLeafContentOrBlock)) {
-        // we encountered a new block.  therefore no more ws.
-        mEndNode = end.GetContainer();
-        mEndOffset = end.Offset();
-        mEndReason = WSType::OtherBlockBoundary;
-        mEndReasonContent = nextLeafContentOrBlock;
-      } else if (nextLeafContentOrBlock->IsText() &&
-                 nextLeafContentOrBlock->IsEditable()) {
-        RefPtr<Text> textNode = nextLeafContentOrBlock->AsText();
-        const nsTextFragment* textFrag = &textNode->TextFragment();
-        uint32_t len = textNode->TextLength();
-
-        if (len < 1) {
-          // Zero length text node. Set end point to it
-          // so we can get past it!
-          end.Set(textNode, 0);
-        } else {
-          for (uint32_t pos = 0; pos < len; pos++) {
-            // sanity bounds check the char position.  bug 136165
-            if (pos >= textFrag->GetLength()) {
-              MOZ_ASSERT_UNREACHABLE("looking beyond end of text fragment");
-              continue;
-            }
-            char16_t theChar = textFrag->CharAt(pos);
-            if (!nsCRT::IsAsciiSpace(theChar)) {
-              if (theChar != kNBSP) {
-                mEndNode = textNode;
-                mEndOffset = pos;
-                mEndReason = WSType::NormalText;
-                mEndReasonContent = textNode;
-                break;
-              }
-              // as we look forwards update our latest found nbsp
-              mLastNBSPNode = textNode;
-              mLastNBSPOffset = pos;
-              // also keep track of earliest nbsp so far
-              if (!mFirstNBSPNode) {
-                mFirstNBSPNode = textNode;
-                mFirstNBSPOffset = pos;
-              }
-            }
-            end.Set(textNode, pos + 1);
-          }
-        }
-      } else {
-        // we encountered a break or a special node, like <img>,
-        // that is not a block and not a break but still
-        // serves as a terminator to ws runs.
-        mEndNode = end.GetContainer();
-        mEndOffset = end.Offset();
-        if (nextLeafContentOrBlock->IsHTMLElement(nsGkAtoms::br)) {
-          mEndReason = WSType::BRElement;
-        } else {
-          mEndReason = WSType::SpecialContent;
-        }
-        mEndReasonContent = nextLeafContentOrBlock;
-      }
-    } else {
-      // no next node means we exhausted
-      // editableBlockParentOrTopmotEditableInlineContent
-      mEndNode = end.GetContainer();
-      mEndOffset = end.Offset();
-      mEndReason = WSType::CurrentBlockBoundary;
-      // mEndReasonContent can be either a block element or any non-editable
-      // content in this case.
-      mEndReasonContent = editableBlockParentOrTopmotEditableInlineContent;
-    }
-  }
-
-  return NS_OK;
+  mStart = BoundaryData::ScanCollapsibleWhiteSpaceStartFrom(
+      mScanStartPoint, *editableBlockElementOrInlineEditingHost, mEditingHost,
+      &mNBSPData, aBlockInlineCheck);
+  MOZ_ASSERT_IF(mStart.IsNonCollapsibleCharacters(),
+                !mStart.PointRef().IsPreviousCharPreformattedNewLine());
+  MOZ_ASSERT_IF(mStart.IsPreformattedLineBreak(),
+                mStart.PointRef().IsPreviousCharPreformattedNewLine());
+  mEnd = BoundaryData::ScanCollapsibleWhiteSpaceEndFrom(
+      mScanStartPoint, *editableBlockElementOrInlineEditingHost, mEditingHost,
+      &mNBSPData, aBlockInlineCheck);
+  MOZ_ASSERT_IF(mEnd.IsNonCollapsibleCharacters(),
+                !mEnd.PointRef().IsCharPreformattedNewLine());
+  MOZ_ASSERT_IF(mEnd.IsPreformattedLineBreak(),
+                mEnd.PointRef().IsCharPreformattedNewLine());
 }
 
-void WSRunScanner::GetRuns() {
-  ClearRuns();
+// static
+template <typename EditorDOMPointType>
+Maybe<WSRunScanner::TextFragmentData::BoundaryData> WSRunScanner::
+    TextFragmentData::BoundaryData::ScanCollapsibleWhiteSpaceStartInTextNode(
+        const EditorDOMPointType& aPoint, NoBreakingSpaceData* aNBSPData,
+        BlockInlineCheck aBlockInlineCheck) {
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+  MOZ_DIAGNOSTIC_ASSERT(aPoint.IsInTextNode());
 
-  // Handle preformatted case first since it's simple.  Note that if end of
-  // the scan range isn't in preformatted element, we need to check only the
-  // style at mScanStartPoint since the range would be replaced and the start
-  // style will be applied to all new string.
-  mPRE =
-      mScanStartPoint.IsInContentNode() &&
-      EditorUtils::IsContentPreformatted(*mScanStartPoint.ContainerAsContent());
-  // if it's preformatedd, or if we are surrounded by text or special, it's all
-  // one big normal ws run
-  if (mPRE ||
-      ((StartsFromNormalText() || StartsFromSpecialContent()) &&
-       (EndsByNormalText() || EndsBySpecialContent() || EndsByBRElement()))) {
-    InitializeWithSingleFragment(WSFragment::Visible::Yes,
-                                 WSFragment::StartOfHardLine::No,
-                                 WSFragment::EndOfHardLine::No);
-    return;
-  }
-
-  // if we are before or after a block (or after a break), and there are no
-  // nbsp's, then it's all non-rendering ws.
-  if (!mFirstNBSPNode && !mLastNBSPNode &&
-      (StartsFromHardLineBreak() || EndsByBlockBoundary())) {
-    InitializeWithSingleFragment(
-        WSFragment::Visible::No,
-        StartsFromHardLineBreak() ? WSFragment::StartOfHardLine::Yes
-                                  : WSFragment::StartOfHardLine::No,
-        EndsByBlockBoundary() ? WSFragment::EndOfHardLine::Yes
-                              : WSFragment::EndOfHardLine::No);
-    return;
-  }
-
-  // otherwise a little trickier.  shucks.
-  mStartRun = new WSFragment();
-  mStartRun->mStartNode = mStartNode;
-  mStartRun->mStartOffset = mStartOffset;
-
-  if (StartsFromHardLineBreak()) {
-    // set up mStartRun
-    mStartRun->MarkAsStartOfHardLine();
-    mStartRun->mEndNode = mFirstNBSPNode;
-    mStartRun->mEndOffset = mFirstNBSPOffset;
-    mStartRun->SetStartFrom(mStartReason);
-    mStartRun->SetEndByNormalWiteSpaces();
-
-    // set up next run
-    WSFragment* normalRun = new WSFragment();
-    mStartRun->mRight = normalRun;
-    normalRun->MarkAsVisible();
-    normalRun->mStartNode = mFirstNBSPNode;
-    normalRun->mStartOffset = mFirstNBSPOffset;
-    normalRun->SetStartFromLeadingWhiteSpaces();
-    normalRun->mLeft = mStartRun;
-    if (!EndsByBlockBoundary()) {
-      // then no trailing ws.  this normal run ends the overall ws run.
-      normalRun->SetEndBy(mEndReason);
-      normalRun->mEndNode = mEndNode;
-      normalRun->mEndOffset = mEndOffset;
-      mEndRun = normalRun;
-    } else {
-      // we might have trailing ws.
-      // it so happens that *if* there is an nbsp at end,
-      // {mEndNode,mEndOffset-1} will point to it, even though in general
-      // start/end points not guaranteed to be in text nodes.
-      if (mLastNBSPNode == mEndNode && mLastNBSPOffset == mEndOffset - 1) {
-        // normal ws runs right up to adjacent block (nbsp next to block)
-        normalRun->SetEndBy(mEndReason);
-        normalRun->mEndNode = mEndNode;
-        normalRun->mEndOffset = mEndOffset;
-        mEndRun = normalRun;
-      } else {
-        normalRun->mEndNode = mLastNBSPNode;
-        normalRun->mEndOffset = mLastNBSPOffset + 1;
-        normalRun->SetEndByTrailingWhiteSpaces();
-
-        // set up next run
-        WSFragment* lastRun = new WSFragment();
-        lastRun->MarkAsEndOfHardLine();
-        lastRun->mStartNode = mLastNBSPNode;
-        lastRun->mStartOffset = mLastNBSPOffset + 1;
-        lastRun->mEndNode = mEndNode;
-        lastRun->mEndOffset = mEndOffset;
-        lastRun->SetStartFromNormalWhiteSpaces();
-        lastRun->mLeft = normalRun;
-        lastRun->SetEndBy(mEndReason);
-        mEndRun = lastRun;
-        normalRun->mRight = lastRun;
-      }
+  const bool isWhiteSpaceCollapsible = !EditorUtils::IsWhiteSpacePreformatted(
+      *aPoint.template ContainerAs<Text>());
+  const bool isNewLineCollapsible =
+      !EditorUtils::IsNewLinePreformatted(*aPoint.template ContainerAs<Text>());
+  const nsTextFragment& textFragment =
+      aPoint.template ContainerAs<Text>()->TextFragment();
+  for (uint32_t i = std::min(aPoint.Offset(), textFragment.GetLength()); i;
+       i--) {
+    WSType wsTypeOfNonCollapsibleChar;
+    switch (textFragment.CharAt(i - 1)) {
+      case HTMLEditUtils::kSpace:
+      case HTMLEditUtils::kCarriageReturn:
+      case HTMLEditUtils::kTab:
+        if (isWhiteSpaceCollapsible) {
+          continue;  // collapsible white-space or invisible white-space.
+        }
+        // preformatted white-space.
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
+      case HTMLEditUtils::kNewLine:
+        if (isNewLineCollapsible) {
+          continue;  // collapsible linefeed.
+        }
+        // preformatted linefeed.
+        wsTypeOfNonCollapsibleChar = WSType::PreformattedLineBreak;
+        break;
+      case HTMLEditUtils::kNBSP:
+        if (isWhiteSpaceCollapsible) {
+          if (aNBSPData) {
+            aNBSPData->NotifyNBSP(
+                EditorDOMPointInText(aPoint.template ContainerAs<Text>(),
+                                     i - 1),
+                NoBreakingSpaceData::Scanning::Backward);
+          }
+          continue;
+        }
+        // NBSP is never converted from collapsible white-space/linefeed.
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
+      default:
+        MOZ_ASSERT(!nsCRT::IsAsciiSpace(textFragment.CharAt(i - 1)));
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
     }
+
+    return Some(BoundaryData(
+        EditorDOMPoint(aPoint.template ContainerAs<Text>(), i),
+        *aPoint.template ContainerAs<Text>(), wsTypeOfNonCollapsibleChar));
+  }
+
+  return Nothing();
+}
+
+// static
+template <typename EditorDOMPointType>
+WSRunScanner::TextFragmentData::BoundaryData WSRunScanner::TextFragmentData::
+    BoundaryData::ScanCollapsibleWhiteSpaceStartFrom(
+        const EditorDOMPointType& aPoint,
+        const Element& aEditableBlockParentOrTopmostEditableInlineElement,
+        const Element* aEditingHost, NoBreakingSpaceData* aNBSPData,
+        BlockInlineCheck aBlockInlineCheck) {
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+  MOZ_ASSERT(aEditableBlockParentOrTopmostEditableInlineElement.IsEditable());
+
+  if (aPoint.IsInTextNode() && !aPoint.IsStartOfContainer()) {
+    Maybe<BoundaryData> startInTextNode =
+        BoundaryData::ScanCollapsibleWhiteSpaceStartInTextNode(
+            aPoint, aNBSPData, aBlockInlineCheck);
+    if (startInTextNode.isSome()) {
+      return startInTextNode.ref();
+    }
+    // The text node does not have visible character, let's keep scanning
+    // preceding nodes.
+    return BoundaryData::ScanCollapsibleWhiteSpaceStartFrom(
+        EditorDOMPoint(aPoint.template ContainerAs<Text>(), 0),
+        aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+        aNBSPData, aBlockInlineCheck);
+  }
+
+  // Then, we need to check previous leaf node.
+  nsIContent* previousLeafContentOrBlock =
+      HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
+          aPoint, aEditableBlockParentOrTopmostEditableInlineElement,
+          {LeafNodeType::LeafNodeOrNonEditableNode}, aBlockInlineCheck,
+          aEditingHost);
+  if (!previousLeafContentOrBlock) {
+    // No previous content means that we reached
+    // aEditableBlockParentOrTopmostEditableInlineElement boundary.
+    return BoundaryData(aPoint,
+                        const_cast<Element&>(
+                            aEditableBlockParentOrTopmostEditableInlineElement),
+                        HTMLEditUtils::IsBlockElement(
+                            aEditableBlockParentOrTopmostEditableInlineElement,
+                            aBlockInlineCheck)
+                            ? WSType::CurrentBlockBoundary
+                            : WSType::InlineEditingHostBoundary);
+  }
+
+  if (HTMLEditUtils::IsBlockElement(*previousLeafContentOrBlock,
+                                    aBlockInlineCheck)) {
+    return BoundaryData(aPoint, *previousLeafContentOrBlock,
+                        WSType::OtherBlockBoundary);
+  }
+
+  if (!previousLeafContentOrBlock->IsText() ||
+      !previousLeafContentOrBlock->IsEditable()) {
+    // it's a break or a special node, like <img>, that is not a block and
+    // not a break but still serves as a terminator to ws runs.
+    return BoundaryData(aPoint, *previousLeafContentOrBlock,
+                        previousLeafContentOrBlock->IsHTMLElement(nsGkAtoms::br)
+                            ? WSType::BRElement
+                            : WSType::SpecialContent);
+  }
+
+  if (!previousLeafContentOrBlock->AsText()->TextLength()) {
+    // If it's an empty text node, keep looking for its previous leaf content.
+    // Note that even if the empty text node is preformatted, we should keep
+    // looking for the previous one.
+    return BoundaryData::ScanCollapsibleWhiteSpaceStartFrom(
+        EditorDOMPointInText(previousLeafContentOrBlock->AsText(), 0),
+        aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+        aNBSPData, aBlockInlineCheck);
+  }
+
+  Maybe<BoundaryData> startInTextNode =
+      BoundaryData::ScanCollapsibleWhiteSpaceStartInTextNode(
+          EditorDOMPointInText::AtEndOf(*previousLeafContentOrBlock->AsText()),
+          aNBSPData, aBlockInlineCheck);
+  if (startInTextNode.isSome()) {
+    return startInTextNode.ref();
+  }
+
+  // The text node does not have visible character, let's keep scanning
+  // preceding nodes.
+  return BoundaryData::ScanCollapsibleWhiteSpaceStartFrom(
+      EditorDOMPointInText(previousLeafContentOrBlock->AsText(), 0),
+      aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+      aNBSPData, aBlockInlineCheck);
+}
+
+// static
+template <typename EditorDOMPointType>
+Maybe<WSRunScanner::TextFragmentData::BoundaryData> WSRunScanner::
+    TextFragmentData::BoundaryData::ScanCollapsibleWhiteSpaceEndInTextNode(
+        const EditorDOMPointType& aPoint, NoBreakingSpaceData* aNBSPData,
+        BlockInlineCheck aBlockInlineCheck) {
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+  MOZ_DIAGNOSTIC_ASSERT(aPoint.IsInTextNode());
+
+  const bool isWhiteSpaceCollapsible = !EditorUtils::IsWhiteSpacePreformatted(
+      *aPoint.template ContainerAs<Text>());
+  const bool isNewLineCollapsible =
+      !EditorUtils::IsNewLinePreformatted(*aPoint.template ContainerAs<Text>());
+  const nsTextFragment& textFragment =
+      aPoint.template ContainerAs<Text>()->TextFragment();
+  for (uint32_t i = aPoint.Offset(); i < textFragment.GetLength(); i++) {
+    WSType wsTypeOfNonCollapsibleChar;
+    switch (textFragment.CharAt(i)) {
+      case HTMLEditUtils::kSpace:
+      case HTMLEditUtils::kCarriageReturn:
+      case HTMLEditUtils::kTab:
+        if (isWhiteSpaceCollapsible) {
+          continue;  // collapsible white-space or invisible white-space.
+        }
+        // preformatted white-space.
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
+      case HTMLEditUtils::kNewLine:
+        if (isNewLineCollapsible) {
+          continue;  // collapsible linefeed.
+        }
+        // preformatted linefeed.
+        wsTypeOfNonCollapsibleChar = WSType::PreformattedLineBreak;
+        break;
+      case HTMLEditUtils::kNBSP:
+        if (isWhiteSpaceCollapsible) {
+          if (aNBSPData) {
+            aNBSPData->NotifyNBSP(
+                EditorDOMPointInText(aPoint.template ContainerAs<Text>(), i),
+                NoBreakingSpaceData::Scanning::Forward);
+          }
+          continue;
+        }
+        // NBSP is never converted from collapsible white-space/linefeed.
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
+      default:
+        MOZ_ASSERT(!nsCRT::IsAsciiSpace(textFragment.CharAt(i)));
+        wsTypeOfNonCollapsibleChar = WSType::NonCollapsibleCharacters;
+        break;
+    }
+
+    return Some(BoundaryData(
+        EditorDOMPoint(aPoint.template ContainerAs<Text>(), i),
+        *aPoint.template ContainerAs<Text>(), wsTypeOfNonCollapsibleChar));
+  }
+
+  return Nothing();
+}
+
+// static
+template <typename EditorDOMPointType>
+WSRunScanner::TextFragmentData::BoundaryData
+WSRunScanner::TextFragmentData::BoundaryData::ScanCollapsibleWhiteSpaceEndFrom(
+    const EditorDOMPointType& aPoint,
+    const Element& aEditableBlockParentOrTopmostEditableInlineElement,
+    const Element* aEditingHost, NoBreakingSpaceData* aNBSPData,
+    BlockInlineCheck aBlockInlineCheck) {
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+  MOZ_ASSERT(aEditableBlockParentOrTopmostEditableInlineElement.IsEditable());
+
+  if (aPoint.IsInTextNode() && !aPoint.IsEndOfContainer()) {
+    Maybe<BoundaryData> endInTextNode =
+        BoundaryData::ScanCollapsibleWhiteSpaceEndInTextNode(aPoint, aNBSPData,
+                                                             aBlockInlineCheck);
+    if (endInTextNode.isSome()) {
+      return endInTextNode.ref();
+    }
+    // The text node does not have visible character, let's keep scanning
+    // following nodes.
+    return BoundaryData::ScanCollapsibleWhiteSpaceEndFrom(
+        EditorDOMPointInText::AtEndOf(*aPoint.template ContainerAs<Text>()),
+        aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+        aNBSPData, aBlockInlineCheck);
+  }
+
+  // Then, we need to check next leaf node.
+  nsIContent* nextLeafContentOrBlock =
+      HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
+          aPoint, aEditableBlockParentOrTopmostEditableInlineElement,
+          {LeafNodeType::LeafNodeOrNonEditableNode}, aBlockInlineCheck,
+          aEditingHost);
+  if (!nextLeafContentOrBlock) {
+    // No next content means that we reached
+    // aEditableBlockParentOrTopmostEditableInlineElement boundary.
+    return BoundaryData(aPoint.template To<EditorDOMPoint>(),
+                        const_cast<Element&>(
+                            aEditableBlockParentOrTopmostEditableInlineElement),
+                        HTMLEditUtils::IsBlockElement(
+                            aEditableBlockParentOrTopmostEditableInlineElement,
+                            aBlockInlineCheck)
+                            ? WSType::CurrentBlockBoundary
+                            : WSType::InlineEditingHostBoundary);
+  }
+
+  if (HTMLEditUtils::IsBlockElement(*nextLeafContentOrBlock,
+                                    aBlockInlineCheck)) {
+    // we encountered a new block.  therefore no more ws.
+    return BoundaryData(aPoint, *nextLeafContentOrBlock,
+                        WSType::OtherBlockBoundary);
+  }
+
+  if (!nextLeafContentOrBlock->IsText() ||
+      !nextLeafContentOrBlock->IsEditable()) {
+    // we encountered a break or a special node, like <img>,
+    // that is not a block and not a break but still
+    // serves as a terminator to ws runs.
+    return BoundaryData(aPoint, *nextLeafContentOrBlock,
+                        nextLeafContentOrBlock->IsHTMLElement(nsGkAtoms::br)
+                            ? WSType::BRElement
+                            : WSType::SpecialContent);
+  }
+
+  if (!nextLeafContentOrBlock->AsText()->TextFragment().GetLength()) {
+    // If it's an empty text node, keep looking for its next leaf content.
+    // Note that even if the empty text node is preformatted, we should keep
+    // looking for the next one.
+    return BoundaryData::ScanCollapsibleWhiteSpaceEndFrom(
+        EditorDOMPointInText(nextLeafContentOrBlock->AsText(), 0),
+        aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+        aNBSPData, aBlockInlineCheck);
+  }
+
+  Maybe<BoundaryData> endInTextNode =
+      BoundaryData::ScanCollapsibleWhiteSpaceEndInTextNode(
+          EditorDOMPointInText(nextLeafContentOrBlock->AsText(), 0), aNBSPData,
+          aBlockInlineCheck);
+  if (endInTextNode.isSome()) {
+    return endInTextNode.ref();
+  }
+
+  // The text node does not have visible character, let's keep scanning
+  // following nodes.
+  return BoundaryData::ScanCollapsibleWhiteSpaceEndFrom(
+      EditorDOMPointInText::AtEndOf(*nextLeafContentOrBlock->AsText()),
+      aEditableBlockParentOrTopmostEditableInlineElement, aEditingHost,
+      aNBSPData, aBlockInlineCheck);
+}
+
+const EditorDOMRange&
+WSRunScanner::TextFragmentData::InvisibleLeadingWhiteSpaceRangeRef() const {
+  if (mLeadingWhiteSpaceRange.isSome()) {
+    return mLeadingWhiteSpaceRange.ref();
+  }
+
+  // If it's start of line, there is no invisible leading white-spaces.
+  if (!StartsFromHardLineBreak() && !StartsFromInlineEditingHostBoundary()) {
+    mLeadingWhiteSpaceRange.emplace();
+    return mLeadingWhiteSpaceRange.ref();
+  }
+
+  // If there is no NBSP, all of the given range is leading white-spaces.
+  // Note that this result may be collapsed if there is no leading white-spaces.
+  if (!mNBSPData.FoundNBSP()) {
+    MOZ_ASSERT(mStart.PointRef().IsSet() || mEnd.PointRef().IsSet());
+    mLeadingWhiteSpaceRange.emplace(mStart.PointRef(), mEnd.PointRef());
+    return mLeadingWhiteSpaceRange.ref();
+  }
+
+  MOZ_ASSERT(mNBSPData.LastPointRef().IsSetAndValid());
+
+  // Even if the first NBSP is the start, i.e., there is no invisible leading
+  // white-space, return collapsed range.
+  mLeadingWhiteSpaceRange.emplace(mStart.PointRef(), mNBSPData.FirstPointRef());
+  return mLeadingWhiteSpaceRange.ref();
+}
+
+const EditorDOMRange&
+WSRunScanner::TextFragmentData::InvisibleTrailingWhiteSpaceRangeRef() const {
+  if (mTrailingWhiteSpaceRange.isSome()) {
+    return mTrailingWhiteSpaceRange.ref();
+  }
+
+  // If it's not immediately before a block boundary nor an invisible
+  // preformatted linefeed, there is no invisible trailing white-spaces.  Note
+  // that collapsible white-spaces before a `<br>` element is visible.
+  if (!EndsByBlockBoundary() && !EndsByInlineEditingHostBoundary() &&
+      !EndsByInvisiblePreformattedLineBreak()) {
+    mTrailingWhiteSpaceRange.emplace();
+    return mTrailingWhiteSpaceRange.ref();
+  }
+
+  // If there is no NBSP, all of the given range is trailing white-spaces.
+  // Note that this result may be collapsed if there is no trailing white-
+  // spaces.
+  if (!mNBSPData.FoundNBSP()) {
+    MOZ_ASSERT(mStart.PointRef().IsSet() || mEnd.PointRef().IsSet());
+    mTrailingWhiteSpaceRange.emplace(mStart.PointRef(), mEnd.PointRef());
+    return mTrailingWhiteSpaceRange.ref();
+  }
+
+  MOZ_ASSERT(mNBSPData.LastPointRef().IsSetAndValid());
+
+  // If last NBSP is immediately before the end, there is no trailing white-
+  // spaces.
+  if (mEnd.PointRef().IsSet() &&
+      mNBSPData.LastPointRef().GetContainer() ==
+          mEnd.PointRef().GetContainer() &&
+      mNBSPData.LastPointRef().Offset() == mEnd.PointRef().Offset() - 1) {
+    mTrailingWhiteSpaceRange.emplace();
+    return mTrailingWhiteSpaceRange.ref();
+  }
+
+  // Otherwise, the may be some trailing white-spaces.
+  MOZ_ASSERT(!mNBSPData.LastPointRef().IsEndOfContainer());
+  mTrailingWhiteSpaceRange.emplace(mNBSPData.LastPointRef().NextPoint(),
+                                   mEnd.PointRef());
+  return mTrailingWhiteSpaceRange.ref();
+}
+
+EditorDOMRangeInTexts
+WSRunScanner::TextFragmentData::GetNonCollapsedRangeInTexts(
+    const EditorDOMRange& aRange) const {
+  if (!aRange.IsPositioned()) {
+    return EditorDOMRangeInTexts();
+  }
+  if (aRange.Collapsed()) {
+    // If collapsed, we can do nothing.
+    return EditorDOMRangeInTexts();
+  }
+  if (aRange.IsInTextNodes()) {
+    // Note that this may return a range which don't include any invisible
+    // white-spaces due to empty text nodes.
+    return aRange.GetAsInTexts();
+  }
+
+  const auto firstPoint =
+      aRange.StartRef().IsInTextNode()
+          ? aRange.StartRef().AsInText()
+          : GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+                aRange.StartRef());
+  if (!firstPoint.IsSet()) {
+    return EditorDOMRangeInTexts();
+  }
+  EditorDOMPointInText endPoint;
+  if (aRange.EndRef().IsInTextNode()) {
+    endPoint = aRange.EndRef().AsInText();
   } else {
-    MOZ_ASSERT(!StartsFromHardLineBreak());
-    mStartRun->MarkAsVisible();
-    mStartRun->mEndNode = mLastNBSPNode;
-    mStartRun->mEndOffset = mLastNBSPOffset + 1;
-    mStartRun->SetStartFrom(mStartReason);
-
-    // we might have trailing ws.
-    // it so happens that *if* there is an nbsp at end, {mEndNode,mEndOffset-1}
-    // will point to it, even though in general start/end points not
-    // guaranteed to be in text nodes.
-    if (mLastNBSPNode == mEndNode && mLastNBSPOffset == (mEndOffset - 1)) {
-      mStartRun->SetEndBy(mEndReason);
-      mStartRun->mEndNode = mEndNode;
-      mStartRun->mEndOffset = mEndOffset;
-      mEndRun = mStartRun;
-    } else {
-      // set up next run
-      WSFragment* lastRun = new WSFragment();
-      lastRun->MarkAsEndOfHardLine();
-      lastRun->mStartNode = mLastNBSPNode;
-      lastRun->mStartOffset = mLastNBSPOffset + 1;
-      lastRun->SetStartFromNormalWhiteSpaces();
-      lastRun->mLeft = mStartRun;
-      lastRun->SetEndBy(mEndReason);
-      mEndRun = lastRun;
-      mStartRun->mRight = lastRun;
-      mStartRun->SetEndByTrailingWhiteSpaces();
+    // FYI: GetPreviousEditableCharPoint() returns last character's point
+    //      of preceding text node if it's not empty, but we need end of
+    //      the text node here.
+    endPoint = GetPreviousEditableCharPoint(aRange.EndRef());
+    if (endPoint.IsSet() && endPoint.IsAtLastContent()) {
+      MOZ_ALWAYS_TRUE(endPoint.AdvanceOffset());
     }
   }
+  if (!endPoint.IsSet() || firstPoint == endPoint) {
+    return EditorDOMRangeInTexts();
+  }
+  return EditorDOMRangeInTexts(firstPoint, endPoint);
 }
 
-void WSRunScanner::ClearRuns() {
-  WSFragment *tmp, *run;
-  run = mStartRun;
-  while (run) {
-    tmp = run->mRight;
-    delete run;
-    run = tmp;
-  }
-  mStartRun = 0;
-  mEndRun = 0;
-}
-
-void WSRunScanner::InitializeWithSingleFragment(
-    WSFragment::Visible aIsVisible,
-    WSFragment::StartOfHardLine aIsStartOfHardLine,
-    WSFragment::EndOfHardLine aIsEndOfHardLine) {
-  MOZ_ASSERT(!mStartRun);
-  MOZ_ASSERT(!mEndRun);
-
-  mStartRun = new WSFragment();
-
-  mStartRun->mStartNode = mStartNode;
-  mStartRun->mStartOffset = mStartOffset;
-  if (aIsVisible == WSFragment::Visible::Yes) {
-    mStartRun->MarkAsVisible();
-  }
-  if (aIsStartOfHardLine == WSFragment::StartOfHardLine::Yes) {
-    mStartRun->MarkAsStartOfHardLine();
-  }
-  if (aIsEndOfHardLine == WSFragment::EndOfHardLine::Yes) {
-    mStartRun->MarkAsEndOfHardLine();
-  }
-  mStartRun->mEndNode = mEndNode;
-  mStartRun->mEndOffset = mEndOffset;
-  mStartRun->SetStartFrom(mStartReason);
-  mStartRun->SetEndBy(mEndReason);
-
-  mEndRun = mStartRun;
-}
-
-nsresult WSRunObject::PrepareToDeleteRangePriv(WSRunObject* aEndObject) {
-  // this routine adjust whitespace before *this* and after aEndObject
-  // in preperation for the two areas to become adjacent after the
-  // intervening content is deleted.  It's overly agressive right
-  // now.  There might be a block boundary remaining between them after
-  // the deletion, in which case these adjstments are unneeded (though
-  // I don't think they can ever be harmful?)
-
-  if (NS_WARN_IF(!aEndObject)) {
-    return NS_ERROR_INVALID_ARG;
+const WSRunScanner::VisibleWhiteSpacesData&
+WSRunScanner::TextFragmentData::VisibleWhiteSpacesDataRef() const {
+  if (mVisibleWhiteSpacesData.isSome()) {
+    return mVisibleWhiteSpacesData.ref();
   }
 
-  // get the runs before and after selection
-  WSFragment* beforeRun = FindNearestRun(mScanStartPoint, false);
-  WSFragment* afterRun =
-      aEndObject->FindNearestRun(aEndObject->mScanStartPoint, true);
+  {
+    // If all things are obviously visible, we can return range for all of the
+    // things quickly.
+    const bool mayHaveInvisibleLeadingSpace =
+        !StartsFromNonCollapsibleCharacters() && !StartsFromSpecialContent();
+    const bool mayHaveInvisibleTrailingWhiteSpace =
+        !EndsByNonCollapsibleCharacters() && !EndsBySpecialContent() &&
+        !EndsByBRElement() && !EndsByInvisiblePreformattedLineBreak();
 
-  if (!beforeRun && !afterRun) {
-    return NS_OK;
-  }
-
-  if (afterRun) {
-    // trim after run of any leading ws
-    if (afterRun->IsStartOfHardLine()) {
-      // mScanStartPoint will be referred bellow so that we need to keep
-      // it a valid point.
-      AutoEditorDOMPointChildInvalidator forgetChild(mScanStartPoint);
-      nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                        .DeleteTextAndTextNodesWithTransaction(
-                            aEndObject->mScanStartPoint, afterRun->EndPoint());
-      if (NS_FAILED(rv)) {
-        NS_WARNING(
-            "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-        return rv;
+    if (!mayHaveInvisibleLeadingSpace && !mayHaveInvisibleTrailingWhiteSpace) {
+      VisibleWhiteSpacesData visibleWhiteSpaces;
+      if (mStart.PointRef().IsSet()) {
+        visibleWhiteSpaces.SetStartPoint(mStart.PointRef());
       }
+      visibleWhiteSpaces.SetStartFrom(mStart.RawReason());
+      if (mEnd.PointRef().IsSet()) {
+        visibleWhiteSpaces.SetEndPoint(mEnd.PointRef());
+      }
+      visibleWhiteSpaces.SetEndBy(mEnd.RawReason());
+      mVisibleWhiteSpacesData.emplace(visibleWhiteSpaces);
+      return mVisibleWhiteSpacesData.ref();
     }
-    // adjust normal ws in afterRun if needed
-    else if (afterRun->IsVisibleAndMiddleOfHardLine() && !aEndObject->mPRE) {
-      if ((beforeRun && beforeRun->IsStartOfHardLine()) ||
-          (!beforeRun && StartsFromHardLineBreak())) {
-        // make sure leading char of following ws is an nbsp, so that it will
-        // show up
-        EditorDOMPointInText nextCharOfStartOfEnd =
-            aEndObject->GetInclusiveNextEditableCharPoint(
-                aEndObject->mScanStartPoint);
-        if (nextCharOfStartOfEnd.IsSet() &&
-            !nextCharOfStartOfEnd.IsEndOfContainer() &&
-            nextCharOfStartOfEnd.IsCharASCIISpace()) {
-          // mScanStartPoint will be referred bellow so that we need to keep
-          // it a valid point.
-          AutoEditorDOMPointChildInvalidator forgetChild(mScanStartPoint);
-          nsresult rv = aEndObject->ReplaceASCIIWhitespacesWithOneNBSP(
-              nextCharOfStartOfEnd);
-          if (NS_FAILED(rv)) {
-            NS_WARNING(
-                "WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP() failed");
-            return rv;
-          }
+  }
+
+  // If all of the range is invisible leading or trailing white-spaces,
+  // there is no visible content.
+  const EditorDOMRange& leadingWhiteSpaceRange =
+      InvisibleLeadingWhiteSpaceRangeRef();
+  const bool maybeHaveLeadingWhiteSpaces =
+      leadingWhiteSpaceRange.StartRef().IsSet() ||
+      leadingWhiteSpaceRange.EndRef().IsSet();
+  if (maybeHaveLeadingWhiteSpaces &&
+      leadingWhiteSpaceRange.StartRef() == mStart.PointRef() &&
+      leadingWhiteSpaceRange.EndRef() == mEnd.PointRef()) {
+    mVisibleWhiteSpacesData.emplace(VisibleWhiteSpacesData());
+    return mVisibleWhiteSpacesData.ref();
+  }
+  const EditorDOMRange& trailingWhiteSpaceRange =
+      InvisibleTrailingWhiteSpaceRangeRef();
+  const bool maybeHaveTrailingWhiteSpaces =
+      trailingWhiteSpaceRange.StartRef().IsSet() ||
+      trailingWhiteSpaceRange.EndRef().IsSet();
+  if (maybeHaveTrailingWhiteSpaces &&
+      trailingWhiteSpaceRange.StartRef() == mStart.PointRef() &&
+      trailingWhiteSpaceRange.EndRef() == mEnd.PointRef()) {
+    mVisibleWhiteSpacesData.emplace(VisibleWhiteSpacesData());
+    return mVisibleWhiteSpacesData.ref();
+  }
+
+  if (!StartsFromHardLineBreak() && !StartsFromInlineEditingHostBoundary()) {
+    VisibleWhiteSpacesData visibleWhiteSpaces;
+    if (mStart.PointRef().IsSet()) {
+      visibleWhiteSpaces.SetStartPoint(mStart.PointRef());
+    }
+    visibleWhiteSpaces.SetStartFrom(mStart.RawReason());
+    if (!maybeHaveTrailingWhiteSpaces) {
+      visibleWhiteSpaces.SetEndPoint(mEnd.PointRef());
+      visibleWhiteSpaces.SetEndBy(mEnd.RawReason());
+      mVisibleWhiteSpacesData = Some(visibleWhiteSpaces);
+      return mVisibleWhiteSpacesData.ref();
+    }
+    if (trailingWhiteSpaceRange.StartRef().IsSet()) {
+      visibleWhiteSpaces.SetEndPoint(trailingWhiteSpaceRange.StartRef());
+    }
+    visibleWhiteSpaces.SetEndByTrailingWhiteSpaces();
+    mVisibleWhiteSpacesData.emplace(visibleWhiteSpaces);
+    return mVisibleWhiteSpacesData.ref();
+  }
+
+  MOZ_ASSERT(StartsFromHardLineBreak() ||
+             StartsFromInlineEditingHostBoundary());
+  MOZ_ASSERT(maybeHaveLeadingWhiteSpaces);
+
+  VisibleWhiteSpacesData visibleWhiteSpaces;
+  if (leadingWhiteSpaceRange.EndRef().IsSet()) {
+    visibleWhiteSpaces.SetStartPoint(leadingWhiteSpaceRange.EndRef());
+  }
+  visibleWhiteSpaces.SetStartFromLeadingWhiteSpaces();
+  if (!EndsByBlockBoundary() && !EndsByInlineEditingHostBoundary()) {
+    // then no trailing ws.  this normal run ends the overall ws run.
+    if (mEnd.PointRef().IsSet()) {
+      visibleWhiteSpaces.SetEndPoint(mEnd.PointRef());
+    }
+    visibleWhiteSpaces.SetEndBy(mEnd.RawReason());
+    mVisibleWhiteSpacesData.emplace(visibleWhiteSpaces);
+    return mVisibleWhiteSpacesData.ref();
+  }
+
+  MOZ_ASSERT(EndsByBlockBoundary() || EndsByInlineEditingHostBoundary());
+
+  if (!maybeHaveTrailingWhiteSpaces) {
+    // normal ws runs right up to adjacent block (nbsp next to block)
+    visibleWhiteSpaces.SetEndPoint(mEnd.PointRef());
+    visibleWhiteSpaces.SetEndBy(mEnd.RawReason());
+    mVisibleWhiteSpacesData.emplace(visibleWhiteSpaces);
+    return mVisibleWhiteSpacesData.ref();
+  }
+
+  if (trailingWhiteSpaceRange.StartRef().IsSet()) {
+    visibleWhiteSpaces.SetEndPoint(trailingWhiteSpaceRange.StartRef());
+  }
+  visibleWhiteSpaces.SetEndByTrailingWhiteSpaces();
+  mVisibleWhiteSpacesData.emplace(visibleWhiteSpaces);
+  return mVisibleWhiteSpacesData.ref();
+}
+
+// static
+Result<CaretPoint, nsresult> WhiteSpaceVisibilityKeeper::
+    MakeSureToKeepVisibleStateOfWhiteSpacesAroundDeletingRange(
+        HTMLEditor& aHTMLEditor, const EditorDOMRange& aRangeToDelete,
+        const Element& aEditingHost) {
+  if (NS_WARN_IF(!aRangeToDelete.IsPositionedAndValid()) ||
+      NS_WARN_IF(!aRangeToDelete.IsInContentNodes())) {
+    return Err(NS_ERROR_INVALID_ARG);
+  }
+
+  EditorDOMRange rangeToDelete(aRangeToDelete);
+  bool mayBecomeUnexpectedDOMTree = aHTMLEditor.MayHaveMutationEventListeners(
+      NS_EVENT_BITS_MUTATION_SUBTREEMODIFIED |
+      NS_EVENT_BITS_MUTATION_NODEREMOVED |
+      NS_EVENT_BITS_MUTATION_NODEREMOVEDFROMDOCUMENT |
+      NS_EVENT_BITS_MUTATION_CHARACTERDATAMODIFIED);
+
+  TextFragmentData textFragmentDataAtStart(
+      rangeToDelete.StartRef(), &aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  TextFragmentData textFragmentDataAtEnd(
+      rangeToDelete.EndRef(), &aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  ReplaceRangeData replaceRangeDataAtEnd =
+      textFragmentDataAtEnd.GetReplaceRangeDataAtEndOfDeletionRange(
+          textFragmentDataAtStart);
+  EditorDOMPoint pointToPutCaret;
+  if (replaceRangeDataAtEnd.IsSet() && !replaceRangeDataAtEnd.Collapsed()) {
+    MOZ_ASSERT(rangeToDelete.EndRef().EqualsOrIsBefore(
+        replaceRangeDataAtEnd.EndRef()));
+    // If there is some text after deleting range, replacing range start must
+    // equal or be before end of the deleting range.
+    MOZ_ASSERT_IF(rangeToDelete.EndRef().IsInTextNode() &&
+                      !rangeToDelete.EndRef().IsEndOfContainer(),
+                  replaceRangeDataAtEnd.StartRef().EqualsOrIsBefore(
+                      rangeToDelete.EndRef()));
+    // If the deleting range end is end of a text node, the replacing range
+    // should:
+    // - start with another node if the following text node starts with
+    // white-spaces.
+    // - start from prior point because end of the range may be in collapsible
+    // white-spaces.
+    MOZ_ASSERT_IF(rangeToDelete.EndRef().IsInTextNode() &&
+                      rangeToDelete.EndRef().IsEndOfContainer(),
+                  replaceRangeDataAtEnd.StartRef().EqualsOrIsBefore(
+                      rangeToDelete.EndRef()) ||
+                      replaceRangeDataAtEnd.StartRef().IsStartOfContainer());
+    MOZ_ASSERT(rangeToDelete.StartRef().EqualsOrIsBefore(
+        replaceRangeDataAtEnd.StartRef()));
+    if (!replaceRangeDataAtEnd.HasReplaceString()) {
+      EditorDOMPoint startToDelete(aRangeToDelete.StartRef());
+      EditorDOMPoint endToDelete(replaceRangeDataAtEnd.StartRef());
+      {
+        AutoEditorDOMPointChildInvalidator lockOffsetOfStart(startToDelete);
+        AutoEditorDOMPointChildInvalidator lockOffsetOfEnd(endToDelete);
+        AutoTrackDOMPoint trackStartToDelete(aHTMLEditor.RangeUpdaterRef(),
+                                             &startToDelete);
+        AutoTrackDOMPoint trackEndToDelete(aHTMLEditor.RangeUpdaterRef(),
+                                           &endToDelete);
+        Result<CaretPoint, nsresult> caretPointOrError =
+            aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+                replaceRangeDataAtEnd.StartRef(),
+                replaceRangeDataAtEnd.EndRef(),
+                HTMLEditor::TreatEmptyTextNodes::
+                    KeepIfContainerOfRangeBoundaries);
+        if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+          NS_WARNING(
+              "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+          return caretPointOrError;
         }
+        caretPointOrError.unwrap().MoveCaretPointTo(
+            pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
       }
-    }
-  }
-
-  if (!beforeRun) {
-    return NS_OK;
-  }
-
-  // trim before run of any trailing ws
-  if (beforeRun->IsEndOfHardLine()) {
-    nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                      .DeleteTextAndTextNodesWithTransaction(
-                          beforeRun->StartPoint(), mScanStartPoint);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-    return rv;
-  }
-
-  if (beforeRun->IsVisibleAndMiddleOfHardLine() && !mPRE) {
-    if ((afterRun && (afterRun->IsEndOfHardLine() || afterRun->IsVisible())) ||
-        (!afterRun && aEndObject->EndsByBlockBoundary())) {
-      // make sure trailing char of starting ws is an nbsp, so that it will show
-      // up
-      EditorDOMPointInText atPreviousCharOfStart =
-          GetPreviousEditableCharPoint(mScanStartPoint);
-      if (atPreviousCharOfStart.IsSet() &&
-          !atPreviousCharOfStart.IsEndOfContainer() &&
-          atPreviousCharOfStart.IsCharASCIISpace()) {
-        EditorDOMPointInText start, end;
-        Tie(start, end) = GetASCIIWhitespacesBounds(eBoth, mScanStartPoint);
-        NS_WARNING_ASSERTION(start.IsSet(),
-                             "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                             "return start point, but ignored");
-        NS_WARNING_ASSERTION(end.IsSet(),
-                             "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                             "return end point, but ignored");
-        nsresult rv = ReplaceASCIIWhitespacesWithOneNBSP(start);
+      if (mayBecomeUnexpectedDOMTree &&
+          (NS_WARN_IF(!startToDelete.IsSetAndValid()) ||
+           NS_WARN_IF(!endToDelete.IsSetAndValid()) ||
+           NS_WARN_IF(!startToDelete.EqualsOrIsBefore(endToDelete)))) {
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+      MOZ_ASSERT(startToDelete.EqualsOrIsBefore(endToDelete));
+      rangeToDelete.SetStartAndEnd(startToDelete, endToDelete);
+    } else {
+      MOZ_ASSERT(replaceRangeDataAtEnd.RangeRef().IsInTextNodes());
+      EditorDOMPoint startToDelete(aRangeToDelete.StartRef());
+      EditorDOMPoint endToDelete(replaceRangeDataAtEnd.StartRef());
+      {
+        AutoTrackDOMPoint trackStartToDelete(aHTMLEditor.RangeUpdaterRef(),
+                                             &startToDelete);
+        AutoTrackDOMPoint trackEndToDelete(aHTMLEditor.RangeUpdaterRef(),
+                                           &endToDelete);
+        AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                               &pointToPutCaret);
+        // FYI: ReplaceTextAndRemoveEmptyTextNodes() does not have any idea of
+        // new caret position.
+        nsresult rv =
+            WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+                aHTMLEditor, replaceRangeDataAtEnd.RangeRef().AsInTexts(),
+                replaceRangeDataAtEnd.ReplaceStringRef());
         if (NS_FAILED(rv)) {
           NS_WARNING(
-              "WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP() failed");
-          return rv;
+              "WhiteSpaceVisibilityKeeper::"
+              "MakeSureToKeepVisibleStateOfWhiteSpacesAtEndOfDeletingRange() "
+              "failed");
+          return Err(rv);
         }
       }
+      if (mayBecomeUnexpectedDOMTree &&
+          (NS_WARN_IF(!startToDelete.IsSetAndValid()) ||
+           NS_WARN_IF(!endToDelete.IsSetAndValid()) ||
+           NS_WARN_IF(!startToDelete.EqualsOrIsBefore(endToDelete)))) {
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+      MOZ_ASSERT(startToDelete.EqualsOrIsBefore(endToDelete));
+      rangeToDelete.SetStartAndEnd(startToDelete, endToDelete);
+    }
+
+    if (mayBecomeUnexpectedDOMTree) {
+      // If focus is changed by mutation event listeners, we should stop
+      // handling this edit action.
+      if (&aEditingHost != aHTMLEditor.ComputeEditingHost()) {
+        NS_WARNING("Active editing host was changed");
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+      if (!rangeToDelete.IsInContentNodes()) {
+        NS_WARNING("The modified range was not in content");
+        return Err(NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE);
+      }
+      // If the DOM tree might be changed by mutation event listeners, we
+      // should retrieve the latest data for avoiding to delete/replace
+      // unexpected range.
+      textFragmentDataAtStart =
+          TextFragmentData(rangeToDelete.StartRef(), &aEditingHost,
+                           BlockInlineCheck::UseComputedDisplayStyle);
+      textFragmentDataAtEnd =
+          TextFragmentData(rangeToDelete.EndRef(), &aEditingHost,
+                           BlockInlineCheck::UseComputedDisplayStyle);
     }
   }
-  return NS_OK;
+  ReplaceRangeData replaceRangeDataAtStart =
+      textFragmentDataAtStart.GetReplaceRangeDataAtStartOfDeletionRange(
+          textFragmentDataAtEnd);
+  if (!replaceRangeDataAtStart.IsSet() || replaceRangeDataAtStart.Collapsed()) {
+    return CaretPoint(std::move(pointToPutCaret));
+  }
+  if (!replaceRangeDataAtStart.HasReplaceString()) {
+    AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                           &pointToPutCaret);
+    Result<CaretPoint, nsresult> caretPointOrError =
+        aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+            replaceRangeDataAtStart.StartRef(),
+            replaceRangeDataAtStart.EndRef(),
+            HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+    // XXX Should we validate the range for making this return
+    //     NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE in this case?
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING("HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+      return caretPointOrError.propagateErr();
+    }
+    trackPointToPutCaret.FlushAndStopTracking();
+    caretPointOrError.unwrap().MoveCaretPointTo(
+        pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    return CaretPoint(std::move(pointToPutCaret));
+  }
+
+  MOZ_ASSERT(replaceRangeDataAtStart.RangeRef().IsInTextNodes());
+  {
+    AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                           &pointToPutCaret);
+    // FYI: ReplaceTextAndRemoveEmptyTextNodes() does not have any idea of
+    // new caret position.
+    nsresult rv =
+        WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+            aHTMLEditor, replaceRangeDataAtStart.RangeRef().AsInTexts(),
+            replaceRangeDataAtStart.ReplaceStringRef());
+    // XXX Should we validate the range for making this return
+    //     NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE in this case?
+    if (NS_FAILED(rv)) {
+      NS_WARNING(
+          "WhiteSpaceVisibilityKeeper::"
+          "MakeSureToKeepVisibleStateOfWhiteSpacesAtStartOfDeletingRange() "
+          "failed");
+      return Err(rv);
+    }
+  }
+  return CaretPoint(std::move(pointToPutCaret));
 }
 
-nsresult WSRunObject::PrepareToSplitAcrossBlocksPriv() {
-  // used to prepare ws to be split across two blocks.  The main issue
-  // here is make sure normalWS doesn't end up becoming non-significant
-  // leading or trailing ws after the split.
+ReplaceRangeData
+WSRunScanner::TextFragmentData::GetReplaceRangeDataAtEndOfDeletionRange(
+    const TextFragmentData& aTextFragmentDataAtStartToDelete) const {
+  const EditorDOMPoint& startToDelete =
+      aTextFragmentDataAtStartToDelete.ScanStartRef();
+  const EditorDOMPoint& endToDelete = mScanStartPoint;
 
-  // get the runs before and after selection
-  WSFragment* beforeRun = FindNearestRun(mScanStartPoint, false);
-  WSFragment* afterRun = FindNearestRun(mScanStartPoint, true);
+  MOZ_ASSERT(startToDelete.IsSetAndValid());
+  MOZ_ASSERT(endToDelete.IsSetAndValid());
+  MOZ_ASSERT(startToDelete.EqualsOrIsBefore(endToDelete));
 
-  // adjust normal ws in afterRun if needed
-  if (afterRun && afterRun->IsVisibleAndMiddleOfHardLine()) {
-    // make sure leading char of following ws is an nbsp, so that it will show
-    // up
+  if (EndRef().EqualsOrIsBefore(endToDelete)) {
+    return ReplaceRangeData();
+  }
+
+  // If deleting range is followed by invisible trailing white-spaces, we need
+  // to remove it for making them not visible.
+  const EditorDOMRange invisibleTrailingWhiteSpaceRangeAtEnd =
+      GetNewInvisibleTrailingWhiteSpaceRangeIfSplittingAt(endToDelete);
+  if (invisibleTrailingWhiteSpaceRangeAtEnd.IsPositioned()) {
+    if (invisibleTrailingWhiteSpaceRangeAtEnd.Collapsed()) {
+      return ReplaceRangeData();
+    }
+    // XXX Why don't we remove all invisible white-spaces?
+    MOZ_ASSERT(invisibleTrailingWhiteSpaceRangeAtEnd.StartRef() == endToDelete);
+    return ReplaceRangeData(invisibleTrailingWhiteSpaceRangeAtEnd, u""_ns);
+  }
+
+  // If end of the deleting range is followed by visible white-spaces which
+  // is not preformatted, we might need to replace the following ASCII
+  // white-spaces with an NBSP.
+  const VisibleWhiteSpacesData& nonPreformattedVisibleWhiteSpacesAtEnd =
+      VisibleWhiteSpacesDataRef();
+  if (!nonPreformattedVisibleWhiteSpacesAtEnd.IsInitialized()) {
+    return ReplaceRangeData();
+  }
+  const PointPosition pointPositionWithNonPreformattedVisibleWhiteSpacesAtEnd =
+      nonPreformattedVisibleWhiteSpacesAtEnd.ComparePoint(endToDelete);
+  if (pointPositionWithNonPreformattedVisibleWhiteSpacesAtEnd !=
+          PointPosition::StartOfFragment &&
+      pointPositionWithNonPreformattedVisibleWhiteSpacesAtEnd !=
+          PointPosition::MiddleOfFragment) {
+    return ReplaceRangeData();
+  }
+  // If start of deleting range follows white-spaces or end of delete
+  // will be start of a line, the following text cannot start with an
+  // ASCII white-space for keeping it visible.
+  if (!aTextFragmentDataAtStartToDelete
+           .FollowingContentMayBecomeFirstVisibleContent(startToDelete)) {
+    return ReplaceRangeData();
+  }
+  auto nextCharOfStartOfEnd =
+      GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(endToDelete);
+  if (!nextCharOfStartOfEnd.IsSet() ||
+      nextCharOfStartOfEnd.IsEndOfContainer() ||
+      !nextCharOfStartOfEnd.IsCharCollapsibleASCIISpace()) {
+    return ReplaceRangeData();
+  }
+  if (nextCharOfStartOfEnd.IsStartOfContainer() ||
+      nextCharOfStartOfEnd.IsPreviousCharCollapsibleASCIISpace()) {
+    nextCharOfStartOfEnd = aTextFragmentDataAtStartToDelete
+                               .GetFirstASCIIWhiteSpacePointCollapsedTo(
+                                   nextCharOfStartOfEnd, nsIEditor::eNone);
+  }
+  const EditorDOMPointInText endOfCollapsibleASCIIWhiteSpaces =
+      aTextFragmentDataAtStartToDelete.GetEndOfCollapsibleASCIIWhiteSpaces(
+          nextCharOfStartOfEnd, nsIEditor::eNone);
+  return ReplaceRangeData(nextCharOfStartOfEnd,
+                          endOfCollapsibleASCIIWhiteSpaces,
+                          nsDependentSubstring(&HTMLEditUtils::kNBSP, 1));
+}
+
+ReplaceRangeData
+WSRunScanner::TextFragmentData::GetReplaceRangeDataAtStartOfDeletionRange(
+    const TextFragmentData& aTextFragmentDataAtEndToDelete) const {
+  const EditorDOMPoint& startToDelete = mScanStartPoint;
+  const EditorDOMPoint& endToDelete =
+      aTextFragmentDataAtEndToDelete.ScanStartRef();
+
+  MOZ_ASSERT(startToDelete.IsSetAndValid());
+  MOZ_ASSERT(endToDelete.IsSetAndValid());
+  MOZ_ASSERT(startToDelete.EqualsOrIsBefore(endToDelete));
+
+  if (startToDelete.EqualsOrIsBefore(StartRef())) {
+    return ReplaceRangeData();
+  }
+
+  const EditorDOMRange invisibleLeadingWhiteSpaceRangeAtStart =
+      GetNewInvisibleLeadingWhiteSpaceRangeIfSplittingAt(startToDelete);
+
+  // If deleting range follows invisible leading white-spaces, we need to
+  // remove them for making them not visible.
+  if (invisibleLeadingWhiteSpaceRangeAtStart.IsPositioned()) {
+    if (invisibleLeadingWhiteSpaceRangeAtStart.Collapsed()) {
+      return ReplaceRangeData();
+    }
+
+    // XXX Why don't we remove all leading white-spaces?
+    return ReplaceRangeData(invisibleLeadingWhiteSpaceRangeAtStart, u""_ns);
+  }
+
+  // If start of the deleting range follows visible white-spaces which is not
+  // preformatted, we might need to replace previous ASCII white-spaces with
+  // an NBSP.
+  const VisibleWhiteSpacesData& nonPreformattedVisibleWhiteSpacesAtStart =
+      VisibleWhiteSpacesDataRef();
+  if (!nonPreformattedVisibleWhiteSpacesAtStart.IsInitialized()) {
+    return ReplaceRangeData();
+  }
+  const PointPosition
+      pointPositionWithNonPreformattedVisibleWhiteSpacesAtStart =
+          nonPreformattedVisibleWhiteSpacesAtStart.ComparePoint(startToDelete);
+  if (pointPositionWithNonPreformattedVisibleWhiteSpacesAtStart !=
+          PointPosition::MiddleOfFragment &&
+      pointPositionWithNonPreformattedVisibleWhiteSpacesAtStart !=
+          PointPosition::EndOfFragment) {
+    return ReplaceRangeData();
+  }
+  // If end of the deleting range is (was) followed by white-spaces or
+  // previous character of start of deleting range will be immediately
+  // before a block boundary, the text cannot ends with an ASCII white-space
+  // for keeping it visible.
+  if (!aTextFragmentDataAtEndToDelete.PrecedingContentMayBecomeInvisible(
+          endToDelete)) {
+    return ReplaceRangeData();
+  }
+  EditorDOMPointInText atPreviousCharOfStart =
+      GetPreviousEditableCharPoint(startToDelete);
+  if (!atPreviousCharOfStart.IsSet() ||
+      atPreviousCharOfStart.IsEndOfContainer() ||
+      !atPreviousCharOfStart.IsCharCollapsibleASCIISpace()) {
+    return ReplaceRangeData();
+  }
+  if (atPreviousCharOfStart.IsStartOfContainer() ||
+      atPreviousCharOfStart.IsPreviousCharASCIISpace()) {
+    atPreviousCharOfStart = GetFirstASCIIWhiteSpacePointCollapsedTo(
+        atPreviousCharOfStart, nsIEditor::eNone);
+  }
+  const EditorDOMPointInText endOfCollapsibleASCIIWhiteSpaces =
+      GetEndOfCollapsibleASCIIWhiteSpaces(atPreviousCharOfStart,
+                                          nsIEditor::eNone);
+  return ReplaceRangeData(atPreviousCharOfStart,
+                          endOfCollapsibleASCIIWhiteSpaces,
+                          nsDependentSubstring(&HTMLEditUtils::kNBSP, 1));
+}
+
+// static
+nsresult
+WhiteSpaceVisibilityKeeper::MakeSureToKeepVisibleWhiteSpacesVisibleAfterSplit(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPointToSplit) {
+  TextFragmentData textFragmentDataAtSplitPoint(
+      aPointToSplit, aHTMLEditor.ComputeEditingHost(),
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtSplitPoint.IsInitialized())) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // used to prepare white-space sequence to be split across two blocks.
+  // The main issue here is make sure white-spaces around the split point
+  // doesn't end up becoming non-significant leading or trailing ws after
+  // the split.
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      textFragmentDataAtSplitPoint.VisibleWhiteSpacesDataRef();
+  if (!visibleWhiteSpaces.IsInitialized()) {
+    return NS_OK;  // No visible white-space sequence.
+  }
+
+  PointPosition pointPositionWithVisibleWhiteSpaces =
+      visibleWhiteSpaces.ComparePoint(aPointToSplit);
+
+  // XXX If we split white-space sequence, the following code modify the DOM
+  //     tree twice.  This is not reasonable and the latter change may touch
+  //     wrong position.  We should do this once.
+
+  // If we insert block boundary to start or middle of the white-space sequence,
+  // the character at the insertion point needs to be an NBSP.
+  EditorDOMPoint pointToSplit(aPointToSplit);
+  if (pointPositionWithVisibleWhiteSpaces == PointPosition::StartOfFragment ||
+      pointPositionWithVisibleWhiteSpaces == PointPosition::MiddleOfFragment) {
     EditorDOMPointInText atNextCharOfStart =
-        GetInclusiveNextEditableCharPoint(mScanStartPoint);
+        textFragmentDataAtSplitPoint.GetInclusiveNextEditableCharPoint(
+            pointToSplit);
     if (atNextCharOfStart.IsSet() && !atNextCharOfStart.IsEndOfContainer() &&
-        atNextCharOfStart.IsCharASCIISpace()) {
-      // mScanStartPoint will be referred bellow so that we need to keep
+        atNextCharOfStart.IsCharCollapsibleASCIISpace()) {
+      // pointToSplit will be referred bellow so that we need to keep
       // it a valid point.
-      AutoEditorDOMPointChildInvalidator forgetChild(mScanStartPoint);
-      nsresult rv = ReplaceASCIIWhitespacesWithOneNBSP(atNextCharOfStart);
+      AutoEditorDOMPointChildInvalidator forgetChild(pointToSplit);
+      AutoTrackDOMPoint trackSplitPoint(aHTMLEditor.RangeUpdaterRef(),
+                                        &pointToSplit);
+      if (atNextCharOfStart.IsStartOfContainer() ||
+          atNextCharOfStart.IsPreviousCharASCIISpace()) {
+        atNextCharOfStart = textFragmentDataAtSplitPoint
+                                .GetFirstASCIIWhiteSpacePointCollapsedTo(
+                                    atNextCharOfStart, nsIEditor::eNone);
+      }
+      const EditorDOMPointInText endOfCollapsibleASCIIWhiteSpaces =
+          textFragmentDataAtSplitPoint.GetEndOfCollapsibleASCIIWhiteSpaces(
+              atNextCharOfStart, nsIEditor::eNone);
+      nsresult rv =
+          WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+              aHTMLEditor,
+              EditorDOMRangeInTexts(atNextCharOfStart,
+                                    endOfCollapsibleASCIIWhiteSpaces),
+              nsDependentSubstring(&HTMLEditUtils::kNBSP, 1));
       if (NS_FAILED(rv)) {
-        NS_WARNING("WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP() failed");
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes() "
+            "failed");
         return rv;
       }
     }
   }
 
-  // adjust normal ws in beforeRun if needed
-  if (beforeRun && beforeRun->IsVisibleAndMiddleOfHardLine()) {
-    // make sure trailing char of starting ws is an nbsp, so that it will show
-    // up
+  // If we insert block boundary to middle of or end of the white-space
+  // sequence, the previous character at the insertion point needs to be an
+  // NBSP.
+  if (pointPositionWithVisibleWhiteSpaces == PointPosition::MiddleOfFragment ||
+      pointPositionWithVisibleWhiteSpaces == PointPosition::EndOfFragment) {
     EditorDOMPointInText atPreviousCharOfStart =
-        GetPreviousEditableCharPoint(mScanStartPoint);
+        textFragmentDataAtSplitPoint.GetPreviousEditableCharPoint(pointToSplit);
     if (atPreviousCharOfStart.IsSet() &&
         !atPreviousCharOfStart.IsEndOfContainer() &&
-        atPreviousCharOfStart.IsCharASCIISpace()) {
-      EditorDOMPointInText start, end;
-      Tie(start, end) = GetASCIIWhitespacesBounds(eBoth, mScanStartPoint);
-      NS_WARNING_ASSERTION(start.IsSet(),
-                           "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                           "return start point, but ignored");
-      NS_WARNING_ASSERTION(end.IsSet(),
-                           "WSRunObject::GetASCIIWhitespacesBounds() didn't "
-                           "return end point, but ignored");
-      nsresult rv = ReplaceASCIIWhitespacesWithOneNBSP(start);
+        atPreviousCharOfStart.IsCharCollapsibleASCIISpace()) {
+      if (atPreviousCharOfStart.IsStartOfContainer() ||
+          atPreviousCharOfStart.IsPreviousCharASCIISpace()) {
+        atPreviousCharOfStart =
+            textFragmentDataAtSplitPoint
+                .GetFirstASCIIWhiteSpacePointCollapsedTo(atPreviousCharOfStart,
+                                                         nsIEditor::eNone);
+      }
+      const EditorDOMPointInText endOfCollapsibleASCIIWhiteSpaces =
+          textFragmentDataAtSplitPoint.GetEndOfCollapsibleASCIIWhiteSpaces(
+              atPreviousCharOfStart, nsIEditor::eNone);
+      nsresult rv =
+          WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+              aHTMLEditor,
+              EditorDOMRangeInTexts(atPreviousCharOfStart,
+                                    endOfCollapsibleASCIIWhiteSpaces),
+              nsDependentSubstring(&HTMLEditUtils::kNBSP, 1));
       if (NS_FAILED(rv)) {
-        NS_WARNING("WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP() failed");
+        NS_WARNING(
+            "WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes() "
+            "failed");
         return rv;
       }
     }
@@ -1298,29 +2943,30 @@ nsresult WSRunObject::PrepareToSplitAcrossBlocksPriv() {
   return NS_OK;
 }
 
-template <typename PT, typename CT>
-EditorDOMPointInText WSRunScanner::GetInclusiveNextEditableCharPoint(
+template <typename EditorDOMPointType, typename PT, typename CT>
+EditorDOMPointType
+WSRunScanner::TextFragmentData::GetInclusiveNextEditableCharPoint(
     const EditorDOMPointBase<PT, CT>& aPoint) const {
   MOZ_ASSERT(aPoint.IsSetAndValid());
 
   if (NS_WARN_IF(!aPoint.IsInContentNode()) ||
       NS_WARN_IF(!mScanStartPoint.IsInContentNode())) {
-    return EditorDOMPointInText();
+    return EditorDOMPointType();
   }
 
   EditorRawDOMPoint point;
   if (nsIContent* child =
           aPoint.CanContainerHaveChildren() ? aPoint.GetChild() : nullptr) {
     nsIContent* leafContent = child->HasChildren()
-                                  ? HTMLEditUtils::GetFirstLeafChild(
-                                        *child, ChildBlockBoundary::Ignore)
+                                  ? HTMLEditUtils::GetFirstLeafContent(
+                                        *child, {LeafNodeType::OnlyLeafNode})
                                   : child;
     if (NS_WARN_IF(!leafContent)) {
-      return EditorDOMPointInText();
+      return EditorDOMPointType();
     }
     point.Set(leafContent, 0);
   } else {
-    point = aPoint;
+    point = aPoint.template To<EditorRawDOMPoint>();
   }
 
   // If it points a character in a text node, return it.
@@ -1328,49 +2974,65 @@ EditorDOMPointInText WSRunScanner::GetInclusiveNextEditableCharPoint(
   //     is outside of our range.
   if (point.IsInTextNode() && point.GetContainer()->IsEditable() &&
       !point.IsEndOfContainer()) {
-    return EditorDOMPointInText(point.ContainerAsText(), point.Offset());
+    return EditorDOMPointType(point.ContainerAs<Text>(), point.Offset());
   }
 
-  if (point.GetContainer() == mEndReasonContent) {
-    return EditorDOMPointInText();
+  if (point.GetContainer() == GetEndReasonContent()) {
+    return EditorDOMPointType();
   }
 
-  nsIContent* editableBlockParentOrTopmotEditableInlineContent =
-      GetEditableBlockParentOrTopmotEditableInlineContent(
-          mScanStartPoint.ContainerAsContent());
-  if (NS_WARN_IF(!editableBlockParentOrTopmotEditableInlineContent)) {
+  NS_ASSERTION(
+      EditorUtils::IsEditableContent(*mScanStartPoint.ContainerAs<nsIContent>(),
+                                     EditorType::HTML),
+      "Given content is not editable");
+  NS_ASSERTION(
+      mScanStartPoint.ContainerAs<nsIContent>()->GetAsElementOrParentElement(),
+      "Given content is not an element and an orphan node");
+  nsIContent* editableBlockElementOrInlineEditingHost =
+      mScanStartPoint.ContainerAs<nsIContent>() &&
+              EditorUtils::IsEditableContent(
+                  *mScanStartPoint.ContainerAs<nsIContent>(), EditorType::HTML)
+          ? HTMLEditUtils::GetInclusiveAncestorElement(
+                *mScanStartPoint.ContainerAs<nsIContent>(),
+                HTMLEditUtils::ClosestEditableBlockElementOrInlineEditingHost,
+                mBlockInlineCheck)
+          : nullptr;
+  if (NS_WARN_IF(!editableBlockElementOrInlineEditingHost)) {
     // Meaning that the container of `mScanStartPoint` is not editable.
-    editableBlockParentOrTopmotEditableInlineContent =
-        mScanStartPoint.ContainerAsContent();
+    editableBlockElementOrInlineEditingHost =
+        mScanStartPoint.ContainerAs<nsIContent>();
   }
 
   for (nsIContent* nextContent =
            HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-               *point.ContainerAsContent(),
-               *editableBlockParentOrTopmotEditableInlineContent, mEditingHost);
+               *point.ContainerAs<nsIContent>(),
+               *editableBlockElementOrInlineEditingHost,
+               {LeafNodeType::LeafNodeOrNonEditableNode}, mBlockInlineCheck,
+               mEditingHost);
        nextContent;
        nextContent = HTMLEditUtils::GetNextLeafContentOrNextBlockElement(
-           *nextContent, *editableBlockParentOrTopmotEditableInlineContent,
+           *nextContent, *editableBlockElementOrInlineEditingHost,
+           {LeafNodeType::LeafNodeOrNonEditableNode}, mBlockInlineCheck,
            mEditingHost)) {
     if (!nextContent->IsText() || !nextContent->IsEditable()) {
-      if (nextContent == mEndReasonContent) {
+      if (nextContent == GetEndReasonContent()) {
         break;  // Reached end of current runs.
       }
       continue;
     }
-    return EditorDOMPointInText(nextContent->AsText(), 0);
+    return EditorDOMPointType(nextContent->AsText(), 0);
   }
-  return EditorDOMPointInText();
+  return EditorDOMPointType();
 }
 
-template <typename PT, typename CT>
-EditorDOMPointInText WSRunScanner::GetPreviousEditableCharPoint(
+template <typename EditorDOMPointType, typename PT, typename CT>
+EditorDOMPointType WSRunScanner::TextFragmentData::GetPreviousEditableCharPoint(
     const EditorDOMPointBase<PT, CT>& aPoint) const {
   MOZ_ASSERT(aPoint.IsSetAndValid());
 
   if (NS_WARN_IF(!aPoint.IsInContentNode()) ||
       NS_WARN_IF(!mScanStartPoint.IsInContentNode())) {
-    return EditorDOMPointInText();
+    return EditorDOMPointType();
   }
 
   EditorRawDOMPoint point;
@@ -1379,15 +3041,15 @@ EditorDOMPointInText WSRunScanner::GetPreviousEditableCharPoint(
                                       : nullptr) {
     nsIContent* leafContent =
         previousChild->HasChildren()
-            ? HTMLEditUtils::GetLastLeafChild(*previousChild,
-                                              ChildBlockBoundary::Ignore)
+            ? HTMLEditUtils::GetLastLeafContent(*previousChild,
+                                                {LeafNodeType::OnlyLeafNode})
             : previousChild;
     if (NS_WARN_IF(!leafContent)) {
-      return EditorDOMPointInText();
+      return EditorDOMPointType();
     }
     point.SetToEndOf(leafContent);
   } else {
-    point = aPoint;
+    point = aPoint.template To<EditorRawDOMPoint>();
   }
 
   // If it points a character in a text node and it's not first character
@@ -1396,465 +3058,1529 @@ EditorDOMPointInText WSRunScanner::GetPreviousEditableCharPoint(
   //     is outside of our range.
   if (point.IsInTextNode() && point.GetContainer()->IsEditable() &&
       !point.IsStartOfContainer()) {
-    return EditorDOMPointInText(point.ContainerAsText(), point.Offset() - 1);
+    return EditorDOMPointType(point.ContainerAs<Text>(), point.Offset() - 1);
   }
 
-  if (point.GetContainer() == mStartReasonContent) {
-    return EditorDOMPointInText();
+  if (point.GetContainer() == GetStartReasonContent()) {
+    return EditorDOMPointType();
   }
 
-  nsIContent* editableBlockParentOrTopmotEditableInlineContent =
-      GetEditableBlockParentOrTopmotEditableInlineContent(
-          mScanStartPoint.ContainerAsContent());
-  if (NS_WARN_IF(!editableBlockParentOrTopmotEditableInlineContent)) {
+  NS_ASSERTION(
+      EditorUtils::IsEditableContent(*mScanStartPoint.ContainerAs<nsIContent>(),
+                                     EditorType::HTML),
+      "Given content is not editable");
+  NS_ASSERTION(
+      mScanStartPoint.ContainerAs<nsIContent>()->GetAsElementOrParentElement(),
+      "Given content is not an element and an orphan node");
+  nsIContent* editableBlockElementOrInlineEditingHost =
+      mScanStartPoint.ContainerAs<nsIContent>() &&
+              EditorUtils::IsEditableContent(
+                  *mScanStartPoint.ContainerAs<nsIContent>(), EditorType::HTML)
+          ? HTMLEditUtils::GetInclusiveAncestorElement(
+                *mScanStartPoint.ContainerAs<nsIContent>(),
+                HTMLEditUtils::ClosestEditableBlockElementOrInlineEditingHost,
+                mBlockInlineCheck)
+          : nullptr;
+  if (NS_WARN_IF(!editableBlockElementOrInlineEditingHost)) {
     // Meaning that the container of `mScanStartPoint` is not editable.
-    editableBlockParentOrTopmotEditableInlineContent =
-        mScanStartPoint.ContainerAsContent();
+    editableBlockElementOrInlineEditingHost =
+        mScanStartPoint.ContainerAs<nsIContent>();
   }
 
   for (nsIContent* previousContent =
            HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-               *point.ContainerAsContent(),
-               *editableBlockParentOrTopmotEditableInlineContent, mEditingHost);
+               *point.ContainerAs<nsIContent>(),
+               *editableBlockElementOrInlineEditingHost,
+               {LeafNodeType::LeafNodeOrNonEditableNode}, mBlockInlineCheck,
+               mEditingHost);
        previousContent;
        previousContent =
            HTMLEditUtils::GetPreviousLeafContentOrPreviousBlockElement(
-               *previousContent,
-               *editableBlockParentOrTopmotEditableInlineContent,
+               *previousContent, *editableBlockElementOrInlineEditingHost,
+               {LeafNodeType::LeafNodeOrNonEditableNode}, mBlockInlineCheck,
                mEditingHost)) {
     if (!previousContent->IsText() || !previousContent->IsEditable()) {
-      if (previousContent == mStartReasonContent) {
+      if (previousContent == GetStartReasonContent()) {
         break;  // Reached start of current runs.
       }
       continue;
     }
-    return EditorDOMPointInText(
-        previousContent->AsText(),
-        previousContent->AsText()->TextLength()
-            ? previousContent->AsText()->TextLength() - 1
-            : 0);
+    return EditorDOMPointType(previousContent->AsText(),
+                              previousContent->AsText()->TextLength()
+                                  ? previousContent->AsText()->TextLength() - 1
+                                  : 0);
   }
-  return EditorDOMPointInText();
+  return EditorDOMPointType();
 }
 
-nsresult WSRunObject::ReplaceASCIIWhitespacesWithOneNBSP(
-    const EditorDOMPointInText& aPointAtASCIIWhitespace) {
-  MOZ_ASSERT(aPointAtASCIIWhitespace.IsSet());
-  MOZ_ASSERT(!aPointAtASCIIWhitespace.IsEndOfContainer());
-  MOZ_ASSERT(aPointAtASCIIWhitespace.IsCharASCIISpace());
+// static
+template <typename EditorDOMPointType>
+EditorDOMPointType WSRunScanner::GetAfterLastVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter) {
+  EditorDOMPoint atLastCharOfTextNode(
+      &aTextNode, AssertedCast<uint32_t>(std::max<int64_t>(
+                      static_cast<int64_t>(aTextNode.Length()) - 1, 0)));
+  if (!atLastCharOfTextNode.IsContainerEmpty() &&
+      !atLastCharOfTextNode.IsCharCollapsibleASCIISpace()) {
+    return EditorDOMPointType::AtEndOf(aTextNode);
+  }
+  TextFragmentData textFragmentData(atLastCharOfTextNode, aAncestorLimiter,
+                                    BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
+    return EditorDOMPointType();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRange& invisibleWhiteSpaceRange =
+      textFragmentData.InvisibleTrailingWhiteSpaceRangeRef();
+  if (!invisibleWhiteSpaceRange.IsPositioned() ||
+      invisibleWhiteSpaceRange.Collapsed()) {
+    return EditorDOMPointType::AtEndOf(aTextNode);
+  }
+  return invisibleWhiteSpaceRange.StartRef().To<EditorDOMPointType>();
+}
 
-  EditorDOMPointInText start, end;
-  Tie(start, end) = GetASCIIWhitespacesBounds(eAfter, aPointAtASCIIWhitespace);
-  if (NS_WARN_IF(!start.IsSet()) || NS_WARN_IF(!end.IsSet())) {
+// static
+template <typename EditorDOMPointType>
+EditorDOMPointType WSRunScanner::GetFirstVisiblePoint(
+    Text& aTextNode, const Element* aAncestorLimiter) {
+  EditorDOMPoint atStartOfTextNode(&aTextNode, 0);
+  if (!atStartOfTextNode.IsContainerEmpty() &&
+      atStartOfTextNode.IsCharCollapsibleASCIISpace()) {
+    return atStartOfTextNode.To<EditorDOMPointType>();
+  }
+  TextFragmentData textFragmentData(atStartOfTextNode, aAncestorLimiter,
+                                    BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
+    return EditorDOMPointType();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRange& invisibleWhiteSpaceRange =
+      textFragmentData.InvisibleLeadingWhiteSpaceRangeRef();
+  if (!invisibleWhiteSpaceRange.IsPositioned() ||
+      invisibleWhiteSpaceRange.Collapsed()) {
+    return atStartOfTextNode.To<EditorDOMPointType>();
+  }
+  return invisibleWhiteSpaceRange.EndRef().To<EditorDOMPointType>();
+}
+
+template <typename EditorDOMPointType>
+EditorDOMPointType
+WSRunScanner::TextFragmentData::GetEndOfCollapsibleASCIIWhiteSpaces(
+    const EditorDOMPointInText& aPointAtASCIIWhiteSpace,
+    nsIEditor::EDirection aDirectionToDelete) const {
+  MOZ_ASSERT(aDirectionToDelete == nsIEditor::eNone ||
+             aDirectionToDelete == nsIEditor::eNext ||
+             aDirectionToDelete == nsIEditor::ePrevious);
+  MOZ_ASSERT(aPointAtASCIIWhiteSpace.IsSet());
+  MOZ_ASSERT(!aPointAtASCIIWhiteSpace.IsEndOfContainer());
+  MOZ_ASSERT_IF(!EditorUtils::IsNewLinePreformatted(
+                    *aPointAtASCIIWhiteSpace.ContainerAs<Text>()),
+                aPointAtASCIIWhiteSpace.IsCharCollapsibleASCIISpace());
+  MOZ_ASSERT_IF(EditorUtils::IsNewLinePreformatted(
+                    *aPointAtASCIIWhiteSpace.ContainerAs<Text>()),
+                aPointAtASCIIWhiteSpace.IsCharASCIISpace());
+
+  // If we're deleting text forward and the next visible character is first
+  // preformatted new line but white-spaces can be collapsed, we need to
+  // delete its following collapsible white-spaces too.
+  bool hasSeenPreformattedNewLine =
+      aPointAtASCIIWhiteSpace.IsCharPreformattedNewLine();
+  auto NeedToScanFollowingWhiteSpaces =
+      [&hasSeenPreformattedNewLine, &aDirectionToDelete](
+          const EditorDOMPointInText& aAtNextVisibleCharacter) -> bool {
+    MOZ_ASSERT(!aAtNextVisibleCharacter.IsEndOfContainer());
+    return !hasSeenPreformattedNewLine &&
+           aDirectionToDelete == nsIEditor::eNext &&
+           aAtNextVisibleCharacter
+               .IsCharPreformattedNewLineCollapsedWithWhiteSpaces();
+  };
+  auto ScanNextNonCollapsibleChar =
+      [&hasSeenPreformattedNewLine, &NeedToScanFollowingWhiteSpaces](
+          const EditorDOMPointInText& aPoint) -> EditorDOMPointInText {
+    Maybe<uint32_t> nextVisibleCharOffset =
+        HTMLEditUtils::GetNextNonCollapsibleCharOffset(aPoint);
+    if (!nextVisibleCharOffset.isSome()) {
+      return EditorDOMPointInText();  // Keep scanning following text nodes
+    }
+    EditorDOMPointInText atNextVisibleChar(aPoint.ContainerAs<Text>(),
+                                           nextVisibleCharOffset.value());
+    if (!NeedToScanFollowingWhiteSpaces(atNextVisibleChar)) {
+      return atNextVisibleChar;
+    }
+    hasSeenPreformattedNewLine |= atNextVisibleChar.IsCharPreformattedNewLine();
+    nextVisibleCharOffset =
+        HTMLEditUtils::GetNextNonCollapsibleCharOffset(atNextVisibleChar);
+    if (nextVisibleCharOffset.isSome()) {
+      MOZ_ASSERT(aPoint.ContainerAs<Text>() ==
+                 atNextVisibleChar.ContainerAs<Text>());
+      return EditorDOMPointInText(atNextVisibleChar.ContainerAs<Text>(),
+                                  nextVisibleCharOffset.value());
+    }
+    return EditorDOMPointInText();  // Keep scanning following text nodes
+  };
+
+  // If it's not the last character in the text node, let's scan following
+  // characters in it.
+  if (!aPointAtASCIIWhiteSpace.IsAtLastContent()) {
+    const EditorDOMPointInText atNextVisibleChar(
+        ScanNextNonCollapsibleChar(aPointAtASCIIWhiteSpace));
+    if (atNextVisibleChar.IsSet()) {
+      return atNextVisibleChar.To<EditorDOMPointType>();
+    }
+  }
+
+  // Otherwise, i.e., the text node ends with ASCII white-space, keep scanning
+  // the following text nodes.
+  // XXX Perhaps, we should stop scanning if there is non-editable and visible
+  //     content.
+  EditorDOMPointInText afterLastWhiteSpace = EditorDOMPointInText::AtEndOf(
+      *aPointAtASCIIWhiteSpace.ContainerAs<Text>());
+  for (EditorDOMPointInText atEndOfPreviousTextNode = afterLastWhiteSpace;;) {
+    const auto atStartOfNextTextNode =
+        GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+            atEndOfPreviousTextNode);
+    if (!atStartOfNextTextNode.IsSet()) {
+      // There is no more text nodes.  Return end of the previous text node.
+      return afterLastWhiteSpace.To<EditorDOMPointType>();
+    }
+
+    // We can ignore empty text nodes (even if it's preformatted).
+    if (atStartOfNextTextNode.IsContainerEmpty()) {
+      atEndOfPreviousTextNode = atStartOfNextTextNode;
+      continue;
+    }
+
+    // If next node starts with non-white-space character or next node is
+    // preformatted, return end of previous text node.  However, if it
+    // starts with a preformatted linefeed but white-spaces are collapsible,
+    // we need to scan following collapsible white-spaces when we're deleting
+    // text forward.
+    if (!atStartOfNextTextNode.IsCharCollapsibleASCIISpace() &&
+        !NeedToScanFollowingWhiteSpaces(atStartOfNextTextNode)) {
+      return afterLastWhiteSpace.To<EditorDOMPointType>();
+    }
+
+    // Otherwise, scan the text node.
+    const EditorDOMPointInText atNextVisibleChar(
+        ScanNextNonCollapsibleChar(atStartOfNextTextNode));
+    if (atNextVisibleChar.IsSet()) {
+      return atNextVisibleChar.To<EditorDOMPointType>();
+    }
+
+    // The next text nodes ends with white-space too.  Try next one.
+    afterLastWhiteSpace = atEndOfPreviousTextNode =
+        EditorDOMPointInText::AtEndOf(
+            *atStartOfNextTextNode.ContainerAs<Text>());
+  }
+}
+
+template <typename EditorDOMPointType>
+EditorDOMPointType
+WSRunScanner::TextFragmentData::GetFirstASCIIWhiteSpacePointCollapsedTo(
+    const EditorDOMPointInText& aPointAtASCIIWhiteSpace,
+    nsIEditor::EDirection aDirectionToDelete) const {
+  MOZ_ASSERT(aDirectionToDelete == nsIEditor::eNone ||
+             aDirectionToDelete == nsIEditor::eNext ||
+             aDirectionToDelete == nsIEditor::ePrevious);
+  MOZ_ASSERT(aPointAtASCIIWhiteSpace.IsSet());
+  MOZ_ASSERT(!aPointAtASCIIWhiteSpace.IsEndOfContainer());
+  MOZ_ASSERT_IF(!EditorUtils::IsNewLinePreformatted(
+                    *aPointAtASCIIWhiteSpace.ContainerAs<Text>()),
+                aPointAtASCIIWhiteSpace.IsCharCollapsibleASCIISpace());
+  MOZ_ASSERT_IF(EditorUtils::IsNewLinePreformatted(
+                    *aPointAtASCIIWhiteSpace.ContainerAs<Text>()),
+                aPointAtASCIIWhiteSpace.IsCharASCIISpace());
+
+  // If we're deleting text backward and the previous visible character is first
+  // preformatted new line but white-spaces can be collapsed, we need to delete
+  // its preceding collapsible white-spaces too.
+  bool hasSeenPreformattedNewLine =
+      aPointAtASCIIWhiteSpace.IsCharPreformattedNewLine();
+  auto NeedToScanPrecedingWhiteSpaces =
+      [&hasSeenPreformattedNewLine, &aDirectionToDelete](
+          const EditorDOMPointInText& aAtPreviousVisibleCharacter) -> bool {
+    MOZ_ASSERT(!aAtPreviousVisibleCharacter.IsEndOfContainer());
+    return !hasSeenPreformattedNewLine &&
+           aDirectionToDelete == nsIEditor::ePrevious &&
+           aAtPreviousVisibleCharacter
+               .IsCharPreformattedNewLineCollapsedWithWhiteSpaces();
+  };
+  auto ScanPreviousNonCollapsibleChar =
+      [&hasSeenPreformattedNewLine, &NeedToScanPrecedingWhiteSpaces](
+          const EditorDOMPointInText& aPoint) -> EditorDOMPointInText {
+    Maybe<uint32_t> previousVisibleCharOffset =
+        HTMLEditUtils::GetPreviousNonCollapsibleCharOffset(aPoint);
+    if (previousVisibleCharOffset.isNothing()) {
+      return EditorDOMPointInText();  // Keep scanning preceding text nodes
+    }
+    EditorDOMPointInText atPreviousVisibleCharacter(
+        aPoint.ContainerAs<Text>(), previousVisibleCharOffset.value());
+    if (!NeedToScanPrecedingWhiteSpaces(atPreviousVisibleCharacter)) {
+      return atPreviousVisibleCharacter.NextPoint();
+    }
+    hasSeenPreformattedNewLine |=
+        atPreviousVisibleCharacter.IsCharPreformattedNewLine();
+    previousVisibleCharOffset =
+        HTMLEditUtils::GetPreviousNonCollapsibleCharOffset(
+            atPreviousVisibleCharacter);
+    if (previousVisibleCharOffset.isSome()) {
+      MOZ_ASSERT(aPoint.ContainerAs<Text>() ==
+                 atPreviousVisibleCharacter.ContainerAs<Text>());
+      return EditorDOMPointInText(
+          atPreviousVisibleCharacter.ContainerAs<Text>(),
+          previousVisibleCharOffset.value() + 1);
+    }
+    return EditorDOMPointInText();  // Keep scanning preceding text nodes
+  };
+
+  // If there is some characters before it, scan it in the text node first.
+  if (!aPointAtASCIIWhiteSpace.IsStartOfContainer()) {
+    EditorDOMPointInText atFirstASCIIWhiteSpace(
+        ScanPreviousNonCollapsibleChar(aPointAtASCIIWhiteSpace));
+    if (atFirstASCIIWhiteSpace.IsSet()) {
+      return atFirstASCIIWhiteSpace.To<EditorDOMPointType>();
+    }
+  }
+
+  // Otherwise, i.e., the text node starts with ASCII white-space, keep scanning
+  // the preceding text nodes.
+  // XXX Perhaps, we should stop scanning if there is non-editable and visible
+  //     content.
+  EditorDOMPointInText atLastWhiteSpace =
+      EditorDOMPointInText(aPointAtASCIIWhiteSpace.ContainerAs<Text>(), 0u);
+  for (EditorDOMPointInText atStartOfPreviousTextNode = atLastWhiteSpace;;) {
+    const EditorDOMPointInText atLastCharOfPreviousTextNode =
+        GetPreviousEditableCharPoint(atStartOfPreviousTextNode);
+    if (!atLastCharOfPreviousTextNode.IsSet()) {
+      // There is no more text nodes.  Return end of last text node.
+      return atLastWhiteSpace.To<EditorDOMPointType>();
+    }
+
+    // We can ignore empty text nodes (even if it's preformatted).
+    if (atLastCharOfPreviousTextNode.IsContainerEmpty()) {
+      atStartOfPreviousTextNode = atLastCharOfPreviousTextNode;
+      continue;
+    }
+
+    // If next node ends with non-white-space character or next node is
+    // preformatted, return start of previous text node.
+    if (!atLastCharOfPreviousTextNode.IsCharCollapsibleASCIISpace() &&
+        !NeedToScanPrecedingWhiteSpaces(atLastCharOfPreviousTextNode)) {
+      return atLastWhiteSpace.To<EditorDOMPointType>();
+    }
+
+    // Otherwise, scan the text node.
+    const EditorDOMPointInText atFirstASCIIWhiteSpace(
+        ScanPreviousNonCollapsibleChar(atLastCharOfPreviousTextNode));
+    if (atFirstASCIIWhiteSpace.IsSet()) {
+      return atFirstASCIIWhiteSpace.To<EditorDOMPointType>();
+    }
+
+    // The next text nodes starts with white-space too.  Try next one.
+    atLastWhiteSpace = atStartOfPreviousTextNode = EditorDOMPointInText(
+        atLastCharOfPreviousTextNode.ContainerAs<Text>(), 0u);
+  }
+}
+
+// static
+nsresult WhiteSpaceVisibilityKeeper::ReplaceTextAndRemoveEmptyTextNodes(
+    HTMLEditor& aHTMLEditor, const EditorDOMRangeInTexts& aRangeToReplace,
+    const nsAString& aReplaceString) {
+  MOZ_ASSERT(aRangeToReplace.IsPositioned());
+  MOZ_ASSERT(aRangeToReplace.StartRef().IsSetAndValid());
+  MOZ_ASSERT(aRangeToReplace.EndRef().IsSetAndValid());
+  MOZ_ASSERT(aRangeToReplace.StartRef().IsBefore(aRangeToReplace.EndRef()));
+
+  {
+    Result<InsertTextResult, nsresult> caretPointOrError =
+        aHTMLEditor.ReplaceTextWithTransaction(
+            MOZ_KnownLive(*aRangeToReplace.StartRef().ContainerAs<Text>()),
+            aRangeToReplace.StartRef().Offset(),
+            aRangeToReplace.InSameContainer()
+                ? aRangeToReplace.EndRef().Offset() -
+                      aRangeToReplace.StartRef().Offset()
+                : aRangeToReplace.StartRef().ContainerAs<Text>()->TextLength() -
+                      aRangeToReplace.StartRef().Offset(),
+            aReplaceString);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
+      return caretPointOrError.unwrapErr();
+    }
+    // Ignore caret suggestion because there was
+    // AutoTransactionsConserveSelection.
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+  }
+
+  if (aRangeToReplace.InSameContainer()) {
     return NS_OK;
   }
-  MOZ_ASSERT(start.GetContainer() != end.GetContainer() ||
-             end.Offset() > start.Offset());
 
-  AutoTransactionsConserveSelection dontChangeMySelection(mHTMLEditor);
-  nsresult rv =
-      MOZ_KnownLive(mHTMLEditor)
-          .ReplaceTextWithTransaction(
-              MOZ_KnownLive(*start.ContainerAsText()), start.Offset(),
-              end.Offset() - start.Offset(), nsDependentSubstring(&kNBSP, 1));
-  if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
-    return rv;
+  Result<CaretPoint, nsresult> caretPointOrError =
+      aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+          EditorDOMPointInText::AtEndOf(
+              *aRangeToReplace.StartRef().ContainerAs<Text>()),
+          aRangeToReplace.EndRef(),
+          HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+  if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+    NS_WARNING("HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+    return caretPointOrError.unwrapErr();
   }
-
-  if (start.GetContainer() == end.GetContainer()) {
-    return NS_OK;
-  }
-
-  // We need to remove the following unnecessary ASCII whitespaces because we
-  // collapsed them into the start node.
-  rv = MOZ_KnownLive(mHTMLEditor)
-           .DeleteTextAndTextNodesWithTransaction(
-               EditorDOMPointInText::AtEndOf(*start.ContainerAsText()), end);
-  NS_WARNING_ASSERTION(
-      NS_SUCCEEDED(rv),
-      "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-  return rv;
+  // Ignore caret suggestion because there was
+  // AutoTransactionsConserveSelection.
+  caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+  return NS_OK;
 }
 
-template <typename PT, typename CT>
-Tuple<EditorDOMPointInText, EditorDOMPointInText>
-WSRunObject::GetASCIIWhitespacesBounds(
-    int16_t aDir, const EditorDOMPointBase<PT, CT>& aPoint) const {
-  MOZ_ASSERT(aPoint.IsSet());
-
-  EditorDOMPointInText start, end;
-
-  if (aDir & eAfter) {
-    EditorDOMPointInText atNextChar = GetInclusiveNextEditableCharPoint(aPoint);
-    if (atNextChar.IsSet()) {
-      // We found a text node, at least.
-      start = end = atNextChar;
-      // Scan ahead to end of ASCII whitespaces.
-      // XXX Looks like that this is too expensive in most cases.  While we
-      //     are scanning a text node, we should do it without
-      //     GetInclusiveNextEditableCharPoint().
-      // XXX This loop ends at end of a text node.  Shouldn't we keep looking
-      //     next text node?
-      for (; atNextChar.IsSet() && !atNextChar.IsEndOfContainer() &&
-             atNextChar.IsCharASCIISpace();
-           atNextChar = GetInclusiveNextEditableCharPoint(atNextChar)) {
-        // End of the range should be after the whitespace.
-        end = atNextChar = atNextChar.NextPoint();
-      }
-    }
-  }
-
-  if (aDir & eBefore) {
-    // XXX Different from eAfter case, this may cross element boundaries with
-    //     this call.  I think that it's not expected case.
-    EditorDOMPointInText atPreviousChar = GetPreviousEditableCharPoint(aPoint);
-    if (atPreviousChar.IsSet()) {
-      // We found a text node, at least.
-      start = atPreviousChar.NextPoint();
-      if (!end.IsSet()) {
-        end = start;
-      }
-      // Scan back to start of ASCII whitespaces.
-      // XXX Looks like that this is too expensive in most cases.  While we
-      //     are scanning a text node, we should do it without
-      //     GetPreviousEditableCharPoint().
-      // XXX This loop ends at end of a text node.  Shouldn't we keep looking
-      //     the text node?
-      for (; atPreviousChar.IsSet() && !atPreviousChar.IsEndOfContainer() &&
-             atPreviousChar.IsCharASCIISpace();
-           atPreviousChar = GetPreviousEditableCharPoint(atPreviousChar)) {
-        start = atPreviousChar;
-      }
-    }
-  }
-
-  return MakeTuple(start, end);
-}
-
-template <typename PT, typename CT>
-WSRunScanner::WSFragment* WSRunScanner::FindNearestRun(
-    const EditorDOMPointBase<PT, CT>& aPoint, bool aForward) const {
-  MOZ_ASSERT(aPoint.IsSetAndValid());
-
-  for (WSFragment* run = mStartRun; run; run = run->mRight) {
-    int32_t comp = run->mStartNode ? *nsContentUtils::ComparePoints(
-                                         aPoint.ToRawRangeBoundary(),
-                                         run->StartPoint().ToRawRangeBoundary())
-                                   : -1;
-    if (comp <= 0) {
-      // aPoint equals or before start of the run.  Return the run if we're
-      // scanning forward, otherwise, nullptr.
-      return aForward ? run : nullptr;
-    }
-
-    comp = run->mEndNode ? *nsContentUtils::ComparePoints(
-                               aPoint.ToRawRangeBoundary(),
-                               run->EndPoint().ToRawRangeBoundary())
-                         : -1;
-    if (comp < 0) {
-      // If aPoint is in the run, return the run.
-      return run;
-    }
-
-    if (!comp) {
-      // If aPoint is at end of the run, return next run if we're scanning
-      // forward, otherwise, return the run.
-      return aForward ? run->mRight : run;
-    }
-
-    if (!run->mRight) {
-      // If the run is the last run and aPoint is after end of the last run,
-      // return nullptr if we're scanning forward, otherwise, return this
-      // last run.
-      return aForward ? nullptr : run;
-    }
-  }
-
-  return nullptr;
-}
-
-char16_t WSRunScanner::GetCharAt(Text* aTextNode, int32_t aOffset) const {
+char16_t WSRunScanner::GetCharAt(Text* aTextNode, uint32_t aOffset) const {
   // return 0 if we can't get a char, for whatever reason
-  if (NS_WARN_IF(!aTextNode) || NS_WARN_IF(aOffset < 0) ||
-      NS_WARN_IF(aOffset >=
-                 static_cast<int32_t>(aTextNode->TextDataLength()))) {
+  if (NS_WARN_IF(!aTextNode) ||
+      NS_WARN_IF(aOffset >= aTextNode->TextDataLength())) {
     return 0;
   }
   return aTextNode->TextFragment().CharAt(aOffset);
 }
 
-nsresult WSRunObject::NormalizeWhitespacesAtEndOf(const WSFragment& aRun) {
-  // Check if it's a visible fragment in a hard line.
-  if (!aRun.IsVisibleAndMiddleOfHardLine()) {
+// static
+template <typename EditorDOMPointType>
+nsresult WhiteSpaceVisibilityKeeper::NormalizeVisibleWhiteSpacesAt(
+    HTMLEditor& aHTMLEditor, const EditorDOMPointType& aPoint) {
+  MOZ_ASSERT(aPoint.IsInContentNode());
+  MOZ_ASSERT(EditorUtils::IsEditableContent(
+      *aPoint.template ContainerAs<nsIContent>(), EditorType::HTML));
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
+  TextFragmentData textFragmentData(aPoint, editingHost,
+                                    BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
     return NS_ERROR_FAILURE;
   }
 
-  // first check for trailing nbsp
-  EditorDOMPoint atEndOfRun = aRun.EndPoint();
-  EditorDOMPointInText atPreviousCharOfEndOfRun =
-      GetPreviousEditableCharPoint(atEndOfRun);
-  if (!atPreviousCharOfEndOfRun.IsSet() ||
-      atPreviousCharOfEndOfRun.IsEndOfContainer() ||
-      !atPreviousCharOfEndOfRun.IsCharNBSP()) {
+  // this routine examines a run of ws and tries to get rid of some unneeded
+  // nbsp's, replacing them with regular ascii space if possible.  Keeping
+  // things simple for now and just trying to fix up the trailing ws in the run.
+  if (!textFragmentData.FoundNoBreakingWhiteSpaces()) {
+    // nothing to do!
+    return NS_OK;
+  }
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      textFragmentData.VisibleWhiteSpacesDataRef();
+  if (!visibleWhiteSpaces.IsInitialized()) {
     return NS_OK;
   }
 
-  // now check that what is to the left of it is compatible with replacing
-  // nbsp with space
-  EditorDOMPointInText atPreviousCharOfPreviousCharOfEndOfRun =
-      GetPreviousEditableCharPoint(atPreviousCharOfEndOfRun);
-  bool isPreviousCharASCIIWhitespace =
-      atPreviousCharOfPreviousCharOfEndOfRun.IsSet() &&
-      !atPreviousCharOfPreviousCharOfEndOfRun.IsEndOfContainer() &&
-      atPreviousCharOfPreviousCharOfEndOfRun.IsCharASCIISpace();
-  bool maybeNBSPFollowingVisibleContent =
-      (atPreviousCharOfPreviousCharOfEndOfRun.IsSet() &&
-       !isPreviousCharASCIIWhitespace) ||
-      (!atPreviousCharOfPreviousCharOfEndOfRun.IsSet() &&
-       (aRun.StartsFromNormalText() || aRun.StartsFromSpecialContent()));
-  bool followedByVisibleContentOrBRElement = false;
-
-  // If the NBSP follows a visible content or an ASCII whitespace, i.e.,
-  // unless NBSP is first character and start of a block, we may need to
-  // insert <br> element and restore the NBSP to an ASCII whitespace.
-  if (maybeNBSPFollowingVisibleContent || isPreviousCharASCIIWhitespace) {
-    followedByVisibleContentOrBRElement = aRun.EndsByNormalText() ||
-                                          aRun.EndsBySpecialContent() ||
-                                          aRun.EndsByBRElement();
-    // First, try to insert <br> element if NBSP is at end of a block.
-    // XXX We should stop this if there is a visible content.
-    if (aRun.EndsByBlockBoundary() && mScanStartPoint.IsInContentNode()) {
-      bool insertBRElement =
-          HTMLEditUtils::IsBlockElement(*mScanStartPoint.ContainerAsContent());
-      if (!insertBRElement) {
-        nsIContent* blockParentOrTopmostEditableInlineContent =
-            GetEditableBlockParentOrTopmotEditableInlineContent(
-                mScanStartPoint.ContainerAsContent());
-        insertBRElement = blockParentOrTopmostEditableInlineContent &&
-                          HTMLEditUtils::IsBlockElement(
-                              *blockParentOrTopmostEditableInlineContent);
-      }
-      if (insertBRElement) {
-        // We are at a block boundary.  Insert a <br>.  Why?  Well, first note
-        // that the br will have no visible effect since it is up against a
-        // block boundary.  |foo<br><p>bar| renders like |foo<p>bar| and
-        // similarly |<p>foo<br></p>bar| renders like |<p>foo</p>bar|.  What
-        // this <br> addition gets us is the ability to convert a trailing
-        // nbsp to a space.  Consider: |<body>foo. '</body>|, where '
-        // represents selection.  User types space attempting to put 2 spaces
-        // after the end of their sentence.  We used to do this as:
-        // |<body>foo. &nbsp</body>|  This caused problems with soft wrapping:
-        // the nbsp would wrap to the next line, which looked attrocious.  If
-        // you try to do: |<body>foo.&nbsp </body>| instead, the trailing
-        // space is invisible because it is against a block boundary.  If you
-        // do:
-        // |<body>foo.&nbsp&nbsp</body>| then you get an even uglier soft
-        // wrapping problem, where foo is on one line until you type the final
-        // space, and then "foo  " jumps down to the next line.  Ugh.  The
-        // best way I can find out of this is to throw in a harmless <br>
-        // here, which allows us to do: |<body>foo.&nbsp <br></body>|, which
-        // doesn't cause foo to jump lines, doesn't cause spaces to show up at
-        // the beginning of soft wrapped lines, and lets the user see 2 spaces
-        // when they type 2 spaces.
-
-        RefPtr<Element> brElement =
-            MOZ_KnownLive(mHTMLEditor)
-                .InsertBRElementWithTransaction(atEndOfRun);
-        if (NS_WARN_IF(mHTMLEditor.Destroyed())) {
-          return NS_ERROR_EDITOR_DESTROYED;
-        }
-        if (!brElement) {
-          NS_WARNING("HTMLEditor::InsertBRElementWithTransaction() failed");
-          return NS_ERROR_FAILURE;
-        }
-
-        atPreviousCharOfEndOfRun = GetPreviousEditableCharPoint(atEndOfRun);
-        atPreviousCharOfPreviousCharOfEndOfRun =
-            GetPreviousEditableCharPoint(atPreviousCharOfEndOfRun);
-        followedByVisibleContentOrBRElement = true;
-      }
+  // Remove this block if we ship Blink-compat white-space normalization.
+  if (!StaticPrefs::editor_white_space_normalization_blink_compatible()) {
+    // now check that what is to the left of it is compatible with replacing
+    // nbsp with space
+    const EditorDOMPoint& atEndOfVisibleWhiteSpaces =
+        visibleWhiteSpaces.EndRef();
+    EditorDOMPointInText atPreviousCharOfEndOfVisibleWhiteSpaces =
+        textFragmentData.GetPreviousEditableCharPoint(
+            atEndOfVisibleWhiteSpaces);
+    if (!atPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() ||
+        atPreviousCharOfEndOfVisibleWhiteSpaces.IsEndOfContainer() ||
+        // If the NBSP is never replaced from an ASCII white-space, we cannot
+        // replace it with an ASCII white-space.
+        !atPreviousCharOfEndOfVisibleWhiteSpaces.IsCharCollapsibleNBSP()) {
+      return NS_OK;
     }
 
-    // Next, replace the NBSP with an ASCII whitespace if it's surrounded
-    // by visible contents (or immediately before a <br> element).
-    if (maybeNBSPFollowingVisibleContent &&
-        followedByVisibleContentOrBRElement) {
-      AutoTransactionsConserveSelection dontChangeMySelection(mHTMLEditor);
-      nsresult rv =
-          MOZ_KnownLive(mHTMLEditor)
-              .ReplaceTextWithTransaction(
-                  MOZ_KnownLive(*atPreviousCharOfEndOfRun.ContainerAsText()),
-                  atPreviousCharOfEndOfRun.Offset(), 1, NS_LITERAL_STRING(" "));
-      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                           "HTMLEditor::ReplaceTextWithTransaction() failed");
-      return rv;
+    // now check that what is to the left of it is compatible with replacing
+    // nbsp with space
+    EditorDOMPointInText atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces =
+        textFragmentData.GetPreviousEditableCharPoint(
+            atPreviousCharOfEndOfVisibleWhiteSpaces);
+    bool isPreviousCharCollapsibleASCIIWhiteSpace =
+        atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() &&
+        !atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+             .IsEndOfContainer() &&
+        atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+            .IsCharCollapsibleASCIISpace();
+    const bool maybeNBSPFollowsVisibleContent =
+        (atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() &&
+         !isPreviousCharCollapsibleASCIIWhiteSpace) ||
+        (!atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() &&
+         (visibleWhiteSpaces.StartsFromNonCollapsibleCharacters() ||
+          visibleWhiteSpaces.StartsFromSpecialContent()));
+    bool followedByVisibleContent =
+        visibleWhiteSpaces.EndsByNonCollapsibleCharacters() ||
+        visibleWhiteSpaces.EndsBySpecialContent();
+    bool followedByBRElement = visibleWhiteSpaces.EndsByBRElement();
+    bool followedByPreformattedLineBreak =
+        visibleWhiteSpaces.EndsByPreformattedLineBreak();
+
+    // If the NBSP follows a visible content or a collapsible ASCII white-space,
+    // i.e., unless NBSP is first character and start of a block, we may need to
+    // insert <br> element and restore the NBSP to an ASCII white-space.
+    if (maybeNBSPFollowsVisibleContent ||
+        isPreviousCharCollapsibleASCIIWhiteSpace) {
+      // First, try to insert <br> element if NBSP is at end of a block.
+      // XXX We should stop this if there is a visible content.
+      if ((visibleWhiteSpaces.EndsByBlockBoundary() ||
+           visibleWhiteSpaces.EndsByInlineEditingHostBoundary()) &&
+          aPoint.IsInContentNode()) {
+        bool insertBRElement = HTMLEditUtils::IsBlockElement(
+            *aPoint.template ContainerAs<nsIContent>(),
+            BlockInlineCheck::UseComputedDisplayStyle);
+        if (!insertBRElement) {
+          NS_ASSERTION(
+              EditorUtils::IsEditableContent(
+                  *aPoint.template ContainerAs<nsIContent>(), EditorType::HTML),
+              "Given content is not editable");
+          NS_ASSERTION(aPoint.template ContainerAs<nsIContent>()
+                           ->GetAsElementOrParentElement(),
+                       "Given content is not an element and an orphan node");
+          const Element* editableBlockElement =
+              EditorUtils::IsEditableContent(
+                  *aPoint.template ContainerAs<nsIContent>(), EditorType::HTML)
+                  ? HTMLEditUtils::GetInclusiveAncestorElement(
+                        *aPoint.template ContainerAs<nsIContent>(),
+                        HTMLEditUtils::ClosestEditableBlockElement,
+                        BlockInlineCheck::UseComputedDisplayStyle)
+                  : nullptr;
+          insertBRElement = !!editableBlockElement;
+        }
+        if (insertBRElement) {
+          // We are at a block boundary.  Insert a <br>.  Why?  Well, first note
+          // that the br will have no visible effect since it is up against a
+          // block boundary.  |foo<br><p>bar| renders like |foo<p>bar| and
+          // similarly |<p>foo<br></p>bar| renders like |<p>foo</p>bar|.  What
+          // this <br> addition gets us is the ability to convert a trailing
+          // nbsp to a space.  Consider: |<body>foo. '</body>|, where '
+          // represents selection.  User types space attempting to put 2 spaces
+          // after the end of their sentence.  We used to do this as:
+          // |<body>foo. &nbsp</body>|  This caused problems with soft wrapping:
+          // the nbsp would wrap to the next line, which looked attrocious.  If
+          // you try to do: |<body>foo.&nbsp </body>| instead, the trailing
+          // space is invisible because it is against a block boundary.  If you
+          // do:
+          // |<body>foo.&nbsp&nbsp</body>| then you get an even uglier soft
+          // wrapping problem, where foo is on one line until you type the final
+          // space, and then "foo  " jumps down to the next line.  Ugh.  The
+          // best way I can find out of this is to throw in a harmless <br>
+          // here, which allows us to do: |<body>foo.&nbsp <br></body>|, which
+          // doesn't cause foo to jump lines, doesn't cause spaces to show up at
+          // the beginning of soft wrapped lines, and lets the user see 2 spaces
+          // when they type 2 spaces.
+
+          Result<CreateElementResult, nsresult> insertBRElementResult =
+              aHTMLEditor.InsertBRElement(WithTransaction::Yes,
+                                          atEndOfVisibleWhiteSpaces);
+          if (MOZ_UNLIKELY(insertBRElementResult.isErr())) {
+            NS_WARNING(
+                "HTMLEditor::InsertBRElement(WithTransaction::Yes) failed");
+            return insertBRElementResult.propagateErr();
+          }
+          MOZ_ASSERT(insertBRElementResult.inspect().GetNewNode());
+          // Ignore caret suggestion because the caller must want to restore
+          // `Selection` due to the purpose of this method.
+          insertBRElementResult.unwrap().IgnoreCaretPointSuggestion();
+
+          atPreviousCharOfEndOfVisibleWhiteSpaces =
+              textFragmentData.GetPreviousEditableCharPoint(
+                  atEndOfVisibleWhiteSpaces);
+          if (NS_WARN_IF(!atPreviousCharOfEndOfVisibleWhiteSpaces.IsSet())) {
+            return NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE;
+          }
+          atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces =
+              textFragmentData.GetPreviousEditableCharPoint(
+                  atPreviousCharOfEndOfVisibleWhiteSpaces);
+          isPreviousCharCollapsibleASCIIWhiteSpace =
+              atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() &&
+              !atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+                   .IsEndOfContainer() &&
+              atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+                  .IsCharCollapsibleASCIISpace();
+          followedByBRElement = true;
+          followedByVisibleContent = followedByPreformattedLineBreak = false;
+        }
+      }
+
+      // Once insert a <br>, the remaining work is only for normalizing
+      // white-space sequence in white-space collapsible text node.
+      // So, if the the text node's white-spaces are preformatted, we need
+      // to do nothing anymore.
+      if (EditorUtils::IsWhiteSpacePreformatted(
+              *atPreviousCharOfEndOfVisibleWhiteSpaces.ContainerAs<Text>())) {
+        return NS_OK;
+      }
+
+      // Next, replace the NBSP with an ASCII white-space if it's surrounded
+      // by visible contents (or immediately before a <br> element).
+      // However, if it follows or is followed by a preformatted linefeed,
+      // we shouldn't do this because an ASCII white-space will be collapsed
+      // **into** the linefeed.
+      if (maybeNBSPFollowsVisibleContent &&
+          (followedByVisibleContent || followedByBRElement) &&
+          !visibleWhiteSpaces.StartsFromPreformattedLineBreak()) {
+        MOZ_ASSERT(!followedByPreformattedLineBreak);
+        Result<InsertTextResult, nsresult> replaceTextResult =
+            aHTMLEditor.ReplaceTextWithTransaction(
+                MOZ_KnownLive(*atPreviousCharOfEndOfVisibleWhiteSpaces
+                                   .ContainerAs<Text>()),
+                atPreviousCharOfEndOfVisibleWhiteSpaces.Offset(), 1, u" "_ns);
+        if (MOZ_UNLIKELY(replaceTextResult.isErr())) {
+          NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
+          return replaceTextResult.propagateErr();
+        }
+        // Ignore caret suggestion because the caller must want to restore
+        // `Selection` due to the purpose of this method.
+        replaceTextResult.unwrap().IgnoreCaretPointSuggestion();
+        return NS_OK;
+      }
     }
-  }
+    // If the text node is not preformatted, and the NBSP is followed by a <br>
+    // element and following (maybe multiple) collapsible ASCII white-spaces,
+    // remove the NBSP, but inserts a NBSP before the spaces.  This makes a line
+    // break opportunity to wrap the line.
+    // XXX This is different behavior from Blink.  Blink generates pairs of
+    //     an NBSP and an ASCII white-space, but put NBSP at the end of the
+    //     sequence.  We should follow the behavior for web-compat.
+    if (maybeNBSPFollowsVisibleContent ||
+        !isPreviousCharCollapsibleASCIIWhiteSpace ||
+        !(followedByVisibleContent || followedByBRElement) ||
+        EditorUtils::IsWhiteSpacePreformatted(
+            *atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+                 .ContainerAs<Text>())) {
+      return NS_OK;
+    }
 
-  // If the text node is not preformatted, and the NBSP is followed by a <br>
-  // element and following (maybe multiple) ASCII spaces, remove the NBSP,
-  // but inserts a NBSP before the spaces.  This makes a line break opportunity
-  // to wrap the line.
-  // XXX This is different behavior from Blink.  Blink generates pairs of
-  //     an NBSP and an ASCII whitespace, but put NBSP at the end of the
-  //     sequence.  We should follow the behavior for web-compat.
-  if (mPRE || maybeNBSPFollowingVisibleContent ||
-      !isPreviousCharASCIIWhitespace || !followedByVisibleContentOrBRElement) {
+    // Currently, we're at an NBSP following an ASCII space, and we need to
+    // replace them with `"&nbsp; "` for avoiding collapsing white-spaces.
+    MOZ_ASSERT(!atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+                    .IsEndOfContainer());
+    const EditorDOMPointInText atFirstASCIIWhiteSpace =
+        textFragmentData.GetFirstASCIIWhiteSpacePointCollapsedTo(
+            atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces,
+            nsIEditor::eNone);
+    uint32_t numberOfASCIIWhiteSpacesInStartNode =
+        atFirstASCIIWhiteSpace.ContainerAs<Text>() ==
+                atPreviousCharOfEndOfVisibleWhiteSpaces.ContainerAs<Text>()
+            ? atPreviousCharOfEndOfVisibleWhiteSpaces.Offset() -
+                  atFirstASCIIWhiteSpace.Offset()
+            : atFirstASCIIWhiteSpace.ContainerAs<Text>()->Length() -
+                  atFirstASCIIWhiteSpace.Offset();
+    // Replace all preceding ASCII white-spaces **and** the NBSP.
+    uint32_t replaceLengthInStartNode =
+        numberOfASCIIWhiteSpacesInStartNode +
+        (atFirstASCIIWhiteSpace.ContainerAs<Text>() ==
+                 atPreviousCharOfEndOfVisibleWhiteSpaces.ContainerAs<Text>()
+             ? 1
+             : 0);
+    Result<InsertTextResult, nsresult> replaceTextResult =
+        aHTMLEditor.ReplaceTextWithTransaction(
+            MOZ_KnownLive(*atFirstASCIIWhiteSpace.ContainerAs<Text>()),
+            atFirstASCIIWhiteSpace.Offset(), replaceLengthInStartNode,
+            textFragmentData.StartsFromPreformattedLineBreak() &&
+                    textFragmentData.EndsByPreformattedLineBreak()
+                ? u"\x00A0\x00A0"_ns
+                : (textFragmentData.EndsByPreformattedLineBreak()
+                       ? u" \x00A0"_ns
+                       : u"\x00A0 "_ns));
+    if (MOZ_UNLIKELY(replaceTextResult.isErr())) {
+      NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
+      return replaceTextResult.propagateErr();
+    }
+    // Ignore caret suggestion because the caller must want to restore
+    // `Selection` due to the purpose of this method.
+    replaceTextResult.unwrap().IgnoreCaretPointSuggestion();
+
+    if (atFirstASCIIWhiteSpace.GetContainer() ==
+        atPreviousCharOfEndOfVisibleWhiteSpaces.GetContainer()) {
+      return NS_OK;
+    }
+
+    // We need to remove the following unnecessary ASCII white-spaces and
+    // NBSP at atPreviousCharOfEndOfVisibleWhiteSpaces because we collapsed them
+    // into the start node.
+    Result<CaretPoint, nsresult> caretPointOrError =
+        aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+            EditorDOMPointInText::AtEndOf(
+                *atFirstASCIIWhiteSpace.ContainerAs<Text>()),
+            atPreviousCharOfEndOfVisibleWhiteSpaces.NextPoint(),
+            HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING("HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+      return caretPointOrError.propagateErr();
+    }
+    // Ignore caret suggestion because the caller must want to restore
+    // `Selection` due to the purpose of this method.    }
+    caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
     return NS_OK;
   }
 
-  // Currently, we're at an NBSP following an ASCII space (in theory,
-  // GetASCIIWhitespacesBounds() may return earlier text node's ASCII
-  // whitespace point to `start` though).  Then, we need to replace it with
-  // `"&nbsp; "` for avoiding collapsing whitespaces.
-  MOZ_ASSERT(!atPreviousCharOfPreviousCharOfEndOfRun.IsEndOfContainer());
-  // XXX `eBoth` is required even though the following code does not refer
-  //     `end` because GetASCIIWhitespacesBounds() may not set `start` nor
-  //     `end` if `eBefore`.
-  EditorDOMPointInText start, end;
-  Tie(start, end) = GetASCIIWhitespacesBounds(eBoth, atPreviousCharOfEndOfRun);
-  MOZ_ASSERT(
-      start.IsSet(),
-      "WSRunObject::GetASCIIWhitespacesBounds() didn't return start point");
-  MOZ_ASSERT(start.GetContainer() != atPreviousCharOfEndOfRun.GetContainer() ||
-                 start.Offset() < atPreviousCharOfEndOfRun.Offset(),
-             "There must be at least one ASCII whitespace");
+  // XXX This is called when top-level edit sub-action handling ends for
+  //     3 points at most.  However, this is not compatible with Blink.
+  //     Blink touches white-space sequence which includes new character
+  //     or following white-space sequence of new <br> element or, if and
+  //     only if deleting range is followed by white-space sequence (i.e.,
+  //     not touched previous white-space sequence of deleting range).
+  //     This should be done when we change to make each edit action
+  //     handler directly normalize white-space sequence rather than
+  //     OnEndHandlingTopLevelEditSucAction().
 
-  AutoTransactionsConserveSelection dontChangeMySelection(mHTMLEditor);
-  uint32_t numberOfASCIIWhitespacesInStartNode =
-      start.ContainerAsText() == atPreviousCharOfEndOfRun.ContainerAsText()
-          ? atPreviousCharOfEndOfRun.Offset() - start.Offset()
-          : start.ContainerAsText()->Length() - start.Offset();
-  // Replace all preceding ASCII whitespaces **and** the NBSP.
-  uint32_t replaceLengthInStartNode =
-      numberOfASCIIWhitespacesInStartNode +
-      (start.ContainerAsText() == atPreviousCharOfEndOfRun.ContainerAsText()
-           ? 1
-           : 0);
-  nsresult rv =
-      MOZ_KnownLive(mHTMLEditor)
-          .ReplaceTextWithTransaction(MOZ_KnownLive(*start.ContainerAsText()),
-                                      start.Offset(), replaceLengthInStartNode,
-                                      NS_LITERAL_STRING(u"\x00A0 "));
-  if (NS_FAILED(rv)) {
-    NS_WARNING("HTMLEditor::ReplaceTextWithTransaction() failed");
-    return rv;
-  }
-
-  if (start.GetContainer() == atPreviousCharOfEndOfRun.GetContainer()) {
+  // First, check if the last character is an NBSP.  Otherwise, we don't need
+  // to do nothing here.
+  const EditorDOMPoint& atEndOfVisibleWhiteSpaces = visibleWhiteSpaces.EndRef();
+  const EditorDOMPointInText atPreviousCharOfEndOfVisibleWhiteSpaces =
+      textFragmentData.GetPreviousEditableCharPoint(atEndOfVisibleWhiteSpaces);
+  if (!atPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() ||
+      atPreviousCharOfEndOfVisibleWhiteSpaces.IsEndOfContainer() ||
+      !atPreviousCharOfEndOfVisibleWhiteSpaces.IsCharCollapsibleNBSP() ||
+      // If the next character of the NBSP is a preformatted linefeed, we
+      // shouldn't replace it with an ASCII white-space for avoiding collapsed
+      // into the linefeed.
+      visibleWhiteSpaces.EndsByPreformattedLineBreak()) {
     return NS_OK;
   }
 
-  // We need to remove the following unnecessary ASCII whitespaces and
-  // NBSP at atPreviousCharOfEndOfRun because we collapsed them into
-  // the start node.
-  rv = MOZ_KnownLive(mHTMLEditor)
-           .DeleteTextAndTextNodesWithTransaction(
-               EditorDOMPointInText::AtEndOf(*start.ContainerAsText()),
-               atPreviousCharOfEndOfRun.NextPoint());
-  NS_WARNING_ASSERTION(
-      NS_SUCCEEDED(rv),
-      "HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-  return rv;
+  // Next, consider the range to collapse ASCII white-spaces before there.
+  EditorDOMPointInText startToDelete, endToDelete;
+
+  const EditorDOMPointInText
+      atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces =
+          textFragmentData.GetPreviousEditableCharPoint(
+              atPreviousCharOfEndOfVisibleWhiteSpaces);
+  // If there are some preceding ASCII white-spaces, we need to treat them
+  // as one white-space.  I.e., we need to collapse them.
+  if (atPreviousCharOfEndOfVisibleWhiteSpaces.IsCharNBSP() &&
+      atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces.IsSet() &&
+      atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces
+          .IsCharCollapsibleASCIISpace()) {
+    startToDelete = textFragmentData.GetFirstASCIIWhiteSpacePointCollapsedTo(
+        atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces,
+        nsIEditor::eNone);
+    endToDelete = atPreviousCharOfPreviousCharOfEndOfVisibleWhiteSpaces;
+  }
+  // Otherwise, we don't need to remove any white-spaces, but we may need
+  // to normalize the white-space sequence containing the previous NBSP.
+  else {
+    startToDelete = endToDelete =
+        atPreviousCharOfEndOfVisibleWhiteSpaces.NextPoint();
+  }
+
+  Result<CaretPoint, nsresult> caretPointOrError =
+      aHTMLEditor.DeleteTextAndNormalizeSurroundingWhiteSpaces(
+          startToDelete, endToDelete,
+          HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries,
+          HTMLEditor::DeleteDirection::Forward);
+  if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+    NS_WARNING(
+        "HTMLEditor::DeleteTextAndNormalizeSurroundingWhiteSpace() failed");
+    return caretPointOrError.unwrapErr();
+  }
+  // Ignore caret suggestion because the caller must want to restore
+  // `Selection` due to the purpose of this method.
+  caretPointOrError.unwrap().IgnoreCaretPointSuggestion();
+  return NS_OK;
 }
 
-nsresult WSRunObject::MaybeReplacePreviousNBSPWithASCIIWhitespace(
-    const WSFragment& aRun, const EditorDOMPoint& aPoint) {
-  MOZ_ASSERT(aPoint.IsSetAndValid());
+EditorDOMPointInText WSRunScanner::TextFragmentData::
+    GetPreviousNBSPPointIfNeedToReplaceWithASCIIWhiteSpace(
+        const EditorDOMPoint& aPointToInsert) const {
+  MOZ_ASSERT(aPointToInsert.IsSetAndValid());
+  MOZ_ASSERT(VisibleWhiteSpacesDataRef().IsInitialized());
+  NS_ASSERTION(VisibleWhiteSpacesDataRef().ComparePoint(aPointToInsert) ==
+                       PointPosition::MiddleOfFragment ||
+                   VisibleWhiteSpacesDataRef().ComparePoint(aPointToInsert) ==
+                       PointPosition::EndOfFragment,
+               "Previous char of aPoint should be in the visible white-spaces");
 
   // Try to change an NBSP to a space, if possible, just to prevent NBSP
   // proliferation.  This routine is called when we are about to make this
   // point in the ws abut an inserted break or text, so we don't have to worry
   // about what is after it.  What is after it now will end up after the
   // inserted object.
-  EditorDOMPointInText atPreviousChar = GetPreviousEditableCharPoint(aPoint);
+  const EditorDOMPointInText atPreviousChar =
+      GetPreviousEditableCharPoint(aPointToInsert);
   if (!atPreviousChar.IsSet() || atPreviousChar.IsEndOfContainer() ||
-      !atPreviousChar.IsCharNBSP()) {
-    return NS_OK;
+      !atPreviousChar.IsCharNBSP() ||
+      EditorUtils::IsWhiteSpacePreformatted(
+          *atPreviousChar.ContainerAs<Text>())) {
+    return EditorDOMPointInText();
   }
 
-  EditorDOMPointInText atPreviousCharOfPreviousChar =
+  const EditorDOMPointInText atPreviousCharOfPreviousChar =
       GetPreviousEditableCharPoint(atPreviousChar);
   if (atPreviousCharOfPreviousChar.IsSet()) {
-    // If the previous char of the NBSP at previous position of aPoint is
-    // an ASCII whitespace, we don't need to replace it with same character.
+    // If the previous char is in different text node and it's preformatted,
+    // we shouldn't touch it.
+    if (atPreviousChar.ContainerAs<Text>() !=
+            atPreviousCharOfPreviousChar.ContainerAs<Text>() &&
+        EditorUtils::IsWhiteSpacePreformatted(
+            *atPreviousCharOfPreviousChar.ContainerAs<Text>())) {
+      return EditorDOMPointInText();
+    }
+    // If the previous char of the NBSP at previous position of aPointToInsert
+    // is an ASCII white-space, we don't need to replace it with same character.
     if (!atPreviousCharOfPreviousChar.IsEndOfContainer() &&
         atPreviousCharOfPreviousChar.IsCharASCIISpace()) {
-      return NS_OK;
+      return EditorDOMPointInText();
     }
-  }
-  // If previous content of the NBSP is block boundary, we cannot replace the
-  // NBSP with an ASCII whitespace to keep it rendered.
-  else if (!aRun.StartsFromNormalText() && !aRun.StartsFromSpecialContent()) {
-    return NS_OK;
+    return atPreviousChar;
   }
 
-  AutoTransactionsConserveSelection dontChangeMySelection(mHTMLEditor);
-  nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                    .ReplaceTextWithTransaction(
-                        MOZ_KnownLive(*atPreviousChar.ContainerAsText()),
-                        atPreviousChar.Offset(), 1, NS_LITERAL_STRING(" "));
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "HTMLEditor::ReplaceTextWithTransaction() failed");
-  return rv;
+  // If previous content of the NBSP is block boundary, we cannot replace the
+  // NBSP with an ASCII white-space to keep it rendered.
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      VisibleWhiteSpacesDataRef();
+  if (!visibleWhiteSpaces.StartsFromNonCollapsibleCharacters() &&
+      !visibleWhiteSpaces.StartsFromSpecialContent()) {
+    return EditorDOMPointInText();
+  }
+  return atPreviousChar;
 }
 
-nsresult WSRunObject::MaybeReplaceInclusiveNextNBSPWithASCIIWhitespace(
-    const WSFragment& aRun, const EditorDOMPoint& aPoint) {
-  MOZ_ASSERT(aPoint.IsSetAndValid());
+EditorDOMPointInText WSRunScanner::TextFragmentData::
+    GetInclusiveNextNBSPPointIfNeedToReplaceWithASCIIWhiteSpace(
+        const EditorDOMPoint& aPointToInsert) const {
+  MOZ_ASSERT(aPointToInsert.IsSetAndValid());
+  MOZ_ASSERT(VisibleWhiteSpacesDataRef().IsInitialized());
+  NS_ASSERTION(VisibleWhiteSpacesDataRef().ComparePoint(aPointToInsert) ==
+                       PointPosition::StartOfFragment ||
+                   VisibleWhiteSpacesDataRef().ComparePoint(aPointToInsert) ==
+                       PointPosition::MiddleOfFragment,
+               "Inclusive next char of aPointToInsert should be in the visible "
+               "white-spaces");
 
   // Try to change an nbsp to a space, if possible, just to prevent nbsp
   // proliferation This routine is called when we are about to make this point
   // in the ws abut an inserted text, so we don't have to worry about what is
   // before it.  What is before it now will end up before the inserted text.
-  EditorDOMPointInText atNextChar = GetInclusiveNextEditableCharPoint(aPoint);
+  auto atNextChar =
+      GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(aPointToInsert);
   if (!atNextChar.IsSet() || NS_WARN_IF(atNextChar.IsEndOfContainer()) ||
-      !atNextChar.IsCharNBSP()) {
-    return NS_OK;
+      !atNextChar.IsCharNBSP() ||
+      EditorUtils::IsWhiteSpacePreformatted(*atNextChar.ContainerAs<Text>())) {
+    return EditorDOMPointInText();
   }
 
-  EditorDOMPointInText atNextCharOfNextCharOfNBSP =
-      GetInclusiveNextEditableCharPoint(atNextChar.NextPoint());
+  const auto atNextCharOfNextCharOfNBSP =
+      GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+          atNextChar.NextPoint<EditorRawDOMPointInText>());
   if (atNextCharOfNextCharOfNBSP.IsSet()) {
-    // If following character of an NBSP is an ASCII whitespace, we don't
+    // If the next char is in different text node and it's preformatted,
+    // we shouldn't touch it.
+    if (atNextChar.ContainerAs<Text>() !=
+            atNextCharOfNextCharOfNBSP.ContainerAs<Text>() &&
+        EditorUtils::IsWhiteSpacePreformatted(
+            *atNextCharOfNextCharOfNBSP.ContainerAs<Text>())) {
+      return EditorDOMPointInText();
+    }
+    // If following character of an NBSP is an ASCII white-space, we don't
     // need to replace it with same character.
     if (!atNextCharOfNextCharOfNBSP.IsEndOfContainer() &&
         atNextCharOfNextCharOfNBSP.IsCharASCIISpace()) {
-      return NS_OK;
+      return EditorDOMPointInText();
     }
-  }
-  // If the NBSP is last character in the hard line, we don't need to
-  // replace it because it's required to render multiple whitespaces.
-  else if (!aRun.EndsByNormalText() && !aRun.EndsBySpecialContent() &&
-           !aRun.EndsByBRElement()) {
-    return NS_OK;
+    return atNextChar;
   }
 
-  AutoTransactionsConserveSelection dontChangeMySelection(mHTMLEditor);
-  nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                    .ReplaceTextWithTransaction(
-                        MOZ_KnownLive(*atNextChar.ContainerAsText()),
-                        atNextChar.Offset(), 1, NS_LITERAL_STRING(" "));
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "HTMLEditor::ReplaceTextWithTransaction() failed");
-  return rv;
+  // If the NBSP is last character in the hard line, we don't need to
+  // replace it because it's required to render multiple white-spaces.
+  const VisibleWhiteSpacesData& visibleWhiteSpaces =
+      VisibleWhiteSpacesDataRef();
+  if (!visibleWhiteSpaces.EndsByNonCollapsibleCharacters() &&
+      !visibleWhiteSpaces.EndsBySpecialContent() &&
+      !visibleWhiteSpaces.EndsByBRElement()) {
+    return EditorDOMPointInText();
+  }
+
+  return atNextChar;
 }
 
-nsresult WSRunObject::Scrub() {
-  for (WSFragment* run = mStartRun; run; run = run->mRight) {
-    if (run->IsMiddleOfHardLine()) {
-      continue;
-    }
-    nsresult rv = MOZ_KnownLive(mHTMLEditor)
-                      .DeleteTextAndTextNodesWithTransaction(run->StartPoint(),
-                                                             run->EndPoint());
-    if (NS_FAILED(rv)) {
+// static
+Result<CaretPoint, nsresult>
+WhiteSpaceVisibilityKeeper::DeleteInvisibleASCIIWhiteSpaces(
+    HTMLEditor& aHTMLEditor, const EditorDOMPoint& aPoint) {
+  MOZ_ASSERT(aPoint.IsSet());
+  Element* editingHost = aHTMLEditor.ComputeEditingHost();
+  TextFragmentData textFragmentData(aPoint, editingHost,
+                                    BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentData.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  const EditorDOMRange& leadingWhiteSpaceRange =
+      textFragmentData.InvisibleLeadingWhiteSpaceRangeRef();
+  // XXX Getting trailing white-space range now must be wrong because
+  //     mutation event listener may invalidate it.
+  const EditorDOMRange& trailingWhiteSpaceRange =
+      textFragmentData.InvisibleTrailingWhiteSpaceRangeRef();
+  EditorDOMPoint pointToPutCaret;
+  DebugOnly<bool> leadingWhiteSpacesDeleted = false;
+  if (leadingWhiteSpaceRange.IsPositioned() &&
+      !leadingWhiteSpaceRange.Collapsed()) {
+    Result<CaretPoint, nsresult> caretPointOrError =
+        aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+            leadingWhiteSpaceRange.StartRef(), leadingWhiteSpaceRange.EndRef(),
+            HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
       NS_WARNING("HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
-      return rv;
+      return caretPointOrError;
+    }
+    caretPointOrError.unwrap().MoveCaretPointTo(
+        pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+    leadingWhiteSpacesDeleted = true;
+  }
+  if (trailingWhiteSpaceRange.IsPositioned() &&
+      !trailingWhiteSpaceRange.Collapsed() &&
+      leadingWhiteSpaceRange != trailingWhiteSpaceRange) {
+    NS_ASSERTION(!leadingWhiteSpacesDeleted,
+                 "We're trying to remove trailing white-spaces with maybe "
+                 "outdated range");
+    AutoTrackDOMPoint trackPointToPutCaret(aHTMLEditor.RangeUpdaterRef(),
+                                           &pointToPutCaret);
+    Result<CaretPoint, nsresult> caretPointOrError =
+        aHTMLEditor.DeleteTextAndTextNodesWithTransaction(
+            trailingWhiteSpaceRange.StartRef(),
+            trailingWhiteSpaceRange.EndRef(),
+            HTMLEditor::TreatEmptyTextNodes::KeepIfContainerOfRangeBoundaries);
+    if (MOZ_UNLIKELY(caretPointOrError.isErr())) {
+      NS_WARNING("HTMLEditor::DeleteTextAndTextNodesWithTransaction() failed");
+      return caretPointOrError.propagateErr();
+    }
+    trackPointToPutCaret.FlushAndStopTracking();
+    caretPointOrError.unwrap().MoveCaretPointTo(
+        pointToPutCaret, {SuggestCaret::OnlyIfHasSuggestion});
+  }
+  return CaretPoint(std::move(pointToPutCaret));
+}
+
+/*****************************************************************************
+ * Implementation for new white-space normalizer
+ *****************************************************************************/
+
+// static
+EditorDOMRangeInTexts
+WSRunScanner::ComputeRangeInTextNodesContainingInvisibleWhiteSpaces(
+    const TextFragmentData& aStart, const TextFragmentData& aEnd) {
+  // Corresponding to handling invisible white-spaces part of
+  // `TextFragmentData::GetReplaceRangeDataAtEndOfDeletionRange()` and
+  // `TextFragmentData::GetReplaceRangeDataAtStartOfDeletionRange()`
+
+  MOZ_ASSERT(aStart.ScanStartRef().IsSetAndValid());
+  MOZ_ASSERT(aEnd.ScanStartRef().IsSetAndValid());
+  MOZ_ASSERT(aStart.ScanStartRef().EqualsOrIsBefore(aEnd.ScanStartRef()));
+  MOZ_ASSERT(aStart.ScanStartRef().IsInTextNode());
+  MOZ_ASSERT(aEnd.ScanStartRef().IsInTextNode());
+
+  // XXX `GetReplaceRangeDataAtEndOfDeletionRange()` and
+  //     `GetReplaceRangeDataAtStartOfDeletionRange()` use
+  //     `GetNewInvisibleLeadingWhiteSpaceRangeIfSplittingAt()` and
+  //     `GetNewInvisibleTrailingWhiteSpaceRangeIfSplittingAt()`.
+  //     However, they are really odd as mentioned with "XXX" comments
+  //     in them.  For the new white-space normalizer, we need to treat
+  //     invisible white-spaces stricter because the legacy path handles
+  //     white-spaces multiple times (e.g., calling `HTMLEditor::
+  //     DeleteNodeIfInvisibleAndEditableTextNode()` later) and that hides
+  //     the bug, but in the new path, we should stop doing same things
+  //     multiple times for both performance and footprint.  Therefore,
+  //     even though the result might be different in some edge cases,
+  //     we should use clean path for now.  Perhaps, we should fix the odd
+  //     cases before shipping `beforeinput` event in release channel.
+
+  const EditorDOMRange& invisibleLeadingWhiteSpaceRange =
+      aStart.InvisibleLeadingWhiteSpaceRangeRef();
+  const EditorDOMRange& invisibleTrailingWhiteSpaceRange =
+      aEnd.InvisibleTrailingWhiteSpaceRangeRef();
+  const bool hasInvisibleLeadingWhiteSpaces =
+      invisibleLeadingWhiteSpaceRange.IsPositioned() &&
+      !invisibleLeadingWhiteSpaceRange.Collapsed();
+  const bool hasInvisibleTrailingWhiteSpaces =
+      invisibleLeadingWhiteSpaceRange != invisibleTrailingWhiteSpaceRange &&
+      invisibleTrailingWhiteSpaceRange.IsPositioned() &&
+      !invisibleTrailingWhiteSpaceRange.Collapsed();
+
+  EditorDOMRangeInTexts result(aStart.ScanStartRef().AsInText(),
+                               aEnd.ScanStartRef().AsInText());
+  MOZ_ASSERT(result.IsPositionedAndValid());
+  if (!hasInvisibleLeadingWhiteSpaces && !hasInvisibleTrailingWhiteSpaces) {
+    return result;
+  }
+
+  MOZ_ASSERT_IF(
+      hasInvisibleLeadingWhiteSpaces && hasInvisibleTrailingWhiteSpaces,
+      invisibleLeadingWhiteSpaceRange.StartRef().IsBefore(
+          invisibleTrailingWhiteSpaceRange.StartRef()));
+  const EditorDOMPoint& aroundFirstInvisibleWhiteSpace =
+      hasInvisibleLeadingWhiteSpaces
+          ? invisibleLeadingWhiteSpaceRange.StartRef()
+          : invisibleTrailingWhiteSpaceRange.StartRef();
+  if (aroundFirstInvisibleWhiteSpace.IsBefore(result.StartRef())) {
+    if (aroundFirstInvisibleWhiteSpace.IsInTextNode()) {
+      result.SetStart(aroundFirstInvisibleWhiteSpace.AsInText());
+      MOZ_ASSERT(result.IsPositionedAndValid());
+    } else {
+      const auto atFirstInvisibleWhiteSpace =
+          hasInvisibleLeadingWhiteSpaces
+              ? aStart.GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+                    aroundFirstInvisibleWhiteSpace)
+              : aEnd.GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(
+                    aroundFirstInvisibleWhiteSpace);
+      MOZ_ASSERT(atFirstInvisibleWhiteSpace.IsSet());
+      MOZ_ASSERT(
+          atFirstInvisibleWhiteSpace.EqualsOrIsBefore(result.StartRef()));
+      result.SetStart(atFirstInvisibleWhiteSpace);
+      MOZ_ASSERT(result.IsPositionedAndValid());
     }
   }
-  return NS_OK;
+  MOZ_ASSERT_IF(
+      hasInvisibleLeadingWhiteSpaces && hasInvisibleTrailingWhiteSpaces,
+      invisibleLeadingWhiteSpaceRange.EndRef().IsBefore(
+          invisibleTrailingWhiteSpaceRange.EndRef()));
+  const EditorDOMPoint& afterLastInvisibleWhiteSpace =
+      hasInvisibleTrailingWhiteSpaces
+          ? invisibleTrailingWhiteSpaceRange.EndRef()
+          : invisibleLeadingWhiteSpaceRange.EndRef();
+  if (afterLastInvisibleWhiteSpace.EqualsOrIsBefore(result.EndRef())) {
+    MOZ_ASSERT(result.IsPositionedAndValid());
+    return result;
+  }
+  if (afterLastInvisibleWhiteSpace.IsInTextNode()) {
+    result.SetEnd(afterLastInvisibleWhiteSpace.AsInText());
+    MOZ_ASSERT(result.IsPositionedAndValid());
+    return result;
+  }
+  const auto atLastInvisibleWhiteSpace =
+      hasInvisibleTrailingWhiteSpaces
+          ? aEnd.GetPreviousEditableCharPoint(afterLastInvisibleWhiteSpace)
+          : aStart.GetPreviousEditableCharPoint(afterLastInvisibleWhiteSpace);
+  MOZ_ASSERT(atLastInvisibleWhiteSpace.IsSet());
+  MOZ_ASSERT(atLastInvisibleWhiteSpace.IsContainerEmpty() ||
+             atLastInvisibleWhiteSpace.IsAtLastContent());
+  MOZ_ASSERT(result.EndRef().EqualsOrIsBefore(atLastInvisibleWhiteSpace));
+  result.SetEnd(atLastInvisibleWhiteSpace.IsEndOfContainer()
+                    ? atLastInvisibleWhiteSpace
+                    : atLastInvisibleWhiteSpace.NextPoint());
+  MOZ_ASSERT(result.IsPositionedAndValid());
+  return result;
+}
+
+// static
+Result<EditorDOMRangeInTexts, nsresult>
+WSRunScanner::GetRangeInTextNodesToBackspaceFrom(const EditorDOMPoint& aPoint,
+                                                 const Element& aEditingHost) {
+  // Corresponding to computing delete range part of
+  // `WhiteSpaceVisibilityKeeper::DeletePreviousWhiteSpace()`
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+
+  TextFragmentData textFragmentDataAtCaret(
+      aPoint, &aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtCaret.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  EditorDOMPointInText atPreviousChar =
+      textFragmentDataAtCaret.GetPreviousEditableCharPoint(aPoint);
+  if (!atPreviousChar.IsSet()) {
+    return EditorDOMRangeInTexts();  // There is no content in the block.
+  }
+
+  // XXX When previous char point is in an empty text node, we do nothing,
+  //     but this must look odd from point of user view.  We should delete
+  //     something before aPoint.
+  if (atPreviousChar.IsEndOfContainer()) {
+    return EditorDOMRangeInTexts();
+  }
+
+  // Extend delete range if previous char is a low surrogate following
+  // a high surrogate.
+  EditorDOMPointInText atNextChar = atPreviousChar.NextPoint();
+  if (!atPreviousChar.IsStartOfContainer()) {
+    if (atPreviousChar.IsCharLowSurrogateFollowingHighSurrogate()) {
+      atPreviousChar = atPreviousChar.PreviousPoint();
+    }
+    // If caret is in middle of a surrogate pair, delete the surrogate pair
+    // (blink-compat).
+    else if (atPreviousChar.IsCharHighSurrogateFollowedByLowSurrogate()) {
+      atNextChar = atNextChar.NextPoint();
+    }
+  }
+
+  // If previous char is an collapsible white-spaces, delete all adjcent
+  // white-spaces which are collapsed together.
+  EditorDOMRangeInTexts rangeToDelete;
+  if (atPreviousChar.IsCharCollapsibleASCIISpace() ||
+      atPreviousChar.IsCharPreformattedNewLineCollapsedWithWhiteSpaces()) {
+    const EditorDOMPointInText startToDelete =
+        textFragmentDataAtCaret.GetFirstASCIIWhiteSpacePointCollapsedTo(
+            atPreviousChar, nsIEditor::ePrevious);
+    if (!startToDelete.IsSet()) {
+      NS_WARNING(
+          "WSRunScanner::GetFirstASCIIWhiteSpacePointCollapsedTo() failed");
+      return Err(NS_ERROR_FAILURE);
+    }
+    const EditorDOMPointInText endToDelete =
+        textFragmentDataAtCaret.GetEndOfCollapsibleASCIIWhiteSpaces(
+            atPreviousChar, nsIEditor::ePrevious);
+    if (!endToDelete.IsSet()) {
+      NS_WARNING("WSRunScanner::GetEndOfCollapsibleASCIIWhiteSpaces() failed");
+      return Err(NS_ERROR_FAILURE);
+    }
+    rangeToDelete = EditorDOMRangeInTexts(startToDelete, endToDelete);
+  }
+  // if previous char is not a collapsible white-space, remove it.
+  else {
+    rangeToDelete = EditorDOMRangeInTexts(atPreviousChar, atNextChar);
+  }
+
+  // If there is no removable and visible content, we should do nothing.
+  if (rangeToDelete.Collapsed()) {
+    return EditorDOMRangeInTexts();
+  }
+
+  // And also delete invisible white-spaces if they become visible.
+  TextFragmentData textFragmentDataAtStart =
+      rangeToDelete.StartRef() != aPoint
+          ? TextFragmentData(rangeToDelete.StartRef(), &aEditingHost,
+                             BlockInlineCheck::UseComputedDisplayStyle)
+          : textFragmentDataAtCaret;
+  TextFragmentData textFragmentDataAtEnd =
+      rangeToDelete.EndRef() != aPoint
+          ? TextFragmentData(rangeToDelete.EndRef(), &aEditingHost,
+                             BlockInlineCheck::UseComputedDisplayStyle)
+          : textFragmentDataAtCaret;
+  if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized()) ||
+      NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  EditorDOMRangeInTexts extendedRangeToDelete =
+      WSRunScanner::ComputeRangeInTextNodesContainingInvisibleWhiteSpaces(
+          textFragmentDataAtStart, textFragmentDataAtEnd);
+  MOZ_ASSERT(extendedRangeToDelete.IsPositionedAndValid());
+  return extendedRangeToDelete.IsPositioned() ? extendedRangeToDelete
+                                              : rangeToDelete;
+}
+
+// static
+Result<EditorDOMRangeInTexts, nsresult>
+WSRunScanner::GetRangeInTextNodesToForwardDeleteFrom(
+    const EditorDOMPoint& aPoint, const Element& aEditingHost) {
+  // Corresponding to computing delete range part of
+  // `WhiteSpaceVisibilityKeeper::DeleteInclusiveNextWhiteSpace()`
+  MOZ_ASSERT(aPoint.IsSetAndValid());
+
+  TextFragmentData textFragmentDataAtCaret(
+      aPoint, &aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtCaret.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  auto atCaret =
+      textFragmentDataAtCaret
+          .GetInclusiveNextEditableCharPoint<EditorDOMPointInText>(aPoint);
+  if (!atCaret.IsSet()) {
+    return EditorDOMRangeInTexts();  // There is no content in the block.
+  }
+  // If caret is in middle of a surrogate pair, we should remove next
+  // character (blink-compat).
+  if (!atCaret.IsEndOfContainer() &&
+      atCaret.IsCharLowSurrogateFollowingHighSurrogate()) {
+    atCaret = atCaret.NextPoint();
+  }
+
+  // XXX When next char point is in an empty text node, we do nothing,
+  //     but this must look odd from point of user view.  We should delete
+  //     something after aPoint.
+  if (atCaret.IsEndOfContainer()) {
+    return EditorDOMRangeInTexts();
+  }
+
+  // Extend delete range if previous char is a low surrogate following
+  // a high surrogate.
+  EditorDOMPointInText atNextChar = atCaret.NextPoint();
+  if (atCaret.IsCharHighSurrogateFollowedByLowSurrogate()) {
+    atNextChar = atNextChar.NextPoint();
+  }
+
+  // If next char is a collapsible white-space, delete all adjcent white-spaces
+  // which are collapsed together.
+  EditorDOMRangeInTexts rangeToDelete;
+  if (atCaret.IsCharCollapsibleASCIISpace() ||
+      atCaret.IsCharPreformattedNewLineCollapsedWithWhiteSpaces()) {
+    const EditorDOMPointInText startToDelete =
+        textFragmentDataAtCaret.GetFirstASCIIWhiteSpacePointCollapsedTo(
+            atCaret, nsIEditor::eNext);
+    if (!startToDelete.IsSet()) {
+      NS_WARNING(
+          "WSRunScanner::GetFirstASCIIWhiteSpacePointCollapsedTo() failed");
+      return Err(NS_ERROR_FAILURE);
+    }
+    const EditorDOMPointInText endToDelete =
+        textFragmentDataAtCaret.GetEndOfCollapsibleASCIIWhiteSpaces(
+            atCaret, nsIEditor::eNext);
+    if (!endToDelete.IsSet()) {
+      NS_WARNING("WSRunScanner::GetEndOfCollapsibleASCIIWhiteSpaces() failed");
+      return Err(NS_ERROR_FAILURE);
+    }
+    rangeToDelete = EditorDOMRangeInTexts(startToDelete, endToDelete);
+  }
+  // if next char is not a collapsible white-space, remove it.
+  else {
+    rangeToDelete = EditorDOMRangeInTexts(atCaret, atNextChar);
+  }
+
+  // If there is no removable and visible content, we should do nothing.
+  if (rangeToDelete.Collapsed()) {
+    return EditorDOMRangeInTexts();
+  }
+
+  // And also delete invisible white-spaces if they become visible.
+  TextFragmentData textFragmentDataAtStart =
+      rangeToDelete.StartRef() != aPoint
+          ? TextFragmentData(rangeToDelete.StartRef(), &aEditingHost,
+                             BlockInlineCheck::UseComputedDisplayStyle)
+          : textFragmentDataAtCaret;
+  TextFragmentData textFragmentDataAtEnd =
+      rangeToDelete.EndRef() != aPoint
+          ? TextFragmentData(rangeToDelete.EndRef(), &aEditingHost,
+                             BlockInlineCheck::UseComputedDisplayStyle)
+          : textFragmentDataAtCaret;
+  if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized()) ||
+      NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+  EditorDOMRangeInTexts extendedRangeToDelete =
+      WSRunScanner::ComputeRangeInTextNodesContainingInvisibleWhiteSpaces(
+          textFragmentDataAtStart, textFragmentDataAtEnd);
+  MOZ_ASSERT(extendedRangeToDelete.IsPositionedAndValid());
+  return extendedRangeToDelete.IsPositioned() ? extendedRangeToDelete
+                                              : rangeToDelete;
+}
+
+// static
+EditorDOMRange WSRunScanner::GetRangesForDeletingAtomicContent(
+    Element* aEditingHost, const nsIContent& aAtomicContent) {
+  if (aAtomicContent.IsHTMLElement(nsGkAtoms::br)) {
+    // Preceding white-spaces should be preserved, but the following
+    // white-spaces should be invisible around `<br>` element.
+    TextFragmentData textFragmentDataAfterBRElement(
+        EditorDOMPoint::After(aAtomicContent), aEditingHost,
+        BlockInlineCheck::UseComputedDisplayStyle);
+    if (NS_WARN_IF(!textFragmentDataAfterBRElement.IsInitialized())) {
+      return EditorDOMRange();  // TODO: Make here return error with Err.
+    }
+    const EditorDOMRangeInTexts followingInvisibleWhiteSpaces =
+        textFragmentDataAfterBRElement.GetNonCollapsedRangeInTexts(
+            textFragmentDataAfterBRElement
+                .InvisibleLeadingWhiteSpaceRangeRef());
+    return followingInvisibleWhiteSpaces.IsPositioned() &&
+                   !followingInvisibleWhiteSpaces.Collapsed()
+               ? EditorDOMRange(
+                     EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)),
+                     followingInvisibleWhiteSpaces.EndRef())
+               : EditorDOMRange(
+                     EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)),
+                     EditorDOMPoint::After(aAtomicContent));
+  }
+
+  if (!HTMLEditUtils::IsBlockElement(
+          aAtomicContent, BlockInlineCheck::UseComputedDisplayStyle)) {
+    // Both preceding and following white-spaces around it should be preserved
+    // around inline elements like `<img>`.
+    return EditorDOMRange(
+        EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)),
+        EditorDOMPoint::After(aAtomicContent));
+  }
+
+  // Both preceding and following white-spaces can be invisible around a
+  // block element.
+  TextFragmentData textFragmentDataBeforeAtomicContent(
+      EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)), aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataBeforeAtomicContent.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRangeInTexts precedingInvisibleWhiteSpaces =
+      textFragmentDataBeforeAtomicContent.GetNonCollapsedRangeInTexts(
+          textFragmentDataBeforeAtomicContent
+              .InvisibleTrailingWhiteSpaceRangeRef());
+  TextFragmentData textFragmentDataAfterAtomicContent(
+      EditorDOMPoint::After(aAtomicContent), aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAfterAtomicContent.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRangeInTexts followingInvisibleWhiteSpaces =
+      textFragmentDataAfterAtomicContent.GetNonCollapsedRangeInTexts(
+          textFragmentDataAfterAtomicContent
+              .InvisibleLeadingWhiteSpaceRangeRef());
+  if (precedingInvisibleWhiteSpaces.StartRef().IsSet() &&
+      followingInvisibleWhiteSpaces.EndRef().IsSet()) {
+    return EditorDOMRange(precedingInvisibleWhiteSpaces.StartRef(),
+                          followingInvisibleWhiteSpaces.EndRef());
+  }
+  if (precedingInvisibleWhiteSpaces.StartRef().IsSet()) {
+    return EditorDOMRange(precedingInvisibleWhiteSpaces.StartRef(),
+                          EditorDOMPoint::After(aAtomicContent));
+  }
+  if (followingInvisibleWhiteSpaces.EndRef().IsSet()) {
+    return EditorDOMRange(
+        EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)),
+        followingInvisibleWhiteSpaces.EndRef());
+  }
+  return EditorDOMRange(
+      EditorDOMPoint(const_cast<nsIContent*>(&aAtomicContent)),
+      EditorDOMPoint::After(aAtomicContent));
+}
+
+// static
+EditorDOMRange WSRunScanner::GetRangeForDeletingBlockElementBoundaries(
+    const HTMLEditor& aHTMLEditor, const Element& aLeftBlockElement,
+    const Element& aRightBlockElement,
+    const EditorDOMPoint& aPointContainingTheOtherBlock) {
+  MOZ_ASSERT(&aLeftBlockElement != &aRightBlockElement);
+  MOZ_ASSERT_IF(
+      aPointContainingTheOtherBlock.IsSet(),
+      aPointContainingTheOtherBlock.GetContainer() == &aLeftBlockElement ||
+          aPointContainingTheOtherBlock.GetContainer() == &aRightBlockElement);
+  MOZ_ASSERT_IF(
+      aPointContainingTheOtherBlock.GetContainer() == &aLeftBlockElement,
+      aRightBlockElement.IsInclusiveDescendantOf(
+          aPointContainingTheOtherBlock.GetChild()));
+  MOZ_ASSERT_IF(
+      aPointContainingTheOtherBlock.GetContainer() == &aRightBlockElement,
+      aLeftBlockElement.IsInclusiveDescendantOf(
+          aPointContainingTheOtherBlock.GetChild()));
+  MOZ_ASSERT_IF(
+      !aPointContainingTheOtherBlock.IsSet(),
+      !aRightBlockElement.IsInclusiveDescendantOf(&aLeftBlockElement));
+  MOZ_ASSERT_IF(
+      !aPointContainingTheOtherBlock.IsSet(),
+      !aLeftBlockElement.IsInclusiveDescendantOf(&aRightBlockElement));
+  MOZ_ASSERT_IF(!aPointContainingTheOtherBlock.IsSet(),
+                EditorRawDOMPoint(const_cast<Element*>(&aLeftBlockElement))
+                    .IsBefore(EditorRawDOMPoint(
+                        const_cast<Element*>(&aRightBlockElement))));
+
+  const Element* editingHost = aHTMLEditor.ComputeEditingHost();
+
+  EditorDOMRange range;
+  // Include trailing invisible white-spaces in aLeftBlockElement.
+  TextFragmentData textFragmentDataAtEndOfLeftBlockElement(
+      aPointContainingTheOtherBlock.GetContainer() == &aLeftBlockElement
+          ? aPointContainingTheOtherBlock
+          : EditorDOMPoint::AtEndOf(const_cast<Element&>(aLeftBlockElement)),
+      editingHost, BlockInlineCheck::UseComputedDisplayOutsideStyle);
+  if (NS_WARN_IF(!textFragmentDataAtEndOfLeftBlockElement.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  if (textFragmentDataAtEndOfLeftBlockElement.StartsFromInvisibleBRElement()) {
+    // If the left block element ends with an invisible `<br>` element,
+    // it'll be deleted (and it means there is no invisible trailing
+    // white-spaces).  Therefore, the range should start from the invisible
+    // `<br>` element.
+    range.SetStart(EditorDOMPoint(
+        textFragmentDataAtEndOfLeftBlockElement.StartReasonBRElementPtr()));
+  } else {
+    const EditorDOMRange& trailingWhiteSpaceRange =
+        textFragmentDataAtEndOfLeftBlockElement
+            .InvisibleTrailingWhiteSpaceRangeRef();
+    if (trailingWhiteSpaceRange.StartRef().IsSet()) {
+      range.SetStart(trailingWhiteSpaceRange.StartRef());
+    } else {
+      range.SetStart(textFragmentDataAtEndOfLeftBlockElement.ScanStartRef());
+    }
+  }
+  // Include leading invisible white-spaces in aRightBlockElement.
+  TextFragmentData textFragmentDataAtStartOfRightBlockElement(
+      aPointContainingTheOtherBlock.GetContainer() == &aRightBlockElement &&
+              !aPointContainingTheOtherBlock.IsEndOfContainer()
+          ? aPointContainingTheOtherBlock.NextPoint()
+          : EditorDOMPoint(const_cast<Element*>(&aRightBlockElement), 0u),
+      editingHost, BlockInlineCheck::UseComputedDisplayOutsideStyle);
+  if (NS_WARN_IF(!textFragmentDataAtStartOfRightBlockElement.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRange& leadingWhiteSpaceRange =
+      textFragmentDataAtStartOfRightBlockElement
+          .InvisibleLeadingWhiteSpaceRangeRef();
+  if (leadingWhiteSpaceRange.EndRef().IsSet()) {
+    range.SetEnd(leadingWhiteSpaceRange.EndRef());
+  } else {
+    range.SetEnd(textFragmentDataAtStartOfRightBlockElement.ScanStartRef());
+  }
+  return range;
+}
+
+// static
+EditorDOMRange
+WSRunScanner::GetRangeContainingInvisibleWhiteSpacesAtRangeBoundaries(
+    Element* aEditingHost, const EditorDOMRange& aRange) {
+  MOZ_ASSERT(aRange.IsPositionedAndValid());
+  MOZ_ASSERT(aRange.EndRef().IsSetAndValid());
+  MOZ_ASSERT(aRange.StartRef().IsSetAndValid());
+
+  EditorDOMRange result;
+  TextFragmentData textFragmentDataAtStart(
+      aRange.StartRef(), aEditingHost,
+      BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRangeInTexts invisibleLeadingWhiteSpacesAtStart =
+      textFragmentDataAtStart.GetNonCollapsedRangeInTexts(
+          textFragmentDataAtStart.InvisibleLeadingWhiteSpaceRangeRef());
+  if (invisibleLeadingWhiteSpacesAtStart.IsPositioned() &&
+      !invisibleLeadingWhiteSpacesAtStart.Collapsed()) {
+    result.SetStart(invisibleLeadingWhiteSpacesAtStart.StartRef());
+  } else {
+    const EditorDOMRangeInTexts invisibleTrailingWhiteSpacesAtStart =
+        textFragmentDataAtStart.GetNonCollapsedRangeInTexts(
+            textFragmentDataAtStart.InvisibleTrailingWhiteSpaceRangeRef());
+    if (invisibleTrailingWhiteSpacesAtStart.IsPositioned() &&
+        !invisibleTrailingWhiteSpacesAtStart.Collapsed()) {
+      MOZ_ASSERT(
+          invisibleTrailingWhiteSpacesAtStart.StartRef().EqualsOrIsBefore(
+              aRange.StartRef()));
+      result.SetStart(invisibleTrailingWhiteSpacesAtStart.StartRef());
+    }
+    // If there is no invisible white-space and the line starts with a
+    // text node, shrink the range to start of the text node.
+    else if (!aRange.StartRef().IsInTextNode() &&
+             (textFragmentDataAtStart.StartsFromBlockBoundary() ||
+              textFragmentDataAtStart.StartsFromInlineEditingHostBoundary()) &&
+             textFragmentDataAtStart.EndRef().IsInTextNode()) {
+      result.SetStart(textFragmentDataAtStart.EndRef());
+    }
+  }
+  if (!result.StartRef().IsSet()) {
+    result.SetStart(aRange.StartRef());
+  }
+
+  TextFragmentData textFragmentDataAtEnd(
+      aRange.EndRef(), aEditingHost, BlockInlineCheck::UseComputedDisplayStyle);
+  if (NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized())) {
+    return EditorDOMRange();  // TODO: Make here return error with Err.
+  }
+  const EditorDOMRangeInTexts invisibleLeadingWhiteSpacesAtEnd =
+      textFragmentDataAtEnd.GetNonCollapsedRangeInTexts(
+          textFragmentDataAtEnd.InvisibleTrailingWhiteSpaceRangeRef());
+  if (invisibleLeadingWhiteSpacesAtEnd.IsPositioned() &&
+      !invisibleLeadingWhiteSpacesAtEnd.Collapsed()) {
+    result.SetEnd(invisibleLeadingWhiteSpacesAtEnd.EndRef());
+  } else {
+    const EditorDOMRangeInTexts invisibleLeadingWhiteSpacesAtEnd =
+        textFragmentDataAtEnd.GetNonCollapsedRangeInTexts(
+            textFragmentDataAtEnd.InvisibleLeadingWhiteSpaceRangeRef());
+    if (invisibleLeadingWhiteSpacesAtEnd.IsPositioned() &&
+        !invisibleLeadingWhiteSpacesAtEnd.Collapsed()) {
+      MOZ_ASSERT(aRange.EndRef().EqualsOrIsBefore(
+          invisibleLeadingWhiteSpacesAtEnd.EndRef()));
+      result.SetEnd(invisibleLeadingWhiteSpacesAtEnd.EndRef());
+    }
+    // If there is no invisible white-space and the line ends with a text
+    // node, shrink the range to end of the text node.
+    else if (!aRange.EndRef().IsInTextNode() &&
+             (textFragmentDataAtEnd.EndsByBlockBoundary() ||
+              textFragmentDataAtEnd.EndsByInlineEditingHostBoundary()) &&
+             textFragmentDataAtEnd.StartRef().IsInTextNode()) {
+      result.SetEnd(EditorDOMPoint::AtEndOf(
+          *textFragmentDataAtEnd.StartRef().ContainerAs<Text>()));
+    }
+  }
+  if (!result.EndRef().IsSet()) {
+    result.SetEnd(aRange.EndRef());
+  }
+  MOZ_ASSERT(result.IsPositionedAndValid());
+  return result;
+}
+
+/******************************************************************************
+ * Utilities for other things.
+ ******************************************************************************/
+
+// static
+Result<bool, nsresult>
+WSRunScanner::ShrinkRangeIfStartsFromOrEndsAfterAtomicContent(
+    const HTMLEditor& aHTMLEditor, nsRange& aRange,
+    const Element* aEditingHost) {
+  MOZ_ASSERT(aRange.IsPositioned());
+  MOZ_ASSERT(!aRange.IsInAnySelection(),
+             "Changing range in selection may cause running script");
+
+  if (NS_WARN_IF(!aRange.GetStartContainer()) ||
+      NS_WARN_IF(!aRange.GetEndContainer())) {
+    return Err(NS_ERROR_FAILURE);
+  }
+
+  if (!aRange.GetStartContainer()->IsContent() ||
+      !aRange.GetEndContainer()->IsContent()) {
+    return false;
+  }
+
+  // If the range crosses a block boundary, we should do nothing for now
+  // because it hits a bug of inserting a padding `<br>` element after
+  // joining the blocks.
+  if (HTMLEditUtils::GetInclusiveAncestorElement(
+          *aRange.GetStartContainer()->AsContent(),
+          HTMLEditUtils::ClosestEditableBlockElementExceptHRElement,
+          BlockInlineCheck::UseComputedDisplayStyle) !=
+      HTMLEditUtils::GetInclusiveAncestorElement(
+          *aRange.GetEndContainer()->AsContent(),
+          HTMLEditUtils::ClosestEditableBlockElementExceptHRElement,
+          BlockInlineCheck::UseComputedDisplayStyle)) {
+    return false;
+  }
+
+  nsIContent* startContent = nullptr;
+  if (aRange.GetStartContainer() && aRange.GetStartContainer()->IsText() &&
+      aRange.GetStartContainer()->AsText()->Length() == aRange.StartOffset()) {
+    // If next content is a visible `<br>` element, special inline content
+    // (e.g., `<img>`, non-editable text node, etc) or a block level void
+    // element like `<hr>`, the range should start with it.
+    TextFragmentData textFragmentDataAtStart(
+        EditorRawDOMPoint(aRange.StartRef()), aEditingHost,
+        BlockInlineCheck::UseComputedDisplayStyle);
+    if (NS_WARN_IF(!textFragmentDataAtStart.IsInitialized())) {
+      return Err(NS_ERROR_FAILURE);
+    }
+    if (textFragmentDataAtStart.EndsByVisibleBRElement()) {
+      startContent = textFragmentDataAtStart.EndReasonBRElementPtr();
+    } else if (textFragmentDataAtStart.EndsBySpecialContent() ||
+               (textFragmentDataAtStart.EndsByOtherBlockElement() &&
+                !HTMLEditUtils::IsContainerNode(
+                    *textFragmentDataAtStart
+                         .EndReasonOtherBlockElementPtr()))) {
+      startContent = textFragmentDataAtStart.GetEndReasonContent();
+    }
+  }
+
+  nsIContent* endContent = nullptr;
+  if (aRange.GetEndContainer() && aRange.GetEndContainer()->IsText() &&
+      !aRange.EndOffset()) {
+    // If previous content is a visible `<br>` element, special inline content
+    // (e.g., `<img>`, non-editable text node, etc) or a block level void
+    // element like `<hr>`, the range should end after it.
+    TextFragmentData textFragmentDataAtEnd(
+        EditorRawDOMPoint(aRange.EndRef()), aEditingHost,
+        BlockInlineCheck::UseComputedDisplayStyle);
+    if (NS_WARN_IF(!textFragmentDataAtEnd.IsInitialized())) {
+      return Err(NS_ERROR_FAILURE);
+    }
+    if (textFragmentDataAtEnd.StartsFromVisibleBRElement()) {
+      endContent = textFragmentDataAtEnd.StartReasonBRElementPtr();
+    } else if (textFragmentDataAtEnd.StartsFromSpecialContent() ||
+               (textFragmentDataAtEnd.StartsFromOtherBlockElement() &&
+                !HTMLEditUtils::IsContainerNode(
+                    *textFragmentDataAtEnd
+                         .StartReasonOtherBlockElementPtr()))) {
+      endContent = textFragmentDataAtEnd.GetStartReasonContent();
+    }
+  }
+
+  if (!startContent && !endContent) {
+    return false;
+  }
+
+  nsresult rv = aRange.SetStartAndEnd(
+      startContent ? RangeBoundary(
+                         startContent->GetParentNode(),
+                         startContent->GetPreviousSibling())  // at startContent
+                   : aRange.StartRef(),
+      endContent ? RangeBoundary(endContent->GetParentNode(),
+                                 endContent)  // after endContent
+                 : aRange.EndRef());
+  if (NS_FAILED(rv)) {
+    NS_WARNING("nsRange::SetStartAndEnd() failed");
+    return Err(rv);
+  }
+  return true;
 }
 
 }  // namespace mozilla

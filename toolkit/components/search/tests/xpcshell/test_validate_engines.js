@@ -1,47 +1,68 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Ensure all the engines defined in list.json are valid by
-// creating a new list.json that contains every engine and
-// loading them all.
+// Ensure all the engines defined in the configuration are valid by
+// creating a refined configuration that includes all the engines everywhere.
 
 "use strict";
 
-Cu.importGlobalProperties(["fetch"]);
-
-const { SearchService } = ChromeUtils.import(
-  "resource://gre/modules/SearchService.jsm"
+const { SearchService } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchService.sys.mjs"
 );
-const LIST_JSON_URL = "resource://search-extensions/list.json";
-
-function traverse(obj, fun) {
-  for (var i in obj) {
-    fun.apply(this, [i, obj[i]]);
-    if (obj[i] !== null && typeof obj[i] == "object") {
-      traverse(obj[i], fun);
-    }
-  }
-}
 
 const ss = new SearchService();
 
 add_task(async function test_validate_engines() {
-  let engines = await fetch(LIST_JSON_URL).then(req => req.json());
+  let settings = RemoteSettings(SearchUtils.SETTINGS_KEY);
+  let config = await settings.get();
 
-  let visibleDefaultEngines = new Set();
-  traverse(engines, (key, val) => {
-    if (key === "visibleDefaultEngines") {
-      val.forEach(engine => visibleDefaultEngines.add(engine));
-    }
-  });
+  if (SearchUtils.newSearchConfigEnabled) {
+    // We do not load engines with the same name. However, in search-config-v2
+    // we have multiple engines named eBay, so we error out.
+    // We never deploy more than one eBay in each environment so this issue
+    // won't be a problem.
+    // Ignore the error and test the configs can be created to engine objects.
+    consoleAllowList.push("Could not load engine");
+    config = config.map(obj => {
+      if (obj.recordType == "engine") {
+        return {
+          recordType: "engine",
+          identifier: obj.identifier,
+          base: {
+            name: obj.base.name,
+            urls: {
+              search: {
+                base: obj.base.urls.search.base || "",
+                searchTermParamName: "q",
+              },
+            },
+          },
+          variants: [
+            {
+              environment: { allRegionsAndLocales: true },
+            },
+          ],
+        };
+      }
 
-  let listjson = {
-    default: {
-      visibleDefaultEngines: Array.from(visibleDefaultEngines),
-    },
-  };
-  ss._listJSONURL = "data:application/json," + JSON.stringify(listjson);
+      return obj;
+    });
+  } else {
+    config = config.map(e => {
+      return {
+        appliesTo: [
+          {
+            included: {
+              everywhere: true,
+            },
+          },
+        ],
+        webExtension: e.webExtension,
+      };
+    });
+  }
 
+  sinon.stub(settings, "get").returns(config);
   await AddonTestUtils.promiseStartupManager();
   await ss.init();
 });

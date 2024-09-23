@@ -7,48 +7,52 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
+} = require("resource://devtools/client/shared/vendor/react.js");
 const {
   span,
   div,
-} = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 const {
   enable,
   reset,
   updateCanBeEnabled,
   updateCanBeDisabled,
-} = require("devtools/client/accessibility/actions/ui");
+} = require("resource://devtools/client/accessibility/actions/ui.js");
 
 // Localization
-const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
 
 // Constants
 const {
   SIDEBAR_WIDTH,
   PORTRAIT_MODE_WIDTH,
-} = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/client/accessibility/constants.js");
 
 // Accessibility Panel
 const AccessibilityTree = createFactory(
-  require("devtools/client/accessibility/components/AccessibilityTree")
+  require("resource://devtools/client/accessibility/components/AccessibilityTree.js")
 );
 const AuditProgressOverlay = createFactory(
-  require("devtools/client/accessibility/components/AuditProgressOverlay")
+  require("resource://devtools/client/accessibility/components/AuditProgressOverlay.js")
 );
 const Description = createFactory(
-  require("devtools/client/accessibility/components/Description").Description
+  require("resource://devtools/client/accessibility/components/Description.js")
+    .Description
 );
 const RightSidebar = createFactory(
-  require("devtools/client/accessibility/components/RightSidebar")
+  require("resource://devtools/client/accessibility/components/RightSidebar.js")
 );
 const Toolbar = createFactory(
-  require("devtools/client/accessibility/components/Toolbar")
+  require("resource://devtools/client/accessibility/components/Toolbar.js")
+    .Toolbar
 );
 const SplitBox = createFactory(
-  require("devtools/client/shared/components/splitter/SplitBox")
+  require("resource://devtools/client/shared/components/splitter/SplitBox.js")
 );
 
 /**
@@ -70,7 +74,6 @@ class MainFrame extends Component {
       audit: PropTypes.func.isRequired,
       simulate: PropTypes.func,
       enableAccessibility: PropTypes.func.isRequired,
-      disableAccessibility: PropTypes.func.isRequired,
       resetAccessiblity: PropTypes.func.isRequired,
       startListeningForLifecycleEvents: PropTypes.func.isRequired,
       stopListeningForLifecycleEvents: PropTypes.func.isRequired,
@@ -90,7 +93,8 @@ class MainFrame extends Component {
     this.onCanBeDisabledChange = this.onCanBeDisabledChange.bind(this);
   }
 
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     this.props.startListeningForLifecycleEvents({
       init: this.resetAccessibility,
       shutdown: this.resetAccessibility,
@@ -100,15 +104,9 @@ class MainFrame extends Component {
       "can-be-disabled-change": this.onCanBeDisabledChange,
     });
     this.props.startListeningForAccessibilityEvents({
-      "document-ready": this.resetAccessibility,
+      "top-level-document-ready": this.resetAccessibility,
     });
     window.addEventListener("resize", this.onPanelWindowResize, true);
-  }
-
-  componentWillReceiveProps({ enabled }) {
-    if (this.props.enabled && !enabled) {
-      this.resetAccessibility();
-    }
   }
 
   componentWillUnmount() {
@@ -121,7 +119,7 @@ class MainFrame extends Component {
       "can-be-disabled-change": this.onCanBeDisabledChange,
     });
     this.props.stopListeningForAccessibilityEvents({
-      "document-ready": this.resetAccessibility,
+      "top-level-document-ready": this.resetAccessibility,
     });
     window.removeEventListener("resize", this.onPanelWindowResize, true);
   }
@@ -132,13 +130,9 @@ class MainFrame extends Component {
   }
 
   onCanBeEnabledChange(canBeEnabled) {
-    const {
-      enableAccessibility,
-      dispatch,
-      supports: { autoInit },
-    } = this.props;
+    const { enableAccessibility, dispatch } = this.props;
     dispatch(updateCanBeEnabled(canBeEnabled));
-    if (canBeEnabled && autoInit) {
+    if (canBeEnabled) {
       dispatch(enable(enableAccessibility));
     }
   }
@@ -176,26 +170,23 @@ class MainFrame extends Component {
       startListeningForAccessibilityEvents,
       stopListeningForAccessibilityEvents,
       audit,
-      enableAccessibility,
-      disableAccessibility,
       highlightAccessible,
       unhighlightAccessible,
     } = this.props;
 
     if (!enabled) {
-      return Description({ enableAccessibility });
+      return Description();
     }
 
     // Audit is currently running.
-    const isAuditing = auditing.length > 0;
+    const isAuditing = !!auditing.length;
 
     return LocalizationProvider(
       { bundles: fluentBundles },
       div(
-        { className: "mainFrame", role: "presentation" },
+        { className: "mainFrame", role: "presentation", tabIndex: "-1" },
         Toolbar({
           audit,
-          disableAccessibility,
           simulate,
           toolboxDoc: toolbox.doc,
         }),
@@ -209,7 +200,7 @@ class MainFrame extends Component {
           SplitBox({
             ref: "splitBox",
             initialSize: SIDEBAR_WIDTH,
-            minSize: "10px",
+            minSize: "10%",
             maxSize: "80%",
             splitterSize: 1,
             endPanelControl: true,
@@ -217,6 +208,7 @@ class MainFrame extends Component {
               {
                 className: "main-panel",
                 role: "presentation",
+                tabIndex: "-1",
               },
               AccessibilityTree({
                 toolboxDoc: toolbox.doc,

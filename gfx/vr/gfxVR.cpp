@@ -52,18 +52,19 @@ void VRHMDSensorState::CalcViewMatrices(
   gfx::Matrix4x4 matHead;
   if (flags & VRDisplayCapabilityFlags::Cap_Orientation) {
     matHead.SetRotationFromQuaternion(
-        gfx::Quaternion(pose.orientation[0], pose.orientation[1],
-                        pose.orientation[2], pose.orientation[3]));
+        gfx::Quaternion(-pose.orientation[0], -pose.orientation[1],
+                        -pose.orientation[2], pose.orientation[3]));
   }
   matHead.PreTranslate(-pose.position[0], -pose.position[1], -pose.position[2]);
 
   gfx::Matrix4x4 matView =
       matHead * aHeadToEyeTransforms[VRDisplayState::Eye_Left];
   matView.Normalize();
-  memcpy(leftViewMatrix, matView.components, sizeof(matView.components));
+  memcpy(leftViewMatrix.data(), matView.components, sizeof(matView.components));
   matView = matHead * aHeadToEyeTransforms[VRDisplayState::Eye_Right];
   matView.Normalize();
-  memcpy(rightViewMatrix, matView.components, sizeof(matView.components));
+  memcpy(rightViewMatrix.data(), matView.components,
+         sizeof(matView.components));
 }
 
 const IntSize VRDisplayInfo::SuggestedEyeResolution() const {
@@ -85,7 +86,7 @@ const Matrix4x4 VRDisplayInfo::GetSittingToStandingTransform() const {
   Matrix4x4 m;
   // If we could replace Matrix4x4 with a pod type, we could
   // use it directly from the VRDisplayInfo struct.
-  memcpy(m.components, mDisplayState.sittingToStandingTransform,
+  memcpy(m.components, mDisplayState.sittingToStandingTransform.data(),
          sizeof(float) * 16);
   return m;
 }

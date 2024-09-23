@@ -88,7 +88,10 @@ class Pk11KeyImportTestBase : public ::testing::Test {
       case dhKey:
         return pub_key->u.dh.publicValue;
       case ecKey:
+      case edKey:
         return pub_key->u.ec.publicValue;
+      case kyberKey:
+        return pub_key->u.kyber.publicValue;
       case fortezzaKey: /* depricated */
       case nullKey:
         /* didn't use default here so we can catch new key types at compile time
@@ -256,10 +259,10 @@ TEST_P(Pk11KeyImportTest, GenerateExportImport) {
   Test(Pkcs11KeyPairGenerator(GetParam()));
 }
 
-INSTANTIATE_TEST_CASE_P(Pk11KeyImportTest, Pk11KeyImportTest,
-                        ::testing::Values(CKM_RSA_PKCS_KEY_PAIR_GEN,
-                                          CKM_DSA_KEY_PAIR_GEN,
-                                          CKM_DH_PKCS_KEY_PAIR_GEN));
+INSTANTIATE_TEST_SUITE_P(Pk11KeyImportTest, Pk11KeyImportTest,
+                         ::testing::Values(CKM_RSA_PKCS_KEY_PAIR_GEN,
+                                           CKM_DSA_KEY_PAIR_GEN,
+                                           CKM_DH_PKCS_KEY_PAIR_GEN));
 
 class Pk11KeyImportTestEC : public Pk11KeyImportTestBase,
                             public ::testing::WithParamInterface<SECOidTag> {
@@ -272,10 +275,10 @@ TEST_P(Pk11KeyImportTestEC, GenerateExportImport) {
   Test(Pkcs11KeyPairGenerator(CKM_EC_KEY_PAIR_GEN, GetParam()));
 }
 
-INSTANTIATE_TEST_CASE_P(Pk11KeyImportTestEC, Pk11KeyImportTestEC,
-                        ::testing::Values(SEC_OID_SECG_EC_SECP256R1,
-                                          SEC_OID_SECG_EC_SECP384R1,
-                                          SEC_OID_SECG_EC_SECP521R1,
-                                          SEC_OID_CURVE25519));
+INSTANTIATE_TEST_SUITE_P(Pk11KeyImportTestEC, Pk11KeyImportTestEC,
+                         ::testing::Values(SEC_OID_SECG_EC_SECP256R1,
+                                           SEC_OID_SECG_EC_SECP384R1,
+                                           SEC_OID_SECG_EC_SECP521R1,
+                                           SEC_OID_CURVE25519));
 
 }  // namespace nss_test

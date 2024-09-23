@@ -24,20 +24,22 @@ const REQUESTS_WITH_MEDIA_AND_FLASH = REQUESTS_WITH_MEDIA.concat([
   { url: "sjs_content-type-test-server.sjs?fmt=flash" },
 ]);
 
-const REQUESTS_WITH_MEDIA_AND_FLASH_AND_WS = REQUESTS_WITH_MEDIA_AND_FLASH.concat(
-  [
+const REQUESTS_WITH_MEDIA_AND_FLASH_AND_WS =
+  REQUESTS_WITH_MEDIA_AND_FLASH.concat([
     /* "Upgrade" is a reserved header and can not be set on XMLHttpRequest */
     { url: "sjs_content-type-test-server.sjs?fmt=ws" },
-  ]
-);
+  ]);
 
-add_task(async function() {
+add_task(async function () {
   Services.prefs.setCharPref(
     "devtools.netmonitor.filters",
     '["bogus", "js", "alsobogus"]'
   );
 
-  const { monitor } = await initNetMonitor(FILTERING_URL, { requestCount: 1 });
+  const { monitor } = await initNetMonitor(FILTERING_URL, {
+    requestCount: 1,
+    expectedEventTimings: 0,
+  });
   info("Starting test... ");
 
   const { document, store, windowRequire } = monitor.panelWin;
@@ -53,8 +55,8 @@ add_task(async function() {
     "The first filter type is invalid, but loaded anyway."
   );
 
-  const wait = waitForNetworkEvents(monitor, 9);
-  loadFrameScriptUtils();
+  // As the view is filtered and there is only one request for which we fetch event timings
+  const wait = waitForNetworkEvents(monitor, 9, { expectedEventTimings: 1 });
   await performRequestsInContent(REQUESTS_WITH_MEDIA_AND_FLASH_AND_WS);
   await wait;
 

@@ -4,12 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// NB: This code may be used from non-XPCOM code, in particular, the
+// Windows Default Browser Agent.
+
 #ifndef nsWindowsHelpers_h
 #define nsWindowsHelpers_h
 
 #include <windows.h>
+#include <msi.h>
 #include "nsAutoRef.h"
-#include "nscore.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/UniquePtr.h"
 
@@ -51,6 +54,19 @@ class nsAutoRefTraits<HDC> {
   static void Release(RawRef aFD) {
     if (aFD != Void()) {
       ::DeleteDC(aFD);
+    }
+  }
+};
+
+template <>
+class nsAutoRefTraits<HFONT> {
+ public:
+  typedef HFONT RawRef;
+  static HFONT Void() { return nullptr; }
+
+  static void Release(RawRef aFD) {
+    if (aFD != Void()) {
+      ::DeleteObject(aFD);
     }
   }
 };
@@ -157,6 +173,19 @@ class nsAutoRefTraits<DEVMODEW*> {
   }
 };
 
+template <>
+class nsAutoRefTraits<MSIHANDLE> {
+ public:
+  typedef MSIHANDLE RawRef;
+  static RawRef Void() { return 0; }
+
+  static void Release(RawRef aHandle) {
+    if (aHandle != Void()) {
+      ::MsiCloseHandle(aHandle);
+    }
+  }
+};
+
 // HGLOBAL is just a typedef of HANDLE which nsSimpleRef has a specialization
 // of, that means having a nsAutoRefTraits specialization for HGLOBAL is
 // useless. Therefore we create a wrapper class for HGLOBAL to make
@@ -212,6 +241,7 @@ class nsAutoRefTraits<nsHPRINTER> {
 
 typedef nsAutoRef<HKEY> nsAutoRegKey;
 typedef nsAutoRef<HDC> nsAutoHDC;
+typedef nsAutoRef<HFONT> nsAutoFont;
 typedef nsAutoRef<HBRUSH> nsAutoBrush;
 typedef nsAutoRef<HRGN> nsAutoRegion;
 typedef nsAutoRef<HBITMAP> nsAutoBitmap;
@@ -221,8 +251,7 @@ typedef nsAutoRef<HMODULE> nsModuleHandle;
 typedef nsAutoRef<DEVMODEW*> nsAutoDevMode;
 typedef nsAutoRef<nsHGLOBAL> nsAutoGlobalMem;
 typedef nsAutoRef<nsHPRINTER> nsAutoPrinter;
-
-namespace {
+typedef nsAutoRef<MSIHANDLE> nsAutoMsiHandle;
 
 // Construct a path "<system32>\<aModule>". return false if the output buffer
 // is too small.
@@ -269,18 +298,16 @@ bool inline ConstructSystem32Path(LPCWSTR aModule, WCHAR* aSystemPath,
 }
 
 HMODULE inline LoadLibrarySystem32(LPCWSTR aModule) {
-  WCHAR systemPath[MAX_PATH + 1];
-  if (!ConstructSystem32Path(aModule, systemPath, MAX_PATH + 1)) {
-    return NULL;
-  }
-  return LoadLibraryW(systemPath);
+  return LoadLibraryExW(aModule, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 }
-
-}  // namespace
 
 // for UniquePtr
 struct LocalFreeDeleter {
   void operator()(void* aPtr) { ::LocalFree(aPtr); }
+};
+
+struct VirtualFreeDeleter {
+  void operator()(void* aPtr) { ::VirtualFree(aPtr, 0, MEM_RELEASE); }
 };
 
 // for UniquePtr to store a PSID
@@ -291,4 +318,22 @@ struct FreeSidDeleter {
 // This typedef will work for storing a PSID in a UniquePtr and should make
 // things a bit more readable.
 typedef mozilla::UniquePtr<void, FreeSidDeleter> UniqueSidPtr;
+
+struct CloseHandleDeleter {
+  typedef HANDLE pointer;
+  void operator()(pointer aHandle) {
+    if (aHandle != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(aHandle);
+    }
+  }
+};
+
+// One caller of this function is early in startup and several others are not,
+// so they have different ways of determining the two parameters. This function
+// exists just so any future code that needs to determine whether the dynamic
+// blocklist is disabled remembers to check whether safe mode is active.
+inline bool IsDynamicBlocklistDisabled(bool isSafeMode,
+                                       bool hasCommandLineDisableArgument) {
+  return isSafeMode || hasCommandLineDisableArgument;
+}
 #endif

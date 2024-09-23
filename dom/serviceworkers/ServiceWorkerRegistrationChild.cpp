@@ -6,11 +6,11 @@
 
 #include "ServiceWorkerRegistrationChild.h"
 
-#include "RemoteServiceWorkerRegistrationImpl.h"
+#include "ServiceWorkerRegistration.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerRef.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::IPCResult;
 
@@ -26,21 +26,23 @@ void ServiceWorkerRegistrationChild::ActorDestroy(ActorDestroyReason aReason) {
 IPCResult ServiceWorkerRegistrationChild::RecvUpdateState(
     const IPCServiceWorkerRegistrationDescriptor& aDescriptor) {
   if (mOwner) {
-    mOwner->UpdateState(ServiceWorkerRegistrationDescriptor(aDescriptor));
+    RefPtr<ServiceWorkerRegistration> owner = mOwner;
+    owner->UpdateState(ServiceWorkerRegistrationDescriptor(aDescriptor));
   }
   return IPC_OK();
 }
 
 IPCResult ServiceWorkerRegistrationChild::RecvFireUpdateFound() {
   if (mOwner) {
-    mOwner->FireUpdateFound();
+    mOwner->MaybeDispatchUpdateFoundRunnable();
   }
   return IPC_OK();
 }
 
 // static
-ServiceWorkerRegistrationChild* ServiceWorkerRegistrationChild::Create() {
-  ServiceWorkerRegistrationChild* actor = new ServiceWorkerRegistrationChild();
+RefPtr<ServiceWorkerRegistrationChild>
+ServiceWorkerRegistrationChild::Create() {
+  RefPtr actor = new ServiceWorkerRegistrationChild;
 
   if (!NS_IsMainThread()) {
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
@@ -54,7 +56,6 @@ ServiceWorkerRegistrationChild* ServiceWorkerRegistrationChild::Create() {
         [helper] { helper->Actor()->MaybeStartTeardown(); });
 
     if (NS_WARN_IF(!actor->mIPCWorkerRef)) {
-      delete actor;
       return nullptr;
     }
   }
@@ -66,14 +67,14 @@ ServiceWorkerRegistrationChild::ServiceWorkerRegistrationChild()
     : mOwner(nullptr), mTeardownStarted(false) {}
 
 void ServiceWorkerRegistrationChild::SetOwner(
-    RemoteServiceWorkerRegistrationImpl* aOwner) {
+    ServiceWorkerRegistration* aOwner) {
   MOZ_DIAGNOSTIC_ASSERT(!mOwner);
   MOZ_DIAGNOSTIC_ASSERT(aOwner);
   mOwner = aOwner;
 }
 
 void ServiceWorkerRegistrationChild::RevokeOwner(
-    RemoteServiceWorkerRegistrationImpl* aOwner) {
+    ServiceWorkerRegistration* aOwner) {
   MOZ_DIAGNOSTIC_ASSERT(mOwner);
   MOZ_DIAGNOSTIC_ASSERT(aOwner == mOwner);
   mOwner = nullptr;
@@ -87,5 +88,4 @@ void ServiceWorkerRegistrationChild::MaybeStartTeardown() {
   Unused << SendTeardown();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

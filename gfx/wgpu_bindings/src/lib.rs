@@ -2,445 +2,231 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use wgc::{hub::IdentityManager, id};
+use crate::error::ErrorBufferType;
+use wgc::id;
 
-use wgt::Backend;
-
-pub use wgc::command::{compute_ffi::*, render_ffi::*};
-
-use parking_lot::Mutex;
-
-use std::{ptr, slice};
-
-pub mod identity;
+pub mod client;
+pub mod command;
+pub mod error;
 pub mod server;
 
-#[derive(Debug, Default)]
-struct IdentityHub {
-    adapters: IdentityManager,
-    devices: IdentityManager,
-    buffers: IdentityManager,
-    command_buffers: IdentityManager,
-    bind_group_layouts: IdentityManager,
-    pipeline_layouts: IdentityManager,
-    bind_groups: IdentityManager,
-    shader_modules: IdentityManager,
-    compute_pipelines: IdentityManager,
-    render_pipelines: IdentityManager,
-    textures: IdentityManager,
-    texture_views: IdentityManager,
-    samplers: IdentityManager,
+pub use wgc::device::trace::Command as CommandEncoderAction;
+
+use std::marker::PhantomData;
+use std::{borrow::Cow, mem, slice};
+
+use nsstring::nsACString;
+
+type RawString = *const std::os::raw::c_char;
+
+//TODO: figure out why 'a and 'b have to be different here
+//TODO: remove this
+fn cow_label<'a, 'b>(raw: &'a RawString) -> Option<Cow<'b, str>> {
+    if raw.is_null() {
+        None
+    } else {
+        let cstr = unsafe { std::ffi::CStr::from_ptr(*raw) };
+        cstr.to_str().ok().map(Cow::Borrowed)
+    }
 }
 
-#[derive(Debug, Default)]
-struct Identities {
-    surfaces: IdentityManager,
-    vulkan: IdentityHub,
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    metal: IdentityHub,
-    #[cfg(windows)]
-    dx12: IdentityHub,
+// Hides the repeated boilerplate of turning a `Option<&nsACString>` into a `Option<Cow<str>`.
+pub fn wgpu_string(gecko_string: Option<&nsACString>) -> Option<Cow<str>> {
+    gecko_string.map(|s| s.to_utf8())
 }
 
-impl Identities {
-    fn select(&mut self, backend: Backend) -> &mut IdentityHub {
-        match backend {
-            Backend::Vulkan => &mut self.vulkan,
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            Backend::Metal => &mut self.metal,
-            #[cfg(windows)]
-            Backend::Dx12 => &mut self.dx12,
-            _ => panic!("Unexpected backend: {:?}", backend),
+/// An equivalent of `&[T]` for ffi structures and function parameters.
+#[repr(C)]
+pub struct FfiSlice<'a, T> {
+    // `data` may be null.
+    pub data: *const T,
+    pub length: usize,
+    pub _marker: PhantomData<&'a T>,
+}
+
+impl<'a, T> FfiSlice<'a, T> {
+    pub unsafe fn as_slice(&self) -> &'a [T] {
+        if self.data.is_null() {
+            // It is invalid to construct a rust slice with a null pointer.
+            return &[];
+        }
+
+        std::slice::from_raw_parts(self.data, self.length)
+    }
+}
+
+impl<'a, T> Copy for FfiSlice<'a, T> {}
+impl<'a, T> Clone for FfiSlice<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[repr(C)]
+pub struct ByteBuf {
+    data: *const u8,
+    len: usize,
+    capacity: usize,
+}
+
+impl ByteBuf {
+    fn from_vec(vec: Vec<u8>) -> Self {
+        if vec.is_empty() {
+            ByteBuf {
+                data: std::ptr::null(),
+                len: 0,
+                capacity: 0,
+            }
+        } else {
+            let bb = ByteBuf {
+                data: vec.as_ptr(),
+                len: vec.len(),
+                capacity: vec.capacity(),
+            };
+            mem::forget(vec);
+            bb
+        }
+    }
+
+    unsafe fn as_slice(&self) -> &[u8] {
+        slice::from_raw_parts(self.data, self.len)
+    }
+}
+
+#[repr(C)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AdapterInformation<S> {
+    id: id::AdapterId,
+    limits: wgt::Limits,
+    features: wgt::Features,
+    name: S,
+    vendor: u32,
+    device: u32,
+    device_type: wgt::DeviceType,
+    driver: S,
+    driver_info: S,
+    backend: wgt::Backend,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ImplicitLayout<'a> {
+    pipeline: id::PipelineLayoutId,
+    bind_groups: Cow<'a, [Option<id::BindGroupLayoutId>]>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum DeviceAction<'a> {
+    CreateTexture(
+        id::TextureId,
+        wgc::resource::TextureDescriptor<'a>,
+        Option<SwapChainId>,
+    ),
+    CreateSampler(id::SamplerId, wgc::resource::SamplerDescriptor<'a>),
+    CreateBindGroupLayout(
+        id::BindGroupLayoutId,
+        wgc::binding_model::BindGroupLayoutDescriptor<'a>,
+    ),
+    RenderPipelineGetBindGroupLayout(id::RenderPipelineId, u32, id::BindGroupLayoutId),
+    ComputePipelineGetBindGroupLayout(id::ComputePipelineId, u32, id::BindGroupLayoutId),
+    CreatePipelineLayout(
+        id::PipelineLayoutId,
+        wgc::binding_model::PipelineLayoutDescriptor<'a>,
+    ),
+    CreateBindGroup(id::BindGroupId, wgc::binding_model::BindGroupDescriptor<'a>),
+    CreateShaderModule(
+        id::ShaderModuleId,
+        wgc::pipeline::ShaderModuleDescriptor<'a>,
+        Cow<'a, str>,
+    ),
+    CreateComputePipeline(
+        id::ComputePipelineId,
+        wgc::pipeline::ComputePipelineDescriptor<'a>,
+        Option<ImplicitLayout<'a>>,
+    ),
+    CreateRenderPipeline(
+        id::RenderPipelineId,
+        wgc::pipeline::RenderPipelineDescriptor<'a>,
+        Option<ImplicitLayout<'a>>,
+    ),
+    CreateRenderBundle(
+        id::RenderBundleId,
+        wgc::command::RenderBundleEncoder,
+        wgc::command::RenderBundleDescriptor<'a>,
+    ),
+    CreateRenderBundleError(id::RenderBundleId, wgc::Label<'a>),
+    CreateCommandEncoder(
+        id::CommandEncoderId,
+        wgt::CommandEncoderDescriptor<wgc::Label<'a>>,
+    ),
+    Error {
+        message: String,
+        r#type: ErrorBufferType,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum QueueWriteAction {
+    Buffer {
+        dst: id::BufferId,
+        offset: wgt::BufferAddress,
+    },
+    Texture {
+        dst: wgt::ImageCopyTexture<id::TextureId>,
+        layout: wgt::ImageDataLayout,
+        size: wgt::Extent3d,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+enum TextureAction<'a> {
+    CreateView(id::TextureViewId, wgc::resource::TextureViewDescriptor<'a>),
+}
+
+#[repr(C)]
+#[derive(serde::Serialize, serde::Deserialize)]
+enum DropAction {
+    Adapter(id::AdapterId),
+    Device(id::DeviceId),
+    ShaderModule(id::ShaderModuleId),
+    PipelineLayout(id::PipelineLayoutId),
+    BindGroupLayout(id::BindGroupLayoutId),
+    BindGroup(id::BindGroupId),
+    CommandBuffer(id::CommandBufferId),
+    RenderBundle(id::RenderBundleId),
+    RenderPipeline(id::RenderPipelineId),
+    ComputePipeline(id::ComputePipelineId),
+    Buffer(id::BufferId),
+    Texture(id::TextureId),
+    TextureView(id::TextureViewId),
+    Sampler(id::SamplerId),
+}
+
+impl DropAction {
+    // helper function to construct byte bufs
+    fn to_byte_buf(&self) -> ByteBuf {
+        let mut data = Vec::new();
+        bincode::serialize_into(&mut data, self).unwrap();
+        ByteBuf::from_vec(data)
+    }
+}
+
+#[repr(C)]
+pub struct ImageDataLayout<'a> {
+    pub offset: wgt::BufferAddress,
+    pub bytes_per_row: Option<&'a u32>,
+    pub rows_per_image: Option<&'a u32>,
+}
+
+impl<'a> ImageDataLayout<'a> {
+    fn into_wgt(&self) -> wgt::ImageDataLayout {
+        wgt::ImageDataLayout {
+            offset: self.offset,
+            bytes_per_row: self.bytes_per_row.map(|bpr| *bpr),
+            rows_per_image: self.rows_per_image.map(|rpi| *rpi),
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Client {
-    identities: Mutex<Identities>,
-}
-
 #[repr(C)]
-#[derive(Debug)]
-pub struct Infrastructure {
-    pub client: *mut Client,
-    pub error: *const u8,
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_new() -> Infrastructure {
-    log::info!("Initializing WGPU client");
-    let client = Box::new(Client {
-        identities: Mutex::new(Identities::default()),
-    });
-    Infrastructure {
-        client: Box::into_raw(client),
-        error: ptr::null(),
-    }
-}
-
-/// # Safety
-///
-/// This function is unsafe because improper use may lead to memory
-/// problems. For example, a double-free may occur if the function is called
-/// twice on the same raw pointer.
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_client_delete(client: *mut Client) {
-    log::info!("Terminating WGPU client");
-    let _client = Box::from_raw(client);
-}
-
-/// # Safety
-///
-/// This function is unsafe as there is no guarantee that the given pointer is
-/// valid for `id_length` elements.
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_client_make_adapter_ids(
-    client: &Client,
-    ids: *mut id::AdapterId,
-    id_length: usize,
-) -> usize {
-    let mut identities = client.identities.lock();
-    assert_ne!(id_length, 0);
-    let mut ids = slice::from_raw_parts_mut(ids, id_length).iter_mut();
-
-    *ids.next().unwrap() = identities.vulkan.adapters.alloc(Backend::Vulkan);
-
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    {
-        *ids.next().unwrap() = identities.metal.adapters.alloc(Backend::Metal);
-    }
-    #[cfg(windows)]
-    {
-        *ids.next().unwrap() = identities.dx12.adapters.alloc(Backend::Dx12);
-    }
-
-    id_length - ids.len()
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_adapter_id(client: &Client, id: id::AdapterId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .adapters
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_device_id(
-    client: &Client,
-    adapter_id: id::AdapterId,
-) -> id::DeviceId {
-    let backend = adapter_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .devices
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_device_id(client: &Client, id: id::DeviceId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .devices
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_buffer_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::BufferId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .buffers
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_buffer_id(client: &Client, id: id::BufferId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .buffers
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_texture_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::TextureId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .textures
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_texture_id(client: &Client, id: id::TextureId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .textures
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_texture_view_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::TextureViewId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .texture_views
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_texture_view_id(client: &Client, id: id::TextureViewId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .texture_views
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_sampler_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::SamplerId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .samplers
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_sampler_id(client: &Client, id: id::SamplerId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .samplers
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_encoder_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::CommandEncoderId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .command_buffers
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_encoder_id(client: &Client, id: id::CommandEncoderId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .command_buffers
-        .free(id)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_command_encoder_begin_compute_pass(
-    encoder_id: id::CommandEncoderId,
-    _desc: Option<&wgc::command::ComputePassDescriptor>,
-) -> wgc::command::RawPass {
-    wgc::command::RawPass::new_compute(encoder_id)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_compute_pass_destroy(mut pass: wgc::command::RawPass) {
-    let _ = pass.invalidate();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_command_encoder_begin_render_pass(
-    encoder_id: id::CommandEncoderId,
-    desc: &wgc::command::RenderPassDescriptor,
-) -> wgc::command::RawPass {
-    wgc::command::RawPass::new_render(encoder_id, desc)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wgpu_render_pass_destroy(mut pass: wgc::command::RawPass) {
-    let _ = pass.invalidate();
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_bind_group_layout_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::BindGroupLayoutId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .bind_group_layouts
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_bind_group_layout_id(
-    client: &Client,
-    id: id::BindGroupLayoutId,
-) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .bind_group_layouts
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_pipeline_layout_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::PipelineLayoutId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .pipeline_layouts
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_pipeline_layout_id(client: &Client, id: id::PipelineLayoutId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .pipeline_layouts
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_bind_group_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::BindGroupId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .bind_groups
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_bind_group_id(client: &Client, id: id::BindGroupId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .bind_groups
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_shader_module_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::ShaderModuleId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .shader_modules
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_shader_module_id(client: &Client, id: id::ShaderModuleId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .shader_modules
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_compute_pipeline_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::ComputePipelineId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .compute_pipelines
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_compute_pipeline_id(client: &Client, id: id::ComputePipelineId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .compute_pipelines
-        .free(id)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_make_render_pipeline_id(
-    client: &Client,
-    device_id: id::DeviceId,
-) -> id::RenderPipelineId {
-    let backend = device_id.backend();
-    client
-        .identities
-        .lock()
-        .select(backend)
-        .render_pipelines
-        .alloc(backend)
-}
-
-#[no_mangle]
-pub extern "C" fn wgpu_client_kill_render_pipeline_id(client: &Client, id: id::RenderPipelineId) {
-    client
-        .identities
-        .lock()
-        .select(id.backend())
-        .render_pipelines
-        .free(id)
-}
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SwapChainId(pub u64);

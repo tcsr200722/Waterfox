@@ -5,12 +5,12 @@
 
 const {
   serviceWorkerRegistrationSpec,
-} = require("devtools/shared/specs/worker/service-worker-registration");
+} = require("resource://devtools/shared/specs/worker/service-worker-registration.js");
 const {
   FrontClassWithSpec,
   registerFront,
   types,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 class ServiceWorkerRegistrationFront extends FrontClassWithSpec(
   serviceWorkerRegistrationSpec
@@ -70,7 +70,7 @@ class ServiceWorkerRegistrationFront extends FrontClassWithSpec(
   form(form) {
     this.actorID = form.actor;
     this._form = form;
-    // FF70+ ServiceWorkerRegistration actor starts exposing traits object
+    // @backward-compat { version 70 } ServiceWorkerRegistration actor now exposes traits
     this.traits = form.traits || {};
   }
 }

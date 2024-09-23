@@ -11,43 +11,61 @@
  * See devtools/docs/backend/actor-hierarchy.md for more details.
  */
 
-const { Cc, Ci, Cu } = require("chrome");
-const Services = require("Services");
-
-const { ThreadActor } = require("devtools/server/actors/thread");
-const { WebConsoleActor } = require("devtools/server/actors/webconsole");
-const makeDebugger = require("devtools/server/actors/utils/make-debugger");
-const { Pool } = require("devtools/shared/protocol");
-const { assert } = require("devtools/shared/DevToolsUtils");
-const { TabSources } = require("devtools/server/actors/utils/TabSources");
-const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
+const { ThreadActor } = require("resource://devtools/server/actors/thread.js");
+const {
+  WebConsoleActor,
+} = require("resource://devtools/server/actors/webconsole.js");
+const makeDebugger = require("resource://devtools/server/actors/utils/make-debugger.js");
+const { Pool } = require("resource://devtools/shared/protocol.js");
+const { assert } = require("resource://devtools/shared/DevToolsUtils.js");
+const {
+  SourcesManager,
+} = require("resource://devtools/server/actors/utils/sources-manager.js");
 const {
   contentProcessTargetSpec,
-} = require("devtools/shared/specs/targets/content-process");
+} = require("resource://devtools/shared/specs/targets/content-process.js");
+const Targets = require("resource://devtools/server/actors/targets/index.js");
+const Resources = require("resource://devtools/server/actors/resources/index.js");
+const {
+  BaseTargetActor,
+} = require("resource://devtools/server/actors/targets/base-target-actor.js");
+const { TargetActorRegistry } = ChromeUtils.importESModule(
+  "resource://devtools/server/actors/targets/target-actor-registry.sys.mjs",
+  { global: "shared" }
+);
 
 loader.lazyRequireGetter(
   this,
-  "WorkerTargetActorList",
-  "devtools/server/actors/worker/worker-target-actor-list",
+  "WorkerDescriptorActorList",
+  "resource://devtools/server/actors/worker/worker-descriptor-actor-list.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "MemoryActor",
-  "devtools/server/actors/memory",
+  "resource://devtools/server/actors/memory.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "TracerActor",
+  "resource://devtools/server/actors/tracer.js",
   true
 );
 
-const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
-  initialize: function(connection) {
-    Actor.prototype.initialize.call(this, connection);
-    this.conn = connection;
+class ContentProcessTargetActor extends BaseTargetActor {
+  constructor(conn, { isXpcShellTarget = false, sessionContext } = {}) {
+    super(conn, Targets.TYPES.PROCESS, contentProcessTargetSpec);
+
     this.threadActor = null;
+    this.isXpcShellTarget = isXpcShellTarget;
+    this.sessionContext = sessionContext;
 
     // Use a see-everything debugger
     this.makeDebugger = makeDebugger.bind(null, {
-      findDebuggees: dbg => dbg.findAllGlobals(),
-      shouldAddNewGlobalAsDebuggee: global => true,
+      findDebuggees: dbg =>
+        dbg.findAllGlobals().map(g => g.unsafeDereference()),
+      shouldAddNewGlobalAsDebuggee: () => true,
     });
 
     const sandboxPrototype = {
@@ -71,7 +89,7 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
     this._consoleScope = sandbox;
 
     this._workerList = null;
-    this._workerTargetActorPool = null;
+    this._workerDescriptorActorPool = null;
     this._onWorkerListChanged = this._onWorkerListChanged.bind(this);
 
     // Try to destroy the Content Process Target when the content process shuts down.
@@ -84,34 +102,33 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
     // and we won't be able to call removeObserver correctly.
     this.destroyObserver = this.destroy.bind(this);
     Services.obs.addObserver(this.destroyObserver, "xpcom-shutdown");
-  },
+    if (this.isXpcShellTarget) {
+      TargetActorRegistry.registerXpcShellTargetActor(this);
+    }
+  }
 
   get isRootActor() {
     return true;
-  },
-
-  get exited() {
-    return !this._contextPool;
-  },
+  }
 
   get url() {
     return undefined;
-  },
+  }
 
   get window() {
     return this._consoleScope;
-  },
+  }
 
-  get sources() {
-    if (!this._sources) {
+  get sourcesManager() {
+    if (!this._sourcesManager) {
       assert(
         this.threadActor,
-        "threadActor should exist when creating sources."
+        "threadActor should exist when creating SourcesManager."
       );
-      this._sources = new TabSources(this.threadActor);
+      this._sourcesManager = new SourcesManager(this.threadActor);
     }
-    return this._sources;
-  },
+    return this._sourcesManager;
+  }
 
   /*
    * Return a Debugger instance or create one if there is none yet
@@ -121,43 +138,54 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
       this._dbg = this.makeDebugger();
     }
     return this._dbg;
-  },
+  }
 
-  form: function() {
+  form() {
     if (!this._consoleActor) {
       this._consoleActor = new WebConsoleActor(this.conn, this);
       this.manage(this._consoleActor);
     }
 
     if (!this.threadActor) {
-      this.threadActor = new ThreadActor(this, null);
+      this.threadActor = new ThreadActor(this);
       this.manage(this.threadActor);
     }
     if (!this.memoryActor) {
       this.memoryActor = new MemoryActor(this.conn, this);
       this.manage(this.memoryActor);
     }
+    if (!this.tracerActor) {
+      this.tracerActor = new TracerActor(this.conn, this);
+      this.manage(this.tracerActor);
+    }
 
     return {
       actor: this.actorID,
+      isXpcShellTarget: this.isXpcShellTarget,
+      processID: Services.appinfo.processID,
+      remoteType: Services.appinfo.remoteType,
+
       consoleActor: this._consoleActor.actorID,
-      threadActor: this.threadActor.actorID,
       memoryActor: this.memoryActor.actorID,
+      threadActor: this.threadActor.actorID,
+      tracerActor: this.tracerActor.actorID,
 
       traits: {
         networkMonitor: false,
+        // See trait description in browsing-context.js
+        supportsTopLevelTargetFlag: false,
       },
     };
-  },
+  }
 
   ensureWorkerList() {
     if (!this._workerList) {
-      this._workerList = new WorkerTargetActorList(this.conn, {});
+      this._workerList = new WorkerDescriptorActorList(this.conn, {});
     }
     return this._workerList;
-  },
+  }
 
-  listWorkers: function() {
+  listWorkers() {
     return this.ensureWorkerList()
       .getList()
       .then(actors => {
@@ -168,34 +196,45 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
 
         // Do not destroy the pool before transfering ownership to the newly created
         // pool, so that we do not accidentally destroy actors that are still in use.
-        if (this._workerTargetActorPool) {
-          this._workerTargetActorPool.destroy();
+        if (this._workerDescriptorActorPool) {
+          this._workerDescriptorActorPool.destroy();
         }
 
-        this._workerTargetActorPool = pool;
+        this._workerDescriptorActorPool = pool;
         this._workerList.onListChanged = this._onWorkerListChanged;
 
-        return {
-          from: this.actorID,
-          workers: actors,
-        };
+        return { workers: actors };
       });
-  },
+  }
 
-  _onWorkerListChanged: function() {
+  _onWorkerListChanged() {
     this.conn.send({ from: this.actorID, type: "workerListChanged" });
     this._workerList.onListChanged = null;
-  },
+  }
 
   pauseMatchingServiceWorkers(request) {
     this.ensureWorkerList().workerPauser.setPauseServiceWorkers(request.origin);
-  },
+  }
 
-  destroy: function() {
-    if (!this.actorID) {
+  destroy({ isModeSwitching } = {}) {
+    // Avoid reentrancy. We will destroy the Transport when emitting "destroyed",
+    // which will force destroying all actors.
+    if (this.destroying) {
       return;
     }
-    Actor.prototype.destroy.call(this);
+    this.destroying = true;
+
+    // Unregistering watchers first is important
+    // otherwise you might have leaks reported when running browser_browser_toolbox_netmonitor.js in debug builds
+    Resources.unwatchAllResources(this);
+
+    this.emit("destroyed", { isModeSwitching });
+
+    super.destroy();
+
+    if (this.threadActor) {
+      this.threadActor = null;
+    }
 
     // Tell the live lists we aren't watching any more.
     if (this._workerList) {
@@ -203,9 +242,9 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
       this._workerList = null;
     }
 
-    if (this._sources) {
-      this._sources.destroy();
-      this._sources = null;
+    if (this._sourcesManager) {
+      this._sourcesManager.destroy();
+      this._sourcesManager = null;
     }
 
     if (this._dbg) {
@@ -214,7 +253,11 @@ const ContentProcessTargetActor = ActorClassWithSpec(contentProcessTargetSpec, {
     }
 
     Services.obs.removeObserver(this.destroyObserver, "xpcom-shutdown");
-  },
-});
+
+    if (this.isXpcShellTarget) {
+      TargetActorRegistry.unregisterXpcShellTargetActor(this);
+    }
+  }
+}
 
 exports.ContentProcessTargetActor = ContentProcessTargetActor;

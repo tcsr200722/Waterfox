@@ -2,16 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import isEmpty from "lodash/isEmpty";
-import type { SourceId, SourceLocation } from "../../../types";
 import * as t from "@babel/types";
-import type {
-  Node,
-  TraversalAncestors,
-  Location as BabelLocation,
-} from "@babel/types";
 
 import getFunctionName from "../utils/getFunctionName";
 import { getAst } from "../utils/ast";
@@ -36,146 +27,49 @@ import { getAst } from "../utils/ast";
  * "global"
  * Variables that reference undeclared global values.
  */
-export type BindingType =
-  | "implicit"
-  | "var"
-  | "const"
-  | "let"
-  | "import"
-  | "global";
-
-export type BindingLocationType = "ref" | BindingDeclarationType;
-export type BindingDeclarationType =
-  | "fn-expr"
-  | "fn-decl"
-  | "fn-param"
-  | "class-decl"
-  | "class-inner"
-  | "import-decl"
-  | "import-ns-decl"
-  | "ts-enum-decl"
-  | "ts-namespace-decl"
-  | "var"
-  | "let"
-  | "const"
-  | "catch";
-
-export type BindingLocation = BindingDeclarationLocation | BindingRefLocation;
-
-export type BindingRefLocation = {
-  type: "ref",
-  start: SourceLocation,
-  end: SourceLocation,
-  meta?: BindingMetaValue | null,
-};
-export type BindingDeclarationLocation = {
-  type: BindingDeclarationType,
-
-  start: SourceLocation,
-  end: SourceLocation,
-
-  // The overall location of the declaration that this binding is part of.
-  declaration: {
-    start: SourceLocation,
-    end: SourceLocation,
-  },
-
-  // If this declaration was an import, include the name of the imported
-  // binding that this binding references.
-  importName?: string,
-};
-export type BindingData = {
-  type: BindingType,
-  refs: Array<BindingLocation>,
-};
 
 // Location information about the expression immediartely surrounding a
 // given binding reference.
-export type BindingMetaValue =
-  | {
-      type: "inherit",
-      start: SourceLocation,
-      end: SourceLocation,
-      parent: BindingMetaValue | null,
-    }
-  | {
-      type: "call",
-      start: SourceLocation,
-      end: SourceLocation,
-      parent: BindingMetaValue | null,
-    }
-  | {
-      type: "member",
-      start: SourceLocation,
-      end: SourceLocation,
-      property: string,
-      parent: BindingMetaValue | null,
-    };
 
-export type ScopeBindingList = {
-  [name: string]: BindingData,
-};
-
-export type SourceScope = {
-  type: "object" | "function" | "block",
-  scopeKind: string,
-  displayName: string,
-  start: SourceLocation,
-  end: SourceLocation,
-  bindings: ScopeBindingList,
-};
-
-export type ParsedScope = SourceScope & {
-  children: ?(ParsedScope[]),
-};
-
-export type ParseJSScopeVisitor = {
-  traverseVisitor: any,
-  toParsedScopes: () => ParsedScope[],
-};
-
-type TempScope = {
-  type: "object" | "function" | "function-body" | "block" | "module",
-  displayName: string,
-  parent: TempScope | null,
-  children: Array<TempScope>,
-  loc: BabelLocation,
-  bindings: ScopeBindingList,
-};
-
-type ScopeCollectionVisitorState = {
-  sourceId: SourceId,
-  inType: Node | null,
-  freeVariables: Map<string, Array<BindingLocation>>,
-  freeVariableStack: Array<Map<string, Array<BindingLocation>>>,
-  scope: TempScope,
-  scopeStack: Array<TempScope>,
-  declarationBindingIds: Set<Node>,
-};
-
-function isGeneratedId(id: string) {
+function isGeneratedId(id) {
   return !/\/originalSource/.test(id);
 }
 
-export function parseSourceScopes(sourceId: SourceId): ?Array<ParsedScope> {
+export function parseSourceScopes(sourceId) {
   const ast = getAst(sourceId);
-  if (isEmpty(ast)) {
+  if (!ast || !Object.keys(ast).length) {
     return null;
   }
 
   return buildScopeList(ast, sourceId);
 }
 
-export function buildScopeList(ast: Node, sourceId: SourceId) {
+export function buildScopeList(ast, sourceId) {
   const { global, lexical } = createGlobalScope(ast, sourceId);
 
   const state = {
+    // The id for the source that scope list is generated for
     sourceId,
+
+    // A map of any free variables(variables which are used within the current scope but not
+    // declared within the scope). This changes when a new scope is created.
     freeVariables: new Map(),
+
+    // A stack of all the free variables created across all the scopes that have
+    // been created.
     freeVariableStack: [],
+
     inType: null,
+
+    // The current scope, a new scope is potentially created on a visit to each node
+    // depending in the criteria. Initially set to the lexical global scope which is the
+    // child to the global scope.
     scope: lexical,
+
+    // A stack of all the existing scopes, this is mainly used retrieve the parent scope
+    // (which is the last scope push onto the stack) on exiting a visited node.
     scopeStack: [],
+
     declarationBindingIds: new Set(),
   };
   t.traverse(ast, scopeCollectionVisitor, state);
@@ -198,7 +92,7 @@ export function buildScopeList(ast: Node, sourceId: SourceId) {
   // code is an ES6 module rather than a script.
   if (
     isGeneratedId(sourceId) ||
-    ((ast: any).program.sourceType === "script" && !looksLikeCommonJS(global))
+    (ast.program.sourceType === "script" && !looksLikeCommonJS(global))
   ) {
     stripModuleScope(global);
   }
@@ -206,10 +100,7 @@ export function buildScopeList(ast: Node, sourceId: SourceId) {
   return toParsedScopes([global], sourceId) || [];
 }
 
-function toParsedScopes(
-  children: TempScope[],
-  sourceId: SourceId
-): ?(ParsedScope[]) {
+function toParsedScopes(children, sourceId) {
   if (!children || children.length === 0) {
     return undefined;
   }
@@ -229,37 +120,40 @@ function toParsedScopes(
   }));
 }
 
-function createTempScope(
-  type: "object" | "function" | "function-body" | "block" | "module",
-  displayName: string,
-  parent: TempScope | null,
-  loc: {
-    start: SourceLocation,
-    end: SourceLocation,
-  }
-): TempScope {
-  const result = {
+/**
+ * Create a new scope object and link the scope to it parent.
+ *
+ * @param {String} type - scope type
+ * @param {String} displayName - The scope display name
+ * @param {Object} parent - The parent object scope
+ * @param {Object} loc - The start and end postions (line/columns) of the scope
+ * @returns {Object} The newly created scope
+ */
+function createTempScope(type, displayName, parent, loc) {
+  const scope = {
     type,
     displayName,
     parent,
+
+    // A list of all the child scopes
     children: [],
     loc,
-    bindings: (Object.create(null): any),
+
+    // All the bindings defined in this scope
+    // bindings = [binding, ...]
+    // binding = { type: "", refs: []}
+    bindings: Object.create(null),
   };
+
   if (parent) {
-    parent.children.push(result);
+    parent.children.push(scope);
   }
-  return result;
+  return scope;
 }
-function pushTempScope(
-  state: ScopeCollectionVisitorState,
-  type: "object" | "function" | "function-body" | "block" | "module",
-  displayName: string,
-  loc: {
-    start: SourceLocation,
-    end: SourceLocation,
-  }
-): TempScope {
+
+// Sets a new current scope and creates a new map to store the free variables
+// that may exist in this scope.
+function pushTempScope(state, type, displayName, loc) {
   const scope = createTempScope(type, displayName, state.scope, loc);
 
   state.scope = scope;
@@ -269,11 +163,12 @@ function pushTempScope(
   return scope;
 }
 
-function isNode(node?: Node, type: string): boolean {
+function isNode(node, type) {
   return node ? node.type === type : false;
 }
 
-function getVarScope(scope: TempScope): TempScope {
+// Walks up the scope tree to the top most variable scope
+function getVarScope(scope) {
   let s = scope;
   while (s.type !== "function" && s.type !== "module") {
     if (!s.parent) {
@@ -284,10 +179,7 @@ function getVarScope(scope: TempScope): TempScope {
   return s;
 }
 
-function fromBabelLocation(
-  location: BabelLocation,
-  sourceId: SourceId
-): SourceLocation {
+function fromBabelLocation(location, sourceId) {
   return {
     sourceId,
     line: location.line,
@@ -296,12 +188,12 @@ function fromBabelLocation(
 }
 
 function parseDeclarator(
-  declaratorId: Node,
-  targetScope: TempScope,
-  type: BindingType,
-  locationType: BindingDeclarationType,
-  declaration: Node,
-  state: ScopeCollectionVisitorState
+  declaratorId,
+  targetScope,
+  type,
+  locationType,
+  declaration,
+  state
 ) {
   if (isNode(declaratorId, "Identifier")) {
     let existing = targetScope.bindings[declaratorId.name];
@@ -401,10 +293,9 @@ function isLexicalVariable(node) {
   return isNode(node, "VariableDeclaration") && isLetOrConst(node);
 }
 
-function createGlobalScope(
-  ast: Node,
-  sourceId: SourceId
-): { global: TempScope, lexical: TempScope } {
+// Creates the global scopes for this source, the overall global scope
+// and a lexical global scope.
+function createGlobalScope(ast, sourceId) {
   const global = createTempScope("object", "Global", null, {
     start: fromBabelLocation(ast.loc.start, sourceId),
     end: fromBabelLocation(ast.loc.end, sourceId),
@@ -420,11 +311,7 @@ function createGlobalScope(
 
 const scopeCollectionVisitor = {
   // eslint-disable-next-line complexity
-  enter(
-    node: Node,
-    ancestors: TraversalAncestors,
-    state: ScopeCollectionVisitorState
-  ) {
+  enter(node, ancestors, state) {
     state.scopeStack.push(state.scope);
 
     const parentNode =
@@ -445,6 +332,7 @@ const scopeCollectionVisitor = {
       };
     } else if (t.isFunction(node)) {
       let { scope } = state;
+
       if (t.isFunctionExpression(node) && isNode(node.id, "Identifier")) {
         scope = pushTempScope(state, "block", "Function Expression", {
           start: fromBabelLocation(node.loc.start, state.sourceId),
@@ -489,6 +377,7 @@ const scopeCollectionVisitor = {
             refs,
           };
         } else {
+          // Add the binding to the ancestor scope
           getVarScope(scope).bindings[node.id.name] = {
             type: "var",
             refs,
@@ -543,7 +432,7 @@ const scopeCollectionVisitor = {
         // piece. To achieve that, we estimate the location of the declaration
         // instead.
         let declStart = node.loc.start;
-        if (node.decorators && node.decorators.length > 0) {
+        if (node.decorators && node.decorators.length) {
           // Estimate the location of the "class" keyword since it
           // is unlikely to be a different line than the class name.
           declStart = {
@@ -819,11 +708,7 @@ const scopeCollectionVisitor = {
       state.inType = node;
     }
   },
-  exit(
-    node: Node,
-    ancestors: TraversalAncestors,
-    state: ScopeCollectionVisitorState
-  ) {
+  exit(node, ancestors, state) {
     const currentScope = state.scope;
     const parentScope = state.scopeStack.pop();
     if (!parentScope) {
@@ -874,10 +759,7 @@ const scopeCollectionVisitor = {
   },
 };
 
-function isOpeningJSXIdentifier(
-  node: Node,
-  ancestors: TraversalAncestors
-): boolean {
+function isOpeningJSXIdentifier(node, ancestors) {
   if (!t.isJSXIdentifier(node)) {
     return false;
   }
@@ -896,11 +778,11 @@ function isOpeningJSXIdentifier(
 }
 
 function buildMetaBindings(
-  sourceId: SourceId,
-  node: Node,
-  ancestors: TraversalAncestors,
-  parentIndex: number = ancestors.length - 1
-): BindingMetaValue | null {
+  sourceId,
+  node,
+  ancestors,
+  parentIndex = ancestors.length - 1
+) {
   if (parentIndex <= 1) {
     return null;
   }
@@ -979,7 +861,7 @@ function buildMetaBindings(
   }
   if (
     t.isCallExpression(parent, { callee: node }) &&
-    parent.arguments.length == 0
+    !parent.arguments.length
   ) {
     return {
       type: "call",
@@ -992,9 +874,9 @@ function buildMetaBindings(
   return null;
 }
 
-function looksLikeCommonJS(rootScope: TempScope): boolean {
+function looksLikeCommonJS(rootScope) {
   const hasRefs = name =>
-    rootScope.bindings[name] && rootScope.bindings[name].refs.length > 0;
+    rootScope.bindings[name] && !!rootScope.bindings[name].refs.length;
 
   return (
     hasRefs("__dirname") ||
@@ -1005,7 +887,7 @@ function looksLikeCommonJS(rootScope: TempScope): boolean {
   );
 }
 
-function stripModuleScope(rootScope: TempScope): void {
+function stripModuleScope(rootScope) {
   const rootLexicalScope = rootScope.children[0];
   const moduleScope = rootLexicalScope.children[0];
   if (moduleScope.type !== "module") {

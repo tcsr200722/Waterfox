@@ -9,6 +9,7 @@
 
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Logging.h"
 #include "mozilla/net/NeckoTargetHolder.h"
@@ -92,7 +93,7 @@ class nsPACMan final : public nsIStreamLoaderObserver,
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
-  explicit nsPACMan(nsIEventTarget* mainThreadEventTarget);
+  explicit nsPACMan(nsISerialEventTarget* mainThreadEventTarget);
 
   /**
    * This method may be called to shutdown the PAC manager.  Any async queries
@@ -118,7 +119,7 @@ class nsPACMan final : public nsIStreamLoaderObserver,
    *        If set to false the callback can be made from the PAC thread
    */
   nsresult AsyncGetProxyForURI(nsIURI* uri, nsPACManCallback* callback,
-                               uint32_t flags, bool mustCallbackOnMainThread);
+                               uint32_t flags, bool mainThreadResponse);
 
   /**
    * This method may be called to reload the PAC file.  While we are loading
@@ -134,7 +135,10 @@ class nsPACMan final : public nsIStreamLoaderObserver,
   /**
    * Returns true if we are currently loading the PAC file.
    */
-  bool IsLoading() { return mLoader != nullptr; }
+  bool IsLoading() {
+    auto loader = mLoader.Lock();
+    return loader.ref() != nullptr;
+  }
 
   /**
    * Returns true if the given URI matches the URI of our PAC file or the
@@ -256,7 +260,7 @@ class nsPACMan final : public nsIStreamLoaderObserver,
   nsresult DispatchToPAC(already_AddRefed<nsIRunnable> aEvent,
                          bool aSync = false);
 
-  ProxyAutoConfig mPAC;
+  UniquePtr<ProxyAutoConfigBase> mPAC;
   nsCOMPtr<nsIThread> mPACThread;
   nsCOMPtr<nsISystemProxySettings> mSystemProxySettings;
   nsCOMPtr<nsIDHCPClient> mDHCPClient;
@@ -270,11 +274,11 @@ class nsPACMan final : public nsIStreamLoaderObserver,
   nsCString mPACURIRedirectSpec;
   nsCString mNormalPACURISpec;
 
-  nsCOMPtr<nsIStreamLoader> mLoader;
+  DataMutex<nsCOMPtr<nsIStreamLoader>> mLoader;
   bool mLoadPending;
   Atomic<bool, Relaxed> mShutdown;
   TimeStamp mScheduledReload;
-  uint32_t mLoadFailureCount;
+  Atomic<uint32_t, Relaxed> mLoadFailureCount;
 
   bool mInProgress;
   bool mIncludePath;

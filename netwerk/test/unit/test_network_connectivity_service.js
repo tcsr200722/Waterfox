@@ -4,16 +4,18 @@
 
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 /**
  * Waits for an observer notification to fire.
  *
- * @param {String} topic The notification topic.
+ * @param {String} topicName The notification topic.
  * @returns {Promise} A promise that fulfills when the notification is fired.
  */
-function promiseObserverNotification(topic, matchFunc) {
-  return new Promise((resolve, reject) => {
+function promiseObserverNotification(topicName, matchFunc) {
+  return new Promise(resolve => {
     Services.obs.addObserver(function observe(subject, topic, data) {
       let matches = typeof matchFunc != "function" || matchFunc(subject, data);
       if (!matches) {
@@ -21,7 +23,7 @@ function promiseObserverNotification(topic, matchFunc) {
       }
       Services.obs.removeObserver(observe, topic);
       resolve({ subject, data });
-    }, topic);
+    }, topicName);
   });
 }
 
@@ -35,11 +37,11 @@ registerCleanupFunction(() => {
 
 let httpserver = null;
 let httpserverv6 = null;
-XPCOMUtils.defineLazyGetter(this, "URL", function() {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort + "/content";
 });
 
-XPCOMUtils.defineLazyGetter(this, "URLv6", function() {
+ChromeUtils.defineLazyGetter(this, "URLv6", function () {
   return "http://[::1]:" + httpserverv6.identity.primaryPort + "/content";
 });
 
@@ -50,8 +52,6 @@ function contentHandler(metadata, response) {
   const responseBody = "anybody";
   response.bodyOutputStream.write(responseBody, responseBody.length);
 }
-
-const DEFAULT_WAIT_TIME = 200; // ms
 
 const kDNSv6Domain =
   mozinfo.os == "linux" || mozinfo.os == "android"
@@ -97,10 +97,11 @@ add_task(async function testDNS() {
     "network.connectivity-service.DNSv6.domain",
     "does-not-exist.example"
   );
-  ncs.recheckDNS();
-  await promiseObserverNotification(
+  let observerNotification = promiseObserverNotification(
     "network:connectivity-service:dns-checks-complete"
   );
+  ncs.recheckDNS();
+  await observerNotification;
 
   equal(
     ncs.DNSv4,
@@ -123,6 +124,9 @@ add_task(async function testDNS() {
     "network.connectivity-service.DNSv6.domain",
     kDNSv6Domain
   );
+  observerNotification = promiseObserverNotification(
+    "network:connectivity-service:dns-checks-complete"
+  );
   Services.obs.notifyObservers(null, "network:captive-portal-connectivity");
   // This will cause the state to go to UNKNOWN for a bit, until the check is completed.
   equal(
@@ -136,9 +140,7 @@ add_task(async function testDNS() {
     "Check DNSv6 support (expect UNKNOWN)"
   );
 
-  await promiseObserverNotification(
-    "network:connectivity-service:dns-checks-complete"
-  );
+  await observerNotification;
 
   equal(
     ncs.DNSv4,
@@ -174,10 +176,11 @@ add_task(async function testDNS() {
   Services.prefs.setBoolPref("network.captive-portal-service.testMode", true);
   Services.prefs.setCharPref("network.connectivity-service.IPv4.url", URL);
   Services.prefs.setCharPref("network.connectivity-service.IPv6.url", URLv6);
-  ncs.recheckIPConnectivity();
-  await promiseObserverNotification(
+  observerNotification = promiseObserverNotification(
     "network:connectivity-service:ip-checks-complete"
   );
+  ncs.recheckIPConnectivity();
+  await observerNotification;
 
   equal(
     ncs.IPv4,
@@ -193,10 +196,11 @@ add_task(async function testDNS() {
   // check that the CPS status is NOT_AVAILABLE when the endpoint is down.
   await new Promise(resolve => httpserver.stop(resolve));
   await new Promise(resolve => httpserverv6.stop(resolve));
-  Services.obs.notifyObservers(null, "network:captive-portal-connectivity");
-  await promiseObserverNotification(
+  observerNotification = promiseObserverNotification(
     "network:connectivity-service:ip-checks-complete"
   );
+  Services.obs.notifyObservers(null, "network:captive-portal-connectivity");
+  await observerNotification;
 
   equal(
     ncs.IPv4,

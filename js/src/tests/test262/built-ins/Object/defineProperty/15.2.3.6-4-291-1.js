@@ -31,14 +31,15 @@ includes: [propertyHelper.js]
     configurable: false
   });
   if (a !== 0) {
-    $ERROR('Expected a === 0, actually ' + a);
+    throw new Test262Error('Expected a === 0, actually ' + a);
   }
 
   verifyEqualTo(arguments, "0", getFunc2());
 
-  verifyNotEnumerable(arguments, "0");
-
-  verifyNotConfigurable(arguments, "0");
+  verifyProperty(arguments, "0", {
+    enumerable: false,
+    configurable: false,
+  });
 }(0, 1, 2));
 
 reportCompare(0, 0);

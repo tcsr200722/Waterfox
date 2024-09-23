@@ -2,12 +2,9 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-var tempScope = {};
-ChromeUtils.import(
-  "resource://gre/modules/addons/AddonUpdateChecker.jsm",
-  tempScope
+let { AddonUpdateChecker } = ChromeUtils.importESModule(
+  "resource://gre/modules/addons/AddonUpdateChecker.sys.mjs"
 );
-var AddonUpdateChecker = tempScope.AddonUpdateChecker;
 
 const updatejson = RELATIVE_DIR + "browser_updatessl.json";
 const redirect = RELATIVE_DIR + "redirect.sjs?";
@@ -28,14 +25,7 @@ var gStart = 0;
 var gLast = 0;
 
 var HTTPObserver = {
-  observeActivity(
-    aChannel,
-    aType,
-    aSubtype,
-    aTimestamp,
-    aSizeData,
-    aStringData
-  ) {
+  observeActivity(aChannel, aType, aSubtype) {
     aChannel.QueryInterface(Ci.nsIChannel);
 
     dump(
@@ -60,7 +50,7 @@ function test() {
   ].getService(Ci.nsIHttpActivityDistributor);
   observerService.addObserver(HTTPObserver);
 
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     observerService.removeObserver(HTTPObserver);
   });
 
@@ -71,10 +61,10 @@ function end_test() {
   var cos = Cc["@mozilla.org/security/certoverride;1"].getService(
     Ci.nsICertOverrideService
   );
-  cos.clearValidityOverride("nocert.example.com", -1);
-  cos.clearValidityOverride("self-signed.example.com", -1);
-  cos.clearValidityOverride("untrusted.example.com", -1);
-  cos.clearValidityOverride("expired.example.com", -1);
+  cos.clearValidityOverride("nocert.example.com", -1, {});
+  cos.clearValidityOverride("self-signed.example.com", -1, {});
+  cos.clearValidityOverride("untrusted.example.com", -1, {});
+  cos.clearValidityOverride("expired.example.com", -1, {});
 
   info("All tests completed in " + (Date.now() - gStart) + "ms");
   finish();
@@ -126,7 +116,10 @@ function run_update_tests(callback) {
 }
 
 // Runs tests with built-in certificates required and no certificate exceptions.
-add_test(function() {
+add_test(async function test_builtin_required() {
+  await SpecialPowers.pushPrefEnv({
+    set: [[PREF_UPDATE_REQUIREBUILTINCERTS, true]],
+  });
   // Tests that a simple update.json retrieval works as expected.
   add_update_test(HTTP, null, SUCCESS);
   add_update_test(HTTPS, null, DOWNLOAD_ERROR);
@@ -188,7 +181,7 @@ add_test(function() {
 
 // Runs tests without requiring built-in certificates and no certificate
 // exceptions.
-add_test(async function() {
+add_test(async function test_builtin_not_required() {
   await SpecialPowers.pushPrefEnv({
     set: [[PREF_UPDATE_REQUIREBUILTINCERTS, false]],
   });
@@ -258,9 +251,9 @@ add_test(() => {
 });
 
 // Runs tests with built-in certificates required and all certificate exceptions.
-add_test(async function() {
+add_test(async function test_builtin_required_overrides() {
   await SpecialPowers.pushPrefEnv({
-    clear: [[PREF_UPDATE_REQUIREBUILTINCERTS]],
+    set: [[PREF_UPDATE_REQUIREBUILTINCERTS, true]],
   });
 
   // Tests that a simple update.json retrieval works as expected.
@@ -324,7 +317,7 @@ add_test(async function() {
 
 // Runs tests without requiring built-in certificates and all certificate
 // exceptions.
-add_test(async function() {
+add_test(async function test_builtin_not_required_overrides() {
   await SpecialPowers.pushPrefEnv({
     set: [[PREF_UPDATE_REQUIREBUILTINCERTS, false]],
   });

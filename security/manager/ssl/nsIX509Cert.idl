@@ -8,22 +8,21 @@
 
 interface nsIArray;
 interface nsIX509CertValidity;
-interface nsIASN1Object;
 interface nsICertVerificationListener;
 
 %{ C++
 namespace IPC {
-  class Message;
+class MessageReader;
+class MessageWriter;
 }
-class PickleIterator;
 
  /* forward declaration */
  typedef struct CERTCertificateStr CERTCertificate;
 %}
 
 [ptr] native CERTCertificatePtr(CERTCertificate);
-[ptr] native IpcMessagePtr(IPC::Message);
-[ptr] native PickleIteratorPtr(PickleIterator);
+[ptr] native IpcMessageReaderPtr(IPC::MessageReader);
+[ptr] native IpcMessageWriterPtr(IPC::MessageWriter);
 
 /**
  * This represents a X.509 certificate.
@@ -40,12 +39,6 @@ interface nsIX509Cert : nsISupports {
    *  The primary email address of the certificate, if present.
    */
   readonly attribute AString emailAddress;
-
-  /**
-   * Did this certificate ship with the platform as a built-in root?
-   */
-  [must_use]
-  readonly attribute bool isBuiltInRoot;
 
   /**
    *  Obtain a list of all email addresses
@@ -72,12 +65,6 @@ interface nsIX509Cert : nsISupports {
    *  The subject owning the certificate.
    */
   readonly attribute AString subjectName;
-
-  /**
-   *  The subject alternative names of the certificate.
-   *  It's a comma separated string of subject alt names.
-   */
-  readonly attribute AString subjectAltNames;
 
   /**
    *  The subject's common name.
@@ -175,29 +162,6 @@ interface nsIX509Cert : nsISupports {
   readonly attribute unsigned long certType;
 
   /**
-   *  True if the certificate is self-signed. CA issued
-   *  certificates are always self-signed.
-   */
-  [must_use]
-  readonly attribute boolean isSelfSigned;
-
-  /**
-   * A comma separated list of localized strings representing the contents of
-   * the certificate's key usage extension, if present. The empty string if the
-   * certificate doesn't have the key usage extension, or has an empty extension.
-   */
-  [must_use]
-  readonly attribute AString keyUsages;
-
-  /**
-   *  This is the attribute which describes the ASN1 layout
-   *  of the certificate.  This can be used when doing a
-   *  "pretty print" of the certificate's ASN1 structure.
-   */
-  [must_use]
-  readonly attribute nsIASN1Object ASN1Structure;
-
-  /**
    *  Obtain a raw binary encoding of this certificate
    *  in DER format.
    *
@@ -216,15 +180,6 @@ interface nsIX509Cert : nsISupports {
   ACString getBase64DERString();
 
   /**
-   *  Test whether two certificate instances represent the
-   *  same certificate.
-   *
-   *  @return Whether the certificates are equal
-   */
-  [must_use]
-  boolean equals(in nsIX509Cert other);
-
-  /**
    * The base64 encoding of the DER encoded public key info using the specified
    * digest.
    */
@@ -237,16 +192,9 @@ interface nsIX509Cert : nsISupports {
   [notxpcom, noscript, must_use]
   CERTCertificatePtr getCert();
 
-  /**
-   * Either delete the certificate from all cert databases,
-   * or mark it as untrusted.
-   */
-  [must_use]
-  void markForPermDeletion();
+  [notxpcom, noscript]
+  void SerializeToIPC(in IpcMessageWriterPtr aWriter);
 
   [notxpcom, noscript]
-  void SerializeToIPC(in IpcMessagePtr aMsg);
-
-  [notxpcom, noscript]
-  bool DeserializeFromIPC([const] in IpcMessagePtr aMsg, in PickleIteratorPtr aIter);
+  boolean DeserializeFromIPC(in IpcMessageReaderPtr aReader);
 };

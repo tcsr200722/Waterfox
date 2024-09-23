@@ -6,14 +6,13 @@
 
 #include "mozilla/dom/SVGFEDistantLightElement.h"
 #include "mozilla/dom/SVGFEDistantLightElementBinding.h"
-#include "nsSVGFilterInstance.h"
+#include "mozilla/SVGFilterInstance.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEDistantLight)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEDistantLightElement::WrapNode(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
@@ -21,7 +20,7 @@ JSObject* SVGFEDistantLightElement::WrapNode(
 }
 
 SVGElement::NumberInfo SVGFEDistantLightElement::sNumberInfo[2] = {
-    {nsGkAtoms::azimuth, 0, false}, {nsGkAtoms::elevation, 0, false}};
+    {nsGkAtoms::azimuth, 0}, {nsGkAtoms::elevation, 0}};
 
 //----------------------------------------------------------------------
 //----------------------------------------------------------------------
@@ -29,7 +28,7 @@ SVGElement::NumberInfo SVGFEDistantLightElement::sNumberInfo[2] = {
 
 NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGFEDistantLightElement)
 
-// nsFEUnstyledElement methods
+// SVGFilterPrimitiveChildElement methods
 
 bool SVGFEDistantLightElement::AttributeAffectsRendering(
     int32_t aNameSpaceID, nsAtom* aAttribute) const {
@@ -39,7 +38,7 @@ bool SVGFEDistantLightElement::AttributeAffectsRendering(
 }
 
 LightType SVGFEDistantLightElement::ComputeLightAttributes(
-    nsSVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) {
+    SVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) {
   float azimuth, elevation;
   GetAnimatedNumberValues(&azimuth, &elevation, nullptr);
 
@@ -65,5 +64,4 @@ SVGElement::NumberAttributesInfo SVGFEDistantLightElement::GetNumberInfo() {
                               ArrayLength(sNumberInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

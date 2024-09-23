@@ -6,17 +6,18 @@
 
 #include "mozilla/dom/InternalHeaders.h"
 
+#include "FetchUtil.h"
 #include "mozilla/dom/FetchTypes.h"
 #include "mozilla/ErrorResult.h"
 
 #include "nsCharSeparatedTokenizer.h"
 #include "nsContentUtils.h"
+#include "nsIHttpChannel.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 InternalHeaders::InternalHeaders(nsTArray<Entry>&& aHeaders,
                                  HeadersGuardEnum aGuard)
@@ -56,11 +57,11 @@ bool InternalHeaders::IsValidHeaderValue(const nsCString& aLowerName,
   }
 
   // Step 4
-  if (mGuard == HeadersGuardEnum::Request &&
-      IsForbiddenRequestHeader(aLowerName)) {
-    return false;
+  if (mGuard == HeadersGuardEnum::Request) {
+    if (IsForbiddenRequestHeader(aLowerName, aNormalizedValue)) {
+      return false;
+    }
   }
-
   // Step 5
   if (mGuard == HeadersGuardEnum::Request_no_cors) {
     nsAutoCString tempValue;
@@ -147,6 +148,7 @@ bool InternalHeaders::DeleteInternal(const nsCString& aLowerName,
 }
 
 void InternalHeaders::Delete(const nsACString& aName, ErrorResult& aRv) {
+  // See https://fetch.spec.whatwg.org/#dom-headers-delete
   nsAutoCString lowerName;
   ToLowerCase(aName, lowerName);
 
@@ -155,34 +157,33 @@ void InternalHeaders::Delete(const nsACString& aName, ErrorResult& aRv) {
     return;
   }
 
-  // Step 2
   if (IsImmutable(aRv)) {
     return;
   }
 
-  // Step 3
-  if (IsForbiddenRequestHeader(lowerName)) {
+  nsAutoCString value;
+  GetInternal(lowerName, value, aRv);
+  if (IsForbiddenRequestHeader(lowerName, value)) {
     return;
   }
 
-  // Step 4
+  // Step 2
   if (mGuard == HeadersGuardEnum::Request_no_cors &&
       !IsNoCorsSafelistedRequestHeaderName(lowerName) &&
       !IsPrivilegedNoCorsRequestHeaderName(lowerName)) {
     return;
   }
 
-  // Step 5
   if (IsForbiddenResponseHeader(lowerName)) {
     return;
   }
 
-  // Steps 6 and 7
+  // Steps 3, 4, and 5
   if (!DeleteInternal(lowerName, aRv)) {
     return;
   }
 
-  // Step 8
+  // Step 6
   if (mGuard == HeadersGuardEnum::Request_no_cors) {
     RemovePrivilegedNoCorsRequestHeaders();
   }
@@ -218,6 +219,14 @@ void InternalHeaders::GetInternal(const nsCString& aLowerName,
   // No value found, so return null to content
   if (!firstValueFound) {
     aValue.SetIsVoid(true);
+  }
+}
+
+void InternalHeaders::GetSetCookie(nsTArray<nsCString>& aValues) const {
+  for (uint32_t i = 0; i < mList.Length(); ++i) {
+    if (mList[i].mName.EqualsIgnoreCase("Set-Cookie")) {
+      aValues.AppendElement(mList[i].mValue);
+    }
   }
 }
 
@@ -326,25 +335,6 @@ bool InternalHeaders::IsPrivilegedNoCorsRequestHeaderName(
 }
 
 // static
-bool InternalHeaders::IsSimpleHeader(const nsCString& aName,
-                                     const nsACString& aValue) {
-  if (aValue.Length() > 128) {
-    return false;
-  }
-  // Note, we must allow a null content-type value here to support
-  // get("content-type"), but the IsInvalidValue() check will prevent null
-  // from being set or appended.
-  return (aName.EqualsIgnoreCase("accept") &&
-          nsContentUtils::IsAllowedNonCorsAccept(aValue)) ||
-         (aName.EqualsIgnoreCase("accept-language") &&
-          nsContentUtils::IsAllowedNonCorsLanguage(aValue)) ||
-         (aName.EqualsIgnoreCase("content-language") &&
-          nsContentUtils::IsAllowedNonCorsLanguage(aValue)) ||
-         (aName.EqualsIgnoreCase("content-type") &&
-          nsContentUtils::IsAllowedNonCorsContentType(aValue));
-}
-
-// static
 bool InternalHeaders::IsRevalidationHeader(const nsCString& aName) {
   return aName.EqualsIgnoreCase("if-modified-since") ||
          aName.EqualsIgnoreCase("if-none-match") ||
@@ -381,21 +371,22 @@ bool InternalHeaders::IsImmutable(ErrorResult& aRv) const {
   return false;
 }
 
-bool InternalHeaders::IsForbiddenRequestHeader(const nsCString& aName) const {
+bool InternalHeaders::IsForbiddenRequestHeader(const nsCString& aName,
+                                               const nsACString& aValue) const {
   return mGuard == HeadersGuardEnum::Request &&
-         nsContentUtils::IsForbiddenRequestHeader(aName);
+         nsContentUtils::IsForbiddenRequestHeader(aName, aValue);
 }
 
 bool InternalHeaders::IsForbiddenRequestNoCorsHeader(
     const nsCString& aName) const {
   return mGuard == HeadersGuardEnum::Request_no_cors &&
-         !IsSimpleHeader(aName, EmptyCString());
+         !nsContentUtils::IsCORSSafelistedRequestHeader(aName, ""_ns);
 }
 
 bool InternalHeaders::IsForbiddenRequestNoCorsHeader(
     const nsCString& aName, const nsACString& aValue) const {
   return mGuard == HeadersGuardEnum::Request_no_cors &&
-         !IsSimpleHeader(aName, aValue);
+         !nsContentUtils::IsCORSSafelistedRequestHeader(aName, aValue);
 }
 
 bool InternalHeaders::IsForbiddenResponseHeader(const nsCString& aName) const {
@@ -476,7 +467,8 @@ void InternalHeaders::FillResponseHeaders(nsIRequest* aRequest) {
 
 bool InternalHeaders::HasOnlySimpleHeaders() const {
   for (uint32_t i = 0; i < mList.Length(); ++i) {
-    if (!IsSimpleHeader(mList[i].mName, mList[i].mValue)) {
+    if (!nsContentUtils::IsCORSSafelistedRequestHeader(mList[i].mName,
+                                                       mList[i].mValue)) {
       return false;
     }
   }
@@ -501,9 +493,9 @@ already_AddRefed<InternalHeaders> InternalHeaders::BasicHeaders(
   ErrorResult result;
   // The Set-Cookie headers cannot be invalid mutable headers, so the Delete
   // must succeed.
-  basic->Delete(NS_LITERAL_CSTRING("Set-Cookie"), result);
+  basic->Delete("Set-Cookie"_ns, result);
   MOZ_ASSERT(!result.Failed());
-  basic->Delete(NS_LITERAL_CSTRING("Set-Cookie2"), result);
+  basic->Delete("Set-Cookie2"_ns, result);
   MOZ_ASSERT(!result.Failed());
   return basic.forget();
 }
@@ -515,15 +507,13 @@ already_AddRefed<InternalHeaders> InternalHeaders::CORSHeaders(
   ErrorResult result;
 
   nsAutoCString acExposedNames;
-  aHeaders->Get(NS_LITERAL_CSTRING("Access-Control-Expose-Headers"),
-                acExposedNames, result);
+  aHeaders->Get("Access-Control-Expose-Headers"_ns, acExposedNames, result);
   MOZ_ASSERT(!result.Failed());
 
   bool allowAllHeaders = false;
   AutoTArray<nsCString, 5> exposeNamesArray;
-  nsCCharSeparatedTokenizer exposeTokens(acExposedNames, ',');
-  while (exposeTokens.hasMoreTokens()) {
-    const nsDependentCSubstring& token = exposeTokens.nextToken();
+  for (const nsACString& token :
+       nsCCharSeparatedTokenizer(acExposedNames, ',').ToRange()) {
     if (token.IsEmpty()) {
       continue;
     }
@@ -554,6 +544,7 @@ already_AddRefed<InternalHeaders> InternalHeaders::CORSHeaders(
     } else if (entry.mName.EqualsIgnoreCase("cache-control") ||
                entry.mName.EqualsIgnoreCase("content-language") ||
                entry.mName.EqualsIgnoreCase("content-type") ||
+               entry.mName.EqualsIgnoreCase("content-length") ||
                entry.mName.EqualsIgnoreCase("expires") ||
                entry.mName.EqualsIgnoreCase("last-modified") ||
                entry.mName.EqualsIgnoreCase("pragma") ||
@@ -576,7 +567,8 @@ void InternalHeaders::GetUnsafeHeaders(nsTArray<nsCString>& aNames) const {
   MOZ_ASSERT(aNames.IsEmpty());
   for (uint32_t i = 0; i < mList.Length(); ++i) {
     const Entry& header = mList[i];
-    if (!InternalHeaders::IsSimpleHeader(header.mName, header.mValue)) {
+    if (!nsContentUtils::IsCORSSafelistedRequestHeader(header.mName,
+                                                       header.mValue)) {
       aNames.AppendElement(header.mName);
     }
   }
@@ -605,12 +597,16 @@ void InternalHeaders::MaybeSortList() {
   mSortedList.Clear();
   for (const Entry& entry : mList) {
     bool found = false;
-    for (Entry& sortedEntry : mSortedList) {
-      if (sortedEntry.mName.EqualsIgnoreCase(entry.mName.get())) {
-        sortedEntry.mValue += ", ";
-        sortedEntry.mValue += entry.mValue;
-        found = true;
-        break;
+
+    // We combine every header but Set-Cookie.
+    if (!entry.mName.EqualsIgnoreCase("Set-Cookie")) {
+      for (Entry& sortedEntry : mSortedList) {
+        if (sortedEntry.mName.EqualsIgnoreCase(entry.mName.get())) {
+          sortedEntry.mValue += ", ";
+          sortedEntry.mValue += entry.mValue;
+          found = true;
+          break;
+        }
       }
     }
 
@@ -636,5 +632,4 @@ void InternalHeaders::ReuseExistingNameIfExists(nsCString& aName) const {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

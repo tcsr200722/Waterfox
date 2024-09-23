@@ -9,26 +9,19 @@ add_task(async function open_customize_mode_in_lazy_tab() {
   });
   gCustomizeMode.setTab(tab);
 
-  is(tab.linkedPanel, "", "Tab should be lazy");
+  is(tab.linkedPanel, null, "Tab should be lazy");
 
-  let tabLoaded = new Promise(resolve => {
-    gBrowser.addTabsProgressListener({
-      async onLocationChange(aBrowser) {
-        if (tab.linkedBrowser == aBrowser) {
-          gBrowser.removeTabsProgressListener(this);
-          await Promise.resolve();
-          resolve();
-        }
-      },
-    });
-  });
+  let title = gNavigatorBundle.getFormattedString("customizeMode.tabTitle", [
+    document.getElementById("bundle_brand").getString("brandShortName"),
+  ]);
+  is(tab.label, title, "Tab should have correct title");
+
   let customizePromise = BrowserTestUtils.waitForEvent(
     gNavToolbox,
     "customizationready"
   );
   gCustomizeMode.enter();
   await customizePromise;
-  await tabLoaded;
 
   is(
     tab.getAttribute("customizemode"),

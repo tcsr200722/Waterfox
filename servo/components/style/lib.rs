@@ -25,34 +25,22 @@
 
 #![deny(missing_docs)]
 
-extern crate app_units;
-extern crate arrayvec;
-extern crate atomic_refcell;
 #[macro_use]
 extern crate bitflags;
-#[allow(unused_extern_crates)]
-extern crate byteorder;
-#[cfg(feature = "servo")]
-extern crate crossbeam_channel;
 #[macro_use]
 extern crate cssparser;
 #[macro_use]
 extern crate debug_unreachable;
 #[macro_use]
 extern crate derive_more;
-extern crate euclid;
-extern crate fallible;
-extern crate fxhash;
+#[macro_use]
+extern crate gecko_profiler;
 #[cfg(feature = "gecko")]
 #[macro_use]
 pub mod gecko_string_cache;
-extern crate hashglobe;
 #[cfg(feature = "servo")]
 #[macro_use]
 extern crate html5ever;
-extern crate indexmap;
-extern crate itertools;
-extern crate itoa;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
@@ -65,48 +53,25 @@ extern crate malloc_size_of_derive;
 #[macro_use]
 extern crate matches;
 #[cfg(feature = "gecko")]
-pub extern crate nsstring;
+pub use nsstring;
 #[cfg(feature = "gecko")]
 extern crate num_cpus;
 #[macro_use]
 extern crate num_derive;
-extern crate num_integer;
-extern crate num_traits;
-extern crate owning_ref;
-extern crate parking_lot;
-extern crate precomputed_hash;
-extern crate rayon;
-extern crate selectors;
 #[macro_use]
 extern crate serde;
-pub extern crate servo_arc;
+pub use servo_arc;
 #[cfg(feature = "servo")]
 #[macro_use]
 extern crate servo_atoms;
-#[cfg(feature = "servo")]
-extern crate servo_config;
-#[cfg(feature = "servo")]
-extern crate servo_url;
-extern crate smallbitvec;
-extern crate smallvec;
-#[cfg(feature = "gecko")]
-extern crate static_prefs;
-#[cfg(feature = "servo")]
-extern crate string_cache;
+#[macro_use]
+extern crate static_assertions;
 #[macro_use]
 extern crate style_derive;
-extern crate style_traits;
-#[cfg(feature = "gecko")]
-extern crate thin_slice;
-extern crate time;
-extern crate to_shmem;
+#[macro_use]
+extern crate thin_vec;
 #[macro_use]
 extern crate to_shmem_derive;
-extern crate uluru;
-extern crate unicode_bidi;
-#[allow(unused_extern_crates)]
-extern crate unicode_segmentation;
-extern crate void;
 
 #[macro_use]
 mod macros;
@@ -119,16 +84,17 @@ pub mod attr;
 pub mod author_styles;
 pub mod bezier;
 pub mod bloom;
+pub mod color;
 #[path = "properties/computed_value_flags.rs"]
 pub mod computed_value_flags;
 pub mod context;
 pub mod counter_style;
 pub mod custom_properties;
+pub mod custom_properties_map;
 pub mod data;
 pub mod dom;
 pub mod dom_apis;
 pub mod driver;
-pub mod element_state;
 #[cfg(feature = "servo")]
 mod encoding_support;
 pub mod error_reporting;
@@ -138,15 +104,17 @@ pub mod font_metrics;
 #[allow(unsafe_code)]
 pub mod gecko_bindings;
 pub mod global_style_data;
-pub mod hash;
 pub mod invalidation;
 #[allow(missing_docs)] // TODO.
 pub mod logical_geometry;
 pub mod matching;
-#[macro_use]
 pub mod media_queries;
 pub mod parallel;
 pub mod parser;
+pub mod piecewise_linear;
+pub mod properties_and_values;
+#[macro_use]
+pub mod queries;
 pub mod rule_cache;
 pub mod rule_collector;
 pub mod rule_tree;
@@ -162,7 +130,6 @@ pub mod stylesheet_set;
 pub mod stylesheets;
 pub mod stylist;
 pub mod thread_state;
-pub mod timer;
 pub mod traversal;
 pub mod traversal_flags;
 pub mod use_counters;
@@ -176,34 +143,33 @@ pub use crate::gecko_string_cache as string_cache;
 pub use crate::gecko_string_cache::Atom;
 /// The namespace prefix type for Gecko, which is just an atom.
 #[cfg(feature = "gecko")]
-pub type Prefix = crate::gecko_string_cache::Atom;
+pub type Prefix = crate::values::AtomIdent;
 /// The local name of an element for Gecko, which is just an atom.
 #[cfg(feature = "gecko")]
-pub type LocalName = crate::gecko_string_cache::Atom;
+pub type LocalName = crate::values::AtomIdent;
 #[cfg(feature = "gecko")]
 pub use crate::gecko_string_cache::Namespace;
 
 #[cfg(feature = "servo")]
-pub use html5ever::LocalName;
-#[cfg(feature = "servo")]
-pub use html5ever::Namespace;
-#[cfg(feature = "servo")]
-pub use html5ever::Prefix;
-#[cfg(feature = "servo")]
 pub use servo_atoms::Atom;
+
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub type LocalName = crate::values::GenericAtomIdent<html5ever::LocalNameStaticSet>;
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub type Namespace = crate::values::GenericAtomIdent<html5ever::NamespaceStaticSet>;
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub type Prefix = crate::values::GenericAtomIdent<html5ever::PrefixStaticSet>;
 
 pub use style_traits::arc_slice::ArcSlice;
 pub use style_traits::owned_slice::OwnedSlice;
 pub use style_traits::owned_str::OwnedStr;
 
-/// The CSS properties supported by the style system.
-/// Generated from the properties.mako.rs template by build.rs
-#[macro_use]
-#[allow(unsafe_code)]
-#[deny(missing_docs)]
-pub mod properties {
-    include!(concat!(env!("OUT_DIR"), "/properties.rs"));
-}
+use std::hash::{BuildHasher, Hash};
+
+pub mod properties;
 
 #[cfg(feature = "gecko")]
 #[allow(unsafe_code)]
@@ -214,14 +180,8 @@ pub mod gecko;
 #[allow(unsafe_code)]
 pub mod servo;
 
-#[cfg(feature = "gecko")]
-#[allow(unsafe_code, missing_docs)]
-pub mod gecko_properties {
-    include!(concat!(env!("OUT_DIR"), "/gecko_properties.rs"));
-}
-
 macro_rules! reexport_computed_values {
-    ( $( { $name: ident, $boxed: expr } )+ ) => {
+    ( $( { $name: ident } )+ ) => {
         /// Types for [computed values][computed].
         ///
         /// [computed]: https://drafts.csswg.org/css-cascade/#computed
@@ -235,7 +195,6 @@ macro_rules! reexport_computed_values {
     }
 }
 longhand_properties_idents!(reexport_computed_values);
-
 #[cfg(feature = "gecko")]
 use crate::gecko_string_cache::WeakAtom;
 #[cfg(feature = "servo")]
@@ -248,6 +207,7 @@ pub trait CaseSensitivityExt {
 }
 
 impl CaseSensitivityExt for selectors::attr::CaseSensitivity {
+    #[inline]
     fn eq_atom(self, a: &WeakAtom, b: &WeakAtom) -> bool {
         match self {
             selectors::attr::CaseSensitivity::CaseSensitive => a == b,
@@ -279,6 +239,12 @@ where
     }
 }
 
+/// A trait implementing a function to tell if the number is zero without a percent
+pub trait ZeroNoPercent {
+    /// So, `0px` should return `true`, but `0%` or `1px` should return `false`
+    fn is_zero_no_percent(&self) -> bool;
+}
+
 /// A trait pretty much similar to num_traits::One, but without the need of
 /// implementing `Mul`.
 pub trait One {
@@ -301,3 +267,68 @@ where
         *self == One::one()
     }
 }
+
+/// An allocation error.
+///
+/// TODO(emilio): Would be nice to have more information here, or for SmallVec
+/// to return the standard error type (and then we can just return that).
+///
+/// But given we use these mostly to bail out and ignore them, it's not a big
+/// deal.
+#[derive(Debug)]
+pub struct AllocErr;
+
+impl From<smallvec::CollectionAllocErr> for AllocErr {
+    #[inline]
+    fn from(_: smallvec::CollectionAllocErr) -> Self {
+        Self
+    }
+}
+
+impl From<std::collections::TryReserveError> for AllocErr {
+    #[inline]
+    fn from(_: std::collections::TryReserveError) -> Self {
+        Self
+    }
+}
+
+/// Shrink the capacity of the collection if needed.
+pub(crate) trait ShrinkIfNeeded {
+    fn shrink_if_needed(&mut self);
+}
+
+/// We shrink the capacity of a collection if we're wasting more than a 25% of
+/// its capacity, and if the collection is arbitrarily big enough
+/// (>= CAPACITY_THRESHOLD entries).
+#[inline]
+fn should_shrink(len: usize, capacity: usize) -> bool {
+    const CAPACITY_THRESHOLD: usize = 64;
+    capacity >= CAPACITY_THRESHOLD && len + capacity / 4 < capacity
+}
+
+impl<K, V, H> ShrinkIfNeeded for std::collections::HashMap<K, V, H>
+where
+    K: Eq + Hash,
+    H: BuildHasher,
+{
+    fn shrink_if_needed(&mut self) {
+        if should_shrink(self.len(), self.capacity()) {
+            self.shrink_to_fit();
+        }
+    }
+}
+
+impl<T, H> ShrinkIfNeeded for std::collections::HashSet<T, H>
+where
+    T: Eq + Hash,
+    H: BuildHasher,
+{
+    fn shrink_if_needed(&mut self) {
+        if should_shrink(self.len(), self.capacity()) {
+            self.shrink_to_fit();
+        }
+    }
+}
+
+// TODO(emilio): Measure and see if we're wasting a lot of memory on Vec /
+// SmallVec, and if so consider shrinking those as well.

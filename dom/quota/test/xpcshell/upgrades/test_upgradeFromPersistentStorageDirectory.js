@@ -280,7 +280,7 @@ function* testSteps() {
   let request = init(continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode == NS_OK, "Initialization succeeded");
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
   info("Verifying storage");
 
@@ -290,6 +290,8 @@ function* testSteps() {
   //       ignore unknown directories.
   getRelativeFile("storage/default/invalid+++example.com").remove(false);
   getRelativeFile("storage/temporary/invalid+++example.com").remove(false);
+
+  info("Checking origin directories");
 
   for (let origin of origins) {
     if (!origin.newPath || origin.newPath != origin.oldPath) {
@@ -332,26 +334,41 @@ function* testSteps() {
           "Metadata differ"
         );
       }
+    }
+  }
 
+  info("Initializing");
+
+  request = initTemporaryStorage(continueToNextStepSync);
+  yield undefined;
+
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
+
+  info("Initializing origins");
+
+  for (const origin of origins) {
+    if (origin.newPath) {
       info("Initializing origin");
 
+      let principal;
       if (origin.chrome) {
-        request = initStorageAndChromeOrigin(
-          origin.persistence,
-          continueToNextStepSync
-        );
-        yield undefined;
+        principal = getCurrentPrincipal();
       } else {
-        let principal = getPrincipal(origin.url);
-        request = initStorageAndOrigin(
-          principal,
-          origin.persistence,
-          continueToNextStepSync
-        );
-        yield undefined;
+        principal = getPrincipal(origin.url);
       }
 
-      ok(request.resultCode == NS_OK, "Initialization succeeded");
+      if (origin.persistence == "persistent") {
+        request = initPersistentOrigin(principal, continueToNextStepSync);
+      } else {
+        request = initTemporaryOrigin(
+          origin.persistence,
+          principal,
+          continueToNextStepSync
+        );
+      }
+      yield undefined;
+
+      Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
       ok(!request.result, "Origin directory wasn't created");
     }

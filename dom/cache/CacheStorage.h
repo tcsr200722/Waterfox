@@ -20,6 +20,8 @@ class nsIGlobalObject;
 namespace mozilla {
 
 class ErrorResult;
+enum UseCounter : int16_t;
+enum class UseCounterWorker : int16_t;
 
 namespace ipc {
 class PrincipalInfo;
@@ -39,7 +41,7 @@ class CacheWorkerRef;
 class CacheStorage final : public nsISupports,
                            public nsWrapperCache,
                            public TypeUtils {
-  typedef mozilla::ipc::PBackgroundChild PBackgroundChild;
+  using PBackgroundChild = mozilla::ipc::PBackgroundChild;
 
  public:
   static already_AddRefed<CacheStorage> CreateOnMainThread(
@@ -50,12 +52,13 @@ class CacheStorage final : public nsISupports,
       Namespace aNamespace, nsIGlobalObject* aGlobal,
       WorkerPrivate* aWorkerPrivate, ErrorResult& aRv);
 
-  static bool DefineCaches(JSContext* aCx, JS::Handle<JSObject*> aGlobal);
+  static bool DefineCachesForSandbox(JSContext* aCx,
+                                     JS::Handle<JSObject*> aGlobal);
 
   // webidl interface methods
   already_AddRefed<Promise> Match(JSContext* aCx,
-                                  const RequestOrUSVString& aRequest,
-                                  const CacheQueryOptions& aOptions,
+                                  const RequestOrUTF8String& aRequest,
+                                  const MultiCacheQueryOptions& aOptions,
                                   ErrorResult& aRv);
   already_AddRefed<Promise> Has(const nsAString& aKey, ErrorResult& aRv);
   already_AddRefed<Promise> Open(const nsAString& aKey, ErrorResult& aRv);
@@ -95,11 +98,11 @@ class CacheStorage final : public nsISupports,
 
   OpenMode GetOpenMode() const;
 
-  bool HasStorageAccess() const;
+  bool HasStorageAccess(UseCounter aLabel, UseCounterWorker aLabelWorker) const;
 
   const Namespace mNamespace;
   nsCOMPtr<nsIGlobalObject> mGlobal;
-  UniquePtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
+  const UniquePtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
 
   // weak ref cleared in DestroyInternal
   CacheStorageChild* mActor;
@@ -108,7 +111,7 @@ class CacheStorage final : public nsISupports,
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(CacheStorage)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(CacheStorage)
 };
 
 }  // namespace cache

@@ -7,8 +7,7 @@
 #include "mozilla/gmp/GMPTypes.h"
 #include "mozilla/CheckedInt.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
 
 GMPVideoi420FrameImpl::GMPVideoi420FrameImpl(GMPVideoHostImpl* aHost)
     : mYPlane(aHost),
@@ -29,6 +28,7 @@ GMPVideoi420FrameImpl::GMPVideoi420FrameImpl(
       mWidth(aFrameData.mWidth()),
       mHeight(aFrameData.mHeight()),
       mTimestamp(aFrameData.mTimestamp()),
+      mUpdatedTimestamp(aFrameData.mUpdatedTimestamp()),
       mDuration(aFrameData.mDuration()) {
   MOZ_ASSERT(aHost);
 }
@@ -42,6 +42,7 @@ bool GMPVideoi420FrameImpl::InitFrameData(GMPVideoi420FrameData& aFrameData) {
   aFrameData.mWidth() = mWidth;
   aFrameData.mHeight() = mHeight;
   aFrameData.mTimestamp() = mTimestamp;
+  aFrameData.mUpdatedTimestamp() = mUpdatedTimestamp;
   aFrameData.mDuration() = mDuration;
   return true;
 }
@@ -81,6 +82,33 @@ bool GMPVideoi420FrameImpl::CheckFrameData(
        aFrameData.mUPlane().mStride() * ((aFrameData.mHeight() + 1) / 2)) ||
       (aFrameData.mVPlane().mSize() <
        aFrameData.mVPlane().mStride() * ((aFrameData.mHeight() + 1) / 2))) {
+    return false;
+  }
+  return true;
+}
+
+bool GMPVideoi420FrameImpl::CheckDimensions(int32_t aWidth, int32_t aHeight,
+                                            int32_t aStride_y,
+                                            int32_t aStride_u,
+                                            int32_t aStride_v, int32_t aSize_y,
+                                            int32_t aSize_u, int32_t aSize_v) {
+  if (aWidth < 1 || aHeight < 1 || aStride_y < aWidth || aSize_y < 1 ||
+      aSize_u < 1 || aSize_v < 1) {
+    return false;
+  }
+  auto halfWidth = (CheckedInt<int32_t>(aWidth) + 1) / 2;
+  if (!halfWidth.isValid() || aStride_u < halfWidth.value() ||
+      aStride_v < halfWidth.value()) {
+    return false;
+  }
+  auto height = CheckedInt<int32_t>(aHeight);
+  auto halfHeight = (height + 1) / 2;
+  auto minSizeY = height * aStride_y;
+  auto minSizeU = halfHeight * aStride_u;
+  auto minSizeV = halfHeight * aStride_v;
+  if (!minSizeY.isValid() || !minSizeU.isValid() || !minSizeV.isValid() ||
+      minSizeY.value() > aSize_y || minSizeU.value() > aSize_u ||
+      minSizeV.value() > aSize_v) {
     return false;
   }
   return true;
@@ -159,6 +187,7 @@ GMPErr GMPVideoi420FrameImpl::CreateEmptyFrame(int32_t aWidth, int32_t aHeight,
   mWidth = aWidth;
   mHeight = aHeight;
   mTimestamp = 0ll;
+  mUpdatedTimestamp.reset();
   mDuration = 0ll;
 
   return GMPNoErr;
@@ -173,11 +202,8 @@ GMPErr GMPVideoi420FrameImpl::CreateFrame(
   MOZ_ASSERT(aBuffer_u);
   MOZ_ASSERT(aBuffer_v);
 
-  if (aSize_y < 1 || aSize_u < 1 || aSize_v < 1) {
-    return GMPGenericErr;
-  }
-
-  if (!CheckDimensions(aWidth, aHeight, aStride_y, aStride_u, aStride_v)) {
+  if (!CheckDimensions(aWidth, aHeight, aStride_y, aStride_u, aStride_v,
+                       aSize_y, aSize_u, aSize_v)) {
     return GMPGenericErr;
   }
 
@@ -221,6 +247,7 @@ GMPErr GMPVideoi420FrameImpl::CopyFrame(const GMPVideoi420Frame& aFrame) {
   mWidth = f.mWidth;
   mHeight = f.mHeight;
   mTimestamp = f.mTimestamp;
+  mUpdatedTimestamp = f.mUpdatedTimestamp;
   mDuration = f.mDuration;
 
   return GMPNoErr;
@@ -234,6 +261,7 @@ void GMPVideoi420FrameImpl::SwapFrame(GMPVideoi420Frame* aFrame) {
   std::swap(mWidth, f->mWidth);
   std::swap(mHeight, f->mHeight);
   std::swap(mTimestamp, f->mTimestamp);
+  std::swap(mUpdatedTimestamp, f->mUpdatedTimestamp);
   std::swap(mDuration, f->mDuration);
 }
 
@@ -297,6 +325,14 @@ void GMPVideoi420FrameImpl::SetTimestamp(uint64_t aTimestamp) {
 
 uint64_t GMPVideoi420FrameImpl::Timestamp() const { return mTimestamp; }
 
+void GMPVideoi420FrameImpl::SetUpdatedTimestamp(uint64_t aTimestamp) {
+  mUpdatedTimestamp = Some(aTimestamp);
+}
+
+uint64_t GMPVideoi420FrameImpl::UpdatedTimestamp() const {
+  return mUpdatedTimestamp ? *mUpdatedTimestamp : mTimestamp;
+}
+
 void GMPVideoi420FrameImpl::SetDuration(uint64_t aDuration) {
   mDuration = aDuration;
 }
@@ -313,5 +349,4 @@ void GMPVideoi420FrameImpl::ResetSize() {
   mVPlane.ResetSize();
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp

@@ -17,6 +17,7 @@
 #include "mozpkix/pkix.h"
 #include "mozpkix/pkixtypes.h"
 #include "nsIX509Cert.h"
+#include "ssl.h"
 
 using mozilla::OriginAttributes;
 using mozilla::TimeDuration;
@@ -27,6 +28,8 @@ class nsILoadGroup;
 char* PK11PasswordPrompt(PK11SlotInfo* slot, PRBool retry, void* arg);
 
 void HandshakeCallback(PRFileDesc* fd, void* client_data);
+void SecretCallback(PRFileDesc* fd, PRUint16 epoch, SSLSecretDirection dir,
+                    PK11SymKey* secret, void* arg);
 SECStatus CanFalseStartCallback(PRFileDesc* fd, void* client_data,
                                 PRBool* canFalseStart);
 
@@ -38,8 +41,5 @@ mozilla::pkix::Result DoOCSPRequest(
 
 nsCString getKeaGroupName(uint32_t aKeaGroup);
 nsCString getSignatureName(uint32_t aSignatureScheme);
-nsresult IsCertificateDistrustImminent(
-    const nsTArray<RefPtr<nsIX509Cert>>& aCertArray,
-    /* out */ bool& isDistrusted);
 
 #endif  // nsNSSCallbacks_h

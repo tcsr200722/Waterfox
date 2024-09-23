@@ -11,6 +11,8 @@
 #include <fstream>
 
 #include "common.h"
+#include "Registry.h"
+#include "UtfConvert.h"
 
 #include "json/json.h"
 #include "mozilla/HelperMacros.h"
@@ -28,7 +30,9 @@
 // The Firefox policy engine hardcodes the string "Mozilla" in its registry
 // key accesses rather than using the configured vendor name, so we should do
 // the same here to be sure we're compatible with it.
-#define POLICY_REGKEY_NAME L"SOFTWARE\\Policies\\Mozilla\\" MOZ_APP_BASENAME
+#define POLICY_REGKEY_NAME L"SOFTWARE\\Policies\\BrowserWorks\\" MOZ_APP_BASENAME
+
+namespace mozilla::default_agent {
 
 // This enum is the return type for the functions that check policy values.
 enum class PolicyState {
@@ -86,22 +90,14 @@ static PolicyState FindPolicyInFile(const char* policyName) {
 
   // We need a narrow string-based std::ifstream because that's all jsoncpp can
   // use; that means we need to supply it the file path as a narrow string.
-  int policiesFilePathLen = WideCharToMultiByte(
-      CP_UTF8, 0, policiesFilePath, -1, nullptr, 0, nullptr, nullptr);
-  if (policiesFilePathLen == 0) {
+  Utf16ToUtf8Result policiesFilePathToUtf8 = Utf16ToUtf8(policiesFilePath);
+  if (policiesFilePathToUtf8.isErr()) {
     return PolicyState::NoPolicy;
   }
-  mozilla::UniquePtr<char[]> policiesFilePathA =
-      mozilla::MakeUnique<char[]>(policiesFilePathLen);
-  policiesFilePathLen = WideCharToMultiByte(
-      CP_UTF8, 0, policiesFilePath, -1, policiesFilePathA.get(),
-      policiesFilePathLen, nullptr, nullptr);
-  if (policiesFilePathLen == 0) {
-    return PolicyState::NoPolicy;
-  }
+  std::string policiesFilePathA = policiesFilePathToUtf8.unwrap();
 
   Json::Value jsonRoot;
-  std::ifstream stream(policiesFilePathA.get());
+  std::ifstream stream(policiesFilePathA);
   Json::Reader().parse(stream, jsonRoot);
 
   if (jsonRoot.isObject() && jsonRoot.isMember("Policies") &&
@@ -119,24 +115,17 @@ static PolicyState FindPolicyInFile(const char* policyName) {
 }
 
 static PolicyState IsDisabledByPref(const wchar_t* prefRegValue) {
-  mozilla::UniquePtr<wchar_t[]> installPath = mozilla::GetFullBinaryPath();
-  if (!PathRemoveFileSpecW(installPath.get())) {
+  auto prefValueResult =
+      RegistryGetValueBool(IsPrefixed::Prefixed, prefRegValue);
+
+  if (prefValueResult.isErr()) {
     return PolicyState::NoPolicy;
   }
-
-  std::wstring telemetryRegistryValueName(installPath.get());
-  telemetryRegistryValueName.append(L"|");
-  telemetryRegistryValueName.append(prefRegValue);
-
-  DWORD prefValue = 0, dataLen = sizeof(DWORD);
-  LSTATUS ls = RegGetValueW(HKEY_CURRENT_USER, AGENT_REGKEY_NAME,
-                            telemetryRegistryValueName.c_str(),
-                            RRF_RT_REG_DWORD, nullptr, &prefValue, &dataLen);
-  if (ls == ERROR_SUCCESS) {
-    return prefValue == 0 ? PolicyState::Disabled : PolicyState::Enabled;
+  auto prefValue = prefValueResult.unwrap();
+  if (prefValue.isNothing()) {
+    return PolicyState::NoPolicy;
   }
-
-  return PolicyState::NoPolicy;
+  return prefValue.value() ? PolicyState::Enabled : PolicyState::Disabled;
 }
 
 // Everything we call from this function wants wide strings, except for jsoncpp,
@@ -169,3 +158,5 @@ bool IsAgentDisabled() {
 bool IsTelemetryDisabled() {
   return IsThingDisabled(TELEMETRY_POLICY_NAME, L"" TELEMETRY_POLICY_NAME);
 }
+
+}  // namespace mozilla::default_agent

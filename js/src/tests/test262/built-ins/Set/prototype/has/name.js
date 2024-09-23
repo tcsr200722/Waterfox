@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.2.3.7
+esid: sec-set.prototype.has
 description: >
     Set.prototype.has ( value )
 
@@ -10,10 +10,11 @@ description: >
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Set.prototype.has.name, "has", "The value of `Set.prototype.has.name` is `'has'`");
-
-verifyNotEnumerable(Set.prototype.has, "name");
-verifyNotWritable(Set.prototype.has, "name");
-verifyConfigurable(Set.prototype.has, "name");
+verifyProperty(Set.prototype.has, "name", {
+  value: "has",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

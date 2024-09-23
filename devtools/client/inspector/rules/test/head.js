@@ -1,8 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../shared/test/telemetry-test-helpers.js */
-/* import-globals-from ../../test/head.js */
+
 "use strict";
 
 // Import the inspector's head.js first (which itself imports shared-head.js).
@@ -17,10 +16,13 @@ registerCleanupFunction(() => {
 
 var {
   getInplaceEditorForSpan: inplaceEditor,
-} = require("devtools/client/shared/inplace-editor");
+} = require("resource://devtools/client/shared/inplace-editor.js");
+
+const {
+  COMPATIBILITY_TOOLTIP_MESSAGE,
+} = require("resource://devtools/client/inspector/rules/constants.js");
 
 const ROOT_TEST_DIR = getRootDirectory(gTestPath);
-const FRAME_SCRIPT_URL = ROOT_TEST_DIR + "doc_frame_script.js";
 
 const STYLE_INSPECTOR_L10N = new LocalizationHelper(
   "devtools/shared/locales/styleinspector.properties"
@@ -29,38 +31,6 @@ const STYLE_INSPECTOR_L10N = new LocalizationHelper(
 registerCleanupFunction(() => {
   Services.prefs.clearUserPref("devtools.defaultColorUnit");
 });
-
-/**
- * The rule-view tests rely on a frame-script to be injected in the content test
- * page. So override the shared-head's addTab to load the frame script after the
- * tab was added.
- * FIXME: Refactor the rule-view tests to use the testActor instead of a frame
- * script, so they can run on remote targets too.
- */
-var _addTab = addTab;
-addTab = function(url) {
-  return _addTab(url).then(tab => {
-    info("Loading the helper frame script " + FRAME_SCRIPT_URL);
-    const browser = tab.linkedBrowser;
-    browser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
-    return tab;
-  });
-};
-
-/**
- * Get an element's inline style property value.
- * @param {TestActor} testActor
- * @param {String} selector
- *        The selector used to obtain the element.
- * @param {String} name
- *        name of the property.
- */
-function getStyle(testActor, selector, propName) {
-  return testActor.eval(`
-    document.querySelector("${selector}")
-            .style.getPropertyValue("${propName}");
-  `);
-}
 
 /**
  * When a tooltip is closed, this ends up "commiting" the value changed within
@@ -92,7 +62,7 @@ async function hideTooltipAndWaitForRuleViewChanged(editorTooltip, view) {
  * @return a promise that resolves when the function returned true or rejects
  * if the timeout is reached
  */
-var waitForSuccess = async function(validatorFn, desc = "untitled") {
+var waitForSuccess = async function (validatorFn, desc = "untitled") {
   let i = 0;
   while (true) {
     info("Checking: " + desc);
@@ -128,7 +98,7 @@ var waitForSuccess = async function(validatorFn, desc = "untitled") {
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var simulateColorPickerChange = async function(
+var simulateColorPickerChange = async function (
   ruleView,
   colorPicker,
   newRgba,
@@ -182,7 +152,7 @@ var simulateColorPickerChange = async function(
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var openColorPickerAndSelectColor = async function(
+var openColorPickerAndSelectColor = async function (
   view,
   ruleIndex,
   propIndex,
@@ -225,7 +195,7 @@ var openColorPickerAndSelectColor = async function(
  *          - {String} value The expected style value
  * The style will be checked like so: getComputedStyle(element)[name] === value
  */
-var openCubicBezierAndChangeCoords = async function(
+var openCubicBezierAndChangeCoords = async function (
   view,
   ruleIndex,
   propIndex,
@@ -269,23 +239,25 @@ var openCubicBezierAndChangeCoords = async function(
  *        The name for the new property
  * @param {String} value
  *        The value for the new property
- * @param {String} commitValueWith
- *        Which key should be used to commit the new value. VK_RETURN is used by
+ * @param {Object=} options
+ * @param {String=} options.commitValueWith
+ *        Which key should be used to commit the new value. VK_TAB is used by
  *        default, but tests might want to use another key to test cancelling
  *        for exemple.
- * @param {Boolean} blurNewProperty
+ *        If set to null, no keys will be hit, so the input will still be focused
+ *        at the end of this function
+ * @param {Boolean=} options.blurNewProperty
  *        After the new value has been added, a new property would have been
  *        focused. This parameter is true by default, and that causes the new
  *        property to be blurred. Set to false if you don't want this.
  * @return {TextProperty} The instance of the TextProperty that was added
  */
-var addProperty = async function(
+var addProperty = async function (
   view,
   ruleIndex,
   name,
   value,
-  commitValueWith = "VK_RETURN",
-  blurNewProperty = true
+  { commitValueWith = "VK_TAB", blurNewProperty = true } = {}
 ) {
   info("Adding new property " + name + ":" + value + " to rule " + ruleIndex);
 
@@ -294,31 +266,49 @@ var addProperty = async function(
   const numOfProps = ruleEditor.rule.textProps.length;
 
   const onMutations = new Promise(r => {
-    // If we're adding the property to a non-element style rule, we don't need to wait
-    // for mutations.
+    // If the rule index is 0, then we are updating the rule for the "element"
+    // selector in the rule view.
+    // This rule is actually updating the style attribute of the element, and
+    // therefore we can expect mutations.
+    // For any other rule index, no mutation should be created, we can resolve
+    // immediately.
     if (ruleIndex !== 0) {
       r();
     }
 
-    // Otherwise, adding the property to the element style rule causes 2 mutations to the
-    // style attribute on the element: first when the name is added with an empty value,
-    // and then when the value is added.
-    let receivedMutations = 0;
-    view.inspector.walker.on("mutations", function onWalkerMutations(
-      mutations
-    ) {
-      receivedMutations += mutations.length;
-      if (receivedMutations >= 2) {
-        view.inspector.walker.off("mutations", onWalkerMutations);
-        r();
+    // Use CSS.escape for the name in order to match the logic at
+    // devtools/client/fronts/inspector/rule-rewriter.js
+    // This leads to odd values in the style attribute and might change in the
+    // future. See https://bugzilla.mozilla.org/show_bug.cgi?id=1765943
+    const expectedAttributeValue = `${CSS.escape(name)}: ${value}`;
+    view.inspector.walker.on(
+      "mutations",
+      function onWalkerMutations(mutations) {
+        // Wait until we receive a mutation which updates the style attribute
+        // with the expected value.
+        const receivedLastMutation = mutations.some(
+          mut =>
+            mut.attributeName === "style" &&
+            mut.newValue.includes(expectedAttributeValue)
+        );
+        if (receivedLastMutation) {
+          view.inspector.walker.off("mutations", onWalkerMutations);
+          r();
+        }
       }
-    });
+    );
   });
 
   info("Adding name " + name);
   editor.input.value = name;
+  is(
+    editor.input.getAttribute("aria-label"),
+    "New property name",
+    "New property name input has expected aria-label"
+  );
+
   const onNameAdded = view.once("ruleview-changed");
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
+  EventUtils.synthesizeKey("VK_TAB", {}, view.styleWindow);
   await onNameAdded;
 
   // Focus has moved to the value inplace-editor automatically.
@@ -342,12 +332,27 @@ var addProperty = async function(
   // triggers a ruleview-changed event (see bug 1209295).
   const onPreview = view.once("ruleview-changed");
   editor.input.value = value;
+
+  ok(
+    !!editor.input.getAttribute("aria-labelledby"),
+    "The value input has an aria-labelledby attribute…"
+  );
+  is(
+    editor.input.getAttribute("aria-labelledby"),
+    textProp.editor.nameSpan.id,
+    "…which references the property name input"
+  );
+
   view.debounce.flush();
   await onPreview;
 
-  const onValueAdded = view.once("ruleview-changed");
+  if (commitValueWith === null) {
+    return textProp;
+  }
+
+  const onRuleViewChanged = view.once("ruleview-changed");
   EventUtils.synthesizeKey(commitValueWith, {}, view.styleWindow);
-  await onValueAdded;
+  await onRuleViewChanged;
 
   info(
     "Waiting for DOM mutations in case the property was added to the element style"
@@ -362,49 +367,6 @@ var addProperty = async function(
 };
 
 /**
- * Simulate changing the value of a property in a rule in the rule-view.
- *
- * @param {CssRuleView} view
- *        The instance of the rule-view panel
- * @param {TextProperty} textProp
- *        The instance of the TextProperty to be changed
- * @param {String} value
- *        The new value to be used. If null is passed, then the value will be
- *        deleted
- * @param {Boolean} blurNewProperty
- *        After the value has been changed, a new property would have been
- *        focused. This parameter is true by default, and that causes the new
- *        property to be blurred. Set to false if you don't want this.
- */
-var setProperty = async function(
-  view,
-  textProp,
-  value,
-  blurNewProperty = true
-) {
-  await focusEditableField(view, textProp.editor.valueSpan);
-
-  const onPreview = view.once("ruleview-changed");
-  if (value === null) {
-    const onPopupOpened = once(view.popup, "popup-opened");
-    EventUtils.synthesizeKey("VK_DELETE", {}, view.styleWindow);
-    await onPopupOpened;
-  } else {
-    EventUtils.sendString(value, view.styleWindow);
-  }
-  view.debounce.flush();
-  await onPreview;
-
-  const onValueDone = view.once("ruleview-changed");
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
-  await onValueDone;
-
-  if (blurNewProperty) {
-    view.styleDocument.activeElement.blur();
-  }
-};
-
-/**
  * Change the name of a property in a rule in the rule-view.
  *
  * @param {CssRuleView} view
@@ -414,7 +376,7 @@ var setProperty = async function(
  * @param {String} name
  *        The new property name.
  */
-var renameProperty = async function(view, textProp, name) {
+var renameProperty = async function (view, textProp, name) {
   await focusEditableField(view, textProp.editor.nameSpan);
 
   const onNameDone = view.once("ruleview-changed");
@@ -423,6 +385,13 @@ var renameProperty = async function(view, textProp, name) {
   EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
   info("Wait for property name.");
   await onNameDone;
+
+  if (
+    !Services.prefs.getBoolPref("devtools.inspector.rule-view.focusNextOnEnter")
+  ) {
+    return;
+  }
+
   // Renaming the property auto-advances the focus to the value input. Exiting without
   // committing will still fire a change event. @see TextPropertyEditor._onValueDone().
   // Wait for that event too before proceeding.
@@ -444,13 +413,13 @@ var renameProperty = async function(view, textProp, name) {
  *        focused. This parameter is true by default, and that causes the new
  *        property to be blurred. Set to false if you don't want this.
  */
-var removeProperty = async function(view, textProp, blurNewProperty = true) {
+var removeProperty = async function (view, textProp, blurNewProperty = true) {
   await focusEditableField(view, textProp.editor.nameSpan);
 
   const onModifications = view.once("ruleview-changed");
   info("Deleting the property name now");
   EventUtils.synthesizeKey("VK_DELETE", {}, view.styleWindow);
-  EventUtils.synthesizeKey("VK_RETURN", {}, view.styleWindow);
+  EventUtils.synthesizeKey("VK_TAB", {}, view.styleWindow);
   await onModifications;
 
   if (blurNewProperty) {
@@ -466,27 +435,11 @@ var removeProperty = async function(view, textProp, blurNewProperty = true) {
  * @param {TextProperty} textProp
  *        The instance of the TextProperty to be enabled/disabled
  */
-var togglePropStatus = async function(view, textProp) {
+var togglePropStatus = async function (view, textProp) {
   const onRuleViewRefreshed = view.once("ruleview-changed");
   textProp.editor.enable.click();
   await onRuleViewRefreshed;
 };
-
-/**
- * Reload the current page and wait for the inspector to be initialized after
- * the navigation
- *
- * @param {InspectorPanel} inspector
- *        The instance of InspectorPanel currently loaded in the toolbox
- * @param {TestActor} testActor
- *        The current instance of the TestActor
- */
-async function reloadPage(inspector, testActor) {
-  const onNewRoot = inspector.once("new-root");
-  await testActor.reload();
-  await onNewRoot;
-  await inspector.markup._waitForChildren();
-}
 
 /**
  * Create a new rule by clicking on the "add rule" button.
@@ -499,11 +452,13 @@ async function reloadPage(inspector, testActor) {
  * @return a promise that resolves after the rule has been added
  */
 async function addNewRule(inspector, view) {
+  const onNewRuleAdded = view.once("new-rule-added");
   info("Adding the new rule using the button");
   view.addRuleButton.click();
 
-  info("Waiting for rule view to change");
-  await view.once("ruleview-changed");
+  info("Waiting for new-rule-added event…");
+  await onNewRuleAdded;
+  info("…received new-rule-added");
 }
 
 /**
@@ -574,7 +529,7 @@ async function sendKeysAndWaitForFocus(view, element, keys) {
  * @return {Promise}
  */
 function waitForStyleModification(inspector) {
-  return new Promise(function(resolve) {
+  return new Promise(function (resolve) {
     function checkForStyleModification(mutations) {
       for (const mutation of mutations) {
         if (
@@ -592,16 +547,61 @@ function waitForStyleModification(inspector) {
 }
 
 /**
- * Click on the selector icon
- * @param {DOMNode} icon
- * @param {CSSRuleView} view
+ * Click on the icon next to the selector of a CSS rule in the Rules view
+ * to toggle the selector highlighter. If a selector highlighter is not already visible
+ * for the given selector, wait for it to be shown. Otherwise, wait for it to be hidden.
+ *
+ * @param {CssRuleView} view
+ *        The instance of the Rules view
+ * @param {String} selectorText
+ *        The selector of the CSS rule to look for
+ * @param {Number} index
+ *        If there are more CSS rules with the same selector, use this index
+ *        to determine which one should be retrieved. Defaults to 0 (first)
  */
-async function clickSelectorIcon(icon, view) {
-  const onToggled = view.once("ruleview-selectorhighlighter-toggled");
-  EventUtils.synthesizeMouseAtCenter(icon, {}, view.styleWindow);
-  await onToggled;
-}
+async function clickSelectorIcon(view, selectorText, index = 0) {
+  const { inspector } = view;
+  const rule = getRuleViewRule(view, selectorText, index);
 
+  info(`Waiting for icon to be available for selector: ${selectorText}`);
+  const icon = await waitFor(() => {
+    return rule.querySelector(".js-toggle-selector-highlighter");
+  });
+
+  // Grab the actual selector associated with the matched icon.
+  // For inline styles, the CSS rule with the "element" selector actually points to
+  // a generated unique selector, for example: "div:nth-child(1)".
+  // The selector highlighter is invoked with this unique selector.
+  // Continuing to use selectorText ("element") would fail some of the checks below.
+  const selector = icon.dataset.computedSelector;
+
+  const { waitForHighlighterTypeShown, waitForHighlighterTypeHidden } =
+    getHighlighterTestHelpers(inspector);
+
+  // If there is an active selector highlighter, get its configuration options.
+  // Will be undefined if there isn't an active selector highlighter.
+  const options = inspector.highlighters.getOptionsForActiveHighlighter(
+    inspector.highlighters.TYPES.SELECTOR
+  );
+
+  // If there is already a highlighter visible for this selector,
+  // wait for hidden event. Otherwise, wait for shown event.
+  const waitForEvent =
+    options?.selector === selector
+      ? waitForHighlighterTypeHidden(inspector.highlighters.TYPES.SELECTOR)
+      : waitForHighlighterTypeShown(inspector.highlighters.TYPES.SELECTOR);
+
+  // Boolean flag whether we waited for a highlighter shown event
+  const waitedForShown = options?.selector !== selector;
+
+  info(`Click the icon for selector: ${selectorText}`);
+  icon.scrollIntoView();
+  EventUtils.synthesizeMouseAtCenter(icon, {}, view.styleWindow);
+
+  // Promise resolves with event data from either highlighter shown or hidden event.
+  const data = await waitForEvent;
+  return { ...data, isShown: waitedForShown };
+}
 /**
  * Toggle one of the checkboxes inside the class-panel. Resolved after the DOM mutation
  * has been recorded.
@@ -681,8 +681,10 @@ async function openEyedropper(view, swatch) {
  *        The rule-view instance.
  * @param {Number} ruleIndex
  *        The index we expect the rule to have in the rule-view.
+ * @param {boolean} addCompatibilityData
+ *        Optional argument to add compatibility dat with the property data
  *
- * @returns A map containing stringified property declarations e.g.
+ * @returns A Promise that resolves with a Map containing stringified property declarations e.g.
  *          [
  *            {
  *              "color:red":
@@ -691,26 +693,46 @@ async function openEyedropper(view, swatch) {
  *                  propertyValue: "red",
  *                  warning: "This won't work",
  *                  used: true,
+ *                  compatibilityData: {
+ *                    isCompatible: true,
+ *                  },
  *                }
  *            },
  *            ...
  *          ]
  */
-function getPropertiesForRuleIndex(view, ruleIndex) {
+async function getPropertiesForRuleIndex(
+  view,
+  ruleIndex,
+  addCompatibilityData = false
+) {
   const declaration = new Map();
   const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
 
-  for (const currProp of ruleEditor.rule.textProps) {
+  for (const currProp of ruleEditor?.rule?.textProps || []) {
     const icon = currProp.editor.unusedState;
     const unused = currProp.editor.element.classList.contains("unused");
+
+    let compatibilityData;
+    let compatibilityIcon;
+    if (addCompatibilityData) {
+      compatibilityData = await currProp.isCompatible();
+      compatibilityIcon = currProp.editor.compatibilityState;
+    }
 
     declaration.set(`${currProp.name}:${currProp.value}`, {
       propertyName: currProp.name,
       propertyValue: currProp.value,
-      icon: icon,
+      icon,
       data: currProp.isUsed(),
       warning: unused,
       used: !unused,
+      ...(addCompatibilityData
+        ? {
+            compatibilityData,
+            compatibilityIcon,
+          }
+        : {}),
     });
   }
 
@@ -782,32 +804,78 @@ async function updateDeclaration(
 }
 
 /**
- * Get the TextProperty instance corresponding to a CSS declaration
- * from a CSS rule in the Rules view.
+ * Check whether the given CSS declaration is compatible or not
  *
- * @param  {RuleView} view
- *         Instance of RuleView.
- * @param  {Number} ruleIndex
- *         The index of the CSS rule where to find the declaration.
- * @param  {Object} declaration
- *         An object representing the target declaration e.g. { color: red }.
- *         The first TextProperty instance which matches will be returned.
- * @return {TextProperty}
+ * @param {ruleView} view
+ *        The rule-view instance.
+ * @param {Number} ruleIndex
+ *        The index we expect the rule to have in the rule-view.
+ * @param {Object} declaration
+ *        An object representing the declaration e.g. { color: "red" }.
+ * @param {Object} options
+ * @param {string | undefined} options.expected
+ *        Expected message ID for the given incompatible property.
+ * If the expected message is not specified (undefined), the given declaration
+ * is inferred as cross-browser compatible and is tested for same.
+ * @param {string | null | undefined} options.expectedLearnMoreUrl
+ *        Expected learn more link. Pass `null` to check that no "Learn more" link is displayed.
  */
-function getTextProperty(view, ruleIndex, declaration) {
-  const ruleEditor = getRuleViewRuleEditor(view, ruleIndex);
+async function checkDeclarationCompatibility(
+  view,
+  ruleIndex,
+  declaration,
+  { expected, expectedLearnMoreUrl }
+) {
+  const declarations = await getPropertiesForRuleIndex(view, ruleIndex, true);
   const [[name, value]] = Object.entries(declaration);
-  const textProp = ruleEditor.rule.textProps.find(prop => {
-    return prop.name === name && prop.value === value;
-  });
+  const dec = `${name}:${value}`;
+  const { compatibilityData } = declarations.get(dec);
 
-  if (!textProp) {
-    throw Error(
-      `Declaration ${name}:${value} not found on rule at index ${ruleIndex}`
+  is(
+    !expected,
+    compatibilityData.isCompatible,
+    `"${dec}" has the correct compatibility status in the payload`
+  );
+
+  is(compatibilityData.msgId, expected, `"${dec}" has expected message ID`);
+
+  if (expected) {
+    await checkInteractiveTooltip(
+      view,
+      "compatibility-tooltip",
+      ruleIndex,
+      declaration
     );
   }
 
-  return textProp;
+  if (expectedLearnMoreUrl !== undefined) {
+    // Show the tooltip
+    const tooltip = view.tooltips.getTooltip("interactiveTooltip");
+    const onTooltipReady = tooltip.once("shown");
+    const { compatibilityIcon } = declarations.get(dec);
+    await view.tooltips.onInteractiveTooltipTargetHover(compatibilityIcon);
+    tooltip.show(compatibilityIcon);
+    await onTooltipReady;
+
+    const learnMoreEl = tooltip.panel.querySelector(".link");
+    if (expectedLearnMoreUrl === null) {
+      ok(!learnMoreEl, `"${dec}" has no "Learn more" link`);
+    } else {
+      ok(learnMoreEl, `"${dec}" has a "Learn more" link`);
+
+      const { link } = await simulateLinkClick(learnMoreEl);
+      is(
+        link,
+        expectedLearnMoreUrl,
+        `Click on ${dec} "Learn more" link navigates user to expected url`
+      );
+    }
+
+    // Hide the tooltip.
+    const onTooltipHidden = tooltip.once("hidden");
+    tooltip.hide();
+    await onTooltipHidden;
+  }
 }
 
 /**
@@ -822,7 +890,7 @@ function getTextProperty(view, ruleIndex, declaration) {
  *        An object representing the declaration e.g. { color: "red" }.
  */
 async function checkDeclarationIsInactive(view, ruleIndex, declaration) {
-  const declarations = getPropertiesForRuleIndex(view, ruleIndex);
+  const declarations = await getPropertiesForRuleIndex(view, ruleIndex);
   const [[name, value]] = Object.entries(declaration);
   const dec = `${name}:${value}`;
   const { used, warning } = declarations.get(dec);
@@ -830,7 +898,12 @@ async function checkDeclarationIsInactive(view, ruleIndex, declaration) {
   ok(!used, `"${dec}" is inactive`);
   ok(warning, `"${dec}" has a warning`);
 
-  await checkInteractiveTooltip(view, ruleIndex, declaration);
+  await checkInteractiveTooltip(
+    view,
+    "inactive-css-tooltip",
+    ruleIndex,
+    declaration
+  );
 }
 
 /**
@@ -843,8 +916,8 @@ async function checkDeclarationIsInactive(view, ruleIndex, declaration) {
  * @param {Object} declaration
  *        An object representing the declaration e.g. { color: "red" }.
  */
-function checkDeclarationIsActive(view, ruleIndex, declaration) {
-  const declarations = getPropertiesForRuleIndex(view, ruleIndex);
+async function checkDeclarationIsActive(view, ruleIndex, declaration) {
+  const declarations = await getPropertiesForRuleIndex(view, ruleIndex);
   const [[name, value]] = Object.entries(declaration);
   const dec = `${name}:${value}`;
   const { used, warning } = declarations.get(dec);
@@ -858,24 +931,47 @@ function checkDeclarationIsActive(view, ruleIndex, declaration) {
  *
  * @param {ruleView} view
  *        The rule-view instance.
+ *  @param {string} type
+ *        The interactive tooltip type being tested.
  * @param {Number} ruleIndex
  *        The index we expect the rule to have in the rule-view.
  * @param {Object} declaration
  *        An object representing the declaration e.g. { color: "red" }.
  */
-async function checkInteractiveTooltip(view, ruleIndex, declaration) {
+async function checkInteractiveTooltip(view, type, ruleIndex, declaration) {
   // Get the declaration
-  const declarations = getPropertiesForRuleIndex(view, ruleIndex);
+  const declarations = await getPropertiesForRuleIndex(
+    view,
+    ruleIndex,
+    type === "compatibility-tooltip"
+  );
   const [[name, value]] = Object.entries(declaration);
   const dec = `${name}:${value}`;
-  const { icon, data } = declarations.get(dec);
+
+  // Get the relevant icon and tooltip payload data
+  let icon;
+  let data;
+  if (type === "inactive-css-tooltip") {
+    ({ icon, data } = declarations.get(dec));
+  } else {
+    const { compatibilityIcon, compatibilityData } = declarations.get(dec);
+    icon = compatibilityIcon;
+    data = compatibilityData;
+  }
 
   // Get the tooltip.
   const tooltip = view.tooltips.getTooltip("interactiveTooltip");
 
+  // Get the necessary tooltip helper to fetch the Fluent template.
+  let tooltipHelper;
+  if (type === "inactive-css-tooltip") {
+    tooltipHelper = view.tooltips.inactiveCssTooltipHelper;
+  } else {
+    tooltipHelper = view.tooltips.compatibilityTooltipHelper;
+  }
+
   // Get the HTML template.
-  const inactiveCssTooltipHelper = view.tooltips.inactiveCssTooltipHelper;
-  const template = inactiveCssTooltipHelper.getTemplate(data, tooltip);
+  const template = tooltipHelper.getTemplate(data, tooltip);
 
   // Translate the template using Fluent.
   const { doc } = tooltip;
@@ -900,6 +996,64 @@ async function checkInteractiveTooltip(view, ruleIndex, declaration) {
 
   // Finally, check the values.
   is(actual, expected, "Tooltip contains the correct value.");
+}
+
+/**
+ * CSS compatibility test runner.
+ *
+ * @param {ruleView} view
+ *        The rule-view instance.
+ * @param {InspectorPanel} inspector
+ *        The instance of InspectorPanel currently loaded in the toolbox.
+ * @param {Array} tests
+ *        An array of test object for this method to consume e.g.
+ *          [
+ *            {
+ *              selector: "#flex-item",
+ *              rules: [
+ *                // Rule Index: 0
+ *                {
+ *                  // If the object doesn't include the "expected"
+ *                  // key, we consider the declaration as
+ *                  // cross-browser compatible and test for same
+ *                  color: { value: "green" },
+ *                },
+ *                // Rule Index: 1
+ *                {
+ *                  cursor:
+ *                  {
+ *                    value: "grab",
+ *                    expected: INCOMPATIBILITY_TOOLTIP_MESSAGE.default,
+ *                    expectedLearnMoreUrl: "https://developer.mozilla.org/en-US/docs/Web/CSS/cursor",
+ *                  },
+ *                },
+ *              ],
+ *            },
+ *            ...
+ *          ]
+ */
+async function runCSSCompatibilityTests(view, inspector, tests) {
+  for (const test of tests) {
+    if (test.selector) {
+      await selectNode(test.selector, inspector);
+    }
+
+    for (const [ruleIndex, rules] of test.rules.entries()) {
+      for (const rule in rules) {
+        await checkDeclarationCompatibility(
+          view,
+          ruleIndex,
+          {
+            [rule]: rules[rule].value,
+          },
+          {
+            expected: rules[rule].expected,
+            expectedLearnMoreUrl: rules[rule].expectedLearnMoreUrl,
+          }
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -955,7 +1109,7 @@ async function runInactiveCSSTests(view, inspector, tests) {
         for (const [name, value] of Object.entries(
           activeDeclarations.declarations
         )) {
-          checkDeclarationIsActive(view, activeDeclarations.ruleIndex, {
+          await checkDeclarationIsActive(view, activeDeclarations.ruleIndex, {
             [name]: value,
           });
         }
@@ -1021,4 +1175,32 @@ function checkCSSVariableOutput(
 
   ok(target, "The target element should exist");
   is(target.dataset.variable, expectedDatasetValue);
+}
+
+/**
+ * Return specific rule ancestor data element (i.e. the one containing @layer / @media
+ * information) from the Rules view
+ *
+ * @param {RulesView} view
+ *        The RulesView instance.
+ * @param {Number} ruleIndex
+ * @returns {HTMLElement}
+ */
+function getRuleViewAncestorRulesDataElementByIndex(view, ruleIndex) {
+  return view.styleDocument
+    .querySelectorAll(`.ruleview-rule`)
+    [ruleIndex]?.querySelector(`.ruleview-rule-ancestor-data`);
+}
+
+/**
+ * Return specific rule ancestor data text from the Rules view.
+ * Will return something like "@layer topLayer\n@media screen\n@layer".
+ *
+ * @param {RulesView} view
+ *        The RulesView instance.
+ * @param {Number} ruleIndex
+ * @returns {String}
+ */
+function getRuleViewAncestorRulesDataTextByIndex(view, ruleIndex) {
+  return getRuleViewAncestorRulesDataElementByIndex(view, ruleIndex)?.innerText;
 }

@@ -537,7 +537,10 @@ var tests = [
     Cr.NS_ERROR_INVALID_ARG,
   ],
 
-  ["attachment; filename=foo extension=bla", "attachment", "foo"],
+  // Bug 1440677 - spaces inside filenames ought to be quoted, but too many
+  // servers do the wrong thing and most browsers accept this, so we were
+  // forced to do the same for compat.
+  ["attachment; filename=foo extension=bla", "attachment", "foo extension=bla"],
 
   ["attachment filename=foo", "attachment", Cr.NS_ERROR_INVALID_ARG],
 
@@ -555,6 +558,41 @@ var tests = [
 
   // Bug 1412213 - do continue to parse, behind a parameter w/o =
   ["attachment; badparameter; filename=foo", "attachment", "foo"],
+
+  // Bug 1440677 - spaces inside filenames ought to be quoted, but too many
+  // servers do the wrong thing and most browsers accept this, so we were
+  // forced to do the same for compat.
+  ["attachment; filename=foo bar.html", "attachment", "foo bar.html"],
+  // Note: we keep the tab character, but later validation will replace with a space,
+  // as file systems do not like tab characters.
+  ["attachment; filename=foo\tbar.html", "attachment", "foo\tbar.html"],
+  // Newlines get stripped completely (in practice, http header parsing may
+  // munge these into spaces before they get to us, but we should check we deal
+  // with them either way):
+  ["attachment; filename=foo\nbar.html", "attachment", "foobar.html"],
+  ["attachment; filename=foo\r\nbar.html", "attachment", "foobar.html"],
+  ["attachment; filename=foo\rbar.html", "attachment", "foobar.html"],
+
+  // Trailing rubbish shouldn't matter:
+  ["attachment; filename=foo bar; garbage", "attachment", "foo bar"],
+  ["attachment; filename=foo bar; extension=blah", "attachment", "foo bar"],
+
+  // Check that whitespace processing can't crash.
+  ["attachment; filename =      ", "attachment", ""],
+
+  // Bug 1784348
+  [
+    "attachment; filename=foo.exe\0.pdf",
+    Cr.NS_ERROR_ILLEGAL_VALUE,
+    Cr.NS_ERROR_INVALID_ARG,
+  ],
+  [
+    "attachment; filename=\0\0foo\0",
+    Cr.NS_ERROR_ILLEGAL_VALUE,
+    Cr.NS_ERROR_INVALID_ARG,
+  ],
+  ["attachment; filename=foo\0\0\0", "attachment", "foo"],
+  ["attachment; filename=\0\0\0", "attachment", ""],
 ];
 
 var rfc5987paramtests = [
@@ -666,7 +704,7 @@ function do_tests(whichRFC) {
       tests[i].length == 3 || whichRFC == 0 ? tests[i][1] : tests[i][3];
 
     try {
-      var result;
+      let result;
 
       if (whichRFC == 0) {
         result = mhp.getParameter(tests[i][0], "", "UTF-8", true, unused);
@@ -681,7 +719,7 @@ function do_tests(whichRFC) {
         // Allow following tests to run by catching exception from do_check_eq()
         try {
           Assert.equal(e.result, expectedDt);
-        } catch (e) {}
+        } catch (e1) {}
       }
       continue;
     }
@@ -691,7 +729,7 @@ function do_tests(whichRFC) {
       tests[i].length == 3 || whichRFC == 0 ? tests[i][2] : tests[i][4];
 
     try {
-      var result;
+      let result;
 
       if (whichRFC == 0) {
         result = mhp.getParameter(
@@ -718,7 +756,7 @@ function do_tests(whichRFC) {
         // Allow following tests to run by catching exception from do_check_eq()
         try {
           Assert.equal(e.result, expectedFn);
-        } catch (e) {}
+        } catch (e1) {}
       }
       continue;
     }

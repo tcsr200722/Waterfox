@@ -4,8 +4,6 @@ DOM Workers & Storage C++ Code Style
 
 This page describes the code style for the components maintained by the DOM Workers & Storage team. They live in-tree under the 'dom/docs/indexedDB' directory.
 
-This document is currently owned by Simon Giesecke <sgiesecke@mozilla.com>.
-
 .. contents::
    :depth: 4
 
@@ -23,7 +21,7 @@ This code style currently applies to the components living in the following dire
 * ``dom/workers``
 
 In the long-term, the code is intended to use the
-`Mozilla Coding Style <https://developer.mozilla.org/en-US/docs/Mozilla/Developer_guide/Coding_Style>`_,
+:ref:`Mozilla Coding Style <Coding style>`,
 which references the `Google C++ Coding Style <https://google.github.io/styleguide/cppguide.html>`_.
 
 However, large parts of the code were written before rules and in particular
@@ -61,8 +59,8 @@ Deviations from the Mozilla C++ Coding Style
 +--------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------+-----------------+-------------------------------------------------------------------------------------+
 |                                             Mozilla style                                              |                                    Prevalent WAS style                                     | Deviation scope |                                      Evolution                                      |
 +========================================================================================================+============================================================================================+=================+=====================================================================================+
-| `We prefer using "static", instead of anonymous C++ namespaces.                                        | Place all symbols that should have internal linkage in a single anonymous                  | All files       | Unclear. The recommendation in the Mozilla code style says this might change in the |
-| <https://developer.mozilla.org/en-US/docs/Mozilla/Developer_guide/Coding_Style#Anonymous_namespaces>`_ | namespace block at the top of an implementation file, rather than declarating them static. |                 | future depending on debugger support, so this deviation might become obsolete.      |
+| We prefer using "static", instead of anonymous C++ namespaces.                                         | Place all symbols that should have internal linkage in a single anonymous                  | All files       | Unclear. The recommendation in the Mozilla code style says this might change in the |
+|                                                                                                        | namespace block at the top of an implementation file, rather than declaring them static.   |                 | future depending on debugger support, so this deviation might become obsolete.      |
 |                                                                                                        |                                                                                            |                 |                                                                                     |
 +--------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------+-----------------+-------------------------------------------------------------------------------------+
 | `All parameters passed by lvalue reference must be labeled const. [...] Input parameters may be const  | Non-const reference parameters may be used.                                                | All files       | Unclear. Maybe at least restrict the use of non-const reference parameters to       |
@@ -328,7 +326,7 @@ base, or where it is difficult to reach a consensus at the global scope,
 may make sense to be kept in the local style.
 
 The details of synchronizing with the global style are subject to discussion
-with the owner and peers of the global coding style (see 
+with the owner and peers of the global coding style (see
 `Bug 1587810 <https://bugzilla.mozilla.org/show_bug.cgi?id=1587810>`).
 
 FAQ
@@ -354,4 +352,3 @@ FAQ
   Personal preferences regarding the degree may differ, but in doubt such
   inconsistencies should be considered acceptable. They should not block a bug
   from being closed.
-

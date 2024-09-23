@@ -5,49 +5,37 @@
 "use strict";
 
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../client/shared/test/shared-head.js */
 
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
   this
 );
 
-const { DevToolsClient } = require("devtools/client/devtools-client");
+const {
+  DevToolsClient,
+} = require("resource://devtools/client/devtools-client.js");
 const {
   ActorRegistry,
-} = require("devtools/server/actors/utils/actor-registry");
-const { DevToolsServer } = require("devtools/server/devtools-server");
+} = require("resource://devtools/server/actors/utils/actor-registry.js");
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
 
 const PATH = "browser/devtools/server/tests/browser/";
 const TEST_DOMAIN = "http://test1.example.org";
+const TEST_DOMAIN_HTTPS = "https://test1.example.org";
 const MAIN_DOMAIN = `${TEST_DOMAIN}/${PATH}`;
+const MAIN_DOMAIN_HTTPS = `${TEST_DOMAIN_HTTPS}/${PATH}`;
 const ALT_DOMAIN = "http://sectest1.example.org/" + PATH;
 const ALT_DOMAIN_SECURED = "https://sectest1.example.org:443/" + PATH;
 
 // GUID to be used as a separator in compound keys. This must match the same
-// constant in devtools/server/actors/storage.js,
+// constant in devtools/server/actors/resources/storage/index.js,
 // devtools/client/storage/ui.js and devtools/client/storage/test/head.js
 const SEPARATOR_GUID = "{9d414cc5-8319-0a04-0586-c0a6ae01670a}";
 
 // All tests are asynchronous.
 waitForExplicitFinish();
-
-/**
- * Add a new test tab in the browser and load the given url.
- * @param {String} url The url to be loaded in the new tab
- * @return a promise that resolves to the new browser that the document
- *         is loaded in. Note that we cannot return the document
- *         directly, as we aren't able to access that in the parent.
- */
-var addTab = async function(url) {
-  info(`Adding a new tab with URL: ${url}`);
-  const tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, url));
-  await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-
-  info(`Tab added a URL ${url} loaded`);
-
-  return tab.linkedBrowser;
-};
 
 // does almost the same thing as addTab, but directly returns an object
 async function addTabTarget(url) {
@@ -55,14 +43,7 @@ async function addTabTarget(url) {
   const tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, url));
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
   info(`Tab added a URL ${url} loaded`);
-  return getTargetForTab(tab);
-}
-
-async function getTargetForTab(tab) {
-  const target = await TargetFactory.forTab(tab);
-  info("Attaching to the active tab.");
-  await target.attach();
-  return target;
+  return createAndAttachTargetForTab(tab);
 }
 
 async function initAnimationsFrontForUrl(url) {
@@ -88,7 +69,6 @@ async function initAccessibilityFrontsForUrl(
     "parentaccessibility"
   );
   const accessibility = await target.getFront("accessibility");
-  await accessibility.bootstrap();
   const a11yWalker = accessibility.accessibleWalkerFront;
   if (enableByDefault) {
     await parentAccessibility.enable();
@@ -198,10 +178,9 @@ function idleWait(time) {
 
 function busyWait(time) {
   const start = Date.now();
-  // eslint-disable-next-line
   let stack;
   while (Date.now() - start < time) {
-    stack = Components.stack;
+    stack = Components.stack; // eslint-disable-line no-unused-vars
   }
 }
 
@@ -218,7 +197,7 @@ function waitUntil(predicate, interval = 10) {
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       waitUntil(predicate).then(() => resolve(true));
     }, interval);
   });
@@ -234,37 +213,36 @@ function waitForMarkerType(
   types = [].concat(types);
   predicate =
     predicate ||
-    function() {
+    function () {
       return true;
     };
   let filteredMarkers = [];
-  const { promise, resolve } = defer();
 
-  info("Waiting for markers of type: " + types);
+  return new Promise(resolve => {
+    info("Waiting for markers of type: " + types);
 
-  function handler(name, data) {
-    if (typeof name === "string" && name !== "markers") {
-      return;
+    function handler(name, data) {
+      if (typeof name === "string" && name !== "markers") {
+        return;
+      }
+
+      const markers = unpackFun(name, data);
+      info("Got markers");
+
+      filteredMarkers = filteredMarkers.concat(
+        markers.filter(m => types.includes(m.name))
+      );
+
+      if (
+        types.every(t => filteredMarkers.some(m => m.name === t)) &&
+        predicate(filteredMarkers)
+      ) {
+        front.off(eventName, handler);
+        resolve(filteredMarkers);
+      }
     }
-
-    const markers = unpackFun(name, data);
-    info("Got markers");
-
-    filteredMarkers = filteredMarkers.concat(
-      markers.filter(m => types.includes(m.name))
-    );
-
-    if (
-      types.every(t => filteredMarkers.some(m => m.name === t)) &&
-      predicate(filteredMarkers)
-    ) {
-      front.off(eventName, handler);
-      resolve(filteredMarkers);
-    }
-  }
-  front.on(eventName, handler);
-
-  return promise;
+    front.on(eventName, handler);
+  });
 }
 
 function getCookieId(name, domain, path) {

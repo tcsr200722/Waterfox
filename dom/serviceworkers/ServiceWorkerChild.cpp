@@ -5,10 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ServiceWorkerChild.h"
+#include "ServiceWorker.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerRef.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 void ServiceWorkerChild::ActorDestroy(ActorDestroyReason aReason) {
   mIPCWorkerRef = nullptr;
@@ -20,8 +21,8 @@ void ServiceWorkerChild::ActorDestroy(ActorDestroyReason aReason) {
 }
 
 // static
-ServiceWorkerChild* ServiceWorkerChild::Create() {
-  ServiceWorkerChild* actor = new ServiceWorkerChild();
+RefPtr<ServiceWorkerChild> ServiceWorkerChild::Create() {
+  RefPtr<ServiceWorkerChild> actor = new ServiceWorkerChild();
 
   if (!NS_IsMainThread()) {
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
@@ -35,7 +36,6 @@ ServiceWorkerChild* ServiceWorkerChild::Create() {
         [helper] { helper->Actor()->MaybeStartTeardown(); });
 
     if (NS_WARN_IF(!actor->mIPCWorkerRef)) {
-      delete actor;
       return nullptr;
     }
   }
@@ -46,13 +46,13 @@ ServiceWorkerChild* ServiceWorkerChild::Create() {
 ServiceWorkerChild::ServiceWorkerChild()
     : mOwner(nullptr), mTeardownStarted(false) {}
 
-void ServiceWorkerChild::SetOwner(RemoteServiceWorkerImpl* aOwner) {
+void ServiceWorkerChild::SetOwner(ServiceWorker* aOwner) {
   MOZ_DIAGNOSTIC_ASSERT(!mOwner);
   MOZ_DIAGNOSTIC_ASSERT(aOwner);
   mOwner = aOwner;
 }
 
-void ServiceWorkerChild::RevokeOwner(RemoteServiceWorkerImpl* aOwner) {
+void ServiceWorkerChild::RevokeOwner(ServiceWorker* aOwner) {
   MOZ_DIAGNOSTIC_ASSERT(mOwner);
   MOZ_DIAGNOSTIC_ASSERT(aOwner == mOwner);
   mOwner = nullptr;
@@ -66,5 +66,4 @@ void ServiceWorkerChild::MaybeStartTeardown() {
   Unused << SendTeardown();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

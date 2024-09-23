@@ -1,7 +1,7 @@
-add_task(async function() {
+add_task(async function () {
   await openPreferencesViaOpenPreferencesAPI("general", { leaveOpen: true });
   const contentDocument = gBrowser.contentDocument;
-  const dialogOverlay = content.gSubDialog._preloadDialog._overlay;
+  let dialogOverlay = content.gSubDialog._preloadDialog._overlay;
 
   async function languagesSubdialogOpened() {
     const promiseSubDialogLoaded = promiseLoadSubDialog(
@@ -9,24 +9,62 @@ add_task(async function() {
     );
     contentDocument.getElementById("chooseLanguage").click();
     const win = await promiseSubDialogLoaded;
-    win.Preferences.forceEnableInstantApply();
-    is(dialogOverlay.style.visibility, "visible", "The dialog is visible.");
+    dialogOverlay = content.gSubDialog._topDialog._overlay;
+    ok(!BrowserTestUtils.isHidden(dialogOverlay), "The dialog is visible.");
     return win;
   }
 
-  function closeLanguagesSubdialog() {
-    const closeBtn = dialogOverlay.querySelector(".dialogClose");
-    closeBtn.doCommand();
+  function acceptLanguagesSubdialog(win) {
+    const button = win.document.querySelector("dialog").getButton("accept");
+    button.doCommand();
   }
 
-  is(dialogOverlay.style.visibility, "", "The dialog is invisible.");
+  function cancelLanguagesSubdialog(win) {
+    const button = win.document.querySelector("dialog").getButton("cancel");
+    button.doCommand();
+  }
+
+  ok(BrowserTestUtils.isHidden(dialogOverlay), "The dialog is invisible.");
   let win = await languagesSubdialogOpened();
   ok(
     win.document.getElementById("spoofEnglish").hidden,
     "The 'Request English' checkbox is hidden."
   );
-  closeLanguagesSubdialog();
-  is(dialogOverlay.style.visibility, "", "The dialog is invisible.");
+  acceptLanguagesSubdialog(win);
+  ok(BrowserTestUtils.isHidden(dialogOverlay), "The dialog is invisible.");
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["intl.accept_languages", "en-US,en-XX,foo"]],
+  });
+  win = await languagesSubdialogOpened();
+  let activeLanguages = win.document.getElementById("activeLanguages").children;
+  Assert.equal(
+    activeLanguages[0].id,
+    "en-us",
+    "The ID for 'en-US' locale code is correctly set."
+  );
+  Assert.equal(
+    activeLanguages[0].firstChild.value,
+    "English (United States) [en-us]",
+    "The name for known 'en-US' locale code is correctly resolved."
+  );
+  Assert.equal(
+    activeLanguages[1].id,
+    "en-xx",
+    "The ID for 'en-XX' locale code is correctly set."
+  );
+  Assert.equal(
+    activeLanguages[1].firstChild.value,
+    "English [en-xx]",
+    "The name for unknown 'en-XX' locale code is resolved using 'en'."
+  );
+  Assert.equal(
+    activeLanguages[2].firstChild.value,
+    " [foo]",
+    "The name for unknown 'foo' locale code is empty."
+  );
+  acceptLanguagesSubdialog(win);
+  await SpecialPowers.popPrefEnv();
 
   await SpecialPowers.pushPrefEnv({
     set: [
@@ -61,7 +99,7 @@ add_task(async function() {
     2,
     "The privacy.spoof_english pref is set to 2."
   );
-  closeLanguagesSubdialog();
+  acceptLanguagesSubdialog(win);
 
   win = await languagesSubdialogOpened();
   ok(
@@ -89,7 +127,7 @@ add_task(async function() {
     1,
     "The privacy.spoof_english pref is set to 1."
   );
-  closeLanguagesSubdialog();
+  acceptLanguagesSubdialog(win);
 
   win = await languagesSubdialogOpened();
   ok(
@@ -105,7 +143,77 @@ add_task(async function() {
     1,
     "The privacy.spoof_english pref is set to 1."
   );
-  closeLanguagesSubdialog();
+  acceptLanguagesSubdialog(win);
+  await SpecialPowers.popPrefEnv();
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["intl.accept_languages", "en-US"]],
+  });
+  win = await languagesSubdialogOpened();
+  is(
+    win.document.getElementById("remove").disabled,
+    false,
+    "The Remove button is enabled when any language is selected on the list"
+  );
+
+  win.document.getElementById("remove").doCommand();
+  is(
+    win.Preferences.get("intl.accept_languages").value,
+    "",
+    "Accepted language has been removed from the preference"
+  );
+  is(
+    win.document.getElementById("activeLanguages").itemCount,
+    0,
+    "Accepted languages list is empty"
+  );
+  ok(
+    win.document.getElementById("remove").disabled,
+    "The Remove button is disabled when there is no language on the list"
+  );
+  acceptLanguagesSubdialog(win);
+
+  // Testing adding from the available languages list
+  win = await languagesSubdialogOpened();
+  ok(
+    win.document.getElementById("addButton").disabled,
+    "The Add button is disabled after opening the Languages dialog"
+  );
+
+  win.document.getElementById("availableLanguages").click();
+  ok(
+    win.document.getElementById("addButton").disabled,
+    "The Add button is disabled after clicking on the available languages list"
+  );
+
+  let availableLanguages =
+    win.document.getElementById("availableLanguages").menupopup;
+  let target = availableLanguages.querySelector("#he");
+  target.click();
+  is(
+    win.document.getElementById("addButton").disabled,
+    false,
+    "The Add button is enabled after selecting a language from the available languages list"
+  );
+  win.document.getElementById("addButton").click();
+  activeLanguages = win.document.getElementById("activeLanguages").children;
+  Assert.equal(
+    activeLanguages[0].id,
+    "he",
+    "Hebrew language added as topmost item."
+  );
+
+  ok(
+    win.document.getElementById("addButton").disabled,
+    "The Add button is disabled after the selected language has been added"
+  );
+  is(
+    win.document.getElementById("activeLanguages").children[0].id,
+    "he",
+    "Hebrew language added as topmost item."
+  );
+
+  cancelLanguagesSubdialog(win);
 
   gBrowser.removeCurrentTab();
 });

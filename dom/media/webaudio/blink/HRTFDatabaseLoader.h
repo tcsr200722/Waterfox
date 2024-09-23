@@ -86,7 +86,12 @@ class HRTFDatabaseLoader {
   // on any thread except m_databaseLoaderThread.
   void waitForLoaderThreadCompletion();
 
-  HRTFDatabase* database() { return m_hrtfDatabase.get(); }
+  HRTFDatabase* database() {
+    if (!m_databaseLoaded) {
+      return nullptr;
+    }
+    return m_hrtfDatabase.get();
+  }
 
   float databaseSampleRate() const { return m_databaseSampleRate; }
 
@@ -139,9 +144,10 @@ class HRTFDatabaseLoader {
 
   // Holding a m_threadLock is required when accessing m_databaseLoaderThread.
   mozilla::Mutex m_threadLock;
-  PRThread* m_databaseLoaderThread;
+  PRThread* m_databaseLoaderThread MOZ_GUARDED_BY(m_threadLock);
 
   float m_databaseSampleRate;
+  mozilla::Atomic<bool> m_databaseLoaded;
 };
 
 }  // namespace WebCore

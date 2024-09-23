@@ -33,7 +33,7 @@ function assertWindowIsPrivate(win) {
   return SpecialPowers.spawn(
     win.gBrowser.selectedBrowser,
     [],
-    async function() {
+    async function () {
       let contentLoadContext = docShell.QueryInterface(Ci.nsILoadContext);
       Assert.ok(
         contentLoadContext.usePrivateBrowsing,
@@ -55,10 +55,10 @@ add_task(async function test_context_and_chromeFlags() {
   let browser = win.gBrowser.selectedBrowser;
 
   let newWinPromise = BrowserTestUtils.waitForNewWindow({
-    url: "http://example.com/",
+    url: "https://example.com/",
   });
-  await SpecialPowers.spawn(browser, [], async function() {
-    content.open("http://example.com", "_blank", "width=100,height=100");
+  await SpecialPowers.spawn(browser, [], async function () {
+    content.open("https://example.com", "_blank", "width=100,height=100");
   });
 
   let win2 = await newWinPromise;

@@ -4,8 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/storage.h"
-#include "mozilla/dom/URLSearchParams.h"
+#include "mozilla/StaticPrefs_places.h"
 #include "nsString.h"
+#include "nsFaviconService.h"
+#include "nsNavBookmarks.h"
 #include "nsUnicharUtils.h"
 #include "nsWhitespaceTokenizer.h"
 #include "nsEscape.h"
@@ -18,12 +20,17 @@
 #include "nsPrintfCString.h"
 #include "nsNavHistory.h"
 #include "mozilla/Likely.h"
+#include "mozilla/Services.h"
 #include "mozilla/Utf8.h"
+#include "nsURLHelper.h"
 #include "nsVariant.h"
+#include "nsICryptoHash.h"
 
 // Maximum number of chars to search through.
 // MatchAutoCompleteFunction won't look for matches over this threshold.
 #define MAX_CHARS_TO_SEARCH_THROUGH 255
+
+#define SECONDS_PER_DAY 86400
 
 using namespace mozilla::storage;
 
@@ -32,9 +39,9 @@ using namespace mozilla::storage;
 
 namespace {
 
-typedef nsACString::const_char_iterator const_char_iterator;
-typedef nsACString::size_type size_type;
-typedef nsACString::char_type char_type;
+using const_char_iterator = nsACString::const_char_iterator;
+using size_type = nsACString::size_type;
+using char_type = nsACString::char_type;
 
 /**
  * Scan forward through UTF-8 text until the next potential character that
@@ -101,7 +108,7 @@ static MOZ_ALWAYS_INLINE void goToNextSearchCandidate(
  */
 static MOZ_ALWAYS_INLINE bool isOnBoundary(const_char_iterator aPos) {
   if ('a' <= *aPos && *aPos <= 'z') {
-    char prev = *(aPos - 1) | 0x20;
+    char prev = static_cast<char>(*(aPos - 1) | 0x20);
     return !('a' <= prev && prev <= 'z');
   }
   return true;
@@ -234,32 +241,10 @@ getSharedUTF8String(mozIStorageValueArray* aValues, uint32_t aIndex) {
   uint32_t len;
   const char* str = aValues->AsSharedUTF8String(aIndex, &len);
   if (!str) {
-    return nsDependentCString("", (uint32_t)0);
+    return nsDependentCString("", (size_t)0);
   }
   return nsDependentCString(str, len);
 }
-
-class MOZ_STACK_CLASS GetQueryParamIterator final
-    : public URLParams::ForEachIterator {
- public:
-  explicit GetQueryParamIterator(const nsCString& aParamName,
-                                 nsVariant* aResult)
-      : mParamName(aParamName), mResult(aResult) {}
-
-  bool URLParamsIterator(const nsAString& aName,
-                         const nsAString& aValue) override {
-    NS_ConvertUTF16toUTF8 name(aName);
-    if (!mParamName.Equals(name)) {
-      return true;
-    }
-    mResult->SetAsAString(aValue);
-    return false;
-  }
-
- private:
-  const nsCString& mParamName;
-  nsVariant* mResult;
-};
 
 /**
  * Gets the length of the prefix in a URI spec.  "Prefix" is defined to be the
@@ -362,8 +347,7 @@ indexOfHostAndPort(const nsACString& aSpec, size_type* _hostAndPortLength) {
 
 }  // End anonymous namespace
 
-namespace mozilla {
-namespace places {
+namespace mozilla::places {
 
 ////////////////////////////////////////////////////////////////////////////////
 //// AutoComplete Matching Function
@@ -372,8 +356,8 @@ namespace places {
 nsresult MatchAutoCompleteFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<MatchAutoCompleteFunction> function = new MatchAutoCompleteFunction();
 
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("autocomplete_match"), kArgIndexLength, function);
+  nsresult rv = aDBConn->CreateFunction("autocomplete_match"_ns,
+                                        kArgIndexLength, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -387,22 +371,24 @@ nsDependentCSubstring MatchAutoCompleteFunction::fixupURISpec(
   // Try to unescape the string.  If that succeeds and yields a different
   // string which is also valid UTF-8, we'll use it.
   // Otherwise, we will simply use our original string.
-  bool unescaped = NS_UnescapeURL(aURISpec.BeginReading(), aURISpec.Length(),
-                                  esc_SkipControl, aSpecBuf);
+  bool unescaped =
+      NS_UnescapeURL(aURISpec.BeginReading(), (int32_t)aURISpec.Length(),
+                     esc_SkipControl, aSpecBuf);
   if (unescaped && IsUtf8(aSpecBuf)) {
     fixedSpec.Rebind(aSpecBuf, 0);
   } else {
     fixedSpec.Rebind(aURISpec, 0);
   }
 
-  if (aMatchBehavior == mozIPlacesAutoComplete::MATCH_ANYWHERE_UNMODIFIED)
+  if (aMatchBehavior == mozIPlacesAutoComplete::MATCH_ANYWHERE_UNMODIFIED) {
     return fixedSpec;
+  }
 
-  if (StringBeginsWith(fixedSpec, NS_LITERAL_CSTRING("http://"))) {
+  if (StringBeginsWith(fixedSpec, "http://"_ns)) {
     fixedSpec.Rebind(fixedSpec, 7);
-  } else if (StringBeginsWith(fixedSpec, NS_LITERAL_CSTRING("https://"))) {
+  } else if (StringBeginsWith(fixedSpec, "https://"_ns)) {
     fixedSpec.Rebind(fixedSpec, 8);
-  } else if (StringBeginsWith(fixedSpec, NS_LITERAL_CSTRING("ftp://"))) {
+  } else if (StringBeginsWith(fixedSpec, "ftp://"_ns)) {
     fixedSpec.Rebind(fixedSpec, 6);
   }
 
@@ -462,18 +448,17 @@ MatchAutoCompleteFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   // We only want to filter javascript: URLs if we are not supposed to search
   // for them, and the search does not start with "javascript:".
   if (matchBehavior != mozIPlacesAutoComplete::MATCH_ANYWHERE_UNMODIFIED &&
-      StringBeginsWith(url, NS_LITERAL_CSTRING("javascript:")) &&
-      !HAS_BEHAVIOR(JAVASCRIPT) &&
-      !StringBeginsWith(searchString, NS_LITERAL_CSTRING("javascript:"))) {
-    NS_ADDREF(*_result = mCachedZero);
+      StringBeginsWith(url, "javascript:"_ns) && !HAS_BEHAVIOR(JAVASCRIPT) &&
+      !StringBeginsWith(searchString, "javascript:"_ns)) {
+    *_result = do_AddRef(mCachedZero).take();
     return NS_OK;
   }
 
   int32_t visitCount = aArguments->AsInt32(kArgIndexVisitCount);
   // Filtering on typed is no more used by Firefox, it is still being used by
   // comm-central clients.
-  bool typed = aArguments->AsInt32(kArgIndexTyped) ? true : false;
-  bool bookmark = aArguments->AsInt32(kArgIndexBookmark) ? true : false;
+  bool typed = aArguments->AsInt32(kArgIndexTyped) != 0;
+  bool bookmark = aArguments->AsInt32(kArgIndexBookmark) != 0;
   nsDependentCString tags = getSharedUTF8String(aArguments, kArgIndexTags);
   int32_t openPageCount = aArguments->AsInt32(kArgIndexOpenPageCount);
   bool matches = false;
@@ -497,7 +482,7 @@ MatchAutoCompleteFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   }
 
   if (!matches) {
-    NS_ADDREF(*_result = mCachedZero);
+    *_result = do_AddRef(mCachedZero).take();
     return NS_OK;
   }
 
@@ -517,6 +502,15 @@ MatchAutoCompleteFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   const nsDependentCSubstring& trimmedTitle =
       Substring(title, 0, MAX_CHARS_TO_SEARCH_THROUGH);
 
+  // Caller may pass a fallback title, for example in case of bookmarks or
+  // snapshots, one may want to search both the user provided title and the
+  // history one.
+  nsDependentCString fallbackTitle =
+      getSharedUTF8String(aArguments, kArgIndexFallbackTitle);
+  // Limit the number of chars we search through.
+  const nsDependentCSubstring& trimmedFallbackTitle =
+      Substring(fallbackTitle, 0, MAX_CHARS_TO_SEARCH_THROUGH);
+
   // Determine if every token matches either the bookmark title, tags, page
   // title, or page URL.
   nsCWhitespaceTokenizer tokenizer(searchString);
@@ -525,21 +519,24 @@ MatchAutoCompleteFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 
     if (HAS_BEHAVIOR(TITLE) && HAS_BEHAVIOR(URL)) {
       matches = (searchFunction(token, trimmedTitle) ||
+                 searchFunction(token, trimmedFallbackTitle) ||
                  searchFunction(token, tags)) &&
                 searchFunction(token, trimmedUrl);
     } else if (HAS_BEHAVIOR(TITLE)) {
-      matches =
-          searchFunction(token, trimmedTitle) || searchFunction(token, tags);
+      matches = searchFunction(token, trimmedTitle) ||
+                searchFunction(token, trimmedFallbackTitle) ||
+                searchFunction(token, tags);
     } else if (HAS_BEHAVIOR(URL)) {
       matches = searchFunction(token, trimmedUrl);
     } else {
       matches = searchFunction(token, trimmedTitle) ||
+                searchFunction(token, trimmedFallbackTitle) ||
                 searchFunction(token, tags) ||
                 searchFunction(token, trimmedUrl);
     }
   }
 
-  NS_ADDREF(*_result = (matches ? mCachedOne : mCachedZero));
+  *_result = do_AddRef(matches ? mCachedOne : mCachedZero).take();
   return NS_OK;
 #undef HAS_BEHAVIOR
 }
@@ -551,8 +548,7 @@ MatchAutoCompleteFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 nsresult CalculateFrecencyFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<CalculateFrecencyFunction> function = new CalculateFrecencyFunction();
 
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("calculate_frecency"), -1, function);
+  nsresult rv = aDBConn->CreateFunction("calculate_frecency"_ns, -1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -572,7 +568,7 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   int64_t pageId = aArguments->AsInt64(0);
   MOZ_ASSERT(pageId > 0, "Should always pass a valid page id");
   if (pageId <= 0) {
-    NS_ADDREF(*_result = new IntegerVariant(0));
+    *_result = MakeAndAddRef<IntegerVariant>(0).take();
     return NS_OK;
   }
 
@@ -586,9 +582,9 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 
   int32_t typed = 0;
   int32_t visitCount = 0;
-  bool hasBookmark = false;
+  PRTime mostRecentBookmarkTime = 0;
   int32_t isQuery = 0;
-  float pointsForSampledVisits = 0.0;
+  float pointsForSampledVisits = 0.0f;
   int32_t numSampledVisits = 0;
   int32_t bonus = 0;
 
@@ -601,14 +597,15 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   // Fetch the page stats from the database.
   {
     nsCOMPtr<mozIStorageStatement> getPageInfo = DB->GetStatement(
-        "SELECT typed, visit_count, foreign_count, "
+        "SELECT typed, visit_count, MAX(dateAdded), "
         "(substr(url, 0, 7) = 'place:') "
-        "FROM moz_places "
-        "WHERE id = :page_id ");
+        "FROM moz_places h "
+        "LEFT JOIN moz_bookmarks ON fk = h.id "
+        "WHERE h.id = :page_id");
     NS_ENSURE_STATE(getPageInfo);
     mozStorageStatementScoper infoScoper(getPageInfo);
 
-    rv = getPageInfo->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), pageId);
+    rv = getPageInfo->BindInt64ByName("page_id"_ns, pageId);
     NS_ENSURE_SUCCESS(rv, rv);
 
     bool hasResult = false;
@@ -619,10 +616,8 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
     NS_ENSURE_SUCCESS(rv, rv);
     rv = getPageInfo->GetInt32(1, &visitCount);
     NS_ENSURE_SUCCESS(rv, rv);
-    int32_t foreignCount = 0;
-    rv = getPageInfo->GetInt32(2, &foreignCount);
+    rv = getPageInfo->GetInt64(2, &mostRecentBookmarkTime);
     NS_ENSURE_SUCCESS(rv, rv);
-    hasBookmark = foreignCount > 0;
     rv = getPageInfo->GetInt32(3, &isQuery);
     NS_ENSURE_SUCCESS(rv, rv);
   }
@@ -636,30 +631,31 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
         "%d AND %d ", nsINavHistoryService::TRANSITION_REDIRECT_PERMANENT,
         nsINavHistoryService::TRANSITION_REDIRECT_TEMPORARY);
     nsCOMPtr<mozIStorageStatement> getVisits = DB->GetStatement(
-        NS_LITERAL_CSTRING(
+        nsLiteralCString(
             "/* do not warn (bug 659740 - SQLite may ignore index if few "
             "visits exist) */"
             "SELECT "
             "IFNULL(origin.visit_type, v.visit_type) AS visit_type, "
             "target.visit_type AS target_visit_type, "
             "ROUND((strftime('%s','now','localtime','utc') - "
-            "v.visit_date/1000000)/86400) AS age_in_days "
+            "v.visit_date/1000000)/86400) AS age_in_days, "
+            "v.source AS visit_source "
             "FROM moz_historyvisits v "
             "LEFT JOIN moz_historyvisits origin ON origin.id = v.from_visit "
             "AND v.visit_type BETWEEN ") +
         redirectsTransitionFragment +
-        NS_LITERAL_CSTRING(
+        nsLiteralCString(
             "LEFT JOIN moz_historyvisits target ON v.id = target.from_visit "
             "AND target.visit_type BETWEEN ") +
         redirectsTransitionFragment +
-        NS_LITERAL_CSTRING("WHERE v.place_id = :page_id "
-                           "ORDER BY v.visit_date DESC "
-                           "LIMIT :max_visits "));
+        nsLiteralCString("WHERE v.place_id = :page_id "
+                         "ORDER BY v.visit_date DESC "
+                         "LIMIT :max_visits "));
     NS_ENSURE_STATE(getVisits);
     mozStorageStatementScoper visitsScoper(getVisits);
-    rv = getVisits->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), pageId);
+    rv = getVisits->BindInt64ByName("page_id"_ns, pageId);
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = getVisits->BindInt32ByName(NS_LITERAL_CSTRING("max_visits"),
+    rv = getVisits->BindInt32ByName("max_visits"_ns,
                                     history->GetNumVisitsForFrecency());
     NS_ENSURE_SUCCESS(rv, rv);
 
@@ -685,20 +681,26 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
              visitType != nsINavHistoryService::TRANSITION_TYPED);
       }
 
-      bonus = history->GetFrecencyTransitionBonus(visitType, true,
-                                                  useRedirectBonus);
-
-      // Add the bookmark visit bonus.
-      if (hasBookmark) {
+      uint32_t visitSource = getVisits->AsInt32(3);
+      if (mostRecentBookmarkTime) {
+        // For bookmarked visit, add full bonus.
+        bonus = history->GetFrecencyTransitionBonus(visitType, true,
+                                                    useRedirectBonus);
         bonus += history->GetFrecencyTransitionBonus(
             nsINavHistoryService::TRANSITION_BOOKMARK, true);
+      } else if (visitSource == nsINavHistoryService::VISIT_SOURCE_ORGANIC) {
+        bonus = history->GetFrecencyTransitionBonus(visitType, true,
+                                                    useRedirectBonus);
+      } else if (visitSource == nsINavHistoryService::VISIT_SOURCE_SEARCHED) {
+        bonus = history->GetFrecencyTransitionBonus(
+            nsINavHistoryService::TRANSITION_LINK, true, useRedirectBonus);
       }
 
       // If bonus was zero, we can skip the work to determine the weight.
       if (bonus) {
         int32_t ageInDays = getVisits->AsInt32(2);
         int32_t weight = history->GetFrecencyAgedWeight(ageInDays);
-        pointsForSampledVisits += (float)(weight * (bonus / 100.0));
+        pointsForSampledVisits += ((float)weight * ((float)bonus / 100.0f));
       }
 
       numSampledVisits++;
@@ -711,29 +713,32 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
     // sample had a zero bonus. Though, we know the page has some past valid
     // visit, or visit_count would be zero. Thus we set the frecency to
     // -1, so they are still shown in autocomplete.
-    if (!pointsForSampledVisits) {
-      NS_ADDREF(*_result = new IntegerVariant(-1));
+    if (pointsForSampledVisits == 0.0f) {
+      *_result = MakeAndAddRef<IntegerVariant>(-1).take();
     } else {
       // Estimate frecency using the sampled visits.
       // Use ceilf() so that we don't round down to 0, which
       // would cause us to completely ignore the place during autocomplete.
-      NS_ADDREF(*_result = new IntegerVariant(
-                    (int32_t)ceilf(visitCount * ceilf(pointsForSampledVisits) /
-                                   numSampledVisits)));
+      *_result =
+          MakeAndAddRef<IntegerVariant>(
+              (int32_t)ceilf((float)visitCount * ceilf(pointsForSampledVisits) /
+                             (float)numSampledVisits))
+              .take();
     }
     return NS_OK;
   }
 
   // Otherwise this page has no visits, it may be bookmarked.
-  if (!hasBookmark || isQuery) {
-    NS_ADDREF(*_result = new IntegerVariant(0));
+  if (!mostRecentBookmarkTime || isQuery) {
+    *_result = MakeAndAddRef<IntegerVariant>(0).take();
     return NS_OK;
   }
 
+  MOZ_ASSERT(bonus == 0, "Pages should arrive here with 0 bonus");
+  MOZ_ASSERT(mostRecentBookmarkTime > 0, "This should be a bookmarked page");
+
   // For unvisited bookmarks, produce a non-zero frecency, so that they show
   // up in URL bar autocomplete.
-  visitCount = 1;
-
   // Make it so something bookmarked and typed will have a higher frecency
   // than something just typed or just bookmarked.
   bonus += history->GetFrecencyTransitionBonus(
@@ -743,15 +748,186 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
         nsINavHistoryService::TRANSITION_TYPED, false);
   }
 
-  // Assume "now" as our ageInDays, so use the first bucket.
+  // Use an appropriate bucket depending on the bookmark creation date.
+  int32_t bookmarkAgeInDays =
+      static_cast<int32_t>((PR_Now() - mostRecentBookmarkTime) /
+                           ((PRTime)SECONDS_PER_DAY * (PRTime)PR_USEC_PER_SEC));
+
   pointsForSampledVisits =
-      history->GetFrecencyBucketWeight(1) * (bonus / (float)100.0);
+      (float)history->GetFrecencyAgedWeight(bookmarkAgeInDays) *
+      ((float)bonus / 100.0f);
 
   // use ceilf() so that we don't round down to 0, which
   // would cause us to completely ignore the place during autocomplete
-  NS_ADDREF(*_result = new IntegerVariant(
-                (int32_t)ceilf(visitCount * ceilf(pointsForSampledVisits))));
+  *_result =
+      MakeAndAddRef<IntegerVariant>((int32_t)ceilf(pointsForSampledVisits))
+          .take();
 
+  return NS_OK;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// Frecency Calculation Function
+
+/* static */
+nsresult CalculateAltFrecencyFunction::create(mozIStorageConnection* aDBConn) {
+  RefPtr<CalculateAltFrecencyFunction> function =
+      new CalculateAltFrecencyFunction();
+
+  nsresult rv =
+      aDBConn->CreateFunction("calculate_alt_frecency"_ns, -1, function);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+NS_IMPL_ISUPPORTS(CalculateAltFrecencyFunction, mozIStorageFunction)
+
+NS_IMETHODIMP
+CalculateAltFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
+                                             nsIVariant** _result) {
+  // Fetch arguments.  Use default values if they were omitted.
+  uint32_t numEntries;
+  nsresult rv = aArguments->GetNumEntries(&numEntries);
+  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_ASSERT(numEntries <= 2, "unexpected number of arguments");
+
+  int64_t pageId = aArguments->AsInt64(0);
+  MOZ_ASSERT(pageId > 0, "Should always pass a valid page id");
+  if (pageId <= 0) {
+    *_result = MakeAndAddRef<IntegerVariant>(0).take();
+    return NS_OK;
+  }
+
+  int32_t isRedirect = 0;
+  if (numEntries > 1) {
+    isRedirect = aArguments->AsInt32(1);
+  }
+  // This is a const version of the history object for thread-safety.
+  const nsNavHistory* history = nsNavHistory::GetConstHistoryService();
+  NS_ENSURE_STATE(history);
+  RefPtr<Database> DB = Database::GetDatabase();
+  NS_ENSURE_STATE(DB);
+
+  /*
+    Exponentially decay each visit with an half-life of halfLifeDays.
+    Score per each visit is a weight exponentially decayed depending on how
+    far away is from a reference date, that is the most recent visit date.
+    The weight for each visit is assigned depending on the visit type and other
+    information (bookmarked, a redirect, a typed entry).
+    If a page has no visits, consider a single visit with an high weight and
+    decay its score using the bookmark date as reference time.
+    Frecency is the sum of all the scores / number of samples.
+    The final score is further decayed using the same half-life.
+    To avoid having to decay the score manually, the stored value is the number
+    of days after which the score would become 1.
+
+    TODO: Add reference link to source docs here.
+  */
+  nsCOMPtr<mozIStorageStatement> stmt = DB->GetStatement(
+      "WITH "
+      "lambda (lambda) AS ( "
+      "  SELECT ln(2) / :halfLifeDays "
+      "), "
+      "visits (days, weight) AS ( "
+      "  SELECT "
+      "    v.visit_date / 86400000000, "
+      "    (SELECT CASE "
+      "      WHEN IFNULL(s.visit_type, v.visit_type) = 3 "  // from a bookmark
+      "        OR v.source = 2 "                            // is a bookmark
+      "        OR  ( IFNULL(s.visit_type, v.visit_type) = 2 "  // is typed
+      "          AND v.source <> 3 "                           // not a search
+      "          AND t.id IS NULL AND NOT :isRedirect "        // not a redirect
+      "        ) "
+      "      THEN :highWeight "
+      "      WHEN t.id IS NULL AND NOT :isRedirect "  // not a redirect
+      "       AND IFNULL(s.visit_type, v.visit_type) NOT IN (4, 8, 9) "
+      "      THEN :mediumWeight "
+      "      ELSE :lowWeight "
+      "     END) "
+      "  FROM moz_historyvisits v "
+      // If it's a redirect target, use the visit_type of the source.
+      "  LEFT JOIN moz_historyvisits s ON s.id = v.from_visit "
+      "                               AND v.visit_type IN (5,6) "
+      // If it's a redirect, use a low weight.
+      "  LEFT JOIN moz_historyvisits t ON t.from_visit = v.id "
+      "                               AND t.visit_type IN (5,6) "
+      "  WHERE v.place_id = :pageId "
+      "  ORDER BY v.visit_date DESC "
+      "  LIMIT :numSampledVisits "
+      "), "
+      "bookmark (days, weight) AS ( "
+      "  SELECT dateAdded / 86400000000, 100 "
+      "  FROM moz_bookmarks "
+      "  WHERE fk = :pageId "
+      "  ORDER BY dateAdded DESC "
+      "  LIMIT 1 "
+      "), "
+      "samples (days, weight) AS ( "
+      "  SELECT * FROM bookmark WHERE (SELECT count(*) FROM visits) = 0 "
+      "  UNION ALL "
+      "  SELECT * FROM visits "
+      "), "
+      "reference (days, samples_count) AS ( "
+      "  SELECT max(samples.days), count(*) FROM samples "
+      "), "
+      "scores (score) AS ( "
+      "  SELECT (weight * exp(-lambda * (samples.days - reference.days))) "
+      "  FROM samples, reference, lambda "
+      ") "
+      "SELECT CASE "
+      "WHEN (substr(url, 0, 7) = 'place:') THEN 0 "
+      "ELSE "
+      "  reference.days + CAST (( "
+      "    ln( "
+      "      sum(score) / samples_count * MAX(visit_count, samples_count) "
+      "    ) / lambda "
+      "  ) AS INTEGER) "
+      "END "
+      "FROM moz_places h, reference, lambda, scores "
+      "WHERE h.id = :pageId");
+  NS_ENSURE_STATE(stmt);
+  mozStorageStatementScoper infoScoper(stmt);
+
+  rv = stmt->BindInt64ByName("pageId"_ns, pageId);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName("isRedirect"_ns, isRedirect);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName(
+      "halfLifeDays"_ns,
+      StaticPrefs::places_frecency_pages_alternative_halfLifeDays_AtStartup());
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName(
+      "numSampledVisits"_ns,
+      StaticPrefs::
+          places_frecency_pages_alternative_numSampledVisits_AtStartup());
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName(
+      "lowWeight"_ns,
+      StaticPrefs::places_frecency_pages_alternative_lowWeight_AtStartup());
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName(
+      "mediumWeight"_ns,
+      StaticPrefs::places_frecency_pages_alternative_mediumWeight_AtStartup());
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = stmt->BindInt64ByName(
+      "highWeight"_ns,
+      StaticPrefs::places_frecency_pages_alternative_highWeight_AtStartup());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  bool hasResult = false;
+  rv = stmt->ExecuteStep(&hasResult);
+  NS_ENSURE_TRUE(NS_SUCCEEDED(rv) && hasResult, NS_ERROR_UNEXPECTED);
+
+  bool isNull;
+  if (NS_SUCCEEDED(stmt->GetIsNull(0, &isNull)) && isNull) {
+    *_result = MakeAndAddRef<NullVariant>().take();
+  } else {
+    int32_t score;
+    rv = stmt->GetInt32(0, &score);
+    NS_ENSURE_SUCCESS(rv, rv);
+    *_result = MakeAndAddRef<IntegerVariant>(score).take();
+  }
   return NS_OK;
 }
 
@@ -761,8 +937,7 @@ CalculateFrecencyFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult GenerateGUIDFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<GenerateGUIDFunction> function = new GenerateGUIDFunction();
-  nsresult rv =
-      aDBConn->CreateFunction(NS_LITERAL_CSTRING("generate_guid"), 0, function);
+  nsresult rv = aDBConn->CreateFunction("generate_guid"_ns, 0, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -777,7 +952,7 @@ GenerateGUIDFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
   nsresult rv = GenerateGUID(guid);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  NS_ADDREF(*_result = new UTF8TextVariant(guid));
+  *_result = MakeAndAddRef<UTF8TextVariant>(guid).take();
   return NS_OK;
 }
 
@@ -787,8 +962,7 @@ GenerateGUIDFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult IsValidGUIDFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<IsValidGUIDFunction> function = new IsValidGUIDFunction();
-  return aDBConn->CreateFunction(NS_LITERAL_CSTRING("is_valid_guid"), 1,
-                                 function);
+  return aDBConn->CreateFunction("is_valid_guid"_ns, 1, function);
 }
 
 NS_IMPL_ISUPPORTS(IsValidGUIDFunction, mozIStorageFunction)
@@ -814,8 +988,7 @@ IsValidGUIDFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult GetUnreversedHostFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<GetUnreversedHostFunction> function = new GetUnreversedHostFunction();
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("get_unreversed_host"), 1, function);
+  nsresult rv = aDBConn->CreateFunction("get_unreversed_host"_ns, 1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -840,7 +1013,7 @@ GetUnreversedHostFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
     ReverseString(src, dest);
     result->SetAsAString(dest);
   } else {
-    result->SetAsAString(EmptyString());
+    result->SetAsAString(u""_ns);
   }
   result.forget(_result);
   return NS_OK;
@@ -852,8 +1025,7 @@ GetUnreversedHostFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult FixupURLFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<FixupURLFunction> function = new FixupURLFunction();
-  nsresult rv =
-      aDBConn->CreateFunction(NS_LITERAL_CSTRING("fixup_url"), 1, function);
+  nsresult rv = aDBConn->CreateFunction("fixup_url"_ns, 1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -872,68 +1044,20 @@ FixupURLFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 
   RefPtr<nsVariant> result = new nsVariant();
 
-  if (StringBeginsWith(src, NS_LITERAL_STRING("http://")))
+  if (StringBeginsWith(src, u"http://"_ns)) {
     src.Cut(0, 7);
-  else if (StringBeginsWith(src, NS_LITERAL_STRING("https://")))
+  } else if (StringBeginsWith(src, u"https://"_ns)) {
     src.Cut(0, 8);
-  else if (StringBeginsWith(src, NS_LITERAL_STRING("ftp://")))
+  } else if (StringBeginsWith(src, u"ftp://"_ns)) {
     src.Cut(0, 6);
+  }
 
   // Remove common URL hostname prefixes
-  if (StringBeginsWith(src, NS_LITERAL_STRING("www."))) {
+  if (StringBeginsWith(src, u"www."_ns)) {
     src.Cut(0, 4);
   }
 
   result->SetAsAString(src);
-  result.forget(_result);
-  return NS_OK;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-//// Frecency Changed Notification Function
-
-/* static */
-nsresult FrecencyNotificationFunction::create(mozIStorageConnection* aDBConn) {
-  RefPtr<FrecencyNotificationFunction> function =
-      new FrecencyNotificationFunction();
-  nsresult rv = aDBConn->CreateFunction(NS_LITERAL_CSTRING("notify_frecency"),
-                                        5, function);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return NS_OK;
-}
-
-NS_IMPL_ISUPPORTS(FrecencyNotificationFunction, mozIStorageFunction)
-
-NS_IMETHODIMP
-FrecencyNotificationFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
-                                             nsIVariant** _result) {
-  uint32_t numArgs;
-  nsresult rv = aArgs->GetNumEntries(&numArgs);
-  NS_ENSURE_SUCCESS(rv, rv);
-  MOZ_ASSERT(numArgs == 5);
-
-  int32_t newFrecency = aArgs->AsInt32(0);
-
-  nsAutoCString spec;
-  rv = aArgs->GetUTF8String(1, spec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString guid;
-  rv = aArgs->GetUTF8String(2, guid);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  bool hidden = static_cast<bool>(aArgs->AsInt32(3));
-  PRTime lastVisitDate = static_cast<PRTime>(aArgs->AsInt64(4));
-
-  const nsNavHistory* navHistory = nsNavHistory::GetConstHistoryService();
-  NS_ENSURE_STATE(navHistory);
-  navHistory->DispatchFrecencyChangedNotification(spec, newFrecency, guid,
-                                                  hidden, lastVisitDate);
-
-  RefPtr<nsVariant> result = new nsVariant();
-  rv = result->SetAsInt32(newFrecency);
-  NS_ENSURE_SUCCESS(rv, rv);
   result.forget(_result);
   return NS_OK;
 }
@@ -945,8 +1069,8 @@ FrecencyNotificationFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 nsresult StoreLastInsertedIdFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<StoreLastInsertedIdFunction> function =
       new StoreLastInsertedIdFunction();
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("store_last_inserted_id"), 2, function);
+  nsresult rv =
+      aDBConn->CreateFunction("store_last_inserted_id"_ns, 2, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -994,8 +1118,7 @@ StoreLastInsertedIdFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 /* static */
 nsresult GetQueryParamFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<GetQueryParamFunction> function = new GetQueryParamFunction();
-  return aDBConn->CreateFunction(NS_LITERAL_CSTRING("get_query_param"), 2,
-                                 function);
+  return aDBConn->CreateFunction("get_query_param"_ns, 2, function);
 }
 
 NS_IMPL_ISUPPORTS(GetQueryParamFunction, mozIStorageFunction)
@@ -1011,8 +1134,15 @@ GetQueryParamFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 
   RefPtr<nsVariant> result = new nsVariant();
   if (!queryString.IsEmpty() && !paramName.IsEmpty()) {
-    GetQueryParamIterator iterator(paramName, result);
-    URLParams::Parse(queryString, iterator);
+    URLParams::Parse(queryString, true,
+                     [&paramName, &result](const nsACString& aName,
+                                           const nsACString& aValue) {
+                       if (!paramName.Equals(aName)) {
+                         return true;
+                       }
+                       result->SetAsACString(aValue);
+                       return false;
+                     });
   }
 
   result.forget(_result);
@@ -1025,7 +1155,7 @@ GetQueryParamFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult HashFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<HashFunction> function = new HashFunction();
-  return aDBConn->CreateFunction(NS_LITERAL_CSTRING("hash"), -1, function);
+  return aDBConn->CreateFunction("hash"_ns, -1, function);
 }
 
 NS_IMPL_ISUPPORTS(HashFunction, mozIStorageFunction)
@@ -1050,11 +1180,64 @@ HashFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 
   RefPtr<nsVariant> result = new nsVariant();
   uint64_t hash;
-  rv = HashURL(str, mode, &hash);
+  rv = mozilla::places::HashURL(str, mode, &hash);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = result->SetAsInt64(hash);
+  rv = result->SetAsInt64((int64_t)hash);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  result.forget(_result);
+  return NS_OK;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// SHA256Hex Function
+
+/* static */
+nsresult SHA256HexFunction::create(mozIStorageConnection* aDBConn) {
+  RefPtr<SHA256HexFunction> function = new SHA256HexFunction();
+  return aDBConn->CreateFunction("sha256hex"_ns, -1, function);
+}
+
+NS_IMPL_ISUPPORTS(SHA256HexFunction, mozIStorageFunction)
+
+NS_IMETHODIMP
+SHA256HexFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
+                                  nsIVariant** _result) {
+  // Must have non-null function arguments.
+  MOZ_ASSERT(aArguments);
+
+  // Fetch arguments.
+  uint32_t numEntries;
+  nsresult rv = aArguments->GetNumEntries(&numEntries);
+  NS_ENSURE_SUCCESS(rv, rv);
+  NS_ENSURE_TRUE(numEntries == 1, NS_ERROR_FAILURE);
+  nsDependentCString str = getSharedUTF8String(aArguments, 0);
+
+  nsCOMPtr<nsICryptoHash> hasher =
+      do_CreateInstance(NS_CRYPTO_HASH_CONTRACTID, &rv);
+  NS_ENSURE_SUCCESS(rv, rv);
+  // SHA256 is not super strong but fine for our mapping needs.
+  rv = hasher->Init(nsICryptoHash::SHA256);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = hasher->Update(reinterpret_cast<const uint8_t*>(str.BeginReading()),
+                      str.Length());
+  NS_ENSURE_SUCCESS(rv, rv);
+  nsAutoCString binaryHash, hashString;
+  rv = hasher->Finish(false, binaryHash);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // Convert to HEX.
+  static const char* const hex = "0123456789abcdef";
+  hashString.SetCapacity(2 * binaryHash.Length());
+  for (size_t i = 0; i < binaryHash.Length(); ++i) {
+    auto c = static_cast<unsigned char>(binaryHash[i]);
+    hashString.Append(hex[(c >> 4) & 0x0F]);
+    hashString.Append(hex[c & 0x0F]);
+  }
+
+  RefPtr<nsVariant> result = new nsVariant();
+  result->SetAsACString(hashString);
   result.forget(_result);
   return NS_OK;
 }
@@ -1065,8 +1248,7 @@ HashFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
 /* static */
 nsresult GetPrefixFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<GetPrefixFunction> function = new GetPrefixFunction();
-  nsresult rv =
-      aDBConn->CreateFunction(NS_LITERAL_CSTRING("get_prefix"), 1, function);
+  nsresult rv = aDBConn->CreateFunction("get_prefix"_ns, 1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1098,8 +1280,7 @@ GetPrefixFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 /* static */
 nsresult GetHostAndPortFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<GetHostAndPortFunction> function = new GetHostAndPortFunction();
-  nsresult rv = aDBConn->CreateFunction(NS_LITERAL_CSTRING("get_host_and_port"),
-                                        1, function);
+  nsresult rv = aDBConn->CreateFunction("get_host_and_port"_ns, 1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1136,8 +1317,8 @@ nsresult StripPrefixAndUserinfoFunction::create(
     mozIStorageConnection* aDBConn) {
   RefPtr<StripPrefixAndUserinfoFunction> function =
       new StripPrefixAndUserinfoFunction();
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("strip_prefix_and_userinfo"), 1, function);
+  nsresult rv =
+      aDBConn->CreateFunction("strip_prefix_and_userinfo"_ns, 1, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1159,7 +1340,7 @@ StripPrefixAndUserinfoFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 
   RefPtr<nsVariant> result = new nsVariant();
 
-  size_type index = indexOfHostAndPort(spec, NULL);
+  size_type index = indexOfHostAndPort(spec, nullptr);
   result->SetAsACString(Substring(spec, index, spec.Length() - index));
   result.forget(_result);
   return NS_OK;
@@ -1172,8 +1353,7 @@ StripPrefixAndUserinfoFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 nsresult IsFrecencyDecayingFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<IsFrecencyDecayingFunction> function =
       new IsFrecencyDecayingFunction();
-  nsresult rv = aDBConn->CreateFunction(
-      NS_LITERAL_CSTRING("is_frecency_decaying"), 0, function);
+  nsresult rv = aDBConn->CreateFunction("is_frecency_decaying"_ns, 0, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1186,52 +1366,68 @@ IsFrecencyDecayingFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
                                            nsIVariant** _result) {
   MOZ_ASSERT(aArgs);
 
+#ifdef DEBUG
   uint32_t numArgs;
-  nsresult rv = aArgs->GetNumEntries(&numArgs);
-  NS_ENSURE_SUCCESS(rv, rv);
-  MOZ_ASSERT(numArgs == 0);
-
-  const nsNavHistory* navHistory = nsNavHistory::GetConstHistoryService();
-  NS_ENSURE_STATE(navHistory);
+  MOZ_ASSERT(NS_SUCCEEDED(aArgs->GetNumEntries(&numArgs)) && numArgs == 0);
+#endif
 
   RefPtr<nsVariant> result = new nsVariant();
-  rv = result->SetAsBool(navHistory->IsFrecencyDecaying());
+  nsresult rv = result->SetAsBool(nsNavHistory::sIsFrecencyDecaying);
   NS_ENSURE_SUCCESS(rv, rv);
   result.forget(_result);
   return NS_OK;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-//// sqrt function
+//// Should start frecency recalculation function
 
 /* static */
-nsresult SqrtFunction::create(mozIStorageConnection* aDBConn) {
-  RefPtr<SqrtFunction> function = new SqrtFunction();
-  nsresult rv =
-      aDBConn->CreateFunction(NS_LITERAL_CSTRING("sqrt"), 1, function);
+nsresult SetShouldStartFrecencyRecalculationFunction::create(
+    mozIStorageConnection* aDBConn) {
+  RefPtr<SetShouldStartFrecencyRecalculationFunction> function =
+      new SetShouldStartFrecencyRecalculationFunction();
+  nsresult rv = aDBConn->CreateFunction(
+      "set_should_start_frecency_recalculation"_ns, 0, function);
   NS_ENSURE_SUCCESS(rv, rv);
+
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS(SqrtFunction, mozIStorageFunction)
+NS_IMPL_ISUPPORTS(SetShouldStartFrecencyRecalculationFunction,
+                  mozIStorageFunction)
 
 NS_IMETHODIMP
-SqrtFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
-                             nsIVariant** _result) {
+SetShouldStartFrecencyRecalculationFunction::OnFunctionCall(
+    mozIStorageValueArray* aArgs, nsIVariant** _result) {
   MOZ_ASSERT(aArgs);
 
+#ifdef DEBUG
   uint32_t numArgs;
-  nsresult rv = aArgs->GetNumEntries(&numArgs);
-  NS_ENSURE_SUCCESS(rv, rv);
-  MOZ_ASSERT(numArgs == 1);
+  MOZ_ASSERT(NS_SUCCEEDED(aArgs->GetNumEntries(&numArgs)) && numArgs == 0);
+#endif
 
-  double value = aArgs->AsDouble(0);
+  // When changing from false to true, dispatch a runnable to the main-thread
+  // to start a recalculation. Once there's nothing left to recalculathe this
+  // boolean will be set back to false. Note this means there will be a short
+  // interval between completing a recalculation and setting this back to false
+  // where we could potentially lose a recalculation request. That should not be
+  // a big deal, since the recalculation will just happen at the next operation
+  // changing frecency or, in the worst case, at the next session.
+  if (!nsNavHistory::sShouldStartFrecencyRecalculation.exchange(true)) {
+    mozilla::Unused << NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "SetShouldStartFrecencyRecalculationFunction::Notify", [] {
+          nsCOMPtr<nsIObserverService> os = services::GetObserverService();
+          if (os) {
+            mozilla::Unused << os->NotifyObservers(
+                nullptr, "frecency-recalculation-needed", nullptr);
+          }
+        }));
+  }
 
   RefPtr<nsVariant> result = new nsVariant();
-  rv = result->SetAsDouble(sqrt(value));
+  nsresult rv = result->SetAsBool(true);
   NS_ENSURE_SUCCESS(rv, rv);
   result.forget(_result);
-
   return NS_OK;
 }
 
@@ -1241,8 +1437,7 @@ SqrtFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
 /* static */
 nsresult NoteSyncChangeFunction::create(mozIStorageConnection* aDBConn) {
   RefPtr<NoteSyncChangeFunction> function = new NoteSyncChangeFunction();
-  nsresult rv = aDBConn->CreateFunction(NS_LITERAL_CSTRING("note_sync_change"),
-                                        0, function);
+  nsresult rv = aDBConn->CreateFunction("note_sync_change"_ns, 0, function);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1258,5 +1453,67 @@ NoteSyncChangeFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
   return NS_OK;
 }
 
-}  // namespace places
-}  // namespace mozilla
+////////////////////////////////////////////////////////////////////////////////
+//// Invalidate days of history Function
+
+/* static */
+nsresult InvalidateDaysOfHistoryFunction::create(
+    mozIStorageConnection* aDBConn) {
+  RefPtr<InvalidateDaysOfHistoryFunction> function =
+      new InvalidateDaysOfHistoryFunction();
+  nsresult rv =
+      aDBConn->CreateFunction("invalidate_days_of_history"_ns, 0, function);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+NS_IMPL_ISUPPORTS(InvalidateDaysOfHistoryFunction, mozIStorageFunction)
+
+NS_IMETHODIMP
+InvalidateDaysOfHistoryFunction::OnFunctionCall(mozIStorageValueArray* aArgs,
+                                                nsIVariant** _result) {
+  nsNavHistory::InvalidateDaysOfHistory();
+  return NS_OK;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// Target folder guid from places query Function
+
+/* static */
+nsresult TargetFolderGuidFunction::create(mozIStorageConnection* aDBConn) {
+  RefPtr<TargetFolderGuidFunction> function = new TargetFolderGuidFunction();
+  nsresult rv = aDBConn->CreateFunction("target_folder_guid"_ns, 1, function);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+NS_IMPL_ISUPPORTS(TargetFolderGuidFunction, mozIStorageFunction)
+
+NS_IMETHODIMP
+TargetFolderGuidFunction::OnFunctionCall(mozIStorageValueArray* aArguments,
+                                         nsIVariant** _result) {
+  // Must have non-null function arguments.
+  MOZ_ASSERT(aArguments);
+  // Must have one argument.
+  DebugOnly<uint32_t> numArgs = 0;
+  MOZ_ASSERT(NS_SUCCEEDED(aArguments->GetNumEntries(&numArgs)) && numArgs == 1,
+             "unexpected number of arguments");
+
+  nsDependentCString queryURI = getSharedUTF8String(aArguments, 0);
+  Maybe<nsCString> targetFolderGuid =
+      nsNavHistory::GetTargetFolderGuid(queryURI);
+
+  if (targetFolderGuid.isSome()) {
+    RefPtr<nsVariant> result = new nsVariant();
+    result->SetAsACString(*targetFolderGuid);
+    result.forget(_result);
+  } else {
+    *_result = MakeAndAddRef<NullVariant>().take();
+  }
+
+  return NS_OK;
+}
+
+}  // namespace mozilla::places

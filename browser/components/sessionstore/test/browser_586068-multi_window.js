@@ -6,7 +6,7 @@ const PREF_RESTORE_ON_DEMAND = "browser.sessionstore.restore_on_demand";
 
 add_task(async function test() {
   Services.prefs.setBoolPref(PREF_RESTORE_ON_DEMAND, false);
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.clearUserPref(PREF_RESTORE_ON_DEMAND);
   });
 
@@ -72,12 +72,7 @@ add_task(async function test() {
 
   let loadCount = 0;
   let promiseRestoringTabs = new Promise(resolve => {
-    gProgressListener.setCallback(function(
-      aBrowser,
-      aNeedRestore,
-      aRestoring,
-      aRestored
-    ) {
+    gProgressListener.setCallback(function (aBrowser, aNeedRestore) {
       if (++loadCount == numTabs) {
         // We don't actually care about load order in this test, just that they all
         // do load.
@@ -91,12 +86,12 @@ add_task(async function test() {
   });
 
   // We also want to catch the 2nd window, so we need to observe domwindowopened
-  Services.ww.registerNotification(function observer(aSubject, aTopic, aData) {
+  Services.ww.registerNotification(function observer(aSubject, aTopic) {
     if (aTopic == "domwindowopened") {
       let win = aSubject;
       win.addEventListener(
         "load",
-        function() {
+        function () {
           Services.ww.unregisterNotification(observer);
           win.gBrowser.addTabsProgressListener(gProgressListener);
         },

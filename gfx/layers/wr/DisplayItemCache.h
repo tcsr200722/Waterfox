@@ -10,11 +10,11 @@
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "nsTArray.h"
 
+namespace mozilla {
+
 class nsDisplayList;
 class nsDisplayListBuilder;
 class nsPaintedDisplayItem;
-
-namespace mozilla {
 
 namespace wr {
 class DisplayListBuilder;
@@ -95,7 +95,22 @@ class DisplayItemCache final {
   /**
    * Returns true if display item caching is enabled, otherwise false.
    */
-  bool IsEnabled() const { return mMaximumSize > 0; }
+  bool IsEnabled() const { return !mSuppressed && mMaximumSize > 0; }
+
+  /**
+   * Suppress display item caching. This doesn't clear any existing cached
+   * items or change the underlying capacity, it just makes IsEnabled() return
+   * false.
+   * It will also make CanReuseItem return false for the duration of the
+   * suppression.
+   */
+  bool SetSuppressed(bool aSuppressed) {
+    if (aSuppressed == mSuppressed) {
+      return mSuppressed;
+    }
+    mSuppressed = aSuppressed;
+    return !mSuppressed;
+  }
 
   /**
    * Returns true if there are no cached items, otherwise false.
@@ -164,8 +179,29 @@ class DisplayItemCache final {
   wr::PipelineId mPipelineId;
   bool mCaching;
   bool mInvalid;
+  bool mSuppressed;
 
   CacheStats mCacheStats;
+};
+
+class MOZ_RAII AutoDisplayItemCacheSuppressor {
+ public:
+  explicit AutoDisplayItemCacheSuppressor(DisplayItemCache* aCache)
+      : mCache(aCache) {
+    mWasSuppressed = mCache->SetSuppressed(true);
+  }
+
+  // Note that this restores the original state rather than unconditionally
+  // unsuppressing the cache for future-proofing/robustification. Currently
+  // we only ever use this RAII in one non-recursive function, but we might
+  // decide to expand its usage to other scenarios and end up with nested
+  // suppressions, in which case restoring the state back to what we found it
+  // is better.
+  ~AutoDisplayItemCacheSuppressor() { mCache->SetSuppressed(mWasSuppressed); }
+
+ private:
+  DisplayItemCache* mCache;
+  bool mWasSuppressed;
 };
 
 }  // namespace layers

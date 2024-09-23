@@ -13,14 +13,11 @@ const TEST_URL = `data:text/html,<!DOCTYPE html>
 
 const TOOL_ID = "test-toolbox-tool";
 var toolbox;
-var target;
 
 function test() {
   addTab(TEST_URL).then(async tab => {
-    target = await TargetFactory.forTab(tab);
-
     gDevTools
-      .showToolbox(target)
+      .showToolboxForTab(tab)
       .then(toolboxRegister)
       .then(testToolRegistered);
   });
@@ -51,8 +48,8 @@ function toolboxRegister(aToolbox) {
     // See ok(tab, ...) assert below and Bug 1596345.
     label: "Test Tool",
     inMenu: true,
-    isTargetSupported: () => true,
-    build: function() {
+    isToolSupported: () => true,
+    build() {
       info("per-toolbox tool has been built.");
       resolveToolInstanceBuild();
 
@@ -99,7 +96,7 @@ function testToolRegistered() {
   // Test that the tool is built once selected and then test its unregistering.
   info("select per-toolbox tool in the opened toolbox.");
   gDevTools
-    .showToolbox(target, TOOL_ID)
+    .showToolboxForTab(gBrowser.selectedTab, { toolId: TOOL_ID })
     .then(waitForToolInstanceBuild)
     .then(testUnregister);
 }

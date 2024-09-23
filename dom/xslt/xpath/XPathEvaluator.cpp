@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "XPathResult.h"
+#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/XPathEvaluatorBinding.h"
@@ -15,7 +16,6 @@
 #include "mozilla/dom/XPathNSResolverBinding.h"
 #include "nsAtom.h"
 #include "nsCOMPtr.h"
-#include "nsContentCID.h"
 #include "nsContentUtils.h"
 #include "nsDOMString.h"
 #include "nsError.h"
@@ -25,8 +25,7 @@
 #include "txIXPathContext.h"
 #include "txURIUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // txIParseContext implementation
 class XPathEvaluatorParseContext : public txIParseContext {
@@ -44,7 +43,7 @@ class XPathEvaluatorParseContext : public txIParseContext {
 
   nsresult getError() { return mLastError; }
 
-  nsresult resolveNamespacePrefix(nsAtom* aPrefix, int32_t& aID) override;
+  int32_t resolveNamespacePrefix(nsAtom* aPrefix) override;
   nsresult resolveFunctionCall(nsAtom* aName, int32_t aID,
                                FunctionCall** aFunction) override;
   bool caseInsensitiveNameTests() override;
@@ -57,33 +56,30 @@ class XPathEvaluatorParseContext : public txIParseContext {
   bool mIsCaseSensitive;
 };
 
-XPathEvaluator::XPathEvaluator(Document* aDocument)
-    : mDocument(do_GetWeakReference(aDocument)) {}
+XPathEvaluator::XPathEvaluator(Document* aDocument) : mDocument(aDocument) {}
 
 XPathEvaluator::~XPathEvaluator() = default;
 
-XPathExpression* XPathEvaluator::CreateExpression(const nsAString& aExpression,
-                                                  XPathNSResolver* aResolver,
-                                                  ErrorResult& aRv) {
-  nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
+UniquePtr<XPathExpression> XPathEvaluator::CreateExpression(
+    const nsAString& aExpression, XPathNSResolver* aResolver,
+    ErrorResult& aRv) {
+  nsCOMPtr<Document> doc(mDocument);
   XPathEvaluatorParseContext pContext(aResolver,
                                       !(doc && doc->IsHTMLDocument()));
   return CreateExpression(aExpression, &pContext, doc, aRv);
 }
 
-XPathExpression* XPathEvaluator::CreateExpression(const nsAString& aExpression,
-                                                  nsINode* aResolver,
-                                                  ErrorResult& aRv) {
-  nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
+UniquePtr<XPathExpression> XPathEvaluator::CreateExpression(
+    const nsAString& aExpression, nsINode* aResolver, ErrorResult& aRv) {
+  nsCOMPtr<Document> doc(mDocument);
   XPathEvaluatorParseContext pContext(aResolver,
                                       !(doc && doc->IsHTMLDocument()));
   return CreateExpression(aExpression, &pContext, doc, aRv);
 }
 
-XPathExpression* XPathEvaluator::CreateExpression(const nsAString& aExpression,
-                                                  txIParseContext* aContext,
-                                                  Document* aDocument,
-                                                  ErrorResult& aRv) {
+UniquePtr<XPathExpression> XPathEvaluator::CreateExpression(
+    const nsAString& aExpression, txIParseContext* aContext,
+    Document* aDocument, ErrorResult& aRv) {
   if (!mRecycler) {
     mRecycler = new txResultRecycler;
   }
@@ -94,13 +90,14 @@ XPathExpression* XPathEvaluator::CreateExpression(const nsAString& aExpression,
   if (aRv.Failed()) {
     if (!aRv.ErrorCodeIs(NS_ERROR_DOM_NAMESPACE_ERR)) {
       aRv.SuppressException();
-      aRv.Throw(NS_ERROR_DOM_INVALID_EXPRESSION_ERR);
+      aRv.ThrowSyntaxError("The expression is not a legal expression");
     }
 
     return nullptr;
   }
 
-  return new XPathExpression(std::move(expression), mRecycler, aDocument);
+  return MakeUnique<XPathExpression>(std::move(expression), mRecycler,
+                                     aDocument);
 }
 
 bool XPathEvaluator::WrapObject(JSContext* aCx,
@@ -110,8 +107,9 @@ bool XPathEvaluator::WrapObject(JSContext* aCx,
 }
 
 /* static */
-XPathEvaluator* XPathEvaluator::Constructor(const GlobalObject& aGlobal) {
-  return new XPathEvaluator(nullptr);
+UniquePtr<XPathEvaluator> XPathEvaluator::Constructor(
+    const GlobalObject& aGlobal) {
+  return MakeUnique<XPathEvaluator>(nullptr);
 }
 
 already_AddRefed<XPathResult> XPathEvaluator::Evaluate(
@@ -131,12 +129,9 @@ already_AddRefed<XPathResult> XPathEvaluator::Evaluate(
  * XPathNSResolver
  */
 
-nsresult XPathEvaluatorParseContext::resolveNamespacePrefix(nsAtom* aPrefix,
-                                                            int32_t& aID) {
-  aID = kNameSpaceID_Unknown;
-
+int32_t XPathEvaluatorParseContext::resolveNamespacePrefix(nsAtom* aPrefix) {
   if (!mResolver && !mResolverNode) {
-    return NS_ERROR_DOM_NAMESPACE_ERR;
+    return kNameSpaceID_Unknown;
   }
 
   nsAutoString prefix;
@@ -149,7 +144,8 @@ nsresult XPathEvaluatorParseContext::resolveNamespacePrefix(nsAtom* aPrefix,
     ErrorResult rv;
     mResolver->LookupNamespaceURI(prefix, ns, rv);
     if (rv.Failed()) {
-      return rv.StealNSResult();
+      rv.SuppressException();
+      return kNameSpaceID_Unknown;
     }
   } else {
     if (aPrefix == nsGkAtoms::xml) {
@@ -160,17 +156,19 @@ nsresult XPathEvaluatorParseContext::resolveNamespacePrefix(nsAtom* aPrefix,
   }
 
   if (DOMStringIsNull(ns)) {
-    return NS_ERROR_DOM_NAMESPACE_ERR;
+    return kNameSpaceID_Unknown;
   }
 
   if (ns.IsEmpty()) {
-    aID = kNameSpaceID_None;
-
-    return NS_OK;
+    return kNameSpaceID_None;
   }
 
   // get the namespaceID for the URI
-  return nsContentUtils::NameSpaceManager()->RegisterNameSpace(ns, aID);
+  int32_t id;
+  return NS_SUCCEEDED(
+             nsNameSpaceManager::GetInstance()->RegisterNameSpace(ns, id))
+             ? id
+             : kNameSpaceID_Unknown;
 }
 
 nsresult XPathEvaluatorParseContext::resolveFunctionCall(nsAtom* aName,
@@ -185,5 +183,4 @@ bool XPathEvaluatorParseContext::caseInsensitiveNameTests() {
 
 void XPathEvaluatorParseContext::SetErrorOffset(uint32_t aOffset) {}
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

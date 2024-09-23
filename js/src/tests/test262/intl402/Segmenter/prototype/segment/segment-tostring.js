@@ -1,4 +1,4 @@
-// |reftest| skip -- Intl.Segmenter is not supported
+// |reftest| skip-if(!Intl.Segmenter) -- Intl.Segmenter is not enabled unconditionally
 // Copyright 2018 the V8 project authors, Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -26,11 +26,9 @@ const tests = [
 
 const segmenter = new Intl.Segmenter("en", { "granularity": "word" });
 for (const [args, expected] of tests) {
-  const iterator = segmenter.segment(...args);
-  const result = iterator.next().value;
-  assert.sameValue(result.segment, expected, `Expected segment "${expected}", found "${result.segment}" for arguments ${args}`);
-  assert(["word", "none"].includes(result.breakType), `Expected valid breakType, found "${result.breakType}" for arguments ${args}`);
-  assert.sameValue(result.index, expected.length, `Expected index ${expected.length}, found ${result.index} for arguments ${args}`);
+  const segments = segmenter.segment(...args);
+  const actual = [...segments][0].segment;
+  assert.sameValue(actual, expected, `Expected segment "${expected}", found "${actual}" for arguments ${args}`);
 }
 
 const symbol = Symbol();

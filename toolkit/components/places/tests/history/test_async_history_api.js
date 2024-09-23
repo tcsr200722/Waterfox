@@ -31,8 +31,8 @@ function VisitInfo(aTransitionType, aVisitTime) {
   this.visitDate = aVisitTime || Date.now() * 1000;
 }
 
-function promiseUpdatePlaces(aPlaces, aOptions, aBatchFrecencyNotifications) {
-  return new Promise((resolve, reject) => {
+function promiseUpdatePlaces(aPlaces, aOptions = {}) {
+  return new Promise(resolve => {
     asyncHistory.updatePlaces(
       aPlaces,
       Object.assign(
@@ -54,40 +54,51 @@ function promiseUpdatePlaces(aPlaces, aOptions, aBatchFrecencyNotifications) {
           },
         },
         aOptions
-      ),
-      aBatchFrecencyNotifications
+      )
     );
   });
 }
 
 /**
  * Listens for a title change notification, and calls aCallback when it gets it.
- *
- * @param aURI
- *        The URI of the page we expect a notification for.
- * @param aExpectedTitle
- *        The expected title of the URI we expect a notification for.
- * @param aCallback
- *        The method to call when we have gotten the proper notification about
- *        the title changing.
  */
-function TitleChangedObserver(aURI, aExpectedTitle, aCallback) {
-  this.uri = aURI;
-  this.expectedTitle = aExpectedTitle;
-  this.callback = aCallback;
-}
-TitleChangedObserver.prototype = {
-  __proto__: NavHistoryObserver.prototype,
-  onTitleChanged(aURI, aTitle, aGUID) {
-    info("onTitleChanged(" + aURI.spec + ", " + aTitle + ", " + aGUID + ")");
-    if (!this.uri.equals(aURI)) {
+class TitleChangedObserver {
+  /**
+   * Constructor.
+   *
+   * @param aURI
+   *        The URI of the page we expect a notification for.
+   * @param aExpectedTitle
+   *        The expected title of the URI we expect a notification for.
+   * @param aCallback
+   *        The method to call when we have gotten the proper notification about
+   *        the title changing.
+   */
+  constructor(aURI, aExpectedTitle, aCallback) {
+    this.uri = aURI;
+    this.expectedTitle = aExpectedTitle;
+    this.callback = aCallback;
+    this.handlePlacesEvent = this.handlePlacesEvent.bind(this);
+    PlacesObservers.addListener(["page-title-changed"], this.handlePlacesEvent);
+  }
+
+  async handlePlacesEvent(aEvents) {
+    info("'page-title-changed'!!!");
+    Assert.equal(aEvents.length, 1, "Right number of title changed notified");
+    Assert.equal(aEvents[0].type, "page-title-changed");
+    if (this.uri.spec !== aEvents[0].url) {
       return;
     }
-    Assert.equal(aTitle, this.expectedTitle);
-    do_check_guid_for_uri(aURI, aGUID);
+    Assert.equal(aEvents[0].title, this.expectedTitle);
+    await check_guid_for_uri(this.uri, aEvents[0].pageGuid);
     this.callback();
-  },
-};
+
+    PlacesObservers.removeListener(
+      ["page-title-changed"],
+      this.handlePlacesEvent
+    );
+  }
+}
 
 /**
  * Listens for a visit notification, and calls aCallback when it gets it.
@@ -249,7 +260,7 @@ add_task(async function test_no_visits_throws() {
   );
   const TEST_GUID = "_RANDOMGUID_";
 
-  let log_test_conditions = function(aPlace) {
+  let log_test_conditions = function (aPlace) {
     let str =
       "Testing place with " +
       (aPlace.uri ? "uri" : "no uri") +
@@ -347,16 +358,17 @@ add_task(async function test_non_addable_uri_errors() {
     "imap://cyrus.andrew.cmu.edu/archive.imap",
     "news://new.mozilla.org/mozilla.dev.apps.firefox",
     "mailbox:Inbox",
-    "moz-anno:favicon:http://mozilla.org/made-up-favicon",
+    "cached-favicon:http://mozilla.org/made-up-favicon",
     "view-source:http://mozilla.org",
     "chrome://browser/content/browser.xhtml",
     "resource://gre-resources/hiddenWindow.html",
     "data:,Hello%2C%20World!",
     "javascript:alert('hello wolrd!');",
     "blob:foo",
+    "moz-extension://f49fb5b3-a1e7-cd41-85e1-d61a3950f5e4/index.html",
   ];
   let places = [];
-  URLS.forEach(function(url) {
+  URLS.forEach(function (url) {
     try {
       let place = {
         uri: NetUtil.newURI(url),
@@ -787,7 +799,7 @@ add_task(async function test_guid_saved() {
   let uri = placeInfo.uri;
   Assert.ok(await PlacesUtils.history.hasVisits(uri));
   Assert.equal(placeInfo.guid, place.guid);
-  do_check_guid_for_uri(uri, place.guid);
+  await check_guid_for_uri(uri, place.guid);
   await PlacesTestUtils.promiseAsyncUpdates();
 });
 
@@ -862,7 +874,7 @@ add_task(async function test_guid_change_saved() {
   if (placesResult.errors.length) {
     do_throw("Unexpected error.");
   }
-  do_check_guid_for_uri(place.uri, place.guid);
+  await check_guid_for_uri(place.uri, place.guid);
 
   await PlacesTestUtils.promiseAsyncUpdates();
 });
@@ -946,15 +958,10 @@ add_task(async function test_title_change_notifies() {
   };
   Assert.equal(false, await PlacesUtils.history.hasVisits(place.uri));
 
-  let silentObserver = new TitleChangedObserver(
-    place.uri,
-    "DO NOT WANT",
-    function() {
-      do_throw("unexpected callback!");
-    }
-  );
+  new TitleChangedObserver(place.uri, "DO NOT WANT", function () {
+    do_throw("unexpected callback!");
+  });
 
-  PlacesUtils.history.addObserver(silentObserver);
   let placesResult = await promiseUpdatePlaces(place);
   if (placesResult.errors.length) {
     do_throw("Unexpected error.");
@@ -967,11 +974,11 @@ add_task(async function test_title_change_notifies() {
   place.title = "title 1";
   let expectedNotification = false;
   let titleChangeObserver;
-  let titleChangePromise = new Promise((resolve, reject) => {
+  let titleChangePromise = new Promise(resolve => {
     titleChangeObserver = new TitleChangedObserver(
       place.uri,
       place.title,
-      function() {
+      function () {
         Assert.ok(
           expectedNotification,
           "Should not get notified for " +
@@ -980,13 +987,10 @@ add_task(async function test_title_change_notifies() {
             place.title
         );
         if (expectedNotification) {
-          PlacesUtils.history.removeObserver(silentObserver);
-          PlacesUtils.history.removeObserver(titleChangeObserver);
           resolve();
         }
       }
     );
-    PlacesUtils.history.addObserver(titleChangeObserver);
   });
 
   let visitPromise = new Promise(resolve => {
@@ -1019,8 +1023,8 @@ add_task(async function test_title_change_notifies() {
 });
 
 add_task(async function test_visit_notifies() {
-  // There are two observers we need to see for each visit.  One is an
-  // nsINavHistoryObserver and the other is the uri-visit-saved observer topic.
+  // There are two observers we need to see for each visit. One is an
+  // PlacesObservers and the other is the uri-visit-saved observer topic.
   let place = {
     guid: "abcdefghijkl",
     uri: NetUtil.newURI(TEST_DOMAIN + "test_visit_notifies"),
@@ -1028,15 +1032,15 @@ add_task(async function test_visit_notifies() {
   };
   Assert.equal(false, await PlacesUtils.history.hasVisits(place.uri));
 
-  function promiseVisitObserver(aPlace) {
-    return new Promise((resolve, reject) => {
+  function promiseVisitObserver() {
+    return new Promise(resolve => {
       let callbackCount = 0;
-      let finisher = function() {
+      let finisher = function () {
         if (++callbackCount == 2) {
           resolve();
         }
       };
-      new VisitObserver(place.uri, place.guid, function(
+      new VisitObserver(place.uri, place.guid, function (
         aVisitDate,
         aTransitionType
       ) {
@@ -1046,7 +1050,7 @@ add_task(async function test_visit_notifies() {
 
         finisher();
       });
-      let observer = function(aSubject, aTopic, aData) {
+      let observer = function (aSubject, aTopic, aData) {
         info("observe(" + aSubject + ", " + aTopic + ", " + aData + ")");
         Assert.ok(aSubject instanceof Ci.nsIURI);
         Assert.ok(aSubject.equals(place.uri));
@@ -1070,7 +1074,7 @@ add_task(async function test_callbacks_not_supplied() {
     "http://mozilla.org/", // valid URI
   ];
   let places = [];
-  URLS.forEach(function(url) {
+  URLS.forEach(function (url) {
     try {
       let place = {
         uri: NetUtil.newURI(url),
@@ -1129,7 +1133,15 @@ add_task(async function test_typed_hidden_not_overwritten() {
 });
 
 add_task(async function test_omit_frecency_notifications() {
+  // When multiple entries are inserted, frecency is calculated delayed, so
+  // we won't get a ranking changed notification until recalculation happens.
   await PlacesUtils.history.clear();
+  let notified = false;
+  let listener = () => {
+    notified = true;
+    PlacesUtils.observers.removeListener(["pages-rank-changed"], listener);
+  };
+  PlacesUtils.observers.addListener(["pages-rank-changed"], listener);
   let places = [
     {
       uri: NetUtil.newURI("http://mozilla.org/"),
@@ -1142,24 +1154,10 @@ add_task(async function test_omit_frecency_notifications() {
       visits: [new VisitInfo(TRANSITION_TYPED)],
     },
   ];
-  let promiseFrecenciesChanged = new Promise(resolve => {
-    let frecencyObserverCheck = {
-      onFrecencyChanged() {
-        ok(
-          false,
-          "Should not fire frecencyChanged because we explicitly asked not to do so."
-        );
-      },
-      onManyFrecenciesChanged() {
-        ok(true, "Should fire many frecencies changed notification instead.");
-        PlacesUtils.history.removeObserver(frecencyObserverCheck);
-        resolve();
-      },
-    };
-    PlacesUtils.history.addObserver(frecencyObserverCheck);
-  });
-  await promiseUpdatePlaces(places, {}, true);
-  await promiseFrecenciesChanged;
+  await promiseUpdatePlaces(places);
+  Assert.ok(!notified);
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
+  Assert.ok(notified);
 });
 
 add_task(async function test_ignore_errors() {
@@ -1295,7 +1293,7 @@ add_task(async function test_title_on_initial_visit() {
     guid: "mnopqrstuvwx",
   };
   let visitPromise = new Promise(resolve => {
-    new VisitObserver(place.uri, place.guid, function(
+    new VisitObserver(place.uri, place.guid, function (
       aVisitDate,
       aTransitionType,
       aLastKnownTitle
@@ -1316,7 +1314,7 @@ add_task(async function test_title_on_initial_visit() {
     guid: "fghijklmnopq",
   };
   visitPromise = new Promise(resolve => {
-    new VisitObserver(place.uri, place.guid, function(
+    new VisitObserver(place.uri, place.guid, function (
       aVisitDate,
       aTransitionType,
       aLastKnownTitle
@@ -1336,7 +1334,7 @@ add_task(async function test_title_on_initial_visit() {
     guid: "fghijklmnopq",
   };
   visitPromise = new Promise(resolve => {
-    new VisitObserver(place.uri, place.guid, function(
+    new VisitObserver(place.uri, place.guid, function (
       aVisitDate,
       aTransitionType,
       aLastKnownTitle

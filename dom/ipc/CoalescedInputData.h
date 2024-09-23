@@ -9,14 +9,18 @@
 
 #include "mozilla/UniquePtr.h"
 #include "mozilla/layers/ScrollableLayerGuid.h"
+#include "nsRefreshObservers.h"
 
-namespace mozilla {
-namespace dom {
+class nsRefreshDriver;
+
+namespace mozilla::dom {
+
+class BrowserChild;
 
 template <class InputEventType>
 class CoalescedInputData {
  protected:
-  typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
+  using ScrollableLayerGuid = mozilla::layers::ScrollableLayerGuid;
 
   UniquePtr<InputEventType> mCoalescedInputEvent;
   ScrollableLayerGuid mGuid;
@@ -46,7 +50,25 @@ class CoalescedInputData {
   uint64_t GetInputBlockId() { return mInputBlockId; }
 };
 
-}  // namespace dom
-}  // namespace mozilla
+class CoalescedInputFlusher : public nsARefreshObserver {
+ public:
+  explicit CoalescedInputFlusher(BrowserChild* aBrowserChild);
+
+  virtual void WillRefresh(mozilla::TimeStamp aTime) override = 0;
+
+  NS_INLINE_DECL_REFCOUNTING(CoalescedInputFlusher, override)
+
+  void StartObserver();
+  void RemoveObserver();
+
+ protected:
+  virtual ~CoalescedInputFlusher();
+
+  nsRefreshDriver* GetRefreshDriver();
+
+  BrowserChild* mBrowserChild;
+  RefPtr<nsRefreshDriver> mRefreshDriver;
+};
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_CoalescedInputData_h

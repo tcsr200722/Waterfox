@@ -12,9 +12,36 @@
 #include <type_traits>
 #include "mozilla/Attributes.h"
 #include "mozilla/FloatingPoint.h"
+#include "Coord.h"
 
 namespace mozilla {
 namespace gfx {
+
+template <class T, typename EnableT = void>
+struct FloatType;
+
+template <typename T>
+struct FloatType<T, typename std::enable_if_t<std::is_integral_v<T>>> {
+  using type = float;
+};
+
+template <typename T>
+struct FloatType<T, typename std::enable_if_t<std::is_floating_point_v<T>>> {
+  using type = T;
+};
+
+template <typename Units, typename Rep>
+struct FloatType<IntCoordTyped<Units, Rep>> {
+  using type = CoordTyped<Units, float>;
+};
+
+template <typename Units, typename Rep>
+struct FloatType<CoordTyped<Units, Rep>> {
+  using type = CoordTyped<Units, Rep>;
+};
+
+template <typename T>
+using FloatType_t = typename FloatType<T>::type;
 
 /**
  * Do not use this class directly. Subclass it, pass that subclass as the
@@ -25,23 +52,23 @@ template <class T, class Sub, class Coord = T>
 struct BasePoint {
   union {
     struct {
-      T x, y;
+      Coord x, y;
     };
-    T components[2];
+    Coord components[2];
   };
 
   // Constructors
   constexpr BasePoint() : x(0), y(0) {}
   constexpr BasePoint(Coord aX, Coord aY) : x(aX), y(aY) {}
 
-  MOZ_ALWAYS_INLINE T X() const { return x; }
-  MOZ_ALWAYS_INLINE T Y() const { return y; }
+  MOZ_ALWAYS_INLINE Coord X() const { return x; }
+  MOZ_ALWAYS_INLINE Coord Y() const { return y; }
 
-  void MoveTo(T aX, T aY) {
+  void MoveTo(Coord aX, Coord aY) {
     x = aX;
     y = aY;
   }
-  void MoveBy(T aDx, T aDy) {
+  void MoveBy(Coord aDx, Coord aDy) {
     x += aDx;
     y += aDy;
   }
@@ -78,11 +105,15 @@ struct BasePoint {
 
   Sub operator-() const { return Sub(-x, -y); }
 
-  T DotProduct(const Sub& aPoint) const { return x * aPoint.x + y * aPoint.y; }
+  T DotProduct(const Sub& aPoint) const {
+    return x.value * aPoint.x.value + y.value * aPoint.y.value;
+  }
 
-  Coord Length() const { return hypot(x, y); }
+  FloatType_t<Coord> Length() const {
+    return FloatType_t<Coord>(hypot(x.value, y.value));
+  }
 
-  T LengthSquare() const { return x * x + y * y; }
+  T LengthSquare() const { return x.value * x.value + y.value * y.value; }
 
   // Round() is *not* rounding to nearest integer if the values are negative.
   // They are always rounding as floor(n + 0.5).
@@ -97,11 +128,10 @@ struct BasePoint {
   bool IsFinite() const {
     using FloatType =
         std::conditional_t<std::is_same_v<T, float>, float, double>;
-    return (mozilla::IsFinite(FloatType(x)) && mozilla::IsFinite(FloatType(y)));
-    return true;
+    return (std::isfinite(FloatType(x)) && std::isfinite(FloatType(y)));
   }
 
-  void Clamp(T aMaxAbsValue) {
+  void Clamp(Coord aMaxAbsValue) {
     x = std::max(std::min(x, aMaxAbsValue), -aMaxAbsValue);
     y = std::max(std::min(y, aMaxAbsValue), -aMaxAbsValue);
   }

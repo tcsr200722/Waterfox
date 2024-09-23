@@ -23,6 +23,11 @@ Configuration
 To enable clippy on new directory, add the path to the include
 section in the `clippy.yml <https://searchfox.org/mozilla-central/source/tools/lint/clippy.yml>`_ file.
 
+Autofix
+-------
+
+This linter provides a ``--fix`` option.
+Please note that this option does not fix all detected issues.
 
 Sources
 -------

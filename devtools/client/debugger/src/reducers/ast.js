@@ -2,135 +2,91 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 /**
  * Ast reducer
  * @module reducers/ast
  */
 
-import { makeBreakpointId } from "../utils/breakpoint";
+import { makeBreakpointId } from "../utils/breakpoint/index";
 
-import type { SymbolDeclarations } from "../workers/parser";
-
-import type { Source, SourceLocation } from "../types";
-import type { Action, DonePromiseAction } from "../actions/types";
-
-type EmptyLinesType = number[];
-
-export type LoadedSymbols = SymbolDeclarations;
-export type Symbols = LoadedSymbols | {| loading: true |};
-
-export type EmptyLinesMap = { [k: string]: EmptyLinesType };
-export type SymbolsMap = { [k: string]: Symbols };
-
-export type SourceMetaDataType = {
-  framework: ?string,
-};
-
-export type SourceMetaDataMap = { [k: string]: SourceMetaDataType };
-
-export type ASTState = {
-  +symbols: SymbolsMap,
-  +inScopeLines: { [string]: Array<number> },
-};
-
-export function initialASTState(): ASTState {
+export function initialASTState() {
   return {
-    symbols: {},
-    inScopeLines: {},
+    // We are using mutable objects as we never return the dictionary as-is from the selectors
+    // but only their values.
+    // Note that all these dictionaries are storing objects as values
+    // which all will have a threadActorId attribute.
+
+    // We have two maps, a first one for original sources.
+    // This is keyed by source id.
+    mutableOriginalSourcesSymbols: {},
+
+    // And another one, for generated sources.
+    // This is keyed by source actor id.
+    mutableSourceActorSymbols: {},
+
+    mutableInScopeLines: {},
   };
 }
 
-function update(state: ASTState = initialASTState(), action: Action): ASTState {
+function update(state = initialASTState(), action) {
   switch (action.type) {
     case "SET_SYMBOLS": {
-      const { sourceId } = action;
+      const { location } = action;
       if (action.status === "start") {
-        return {
-          ...state,
-          symbols: { ...state.symbols, [sourceId]: { loading: true } },
-        };
+        return state;
       }
 
-      const value = ((action: any): DonePromiseAction).value;
+      const entry = {
+        value: action.value,
+        threadActorId: location.sourceActor?.thread,
+      };
+      if (location.source.isOriginal) {
+        state.mutableOriginalSourcesSymbols[location.source.id] = entry;
+      } else {
+        if (!location.sourceActor) {
+          throw new Error(
+            "Expects a location with a source actor when adding symbols for non-original sources"
+          );
+        }
+        state.mutableSourceActorSymbols[location.sourceActor.id] = entry;
+      }
       return {
         ...state,
-        symbols: { ...state.symbols, [sourceId]: value },
       };
     }
 
     case "IN_SCOPE_LINES": {
+      state.mutableInScopeLines[makeBreakpointId(action.location)] = {
+        lines: action.lines,
+        threadActorId: action.location.sourceActor?.thread,
+      };
       return {
         ...state,
-        inScopeLines: {
-          ...state.inScopeLines,
-          [makeBreakpointId(action.location)]: action.lines,
-        },
       };
     }
 
     case "RESUME": {
-      return { ...state, inScopeLines: {} };
+      return { ...state, mutableInScopeLines: {} };
     }
 
-    case "NAVIGATE": {
-      return initialASTState();
+    case "REMOVE_THREAD": {
+      function clearDict(dict, threadId) {
+        for (const key in dict) {
+          if (dict[key].threadActorId == threadId) {
+            delete dict[key];
+          }
+        }
+      }
+      clearDict(state.mutableSourceActorSymbols, action.threadActorID);
+      clearDict(state.mutableOriginalSourcesSymbols, action.threadActorID);
+      clearDict(state.mutableInScopeLines, action.threadActorID);
+      return { ...state };
     }
 
     default: {
       return state;
     }
   }
-}
-
-// NOTE: we'd like to have the app state fully typed
-// https://github.com/firefox-devtools/debugger/blob/master/src/reducers/sources.js#L179-L185
-type OuterState = { ast: ASTState };
-
-export function getSymbols(state: OuterState, source: ?Source): ?Symbols {
-  if (!source) {
-    return null;
-  }
-
-  return state.ast.symbols[source.id] || null;
-}
-
-export function hasSymbols(state: OuterState, source: Source): boolean {
-  const symbols = getSymbols(state, source);
-
-  if (!symbols) {
-    return false;
-  }
-
-  return !symbols.loading;
-}
-
-export function getFramework(state: OuterState, source: Source): ?string {
-  const symbols = getSymbols(state, source);
-  if (symbols && !symbols.loading) {
-    return symbols.framework;
-  }
-}
-
-export function isSymbolsLoading(state: OuterState, source: ?Source): boolean {
-  const symbols = getSymbols(state, source);
-  if (!symbols) {
-    return false;
-  }
-
-  return symbols.loading;
-}
-
-export function getInScopeLines(state: OuterState, location: SourceLocation) {
-  return state.ast.inScopeLines[makeBreakpointId(location)];
-}
-
-export function hasInScopeLines(
-  state: OuterState,
-  location: SourceLocation
-): boolean {
-  return !!getInScopeLines(state, location);
 }
 
 export default update;

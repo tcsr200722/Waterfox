@@ -112,7 +112,16 @@ impl Gl for GlFns {
         dst_buffer: &mut [u8],
     ) {
         // Assumes that the user properly allocated the size for dst_buffer.
-        assert!(calculate_length(width, height, format, pixel_type) == dst_buffer.len());
+        let mut row_length = 0;
+        unsafe {
+            self.ffi_gl_.GetIntegerv(ffi::PACK_ROW_LENGTH, &mut row_length as _);
+        }
+        if row_length == 0 {
+            row_length = width;
+        } else {
+            assert!(row_length >= width);
+        }
+        assert_eq!(calculate_length(row_length, height, format, pixel_type), dst_buffer.len());
 
         unsafe {
             // We don't want any alignment padding on pixel rows.
@@ -501,6 +510,10 @@ impl Gl for GlFns {
         unsafe {
             self.ffi_gl_.BindTexture(target, texture);
         }
+    }
+
+    fn bind_vertex_buffer(&self, binding_index: GLuint, buffer: GLuint, offset: GLintptr, stride: GLint) {
+        unsafe { self.ffi_gl_.BindVertexBuffer(binding_index, buffer, offset, stride) }
     }
 
     fn draw_buffers(&self, bufs: &[GLenum]) {
@@ -1065,6 +1078,10 @@ impl Gl for GlFns {
         unsafe { self.ffi_gl_.VertexAttrib4f(index, x, y, z, w) }
     }
 
+    fn vertex_attrib_binding(&self, attrib_index: GLuint, binding_index: GLuint) {
+        unsafe { self.ffi_gl_.VertexAttribBinding(attrib_index, binding_index) }
+    }
+
     fn vertex_attrib_pointer_f32(
         &self,
         index: GLuint,
@@ -1122,6 +1139,18 @@ impl Gl for GlFns {
 
     fn vertex_attrib_divisor(&self, index: GLuint, divisor: GLuint) {
         unsafe { self.ffi_gl_.VertexAttribDivisor(index, divisor) }
+    }
+
+    fn vertex_attrib_format(&self, attrib_index: GLuint, size: GLint, type_: GLenum, normalized: bool, relative_offset: GLuint) {
+        unsafe { self.ffi_gl_.VertexAttribFormat(attrib_index, size, type_, normalized as GLboolean, relative_offset) }
+    }
+
+    fn vertex_attrib_i_format(&self, attrib_index: GLuint, size: GLint, type_: GLenum, relative_offset: GLuint) {
+        unsafe { self.ffi_gl_.VertexAttribIFormat(attrib_index, size, type_, relative_offset) }
+    }
+
+    fn vertex_binding_divisor(&self, binding_index: GLuint, divisor: GLuint) {
+        unsafe { self.ffi_gl_.VertexBindingDivisor(binding_index, divisor) }
     }
 
     fn viewport(&self, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
@@ -2002,10 +2031,10 @@ impl Gl for GlFns {
         unsafe { self.ffi_gl_.FenceSync(condition, flags) as *const _ }
     }
 
-    fn client_wait_sync(&self, sync: GLsync, flags: GLbitfield, timeout: GLuint64) {
+    fn client_wait_sync(&self, sync: GLsync, flags: GLbitfield, timeout: GLuint64) -> GLenum {
         unsafe {
             self.ffi_gl_
-                .ClientWaitSync(sync as *const _, flags, timeout);
+                .ClientWaitSync(sync as *const _, flags, timeout)
         }
     }
 
@@ -2236,5 +2265,29 @@ impl Gl for GlFns {
         _unpack_unmultiply_alpha: GLboolean,
     ) {
         unimplemented!("This extension is ANGLE only");
+    }
+
+    fn buffer_storage(
+        &self,
+        target: GLenum,
+        size: GLsizeiptr,
+        data: *const GLvoid,
+        flags: GLbitfield,
+    ) {
+        unsafe {
+            self.ffi_gl_.BufferStorage(target, size, data, flags);
+        }
+    }
+
+    fn flush_mapped_buffer_range(&self, target: GLenum, offset: GLintptr, length: GLsizeiptr) {
+        unsafe {
+            self.ffi_gl_.FlushMappedBufferRange(target, offset, length);
+        }
+    }
+
+    fn start_tiling_qcom(&self, _x: GLuint, _y: GLuint, _width: GLuint, _height: GLuint, _preserve_mask: GLbitfield) {
+    }
+
+    fn end_tiling_qcom(&self, _preserve_mask: GLbitfield) {
     }
 }

@@ -16,9 +16,9 @@
 
 #include <stdint.h>  // uint32_t
 
+#include "frontend/ParserAtom.h"  // TaggedParserAtomIndex, TrivialTaggedParserAtomIndex
 #include "frontend/TokenKind.h"  // js::frontend::TokenKind
 #include "js/RegExpFlags.h"      // JS::RegExpFlags
-#include "vm/StringType.h"       // js::PropertyName
 
 namespace js {
 
@@ -129,10 +129,6 @@ struct Token {
   friend class TokenStreamShared;
 
  public:
-  // WARNING: TokenStreamPosition assumes that the only GC things a Token
-  //          includes are atoms.  DON'T ADD NON-ATOM GC THING POINTERS HERE
-  //          UNLESS YOU ADD ADDITIONAL ROOTING TO THAT CLASS.
-
   /** The type of this token. */
   TokenKind type;
 
@@ -143,11 +139,7 @@ struct Token {
    private:
     friend struct Token;
 
-    /** Non-numeric atom. */
-    PropertyName* name;
-
-    /** Potentially-numeric atom. */
-    JSAtom* atom;
+    TrivialTaggedParserAtomIndex atom;
 
     struct {
       /** Numeric literal's value. */
@@ -168,15 +160,15 @@ struct Token {
 
   // Mutators
 
-  void setName(PropertyName* name) {
+  void setName(TaggedParserAtomIndex name) {
     MOZ_ASSERT(type == TokenKind::Name || type == TokenKind::PrivateName);
-    u.name = name;
+    u.atom = TrivialTaggedParserAtomIndex::from(name);
   }
 
-  void setAtom(JSAtom* atom) {
+  void setAtom(TaggedParserAtomIndex atom) {
     MOZ_ASSERT(type == TokenKind::String || type == TokenKind::TemplateHead ||
                type == TokenKind::NoSubsTemplate);
-    u.atom = atom;
+    u.atom = TrivialTaggedParserAtomIndex::from(atom);
   }
 
   void setRegExpFlags(JS::RegExpFlags flags) {
@@ -192,12 +184,12 @@ struct Token {
 
   // Type-safe accessors
 
-  PropertyName* name() const {
+  TaggedParserAtomIndex name() const {
     MOZ_ASSERT(type == TokenKind::Name || type == TokenKind::PrivateName);
-    return u.name->JSAtom::asPropertyName();  // poor-man's type verification
+    return u.atom;
   }
 
-  JSAtom* atom() const {
+  TaggedParserAtomIndex atom() const {
     MOZ_ASSERT(type == TokenKind::String || type == TokenKind::TemplateHead ||
                type == TokenKind::NoSubsTemplate);
     return u.atom;

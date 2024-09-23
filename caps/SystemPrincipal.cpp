@@ -7,6 +7,7 @@
 
 #include "nscore.h"
 #include "SystemPrincipal.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "nsCOMPtr.h"
 #include "nsReadableUtils.h"
 #include "nsCRT.h"
@@ -16,22 +17,47 @@
 
 using namespace mozilla;
 
-NS_IMPL_CLASSINFO(SystemPrincipal, nullptr,
-                  nsIClassInfo::SINGLETON | nsIClassInfo::MAIN_THREAD_ONLY,
+NS_IMPL_CLASSINFO(SystemPrincipal, nullptr, nsIClassInfo::SINGLETON,
                   NS_SYSTEMPRINCIPAL_CID)
 NS_IMPL_QUERY_INTERFACE_CI(SystemPrincipal, nsIPrincipal, nsISerializable)
 NS_IMPL_CI_INTERFACE_GETTER(SystemPrincipal, nsIPrincipal, nsISerializable)
 
-#define SYSTEM_PRINCIPAL_SPEC "[System Principal]"
+static constexpr nsLiteralCString kSystemPrincipalSpec =
+    "[System Principal]"_ns;
 
-already_AddRefed<SystemPrincipal> SystemPrincipal::Create() {
-  RefPtr<SystemPrincipal> sp = new SystemPrincipal();
-  sp->FinishInit(NS_LITERAL_CSTRING(SYSTEM_PRINCIPAL_SPEC), OriginAttributes());
-  return sp.forget();
+SystemPrincipal::SystemPrincipal()
+    : BasePrincipal(eSystemPrincipal, kSystemPrincipalSpec,
+                    OriginAttributes()) {}
+
+static StaticMutex sSystemPrincipalMutex;
+static StaticRefPtr<SystemPrincipal> sSystemPrincipal
+    MOZ_GUARDED_BY(sSystemPrincipalMutex);
+
+already_AddRefed<SystemPrincipal> SystemPrincipal::Get() {
+  StaticMutexAutoLock lock(sSystemPrincipalMutex);
+  return do_AddRef(sSystemPrincipal);
+}
+
+already_AddRefed<SystemPrincipal> SystemPrincipal::Init() {
+  AssertIsOnMainThread();
+  StaticMutexAutoLock lock(sSystemPrincipalMutex);
+  if (MOZ_UNLIKELY(sSystemPrincipal)) {
+    MOZ_ASSERT_UNREACHABLE("SystemPrincipal::Init() may only be called once");
+  } else {
+    sSystemPrincipal = new SystemPrincipal();
+  }
+  return do_AddRef(sSystemPrincipal);
+}
+
+void SystemPrincipal::Shutdown() {
+  AssertIsOnMainThread();
+  StaticMutexAutoLock lock(sSystemPrincipalMutex);
+  MOZ_ASSERT(sSystemPrincipal);
+  sSystemPrincipal = nullptr;
 }
 
 nsresult SystemPrincipal::GetScriptLocation(nsACString& aStr) {
-  aStr.AssignLiteral(SYSTEM_PRINCIPAL_SPEC);
+  aStr.Assign(kSystemPrincipalSpec);
   return NS_OK;
 }
 

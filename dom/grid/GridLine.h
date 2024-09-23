@@ -12,8 +12,9 @@
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+class nsAtom;
+
+namespace mozilla::dom {
 
 class GridLines;
 
@@ -26,7 +27,7 @@ class GridLine : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(GridLine)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(GridLine)
 
   void GetNames(nsTArray<nsString>& aNames) const;
   const nsTArray<RefPtr<nsAtom>>& Names() const { return mNames; }
@@ -57,7 +58,6 @@ class GridLine : public nsISupports, public nsWrapperCache {
   int32_t mNegativeNumber;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_GridLine_h */

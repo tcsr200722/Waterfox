@@ -11,26 +11,9 @@ interface nsIWebProgress;
 interface nsIReferrerInfo;
 interface nsIOpenWindowInfo;
 
-webidl FrameLoader;
-
 [scriptable, uuid(14e5a0cb-e223-4202-95e8-fe53275193ea)]
 interface nsIBrowser : nsISupports
 {
-  /**
-   * Gets an optional frame loader that is "related" to this browser.
-   * If this exists, then we should attempt to use the same content parent as
-   * this frame loader for any new remote tabs.  For example, view source
-   * browsers set this to the frame loader for the original content to ensure
-   * they are loaded in the same process as the content.
-   */
-  readonly attribute FrameLoader sameProcessAsFrameLoader;
-
-  /**
-   * Gets the optional open window information provided by the window creation
-   * code and used to initialize a new browser.
-   */
-  attribute nsIOpenWindowInfo openWindowInfo;
-
   /*
    * Called by the child to inform the parent that links are dropped into
    * content area.
@@ -69,16 +52,13 @@ interface nsIBrowser : nsISupports
   readonly attribute boolean isRemoteBrowser;
 
   /**
-   * The nsIWebProgress instance responsible for handling progress events
-   * from the content process.
-   *
-   * Will always be non-null when isRemoteBrowser is true.
+   * The browser's permanent key. This was added temporarily for Session Store,
+   * and will be removed in bug 1716788.
    */
-  readonly attribute nsIWebProgress remoteWebProgressManager;
+  readonly attribute jsval permanentKey;
 
   readonly attribute nsIPrincipal contentPrincipal;
-  readonly attribute nsIPrincipal contentStoragePrincipal;
-  readonly attribute nsIPrincipal contentBlockingAllowListPrincipal;
+  readonly attribute nsIPrincipal contentPartitionedPrincipal;
   readonly attribute nsIContentSecurityPolicy csp;
   readonly attribute nsIReferrerInfo referrerInfo;
 
@@ -92,12 +72,6 @@ interface nsIBrowser : nsISupports
    * Whether or not the character encoding menu may be enabled.
    */
   attribute boolean mayEnableCharacterEncodingMenu;
-
-  /**
-   * Whether or not the character encoding was detected by analyzing
-   * content (as opposed to reading a protocol label).
-   */
-  attribute boolean charsetAutodetected;
 
   /**
    * Called by Gecko to update the browser when its state changes.
@@ -128,17 +102,14 @@ interface nsIBrowser : nsISupports
    * @param aCharset the character set of the document
    * @param aMayEnableCharacterEncodingMenu whether or not the content encoding
    *                                        menu may be enabled
-   * @param aCharsetAutodetected whether or not the given character set was
-   *                             autodetected
    * @param aDocumentURI the URI of the new document
    * @param aTitle the title of the new doucment
    * @param aContentPrincipal the security principal of the new document
-   * @param aContentStoragePrincipal the security principal for the new
-   *                                 document's storage
+   * @param aContentPartitionedPrincipal the security principal for the new
+   *                                     document's storage
    * @param aCSP the content security policy of the new document
    * @param aReferrerInfo the referrer info of the new document
    * @param aIsSynthetic whether or not the document is synthetic
-   * @param aInnerWindowID the inner window ID of the document
    * @param aHasRequestContextID whether or not the the request context has a
    *                             value (true) or null should be used (false)
    * @param aRequestContextID the request context ID
@@ -147,37 +118,32 @@ interface nsIBrowser : nsISupports
   void updateForLocationChange(in nsIURI aLocation,
                                in AString aCharset,
                                in boolean aMayEnableCharacterEncodingMenu,
-                               in boolean aCharsetAutodetected,
                                in nsIURI aDocumentURI,
                                in AString aTitle,
                                in nsIPrincipal aContentPrincipal,
-                               in nsIPrincipal aContentStoragePrincipal,
+                               in nsIPrincipal aContentPartitionedPrincipal,
                                in nsIContentSecurityPolicy aCSP,
                                in nsIReferrerInfo aReferrerInfo,
                                in boolean aIsSynthetic,
-                               in uint64_t aInnerWindowID,
                                in boolean aHasRequestContextID,
                                in uint64_t aRequestContextID,
                                in AString aContentType);
 
   /**
-   * Called by Gecko when it wants to change the process which is currently
-   * being used to render content in this tab.
-   *
-   * Returns a promise which will be resolved with the ChildID of the new
-   * process.
-   *
-   * @param aRemoteType the new remote type to switch this browser into
-   * @param aPendingSwitchId unique identifier for the ongoing
-   *                         process-switching load
-   * @param aReplaceBrowsingContext if true, do not preserve the
-   *                                BrowsingContext loaded inside this
-   *                                browser after changing processes.
+   * Called to perform any async tasks which must be completed before changing
+   * remoteness. Gecko will wait for the returned promise to resolve before
+   * performing the process switch.
    */
-  Promise performProcessSwitch(in AString aRemoteType,
-                               in uint64_t aPendingSwitchId,
-                               in boolean aReplaceBrowsingContext);
+  Promise prepareToChangeRemoteness();
 
-  /** If `true`, this browser supports the `performProcessSwitch` method */
-  readonly attribute bool canPerformProcessSwitch;
+  /** Called immediately before changing remoteness */
+  void beforeChangeRemoteness();
+
+  /**
+   * Called immediately after changing remoteness.
+   *
+   * If this method returns `true`, Gecko will assume frontend handled resuming
+   * the load, and will not attempt to resume the load itself.
+   */
+  boolean finishChangeRemoteness(in uint64_t aPendingSwitchId);
 };

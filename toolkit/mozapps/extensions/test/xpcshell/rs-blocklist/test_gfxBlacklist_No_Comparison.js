@@ -17,7 +17,6 @@ async function run_test() {
   }
 
   gfxInfo.QueryInterface(Ci.nsIGfxInfoDebug);
-  gfxInfo.fireTestProcess();
 
   gfxInfo.spoofVendorID("0xabcd");
   gfxInfo.spoofDeviceID("0x6666");
@@ -48,6 +47,9 @@ async function run_test() {
       var status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT2D);
       Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
 
+      status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBRENDER);
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
+
       // Make sure unrelated features aren't affected
       status = gfxInfo.getFeatureStatus(
         Ci.nsIGfxInfo.FEATURE_DIRECT3D_9_LAYERS
@@ -57,7 +59,7 @@ async function run_test() {
     do_test_finished();
   }
 
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+  Services.obs.addObserver(function () {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
     executeSoon(checkBlacklist);

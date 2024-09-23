@@ -1,17 +1,15 @@
 //! Serialize a Rust data structure into JSON data.
 
-use std::fmt;
-use std::io;
-use std::num::FpCategory;
-use std::str;
-
-use super::error::{Error, ErrorCode, Result};
+use crate::error::{Error, ErrorCode, Result};
+use crate::io;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt::{self, Display};
+use core::num::FpCategory;
 use serde::ser::{self, Impossible, Serialize};
 
-use itoa;
-use ryu;
-
 /// A structure for serializing Rust values into JSON.
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub struct Serializer<W, F = CompactFormatter> {
     writer: W,
     formatter: F,
@@ -48,10 +46,7 @@ where
     /// specified.
     #[inline]
     pub fn with_formatter(writer: W, formatter: F) -> Self {
-        Serializer {
-            writer: writer,
-            formatter: formatter,
-        }
+        Serializer { writer, formatter }
     }
 
     /// Unwrap the `Writer` from the `Serializer`.
@@ -79,137 +74,105 @@ where
 
     #[inline]
     fn serialize_bool(self, value: bool) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_bool(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_i8(self, value: i8) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_i8(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_i16(self, value: i16) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_i16(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_i32(self, value: i32) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_i32(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_i64(self, value: i64) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_i64(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
-    serde_if_integer128! {
-        fn serialize_i128(self, value: i128) -> Result<()> {
-            self.formatter
-                .write_number_str(&mut self.writer, &value.to_string())
-                .map_err(Error::io)
-        }
+    fn serialize_i128(self, value: i128) -> Result<()> {
+        self.formatter
+            .write_i128(&mut self.writer, value)
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_u8(self, value: u8) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_u8(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_u16(self, value: u16) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_u16(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_u32(self, value: u32) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_u32(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_u64(self, value: u64) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_u64(&mut self.writer, value)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
-    serde_if_integer128! {
-        fn serialize_u128(self, value: u128) -> Result<()> {
-            self.formatter
-                .write_number_str(&mut self.writer, &value.to_string())
-                .map_err(Error::io)
-        }
+    fn serialize_u128(self, value: u128) -> Result<()> {
+        self.formatter
+            .write_u128(&mut self.writer, value)
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_f32(self, value: f32) -> Result<()> {
         match value.classify() {
-            FpCategory::Nan | FpCategory::Infinite => {
-                try!(self
-                    .formatter
-                    .write_null(&mut self.writer)
-                    .map_err(Error::io));
-            }
-            _ => {
-                try!(self
-                    .formatter
-                    .write_f32(&mut self.writer, value)
-                    .map_err(Error::io));
-            }
+            FpCategory::Nan | FpCategory::Infinite => self
+                .formatter
+                .write_null(&mut self.writer)
+                .map_err(Error::io),
+            _ => self
+                .formatter
+                .write_f32(&mut self.writer, value)
+                .map_err(Error::io),
         }
-        Ok(())
     }
 
     #[inline]
     fn serialize_f64(self, value: f64) -> Result<()> {
         match value.classify() {
-            FpCategory::Nan | FpCategory::Infinite => {
-                try!(self
-                    .formatter
-                    .write_null(&mut self.writer)
-                    .map_err(Error::io));
-            }
-            _ => {
-                try!(self
-                    .formatter
-                    .write_f64(&mut self.writer, value)
-                    .map_err(Error::io));
-            }
+            FpCategory::Nan | FpCategory::Infinite => self
+                .formatter
+                .write_null(&mut self.writer)
+                .map_err(Error::io),
+            _ => self
+                .formatter
+                .write_f64(&mut self.writer, value)
+                .map_err(Error::io),
         }
-        Ok(())
     }
 
     #[inline]
@@ -221,27 +184,21 @@ where
 
     #[inline]
     fn serialize_str(self, value: &str) -> Result<()> {
-        try!(format_escaped_str(&mut self.writer, &mut self.formatter, value).map_err(Error::io));
-        Ok(())
+        format_escaped_str(&mut self.writer, &mut self.formatter, value).map_err(Error::io)
     }
 
     #[inline]
     fn serialize_bytes(self, value: &[u8]) -> Result<()> {
-        use serde::ser::SerializeSeq;
-        let mut seq = try!(self.serialize_seq(Some(value.len())));
-        for byte in value {
-            try!(seq.serialize_element(byte));
-        }
-        seq.end()
+        self.formatter
+            .write_byte_array(&mut self.writer, value)
+            .map_err(Error::io)
     }
 
     #[inline]
     fn serialize_unit(self) -> Result<()> {
-        try!(self
-            .formatter
+        self.formatter
             .write_null(&mut self.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
@@ -261,15 +218,15 @@ where
 
     /// Serialize newtypes without an object wrapper.
     #[inline]
-    fn serialize_newtype_struct<T: ?Sized>(self, _name: &'static str, value: &T) -> Result<()>
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         value.serialize(self)
     }
 
     #[inline]
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
@@ -277,35 +234,33 @@ where
         value: &T,
     ) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        try!(self
+        tri!(self
             .formatter
             .begin_object(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_key(&mut self.writer, true)
             .map_err(Error::io));
-        try!(self.serialize_str(variant));
-        try!(self
+        tri!(self.serialize_str(variant));
+        tri!(self
             .formatter
             .end_object_key(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_value(&mut self.writer)
             .map_err(Error::io));
-        try!(value.serialize(&mut *self));
-        try!(self
+        tri!(value.serialize(&mut *self));
+        tri!(self
             .formatter
             .end_object_value(&mut self.writer)
             .map_err(Error::io));
-        try!(self
-            .formatter
+        self.formatter
             .end_object(&mut self.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     #[inline]
@@ -314,21 +269,21 @@ where
     }
 
     #[inline]
-    fn serialize_some<T: ?Sized>(self, value: &T) -> Result<()>
+    fn serialize_some<T>(self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         value.serialize(self)
     }
 
     #[inline]
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
+        tri!(self
+            .formatter
+            .begin_array(&mut self.writer)
+            .map_err(Error::io));
         if len == Some(0) {
-            try!(self
-                .formatter
-                .begin_array(&mut self.writer)
-                .map_err(Error::io));
-            try!(self
+            tri!(self
                 .formatter
                 .end_array(&mut self.writer)
                 .map_err(Error::io));
@@ -337,10 +292,6 @@ where
                 state: State::Empty,
             })
         } else {
-            try!(self
-                .formatter
-                .begin_array(&mut self.writer)
-                .map_err(Error::io));
             Ok(Compound::Map {
                 ser: self,
                 state: State::First,
@@ -370,20 +321,20 @@ where
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        try!(self
+        tri!(self
             .formatter
             .begin_object(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_key(&mut self.writer, true)
             .map_err(Error::io));
-        try!(self.serialize_str(variant));
-        try!(self
+        tri!(self.serialize_str(variant));
+        tri!(self
             .formatter
             .end_object_key(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_value(&mut self.writer)
             .map_err(Error::io));
@@ -392,12 +343,12 @@ where
 
     #[inline]
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
+        tri!(self
+            .formatter
+            .begin_object(&mut self.writer)
+            .map_err(Error::io));
         if len == Some(0) {
-            try!(self
-                .formatter
-                .begin_object(&mut self.writer)
-                .map_err(Error::io));
-            try!(self
+            tri!(self
                 .formatter
                 .end_object(&mut self.writer)
                 .map_err(Error::io));
@@ -406,10 +357,6 @@ where
                 state: State::Empty,
             })
         } else {
-            try!(self
-                .formatter
-                .begin_object(&mut self.writer)
-                .map_err(Error::io));
             Ok(Compound::Map {
                 ser: self,
                 state: State::First,
@@ -421,9 +368,9 @@ where
     fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
         match name {
             #[cfg(feature = "arbitrary_precision")]
-            ::number::TOKEN => Ok(Compound::Number { ser: self }),
+            crate::number::TOKEN => Ok(Compound::Number { ser: self }),
             #[cfg(feature = "raw_value")]
-            ::raw::TOKEN => Ok(Compound::RawValue { ser: self }),
+            crate::raw::TOKEN => Ok(Compound::RawValue { ser: self }),
             _ => self.serialize_map(Some(len)),
         }
     }
@@ -436,31 +383,31 @@ where
         variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant> {
-        try!(self
+        tri!(self
             .formatter
             .begin_object(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_key(&mut self.writer, true)
             .map_err(Error::io));
-        try!(self.serialize_str(variant));
-        try!(self
+        tri!(self.serialize_str(variant));
+        tri!(self
             .formatter
             .end_object_key(&mut self.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .formatter
             .begin_object_value(&mut self.writer)
             .map_err(Error::io));
         self.serialize_map(Some(len))
     }
 
-    fn collect_str<T: ?Sized>(self, value: &T) -> Result<Self::Ok>
+    fn collect_str<T>(self, value: &T) -> Result<()>
     where
-        T: fmt::Display,
+        T: ?Sized + Display,
     {
-        use std::fmt::Write;
+        use self::fmt::Write;
 
         struct Adapter<'ser, W: 'ser, F: 'ser> {
             writer: &'ser mut W,
@@ -474,7 +421,7 @@ where
             F: Formatter,
         {
             fn write_str(&mut self, s: &str) -> fmt::Result {
-                assert!(self.error.is_none());
+                debug_assert!(self.error.is_none());
                 match format_escaped_str_contents(self.writer, self.formatter, s) {
                     Ok(()) => Ok(()),
                     Err(err) => {
@@ -485,41 +432,37 @@ where
             }
         }
 
-        try!(self
+        tri!(self
             .formatter
             .begin_string(&mut self.writer)
             .map_err(Error::io));
-        {
-            let mut adapter = Adapter {
-                writer: &mut self.writer,
-                formatter: &mut self.formatter,
-                error: None,
-            };
-            match write!(adapter, "{}", value) {
-                Ok(()) => assert!(adapter.error.is_none()),
-                Err(fmt::Error) => {
-                    return Err(Error::io(adapter.error.expect("there should be an error")));
-                }
+        let mut adapter = Adapter {
+            writer: &mut self.writer,
+            formatter: &mut self.formatter,
+            error: None,
+        };
+        match write!(adapter, "{}", value) {
+            Ok(()) => debug_assert!(adapter.error.is_none()),
+            Err(fmt::Error) => {
+                return Err(Error::io(adapter.error.expect("there should be an error")));
             }
         }
-        try!(self
-            .formatter
+        self.formatter
             .end_string(&mut self.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 }
 
-#[derive(Eq, PartialEq)]
-/// Not public API. Should be pub(crate).
+// Not public API. Should be pub(crate).
 #[doc(hidden)]
+#[derive(Eq, PartialEq)]
 pub enum State {
     Empty,
     First,
     Rest,
 }
 
-/// Not public API. Should be pub(crate).
+// Not public API. Should be pub(crate).
 #[doc(hidden)]
 pub enum Compound<'a, W: 'a, F: 'a> {
     Map {
@@ -541,26 +484,21 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        match *self {
-            Compound::Map {
-                ref mut ser,
-                ref mut state,
-            } => {
-                try!(ser
+        match self {
+            Compound::Map { ser, state } => {
+                tri!(ser
                     .formatter
                     .begin_array_value(&mut ser.writer, *state == State::First)
                     .map_err(Error::io));
                 *state = State::Rest;
-                try!(value.serialize(&mut **ser));
-                try!(ser
-                    .formatter
+                tri!(value.serialize(&mut **ser));
+                ser.formatter
                     .end_array_value(&mut ser.writer)
-                    .map_err(Error::io));
-                Ok(())
+                    .map_err(Error::io)
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -572,13 +510,10 @@ where
     #[inline]
     fn end(self) -> Result<()> {
         match self {
-            Compound::Map { ser, state } => {
-                match state {
-                    State::Empty => {}
-                    _ => try!(ser.formatter.end_array(&mut ser.writer).map_err(Error::io)),
-                }
-                Ok(())
-            }
+            Compound::Map { ser, state } => match state {
+                State::Empty => Ok(()),
+                _ => ser.formatter.end_array(&mut ser.writer).map_err(Error::io),
+            },
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
             #[cfg(feature = "raw_value")]
@@ -596,9 +531,9 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -618,9 +553,9 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -640,9 +575,9 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         ser::SerializeSeq::serialize_element(self, value)
     }
@@ -653,14 +588,13 @@ where
             Compound::Map { ser, state } => {
                 match state {
                     State::Empty => {}
-                    _ => try!(ser.formatter.end_array(&mut ser.writer).map_err(Error::io)),
+                    _ => tri!(ser.formatter.end_array(&mut ser.writer).map_err(Error::io)),
                 }
-                try!(ser
+                tri!(ser
                     .formatter
                     .end_object_value(&mut ser.writer)
                     .map_err(Error::io));
-                try!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io));
-                Ok(())
+                ser.formatter.end_object(&mut ser.writer).map_err(Error::io)
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -679,28 +613,23 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<()>
+    fn serialize_key<T>(&mut self, key: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        match *self {
-            Compound::Map {
-                ref mut ser,
-                ref mut state,
-            } => {
-                try!(ser
+        match self {
+            Compound::Map { ser, state } => {
+                tri!(ser
                     .formatter
                     .begin_object_key(&mut ser.writer, *state == State::First)
                     .map_err(Error::io));
                 *state = State::Rest;
 
-                try!(key.serialize(MapKeySerializer { ser: *ser }));
+                tri!(key.serialize(MapKeySerializer { ser: *ser }));
 
-                try!(ser
-                    .formatter
+                ser.formatter
                     .end_object_key(&mut ser.writer)
-                    .map_err(Error::io));
-                Ok(())
+                    .map_err(Error::io)
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -710,22 +639,20 @@ where
     }
 
     #[inline]
-    fn serialize_value<T: ?Sized>(&mut self, value: &T) -> Result<()>
+    fn serialize_value<T>(&mut self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        match *self {
-            Compound::Map { ref mut ser, .. } => {
-                try!(ser
+        match self {
+            Compound::Map { ser, .. } => {
+                tri!(ser
                     .formatter
                     .begin_object_value(&mut ser.writer)
                     .map_err(Error::io));
-                try!(value.serialize(&mut **ser));
-                try!(ser
-                    .formatter
+                tri!(value.serialize(&mut **ser));
+                ser.formatter
                     .end_object_value(&mut ser.writer)
-                    .map_err(Error::io));
-                Ok(())
+                    .map_err(Error::io)
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -737,13 +664,10 @@ where
     #[inline]
     fn end(self) -> Result<()> {
         match self {
-            Compound::Map { ser, state } => {
-                match state {
-                    State::Empty => {}
-                    _ => try!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io)),
-                }
-                Ok(())
-            }
+            Compound::Map { ser, state } => match state {
+                State::Empty => Ok(()),
+                _ => ser.formatter.end_object(&mut ser.writer).map_err(Error::io),
+            },
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
             #[cfg(feature = "raw_value")]
@@ -761,29 +685,24 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        match *self {
-            Compound::Map { .. } => {
-                try!(ser::SerializeMap::serialize_key(self, key));
-                ser::SerializeMap::serialize_value(self, value)
-            }
+        match self {
+            Compound::Map { .. } => ser::SerializeMap::serialize_entry(self, key, value),
             #[cfg(feature = "arbitrary_precision")]
-            Compound::Number { ref mut ser, .. } => {
-                if key == ::number::TOKEN {
-                    try!(value.serialize(NumberStrEmitter(&mut *ser)));
-                    Ok(())
+            Compound::Number { ser, .. } => {
+                if key == crate::number::TOKEN {
+                    value.serialize(NumberStrEmitter(ser))
                 } else {
                     Err(invalid_number())
                 }
             }
             #[cfg(feature = "raw_value")]
-            Compound::RawValue { ref mut ser, .. } => {
-                if key == ::raw::TOKEN {
-                    try!(value.serialize(RawValueStrEmitter(&mut *ser)));
-                    Ok(())
+            Compound::RawValue { ser, .. } => {
+                if key == crate::raw::TOKEN {
+                    value.serialize(RawValueStrEmitter(ser))
                 } else {
                     Err(invalid_raw_value())
                 }
@@ -812,9 +731,9 @@ where
     type Error = Error;
 
     #[inline]
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<()>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         match *self {
             Compound::Map { .. } => ser::SerializeStruct::serialize_field(self, key, value),
@@ -831,14 +750,13 @@ where
             Compound::Map { ser, state } => {
                 match state {
                     State::Empty => {}
-                    _ => try!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io)),
+                    _ => tri!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io)),
                 }
-                try!(ser
+                tri!(ser
                     .formatter
                     .end_object_value(&mut ser.writer)
                     .map_err(Error::io));
-                try!(ser.formatter.end_object(&mut ser.writer).map_err(Error::io));
-                Ok(())
+                ser.formatter.end_object(&mut ser.writer).map_err(Error::io)
             }
             #[cfg(feature = "arbitrary_precision")]
             Compound::Number { .. } => unreachable!(),
@@ -866,6 +784,10 @@ fn key_must_be_a_string() -> Error {
     Error::syntax(ErrorCode::KeyMustBeAString, 0, 0)
 }
 
+fn float_key_must_be_finite() -> Error {
+    Error::syntax(ErrorCode::FloatKeyMustBeFinite, 0, 0)
+}
+
 impl<'a, W, F> ser::Serializer for MapKeySerializer<'a, W, F>
 where
     W: io::Write,
@@ -890,9 +812,9 @@ where
     }
 
     #[inline]
-    fn serialize_newtype_struct<T: ?Sized>(self, _name: &'static str, value: &T) -> Result<()>
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         value.serialize(self)
     }
@@ -905,210 +827,233 @@ where
     type SerializeStruct = Impossible<(), Error>;
     type SerializeStructVariant = Impossible<(), Error>;
 
-    fn serialize_bool(self, _value: bool) -> Result<()> {
-        Err(key_must_be_a_string())
-    }
-
-    fn serialize_i8(self, value: i8) -> Result<()> {
-        try!(self
+    fn serialize_bool(self, value: bool) -> Result<()> {
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
+            .ser
+            .formatter
+            .write_bool(&mut self.ser.writer, value)
+            .map_err(Error::io));
+        self.ser
+            .formatter
+            .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
+    }
+
+    fn serialize_i8(self, value: i8) -> Result<()> {
+        tri!(self
+            .ser
+            .formatter
+            .begin_string(&mut self.ser.writer)
+            .map_err(Error::io));
+        tri!(self
             .ser
             .formatter
             .write_i8(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_i16(self, value: i16) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_i16(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_i32(self, value: i32) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_i32(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_i64(self, value: i64) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_i64(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
-    serde_if_integer128! {
-        fn serialize_i128(self, value: i128) -> Result<()> {
-            try!(self
-                .ser
-                .formatter
-                .begin_string(&mut self.ser.writer)
-                .map_err(Error::io));
-            try!(self
-                .ser
-                .formatter
-                .write_number_str(&mut self.ser.writer, &value.to_string())
-                .map_err(Error::io));
-            try!(self
-                .ser
-                .formatter
-                .end_string(&mut self.ser.writer)
-                .map_err(Error::io));
-            Ok(())
-        }
-    }
-
-    fn serialize_u8(self, value: u8) -> Result<()> {
-        try!(self
+    fn serialize_i128(self, value: i128) -> Result<()> {
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
+            .ser
+            .formatter
+            .write_i128(&mut self.ser.writer, value)
+            .map_err(Error::io));
+        self.ser
+            .formatter
+            .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
+    }
+
+    fn serialize_u8(self, value: u8) -> Result<()> {
+        tri!(self
+            .ser
+            .formatter
+            .begin_string(&mut self.ser.writer)
+            .map_err(Error::io));
+        tri!(self
             .ser
             .formatter
             .write_u8(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_u16(self, value: u16) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_u16(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_u32(self, value: u32) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_u32(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
-            .map_err(Error::io));
-        Ok(())
+            .map_err(Error::io)
     }
 
     fn serialize_u64(self, value: u64) -> Result<()> {
-        try!(self
+        tri!(self
             .ser
             .formatter
             .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        try!(self
+        tri!(self
             .ser
             .formatter
             .write_u64(&mut self.ser.writer, value)
             .map_err(Error::io));
-        try!(self
-            .ser
+        self.ser
             .formatter
             .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
+    }
+
+    fn serialize_u128(self, value: u128) -> Result<()> {
+        tri!(self
+            .ser
+            .formatter
+            .begin_string(&mut self.ser.writer)
             .map_err(Error::io));
-        Ok(())
+        tri!(self
+            .ser
+            .formatter
+            .write_u128(&mut self.ser.writer, value)
+            .map_err(Error::io));
+        self.ser
+            .formatter
+            .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
     }
 
-    serde_if_integer128! {
-        fn serialize_u128(self, value: u128) -> Result<()> {
-            try!(self
-                .ser
-                .formatter
-                .begin_string(&mut self.ser.writer)
-                .map_err(Error::io));
-            try!(self
-                .ser
-                .formatter
-                .write_number_str(&mut self.ser.writer, &value.to_string())
-                .map_err(Error::io));
-            try!(self
-                .ser
-                .formatter
-                .end_string(&mut self.ser.writer)
-                .map_err(Error::io));
-            Ok(())
+    fn serialize_f32(self, value: f32) -> Result<()> {
+        if !value.is_finite() {
+            return Err(float_key_must_be_finite());
         }
+
+        tri!(self
+            .ser
+            .formatter
+            .begin_string(&mut self.ser.writer)
+            .map_err(Error::io));
+        tri!(self
+            .ser
+            .formatter
+            .write_f32(&mut self.ser.writer, value)
+            .map_err(Error::io));
+        self.ser
+            .formatter
+            .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
     }
 
-    fn serialize_f32(self, _value: f32) -> Result<()> {
-        Err(key_must_be_a_string())
-    }
+    fn serialize_f64(self, value: f64) -> Result<()> {
+        if !value.is_finite() {
+            return Err(float_key_must_be_finite());
+        }
 
-    fn serialize_f64(self, _value: f64) -> Result<()> {
-        Err(key_must_be_a_string())
+        tri!(self
+            .ser
+            .formatter
+            .begin_string(&mut self.ser.writer)
+            .map_err(Error::io));
+        tri!(self
+            .ser
+            .formatter
+            .write_f64(&mut self.ser.writer, value)
+            .map_err(Error::io));
+        self.ser
+            .formatter
+            .end_string(&mut self.ser.writer)
+            .map_err(Error::io)
     }
 
     fn serialize_char(self, value: char) -> Result<()> {
@@ -1127,7 +1072,7 @@ where
         Err(key_must_be_a_string())
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
@@ -1135,7 +1080,7 @@ where
         _value: &T,
     ) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(key_must_be_a_string())
     }
@@ -1144,11 +1089,11 @@ where
         Err(key_must_be_a_string())
     }
 
-    fn serialize_some<T: ?Sized>(self, _value: &T) -> Result<()>
+    fn serialize_some<T>(self, value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
-        Err(key_must_be_a_string())
+        value.serialize(self)
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
@@ -1194,6 +1139,13 @@ where
     ) -> Result<Self::SerializeStructVariant> {
         Err(key_must_be_a_string())
     }
+
+    fn collect_str<T>(self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Display,
+    {
+        self.ser.collect_str(value)
+    }
 }
 
 #[cfg(feature = "arbitrary_precision")]
@@ -1212,67 +1164,63 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for NumberStrEmitter<'a, W,
     type SerializeStruct = Impossible<(), Error>;
     type SerializeStructVariant = Impossible<(), Error>;
 
-    fn serialize_bool(self, _v: bool) -> Result<Self::Ok> {
+    fn serialize_bool(self, _v: bool) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_i8(self, _v: i8) -> Result<Self::Ok> {
+    fn serialize_i8(self, _v: i8) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_i16(self, _v: i16) -> Result<Self::Ok> {
+    fn serialize_i16(self, _v: i16) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_i32(self, _v: i32) -> Result<Self::Ok> {
+    fn serialize_i32(self, _v: i32) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_i64(self, _v: i64) -> Result<Self::Ok> {
+    fn serialize_i64(self, _v: i64) -> Result<()> {
         Err(invalid_number())
     }
 
-    serde_if_integer128! {
-        fn serialize_i128(self, _v: i128) -> Result<Self::Ok> {
-            Err(invalid_number())
-        }
-    }
-
-    fn serialize_u8(self, _v: u8) -> Result<Self::Ok> {
+    fn serialize_i128(self, _v: i128) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_u16(self, _v: u16) -> Result<Self::Ok> {
+    fn serialize_u8(self, _v: u8) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_u32(self, _v: u32) -> Result<Self::Ok> {
+    fn serialize_u16(self, _v: u16) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_u64(self, _v: u64) -> Result<Self::Ok> {
+    fn serialize_u32(self, _v: u32) -> Result<()> {
         Err(invalid_number())
     }
 
-    serde_if_integer128! {
-        fn serialize_u128(self, _v: u128) -> Result<Self::Ok> {
-            Err(invalid_number())
-        }
-    }
-
-    fn serialize_f32(self, _v: f32) -> Result<Self::Ok> {
+    fn serialize_u64(self, _v: u64) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_f64(self, _v: f64) -> Result<Self::Ok> {
+    fn serialize_u128(self, _v: u128) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_char(self, _v: char) -> Result<Self::Ok> {
+    fn serialize_f32(self, _v: f32) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_str(self, value: &str) -> Result<Self::Ok> {
+    fn serialize_f64(self, _v: f64) -> Result<()> {
+        Err(invalid_number())
+    }
+
+    fn serialize_char(self, _v: char) -> Result<()> {
+        Err(invalid_number())
+    }
+
+    fn serialize_str(self, value: &str) -> Result<()> {
         let NumberStrEmitter(serializer) = self;
         serializer
             .formatter
@@ -1280,26 +1228,26 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for NumberStrEmitter<'a, W,
             .map_err(Error::io)
     }
 
-    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok> {
+    fn serialize_bytes(self, _value: &[u8]) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_none(self) -> Result<Self::Ok> {
+    fn serialize_none(self) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_some<T: ?Sized>(self, _value: &T) -> Result<Self::Ok>
+    fn serialize_some<T>(self, _value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(invalid_number())
     }
 
-    fn serialize_unit(self) -> Result<Self::Ok> {
+    fn serialize_unit(self) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
         Err(invalid_number())
     }
 
@@ -1308,30 +1256,26 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for NumberStrEmitter<'a, W,
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
-    ) -> Result<Self::Ok> {
+    ) -> Result<()> {
         Err(invalid_number())
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(
-        self,
-        _name: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok>
+    fn serialize_newtype_struct<T>(self, _name: &'static str, _value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(invalid_number())
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
         _value: &T,
-    ) -> Result<Self::Ok>
+    ) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(invalid_number())
     }
@@ -1397,67 +1341,63 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for RawValueStrEmitter<'a, 
     type SerializeStruct = Impossible<(), Error>;
     type SerializeStructVariant = Impossible<(), Error>;
 
-    fn serialize_bool(self, _v: bool) -> Result<Self::Ok> {
+    fn serialize_bool(self, _v: bool) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_i8(self, _v: i8) -> Result<Self::Ok> {
+    fn serialize_i8(self, _v: i8) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_i16(self, _v: i16) -> Result<Self::Ok> {
+    fn serialize_i16(self, _v: i16) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_i32(self, _v: i32) -> Result<Self::Ok> {
+    fn serialize_i32(self, _v: i32) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_i64(self, _v: i64) -> Result<Self::Ok> {
+    fn serialize_i64(self, _v: i64) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    serde_if_integer128! {
-        fn serialize_i128(self, _v: i128) -> Result<Self::Ok> {
-            Err(ser::Error::custom("expected RawValue"))
-        }
-    }
-
-    fn serialize_u8(self, _v: u8) -> Result<Self::Ok> {
+    fn serialize_i128(self, _v: i128) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_u16(self, _v: u16) -> Result<Self::Ok> {
+    fn serialize_u8(self, _v: u8) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_u32(self, _v: u32) -> Result<Self::Ok> {
+    fn serialize_u16(self, _v: u16) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_u64(self, _v: u64) -> Result<Self::Ok> {
+    fn serialize_u32(self, _v: u32) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    serde_if_integer128! {
-        fn serialize_u128(self, _v: u128) -> Result<Self::Ok> {
-            Err(ser::Error::custom("expected RawValue"))
-        }
-    }
-
-    fn serialize_f32(self, _v: f32) -> Result<Self::Ok> {
+    fn serialize_u64(self, _v: u64) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_f64(self, _v: f64) -> Result<Self::Ok> {
+    fn serialize_u128(self, _v: u128) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_char(self, _v: char) -> Result<Self::Ok> {
+    fn serialize_f32(self, _v: f32) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_str(self, value: &str) -> Result<Self::Ok> {
+    fn serialize_f64(self, _v: f64) -> Result<()> {
+        Err(ser::Error::custom("expected RawValue"))
+    }
+
+    fn serialize_char(self, _v: char) -> Result<()> {
+        Err(ser::Error::custom("expected RawValue"))
+    }
+
+    fn serialize_str(self, value: &str) -> Result<()> {
         let RawValueStrEmitter(serializer) = self;
         serializer
             .formatter
@@ -1465,26 +1405,26 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for RawValueStrEmitter<'a, 
             .map_err(Error::io)
     }
 
-    fn serialize_bytes(self, _value: &[u8]) -> Result<Self::Ok> {
+    fn serialize_bytes(self, _value: &[u8]) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_none(self) -> Result<Self::Ok> {
+    fn serialize_none(self) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_some<T: ?Sized>(self, _value: &T) -> Result<Self::Ok>
+    fn serialize_some<T>(self, _value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_unit(self) -> Result<Self::Ok> {
+    fn serialize_unit(self) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok> {
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
@@ -1493,30 +1433,26 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for RawValueStrEmitter<'a, 
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
-    ) -> Result<Self::Ok> {
+    ) -> Result<()> {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(
-        self,
-        _name: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok>
+    fn serialize_newtype_struct<T>(self, _name: &'static str, _value: &T) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(ser::Error::custom("expected RawValue"))
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
         _value: &T,
-    ) -> Result<Self::Ok>
+    ) -> Result<()>
     where
-        T: Serialize,
+        T: ?Sized + Serialize,
     {
         Err(ser::Error::custom("expected RawValue"))
     }
@@ -1563,6 +1499,13 @@ impl<'a, W: io::Write, F: Formatter> ser::Serializer for RawValueStrEmitter<'a, 
         _len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         Err(ser::Error::custom("expected RawValue"))
+    }
+
+    fn collect_str<T>(self, value: &T) -> Result<Self::Ok>
+    where
+        T: ?Sized + Display,
+    {
+        self.serialize_str(&value.to_string())
     }
 }
 
@@ -1611,18 +1554,18 @@ impl CharEscape {
 pub trait Formatter {
     /// Writes a `null` value to the specified writer.
     #[inline]
-    fn write_null<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn write_null<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"null")
     }
 
     /// Writes a `true` or `false` value to the specified writer.
     #[inline]
-    fn write_bool<W: ?Sized>(&mut self, writer: &mut W, value: bool) -> io::Result<()>
+    fn write_bool<W>(&mut self, writer: &mut W, value: bool) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         let s = if value {
             b"true" as &[u8]
@@ -1634,81 +1577,119 @@ pub trait Formatter {
 
     /// Writes an integer value like `-123` to the specified writer.
     #[inline]
-    fn write_i8<W: ?Sized>(&mut self, writer: &mut W, value: i8) -> io::Result<()>
+    fn write_i8<W>(&mut self, writer: &mut W, value: i8) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `-123` to the specified writer.
     #[inline]
-    fn write_i16<W: ?Sized>(&mut self, writer: &mut W, value: i16) -> io::Result<()>
+    fn write_i16<W>(&mut self, writer: &mut W, value: i16) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `-123` to the specified writer.
     #[inline]
-    fn write_i32<W: ?Sized>(&mut self, writer: &mut W, value: i32) -> io::Result<()>
+    fn write_i32<W>(&mut self, writer: &mut W, value: i32) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `-123` to the specified writer.
     #[inline]
-    fn write_i64<W: ?Sized>(&mut self, writer: &mut W, value: i64) -> io::Result<()>
+    fn write_i64<W>(&mut self, writer: &mut W, value: i64) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
+    }
+
+    /// Writes an integer value like `-123` to the specified writer.
+    #[inline]
+    fn write_i128<W>(&mut self, writer: &mut W, value: i128) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `123` to the specified writer.
     #[inline]
-    fn write_u8<W: ?Sized>(&mut self, writer: &mut W, value: u8) -> io::Result<()>
+    fn write_u8<W>(&mut self, writer: &mut W, value: u8) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `123` to the specified writer.
     #[inline]
-    fn write_u16<W: ?Sized>(&mut self, writer: &mut W, value: u16) -> io::Result<()>
+    fn write_u16<W>(&mut self, writer: &mut W, value: u16) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `123` to the specified writer.
     #[inline]
-    fn write_u32<W: ?Sized>(&mut self, writer: &mut W, value: u32) -> io::Result<()>
+    fn write_u32<W>(&mut self, writer: &mut W, value: u32) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes an integer value like `123` to the specified writer.
     #[inline]
-    fn write_u64<W: ?Sized>(&mut self, writer: &mut W, value: u64) -> io::Result<()>
+    fn write_u64<W>(&mut self, writer: &mut W, value: u64) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        itoa::write(writer, value).map(drop)
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
+    }
+
+    /// Writes an integer value like `123` to the specified writer.
+    #[inline]
+    fn write_u128<W>(&mut self, writer: &mut W, value: u128) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(value);
+        writer.write_all(s.as_bytes())
     }
 
     /// Writes a floating point value like `-31.26e+12` to the specified writer.
     #[inline]
-    fn write_f32<W: ?Sized>(&mut self, writer: &mut W, value: f32) -> io::Result<()>
+    fn write_f32<W>(&mut self, writer: &mut W, value: f32) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         let mut buffer = ryu::Buffer::new();
         let s = buffer.format_finite(value);
@@ -1717,9 +1698,9 @@ pub trait Formatter {
 
     /// Writes a floating point value like `-31.26e+12` to the specified writer.
     #[inline]
-    fn write_f64<W: ?Sized>(&mut self, writer: &mut W, value: f64) -> io::Result<()>
+    fn write_f64<W>(&mut self, writer: &mut W, value: f64) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         let mut buffer = ryu::Buffer::new();
         let s = buffer.format_finite(value);
@@ -1728,9 +1709,9 @@ pub trait Formatter {
 
     /// Writes a number that has already been rendered to a string.
     #[inline]
-    fn write_number_str<W: ?Sized>(&mut self, writer: &mut W, value: &str) -> io::Result<()>
+    fn write_number_str<W>(&mut self, writer: &mut W, value: &str) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(value.as_bytes())
     }
@@ -1738,9 +1719,9 @@ pub trait Formatter {
     /// Called before each series of `write_string_fragment` and
     /// `write_char_escape`.  Writes a `"` to the specified writer.
     #[inline]
-    fn begin_string<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_string<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"\"")
     }
@@ -1748,9 +1729,9 @@ pub trait Formatter {
     /// Called after each series of `write_string_fragment` and
     /// `write_char_escape`.  Writes a `"` to the specified writer.
     #[inline]
-    fn end_string<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn end_string<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"\"")
     }
@@ -1758,22 +1739,18 @@ pub trait Formatter {
     /// Writes a string fragment that doesn't need any escaping to the
     /// specified writer.
     #[inline]
-    fn write_string_fragment<W: ?Sized>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
+    fn write_string_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(fragment.as_bytes())
     }
 
     /// Writes a character escape code to the specified writer.
     #[inline]
-    fn write_char_escape<W: ?Sized>(
-        &mut self,
-        writer: &mut W,
-        char_escape: CharEscape,
-    ) -> io::Result<()>
+    fn write_char_escape<W>(&mut self, writer: &mut W, char_escape: CharEscape) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         use self::CharEscape::*;
 
@@ -1803,12 +1780,30 @@ pub trait Formatter {
         writer.write_all(s)
     }
 
+    /// Writes the representation of a byte array. Formatters can choose whether
+    /// to represent bytes as a JSON array of integers (the default), or some
+    /// JSON string encoding like hex or base64.
+    fn write_byte_array<W>(&mut self, writer: &mut W, value: &[u8]) -> io::Result<()>
+    where
+        W: ?Sized + io::Write,
+    {
+        tri!(self.begin_array(writer));
+        let mut first = true;
+        for byte in value {
+            tri!(self.begin_array_value(writer, first));
+            tri!(self.write_u8(writer, *byte));
+            tri!(self.end_array_value(writer));
+            first = false;
+        }
+        self.end_array(writer)
+    }
+
     /// Called before every array.  Writes a `[` to the specified
     /// writer.
     #[inline]
-    fn begin_array<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_array<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"[")
     }
@@ -1816,9 +1811,9 @@ pub trait Formatter {
     /// Called after every array.  Writes a `]` to the specified
     /// writer.
     #[inline]
-    fn end_array<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn end_array<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"]")
     }
@@ -1826,9 +1821,9 @@ pub trait Formatter {
     /// Called before every array value.  Writes a `,` if needed to
     /// the specified writer.
     #[inline]
-    fn begin_array_value<W: ?Sized>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         if first {
             Ok(())
@@ -1839,9 +1834,9 @@ pub trait Formatter {
 
     /// Called after every array value.
     #[inline]
-    fn end_array_value<W: ?Sized>(&mut self, _writer: &mut W) -> io::Result<()>
+    fn end_array_value<W>(&mut self, _writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         Ok(())
     }
@@ -1849,9 +1844,9 @@ pub trait Formatter {
     /// Called before every object.  Writes a `{` to the specified
     /// writer.
     #[inline]
-    fn begin_object<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_object<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"{")
     }
@@ -1859,18 +1854,18 @@ pub trait Formatter {
     /// Called after every object.  Writes a `}` to the specified
     /// writer.
     #[inline]
-    fn end_object<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn end_object<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b"}")
     }
 
     /// Called before every object key.
     #[inline]
-    fn begin_object_key<W: ?Sized>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         if first {
             Ok(())
@@ -1883,9 +1878,9 @@ pub trait Formatter {
     /// specified writer by either this method or
     /// `begin_object_value`.
     #[inline]
-    fn end_object_key<W: ?Sized>(&mut self, _writer: &mut W) -> io::Result<()>
+    fn end_object_key<W>(&mut self, _writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         Ok(())
     }
@@ -1894,18 +1889,18 @@ pub trait Formatter {
     /// the specified writer by either this method or
     /// `end_object_key`.
     #[inline]
-    fn begin_object_value<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b":")
     }
 
     /// Called after every object value.
     #[inline]
-    fn end_object_value<W: ?Sized>(&mut self, _writer: &mut W) -> io::Result<()>
+    fn end_object_value<W>(&mut self, _writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         Ok(())
     }
@@ -1913,9 +1908,9 @@ pub trait Formatter {
     /// Writes a raw JSON fragment that doesn't need any escaping to the
     /// specified writer.
     #[inline]
-    fn write_raw_fragment<W: ?Sized>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
+    fn write_raw_fragment<W>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(fragment.as_bytes())
     }
@@ -1946,7 +1941,7 @@ impl<'a> PrettyFormatter<'a> {
         PrettyFormatter {
             current_indent: 0,
             has_value: false,
-            indent: indent,
+            indent,
         }
     }
 }
@@ -1959,9 +1954,9 @@ impl<'a> Default for PrettyFormatter<'a> {
 
 impl<'a> Formatter for PrettyFormatter<'a> {
     #[inline]
-    fn begin_array<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_array<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.current_indent += 1;
         self.has_value = false;
@@ -1969,47 +1964,42 @@ impl<'a> Formatter for PrettyFormatter<'a> {
     }
 
     #[inline]
-    fn end_array<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn end_array<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.current_indent -= 1;
 
         if self.has_value {
-            try!(writer.write_all(b"\n"));
-            try!(indent(writer, self.current_indent, self.indent));
+            tri!(writer.write_all(b"\n"));
+            tri!(indent(writer, self.current_indent, self.indent));
         }
 
         writer.write_all(b"]")
     }
 
     #[inline]
-    fn begin_array_value<W: ?Sized>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    fn begin_array_value<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        if first {
-            try!(writer.write_all(b"\n"));
-        } else {
-            try!(writer.write_all(b",\n"));
-        }
-        try!(indent(writer, self.current_indent, self.indent));
-        Ok(())
+        tri!(writer.write_all(if first { b"\n" } else { b",\n" }));
+        indent(writer, self.current_indent, self.indent)
     }
 
     #[inline]
-    fn end_array_value<W: ?Sized>(&mut self, _writer: &mut W) -> io::Result<()>
+    fn end_array_value<W>(&mut self, _writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.has_value = true;
         Ok(())
     }
 
     #[inline]
-    fn begin_object<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_object<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.current_indent += 1;
         self.has_value = false;
@@ -2017,74 +2007,65 @@ impl<'a> Formatter for PrettyFormatter<'a> {
     }
 
     #[inline]
-    fn end_object<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn end_object<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.current_indent -= 1;
 
         if self.has_value {
-            try!(writer.write_all(b"\n"));
-            try!(indent(writer, self.current_indent, self.indent));
+            tri!(writer.write_all(b"\n"));
+            tri!(indent(writer, self.current_indent, self.indent));
         }
 
         writer.write_all(b"}")
     }
 
     #[inline]
-    fn begin_object_key<W: ?Sized>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
+    fn begin_object_key<W>(&mut self, writer: &mut W, first: bool) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
-        if first {
-            try!(writer.write_all(b"\n"));
-        } else {
-            try!(writer.write_all(b",\n"));
-        }
+        tri!(writer.write_all(if first { b"\n" } else { b",\n" }));
         indent(writer, self.current_indent, self.indent)
     }
 
     #[inline]
-    fn begin_object_value<W: ?Sized>(&mut self, writer: &mut W) -> io::Result<()>
+    fn begin_object_value<W>(&mut self, writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         writer.write_all(b": ")
     }
 
     #[inline]
-    fn end_object_value<W: ?Sized>(&mut self, _writer: &mut W) -> io::Result<()>
+    fn end_object_value<W>(&mut self, _writer: &mut W) -> io::Result<()>
     where
-        W: io::Write,
+        W: ?Sized + io::Write,
     {
         self.has_value = true;
         Ok(())
     }
 }
 
-fn format_escaped_str<W: ?Sized, F: ?Sized>(
-    writer: &mut W,
-    formatter: &mut F,
-    value: &str,
-) -> io::Result<()>
+fn format_escaped_str<W, F>(writer: &mut W, formatter: &mut F, value: &str) -> io::Result<()>
 where
-    W: io::Write,
-    F: Formatter,
+    W: ?Sized + io::Write,
+    F: ?Sized + Formatter,
 {
-    try!(formatter.begin_string(writer));
-    try!(format_escaped_str_contents(writer, formatter, value));
-    try!(formatter.end_string(writer));
-    Ok(())
+    tri!(formatter.begin_string(writer));
+    tri!(format_escaped_str_contents(writer, formatter, value));
+    formatter.end_string(writer)
 }
 
-fn format_escaped_str_contents<W: ?Sized, F: ?Sized>(
+fn format_escaped_str_contents<W, F>(
     writer: &mut W,
     formatter: &mut F,
     value: &str,
 ) -> io::Result<()>
 where
-    W: io::Write,
-    F: Formatter,
+    W: ?Sized + io::Write,
+    F: ?Sized + Formatter,
 {
     let bytes = value.as_bytes();
 
@@ -2097,20 +2078,20 @@ where
         }
 
         if start < i {
-            try!(formatter.write_string_fragment(writer, &value[start..i]));
+            tri!(formatter.write_string_fragment(writer, &value[start..i]));
         }
 
         let char_escape = CharEscape::from_escape_table(escape, byte);
-        try!(formatter.write_char_escape(writer, char_escape));
+        tri!(formatter.write_char_escape(writer, char_escape));
 
         start = i + 1;
     }
 
-    if start != bytes.len() {
-        try!(formatter.write_string_fragment(writer, &value[start..]));
+    if start == bytes.len() {
+        return Ok(());
     }
 
-    Ok(())
+    formatter.write_string_fragment(writer, &value[start..])
 }
 
 const BB: u8 = b'b'; // \x08
@@ -2145,39 +2126,43 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
 ];
 
-/// Serialize the given data structure as JSON into the IO stream.
+/// Serialize the given data structure as JSON into the I/O stream.
+///
+/// Serialization guarantees it only feeds valid UTF-8 sequences to the writer.
 ///
 /// # Errors
 ///
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_writer<W, T: ?Sized>(writer: W, value: &T) -> Result<()>
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn to_writer<W, T>(writer: W, value: &T) -> Result<()>
 where
     W: io::Write,
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
     let mut ser = Serializer::new(writer);
-    try!(value.serialize(&mut ser));
-    Ok(())
+    value.serialize(&mut ser)
 }
 
-/// Serialize the given data structure as pretty-printed JSON into the IO
+/// Serialize the given data structure as pretty-printed JSON into the I/O
 /// stream.
+///
+/// Serialization guarantees it only feeds valid UTF-8 sequences to the writer.
 ///
 /// # Errors
 ///
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_writer_pretty<W, T: ?Sized>(writer: W, value: &T) -> Result<()>
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub fn to_writer_pretty<W, T>(writer: W, value: &T) -> Result<()>
 where
     W: io::Write,
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
     let mut ser = Serializer::pretty(writer);
-    try!(value.serialize(&mut ser));
-    Ok(())
+    value.serialize(&mut ser)
 }
 
 /// Serialize the given data structure as a JSON byte vector.
@@ -2187,12 +2172,12 @@ where
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_vec<T: ?Sized>(value: &T) -> Result<Vec<u8>>
+pub fn to_vec<T>(value: &T) -> Result<Vec<u8>>
 where
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
     let mut writer = Vec::with_capacity(128);
-    try!(to_writer(&mut writer, value));
+    tri!(to_writer(&mut writer, value));
     Ok(writer)
 }
 
@@ -2203,12 +2188,12 @@ where
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_vec_pretty<T: ?Sized>(value: &T) -> Result<Vec<u8>>
+pub fn to_vec_pretty<T>(value: &T) -> Result<Vec<u8>>
 where
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
     let mut writer = Vec::with_capacity(128);
-    try!(to_writer_pretty(&mut writer, value));
+    tri!(to_writer_pretty(&mut writer, value));
     Ok(writer)
 }
 
@@ -2219,11 +2204,11 @@ where
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_string<T: ?Sized>(value: &T) -> Result<String>
+pub fn to_string<T>(value: &T) -> Result<String>
 where
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
-    let vec = try!(to_vec(value));
+    let vec = tri!(to_vec(value));
     let string = unsafe {
         // We do not emit invalid UTF-8.
         String::from_utf8_unchecked(vec)
@@ -2238,11 +2223,11 @@ where
 /// Serialization can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 #[inline]
-pub fn to_string_pretty<T: ?Sized>(value: &T) -> Result<String>
+pub fn to_string_pretty<T>(value: &T) -> Result<String>
 where
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
-    let vec = try!(to_vec_pretty(value));
+    let vec = tri!(to_vec_pretty(value));
     let string = unsafe {
         // We do not emit invalid UTF-8.
         String::from_utf8_unchecked(vec)
@@ -2250,12 +2235,12 @@ where
     Ok(string)
 }
 
-fn indent<W: ?Sized>(wr: &mut W, n: usize, s: &[u8]) -> io::Result<()>
+fn indent<W>(wr: &mut W, n: usize, s: &[u8]) -> io::Result<()>
 where
-    W: io::Write,
+    W: ?Sized + io::Write,
 {
     for _ in 0..n {
-        try!(wr.write_all(s));
+        tri!(wr.write_all(s));
     }
 
     Ok(())

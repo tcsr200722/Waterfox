@@ -11,8 +11,18 @@ if [[ -f nss/nspr.patch && "$ALLOW_NSPR_PATCH" == "1" ]]; then
   popd
 fi
 
+# Dependencies
+# For MacOS we have hardware in the CI which doesn't allow us o deploy VMs.
+# The setup is hardcoded and can't be changed easily.
+# This part is a helper We install dependencies manually to help.
+if [ "$(uname)" = "Darwin" ]; then
+  python3 -m pip install --user gyp-next
+  python3 -m pip install --user ninja
+  export PATH="$(python3 -m site --user-base)/bin:${PATH}"
+fi
+
 # Build.
-nss/build.sh -g -v --enable-libpkix "$@"
+nss/build.sh -g -v --enable-libpkix -Denable_draft_hpke=1 "$@"
 
 # Package.
 if [[ $(uname) = "Darwin" ]]; then

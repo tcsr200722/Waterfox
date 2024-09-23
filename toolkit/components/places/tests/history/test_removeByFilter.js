@@ -9,6 +9,7 @@ This test will ideally test the following cases
     Case A 3: Page has random subhost, with same host, removed by wildcard
     Case A 4: Page is localhost and localhost:port, removed by host
     Case A 5: Page is a `file://` type address, removed by empty host
+    Case A 6: Page has a uri with a trailing dot
     Cases A 1,2,3 will be tried with and without bookmarks added (which prevent page deletion)
   Case B: Tests in which no pages are removed (Inverses)
     Case B 1 (inverse): Page has no visits in timeframe, and nothing is deleted
@@ -35,7 +36,7 @@ add_task(async function test_removeByFilter() {
     "Witness URI is in database"
   );
 
-  let removeByFilterTester = async function(
+  let removeByFilterTester = async function (
     visits,
     filter,
     checkBeforeRemove,
@@ -58,9 +59,13 @@ add_task(async function test_removeByFilter() {
     await checkBeforeRemove();
 
     // Take care of any observers (due to bookmarks)
-    let { observer, promiseObserved } = getObserverPromise(bookmarkedUri);
-    if (observer) {
-      PlacesUtils.history.addObserver(observer, false);
+    let { placesEventListener, promiseObserved } =
+      getObserverPromise(bookmarkedUri);
+    if (placesEventListener) {
+      PlacesObservers.addListener(
+        ["page-title-changed", "history-cleared", "page-removed"],
+        placesEventListener
+      );
     }
     // Perfom delete operation on database
     let removed = false;
@@ -83,10 +88,12 @@ add_task(async function test_removeByFilter() {
     }
     await checkAfterRemove();
     await promiseObserved;
-    if (observer) {
-      PlacesUtils.history.removeObserver(observer);
-      // Remove the added bookmarks as they interfere with following tests
+    if (placesEventListener) {
       await PlacesUtils.bookmarks.eraseEverything();
+      PlacesObservers.removeListener(
+        ["page-title-changed", "history-cleared", "page-removed"],
+        placesEventListener
+      );
     }
     Assert.ok(
       await PlacesTestUtils.isPageInDB(witnessURI),
@@ -108,6 +115,7 @@ add_task(async function test_removeByFilter() {
     "http://localhost/" + Math.random(),
   ];
   const fileUriList = ["file:///home/user/files" + Math.random()];
+  const trailingDotUriList = ["http://example.com./" + Math.random()];
   const title = "Title " + Math.random();
   let sameHostVisits = [
     {
@@ -159,22 +167,28 @@ add_task(async function test_removeByFilter() {
       title,
     },
   ];
-  let assertInDB = async function(aUri) {
+  let trailingDotVisits = [
+    {
+      uri: trailingDotUriList[0],
+      title,
+    },
+  ];
+  let assertInDB = async function (aUri) {
     Assert.ok(await PlacesTestUtils.isPageInDB(aUri));
   };
-  let assertNotInDB = async function(aUri) {
+  let assertNotInDB = async function (aUri) {
     Assert.ok(!(await PlacesTestUtils.isPageInDB(aUri)));
   };
   for (let callbackUse of [true, false]) {
     // Case A Positives
     for (let bookmarkUse of [true, false]) {
-      let bookmarkedUri = arr => undefined;
+      let bookmarkedUri = () => undefined;
       let checkableArray = arr => arr;
       let checkClosure = assertNotInDB;
       if (bookmarkUse) {
         bookmarkedUri = arr => arr[0];
         checkableArray = arr => arr.slice(1);
-        checkClosure = function(aUri) {};
+        checkClosure = function () {};
       }
       // Case A 1: Dates
       await removeByFilterTester(
@@ -240,6 +254,22 @@ add_task(async function test_removeByFilter() {
       },
       async () => {
         for (let uri of fileUriList) {
+          await assertNotInDB(uri);
+        }
+      },
+      callbackUse
+    );
+    // Case A 6: Trailing Dot Hostname
+    await removeByFilterTester(
+      trailingDotVisits,
+      { host: "example.com." },
+      async () => {
+        for (let uri of trailingDotUriList) {
+          await assertInDB(uri);
+        }
+      },
+      async () => {
+        for (let uri of trailingDotUriList) {
           await assertNotInDB(uri);
         }
       },
@@ -348,11 +378,15 @@ add_task(async function test_error_cases() {
   );
   Assert.throws(
     () => PlacesUtils.history.removeVisitsByFilter({ beginDate: "now" }),
-    /TypeError: Expected a Date/
+    /TypeError: Expected a valid Date/
   );
   Assert.throws(
     () => PlacesUtils.history.removeByFilter({ beginDate: Date.now() }),
-    /TypeError: Expected a Date/
+    /TypeError: Expected a valid Date/
+  );
+  Assert.throws(
+    () => PlacesUtils.history.removeByFilter({ beginDate: new Date(NaN) }),
+    /TypeError: Expected a valid Date/
   );
   Assert.throws(
     () =>
@@ -388,10 +422,6 @@ add_task(async function test_error_cases() {
   );
   Assert.throws(
     () => PlacesUtils.history.removeByFilter({ host: "*" }),
-    /TypeError: Expected well formed hostname string for/
-  );
-  Assert.throws(
-    () => PlacesUtils.history.removeByFilter({ host: "local.host." }),
     /TypeError: Expected well formed hostname string for/
   );
   Assert.throws(
@@ -442,52 +472,46 @@ add_task(async function test_chunking() {
 
 function getObserverPromise(bookmarkedUri) {
   if (!bookmarkedUri) {
-    return { observer: null, promiseObserved: Promise.resolve() };
+    return { promiseObserved: Promise.resolve() };
   }
-  let observer;
+  let placesEventListener;
   let promiseObserved = new Promise((resolve, reject) => {
-    observer = {
-      onBeginUpdateBatch() {},
-      onEndUpdateBatch() {},
-      onTitleChanged(aUri) {
-        reject(new Error("Unexpected call to onTitleChanged"));
-      },
-      onClearHistory() {
-        reject(new Error("Unexpected call to onClearHistory"));
-      },
-      onPageChanged(aUri) {
-        reject(new Error("Unexpected call to onPageChanged"));
-      },
-      onFrecencyChanged(aURI) {},
-      onManyFrecenciesChanged() {},
-      onDeleteURI(aURI) {
-        try {
-          Assert.notEqual(
-            aURI.spec,
-            bookmarkedUri,
-            "Bookmarked URI should not be deleted"
-          );
-        } finally {
-          resolve();
+    placesEventListener = events => {
+      for (const event of events) {
+        switch (event.type) {
+          case "page-title-changed": {
+            reject(new Error("Unexpected page-title-changed event happens"));
+            break;
+          }
+          case "history-cleared": {
+            reject(new Error("Unexpected history-cleared event happens"));
+            break;
+          }
+          case "page-removed": {
+            if (event.isRemovedFromStore) {
+              Assert.notEqual(
+                event.url,
+                bookmarkedUri,
+                "Bookmarked URI should not be deleted"
+              );
+            } else {
+              Assert.equal(
+                event.isPartialVisistsRemoval,
+                false,
+                "Observing page-removed deletes all visits"
+              );
+              Assert.equal(
+                event.url,
+                bookmarkedUri,
+                "Bookmarked URI should have all visits removed but not the page itself"
+              );
+            }
+            resolve();
+            break;
+          }
         }
-      },
-      onDeleteVisits(aURI, aPartialRemoval) {
-        try {
-          Assert.equal(
-            aPartialRemoval,
-            false,
-            "Observing onDeleteVisits deletes all visits"
-          );
-          Assert.equal(
-            aURI.spec,
-            bookmarkedUri,
-            "Bookmarked URI should have all visits removed but not the page itself"
-          );
-        } finally {
-          resolve();
-        }
-      },
+      }
     };
   });
-  return { observer, promiseObserved };
+  return { placesEventListener, promiseObserved };
 }

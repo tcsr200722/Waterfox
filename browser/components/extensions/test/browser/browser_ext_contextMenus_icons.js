@@ -17,7 +17,7 @@ add_task(async function test_root_icon() {
       name: "contextMenus icons",
       permissions: ["contextMenus"],
       icons: {
-        "18": "extension.png",
+        18: "extension.png",
       },
     },
 
@@ -25,7 +25,7 @@ add_task(async function test_root_icon() {
       "extension.png": IMAGE_ARRAYBUFFER,
     },
 
-    background: function() {
+    background: function () {
       let menuitemId = browser.contextMenus.create({
         title: "child-to-delete",
         onclick: () => {
@@ -112,7 +112,7 @@ add_task(async function test_child_icon() {
     manifest: {
       permissions: ["contextMenus"],
       icons: {
-        "18": "black_icon.png",
+        18: "black_icon.png",
       },
     },
 
@@ -123,7 +123,7 @@ add_task(async function test_child_icon() {
       "green_icon.png": IMAGE_ARRAYBUFFER_GREEN,
     },
 
-    background: function() {
+    background: function () {
       browser.test.onMessage.addListener(msg => {
         if (msg !== "add-additional-contextmenu-items") {
           return;
@@ -269,7 +269,7 @@ add_task(async function test_manifest_without_icons() {
   let items = menu.getElementsByAttribute("label", "first item");
   is(items.length, 1, "Found first item");
   // manifest.json does not declare icons, so the root menu item shouldn't have an icon either.
-  is(items[0].getAttribute("image"), "", "Root menu must not have an icon");
+  is(items[0].getAttribute("image"), null, "Root menu must not have an icon");
 
   await closeExtensionContextMenu(items[0]);
   await extension.awaitMessage("added-second-item");
@@ -281,17 +281,14 @@ add_task(async function test_manifest_without_icons() {
   is(items.length, 1, "Auto-generated root item exists");
   is(
     items[0].getAttribute("image"),
-    "",
+    null,
     "Auto-generated menu root must not have an icon"
   );
 
   items = menu.getElementsByAttribute("label", "first item");
   is(items.length, 1, "First child item should exist");
   is(
-    items[0]
-      .getAttribute("image")
-      .split("/")
-      .pop(),
+    items[0].getAttribute("image").split("/").pop(),
     "red.png",
     "First item should have an icon"
   );
@@ -299,10 +296,7 @@ add_task(async function test_manifest_without_icons() {
   items = menu.getElementsByAttribute("label", "second item");
   is(items.length, 1, "Secobnd child item should exist");
   is(
-    items[0]
-      .getAttribute("image")
-      .split("/")
-      .pop(),
+    items[0].getAttribute("image").split("/").pop(),
     "green.png",
     "Second item should have an icon"
   );
@@ -331,7 +325,7 @@ add_task(async function test_child_icon_update() {
     manifest: {
       permissions: ["contextMenus"],
       icons: {
-        "18": "black_icon.png",
+        18: "black_icon.png",
       },
     },
 
@@ -341,7 +335,7 @@ add_task(async function test_child_icon_update() {
       "blue_icon.png": IMAGE_ARRAYBUFFER_BLUE,
     },
 
-    background: function() {
+    background: function () {
       browser.test.onMessage.addListener(msg => {
         if (msg === "update-contextmenu-item") {
           browser.contextMenus.update(
@@ -470,7 +464,7 @@ add_task(async function test_child_icon_update() {
   contextMenuChild2 = contextMenu.getElementsByAttribute("label", "child2")[0];
   is(
     contextMenuChild2.getAttribute("image"),
-    "",
+    null,
     "Second child should not have an icon"
   );
 

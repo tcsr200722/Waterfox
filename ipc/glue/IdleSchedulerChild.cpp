@@ -9,16 +9,18 @@
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/IdlePeriodState.h"
+#include "mozilla/Telemetry.h"
 #include "BackgroundChild.h"
 
-namespace mozilla {
-namespace ipc {
+namespace mozilla::ipc {
 
 static IdleSchedulerChild* sMainThreadIdleScheduler = nullptr;
+static bool sIdleSchedulerDestroyed = false;
 
 IdleSchedulerChild::~IdleSchedulerChild() {
   if (sMainThreadIdleScheduler == this) {
     sMainThreadIdleScheduler = nullptr;
+    sIdleSchedulerDestroyed = true;
   }
   MOZ_ASSERT(!mIdlePeriodState);
 }
@@ -28,11 +30,11 @@ void IdleSchedulerChild::Init(IdlePeriodState* aIdlePeriodState) {
 
   RefPtr<IdleSchedulerChild> scheduler = this;
   auto resolve =
-      [&](Tuple<mozilla::Maybe<SharedMemoryHandle>, uint32_t>&& aResult) {
-        if (Get<0>(aResult)) {
-          mActiveCounter.SetHandle(*Get<0>(aResult), false);
+      [&](std::tuple<mozilla::Maybe<SharedMemoryHandle>, uint32_t>&& aResult) {
+        if (std::get<0>(aResult)) {
+          mActiveCounter.SetHandle(std::move(*std::get<0>(aResult)), false);
           mActiveCounter.Map(sizeof(int32_t));
-          mChildId = Get<1>(aResult);
+          mChildId = std::get<1>(aResult);
           if (mChildId && mIdlePeriodState && mIdlePeriodState->IsActive()) {
             SetActive();
           }
@@ -73,6 +75,57 @@ bool IdleSchedulerChild::SetPaused() {
   return false;
 }
 
+RefPtr<IdleSchedulerChild::MayGCPromise> IdleSchedulerChild::MayGCNow() {
+  if (mIsRequestingGC || mIsDoingGC) {
+    return MayGCPromise::CreateAndResolve(false, __func__);
+  }
+
+  mIsRequestingGC = true;
+  return SendRequestGC()->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [self = RefPtr(this)](bool aIgnored) {
+        // Only one of these may be true at a time.
+        MOZ_ASSERT(!(self->mIsRequestingGC && self->mIsDoingGC));
+
+        // The parent process always says yes, sometimes after a delay.
+        if (self->mIsRequestingGC) {
+          self->mIsRequestingGC = false;
+          self->mIsDoingGC = true;
+          return MayGCPromise::CreateAndResolve(true, __func__);
+        }
+        return MayGCPromise::CreateAndResolve(false, __func__);
+      },
+      [self = RefPtr(this)](ResponseRejectReason reason) {
+        self->mIsRequestingGC = false;
+        return MayGCPromise::CreateAndReject(reason, __func__);
+      });
+}
+
+void IdleSchedulerChild::StartedGC() {
+  // Only one of these may be true at a time.
+  MOZ_ASSERT(!(mIsRequestingGC && mIsDoingGC));
+
+  // If mRequestingGC was true then when the outstanding GC request returns
+  // it'll see that the GC has already started.
+  mIsRequestingGC = false;
+
+  if (!mIsDoingGC) {
+    if (CanSend()) {
+      SendStartedGC();
+    }
+    mIsDoingGC = true;
+  }
+}
+
+void IdleSchedulerChild::DoneGC() {
+  if (mIsDoingGC) {
+    if (CanSend()) {
+      SendDoneGC();
+    }
+    mIsDoingGC = false;
+  }
+}
+
 IdleSchedulerChild* IdleSchedulerChild::GetMainThreadIdleScheduler() {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -80,14 +133,19 @@ IdleSchedulerChild* IdleSchedulerChild::GetMainThreadIdleScheduler() {
     return sMainThreadIdleScheduler;
   }
 
+  if (sIdleSchedulerDestroyed) {
+    return nullptr;
+  }
+
   ipc::PBackgroundChild* background =
       ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (background) {
+    // this is nulled out on our destruction, so we don't need to worry
     sMainThreadIdleScheduler = new ipc::IdleSchedulerChild();
-    background->SendPIdleSchedulerConstructor(sMainThreadIdleScheduler);
+    MOZ_ALWAYS_TRUE(
+        background->SendPIdleSchedulerConstructor(sMainThreadIdleScheduler));
   }
   return sMainThreadIdleScheduler;
 }
 
-}  // namespace ipc
-}  // namespace mozilla
+}  // namespace mozilla::ipc

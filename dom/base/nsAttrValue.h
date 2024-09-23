@@ -16,20 +16,18 @@
 
 #include "nscore.h"
 #include "nsString.h"
-#include "nsStringBuffer.h"
+#include "mozilla/StringBuffer.h"
 #include "nsColor.h"
 #include "nsCaseTreatment.h"
 #include "nsMargin.h"
-#include "nsCOMPtr.h"
 #include "nsStringFwd.h"
 #include "nsTArrayForwardDeclare.h"
 #include "nsAtom.h"
-#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/AtomArray.h"
 #include "mozilla/EnumTypeTraits.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/SVGAttrValueWrapper.h"
 
+class nsIPrincipal;
 class nsIURI;
 class nsStyledElement;
 struct MiscContainer;
@@ -37,6 +35,39 @@ struct MiscContainer;
 namespace mozilla {
 class DeclarationBlock;
 class ShadowParts;
+class SVGAnimatedIntegerPair;
+class SVGAnimatedLength;
+class SVGAnimatedNumberPair;
+class SVGAnimatedOrient;
+class SVGAnimatedPreserveAspectRatio;
+class SVGAnimatedViewBox;
+class SVGLengthList;
+class SVGNumberList;
+class SVGPathData;
+class SVGPointList;
+class SVGStringList;
+class SVGTransformList;
+
+struct AttrAtomArray {
+  AtomArray mArray;
+  mutable bool mMayContainDuplicates = false;
+  UniquePtr<AttrAtomArray> CreateDeduplicatedCopyIfDifferent() const {
+    if (!mMayContainDuplicates) {
+      return nullptr;
+    }
+    return CreateDeduplicatedCopyIfDifferentImpl();
+  }
+  bool operator==(const AttrAtomArray& aOther) const {
+    return mArray == aOther.mArray;
+  }
+
+ private:
+  UniquePtr<AttrAtomArray> CreateDeduplicatedCopyIfDifferentImpl() const;
+};
+
+namespace dom {
+class DOMString;
+}
 }  // namespace mozilla
 
 #define NS_ATTRVALUE_MAX_STRINGLENGTH_ATOM 12
@@ -64,20 +95,22 @@ const uintptr_t NS_ATTRVALUE_BASETYPE_MASK = 3;
               ~NS_ATTRVALUE_ENUMTABLE_VALUE_NEEDS_TO_UPPER)))
 
 /**
- * A class used to construct a nsString from a nsStringBuffer (we might
+ * A class used to construct a nsString from a mozilla::StringBuffer (we might
  * want to move this to nsString at some point).
  *
  * WARNING: Note that nsCheapString doesn't take an explicit length -- it
- * assumes the string is maximally large, given the nsStringBuffer's storage
- * size.  This means the given string buffer *must* be sized exactly correctly
- * for the string it contains (including one byte for a null terminator).  If
- * it has any unused storage space, then that will result in bogus characters
- * at the end of our nsCheapString.
+ * assumes the string is maximally large, given the mozilla::StringBuffer's
+ * storage size.  This means the given string buffer *must* be sized exactly
+ * correctly for the string it contains (including one byte for a null
+ * terminator).  If it has any unused storage space, then that will result in
+ * bogus characters at the end of our nsCheapString.
  */
 class nsCheapString : public nsString {
  public:
-  explicit nsCheapString(nsStringBuffer* aBuf) {
-    if (aBuf) aBuf->ToString(aBuf->StorageSize() / sizeof(char16_t) - 1, *this);
+  explicit nsCheapString(mozilla::StringBuffer* aBuf) {
+    if (aBuf) {
+      Assign(aBuf, aBuf->StorageSize() / sizeof(char16_t) - 1);
+    }
   }
 };
 
@@ -101,7 +134,6 @@ class nsAttrValue {
     eImage,
     eAtomArray,
     eDoubleValue,
-    eIntMarginValue,
     // eShadowParts is refcounted in the misc container, as we do copy attribute
     // values quite a bit (for example to process style invalidation), and the
     // underlying value could get expensive to copy.
@@ -128,7 +160,6 @@ class nsAttrValue {
   explicit nsAttrValue(nsAtom* aValue);
   nsAttrValue(already_AddRefed<mozilla::DeclarationBlock> aValue,
               const nsAString* aSerialized);
-  explicit nsAttrValue(const nsIntMargin& aValue);
   ~nsAttrValue();
 
   inline const nsAttrValue& operator=(const nsAttrValue& aOther);
@@ -155,7 +186,6 @@ class nsAttrValue {
   void SetTo(already_AddRefed<mozilla::DeclarationBlock> aValue,
              const nsAString* aSerialized);
   void SetTo(nsIURI* aValue, const nsAString* aSerialized);
-  void SetTo(const nsIntMargin& aValue);
   void SetTo(const mozilla::SVGAnimatedIntegerPair& aValue,
              const nsAString* aSerialized);
   void SetTo(const mozilla::SVGAnimatedLength& aValue,
@@ -190,6 +220,8 @@ class nsAttrValue {
 
   void SwapValueWith(nsAttrValue& aOther);
 
+  void RemoveDuplicatesFromAtomArray();
+
   void ToString(nsAString& aResult) const;
   inline void ToString(mozilla::dom::DOMString& aResult) const;
 
@@ -208,11 +240,10 @@ class nsAttrValue {
   bool GetColorValue(nscolor& aColor) const;
   inline int16_t GetEnumValue() const;
   inline double GetPercentValue() const;
-  inline mozilla::AtomArray* GetAtomArrayValue() const;
+  inline const mozilla::AttrAtomArray* GetAtomArrayValue() const;
   inline mozilla::DeclarationBlock* GetCSSDeclarationValue() const;
   inline nsIURI* GetURLValue() const;
   inline double GetDoubleValue() const;
-  bool GetIntMarginValue(nsIntMargin& aMargin) const;
   inline const mozilla::ShadowParts& GetShadowPartsValue() const;
 
   /**
@@ -264,6 +295,7 @@ class nsAttrValue {
 
   void ParseAtom(const nsAString& aValue);
   void ParseAtomArray(const nsAString& aValue);
+  void ParseAtomArray(nsAtom* aValue);
   void ParseStringOrAtom(const nsAString& aValue);
 
   /**
@@ -296,6 +328,8 @@ class nsAttrValue {
         : tag(aTag), value(static_cast<int16_t>(aValue)) {
       static_assert(mozilla::EnumTypeFitsWithin<T, int16_t>::value,
                     "aValue must be an enum that fits within int16_t");
+      // TODO: statically assert there are no duplicate values, otherwise
+      // `GetEnumString()` above will return wrong values.
     }
 
     /** The string the value maps to */
@@ -437,15 +471,6 @@ class nsAttrValue {
   bool ParseDoubleValue(const nsAString& aString);
 
   /**
-   * Parse a margin string of format 'top, right, bottom, left' into
-   * an nsIntMargin.
-   *
-   * @param aString the string to parse
-   * @return whether the value could be parsed
-   */
-  bool ParseIntMarginValue(const nsAString& aString);
-
-  /**
    * Parse a string into a CSS style rule.
    *
    * @param aString the style attribute value to be parsed.
@@ -459,6 +484,9 @@ class nsAttrValue {
                            nsStyledElement* aElement);
 
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+
+  nsAtom* GetStoredAtom() const;
+  mozilla::StringBuffer* GetStoredStringBuffer() const;
 
  private:
   // These have to be the same as in ValueType
@@ -487,7 +515,7 @@ class nsAttrValue {
   // aType can be ePercent or eDoubleValue.
   void SetDoubleValueAndType(double aValue, ValueType aType,
                              const nsAString* aStringValue);
-  void SetColorValue(nscolor aColor, const nsAString& aString);
+  bool SetColorValue(nscolor aColor, const nsAString& aString);
   void SetMiscAtomOrString(const nsAString* aValue);
   void ResetMiscAtomOrString();
   void SetSVGType(ValueType aType, const void* aValue,
@@ -504,8 +532,7 @@ class nsAttrValue {
   // Like ClearMiscContainer, except allocates a new container if one does not
   // exist already.
   MiscContainer* EnsureEmptyMiscContainer();
-  bool EnsureEmptyAtomArray();
-  already_AddRefed<nsStringBuffer> GetStringBuffer(
+  already_AddRefed<mozilla::StringBuffer> GetStringBuffer(
       const nsAString& aValue) const;
   // Given an enum table and a particular entry in that table, return
   // the actual integer value we should store.
@@ -520,7 +547,6 @@ class nsAttrValue {
   static void DeallocMiscContainer(MiscContainer* aCont);
 
   static nsTArray<const EnumTable*>* sEnumTableArray;
-  static MiscContainer* sMiscContainerCache;
 
   /**
    * Helper for ParseHTMLDimension and ParseNonzeroHTMLDimension.

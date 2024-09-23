@@ -5,14 +5,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FeaturePolicy.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/Feature.h"
 #include "mozilla/dom/FeaturePolicyBinding.h"
 #include "mozilla/dom/FeaturePolicyParser.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
+#include "mozilla/dom/HTMLIFrameElement.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "nsContentUtils.h"
 #include "nsNetUtil.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(FeaturePolicy)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(FeaturePolicy)
@@ -65,6 +69,30 @@ void FeaturePolicy::InheritPolicy(FeaturePolicy* aParentPolicy) {
       dest->SetInheritedDeniedFeature(featureName);
     }
   });
+}
+
+void FeaturePolicy::InheritPolicy(
+    const FeaturePolicyInfo& aContainerFeaturePolicyInfo) {
+  // We create a temporary FeaturePolicy from the FeaturePolicyInfo to be able
+  // to re-use the inheriting functionality from FeaturePolicy.
+  RefPtr<dom::FeaturePolicy> featurePolicy = new dom::FeaturePolicy(nullptr);
+  featurePolicy->SetDefaultOrigin(aContainerFeaturePolicyInfo.mDefaultOrigin);
+  featurePolicy->SetInheritedDeniedFeatureNames(
+      aContainerFeaturePolicyInfo.mInheritedDeniedFeatureNames);
+
+  const auto& declaredString = aContainerFeaturePolicyInfo.mDeclaredString;
+  if (aContainerFeaturePolicyInfo.mSelfOrigin && !declaredString.IsEmpty()) {
+    featurePolicy->SetDeclaredPolicy(nullptr, declaredString,
+                                     aContainerFeaturePolicyInfo.mSelfOrigin,
+                                     aContainerFeaturePolicyInfo.mSrcOrigin);
+  }
+
+  for (const auto& featureName :
+       aContainerFeaturePolicyInfo.mAttributeEnabledFeatureNames) {
+    featurePolicy->MaybeSetAllowedPolicy(featureName);
+  }
+
+  InheritPolicy(featurePolicy);
 }
 
 void FeaturePolicy::SetInheritedDeniedFeature(const nsAString& aFeatureName) {
@@ -157,6 +185,7 @@ void FeaturePolicy::ResetDeclaredPolicy() {
   mSelfOrigin = nullptr;
   mSrcOrigin = nullptr;
   mDeclaredFeaturesInAncestorChain.Clear();
+  mAttributeEnabledFeatureNames.Clear();
 }
 
 JSObject* FeaturePolicy::WrapObject(JSContext* aCx,
@@ -264,7 +293,7 @@ void FeaturePolicy::GetAllowlistForFeature(const nsAString& aFeatureName,
   for (const Feature& feature : mFeatures) {
     if (feature.Name().Equals(aFeatureName)) {
       if (feature.AllowsAll()) {
-        aList.AppendElement(NS_LITERAL_STRING("*"));
+        aList.AppendElement(u"*"_ns);
         return;
       }
 
@@ -286,7 +315,7 @@ void FeaturePolicy::GetAllowlistForFeature(const nsAString& aFeatureName,
 
   switch (FeaturePolicyUtils::DefaultAllowListFeature(aFeatureName)) {
     case FeaturePolicyUtils::FeaturePolicyValue::eAll:
-      aList.AppendElement(NS_LITERAL_STRING("*"));
+      aList.AppendElement(u"*"_ns);
       return;
 
     case FeaturePolicyUtils::FeaturePolicyValue::eSelf: {
@@ -311,7 +340,7 @@ void FeaturePolicy::GetAllowlistForFeature(const nsAString& aFeatureName,
 void FeaturePolicy::MaybeSetAllowedPolicy(const nsAString& aFeatureName) {
   MOZ_ASSERT(FeaturePolicyUtils::IsSupportedFeature(aFeatureName) ||
              FeaturePolicyUtils::IsExperimentalFeature(aFeatureName));
-  // Skip if feature is in experimental pharse
+  // Skip if feature is in experimental phase
   if (!StaticPrefs::dom_security_featurePolicy_experimental_enabled() &&
       FeaturePolicyUtils::IsExperimentalFeature(aFeatureName)) {
     return;
@@ -325,7 +354,16 @@ void FeaturePolicy::MaybeSetAllowedPolicy(const nsAString& aFeatureName) {
   feature.SetAllowsAll();
 
   mFeatures.AppendElement(feature);
+  mAttributeEnabledFeatureNames.AppendElement(aFeatureName);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+FeaturePolicyInfo FeaturePolicy::ToFeaturePolicyInfo() const {
+  return {mInheritedDeniedFeatureNames.Clone(),
+          mAttributeEnabledFeatureNames.Clone(),
+          mDeclaredString,
+          mDefaultOrigin,
+          mSelfOrigin,
+          mSrcOrigin};
+}
+
+}  // namespace mozilla::dom

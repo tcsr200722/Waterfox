@@ -68,7 +68,7 @@ void ATKStringConverterHelper::AdjustOffsets(gint* aStartOffset,
     mStartShifted = true;
   }
 
-  if (*aEndOffset != -1 && *aEndOffset < count) {
+  if (*aEndOffset >= 0 && *aEndOffset < count) {
     (*aEndOffset)++;
     mEndShifted = true;
   }
@@ -143,12 +143,6 @@ gchar* Convert(const nsAString& aStr) {
   nsAutoCString cautoStrBOMs;
   AddBOMs(cautoStrBOMs, cautoStr);
   return g_strdup(cautoStrBOMs.get());
-}
-
-void ConvertTexttoAsterisks(nsAString& aString) {
-  for (uint32_t i = 0; i < aString.Length(); i++) {
-    aString.ReplaceLiteral(i, 1, u"*");
-  }
 }
 
 }  // namespace DOMtoATK

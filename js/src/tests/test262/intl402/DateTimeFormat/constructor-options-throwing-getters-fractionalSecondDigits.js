@@ -1,9 +1,8 @@
-// |reftest| skip-if(release_or_beta) -- Intl.DateTimeFormat-fractionalSecondDigits is not released yet
 // Copyright 2019 Google Inc. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: Checks the propagation of exceptions from the options for the DateTimeFormat constructor.
 features: [Intl.DateTimeFormat-fractionalSecondDigits]
 ---*/

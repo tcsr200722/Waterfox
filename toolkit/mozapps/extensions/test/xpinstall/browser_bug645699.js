@@ -3,6 +3,28 @@
 // content. This should be blocked by the whitelist check.
 // This verifies bug 645699
 function test() {
+  if (
+    !SpecialPowers.Services.prefs.getBoolPref(
+      "extensions.InstallTrigger.enabled"
+    ) ||
+    !SpecialPowers.Services.prefs.getBoolPref(
+      "extensions.InstallTriggerImpl.enabled"
+    )
+  ) {
+    ok(true, "InstallTrigger is not enabled");
+    return;
+  }
+
+  // prompt prior to download
+  SpecialPowers.pushPrefEnv({
+    set: [
+      ["extensions.postDownloadThirdPartyPrompt", false],
+      ["extensions.InstallTrigger.requireUserInput", false],
+      // Relax the user input requirements while running this test.
+      ["xpinstall.userActivation.required", false],
+    ],
+  });
+
   Harness.installConfirmCallback = confirm_install;
   Harness.installBlockedCallback = allow_blocked;
   Harness.installsCompletedCallback = finish_test;
@@ -15,7 +37,7 @@ function test() {
   );
 
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(gBrowser, TESTROOT + "bug645699.html");
+  BrowserTestUtils.startLoadingURIString(gBrowser, TESTROOT + "bug645699.html");
 }
 
 function allow_blocked(installInfo) {
@@ -32,14 +54,14 @@ function allow_blocked(installInfo) {
   return false;
 }
 
-function confirm_install(panel) {
+function confirm_install() {
   ok(false, "Should not see the install dialog");
   return false;
 }
 
 function finish_test(count) {
   is(count, 0, "0 Add-ons should have been successfully installed");
-  PermissionTestUtils.remove("http://addons.mozilla.org", "install");
+  PermissionTestUtils.remove("http://example.org/", "install");
 
   gBrowser.removeCurrentTab();
   Harness.finish();

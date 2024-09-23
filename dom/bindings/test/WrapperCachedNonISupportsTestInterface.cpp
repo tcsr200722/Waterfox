@@ -7,13 +7,7 @@
 #include "mozilla/dom/WrapperCachedNonISupportsTestInterface.h"
 #include "mozilla/dom/TestFunctionsBinding.h"
 
-namespace mozilla {
-namespace dom {
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(WrapperCachedNonISupportsTestInterface,
-                                     AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(WrapperCachedNonISupportsTestInterface,
-                                       Release)
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(WrapperCachedNonISupportsTestInterface)
 
@@ -31,5 +25,4 @@ WrapperCachedNonISupportsTestInterface::Constructor(
   return result.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

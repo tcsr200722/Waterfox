@@ -4,7 +4,6 @@
 
 "use strict";
 
-const Services = require("Services");
 const {
   CLEAR_REQUESTS,
   OPEN_NETWORK_DETAILS,
@@ -25,7 +24,8 @@ const {
   PANELS,
   MIN_COLUMN_WIDTH,
   SET_COLUMNS_WIDTH,
-} = require("devtools/client/netmonitor/src/constants");
+  SET_HEADERS_URL_PREVIEW_EXPANDED,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 const cols = {
   status: true,
@@ -42,6 +42,7 @@ const cols = {
   setCookies: false,
   transferred: true,
   contentSize: true,
+  priority: false,
   startTime: false,
   endTime: false,
   responseTime: false,
@@ -81,10 +82,12 @@ function UI(initialState = {}) {
       "devtools.netmonitor.persistlog"
     ),
     browserCacheDisabled: Services.prefs.getBoolPref("devtools.cache.disabled"),
+    slowLimit: Services.prefs.getIntPref("devtools.netmonitor.audits.slow"),
     statisticsOpen: false,
     waterfallWidth: null,
     networkActionOpen: false,
     selectedActionBarTabId: null,
+    shouldExpandHeadersUrlPreview: false,
     ...initialState,
   };
 }
@@ -161,6 +164,13 @@ function setActionBarTab(state, action) {
   };
 }
 
+function setHeadersUrlPreviewExpanded(state, action) {
+  return {
+    ...state,
+    shouldExpandHeadersUrlPreview: action.expanded,
+  };
+}
+
 function toggleColumn(state, action) {
   const { column } = action;
 
@@ -197,7 +207,7 @@ function setColumnsWidth(state, action) {
 
   return {
     ...state,
-    columnsData: columnsData,
+    columnsData,
   };
 }
 
@@ -235,6 +245,8 @@ function ui(state = UI(), action) {
       return setColumnsWidth(state, action);
     case OPEN_ACTION_BAR:
       return openNetworkAction(state, action);
+    case SET_HEADERS_URL_PREVIEW_EXPANDED:
+      return setHeadersUrlPreviewExpanded(state, action);
     default:
       return state;
   }

@@ -1,53 +1,15 @@
-from __future__ import absolute_import
-
-import io
-import abc
 import sys
-import email
+import platform
 
 
-if sys.version_info > (3,):  # pragma: nocover
-    import builtins
-    from configparser import ConfigParser
-    from contextlib import suppress
-    FileNotFoundError = builtins.FileNotFoundError
-    IsADirectoryError = builtins.IsADirectoryError
-    NotADirectoryError = builtins.NotADirectoryError
-    PermissionError = builtins.PermissionError
-    map = builtins.map
-else:  # pragma: nocover
-    from backports.configparser import ConfigParser
-    from itertools import imap as map  # type: ignore
-    from contextlib2 import suppress  # noqa
-    FileNotFoundError = IOError, OSError
-    IsADirectoryError = IOError, OSError
-    NotADirectoryError = IOError, OSError
-    PermissionError = IOError, OSError
+__all__ = ['install', 'NullFinder', 'Protocol']
 
-if sys.version_info > (3, 5):  # pragma: nocover
-    import pathlib
-else:  # pragma: nocover
-    import pathlib2 as pathlib
 
 try:
-    ModuleNotFoundError = builtins.FileNotFoundError
-except (NameError, AttributeError):  # pragma: nocover
-    ModuleNotFoundError = ImportError  # type: ignore
-
-
-if sys.version_info >= (3,):  # pragma: nocover
-    from importlib.abc import MetaPathFinder
-else:  # pragma: nocover
-    class MetaPathFinder(object):
-        __metaclass__ = abc.ABCMeta
-
-
-__metaclass__ = type
-__all__ = [
-    'install', 'NullFinder', 'MetaPathFinder', 'ModuleNotFoundError',
-    'pathlib', 'ConfigParser', 'map', 'suppress', 'FileNotFoundError',
-    'NotADirectoryError', 'email_message_from_string',
-    ]
+    from typing import Protocol
+except ImportError:  # pragma: no cover
+    # Python 3.7 compatibility
+    from typing_extensions import Protocol  # type: ignore
 
 
 def install(cls):
@@ -71,11 +33,12 @@ def disable_stdlib_finder():
     See #91 for more background for rationale on this sketchy
     behavior.
     """
+
     def matches(finder):
-        return (
-            getattr(finder, '__module__', None) == '_frozen_importlib_external'
-            and hasattr(finder, 'find_distributions')
-            )
+        return getattr(
+            finder, '__module__', None
+        ) == '_frozen_importlib_external' and hasattr(finder, 'find_distributions')
+
     for finder in filter(matches, sys.meta_path):  # pragma: nocover
         del finder.find_distributions
 
@@ -85,6 +48,7 @@ class NullFinder:
     A "Finder" (aka "MetaClassFinder") that never finds any modules,
     but may find distributions.
     """
+
     @staticmethod
     def find_spec(*args, **kwargs):
         return None
@@ -98,34 +62,11 @@ class NullFinder:
     find_module = find_spec
 
 
-def py2_message_from_string(text):  # nocoverpy3
-    # Work around https://bugs.python.org/issue25545 where
-    # email.message_from_string cannot handle Unicode on Python 2.
-    io_buffer = io.StringIO(text)
-    return email.message_from_file(io_buffer)
-
-
-email_message_from_string = (
-    py2_message_from_string
-    if sys.version_info < (3,) else
-    email.message_from_string
-    )
-
-
-class PyPy_repr:
+def pypy_partial(val):
     """
-    Override repr for EntryPoint objects on PyPy to avoid __iter__ access.
-    Ref #97, #102.
+    Adjust for variable stacklevel on partial under PyPy.
+
+    Workaround for #327.
     """
-    affected = hasattr(sys, 'pypy_version_info')
-
-    def __compat_repr__(self):  # pragma: nocover
-        def make_param(name):
-            value = getattr(self, name)
-            return '{name}={value!r}'.format(**locals())
-        params = ', '.join(map(make_param, self._fields))
-        return 'EntryPoint({params})'.format(**locals())
-
-    if affected:  # pragma: nocover
-        __repr__ = __compat_repr__
-    del affected
+    is_pypy = platform.python_implementation() == 'PyPy'
+    return val + is_pypy

@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGEllipseElement_h
-#define mozilla_dom_SVGEllipseElement_h
+#ifndef DOM_SVG_SVGELLIPSEELEMENT_H_
+#define DOM_SVG_SVGELLIPSEELEMENT_H_
 
 #include "nsCSSPropertyID.h"
 #include "SVGAnimatedLength.h"
@@ -19,14 +19,13 @@ class ComputedStyle;
 
 namespace dom {
 
-typedef SVGGeometryElement SVGEllipseElementBase;
+using SVGEllipseElementBase = SVGGeometryElement;
 
 class SVGEllipseElement final : public SVGEllipseElementBase {
  protected:
   explicit SVGEllipseElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
   friend nsresult(::NS_NewSVGEllipseElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -34,17 +33,18 @@ class SVGEllipseElement final : public SVGEllipseElementBase {
  public:
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
 
-  // nsSVGSVGElement methods:
-  virtual bool HasValidDimensions() const override;
+  // SVGSVGElement methods:
+  bool HasValidDimensions() const override;
 
   // SVGGeometryElement methods:
   virtual bool GetGeometryBounds(
       Rect* aBounds, const StrokeOptions& aStrokeOptions,
       const Matrix& aToBoundsSpace,
       const Matrix* aToNonScalingStrokeSpace = nullptr) override;
-  virtual already_AddRefed<Path> BuildPath(PathBuilder* aBuilder) override;
+  already_AddRefed<Path> BuildPath(PathBuilder* aBuilder) override;
+  bool IsClosedLoop() const override { return true; }
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   static bool IsLengthChangedViaCSS(const ComputedStyle& aNewStyle,
                                     const ComputedStyle& aOldStyle);
@@ -57,7 +57,7 @@ class SVGEllipseElement final : public SVGEllipseElementBase {
   already_AddRefed<DOMSVGAnimatedLength> Ry();
 
  protected:
-  virtual LengthAttributesInfo GetLengthInfo() override;
+  LengthAttributesInfo GetLengthInfo() override;
 
   enum { CX, CY, RX, RY };
   SVGAnimatedLength mLengthAttributes[4];
@@ -67,4 +67,4 @@ class SVGEllipseElement final : public SVGEllipseElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGEllipseElement_h
+#endif  // DOM_SVG_SVGELLIPSEELEMENT_H_

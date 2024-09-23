@@ -7,8 +7,6 @@ Constants for SCHEDULES configuration in moz.build files and for
 skip-unless-schedules optimizations in task-graph generation.
 """
 
-from __future__ import absolute_import, unicode_literals, print_function
-
 # TODO: ideally these lists could be specified in moz.build itself
 
 # Inclusive components are those which are scheduled when certain files are
@@ -16,19 +14,20 @@ from __future__ import absolute_import, unicode_literals, print_function
 # `SCHEDULES.inclusive` using `+=`, but can also be used as exclusive
 # components for files which *only* affect the named component.
 INCLUSIVE_COMPONENTS = [
-    'docs',
-    'py-lint',
-    'js-lint',
-    'yaml-lint',
+    "docs",
+    "py-lint",
+    "js-lint",
+    "yaml-lint",
     # inclusive test suites -- these *only* run when certain files have changed
-    'jittest',
-    'test-verify',
-    'test-verify-gpu',
-    'test-verify-wpt',
-    'test-coverage',
-    'test-coverage-wpt',
-    'jsreftest',
-    'android-hw-gfx',
+    "jittest",
+    "test-verify",
+    "test-verify-gpu",
+    "test-verify-wpt",
+    "test-coverage",
+    "test-coverage-wpt",
+    "jsreftest",
+    "android-hw-gfx",
+    "rusttests",
 ]
 INCLUSIVE_COMPONENTS = sorted(INCLUSIVE_COMPONENTS)
 
@@ -39,37 +38,45 @@ INCLUSIVE_COMPONENTS = sorted(INCLUSIVE_COMPONENTS)
 # denotes a new mutually exclusive set of groups that tasks can belong to.
 EXCLUSIVE_COMPONENTS = [
     # os families
-    'android',
-    'linux',
-    'macosx',
-    'windows',
+    "android",
+    "linux",
+    "macosx",
+    "windows",
+    "ios",
+    # application
+    "firefox",
+    "fenix",
+    "focus-android",
     # broad test harness categories
-    'awsy',
-    'condprofile',
-    'cppunittest',
-    'firefox-ui',
-    'geckoview-junit',
-    'gtest',
-    'marionette',
-    'mochitest',
-    'raptor',
-    'reftest',
-    'talos',
-    'telemetry-tests-client',
-    'xpcshell',
-    'xpcshell-coverage',
-    'web-platform-tests',
+    "awsy",
+    "condprofile",
+    "cppunittest",
+    "firefox-ui",
+    "fuzztest",
+    "geckoview-junit",
+    "gtest",
+    "marionette",
+    "mochitest",
+    "raptor",
+    "reftest",
+    "talos",
+    "telemetry-tests-client",
+    "xpcshell",
+    "xpcshell-coverage",
+    "web-platform-tests",
     # specific test suites
-    'crashtest',
-    'mochitest-a11y',
-    'mochitest-browser-chrome',
-    'mochitest-chrome',
-    'mochitest-plain',
-    'web-platform-tests-crashtest',
-    'web-platform-tests-reftest',
-    'web-platform-tests-wdspec',
-    # webrender enabled
-    'webrender',
+    "crashtest",
+    "mochitest-a11y",
+    "mochitest-browser-a11y",
+    "mochitest-browser-media",
+    "mochitest-browser-chrome",
+    "mochitest-chrome",
+    "mochitest-plain",
+    "web-platform-tests-crashtest",
+    "web-platform-tests-print-reftest",
+    "web-platform-tests-reftest",
+    "web-platform-tests-wdspec",
+    "nss",
 ]
 EXCLUSIVE_COMPONENTS = sorted(EXCLUSIVE_COMPONENTS)
 ALL_COMPONENTS = INCLUSIVE_COMPONENTS + EXCLUSIVE_COMPONENTS

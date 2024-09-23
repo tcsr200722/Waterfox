@@ -3,18 +3,17 @@
 
 const TEST_URL = "data:text/html,test browsertoolbox host";
 
-add_task(async function() {
-  const { Toolbox } = require("devtools/client/framework/toolbox");
+add_task(async function () {
+  const {
+    Toolbox,
+  } = require("resource://devtools/client/framework/toolbox.js");
 
   const tab = await addTab(TEST_URL);
-  const target = await TargetFactory.forTab(tab);
   const options = { doc: document };
-  const toolbox = await gDevTools.showToolbox(
-    target,
-    null,
-    Toolbox.HostType.BROWSERTOOLBOX,
-    options
-  );
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    hostType: Toolbox.HostType.BROWSERTOOLBOX,
+    hostOptions: options,
+  });
 
   is(toolbox.topWindow, window, "Toolbox is included in browser.xhtml");
   const iframe = document.querySelector(

@@ -42,20 +42,20 @@ async function compareToNode(aItem, aNode, aIsRootItem, aExcludedGuids = []) {
   compare_prop("dateAdded");
   compare_prop("lastModified");
 
-  if (aIsRootItem && aNode.itemId != PlacesUtils.placesRootId) {
+  if (aIsRootItem && aNode.bookmarkGuid != PlacesUtils.bookmarks.rootGuid) {
     Assert.ok("parentGuid" in aItem);
     await check_has_child(aItem.parentGuid, aItem.guid);
   } else {
     check_unset("parentGuid");
   }
 
-  const BOOKMARK_ONLY_PROPS = ["uri", "iconuri", "tags", "charset", "keyword"];
+  const BOOKMARK_ONLY_PROPS = ["uri", "iconUri", "tags", "charset", "keyword"];
   const FOLDER_ONLY_PROPS = ["children", "root"];
 
   let nodesCount = 1;
 
   switch (aNode.type) {
-    case Ci.nsINavHistoryResultNode.RESULT_TYPE_FOLDER:
+    case Ci.nsINavHistoryResultNode.RESULT_TYPE_FOLDER: {
       Assert.equal(aItem.type, PlacesUtils.TYPE_X_MOZ_PLACE_CONTAINER);
       Assert.equal(aItem.typeCode, PlacesUtils.bookmarks.TYPE_FOLDER);
       compare_prop("title", "title", true);
@@ -101,12 +101,13 @@ async function compareToNode(aItem, aNode, aIsRootItem, aExcludedGuids = []) {
         check_unset("root");
       }
       break;
+    }
     case Ci.nsINavHistoryResultNode.RESULT_TYPE_SEPARATOR:
       Assert.equal(aItem.type, PlacesUtils.TYPE_X_MOZ_PLACE_SEPARATOR);
       Assert.equal(aItem.typeCode, PlacesUtils.bookmarks.TYPE_SEPARATOR);
       check_unset(...BOOKMARK_ONLY_PROPS, ...FOLDER_ONLY_PROPS);
       break;
-    default:
+    default: {
       Assert.equal(aItem.type, PlacesUtils.TYPE_X_MOZ_PLACE);
       Assert.equal(aItem.typeCode, PlacesUtils.bookmarks.TYPE_BOOKMARK);
       compare_prop("uri");
@@ -119,13 +120,13 @@ async function compareToNode(aItem, aNode, aIsRootItem, aExcludedGuids = []) {
 
       if (aNode.icon) {
         try {
-          await compareFavicons(aNode.icon, aItem.iconuri);
+          await compareFavicons(aNode.icon, aItem.iconUri);
         } catch (ex) {
           info(ex);
           todo_check_true(false);
         }
       } else {
-        check_unset(aItem.iconuri);
+        check_unset(aItem.iconUri);
       }
 
       check_unset(...FOLDER_ONLY_PROPS);
@@ -152,6 +153,7 @@ async function compareToNode(aItem, aNode, aIsRootItem, aExcludedGuids = []) {
       } else {
         Assert.equal(null, aNode.title);
       }
+    }
   }
 
   if (aIsRootItem) {
@@ -165,7 +167,7 @@ var itemsCount = 0;
 async function new_bookmark(aInfo) {
   ++itemsCount;
   if (!("url" in aInfo)) {
-    aInfo.url = uri("http://test.item." + itemsCount);
+    aInfo.url = uri("http://test.item.y" + itemsCount);
   }
 
   if (!("title" in aInfo)) {
@@ -223,7 +225,7 @@ async function test_promiseBookmarksTreeAgainstResult(
   return test_promiseBookmarksTreeForEachNode(node, aOptions, aExcludedGuids);
 }
 
-add_task(async function() {
+add_task(async function () {
   // Add some bookmarks to cover various use cases.
   await new_bookmark({ parentGuid: PlacesUtils.bookmarks.toolbarGuid });
   await new_folder({

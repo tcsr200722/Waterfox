@@ -47,7 +47,10 @@ void MustReturnFromCallerChecker::check(
   StmtToBlockMap BlockMap(TheCFG.get(), Result.Context);
   size_t CallIndex;
   const auto *Block = BlockMap.blockContainingStmt(Call, &CallIndex);
-  assert(Block && "This statement should be within the CFG!");
+  if (!Block) {
+    // This statement is not within the CFG!
+    return;
+  }
 
   if (!immediatelyReturns(Block, Result.Context, CallIndex + 1)) {
     diag(Call->getBeginLoc(),
@@ -110,7 +113,7 @@ bool MustReturnFromCallerChecker::immediatelyReturns(
   }
 
   for (size_t I = FromIdx; I < Block->size(); ++I) {
-    Optional<CFGStmt> S = (*Block)[I].getAs<CFGStmt>();
+    auto S = (*Block)[I].getAs<CFGStmt>();
     if (!S) {
       continue;
     }

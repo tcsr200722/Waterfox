@@ -12,6 +12,7 @@
 #include "nsContentUtils.h"
 #include "nsTreeBodyFrame.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/CSSOrderAwareFrameIterator.h"
 #include "mozilla/dom/TreeColumnBinding.h"
 #include "mozilla/dom/TreeColumnsBinding.h"
 #include "mozilla/dom/XULTreeElement.h"
@@ -35,7 +36,7 @@ nsTreeColumn::~nsTreeColumn() {
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsTreeColumn)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsTreeColumn)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsTreeColumn)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
@@ -49,7 +50,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsTreeColumn)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mContent)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mNext)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(nsTreeColumn)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsTreeColumn)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsTreeColumn)
@@ -88,8 +88,12 @@ nsresult nsTreeColumn::GetRect(nsTreeBodyFrame* aBodyFrame, nscoord aY,
     return NS_ERROR_FAILURE;
   }
 
-  bool isRTL = aBodyFrame->StyleVisibility()->mDirection == StyleDirection::Rtl;
+  const bool isRTL =
+      aBodyFrame->StyleVisibility()->mDirection == StyleDirection::Rtl;
   *aResult = frame->GetRect();
+  if (frame->StyleVisibility()->IsCollapse()) {
+    aResult->SizeTo(nsSize());
+  }
   aResult->y = aY;
   aResult->height = aHeight;
   if (isRTL)
@@ -132,7 +136,7 @@ void nsTreeColumn::Invalidate(ErrorResult& aRv) {
   }
 
   // Fetch the Id.
-  mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::id, mId);
+  mContent->GetAttr(nsGkAtoms::id, mId);
 
   // If we have an Id, cache the Id as an atom.
   if (!mId.IsEmpty()) {
@@ -233,19 +237,7 @@ int32_t nsTreeColumn::GetWidth(mozilla::ErrorResult& aRv) {
 }
 
 already_AddRefed<nsTreeColumn> nsTreeColumn::GetPreviousColumn() {
-  nsIFrame* frame = GetFrame();
-  while (frame) {
-    frame = frame->GetPrevSibling();
-    if (frame && frame->GetContent()->IsElement()) {
-      RefPtr<nsTreeColumn> column =
-          mColumns->GetColumnFor(frame->GetContent()->AsElement());
-      if (column) {
-        return column.forget();
-      }
-    }
-  }
-
-  return nullptr;
+  return do_AddRef(mPrevious);
 }
 
 nsTreeColumns::nsTreeColumns(nsTreeBodyFrame* aTree) : mTree(aTree) {}
@@ -441,33 +433,30 @@ void nsTreeColumns::EnsureColumns() {
     if (!colFrame) return;
 
     colFrame = colFrame->GetParent();
-    if (!colFrame) return;
+    if (!colFrame || !colFrame->GetContent()) return;
 
-    colFrame = colFrame->PrincipalChildList().FirstChild();
-    if (!colFrame) return;
-
-    // Now that we have the first visible column,
-    // we can enumerate the columns in visible order
     nsTreeColumn* currCol = nullptr;
-    while (colFrame) {
+
+    // Enumerate the columns in visible order
+    CSSOrderAwareFrameIterator iter(
+        colFrame, FrameChildListID::Principal,
+        CSSOrderAwareFrameIterator::ChildFilter::IncludeAll);
+    for (; !iter.AtEnd(); iter.Next()) {
+      nsIFrame* colFrame = iter.get();
       nsIContent* colContent = colFrame->GetContent();
-
-      if (colContent->NodeInfo()->Equals(nsGkAtoms::treecol,
-                                         kNameSpaceID_XUL)) {
-        // Create a new column structure.
-        nsTreeColumn* col = new nsTreeColumn(this, colContent->AsElement());
-        if (!col) return;
-
-        if (currCol) {
-          currCol->SetNext(col);
-          col->SetPrevious(currCol);
-        } else {
-          mFirstColumn = col;
-        }
-        currCol = col;
+      if (!colContent->IsXULElement(nsGkAtoms::treecol)) {
+        continue;
       }
+      // Create a new column structure.
+      nsTreeColumn* col = new nsTreeColumn(this, colContent->AsElement());
 
-      colFrame = colFrame->GetNextSibling();
+      if (currCol) {
+        currCol->SetNext(col);
+        col->SetPrevious(currCol);
+      } else {
+        mFirstColumn = col;
+      }
+      currCol = col;
     }
   }
 }

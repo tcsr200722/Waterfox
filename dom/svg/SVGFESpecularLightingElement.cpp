@@ -6,15 +6,15 @@
 
 #include "mozilla/dom/SVGFESpecularLightingElement.h"
 #include "mozilla/dom/SVGFESpecularLightingElementBinding.h"
-#include "nsSVGUtils.h"
-#include "nsSVGFilterInstance.h"
+#include "mozilla/SVGFilterInstance.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FESpecularLighting)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFESpecularLightingElement::WrapNode(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
@@ -62,7 +62,7 @@ SVGFESpecularLightingElement::KernelUnitLengthY() {
 
 FilterPrimitiveDescription
 SVGFESpecularLightingElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   float specularExponent = mNumberAttributes[SPECULAR_EXPONENT].GetAnimValue();
@@ -93,5 +93,13 @@ bool SVGFESpecularLightingElement::AttributeAffectsRendering(
            aAttribute == nsGkAtoms::specularExponent));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+nsresult SVGFESpecularLightingElement::BindToTree(BindContext& aCtx,
+                                                  nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feSpecularLighting);
+  }
+
+  return SVGFESpecularLightingElementBase::BindToTree(aCtx, aParent);
+}
+
+}  // namespace mozilla::dom

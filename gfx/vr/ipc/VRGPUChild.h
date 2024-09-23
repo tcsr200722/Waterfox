@@ -14,12 +14,15 @@ namespace gfx {
 
 class VRGPUChild final : public PVRGPUChild {
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRGPUChild);
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRGPUChild, final);
 
   static VRGPUChild* Get();
   static bool InitForGPUProcess(Endpoint<PVRGPUChild>&& aEndpoint);
   static bool IsCreated();
   static void Shutdown();
+
+  mozilla::ipc::IPCResult RecvNotifyPuppetComplete();
+  mozilla::ipc::IPCResult RecvNotifyServiceStarted();
 
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
   bool IsClosed();

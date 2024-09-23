@@ -48,7 +48,7 @@ interface nsIProxyInfo : nsISupports
    * This attribute specifies flags that were used by nsIProxyProtocolService when
    * creating this ProxyInfo element.
    */
-  attribute unsigned long resolveFlags;
+  readonly attribute unsigned long resolveFlags;
 
   /**
    * Specifies a proxy username.
@@ -74,6 +74,12 @@ interface nsIProxyInfo : nsISupports
   attribute nsIProxyInfo failoverProxy;
 
   /**
+   * Specifies an ID related to the source of this proxy configuration.  If
+   * it is created in response to an extension API, it will be the extension ID.
+   */
+  attribute ACString sourceId;
+
+  /**
    * Any non-empty value will be passed directly as Proxy-Authorization header
    * value for the CONNECT request attempt.  However, this header set on the
    * resource request itself takes precedence.
@@ -84,6 +90,13 @@ interface nsIProxyInfo : nsISupports
    * An optional key used for additional isolation of this proxy connection.
    */
   readonly attribute ACString connectionIsolationKey;
+
+  /**
+   * The following two constants can be used to compare against
+   * network.proxy.socks_version
+   */
+  const unsigned short SOCKS_V4 = 4;
+  const unsigned short SOCKS_V5 = 5;
 
   /****************************************************************************
    * The following "Proxy Flags" may be bit-wise combined to construct the

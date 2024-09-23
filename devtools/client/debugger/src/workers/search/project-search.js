@@ -2,40 +2,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 // Maybe reuse file search's functions?
 
 import getMatches from "./get-matches";
 
-import type { SourceId, TextSourceContent } from "../../types";
-
-export function findSourceMatches(
-  sourceId: SourceId,
-  content: TextSourceContent,
-  queryText: string
-): Object[] {
+export function findSourceMatches(content, queryText, options) {
   if (queryText == "") {
     return [];
   }
 
-  const modifiers = {
-    caseSensitive: false,
-    regexMatch: false,
-    wholeWord: false,
-  };
-
   const text = content.value;
   const lines = text.split("\n");
 
-  return getMatches(queryText, text, modifiers).map(({ line, ch }) => {
+  return getMatches(queryText, text, options).map(({ line, ch, match }) => {
     const { value, matchIndex } = truncateLine(lines[line], ch);
     return {
-      sourceId,
       line: line + 1,
       column: ch,
+
       matchIndex,
-      match: queryText,
+      match,
       value,
     };
   });
@@ -50,8 +36,9 @@ const endRegex = new RegExp(
     '[^ !@#$%^&*()_+-=[]{};\':"\\|,.<>/?]*$"/',
   ].join("")
 );
-
-function truncateLine(text: string, column: number) {
+// For texts over 100 characters this truncates the text (for display)
+// around the context of the matched text.
+function truncateLine(text, column) {
   if (text.length < 100) {
     return {
       matchIndex: column,

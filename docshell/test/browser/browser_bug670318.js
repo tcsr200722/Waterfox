@@ -14,11 +14,12 @@ const URL =
 add_task(async function test() {
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
-      if (!SpecialPowers.getBoolPref("fission.sessionHistoryInParent")) {
-        await ContentTask.spawn(browser, URL, async function(URL) {
-          let history = docShell.QueryInterface(Ci.nsIWebNavigation)
-            .sessionHistory;
+    async function (browser) {
+      if (!SpecialPowers.Services.appinfo.sessionHistoryInParent) {
+        await ContentTask.spawn(browser, URL, async function (URL) {
+          let history = docShell.QueryInterface(
+            Ci.nsIWebNavigation
+          ).sessionHistory;
           let count = 0;
 
           let testDone = {};
@@ -26,8 +27,15 @@ add_task(async function test() {
             testDone.resolve = resolve;
           });
 
-          let listener = {
+          // Since listener implements nsISupportsWeakReference, we are
+          // responsible for keeping it alive so that the GC doesn't clear
+          // it before the test completes. We do this by anchoring the listener
+          // to the message manager, and clearing it just before the test
+          // completes.
+          this._testListener = {
+            owner: this,
             OnHistoryNewEntry(aNewURI) {
+              info("OnHistoryNewEntry " + aNewURI.spec + ", " + count);
               if (aNewURI.spec == URL && 5 == ++count) {
                 addEventListener(
                   "load",
@@ -41,8 +49,11 @@ add_task(async function test() {
                   { capture: true, once: true }
                 );
 
-                history.legacySHistory.removeSHistoryListener(listener);
-                delete content._testListener;
+                history.legacySHistory.removeSHistoryListener(
+                  this.owner._testListener
+                );
+                delete this.owner._testListener;
+                this.owner = null;
                 content.setTimeout(() => {
                   content.location.reload();
                 }, 0);
@@ -60,18 +71,12 @@ add_task(async function test() {
             },
 
             QueryInterface: ChromeUtils.generateQI([
-              Ci.nsISHistoryListener,
-              Ci.nsISupportsWeakReference,
+              "nsISHistoryListener",
+              "nsISupportsWeakReference",
             ]),
           };
 
-          history.legacySHistory.addSHistoryListener(listener);
-          // Since listener implements nsISupportsWeakReference, we are
-          // responsible for keeping it alive so that the GC doesn't clear
-          // it before the test completes. We do this by anchoring the listener
-          // to the content global window, and clearing it just before the test
-          // completes.
-          content._testListener = listener;
+          history.legacySHistory.addSHistoryListener(this._testListener);
           content.location = URL;
 
           await testDone.promise;
@@ -96,9 +101,10 @@ add_task(async function test() {
               return new Promise(resolve => {
                 addEventListener(
                   "load",
-                  evt => {
-                    let history = docShell.QueryInterface(Ci.nsIWebNavigation)
-                      .sessionHistory;
+                  () => {
+                    let history = docShell.QueryInterface(
+                      Ci.nsIWebNavigation
+                    ).sessionHistory;
                     Assert.ok(
                       history.index < history.count,
                       "history.index is valid"
@@ -126,13 +132,13 @@ add_task(async function test() {
         },
 
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsISHistoryListener,
-          Ci.nsISupportsWeakReference,
+          "nsISHistoryListener",
+          "nsISupportsWeakReference",
         ]),
       };
 
       history.addSHistoryListener(listener);
-      BrowserTestUtils.loadURI(browser, URL);
+      BrowserTestUtils.startLoadingURIString(browser, URL);
 
       await testDone.promise;
     }

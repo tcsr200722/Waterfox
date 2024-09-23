@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGForeignObjectElement_h
-#define mozilla_dom_SVGForeignObjectElement_h
+#ifndef DOM_SVG_SVGFOREIGNOBJECTELEMENT_H_
+#define DOM_SVG_SVGFOREIGNOBJECTELEMENT_H_
 
 #include "mozilla/dom/SVGGraphicsElement.h"
 #include "nsCSSPropertyID.h"
@@ -14,13 +14,13 @@
 nsresult NS_NewSVGForeignObjectElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-class nsSVGForeignObjectFrame;
-
 namespace mozilla {
+class SVGForeignObjectFrame;
+
 namespace dom {
 
 class SVGForeignObjectElement final : public SVGGraphicsElement {
-  friend class ::nsSVGForeignObjectFrame;
+  friend class mozilla::SVGForeignObjectFrame;
 
  protected:
   friend nsresult(::NS_NewSVGForeignObjectElement(
@@ -28,20 +28,19 @@ class SVGForeignObjectElement final : public SVGGraphicsElement {
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
   explicit SVGForeignObjectElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
   // SVGElement specializations:
   virtual gfxMatrix PrependLocalTransformsTo(
       const gfxMatrix& aMatrix,
       SVGTransformTypes aWhich = eAllTransforms) const override;
-  virtual bool HasValidDimensions() const override;
+  bool HasValidDimensions() const override;
 
   // nsIContent interface
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* name) const override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   static nsCSSPropertyID GetCSSPropertyIdForAttrEnum(uint8_t aAttrEnum);
 
@@ -52,7 +51,7 @@ class SVGForeignObjectElement final : public SVGGraphicsElement {
   already_AddRefed<DOMSVGAnimatedLength> Height();
 
  protected:
-  virtual LengthAttributesInfo GetLengthInfo() override;
+  LengthAttributesInfo GetLengthInfo() override;
 
   enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
   SVGAnimatedLength mLengthAttributes[4];
@@ -62,4 +61,4 @@ class SVGForeignObjectElement final : public SVGGraphicsElement {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGForeignObjectElement_h
+#endif  // DOM_SVG_SVGFOREIGNOBJECTELEMENT_H_

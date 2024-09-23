@@ -5,8 +5,16 @@
 
 const TEST_FILE = "test-network-request.html";
 const TEST_PATH =
-  "http://example.com/browser/devtools/client/webconsole/" + "test/browser/";
+  "https://example.com/browser/devtools/client/webconsole/" + "test/browser/";
 const TEST_URI = TEST_PATH + TEST_FILE;
+
+registerCleanupFunction(async function () {
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
+      resolve()
+    );
+  });
+});
 
 add_task(async function task() {
   await pushPref("devtools.webconsole.filter.net", false);
@@ -14,14 +22,13 @@ add_task(async function task() {
   await openNewTabAndToolbox(TEST_URI, "netmonitor");
 
   const currentTab = gBrowser.selectedTab;
-  const target = await TargetFactory.forTab(currentTab);
-  const toolbox = gDevTools.getToolbox(target);
+  const toolbox = gDevTools.getToolboxForTab(currentTab);
+  const panel = toolbox.getCurrentPanel().panelWin;
 
-  const monitor = toolbox.getCurrentPanel();
-  const netReady = monitor.panelWin.api.once("NetMonitor:PayloadReady");
+  const netReady = panel.api.once("NetMonitor:PayloadReady");
 
   // Fire an XHR POST request.
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     content.wrappedJSObject.testXhrGet();
   });
 
@@ -34,18 +41,21 @@ add_task(async function task() {
   const { hud } = await toolbox.selectTool("webconsole");
 
   const xhrUrl = TEST_PATH + "test-data.json";
-  const messageNode = await waitFor(() => findMessage(hud, xhrUrl));
+  const messageNode = await waitFor(() =>
+    findMessageByType(hud, xhrUrl, ".network")
+  );
   const urlNode = messageNode.querySelector(".url");
   info("Network message found.");
 
-  const consoleReady = hud.ui.once("network-request-payload-ready");
+  const onReady = hud.ui.once("network-request-payload-ready");
 
   // Expand network log
   urlNode.click();
 
-  await consoleReady;
+  await onReady;
 
   info("network-request-payload-ready received");
+
   await testNetworkMessage(messageNode);
   await waitForLazyRequests(toolbox);
 });

@@ -7,8 +7,14 @@
 // mostly derived from the Allegro source code at:
 // http://alleg.svn.sourceforge.net/viewvc/alleg/allegro/branches/4.9/src/macosx/hidjoy.m?revision=13760&view=markup
 
+#include "mozilla/dom/GamepadHandle.h"
 #include "mozilla/dom/GamepadPlatformService.h"
+#include "mozilla/dom/GamepadRemapping.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/Sprintf.h"
+#include "mozilla/Tainting.h"
+#include "nsComponentManagerUtils.h"
 #include "nsITimer.h"
 #include "nsThreadUtils.h"
 #include <CoreFoundation/CoreFoundation.h>
@@ -23,7 +29,6 @@ namespace {
 
 using namespace mozilla;
 using namespace mozilla::dom;
-using std::vector;
 class DarwinGamepadService;
 
 DarwinGamepadService* gService = nullptr;
@@ -75,6 +80,11 @@ const unsigned kBackUsage = 0x224;
 // 50ms is arbitrarily chosen.
 const uint32_t kDarwinGamepadPollInterval = 50;
 
+struct GamepadInputReportContext {
+  DarwinGamepadService* service;
+  size_t gamepadSlot;
+};
+
 class Gamepad {
  private:
   IOHIDDeviceRef mDevice;
@@ -82,7 +92,7 @@ class Gamepad {
   nsTArray<Axis> axes;
 
  public:
-  Gamepad() : mDevice(nullptr), mSuperIndex(-1) {}
+  Gamepad() : mDevice(nullptr) {}
 
   bool operator==(IOHIDDeviceRef device) const { return mDevice == device; }
   bool empty() const { return mDevice == nullptr; }
@@ -90,7 +100,7 @@ class Gamepad {
     mDevice = nullptr;
     buttons.Clear();
     axes.Clear();
-    mSuperIndex = -1;
+    mHandle = GamepadHandle{};
   }
   void init(IOHIDDeviceRef device, bool defaultRemapper);
   void ReportChanged(uint8_t* report, CFIndex report_length);
@@ -113,10 +123,10 @@ class Gamepad {
     return nullptr;
   }
 
-  // Index given by our superclass.
-  uint32_t mSuperIndex;
+  GamepadHandle mHandle;
   RefPtr<GamepadRemapper> mRemapper;
-  std::vector<uint8_t> mInputReport;
+  nsTArray<uint8_t> mInputReport;
+  UniquePtr<GamepadInputReportContext> mInputReportContext;
 };
 
 void Gamepad::init(IOHIDDeviceRef aDevice, bool aDefaultRemapper) {
@@ -155,9 +165,24 @@ void Gamepad::init(IOHIDDeviceRef aDevice, bool aDefaultRemapper) {
                    IOHIDElementGetLogicalMin(element),
                    IOHIDElementGetLogicalMax(element)};
       axes.AppendElement(axis);
-    } else if ((usagePage == kSimUsagePage &&
-                (usage == kAcceleratorUsage || usage == kBrakeUsage)) ||
-               (usagePage == kButtonUsagePage) ||
+    } else if (usagePage == kSimUsagePage &&
+               (usage == kAcceleratorUsage || usage == kBrakeUsage)) {
+      if (IOHIDElementGetType(element) == kIOHIDElementTypeInput_Button) {
+        Button button(int(buttons.Length()), element,
+                      IOHIDElementGetLogicalMin(element),
+                      IOHIDElementGetLogicalMax(element));
+        buttons.AppendElement(button);
+      } else {
+        Axis axis = {aDefaultRemapper ? int(axes.Length())
+                                      : static_cast<int>(usage - kAxisUsageMin),
+                     element,
+                     usagePage,
+                     usage,
+                     IOHIDElementGetLogicalMin(element),
+                     IOHIDElementGetLogicalMax(element)};
+        axes.AppendElement(axis);
+      }
+    } else if ((usagePage == kButtonUsagePage) ||
                (usagePage == kConsumerPage &&
                 (usage == kHomeUsage || usage == kBackUsage))) {
       Button button(int(buttons.Length()), element,
@@ -175,7 +200,7 @@ void Gamepad::init(IOHIDDeviceRef aDevice, bool aDefaultRemapper) {
 class DarwinGamepadService {
  private:
   IOHIDManagerRef mManager;
-  vector<Gamepad> mGamepads;
+  nsTArray<Gamepad> mGamepads;
 
   nsCOMPtr<nsIThread> mMonitorThread;
   nsCOMPtr<nsIThread> mBackgroundThread;
@@ -207,8 +232,10 @@ class DarwinGamepadService {
 
   void Startup();
   void Shutdown();
-  void SetLightIndicatorColor(uint32_t aControllerIdx, uint32_t aLightIndex,
-                              uint8_t aRed, uint8_t aGreen, uint8_t aBlue);
+  void SetLightIndicatorColor(const Tainted<GamepadHandle>& aGamepadHandle,
+                              const Tainted<uint32_t>& aLightColorIndex,
+                              const uint8_t& aRed, const uint8_t& aGreen,
+                              const uint8_t& aBlue);
   friend class DarwinGamepadServiceStartupRunnable;
   friend class DarwinGamepadServiceShutdownRunnable;
 };
@@ -266,14 +293,14 @@ void DarwinGamepadService::DeviceAdded(IOHIDDeviceRef device) {
   }
 
   size_t slot = size_t(-1);
-  for (size_t i = 0; i < mGamepads.size(); i++) {
+  for (size_t i = 0; i < mGamepads.Length(); i++) {
     if (mGamepads[i] == device) return;
     if (slot == size_t(-1) && mGamepads[i].empty()) slot = i;
   }
 
   if (slot == size_t(-1)) {
-    slot = mGamepads.size();
-    mGamepads.push_back(Gamepad());
+    slot = mGamepads.Length();
+    mGamepads.AppendElement(Gamepad());
   }
 
   // Gather some identifying information
@@ -290,7 +317,7 @@ void DarwinGamepadService::DeviceAdded(IOHIDDeviceRef device) {
   CFStringGetCString(productRef, product_name, sizeof(product_name),
                      kCFStringEncodingASCII);
   char buffer[256];
-  sprintf(buffer, "%x-%x-%s", vendorId, productId, product_name);
+  SprintfLiteral(buffer, "%x-%x-%s", vendorId, productId, product_name);
 
   bool defaultRemapper = false;
   RefPtr<GamepadRemapper> remapper =
@@ -301,7 +328,7 @@ void DarwinGamepadService::DeviceAdded(IOHIDDeviceRef device) {
   remapper->SetAxisCount(mGamepads[slot].numAxes());
   remapper->SetButtonCount(mGamepads[slot].numButtons());
 
-  uint32_t index = service->AddGamepad(
+  GamepadHandle handle = service->AddGamepad(
       buffer, remapper->GetMappingType(), mozilla::dom::GamepadHand::_empty,
       remapper->GetButtonCount(), remapper->GetAxisCount(),
       0,  // TODO: Bug 680289, implement gamepad haptics for cocoa.
@@ -311,18 +338,20 @@ void DarwinGamepadService::DeviceAdded(IOHIDDeviceRef device) {
   remapper->GetLightIndicators(lightTypes);
   for (uint32_t i = 0; i < lightTypes.Length(); ++i) {
     if (lightTypes[i] != GamepadLightIndicator::DefaultType()) {
-      service->NewLightIndicatorTypeEvent(index, i, lightTypes[i]);
+      service->NewLightIndicatorTypeEvent(handle, i, lightTypes[i]);
     }
   }
 
-  mGamepads[slot].mSuperIndex = index;
-  mGamepads[slot].mInputReport.resize(remapper->GetMaxInputReportLength());
+  mGamepads[slot].mHandle = handle;
+  mGamepads[slot].mInputReport.SetLength(remapper->GetMaxInputReportLength());
+  mGamepads[slot].mInputReportContext = UniquePtr<GamepadInputReportContext>(
+      new GamepadInputReportContext{this, slot});
   mGamepads[slot].mRemapper = remapper.forget();
 
   IOHIDDeviceRegisterInputReportCallback(
-      device, mGamepads[slot].mInputReport.data(),
-      mGamepads[slot].mInputReport.size(), ReportChangedCallback,
-      &mGamepads[slot]);
+      device, mGamepads[slot].mInputReport.Elements(),
+      mGamepads[slot].mInputReport.Length(), ReportChangedCallback,
+      mGamepads[slot].mInputReportContext.get());
 }
 
 void DarwinGamepadService::DeviceRemoved(IOHIDDeviceRef device) {
@@ -331,13 +360,16 @@ void DarwinGamepadService::DeviceRemoved(IOHIDDeviceRef device) {
   if (!service) {
     return;
   }
-  for (size_t i = 0; i < mGamepads.size(); i++) {
-    if (mGamepads[i] == device) {
+  for (Gamepad& gamepad : mGamepads) {
+    if (gamepad == device) {
       IOHIDDeviceRegisterInputReportCallback(
-          device, mGamepads[i].mInputReport.data(), 0, NULL, &mGamepads[i]);
+          device, gamepad.mInputReport.Elements(), 0, NULL,
+          gamepad.mInputReportContext.get());
 
-      service->RemoveGamepad(mGamepads[i].mSuperIndex);
-      mGamepads[i].clear();
+      gamepad.mInputReportContext.reset();
+
+      service->RemoveGamepad(gamepad.mHandle);
+      gamepad.clear();
       return;
     }
   }
@@ -348,13 +380,16 @@ void DarwinGamepadService::ReportChangedCallback(
     void* context, IOReturn result, void* sender, IOHIDReportType report_type,
     uint32_t report_id, uint8_t* report, CFIndex report_length) {
   if (context && report_type == kIOHIDReportTypeInput && report_length) {
-    reinterpret_cast<Gamepad*>(context)->ReportChanged(report, report_length);
+    auto reportContext = static_cast<GamepadInputReportContext*>(context);
+    DarwinGamepadService* service = reportContext->service;
+    service->mGamepads[reportContext->gamepadSlot].ReportChanged(report,
+                                                                 report_length);
   }
 }
 
 void Gamepad::ReportChanged(uint8_t* report, CFIndex report_len) {
   MOZ_RELEASE_ASSERT(report_len <= mRemapper->GetMaxInputReportLength());
-  mRemapper->ProcessTouchData(mSuperIndex, report);
+  mRemapper->ProcessTouchData(mHandle, report);
 }
 
 size_t Gamepad::WriteOutputReport(const std::vector<uint8_t>& aReport) const {
@@ -382,8 +417,7 @@ void DarwinGamepadService::InputValueChanged(IOHIDValueRef value) {
   IOHIDElementRef element = IOHIDValueGetElement(value);
   IOHIDDeviceRef device = IOHIDElementGetDevice(element);
 
-  for (unsigned i = 0; i < mGamepads.size(); i++) {
-    Gamepad& gamepad = mGamepads[i];
+  for (Gamepad& gamepad : mGamepads) {
     if (gamepad == device) {
       // Axis elements represent axes and d-pads.
       if (Axis* axis = gamepad.lookupAxis(element)) {
@@ -391,15 +425,14 @@ void DarwinGamepadService::InputValueChanged(IOHIDValueRef value) {
         const double v =
             2.0f * (d - axis->min) / (double)(axis->max - axis->min) - 1.0f;
         if (axis->value != v) {
-          gamepad.mRemapper->RemapAxisMoveEvent(gamepad.mSuperIndex, axis->id,
-                                                v);
+          gamepad.mRemapper->RemapAxisMoveEvent(gamepad.mHandle, axis->id, v);
           axis->value = v;
         }
       } else if (Button* button = gamepad.lookupButton(element)) {
         const int iv = IOHIDValueGetIntegerValue(value);
         const bool pressed = iv != 0;
         if (button->pressed != pressed) {
-          gamepad.mRemapper->RemapButtonEvent(gamepad.mSuperIndex, button->id,
+          gamepad.mRemapper->RemapButtonEvent(gamepad.mHandle, button->id,
                                               pressed);
           button->pressed = pressed;
         }
@@ -482,7 +515,7 @@ void DarwinGamepadService::RunEventLoopOnce() {
 
   // This timer must be created in monitor thread
   if (!mPollingTimer) {
-    mPollingTimer = do_CreateInstance("@mozilla.org/timer;1");
+    mPollingTimer = NS_NewTimer();
   }
   mPollingTimer->Cancel();
   if (mIsRunning) {
@@ -565,26 +598,23 @@ void DarwinGamepadService::Shutdown() {
   mIsRunning = false;
 }
 
-void DarwinGamepadService::SetLightIndicatorColor(uint32_t aControllerIdx,
-                                                  uint32_t aLightColorIndex,
-                                                  uint8_t aRed, uint8_t aGreen,
-                                                  uint8_t aBlue) {
+void DarwinGamepadService::SetLightIndicatorColor(
+    const Tainted<GamepadHandle>& aGamepadHandle,
+    const Tainted<uint32_t>& aLightColorIndex, const uint8_t& aRed,
+    const uint8_t& aGreen, const uint8_t& aBlue) {
   // We get aControllerIdx from GamepadPlatformService::AddGamepad(),
   // It begins from 1 and is stored at Gamepad.id.
-  const Gamepad* gamepad = nullptr;
-  for (const auto& pad : mGamepads) {
-    if (pad.mSuperIndex == aControllerIdx) {
-      gamepad = &pad;
-      break;
-    }
-  }
+  const Gamepad* gamepad = MOZ_FIND_AND_VALIDATE(
+      aGamepadHandle, list_item.mHandle == aGamepadHandle, mGamepads);
   if (!gamepad) {
     MOZ_ASSERT(false);
     return;
   }
 
   RefPtr<GamepadRemapper> remapper = gamepad->mRemapper;
-  if (!remapper || remapper->GetLightIndicatorCount() <= aLightColorIndex) {
+  if (!remapper ||
+      MOZ_IS_VALID(aLightColorIndex,
+                   remapper->GetLightIndicatorCount() <= aLightColorIndex)) {
     MOZ_ASSERT(false);
     return;
   }
@@ -600,7 +630,7 @@ namespace mozilla {
 namespace dom {
 
 void StartGamepadMonitoring() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   if (gService) {
     return;
   }
@@ -610,7 +640,7 @@ void StartGamepadMonitoring() {
 }
 
 void StopGamepadMonitoring() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   if (!gService) {
     return;
   }
@@ -619,14 +649,15 @@ void StopGamepadMonitoring() {
   gService->Shutdown();
 }
 
-void SetGamepadLightIndicatorColor(uint32_t aControllerIdx,
-                                   uint32_t aLightColorIndex, uint8_t aRed,
-                                   uint8_t aGreen, uint8_t aBlue) {
+void SetGamepadLightIndicatorColor(const Tainted<GamepadHandle>& aGamepadHandle,
+                                   const Tainted<uint32_t>& aLightColorIndex,
+                                   const uint8_t& aRed, const uint8_t& aGreen,
+                                   const uint8_t& aBlue) {
   MOZ_ASSERT(gService);
   if (!gService) {
     return;
   }
-  gService->SetLightIndicatorColor(aControllerIdx, aLightColorIndex, aRed,
+  gService->SetLightIndicatorColor(aGamepadHandle, aLightColorIndex, aRed,
                                    aGreen, aBlue);
 }
 

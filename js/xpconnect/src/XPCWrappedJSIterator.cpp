@@ -7,7 +7,9 @@
 #include "xpcprivate.h"
 
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/IteratorResultBinding.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ScriptSettings.h"
 
 using namespace mozilla;

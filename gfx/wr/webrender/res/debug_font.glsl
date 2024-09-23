@@ -2,10 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#define WR_FEATURE_TEXTURE_2D
+
 #include shared,shared_other
 
-varying vec2 vColorTexCoord;
-varying vec4 vColor;
+varying highp vec2 vColorTexCoord;
+varying mediump vec4 vColor;
 
 #ifdef WR_VERTEX_SHADER
 in vec4 aColor;
@@ -22,7 +24,7 @@ void main(void) {
 
 #ifdef WR_FRAGMENT_SHADER
 void main(void) {
-    float alpha = texture(sColor0, vec3(vColorTexCoord.xy, 0.0)).r;
+    float alpha = texture(sColor0, vColorTexCoord).r;
     oFragColor = vColor * alpha;
 }
 #endif

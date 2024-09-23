@@ -13,16 +13,22 @@ class ServiceWorkerAtShutdownTestCase(MarionetteTestCase):
         self.set_pref_to_delete_site_data_on_shutdown()
 
     def tearDown(self):
-        self.marionette.restart(clean=True)
+        self.marionette.restart(in_app=False, clean=True)
         super(ServiceWorkerAtShutdownTestCase, self).tearDown()
 
     def install_service_worker(self):
-        install_url = self.marionette.absolute_url("serviceworker/install_serviceworker.html")
+        install_url = self.marionette.absolute_url(
+            "serviceworker/install_serviceworker.html"
+        )
         self.marionette.navigate(install_url)
+        # Make sure 'install_url' is not loaded on startup, it would reinstall the service worker
+        dummy_url = self.marionette.absolute_url("dummy.html")
+        self.marionette.navigate(dummy_url)
         Wait(self.marionette).until(lambda _: self.is_service_worker_registered)
 
     def set_pref_to_delete_site_data_on_shutdown(self):
-        self.marionette.set_pref("network.cookie.lifetimePolicy", 2)
+        self.marionette.set_pref("privacy.sanitize.sanitizeOnShutdown", True)
+        self.marionette.set_pref("privacy.clearOnShutdown.offlineApps", True)
 
     def test_unregistering_service_worker_when_clearing_data(self):
         self.marionette.restart(clean=False, in_app=True)
@@ -31,7 +37,8 @@ class ServiceWorkerAtShutdownTestCase(MarionetteTestCase):
     @property
     def is_service_worker_registered(self):
         with self.marionette.using_context("chrome"):
-            return self.marionette.execute_script("""
+            return self.marionette.execute_script(
+                """
                 let serviceWorkerManager = Cc["@mozilla.org/serviceworkers/manager;1"].getService(
                     Ci.nsIServiceWorkerManager
                 );
@@ -50,4 +57,6 @@ class ServiceWorkerAtShutdownTestCase(MarionetteTestCase):
                     }
                 }
                 return false;
-            """, script_args=(self.marionette.absolute_url(""),))
+            """,
+                script_args=(self.marionette.absolute_url(""),),
+            )

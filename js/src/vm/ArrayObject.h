@@ -34,40 +34,27 @@ class ArrayObject : public NativeObject {
     getElementsHeader()->setNonwritableArrayLength();
   }
 
-  inline void setLength(JSContext* cx, uint32_t length);
-
-  // Variant of setLength for use on arrays where the length cannot overflow
-  // int32_t.
-  void setLengthInt32(uint32_t length) {
+  void setLength(uint32_t length) {
     MOZ_ASSERT(lengthIsWritable());
     MOZ_ASSERT_IF(length != getElementsHeader()->length,
                   !denseElementsAreFrozen());
-    MOZ_ASSERT(length <= INT32_MAX);
     getElementsHeader()->length = length;
   }
 
+  // Try to add a new dense element to this array. The array must be extensible.
+  //
+  // Returns DenseElementResult::Incomplete if `index >= length`, if the array
+  // has sparse elements, if we're adding a sparse element, or if the array
+  // already contains a dense element at this index.
+  inline DenseElementResult addDenseElementNoLengthChange(JSContext* cx,
+                                                          uint32_t index,
+                                                          const Value& val);
+
   // Make an array object with the specified initial state.
-  static inline ArrayObject* createArray(JSContext* cx, gc::AllocKind kind,
-                                         gc::InitialHeap heap,
-                                         HandleShape shape,
-                                         HandleObjectGroup group,
-                                         uint32_t length,
-                                         AutoSetNewObjectMetadata& metadata);
-
-  // Make a copy-on-write array object which shares the elements of an
-  // existing object.
-  static inline ArrayObject* createCopyOnWriteArray(
-      JSContext* cx, gc::InitialHeap heap,
-      HandleArrayObject sharedElementsOwner);
-
- private:
-  // Helper for the above methods.
-  static inline ArrayObject* createArrayInternal(
-      JSContext* cx, gc::AllocKind kind, gc::InitialHeap heap,
-      HandleShape shape, HandleObjectGroup group, AutoSetNewObjectMetadata&);
-
-  static inline ArrayObject* finishCreateArray(
-      ArrayObject* obj, HandleShape shape, AutoSetNewObjectMetadata& metadata);
+  static MOZ_ALWAYS_INLINE ArrayObject* create(
+      JSContext* cx, gc::AllocKind kind, gc::Heap heap,
+      Handle<SharedShape*> shape, uint32_t length, uint32_t slotSpan,
+      AutoSetNewObjectMetadata& metadata, gc::AllocSite* site = nullptr);
 };
 
 }  // namespace js

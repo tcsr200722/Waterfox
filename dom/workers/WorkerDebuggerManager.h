@@ -7,14 +7,15 @@
 #ifndef mozilla_dom_workers_workerdebuggermanager_h
 #define mozilla_dom_workers_workerdebuggermanager_h
 
-#include "mozilla/dom/WorkerCommon.h"
-
+#include "MainThreadUtils.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Mutex.h"
+#include "nsCOMPtr.h"
+#include "nsDebug.h"
 #include "nsIObserver.h"
+#include "nsISupports.h"
 #include "nsIWorkerDebuggerManager.h"
-
-#include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
-#include "nsThreadUtils.h"
 
 #define WORKERDEBUGGERMANAGER_CID                    \
   {                                                  \
@@ -25,15 +26,14 @@
 #define WORKERDEBUGGERMANAGER_CONTRACTID \
   "@mozilla.org/dom/workers/workerdebuggermanager;1"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class WorkerDebugger;
 class WorkerPrivate;
 
 class WorkerDebuggerManager final : public nsIObserver,
                                     public nsIWorkerDebuggerManager {
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
 
   // Protected by mMutex.
   nsTArray<nsCOMPtr<nsIWorkerDebuggerManagerListener>> mListeners;
@@ -72,6 +72,8 @@ class WorkerDebuggerManager final : public nsIObserver,
   WorkerDebugger* GetDebuggerAt(uint32_t aIndex) const;
 
  private:
+  nsTArray<nsCOMPtr<nsIWorkerDebuggerManagerListener>> CloneListeners();
+
   virtual ~WorkerDebuggerManager();
 };
 
@@ -109,7 +111,6 @@ inline nsresult UnregisterWorkerDebugger(WorkerPrivate* aWorkerPrivate) {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_workers_workerdebuggermanager_h

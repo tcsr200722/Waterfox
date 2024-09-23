@@ -10,7 +10,8 @@
 #include "nsMacCursor.h"
 
 /*! @class      nsCursorManager
-    @abstract   Singleton service provides access to all cursors available in the application.
+    @abstract   Singleton service provides access to all cursors available in
+   the application.
     @discussion Use <code>nsCusorManager</code> to set the current cursor using
                 an XP <code>nsCusor</code> enum value.
                 <code>nsCursorManager</code> encapsulates the details of
@@ -25,25 +26,18 @@
 
 /*! @method     setCursor:
     @abstract   Sets the current cursor.
-    @discussion Sets the current cursor to the cursor indicated by the XP cursor constant given as
-   an argument. Resources associated with the previous cursor are cleaned up.
+    @discussion Sets the current cursor to the cursor indicated by the XP
+                cursor given in the argument. Resources associated with the
+                previous cursor are cleaned up.
     @param aCursor the cursor to use
 */
-- (nsresult)setCursor:(nsCursor)aCursor;
+- (nsresult)setNonCustomCursor:(const nsIWidget::Cursor&)aCursor;
 
-/*! @method  setCursorWithImage:hotSpotX:hotSpotY:
- @abstract   Sets the current cursor to a custom image
- @discussion Sets the current cursor to the cursor given by the aCursorImage argument.
- Resources associated with the previous cursor are cleaned up.
- @param aCursorImage the cursor image to use
- @param aHotSpotX the x coordinate of the cursor's hotspot
- @param aHotSpotY the y coordinate of the cursor's hotspot
- @param scaleFactor the scale factor of the target display (2 for a retina display)
- */
-- (nsresult)setCursorWithImage:(imgIContainer*)aCursorImage
-                      hotSpotX:(uint32_t)aHotspotX
-                      hotSpotY:(uint32_t)aHotspotY
-                   scaleFactor:(CGFloat)scaleFactor;
+// As above, but returns an error if the cursor isn't custom or we couldn't set
+// it for some reason.
+- (nsresult)setCustomCursor:(const nsIWidget::Cursor&)aCursor
+          widgetScaleFactor:(CGFloat)aWidgetScaleFactor
+                forceUpdate:(bool)aForceUpdate;
 
 /*! @method     sharedInstance
     @abstract   Get the Singleton instance of the cursor manager.
@@ -54,14 +48,15 @@
 
 /*! @method     dispose
     @abstract   Releases the shared instance of the cursor manager.
-    @discussion Use dispose to clean up the cursor manager and associated cursors.
+    @discussion Use dispose to clean up the cursor manager and associated
+   cursors.
 */
 + (void)dispose;
 @end
 
 @interface NSCursor (Undocumented)
-// busyButClickableCursor is an undocumented NSCursor API, but has been in use since
-// at least OS X 10.4 and through 10.9.
+// busyButClickableCursor is an undocumented NSCursor API, but has been in use
+// since at least OS X 10.4 and through 10.9.
 + (NSCursor*)busyButClickableCursor;
 @end
 

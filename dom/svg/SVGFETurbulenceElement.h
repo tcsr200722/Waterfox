@@ -4,24 +4,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFETurbulenceElement_h
-#define mozilla_dom_SVGFETurbulenceElement_h
+#ifndef DOM_SVG_SVGFETURBULENCEELEMENT_H_
+#define DOM_SVG_SVGFETURBULENCEELEMENT_H_
 
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedInteger.h"
 #include "SVGAnimatedNumber.h"
 #include "SVGAnimatedString.h"
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFETurbulenceElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGFE SVGFETurbulenceElementBase;
+using SVGFETurbulenceElementBase = SVGFilterPrimitiveElement;
 
-class SVGFETurbulenceElement : public SVGFETurbulenceElementBase {
+class SVGFETurbulenceElement final : public SVGFETurbulenceElementBase {
   friend nsresult(::NS_NewSVGFETurbulenceElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -30,23 +29,25 @@ class SVGFETurbulenceElement : public SVGFETurbulenceElementBase {
   explicit SVGFETurbulenceElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFETurbulenceElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual bool SubregionIsUnionOfRegions() override { return false; }
+  bool SubregionIsUnionOfRegions() override { return false; }
 
-  virtual FilterPrimitiveDescription GetPrimitiveDescription(
-      nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+  FilterPrimitiveDescription GetPrimitiveDescription(
+      SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
       const nsTArray<bool>& aInputsAreTainted,
       nsTArray<RefPtr<SourceSurface>>& aInputImages) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
-  virtual SVGAnimatedString& GetResultImageName() override {
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
+  SVGAnimatedString& GetResultImageName() override {
     return mStringAttributes[RESULT];
   }
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedNumber> BaseFrequencyX();
@@ -57,11 +58,11 @@ class SVGFETurbulenceElement : public SVGFETurbulenceElementBase {
   already_AddRefed<DOMSVGAnimatedEnumeration> Type();
 
  protected:
-  virtual NumberAttributesInfo GetNumberInfo() override;
-  virtual NumberPairAttributesInfo GetNumberPairInfo() override;
-  virtual IntegerAttributesInfo GetIntegerInfo() override;
-  virtual EnumAttributesInfo GetEnumInfo() override;
-  virtual StringAttributesInfo GetStringInfo() override;
+  NumberAttributesInfo GetNumberInfo() override;
+  NumberPairAttributesInfo GetNumberPairInfo() override;
+  IntegerAttributesInfo GetIntegerInfo() override;
+  EnumAttributesInfo GetEnumInfo() override;
+  StringAttributesInfo GetStringInfo() override;
 
   enum { SEED };  // floating point seed?!
   SVGAnimatedNumber mNumberAttributes[1];
@@ -86,7 +87,6 @@ class SVGFETurbulenceElement : public SVGFETurbulenceElementBase {
   static StringInfo sStringInfo[1];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFETurbulenceElement_h
+#endif  // DOM_SVG_SVGFETURBULENCEELEMENT_H_

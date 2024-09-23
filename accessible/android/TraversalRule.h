@@ -17,14 +17,14 @@ class Accessible;
 /**
  * Class represents a simple traversal rule.
  */
-class TraversalRule final : public PivotRule {
+class TraversalRule : public PivotRule {
  public:
   TraversalRule();
-  explicit TraversalRule(int32_t aGranularity);
+  explicit TraversalRule(int32_t aGranularity, bool aIsLocal);
 
   ~TraversalRule() = default;
 
-  virtual uint16_t Match(Accessible* aAccessible) override;
+  virtual uint16_t Match(Accessible* aAcc) override;
 
  private:
   bool IsSingleLineage(Accessible* aAccessible);
@@ -48,6 +48,8 @@ class TraversalRule final : public PivotRule {
   uint16_t LandmarkMatch(Accessible* aAccessible);
 
   int32_t mGranularity;
+
+  bool mIsLocal;
 };
 
 }  // namespace a11y

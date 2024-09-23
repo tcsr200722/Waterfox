@@ -16,10 +16,11 @@
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/layers/TextureClient.h"   // for TextureClient, etc
-#include "AndroidSurfaceTexture.h"
-#include "AndroidNativeWindow.h"
 #ifdef MOZ_WIDGET_ANDROID
+#  include "AndroidSurfaceTexture.h"
+#  include "AndroidNativeWindow.h"
 #  include "mozilla/java/GeckoSurfaceWrappers.h"
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
 #endif
 
 namespace mozilla {
@@ -34,11 +35,14 @@ namespace layers {
 
 #ifdef MOZ_WIDGET_ANDROID
 
+class AndroidHardwareBuffer;
+
 class AndroidSurfaceTextureData : public TextureData {
  public:
   static already_AddRefed<TextureClient> CreateTextureClient(
       AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
-      gl::OriginPos aOriginPos, bool aHasAlpha, LayersIPCChannel* aAllocator,
+      gl::OriginPos aOriginPos, bool aHasAlpha, bool aForceBT709ColorSpace,
+      Maybe<gfx::Matrix4x4> aTransformOverride, LayersIPCChannel* aAllocator,
       TextureFlags aFlags);
 
   virtual ~AndroidSurfaceTextureData();
@@ -58,18 +62,25 @@ class AndroidSurfaceTextureData : public TextureData {
  protected:
   AndroidSurfaceTextureData(AndroidSurfaceTextureHandle aHandle,
                             gfx::IntSize aSize, bool aContinuous,
-                            bool aHasAlpha);
+                            bool aHasAlpha, bool aForceBT709ColorSpace,
+                            Maybe<gfx::Matrix4x4> aTransformOverride);
 
   const AndroidSurfaceTextureHandle mHandle;
   const gfx::IntSize mSize;
   const bool mContinuous;
   const bool mHasAlpha;
+  const bool mForceBT709ColorSpace;
+  const Maybe<gfx::Matrix4x4> mTransformOverride;
 };
 
 class AndroidNativeWindowTextureData : public TextureData {
  public:
   static AndroidNativeWindowTextureData* Create(gfx::IntSize aSize,
                                                 gfx::SurfaceFormat aFormat);
+
+  TextureType GetTextureType() const override {
+    return TextureType::AndroidNativeWindow;
+  }
 
   void FillInfo(TextureData::Info& aInfo) const override;
 
@@ -99,6 +110,55 @@ class AndroidNativeWindowTextureData : public TextureData {
 
   const gfx::IntSize mSize;
   const gfx::SurfaceFormat mFormat;
+};
+
+class AndroidHardwareBufferTextureData : public TextureData {
+ public:
+  static AndroidHardwareBufferTextureData* Create(gfx::IntSize aSize,
+                                                  gfx::SurfaceFormat aFormat);
+
+  virtual ~AndroidHardwareBufferTextureData();
+
+  void FillInfo(TextureData::Info& aInfo) const override;
+
+  bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
+
+  bool Lock(OpenMode aMode) override;
+  void Unlock() override;
+
+  void Forget(LayersIPCChannel*) override;
+  void Deallocate(LayersIPCChannel*) override {}
+
+  already_AddRefed<gfx::DrawTarget> BorrowDrawTarget() override;
+
+  void OnForwardedToHost() override;
+
+  TextureFlags GetTextureFlags() const override;
+
+  Maybe<uint64_t> GetBufferId() const override;
+
+  mozilla::ipc::FileDescriptor GetAcquireFence() override;
+
+  AndroidHardwareBufferTextureData* AsAndroidHardwareBufferTextureData()
+      override {
+    return this;
+  }
+
+  AndroidHardwareBuffer* GetBuffer() { return mAndroidHardwareBuffer; }
+
+ protected:
+  AndroidHardwareBufferTextureData(
+      AndroidHardwareBuffer* aAndroidHardwareBuffer, gfx::IntSize aSize,
+      gfx::SurfaceFormat aFormat);
+
+  RefPtr<AndroidHardwareBuffer> mAndroidHardwareBuffer;
+  const gfx::IntSize mSize;
+  const gfx::SurfaceFormat mFormat;
+
+  void* mAddress;
+
+  // Keeps track of whether the underlying NativeWindow is actually locked.
+  bool mIsLocked;
 };
 
 #endif  // MOZ_WIDGET_ANDROID

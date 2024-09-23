@@ -9,7 +9,7 @@ loadScripts({ name: "role.js", dir: MOCHITESTS_DIR });
 
 addAccessibleTask(
   '<ol id="list"></ol>',
-  async function(browser, accDoc) {
+  async function (browser, accDoc) {
     let list = findAccessibleChildByID(accDoc, "list");
 
     testAccessibleTree(list, {
@@ -37,7 +37,7 @@ addAccessibleTask(
         {
           role: ROLE_LISTITEM,
           children: [
-            { role: ROLE_STATICTEXT, name: "1. ", children: [] },
+            { role: ROLE_LISTITEM_MARKER, name: "1. ", children: [] },
             { role: ROLE_TEXT_LEAF, children: [] },
           ],
         },

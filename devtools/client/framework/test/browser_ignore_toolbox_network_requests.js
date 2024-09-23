@@ -6,15 +6,11 @@
 // Test that network requests originating from the toolbox don't get recorded in
 // the network panel.
 
-add_task(async function() {
-  // TODO: This test tries to verify the normal behavior of the netmonitor and
-  // therefore needs to avoid the explicit check for tests. Bug 1167188 will
-  // allow us to remove this workaround.
-  await pushPref("devtools.testing", false);
-
+add_task(async function () {
   let tab = await addTab(URL_ROOT + "doc_viewsource.html");
-  let target = await TargetFactory.forTab(tab);
-  let toolbox = await gDevTools.showToolbox(target, "styleeditor");
+  let toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: "styleeditor",
+  });
   let panel = toolbox.getPanel("styleeditor");
 
   is(panel.UI.editors.length, 1, "correct number of editors opened");
@@ -29,6 +25,6 @@ add_task(async function() {
   );
 
   await toolbox.destroy();
-  tab = target = toolbox = panel = null;
+  tab = toolbox = panel = null;
   gBrowser.removeCurrentTab();
 });

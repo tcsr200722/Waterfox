@@ -8,17 +8,15 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use crate::backend::{
-    BackendDatabase,
-    BackendRoCursor,
-    BackendRoCursorTransaction,
-    BackendRoTransaction,
-    BackendRwCursorTransaction,
-    BackendRwTransaction,
+use crate::{
+    backend::{
+        BackendDatabase, BackendRoCursor, BackendRoCursorTransaction, BackendRoTransaction,
+        BackendRwCursorTransaction, BackendRwTransaction,
+    },
+    error::StoreError,
+    helpers::read_transform,
+    value::Value,
 };
-use crate::error::StoreError;
-use crate::helpers::read_transform;
-use crate::value::Value;
 
 pub struct Reader<T>(T);
 pub struct Writer<T>(T);
@@ -46,7 +44,10 @@ where
         K: AsRef<[u8]>,
     {
         let bytes = self.0.get(db, k.as_ref()).map_err(|e| e.into());
-        read_transform(bytes)
+        match read_transform(bytes).map(Some) {
+            Err(StoreError::KeyValuePairNotFound) => Ok(None),
+            result => result,
+        }
     }
 
     fn open_ro_cursor(&'r self, db: &T::Database) -> Result<T::RoCursor, StoreError> {
@@ -81,7 +82,10 @@ where
         K: AsRef<[u8]>,
     {
         let bytes = self.0.get(db, k.as_ref()).map_err(|e| e.into());
-        read_transform(bytes)
+        match read_transform(bytes).map(Some) {
+            Err(StoreError::KeyValuePairNotFound) => Ok(None),
+            result => result,
+        }
     }
 
     fn open_ro_cursor(&'r self, db: &T::Database) -> Result<T::RoCursor, StoreError> {
@@ -107,12 +111,20 @@ where
         self.0.abort();
     }
 
-    pub(crate) fn put<K>(&mut self, db: &T::Database, k: &K, v: &Value, flags: T::Flags) -> Result<(), StoreError>
+    pub(crate) fn put<K>(
+        &mut self,
+        db: &T::Database,
+        k: &K,
+        v: &Value,
+        flags: T::Flags,
+    ) -> Result<(), StoreError>
     where
         K: AsRef<[u8]>,
     {
         // TODO: don't allocate twice.
-        self.0.put(db, k.as_ref(), &v.to_bytes()?, flags).map_err(|e| e.into())
+        self.0
+            .put(db, k.as_ref(), &v.to_bytes()?, flags)
+            .map_err(|e| e.into())
     }
 
     #[cfg(not(feature = "db-dup-sort"))]
@@ -124,7 +136,12 @@ where
     }
 
     #[cfg(feature = "db-dup-sort")]
-    pub(crate) fn delete<K>(&mut self, db: &T::Database, k: &K, v: Option<&[u8]>) -> Result<(), StoreError>
+    pub(crate) fn delete<K>(
+        &mut self,
+        db: &T::Database,
+        k: &K,
+        v: Option<&[u8]>,
+    ) -> Result<(), StoreError>
     where
         K: AsRef<[u8]>,
     {

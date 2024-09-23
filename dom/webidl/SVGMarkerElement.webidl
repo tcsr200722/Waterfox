@@ -22,6 +22,7 @@ interface SVGMarkerElement : SVGElement {
   const unsigned short SVG_MARKER_ORIENT_UNKNOWN = 0;
   const unsigned short SVG_MARKER_ORIENT_AUTO = 1;
   const unsigned short SVG_MARKER_ORIENT_ANGLE = 2;
+  const unsigned short SVG_MARKER_ORIENT_AUTO_START_REVERSE = 3;
 
   [Constant]
   readonly attribute SVGAnimatedLength refX;
@@ -38,10 +39,8 @@ interface SVGMarkerElement : SVGElement {
   [Constant]
   readonly attribute SVGAnimatedAngle orientAngle;
 
-  void setOrientToAuto();
-  [Throws]
-  void setOrientToAngle(SVGAngle angle);
+  undefined setOrientToAuto();
+  undefined setOrientToAngle(SVGAngle angle);
 };
 
 SVGMarkerElement includes SVGFitToViewBox;
-

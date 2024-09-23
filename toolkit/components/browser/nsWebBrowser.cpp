@@ -26,9 +26,11 @@
 #include "nsIURI.h"
 #include "nsIWebBrowserPersist.h"
 #include "nsFocusManager.h"
-#include "Layers.h"
 #include "nsILoadContext.h"
+#include "nsComponentManagerUtils.h"
 #include "nsDocShell.h"
+#include "nsServiceManagerUtils.h"
+#include "WindowRenderer.h"
 
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/BrowsingContext.h"
@@ -42,7 +44,7 @@
 // Printing Includes
 #ifdef NS_PRINTING
 #  include "nsIWebBrowserPrint.h"
-#  include "nsIContentViewer.h"
+#  include "nsIDocumentViewer.h"
 #endif
 
 // PSM2 includes
@@ -81,9 +83,9 @@ nsIWidget* nsWebBrowser::EnsureWidget() {
     return nullptr;
   }
 
-  nsWidgetInitData widgetInit;
-  widgetInit.clipChildren = true;
-  widgetInit.mWindowType = eWindowType_child;
+  widget::InitData widgetInit;
+  widgetInit.mClipChildren = true;
+  widgetInit.mWindowType = widget::WindowType::Child;
   LayoutDeviceIntRect bounds(0, 0, 0, 0);
 
   mInternalWidget->SetWidgetListener(&mWidgetListenerDelegate);
@@ -123,10 +125,14 @@ already_AddRefed<nsWebBrowser> nsWebBrowser::Create(
     return nullptr;
   }
   browser->SetDocShell(docShell);
+  MOZ_ASSERT(browser->mDocShell == docShell);
 
   // get the system default window background colour
-  LookAndFeel::GetColor(LookAndFeel::ColorID::WindowBackground,
-                        &browser->mBackgroundColor);
+  //
+  // TODO(emilio): Can we get the color-scheme from somewhere here?
+  browser->mBackgroundColor =
+      LookAndFeel::Color(LookAndFeel::ColorID::Window, ColorScheme::Light,
+                         LookAndFeel::UseStandins::No);
 
   // HACK ALERT - this registration registers the nsDocShellTreeOwner as a
   // nsIWebBrowserListener so it can setup its MouseListener in one of the
@@ -134,18 +140,8 @@ already_AddRefed<nsWebBrowser> nsWebBrowser::Create(
   // registration can go away, and nsDocShellTreeOwner can stop implementing
   // nsIWebProgressListener.
   RefPtr<nsDocShellTreeOwner> docShellTreeOwner = browser->mDocShellTreeOwner;
-  NS_ASSERTION(
-      browser->mWebProgress,
-      "this should only be called after we've retrieved a progress iface");
-  if (browser->mWebProgress) {
-    Unused << browser->mWebProgress->AddProgressListener(
-        docShellTreeOwner, nsIWebProgress::NOTIFY_ALL);
-  }
-
-  nsCOMPtr<nsIBaseWindow> docShellAsWin = browser->mDocShellAsWin;
-  NS_ENSURE_SUCCESS(
-      docShellAsWin->InitWindow(nullptr, docShellParentWidget, 0, 0, 0, 0),
-      nullptr);
+  Unused << docShell->AddProgressListener(docShellTreeOwner,
+                                          nsIWebProgress::NOTIFY_ALL);
 
   docShell->SetTreeOwner(docShellTreeOwner);
 
@@ -154,24 +150,22 @@ already_AddRefed<nsWebBrowser> nsWebBrowser::Create(
   // handler that always gets called (even for subframes) for any bubbling
   // event.
 
-  if (aBrowsingContext->IsTop()) {
-    aBrowsingContext->InitSessionHistory();
+  nsresult rv = docShell->InitWindow(nullptr, docShellParentWidget, 0, 0, 0, 0);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return nullptr;
   }
-
-  NS_ENSURE_SUCCESS(docShellAsWin->Create(), nullptr);
 
   docShellTreeOwner->AddToWatcher();  // evil twin of Remove in SetDocShell(0)
   docShellTreeOwner->AddChromeListeners();
 
   if (aInitialWindowChild) {
-    docShell->CreateContentViewerForActor(aInitialWindowChild);
+    docShell->CreateDocumentViewerForActor(aInitialWindowChild);
   }
 
   return browser.forget();
 }
 
-NS_IMETHODIMP
-nsWebBrowser::InternalDestroy() {
+void nsWebBrowser::InternalDestroy() {
   if (mInternalWidget) {
     mInternalWidget->SetWidgetListener(nullptr);
     mInternalWidget->Destroy();
@@ -184,15 +178,12 @@ nsWebBrowser::InternalDestroy() {
     mDocShellTreeOwner->WebBrowser(nullptr);
     mDocShellTreeOwner = nullptr;
   }
-
-  return NS_OK;
 }
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsWebBrowser)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsWebBrowser)
 
-NS_IMPL_CYCLE_COLLECTION_WEAK(nsWebBrowser, mDocShell, mDocShellAsReq,
-                              mDocShellAsWin, mDocShellAsNav, mWebProgress)
+NS_IMPL_CYCLE_COLLECTION_WEAK(nsWebBrowser, mDocShell)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsWebBrowser)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIWebBrowser)
@@ -222,8 +213,8 @@ nsWebBrowser::GetInterface(const nsIID& aIID, void** aSink) {
   if (mDocShell) {
 #ifdef NS_PRINTING
     if (aIID.Equals(NS_GET_IID(nsIWebBrowserPrint))) {
-      nsCOMPtr<nsIContentViewer> viewer;
-      mDocShell->GetContentViewer(getter_AddRefs(viewer));
+      nsCOMPtr<nsIDocumentViewer> viewer;
+      mDocShell->GetDocViewer(getter_AddRefs(viewer));
       if (!viewer) {
         return NS_NOINTERFACE;
       }
@@ -236,7 +227,7 @@ nsWebBrowser::GetInterface(const nsIID& aIID, void** aSink) {
       return NS_OK;
     }
 #endif
-    return mDocShellAsReq->GetInterface(aIID, aSink);
+    return mDocShell->GetInterface(aIID, aSink);
   }
 
   return NS_NOINTERFACE;
@@ -262,7 +253,7 @@ nsWebBrowser::GetContainerWindow(nsIWebBrowserChrome** aTopWindow) {
 
 NS_IMETHODIMP
 nsWebBrowser::SetContainerWindow(nsIWebBrowserChrome* aTopWindow) {
-  NS_ENSURE_SUCCESS(EnsureDocShellTreeOwner(), NS_ERROR_FAILURE);
+  EnsureDocShellTreeOwner();
   return mDocShellTreeOwner->SetWebBrowserChrome(aTopWindow);
 }
 
@@ -415,7 +406,7 @@ nsWebBrowser::GetTreeOwner(nsIDocShellTreeOwner** aTreeOwner) {
 
 NS_IMETHODIMP
 nsWebBrowser::SetTreeOwner(nsIDocShellTreeOwner* aTreeOwner) {
-  NS_ENSURE_SUCCESS(EnsureDocShellTreeOwner(), NS_ERROR_FAILURE);
+  EnsureDocShellTreeOwner();
   return mDocShellTreeOwner->SetTreeOwner(aTreeOwner);
 }
 
@@ -454,31 +445,33 @@ NS_IMETHODIMP
 nsWebBrowser::GetCanGoBack(bool* aCanGoBack) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GetCanGoBack(aCanGoBack);
+  return mDocShell->GetCanGoBack(aCanGoBack);
 }
 
 NS_IMETHODIMP
 nsWebBrowser::GetCanGoForward(bool* aCanGoForward) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GetCanGoForward(aCanGoForward);
+  return mDocShell->GetCanGoForward(aCanGoForward);
 }
 
 NS_IMETHODIMP
-nsWebBrowser::GoBack() {
+nsWebBrowser::GoBack(bool aRequireUserInteraction, bool aUserActivation) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GoBack();
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->GoBack(aRequireUserInteraction, aUserActivation);
 }
 
 NS_IMETHODIMP
-nsWebBrowser::GoForward() {
+nsWebBrowser::GoForward(bool aRequireUserInteraction, bool aUserActivation) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GoForward();
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->GoForward(aRequireUserInteraction, aUserActivation);
 }
 
-nsresult nsWebBrowser::LoadURI(const nsAString& aURI,
+nsresult nsWebBrowser::LoadURI(nsIURI* aURI,
                                const dom::LoadURIOptions& aLoadURIOptions) {
 #ifndef ANDROID
   MOZ_ASSERT(aLoadURIOptions.mTriggeringPrincipal,
@@ -486,11 +479,12 @@ nsresult nsWebBrowser::LoadURI(const nsAString& aURI,
 #endif
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->LoadURI(aURI, aLoadURIOptions);
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->LoadURI(aURI, aLoadURIOptions);
 }
 
 NS_IMETHODIMP
-nsWebBrowser::LoadURIFromScript(const nsAString& aURI,
+nsWebBrowser::LoadURIFromScript(nsIURI* aURI,
                                 JS::Handle<JS::Value> aLoadURIOptions,
                                 JSContext* aCx) {
   // generate dictionary for loadURIOptions and forward call
@@ -501,38 +495,67 @@ nsWebBrowser::LoadURIFromScript(const nsAString& aURI,
   return LoadURI(aURI, loadURIOptions);
 }
 
+nsresult nsWebBrowser::FixupAndLoadURIString(
+    const nsAString& aURI, const dom::LoadURIOptions& aLoadURIOptions) {
+#ifndef ANDROID
+  MOZ_ASSERT(
+      aLoadURIOptions.mTriggeringPrincipal,
+      "nsWebBrowser::FixupAndLoadURIString - Need a valid triggeringPrincipal");
+#endif
+  NS_ENSURE_STATE(mDocShell);
+
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->FixupAndLoadURIString(aURI, aLoadURIOptions);
+}
+
+NS_IMETHODIMP
+nsWebBrowser::FixupAndLoadURIStringFromScript(
+    const nsAString& aURI, JS::Handle<JS::Value> aLoadURIOptions,
+    JSContext* aCx) {
+  // generate dictionary for loadURIOptions and forward call
+  dom::LoadURIOptions loadURIOptions;
+  if (!loadURIOptions.Init(aCx, aLoadURIOptions)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  return FixupAndLoadURIString(aURI, loadURIOptions);
+}
+
 NS_IMETHODIMP
 nsWebBrowser::ResumeRedirectedLoad(uint64_t aIdentifier,
                                    int32_t aHistoryIndex) {
-  return mDocShellAsNav->ResumeRedirectedLoad(aIdentifier, aHistoryIndex);
+  NS_ENSURE_STATE(mDocShell);
+
+  return mDocShell->ResumeRedirectedLoad(aIdentifier, aHistoryIndex);
 }
 
 NS_IMETHODIMP
 nsWebBrowser::Reload(uint32_t aReloadFlags) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->Reload(aReloadFlags);
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->Reload(aReloadFlags);
 }
 
 NS_IMETHODIMP
-nsWebBrowser::GotoIndex(int32_t aIndex) {
+nsWebBrowser::GotoIndex(int32_t aIndex, bool aUserActivation) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GotoIndex(aIndex);
+  RefPtr<nsDocShell> docShell = mDocShell;
+  return docShell->GotoIndex(aIndex, aUserActivation);
 }
 
 NS_IMETHODIMP
 nsWebBrowser::Stop(uint32_t aStopFlags) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->Stop(aStopFlags);
+  return mDocShell->Stop(aStopFlags);
 }
 
 NS_IMETHODIMP
 nsWebBrowser::GetCurrentURI(nsIURI** aURI) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GetCurrentURI(aURI);
+  return mDocShell->GetCurrentURI(aURI);
 }
 
 // XXX(nika): Consider making the mozilla::dom::ChildSHistory version the
@@ -542,9 +565,7 @@ nsWebBrowser::GetSessionHistoryXPCOM(nsISupports** aSessionHistory) {
   NS_ENSURE_ARG_POINTER(aSessionHistory);
   *aSessionHistory = nullptr;
   if (mDocShell) {
-    RefPtr<mozilla::dom::ChildSHistory> shistory =
-        mDocShellAsNav->GetSessionHistory();
-    shistory.forget(aSessionHistory);
+    return mDocShell->GetSessionHistoryXPCOM(aSessionHistory);
   }
   return NS_OK;
 }
@@ -553,7 +574,7 @@ NS_IMETHODIMP
 nsWebBrowser::GetDocument(dom::Document** aDocument) {
   NS_ENSURE_STATE(mDocShell);
 
-  return mDocShellAsNav->GetDocument(aDocument);
+  return mDocShell->GetDocument(aDocument);
 }
 
 void nsWebBrowser::SetAllowDNSPrefetch(bool aAllowPrefetch) {
@@ -701,24 +722,10 @@ nsWebBrowser::SetProgressListener(nsIWebProgressListener* aProgressListener) {
 NS_IMETHODIMP
 nsWebBrowser::SaveURI(nsIURI* aURI, nsIPrincipal* aPrincipal,
                       uint32_t aCacheKey, nsIReferrerInfo* aReferrerInfo,
+                      nsICookieJarSettings* aCookieJarSettings,
                       nsIInputStream* aPostData, const char* aExtraHeaders,
                       nsISupports* aFile,
-                      nsContentPolicyType aContentPolicyType,
-                      nsILoadContext* aPrivacyContext) {
-  return SavePrivacyAwareURI(
-      aURI, aPrincipal, aCacheKey, aReferrerInfo, aPostData, aExtraHeaders,
-      aFile, aContentPolicyType,
-      aPrivacyContext && aPrivacyContext->UsePrivateBrowsing());
-}
-
-NS_IMETHODIMP
-nsWebBrowser::SavePrivacyAwareURI(nsIURI* aURI, nsIPrincipal* aPrincipal,
-                                  uint32_t aCacheKey,
-                                  nsIReferrerInfo* aReferrerInfo,
-                                  nsIInputStream* aPostData,
-                                  const char* aExtraHeaders, nsISupports* aFile,
-                                  nsContentPolicyType aContentPolicyType,
-                                  bool aIsPrivate) {
+                      nsContentPolicyType aContentPolicyType, bool aIsPrivate) {
   if (mPersist) {
     uint32_t currentState;
     mPersist->GetCurrentState(&currentState);
@@ -748,9 +755,9 @@ nsWebBrowser::SavePrivacyAwareURI(nsIURI* aURI, nsIPrincipal* aPrincipal,
   mPersist->SetPersistFlags(mPersistFlags);
   mPersist->GetCurrentState(&mPersistCurrentState);
 
-  rv = mPersist->SavePrivacyAwareURI(uri, aPrincipal, aCacheKey, aReferrerInfo,
-                                     aPostData, aExtraHeaders, aFile,
-                                     aContentPolicyType, aIsPrivate);
+  rv = mPersist->SaveURI(uri, aPrincipal, aCacheKey, aReferrerInfo,
+                         aCookieJarSettings, aPostData, aExtraHeaders, aFile,
+                         aContentPolicyType, aIsPrivate);
   if (NS_FAILED(rv)) {
     mPersist = nullptr;
   }
@@ -819,6 +826,8 @@ nsWebBrowser::SaveDocument(nsISupports* aDocumentish, nsISupports* aFile,
   nsresult rv;
   mPersist = do_CreateInstance(NS_WEBBROWSERPERSIST_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
+  RefPtr<nsIWebBrowserPersist> localPersist(mPersist);
+  Unused << localPersist;
   mPersist->SetProgressListener(this);
   mPersist->SetPersistFlags(mPersistFlags);
   mPersist->GetCurrentState(&mPersistCurrentState);
@@ -861,24 +870,14 @@ nsWebBrowser::InitWindow(nativeWindow aParentNativeWindow,
 }
 
 NS_IMETHODIMP
-nsWebBrowser::Create() {
-  // nsIBaseWindow::InitWindow and nsIBaseWindow::Create
-  // implementations have been merged into nsWebBrowser::Create
-  MOZ_DIAGNOSTIC_ASSERT(false);
-  return NS_ERROR_NULL_POINTER;
-}
-
-NS_IMETHODIMP
 nsWebBrowser::Destroy() {
   InternalDestroy();
 
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsWebBrowser::GetUnscaledDevicePixelsPerCSSPixel(double* aScale) {
-  *aScale = mParentWidget ? mParentWidget->GetDefaultScale().scale : 1.0;
-  return NS_OK;
+double nsWebBrowser::GetWidgetCSSToDeviceScale() {
+  return mParentWidget ? mParentWidget->GetDefaultScale().scale : 1.0;
 }
 
 NS_IMETHODIMP
@@ -949,7 +948,7 @@ nsWebBrowser::SetPositionAndSize(int32_t aX, int32_t aY, int32_t aCX,
   }
   // Now reposition/ resize the doc
   NS_ENSURE_SUCCESS(
-      mDocShellAsWin->SetPositionAndSize(doc_x, doc_y, aCX, aCY, aFlags),
+      mDocShell->SetPositionAndSize(doc_x, doc_y, aCX, aCY, aFlags),
       NS_ERROR_FAILURE);
 
   return NS_OK;
@@ -974,12 +973,22 @@ nsWebBrowser::GetPositionAndSize(int32_t* aX, int32_t* aY, int32_t* aCX,
       *aCY = bounds.Height();
     }
     return NS_OK;
-  } else {
-    // Can directly return this as it is the
-    // same interface, thus same returns.
-    return mDocShellAsWin->GetPositionAndSize(aX, aY, aCX, aCY);
   }
-  return NS_OK;
+
+  // Can directly return this as it is the
+  // same interface, thus same returns.
+  return mDocShell->GetPositionAndSize(aX, aY, aCX, aCY);
+}
+
+NS_IMETHODIMP
+nsWebBrowser::SetDimensions(DimensionRequest&& aRequest) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsWebBrowser::GetDimensions(DimensionKind aDimensionKind, int32_t* aX,
+                            int32_t* aY, int32_t* aCX, int32_t* aCY) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -987,7 +996,7 @@ nsWebBrowser::Repaint(bool aForce) {
   NS_ENSURE_STATE(mDocShell);
   // Can directly return this as it is the
   // same interface, thus same returns.
-  return mDocShellAsWin->Repaint(aForce);
+  return mDocShell->Repaint(aForce);
 }
 
 NS_IMETHODIMP
@@ -1044,8 +1053,7 @@ nsWebBrowser::GetVisibility(bool* aVisibility) {
   NS_ENSURE_ARG_POINTER(aVisibility);
 
   if (mDocShell) {
-    NS_ENSURE_SUCCESS(mDocShellAsWin->GetVisibility(aVisibility),
-                      NS_ERROR_FAILURE);
+    NS_ENSURE_SUCCESS(mDocShell->GetVisibility(aVisibility), NS_ERROR_FAILURE);
   }
 
   return NS_OK;
@@ -1054,8 +1062,7 @@ nsWebBrowser::GetVisibility(bool* aVisibility) {
 NS_IMETHODIMP
 nsWebBrowser::SetVisibility(bool aVisibility) {
   if (mDocShell) {
-    NS_ENSURE_SUCCESS(mDocShellAsWin->SetVisibility(aVisibility),
-                      NS_ERROR_FAILURE);
+    NS_ENSURE_SUCCESS(mDocShell->SetVisibility(aVisibility), NS_ERROR_FAILURE);
     if (mInternalWidget) {
       mInternalWidget->Show(aVisibility);
     }
@@ -1099,19 +1106,10 @@ nsWebBrowser::GetMainWidget(nsIWidget** aMainWidget) {
 }
 
 NS_IMETHODIMP
-nsWebBrowser::SetFocus() {
-  nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow();
-  NS_ENSURE_TRUE(window, NS_ERROR_FAILURE);
-
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  return fm ? fm->SetFocusedWindow(window) : NS_OK;
-}
-
-NS_IMETHODIMP
 nsWebBrowser::GetTitle(nsAString& aTitle) {
   NS_ENSURE_STATE(mDocShell);
 
-  NS_ENSURE_SUCCESS(mDocShellAsWin->GetTitle(aTitle), NS_ERROR_FAILURE);
+  NS_ENSURE_SUCCESS(mDocShell->GetTitle(aTitle), NS_ERROR_FAILURE);
 
   return NS_OK;
 }
@@ -1120,7 +1118,7 @@ NS_IMETHODIMP
 nsWebBrowser::SetTitle(const nsAString& aTitle) {
   NS_ENSURE_STATE(mDocShell);
 
-  NS_ENSURE_SUCCESS(mDocShellAsWin->SetTitle(aTitle), NS_ERROR_FAILURE);
+  NS_ENSURE_SUCCESS(mDocShell->SetTitle(aTitle), NS_ERROR_FAILURE);
 
   return NS_OK;
 }
@@ -1129,27 +1127,16 @@ nsWebBrowser::SetTitle(const nsAString& aTitle) {
 // nsWebBrowser: Listener Helpers
 //*****************************************************************************
 
-NS_IMETHODIMP
-nsWebBrowser::SetDocShell(nsIDocShell* aDocShell) {
+void nsWebBrowser::SetDocShell(nsDocShell* aDocShell) {
   // We need to keep the docshell alive while we perform the changes, but we
   // don't need to call any methods on it.
   nsCOMPtr<nsIDocShell> kungFuDeathGrip(mDocShell);
   mozilla::Unused << kungFuDeathGrip;
 
   if (aDocShell) {
-    NS_ENSURE_TRUE(!mDocShell, NS_ERROR_FAILURE);
-
-    nsCOMPtr<nsIInterfaceRequestor> req(do_QueryInterface(aDocShell));
-    nsCOMPtr<nsIBaseWindow> baseWin(do_QueryInterface(aDocShell));
-    nsCOMPtr<nsIWebNavigation> nav(do_QueryInterface(aDocShell));
-    nsCOMPtr<nsIWebProgress> progress(do_GetInterface(aDocShell));
-    NS_ENSURE_TRUE(req && baseWin && nav && progress, NS_ERROR_FAILURE);
+    MOZ_ASSERT(!mDocShell, "Should not overwrite an existing value!");
 
     mDocShell = aDocShell;
-    mDocShellAsReq = req;
-    mDocShellAsWin = baseWin;
-    mDocShellAsNav = nav;
-    mWebProgress = progress;
 
     // By default, do not allow DNS prefetch, so we don't break our frozen
     // API.  Embeddors who decide to enable it should do so manually.
@@ -1158,48 +1145,24 @@ nsWebBrowser::SetDocShell(nsIDocShell* aDocShell) {
     if (mDocShellTreeOwner) {
       mDocShellTreeOwner->RemoveFromWatcher();  // evil twin of Add in Create()
     }
-    if (mDocShellAsWin) {
-      mDocShellAsWin->Destroy();
+    if (mDocShell) {
+      mDocShell->Destroy();
     }
     if (!mWillChangeProcess && mDocShell) {
       mDocShell->GetBrowsingContext()->Detach(/* aFromIPC */ true);
     }
 
     mDocShell = nullptr;
-    mDocShellAsReq = nullptr;
-    mDocShellAsWin = nullptr;
-    mDocShellAsNav = nullptr;
-    mWebProgress = nullptr;
   }
-
-  return NS_OK;
 }
 
-NS_IMETHODIMP
-nsWebBrowser::EnsureDocShellTreeOwner() {
+void nsWebBrowser::EnsureDocShellTreeOwner() {
   if (mDocShellTreeOwner) {
-    return NS_OK;
+    return;
   }
 
   mDocShellTreeOwner = new nsDocShellTreeOwner();
   mDocShellTreeOwner->WebBrowser(this);
-
-  return NS_OK;
-}
-
-static void DrawPaintedLayer(PaintedLayer* aLayer, gfxContext* aContext,
-                             const nsIntRegion& aRegionToDraw,
-                             const nsIntRegion& aDirtyRegion,
-                             DrawRegionClip aClip,
-                             const nsIntRegion& aRegionToInvalidate,
-                             void* aCallbackData) {
-  DrawTarget& aDrawTarget = *aContext->GetDrawTarget();
-
-  ColorPattern color(ToDeviceColor(*static_cast<nscolor*>(aCallbackData)));
-  nsIntRect dirtyRect = aRegionToDraw.GetBounds();
-  aDrawTarget.FillRect(
-      Rect(dirtyRect.X(), dirtyRect.Y(), dirtyRect.Width(), dirtyRect.Height()),
-      color);
 }
 
 void nsWebBrowser::WindowActivated() {
@@ -1210,7 +1173,7 @@ void nsWebBrowser::WindowActivated() {
   printf("nsWebBrowser::NS_ACTIVATE %p %s\n", (void*)this,
          NS_ConvertUTF16toUTF8(documentURI).get());
 #endif
-  FocusActivate();
+  FocusActivate(nsFocusManager::GenerateFocusActionId());
 }
 
 void nsWebBrowser::WindowDeactivated() {
@@ -1221,39 +1184,36 @@ void nsWebBrowser::WindowDeactivated() {
   printf("nsWebBrowser::NS_DEACTIVATE %p %s\n", (void*)this,
          NS_ConvertUTF16toUTF8(documentURI).get());
 #endif
-  FocusDeactivate();
+  FocusDeactivate(nsFocusManager::GenerateFocusActionId());
 }
 
 bool nsWebBrowser::PaintWindow(nsIWidget* aWidget,
                                LayoutDeviceIntRegion aRegion) {
-  LayerManager* layerManager = aWidget->GetLayerManager();
-  NS_ASSERTION(layerManager, "Must be in paint event");
-
-  layerManager->BeginTransaction();
-  RefPtr<PaintedLayer> root = layerManager->CreatePaintedLayer();
-  if (root) {
-    nsIntRect dirtyRect = aRegion.GetBounds().ToUnknownRect();
-    root->SetVisibleRegion(LayerIntRegion::FromUnknownRegion(dirtyRect));
-    layerManager->SetRoot(root);
+  WindowRenderer* renderer = aWidget->GetWindowRenderer();
+  NS_ASSERTION(renderer, "Must be in paint event");
+  if (FallbackRenderer* fallback = renderer->AsFallback()) {
+    if (fallback->BeginTransaction()) {
+      fallback->EndTransactionWithColor(aRegion.GetBounds().ToUnknownRect(),
+                                        ToDeviceColor(mBackgroundColor));
+    }
+    return true;
   }
-
-  layerManager->EndTransaction(DrawPaintedLayer, &mBackgroundColor);
-  return true;
+  return false;
 }
 
-void nsWebBrowser::FocusActivate() {
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow();
-  if (fm && window) {
-    fm->WindowRaised(window);
+void nsWebBrowser::FocusActivate(uint64_t aActionId) {
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    if (nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow()) {
+      fm->WindowRaised(window, aActionId);
+    }
   }
 }
 
-void nsWebBrowser::FocusDeactivate() {
-  nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow();
-  if (fm && window) {
-    fm->WindowLowered(window);
+void nsWebBrowser::FocusDeactivate(uint64_t aActionId) {
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+    if (nsCOMPtr<nsPIDOMWindowOuter> window = GetWindow()) {
+      fm->WindowLowered(window, aActionId);
+    }
   }
 }
 

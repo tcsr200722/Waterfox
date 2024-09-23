@@ -13,8 +13,8 @@
 #include "nsDocShellLoadState.h"
 #include "nsDocShellLoadTypes.h"
 #include "nsIContentSecurityPolicy.h"
-#include "nsIContentViewer.h"
 #include "nsIDocShellTreeItem.h"
+#include "nsIDocumentViewer.h"
 #include "nsIInputStream.h"
 #include "nsILayoutHistoryState.h"
 #include "nsIMutableArray.h"
@@ -28,39 +28,36 @@
 
 extern mozilla::LazyLogModule gPageCacheLog;
 
-namespace dom = mozilla::dom;
-
 static uint32_t gEntryID = 0;
 
-nsSHEntry::nsSHEntry(nsISHistory* aSHistory)
-    : mShared(new nsSHEntryShared(aSHistory)),
+nsSHEntry::nsSHEntry()
+    : mShared(new nsSHEntryShared()),
       mLoadType(0),
-      mID(gEntryID++),
+      mID(++gEntryID),  // SessionStore has special handling for 0 values.
       mScrollPositionX(0),
       mScrollPositionY(0),
-      mParent(nullptr),
       mLoadReplace(false),
       mURIWasModified(false),
       mIsSrcdocEntry(false),
       mScrollRestorationIsManual(false),
       mLoadedInThisProcess(false),
-      mPersist(true) {}
+      mPersist(true),
+      mHasUserInteraction(false),
+      mHasUserActivation(false) {}
 
 nsSHEntry::nsSHEntry(const nsSHEntry& aOther)
     : mShared(aOther.mShared),
       mURI(aOther.mURI),
       mOriginalURI(aOther.mOriginalURI),
       mResultPrincipalURI(aOther.mResultPrincipalURI),
+      mUnstrippedURI(aOther.mUnstrippedURI),
       mReferrerInfo(aOther.mReferrerInfo),
       mTitle(aOther.mTitle),
       mPostData(aOther.mPostData),
-      mLoadType(0)  // XXX why not copy?
-      ,
+      mLoadType(0),  // XXX why not copy?
       mID(aOther.mID),
-      mScrollPositionX(0)  // XXX why not copy?
-      ,
-      mScrollPositionY(0)  // XXX why not copy?
-      ,
+      mScrollPositionX(0),  // XXX why not copy?
+      mScrollPositionY(0),  // XXX why not copy?
       mParent(aOther.mParent),
       mStateData(aOther.mStateData),
       mSrcdocData(aOther.mSrcdocData),
@@ -70,7 +67,9 @@ nsSHEntry::nsSHEntry(const nsSHEntry& aOther)
       mIsSrcdocEntry(aOther.mIsSrcdocEntry),
       mScrollRestorationIsManual(false),
       mLoadedInThisProcess(aOther.mLoadedInThisProcess),
-      mPersist(aOther.mPersist) {}
+      mPersist(aOther.mPersist),
+      mHasUserInteraction(false),
+      mHasUserActivation(aOther.mHasUserActivation) {}
 
 nsSHEntry::~nsSHEntry() {
   // Null out the mParent pointers on all our kids.
@@ -81,7 +80,7 @@ nsSHEntry::~nsSHEntry() {
   }
 }
 
-NS_IMPL_ISUPPORTS(nsSHEntry, nsISHEntry)
+NS_IMPL_ISUPPORTS(nsSHEntry, nsISHEntry, nsISupportsWeakReference)
 
 NS_IMETHODIMP
 nsSHEntry::SetScrollPosition(int32_t aX, int32_t aY) {
@@ -149,6 +148,19 @@ nsSHEntry::SetResultPrincipalURI(nsIURI* aResultPrincipalURI) {
 }
 
 NS_IMETHODIMP
+nsSHEntry::GetUnstrippedURI(nsIURI** aUnstrippedURI) {
+  *aUnstrippedURI = mUnstrippedURI;
+  NS_IF_ADDREF(*aUnstrippedURI);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::SetUnstrippedURI(nsIURI* aUnstrippedURI) {
+  mUnstrippedURI = aUnstrippedURI;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsSHEntry::GetLoadReplace(bool* aLoadReplace) {
   *aLoadReplace = mLoadReplace;
   return NS_OK;
@@ -207,6 +219,18 @@ nsSHEntry::SetTitle(const nsAString& aTitle) {
 }
 
 NS_IMETHODIMP
+nsSHEntry::GetName(nsAString& aName) {
+  aName = mName;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::SetName(const nsAString& aName) {
+  mName = aName;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsSHEntry::GetPostData(nsIInputStream** aResult) {
   *aResult = mPostData;
   NS_IF_ADDREF(*aResult);
@@ -216,6 +240,12 @@ nsSHEntry::GetPostData(nsIInputStream** aResult) {
 NS_IMETHODIMP
 nsSHEntry::SetPostData(nsIInputStream* aPostData) {
   mPostData = aPostData;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::GetHasPostData(bool* aResult) {
+  *aResult = !!mPostData;
   return NS_OK;
 }
 
@@ -287,6 +317,44 @@ nsSHEntry::SetIsSubFrame(bool aFlag) {
 }
 
 NS_IMETHODIMP
+nsSHEntry::GetHasUserInteraction(bool* aFlag) {
+  // The back button and menulist deal with root/top-level
+  // session history entries, thus we annotate only the root entry.
+  if (!mParent) {
+    *aFlag = mHasUserInteraction;
+  } else {
+    nsCOMPtr<nsISHEntry> root = nsSHistory::GetRootSHEntry(this);
+    root->GetHasUserInteraction(aFlag);
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::SetHasUserInteraction(bool aFlag) {
+  // The back button and menulist deal with root/top-level
+  // session history entries, thus we annotate only the root entry.
+  if (!mParent) {
+    mHasUserInteraction = aFlag;
+  } else {
+    nsCOMPtr<nsISHEntry> root = nsSHistory::GetRootSHEntry(this);
+    root->SetHasUserInteraction(aFlag);
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::GetHasUserActivation(bool* aFlag) {
+  *aFlag = mHasUserActivation;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::SetHasUserActivation(bool aFlag) {
+  mHasUserActivation = aFlag;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsSHEntry::GetCacheKey(uint32_t* aResult) {
   *aResult = mShared->mCacheKey;
   return NS_OK;
@@ -295,18 +363,6 @@ nsSHEntry::GetCacheKey(uint32_t* aResult) {
 NS_IMETHODIMP
 nsSHEntry::SetCacheKey(uint32_t aCacheKey) {
   mShared->mCacheKey = aCacheKey;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsSHEntry::GetExpirationStatus(bool* aFlag) {
-  *aFlag = mShared->mExpired;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsSHEntry::SetExpirationStatus(bool aFlag) {
-  mShared->mExpired = aFlag;
   return NS_OK;
 }
 
@@ -327,11 +383,12 @@ nsSHEntry::Create(
     nsIURI* aURI, const nsAString& aTitle, nsIInputStream* aInputStream,
     uint32_t aCacheKey, const nsACString& aContentType,
     nsIPrincipal* aTriggeringPrincipal, nsIPrincipal* aPrincipalToInherit,
-    nsIPrincipal* aStoragePrincipalToInherit, nsIContentSecurityPolicy* aCsp,
-    const nsID& aDocShellID, bool aDynamicCreation, nsIURI* aOriginalURI,
-    nsIURI* aResultPrincipalURI, bool aLoadReplace,
-    nsIReferrerInfo* aReferrerInfo, const nsAString& aSrcdocData,
-    bool aSrcdocEntry, nsIURI* aBaseURI, bool aSaveLayoutState, bool aExpired) {
+    nsIPrincipal* aPartitionedPrincipalToInherit,
+    nsIContentSecurityPolicy* aCsp, const nsID& aDocShellID,
+    bool aDynamicCreation, nsIURI* aOriginalURI, nsIURI* aResultPrincipalURI,
+    nsIURI* aUnstrippedURI, bool aLoadReplace, nsIReferrerInfo* aReferrerInfo,
+    const nsAString& aSrcdocData, bool aSrcdocEntry, nsIURI* aBaseURI,
+    bool aSaveLayoutState, bool aExpired, bool aUserActivation) {
   MOZ_ASSERT(
       aTriggeringPrincipal,
       "need a valid triggeringPrincipal to create a session history entry");
@@ -347,7 +404,7 @@ nsSHEntry::Create(
   mShared->mContentType = aContentType;
   mShared->mTriggeringPrincipal = aTriggeringPrincipal;
   mShared->mPrincipalToInherit = aPrincipalToInherit;
-  mShared->mStoragePrincipalToInherit = aStoragePrincipalToInherit;
+  mShared->mPartitionedPrincipalToInherit = aPartitionedPrincipalToInherit;
   mShared->mCsp = aCsp;
   mShared->mDocShellID = aDocShellID;
   mShared->mDynamicallyCreated = aDynamicCreation;
@@ -356,6 +413,8 @@ nsSHEntry::Create(
   // nsDocShell::CloneAndReplace() which creates entries for
   // all subframe navigations, sets the flag to true.
   mShared->mIsFrameNavigation = false;
+
+  mHasUserInteraction = false;
 
   mShared->mExpired = aExpired;
 
@@ -368,8 +427,11 @@ nsSHEntry::Create(
 
   mOriginalURI = aOriginalURI;
   mResultPrincipalURI = aResultPrincipalURI;
+  mUnstrippedURI = aUnstrippedURI;
   mLoadReplace = aLoadReplace;
   mReferrerInfo = aReferrerInfo;
+
+  mHasUserActivation = aUserActivation;
 
   mShared->mLayoutHistoryState = nullptr;
 
@@ -380,19 +442,14 @@ nsSHEntry::Create(
 
 NS_IMETHODIMP
 nsSHEntry::GetParent(nsISHEntry** aResult) {
-  *aResult = mParent;
-  NS_IF_ADDREF(*aResult);
+  nsCOMPtr<nsISHEntry> parent = do_QueryReferent(mParent);
+  parent.forget(aResult);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsSHEntry::SetParent(nsISHEntry* aParent) {
-  /* parent not Addrefed on purpose to avoid cyclic reference
-   * Null parent is OK
-   *
-   * XXX this method should not be scriptable if this is the case!!
-   */
-  mParent = aParent;
+  mParent = do_GetWeakReference(aParent);
   return NS_OK;
 }
 
@@ -431,17 +488,17 @@ nsSHEntry::SetPrincipalToInherit(nsIPrincipal* aPrincipalToInherit) {
 }
 
 NS_IMETHODIMP
-nsSHEntry::GetStoragePrincipalToInherit(
-    nsIPrincipal** aStoragePrincipalToInherit) {
-  NS_IF_ADDREF(*aStoragePrincipalToInherit =
-                   mShared->mStoragePrincipalToInherit);
+nsSHEntry::GetPartitionedPrincipalToInherit(
+    nsIPrincipal** aPartitionedPrincipalToInherit) {
+  NS_IF_ADDREF(*aPartitionedPrincipalToInherit =
+                   mShared->mPartitionedPrincipalToInherit);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsSHEntry::SetStoragePrincipalToInherit(
-    nsIPrincipal* aStoragePrincipalToInherit) {
-  mShared->mStoragePrincipalToInherit = aStoragePrincipalToInherit;
+nsSHEntry::SetPartitionedPrincipalToInherit(
+    nsIPrincipal* aPartitionedPrincipalToInherit) {
+  mShared->mPartitionedPrincipalToInherit = aPartitionedPrincipalToInherit;
   return NS_OK;
 }
 
@@ -806,6 +863,15 @@ nsSHEntry::GetShistory(nsISHistory** aSHistory) {
 }
 
 NS_IMETHODIMP
+nsSHEntry::SetShistory(nsISHistory* aSHistory) {
+  nsWeakPtr shistory = do_GetWeakReference(aSHistory);
+  // mSHistory can not be changed once it's set
+  MOZ_ASSERT(!mShared->mSHistory || (mShared->mSHistory == shistory));
+  mShared->mSHistory = shistory;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsSHEntry::SetLoadTypeAsHistory() {
   // Set the LoadType by default to loadHistory during creation
   mLoadType = LOAD_HISTORY;
@@ -837,6 +903,9 @@ nsSHEntry::CreateLoadInfo(nsDocShellLoadState** aLoadState) {
   emplacedResultPrincipalURI.emplace(std::move(resultPrincipalURI));
   loadState->SetMaybeResultPrincipalURI(emplacedResultPrincipalURI);
 
+  nsCOMPtr<nsIURI> unstrippedURI = GetUnstrippedURI();
+  loadState->SetUnstrippedURI(unstrippedURI);
+
   loadState->SetLoadReplace(GetLoadReplace());
   nsCOMPtr<nsIInputStream> postData = GetPostData();
   loadState->SetPostDataStream(postData);
@@ -849,9 +918,9 @@ nsSHEntry::CreateLoadInfo(nsDocShellLoadState** aLoadState) {
   loadState->SetTriggeringPrincipal(triggeringPrincipal);
   nsCOMPtr<nsIPrincipal> principalToInherit = GetPrincipalToInherit();
   loadState->SetPrincipalToInherit(principalToInherit);
-  nsCOMPtr<nsIPrincipal> storagePrincipalToInherit =
-      GetStoragePrincipalToInherit();
-  loadState->SetStoragePrincipalToInherit(storagePrincipalToInherit);
+  nsCOMPtr<nsIPrincipal> partitionedPrincipalToInherit =
+      GetPartitionedPrincipalToInherit();
+  loadState->SetPartitionedPrincipalToInherit(partitionedPrincipalToInherit);
   nsCOMPtr<nsIContentSecurityPolicy> csp = GetCsp();
   loadState->SetCsp(csp);
   nsCOMPtr<nsIReferrerInfo> referrerInfo = GetReferrerInfo();
@@ -875,10 +944,18 @@ nsSHEntry::CreateLoadInfo(nsDocShellLoadState** aLoadState) {
   }
   loadState->SetSrcdocData(srcdoc);
   loadState->SetBaseURI(baseURI);
-  loadState->SetLoadFlags(flags);
+  loadState->SetInternalLoadFlags(flags);
 
   loadState->SetFirstParty(true);
+
+  loadState->SetHasValidUserGestureActivation(GetHasUserActivation());
+
   loadState->SetSHEntry(this);
+
+  // When we create a load state from the history entry we already know if
+  // https-first was able to upgrade the request from http to https. There is no
+  // point in re-retrying to upgrade.
+  loadState->SetIsExemptFromHTTPSFirstMode(true);
 
   loadState.forget(aLoadState);
   return NS_OK;
@@ -888,6 +965,9 @@ NS_IMETHODIMP_(void)
 nsSHEntry::SyncTreesForSubframeNavigation(
     nsISHEntry* aEntry, mozilla::dom::BrowsingContext* aTopBC,
     mozilla::dom::BrowsingContext* aIgnoreBC) {
+  // XXX Keep this in sync with
+  // SessionHistoryEntry::SyncTreesForSubframeNavigation
+  //
   // We need to sync up the browsing context and session history trees for
   // subframe navigation.  If the load was in a subframe, we forward up to
   // the top browsing context, which will then recursively sync up all browsing
@@ -910,33 +990,33 @@ nsSHEntry::SyncTreesForSubframeNavigation(
   }
 }
 
-void nsSHEntry::EvictContentViewer() {
-  nsCOMPtr<nsIContentViewer> viewer = GetContentViewer();
+void nsSHEntry::EvictDocumentViewer() {
+  nsCOMPtr<nsIDocumentViewer> viewer = GetDocumentViewer();
   if (viewer) {
-    mShared->NotifyListenersContentViewerEvicted();
+    mShared->NotifyListenersDocumentViewerEvicted();
     // Drop the presentation state before destroying the viewer, so that
     // document teardown is able to correctly persist the state.
-    SetContentViewer(nullptr);
+    SetDocumentViewer(nullptr);
     SyncPresentationState();
     viewer->Destroy();
   }
 }
 
 NS_IMETHODIMP
-nsSHEntry::SynchronizeLayoutHistoryState() {
-  // No-op on purpose. See nsISHEntry.idl
+nsSHEntry::SetDocumentViewer(nsIDocumentViewer* aViewer) {
+  return GetState()->SetDocumentViewer(aViewer);
+}
+
+NS_IMETHODIMP
+nsSHEntry::GetDocumentViewer(nsIDocumentViewer** aResult) {
+  *aResult = GetState()->mDocumentViewer;
+  NS_IF_ADDREF(*aResult);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsSHEntry::SetContentViewer(nsIContentViewer* aViewer) {
-  return GetState()->SetContentViewer(aViewer);
-}
-
-NS_IMETHODIMP
-nsSHEntry::GetContentViewer(nsIContentViewer** aResult) {
-  *aResult = GetState()->mContentViewer;
-  NS_IF_ADDREF(*aResult);
+nsSHEntry::GetIsInBFCache(bool* aResult) {
+  *aResult = !!GetState()->mDocumentViewer;
   return NS_OK;
 }
 
@@ -1022,8 +1102,9 @@ bool nsSHEntry::HasDetachedEditor() {
   return GetState()->mEditorData != nullptr;
 }
 
-bool nsSHEntry::HasBFCacheEntry(nsIBFCacheEntry* aEntry) {
-  return static_cast<nsIBFCacheEntry*>(GetState()) == aEntry;
+bool nsSHEntry::HasBFCacheEntry(
+    mozilla::dom::SHEntrySharedParentState* aEntry) {
+  return GetState() == aEntry;
 }
 
 NS_IMETHODIMP
@@ -1034,6 +1115,17 @@ nsSHEntry::AbandonBFCacheEntry() {
 
 NS_IMETHODIMP
 nsSHEntry::GetBfcacheID(uint64_t* aBFCacheID) {
-  *aBFCacheID = mShared->GetID();
+  *aBFCacheID = mShared->GetId();
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::GetWireframe(JSContext* aCx, JS::MutableHandle<JS::Value> aOut) {
+  aOut.set(JS::NullValue());
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHEntry::SetWireframe(JSContext* aCx, JS::Handle<JS::Value> aArg) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }

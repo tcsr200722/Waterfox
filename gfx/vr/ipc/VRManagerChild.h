@@ -7,13 +7,13 @@
 #ifndef MOZILLA_GFX_VR_VRMANAGERCHILD_H
 #define MOZILLA_GFX_VR_VRMANAGERCHILD_H
 
+#include "nsISupportsImpl.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/WindowBinding.h"  // For FrameRequestCallback
+#include "mozilla/dom/AnimationFrameProviderBinding.h"
 #include "mozilla/dom/WebXRBinding.h"
 #include "mozilla/dom/XRFrame.h"
 #include "mozilla/gfx/PVRManagerChild.h"
-#include "mozilla/ipc/SharedMemory.h"  // for SharedMemory, etc
-#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
+#include "mozilla/ipc/SharedMemory.h"          // for SharedMemory, etc
 #include "mozilla/layers/ISurfaceAllocator.h"  // for ISurfaceAllocator
 #include "mozilla/layers/LayersTypes.h"        // for LayersBackend
 
@@ -25,9 +25,6 @@ class Navigator;
 class VRDisplay;
 class FrameRequestCallback;
 }  // namespace dom
-namespace layers {
-class SyncObjectClient;
-}
 namespace gfx {
 class VRLayerChild;
 class VRDisplayClient;
@@ -53,7 +50,7 @@ class VRManagerChild : public PVRManagerChild {
   friend class PVRManagerChild;
 
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRManagerChild);
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRManagerChild, override);
 
   static VRManagerChild* Get();
 
@@ -83,13 +80,11 @@ class VRManagerChild : public PVRManagerChild {
   static bool IsPresenting();
   static TimeStamp GetIdleDeadlineHint(TimeStamp aDefault);
 
-  PVRLayerChild* CreateVRLayer(uint32_t aDisplayID, nsIEventTarget* aTarget,
-                               uint32_t aGroup);
+  PVRLayerChild* CreateVRLayer(uint32_t aDisplayID, uint32_t aGroup);
 
   static void IdentifyTextureHost(
       const layers::TextureFactoryIdentifier& aIdentifier);
   layers::LayersBackend GetBackendType() const;
-  layers::SyncObjectClient* GetSyncObject() { return mSyncObject; }
 
   nsresult ScheduleFrameRequestCallback(dom::FrameRequestCallback& aCallback,
                                         int32_t* aHandle);
@@ -107,7 +102,7 @@ class VRManagerChild : public PVRManagerChild {
   void FireDOMVRDisplayPresentChangeEvent(uint32_t aDisplayID);
   void FireDOMVRDisplayConnectEventsForLoad(VRManagerEventObserver* aObserver);
 
-  void HandleFatalError(const char* aMsg) const override;
+  void HandleFatalError(const char* aMsg) override;
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   void RunPuppet(const nsTArray<uint64_t>& aBuffer, dom::Promise* aPromise,
@@ -121,8 +116,6 @@ class VRManagerChild : public PVRManagerChild {
   PVRLayerChild* AllocPVRLayerChild(const uint32_t& aDisplayID,
                                     const uint32_t& aGroup);
   bool DeallocPVRLayerChild(PVRLayerChild* actor);
-
-  void ActorDealloc() override;
 
   // MOZ_CAN_RUN_SCRIPT_BOUNDARY until we can mark ipdl-generated things as
   // MOZ_CAN_RUN_SCRIPT.
@@ -191,7 +184,6 @@ class VRManagerChild : public PVRManagerChild {
   bool mWaitingForEnumeration;
 
   layers::LayersBackend mBackend;
-  RefPtr<layers::SyncObjectClient> mSyncObject;
   nsRefPtrHashtable<nsUint32HashKey, dom::Promise> mGamepadPromiseList;
   RefPtr<dom::Promise> mRunPuppetPromise;
   nsTArray<RefPtr<dom::Promise>> mResetPuppetPromises;

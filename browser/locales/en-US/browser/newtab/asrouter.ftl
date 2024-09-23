@@ -6,7 +6,7 @@
 
 cfr-doorhanger-extension-heading = Recommended Extension
 cfr-doorhanger-feature-heading = Recommended Feature
-cfr-doorhanger-pintab-heading = Try This: Pin Tab
+
 ##
 
 cfr-doorhanger-extension-sumo-link =
@@ -17,8 +17,6 @@ cfr-doorhanger-extension-cancel-button = Not Now
 
 cfr-doorhanger-extension-ok-button = Add Now
   .accesskey = A
-cfr-doorhanger-pintab-ok-button = Pin This Tab
-  .accesskey = P
 
 cfr-doorhanger-extension-manage-settings-button = Manage Recommendation Settings
   .accesskey = M
@@ -36,12 +34,14 @@ cfr-doorhanger-extension-author = by { $name }
 # This is a notification displayed in the address bar.
 # When clicked it opens a panel with a message for the user.
 cfr-doorhanger-extension-notification = Recommendation
+# .a11y-announcement is extracted in JS and announced via A11y.announce.
 cfr-doorhanger-extension-notification2 = Recommendation
   .tooltiptext = Extension recommendation
   .a11y-announcement = Extension recommendation available
 
 # This is a notification displayed in the address bar.
 # When clicked it opens a panel with a message for the user.
+# .a11y-announcement is extracted in JS and announced via A11y.announce.
 cfr-doorhanger-feature-notification = Recommendation
   .tooltiptext = Feature recommendation
   .a11y-announcement = Feature recommendation available
@@ -66,32 +66,14 @@ cfr-doorhanger-extension-total-users =
      *[other] { $total } users
   }
 
-cfr-doorhanger-pintab-description = Get easy access to your most-used sites. Keep sites open in a tab (even when you restart).
-
-## These messages are steps on how to use the feature and are shown together.
-
-cfr-doorhanger-pintab-step1 = <b>Right-click</b> on the tab you want to pin.
-cfr-doorhanger-pintab-step2 = Select <b>Pin Tab</b> from the menu.
-cfr-doorhanger-pintab-step3 = If the site has an update you’ll see a blue dot on your pinned tab.
-
-cfr-doorhanger-pintab-animation-pause = Pause
-cfr-doorhanger-pintab-animation-resume = Resume
-
-
 ## Firefox Accounts Message
 
 cfr-doorhanger-bookmark-fxa-header = Sync your bookmarks everywhere.
-cfr-doorhanger-bookmark-fxa-body = Great find! Now don’t be left without this bookmark on your mobile devices. Get Started with a { -fxaccount-brand-name }.
+cfr-doorhanger-bookmark-fxa-body-2 = Great find! Now don’t be left without this bookmark on your mobile devices. Get started with an account.
 cfr-doorhanger-bookmark-fxa-link-text = Sync bookmarks now…
 cfr-doorhanger-bookmark-fxa-close-btn-tooltip =
   .aria-label = Close button
   .title = Close
-
-## Protections panel
-
-cfr-protections-panel-header = Browse without being followed
-cfr-protections-panel-body = Keep your data to yourself. { -brand-short-name } protects you from many of the most common trackers that follow what you do online.
-cfr-protections-panel-link-text = Learn more
 
 ## What's New toolbar button and panel
 
@@ -103,162 +85,189 @@ cfr-whatsnew-button =
   .label = What’s New
   .tooltiptext = What’s New
 
-cfr-whatsnew-panel-header = What’s New
-
 cfr-whatsnew-release-notes-link-text = Read the release notes
-
-cfr-whatsnew-fx70-title = { -brand-short-name } now fights harder for your privacy
-cfr-whatsnew-fx70-body =
-   The latest update enhances the Tracking Protection feature and makes it
-   easier than ever to create secure passwords for every site.
-
-cfr-whatsnew-tracking-protect-title = Protect yourself from trackers
-cfr-whatsnew-tracking-protect-body =
-   { -brand-short-name } blocks many common social and cross-site trackers that
-   follow what you do online.
-cfr-whatsnew-tracking-protect-link-text = View Your Report
-
-# This string is displayed before a large numeral that indicates the total
-# number of tracking elements blocked. Don’t add $blockedCount to your
-# localization, because it would result in the number showing twice.
-cfr-whatsnew-tracking-blocked-title =
-  { $blockedCount ->
-    [one] Tracker blocked
-   *[other] Trackers blocked
-  }
-cfr-whatsnew-tracking-blocked-subtitle =
-   Since { DATETIME($earliestDate, month: "long", year: "numeric") }
-cfr-whatsnew-tracking-blocked-link-text = View Report
-
-cfr-whatsnew-lockwise-backup-title = Back up your passwords
-cfr-whatsnew-lockwise-backup-body =
-   Now generate secure passwords you can access anywhere you sign in.
-cfr-whatsnew-lockwise-backup-link-text = Turn on backups
-
-cfr-whatsnew-lockwise-take-title = Take your passwords with you
-cfr-whatsnew-lockwise-take-body =
-   The { -lockwise-brand-short-name } mobile app lets you securely access your
-   backed up passwords from anywhere.
-cfr-whatsnew-lockwise-take-link-text = Get the app
-
-## Search Bar
-
-cfr-whatsnew-searchbar-title = Type less, find more with the address bar
-cfr-whatsnew-searchbar-body-topsites = Now, just select the address bar, and a box will expand with links to your top sites.
-cfr-whatsnew-searchbar-icon-alt-text = Magnifying glass icon
-
-## Picture-in-Picture
-
-cfr-whatsnew-pip-header = Watch videos while you browse
-cfr-whatsnew-pip-body = Picture-in-picture pops video into a floating window so you can watch while working in other tabs.
-cfr-whatsnew-pip-cta = Learn more
-
-## Permission Prompt
-
-cfr-whatsnew-permission-prompt-header = Fewer annoying site pop-ups
-cfr-whatsnew-permission-prompt-body = { -brand-shorter-name } now blocks sites from automatically asking to send you pop-up messages.
-cfr-whatsnew-permission-prompt-cta = Learn more
-
-## Fingerprinter Counter
-
-# This string is displayed before a large numeral that indicates the total
-# number of tracking elements blocked. Don’t add $fingerprinterCount to your
-# localization, because it would result in the number showing twice.
-cfr-whatsnew-fingerprinter-counter-header =
-  { $fingerprinterCount ->
-    [one] Fingerprinter blocked
-   *[other] Fingerprinters blocked
-  }
-cfr-whatsnew-fingerprinter-counter-body = { -brand-shorter-name } blocks many fingerprinters that secretly gather information about your device and actions to create an advertising profile of you.
-
-# Message variation when fingerprinters count is less than 10
-cfr-whatsnew-fingerprinter-counter-header-alt = Fingerprinters
-cfr-whatsnew-fingerprinter-counter-body-alt = { -brand-shorter-name } can block fingerprinters that secretly gather information about your device and actions to create an advertising profile of you.
-
-## Bookmark Sync
-
-cfr-doorhanger-sync-bookmarks-header = Get this bookmark on your phone
-cfr-doorhanger-sync-bookmarks-body = Take your bookmarks, passwords, history and more everywhere you’re signed into { -brand-product-name }.
-cfr-doorhanger-sync-bookmarks-ok-button = Turn on { -sync-brand-short-name }
-  .accesskey = T
-
-## Login Sync
-
-cfr-doorhanger-sync-logins-header = Never Lose a Password Again
-cfr-doorhanger-sync-logins-body = Securely store and sync your passwords to all your devices.
-cfr-doorhanger-sync-logins-ok-button = Turn on { -sync-brand-short-name }
-  .accesskey = T
-
-## Send Tab
-
-cfr-doorhanger-send-tab-header = Read this on the go
-cfr-doorhanger-send-tab-recipe-header = Take this recipe to the kitchen
-cfr-doorhanger-send-tab-body = Send Tab lets you easily share this link to your phone or anywhere you’re signed in to { -brand-product-name }.
-cfr-doorhanger-send-tab-ok-button = Try Send Tab
-  .accesskey = T
-
-## Firefox Send
-
-cfr-doorhanger-firefox-send-header = Share this PDF securely
-cfr-doorhanger-firefox-send-body = Keep your sensitive documents safe from prying eyes with end-to-end encryption and a link that disappears when you’re done.
-cfr-doorhanger-firefox-send-ok-button = Try { -send-brand-name }
-  .accesskey = T
-
-## Social Tracking Protection
-
-cfr-doorhanger-socialtracking-ok-button = See Protections
-  .accesskey = P
-cfr-doorhanger-socialtracking-close-button = Close
-  .accesskey = C
-cfr-doorhanger-socialtracking-dont-show-again = Don’t show me messages like this again
-  .accesskey = D
-cfr-doorhanger-socialtracking-heading = { -brand-short-name } stopped a social network from tracking you here
-cfr-doorhanger-socialtracking-description = Your privacy matters. { -brand-short-name } now blocks common social media trackers, limiting how much data they can collect about what you do online.
-cfr-doorhanger-fingerprinters-heading = { -brand-short-name } blocked a fingerprinter on this page
-cfr-doorhanger-fingerprinters-description = Your privacy matters. { -brand-short-name } now blocks fingerprinters, which collect pieces of uniquely identifiable information about your device to track you.
-cfr-doorhanger-cryptominers-heading = { -brand-short-name } blocked a cryptominer on this page
-cfr-doorhanger-cryptominers-description = Your privacy matters. { -brand-short-name } now blocks cryptominers, which use your system’s computing power to mine digital money.
 
 ## Enhanced Tracking Protection Milestones
 
 # Variables:
 #   $blockedCount (Number) - The total count of blocked trackers. This number will always be greater than 1.
-#   $date (String) - The date we began recording the count of blocked trackers
-cfr-doorhanger-milestone-heading =
+#   $date (Datetime) - The date we began recording the count of blocked trackers
+cfr-doorhanger-milestone-heading2 =
   { $blockedCount ->
-   *[other] { -brand-short-name } blocked over <b>{ $blockedCount }</b> trackers since { $date }!
+    *[other] { -brand-short-name } blocked over <b>{ $blockedCount }</b> trackers since { DATETIME($date, month: "long", year: "numeric") }!
   }
 cfr-doorhanger-milestone-ok-button = See All
   .accesskey = S
+cfr-doorhanger-milestone-close-button = Close
+  .accesskey = C
 
-## What’s New Panel Content for Firefox 76
+## DOH Message
 
-## Lockwise message
+cfr-doorhanger-doh-body = Your privacy matters. { -brand-short-name } now securely routes your DNS requests whenever possible to a partner service to protect you while you browse.
+cfr-doorhanger-doh-header = More secure, encrypted DNS lookups
+cfr-doorhanger-doh-primary-button-2 = Okay
+  .accesskey = O
+cfr-doorhanger-doh-secondary-button = Disable
+  .accesskey = D
 
-cfr-whatsnew-lockwise-header = Easily create secure passwords
-cfr-whatsnew-lockwise-body = It’s difficult to think of unique, secure passwords for every account. When creating a password, select the password field to use a secure, generated password from { -brand-shorter-name }.
-cfr-whatsnew-lockwise-icon-alt = { -lockwise-brand-short-name } icon
+## Full Video Support CFR message
 
-## Vulnerable Passwords message
+cfr-doorhanger-video-support-body = Videos on this site may not play correctly on this version of { -brand-short-name }. For full video support, update { -brand-short-name } now.
+cfr-doorhanger-video-support-header = Update { -brand-short-name } to play video
+cfr-doorhanger-video-support-primary-button = Update Now
+  .accesskey = U
 
-cfr-whatsnew-passwords-header = Get alerts about vulnerable passwords
-cfr-whatsnew-passwords-body = Hackers know people reuse the same passwords. If you used the same password on multiple sites, and one of those sites was in a data breach, you’ll see an alert in { -lockwise-brand-short-name } to change your password on those sites.
-cfr-whatsnew-passwords-icon-alt = Vulnerable password key icon
+## VPN promotion dialog for public Wi-Fi users
+##
+## If a user is detected to be on a public Wi-Fi network, they are given a
+## bit of info about how to improve their privacy and then offered a button
+## to the Mozilla VPN page and a link to dismiss the dialog.
 
-## Picture-in-Picture fullscreen message
+# This header text can be explicitly wrapped.
+spotlight-public-wifi-vpn-header = Looks like you’re using public Wi-Fi
+spotlight-public-wifi-vpn-body = To hide your location and browsing activity, consider a Virtual Private Network. It will help keep you protected when browsing in public places like airports and coffee shops.
+spotlight-public-wifi-vpn-primary-button = Stay private with { -mozilla-vpn-brand-name }
+  .accesskey = S
+spotlight-public-wifi-vpn-link = Not Now
+  .accesskey = N
 
-cfr-whatsnew-pip-fullscreen-header = Take picture-in-picture fullscreen
-cfr-whatsnew-pip-fullscreen-body = When you pop a video into a floating window, you can now double-click on that window to go fullscreen.
-cfr-whatsnew-pip-fullscreen-icon-alt = Picture-in-picture icon
+## Emotive Continuous Onboarding
 
-## Protections Dashboard message
+spotlight-better-internet-header = A better internet starts with you
+spotlight-better-internet-body = When you use { -brand-short-name}, you’re voting for an open and accessible internet that’s better for everyone.
+spotlight-peace-mind-header = We’ve got you covered
+spotlight-peace-mind-body = Every month, { -brand-short-name } blocks an average of over 3,000 trackers per user. Because nothing, especially privacy nuisances like trackers, should stand between you and the good internet.
+spotlight-pin-primary-button = { PLATFORM() ->
+    [macos] Keep in Dock
+   *[other] Pin to taskbar
+}
+spotlight-pin-secondary-button = Not now
 
-cfr-whatsnew-protections-header = Protections at a glance
-cfr-whatsnew-protections-body = The Protections Dashboard includes summary reports about data breaches and password management. You can now track how many breaches you’ve resolved, and see if any of your saved passwords may have been exposed in a data breach.
-cfr-whatsnew-protections-cta-link = View Protections Dashboard
-cfr-whatsnew-protections-icon-alt = Shield icon
+## MR2022 Background Update Windows native toast notification strings.
+##
+## These strings will be displayed by the Windows operating system in
+## a native toast, like:
+##
+## <b>multi-line title</b>
+## multi-line text
+## <img>
+## [ primary button ] [ secondary button ]
+##
+## The button labels are fitted into narrow fixed-width buttons by
+## Windows and therefore must be as narrow as possible.
 
-## Better PDF message
+mr2022-background-update-toast-title = New { -brand-short-name }. More private. Fewer trackers. No compromises.
+mr2022-background-update-toast-text = Try the newest { -brand-short-name } now, upgraded with our strongest anti-tracking protection yet.
 
-cfr-whatsnew-better-pdf-header = Better PDF experience
-cfr-whatsnew-better-pdf-body = PDF documents now open directly in { -brand-short-name }, keeping your workflow within easy reach.
+# This button label will be fitted into a narrow fixed-width button by
+# Windows. Try to not exceed the width of the English text (compare it
+# using a variable font like Arial): the button can only fit 1-2
+# additional characters, exceeding characters will be truncated.
+mr2022-background-update-toast-primary-button-label = Open { -brand-shorter-name } Now
+
+# This button label will be fitted into a narrow fixed-width button by
+# Windows. Try to not exceed the width of the English text (compare it using a
+# variable font like Arial): the button can only fit 1-2 additional characters,
+# exceeding characters will be truncated.
+mr2022-background-update-toast-secondary-button-label = Remind Me Later
+
+## Firefox View CFR
+
+firefoxview-cfr-primarybutton = Try it
+  .accesskey = T
+firefoxview-cfr-secondarybutton = Not now
+  .accesskey = N
+firefoxview-cfr-header-v2 = Quickly pick up where you left off
+firefoxview-cfr-body-v2 = Get recently closed tabs back, plus seamlessly hop between devices with { -firefoxview-brand-name }.
+
+## Firefox View Spotlight
+
+firefoxview-spotlight-promo-title = Say hello to { -firefoxview-brand-name }
+
+# “Poof” refers to the expression to convey when something or someone suddenly disappears, or in this case, reappears. For example, “Poof, it’s gone.”
+firefoxview-spotlight-promo-subtitle = Want that open tab on your phone? Grab it. Need that site you just visited? Poof, it’s back with { -firefoxview-brand-name }.
+firefoxview-spotlight-promo-primarybutton = See how it works
+firefoxview-spotlight-promo-secondarybutton = Skip
+
+## Cookie Banner Handling CFR
+
+cookie-banner-blocker-onboarding-header = { -brand-short-name } just refused a cookie banner for you
+cookie-banner-blocker-onboarding-body = Less distractions, less cookies tracking you on this site.
+cookie-banner-blocker-onboarding-learn-more = Learn more
+
+## These strings are used in the Fox doodle Pin/set default spotlights
+
+july-jam-headline = We’ve got you covered
+july-jam-body = Every month, { -brand-short-name } blocks an average of 3,000+ trackers per user, giving you safe, speedy access to the good internet.
+july-jam-set-default-primary = Open my links with { -brand-short-name }
+fox-doodle-pin-headline = Welcome back
+
+# “indie” is short for the term “independent”.
+# In this instance, free from outside influence or control.
+fox-doodle-pin-body = Here’s a quick reminder that you can keep your favorite indie browser just one click away.
+fox-doodle-pin-primary = Open my links with { -brand-short-name }
+fox-doodle-pin-secondary = Not now
+
+## These strings are used in the Set Firefox as Default PDF Handler for Existing Users experiment
+
+set-default-pdf-handler-headline = <strong>Your PDFs now open in { -brand-short-name }.</strong> Edit or sign forms directly in your browser. To change, search “PDF” in settings.
+set-default-pdf-handler-primary = Got it
+
+## FxA sync CFR
+
+fxa-sync-cfr-header = New device in your future?
+fxa-sync-cfr-body = Make sure your latest bookmarks, passwords, and tabs come with you any time you open a new { -brand-product-name } browser.
+fxa-sync-cfr-primary = Learn more
+  .accesskey = L
+fxa-sync-cfr-secondary = Remind me later
+  .accesskey = R
+
+## Device Migration FxA Spotlight
+
+device-migration-fxa-spotlight-heavy-user-header = Don’t forget to back up your data
+device-migration-fxa-spotlight-heavy-user-body = Make sure important info — like bookmarks and passwords — is updated and protected across all your devices.
+device-migration-fxa-spotlight-heavy-user-primary-button = Get started
+
+device-migration-fxa-spotlight-older-device-header = Peace of mind, from { -brand-product-name }
+device-migration-fxa-spotlight-older-device-body = An account keeps your important info updated and protected on any device you connect.
+device-migration-fxa-spotlight-older-device-primary-button = Create an account
+
+device-migration-fxa-spotlight-getting-new-device-header-2 = New device in your future?
+device-migration-fxa-spotlight-getting-new-device-body-2 = Follow a few simple steps to bring your bookmarks, history, and passwords with you when you get started on a new device.
+device-migration-fxa-spotlight-getting-new-device-primary-button = How to back up my data
+
+## Set as Default PDF Reader Infobar
+
+# The question portion of the following message should have the <strong> and </strong> tags surrounding it.
+pdf-default-notification-message = <strong>Make { -brand-short-name } your default PDF reader?</strong> Use { -brand-short-name } to read and edit PDFs saved to your computer.
+pdf-default-notification-set-default-button =
+    .label = Set as default
+pdf-default-notification-decline-button =
+    .label = Not now
+
+## Launch on login infobar notification
+
+launch-on-login-infobar-message = <strong>Open { -brand-short-name } every time you restart your computer?</strong> Now you can set { -brand-short-name } to open automatically when you restart your device.
+launch-on-login-learnmore = Learn more
+launch-on-login-infobar-confirm-button = Yes, open { -brand-short-name }
+  .accesskey = Y
+launch-on-login-infobar-reject-button = Not now
+  .accesskey = N
+
+## These string variants are used when the “launch on login” infobar
+## notification is displayed for a second time.
+
+launch-on-login-infobar-final-message = <strong>Open { -brand-short-name } every time you restart your computer?</strong> To manage your Startup preferences, search “startup” in settings.
+launch-on-login-infobar-final-reject-button = No thanks
+  .accesskey = N
+
+## Tail Fox Set Default Spotlight
+
+# This title is displayed together with the picture of a running fox with a long tail.
+# In English, this is a figure of speech meaning 'stop something from following you'.
+# If the localization of this message is challenging, consider using a simplified
+# alternative as a reference for translation: 'Keep unwanted trackers away'.
+tail-fox-spotlight-title = Keep pesky trackers off your tail
+tail-fox-spotlight-subtitle = Say goodbye to annoying ad trackers and settle into a safer, speedy internet experience.
+tail-fox-spotlight-primary-button = Open my links with { -brand-short-name }
+tail-fox-spotlight-secondary-button = Not now

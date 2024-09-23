@@ -1,4 +1,8 @@
-use proc_macro2::*;
+#![allow(clippy::extra_unused_type_parameters)]
+
+use proc_macro2::{
+    Delimiter, Group, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
+};
 
 macro_rules! assert_impl {
     ($ty:ident is $($marker:ident) and +) => {
@@ -51,9 +55,45 @@ assert_impl!(TokenTree is not Send or Sync);
 
 #[cfg(procmacro2_semver_exempt)]
 mod semver_exempt {
-    use super::*;
+    use proc_macro2::{LineColumn, SourceFile};
 
     assert_impl!(LineColumn is Send and Sync);
 
     assert_impl!(SourceFile is not Send or Sync);
+}
+
+mod unwind_safe {
+    use proc_macro2::{
+        Delimiter, Group, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
+    };
+    #[cfg(procmacro2_semver_exempt)]
+    use proc_macro2::{LineColumn, SourceFile};
+    use std::panic::{RefUnwindSafe, UnwindSafe};
+
+    macro_rules! assert_unwind_safe {
+        ($($types:ident)*) => {
+            $(
+                assert_impl!($types is UnwindSafe and RefUnwindSafe);
+            )*
+        };
+    }
+
+    assert_unwind_safe! {
+        Delimiter
+        Group
+        Ident
+        LexError
+        Literal
+        Punct
+        Spacing
+        Span
+        TokenStream
+        TokenTree
+    }
+
+    #[cfg(procmacro2_semver_exempt)]
+    assert_unwind_safe! {
+        LineColumn
+        SourceFile
+    }
 }

@@ -17,7 +17,8 @@ const TEST_URI = `
   <div></div>
 `;
 
-add_task(async function() {
+add_task(async function () {
+  await pushPref("devtools.inspector.rule-view.focusNextOnEnter", false);
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view: ruleView } = await openRuleView();
   const { document: doc, store } = selectChangesView(inspector);
@@ -38,13 +39,13 @@ async function testRemoveValue(ruleView, store, doc, prop) {
   info("Test removing disabled declaration by clearing its property value.");
   let onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Disable the declaration");
   await togglePropStatus(ruleView, prop);
   info("Wait for change to be tracked");
   await onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Remove the disabled declaration by clearing its value");
   await setProperty(ruleView, prop, null);
   await onTrackChange;
@@ -59,30 +60,32 @@ async function testToggle(ruleView, store, doc, prop) {
   );
   let onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Disable the declaration");
   await togglePropStatus(ruleView, prop);
   await onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Re-enable the declaration");
   await togglePropStatus(ruleView, prop);
   await onTrackChange;
 
-  const removeDecl = getRemovedDeclarations(doc);
-  is(removeDecl.length, 1, "Still just one declaration tracked as removed");
+  await waitFor(
+    () => getRemovedDeclarations(doc).length == 1,
+    "Still just one declaration tracked as removed"
+  );
 }
 
 async function testRemoveName(ruleView, store, doc, prop) {
   info("Test removing disabled declaration by clearing its property name.");
   let onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Disable the declaration");
   await togglePropStatus(ruleView, prop);
   await onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Remove the disabled declaration by clearing its name");
   await removeProperty(ruleView, prop);
   await onTrackChange;
@@ -92,8 +95,11 @@ async function testRemoveName(ruleView, store, doc, prop) {
   - one removed by its name from this test
   `);
 
+  await waitFor(
+    () => getRemovedDeclarations(doc).length == 2,
+    "Two declarations tracked as removed"
+  );
   const removeDecl = getRemovedDeclarations(doc);
-  is(removeDecl.length, 2, "Two declarations tracked as removed");
   is(removeDecl[0].property, "background", "First declaration name correct");
   is(removeDecl[0].value, "black", "First declaration value correct");
   is(removeDecl[1].property, "color", "Second declaration name correct");

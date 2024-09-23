@@ -3,8 +3,8 @@
 
 "use strict";
 
-const { WebChannelBroker } = ChromeUtils.import(
-  "resource://gre/modules/WebChannel.jsm"
+const { WebChannelBroker } = ChromeUtils.importESModule(
+  "resource://gre/modules/WebChannel.sys.mjs"
 );
 
 const VALID_WEB_CHANNEL_ID = "id";
@@ -44,7 +44,7 @@ add_test(function test_web_channel_broker_channel_map() {
  * Test WebChannelBroker _listener test
  */
 add_task(function test_web_channel_broker_listener() {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     var channel = {
       id: VALID_WEB_CHANNEL_ID,
       _originCheckCallback: requestPrincipal => {

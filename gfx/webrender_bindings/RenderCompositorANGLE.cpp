@@ -13,8 +13,10 @@
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/StackArray.h"
+#include "mozilla/layers/TextureD3D11.h"
 #include "mozilla/layers/HelpersD3D11.h"
 #include "mozilla/layers/SyncObject.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/webrender/DCLayerTree.h"
 #include "mozilla/webrender/RenderThread.h"
@@ -22,10 +24,8 @@
 #include "mozilla/widget/WinCompositorWidget.h"
 #include "mozilla/WindowsVersion.h"
 #include "mozilla/Telemetry.h"
+#include "nsPrintfCString.h"
 #include "FxROutputHandler.h"
-
-#undef NTDDI_VERSION
-#define NTDDI_VERSION NTDDI_WIN8
 
 #include <d3d11.h>
 #include <dcomp.h>
@@ -37,148 +37,128 @@
 #undef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 0x00000002
 
-namespace mozilla {
-namespace wr {
+namespace mozilla::wr {
+
+extern LazyLogModule gRenderThreadLog;
+#define LOG(...) MOZ_LOG(gRenderThreadLog, LogLevel::Debug, (__VA_ARGS__))
 
 /* static */
 UniquePtr<RenderCompositor> RenderCompositorANGLE::Create(
-    RefPtr<widget::CompositorWidget>&& aWidget) {
-  const auto& gl = RenderThread::Get()->SharedGL();
+    const RefPtr<widget::CompositorWidget>& aWidget, nsACString& aError) {
+  RefPtr<gl::GLContext> gl = RenderThread::Get()->SingletonGL(aError);
   if (!gl) {
-    gfxCriticalNote << "Failed to get shared GL context";
+    if (aError.IsEmpty()) {
+      aError.Assign("RcANGLE(no shared GL)"_ns);
+    } else {
+      aError.Append("(Create)"_ns);
+    }
     return nullptr;
   }
 
   UniquePtr<RenderCompositorANGLE> compositor =
-      MakeUnique<RenderCompositorANGLE>(std::move(aWidget));
-  if (!compositor->Initialize()) {
+      MakeUnique<RenderCompositorANGLE>(aWidget, std::move(gl));
+  if (!compositor->Initialize(aError)) {
     return nullptr;
   }
   return compositor;
 }
 
 RenderCompositorANGLE::RenderCompositorANGLE(
-    RefPtr<widget::CompositorWidget>&& aWidget)
-    : RenderCompositor(std::move(aWidget)),
-      mEGLConfig(nullptr),
-      mEGLSurface(nullptr),
-      mUseTripleBuffering(false),
-      mUseAlpha(false),
-      mUseNativeCompositor(true),
-      mUsePartialPresent(false),
-      mFullRender(false),
-      mDisablingNativeCompositor(false) {}
+    const RefPtr<widget::CompositorWidget>& aWidget,
+    RefPtr<gl::GLContext>&& aGL)
+    : RenderCompositor(aWidget), mGL(aGL) {
+  MOZ_ASSERT(mGL);
+  LOG("RenderCompositorANGLE::RenderCompositorANGLE()");
+}
 
 RenderCompositorANGLE::~RenderCompositorANGLE() {
+  LOG("RenderCompositorANGLE::~RenderCompositorANGLE()");
+
   DestroyEGLSurface();
   MOZ_ASSERT(!mEGLSurface);
 }
 
-ID3D11Device* RenderCompositorANGLE::GetDeviceOfEGLDisplay() {
-  auto* egl = gl::GLLibraryEGL::Get();
+ID3D11Device* RenderCompositorANGLE::GetDeviceOfEGLDisplay(nsACString& aError) {
+  const auto& gle = gl::GLContextEGL::Cast(mGL);
+  const auto& egl = gle->mEgl;
   MOZ_ASSERT(egl);
-  if (!egl || !egl->IsExtensionSupported(gl::GLLibraryEGL::EXT_device_query)) {
+  if (!egl ||
+      !egl->mLib->IsExtensionSupported(gl::EGLLibExtension::EXT_device_query)) {
+    aError.Assign("RcANGLE(no EXT_device_query support)"_ns);
     return nullptr;
   }
 
   // Fetch the D3D11 device.
   EGLDeviceEXT eglDevice = nullptr;
-  egl->fQueryDisplayAttribEXT(egl->Display(), LOCAL_EGL_DEVICE_EXT,
-                              (EGLAttrib*)&eglDevice);
+  egl->fQueryDisplayAttribEXT(LOCAL_EGL_DEVICE_EXT, (EGLAttrib*)&eglDevice);
   MOZ_ASSERT(eglDevice);
   ID3D11Device* device = nullptr;
-  egl->fQueryDeviceAttribEXT(eglDevice, LOCAL_EGL_D3D11_DEVICE_ANGLE,
-                             (EGLAttrib*)&device);
+  egl->mLib->fQueryDeviceAttribEXT(eglDevice, LOCAL_EGL_D3D11_DEVICE_ANGLE,
+                                   (EGLAttrib*)&device);
   if (!device) {
-    gfxCriticalNote << "Failed to get D3D11Device from EGLDisplay";
+    aError.Assign("RcANGLE(get D3D11Device from EGLDisplay failed)"_ns);
     return nullptr;
   }
   return device;
 }
 
-bool RenderCompositorANGLE::SutdownEGLLibraryIfNecessary() {
-  const RefPtr<gl::GLLibraryEGL> egl = gl::GLLibraryEGL::Get();
-  if (!egl) {
-    // egl is not initialized yet;
-    return true;
-  }
-
-  RefPtr<ID3D11Device> device =
-      gfx::DeviceManagerDx::Get()->GetCompositorDevice();
-  // When DeviceReset is handled by GPUProcessManager/GPUParent,
-  // CompositorDevice is updated to a new device. EGLDisplay also needs to be
-  // updated, since EGLDisplay uses DeviceManagerDx::mCompositorDevice on ANGLE
-  // WebRender use case. EGLDisplay could be updated when Renderer count becomes
-  // 0. It is ensured by GPUProcessManager during handling DeviceReset.
-  // GPUChild::RecvNotifyDeviceReset() destroys all CompositorSessions before
-  // re-creating them.
-  if (device.get() != GetDeviceOfEGLDisplay() &&
-      RenderThread::Get()->RendererCount() == 0) {
-    // Shutdown GLLibraryEGL for updating EGLDisplay.
-    RenderThread::Get()->ClearSharedGL();
-    egl->Shutdown();
-  }
-  return true;
-}
-
-bool RenderCompositorANGLE::Initialize() {
+bool RenderCompositorANGLE::Initialize(nsACString& aError) {
+  // TODO(aosmond): This causes us to lose WebRender because it is unable to
+  // distinguish why we failed and retry once the reset is complete. This does
+  // appear to happen in the wild, so we really should try to do something
+  // differently here.
   if (RenderThread::Get()->IsHandlingDeviceReset()) {
-    gfxCriticalNote << "Waiting for handling device reset";
-    return false;
-  }
-
-  // Update device if necessary.
-  if (!SutdownEGLLibraryIfNecessary()) {
-    return false;
-  }
-  const auto gl = RenderThread::Get()->SharedGL();
-  if (!gl) {
-    gfxCriticalNote << "[WR] failed to get shared GL context.";
+    aError.Assign("RcANGLE(waiting device reset)"_ns);
     return false;
   }
 
   // Force enable alpha channel to make sure ANGLE use correct framebuffer
   // formart
-  const auto& gle = gl::GLContextEGL::Cast(gl);
+  const auto& gle = gl::GLContextEGL::Cast(mGL);
   const auto& egl = gle->mEgl;
-  if (!gl::CreateConfig(egl, &mEGLConfig, /* bpp */ 32,
-                        /* enableDepthBuffer */ true, gl->IsGLES())) {
-    gfxCriticalNote << "Failed to create EGLConfig for WebRender";
+  if (!gl::CreateConfig(*egl, &mEGLConfig, /* bpp */ 32,
+                        /* enableDepthBuffer */ false, mGL->IsGLES())) {
+    aError.Assign("RcANGLE(create EGLConfig failed)"_ns);
+    return false;
   }
   MOZ_ASSERT(mEGLConfig);
 
-  mDevice = GetDeviceOfEGLDisplay();
+  mDevice = GetDeviceOfEGLDisplay(aError);
 
   if (!mDevice) {
-    gfxCriticalNote << "[WR] failed to get compositor device.";
     return false;
   }
 
   mDevice->GetImmediateContext(getter_AddRefs(mCtx));
   if (!mCtx) {
-    gfxCriticalNote << "[WR] failed to get immediate context.";
+    aError.Assign("RcANGLE(get immediate context failed)"_ns);
     return false;
+  }
+
+  // Disable native compositor when fast snapshot is needed.
+  // Taking snapshot of native compositor is very slow on Windows.
+  if (mWidget->GetCompositorOptions().NeedFastSnaphot()) {
+    mUseNativeCompositor = false;
   }
 
   // Create DCLayerTree when DirectComposition is used.
   if (gfx::gfxVars::UseWebRenderDCompWin()) {
     HWND compositorHwnd = GetCompositorHwnd();
     if (compositorHwnd) {
-      mDCLayerTree =
-          DCLayerTree::Create(gl, mEGLConfig, mDevice, compositorHwnd);
+      mDCLayerTree = DCLayerTree::Create(mGL, mEGLConfig, mDevice, mCtx,
+                                         compositorHwnd, aError);
       if (!mDCLayerTree) {
-        gfxCriticalNote << "Failed to create DCLayerTree";
         return false;
       }
     } else {
-      gfxCriticalNote << "Compositor window was not created";
+      aError.Assign("RcANGLE(no compositor window)"_ns);
       return false;
     }
   }
 
   // Create SwapChain when compositor is not used
   if (!UseCompositor()) {
-    if (!CreateSwapChain()) {
+    if (!CreateSwapChain(aError)) {
       // SwapChain creation failed.
       return false;
     }
@@ -188,6 +168,7 @@ bool RenderCompositorANGLE::Initialize() {
   if (!mSyncObject->Init()) {
     // Some errors occur. Clear the mSyncObject here.
     // Then, there will be no texture synchronization.
+    aError.Assign("RcANGLE(create SyncObject failed)"_ns);
     return false;
   }
 
@@ -201,9 +182,7 @@ HWND RenderCompositorANGLE::GetCompositorHwnd() {
 
   if (XRE_IsGPUProcess()) {
     hwnd = mWidget->AsWindows()->GetCompositorHwnd();
-  }
-#ifdef NIGHTLY_BUILD
-  else if (
+  } else if (
       StaticPrefs::
           gfx_webrender_enabled_no_gpu_process_with_angle_win_AtStartup()) {
     MOZ_ASSERT(XRE_IsParentProcess());
@@ -211,14 +190,14 @@ HWND RenderCompositorANGLE::GetCompositorHwnd() {
     // When GPU process does not exist, we do not need to use compositor window.
     hwnd = mWidget->AsWindows()->GetHwnd();
   }
-#endif
 
   return hwnd;
 }
 
-bool RenderCompositorANGLE::CreateSwapChain() {
+bool RenderCompositorANGLE::CreateSwapChain(nsACString& aError) {
   MOZ_ASSERT(!UseCompositor());
 
+  mFirstPresent = true;
   HWND hwnd = mWidget->AsWindows()->GetHwnd();
 
   RefPtr<IDXGIDevice> dxgiDevice;
@@ -243,11 +222,11 @@ bool RenderCompositorANGLE::CreateSwapChain() {
   CreateSwapChainForDCompIfPossible(dxgiFactory2);
   if (gfx::gfxVars::UseWebRenderDCompWin() && !mSwapChain) {
     MOZ_ASSERT(GetCompositorHwnd());
-    gfxCriticalNote << "Failed to create SwapChain for DComp";
+    aError.Assign("RcANGLE(create swapchain for dcomp failed)"_ns);
     return false;
   }
 
-  if (!mSwapChain && dxgiFactory2 && IsWin8OrLater()) {
+  if (!mSwapChain && dxgiFactory2) {
     RefPtr<IDXGISwapChain1> swapChain1;
     bool useTripleBuffering = false;
 
@@ -259,7 +238,13 @@ bool RenderCompositorANGLE::CreateSwapChain() {
     desc.SampleDesc.Quality = 0;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 
-    if (gfx::gfxVars::UseWebRenderFlipSequentialWin()) {
+    bool useFlipSequential = gfx::gfxVars::UseWebRenderFlipSequentialWin();
+    if (useFlipSequential && !mWidget->AsWindows()->GetCompositorHwnd()) {
+      useFlipSequential = false;
+      gfxCriticalNoteOnce << "FLIP_SEQUENTIAL needs CompositorHwnd. Fallback";
+    }
+
+    if (useFlipSequential) {
       useTripleBuffering = gfx::gfxVars::UseWebRenderTripleBufferingWin();
       if (useTripleBuffering) {
         desc.BufferCount = 3;
@@ -267,11 +252,12 @@ bool RenderCompositorANGLE::CreateSwapChain() {
         desc.BufferCount = 2;
       }
       desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+      desc.Scaling = DXGI_SCALING_NONE;
     } else {
       desc.BufferCount = 1;
       desc.SwapEffect = DXGI_SWAP_EFFECT_SEQUENTIAL;
+      desc.Scaling = DXGI_SCALING_STRETCH;
     }
-    desc.Scaling = DXGI_SCALING_NONE;
     desc.Flags = 0;
 
     hr = dxgiFactory2->CreateSwapChainForHwnd(
@@ -282,14 +268,18 @@ bool RenderCompositorANGLE::CreateSwapChain() {
       mSwapChain = swapChain1;
       mSwapChain1 = swapChain1;
       mUseTripleBuffering = useTripleBuffering;
-    } else if (gfx::gfxVars::UseWebRenderFlipSequentialWin()) {
-      MOZ_ASSERT(GetCompositorHwnd());
-      gfxCriticalNote << "Failed to create flip mode SwapChain";
-      return false;
+    } else if (useFlipSequential) {
+      gfxCriticalNoteOnce << "FLIP_SEQUENTIAL is not supported. Fallback";
     }
   }
 
   if (!mSwapChain) {
+    if (mWidget->AsWindows()->GetCompositorHwnd()) {
+      // Destroy compositor window.
+      mWidget->AsWindows()->DestroyCompositorWindow();
+      hwnd = mWidget->AsWindows()->GetHwnd();
+    }
+
     DXGI_SWAP_CHAIN_DESC swapDesc{};
     swapDesc.BufferDesc.Width = 0;
     swapDesc.BufferDesc.Height = 0;
@@ -308,7 +298,8 @@ bool RenderCompositorANGLE::CreateSwapChain() {
     HRESULT hr = dxgiFactory->CreateSwapChain(dxgiDevice, &swapDesc,
                                               getter_AddRefs(mSwapChain));
     if (FAILED(hr)) {
-      gfxCriticalNote << "Could not create swap chain: " << gfx::hexa(hr);
+      aError.Assign(
+          nsPrintfCString("RcANGLE(swap chain create failed %lx)", hr));
       return false;
     }
 
@@ -324,6 +315,7 @@ bool RenderCompositorANGLE::CreateSwapChain() {
   dxgiFactory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_WINDOW_CHANGES);
 
   if (!ResizeBufferIfNeeded()) {
+    aError.Assign("RcANGLE(resize buffer failed)"_ns);
     return false;
   }
 
@@ -351,15 +343,12 @@ void RenderCompositorANGLE::CreateSwapChainForDCompIfPossible(
   // It does not support triple buffering.
   bool useTripleBuffering =
       gfx::gfxVars::UseWebRenderTripleBufferingWin() && !UseCompositor();
-  // Non Glass window is common since Windows 10.
-  bool useAlpha = false;
   RefPtr<IDXGISwapChain1> swapChain1 =
-      CreateSwapChainForDComp(useTripleBuffering, useAlpha);
+      CreateSwapChainForDComp(useTripleBuffering);
   if (swapChain1) {
     mSwapChain = swapChain1;
     mSwapChain1 = swapChain1;
     mUseTripleBuffering = useTripleBuffering;
-    mUseAlpha = useAlpha;
     mDCLayerTree->SetDefaultSwapChain(swapChain1);
   } else {
     // Clear CLayerTree on falire
@@ -368,7 +357,7 @@ void RenderCompositorANGLE::CreateSwapChainForDCompIfPossible(
 }
 
 RefPtr<IDXGISwapChain1> RenderCompositorANGLE::CreateSwapChainForDComp(
-    bool aUseTripleBuffering, bool aUseAlpha) {
+    bool aUseTripleBuffering) {
   HRESULT hr;
   RefPtr<IDXGIDevice> dxgiDevice;
   mDevice->QueryInterface((IDXGIDevice**)getter_AddRefs(dxgiDevice));
@@ -407,12 +396,7 @@ RefPtr<IDXGISwapChain1> RenderCompositorANGLE::CreateSwapChainForDComp(
   // DXGI_SCALING_NONE caused swap chain creation failure.
   desc.Scaling = DXGI_SCALING_STRETCH;
   desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-  if (aUseAlpha) {
-    // This could degrade performance. Use it only when it is necessary.
-    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-  } else {
-    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-  }
+  desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   desc.Flags = 0;
 
   hr = dxgiFactory2->CreateSwapChainForComposition(mDevice, &desc, nullptr,
@@ -429,37 +413,8 @@ RefPtr<IDXGISwapChain1> RenderCompositorANGLE::CreateSwapChainForDComp(
 bool RenderCompositorANGLE::BeginFrame() {
   mWidget->AsWindows()->UpdateCompositorWndSizeIfNecessary();
 
-  if (!UseCompositor()) {
-    if (mDCLayerTree) {
-      bool useAlpha = mWidget->AsWindows()->HasGlass();
-      // When Alpha usage is changed, SwapChain needs to be recreatd.
-      if (useAlpha != mUseAlpha) {
-        DestroyEGLSurface();
-        mBufferSize.reset();
-
-        RefPtr<IDXGISwapChain1> swapChain1 =
-            CreateSwapChainForDComp(mUseTripleBuffering, useAlpha);
-        if (swapChain1) {
-          mSwapChain = swapChain1;
-          mUseAlpha = useAlpha;
-          mDCLayerTree->SetDefaultSwapChain(swapChain1);
-          // When alpha is used, we want to disable partial present.
-          // See Bug 1595027.
-          if (useAlpha) {
-            mFullRender = true;
-          }
-        } else {
-          gfxCriticalNote << "Failed to re-create SwapChain";
-          RenderThread::Get()->HandleWebRenderError(
-              WebRenderError::NEW_SURFACE);
-          return false;
-        }
-      }
-    }
-
-    if (!ResizeBufferIfNeeded()) {
-      return false;
-    }
+  if (!UseCompositor() && !ResizeBufferIfNeeded()) {
+    return false;
   }
 
   if (!MakeCurrent()) {
@@ -467,10 +422,12 @@ bool RenderCompositorANGLE::BeginFrame() {
     return false;
   }
 
-  if (mSyncObject) {
+  if (RenderThread::Get()->SyncObjectNeeded() && mSyncObject) {
     if (!mSyncObject->Synchronize(/* aFallible */ true)) {
       // It's timeout or other error. Handle the device-reset here.
-      RenderThread::Get()->HandleDeviceReset("SyncObject", /* aNotify */ true);
+      RenderThread::Get()->HandleDeviceReset(
+          gfx::DeviceResetDetectPlace::WR_SYNC_OBJRCT,
+          gfx::DeviceResetReason::UNKNOWN);
       return false;
     }
   }
@@ -484,61 +441,89 @@ RenderedFrameId RenderCompositorANGLE::EndFrame(
 
   if (!UseCompositor()) {
     auto start = TimeStamp::Now();
-    if (mWidget->AsWindows()->HasFxrOutputHandler()) {
+    if (auto* fxrHandler = mWidget->AsWindows()->GetFxrOutputHandler()) {
       // There is a Firefox Reality handler for this swapchain. Update this
       // window's contents to the VR window.
-      FxROutputHandler* fxrHandler =
-          mWidget->AsWindows()->GetFxrOutputHandler();
       if (fxrHandler->TryInitialize(mSwapChain, mDevice)) {
         fxrHandler->UpdateOutput(mCtx);
       }
     }
 
+    const UINT interval =
+        mFirstPresent ||
+                StaticPrefs::
+                    gfx_webrender_dcomp_video_swap_chain_present_interval_0()
+            ? 0
+            : 1;
+    const UINT flags = 0;
+
     const LayoutDeviceIntSize& bufferSize = mBufferSize.ref();
-
-    // During high contrast mode, alpha is used. In this case,
-    // IDXGISwapChain1::Present1 shows nothing with compositor window.
-    // In this case, we want to disable partial present by full render.
-    // See Bug 1595027
-    MOZ_ASSERT_IF(mUsePartialPresent && mUseAlpha, mFullRender);
-
-    if (mUsePartialPresent && !mUseAlpha) {
+    if (mUsePartialPresent && mSwapChain1) {
       // Clear full render flag.
       mFullRender = false;
       // If there is no diry rect, we skip SwapChain present.
       if (!aDirtyRects.IsEmpty()) {
+        int rectsCount = 0;
         StackArray<RECT, 1> rects(aDirtyRects.Length());
+
         for (size_t i = 0; i < aDirtyRects.Length(); ++i) {
           const DeviceIntRect& rect = aDirtyRects[i];
           // Clip rect to bufferSize
-          rects[i].left =
-              std::max(0, std::min(rect.origin.x, bufferSize.width));
-          rects[i].top =
-              std::max(0, std::min(rect.origin.y, bufferSize.height));
-          rects[i].right = std::max(
-              0, std::min(rect.origin.x + rect.size.width, bufferSize.width));
-          rects[i].bottom = std::max(
-              0, std::min(rect.origin.y + rect.size.height, bufferSize.height));
+          int left = std::max(0, std::min(rect.min.x, bufferSize.width));
+          int top = std::max(0, std::min(rect.min.y, bufferSize.height));
+          int right = std::max(0, std::min(rect.max.x, bufferSize.width));
+          int bottom = std::max(0, std::min(rect.max.y, bufferSize.height));
+
+          // When rect is not empty, the rect could be passed to Present1().
+          if (left < right && top < bottom) {
+            rects[rectsCount].left = left;
+            rects[rectsCount].top = top;
+            rects[rectsCount].right = right;
+            rects[rectsCount].bottom = bottom;
+            rectsCount++;
+          }
         }
 
-        DXGI_PRESENT_PARAMETERS params;
-        PodZero(&params);
-        params.DirtyRectsCount = aDirtyRects.Length();
-        params.pDirtyRects = rects.data();
+        if (rectsCount > 0) {
+          DXGI_PRESENT_PARAMETERS params;
+          PodZero(&params);
+          params.DirtyRectsCount = rectsCount;
+          params.pDirtyRects = rects.data();
 
-        HRESULT hr;
-        hr = mSwapChain1->Present1(0, 0, &params);
-        if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED) {
-          gfxCriticalNote << "Present1 failed: " << gfx::hexa(hr);
-          mFullRender = true;
+          HRESULT hr;
+          hr = mSwapChain1->Present1(interval, flags, &params);
+          if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED) {
+            gfxCriticalNote << "Present1 failed: " << gfx::hexa(hr);
+            mFullRender = true;
+          }
         }
       }
     } else {
-      mSwapChain->Present(0, 0);
+      mSwapChain->Present(interval, flags);
     }
     auto end = TimeStamp::Now();
     mozilla::Telemetry::Accumulate(mozilla::Telemetry::COMPOSITE_SWAP_TIME,
                                    (end - start).ToMilliseconds() * 10.);
+
+    if (mFirstPresent && mDCLayerTree) {
+      // Wait for the GPU to finish executing its commands before
+      // committing the DirectComposition tree, or else the swapchain
+      // may flicker black when it's first presented.
+      RefPtr<IDXGIDevice2> dxgiDevice2;
+      mDevice->QueryInterface((IDXGIDevice2**)getter_AddRefs(dxgiDevice2));
+      MOZ_ASSERT(dxgiDevice2);
+
+      HANDLE event = ::CreateEvent(nullptr, false, false, nullptr);
+      HRESULT hr = dxgiDevice2->EnqueueSetEvent(event);
+      if (SUCCEEDED(hr)) {
+        DebugOnly<DWORD> result = ::WaitForSingleObject(event, INFINITE);
+        MOZ_ASSERT(result == WAIT_OBJECT_0);
+      } else {
+        gfxCriticalNoteOnce << "EnqueueSetEvent failed: " << gfx::hexa(hr);
+      }
+      ::CloseHandle(event);
+    }
+    mFirstPresent = false;
   }
 
   if (mDisablingNativeCompositor) {
@@ -570,7 +555,10 @@ bool RenderCompositorANGLE::WaitForGPU() {
   //   Wait for query #2.
   //
   // This ensures we're done reading textures before swapping buffers.
-  return WaitForPreviousGraphicsCommandsFinishedQuery();
+  if (!StaticPrefs::gfx_webrender_wait_gpu_finished_disabled_AtStartup()) {
+    return WaitForPreviousGraphicsCommandsFinishedQuery();
+  }
+  return true;
 }
 
 bool RenderCompositorANGLE::ResizeBufferIfNeeded() {
@@ -645,26 +633,18 @@ bool RenderCompositorANGLE::CreateEGLSurface() {
     }
   }
 
-  const EGLint pbuffer_attribs[]{
-      LOCAL_EGL_WIDTH,
-      size.width,
-      LOCAL_EGL_HEIGHT,
-      size.height,
-      LOCAL_EGL_FLEXIBLE_SURFACE_COMPATIBILITY_SUPPORTED_ANGLE,
-      LOCAL_EGL_TRUE,
-      LOCAL_EGL_NONE};
+  const EGLint pbuffer_attribs[]{LOCAL_EGL_WIDTH, size.width, LOCAL_EGL_HEIGHT,
+                                 size.height, LOCAL_EGL_NONE};
 
   const auto buffer = reinterpret_cast<EGLClientBuffer>(backBuf.get());
 
-  const auto gl = RenderThread::Get()->SharedGL();
-  const auto& gle = gl::GLContextEGL::Cast(gl);
+  const auto& gle = gl::GLContextEGL::Cast(mGL);
   const auto& egl = gle->mEgl;
   const EGLSurface surface = egl->fCreatePbufferFromClientBuffer(
-      egl->Display(), LOCAL_EGL_D3D_TEXTURE_ANGLE, buffer, mEGLConfig,
-      pbuffer_attribs);
+      LOCAL_EGL_D3D_TEXTURE_ANGLE, buffer, mEGLConfig, pbuffer_attribs);
 
-  EGLint err = egl->fGetError();
-  if (err != LOCAL_EGL_SUCCESS) {
+  if (!surface) {
+    EGLint err = egl->mLib->fGetError();
     gfxCriticalError() << "Failed to create Pbuffer of back buffer error: "
                        << gfx::hexa(err) << " Size : " << size;
     return false;
@@ -681,7 +661,7 @@ void RenderCompositorANGLE::DestroyEGLSurface() {
     const auto& gle = gl::GLContextEGL::Cast(gl());
     const auto& egl = gle->mEgl;
     gle->SetEGLSurfaceOverride(EGL_NO_SURFACE);
-    egl->fDestroySurface(egl->Display(), mEGLSurface);
+    egl->fDestroySurface(mEGLSurface);
     mEGLSurface = nullptr;
   }
 }
@@ -710,7 +690,11 @@ LayoutDeviceIntSize RenderCompositorANGLE::GetBufferSize() {
     }
     return mBufferSize.ref();
   } else {
-    return mWidget->GetClientSize();
+    auto size = mWidget->GetClientSize();
+    // This size is used for WR DEBUG_OVERLAY. Its DCTile does not like 0.
+    size.width = std::max(size.width, 1);
+    size.height = std::max(size.height, 1);
+    return size;
   }
 }
 
@@ -740,6 +724,7 @@ void RenderCompositorANGLE::InsertGraphicsCommandsFinishedWaitQuery(
   }
 
   mCtx->End(query);
+  mCtx->Flush();
   mWaitForPresentQueries.emplace(aFrameId, query);
 }
 
@@ -772,7 +757,8 @@ bool RenderCompositorANGLE::WaitForPreviousGraphicsCommandsFinishedQuery(
 RenderedFrameId RenderCompositorANGLE::GetLastCompletedFrameId() {
   while (!mWaitForPresentQueries.empty()) {
     auto queryPair = mWaitForPresentQueries.front();
-    if (mCtx->GetData(queryPair.second, nullptr, 0, 0) != S_OK) {
+    if (mCtx->GetData(queryPair.second, nullptr, 0,
+                      D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) {
       break;
     }
 
@@ -780,6 +766,10 @@ RenderedFrameId RenderCompositorANGLE::GetLastCompletedFrameId() {
     mLastCompletedFrameId = queryPair.first;
     mWaitForPresentQueries.pop();
   }
+
+  nsPrintfCString marker("Pending frames %u",
+                         (uint32_t)mWaitForPresentQueries.size());
+  PROFILER_MARKER_TEXT("GetLastCompletedFrameId", GRAPHICS, {}, marker);
 
   return mLastCompletedFrameId;
 }
@@ -790,13 +780,12 @@ RenderedFrameId RenderCompositorANGLE::UpdateFrameId() {
   return frameId;
 }
 
-bool RenderCompositorANGLE::IsContextLost() {
-  // XXX glGetGraphicsResetStatus sometimes did not work for detecting TDR.
-  // Then this function just uses GetDeviceRemovedReason().
-  if (mDevice->GetDeviceRemovedReason() != S_OK) {
-    return true;
-  }
-  return false;
+gfx::DeviceResetReason RenderCompositorANGLE::IsContextLost(bool aForce) {
+  // glGetGraphicsResetStatus does not always work to detect timeout detection
+  // and recovery (TDR). On Windows, ANGLE itself is just relying upon the same
+  // API, so we should not need to check it separately.
+  auto reason = mDevice->GetDeviceRemovedReason();
+  return layers::DXGIErrorToDeviceResetReason(reason);
 }
 
 bool RenderCompositorANGLE::UseCompositor() {
@@ -816,14 +805,6 @@ bool RenderCompositorANGLE::SupportAsyncScreenshot() {
 
 bool RenderCompositorANGLE::ShouldUseNativeCompositor() {
   return UseCompositor();
-}
-
-uint32_t RenderCompositorANGLE::GetMaxUpdateRects() {
-  if (UseCompositor() &&
-      StaticPrefs::gfx_webrender_compositor_max_update_rects_AtStartup() > 0) {
-    return 1;
-  }
-  return 0;
 }
 
 void RenderCompositorANGLE::CompositorBeginFrame() {
@@ -850,6 +831,11 @@ void RenderCompositorANGLE::CreateSurface(wr::NativeSurfaceId aId,
   mDCLayerTree->CreateSurface(aId, aVirtualOffset, aTileSize, aIsOpaque);
 }
 
+void RenderCompositorANGLE::CreateExternalSurface(wr::NativeSurfaceId aId,
+                                                  bool aIsOpaque) {
+  mDCLayerTree->CreateExternalSurface(aId, aIsOpaque);
+}
+
 void RenderCompositorANGLE::DestroySurface(NativeSurfaceId aId) {
   mDCLayerTree->DestroySurface(aId);
 }
@@ -864,24 +850,35 @@ void RenderCompositorANGLE::DestroyTile(wr::NativeSurfaceId aId, int aX,
   mDCLayerTree->DestroyTile(aId, aX, aY);
 }
 
-void RenderCompositorANGLE::AddSurface(wr::NativeSurfaceId aId,
-                                       wr::DeviceIntPoint aPosition,
-                                       wr::DeviceIntRect aClipRect) {
-  mDCLayerTree->AddSurface(aId, aPosition, aClipRect);
+void RenderCompositorANGLE::AttachExternalImage(
+    wr::NativeSurfaceId aId, wr::ExternalImageId aExternalImage) {
+  mDCLayerTree->AttachExternalImage(aId, aExternalImage);
 }
 
-CompositorCapabilities RenderCompositorANGLE::GetCompositorCapabilities() {
-  CompositorCapabilities caps;
+void RenderCompositorANGLE::AddSurface(
+    wr::NativeSurfaceId aId, const wr::CompositorSurfaceTransform& aTransform,
+    wr::DeviceIntRect aClipRect, wr::ImageRendering aImageRendering) {
+  mDCLayerTree->AddSurface(aId, aTransform, aClipRect, aImageRendering);
+}
 
-  caps.virtual_surface_size = VIRTUAL_SURFACE_SIZE;
+void RenderCompositorANGLE::GetCompositorCapabilities(
+    CompositorCapabilities* aCaps) {
+  RenderCompositor::GetCompositorCapabilities(aCaps);
 
-  return caps;
+  if (StaticPrefs::gfx_webrender_dcomp_use_virtual_surfaces_AtStartup()) {
+    aCaps->virtual_surface_size = VIRTUAL_SURFACE_SIZE;
+  } else {
+    aCaps->virtual_surface_size = 0;
+  }
+  // DComp video overlay does not support negative scaling. See Bug 1831820
+  aCaps->supports_external_compositor_surface_negative_scaling = false;
 }
 
 void RenderCompositorANGLE::EnableNativeCompositor(bool aEnable) {
   // XXX Re-enable native compositor is not handled yet.
   MOZ_RELEASE_ASSERT(!mDisablingNativeCompositor);
   MOZ_RELEASE_ASSERT(!aEnable);
+  LOG("RenderCompositorANGLE::EnableNativeCompositor() aEnable %d", aEnable);
 
   if (!UseCompositor()) {
     return;
@@ -890,21 +887,14 @@ void RenderCompositorANGLE::EnableNativeCompositor(bool aEnable) {
   mUseNativeCompositor = false;
   mDCLayerTree->DisableNativeCompositor();
 
-  bool useAlpha = mWidget->AsWindows()->HasGlass();
   DestroyEGLSurface();
   mBufferSize.reset();
 
   RefPtr<IDXGISwapChain1> swapChain1 =
-      CreateSwapChainForDComp(mUseTripleBuffering, useAlpha);
+      CreateSwapChainForDComp(mUseTripleBuffering);
   if (swapChain1) {
     mSwapChain = swapChain1;
-    mUseAlpha = useAlpha;
     mDCLayerTree->SetDefaultSwapChain(swapChain1);
-    // When alpha is used, we want to disable partial present.
-    // See Bug 1595027.
-    if (useAlpha) {
-      mFullRender = true;
-    }
     ResizeBufferIfNeeded();
   } else {
     gfxCriticalNote << "Failed to re-create SwapChain";
@@ -918,12 +908,9 @@ void RenderCompositorANGLE::InitializeUsePartialPresent() {
   // Even when mSwapChain1 is null, we could enable WR partial present, since
   // when mSwapChain1 is null, SwapChain is blit model swap chain with one
   // buffer.
-  if (UseCompositor() || mWidget->AsWindows()->HasFxrOutputHandler() ||
-      gfx::gfxVars::WebRenderMaxPartialPresentRects() <= 0) {
-    mUsePartialPresent = false;
-  } else {
-    mUsePartialPresent = true;
-  }
+  mUsePartialPresent = !UseCompositor() &&
+                       !mWidget->AsWindows()->HasFxrOutputHandler() &&
+                       gfx::gfxVars::WebRenderMaxPartialPresentRects() > 0;
 }
 
 bool RenderCompositorANGLE::UsePartialPresent() { return mUsePartialPresent; }
@@ -939,7 +926,7 @@ uint32_t RenderCompositorANGLE::GetMaxPartialPresentRects() {
 
 bool RenderCompositorANGLE::MaybeReadback(
     const gfx::IntSize& aReadbackSize, const wr::ImageFormat& aReadbackFormat,
-    const Range<uint8_t>& aReadbackBuffer) {
+    const Range<uint8_t>& aReadbackBuffer, bool* aNeedsYFlip) {
   MOZ_ASSERT(aReadbackFormat == wr::ImageFormat::BGRA8);
 
   if (!UseCompositor()) {
@@ -1006,8 +993,11 @@ bool RenderCompositorANGLE::MaybeReadback(
     gfxCriticalNote << "Readback took too long: " << latencyMs << " ms";
   }
 
+  if (aNeedsYFlip) {
+    *aNeedsYFlip = false;
+  }
+
   return true;
 }
 
-}  // namespace wr
-}  // namespace mozilla
+}  // namespace mozilla::wr

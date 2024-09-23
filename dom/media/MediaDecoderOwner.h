@@ -18,6 +18,7 @@ class GMPCrashHelper;
 class VideoFrameContainer;
 class MediaInfo;
 class MediaResult;
+enum class RFPTarget : uint64_t;
 
 namespace dom {
 class Document;
@@ -35,13 +36,9 @@ class MediaDecoderOwner {
   // Triggers a recomputation of readyState.
   virtual void UpdateReadyState() = 0;
 
-  /**
-   * Fires a timeupdate event. If aPeriodic is true, the event will only
-   * be fired if we've not fired a timeupdate event (for any reason) in the
-   * last 250ms, as required by the spec when the current time is periodically
-   * increasing during playback.
-   */
-  virtual void FireTimeUpdate(bool aPeriodic) = 0;
+  // Called by the decoder object to notify owner might need to dispatch the
+  // `timeupdate` event due to current time changes.
+  virtual void MaybeQueueTimeupdateEvent() = 0;
 
   // Return true if decoding should be paused
   virtual bool GetPaused() = 0;
@@ -169,9 +166,11 @@ class MediaDecoderOwner {
   // Called by the frame container to notify the layout engine that the
   // size of the image has changed, or the video needs to be be repainted
   // for some other reason.
-  virtual void Invalidate(bool aImageSizeChanged,
-                          Maybe<nsIntSize>& aNewIntrinsicSize,
-                          bool aForceInvalidate) {}
+  enum class ImageSizeChanged { No, Yes };
+  enum class ForceInvalidate { No, Yes };
+  virtual void Invalidate(ImageSizeChanged aImageSizeChanged,
+                          const Maybe<nsIntSize>& aNewIntrinsicSize,
+                          ForceInvalidate aForceInvalidate) {}
 
   // Called after the MediaStream we're playing rendered a frame to aContainer
   // with a different principalHandle than the previous frame.
@@ -183,6 +182,12 @@ class MediaDecoderOwner {
   // container and render potential frames to it.
   virtual void OnSecondaryVideoContainerInstalled(
       const RefPtr<VideoFrameContainer>& aSecondaryContainer) {}
+
+  // Return true is the owner is actually invisible to users.
+  virtual bool IsActuallyInvisible() const = 0;
+
+  // Returns true if the owner should resist fingerprinting.
+  virtual bool ShouldResistFingerprinting(RFPTarget aTarget) const = 0;
 
   /*
    * Servo only methods go here. Please provide default implementations so they

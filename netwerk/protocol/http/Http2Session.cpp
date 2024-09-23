@@ -6,6 +6,8 @@
 
 // HttpLog.h should generally be included first
 #include "HttpLog.h"
+#include "nsCOMPtr.h"
+#include "nsStringFwd.h"
 
 // Log on level :5, instead of default :4.
 #undef LOG
@@ -16,31 +18,33 @@
 #include <algorithm>
 
 #include "AltServiceChild.h"
+#include "CacheControlParser.h"
+#include "CachePushChecker.h"
+#include "Http2Push.h"
 #include "Http2Session.h"
 #include "Http2Stream.h"
-#include "Http2Push.h"
-
+#include "Http2StreamBase.h"
+#include "Http2StreamTunnel.h"
+#include "LoadContextInfo.h"
 #include "mozilla/EndianUtils.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Sprintf.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/Telemetry.h"
 #include "nsHttp.h"
-#include "nsHttpHandler.h"
 #include "nsHttpConnection.h"
+#include "nsHttpHandler.h"
 #include "nsIRequestContext.h"
-#include "nsISSLSocketControl.h"
 #include "nsISupportsPriority.h"
+#include "nsITLSSocketControl.h"
+#include "nsNetUtil.h"
+#include "nsQueryObject.h"
+#include "nsSocketTransportService2.h"
 #include "nsStandardURL.h"
 #include "nsURLHelper.h"
 #include "prnetdb.h"
+#include "sslerr.h"
 #include "sslt.h"
-#include "mozilla/Sprintf.h"
-#include "nsSocketTransportService2.h"
-#include "nsNetUtil.h"
-#include "CacheControlParser.h"
-#include "CachePushChecker.h"
-#include "LoadContextInfo.h"
-#include "TCPFastOpenLayer.h"
-#include "nsQueryObject.h"
 
 namespace mozilla {
 namespace net {
@@ -49,14 +53,61 @@ namespace net {
 NS_IMPL_ADDREF(Http2Session)
 NS_IMPL_RELEASE(Http2Session)
 NS_INTERFACE_MAP_BEGIN(Http2Session)
+  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(Http2Session)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsAHttpConnection)
 NS_INTERFACE_MAP_END
+
+static void RemoveStreamFromQueue(Http2StreamBase* aStream,
+                                  nsTArray<WeakPtr<Http2StreamBase>>& queue) {
+  for (const auto& stream : Reversed(queue)) {
+    if (stream == aStream) {
+      queue.RemoveElement(stream);
+    }
+  }
+}
+
+static void AddStreamToQueue(Http2StreamBase* aStream,
+                             nsTArray<WeakPtr<Http2StreamBase>>& queue) {
+  if (!queue.Contains(aStream)) {
+    queue.AppendElement(aStream);
+  }
+}
+
+static already_AddRefed<Http2StreamBase> GetNextStreamFromQueue(
+    nsTArray<WeakPtr<Http2StreamBase>>& queue) {
+  while (!queue.IsEmpty() && !queue[0]) {
+    MOZ_ASSERT(false);
+    queue.RemoveElementAt(0);
+  }
+  if (queue.IsEmpty()) {
+    return nullptr;
+  }
+
+  RefPtr<Http2StreamBase> stream = queue[0].get();
+  queue.RemoveElementAt(0);
+  return stream.forget();
+}
 
 // "magic" refers to the string that preceeds HTTP/2 on the wire
 // to help find any intermediaries speaking an older version of HTTP
 const uint8_t Http2Session::kMagicHello[] = {
     0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32,
     0x2e, 0x30, 0x0d, 0x0a, 0x0d, 0x0a, 0x53, 0x4d, 0x0d, 0x0a, 0x0d, 0x0a};
+
+Http2Session* Http2Session::CreateSession(nsISocketTransport* aSocketTransport,
+                                          enum SpdyVersion version,
+                                          bool attemptingEarlyData) {
+  if (!gHttpHandler) {
+    RefPtr<nsHttpHandler> handler = nsHttpHandler::GetInstance();
+    Unused << handler.get();
+  }
+
+  Http2Session* session =
+      new Http2Session(aSocketTransport, version, attemptingEarlyData);
+  session->SendHello();
+  return session;
+}
 
 Http2Session::Http2Session(nsISocketTransport* aSocketTransport,
                            enum SpdyVersion version, bool attemptingEarlyData)
@@ -112,9 +163,8 @@ Http2Session::Http2Session(nsISocketTransport* aSocketTransport,
       mUseH2Deps(false),
       mAttemptingEarlyData(attemptingEarlyData),
       mOriginFrameActivated(false),
+      mCntActivated(0),
       mTlsHandshakeFinished(false),
-      mCheckNetworkStallsWithTFO(false),
-      mLastRequestBytesSentTime(0),
       mPeerFailedHandshake(false),
       mTrrStreams(0),
       mEnableWebsockets(false),
@@ -135,58 +185,65 @@ Http2Session::Http2Session(nsISocketTransport* aSocketTransport,
   mInitialRwin = std::max(gHttpHandler->SpdyPullAllowance(), mPushAllowance);
   mMaxConcurrent = gHttpHandler->DefaultSpdyConcurrent();
   mSendingChunkSize = gHttpHandler->SpdySendingChunkSize();
-  SendHello();
 
   mLastDataReadEpoch = mLastReadEpoch;
 
   mPingThreshold = gHttpHandler->SpdyPingThreshold();
   mPreviousPingThreshold = mPingThreshold;
-  mCurrentForegroundTabOuterContentWindowId =
-      gHttpHandler->ConnMgr()->CurrentTopLevelOuterContentWindowId();
+  mCurrentBrowserId = gHttpHandler->ConnMgr()->CurrentBrowserId();
 
-  mEnableWebsockets = gHttpHandler->IsH2WebsocketsEnabled();
+  mEnableWebsockets = StaticPrefs::network_http_http2_websockets();
 
-  bool dumpHpackTables = gHttpHandler->DumpHpackTables();
+  bool dumpHpackTables = StaticPrefs::network_http_http2_enable_hpack_dump();
   mCompressor.SetDumpTables(dumpHpackTables);
   mDecompressor.SetDumpTables(dumpHpackTables);
 }
 
-void Http2Session::Shutdown() {
-  for (auto iter = mStreamTransactionHash.Iter(); !iter.Done(); iter.Next()) {
-    auto stream = iter.UserData();
+void Http2Session::Shutdown(nsresult aReason) {
+  for (const auto& stream : mStreamTransactionHash.Values()) {
+    ShutdownStream(stream, aReason);
+  }
 
-    // On a clean server hangup the server sets the GoAwayID to be the ID of
-    // the last transaction it processed. If the ID of stream in the
-    // local stream is greater than that it can safely be restarted because the
-    // server guarantees it was not partially processed. Streams that have not
-    // registered an ID haven't actually been sent yet so they can always be
-    // restarted.
-    if (mCleanShutdown &&
-        (stream->StreamID() > mGoAwayID || !stream->HasRegisteredID())) {
-      CloseStream(stream, NS_ERROR_NET_RESET);  // can be restarted
-    } else if (stream->RecvdData()) {
-      CloseStream(stream, NS_ERROR_NET_PARTIAL_TRANSFER);
-    } else if (mGoAwayReason == INADEQUATE_SECURITY) {
-      CloseStream(stream, NS_ERROR_NET_INADEQUATE_SECURITY);
-    } else if (!mCleanShutdown && (mGoAwayReason != NO_HTTP_ERROR)) {
-      CloseStream(stream, NS_ERROR_NET_HTTP2_SENT_GOAWAY);
-    } else {
-      CloseStream(stream, NS_ERROR_ABORT);
-    }
+  for (auto& stream : mTunnelStreams) {
+    ShutdownStream(stream, aReason);
+  }
+}
+
+void Http2Session::ShutdownStream(Http2StreamBase* aStream, nsresult aReason) {
+  // On a clean server hangup the server sets the GoAwayID to be the ID of
+  // the last transaction it processed. If the ID of stream in the
+  // local stream is greater than that it can safely be restarted because the
+  // server guarantees it was not partially processed. Streams that have not
+  // registered an ID haven't actually been sent yet so they can always be
+  // restarted.
+  if (mCleanShutdown &&
+      (aStream->StreamID() > mGoAwayID || !aStream->HasRegisteredID())) {
+    CloseStream(aStream, NS_ERROR_NET_RESET);  // can be restarted
+  } else if (aStream->RecvdData()) {
+    CloseStream(aStream, NS_ERROR_NET_PARTIAL_TRANSFER);
+  } else if (mGoAwayReason == INADEQUATE_SECURITY) {
+    CloseStream(aStream, NS_ERROR_NET_INADEQUATE_SECURITY);
+  } else if (!mCleanShutdown && (mGoAwayReason != NO_HTTP_ERROR)) {
+    CloseStream(aStream, NS_ERROR_NET_HTTP2_SENT_GOAWAY);
+  } else if (!mCleanShutdown && PossibleZeroRTTRetryError(aReason)) {
+    CloseStream(aStream, aReason);
+  } else {
+    CloseStream(aStream, NS_ERROR_ABORT);
   }
 }
 
 Http2Session::~Http2Session() {
+  MOZ_DIAGNOSTIC_ASSERT(OnSocketThread());
   LOG3(("Http2Session::~Http2Session %p mDownstreamState=%X", this,
         mDownstreamState));
 
-  Shutdown();
+  Shutdown(NS_OK);
 
   if (mTrrStreams) {
     Telemetry::Accumulate(Telemetry::DNS_TRR_REQUEST_PER_CONN, mTrrStreams);
   }
   Telemetry::Accumulate(Telemetry::SPDY_PARALLEL_STREAMS, mConcurrentHighWater);
-  Telemetry::Accumulate(Telemetry::SPDY_REQUEST_PER_CONN_2, mCntActivated);
+  Telemetry::Accumulate(Telemetry::SPDY_REQUEST_PER_CONN_3, mCntActivated);
   Telemetry::Accumulate(Telemetry::SPDY_SERVER_INITIATED_STREAMS,
                         mServerPushedResources);
   Telemetry::Accumulate(Telemetry::SPDY_GOAWAY_LOCAL, mClientGoAwayReason);
@@ -209,7 +266,7 @@ inline nsresult Http2Session::SessionError(enum errorType reason) {
   return NS_ERROR_NET_HTTP2_SENT_GOAWAY;
 }
 
-void Http2Session::LogIO(Http2Session* self, Http2Stream* stream,
+void Http2Session::LogIO(Http2Session* self, Http2StreamBase* stream,
                          const char* label, const char* data,
                          uint32_t datalen) {
   if (!LOG5_ENABLED()) return;
@@ -244,8 +301,8 @@ void Http2Session::LogIO(Http2Session* self, Http2Stream* stream,
   }
 }
 
-typedef nsresult (*Http2ControlFx)(Http2Session* self);
-static Http2ControlFx sControlFunctions[] = {
+using Http2ControlFx = nsresult (*)(Http2Session*);
+static constexpr Http2ControlFx sControlFunctions[] = {
     nullptr,  // type 0 data is not a control function
     Http2Session::RecvHeaders,
     Http2Session::RecvPriority,
@@ -256,10 +313,45 @@ static Http2ControlFx sControlFunctions[] = {
     Http2Session::RecvGoAway,
     Http2Session::RecvWindowUpdate,
     Http2Session::RecvContinuation,
-    Http2Session::RecvAltSvc,  // extension for type 0x0A
-    Http2Session::RecvUnused,  // 0x0B was BLOCKED still radioactive
-    Http2Session::RecvOrigin   // extension for type 0x0C
+    Http2Session::RecvAltSvc,          // extension for type 0x0A
+    Http2Session::RecvUnused,          // 0x0B was BLOCKED still radioactive
+    Http2Session::RecvOrigin,          // extension for type 0x0C
+    Http2Session::RecvUnused,          // 0x0D
+    Http2Session::RecvUnused,          // 0x0E
+    Http2Session::RecvUnused,          // 0x0F
+    Http2Session::RecvPriorityUpdate,  // 0x10
 };
+
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_DATA] == nullptr);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_HEADERS] ==
+              Http2Session::RecvHeaders);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_PRIORITY] ==
+              Http2Session::RecvPriority);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_RST_STREAM] ==
+              Http2Session::RecvRstStream);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_SETTINGS] ==
+              Http2Session::RecvSettings);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_PUSH_PROMISE] ==
+              Http2Session::RecvPushPromise);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_PING] ==
+              Http2Session::RecvPing);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_GOAWAY] ==
+              Http2Session::RecvGoAway);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_WINDOW_UPDATE] ==
+              Http2Session::RecvWindowUpdate);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_CONTINUATION] ==
+              Http2Session::RecvContinuation);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_ALTSVC] ==
+              Http2Session::RecvAltSvc);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_UNUSED] ==
+              Http2Session::RecvUnused);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_ORIGIN] ==
+              Http2Session::RecvOrigin);
+static_assert(sControlFunctions[0x0D] == Http2Session::RecvUnused);
+static_assert(sControlFunctions[0x0E] == Http2Session::RecvUnused);
+static_assert(sControlFunctions[0x0F] == Http2Session::RecvUnused);
+static_assert(sControlFunctions[Http2Session::FRAME_TYPE_PRIORITY_UPDATE] ==
+              Http2Session::RecvPriorityUpdate);
 
 bool Http2Session::RoomForMoreConcurrent() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
@@ -267,8 +359,9 @@ bool Http2Session::RoomForMoreConcurrent() {
 }
 
 bool Http2Session::RoomForMoreStreams() {
-  if (mNextStreamID + mStreamTransactionHash.Count() * 2 > kMaxStreamID)
+  if (mNextStreamID + mStreamTransactionHash.Count() * 2 > kMaxStreamID) {
     return false;
+  }
 
   return !mShouldGoAway;
 }
@@ -283,18 +376,9 @@ uint32_t Http2Session::ReadTimeoutTick(PRIntervalTime now) {
   LOG3(("Http2Session::ReadTimeoutTick %p delta since last read %ds\n", this,
         PR_IntervalToSeconds(now - mLastReadEpoch)));
 
-  uint32_t nextTick = UINT32_MAX;
-  if (mCheckNetworkStallsWithTFO && mLastRequestBytesSentTime) {
-    PRIntervalTime initialResponseDelta = now - mLastRequestBytesSentTime;
-    if (initialResponseDelta >= gHttpHandler->FastOpenStallsTimeout()) {
-      gHttpHandler->IncrementFastOpenStallsCounter();
-      mCheckNetworkStallsWithTFO = false;
-    } else {
-      nextTick = PR_IntervalToSeconds(gHttpHandler->FastOpenStallsTimeout()) -
-                 PR_IntervalToSeconds(initialResponseDelta);
-    }
+  if (!mPingThreshold) {
+    return UINT32_MAX;
   }
-  if (!mPingThreshold) return nextTick;
 
   if ((now - mLastReadEpoch) < mPingThreshold) {
     // recent activity means ping is not an issue
@@ -307,16 +391,37 @@ uint32_t Http2Session::ReadTimeoutTick(PRIntervalTime now) {
       }
     }
 
-    return std::min(nextTick, PR_IntervalToSeconds(mPingThreshold) -
-                                  PR_IntervalToSeconds(now - mLastReadEpoch));
+    return PR_IntervalToSeconds(mPingThreshold) -
+           PR_IntervalToSeconds(now - mLastReadEpoch);
   }
 
   if (mPingSentEpoch) {
-    LOG3(("Http2Session::ReadTimeoutTick %p handle outstanding ping\n", this));
-    if ((now - mPingSentEpoch) >= gHttpHandler->SpdyPingTimeout()) {
+    bool isTrr = (mTrrStreams > 0);
+    uint32_t pingTimeout = isTrr ? StaticPrefs::network_trr_ping_timeout()
+                                 : gHttpHandler->SpdyPingTimeout();
+    LOG3(
+        ("Http2Session::ReadTimeoutTick %p handle outstanding ping, "
+         "timeout=%d\n",
+         this, pingTimeout));
+    if ((now - mPingSentEpoch) >= pingTimeout) {
       LOG3(("Http2Session::ReadTimeoutTick %p Ping Timer Exhaustion\n", this));
+      if (mConnection) {
+        mConnection->SetCloseReason(ConnectionCloseReason::IDLE_TIMEOUT);
+      }
       mPingSentEpoch = 0;
-      Close(NS_ERROR_NET_TIMEOUT);
+      if (isTrr) {
+        // These must be set this way to ensure we gracefully restart all
+        // streams
+        mGoAwayID = 0;
+        mCleanShutdown = true;
+        // If TRR is mode 2, this Http2Session will be closed due to TRR request
+        // timeout, so we won't reach this code. If we are in mode 3, the
+        // request timeout is usually larger than the ping timeout. We close the
+        // stream with NS_ERROR_NET_RESET, so the transactions can be restarted.
+        Close(NS_ERROR_NET_RESET);
+      } else {
+        Close(NS_ERROR_NET_TIMEOUT);
+      }
       return UINT32_MAX;
     }
     return 1;  // run the tick aggressively while ping is outstanding
@@ -341,8 +446,9 @@ uint32_t Http2Session::ReadTimeoutTick(PRIntervalTime now) {
     for (uint32_t index = mPushedStreams.Length(); index > 0; --index) {
       Http2PushedStream* pushedStream = mPushedStreams[index - 1];
 
-      if (timestampNow.IsNull())
+      if (timestampNow.IsNull()) {
         timestampNow = TimeStamp::Now();  // lazy initializer
+      }
 
       // if stream finished, but is not connected, and its been like that for
       // long then cleanup the stream.
@@ -360,7 +466,8 @@ uint32_t Http2Session::ReadTimeoutTick(PRIntervalTime now) {
   return 1;  // run the tick aggressively while ping is outstanding
 }
 
-uint32_t Http2Session::RegisterStreamID(Http2Stream* stream, uint32_t aNewID) {
+uint32_t Http2Session::RegisterStreamID(Http2StreamBase* stream,
+                                        uint32_t aNewID) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(mNextStreamID < 0xfffffff0,
              "should have stopped admitting streams");
@@ -385,37 +492,18 @@ uint32_t Http2Session::RegisterStreamID(Http2Stream* stream, uint32_t aNewID) {
   if (aNewID >= kMaxStreamID) mShouldGoAway = true;
 
   // integrity check
-  if (mStreamIDHash.Get(aNewID)) {
+  if (mStreamIDHash.Contains(aNewID)) {
     LOG3(("   New ID already present\n"));
     MOZ_ASSERT(false, "New ID already present in mStreamIDHash");
     mShouldGoAway = true;
     return kDeadStreamID;
   }
 
-  mStreamIDHash.Put(aNewID, stream);
-
-  // If TCP fast Open has been used and conection was idle for some time
-  // we will be cautious and watch out for bug 1395494.
-  if (!mCheckNetworkStallsWithTFO && mConnection) {
-    RefPtr<HttpConnectionBase> connBase = mConnection->HttpConnection();
-    RefPtr<nsHttpConnection> conn = do_QueryObject(connBase);
-    if (conn && (conn->GetFastOpenStatus() == TFO_DATA_SENT) &&
-        gHttpHandler
-            ->CheckIfConnectionIsStalledOnlyIfIdleForThisAmountOfSeconds() &&
-        IdleTime() >=
-            gHttpHandler
-                ->CheckIfConnectionIsStalledOnlyIfIdleForThisAmountOfSeconds()) {
-      // If a connection was using the TCP FastOpen and it was idle for a
-      // long time we should check for stalls like bug 1395494.
-      mCheckNetworkStallsWithTFO = true;
-      mLastRequestBytesSentTime = PR_IntervalNow();
-    }
-  }
+  mStreamIDHash.InsertOrUpdate(aNewID, stream);
 
   if (aNewID & 1) {
     // don't count push streams here
-    MOZ_ASSERT(stream->Transaction(), "no transation for the stream!");
-    RefPtr<nsHttpConnectionInfo> ci(stream->Transaction()->ConnectionInfo());
+    RefPtr<nsHttpConnectionInfo> ci(stream->ConnectionInfo());
     if (ci && ci->GetIsTrrServiceChannel()) {
       IncrementTrrCounter();
     }
@@ -424,13 +512,12 @@ uint32_t Http2Session::RegisterStreamID(Http2Stream* stream, uint32_t aNewID) {
 }
 
 bool Http2Session::AddStream(nsAHttpTransaction* aHttpTransaction,
-                             int32_t aPriority, bool aUseTunnel,
-                             bool aIsWebsocket,
+                             int32_t aPriority,
                              nsIInterfaceRequestor* aCallbacks) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
   // integrity check
-  if (mStreamTransactionHash.Get(aHttpTransaction)) {
+  if (mStreamTransactionHash.Contains(aHttpTransaction)) {
     LOG3(("   New transaction already present\n"));
     MOZ_ASSERT(false, "AddStream duplicate transaction pointer");
     return false;
@@ -474,88 +561,34 @@ bool Http2Session::AddStream(nsAHttpTransaction* aHttpTransaction,
   aHttpTransaction->SetConnection(this);
   aHttpTransaction->OnActivated();
 
-  if (aIsWebsocket) {
-    MOZ_ASSERT(!aUseTunnel, "Websocket on tunnel?!");
-    nsHttpTransaction* trans = aHttpTransaction->QueryHttpTransaction();
-    MOZ_ASSERT(trans, "Websocket without transaction?!");
-    if (!trans) {
-      LOG3(("Http2Session::AddStream %p websocket without transaction. WAT?!",
-            this));
-      return true;
-    }
+  CreateStream(aHttpTransaction, aPriority, Http2StreamBaseType::Normal);
+  return true;
+}
 
-    if (!mEnableWebsockets) {
-      LOG3(
-          ("Http2Session::AddStream %p Re-queuing websocket as h1 due to "
-           "mEnableWebsockets=false",
-           this));
-      aHttpTransaction->SetConnection(nullptr);
-      aHttpTransaction->DisableSpdy();
-      nsresult rv = gHttpHandler->InitiateTransaction(trans, trans->Priority());
-      if (NS_FAILED(rv)) {
-        LOG3(
-            ("Http2Session::AddStream %p failed to reinitiate websocket "
-             "transaction (0x%08x).",
-             this, static_cast<uint32_t>(rv)));
-      }
-
-      return true;
-    }
-
-    if (!mPeerAllowsWebsockets) {
-      LOG3(("Http2Session::AddStream %p mPeerAllowsWebsockets=false", this));
-      if (!mProcessedWaitingWebsockets) {
-        LOG3(
-            ("Http2Session::AddStream %p waiting for SETTINGS to determine "
-             "fate of websocket",
-             this));
-        mWaitingWebsockets.AppendElement(aHttpTransaction);
-        mWaitingWebsocketCallbacks.AppendElement(aCallbacks);
-      } else {
-        LOG3(
-            ("Http2Session::AddStream %p Re-queuing websocket as h1 due to "
-             "mPeerAllowsWebsockets=false",
-             this));
-        aHttpTransaction->SetConnection(nullptr);
-        aHttpTransaction->DisableSpdy();
-        if (trans) {
-          nsresult rv =
-              gHttpHandler->InitiateTransaction(trans, trans->Priority());
-          if (NS_FAILED(rv)) {
-            LOG3(
-                ("Http2Session::AddStream %p failed to reinitiate websocket "
-                 "transaction (%08x).\n",
-                 this, static_cast<uint32_t>(rv)));
-          }
-        }
-      }
-      return true;
-    }
-
-    LOG3(("Http2Session::AddStream session=%p trans=%p websocket", this,
-          aHttpTransaction));
-    CreateWebsocketStream(aHttpTransaction, aCallbacks);
-    return true;
+void Http2Session::CreateStream(nsAHttpTransaction* aHttpTransaction,
+                                int32_t aPriority,
+                                Http2StreamBaseType streamType) {
+  RefPtr<Http2StreamBase> refStream;
+  switch (streamType) {
+    case Http2StreamBaseType::Normal:
+      refStream =
+          new Http2Stream(aHttpTransaction, this, aPriority, mCurrentBrowserId);
+      break;
+    case Http2StreamBaseType::WebSocket:
+    case Http2StreamBaseType::Tunnel:
+    case Http2StreamBaseType::ServerPush:
+      MOZ_RELEASE_ASSERT(false);
+      return;
   }
-
-  if (aUseTunnel) {
-    LOG3(("Http2Session::AddStream session=%p trans=%p OnTunnel", this,
-          aHttpTransaction));
-    DispatchOnTunnel(aHttpTransaction, aCallbacks);
-    return true;
-  }
-
-  Http2Stream* stream =
-      new Http2Stream(aHttpTransaction, this, aPriority,
-                      mCurrentForegroundTabOuterContentWindowId);
 
   LOG3(("Http2Session::AddStream session=%p stream=%p serial=%" PRIu64 " "
         "NextID=0x%X (tentative)",
-        this, stream, mSerial, mNextStreamID));
+        this, refStream.get(), mSerial, mNextStreamID));
 
-  mStreamTransactionHash.Put(aHttpTransaction, stream);
+  RefPtr<Http2StreamBase> stream = refStream;
+  mStreamTransactionHash.InsertOrUpdate(aHttpTransaction, std::move(refStream));
 
-  mReadyForWrite.Push(stream);
+  AddStreamToQueue(stream, mReadyForWrite);
   SetWriteCallbacks();
 
   // Kick off the SYN transmit without waiting for the poll loop
@@ -572,11 +605,23 @@ bool Http2Session::AddStream(nsAHttpTransaction* aHttpTransaction,
           this, aHttpTransaction));
     DontReuse();
   }
-
-  return true;
 }
 
-void Http2Session::QueueStream(Http2Stream* stream) {
+already_AddRefed<nsHttpConnection> Http2Session::CreateTunnelStream(
+    nsAHttpTransaction* aHttpTransaction, nsIInterfaceRequestor* aCallbacks,
+    PRIntervalTime aRtt, bool aIsWebSocket) {
+  RefPtr<Http2StreamTunnel> refStream = CreateTunnelStreamFromConnInfo(
+      this, mCurrentBrowserId, aHttpTransaction->ConnectionInfo(),
+      aIsWebSocket);
+
+  RefPtr<nsHttpConnection> newConn = refStream->CreateHttpConnection(
+      aHttpTransaction, aCallbacks, aRtt, aIsWebSocket);
+
+  mTunnelStreams.AppendElement(std::move(refStream));
+  return newConn.forget();
+}
+
+void Http2Session::QueueStream(Http2StreamBase* stream) {
   // will be removed via processpending or a shutdown path
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(!stream->CountAsActive());
@@ -585,31 +630,28 @@ void Http2Session::QueueStream(Http2Stream* stream) {
   LOG3(("Http2Session::QueueStream %p stream %p queued.", this, stream));
 
 #ifdef DEBUG
-  int32_t qsize = mQueuedStreams.GetSize();
-  for (int32_t i = 0; i < qsize; i++) {
-    Http2Stream* qStream =
-        static_cast<Http2Stream*>(mQueuedStreams.ObjectAt(i));
+  for (const auto& qStream : mQueuedStreams) {
     MOZ_ASSERT(qStream != stream);
     MOZ_ASSERT(qStream->Queued());
   }
 #endif
 
   stream->SetQueued(true);
-  mQueuedStreams.Push(stream);
+  AddStreamToQueue(stream, mQueuedStreams);
 }
 
 void Http2Session::ProcessPending() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  Http2Stream* stream;
+  RefPtr<Http2StreamBase> stream;
   while (RoomForMoreConcurrent() &&
-         (stream = static_cast<Http2Stream*>(mQueuedStreams.PopFront()))) {
+         (stream = GetNextStreamFromQueue(mQueuedStreams))) {
     LOG3(("Http2Session::ProcessPending %p stream %p woken from queue.", this,
-          stream));
+          stream.get()));
     MOZ_ASSERT(!stream->CountAsActive());
     MOZ_ASSERT(stream->Queued());
     stream->SetQueued(false);
-    mReadyForWrite.Push(stream);
+    AddStreamToQueue(stream, mReadyForWrite);
     SetWriteCallbacks();
   }
 }
@@ -626,7 +668,6 @@ nsresult Http2Session::NetworkRead(nsAHttpSegmentWriter* writer, char* buf,
   nsresult rv = writer->OnWriteSegment(buf, count, countWritten);
   if (NS_SUCCEEDED(rv) && *countWritten > 0) {
     mLastReadEpoch = PR_IntervalNow();
-    mCheckNetworkStallsWithTFO = false;
   }
   return rv;
 }
@@ -716,7 +757,7 @@ enum SpdyVersion Http2Session::SpdyVersion() { return SpdyVersion::HTTP_2; }
 uint32_t Http2Session::GetWriteQueueSize() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  return mReadyForWrite.GetSize();
+  return mReadyForWrite.Length();
 }
 
 void Http2Session::ChangeDownstreamState(enum internalStateType newState) {
@@ -746,7 +787,7 @@ void Http2Session::ResetDownstreamState() {
 
 // return true if activated (and counted against max)
 // otherwise return false and queue
-bool Http2Session::TryToActivate(Http2Stream* aStream) {
+bool Http2Session::TryToActivate(Http2StreamBase* aStream) {
   if (aStream->Queued()) {
     LOG3(("Http2Session::TryToActivate %p stream=%p already queued.\n", this,
           aStream));
@@ -769,14 +810,13 @@ bool Http2Session::TryToActivate(Http2Stream* aStream) {
   return true;
 }
 
-void Http2Session::IncrementConcurrent(Http2Stream* stream) {
+void Http2Session::IncrementConcurrent(Http2StreamBase* stream) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(!stream->StreamID() || (stream->StreamID() & 1),
              "Do not activate pushed streams");
 
   nsAHttpTransaction* trans = stream->Transaction();
-  if (!trans || !trans->IsNullTransaction() ||
-      trans->QuerySpdyConnectTransaction()) {
+  if (!trans || !trans->IsNullTransaction()) {
     MOZ_ASSERT(!stream->CountAsActive());
     stream->SetCountAsActive(true);
     ++mConcurrent;
@@ -830,7 +870,7 @@ template void Http2Session::CreateFrameHeader(uint8_t* dest,
                                               uint8_t frameFlags,
                                               uint32_t streamID);
 
-void Http2Session::MaybeDecrementConcurrent(Http2Stream* aStream) {
+void Http2Session::MaybeDecrementConcurrent(Http2StreamBase* aStream) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(("MaybeDecrementConcurrent %p id=0x%X concurrent=%d active=%d\n", this,
         aStream->StreamID(), mConcurrent, aStream->CountAsActive()));
@@ -893,23 +933,12 @@ void Http2Session::GenerateSettingsAck() {
   FlushOutputQueue();
 }
 
-void Http2Session::GeneratePriority(uint32_t aID, uint8_t aPriorityWeight) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  LOG3(("Http2Session::GeneratePriority %p %X %X\n", this, aID,
-        aPriorityWeight));
-
-  char* packet = CreatePriorityFrame(aID, 0, aPriorityWeight);
-
-  LogIO(this, nullptr, "Generate Priority", packet, kFrameHeaderBytes + 5);
-  FlushOutputQueue();
-}
-
 void Http2Session::GenerateRstStream(uint32_t aStatusCode, uint32_t aID) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
   // make sure we don't do this twice for the same stream (at least if we
   // have a stream entry for it)
-  Http2Stream* stream = mStreamIDHash.Get(aID);
+  Http2StreamBase* stream = mStreamIDHash.Get(aID);
   if (stream) {
     if (stream->SentReset()) return;
     stream->SetSentReset(true);
@@ -961,10 +990,10 @@ void Http2Session::SendHello() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(("Http2Session::SendHello %p\n", this));
 
-  // sized for magic + 5 settings and a session window update and 6 priority
+  // sized for magic + 6 settings and a session window update and 6 priority
   // frames 24 magic, 33 for settings (9 header + 4 settings @6), 13 for window
   // update, 6 priority frames at 14 (9 + 5) each
-  static const uint32_t maxSettings = 5;
+  static const uint32_t maxSettings = 6;
   static const uint32_t prioritySize =
       kPriorityGroupCount * (kFrameHeaderBytes + 5);
   static const uint32_t maxDataLen =
@@ -997,7 +1026,7 @@ void Http2Session::SendHello() {
       maxHpackBufferSize);
   numberOfEntries++;
 
-  if (!gHttpHandler->AllowPush()) {
+  if (!StaticPrefs::network_http_http2_allow_push()) {
     // If we don't support push then set MAX_CONCURRENT to 0 and also
     // set ENABLE_PUSH to 0
     NetworkEndian::writeUint16(
@@ -1031,6 +1060,21 @@ void Http2Session::SendHello() {
       packet + kFrameHeaderBytes + (6 * numberOfEntries) + 2, kMaxFrameData);
   numberOfEntries++;
 
+  bool disableRFC7540Priorities =
+      !StaticPrefs::network_http_http2_enabled_deps() ||
+      !gHttpHandler->CriticalRequestPrioritization();
+
+  // See bug 1909666. Sending this new setting could break some websites.
+  if (disableRFC7540Priorities) {
+    NetworkEndian::writeUint16(
+        packet + kFrameHeaderBytes + (6 * numberOfEntries),
+        SETTINGS_NO_RFC7540_PRIORITIES);
+    NetworkEndian::writeUint32(
+        packet + kFrameHeaderBytes + (6 * numberOfEntries) + 2,
+        disableRFC7540Priorities ? 1 : 0);
+    numberOfEntries++;
+  }
+
   MOZ_ASSERT(numberOfEntries <= maxSettings);
   uint32_t dataLen = 6 * numberOfEntries;
   CreateFrameHeader(packet, dataLen, FRAME_TYPE_SETTINGS, 0, 0);
@@ -1055,8 +1099,7 @@ void Http2Session::SendHello() {
     LogIO(this, nullptr, "Session Window Bump ", packet, kFrameHeaderBytes + 4);
   }
 
-  if (gHttpHandler->UseH2Deps() &&
-      gHttpHandler->CriticalRequestPrioritization()) {
+  if (!disableRFC7540Priorities) {
     mUseH2Deps = true;
     MOZ_ASSERT(mNextStreamID == kLeaderGroupID);
     CreatePriorityNode(kLeaderGroupID, 0, 200, "leader");
@@ -1087,6 +1130,12 @@ void Http2Session::SendHello() {
 
 void Http2Session::SendPriorityFrame(uint32_t streamID, uint32_t dependsOn,
                                      uint8_t weight) {
+  // If mUseH2Deps is false, that means that we've sent
+  // SETTINGS_NO_RFC7540_PRIORITIES = 1. Since the server must
+  // ignore priority frames anyway, we can skip sending it.
+  if (!UseH2Deps()) {
+    return;
+  }
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(
       ("Http2Session::SendPriorityFrame %p Frame 0x%X depends on 0x%X "
@@ -1097,6 +1146,42 @@ void Http2Session::SendPriorityFrame(uint32_t streamID, uint32_t dependsOn,
 
   LogIO(this, nullptr, "SendPriorityFrame", packet, kFrameHeaderBytes + 5);
   FlushOutputQueue();
+}
+
+void Http2Session::SendPriorityUpdateFrame(uint32_t streamID, uint8_t urgency,
+                                           bool incremental) {
+  CreatePriorityUpdateFrame(streamID, urgency, incremental);
+  FlushOutputQueue();
+}
+
+char* Http2Session::CreatePriorityUpdateFrame(uint32_t streamID,
+                                              uint8_t urgency,
+                                              bool incremental) {
+  // https://www.rfc-editor.org/rfc/rfc9218.html#section-7.1
+  nsPrintfCString priorityFieldValue(
+      "%s", urgency != 3 ? nsPrintfCString("u=%d", urgency).get() : "");
+  size_t payloadSize = 4 + priorityFieldValue.Length();
+  char* packet = EnsureOutputBuffer(kFrameHeaderBytes + payloadSize);
+  // The Stream Identifier field (see Section 5.1.1 of [HTTP/2]) in the
+  // PRIORITY_UPDATE frame header MUST be zero
+  CreateFrameHeader(packet, payloadSize,
+                    Http2Session::FRAME_TYPE_PRIORITY_UPDATE,
+                    0,   // unused flags
+                    0);  // streamID
+
+  // Reserved (1),
+  // Prioritized Stream ID (31),
+  MOZ_ASSERT(!(streamID & 0x80000000));
+  NetworkEndian::writeUint32(packet + kFrameHeaderBytes, streamID & 0x7FFFFFFF);
+  // Priority Field Value (..),
+  for (size_t i = 0; i < priorityFieldValue.Length(); ++i) {
+    packet[kFrameHeaderBytes + 4 + i] = priorityFieldValue[i];
+  }
+  mOutputQueueUsed += kFrameHeaderBytes + payloadSize;
+
+  LogIO(this, nullptr, "SendPriorityUpdateFrame", packet,
+        kFrameHeaderBytes + payloadSize);
+  return packet;
 }
 
 char* Http2Session::CreatePriorityFrame(uint32_t streamID, uint32_t dependsOn,
@@ -1124,7 +1209,7 @@ void Http2Session::CreatePriorityNode(uint32_t streamID, uint32_t dependsOn,
 
 // perform a bunch of integrity checks on the stream.
 // returns true if passed, false (plus LOG and ABORT) if failed.
-bool Http2Session::VerifyStream(Http2Stream* aStream,
+bool Http2Session::VerifyStream(Http2StreamBase* aStream,
                                 uint32_t aOptionalID = 0) {
   // This is annoying, but at least it is O(1)
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
@@ -1141,16 +1226,9 @@ bool Http2Session::VerifyStream(Http2Stream* aStream,
   do {
     if (aStream->StreamID() == kDeadStreamID) break;
 
-    nsAHttpTransaction* trans = aStream->Transaction();
-
     test++;
-    if (!trans) break;
-
-    test++;
-    if (mStreamTransactionHash.Get(trans) != aStream) break;
-
     if (aStream->StreamID()) {
-      Http2Stream* idStream = mStreamIDHash.Get(aStream->StreamID());
+      Http2StreamBase* idStream = mStreamIDHash.Get(aStream->StreamID());
 
       test++;
       if (idStream != aStream) break;
@@ -1160,6 +1238,18 @@ bool Http2Session::VerifyStream(Http2Stream* aStream,
         if (idStream->StreamID() != aOptionalID) break;
       }
     }
+
+    if (aStream->IsTunnel()) {
+      return true;
+    }
+
+    nsAHttpTransaction* trans = aStream->Transaction();
+
+    test++;
+    if (!trans) break;
+
+    test++;
+    if (mStreamTransactionHash.GetWeak(trans) != aStream) break;
 
     // tests passed
     return true;
@@ -1176,7 +1266,27 @@ bool Http2Session::VerifyStream(Http2Stream* aStream,
 #endif  // DEBUG
 }
 
-void Http2Session::CleanupStream(Http2Stream* aStream, nsresult aResult,
+// static
+Http2StreamTunnel* Http2Session::CreateTunnelStreamFromConnInfo(
+    Http2Session* session, uint64_t bcId, nsHttpConnectionInfo* info,
+    bool isWebSocket) {
+  MOZ_ASSERT(info);
+  MOZ_ASSERT(session);
+
+  if (isWebSocket) {
+    LOG(("Http2Session creating Http2StreamWebSocket"));
+    MOZ_ASSERT(session->GetWebSocketSupport() == WebSocketSupport::SUPPORTED);
+    return new Http2StreamWebSocket(
+        session, nsISupportsPriority::PRIORITY_NORMAL, bcId, info);
+  }
+
+  MOZ_ASSERT(info->UsingHttpProxy() && info->UsingConnect());
+  LOG(("Http2Session creating Http2StreamTunnel"));
+  return new Http2StreamTunnel(session, nsISupportsPriority::PRIORITY_NORMAL,
+                               bcId, info);
+}
+
+void Http2Session::CleanupStream(Http2StreamBase* aStream, nsresult aResult,
                                  errorType aResetCode) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(("Http2Session::CleanupStream %p %p 0x%X %" PRIX32 "\n", this, aStream,
@@ -1185,13 +1295,17 @@ void Http2Session::CleanupStream(Http2Stream* aStream, nsresult aResult,
     return;
   }
 
-  Http2PushedStream* pushSource = aStream->PushSource();
-  if (pushSource) {
-    // aStream is a synthetic  attached to an even push
-    MOZ_ASSERT(pushSource->GetConsumerStream() == aStream);
-    MOZ_ASSERT(!aStream->StreamID());
-    MOZ_ASSERT(!(pushSource->StreamID() & 0x1));
-    aStream->ClearPushSource();
+  Http2PushedStream* pushSource = nullptr;
+  Http2Stream* h2Stream = aStream->GetHttp2Stream();
+  if (h2Stream) {
+    pushSource = h2Stream->PushSource();
+    if (pushSource) {
+      // aStream is a synthetic  attached to an even push
+      MOZ_ASSERT(pushSource->GetConsumerStream() == aStream);
+      MOZ_ASSERT(!aStream->StreamID());
+      MOZ_ASSERT(!(pushSource->StreamID() & 0x1));
+      h2Stream->ClearPushSource();
+    }
   }
 
   if (aStream->DeferCleanup(aResult)) {
@@ -1246,9 +1360,10 @@ void Http2Session::CleanupStream(Http2Stream* aStream, nsresult aResult,
   RemoveStreamFromQueues(aStream);
 
   // removing from the stream transaction hash will
-  // delete the Http2Stream and drop the reference to
+  // delete the Http2StreamBase and drop the reference to
   // its transaction
   mStreamTransactionHash.Remove(aStream->Transaction());
+  mTunnelStreams.RemoveElement(aStream);
 
   if (mShouldGoAway && !mStreamTransactionHash.Count()) Close(NS_OK);
 
@@ -1261,7 +1376,7 @@ void Http2Session::CleanupStream(Http2Stream* aStream, nsresult aResult,
 void Http2Session::CleanupStream(uint32_t aID, nsresult aResult,
                                  errorType aResetCode) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  Http2Stream* stream = mStreamIDHash.Get(aID);
+  Http2StreamBase* stream = mStreamIDHash.Get(aID);
   LOG3(("Http2Session::CleanupStream %p by ID 0x%X to stream %p\n", this, aID,
         stream));
   if (!stream) {
@@ -1270,22 +1385,15 @@ void Http2Session::CleanupStream(uint32_t aID, nsresult aResult,
   CleanupStream(stream, aResult, aResetCode);
 }
 
-static void RemoveStreamFromQueue(Http2Stream* aStream, nsDeque& queue) {
-  size_t size = queue.GetSize();
-  for (size_t count = 0; count < size; ++count) {
-    Http2Stream* stream = static_cast<Http2Stream*>(queue.PopFront());
-    if (stream != aStream) queue.Push(stream);
-  }
-}
-
-void Http2Session::RemoveStreamFromQueues(Http2Stream* aStream) {
+void Http2Session::RemoveStreamFromQueues(Http2StreamBase* aStream) {
   RemoveStreamFromQueue(aStream, mReadyForWrite);
   RemoveStreamFromQueue(aStream, mQueuedStreams);
   RemoveStreamFromQueue(aStream, mPushesReadyForRead);
   RemoveStreamFromQueue(aStream, mSlowConsumersReadyForRead);
 }
 
-void Http2Session::CloseStream(Http2Stream* aStream, nsresult aResult) {
+void Http2Session::CloseStream(Http2StreamBase* aStream, nsresult aResult,
+                               bool aRemoveFromQueue) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(("Http2Session::CloseStream %p %p 0x%x %" PRIX32 "\n", this, aStream,
         aStream->StreamID(), static_cast<uint32_t>(aResult)));
@@ -1299,14 +1407,12 @@ void Http2Session::CloseStream(Http2Stream* aStream, nsresult aResult) {
     mInputFrameDataStream = nullptr;
   }
 
-  RemoveStreamFromQueues(aStream);
-
-  if (aStream->IsTunnel()) {
-    UnRegisterTunnel(aStream);
+  if (aRemoveFromQueue) {
+    RemoveStreamFromQueues(aStream);
   }
 
   // Send the stream the close() indication
-  aStream->Close(aResult);
+  aStream->CloseStream(aResult);
 }
 
 nsresult Http2Session::SetInputFrameDataStream(uint32_t streamID) {
@@ -1353,10 +1459,11 @@ nsresult Http2Session::RecvHeaders(Http2Session* self) {
   // frame to be HEADERS of the same ID
   bool endHeadersFlag = self->mInputFrameFlags & kFlag_END_HEADERS;
 
-  if (endHeadersFlag)
+  if (endHeadersFlag) {
     self->mExpectedHeaderID = 0;
-  else
+  } else {
     self->mExpectedHeaderID = self->mInputFrameID;
+  }
 
   uint32_t priorityLen = 0;
   if (self->mInputFrameFlags & kFlag_PRIORITY) {
@@ -1394,6 +1501,13 @@ nsresult Http2Session::RecvHeaders(Http2Session* self) {
     return self->SessionError(PROTOCOL_ERROR);
   }
 
+  uint32_t frameSize = self->mInputFrameDataSize - paddingControlBytes -
+                       priorityLen - paddingLength;
+  if (self->mAggregatedHeaderSize + frameSize >
+      StaticPrefs::network_http_max_response_header_size()) {
+    LOG(("Http2Session %p header exceeds the limit\n", self));
+    return self->SessionError(PROTOCOL_ERROR);
+  }
   if (!self->mInputFrameDataStream) {
     // Cannot find stream. We can continue the session, but we need to
     // uncompress the header block to maintain the correct compression context
@@ -1403,14 +1517,14 @@ nsresult Http2Session::RecvHeaders(Http2Session* self) {
          "0x%X failed. NextStreamID = 0x%X\n",
          self, self->mInputFrameID, self->mNextStreamID));
 
-    if (self->mInputFrameID >= self->mNextStreamID)
+    if (self->mInputFrameID >= self->mNextStreamID) {
       self->GenerateRstStream(PROTOCOL_ERROR, self->mInputFrameID);
+    }
 
     self->mDecompressBuffer.Append(
         &self->mInputFrameBuffer[kFrameHeaderBytes + paddingControlBytes +
                                  priorityLen],
-        self->mInputFrameDataSize - paddingControlBytes - priorityLen -
-            paddingLength);
+        frameSize);
 
     if (self->mInputFrameFlags & kFlag_END_HEADERS) {
       rv = self->UncompressAndDiscard(false);
@@ -1440,21 +1554,16 @@ nsresult Http2Session::RecvHeaders(Http2Session* self) {
   self->mDecompressBuffer.Append(
       &self->mInputFrameBuffer[kFrameHeaderBytes + paddingControlBytes +
                                priorityLen],
-      self->mInputFrameDataSize - paddingControlBytes - priorityLen -
-          paddingLength);
+      frameSize);
 
   self->mInputFrameDataStream->UpdateTransportReadEvents(
       self->mInputFrameDataSize);
   self->mLastDataReadEpoch = self->mLastReadEpoch;
 
   if (!isContinuation) {
-    self->mAggregatedHeaderSize = self->mInputFrameDataSize -
-                                  paddingControlBytes - priorityLen -
-                                  paddingLength;
+    self->mAggregatedHeaderSize = frameSize;
   } else {
-    self->mAggregatedHeaderSize += self->mInputFrameDataSize -
-                                   paddingControlBytes - priorityLen -
-                                   paddingLength;
+    self->mAggregatedHeaderSize += frameSize;
   }
 
   if (!endHeadersFlag) {  // more are coming - don't process yet
@@ -1520,7 +1629,7 @@ nsresult Http2Session::ResponseHeadersComplete() {
 
   // The stream needs to see flattened http headers
   // Uncompressed http/2 format headers currently live in
-  // Http2Stream::mDecompressBuffer - convert that to HTTP format in
+  // Http2StreamBase::mDecompressBuffer - convert that to HTTP format in
   // mFlatHTTPResponseHeaders via ConvertHeaders()
 
   nsresult rv;
@@ -1536,11 +1645,12 @@ nsresult Http2Session::ResponseHeadersComplete() {
          this));
     // This means the stream found connection-oriented auth. Treat this like we
     // got a reset with HTTP_1_1_REQUIRED.
-    mInputFrameDataStream->Transaction()->DisableSpdy();
+    mInputFrameDataStream->DisableSpdy();
     CleanupStream(mInputFrameDataStream, NS_ERROR_NET_RESET, CANCEL_ERROR);
     ResetDownstreamState();
     return NS_OK;
-  } else if (NS_FAILED(rv)) {
+  }
+  if (NS_FAILED(rv)) {
     return rv;
   }
 
@@ -1686,9 +1796,8 @@ nsresult Http2Session::RecvSettings(Http2Session* self) {
 
         // SETTINGS only adjusts stream windows. Leave the session window alone.
         // We need to add the delta to all open streams (delta can be negative)
-        for (auto iter = self->mStreamTransactionHash.Iter(); !iter.Done();
-             iter.Next()) {
-          iter.Data()->UpdateServerReceiveWindow(delta);
+        for (const auto& stream : self->mStreamTransactionHash.Values()) {
+          stream->UpdateServerReceiveWindow(delta);
         }
       } break;
 
@@ -1712,6 +1821,7 @@ nsresult Http2Session::RecvSettings(Http2Session* self) {
           LOG3(("Peer tried to re-disable extended CONNECT"));
           return self->SessionError(PROTOCOL_ERROR);
         }
+        self->mHasTransactionWaitingForWebsockets = true;
       } break;
 
       default:
@@ -1729,13 +1839,23 @@ nsresult Http2Session::RecvSettings(Http2Session* self) {
   }
 
   if (!self->mProcessedWaitingWebsockets) {
-    self->ProcessWaitingWebsockets();
+    self->mProcessedWaitingWebsockets = true;
+  }
+
+  if (self->mHasTransactionWaitingForWebsockets) {
+    // trigger a queued websockets transaction -- enabled or not
+    LOG3(("Http2Sesssion::RecvSettings triggering queued websocket"));
+    RefPtr<nsHttpConnectionInfo> ci;
+    self->GetConnectionInfo(getter_AddRefs(ci));
+    gHttpHandler->ConnMgr()->ProcessPendingQ(ci);
+    self->mHasTransactionWaitingForWebsockets = false;
   }
 
   return NS_OK;
 }
 
 nsresult Http2Session::RecvPushPromise(Http2Session* self) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(self->mInputFrameType == FRAME_TYPE_PUSH_PROMISE ||
              self->mInputFrameType == FRAME_TYPE_CONTINUATION);
 
@@ -1808,7 +1928,7 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
   nsresult rv = self->SetInputFrameDataStream(associatedID);
   if (NS_FAILED(rv)) return rv;
 
-  Http2Stream* associatedStream = self->mInputFrameDataStream;
+  Http2StreamBase* associatedStream = self->mInputFrameDataStream;
   ++(self->mServerPushedResources);
 
   // Anytime we start using the high bit of stream ID (either client or server)
@@ -1824,7 +1944,7 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
          "mode refused.\n",
          self));
     self->GenerateRstStream(REFUSED_STREAM_ERROR, promisedID);
-  } else if (!gHttpHandler->AllowPush()) {
+  } else if (!StaticPrefs::network_http_http2_allow_push()) {
     // ENABLE_PUSH and MAX_CONCURRENT_STREAMS of 0 in settings disabled push
     LOG3(("Http2Session::RecvPushPromise Push Recevied when Disabled\n"));
     if (self->mGoAwayOnPush) {
@@ -1918,9 +2038,9 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
   RefPtr<Http2PushTransactionBuffer> transactionBuffer =
       new Http2PushTransactionBuffer();
   transactionBuffer->SetConnection(self);
-  UniquePtr<Http2PushedStream> pushedStream(new Http2PushedStream(
-      transactionBuffer, self, associatedStream, promisedID,
-      self->mCurrentForegroundTabOuterContentWindowId));
+  RefPtr<Http2PushedStream> pushedStream(
+      new Http2PushedStream(transactionBuffer, self, associatedStream,
+                            promisedID, self->mCurrentBrowserId));
 
   rv = pushedStream->ConvertPushHeaders(&self->mDecompressor,
                                         self->mDecompressBuffer,
@@ -1939,19 +2059,20 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
     self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
     self->ResetDownstreamState();
     return NS_OK;
-  } else if (NS_FAILED(rv)) {
+  }
+  if (NS_FAILED(rv)) {
     // This is fatal to the session.
     self->mGoAwayReason = COMPRESSION_ERROR;
     return rv;
   }
 
-  WeakPtr<Http2Stream> pushedWeak = pushedStream.release();
-
   // Ownership of the pushed stream is by the transaction hash, just as it
   // is for a client initiated stream. Errors that aren't fatal to the
   // whole session must call cleanupStream() after this point in order
   // to remove the stream from that hash.
-  self->mStreamTransactionHash.Put(transactionBuffer, pushedWeak);
+  WeakPtr<Http2StreamBase> pushedWeak = pushedStream.get();
+  self->mStreamTransactionHash.InsertOrUpdate(transactionBuffer,
+                                              std::move(pushedStream));
   self->mPushedStreams.AppendElement(
       static_cast<Http2PushedStream*>(pushedWeak.get()));
 
@@ -1961,8 +2082,9 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
     return NS_ERROR_FAILURE;
   }
 
-  if (promisedID > self->mOutgoingGoAwayID)
+  if (promisedID > self->mOutgoingGoAwayID) {
     self->mOutgoingGoAwayID = promisedID;
+  }
 
   // Fake the request side of the pushed HTTP transaction. Sets up hash
   // key and origin
@@ -1983,7 +2105,7 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
   LOG3(("Http2Session::RecvPushPromise %p origin check %s", self,
         pushedWeak->Origin().get()));
   nsCOMPtr<nsIURI> pushedOrigin;
-  rv = Http2Stream::MakeOriginURL(pushedWeak->Origin(), pushedOrigin);
+  rv = MakeOriginURL(pushedWeak->Origin(), pushedOrigin);
   nsAutoCString pushedHostName;
   int32_t pushedPort = -1;
   if (NS_SUCCEEDED(rv)) {
@@ -2044,13 +2166,13 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
     // generally ok off the main thread), since we're not using the protocol
     // handler to create any URIs, this will work just fine here. Don't try this
     // at home, though, kids. I'm a trained professional.
-    if (NS_SUCCEEDED(Http2Stream::MakeOriginURL(spec, pushedURL))) {
+    if (NS_SUCCEEDED(MakeOriginURL(spec, pushedURL))) {
       LOG3(("Http2Session::RecvPushPromise %p check disk cache for entry",
             self));
       mozilla::OriginAttributes oa;
       pushedWeak->GetOriginAttributes(&oa);
       RefPtr<Http2Session> session = self;
-      auto callback = [session, promisedID](bool aAccepted) {
+      auto cachePushCheckCallback = [session, promisedID](bool aAccepted) {
         MOZ_ASSERT(OnSocketThread());
 
         if (!aAccepted) {
@@ -2061,7 +2183,7 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
       RefPtr<CachePushChecker> checker = new CachePushChecker(
           pushedURL, oa,
           static_cast<Http2PushedStream*>(pushedWeak.get())->GetRequestString(),
-          std::move(callback));
+          std::move(cachePushCheckCallback));
       if (NS_FAILED(checker->DoCheck())) {
         LOG3(
             ("Http2Session::RecvPushPromise %p failed to open cache entry for "
@@ -2071,12 +2193,38 @@ nsresult Http2Session::RecvPushPromise(Http2Session* self) {
     }
   }
 
-  pushedWeak->SetHTTPState(Http2Stream::RESERVED_BY_REMOTE);
-  static_assert(Http2Stream::kWorstPriority >= 0,
+  if (!pushedWeak) {
+    // We have an up to date entry in our cache, so the stream was closed
+    // and released in the cachePushCheckCallback above.
+    self->ResetDownstreamState();
+    return NS_OK;
+  }
+
+  pushedWeak->SetHTTPState(Http2StreamBase::RESERVED_BY_REMOTE);
+  static_assert(Http2StreamBase::kWorstPriority >= 0,
                 "kWorstPriority out of range");
-  uint32_t priorityDependency = pushedWeak->PriorityDependency();
-  uint8_t priorityWeight = pushedWeak->PriorityWeight();
-  self->SendPriorityFrame(promisedID, priorityDependency, priorityWeight);
+  if (self->UseH2Deps()) {
+    uint32_t priorityDependency = pushedWeak->PriorityDependency();
+    uint8_t priorityWeight = pushedWeak->PriorityWeight();
+    self->SendPriorityFrame(promisedID, priorityDependency, priorityWeight);
+  } else {
+    nsHttpTransaction* trans = associatedStream->HttpTransaction();
+    if (trans) {
+      uint8_t urgency = nsHttpHandler::UrgencyFromCoSFlags(
+          trans->GetClassOfService().Flags());
+
+      // if the initial stream was kUrgentStartGroupID or kLeaderGroupID
+      // which are equivalent to urgency 1 and 2 then set the pushed stream
+      // as having the same urgency as kFollowerGroupID.
+      // See Http2PushedStream::Http2PushedStream changing mPriorityDependency
+      if (urgency < 3) {
+        urgency = 4;
+      }
+
+      bool incremental = trans->GetClassOfService().Incremental();
+      self->SendPriorityUpdateFrame(promisedID, urgency, incremental);
+    }
+  }
   self->ResetDownstreamState();
   return NS_OK;
 }
@@ -2102,6 +2250,9 @@ nsresult Http2Session::RecvPing(Http2Session* self) {
   if (self->mInputFrameFlags & kFlag_ACK) {
     // presumably a reply to our timeout ping.. don't reply to it
     self->mPingSentEpoch = 0;
+    // We need to reset mPreviousUsed. If we don't, the next time
+    // Http2Session::SendPing is called, it will have no effect.
+    self->mPreviousUsed = false;
   } else {
     // reply with a ack'd ping
     self->GeneratePing(true);
@@ -2112,6 +2263,7 @@ nsresult Http2Session::RecvPing(Http2Session* self) {
 }
 
 nsresult Http2Session::RecvGoAway(Http2Session* self) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(self->mInputFrameType == FRAME_TYPE_GOAWAY);
 
   if (self->mInputFrameDataSize < 8) {
@@ -2128,6 +2280,7 @@ nsresult Http2Session::RecvGoAway(Http2Session* self) {
     return self->SessionError(PROTOCOL_ERROR);
   }
 
+  self->mConnection->SetCloseReason(ConnectionCloseReason::GO_AWAY);
   self->mShouldGoAway = true;
   self->mGoAwayID = NetworkEndian::readUint32(self->mInputFrameBuffer.get() +
                                               kFrameHeaderBytes);
@@ -2139,13 +2292,11 @@ nsresult Http2Session::RecvGoAway(Http2Session* self) {
   // Find streams greater than the last-good ID and mark them for deletion
   // in the mGoAwayStreamsToRestart queue. The underlying transaction can be
   // restarted.
-  for (auto iter = self->mStreamTransactionHash.Iter(); !iter.Done();
-       iter.Next()) {
+  for (const auto& stream : self->mStreamTransactionHash.Values()) {
     // these streams were not processed by the server and can be restarted.
     // Do that after the enumerator completes to avoid the risk of
     // a restart event re-entrantly modifying this hash. Be sure not to restart
     // a pushed (even numbered) stream
-    auto stream = iter.UserData();
     if ((stream->StreamID() > self->mGoAwayID && (stream->StreamID() & 1)) ||
         !stream->HasRegisteredID()) {
       self->mGoAwayStreamsToRestart.Push(stream);
@@ -2155,33 +2306,32 @@ nsresult Http2Session::RecvGoAway(Http2Session* self) {
   // Process the streams marked for deletion and restart.
   size_t size = self->mGoAwayStreamsToRestart.GetSize();
   for (size_t count = 0; count < size; ++count) {
-    Http2Stream* stream =
-        static_cast<Http2Stream*>(self->mGoAwayStreamsToRestart.PopFront());
+    Http2StreamBase* stream =
+        static_cast<Http2StreamBase*>(self->mGoAwayStreamsToRestart.PopFront());
 
     if (self->mPeerGoAwayReason == HTTP_1_1_REQUIRED) {
-      stream->Transaction()->DisableSpdy();
+      stream->DisableSpdy();
     }
     self->CloseStream(stream, NS_ERROR_NET_RESET);
-    if (stream->HasRegisteredID())
+    if (stream->HasRegisteredID()) {
       self->mStreamIDHash.Remove(stream->StreamID());
+    }
     self->mStreamTransactionHash.Remove(stream->Transaction());
   }
 
   // Queued streams can also be deleted from this session and restarted
   // in another one. (they were never sent on the network so they implicitly
   // are not covered by the last-good id.
-  size = self->mQueuedStreams.GetSize();
-  for (size_t count = 0; count < size; ++count) {
-    Http2Stream* stream =
-        static_cast<Http2Stream*>(self->mQueuedStreams.PopFront());
+  for (const auto& stream : self->mQueuedStreams) {
     MOZ_ASSERT(stream->Queued());
     stream->SetQueued(false);
     if (self->mPeerGoAwayReason == HTTP_1_1_REQUIRED) {
-      stream->Transaction()->DisableSpdy();
+      stream->DisableSpdy();
     }
-    self->CloseStream(stream, NS_ERROR_NET_RESET);
+    self->CloseStream(stream, NS_ERROR_NET_RESET, false);
     self->mStreamTransactionHash.Remove(stream->Transaction());
   }
+  self->mQueuedStreams.Clear();
 
   LOG3(
       ("Http2Session::RecvGoAway %p GOAWAY Last-Good-ID 0x%X status 0x%X "
@@ -2194,6 +2344,7 @@ nsresult Http2Session::RecvGoAway(Http2Session* self) {
 }
 
 nsresult Http2Session::RecvWindowUpdate(Http2Session* self) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(self->mInputFrameType == FRAME_TYPE_WINDOW_UPDATE);
 
   if (self->mInputFrameDataSize != 4) {
@@ -2216,9 +2367,10 @@ nsresult Http2Session::RecvWindowUpdate(Http2Session* self) {
     if (!self->mInputFrameDataStream) {
       LOG3(("Http2Session::RecvWindowUpdate %p lookup streamID 0x%X failed.\n",
             self, self->mInputFrameID));
-      // only resest the session if the ID is one we haven't ever opened
-      if (self->mInputFrameID >= self->mNextStreamID)
+      // only reset the session if the ID is one we haven't ever opened
+      if (self->mInputFrameID >= self->mNextStreamID) {
         self->GenerateRstStream(PROTOCOL_ERROR, self->mInputFrameID);
+      }
       self->ResetDownstreamState();
       return NS_OK;
     }
@@ -2278,16 +2430,14 @@ nsresult Http2Session::RecvWindowUpdate(Http2Session* self) {
     if ((oldRemoteWindow <= 0) && (self->mServerSessionWindow > 0)) {
       LOG3(
           ("Http2Session::RecvWindowUpdate %p restart session window\n", self));
-      for (auto iter = self->mStreamTransactionHash.Iter(); !iter.Done();
-           iter.Next()) {
+      for (const auto& stream : self->mStreamTransactionHash.Values()) {
         MOZ_ASSERT(self->mServerSessionWindow > 0);
 
-        auto stream = iter.UserData();
         if (!stream->BlockedOnRwin() || stream->ServerReceiveWindow() <= 0) {
           continue;
         }
 
-        self->mReadyForWrite.Push(stream);
+        AddStreamToQueue(stream, self->mReadyForWrite);
         self->SetWriteCallbacks();
       }
     }
@@ -2339,12 +2489,11 @@ nsresult Http2Session::RecvContinuation(Http2Session* self) {
 class UpdateAltSvcEvent : public Runnable {
  public:
   UpdateAltSvcEvent(const nsCString& header, const nsCString& aOrigin,
-                    nsHttpConnectionInfo* aCI, nsIInterfaceRequestor* callbacks)
+                    nsHttpConnectionInfo* aCI)
       : Runnable("net::UpdateAltSvcEvent"),
         mHeader(header),
         mOrigin(aOrigin),
-        mCI(aCI),
-        mCallbacks(callbacks) {}
+        mCI(aCI) {}
 
   NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
@@ -2365,15 +2514,15 @@ class UpdateAltSvcEvent : public Runnable {
     if (XRE_IsSocketProcess()) {
       AltServiceChild::ProcessHeader(
           mHeader, originScheme, originHost, originPort, mCI->GetUsername(),
-          mCI->GetTopWindowOrigin(), mCI->GetPrivate(), mCI->GetIsolated(),
-          mCallbacks, mCI->ProxyInfo(), 0, mCI->GetOriginAttributes());
+          mCI->GetPrivate(), nullptr, mCI->ProxyInfo(), 0,
+          mCI->GetOriginAttributes());
       return NS_OK;
     }
 
-    AltSvcMapping::ProcessHeader(
-        mHeader, originScheme, originHost, originPort, mCI->GetUsername(),
-        mCI->GetTopWindowOrigin(), mCI->GetPrivate(), mCI->GetIsolated(),
-        nullptr, mCI->ProxyInfo(), 0, mCI->GetOriginAttributes());
+    AltSvcMapping::ProcessHeader(mHeader, originScheme, originHost, originPort,
+                                 mCI->GetUsername(), mCI->GetPrivate(), nullptr,
+                                 mCI->ProxyInfo(), 0,
+                                 mCI->GetOriginAttributes());
     return NS_OK;
   }
 
@@ -2498,9 +2647,8 @@ nsresult Http2Session::RecvAltSvc(Http2Session* self) {
 
   if (!impliedOrigin) {
     bool okToReroute = true;
-    nsCOMPtr<nsISupports> securityInfo;
-    self->mConnection->GetSecurityInfo(getter_AddRefs(securityInfo));
-    nsCOMPtr<nsISSLSocketControl> ssl = do_QueryInterface(securityInfo);
+    nsCOMPtr<nsITLSSocketControl> ssl;
+    self->mConnection->GetTLSSocketControl(getter_AddRefs(ssl));
     if (!ssl) {
       okToReroute = false;
     }
@@ -2508,9 +2656,11 @@ nsresult Http2Session::RecvAltSvc(Http2Session* self) {
     // a little off main thread origin parser. This is a non critical function
     // because any alternate route created has to be verified anyhow
     nsAutoCString specifiedOriginHost;
-    if (origin.EqualsIgnoreCase("https://", 8)) {
+    if (StringBeginsWith(origin, "https://"_ns,
+                         nsCaseInsensitiveCStringComparator)) {
       specifiedOriginHost.Assign(origin.get() + 8, origin.Length() - 8);
-    } else if (origin.EqualsIgnoreCase("http://", 7)) {
+    } else if (StringBeginsWith(origin, "http://"_ns,
+                                nsCaseInsensitiveCStringComparator)) {
       specifiedOriginHost.Assign(origin.get() + 7, origin.Length() - 7);
     }
 
@@ -2533,12 +2683,8 @@ nsresult Http2Session::RecvAltSvc(Http2Session* self) {
     }
   }
 
-  nsCOMPtr<nsISupports> callbacks;
-  self->mConnection->GetSecurityInfo(getter_AddRefs(callbacks));
-  nsCOMPtr<nsIInterfaceRequestor> irCallbacks = do_QueryInterface(callbacks);
-
   RefPtr<UpdateAltSvcEvent> event =
-      new UpdateAltSvcEvent(altSvcFieldValue, origin, ci, irCallbacks);
+      new UpdateAltSvcEvent(altSvcFieldValue, origin, ci);
   NS_DispatchToMainThread(event);
   self->ResetDownstreamState();
   return NS_OK;
@@ -2593,12 +2739,6 @@ nsresult Http2Session::RecvOrigin(Http2Session* self) {
     return NS_OK;
   }
 
-  if (!gHttpHandler->AllowOriginExtension()) {
-    LOG3(("Http2Session::RecvOrigin %p origin extension pref'd off", self));
-    self->ResetDownstreamState();
-    return NS_OK;
-  }
-
   uint32_t offset = 0;
   self->mOriginFrameActivated = true;
 
@@ -2618,7 +2758,7 @@ nsresult Http2Session::RecvOrigin(Http2Session* self) {
         self->mInputFrameBuffer.get() + kFrameHeaderBytes + offset + 2,
         originLen);
     offset += originLen + 2;
-    if (NS_FAILED(Http2Stream::MakeOriginURL(originString, originURL))) {
+    if (NS_FAILED(MakeOriginURL(originString, originURL))) {
       LOG3(
           ("Http2Session::RecvOrigin %p origin frame string %s failed to "
            "parse\n",
@@ -2644,18 +2784,29 @@ nsresult Http2Session::RecvOrigin(Http2Session* self) {
     nsAutoCString key(host);
     key.Append(':');
     key.AppendInt(port);
-    if (!self->mOriginFrame.Get(key)) {
-      self->mOriginFrame.Put(key, true);
-      RefPtr<HttpConnectionBase> conn(self->HttpConnection());
-      MOZ_ASSERT(conn.get());
-      gHttpHandler->ConnMgr()->RegisterOriginCoalescingKey(conn, host, port);
-    } else {
-      LOG3(("Http2Session::RecvOrigin %p origin frame already in set\n", self));
-    }
+    self->mOriginFrame.WithEntryHandle(key, [&](auto&& entry) {
+      if (!entry) {
+        entry.Insert(true);
+        RefPtr<HttpConnectionBase> conn(self->HttpConnection());
+        MOZ_ASSERT(conn.get());
+        gHttpHandler->ConnMgr()->RegisterOriginCoalescingKey(conn, host, port);
+      } else {
+        LOG3(("Http2Session::RecvOrigin %p origin frame already in set\n",
+              self));
+      }
+    });
   }
 
   self->ResetDownstreamState();
   return NS_OK;
+}
+
+nsresult Http2Session::RecvPriorityUpdate(Http2Session* self) {
+  // https://www.rfc-editor.org/rfc/rfc9218.html#section-7.1-9
+  // Servers MUST NOT send PRIORITY_UPDATE frames. If a client receives a
+  //   PRIORITY_UPDATE frame, it MUST respond with a connection error of
+  //   type PROTOCOL_ERROR.
+  return self->SessionError(PROTOCOL_ERROR);
 }
 
 //-----------------------------------------------------------------------------
@@ -2708,13 +2859,13 @@ void Http2Session::OnTransportStatus(nsITransport* aTransport, nsresult aStatus,
       //
       // There is no good way to map it to the right transaction in http/2,
       // so it is ignored here and generated separately when the request
-      // is sent from Http2Stream::TransmitFrame
+      // is sent from Http2StreamBase::TransmitFrame
 
       // NS_NET_STATUS_WAITING_FOR:
       // Created by nsHttpConnection when the request has been totally sent.
       // There is no good way to map it to the right transaction in http/2,
       // so it is ignored here and generated separately when the same
-      // condition is complete in Http2Stream when there is no more
+      // condition is complete in Http2StreamBase when there is no more
       // request body left to be transmitted.
 
       // NS_NET_STATUS_RECEIVING_FROM
@@ -2735,8 +2886,9 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
                                          bool* again) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  MOZ_ASSERT(!mSegmentReader || !reader || (mSegmentReader == reader),
-             "Inconsistent Write Function Callback");
+  MOZ_DIAGNOSTIC_ASSERT(
+      !mSegmentReader || !reader || (mSegmentReader == reader),
+      "Inconsistent Write Function Callback");
 
   nsresult rv = ConfirmTLSProfile();
   if (NS_FAILED(rv)) {
@@ -2756,7 +2908,8 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
 
   LOG3(("Http2Session::ReadSegments %p", this));
 
-  Http2Stream* stream = static_cast<Http2Stream*>(mReadyForWrite.PopFront());
+  RefPtr<Http2StreamBase> stream = GetNextStreamFromQueue(mReadyForWrite);
+
   if (!stream) {
     LOG3(("Http2Session %p could not identify a stream to write; suspending.",
           this));
@@ -2772,6 +2925,8 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
     if (mAttemptingEarlyData) {
       // We can still try to send our preamble as early-data
       *countRead = mOutputQueueUsed - mOutputQueueSent;
+      LOG(("Http2Session %p nothing to send because of 0RTT failed", this));
+      Unused << ResumeRecv();
     }
     return *countRead ? NS_OK : NS_BASE_STREAM_WOULD_BLOCK;
   }
@@ -2779,8 +2934,10 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
   uint32_t earlyDataUsed = 0;
   if (mAttemptingEarlyData) {
     if (!stream->Do0RTT()) {
-      LOG3(("Http2Session %p will not get early data from Http2Stream %p 0x%X",
-            this, stream, stream->StreamID()));
+      LOG3(
+          ("Http2Session %p will not get early data from Http2StreamBase %p "
+           "0x%X",
+           this, stream.get(), stream->StreamID()));
       FlushOutputQueue();
       SetWriteCallbacks();
       if (!mCannotDo0RTTStreams.Contains(stream)) {
@@ -2801,9 +2958,9 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
   }
 
   LOG3(
-      ("Http2Session %p will write from Http2Stream %p 0x%X "
+      ("Http2Session %p will write from Http2StreamBase %p 0x%X "
        "block-input=%d block-output=%d\n",
-       this, stream, stream->StreamID(), stream->RequestBlockedOnRead(),
+       this, stream.get(), stream->StreamID(), stream->RequestBlockedOnRead(),
        stream->BlockedOnRwin()));
 
   rv = stream->ReadSegments(this, count, countRead);
@@ -2867,21 +3024,21 @@ nsresult Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader* reader,
   }
 
   if (*countRead > 0) {
-    LOG3(("Http2Session::ReadSegments %p stream=%p countread=%d", this, stream,
-          *countRead));
-    mReadyForWrite.Push(stream);
+    LOG3(("Http2Session::ReadSegments %p stream=%p countread=%d", this,
+          stream.get(), *countRead));
+    AddStreamToQueue(stream, mReadyForWrite);
     SetWriteCallbacks();
     return rv;
   }
 
   if (stream->BlockedOnRwin()) {
     LOG3(("Http2Session %p will stream %p 0x%X suspended for flow control\n",
-          this, stream, stream->StreamID()));
+          this, stream.get(), stream->StreamID()));
     return NS_BASE_STREAM_WOULD_BLOCK;
   }
 
   LOG3(("Http2Session::ReadSegments %p stream=%p stream send complete", this,
-        stream));
+        stream.get()));
 
   // call readsegments again if there are other streams ready
   // to go in this session
@@ -2924,8 +3081,9 @@ nsresult Http2Session::ReadyToProcessDataFrame(
         ("Http2Session::ReadyToProcessDataFrame %p lookup streamID 0x%X "
          "failed. Next = 0x%X",
          this, mInputFrameID, mNextStreamID));
-    if (mInputFrameID >= mNextStreamID)
+    if (mInputFrameID >= mNextStreamID) {
       GenerateRstStream(PROTOCOL_ERROR, mInputFrameID);
+    }
     ChangeDownstreamState(DISCARDING_DATA_FRAME);
   } else if (mInputFrameDataStream->RecvdFin() ||
              mInputFrameDataStream->RecvdReset() ||
@@ -2935,8 +3093,9 @@ nsresult Http2Session::ReadyToProcessDataFrame(
          "Data arrived for already server closed stream.\n",
          this, mInputFrameID));
     if (mInputFrameDataStream->RecvdFin() ||
-        mInputFrameDataStream->RecvdReset())
+        mInputFrameDataStream->RecvdReset()) {
       GenerateRstStream(STREAM_CLOSED_ERROR, mInputFrameID);
+    }
     ChangeDownstreamState(DISCARDING_DATA_FRAME);
   } else if (mInputFrameDataSize == 0 && !mInputFrameFinal) {
     // Only if non-final because the stream properly handles final frames of any
@@ -2946,6 +3105,15 @@ nsresult Http2Session::ReadyToProcessDataFrame(
          "Ignoring 0-length non-terminal data frame.",
          this, mInputFrameID));
     ChangeDownstreamState(DISCARDING_DATA_FRAME);
+  } else if (newState == PROCESSING_DATA_FRAME &&
+             !mInputFrameDataStream->AllHeadersReceived()) {
+    LOG3(
+        ("Http2Session::ReadyToProcessDataFrame %p streamID 0x%X "
+         "Receiving data frame without having headers.",
+         this, mInputFrameID));
+    CleanupStream(mInputFrameDataStream, NS_ERROR_NET_HTTP2_SENT_GOAWAY,
+                  PROTOCOL_ERROR);
+    return NS_OK;
   }
 
   LOG3(
@@ -2985,7 +3153,13 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
 
   *countWritten = 0;
 
-  if (mClosed) return NS_ERROR_FAILURE;
+  if (mClosed) {
+    LOG(("Http2Session::WriteSegments %p already closed", this));
+    // We return NS_ERROR_ABORT (a "soft" error) here, so when this error is
+    // propagated to another Http2Session, the Http2Session will not be closed
+    // due to this error code.
+    return NS_ERROR_ABORT;
+  }
 
   nsresult rv = ConfirmTLSProfile();
   if (NS_FAILED(rv)) return rv;
@@ -2995,8 +3169,8 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
   // If there are http transactions attached to a push stream with filled
   // buffers trigger that data pump here. This only reads from buffers (not the
   // network) so mDownstreamState doesn't matter.
-  Http2Stream* pushConnectedStream =
-      static_cast<Http2Stream*>(mPushesReadyForRead.PopFront());
+  RefPtr<Http2StreamBase> pushConnectedStream =
+      GetNextStreamFromQueue(mPushesReadyForRead);
   if (pushConnectedStream) {
     return ProcessConnectedPush(pushConnectedStream, writer, count,
                                 countWritten);
@@ -3004,8 +3178,8 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
 
   // feed gecko channels that previously stopped consuming data
   // only take data from stored buffers
-  Http2Stream* slowConsumer =
-      static_cast<Http2Stream*>(mSlowConsumersReadyForRead.PopFront());
+  RefPtr<Http2StreamBase> slowConsumer =
+      GetNextStreamFromQueue(mSlowConsumersReadyForRead);
   if (slowConsumer) {
     internalStateType savedState = mDownstreamState;
     mDownstreamState = NOT_USING_NETWORK;
@@ -3114,14 +3288,12 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
       // Don't allow any more h2 connections to this host
       RefPtr<nsHttpConnectionInfo> ci = ConnectionInfo();
       if (ci) {
-        gHttpHandler->BlacklistSpdy(ci);
+        gHttpHandler->ExcludeHttp2(ci);
       }
 
       // Go through and re-start all of our transactions with h2 disabled.
-      for (auto iter = mStreamTransactionHash.Iter(); !iter.Done();
-           iter.Next()) {
-        auto stream = iter.UserData();
-        stream->Transaction()->DisableSpdy();
+      for (const auto& stream : mStreamTransactionHash.Values()) {
+        stream->DisableSpdy();
         CloseStream(stream, NS_ERROR_NET_RESET);
       }
       mStreamTransactionHash.Clear();
@@ -3190,7 +3362,8 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
            "frame",
            this, mInputFrameID));
       return SessionError(PROTOCOL_ERROR);
-    } else if (1U + mPaddingLength == mInputFrameDataSize) {
+    }
+    if (1U + mPaddingLength == mInputFrameDataSize) {
       // This frame consists entirely of padding, we can just discard it
       LOG3(
           ("Http2Session::WriteSegments %p stream 0x%X frame with only padding",
@@ -3218,13 +3391,13 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
     // equivalent to cancel.
     if (mDownstreamRstReason == REFUSED_STREAM_ERROR) {
       streamCleanupCode = NS_ERROR_NET_RESET;  // can retry this 100% safely
-      mInputFrameDataStream->Transaction()->ReuseConnectionOnRestartOK(true);
+      mInputFrameDataStream->ReuseConnectionOnRestartOK(true);
     } else if (mDownstreamRstReason == HTTP_1_1_REQUIRED) {
       streamCleanupCode = NS_ERROR_NET_RESET;
-      mInputFrameDataStream->Transaction()->ReuseConnectionOnRestartOK(true);
-      mInputFrameDataStream->Transaction()->DisableSpdy();
-      mInputFrameDataStream->Transaction()
-          ->MakeNonSticky();  // actully allow restart by unsticking
+      mInputFrameDataStream->ReuseConnectionOnRestartOK(true);
+      mInputFrameDataStream->DisableSpdy();
+      // actually allow restart by unsticking
+      mInputFrameDataStream->MakeNonSticky();
     } else {
       streamCleanupCode = mInputFrameDataStream->RecvdData()
                               ? NS_ERROR_NET_PARTIAL_TRANSFER
@@ -3236,7 +3409,7 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
     }
 
     // mInputFrameDataStream is reset by ChangeDownstreamState
-    Http2Stream* stream = mInputFrameDataStream;
+    Http2StreamBase* stream = mInputFrameDataStream;
     ResetDownstreamState();
     LOG3(
         ("Http2Session::WriteSegments cleanup stream on recv of rst "
@@ -3253,6 +3426,9 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
     MOZ_ASSERT(!mNeedsCleanup, "cleanup stream set unexpectedly");
     mNeedsCleanup = nullptr; /* just in case */
 
+    if (!mInputFrameDataStream) {
+      return NS_ERROR_UNEXPECTED;
+    }
     uint32_t streamID = mInputFrameDataStream->StreamID();
     mSegmentWriter = writer;
     rv = mInputFrameDataStream->WriteSegments(this, count, countWritten);
@@ -3341,7 +3517,7 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
     mInputFrameDataRead += *countWritten;
 
     if (mInputFrameDataRead == mInputFrameDataSize) {
-      Http2Stream* streamToCleanup = nullptr;
+      Http2StreamBase* streamToCleanup = nullptr;
       if (mInputFrameFinal) {
         streamToCleanup = mInputFrameDataStream;
       }
@@ -3351,21 +3527,22 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
       ResetDownstreamState();
 
       if (streamToCleanup) {
-        if (discardedPadding && !(streamToCleanup->StreamID() & 1)) {
+        Http2PushedStream* pushed = streamToCleanup->GetHttp2PushedStream();
+        if (discardedPadding && pushed) {
           // Pushed streams are special on padding-only final data frames.
           // See bug 1409570 comments 6-8 for details.
-          streamToCleanup->SetPushComplete();
-          Http2Stream* pushSink = streamToCleanup->GetConsumerStream();
+          pushed->SetPushComplete();
+          Http2StreamBase* pushSink = pushed->GetConsumerStream();
           if (pushSink) {
             bool enqueueSink = true;
-            for (auto s : mPushesReadyForRead) {
+            for (const auto& s : mPushesReadyForRead) {
               if (s == pushSink) {
                 enqueueSink = false;
                 break;
               }
             }
             if (enqueueSink) {
-              mPushesReadyForRead.Push(pushSink);
+              AddStreamToQueue(pushSink, mPushesReadyForRead);
               // No use trying to clean up, it won't do anything, anyway
               streamToCleanup = nullptr;
             }
@@ -3408,7 +3585,7 @@ nsresult Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter* writer,
   if (mInputFrameDataRead != mInputFrameDataSize) return NS_OK;
 
   MOZ_ASSERT(mInputFrameType != FRAME_TYPE_DATA);
-  if (mInputFrameType < FRAME_TYPE_LAST) {
+  if (mInputFrameType < ArrayLength(sControlFunctions)) {
     rv = sControlFunctions[mInputFrameType](this);
   } else {
     // Section 4.1 requires this to be ignored; though protocol_error would
@@ -3487,20 +3664,9 @@ nsresult Http2Session::Finish0RTT(bool aRestart, bool aAlpnChanged) {
   return NS_OK;
 }
 
-void Http2Session::SetFastOpenStatus(uint8_t aStatus) {
-  LOG3(("Http2Session::SetFastOpenStatus %d [this=%p]", aStatus, this));
-
-  for (size_t i = 0; i < m0RTTStreams.Length(); ++i) {
-    if (m0RTTStreams[i]) {
-      m0RTTStreams[i]->Transaction()->SetFastOpenStatus(aStatus);
-    }
-  }
-}
-
-nsresult Http2Session::ProcessConnectedPush(Http2Stream* pushConnectedStream,
-                                            nsAHttpSegmentWriter* writer,
-                                            uint32_t count,
-                                            uint32_t* countWritten) {
+nsresult Http2Session::ProcessConnectedPush(
+    Http2StreamBase* pushConnectedStream, nsAHttpSegmentWriter* writer,
+    uint32_t count, uint32_t* countWritten) {
   LOG3(("Http2Session::ProcessConnectedPush %p 0x%X\n", this,
         pushConnectedStream->StreamID()));
   mSegmentWriter = writer;
@@ -3509,8 +3675,10 @@ nsresult Http2Session::ProcessConnectedPush(Http2Stream* pushConnectedStream,
 
   // The pipe in nsHttpTransaction rewrites CLOSED error codes into OK
   // so we need this check to determine the truth.
-  if (NS_SUCCEEDED(rv) && !*countWritten && pushConnectedStream->PushSource() &&
-      pushConnectedStream->PushSource()->GetPushComplete()) {
+  Http2Stream* h2Stream = pushConnectedStream->GetHttp2Stream();
+  MOZ_ASSERT(h2Stream);
+  if (NS_SUCCEEDED(rv) && !*countWritten && h2Stream &&
+      h2Stream->PushSource() && h2Stream->PushSource()->GetPushComplete()) {
     rv = NS_BASE_STREAM_CLOSED;
   }
 
@@ -3529,7 +3697,7 @@ nsresult Http2Session::ProcessConnectedPush(Http2Stream* pushConnectedStream,
   return rv;
 }
 
-nsresult Http2Session::ProcessSlowConsumer(Http2Stream* slowConsumer,
+nsresult Http2Session::ProcessSlowConsumer(Http2StreamBase* slowConsumer,
                                            nsAHttpSegmentWriter* writer,
                                            uint32_t count,
                                            uint32_t* countWritten) {
@@ -3562,10 +3730,12 @@ nsresult Http2Session::ProcessSlowConsumer(Http2Stream* slowConsumer,
   return rv;
 }
 
-void Http2Session::UpdateLocalStreamWindow(Http2Stream* stream,
+void Http2Session::UpdateLocalStreamWindow(Http2StreamBase* stream,
                                            uint32_t bytes) {
-  if (!stream)  // this is ok - it means there was a data frame for a rst stream
+  if (!stream) {  // this is ok - it means there was a data frame for a rst
+                  // stream
     return;
+  }
 
   // If this data packet was not for a valid or live stream then there
   // is no reason to mess with the flow control
@@ -3588,8 +3758,9 @@ void Http2Session::UpdateLocalStreamWindow(Http2Stream* stream,
 
   if (!unacked) return;
 
-  if ((unacked < kMinimumToAck) && (localWindow > kEmergencyWindowThreshold))
+  if ((unacked < kMinimumToAck) && (localWindow > kEmergencyWindowThreshold)) {
     return;
+  }
 
   if (!stream->HasSink()) {
     LOG3(
@@ -3638,8 +3809,9 @@ void Http2Session::UpdateLocalSessionWindow(uint32_t bytes) {
   // Don't necessarily ack every data packet. Only do it
   // after a significant amount of data.
   if ((mLocalSessionWindow > (mInitialRwin - kMinimumToAck)) &&
-      (mLocalSessionWindow > kEmergencyWindowThreshold))
+      (mLocalSessionWindow > kEmergencyWindowThreshold)) {
     return;
+  }
 
   // Only send max  bits of window updates at a time.
   uint64_t toack64 = mInitialRwin - mLocalSessionWindow;
@@ -3666,7 +3838,7 @@ void Http2Session::UpdateLocalSessionWindow(uint32_t bytes) {
   // dont flush here, this write can commonly be coalesced with others
 }
 
-void Http2Session::UpdateLocalRwin(Http2Stream* stream, uint32_t bytes) {
+void Http2Session::UpdateLocalRwin(Http2StreamBase* stream, uint32_t bytes) {
   // make sure there is room for 2 window updates even though
   // we may not generate any.
   EnsureOutputBuffer(2 * (kFrameHeaderBytes + 4));
@@ -3686,41 +3858,12 @@ void Http2Session::Close(nsresult aReason) {
 
   mClosed = true;
 
-  Shutdown();
+  Shutdown(aReason);
 
   mStreamIDHash.Clear();
   mStreamTransactionHash.Clear();
-
-  // If we have any websocket transactions waiting for settings frame,
-  // reinitiate them. This can happend if we close a h2 connection before the
-  // settings frame is received.
-  if (mWaitingWebsockets.Length()) {
-    MOZ_ASSERT(!mProcessedWaitingWebsockets);
-    MOZ_ASSERT(mWaitingWebsockets.Length() ==
-               mWaitingWebsocketCallbacks.Length());
-
-    mProcessedWaitingWebsockets = true;
-    for (size_t i = 0; i < mWaitingWebsockets.Length(); ++i) {
-      RefPtr<nsAHttpTransaction> httpTransaction = mWaitingWebsockets[i];
-      LOG3(("Http2Session::Close %p Re-queuing websocket.", this));
-      httpTransaction->SetConnection(nullptr);
-      nsHttpTransaction* trans = httpTransaction->QueryHttpTransaction();
-      if (trans) {
-        nsresult rv =
-            gHttpHandler->InitiateTransaction(trans, trans->Priority());
-        if (NS_FAILED(rv)) {
-          LOG3(
-              ("Http2Session::Close %p failed to reinitiate websocket "
-               "transaction (%08x).\n",
-               this, static_cast<uint32_t>(rv)));
-        }
-      } else {
-        LOG3(("Http2Session::Close %p missing transaction?!", this));
-      }
-    }
-    mWaitingWebsockets.Clear();
-    mWaitingWebsocketCallbacks.Clear();
-  }
+  mTunnelStreams.Clear();
+  mProcessedWaitingWebsockets = true;
 
   uint32_t goAwayReason;
   if (mGoAwayReason != NO_HTTP_ERROR) {
@@ -3757,7 +3900,7 @@ void Http2Session::CloseTransaction(nsAHttpTransaction* aTransaction,
   // Generally this arrives as a cancel event from the connection manager.
 
   // need to find the stream and call CleanupStream() on it.
-  Http2Stream* stream = mStreamTransactionHash.Get(aTransaction);
+  RefPtr<Http2StreamBase> stream = mStreamTransactionHash.Get(aTransaction);
   if (!stream) {
     LOG3(("Http2Session::CloseTransaction %p %p %" PRIx32 " - not found.", this,
           aTransaction, static_cast<uint32_t>(aResult)));
@@ -3767,7 +3910,7 @@ void Http2Session::CloseTransaction(nsAHttpTransaction* aTransaction,
       ("Http2Session::CloseTransaction probably a cancel. "
        "this=%p, trans=%p, result=%" PRIx32 ", streamID=0x%X stream=%p",
        this, aTransaction, static_cast<uint32_t>(aResult), stream->StreamID(),
-       stream));
+       stream.get()));
   CleanupStream(stream, aResult, CANCEL_ERROR);
   nsresult rv = ResumeRecv();
   if (NS_FAILED(rv)) {
@@ -3823,8 +3966,9 @@ nsresult Http2Session::OnReadSegment(const char* buf, uint32_t count,
   // for other routines to use - but this is an all-or-nothing function,
   // so if it will not all fit just return WOULD_BLOCK
 
-  if ((mOutputQueueUsed + count) > (mOutputQueueSize - kQueueReserved))
+  if ((mOutputQueueUsed + count) > (mOutputQueueSize - kQueueReserved)) {
     return NS_BASE_STREAM_WOULD_BLOCK;
+  }
 
   memcpy(mOutputQueueBuffer.get() + mOutputQueueUsed, buf, count);
   mOutputQueueUsed += count;
@@ -3840,8 +3984,9 @@ nsresult Http2Session::CommitToSegmentSize(uint32_t count,
   if (mOutputQueueUsed && !mAttemptingEarlyData) FlushOutputQueue();
 
   // would there be enough room to buffer this if needed?
-  if ((mOutputQueueUsed + count) <= (mOutputQueueSize - kQueueReserved))
+  if ((mOutputQueueUsed + count) <= (mOutputQueueSize - kQueueReserved)) {
     return NS_OK;
+  }
 
   // if we are using part of our buffers already, try again later unless
   // forceCommitment is set.
@@ -3853,8 +3998,9 @@ nsresult Http2Session::CommitToSegmentSize(uint32_t count,
     RealignOutputQueue();
 
     // is there enough room now?
-    if ((mOutputQueueUsed + count) <= (mOutputQueueSize - kQueueReserved))
+    if ((mOutputQueueUsed + count) <= (mOutputQueueSize - kQueueReserved)) {
       return NS_OK;
+    }
   }
 
   // resize the buffers as needed
@@ -3928,8 +4074,9 @@ nsresult Http2Session::OnWriteSegment(char* buf, uint32_t count,
     }
 
     mInputFrameDataStream->UpdateTransportReadEvents(*countWritten);
-    if ((mInputFrameDataRead == mInputFrameDataSize) && !mInputFrameFinal)
+    if ((mInputFrameDataRead == mInputFrameDataSize) && !mInputFrameFinal) {
       ResetDownstreamState();
+    }
 
     return rv;
   }
@@ -3942,7 +4089,7 @@ nsresult Http2Session::OnWriteSegment(char* buf, uint32_t count,
       return NS_BASE_STREAM_CLOSED;
     }
 
-    count = std::min(
+    count = std::min<uint32_t>(
         count, mFlatHTTPResponseHeaders.Length() - mFlatHTTPResponseHeadersOut);
     memcpy(buf, mFlatHTTPResponseHeaders.get() + mFlatHTTPResponseHeadersOut,
            count);
@@ -3950,7 +4097,9 @@ nsresult Http2Session::OnWriteSegment(char* buf, uint32_t count,
     *countWritten = count;
 
     if (mFlatHTTPResponseHeaders.Length() == mFlatHTTPResponseHeadersOut) {
-      if (!mInputFrameFinal) {
+      // Since mInputFrameFinal can be reset, we need to also check RecvdFin to
+      // see if a stream doesn’t expect more frames.
+      if (!mInputFrameFinal && !mInputFrameDataStream->RecvdFin()) {
         // If more frames are expected in this stream, then reset the state so
         // they can be handled. Otherwise (e.g. a 0 length response with the fin
         // on the incoming headers) stay in PROCESSING_COMPLETE_HEADERS state so
@@ -3979,170 +4128,41 @@ void Http2Session::SetNeedsCleanup() {
   ResetDownstreamState();
 }
 
-void Http2Session::ConnectPushedStream(Http2Stream* stream) {
-  mPushesReadyForRead.Push(stream);
+void Http2Session::ConnectPushedStream(Http2StreamBase* stream) {
+  AddStreamToQueue(stream, mPushesReadyForRead);
   Unused << ForceRecv();
 }
 
-void Http2Session::ConnectSlowConsumer(Http2Stream* stream) {
+void Http2Session::ConnectSlowConsumer(Http2StreamBase* stream) {
   LOG3(("Http2Session::ConnectSlowConsumer %p 0x%X\n", this,
         stream->StreamID()));
-  mSlowConsumersReadyForRead.Push(stream);
+  AddStreamToQueue(stream, mSlowConsumersReadyForRead);
   Unused << ForceRecv();
-}
-
-uint32_t Http2Session::FindTunnelCount(nsHttpConnectionInfo* aConnInfo) {
-  return FindTunnelCount(aConnInfo->HashKey());
-}
-uint32_t Http2Session::FindTunnelCount(nsCString const& aHashKey) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  uint32_t rv = 0;
-  mTunnelHash.Get(aHashKey, &rv);
-  return rv;
-}
-
-void Http2Session::RegisterTunnel(Http2Stream* aTunnel) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  nsCString const& regKey = aTunnel->RegistrationKey();
-  uint32_t newcount = FindTunnelCount(regKey) + 1;
-  mTunnelHash.Remove(regKey);
-  mTunnelHash.Put(regKey, newcount);
-  LOG3(("Http2Stream::RegisterTunnel %p stream=%p tunnels=%d [%s]", this,
-        aTunnel, newcount, regKey.get()));
-}
-
-void Http2Session::UnRegisterTunnel(Http2Stream* aTunnel) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  nsCString const& regKey = aTunnel->RegistrationKey();
-  MOZ_ASSERT(FindTunnelCount(regKey));
-  uint32_t newcount = FindTunnelCount(regKey) - 1;
-  mTunnelHash.Remove(regKey);
-  if (newcount) {
-    mTunnelHash.Put(regKey, newcount);
-  }
-  LOG3(("Http2Session::UnRegisterTunnel %p stream=%p tunnels=%d [%s]", this,
-        aTunnel, newcount, regKey.get()));
-}
-
-void Http2Session::CreateTunnel(nsHttpTransaction* trans,
-                                nsHttpConnectionInfo* ci,
-                                nsIInterfaceRequestor* aCallbacks) {
-  LOG(("Http2Session::CreateTunnel %p %p make new tunnel\n", this, trans));
-  // The connect transaction will hold onto the underlying http
-  // transaction so that an auth created by the connect can be mappped
-  // to the correct security callbacks
-
-  RefPtr<SpdyConnectTransaction> connectTrans = new SpdyConnectTransaction(
-      ci, aCallbacks, trans->Caps(), trans, this, false);
-  DebugOnly<bool> rv =
-      AddStream(connectTrans, nsISupportsPriority::PRIORITY_NORMAL, false,
-                false, nullptr);
-  MOZ_ASSERT(rv);
-  Http2Stream* tunnel = mStreamTransactionHash.Get(connectTrans);
-  MOZ_ASSERT(tunnel);
-  RegisterTunnel(tunnel);
-}
-
-void Http2Session::DispatchOnTunnel(nsAHttpTransaction* aHttpTransaction,
-                                    nsIInterfaceRequestor* aCallbacks) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  nsHttpTransaction* trans = aHttpTransaction->QueryHttpTransaction();
-  nsHttpConnectionInfo* ci = aHttpTransaction->ConnectionInfo();
-  MOZ_ASSERT(trans);
-
-  LOG3(("Http2Session::DispatchOnTunnel %p trans=%p", this, trans));
-
-  aHttpTransaction->SetConnection(nullptr);
-
-  // this transaction has done its work of setting up a tunnel, let
-  // the connection manager queue it if necessary
-  trans->SetTunnelProvider(this);
-  trans->EnableKeepAlive();
-
-  if (FindTunnelCount(ci) < gHttpHandler->MaxConnectionsPerOrigin()) {
-    LOG3(("Http2Session::DispatchOnTunnel %p create on new tunnel %s", this,
-          ci->HashKey().get()));
-    CreateTunnel(trans, ci, aCallbacks);
-  } else {
-    // requeue it. The connection manager is responsible for actually putting
-    // this on the tunnel connection with the specific ci. If that can't
-    // happen the cmgr checks with us via MaybeReTunnel() to see if it should
-    // make a new tunnel or just wait longer.
-    LOG3(
-        ("Http2Session::DispatchOnTunnel %p trans=%p queue in connection "
-         "manager",
-         this, trans));
-    nsresult rv = gHttpHandler->InitiateTransaction(trans, trans->Priority());
-    if (NS_FAILED(rv)) {
-      LOG3(
-          ("Http2Session::DispatchOnTunnel %p trans=%p failed to initiate "
-           "transaction (%08x)",
-           this, trans, static_cast<uint32_t>(rv)));
-    }
-  }
-}
-
-// From ASpdySession
-bool Http2Session::MaybeReTunnel(nsAHttpTransaction* aHttpTransaction) {
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  nsHttpTransaction* trans = aHttpTransaction->QueryHttpTransaction();
-  LOG(("Http2Session::MaybeReTunnel %p trans=%p\n", this, trans));
-  if (!trans || trans->TunnelProvider() != this) {
-    // this isn't really one of our transactions.
-    return false;
-  }
-
-  if (mClosed || mShouldGoAway) {
-    LOG(("Http2Session::MaybeReTunnel %p %p session closed - requeue\n", this,
-         trans));
-    trans->SetTunnelProvider(nullptr);
-    nsresult rv = gHttpHandler->InitiateTransaction(trans, trans->Priority());
-    if (NS_FAILED(rv)) {
-      LOG3(
-          ("Http2Session::MaybeReTunnel %p trans=%p failed to initiate "
-           "transaction (%08x)",
-           this, trans, static_cast<uint32_t>(rv)));
-    }
-    return true;
-  }
-
-  nsHttpConnectionInfo* ci = aHttpTransaction->ConnectionInfo();
-  LOG(("Http2Session:MaybeReTunnel %p %p count=%d limit %d\n", this, trans,
-       FindTunnelCount(ci), gHttpHandler->MaxConnectionsPerOrigin()));
-  if (FindTunnelCount(ci) >= gHttpHandler->MaxConnectionsPerOrigin()) {
-    // patience - a tunnel will open up.
-    return false;
-  }
-
-  LOG(("Http2Session::MaybeReTunnel %p %p make new tunnel\n", this, trans));
-  CreateTunnel(trans, ci, trans->SecurityCallbacks());
-  return true;
 }
 
 nsresult Http2Session::BufferOutput(const char* buf, uint32_t count,
                                     uint32_t* countRead) {
-  nsAHttpSegmentReader* old = mSegmentReader;
-  mSegmentReader = nullptr;
+  RefPtr<nsAHttpSegmentReader> old;
+  mSegmentReader.swap(old);  // Make mSegmentReader null
   nsresult rv = OnReadSegment(buf, count, countRead);
-  mSegmentReader = old;
+  mSegmentReader.swap(old);  // Restore the old mSegmentReader
   return rv;
 }
 
 bool  // static
-Http2Session::ALPNCallback(nsISupports* securityInfo) {
-  nsCOMPtr<nsISSLSocketControl> ssl = do_QueryInterface(securityInfo);
-  LOG3(("Http2Session::ALPNCallback sslsocketcontrol=%p\n", ssl.get()));
-  if (ssl) {
-    int16_t version = ssl->GetSSLVersionOffered();
+Http2Session::ALPNCallback(nsITLSSocketControl* tlsSocketControl) {
+  LOG3(("Http2Session::ALPNCallback sslsocketcontrol=%p\n", tlsSocketControl));
+  if (tlsSocketControl) {
+    int16_t version = tlsSocketControl->GetSSLVersionOffered();
     LOG3(("Http2Session::ALPNCallback version=%x\n", version));
 
-    if (version == nsISSLSocketControl::TLS_VERSION_1_2 &&
+    if (version == nsITLSSocketControl::TLS_VERSION_1_2 &&
         !gHttpHandler->IsH2MandatorySuiteEnabled()) {
       LOG3(("Http2Session::ALPNCallback Mandatory Cipher Suite Unavailable\n"));
       return false;
     }
 
-    if (version >= nsISSLSocketControl::TLS_VERSION_1_2) {
+    if (version >= nsITLSSocketControl::TLS_VERSION_1_2) {
       return true;
     }
   }
@@ -4165,7 +4185,7 @@ nsresult Http2Session::ConfirmTLSProfile() {
     return NS_OK;
   }
 
-  if (!gHttpHandler->EnforceHttp2TlsProfile()) {
+  if (!StaticPrefs::network_http_http2_enforce_tls_profile()) {
     LOG3(
         ("Http2Session::ConfirmTLSProfile %p passed due to configuration "
          "bypass\n",
@@ -4176,23 +4196,28 @@ nsresult Http2Session::ConfirmTLSProfile() {
 
   if (!mConnection) return NS_ERROR_FAILURE;
 
-  nsCOMPtr<nsISupports> securityInfo;
-  mConnection->GetSecurityInfo(getter_AddRefs(securityInfo));
-  nsCOMPtr<nsISSLSocketControl> ssl = do_QueryInterface(securityInfo);
+  nsCOMPtr<nsITLSSocketControl> ssl;
+  mConnection->GetTLSSocketControl(getter_AddRefs(ssl));
   LOG3(("Http2Session::ConfirmTLSProfile %p sslsocketcontrol=%p\n", this,
         ssl.get()));
   if (!ssl) return NS_ERROR_FAILURE;
 
   int16_t version = ssl->GetSSLVersionUsed();
   LOG3(("Http2Session::ConfirmTLSProfile %p version=%x\n", this, version));
-  if (version < nsISSLSocketControl::TLS_VERSION_1_2) {
+  if (version < nsITLSSocketControl::TLS_VERSION_1_2) {
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to lack of TLS1.2\n",
           this));
     return SessionError(INADEQUATE_SECURITY);
   }
 
   uint16_t kea = ssl->GetKEAUsed();
-  if (kea != ssl_kea_dh && kea != ssl_kea_ecdh) {
+  if (kea == ssl_kea_ecdh_hybrid && !StaticPrefs::security_tls_enable_kyber()) {
+    LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to disabled KEA %d\n",
+          this, kea));
+    return SessionError(INADEQUATE_SECURITY);
+  }
+
+  if (kea != ssl_kea_dh && kea != ssl_kea_ecdh && kea != ssl_kea_ecdh_hybrid) {
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to invalid KEA %d\n",
           this, kea));
     return SessionError(INADEQUATE_SECURITY);
@@ -4203,7 +4228,8 @@ nsresult Http2Session::ConfirmTLSProfile() {
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to DH %d < 2048\n",
           this, keybits));
     return SessionError(INADEQUATE_SECURITY);
-  } else if (kea == ssl_kea_ecdh && keybits < 224) {  // see rfc7540 9.2.1.
+  }
+  if (kea == ssl_kea_ecdh && keybits < 224) {  // see rfc7540 9.2.1.
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to ECDH %d < 224\n",
           this, keybits));
     return SessionError(INADEQUATE_SECURITY);
@@ -4212,7 +4238,7 @@ nsresult Http2Session::ConfirmTLSProfile() {
   int16_t macAlgorithm = ssl->GetMACAlgorithmUsed();
   LOG3(("Http2Session::ConfirmTLSProfile %p MAC Algortihm (aead==6) %d\n", this,
         macAlgorithm));
-  if (macAlgorithm != nsISSLSocketControl::SSL_MAC_AEAD) {
+  if (macAlgorithm != nsITLSSocketControl::SSL_MAC_AEAD) {
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to lack of AEAD\n",
           this));
     return SessionError(INADEQUATE_SECURITY);
@@ -4241,7 +4267,7 @@ void Http2Session::TransactionHasDataToWrite(nsAHttpTransaction* caller) {
   // a trapped signal from the http transaction to the connection that
   // it is no longer blocked on read.
 
-  Http2Stream* stream = mStreamTransactionHash.Get(caller);
+  RefPtr<Http2StreamBase> stream = mStreamTransactionHash.Get(caller);
   if (!stream || !VerifyStream(stream)) {
     LOG3(("Http2Session::TransactionHasDataToWrite %p caller %p not found",
           this, caller));
@@ -4252,7 +4278,7 @@ void Http2Session::TransactionHasDataToWrite(nsAHttpTransaction* caller) {
         stream->StreamID()));
 
   if (!mClosed) {
-    mReadyForWrite.Push(stream);
+    AddStreamToQueue(stream, mReadyForWrite);
     SetWriteCallbacks();
   } else {
     LOG3(
@@ -4273,7 +4299,7 @@ void Http2Session::TransactionHasDataToRecv(nsAHttpTransaction* caller) {
 
   // a signal from the http transaction to the connection that it will consume
   // more
-  Http2Stream* stream = mStreamTransactionHash.Get(caller);
+  RefPtr<Http2StreamBase> stream = mStreamTransactionHash.Get(caller);
   if (!stream || !VerifyStream(stream)) {
     LOG3(("Http2Session::TransactionHasDataToRecv %p caller %p not found", this,
           caller));
@@ -4282,17 +4308,21 @@ void Http2Session::TransactionHasDataToRecv(nsAHttpTransaction* caller) {
 
   LOG3(("Http2Session::TransactionHasDataToRecv %p ID is 0x%X\n", this,
         stream->StreamID()));
-  ConnectSlowConsumer(stream);
+  TransactionHasDataToRecv(stream);
 }
 
-void Http2Session::TransactionHasDataToWrite(Http2Stream* stream) {
+void Http2Session::TransactionHasDataToWrite(Http2StreamBase* stream) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   LOG3(("Http2Session::TransactionHasDataToWrite %p stream=%p ID=0x%x", this,
         stream, stream->StreamID()));
 
-  mReadyForWrite.Push(stream);
+  AddStreamToQueue(stream, mReadyForWrite);
   SetWriteCallbacks();
   Unused << ForceSend();
+}
+
+void Http2Session::TransactionHasDataToRecv(Http2StreamBase* caller) {
+  ConnectSlowConsumer(caller);
 }
 
 bool Http2Session::IsPersistent() { return true; }
@@ -4302,6 +4332,12 @@ nsresult Http2Session::TakeTransport(nsISocketTransport**,
                                      nsIAsyncOutputStream**) {
   MOZ_ASSERT(false, "TakeTransport of Http2Session");
   return NS_ERROR_UNEXPECTED;
+}
+
+Http3WebTransportSession* Http2Session::GetWebTransportSession(
+    nsAHttpTransaction* aTransaction) {
+  MOZ_ASSERT(false, "GetWebTransportSession of Http2Session");
+  return nullptr;
 }
 
 already_AddRefed<HttpConnectionBase> Http2Session::TakeHttpConnection() {
@@ -4320,17 +4356,16 @@ void Http2Session::GetSecurityCallbacks(nsIInterfaceRequestor** aOut) {
   *aOut = nullptr;
 }
 
+void Http2Session::SetConnection(nsAHttpConnection* aConn) {
+  mConnection = aConn;
+}
+
 //-----------------------------------------------------------------------------
 // unused methods of nsAHttpTransaction
 // We can be sure of this because Http2Session is only constructed in
 // nsHttpConnection and is never passed out of that object or a
 // TLSFilterTransaction TLS tunnel
 //-----------------------------------------------------------------------------
-
-void Http2Session::SetConnection(nsAHttpConnection*) {
-  // This is unexpected
-  MOZ_ASSERT(false, "Http2Session::SetConnection()");
-}
 
 void Http2Session::SetProxyConnectFailed() {
   MOZ_ASSERT(false, "Http2Session::SetProxyConnectFailed()");
@@ -4359,7 +4394,8 @@ nsHttpRequestHead* Http2Session::RequestHead() {
 uint32_t Http2Session::Http1xTransactionCount() { return 0; }
 
 nsresult Http2Session::TakeSubTransactions(
-    nsTArray<RefPtr<nsAHttpTransaction> >& outTransactions) {
+    nsTArray<RefPtr<nsAHttpTransaction>>& outTransactions) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   // Generally this cannot be done with http/2 as transactions are
   // started right away.
 
@@ -4392,11 +4428,16 @@ nsresult Http2Session::OnHeadersAvailable(nsAHttpTransaction* transaction,
                                           nsHttpRequestHead* requestHead,
                                           nsHttpResponseHead* responseHead,
                                           bool* reset) {
-  return mConnection->OnHeadersAvailable(transaction, requestHead, responseHead,
-                                         reset);
+  return NS_OK;
 }
 
-bool Http2Session::IsReused() { return mConnection->IsReused(); }
+bool Http2Session::IsReused() {
+  if (!mConnection) {
+    return false;
+  }
+
+  return mConnection->IsReused();
+}
 
 nsresult Http2Session::PushBack(const char* buf, uint32_t len) {
   return mConnection->PushBack(buf, len);
@@ -4404,6 +4445,7 @@ nsresult Http2Session::PushBack(const char* buf, uint32_t len) {
 
 void Http2Session::SendPing() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  LOG(("Http2Session::SendPing %p mPreviousUsed=%d", this, mPreviousUsed));
 
   if (mPreviousUsed) {
     // alredy in progress, get out
@@ -4419,6 +4461,9 @@ void Http2Session::SendPing() {
     mPreviousPingThreshold = mPingThreshold;
     mPreviousUsed = true;
     mPingThreshold = gHttpHandler->NetworkChangedTimeout();
+    // Reset mLastReadEpoch, so we can really check when do we got pong from the
+    // server.
+    mLastReadEpoch = 0;
   }
   GeneratePing(false);
   Unused << ResumeRecv();
@@ -4491,26 +4536,22 @@ bool Http2Session::RealJoinConnection(const nsACString& hostname, int32_t port,
   nsresult rv;
   bool isJoined = false;
 
-  nsCOMPtr<nsISupports> securityInfo;
-  nsCOMPtr<nsISSLSocketControl> sslSocketControl;
-
-  mConnection->GetSecurityInfo(getter_AddRefs(securityInfo));
-  sslSocketControl = do_QueryInterface(securityInfo, &rv);
-  if (NS_FAILED(rv) || !sslSocketControl) {
+  nsCOMPtr<nsITLSSocketControl> sslSocketControl;
+  mConnection->GetTLSSocketControl(getter_AddRefs(sslSocketControl));
+  if (!sslSocketControl) {
     return false;
   }
 
   // try all the coalescable versions we support.
   const SpdyInformation* info = gHttpHandler->SpdyInfo();
-  static_assert(SpdyInformation::kCount == 1, "assume 1 alpn version");
   bool joinedReturn = false;
-  if (info->ProtocolEnabled(0)) {
+  if (StaticPrefs::network_http_http2_enabled()) {
     if (justKidding) {
-      rv = sslSocketControl->TestJoinConnection(info->VersionString[0],
-                                                hostname, port, &isJoined);
+      rv = sslSocketControl->TestJoinConnection(info->VersionString, hostname,
+                                                port, &isJoined);
     } else {
-      rv = sslSocketControl->JoinConnection(info->VersionString[0], hostname,
-                                            port, &isJoined);
+      rv = sslSocketControl->JoinConnection(info->VersionString, hostname, port,
+                                            &isJoined);
     }
     if (NS_SUCCEEDED(rv) && isJoined) {
       joinedReturn = true;
@@ -4519,7 +4560,7 @@ bool Http2Session::RealJoinConnection(const nsACString& hostname, int32_t port,
 
   LOG(("joinconnection [%p %s] %s result=%d lookup\n", this,
        ConnectionInfo()->HashKey().get(), key.get(), joinedReturn));
-  mJoinConnectionCache.Put(key, joinedReturn);
+  mJoinConnectionCache.InsertOrUpdate(key, joinedReturn);
   if (!justKidding) {
     // cache a kidding entry too as this one is good for both
     nsAutoCString key2(hostname);
@@ -4527,19 +4568,19 @@ bool Http2Session::RealJoinConnection(const nsACString& hostname, int32_t port,
     key2.Append('k');
     key2.AppendInt(port);
     if (!mJoinConnectionCache.Get(key2)) {
-      mJoinConnectionCache.Put(key2, joinedReturn);
+      mJoinConnectionCache.InsertOrUpdate(key2, joinedReturn);
     }
   }
   return joinedReturn;
 }
 
-void Http2Session::TopLevelOuterContentWindowIdChanged(uint64_t windowId) {
+void Http2Session::CurrentBrowserIdChanged(uint64_t id) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
-  mCurrentForegroundTabOuterContentWindowId = windowId;
+  mCurrentBrowserId = id;
 
-  for (auto iter = mStreamTransactionHash.Iter(); !iter.Done(); iter.Next()) {
-    iter.Data()->TopLevelOuterContentWindowIdChanged(windowId);
+  for (const auto& stream : mStreamTransactionHash.Values()) {
+    stream->CurrentBrowserIdChanged(id);
   }
 }
 
@@ -4547,87 +4588,29 @@ void Http2Session::SetCleanShutdown(bool aCleanShutdown) {
   mCleanShutdown = aCleanShutdown;
 }
 
-void Http2Session::CreateWebsocketStream(
-    nsAHttpTransaction* aOriginalTransaction,
-    nsIInterfaceRequestor* aCallbacks) {
-  LOG(("Http2Session::CreateWebsocketStream %p %p\n", this,
-       aOriginalTransaction));
-
-  nsHttpTransaction* trans = aOriginalTransaction->QueryHttpTransaction();
-  MOZ_ASSERT(trans);
-
-  nsHttpConnectionInfo* ci = aOriginalTransaction->ConnectionInfo();
-  MOZ_ASSERT(ci);
-
-  RefPtr<SpdyConnectTransaction> connectTrans = new SpdyConnectTransaction(
-      ci, aCallbacks, trans->Caps(), trans, this, true);
-  DebugOnly<bool> rv =
-      AddStream(connectTrans, nsISupportsPriority::PRIORITY_NORMAL, false,
-                false, nullptr);
-  MOZ_ASSERT(rv);
-}
-
-void Http2Session::ProcessWaitingWebsockets() {
-  MOZ_ASSERT(!mProcessedWaitingWebsockets);
-  MOZ_ASSERT(mWaitingWebsockets.Length() ==
-             mWaitingWebsocketCallbacks.Length());
-
-  mProcessedWaitingWebsockets = true;
-
-  if (!mWaitingWebsockets.Length()) {
-    // Nothing to do here
-    LOG3(("Http2Session::ProcessWaitingWebsockets %p nothing to do", this));
-    return;
-  }
-
-  for (size_t i = 0; i < mWaitingWebsockets.Length(); ++i) {
-    RefPtr<nsAHttpTransaction> httpTransaction = mWaitingWebsockets[i];
-    nsCOMPtr<nsIInterfaceRequestor> callbacks = mWaitingWebsocketCallbacks[i];
-
-    if (mPeerAllowsWebsockets) {
-      LOG3(
-          ("Http2Session::ProcessWaitingWebsockets session=%p trans=%p "
-           "websocket",
-           this, httpTransaction.get()));
-      CreateWebsocketStream(httpTransaction, callbacks);
-    } else {
-      LOG3(
-          ("Http2Session::ProcessWaitingWebsockets %p Re-queuing websocket as "
-           "h1 due to mPeerAllowsWebsockets=false",
-           this));
-      httpTransaction->SetConnection(nullptr);
-      httpTransaction->DisableSpdy();
-      nsHttpTransaction* trans = httpTransaction->QueryHttpTransaction();
-      if (trans) {
-        nsresult rv =
-            gHttpHandler->InitiateTransaction(trans, trans->Priority());
-        if (NS_FAILED(rv)) {
-          LOG3(
-              ("Http2Session::ProcessWaitingWebsockets %p failed to reinitiate "
-               "websocket transaction (%08x).\n",
-               this, static_cast<uint32_t>(rv)));
-        }
-      } else {
-        LOG3(("Http2Session::ProcessWaitingWebsockets %p missing transaction?!",
-              this));
-      }
-    }
-  }
-
-  mWaitingWebsockets.Clear();
-  mWaitingWebsocketCallbacks.Clear();
-}
-
-bool Http2Session::CanAcceptWebsocket() {
-  LOG3(("Http2Session::CanAcceptWebsocket %p enable=%d allow=%d processed=%d",
+WebSocketSupport Http2Session::GetWebSocketSupport() {
+  LOG3(("Http2Session::GetWebSocketSupport %p enable=%d allow=%d processed=%d",
         this, mEnableWebsockets, mPeerAllowsWebsockets,
         mProcessedWaitingWebsockets));
-  if (mEnableWebsockets &&
-      (mPeerAllowsWebsockets || !mProcessedWaitingWebsockets)) {
-    return true;
+
+  if (!mEnableWebsockets) {
+    return WebSocketSupport::NO_SUPPORT;
   }
 
-  return false;
+  if (mPeerAllowsWebsockets) {
+    return WebSocketSupport::SUPPORTED;
+  }
+
+  if (!mProcessedWaitingWebsockets) {
+    mHasTransactionWaitingForWebsockets = true;
+    return WebSocketSupport::UNSURE;
+  }
+
+  return WebSocketSupport::NO_SUPPORT;
+}
+
+PRIntervalTime Http2Session::LastWriteTime() {
+  return mConnection->LastWriteTime();
 }
 
 }  // namespace net

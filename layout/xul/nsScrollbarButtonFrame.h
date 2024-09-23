@@ -14,33 +14,32 @@
 #ifndef nsScrollbarButtonFrame_h___
 #define nsScrollbarButtonFrame_h___
 
+#include "SimpleXULLeafFrame.h"
 #include "mozilla/Attributes.h"
-#include "nsButtonBoxFrame.h"
+#include "nsLeafFrame.h"
 #include "nsRepeatService.h"
 
 namespace mozilla {
 class PresShell;
 }  // namespace mozilla
 
-class nsScrollbarButtonFrame final : public nsButtonBoxFrame {
+class nsScrollbarButtonFrame final : public mozilla::SimpleXULLeafFrame {
  public:
   NS_DECL_FRAMEARENA_HELPERS(nsScrollbarButtonFrame)
 
   explicit nsScrollbarButtonFrame(ComputedStyle* aStyle,
                                   nsPresContext* aPresContext)
-      : nsButtonBoxFrame(aStyle, aPresContext, kClassID),
-        mCursorOnThis(false) {}
+      : mozilla::SimpleXULLeafFrame(aStyle, aPresContext, kClassID) {}
 
   // Overrides
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
   friend nsIFrame* NS_NewScrollbarButtonFrame(mozilla::PresShell* aPresShell,
                                               ComputedStyle* aStyle);
 
-  virtual nsresult HandleEvent(nsPresContext* aPresContext,
-                               mozilla::WidgetGUIEvent* aEvent,
-                               nsEventStatus* aEventStatus) override;
+  nsresult HandleEvent(nsPresContext* aPresContext,
+                       mozilla::WidgetGUIEvent* aEvent,
+                       nsEventStatus* aEventStatus) override;
 
   static nsresult GetChildWithTag(nsAtom* atom, nsIFrame* start,
                                   nsIFrame*& result);
@@ -71,9 +70,8 @@ class nsScrollbarButtonFrame final : public nsButtonBoxFrame {
 
  protected:
   void StartRepeat() {
-    nsRepeatService::GetInstance()->Start(
-        Notify, this, mContent->OwnerDoc(),
-        NS_LITERAL_CSTRING("nsScrollbarButtonFrame"));
+    nsRepeatService::GetInstance()->Start(Notify, this, mContent->OwnerDoc(),
+                                          "nsScrollbarButtonFrame"_ns);
   }
   void StopRepeat() { nsRepeatService::GetInstance()->Stop(Notify, this); }
   void Notify();
@@ -81,7 +79,7 @@ class nsScrollbarButtonFrame final : public nsButtonBoxFrame {
     static_cast<nsScrollbarButtonFrame*>(aData)->Notify();
   }
 
-  bool mCursorOnThis;
+  bool mCursorOnThis = false;
 };
 
 #endif

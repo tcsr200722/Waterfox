@@ -3,10 +3,6 @@
 /* globals browser */
 let scopes = AddonManager.SCOPE_PROFILE | AddonManager.SCOPE_APPLICATION;
 Services.prefs.setIntPref("extensions.enabledScopes", scopes);
-Services.prefs.setBoolPref(
-  "extensions.webextensions.background-delayed-startup",
-  false
-);
 
 AddonTestUtils.createAppInfo(
   "xpcshell@tests.mozilla.org",
@@ -20,7 +16,7 @@ AddonTestUtils.usePrivilegedSignatures = id => id.startsWith("system");
 async function promiseInstallSystemProfileExtension(id, hidden) {
   let xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
       hidden,
     },
     background() {
@@ -57,6 +53,7 @@ add_task(async function test_system_profile_location() {
   notEqual(addon, null, "Addon is installed");
   ok(addon.isActive, "Addon is active");
   ok(addon.isPrivileged, "Addon is privileged");
+  ok(wrapper.extension.isAppProvided, "Addon is app provided");
   ok(!addon.hidden, "Addon is not hidden");
   equal(
     addon.signedState,
@@ -124,7 +121,7 @@ add_task(async function test_system_profile_location_installFile() {
   let id = "system-fileinstall@test";
   let xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
     background() {
       browser.test.sendMessage("started");
@@ -149,7 +146,7 @@ add_task(async function test_system_profile_location_overridden() {
   let xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
       version: "1.0",
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
   });
 
@@ -163,7 +160,7 @@ add_task(async function test_system_profile_location_overridden() {
   xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
       version: "2.0",
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
   });
 
@@ -188,7 +185,7 @@ add_task(async function test_system_profile_location_require_system_cert() {
   let id = "fail@test";
   let xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
   });
   const install = await AddonManager.getInstallForURL(`file://${xpi.path}`, {

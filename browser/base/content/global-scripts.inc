@@ -12,13 +12,13 @@
 # tools/lint/eslint/eslint-plugin-mozilla/lib/environments/browser-window.js
 
 <script type="text/javascript">
-var {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 Services.scriptloader.loadSubScript("chrome://browser/content/browser.js", this);
+Services.scriptloader.loadSubScript("chrome://browser/content/places/browserPlacesViews.js", this);
 Services.scriptloader.loadSubScript("chrome://browser/content/browser-places.js", this);
 Services.scriptloader.loadSubScript("chrome://global/content/globalOverlay.js", this);
 Services.scriptloader.loadSubScript("chrome://global/content/editMenuOverlay.js", this);
 Services.scriptloader.loadSubScript("chrome://browser/content/utilityOverlay.js", this);
+Services.scriptloader.loadSubScript("chrome://browser/content/browser-command-listeners.js", this);
 if (AppConstants.platform == "macosx") {
   Services.scriptloader.loadSubScript("chrome://global/content/macWindowMenu.js", this);
 }

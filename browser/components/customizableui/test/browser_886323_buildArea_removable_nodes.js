@@ -11,17 +11,17 @@ var gNavBar = document.getElementById(CustomizableUI.AREA_NAVBAR);
 var gLazyArea;
 
 // Removable nodes shouldn't be moved by buildArea
-add_task(async function() {
+add_task(async function () {
   let dummyBtn = createDummyXULButton(kButtonId, "Dummy");
   dummyBtn.setAttribute("removable", "true");
   CustomizableUI.getCustomizationTarget(gNavBar).appendChild(dummyBtn);
   let popupSet = document.getElementById("mainPopupSet");
   gLazyArea = document.createXULElement("panel");
   gLazyArea.id = kLazyAreaId;
-  gLazyArea.setAttribute("hidden", "true");
+  gLazyArea.hidden = true;
   popupSet.appendChild(gLazyArea);
   CustomizableUI.registerArea(kLazyAreaId, {
-    type: CustomizableUI.TYPE_MENU_PANEL,
+    type: CustomizableUI.TYPE_PANEL,
     defaultPlacements: [],
   });
   CustomizableUI.addWidgetToArea(kButtonId, kLazyAreaId);

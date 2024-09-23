@@ -7,22 +7,25 @@
 #include "nsDirectoryServiceUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsAppDirectoryServiceDefs.h"
+#include "GMPLog.h"
 #include "GMPParent.h"
 #include "gmp-storage.h"
 #include "mozilla/Unused.h"
 #include "mozilla/EndianUtils.h"
 #include "nsClassHashtable.h"
 #include "prio.h"
-#include "nsContentCID.h"
 #include "nsServiceManagerUtils.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
+
+#define LOG(msg, ...)                   \
+  MOZ_LOG(GetGMPLog(), LogLevel::Debug, \
+          ("GMPDiskStorage=%p, " msg, this, ##__VA_ARGS__))
 
 // We store the records for a given GMP as files in the profile dir.
 // $profileDir/gmp/$platform/$gmpName/storage/$nodeId/
-static nsresult GetGMPStorageDir(nsIFile** aTempDir, const nsString& aGMPName,
-                                 const nsCString& aNodeId) {
+static nsresult GetGMPStorageDir(nsIFile** aTempDir, const nsAString& aGMPName,
+                                 const nsACString& aNodeId) {
   if (NS_WARN_IF(!aTempDir)) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -44,7 +47,7 @@ static nsresult GetGMPStorageDir(nsIFile** aTempDir, const nsString& aGMPName,
     return rv;
   }
 
-  rv = tmpFile->AppendNative(NS_LITERAL_CSTRING("storage"));
+  rv = tmpFile->AppendNative("storage"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -73,18 +76,21 @@ static nsresult GetGMPStorageDir(nsIFile** aTempDir, const nsString& aGMPName,
 //   record bytes (entire remainder of file)
 class GMPDiskStorage : public GMPStorage {
  public:
-  explicit GMPDiskStorage(const nsCString& aNodeId, const nsString& aGMPName)
-      : mNodeId(aNodeId), mGMPName(aGMPName) {}
+  explicit GMPDiskStorage(const nsACString& aNodeId, const nsAString& aGMPName)
+      : mNodeId(aNodeId), mGMPName(aGMPName) {
+    LOG("Created GMPDiskStorage, nodeId=%s, gmpName=%s", mNodeId.BeginReading(),
+        NS_ConvertUTF16toUTF8(mGMPName).get());
+  }
 
   ~GMPDiskStorage() {
     // Close all open file handles.
-    for (auto iter = mRecords.ConstIter(); !iter.Done(); iter.Next()) {
-      Record* record = iter.UserData();
+    for (const auto& record : mRecords.Values()) {
       if (record->mFileDesc) {
         PR_Close(record->mFileDesc);
         record->mFileDesc = nullptr;
       }
     }
+    LOG("Destroyed GMPDiskStorage");
   }
 
   nsresult Init() {
@@ -120,25 +126,33 @@ class GMPDiskStorage : public GMPStorage {
         continue;
       }
 
-      mRecords.Put(recordName, new Record(filename, recordName));
+      mRecords.InsertOrUpdate(recordName,
+                              MakeUnique<Record>(filename, recordName));
     }
 
     return NS_OK;
   }
 
-  GMPErr Open(const nsCString& aRecordName) override {
+  GMPErr Open(const nsACString& aRecordName) override {
     MOZ_ASSERT(!IsOpen(aRecordName));
-    nsresult rv;
-    Record* record = nullptr;
-    if (!mRecords.Get(aRecordName, &record)) {
-      // New file.
-      nsAutoString filename;
-      rv = GetUnusedFilename(aRecordName, filename);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return GMPGenericErr;
-      }
-      record = new Record(filename, aRecordName);
-      mRecords.Put(aRecordName, record);
+
+    Record* const record =
+        mRecords.WithEntryHandle(aRecordName, [&](auto&& entry) -> Record* {
+          if (!entry) {
+            // New file.
+            nsAutoString filename;
+            nsresult rv = GetUnusedFilename(aRecordName, filename);
+            if (NS_WARN_IF(NS_FAILED(rv))) {
+              return nullptr;
+            }
+            return entry.Insert(MakeUnique<Record>(filename, aRecordName))
+                .get();
+          }
+
+          return entry->get();
+        });
+    if (!record) {
+      return GMPGenericErr;
     }
 
     MOZ_ASSERT(record);
@@ -147,7 +161,8 @@ class GMPDiskStorage : public GMPStorage {
       return GMPRecordInUse;
     }
 
-    rv = OpenStorageFile(record->mFilename, ReadWrite, &record->mFileDesc);
+    nsresult rv =
+        OpenStorageFile(record->mFilename, ReadWrite, &record->mFileDesc);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return GMPGenericErr;
     }
@@ -157,14 +172,14 @@ class GMPDiskStorage : public GMPStorage {
     return GMPNoErr;
   }
 
-  bool IsOpen(const nsCString& aRecordName) const override {
+  bool IsOpen(const nsACString& aRecordName) const override {
     // We are open if we have a record indexed, and it has a valid
     // file descriptor.
     const Record* record = mRecords.Get(aRecordName);
     return record && !!record->mFileDesc;
   }
 
-  GMPErr Read(const nsCString& aRecordName,
+  GMPErr Read(const nsACString& aRecordName,
               nsTArray<uint8_t>& aOutBytes) override {
     if (!IsOpen(aRecordName)) {
       return GMPClosedErr;
@@ -209,7 +224,7 @@ class GMPDiskStorage : public GMPStorage {
     return (bytesRead == recordLength) ? GMPNoErr : GMPRecordCorrupted;
   }
 
-  GMPErr Write(const nsCString& aRecordName,
+  GMPErr Write(const nsACString& aRecordName,
                const nsTArray<uint8_t>& aBytes) override {
     if (!IsOpen(aRecordName)) {
       return GMPClosedErr;
@@ -250,8 +265,8 @@ class GMPDiskStorage : public GMPStorage {
       NS_WARNING("Failed to write GMPStorage record name length.");
       return GMPRecordCorrupted;
     }
-    bytesWritten =
-        PR_Write(record->mFileDesc, aRecordName.get(), aRecordName.Length());
+    bytesWritten = PR_Write(record->mFileDesc, aRecordName.BeginReading(),
+                            aRecordName.Length());
     if (bytesWritten != (int32_t)aRecordName.Length()) {
       NS_WARNING("Failed to write GMPStorage record name.");
       return GMPRecordCorrupted;
@@ -271,7 +286,7 @@ class GMPDiskStorage : public GMPStorage {
     return GMPNoErr;
   }
 
-  void Close(const nsCString& aRecordName) override {
+  void Close(const nsACString& aRecordName) override {
     Record* record = nullptr;
     mRecords.Get(aRecordName, &record);
     if (record && !!record->mFileDesc) {
@@ -406,7 +421,7 @@ class GMPDiskStorage : public GMPStorage {
     return NS_OK;
   }
 
-  nsresult RemoveStorageFile(const nsString& aFilename) {
+  nsresult RemoveStorageFile(const nsAString& aFilename) {
     nsCOMPtr<nsIFile> f;
     nsresult rv = GetGMPStorageDir(getter_AddRefs(f), mGMPName, mNodeId);
     if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -434,8 +449,8 @@ class GMPDiskStorage : public GMPStorage {
   const nsString mGMPName;
 };
 
-already_AddRefed<GMPStorage> CreateGMPDiskStorage(const nsCString& aNodeId,
-                                                  const nsString& aGMPName) {
+already_AddRefed<GMPStorage> CreateGMPDiskStorage(const nsACString& aNodeId,
+                                                  const nsAString& aGMPName) {
   RefPtr<GMPDiskStorage> storage(new GMPDiskStorage(aNodeId, aGMPName));
   if (NS_FAILED(storage->Init())) {
     NS_WARNING("Failed to initialize on disk GMP storage");
@@ -444,5 +459,6 @@ already_AddRefed<GMPStorage> CreateGMPDiskStorage(const nsCString& aNodeId,
   return storage.forget();
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+#undef LOG
+
+}  // namespace mozilla::gmp

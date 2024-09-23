@@ -36,16 +36,14 @@ class CombinedStacks {
   size_t GetModuleCount() const;
   const Stack& GetStack(unsigned aIndex) const;
   size_t AddStack(const Telemetry::ProcessedStack& aStack);
+  void AddStacks(const CombinedStacks& aStacks);
   size_t GetStackCount() const;
   size_t SizeOfExcludingThis() const;
   void RemoveStack(unsigned aIndex);
-  bool GetIsFromTerminatorWatchdog();
-  void SetIsFromTerminatorWatchdog(bool aIsFromTerminatorWatchdog);
+  size_t GetMaxStacksCount() const;
 
-#if defined(MOZ_GECKO_PROFILER)
   /** Clears the contents of vectors and resets the index. */
   void Clear();
-#endif
 
  private:
   std::vector<Telemetry::ProcessedStack::Module> mModules;
@@ -55,8 +53,10 @@ class CombinedStacks {
   size_t mNextIndex;
   // The maximum number of stacks to keep in the CombinedStacks object.
   size_t mMaxStacksCount;
-  // Indicates if this stack came from a late write in nsTerminator.
-  bool mIsFromTerminatorWatchdog;
+
+  void AddFrame(
+      size_t aStackIndex, const ProcessedStack::Frame& aFrame,
+      const std::function<const ProcessedStack::Module&(int)>& aModuleGetter);
 
   friend struct ::IPC::ParamTraits<CombinedStacks>;
 };
@@ -75,28 +75,27 @@ template <>
 struct ParamTraits<mozilla::Telemetry::CombinedStacks> {
   typedef mozilla::Telemetry::CombinedStacks paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mModules);
-    WriteParam(aMsg, aParam.mStacks);
-    WriteParam(aMsg, aParam.mNextIndex);
-    WriteParam(aMsg, aParam.mMaxStacksCount);
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mModules);
+    WriteParam(aWriter, aParam.mStacks);
+    WriteParam(aWriter, aParam.mNextIndex);
+    WriteParam(aWriter, aParam.mMaxStacksCount);
   }
 
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    if (!ReadParam(aMsg, aIter, &aResult->mModules)) {
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    if (!ReadParam(aReader, &aResult->mModules)) {
       return false;
     }
 
-    if (!ReadParam(aMsg, aIter, &aResult->mStacks)) {
+    if (!ReadParam(aReader, &aResult->mStacks)) {
       return false;
     }
 
-    if (!ReadParam(aMsg, aIter, &aResult->mNextIndex)) {
+    if (!ReadParam(aReader, &aResult->mNextIndex)) {
       return false;
     }
 
-    if (!ReadParam(aMsg, aIter, &aResult->mMaxStacksCount)) {
+    if (!ReadParam(aReader, &aResult->mMaxStacksCount)) {
       return false;
     }
 

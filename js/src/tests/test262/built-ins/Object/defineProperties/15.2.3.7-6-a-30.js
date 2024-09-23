@@ -19,14 +19,9 @@ Object.defineProperties(obj, {
   }
 });
 
-verifyNotConfigurable(obj, "prop");
-
-if (!obj.hasOwnProperty("prop")) {
-  $ERROR('Expected obj.hasOwnProperty("prop") to be true, actually ' + obj.hasOwnProperty("prop"));
-}
-
-if (obj.prop !== 1001) {
-  $ERROR('Expected obj.prop === 1001, actually ' + obj.prop);
-}
+verifyProperty(obj, "prop", {
+  value: 1001,
+  configurable: false,
+});
 
 reportCompare(0, 0);

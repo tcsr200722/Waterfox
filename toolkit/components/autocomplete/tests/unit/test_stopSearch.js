@@ -25,9 +25,7 @@ AutoCompleteInput.prototype = {
   textValue: "hello",
   disableAutoComplete: false,
   completeDefaultIndex: false,
-  set popupOpen(val) {
-    return val;
-  }, // ignore
+  set popupOpen(val) {}, // ignore
   get popupOpen() {
     return false;
   },
@@ -44,15 +42,13 @@ AutoCompleteInput.prototype = {
   popup: {
     selectBy() {},
     invalidate() {},
-    set selectedIndex(val) {
-      return val;
-    }, // ignore
+    set selectedIndex(val) {}, // ignore
     get selectedIndex() {
       return -1;
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompletePopup]),
+    QueryInterface: ChromeUtils.generateQI(["nsIAutoCompletePopup"]),
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompleteInput]),
+  QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteInput"]),
 };
 
 /**
@@ -64,7 +60,7 @@ function AutoCompleteSearch(aName) {
 AutoCompleteSearch.prototype = {
   constructor: AutoCompleteSearch,
   stopSearchInvoked: true,
-  startSearch(aSearchString, aSearchParam, aPreviousResult, aListener) {
+  startSearch() {
     info("Check stop search has been called");
     Assert.ok(this.stopSearchInvoked);
     this.stopSearchInvoked = false;
@@ -73,10 +69,10 @@ AutoCompleteSearch.prototype = {
     this.stopSearchInvoked = true;
   },
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIFactory,
-    Ci.nsIAutoCompleteSearch,
+    "nsIFactory",
+    "nsIAutoCompleteSearch",
   ]),
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };
@@ -87,9 +83,7 @@ AutoCompleteSearch.prototype = {
  */
 function registerAutoCompleteSearch(aSearch) {
   let name = "@mozilla.org/autocomplete/search;1?name=" + aSearch.name;
-  let uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(
-    Ci.nsIUUIDGenerator
-  );
+  let uuidGenerator = Services.uuid;
   let cid = uuidGenerator.generateUUID();
   let desc = "Test AutoCompleteSearch";
   let componentManager = Components.manager.QueryInterface(
@@ -111,12 +105,12 @@ function unregisterAutoCompleteSearch(aSearch) {
 }
 
 var gTests = [
-  function(controller) {
+  function (controller) {
     info("handleText");
     controller.input.textValue = "hel";
     controller.handleText();
   },
-  function(controller) {
+  function (controller) {
     info("handleStartComposition");
     controller.handleStartComposition();
     info("handleEndComposition");
@@ -124,20 +118,20 @@ var gTests = [
     // an input event always follows compositionend event.
     controller.handleText();
   },
-  function(controller) {
+  function (controller) {
     info("handleEscape");
     controller.handleEscape();
   },
-  function(controller) {
+  function (controller) {
     info("handleEnter");
     controller.handleEnter(false);
   },
-  function(controller) {
+  function (controller) {
     info("handleTab");
     controller.handleTab();
   },
 
-  function(controller) {
+  function (controller) {
     info("handleKeyNavigation");
     // Hardcode KeyboardEvent.DOM_VK_RIGHT, because we can't easily
     // include KeyboardEvent here.
@@ -145,7 +139,7 @@ var gTests = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   // Make an AutoCompleteSearch that always returns nothing
   let search = new AutoCompleteSearch("test");
   registerAutoCompleteSearch(search);
@@ -159,11 +153,11 @@ add_task(async function() {
   controller.input = input;
 
   for (let testFn of gTests) {
-    input.onSearchBegin = function() {
+    input.onSearchBegin = function () {
       executeSoon(() => testFn(controller));
     };
     let promise = new Promise(resolve => {
-      input.onSearchComplete = function() {
+      input.onSearchComplete = function () {
         resolve();
       };
     });

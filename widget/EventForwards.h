@@ -270,9 +270,6 @@ inline bool IsCancelableBeforeInputEvent(EditorInputType aInputType) {
       return true;
     case EditorInputType::eInsertLink:
       return true;
-    case EditorInputType::eDeleteByComposition:
-      MOZ_ASSERT(!StaticPrefs::dom_input_events_conform_to_level_1());
-      return true;
     case EditorInputType::eDeleteCompositionText:
       MOZ_ASSERT(!StaticPrefs::dom_input_events_conform_to_level_1());
       return false;
@@ -412,8 +409,6 @@ struct EventFlags;
 
 class WidgetEventTime;
 
-class NativeEventData;
-
 // TextEvents.h
 enum class AccessKeyType;
 
@@ -438,22 +433,61 @@ typedef nsTArray<OwningNonNull<dom::StaticRange>> OwningNonNullStaticRangeArray;
 // FontRange.h
 struct FontRange;
 
-enum MouseButton { eNotPressed = -1, eLeft = 0, eMiddle = 1, eRight = 2 };
+enum MouseButton : int16_t {
+  eNotPressed = -1,
+  ePrimary = 0,
+  eMiddle = 1,
+  eSecondary = 2,
+  eX1 = 3,  // Typically, "back" button
+  eX2 = 4,  // Typically, "forward" button
+  eEraser = 5
+};
 
 enum MouseButtonsFlag {
   eNoButtons = 0x00,
-  eLeftFlag = 0x01,
-  eRightFlag = 0x02,
+  ePrimaryFlag = 0x01,
+  eSecondaryFlag = 0x02,
   eMiddleFlag = 0x04,
   // typicall, "back" button being left side of 5-button
   // mice, see "buttons" attribute document of DOM3 Events.
   e4thFlag = 0x08,
   // typicall, "forward" button being right side of 5-button
   // mice, see "buttons" attribute document of DOM3 Events.
-  e5thFlag = 0x10
+  e5thFlag = 0x10,
+  eEraserFlag = 0x20
 };
 
+/**
+ * Returns a MouseButtonsFlag value which is changed by a button state change
+ * event whose mButton is aMouseButton.
+ */
+inline MouseButtonsFlag MouseButtonsFlagToChange(MouseButton aMouseButton) {
+  switch (aMouseButton) {
+    case MouseButton::ePrimary:
+      return MouseButtonsFlag::ePrimaryFlag;
+    case MouseButton::eMiddle:
+      return MouseButtonsFlag::eMiddleFlag;
+    case MouseButton::eSecondary:
+      return MouseButtonsFlag::eSecondaryFlag;
+    case MouseButton::eX1:
+      return MouseButtonsFlag::e4thFlag;
+    case MouseButton::eX2:
+      return MouseButtonsFlag::e5thFlag;
+    case MouseButton::eEraser:
+      return MouseButtonsFlag::eEraserFlag;
+    default:
+      return MouseButtonsFlag::eNoButtons;
+  }
+}
+
 enum class TextRangeType : RawTextRangeType;
+
+// IMEData.h
+
+template <typename IntType>
+class StartAndEndOffsets;
+template <typename IntType>
+class OffsetAndData;
 
 }  // namespace mozilla
 

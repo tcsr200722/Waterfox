@@ -13,7 +13,7 @@ Services.scriptloader.loadSubScript(
  * Check that DevTools are not closed when leaving This Firefox runtime page.
  */
 
-add_task(async function() {
+add_task(async function () {
   info("Force all debug target panes to be expanded");
   prepareCollapsibilitiesTest();
 
@@ -30,7 +30,7 @@ add_task(async function() {
 
   info("DevTools starts workers, wait for requests to settle");
   const store = window.AboutDebugging.store;
-  await waitForRequestsToSettle(store);
+  await waitForAboutDebuggingRequests(store);
 
   info("Click on the Connect item in the sidebar");
   connectLink.click();
@@ -41,6 +41,11 @@ add_task(async function() {
 
   const markupViewElement = inspector.panelDoc.getElementById("markup-box");
   ok(markupViewElement, "Inspector is still rendered");
+
+  // We explicitely destroy the toolbox in order to ensure waiting for its full destruction
+  // and avoid leak / pending requests
+  info("Destroy the opened toolbox");
+  await toolbox.destroy();
 
   await removeTab(tab);
 });

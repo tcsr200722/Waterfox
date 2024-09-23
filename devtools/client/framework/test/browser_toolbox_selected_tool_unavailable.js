@@ -8,14 +8,14 @@
 
 const testToolDefinition = {
   id: "testTool",
-  isTargetSupported: () => true,
+  isToolSupported: () => true,
   visibilityswitch: "devtools.test-tool.enabled",
   url: "about:blank",
   label: "someLabel",
   build: (iframeWindow, toolbox) => {
     return {
       target: toolbox.target,
-      toolbox: toolbox,
+      toolbox,
       isReady: true,
       destroy: () => {},
       panelDoc: iframeWindow.document,
@@ -23,24 +23,24 @@ const testToolDefinition = {
   },
 };
 
-add_task(async function() {
+add_task(async function () {
   gDevTools.registerTool(testToolDefinition);
   let tab = await addTab("about:blank");
-  let target = await TargetFactory.forTab(tab);
 
-  let toolbox = await gDevTools.showToolbox(target, testToolDefinition.id);
+  let toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: testToolDefinition.id,
+  });
   is(toolbox.currentToolId, "testTool", "test-tool was selected");
   await toolbox.destroy();
 
   // Make the previously selected tool unavailable.
-  testToolDefinition.isTargetSupported = () => false;
+  testToolDefinition.isToolSupported = () => false;
 
-  target = await TargetFactory.forTab(tab);
-  toolbox = await gDevTools.showToolbox(target);
+  toolbox = await gDevTools.showToolboxForTab(tab);
   is(toolbox.currentToolId, "webconsole", "web console was selected");
 
   await toolbox.destroy();
   gDevTools.unregisterTool(testToolDefinition.id);
-  tab = toolbox = target = null;
+  tab = toolbox = null;
   gBrowser.removeCurrentTab();
 });

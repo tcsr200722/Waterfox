@@ -11,14 +11,15 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/ContentFrameMessageManager.h"
+#include "mozilla/dom/MessageManagerCallback.h"
 #include "nsCOMPtr.h"
-#include "nsFrameMessageManager.h"
 #include "nsIScriptContext.h"
 #include "nsIScriptObjectPrincipal.h"
-#include "nsIScriptContext.h"
 #include "nsDocShell.h"
 #include "nsCOMArray.h"
 #include "nsWeakReference.h"
+
+class nsFrameMessageManager;
 
 namespace mozilla {
 class EventChainPreVisitor;
@@ -37,7 +38,7 @@ class InProcessBrowserChildMessageManager final
       public nsIInProcessContentFrameMessageManager,
       public nsSupportsWeakReference,
       public mozilla::dom::ipc::MessageManagerCallback {
-  typedef mozilla::dom::ipc::StructuredCloneData StructuredCloneData;
+  using StructuredCloneData = mozilla::dom::ipc::StructuredCloneData;
 
  private:
   InProcessBrowserChildMessageManager(nsDocShell* aShell, nsIContent* aOwner,
@@ -62,7 +63,6 @@ class InProcessBrowserChildMessageManager final
     return do_AddRef(mDocShell);
   }
   virtual already_AddRefed<nsIEventTarget> GetTabEventTarget() override;
-  virtual uint64_t ChromeOuterWindowID() override;
 
   NS_FORWARD_SAFE_NSIMESSAGESENDER(mMessageManager)
 
@@ -108,9 +108,6 @@ class InProcessBrowserChildMessageManager final
   RefPtr<nsDocShell> mDocShell;
   bool mLoadingScript;
 
-  // Is this the message manager for an in-process <iframe mozbrowser>? This
-  // affects where events get sent, so it affects GetEventTargetParent.
-  bool mIsBrowserFrame;
   bool mPreventEventsEscaping;
 
   // We keep a strong reference to the frameloader after we've started

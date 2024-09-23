@@ -5,12 +5,12 @@
 "use strict";
 
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* globals getTestActor, openToolboxForTab, gBrowser */
+/* globals getHighlighterTestFront, openToolboxForTab, gBrowser */
 /* import-globals-from ../../shared/test/shared-head.js */
 
 var {
   getInplaceEditorForSpan: inplaceEditor,
-} = require("devtools/client/shared/inplace-editor");
+} = require("resource://devtools/client/shared/inplace-editor.js");
 
 // This file contains functions related to the inspector that are also of interest to
 // other test directores as well.
@@ -18,9 +18,13 @@ var {
 /**
  * Open the toolbox, with the inspector tool visible.
  * @param {String} hostType Optional hostType, as defined in Toolbox.HostType
- * @return a promise that resolves when the inspector is ready
+ * @return {Promise} A promise that resolves when the inspector is ready.The promise
+ *         resolves with an object containing the following properties:
+ *           - toolbox
+ *           - inspector
+ *           - highlighterTestFront
  */
-var openInspector = async function(hostType) {
+var openInspector = async function (hostType) {
   info("Opening the inspector");
 
   const toolbox = await openToolboxForTab(
@@ -30,14 +34,9 @@ var openInspector = async function(hostType) {
   );
   const inspector = toolbox.getPanel("inspector");
 
-  if (inspector._updateProgress) {
-    info("Need to wait for the inspector to update");
-    await inspector.once("inspector-updated");
-  }
+  const highlighterTestFront = await getHighlighterTestFront(toolbox);
 
-  const testActor = await getTestActor(toolbox);
-
-  return { toolbox, inspector, testActor };
+  return { toolbox, inspector, highlighterTestFront };
 };
 
 /**
@@ -46,11 +45,15 @@ var openInspector = async function(hostType) {
  *
  * @param {String} id
  *        The ID of the sidebar tab to be opened
- * @return a promise that resolves when the inspector is ready and the tab is
- * visible and ready
+ * @return {Promise<Object>} A promise that resolves when the inspector is ready and the tab is
+ *         visible and ready. The promise resolves with an object containing the
+ *         following properties:
+ *           - toolbox
+ *           - inspector
+ *           - highlighterTestFront
  */
-var openInspectorSidebarTab = async function(id) {
-  const { toolbox, inspector, testActor } = await openInspector();
+var openInspectorSidebarTab = async function (id) {
+  const { toolbox, inspector, highlighterTestFront } = await openInspector();
 
   info("Selecting the " + id + " sidebar");
 
@@ -70,7 +73,7 @@ var openInspectorSidebarTab = async function(id) {
   return {
     toolbox,
     inspector,
-    testActor,
+    highlighterTestFront,
   };
 };
 
@@ -81,21 +84,23 @@ var openInspectorSidebarTab = async function(id) {
  * @return a promise that resolves when the inspector is ready and the rule view
  * is visible and ready
  */
-function openRuleView() {
-  return openInspector().then(data => {
-    const view = data.inspector.getPanel("ruleview").view;
+async function openRuleView() {
+  const { inspector, toolbox, highlighterTestFront } = await openInspector();
 
-    // Replace the view to use a custom debounce function that can be triggered manually
-    // through an additional ".flush()" property.
-    view.debounce = manualDebounce();
+  const ruleViewPanel = inspector.getPanel("ruleview");
+  await ruleViewPanel.readyPromise;
+  const view = ruleViewPanel.view;
 
-    return {
-      toolbox: data.toolbox,
-      inspector: data.inspector,
-      testActor: data.testActor,
-      view,
-    };
-  });
+  // Replace the view to use a custom debounce function that can be triggered manually
+  // through an additional ".flush()" property.
+  view.debounce = manualDebounce();
+
+  return {
+    toolbox,
+    inspector,
+    highlighterTestFront,
+    view,
+  };
 }
 
 /**
@@ -112,7 +117,7 @@ function openComputedView() {
     return {
       toolbox: data.toolbox,
       inspector: data.inspector,
-      testActor: data.testActor,
+      highlighterTestFront: data.highlighterTestFront,
       view,
     };
   });
@@ -130,7 +135,7 @@ function openChangesView() {
     return {
       toolbox: data.toolbox,
       inspector: data.inspector,
-      testActor: data.testActor,
+      highlighterTestFront: data.highlighterTestFront,
       view: data.inspector.getPanel("changesview"),
     };
   });
@@ -145,18 +150,6 @@ function openChangesView() {
  */
 function openLayoutView() {
   return openInspectorSidebarTab("layoutview").then(data => {
-    // The actual highligher show/hide methods are mocked in box model tests.
-    // The highlighter is tested in devtools/inspector/test.
-    function mockHighlighter({ highlighter }) {
-      highlighter.showBoxModel = function() {
-        return promise.resolve();
-      };
-      highlighter.hideBoxModel = function() {
-        return promise.resolve();
-      };
-    }
-    mockHighlighter(data.inspector);
-
     return {
       toolbox: data.toolbox,
       inspector: data.inspector,
@@ -164,7 +157,7 @@ function openLayoutView() {
       gridInspector: data.inspector.getPanel("layoutview").gridInspector,
       flexboxInspector: data.inspector.getPanel("layoutview").flexboxInspector,
       layoutView: data.inspector.getPanel("layoutview"),
-      testActor: data.testActor,
+      highlighterTestFront: data.highlighterTestFront,
     };
   });
 }
@@ -233,14 +226,18 @@ function getNodeFront(selector, { walker }) {
 /**
  * Set the inspector's current selection to the first match of the given css
  * selector
+ *
  * @param {String|NodeFront} selector
- * @param {InspectorPanel} inspector The instance of InspectorPanel currently
- * loaded in the toolbox
- * @param {String} reason Defaults to "test" which instructs the inspector not
- * to highlight the node upon selection
+ * @param {InspectorPanel} inspector
+ *        The instance of InspectorPanel currently loaded in the toolbox.
+ * @param {String} reason
+ *        Defaults to "test" which instructs the inspector not to highlight the
+ *        node upon selection.
+ * @param {Boolean} isSlotted
+ *        Is the selection representing the slotted version the node.
  * @return {Promise} Resolves when the inspector is updated with the new node
  */
-var selectNode = async function(
+var selectNode = async function (
   selector,
   inspector,
   reason = "test",
@@ -249,9 +246,149 @@ var selectNode = async function(
   info("Selecting the node for '" + selector + "'");
   const nodeFront = await getNodeFront(selector, inspector);
   const updated = inspector.once("inspector-updated");
+
+  const {
+    ELEMENT_NODE,
+  } = require("resource://devtools/shared/dom-node-constants.js");
+  const onSelectionCssSelectorsUpdated =
+    nodeFront?.nodeType == ELEMENT_NODE
+      ? inspector.once("selection-css-selectors-updated")
+      : null;
+
   inspector.selection.setNodeFront(nodeFront, { reason, isSlotted });
   await updated;
+  await onSelectionCssSelectorsUpdated;
 };
+
+/**
+ * Using the markupview's _waitForChildren function, wait for all queued
+ * children updates to be handled.
+ * @param {InspectorPanel} inspector The instance of InspectorPanel currently
+ * loaded in the toolbox
+ * @return a promise that resolves when all queued children updates have been
+ * handled
+ */
+function waitForChildrenUpdated({ markup }) {
+  info("Waiting for queued children updates to be handled");
+  return new Promise(resolve => {
+    markup._waitForChildren().then(() => {
+      executeSoon(resolve);
+    });
+  });
+}
+
+// The expand all operation of the markup-view calls itself recursively and
+// there's not one event we can wait for to know when it's done, so use this
+// helper function to wait until all recursive children updates are done.
+async function waitForMultipleChildrenUpdates(inspector) {
+  // As long as child updates are queued up while we wait for an update already
+  // wait again
+  if (
+    inspector.markup._queuedChildUpdates &&
+    inspector.markup._queuedChildUpdates.size
+  ) {
+    await waitForChildrenUpdated(inspector);
+    return waitForMultipleChildrenUpdates(inspector);
+  }
+  return null;
+}
+
+/**
+ * Expand the provided markup container programmatically and  wait for all
+ * children to update.
+ */
+async function expandContainer(inspector, container) {
+  await inspector.markup.expandNode(container.node);
+  await waitForMultipleChildrenUpdates(inspector);
+}
+
+/**
+ * Get the NodeFront for a node that matches a given css selector inside a
+ * given iframe.
+ *
+ * @param {Array} selectors
+ *        Arrays of CSS selectors from the root document to the node.
+ *        The last CSS selector of the array is for the node in its frame doc.
+ *        The before-last CSS selector is for the frame in its parent frame, etc...
+ *        Ex: ["frame.first-frame", ..., "frame.last-frame", ".target-node"]
+ * @param {InspectorPanel} inspector
+ *        See `selectNode`
+ * @return {NodeFront} Resolves the corresponding node front.
+ */
+async function getNodeFrontInFrames(selectors, inspector) {
+  let walker = inspector.walker;
+  let rootNode = walker.rootNode;
+
+  // clone the array since `selectors` could be used from callsite after.
+  selectors = [...selectors];
+  // Extract the last selector from the provided array of selectors.
+  const nodeSelector = selectors.pop();
+
+  // Remaining selectors should all be frame selectors. Renaming for clarity.
+  const frameSelectors = selectors;
+
+  info("Loop through all frame selectors");
+  for (const frameSelector of frameSelectors) {
+    const url = walker.targetFront.url;
+    info(`Find the frame element for selector ${frameSelector} in ${url}`);
+
+    const frameNodeFront = await walker.querySelector(rootNode, frameSelector);
+
+    // If needed, connect to the corresponding frame target.
+    // Otherwise, reuse the current targetFront.
+    let frameTarget = frameNodeFront.targetFront;
+    if (frameNodeFront.useChildTargetToFetchChildren) {
+      info("Connect to frame and retrieve the targetFront");
+      frameTarget = await frameNodeFront.connectToFrame();
+    }
+
+    walker = (await frameTarget.getFront("inspector")).walker;
+
+    if (frameNodeFront.useChildTargetToFetchChildren) {
+      // For frames or browser elements, use the walker's rootNode.
+      rootNode = walker.rootNode;
+    } else {
+      // For same-process frames, select the document front as the root node.
+      // It is a different node from the walker's rootNode.
+      info("Retrieve the children of the frame to find the document node");
+      const { nodes } = await walker.children(frameNodeFront);
+      rootNode = nodes.find(n => n.nodeType === Node.DOCUMENT_NODE);
+    }
+  }
+
+  return walker.querySelector(rootNode, nodeSelector);
+}
+
+/**
+ * Helper to select a node in the markup-view, in a nested tree of
+ * frames/browser elements. The iframes can either be remote or same-process.
+ *
+ * Note: "frame" will refer to either "frame" or "browser" in the documentation
+ * and method.
+ *
+ * @param {Array} selectors
+ *        Arrays of CSS selectors from the root document to the node.
+ *        The last CSS selector of the array is for the node in its frame doc.
+ *        The before-last CSS selector is for the frame in its parent frame, etc...
+ *        Ex: ["frame.first-frame", ..., "frame.last-frame", ".target-node"]
+ * @param {InspectorPanel} inspector
+ *        See `selectNode`
+ * @param {String} reason
+ *        See `selectNode`
+ * @param {Boolean} isSlotted
+ *        See `selectNode`
+ * @return {NodeFront} The selected node front.
+ */
+async function selectNodeInFrames(
+  selectors,
+  inspector,
+  reason = "test",
+  isSlotted
+) {
+  const nodeFront = await getNodeFrontInFrames(selectors, inspector);
+  await selectNode(nodeFront, inspector, reason, isSlotted);
+  return nodeFront;
+}
 
 /**
  * Create a throttling function that can be manually "flushed". This is to replace the
@@ -265,7 +402,7 @@ function manualDebounce() {
   let calls = [];
 
   function debounce(func, wait, scope) {
-    return function() {
+    return function () {
       const existingCall = calls.find(call => call.func === func);
       if (existingCall) {
         existingCall.args = arguments;
@@ -275,7 +412,7 @@ function manualDebounce() {
     };
   }
 
-  debounce.flush = function() {
+  debounce.flush = function () {
     calls.forEach(({ func, scope, args }) => func.apply(scope, args));
     calls = [];
   };
@@ -284,95 +421,98 @@ function manualDebounce() {
 }
 
 /**
- * Wait for a content -> chrome message on the message manager (the window
- * messagemanager is used).
+ * Get the requested rule style property from the current browser.
  *
+ * @param {Number} styleSheetIndex
+ * @param {Number} ruleIndex
  * @param {String} name
- *        The message name
- * @return {Promise} A promise that resolves to the response data when the
- * message has been received
+ * @return {String} The value, if found, null otherwise
  */
-function waitForContentMessage(name) {
-  info("Expecting message " + name + " from content");
 
-  const mm = gBrowser.selectedBrowser.messageManager;
+async function getRulePropertyValue(styleSheetIndex, ruleIndex, name) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [styleSheetIndex, ruleIndex, name],
+    (styleSheetIndexChild, ruleIndexChild, nameChild) => {
+      let value = null;
 
-  return new Promise(resolve => {
-    mm.addMessageListener(name, function onMessage(msg) {
-      mm.removeMessageListener(name, onMessage);
-      resolve(msg.data);
-    });
-  });
+      info(
+        "Getting the value for property name " +
+          nameChild +
+          " in sheet " +
+          styleSheetIndexChild +
+          " and rule " +
+          ruleIndexChild
+      );
+
+      const sheet = content.document.styleSheets[styleSheetIndexChild];
+      if (sheet) {
+        const rule = sheet.cssRules[ruleIndexChild];
+        if (rule) {
+          value = rule.style.getPropertyValue(nameChild);
+        }
+      }
+
+      return value;
+    }
+  );
 }
 
 /**
- * Send an async message to the frame script (chrome -> content) and wait for a
- * response message with the same name (content -> chrome).
- *
- * @param {String} name
- *        The message name. Should be one of the messages defined
- *        in doc_frame_script.js
- * @param {Object} data
- *        Optional data to send along
- * @param {Boolean} expectResponse
- *        If set to false, don't wait for a response with the same name
- *        from the content script. Defaults to true.
- * @return {Promise} Resolves to the response data if a response is expected,
- * immediately resolves otherwise
- */
-function executeInContent(name, data = {}, expectResponse = true) {
-  info("Sending message " + name + " to content");
-  const mm = gBrowser.selectedBrowser.messageManager;
-
-  mm.sendAsyncMessage(name, data);
-  if (expectResponse) {
-    return waitForContentMessage(name);
-  }
-
-  return promise.resolve();
-}
-
-/**
- * Send an async message to the frame script and get back the requested
- * computed style property.
+ * Get the requested computed style property from the current browser.
  *
  * @param {String} selector
  *        The selector used to obtain the element.
  * @param {String} pseudo
  *        pseudo id to query, or null.
- * @param {String} name
+ * @param {String} propName
  *        name of the property.
  */
 async function getComputedStyleProperty(selector, pseudo, propName) {
-  return executeInContent("Test:GetComputedStylePropertyValue", {
-    selector,
-    pseudo,
-    name: propName,
-  });
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, pseudo, propName],
+    (selectorChild, pseudoChild, propNameChild) => {
+      const element = content.document.querySelector(selectorChild);
+      return content.document.defaultView
+        .getComputedStyle(element, pseudoChild)
+        .getPropertyValue(propNameChild);
+    }
+  );
 }
 
 /**
- * Send an async message to the frame script and wait until the requested
- * computed style property has the expected value.
+ * Wait until the requested computed style property has the
+ * expected value in the the current browser.
  *
  * @param {String} selector
  *        The selector used to obtain the element.
  * @param {String} pseudo
  *        pseudo id to query, or null.
- * @param {String} prop
+ * @param {String} propName
  *        name of the property.
  * @param {String} expected
  *        expected value of property
- * @param {String} name
- *        the name used in test message
  */
-async function waitForComputedStyleProperty(selector, pseudo, name, expected) {
-  return executeInContent("Test:WaitForComputedStylePropertyValue", {
-    selector,
-    pseudo,
-    expected,
-    name,
-  });
+async function waitForComputedStyleProperty(
+  selector,
+  pseudo,
+  propName,
+  expected
+) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, pseudo, propName, expected],
+    (selectorChild, pseudoChild, propNameChild, expectedChild) => {
+      const element = content.document.querySelector(selectorChild);
+      return ContentTaskUtils.waitForCondition(() => {
+        const value = content.document.defaultView
+          .getComputedStyle(element, pseudoChild)
+          .getPropertyValue(propNameChild);
+        return value === expectedChild;
+      });
+    }
+  );
 }
 
 /**
@@ -381,13 +521,14 @@ async function waitForComputedStyleProperty(selector, pseudo, name, expected) {
  *
  * @return a promise that resolves to the inplace-editor element when ready
  */
-var focusEditableField = async function(
+var focusEditableField = async function (
   ruleView,
   editable,
   xOffset = 1,
   yOffset = 1,
   options = {}
 ) {
+  editable.scrollIntoView();
   const onFocus = once(editable.parentNode, "focus", true);
   info("Clicking on editable field to turn to edit mode");
   if (options.type === undefined) {
@@ -448,7 +589,7 @@ function getRuleViewRule(view, selectorText, index = 0) {
   let pos = 0;
   for (const r of view.styleDocument.querySelectorAll(".ruleview-rule")) {
     const selector = r.querySelector(
-      ".ruleview-selectorcontainer, " + ".ruleview-selector-matched"
+      ".ruleview-selectors-container, .ruleview-selector.matched"
     );
     if (selector && selector.textContent === selectorText) {
       if (index == pos) {
@@ -464,7 +605,7 @@ function getRuleViewRule(view, selectorText, index = 0) {
 
 /**
  * Get references to the name and value span nodes corresponding to a given
- * selector and property name in the rule-view
+ * selector and property name in the rule-view.
  *
  * @param {CssRuleView} view
  *        The instance of the rule-view panel
@@ -472,25 +613,38 @@ function getRuleViewRule(view, selectorText, index = 0) {
  *        The selector in the rule-view to look for the property in
  * @param {String} propertyName
  *        The name of the property
+ * @param {Object=} options
+ * @param {Boolean=} options.wait
+ *        When true, returns a promise which waits until a valid rule view
+ *        property can be retrieved for the provided selectorText & propertyName.
+ *        Defaults to false.
  * @return {Object} An object like {nameSpan: DOMNode, valueSpan: DOMNode}
  */
-function getRuleViewProperty(view, selectorText, propertyName) {
-  let prop;
+function getRuleViewProperty(view, selectorText, propertyName, options = {}) {
+  if (options.wait) {
+    return waitFor(() =>
+      _syncGetRuleViewProperty(view, selectorText, propertyName)
+    );
+  }
+  return _syncGetRuleViewProperty(view, selectorText, propertyName);
+}
 
+function _syncGetRuleViewProperty(view, selectorText, propertyName) {
   const rule = getRuleViewRule(view, selectorText);
-  if (rule) {
-    // Look for the propertyName in that rule element
-    for (const p of rule.querySelectorAll(".ruleview-property")) {
-      const nameSpan = p.querySelector(".ruleview-propertyname");
-      const valueSpan = p.querySelector(".ruleview-propertyvalue");
+  if (!rule) {
+    return null;
+  }
 
-      if (nameSpan.textContent === propertyName) {
-        prop = { nameSpan: nameSpan, valueSpan: valueSpan };
-        break;
-      }
+  // Look for the propertyName in that rule element
+  for (const p of rule.querySelectorAll(".ruleview-property")) {
+    const nameSpan = p.querySelector(".ruleview-propertyname");
+    const valueSpan = p.querySelector(".ruleview-propertyvalue");
+
+    if (nameSpan.textContent === propertyName) {
+      return { nameSpan, valueSpan };
     }
   }
-  return prop;
+  return null;
 }
 
 /**
@@ -522,36 +676,10 @@ function getRuleViewPropertyValue(view, selectorText, propertyName) {
  */
 function getRuleViewSelector(view, selectorText) {
   const rule = getRuleViewRule(view, selectorText);
-  return rule.querySelector(".ruleview-selector, .ruleview-selector-matched");
+  return rule.querySelector(
+    ".ruleview-selectors-container, .ruleview-selector.matched"
+  );
 }
-
-/**
- * Get a reference to the selectorhighlighter icon DOM element corresponding to
- * a given selector in the rule-view
- *
- * @param {CssRuleView} view
- *        The instance of the rule-view panel
- * @param {String} selectorText
- *        The selector in the rule-view to look for
- * @param {Number} index
- *        If there are more than 1 rule with the same selector, use this index
- *        to determine which one should be retrieved. Defaults to 0
- * @return {DOMNode} The selectorhighlighter icon DOM element
- */
-var getRuleViewSelectorHighlighterIcon = async function(
-  view,
-  selectorText,
-  index = 0
-) {
-  const rule = getRuleViewRule(view, selectorText, index);
-
-  const editor = rule._ruleEditor;
-  if (!editor.uniqueSelector) {
-    await once(editor, "selector-icon-created");
-  }
-
-  return rule.querySelector(".ruleview-selectorhighlighter");
-};
 
 /**
  * Get a rule-link from the rule-view given its index
@@ -589,7 +717,7 @@ function getRuleViewLinkTextByIndex(view, index) {
  * @return a promise that resolves to the newly created editor when ready and
  * focused
  */
-var focusNewRuleViewProperty = async function(ruleEditor) {
+var focusNewRuleViewProperty = async function (ruleEditor) {
   info("Clicking on a close ruleEditor brace to start editing a new property");
 
   // Use bottom alignment to avoid scrolling out of the parent element area.
@@ -621,7 +749,7 @@ var focusNewRuleViewProperty = async function(ruleEditor) {
  * @return a promise that resolves when the new property name has been entered
  * and once the value field is focused
  */
-var createNewRuleViewProperty = async function(ruleEditor, inputValue) {
+var createNewRuleViewProperty = async function (ruleEditor, inputValue) {
   info("Creating a new property editor");
   const editor = await focusNewRuleViewProperty(ruleEditor);
 
@@ -648,7 +776,7 @@ var createNewRuleViewProperty = async function(ruleEditor, inputValue) {
  * @return a promise that resolves when the rule-view is filtered for the
  * search term
  */
-var setSearchFilter = async function(view, searchValue) {
+var setSearchFilter = async function (view, searchValue) {
   info('Setting filter text to "' + searchValue + '"');
 
   const searchField = view.searchField;
@@ -686,7 +814,7 @@ function buildContextMenuItems(menu) {
  * @return An array of MenuItems
  */
 function openStyleContextMenuAndGetAllItems(view, target) {
-  const menu = view.contextMenu._openMenu({ target: target });
+  const menu = view.contextMenu._openMenu({ target });
   return buildContextMenuItems(menu);
 }
 
@@ -715,16 +843,16 @@ async function waitUntilVisitedState(tab, selectors) {
       tab.linkedBrowser,
       selectors,
       args => {
-        const NS_EVENT_STATE_VISITED = 1 << 24;
+        // ElementState::VISITED
+        const ELEMENT_STATE_VISITED = 1 << 18;
 
         for (const selector of args) {
-          const target = content.wrappedJSObject.document.querySelector(
-            selector
-          );
+          const target =
+            content.wrappedJSObject.document.querySelector(selector);
           if (
             !(
               target &&
-              InspectorUtils.getContentState(target) & NS_EVENT_STATE_VISITED
+              InspectorUtils.getContentState(target) & ELEMENT_STATE_VISITED
             )
           ) {
             return false;
@@ -735,4 +863,296 @@ async function waitUntilVisitedState(tab, selectors) {
     );
     return hasVisitedState;
   });
+}
+
+/**
+ * Return wether or not the passed selector matches an element in the content page.
+ *
+ * @param {string} selector
+ * @returns Promise<Boolean>
+ */
+function hasMatchingElementInContentPage(selector) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    function (innerSelector) {
+      return content.document.querySelector(innerSelector) !== null;
+    }
+  );
+}
+
+/**
+ * Return the number of elements matching the passed selector.
+ *
+ * @param {string} selector
+ * @returns Promise<Number> the number of matching elements
+ */
+function getNumberOfMatchingElementsInContentPage(selector) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    function (innerSelector) {
+      return content.document.querySelectorAll(innerSelector).length;
+    }
+  );
+}
+
+/**
+ * Get the property of an element in the content page
+ *
+ * @param {string} selector: The selector to get the element we want the property of
+ * @param {string} propertyName: The name of the property we want the value of
+ * @returns {Promise} A promise that returns with the value of the property for the element
+ */
+function getContentPageElementProperty(selector, propertyName) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, propertyName],
+    function (innerSelector, innerPropertyName) {
+      return content.document.querySelector(innerSelector)[innerPropertyName];
+    }
+  );
+}
+
+/**
+ * Set the property of an element in the content page
+ *
+ * @param {string} selector: The selector to get the element we want to set the property on
+ * @param {string} propertyName: The name of the property we want to set
+ * @param {string} propertyValue: The value that is going to be assigned to the property
+ * @returns {Promise}
+ */
+function setContentPageElementProperty(selector, propertyName, propertyValue) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, propertyName, propertyValue],
+    function (innerSelector, innerPropertyName, innerPropertyValue) {
+      content.document.querySelector(innerSelector)[innerPropertyName] =
+        innerPropertyValue;
+    }
+  );
+}
+
+/**
+ * Get all the attributes for a DOM Node living in the content page.
+ *
+ * @param {String} selector The node selector
+ * @returns {Array<Object>} An array of {name, value} objects.
+ */
+async function getContentPageElementAttributes(selector) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    _selector => {
+      const node = content.document.querySelector(_selector);
+      return Array.from(node.attributes).map(({ name, value }) => ({
+        name,
+        value,
+      }));
+    }
+  );
+}
+
+/**
+ * Get an attribute on a DOM Node living in the content page.
+ *
+ * @param {String} selector The node selector
+ * @param {String} attribute The attribute name
+ * @return {String} value The attribute value
+ */
+async function getContentPageElementAttribute(selector, attribute) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, attribute],
+    (_selector, _attribute) => {
+      return content.document.querySelector(_selector).getAttribute(_attribute);
+    }
+  );
+}
+
+/**
+ * Set an attribute on a DOM Node living in the content page.
+ *
+ * @param {String} selector The node selector
+ * @param {String} attribute The attribute name
+ * @param {String} value The attribute value
+ */
+async function setContentPageElementAttribute(selector, attribute, value) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, attribute, value],
+    (_selector, _attribute, _value) => {
+      content.document
+        .querySelector(_selector)
+        .setAttribute(_attribute, _value);
+    }
+  );
+}
+
+/**
+ * Remove an attribute from a DOM Node living in the content page.
+ *
+ * @param {String} selector The node selector
+ * @param {String} attribute The attribute name
+ */
+async function removeContentPageElementAttribute(selector, attribute) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, attribute],
+    (_selector, _attribute) => {
+      content.document.querySelector(_selector).removeAttribute(_attribute);
+    }
+  );
+}
+
+/**
+ * Get the rule editor from the rule-view given its index
+ *
+ * @param {CssRuleView} ruleView
+ *        The instance of the rule-view panel
+ * @param {Number} childrenIndex
+ *        The children index of the element to get
+ * @param {Number} nodeIndex
+ *        The child node index of the element to get
+ * @return {DOMNode} The rule editor if any at this index
+ */
+function getRuleViewRuleEditor(ruleView, childrenIndex, nodeIndex) {
+  const child = ruleView.element.children[childrenIndex];
+  if (!child) {
+    return null;
+  }
+
+  return nodeIndex !== undefined
+    ? child.childNodes[nodeIndex]?._ruleEditor
+    : child._ruleEditor;
+}
+
+/**
+ * Get the TextProperty instance corresponding to a CSS declaration
+ * from a CSS rule in the Rules view.
+ *
+ * @param  {RuleView} ruleView
+ *         Instance of RuleView.
+ * @param  {Number} ruleIndex
+ *         The index of the CSS rule where to find the declaration.
+ * @param  {Object} declaration
+ *         An object representing the target declaration e.g. { color: red }.
+ *         The first TextProperty instance which matches will be returned.
+ * @return {TextProperty}
+ */
+function getTextProperty(ruleView, ruleIndex, declaration) {
+  const ruleEditor = getRuleViewRuleEditor(ruleView, ruleIndex);
+  const [[name, value]] = Object.entries(declaration);
+  const textProp = ruleEditor.rule.textProps.find(prop => {
+    return prop.name === name && prop.value === value;
+  });
+
+  if (!textProp) {
+    throw Error(
+      `Declaration ${name}:${value} not found on rule at index ${ruleIndex}`
+    );
+  }
+
+  return textProp;
+}
+
+/**
+ * Simulate changing the value of a property in a rule in the rule-view.
+ *
+ * @param {CssRuleView} ruleView
+ *        The instance of the rule-view panel
+ * @param {TextProperty} textProp
+ *        The instance of the TextProperty to be changed
+ * @param {String} value
+ *        The new value to be used. If null is passed, then the value will be
+ *        deleted
+ * @param {Object} options
+ * @param {Boolean} options.blurNewProperty
+ *        After the value has been changed, a new property would have been
+ *        focused. This parameter is true by default, and that causes the new
+ *        property to be blurred. Set to false if you don't want this.
+ * @param {number} options.flushCount
+ *        The ruleview uses a manual flush for tests only, and some properties are
+ *        only updated after several flush. Allow tests to trigger several flushes
+ *        if necessary. Defaults to 1.
+ */
+async function setProperty(
+  ruleView,
+  textProp,
+  value,
+  { blurNewProperty = true, flushCount = 1 } = {}
+) {
+  info("Set property to: " + value);
+  await focusEditableField(ruleView, textProp.editor.valueSpan);
+
+  // Because of the manual flush approach used for tests, we might have an
+  // unknown number of debounced "preview" requests . Each preview should
+  // synchronously emit "start-preview-property-value".
+  // Listen to both this event and "ruleview-changed" which is emitted at the
+  // end of a preview and make sure each preview completes successfully.
+  let previewStartedCounter = 0;
+  const onStartPreview = () => previewStartedCounter++;
+  ruleView.on("start-preview-property-value", onStartPreview);
+
+  let previewCounter = 0;
+  const onPreviewApplied = () => previewCounter++;
+  ruleView.on("ruleview-changed", onPreviewApplied);
+
+  if (value === null) {
+    const onPopupOpened = once(ruleView.popup, "popup-opened");
+    EventUtils.synthesizeKey("VK_DELETE", {}, ruleView.styleWindow);
+    await onPopupOpened;
+  } else {
+    await wait(500);
+    EventUtils.sendString(value, ruleView.styleWindow);
+  }
+
+  info(`Flush debounced ruleview methods (remaining: ${flushCount})`);
+  ruleView.debounce.flush();
+  await waitFor(() => previewCounter >= previewStartedCounter);
+
+  flushCount--;
+
+  while (flushCount > 0) {
+    // Wait for some time before triggering a new flush to let new debounced
+    // functions queue in-between.
+    await wait(100);
+
+    info(`Flush debounced ruleview methods (remaining: ${flushCount})`);
+    ruleView.debounce.flush();
+    await waitFor(() => previewCounter >= previewStartedCounter);
+
+    flushCount--;
+  }
+
+  ruleView.off("start-preview-property-value", onStartPreview);
+  ruleView.off("ruleview-changed", onPreviewApplied);
+
+  const onValueDone = ruleView.once("ruleview-changed");
+  // In case the popup was opened, wait until it closes
+  let onPopupClosed;
+  if (ruleView.popup?.isOpen) {
+    // it might happen that the popup is still in the process of being opened,
+    // so wait until it's properly opened
+    await ruleView.popup._pendingShowPromise;
+    onPopupClosed = once(ruleView.popup, "popup-closed");
+  }
+
+  EventUtils.synthesizeKey(
+    blurNewProperty ? "VK_RETURN" : "VK_TAB",
+    {},
+    ruleView.styleWindow
+  );
+
+  info("Waiting for another ruleview-changed after setting property");
+  await onValueDone;
+
+  const focusNextOnEnter = Services.prefs.getBoolPref(
+    "devtools.inspector.rule-view.focusNextOnEnter"
+  );
+  if (blurNewProperty && !focusNextOnEnter) {
+    info("Force blur on the active element");
+    ruleView.styleDocument.activeElement.blur();
+  }
+  await onPopupClosed;
 }

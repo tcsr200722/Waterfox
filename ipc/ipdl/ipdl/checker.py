@@ -3,8 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import print_function
-
 import sys
 from ipdl.ast import Visitor, ASYNC
 
@@ -22,12 +20,12 @@ class SyncMessageChecker(Visitor):
         return "%s::%s" % (self.currentProtocol, msg)
 
     def errorUnknownSyncMessage(self, loc, msg):
-        self.errors.append('%s: error: Unknown sync IPC message %s' %
-                           (str(loc), msg))
+        self.errors.append("%s: error: Unknown sync IPC message %s" % (str(loc), msg))
 
     def errorAsyncMessageCanRemove(self, loc, msg):
-        self.errors.append('%s: error: IPC message %s is async, can be delisted' %
-                           (str(loc), msg))
+        self.errors.append(
+            "%s: error: IPC message %s is async, can be delisted" % (str(loc), msg)
+        )
 
     def visitProtocol(self, p):
         self.errors = []
@@ -46,7 +44,9 @@ class SyncMessageChecker(Visitor):
 
     @staticmethod
     def getFixedSyncMessages():
-        return set(SyncMessageChecker.syncMsgList) - set(SyncMessageChecker.seenSyncMessages)
+        return set(SyncMessageChecker.syncMsgList) - set(
+            SyncMessageChecker.seenSyncMessages
+        )
 
 
 def checkSyncMessage(tu, syncMsgList, errout=sys.stderr):
@@ -63,12 +63,17 @@ def checkFixedSyncMessages(config, errout=sys.stderr):
     fixed = SyncMessageChecker.getFixedSyncMessages()
     error_free = True
     for item in fixed:
-        protocol = item.split('::')[0]
+        protocol = item.split("::")[0]
         # Ignore things like sync messages in test protocols we didn't compile.
         # Also, ignore platform-specific IPC messages.
-        if protocol in SyncMessageChecker.seenProtocols and \
-           'platform' not in config.options(item):
-            print('Error: Sync IPC message %s not found, it appears to be fixed.\n'
-                  'Please remove it from sync-messages.ini.' % item, file=errout)
+        if (
+            protocol in SyncMessageChecker.seenProtocols
+            and "platform" not in config.options(item)
+        ):
+            print(
+                "Error: Sync IPC message %s not found, it appears to be fixed.\n"
+                "Please remove it from sync-messages.ini." % item,
+                file=errout,
+            )
             error_free = False
     return error_free

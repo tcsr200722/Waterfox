@@ -11,7 +11,6 @@
 #include "nsIContentPolicy.h"
 #include "nsIChannel.h"
 #include "nsIChannelEventSink.h"
-#include "nsDataHashtable.h"
 
 #define CSPSERVICE_CONTRACTID "@mozilla.org/cspservice;1"
 #define CSPSERVICE_CID                               \
@@ -31,7 +30,6 @@ class CSPService : public nsIContentPolicy, public nsIChannelEventSink {
   // helper function to avoid creating a new instance of the
   // cspservice everytime we call content policies.
   static nsresult ConsultCSP(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
-                             const nsACString& aMimeTypeGuess,
                              int16_t* aDecision);
 
   // Static helper to check CSP when doing a channel redirect.
@@ -40,7 +38,7 @@ class CSPService : public nsIContentPolicy, public nsIChannelEventSink {
   // an nsresult to Cancel the old channel with.
   static nsresult ConsultCSPForRedirect(nsIURI* aOriginalURI, nsIURI* aNewURI,
                                         nsILoadInfo* aLoadInfo,
-                                        Maybe<nsresult>& aCancelCode);
+                                        mozilla::Maybe<nsresult>& aCancelCode);
 
  protected:
   virtual ~CSPService();

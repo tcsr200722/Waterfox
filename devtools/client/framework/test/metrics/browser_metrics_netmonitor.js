@@ -12,7 +12,7 @@
 const TEST_URL =
   "data:text/html;charset=UTF-8,<div>Netmonitor modules load test</div>";
 
-add_task(async function() {
+add_task(async function () {
   const toolbox = await openNewTabAndToolbox(TEST_URL, "netmonitor");
   const toolboxBrowserLoader = toolbox.win.getBrowserLoaderForWindow();
 
@@ -29,10 +29,9 @@ add_task(async function() {
   // Uncomment after Bug 1581068 is fixed, otherwise the test might fail too
   // frequently.
 
-  // const whitelist = [
+  // const allowedDupes = [
   //   "@loader/unload.js",
   //   "@loader/options.js",
-  //   "chrome.js",
   //   "resource://devtools/client/netmonitor/src/api.js",
   //   "resource://devtools/client/shared/vendor/redux.js",
   //   "resource://devtools/client/netmonitor/src/connector/index.js",
@@ -40,7 +39,6 @@ add_task(async function() {
   //   "resource://devtools/client/netmonitor/src/constants.js",
   //   "resource://devtools/client/netmonitor/src/middleware/batching.js",
   //   "resource://devtools/client/netmonitor/src/middleware/prefs.js",
-  //   "resource://devtools/client/netmonitor/src/middleware/thunk.js",
   //   "resource://devtools/client/netmonitor/src/middleware/recording.js",
   //   "resource://devtools/client/netmonitor/src/selectors/index.js",
   //   "resource://devtools/client/netmonitor/src/selectors/requests.js",
@@ -54,7 +52,7 @@ add_task(async function() {
   //   "resource://devtools/client/netmonitor/src/selectors/search.js",
   //   "resource://devtools/client/netmonitor/src/selectors/timing-markers.js",
   //   "resource://devtools/client/netmonitor/src/selectors/ui.js",
-  //   "resource://devtools/client/netmonitor/src/selectors/web-sockets.js",
+  //   "resource://devtools/client/netmonitor/src/selectors/messages.js",
   //   "resource://devtools/client/netmonitor/src/middleware/throttling.js",
   //   "resource://devtools/client/shared/components/throttling/actions.js",
   //   "resource://devtools/client/netmonitor/src/middleware/event-telemetry.js",
@@ -66,7 +64,7 @@ add_task(async function() {
   //   "resource://devtools/client/netmonitor/src/reducers/filters.js",
   //   "resource://devtools/client/netmonitor/src/reducers/timing-markers.js",
   //   "resource://devtools/client/netmonitor/src/reducers/ui.js",
-  //   "resource://devtools/client/netmonitor/src/reducers/web-sockets.js",
+  //   "resource://devtools/client/netmonitor/src/reducers/messages.js",
   //   "resource://devtools/client/shared/components/throttling/reducer.js",
   //   "resource://devtools/client/netmonitor/src/actions/index.js",
   //   "resource://devtools/client/netmonitor/src/actions/batching.js",
@@ -76,12 +74,12 @@ add_task(async function() {
   //   "resource://devtools/client/netmonitor/src/actions/sort.js",
   //   "resource://devtools/client/netmonitor/src/actions/timing-markers.js",
   //   "resource://devtools/client/netmonitor/src/actions/ui.js",
-  //   "resource://devtools/client/netmonitor/src/actions/web-sockets.js",
+  //   "resource://devtools/client/netmonitor/src/actions/messages.js",
   //   "resource://devtools/client/netmonitor/src/actions/search.js",
   //   "resource://devtools/client/netmonitor/src/workers/search/index.js",
-  //   "resource://devtools/client/netmonitor/src/workers/worker-utils.js",
+  //   "resource://devtools/client/shared/worker-utils",
   // ];
-  // runDuplicatedModulesTest(loaders, whitelist);
+  // runDuplicatedModulesTest(loaders, allowedDupes);
 
   runMetricsTest({
     filterString: "devtools/client/netmonitor",

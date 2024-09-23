@@ -301,10 +301,11 @@ static CK_FUNCTION_LIST sftk_fipsTable_v2 = {
 static CK_INTERFACE fips_interfaces[] = {
     { (CK_UTF8CHAR_PTR) "PKCS 11", &sftk_fipsTable, NSS_INTERFACE_FLAGS },
     { (CK_UTF8CHAR_PTR) "PKCS 11", &sftk_fipsTable_v2, NSS_INTERFACE_FLAGS },
-    { (CK_UTF8CHAR_PTR) "Vendor NSS Module Interface", &sftk_module_funcList, NSS_INTERFACE_FLAGS }
+    { (CK_UTF8CHAR_PTR) "Vendor NSS Module Interface", &sftk_module_funcList, NSS_INTERFACE_FLAGS },
+    { (CK_UTF8CHAR_PTR) "Vendor NSS FIPS Interface", &sftk_fips_funcList, NSS_INTERFACE_FLAGS }
 };
 /* must match the count of interfaces in fips_interfaces above*/
-#define FIPS_INTERFACE_COUNT 3
+#define FIPS_INTERFACE_COUNT 4
 
 /* CKO_NOT_A_KEY can be any object class that's not a key object. */
 #define CKO_NOT_A_KEY CKO_DATA
@@ -528,15 +529,22 @@ FC_Initialize(CK_VOID_PTR pReserved)
 {
     const char *envp;
     CK_RV crv;
+    PRBool rerun;
 
     if ((envp = PR_GetEnv("NSS_ENABLE_AUDIT")) != NULL) {
         sftk_audit_enabled = (atoi(envp) == 1);
     }
 
+    /* if we have the forcePOST flag on, rerun the integrity checks */
+    /* we need to know this before we fully parse the arguments in
+     * nsc_CommonInitialize, so read it now */
+    rerun = sftk_RawArgHasFlag("flags", "forcePost", pReserved);
+
     /* At this point we should have already done post and integrity checks.
      * if we haven't, it probably means the FIPS product has not been installed
-     * or the tests failed. Don't let an application try to enter FIPS mode */
-    crv = sftk_FIPSEntryOK();
+     * or the tests failed. Don't let an application try to enter FIPS mode. This
+     * also forces the tests to be rerun if forcePOST is set. */
+    crv = sftk_FIPSEntryOK(rerun);
     if (crv != CKR_OK) {
         sftk_fatalError = PR_TRUE;
         fc_log_init_error(crv);
@@ -650,7 +658,7 @@ FC_GetMechanismList(CK_SLOT_ID slotID,
     CHECK_FORK();
 
     SFTK_FIPSFATALCHECK();
-    if ((slotID == FIPS_SLOT_ID) || (slotID >= SFTK_MIN_FIPS_USER_SLOT_ID)) {
+    if (sftk_isFIPS(slotID)) {
         slotID = NETSCAPE_SLOT_ID;
     }
     /* FIPS Slots support all functions */
@@ -666,7 +674,7 @@ FC_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type,
     CHECK_FORK();
 
     SFTK_FIPSFATALCHECK();
-    if ((slotID == FIPS_SLOT_ID) || (slotID >= SFTK_MIN_FIPS_USER_SLOT_ID)) {
+    if (sftk_isFIPS(slotID)) {
         slotID = NETSCAPE_SLOT_ID;
     }
     /* FIPS Slots support all functions */
@@ -682,7 +690,7 @@ FC_GetMechanismInfoV2(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type,
     CHECK_FORK();
 
     SFTK_FIPSFATALCHECK();
-    if ((slotID == FIPS_SLOT_ID) || (slotID >= SFTK_MIN_FIPS_USER_SLOT_ID)) {
+    if (sftk_isFIPS(slotID)) {
         slotID = NETSCAPE_SLOT_ID;
     }
     /* FIPS Slots support all functions */

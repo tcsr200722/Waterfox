@@ -11,11 +11,7 @@ const crossHelloDoc = CROSS_URI + "hello.html";
 
 const sw = BASE_URI + "fetch.js";
 
-const gIsParentInterceptEnabled = Cc["@mozilla.org/serviceworkers/manager;1"]
-  .getService(Ci.nsIServiceWorkerManager)
-  .isParentInterceptEnabled();
-
-async function checkObserver({ aInput, isParentInterceptEnabled }) {
+async function checkObserver(aInput) {
   let interceptedChannel = null;
 
   // We always get two channels which receive the "http-on-stop-request"
@@ -70,28 +66,7 @@ async function checkObserver({ aInput, isParentInterceptEnabled }) {
       },
       { start: tc.handleFetchEventStartTime, end: tc.handleFetchEventEndTime },
     ];
-    if (aInput.swPresent) {
-      // TODO: remove this condition (but keep the if statement's body) when
-      // bug 1577829 is resolved.
-      if (!isParentInterceptEnabled) {
-        serviceWorkerTimings.reduce((aPreviousTimings, aCurrentTimings) => {
-          ok(aPreviousTimings.start !== 0, "Start time check.");
-          ok(
-            aPreviousTimings.start <= aCurrentTimings.start,
-            "Start time order check."
-          );
-          ok(
-            aPreviousTimings.end <= aCurrentTimings.end,
-            "End time order check."
-          );
-          ok(
-            aCurrentTimings.start <= aCurrentTimings.end,
-            "Start time should be smaller than end time."
-          );
-          return aCurrentTimings;
-        });
-      }
-    } else {
+    if (!aInput.swPresent) {
       serviceWorkerTimings.forEach(aTimings => {
         is(aTimings.start, 0, "SW timings should be 0.");
         is(aTimings.end, 0, "SW timings should be 0.");
@@ -110,7 +85,11 @@ async function checkObserver({ aInput, isParentInterceptEnabled }) {
     ];
     if (aInput.fetch) {
       networkTimings.reduce((aPreviousTiming, aCurrentTiming) => {
-        ok(aPreviousTiming <= aCurrentTiming, "Checking network timings");
+        Assert.lessOrEqual(
+          aPreviousTiming,
+          aCurrentTiming,
+          "Checking network timings"
+        );
         return aCurrentTiming;
       });
     } else {
@@ -168,15 +147,7 @@ async function fetchAndCheckObservers(
 ) {
   let promise = null;
 
-  let checkArgs = {
-    aInput: aTestCase,
-    isParentInterceptEnabled: gIsParentInterceptEnabled,
-  };
-  if (gIsParentInterceptEnabled) {
-    promise = checkObserver(checkArgs);
-  } else {
-    promise = SpecialPowers.spawn(aObserverBrowser, [checkArgs], checkObserver);
-  }
+  promise = checkObserver(aTestCase);
 
   await SpecialPowers.spawn(aFetchBrowser, [aTestCase.url], contentFetch);
   await promise;
@@ -189,19 +160,21 @@ async function registerSWAndWaitForActive(aServiceWorker) {
   await new Promise(resolve => {
     let worker = swr.installing || swr.waiting || swr.active;
     if (worker.state === "activated") {
-      return resolve();
+      resolve();
+      return;
     }
 
     worker.addEventListener("statechange", () => {
       if (worker.state === "activated") {
-        return resolve();
+        resolve();
       }
     });
   });
 
   await new Promise(resolve => {
     if (content.navigator.serviceWorker.controller) {
-      return resolve();
+      resolve();
+      return;
     }
 
     content.navigator.serviceWorker.addEventListener(

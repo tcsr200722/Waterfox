@@ -11,7 +11,10 @@
 #include "nsILoadInfo.h"
 #include "nsIPrincipal.h"
 #include "nsIURI.h"
+#include "nsJSUtils.h"
+#include "xpcpublic.h"
 
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/StaticPrefs_dom.h"
 
 /* static */
@@ -33,58 +36,55 @@ void DOMSecurityMonitor::AuditParsingOfHTMLXMLFragments(
   // originating from JS code.
   nsAutoString filename;
   uint32_t lineNum = 0;
-  uint32_t columnNum = 0;
+  uint32_t columnNum = 1;
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
-  if (!nsJSUtils::GetCallingLocation(cx, filename, &lineNum, &columnNum)) {
+  if (!cx ||
+      !nsJSUtils::GetCallingLocation(cx, filename, &lineNum, &columnNum)) {
     return;
   }
 
   // check if we should skip assertion. Please only ever set this pref to
   // true if really needed for testing purposes.
-  if (StaticPrefs::dom_security_skip_html_fragment_assertion()) {
+  if (mozilla::StaticPrefs::dom_security_skip_html_fragment_assertion()) {
     return;
   }
 
   /*
    * WARNING: Do not add any new entries to the htmlFragmentAllowlist
-   * withiout proper review from a dom:security peer!
+   * without proper review from a dom:security peer!
    */
   static nsLiteralCString htmlFragmentAllowlist[] = {
-      NS_LITERAL_CSTRING("chrome://global/content/elements/marquee.js"),
-      NS_LITERAL_CSTRING(
+      "chrome://global/content/elements/marquee.js"_ns,
+      nsLiteralCString(
           "chrome://pocket/content/panels/js/vendor/jquery-2.1.1.min.js"),
-      NS_LITERAL_CSTRING("chrome://browser/content/aboutNetError.js"),
-      NS_LITERAL_CSTRING("chrome://devtools/content/shared/sourceeditor/"
-                         "codemirror/codemirror.bundle.js"),
-      NS_LITERAL_CSTRING(
-          "chrome://devtools-startup/content/aboutdevtools/aboutdevtools.js"),
-      NS_LITERAL_CSTRING(
+      nsLiteralCString("chrome://devtools/content/shared/sourceeditor/"
+                       "codemirror/codemirror.bundle.js"),
+      nsLiteralCString(
           "resource://activity-stream/data/content/activity-stream.bundle.js"),
-      NS_LITERAL_CSTRING("resource://devtools/client/debugger/src/components/"
-                         "Editor/Breakpoint.js"),
-      NS_LITERAL_CSTRING("resource://devtools/client/debugger/src/components/"
-                         "Editor/ColumnBreakpoint.js"),
-      NS_LITERAL_CSTRING(
+      nsLiteralCString("resource://devtools/client/debugger/src/components/"
+                       "Editor/Breakpoint.js"),
+      nsLiteralCString("resource://devtools/client/debugger/src/components/"
+                       "Editor/ColumnBreakpoint.js"),
+      nsLiteralCString(
           "resource://devtools/client/shared/vendor/fluent-react.js"),
-      NS_LITERAL_CSTRING(
-          "resource://devtools/client/shared/vendor/react-dom.js"),
-      NS_LITERAL_CSTRING(
+      "resource://devtools/client/shared/vendor/react-dom.js"_ns,
+      nsLiteralCString(
           "resource://devtools/client/shared/vendor/react-dom-dev.js"),
-      NS_LITERAL_CSTRING(
+      nsLiteralCString(
           "resource://devtools/client/shared/widgets/FilterWidget.js"),
-      NS_LITERAL_CSTRING("resource://devtools/client/shared/widgets/tooltip/"
-                         "inactive-css-tooltip-helper.js"),
-      NS_LITERAL_CSTRING(
-          "resource://devtools/client/shared/widgets/Spectrum.js"),
-      NS_LITERAL_CSTRING("resource://gre/modules/narrate/VoiceSelect.jsm"),
-      NS_LITERAL_CSTRING("resource://normandy-vendor/ReactDOM.js"),
+      nsLiteralCString("resource://devtools/client/shared/widgets/tooltip/"
+                       "inactive-css-tooltip-helper.js"),
+      "resource://devtools/client/shared/widgets/Spectrum.js"_ns,
+      "resource://gre/modules/narrate/VoiceSelect.sys.mjs"_ns,
+      "resource://normandy-vendor/ReactDOM.js"_ns,
       // ------------------------------------------------------------------
       // test pages
       // ------------------------------------------------------------------
-      NS_LITERAL_CSTRING("chrome://mochikit/content/harness.xhtml"),
-      NS_LITERAL_CSTRING("chrome://mochikit/content/tests/"),
-      NS_LITERAL_CSTRING("chrome://mochitests/content/"),
-      NS_LITERAL_CSTRING("chrome://reftest/content/"),
+      "chrome://mochikit/content/browser-harness.xhtml"_ns,
+      "chrome://mochikit/content/harness.xhtml"_ns,
+      "chrome://mochikit/content/tests/"_ns,
+      "chrome://mochitests/content/"_ns,
+      "chrome://reftest/content/"_ns,
   };
 
   for (const nsLiteralCString& allowlistEntry : htmlFragmentAllowlist) {
@@ -106,6 +106,8 @@ void DOMSecurityMonitor::AuditParsingOfHTMLXMLFragments(
           "(fragment: %s)",
           uriSpec.get(), NS_ConvertUTF16toUTF8(filename).get(), lineNum,
           columnNum, NS_ConvertUTF16toUTF8(aFragment).get());
+
+  xpc_DumpJSStack(true, true, false);
   MOZ_ASSERT(false);
 }
 

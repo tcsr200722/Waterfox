@@ -24,9 +24,9 @@ class nsWifiAccessPoint final : public nsIWifiAccessPoint {
 
   nsWifiAccessPoint();
 
-  char mMac[18];
+  char mMac[18]{0};
   int mSignal;
-  char mSsid[33];
+  char mSsid[33]{0};
   int mSsidLen;
 
   void setSignal(int signal) { mSignal = signal; }
@@ -67,13 +67,12 @@ class nsWifiAccessPoint final : public nsIWifiAccessPoint {
       mSsidLen = 0;
     }
   }
+
+  // 3-value compare for nsWifiAccessPoint
+  int Compare(const nsWifiAccessPoint& o) const;
+
+  bool operator==(const nsWifiAccessPoint& o) const;
+  bool operator!=(const nsWifiAccessPoint& o) const { return !(*this == o); }
 };
-
-// Helper functions
-
-bool AccessPointsEqual(nsCOMArray<nsWifiAccessPoint>& a,
-                       nsCOMArray<nsWifiAccessPoint>& b);
-void ReplaceArray(nsCOMArray<nsWifiAccessPoint>& a,
-                  nsCOMArray<nsWifiAccessPoint>& b);
 
 #endif

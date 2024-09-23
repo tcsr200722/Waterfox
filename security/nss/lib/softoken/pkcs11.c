@@ -37,6 +37,7 @@
 #include "secasn1.h"
 #include "secerr.h"
 #include "lgglue.h"
+#include "kem.h"
 
 PRBool parentForkedAfterC_Initialize;
 
@@ -60,6 +61,11 @@ PRBool usePthread_atfork;
 
 #endif
 
+#ifdef XP_UNIX
+#define LIB_PARAM_DEFAULT_FILE_LOCATION "/etc/nss/params.config"
+#endif
+
+#define LIB_PARAM_DEFAULT " configdir='' certPrefix='' keyPrefix='' secmod='' flags=noCertDB,noModDB "
 /*
  * ******************** Static data *******************************
  */
@@ -75,7 +81,6 @@ static char libraryDescription_space[33];
  * failure so that there are at most 60 login attempts per minute.
  */
 static PRIntervalTime loginWaitTime;
-static PRUint32 minSessionObjectHandle = 1U;
 
 #define __PASTE(x, y) x##y
 
@@ -93,6 +98,17 @@ static PRUint32 minSessionObjectHandle = 1U;
 #define CK_NEED_ARG_LIST 1
 
 #include "pkcs11f.h"
+
+#ifndef NSS_FIPS_DISABLE
+/* ------------- forward declare all the FIPS functions ------------- */
+#undef CK_NEED_ARG_LIST
+#undef CK_PKCS11_FUNCTION_INFO
+
+#define CK_PKCS11_FUNCTION_INFO(name) CK_RV __PASTE(F, name)
+#define CK_NEED_ARG_LIST 1
+
+#include "pkcs11f.h"
+#endif
 
 /* build the crypto module table */
 static CK_FUNCTION_LIST_3_0 sftk_funcList = {
@@ -145,16 +161,34 @@ CK_NSS_MODULE_FUNCTIONS sftk_module_funcList = {
     NSC_ModuleDBFunc
 };
 
+static CK_RV
+nsc_NSSGetFIPSStatus(CK_SESSION_HANDLE hSession,
+                     CK_OBJECT_HANDLE hObject,
+                     CK_ULONG ulOperationType,
+                     CK_ULONG *pulFIPSStatus);
+CK_NSS_FIPS_FUNCTIONS sftk_fips_funcList = {
+    { 1, 0 },
+    nsc_NSSGetFIPSStatus
+};
+
+CK_NSS_KEM_FUNCTIONS sftk_kem_funcList = {
+    { 1, 0 },
+    NSC_Encapsulate,
+    NSC_Decapsulate
+};
+
 /*
  * Array is orderd by default first
  */
 static CK_INTERFACE nss_interfaces[] = {
     { (CK_UTF8CHAR_PTR) "PKCS 11", &sftk_funcList, NSS_INTERFACE_FLAGS },
     { (CK_UTF8CHAR_PTR) "PKCS 11", &sftk_funcList_v2, NSS_INTERFACE_FLAGS },
-    { (CK_UTF8CHAR_PTR) "Vendor NSS Module Interface", &sftk_module_funcList, NSS_INTERFACE_FLAGS }
+    { (CK_UTF8CHAR_PTR) "Vendor NSS Module Interface", &sftk_module_funcList, NSS_INTERFACE_FLAGS },
+    { (CK_UTF8CHAR_PTR) "Vendor NSS FIPS Interface", &sftk_fips_funcList, NSS_INTERFACE_FLAGS },
+    { (CK_UTF8CHAR_PTR) "Vendor NSS KEM Interface", &sftk_kem_funcList, NSS_INTERFACE_FLAGS }
 };
 /* must match the count of interfaces in nss_interfaces above */
-#define NSS_INTERFACE_COUNT 3
+#define NSS_INTERFACE_COUNT 5
 
 /* List of DES Weak Keys */
 typedef unsigned char desKey[8];
@@ -248,7 +282,7 @@ static const unsigned char parityTable[256] = {
     /* Odd....0xe0,0xe2,0xe4,0xe6,0xe8,0xea,0xec,0xee */
     /* O */ 0xe0, 0xe3, 0xe5, 0xe6, 0xe9, 0xea, 0xec, 0xef,
     /* Even...0xf0,0xf2,0xf4,0xf6,0xf8,0xfa,0xfc,0xfe */
-    /* E */ 0xf1, 0xf2, 0xf4, 0xf7, 0xf8, 0xfb, 0xfd, 0xfe,
+    /* E */ 0xf1, 0xf2, 0xf4, 0xf7, 0xf8, 0xfb, 0xfd, 0xfe
 };
 
 /* Mechanisms */
@@ -276,6 +310,7 @@ struct mechanismList {
 #define CKF_EC_PNU CKF_EC_F_P | CKF_EC_NAMEDCURVE | CKF_EC_UNCOMPRESS
 
 #define CKF_EC_BPNU CKF_EC_F_2M | CKF_EC_PNU
+#define CKF_EC_POC CKF_EC_F_P | CKF_EC_OID | CKF_EC_COMPRESS
 
 #define CK_MAX 0xffffffff
 
@@ -318,6 +353,11 @@ static const struct mechanismList mechanisms[] = {
     { CKM_SHA256_RSA_PKCS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
     { CKM_SHA384_RSA_PKCS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
     { CKM_SHA512_RSA_PKCS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA1_RSA_PKCS_PSS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA224_RSA_PKCS_PSS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA256_RSA_PKCS_PSS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA384_RSA_PKCS_PSS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA512_RSA_PKCS_PSS, { RSA_MIN_MODULUS_BITS, CK_MAX, CKF_SN_VR }, PR_TRUE },
     /* ------------------------- DSA Operations --------------------------- */
     { CKM_DSA_KEY_PAIR_GEN, { DSA_MIN_P_BITS, DSA_MAX_P_BITS, CKF_GENERATE_KEY_PAIR }, PR_TRUE },
     { CKM_DSA, { DSA_MIN_P_BITS, DSA_MAX_P_BITS, CKF_SN_VR }, PR_TRUE },
@@ -340,6 +380,8 @@ static const struct mechanismList mechanisms[] = {
     { CKM_ECDSA_SHA256, { EC_MIN_KEY_BITS, EC_MAX_KEY_BITS, CKF_SN_VR | CKF_EC_BPNU }, PR_TRUE },
     { CKM_ECDSA_SHA384, { EC_MIN_KEY_BITS, EC_MAX_KEY_BITS, CKF_SN_VR | CKF_EC_BPNU }, PR_TRUE },
     { CKM_ECDSA_SHA512, { EC_MIN_KEY_BITS, EC_MAX_KEY_BITS, CKF_SN_VR | CKF_EC_BPNU }, PR_TRUE },
+    { CKM_EC_EDWARDS_KEY_PAIR_GEN, { ECD_MIN_KEY_BITS, ECD_MAX_KEY_BITS, CKF_GENERATE_KEY_PAIR }, PR_TRUE },
+    { CKM_EDDSA, { ECD_MIN_KEY_BITS, ECD_MAX_KEY_BITS, CKF_SN_VR | CKF_EC_POC }, PR_TRUE },
     /* ------------------------- RC2 Operations --------------------------- */
     { CKM_RC2_KEY_GEN, { 1, 128, CKF_GENERATE }, PR_TRUE },
     { CKM_RC2_ECB, { 1, 128, CKF_EN_DE_WR_UN }, PR_TRUE },
@@ -407,6 +449,7 @@ static const struct mechanismList mechanisms[] = {
     { CKM_NSS_CHACHA20_POLY1305, { 32, 32, CKF_EN_DE }, PR_TRUE },
     { CKM_NSS_CHACHA20_CTR, { 32, 32, CKF_EN_DE }, PR_TRUE },
     { CKM_CHACHA20_KEY_GEN, { 32, 32, CKF_GENERATE }, PR_TRUE },
+    { CKM_CHACHA20, { 32, 32, CKF_EN_DE }, PR_TRUE },
     { CKM_CHACHA20_POLY1305, { 32, 32, CKF_EN_DE_MSG }, PR_TRUE },
 #endif /* NSS_DISABLE_CHACHAPOLY */
     /* ------------------------- Hashing Operations ----------------------- */
@@ -431,6 +474,18 @@ static const struct mechanismList mechanisms[] = {
     { CKM_SHA512, { 0, 0, CKF_DIGEST }, PR_FALSE },
     { CKM_SHA512_HMAC, { 1, 128, CKF_SN_VR }, PR_TRUE },
     { CKM_SHA512_HMAC_GENERAL, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_224, { 0, 0, CKF_DIGEST }, PR_FALSE },
+    { CKM_SHA3_224_HMAC, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_224_HMAC_GENERAL, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_256, { 0, 0, CKF_DIGEST }, PR_FALSE },
+    { CKM_SHA3_256_HMAC, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_256_HMAC_GENERAL, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_384, { 0, 0, CKF_DIGEST }, PR_FALSE },
+    { CKM_SHA3_384_HMAC, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_384_HMAC_GENERAL, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_512, { 0, 0, CKF_DIGEST }, PR_FALSE },
+    { CKM_SHA3_512_HMAC, { 1, 128, CKF_SN_VR }, PR_TRUE },
+    { CKM_SHA3_512_HMAC_GENERAL, { 1, 128, CKF_SN_VR }, PR_TRUE },
     { CKM_TLS_PRF_GENERAL, { 0, 512, CKF_SN_VR }, PR_FALSE },
     { CKM_TLS_MAC, { 0, 512, CKF_SN_VR }, PR_FALSE },
     { CKM_NSS_TLS_PRF_GENERAL_SHA256,
@@ -586,11 +641,14 @@ static const struct mechanismList mechanisms[] = {
     /* -------------------- Constant Time TLS MACs ----------------------- */
     { CKM_NSS_HMAC_CONSTANT_TIME, { 0, 0, CKF_DIGEST }, PR_TRUE },
     { CKM_NSS_SSL3_MAC_CONSTANT_TIME, { 0, 0, CKF_DIGEST }, PR_TRUE },
-    /* --------------------IPSEC ----------------------- */
+    /* -------------------- IPSEC ----------------------- */
     { CKM_NSS_IKE_PRF_PLUS_DERIVE, { 8, 255 * 64, CKF_DERIVE }, PR_TRUE },
     { CKM_NSS_IKE_PRF_DERIVE, { 8, 64, CKF_DERIVE }, PR_TRUE },
     { CKM_NSS_IKE1_PRF_DERIVE, { 8, 64, CKF_DERIVE }, PR_TRUE },
-    { CKM_NSS_IKE1_APP_B_PRF_DERIVE, { 8, 255 * 64, CKF_DERIVE }, PR_TRUE }
+    { CKM_NSS_IKE1_APP_B_PRF_DERIVE, { 8, 255 * 64, CKF_DERIVE }, PR_TRUE },
+    /* -------------------- Kyber Operations ----------------------- */
+    { CKM_NSS_KYBER_KEY_PAIR_GEN, { 0, 0, CKF_GENERATE_KEY_PAIR }, PR_TRUE },
+    { CKM_NSS_KYBER, { 0, 0, 0 }, PR_TRUE },
 };
 static const CK_ULONG mechanismCount = sizeof(mechanisms) / sizeof(mechanisms[0]);
 
@@ -1019,6 +1077,8 @@ sftk_handlePublicKeyObject(SFTKSession *session, SFTKObject *object,
             recover = CK_FALSE;
             wrap = CK_FALSE;
             break;
+        case CKK_EC_MONTGOMERY:
+        case CKK_EC_EDWARDS:
         case CKK_EC:
             if (!sftk_hasAttribute(object, CKA_EC_PARAMS)) {
                 return CKR_TEMPLATE_INCOMPLETE;
@@ -1026,8 +1086,19 @@ sftk_handlePublicKeyObject(SFTKSession *session, SFTKObject *object,
             if (!sftk_hasAttribute(object, CKA_EC_POINT)) {
                 return CKR_TEMPLATE_INCOMPLETE;
             }
-            derive = CK_TRUE; /* for ECDH */
-            verify = CK_TRUE; /* for ECDSA */
+            /* for ECDSA and EDDSA. Change if the structure of any of them is modified. */
+            derive = (key_type == CKK_EC_EDWARDS) ? CK_FALSE : CK_TRUE; /* CK_TRUE for ECDH */
+            verify = CK_TRUE;                                           /* for ECDSA and EDDSA */
+            encrypt = CK_FALSE;
+            recover = CK_FALSE;
+            wrap = CK_FALSE;
+            break;
+        case CKK_NSS_KYBER:
+            if (!sftk_hasAttribute(object, CKA_NSS_PARAMETER_SET)) {
+                return CKR_TEMPLATE_INCOMPLETE;
+            }
+            derive = CK_FALSE;
+            verify = CK_FALSE;
             encrypt = CK_FALSE;
             recover = CK_FALSE;
             wrap = CK_FALSE;
@@ -1064,7 +1135,7 @@ sftk_handlePublicKeyObject(SFTKSession *session, SFTKObject *object,
     object->infoFree = (SFTKFree)nsslowkey_DestroyPublicKey;
 
     /* Check that an imported EC key is valid */
-    if (key_type == CKK_EC) {
+    if (key_type == CKK_EC || key_type == CKK_EC_EDWARDS || key_type == CKK_EC_MONTGOMERY) {
         NSSLOWKEYPublicKey *pubKey = (NSSLOWKEYPublicKey *)object->objectInfo;
         SECStatus rv = EC_ValidatePublicKey(&pubKey->u.ec.ecParams,
                                             &pubKey->u.ec.publicValue);
@@ -1172,7 +1243,7 @@ sftk_handlePrivateKeyObject(SFTKSession *session, SFTKObject *object, CK_KEY_TYP
             crv = sftk_forceAttribute(object, CKA_NSS_DB,
                                       sftk_item_expand(&mod));
             if (mod.data)
-                PORT_Free(mod.data);
+                SECITEM_ZfreeItem(&mod, PR_FALSE);
             if (crv != CKR_OK)
                 return crv;
 
@@ -1196,19 +1267,28 @@ sftk_handlePrivateKeyObject(SFTKSession *session, SFTKObject *object, CK_KEY_TYP
             if (!sftk_hasAttribute(object, CKA_VALUE)) {
                 return CKR_TEMPLATE_INCOMPLETE;
             }
+            /* allow subprime to be set after the fact */
+            crv = sftk_defaultAttribute(object, CKA_SUBPRIME, NULL, 0);
+            if (crv != CKR_OK) {
+                return crv;
+            }
             encrypt = CK_FALSE;
             recover = CK_FALSE;
             wrap = CK_FALSE;
             break;
         case CKK_EC:
+        case CKK_EC_EDWARDS:
+        case CKK_EC_MONTGOMERY:
             if (!sftk_hasAttribute(object, CKA_EC_PARAMS)) {
                 return CKR_TEMPLATE_INCOMPLETE;
             }
             if (!sftk_hasAttribute(object, CKA_VALUE)) {
                 return CKR_TEMPLATE_INCOMPLETE;
             }
+            /* for ECDSA and EDDSA. Change if the structure of any of them is modified. */
+            derive = (key_type == CKK_EC_EDWARDS) ? CK_FALSE : CK_TRUE; /* CK_TRUE for ECDH */
+            sign = CK_TRUE;                                             /* for ECDSA and EDDSA */
             encrypt = CK_FALSE;
-            sign = CK_TRUE;
             recover = CK_FALSE;
             wrap = CK_FALSE;
             break;
@@ -1225,6 +1305,15 @@ sftk_handlePrivateKeyObject(SFTKSession *session, SFTKObject *object, CK_KEY_TYP
             encrypt = sign = recover = wrap = CK_FALSE;
             derive = CK_TRUE;
             createObjectInfo = PR_FALSE;
+            break;
+        case CKK_NSS_KYBER:
+            if (!sftk_hasAttribute(object, CKA_KEY_TYPE)) {
+                return CKR_TEMPLATE_INCOMPLETE;
+            }
+            if (!sftk_hasAttribute(object, CKA_VALUE)) {
+                return CKR_TEMPLATE_INCOMPLETE;
+            }
+            encrypt = sign = recover = wrap = CK_FALSE;
             break;
         default:
             return CKR_ATTRIBUTE_VALUE_INVALID;
@@ -1487,7 +1576,7 @@ sftk_handleKeyObject(SFTKSession *session, SFTKObject *object)
         case CKO_SECRET_KEY:
             /* make sure the required fields exist */
             return sftk_handleSecretKeyObject(session, object, key_type,
-                                              (PRBool)(session->slot->slotID == FIPS_SLOT_ID));
+                                              (PRBool)(sftk_isFIPS(session->slot->slotID)));
         default:
             break;
     }
@@ -1651,10 +1740,9 @@ sftk_handleObject(SFTKObject *object, SFTKSession *session)
 {
     SFTKSlot *slot = session->slot;
     SFTKAttribute *attribute;
-    SFTKObject *duplicateObject = NULL;
-    CK_OBJECT_HANDLE handle;
     CK_BBOOL ckfalse = CK_FALSE;
     CK_BBOOL cktrue = CK_TRUE;
+    PRBool isLoggedIn, needLogin;
     CK_RV crv;
 
     /* make sure all the base object types are defined. If not set the
@@ -1672,9 +1760,13 @@ sftk_handleObject(SFTKObject *object, SFTKSession *session)
     if (crv != CKR_OK)
         return crv;
 
+    PZ_Lock(slot->slotLock);
+    isLoggedIn = slot->isLoggedIn;
+    needLogin = slot->needLogin;
+    PZ_Unlock(slot->slotLock);
+
     /* don't create a private object if we aren't logged in */
-    if ((!slot->isLoggedIn) && (slot->needLogin) &&
-        (sftk_isTrue(object, CKA_PRIVATE))) {
+    if (!isLoggedIn && needLogin && sftk_isTrue(object, CKA_PRIVATE)) {
         return CKR_USER_NOT_LOGGED_IN;
     }
 
@@ -1696,24 +1788,7 @@ sftk_handleObject(SFTKObject *object, SFTKSession *session)
      * sftk_isToken examines the sign bit of the object's handle, but
      * sftk_isTrue(...,CKA_TOKEN) examines the CKA_TOKEN attribute.
      */
-    do {
-        PRUint32 wrappedAround;
-
-        duplicateObject = NULL;
-        PZ_Lock(slot->objectLock);
-        wrappedAround = slot->sessionObjectHandleCount & SFTK_TOKEN_MASK;
-        handle = slot->sessionObjectHandleCount & ~SFTK_TOKEN_MASK;
-        if (!handle) /* don't allow zero handle */
-            handle = minSessionObjectHandle;
-        slot->sessionObjectHandleCount = (handle + 1U) | wrappedAround;
-        /* Is there already a session object with this handle? */
-        if (wrappedAround) {
-            sftkqueue_find(duplicateObject, handle, slot->sessObjHashTable,
-                           slot->sessObjHashSize);
-        }
-        PZ_Unlock(slot->objectLock);
-    } while (duplicateObject != NULL);
-    object->handle = handle;
+    object->handle = sftk_getNextHandle(slot);
 
     /* get the object class */
     attribute = sftk_FindAttribute(object, CKA_CLASS);
@@ -1861,6 +1936,8 @@ sftk_GetPubKey(SFTKObject *object, CK_KEY_TYPE key_type,
             crv = sftk_Attribute2SSecItem(arena, &pubKey->u.dh.publicValue,
                                           object, CKA_VALUE);
             break;
+        case CKK_EC_EDWARDS:
+        case CKK_EC_MONTGOMERY:
         case CKK_EC:
             pubKey->keyType = NSSLOWKEYECKey;
             crv = sftk_Attribute2SSecItem(arena,
@@ -1890,8 +1967,8 @@ sftk_GetPubKey(SFTKObject *object, CK_KEY_TYPE key_type,
                 /* Handle the non-DER encoded case.
                  * Some curves are always pressumed to be non-DER.
                  */
-                if (pubKey->u.ec.publicValue.len == keyLen &&
-                    (pubKey->u.ec.ecParams.fieldID.type == ec_field_plain ||
+                if (pubKey->u.ec.ecParams.type != ec_params_named ||
+                    (pubKey->u.ec.publicValue.len == keyLen &&
                      pubKey->u.ec.publicValue.data[0] == EC_POINT_FORM_UNCOMPRESSED)) {
                     break; /* key was not DER encoded, no need to unwrap */
                 }
@@ -1911,8 +1988,7 @@ sftk_GetPubKey(SFTKObject *object, CK_KEY_TYPE key_type,
                         break;
                     }
                     /* we don't handle compressed points except in the case of ECCurve25519 */
-                    if ((pubKey->u.ec.ecParams.fieldID.type != ec_field_plain) &&
-                        (publicValue.data[0] != EC_POINT_FORM_UNCOMPRESSED)) {
+                    if (publicValue.data[0] != EC_POINT_FORM_UNCOMPRESSED) {
                         crv = CKR_ATTRIBUTE_VALUE_INVALID;
                         break;
                     }
@@ -1923,13 +1999,16 @@ sftk_GetPubKey(SFTKObject *object, CK_KEY_TYPE key_type,
                 crv = CKR_ATTRIBUTE_VALUE_INVALID;
             }
             break;
+        case CKK_NSS_KYBER:
+            crv = CKR_OK;
+            break;
         default:
             crv = CKR_KEY_TYPE_INCONSISTENT;
             break;
     }
     *crvp = crv;
     if (crv != CKR_OK) {
-        PORT_FreeArena(arena, PR_FALSE);
+        PORT_FreeArena(arena, PR_TRUE);
         return NULL;
     }
 
@@ -2031,7 +2110,8 @@ sftk_mkPrivKey(SFTKObject *object, CK_KEY_TYPE key_type, CK_RV *crvp)
             /* privKey was zero'd so public value is already set to NULL, 0
              * if we don't set it explicitly */
             break;
-
+        case CKK_EC_EDWARDS:
+        case CKK_EC_MONTGOMERY:
         case CKK_EC:
             privKey->keyType = NSSLOWKEYECKey;
             crv = sftk_Attribute2SSecItem(arena,
@@ -2077,6 +2157,9 @@ sftk_mkPrivKey(SFTKObject *object, CK_KEY_TYPE key_type, CK_RV *crvp)
             }
             break;
 
+        case CKK_NSS_KYBER:
+            break;
+
         default:
             crv = CKR_KEY_TYPE_INCONSISTENT;
             break;
@@ -2089,7 +2172,7 @@ sftk_mkPrivKey(SFTKObject *object, CK_KEY_TYPE key_type, CK_RV *crvp)
     }
     *crvp = crv;
     if (crv != CKR_OK) {
-        PORT_FreeArena(arena, PR_FALSE);
+        PORT_FreeArena(arena, PR_TRUE);
         return NULL;
     }
     return privKey;
@@ -2344,6 +2427,8 @@ sftk_PutPubKey(SFTKObject *publicKey, SFTKObject *privateKey, CK_KEY_TYPE keyTyp
                                         sftk_item_expand(&pubKey->u.dh.publicValue));
             break;
         case CKK_EC:
+        case CKK_EC_MONTGOMERY:
+        case CKK_EC_EDWARDS:
             sftk_DeleteAttributeType(publicKey, CKA_EC_PARAMS);
             sftk_DeleteAttributeType(publicKey, CKA_EC_POINT);
             crv = sftk_AddAttributeType(publicKey, CKA_EC_PARAMS,
@@ -2478,7 +2563,15 @@ NSC_GetFunctionList(CK_FUNCTION_LIST_PTR *pFunctionList)
 CK_RV
 C_GetFunctionList(CK_FUNCTION_LIST_PTR *pFunctionList)
 {
+#ifdef NSS_FIPS_DISABLED
     return NSC_GetFunctionList(pFunctionList);
+#else
+    if (NSS_GetSystemFIPSEnabled()) {
+        return FC_GetFunctionList(pFunctionList);
+    } else {
+        return NSC_GetFunctionList(pFunctionList);
+    }
+#endif
 }
 
 CK_RV
@@ -2499,7 +2592,15 @@ NSC_GetInterfaceList(CK_INTERFACE_PTR interfaces, CK_ULONG_PTR pulCount)
 CK_RV
 C_GetInterfaceList(CK_INTERFACE_PTR interfaces, CK_ULONG_PTR pulCount)
 {
+#ifdef NSS_FIPS_DISABLED
     return NSC_GetInterfaceList(interfaces, pulCount);
+#else
+    if (NSS_GetSystemFIPSEnabled()) {
+        return FC_GetInterfaceList(interfaces, pulCount);
+    } else {
+        return NSC_GetInterfaceList(interfaces, pulCount);
+    }
+#endif
 }
 
 /*
@@ -2532,7 +2633,15 @@ CK_RV
 C_GetInterface(CK_UTF8CHAR_PTR pInterfaceName, CK_VERSION_PTR pVersion,
                CK_INTERFACE_PTR_PTR ppInterface, CK_FLAGS flags)
 {
+#ifdef NSS_FIPS_DISABLED
     return NSC_GetInterface(pInterfaceName, pVersion, ppInterface, flags);
+#else
+    if (NSS_GetSystemFIPSEnabled()) {
+        return FC_GetInterface(pInterfaceName, pVersion, ppInterface, flags);
+    } else {
+        return NSC_GetInterface(pInterfaceName, pVersion, ppInterface, flags);
+    }
+#endif
 }
 
 static PLHashNumber
@@ -2561,7 +2670,7 @@ sftk_getDefTokName(CK_SLOT_ID slotID)
         default:
             break;
     }
-    sprintf(buf, "NSS Application Token %08x  ", (unsigned int)slotID);
+    snprintf(buf, sizeof(buf), "NSS Application Token %08x  ", (unsigned int)slotID);
     return buf;
 }
 
@@ -2580,9 +2689,9 @@ sftk_getDefSlotName(CK_SLOT_ID slotID)
         default:
             break;
     }
-    sprintf(buf,
-            "NSS Application Slot %08x                                   ",
-            (unsigned int)slotID);
+    snprintf(buf, sizeof(buf),
+             "NSS Application Slot %08x                                   ",
+             (unsigned int)slotID);
     return buf;
 }
 
@@ -2594,7 +2703,7 @@ static PLHashTable *nscSlotHashTable[2] = { NULL, NULL };
 static unsigned int
 sftk_GetModuleIndex(CK_SLOT_ID slotID)
 {
-    if ((slotID == FIPS_SLOT_ID) || (slotID >= SFTK_MIN_FIPS_USER_SLOT_ID)) {
+    if (sftk_isFIPS(slotID)) {
         return NSC_FIPS_MODULE;
     }
     return NSC_NON_FIPS_MODULE;
@@ -2613,7 +2722,7 @@ sftk_SlotFromID(CK_SLOT_ID slotID, PRBool all)
     if (nscSlotHashTable[index] == NULL)
         return NULL;
     slot = (SFTKSlot *)PL_HashTableLookupConst(nscSlotHashTable[index],
-                                               (void *)slotID);
+                                               (void *)(uintptr_t)slotID);
     /* cleared slots shouldn't 'show up' */
     if (slot && !all && !slot->present)
         slot = NULL;
@@ -2666,6 +2775,9 @@ sftk_RegisterSlot(SFTKSlot *slot, unsigned int moduleIndex)
         nscSlotList[index] = (CK_SLOT_ID *)PORT_Realloc(oldNscSlotList,
                                                         nscSlotListSize[index] * sizeof(CK_SLOT_ID));
         if (nscSlotList[index] == NULL) {
+            /* evidently coverity doesn't know realloc does not
+             * free var if it fails ! */
+            /* coverity [use_after_free : FALSE] */
             nscSlotList[index] = oldNscSlotList;
             nscSlotListSize[index] = oldNscSlotListSize;
             return CKR_HOST_MEMORY;
@@ -2680,7 +2792,7 @@ sftk_RegisterSlot(SFTKSlot *slot, unsigned int moduleIndex)
         }
     }
 
-    entry = PL_HashTableAdd(nscSlotHashTable[index], (void *)slot->slotID, slot);
+    entry = PL_HashTableAdd(nscSlotHashTable[index], (void *)(uintptr_t)slot->slotID, slot);
     if (entry == NULL) {
         return CKR_HOST_MEMORY;
     }
@@ -2851,10 +2963,15 @@ SFTK_SlotInit(char *configdir, char *updatedir, char *updateID,
         goto mem_loser;
 
     slot->sessionIDCount = 0;
-    slot->sessionObjectHandleCount = minSessionObjectHandle;
+    slot->sessionObjectHandleCount = NSC_MIN_SESSION_OBJECT_HANDLE;
     slot->slotID = slotID;
     sftk_setStringName(params->slotdes ? params->slotdes : sftk_getDefSlotName(slotID), slot->slotDescription,
                        sizeof(slot->slotDescription), PR_TRUE);
+    crv = sftk_InitSession(&slot->moduleObjects, slot, slotID, NULL, NULL,
+                           CKF_SERIAL_SESSION);
+    if (crv != CKR_OK) {
+        goto loser;
+    }
 
     /* call the reinit code to set everything that changes between token
      * init calls */
@@ -2862,6 +2979,12 @@ SFTK_SlotInit(char *configdir, char *updatedir, char *updateID,
                           params, moduleIndex);
     if (crv != CKR_OK) {
         goto loser;
+    }
+    if (sftk_isFIPS(slotID)) {
+        crv = sftk_CreateValidationObjects(slot);
+        if (crv != CKR_OK) {
+            goto loser;
+        }
     }
     crv = sftk_RegisterSlot(slot, moduleIndex);
     if (crv != CKR_OK) {
@@ -3007,6 +3130,8 @@ SFTK_DestroySlotData(SFTKSlot *slot)
     unsigned int i;
 
     SFTK_ShutdownSlot(slot);
+
+    sftk_ClearSession(&slot->moduleObjects);
 
     if (slot->tokObjHashTable) {
         PL_HashTableDestroy(slot->tokObjHashTable);
@@ -3200,12 +3325,12 @@ nscFreeAllSlots(unsigned int moduleIndex)
         for (i = 0; i < (int)tmpSlotCount; i++) {
             slotID = tmpSlotList[i];
             slot = (SFTKSlot *)
-                PL_HashTableLookup(tmpSlotHashTable, (void *)slotID);
+                PL_HashTableLookup(tmpSlotHashTable, (void *)(uintptr_t)slotID);
             PORT_Assert(slot);
             if (!slot)
                 continue;
             SFTK_DestroySlotData(slot);
-            PL_HashTableRemove(tmpSlotHashTable, (void *)slotID);
+            PL_HashTableRemove(tmpSlotHashTable, (void *)(uintptr_t)slotID);
         }
         PORT_Free(tmpSlotList);
         PL_HashTableDestroy(tmpSlotHashTable);
@@ -3220,7 +3345,7 @@ sftk_closePeer(PRBool isFIPS)
     unsigned int moduleIndex = isFIPS ? NSC_NON_FIPS_MODULE : NSC_FIPS_MODULE;
     PLHashTable *tmpSlotHashTable = nscSlotHashTable[moduleIndex];
 
-    slot = (SFTKSlot *)PL_HashTableLookup(tmpSlotHashTable, (void *)slotID);
+    slot = (SFTKSlot *)PL_HashTableLookup(tmpSlotHashTable, (void *)(uintptr_t)slotID);
     if (slot == NULL) {
         return;
     }
@@ -3231,6 +3356,82 @@ sftk_closePeer(PRBool isFIPS)
 extern void sftk_PBELockInit(void);
 extern void sftk_PBELockShutdown(void);
 
+/* Parse the library parameters from the first occurance in the following src.:
+ * 1. C_INITIALIZED_ARGS - lib params are included in LibraryParameters field
+ * 2. NSS_LIB_PARAMS - env. var. containing the lib. params.
+ * 3. NSS_LIB_PARAMS_FILE - env. var. pointion to a file with lib. params.
+ * 4. /etc/nss/params.config - default lib. param. file location [Linux only]
+ * 5. LIB_PARAM_DEFAULT - string ensureing the pressence at all times
+ *    "configdir='' certPrefix='' keyPrefix='' secmod='' flags=noCertDB,noModDB"
+ */
+static CK_RV
+sftk_getParameters(CK_C_INITIALIZE_ARGS *init_args, PRBool isFIPS,
+                   sftk_parameters *paramStrings)
+{
+    CK_RV crv;
+    char *libParams;
+    const char *filename;
+    PRFileDesc *file_dc;
+    PRBool free_mem = PR_FALSE;
+
+    if (!init_args || !init_args->LibraryParameters) {
+        /* Library parameters were not provided via C_Initialize_args*/
+
+        /* Enviromental value has precedence to configuration filename */
+        libParams = PR_GetEnvSecure("NSS_LIB_PARAMS");
+
+        if (!libParams) {
+            /* Load from config filename or use default */
+            filename = PR_GetEnvSecure("NSS_LIB_PARAMS_FILE");
+#ifdef XP_UNIX
+            /* Use default configuration file for Linux only */
+            if (!filename)
+                filename = LIB_PARAM_DEFAULT_FILE_LOCATION;
+#endif
+            if (filename) {
+                file_dc = PR_OpenFile(filename, PR_RDONLY, 444);
+                if (file_dc) {
+                    /* file opened */
+                    PRInt32 len = PR_Available(file_dc);
+                    libParams = PORT_NewArray(char, len + 1);
+                    if (libParams) {
+                        /* memory allocated */
+                        if (PR_Read(file_dc, libParams, len) == -1) {
+                            PORT_Free(libParams);
+                            libParams = NULL;
+                        } else {
+                            free_mem = PR_TRUE;
+                            libParams[len] = '\0';
+                        }
+                    }
+
+                    PR_Close(file_dc);
+                }
+            }
+        }
+
+        if (libParams == NULL)
+            libParams = LIB_PARAM_DEFAULT;
+
+    } else {
+        /* Use parameters provided with C_Initialize_args */
+        libParams = (char *)init_args->LibraryParameters;
+    }
+
+    crv = sftk_parseParameters(libParams, paramStrings, isFIPS);
+    if (crv != CKR_OK) {
+        crv = CKR_ARGUMENTS_BAD;
+        goto loser;
+    }
+
+    crv = CKR_OK;
+loser:
+    if (free_mem)
+        PORT_Free(libParams);
+
+    return crv;
+}
+
 /* NSC_Initialize initializes the Cryptoki library. */
 CK_RV
 nsc_CommonInitialize(CK_VOID_PTR pReserved, PRBool isFIPS)
@@ -3238,6 +3439,7 @@ nsc_CommonInitialize(CK_VOID_PTR pReserved, PRBool isFIPS)
     CK_RV crv = CKR_OK;
     SECStatus rv;
     CK_C_INITIALIZE_ARGS *init_args = (CK_C_INITIALIZE_ARGS *)pReserved;
+    PRBool destroy_freelist_on_error = PR_TRUE;
     int i;
     unsigned int moduleIndex = isFIPS ? NSC_FIPS_MODULE : NSC_NON_FIPS_MODULE;
 
@@ -3291,48 +3493,59 @@ nsc_CommonInitialize(CK_VOID_PTR pReserved, PRBool isFIPS)
             return crv;
         }
     }
-    crv = CKR_ARGUMENTS_BAD;
-    if ((init_args && init_args->LibraryParameters)) {
-        sftk_parameters paramStrings;
 
-        crv = sftk_parseParameters((char *)init_args->LibraryParameters, &paramStrings, isFIPS);
-        if (crv != CKR_OK) {
-            return crv;
-        }
-        crv = sftk_configure(paramStrings.man, paramStrings.libdes);
-        if (crv != CKR_OK) {
-            goto loser;
-        }
+    sftk_parameters paramStrings;
 
-        /* if we have a peer already open, have him close his DB's so we
-         * don't clobber each other. */
-        if ((isFIPS && nsc_init) || (!isFIPS && nsf_init)) {
-            sftk_closePeer(isFIPS);
-            if (sftk_audit_enabled) {
-                if (isFIPS && nsc_init) {
-                    sftk_LogAuditMessage(NSS_AUDIT_INFO, NSS_AUDIT_FIPS_STATE,
-                                         "enabled FIPS mode");
-                } else {
-                    sftk_LogAuditMessage(NSS_AUDIT_INFO, NSS_AUDIT_FIPS_STATE,
-                                         "disabled FIPS mode");
-                }
-            }
-        }
-
-        for (i = 0; i < paramStrings.token_count; i++) {
-            crv = SFTK_SlotInit(paramStrings.configdir,
-                                paramStrings.updatedir, paramStrings.updateID,
-                                &paramStrings.tokens[i], moduleIndex);
-            if (crv != CKR_OK) {
-                nscFreeAllSlots(moduleIndex);
-                break;
-            }
-        }
-    loser:
-        sftk_freeParams(&paramStrings);
+    /* load and parse the library parameters */
+    crv = sftk_getParameters(init_args, isFIPS, &paramStrings);
+    if (crv != CKR_OK) {
+        goto loser;
     }
-    if (CKR_OK == crv) {
-        sftk_InitFreeLists();
+
+    crv = sftk_configure(paramStrings.man, paramStrings.libdes);
+    if (crv != CKR_OK) {
+        goto loser;
+    }
+
+    /* if we have a peer already open, have him close his DB's so we
+     * don't clobber each other. */
+    if ((isFIPS && nsc_init) || (!isFIPS && nsf_init)) {
+        sftk_closePeer(isFIPS);
+        if (sftk_audit_enabled) {
+            if (isFIPS && nsc_init) {
+                sftk_LogAuditMessage(NSS_AUDIT_INFO, NSS_AUDIT_FIPS_STATE,
+                                     "enabled FIPS mode");
+            } else {
+                sftk_LogAuditMessage(NSS_AUDIT_INFO, NSS_AUDIT_FIPS_STATE,
+                                     "disabled FIPS mode");
+            }
+        }
+        /* if we have a peer open, we don't want to destroy the freelist
+         * from under the peer if we fail, the free list will be
+         * destroyed in that case when the C_Finalize is called for
+         * the peer */
+        destroy_freelist_on_error = PR_FALSE;
+    }
+    /* allow us to create objects in SFTK_SlotInit */
+    sftk_InitFreeLists();
+
+    for (i = 0; i < paramStrings.token_count; i++) {
+        crv = SFTK_SlotInit(paramStrings.configdir,
+                            paramStrings.updatedir, paramStrings.updateID,
+                            &paramStrings.tokens[i], moduleIndex);
+        if (crv != CKR_OK) {
+            nscFreeAllSlots(moduleIndex);
+            break;
+        }
+    }
+
+loser:
+
+    sftk_freeParams(&paramStrings);
+
+    if (destroy_freelist_on_error && (CKR_OK != crv)) {
+        /* idempotent. If the list are already freed, this is a noop */
+        sftk_CleanupFreeLists();
     }
 
 #ifndef NO_FORK_CHECK
@@ -3622,11 +3835,18 @@ NSC_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo)
 static PRBool
 sftk_checkNeedLogin(SFTKSlot *slot, SFTKDBHandle *keyHandle)
 {
+    PRBool needLogin;
     if (sftkdb_PWCached(keyHandle) == SECSuccess) {
-        return slot->needLogin;
+        PZ_Lock(slot->slotLock);
+        needLogin = slot->needLogin;
+        PZ_Unlock(slot->slotLock);
+    } else {
+        needLogin = (PRBool)!sftk_hasNullPassword(slot, keyHandle);
+        PZ_Lock(slot->slotLock);
+        slot->needLogin = needLogin;
+        PZ_Unlock(slot->slotLock);
     }
-    slot->needLogin = (PRBool)!sftk_hasNullPassword(slot, keyHandle);
-    return (slot->needLogin);
+    return needLogin;
 }
 
 static PRBool
@@ -3661,10 +3881,12 @@ NSC_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
     PORT_Memcpy(pInfo->model, "NSS 3           ", 16);
     PORT_Memcpy(pInfo->serialNumber, "0000000000000000", 16);
     PORT_Memcpy(pInfo->utcTime, "0000000000000000", 16);
-    pInfo->ulMaxSessionCount = 0; /* arbitrarily large */
-    pInfo->ulSessionCount = slot->sessionCount;
+    pInfo->ulMaxSessionCount = 0;   /* arbitrarily large */
     pInfo->ulMaxRwSessionCount = 0; /* arbitarily large */
+    PZ_Lock(slot->slotLock);        /* Protect sessionCount / rwSessioncount */
+    pInfo->ulSessionCount = slot->sessionCount;
     pInfo->ulRwSessionCount = slot->rwSessionCount;
+    PZ_Unlock(slot->slotLock); /* Unlock before sftk_getKeyDB */
     pInfo->firmwareVersion.major = 0;
     pInfo->firmwareVersion.minor = 0;
     PORT_Memcpy(pInfo->label, slot->tokDescription, sizeof(pInfo->label));
@@ -3834,50 +4056,10 @@ CK_RV
 sftk_MechAllowsOperation(CK_MECHANISM_TYPE type, CK_ATTRIBUTE_TYPE op)
 {
     CK_ULONG i;
-    CK_FLAGS flags;
+    CK_FLAGS flags = sftk_AttributeToFlags(op);
 
-    switch (op) {
-        case CKA_ENCRYPT:
-            flags = CKF_ENCRYPT;
-            break;
-        case CKA_DECRYPT:
-            flags = CKF_DECRYPT;
-            break;
-        case CKA_WRAP:
-            flags = CKF_WRAP;
-            break;
-        case CKA_UNWRAP:
-            flags = CKF_UNWRAP;
-            break;
-        case CKA_SIGN:
-            flags = CKF_SIGN;
-            break;
-        case CKA_SIGN_RECOVER:
-            flags = CKF_SIGN_RECOVER;
-            break;
-        case CKA_VERIFY:
-            flags = CKF_VERIFY;
-            break;
-        case CKA_VERIFY_RECOVER:
-            flags = CKF_VERIFY_RECOVER;
-            break;
-        case CKA_DERIVE:
-            flags = CKF_DERIVE;
-            break;
-        case CKA_NSS_MESSAGE | CKA_ENCRYPT:
-            flags = CKF_MESSAGE_ENCRYPT;
-            break;
-        case CKA_NSS_MESSAGE | CKA_DECRYPT:
-            flags = CKF_MESSAGE_DECRYPT;
-            break;
-        case CKA_NSS_MESSAGE | CKA_SIGN:
-            flags = CKF_MESSAGE_SIGN;
-            break;
-        case CKA_NSS_MESSAGE | CKA_VERIFY:
-            flags = CKF_MESSAGE_VERIFY;
-            break;
-        default:
-            return CKR_ARGUMENTS_BAD;
+    if (flags == 0) {
+        return CKR_ARGUMENTS_BAD;
     }
     for (i = 0; i < mechanismCount; i++) {
         if (type == mechanisms[i].type) {
@@ -4019,13 +4201,17 @@ NSC_InitPIN(CK_SESSION_HANDLE hSession,
     if (tokenRemoved) {
         sftk_CloseAllSessions(slot, PR_FALSE);
     }
+    PORT_Memset(newPinStr, 0, ulPinLen);
     sftk_freeDB(handle);
     handle = NULL;
 
     /* Now update our local copy of the pin */
     if (rv == SECSuccess) {
-        if (ulPinLen == 0)
+        if (ulPinLen == 0) {
+            PZ_Lock(slot->slotLock);
             slot->needLogin = PR_FALSE;
+            PZ_Unlock(slot->slotLock);
+        }
         /* database has been initialized, now force min password in FIPS
          * mode. NOTE: if we are in level1, we may not have a password, but
          * forcing it now will prevent an insufficient password from being set.
@@ -4060,6 +4246,7 @@ NSC_SetPIN(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pOldPin,
     char newPinStr[SFTK_MAX_PIN + 1], oldPinStr[SFTK_MAX_PIN + 1];
     SECStatus rv;
     CK_RV crv = CKR_SESSION_HANDLE_INVALID;
+    PRBool needLogin;
     PRBool tokenRemoved = PR_FALSE;
 
     CHECK_FORK();
@@ -4080,7 +4267,10 @@ NSC_SetPIN(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pOldPin,
         return CKR_PIN_LEN_RANGE; /* XXX FIXME wrong return value */
     }
 
-    if (slot->needLogin && sp->info.state != CKS_RW_USER_FUNCTIONS) {
+    PZ_Lock(slot->slotLock);
+    needLogin = slot->needLogin;
+    PZ_Unlock(slot->slotLock);
+    if (needLogin && sp->info.state != CKS_RW_USER_FUNCTIONS) {
         crv = CKR_USER_NOT_LOGGED_IN;
         goto loser;
     }
@@ -4110,10 +4300,12 @@ NSC_SetPIN(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pOldPin,
     /* change the data base password */
     PR_Lock(slot->pwCheckLock);
     rv = sftkdb_ChangePassword(handle, oldPinStr, newPinStr, &tokenRemoved);
+    PORT_Memset(newPinStr, 0, ulNewLen);
+    PORT_Memset(oldPinStr, 0, ulOldLen);
     if (tokenRemoved) {
         sftk_CloseAllSessions(slot, PR_FALSE);
     }
-    if ((rv != SECSuccess) && (slot->slotID == FIPS_SLOT_ID)) {
+    if ((rv != SECSuccess) && (sftk_isFIPS(slot->slotID))) {
         PR_Sleep(loginWaitTime);
     }
     PR_Unlock(slot->pwCheckLock);
@@ -4308,6 +4500,8 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
     CK_RV crv;
     char pinStr[SFTK_MAX_PIN + 1];
     PRBool tokenRemoved = PR_FALSE;
+    PRBool isLoggedIn;
+    PRBool needLogin;
 
     CHECK_FORK();
 
@@ -4331,9 +4525,14 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
         return CKR_USER_TYPE_INVALID;
     }
 
-    if (slot->isLoggedIn)
+    PZ_Lock(slot->slotLock);
+    isLoggedIn = slot->isLoggedIn;
+    needLogin = slot->needLogin;
+    PZ_Unlock(slot->slotLock);
+
+    if (isLoggedIn)
         return CKR_USER_ALREADY_LOGGED_IN;
-    if (!slot->needLogin) {
+    if (!needLogin) {
         return ulPinLen ? CKR_PIN_INCORRECT : CKR_OK;
     }
     slot->ssoLoggedIn = PR_FALSE;
@@ -4349,6 +4548,7 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
 
     handle = sftk_getKeyDB(slot);
     if (handle == NULL) {
+        PORT_Memset(pinStr, 0, ulPinLen);
         return CKR_USER_TYPE_INVALID;
     }
 
@@ -4363,7 +4563,7 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
          * key database */
         if (((userType == CKU_SO) && (sessionFlags & CKF_RW_SESSION))
             /* fips always needs to authenticate, even if there isn't a db */
-            || (slot->slotID == FIPS_SLOT_ID)) {
+            || (sftk_isFIPS(slot->slotID))) {
             /* should this be a fixed password? */
             if (ulPinLen == 0) {
                 sftkdb_ClearPassword(handle);
@@ -4394,7 +4594,7 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
     if (tokenRemoved) {
         sftk_CloseAllSessions(slot, PR_FALSE);
     }
-    if ((rv != SECSuccess) && (slot->slotID == FIPS_SLOT_ID)) {
+    if ((rv != SECSuccess) && (sftk_isFIPS(slot->slotID))) {
         PR_Sleep(loginWaitTime);
     }
     PR_Unlock(slot->pwCheckLock);
@@ -4415,6 +4615,7 @@ NSC_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType,
 
     crv = CKR_PIN_INCORRECT;
 done:
+    PORT_Memset(pinStr, 0, ulPinLen);
     if (handle) {
         sftk_freeDB(handle);
     }
@@ -4607,6 +4808,14 @@ NSC_CreateObject(CK_SESSION_HANDLE hSession,
     }
 
     /*
+     * sftk_NewObject will set object->isFIPS to PR_TRUE if the slot is FIPS.
+     * We don't need to worry about that here, as FC_CreateObject will always
+     * disallow the import of secret and private keys, regardless of isFIPS
+     * approval status. Therefore, at this point we know that the key is a
+     * public key, which is acceptable to be imported in plaintext.
+     */
+
+    /*
      * load the template values into the object
      */
     for (i = 0; i < (int)ulCount; i++) {
@@ -4796,7 +5005,7 @@ NSC_GetAttributeValue(CK_SESSION_HANDLE hSession,
     SFTKSession *session;
     SFTKObject *object;
     SFTKAttribute *attribute;
-    PRBool sensitive;
+    PRBool sensitive, isLoggedIn, needLogin;
     CK_RV crv;
     int i;
 
@@ -4827,9 +5036,13 @@ NSC_GetAttributeValue(CK_SESSION_HANDLE hSession,
         return CKR_OBJECT_HANDLE_INVALID;
     }
 
+    PZ_Lock(slot->slotLock);
+    isLoggedIn = slot->isLoggedIn;
+    needLogin = slot->needLogin;
+    PZ_Unlock(slot->slotLock);
+
     /* don't read a private object if we aren't logged in */
-    if ((!slot->isLoggedIn) && (slot->needLogin) &&
-        (sftk_isTrue(object, CKA_PRIVATE))) {
+    if (!isLoggedIn && needLogin && sftk_isTrue(object, CKA_PRIVATE)) {
         sftk_FreeObject(object);
         return CKR_USER_NOT_LOGGED_IN;
     }
@@ -4870,7 +5083,7 @@ NSC_SetAttributeValue(CK_SESSION_HANDLE hSession,
     SFTKSession *session;
     SFTKAttribute *attribute;
     SFTKObject *object;
-    PRBool isToken;
+    PRBool isToken, isLoggedIn, needLogin;
     CK_RV crv = CKR_OK;
     CK_BBOOL legal;
     int i;
@@ -4894,9 +5107,13 @@ NSC_SetAttributeValue(CK_SESSION_HANDLE hSession,
         return CKR_OBJECT_HANDLE_INVALID;
     }
 
+    PZ_Lock(slot->slotLock);
+    isLoggedIn = slot->isLoggedIn;
+    needLogin = slot->needLogin;
+    PZ_Unlock(slot->slotLock);
+
     /* don't modify a private object if we aren't logged in */
-    if ((!slot->isLoggedIn) && (slot->needLogin) &&
-        (sftk_isTrue(object, CKA_PRIVATE))) {
+    if (!isLoggedIn && needLogin && sftk_isTrue(object, CKA_PRIVATE)) {
         sftk_FreeSession(session);
         sftk_FreeObject(object);
         return CKR_USER_NOT_LOGGED_IN;
@@ -5174,7 +5391,10 @@ NSC_FindObjectsInit(CK_SESSION_HANDLE hSession,
     search->index = 0;
     search->size = 0;
     search->array_size = NSC_SEARCH_BLOCK_SIZE;
+
+    PZ_Lock(slot->slotLock);
     isLoggedIn = (PRBool)((!slot->needLogin) || slot->isLoggedIn);
+    PZ_Unlock(slot->slotLock);
 
     crv = sftk_searchTokenList(slot, search, pTemplate, ulCount, isLoggedIn);
     if (crv != CKR_OK) {
@@ -5277,4 +5497,107 @@ NSC_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot,
     CHECK_FORK();
 
     return CKR_FUNCTION_NOT_SUPPORTED;
+}
+
+static CK_RV
+nsc_NSSGetFIPSStatus(CK_SESSION_HANDLE hSession,
+                     CK_OBJECT_HANDLE hObject,
+                     CK_ULONG ulOperationType,
+                     CK_ULONG *pulFIPSStatus)
+{
+    CK_ULONG sessionState = CKS_NSS_UNINITIALIZED;
+    CK_ULONG objectState = CKS_NSS_UNINITIALIZED;
+    PRBool needSession = PR_FALSE;
+    PRBool needObject = PR_FALSE;
+    SFTKSession *session;
+    SFTKObject *object;
+
+    *pulFIPSStatus = CKS_NSS_FIPS_NOT_OK;
+
+    /* first determine what we need to look up */
+    switch (ulOperationType) {
+        case CKT_NSS_SESSION_CHECK:
+        case CKT_NSS_SESSION_LAST_CHECK:
+            needSession = PR_TRUE;
+            needObject = PR_FALSE;
+            break;
+        case CKT_NSS_OBJECT_CHECK:
+            needSession = PR_FALSE;
+            needObject = PR_TRUE;
+            break;
+        case CKT_NSS_BOTH_CHECK:
+            needSession = PR_TRUE;
+            needObject = PR_TRUE;
+            break;
+        default:
+            return CKR_ARGUMENTS_BAD;
+    }
+
+    /* we always need the session handle, the object handle is only
+     * meaningful if there is a session */
+    session = sftk_SessionFromHandle(hSession);
+    if (!session) {
+        return CKR_SESSION_HANDLE_INVALID;
+    }
+    if (needSession) {
+        if (CKT_NSS_SESSION_LAST_CHECK == ulOperationType) {
+            sessionState = session->lastOpWasFIPS ? CKS_NSS_FIPS_OK : CKS_NSS_FIPS_NOT_OK;
+        } else {
+            if (session->enc_context) {
+                sessionState = session->enc_context->isFIPS ? CKS_NSS_FIPS_OK : CKS_NSS_FIPS_NOT_OK;
+            }
+            if (sessionState != CKS_NSS_FIPS_NOT_OK && session->hash_context) {
+                sessionState = session->hash_context->isFIPS ? CKS_NSS_FIPS_OK : CKS_NSS_FIPS_NOT_OK;
+            }
+            /* sessionState is set to CKS_NSS_UNINITIALIZED if neither
+             * context exists */
+        }
+    }
+
+    if (needObject) {
+        object = sftk_ObjectFromHandle(hObject, session);
+        if (!object) {
+            sftk_FreeSession(session);
+            return CKR_OBJECT_HANDLE_INVALID;
+        }
+        objectState = object->isFIPS ? CKS_NSS_FIPS_OK : CKS_NSS_FIPS_NOT_OK;
+        sftk_FreeObject(object);
+    }
+
+    sftk_FreeSession(session);
+
+    /* If we didn't fetch the state, then it is uninitialized.
+     * The session state can also be uninitialized if there are no active
+     * crypto operations on the session. Turns out the rules for combining
+     * the states are the same whether or not the state was uninitialzed
+     * because we didn't fetch it or because there wasn't a state to fetch.
+     */
+
+    /* if the object State is uninitialized, return the state of the session. */
+    if (objectState == CKS_NSS_UNINITIALIZED) {
+        /* if they are both uninitalized, return CKS_FIPS_NOT_OK */
+        if (sessionState == CKS_NSS_UNINITIALIZED) {
+            /* *pulFIPSStatus already set to CKS_FIPS_NOT_OK */
+            return CKR_OK;
+        }
+        *pulFIPSStatus = sessionState;
+        return CKR_OK;
+    }
+    /* objectState is initialized, if sessionState is uninitialized, we can
+     * just return objectState */
+    if (sessionState == CKS_NSS_UNINITIALIZED) {
+        *pulFIPSStatus = objectState;
+        return CKR_OK;
+    }
+
+    /* they are are not equal, one must be CKS_FIPS_NOT_OK, so we return that
+     * value CKS_FIPS_NOT_OK */
+    if (objectState != sessionState) {
+        /* *pulFIPSStatus already set to CKS_FIPS_NOT_OK */
+        return CKR_OK;
+    }
+
+    /* objectState and sessionState or the same, so we can return either */
+    *pulFIPSStatus = sessionState;
+    return CKR_OK;
 }

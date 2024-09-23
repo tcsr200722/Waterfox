@@ -7,17 +7,19 @@
 const {
   createElement,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const { Provider } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const {
+  Provider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 const App = createFactory(
-  require("devtools/client/inspector/animation/components/App")
+  require("resource://devtools/client/inspector/animation/components/App.js")
 );
-const CurrentTimeTimer = require("devtools/client/inspector/animation/current-time-timer");
+const CurrentTimeTimer = require("resource://devtools/client/inspector/animation/current-time-timer.js");
 
-const animationsReducer = require("devtools/client/inspector/animation/reducers/animations");
+const animationsReducer = require("resource://devtools/client/inspector/animation/reducers/animations.js");
 const {
   updateAnimations,
   updateDetailVisibility,
@@ -26,11 +28,11 @@ const {
   updatePlaybackRates,
   updateSelectedAnimation,
   updateSidebarSize,
-} = require("devtools/client/inspector/animation/actions/animations");
+} = require("resource://devtools/client/inspector/animation/actions/animations.js");
 const {
   hasAnimationIterationCountInfinite,
   hasRunningAnimation,
-} = require("devtools/client/inspector/animation/utils/utils");
+} = require("resource://devtools/client/inspector/animation/utils/utils.js");
 
 class AnimationInspector {
   constructor(inspector, win) {
@@ -39,19 +41,16 @@ class AnimationInspector {
 
     this.inspector.store.injectReducer("animations", animationsReducer);
 
-    this.addAnimationsCurrentTimeListener = this.addAnimationsCurrentTimeListener.bind(
-      this
-    );
+    this.addAnimationsCurrentTimeListener =
+      this.addAnimationsCurrentTimeListener.bind(this);
     this.getAnimatedPropertyMap = this.getAnimatedPropertyMap.bind(this);
     this.getAnimationsCurrentTime = this.getAnimationsCurrentTime.bind(this);
     this.getComputedStyle = this.getComputedStyle.bind(this);
     this.getNodeFromActor = this.getNodeFromActor.bind(this);
-    this.removeAnimationsCurrentTimeListener = this.removeAnimationsCurrentTimeListener.bind(
-      this
-    );
-    this.rewindAnimationsCurrentTime = this.rewindAnimationsCurrentTime.bind(
-      this
-    );
+    this.removeAnimationsCurrentTimeListener =
+      this.removeAnimationsCurrentTimeListener.bind(this);
+    this.rewindAnimationsCurrentTime =
+      this.rewindAnimationsCurrentTime.bind(this);
     this.selectAnimation = this.selectAnimation.bind(this);
     this.setAnimationsCurrentTime = this.setAnimationsCurrentTime.bind(this);
     this.setAnimationsPlaybackRate = this.setAnimationsPlaybackRate.bind(this);
@@ -60,15 +59,13 @@ class AnimationInspector {
     this.setHighlightedNode = this.setHighlightedNode.bind(this);
     this.setSelectedNode = this.setSelectedNode.bind(this);
     this.simulateAnimation = this.simulateAnimation.bind(this);
-    this.simulateAnimationForKeyframesProgressBar = this.simulateAnimationForKeyframesProgressBar.bind(
-      this
-    );
+    this.simulateAnimationForKeyframesProgressBar =
+      this.simulateAnimationForKeyframesProgressBar.bind(this);
     this.toggleElementPicker = this.toggleElementPicker.bind(this);
     this.update = this.update.bind(this);
     this.onAnimationStateChanged = this.onAnimationStateChanged.bind(this);
-    this.onAnimationsCurrentTimeUpdated = this.onAnimationsCurrentTimeUpdated.bind(
-      this
-    );
+    this.onAnimationsCurrentTimeUpdated =
+      this.onAnimationsCurrentTimeUpdated.bind(this);
     this.onAnimationsMutation = this.onAnimationsMutation.bind(this);
     this.onCurrentTimeTimerUpdated = this.onCurrentTimeTimerUpdated.bind(this);
     this.onElementPickerStarted = this.onElementPickerStarted.bind(this);
@@ -86,14 +83,6 @@ class AnimationInspector {
   }
 
   initComponents() {
-    const {
-      onShowBoxModelHighlighterForNode,
-    } = this.inspector.getCommonComponentProps();
-
-    const { onHideBoxModelHighlighter } = this.inspector
-      .getPanel("boxmodel")
-      .getComponentProps();
-
     const {
       addAnimationsCurrentTimeListener,
       emitForTests: emitEventForTest,
@@ -137,8 +126,6 @@ class AnimationInspector {
         getComputedStyle,
         getNodeFromActor,
         isAnimationsRunning,
-        onHideBoxModelHighlighter,
-        onShowBoxModelHighlighterForNode,
         removeAnimationsCurrentTimeListener,
         rewindAnimationsCurrentTime,
         selectAnimation,
@@ -157,10 +144,10 @@ class AnimationInspector {
   }
 
   async initListeners() {
-    await this.inspector.toolbox.targetList.watchTargets(
-      [this.inspector.toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable
-    );
+    await this.inspector.commands.targetCommand.watchTargets({
+      types: [this.inspector.commands.targetCommand.TYPES.FRAME],
+      onAvailable: this.onTargetAvailable,
+    });
 
     this.inspector.on("new-root", this.onNavigate);
     this.inspector.selection.on("new-node-front", this.update);
@@ -260,9 +247,8 @@ class AnimationInspector {
    *           distance: {Number} use as y coordinate in graph,
    *         }
    */
-  async getAnimatedPropertyMap(animation) {
-    // getProperties might throw an error.
-    const properties = await animation.getProperties();
+  getAnimatedPropertyMap(animation) {
+    const properties = animation.state.properties;
     const animatedPropertyMap = new Map();
 
     for (const { name, values } of properties) {
@@ -456,9 +442,8 @@ class AnimationInspector {
   }
 
   removeAnimationsCurrentTimeListener(listener) {
-    this.animationsCurrentTimeListeners = this.animationsCurrentTimeListeners.filter(
-      l => l !== listener
-    );
+    this.animationsCurrentTimeListeners =
+      this.animationsCurrentTimeListeners.filter(l => l !== listener);
   }
 
   async rewindAnimationsCurrentTime() {
@@ -509,33 +494,35 @@ class AnimationInspector {
   }
 
   async setAnimationsPlaybackRate(playbackRate) {
+    if (!this.inspector) {
+      return; // Already destroyed or another node selected.
+    }
+
     let animations = this.state.animations;
     // "changed" event on each animation will fire respectively when the playback
     // rate changed. Since for each occurrence of event, change of UI is urged.
     // To avoid this, disable the listeners once in order to not capture the event.
     this.setAnimationStateChangedListenerEnabled(false);
-
     try {
       await this.animationsFront.setPlaybackRates(animations, playbackRate);
       animations = await this.refreshAnimationsState(animations);
     } catch (e) {
-      // Expected if we've already been destroyed or other node have been selected
-      // in the meantime.
+      // Expected if we've already been destroyed or another node has been
+      // selected in the meantime.
       console.error(e);
       return;
     } finally {
       this.setAnimationStateChangedListenerEnabled(true);
     }
 
-    await this.fireUpdateAction(animations);
+    if (animations) {
+      await this.fireUpdateAction(animations);
+    }
   }
 
   async setAnimationsPlayState(doPlay) {
-    if (typeof this.hasPausePlaySome === "undefined") {
-      this.hasPausePlaySome = await this.inspector.currentTarget.actorHasMethod(
-        "animations",
-        "pauseSome"
-      );
+    if (!this.inspector) {
+      return; // Already destroyed or another node selected.
     }
 
     let { animations, timeScale } = this.state;
@@ -551,19 +538,10 @@ class AnimationInspector {
         await this.doSetCurrentTimes(timeScale.zeroPositionTime);
       }
 
-      // If the server does not support pauseSome/playSome function, (which happens
-      // when connected to server older than FF62), use pauseAll/playAll instead.
-      // See bug 1456857.
-      if (this.hasPausePlaySome) {
-        if (doPlay) {
-          await this.animationsFront.playSome(animations);
-        } else {
-          await this.animationsFront.pauseSome(animations);
-        }
-      } else if (doPlay) {
-        await this.animationsFront.playAll();
+      if (doPlay) {
+        await this.animationsFront.playSome(animations);
       } else {
-        await this.animationsFront.pauseAll();
+        await this.animationsFront.pauseSome(animations);
       }
 
       animations = await this.refreshAnimationsState(animations);
@@ -585,6 +563,9 @@ class AnimationInspector {
    * @param {Bool} isEnabled
    */
   setAnimationStateChangedListenerEnabled(isEnabled) {
+    if (!this.inspector) {
+      return; // Already destroyed.
+    }
     if (isEnabled) {
       for (const animation of this.state.animations) {
         animation.on("changed", this.onAnimationStateChanged);
@@ -601,19 +582,41 @@ class AnimationInspector {
   }
 
   /**
-   * Highlight the given node with the box model highlighter.
-   * If no node is provided, hide the box model highlighter.
+   * Persistently highlight the given node identified with a unique selector.
+   * If no node is provided, hide any persistent highlighter.
    *
    * @param {NodeFront} nodeFront
    */
   async setHighlightedNode(nodeFront) {
-    await this.inspector.highlighters.hideBoxModelHighlighter();
+    await this.inspector.highlighters.hideHighlighterType(
+      this.inspector.highlighters.TYPES.SELECTOR
+    );
 
     if (nodeFront) {
-      await this.inspector.highlighters.showBoxModelHighlighter(nodeFront, {
-        hideInfoBar: true,
-        hideGuides: true,
-      });
+      const selector = await nodeFront.getUniqueSelector();
+      if (!selector) {
+        console.warn(
+          `Couldn't get unique selector for NodeFront: ${nodeFront.actorID}`
+        );
+        return;
+      }
+
+      /**
+       * NOTE: Using a Selector Highlighter here because only one Box Model Highlighter
+       * can be visible at a time. The Box Model Highlighter is shown when hovering nodes
+       * which would cause this persistent highlighter to be hidden unexpectedly.
+       * This limitation of one highlighter type a time should be solved by switching
+       * to a highlighter by role approach (Bug 1663443).
+       */
+      await this.inspector.highlighters.showHighlighterTypeForNode(
+        this.inspector.highlighters.TYPES.SELECTOR,
+        nodeFront,
+        {
+          hideInfoBar: true,
+          hideGuides: true,
+          selector,
+        }
+      );
     }
 
     this.inspector.store.dispatch(updateHighlightedNode(nodeFront));
@@ -684,11 +687,8 @@ class AnimationInspector {
       this.simulatedAnimationForKeyframesProgressBar = new this.win.Animation();
     }
 
-    this.simulatedAnimationForKeyframesProgressBar.effect = new this.win.KeyframeEffect(
-      null,
-      null,
-      effectTiming
-    );
+    this.simulatedAnimationForKeyframesProgressBar.effect =
+      new this.win.KeyframeEffect(null, null, effectTiming);
 
     return this.simulatedAnimationForKeyframesProgressBar;
   }

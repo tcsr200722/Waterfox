@@ -4,38 +4,33 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-TEST_DIRS += ['httpserver', 'gtest', 'unit', 'http3server']
+TEST_DIRS += ["httpserver"]
 
-BROWSER_CHROME_MANIFESTS += ['browser/browser.ini']
-MOCHITEST_MANIFESTS += ['mochitests/mochitest.ini']
+if CONFIG["ENABLE_TESTS"]:
+    TEST_DIRS += ["http3server", "gtest"]
+
+BROWSER_CHROME_MANIFESTS += [
+    "browser/browser.toml",
+    "useragent/browser_nonsnap.toml",
+    "useragent/browser_snap.toml",
+]
+MOCHITEST_MANIFESTS += ["mochitests/mochitest.toml"]
 
 XPCSHELL_TESTS_MANIFESTS += [
-    'unit/xpcshell.ini',
-    'unit_ipc/xpcshell.ini',
+    "unit/node_execute/xpcshell.toml",
+    "unit/xpcshell.toml",
+    "unit_ipc/xpcshell.toml",
 ]
 
-FINAL_LIBRARY = 'xul-gtest'
-UNIFIED_SOURCES += [
-    'TestBind.cpp',
-    'TestCookie.cpp',
-    'TestUDPSocket.cpp',
+TESTING_JS_MODULES += [
+    "browser/cookie_filtering_helper.sys.mjs",
+    "browser/early_hint_preload_test_helper.sys.mjs",
+    "unit/test_http3_prio_helpers.js",
 ]
 
-LOCAL_INCLUDES += [
-    '/netwerk/cookie',
-]
+PERFTESTS_MANIFESTS += ["perf/perftest.toml", "unit/perftest.toml"]
 
-if CONFIG['OS_TARGET'] == 'WINNT':
-    UNIFIED_SOURCES += [
-        'TestNamedPipeService.cpp',
-    ]
+MARIONETTE_MANIFESTS += ["marionette/manifest.toml"]
 
-include('/ipc/chromium/chromium-config.mozbuild')
-
-if CONFIG['CC_TYPE'] in ('clang', 'gcc'):
-    CXXFLAGS += ['-Wno-shadow']
-
-if CONFIG['FUZZING_INTERFACES']:
-    TEST_DIRS += [
-        'fuzz'
-    ]
+if CONFIG["FUZZING_INTERFACES"]:
+    TEST_DIRS += ["fuzz"]

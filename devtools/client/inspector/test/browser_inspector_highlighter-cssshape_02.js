@@ -9,26 +9,32 @@
 const TEST_URL = URL_ROOT + "doc_inspector_highlighter_cssshapes.html";
 const HIGHLIGHTER_TYPE = "ShapesHighlighter";
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_URL);
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
+    TEST_URL
+  );
   const front = inspector.inspectorFront;
   const highlighter = await front.getHighlighterByType(HIGHLIGHTER_TYPE);
 
-  await polygonHasCorrectAttrs(testActor, inspector, highlighter);
-  await circleHasCorrectAttrs(testActor, inspector, highlighter);
-  await ellipseHasCorrectAttrs(testActor, inspector, highlighter);
-  await insetHasCorrectAttrs(testActor, inspector, highlighter);
+  await polygonHasCorrectAttrs(highlighterTestFront, inspector, highlighter);
+  await circleHasCorrectAttrs(highlighterTestFront, inspector, highlighter);
+  await ellipseHasCorrectAttrs(highlighterTestFront, inspector, highlighter);
+  await insetHasCorrectAttrs(highlighterTestFront, inspector, highlighter);
 
   await highlighter.finalize();
 });
 
-async function polygonHasCorrectAttrs(testActor, inspector, highlighterFront) {
+async function polygonHasCorrectAttrs(
+  highlighterTestFront,
+  inspector,
+  highlighterFront
+) {
   info("Checking polygon highlighter has correct points");
 
   const polygonNode = await getNodeFront("#polygon", inspector);
   await highlighterFront.show(polygonNode, { mode: "cssClipPath" });
 
-  const points = await testActor.getHighlighterNodeAttribute(
+  const points = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-polygon",
     "points",
     highlighterFront
@@ -39,101 +45,113 @@ async function polygonHasCorrectAttrs(testActor, inspector, highlighterFront) {
   is(points, realPoints, "Polygon highlighter has correct points");
 }
 
-async function circleHasCorrectAttrs(testActor, inspector, highlighterFront) {
+async function circleHasCorrectAttrs(
+  highlighterTestFront,
+  inspector,
+  highlighterFront
+) {
   info("Checking circle highlighter has correct attributes");
 
   const circleNode = await getNodeFront("#circle", inspector);
   await highlighterFront.show(circleNode, { mode: "cssClipPath" });
 
-  const rx = await testActor.getHighlighterNodeAttribute(
+  const rx = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "rx",
     highlighterFront
   );
-  const ry = await testActor.getHighlighterNodeAttribute(
+  const ry = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "ry",
     highlighterFront
   );
-  const cx = await testActor.getHighlighterNodeAttribute(
+  const cx = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "cx",
     highlighterFront
   );
-  const cy = await testActor.getHighlighterNodeAttribute(
+  const cy = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "cy",
     highlighterFront
   );
 
-  is(rx, 25, "Circle highlighter has correct rx");
-  is(ry, 25, "Circle highlighter has correct ry");
-  is(cx, 30, "Circle highlighter has correct cx");
-  is(cy, 40, "Circle highlighter has correct cy");
+  is(rx, "25", "Circle highlighter has correct rx");
+  is(ry, "25", "Circle highlighter has correct ry");
+  is(cx, "30", "Circle highlighter has correct cx");
+  is(cy, "40", "Circle highlighter has correct cy");
 }
 
-async function ellipseHasCorrectAttrs(testActor, inspector, highlighterFront) {
+async function ellipseHasCorrectAttrs(
+  highlighterTestFront,
+  inspector,
+  highlighterFront
+) {
   info("Checking ellipse highlighter has correct attributes");
 
   const ellipseNode = await getNodeFront("#ellipse", inspector);
   await highlighterFront.show(ellipseNode, { mode: "cssClipPath" });
 
-  const rx = await testActor.getHighlighterNodeAttribute(
+  const rx = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "rx",
     highlighterFront
   );
-  const ry = await testActor.getHighlighterNodeAttribute(
+  const ry = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "ry",
     highlighterFront
   );
-  const cx = await testActor.getHighlighterNodeAttribute(
+  const cx = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "cx",
     highlighterFront
   );
-  const cy = await testActor.getHighlighterNodeAttribute(
+  const cy = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-ellipse",
     "cy",
     highlighterFront
   );
 
-  is(rx, 40, "Ellipse highlighter has correct rx");
-  is(ry, 30, "Ellipse highlighter has correct ry");
-  is(cx, 25, "Ellipse highlighter has correct cx");
-  is(cy, 30, "Ellipse highlighter has correct cy");
+  is(rx, "40", "Ellipse highlighter has correct rx");
+  is(ry, "30", "Ellipse highlighter has correct ry");
+  is(cx, "25", "Ellipse highlighter has correct cx");
+  is(cy, "30", "Ellipse highlighter has correct cy");
 }
 
-async function insetHasCorrectAttrs(testActor, inspector, highlighterFront) {
+async function insetHasCorrectAttrs(
+  highlighterTestFront,
+  inspector,
+  highlighterFront
+) {
   info("Checking rect highlighter has correct attributes");
 
   const insetNode = await getNodeFront("#inset", inspector);
   await highlighterFront.show(insetNode, { mode: "cssClipPath" });
 
-  const x = await testActor.getHighlighterNodeAttribute(
+  const x = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-rect",
     "x",
     highlighterFront
   );
-  const y = await testActor.getHighlighterNodeAttribute(
+  const y = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-rect",
     "y",
     highlighterFront
   );
-  const width = await testActor.getHighlighterNodeAttribute(
+  const width = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-rect",
     "width",
     highlighterFront
   );
-  const height = await testActor.getHighlighterNodeAttribute(
+  const height = await highlighterTestFront.getHighlighterNodeAttribute(
     "shapes-rect",
     "height",
     highlighterFront
   );
 
-  is(x, 15, "Rect highlighter has correct x");
-  is(y, 25, "Rect highlighter has correct y");
-  is(width, 72.5, "Rect highlighter has correct width");
-  is(height, 45, "Rect highlighter has correct height");
+  is(x, "15", "Rect highlighter has correct x");
+  is(y, "25", "Rect highlighter has correct y");
+  is(width, "72.5", "Rect highlighter has correct width");
+  is(height, "45", "Rect highlighter has correct height");
 }

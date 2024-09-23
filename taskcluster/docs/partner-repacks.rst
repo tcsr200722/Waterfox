@@ -1,5 +1,6 @@
 Partner repacks
 ===============
+.. _partner repacks:
 
 We create slightly-modified Firefox releases for some extra audiences
 
@@ -15,6 +16,8 @@ We produce partner repacks for some beta builds, and for release builds, as part
 automation. We don't produce any files to update these builds as they are handled automatically
 (see updates_).
 
+We also produce :ref:`partner attribution` builds, which are Firefox Windows installers with a cohort identifier
+added.
 
 Parameters & Scheduling
 -----------------------
@@ -22,7 +25,7 @@ Parameters & Scheduling
 Partner repacks have a number of parameters which control how they work:
 
 * ``release_enable_emefree``
-* ``release_enable_partners``
+* ``release_enable_partner_repack``
 * ``release_partner_config``
 * ``release_partner_build_number``
 * ``release_partners``
@@ -30,23 +33,21 @@ Partner repacks have a number of parameters which control how they work:
 We split the repacks into two 'paths', EME-free and everything else, to retain some
 flexibility over enabling/disabling them separately. This costs us some duplication of the kinds
 in the repacking stack. The two enable parameters are booleans to turn these two paths
-on/off. We set them in release-runner3's `is_partner_enabled() <https://dxr.mozilla
-.org/build-central/search?q=function%3Ais_partner_enabled&redirect=true>`_ when starting a
+on/off. We set them in shipit's `is_partner_enabled() <https://github.com/mozilla-releng/shipit/blob/main/api/src/shipit_api/admin/release.py#L93>`_ when starting a
 release. They're both true for Firefox betas >= b8 and releases, but otherwise disabled.
 
 ``release_partner_config`` is a dictionary of configuration data which drives the task generation
 logic. It's usually looked up during the release promotion action task, using the Github
 GraphQL API in the `get_partner_config_by_url()
 <python/taskgraph.util.html#taskgraph.util.partners.get_partner_config_by_url>`_ function, with the
-url defined in `taskcluster/ci/config.yml <https://dxr.mozilla
+url defined in `taskcluster/config.yml <https://searchfox
 .org/mozilla-release/search?q=regexp%3A^partner+path%3Aconfig.yml&redirect=true>`_.
 
 ``release_partner_build_number`` is an integer used to create unique upload paths in the firefox
 candidates directory, while ``release_partners`` is a list of partners that should be
 repacked (i.e. a subset of the whole config). Both are intended for use when respinning a few partners after
-the regular Firefox has shipped. More information on that can be found in the `release-warrior docs
-<https://github.com/mozilla-releng/releasewarrior-2
-.0/blob/master/docs/misc-operations/off-cycle-partner-repacks -and-funnelcake.md>`_.
+the regular Firefox has shipped. More information on that can be found in the
+`RelEng Docs <https://moz-releng-docs.readthedocs.io/en/latest/procedures/misc-operations/off-cycle-partner-repacks-and-funnelcake.html>`_.
 
 Most of the machine time for generating partner repacks takes place in the `promote` phase of the
 automation, or `promote_rc` in the case of X.0 release candidates. The EME-free builds are copied into the
@@ -90,12 +91,7 @@ containing the customizations needed. Here's `EME-free's repack.cfg <https://git
     win64=true
     output_dir="%(platform)s-EME-free/%(locale)s"
 
-    # Upload params
-    upload_to_candidates=true
-
-Note the list of locales and boolean toggles for enabling platforms. The ``output_dir`` and
-``upload_to_candidates`` parameters are only present for repacks which are uploaded into the
-`candidates directory <https://archive.mozilla.org/pub/firefox/candidates/>`_.
+Note the list of locales and boolean toggles for enabling platforms.
 
 All customizations will be placed in the ``distribution`` directory at the root of the Firefox
 install directory, or in the case of OS X in ``Firefox.app/Contents/Resources/distribution/``. A
@@ -125,7 +121,7 @@ Repacking process
 The stack of tasks to create partner repacks is broadly similar to localised nightlies and
 regular releases. The basic form is
 
-* partner repack - insert the customisations into the the regular builds
+* partner repack - insert the customisations into the regular builds
 * signing - sign the internals which will become the installer (Mac only)
 * repackage - create the "installer" (Mac and Windows)
 * chunking dummy - a linux only bridge to ...
@@ -138,7 +134,6 @@ Some key divergences are:
 * all intermediate artifacts are uploaded with a ``releng/partner`` prefix
 * we don't insert any binaries on Windows so no need for internal signing
 * there's no need to create any complete mar files at the repackage step
-* we support both public and private destinations in beetmover
 * we only need beetmover checksums for EME-free builds
 
 
@@ -150,8 +145,10 @@ Partner repack
 * upstreams: ``build-signing`` ``l10n-signing``
 
 There is one task per platform in this step, calling out to `scripts/desktop_partner_repacks.py
-<https://hg.mozilla.org/releases/mozilla-release/file/default/testing/mozharness/scripts
+<https://hg.mozilla.org/mozilla-central/file/default/testing/mozharness/scripts
 /desktop_partner_repacks.py>`_ in mozharness to prepare an environment and then perform the repacks.
+The actual repacking is done by `python/mozrelease/mozrelease/partner_repack.py
+<https://hg.mozilla.org/mozilla-central/file/default/python/mozrelease/mozrelease/partner_repack.py>`_.
 
 It takes as input the build-signing and l10n-signing artifacts, which are all zip/tar.gz/tar.bz2
 archives, simplifying the repack process by avoiding dmg and exe. Windows produces ``target.zip``
@@ -161,15 +158,16 @@ archives, simplifying the repack process by avoiding dmg and exe. Windows produc
 Signing
 ^^^^^^^
 
-* kinds: ``release-partner-repack-signing`` ``release-eme-free-repack-signing``
+* kinds: ``release-partner-repack-mac-signing`` ``release-partner-repack-mac-notarization``
 * platforms: Mac
 * upstreams: ``release-partner-repack`` ``release-eme-free-repack``
 
-We chunk the single partner repack task out to a signing task per artifact at this point. For
-example, EME-free will become ~95 tasks, one for each locale. We collect the target.tar.gz from the
+We chunk the single partner repack task out to a signing task with 5 artifacts each. For
+example, EME-free will become 19 tasks. We collect the target.tar.gz from the
 upstream, and return a signed target.tar.gz. We use a ``target.dmg`` artifact for
 nightlies/regular releases, but this is converted to ``target.tar.gz`` by the signing
-scriptworker before sending it to the signing server, so partners are equivalent.
+scriptworker before sending it to the signing server, so partners are equivalent. The ``mac-signing`` task
+signs the binary, and then ``mac-notarization`` submits it to Apple and staples the ticket to it.
 
 Repackage
 ^^^^^^^^^
@@ -217,12 +215,11 @@ Beetmover
 * upstreams: ``release-partner-repack-repackage-signing`` ``release-eme-free-repack-repackage-signing``
 
 Moves and renames the artifacts to their public location in the `candidates directory
-<https://archive.mozilla.org/pub/firefox/candidates/>`_, or a private S3 bucket. Each task will
-have the ``project:releng:beetmover:action:push-to-partner`` scope, with public uploads having
-``project:releng:beetmover:bucket:release`` and private uploads using
-``project:releng:beetmover:bucket:partner``. The ``upload_to_candidates`` key in the partner config
-controls the second scope. There's a separate partner code path in `beetmoverscript <https://github
-.com/mozilla-releng/beetmoverscript>`_.
+<https://archive.mozilla.org/pub/firefox/candidates/>`_. Each task will
+have the ``project:releng:beetmover:action:push-to-partner`` and
+``project:releng:beetmover:bucket:release`` scopes. There's a separate partner
+code path in `beetmoverscript
+<https://github.com/mozilla-releng/scriptworker-scripts/tree/master/beetmoverscript>`_.
 
 Beetmover checksums
 ^^^^^^^^^^^^^^^^^^^

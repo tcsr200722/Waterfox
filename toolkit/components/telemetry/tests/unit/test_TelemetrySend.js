@@ -6,29 +6,25 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://testing-common/ContentTaskUtils.jsm", this);
-ChromeUtils.import("resource://testing-common/MockRegistrar.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetrySession.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetrySend.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryStorage.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryUtils.jsm", this);
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/osfile.jsm", this);
-ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm", this);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryHealthPing",
-  "resource://gre/modules/HealthPing.jsm"
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
+);
+const { MockRegistrar } = ChromeUtils.importESModule(
+  "resource://testing-common/MockRegistrar.sys.mjs"
+);
+const { TelemetrySend } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetrySend.sys.mjs"
+);
+const { TelemetryStorage } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryStorage.sys.mjs"
+);
+const { TelemetryUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookies",
-  "@mozilla.org/cookieService;1",
-  "nsICookieService"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  TelemetryHealthPing: "resource://gre/modules/HealthPing.sys.mjs",
+});
 
 const MS_IN_A_MINUTE = 60 * 1000;
 
@@ -41,8 +37,8 @@ function countPingTypes(pings) {
 }
 
 function setPingLastModified(id, timestamp) {
-  const path = OS.Path.join(TelemetryStorage.pingDirectoryPath, id);
-  return OS.File.setDates(path, null, timestamp);
+  const path = PathUtils.join(TelemetryStorage.pingDirectoryPath, id);
+  return IOUtils.setModificationTime(path, timestamp);
 }
 
 // Mock out the send timer activity.
@@ -84,13 +80,13 @@ function fakePingId(type, number) {
   return id;
 }
 
-var checkPingsSaved = async function(pingIds) {
+var checkPingsSaved = async function (pingIds) {
   let allFound = true;
   for (let id of pingIds) {
-    const path = OS.Path.join(TelemetryStorage.pingDirectoryPath, id);
+    const path = PathUtils.join(TelemetryStorage.pingDirectoryPath, id);
     let exists = false;
     try {
-      exists = await OS.File.exists(path);
+      exists = await IOUtils.exists(path);
     } catch (ex) {}
 
     if (!exists) {
@@ -111,7 +107,12 @@ add_task(async function test_setup() {
   do_get_profile(true);
 
   // Addon manager needs a profile directory.
-  loadAddonManager("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
+  await loadAddonManager(
+    "xpcshell@tests.mozilla.org",
+    "XPCShell",
+    "1",
+    "1.9.2"
+  );
   finishAddonManagerStartup();
   fakeIntlReady();
 
@@ -795,13 +796,14 @@ add_task(
 
     TelemetrySend.flushPingSenderBatch();
 
+    // Pings don't have to be sent in the order they're submitted.
     const ping = await PingServer.promiseNextPing();
-    Assert.equal(ping.type, TEST_TYPE);
-    Assert.equal(ping.id, id);
-
     const ping2 = await PingServer.promiseNextPing();
+    Assert.ok(
+      (ping.id == id && ping2.id == id2) || (ping.id == id2 && ping2.id == id)
+    );
+    Assert.equal(ping.type, TEST_TYPE);
     Assert.equal(ping2.type, TEST_TYPE);
-    Assert.equal(ping2.id, id2);
 
     await TelemetryStorage.reset();
     Assert.equal(
@@ -858,6 +860,12 @@ add_task(async function test_persistCurrentPingsOnShutdown() {
 
 add_task(async function test_sendCheckOverride() {
   const TEST_PING_TYPE = "test-sendCheckOverride";
+
+  // Disable "health" ping. It can sneak into the test.
+  Services.prefs.setBoolPref(
+    TelemetryUtils.Preferences.HealthPingEnabled,
+    false
+  );
 
   // Clear any pending pings.
   await TelemetryController.testShutdown();
@@ -973,6 +981,7 @@ add_task(async function testCookies() {
     loadUsingSystemPrincipal: true,
     contentPolicyType: Ci.nsIContentPolicy.TYPE_DOCUMENT,
   });
+  Services.cookies.QueryInterface(Ci.nsICookieService);
   Services.cookies.setCookieStringFromHttp(uri, "cookie-time=yes", channel);
 
   const id = await TelemetryController.submitExternalPing(TEST_TYPE, {});
@@ -1022,11 +1031,11 @@ add_task(async function test_pref_observer() {
   Services.prefs.setBoolPref(TelemetryUtils.Preferences.FhrUploadEnabled, true);
 
   function waitAnnotateCrashReport(expectedValue, trigger) {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
       let keys = new Set(["TelemetryClientId", "TelemetryServerURL"]);
 
       let crs = {
-        QueryInterface: ChromeUtils.generateQI([Ci.nsICrashReporter]),
+        QueryInterface: ChromeUtils.generateQI(["nsICrashReporter"]),
         annotateCrashReport(key, value) {
           if (!keys.delete(key)) {
             MockRegistrar.unregister(gMockCrs);
@@ -1062,7 +1071,7 @@ add_task(async function test_pref_observer() {
         "@mozilla.org/toolkit/crash-reporter;1",
         crs
       );
-      registerCleanupFunction(function() {
+      registerCleanupFunction(function () {
         MockRegistrar.unregister(gMockCrs);
       });
 

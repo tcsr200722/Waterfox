@@ -7,9 +7,9 @@
 #include "mozilla/dom/XRInputSourceArray.h"
 #include "mozilla/dom/XRSession.h"
 #include "mozilla/dom/XRInputSourcesChangeEvent.h"
+#include "VRDisplayClient.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSourceArray, mParent,
                                       mInputSources)
@@ -96,7 +96,7 @@ void XRInputSourceArray::Update(XRSession* aSession) {
   if (addInit.mAdded.Length()) {
     RefPtr<XRInputSourcesChangeEvent> event =
         XRInputSourcesChangeEvent::Constructor(
-            aSession, NS_LITERAL_STRING("inputsourceschange"), addInit);
+            aSession, u"inputsourceschange"_ns, addInit);
 
     event->SetTrusted(true);
     aSession->DispatchEvent(*event);
@@ -140,8 +140,8 @@ void XRInputSourceArray::DispatchInputSourceRemovedEvent(
 
   if (init.mRemoved.Length()) {
     RefPtr<XRInputSourcesChangeEvent> event =
-        XRInputSourcesChangeEvent::Constructor(
-            aSession, NS_LITERAL_STRING("inputsourceschange"), init);
+        XRInputSourcesChangeEvent::Constructor(aSession,
+                                               u"inputsourceschange"_ns, init);
 
     event->SetTrusted(true);
     aSession->DispatchEvent(*event);
@@ -164,5 +164,4 @@ XRInputSource* XRInputSourceArray::IndexedGetter(uint32_t aIndex,
   return mInputSources[aIndex];
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

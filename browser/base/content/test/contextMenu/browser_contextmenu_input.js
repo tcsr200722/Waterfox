@@ -3,8 +3,41 @@
 let contextMenu;
 let hasPocket = Services.prefs.getBoolPref("extensions.pocket.enabled");
 
+const NAVIGATION_ITEMS =
+  AppConstants.platform == "macosx"
+    ? [
+        "context-back",
+        false,
+        "context-forward",
+        false,
+        "context-reload",
+        true,
+        "---",
+        null,
+        "context-bookmarkpage",
+        true,
+      ]
+    : [
+        "context-navigation",
+        null,
+        [
+          "context-back",
+          false,
+          "context-forward",
+          false,
+          "context-reload",
+          true,
+          "context-bookmarkpage",
+          true,
+        ],
+        null,
+        "---",
+        null,
+      ];
+
 add_task(async function test_setup() {
   const example_base =
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example.com/browser/browser/base/content/test/contextMenu/";
   const url = example_base + "subtst_contextmenu_input.html";
   await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
@@ -14,28 +47,24 @@ add_task(async function test_setup() {
   const contextmenu_common = chrome_base + "contextmenu_common.js";
   /* import-globals-from contextmenu_common.js */
   Services.scriptloader.loadSubScript(contextmenu_common, this);
-
-  // Ensure screenshots is really disabled (bug 1498738)
-  const addon = await AddonManager.getAddonByID("screenshots@mozilla.org");
-  await addon.disable({ allowSystemAddons: true });
 });
 
 add_task(async function test_text_input() {
   await test_contextmenu("#input_text", [
     "context-undo",
     false,
+    "context-redo",
+    false,
     "---",
     null,
     "context-cut",
-    true,
+    false,
     "context-copy",
-    true,
+    false,
     "context-paste",
     null, // ignore clipboard state
     "context-delete",
     false,
-    "---",
-    null,
     "context-selectall",
     false,
     "---",
@@ -51,18 +80,18 @@ add_task(async function test_text_input_disabled() {
     [
       "context-undo",
       false,
+      "context-redo",
+      false,
       "---",
       null,
       "context-cut",
-      true,
+      false,
       "context-copy",
-      true,
+      false,
       "context-paste",
       null, // ignore clipboard state
       "context-delete",
       false,
-      "---",
-      null,
       "context-selectall",
       false,
       "---",
@@ -76,7 +105,10 @@ add_task(async function test_text_input_disabled() {
 
 add_task(async function test_password_input() {
   await SpecialPowers.pushPrefEnv({
-    set: [["signon.generation.enabled", false]],
+    set: [
+      ["signon.generation.enabled", false],
+      ["layout.forms.reveal-password-context-menu.enabled", true],
+    ],
   });
   todo(
     false,
@@ -86,34 +118,27 @@ add_task(async function test_password_input() {
   await test_contextmenu(
     "#input_password",
     [
-      "fill-login",
-      null,
-      [
-        "fill-login-no-logins",
-        false,
-        "---",
-        null,
-        "fill-login-saved-passwords",
-        true,
-      ],
-      null,
+      "manage-saved-logins",
+      true,
       "---",
       null,
       "context-undo",
       false,
+      "context-redo",
+      false,
       "---",
       null,
       "context-cut",
-      true,
+      false,
       "context-copy",
-      true,
+      false,
       "context-paste",
       null, // ignore clipboard state
       "context-delete",
       false,
-      "---",
-      null,
       "context-selectall",
+      null,
+      "context-reveal-password",
       null,
     ],
     {
@@ -126,7 +151,7 @@ add_task(async function test_password_input() {
         await SpecialPowers.spawn(
           gBrowser.selectedBrowser,
           [],
-          async function() {
+          async function () {
             let doc = content.document;
             let input = doc.getElementById("input_password");
             input.type = "password";
@@ -138,7 +163,7 @@ add_task(async function test_password_input() {
         await SpecialPowers.spawn(
           gBrowser.selectedBrowser,
           [],
-          async function() {
+          async function () {
             let doc = content.document;
             let input = doc.getElementById("input_password");
             input.outerHTML = `<input id=\"input_password\">`;
@@ -148,6 +173,70 @@ add_task(async function test_password_input() {
       },
     }
   );
+  await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function firefox_relay_input() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["signon.firefoxRelay.feature", "enabled"]],
+  });
+
+  await test_contextmenu("#input_username", [
+    "use-relay-mask",
+    true,
+    "---",
+    null,
+    "context-undo",
+    false,
+    "context-redo",
+    false,
+    "---",
+    null,
+    "context-cut",
+    false,
+    "context-copy",
+    false,
+    "context-paste",
+    null, // ignore clipboard state
+    "context-delete",
+    false,
+    "context-selectall",
+    false,
+    "---",
+    null,
+    "spell-check-enabled",
+    true,
+  ]);
+
+  await test_contextmenu(
+    "#input_email",
+    [
+      "use-relay-mask",
+      true,
+      "---",
+      null,
+      "context-undo",
+      false,
+      "context-redo",
+      false,
+      "---",
+      null,
+      "context-cut",
+      false,
+      "context-copy",
+      false,
+      "context-paste",
+      null, // ignore clipboard state
+      "context-delete",
+      false,
+      "context-selectall",
+      null,
+    ],
+    {
+      skipFocusChange: true,
+    }
+  );
+
   await SpecialPowers.popPrefEnv();
 });
 
@@ -168,18 +257,18 @@ add_task(async function test_tel_email_url_number_input() {
       [
         "context-undo",
         false,
+        "context-redo",
+        false,
         "---",
         null,
         "context-cut",
-        true,
+        false,
         "context-copy",
-        true,
+        false,
         "context-paste",
         null, // ignore clipboard state
         "context-delete",
         false,
-        "---",
-        null,
         "context-selectall",
         null,
       ],
@@ -204,48 +293,18 @@ add_task(
       await test_contextmenu(
         selector,
         [
-          "context-navigation",
-          null,
-          [
-            "context-back",
-            false,
-            "context-forward",
-            false,
-            "context-reload",
-            true,
-            "context-bookmarkpage",
-            true,
-          ],
-          null,
-          "---",
-          null,
+          ...NAVIGATION_ITEMS,
           "context-savepage",
           true,
           ...(hasPocket ? ["context-pocket", true] : []),
-          "---",
-          null,
-          "context-sendpagetodevice",
-          null,
-          [],
-          null,
-          "---",
-          null,
-          "context-viewbgimage",
-          false,
           "context-selectall",
           null,
           "---",
           null,
           "context-viewsource",
           true,
-          "context-viewinfo",
-          true,
         ],
         {
-          // XXX Bug 1345081. Currently the Screenshots menu option is shown for
-          // various text elements even though it is set to type "page". That bug
-          // should remove the need for next line.
-          maybeScreenshotsPresent: true,
           skipFocusChange: true,
         }
       );
@@ -264,18 +323,18 @@ add_task(async function test_search_input() {
     [
       "context-undo",
       false,
+      "context-redo",
+      false,
       "---",
       null,
       "context-cut",
-      true,
+      false,
       "context-copy",
-      true,
+      false,
       "context-paste",
       null, // ignore clipboard state
       "context-delete",
       false,
-      "---",
-      null,
       "context-selectall",
       null,
       "---",
@@ -302,26 +361,22 @@ add_task(async function test_text_input_readonly() {
     [
       "context-undo",
       false,
+      "context-redo",
+      false,
       "---",
       null,
       "context-cut",
-      true,
+      false,
       "context-copy",
-      true,
+      false,
       "context-paste",
       null, // ignore clipboard state
       "context-delete",
       false,
-      "---",
-      null,
       "context-selectall",
       null,
     ],
     {
-      // XXX Bug 1345081. Currently the Screenshots menu option is shown for
-      // various text elements even though it is set to type "page". That bug
-      // should remove the need for next line.
-      maybeScreenshotsPresent: true,
       skipFocusChange: true,
     }
   );

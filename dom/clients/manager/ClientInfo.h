@@ -8,9 +8,14 @@
 #define _mozilla_dom_ClientInfo_h
 
 #include "X11UndefineNone.h"
-#include "mozilla/dom/ClientBinding.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
+#include "nsCOMPtr.h"
+#include "nsString.h"
+
+class nsIPrincipal;
+struct nsID;
 
 namespace mozilla {
 
@@ -22,6 +27,8 @@ class PrincipalInfo;
 namespace dom {
 
 class IPCClientInfo;
+enum class FrameType : uint8_t;
+enum class ClientType : uint8_t;
 
 // This class provides a simple structure that represents a global living
 // in the system.  Its thread safe and can be transferred across process
@@ -38,9 +45,9 @@ class ClientInfo final {
 
   ClientInfo& operator=(const ClientInfo& aRight);
 
-  ClientInfo(ClientInfo&& aRight);
+  ClientInfo(ClientInfo&& aRight) noexcept;
 
-  ClientInfo& operator=(ClientInfo&& aRight);
+  ClientInfo& operator=(ClientInfo&& aRight) noexcept;
 
   explicit ClientInfo(const IPCClientInfo& aData);
 

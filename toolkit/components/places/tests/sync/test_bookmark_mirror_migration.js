@@ -1,8 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Keep in sync with `SyncedBookmarksMirror.jsm`.
-const CURRENT_MIRROR_SCHEMA_VERSION = 7;
+// Keep in sync with `SyncedBookmarksMirror.sys.mjs`.
+const CURRENT_MIRROR_SCHEMA_VERSION = 9;
 
 // The oldest schema version that we support. Any databases with schemas older
 // than this will be dropped and recreated.
@@ -157,4 +157,90 @@ add_task(async function test_database_corrupt() {
   });
   ok(buf.wasCorrupt, "Opening corrupt database should mark it as such");
   await buf.finalize();
+});
+
+add_task(async function test_migrate_v7_v9() {
+  let buf = await openMirror("test_migrate_v7_v9");
+
+  await PlacesUtils.bookmarks.insertTree({
+    guid: PlacesUtils.bookmarks.menuGuid,
+    children: [
+      {
+        guid: "bookmarkAAAA",
+        url: "http://example.com/a",
+        title: "A",
+      },
+      {
+        guid: "bookmarkBBBB",
+        url: "http://example.com/b",
+        title: "B",
+      },
+    ],
+  });
+
+  await buf.db.execute(
+    `UPDATE moz_bookmarks
+     SET syncChangeCounter = 0,
+         syncStatus = ${PlacesUtils.bookmarks.SYNC_STATUS.NEW}`
+  );
+
+  // setup the mirror.
+  await storeRecords(buf, [
+    {
+      id: "bookmarkAAAA",
+      parentid: "menu",
+      type: "bookmark",
+      title: "B",
+      bmkUri: "http://example.com/b",
+    },
+    {
+      id: "menu",
+      parentid: "places",
+      type: "folder",
+      children: [],
+    },
+  ]);
+
+  await buf.db.setSchemaVersion(7, "mirror");
+  await buf.finalize();
+
+  // reopen it.
+  buf = await openMirror("test_migrate_v7_v9");
+  Assert.equal(await buf.db.getSchemaVersion("mirror"), 9, "did upgrade");
+
+  let fields = await PlacesTestUtils.fetchBookmarkSyncFields(
+    "bookmarkAAAA",
+    "bookmarkBBBB",
+    PlacesUtils.bookmarks.menuGuid
+  );
+  let [fieldsA, fieldsB, fieldsMenu] = fields;
+
+  // 'A' was in the mirror - should now be _NORMAL
+  Assert.equal(fieldsA.guid, "bookmarkAAAA");
+  Assert.equal(fieldsA.syncStatus, PlacesUtils.bookmarks.SYNC_STATUS.NORMAL);
+  // 'B' was not in the mirror so should be untouched.
+  Assert.equal(fieldsB.guid, "bookmarkBBBB");
+  Assert.equal(fieldsB.syncStatus, PlacesUtils.bookmarks.SYNC_STATUS.NEW);
+  // 'menu' was in the mirror - should now be _NORMAL
+  Assert.equal(fieldsMenu.guid, PlacesUtils.bookmarks.menuGuid);
+  Assert.equal(fieldsMenu.syncStatus, PlacesUtils.bookmarks.SYNC_STATUS.NORMAL);
+  await buf.finalize();
+});
+
+add_task(async function test_migrate_v8_v9() {
+  let dbFile = await setupFixtureFile("mirror_v8.sqlite");
+  let buf = await SyncedBookmarksMirror.open({
+    path: dbFile.path,
+    recordStepTelemetry() {},
+    recordValidationTelemetry() {},
+  });
+
+  Assert.equal(await buf.db.getSchemaVersion("mirror"), 9, "did upgrade");
+
+  // Verify the new column is there
+  Assert.ok(await buf.db.execute("SELECT unknownFields FROM items"));
+
+  await buf.finalize();
+  await PlacesUtils.bookmarks.eraseEverything();
+  await PlacesSyncUtils.bookmarks.reset();
 });

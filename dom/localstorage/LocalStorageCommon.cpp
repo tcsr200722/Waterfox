@@ -6,11 +6,30 @@
 
 #include "LocalStorageCommon.h"
 
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/net/MozURL.h"
+#include <cstdint>
+#include "MainThreadUtils.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Logging.h"
+#include "mozilla/OriginAttributes.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/StorageUtils.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/net/WebSocketFrame.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsIURL.h"
+#include "nsNetUtil.h"
+#include "nsPrintfCString.h"
+#include "nsString.h"
+#include "nsStringFlags.h"
+#include "nsXULAppAPI.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::net;
 
@@ -29,21 +48,28 @@ bool NextGenLocalStorageEnabled() {
     StaticMutexAutoLock lock(gNextGenLocalStorageMutex);
 
     if (gNextGenLocalStorageEnabled == -1) {
-      bool enabled = GetCurrentNextGenPrefValue();
+      // Ideally all this Mutex stuff would be replaced with just using
+      // an AtStartup StaticPref, but there are concerns about this causing
+      // deadlocks if this access needs to init the AtStartup cache.
+      bool enabled =
+          !StaticPrefs::
+              dom_storage_enable_unsupported_legacy_implementation_DoNotUseDirectly();
+
       gNextGenLocalStorageEnabled = enabled ? 1 : 0;
     }
 
     return !!gNextGenLocalStorageEnabled;
   }
 
+  return CachedNextGenLocalStorageEnabled();
+}
+
+void RecvInitNextGenLocalStorageEnabled(const bool aEnabled) {
+  MOZ_ASSERT(!XRE_IsParentProcess());
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(gNextGenLocalStorageEnabled == -1);
 
-  if (gNextGenLocalStorageEnabled == -1) {
-    bool enabled = Preferences::GetBool("dom.storage.next_gen", false);
-    gNextGenLocalStorageEnabled = enabled ? 1 : 0;
-  }
-
-  return !!gNextGenLocalStorageEnabled;
+  gNextGenLocalStorageEnabled = aEnabled ? 1 : 0;
 }
 
 bool CachedNextGenLocalStorageEnabled() {
@@ -52,89 +78,41 @@ bool CachedNextGenLocalStorageEnabled() {
   return !!gNextGenLocalStorageEnabled;
 }
 
-nsresult GenerateOriginKey2(const PrincipalInfo& aPrincipalInfo,
-                            nsACString& aOriginAttrSuffix,
-                            nsACString& aOriginKey) {
-  OriginAttributes attrs;
-  nsCString spec;
-
-  switch (aPrincipalInfo.type()) {
-    case PrincipalInfo::TNullPrincipalInfo: {
-      const NullPrincipalInfo& info = aPrincipalInfo.get_NullPrincipalInfo();
-
-      attrs = info.attrs();
-      spec = info.spec();
-
-      break;
-    }
-
-    case PrincipalInfo::TContentPrincipalInfo: {
-      const ContentPrincipalInfo& info =
-          aPrincipalInfo.get_ContentPrincipalInfo();
-
-      attrs = info.attrs();
-      spec = info.spec();
-
-      break;
-    }
-
-    default: {
-      spec.SetIsVoid(true);
-
-      break;
-    }
+Result<std::pair<nsCString, nsCString>, nsresult> GenerateOriginKey2(
+    const mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
+  if (aPrincipalInfo.type() !=
+          mozilla::ipc::PrincipalInfo::TNullPrincipalInfo &&
+      aPrincipalInfo.type() !=
+          mozilla::ipc::PrincipalInfo::TContentPrincipalInfo) {
+    return Err(NS_ERROR_UNEXPECTED);
   }
 
-  if (spec.IsVoid()) {
-    return NS_ERROR_UNEXPECTED;
+  Result<nsCOMPtr<nsIPrincipal>, nsresult> p =
+      PrincipalInfoToPrincipal(aPrincipalInfo);
+  if (p.isErr()) {
+    return Err(p.unwrapErr());
   }
 
-  attrs.CreateSuffix(aOriginAttrSuffix);
-
-  RefPtr<MozURL> specURL;
-  nsresult rv = MozURL::Init(getter_AddRefs(specURL), spec);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+  nsCOMPtr<nsIPrincipal> principal = p.unwrap();
+  if (!principal) {
+    return Err(NS_ERROR_NULL_POINTER);
   }
 
-  nsCString host(specURL->Host());
-  uint32_t length = host.Length();
-  if (length > 0 && host.CharAt(0) == '[' && host.CharAt(length - 1) == ']') {
-    host = Substring(host, 1, length - 2);
-  }
-
-  nsCString domainOrigin(host);
-
-  if (domainOrigin.IsEmpty()) {
-    // For the file:/// protocol use the exact directory as domain.
-    if (specURL->Scheme().EqualsLiteral("file")) {
-      domainOrigin.Assign(specURL->Directory());
-    }
-  }
-
-  // Append reversed domain
-  nsAutoCString reverseDomain;
-  rv = CreateReversedDomain(domainOrigin, reverseDomain);
+  nsCString originKey;
+  nsresult rv = principal->GetStorageOriginKey(originKey);
   if (NS_FAILED(rv)) {
-    return rv;
+    return Err(rv);
   }
 
-  aOriginKey.Append(reverseDomain);
-
-  // Append scheme
-  aOriginKey.Append(':');
-  aOriginKey.Append(specURL->Scheme());
-
-  // Append port if any
-  int32_t port = specURL->RealPort();
-  if (port != -1) {
-    aOriginKey.Append(nsPrintfCString(":%d", port));
+  nsCString originAttrSuffix;
+  rv = principal->GetOriginSuffix(originAttrSuffix);
+  if (NS_FAILED(rv)) {
+    return Err(rv);
   }
 
-  return NS_OK;
+  return std::make_pair(std::move(originAttrSuffix), std::move(originKey));
 }
 
 LogModule* GetLocalStorageLogger() { return gLogger; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

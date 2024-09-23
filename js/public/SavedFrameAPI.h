@@ -11,12 +11,10 @@
 #ifndef js_SavedFrameAPI_h
 #define js_SavedFrameAPI_h
 
-#include "jstypes.h"  // JS_FRIEND_API, JS_PUBLIC_API
+#include "jstypes.h"  // JS_PUBLIC_API
 
-#include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
-
-struct JS_PUBLIC_API JSContext;
-class JS_PUBLIC_API JSObject;
+#include "js/ColumnNumber.h"  // JS::TaggedColumnNumberOneOrigin
+#include "js/TypeDecls.h"
 
 struct JSPrincipals;
 
@@ -76,7 +74,8 @@ extern JS_PUBLIC_API SavedFrameResult GetSavedFrameSourceId(
     SavedFrameSelfHosted selfHosted = SavedFrameSelfHosted::Include);
 
 /**
- * Given a SavedFrame JSObject, get its line property. Defaults to 0.
+ * Given a SavedFrame JSObject, get its line property (1-origin).
+ * Defaults to 0.
  */
 extern JS_PUBLIC_API SavedFrameResult GetSavedFrameLine(
     JSContext* cx, JSPrincipals* principals, Handle<JSObject*> savedFrame,
@@ -88,7 +87,7 @@ extern JS_PUBLIC_API SavedFrameResult GetSavedFrameLine(
  */
 extern JS_PUBLIC_API SavedFrameResult GetSavedFrameColumn(
     JSContext* cx, JSPrincipals* principals, Handle<JSObject*> savedFrame,
-    uint32_t* columnp,
+    JS::TaggedColumnNumberOneOrigin* columnp,
     SavedFrameSelfHosted selfHosted = SavedFrameSelfHosted::Include);
 
 /**
@@ -151,7 +150,7 @@ namespace js {
  *
  * Do NOT pass a non-SavedFrame object here.
  */
-extern JS_FRIEND_API JSObject* GetFirstSubsumedSavedFrame(
+extern JS_PUBLIC_API JSObject* GetFirstSubsumedSavedFrame(
     JSContext* cx, JSPrincipals* principals, JS::Handle<JSObject*> savedFrame,
     JS::SavedFrameSelfHosted selfHosted);
 

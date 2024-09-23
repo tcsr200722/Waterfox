@@ -7,10 +7,13 @@
 #ifndef MOZILLA_GFX_RENDERCOMPOSITOR_H
 #define MOZILLA_GFX_RENDERCOMPOSITOR_H
 
+#include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "Units.h"
+
+#include "GLTypes.h"
 
 namespace mozilla {
 
@@ -19,6 +22,7 @@ class GLContext;
 }
 
 namespace layers {
+class CompositionRecorder;
 class SyncObjectHost;
 }  // namespace layers
 
@@ -28,15 +32,22 @@ class CompositorWidget;
 
 namespace wr {
 
+class RenderCompositorLayersSWGL;
+class RenderCompositorD3D11SWGL;
+
 class RenderCompositor {
  public:
   static UniquePtr<RenderCompositor> Create(
-      RefPtr<widget::CompositorWidget>&& aWidget);
+      const RefPtr<widget::CompositorWidget>& aWidget, nsACString& aError);
 
-  RenderCompositor(RefPtr<widget::CompositorWidget>&& aWidget);
+  RenderCompositor(const RefPtr<widget::CompositorWidget>& aWidget);
   virtual ~RenderCompositor();
 
   virtual bool BeginFrame() = 0;
+
+  // Optional handler in case the frame was aborted allowing the compositor
+  // to clean up relevant resources if required.
+  virtual void CancelFrame() {}
 
   // Called to notify the RenderCompositor that all of the commands for a frame
   // have been pushed to the queue.
@@ -62,6 +73,7 @@ class RenderCompositor {
   virtual void Update() {}
 
   virtual gl::GLContext* gl() const { return nullptr; }
+  virtual void* swgl() const { return nullptr; }
 
   virtual bool MakeCurrent();
 
@@ -71,18 +83,36 @@ class RenderCompositor {
 
   virtual bool UseTripleBuffering() const { return false; }
 
+  virtual layers::WebRenderBackend BackendType() const {
+    return layers::WebRenderBackend::HARDWARE;
+  }
+  virtual layers::WebRenderCompositor CompositorType() const {
+    return layers::WebRenderCompositor::DRAW;
+  }
+
+  virtual RenderCompositorD3D11SWGL* AsRenderCompositorD3D11SWGL() {
+    return nullptr;
+  }
+
+  virtual RenderCompositorLayersSWGL* AsRenderCompositorLayersSWGL() {
+    return nullptr;
+  }
+
+  // True if AttachExternalImage supports being used with an external
+  // image that maps to a RenderBufferTextureHost
+  virtual bool SupportsExternalBufferTextures() const { return false; }
+
   virtual LayoutDeviceIntSize GetBufferSize() = 0;
 
   widget::CompositorWidget* GetWidget() const { return mWidget; }
 
   layers::SyncObjectHost* GetSyncObject() const { return mSyncObject.get(); }
 
-  virtual bool IsContextLost();
+  virtual gfx::DeviceResetReason IsContextLost(bool aForce);
 
   virtual bool SupportAsyncScreenshot() { return true; }
 
   virtual bool ShouldUseNativeCompositor() { return false; }
-  virtual uint32_t GetMaxUpdateRects() { return 0; }
 
   // Interface for wr::Compositor
   virtual void CompositorBeginFrame() {}
@@ -91,23 +121,58 @@ class RenderCompositor {
                     uint32_t* aFboId, wr::DeviceIntRect aDirtyRect,
                     wr::DeviceIntRect aValidRect) {}
   virtual void Unbind() {}
+  virtual bool MapTile(wr::NativeTileId aId, wr::DeviceIntRect aDirtyRect,
+                       wr::DeviceIntRect aValidRect, void** aData,
+                       int32_t* aStride) {
+    return false;
+  }
+  virtual void UnmapTile() {}
   virtual void CreateSurface(wr::NativeSurfaceId aId,
                              wr::DeviceIntPoint aVirtualOffset,
                              wr::DeviceIntSize aTileSize, bool aIsOpaque) {}
+  virtual void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) {}
+  virtual void CreateBackdropSurface(wr::NativeSurfaceId aId,
+                                     wr::ColorF aColor) {}
   virtual void DestroySurface(NativeSurfaceId aId) {}
   virtual void CreateTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
   virtual void DestroyTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
-  virtual void AddSurface(wr::NativeSurfaceId aId, wr::DeviceIntPoint aPosition,
-                          wr::DeviceIntRect aClipRect) {}
+  virtual void AttachExternalImage(wr::NativeSurfaceId aId,
+                                   wr::ExternalImageId aExternalImage) {}
+  virtual void AddSurface(wr::NativeSurfaceId aId,
+                          const wr::CompositorSurfaceTransform& aTransform,
+                          wr::DeviceIntRect aClipRect,
+                          wr::ImageRendering aImageRendering) {}
+  // Called in the middle of a frame after all surfaces have been added but
+  // before tiles are updated to signal that early compositing can start
+  virtual void StartCompositing(wr::ColorF aClearColor,
+                                const wr::DeviceIntRect* aDirtyRects,
+                                size_t aNumDirtyRects,
+                                const wr::DeviceIntRect* aOpaqueRects,
+                                size_t aNumOpaqueRects) {}
   virtual void EnableNativeCompositor(bool aEnable) {}
   virtual void DeInit() {}
-  virtual CompositorCapabilities GetCompositorCapabilities() = 0;
+  // Overrides any of the default compositor capabilities for behavior this
+  // compositor might require.
+  virtual void GetCompositorCapabilities(CompositorCapabilities* aCaps);
+
+  virtual void GetWindowVisibility(WindowVisibility* aVisibility);
 
   // Interface for partial present
   virtual bool UsePartialPresent() { return false; }
   virtual bool RequestFullRender() { return false; }
   virtual uint32_t GetMaxPartialPresentRects() { return 0; }
   virtual bool ShouldDrawPreviousPartialPresentRegions() { return false; }
+  // Returns the age of the current backbuffer., This should be used, if
+  // ShouldDrawPreviousPartialPresentRegions() returns true, to determine the
+  // region which must be rendered in addition to the current frame's dirty
+  // rect.
+  virtual size_t GetBufferAge() const { return 0; }
+  // Allows webrender to specify the total region that will be rendered to this
+  // frame, ie the frame's dirty region and some previous frames' dirty regions,
+  // if applicable (calculated using the buffer age). Must be called before
+  // anything has been rendered to the main framebuffer.
+  virtual void SetBufferDamageRegion(const wr::DeviceIntRect* aRects,
+                                     size_t aNumRects) {}
 
   // Whether the surface origin is top-left.
   virtual bool SurfaceOriginIsTopLeft() { return false; }
@@ -116,9 +181,28 @@ class RenderCompositor {
   // result. It could happen when WebRender renders to multiple overlay layers.
   virtual bool MaybeReadback(const gfx::IntSize& aReadbackSize,
                              const wr::ImageFormat& aReadbackFormat,
-                             const Range<uint8_t>& aReadbackBuffer) {
+                             const Range<uint8_t>& aReadbackBuffer,
+                             bool* aNeedsYFlip) {
     return false;
   }
+  virtual void MaybeRequestAllowFrameRecording(bool aWillRecord) {}
+  virtual bool MaybeRecordFrame(layers::CompositionRecorder& aRecorder) {
+    return false;
+  }
+  virtual bool MaybeGrabScreenshot(const gfx::IntSize& aWindowSize) {
+    return false;
+  }
+  virtual bool MaybeProcessScreenshotQueue() { return false; }
+
+  // Returns FileDescriptor of release fence.
+  // Release fence is a fence that is used for waiting until usage/composite of
+  // AHardwareBuffer is ended. The fence is delivered to client side via
+  // ImageBridge. It is used only on android.
+  virtual ipc::FileDescriptor GetAndResetReleaseFence() {
+    return ipc::FileDescriptor();
+  }
+
+  virtual bool IsPaused() { return false; }
 
  protected:
   // We default this to 2, so that mLatestRenderFrameId.Prev() is always valid.

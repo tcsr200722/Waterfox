@@ -7,6 +7,7 @@
 #include "nsHtml5Parser.h"
 
 #include "mozilla/AutoRestore.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCRT.h"
 #include "nsContentUtils.h"  // for kLoadAsData
 #include "nsHtml5AtomTable.h"
@@ -48,7 +49,7 @@ nsHtml5Parser::nsHtml5Parser()
       mFirstBuffer(new nsHtml5OwningUTF16Buffer((void*)nullptr)),
       mLastBuffer(mFirstBuffer),
       mExecutor(new nsHtml5TreeOpExecutor()),
-      mTreeBuilder(new nsHtml5TreeBuilder(mExecutor, nullptr)),
+      mTreeBuilder(new nsHtml5TreeBuilder(mExecutor, nullptr, false)),
       mTokenizer(new nsHtml5Tokenizer(mTreeBuilder.get(), false)),
       mRootContextLineNumber(1),
       mReturnToStreamParserPermitted(false) {
@@ -94,26 +95,22 @@ nsHtml5Parser::SetCommand(eParserCommands aParserCommand) {
 }
 
 void nsHtml5Parser::SetDocumentCharset(NotNull<const Encoding*> aEncoding,
-                                       int32_t aCharsetSource) {
+                                       int32_t aCharsetSource,
+                                       bool aForceAutoDetection) {
   MOZ_ASSERT(!mExecutor->HasStarted(), "Document charset set too late.");
   MOZ_ASSERT(GetStreamParser(), "Setting charset on a script-only parser.");
-  GetStreamParser()->SetDocumentCharset(aEncoding, aCharsetSource);
-  mExecutor->SetDocumentCharsetAndSource(aEncoding, aCharsetSource);
+  GetStreamParser()->SetDocumentCharset(
+      aEncoding, (nsCharsetSource)aCharsetSource, aForceAutoDetection);
+  mExecutor->SetDocumentCharsetAndSource(aEncoding,
+                                         (nsCharsetSource)aCharsetSource);
 }
 
-NS_IMETHODIMP
-nsHtml5Parser::GetChannel(nsIChannel** aChannel) {
+nsresult nsHtml5Parser::GetChannel(nsIChannel** aChannel) {
   if (GetStreamParser()) {
     return GetStreamParser()->GetChannel(aChannel);
   } else {
     return NS_ERROR_NOT_AVAILABLE;
   }
-}
-
-NS_IMETHODIMP
-nsHtml5Parser::GetDTD(nsIDTD** aDTD) {
-  *aDTD = nullptr;
-  return NS_OK;
 }
 
 nsIStreamListener* nsHtml5Parser::GetStreamListener() {
@@ -151,13 +148,13 @@ NS_IMETHODIMP_(bool)
 nsHtml5Parser::IsParserEnabled() { return !mBlocked; }
 
 NS_IMETHODIMP_(bool)
+nsHtml5Parser::IsParserClosed() { return mDocumentClosed; }
+
+NS_IMETHODIMP_(bool)
 nsHtml5Parser::IsComplete() { return mExecutor->IsComplete(); }
 
 NS_IMETHODIMP
-nsHtml5Parser::Parse(nsIURI* aURL, nsIRequestObserver* aObserver,
-                     void* aKey,       // legacy; ignored
-                     nsDTDMode aMode)  // legacy; ignored
-{
+nsHtml5Parser::Parse(nsIURI* aURL) {
   /*
    * Do NOT cause WillBuildModel to be called synchronously from here!
    * The document won't be ready for it until OnStartRequest!
@@ -167,7 +164,6 @@ nsHtml5Parser::Parse(nsIURI* aURL, nsIRequestObserver* aObserver,
   MOZ_ASSERT(GetStreamParser(),
              "Can't call this Parse() variant on script-created parser");
 
-  GetStreamParser()->SetObserver(aObserver);
   GetStreamParser()->SetViewSourceTitle(aURL);  // In case we're viewing source
   mExecutor->SetStreamParser(GetStreamParser());
   mExecutor->SetParser(this);
@@ -339,8 +335,11 @@ nsresult nsHtml5Parser::Parse(const nsAString& aSourceBuffer, void* aKey,
         mTokenizer->setLineNumber(lineNumberSave);
       }
 
-      if (mTreeBuilder->HasScript()) {
-        mTreeBuilder->Flush();                // Move ops to the executor
+      if (mTreeBuilder->HasScriptThatMayDocumentWriteOrBlock()) {
+        auto r = mTreeBuilder->Flush();  // Move ops to the executor
+        if (r.isErr()) {
+          return executor->MarkAsBroken(r.unwrapErr());
+        }
         rv = executor->FlushDocumentWrite();  // run the ops
         NS_ENSURE_SUCCESS(rv, rv);
         // Flushing tree ops can cause all sorts of things.
@@ -400,7 +399,10 @@ nsresult nsHtml5Parser::Parse(const nsAString& aSourceBuffer, void* aKey,
     NS_ASSERTION(!stackBuffer.hasMore(),
                  "Buffer wasn't tokenized to completion?");
     // Scripting semantics require a forced tree builder flush here
-    mTreeBuilder->Flush();                // Move ops to the executor
+    auto r = mTreeBuilder->Flush();  // Move ops to the executor
+    if (r.isErr()) {
+      return executor->MarkAsBroken(r.unwrapErr());
+    }
     rv = executor->FlushDocumentWrite();  // run the ops
     NS_ENSURE_SUCCESS(rv, rv);
   } else if (stackBuffer.hasMore()) {
@@ -412,10 +414,13 @@ nsresult nsHtml5Parser::Parse(const nsAString& aSourceBuffer, void* aKey,
       if (!mDocWriteSpeculativeTreeBuilder) {
         // Lazily initialize if uninitialized
         mDocWriteSpeculativeTreeBuilder =
-            MakeUnique<nsHtml5TreeBuilder>(nullptr, executor->GetStage());
+            mozilla::MakeUnique<nsHtml5TreeBuilder>(nullptr,
+                                                    executor->GetStage(), true);
         mDocWriteSpeculativeTreeBuilder->setScriptingEnabled(
             mTreeBuilder->isScriptingEnabled());
-        mDocWriteSpeculativeTokenizer = MakeUnique<nsHtml5Tokenizer>(
+        mDocWriteSpeculativeTreeBuilder->setAllowDeclarativeShadowRoots(
+            mTreeBuilder->isAllowDeclarativeShadowRoots());
+        mDocWriteSpeculativeTokenizer = mozilla::MakeUnique<nsHtml5Tokenizer>(
             mDocWriteSpeculativeTreeBuilder.get(), false);
         mDocWriteSpeculativeTokenizer->setInterner(&mAtomTable);
         mDocWriteSpeculativeTokenizer->start();
@@ -450,7 +455,10 @@ nsresult nsHtml5Parser::Parse(const nsAString& aSourceBuffer, void* aKey,
       }
     }
 
-    mDocWriteSpeculativeTreeBuilder->Flush();
+    auto r = mDocWriteSpeculativeTreeBuilder->Flush();
+    if (r.isErr()) {
+      return executor->MarkAsBroken(r.unwrapErr());
+    }
     mDocWriteSpeculativeTreeBuilder->DropHandles();
     executor->FlushSpeculativeLoads();
   }
@@ -460,6 +468,8 @@ nsresult nsHtml5Parser::Parse(const nsAString& aSourceBuffer, void* aKey,
 
 NS_IMETHODIMP
 nsHtml5Parser::Terminate() {
+  // Prevent a second call to DidBuildModel via document.close()
+  mDocumentClosed = true;
   // We should only call DidBuildModel once, so don't do anything if this is
   // the second time that Terminate has been called.
   if (mExecutor->IsComplete()) {
@@ -475,26 +485,6 @@ nsHtml5Parser::Terminate() {
   }
   return executor->DidBuildModel(true);
 }
-
-NS_IMETHODIMP
-nsHtml5Parser::ParseFragment(const nsAString& aSourceBuffer,
-                             nsTArray<nsString>& aTagStack) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-nsHtml5Parser::BuildModel() {
-  MOZ_ASSERT_UNREACHABLE("Don't call this!");
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-nsHtml5Parser::CancelParsingEvents() {
-  MOZ_ASSERT_UNREACHABLE("Don't call this!");
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-void nsHtml5Parser::Reset() { MOZ_ASSERT_UNREACHABLE("Don't call this!"); }
 
 bool nsHtml5Parser::IsInsertionPointDefined() {
   return !mExecutor->IsFlushing() && !mInsertionPointPermanentlyUndefined &&
@@ -574,7 +564,10 @@ nsresult nsHtml5Parser::ParseUntilBlocked() {
               mTreeBuilder->StreamEnded();
             }
           }
-          mTreeBuilder->Flush();
+          auto r = mTreeBuilder->Flush();
+          if (r.isErr()) {
+            return mExecutor->MarkAsBroken(r.unwrapErr());
+          }
           mExecutor->FlushDocumentWrite();
           // The below call does memory cleanup, so call it even if the
           // parser has been marked as broken.
@@ -587,14 +580,20 @@ nsresult nsHtml5Parser::ParseUntilBlocked() {
         if (GetStreamParser()) {
           if (mReturnToStreamParserPermitted &&
               !mExecutor->IsScriptExecuting()) {
-            mTreeBuilder->Flush();
+            auto r = mTreeBuilder->Flush();
+            if (r.isErr()) {
+              return mExecutor->MarkAsBroken(r.unwrapErr());
+            }
             mReturnToStreamParserPermitted = false;
-            GetStreamParser()->ContinueAfterScripts(
+            GetStreamParser()->ContinueAfterScriptsOrEncodingCommitment(
                 mTokenizer.get(), mTreeBuilder.get(), mLastWasCR);
           }
         } else {
           // Script-created parser
-          mTreeBuilder->Flush();
+          auto r = mTreeBuilder->Flush();
+          if (r.isErr()) {
+            return mExecutor->MarkAsBroken(r.unwrapErr());
+          }
           // No need to flush the executor, because the executor is already
           // in a flush
           NS_ASSERTION(mExecutor->IsInFlushLoop(),
@@ -629,8 +628,11 @@ nsresult nsHtml5Parser::ParseUntilBlocked() {
       if (inRootContext) {
         mRootContextLineNumber = mTokenizer->getLineNumber();
       }
-      if (mTreeBuilder->HasScript()) {
-        mTreeBuilder->Flush();
+      if (mTreeBuilder->HasScriptThatMayDocumentWriteOrBlock()) {
+        auto r = mTreeBuilder->Flush();
+        if (r.isErr()) {
+          return mExecutor->MarkAsBroken(r.unwrapErr());
+        }
         rv = mExecutor->FlushDocumentWrite();
         NS_ENSURE_SUCCESS(rv, rv);
       }
@@ -648,6 +650,8 @@ nsresult nsHtml5Parser::StartExecutor() {
   RefPtr<nsHtml5TreeOpExecutor> executor(mExecutor);
   executor->SetParser(this);
   mTreeBuilder->setScriptingEnabled(executor->IsScriptEnabled());
+  mTreeBuilder->setAllowDeclarativeShadowRoots(
+      executor->GetDocument()->AllowsDeclarativeShadowRoots());
 
   mTreeBuilder->setIsSrcdocDocument(false);
 
@@ -658,12 +662,14 @@ nsresult nsHtml5Parser::StartExecutor() {
    * We know we're in document.open(), so our document must already
    * have a script global andthe WillBuildModel call is safe.
    */
-  return executor->WillBuildModel(eDTDMode_unknown);
+  return executor->WillBuildModel();
 }
 
 nsresult nsHtml5Parser::Initialize(mozilla::dom::Document* aDoc, nsIURI* aURI,
                                    nsISupports* aContainer,
                                    nsIChannel* aChannel) {
+  mTreeBuilder->setAllowDeclarativeShadowRoots(
+      aDoc->AllowsDeclarativeShadowRoots());
   return mExecutor->Init(aDoc, aURI, aContainer, aChannel);
 }
 
@@ -678,6 +684,8 @@ void nsHtml5Parser::StartTokenizer(bool aScriptingEnabled) {
 
   mTreeBuilder->SetPreventScriptExecution(!aScriptingEnabled);
   mTreeBuilder->setScriptingEnabled(aScriptingEnabled);
+  mTreeBuilder->setAllowDeclarativeShadowRoots(
+      mExecutor->GetDocument()->AllowsDeclarativeShadowRoots());
   mTokenizer->start();
 }
 

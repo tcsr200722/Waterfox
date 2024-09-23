@@ -1,42 +1,59 @@
 "use strict";
 
-ChromeUtils.import("resource://normandy/lib/AddonStudies.jsm", this);
-ChromeUtils.import("resource://normandy/lib/PreferenceExperiments.jsm", this);
-ChromeUtils.import("resource://normandy/lib/RecipeRunner.jsm", this);
-ChromeUtils.import("resource://normandy-content/AboutPages.jsm", this);
-
-const { NormandyTestUtils } = ChromeUtils.import(
-  "resource://testing-common/NormandyTestUtils.jsm"
+const { PreferenceExperiments } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceExperiments.sys.mjs"
 );
-const {
-  addonStudyFactory,
-  preferenceStudyFactory,
-} = NormandyTestUtils.factories;
+const { RecipeRunner } = ChromeUtils.importESModule(
+  "resource://normandy/lib/RecipeRunner.sys.mjs"
+);
+const { ExperimentFakes } = ChromeUtils.importESModule(
+  "resource://testing-common/NimbusTestUtils.sys.mjs"
+);
+const { ExperimentManager } = ChromeUtils.importESModule(
+  "resource://nimbus/lib/ExperimentManager.sys.mjs"
+);
+const { ExperimentAPI } = ChromeUtils.importESModule(
+  "resource://nimbus/ExperimentAPI.sys.mjs"
+);
+const { RemoteSettingsExperimentLoader } = ChromeUtils.importESModule(
+  "resource://nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs"
+);
 
-function withAboutStudies(testFunc) {
-  return async (...args) =>
-    BrowserTestUtils.withNewTab("about:studies", async browser =>
-      testFunc(...args, browser)
-    );
+const { NormandyTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NormandyTestUtils.sys.mjs"
+);
+const { addonStudyFactory, preferenceStudyFactory } =
+  NormandyTestUtils.factories;
+
+function withAboutStudies() {
+  return function (testFunc) {
+    return async args =>
+      BrowserTestUtils.withNewTab("about:studies", async browser =>
+        testFunc({ ...args, browser })
+      );
+  };
 }
 
 // Test that the code renders at all
-decorate_task(withAboutStudies, async function testAboutStudiesWorks(browser) {
-  const appFound = await SpecialPowers.spawn(
-    browser,
-    [],
-    () => !!content.document.getElementById("app")
-  );
-  ok(appFound, "App element was found");
-});
+decorate_task(
+  withAboutStudies(),
+  async function testAboutStudiesWorks({ browser }) {
+    const appFound = await SpecialPowers.spawn(
+      browser,
+      [],
+      () => !!content.document.getElementById("app")
+    );
+    ok(appFound, "App element was found");
+  }
+);
 
 // Test that the learn more element is displayed correctly
 decorate_task(
   withPrefEnv({
     set: [["app.normandy.shieldLearnMoreUrl", "http://test/%OS%/"]],
   }),
-  withAboutStudies,
-  async function testLearnMore(browser) {
+  withAboutStudies(),
+  async function testLearnMore({ browser }) {
     SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(() =>
@@ -57,34 +74,37 @@ decorate_task(
 );
 
 // Test that jumping to preferences worked as expected
-decorate_task(withAboutStudies, async function testUpdatePreferences(browser) {
-  let loadPromise = BrowserTestUtils.firstBrowserLoaded(window);
+decorate_task(
+  withAboutStudies(),
+  async function testUpdatePreferences({ browser }) {
+    let loadPromise = BrowserTestUtils.firstBrowserLoaded(window);
 
-  // We have to use gBrowser instead of browser in most spots since we're
-  // dealing with a new tab outside of the about:studies tab.
-  const tab = await BrowserTestUtils.switchTab(gBrowser, () => {
-    SpecialPowers.spawn(browser, [], async () => {
-      const doc = content.document;
-      await ContentTaskUtils.waitForCondition(() =>
-        doc.getElementById("shield-studies-update-preferences")
-      );
-      content.document
-        .getElementById("shield-studies-update-preferences")
-        .click();
+    // We have to use gBrowser instead of browser in most spots since we're
+    // dealing with a new tab outside of the about:studies tab.
+    const tab = await BrowserTestUtils.switchTab(gBrowser, () => {
+      SpecialPowers.spawn(browser, [], async () => {
+        const doc = content.document;
+        await ContentTaskUtils.waitForCondition(() =>
+          doc.getElementById("shield-studies-update-preferences")
+        );
+        content.document
+          .getElementById("shield-studies-update-preferences")
+          .click();
+      });
     });
-  });
 
-  await loadPromise;
+    await loadPromise;
 
-  const location = gBrowser.currentURI.spec;
-  is(
-    location,
-    "about:preferences#privacy",
-    "Clicking Update Preferences opens the privacy section of the new about:preferences."
-  );
+    const location = gBrowser.currentURI.spec;
+    is(
+      location,
+      "about:preferences#privacy",
+      "Clicking Update Preferences opens the privacy section of the new about:preferences."
+    );
 
-  BrowserTestUtils.removeTab(tab);
-});
+    BrowserTestUtils.removeTab(tab);
+  }
+);
 
 // Test that the study listing shows studies in the proper order and grouping
 decorate_task(
@@ -132,12 +152,12 @@ decorate_task(
       expired: false,
     }),
   ]),
-  withAboutStudies,
-  async function testStudyListing(addonStudies, prefStudies, browser) {
+  withAboutStudies(),
+  async function testStudyListing({ addonStudies, prefExperiments, browser }) {
     await SpecialPowers.spawn(
       browser,
-      [{ addonStudies, prefStudies }],
-      async ({ addonStudies, prefStudies }) => {
+      [{ addonStudies, prefExperiments }],
+      async ({ addonStudies, prefExperiments }) => {
         const doc = content.document;
 
         function getStudyRow(docElem, slug) {
@@ -157,16 +177,16 @@ decorate_task(
         Assert.deepEqual(
           activeNames,
           [
-            prefStudies[2].slug,
+            prefExperiments[2].slug,
             addonStudies[0].slug,
-            prefStudies[0].slug,
+            prefExperiments[0].slug,
             addonStudies[2].slug,
           ],
           "Active studies are grouped by enabled status, and sorted by date"
         );
         Assert.deepEqual(
           inactiveNames,
-          [prefStudies[1].slug, addonStudies[1].slug],
+          [prefExperiments[1].slug, addonStudies[1].slug],
           "Inactive studies are grouped by enabled status, and sorted by date"
         );
 
@@ -205,8 +225,8 @@ decorate_task(
           "Inactive studies do not show a remove button"
         );
 
-        const activePrefStudy = getStudyRow(doc, prefStudies[0].slug);
-        const preferenceName = Object.keys(prefStudies[0].preferences)[0];
+        const activePrefStudy = getStudyRow(doc, prefExperiments[0].slug);
+        const preferenceName = Object.keys(prefExperiments[0].preferences)[0];
         ok(
           activePrefStudy
             .querySelector(".study-description")
@@ -223,7 +243,7 @@ decorate_task(
           "Active studies show a remove button"
         );
 
-        const inactivePrefStudy = getStudyRow(doc, prefStudies[1].slug);
+        const inactivePrefStudy = getStudyRow(doc, prefExperiments[1].slug);
         is(
           inactivePrefStudy.querySelector(".study-status").textContent,
           "Complete",
@@ -245,10 +265,10 @@ decorate_task(
 
         activePrefStudy.querySelector(".remove-button").click();
         await ContentTaskUtils.waitForCondition(() =>
-          getStudyRow(doc, prefStudies[0].slug).matches(".study.disabled")
+          getStudyRow(doc, prefExperiments[0].slug).matches(".study.disabled")
         );
         ok(
-          getStudyRow(doc, prefStudies[0].slug).matches(".study.disabled"),
+          getStudyRow(doc, prefExperiments[0].slug).matches(".study.disabled"),
           "Clicking the remove button updates the UI to show that the study has been disabled."
         );
       }
@@ -261,7 +281,7 @@ decorate_task(
     );
 
     const updatedPrefStudy = await PreferenceExperiments.get(
-      prefStudies[0].slug
+      prefExperiments[0].slug
     );
     ok(
       updatedPrefStudy.expired,
@@ -273,8 +293,8 @@ decorate_task(
 // Test that a message is shown when no studies have been run
 decorate_task(
   AddonStudies.withStudies([]),
-  withAboutStudies,
-  async function testStudyListingNoStudies(studies, browser) {
+  withAboutStudies(),
+  async function testStudyListingNoStudies({ browser }) {
     await SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(
@@ -293,7 +313,7 @@ decorate_task(
 
 // Test that the message shown when studies are disabled and studies exist
 decorate_task(
-  withAboutStudies,
+  withAboutStudies(),
   AddonStudies.withStudies([
     addonStudyFactory({
       userFacingName: "A Fake Add-on Study",
@@ -311,11 +331,7 @@ decorate_task(
       expired: true,
     }),
   ]),
-  async function testStudyListingDisabled(
-    browser,
-    addonStudies,
-    preferenceStudies
-  ) {
+  async function testStudyListingDisabled({ browser }) {
     try {
       RecipeRunner.disable();
 
@@ -347,10 +363,10 @@ decorate_task(
       ["app.shield.optoutstudies.enabled", false],
     ],
   }),
-  withAboutStudies,
+  withAboutStudies(),
   AddonStudies.withStudies([]),
   PreferenceExperiments.withMockExperiments([]),
-  async function testStudyListingStudiesOptOut(browser) {
+  async function testStudyListingStudiesOptOut({ browser }) {
     RecipeRunner.checkPrefs();
     ok(
       RecipeRunner.enabled,
@@ -393,8 +409,12 @@ decorate_task(
       expired: false,
     }),
   ]),
-  withAboutStudies,
-  async function testStudyListing([addonStudy], [prefStudy], browser) {
+  withAboutStudies(),
+  async function testStudyListing({
+    addonStudies: [addonStudy],
+    prefExperiments: [prefStudy],
+    browser,
+  }) {
     // The content page has already loaded. Disabling the studies here shouldn't
     // affect it, since it doesn't live-update.
     await AddonStudies.markAsEnded(addonStudy, "disabled-automatically-test");
@@ -489,8 +509,12 @@ decorate_task(
       expired: false,
     }),
   ]),
-  withAboutStudies,
-  async function testOtherTabsUpdated([addonStudy], [prefStudy], browser) {
+  withAboutStudies(),
+  async function testOtherTabsUpdated({
+    addonStudies: [addonStudy],
+    prefExperiments: [prefStudy],
+    browser,
+  }) {
     // Ensure that both our studies are active in the current tab.
     await SpecialPowers.spawn(
       browser,
@@ -620,3 +644,221 @@ decorate_task(
     );
   }
 );
+
+add_task(async function test_nimbus_about_studies_experiment() {
+  const recipe = ExperimentFakes.recipe("about-studies-foo");
+  await ExperimentManager.enroll(recipe);
+  const activeBranchSlug = ExperimentAPI.getActiveBranch({
+    slug: recipe.slug,
+  })?.slug;
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies", activeBranchSlug },
+    async browser => {
+      const [name, renderedBranchSlug] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus .remove-button"),
+            "waiting for page to load"
+          );
+          return [
+            content.document.querySelector(".study-name").innerText,
+            content.document.querySelector(".study-branch-slug").innerText,
+          ];
+        }
+      );
+      // Make sure strings are properly shown
+      Assert.equal(
+        name,
+        recipe.userFacingName,
+        "Correct active experiment name"
+      );
+      Assert.equal(
+        renderedBranchSlug,
+        activeBranchSlug,
+        "Correct active experiment branch slug"
+      );
+    }
+  );
+  ExperimentManager.unenroll(recipe.slug);
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies", activeBranchSlug },
+    async browser => {
+      const [name, renderedBranchSlug] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus.disabled"),
+            "waiting for experiment to become disabled"
+          );
+          return [
+            content.document.querySelector(".study-name").innerText,
+            content.document.querySelector(".study-branch-slug").innerText,
+          ];
+        }
+      );
+      // Make sure strings are properly shown
+      Assert.equal(
+        name,
+        recipe.userFacingName,
+        "Correct disabled experiment name"
+      );
+      Assert.equal(
+        renderedBranchSlug,
+        activeBranchSlug,
+        "Correct disabled experiment branch slug"
+      );
+    }
+  );
+  // Cleanup for multiple test runs
+  ExperimentManager.store._deleteForTests(recipe.slug);
+  Assert.equal(ExperimentManager.store.getAll().length, 0, "Cleanup done");
+});
+
+add_task(async function test_nimbus_about_studies_rollout() {
+  let recipe = ExperimentFakes.recipe("test_nimbus_about_studies_rollout");
+  let rollout = {
+    ...recipe,
+    branches: [recipe.branches[0]],
+    isRollout: true,
+  };
+  await ExperimentManager.enroll(rollout);
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies" },
+    async browser => {
+      const studyCount = await SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForCondition(
+          () => content.document.querySelector("#shield-studies-learn-more"),
+          "waiting for page/experiment to load"
+        );
+        return content.document.querySelectorAll(".study-name").length;
+      });
+      // Make sure strings are properly shown
+      Assert.equal(studyCount, 1, "Rollout loaded in non-debug mode");
+    }
+  );
+  Services.prefs.setBoolPref("nimbus.debug", true);
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies" },
+    async browser => {
+      const [studyName, branchShown] = await SpecialPowers.spawn(
+        browser,
+        [],
+        async () => {
+          await ContentTaskUtils.waitForCondition(
+            () => content.document.querySelector(".nimbus .remove-button"),
+            "waiting for page/experiment to load"
+          );
+          return [
+            content.document.querySelector(".study-header").innerText,
+            !!content.document.querySelector(".study-branch-slug"),
+          ];
+        }
+      );
+      // Make sure strings are properly shown
+      Assert.ok(studyName.includes("Active"), "Rollout loaded in debug mode");
+      // Make sure the branch slug is not shown for rollouts
+      Assert.ok(!branchShown, "Branch slug not shown for rollouts");
+    }
+  );
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies" },
+    async browser => {
+      const name = await SpecialPowers.spawn(browser, [], async () => {
+        content.document.querySelector(".remove-button").click();
+        await ContentTaskUtils.waitForCondition(
+          () => content.document.querySelector(".nimbus.disabled"),
+          "waiting for experiment to become disabled"
+        );
+        return content.document.querySelector(".study-header").innerText;
+      });
+      // Make sure strings are properly shown
+      Assert.ok(name.includes("Complete"), "Rollout was removed");
+    }
+  );
+  // Cleanup for multiple test runs
+  ExperimentManager.store._deleteForTests(rollout.slug);
+  Services.prefs.clearUserPref("nimbus.debug");
+});
+
+add_task(async function test_getStudiesEnabled() {
+  RecipeRunner.initializedPromise = Promise.withResolvers();
+  let promise = AboutPages.aboutStudies.getStudiesEnabled();
+
+  RecipeRunner.initializedPromise.resolve();
+  let result = await promise;
+
+  Assert.equal(
+    result,
+    Services.prefs.getBoolPref("app.shield.optoutstudies.enabled"),
+    "about:studies is enabled if the pref is enabled"
+  );
+});
+
+add_task(async function test_forceEnroll() {
+  let sandbox = sinon.createSandbox();
+
+  // This simulates a succesful enrollment
+  let stub = sandbox.stub(RemoteSettingsExperimentLoader, "optInToExperiment");
+
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: "about:studies?optin_collection=collection123&optin_branch=branch123&optin_slug=slug123",
+    },
+    async browser => {
+      await SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForCondition(
+          () => content.document.querySelector(".opt-in-box"),
+          "Should show the opt in message"
+        );
+
+        Assert.equal(
+          content.document
+            .querySelector(".opt-in-box")
+            .classList.contains("opt-in-error"),
+          false,
+          "should not have an error class since the enrollment was successful"
+        );
+
+        return true;
+      });
+    }
+  );
+
+  // Simulates a problem force enrolling
+  stub.rejects(new Error("Testing error"));
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: "about:studies?optin_collection=collection123&optin_branch=branch123&optin_slug=slug123",
+    },
+    async browser => {
+      await SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForCondition(
+          () => content.document.querySelector(".opt-in-box"),
+          "Should show the opt in message"
+        );
+
+        Assert.ok(
+          content.document
+            .querySelector(".opt-in-box")
+            .classList.contains("opt-in-error"),
+          "should have an error class since the enrollment rejected"
+        );
+
+        Assert.equal(
+          content.document.querySelector(".opt-in-box").textContent,
+          "Testing error",
+          "should render the error"
+        );
+
+        return true;
+      });
+    }
+  );
+
+  sandbox.restore();
+});

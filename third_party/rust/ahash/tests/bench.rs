@@ -1,56 +1,62 @@
-use ahash::AHasher;
+#![cfg_attr(feature = "specialize", feature(build_hasher_simple_hash_one))]
+
+use ahash::{AHasher, RandomState};
 use criterion::*;
 use fxhash::FxHasher;
+use rand::Rng;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes"))]
-fn aeshash<H: Hash>(b: H) -> u64 {
-    let mut hasher = AHasher::new_with_keys(1234, 5678);
-    b.hash(&mut hasher);
-    hasher.finish()
-}
-#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes")))]
-fn aeshash<H: Hash>(_b: H) -> u64 {
-    panic!("aes must be enabled")
+// Needs to be in sync with `src/lib.rs`
+const AHASH_IMPL: &str = if cfg!(any(
+    all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "aes",
+        not(miri),
+    ),
+    all(feature = "nightly-arm-aes", target_arch = "aarch64", target_feature = "aes", not(miri)),
+    all(
+        feature = "nightly-arm-aes",
+        target_arch = "arm",
+        target_feature = "aes",
+        not(miri)
+    ),
+)) {
+    "aeshash"
+} else {
+    "fallbackhash"
+};
+
+fn ahash<H: Hash>(b: &H) -> u64 {
+    let build_hasher = RandomState::with_seeds(1, 2, 3, 4);
+    build_hasher.hash_one(b)
 }
 
-#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes")))]
-fn fallbackhash<H: Hash>(b: H) -> u64 {
-    let mut hasher = AHasher::new_with_keys(1234, 5678);
-    b.hash(&mut hasher);
-    hasher.finish()
-}
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes"))]
-fn fallbackhash<H: Hash>(_b: H) -> u64 {
-    panic!("aes must be disabled")
-}
-
-fn fnvhash<H: Hash>(b: H) -> u64 {
+fn fnvhash<H: Hash>(b: &H) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     b.hash(&mut hasher);
     hasher.finish()
 }
 
-fn siphash<H: Hash>(b: H) -> u64 {
+fn siphash<H: Hash>(b: &H) -> u64 {
     let mut hasher = DefaultHasher::default();
     b.hash(&mut hasher);
     hasher.finish()
 }
 
-fn fxhash<H: Hash>(b: H) -> u64 {
+fn fxhash<H: Hash>(b: &H) -> u64 {
     let mut hasher = FxHasher::default();
     b.hash(&mut hasher);
     hasher.finish()
 }
 
-fn seahash<H: Hash>(b: H) -> u64 {
+fn seahash<H: Hash>(b: &H) -> u64 {
     let mut hasher = seahash::SeaHasher::default();
     b.hash(&mut hasher);
     hasher.finish()
 }
 
-const STRING_LENGTHS: [u32; 11] = [1, 3, 4, 7, 8, 15, 16, 24, 68, 132, 1024];
+const STRING_LENGTHS: [u32; 12] = [1, 3, 4, 7, 8, 15, 16, 24, 33, 68, 132, 1024];
 
 fn gen_strings() -> Vec<String> {
     STRING_LENGTHS
@@ -66,161 +72,128 @@ fn gen_strings() -> Vec<String> {
         .collect()
 }
 
-const U8_VALUES: [u8; 1] = [8];
-const U16_VALUES: [u16; 1] = [16];
-const U32_VALUES: [u32; 1] = [32];
-const U64_VALUES: [u64; 1] = [64];
-const U128_VALUES: [u128; 1] = [128];
+macro_rules! bench_inputs {
+    ($group:ident, $hash:ident) => {
+        // Number of iterations per batch should be high enough to hide timing overhead.
+        let size = BatchSize::NumIterations(50_000);
 
-fn bench_ahash(c: &mut Criterion) {
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("u8", |b, s| b.iter(|| black_box(aeshash(s))), &U8_VALUES),
-    );
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("u16", |b, s| b.iter(|| black_box(aeshash(s))), &U16_VALUES),
-    );
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("u32", |b, s| b.iter(|| black_box(aeshash(s))), &U32_VALUES),
-    );
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("u64", |b, s| b.iter(|| black_box(aeshash(s))), &U64_VALUES),
-    );
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("u128", |b, s| b.iter(|| black_box(aeshash(s))), &U128_VALUES),
-    );
-    c.bench(
-        "aeshash",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(aeshash(s))), gen_strings()),
-    );
+        let mut rng = rand::thread_rng();
+        $group.bench_function("u8", |b| b.iter_batched(|| rng.gen::<u8>(), |v| $hash(&v), size));
+        $group.bench_function("u16", |b| b.iter_batched(|| rng.gen::<u16>(), |v| $hash(&v), size));
+        $group.bench_function("u32", |b| b.iter_batched(|| rng.gen::<u32>(), |v| $hash(&v), size));
+        $group.bench_function("u64", |b| b.iter_batched(|| rng.gen::<u64>(), |v| $hash(&v), size));
+        $group.bench_function("u128", |b| b.iter_batched(|| rng.gen::<u128>(), |v| $hash(&v), size));
+        $group.bench_with_input("strings", &gen_strings(), |b, s| b.iter(|| $hash(black_box(s))));
+    };
 }
 
-fn bench_fallback(c: &mut Criterion) {
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("u8", |b, s| b.iter(|| black_box(fallbackhash(s))), &U8_VALUES),
-    );
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("u16", |b, s| b.iter(|| black_box(fallbackhash(s))), &U16_VALUES),
-    );
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("u32", |b, s| b.iter(|| black_box(fallbackhash(s))), &U32_VALUES),
-    );
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("u64", |b, s| b.iter(|| black_box(fallbackhash(s))), &U64_VALUES),
-    );
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("u128", |b, s| b.iter(|| black_box(fallbackhash(s))), &U128_VALUES),
-    );
-    c.bench(
-        "fallback",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(fallbackhash(s))), gen_strings()),
-    );
+fn bench_ahash(c: &mut Criterion) {
+    let mut group = c.benchmark_group(AHASH_IMPL);
+    bench_inputs!(group, ahash);
 }
 
 fn bench_fx(c: &mut Criterion) {
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("u8", |b, s| b.iter(|| black_box(fxhash(s))), &U8_VALUES),
-    );
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("u16", |b, s| b.iter(|| black_box(fxhash(s))), &U16_VALUES),
-    );
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("u32", |b, s| b.iter(|| black_box(fxhash(s))), &U32_VALUES),
-    );
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("u64", |b, s| b.iter(|| black_box(fxhash(s))), &U64_VALUES),
-    );
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("u128", |b, s| b.iter(|| black_box(fxhash(s))), &U128_VALUES),
-    );
-    c.bench(
-        "fx",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(fxhash(s))), gen_strings()),
-    );
+    let mut group = c.benchmark_group("fx");
+    bench_inputs!(group, fxhash);
 }
 
 fn bench_fnv(c: &mut Criterion) {
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("u8", |b, s| b.iter(|| black_box(fnvhash(s))), &U8_VALUES),
-    );
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("u16", |b, s| b.iter(|| black_box(fnvhash(s))), &U16_VALUES),
-    );
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("u32", |b, s| b.iter(|| black_box(fnvhash(s))), &U32_VALUES),
-    );
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("u64", |b, s| b.iter(|| black_box(fnvhash(s))), &U64_VALUES),
-    );
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("u128", |b, s| b.iter(|| black_box(fnvhash(s))), &U128_VALUES),
-    );
-    c.bench(
-        "fnv",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(fnvhash(s))), gen_strings()),
-    );
+    let mut group = c.benchmark_group("fnv");
+    bench_inputs!(group, fnvhash);
 }
 
 fn bench_sea(c: &mut Criterion) {
-    c.bench(
-        "sea",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(seahash(s))), gen_strings()),
-    );
+    let mut group = c.benchmark_group("sea");
+    bench_inputs!(group, seahash);
 }
 
 fn bench_sip(c: &mut Criterion) {
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("u8", |b, s| b.iter(|| black_box(siphash(s))), &U8_VALUES),
-    );
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("u16", |b, s| b.iter(|| black_box(siphash(s))), &U16_VALUES),
-    );
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("u32", |b, s| b.iter(|| black_box(siphash(s))), &U32_VALUES),
-    );
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("u64", |b, s| b.iter(|| black_box(siphash(s))), &U64_VALUES),
-    );
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("u128", |b, s| b.iter(|| black_box(siphash(s))), &U128_VALUES),
-    );
-    c.bench(
-        "sip",
-        ParameterizedBenchmark::new("string", |b, s| b.iter(|| black_box(siphash(s))), gen_strings()),
-    );
+    let mut group = c.benchmark_group("sip");
+    bench_inputs!(group, siphash);
+}
+
+fn bench_map(c: &mut Criterion) {
+    #[cfg(feature = "std")]
+    {
+        let mut group = c.benchmark_group("map");
+        group.bench_function("aHash-alias", |b| {
+            b.iter(|| {
+                let hm: ahash::HashMap<i32, i32> = (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+        group.bench_function("aHash-hashBrown", |b| {
+            b.iter(|| {
+                let hm: hashbrown::HashMap<i32, i32> = (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+        group.bench_function("aHash-hashBrown-explicit", |b| {
+            b.iter(|| {
+                let hm: hashbrown::HashMap<i32, i32, RandomState> = (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+        group.bench_function("aHash-wrapper", |b| {
+            b.iter(|| {
+                let hm: ahash::AHashMap<i32, i32> = (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+        group.bench_function("aHash-rand", |b| {
+            b.iter(|| {
+                let hm: std::collections::HashMap<i32, i32, RandomState> = (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+        group.bench_function("aHash-default", |b| {
+            b.iter(|| {
+                let hm: std::collections::HashMap<i32, i32, BuildHasherDefault<AHasher>> =
+                    (0..1_000_000).map(|i| (i, i)).collect();
+                let mut sum = 0;
+                for i in 0..1_000_000 {
+                    if let Some(x) = hm.get(&i) {
+                        sum += x;
+                    }
+                }
+            })
+        });
+    }
 }
 
 criterion_main!(benches);
+
 criterion_group!(
     benches,
     bench_ahash,
-    bench_fallback,
     bench_fx,
     bench_fnv,
     bench_sea,
-    bench_sip
+    bench_sip,
+    bench_map
 );

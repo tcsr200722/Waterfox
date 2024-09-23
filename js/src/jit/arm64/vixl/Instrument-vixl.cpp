@@ -1,4 +1,4 @@
-// Copyright 2014, ARM Limited
+// Copyright 2014, VIXL authors
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -25,8 +25,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "jit/arm64/vixl/Instrument-vixl.h"
-
-#include "mozilla/Unused.h"
 
 namespace vixl {
 
@@ -141,7 +139,7 @@ Instrument::Instrument(const char* datafile, uint64_t sample_period)
   // Construct Counter objects from counter description array.
   for (int i = 0; i < num_counters; i++) {
     if (Counter* counter = js_new<Counter>(kCounterList[i].name, kCounterList[i].type))
-      mozilla::Unused << counters_.append(counter);
+      (void)counters_.append(counter);
   }
 
   DumpCounterNames();
@@ -401,6 +399,12 @@ void Instrument::VisitLoadStoreExclusive(const Instruction* instr) {
   counter->Increment();
 }
 
+void Instrument::VisitAtomicMemory(const Instruction* instr) {
+  USE(instr);
+  Update();
+  static Counter* counter = GetCounter("Other");
+  counter->Increment();
+}
 
 void Instrument::VisitLoadLiteral(const Instruction* instr) {
   USE(instr);

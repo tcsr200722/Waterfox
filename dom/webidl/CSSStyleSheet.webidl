@@ -15,14 +15,14 @@ enum CSSStyleSheetParsingMode {
 };
 
 dictionary CSSStyleSheetInit {
-  (MediaList or DOMString) media = "";
+  (MediaList or UTF8String) media = "";
   boolean disabled = false;
   UTF8String baseURL;
 };
 
 [Exposed=Window]
 interface CSSStyleSheet : StyleSheet {
-  [Throws, Pref="layout.css.constructable-stylesheets.enabled"]
+  [Throws]
   constructor(optional CSSStyleSheetInit options = {});
   [Pure, BinaryName="DOMOwnerRule"]
   readonly attribute CSSRule? ownerRule;
@@ -31,19 +31,19 @@ interface CSSStyleSheet : StyleSheet {
   [ChromeOnly, BinaryName="parsingModeDOM"]
   readonly attribute CSSStyleSheetParsingMode parsingMode;
   [Throws, NeedsSubjectPrincipal]
-  unsigned long insertRule(DOMString rule, optional unsigned long index = 0);
+  unsigned long insertRule(UTF8String rule, optional unsigned long index = 0);
   [Throws, NeedsSubjectPrincipal]
-  void deleteRule(unsigned long index);
-  [Throws, Pref="layout.css.constructable-stylesheets.enabled"]
+  undefined deleteRule(unsigned long index);
+  [NewObject]
   Promise<CSSStyleSheet> replace(UTF8String text);
-  [Throws, Pref="layout.css.constructable-stylesheets.enabled"]
-  void replaceSync(UTF8String text);
+  [Throws]
+  undefined replaceSync(UTF8String text);
 
   // Non-standard WebKit things.
   [Throws, NeedsSubjectPrincipal, BinaryName="cssRules"]
   readonly attribute CSSRuleList rules;
   [Throws, NeedsSubjectPrincipal, BinaryName="deleteRule"]
-  void removeRule(optional unsigned long index = 0);
+  undefined removeRule(optional unsigned long index = 0);
   [Throws, NeedsSubjectPrincipal]
-  long addRule(optional DOMString selector = "undefined", optional DOMString style = "undefined", optional unsigned long index);
+  long addRule(optional UTF8String selector = "undefined", optional UTF8String style = "undefined", optional unsigned long index);
 };

@@ -11,16 +11,19 @@ const {
   testSetup,
   testTeardown,
   COMPLICATED_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 const {
   exportHar,
   waitForNetworkRequests,
   openResponseDetailsPanel,
-} = require("./netmonitor-helpers");
+} = require("damp-test/tests/netmonitor/netmonitor-helpers");
 
-const EXPECTED_REQUESTS = 280;
+const EXPECTED_REQUESTS = {
+  min: 230,
+  max: 280,
+};
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(COMPLICATED_URL);
   const toolbox = await openToolboxAndLog(
     "complicated.netmonitor",
@@ -30,7 +33,8 @@ module.exports = async function() {
   const requestsDone = waitForNetworkRequests(
     "complicated.netmonitor",
     toolbox,
-    EXPECTED_REQUESTS
+    EXPECTED_REQUESTS.min,
+    EXPECTED_REQUESTS.max
   );
   await reloadPageAndLog("complicated.netmonitor", toolbox);
   await requestsDone;

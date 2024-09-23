@@ -64,7 +64,7 @@ async function cleanTheDOM() {
   await window.promiseDocumentFlushed(() => {});
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   registerCleanupFunction(cleanTheDOM);
 });
 
@@ -73,20 +73,25 @@ add_task(async function setup() {
  * resolve once layout and style have been flushed.
  */
 add_task(async function test_basic() {
+  info("Dirtying style / layout");
   dirtyStyleAndLayout();
   assertFlushesRequired();
 
+  info("Waiting");
   await window.promiseDocumentFlushed(() => {});
   assertNoFlushesRequired();
 
+  info("Dirtying style");
   dirtyStyle();
   assertFlushesRequired();
 
+  info("Waiting");
   await window.promiseDocumentFlushed(() => {});
   assertNoFlushesRequired();
 
   // The DOM should be clean already, but we'll do this anyway to isolate
   // failures from other tests.
+  info("Cleaning up");
   await cleanTheDOM();
 });
 
@@ -128,8 +133,8 @@ add_task(async function test_can_get_results_from_callback() {
       },
       reflowInterruptible() {},
       QueryInterface: ChromeUtils.generateQI([
-        Ci.nsIReflowObserver,
-        Ci.nsISupportsWeakReference,
+        "nsIReflowObserver",
+        "nsISupportsWeakReference",
       ]),
     };
 
@@ -167,8 +172,9 @@ add_task(async function test_resolved_in_window_close() {
 
   await win.promiseDocumentFlushed(() => {});
 
-  let docShell = win.docShell;
-  docShell.contentViewer.pausePainting();
+  // Use advanceTimeAndRefresh to pause paints in the window:
+  let utils = win.windowUtils;
+  utils.advanceTimeAndRefresh(0);
 
   win.gNavToolbox.style.padding = "5px";
 
@@ -187,7 +193,7 @@ add_task(async function test_resolved_in_window_close() {
 /**
  * Test that re-entering promiseDocumentFlushed is not possible
  * from within a promiseDocumentFlushed callback. Doing so will
- * result in the outer Promise rejecting with NS_ERROR_FAILURE.
+ * result in the outer Promise rejecting with InvalidStateError.
  */
 add_task(async function test_reentrancy() {
   dirtyStyleAndLayout();
@@ -199,7 +205,7 @@ add_task(async function test_reentrancy() {
     });
   });
 
-  await Assert.rejects(promise, ex => ex.result == Cr.NS_ERROR_FAILURE);
+  await Assert.rejects(promise, ex => ex.name == "InvalidStateError");
 });
 
 /**

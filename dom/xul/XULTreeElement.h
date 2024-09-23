@@ -8,7 +8,6 @@
 #define XULTreeElement_h__
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 #include "nsString.h"
@@ -20,6 +19,8 @@ class nsTreeColumn;
 class nsTreeColumns;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 struct TreeCellInfo;
@@ -46,7 +47,7 @@ class XULTreeElement final : public nsXULElement {
   already_AddRefed<nsITreeView> GetView(CallerType /* unused */) {
     return GetView();
   }
-  already_AddRefed<nsITreeView> GetView();
+  already_AddRefed<nsITreeView> GetView(FlushType = FlushType::Frames);
 
   void SetView(nsITreeView* arg, CallerType aCallerType, ErrorResult& aRv);
 
@@ -100,7 +101,7 @@ class XULTreeElement final : public nsXULElement {
   void EndUpdateBatch(void);
   void ClearStyleAndImageCaches(void);
 
-  virtual void UnbindFromTree(bool aNullParent) override;
+  virtual void UnbindFromTree(UnbindContext&) override;
   virtual void DestroyContent() override;
 
   void BodyDestroyed(int32_t aFirstVisibleRow) {

@@ -11,7 +11,7 @@ const NEW_TAB_URL = `data:text/html,<title>${NEW_TAB_TITLE}</title>`;
  * This test file ensures that the URL input for DebugTargetInfo navigates the target to
  * the specified URL.
  */
-add_task(async function() {
+add_task(async function () {
   const { document, tab, window } = await openAboutDebugging();
 
   info("Open a new background tab.");
@@ -25,12 +25,16 @@ add_task(async function() {
     "PAGE"
   );
   const { devtoolsDocument, devtoolsTab, devtoolsWindow } = devToolsToolbox;
+  const toolbox = getToolbox(devtoolsWindow);
 
   const urlInput = devtoolsDocument.querySelector(".devtools-textinput");
+  const waitForLoadedPanelsReload = await watchForLoadedPanelsReload(toolbox);
+
   await synthesizeUrlKeyInput(devToolsToolbox, urlInput, NEW_TAB_URL);
 
+  await waitForLoadedPanelsReload();
+
   info("Test that the debug target navigated to the specified URL.");
-  const toolbox = getToolbox(devtoolsWindow);
   await waitUntil(
     () =>
       toolbox.target.url === NEW_TAB_URL &&
@@ -45,39 +49,8 @@ add_task(async function() {
   info("Remove the background tab");
   await removeTab(debug_tab);
   await waitUntil(() => !findDebugTargetByText("NEW_TAB_TITLE", document));
-  await waitForRequestsToSettle(window.AboutDebugging.store);
+  await waitForAboutDebuggingRequests(window.AboutDebugging.store);
 
   info("Remove the about:debugging tab.");
   await removeTab(tab);
 });
-
-/**
- * Synthesizes key input inside the DebugTargetInfo's URL component.
- *
- * @param {DevToolsToolbox} toolbox
- *        The DevToolsToolbox debugging the target.
- * @param {HTMLElement} inputEl
- *        The <input> element to submit the URL with.
- * @param {String}  url
- *        The URL to navigate to.
- */
-async function synthesizeUrlKeyInput(toolbox, inputEl, url) {
-  const { devtoolsDocument, devtoolsWindow } = toolbox;
-
-  info("Wait for URL input to be focused.");
-  const onInputFocused = waitUntil(
-    () => devtoolsDocument.activeElement === inputEl
-  );
-  inputEl.focus();
-  await onInputFocused;
-
-  info("Synthesize entering URL into text field");
-  const onInputChange = waitUntil(() => inputEl.value === url);
-  for (const key of NEW_TAB_URL.split("")) {
-    EventUtils.synthesizeKey(key, {}, devtoolsWindow);
-  }
-  await onInputChange;
-
-  info("Submit URL to navigate to");
-  EventUtils.synthesizeKey("KEY_Enter");
-}

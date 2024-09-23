@@ -7,11 +7,11 @@
 
 use crate::parser::{Parse, ParserContext};
 use crate::values::generics::grid::{GridTemplateComponent, ImplicitGridTracks, RepeatCount};
-use crate::values::generics::grid::{LineNameList, TrackBreadth, TrackRepeat, TrackSize};
-use crate::values::generics::grid::{TrackList, TrackListValue};
+use crate::values::generics::grid::{LineNameList, LineNameListValue, NameRepeat, TrackBreadth};
+use crate::values::generics::grid::{TrackList, TrackListValue, TrackRepeat, TrackSize};
 use crate::values::specified::{Integer, LengthPercentage};
 use crate::values::{CSSFloat, CustomIdent};
-use cssparser::{ParseError as CssParseError, Parser, Token};
+use cssparser::{Parser, Token};
 use std::mem;
 use style_traits::{ParseError, StyleParseErrorKind};
 
@@ -52,11 +52,11 @@ impl Parse for TrackBreadth<LengthPercentage> {
         // NonNegativeLengthPercentage instead.
         //
         // Though it seems these cannot be animated so it's ~ok.
-        if let Ok(lp) = input.try(|i| LengthPercentage::parse_non_negative(context, i)) {
+        if let Ok(lp) = input.try_parse(|i| LengthPercentage::parse_non_negative(context, i)) {
             return Ok(TrackBreadth::Breadth(lp));
         }
 
-        if let Ok(f) = input.try(parse_flex) {
+        if let Ok(f) = input.try_parse(parse_flex) {
             return Ok(TrackBreadth::Fr(f));
         }
 
@@ -69,14 +69,17 @@ impl Parse for TrackSize<LengthPercentage> {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(b) = input.try(|i| TrackBreadth::parse(context, i)) {
+        if let Ok(b) = input.try_parse(|i| TrackBreadth::parse(context, i)) {
             return Ok(TrackSize::Breadth(b));
         }
 
-        if input.try(|i| i.expect_function_matching("minmax")).is_ok() {
+        if input
+            .try_parse(|i| i.expect_function_matching("minmax"))
+            .is_ok()
+        {
             return input.parse_nested_block(|input| {
                 let inflexible_breadth =
-                    match input.try(|i| LengthPercentage::parse_non_negative(context, i)) {
+                    match input.try_parse(|i| LengthPercentage::parse_non_negative(context, i)) {
                         Ok(lp) => TrackBreadth::Breadth(lp),
                         Err(..) => TrackBreadth::parse_keyword(input)?,
                     };
@@ -119,10 +122,7 @@ pub fn parse_line_names<'i, 't>(
     input.expect_square_bracket_block()?;
     input.parse_nested_block(|input| {
         let mut values = vec![];
-        while let Ok((loc, ident)) = input.try(|i| -> Result<_, CssParseError<()>> {
-            Ok((i.current_source_location(), i.expect_ident_cloned()?))
-        }) {
-            let ident = CustomIdent::from_ident(loc, &ident, &["span", "auto"])?;
+        while let Ok(ident) = input.try_parse(|i| CustomIdent::parse(i, &["span", "auto"])) {
             values.push(ident);
         }
 
@@ -150,7 +150,7 @@ impl TrackRepeat<LengthPercentage, Integer> {
         input: &mut Parser<'i, 't>,
     ) -> Result<(Self, RepeatType), ParseError<'i>> {
         input
-            .try(|i| i.expect_function_matching("repeat").map_err(|e| e.into()))
+            .try_parse(|i| i.expect_function_matching("repeat").map_err(|e| e.into()))
             .and_then(|_| {
                 input.parse_nested_block(|input| {
                     let count = RepeatCount::parse(context, input)?;
@@ -169,8 +169,8 @@ impl TrackRepeat<LengthPercentage, Integer> {
                     let mut current_names;
 
                     loop {
-                        current_names = input.try(parse_line_names).unwrap_or_default();
-                        if let Ok(track_size) = input.try(|i| TrackSize::parse(context, i)) {
+                        current_names = input.try_parse(parse_line_names).unwrap_or_default();
+                        if let Ok(track_size) = input.try_parse(|i| TrackSize::parse(context, i)) {
                             if !track_size.is_fixed() {
                                 if is_auto {
                                     // should be <fixed-size> for <auto-repeat>
@@ -224,8 +224,9 @@ impl Parse for TrackList<LengthPercentage, Integer> {
         // assume that everything is <fixed-size>. This flag is useful when we encounter <auto-repeat>
         let mut at_least_one_not_fixed = false;
         loop {
-            current_names.extend_from_slice(&mut input.try(parse_line_names).unwrap_or_default());
-            if let Ok(track_size) = input.try(|i| TrackSize::parse(context, i)) {
+            current_names
+                .extend_from_slice(&mut input.try_parse(parse_line_names).unwrap_or_default());
+            if let Ok(track_size) = input.try_parse(|i| TrackSize::parse(context, i)) {
                 if !track_size.is_fixed() {
                     at_least_one_not_fixed = true;
                     if auto_repeat_index.is_some() {
@@ -238,7 +239,7 @@ impl Parse for TrackList<LengthPercentage, Integer> {
                 names.push(vec.into());
                 values.push(TrackListValue::TrackSize(track_size));
             } else if let Ok((repeat, type_)) =
-                input.try(|i| TrackRepeat::parse_with_repeat_type(context, i))
+                input.try_parse(|i| TrackRepeat::parse_with_repeat_type(context, i))
             {
                 match type_ {
                     RepeatType::Normal => {
@@ -286,7 +287,7 @@ impl Parse for TrackList<LengthPercentage, Integer> {
 #[cfg(feature = "gecko")]
 #[inline]
 fn allow_grid_template_subgrids() -> bool {
-    static_prefs::pref!("layout.css.grid-template-subgrid-value.enabled")
+    true
 }
 
 #[cfg(feature = "servo")]
@@ -312,7 +313,7 @@ impl Parse for GridTemplateComponent<LengthPercentage, Integer> {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(GridTemplateComponent::None);
         }
 
@@ -327,16 +328,114 @@ impl GridTemplateComponent<LengthPercentage, Integer> {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if allow_grid_template_subgrids() {
-            if let Ok(t) = input.try(|i| LineNameList::parse(context, i)) {
+            if let Ok(t) = input.try_parse(|i| LineNameList::parse(context, i)) {
                 return Ok(GridTemplateComponent::Subgrid(Box::new(t)));
             }
         }
         if allow_grid_template_masonry() {
-            if input.try(|i| i.expect_ident_matching("masonry")).is_ok() {
+            if input
+                .try_parse(|i| i.expect_ident_matching("masonry"))
+                .is_ok()
+            {
                 return Ok(GridTemplateComponent::Masonry);
             }
         }
         let track_list = TrackList::parse(context, input)?;
         Ok(GridTemplateComponent::TrackList(Box::new(track_list)))
+    }
+}
+
+impl Parse for NameRepeat<Integer> {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        input.expect_function_matching("repeat")?;
+        input.parse_nested_block(|i| {
+            let count = RepeatCount::parse(context, i)?;
+            // NameRepeat doesn't accept `auto-fit`
+            // https://drafts.csswg.org/css-grid/#typedef-name-repeat
+            if matches!(count, RepeatCount::AutoFit) {
+                return Err(i.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            }
+
+            i.expect_comma()?;
+            let mut names_list = vec![];
+            names_list.push(parse_line_names(i)?); // there should be at least one
+            while let Ok(names) = i.try_parse(parse_line_names) {
+                names_list.push(names);
+            }
+
+            Ok(NameRepeat {
+                count,
+                line_names: names_list.into(),
+            })
+        })
+    }
+}
+
+impl Parse for LineNameListValue<Integer> {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(repeat) = input.try_parse(|i| NameRepeat::parse(context, i)) {
+            return Ok(LineNameListValue::Repeat(repeat));
+        }
+
+        parse_line_names(input).map(LineNameListValue::LineNames)
+    }
+}
+
+impl LineNameListValue<Integer> {
+    /// Returns the length of `<line-names>` after expanding repeat(N, ...). This returns zero for
+    /// repeat(auto-fill, ...).
+    #[inline]
+    pub fn line_names_length(&self) -> usize {
+        match *self {
+            Self::LineNames(..) => 1,
+            Self::Repeat(ref r) => {
+                match r.count {
+                    // Note: RepeatCount is always >= 1.
+                    RepeatCount::Number(v) => r.line_names.len() * v.value() as usize,
+                    _ => 0,
+                }
+            },
+        }
+    }
+}
+
+impl Parse for LineNameList<Integer> {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        input.expect_ident_matching("subgrid")?;
+
+        let mut auto_repeat = false;
+        let mut expanded_line_names_length = 0;
+        let mut line_names = vec![];
+        while let Ok(value) = input.try_parse(|i| LineNameListValue::parse(context, i)) {
+            match value {
+                LineNameListValue::Repeat(ref r) if r.is_auto_fill() => {
+                    if auto_repeat {
+                        // On a subgridded axis, the auto-fill keyword is only valid once per
+                        // <line-name-list>.
+                        // https://drafts.csswg.org/css-grid/#auto-repeat
+                        return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                    }
+                    auto_repeat = true;
+                },
+                _ => (),
+            };
+
+            expanded_line_names_length += value.line_names_length();
+            line_names.push(value);
+        }
+
+        Ok(LineNameList {
+            expanded_line_names_length,
+            line_names: line_names.into(),
+        })
     }
 }

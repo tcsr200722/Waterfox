@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.1.3.1
+esid: sec-map.prototype.clear
 description: >
   Map.prototype.entries.name value and descriptor.
 info: |
@@ -12,13 +12,11 @@ info: |
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(
-  Map.prototype.clear.name, 'clear',
-  'The value of `Map.prototype.clear.name` is `"clear"`'
-);
-
-verifyNotEnumerable(Map.prototype.clear, 'name');
-verifyNotWritable(Map.prototype.clear, 'name');
-verifyConfigurable(Map.prototype.clear, 'name');
+verifyProperty(Map.prototype.clear, "name", {
+  value: "clear",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow */
 
 "use strict";
 
@@ -9,7 +8,7 @@
  */
 
 add_task(
-  threadFrontTest(async ({ threadFront, debuggee }) => {
+  threadFrontTest(async ({ threadFront, debuggee, commands }) => {
     await executeOnNextTickAndWaitForPause(
       () => evalCode(debuggee),
       threadFront
@@ -20,10 +19,12 @@ add_task(
 
     const sourceFront = await getSource(threadFront, BLACK_BOXED_URL);
     await blackBox(sourceFront);
-    threadFront.pauseOnExceptions(true, false);
+    await commands.threadConfigurationCommand.updateConfiguration({
+      pauseOnExceptions: true,
+      ignoreCaughtExceptions: false,
+    });
 
-    threadFront.resume();
-    const packet = await waitForPause(threadFront);
+    const packet = await resumeAndWaitForPause(threadFront);
     const source = await getSourceById(threadFront, packet.frame.where.actor);
 
     Assert.equal(
@@ -31,6 +32,29 @@ add_task(
       SOURCE_URL,
       "We shouldn't pause while in the black boxed source."
     );
+
+    await unBlackBox(sourceFront);
+    await blackBox(sourceFront, {
+      start: { line: 1, column: 0 },
+      end: { line: 4, column: 0 },
+    });
+
+    await threadFront.resume();
+
+    await executeOnNextTickAndWaitForPause(
+      () => evalCode(debuggee),
+      threadFront
+    );
+
+    const packet2 = await resumeAndWaitForPause(threadFront);
+    const source2 = await getSourceById(threadFront, packet2.frame.where.actor);
+
+    Assert.equal(
+      source2.url,
+      SOURCE_URL,
+      "We shouldn't pause while in the black boxed source."
+    );
+
     await threadFront.resume();
   })
 );
@@ -57,7 +81,7 @@ function evalCode(debuggee) {
     "" +
     function runTest() { // line 1
       doStuff(           // line 2
-        function(n) {    // line 3
+        function() {    // line 3
           debugger;      // line 4
         }                // line 5
       );                 // line 6

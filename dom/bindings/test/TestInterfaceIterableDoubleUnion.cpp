@@ -6,11 +6,11 @@
 
 #include "mozilla/dom/TestInterfaceIterableDoubleUnion.h"
 #include "mozilla/dom/TestInterfaceJSMaplikeSetlikeIterableBinding.h"
+#include "mozilla/dom/UnionTypes.h"
 #include "nsPIDOMWindow.h"
 #include "mozilla/dom/BindingUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(TestInterfaceIterableDoubleUnion, mParent)
 
@@ -27,11 +27,10 @@ TestInterfaceIterableDoubleUnion::TestInterfaceIterableDoubleUnion(
     : mParent(aParent) {
   OwningStringOrLong a;
   a.SetAsLong() = 1;
+  mValues.AppendElement(std::pair<nsString, OwningStringOrLong>(u"long"_ns, a));
+  a.SetAsString() = u"a"_ns;
   mValues.AppendElement(
-      std::pair<nsString, OwningStringOrLong>(NS_LITERAL_STRING("long"), a));
-  a.SetAsString() = NS_LITERAL_STRING("a");
-  mValues.AppendElement(
-      std::pair<nsString, OwningStringOrLong>(NS_LITERAL_STRING("string"), a));
+      std::pair<nsString, OwningStringOrLong>(u"string"_ns, a));
 }
 
 // static
@@ -74,5 +73,4 @@ OwningStringOrLong& TestInterfaceIterableDoubleUnion::GetValueAtIndex(
   return mValues.ElementAt(aIndex).second;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -6,17 +6,15 @@
 
 "use strict";
 
-var { ExtensionParent } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionParent.jsm"
+var { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "BroadcastConduit",
-  "resource://gre/modules/ConduitsParent.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  BroadcastConduit: "resource://gre/modules/ConduitsParent.sys.mjs",
+});
 
-var { IconDetails, watchExtensionProxyContextLoad } = ExtensionParent;
+var { watchExtensionProxyContextLoad } = ExtensionParent;
 
 var { promiseDocumentLoaded } = ExtensionUtils;
 
@@ -85,7 +83,9 @@ class BaseDevToolsPanel {
       }
     );
 
-    this.browser.loadURI(url, { triggeringPrincipal: this.context.principal });
+    this.browser.fixupAndLoadURIString(url, {
+      triggeringPrincipal: this.context.principal,
+    });
   }
 
   destroyBrowserElement() {
@@ -104,20 +104,21 @@ class BaseDevToolsPanel {
 
 /**
  * Represents an addon devtools panel in the main process.
- *
- * @param {ExtensionChildProxyContext} context
- *        A devtools extension proxy context running in a main process.
- * @param {object} options
- * @param {string} options.id
- *        The id of the addon devtools panel.
- * @param {string} options.icon
- *        The icon of the addon devtools panel.
- * @param {string} options.title
- *        The title of the addon devtools panel.
- * @param {string} options.url
- *        The url of the addon devtools panel, relative to the extension base URL.
  */
 class ParentDevToolsPanel extends BaseDevToolsPanel {
+  /**
+   * @param {DevToolsExtensionPageContextParent} context
+   *        A devtools extension proxy context running in a main process.
+   * @param {object} panelOptions
+   * @param {string} panelOptions.id
+   *        The id of the addon devtools panel.
+   * @param {string} panelOptions.icon
+   *        The icon of the addon devtools panel.
+   * @param {string} panelOptions.title
+   *        The title of the addon devtools panel.
+   * @param {string} panelOptions.url
+   *        The url of the addon devtools panel, relative to the extension base URL.
+   */
   constructor(context, panelOptions) {
     super(context, panelOptions);
 
@@ -156,7 +157,7 @@ class ParentDevToolsPanel extends BaseDevToolsPanel {
       // panelLabel is used to set the aria-label attribute (See Bug 1570645).
       panelLabel: title,
       tooltip: `DevTools Panel added by "${extensionName}" add-on.`,
-      isTargetSupported: target => target.isLocalTab,
+      isToolSupported: toolbox => toolbox.commands.descriptorFront.isLocalTab,
       build: (window, toolbox) => {
         if (toolbox !== this.toolbox) {
           throw new Error(
@@ -339,16 +340,17 @@ class DevToolsSelectionObserver extends EventEmitter {
 
 /**
  * Represents an addon devtools inspector sidebar in the main process.
- *
- * @param {ExtensionChildProxyContext} context
- *        A devtools extension proxy context running in a main process.
- * @param {object} options
- * @param {string} options.id
- *        The id of the addon devtools sidebar.
- * @param {string} options.title
- *        The title of the addon devtools sidebar.
  */
 class ParentDevToolsInspectorSidebar extends BaseDevToolsPanel {
+  /**
+   * @param {DevToolsExtensionPageContextParent} context
+   *        A devtools extension proxy context running in a main process.
+   * @param {object} panelOptions
+   * @param {string} panelOptions.id
+   *        The id of the addon devtools sidebar.
+   * @param {string} panelOptions.title
+   *        The title of the addon devtools sidebar.
+   */
   constructor(context, panelOptions) {
     super(context, panelOptions);
 
@@ -413,9 +415,6 @@ class ParentDevToolsInspectorSidebar extends BaseDevToolsPanel {
       this.browser = null;
       this.containerEl = null;
     }
-
-    // Release the last selected actor on the remote debugging server.
-    this._updateLastExpressionResult(null);
 
     this.toolbox.off(
       `extension-sidebar-created-${this.id}`,
@@ -494,7 +493,7 @@ class ParentDevToolsInspectorSidebar extends BaseDevToolsPanel {
       if (this.browser) {
         // Just load the new extension page url in the existing browser, if
         // it already exists.
-        this.browser.loadURI(this.panelOptions.url, {
+        this.browser.fixupAndLoadURIString(this.panelOptions.url, {
           triggeringPrincipal: this.context.extension.principal,
         });
       } else {
@@ -571,10 +570,6 @@ const sidebarsById = new Map();
 
 this.devtools_panels = class extends ExtensionAPI {
   getAPI(context) {
-    // Lazily retrieved inspectedWindow actor front per child context
-    // (used by Sidebar.setExpression).
-    let waitForInspectedWindowFront;
-
     // TODO - Bug 1448878: retrieve a more detailed callerInfo object,
     // like the filename and lineNumber of the actual extension called
     // in the child process.
@@ -600,7 +595,7 @@ this.devtools_panels = class extends ExtensionAPI {
               context,
               name: "devtools.panels.elements.onSelectionChanged",
               register: fire => {
-                const listener = eventName => {
+                const listener = () => {
                   fire.async();
                 };
                 toolboxSelectionObserver.on("selectionChanged", listener);
@@ -646,21 +641,14 @@ this.devtools_panels = class extends ExtensionAPI {
               async setExpression(sidebarId, evalExpression, rootTitle) {
                 const sidebar = sidebarsById.get(sidebarId);
 
-                if (!waitForInspectedWindowFront) {
-                  waitForInspectedWindowFront = getInspectedWindowFront(
-                    context
-                  );
-                }
-
-                const front = await waitForInspectedWindowFront;
                 const toolboxEvalOptions = await getToolboxEvalOptions(context);
 
-                const consoleFront = await context.devToolsToolbox.target.getFront(
-                  "console"
-                );
+                const commands = await context.getDevToolsCommands();
+                const target = commands.targetCommand.targetFront;
+                const consoleFront = await target.getFront("console");
                 toolboxEvalOptions.consoleFront = consoleFront;
 
-                const evalResult = await front.eval(
+                const evalResult = await commands.inspectedWindowCommand.eval(
                   callerInfo,
                   evalExpression,
                   toolboxEvalOptions
@@ -680,13 +668,8 @@ this.devtools_panels = class extends ExtensionAPI {
           },
           create(title, icon, url) {
             // Get a fallback icon from the manifest data.
-            if (icon === "" && context.extension.manifest.icons) {
-              const iconInfo = IconDetails.getPreferredIcon(
-                context.extension.manifest.icons,
-                context.extension,
-                128
-              );
-              icon = iconInfo ? iconInfo.icon : "";
+            if (icon === "") {
+              icon = context.extension.getPreferredIcon(128);
             }
 
             icon = context.extension.baseURI.resolve(icon);

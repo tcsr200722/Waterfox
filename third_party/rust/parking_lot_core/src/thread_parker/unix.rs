@@ -5,17 +5,15 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "tvos", target_os = "ios", target_os = "watchos"))]
 use core::ptr;
 use core::{
     cell::{Cell, UnsafeCell},
     mem::MaybeUninit,
 };
 use libc;
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Instant;
+use std::{thread, time::Duration};
 
 // x32 Linux uses a non-standard type for tv_nsec in timespec.
 // See https://sourceware.org/bugzilla/show_bug.cgi?id=16437
@@ -129,12 +127,26 @@ impl super::ThreadParkerT for ThreadParker {
 
 impl ThreadParker {
     /// Initializes the condvar to use CLOCK_MONOTONIC instead of CLOCK_REALTIME.
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "android",
+        target_os = "espidf"
+    ))]
     #[inline]
     unsafe fn init(&self) {}
 
     /// Initializes the condvar to use CLOCK_MONOTONIC instead of CLOCK_REALTIME.
-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "android",
+        target_os = "espidf"
+    )))]
     #[inline]
     unsafe fn init(&self) {
         let mut attr = MaybeUninit::<libc::pthread_condattr_t>::uninit();
@@ -158,17 +170,9 @@ impl Drop for ThreadParker {
         // this behaviour no longer occurs. The same applies to condvars.
         unsafe {
             let r = libc::pthread_mutex_destroy(self.mutex.get());
-            if cfg!(target_os = "dragonfly") {
-                debug_assert!(r == 0 || r == libc::EINVAL);
-            } else {
-                debug_assert_eq!(r, 0);
-            }
+            debug_assert!(r == 0 || r == libc::EINVAL);
             let r = libc::pthread_cond_destroy(self.condvar.get());
-            if cfg!(target_os = "dragonfly") {
-                debug_assert!(r == 0 || r == libc::EINVAL);
-            } else {
-                debug_assert_eq!(r, 0);
-            }
+            debug_assert!(r == 0 || r == libc::EINVAL);
         }
     }
 }
@@ -193,7 +197,7 @@ impl super::UnparkHandleT for UnparkHandle {
 }
 
 // Returns the current time on the clock used by pthread_cond_t as a timespec.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos"))]
 #[inline]
 fn timespec_now() -> libc::timespec {
     let mut now = MaybeUninit::<libc::timeval>::uninit();
@@ -206,7 +210,7 @@ fn timespec_now() -> libc::timespec {
         tv_nsec: now.tv_usec as tv_nsec_t * 1000,
     }
 }
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "watchos")))]
 #[inline]
 fn timespec_now() -> libc::timespec {
     let mut now = MaybeUninit::<libc::timespec>::uninit();

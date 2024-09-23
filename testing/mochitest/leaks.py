@@ -8,8 +8,8 @@
 import re
 from operator import itemgetter
 
-RE_DOCSHELL = re.compile("I\/DocShellAndDOMWindowLeak ([+\-]{2})DOCSHELL")
-RE_DOMWINDOW = re.compile("I\/DocShellAndDOMWindowLeak ([+\-]{2})DOMWINDOW")
+RE_DOCSHELL = re.compile(r"I\/DocShellAndDOMWindowLeak ([+\-]{2})DOCSHELL")
+RE_DOMWINDOW = re.compile(r"I\/DocShellAndDOMWindowLeak ([+\-]{2})DOMWINDOW")
 
 
 class ShutdownLeaks(object):
@@ -35,11 +35,11 @@ class ShutdownLeaks(object):
         self.seenShutdown = set()
 
     def log(self, message):
-        action = message['action']
+        action = message["action"]
 
         # Remove 'log' when clipboard is gone and/or structured.
-        if action in ('log', 'process_output'):
-            line = message['message'] if action == 'log' else message['data']
+        if action in ("log", "process_output"):
+            line = message["message"] if action == "log" else message["data"]
 
             m = RE_DOMWINDOW.search(line)
             if m:
@@ -54,14 +54,20 @@ class ShutdownLeaks(object):
             if line.startswith("Completed ShutdownLeaks collections in process"):
                 pid = int(line.split()[-1])
                 self.seenShutdown.add(pid)
-        elif action == 'test_start':
-            fileName = message['test'].replace(
-                "chrome://mochitests/content/browser/", "")
+        elif action == "test_start":
+            fileName = message["test"].replace(
+                "chrome://mochitests/content/browser/", ""
+            )
             self.currentTest = {
-                "fileName": fileName, "windows": set(), "docShells": set()}
-        elif action == 'test_end':
+                "fileName": fileName,
+                "windows": set(),
+                "docShells": set(),
+            }
+        elif action == "test_end":
             # don't track a test if no windows or docShells leaked
-            if self.currentTest and (self.currentTest["windows"] or self.currentTest["docShells"]):
+            if self.currentTest and (
+                self.currentTest["windows"] or self.currentTest["docShells"]
+            ):
                 self.tests.append(self.currentTest)
             self.currentTest = None
 
@@ -70,69 +76,103 @@ class ShutdownLeaks(object):
 
         if not self.seenShutdown:
             self.logger.error(
-                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | process() called before end of test suite")
+                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | process() called before end of test suite"
+            )
             failures += 1
 
-        if self.numDocShellCreatedLogsSeen == 0 or self.numDocShellDestroyedLogsSeen == 0:
-            self.logger.error("TEST-UNEXPECTED-FAIL | did not see DOCSHELL log strings."
-                              " this occurs if the DOCSHELL logging gets disabled by"
-                              " something. %d created seen %d destroyed seen" %
-                              (self.numDocShellCreatedLogsSeen, self.numDocShellDestroyedLogsSeen))
-            failures += 1
-        else:
-            self.logger.info(
-                    "TEST-INFO | Confirming we saw %d DOCSHELL created and %d destroyed log"
-                    " strings." %
-                    (self.numDocShellCreatedLogsSeen, self.numDocShellDestroyedLogsSeen))
-
-        if self.numDomWindowCreatedLogsSeen == 0 or self.numDomWindowDestroyedLogsSeen == 0:
-            self.logger.error("TEST-UNEXPECTED-FAIL | did not see DOMWINDOW log strings."
-                              " this occurs if the DOMWINDOW logging gets disabled by"
-                              " something%d created seen %d destroyed seen" %
-                              (self.numDomWindowCreatedLogsSeen,
-                               self.numDomWindowDestroyedLogsSeen))
+        if (
+            self.numDocShellCreatedLogsSeen == 0
+            or self.numDocShellDestroyedLogsSeen == 0
+        ):
+            self.logger.error(
+                "TEST-UNEXPECTED-FAIL | did not see DOCSHELL log strings."
+                " this occurs if the DOCSHELL logging gets disabled by"
+                " something. %d created seen %d destroyed seen"
+                % (self.numDocShellCreatedLogsSeen, self.numDocShellDestroyedLogsSeen)
+            )
             failures += 1
         else:
             self.logger.info(
-                    "TEST-INFO | Confirming we saw %d DOMWINDOW created and %d destroyed log"
-                    " strings." %
-                    (self.numDomWindowCreatedLogsSeen, self.numDomWindowDestroyedLogsSeen))
+                "TEST-INFO | Confirming we saw %d DOCSHELL created and %d destroyed log"
+                " strings."
+                % (self.numDocShellCreatedLogsSeen, self.numDocShellDestroyedLogsSeen)
+            )
 
+        if (
+            self.numDomWindowCreatedLogsSeen == 0
+            or self.numDomWindowDestroyedLogsSeen == 0
+        ):
+            self.logger.error(
+                "TEST-UNEXPECTED-FAIL | did not see DOMWINDOW log strings."
+                " this occurs if the DOMWINDOW logging gets disabled by"
+                " something%d created seen %d destroyed seen"
+                % (self.numDomWindowCreatedLogsSeen, self.numDomWindowDestroyedLogsSeen)
+            )
+            failures += 1
+        else:
+            self.logger.info(
+                "TEST-INFO | Confirming we saw %d DOMWINDOW created and %d destroyed log"
+                " strings."
+                % (self.numDomWindowCreatedLogsSeen, self.numDomWindowDestroyedLogsSeen)
+            )
+
+        errors = []
         for test in self._parseLeakingTests():
             for url, count in self._zipLeakedWindows(test["leakedWindows"]):
-                self.logger.error(
-                    "TEST-UNEXPECTED-FAIL | %s | leaked %d window(s) until shutdown "
-                    "[url = %s]" % (test["fileName"], count, url))
+                errors.append(
+                    {
+                        "test": test["fileName"],
+                        "msg": "leaked %d window(s) until shutdown [url = %s]"
+                        % (count, url),
+                    }
+                )
                 failures += 1
 
             if test["leakedWindowsString"]:
-                self.logger.info("TEST-INFO | %s | windows(s) leaked: %s" %
-                                 (test["fileName"], test["leakedWindowsString"]))
+                self.logger.info(
+                    "TEST-INFO | %s | windows(s) leaked: %s"
+                    % (test["fileName"], test["leakedWindowsString"])
+                )
 
             if test["leakedDocShells"]:
-                self.logger.error("TEST-UNEXPECTED-FAIL | %s | leaked %d docShell(s) until "
-                                  "shutdown" %
-                                  (test["fileName"], len(test["leakedDocShells"])))
+                errors.append(
+                    {
+                        "test": test["fileName"],
+                        "msg": "leaked %d docShell(s) until shutdown"
+                        % (len(test["leakedDocShells"])),
+                    }
+                )
                 failures += 1
-                self.logger.info("TEST-INFO | %s | docShell(s) leaked: %s" %
-                                 (test["fileName"], ', '.join(["[pid = %s] [id = %s]" %
-                                                               x for x in test["leakedDocShells"]]
-                                                              )))
+                self.logger.info(
+                    "TEST-INFO | %s | docShell(s) leaked: %s"
+                    % (
+                        test["fileName"],
+                        ", ".join(
+                            [
+                                "[pid = %s] [id = %s]" % x
+                                for x in test["leakedDocShells"]
+                            ]
+                        ),
+                    )
+                )
 
             if test["hiddenWindowsCount"] > 0:
                 # Note: to figure out how many hidden windows were created, we divide
                 # this number by 2, because 1 hidden window creation implies in
                 # 1 outer window + 1 inner window.
+                # pylint --py3k W1619
                 self.logger.info(
                     "TEST-INFO | %s | This test created %d hidden window(s)"
-                    % (test["fileName"], test["hiddenWindowsCount"] / 2))
+                    % (test["fileName"], test["hiddenWindowsCount"] / 2)
+                )
 
             if test["hiddenDocShellsCount"] > 0:
                 self.logger.info(
                     "TEST-INFO | %s | This test created %d hidden docshell(s)"
-                    % (test["fileName"], test["hiddenDocShellsCount"]))
+                    % (test["fileName"], test["hiddenDocShellsCount"])
+                )
 
-        return failures
+        return failures, errors
 
     def _logWindow(self, line, created):
         pid = self._parseValue(line, "pid")
@@ -143,7 +183,9 @@ class ShutdownLeaks(object):
         # log line has invalid format
         if not pid or not serial:
             self.logger.error(
-                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
+                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line"
+            )
+            self.logger.error("TEST-INFO | ShutdownLeaks | Unparsable line <%s>" % line)
             return
 
         key = (pid, serial)
@@ -170,7 +212,9 @@ class ShutdownLeaks(object):
         # log line has invalid format
         if not pid or not id:
             self.logger.error(
-                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
+                "TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line"
+            )
+            self.logger.error("TEST-INFO | ShutdownLeaks | Unparsable line <%s>" % line)
             return
 
         key = (pid, id)
@@ -189,7 +233,7 @@ class ShutdownLeaks(object):
                 self.hiddenDocShellsCount += 1
 
     def _parseValue(self, line, name):
-        match = re.search("\[%s = (.+?)\]" % name, line)
+        match = re.search(r"\[%s = (.+?)\]" % name, line)
         if match:
             return match.group(1)
         return None
@@ -198,20 +242,25 @@ class ShutdownLeaks(object):
         leakingTests = []
 
         for test in self.tests:
-            leakedWindows = [
-                id for id in test["windows"] if id in self.leakedWindows]
-            test["leakedWindows"] = [self.leakedWindows[id]
-                                     for id in leakedWindows]
+            leakedWindows = [id for id in test["windows"] if id in self.leakedWindows]
+            test["leakedWindows"] = [self.leakedWindows[id] for id in leakedWindows]
             test["hiddenWindowsCount"] = self.hiddenWindowsCount
-            test["leakedWindowsString"] = ', '.join(
-                ["[pid = %s] [serial = %s]" % x for x in leakedWindows])
+            test["leakedWindowsString"] = ", ".join(
+                ["[pid = %s] [serial = %s]" % x for x in leakedWindows]
+            )
             test["leakedDocShells"] = [
-                id for id in test["docShells"] if id in self.leakedDocShells]
+                id for id in test["docShells"] if id in self.leakedDocShells
+            ]
             test["hiddenDocShellsCount"] = self.hiddenDocShellsCount
-            test["leakCount"] = len(
-                test["leakedWindows"]) + len(test["leakedDocShells"])
+            test["leakCount"] = len(test["leakedWindows"]) + len(
+                test["leakedDocShells"]
+            )
 
-            if test["leakCount"] or test["hiddenWindowsCount"] or test["hiddenDocShellsCount"]:
+            if (
+                test["leakCount"]
+                or test["hiddenWindowsCount"]
+                or test["hiddenDocShellsCount"]
+            ):
                 leakingTests.append(test)
 
         return sorted(leakingTests, key=itemgetter("leakCount"), reverse=True)
@@ -228,8 +277,10 @@ class ShutdownLeaks(object):
         return sorted(counts, key=itemgetter(1), reverse=True)
 
     def _isHiddenWindowURL(self, url):
-        return (url == "resource://gre-resources/hiddenWindow.html" or  # Win / Linux
-                url == "chrome://browser/content/hiddenWindowMac.xhtml")     # Mac
+        return (
+            url == "resource://gre-resources/hiddenWindow.html"
+            or url == "chrome://browser/content/hiddenWindowMac.xhtml"  # Win / Linux
+        )  # Mac
 
 
 class LSANLeaks(object):
@@ -252,29 +303,46 @@ class LSANLeaks(object):
         # Don't various allocation-related stack frames, as they do not help much to
         # distinguish different leaks.
         unescapedSkipList = [
-            "malloc", "js_malloc", "js_arena_malloc", "malloc_",
-            "__interceptor_malloc", "moz_xmalloc",
-            "calloc", "js_calloc", "js_arena_calloc", "calloc_",
-            "__interceptor_calloc", "moz_xcalloc",
-            "realloc", "js_realloc", "js_arena_realloc", "realloc_",
-            "__interceptor_realloc", "moz_xrealloc",
+            "malloc",
+            "js_malloc",
+            "js_arena_malloc",
+            "malloc_",
+            "__interceptor_malloc",
+            "moz_xmalloc",
+            "calloc",
+            "js_calloc",
+            "js_arena_calloc",
+            "calloc_",
+            "__interceptor_calloc",
+            "moz_xcalloc",
+            "realloc",
+            "js_realloc",
+            "js_arena_realloc",
+            "realloc_",
+            "__interceptor_realloc",
+            "moz_xrealloc",
             "new",
             "js::MallocProvider",
         ]
         self.skipListRegExp = re.compile(
-            "^" + "|".join([re.escape(f) for f in unescapedSkipList]) + "$")
+            "^" + "|".join([re.escape(f) for f in unescapedSkipList]) + "$"
+        )
 
         self.startRegExp = re.compile(
-            "==\d+==ERROR: LeakSanitizer: detected memory leaks")
+            r"==\d+==ERROR: LeakSanitizer: detected memory leaks"
+        )
         self.fatalErrorRegExp = re.compile(
-            "==\d+==LeakSanitizer has encountered a fatal error.")
+            r"==\d+==LeakSanitizer has encountered a fatal error."
+        )
         self.symbolizerOomRegExp = re.compile(
-            "LLVMSymbolizer: error reading file: Cannot allocate memory")
-        self.stackFrameRegExp = re.compile("    #\d+ 0x[0-9a-f]+ in ([^(</]+)")
+            "LLVMSymbolizer: error reading file: Cannot allocate memory"
+        )
+        self.stackFrameRegExp = re.compile(r"    #\d+ 0x[0-9a-f]+ in ([^(</]+)")
         self.sysLibStackFrameRegExp = re.compile(
-            "    #\d+ 0x[0-9a-f]+ \(([^+]+)\+0x[0-9a-f]+\)")
+            r"    #\d+ 0x[0-9a-f]+ \(([^+]+)\+0x[0-9a-f]+\)"
+        )
 
-    def log(self, line):
+    def log(self, line, path=""):
         if re.match(self.startRegExp, line):
             self.inReport = True
             return
@@ -291,13 +359,13 @@ class LSANLeaks(object):
             return
 
         if line.startswith("Direct leak") or line.startswith("Indirect leak"):
-            self._finishStack()
+            self._finishStack(path)
             self.recordMoreFrames = True
             self.currStack = []
             return
 
         if line.startswith("SUMMARY: AddressSanitizer"):
-            self._finishStack()
+            self._finishStack(path)
             self.inReport = False
             return
 
@@ -325,36 +393,50 @@ class LSANLeaks(object):
         failures = 0
 
         if self.fatalError:
-            self.logger.error("TEST-UNEXPECTED-FAIL | LeakSanitizer | LeakSanitizer "
-                              "has encountered a fatal error.")
+            self.logger.error(
+                "TEST-UNEXPECTED-FAIL | LeakSanitizer | LeakSanitizer "
+                "has encountered a fatal error."
+            )
             failures += 1
 
         if self.symbolizerError:
-            self.logger.error("TEST-UNEXPECTED-FAIL | LeakSanitizer | LLVMSymbolizer "
-                              "was unable to allocate memory.")
+            self.logger.error(
+                "TEST-UNEXPECTED-FAIL | LeakSanitizer | LLVMSymbolizer "
+                "was unable to allocate memory."
+            )
             failures += 1
-            self.logger.info("TEST-INFO | LeakSanitizer | This will cause leaks that "
-                             "should be ignored to instead be reported as an error")
+            self.logger.info(
+                "TEST-INFO | LeakSanitizer | This will cause leaks that "
+                "should be ignored to instead be reported as an error"
+            )
 
         if self.foundFrames:
-            self.logger.info("TEST-INFO | LeakSanitizer | To show the "
-                             "addresses of leaked objects add report_objects=1 to LSAN_OPTIONS")
-            self.logger.info("TEST-INFO | LeakSanitizer | This can be done "
-                             "in testing/mozbase/mozrunner/mozrunner/utils.py")
+            self.logger.info(
+                "TEST-INFO | LeakSanitizer | To show the "
+                "addresses of leaked objects add report_objects=1 to LSAN_OPTIONS"
+            )
+            self.logger.info(
+                "TEST-INFO | LeakSanitizer | This can be done "
+                "in testing/mozbase/mozrunner/mozrunner/utils.py"
+            )
 
-        for f in self.foundFrames:
-            self.logger.error(
-                "TEST-UNEXPECTED-FAIL | LeakSanitizer | leak at " + f)
+        frames = list(self.foundFrames)
+        frames.sort()
+        for f in frames:
+            if self.scope:
+                f = "%s | %s" % (f, self.scope)
+            self.logger.error("TEST-UNEXPECTED-FAIL | LeakSanitizer leak at " + f)
             failures += 1
 
         return failures
 
-    def _finishStack(self):
+    def _finishStack(self, path=""):
         if self.recordMoreFrames and len(self.currStack) == 0:
             self.currStack = ["unknown stack"]
         if self.currStack:
             self.foundFrames.add(", ".join(self.currStack))
             self.currStack = None
+            self.scope = path
         self.recordMoreFrames = False
         self.numRecordedFrames = 0
 

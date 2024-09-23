@@ -6,27 +6,23 @@
 #ifndef mozilla_a11y_DocAccessible_h__
 #define mozilla_a11y_DocAccessible_h__
 
-#include "nsIAccessiblePivot.h"
-
-#include "HyperTextAccessibleWrap.h"
+#include "HyperTextAccessible.h"
 #include "AccEvent.h"
 
 #include "nsClassHashtable.h"
-#include "nsDataHashtable.h"
-#include "mozilla/dom/Document.h"
+#include "nsTHashMap.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIDocumentObserver.h"
-#include "nsIObserver.h"
 #include "nsITimer.h"
-
-class nsAccessiblePivot;
+#include "nsTHashSet.h"
+#include "nsWeakReference.h"
 
 const uint32_t kDefaultCacheLength = 128;
 
 namespace mozilla {
 
+class EditorBase;
 class PresShell;
-class TextEditor;
 
 namespace dom {
 class Document;
@@ -41,16 +37,16 @@ class RelatedAccIterator;
 template <class Class, class... Args>
 class TNotification;
 
-class DocAccessible : public HyperTextAccessibleWrap,
+/**
+ * An accessibility tree node that originated in a content process and
+ * represents a document. Tabs, in-process iframes, and out-of-process iframes
+ * all use this class to represent the doc they contain.
+ */
+class DocAccessible : public HyperTextAccessible,
                       public nsIDocumentObserver,
-                      public nsIObserver,
-                      public nsSupportsWeakReference,
-                      public nsIAccessiblePivotObserver {
+                      public nsSupportsWeakReference {
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DocAccessible, Accessible)
-
-  NS_DECL_NSIOBSERVER
-  NS_DECL_NSIACCESSIBLEPIVOTOBSERVER
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DocAccessible, LocalAccessible)
 
  protected:
   typedef mozilla::dom::Document Document;
@@ -61,22 +57,21 @@ class DocAccessible : public HyperTextAccessibleWrap,
   // nsIDocumentObserver
   NS_DECL_NSIDOCUMENTOBSERVER
 
-  // Accessible
+  // LocalAccessible
   virtual void Init();
   virtual void Shutdown() override;
   virtual nsIFrame* GetFrame() const override;
-  virtual nsINode* GetNode() const override { return mDocumentNode; }
+  virtual nsINode* GetNode() const override;
   Document* DocumentNode() const { return mDocumentNode; }
 
   virtual mozilla::a11y::ENameValueFlag Name(nsString& aName) const override;
-  virtual void Description(nsString& aDescription) override;
+  virtual void Description(nsString& aDescription) const override;
   virtual Accessible* FocusedChild() override;
   virtual mozilla::a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
   virtual uint64_t NativeInteractiveState() const override;
   virtual bool NativelyUnavailable() const override;
   virtual void ApplyARIAState(uint64_t* aState) const override;
-  virtual already_AddRefed<nsIPersistentProperties> Attributes() override;
 
   virtual void TakeFocus() const override;
 
@@ -86,8 +81,12 @@ class DocAccessible : public HyperTextAccessibleWrap,
 
   virtual nsRect RelativeBounds(nsIFrame** aRelativeFrame) const override;
 
+  // ActionAccessible
+  virtual bool HasPrimaryAction() const override;
+  virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
+
   // HyperTextAccessible
-  virtual already_AddRefed<TextEditor> GetEditor() const override;
+  virtual already_AddRefed<EditorBase> GetEditor() const override;
 
   // DocAccessible
 
@@ -99,24 +98,35 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Return DOM document title.
    */
-  void Title(nsString& aTitle) const { mDocumentNode->GetTitle(aTitle); }
+  void Title(nsString& aTitle) const;
 
   /**
    * Return DOM document mime type.
    */
-  void MimeType(nsAString& aType) const {
-    mDocumentNode->GetContentType(aType);
-  }
-
+  void MimeType(nsAString& aType) const;
   /**
    * Return DOM document type.
    */
   void DocType(nsAString& aType) const;
 
   /**
-   * Return virtual cursor associated with the document.
+   * Adds an entry to queued cache updates indicating aAcc requires
+   * a cache update on domain aNewDomain. If we've already queued an update
+   * for aAcc, aNewDomain is or'd with the existing domain(s)
+   * and the map is updated. Otherwise, the entry is simply inserted.
+   * This function also schedules processing on the controller.
+   * Note that this CANNOT be used for anything which fires events, since events
+   * must be fired after their associated cache update.
    */
-  nsIAccessiblePivot* VirtualCursor();
+  void QueueCacheUpdate(LocalAccessible* aAcc, uint64_t aNewDomain);
+
+  /**
+   * Walks the dependent ids and elements maps for the given accessible and
+   * queues a CacheDomain::Relations cache update fore each related acc.
+   * We call this when we observe an ID mutation or when an acc is bound
+   * to its document.
+   */
+  void QueueCacheUpdateForDependentRelations(LocalAccessible* aAcc);
 
   /**
    * Returns true if the instance has shutdown.
@@ -134,20 +144,16 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Return the presentation shell's context.
    */
-  nsPresContext* PresContext() const { return mPresShell->GetPresContext(); }
+  nsPresContext* PresContext() const;
 
   /**
    * Return true if associated DOM document was loaded and isn't unloading.
    */
-  bool IsContentLoaded() const {
-    // eDOMLoaded flag check is used for error pages as workaround to make this
-    // method return correct result since error pages do not receive 'pageshow'
-    // event and as consequence Document::IsShowing() returns false.
-    return mDocumentNode && mDocumentNode->IsVisible() &&
-           (mDocumentNode->IsShowing() || HasLoadState(eDOMLoaded));
-  }
+  bool IsContentLoaded() const;
 
-  bool IsHidden() const { return mDocumentNode->Hidden(); }
+  bool IsHidden() const;
+
+  void SetViewportCacheDirty(bool aDirty) { mViewportCacheDirty = aDirty; }
 
   /**
    * Document load states.
@@ -201,18 +207,20 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * Fire accessible event asynchronously.
    */
   void FireDelayedEvent(AccEvent* aEvent);
-  void FireDelayedEvent(uint32_t aEventType, Accessible* aTarget);
-  void FireEventsOnInsertion(Accessible* aContainer);
+  void FireDelayedEvent(uint32_t aEventType, LocalAccessible* aTarget);
+  void FireEventsOnInsertion(LocalAccessible* aContainer);
 
   /**
    * Fire value change event on the given accessible if applicable.
    */
-  void MaybeNotifyOfValueChange(Accessible* aAccessible);
+  void MaybeNotifyOfValueChange(LocalAccessible* aAccessible);
 
   /**
    * Get/set the anchor jump.
    */
-  Accessible* AnchorJump() { return GetAccessibleOrContainer(mAnchorJumpElm); }
+  LocalAccessible* AnchorJump() {
+    return GetAccessibleOrContainer(mAnchorJumpElm);
+  }
 
   void SetAnchorJump(nsIContent* aTargetNode) { mAnchorJumpElm = aTargetNode; }
 
@@ -239,10 +247,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    *
    * @return the accessible object
    */
-  Accessible* GetAccessible(nsINode* aNode) const {
-    return aNode == mDocumentNode ? const_cast<DocAccessible*>(this)
-                                  : mNodeToAccessibleMap.Get(aNode);
-  }
+  LocalAccessible* GetAccessible(nsINode* aNode) const;
 
   /**
    * Return an accessible for the given node even if the node is not in
@@ -250,8 +255,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
    *
    * XXX: it should be really merged with GetAccessible().
    */
-  Accessible* GetAccessibleEvenIfNotInMap(nsINode* aNode) const;
-  Accessible* GetAccessibleEvenIfNotInMapOrContainer(nsINode* aNode) const;
+  LocalAccessible* GetAccessibleEvenIfNotInMap(nsINode* aNode) const;
+  LocalAccessible* GetAccessibleEvenIfNotInMapOrContainer(nsINode* aNode) const;
 
   /**
    * Return whether the given DOM node has an accessible or not.
@@ -265,7 +270,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    *
    * @param  aUniqueID  [in] the unique ID used to cache the node.
    */
-  Accessible* GetAccessibleByUniqueID(void* aUniqueID) {
+  LocalAccessible* GetAccessibleByUniqueID(void* aUniqueID) {
     return UniqueID() == aUniqueID ? this : mAccessibleCache.GetWeak(aUniqueID);
   }
 
@@ -273,7 +278,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * Return the cached accessible by the given unique ID looking through
    * this and nested documents.
    */
-  Accessible* GetAccessibleByUniqueIDInSubtree(void* aUniqueID);
+  LocalAccessible* GetAccessibleByUniqueIDInSubtree(void* aUniqueID);
 
   /**
    * Return an accessible for the given DOM node or container accessible if
@@ -281,40 +286,39 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * null if the node is in a pruned subtree (eg. aria-hidden or unselected deck
    * panel)
    */
-  Accessible* GetAccessibleOrContainer(nsINode* aNode,
-                                       bool aNoContainerIfPruned = false) const;
+  LocalAccessible* GetAccessibleOrContainer(
+      nsINode* aNode, bool aNoContainerIfPruned = false) const;
 
   /**
    * Return a container accessible for the given DOM node.
    */
-  Accessible* GetContainerAccessible(nsINode* aNode) const {
-    return aNode ? GetAccessibleOrContainer(aNode->GetParentNode()) : nullptr;
-  }
+  LocalAccessible* GetContainerAccessible(nsINode* aNode) const;
 
   /**
    * Return an accessible for the given node if any, or an immediate accessible
    * container for it.
    */
-  Accessible* AccessibleOrTrueContainer(
+  LocalAccessible* AccessibleOrTrueContainer(
       nsINode* aNode, bool aNoContainerIfPruned = false) const;
 
   /**
    * Return an accessible for the given node or its first accessible descendant.
    */
-  Accessible* GetAccessibleOrDescendant(nsINode* aNode) const;
+  LocalAccessible* GetAccessibleOrDescendant(nsINode* aNode) const;
 
   /**
    * Returns aria-owns seized child at the given index.
    */
-  Accessible* ARIAOwnedAt(Accessible* aParent, uint32_t aIndex) const {
-    nsTArray<RefPtr<Accessible>>* children = mARIAOwnsHash.Get(aParent);
+  LocalAccessible* ARIAOwnedAt(LocalAccessible* aParent,
+                               uint32_t aIndex) const {
+    nsTArray<RefPtr<LocalAccessible>>* children = mARIAOwnsHash.Get(aParent);
     if (children) {
       return children->SafeElementAt(aIndex);
     }
     return nullptr;
   }
-  uint32_t ARIAOwnedCount(Accessible* aParent) const {
-    nsTArray<RefPtr<Accessible>>* children = mARIAOwnsHash.Get(aParent);
+  uint32_t ARIAOwnedCount(LocalAccessible* aParent) const {
+    nsTArray<RefPtr<LocalAccessible>>* children = mARIAOwnsHash.Get(aParent);
     return children ? children->Length() : 0;
   }
 
@@ -332,13 +336,13 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param  aRoleMapEntry  [in] the role map entry role the ARIA role or
    * nullptr if none
    */
-  void BindToDocument(Accessible* aAccessible,
+  void BindToDocument(LocalAccessible* aAccessible,
                       const nsRoleMapEntry* aRoleMapEntry);
 
   /**
    * Remove from document and shutdown the given accessible.
    */
-  void UnbindFromDocument(Accessible* aAccessible);
+  void UnbindFromDocument(LocalAccessible* aAccessible);
 
   /**
    * Notify the document accessible that content was inserted.
@@ -346,9 +350,14 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void ContentInserted(nsIContent* aStartChildNode, nsIContent* aEndChildNode);
 
   /**
+   * @see nsAccessibilityService::ScheduleAccessibilitySubtreeUpdate
+   */
+  void ScheduleTreeUpdate(nsIContent* aContent);
+
+  /**
    * Update the tree on content removal.
    */
-  void ContentRemoved(Accessible* aAccessible);
+  void ContentRemoved(LocalAccessible* aAccessible);
   void ContentRemoved(nsIContent* aContentNode);
 
   /**
@@ -381,9 +390,28 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Notify the document that a DOM node has been scrolled. document will
    * dispatch throttled accessibility events for scrolling, and a scroll-end
-   * event.
+   * event. This function also queues a cache update for ScrollPosition.
    */
   void HandleScroll(nsINode* aTarget);
+
+  /**
+   * Retrieves the scroll frame (if it exists) for the given accessible
+   * and returns its scroll position and scroll range. If the given
+   * accessible is `this`, return the scroll position and range of
+   * the root scroll frame. Return values have been scaled by the
+   * PresShell's resolution.
+   */
+  std::pair<nsPoint, nsRect> ComputeScrollData(LocalAccessible* aAcc);
+
+  /**
+   * Only works in content process documents.
+   */
+  bool IsAccessibleBeingMoved(LocalAccessible* aAcc) {
+    return mMovedAccessibles.Contains(aAcc);
+  }
+
+  void AttrElementWillChange(dom::Element* aElement, nsAtom* aAttr);
+  void AttrElementChanged(dom::Element* aElement, nsAtom* aAttr);
 
  protected:
   virtual ~DocAccessible();
@@ -446,7 +474,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aRelProvider [in] accessible that element has relation attribute
    * @param aRelAttr     [in, optional] relation attribute
    */
-  void AddDependentIDsFor(Accessible* aRelProvider, nsAtom* aRelAttr = nullptr);
+  void AddDependentIDsFor(LocalAccessible* aRelProvider,
+                          nsAtom* aRelAttr = nullptr);
 
   /**
    * Remove dependent IDs pointed by accessible element by relation attribute
@@ -456,8 +485,37 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aRelProvider [in] accessible that element has relation attribute
    * @param aRelAttr     [in, optional] relation attribute
    */
-  void RemoveDependentIDsFor(Accessible* aRelProvider,
+  void RemoveDependentIDsFor(LocalAccessible* aRelProvider,
                              nsAtom* aRelAttr = nullptr);
+
+  /**
+   * Add dependent elements targeted by a relation attribute on an accessible
+   * element to the dependent elements cache. This is used for reflected IDL
+   * attributes which return DOM elements and reflect a content attribute, where
+   * the IDL attribute has been set to an element. For example, if the
+   * .popoverTargetElement IDL attribute is set to an element using JS, the
+   * target element will be added to the dependent elements cache. If the
+   * relation attribute is not specified, then all relation attributes are
+   * checked.
+   *
+   * @param aRelProvider [in] the accessible with the relation IDL attribute.
+   * @param aRelAttr [in, optional] the name of the reflected content attribute.
+   *   For example, for the popoverTargetElement IDL attribute, this would be
+   * "popovertarget".
+   */
+  void AddDependentElementsFor(LocalAccessible* aRelProvider,
+                               nsAtom* aRelAttr = nullptr);
+
+  /**
+   * Remove dependent elements targeted by a relation attribute on an accessible
+   * element from the dependent elements cache. If the relation attribute is
+   * not specified, then all relation attributes are checked.
+   *
+   * @param aRelProvider [in] the accessible with the relation IDL attribute.
+   * @param aRelAttr [in, optional] the name of the reflected content attribute.
+   */
+  void RemoveDependentElementsFor(LocalAccessible* aRelProvider,
+                                  nsAtom* aRelAttr = nullptr);
 
   /**
    * Update or recreate an accessible depending on a changed attribute.
@@ -470,36 +528,17 @@ class DocAccessible : public HyperTextAccessibleWrap,
                                     nsAtom* aAttribute);
 
   /**
-   * Fire accessible events when attribute is changed.
-   *
-   * @param aAccessible   [in] accessible the DOM attribute is changed for
-   * @param aNameSpaceID  [in] namespace of changed attribute
-   * @param aAttribute    [in] changed attribute
-   * @param aModType      [in] modification type (changed/added/removed)
-   */
-  void AttributeChangedImpl(Accessible* aAccessible, int32_t aNameSpaceID,
-                            nsAtom* aAttribute, int32_t aModType);
-
-  /**
-   * Fire accessible events when ARIA attribute is changed.
-   *
-   * @param aAccessible  [in] accesislbe the DOM attribute is changed for
-   * @param aAttribute   [in] changed attribute
-   */
-  void ARIAAttributeChanged(Accessible* aAccessible, nsAtom* aAttribute);
-
-  /**
    * Process ARIA active-descendant attribute change.
    */
-  void ARIAActiveDescendantChanged(Accessible* aAccessible);
+  void ARIAActiveDescendantChanged(LocalAccessible* aAccessible);
 
   /**
    * Update the accessible tree for inserted content.
    */
   void ProcessContentInserted(
-      Accessible* aContainer,
+      LocalAccessible* aContainer,
       const nsTArray<nsCOMPtr<nsIContent>>* aInsertedContent);
-  void ProcessContentInserted(Accessible* aContainer,
+  void ProcessContentInserted(LocalAccessible* aContainer,
                               nsIContent* aInsertedContent);
 
   /**
@@ -512,17 +551,45 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void ProcessInvalidationList();
 
   /**
+   * Process mPendingUpdates
+   */
+  void ProcessPendingUpdates();
+
+  /**
+   * Called from NotificationController to process this doc's
+   * queued cache updates. For each acc in the map, this function
+   * sends a cache update with its corresponding CacheDomain.
+   */
+  void ProcessQueuedCacheUpdates();
+
+  /**
+   * Called from NotificationController before mutation events are processed to
+   * notify the parent process which Accessibles are being moved (if any).
+   */
+  void SendAccessiblesWillMove();
+
+  /**
+   * Called from NotificationController after all mutation events have been
+   * processed to clear our data about mutations during this tick.
+   */
+  void ClearMutationData() {
+    mMovedAccessibles.Clear();
+    mInsertedAccessibles.Clear();
+    mRemovedNodes.Clear();
+  }
+
+  /**
    * Steals or puts back accessible subtrees.
    */
-  void DoARIAOwnsRelocation(Accessible* aOwner);
+  void DoARIAOwnsRelocation(LocalAccessible* aOwner);
 
   /**
    * Moves children back under their original parents.
    */
-  void PutChildrenBack(nsTArray<RefPtr<Accessible>>* aChildren,
+  void PutChildrenBack(nsTArray<RefPtr<LocalAccessible>>* aChildren,
                        uint32_t aStartIdx);
 
-  bool MoveChild(Accessible* aChild, Accessible* aNewParent,
+  bool MoveChild(LocalAccessible* aChild, LocalAccessible* aNewParent,
                  int32_t aIdxInParent);
 
   /**
@@ -532,14 +599,14 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aFocusedAcc [in, optional] a focused accessible under created
    *                      subtree if any
    */
-  void CacheChildrenInSubtree(Accessible* aRoot,
-                              Accessible** aFocusedAcc = nullptr);
-  void CreateSubtree(Accessible* aRoot);
+  void CacheChildrenInSubtree(LocalAccessible* aRoot,
+                              LocalAccessible** aFocusedAcc = nullptr);
+  void CreateSubtree(LocalAccessible* aRoot);
 
   /**
    * Remove accessibles in subtree from node to accessible map.
    */
-  void UncacheChildrenInSubtree(Accessible* aRoot);
+  void UncacheChildrenInSubtree(LocalAccessible* aRoot);
 
   /**
    * Shutdown any cached accessible in the subtree.
@@ -547,7 +614,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aAccessible  [in] the root of the subrtee to invalidate accessible
    *                      child/parent refs in
    */
-  void ShutdownChildrenInSubtree(Accessible* aAccessible);
+  void ShutdownChildrenInSubtree(LocalAccessible* aAccessible);
 
   /**
    * Return true if the document is a target of document loading events
@@ -566,7 +633,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    */
   void SetIPCDoc(DocAccessibleChild* aIPCDoc);
 
-  friend class DocAccessibleChildBase;
+  friend class DocAccessibleChild;
 
   /**
    * Used to fire scrolling end event after page scroll.
@@ -586,7 +653,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * previous active descendant, thus making this element the new active
    * descendant. In that case, accessible focus must be changed accordingly.
    */
-  void ARIAActiveDescendantIDMaybeMoved(dom::Element* aElm);
+  void ARIAActiveDescendantIDMaybeMoved(LocalAccessible* aAccessible);
 
   /**
    * Traverse content subtree and for each node do one of 3 things:
@@ -606,20 +673,20 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * State and property flags, kept by mDocFlags.
    */
   enum {
-    // Whether the document is a tab document.
-    eTabDocument = 1 << 0
+    // Whether the document is a top level content document in this process.
+    eTopLevelContentDocInProcess = 1 << 0
   };
 
   /**
    * Cache of accessibles within this document accessible.
    */
   AccessibleHashtable mAccessibleCache;
-  nsDataHashtable<nsPtrHashKey<const nsINode>, Accessible*>
+  nsTHashMap<nsPtrHashKey<const nsINode>, LocalAccessible*>
       mNodeToAccessibleMap;
 
   Document* mDocumentNode;
   nsCOMPtr<nsITimer> mScrollWatchTimer;
-  nsDataHashtable<nsPtrHashKey<nsINode>, TimeStamp> mLastScrollingDispatch;
+  nsTHashMap<nsPtrHashKey<nsINode>, TimeStamp> mLastScrollingDispatch;
 
   /**
    * Bit mask of document load states (@see LoadState).
@@ -629,7 +696,15 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Bit mask of other states and props.
    */
-  uint32_t mDocFlags : 28;
+  uint32_t mDocFlags : 27;
+
+  /**
+   * Tracks whether we have seen changes to this document's content that
+   * indicate we should re-send the viewport cache we use for hittesting.
+   * This value is set in `BundleFieldsForCache` and processed in
+   * `ProcessQueuedCacheUpdates`.
+   */
+  bool mViewportCacheDirty : 1;
 
   /**
    * Type of document load event fired after the document is loaded completely.
@@ -645,20 +720,11 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * A generic state (see items below) before the attribute value was changed.
    * @see AttributeWillChange and AttributeChanged notifications.
    */
-  union {
-    // ARIA attribute value
-    const nsAtom* mARIAAttrOldValue;
 
-    // Previous state bits before attribute change
-    uint64_t mPrevStateBits;
-  };
+  // Previous state bits before attribute change
+  uint64_t mPrevStateBits;
 
   nsTArray<RefPtr<DocAccessible>> mChildDocuments;
-
-  /**
-   * The virtual cursor of the document.
-   */
-  RefPtr<nsAccessiblePivot> mVirtualCursor;
 
   /**
    * A storage class for pairing content with one of its relation attributes.
@@ -693,11 +759,34 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void RemoveRelProvidersIfEmpty(dom::Element* aElement, const nsAString& aID);
 
   /**
-   * The cache of IDs pointed by relation attributes.
+   * A map used to look up the target node for an implicit reverse relation
+   * where the target of the explicit relation is specified as an id.
+   * For example:
+   * <div id="label">Name:</div><input aria-labelledby="label">
+   * The div should get a LABEL_FOR relation targeting the input. To facilitate
+   * that, mDependentIDsHashes maps from "label" to an AttrRelProvider
+   * specifying aria-labelledby and the input. Because ids are scoped to the
+   * nearest ancestor document or shadow root, mDependentIDsHashes maps from the
+   * DocumentOrShadowRoot first.
    */
   nsClassHashtable<nsPtrHashKey<dom::DocumentOrShadowRoot>,
                    DependentIDsHashtable>
       mDependentIDsHashes;
+
+  /**
+   * A map used to look up the target element for an implicit reverse relation
+   * where the target of the explicit relation is also specified as an element.
+   * This is similar to mDependentIDsHashes, except that this is used when a
+   * DOM property is used to set the relation target element directly, rather
+   * than using an id. For example:
+   * <button>More info</button><div popover>Some info</div>
+   * The button's .popoverTargetElement property is set to the div so that the
+   * button invokes the popover.
+   * To facilitate finding the invoker given the popover, mDependentElementsMap
+   * maps from the div to an AttrRelProvider specifying popovertarget and the
+   * button.
+   */
+  nsTHashMap<nsIContent*, AttrRelProviders> mDependentElementsMap;
 
   friend class RelatedAccIterator;
 
@@ -712,8 +801,14 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Holds a list of aria-owns relocations.
    */
-  nsClassHashtable<nsPtrHashKey<Accessible>, nsTArray<RefPtr<Accessible>>>
+  nsClassHashtable<nsPtrHashKey<LocalAccessible>,
+                   nsTArray<RefPtr<LocalAccessible>>>
       mARIAOwnsHash;
+
+  /**
+   * Keeps a list of pending subtrees to update post-refresh.
+   */
+  nsTArray<RefPtr<nsIContent>> mPendingUpdates;
 
   /**
    * Used to process notification from core and accessible events.
@@ -725,13 +820,57 @@ class DocAccessible : public HyperTextAccessibleWrap,
  private:
   void SetRoleMapEntryForDoc(dom::Element* aElement);
 
+  /**
+   * This must be called whenever an Accessible is moved in a content process.
+   * It keeps track of Accessibles moved during this tick.
+   */
+  void TrackMovedAccessible(LocalAccessible* aAcc);
+
+  /**
+   * For hidden subtrees, fire a name/description change event if the subtree
+   * is a target of aria-labelledby/describedby.
+   * This does nothing if it is called on a node which is not part of a hidden
+   * aria-labelledby/describedby target.
+   */
+  void MaybeHandleChangeToHiddenNameOrDescription(nsIContent* aChild);
+
+  void MaybeFireEventsForChangedPopover(LocalAccessible* aAcc);
+
   PresShell* mPresShell;
 
   // Exclusively owned by IPDL so don't manually delete it!
+  // Cleared in ActorDestroy
   DocAccessibleChild* mIPCDoc;
+
+  // These data structures map between LocalAccessibles and CacheDomains,
+  // tracking cache updates that have been queued during the current tick but
+  // not yet sent. If there are a lot of nearby text cache updates (e.g. during
+  // a reflow), it is much more performant to process them in order because we
+  // then benefit from the layout line cursor. However, we still only want to
+  // process each LocalAccessible only once. Therefore, we use an array for
+  // ordering and a hash map to avoid duplicates, since Gecko has no ordered
+  // set data structure. The array contains pairs of LocalAccessible and cache
+  // domain. The hash map maps from LocalAccessible to the corresponding index
+  // in the array. These data structures must be kept in sync. It is possible
+  // for these to contain a reference to the document they live on. We clear
+  // them in Shutdown() to avoid cyclical references.
+  nsTArray<std::pair<RefPtr<LocalAccessible>, uint64_t>>
+      mQueuedCacheUpdatesArray;
+  nsTHashMap<LocalAccessible*, size_t> mQueuedCacheUpdatesHash;
+
+  // A set of Accessibles moved during this tick. Only used in content
+  // processes.
+  nsTHashSet<RefPtr<LocalAccessible>> mMovedAccessibles;
+  // A set of Accessibles inserted during this tick. Only used in content
+  // processes. This is needed to prevent insertions + moves of the same
+  // Accessible in the same tick from being tracked as moves.
+  nsTHashSet<RefPtr<LocalAccessible>> mInsertedAccessibles;
+  // A set of DOM nodes removed during this tick. This avoids a lot of pointless
+  // recursive DOM traversals.
+  nsTHashSet<nsIContent*> mRemovedNodes;
 };
 
-inline DocAccessible* Accessible::AsDoc() {
+inline DocAccessible* LocalAccessible::AsDoc() {
   return IsDoc() ? static_cast<DocAccessible*>(this) : nullptr;
 }
 

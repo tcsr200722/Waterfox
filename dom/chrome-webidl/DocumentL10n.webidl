@@ -16,7 +16,7 @@
  * are added to the document, and is removed in case all links
  * of that type are removed from it.
  */
-[NoInterfaceObject,
+[LegacyNoInterfaceObject,
  Exposed=Window]
 interface DocumentL10n : DOMLocalization {
   /**
@@ -43,5 +43,5 @@ interface DocumentL10n : DOMLocalization {
    * the `TranslateFragment` be available immediately when `DocumentL10n` becomes
    * available.
    */
-  [Throws] void connectRoot(Node aElement, optional boolean aTranslate = false);
+  [Throws] undefined connectRoot(Node aElement, optional boolean aTranslate = false);
 };

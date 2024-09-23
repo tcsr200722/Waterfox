@@ -3,16 +3,12 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { AboutNewTab } = ChromeUtils.import(
-  "resource:///modules/AboutNewTab.jsm"
-);
-
 async function doTest(isPrivate) {
   let win = await BrowserTestUtils.openNewBrowserWindow({ private: isPrivate });
   let defaultURL = AboutNewTab.newTabURL;
   let newTabURL;
   let mode;
-  let testURL = "http://example.com/";
+  let testURL = "https://example.com/";
   if (isPrivate) {
     mode = "per window private browsing";
     newTabURL = "about:privatebrowsing";
@@ -63,19 +59,14 @@ add_task(async function test_newTabService() {
 
 async function openNewTab(aWindow, aExpectedURL) {
   // Open a new tab
-  aWindow.BrowserOpenTab();
-
+  aWindow.BrowserCommands.openTab();
   let browser = aWindow.gBrowser.selectedBrowser;
-  let loadPromise = BrowserTestUtils.browserLoaded(
-    browser,
-    false,
-    aExpectedURL
-  );
-  let alreadyLoaded = await ContentTask.spawn(browser, aExpectedURL, url => {
-    let doc = content.document;
-    return doc && doc.readyState === "complete" && doc.location.href == url;
-  });
-  if (!alreadyLoaded) {
-    await loadPromise;
+
+  // We're already loaded.
+  if (browser.currentURI.spec === aExpectedURL) {
+    return;
   }
+
+  // Wait for any location change.
+  await BrowserTestUtils.waitForLocationChange(aWindow.gBrowser);
 }

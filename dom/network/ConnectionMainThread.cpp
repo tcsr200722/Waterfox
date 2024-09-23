@@ -8,12 +8,11 @@
 #include "mozilla/Hal.h"
 #include "ConnectionMainThread.h"
 
-namespace mozilla {
-namespace dom {
-namespace network {
+namespace mozilla::dom::network {
 
-ConnectionMainThread::ConnectionMainThread(nsPIDOMWindowInner* aWindow)
-    : Connection(aWindow) {
+ConnectionMainThread::ConnectionMainThread(nsPIDOMWindowInner* aWindow,
+                                           bool aShouldResistFingerprinting)
+    : Connection(aWindow, aShouldResistFingerprinting) {
   hal::RegisterNetworkObserver(this);
 
   hal::NetworkInformation networkInfo;
@@ -38,6 +37,4 @@ void ConnectionMainThread::Notify(const hal::NetworkInformation& aNetworkInfo) {
   UpdateFromNetworkInfo(aNetworkInfo, true);
 }
 
-}  // namespace network
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::network

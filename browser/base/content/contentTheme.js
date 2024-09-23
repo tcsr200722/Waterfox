@@ -5,6 +5,8 @@
 "use strict";
 
 {
+  const prefersDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
   function _isTextColorDark(r, g, b) {
     return 0.2125 * r + 0.7154 * g + 0.0721 * b <= 110;
   }
@@ -14,6 +16,20 @@
       "--newtab-background-color",
       {
         lwtProperty: "ntp_background",
+        processColor(rgbaChannels) {
+          if (!rgbaChannels) {
+            return null;
+          }
+          const { r, g, b } = rgbaChannels;
+          // Drop alpha channel
+          return `rgb(${r}, ${g}, ${b})`;
+        },
+      },
+    ],
+    [
+      "--newtab-background-color-secondary",
+      {
+        lwtProperty: "ntp_card_background",
       },
     ],
     [
@@ -21,21 +37,41 @@
       {
         lwtProperty: "ntp_text",
         processColor(rgbaChannels, element) {
+          // We only have access to the browser when we're in a chrome
+          // docshell, so for now only set the color scheme in that case, and
+          // use the `lwt-newtab-brighttext` attribute as a fallback mechanism.
+          let browserStyle =
+            element.ownerGlobal?.docShell?.chromeEventHandler.style;
+
+          element.toggleAttribute("lwt-newtab", !!rgbaChannels);
           if (!rgbaChannels) {
-            element.removeAttribute("lwt-newtab");
-            element.removeAttribute("lwt-newtab-brighttext");
+            element.toggleAttribute(
+              "lwt-newtab-brighttext",
+              prefersDarkQuery.matches
+            );
+            if (browserStyle) {
+              browserStyle.colorScheme = "";
+            }
             return null;
           }
 
-          element.setAttribute("lwt-newtab", "true");
           const { r, g, b, a } = rgbaChannels;
-          if (!_isTextColorDark(r, g, b)) {
-            element.setAttribute("lwt-newtab-brighttext", "true");
-          } else {
-            element.removeAttribute("lwt-newtab-brighttext");
+          let darkMode = !_isTextColorDark(r, g, b);
+          element.toggleAttribute("lwt-newtab-brighttext", darkMode);
+          if (browserStyle) {
+            browserStyle.colorScheme = darkMode ? "dark" : "light";
           }
 
           return `rgba(${r}, ${g}, ${b}, ${a})`;
+        },
+      },
+    ],
+    [
+      "--in-content-zap-gradient",
+      {
+        lwtProperty: "zap_gradient",
+        processColor(value) {
+          return value;
         },
       },
     ],
@@ -60,18 +96,15 @@
         processColor(rgbaChannels, element) {
           if (!rgbaChannels) {
             element.removeAttribute("lwt-sidebar");
-            element.removeAttribute("lwt-sidebar-brighttext");
             return null;
           }
 
-          element.setAttribute("lwt-sidebar", "true");
+          // TODO(emilio): Can we share this code somehow with LightWeightThemeConsumer?
           const { r, g, b, a } = rgbaChannels;
-          if (!_isTextColorDark(r, g, b)) {
-            element.setAttribute("lwt-sidebar-brighttext", "true");
-          } else {
-            element.removeAttribute("lwt-sidebar-brighttext");
-          }
-
+          element.setAttribute(
+            "lwt-sidebar",
+            _isTextColorDark(r, g, b) ? "light" : "dark"
+          );
           return `rgba(${r}, ${g}, ${b}, ${a})`;
         },
       },
@@ -80,12 +113,6 @@
       "--lwt-sidebar-highlight-background-color",
       {
         lwtProperty: "sidebar_highlight",
-      },
-    ],
-    [
-      "--lwt-sidebar-highlight-text-color",
-      {
-        lwtProperty: "sidebar_highlight_text",
         processColor(rgbaChannels, element) {
           if (!rgbaChannels) {
             element.removeAttribute("lwt-sidebar-highlight");
@@ -98,37 +125,48 @@
         },
       },
     ],
+    [
+      "--lwt-sidebar-highlight-text-color",
+      {
+        lwtProperty: "sidebar_highlight_text",
+      },
+    ],
   ];
 
   /**
    * ContentThemeController handles theme updates sent by the frame script.
    * To be able to use ContentThemeController, you must add your page to the whitelist
-   * in LightweightThemeChildListener.jsm
+   * in LightweightThemeChild.sys.mjs
    */
   const ContentThemeController = {
     /**
-     * Tell the frame script that the page supports theming, and watch for updates
-     * from the frame script.
+     * Listen for theming updates from the LightweightThemeChild actor, and
+     * begin listening to changes in preferred color scheme.
      */
     init() {
       addEventListener("LightweightTheme:Set", this);
+
+      // We don't sync default theme attributes in `init()`, as we may not have
+      // a root element to attach the attribute to yet. They will be set when
+      // the first LightweightTheme:Set event is delivered during pageshow.
+      prefersDarkQuery.addEventListener("change", this);
     },
 
     /**
-     * Handle theme updates from the frame script.
-     * @param {Object} event object containing the theme update.
+     * Handle theme updates from the LightweightThemeChild actor or due to
+     * changes to the prefers-color-scheme media query.
+     * @param {Object} event object containing the theme or query update.
      */
-    handleEvent({ type, detail }) {
-      if (type == "LightweightTheme:Set") {
-        let { data } = detail;
-        if (!data) {
-          data = {};
+    handleEvent(event) {
+      if (event.type == "LightweightTheme:Set") {
+        this._setProperties(event.detail.data || {});
+      } else if (event.type == "change") {
+        const root = document.documentElement;
+        // If a lightweight theme doesn't apply, update lwt-newtab-brighttext to
+        // reflect prefers-color-scheme.
+        if (!root.hasAttribute("lwt-newtab")) {
+          root.toggleAttribute("lwt-newtab-brighttext", event.matches);
         }
-        // XUL documents don't have a body
-        const element = document.body
-          ? document.body
-          : document.documentElement;
-        this._setProperties(element, data);
       }
     },
 
@@ -148,22 +186,23 @@
 
     /**
      * Apply theme data to an element
-     * @param {Element} root The element where the properties should be applied.
      * @param {Object} themeData The theme data.
      */
-    _setProperties(elem, themeData) {
+    _setProperties(themeData) {
+      const root = document.documentElement;
+      root.toggleAttribute("lwtheme", themeData.hasTheme);
       for (let [cssVarName, definition] of inContentVariableMap) {
         const { lwtProperty, processColor } = definition;
         let value = themeData[lwtProperty];
 
         if (processColor) {
-          value = processColor(value, elem);
+          value = processColor(value, root);
         } else if (value) {
           const { r, g, b, a } = value;
           value = `rgba(${r}, ${g}, ${b}, ${a})`;
         }
 
-        this._setProperty(elem, cssVarName, value);
+        this._setProperty(root, cssVarName, value);
       }
     },
   };

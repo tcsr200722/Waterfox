@@ -10,8 +10,7 @@
 
 #include "ServiceWorkerRegistrationProxy.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::IPCResult;
 
@@ -32,7 +31,7 @@ namespace {
 void ResolveUnregister(
     PServiceWorkerRegistrationParent::UnregisterResolver&& aResolver,
     bool aSuccess, nsresult aRv) {
-  aResolver(Tuple<const bool&, const CopyableErrorResult&>(
+  aResolver(std::tuple<const bool&, const CopyableErrorResult&>(
       aSuccess, CopyableErrorResult(aRv)));
 }
 
@@ -47,7 +46,7 @@ IPCResult ServiceWorkerRegistrationParent::RecvUnregister(
   }
 
   mProxy->Unregister()->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [aResolver](bool aSuccess) mutable {
         ResolveUnregister(std::move(aResolver), aSuccess, NS_OK);
       },
@@ -59,7 +58,7 @@ IPCResult ServiceWorkerRegistrationParent::RecvUnregister(
 }
 
 IPCResult ServiceWorkerRegistrationParent::RecvUpdate(
-    const nsCString& aNewestWorkerScriptUrl, UpdateResolver&& aResolver) {
+    const nsACString& aNewestWorkerScriptUrl, UpdateResolver&& aResolver) {
   if (!mProxy) {
     aResolver(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR));
     return IPC_OK();
@@ -67,13 +66,62 @@ IPCResult ServiceWorkerRegistrationParent::RecvUpdate(
 
   mProxy->Update(aNewestWorkerScriptUrl)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolver](const ServiceWorkerRegistrationDescriptor& aDescriptor) {
             aResolver(aDescriptor.ToIPC());
           },
           [aResolver](const CopyableErrorResult& aResult) {
             aResolver(aResult);
           });
+
+  return IPC_OK();
+}
+
+IPCResult ServiceWorkerRegistrationParent::RecvSetNavigationPreloadEnabled(
+    const bool& aEnabled, SetNavigationPreloadEnabledResolver&& aResolver) {
+  if (!mProxy) {
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  mProxy->SetNavigationPreloadEnabled(aEnabled)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aResolver](bool) { aResolver(true); },
+      [aResolver](nsresult) { aResolver(false); });
+
+  return IPC_OK();
+}
+
+IPCResult ServiceWorkerRegistrationParent::RecvSetNavigationPreloadHeader(
+    const nsACString& aHeader, SetNavigationPreloadHeaderResolver&& aResolver) {
+  if (!mProxy) {
+    aResolver(false);
+    return IPC_OK();
+  }
+
+  mProxy->SetNavigationPreloadHeader(aHeader)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aResolver](bool) { aResolver(true); },
+      [aResolver](nsresult) { aResolver(false); });
+
+  return IPC_OK();
+}
+
+IPCResult ServiceWorkerRegistrationParent::RecvGetNavigationPreloadState(
+    GetNavigationPreloadStateResolver&& aResolver) {
+  if (!mProxy) {
+    aResolver(Nothing());
+    return IPC_OK();
+  }
+
+  mProxy->GetNavigationPreloadState()->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [aResolver](const IPCNavigationPreloadState& aState) {
+        aResolver(Some(aState));
+      },
+      [aResolver](const CopyableErrorResult& aResult) {
+        aResolver(Nothing());
+      });
 
   return IPC_OK();
 }
@@ -101,5 +149,4 @@ void ServiceWorkerRegistrationParent::MaybeSendDelete() {
   Unused << Send__delete__(this);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

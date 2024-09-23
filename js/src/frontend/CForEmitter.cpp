@@ -9,7 +9,7 @@
 #include "frontend/BytecodeEmitter.h"  // BytecodeEmitter
 #include "frontend/EmitterScope.h"     // EmitterScope
 #include "vm/Opcodes.h"                // JSOp
-#include "vm/Scope.h"                  // ScopeKind
+#include "vm/ScopeKind.h"              // ScopeKind
 #include "vm/StencilEnums.h"           // TryNoteKind
 
 using namespace js;
@@ -60,14 +60,15 @@ bool CForEmitter::emitCond(const Maybe<uint32_t>& condPos) {
                ScopeKind::Lexical);
 
     if (headLexicalEmitterScopeForLet_->hasEnvironment()) {
-      if (!bce_->emit1(JSOp::FreshenLexicalEnv)) {
+      if (!bce_->emitInternedScopeOp(headLexicalEmitterScopeForLet_->index(),
+                                     JSOp::FreshenLexicalEnv)) {
         return false;
       }
     }
   }
 
   if (!loopInfo_->emitLoopHead(bce_, condPos)) {
-    //            [stack]
+    //              [stack]
     return false;
   }
 
@@ -82,7 +83,7 @@ bool CForEmitter::emitBody(Cond cond) {
   cond_ = cond;
 
   if (cond_ == Cond::Present) {
-    if (!bce_->emitJump(JSOp::IfEq, &loopInfo_->breaks)) {
+    if (!bce_->emitJump(JSOp::JumpIfFalse, &loopInfo_->breaks)) {
       return false;
     }
   }
@@ -114,7 +115,8 @@ bool CForEmitter::emitUpdate(Update update, const Maybe<uint32_t>& updatePos) {
                ScopeKind::Lexical);
 
     if (headLexicalEmitterScopeForLet_->hasEnvironment()) {
-      if (!bce_->emit1(JSOp::FreshenLexicalEnv)) {
+      if (!bce_->emitInternedScopeOp(headLexicalEmitterScopeForLet_->index(),
+                                     JSOp::FreshenLexicalEnv)) {
         return false;
       }
     }
@@ -138,7 +140,7 @@ bool CForEmitter::emitUpdate(Update update, const Maybe<uint32_t>& updatePos) {
   return true;
 }
 
-bool CForEmitter::emitEnd(const Maybe<uint32_t>& forPos) {
+bool CForEmitter::emitEnd(uint32_t forPos) {
   MOZ_ASSERT(state_ == State::Update);
 
   if (update_ == Update::Present) {
@@ -157,10 +159,8 @@ bool CForEmitter::emitEnd(const Maybe<uint32_t>& forPos) {
     // the loop-ending "goto" with the location of the "for".
     // This ensures that the debugger will stop on each loop
     // iteration.
-    if (forPos) {
-      if (!bce_->updateSourceCoordNotes(*forPos)) {
-        return false;
-      }
+    if (!bce_->updateSourceCoordNotes(forPos)) {
+      return false;
     }
   }
 

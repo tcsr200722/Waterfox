@@ -7,26 +7,30 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const {
+  L10N,
+} = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
 const {
   fetchNetworkUpdatePacket,
   getUrlHost,
-} = require("devtools/client/netmonitor/src/utils/request-utils");
+} = require("resource://devtools/client/netmonitor/src/utils/request-utils.js");
 
 // Components
-const TreeViewClass = require("devtools/client/shared/components/tree/TreeView");
+const TreeViewClass = require("resource://devtools/client/shared/components/tree/TreeView.js");
 const PropertiesView = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/PropertiesView")
+  require("resource://devtools/client/netmonitor/src/components/request-details/PropertiesView.js")
 );
 
-loader.lazyGetter(this, "Rep", function() {
-  return require("devtools/client/shared/components/reps/reps").REPS.Rep;
+loader.lazyGetter(this, "Rep", function () {
+  return require("resource://devtools/client/shared/components/reps/index.js")
+    .REPS.Rep;
 });
-loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/shared/components/reps/reps").MODE;
+loader.lazyGetter(this, "MODE", function () {
+  return require("resource://devtools/client/shared/components/reps/index.js")
+    .MODE;
 });
 
 const { div, span } = dom;
@@ -152,22 +156,22 @@ const getCertificateLabel = securityInfo => {
 
   return {
     [SUBJECT_INFO_LABEL]: {
-      [CERT_DETAIL_COMMON_NAME_LABEL]: subject.commonName || NOT_AVAILABLE,
-      [CERT_DETAIL_ORG_LABEL]: subject.organization || NOT_AVAILABLE,
-      [CERT_DETAIL_ORG_UNIT_LABEL]: subject.organizationUnit || NOT_AVAILABLE,
+      [CERT_DETAIL_COMMON_NAME_LABEL]: subject?.commonName || NOT_AVAILABLE,
+      [CERT_DETAIL_ORG_LABEL]: subject?.organization || NOT_AVAILABLE,
+      [CERT_DETAIL_ORG_UNIT_LABEL]: subject?.organizationUnit || NOT_AVAILABLE,
     },
     [ISSUER_INFO_LABEL]: {
-      [CERT_DETAIL_COMMON_NAME_LABEL]: issuer.commonName || NOT_AVAILABLE,
-      [CERT_DETAIL_ORG_LABEL]: issuer.organization || NOT_AVAILABLE,
-      [CERT_DETAIL_ORG_UNIT_LABEL]: issuer.organizationUnit || NOT_AVAILABLE,
+      [CERT_DETAIL_COMMON_NAME_LABEL]: issuer?.commonName || NOT_AVAILABLE,
+      [CERT_DETAIL_ORG_LABEL]: issuer?.organization || NOT_AVAILABLE,
+      [CERT_DETAIL_ORG_UNIT_LABEL]: issuer?.organizationUnit || NOT_AVAILABLE,
     },
     [PERIOD_OF_VALIDITY_LABEL]: {
-      [BEGINS_LABEL]: validity.start || NOT_AVAILABLE,
-      [EXPIRES_LABEL]: validity.end || NOT_AVAILABLE,
+      [BEGINS_LABEL]: validity?.start || NOT_AVAILABLE,
+      [EXPIRES_LABEL]: validity?.end || NOT_AVAILABLE,
     },
     [FINGERPRINTS_LABEL]: {
-      [SHA256_FINGERPRINT_LABEL]: fingerprint.sha256 || NOT_AVAILABLE,
-      [SHA1_FINGERPRINT_LABEL]: fingerprint.sha1 || NOT_AVAILABLE,
+      [SHA256_FINGERPRINT_LABEL]: fingerprint?.sha256 || NOT_AVAILABLE,
+      [SHA1_FINGERPRINT_LABEL]: fingerprint?.sha1 || NOT_AVAILABLE,
     },
     [CERTIFICATE_TRANSPARENCY_LABEL]:
       securityInfo.certificateTransparency || NOT_AVAILABLE,
@@ -214,7 +218,8 @@ class SecurityPanel extends Component {
     fetchNetworkUpdatePacket(connector.requestData, request, ["securityInfo"]);
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     const { request, connector } = nextProps;
     fetchNetworkUpdatePacket(connector.requestData, request, ["securityInfo"]);
   }

@@ -1,16 +1,17 @@
-const BlocklistGlobal = ChromeUtils.import(
-  "resource://gre/modules/Blocklist.jsm",
-  null
+const { BlocklistPrivate } = ChromeUtils.importESModule(
+  "resource://gre/modules/Blocklist.sys.mjs"
 );
-const { Utils: RemoteSettingsUtils } = ChromeUtils.import(
-  "resource://services-settings/Utils.jsm"
+const { Utils: RemoteSettingsUtils } = ChromeUtils.importESModule(
+  "resource://services-settings/Utils.sys.mjs"
 );
-
-const IS_ANDROID = AppConstants.platform == "android";
-
+const { RemoteSettings } = ChromeUtils.importESModule(
+  "resource://services-settings/remote-settings.sys.mjs"
+);
 let gBlocklistClients;
 
 async function clear_state() {
+  RemoteSettings.enablePreviewMode(undefined);
+
   for (let { client } of gBlocklistClients) {
     // Remove last server times.
     Services.prefs.clearUserPref(client.lastCheckTimePref);
@@ -29,22 +30,18 @@ add_task(async function setup() {
   );
 
   // This will initialize the remote settings clients for blocklists.
-  BlocklistGlobal.ExtensionBlocklistRS.ensureInitialized();
-  BlocklistGlobal.PluginBlocklistRS.ensureInitialized();
-  BlocklistGlobal.GfxBlocklistRS._ensureInitialized();
+  BlocklistPrivate.ExtensionBlocklistRS.ensureInitialized();
+  BlocklistPrivate.GfxBlocklistRS._ensureInitialized();
 
+  // ExtensionBlocklistMLBF is covered by test_blocklist_mlbf_dump.js.
   gBlocklistClients = [
     {
-      client: BlocklistGlobal.ExtensionBlocklistRS._client,
-      testData: ["i808", "i720", "i539"],
+      client: BlocklistPrivate.ExtensionBlocklistRS._client,
+      expectHasDump: false,
     },
     {
-      client: BlocklistGlobal.PluginBlocklistRS._client,
-      testData: ["p1044", "p32", "p28"],
-    },
-    {
-      client: BlocklistGlobal.GfxBlocklistRS._client,
-      testData: ["g204", "g200", "g36"],
+      client: BlocklistPrivate.GfxBlocklistRS._client,
+      expectHasDump: true,
     },
   ];
 
@@ -53,20 +50,14 @@ add_task(async function setup() {
 
 add_task(
   async function test_initial_dump_is_loaded_as_synced_when_collection_is_empty() {
-    for (let { client } of gBlocklistClients) {
-      if (
-        IS_ANDROID &&
-        client.collectionName !=
-          BlocklistGlobal.ExtensionBlocklistRS._client.collectionName
-      ) {
-        // On Android we don't ship the dumps of plugins and gfx.
-        continue;
-      }
-      Assert.ok(
+    for (let { client, expectHasDump } of gBlocklistClients) {
+      Assert.equal(
         await RemoteSettingsUtils.hasLocalDump(
           client.bucketName,
           client.collectionName
-        )
+        ),
+        expectHasDump,
+        `Expected initial remote settings dump for ${client.collectionName}`
       );
     }
   }
@@ -209,8 +200,10 @@ add_task(
       for (const record of records) {
         await client.db.create(record);
       }
-      await client.db.saveLastModified(42); // Prevent from loading JSON dump.
-      const list = await client.get({ syncIfEmpty: false });
+      const list = await client.get({
+        loadDumpIfNewer: false,
+        syncIfEmpty: false,
+      });
       equal(list.length, 4);
       ok(list.every(e => e.willMatch));
     }
@@ -218,16 +211,15 @@ add_task(
 );
 add_task(clear_state);
 
-add_task(async function test_bucketname_changes_when_bucket_pref_changes() {
+add_task(async function test_bucketname_changes_when_preview_mode_is_enabled() {
   for (const { client } of gBlocklistClients) {
     equal(client.bucketName, "blocklists");
   }
 
-  Services.prefs.setCharPref("services.blocklist.bucket", "blocklists-preview");
+  RemoteSettings.enablePreviewMode(true);
 
   for (const { client } of gBlocklistClients) {
     equal(client.bucketName, "blocklists-preview", client.identifier);
   }
-  Services.prefs.clearUserPref("services.blocklist.bucket");
 });
 add_task(clear_state);

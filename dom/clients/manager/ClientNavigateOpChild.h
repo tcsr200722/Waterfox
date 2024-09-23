@@ -9,14 +9,13 @@
 #include "mozilla/dom/PClientNavigateOpChild.h"
 #include "ClientOpPromise.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ClientNavigateOpChild final : public PClientNavigateOpChild {
   MozPromiseRequestHolder<ClientOpPromise> mPromiseRequestHolder;
   nsCOMPtr<nsISerialEventTarget> mSerialEventTarget;
 
-  MOZ_MUST_USE RefPtr<ClientOpPromise> DoNavigate(
+  [[nodiscard]] RefPtr<ClientOpPromise> DoNavigate(
       const ClientNavigateOpConstructorArgs& aArgs);
 
   // PClientNavigateOpChild interface
@@ -29,7 +28,6 @@ class ClientNavigateOpChild final : public PClientNavigateOpChild {
   void Init(const ClientNavigateOpConstructorArgs& aArgs);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // _mozilla_dom_ClientNavigateOpChild_h

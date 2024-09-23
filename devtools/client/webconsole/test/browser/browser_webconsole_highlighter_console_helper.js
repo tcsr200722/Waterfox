@@ -5,7 +5,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf-8,
+const TEST_URI = `data:text/html;charset=utf-8,<!DOCTYPE html>
 <head>
   <title>Inspector Tree Selection Test</title>
 </head>
@@ -20,31 +20,33 @@ const TEST_URI = `data:text/html;charset=utf-8,
   </div>
 </body>`.replace("\n", "");
 
-add_task(async function() {
+add_task(async function () {
   const toolbox = await openNewTabAndToolbox(TEST_URI, "inspector");
-  const testActor = await getTestActor(toolbox);
-  await selectNodeWithPicker(toolbox, testActor, "h1");
+  await selectNodeWithPicker(toolbox, "h1");
 
   info("Picker mode stopped, <h1> selected, now switching to the console");
   const hud = await openConsole();
 
   await clearOutput(hud);
 
-  await executeAndWaitForMessage(hud, "$0", "<h1>", ".result");
+  await executeAndWaitForResultMessage(hud, "$0", "<h1>");
   ok(true, "correct output for $0");
 
   await clearOutput(hud);
 
   const newH1Content = "newH1Content";
-  await executeAndWaitForMessage(
+  await executeAndWaitForResultMessage(
     hud,
     `$0.textContent = "${newH1Content}";$0`,
-    "<h1>",
-    ".result"
+    "<h1>"
   );
 
   ok(true, "correct output for $0 after setting $0.textContent");
-  const { textContent } = await testActor.getNodeInfo("h1");
+  const textContent = await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [],
+    () => content.document.querySelector("h1").textContent
+  );
   is(textContent, newH1Content, "node successfully updated");
 });
 

@@ -4,24 +4,21 @@
 
 "use strict";
 
-ChromeUtils.import("resource://testing-common/LoginTestUtils.jsm", this);
-
 let FormAutofillStorage;
-let OSKeyStore;
-add_task(async function setup() {
-  ({ FormAutofillStorage } = ChromeUtils.import(
-    "resource://formautofill/FormAutofillStorage.jsm",
-    null
-  ));
-  ({ OSKeyStore } = ChromeUtils.import(
-    "resource://gre/modules/OSKeyStore.jsm"
+add_setup(async () => {
+  ({ FormAutofillStorage } = ChromeUtils.importESModule(
+    "resource://autofill/FormAutofillStorage.sys.mjs"
   ));
 });
 
 const TEST_STORE_FILE_NAME = "test-profile.json";
 
-const ADDRESS_SCHEMA_VERSION = 1;
-const CREDIT_CARD_SCHEMA_VERSION = 2;
+const { ADDRESS_SCHEMA_VERSION } = ChromeUtils.importESModule(
+  "resource://autofill/FormAutofillStorageBase.sys.mjs"
+);
+const { CREDIT_CARD_SCHEMA_VERSION } = ChromeUtils.importESModule(
+  "resource://autofill/FormAutofillStorageBase.sys.mjs"
+);
 
 const ADDRESS_TESTCASES = [
   {
@@ -30,15 +27,16 @@ const ADDRESS_TESTCASES = [
     record: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "John", // The cached name field doesn't align "given-name" but it
+      // The cached address-line1 field doesn't align "street-address" but it
       // won't be recomputed because the migration isn't invoked.
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
     },
     expectedResult: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
     },
   },
   {
@@ -47,14 +45,14 @@ const ADDRESS_TESTCASES = [
     record: {
       guid: "test-guid",
       version: 99,
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
     },
     expectedResult: {
       guid: "test-guid",
       version: 99,
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
     },
   },
   {
@@ -63,14 +61,14 @@ const ADDRESS_TESTCASES = [
     record: {
       guid: "test-guid",
       version: 0,
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
     },
     expectedResult: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "Timothy",
+      "address-line1": "32 Vassar Street",
+      "street-address": "32 Vassar Street",
     },
   },
   {
@@ -78,14 +76,16 @@ const ADDRESS_TESTCASES = [
       "The record version is omitted. The migration should be invoked.",
     record: {
       guid: "test-guid",
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
+      "unknown-1": "an unknown field from another client",
     },
     expectedResult: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "Timothy",
+      "address-line1": "32 Vassar Street",
+      "street-address": "32 Vassar Street",
+      "unknown-1": "an unknown field from another client",
     },
   },
   {
@@ -94,14 +94,16 @@ const ADDRESS_TESTCASES = [
     record: {
       guid: "test-guid",
       version: "ABCDE",
-      "given-name": "Timothy",
-      name: "John",
+      "address-line1": "Some Address",
+      "street-address": "32 Vassar Street",
+      "unknown-1": "an unknown field from another client",
     },
     expectedResult: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "Timothy",
+      "address-line1": "32 Vassar Street",
+      "street-address": "32 Vassar Street",
+      "unknown-1": "an unknown field from another client",
     },
   },
   {
@@ -110,13 +112,13 @@ const ADDRESS_TESTCASES = [
     record: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
+      "street-address": "32 Vassar Street",
     },
     expectedResult: {
       guid: "test-guid",
       version: ADDRESS_SCHEMA_VERSION,
-      "given-name": "Timothy",
-      name: "Timothy",
+      "address-line1": "32 Vassar Street",
+      "street-address": "32 Vassar Street",
     },
   },
   {
@@ -134,6 +136,98 @@ const ADDRESS_TESTCASES = [
       // Make sure no new fields are appended.
       version: undefined,
       name: undefined,
+    },
+  },
+
+  // Bug 1836438 - Migrate "*-name" to "name"
+  {
+    description:
+      "Migrate address - `given-name`, `additional-name`, and `family-name` should be migrated to `name`",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      "given-name": "Timothy",
+      "additional-name": "John",
+      "family-name": "Berners-Lee",
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      name: "Timothy John Berners-Lee",
+    },
+  },
+  {
+    description: "Migrate address - `given-name` should be migrated to `name`",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      "given-name": "Timothy",
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      name: "Timothy",
+    },
+  },
+  {
+    description:
+      "Migrate address - `additional-name` should be migrated to `name`",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      "additional-name": "John",
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      name: "John",
+    },
+  },
+  {
+    description: "Migrate address - `family-name` should be migrated to `name`",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      "family-name": "Berners-Lee",
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      name: "Berners-Lee",
+    },
+  },
+  {
+    description:
+      "Migrate address - `name` should still be empty when there is no *-name fields in the record",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+    },
+  },
+  {
+    description:
+      "Migrate address - do not run migration as long as the name field exists",
+    record: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      // The cached field doesn't align "name" but it
+      // won't be recomputed because the migration isn't invoked.
+      "given-name": "Timothy",
+      "additional-name": "John",
+      "family-name": "Berners-Lee",
+      name: "Jane",
+    },
+    expectedResult: {
+      guid: "test-guid",
+      version: ADDRESS_SCHEMA_VERSION,
+      "given-name": "Timothy",
+      "additional-name": "John",
+      "family-name": "Berners-Lee",
+      name: "Jane",
     },
   },
 ];
@@ -196,12 +290,14 @@ const CREDIT_CARD_TESTCASES = [
       guid: "test-guid",
       "cc-name": "Timothy",
       "cc-given-name": "John",
+      "unknown-1": "an unknown field from another client",
     },
     expectedResult: {
       guid: "test-guid",
       version: CREDIT_CARD_SCHEMA_VERSION,
       "cc-name": "Timothy",
       "cc-given-name": "Timothy",
+      "unknown-1": "an unknown field from another client",
     },
   },
   {
@@ -212,12 +308,14 @@ const CREDIT_CARD_TESTCASES = [
       version: "ABCDE",
       "cc-name": "Timothy",
       "cc-given-name": "John",
+      "unknown-1": "an unknown field from another client",
     },
     expectedResult: {
       guid: "test-guid",
       version: CREDIT_CARD_SCHEMA_VERSION,
       "cc-name": "Timothy",
       "cc-given-name": "Timothy",
+      "unknown-1": "an unknown field from another client",
     },
   },
   {
@@ -300,68 +398,78 @@ add_task(async function test_migrateEncryptedCreditCardNumber() {
   let profileStorage = new FormAutofillStorage(path);
   await profileStorage.initialize();
 
-  const ccNumber = "4111111111111111";
-  let cryptoSDR = Cc["@mozilla.org/login-manager/crypto/SDR;1"].createInstance(
-    Ci.nsILoginManagerCrypto
-  );
+  info("v1 and v2 schema cards should be abandoned.");
 
-  info("Encrypted credit card should be migrated from v1 to v2");
-
-  let record = {
-    guid: "test-guid",
+  let v1record = {
+    guid: "test-guid1",
     version: 1,
     "cc-name": "Timothy",
-    "cc-number-encrypted": cryptoSDR.encrypt(ccNumber),
+    "cc-number-encrypted": "aaaa",
   };
 
-  let expectedRecord = {
-    guid: "test-guid",
-    version: CREDIT_CARD_SCHEMA_VERSION,
-    "cc-name": "Timothy",
-    "cc-given-name": "Timothy",
+  let v2record = {
+    guid: "test-guid2",
+    version: 2,
+    "cc-name": "Bob",
+    "cc-number-encrypted": "bbbb",
   };
-  profileStorage._store.data.creditCards = [record];
-  await profileStorage.creditCards._migrateRecord(record, 0);
-  record = profileStorage.creditCards._data[0];
 
-  Assert.equal(expectedRecord.guid, record.guid);
-  Assert.equal(expectedRecord.version, record.version);
-  Assert.equal(expectedRecord["cc-name"], record["cc-name"]);
-  Assert.equal(expectedRecord["cc-given-name"], record["cc-given-name"]);
+  profileStorage._store.data.creditCards = [v1record, v2record];
+  await profileStorage.creditCards._migrateRecord(v1record, 0);
+  await profileStorage.creditCards._migrateRecord(v2record, 1);
+  v1record = profileStorage.creditCards._data[0];
+  v2record = profileStorage.creditCards._data[1];
 
-  // Ciphertext of OS Key Store is not stable, must compare decrypted text here.
-  Assert.equal(
-    ccNumber,
-    await OSKeyStore.decrypt(record["cc-number-encrypted"])
-  );
+  Assert.ok(v1record.deleted);
+  Assert.ok(v2record.deleted);
 });
 
-add_task(async function test_migrateEncryptedCreditCardNumberWithMP() {
-  LoginTestUtils.masterPassword.enable();
-
+add_task(async function test_migrateDeprecatedCreditCardV4() {
   let path = getTempFile(TEST_STORE_FILE_NAME).path;
 
   let profileStorage = new FormAutofillStorage(path);
   await profileStorage.initialize();
 
-  info("Encrypted credit card should be migrated a tombstone if MP is enabled");
+  let records = [
+    {
+      guid: "test-guid1",
+      version: CREDIT_CARD_SCHEMA_VERSION,
+      "cc-name": "Alice",
+      _sync: {
+        changeCounter: 0,
+        lastSyncedFields: {},
+      },
+    },
+    {
+      guid: "test-guid2",
+      version: 4,
+      "cc-name": "Timothy",
+      _sync: {
+        changeCounter: 0,
+        lastSyncedFields: {},
+      },
+    },
+    {
+      guid: "test-guid3",
+      version: 4,
+      "cc-name": "Bob",
+    },
+  ];
 
-  let record = {
-    guid: "test-guid",
-    version: 1,
-    "cc-name": "Timothy",
-    "cc-number-encrypted": "(encrypted to be discarded)",
-  };
+  profileStorage._store.data.creditCards = records;
+  for (let idx = 0; idx < records.length; idx++) {
+    await profileStorage.creditCards._migrateRecord(records[idx], idx);
+  }
 
-  profileStorage._store.data.creditCards = [record];
-  await profileStorage.creditCards._migrateRecord(record, 0);
-  record = profileStorage.creditCards._data[0];
+  profileStorage.creditCards.pullSyncChanges();
 
-  Assert.equal(record.guid, "test-guid");
-  Assert.equal(record.deleted, true);
-  Assert.equal(typeof record.version, "undefined");
-  Assert.equal(typeof record["cc-name"], "undefined");
-  Assert.equal(typeof record["cc-number-encrypted"], "undefined");
+  // Record that has already synced before, do not sync again
+  equal(getSyncChangeCounter(profileStorage.creditCards, records[0].guid), 0);
 
-  LoginTestUtils.masterPassword.disable();
+  // alaways force sync v4 record
+  equal(records[1].version, CREDIT_CARD_SCHEMA_VERSION);
+  equal(getSyncChangeCounter(profileStorage.creditCards, records[1].guid), 1);
+
+  equal(records[2].version, CREDIT_CARD_SCHEMA_VERSION);
+  equal(getSyncChangeCounter(profileStorage.creditCards, records[2].guid), 1);
 });

@@ -1,9 +1,16 @@
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
-#![warn(clippy::pedantic)]
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 
-use neqo_crypto::aead::Aead;
-use neqo_crypto::constants::*;
-use neqo_crypto::hkdf;
+#![warn(clippy::pedantic)]
+#![cfg(not(feature = "disable-encryption"))]
+
+use neqo_crypto::{
+    constants::{Cipher, TLS_AES_128_GCM_SHA256, TLS_VERSION_1_3},
+    hkdf, Aead,
+};
 use test_fixture::fixture_init;
 
 const AAD: &[u8] = &[
@@ -25,7 +32,6 @@ fn make_aead(cipher: Cipher) -> Aead {
 
     let secret = hkdf::import_key(
         TLS_VERSION_1_3,
-        cipher,
         &[
             0x47, 0xb2, 0xea, 0xea, 0x6c, 0x26, 0x6e, 0x32, 0xc0, 0x69, 0x7a, 0x9e, 0x2a, 0x89,
             0x8b, 0xdf, 0x5c, 0x4f, 0xb3, 0xe5, 0xac, 0x34, 0xf0, 0xe5, 0x49, 0xbf, 0x2c, 0x58,
@@ -37,7 +43,7 @@ fn make_aead(cipher: Cipher) -> Aead {
         TLS_VERSION_1_3,
         cipher,
         &secret,
-        "quic ", // Note the trailing space here.
+        "quic ", // QUICv1 label prefix; note the trailing space here.
     )
     .expect("can make an AEAD")
 }

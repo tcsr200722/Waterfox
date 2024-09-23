@@ -1,19 +1,16 @@
 Serde YAML
 ==========
 
-[![Build Status](https://api.travis-ci.org/dtolnay/serde-yaml.svg?branch=master)][travis]
-[![Latest Version](https://img.shields.io/crates/v/serde_yaml.svg)][crates.io]
-[![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)][docs.rs]
-
-[travis]: https://travis-ci.org/dtolnay/serde-yaml
-[crates.io]: https://crates.io/crates/serde_yaml
-[docs.rs]: https://docs.rs/serde_yaml
+[<img alt="github" src="https://img.shields.io/badge/github-dtolnay/serde--yaml-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/dtolnay/serde-yaml)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/serde_yaml.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/serde_yaml)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-serde__yaml-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/serde_yaml)
+[<img alt="build status" src="https://img.shields.io/github/workflow/status/dtolnay/serde-yaml/CI/master?style=for-the-badge" height="20">](https://github.com/dtolnay/serde-yaml/actions?query=branch%3Amaster)
 
 This crate is a Rust library for using the [Serde] serialization framework with
 data in [YAML] file format.
 
 [Serde]: https://github.com/serde-rs/serde
-[YAML]: http://yaml.org
+[YAML]: https://yaml.org/
 
 This library does not reimplement a YAML parser; it uses [yaml-rust] which is a
 pure Rust YAML 1.2 implementation.
@@ -37,6 +34,8 @@ Release notes are available under [GitHub releases].
 [API documentation is available in rustdoc form][docs.rs] but the general idea
 is:
 
+[docs.rs]: https://docs.rs/serde_yaml
+
 ```rust
 use std::collections::BTreeMap;
 
@@ -48,7 +47,7 @@ fn main() -> Result<(), serde_yaml::Error> {
 
     // Serialize it to a YAML string.
     let s = serde_yaml::to_string(&map)?;
-    assert_eq!(s, "---\nx: 1\ny: 2");
+    assert_eq!(s, "---\nx: 1.0\ny: 2.0\n");
 
     // Deserialize it back to a Rust type.
     let deserialized_map: BTreeMap<String, f64> = serde_yaml::from_str(&s)?;
@@ -79,7 +78,7 @@ fn main() -> Result<(), serde_yaml::Error> {
     let point = Point { x: 1.0, y: 2.0 };
 
     let s = serde_yaml::to_string(&point)?;
-    assert_eq!(s, "---\nx: 1\ny: 2");
+    assert_eq!(s, "---\nx: 1.0\ny: 2.0\n");
 
     let deserialized_point: Point = serde_yaml::from_str(&s)?;
     assert_eq!(point, deserialized_point);
@@ -87,17 +86,19 @@ fn main() -> Result<(), serde_yaml::Error> {
 }
 ```
 
-## License
+<br>
 
-Licensed under either of
+#### License
 
- * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+<sup>
+Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
+2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
+</sup>
 
-at your option.
+<br>
 
-### Contribution
-
+<sub>
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Serde YAML by you, as defined in the Apache-2.0 license, shall
+for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
+</sub>

@@ -67,8 +67,8 @@ function addListeners(elem) {
     "gotpointercapture",
     "lostpointercapture",
   ];
-  All_Events.forEach(function(name) {
-    elem.addEventListener(name, function(event) {
+  All_Events.forEach(function (name) {
+    elem.addEventListener(name, function (event) {
       console.log("(" + event.type + ")-(" + event.pointerType + ")");
 
       // Perform checks only for trusted events.
@@ -92,3 +92,34 @@ function addListeners(elem) {
     });
   });
 }
+
+// mock the touchScrollInTarget to make the test work.
+function touchScrollInTarget() {
+  return Promise.resolve();
+}
+
+// mock test_driver to make the test work.
+function Actions() {}
+Actions.prototype = {
+  addPointer() {
+    return this;
+  },
+  pointerMove() {
+    return this;
+  },
+  pointerDown() {
+    return this;
+  },
+  pause() {
+    return this;
+  },
+  pointerUp() {
+    return this;
+  },
+  send() {
+    return Promise.resolve();
+  },
+};
+const test_driver = {
+  Actions,
+};

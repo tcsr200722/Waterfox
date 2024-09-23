@@ -3,13 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Cu } = require("chrome");
-
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 loader.lazyRequireGetter(
   this,
   "openContentLink",
-  "devtools/client/shared/link",
+  "resource://devtools/client/shared/link.js",
   true
 );
 
@@ -17,12 +15,11 @@ loader.lazyRequireGetter(
  * This object represents DOM panel. It's responsibility is to
  * render Document Object Model of the current debugger target.
  */
-function DomPanel(iframeWindow, toolbox) {
+function DomPanel(iframeWindow, toolbox, commands) {
   this.panelWin = iframeWindow;
   this._toolbox = toolbox;
+  this._commands = commands;
 
-  this.onTabNavigated = this.onTabNavigated.bind(this);
-  this.onTargetAvailable = this.onTargetAvailable.bind(this);
   this.onContentMessage = this.onContentMessage.bind(this);
   this.onPanelVisibilityChange = this.onPanelVisibilityChange.bind(this);
 
@@ -44,19 +41,16 @@ DomPanel.prototype = {
       this._resolveOpen = resolve;
     });
 
-    this.initialize();
+    await this.initialize();
 
     await onGetProperties;
-
-    this.isReady = true;
-    this.emit("ready");
 
     return this;
   },
 
   // Initialization
 
-  initialize: function() {
+  async initialize() {
     this.panelWin.addEventListener(
       "devtools/content/message",
       this.onContentMessage,
@@ -65,9 +59,21 @@ DomPanel.prototype = {
 
     this._toolbox.on("select", this.onPanelVisibilityChange);
 
-    this._toolbox.targetList.watchTargets(
-      [this._toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable
+    // onTargetAvailable is mandatory when calling watchTargets
+    this._onTargetAvailable = () => {};
+    this._onTargetSelected = this._onTargetSelected.bind(this);
+    await this._commands.targetCommand.watchTargets({
+      types: [this._commands.targetCommand.TYPES.FRAME],
+      onAvailable: this._onTargetAvailable,
+      onSelected: this._onTargetSelected,
+    });
+
+    this.onResourceAvailable = this.onResourceAvailable.bind(this);
+    await this._commands.resourceCommand.watchResources(
+      [this._commands.resourceCommand.TYPES.DOCUMENT_EVENT],
+      {
+        onAvailable: this.onResourceAvailable,
+      }
     );
 
     // Export provider object with useful API for DOM panel.
@@ -93,7 +99,15 @@ DomPanel.prototype = {
     }
     this._destroyed = true;
 
-    this.currentTarget.off("navigate", this.onTabNavigated);
+    this._commands.targetCommand.unwatchTargets({
+      types: [this._commands.targetCommand.TYPES.FRAME],
+      onAvailable: this._onTargetAvailable,
+      onSelected: this._onTargetSelected,
+    });
+    this._commands.resourceCommand.unwatchResources(
+      [this._commands.resourceCommand.TYPES.DOCUMENT_EVENT],
+      { onAvailable: this.onResourceAvailable }
+    );
     this._toolbox.off("select", this.onPanelVisibilityChange);
 
     this.emit("destroyed");
@@ -101,7 +115,7 @@ DomPanel.prototype = {
 
   // Events
 
-  refresh: function() {
+  refresh() {
     // Do not refresh if the panel isn't visible.
     if (!this.isPanelVisible()) {
       return;
@@ -121,33 +135,40 @@ DomPanel.prototype = {
   },
 
   /**
-   * Make sure the panel is refreshed when navigation occurs.
+   * Make sure the panel is refreshed, either when navigation occurs or when a frame is
+   * selected in the iframe picker.
    * The panel is refreshed immediately if it's currently selected or lazily when the user
    * actually selects it.
    */
-  onTabNavigated: function() {
+  forceRefresh() {
     this.shouldRefresh = true;
+    // This will end up calling scriptCommand execute method to retrieve the `window` grip
+    // on targetCommand.selectedTargetFront.
     this.refresh();
   },
 
-  onTargetAvailable: function({ targetFront }) {
-    // Only care about top-level targets.
-    if (!targetFront.isTopLevel) {
-      return;
+  _onTargetSelected() {
+    this.forceRefresh();
+  },
+
+  onResourceAvailable(resources) {
+    for (const resource of resources) {
+      // Only consider top level document, and ignore remote iframes top document
+      if (
+        resource.resourceType ===
+          this._commands.resourceCommand.TYPES.DOCUMENT_EVENT &&
+        resource.name === "dom-complete" &&
+        resource.targetFront.isTopLevel
+      ) {
+        this.forceRefresh();
+      }
     }
-
-    this.shouldRefresh = true;
-    this.refresh();
-
-    // Whenever a new target is available, listen to navigate events on it so we can
-    // refresh the panel when we navigate within the same process.
-    this.currentTarget.on("navigate", this.onTabNavigated);
   },
 
   /**
    * Make sure the panel is refreshed (if needed) when it's selected.
    */
-  onPanelVisibilityChange: function() {
+  onPanelVisibilityChange() {
     this.refresh();
   },
 
@@ -156,11 +177,11 @@ DomPanel.prototype = {
   /**
    * Return true if the DOM panel is currently selected.
    */
-  isPanelVisible: function() {
+  isPanelVisible() {
     return this._toolbox.currentToolId === "dom";
   },
 
-  getPrototypeAndProperties: async function(objectFront) {
+  async getPrototypeAndProperties(objectFront) {
     if (!objectFront.actorID) {
       console.error("No actor!", objectFront);
       throw new Error("Failed to get object front.");
@@ -191,34 +212,36 @@ DomPanel.prototype = {
     return response;
   },
 
-  openLink: function(url) {
+  openLink(url) {
     openContentLink(url);
   },
 
-  getRootGrip: async function() {
-    // Attach Console. It might involve RDP communication, so wait
-    // asynchronously for the result
-    const consoleFront = await this.currentTarget.getFront("console");
-    const { result } = await consoleFront.evaluateJSAsync("window");
+  async getRootGrip() {
+    const { result } = await this._toolbox.commands.scriptCommand.execute(
+      "window",
+      {
+        disableBreaks: true,
+      }
+    );
     return result;
   },
 
-  postContentMessage: function(type, args) {
+  postContentMessage(type, args) {
     const data = {
-      type: type,
-      args: args,
+      type,
+      args,
     };
 
     const event = new this.panelWin.MessageEvent("devtools/chrome/message", {
       bubbles: true,
       cancelable: true,
-      data: data,
+      data,
     });
 
     this.panelWin.dispatchEvent(event);
   },
 
-  onContentMessage: function(event) {
+  onContentMessage(event) {
     const data = event.data;
     const method = data.type;
     if (typeof this[method] == "function") {
@@ -226,7 +249,7 @@ DomPanel.prototype = {
     }
   },
 
-  getToolbox: function() {
+  getToolbox() {
     return this._toolbox;
   },
 
@@ -239,7 +262,7 @@ DomPanel.prototype = {
 
 function exportIntoContentScope(win, obj, defineAs) {
   const clone = Cu.createObjectIn(win, {
-    defineAs: defineAs,
+    defineAs,
   });
 
   const props = Object.getOwnPropertyNames(obj);

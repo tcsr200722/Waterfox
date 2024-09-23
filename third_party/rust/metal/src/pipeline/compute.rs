@@ -7,17 +7,9 @@
 
 use super::*;
 
-use cocoa::foundation::NSUInteger;
 use objc::runtime::{NO, YES};
 
-#[repr(u64)]
-#[allow(non_camel_case_types)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum MTLIndexType {
-    UInt16 = 0,
-    UInt32 = 1,
-}
-
+/// See <https://developer.apple.com/documentation/metal/mtlattributeformat>
 #[repr(u64)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -76,6 +68,7 @@ pub enum MTLAttributeFormat {
     Half = 53,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlstepfunction>
 #[repr(u64)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -91,12 +84,12 @@ pub enum MTLStepFunction {
     ThreadPositionInGridYIndexed = 8,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlcomputepipelinedescriptor>
 pub enum MTLComputePipelineDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLComputePipelineDescriptor;
     pub struct ComputePipelineDescriptor;
-    pub struct ComputePipelineDescriptorRef;
 }
 
 impl ComputePipelineDescriptor {
@@ -132,13 +125,7 @@ impl ComputePipelineDescriptorRef {
     }
 
     pub fn thread_group_size_is_multiple_of_thread_execution_width(&self) -> bool {
-        unsafe {
-            match msg_send![self, threadGroupSizeIsMultipleOfThreadExecutionWidth] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, threadGroupSizeIsMultipleOfThreadExecutionWidth] }
     }
 
     pub fn set_thread_group_size_is_multiple_of_thread_execution_width(
@@ -151,6 +138,101 @@ impl ComputePipelineDescriptorRef {
                 setThreadGroupSizeIsMultipleOfThreadExecutionWidth: size_is_multiple_of_width
             ]
         }
+    }
+
+    /// API_AVAILABLE(macos(10.14), ios(12.0));
+    pub fn max_total_threads_per_threadgroup(&self) -> NSUInteger {
+        unsafe { msg_send![self, maxTotalThreadsPerThreadgroup] }
+    }
+
+    /// API_AVAILABLE(macos(10.14), ios(12.0));
+    pub fn set_max_total_threads_per_threadgroup(&self, max_total_threads: NSUInteger) {
+        unsafe { msg_send![self, setMaxTotalThreadsPerThreadgroup: max_total_threads] }
+    }
+
+    /// API_AVAILABLE(ios(13.0),macos(11.0));
+    pub fn support_indirect_command_buffers(&self) -> bool {
+        unsafe { msg_send_bool![self, supportIndirectCommandBuffers] }
+    }
+
+    /// API_AVAILABLE(ios(13.0),macos(11.0));
+    pub fn set_support_indirect_command_buffers(&self, support: bool) {
+        unsafe { msg_send![self, setSupportIndirectCommandBuffers: support] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn support_adding_binary_functions(&self) -> bool {
+        unsafe { msg_send_bool![self, supportAddingBinaryFunctions] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn set_support_adding_binary_functions(&self, support: bool) {
+        unsafe { msg_send![self, setSupportAddingBinaryFunctions: support] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn max_call_stack_depth(&self) -> NSUInteger {
+        unsafe { msg_send![self, maxCallStackDepth] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn set_max_call_stack_depth(&self, depth: NSUInteger) {
+        unsafe { msg_send![self, setMaxCallStackDepth: depth] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    /// Marshal to Rust Vec
+    pub fn insert_libraries(&self) -> Vec<DynamicLibrary> {
+        unsafe {
+            let libraries: *mut Object = msg_send![self, insertLibraries];
+            let count: NSUInteger = msg_send![libraries, count];
+            let ret = (0..count)
+                .map(|i| {
+                    let lib = msg_send![libraries, objectAtIndex: i];
+                    DynamicLibrary::from_ptr(lib)
+                })
+                .collect();
+            ret
+        }
+    }
+
+    /// Marshal from Rust slice
+    pub fn set_insert_libraries(&self, libraries: &[&DynamicLibraryRef]) {
+        let ns_array = Array::<DynamicLibrary>::from_slice(libraries);
+        unsafe { msg_send![self, setInsertLibraries: ns_array] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    /// Marshal to Rust Vec
+    pub fn binary_archives(&self) -> Vec<BinaryArchive> {
+        unsafe {
+            let archives: *mut Object = msg_send![self, binaryArchives];
+            let count: NSUInteger = msg_send![archives, count];
+            let ret = (0..count)
+                .map(|i| {
+                    let a = msg_send![archives, objectAtIndex: i];
+                    BinaryArchive::from_ptr(a)
+                })
+                .collect();
+            ret
+        }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    /// Marshal from Rust slice
+    pub fn set_binary_archives(&self, archives: &[&BinaryArchiveRef]) {
+        let ns_array = Array::<BinaryArchive>::from_slice(archives);
+        unsafe { msg_send![self, setBinaryArchives: ns_array] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn linked_functions(&self) -> &LinkedFunctionsRef {
+        unsafe { msg_send![self, linkedFunctions] }
+    }
+
+    /// API_AVAILABLE(macos(11.0), ios(14.0));
+    pub fn set_linked_functions(&self, functions: &LinkedFunctionsRef) {
+        unsafe { msg_send![self, setLinkedFunctions: functions] }
     }
 
     pub fn stage_input_descriptor(&self) -> Option<&StageInputOutputDescriptorRef> {
@@ -170,12 +252,12 @@ impl ComputePipelineDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlcomputepipelinestate>
 pub enum MTLComputePipelineState {}
 
 foreign_obj_type! {
     type CType = MTLComputePipelineState;
     pub struct ComputePipelineState;
-    pub struct ComputePipelineStateRef;
 }
 
 impl ComputePipelineStateRef {
@@ -186,14 +268,7 @@ impl ComputePipelineStateRef {
         }
     }
 
-    pub fn set_label(&self, label: &str) {
-        unsafe {
-            let nslabel = crate::nsstring_from_str(label);
-            let () = msg_send![self, setLabel: nslabel];
-        }
-    }
-
-    pub fn max_total_threads_per_group(&self) -> NSUInteger {
+    pub fn max_total_threads_per_threadgroup(&self) -> NSUInteger {
         unsafe { msg_send![self, maxTotalThreadsPerThreadgroup] }
     }
 
@@ -204,14 +279,48 @@ impl ComputePipelineStateRef {
     pub fn static_threadgroup_memory_length(&self) -> NSUInteger {
         unsafe { msg_send![self, staticThreadgroupMemoryLength] }
     }
+
+    /// Only available on (ios(11.0), macos(11.0), macCatalyst(14.0)) NOT available on (tvos)
+    pub fn imageblock_memory_length_for_dimensions(&self, dimensions: MTLSize) -> NSUInteger {
+        unsafe { msg_send![self, imageblockMemoryLengthForDimensions: dimensions] }
+    }
+
+    /// Only available on (ios(13.0), macos(11.0))
+    pub fn support_indirect_command_buffers(&self) -> bool {
+        unsafe { msg_send_bool![self, supportIndirectCommandBuffers] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn function_handle_with_function(
+        &self,
+        function: &FunctionRef,
+    ) -> Option<&FunctionHandleRef> {
+        unsafe { msg_send![self, functionHandleWithFunction: function] }
+    }
+
+    // API_AVAILABLE(macos(11.0), ios(14.0));
+    // TODO: newComputePipelineStateWithAdditionalBinaryFunctions
+    // - (nullable id <MTLComputePipelineState>)newComputePipelineStateWithAdditionalBinaryFunctions:(nonnull NSArray<id<MTLFunction>> *)functions error:(__autoreleasing NSError **)error
+
+    // API_AVAILABLE(macos(11.0), ios(14.0));
+    // TODO: newVisibleFunctionTableWithDescriptor
+    // - (nullable id<MTLVisibleFunctionTable>)newVisibleFunctionTableWithDescriptor:(MTLVisibleFunctionTableDescriptor * __nonnull)descriptor
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn new_intersection_function_table_with_descriptor(
+        &self,
+        descriptor: &IntersectionFunctionTableDescriptorRef,
+    ) -> IntersectionFunctionTable {
+        unsafe { msg_send![self, newIntersectionFunctionTableWithDescriptor: descriptor] }
+    }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlstageinputoutputdescriptor>
 pub enum MTLStageInputOutputDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLStageInputOutputDescriptor;
     pub struct StageInputOutputDescriptor;
-    pub struct StageInputOutputDescriptorRef;
 }
 
 impl StageInputOutputDescriptor {
@@ -253,12 +362,12 @@ impl StageInputOutputDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlattributedescriptorarray>
 pub enum MTLAttributeDescriptorArray {}
 
 foreign_obj_type! {
     type CType = MTLAttributeDescriptorArray;
     pub struct AttributeDescriptorArray;
-    pub struct AttributeDescriptorArrayRef;
 }
 
 impl AttributeDescriptorArrayRef {
@@ -271,12 +380,12 @@ impl AttributeDescriptorArrayRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlattributedescriptor>
 pub enum MTLAttributeDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLAttributeDescriptor;
     pub struct AttributeDescriptor;
-    pub struct AttributeDescriptorRef;
 }
 
 impl AttributeDescriptorRef {
@@ -305,12 +414,12 @@ impl AttributeDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlbufferlayoutdescriptorarray>
 pub enum MTLBufferLayoutDescriptorArray {}
 
 foreign_obj_type! {
     type CType = MTLBufferLayoutDescriptorArray;
     pub struct BufferLayoutDescriptorArray;
-    pub struct BufferLayoutDescriptorArrayRef;
 }
 
 impl BufferLayoutDescriptorArrayRef {
@@ -318,17 +427,21 @@ impl BufferLayoutDescriptorArrayRef {
         unsafe { msg_send![self, objectAtIndexedSubscript: index] }
     }
 
-    pub fn set_object_at(&self, index: NSUInteger, buffer_desc: Option<&BufferLayoutDescriptorRef>) {
+    pub fn set_object_at(
+        &self,
+        index: NSUInteger,
+        buffer_desc: Option<&BufferLayoutDescriptorRef>,
+    ) {
         unsafe { msg_send![self, setObject:buffer_desc atIndexedSubscript:index] }
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlbufferlayoutdescriptor>
 pub enum MTLBufferLayoutDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLBufferLayoutDescriptor;
     pub struct BufferLayoutDescriptor;
-    pub struct BufferLayoutDescriptorRef;
 }
 
 impl BufferLayoutDescriptorRef {

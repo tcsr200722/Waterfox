@@ -9,13 +9,10 @@
 #include "nsIProtocolHandler.h"
 #include "nsIURI.h"
 #include "nsIFile.h"
-#include "nsDirectoryServiceDefs.h"
-#include "nsThreadUtils.h"
 #include "xpcpublic.h"
 
 #include "mozilla/dom/Promise.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
 
 #define PREF_BDM_ADDTORECENTDOCS "browser.download.manager.addToRecentDocs"
 
@@ -48,10 +45,6 @@ DownloadPlatform* DownloadPlatform::GetDownloadPlatform() {
   }
 
   NS_ADDREF(gDownloadPlatformService);
-
-#if defined(MOZ_WIDGET_GTK)
-  g_type_init();
-#endif
 
   return gDownloadPlatformService;
 }
@@ -167,19 +160,24 @@ nsresult DownloadPlatform::DownloadDone(nsIURI* aSource, nsIURI* aReferrer,
       }
 #    endif
 #    ifdef MOZ_WIDGET_GTK
-      // Use GIO to store the source URI for later display in the file manager.
-      GFile* gio_file = g_file_new_for_path(NS_ConvertUTF16toUTF8(path).get());
-      nsCString source_uri;
-      nsresult rv = aSource->GetSpec(source_uri);
-      NS_ENSURE_SUCCESS(rv, rv);
-      GFileInfo* file_info = g_file_info_new();
-      g_file_info_set_attribute_string(file_info, "metadata::download-uri",
-                                       source_uri.get());
-      g_file_set_attributes_async(gio_file, file_info, G_FILE_QUERY_INFO_NONE,
-                                  G_PRIORITY_DEFAULT, nullptr,
-                                  gio_set_metadata_done, nullptr);
-      g_object_unref(file_info);
-      g_object_unref(gio_file);
+      // Private window should not leak URI to the system (Bug 1535950)
+      if (!aIsPrivate) {
+        // Use GIO to store the source URI for later display in the file
+        // manager.
+        GFile* gio_file =
+            g_file_new_for_path(NS_ConvertUTF16toUTF8(path).get());
+        nsCString source_uri;
+        nsresult rv = aSource->GetSpec(source_uri);
+        NS_ENSURE_SUCCESS(rv, rv);
+        GFileInfo* file_info = g_file_info_new();
+        g_file_info_set_attribute_string(file_info, "metadata::download-uri",
+                                         source_uri.get());
+        g_file_set_attributes_async(gio_file, file_info, G_FILE_QUERY_INFO_NONE,
+                                    G_PRIORITY_DEFAULT, nullptr,
+                                    gio_set_metadata_done, nullptr);
+        g_object_unref(file_info);
+        g_object_unref(gio_file);
+      }
 #    endif
     }
 #  endif
@@ -292,22 +290,10 @@ bool DownloadPlatform::IsURLPossiblyFromWeb(nsIURI* aURI) {
   }
 
   while (uri) {
-    // We're not using nsIIOService::ProtocolHasFlags because it doesn't
-    // take per-URI flags into account. We're also not using
-    // NS_URIChainHasFlags because we're checking for *any* of 3 flags
-    // to be present on *all* of the nested URIs, which it can't do.
-    nsAutoCString scheme;
-    nsresult rv = uri->GetScheme(scheme);
-    if (NS_FAILED(rv)) {
-      return true;
-    }
-    nsCOMPtr<nsIProtocolHandler> ph;
-    rv = ios->GetProtocolHandler(scheme.get(), getter_AddRefs(ph));
-    if (NS_FAILED(rv)) {
-      return true;
-    }
+    // We're not using NS_URIChainHasFlags because we're checking for *any* of 3
+    // flags to be present on *all* of the nested URIs, which it can't do.
     uint32_t flags;
-    rv = ph->DoGetProtocolFlags(uri, &flags);
+    nsresult rv = ios->GetDynamicProtocolFlags(uri, &flags);
     if (NS_FAILED(rv)) {
       return true;
     }

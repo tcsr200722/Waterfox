@@ -1,17 +1,18 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use mozprofile::prefreader::PrefReaderError;
 use mozprofile::profile::Profile;
 use std::collections::HashMap;
-use std::convert::From;
-use std::error::Error;
 use std::ffi::{OsStr, OsString};
-use std::fmt;
 use std::io;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time;
+use thiserror::Error;
 
 use crate::firefox_args::Arg;
 
@@ -81,49 +82,21 @@ pub trait RunnerProcess {
     fn kill(&mut self) -> io::Result<process::ExitStatus>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RunnerError {
-    Io(io::Error),
-    PrefReader(PrefReaderError),
-}
-
-impl fmt::Display for RunnerError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            RunnerError::Io(ref err) => match err.kind() {
-                ErrorKind::NotFound => "no such file or directory".fmt(f),
-                _ => err.fmt(f),
-            },
-            RunnerError::PrefReader(ref err) => err.fmt(f),
-        }
-    }
-}
-
-impl Error for RunnerError {
-    fn cause(&self) -> Option<&dyn Error> {
-        Some(match *self {
-            RunnerError::Io(ref err) => err as &dyn Error,
-            RunnerError::PrefReader(ref err) => err as &dyn Error,
-        })
-    }
-}
-
-impl From<io::Error> for RunnerError {
-    fn from(value: io::Error) -> RunnerError {
-        RunnerError::Io(value)
-    }
-}
-
-impl From<PrefReaderError> for RunnerError {
-    fn from(value: PrefReaderError) -> RunnerError {
-        RunnerError::PrefReader(value)
-    }
+    #[error("IO Error: {0}")]
+    Io(#[from] io::Error),
+    #[error("PrefReader Error: {0}")]
+    PrefReader(#[from] PrefReaderError),
 }
 
 #[derive(Debug)]
 pub struct FirefoxProcess {
     process: Child,
-    profile: Profile,
+    // The profile field is not directly used, but it is kept to avoid its
+    // Drop removing the (temporary) profile directory.
+    #[allow(dead_code)]
+    profile: Option<Profile>,
 }
 
 impl RunnerProcess for FirefoxProcess {
@@ -154,16 +127,26 @@ impl RunnerProcess for FirefoxProcess {
     }
 
     fn kill(&mut self) -> io::Result<process::ExitStatus> {
-        debug!("Killing process {}", self.process.id());
-        self.process.kill()?;
-        self.process.wait()
+        match self.try_wait() {
+            // child has already exited, reap its exit code
+            Ok(Some(status)) => Ok(status),
+
+            // child still running, kill it
+            Ok(None) => {
+                debug!("Killing process {}", self.process.id());
+                self.process.kill()?;
+                self.process.wait()
+            }
+
+            Err(e) => Err(e),
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct FirefoxRunner {
     path: PathBuf,
-    profile: Profile,
+    profile: Option<Profile>,
     args: Vec<OsString>,
     envs: HashMap<OsString, OsString>,
     stdout: Option<Stdio>,
@@ -171,12 +154,12 @@ pub struct FirefoxRunner {
 }
 
 impl FirefoxRunner {
-    /// Initialise Firefox process runner.
+    /// Initialize Firefox process runner.
     ///
     /// On macOS, `path` can optionally point to an application bundle,
     /// i.e. _/Applications/Firefox.app_, as well as to an executable program
-    /// such as _/Applications/Firefox.app/Content/MacOS/firefox-bin_.
-    pub fn new(path: &Path, profile: Profile) -> FirefoxRunner {
+    /// such as _/Applications/Firefox.app/Content/MacOS/firefox_.
+    pub fn new(path: &Path, profile: Option<Profile>) -> FirefoxRunner {
         let mut envs: HashMap<OsString, OsString> = HashMap::new();
         envs.insert("MOZ_NO_REMOTE".into(), "1".into());
 
@@ -251,7 +234,9 @@ impl Runner for FirefoxRunner {
     }
 
     fn start(mut self) -> Result<FirefoxProcess, RunnerError> {
-        self.profile.user_prefs()?.write()?;
+        if let Some(ref mut profile) = self.profile {
+            profile.user_prefs()?.write()?;
+        }
 
         let stdout = self.stdout.unwrap_or_else(Stdio::inherit);
         let stderr = self.stderr.unwrap_or_else(Stdio::inherit);
@@ -271,17 +256,26 @@ impl Runner for FirefoxRunner {
                 Arg::Foreground => seen_foreground = true,
                 Arg::NoRemote => seen_no_remote = true,
                 Arg::Profile | Arg::NamedProfile | Arg::ProfileManager => seen_profile = true,
-                Arg::Other(_) | Arg::None => {}
+                Arg::Marionette
+                | Arg::None
+                | Arg::Other(_)
+                | Arg::RemoteAllowHosts
+                | Arg::RemoteAllowOrigins
+                | Arg::RemoteDebuggingPort => {}
             }
         }
-        if !seen_foreground {
+        // -foreground is only supported on Mac, and shouldn't be passed
+        // to Firefox on other platforms (bug 1720502).
+        if cfg!(target_os = "macos") && !seen_foreground {
             cmd.arg("-foreground");
         }
         if !seen_no_remote {
             cmd.arg("-no-remote");
         }
-        if !seen_profile {
-            cmd.arg("-profile").arg(&self.profile.path);
+        if let Some(ref profile) = self.profile {
+            if !seen_profile {
+                cmd.arg("-profile").arg(&profile.path);
+            }
         }
 
         info!("Running command: {:?}", cmd);
@@ -302,20 +296,91 @@ pub mod platform {
         path
     }
 
+    fn running_as_snap() -> bool {
+        std::env::var("SNAP_INSTANCE_NAME")
+            .or_else(|_| {
+                // Compatibility for snapd <= 2.35
+                std::env::var("SNAP_NAME")
+            })
+            .map(|name| !name.is_empty())
+            .unwrap_or(false)
+    }
+
     /// Searches the system path for `firefox`.
     pub fn firefox_default_path() -> Option<PathBuf> {
+        if running_as_snap() {
+            return Some(PathBuf::from("/snap/firefox/current/firefox.launcher"));
+        }
         find_binary("firefox")
     }
 
     pub fn arg_prefix_char(c: char) -> bool {
         c == '-'
     }
+
+    #[cfg(test)]
+    mod tests {
+        use crate::firefox_default_path;
+        use std::env;
+        use std::ops::Drop;
+        use std::path::PathBuf;
+
+        static SNAP_KEY: &str = "SNAP_INSTANCE_NAME";
+        static SNAP_LEGACY_KEY: &str = "SNAP_NAME";
+
+        struct SnapEnvironment {
+            initial_environment: (Option<String>, Option<String>),
+        }
+
+        impl SnapEnvironment {
+            fn new() -> SnapEnvironment {
+                SnapEnvironment {
+                    initial_environment: (env::var(SNAP_KEY).ok(), env::var(SNAP_LEGACY_KEY).ok()),
+                }
+            }
+
+            fn set(&self, value: Option<String>, legacy_value: Option<String>) {
+                fn set_env(key: &str, value: Option<String>) {
+                    match value {
+                        Some(value) => env::set_var(key, value),
+                        None => env::remove_var(key),
+                    }
+                }
+                set_env(SNAP_KEY, value);
+                set_env(SNAP_LEGACY_KEY, legacy_value);
+            }
+        }
+
+        impl Drop for SnapEnvironment {
+            fn drop(&mut self) {
+                self.set(
+                    self.initial_environment.0.clone(),
+                    self.initial_environment.1.clone(),
+                )
+            }
+        }
+
+        #[test]
+        fn test_default_path() {
+            let snap_path = Some(PathBuf::from("/snap/firefox/current/firefox.launcher"));
+
+            let snap_env = SnapEnvironment::new();
+
+            snap_env.set(None, None);
+            assert_ne!(firefox_default_path(), snap_path);
+
+            snap_env.set(Some("value".into()), None);
+            assert_eq!(firefox_default_path(), snap_path);
+
+            snap_env.set(None, Some("value".into()));
+            assert_eq!(firefox_default_path(), snap_path);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub mod platform {
-    use crate::path::{find_binary, is_binary};
-    use dirs;
+    use crate::path::{find_binary, is_app_bundle, is_binary};
     use plist::Value;
     use std::path::PathBuf;
 
@@ -329,12 +394,10 @@ pub mod platform {
             info_plist.push("Info.plist");
             if let Ok(plist) = Value::from_file(&info_plist) {
                 if let Some(dict) = plist.as_dictionary() {
-                    if let Some(binary_file) = dict.get("CFBundleExecutable") {
-                        if let Value::String(s) = binary_file {
-                            path.push("Contents");
-                            path.push("MacOS");
-                            path.push(s);
-                        }
+                    if let Some(Value::String(s)) = dict.get("CFBundleExecutable") {
+                        path.push("Contents");
+                        path.push("MacOS");
+                        path.push(s);
                     }
                 }
             }
@@ -342,39 +405,31 @@ pub mod platform {
         path
     }
 
-    /// Searches the system path for `firefox-bin`, then looks for
-    /// `Applications/Firefox.app/Contents/MacOS/firefox-bin` as well
-    /// as `Applications/Firefox Nightly.app/Contents/MacOS/firefox-bin`
+    /// Searches the system path for `firefox`, then looks for
+    /// `Applications/Firefox.app/Contents/MacOS/firefox` as well
+    /// as `Applications/Firefox Nightly.app/Contents/MacOS/firefox`
     /// under both `/` (system root) and the user home directory.
     pub fn firefox_default_path() -> Option<PathBuf> {
-        if let Some(path) = find_binary("firefox-bin") {
+        if let Some(path) = find_binary("firefox") {
             return Some(path);
         }
 
         let home = dirs::home_dir();
         for &(prefix_home, trial_path) in [
-            (
-                false,
-                "/Applications/Firefox.app/Contents/MacOS/firefox-bin",
-            ),
-            (true, "Applications/Firefox.app/Contents/MacOS/firefox-bin"),
-            (
-                false,
-                "/Applications/Firefox Nightly.app/Contents/MacOS/firefox-bin",
-            ),
-            (
-                true,
-                "Applications/Firefox Nightly.app/Contents/MacOS/firefox-bin",
-            ),
+            (false, "/Applications/Firefox.app"),
+            (true, "Applications/Firefox.app"),
+            (false, "/Applications/Firefox Nightly.app"),
+            (true, "Applications/Firefox Nightly.app"),
         ]
         .iter()
         {
             let path = match (home.as_ref(), prefix_home) {
-                (Some(ref home_dir), true) => home_dir.join(trial_path),
+                (Some(home_dir), true) => home_dir.join(trial_path),
                 (None, true) => continue,
                 (_, false) => PathBuf::from(trial_path),
             };
-            if is_binary(&path) {
+
+            if is_binary(&path) || is_app_bundle(&path) {
                 return Some(path);
             }
         }

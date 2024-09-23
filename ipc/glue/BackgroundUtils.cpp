@@ -11,9 +11,11 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ContentPrincipal.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/SystemPrincipal.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "mozilla/net/CookieJarSettings.h"
+#include "mozilla/net/InterceptionInfo.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "ExpandedPrincipal.h"
 #include "nsIScriptSecurityManager.h"
@@ -24,40 +26,33 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "mozilla/nsRedirectHistoryEntry.h"
-#include "URIUtils.h"
 #include "mozilla/dom/nsCSPUtils.h"
 #include "mozilla/dom/nsCSPContext.h"
 #include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/WindowGlobalParent.h"
+#include "mozilla/LoadInfo.h"
+
+using namespace mozilla::dom;
+using namespace mozilla::net;
 
 namespace mozilla {
-
-using mozilla::BasePrincipal;
-using mozilla::Maybe;
-using mozilla::dom::BrowsingContext;
-using mozilla::dom::ServiceWorkerDescriptor;
-using namespace mozilla::net;
 
 namespace ipc {
 
 Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
     const PrincipalInfo& aPrincipalInfo) {
-  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPrincipalInfo.type() != PrincipalInfo::T__None);
-
-  nsCOMPtr<nsIScriptSecurityManager> secMan =
-      nsContentUtils::GetSecurityManager();
-  if (!secMan) {
-    return Err(NS_ERROR_NULL_POINTER);
-  }
 
   nsCOMPtr<nsIPrincipal> principal;
   nsresult rv;
 
   switch (aPrincipalInfo.type()) {
     case PrincipalInfo::TSystemPrincipalInfo: {
-      rv = secMan->GetSystemPrincipal(getter_AddRefs(principal));
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return Err(rv);
+      principal = SystemPrincipal::Get();
+      if (NS_WARN_IF(!principal)) {
+        return Err(NS_ERROR_NOT_INITIALIZED);
       }
 
       return principal;
@@ -70,6 +65,10 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
       rv = NS_NewURI(getter_AddRefs(uri), info.spec());
       if (NS_WARN_IF(NS_FAILED(rv))) {
         return Err(rv);
+      }
+
+      if (!uri->SchemeIs(NS_NULLPRINCIPAL_SCHEME)) {
+        return Err(NS_ERROR_ILLEGAL_VALUE);
       }
 
       principal = NullPrincipal::Create(info.attrs(), uri);
@@ -86,7 +85,16 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
         return Err(rv);
       }
 
-      principal = BasePrincipal::CreateContentPrincipal(uri, info.attrs());
+      nsCOMPtr<nsIURI> domain;
+      if (info.domain()) {
+        rv = NS_NewURI(getter_AddRefs(domain), *info.domain());
+        if (NS_WARN_IF(NS_FAILED(rv))) {
+          return Err(rv);
+        }
+      }
+
+      principal =
+          BasePrincipal::CreateContentPrincipal(uri, info.attrs(), domain);
       if (NS_WARN_IF(!principal)) {
         return Err(NS_ERROR_NULL_POINTER);
       }
@@ -100,19 +108,6 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
 
       if (NS_WARN_IF(!info.originNoSuffix().Equals(originNoSuffix))) {
         return Err(NS_ERROR_FAILURE);
-      }
-
-      if (info.domain()) {
-        nsCOMPtr<nsIURI> domain;
-        rv = NS_NewURI(getter_AddRefs(domain), *info.domain());
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return Err(rv);
-        }
-
-        rv = principal->SetDomain(domain);
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return Err(rv);
-        }
       }
 
       if (!info.baseDomain().IsVoid()) {
@@ -159,7 +154,29 @@ Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
     default:
       return Err(NS_ERROR_FAILURE);
   }
-  return Err(NS_ERROR_FAILURE);
+}
+
+bool StorageKeysEqual(const PrincipalInfo& aLeft, const PrincipalInfo& aRight) {
+  MOZ_RELEASE_ASSERT(aLeft.type() == PrincipalInfo::TContentPrincipalInfo ||
+                     aLeft.type() == PrincipalInfo::TSystemPrincipalInfo);
+  MOZ_RELEASE_ASSERT(aRight.type() == PrincipalInfo::TContentPrincipalInfo ||
+                     aRight.type() == PrincipalInfo::TSystemPrincipalInfo);
+
+  if (aLeft.type() != aRight.type()) {
+    return false;
+  }
+
+  if (aLeft.type() == PrincipalInfo::TContentPrincipalInfo) {
+    const ContentPrincipalInfo& leftContent = aLeft.get_ContentPrincipalInfo();
+    const ContentPrincipalInfo& rightContent =
+        aRight.get_ContentPrincipalInfo();
+
+    return leftContent.attrs() == rightContent.attrs() &&
+           leftContent.originNoSuffix() == rightContent.originNoSuffix();
+  }
+
+  // Storage keys for the System principal always equal.
+  return true;
 }
 
 already_AddRefed<nsIContentSecurityPolicy> CSPInfoToCSP(
@@ -232,7 +249,7 @@ nsresult CSPToCSPInfo(nsIContentSecurityPolicy* aCSP, CSPInfo* aCSPInfo) {
     selfURI->GetSpec(selfURISpec);
   }
 
-  nsAutoString referrer;
+  nsAutoCString referrer;
   aCSP->GetReferrer(referrer);
 
   uint64_t windowID = aCSP->GetInnerWindowID();
@@ -249,7 +266,6 @@ nsresult CSPToCSPInfo(nsIContentSecurityPolicy* aCSP, CSPInfo* aCSPInfo) {
 nsresult PrincipalToPrincipalInfo(nsIPrincipal* aPrincipal,
                                   PrincipalInfo* aPrincipalInfo,
                                   bool aSkipBaseDomain) {
-  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPrincipal);
   MOZ_ASSERT(aPrincipalInfo);
 
@@ -383,7 +399,7 @@ nsresult RHEntryToRHEntryInfo(nsIRedirectHistoryEntry* aRHEntry,
 }
 
 nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
-                                Maybe<LoadInfoArgs>* aOptionalLoadInfoArgs) {
+                                LoadInfoArgs* outLoadInfoArgs) {
   nsresult rv = NS_OK;
   Maybe<PrincipalInfo> loadingPrincipalInfo;
   if (nsIPrincipal* loadingPrin = aLoadInfo->GetLoadingPrincipal()) {
@@ -405,25 +421,10 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
-  Maybe<PrincipalInfo> sandboxedLoadingPrincipalInfo;
-  if (aLoadInfo->GetLoadingSandboxed()) {
-    sandboxedLoadingPrincipalInfo.emplace();
-    rv = PrincipalToPrincipalInfo(aLoadInfo->GetSandboxedLoadingPrincipal(),
-                                  sandboxedLoadingPrincipalInfo.ptr());
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
-
   Maybe<PrincipalInfo> topLevelPrincipalInfo;
   if (nsIPrincipal* topLevenPrin = aLoadInfo->GetTopLevelPrincipal()) {
     topLevelPrincipalInfo.emplace();
     rv = PrincipalToPrincipalInfo(topLevenPrin, topLevelPrincipalInfo.ptr());
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
-
-  Maybe<PrincipalInfo> topLevelStorageAreaPrincipalInfo;
-  if (nsIPrincipal* prin = aLoadInfo->GetTopLevelStorageAreaPrincipal()) {
-    topLevelStorageAreaPrincipalInfo.emplace();
-    rv = PrincipalToPrincipalInfo(prin, topLevelStorageAreaPrincipalInfo.ptr());
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -434,6 +435,10 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
   if (resultPrincipalURI) {
     SerializeURI(resultPrincipalURI, optionalResultPrincipalURI);
   }
+
+  nsCString triggeringRemoteType;
+  rv = aLoadInfo->GetTriggeringRemoteType(triggeringRemoteType);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   nsTArray<RedirectHistoryEntryInfo> redirectChainIncludingInternalRedirects;
   for (const nsCOMPtr<nsIRedirectHistoryEntry>& redirectEntry :
@@ -449,14 +454,6 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
        aLoadInfo->RedirectChain()) {
     RedirectHistoryEntryInfo* entry = redirectChain.AppendElement();
     rv = RHEntryToRHEntryInfo(redirectEntry, entry);
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
-
-  nsTArray<PrincipalInfo> ancestorPrincipals;
-  ancestorPrincipals.SetCapacity(aLoadInfo->AncestorPrincipals().Length());
-  for (const auto& principal : aLoadInfo->AncestorPrincipals()) {
-    rv =
-        PrincipalToPrincipalInfo(principal, ancestorPrincipals.AppendElement());
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -489,6 +486,10 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
   nsAutoString cspNonce;
   Unused << NS_WARN_IF(NS_FAILED(aLoadInfo->GetCspNonce(cspNonce)));
 
+  nsAutoString integrityMetadata;
+  Unused << NS_WARN_IF(
+      NS_FAILED(aLoadInfo->GetIntegrityMetadata(integrityMetadata)));
+
   nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
   rv = aLoadInfo->GetCookieJarSettings(getter_AddRefs(cookieJarSettings));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -507,84 +508,129 @@ nsresult LoadInfoToLoadInfoArgs(nsILoadInfo* aLoadInfo,
     maybeCspToInheritInfo.emplace(cspToInheritInfo);
   }
 
-  *aOptionalLoadInfoArgs = Some(LoadInfoArgs(
+  nsCOMPtr<nsIURI> unstrippedURI;
+  Unused << aLoadInfo->GetUnstrippedURI(getter_AddRefs(unstrippedURI));
+
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (static_cast<LoadInfo*>(aLoadInfo)
+          ->HasIsThirdPartyContextToTopWindowSet()) {
+    isThirdPartyContextToTopWindow.emplace(
+        aLoadInfo->GetIsThirdPartyContextToTopWindow());
+  }
+
+  Maybe<InterceptionInfoArg> interceptionInfoArg;
+  nsIInterceptionInfo* interceptionInfo = aLoadInfo->InterceptionInfo();
+  if (interceptionInfo) {
+    Maybe<PrincipalInfo> triggeringPrincipalInfo;
+    if (interceptionInfo->TriggeringPrincipal()) {
+      triggeringPrincipalInfo.emplace();
+      rv = PrincipalToPrincipalInfo(interceptionInfo->TriggeringPrincipal(),
+                                    triggeringPrincipalInfo.ptr());
+    }
+
+    nsTArray<RedirectHistoryEntryInfo> redirectChain;
+    for (const nsCOMPtr<nsIRedirectHistoryEntry>& redirectEntry :
+         interceptionInfo->RedirectChain()) {
+      RedirectHistoryEntryInfo* entry = redirectChain.AppendElement();
+      rv = RHEntryToRHEntryInfo(redirectEntry, entry);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
+    interceptionInfoArg = Some(InterceptionInfoArg(
+        triggeringPrincipalInfo, interceptionInfo->ContentPolicyType(),
+        redirectChain, interceptionInfo->FromThirdParty()));
+  }
+
+  Maybe<uint64_t> overriddenFingerprintingSettingsArg;
+  Maybe<RFPTarget> overriddenFingerprintingSettings =
+      aLoadInfo->GetOverriddenFingerprintingSettings();
+
+  if (overriddenFingerprintingSettings) {
+    overriddenFingerprintingSettingsArg =
+        Some(uint64_t(overriddenFingerprintingSettings.ref()));
+  }
+
+  *outLoadInfoArgs = LoadInfoArgs(
       loadingPrincipalInfo, triggeringPrincipalInfo, principalToInheritInfo,
-      sandboxedLoadingPrincipalInfo, topLevelPrincipalInfo,
-      topLevelStorageAreaPrincipalInfo, optionalResultPrincipalURI,
-      aLoadInfo->GetSecurityFlags(), aLoadInfo->GetSandboxFlags(),
+      topLevelPrincipalInfo, optionalResultPrincipalURI, triggeringRemoteType,
+      aLoadInfo->GetSandboxedNullPrincipalID(), aLoadInfo->GetSecurityFlags(),
+      aLoadInfo->GetSandboxFlags(), aLoadInfo->GetTriggeringSandboxFlags(),
+      aLoadInfo->GetTriggeringWindowId(),
+      aLoadInfo->GetTriggeringStorageAccess(),
       aLoadInfo->InternalContentPolicyType(),
       static_cast<uint32_t>(aLoadInfo->GetTainting()),
       aLoadInfo->GetBlockAllMixedContent(),
       aLoadInfo->GetUpgradeInsecureRequests(),
       aLoadInfo->GetBrowserUpgradeInsecureRequests(),
+      aLoadInfo->GetBrowserDidUpgradeInsecureRequests(),
       aLoadInfo->GetBrowserWouldUpgradeInsecureRequests(),
       aLoadInfo->GetForceAllowDataURI(),
       aLoadInfo->GetAllowInsecureRedirectToDataURI(),
-      aLoadInfo->GetBypassCORSChecks(),
       aLoadInfo->GetSkipContentPolicyCheckForWebRequest(),
+      aLoadInfo->GetOriginalFrameSrcLoad(),
       aLoadInfo->GetForceInheritPrincipalDropped(),
-      aLoadInfo->GetInnerWindowID(), aLoadInfo->GetOuterWindowID(),
-      aLoadInfo->GetParentOuterWindowID(), aLoadInfo->GetTopOuterWindowID(),
-      aLoadInfo->GetFrameOuterWindowID(), aLoadInfo->GetBrowsingContextID(),
+      aLoadInfo->GetInnerWindowID(), aLoadInfo->GetBrowsingContextID(),
       aLoadInfo->GetFrameBrowsingContextID(),
       aLoadInfo->GetInitialSecurityCheckDone(),
-      aLoadInfo->GetIsInThirdPartyContext(),
-      aLoadInfo->GetIsThirdPartyContextToTopWindow(),
+      aLoadInfo->GetIsInThirdPartyContext(), isThirdPartyContextToTopWindow,
       aLoadInfo->GetIsFormSubmission(), aLoadInfo->GetSendCSPViolationEvents(),
       aLoadInfo->GetOriginAttributes(), redirectChainIncludingInternalRedirects,
-      redirectChain, ancestorPrincipals, aLoadInfo->AncestorOuterWindowIDs(),
-      ipcClientInfo, ipcReservedClientInfo, ipcInitialClientInfo, ipcController,
-      aLoadInfo->CorsUnsafeHeaders(), aLoadInfo->GetForcePreflight(),
-      aLoadInfo->GetIsPreflight(), aLoadInfo->GetLoadTriggeredFromExternal(),
+      redirectChain, aLoadInfo->GetHasInjectedCookieForCookieBannerHandling(),
+      aLoadInfo->GetWasSchemelessInput(), ipcClientInfo, ipcReservedClientInfo,
+      ipcInitialClientInfo, ipcController, aLoadInfo->CorsUnsafeHeaders(),
+      aLoadInfo->GetForcePreflight(), aLoadInfo->GetIsPreflight(),
+      aLoadInfo->GetLoadTriggeredFromExternal(),
       aLoadInfo->GetServiceWorkerTaintingSynthesized(),
       aLoadInfo->GetDocumentHasUserInteracted(),
-      aLoadInfo->GetDocumentHasLoaded(),
       aLoadInfo->GetAllowListFutureDocumentsCreatedFromThisRedirectChain(),
-      cspNonce, aLoadInfo->GetSkipContentSniffing(),
-      aLoadInfo->GetHttpsOnlyStatus(),
+      aLoadInfo->GetNeedForCheckingAntiTrackingHeuristic(), cspNonce,
+      integrityMetadata, aLoadInfo->GetSkipContentSniffing(),
+      aLoadInfo->GetHttpsOnlyStatus(), aLoadInfo->GetHstsStatus(),
       aLoadInfo->GetHasValidUserGestureActivation(),
       aLoadInfo->GetAllowDeprecatedSystemRequests(),
-      aLoadInfo->GetParserCreatedScript(),
-      aLoadInfo->GetIsFromProcessingFrameAttributes(), cookieJarSettingsArgs,
+      aLoadInfo->GetIsInDevToolsContext(), aLoadInfo->GetParserCreatedScript(),
+      aLoadInfo->GetIsFromProcessingFrameAttributes(),
+      aLoadInfo->GetIsMediaRequest(), aLoadInfo->GetIsMediaInitialRequest(),
+      aLoadInfo->GetIsFromObjectOrEmbed(), cookieJarSettingsArgs,
       aLoadInfo->GetRequestBlockingReason(), maybeCspToInheritInfo,
-      aLoadInfo->GetHasStoragePermission(),
-      aLoadInfo->GetLoadingEmbedderPolicy()));
+      aLoadInfo->GetStoragePermission(), overriddenFingerprintingSettingsArg,
+      aLoadInfo->GetIsMetaRefresh(), aLoadInfo->GetLoadingEmbedderPolicy(),
+      aLoadInfo->GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(),
+      unstrippedURI, interceptionInfoArg, aLoadInfo->GetIsNewWindowTarget());
 
   return NS_OK;
 }
 
-nsresult LoadInfoArgsToLoadInfo(
-    const Maybe<LoadInfoArgs>& aOptionalLoadInfoArgs,
-    nsILoadInfo** outLoadInfo) {
-  return LoadInfoArgsToLoadInfo(aOptionalLoadInfoArgs, nullptr, outLoadInfo);
+nsresult LoadInfoArgsToLoadInfo(const LoadInfoArgs& aLoadInfoArgs,
+                                const nsACString& aOriginRemoteType,
+                                nsILoadInfo** outLoadInfo) {
+  return LoadInfoArgsToLoadInfo(aLoadInfoArgs, aOriginRemoteType, nullptr,
+                                outLoadInfo);
 }
-nsresult LoadInfoArgsToLoadInfo(
-    const Maybe<LoadInfoArgs>& aOptionalLoadInfoArgs,
-    nsINode* aCspToInheritLoadingContext, nsILoadInfo** outLoadInfo) {
+nsresult LoadInfoArgsToLoadInfo(const LoadInfoArgs& aLoadInfoArgs,
+                                const nsACString& aOriginRemoteType,
+                                nsINode* aCspToInheritLoadingContext,
+                                nsILoadInfo** outLoadInfo) {
   RefPtr<LoadInfo> loadInfo;
-  nsresult rv =
-      LoadInfoArgsToLoadInfo(aOptionalLoadInfoArgs, aCspToInheritLoadingContext,
-                             getter_AddRefs(loadInfo));
+  nsresult rv = LoadInfoArgsToLoadInfo(aLoadInfoArgs, aOriginRemoteType,
+                                       aCspToInheritLoadingContext,
+                                       getter_AddRefs(loadInfo));
   NS_ENSURE_SUCCESS(rv, rv);
 
   loadInfo.forget(outLoadInfo);
   return NS_OK;
 }
 
-nsresult LoadInfoArgsToLoadInfo(
-    const Maybe<LoadInfoArgs>& aOptionalLoadInfoArgs, LoadInfo** outLoadInfo) {
-  return LoadInfoArgsToLoadInfo(aOptionalLoadInfoArgs, nullptr, outLoadInfo);
+nsresult LoadInfoArgsToLoadInfo(const LoadInfoArgs& aLoadInfoArgs,
+                                const nsACString& aOriginRemoteType,
+                                LoadInfo** outLoadInfo) {
+  return LoadInfoArgsToLoadInfo(aLoadInfoArgs, aOriginRemoteType, nullptr,
+                                outLoadInfo);
 }
-nsresult LoadInfoArgsToLoadInfo(
-    const Maybe<LoadInfoArgs>& aOptionalLoadInfoArgs,
-    nsINode* aCspToInheritLoadingContext, LoadInfo** outLoadInfo) {
-  if (aOptionalLoadInfoArgs.isNothing()) {
-    *outLoadInfo = nullptr;
-    return NS_OK;
-  }
-
-  const LoadInfoArgs& loadInfoArgs = aOptionalLoadInfoArgs.ref();
-
+nsresult LoadInfoArgsToLoadInfo(const LoadInfoArgs& loadInfoArgs,
+                                const nsACString& aOriginRemoteType,
+                                nsINode* aCspToInheritLoadingContext,
+                                LoadInfo** outLoadInfo) {
   nsCOMPtr<nsIPrincipal> loadingPrincipal;
   if (loadInfoArgs.requestingPrincipalInfo().isSome()) {
     auto loadingPrincipalOrErr =
@@ -604,26 +650,41 @@ nsresult LoadInfoArgsToLoadInfo(
       triggeringPrincipalOrErr.unwrap();
 
   nsCOMPtr<nsIPrincipal> principalToInherit;
+  nsCOMPtr<nsIPrincipal> flattenedPrincipalToInherit;
   if (loadInfoArgs.principalToInheritInfo().isSome()) {
     auto principalToInheritOrErr =
         PrincipalInfoToPrincipal(loadInfoArgs.principalToInheritInfo().ref());
     if (NS_WARN_IF(principalToInheritOrErr.isErr())) {
       return principalToInheritOrErr.unwrapErr();
     }
-    principalToInherit = principalToInheritOrErr.unwrap();
+    flattenedPrincipalToInherit = principalToInheritOrErr.unwrap();
   }
 
-  nsCOMPtr<nsIPrincipal> sandboxedLoadingPrincipal;
-  if (loadInfoArgs.sandboxedLoadingPrincipalInfo().isSome()) {
-    auto sandboxedLoadingPrincipalOrErr = PrincipalInfoToPrincipal(
-        loadInfoArgs.sandboxedLoadingPrincipalInfo().ref());
-    if (NS_WARN_IF(sandboxedLoadingPrincipalOrErr.isErr())) {
-      return sandboxedLoadingPrincipalOrErr.unwrapErr();
+  if (XRE_IsContentProcess()) {
+    auto targetBrowsingContextId = loadInfoArgs.frameBrowsingContextID()
+                                       ? loadInfoArgs.frameBrowsingContextID()
+                                       : loadInfoArgs.browsingContextID();
+    if (RefPtr<BrowsingContext> bc =
+            BrowsingContext::Get(targetBrowsingContextId)) {
+      auto [originalTriggeringPrincipal, originalPrincipalToInherit] =
+          bc->GetTriggeringAndInheritPrincipalsForCurrentLoad();
+
+      if (originalTriggeringPrincipal &&
+          originalTriggeringPrincipal->Equals(triggeringPrincipal)) {
+        triggeringPrincipal = originalTriggeringPrincipal;
+      }
+      if (originalPrincipalToInherit &&
+          (loadInfoArgs.securityFlags() &
+           nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL) &&
+          originalPrincipalToInherit->Equals(flattenedPrincipalToInherit)) {
+        principalToInherit = originalPrincipalToInherit;
+      }
     }
-    sandboxedLoadingPrincipal = sandboxedLoadingPrincipalOrErr.unwrap();
+  }
+  if (!principalToInherit && loadInfoArgs.principalToInheritInfo().isSome()) {
+    principalToInherit = flattenedPrincipalToInherit;
   }
 
-  nsresult rv = NS_OK;
   nsCOMPtr<nsIPrincipal> topLevelPrincipal;
   if (loadInfoArgs.topLevelPrincipalInfo().isSome()) {
     auto topLevelPrincipalOrErr =
@@ -634,20 +695,24 @@ nsresult LoadInfoArgsToLoadInfo(
     topLevelPrincipal = topLevelPrincipalOrErr.unwrap();
   }
 
-  nsCOMPtr<nsIPrincipal> topLevelStorageAreaPrincipal;
-  if (loadInfoArgs.topLevelStorageAreaPrincipalInfo().isSome()) {
-    auto topLevelStorageAreaPrincipalOrErr = PrincipalInfoToPrincipal(
-        loadInfoArgs.topLevelStorageAreaPrincipalInfo().ref());
-    if (NS_WARN_IF(topLevelStorageAreaPrincipalOrErr.isErr())) {
-      return topLevelStorageAreaPrincipalOrErr.unwrapErr();
-    }
-    topLevelStorageAreaPrincipal = topLevelStorageAreaPrincipalOrErr.unwrap();
-  }
-
   nsCOMPtr<nsIURI> resultPrincipalURI;
   if (loadInfoArgs.resultPrincipalURI().isSome()) {
     resultPrincipalURI = DeserializeURI(loadInfoArgs.resultPrincipalURI());
     NS_ENSURE_TRUE(resultPrincipalURI, NS_ERROR_UNEXPECTED);
+  }
+
+  // If we received this message from a content process, reset
+  // triggeringRemoteType to the process which sent us the message. If the
+  // parent sent us the message, we trust it to provide the correct triggering
+  // remote type.
+  //
+  // This means that the triggering remote type will be reset if a LoadInfo is
+  // bounced through a content process, as the LoadInfo can no longer be
+  // validated to be coming from the originally specified remote type.
+  nsCString triggeringRemoteType = loadInfoArgs.triggeringRemoteType();
+  if (aOriginRemoteType != NOT_REMOTE_TYPE &&
+      aOriginRemoteType != triggeringRemoteType) {
+    triggeringRemoteType = aOriginRemoteType;
   }
 
   RedirectHistoryArray redirectChainIncludingInternalRedirects;
@@ -655,7 +720,7 @@ nsresult LoadInfoArgsToLoadInfo(
        loadInfoArgs.redirectChainIncludingInternalRedirects()) {
     nsCOMPtr<nsIRedirectHistoryEntry> redirectHistoryEntry =
         RHEntryInfoToRHEntry(entryInfo);
-    NS_ENSURE_SUCCESS(rv, rv);
+    NS_ENSURE_TRUE(redirectHistoryEntry, NS_ERROR_UNEXPECTED);
     redirectChainIncludingInternalRedirects.AppendElement(
         redirectHistoryEntry.forget());
   }
@@ -665,19 +730,23 @@ nsresult LoadInfoArgsToLoadInfo(
        loadInfoArgs.redirectChain()) {
     nsCOMPtr<nsIRedirectHistoryEntry> redirectHistoryEntry =
         RHEntryInfoToRHEntry(entryInfo);
-    NS_ENSURE_SUCCESS(rv, rv);
+    NS_ENSURE_TRUE(redirectHistoryEntry, NS_ERROR_UNEXPECTED);
     redirectChain.AppendElement(redirectHistoryEntry.forget());
   }
-
   nsTArray<nsCOMPtr<nsIPrincipal>> ancestorPrincipals;
-  ancestorPrincipals.SetCapacity(loadInfoArgs.ancestorPrincipals().Length());
-  for (const PrincipalInfo& principalInfo : loadInfoArgs.ancestorPrincipals()) {
-    auto ancestorPrincipalOrErr = PrincipalInfoToPrincipal(principalInfo);
-    if (NS_WARN_IF(ancestorPrincipalOrErr.isErr())) {
-      return ancestorPrincipalOrErr.unwrapErr();
+  nsTArray<uint64_t> ancestorBrowsingContextIDs;
+  if (XRE_IsParentProcess() &&
+      (nsContentUtils::InternalContentPolicyTypeToExternal(
+           loadInfoArgs.contentPolicyType()) !=
+       ExtContentPolicy::TYPE_DOCUMENT)) {
+    // Only fill out ancestor principals and browsing context IDs when we
+    // are deserializing LoadInfoArgs to be LoadInfo for a subresource
+    RefPtr<BrowsingContext> parentBC =
+        BrowsingContext::Get(loadInfoArgs.browsingContextID());
+    if (parentBC) {
+      LoadInfo::ComputeAncestors(parentBC->Canonical(), ancestorPrincipals,
+                                 ancestorBrowsingContextIDs);
     }
-    nsCOMPtr<nsIPrincipal> ancestorPrincipal = ancestorPrincipalOrErr.unwrap();
-    ancestorPrincipals.AppendElement(ancestorPrincipal.forget());
   }
 
   Maybe<ClientInfo> clientInfo;
@@ -714,6 +783,12 @@ nsresult LoadInfoArgsToLoadInfo(
   CookieJarSettings::Deserialize(loadInfoArgs.cookieJarSettings(),
                                  getter_AddRefs(cookieJarSettings));
 
+  Maybe<RFPTarget> overriddenFingerprintingSettings;
+  if (loadInfoArgs.overriddenFingerprintingSettings().isSome()) {
+    overriddenFingerprintingSettings.emplace(
+        RFPTarget(loadInfoArgs.overriddenFingerprintingSettings().ref()));
+  }
+
   nsCOMPtr<nsIContentSecurityPolicy> cspToInherit;
   Maybe<mozilla::ipc::CSPInfo> cspToInheritInfo =
       loadInfoArgs.cspToInheritInfo();
@@ -732,49 +807,100 @@ nsresult LoadInfoArgsToLoadInfo(
     loadingContext = frameBrowsingContext->GetEmbedderElement();
   }
 
-  RefPtr<mozilla::LoadInfo> loadInfo = new mozilla::LoadInfo(
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (loadInfoArgs.isThirdPartyContextToTopWindow().isSome()) {
+    isThirdPartyContextToTopWindow.emplace(
+        loadInfoArgs.isThirdPartyContextToTopWindow().ref());
+  }
+
+  nsCOMPtr<nsIInterceptionInfo> interceptionInfo;
+  if (loadInfoArgs.interceptionInfo().isSome()) {
+    const InterceptionInfoArg& interceptionInfoArg =
+        loadInfoArgs.interceptionInfo().ref();
+    nsCOMPtr<nsIPrincipal> triggeringPrincipal;
+    if (interceptionInfoArg.triggeringPrincipalInfo().isSome()) {
+      auto triggeringPrincipalOrErr = PrincipalInfoToPrincipal(
+          interceptionInfoArg.triggeringPrincipalInfo().ref());
+      if (NS_WARN_IF(triggeringPrincipalOrErr.isErr())) {
+        return triggeringPrincipalOrErr.unwrapErr();
+      }
+      triggeringPrincipal = triggeringPrincipalOrErr.unwrap();
+    }
+
+    RedirectHistoryArray redirectChain;
+    for (const RedirectHistoryEntryInfo& entryInfo :
+         interceptionInfoArg.redirectChain()) {
+      nsCOMPtr<nsIRedirectHistoryEntry> redirectHistoryEntry =
+          RHEntryInfoToRHEntry(entryInfo);
+      NS_ENSURE_TRUE(redirectHistoryEntry, NS_ERROR_UNEXPECTED);
+      redirectChain.AppendElement(redirectHistoryEntry.forget());
+    }
+
+    interceptionInfo = new InterceptionInfo(
+        triggeringPrincipal, interceptionInfoArg.contentPolicyType(),
+        redirectChain, interceptionInfoArg.fromThirdParty());
+  }
+
+  RefPtr<mozilla::net::LoadInfo> loadInfo = new mozilla::net::LoadInfo(
       loadingPrincipal, triggeringPrincipal, principalToInherit,
-      sandboxedLoadingPrincipal, topLevelPrincipal,
-      topLevelStorageAreaPrincipal, resultPrincipalURI, cookieJarSettings,
-      cspToInherit, clientInfo, reservedClientInfo, initialClientInfo,
-      controller, loadInfoArgs.securityFlags(), loadInfoArgs.sandboxFlags(),
-      loadInfoArgs.contentPolicyType(),
+      topLevelPrincipal, resultPrincipalURI, cookieJarSettings, cspToInherit,
+      triggeringRemoteType, loadInfoArgs.sandboxedNullPrincipalID(), clientInfo,
+      reservedClientInfo, initialClientInfo, controller,
+      loadInfoArgs.securityFlags(), loadInfoArgs.sandboxFlags(),
+      loadInfoArgs.triggeringSandboxFlags(), loadInfoArgs.triggeringWindowId(),
+      loadInfoArgs.triggeringStorageAccess(), loadInfoArgs.contentPolicyType(),
       static_cast<LoadTainting>(loadInfoArgs.tainting()),
       loadInfoArgs.blockAllMixedContent(),
       loadInfoArgs.upgradeInsecureRequests(),
       loadInfoArgs.browserUpgradeInsecureRequests(),
+      loadInfoArgs.browserDidUpgradeInsecureRequests(),
       loadInfoArgs.browserWouldUpgradeInsecureRequests(),
       loadInfoArgs.forceAllowDataURI(),
       loadInfoArgs.allowInsecureRedirectToDataURI(),
-      loadInfoArgs.bypassCORSChecks(),
       loadInfoArgs.skipContentPolicyCheckForWebRequest(),
+      loadInfoArgs.originalFrameSrcLoad(),
       loadInfoArgs.forceInheritPrincipalDropped(), loadInfoArgs.innerWindowID(),
-      loadInfoArgs.outerWindowID(), loadInfoArgs.parentOuterWindowID(),
-      loadInfoArgs.topOuterWindowID(), loadInfoArgs.frameOuterWindowID(),
       loadInfoArgs.browsingContextID(), loadInfoArgs.frameBrowsingContextID(),
       loadInfoArgs.initialSecurityCheckDone(),
-      loadInfoArgs.isInThirdPartyContext(),
-      loadInfoArgs.isThirdPartyContextToTopWindow(),
+      loadInfoArgs.isInThirdPartyContext(), isThirdPartyContextToTopWindow,
       loadInfoArgs.isFormSubmission(), loadInfoArgs.sendCSPViolationEvents(),
-      loadInfoArgs.originAttributes(), redirectChainIncludingInternalRedirects,
-      redirectChain, std::move(ancestorPrincipals),
-      loadInfoArgs.ancestorOuterWindowIDs(), loadInfoArgs.corsUnsafeHeaders(),
+      loadInfoArgs.originAttributes(),
+      std::move(redirectChainIncludingInternalRedirects),
+      std::move(redirectChain), std::move(ancestorPrincipals),
+      ancestorBrowsingContextIDs, loadInfoArgs.corsUnsafeHeaders(),
       loadInfoArgs.forcePreflight(), loadInfoArgs.isPreflight(),
       loadInfoArgs.loadTriggeredFromExternal(),
       loadInfoArgs.serviceWorkerTaintingSynthesized(),
       loadInfoArgs.documentHasUserInteracted(),
-      loadInfoArgs.documentHasLoaded(),
       loadInfoArgs.allowListFutureDocumentsCreatedFromThisRedirectChain(),
-      loadInfoArgs.cspNonce(), loadInfoArgs.skipContentSniffing(),
-      loadInfoArgs.httpsOnlyStatus(),
-      loadInfoArgs.hasValidUserGestureActivation(),
+      loadInfoArgs.needForCheckingAntiTrackingHeuristic(),
+      loadInfoArgs.cspNonce(), loadInfoArgs.integrityMetadata(),
+      loadInfoArgs.skipContentSniffing(), loadInfoArgs.httpsOnlyStatus(),
+      loadInfoArgs.hstsStatus(), loadInfoArgs.hasValidUserGestureActivation(),
       loadInfoArgs.allowDeprecatedSystemRequests(),
-      loadInfoArgs.parserCreatedScript(), loadInfoArgs.hasStoragePermission(),
-      loadInfoArgs.requestBlockingReason(), loadingContext,
-      loadInfoArgs.loadingEmbedderPolicy());
+      loadInfoArgs.isInDevToolsContext(), loadInfoArgs.parserCreatedScript(),
+      loadInfoArgs.storagePermission(), overriddenFingerprintingSettings,
+      loadInfoArgs.isMetaRefresh(), loadInfoArgs.requestBlockingReason(),
+      loadingContext, loadInfoArgs.loadingEmbedderPolicy(),
+      loadInfoArgs.originTrialCoepCredentiallessEnabledForTopLevel(),
+      loadInfoArgs.unstrippedURI(), interceptionInfo,
+      loadInfoArgs.hasInjectedCookieForCookieBannerHandling(),
+      loadInfoArgs.wasSchemelessInput(), loadInfoArgs.isNewWindowTarget());
 
   if (loadInfoArgs.isFromProcessingFrameAttributes()) {
     loadInfo->SetIsFromProcessingFrameAttributes();
+  }
+
+  if (loadInfoArgs.isMediaRequest()) {
+    loadInfo->SetIsMediaRequest(true);
+
+    if (loadInfoArgs.isMediaInitialRequest()) {
+      loadInfo->SetIsMediaInitialRequest(true);
+    }
+  }
+
+  if (loadInfoArgs.isFromObjectOrEmbed()) {
+    loadInfo->SetIsFromObjectOrEmbed(true);
   }
 
   loadInfo.forget(outLoadInfo);
@@ -805,20 +931,42 @@ void LoadInfoToParentLoadInfoForwarder(
     cookieJarSettingsArgs = Some(args);
   }
 
+  nsCOMPtr<nsIURI> unstrippedURI;
+  Unused << aLoadInfo->GetUnstrippedURI(getter_AddRefs(unstrippedURI));
+
+  Maybe<bool> isThirdPartyContextToTopWindow;
+  if (static_cast<LoadInfo*>(aLoadInfo)
+          ->HasIsThirdPartyContextToTopWindowSet()) {
+    isThirdPartyContextToTopWindow.emplace(
+        aLoadInfo->GetIsThirdPartyContextToTopWindow());
+  }
+
+  Maybe<uint64_t> overriddenFingerprintingSettingsArg;
+  Maybe<RFPTarget> overriddenFingerprintingSettings =
+      aLoadInfo->GetOverriddenFingerprintingSettings();
+
+  if (overriddenFingerprintingSettings) {
+    overriddenFingerprintingSettingsArg =
+        Some(uint64_t(overriddenFingerprintingSettings.ref()));
+  }
+
   *aForwarderArgsOut = ParentLoadInfoForwarderArgs(
-      aLoadInfo->GetAllowInsecureRedirectToDataURI(),
-      aLoadInfo->GetBypassCORSChecks(), ipcController, tainting,
+      aLoadInfo->GetAllowInsecureRedirectToDataURI(), ipcController, tainting,
       aLoadInfo->GetSkipContentSniffing(), aLoadInfo->GetHttpsOnlyStatus(),
-      aLoadInfo->GetHasValidUserGestureActivation(),
+      aLoadInfo->GetHstsStatus(), aLoadInfo->GetHasValidUserGestureActivation(),
       aLoadInfo->GetAllowDeprecatedSystemRequests(),
-      aLoadInfo->GetParserCreatedScript(),
+      aLoadInfo->GetIsInDevToolsContext(), aLoadInfo->GetParserCreatedScript(),
+      aLoadInfo->GetTriggeringSandboxFlags(),
+      aLoadInfo->GetTriggeringWindowId(),
+      aLoadInfo->GetTriggeringStorageAccess(),
       aLoadInfo->GetServiceWorkerTaintingSynthesized(),
       aLoadInfo->GetDocumentHasUserInteracted(),
-      aLoadInfo->GetDocumentHasLoaded(),
       aLoadInfo->GetAllowListFutureDocumentsCreatedFromThisRedirectChain(),
-      cookieJarSettingsArgs, aLoadInfo->GetRequestBlockingReason(),
-      aLoadInfo->GetHasStoragePermission(),
-      aLoadInfo->GetIsThirdPartyContextToTopWindow());
+      cookieJarSettingsArgs, aLoadInfo->GetContainerFeaturePolicyInfo(),
+      aLoadInfo->GetRequestBlockingReason(), aLoadInfo->GetStoragePermission(),
+      overriddenFingerprintingSettingsArg, aLoadInfo->GetIsMetaRefresh(),
+      isThirdPartyContextToTopWindow, aLoadInfo->GetIsInThirdPartyContext(),
+      unstrippedURI);
 }
 
 nsresult MergeParentLoadInfoForwarder(
@@ -827,9 +975,6 @@ nsresult MergeParentLoadInfoForwarder(
 
   rv = aLoadInfo->SetAllowInsecureRedirectToDataURI(
       aForwarderArgs.allowInsecureRedirectToDataURI());
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = aLoadInfo->SetBypassCORSChecks(aForwarderArgs.bypassCORSChecks());
   NS_ENSURE_SUCCESS(rv, rv);
 
   aLoadInfo->ClearController();
@@ -851,6 +996,20 @@ nsresult MergeParentLoadInfoForwarder(
   rv = aLoadInfo->SetHttpsOnlyStatus(aForwarderArgs.httpsOnlyStatus());
   NS_ENSURE_SUCCESS(rv, rv);
 
+  rv = aLoadInfo->SetHstsStatus(aForwarderArgs.hstsStatus());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aLoadInfo->SetTriggeringSandboxFlags(
+      aForwarderArgs.triggeringSandboxFlags());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aLoadInfo->SetTriggeringWindowId(aForwarderArgs.triggeringWindowId());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aLoadInfo->SetTriggeringStorageAccess(
+      aForwarderArgs.triggeringStorageAccess());
+  NS_ENSURE_SUCCESS(rv, rv);
+
   rv = aLoadInfo->SetHasValidUserGestureActivation(
       aForwarderArgs.hasValidUserGestureActivation());
   NS_ENSURE_SUCCESS(rv, rv);
@@ -859,13 +1018,14 @@ nsresult MergeParentLoadInfoForwarder(
       aForwarderArgs.allowDeprecatedSystemRequests());
   NS_ENSURE_SUCCESS(rv, rv);
 
+  rv = aLoadInfo->SetIsInDevToolsContext(aForwarderArgs.isInDevToolsContext());
+  NS_ENSURE_SUCCESS(rv, rv);
+
   rv = aLoadInfo->SetParserCreatedScript(aForwarderArgs.parserCreatedScript());
   NS_ENSURE_SUCCESS(rv, rv);
 
   MOZ_ALWAYS_SUCCEEDS(aLoadInfo->SetDocumentHasUserInteracted(
       aForwarderArgs.documentHasUserInteracted()));
-  MOZ_ALWAYS_SUCCEEDS(
-      aLoadInfo->SetDocumentHasLoaded(aForwarderArgs.documentHasLoaded()));
   MOZ_ALWAYS_SUCCEEDS(
       aLoadInfo->SetAllowListFutureDocumentsCreatedFromThisRedirectChain(
           aForwarderArgs
@@ -885,13 +1045,37 @@ nsresult MergeParentLoadInfoForwarder(
     }
   }
 
-  rv =
-      aLoadInfo->SetHasStoragePermission(aForwarderArgs.hasStoragePermission());
+  rv = aLoadInfo->SetStoragePermission(aForwarderArgs.storagePermission());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = aLoadInfo->SetIsThirdPartyContextToTopWindow(
-      aForwarderArgs.isThirdPartyContextToTopWindow());
+  rv = aLoadInfo->SetIsMetaRefresh(aForwarderArgs.isMetaRefresh());
   NS_ENSURE_SUCCESS(rv, rv);
+
+  const Maybe<uint64_t> overriddenFingerprintingSettings =
+      aForwarderArgs.overriddenFingerprintingSettings();
+  if (overriddenFingerprintingSettings.isSome()) {
+    aLoadInfo->SetOverriddenFingerprintingSettings(
+        RFPTarget(overriddenFingerprintingSettings.ref()));
+  }
+
+  static_cast<LoadInfo*>(aLoadInfo)->ClearIsThirdPartyContextToTopWindow();
+  if (aForwarderArgs.isThirdPartyContextToTopWindow().isSome()) {
+    rv = aLoadInfo->SetIsThirdPartyContextToTopWindow(
+        aForwarderArgs.isThirdPartyContextToTopWindow().ref());
+  }
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aLoadInfo->SetIsInThirdPartyContext(
+      aForwarderArgs.isInThirdPartyContext());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aLoadInfo->SetUnstrippedURI(aForwarderArgs.unstrippedURI());
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (aForwarderArgs.containerFeaturePolicyInfo()) {
+    aLoadInfo->SetContainerFeaturePolicyInfo(
+        *aForwarderArgs.containerFeaturePolicyInfo());
+  }
 
   return NS_OK;
 }

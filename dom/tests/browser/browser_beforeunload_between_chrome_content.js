@@ -1,9 +1,13 @@
 const TEST_URL = "http://www.example.com/browser/dom/tests/browser/dummy.html";
 
+const { PromptTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromptTestUtils.sys.mjs"
+);
+
 function pageScript() {
   window.addEventListener(
     "beforeunload",
-    function(event) {
+    function (event) {
       var str = "Leaving?";
       event.returnValue = str;
       return str;
@@ -13,10 +17,10 @@ function pageScript() {
 }
 
 function injectBeforeUnload(browser) {
-  return ContentTask.spawn(browser, null, async function() {
+  return ContentTask.spawn(browser, null, async function () {
     content.window.addEventListener(
       "beforeunload",
-      function(event) {
+      function (event) {
         sendAsyncMessage("Test:OnBeforeUnloadReceived");
         var str = "Leaving?";
         event.returnValue = str;
@@ -28,19 +32,12 @@ function injectBeforeUnload(browser) {
 }
 
 // Wait for onbeforeunload dialog, and dismiss it immediately.
-function awaitAndCloseBeforeUnloadDialog(doStayOnPage) {
-  return new Promise(resolve => {
-    function onDialogShown(node) {
-      Services.obs.removeObserver(onDialogShown, "tabmodal-dialog-loaded");
-      let button = node.querySelector(
-        doStayOnPage ? ".tabmodalprompt-button1" : ".tabmodalprompt-button0"
-      );
-      button.click();
-      resolve();
-    }
-
-    Services.obs.addObserver(onDialogShown, "tabmodal-dialog-loaded");
-  });
+function awaitAndCloseBeforeUnloadDialog(browser, doStayOnPage) {
+  return PromptTestUtils.handleNextPrompt(
+    browser,
+    { modalType: Services.prompt.MODAL_TYPE_CONTENT, promptType: "confirmEx" },
+    { buttonNumClick: doStayOnPage ? 1 : 0 }
+  );
 }
 
 SpecialPowers.pushPrefEnv({
@@ -52,9 +49,9 @@ SpecialPowers.pushPrefEnv({
  * one beforeunload event is fired.
  */
 /* global messageManager */
-add_task(async function() {
+add_task(async function () {
   let beforeUnloadCount = 0;
-  messageManager.addMessageListener("Test:OnBeforeUnloadReceived", function() {
+  messageManager.addMessageListener("Test:OnBeforeUnloadReceived", function () {
     beforeUnloadCount++;
   });
 
@@ -66,8 +63,8 @@ add_task(async function() {
 
   await injectBeforeUnload(browser);
   // Navigate to a chrome page.
-  let dialogShown1 = awaitAndCloseBeforeUnloadDialog(false);
-  await BrowserTestUtils.loadURI(browser, "about:support");
+  let dialogShown1 = awaitAndCloseBeforeUnloadDialog(browser, false);
+  BrowserTestUtils.startLoadingURIString(browser, "about:support");
   await Promise.all([dialogShown1, BrowserTestUtils.browserLoaded(browser)]);
 
   is(beforeUnloadCount, 1, "Should have received one beforeunload event.");
@@ -93,9 +90,9 @@ add_task(async function() {
  * Test navigation from a chrome page to a content page. Also check that only
  * one beforeunload event is fired.
  */
-add_task(async function() {
+add_task(async function () {
   let beforeUnloadCount = 0;
-  messageManager.addMessageListener("Test:OnBeforeUnloadReceived", function() {
+  messageManager.addMessageListener("Test:OnBeforeUnloadReceived", function () {
     beforeUnloadCount++;
   });
 
@@ -107,10 +104,10 @@ add_task(async function() {
   let browser = tab.linkedBrowser;
 
   ok(!browser.isRemoteBrowser, "Browser should not be remote.");
-  await ContentTask.spawn(browser, null, async function() {
+  await ContentTask.spawn(browser, null, async function () {
     content.window.addEventListener(
       "beforeunload",
-      function(event) {
+      function (event) {
         sendAsyncMessage("Test:OnBeforeUnloadReceived");
         var str = "Leaving?";
         event.returnValue = str;
@@ -122,7 +119,7 @@ add_task(async function() {
 
   // Navigate to a content page.
   let dialogShown1 = awaitAndCloseBeforeUnloadDialog(false);
-  await BrowserTestUtils.loadURI(browser, TEST_URL);
+  BrowserTestUtils.startLoadingURIString(browser, TEST_URL);
   await Promise.all([dialogShown1, BrowserTestUtils.browserLoaded(browser)]);
   is(beforeUnloadCount, 1, "Should have received one beforeunload event.");
   ok(browser.isRemoteBrowser, "Browser should be remote.");
@@ -131,10 +128,10 @@ add_task(async function() {
   ok(gBrowser.webNavigation.canGoBack, "Should be able to go back.");
   gBrowser.goBack();
   await BrowserTestUtils.browserLoaded(browser);
-  await ContentTask.spawn(browser, null, async function() {
+  await ContentTask.spawn(browser, null, async function () {
     content.window.addEventListener(
       "beforeunload",
-      function(event) {
+      function (event) {
         sendAsyncMessage("Test:OnBeforeUnloadReceived");
         var str = "Leaving?";
         event.returnValue = str;

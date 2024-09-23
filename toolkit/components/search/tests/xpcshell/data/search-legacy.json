@@ -74,7 +74,7 @@
       "_metaData": {},
       "_urls": [
         {
-          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl={moz:locale}&q={searchTerms}",
+          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
           "rels": [],
           "resultDomain": "suggestqueries.google.com",
           "type": "application/x-suggestions+json",
@@ -84,28 +84,6 @@
           "template": "http://www.google.com/search",
           "rels": [],
           "resultDomain": "google.com",
-          "params": [
-            {
-              "name": "q",
-              "value": "{searchTerms}"
-            },
-            {
-              "name": "channel",
-              "value": "fflb",
-              "purpose": "keyword"
-            },
-            {
-              "name": "channel",
-              "value": "rcs",
-              "purpose": "contextmenu"
-            }
-          ]
-        },
-        {
-          "template": "http://www.google.com/search",
-          "rels": [],
-          "resultDomain": "purpose.google.com",
-          "type": "application/x-moz-default-purpose",
           "params": [
             {
               "name": "q",

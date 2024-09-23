@@ -15,19 +15,11 @@ const URIS = [
   "http://c.example3.com/",
 ];
 
-const TOPIC_CONNECTION_CLOSED = "places-connection-closed";
-
-var EXPECTED_NOTIFICATIONS = [
-  "places-shutdown",
-  "places-expiration-finished",
-  "places-connection-closed",
-];
-
-const UNEXPECTED_NOTIFICATIONS = ["xpcom-shutdown"];
-
 const FTP_URL = "ftp://localhost/clearHistoryOnShutdown/";
 
-const { Sanitizer } = ChromeUtils.import("resource:///modules/Sanitizer.jsm");
+const { Sanitizer } = ChromeUtils.importESModule(
+  "resource:///modules/Sanitizer.sys.mjs"
+);
 
 // Send the profile-after-change notification to the form history component to ensure
 // that it has been initialized.
@@ -35,11 +27,9 @@ var formHistoryStartup = Cc[
   "@mozilla.org/satchel/form-history-startup;1"
 ].getService(Ci.nsIObserver);
 formHistoryStartup.observe(null, "profile-after-change", null);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormHistory",
-  "resource://gre/modules/FormHistory.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
+});
 
 var timeInMicroseconds = Date.now() * 1000;
 
@@ -98,7 +88,7 @@ add_task(async function test_execute() {
   );
 
   try {
-    URIS.forEach(function(aUrl) {
+    URIS.forEach(function (aUrl) {
       stmt.params.page_url = aUrl;
       Assert.ok(!stmt.executeStep());
       stmt.reset();
@@ -113,54 +103,32 @@ add_task(async function test_execute() {
 });
 
 function addFormHistory() {
-  return new Promise(resolve => {
-    let now = Date.now() * 1000;
-    FormHistory.update(
-      {
-        op: "add",
-        fieldname: "testfield",
-        value: "test",
-        timesUsed: 1,
-        firstUsed: now,
-        lastUsed: now,
-      },
-      {
-        handleCompletion(reason) {
-          resolve();
-        },
-      }
-    );
+  let now = Date.now() * 1000;
+  return FormHistory.update({
+    op: "add",
+    fieldname: "testfield",
+    value: "test",
+    timesUsed: 1,
+    firstUsed: now,
+    lastUsed: now,
   });
 }
 
-function getFormHistoryCount() {
-  return new Promise((resolve, reject) => {
-    let count = -1;
-    FormHistory.count(
-      { fieldname: "testfield" },
-      {
-        handleResult(result) {
-          count = result;
-        },
-        handleCompletion(reason) {
-          resolve(count);
-        },
-      }
-    );
-  });
+async function getFormHistoryCount() {
+  return FormHistory.count({ fieldname: "testfield" });
 }
 
 function storeCache(aURL, aContent) {
   let cache = Services.cache2;
-  let storage = cache.diskCacheStorage(Services.loadContextInfo.default, false);
+  let storage = cache.diskCacheStorage(Services.loadContextInfo.default);
 
   return new Promise(resolve => {
     let storeCacheListener = {
-      onCacheEntryCheck(entry, appcache) {
+      onCacheEntryCheck() {
         return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
       },
 
-      onCacheEntryAvailable(entry, isnew, appcache, status) {
+      onCacheEntryAvailable(entry, isnew, status) {
         Assert.equal(status, Cr.NS_OK);
 
         entry.setMetaDataElement("servertype", "0");
@@ -179,7 +147,6 @@ function storeCache(aURL, aContent) {
           );
         }
         os.close();
-        entry.close();
         resolve();
       },
     };
@@ -195,11 +162,11 @@ function storeCache(aURL, aContent) {
 
 function checkCache(aURL) {
   let cache = Services.cache2;
-  let storage = cache.diskCacheStorage(Services.loadContextInfo.default, false);
+  let storage = cache.diskCacheStorage(Services.loadContextInfo.default);
 
   return new Promise(resolve => {
     let checkCacheListener = {
-      onCacheEntryAvailable(entry, isnew, appcache, status) {
+      onCacheEntryAvailable(entry, isnew, status) {
         Assert.equal(status, Cr.NS_ERROR_CACHE_KEY_NOT_FOUND);
         resolve();
       },

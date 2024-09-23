@@ -4,14 +4,10 @@
 
 "use strict";
 
-const { Cc, Ci } = require("chrome");
-const { isWindowIncluded } = require("devtools/shared/layout/utils");
-const Services = require("Services");
-const ChromeUtils = require("ChromeUtils");
 const {
   CONSOLE_WORKER_IDS,
   WebConsoleUtils,
-} = require("devtools/server/actors/webconsole/utils");
+} = require("resource://devtools/server/actors/webconsole/utils.js");
 
 // The window.console API observer
 
@@ -23,67 +19,85 @@ const {
  * @param nsIDOMWindow window
  *        Optional - the window object for which we are created. This is used
  *        for filtering out messages that belong to other windows.
- * @param object owner
- *        The owner object must have the following methods:
- *        - onConsoleAPICall(). This method is invoked with one argument, the
- *        Console API message that comes from the observer service, whenever
- *        a relevant console API call is received.
+ * @param Function handler
+ *        This function is invoked with one argument, the Console API message that comes
+ *        from the observer service, whenever a relevant console API call is received.
  * @param object filteringOptions
  *        Optional - The filteringOptions that this listener should listen to:
  *        - addonId: filter console messages based on the addonId.
+ *        - excludeMessagesBoundToWindow: Set to true to filter out messages that
+ *          are bound to a specific window.
+ *        - matchExactWindow: Set to true to match the messages on a specific window (when
+ *          `window` is defined) and not on the whole window tree.
  */
-function ConsoleAPIListener(window, owner, { addonId } = {}) {
-  this.window = window;
-  this.owner = owner;
-  this.addonId = addonId;
-}
-exports.ConsoleAPIListener = ConsoleAPIListener;
+class ConsoleAPIListener {
+  constructor(
+    window,
+    handler,
+    { addonId, excludeMessagesBoundToWindow, matchExactWindow } = {}
+  ) {
+    this.window = window;
+    this.handler = handler;
+    this.addonId = addonId;
+    this.excludeMessagesBoundToWindow = excludeMessagesBoundToWindow;
+    this.matchExactWindow = matchExactWindow;
+    if (this.window) {
+      this.innerWindowId = WebConsoleUtils.getInnerWindowId(this.window);
+    }
+  }
 
-ConsoleAPIListener.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface = ChromeUtils.generateQI([Ci.nsIObserver]);
 
   /**
    * The content window for which we listen to window.console API calls.
    * @type nsIDOMWindow
    */
-  window: null,
+  window = null;
 
   /**
-   * The owner object which is notified of window.console API calls. It must
-   * have a onConsoleAPICall method which is invoked with one argument: the
-   * console API call object that comes from the observer service.
+   * The function which is notified of window.console API calls. It is invoked with one
+   * argument: the console API call object that comes from the ConsoleAPIStorage service.
    *
-   * @type object
-   * @see WebConsoleActor
+   * @type function
    */
-  owner: null,
+  handler = null;
 
   /**
    * The addonId that we listen for. If not null then only messages from this
    * console will be returned.
    */
-  addonId: null,
+  addonId = null;
 
   /**
-   * Initialize the window.console API observer.
+   * Initialize the window.console API listener.
    */
-  init: function() {
-    // Note that the observer is process-wide. We will filter the messages as
-    // needed, see CAL_observe().
-    Services.obs.addObserver(this, "console-api-log-event");
-  },
+  init() {
+    const ConsoleAPIStorage = Cc[
+      "@mozilla.org/consoleAPI-storage;1"
+    ].getService(Ci.nsIConsoleAPIStorage);
+
+    // Note that the listener is process-wide. We will filter the messages as
+    // needed, see onConsoleAPILogEvent().
+    this.onConsoleAPILogEvent = this.onConsoleAPILogEvent.bind(this);
+    ConsoleAPIStorage.addLogEventListener(
+      this.onConsoleAPILogEvent,
+      // We create a principal here to get the privileged principal of this
+      // script. Note that this is importantly *NOT* the principal of the
+      // content we are observing, as that would not have access to the
+      // message object created in ConsoleAPIStorage.jsm's scope.
+      Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+    );
+  }
 
   /**
-   * The console API message observer. When messages are received from the
-   * observer service we forward them to the remote Web Console instance.
+   * The console API message listener. When messages are received from the
+   * ConsoleAPIStorage service we forward them to the remote Web Console instance.
    *
    * @param object message
-   *        The message object receives from the observer service.
-   * @param string topic
-   *        The message topic received from the observer service.
+   *        The message object receives from the ConsoleAPIStorage service.
    */
-  observe: function(message, topic) {
-    if (!this.owner) {
+  onConsoleAPILogEvent(message) {
+    if (!this.handler) {
       return;
     }
 
@@ -96,8 +110,8 @@ ConsoleAPIListener.prototype = {
       return;
     }
 
-    this.owner.onConsoleAPICall(apiMessage);
-  },
+    this.handler(apiMessage);
+  }
 
   /**
    * Given a message, return true if this window should show it and false
@@ -108,7 +122,7 @@ ConsoleAPIListener.prototype = {
    * @return bool
    *         Do we care about this message?
    */
-  isMessageRelevant: function(message) {
+  isMessageRelevant(message) {
     const workerType = WebConsoleUtils.getWorkerType(message);
 
     if (this.window && workerType === "ServiceWorker") {
@@ -122,13 +136,42 @@ ConsoleAPIListener.prototype = {
       }
     }
 
-    if (this.window && !workerType) {
-      const msgWindow = Services.wm.getCurrentInnerWindowWithId(
+    // innerID can be of different type:
+    // - a number if the message is bound to a specific window
+    // - a worker type ([Shared|Service]Worker) if the message comes from a worker
+    // - a JSM filename
+    // if we want to filter on a specific window, ignore all non-worker messages that
+    // don't have a proper window id (for now, we receive the worker messages from the
+    // main process so we still want to get them, although their innerID isn't a number).
+    if (!workerType && typeof message.innerID !== "number" && this.window) {
+      return false;
+    }
+
+    // Don't show ChromeWorker messages on WindowGlobal targets
+    if (workerType && this.window && message.chromeContext) {
+      return false;
+    }
+
+    if (typeof message.innerID == "number") {
+      if (
+        this.excludeMessagesBoundToWindow &&
+        // If innerID is 0, the message isn't actually bound to a window.
         message.innerID
-      );
-      if (!msgWindow || !isWindowIncluded(this.window, msgWindow)) {
-        // Not the same window!
+      ) {
         return false;
+      }
+
+      if (this.window) {
+        const matchesWindow = this.matchExactWindow
+          ? this.innerWindowId === message.innerID
+          : WebConsoleUtils.getInnerWindowIDsForFrames(this.window).includes(
+              message.innerID
+            );
+
+        if (!matchesWindow) {
+          // Not the same window!
+          return false;
+        }
       }
     }
 
@@ -154,7 +197,7 @@ ConsoleAPIListener.prototype = {
     }
 
     return true;
-  },
+  }
 
   /**
    * Get the cached messages for the current inner window and its (i)frames.
@@ -165,7 +208,7 @@ ConsoleAPIListener.prototype = {
    * @return array
    *         The array of cached messages.
    */
-  getCachedMessages: function(includePrivate = false) {
+  getCachedMessages(includePrivate = false) {
     let messages = [];
     const ConsoleAPIStorage = Cc[
       "@mozilla.org/consoleAPI-storage;1"
@@ -175,9 +218,10 @@ ConsoleAPIListener.prototype = {
     // for filtering based on privacy.
     if (!this.window) {
       messages = ConsoleAPIStorage.getEvents();
+    } else if (this.matchExactWindow) {
+      messages = ConsoleAPIStorage.getEvents(this.innerWindowId);
     } else {
-      const ids = WebConsoleUtils.getInnerWindowIDsForFrames(this.window);
-      ids.forEach(id => {
+      WebConsoleUtils.getInnerWindowIDsForFrames(this.window).forEach(id => {
         messages = messages.concat(ConsoleAPIStorage.getEvents(id));
       });
     }
@@ -195,13 +239,17 @@ ConsoleAPIListener.prototype = {
     }
 
     return messages.filter(m => !m.private);
-  },
+  }
 
   /**
    * Destroy the console API listener.
    */
-  destroy: function() {
-    Services.obs.removeObserver(this, "console-api-log-event");
-    this.window = this.owner = null;
-  },
-};
+  destroy() {
+    const ConsoleAPIStorage = Cc[
+      "@mozilla.org/consoleAPI-storage;1"
+    ].getService(Ci.nsIConsoleAPIStorage);
+    ConsoleAPIStorage.removeLogEventListener(this.onConsoleAPILogEvent);
+    this.window = this.handler = null;
+  }
+}
+exports.ConsoleAPIListener = ConsoleAPIListener;

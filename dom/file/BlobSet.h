@@ -12,18 +12,20 @@
 #include "nsString.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class BlobImpl;
 
 class BlobSet final {
  public:
-  MOZ_MUST_USE nsresult AppendVoidPtr(const void* aData, uint32_t aLength);
+  [[nodiscard]] nsresult AppendVoidPtr(const void* aData, uint32_t aLength);
 
-  MOZ_MUST_USE nsresult AppendString(const nsAString& aString, bool nativeEOL);
+  [[nodiscard]] nsresult AppendVector(Vector<uint8_t>&& aData);
 
-  MOZ_MUST_USE nsresult AppendBlobImpl(BlobImpl* aBlobImpl);
+  [[nodiscard]] nsresult AppendUTF8String(const nsACString& aUTF8String,
+                                          bool nativeEOL);
+
+  [[nodiscard]] nsresult AppendBlobImpl(BlobImpl* aBlobImpl);
 
   FallibleTArray<RefPtr<BlobImpl>>& GetBlobImpls() { return mBlobImpls; }
 
@@ -31,7 +33,6 @@ class BlobSet final {
   FallibleTArray<RefPtr<BlobImpl>> mBlobImpls;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_BlobSet_h

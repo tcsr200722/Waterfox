@@ -143,6 +143,12 @@ enum ErrorKind {
 // u16::MAX is reserved for None
 const MAX_LEN: usize = (u16::MAX - 1) as usize;
 
+// URI_CHARS is a table of valid characters in a URI. An entry in the table is
+// 0 for invalid characters. For valid characters the entry is itself (i.e.
+// the entry for 33 is b'!' because b'!' == 33u8). An important characteristic
+// of this table is that all entries above 127 are invalid. This makes all of the
+// valid entries a valid single-byte UTF-8 code point. This means that a slice
+// of such valid entries is valid UTF-8.
 const URI_CHARS: [u8; 256] = [
     //  0      1      2      3      4      5      6      7      8      9
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //   x
@@ -195,7 +201,40 @@ impl Uri {
         Builder::new()
     }
 
-    /// Attempt to convert a `Uri` from `Parts`
+    /// Attempt to convert a `Parts` into a `Uri`.
+    ///
+    /// # Examples
+    ///
+    /// Relative URI
+    ///
+    /// ```
+    /// # use http::uri::*;
+    /// let mut parts = Parts::default();
+    /// parts.path_and_query = Some("/foo".parse().unwrap());
+    ///
+    /// let uri = Uri::from_parts(parts).unwrap();
+    ///
+    /// assert_eq!(uri.path(), "/foo");
+    ///
+    /// assert!(uri.scheme().is_none());
+    /// assert!(uri.authority().is_none());
+    /// ```
+    ///
+    /// Absolute URI
+    ///
+    /// ```
+    /// # use http::uri::*;
+    /// let mut parts = Parts::default();
+    /// parts.scheme = Some("http".parse().unwrap());
+    /// parts.authority = Some("foo.com".parse().unwrap());
+    /// parts.path_and_query = Some("/foo".parse().unwrap());
+    ///
+    /// let uri = Uri::from_parts(parts).unwrap();
+    ///
+    /// assert_eq!(uri.scheme().unwrap().as_str(), "http");
+    /// assert_eq!(uri.authority().unwrap(), "foo.com");
+    /// assert_eq!(uri.path(), "/foo");
+    /// ```
     pub fn from_parts(src: Parts) -> Result<Uri, InvalidUriParts> {
         if src.scheme.is_some() {
             if src.authority.is_none() {
@@ -485,8 +524,6 @@ impl Uri {
     ///                 authority
     /// ```
     ///
-    /// This function will be renamed to `authority` in the next semver release.
-    ///
     /// # Examples
     ///
     /// Absolute URI
@@ -705,6 +742,15 @@ impl TryFrom<String> for Uri {
     }
 }
 
+impl<'a> TryFrom<Vec<u8>> for Uri {
+    type Error = InvalidUri;
+
+    #[inline]
+    fn try_from(vec: Vec<u8>) -> Result<Self, Self::Error> {
+        Uri::from_shared(Bytes::from(vec))
+    }
+}
+
 impl TryFrom<Parts> for Uri {
     type Error = InvalidUriParts;
 
@@ -723,40 +769,29 @@ impl<'a> TryFrom<&'a Uri> for Uri {
     }
 }
 
-/// Convert a `Uri` from parts
-///
-/// # Examples
-///
-/// Relative URI
-///
-/// ```
-/// # use http::uri::*;
-/// let mut parts = Parts::default();
-/// parts.path_and_query = Some("/foo".parse().unwrap());
-///
-/// let uri = Uri::from_parts(parts).unwrap();
-///
-/// assert_eq!(uri.path(), "/foo");
-///
-/// assert!(uri.scheme().is_none());
-/// assert!(uri.authority().is_none());
-/// ```
-///
-/// Absolute URI
-///
-/// ```
-/// # use http::uri::*;
-/// let mut parts = Parts::default();
-/// parts.scheme = Some("http".parse().unwrap());
-/// parts.authority = Some("foo.com".parse().unwrap());
-/// parts.path_and_query = Some("/foo".parse().unwrap());
-///
-/// let uri = Uri::from_parts(parts).unwrap();
-///
-/// assert_eq!(uri.scheme().unwrap().as_str(), "http");
-/// assert_eq!(uri.authority().unwrap(), "foo.com");
-/// assert_eq!(uri.path(), "/foo");
-/// ```
+/// Convert an `Authority` into a `Uri`.
+impl From<Authority> for Uri {
+    fn from(authority: Authority) -> Self {
+        Self {
+            scheme: Scheme::empty(),
+            authority,
+            path_and_query: PathAndQuery::empty(),
+        }
+    }
+}
+
+/// Convert a `PathAndQuery` into a `Uri`.
+impl From<PathAndQuery> for Uri {
+    fn from(path_and_query: PathAndQuery) -> Self {
+        Self {
+            scheme: Scheme::empty(),
+            authority: Authority::empty(),
+            path_and_query,
+        }
+    }
+}
+
+/// Convert a `Uri` into `Parts`
 impl From<Uri> for Parts {
     fn from(src: Uri) -> Self {
         let path_and_query = if src.has_path() {
@@ -1025,14 +1060,8 @@ impl From<ErrorKind> for InvalidUriParts {
     }
 }
 
-impl fmt::Display for InvalidUri {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.description().fmt(f)
-    }
-}
-
-impl Error for InvalidUri {
-    fn description(&self) -> &str {
+impl InvalidUri {
+    fn s(&self) -> &str {
         match self.0 {
             ErrorKind::InvalidUriChar => "invalid uri character",
             ErrorKind::InvalidScheme => "invalid scheme",
@@ -1049,17 +1078,21 @@ impl Error for InvalidUri {
     }
 }
 
+impl fmt::Display for InvalidUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.s().fmt(f)
+    }
+}
+
+impl Error for InvalidUri {}
+
 impl fmt::Display for InvalidUriParts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl Error for InvalidUriParts {
-    fn description(&self) -> &str {
-        self.0.description()
-    }
-}
+impl Error for InvalidUriParts {}
 
 impl Hash for Uri {
     fn hash<H>(&self, state: &mut H)

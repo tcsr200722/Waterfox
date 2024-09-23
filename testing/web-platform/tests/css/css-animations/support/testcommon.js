@@ -48,7 +48,8 @@ function assert_frames_equal(actual, expected, name) {
     `properties on ${name} should match`
   );
 
-  for (const prop in actual) {
+  // Iterates sorted keys to ensure stable failures.
+  for (const prop of Object.keys(actual).sort()) {
     if (
       // 'offset' can be null
       (prop === 'offset' && typeof actual[prop] === 'number') ||
@@ -86,6 +87,32 @@ function assert_frame_lists_equal(actual, expected) {
 }
 
 /**
+ * Appends an element to the document body.
+ *
+ * @param t  The testharness.js Test object. If provided, this will be used
+ *           to register a cleanup callback to remove the div when the test
+ *           finishes.
+ *
+ * @param name  A string specifying the element name.
+ *
+ * @param attrs  A dictionary object with attribute names and values to set on
+ *               the div.
+ */
+function addElement(t, name, attrs) {
+  var element = document.createElement(name);
+  if (attrs) {
+    for (var attrName in attrs) {
+      element.setAttribute(attrName, attrs[attrName]);
+    }
+  }
+  document.body.appendChild(element);
+  if (t && typeof t.add_cleanup === 'function') {
+      t.add_cleanup(() => element.remove());
+  }
+  return element;
+}
+
+/**
  * Appends a div to the document body.
  *
  * @param t  The testharness.js Test object. If provided, this will be used
@@ -96,21 +123,7 @@ function assert_frame_lists_equal(actual, expected) {
  *               the div.
  */
 function addDiv(t, attrs) {
-  var div = document.createElement('div');
-  if (attrs) {
-    for (var attrName in attrs) {
-      div.setAttribute(attrName, attrs[attrName]);
-    }
-  }
-  document.body.appendChild(div);
-  if (t && typeof t.add_cleanup === 'function') {
-    t.add_cleanup(function() {
-      if (div.parentNode) {
-        div.remove();
-      }
-    });
-  }
-  return div;
+  return addElement(t, "div", attrs);
 }
 
 /**
@@ -201,6 +214,21 @@ function fastEventsTimeout() {
 };
 
 /**
+ * Timeout function used for tests with EventWatchers. The client agent has no
+ * strict requirement for how long it takes to resolve the ready promise. Once
+ * the promise is resolved a secondary timeout promise is armed that may have
+ * a tight deadline measured in animation frames.
+ */
+function armTimeoutWhenReady(animation, timeoutPromise) {
+  return () => {
+    if (animation.pending)
+      return animation.ready.then(() => { return timeoutPromise(); });
+    else
+      return timeoutPromise();
+  };
+}
+
+/**
  * Wrapper that takes a sequence of N animations and returns:
  *
  *   Promise.all([animations[0].ready, animations[1].ready, ... animations[N-1].ready]);
@@ -218,16 +246,4 @@ function waitForAllAnimations(animations) {
 function flushComputedStyle(elem) {
   var cs = getComputedStyle(elem);
   cs.marginLeft;
-}
-// Waits for a given animation being ready to restyle.
-async function waitForAnimationReadyToRestyle(aAnimation) {
-  await aAnimation.ready;
-  // If |aAnimation| begins at the current timeline time, we will not process
-  // restyling in the initial frame because of aligning with the refresh driver,
-  // the animation frame in which the ready promise is resolved happens to
-  // coincide perfectly with the start time of the animation.  In this case no
-  // restyling is needed in the frame so we have to wait one more frame.
-  if (animationStartsRightNow(aAnimation)) {
-    await waitForNextFrame();
-  }
 }

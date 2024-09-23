@@ -7,25 +7,35 @@
 with Files("**"):
     BUG_COMPONENT = ("Firefox", "Theme")
 
-toolkit = CONFIG['MOZ_WIDGET_TOOLKIT']
+with Files("ThemeVariableMap.sys.mjs"):
+    BUG_COMPONENT = ("WebExtensions", "Themes")
 
-if toolkit == 'cocoa':
-    DIRS += ['osx']
-elif toolkit == 'gtk':
-    DIRS += ['linux']
-else:
-    DIRS += ['windows']
-
-DIRS += [
-    'addons/dark',
-    'addons/light',
+EXTRA_JS_MODULES += [
+    "BuiltInThemeConfig.sys.mjs",
+    "BuiltInThemes.sys.mjs",
+    "ThemeVariableMap.sys.mjs",
 ]
 
-with Files('osx/**'):
-    SCHEDULES.exclusive = ['macosx']
+BROWSER_CHROME_MANIFESTS += [
+    "test/browser/browser.toml",
+]
 
-with Files('linux/**'):
-    SCHEDULES.exclusive = ['linux']
+toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
 
-with Files('windows/**'):
-    SCHEDULES.exclusive = ['windows']
+if toolkit == "cocoa":
+    DIRS += ["osx"]
+elif toolkit == "gtk":
+    DIRS += ["linux"]
+else:
+    DIRS += ["windows"]
+
+DIRS += ["addons", "shared/app-marketplace-icons"]
+
+with Files("osx/**"):
+    SCHEDULES.exclusive = ["macosx"]
+
+with Files("linux/**"):
+    SCHEDULES.exclusive = ["linux"]
+
+with Files("windows/**"):
+    SCHEDULES.exclusive = ["windows"]

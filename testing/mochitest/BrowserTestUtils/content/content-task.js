@@ -6,32 +6,34 @@
 
 "use strict";
 
-ChromeUtils.import("resource://testing-common/Task.jsm", this);
-ChromeUtils.import("resource://testing-common/ContentTaskUtils.jsm", this);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const AssertCls = ChromeUtils.import(
-  "resource://testing-common/Assert.jsm",
-  null
-).Assert;
+let { ContentTaskUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ContentTaskUtils.sys.mjs"
+);
+const { Assert: AssertCls } = ChromeUtils.importESModule(
+  "resource://testing-common/Assert.sys.mjs"
+);
+const { setTimeout } = ChromeUtils.importESModule(
+  "resource://gre/modules/Timer.sys.mjs"
+);
 
 // Injects EventUtils into ContentTask scope. To avoid leaks, this does not hold on
 // to the window global. This means you **need** to pass the window as an argument to
 // the individual EventUtils functions.
 // See SimpleTest/EventUtils.js for documentation.
-var EventUtils = {};
-
-EventUtils.window = {};
-EventUtils.parent = EventUtils.window;
-EventUtils._EU_Ci = Ci;
-EventUtils._EU_Cc = Cc;
-EventUtils.KeyboardEvent = content.KeyboardEvent;
-EventUtils.navigator = content.navigator;
+var EventUtils = {
+  _EU_Ci: Ci,
+  _EU_Cc: Cc,
+  KeyboardEvent: content.KeyboardEvent,
+  navigator: content.navigator,
+  setTimeout,
+  window: {},
+};
 
 EventUtils.synthesizeClick = element =>
   new Promise(resolve => {
     element.addEventListener(
       "click",
-      function() {
+      function () {
         resolve();
       },
       { once: true }
@@ -61,7 +63,7 @@ try {
   EventUtils = null;
 }
 
-addMessageListener("content-task:spawn", function(msg) {
+addMessageListener("content-task:spawn", async function (msg) {
   let id = msg.data.id;
   let source = msg.data.runnable || "()=>{}";
 
@@ -108,25 +110,15 @@ addMessageListener("content-task:spawn", function(msg) {
 
     // eslint-disable-next-line no-eval
     let runnable = eval(runnablestr);
-    let iterator = runnable.call(this, msg.data.arg);
-    Task.spawn(iterator).then(
-      val => {
-        sendAsyncMessage("content-task:complete", {
-          id,
-          result: val,
-        });
-      },
-      e => {
-        sendAsyncMessage("content-task:complete", {
-          id,
-          error: e.toString(),
-        });
-      }
-    );
-  } catch (e) {
+    let result = await runnable.call(this, msg.data.arg);
     sendAsyncMessage("content-task:complete", {
       id,
-      error: e.toString(),
+      result,
+    });
+  } catch (ex) {
+    sendAsyncMessage("content-task:complete", {
+      id,
+      error: ex.toString(),
     });
   }
 });

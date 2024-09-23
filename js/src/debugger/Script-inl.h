@@ -21,10 +21,17 @@
 #include "vm/NativeObject.h"    // for NativeObject
 #include "wasm/WasmJS.h"        // for WasmInstanceObject
 
+#include "debugger/Debugger-inl.h"  // for Debugger::fromJSObject
+
 class JS_PUBLIC_API JSObject;
 
+inline js::Debugger* js::DebuggerScript::owner() const {
+  JSObject* dbgobj = &getReservedSlot(OWNER_SLOT).toObject();
+  return Debugger::fromJSObject(dbgobj);
+}
+
 js::gc::Cell* js::DebuggerScript::getReferentCell() const {
-  return static_cast<gc::Cell*>(getPrivate());
+  return maybePtrFromReservedSlot<gc::Cell>(SCRIPT_SLOT);
 }
 
 js::DebuggerScriptReferent js::DebuggerScript::getReferent() const {

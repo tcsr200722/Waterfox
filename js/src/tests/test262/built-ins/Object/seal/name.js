@@ -2,7 +2,7 @@
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-es6id: 19.1.2.17
+esid: sec-object.seal
 description: >
   Object.seal.name is "seal".
 info: |
@@ -19,10 +19,11 @@ info: |
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Object.seal.name, "seal");
-
-verifyNotEnumerable(Object.seal, "name");
-verifyNotWritable(Object.seal, "name");
-verifyConfigurable(Object.seal, "name");
+verifyProperty(Object.seal, "name", {
+  value: "seal",
+  writable: false,
+  enumerable: false,
+  configurable: true,
+});
 
 reportCompare(0, 0);

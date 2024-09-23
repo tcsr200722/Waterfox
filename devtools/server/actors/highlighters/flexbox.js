@@ -6,8 +6,8 @@
 
 const {
   AutoRefreshHighlighter,
-} = require("devtools/server/actors/highlighters/auto-refresh");
-const { apply } = require("devtools/shared/layout/dom-matrix-2d");
+} = require("resource://devtools/server/actors/highlighters/auto-refresh.js");
+const { apply } = require("resource://devtools/shared/layout/dom-matrix-2d.js");
 const {
   CANVAS_SIZE,
   DEFAULT_COLOR,
@@ -17,12 +17,11 @@ const {
   getCurrentMatrix,
   updateCanvasElement,
   updateCanvasPosition,
-} = require("devtools/server/actors/highlighters/utils/canvas");
+} = require("resource://devtools/server/actors/highlighters/utils/canvas.js");
 const {
   CanvasFrameAnonymousContentHelper,
-  createNode,
   getComputedStyle,
-} = require("devtools/server/actors/highlighters/utils/markup");
+} = require("resource://devtools/server/actors/highlighters/utils/markup.js");
 const {
   getAbsoluteScrollOffsetsForNode,
   getCurrentZoom,
@@ -30,7 +29,7 @@ const {
   getUntransformedQuad,
   getWindowDimensions,
   setIgnoreLayoutChanges,
-} = require("devtools/shared/layout/utils");
+} = require("resource://devtools/shared/layout/utils.js");
 
 const FLEXBOX_LINES_PROPERTIES = {
   edge: {
@@ -86,6 +85,7 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
       this.highlighterEnv,
       this._buildMarkup.bind(this)
     );
+    this.isReady = this.markup.initialize();
 
     this.onPageHide = this.onPageHide.bind(this);
     this.onWillNavigate = this.onWillNavigate.bind(this);
@@ -114,13 +114,13 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
   }
 
   _buildMarkup() {
-    const container = createNode(this.win, {
+    const container = this.markup.createNode({
       attributes: {
         class: "highlighter-container",
       },
     });
 
-    const root = createNode(this.win, {
+    const root = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
@@ -132,7 +132,7 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
     // We use a <canvas> element because there is an arbitrary number of items and texts
     // to draw which wouldn't be possible with HTML or SVG without having to insert and
     // remove the whole markup on every update.
-    createNode(this.win, {
+    this.markup.createNode({
       parent: root,
       nodeType: "canvas",
       attributes: {
@@ -227,7 +227,7 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
     }
 
     // Create the diagonal lines pattern for the rendering the flexbox gaps.
-    const canvas = createNode(this.win, { nodeType: "canvas" });
+    const canvas = this.markup.createNode({ nodeType: "canvas" });
     const width = (canvas.width =
       FLEXBOX_CONTAINER_PATTERN_WIDTH * devicePixelRatio);
     const height = (canvas.height =
@@ -275,7 +275,7 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
 
     // Create the inversed diagonal lines pattern
     // for the rendering the justify content gaps.
-    const canvas = createNode(this.win, { nodeType: "canvas" });
+    const canvas = this.markup.createNode({ nodeType: "canvas" });
     const zoom = getCurrentZoom(this.win);
     const width = (canvas.width =
       FLEXBOX_JUSTIFY_CONTENT_PATTERN_WIDTH * devicePixelRatio * zoom);
@@ -497,10 +497,8 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
 
     const lineWidth = getDisplayPixelRatio(this.win);
     const options = { matrix: this.currentMatrix };
-    const {
-      width: containerWidth,
-      height: containerHeight,
-    } = getUntransformedQuad(this.container, "content").getBounds();
+    const { width: containerWidth, height: containerHeight } =
+      getUntransformedQuad(this.container, "content").getBounds();
 
     this.setupCanvas({
       useContainerScrollOffsets: true,
@@ -642,10 +640,8 @@ class FlexboxHighlighter extends AutoRefreshHighlighter {
       return;
     }
 
-    const {
-      width: containerWidth,
-      height: containerHeight,
-    } = getUntransformedQuad(this.container, "content").getBounds();
+    const { width: containerWidth, height: containerHeight } =
+      getUntransformedQuad(this.container, "content").getBounds();
 
     this.setupCanvas({
       lineDash: FLEXBOX_LINES_PROPERTIES.alignItems.lineDash,
@@ -949,10 +945,7 @@ function getRectFromFlexItemValues(item, container) {
   domRect.x -= paddingLeft + scrollX;
   domRect.y -= paddingTop + scrollY;
 
-  if (
-    style.overflow === "visible" ||
-    style.overflow === "-moz-hidden-unscrollable"
-  ) {
+  if (style.overflow === "visible" || style.overflow === "clip") {
     domRect.x -= borderLeftWidth;
     domRect.y -= borderTopWidth;
   }

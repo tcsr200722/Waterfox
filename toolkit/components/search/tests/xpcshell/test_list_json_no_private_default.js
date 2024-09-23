@@ -9,7 +9,7 @@
 
 // Check that current engine matches with US searchDefault from list.json
 add_task(async function test_searchDefaultEngineUS() {
-  await useTestEngines("data1");
+  await SearchTestUtils.useTestEngines("data1");
 
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
@@ -27,9 +27,9 @@ add_task(async function test_searchDefaultEngineUS() {
   Assert.ok(Services.search.isInitialized, "search initialized");
 
   Assert.equal(
-    Services.search.originalDefaultEngine.name,
+    Services.search.appDefaultEngine.name,
     "engine1",
-    "Should have the expected engine as original default"
+    "Should have the expected engine as app default"
   );
   Assert.equal(
     Services.search.defaultEngine.name,
@@ -37,9 +37,9 @@ add_task(async function test_searchDefaultEngineUS() {
     "Should have the expected engine as default"
   );
   Assert.equal(
-    Services.search.originalPrivateDefaultEngine.name,
+    Services.search.appPrivateDefaultEngine.name,
     "engine1",
-    "Should have the same engine for the original private default"
+    "Should have the same engine for the app private default"
   );
   Assert.equal(
     Services.search.defaultPrivateEngine.name,

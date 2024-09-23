@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGAnimateElement_h
-#define mozilla_dom_SVGAnimateElement_h
+#ifndef DOM_SVG_SVGANIMATEELEMENT_H_
+#define DOM_SVG_SVGANIMATEELEMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/SVGAnimationElement.h"
@@ -14,8 +14,7 @@
 nsresult NS_NewSVGAnimateElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SVGAnimateElement final : public SVGAnimationElement {
  protected:
@@ -27,18 +26,17 @@ class SVGAnimateElement final : public SVGAnimationElement {
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
   // nsINode
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   // SVGAnimationElement
-  virtual SMILAnimationFunction& AnimationFunction() override;
+  SMILAnimationFunction& AnimationFunction() override;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGAnimateElement_h
+#endif  // DOM_SVG_SVGANIMATEELEMENT_H_

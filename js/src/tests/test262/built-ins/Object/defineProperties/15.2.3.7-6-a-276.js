@@ -28,18 +28,18 @@ try {
       enumerable: true
     }
   });
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
   verifyWritable(arr, "property", "setVerifyHelpProp");
 
-  verifyNotEnumerable(arr, "property");
-
-  verifyNotConfigurable(arr, "property");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(arr, "property", {
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

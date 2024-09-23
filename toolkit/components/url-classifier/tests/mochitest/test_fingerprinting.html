@@ -9,19 +9,17 @@
 <body>
 <script class="testbody" type="text/javascript">
 
-/* eslint-env mozilla/frame-script */
-
 var tests = [
   // All disabled.
   { config: [ false, false ], imgLoadExpected: true, scriptLoadExpected: true },
 
-  // Just whitelisted.
+  // Just entitylisted.
   { config: [ false, true ], imgLoadExpected: true, scriptLoadExpected: true },
 
-  // Just blacklisted.
+  // Just blocklisted.
   { config: [ true, false ], imgLoadExpected: true, scriptLoadExpected: false },
 
-  // whitelist + blacklist: whitelist wins
+  // entitylist + blocklist: entitylist wins
   { config: [ true, true ], imgLoadExpected: true, scriptLoadExpected: true },
 ];
 
@@ -32,12 +30,13 @@ function prefValue(value, what) {
 async function runTest(test) {
   await SpecialPowers.pushPrefEnv({set: [
     [ "urlclassifier.features.fingerprinting.blacklistHosts", prefValue(test.config[0], "example.com") ],
-    [ "urlclassifier.features.fingerprinting.whitelistHosts", prefValue(test.config[1], "mochi.test") ],
+    [ "urlclassifier.features.fingerprinting.whitelistHosts", prefValue(test.config[1], "mochi.test,mochi.xorigin-test") ],
     [ "urlclassifier.features.fingerprinting.blacklistTables", prefValue(test.config[0], "mochitest1-track-simple") ],
     [ "urlclassifier.features.fingerprinting.whitelistTables", "" ],
     [ "privacy.trackingprotection.enabled", false ],
     [ "privacy.trackingprotection.annotate_channels", false ],
     [ "privacy.trackingprotection.cryptomining.enabled", false ],
+    [ "privacy.trackingprotection.emailtracking.enabled", false ],
     [ "privacy.trackingprotection.fingerprinting.enabled", true ],
     [ "privacy.trackingprotection.socialtracking.enabled", false ],
   ]});
@@ -97,7 +96,10 @@ async function runTest(test) {
 
 async function runTests() {
   let chromeScript = SpecialPowers.loadChromeScript(_ => {
-    const {UrlClassifierTestUtils} = ChromeUtils.import("resource://testing-common/UrlClassifierTestUtils.jsm");
+    /* eslint-env mozilla/chrome-script */
+    const {UrlClassifierTestUtils} = ChromeUtils.importESModule(
+      "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
+    );
 
     addMessageListener("loadTrackers", __ => {
       return UrlClassifierTestUtils.addTestTrackers();

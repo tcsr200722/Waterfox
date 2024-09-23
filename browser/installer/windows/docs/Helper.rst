@@ -12,6 +12,7 @@ The uninstaller may be the most straightforward of the installer components. The
 * If the application directory is empty after that, then it is removed, but it's left alone if any files are still present.
 * If the copy of Firefox that was just uninstalled is the only one that was using the maintenance service, the maintenance service uninstaller is also run.
 * Any BITS jobs from this installation of Firefox are cancelled.
+* The first :ref:`"uninstall" ping` found is uploaded, and all uninstall pings are deleted (for this installation).
 
 Note that profiles and any other user-generated files (e.g., crash reports) are specifically not uninstalled.
 
@@ -20,6 +21,8 @@ PostUpdate
 At the end of an application update cycle, after the new files are in place, the updater invokes the helper with the ``/PostUpdate`` command-line switch. The PostUpdate function fills a grab bag of responsibilities which are all focused around maintaining system integration objects created by the installer. For example, a number of registry entries contain the version number, so that has to be changed on updates. If the branding name of the application changes and shortcuts have to be renamed, that's done here as well. For one counterexample, changing icons does not require any code in PostUpdate, or anywhere else; new icons are automatically picked up by the shell. The PostUpdate function also keeps the maintenance service up to date.
 
 It's important to remember that PostUpdate is, indeed, post-update. It doesn't run until after its own code has already been updated. This makes it really the only phase of the update process where changes can go into affect immediately in the first build that contains a patch, instead of having to wait for the next update after that. This makes it a good place to put anything that needs to be done before the new version of the application can run; this includes things like registering DLL's, which the installer also handles, but that PostUpdate has to take care of for existing installations.
+
+PostUpdate actually runs two times after each update: once in an elevated context, and once as a regular user who performed the update. Both runs do similar work - the main difference being that we update HKLM registry entries are updated by the elevated instance, while HKCU ones are updated by the non-elevated instance.
 
 It's also important to remember that PostUpdate, being part of the installer code, only exists on Windows, so it can't be used to fix things up on other platforms the same way.
 

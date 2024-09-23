@@ -15,8 +15,7 @@
 
 class nsMemoryReporterManager;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class MemoryReport;
 
@@ -38,7 +37,7 @@ class MemoryReportRequestHost final {
 class MemoryReportRequestClient final : public nsIRunnable {
  public:
   using ReportCallback = std::function<void(const MemoryReport&)>;
-  using FinishCallback = std::function<bool(const uint32_t&)>;
+  using FinishCallback = std::function<void(const uint32_t&)>;
 
   NS_DECL_ISUPPORTS
 
@@ -69,7 +68,6 @@ class MemoryReportRequestClient final : public nsIRunnable {
   FinishCallback mFinishCallback;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_MemoryReportRequest_h_

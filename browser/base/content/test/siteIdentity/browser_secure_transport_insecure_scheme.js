@@ -7,9 +7,44 @@
 // insecure in terms of the site identity panel. We achieve this by running an
 // HTTP-over-TLS "proxy" and having Firefox request an http:// URI over it.
 
+const NOT_SECURE_LABEL = Services.prefs.getBoolPref(
+  "security.insecure_connection_text.enabled"
+)
+  ? "notSecure notSecureText"
+  : "notSecure";
+
+/**
+ * Tests that the page info dialog "security" section labels a
+ * connection as unencrypted and does not show certificate.
+ * @param {string} uri - URI of the page to test with.
+ */
+async function testPageInfoNotEncrypted(uri) {
+  let pageInfo = BrowserCommands.pageInfo(uri, "securityTab");
+  await BrowserTestUtils.waitForEvent(pageInfo, "load");
+  let pageInfoDoc = pageInfo.document;
+  let securityTab = pageInfoDoc.getElementById("securityTab");
+  await TestUtils.waitForCondition(
+    () => BrowserTestUtils.isVisible(securityTab),
+    "Security tab should be visible."
+  );
+
+  let secLabel = pageInfoDoc.getElementById("security-technical-shortform");
+  await TestUtils.waitForCondition(
+    () => secLabel.value == "Connection Not Encrypted",
+    "pageInfo 'Security Details' should show not encrypted"
+  );
+
+  let viewCertBtn = pageInfoDoc.getElementById("security-view-cert");
+  ok(
+    viewCertBtn.collapsed,
+    "pageInfo 'View Cert' button should not be visible"
+  );
+  pageInfo.close();
+}
+
 // But first, a quick test that we don't incorrectly treat a
 // blob:https://example.com URI as secure.
-add_task(async function() {
+add_task(async function () {
   let uri =
     getRootDirectory(gTestPath).replace(
       "chrome://mochitests/content",
@@ -26,7 +61,8 @@ add_task(async function() {
     });
     await BrowserTestUtils.browserLoaded(browser);
     let identityMode = window.document.getElementById("identity-box").className;
-    is(identityMode, "unknownIdentity", "identity should be 'unknown'");
+    is(identityMode, "localResource", "identity should be 'localResource'");
+    await testPageInfoNotEncrypted(uri);
   });
 });
 
@@ -43,7 +79,7 @@ function startServer(cert) {
 
   let listener = {
     onSocketAccepted(socket, transport) {
-      let connectionInfo = transport.securityInfo.QueryInterface(
+      let connectionInfo = transport.securityCallbacks.getInterface(
         Ci.nsITLSServerConnectionInfo
       );
       connectionInfo.setSecurityObserver(listener);
@@ -51,7 +87,7 @@ function startServer(cert) {
       output = transport.openOutputStream(0, 0, 0);
     },
 
-    onHandshakeDone(socket, status) {
+    onHandshakeDone() {
       input.asyncWait(
         {
           onInputStreamReady(readyInput) {
@@ -91,48 +127,32 @@ function startServer(cert) {
   return tlsServer;
 }
 
-add_task(async function() {
+add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     // This test fails on some platforms if we leave IPv6 enabled.
     set: [["network.dns.disableIPv6", true]],
   });
 
-  let certService = Cc["@mozilla.org/security/local-cert-service;1"].getService(
-    Ci.nsILocalCertService
-  );
   let certOverrideService = Cc[
     "@mozilla.org/security/certoverride;1"
   ].getService(Ci.nsICertOverrideService);
 
-  let cert = await new Promise((resolve, reject) => {
-    certService.getOrCreateCert("http-over-https-proxy", {
-      handleCert(c, rv) {
-        if (!Components.isSuccessCode(rv)) {
-          reject(rv);
-          return;
-        }
-        resolve(c);
-      },
-    });
-  });
+  let cert = getTestServerCertificate();
   // Start the proxy and configure Firefox to trust its certificate.
   let server = startServer(cert);
-  let overrideBits =
-    Ci.nsICertOverrideService.ERROR_UNTRUSTED |
-    Ci.nsICertOverrideService.ERROR_MISMATCH;
   certOverrideService.rememberValidityOverride(
     "localhost",
     server.port,
+    {},
     cert,
-    overrideBits,
     true
   );
   // Configure Firefox to use the proxy.
   let systemProxySettings = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsISystemProxySettings]),
+    QueryInterface: ChromeUtils.generateQI(["nsISystemProxySettings"]),
     mainThreadOnly: true,
     PACURI: null,
-    getProxyForURI: (aSpec, aScheme, aHost, aPort) => {
+    getProxyForURI: () => {
       return `HTTPS localhost:${server.port}`;
     },
   };
@@ -141,8 +161,8 @@ add_task(async function() {
     "network.proxy.type",
     Ci.nsIProtocolProxyService.PROXYCONFIG_SYSTEM
   );
-  let { MockRegistrar } = ChromeUtils.import(
-    "resource://testing-common/MockRegistrar.jsm"
+  let { MockRegistrar } = ChromeUtils.importESModule(
+    "resource://testing-common/MockRegistrar.sys.mjs"
   );
   let mockProxy = MockRegistrar.register(
     "@mozilla.org/system-proxy-settings;1",
@@ -150,7 +170,7 @@ add_task(async function() {
   );
   // Register cleanup to undo the configuration changes we've made.
   registerCleanupFunction(() => {
-    certOverrideService.clearValidityOverride("localhost", server.port);
+    certOverrideService.clearValidityOverride("localhost", server.port, {});
     Services.prefs.setIntPref("network.proxy.type", oldProxyType);
     MockRegistrar.unregister(mockProxy);
     server.close();
@@ -160,8 +180,16 @@ add_task(async function() {
   // the "proxy" we just started. Even though our connection to the proxy is
   // secure, in a real situation the connection from the proxy to
   // http://example.com won't be secure, so we treat it as not secure.
-  await BrowserTestUtils.withNewTab("http://example.com/", async browser => {
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  await BrowserTestUtils.withNewTab("http://example.com/", async () => {
     let identityMode = window.document.getElementById("identity-box").className;
-    is(identityMode, "notSecure", "identity should be 'not secure'");
+    is(
+      identityMode,
+      NOT_SECURE_LABEL,
+      `identity should be '${NOT_SECURE_LABEL}'`
+    );
+
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    await testPageInfoNotEncrypted("http://example.com");
   });
 });

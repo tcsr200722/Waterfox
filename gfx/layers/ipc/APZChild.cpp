@@ -21,6 +21,10 @@ APZChild::APZChild(RefPtr<GeckoContentController> aController)
 }
 
 APZChild::~APZChild() {
+  if (mAPZTaskRunnable) {
+    mAPZTaskRunnable->Revoke();
+    mAPZTaskRunnable = nullptr;
+  }
   if (mController) {
     mController->Destroy();
     mController = nullptr;
@@ -28,8 +32,8 @@ APZChild::~APZChild() {
 }
 
 mozilla::ipc::IPCResult APZChild::RecvLayerTransforms(
-    const nsTArray<MatrixMessage>& aTransforms) {
-  mController->NotifyLayerTransforms(aTransforms);
+    nsTArray<MatrixMessage>&& aTransforms) {
+  mController->NotifyLayerTransforms(std::move(aTransforms));
   return IPC_OK();
 }
 
@@ -37,19 +41,23 @@ mozilla::ipc::IPCResult APZChild::RecvRequestContentRepaint(
     const RepaintRequest& aRequest) {
   MOZ_ASSERT(mController->IsRepaintThread());
 
-  mController->RequestContentRepaint(aRequest);
+  EnsureAPZTaskRunnable();
+
+  mAPZTaskRunnable->QueueRequest(aRequest);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult APZChild::RecvUpdateOverscrollVelocity(
-    const float& aX, const float& aY, const bool& aIsRootContent) {
-  mController->UpdateOverscrollVelocity(aX, aY, aIsRootContent);
+    const ScrollableLayerGuid& aGuid, const float& aX, const float& aY,
+    const bool& aIsRootContent) {
+  mController->UpdateOverscrollVelocity(aGuid, aX, aY, aIsRootContent);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult APZChild::RecvUpdateOverscrollOffset(
-    const float& aX, const float& aY, const bool& aIsRootContent) {
-  mController->UpdateOverscrollOffset(aX, aY, aIsRootContent);
+    const ScrollableLayerGuid& aGuid, const float& aX, const float& aY,
+    const bool& aIsRootContent) {
+  mController->UpdateOverscrollOffset(aGuid, aX, aY, aIsRootContent);
   return IPC_OK();
 }
 
@@ -61,15 +69,17 @@ mozilla::ipc::IPCResult APZChild::RecvNotifyMozMouseScrollEvent(
 
 mozilla::ipc::IPCResult APZChild::RecvNotifyAPZStateChange(
     const ScrollableLayerGuid& aGuid, const APZStateChange& aChange,
-    const int& aArg) {
-  mController->NotifyAPZStateChange(aGuid, aChange, aArg);
+    const int& aArg, Maybe<uint64_t> aInputBlockId) {
+  mController->NotifyAPZStateChange(aGuid, aChange, aArg, aInputBlockId);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult APZChild::RecvNotifyFlushComplete() {
   MOZ_ASSERT(mController->IsRepaintThread());
+  EnsureAPZTaskRunnable();
 
-  mController->NotifyFlushComplete();
+  mAPZTaskRunnable->QueueFlushCompleteNotification();
+
   return IPC_OK();
 }
 

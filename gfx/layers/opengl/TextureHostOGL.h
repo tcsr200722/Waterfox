@@ -46,6 +46,8 @@ namespace layers {
 
 class Compositor;
 class CompositorOGL;
+class AndroidHardwareBuffer;
+class SurfaceDescriptorAndroidHardwareBuffer;
 class TextureImageTextureSourceOGL;
 class GLTextureSource;
 
@@ -149,7 +151,8 @@ class TextureImageTextureSourceOGL final : public DataTextureSource,
 
   bool Update(gfx::DataSourceSurface* aSurface,
               nsIntRegion* aDestRegion = nullptr,
-              gfx::IntPoint* aSrcOffset = nullptr) override;
+              gfx::IntPoint* aSrcOffset = nullptr,
+              gfx::IntPoint* aDstOffset = nullptr) override;
 
   void EnsureBuffer(const gfx::IntSize& aSize, gfxContentType aContentType);
 
@@ -172,8 +175,6 @@ class TextureImageTextureSourceOGL final : public DataTextureSource,
 
   bool IsValid() const override { return !!mTexImage; }
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
   GLenum GetWrapMode() const override { return mTexImage->GetWrapMode(); }
 
   // BigImageIterator
@@ -192,6 +193,8 @@ class TextureImageTextureSourceOGL final : public DataTextureSource,
   size_t GetTileCount() override { return mTexImage->GetTileCount(); }
 
   bool NextTile() override { return mTexImage->NextTile(); }
+
+  gl::GLContext* gl() const { return mGL; }
 
  protected:
   ~TextureImageTextureSourceOGL();
@@ -217,6 +220,9 @@ class GLTextureSource : public DataTextureSource, public TextureSourceOGL {
                   GLenum aTarget, gfx::IntSize aSize,
                   gfx::SurfaceFormat aFormat);
 
+  GLTextureSource(gl::GLContext* aGL, GLuint aTextureHandle, GLenum aTarget,
+                  gfx::IntSize aSize, gfx::SurfaceFormat aFormat);
+
   virtual ~GLTextureSource();
 
   const char* Name() const override { return "GLTextureSource"; }
@@ -240,8 +246,6 @@ class GLTextureSource : public DataTextureSource, public TextureSourceOGL {
 
   void DeallocateDeviceData() override;
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
   void SetSize(gfx::IntSize aSize) { mSize = aSize; }
 
   void SetFormat(gfx::SurfaceFormat aFormat) { mFormat = aFormat; }
@@ -252,7 +256,8 @@ class GLTextureSource : public DataTextureSource, public TextureSourceOGL {
 
   bool Update(gfx::DataSourceSurface* aSurface,
               nsIntRegion* aDestRegion = nullptr,
-              gfx::IntPoint* aSrcOffset = nullptr) override {
+              gfx::IntPoint* aSrcOffset = nullptr,
+              gfx::IntPoint* aDstOffset = nullptr) override {
     return false;
   }
 
@@ -274,15 +279,16 @@ class GLTextureSource : public DataTextureSource, public TextureSourceOGL {
 // the surface is not used by compositor.
 class DirectMapTextureSource : public GLTextureSource {
  public:
+  DirectMapTextureSource(gl::GLContext* aContext,
+                         gfx::DataSourceSurface* aSurface);
   DirectMapTextureSource(TextureSourceProvider* aProvider,
                          gfx::DataSourceSurface* aSurface);
   ~DirectMapTextureSource();
 
   bool Update(gfx::DataSourceSurface* aSurface,
               nsIntRegion* aDestRegion = nullptr,
-              gfx::IntPoint* aSrcOffset = nullptr) override;
-
-  bool IsDirectMap() override { return true; }
+              gfx::IntPoint* aSrcOffset = nullptr,
+              gfx::IntPoint* aDstOffset = nullptr) override;
 
   // If aBlocking is false, check if this texture is no longer being used
   // by the GPU - if aBlocking is true, this will block until the GPU is
@@ -309,20 +315,10 @@ class GLTextureHost : public TextureHost {
   // We don't own anything.
   void DeallocateDeviceData() override {}
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
-  bool Lock() override;
-
-  void Unlock() override {}
-
   gfx::SurfaceFormat GetFormat() const override;
 
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override {
-    aTexture = mTextureSource;
-    return !!aTexture;
-  }
-
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override {
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
     return nullptr;  // XXX - implement this (for MOZ_DUMP_PAINTING)
   }
 
@@ -352,7 +348,7 @@ class SurfaceTextureSource : public TextureSource, public TextureSourceOGL {
                        java::GeckoSurfaceTexture::Ref& aSurfTex,
                        gfx::SurfaceFormat aFormat, GLenum aTarget,
                        GLenum aWrapMode, gfx::IntSize aSize,
-                       bool aIgnoreTransform);
+                       Maybe<gfx::Matrix4x4> aTransformOverride);
 
   const char* Name() const override { return "SurfaceTextureSource"; }
 
@@ -375,8 +371,6 @@ class SurfaceTextureSource : public TextureSource, public TextureSourceOGL {
 
   void DeallocateDeviceData() override;
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
   gl::GLContext* gl() const { return mGL; }
 
  protected:
@@ -386,7 +380,7 @@ class SurfaceTextureSource : public TextureSource, public TextureSourceOGL {
   const GLenum mTextureTarget;
   const GLenum mWrapMode;
   const gfx::IntSize mSize;
-  const bool mIgnoreTransform;
+  const Maybe<gfx::Matrix4x4> mTransformOverride;
 };
 
 class SurfaceTextureHost : public TextureHost {
@@ -394,28 +388,17 @@ class SurfaceTextureHost : public TextureHost {
   SurfaceTextureHost(TextureFlags aFlags,
                      mozilla::java::GeckoSurfaceTexture::Ref& aSurfTex,
                      gfx::IntSize aSize, gfx::SurfaceFormat aFormat,
-                     bool aContinuousUpdate, bool aIgnoreTransform);
+                     bool aContinuousUpdate, bool aForceBT709ColorSpace,
+                     Maybe<gfx::Matrix4x4> aTransformOverride);
 
   virtual ~SurfaceTextureHost();
 
-  void PrepareTextureSource(CompositableTextureSourceRef& aTexture) override;
-
   void DeallocateDeviceData() override;
-
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
-  bool Lock() override;
 
   gfx::SurfaceFormat GetFormat() const override;
 
-  void NotifyNotUsed() override;
-
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override {
-    aTexture = mTextureSource;
-    return !!aTexture;
-  }
-
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override {
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
     return nullptr;  // XXX - implement this (for MOZ_DUMP_PAINTING)
   }
 
@@ -426,6 +409,8 @@ class SurfaceTextureHost : public TextureHost {
   const char* Name() override { return "SurfaceTextureHost"; }
 
   SurfaceTextureHost* AsSurfaceTextureHost() override { return this; }
+
+  bool IsWrappingSurfaceTextureHost() override { return true; }
 
   void CreateRenderTexture(
       const wr::ExternalImageId& aExternalImageId) override;
@@ -441,18 +426,139 @@ class SurfaceTextureHost : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
+
+  bool SupportsExternalCompositing(WebRenderBackend aBackend) override;
+
+  // gecko does not need deferred deletion with WebRender
+  // GPU/hardware task end could be checked by android fence.
+  // SurfaceTexture uses android fence internally,
+  bool NeedsDeferredDeletion() const override { return false; }
 
  protected:
-  bool EnsureAttached();
-
   mozilla::java::GeckoSurfaceTexture::GlobalRef mSurfTex;
   const gfx::IntSize mSize;
   const gfx::SurfaceFormat mFormat;
   bool mContinuousUpdate;
-  const bool mIgnoreTransform;
+  const bool mForceBT709ColorSpace;
+  const Maybe<gfx::Matrix4x4> mTransformOverride;
   RefPtr<CompositorOGL> mCompositor;
   RefPtr<SurfaceTextureSource> mTextureSource;
+};
+
+class AndroidHardwareBufferTextureSource : public TextureSource,
+                                           public TextureSourceOGL {
+ public:
+  AndroidHardwareBufferTextureSource(
+      TextureSourceProvider* aProvider,
+      AndroidHardwareBuffer* aAndroidHardwareBuffer, gfx::SurfaceFormat aFormat,
+      GLenum aTarget, GLenum aWrapMode, gfx::IntSize aSize);
+
+  const char* Name() const override { return "SurfaceTextureSource"; }
+
+  TextureSourceOGL* AsSourceOGL() override { return this; }
+
+  void BindTexture(GLenum activetex,
+                   gfx::SamplingFilter aSamplingFilter) override;
+
+  bool IsValid() const override;
+
+  gfx::IntSize GetSize() const override { return mSize; }
+
+  gfx::SurfaceFormat GetFormat() const override { return mFormat; }
+
+  GLenum GetTextureTarget() const override { return mTextureTarget; }
+
+  GLenum GetWrapMode() const override { return mWrapMode; }
+
+  void DeallocateDeviceData() override;
+
+  gl::GLContext* gl() const { return mGL; }
+
+ protected:
+  virtual ~AndroidHardwareBufferTextureSource();
+
+  bool EnsureEGLImage();
+  void DestroyEGLImage();
+  void DeleteTextureHandle();
+
+  RefPtr<gl::GLContext> mGL;
+  RefPtr<AndroidHardwareBuffer> mAndroidHardwareBuffer;
+  const gfx::SurfaceFormat mFormat;
+  const GLenum mTextureTarget;
+  const GLenum mWrapMode;
+  const gfx::IntSize mSize;
+
+  EGLImage mEGLImage;
+  GLuint mTextureHandle;
+};
+
+class AndroidHardwareBufferTextureHost : public TextureHost {
+ public:
+  static already_AddRefed<AndroidHardwareBufferTextureHost> Create(
+      TextureFlags aFlags, const SurfaceDescriptorAndroidHardwareBuffer& aDesc);
+
+  AndroidHardwareBufferTextureHost(
+      TextureFlags aFlags, AndroidHardwareBuffer* aAndroidHardwareBuffer);
+
+  virtual ~AndroidHardwareBufferTextureHost();
+
+  void DeallocateDeviceData() override;
+
+  gfx::SurfaceFormat GetFormat() const override;
+
+  gfx::IntSize GetSize() const override;
+
+  void NotifyNotUsed() override;
+
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
+    return nullptr;  // XXX - implement this (for MOZ_DUMP_PAINTING)
+  }
+
+  gl::GLContext* gl() const;
+
+  const char* Name() override { return "AndroidHardwareBufferTextureHost"; }
+
+  AndroidHardwareBufferTextureHost* AsAndroidHardwareBufferTextureHost()
+      override {
+    return this;
+  }
+
+  void CreateRenderTexture(
+      const wr::ExternalImageId& aExternalImageId) override;
+
+  uint32_t NumSubTextures() override;
+
+  void PushResourceUpdates(wr::TransactionBuilder& aResources,
+                           ResourceUpdateOp aOp,
+                           const Range<wr::ImageKey>& aImageKeys,
+                           const wr::ExternalImageId& aExtID) override;
+
+  void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
+                        const wr::LayoutRect& aBounds,
+                        const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
+                        const Range<wr::ImageKey>& aImageKeys,
+                        PushDisplayItemFlagSet aFlags) override;
+
+  void SetAcquireFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
+
+  void SetReleaseFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
+
+  mozilla::ipc::FileDescriptor GetAndResetReleaseFence() override;
+
+  AndroidHardwareBuffer* GetAndroidHardwareBuffer() const override {
+    return mAndroidHardwareBuffer;
+  }
+
+  bool SupportsExternalCompositing(WebRenderBackend aBackend) override;
+
+  // gecko does not need deferred deletion with WebRender
+  // GPU/hardware task end could be checked by android fence.
+  bool NeedsDeferredDeletion() const override { return false; }
+
+ protected:
+  RefPtr<AndroidHardwareBuffer> mAndroidHardwareBuffer;
 };
 
 #endif  // MOZ_WIDGET_ANDROID
@@ -488,8 +594,6 @@ class EGLImageTextureSource : public TextureSource, public TextureSourceOGL {
   // We don't own anything.
   void DeallocateDeviceData() override {}
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
   gl::GLContext* gl() const { return mGL; }
 
  protected:
@@ -512,20 +616,10 @@ class EGLImageTextureHost final : public TextureHost {
   // We don't own anything.
   void DeallocateDeviceData() override {}
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
-  bool Lock() override;
-
-  void Unlock() override;
-
   gfx::SurfaceFormat GetFormat() const override;
 
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override {
-    aTexture = mTextureSource;
-    return !!aTexture;
-  }
-
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override {
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
     return nullptr;  // XXX - implement this (for MOZ_DUMP_PAINTING)
   }
 
@@ -547,7 +641,7 @@ class EGLImageTextureHost final : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
 
  protected:
   const EGLImage mImage;

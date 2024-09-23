@@ -1,12 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function() {
+add_task(async function () {
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  await target.attach();
+  const target = await createAndAttachTargetForTab(gBrowser.selectedTab);
 
   info("Test applying watchFronts to a front that will be created");
   const promise = new Promise(resolve => {

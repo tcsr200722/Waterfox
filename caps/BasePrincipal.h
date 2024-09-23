@@ -7,29 +7,39 @@
 #ifndef mozilla_BasePrincipal_h
 #define mozilla_BasePrincipal_h
 
-#include "nsJSPrincipals.h"
-
-#include "mozilla/Attributes.h"
+#include <stdint.h>
+#include "ErrorList.h"
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/OriginAttributes.h"
-
-class nsAtom;
-class nsIContentSecurityPolicy;
-class nsIObjectOutputStream;
-class nsIObjectInputStream;
-class nsIURI;
+#include "mozilla/RefPtr.h"
+#include "nsAtom.h"
+#include "nsIObjectOutputStream.h"
+#include "nsIPrincipal.h"
+#include "nsJSPrincipals.h"
+#include "nsStringFwd.h"
+#include "nscore.h"
 
 class ExpandedPrincipal;
+class mozIDOMWindow;
+class nsIChannel;
+class nsIReferrerInfo;
+class nsISupports;
+class nsIURI;
 
-namespace Json {
-class Value;
-}
 namespace mozilla {
+
+class JSONWriter;
+
 namespace dom {
-class Document;
+enum class ReferrerPolicy : uint8_t;
 }
+
 namespace extensions {
 class WebExtensionPolicy;
-}
+class WebExtensionPolicyCore;
+}  // namespace extensions
 
 class BasePrincipal;
 
@@ -80,7 +90,14 @@ class BasePrincipal : public nsJSPrincipals {
     eKindMax = eSystemPrincipal
   };
 
-  explicit BasePrincipal(PrincipalKind aKind);
+  static constexpr char NullPrincipalKey = '0';
+  static_assert(eNullPrincipal == 0);
+  static constexpr char ContentPrincipalKey = '1';
+  static_assert(eContentPrincipal == 1);
+  static constexpr char ExpandedPrincipalKey = '2';
+  static_assert(eExpandedPrincipal == 2);
+  static constexpr char SystemPrincipalKey = '3';
+  static_assert(eSystemPrincipal == 3);
 
   template <typename T>
   bool Is() const {
@@ -101,7 +118,7 @@ class BasePrincipal : public nsJSPrincipals {
                 DocumentDomainConsideration aConsideration);
 
   NS_IMETHOD GetOrigin(nsACString& aOrigin) final;
-  NS_IMETHOD GetAsciiOrigin(nsACString& aOrigin) override;
+  NS_IMETHOD GetWebExposedOriginSerialization(nsACString& aOrigin) override;
   NS_IMETHOD GetOriginNoSuffix(nsACString& aOrigin) final;
   NS_IMETHOD Equals(nsIPrincipal* other, bool* _retval) final;
   NS_IMETHOD EqualsConsideringDomain(nsIPrincipal* other, bool* _retval) final;
@@ -117,40 +134,47 @@ class BasePrincipal : public nsJSPrincipals {
   NS_IMETHOD CheckMayLoadWithReporting(nsIURI* uri,
                                        bool allowIfInheritsPrincipal,
                                        uint64_t innerWindowID) final;
-  NS_IMETHOD GetAddonPolicy(nsISupports** aResult) final;
+  NS_IMETHOD GetAddonPolicy(extensions::WebExtensionPolicy** aResult) final;
+  NS_IMETHOD GetContentScriptAddonPolicy(
+      extensions::WebExtensionPolicy** aResult) final;
   NS_IMETHOD GetIsNullPrincipal(bool* aResult) override;
   NS_IMETHOD GetIsContentPrincipal(bool* aResult) override;
   NS_IMETHOD GetIsExpandedPrincipal(bool* aResult) override;
   NS_IMETHOD GetIsSystemPrincipal(bool* aResult) override;
+  NS_IMETHOD GetScheme(nsACString& aScheme) override;
   NS_IMETHOD SchemeIs(const char* aScheme, bool* aResult) override;
   NS_IMETHOD IsURIInPrefList(const char* aPref, bool* aResult) override;
+  NS_IMETHOD IsURIInList(const nsACString& aList, bool* aResult) override;
+  NS_IMETHOD IsContentAccessibleAboutURI(bool* aResult) override;
   NS_IMETHOD IsL10nAllowed(nsIURI* aURI, bool* aResult) override;
   NS_IMETHOD GetAboutModuleFlags(uint32_t* flags) override;
   NS_IMETHOD GetIsAddonOrExpandedAddonPrincipal(bool* aResult) override;
   NS_IMETHOD GetOriginAttributes(JSContext* aCx,
                                  JS::MutableHandle<JS::Value> aVal) final;
   NS_IMETHOD GetAsciiSpec(nsACString& aSpec) override;
+  NS_IMETHOD GetSpec(nsACString& aSpec) override;
   NS_IMETHOD GetExposablePrePath(nsACString& aResult) override;
   NS_IMETHOD GetExposableSpec(nsACString& aSpec) override;
   NS_IMETHOD GetHostPort(nsACString& aRes) override;
   NS_IMETHOD GetHost(nsACString& aRes) override;
-  NS_IMETHOD GetPrepath(nsACString& aResult) override;
+  NS_IMETHOD GetPrePath(nsACString& aResult) override;
   NS_IMETHOD GetFilePath(nsACString& aResult) override;
   NS_IMETHOD GetOriginSuffix(nsACString& aOriginSuffix) final;
   NS_IMETHOD GetIsIpAddress(bool* aIsIpAddress) override;
+  NS_IMETHOD GetIsLocalIpAddress(bool* aIsIpAddress) override;
   NS_IMETHOD GetIsOnion(bool* aIsOnion) override;
-  NS_IMETHOD GetIsInIsolatedMozBrowserElement(
-      bool* aIsInIsolatedMozBrowserElement) final;
   NS_IMETHOD GetUserContextId(uint32_t* aUserContextId) final;
   NS_IMETHOD GetPrivateBrowsingId(uint32_t* aPrivateBrowsingId) final;
-  NS_IMETHOD GetSiteOrigin(nsACString& aOrigin) override;
+  NS_IMETHOD GetSiteOrigin(nsACString& aSiteOrigin) final;
+  NS_IMETHOD GetSiteOriginNoSuffix(nsACString& aSiteOrigin) override;
   NS_IMETHOD IsThirdPartyURI(nsIURI* uri, bool* aRes) override;
   NS_IMETHOD IsThirdPartyPrincipal(nsIPrincipal* uri, bool* aRes) override;
   NS_IMETHOD IsThirdPartyChannel(nsIChannel* aChannel, bool* aRes) override;
   NS_IMETHOD GetIsOriginPotentiallyTrustworthy(bool* aResult) override;
-  NS_IMETHOD IsSameOrigin(nsIURI* aURI, bool aIsPrivateWin,
-                          bool* aRes) override;
+  NS_IMETHOD GetIsLoopbackHost(bool* aResult) override;
+  NS_IMETHOD IsSameOrigin(nsIURI* aURI, bool* aRes) override;
   NS_IMETHOD GetPrefLightCacheKey(nsIURI* aURI, bool aWithCredentials,
+                                  const OriginAttributes& aOriginAttributes,
                                   nsACString& _retval) override;
   NS_IMETHOD HasFirstpartyStorageAccess(mozIDOMWindow* aCheckWindow,
                                         uint32_t* aRejectedReason,
@@ -167,11 +191,18 @@ class BasePrincipal : public nsJSPrincipals {
 
   NS_IMETHOD GetNextSubDomainPrincipal(
       nsIPrincipal** aNextSubDomainPrincipal) override;
+
+  NS_IMETHOD GetPrecursorPrincipal(nsIPrincipal** aPrecursor) override;
+
   nsresult ToJSON(nsACString& aJSON);
+  nsresult ToJSON(JSONWriter& aWriter);
+  nsresult WriteJSONProperties(JSONWriter& aWriter);
+
   static already_AddRefed<BasePrincipal> FromJSON(const nsACString& aJSON);
-  // Method populates a passed Json::Value with serializable fields
-  // which represent all of the fields to deserialize the principal
-  virtual nsresult PopulateJSONObject(Json::Value& aObject);
+
+  // Method to write serializable fields which represent all of the fields to
+  // deserialize the principal.
+  virtual nsresult WriteJSONInnerProperties(JSONWriter& aWriter);
 
   virtual bool AddonHasPermission(const nsAtom* aPerm);
 
@@ -196,23 +227,26 @@ class BasePrincipal : public nsJSPrincipals {
   static already_AddRefed<BasePrincipal> CreateContentPrincipal(
       const nsACString& aOrigin);
 
-  // These following method may not create a content principal in case it's
-  // not possible to generate a correct origin from the passed URI. If this
-  // happens, a NullPrincipal is returned.
+  // This method may not create a content principal in case it's not possible to
+  // generate a correct origin from the passed URI. If this happens, a
+  // NullPrincipal is returned.
+  //
+  // If `aInitialDomain` is specified, and a ContentPrincipal is set, it will
+  // initially have its domain set to the given value, without re-computing js
+  // wrappers. Unlike `SetDomain()` this is safe to do off-main-thread.
 
   static already_AddRefed<BasePrincipal> CreateContentPrincipal(
-      nsIURI* aURI, const OriginAttributes& aAttrs);
+      nsIURI* aURI, const OriginAttributes& aAttrs,
+      nsIURI* aInitialDomain = nullptr);
 
   const OriginAttributes& OriginAttributesRef() final {
     return mOriginAttributes;
   }
   extensions::WebExtensionPolicy* AddonPolicy();
+  RefPtr<extensions::WebExtensionPolicyCore> AddonPolicyCore();
   uint32_t UserContextId() const { return mOriginAttributes.mUserContextId; }
   uint32_t PrivateBrowsingId() const {
     return mOriginAttributes.mPrivateBrowsingId;
-  }
-  bool IsInIsolatedMozBrowserElement() const {
-    return mOriginAttributes.mInIsolatedMozBrowser;
   }
 
   PrincipalKind Kind() const { return mKind; }
@@ -223,6 +257,7 @@ class BasePrincipal : public nsJSPrincipals {
   // If this is an add-on content script principal, returns its AddonPolicy.
   // Otherwise returns null.
   extensions::WebExtensionPolicy* ContentScriptAddonPolicy();
+  RefPtr<extensions::WebExtensionPolicyCore> ContentScriptAddonPolicyCore();
 
   // Helper to check whether this principal is associated with an addon that
   // allows unprivileged code to load aURI.  aExplicit == true will prevent
@@ -253,20 +288,7 @@ class BasePrincipal : public nsJSPrincipals {
    * subsume the document principal, and add-on content principals regardless
    * of whether they subsume the document principal.
    */
-  bool OverridesCSP(nsIPrincipal* aDocumentPrincipal) {
-    MOZ_ASSERT(aDocumentPrincipal);
-
-    // Expanded principals override CSP if and only if they subsume the document
-    // principal.
-    if (mKind == eExpandedPrincipal) {
-      return FastSubsumes(aDocumentPrincipal);
-    }
-    // Extension principals always override the CSP non-extension principals.
-    // This is primarily for the sake of their stylesheets, which are usually
-    // loaded from channels and cannot have expanded principals.
-    return (AddonPolicy() &&
-            !BasePrincipal::Cast(aDocumentPrincipal)->AddonPolicy());
-  }
+  bool OverridesCSP(nsIPrincipal* aDocumentPrincipal);
 
   uint32_t GetOriginNoSuffixHash() const { return mOriginNoSuffix->hash(); }
   uint32_t GetOriginSuffixHash() const { return mOriginSuffix->hash(); }
@@ -274,6 +296,11 @@ class BasePrincipal : public nsJSPrincipals {
   virtual nsresult GetSiteIdentifier(SiteIdentifier& aSite) = 0;
 
  protected:
+  BasePrincipal(PrincipalKind aKind, const nsACString& aOriginNoSuffix,
+                const OriginAttributes& aOriginAttributes);
+  BasePrincipal(BasePrincipal* aOther,
+                const OriginAttributes& aOriginAttributes);
+
   virtual ~BasePrincipal();
 
   // Note that this does not check OriginAttributes. Callers that depend on
@@ -284,6 +311,8 @@ class BasePrincipal : public nsJSPrincipals {
   // Internal, side-effect-free check to determine whether the concrete
   // principal would allow the load ignoring any common behavior implemented in
   // BasePrincipal::CheckMayLoad.
+  //
+  // Safe to call from any thread, unlike CheckMayLoad.
   virtual bool MayLoadInternal(nsIURI* aURI) = 0;
   friend class ::ExpandedPrincipal;
 
@@ -292,14 +321,7 @@ class BasePrincipal : public nsJSPrincipals {
                               bool aReport, uint64_t aInnerWindowID);
 
   void SetHasExplicitDomain() { mHasExplicitDomain = true; }
-
-  // Either of these functions should be called as the last step of the
-  // initialization of the principal objects.  It's typically called as the
-  // last step from the Init() method of the child classes.
-  void FinishInit(const nsACString& aOriginNoSuffix,
-                  const OriginAttributes& aOriginAttributes);
-  void FinishInit(BasePrincipal* aOther,
-                  const OriginAttributes& aOriginAttributes);
+  bool GetHasExplicitDomain() { return mHasExplicitDomain; }
 
   // KeyValT holds a principal subtype-specific key value and the associated
   // parsed value after JSON parsing.
@@ -312,21 +334,56 @@ class BasePrincipal : public nsJSPrincipals {
     nsCString value;
   };
 
+  // Common base class for all Deserializer implementations in concrete
+  // subclasses. Subclasses will initialize `mPrincipal` in `Read`, and then
+  // calls to `QueryInterface` will QI on the target object.
+  class Deserializer : public nsISerializable {
+   public:
+    NS_DECL_ISUPPORTS
+    NS_IMETHOD Write(nsIObjectOutputStream* aStream) override;
+
+   protected:
+    virtual ~Deserializer() = default;
+    RefPtr<BasePrincipal> mPrincipal;
+  };
+
+ private:
+  static constexpr Span<const char> JSONEnumKeyStrings[4] = {
+      MakeStringSpan("0"),
+      MakeStringSpan("1"),
+      MakeStringSpan("2"),
+      MakeStringSpan("3"),
+  };
+
+  static void WriteJSONProperty(JSONWriter& aWriter,
+                                const Span<const char>& aKey,
+                                const nsCString& aValue);
+
+ protected:
+  template <size_t EnumValue>
+  static inline constexpr const Span<const char>& JSONEnumKeyString() {
+    static_assert(EnumValue < ArrayLength(JSONEnumKeyStrings));
+    return JSONEnumKeyStrings[EnumValue];
+  }
+  template <size_t EnumValue>
+  static void WriteJSONProperty(JSONWriter& aWriter, const nsCString& aValue) {
+    WriteJSONProperty(aWriter, JSONEnumKeyString<EnumValue>(), aValue);
+  }
+
  private:
   static already_AddRefed<BasePrincipal> CreateContentPrincipal(
       nsIURI* aURI, const OriginAttributes& aAttrs,
-      const nsACString& aOriginNoSuffix);
+      const nsACString& aOriginNoSuffix, nsIURI* aInitialDomain);
 
-  inline bool FastSubsumesIgnoringFPD(
-      nsIPrincipal* aOther, DocumentDomainConsideration aConsideration);
+  bool FastSubsumesIgnoringFPD(nsIPrincipal* aOther,
+                               DocumentDomainConsideration aConsideration);
 
-  RefPtr<nsAtom> mOriginNoSuffix;
-  RefPtr<nsAtom> mOriginSuffix;
+  const RefPtr<nsAtom> mOriginNoSuffix;
+  const RefPtr<nsAtom> mOriginSuffix;
 
-  OriginAttributes mOriginAttributes;
-  PrincipalKind mKind;
-  bool mHasExplicitDomain;
-  bool mInitialized;
+  const OriginAttributes mOriginAttributes;
+  const PrincipalKind mKind;
+  std::atomic<bool> mHasExplicitDomain;
 };
 
 inline bool BasePrincipal::FastEquals(nsIPrincipal* aOther) {
@@ -364,6 +421,16 @@ inline bool BasePrincipal::FastEqualsConsideringDomain(nsIPrincipal* aOther) {
     return FastEquals(aOther);
   }
 
+  // Principals of different kinds can't be equal.
+  if (Kind() != other->Kind()) {
+    return false;
+  }
+
+  // Only ContentPrincipals should have mHasExplicitDomain set to true, so test
+  // that we haven't ended up here instead of FastEquals by mistake.
+  MOZ_ASSERT(IsContentPrincipal(),
+             "Only content principals can set mHasExplicitDomain");
+
   return Subsumes(aOther, ConsiderDocumentDomain) &&
          other->Subsumes(this, ConsiderDocumentDomain);
 }
@@ -391,19 +458,6 @@ inline bool BasePrincipal::FastSubsumesConsideringDomain(nsIPrincipal* aOther) {
   }
 
   return Subsumes(aOther, ConsiderDocumentDomain);
-}
-
-inline bool BasePrincipal::FastSubsumesIgnoringFPD(
-    nsIPrincipal* aOther, DocumentDomainConsideration aConsideration) {
-  MOZ_ASSERT(aOther);
-
-  if (Kind() == eContentPrincipal &&
-      !dom::ChromeUtils::IsOriginAttributesEqualIgnoringFPD(
-          mOriginAttributes, Cast(aOther)->mOriginAttributes)) {
-    return false;
-  }
-
-  return SubsumesInternal(aOther, aConsideration);
 }
 
 inline bool BasePrincipal::FastSubsumesIgnoringFPD(nsIPrincipal* aOther) {

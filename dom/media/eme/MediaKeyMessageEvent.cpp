@@ -16,8 +16,7 @@
 #include "nsContentUtils.h"
 #include "mozilla/dom/MediaKeys.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaKeyMessageEvent)
 
@@ -32,8 +31,7 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(MediaKeyMessageEvent, Event)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MediaKeyMessageEvent, Event)
-  tmp->mMessage = nullptr;
-  mozilla::DropJSObjects(this);
+  mozilla::DropJSObjects(tmp);
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MediaKeyMessageEvent)
@@ -45,10 +43,7 @@ MediaKeyMessageEvent::MediaKeyMessageEvent(EventTarget* aOwner)
   mozilla::HoldJSObjects(this);
 }
 
-MediaKeyMessageEvent::~MediaKeyMessageEvent() {
-  mMessage = nullptr;
-  mozilla::DropJSObjects(this);
-}
+MediaKeyMessageEvent::~MediaKeyMessageEvent() { mozilla::DropJSObjects(this); }
 
 MediaKeyMessageEvent* MediaKeyMessageEvent::AsMediaKeyMessageEvent() {
   return this;
@@ -63,7 +58,7 @@ already_AddRefed<MediaKeyMessageEvent> MediaKeyMessageEvent::Constructor(
     EventTarget* aOwner, MediaKeyMessageType aMessageType,
     const nsTArray<uint8_t>& aMessage) {
   RefPtr<MediaKeyMessageEvent> e = new MediaKeyMessageEvent(aOwner);
-  e->InitEvent(NS_LITERAL_STRING("message"), false, false);
+  e->InitEvent(u"message"_ns, false, false);
   e->mMessageType = aMessageType;
   e->mRawMessage = aMessage.Clone();
   e->SetTrusted(true);
@@ -94,10 +89,8 @@ void MediaKeyMessageEvent::GetMessage(JSContext* cx,
                                       JS::MutableHandle<JSObject*> aMessage,
                                       ErrorResult& aRv) {
   if (!mMessage) {
-    mMessage = ArrayBuffer::Create(cx, this, mRawMessage.Length(),
-                                   mRawMessage.Elements());
-    if (!mMessage) {
-      aRv.NoteJSContextException(cx);
+    mMessage = ArrayBuffer::Create(cx, this, mRawMessage, aRv);
+    if (aRv.Failed()) {
       return;
     }
     mRawMessage.Clear();
@@ -105,5 +98,4 @@ void MediaKeyMessageEvent::GetMessage(JSContext* cx,
   aMessage.set(mMessage);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -6,6 +6,7 @@
 
 #include "RemotePrintJobChild.h"
 
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
 #include "nsPagePrintTimer.h"
 #include "nsPrintJob.h"
@@ -19,14 +20,13 @@ NS_IMPL_ISUPPORTS(RemotePrintJobChild, nsIWebProgressListener)
 RemotePrintJobChild::RemotePrintJobChild() = default;
 
 nsresult RemotePrintJobChild::InitializePrint(const nsString& aDocumentTitle,
-                                              const nsString& aPrintToFile,
                                               const int32_t& aStartPage,
                                               const int32_t& aEndPage) {
   // Print initialization can sometimes display a dialog in the parent, so we
   // need to spin a nested event loop until initialization completes.
-  Unused << SendInitializePrint(aDocumentTitle, aPrintToFile, aStartPage,
-                                aEndPage);
-  mozilla::SpinEventLoopUntil([&]() { return mPrintInitialized; });
+  Unused << SendInitializePrint(aDocumentTitle, aStartPage, aEndPage);
+  mozilla::SpinEventLoopUntil("RemotePrintJobChild::InitializePrint"_ns,
+                              [&]() { return mPrintInitialized; });
 
   return mInitializationResult;
 }
@@ -42,6 +42,7 @@ mozilla::ipc::IPCResult RemotePrintJobChild::RecvPrintInitializationResult(
 }
 
 PRFileDesc* RemotePrintJobChild::GetNextPageFD() {
+  MOZ_ASSERT(!mDestroyed);
   MOZ_ASSERT(mNextPageFD);
   PRFileDesc* fd = mNextPageFD;
   mNextPageFD = nullptr;
@@ -50,16 +51,19 @@ PRFileDesc* RemotePrintJobChild::GetNextPageFD() {
 
 void RemotePrintJobChild::SetNextPageFD(
     const mozilla::ipc::FileDescriptor& aFd) {
+  MOZ_ASSERT(!mDestroyed);
   auto handle = aFd.ClonePlatformHandle();
   mNextPageFD = PR_ImportFile(PROsfd(handle.release()));
 }
 
-void RemotePrintJobChild::ProcessPage() {
+void RemotePrintJobChild::ProcessPage(const IntSize& aSizeInPoints,
+                                      nsTArray<uint64_t>&& aDeps) {
   MOZ_ASSERT(mPagePrintTimer);
 
   mPagePrintTimer->WaitForRemotePrint();
   if (!mDestroyed) {
-    Unused << SendProcessPage();
+    Unused << SendProcessPage(aSizeInPoints.width, aSizeInPoints.height,
+                              std::move(aDeps));
   }
 }
 
@@ -81,12 +85,14 @@ mozilla::ipc::IPCResult RemotePrintJobChild::RecvAbortPrint(
 }
 
 void RemotePrintJobChild::SetPagePrintTimer(nsPagePrintTimer* aPagePrintTimer) {
+  MOZ_ASSERT(!mDestroyed);
   MOZ_ASSERT(aPagePrintTimer);
 
   mPagePrintTimer = aPagePrintTimer;
 }
 
 void RemotePrintJobChild::SetPrintJob(nsPrintJob* aPrintJob) {
+  MOZ_ASSERT(!mDestroyed);
   MOZ_ASSERT(aPrintJob);
 
   mPrintJob = aPrintJob;
@@ -98,10 +104,9 @@ NS_IMETHODIMP
 RemotePrintJobChild::OnStateChange(nsIWebProgress* aProgress,
                                    nsIRequest* aRequest, uint32_t aStateFlags,
                                    nsresult aStatus) {
-  if (!mDestroyed) {
-    Unused << SendStateChange(aStateFlags, aStatus);
-  }
-
+  // `RemotePrintJobParent` emits its own state change events based on its
+  // own progress & the actor lifecycle, so any forwarded event here would get
+  // ignored.
   return NS_OK;
 }
 

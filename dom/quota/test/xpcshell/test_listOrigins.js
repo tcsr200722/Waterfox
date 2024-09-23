@@ -12,11 +12,15 @@ async function testSteps() {
 
   function verifyResult(result, expectedOrigins) {
     ok(result instanceof Array, "Got an array object");
-    ok(result.length == expectedOrigins.length, "Correct number of elements");
+    Assert.equal(
+      result.length,
+      expectedOrigins.length,
+      "Correct number of elements"
+    );
 
     info("Sorting elements");
 
-    result.sort(function(a, b) {
+    result.sort(function (a, b) {
       if (a < b) {
         return -1;
       }
@@ -29,7 +33,11 @@ async function testSteps() {
     info("Verifying elements");
 
     for (let i = 0; i < result.length; i++) {
-      ok(result[i] == expectedOrigins[i], "Result matches expected origin");
+      Assert.equal(
+        result[i],
+        expectedOrigins[i],
+        "Result matches expected origin"
+      );
     }
   }
 
@@ -52,10 +60,20 @@ async function testSteps() {
   request = clear();
   await requestFinished(request);
 
+  info("Initializing");
+
+  request = init();
+  await requestFinished(request);
+
+  info("Initializing temporary storage");
+
+  request = initTemporaryStorage();
+  await requestFinished(request);
+
   info("Initializing origins");
 
   for (const origin of origins) {
-    request = initStorageAndOrigin(getPrincipal(origin), "default");
+    request = initTemporaryOrigin("default", getPrincipal(origin));
     await requestFinished(request);
   }
 

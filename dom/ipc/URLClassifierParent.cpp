@@ -28,7 +28,7 @@ mozilla::ipc::IPCResult URLClassifierParent::StartClassify(
   nsCOMPtr<nsIURIClassifier> uriClassifier =
       do_GetService(NS_URICLASSIFIERSERVICE_CONTRACTID, &rv);
   if (NS_SUCCEEDED(rv)) {
-    rv = uriClassifier->Classify(aPrincipal, nullptr, this, aSuccess);
+    rv = uriClassifier->Classify(aPrincipal, this, aSuccess);
   }
   if (NS_FAILED(rv) || !*aSuccess) {
     // We treat the case where we fail to classify and the case where the
@@ -88,8 +88,8 @@ class IPCFeature final : public nsIUrlClassifierFeature {
   }
 
   NS_IMETHOD
-  GetSkipHostList(nsACString& aList) override {
-    aList = mIPCFeature.skipHostList();
+  GetExceptionHostList(nsACString& aList) override {
+    aList = mIPCFeature.exceptionHostList();
     return NS_OK;
   }
 
@@ -114,9 +114,9 @@ class IPCFeature final : public nsIUrlClassifierFeature {
     // This method should not be called, but we have a URI, let's return it.
     nsCOMPtr<nsIURI> uri = mURI;
     uri.forget(aURI);
-    *aURIType = aListType == nsIUrlClassifierFeature::blacklist
-                    ? nsIUrlClassifierFeature::URIType::blacklistURI
-                    : nsIUrlClassifierFeature::URIType::whitelistURI;
+    *aURIType = aListType == nsIUrlClassifierFeature::blocklist
+                    ? nsIUrlClassifierFeature::URIType::blocklistURI
+                    : nsIUrlClassifierFeature::URIType::entitylistURI;
     return NS_OK;
   }
 
@@ -152,10 +152,10 @@ mozilla::ipc::IPCResult URLClassifierLocalParent::StartClassify(
     features.AppendElement(new IPCFeature(aURI, feature));
   }
 
-  // Doesn't matter if we pass blacklist, whitelist or any other list.
+  // Doesn't matter if we pass blocklist, entitylist or any other list.
   // IPCFeature returns always the same values.
   rv = uriClassifier->AsyncClassifyLocalWithFeatures(
-      aURI, features, nsIUrlClassifierFeature::blacklist, this);
+      aURI, features, nsIUrlClassifierFeature::blocklist, this);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     OnClassifyComplete(nsTArray<RefPtr<nsIUrlClassifierFeatureResult>>());
     return IPC_OK();

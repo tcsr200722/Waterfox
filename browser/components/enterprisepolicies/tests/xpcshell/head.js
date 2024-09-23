@@ -4,19 +4,28 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { Preferences } = ChromeUtils.import(
-  "resource://gre/modules/Preferences.jsm"
+const lazy = {};
+
+const { Preferences } = ChromeUtils.importESModule(
+  "resource://gre/modules/Preferences.sys.mjs"
 );
-const { updateAppInfo, getAppInfo } = ChromeUtils.import(
-  "resource://testing-common/AppInfo.jsm"
+const { SearchSettings } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchSettings.sys.mjs"
 );
-const { FileTestUtils } = ChromeUtils.import(
-  "resource://testing-common/FileTestUtils.jsm"
+const { updateAppInfo, getAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
 );
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { FileTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/FileTestUtils.sys.mjs"
+);
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
+);
+ChromeUtils.defineESModuleGetters(lazy, {
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+});
+const { EnterprisePolicyTesting } = ChromeUtils.importESModule(
+  "resource://testing-common/EnterprisePolicyTesting.sys.mjs"
 );
 
 updateAppInfo({
@@ -32,47 +41,45 @@ let policies = Cc["@mozilla.org/enterprisepolicies;1"].getService(
 );
 policies.observe(null, "policies-startup", null);
 
-// Any changes to this function should also be made to the corresponding version
-// in browser/components/enterprisepolicies/tests/browser/head.js
+SearchSettings.SETTINGS_INVALIDATION_DELAY = 100;
+
 async function setupPolicyEngineWithJson(json, customSchema) {
-  let filePath;
-  if (typeof json == "object") {
-    filePath = FileTestUtils.getTempFile("policies.json").path;
-
-    // This file gets automatically deleted by FileTestUtils
-    // at the end of the test run.
-    await OS.File.writeAtomic(filePath, JSON.stringify(json), {
-      encoding: "utf-8",
-    });
-  } else {
-    filePath = do_get_file(json ? json : "non-existing-file.json").path;
-  }
-
-  Services.prefs.setStringPref("browser.policies.alternatePath", filePath);
-
-  let promise = new Promise(resolve => {
-    Services.obs.addObserver(function observer() {
-      Services.obs.removeObserver(
-        observer,
-        "EnterprisePolicies:AllPoliciesApplied"
-      );
-      resolve();
-    }, "EnterprisePolicies:AllPoliciesApplied");
-  });
-
-  // Clear any previously used custom schema
-  Cu.unload("resource:///modules/policies/schema.jsm");
-
-  if (customSchema) {
-    let schemaModule = ChromeUtils.import(
-      "resource:///modules/policies/schema.jsm",
-      null
+  if (typeof json != "object") {
+    let filePath = do_get_file(json ? json : "non-existing-file.json").path;
+    return EnterprisePolicyTesting.setupPolicyEngineWithJson(
+      filePath,
+      customSchema
     );
-    schemaModule.schema = customSchema;
   }
+  return EnterprisePolicyTesting.setupPolicyEngineWithJson(json, customSchema);
+}
 
-  Services.obs.notifyObservers(null, "EnterprisePolicies:Restart");
-  return promise;
+/**
+ * Loads a new enterprise policy, and re-initialise the search service
+ * with the new policy. Also waits for the search service to write the settings
+ * file to disk.
+ *
+ * @param {object} json
+ *   The enterprise policy to use.
+ * @param {object} customSchema
+ *   A custom schema to use to validate the enterprise policy.
+ */
+async function setupPolicyEngineWithJsonWithSearch(json, customSchema) {
+  Services.search.wrappedJSObject.reset();
+  if (typeof json != "object") {
+    let filePath = do_get_file(json ? json : "non-existing-file.json").path;
+    await EnterprisePolicyTesting.setupPolicyEngineWithJson(
+      filePath,
+      customSchema
+    );
+  } else {
+    await EnterprisePolicyTesting.setupPolicyEngineWithJson(json, customSchema);
+  }
+  let settingsWritten = lazy.SearchTestUtils.promiseSearchNotification(
+    "write-settings-to-disk-complete"
+  );
+  await Services.search.init();
+  return settingsWritten;
 }
 
 function checkLockedPref(prefName, prefValue) {
@@ -81,7 +88,7 @@ function checkLockedPref(prefName, prefValue) {
     true,
     `Pref ${prefName} is correctly locked`
   );
-  equal(
+  strictEqual(
     Preferences.get(prefName),
     prefValue,
     `Pref ${prefName} has the correct value`
@@ -94,9 +101,50 @@ function checkUnlockedPref(prefName, prefValue) {
     false,
     `Pref ${prefName} is correctly unlocked`
   );
-  equal(
+  strictEqual(
     Preferences.get(prefName),
     prefValue,
     `Pref ${prefName} has the correct value`
+  );
+}
+
+function checkUserPref(prefName, prefValue) {
+  strictEqual(
+    Preferences.get(prefName),
+    prefValue,
+    `Pref ${prefName} has the correct value`
+  );
+}
+
+function checkClearPref(prefName) {
+  equal(
+    Services.prefs.prefHasUserValue(prefName),
+    false,
+    `Pref ${prefName} has no user value`
+  );
+}
+
+function checkDefaultPref(prefName, prefValue) {
+  let defaultPrefBranch = Services.prefs.getDefaultBranch("");
+  let prefType = defaultPrefBranch.getPrefType(prefName);
+  notEqual(
+    prefType,
+    Services.prefs.PREF_INVALID,
+    `Pref ${prefName} is set on the default branch`
+  );
+  strictEqual(
+    Preferences.get(prefName),
+    prefValue,
+    `Pref ${prefName} has the correct value`
+  );
+}
+
+function checkUnsetPref(prefName) {
+  let defaultPrefBranch = Services.prefs.getDefaultBranch("");
+  let prefType = defaultPrefBranch.getPrefType(prefName);
+  equal(
+    prefType,
+    Services.prefs.PREF_INVALID,
+    `Pref ${prefName} is not set on the default branch`
   );
 }

@@ -1,8 +1,4 @@
-// |jit-test| skip-if: !('oomTest' in this)
-
 // OOM tests for module parsing.
-
-load(libdir + "dummyModuleResolveHook.js");
 
 const sa =
 `export default 20;
@@ -18,8 +14,8 @@ const sb =
 `;
 
 oomTest(() => {
-    let a = moduleRepo['a'] = parseModule(sa);
-    let b = moduleRepo['b'] = parseModule(sb);
-    b.declarationInstantiation();
-    assertEq(b.evaluation(), 42);
+    let a = registerModule('a', parseModule(sa));
+    let b = registerModule('b', parseModule(sb));
+    moduleLink(b);
+    assertEq(moduleEvaluate(b), 42);
 });

@@ -6,25 +6,56 @@
 #ifndef nsHtml5StreamParser_h
 #define nsHtml5StreamParser_h
 
-#include "nsCOMPtr.h"
-#include "nsHtml5MetaScanner.h"
-#include "mozilla/Encoding.h"
-#include "mozilla/EncodingDetector.h"
-#include "mozilla/JapaneseDetector.h"
-#include "mozilla/UniquePtr.h"
-#include "nsHtml5TreeOpExecutor.h"
-#include "nsHtml5OwningUTF16Buffer.h"
-#include "nsIInputStream.h"
-#include "mozilla/Mutex.h"
-#include "mozilla/UniquePtr.h"
-#include "nsHtml5AtomTable.h"
-#include "nsHtml5Speculation.h"
-#include "nsISerialEventTarget.h"
-#include "nsITimer.h"
-#include "mozilla/dom/DocGroup.h"
-#include "mozilla/Buffer.h"
+#include <tuple>
 
+#include "MainThreadUtils.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Encoding.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/NotNull.h"
+#include "mozilla/ReentrantMonitor.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Span.h"
+#include "mozilla/TimeStamp.h"
+#include "mozilla/UniquePtr.h"
+#include "nsCharsetSource.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsDebug.h"
+#include "nsHtml5AtomTable.h"
+#include "nsIRequestObserver.h"
+#include "nsISerialEventTarget.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+#include "nscore.h"
+
+class nsCycleCollectionTraversalCallback;
+class nsHtml5OwningUTF16Buffer;
 class nsHtml5Parser;
+class nsHtml5Speculation;
+class nsHtml5String;
+class nsHtml5Tokenizer;
+class nsHtml5TreeBuilder;
+class nsHtml5TreeOpExecutor;
+class nsIChannel;
+class nsIInputStream;
+class nsIRequest;
+class nsIRunnable;
+class nsITimer;
+class nsIURI;
+
+namespace mozilla {
+class EncodingDetector;
+template <typename T>
+class Buffer;
+
+namespace dom {
+class DocGroup;
+}
+}  // namespace mozilla
 
 enum eParserMode {
   /**
@@ -62,36 +93,86 @@ enum eBomState {
   /**
    * BOM sniffing hasn't started.
    */
-  BOM_SNIFFING_NOT_STARTED = 0,
+  BOM_SNIFFING_NOT_STARTED,
 
   /**
    * BOM sniffing is ongoing, and the first byte of an UTF-16LE BOM has been
    * seen.
    */
-  SEEN_UTF_16_LE_FIRST_BYTE = 1,
+  SEEN_UTF_16_LE_FIRST_BYTE,
 
   /**
    * BOM sniffing is ongoing, and the first byte of an UTF-16BE BOM has been
    * seen.
    */
-  SEEN_UTF_16_BE_FIRST_BYTE = 2,
+  SEEN_UTF_16_BE_FIRST_BYTE,
 
   /**
    * BOM sniffing is ongoing, and the first byte of an UTF-8 BOM has been
    * seen.
    */
-  SEEN_UTF_8_FIRST_BYTE = 3,
+  SEEN_UTF_8_FIRST_BYTE,
 
   /**
    * BOM sniffing is ongoing, and the first and second bytes of an UTF-8 BOM
    * have been seen.
    */
-  SEEN_UTF_8_SECOND_BYTE = 4,
+  SEEN_UTF_8_SECOND_BYTE,
+
+  /**
+   * Seen \x00 in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_BE_XML_FIRST,
+
+  /**
+   * Seen \x00< in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_BE_XML_SECOND,
+
+  /**
+   * Seen \x00<\x00 in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_BE_XML_THIRD,
+
+  /**
+   * Seen \x00<\x00? in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_BE_XML_FOURTH,
+
+  /**
+   * Seen \x00<\x00?\x00 in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_BE_XML_FIFTH,
+
+  /**
+   * Seen < in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_LE_XML_FIRST,
+
+  /**
+   * Seen <\x00 in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_LE_XML_SECOND,
+
+  /**
+   * Seen <\x00? in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_LE_XML_THIRD,
+
+  /**
+   * Seen <\x00?\x00 in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_LE_XML_FOURTH,
+
+  /**
+   * Seen <\x00?\x00x in UTF-16BE bogo-XML declaration.
+   */
+  SEEN_UTF_16_LE_XML_FIFTH,
 
   /**
    * BOM sniffing was started but is now over for whatever reason.
    */
-  BOM_SNIFFING_OVER = 5
+  BOM_SNIFFING_OVER,
 };
 
 enum eHtml5StreamState {
@@ -105,7 +186,7 @@ class nsHtml5StreamParser final : public nsISupports {
   using NotNull = mozilla::NotNull<T>;
   using Encoding = mozilla::Encoding;
 
-  const uint32_t SNIFFING_BUFFER_SIZE = 1024;
+  const uint32_t UNCONDITIONAL_META_SCAN_BOUNDARY = 1024;
   const uint32_t READ_BUFFER_SIZE = 1024;
   const uint32_t LOCAL_FILE_UTF_8_BUFFER_SIZE = 1024 * 1024 * 4;  // 4 MB
 
@@ -114,6 +195,7 @@ class nsHtml5StreamParser final : public nsISupports {
   friend class nsHtml5StreamParserContinuation;
   friend class nsHtml5TimerKungFu;
   friend class nsHtml5StreamParserPtr;
+  friend class nsHtml5StreamListener;
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -122,15 +204,18 @@ class nsHtml5StreamParser final : public nsISupports {
   nsHtml5StreamParser(nsHtml5TreeOpExecutor* aExecutor, nsHtml5Parser* aOwner,
                       eParserMode aMode);
 
-  // Methods that nsHtml5StreamListener calls
-  nsresult CheckListenerChain();
-
   nsresult OnStartRequest(nsIRequest* aRequest);
 
   nsresult OnDataAvailable(nsIRequest* aRequest, nsIInputStream* aInStream,
                            uint64_t aSourceOffset, uint32_t aLength);
-
-  nsresult OnStopRequest(nsIRequest* aRequest, nsresult status);
+  /**
+   * ReentrantMonitorAutoEnter is used for protecting access to
+   * nsHtml5StreamParser::mOnStopCalled and should be obtained from
+   * nsHtml5StreamListener::mDelegateMonitor
+   */
+  nsresult OnStopRequest(
+      nsIRequest* aRequest, nsresult status,
+      const mozilla::ReentrantMonitorAutoEnter& aProofOfLock);
 
   // EncodingDeclarationHandler
   // https://hg.mozilla.org/projects/htmlparser/file/tip/src/nu/validator/htmlparser/common/EncodingDeclarationHandler.java
@@ -139,17 +224,30 @@ class nsHtml5StreamParser final : public nsISupports {
    */
   bool internalEncodingDeclaration(nsHtml5String aEncoding);
 
+  bool TemplatePushedOrHeadPopped();
+
+  void RememberGt(int32_t aPos);
+
   // Not from an external interface
 
   /**
-   * Pass a buffer to the JapaneseDetector.
+   * Post a runnable to the main thread to perform the speculative load
+   * operations without performing the tree operations.
+   *
+   * This should be called at the end of each data available or stop
+   * request runnable running on the parser thread.
    */
-  void FeedJapaneseDetector(mozilla::Span<const uint8_t> aBuffer, bool aLast);
+  void PostLoadFlusher();
 
   /**
-   * Pass a buffer to the Japanese or Cyrillic detector as appropriate.
+   * Pass a buffer to chardetng.
    */
-  void FeedDetector(mozilla::Span<const uint8_t> aBuffer, bool aLast);
+  void FeedDetector(mozilla::Span<const uint8_t> aBuffer);
+
+  /**
+   * Report EOF to chardetng.
+   */
+  void DetectorEof();
 
   /**
    *  Call this method once you've created a parser, and want to instruct it
@@ -159,17 +257,17 @@ class nsHtml5StreamParser final : public nsISupports {
    *  @param   aCharsetSource the source of the charset
    */
   inline void SetDocumentCharset(NotNull<const Encoding*> aEncoding,
-                                 int32_t aSource) {
+                                 nsCharsetSource aSource,
+                                 bool aForceAutoDetection) {
     MOZ_ASSERT(mStreamState == STREAM_NOT_STARTED,
                "SetDocumentCharset called too late.");
-    NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+    MOZ_ASSERT(NS_IsMainThread(), "Wrong thread!");
+    MOZ_ASSERT(!(aForceAutoDetection && aSource >= kCharsetFromOtherComponent),
+               "Can't force with high-ranking source.");
     mEncoding = aEncoding;
     mCharsetSource = aSource;
-  }
-
-  inline void SetObserver(nsIRequestObserver* aObserver) {
-    NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
-    mObserver = aObserver;
+    mForceAutoDetection = aForceAutoDetection;
+    mChannelHadCharset = (aSource == kCharsetFromChannel);
   }
 
   nsresult GetChannel(nsIChannel** aChannel);
@@ -178,28 +276,23 @@ class nsHtml5StreamParser final : public nsISupports {
    * The owner parser must call this after script execution
    * when no scripts are executing and the document.written
    * buffer has been exhausted.
+   *
+   * If the first two arguments are nullptr, instead of
+   * continuing after scripts, this method commits to an
+   * internally-discovered encoding.
    */
-  void ContinueAfterScripts(nsHtml5Tokenizer* aTokenizer,
-                            nsHtml5TreeBuilder* aTreeBuilder, bool aLastWasCR);
+  void ContinueAfterScriptsOrEncodingCommitment(
+      nsHtml5Tokenizer* aTokenizer, nsHtml5TreeBuilder* aTreeBuilder,
+      bool aLastWasCR);
 
   /**
    * Continues the stream parser if the charset switch failed.
    */
   void ContinueAfterFailedCharsetSwitch();
 
-  void Terminate() {
-    mozilla::MutexAutoLock autoLock(mTerminatedMutex);
-    mTerminated = true;
-  }
+  void Terminate() { mTerminated = true; }
 
   void DropTimer();
-
-  /**
-   * Sets mEncoding and mCharsetSource appropriately for the XML View Source
-   * case if aEncoding names a supported rough ASCII superset and sets
-   * the mEncoding and mCharsetSource to the UTF-8 default otherwise.
-   */
-  void SetEncodingFromExpat(const char16_t* aEncoding);
 
   /**
    * Sets the URL for View Source title in case this parser ends up being
@@ -224,15 +317,13 @@ class nsHtml5StreamParser final : public nsISupports {
    * call on the other thread too soon.
    */
   void Interrupt() {
-    mozilla::MutexAutoLock autoLock(mTerminatedMutex);
+    MOZ_ASSERT(NS_IsMainThread(), "Wrong thread!");
     mInterrupted = true;
   }
 
-  void Uninterrupt() {
-    NS_ASSERTION(IsParserThread(), "Wrong thread!");
+  void Uninterrupt() MOZ_NO_THREAD_SAFETY_ANALYSIS {
+    MOZ_ASSERT(IsParserThread(), "Wrong thread!");
     mTokenizerMutex.AssertCurrentThreadOwns();
-    // Not acquiring mTerminatedMutex because mTokenizerMutex is already
-    // held at this point and is already stronger.
     mInterrupted = false;
   }
 
@@ -242,28 +333,35 @@ class nsHtml5StreamParser final : public nsISupports {
    */
   void FlushTreeOpsAndDisarmTimer();
 
+  void SwitchDecoderIfAsciiSoFar(NotNull<const Encoding*> aEncoding)
+      MOZ_REQUIRES(mTokenizerMutex);
+  ;
+
+  size_t CountGts();
+
+  void DiscardMetaSpeculation();
+
+  bool ProcessLookingForMetaCharset(bool aEof) MOZ_REQUIRES(mTokenizerMutex);
+
   void ParseAvailableData();
 
   void DoStopRequest();
 
-  void DoDataAvailableBuffer(mozilla::Buffer<uint8_t>&& aBuffer);
+  void DoDataAvailableBuffer(mozilla::Buffer<uint8_t>&& aBuffer)
+      MOZ_REQUIRES(mTokenizerMutex);
 
-  void DoDataAvailable(mozilla::Span<const uint8_t> aBuffer);
+  void DoDataAvailable(mozilla::Span<const uint8_t> aBuffer)
+      MOZ_REQUIRES(mTokenizerMutex);
 
   static nsresult CopySegmentsToParser(nsIInputStream* aInStream,
                                        void* aClosure, const char* aFromSegment,
                                        uint32_t aToOffset, uint32_t aCount,
-                                       uint32_t* aWriteCount);
+                                       uint32_t* aWriteCount)
+      MOZ_REQUIRES(mTokenizerMutex);
 
-  bool IsTerminatedOrInterrupted() {
-    mozilla::MutexAutoLock autoLock(mTerminatedMutex);
-    return mTerminated || mInterrupted;
-  }
+  bool IsTerminatedOrInterrupted() { return mTerminated || mInterrupted; }
 
-  bool IsTerminated() {
-    mozilla::MutexAutoLock autoLock(mTerminatedMutex);
-    return mTerminated;
-  }
+  bool IsTerminated() { return mTerminated; }
 
   /**
    * True when there is a Unicode decoder already
@@ -271,46 +369,40 @@ class nsHtml5StreamParser final : public nsISupports {
   inline bool HasDecoder() { return !!mUnicodeDecoder; }
 
   /**
+   * Returns 0 if 1) there aren't at least 2 buffers in mBufferedBytes
+   * or 2) there is no byte '>' in the second buffer.
+   * Otherwise, returns the length of the prefix of the second buffer
+   * that is long enough to contain the first byte '>' in the second
+   * buffer (including the '>' byte).
+   */
+  size_t LengthOfLtContainingPrefixInSecondBuffer();
+
+  /**
    * Push bytes from network when there is no Unicode decoder yet
    */
-  nsresult SniffStreamBytes(mozilla::Span<const uint8_t> aFromSegment);
+  nsresult SniffStreamBytes(mozilla::Span<const uint8_t> aFromSegment,
+                            bool aEof) MOZ_REQUIRES(mTokenizerMutex);
 
   /**
    * Push bytes from network when there is a Unicode decoder already
    */
-  nsresult WriteStreamBytes(mozilla::Span<const uint8_t> aFromSegment);
-
-  /**
-   * Check whether every other byte in the sniffing buffer is zero.
-   */
-  void SniffBOMlessUTF16BasicLatin(mozilla::Span<const uint8_t> aFromSegment);
-
-  /**
-   * Write the start of the stream to detector.
-   */
-  void FinalizeSniffingWithDetector(mozilla::Span<const uint8_t> aFromSegment,
-                                    uint32_t aCountToSniffingLimit, bool aEof);
-
-  /**
-   * <meta charset> scan failed. Try chardet if applicable. After this, the
-   * the parser will have some encoding even if a last resolt fallback.
-   *
-   * @param aFromSegment The current network buffer
-   * @param aCountToSniffingLimit The number of unfilled slots in
-   *                              mSniffingBuffer
-   * @param aEof true iff called upon end of stream
-   */
-  nsresult FinalizeSniffing(mozilla::Span<const uint8_t> aFromSegment,
-                            uint32_t aCountToSniffingLimit, bool aEof);
+  nsresult WriteStreamBytes(mozilla::Span<const uint8_t> aFromSegment)
+      MOZ_REQUIRES(mTokenizerMutex);
 
   /**
    * Set up the Unicode decoder and write the sniffing buffer into it
    * followed by the current network buffer.
    *
+   * @param aPrefix the part of the stream that has already been seen
+   *                prior to aFromSegment. In practice, these are the
+   *                bytes that are baked into the state of the BOM
+   *                and UTF-16 XML declaration-like sniffing state
+   *                machine state.
    * @param aFromSegment The current network buffer
    */
   nsresult SetupDecodingAndWriteSniffingBufferAndCurrentSegment(
-      mozilla::Span<const uint8_t> aFromSegment);
+      mozilla::Span<const uint8_t> aPrefix,
+      mozilla::Span<const uint8_t> aFromSegment) MOZ_REQUIRES(mTokenizerMutex);
 
   /**
    * Initialize the Unicode decoder, mark the BOM as the source and
@@ -320,33 +412,29 @@ class nsHtml5StreamParser final : public nsISupports {
    *                            (UTF-16BE, UTF-16LE or UTF-8; the BOM has
    *                            been swallowed)
    */
-  nsresult SetupDecodingFromBom(NotNull<const Encoding*> aEncoding);
+  void SetupDecodingFromBom(NotNull<const Encoding*> aEncoding);
+
+  void SetupDecodingFromUtf16BogoXml(NotNull<const Encoding*> aEncoding);
 
   /**
    * When speculatively decoding from file: URL as UTF-8, commit
    * to UTF-8 as the non-speculative encoding and start processing
    * the decoded data.
    */
-  void CommitLocalFileToEncoding();
+  [[nodiscard]] nsresult CommitLocalFileToEncoding();
 
   /**
    * When speculatively decoding from file: URL as UTF-8, redecode
    * using fallback and then continue normally with the fallback.
    */
-  void ReDecodeLocalFile();
+  [[nodiscard]] nsresult ReDecodeLocalFile() MOZ_REQUIRES(mTokenizerMutex);
 
   /**
    * Potentially guess the encoding using mozilla::EncodingDetector.
+   * Returns the guessed encoding and a telemetry-appropriate source.
    */
-  void GuessEncoding(bool aEof, bool aInitial);
-
-  inline void DontGuessEncoding() {
-    mFeedChardet = false;
-    mGuessEncoding = false;
-    if (mDecodingLocalFileWithoutTokenizing) {
-      CommitLocalFileToEncoding();
-    }
-  }
+  std::tuple<NotNull<const Encoding*>, nsCharsetSource> GuessEncoding(
+      bool aInitial);
 
   /**
    * Become confident or resolve and encoding name to its preferred form.
@@ -356,7 +444,7 @@ class nsHtml5StreamParser final : public nsISupports {
    *         aEncoding and false if the parser became confident or if
    *         the encoding name did not specify a usable encoding
    */
-  const Encoding* PreferredForInternalEncodingDecl(const nsACString& aEncoding);
+  const Encoding* PreferredForInternalEncodingDecl(const nsAString& aEncoding);
 
   /**
    * Callback for mFlushTimer.
@@ -399,7 +487,6 @@ class nsHtml5StreamParser final : public nsISupports {
   inline void OnContentComplete();
 
   nsCOMPtr<nsIRequest> mRequest;
-  nsCOMPtr<nsIRequestObserver> mObserver;
 
   /**
    * The document title to use if this turns out to be a View Source parser.
@@ -412,56 +499,89 @@ class nsHtml5StreamParser final : public nsISupports {
   mozilla::UniquePtr<mozilla::Decoder> mUnicodeDecoder;
 
   /**
-   * The buffer for sniffing the character encoding
-   */
-  mozilla::UniquePtr<uint8_t[]> mSniffingBuffer;
-
-  /**
-   * The number of meaningful bytes in mSniffingBuffer
-   */
-  uint32_t mSniffingLength;
-
-  /**
    * BOM sniffing state
    */
   eBomState mBomState;
-
-  /**
-   * <meta> prescan implementation
-   */
-  mozilla::UniquePtr<nsHtml5MetaScanner> mMetaScanner;
 
   // encoding-related stuff
   /**
    * The source (confidence) of the character encoding in use
    */
-  int32_t mCharsetSource;
+  nsCharsetSource mCharsetSource;
+
+  nsCharsetSource mEncodingSwitchSource;
 
   /**
    * The character encoding in use
    */
   NotNull<const Encoding*> mEncoding;
 
-  /**
-   * Whether the generic or Japanese detector should still be fed.
-   */
-  bool mFeedChardet;
+  const Encoding* mNeedsEncodingSwitchTo;
 
-  /**
-   * Whether the generic detector should be still queried for its guess.
-   */
-  bool mGuessEncoding;
+  bool mSeenEligibleMetaCharset;
+
+  bool mChardetEof;
+
+#ifdef DEBUG
+
+  bool mStartedFeedingDetector;
+
+  bool mStartedFeedingDevTools;
+
+#endif
 
   /**
    * Whether reparse is forbidden
    */
   bool mReparseForbidden;
 
+  /**
+   * Whether the Repair Text Encoding menu item was invoked
+   */
+  bool mForceAutoDetection;
+
+  /**
+   * Whether there was a valid charset parameter on the HTTP layer.
+   */
+  bool mChannelHadCharset;
+
+  /**
+   * We are in the process of looking for <meta charset>
+   */
+  bool mLookingForMetaCharset;
+
+  /**
+   * Whether the byte stream started with ASCII <?
+   */
+  bool mStartsWithLtQuestion;
+
+  /**
+   * If we are viewing XML source and are waiting for a '>' form the network.
+   */
+  bool mLookingForXmlDeclarationForXmlViewSource;
+
+  /**
+   * Whether template has been pushed or head popped within the first 1024
+   * bytes.
+   */
+  bool mTemplatePushedOrHeadPopped;
+
   // Portable parser objects
   /**
    * The first buffer in the pending UTF-16 buffer queue
    */
   RefPtr<nsHtml5OwningUTF16Buffer> mFirstBuffer;
+
+  /**
+   * Non-owning pointer to the most recent buffer that contains the most recent
+   * remembered greater-than sign. Used only while mLookingForMetaCharset is
+   * true. While mLookingForMetaCharset is true, mFirstBuffer is not changed and
+   * keeps the whole linked list of buffers alive. This pointer is non-owning to
+   * avoid frequent refcounting.
+   */
+  nsHtml5OwningUTF16Buffer* mGtBuffer;
+
+  int32_t mGtPos;
 
   /**
    * The last buffer in the pending UTF-16 buffer queue
@@ -472,14 +592,15 @@ class nsHtml5StreamParser final : public nsISupports {
                     // NS_HTML5_STREAM_PARSER_READ_BUFFER_SIZE
 
   /**
+   * The first buffer of the document if looking for <meta charset> or
+   * nullptr afterwards.
+   */
+  RefPtr<nsHtml5OwningUTF16Buffer> mFirstBufferOfMetaScan;
+
+  /**
    * The tree operation executor
    */
   nsHtml5TreeOpExecutor* mExecutor;
-
-  /**
-   * The same as mExecutor->mDocument->mDocGroup.
-   */
-  RefPtr<mozilla::dom::DocGroup> mDocGroup;
 
   /**
    * The HTML5 tree builder
@@ -539,22 +660,24 @@ class nsHtml5StreamParser final : public nsISupports {
   /**
    * Number of times speculation has failed for this parser.
    */
-  uint32_t mSpeculationFailureCount;
+  mozilla::Atomic<uint32_t> mSpeculationFailureCount;
 
   /**
-   * Number of bytes already buffered into mBufferedLocalFileData.
-   * Never counts above LOCAL_FILE_UTF_8_BUFFER_SIZE.
+   * Number of bytes already buffered into mBufferedBytes.
    */
-  uint32_t mLocalFileBytesBuffered;
+  uint32_t mNumBytesBuffered;
 
-  nsTArray<mozilla::Buffer<uint8_t>> mBufferedLocalFileData;
+  nsTArray<mozilla::Buffer<uint8_t>> mBufferedBytes;
 
   /**
-   * True to terminate early; protected by mTerminatedMutex
+   * True to terminate early.
    */
-  bool mTerminated;
-  bool mInterrupted;
-  mozilla::Mutex mTerminatedMutex;
+  mozilla::Atomic<bool> mTerminated;
+
+  /**
+   * True to release mTokenizerMutex early.
+   */
+  mozilla::Atomic<bool> mInterrupted;
 
   /**
    * The thread this stream parser runs on.
@@ -566,9 +689,12 @@ class nsHtml5StreamParser final : public nsISupports {
   nsCOMPtr<nsIRunnable> mLoadFlusher;
 
   /**
-   * The Japanese detector.
+   * This runnable is distinct from the regular flushers to
+   * signal the intent of encoding commitment without having to
+   * protect mPendingEncodingCommitment in the executer with a
+   * mutex.
    */
-  mozilla::UniquePtr<mozilla::JapaneseDetector> mJapaneseDetector;
+  nsCOMPtr<nsIRunnable> mEncodingCommitter;
 
   /**
    * The generict detector.
@@ -580,8 +706,6 @@ class nsHtml5StreamParser final : public nsISupports {
    */
   nsCString mTLD;
 
-  bool mUseJapaneseDetector;
-
   /**
    * Whether the initial charset source was kCharsetFromParentFrame
    */
@@ -589,11 +713,18 @@ class nsHtml5StreamParser final : public nsISupports {
 
   bool mHasHadErrors;
 
+  bool mDetectorHasSeenNonAscii;
+
   /**
    * If true, we are decoding a local file that lacks an encoding
    * declaration and we are not tokenizing yet.
    */
   bool mDecodingLocalFileWithoutTokenizing;
+
+  /**
+   * Whether we are keeping the incoming bytes.
+   */
+  bool mBufferingBytes;
 
   /**
    * Timer for flushing tree ops once in a while when not speculating.
@@ -634,6 +765,20 @@ class nsHtml5StreamParser final : public nsISupports {
    * If content is being sent to the devtools, an encoded UUID for the parser.
    */
   nsString mUUIDForDevtools;
+
+  /**
+   * prevent multiple calls to OnStopRequest
+   * This field can be called from multiple threads and is protected by
+   * nsHtml5StreamListener::mDelegateMonitor passed in the OnStopRequest
+   */
+  bool mOnStopCalled{false};
+
+  /*
+   * Used for telemetry about OnStopRequest vs OnDataFinished
+   */
+  // guarded by nsHtml5StreamListener::mDelegateMonitor
+  mozilla::TimeStamp mOnStopRequestTime;
+  mozilla::TimeStamp mOnDataFinishedTime;
 };
 
 #endif  // nsHtml5StreamParser_h

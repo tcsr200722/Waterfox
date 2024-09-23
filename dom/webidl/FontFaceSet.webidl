@@ -18,32 +18,31 @@ dictionary FontFaceSetIteratorResult
 };
 
 // To implement FontFaceSet's iterator until we can use setlike.
-[NoInterfaceObject,
- Exposed=Window]
+[LegacyNoInterfaceObject,
+ Exposed=(Window,Worker)]
 interface FontFaceSetIterator {
   [Throws] FontFaceSetIteratorResult next();
 };
 
-callback FontFaceSetForEachCallback = void (FontFace value, FontFace key, FontFaceSet set);
+callback FontFaceSetForEachCallback = undefined (FontFace value, FontFace key, FontFaceSet set);
 
 enum FontFaceSetLoadStatus { "loading", "loaded" };
 
-[Pref="layout.css.font-loading-api.enabled",
- Exposed=Window]
+[Exposed=(Window,Worker)]
 interface FontFaceSet : EventTarget {
   // Bug 1072762 is for the FontFaceSet constructor.
   // constructor(sequence<FontFace> initialFaces);
 
   // Emulate setlike behavior until we can use that directly.
   readonly attribute unsigned long size;
-  [Throws] void add(FontFace font);
+  [Throws] undefined add(FontFace font);
   boolean has(FontFace font);
   boolean delete(FontFace font);
-  void clear();
+  undefined clear();
   [NewObject] FontFaceSetIterator entries();
   // Iterator keys();
   [NewObject, Alias=keys, Alias="@@iterator"] FontFaceSetIterator values();
-  [Throws] void forEach(FontFaceSetForEachCallback cb, optional any thisArg);
+  [Throws] undefined forEach(FontFaceSetForEachCallback cb, optional any thisArg);
 
   // -- events for when loading state changes
   attribute EventHandler onloading;
@@ -52,14 +51,14 @@ interface FontFaceSet : EventTarget {
 
   // check and start loads if appropriate
   // and fulfill promise when all loads complete
-  [NewObject] Promise<sequence<FontFace>> load(DOMString font, optional DOMString text = " ");
+  [NewObject] Promise<sequence<FontFace>> load(UTF8String font, optional DOMString text = " ");
 
   // return whether all fonts in the fontlist are loaded
   // (does not initiate load if not available)
-  [Throws] boolean check(DOMString font, optional DOMString text = " ");
+  [Throws] boolean check(UTF8String font, optional DOMString text = " ");
 
   // async notification that font loading and layout operations are done
-  [Throws] readonly attribute Promise<void> ready;
+  [Throws] readonly attribute Promise<undefined> ready;
 
   // loading state, "loading" while one or more fonts loading, "loaded" otherwise
   readonly attribute FontFaceSetLoadStatus status;

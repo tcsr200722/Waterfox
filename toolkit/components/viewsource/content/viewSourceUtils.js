@@ -8,17 +8,12 @@
  * To keep the global namespace safe, don't define global variables and
  * functions in this file.
  *
- * This file silently depends on contentAreaUtils.js for
- * getDefaultFileName, getNormalizedLeafName and getDefaultExtension
+ * This file silently depends on contentAreaUtils.js for getDefaultFileName
  */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "PrivateBrowsingUtils",
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+});
 
 var gViewSourceUtils = {
   mnsIWebBrowserPersist: Ci.nsIWebBrowserPersist,
@@ -28,6 +23,14 @@ var gViewSourceUtils = {
   // Get the ViewSource actor for a browsing context.
   getViewSourceActor(aBrowsingContext) {
     return aBrowsingContext.currentWindowGlobal.getActor("ViewSource");
+  },
+
+  /**
+   * Get the ViewSourcePage actor.
+   * @param object An object with `browsingContext` field
+   */
+  getPageActor({ browsingContext }) {
+    return browsingContext.currentWindowGlobal.getActor("ViewSourcePage");
   },
 
   /**
@@ -59,8 +62,8 @@ var gViewSourceUtils = {
     }
     // Try existing browsers first.
     let browserWin = Services.wm.getMostRecentWindow("navigator:browser");
-    if (browserWin && browserWin.BrowserViewSourceOfDocument) {
-      browserWin.BrowserViewSourceOfDocument(aArgs);
+    if (browserWin && browserWin.BrowserCommands.viewSourceOfDocument) {
+      browserWin.BrowserCommands.viewSourceOfDocument(aArgs);
       return;
     }
     // No browser window created yet, try to create one.
@@ -118,8 +121,6 @@ var gViewSourceUtils = {
     }
 
     if (browser) {
-      viewSourceBrowser.sameProcessAsFrameLoader = browser.frameLoader;
-
       // If we're dealing with a remote browser, then the browser
       // for view source needs to be remote as well.
       if (viewSourceBrowser.remoteType != browser.remoteType) {
@@ -220,6 +221,7 @@ var gViewSourceUtils = {
           characterSet: browser.characterSet,
           contentType: browser.documentContentType,
           title: browser.contentTitle,
+          cookieJarSettings: browser.cookieJarSettings,
         };
         data.isPrivate = PrivateBrowsingUtils.isBrowserPrivate(browser);
       }
@@ -238,6 +240,7 @@ var gViewSourceUtils = {
 
         var path;
         var contentType = data.doc ? data.doc.contentType : null;
+        var cookieJarSettings = data.doc ? data.doc.cookieJarSettings : null;
         if (uri.scheme == "file") {
           // it's a local file; we can open it directly
           path = uri.QueryInterface(Ci.nsIFileURL).file.path;
@@ -261,18 +264,20 @@ var gViewSourceUtils = {
             "@mozilla.org/embedding/browser/nsWebBrowserPersist;1"
           ].createInstance(this.mnsIWebBrowserPersist);
           // the default setting is to not decode. we need to decode.
-          webBrowserPersist.persistFlags = this.mnsIWebBrowserPersist.PERSIST_FLAGS_REPLACE_EXISTING_FILES;
+          webBrowserPersist.persistFlags =
+            this.mnsIWebBrowserPersist.PERSIST_FLAGS_REPLACE_EXISTING_FILES;
           webBrowserPersist.progressListener = this.viewSourceProgressListener;
           let ssm = Services.scriptSecurityManager;
           let principal = ssm.createContentPrincipal(
             data.uri,
             browser.contentPrincipal.originAttributes
           );
-          webBrowserPersist.savePrivacyAwareURI(
+          webBrowserPersist.saveURI(
             uri,
             principal,
             null,
             null,
+            cookieJarSettings,
             null,
             null,
             file,
@@ -293,7 +298,7 @@ var gViewSourceUtils = {
         }
       } catch (ex) {
         // we failed loading it with the external editor.
-        Cu.reportError(ex);
+        console.error(ex);
         reject(data);
       }
     });
@@ -313,7 +318,7 @@ var gViewSourceUtils = {
 
       return editor;
     } catch (ex) {
-      Cu.reportError(ex);
+      console.error(ex);
     }
 
     return null;
@@ -328,10 +333,6 @@ var gViewSourceUtils = {
     ]),
 
     destroy() {
-      if (this.webShell) {
-        this.webShell.QueryInterface(Ci.nsIBaseWindow).destroy();
-      }
-      this.webShell = null;
       this.editor = null;
       this.resolve = null;
       this.reject = null;
@@ -345,22 +346,9 @@ var gViewSourceUtils = {
     onStateChange(aProgress, aRequest, aFlag, aStatus) {
       // once it's done loading...
       if (aFlag & this.mnsIWebProgressListener.STATE_STOP && aStatus == 0) {
-        if (!this.webShell) {
-          // We aren't waiting for the parser. Instead, we are waiting for
-          // an nsIWebBrowserPersist.
-          this.onContentLoaded();
-          return 0;
-        }
-        var webNavigation = this.webShell.QueryInterface(Ci.nsIWebNavigation);
-        if (webNavigation.document.readyState == "complete") {
-          // This branch is probably never taken. Including it for completeness.
-          this.onContentLoaded();
-        } else {
-          webNavigation.document.addEventListener(
-            "DOMContentLoaded",
-            this.onContentLoaded.bind(this)
-          );
-        }
+        // We aren't waiting for the parser. Instead, we are waiting for
+        // an nsIWebBrowserPersist.
+        this.onContentLoaded();
       }
       return 0;
     },
@@ -373,44 +361,7 @@ var gViewSourceUtils = {
       }
       try {
         if (!this.file) {
-          // it's not saved to file yet, it's in the webshell
-
-          // get a temporary filename using the attributes from the data object that
-          // openInExternalEditor gave us
-          this.file = gViewSourceUtils.getTemporaryFile(
-            this.data.uri,
-            this.data.doc,
-            this.data.doc.contentType
-          );
-
-          // we have to convert from the source charset.
-          var webNavigation = this.webShell.QueryInterface(Ci.nsIWebNavigation);
-          var foStream = Cc[
-            "@mozilla.org/network/file-output-stream;1"
-          ].createInstance(Ci.nsIFileOutputStream);
-          foStream.init(this.file, 0x02 | 0x08 | 0x20, -1, 0); // write | create | truncate
-          var coStream = Cc[
-            "@mozilla.org/intl/converter-output-stream;1"
-          ].createInstance(Ci.nsIConverterOutputStream);
-          coStream.init(foStream, this.data.doc.characterSet);
-
-          // write the source to the file
-          coStream.writeString(webNavigation.document.body.textContent);
-
-          // clean up
-          coStream.close();
-          foStream.close();
-
-          let helperService = Cc[
-            "@mozilla.org/uriloader/external-helper-app-service;1"
-          ].getService(Ci.nsPIExternalAppLauncher);
-          if (this.data.isPrivate) {
-            // register the file to be deleted when possible
-            helperService.deleteTemporaryPrivateFileWhenPossible(this.file);
-          } else {
-            // register the file to be deleted on app exit
-            helperService.deleteTemporaryFileOnExit(this.file);
-          }
+          throw new Error("View-source progress listener should have a file!");
         }
 
         var editorArgs = gViewSourceUtils.buildEditorArgs(
@@ -423,14 +374,13 @@ var gViewSourceUtils = {
         this.resolve(this.data);
       } catch (ex) {
         // we failed loading it with the external editor.
-        Cu.reportError(ex);
+        console.error(ex);
         this.reject(this.data);
       } finally {
         this.destroy();
       }
     },
 
-    webShell: null,
     editor: null,
     resolve: null,
     reject: null,
@@ -449,20 +399,22 @@ var gViewSourceUtils = {
       );
     }
 
-    var tempFile = Services.dirsvc.get("TmpD", Ci.nsIFile);
     var fileName = this._caUtils.getDefaultFileName(
       null,
       aURI,
       aDocument,
-      aContentType
+      null
     );
-    var extension = this._caUtils.getDefaultExtension(
+
+    const mimeService = Cc["@mozilla.org/mime;1"].getService(Ci.nsIMIMEService);
+    fileName = mimeService.validateFileNameForSaving(
       fileName,
-      aURI,
-      aContentType
+      aContentType,
+      mimeService.VALIDATE_DEFAULT
     );
-    var leafName = this._caUtils.getNormalizedLeafName(fileName, extension);
-    tempFile.append(leafName);
+
+    var tempFile = Services.dirsvc.get("TmpD", Ci.nsIFile);
+    tempFile.append(fileName);
     return tempFile;
   },
 };

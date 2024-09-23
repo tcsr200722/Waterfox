@@ -7,7 +7,7 @@
  * Tests whether copying a request item's parameters works.
  */
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(PARAMS_URL, {
     requestCount: 1,
   });
@@ -34,7 +34,7 @@ add_task(async function() {
   await testCopyUrlParamsHidden(2, false);
   await testCopyUrlParams(2, "a=b");
   await testCopyPostDataHidden(2, false);
-  await testCopyPostData(2, "foo=bar");
+  await testCopyPostData(2, "foo=bar=123=xyz");
 
   await testCopyUrlParamsHidden(3, false);
   await testCopyUrlParams(3, "a");
@@ -50,20 +50,20 @@ add_task(async function() {
   await testCopyUrlParams(5, "a=b");
   await testCopyPostDataHidden(5, false);
   await testCopyPostData(5, "?foo=bar");
-  await testCopyRequestDataLabel(5, "POST");
+  testCopyRequestDataLabel(5, "POST");
 
   await testCopyUrlParamsHidden(6, true);
   await testCopyPostDataHidden(6, true);
 
   await testCopyPostDataHidden(7, false);
-  await testCopyRequestDataLabel(7, "PATCH");
+  testCopyRequestDataLabel(7, "PATCH");
 
   await testCopyPostDataHidden(8, false);
-  await testCopyRequestDataLabel(8, "PUT");
+  testCopyRequestDataLabel(8, "PUT");
 
   return teardown(monitor);
 
-  function testCopyUrlParamsHidden(index, hidden) {
+  async function testCopyUrlParamsHidden(index, hidden) {
     EventUtils.sendMouseEvent(
       { type: "mousedown" },
       document.querySelectorAll(".request-list-item")[index]
@@ -72,12 +72,9 @@ add_task(async function() {
       { type: "contextmenu" },
       document.querySelectorAll(".request-list-item")[index]
     );
-    const copyUrlParamsNode = getContextMenuItem(
-      monitor,
-      "request-list-context-copy-url-params"
-    );
+
     is(
-      !!copyUrlParamsNode,
+      !!getContextMenuItem(monitor, "request-list-context-copy-url-params"),
       !hidden,
       'The "Copy URL Parameters" context menu item should' +
         (hidden ? " " : " not ") +
@@ -94,16 +91,16 @@ add_task(async function() {
       { type: "contextmenu" },
       document.querySelectorAll(".request-list-item")[index]
     );
-    await waitForClipboardPromise(function setup() {
-      getContextMenuItem(
+    await waitForClipboardPromise(async function setup() {
+      await selectContextMenuItem(
         monitor,
         "request-list-context-copy-url-params"
-      ).click();
+      );
     }, queryString);
     ok(true, "The url query string copied from the selected item is correct.");
   }
 
-  function testCopyPostDataHidden(index, hidden) {
+  async function testCopyPostDataHidden(index, hidden) {
     EventUtils.sendMouseEvent(
       { type: "mousedown" },
       document.querySelectorAll(".request-list-item")[index]
@@ -112,12 +109,8 @@ add_task(async function() {
       { type: "contextmenu" },
       document.querySelectorAll(".request-list-item")[index]
     );
-    const copyPostDataNode = getContextMenuItem(
-      monitor,
-      "request-list-context-copy-post-data"
-    );
     is(
-      !!copyPostDataNode,
+      !!getContextMenuItem(monitor, "request-list-context-copy-post-data"),
       !hidden,
       'The "Copy POST Data" context menu item should' +
         (hidden ? " " : " not ") +
@@ -163,11 +156,11 @@ add_task(async function() {
       { type: "contextmenu" },
       document.querySelectorAll(".request-list-item")[index]
     );
-    await waitForClipboardPromise(function setup() {
-      getContextMenuItem(
+    await waitForClipboardPromise(async function setup() {
+      await selectContextMenuItem(
         monitor,
         "request-list-context-copy-post-data"
-      ).click();
+      );
     }, postData);
     ok(true, "The post data string copied from the selected item is correct.");
   }

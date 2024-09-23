@@ -3,7 +3,7 @@
 /*---
 esid: sec-integer-indexed-exotic-objects-set-p-v-receiver
 description: >
-  Returns abrupt from OrginarySet when key is not a numeric index
+  Returns abrupt from OrdinarySet when key is not a numeric index
 info: |
   9.4.5.5 [[Set]] ( P, V, Receiver)
 
@@ -20,7 +20,7 @@ info: |
   8. Perform ? Call(setter, Receiver, « V »).
   ...
 includes: [testBigIntTypedArray.js]
-features: [BigInt, TypedArray]
+features: [align-detached-buffer-semantics-with-web-reality, BigInt, TypedArray]
 ---*/
 
 testWithBigIntTypedArrayConstructors(function(TA) {
@@ -36,7 +36,7 @@ testWithBigIntTypedArrayConstructors(function(TA) {
     sample.test262 = 1;
   });
 
-  assert.sameValue(sample.test262, undefined);
+  assert.sameValue(sample.test262, undefined, 'The value of sample.test262 is expected to equal `undefined`');
 });
 
 reportCompare(0, 0);

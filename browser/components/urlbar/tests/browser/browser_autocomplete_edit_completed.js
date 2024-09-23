@@ -5,7 +5,13 @@
  * Tests selecting a result, and editing the value of that autocompleted result.
  */
 
-add_task(async function() {
+add_task(async function () {
+  SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.urlbar.trimHttps", false],
+      ["dom.security.https_first_schemeless", false],
+    ],
+  });
   await PlacesUtils.history.clear();
 
   await PlacesTestUtils.addVisits([
@@ -17,14 +23,13 @@ add_task(async function() {
     gBrowser,
     "about:blank"
   );
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     BrowserTestUtils.removeTab(tab);
     await PlacesUtils.history.clear();
   });
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "http://example.com",
   });
 
@@ -51,6 +56,7 @@ add_task(async function() {
 
   info("Press backspace");
   EventUtils.synthesizeKey("KEY_Backspace");
+  info("Backspaced value is " + gURLBar.value);
   await UrlbarTestUtils.promiseSearchComplete(window);
 
   let editedValue = gURLBar.value;

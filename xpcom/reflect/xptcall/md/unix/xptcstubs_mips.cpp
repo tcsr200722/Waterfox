@@ -19,10 +19,8 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
 {
     args++; // always skip over a0
 
-#define PARAM_BUFFER_COUNT		16
 
     nsXPTCMiniVariant paramBuffer[PARAM_BUFFER_COUNT];
-    nsXPTCMiniVariant* dispatchParams = nullptr;
     const nsXPTMethodInfo* info;
     uint8_t paramCount;
     uint8_t i;
@@ -32,23 +30,16 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
     self->mEntry->GetMethodInfo(uint16_t(methodIndex), &info);
     NS_ASSERTION(info,"no method info");
 
-    paramCount = info->GetParamCount();
-
-    // setup variant array pointer
-    if(paramCount > PARAM_BUFFER_COUNT)
-        dispatchParams = new nsXPTCMiniVariant[paramCount];
-    else
-        dispatchParams = paramBuffer;
-    NS_ASSERTION(dispatchParams,"no place for params");
+    paramCount = info->ParamCount();
 
     const uint8_t indexOfJSContext = info->IndexOfJSContext();
 
     uint32_t* ap = args;
     for(i = 0; i < paramCount; i++, ap++)
     {
-        const nsXPTParamInfo& param = info->GetParam(i);
+        const nsXPTParamInfo& param = info->Param(i);
         const nsXPTType& type = param.GetType();
-        nsXPTCMiniVariant* dp = &dispatchParams[i];
+        nsXPTCMiniVariant* dp = &paramBuffer[i];
 
         if (i == indexOfJSContext)
             ap++;
@@ -96,10 +87,7 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
     }
 
     nsresult result = self->mOuter->CallMethod((uint16_t)methodIndex, info,
-                                               dispatchParams);
-
-    if(dispatchParams != paramBuffer)
-        delete [] dispatchParams;
+                                               paramBuffer);
 
     return result;
 }

@@ -12,16 +12,7 @@ const TEST_RESULTS = [
     UrlbarUtils.RESULT_SOURCE.HISTORY,
     { url: "http://mozilla.org/1" }
   ),
-  new UrlbarResult(
-    UrlbarUtils.RESULT_TYPE.TIP,
-    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-    {
-      text: "This is a test tip.",
-      buttonText: "Done",
-      type: "test",
-      helpUrl: "about:about",
-    }
-  ),
+  makeTipResult(),
 ];
 
 const MAX_RESULTS = UrlbarPrefs.get("maxRichResults");
@@ -29,9 +20,12 @@ const TIP_SPAN = UrlbarUtils.getSpanForResult({
   type: UrlbarUtils.RESULT_TYPE.TIP,
 });
 
-add_task(async function init() {
+add_setup(async function () {
   await PlacesUtils.history.clear();
   await PlacesUtils.bookmarks.eraseEverything();
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.suggest.quickactions", false]],
+  });
 });
 
 // A restricting provider with one tip result and many history results.
@@ -58,7 +52,6 @@ add_task(async function oneTip() {
   let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
     window,
-    waitForFocus: SimpleTest.waitForFocus,
   });
 
   checkResults(context.results, expectedResults);
@@ -71,18 +64,7 @@ add_task(async function oneTip() {
 add_task(async function threeTips() {
   let results = Array.from(TEST_RESULTS);
   for (let i = 1; i < 3; i++) {
-    results.push(
-      new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.TIP,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        {
-          text: "This is a test tip.",
-          buttonText: "Done",
-          type: "test",
-          helpUrl: `about:about#${i}`,
-        }
-      )
-    );
+    results.push(makeTipResult());
   }
   for (let i = 2; i < 15; i++) {
     results.push(
@@ -105,7 +87,6 @@ add_task(async function threeTips() {
   let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
     window,
-    waitForFocus: SimpleTest.waitForFocus,
   });
 
   checkResults(context.results, expectedResults);
@@ -114,7 +95,7 @@ add_task(async function threeTips() {
   gURLBar.view.close();
 });
 
-// A non-restricting provider with one tip results and many history results.
+// A non-restricting provider with one tip result and many history results.
 add_task(async function oneTip_nonRestricting() {
   let results = Array.from(TEST_RESULTS);
   for (let i = 2; i < 15; i++) {
@@ -129,7 +110,7 @@ add_task(async function oneTip_nonRestricting() {
 
   let expectedResults = Array.from(results);
 
-  // UnifiedComplete's heuristic search result
+  // UrlbarProviderHeuristicFallback's heuristic search result
   expectedResults.unshift({
     type: UrlbarUtils.RESULT_TYPE.SEARCH,
     source: UrlbarUtils.RESULT_SOURCE.SEARCH,
@@ -147,7 +128,6 @@ add_task(async function oneTip_nonRestricting() {
   let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
     window,
-    waitForFocus: SimpleTest.waitForFocus,
   });
 
   checkResults(context.results, expectedResults);
@@ -160,18 +140,7 @@ add_task(async function oneTip_nonRestricting() {
 add_task(async function threeTips_nonRestricting() {
   let results = Array.from(TEST_RESULTS);
   for (let i = 1; i < 3; i++) {
-    results.push(
-      new UrlbarResult(
-        UrlbarUtils.RESULT_TYPE.TIP,
-        UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-        {
-          text: "This is a test tip.",
-          buttonText: "Done",
-          type: "test",
-          helpUrl: `about:about#${i}`,
-        }
-      )
-    );
+    results.push(makeTipResult());
   }
   for (let i = 2; i < 15; i++) {
     results.push(
@@ -185,7 +154,7 @@ add_task(async function threeTips_nonRestricting() {
 
   let expectedResults = Array.from(results);
 
-  // UnifiedComplete's heuristic search result
+  // UrlbarProviderHeuristicFallback's heuristic search result
   expectedResults.unshift({
     type: UrlbarUtils.RESULT_TYPE.SEARCH,
     source: UrlbarUtils.RESULT_SOURCE.SEARCH,
@@ -203,7 +172,37 @@ add_task(async function threeTips_nonRestricting() {
   let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
     value: "test",
     window,
-    waitForFocus: SimpleTest.waitForFocus,
+  });
+
+  checkResults(context.results, expectedResults);
+
+  UrlbarProvidersManager.unregisterProvider(provider);
+  gURLBar.view.close();
+});
+
+add_task(async function customValue() {
+  let results = [];
+  for (let i = 0; i < 15; i++) {
+    results.push(
+      new UrlbarResult(
+        UrlbarUtils.RESULT_TYPE.URL,
+        UrlbarUtils.RESULT_SOURCE.HISTORY,
+        { url: `http://mozilla.org/${i}` }
+      )
+    );
+  }
+
+  results[1].resultSpan = 5;
+
+  let expectedResults = Array.from(results);
+  expectedResults = expectedResults.slice(0, 6);
+
+  let provider = new UrlbarTestUtils.TestProvider({ results });
+  UrlbarProvidersManager.registerProvider(provider);
+
+  let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    value: "test",
+    window,
   });
 
   checkResults(context.results, expectedResults);
@@ -234,4 +233,22 @@ function collectExpectedProperties(actualObj, expectedObj) {
     }
   }
   return newActualObj;
+}
+
+function makeTipResult() {
+  return new UrlbarResult(
+    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+    {
+      helpUrl: "http://example.com/",
+      type: "test",
+      titleL10n: { id: "urlbar-search-tips-confirm" },
+      buttons: [
+        {
+          url: "http://example.com/",
+          l10n: { id: "urlbar-search-tips-confirm" },
+        },
+      ],
+    }
+  );
 }

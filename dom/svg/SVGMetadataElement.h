@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGMetadataElement_h
-#define mozilla_dom_SVGMetadataElement_h
+#ifndef DOM_SVG_SVGMETADATAELEMENT_H_
+#define DOM_SVG_SVGMETADATAELEMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "SVGElement.h"
@@ -13,10 +13,9 @@
 nsresult NS_NewSVGMetadataElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGElement SVGMetadataElementBase;
+using SVGMetadataElementBase = SVGElement;
 
 class SVGMetadataElement final : public SVGMetadataElementBase {
  protected:
@@ -26,15 +25,14 @@ class SVGMetadataElement final : public SVGMetadataElementBase {
   explicit SVGMetadataElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
   nsresult Init();
 
  public:
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGMetadataElement_h
+#endif  // DOM_SVG_SVGMETADATAELEMENT_H_

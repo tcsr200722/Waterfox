@@ -13,7 +13,7 @@ const server = createTestHTTPServer();
 // Register a slow image handler so we can simulate a long time between
 // a reload and the load event firing.
 server.registerContentType("gif", "image/gif");
-server.registerPathHandler("/slow.gif", function(metadata, response) {
+server.registerPathHandler("/slow.gif", function (metadata, response) {
   info("Image has been requested");
   response.processAsync();
   setTimeout(() => {
@@ -35,8 +35,8 @@ const TEST_URL =
   "</body>" +
   "</html>";
 
-add_task(async function() {
-  const { inspector, testActor, tab } = await openInspectorForURL(TEST_URL);
+add_task(async function () {
+  const { inspector, tab } = await openInspectorForURL(TEST_URL);
 
   const domContentLoaded = waitForLinkedBrowserEvent(tab, "DOMContentLoaded");
   const pageLoaded = waitForLinkedBrowserEvent(tab, "load");
@@ -44,17 +44,21 @@ add_task(async function() {
   ok(inspector.markup, "There is a markup view");
 
   // Select an element while the tab is in the middle of a slow reload.
-  testActor.eval("location.reload()");
+  // Do not await here because we interact with the page during navigation.
+  const onToolboxNavigated = navigateTo(TEST_URL);
 
   info("Wait for DOMContentLoaded");
   await domContentLoaded;
 
   info("Inspect element via context menu");
   const markupLoaded = inspector.once("markuploaded");
-  await chooseWithInspectElementContextMenu("img", tab);
+  await clickOnInspectMenuItem("img");
 
   info("Wait for load");
   await pageLoaded;
+
+  info("Wait for toolbox navigation");
+  await onToolboxNavigated;
 
   info("Wait for markup-loaded after element inspection");
   await markupLoaded;
@@ -64,19 +68,6 @@ add_task(async function() {
   ok(inspector.markup, "There is a markup view");
   is(inspector.markup._elt.children.length, 1, "The markup view is rendering");
 });
-
-async function chooseWithInspectElementContextMenu(selector, tab) {
-  await BrowserTestUtils.synthesizeMouseAtCenter(
-    selector,
-    {
-      type: "contextmenu",
-      button: 2,
-    },
-    tab.linkedBrowser
-  );
-
-  await EventUtils.sendString("Q");
-}
 
 function waitForLinkedBrowserEvent(tab, event) {
   return BrowserTestUtils.waitForContentEvent(tab.linkedBrowser, event, true);

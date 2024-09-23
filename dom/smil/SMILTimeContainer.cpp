@@ -7,6 +7,7 @@
 #include "SMILTimeContainer.h"
 
 #include "mozilla/AutoRestore.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/SMILTimedElement.h"
 #include "mozilla/SMILTimeValue.h"
 #include <algorithm>
@@ -185,7 +186,7 @@ nsresult SMILTimeContainer::SetParent(SMILTimeContainer* aParent) {
   return rv;
 }
 
-bool SMILTimeContainer::AddMilestone(
+void SMILTimeContainer::AddMilestone(
     const SMILMilestone& aMilestone,
     mozilla::dom::SVGAnimationElement& aElement) {
   // We record the milestone time and store it along with the element but this
@@ -193,7 +194,7 @@ bool SMILTimeContainer::AddMilestone(
   // between samples). If this happens, then we may do an unecessary sample
   // but that's pretty cheap.
   MOZ_ASSERT(!mHoldingEntries);
-  return mMilestoneEntries.Push(MilestoneEntry(aMilestone, aElement));
+  mMilestoneEntries.Push(MilestoneEntry(aMilestone, aElement));
 }
 
 void SMILTimeContainer::ClearMilestones() {
@@ -262,8 +263,12 @@ void SMILTimeContainer::Unlink() {
 
 void SMILTimeContainer::UpdateCurrentTime() {
   SMILTime now = IsPaused() ? mPauseStart : GetParentTime();
-  mCurrentTime = now - mParentOffset;
-  MOZ_ASSERT(mCurrentTime >= 0, "Container has negative time");
+  MOZ_ASSERT(now >= mParentOffset,
+             "Container has negative time with respect to parent");
+  const auto updatedCurrentTime = CheckedInt<SMILTime>(now) - mParentOffset;
+  mCurrentTime = updatedCurrentTime.isValid()
+                     ? updatedCurrentTime.value()
+                     : std::numeric_limits<SMILTime>::max();
 }
 
 void SMILTimeContainer::NotifyTimeChange() {

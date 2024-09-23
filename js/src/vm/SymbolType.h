@@ -7,50 +7,48 @@
 #ifndef vm_SymbolType_h
 #define vm_SymbolType_h
 
-#include "mozilla/Attributes.h"
-
 #include <stdio.h>
-
-#include "jsapi.h"
 
 #include "gc/Barrier.h"
 #include "gc/Tracer.h"
 #include "js/AllocPolicy.h"
 #include "js/GCHashTable.h"
-#include "js/HeapAPI.h"
 #include "js/RootingAPI.h"
+#include "js/shadow/Symbol.h"  // JS::shadow::Symbol
 #include "js/Symbol.h"
 #include "js/TypeDecls.h"
-#include "js/Utility.h"
-#include "vm/Printer.h"
 #include "vm/StringType.h"
 
 namespace js {
-class AutoAccessAtomsZone;
-}  // namespace js
+class JS_PUBLIC_API GenericPrinter;
+class JSONPrinter;
+} /* namespace js */
 
 namespace JS {
 
-class Symbol : public js::gc::TenuredCell {
- private:
-  // User description of symbol. Also meets gc::Cell requirements.
-  using HeaderWithAtom = js::gc::CellHeaderWithTenuredGCPointer<JSAtom>;
-  HeaderWithAtom headerAndDescription_;
+class Symbol
+    : public js::gc::CellWithTenuredGCPointer<js::gc::TenuredCell, JSAtom> {
+  friend class js::gc::CellAllocator;
 
+ public:
+  // User description of symbol, stored in the cell header.
+  JSAtom* description() const { return headerPtr(); }
+
+ private:
   SymbolCode code_;
 
   // Each Symbol gets its own hash code so that we don't have to use
   // addresses as hash codes (a security hazard).
   js::HashNumber hash_;
 
-  Symbol(SymbolCode code, js::HashNumber hash, JSAtom* desc)
-      : headerAndDescription_(desc), code_(code), hash_(hash) {}
+  Symbol(SymbolCode code, js::HashNumber hash, Handle<JSAtom*> desc)
+      : CellWithTenuredGCPointer(desc), code_(code), hash_(hash) {}
 
   Symbol(const Symbol&) = delete;
   void operator=(const Symbol&) = delete;
 
   static Symbol* newInternal(JSContext* cx, SymbolCode code,
-                             js::HashNumber hash, js::HandleAtom description);
+                             js::HashNumber hash, Handle<JSAtom*> description);
 
   static void staticAsserts() {
     static_assert(uint32_t(SymbolCode::WellKnownAPILimit) ==
@@ -65,9 +63,10 @@ class Symbol : public js::gc::TenuredCell {
  public:
   static Symbol* new_(JSContext* cx, SymbolCode code,
                       js::HandleString description);
+  static Symbol* newWellKnown(JSContext* cx, SymbolCode code,
+                              Handle<js::PropertyName*> description);
   static Symbol* for_(JSContext* cx, js::HandleString description);
 
-  JSAtom* description() const { return headerAndDescription_.ptr(); }
   SymbolCode code() const { return code_; }
   js::HashNumber hash() const { return hash_; }
 
@@ -81,31 +80,37 @@ class Symbol : public js::gc::TenuredCell {
   // symbol properties are added, so we can optimize lookups on objects that
   // don't have the BaseShape flag.
   bool isInterestingSymbol() const {
-    return code_ == SymbolCode::toStringTag || code_ == SymbolCode::toPrimitive;
+    return code_ == SymbolCode::toStringTag ||
+           code_ == SymbolCode::toPrimitive ||
+           code_ == SymbolCode::isConcatSpreadable;
   }
+
+  // Symbol created for the #PrivateName syntax.
+  bool isPrivateName() const { return code_ == SymbolCode::PrivateNameSymbol; }
 
   static const JS::TraceKind TraceKind = JS::TraceKind::Symbol;
-  const js::gc::CellHeader& cellHeader() const { return headerAndDescription_; }
 
-  inline void traceChildren(JSTracer* trc) {
-    js::TraceNullableEdge(trc, &headerAndDescription_, "symbol description");
-  }
-  inline void finalize(JSFreeOp*) {}
+  void traceChildren(JSTracer* trc);
+  void finalize(JS::GCContext* gcx) {}
 
-  static MOZ_ALWAYS_INLINE void writeBarrierPre(Symbol* thing) {
-    if (thing && !thing->isWellKnownSymbol()) {
-      thing->asTenured().writeBarrierPre(thing);
-    }
-  }
+  // Override base class implementation to tell GC about well-known symbols.
+  bool isPermanentAndMayBeShared() const { return isWellKnownSymbol(); }
 
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
     return mallocSizeOf(this);
   }
 
 #if defined(DEBUG) || defined(JS_JITSPEW)
-  void dump();  // Debugger-friendly stderr dump.
-  void dump(js::GenericPrinter& out);
+  void dump() const;  // Debugger-friendly stderr dump.
+  void dump(js::GenericPrinter& out) const;
+  void dump(js::JSONPrinter& json) const;
+
+  void dumpFields(js::JSONPrinter& json) const;
+  void dumpStringContent(js::GenericPrinter& out) const;
+  void dumpPropertyName(js::GenericPrinter& out) const;
 #endif
+
+  static constexpr size_t offsetOfHash() { return offsetof(Symbol, hash_); }
 };
 
 } /* namespace JS */
@@ -139,7 +144,7 @@ struct HashSymbolsByDescription {
  * enumerating the symbol registry, querying its size, etc.
  */
 class SymbolRegistry
-    : public GCHashSet<WeakHeapPtrSymbol, HashSymbolsByDescription,
+    : public GCHashSet<WeakHeapPtr<JS::Symbol*>, HashSymbolsByDescription,
                        SystemAllocPolicy> {
  public:
   SymbolRegistry() = default;

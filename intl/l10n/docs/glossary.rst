@@ -1,6 +1,5 @@
-========
-Glossary
-========
+L10N Glossary
+=============
 
 .. glossary::
     :sorted:
@@ -11,14 +10,11 @@ Glossary
 
     Localizability
         Enabling a piece of software to be localized. This is mostly
-        externalizing English strings, and writing build support to 
+        externalizing English strings, and writing build support to
         pick up localized search engines etc.
 
     L10n
         *Numeronym* for Localization, *L*, 10 chars, *n*
-
-    L12y
-        Numeronym for Localizability
 
     l10n-merge
         nick-name for the process of merging ``en-US`` and a particular

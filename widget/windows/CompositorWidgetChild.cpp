@@ -5,6 +5,7 @@
 
 #include "CompositorWidgetChild.h"
 #include "mozilla/Unused.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/widget/CompositorWidgetVsyncObserver.h"
 #include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsBaseWidget.h"
@@ -67,11 +68,16 @@ bool CompositorWidgetChild::OnWindowResize(const LayoutDeviceIntSize& aSize) {
 
 void CompositorWidgetChild::OnWindowModeChange(nsSizeMode aSizeMode) {}
 
-void CompositorWidgetChild::UpdateTransparency(nsTransparencyMode aMode) {
+void CompositorWidgetChild::UpdateTransparency(TransparencyMode aMode) {
   mTransparencyMode = aMode;
   mRemoteBackbufferProvider->UpdateTransparencyMode(aMode);
   Unused << SendUpdateTransparency(aMode);
 }
+
+void CompositorWidgetChild::NotifyVisibilityUpdated(nsSizeMode aSizeMode,
+                                                    bool aIsFullyOccluded) {
+  Unused << SendNotifyVisibilityUpdated(aSizeMode, aIsFullyOccluded);
+};
 
 void CompositorWidgetChild::ClearTransparentWindow() {
   Unused << SendClearTransparentWindow();

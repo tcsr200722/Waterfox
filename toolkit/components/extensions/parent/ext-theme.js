@@ -8,15 +8,10 @@
 
 /* eslint-disable complexity */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "LightweightThemeManager",
-  "resource://gre/modules/LightweightThemeManager.jsm"
-);
-
-var { getWinUtils } = ExtensionUtils;
+ChromeUtils.defineESModuleGetters(this, {
+  LightweightThemeManager:
+    "resource://gre/modules/LightweightThemeManager.sys.mjs",
+});
 
 const onUpdatedEmitter = new EventEmitter();
 
@@ -37,8 +32,13 @@ class Theme {
   /**
    * Creates a theme instance.
    *
-   * @param {string} extension Extension that created the theme.
-   * @param {Integer} windowId The windowId where the theme is applied.
+   * @param {object} options
+   * @param {string} options.extension Extension that created the theme.
+   * @param {Integer} options.windowId The windowId where the theme is applied.
+   * @param {object} options.details
+   * @param {object} options.darkDetails
+   * @param {object} options.experiment
+   * @param {object} options.startupData startupData if this is a static theme.
    */
   constructor({
     extension,
@@ -53,23 +53,43 @@ class Theme {
     this.darkDetails = darkDetails;
     this.windowId = windowId;
 
-    if (startupData && startupData.lwtData) {
-      Object.assign(this, startupData);
+    if (startupData?.lwtData) {
+      // Parsed theme from a previous load() already available in startupData
+      // of parsed theme. We assume that reparsing the theme will yield the same
+      // result, and therefore reuse the value of startupData. This is a minor
+      // optimization; the more important use of startupData is before startup,
+      // by Extension.sys.mjs for LightweightThemeManager.fallbackThemeData.
+      //
+      // Note: the assumption "yield the same result" is not obviously true: the
+      // startupData persists across application updates, so it is possible for
+      // a browser update to occur that interprets the static theme differently.
+      // In this case we would still be using the old interpretation instead of
+      // the new one, until the user disables and re-enables/installs the theme.
+      this.lwtData = startupData.lwtData;
+      this.lwtStyles = startupData.lwtStyles;
+      this.lwtDarkStyles = startupData.lwtDarkStyles;
+      this.experiment = startupData.experiment;
     } else {
+      // lwtData will be populated by load().
+      this.lwtData = null;
       // TODO(ntim): clean this in bug 1550090
       this.lwtStyles = {};
-      this.lwtDarkStyles = null;
-      if (darkDetails) {
-        this.lwtDarkStyles = {};
-      }
-
+      this.lwtDarkStyles = darkDetails ? {} : null;
+      this.experiment = null;
       if (experiment) {
-        if (extension.experimentsAllowed) {
+        if (extension.canUseThemeExperiment()) {
           this.lwtStyles.experimental = {
             colors: {},
             images: {},
             properties: {},
           };
+          if (this.lwtDarkStyles) {
+            this.lwtDarkStyles.experimental = {
+              colors: {},
+              images: {},
+              properties: {},
+            };
+          }
           const { baseURI } = this.extension;
           if (experiment.stylesheet) {
             experiment.stylesheet = baseURI.resolve(experiment.stylesheet);
@@ -88,11 +108,9 @@ class Theme {
   /**
    * Loads a theme by reading the properties from the extension's manifest.
    * This method will override any currently applied theme.
-   *
-   * @param {Object} details Theme part of the manifest. Supported
-   *   properties can be found in the schema under ThemeType.
    */
   load() {
+    // this.lwtData is usually null, unless populated from startupData.
     if (!this.lwtData) {
       this.loadDetails(this.details, this.lwtStyles);
       if (this.darkDetails) {
@@ -108,19 +126,25 @@ class Theme {
         this.lwtData.experiment = this.experiment;
       }
 
-      this.extension.startupData = {
-        lwtData: this.lwtData,
-        lwtStyles: this.lwtStyles,
-        lwtDarkStyles: this.lwtDarkStyles,
-        experiment: this.experiment,
-      };
-      this.extension.saveStartupData();
+      if (this.extension.type === "theme") {
+        // Store the parsed theme in startupData, so it is available early at
+        // browser startup, to use as LightweightThemeManager.fallbackThemeData,
+        // which is assigned from Extension.sys.mjs to avoid having to wait for
+        // this ext-theme.js file to be loaded.
+        this.extension.startupData = {
+          lwtData: this.lwtData,
+          lwtStyles: this.lwtStyles,
+          lwtDarkStyles: this.lwtDarkStyles,
+          experiment: this.experiment,
+        };
+        this.extension.saveStartupData();
+      }
     }
 
     if (this.windowId) {
-      this.lwtData.window = getWinUtils(
-        windowTracker.getWindow(this.windowId)
-      ).outerWindowID;
+      this.lwtData.window = windowTracker.getWindow(
+        this.windowId
+      ).docShell.outerWindowID;
       windowOverrides.set(this.windowId, this);
     } else {
       windowOverrides.clear();
@@ -136,8 +160,8 @@ class Theme {
   }
 
   /**
-   * @param {Object} details Details
-   * @param {Object} styles Styles object in which to store the colors.
+   * @param {object} details Details
+   * @param {object} styles Styles object in which to store the colors.
    */
   loadDetails(details, styles) {
     if (details.colors) {
@@ -158,8 +182,8 @@ class Theme {
   /**
    * Helper method for loading colors found in the extension's manifest.
    *
-   * @param {Object} colors Dictionary mapping color properties to values.
-   * @param {Object} styles Styles object in which to store the colors.
+   * @param {object} colors Dictionary mapping color properties to values.
+   * @param {object} styles Styles object in which to store the colors.
    */
   loadColors(colors, styles) {
     for (let color of Object.keys(colors)) {
@@ -206,7 +230,6 @@ class Theme {
         case "toolbar_field":
         case "toolbar_field_text":
         case "toolbar_field_border":
-        case "toolbar_field_separator":
         case "toolbar_field_focus":
         case "toolbar_field_text_focus":
         case "toolbar_field_border_focus":
@@ -221,6 +244,7 @@ class Theme {
         case "popup_highlight":
         case "popup_highlight_text":
         case "ntp_background":
+        case "ntp_card_background":
         case "ntp_text":
         case "sidebar":
         case "sidebar_border":
@@ -250,8 +274,8 @@ class Theme {
   /**
    * Helper method for loading images found in the extension's manifest.
    *
-   * @param {Object} images Dictionary mapping image properties to values.
-   * @param {Object} styles Styles object in which to store the colors.
+   * @param {object} images Dictionary mapping image properties to values.
+   * @param {object} styles Styles object in which to store the colors.
    */
   loadImages(images, styles) {
     const { baseURI, logger } = this.extension;
@@ -295,8 +319,8 @@ class Theme {
    * Properties are commonly used to specify more advanced behavior of colors,
    * images or icons.
    *
-   * @param {Object} properties Dictionary mapping properties to values.
-   * @param {Object} styles Styles object in which to store the colors.
+   * @param {object} properties Dictionary mapping properties to values.
+   * @param {object} styles Styles object in which to store the colors.
    */
   loadProperties(properties, styles) {
     let additionalBackgroundsCount =
@@ -349,6 +373,11 @@ class Theme {
           styles.backgroundsTiling = tiling.join(",");
           break;
         }
+        case "color_scheme":
+        case "content_color_scheme": {
+          styles[property] = val;
+          break;
+        }
         default: {
           if (
             this.experiment &&
@@ -372,8 +401,8 @@ class Theme {
    * Helper method for loading extension metadata required by downstream
    * consumers.
    *
-   * @param {Object} extension Extension object.
-   * @param {Object} styles Styles object in which to store the colors.
+   * @param {object} extension Extension object.
+   * @param {object} styles Styles object in which to store the colors.
    */
   loadMetadata(extension, styles) {
     styles.id = extension.id;
@@ -386,9 +415,7 @@ class Theme {
     };
 
     if (windowId) {
-      lwtData.window = getWinUtils(
-        windowTracker.getWindow(windowId)
-      ).outerWindowID;
+      lwtData.window = windowTracker.getWindow(windowId).docShell.outerWindowID;
       windowOverrides.delete(windowId);
     } else {
       windowOverrides.clear();
@@ -401,11 +428,39 @@ class Theme {
   }
 }
 
-this.theme = class extends ExtensionAPI {
-  onManifestEntry(entryName) {
+this.theme = class extends ExtensionAPIPersistent {
+  PERSISTENT_EVENTS = {
+    onUpdated({ fire, context }) {
+      let callback = (event, theme, windowId) => {
+        if (windowId) {
+          // Force access validation for incognito mode by getting the window.
+          if (windowTracker.getWindow(windowId, context, false)) {
+            fire.async({ theme, windowId });
+          }
+        } else {
+          fire.async({ theme });
+        }
+      };
+
+      onUpdatedEmitter.on("theme-updated", callback);
+      return {
+        unregister() {
+          onUpdatedEmitter.off("theme-updated", callback);
+        },
+        convert(_fire, _context) {
+          fire = _fire;
+          context = _context;
+        },
+      };
+    },
+  };
+
+  onManifestEntry() {
     let { extension } = this;
     let { manifest } = extension;
 
+    // Note: only static themes are processed here; extensions with the "theme"
+    // permission do not enter this code path.
     defaultTheme = new Theme({
       extension,
       details: manifest.theme,
@@ -413,6 +468,15 @@ this.theme = class extends ExtensionAPI {
       experiment: manifest.theme_experiment,
       startupData: extension.startupData,
     });
+    if (extension.startupData.lwtData?._processedColors) {
+      // We should ideally not be modifying startupData, but we did so before,
+      // before bug 1830136 was fixed. startupData persists across browser
+      // updates and is only erased when the theme is updated or uninstalled.
+      // To prevent this stale _processedColors from bloating the database
+      // unnecessarily, we delete it here.
+      delete extension.startupData.lwtData._processedColors;
+      extension.saveStartupData();
+    }
   }
 
   onShutdown(isAppShutdown) {
@@ -486,24 +550,9 @@ this.theme = class extends ExtensionAPI {
         },
         onUpdated: new EventManager({
           context,
-          name: "theme.onUpdated",
-          register: fire => {
-            let callback = (event, theme, windowId) => {
-              if (windowId) {
-                // Force access validation for incognito mode by getting the window.
-                if (windowTracker.getWindow(windowId, context, false)) {
-                  fire.async({ theme, windowId });
-                }
-              } else {
-                fire.async({ theme });
-              }
-            };
-
-            onUpdatedEmitter.on("theme-updated", callback);
-            return () => {
-              onUpdatedEmitter.off("theme-updated", callback);
-            };
-          },
+          module: "theme",
+          event: "onUpdated",
+          extensionApi: this,
         }).api(),
       },
     };

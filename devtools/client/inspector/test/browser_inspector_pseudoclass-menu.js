@@ -5,7 +5,9 @@
 // Test that the inspector has the correct pseudo-class locking menu items and
 // that these items actually work
 
-const { PSEUDO_CLASSES } = require("devtools/shared/css/constants");
+const {
+  PSEUDO_CLASSES,
+} = require("resource://devtools/shared/css/constants.js");
 const TEST_URI =
   "data:text/html;charset=UTF-8," +
   "pseudo-class lock node menu tests" +
@@ -13,16 +15,18 @@ const TEST_URI =
 // Strip the colon prefix from pseudo-classes (:before => before)
 const PSEUDOS = PSEUDO_CLASSES.map(pseudo => pseudo.substr(1));
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_URI);
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
+    TEST_URI
+  );
   await selectNode("div", inspector);
 
   const allMenuItems = openContextMenuAndGetAllItems(inspector);
 
-  await testMenuItems(testActor, allMenuItems, inspector);
+  await testMenuItems(highlighterTestFront, allMenuItems, inspector);
 });
 
-async function testMenuItems(testActor, allMenuItems, inspector) {
+async function testMenuItems(highlighterTestFront, allMenuItems, inspector) {
   for (const pseudo of PSEUDOS) {
     const menuItem = allMenuItems.find(
       item => item.id === "node-menu-pseudo-" + pseudo
@@ -43,7 +47,14 @@ async function testMenuItems(testActor, allMenuItems, inspector) {
     await onRefresh;
     await onMutations;
 
-    const hasLock = await testActor.hasPseudoClassLock("div", ":" + pseudo);
+    const hasLock = await SpecialPowers.spawn(
+      gBrowser.selectedBrowser,
+      [`:${pseudo}`],
+      pseudoClass => {
+        const element = content.document.querySelector("div");
+        return InspectorUtils.hasPseudoClassLock(element, pseudoClass);
+      }
+    );
     ok(hasLock, "pseudo-class lock has been applied");
   }
 }

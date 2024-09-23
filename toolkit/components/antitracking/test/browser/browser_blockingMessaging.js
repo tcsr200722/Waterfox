@@ -1,9 +1,7 @@
-/* import-globals-from antitracking_head.js */
-
 if (AppConstants.MOZ_CODE_COVERAGE) {
   requestLongerTimeout(12);
 } else {
-  requestLongerTimeout(6);
+  requestLongerTimeout(12);
 }
 
 AntiTracking.runTestInNormalAndPrivateMode(
@@ -23,7 +21,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });
@@ -52,7 +50,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -60,7 +58,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
@@ -81,7 +79,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -89,14 +87,14 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
   },
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });
@@ -120,13 +118,19 @@ AntiTracking.runTestInNormalAndPrivateMode(
     /* import-globals-from storageAccessAPIHelpers.js */
     await callRequestStorageAccess();
 
+    let effectiveCookieBehavior = SpecialPowers.isContentWindowPrivate(window)
+      ? SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior.pbmode"
+        )
+      : SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior"
+        );
+
     if (
       [
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT,
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN,
-      ].includes(
-        SpecialPowers.Services.prefs.getIntPref("network.cookie.cookieBehavior")
-      )
+      ].includes(effectiveCookieBehavior)
     ) {
       try {
         new BroadcastChannel("hello");
@@ -142,11 +146,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     new BroadcastChannel("hello");
     ok(true, "BroadcastChanneli can be used");
@@ -159,7 +159,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });
@@ -198,7 +198,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -206,7 +206,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
@@ -214,13 +214,19 @@ AntiTracking.runTestInNormalAndPrivateMode(
     /* import-globals-from storageAccessAPIHelpers.js */
     await callRequestStorageAccess();
 
+    let effectiveCookieBehavior = SpecialPowers.isContentWindowPrivate(window)
+      ? SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior.pbmode"
+        )
+      : SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior"
+        );
+
     if (
       [
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT,
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN,
-      ].includes(
-        SpecialPowers.Services.prefs.getIntPref("network.cookie.cookieBehavior")
-      )
+      ].includes(effectiveCookieBehavior)
     ) {
       blob = new Blob([blockingCode.toString() + "; blockingCode();"]);
     } else {
@@ -236,7 +242,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -244,7 +250,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
@@ -256,11 +262,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     }
 
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     let blob = new Blob([nonBlockingCode.toString() + "; nonBlockingCode();"]);
     ok(blob, "Blob has been created");
@@ -272,7 +274,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -280,7 +282,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
@@ -294,7 +296,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     ok(worker, "Worker has been created");
 
     await new Promise((resolve, reject) => {
-      worker.onmessage = function(e) {
+      worker.onmessage = function (e) {
         if (e.data) {
           resolve();
         } else {
@@ -302,14 +304,14 @@ AntiTracking.runTestInNormalAndPrivateMode(
         }
       };
 
-      worker.onerror = function(e) {
+      worker.onerror = function () {
         reject();
       };
     });
   },
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });

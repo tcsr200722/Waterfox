@@ -3,20 +3,18 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """ Manages a metadata file.
 """
-import os
 import datetime
-from collections.abc import MutableMapping
 import json
+import os
+from collections.abc import MutableMapping
 
 from condprof.util import logger
-
 
 METADATA_NAME = "condprofile.json"
 
 
 class Metadata(MutableMapping):
-    """ dict-like class that holds metadata for a profile.
-    """
+    """dict-like class that holds metadata for a profile."""
 
     def __init__(self, profile_dir):
         self.metadata_file = os.path.join(profile_dir, METADATA_NAME)

@@ -18,7 +18,7 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, gridInspector, layoutView } = await openLayoutView();
   const { document: doc } = gridInspector;
@@ -68,7 +68,7 @@ add_task(async function() {
   await selectNode("#grid", inspector);
 
   const container = getRuleViewProperty(ruleView, "#grid", "display").valueSpan;
-  const gridToggle = container.querySelector(".ruleview-grid");
+  const gridToggle = container.querySelector(".js-toggle-grid-highlighter");
 
   info("Toggling ON the CSS grid highlighter from the rule-view.");
   const onHighlighterShown = highlighters.once(

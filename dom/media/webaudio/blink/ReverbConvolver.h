@@ -38,6 +38,7 @@
 #  undef LOG
 #endif
 #include "base/thread.h"
+#include <atomic>
 
 namespace WebCore {
 
@@ -54,7 +55,8 @@ class ReverbConvolver {
   // If not doing multi-threaded convolution, then should not go > 8192.
   ReverbConvolver(const float* impulseResponseData,
                   size_t impulseResponseLength, size_t maxFFTSize,
-                  size_t convolverRenderPhase, bool useBackgroundThreads);
+                  size_t convolverRenderPhase, bool useBackgroundThreads,
+                  bool* aAllocationFailure);
   ~ReverbConvolver();
 
   void process(const float* sourceChannelData, float* destinationChannelData);
@@ -81,10 +83,10 @@ class ReverbConvolver {
 
   // Background thread and synchronization
   base::Thread m_backgroundThread;
-  mozilla::Monitor m_backgroundThreadMonitor;
+  mozilla::Monitor m_backgroundThreadMonitor MOZ_UNANNOTATED;
   bool m_useBackgroundThreads;
-  bool m_wantsToExit;
-  bool m_moreInputBuffered;
+  std::atomic<bool> m_wantsToExit;
+  std::atomic<bool> m_moreInputBuffered;
 };
 
 }  // namespace WebCore

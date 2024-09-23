@@ -1,13 +1,14 @@
 add_task(async function test_windowlessBrowserTroubleshootCrash() {
   let webNav = Services.appShell.createWindowlessBrowser(false);
 
-  let onLoaded = new Promise((resolve, reject) => {
+  let onLoaded = new Promise(resolve => {
     let docShell = webNav.docShell;
     let listener = {
-      observe(contentWindow, topic, data) {
-        let observedDocShell = contentWindow.docShell.sameTypeRootTreeItem.QueryInterface(
-          Ci.nsIDocShell
-        );
+      observe(contentWindow) {
+        let observedDocShell =
+          contentWindow.docShell.sameTypeRootTreeItem.QueryInterface(
+            Ci.nsIDocShell
+          );
         if (docShell === observedDocShell) {
           Services.obs.removeObserver(
             listener,
@@ -22,16 +23,16 @@ add_task(async function test_windowlessBrowserTroubleshootCrash() {
   let loadURIOptions = {
     triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
   };
-  webNav.loadURI("about:blank", loadURIOptions);
+  webNav.loadURI(Services.io.newURI("about:blank"), loadURIOptions);
 
   await onLoaded;
 
   let winUtils = webNav.document.defaultView.windowUtils;
   try {
-    is(
-      winUtils.layerManagerType,
-      "Basic",
-      "windowless browser's layerManagerType should be 'Basic'"
+    let layerManager = winUtils.layerManagerType;
+    ok(
+      layerManager == "Basic" || layerManager == "WebRender (Software)",
+      "windowless browser's layerManagerType should be 'Basic' or 'WebRender (Software)'"
     );
   } catch (e) {
     // The windowless browser may not have a layermanager at all yet, and that's ok.
@@ -39,18 +40,14 @@ add_task(async function test_windowlessBrowserTroubleshootCrash() {
   }
   ok(true, "not crashed");
 
-  var Troubleshoot = ChromeUtils.import(
-    "resource://gre/modules/Troubleshoot.jsm",
-    {}
-  ).Troubleshoot;
-  var data = await new Promise((resolve, reject) => {
-    Troubleshoot.snapshot(data => {
-      resolve(data);
-    });
-  });
+  var { Troubleshoot } = ChromeUtils.importESModule(
+    "resource://gre/modules/Troubleshoot.sys.mjs"
+  );
+  var data = await Troubleshoot.snapshot();
 
-  ok(
-    data.graphics.windowLayerManagerType !== "None",
+  Assert.notStrictEqual(
+    data.graphics.windowLayerManagerType,
+    "None",
     "windowless browser window should not set windowLayerManagerType to 'None'"
   );
 

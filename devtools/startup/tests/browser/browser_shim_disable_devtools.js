@@ -5,17 +5,32 @@
 
 /* eslint-env browser */
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
-const { CustomizableUI } = ChromeUtils.import(
-  "resource:///modules/CustomizableUI.jsm"
+const { require } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/Loader.sys.mjs"
 );
-const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
+
 const { gDevTools } = require("devtools/client/framework/devtools");
+
+async function simulateMenuOpen(menu) {
+  return new Promise(resolve => {
+    menu.addEventListener("popupshown", resolve, { once: true });
+    menu.dispatchEvent(new MouseEvent("popupshowing"));
+    menu.dispatchEvent(new MouseEvent("popupshown"));
+  });
+}
+
+async function simulateMenuClosed(menu) {
+  return new Promise(resolve => {
+    menu.addEventListener("popuphidden", resolve, { once: true });
+    menu.dispatchEvent(new MouseEvent("popuphiding"));
+    menu.dispatchEvent(new MouseEvent("popuphidden"));
+  });
+}
 
 /**
  * Test that the preference devtools.policy.disabled disables entry points for devtools.
  */
-add_task(async function() {
+add_task(async function () {
   info(
     "Disable DevTools entry points (does not apply to the already created window"
   );
@@ -56,14 +71,7 @@ add_task(async function() {
   /* eslint-disable mozilla/no-arbitrary-setTimeout */
   await new Promise(r => setTimeout(r, 1000));
 
-  is(gDevTools._toolboxes.size, 0, "No toolbox has been opened");
-
-  const browser = gBrowser.selectedTab.linkedBrowser;
-  const location = browser.documentURI.spec;
-  ok(
-    !location.startsWith("about:devtools"),
-    "The current tab is not about:devtools"
-  );
+  is(gDevTools._toolboxesPerCommands.size, 0, "No toolbox has been opened");
 
   info("Open the context menu for the content page.");
   const contextMenu = win.document.getElementById("contentAreaContextMenu");
@@ -92,27 +100,52 @@ add_task(async function() {
   contextMenu.hidePopup();
   await onContextMenuHidden;
 
-  const toolsMenu = win.document.getElementById("webDeveloperMenu");
-  ok(toolsMenu.hidden, "The Web Developer item of the tools menu is hidden");
-  const hamburgerMenu = win.document.getElementById("appMenu-developer-button");
+  info("Open the menubar Tools menu");
+  const toolsMenuPopup = win.document.getElementById("menu_ToolsPopup");
+  const browserToolsMenu = win.document.getElementById("browserToolsMenu");
   ok(
-    hamburgerMenu.hidden,
-    "The Web Developer item of the hamburger menu is hidden"
+    !browserToolsMenu.hidden,
+    "The Browser Tools item of the tools menu is visible"
   );
+
+  await simulateMenuOpen(toolsMenuPopup);
+  const subMenu = win.document.getElementById("menuWebDeveloperPopup");
+
+  info("Open the Browser Tools sub-menu");
+  await simulateMenuOpen(subMenu);
+
+  const visibleMenuItems = Array.from(
+    subMenu.querySelectorAll("menuitem")
+  ).filter(item => !item.hidden);
+
+  const { menuitems } = require("devtools/client/menus");
+  for (const devtoolsItem of menuitems) {
+    ok(
+      !visibleMenuItems.some(item => item.id === devtoolsItem.id),
+      "DevTools menu item is not visible in the Browser Tools menu"
+    );
+  }
+
+  info("Close out the menu popups");
+  await simulateMenuClosed(subMenu);
+  await simulateMenuClosed(toolsMenuPopup);
 
   win.gBrowser.removeTab(tab);
 
   info("Close the test window");
   const winClosed = BrowserTestUtils.windowClosed(win);
-  win.BrowserTryToCloseWindow();
+  win.BrowserCommands.tryToCloseWindow();
   await winClosed;
 });
 
 function waitForDelayedStartupFinished(win) {
   return new Promise(resolve => {
-    Services.obs.addObserver(function observer(subject, topic) {
+    Services.obs.addObserver(function observer(subject) {
       if (win == subject) {
-        Services.obs.removeObserver(observer, topic);
+        Services.obs.removeObserver(
+          observer,
+          "browser-delayed-startup-finished"
+        );
         resolve();
       }
     }, "browser-delayed-startup-finished");

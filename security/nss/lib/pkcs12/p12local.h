@@ -26,6 +26,12 @@ extern SECItem *sec_pkcs12_generate_key_from_password(SECOidTag algorithm,
                                                       SECItem *salt, SECItem *password);
 extern SECItem *sec_pkcs12_generate_mac(SECItem *key, SECItem *msg,
                                         PRBool old_method);
+PK11SymKey *sec_pkcs12_integrity_key(PK11SlotInfo *slot,
+                                     sec_PKCS12MacData *macData,
+                                     SECItem *pwitem,
+                                     CK_MECHANISM_TYPE *hmacMech,
+                                     PRBool isDecrypt,
+                                     void *pwarg);
 extern SGNDigestInfo *sec_pkcs12_compute_thumbprint(SECItem *der_cert);
 extern SECItem *sec_pkcs12_create_virtual_password(SECItem *password,
                                                    SECItem *salt, PRBool swapUnicodeBytes);
@@ -38,6 +44,7 @@ extern PRBool sec_pkcs12_convert_item_to_unicode(PLArenaPool *arena, SECItem *de
                                                  SECItem *src, PRBool zeroTerm,
                                                  PRBool asciiConvert, PRBool toUnicode);
 extern CK_MECHANISM_TYPE sec_pkcs12_algtag_to_mech(SECOidTag algtag);
+extern CK_MECHANISM_TYPE sec_pkcs12_algtag_to_keygen_mech(SECOidTag algtag);
 
 /* create functions */
 extern SEC_PKCS12PFXItem *sec_pkcs12_new_pfx(void);

@@ -15,6 +15,7 @@
 #include "mozilla/Preferences.h"
 #include "nsUnicodeProperties.h"
 #include "gfxFontConstants.h"
+#include "gfxHarfBuzzShaper.h"
 #include "gfxTextRun.h"
 
 #include "cairo-win32.h"
@@ -51,15 +52,15 @@ gfxGDIFont::~gfxGDIFont() {
   delete mMetrics;
 }
 
-UniquePtr<gfxFont> gfxGDIFont::CopyWithAntialiasOption(
-    AntialiasOption anAAOption) {
+gfxFont* gfxGDIFont::CopyWithAntialiasOption(AntialiasOption anAAOption) const {
   auto entry = static_cast<GDIFontEntry*>(mFontEntry.get());
-  return MakeUnique<gfxGDIFont>(entry, &mStyle, anAAOption);
+  return new gfxGDIFont(entry, &mStyle, anAAOption);
 }
 
 bool gfxGDIFont::ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
                            uint32_t aOffset, uint32_t aLength, Script aScript,
-                           bool aVertical, RoundingFlags aRounding,
+                           nsAtom* aLanguage, bool aVertical,
+                           RoundingFlags aRounding,
                            gfxShapedText* aShapedText) {
   if (!mIsValid) {
     NS_WARNING("invalid font! expect incorrect text rendering");
@@ -67,23 +68,31 @@ bool gfxGDIFont::ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
   }
 
   return gfxFont::ShapeText(aDrawTarget, aText, aOffset, aLength, aScript,
-                            aVertical, aRounding, aShapedText);
+                            aLanguage, aVertical, aRounding, aShapedText);
 }
 
-const gfxFont::Metrics& gfxGDIFont::GetHorizontalMetrics() { return *mMetrics; }
-
-already_AddRefed<ScaledFont> gfxGDIFont::GetScaledFont(DrawTarget* aTarget) {
-  if (!mAzureScaledFont) {
-    LOGFONT lf;
-    GetObject(GetHFONT(), sizeof(LOGFONT), &lf);
-
-    mAzureScaledFont = Factory::CreateScaledFontForGDIFont(
-        &lf, GetUnscaledFont(), GetAdjustedSize());
-    InitializeScaledFont();
+already_AddRefed<ScaledFont> gfxGDIFont::GetScaledFont(
+    const TextRunDrawParams& aRunParams) {
+  if (ScaledFont* scaledFont = mAzureScaledFont) {
+    return do_AddRef(scaledFont);
   }
 
-  RefPtr<ScaledFont> scaledFont(mAzureScaledFont);
-  return scaledFont.forget();
+  LOGFONT lf;
+  GetObject(GetHFONT(), sizeof(LOGFONT), &lf);
+
+  RefPtr<ScaledFont> newScaledFont = Factory::CreateScaledFontForGDIFont(
+      &lf, GetUnscaledFont(), GetAdjustedSize());
+  if (!newScaledFont) {
+    return nullptr;
+  }
+
+  InitializeScaledFont(newScaledFont);
+
+  if (mAzureScaledFont.compareExchange(nullptr, newScaledFont.get())) {
+    Unused << newScaledFont.forget();
+  }
+  ScaledFont* scaledFont = mAzureScaledFont;
+  return do_AddRef(scaledFont);
 }
 
 gfxFont::RunMetrics gfxGDIFont::Measure(const gfxTextRun* aTextRun,
@@ -117,30 +126,63 @@ void gfxGDIFont::Initialize() {
   LOGFONTW logFont;
 
   if (mAdjustedSize == 0.0) {
-    mAdjustedSize = mStyle.size;
-    if (mStyle.sizeAdjust > 0.0 && mAdjustedSize > 0.0) {
-      // to implement font-size-adjust, we first create the "unadjusted" font
-      FillLogFont(logFont, mAdjustedSize);
-      mFont = ::CreateFontIndirectW(&logFont);
+    mAdjustedSize = GetAdjustedSize();
+    if (FontSizeAdjust::Tag(mStyle.sizeAdjustBasis) !=
+        FontSizeAdjust::Tag::None) {
+      if (mStyle.sizeAdjust > 0.0 && mAdjustedSize > 0.0) {
+        // to implement font-size-adjust, we first create the "unadjusted" font
+        FillLogFont(logFont, mAdjustedSize);
+        mFont = ::CreateFontIndirectW(&logFont);
 
-      // initialize its metrics so we can calculate size adjustment
-      Initialize();
+        // initialize its metrics so we can calculate size adjustment
+        Initialize();
 
-      // Unless the font was so small that GDI metrics rounded to zero,
-      // calculate the properly adjusted size, and then proceed
-      // to recreate mFont and recalculate metrics
-      if (mMetrics->xHeight > 0.0 && mMetrics->emHeight > 0.0) {
-        gfxFloat aspect = mMetrics->xHeight / mMetrics->emHeight;
-        mAdjustedSize = mStyle.GetAdjustedSize(aspect);
+        // Unless the font was so small that GDI metrics rounded to zero,
+        // calculate the properly adjusted size, and then proceed
+        // to recreate mFont and recalculate metrics
+        if (mMetrics->emHeight > 0.0) {
+          gfxFloat aspect;
+          switch (FontSizeAdjust::Tag(mStyle.sizeAdjustBasis)) {
+            default:
+              MOZ_ASSERT_UNREACHABLE("unhandled sizeAdjustBasis?");
+              aspect = 0.0;
+              break;
+            case FontSizeAdjust::Tag::ExHeight:
+              aspect = mMetrics->xHeight / mMetrics->emHeight;
+              break;
+            case FontSizeAdjust::Tag::CapHeight:
+              aspect = mMetrics->capHeight / mMetrics->emHeight;
+              break;
+            case FontSizeAdjust::Tag::ChWidth: {
+              gfxFloat advance = GetCharAdvance('0');
+              aspect = advance > 0.0 ? advance / mMetrics->emHeight : 0.5;
+              break;
+            }
+            case FontSizeAdjust::Tag::IcWidth:
+            case FontSizeAdjust::Tag::IcHeight: {
+              bool vertical = FontSizeAdjust::Tag(mStyle.sizeAdjustBasis) ==
+                              FontSizeAdjust::Tag::IcHeight;
+              gfxFloat advance = GetCharAdvance(kWaterIdeograph, vertical);
+              aspect = advance > 0.0 ? advance / mMetrics->emHeight : 1.0;
+              break;
+            }
+          }
+          if (aspect > 0.0) {
+            // If we created a shaper above (to measure glyphs), discard it so
+            // we get a new one for the adjusted scaling.
+            delete mHarfBuzzShaper.exchange(nullptr);
+            mAdjustedSize = mStyle.GetAdjustedSize(aspect);
+          }
+        }
+
+        // delete the temporary font and metrics
+        ::DeleteObject(mFont);
+        mFont = nullptr;
+        delete mMetrics;
+        mMetrics = nullptr;
+      } else {
+        mAdjustedSize = 0.0;
       }
-
-      // delete the temporary font and metrics
-      ::DeleteObject(mFont);
-      mFont = nullptr;
-      delete mMetrics;
-      mMetrics = nullptr;
-    } else if (mStyle.sizeAdjust == 0.0) {
-      mAdjustedSize = 0.0;
     }
   }
 
@@ -316,14 +358,32 @@ void gfxGDIFont::Initialize() {
       mMetrics->zeroWidth = -1.0;  // indicates not found
     }
 
+    wchar_t ch = kWaterIdeograph;
+    ret = GetGlyphIndicesW(dc.GetDC(), &ch, 1, &glyph,
+                           GGI_MARK_NONEXISTING_GLYPHS);
+    if (ret != GDI_ERROR && glyph != 0xFFFF) {
+      GetTextExtentPoint32W(dc.GetDC(), &ch, 1, &size);
+      mMetrics->ideographicWidth = ROUND(size.cx);
+    } else {
+      mMetrics->ideographicWidth = -1.0;
+    }
+
     SanitizeMetrics(mMetrics, GetFontEntry()->mIsBadUnderlineFont);
   } else {
     mFUnitsConvFactor = 0.0;  // zero-sized font: all values scale to zero
   }
 
-  if (IsSyntheticBold()) {
-    mMetrics->aveCharWidth += GetSyntheticBoldOffset();
-    mMetrics->maxAdvance += GetSyntheticBoldOffset();
+  if (ApplySyntheticBold()) {
+    auto delta = GetSyntheticBoldOffset();
+    mMetrics->spaceWidth += delta;
+    mMetrics->aveCharWidth += delta;
+    mMetrics->maxAdvance += delta;
+    if (mMetrics->zeroWidth > 0) {
+      mMetrics->zeroWidth += delta;
+    }
+    if (mMetrics->ideographicWidth > 0) {
+      mMetrics->ideographicWidth += delta;
+    }
   }
 
 #if 0
@@ -377,7 +437,7 @@ uint32_t gfxGDIFont::GetGlyph(uint32_t aUnicode, uint32_t aVarSelector) {
   }
 
   if (!mGlyphIDs) {
-    mGlyphIDs = MakeUnique<nsDataHashtable<nsUint32HashKey, uint32_t>>(64);
+    mGlyphIDs = MakeUnique<nsTHashMap<nsUint32HashKey, uint32_t>>(64);
   }
 
   uint32_t gid;
@@ -387,7 +447,7 @@ uint32_t gfxGDIFont::GetGlyph(uint32_t aUnicode, uint32_t aVarSelector) {
 
   wchar_t ch = aUnicode;
   WORD glyph;
-  DWORD ret = ScriptGetCMap(nullptr, &mScriptCache, &ch, 1, 0, &glyph);
+  HRESULT ret = ScriptGetCMap(nullptr, &mScriptCache, &ch, 1, 0, &glyph);
   if (ret != S_OK) {
     AutoDC dc;
     AutoSelectFont fs(dc.GetDC(), GetHFONT());
@@ -398,41 +458,38 @@ uint32_t gfxGDIFont::GetGlyph(uint32_t aUnicode, uint32_t aVarSelector) {
     if (ret != S_OK) {
       // If ScriptGetCMap still failed, fall back to GetGlyphIndicesW
       // (see bug 1105807).
-      ret = GetGlyphIndicesW(dc.GetDC(), &ch, 1, &glyph,
-                             GGI_MARK_NONEXISTING_GLYPHS);
+      DWORD ret = GetGlyphIndicesW(dc.GetDC(), &ch, 1, &glyph,
+                                   GGI_MARK_NONEXISTING_GLYPHS);
       if (ret == GDI_ERROR || glyph == 0xFFFF) {
         glyph = 0;
       }
     }
   }
 
-  mGlyphIDs->Put(aUnicode, glyph);
+  mGlyphIDs->InsertOrUpdate(aUnicode, glyph);
   return glyph;
 }
 
 int32_t gfxGDIFont::GetGlyphWidth(uint16_t aGID) {
   if (!mGlyphWidths) {
-    mGlyphWidths = MakeUnique<nsDataHashtable<nsUint32HashKey, int32_t>>(128);
+    mGlyphWidths = MakeUnique<nsTHashMap<nsUint32HashKey, int32_t>>(128);
   }
 
-  int32_t width;
-  if (mGlyphWidths->Get(aGID, &width)) {
-    return width;
-  }
+  return mGlyphWidths->WithEntryHandle(aGID, [&](auto&& entry) {
+    if (!entry) {
+      DCForMetrics dc;
+      AutoSelectFont fs(dc, GetHFONT());
 
-  DCForMetrics dc;
-  AutoSelectFont fs(dc, GetHFONT());
-
-  int devWidth;
-  if (GetCharWidthI(dc, aGID, 1, nullptr, &devWidth)) {
-    // clamp value to range [0..0x7fff], and convert to 16.16 fixed-point
-    devWidth = std::min(std::max(0, devWidth), 0x7fff);
-    width = devWidth << 16;
-    mGlyphWidths->Put(aGID, width);
-    return width;
-  }
-
-  return -1;
+      int devWidth;
+      if (!GetCharWidthI(dc, aGID, 1, nullptr, &devWidth)) {
+        return -1;
+      }
+      // clamp value to range [0..0x7fff], and convert to 16.16 fixed-point
+      devWidth = std::min(std::max(0, devWidth), 0x7fff);
+      entry.Insert(devWidth << 16);
+    }
+    return *entry;
+  });
 }
 
 bool gfxGDIFont::GetGlyphBounds(uint16_t aGID, gfxRect* aBounds, bool aTight) {

@@ -6,16 +6,21 @@
 #ifndef widget_windows_RemoteBackbuffer_h
 #define widget_windows_RemoteBackbuffer_h
 
-#include <thread>
-#include <windows.h>
+#include "nsIWidget.h"
+#include "mozilla/widget/PCompositorWidgetParent.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/gfx/2D.h"
+#include "prthread.h"
+#include <windows.h>
 
 namespace mozilla {
 namespace widget {
 namespace remote_backbuffer {
 
+struct IpcRect;
 struct SharedData;
 struct BorrowResponseData;
+struct PresentRequestData;
 struct PresentResponseData;
 class SharedImage;
 class PresentableSharedImage;
@@ -26,11 +31,11 @@ class Provider {
   ~Provider();
 
   bool Initialize(HWND aWindowHandle, DWORD aTargetProcessId,
-                  nsTransparencyMode aTransparencyMode);
+                  TransparencyMode aTransparencyMode);
 
   Maybe<RemoteBackbufferHandles> CreateRemoteHandles();
 
-  void UpdateTransparencyMode(nsTransparencyMode aTransparencyMode);
+  void UpdateTransparencyMode(TransparencyMode aTransparencyMode);
 
   Provider(const Provider&) = delete;
   Provider(Provider&&) = delete;
@@ -42,19 +47,22 @@ class Provider {
 
   void HandleBorrowRequest(BorrowResponseData* aResponseData,
                            bool aAllowSameBuffer);
-  void HandlePresentRequest(PresentResponseData* aResponseData);
+  void HandlePresentRequest(const PresentRequestData& aRequestData,
+                            PresentResponseData* aResponseData);
 
   HWND mWindowHandle;
-  DWORD mTargetProcessId;
+  HANDLE mTargetProcess;
   HANDLE mFileMapping;
   HANDLE mRequestReadyEvent;
   HANDLE mResponseReadyEvent;
   SharedData* mSharedDataPtr;
   bool mStopServiceThread;
-  std::thread mServiceThread;
+  PRThread* mServiceThread;
   std::unique_ptr<PresentableSharedImage> mBackbuffer;
-  mozilla::Atomic<nsTransparencyMode, MemoryOrdering::Relaxed>
-      mTransparencyMode;
+  mozilla::Atomic<uint32_t, MemoryOrdering::Relaxed> mTransparencyMode;
+  TransparencyMode GetTransparencyMode() const {
+    return TransparencyMode(uint32_t(mTransparencyMode));
+  }
 };
 
 class Client {
@@ -65,7 +73,7 @@ class Client {
   bool Initialize(const RemoteBackbufferHandles& aRemoteHandles);
 
   already_AddRefed<gfx::DrawTarget> BorrowDrawTarget();
-  bool PresentDrawTarget();
+  bool PresentDrawTarget(gfx::IntRegion aDirtyRegion);
 
   Client(const Client&) = delete;
   Client(Client&&) = delete;

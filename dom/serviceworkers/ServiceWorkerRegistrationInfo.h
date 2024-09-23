@@ -9,14 +9,14 @@
 
 #include <functional>
 
+#include "mozilla/dom/IPCNavigationPreloadState.h"
 #include "mozilla/dom/ServiceWorkerInfo.h"
 #include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
 #include "nsProxyRelease.h"
 #include "nsTObserverArray.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ServiceWorkerRegistrationListener;
 
@@ -37,7 +37,7 @@ class ServiceWorkerRegistrationInfo final
   };
   nsTArray<UniquePtr<VersionEntry>> mVersionList;
 
-  const nsID mAgentClusterId = nsContentUtils::GenerateUUID();
+  const nsID mAgentClusterId = nsID::GenerateUUID();
 
   uint32_t mControlledClientsCounter;
   uint32_t mDelayMultiplier;
@@ -68,15 +68,18 @@ class ServiceWorkerRegistrationInfo final
 
   bool mCorrupt;
 
+  IPCNavigationPreloadState mNavigationPreloadState;
+
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSISERVICEWORKERREGISTRATIONINFO
 
-  typedef std::function<void()> TryToActivateCallback;
+  using TryToActivateCallback = std::function<void()>;
 
-  ServiceWorkerRegistrationInfo(const nsACString& aScope,
-                                nsIPrincipal* aPrincipal,
-                                ServiceWorkerUpdateViaCache aUpdateViaCache);
+  ServiceWorkerRegistrationInfo(
+      const nsACString& aScope, nsIPrincipal* aPrincipal,
+      ServiceWorkerUpdateViaCache aUpdateViaCache,
+      IPCNavigationPreloadState&& aNavigationPreloadState);
 
   void AddInstance(ServiceWorkerRegistrationListener* aInstance,
                    const ServiceWorkerRegistrationDescriptor& aDescriptor);
@@ -225,6 +228,12 @@ class ServiceWorkerRegistrationInfo final
 
   const nsID& AgentClusterId() const;
 
+  void SetNavigationPreloadEnabled(const bool& aEnabled);
+
+  void SetNavigationPreloadHeader(const nsCString& aHeader);
+
+  IPCNavigationPreloadState GetNavigationPreloadState() const;
+
  private:
   // Roughly equivalent to [[Update Registration State algorithm]]. Make sure
   // this is called *before* updating SW instances' state, otherwise they
@@ -250,9 +259,10 @@ class ServiceWorkerRegistrationInfo final
   // call to `aFunc`, so `aFunc` will always get a reference to a non-null
   // pointer.
   void ForEachWorker(void (*aFunc)(RefPtr<ServiceWorkerInfo>&));
+
+  void CheckQuotaUsage();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerregistrationinfo_h

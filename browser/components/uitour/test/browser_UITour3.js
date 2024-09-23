@@ -1,14 +1,12 @@
 "use strict";
 
-ChromeUtils.import(
-  "resource://testing-common/CustomizableUITestUtils.jsm",
-  this
+const { CustomizableUITestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/CustomizableUITestUtils.sys.mjs"
 );
 let gCUITestUtils = new CustomizableUITestUtils(window);
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 
 requestLongerTimeout(2);
 
@@ -83,7 +81,7 @@ add_UITour_task(async function test_info_buttons_1() {
   );
   is(
     buttons.children[0].getAttribute("image"),
-    "",
+    null,
     "Text should have no image"
   );
   is(buttons.children[0].className, "", "Text should have no class");
@@ -96,7 +94,7 @@ add_UITour_task(async function test_info_buttons_1() {
   );
   is(
     buttons.children[1].getAttribute("image"),
-    "",
+    null,
     "Link should have no image"
   );
   is(buttons.children[1].className, "button-link", "Check link class");
@@ -109,7 +107,7 @@ add_UITour_task(async function test_info_buttons_1() {
   );
   is(
     buttons.children[2].getAttribute("image"),
-    "",
+    null,
     "First button should have no image"
   );
   is(buttons.children[2].className, "", "Button 1 should have no class");
@@ -175,7 +173,7 @@ add_UITour_task(async function test_info_buttons_2() {
   );
   is(
     buttons.children[1].getAttribute("image"),
-    "",
+    null,
     "Link should have no image"
   );
   ok(
@@ -190,7 +188,7 @@ add_UITour_task(async function test_info_buttons_2() {
   );
   is(
     buttons.children[2].getAttribute("image"),
-    "",
+    null,
     "First button should have no image"
   );
 

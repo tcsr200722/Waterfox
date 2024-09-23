@@ -26,7 +26,7 @@ MediaTimer::MediaTimer(bool aFuzzy)
   // Use the SharedThreadPool to create an nsIThreadPool with a maximum of one
   // thread, which is equivalent to an nsIThread for our purposes.
   RefPtr<SharedThreadPool> threadPool(
-      SharedThreadPool::Get(NS_LITERAL_CSTRING("MediaTimer"), 1));
+      SharedThreadPool::Get("MediaTimer"_ns, 1));
   mThread = threadPool.get();
   mTimer = NS_NewTimer(mThread);
 }
@@ -53,10 +53,10 @@ void MediaTimer::Destroy() {
   {
     MonitorAutoLock lock(mMonitor);
     Reject();
-  }
 
-  // Cancel the timer if necessary.
-  CancelTimerIfArmed();
+    // Cancel the timer if necessary.
+    CancelTimerIfArmed();
+  }
 
   delete this;
 }
@@ -68,12 +68,12 @@ bool MediaTimer::OnMediaTimerThread() {
 }
 
 RefPtr<MediaTimerPromise> MediaTimer::WaitFor(const TimeDuration& aDuration,
-                                              const char* aCallSite) {
+                                              StaticString aCallSite) {
   return WaitUntil(TimeStamp::Now() + aDuration, aCallSite);
 }
 
 RefPtr<MediaTimerPromise> MediaTimer::WaitUntil(const TimeStamp& aTimeStamp,
-                                                const char* aCallSite) {
+                                                StaticString aCallSite) {
   MonitorAutoLock mon(mMonitor);
   TIMER_LOG("MediaTimer::WaitUntil %" PRId64, RelativeMicroseconds(aTimeStamp));
   Entry e(aTimeStamp, aCallSite);
@@ -181,17 +181,12 @@ void MediaTimer::ArmTimer(const TimeStamp& aTarget, const TimeStamp& aNow) {
   MOZ_DIAGNOSTIC_ASSERT(!TimerIsArmed());
   MOZ_DIAGNOSTIC_ASSERT(aTarget > aNow);
 
-  // XPCOM timer resolution is in milliseconds. It's important to never resolve
-  // a timer when mTarget might compare < now (even if very close), so round up.
-  unsigned long delay = std::ceil((aTarget - aNow).ToMilliseconds());
-  TIMER_LOG("MediaTimer::ArmTimer delay=%lu", delay);
+  const TimeDuration delay = aTarget - aNow;
+  TIMER_LOG("MediaTimer::ArmTimer delay=%.3fms", delay.ToMilliseconds());
   mCurrentTimerTarget = aTarget;
-  nsresult rv = mTimer->InitWithNamedFuncCallback(&TimerCallback, this, delay,
-                                                  nsITimer::TYPE_ONE_SHOT,
-                                                  "MediaTimer::TimerCallback");
-  MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
-  Unused << rv;
-  (void)rv;
+  MOZ_ALWAYS_SUCCEEDS(mTimer->InitHighResolutionWithNamedFuncCallback(
+      &TimerCallback, this, delay, nsITimer::TYPE_ONE_SHOT,
+      "MediaTimer::TimerCallback"));
 }
 
 }  // namespace mozilla

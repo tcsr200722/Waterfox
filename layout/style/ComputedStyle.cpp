@@ -23,12 +23,12 @@
 
 #include "nsCOMPtr.h"
 
-#include "GeckoProfiler.h"
 #include "mozilla/dom/Document.h"
 #include "nsPrintfCString.h"
 #include "RubyUtils.h"
 #include "mozilla/ComputedStyleInlines.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ProfilerLabels.h"
 
 #include "mozilla/ReflowInput.h"
 #include "nsLayoutUtils.h"
@@ -52,18 +52,18 @@ ComputedStyle::ComputedStyle(PseudoStyleType aPseudoType,
 // whether we establish a containing block has really changed.
 static bool ContainingBlockMayHaveChanged(const ComputedStyle& aOldStyle,
                                           const ComputedStyle& aNewStyle) {
-  auto* oldDisp = aOldStyle.StyleDisplay();
-  auto* newDisp = aNewStyle.StyleDisplay();
+  const auto& oldDisp = *aOldStyle.StyleDisplay();
+  const auto& newDisp = *aNewStyle.StyleDisplay();
 
-  if (oldDisp->IsAbsPosContainingBlockForNonSVGTextFrames() !=
-      newDisp->IsAbsPosContainingBlockForNonSVGTextFrames()) {
+  if (oldDisp.IsPositionedStyle() != newDisp.IsPositionedStyle()) {
+    // XXX This check can probably be moved to after the fixedCB check, since
+    // IsPositionedStyle() is also only relevant for non-svg text frame
+    // subtrees.
     return true;
   }
 
-  bool fixedCB =
-      oldDisp->IsFixedPosContainingBlockForNonSVGTextFrames(aOldStyle);
-  if (fixedCB !=
-      newDisp->IsFixedPosContainingBlockForNonSVGTextFrames(aNewStyle)) {
+  const bool fixedCB = aOldStyle.IsFixedPosContainingBlockForNonSVGTextFrames();
+  if (fixedCB != aNewStyle.IsFixedPosContainingBlockForNonSVGTextFrames()) {
     return true;
   }
   // If we were both before and after a fixed-pos containing-block that means
@@ -72,20 +72,21 @@ static bool ContainingBlockMayHaveChanged(const ComputedStyle& aOldStyle,
   if (fixedCB) {
     return false;
   }
+
   // Note that neither of these two following sets of frames
   // (transform-supporting and layout-and-paint-supporting frames) is a subset
   // of the other, because table frames support contain: layout/paint but not
   // transforms (which are instead inherited to the table wrapper), and quite a
   // few frame types support transforms but not contain: layout/paint (e.g.,
   // table rows and row groups, many SVG frames).
-  if (oldDisp->IsFixedPosContainingBlockForTransformSupportingFrames() !=
-      newDisp->IsFixedPosContainingBlockForTransformSupportingFrames()) {
+  if (oldDisp.IsFixedPosContainingBlockForTransformSupportingFrames() !=
+      newDisp.IsFixedPosContainingBlockForTransformSupportingFrames()) {
     return true;
   }
   if (oldDisp
-          ->IsFixedPosContainingBlockForContainLayoutAndPaintSupportingFrames() !=
+          .IsFixedPosContainingBlockForContainLayoutAndPaintSupportingFrames() !=
       newDisp
-          ->IsFixedPosContainingBlockForContainLayoutAndPaintSupportingFrames()) {
+          .IsFixedPosContainingBlockForContainLayoutAndPaintSupportingFrames()) {
     return true;
   }
   return false;
@@ -93,7 +94,7 @@ static bool ContainingBlockMayHaveChanged(const ComputedStyle& aOldStyle,
 
 nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
                                                 uint32_t* aEqualStructs) const {
-  AUTO_PROFILER_LABEL("ComputedStyle::CalcStyleDifference", LAYOUT);
+  AUTO_PROFILER_LABEL_HOT("ComputedStyle::CalcStyleDifference", LAYOUT);
   static_assert(StyleStructConstants::kStyleStructCount <= 32,
                 "aEqualStructs is not big enough");
 
@@ -152,7 +153,7 @@ nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
   // FIXME: The order of these DO_STRUCT_DIFFERENCE calls is no longer
   // significant.  With a small amount of effort, we could replace them with a
   // #include "nsStyleStructList.h".
-  DO_STRUCT_DIFFERENCE_WITH_ARGS(Display, (, *StylePosition()));
+  DO_STRUCT_DIFFERENCE_WITH_ARGS(Display, (, *this));
   DO_STRUCT_DIFFERENCE(XUL);
   DO_STRUCT_DIFFERENCE(Column);
   DO_STRUCT_DIFFERENCE(Content);
@@ -163,10 +164,10 @@ nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
   DO_STRUCT_DIFFERENCE(Table);
   DO_STRUCT_DIFFERENCE(UIReset);
   DO_STRUCT_DIFFERENCE(Text);
-  DO_STRUCT_DIFFERENCE_WITH_ARGS(List, (, *StyleDisplay()));
+  DO_STRUCT_DIFFERENCE_WITH_ARGS(List, (, *this));
   DO_STRUCT_DIFFERENCE(SVGReset);
   DO_STRUCT_DIFFERENCE(SVG);
-  DO_STRUCT_DIFFERENCE_WITH_ARGS(Position, (, *StyleVisibility()));
+  DO_STRUCT_DIFFERENCE_WITH_ARGS(Position, (, *this));
   DO_STRUCT_DIFFERENCE(Font);
   DO_STRUCT_DIFFERENCE(Margin);
   DO_STRUCT_DIFFERENCE(Padding);
@@ -174,6 +175,7 @@ nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
   DO_STRUCT_DIFFERENCE(TextReset);
   DO_STRUCT_DIFFERENCE(Effects);
   DO_STRUCT_DIFFERENCE(Background);
+  DO_STRUCT_DIFFERENCE(Page);
 
 #undef DO_STRUCT_DIFFERENCE
 #undef DO_STRUCT_DIFFERENCE_WITH_ARGS
@@ -185,9 +187,9 @@ nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
   // Note that we do not check whether this->RelevantLinkVisited() !=
   // aNewContext->RelevantLinkVisited(); we don't need to since
   // nsCSSFrameConstructor::DoContentStateChanged always adds
-  // nsChangeHint_RepaintFrame for NS_EVENT_STATE_VISITED changes (and
+  // nsChangeHint_RepaintFrame for ElementState::VISITED changes (and
   // needs to, since HasStateDependentStyle probably doesn't work right
-  // for NS_EVENT_STATE_VISITED).  Hopefully this doesn't actually
+  // for ElementState::VISITED).  Hopefully this doesn't actually
   // expose whether links are visited to performance tests since all
   // link coloring happens asynchronously at a time when it's hard for
   // the page to measure.
@@ -245,6 +247,19 @@ nsChangeHint ComputedStyle::CalcStyleDifference(const ComputedStyle& aNewStyle,
     }
   }
 
+  if (HasAuthorSpecifiedBorderOrBackground() !=
+      aNewStyle.HasAuthorSpecifiedBorderOrBackground()) {
+    const StyleAppearance appearance = StyleDisplay()->EffectiveAppearance();
+    if (appearance != StyleAppearance::None &&
+        nsLayoutUtils::AuthorSpecifiedBorderBackgroundDisablesTheming(
+            appearance)) {
+      // A background-specified change may cause padding to change, so we may
+      // need to reflow.  We use the same hint here as we do for "appearance"
+      // changes.
+      hint |= nsChangeHint_AllReflowHints | nsChangeHint_RepaintFrame;
+    }
+  }
+
   MOZ_ASSERT(NS_IsHintSubset(hint, nsChangeHint_AllHints),
              "Added a new hint without bumping AllHints?");
   return hint & ~nsChangeHint_NeutralChange;
@@ -281,7 +296,7 @@ static nscolor GetVisitedDependentColorInternal(const ComputedStyle& aStyle,
 }
 
 static nscolor ExtractColor(const ComputedStyle& aStyle,
-                            const StyleRGBA& aColor) {
+                            const StyleAbsoluteColor& aColor) {
   return aColor.ToColor();
 }
 
@@ -310,8 +325,9 @@ static nscolor ExtractColor(const ComputedStyle& aStyle,
 #define STYLE_FIELD(struct_, field_) aField == &struct_::field_ ||
 #define STYLE_STRUCT(name_, fields_)                                           \
   template <>                                                                  \
-  nscolor ComputedStyle::GetVisitedDependentColor(decltype(                    \
-      nsStyle##name_::MOZ_ARG_1 fields_) nsStyle##name_::*aField) const {      \
+  nscolor ComputedStyle::GetVisitedDependentColor(                             \
+      decltype(nsStyle##name_::MOZ_ARG_1 fields_) nsStyle##name_::*aField)     \
+      const {                                                                  \
     MOZ_ASSERT(MOZ_FOR_EACH(STYLE_FIELD, (nsStyle##name_, ), fields_) false,   \
                "Getting visited-dependent color for a field in nsStyle" #name_ \
                " which is not listed in nsCSSVisitedDependentPropList.h");     \
@@ -409,6 +425,9 @@ bool ComputedStyle::EqualForCachedAnonymousContentStyle(
                                                                   &aOther);
 }
 
+void ComputedStyle::DumpMatchedRules() const {
+  Servo_ComputedValues_DumpMatchedRules(this);
+}
 #endif
 
 }  // namespace mozilla

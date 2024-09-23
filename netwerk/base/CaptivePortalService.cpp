@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/net/CaptivePortalService.h"
+#include "mozilla/AppShutdown.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Services.h"
 #include "mozilla/Preferences.h"
@@ -10,16 +11,15 @@
 #include "nsServiceManagerUtils.h"
 #include "nsXULAppAPI.h"
 #include "xpcpublic.h"
+#include "xpcprivate.h"
 
-static NS_NAMED_LITERAL_STRING(kInterfaceName, u"captive-portal-inteface");
+static constexpr auto kInterfaceName = u"captive-portal-inteface"_ns;
 
 static const char kOpenCaptivePortalLoginEvent[] = "captive-portal-login";
 static const char kAbortCaptivePortalLoginEvent[] =
     "captive-portal-login-abort";
 static const char kCaptivePortalLoginSuccessEvent[] =
     "captive-portal-login-success";
-
-static const uint32_t kDefaultInterval = 60 * 1000;  // check every 60 seconds
 
 namespace mozilla {
 namespace net {
@@ -45,17 +45,7 @@ already_AddRefed<nsICaptivePortalService> CaptivePortalService::GetSingleton() {
   return do_AddRef(gCPService);
 }
 
-CaptivePortalService::CaptivePortalService()
-    : mState(UNKNOWN),
-      mStarted(false),
-      mInitialized(false),
-      mRequestInProgress(false),
-      mEverBeenCaptive(false),
-      mDelay(kDefaultInterval),
-      mSlackCount(0),
-      mMinInterval(kDefaultInterval),
-      mMaxInterval(25 * kDefaultInterval),
-      mBackoffFactor(5.0) {
+CaptivePortalService::CaptivePortalService() {
   mLastChecked = TimeStamp::Now();
 }
 
@@ -72,6 +62,16 @@ nsresult CaptivePortalService::PerformCheck() {
   // Don't issue another request if last one didn't complete
   if (mRequestInProgress || !mInitialized || !mStarted) {
     return NS_OK;
+  }
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
+  }
+  // Instantiating CaptiveDetect.sys.mjs before the JS engine is ready will
+  // lead to a crash (see bug 1800603)
+  // We can remove this restriction when we rewrite the detector in
+  // C++ or rust (bug 1809886).
+  if (!XPCJSRuntime::Get()) {
+    return NS_ERROR_NOT_INITIALIZED;
   }
   MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_Default);
   nsresult rv;
@@ -96,6 +96,11 @@ nsresult CaptivePortalService::RearmTimer() {
   MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_Default);
   if (mTimer) {
     mTimer->Cancel();
+  }
+
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
+    mTimer = nullptr;
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
   }
 
   // If we have successfully determined the state, and we have never detected
@@ -135,6 +140,7 @@ nsresult CaptivePortalService::Initialize() {
     observerService->AddObserver(this, kOpenCaptivePortalLoginEvent, true);
     observerService->AddObserver(this, kAbortCaptivePortalLoginEvent, true);
     observerService->AddObserver(this, kCaptivePortalLoginSuccessEvent, true);
+    observerService->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, true);
   }
 
   LOG(("Initialized CaptivePortalService\n"));
@@ -158,6 +164,10 @@ nsresult CaptivePortalService::Start() {
 
   if (mStarted) {
     return NS_OK;
+  }
+
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
   }
 
   MOZ_ASSERT(mState == UNKNOWN, "Initial state should be UNKNOWN");
@@ -313,12 +323,12 @@ CaptivePortalService::Observe(nsISupports* aSubject, const char* aTopic,
   if (!strcmp(aTopic, kOpenCaptivePortalLoginEvent)) {
     // A redirect or altered content has been detected.
     // The user needs to log in. We are in a captive portal.
-    mState = LOCKED_PORTAL;
+    StateTransition(LOCKED_PORTAL);
     mLastChecked = TimeStamp::Now();
     mEverBeenCaptive = true;
   } else if (!strcmp(aTopic, kCaptivePortalLoginSuccessEvent)) {
     // The user has successfully logged in. We have connectivity.
-    mState = UNLOCKED_PORTAL;
+    StateTransition(UNLOCKED_PORTAL);
     mLastChecked = TimeStamp::Now();
     mSlackCount = 0;
     mDelay = mMinInterval;
@@ -326,9 +336,12 @@ CaptivePortalService::Observe(nsISupports* aSubject, const char* aTopic,
     RearmTimer();
   } else if (!strcmp(aTopic, kAbortCaptivePortalLoginEvent)) {
     // The login has been aborted
-    mState = UNKNOWN;
+    StateTransition(UNKNOWN);
     mLastChecked = TimeStamp::Now();
     mSlackCount = 0;
+  } else if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
+    Stop();
+    return NS_OK;
   }
 
   // Send notification so that the captive portal state is mirrored in the
@@ -359,6 +372,9 @@ NS_IMETHODIMP
 CaptivePortalService::Prepare() {
   LOG(("CaptivePortalService::Prepare\n"));
   MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_Default);
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
+    return NS_OK;
+  }
   // XXX: Finish preparation shouldn't be called until dns and routing is
   // available.
   if (mCaptivePortalDetector) {
@@ -380,16 +396,32 @@ CaptivePortalService::Complete(bool success) {
 
   if (success) {
     if (mEverBeenCaptive) {
-      mState = UNLOCKED_PORTAL;
+      StateTransition(UNLOCKED_PORTAL);
       NotifyConnectivityAvailable(true);
     } else {
-      mState = NOT_CAPTIVE;
+      StateTransition(NOT_CAPTIVE);
       NotifyConnectivityAvailable(false);
     }
   }
 
   mRequestInProgress = false;
   return NS_OK;
+}
+
+void CaptivePortalService::StateTransition(int32_t aNewState) {
+  int32_t oldState = mState;
+  mState = aNewState;
+
+  if ((oldState == UNKNOWN && mState == NOT_CAPTIVE) ||
+      (oldState == LOCKED_PORTAL && mState == UNLOCKED_PORTAL)) {
+    nsCOMPtr<nsIObserverService> observerService =
+        services::GetObserverService();
+    if (observerService) {
+      nsCOMPtr<nsICaptivePortalService> cps(this);
+      observerService->NotifyObservers(
+          cps, NS_CAPTIVE_PORTAL_CONNECTIVITY_CHANGED, nullptr);
+    }
+  }
 }
 
 }  // namespace net

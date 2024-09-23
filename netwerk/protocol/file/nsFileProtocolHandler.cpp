@@ -15,6 +15,9 @@
 
 #include "FileChannelChild.h"
 
+#include "mozilla/ResultExtensions.h"
+#include "mozilla/net/NeckoCommon.h"
+
 // URL file handling, copied and modified from
 // xpfe/components/bookmarks/src/nsBookmarksService.cpp
 #ifdef XP_WIN
@@ -92,9 +95,9 @@ nsFileProtocolHandler::ReadURLFile(nsIFile* aFile, nsIURI** aURI) {
   // http://standards.freedesktop.org/desktop-entry-spec/latest/ar01s02.html
   nsAutoCString leafName;
   nsresult rv = aFile->GetNativeLeafName(leafName);
-  if (NS_FAILED(rv) ||
-      !StringEndsWith(leafName, NS_LITERAL_CSTRING(".desktop")))
+  if (NS_FAILED(rv) || !StringEndsWith(leafName, ".desktop"_ns)) {
     return NS_ERROR_NOT_AVAILABLE;
+  }
 
   bool isFile = false;
   rv = aFile->IsFile(&isFile);
@@ -125,21 +128,40 @@ nsFileProtocolHandler::ReadURLFile(nsIFile* aFile, nsIURI** aURI) {
 #endif  // ReadURLFile()
 
 NS_IMETHODIMP
+nsFileProtocolHandler::ReadShellLink(nsIFile* aFile, nsIURI** aURI) {
+#if defined(XP_WIN)
+  nsAutoString path;
+  MOZ_TRY(aFile->GetPath(path));
+
+  if (path.Length() < 4 ||
+      !StringTail(path, 4).LowerCaseEqualsLiteral(".lnk")) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  RefPtr<IPersistFile> persistFile;
+  RefPtr<IShellLinkW> shellLink;
+  WCHAR lpTemp[MAX_PATH];
+  // Get a pointer to the IPersistFile interface.
+  if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_IShellLinkW, getter_AddRefs(shellLink))) ||
+      FAILED(shellLink->QueryInterface(IID_IPersistFile,
+                                       getter_AddRefs(persistFile))) ||
+      FAILED(persistFile->Load(path.get(), STGM_READ)) ||
+      FAILED(shellLink->Resolve(nullptr, SLR_NO_UI)) ||
+      FAILED(shellLink->GetPath(lpTemp, MAX_PATH, nullptr, SLGP_UNCPRIORITY))) {
+    return NS_ERROR_FAILURE;
+  }
+  nsCOMPtr<nsIFile> linkedFile;
+  MOZ_TRY(NS_NewLocalFile(nsDependentString(lpTemp), false,
+                          getter_AddRefs(linkedFile)));
+  return NS_NewFileURI(aURI, linkedFile);
+#else
+  return NS_ERROR_NOT_AVAILABLE;
+#endif
+}
+
+NS_IMETHODIMP
 nsFileProtocolHandler::GetScheme(nsACString& result) {
   result.AssignLiteral("file");
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsFileProtocolHandler::GetDefaultPort(int32_t* result) {
-  *result = -1;  // no port for file: URLs
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsFileProtocolHandler::GetProtocolFlags(uint32_t* result) {
-  *result = URI_NOAUTH | URI_IS_LOCAL_FILE | URI_IS_LOCAL_RESOURCE |
-            URI_IS_POTENTIALLY_TRUSTWORTHY;
   return NS_OK;
 }
 
@@ -149,7 +171,7 @@ nsFileProtocolHandler::NewChannel(nsIURI* uri, nsILoadInfo* aLoadInfo,
   nsresult rv;
 
   RefPtr<nsFileChannel> chan;
-  if (IsNeckoChild()) {
+  if (mozilla::net::IsNeckoChild()) {
     chan = new mozilla::net::FileChannelChild(uri);
   } else {
     chan = new nsFileChannel(uri);
@@ -168,7 +190,7 @@ nsFileProtocolHandler::NewChannel(nsIURI* uri, nsILoadInfo* aLoadInfo,
     return rv;
   }
 
-  chan.forget(result);
+  *result = chan.forget().downcast<nsBaseChannel>().take();
   return NS_OK;
 }
 
@@ -190,8 +212,8 @@ nsFileProtocolHandler::NewFileURI(nsIFile* aFile, nsIURI** aResult) {
   RefPtr<nsIFile> file(aFile);
   // NOTE: the origin charset is assigned the value of the platform
   // charset by the SetFile method.
-  return NS_MutateURI(new nsStandardURL::Mutator())
-      .Apply(NS_MutatorMethod(&nsIFileURLMutator::SetFile, file))
+  return NS_MutateURI(new mozilla::net::nsStandardURL::Mutator())
+      .Apply(&nsIFileURLMutator::SetFile, file)
       .Finalize(aResult);
 }
 
@@ -201,7 +223,7 @@ nsFileProtocolHandler::NewFileURIMutator(nsIFile* aFile,
   NS_ENSURE_ARG_POINTER(aFile);
   nsresult rv;
 
-  nsCOMPtr<nsIURIMutator> mutator = new nsStandardURL::Mutator();
+  nsCOMPtr<nsIURIMutator> mutator = new mozilla::net::nsStandardURL::Mutator();
   nsCOMPtr<nsIFileURLMutator> fileMutator = do_QueryInterface(mutator, &rv);
   if (NS_FAILED(rv)) {
     return rv;

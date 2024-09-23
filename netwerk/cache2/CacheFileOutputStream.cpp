@@ -9,11 +9,10 @@
 #include "CacheEntry.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
-#include "mozilla/DebugOnly.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include <algorithm>
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 NS_IMPL_ADDREF(CacheFileOutputStream)
 NS_IMETHODIMP_(MozExternalRefCountType)
@@ -80,9 +79,22 @@ CacheFileOutputStream::Flush() {
 }
 
 NS_IMETHODIMP
+CacheFileOutputStream::StreamStatus() {
+  CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
+
+  LOG(("CacheFileOutputStream::Close() [this=%p]", this));
+  if (mClosed) {
+    return NS_FAILED(mStatus) ? mStatus : NS_BASE_STREAM_CLOSED;
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 CacheFileOutputStream::Write(const char* aBuf, uint32_t aCount,
                              uint32_t* _retval) {
   CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
 
   LOG(("CacheFileOutputStream::Write() [this=%p, count=%d]", this, aCount));
 
@@ -247,6 +259,7 @@ CacheFileOutputStream::AsyncWait(nsIOutputStreamCallback* aCallback,
 NS_IMETHODIMP
 CacheFileOutputStream::Seek(int32_t whence, int64_t offset) {
   CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
 
   LOG(("CacheFileOutputStream::Seek() [this=%p, whence=%d, offset=%" PRId64 "]",
        this, whence, offset));
@@ -297,6 +310,7 @@ CacheFileOutputStream::SetEOF() {
 NS_IMETHODIMP
 CacheFileOutputStream::Tell(int64_t* _retval) {
   CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
 
   if (mClosed) {
     LOG(("CacheFileOutputStream::Tell() - Stream is closed. [this=%p]", this));
@@ -348,6 +362,8 @@ void CacheFileOutputStream::NotifyCloseListener() {
 }
 
 void CacheFileOutputStream::ReleaseChunk() {
+  mFile->AssertOwnsLock();
+
   LOG(("CacheFileOutputStream::ReleaseChunk() [this=%p, idx=%d]", this,
        mChunk->Index()));
 
@@ -436,7 +452,7 @@ void CacheFileOutputStream::NotifyListener() {
       LOG(
           ("CacheFileOutputStream::NotifyListener() - Cannot get Cache I/O "
            "thread! Using main thread for callback."));
-      mCallbackTarget = GetMainThreadEventTarget();
+      mCallbackTarget = GetMainThreadSerialEventTarget();
     }
   }
 
@@ -462,5 +478,4 @@ size_t CacheFileOutputStream::SizeOfIncludingThis(
   return mallocSizeOf(this);
 }
 
-}  // namespace net
-}  // namespace mozilla
+}  // namespace mozilla::net

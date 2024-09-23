@@ -22,6 +22,8 @@
 #    include "jit/arm64/vixl/Instructions-vixl.h"  // vixl::Instruction
 #  elif defined(JS_CODEGEN_ARM)
 #    include "jit/arm/disasm/Disasm-arm.h"  // js::jit::disasm::*
+#  elif defined(JS_CODEGEN_RISCV64)
+#    include "jit/riscv64/disasm/Disasm-riscv64.h"  // js::jit::disasm::*
 #  endif
 #endif
 
@@ -29,6 +31,8 @@ namespace js {
 namespace jit {
 
 #if defined(JS_JITSPEW) && (defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64))
+
+bool HasDisassembler() { return true; }
 
 void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   zydisDisassemble(code, length, callback);
@@ -42,14 +46,20 @@ class ARM64Disassembler : public vixl::Disassembler {
 
  protected:
   void ProcessOutput(const vixl::Instruction* instr) override {
+    AutoEnterOOMUnsafeRegion oomUnsafe;
     JS::UniqueChars formatted = JS_smprintf(
         "0x%p  %08x  %s", instr, instr->InstructionBits(), GetOutput());
+    if (!formatted) {
+      oomUnsafe.crash("ARM64Disassembler::ProcessOutput");
+    }
     callback_(formatted.get());
   }
 
  private:
   InstrCallback callback_;
 };
+
+bool HasDisassembler() { return true; }
 
 void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   ARM64Disassembler dis(callback);
@@ -68,6 +78,8 @@ void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
 
 #elif defined(JS_JITSPEW) && defined(JS_CODEGEN_ARM)
 
+bool HasDisassembler() { return true; }
+
 void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   disasm::NameConverter converter;
   disasm::Disassembler d(converter);
@@ -81,8 +93,33 @@ void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
     uint8_t* next_instr = instr + d.InstructionDecode(buffer, instr);
 
     JS::UniqueChars formatted =
-        JS_smprintf("0x%p  %08x  %s\n", instr,
-                    *reinterpret_cast<int32_t*>(instr), buffer.start());
+        JS_smprintf("0x%p  %08x  %s", instr, *reinterpret_cast<int32_t*>(instr),
+                    buffer.start());
+    callback(formatted.get());
+
+    instr = next_instr;
+  }
+}
+
+#elif defined(JS_JITSPEW) && defined(JS_CODEGEN_RISCV64)
+
+bool HasDisassembler() { return true; }
+
+void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
+  disasm::NameConverter converter;
+  disasm::Disassembler d(converter);
+
+  uint8_t* instr = code;
+  uint8_t* end = code + length;
+
+  while (instr < end) {
+    EmbeddedVector<char, ReasonableBufferSize> buffer;
+    buffer[0] = '\0';
+    uint8_t* next_instr = instr + d.InstructionDecode(buffer, instr);
+
+    JS::UniqueChars formatted =
+        JS_smprintf("0x%p  %08x  %s", instr, *reinterpret_cast<int32_t*>(instr),
+                    buffer.start());
     callback(formatted.get());
 
     instr = next_instr;
@@ -90,6 +127,8 @@ void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
 }
 
 #else
+
+bool HasDisassembler() { return false; }
 
 void Disassemble(uint8_t* code, size_t length, InstrCallback callback) {
   callback("*** No disassembly available ***\n");

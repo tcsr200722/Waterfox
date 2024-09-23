@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Tests for `History.insertMany` as implemented in History.jsm
+// Tests for `History.insertMany` as implemented in History.sys.mjs
 
 "use strict";
 
@@ -34,7 +34,7 @@ add_task(async function test_insertMany() {
     return `http://mozilla.com/${x}`;
   });
 
-  let makePageInfos = async function(urls, filter = x => x) {
+  let makePageInfos = async function (urls, filter = x => x) {
     let pageInfos = [];
     for (let url of urls) {
       let uri = NetUtil.newURI(url);
@@ -50,22 +50,7 @@ add_task(async function test_insertMany() {
     return pageInfos;
   };
 
-  let inserter = async function(name, filter, useCallbacks) {
-    function promiseManyFrecenciesChanged() {
-      return new Promise((resolve, reject) => {
-        let obs = new NavHistoryObserver();
-        obs.onManyFrecenciesChanged = () => {
-          PlacesUtils.history.removeObserver(obs);
-          resolve();
-        };
-        obs.onFrecencyChanged = () => {
-          PlacesUtils.history.removeObserver(obs);
-          reject();
-        };
-        PlacesUtils.history.addObserver(obs);
-      });
-    }
-
+  let inserter = async function (name, filter, useCallbacks) {
     info(name);
     info(`filter: ${filter}`);
     info(`useCallbacks: ${useCallbacks}`);
@@ -127,9 +112,11 @@ add_task(async function test_insertMany() {
         "onError callback was called for each bad url"
       );
     } else {
-      let promiseManyFrecencies = promiseManyFrecenciesChanged();
+      const promiseRankingChanged =
+        PlacesTestUtils.waitForNotification("pages-rank-changed");
       result = await PlacesUtils.history.insertMany(pageInfos);
-      await promiseManyFrecencies;
+      await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
+      await promiseRankingChanged;
     }
 
     Assert.equal(undefined, result, "insertMany returned undefined");
@@ -163,7 +150,7 @@ add_task(async function test_insertMany() {
       );
       await inserter(
         "Testing History.insertMany() with a URL object",
-        x => new URL(x.spec),
+        x => URL.fromURI(x),
         useCallbacks
       );
     }
@@ -202,7 +189,7 @@ add_task(async function test_transitions() {
   await PlacesUtils.history.insertMany(places);
   // Check callbacks.
   let count = 0;
-  await PlacesUtils.history.insertMany(places, pageInfo => {
+  await PlacesUtils.history.insertMany(places, () => {
     ++count;
   });
   Assert.equal(count, Object.keys(PlacesUtils.history.TRANSITIONS).length);
@@ -257,5 +244,24 @@ add_task(async function test_guid() {
   Assert.ok(
     await PlacesUtils.history.fetch(guidC),
     "Record C is fetchable after insertMany"
+  );
+});
+
+add_task(async function test_withUserPass() {
+  await PlacesUtils.history.insertMany([
+    {
+      url: "http://user:pass@example.com/userpass",
+      visits: [{ date: new Date() }],
+    },
+  ]);
+
+  Assert.ok(
+    !(await PlacesUtils.history.fetch("http://user:pass@example.com/userpass")),
+    "The url with user and pass is not stored"
+  );
+
+  Assert.ok(
+    await PlacesUtils.history.fetch("http://example.com/userpass"),
+    "The url without user and pass is stored"
   );
 });

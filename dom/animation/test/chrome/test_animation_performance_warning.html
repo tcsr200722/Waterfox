@@ -35,7 +35,7 @@ var gStringBundle;
 
 W3CTest.runner.requestLongerTimeout(2);
 
-const { Services } = SpecialPowers.Cu.import("resource://gre/modules/Services.jsm");
+const Services = SpecialPowers.Services;
 Services.locale.requestedLocales = ["en-US"];
 
 SpecialPowers.pushPrefEnv({ "set": [
@@ -43,6 +43,7 @@ SpecialPowers.pushPrefEnv({ "set": [
                             // consistent pixel values in warning messages
                             // regardless of platform DPIs.
                             ["layout.css.devPixelsPerPx", 1],
+                            ["layout.animation.prerender.partial", false],
                           ] },
                           start);
 
@@ -232,8 +233,7 @@ function testKeyframesWithGeometricProperties() {
           },
           {
             property: 'transform',
-            runningOnCompositor: false,
-            warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+            runningOnCompositor: true,
           }
         ]
       }
@@ -257,8 +257,7 @@ function testKeyframesWithGeometricProperties() {
           },
           {
             property: 'translate',
-            runningOnCompositor: false,
-            warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+            runningOnCompositor: true,
           }
         ]
       }
@@ -296,13 +295,11 @@ function testKeyframesWithGeometricProperties() {
           },
           {
             property: 'transform',
-            runningOnCompositor: false,
-            warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+            runningOnCompositor: true,
           },
           {
             property: 'translate',
-            runningOnCompositor: false,
-            warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+            runningOnCompositor: true,
           }
         ]
       }
@@ -379,8 +376,7 @@ function testSetOfGeometricProperties() {
           },
           {
             property: 'transform',
-            runningOnCompositor: false,
-            warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+            runningOnCompositor: true,
           }
         ]);
     }, `${property} is treated as a geometric property`);
@@ -425,8 +421,7 @@ function testStyleChanges() {
       expected: [
         {
           property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+          runningOnCompositor: true,
         }
       ]
     },
@@ -439,8 +434,7 @@ function testStyleChanges() {
       expected: [
         {
           property: 'translate',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+          runningOnCompositor: true,
         }
       ]
     },
@@ -483,13 +477,11 @@ function testStyleChanges() {
         },
         {
           property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+          runningOnCompositor: true,
         },
         {
           property: 'translate',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+          runningOnCompositor: true,
         }
       ]
     },
@@ -653,8 +645,7 @@ function testMultipleAnimations() {
           expected: [
             {
               property: 'transform',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -665,8 +656,7 @@ function testMultipleAnimations() {
           expected: [
             {
               property: 'translate',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformBackfaceVisibilityHidden'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -742,8 +732,7 @@ function testMultipleAnimationsWithGeometricKeyframes() {
             withGeometric: [
               {
                 property: 'transform',
-                runningOnCompositor: false,
-                warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+                runningOnCompositor: true,
               }
             ]
           }
@@ -813,8 +802,7 @@ function testMultipleAnimationsWithGeometricKeyframes() {
               },
               {
                 property: 'transform',
-                runningOnCompositor: false,
-                warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+                runningOnCompositor: true,
               }
             ]
           }
@@ -861,8 +849,7 @@ function testMultipleAnimationsWithGeometricKeyframes() {
               },
               {
                 property: 'translate',
-                runningOnCompositor: false,
-                warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+                runningOnCompositor: true,
               }
             ]
           }
@@ -937,8 +924,7 @@ function testMultipleAnimationsWithGeometricAnimations() {
           expected: [
             {
               property: 'transform',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -954,8 +940,7 @@ function testMultipleAnimationsWithGeometricAnimations() {
           expected: [
             {
               property: 'translate',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -987,8 +972,7 @@ function testMultipleAnimationsWithGeometricAnimations() {
           expected: [
             {
               property: 'transform',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -999,8 +983,7 @@ function testMultipleAnimationsWithGeometricAnimations() {
           expected: [
             {
               property: 'translate',
-              runningOnCompositor: false,
-              warning: 'CompositorAnimationWarningTransformWithGeometricProperties'
+              runningOnCompositor: true,
             }
           ]
         },
@@ -1135,13 +1118,13 @@ function testSynchronizedAnimations() {
     const animB = elemB.animate({ marginLeft: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
 
+    await Promise.all([animA.ready, animB.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
   }, 'Animations created within the same tick are synchronized'
      + ' (compositor animation created first)');
@@ -1159,21 +1142,20 @@ function testSynchronizedAnimations() {
     const animC = elemC.animate({ marginLeft: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
 
+    await Promise.all([animA.ready, animB.ready, animC.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
       [
         { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
     assert_animation_property_state_equals(
       animB.effect.getProperties(),
       [
         { property: 'translate',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
   }, 'Animations created within the same tick are synchronized'
      + ' (compositor animation created first/second)');
@@ -1191,20 +1173,19 @@ function testSynchronizedAnimations() {
     const animC = elemC.animate({ translate: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
 
+    await Promise.all([animA.ready, animB.ready, animC.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
       animB.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
     assert_animation_property_state_equals(
       animC.effect.getProperties(),
       [
         { property: 'translate',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
   }, 'Animations created within the same tick are synchronized'
      + ' (compositor animation created second/third)');
@@ -1251,8 +1232,7 @@ function testSynchronizedAnimations() {
     assert_animation_property_state_equals(
       transitionA.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
   }, 'Transitions created before and after a tick are synchronized');
 
@@ -1267,13 +1247,13 @@ function testSynchronizedAnimations() {
     const animB = elemB.animate({ marginLeft: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
 
+    await Promise.all([animA.ready, animB.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
         },
         { property: 'opacity',
           runningOnCompositor: true
@@ -1300,6 +1280,7 @@ function testSynchronizedAnimations() {
     const cssAnimation = animationElem.getAnimations()[0];
 
     await Promise.all([cssTransition.ready, cssAnimation.ready]);
+    await waitForPaints();
 
     assert_animation_property_state_equals(cssAnimation.effect.getProperties(),
       [{ property: 'transform',
@@ -1312,12 +1293,14 @@ function testSynchronizedAnimations() {
 
     const animA = elemA.animate({ marginLeft: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
+    await animA.ready;
     await waitForPaints();
 
     let animB = elemB.animate({ transform: [ 'translate(0px)',
                                              'translate(100px)' ] },
                               100 * MS_PER_SEC);
     await animB.ready;
+    await waitForPaints();
 
     assert_animation_property_state_equals(
       animB.effect.getProperties(),
@@ -1333,11 +1316,13 @@ function testSynchronizedAnimations() {
     const animA = elemA.animate({ transform: [ 'translate(0px)',
                                                'translate(100px)' ] },
                                 100 * MS_PER_SEC);
+    await animA.ready;
     await waitForPaints();
 
     let animB = elemB.animate({ marginLeft: [ '0px', '100px' ] },
                               100 * MS_PER_SEC);
     await animB.ready;
+    await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
@@ -1357,6 +1342,7 @@ function testSynchronizedAnimations() {
                                 100 * MS_PER_SEC);
     animB.pause();
 
+    await animA.ready;
     await waitForPaints();
 
     assert_animation_property_state_equals(
@@ -1377,6 +1363,7 @@ function testSynchronizedAnimations() {
     // Seek one of the animations so that their start times will differ
     animA.currentTime = 5000;
 
+    await Promise.all([animA.ready, animB.ready]);
     await waitForPaints();
 
     assert_not_equals(animA.startTime, animB.startTime,
@@ -1384,8 +1371,7 @@ function testSynchronizedAnimations() {
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false,
-          warning: 'CompositorAnimationWarningTransformWithSyncGeometricAnimations'
+          runningOnCompositor: true,
       } ]);
   }, 'Animations are synchronized based on when they are started'
      + ' and NOT their start time');
@@ -1400,16 +1386,18 @@ function testSynchronizedAnimations() {
     const animB = elemB.animate({ marginLeft: [ '0px', '100px' ] },
                                 100 * MS_PER_SEC);
 
+    await Promise.all([animA.ready, animB.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
       [ { property: 'transform',
-          runningOnCompositor: false } ]);
+          runningOnCompositor: true } ]);
     // Restart animation
     animA.pause();
     animA.play();
     await animA.ready;
+    await waitForPaints();
 
     assert_animation_property_state_equals(
       animA.effect.getProperties(),
@@ -1430,6 +1418,7 @@ function testSynchronizedAnimations() {
     // Clear target effect
     animB.effect.target = null;
 
+    await Promise.all([animA.ready, animB.ready]);
     await waitForPaints();
 
     assert_animation_property_state_equals(
@@ -1481,7 +1470,7 @@ function testTooLargeFrame() {
       // With WebRender we appear to stick to the previous layerization decision
       // after changing the bounds back to a smaller object.
       const isWebRender =
-        SpecialPowers.DOMWindowUtils.layerManagerType == 'WebRender';
+        SpecialPowers.DOMWindowUtils.layerManagerType.startsWith('WebRender');
       assert_animation_property_state_equals(
         animation.effect.getProperties(),
         [ { property: subtest.property, runningOnCompositor: !isWebRender } ]);
@@ -1517,7 +1506,7 @@ function testTooLargeFrame() {
       await waitForFrame();
 
       const isWebRender =
-        SpecialPowers.DOMWindowUtils.layerManagerType == 'WebRender';
+        SpecialPowers.DOMWindowUtils.layerManagerType.startsWith('WebRender');
       assert_animation_property_state_equals(
         animation.effect.getProperties(),
         [ { property: subtest.property, runningOnCompositor: !isWebRender } ]);
@@ -1627,7 +1616,7 @@ function testImportantRuleOverride() {
 }
 
 function testCurrentColor() {
-  if (SpecialPowers.DOMWindowUtils.layerManagerType == 'WebRender') {
+  if (SpecialPowers.DOMWindowUtils.layerManagerType.startsWith('WebRender')) {
     return; // skip this test until bug 1510030 landed.
   }
   promise_test(async t => {
@@ -1682,6 +1671,19 @@ function start() {
       scriptAnimation.effect.getProperties(),
       [ { property: 'opacity', runningOnCompositor: true } ]);
   }, 'overridden animation');
+
+  promise_test(async t => {
+      const keyframes = {
+        width: [ '100px', '200px' ],
+        transform: [ 'translate(0px)', 'translate(100px)' ],
+        "--foo": ["--bar", "--baz"],
+      };
+      const animation = addDivAndAnimate(t, { class: 'compositable' },
+                                         keyframes, 100 * MS_PER_SEC);
+      await waitForPaints();
+
+      assert_true(true, "Didn't crash");
+  }, 'Warning with custom props');
 
   done();
 }

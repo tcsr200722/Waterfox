@@ -1,9 +1,10 @@
-use std::hash::{Hash, Hasher};
+#![cfg_attr(feature = "specialize", feature(build_hasher_simple_hash_one))]
 
+use std::hash::{BuildHasher, Hash, Hasher};
+
+use ahash::RandomState;
 use criterion::*;
 use fxhash::FxHasher;
-
-use ahash::AHasher;
 
 fn gen_word_pairs() -> Vec<String> {
     let words: Vec<_> = r#"
@@ -118,16 +119,17 @@ yet, you, young, your, yourself"#
     word_pairs
 }
 
-fn test_hash_common_words<T: Hasher>(hasher: impl Fn() -> T) {
+#[allow(unused)] // False positive
+fn test_hash_common_words<B: BuildHasher>(build_hasher: &B) {
     let word_pairs: Vec<_> = gen_word_pairs();
-    check_for_collisions(&hasher, &word_pairs, 32);
+    check_for_collisions(build_hasher, &word_pairs, 32);
 }
 
-fn check_for_collisions<T: Hasher, H: Hash>(hasher: &impl Fn() -> T, items: &[H], bucket_count: usize) {
+#[allow(unused)] // False positive
+fn check_for_collisions<H: Hash, B: BuildHasher>(build_hasher: &B, items: &[H], bucket_count: usize) {
     let mut buckets = vec![0; bucket_count];
     for item in items {
-        let value = hash(item, &hasher) as usize;
-        println!("{:x}", value);
+        let value = hash(item, build_hasher) as usize;
         buckets[value % bucket_count] += 1;
     }
     let mean = items.len() / bucket_count;
@@ -149,29 +151,135 @@ fn check_for_collisions<T: Hasher, H: Hash>(hasher: &impl Fn() -> T, items: &[H]
     );
 }
 
-fn hash<T: Hasher>(b: &impl Hash, hasher: &dyn Fn() -> T) -> u64 {
-    let mut hasher = hasher();
+#[cfg(feature = "specialize")]
+#[allow(unused)] // False positive
+fn hash<H: Hash, B: BuildHasher>(b: &H, build_hasher: &B) -> u64 {
+    build_hasher.hash_one(b)
+}
+
+#[cfg(not(feature = "specialize"))]
+#[allow(unused)] // False positive
+fn hash<H: Hash, B: BuildHasher>(b: &H, build_hasher: &B) -> u64 {
+    let mut hasher = build_hasher.build_hasher();
     b.hash(&mut hasher);
     hasher.finish()
 }
 
 #[test]
 fn test_bucket_distribution() {
-    let hasher = || AHasher::new_with_keys(0x0123456789ABCDEF, 0x0123456789ABCDEF);
+    let build_hasher = RandomState::with_seeds(1, 2, 3, 4);
+    test_hash_common_words(&build_hasher);
     let sequence: Vec<_> = (0..320000).collect();
-    check_for_collisions(&hasher, &sequence, 32);
+    check_for_collisions(&build_hasher, &sequence, 32);
     let sequence: Vec<_> = (0..2560000).collect();
-    check_for_collisions(&hasher, &sequence, 256);
+    check_for_collisions(&build_hasher, &sequence, 256);
     let sequence: Vec<_> = (0..320000).map(|i| i * 1024).collect();
-    check_for_collisions(&hasher, &sequence, 32);
+    check_for_collisions(&build_hasher, &sequence, 32);
     let sequence: Vec<_> = (0..2560000_u64).map(|i| i * 1024).collect();
-    check_for_collisions(&hasher, &sequence, 256);
+    check_for_collisions(&build_hasher, &sequence, 256);
 }
+
+#[cfg(feature = "std")]
+#[test]
+fn test_ahash_alias_map_construction() {
+    let mut map = ahash::HashMap::default();
+    map.insert(1, "test");
+    use ahash::HashMapExt;
+    let mut map = ahash::HashMap::with_capacity(1234);
+    map.insert(1, "test");
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_ahash_alias_set_construction() {
+    let mut set = ahash::HashSet::default();
+    set.insert(1);
+
+    use ahash::HashSetExt;
+    let mut set = ahash::HashSet::with_capacity(1235);
+    set.insert(1);
+}
+
+
+#[cfg(feature = "std")]
+#[test]
+fn test_key_ref() {
+    let mut map = ahash::HashMap::default();
+    map.insert(1, "test");
+    assert_eq!(Some((1, "test")), map.remove_entry(&1));
+
+    let mut map = ahash::HashMap::default();
+    map.insert(&1, "test");
+    assert_eq!(Some((&1, "test")), map.remove_entry(&&1));
+
+    let mut m = ahash::HashSet::<Box<String>>::default();
+    m.insert(Box::from("hello".to_string()));
+    assert!(m.contains(&"hello".to_string()));
+
+    let mut m = ahash::HashSet::<String>::default();
+    m.insert("hello".to_string());
+    assert!(m.contains("hello"));
+
+    let mut m = ahash::HashSet::<Box<[u8]>>::default();
+    m.insert(Box::from(&b"hello"[..]));
+    assert!(m.contains(&b"hello"[..]));
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn test_byte_dist() {
+    use rand::{SeedableRng, Rng, RngCore};
+    use pcg_mwc::Mwc256XXA64;
+
+    let mut r = Mwc256XXA64::seed_from_u64(0xe786_c22b_119c_1479);
+    let mut lowest = 2.541;
+    let mut highest = 2.541;
+    for _round in 0..100 {
+        let mut table: [bool; 256 * 8] = [false; 256 * 8];
+        let hasher = RandomState::with_seeds(r.gen(), r.gen(), r.gen(), r.gen());
+        for i in 0..128 {
+            let mut keys: [u8; 8] = hasher.hash_one((i as u64) << 30).to_ne_bytes();
+            //let mut keys = r.next_u64().to_ne_bytes(); //This is a control to test assert sensitivity.
+            for idx in 0..8 {
+                while table[idx * 256 + keys[idx] as usize] {
+                    keys[idx] = keys[idx].wrapping_add(1);
+                }
+                table[idx * 256 + keys[idx] as usize] = true;
+            }
+        }
+
+        for idx in 0..8 {
+            let mut len = 0;
+            let mut total_len = 0;
+            let mut num_seq = 0;
+            for i in 0..256 {
+                if table[idx * 256 + i] {
+                    len += 1;
+                } else if len != 0 {
+                    num_seq += 1;
+                    total_len += len;
+                    len = 0;
+                }
+            }
+            let mean = total_len as f32 / num_seq as f32;
+            println!("Mean sequence length = {}", mean);
+            if mean > highest {
+                highest = mean;
+            }
+            if mean < lowest {
+                lowest = mean;
+            }
+        }
+    }
+    assert!(lowest > 1.9, "Lowest = {}", lowest);
+    assert!(highest < 3.9, "Highest = {}", highest);
+}
+
 
 fn ahash_vec<H: Hash>(b: &Vec<H>) -> u64 {
     let mut total: u64 = 0;
     for item in b {
-        let mut hasher = AHasher::new_with_keys(1234, 5678);
+        let mut hasher = RandomState::with_seeds(12, 34, 56, 78).build_hasher();
         item.hash(&mut hasher);
         total = total.wrapping_add(hasher.finish());
     }

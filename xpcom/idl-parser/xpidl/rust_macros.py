@@ -6,11 +6,7 @@
 
 """Generate rust bindings information for the IDL file specified"""
 
-from __future__ import absolute_import
-
-from xpidl import rust
-from xpidl import xpidl
-
+from xpidl import rust, xpidl
 
 derive_method_tmpl = """\
 Method {
@@ -21,22 +17,25 @@ Method {
 
 
 def attrAsMethodStruct(iface, m, getter):
-    params = ['Param { name: "%s", ty: "%s" }' % x
-              for x in rust.attributeRawParamList(iface, m, getter)]
+    params = [
+        'Param { name: "%s", ty: "%s" }' % x
+        for x in rust.attributeRawParamList(iface, m, getter)
+    ]
     return derive_method_tmpl % {
-        'name': rust.attributeNativeName(m, getter),
-        'params': ', '.join(params),
-        'ret': '::nserror::nsresult',
+        "name": rust.attributeNativeName(m, getter),
+        "params": ", ".join(params),
+        "ret": "::nserror::nsresult",
     }
 
 
 def methodAsMethodStruct(iface, m):
-    params = ['Param { name: "%s", ty: "%s" }' % x
-              for x in rust.methodRawParamList(iface, m)]
+    params = [
+        'Param { name: "%s", ty: "%s" }' % x for x in rust.methodRawParamList(iface, m)
+    ]
     return derive_method_tmpl % {
-        'name': rust.methodNativeName(m),
-        'params': ', '.join(params),
-        'ret': rust.methodReturnType(m),
+        "name": rust.methodNativeName(m),
+        "params": ", ".join(params),
+        "ret": rust.methodReturnType(m),
     }
 
 
@@ -44,6 +43,7 @@ derive_iface_tmpl = """\
 Interface {
     name: "%(name)s",
     base: %(base)s,
+    sync: %(sync)s,
     methods: %(methods)s,
 },
 """
@@ -55,7 +55,7 @@ def write_interface(iface, fd):
 
     assert iface.base or (iface.name == "nsISupports")
 
-    base = 'Some("%s")' % iface.base if iface.base is not None else 'None'
+    base = 'Some("%s")' % iface.base if iface.base is not None else "None"
     try:
         methods = ""
         for member in iface.members:
@@ -69,17 +69,25 @@ def write_interface(iface, fd):
             elif type(member) == xpidl.Method:
                 methods += "/* %s */\n" % member.toIDL()
                 methods += "%s,\n\n" % methodAsMethodStruct(iface, member)
-        fd.write(derive_iface_tmpl % {
-            'name': iface.name,
-            'base': base,
-            'methods': 'Ok(&[\n%s])' % methods,
-        })
+        fd.write(
+            derive_iface_tmpl
+            % {
+                "name": iface.name,
+                "base": base,
+                "sync": "true" if iface.attributes.rust_sync else "false",
+                "methods": "Ok(&[\n%s])" % methods,
+            }
+        )
     except xpidl.RustNoncompat as reason:
-        fd.write(derive_iface_tmpl % {
-            'name': iface.name,
-            'base': base,
-            'methods': 'Err("%s")' % reason,
-        })
+        fd.write(
+            derive_iface_tmpl
+            % {
+                "name": iface.name,
+                "base": base,
+                "sync": "false",
+                "methods": 'Err("%s")' % reason,
+            }
+        )
 
 
 header = """\
@@ -93,11 +101,11 @@ header = """\
 def print_rust_macros_bindings(idl, fd, relpath):
     fd = rust.AutoIndent(fd)
 
-    fd.write(header % {'relpath': relpath})
-    fd.write("{static D: &'static [Interface] = &[\n")
+    fd.write(header % {"relpath": relpath})
+    fd.write("{static D: &[Interface] = &[\n")
 
     for p in idl.productions:
-        if p.kind == 'interface':
+        if p.kind == "interface":
             write_interface(p, fd)
 
     fd.write("]; D}\n")

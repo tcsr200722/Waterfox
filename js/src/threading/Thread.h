@@ -8,9 +8,7 @@
 #define threading_Thread_h
 
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/Tuple.h"
 
 #include <stdint.h>
 #include <type_traits>
@@ -65,7 +63,7 @@ class Thread {
             typename DerefO = std::remove_reference_t<NonConstO>,
             typename = std::enable_if_t<std::is_same_v<DerefO, Options>>>
   explicit Thread(O&& options = Options())
-      : id_(ThreadId()), options_(std::forward<O>(options)) {
+      : options_(std::forward<O>(options)) {
     MOZ_ASSERT(isInitialized());
   }
 
@@ -76,7 +74,7 @@ class Thread {
   // result in the value being copied, which may not be the intended behavior.
   // See the comment below on ThreadTrampoline::args for an explanation.
   template <typename F, typename... Args>
-  MOZ_MUST_USE bool init(F&& f, Args&&... args) {
+  [[nodiscard]] bool init(F&& f, Args&&... args) {
     MOZ_RELEASE_ASSERT(id_ == ThreadId());
     using Trampoline = detail::ThreadTrampoline<F, Args...>;
     auto trampoline =
@@ -85,15 +83,24 @@ class Thread {
       return false;
     }
 
-    // We hold this lock while create() sets the thread id.
-    LockGuard<Mutex> lock(trampoline->createMutex);
-    return create(Trampoline::Start, trampoline);
+    bool result;
+    {
+      // We hold this lock while create() sets the thread id.
+      LockGuard<Mutex> lock(trampoline->createMutex);
+      result = create(Trampoline::Start, trampoline);
+    }
+    if (!result) {
+      // Trampoline should be deleted outside of the above lock.
+      js_delete(trampoline);
+      return false;
+    }
+    return true;
   }
 
   // The thread must be joined or detached before destruction.
   ~Thread();
 
-  // Move the thread into the detached state without blocking. In the detatched
+  // Move the thread into the detached state without blocking. In the detached
   // state, the thread continues to run until it exits, but cannot be joined.
   // After this method returns, this Thread no longer represents a thread of
   // execution. When the thread exits, its resources will be cleaned up by the
@@ -133,8 +140,8 @@ class Thread {
   Options options_;
 
   // Dispatch to per-platform implementation of thread creation.
-  MOZ_MUST_USE bool create(THREAD_RETURN_TYPE(THREAD_CALL_API* aMain)(void*),
-                           void* aArg);
+  [[nodiscard]] bool create(THREAD_RETURN_TYPE(THREAD_CALL_API* aMain)(void*),
+                            void* aArg);
 
   // An internal version of JS_IsInitialized() that returns whether SpiderMonkey
   // is currently initialized or is in the process of being initialized.
@@ -157,6 +164,10 @@ void SetName(const char* name);
 // storing NUL in nameBuffer[0]). 'len' is the bytes available to be written in
 // 'nameBuffer', including the terminating NUL.
 void GetName(char* nameBuffer, size_t len);
+
+// Causes the current thread to sleep until the
+// number of real-time milliseconds specified have elapsed.
+void SleepMilliseconds(size_t ms);
 
 }  // namespace ThisThread
 
@@ -182,10 +193,10 @@ class ThreadTrampoline {
   // thread. To avoid this dangerous and highly non-obvious footgun, the
   // standard requires a "decay" copy of the arguments at the cost of making it
   // impossible to pass references between threads.
-  mozilla::Tuple<std::decay_t<Args>...> args;
+  std::tuple<std::decay_t<Args>...> args;
 
   // Protect the thread id during creation.
-  Mutex createMutex;
+  Mutex createMutex MOZ_UNANNOTATED;
 
   // Thread can access createMutex.
   friend class js::Thread;
@@ -214,7 +225,7 @@ class ThreadTrampoline {
     // thread that spawned us is ready.
     createMutex.lock();
     createMutex.unlock();
-    f(mozilla::Get<Indices>(args)...);
+    f(std::move(std::get<Indices>(args))...);
   }
 };
 

@@ -16,6 +16,7 @@
 #include "mozilla/dom/MutationEventBinding.h"
 #include "mozilla/dom/SVGAnimationElement.h"
 #include "nsCharSeparatedTokenizer.h"
+#include "nsContentUtils.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::dom::SVGTransform_Binding;
@@ -59,7 +60,7 @@ nsresult SVGAnimatedTransformList::SetBaseValue(const SVGTransformList& aValue,
     // back to the same length:
     domWrapper->InternalBaseValListWillChangeLengthTo(mBaseVal.Length());
   } else {
-    mIsAttrSet = true;
+    mIsBaseSet = true;
     // We only need to treat this as a creation or removal of a transform if the
     // frame already exists and it didn't have an existing one.
     mCreatedOrRemovedOnLastChange =
@@ -78,7 +79,7 @@ void SVGAnimatedTransformList::ClearBaseValue() {
     domWrapper->InternalBaseValListWillChangeLengthTo(0);
   }
   mBaseVal.Clear();
-  mIsAttrSet = false;
+  mIsBaseSet = false;
   // Caller notifies
 }
 
@@ -154,14 +155,14 @@ bool SVGAnimatedTransformList::IsExplicitlySet() const {
   // been explicitly set.
   //
   // There are three ways an animated list can become set:
-  // 1) Markup -- we set mIsAttrSet to true on any successful call to
+  // 1) Markup -- we set mIsBaseSet to true on any successful call to
   //    SetBaseValueString and clear it on ClearBaseValue (as called by
   //    SVGElement::UnsetAttr or a failed SVGElement::ParseAttribute)
   // 2) DOM call -- simply fetching the baseVal doesn't mean the transform value
   //    has been set. It is set if that baseVal has one or more transforms in
   //    the list.
   // 3) Animation -- which will cause the mAnimVal member to be allocated
-  return mIsAttrSet || !mBaseVal.IsEmpty() || mAnimVal;
+  return mIsBaseSet || !mBaseVal.IsEmpty() || mAnimVal;
 }
 
 UniquePtr<SMILAttr> SVGAnimatedTransformList::ToSMILAttr(
@@ -189,7 +190,6 @@ nsresult SVGAnimatedTransformList::SMILAnimatedTransformList::ValueFromString(
   }
 
   ParseValue(aStr, transformType, aValue);
-  aPreventCachingOfSandwich = false;
   return aValue.IsNull() ? NS_ERROR_FAILURE : NS_OK;
 }
 
@@ -198,7 +198,7 @@ void SVGAnimatedTransformList::SMILAnimatedTransformList::ParseValue(
   MOZ_ASSERT(aResult.IsNull(), "Unexpected type for SMIL value");
 
   static_assert(SVGTransformSMILData::NUM_SIMPLE_PARAMS == 3,
-                "nsSVGSMILTransform constructor should be expecting array "
+                "SVGSMILTransform constructor should be expecting array "
                 "with 3 params");
 
   float params[3] = {0.f};
@@ -244,14 +244,15 @@ void SVGAnimatedTransformList::SMILAnimatedTransformList::ParseValue(
 
 int32_t SVGAnimatedTransformList::SMILAnimatedTransformList::ParseParameterList(
     const nsAString& aSpec, float* aVars, int32_t aNVars) {
-  nsCharSeparatedTokenizerTemplate<nsContentUtils::IsHTMLWhitespace> tokenizer(
-      aSpec, ',', nsCharSeparatedTokenizer::SEPARATOR_OPTIONAL);
-
   int numArgsFound = 0;
 
-  while (tokenizer.hasMoreTokens()) {
+  for (const auto& token :
+       nsCharSeparatedTokenizerTemplate<nsContentUtils::IsHTMLWhitespace,
+                                        nsTokenizerFlags::SeparatorOptional>(
+           aSpec, ',')
+           .ToRange()) {
     float f;
-    if (!SVGContentUtils::ParseNumber(tokenizer.nextToken(), f)) {
+    if (!SVGContentUtils::ParseNumber(token, f)) {
       return -1;
     }
     if (numArgsFound < aNVars) {

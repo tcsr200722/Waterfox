@@ -9,47 +9,34 @@
 #define SKSL_STATEMENT
 
 #include "src/sksl/ir/SkSLIRNode.h"
-#include "src/sksl/ir/SkSLType.h"
+#include "src/sksl/ir/SkSLSymbol.h"
 
 namespace SkSL {
 
 /**
  * Abstract supertype of all statements.
  */
-struct Statement : public IRNode {
-    enum Kind {
-        kBlock_Kind,
-        kBreak_Kind,
-        kContinue_Kind,
-        kDiscard_Kind,
-        kDo_Kind,
-        kExpression_Kind,
-        kFor_Kind,
-        kGroup_Kind,
-        kIf_Kind,
-        kNop_Kind,
-        kReturn_Kind,
-        kSwitch_Kind,
-        kVarDeclaration_Kind,
-        kVarDeclarations_Kind,
-        kWhile_Kind
-    };
+class Statement : public IRNode {
+public:
+    using Kind = StatementKind;
 
-    Statement(int offset, Kind kind)
-    : INHERITED(offset)
-    , fKind(kind) {}
+    Statement(Position pos, Kind kind)
+    : INHERITED(pos, (int) kind) {
+        SkASSERT(kind >= Kind::kFirst && kind <= Kind::kLast);
+    }
+
+    Kind kind() const {
+        return (Kind) fKind;
+    }
 
     virtual bool isEmpty() const {
         return false;
     }
 
-    virtual std::unique_ptr<Statement> clone() const = 0;
-
-    const Kind fKind;
-
-    typedef IRNode INHERITED;
+private:
+    using INHERITED = IRNode;
 };
 
-} // namespace
+}  // namespace SkSL
 
 #endif

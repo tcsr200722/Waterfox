@@ -9,27 +9,8 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
-#include <unordered_map>
-#include <unordered_set>
+#include "DmdStdContainers.h"
 #include <vector>
-
-namespace std {  // You know it's going to be good with this at the top of the
-                 // file.
-
-// The STL is lazy and doesn't provide these:
-template <typename T>
-struct hash<const T*> {
-  auto operator()(const T* const x) const {
-    return hash<T*>()(const_cast<T*>(x));
-  }
-};
-
-template <typename T>
-struct hash<const T> {
-  auto operator()(const T x) const { return hash<T>()(const_cast<T>(x)); }
-};
-
-}  // namespace std
 
 // -
 
@@ -43,7 +24,7 @@ class CacheInvalidator {
   friend class AbstractCache;
 
  private:
-  mutable std::unordered_set<AbstractCache*> mCaches;
+  mutable webgl::dmd_unordered_set<AbstractCache*> mCaches;
 
  public:
   virtual ~CacheInvalidator() {
@@ -56,12 +37,18 @@ class CacheInvalidator {
   }
 
   void InvalidateCaches() const;
+
+  // -
+
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf mso) const {
+    return mCaches.SizeOfExcludingThis(mso);
+  }
 };
 
 // -
 
 class AbstractCache {
-  typedef std::vector<const CacheInvalidator*> InvalidatorListT;
+  using InvalidatorListT = std::vector<const CacheInvalidator*>;
 
  private:
   InvalidatorListT mInvalidators;
@@ -131,7 +118,7 @@ class CacheWeakMap final {
 
   struct DerefHash final {
     size_t operator()(const KeyT* const a) const {
-      return std::hash<const KeyT>()(*a);
+      return std::hash<KeyT>()(*a);
     }
   };
   struct DerefEqual final {
@@ -140,12 +127,15 @@ class CacheWeakMap final {
     }
   };
 
-  typedef std::unordered_map<const KeyT*, UniquePtr<Entry>, DerefHash,
-                             DerefEqual>
-      MapT;
+  using MapT = webgl::dmd_unordered_map<const KeyT*, UniquePtr<Entry>,
+                                        DerefHash, DerefEqual>;
   MapT mMap;
 
  public:
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf mso) const {
+    return mMap.SizeOfExcludingThis(mso);
+  }
+
   UniquePtr<Entry> MakeEntry(const KeyT& key, ValueT&& value) {
     return UniquePtr<Entry>(new Entry(*this, key, std::move(value)));
   }

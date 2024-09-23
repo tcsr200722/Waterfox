@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from marionette_driver import errors
 from marionette_driver.wait import Wait
 from marionette_harness import (
@@ -18,7 +16,6 @@ unknown_orientation = "Unknown screen orientation: {}"
 
 
 class TestScreenOrientation(MarionetteTestCase):
-
     def setUp(self):
         MarionetteTestCase.setUp(self)
 
@@ -27,7 +24,8 @@ class TestScreenOrientation(MarionetteTestCase):
 
     def wait_for_orientation(self, orientation, timeout=None):
         Wait(self.marionette, timeout=timeout).until(
-            lambda _: self.marionette.orientation == orientation)
+            lambda _: self.marionette.orientation == orientation
+        )
 
     @skip_if_desktop("Not supported in Firefox")
     @parameterized("landscape-primary", "landscape-primary")
@@ -60,14 +58,16 @@ class TestScreenOrientation(MarionetteTestCase):
 
     @skip_if_desktop("Not supported in Firefox")
     def test_set_invalid_orientation(self):
-        with self.assertRaisesRegexp(errors.MarionetteException,
-                                     unknown_orientation.format("cheese")):
+        with self.assertRaisesRegexp(
+            errors.MarionetteException, unknown_orientation.format("cheese")
+        ):
             self.marionette.set_orientation("cheese")
 
     @skip_if_desktop("Not supported in Firefox")
     def test_set_null_orientation(self):
-        with self.assertRaisesRegexp(errors.MarionetteException,
-                                     unknown_orientation.format("null")):
+        with self.assertRaisesRegexp(
+            errors.MarionetteException, unknown_orientation.format("null")
+        ):
             self.marionette.set_orientation(None)
 
     def test_unsupported_operation_on_desktop(self):

@@ -4,17 +4,14 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm"
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+const { TestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TestUtils.sys.mjs"
 );
 
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm"
-);
-
-let h2Port, trrServer1, trrServer2;
+let h2Port, trrServer1, trrServer2, trrList;
 let DNSLookup, LookupAggregator, TRRRacer;
 
 function readFile(file) {
@@ -47,22 +44,19 @@ function ensureNoTelemetry() {
 }
 
 function setup() {
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  h2Port = env.get("MOZHTTP2_PORT");
+  h2Port = Services.env.get("MOZHTTP2_PORT");
   Assert.notEqual(h2Port, null);
   Assert.notEqual(h2Port, "");
 
   // Set to allow the cert presented by our H2 server
   do_get_profile();
 
-  Services.prefs.setBoolPref("network.http.spdy.enabled", true);
-  Services.prefs.setBoolPref("network.http.spdy.enabled.http2", true);
+  Services.prefs.setBoolPref("network.http.http2.enabled", true);
 
   // use the h2 server as DOH provider
   trrServer1 = `https://foo.example.com:${h2Port}/doh?responseIP=1.1.1.1`;
   trrServer2 = `https://foo.example.com:${h2Port}/doh?responseIP=2.2.2.2`;
+  trrList = [trrServer1, trrServer2];
   // make all native resolve calls "secretly" resolve localhost instead
   Services.prefs.setBoolPref("network.dns.native-is-localhost", true);
 
@@ -77,26 +71,16 @@ function setup() {
 
   Services.prefs.setCharPref(
     "doh-rollout.trrRace.popularDomains",
-    "foo.example.com, bar.example.com"
+    "foo.example.com., bar.example.com."
   );
 
   Services.prefs.setCharPref(
     "doh-rollout.trrRace.canonicalDomain",
-    "firefox-dns-perf-test.net"
+    "firefox-dns-perf-test.net."
   );
 
-  let defaultPrefBranch = Services.prefs.getDefaultBranch("");
-  let origResolverList = defaultPrefBranch.getCharPref("network.trr.resolvers");
-
-  Services.prefs
-    .getDefaultBranch("")
-    .setCharPref(
-      "network.trr.resolvers",
-      `[{"url": "${trrServer1}"}, {"url": "${trrServer2}"}]`
-    );
-
-  let TRRPerformance = ChromeUtils.import(
-    "resource:///modules/TRRPerformance.jsm"
+  let TRRPerformance = ChromeUtils.importESModule(
+    "resource:///modules/TRRPerformance.sys.mjs"
   );
 
   DNSLookup = TRRPerformance.DNSLookup;
@@ -107,10 +91,8 @@ function setup() {
   Services.telemetry.canRecordExtended = true;
 
   registerCleanupFunction(() => {
-    Services.prefs.clearUserPref("network.http.spdy.enabled");
-    Services.prefs.clearUserPref("network.http.spdy.enabled.http2");
+    Services.prefs.clearUserPref("network.http.http2.enabled");
     Services.prefs.clearUserPref("network.dns.native-is-localhost");
-    defaultPrefBranch.setCharPref("network.trr.resolvers", origResolverList);
 
     Services.telemetry.canRecordExtended = oldCanRecord;
   });

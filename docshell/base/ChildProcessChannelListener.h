@@ -12,12 +12,11 @@
 #include "mozilla/extensions/StreamFilterParent.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "nsDOMNavigationTiming.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsIChannel.h"
-#include "BackgroundUtils.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ChildProcessChannelListener final {
   NS_INLINE_DECL_REFCOUNTING(ChildProcessChannelListener)
@@ -37,7 +36,7 @@ class ChildProcessChannelListener final {
 
  private:
   ChildProcessChannelListener() = default;
-  ~ChildProcessChannelListener() = default;
+  ~ChildProcessChannelListener();
   struct CallbackArgs {
     RefPtr<nsDocShellLoadState> mLoadState;
     nsTArray<Endpoint> mStreamFilterEndpoints;
@@ -46,11 +45,10 @@ class ChildProcessChannelListener final {
   };
 
   // TODO Backtrack.
-  nsDataHashtable<nsUint64HashKey, Callback> mCallbacks;
-  nsDataHashtable<nsUint64HashKey, CallbackArgs> mChannelArgs;
+  nsTHashMap<nsUint64HashKey, Callback> mCallbacks;
+  nsTHashMap<nsUint64HashKey, CallbackArgs> mChannelArgs;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // !defined(mozilla_dom_ChildProcessChannelListener_h)

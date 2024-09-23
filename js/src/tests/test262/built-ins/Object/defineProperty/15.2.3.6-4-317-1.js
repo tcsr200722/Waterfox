@@ -22,25 +22,23 @@ includes: [propertyHelper.js]
     Object.defineProperty(arguments, "genericProperty", {
       value: 1002
     });
-    $ERROR("Expected an exception.");
+    throw new Test262Error("Expected an exception.");
   } catch (e) {
     if (b !== 2) {
-      $ERROR('Expected "b === 2;", actually ' + b);
+      throw new Test262Error('Expected "b === 2;", actually ' + b);
     }
-
-    verifyEqualTo(arguments, "genericProperty", 1001);
-
-    verifyNotWritable(arguments, "genericProperty");
-
-    verifyNotEnumerable(arguments, "genericProperty");
-
-    verifyNotConfigurable(arguments, "genericProperty");
 
     if (!(e instanceof TypeError)) {
-      $ERROR("Expected TypeError, got " + e);
+      throw new Test262Error("Expected TypeError, got " + e);
     }
-
   }
+
+  verifyProperty(arguments, "genericProperty", {
+    value: 1001,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
 }(1, 2, 3));
 
 reportCompare(0, 0);

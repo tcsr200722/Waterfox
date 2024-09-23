@@ -1,7 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 from utils import mathfont
 import fontforge
+
 
 def createStretchyRadical(aFont):
     radicalCodePoint = 0x221a
@@ -16,8 +17,9 @@ def createStretchyRadical(aFont):
     # Part: (glyphName, isExtender, startConnector, endConnector, fullAdvance)
     aFont.math.MinConnectorOverlap = 0
     aFont[radicalCodePoint].verticalComponents = \
-        (("size2", False, 0, mathfont.em, 3 * mathfont.em), \
+        (("size2", False, 0, mathfont.em, 3 * mathfont.em),
          ("size1", True, mathfont.em, mathfont.em, 2 * mathfont.em))
+
 
 v1 = 25
 v2 = 1 * mathfont.em
@@ -114,4 +116,18 @@ f.math.RadicalKernAfterDegree = 0
 f.math.RadicalKernBeforeDegree = 0
 f.math.RadicalRuleThickness = v2
 f.math.RadicalVerticalGap = v1
+mathfont.save(f)
+
+v1 = 1 * mathfont.em
+v2 = 1 * mathfont.em
+f = mathfont.create("radical-negativekernbeforedegree%d-rulethickness%d" %
+                    (v1, v2), "Copyright (c) 2020 Igalia S.L.")
+createStretchyRadical(f)
+f.math.RadicalDegreeBottomRaisePercent = 0
+f.math.RadicalDisplayStyleVerticalGap = 0
+f.math.RadicalExtraAscender = 0
+f.math.RadicalKernAfterDegree = 0
+f.math.RadicalKernBeforeDegree = -v1
+f.math.RadicalRuleThickness = v2
+f.math.RadicalVerticalGap = 0
 mathfont.save(f)

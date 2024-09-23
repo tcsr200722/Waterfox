@@ -8,14 +8,17 @@ const {
   openToolbox,
   closeToolbox,
   getBrowserWindow,
+  logTestResult,
   runTest,
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
-const { waitForConsoleOutputChildListChange } = require("./webconsole-helpers");
+} = require("damp-test/tests/head");
+const {
+  waitForConsoleOutputChildListChange,
+} = require("damp-test/tests/webconsole/webconsole-helpers");
 
-module.exports = async function() {
+module.exports = async function () {
   let TOTAL_MESSAGES = 1000;
   let tab = await testSetup(SIMPLE_URL);
   let messageManager = tab.linkedBrowser.messageManager;
@@ -28,10 +31,16 @@ module.exports = async function() {
     "data:,(" +
       encodeURIComponent(
         `function () {
+      const obj = {};
+      for (let i = 0; i < 1000; i++) {
+        obj["item-" + i] = {index: i, ...obj};
+      }
       addMessageListener("do-logs", function () {
+        const start = Cu.now();
         for (var i = 0; i < ${TOTAL_MESSAGES}; i++) {
-          content.console.log('damp', i+1, content);
+          content.console.log('damp', i+1, content, obj);
         }
+        sendAsyncMessage('logs-done',  Cu.now() - start);
       });
     }`
       ) +
@@ -43,13 +52,33 @@ module.exports = async function() {
 
   const allMessagesreceived = waitForConsoleOutputChildListChange(
     hud,
-    consoleOutput =>
-      consoleOutput.querySelectorAll(".message").length >= TOTAL_MESSAGES &&
-      consoleOutput.textContent.includes("damp " + TOTAL_MESSAGES)
+    consoleOutput => {
+      const messages = Array.from(
+        consoleOutput.querySelectorAll(".message-body")
+      );
+      return (
+        messages.find(message => message.textContent.includes("damp 1")) &&
+        messages.find(message =>
+          message.textContent.includes("damp " + TOTAL_MESSAGES)
+        )
+      );
+    }
   );
 
   // Kick off the logging
+  const onContentProcessLogsDone = new Promise(resolve => {
+    messageManager.addMessageListener("logs-done", function onLogsDone(msg) {
+      messageManager.removeMessageListener("logs-done", onLogsDone);
+      resolve(msg.data);
+    });
+  });
+
   messageManager.sendAsyncMessage("do-logs");
+  const contentProcessConsoleAPIDuration = await onContentProcessLogsDone;
+  logTestResult(
+    "console.content-process-bulklog",
+    contentProcessConsoleAPIDuration
+  );
 
   await allMessagesreceived;
   // Wait for the console to redraw

@@ -6,6 +6,7 @@
 
 const actionTypes = {
   ADD_REQUEST: "ADD_REQUEST",
+  SET_EVENT_STREAM_FLAG: "SET_EVENT_STREAM_FLAG",
   ADD_TIMING_MARKER: "ADD_TIMING_MARKER",
   ADD_BLOCKED_URL: "ADD_BLOCKED_URL",
   BATCH_ACTIONS: "BATCH_ACTIONS",
@@ -24,6 +25,8 @@ const actionTypes = {
   ENABLE_PERSISTENT_LOGS: "ENABLE_PERSISTENT_LOGS",
   DISABLE_BROWSER_CACHE: "DISABLE_BROWSER_CACHE",
   OPEN_STATISTICS: "OPEN_STATISTICS",
+  PERSIST_CHANGED: "PERSIST_CHANGED",
+  PRESELECT_REQUEST: "PRESELECT_REQUEST",
   REMOVE_SELECTED_CUSTOM_REQUEST: "REMOVE_SELECTED_CUSTOM_REQUEST",
   RESET_COLUMNS: "RESET_COLUMNS",
   SELECT_REQUEST: "SELECT_REQUEST",
@@ -32,6 +35,7 @@ const actionTypes = {
   SEND_CUSTOM_REQUEST: "SEND_CUSTOM_REQUEST",
   SET_REQUEST_FILTER_TEXT: "SET_REQUEST_FILTER_TEXT",
   SORT_BY: "SORT_BY",
+  SYNCED_BLOCKED_URLS: "SYNCED_BLOCKED_URLS",
   TOGGLE_BLOCKING_ENABLED: "TOGGLE_BLOCKING_ENABLED",
   REMOVE_BLOCKED_URL: "REMOVE_BLOCKED_URL",
   REMOVE_ALL_BLOCKED_URLS: "REMOVE_ALL_BLOCKED_URLS",
@@ -42,22 +46,23 @@ const actionTypes = {
   DISABLE_MATCHING_URLS: "DISABLE_MATCHING_URLS",
   REQUEST_BLOCKING_UPDATE_COMPLETE: "REQUEST_BLOCKING_UPDATE_COMPLETE",
   TOGGLE_COLUMN: "TOGGLE_COLUMN",
-  TOGGLE_RECORDING: "TOGGLE_RECORDING",
+  SET_RECORDING_STATE: "SET_RECORDING_STATE",
   TOGGLE_REQUEST_FILTER_TYPE: "TOGGLE_REQUEST_FILTER_TYPE",
   UNBLOCK_SELECTED_REQUEST_DONE: "UNBLOCK_SELECTED_REQUEST_DONE",
   UPDATE_REQUEST: "UPDATE_REQUEST",
   WATERFALL_RESIZE: "WATERFALL_RESIZE",
   SET_COLUMNS_WIDTH: "SET_COLUMNS_WIDTH",
-  WS_ADD_FRAME: "WS_ADD_FRAME",
-  WS_SELECT_FRAME: "WS_SELECT_FRAME",
-  WS_OPEN_FRAME_DETAILS: "WS_OPEN_FRAME_DETAILS",
-  WS_CLEAR_FRAMES: "WS_CLEAR_FRAMES",
-  WS_TOGGLE_FRAME_FILTER_TYPE: "WS_TOGGLE_FRAME_FILTER_TYPE",
-  WS_TOGGLE_CONTROL_FRAMES: "WS_TOGGLE_CONTROL_FRAMES",
-  WS_SET_REQUEST_FILTER_TEXT: "WS_SET_REQUEST_FILTER_TEXT",
-  WS_TOGGLE_COLUMN: "WS_TOGGLE_COLUMN",
-  WS_RESET_COLUMNS: "WS_RESET_COLUMNS",
-  WS_CLOSE_CONNECTION: "WS_CLOSE_CONNECTION",
+  MSG_ADD: "MSG_ADD",
+  MSG_SELECT: "MSG_SELECT",
+  MSG_OPEN_DETAILS: "MSG_OPEN_DETAILS",
+  MSG_CLEAR: "MSG_CLEAR",
+  MSG_TOGGLE_FILTER_TYPE: "MSG_TOGGLE_FILTER_TYPE",
+  MSG_TOGGLE_CONTROL: "MSG_TOGGLE_CONTROL",
+  MSG_SET_FILTER_TEXT: "MSG_SET_FILTER_TEXT",
+  MSG_TOGGLE_COLUMN: "MSG_TOGGLE_COLUMN",
+  MSG_RESET_COLUMNS: "MSG_RESET_COLUMNS",
+  MSG_CLOSE_CONNECTION: "MSG_CLOSE_CONNECTION",
+  SET_HEADERS_URL_PREVIEW_EXPANDED: "SET_HEADERS_URL_PREVIEW_EXPANDED",
 
   // Search
   ADD_SEARCH_QUERY: "ADD_SEARCH_QUERY",
@@ -76,6 +81,11 @@ const SEARCH_STATUS = {
   CANCELED: "CANCELED",
   DONE: "DONE",
   ERROR: "ERROR",
+};
+
+const CHANNEL_TYPE = {
+  WEB_SOCKET: "WEB_SOCKET",
+  EVENT_STREAM: "EVENT_STREAM",
 };
 
 // Descriptions for what this frontend is currently doing.
@@ -136,7 +146,7 @@ const EVENTS = {
 
 const TEST_EVENTS = {
   // When a network or timeline event is received.
-  // See https://developer.mozilla.org/docs/Tools/Web_Console/remoting for
+  // See https://firefox-source-docs.mozilla.org/devtools-user/web_console/remoting/ for
   // more information about what each packet is supposed to deliver.
   NETWORK_EVENT: "NetMonitor:NetworkEvent",
   NETWORK_EVENT_UPDATED: "NetMonitor:NetworkEventUpdated",
@@ -216,10 +226,18 @@ const UPDATE_PROPS = [
   "formDataSections",
   "stacktrace",
   "isThirdPartyTrackingResource",
+  "isResolvedByTRR",
   "referrerPolicy",
+  "priority",
   "blockedReason",
   "blockingExtension",
   "channelId",
+  "waitingTime",
+  "proxyHttpVersion",
+  "proxyStatus",
+  "proxyStatusText",
+  "fromCache",
+  "fromServiceWorker",
 ];
 
 const PANELS = {
@@ -232,6 +250,7 @@ const PANELS = {
   SECURITY: "security",
   STACK_TRACE: "stack-trace",
   TIMINGS: "timings",
+  HTTP_CUSTOM_REQUEST: "network-action-bar-HTTP-custom-request",
   SEARCH: "network-action-bar-search",
   BLOCKING: "network-action-bar-blocked",
 };
@@ -316,6 +335,11 @@ const HEADERS = [
     canFilter: true,
   },
   {
+    name: "priority",
+    boxName: "priority",
+    canFilter: true,
+  },
+  {
     name: "startTime",
     boxName: "start-time",
     canFilter: false,
@@ -385,7 +409,7 @@ const FILTER_TAGS = [
   "other",
 ];
 
-const WS_FRAMES_HEADERS = [
+const MESSAGE_HEADERS = [
   {
     name: "data",
     width: "40%",
@@ -408,7 +432,19 @@ const WS_FRAMES_HEADERS = [
   },
   {
     name: "time",
-    width: "22%",
+    width: "20%",
+  },
+  {
+    name: "eventName",
+    width: "9%",
+  },
+  {
+    name: "lastEventId",
+    width: "9%",
+  },
+  {
+    name: "retry",
+    width: "9%",
   },
 ];
 
@@ -531,12 +567,22 @@ const BLOCKED_REASON_MESSAGES = {
   4000: "CSP",
   4001: "CSP No Data Protocol",
   4002: "CSP Web Extension",
-  4003: "CSP ContentBlocked",
+  4003: "CSP Content Blocked",
   4004: "CSP Data Document",
   4005: "CSP Web Browser",
   4006: "CSP Preload",
   5000: "Not same-origin",
   6000: "Blocked By Extension",
+};
+
+/** @see {@link https://searchfox.org/mozilla-central/rev/d7a8eadc28298c31381119cbf25c8ba14b8712b3/netwerk/protocol/websocket/nsIWebSocketEventService.idl#30-38} */
+const WEB_SOCKET_OPCODE = {
+  CONTINUATION: 0,
+  TEXT: 1,
+  BINARY: 2,
+  CLOSE: 8,
+  PING: 9,
+  PONG: 10,
 };
 
 const general = {
@@ -546,7 +592,7 @@ const general = {
   FILTER_SEARCH_DELAY: 200,
   UPDATE_PROPS,
   HEADERS,
-  WS_FRAMES_HEADERS,
+  MESSAGE_HEADERS,
   RESPONSE_HEADERS,
   FILTER_FLAGS,
   FILTER_TAGS,
@@ -560,6 +606,8 @@ const general = {
   SEARCH_STATUS,
   AUTO_EXPAND_MAX_LEVEL: 7,
   AUTO_EXPAND_MAX_NODES: 50,
+  CHANNEL_TYPE,
+  WEB_SOCKET_OPCODE,
 };
 
 // flatten constants

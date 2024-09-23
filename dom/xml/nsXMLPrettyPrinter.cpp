@@ -10,11 +10,13 @@
 #include "nsPIDOMWindow.h"
 #include "nsNetUtil.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Document.h"
 #include "nsVariant.h"
 #include "mozilla/dom/CustomEvent.h"
 #include "mozilla/dom/DocumentFragment.h"
+#include "mozilla/dom/DocumentL10n.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/txMozillaXSLTProcessor.h"
@@ -57,15 +59,14 @@ nsresult nsXMLPrettyPrinter::PrettyPrint(Document* aDocument,
 
   // Load the XSLT
   nsCOMPtr<nsIURI> xslUri;
-  rv = NS_NewURI(
-      getter_AddRefs(xslUri),
-      NS_LITERAL_CSTRING("chrome://global/content/xml/XMLPrettyPrint.xsl"));
+  rv = NS_NewURI(getter_AddRefs(xslUri),
+                 "chrome://global/content/xml/XMLPrettyPrint.xsl"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<Document> xslDocument;
   rv = nsSyncLoadService::LoadDocument(
       xslUri, nsIContentPolicy::TYPE_XSLT, nsContentUtils::GetSystemPrincipal(),
-      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL, nullptr,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL, nullptr,
       aDocument->CookieJarSettings(), true, ReferrerPolicy::_empty,
       getter_AddRefs(xslDocument));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -85,13 +86,32 @@ nsresult nsXMLPrettyPrinter::PrettyPrint(Document* aDocument,
   }
 
   // Attach an UA Widget Shadow Root on it.
-  rootElement->AttachAndSetUAShadowRoot();
+  rootElement->AttachAndSetUAShadowRoot(Element::NotifyUAWidgetSetup::No);
   RefPtr<ShadowRoot> shadowRoot = rootElement->GetShadowRoot();
   MOZ_RELEASE_ASSERT(shadowRoot && shadowRoot->IsUAWidget(),
                      "There should be a UA Shadow Root here.");
 
   // Append the document fragment to the shadow dom.
   shadowRoot->AppendChild(*resultFragment, err);
+  if (NS_WARN_IF(err.Failed())) {
+    return err.StealNSResult();
+  }
+
+  // Create a DocumentL10n, as the XML document is not allowed to have one.
+  // Make it sync so that the test for bug 590812 does not require a setTimeout.
+  RefPtr<DocumentL10n> l10n = DocumentL10n::Create(aDocument, true);
+  NS_ENSURE_TRUE(l10n, NS_ERROR_UNEXPECTED);
+  l10n->AddResourceId("dom/XMLPrettyPrint.ftl"_ns);
+
+  // Localize the shadow DOM header
+  Element* l10nRoot = shadowRoot->GetElementById(u"header"_ns);
+  NS_ENSURE_TRUE(l10nRoot, NS_ERROR_UNEXPECTED);
+  l10n->SetRootInfo(l10nRoot);
+  l10n->ConnectRoot(*l10nRoot, true, err);
+  if (NS_WARN_IF(err.Failed())) {
+    return err.StealNSResult();
+  }
+  RefPtr<Promise> promise = l10n->TranslateRoots(err);
   if (NS_WARN_IF(err.Failed())) {
     return err.StealNSResult();
   }
@@ -157,7 +177,7 @@ void nsXMLPrettyPrinter::ContentRemoved(nsIContent* aChild,
   MaybeUnhook(aChild->GetParent());
 }
 
-void nsXMLPrettyPrinter::NodeWillBeDestroyed(const nsINode* aNode) {
+void nsXMLPrettyPrinter::NodeWillBeDestroyed(nsINode* aNode) {
   mDocument = nullptr;
   NS_RELEASE_THIS();
 }

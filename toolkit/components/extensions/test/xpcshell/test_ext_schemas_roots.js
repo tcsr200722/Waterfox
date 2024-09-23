@@ -2,9 +2,8 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { SchemaRoot } = ChromeUtils.import("resource://gre/modules/Schemas.jsm");
-const { ExtensionCommon } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionCommon.jsm"
+const { SchemaRoot } = ChromeUtils.importESModule(
+  "resource://gre/modules/Schemas.sys.mjs"
 );
 
 let { SchemaAPIInterface } = ExtensionCommon;
@@ -141,6 +140,7 @@ class TallyingAPIImplementation extends SchemaAPIInterface {
 
 let wrapper = {
   url: "moz-extension://b66e3509-cdb3-44f6-8eb8-c8b39b3a1d27/",
+  manifestVersion: 2,
 
   cloneScope: global,
 
@@ -149,7 +149,7 @@ let wrapper = {
   },
 
   preprocessors: {
-    localize(value, context) {
+    localize(value) {
       return value.replace(/__MSG_(.*?)__/g, (m0, m1) => `${m1.toUpperCase()}`);
     },
   },
@@ -171,7 +171,7 @@ let wrapper = {
   },
 };
 
-add_task(async function() {
+add_task(async function () {
   let baseSchemas = new Map([["resource://schemas/base.json", baseSchemaJSON]]);
   let experimentSchemas = new Map([
     ["resource://experiment-foo/schema.json", experimentFooJSON],

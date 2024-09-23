@@ -22,15 +22,15 @@ var res1 = [
   },
   {
     selector: ".boxmodel-position.boxmodel-top > span",
-    value: 42,
+    value: "42",
   },
   {
     selector: ".boxmodel-position.boxmodel-left > span",
-    value: 42,
+    value: "42",
   },
   {
     selector: ".boxmodel-margin.boxmodel-top > span",
-    value: 30,
+    value: "30",
   },
   {
     selector: ".boxmodel-margin.boxmodel-left > span",
@@ -38,7 +38,7 @@ var res1 = [
   },
   {
     selector: ".boxmodel-margin.boxmodel-bottom > span",
-    value: 30,
+    value: "30",
   },
   {
     selector: ".boxmodel-margin.boxmodel-right > span",
@@ -46,35 +46,35 @@ var res1 = [
   },
   {
     selector: ".boxmodel-padding.boxmodel-top > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-left > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-bottom > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-right > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-border.boxmodel-top > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-left > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-bottom > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-right > span",
-    value: 10,
+    value: "10",
   },
 ];
 
@@ -93,15 +93,15 @@ var res2 = [
   },
   {
     selector: ".boxmodel-position.boxmodel-top > span",
-    value: 50,
+    value: "50",
   },
   {
     selector: ".boxmodel-position.boxmodel-left > span",
-    value: 42,
+    value: "42",
   },
   {
     selector: ".boxmodel-margin.boxmodel-top > span",
-    value: 30,
+    value: "30",
   },
   {
     selector: ".boxmodel-margin.boxmodel-left > span",
@@ -109,7 +109,7 @@ var res2 = [
   },
   {
     selector: ".boxmodel-margin.boxmodel-bottom > span",
-    value: 30,
+    value: "30",
   },
   {
     selector: ".boxmodel-margin.boxmodel-right > span",
@@ -117,39 +117,39 @@ var res2 = [
   },
   {
     selector: ".boxmodel-padding.boxmodel-top > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-left > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-bottom > span",
-    value: 20,
+    value: "20",
   },
   {
     selector: ".boxmodel-padding.boxmodel-right > span",
-    value: 50,
+    value: "50",
   },
   {
     selector: ".boxmodel-border.boxmodel-top > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-left > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-bottom > span",
-    value: 10,
+    value: "10",
   },
   {
     selector: ".boxmodel-border.boxmodel-right > span",
-    value: 10,
+    value: "10",
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   const style =
     "div { position: absolute; top: 42px; left: 42px; " +
     "height: 100.111px; width: 100px; border: 10px solid black; " +
@@ -157,11 +157,11 @@ add_task(async function() {
   const html = "<style>" + style + "</style><div></div>";
 
   await addTab("data:text/html," + encodeURIComponent(html));
-  const { inspector, boxmodel, testActor } = await openLayoutView();
+  const { inspector, boxmodel } = await openLayoutView();
   await selectNode("div", inspector);
 
   await testInitialValues(inspector, boxmodel);
-  await testChangingValues(inspector, boxmodel, testActor);
+  await testChangingValues(inspector, boxmodel);
 });
 
 function testInitialValues(inspector, boxmodel) {
@@ -178,12 +178,12 @@ function testInitialValues(inspector, boxmodel) {
   }
 }
 
-async function testChangingValues(inspector, boxmodel, testActor) {
+async function testChangingValues(inspector, boxmodel) {
   info("Test that changing the document updates the box model");
   const doc = boxmodel.document;
 
   const onUpdated = waitForUpdate(inspector);
-  await testActor.setAttribute(
+  await setContentPageElementAttribute(
     "div",
     "style",
     "height:150px;padding-right:50px;top:50px"

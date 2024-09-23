@@ -9,14 +9,13 @@ use crossbeam::sync::chase_lev;
 use dwrote;
 #[cfg(all(unix, not(target_os = "android")))]
 use font_loader::system_fonts;
-use winit::EventsLoopProxy;
+use winit::event_loop::EventLoopProxy;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
-use time;
-use webrender;
 use webrender::api::*;
+use webrender::render_api::*;
 use webrender::api::units::*;
 use webrender::{DebugFlags, RenderResults, ShaderPrecacheFlags};
 use crate::{WindowWrapper, NotifierEvent};
@@ -37,7 +36,7 @@ pub enum FontDescriptor {
 }
 
 struct NotifierData {
-    events_loop_proxy: Option<EventsLoopProxy>,
+    events_loop_proxy: Option<EventLoopProxy<()>>,
     frames_notified: u32,
     timing_receiver: chase_lev::Stealer<time::SteadyTime>,
     verbose: bool,
@@ -45,7 +44,7 @@ struct NotifierData {
 
 impl NotifierData {
     fn new(
-        events_loop_proxy: Option<EventsLoopProxy>,
+        events_loop_proxy: Option<EventLoopProxy<()>>,
         timing_receiver: chase_lev::Stealer<time::SteadyTime>,
         verbose: bool,
     ) -> Self {
@@ -85,7 +84,7 @@ impl Notifier {
 
         if let Some(ref _elp) = data.events_loop_proxy {
             #[cfg(not(target_os = "android"))]
-            let _ = _elp.wakeup();
+            let _ = _elp.send_event(());
         }
     }
 }
@@ -95,14 +94,14 @@ impl RenderNotifier for Notifier {
         Box::new(Notifier(self.0.clone()))
     }
 
-    fn wake_up(&self) {
+    fn wake_up(&self, _composite_needed: bool) {
         self.update(false);
     }
 
     fn new_frame_ready(&self, _: DocumentId,
                        scrolled: bool,
                        _composite_needed: bool,
-                       _render_time: Option<u64>) {
+                       _: FramePublishId) {
         self.update(!scrolled);
     }
 }
@@ -117,16 +116,13 @@ impl WrenchThing for CapturedDocument {
     fn next_frame(&mut self) {}
     fn prev_frame(&mut self) {}
     fn do_frame(&mut self, wrench: &mut Wrench) -> u32 {
-        match self.root_pipeline_id.take() {
-            Some(root_pipeline_id) => {
-                // skip the first frame - to not overwrite the loaded one
-                let mut txn = Transaction::new();
-                txn.set_root_pipeline(root_pipeline_id);
-                wrench.api.send_transaction(self.document_id, txn);
-            }
-            None => {
-                wrench.refresh();
-            }
+        if let Some(root_pipeline_id) = self.root_pipeline_id.take() {
+            // skip the first frame - to not overwrite the loaded one
+            let mut txn = Transaction::new();
+            txn.set_root_pipeline(root_pipeline_id);
+            wrench.api.send_transaction(self.document_id, txn);
+        } else {
+            wrench.refresh();
         }
         0
     }
@@ -162,12 +158,12 @@ impl CapturedSequence {
         }
     }
 
-    fn scene_root(root: &PathBuf, scene: u32) -> PathBuf {
+    fn scene_root(root: &Path, scene: u32) -> PathBuf {
         let path = format!("scenes/{:05}", scene);
         root.join(path)
     }
 
-    fn frame_root(root: &PathBuf, scene: u32, frame: u32) -> PathBuf {
+    fn frame_root(root: &Path, scene: u32, frame: u32) -> PathBuf {
         let path = format!("scenes/{:05}/frames/{:05}", scene, frame);
         root.join(path)
     }
@@ -199,8 +195,6 @@ impl WrenchThing for CapturedSequence {
 
 pub struct Wrench {
     window_size: DeviceIntSize,
-    pub device_pixel_ratio: f32,
-    page_zoom_factor: ZoomFactor,
 
     pub renderer: webrender::Renderer,
     pub api: RenderApi,
@@ -212,7 +206,6 @@ pub struct Wrench {
     graphics_api: webrender::GraphicsApiInfo,
 
     pub rebuild_display_lists: bool,
-    pub verbose: bool,
 
     pub frame_start_sender: chase_lev::Worker<time::SteadyTime>,
 
@@ -220,23 +213,19 @@ pub struct Wrench {
 }
 
 impl Wrench {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         window: &mut WindowWrapper,
-        proxy: Option<EventsLoopProxy>,
+        proxy: Option<EventLoopProxy<()>>,
         shader_override_path: Option<PathBuf>,
         use_optimized_shaders: bool,
-        dp_ratio: f32,
         size: DeviceIntSize,
         do_rebuild: bool,
         no_subpixel_aa: bool,
-        no_picture_caching: bool,
         verbose: bool,
         no_scissor: bool,
         no_batch: bool,
         precache_shaders: bool,
-        disable_dual_source_blending: bool,
-        zoom_factor: f32,
-        chase_primitive: webrender::ChasePrimitive,
         dump_shader_source: Option<String>,
         notifier: Option<Box<dyn RenderNotifier>>,
     ) -> Self {
@@ -252,30 +241,29 @@ impl Wrench {
             ShaderPrecacheFlags::empty()
         };
 
-        let opts = webrender::RendererOptions {
-            device_pixel_ratio: dp_ratio,
+        let opts = webrender::WebRenderOptions {
             resource_override_path: shader_override_path,
             use_optimized_shaders,
             enable_subpixel_aa: !no_subpixel_aa,
             debug_flags,
-            enable_clear_scissor: !no_scissor,
+            enable_clear_scissor: no_scissor.then_some(false),
             max_recorded_profiles: 16,
             precache_flags,
             blob_image_handler: Some(Box::new(blob::CheckerboardRenderer::new(callbacks.clone()))),
-            chase_primitive,
-            enable_picture_caching: !no_picture_caching,
             testing: true,
-            max_texture_size: Some(8196), // Needed for rawtest::test_resize_image.
-            allow_dual_source_blending: !disable_dual_source_blending,
-            allow_advanced_blend_equation: true,
+            max_internal_texture_size: Some(8196), // Needed for rawtest::test_resize_image.
+            allow_advanced_blend_equation: window.is_software(),
             dump_shader_source,
+            // SWGL doesn't support the GL_ALWAYS depth comparison function used by
+            // `clear_caches_with_quads`, but scissored clears work well.
+            clear_caches_with_quads: !window.is_software(),
             ..Default::default()
         };
 
         // put an Awakened event into the queue to kick off the first frame
         if let Some(ref _elp) = proxy {
             #[cfg(not(target_os = "android"))]
-            let _ = _elp.wakeup();
+            let _ = _elp.send_event(());
         }
 
         let (timing_sender, timing_receiver) = chase_lev::deque();
@@ -284,19 +272,17 @@ impl Wrench {
             Box::new(Notifier(data))
         });
 
-        let (renderer, sender) = webrender::Renderer::new(
+        let (renderer, sender) = webrender::create_webrender_instance(
             window.clone_gl(),
             notifier,
             opts,
             None,
-            size,
         ).unwrap();
 
         let api = sender.create_api();
-        let document_id = api.add_document(size, 0);
+        let document_id = api.add_document(size);
 
         let graphics_api = renderer.get_graphics_api_info();
-        let zoom_factor = ZoomFactor::new(zoom_factor);
 
         let mut wrench = Wrench {
             window_size: size,
@@ -307,9 +293,6 @@ impl Wrench {
             window_title_to_set: None,
 
             rebuild_display_lists: do_rebuild,
-            verbose,
-            device_pixel_ratio: dp_ratio,
-            page_zoom_factor: ZoomFactor::new(0.0),
 
             root_pipeline_id: PipelineId(0, 0),
 
@@ -319,7 +302,6 @@ impl Wrench {
             callbacks,
         };
 
-        wrench.set_page_zoom(zoom_factor);
         wrench.set_title("start");
         let mut txn = Transaction::new();
         txn.set_root_pipeline(wrench.root_pipeline_id);
@@ -332,20 +314,6 @@ impl Wrench {
         let mut txn = Transaction::new();
         txn.set_quality_settings(settings);
         self.api.send_transaction(self.document_id, txn);
-    }
-
-    pub fn get_page_zoom(&self) -> ZoomFactor {
-        self.page_zoom_factor
-    }
-
-    pub fn set_page_zoom(&mut self, zoom_factor: ZoomFactor) {
-        if self.page_zoom_factor.get() != zoom_factor.get() {
-            self.page_zoom_factor = zoom_factor;
-            let mut txn = Transaction::new();
-            txn.set_page_zoom(self.page_zoom_factor);
-            self.api.send_transaction(self.document_id, txn);
-            self.set_title("");
-        }
     }
 
     pub fn layout_simple_ascii(
@@ -386,22 +354,19 @@ impl Wrench {
         for metric in metrics {
             positions.push(cursor);
 
-            match metric {
-                Some(metric) => {
-                    let glyph_rect = LayoutRect::new(
-                        LayoutPoint::new(cursor.x + metric.left as f32, cursor.y - metric.top as f32),
-                        LayoutSize::new(metric.width as f32, metric.height as f32)
-                    );
-                    bounding_rect = bounding_rect.union(&glyph_rect);
-                    cursor += direction * metric.advance;
-                }
-                None => {
-                    // Extract the advances from the metrics. The get_glyph_dimensions API
-                    // has a limitation that it can't currently get dimensions for non-renderable
-                    // glyphs (e.g. spaces), so just use a rough estimate in that case.
-                    let space_advance = size / 3.0;
-                    cursor += direction * space_advance;
-                }
+            if let Some(GlyphDimensions { left, top, width, height, advance }) = metric {
+                let glyph_rect = LayoutRect::from_origin_and_size(
+                    LayoutPoint::new(cursor.x + left as f32, cursor.y - top as f32),
+                    LayoutSize::new(width as f32, height as f32)
+                );
+                bounding_rect = bounding_rect.union(&glyph_rect);
+                cursor += direction * advance;
+            } else {
+                // Extract the advances from the metrics. The get_glyph_dimensions API
+                // has a limitation that it can't currently get dimensions for non-renderable
+                // glyphs (e.g. spaces), so just use a rough estimate in that case.
+                let space_advance = size / 3.0;
+                cursor += direction * space_advance;
             }
         }
 
@@ -417,10 +382,8 @@ impl Wrench {
 
     pub fn set_title(&mut self, extra: &str) {
         self.window_title_to_set = Some(format!(
-            "Wrench: {} ({}x zoom={}) - {} - {}",
+            "Wrench: {} - {} - {}",
             extra,
-            self.device_pixel_ratio,
-            self.page_zoom_factor.get(),
             self.graphics_api.renderer,
             self.graphics_api.version
         ));
@@ -546,7 +509,6 @@ impl Wrench {
         size: f32,
         flags: FontInstanceFlags,
         render_mode: Option<FontRenderMode>,
-        bg_color: Option<ColorU>,
         synthetic_italics: SyntheticItalics,
     ) -> FontInstanceKey {
         let key = self.api.generate_font_instance_key();
@@ -555,9 +517,6 @@ impl Wrench {
         options.flags |= flags;
         if let Some(render_mode) = render_mode {
             options.render_mode = render_mode;
-        }
-        if let Some(bg_color) = bg_color {
-            options.bg_color = bg_color;
         }
         options.synthetic_italics = synthetic_italics;
         txn.add_font_instance(key, font_key, size, Some(options), None, Vec::new());
@@ -585,27 +544,22 @@ impl Wrench {
     pub fn send_lists(
         &mut self,
         frame_number: u32,
-        display_lists: Vec<(PipelineId, LayoutSize, BuiltDisplayList)>,
-        scroll_offsets: &HashMap<ExternalScrollId, LayoutPoint>,
+        display_lists: Vec<(PipelineId, BuiltDisplayList)>,
+        scroll_offsets: &HashMap<ExternalScrollId, Vec<SampledScrollOffset>>,
     ) {
-        let root_background_color = Some(ColorF::new(1.0, 1.0, 1.0, 1.0));
-
         let mut txn = Transaction::new();
         for display_list in display_lists {
             txn.set_display_list(
                 Epoch(frame_number),
-                root_background_color,
-                self.window_size_f32(),
                 display_list,
-                false,
             );
         }
 
-        for (id, offset) in scroll_offsets {
-            txn.scroll_node_with_id(*offset, *id, ScrollClamping::NoClamping);
+        for (id, offsets) in scroll_offsets {
+            txn.set_scroll_offsets(*id, offsets.clone());
         }
 
-        txn.generate_frame();
+        txn.generate_frame(0, RenderReasons::TESTING);
         self.api.send_transaction(self.document_id, txn);
     }
 
@@ -619,14 +573,14 @@ impl Wrench {
         self.renderer.update();
         let _ = self.renderer.flush_pipeline_info();
         self.renderer
-            .render(self.window_size)
+            .render(self.window_size, 0)
             .expect("errors encountered during render!")
     }
 
     pub fn refresh(&mut self) {
         self.begin_frame();
         let mut txn = Transaction::new();
-        txn.generate_frame();
+        txn.generate_frame(0, RenderReasons::TESTING);
         self.api.send_transaction(self.document_id, txn);
     }
 
@@ -654,12 +608,12 @@ impl Wrench {
         self.renderer.device.begin_frame(); // next line might compile shaders:
         let dr = self.renderer.debug_renderer().unwrap();
 
-        for ref co in &color_and_offset {
-            let x = self.device_pixel_ratio * (15.0 + co.1);
-            let mut y = self.device_pixel_ratio * (15.0 + co.1 + dr.line_height());
-            for ref line in &help_lines {
+        for co in &color_and_offset {
+            let x = 15.0 + co.1;
+            let mut y = 15.0 + co.1 + dr.line_height();
+            for line in &help_lines {
                 dr.add_text(x, y, line, co.0.into(), None);
-                y += self.device_pixel_ratio * dr.line_height();
+                y += dr.line_height();
             }
         }
         self.renderer.device.end_frame();

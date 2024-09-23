@@ -11,8 +11,7 @@
 #include "nsHashKeys.h"
 #include "nsISupportsImpl.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class MessagePortParent;
 class SharedMessageBody;
@@ -33,12 +32,12 @@ class MessagePortService final {
                          const uint32_t& aSequenceID);
 
   bool DisentanglePort(MessagePortParent* aParent,
-                       FallibleTArray<RefPtr<SharedMessageBody>>& aMessages);
+                       FallibleTArray<RefPtr<SharedMessageBody>> aMessages);
 
   bool ClosePort(MessagePortParent* aParent);
 
   bool PostMessages(MessagePortParent* aParent,
-                    FallibleTArray<RefPtr<SharedMessageBody>>& aMessages);
+                    FallibleTArray<RefPtr<SharedMessageBody>> aMessages);
 
   void ParentDestroy(MessagePortParent* aParent);
 
@@ -56,7 +55,6 @@ class MessagePortService final {
   nsClassHashtable<nsIDHashKey, MessagePortServiceData> mPorts;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_MessagePortService_h

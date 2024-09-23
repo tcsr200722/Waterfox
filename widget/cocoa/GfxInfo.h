@@ -23,9 +23,11 @@ class GfxInfo : public GfxInfoBase {
   NS_IMETHOD GetD2DEnabled(bool* aD2DEnabled) override;
   NS_IMETHOD GetDWriteEnabled(bool* aDWriteEnabled) override;
   NS_IMETHOD GetDWriteVersion(nsAString& aDwriteVersion) override;
+  NS_IMETHOD GetEmbeddedInFirefoxReality(
+      bool* aEmbeddedInFirefoxReality) override;
   NS_IMETHOD GetHasBattery(bool* aHasBattery) override;
   NS_IMETHOD GetWindowProtocol(nsAString& aWindowProtocol) override;
-  NS_IMETHOD GetDesktopEnvironment(nsAString& aDesktopEnvironment) override;
+  NS_IMETHOD GetTestType(nsAString& aTestType) override;
   NS_IMETHOD GetCleartypeParameters(nsAString& aCleartypeParams) override;
   NS_IMETHOD GetAdapterDescription(nsAString& aAdapterDescription) override;
   NS_IMETHOD GetAdapterDriver(nsAString& aAdapterDriver) override;
@@ -47,9 +49,7 @@ class GfxInfo : public GfxInfoBase {
       nsAString& aAdapterDriverVersion) override;
   NS_IMETHOD GetAdapterDriverDate2(nsAString& aAdapterDriverDate) override;
   NS_IMETHOD GetIsGPU2Active(bool* aIsGPU2Active) override;
-  NS_IMETHOD GetDisplayInfo(nsTArray<nsString>& aDisplayInfo) override;
-  NS_IMETHOD GetDisplayWidth(nsTArray<uint32_t>& aDisplayWidth) override;
-  NS_IMETHOD GetDisplayHeight(nsTArray<uint32_t>& aDisplayHeight) override;
+  NS_IMETHOD GetDrmRenderDevice(nsACString& aDrmRenderDevice) override;
 
   using GfxInfoBase::GetFeatureStatus;
   using GfxInfoBase::GetFeatureSuggestedDriverVersion;
@@ -63,11 +63,10 @@ class GfxInfo : public GfxInfoBase {
 
   virtual uint32_t OperatingSystemVersion() override { return mOSXVersion; }
 
-  nsresult FindMonitors(JSContext* cx, JS::HandleObject array) override;
-
  protected:
   virtual ~GfxInfo() {}
 
+  OperatingSystem GetOperatingSystem() override;
   virtual nsresult GetFeatureStatusImpl(
       int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
       const nsTArray<GfxDriverInfo>& aDriverInfo, nsACString& aFailureId,
@@ -79,14 +78,16 @@ class GfxInfo : public GfxInfoBase {
   void GetSelectedCityInfo();
   void AddCrashReportAnnotations();
 
-  uint32_t mAdapterRAM;
-  nsString mDeviceID;
-  nsString mDriverVersion;
-  nsString mDriverDate;
-  nsString mDeviceKey;
+  uint32_t mNumGPUsDetected;
 
-  nsString mAdapterVendorID;
-  nsString mAdapterDeviceID;
+  uint32_t mAdapterRAM[2];
+  nsString mDeviceID[2];
+  nsString mDriverVersion[2];
+  nsString mDriverDate[2];
+  nsString mDeviceKey[2];
+
+  nsString mAdapterVendorID[2];
+  nsString mAdapterDeviceID[2];
 
   uint32_t mOSXVersion;
 };

@@ -8,9 +8,16 @@
 #define _mozilla_a11y_style_h_
 
 #include "mozilla/gfx/Types.h"
-#include "mozilla/ComputedStyle.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "nsStringFwd.h"
+#include "nsColor.h"
+
+class nsAtom;
 
 namespace mozilla {
+
+enum class StyleTextDecorationStyle : uint8_t;
+
 namespace dom {
 class Element;
 }  // namespace dom
@@ -18,30 +25,9 @@ namespace a11y {
 
 class StyleInfo {
  public:
-  explicit StyleInfo(dom::Element* aElement);
-  ~StyleInfo() {}
-
-  void Display(nsAString& aValue);
-  void TextAlign(nsAString& aValue);
-  void TextIndent(nsAString& aValue);
-  void MarginLeft(nsAString& aValue) { Margin(eSideLeft, aValue); }
-  void MarginRight(nsAString& aValue) { Margin(eSideRight, aValue); }
-  void MarginTop(nsAString& aValue) { Margin(eSideTop, aValue); }
-  void MarginBottom(nsAString& aValue) { Margin(eSideBottom, aValue); }
-
-  static void FormatColor(const nscolor& aValue, nsString& aFormattedValue);
-  static void FormatTextDecorationStyle(uint8_t aValue,
-                                        nsAString& aFormattedValue);
-
- private:
-  StyleInfo() = delete;
-  StyleInfo(const StyleInfo&) = delete;
-  StyleInfo& operator=(const StyleInfo&) = delete;
-
-  void Margin(Side aSide, nsAString& aValue);
-
-  dom::Element* mElement;
-  RefPtr<ComputedStyle> mComputedStyle;
+  static void FormatColor(const nscolor& aValue, nsAString& aFormattedValue);
+  static already_AddRefed<nsAtom> TextDecorationStyleToAtom(
+      StyleTextDecorationStyle aValue);
 };
 
 }  // namespace a11y

@@ -7,51 +7,67 @@
 #include "StoragePrincipalHelper.h"
 
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
-#include "mozilla/ContentBlocking.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StorageAccess.h"
 #include "nsContentUtils.h"
+#include "nsICookieJarSettings.h"
+#include "nsICookieService.h"
+#include "nsIDocShell.h"
+#include "nsIEffectiveTLDService.h"
+#include "nsIPrivateBrowsingChannel.h"
+#include "AntiTrackingUtils.h"
 
 namespace mozilla {
 
 namespace {
 
+bool ShouldPartitionChannel(nsIChannel* aChannel,
+                            nsICookieJarSettings* aCookieJarSettings) {
+  MOZ_ASSERT(aChannel);
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = aChannel->GetURI(getter_AddRefs(uri));
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  uint32_t rejectedReason = 0;
+  if (ShouldAllowAccessFor(aChannel, uri, &rejectedReason)) {
+    return false;
+  }
+
+  // Let's use the storage principal only if we need to partition the cookie
+  // jar.  We use the lower-level ContentBlocking API here to ensure this
+  // check doesn't send notifications.
+  if (!ShouldPartitionStorage(rejectedReason) ||
+      !StoragePartitioningEnabled(rejectedReason, aCookieJarSettings)) {
+    return false;
+  }
+
+  return true;
+}
+
 bool ChooseOriginAttributes(nsIChannel* aChannel, OriginAttributes& aAttrs,
-                            bool aForceInstrinsicStoragePrincipal) {
+                            bool aForcePartitionedPrincipal) {
   MOZ_ASSERT(aChannel);
 
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
   nsCOMPtr<nsICookieJarSettings> cjs;
-  if (NS_FAILED(loadInfo->GetCookieJarSettings(getter_AddRefs(cjs)))) {
+  Unused << loadInfo->GetCookieJarSettings(getter_AddRefs(cjs));
+
+  if (!aForcePartitionedPrincipal && !ShouldPartitionChannel(aChannel, cjs)) {
     return false;
   }
 
-  if (!aForceInstrinsicStoragePrincipal) {
-    nsCOMPtr<nsIURI> uri;
-    nsresult rv = aChannel->GetURI(getter_AddRefs(uri));
-    if (NS_FAILED(rv)) {
-      return false;
-    }
+  nsAutoString partitionKey;
+  Unused << cjs->GetPartitionKey(partitionKey);
 
-    uint32_t rejectedReason = 0;
-    if (ContentBlocking::ShouldAllowAccessFor(aChannel, uri, &rejectedReason)) {
-      return false;
-    }
-
-    // Let's use the storage principal only if we need to partition the cookie
-    // jar.  We use the lower-level ContentBlocking API here to ensure this
-    // check doesn't send notifications.
-    if (!ShouldPartitionStorage(rejectedReason) ||
-        !StoragePartitioningEnabled(rejectedReason, cjs)) {
-      return false;
-    }
-  }
-
-  nsAutoString domain;
-  Unused << cjs->GetFirstPartyDomain(domain);
-
-  if (!domain.IsEmpty()) {
-    aAttrs.SetFirstPartyDomain(false, domain, true /* aForced */);
+  if (!partitionKey.IsEmpty()) {
+    aAttrs.SetPartitionKey(partitionKey);
     return true;
   }
 
@@ -70,9 +86,83 @@ bool ChooseOriginAttributes(nsIChannel* aChannel, OriginAttributes& aAttrs,
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return false;
   }
-
-  aAttrs.SetFirstPartyDomain(false, principalURI, true /* aForced */);
+  bool foreignByAncestorContext =
+      AntiTrackingUtils::IsThirdPartyChannel(aChannel) &&
+      !loadInfo->GetIsThirdPartyContextToTopWindow();
+  aAttrs.SetPartitionKey(principalURI, foreignByAncestorContext);
   return true;
+}
+
+bool VerifyValidPartitionedPrincipalInfoForPrincipalInfoInternal(
+    const ipc::PrincipalInfo& aPartitionedPrincipalInfo,
+    const ipc::PrincipalInfo& aPrincipalInfo,
+    bool aIgnoreSpecForContentPrincipal,
+    bool aIgnoreDomainForContentPrincipal) {
+  if (aPartitionedPrincipalInfo.type() != aPrincipalInfo.type()) {
+    return false;
+  }
+
+  if (aPartitionedPrincipalInfo.type() ==
+      mozilla::ipc::PrincipalInfo::TContentPrincipalInfo) {
+    const mozilla::ipc::ContentPrincipalInfo& spInfo =
+        aPartitionedPrincipalInfo.get_ContentPrincipalInfo();
+    const mozilla::ipc::ContentPrincipalInfo& pInfo =
+        aPrincipalInfo.get_ContentPrincipalInfo();
+
+    return spInfo.attrs().EqualsIgnoringPartitionKey(pInfo.attrs()) &&
+           spInfo.originNoSuffix() == pInfo.originNoSuffix() &&
+           (aIgnoreSpecForContentPrincipal || spInfo.spec() == pInfo.spec()) &&
+           (aIgnoreDomainForContentPrincipal ||
+            spInfo.domain() == pInfo.domain()) &&
+           spInfo.baseDomain() == pInfo.baseDomain();
+  }
+
+  if (aPartitionedPrincipalInfo.type() ==
+      mozilla::ipc::PrincipalInfo::TSystemPrincipalInfo) {
+    // Nothing to check here.
+    return true;
+  }
+
+  if (aPartitionedPrincipalInfo.type() ==
+      mozilla::ipc::PrincipalInfo::TNullPrincipalInfo) {
+    const mozilla::ipc::NullPrincipalInfo& spInfo =
+        aPartitionedPrincipalInfo.get_NullPrincipalInfo();
+    const mozilla::ipc::NullPrincipalInfo& pInfo =
+        aPrincipalInfo.get_NullPrincipalInfo();
+
+    return spInfo.spec() == pInfo.spec() &&
+           spInfo.attrs().EqualsIgnoringPartitionKey(pInfo.attrs());
+  }
+
+  if (aPartitionedPrincipalInfo.type() ==
+      mozilla::ipc::PrincipalInfo::TExpandedPrincipalInfo) {
+    const mozilla::ipc::ExpandedPrincipalInfo& spInfo =
+        aPartitionedPrincipalInfo.get_ExpandedPrincipalInfo();
+    const mozilla::ipc::ExpandedPrincipalInfo& pInfo =
+        aPrincipalInfo.get_ExpandedPrincipalInfo();
+
+    if (!spInfo.attrs().EqualsIgnoringPartitionKey(pInfo.attrs())) {
+      return false;
+    }
+
+    if (spInfo.allowlist().Length() != pInfo.allowlist().Length()) {
+      return false;
+    }
+
+    for (uint32_t i = 0; i < spInfo.allowlist().Length(); ++i) {
+      if (!VerifyValidPartitionedPrincipalInfoForPrincipalInfoInternal(
+              spInfo.allowlist()[i], pInfo.allowlist()[i],
+              aIgnoreSpecForContentPrincipal,
+              aIgnoreDomainForContentPrincipal)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  MOZ_CRASH("Invalid principalInfo type");
+  return false;
 }
 
 }  // namespace
@@ -80,6 +170,7 @@ bool ChooseOriginAttributes(nsIChannel* aChannel, OriginAttributes& aAttrs,
 // static
 nsresult StoragePrincipalHelper::Create(nsIChannel* aChannel,
                                         nsIPrincipal* aPrincipal,
+                                        bool aForceIsolation,
                                         nsIPrincipal** aStoragePrincipal) {
   MOZ_ASSERT(aChannel);
   MOZ_ASSERT(aPrincipal);
@@ -91,7 +182,7 @@ nsresult StoragePrincipalHelper::Create(nsIChannel* aChannel,
   });
 
   OriginAttributes attrs = aPrincipal->OriginAttributesRef();
-  if (!ChooseOriginAttributes(aChannel, attrs, false)) {
+  if (!ChooseOriginAttributes(aChannel, attrs, aForceIsolation)) {
     return NS_OK;
   }
 
@@ -100,7 +191,38 @@ nsresult StoragePrincipalHelper::Create(nsIChannel* aChannel,
   nsCOMPtr<nsIPrincipal> storagePrincipal =
       BasePrincipal::Cast(aPrincipal)->CloneForcingOriginAttributes(attrs);
 
+  // If aPrincipal is not a ContentPrincipal, e.g. a NullPrincipal, the clone
+  // call will return a nullptr.
+  NS_ENSURE_TRUE(storagePrincipal, NS_ERROR_FAILURE);
+
   storagePrincipal.forget(aStoragePrincipal);
+  return NS_OK;
+}
+
+// static
+nsresult StoragePrincipalHelper::CreatePartitionedPrincipalForServiceWorker(
+    nsIPrincipal* aPrincipal, nsICookieJarSettings* aCookieJarSettings,
+    nsIPrincipal** aPartitionedPrincipal) {
+  MOZ_ASSERT(aPrincipal);
+  MOZ_ASSERT(aPartitionedPrincipal);
+
+  OriginAttributes attrs = aPrincipal->OriginAttributesRef();
+
+  nsAutoString partitionKey;
+  Unused << aCookieJarSettings->GetPartitionKey(partitionKey);
+
+  if (!partitionKey.IsEmpty()) {
+    attrs.SetPartitionKey(partitionKey);
+  }
+
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal =
+      BasePrincipal::Cast(aPrincipal)->CloneForcingOriginAttributes(attrs);
+
+  // If aPrincipal is not a ContentPrincipal, e.g. a NullPrincipal, the clone
+  // call will return a nullptr.
+  NS_ENSURE_TRUE(partitionedPrincipal, NS_ERROR_FAILURE);
+
+  partitionedPrincipal.forget(aPartitionedPrincipal);
   return NS_OK;
 }
 
@@ -118,71 +240,204 @@ StoragePrincipalHelper::PrepareEffectiveStoragePrincipalOriginAttributes(
 bool StoragePrincipalHelper::VerifyValidStoragePrincipalInfoForPrincipalInfo(
     const mozilla::ipc::PrincipalInfo& aStoragePrincipalInfo,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
-  if (aStoragePrincipalInfo.type() != aPrincipalInfo.type()) {
+  return VerifyValidPartitionedPrincipalInfoForPrincipalInfoInternal(
+      aStoragePrincipalInfo, aPrincipalInfo, false, false);
+}
+
+// static
+bool StoragePrincipalHelper::VerifyValidClientPrincipalInfoForPrincipalInfo(
+    const mozilla::ipc::PrincipalInfo& aClientPrincipalInfo,
+    const mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
+  return VerifyValidPartitionedPrincipalInfoForPrincipalInfoInternal(
+      aClientPrincipalInfo, aPrincipalInfo, true, true);
+}
+
+// static
+nsresult StoragePrincipalHelper::GetPrincipal(nsIChannel* aChannel,
+                                              PrincipalType aPrincipalType,
+                                              nsIPrincipal** aPrincipal) {
+  MOZ_ASSERT(aChannel);
+  MOZ_ASSERT(aPrincipal);
+
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+  nsCOMPtr<nsICookieJarSettings> cjs;
+  Unused << loadInfo->GetCookieJarSettings(getter_AddRefs(cjs));
+
+  nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
+  MOZ_DIAGNOSTIC_ASSERT(ssm);
+
+  nsCOMPtr<nsIPrincipal> principal;
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal;
+
+  nsresult rv =
+      ssm->GetChannelResultPrincipals(aChannel, getter_AddRefs(principal),
+                                      getter_AddRefs(partitionedPrincipal));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  // The aChannel might not be opened in some cases, e.g. getting principal
+  // for the new channel during a redirect. So, the value
+  // `IsThirdPartyToTopWindow` is incorrect in this case because this value is
+  // calculated during opening a channel. And we need to know the value in order
+  // to get the correct principal. To fix this, we compute the value here even
+  // the channel hasn't been opened yet.
+  //
+  // Note that we don't need to compute the value if there is no browsing
+  // context ID assigned. This could happen in a GTest or XPCShell.
+  //
+  // ToDo: The AntiTrackingUtils::ComputeIsThirdPartyToTopWindow() is only
+  //       available in the parent process. So, this can only work in the parent
+  //       process. It's fine for now, but we should change this to also work in
+  //       content processes. Bug 1736452 will address this.
+  //
+  if (XRE_IsParentProcess() && loadInfo->GetBrowsingContextID() != 0) {
+    AntiTrackingUtils::ComputeIsThirdPartyToTopWindow(aChannel);
+  }
+
+  nsCOMPtr<nsIPrincipal> outPrincipal = principal;
+
+  switch (aPrincipalType) {
+    case eRegularPrincipal:
+      break;
+
+    case eStorageAccessPrincipal:
+      if (ShouldPartitionChannel(aChannel, cjs)) {
+        outPrincipal = partitionedPrincipal;
+      }
+      break;
+
+    case ePartitionedPrincipal:
+      outPrincipal = partitionedPrincipal;
+      break;
+
+    case eForeignPartitionedPrincipal:
+      // We only support foreign partitioned principal when dFPI is enabled.
+      if (cjs->GetCookieBehavior() ==
+              nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN &&
+          AntiTrackingUtils::IsThirdPartyChannel(aChannel)) {
+        outPrincipal = partitionedPrincipal;
+      }
+      break;
+  }
+
+  outPrincipal.forget(aPrincipal);
+  return NS_OK;
+}
+
+// static
+nsresult StoragePrincipalHelper::GetPrincipal(nsPIDOMWindowInner* aWindow,
+                                              PrincipalType aPrincipalType,
+                                              nsIPrincipal** aPrincipal) {
+  MOZ_ASSERT(aWindow);
+  MOZ_ASSERT(aPrincipal);
+
+  nsCOMPtr<dom::Document> doc = aWindow->GetExtantDoc();
+  NS_ENSURE_STATE(doc);
+
+  nsCOMPtr<nsIPrincipal> outPrincipal;
+
+  switch (aPrincipalType) {
+    case eRegularPrincipal:
+      outPrincipal = doc->NodePrincipal();
+      break;
+
+    case eStorageAccessPrincipal:
+      outPrincipal = doc->EffectiveStoragePrincipal();
+      break;
+
+    case ePartitionedPrincipal:
+      outPrincipal = doc->PartitionedPrincipal();
+      break;
+
+    case eForeignPartitionedPrincipal:
+      // We only support foreign partitioned principal when dFPI is enabled.
+      if (doc->CookieJarSettings()->GetCookieBehavior() ==
+              nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN &&
+          AntiTrackingUtils::IsThirdPartyWindow(aWindow, nullptr)) {
+        outPrincipal = doc->PartitionedPrincipal();
+      } else {
+        outPrincipal = doc->NodePrincipal();
+      }
+      break;
+  }
+
+  outPrincipal.forget(aPrincipal);
+  return NS_OK;
+}
+
+// static
+bool StoragePrincipalHelper::ShouldUsePartitionPrincipalForServiceWorker(
+    nsIDocShell* aDocShell) {
+  MOZ_ASSERT(aDocShell);
+
+  // We don't use the partitioned principal for service workers if it's
+  // disabled.
+  if (!StaticPrefs::privacy_partition_serviceWorkers()) {
     return false;
   }
 
-  if (aStoragePrincipalInfo.type() ==
-      mozilla::ipc::PrincipalInfo::TContentPrincipalInfo) {
-    const mozilla::ipc::ContentPrincipalInfo& spInfo =
-        aStoragePrincipalInfo.get_ContentPrincipalInfo();
-    const mozilla::ipc::ContentPrincipalInfo& pInfo =
-        aPrincipalInfo.get_ContentPrincipalInfo();
+  RefPtr<dom::Document> document = aDocShell->GetExtantDocument();
 
-    if (!spInfo.attrs().EqualsIgnoringFPD(pInfo.attrs()) ||
-        spInfo.originNoSuffix() != pInfo.originNoSuffix() ||
-        spInfo.spec() != pInfo.spec() || spInfo.domain() != pInfo.domain() ||
-        spInfo.baseDomain() != pInfo.baseDomain()) {
-      return false;
+  // If we cannot get the document from the docShell, we turn to get its
+  // parent's document.
+  if (!document) {
+    nsCOMPtr<nsIDocShellTreeItem> parentItem;
+    aDocShell->GetInProcessSameTypeParent(getter_AddRefs(parentItem));
+
+    if (parentItem) {
+      document = parentItem->GetDocument();
     }
-
-    return true;
   }
 
-  if (aStoragePrincipalInfo.type() ==
-      mozilla::ipc::PrincipalInfo::TSystemPrincipalInfo) {
-    // Nothing to check here.
-    return true;
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
+
+  if (document) {
+    cookieJarSettings = document->CookieJarSettings();
+  } else {
+    // If there was no document, we create one cookieJarSettings here in order
+    // to get the cookieBehavior.  We don't need a real value for RFP because
+    // we are only using this object to check default cookie behavior.
+    cookieJarSettings =
+        net::CookieJarSettings::Create(net::CookieJarSettings::eRegular,
+                                       /* shouldResistFingerpreinting */ false);
   }
 
-  if (aStoragePrincipalInfo.type() ==
-      mozilla::ipc::PrincipalInfo::TNullPrincipalInfo) {
-    const mozilla::ipc::NullPrincipalInfo& spInfo =
-        aStoragePrincipalInfo.get_NullPrincipalInfo();
-    const mozilla::ipc::NullPrincipalInfo& pInfo =
-        aPrincipalInfo.get_NullPrincipalInfo();
-
-    return spInfo.spec() == pInfo.spec() &&
-           spInfo.attrs().EqualsIgnoringFPD(pInfo.attrs());
+  // We only support partitioned service workers when dFPI is enabled.
+  if (cookieJarSettings->GetCookieBehavior() !=
+      nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN) {
+    return false;
   }
 
-  if (aStoragePrincipalInfo.type() ==
-      mozilla::ipc::PrincipalInfo::TExpandedPrincipalInfo) {
-    const mozilla::ipc::ExpandedPrincipalInfo& spInfo =
-        aStoragePrincipalInfo.get_ExpandedPrincipalInfo();
-    const mozilla::ipc::ExpandedPrincipalInfo& pInfo =
-        aPrincipalInfo.get_ExpandedPrincipalInfo();
+  // Only the third-party context will need to use the partitioned principal. A
+  // first-party context is still using the regular principal for the service
+  // worker.
+  return AntiTrackingUtils::IsThirdPartyContext(
+      document ? document->GetBrowsingContext()
+               : aDocShell->GetBrowsingContext());
+}
 
-    if (!spInfo.attrs().EqualsIgnoringFPD(pInfo.attrs())) {
-      return false;
-    }
+// static
+bool StoragePrincipalHelper::ShouldUsePartitionPrincipalForServiceWorker(
+    dom::WorkerPrivate* aWorkerPrivate) {
+  MOZ_ASSERT(aWorkerPrivate);
 
-    if (spInfo.allowlist().Length() != pInfo.allowlist().Length()) {
-      return false;
-    }
-
-    for (uint32_t i = 0; i < spInfo.allowlist().Length(); ++i) {
-      if (!VerifyValidStoragePrincipalInfoForPrincipalInfo(
-              spInfo.allowlist()[i], pInfo.allowlist()[i])) {
-        return false;
-      }
-    }
-
-    return true;
+  // We don't use the partitioned principal for service workers if it's
+  // disabled.
+  if (!StaticPrefs::privacy_partition_serviceWorkers()) {
+    return false;
   }
 
-  MOZ_CRASH("Invalid principalInfo type");
-  return false;
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+      aWorkerPrivate->CookieJarSettings();
+
+  // We only support partitioned service workers when dFPI is enabled.
+  if (cookieJarSettings->GetCookieBehavior() !=
+      nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN) {
+    return false;
+  }
+
+  return aWorkerPrivate->IsThirdPartyContext();
 }
 
 // static
@@ -205,6 +460,8 @@ bool StoragePrincipalHelper::GetOriginAttributes(
   }
   aAttributes.SyncAttributesWithPrivateBrowsing(isPrivate);
 
+  nsCOMPtr<nsICookieJarSettings> cjs;
+
   switch (aPrincipalType) {
     case eRegularPrincipal:
       break;
@@ -216,6 +473,18 @@ bool StoragePrincipalHelper::GetOriginAttributes(
     case ePartitionedPrincipal:
       ChooseOriginAttributes(aChannel, aAttributes, true);
       break;
+
+    case eForeignPartitionedPrincipal:
+      Unused << loadInfo->GetCookieJarSettings(getter_AddRefs(cjs));
+
+      // We only support foreign partitioned principal when dFPI is enabled.
+      // Otherwise, we will use the regular principal.
+      if (cjs->GetCookieBehavior() ==
+              nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN &&
+          AntiTrackingUtils::IsThirdPartyChannel(aChannel)) {
+        ChooseOriginAttributes(aChannel, aAttributes, true);
+      }
+      break;
   }
 
   return true;
@@ -223,7 +492,7 @@ bool StoragePrincipalHelper::GetOriginAttributes(
 
 // static
 bool StoragePrincipalHelper::GetRegularPrincipalOriginAttributes(
-    Document* aDocument, OriginAttributes& aAttributes) {
+    dom::Document* aDocument, OriginAttributes& aAttributes) {
   aAttributes = mozilla::OriginAttributes();
   if (!aDocument) {
     return false;
@@ -276,27 +545,158 @@ bool StoragePrincipalHelper::GetOriginAttributesForNetworkState(
 
 // static
 void StoragePrincipalHelper::GetOriginAttributesForNetworkState(
-    Document* aDocument, OriginAttributes& aAttributes) {
+    dom::Document* aDocument, OriginAttributes& aAttributes) {
   aAttributes = aDocument->NodePrincipal()->OriginAttributesRef();
 
   if (!StaticPrefs::privacy_partition_network_state()) {
     return;
   }
 
-  // This part is required because the intrisicStoragePrincipal is not always
-  // partitioned. This should probably change. TODO - bug 1639833.
-  nsCOMPtr<nsICookieJarSettings> cjs = aDocument->CookieJarSettings();
-  MOZ_ASSERT(cjs);
+  aAttributes = aDocument->PartitionedPrincipal()->OriginAttributesRef();
+}
 
-  nsAutoString domain;
-  Unused << cjs->GetFirstPartyDomain(domain);
-
-  if (!domain.IsEmpty()) {
-    aAttributes.SetFirstPartyDomain(false, domain, true /* aForced */);
+// static
+void StoragePrincipalHelper::UpdateOriginAttributesForNetworkState(
+    nsIURI* aFirstPartyURI, OriginAttributes& aAttributes) {
+  if (!StaticPrefs::privacy_partition_network_state()) {
     return;
   }
 
-  aAttributes = aDocument->IntrinsicStoragePrincipal()->OriginAttributesRef();
+  aAttributes.SetPartitionKey(aFirstPartyURI, false);
+}
+
+enum SupportedScheme { HTTP, HTTPS };
+
+static bool GetOriginAttributesWithScheme(nsIChannel* aChannel,
+                                          OriginAttributes& aAttributes,
+                                          SupportedScheme aScheme) {
+  const nsString targetScheme = aScheme == HTTP ? u"http"_ns : u"https"_ns;
+  if (!StoragePrincipalHelper::GetOriginAttributesForNetworkState(
+          aChannel, aAttributes)) {
+    return false;
+  }
+
+  if (aAttributes.mPartitionKey.IsEmpty() ||
+      aAttributes.mPartitionKey[0] != '(') {
+    return true;
+  }
+
+  nsAString::const_iterator start, end;
+  aAttributes.mPartitionKey.BeginReading(start);
+  aAttributes.mPartitionKey.EndReading(end);
+
+  MOZ_DIAGNOSTIC_ASSERT(*start == '(');
+  start++;
+
+  nsAString::const_iterator iter(start);
+  bool ok = FindCharInReadable(',', iter, end);
+  MOZ_DIAGNOSTIC_ASSERT(ok);
+
+  if (!ok) {
+    return false;
+  }
+
+  nsAutoString scheme;
+  scheme.Assign(Substring(start, iter));
+
+  if (scheme.Equals(targetScheme)) {
+    return true;
+  }
+
+  nsAutoString key;
+  key += u"("_ns;
+  key += targetScheme;
+  key.Append(Substring(iter, end));
+  aAttributes.SetPartitionKey(key);
+
+  return true;
+}
+
+// static
+bool StoragePrincipalHelper::GetOriginAttributesForHSTS(
+    nsIChannel* aChannel, OriginAttributes& aAttributes) {
+  return GetOriginAttributesWithScheme(aChannel, aAttributes, HTTP);
+}
+
+// static
+bool StoragePrincipalHelper::GetOriginAttributesForHTTPSRR(
+    nsIChannel* aChannel, OriginAttributes& aAttributes) {
+  return GetOriginAttributesWithScheme(aChannel, aAttributes, HTTPS);
+}
+
+// static
+bool StoragePrincipalHelper::GetOriginAttributes(
+    const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
+    OriginAttributes& aAttributes) {
+  aAttributes = mozilla::OriginAttributes();
+
+  using Type = ipc::PrincipalInfo;
+  switch (aPrincipalInfo.type()) {
+    case Type::TContentPrincipalInfo:
+      aAttributes = aPrincipalInfo.get_ContentPrincipalInfo().attrs();
+      break;
+    case Type::TNullPrincipalInfo:
+      aAttributes = aPrincipalInfo.get_NullPrincipalInfo().attrs();
+      break;
+    case Type::TExpandedPrincipalInfo:
+      aAttributes = aPrincipalInfo.get_ExpandedPrincipalInfo().attrs();
+      break;
+    case Type::TSystemPrincipalInfo:
+      break;
+    default:
+      return false;
+  }
+
+  return true;
+}
+
+bool StoragePrincipalHelper::PartitionKeyHasBaseDomain(
+    const nsAString& aPartitionKey, const nsACString& aBaseDomain) {
+  return PartitionKeyHasBaseDomain(aPartitionKey,
+                                   NS_ConvertUTF8toUTF16(aBaseDomain));
+}
+
+// static
+bool StoragePrincipalHelper::PartitionKeyHasBaseDomain(
+    const nsAString& aPartitionKey, const nsAString& aBaseDomain) {
+  if (aPartitionKey.IsEmpty() || aBaseDomain.IsEmpty()) {
+    return false;
+  }
+
+  nsString scheme;
+  nsString pkBaseDomain;
+  int32_t port;
+  bool foreign;
+  bool success = OriginAttributes::ParsePartitionKey(
+      aPartitionKey, scheme, pkBaseDomain, port, foreign);
+
+  if (!success) {
+    return false;
+  }
+
+  return aBaseDomain.Equals(pkBaseDomain);
+}
+
+// static
+void StoragePrincipalHelper::UpdatePartitionKeyWithForeignAncestorBit(
+    nsAString& aKey, bool aForeignByAncestorContext) {
+  bool site = 0 == aKey.Find(u"(");
+  if (!site) {
+    return;
+  }
+  if (aForeignByAncestorContext) {
+    int32_t index = aKey.Find(u",f)");
+    if (index == -1) {
+      uint32_t cutStart = aKey.Length() - 1;
+      aKey.ReplaceLiteral(cutStart, 1, u",f)");
+    }
+  } else {
+    int32_t index = aKey.Find(u",f)");
+    if (index != -1) {
+      uint32_t cutLength = aKey.Length() - index;
+      aKey.ReplaceLiteral(index, cutLength, u")");
+    }
+  }
 }
 
 }  // namespace mozilla

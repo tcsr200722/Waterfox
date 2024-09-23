@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.1.1.1
+esid: sec-map-iterable
 description: Map.name value and descriptor.
 info: |
   Map ( [ iterable ] )
@@ -11,10 +11,11 @@ info: |
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Map.name, 'Map', 'The value of Map.name is "Map"');
-
-verifyNotEnumerable(Map, 'name');
-verifyNotWritable(Map, 'name');
-verifyConfigurable(Map, 'name');
+verifyProperty(Map, "name", {
+  value: "Map",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

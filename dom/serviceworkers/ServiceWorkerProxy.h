@@ -10,16 +10,17 @@
 #include "nsProxyRelease.h"
 #include "ServiceWorkerDescriptor.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+class ClientInfo;
+class ClientState;
 class ServiceWorkerCloneData;
 class ServiceWorkerInfo;
 class ServiceWorkerParent;
 
 class ServiceWorkerProxy final {
   // Background thread only
-  ServiceWorkerParent* mActor;
+  RefPtr<ServiceWorkerParent> mActor;
 
   // Written on background thread and read on main thread
   nsCOMPtr<nsISerialEventTarget> mEventTarget;
@@ -55,7 +56,6 @@ class ServiceWorkerProxy final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ServiceWorkerProxy);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // moz_dom_ServiceWorkerProxy_h

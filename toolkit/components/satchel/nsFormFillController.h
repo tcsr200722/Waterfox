@@ -6,28 +6,29 @@
 #ifndef __nsFormFillController__
 #define __nsFormFillController__
 
+#include "mozilla/TimeStamp.h"
 #include "nsIFormFillController.h"
 #include "nsIAutoCompleteInput.h"
 #include "nsIAutoCompleteSearch.h"
 #include "nsIAutoCompleteController.h"
 #include "nsIAutoCompletePopup.h"
-#include "nsIFormAutoComplete.h"
+#include "nsIDOMEventListener.h"
 #include "nsCOMPtr.h"
-#include "nsDataHashtable.h"
+#include "nsStubMutationObserver.h"
+#include "nsTHashMap.h"
 #include "nsInterfaceHashtable.h"
 #include "nsIDocShell.h"
-#include "nsILoginAutoCompleteSearch.h"
 #include "nsIMutationObserver.h"
-#include "nsTArray.h"
+#include "nsIObserver.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsILoginReputation.h"
 
 class nsFormHistory;
 class nsINode;
-class nsPIDOMWindowOuter;
 
 namespace mozilla {
+class CancelableRunnable;
 namespace dom {
+class EventTarget;
 class HTMLInputElement;
 }  // namespace dom
 }  // namespace mozilla
@@ -35,14 +36,18 @@ class HTMLInputElement;
 class nsFormFillController final : public nsIFormFillController,
                                    public nsIAutoCompleteInput,
                                    public nsIAutoCompleteSearch,
-                                   public nsIFormAutoCompleteObserver,
-                                   public nsIMutationObserver {
+                                   public nsIFormFillCompleteObserver,
+                                   public nsIDOMEventListener,
+                                   public nsIObserver,
+                                   public nsMultiMutationObserver {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_NSIFORMFILLCONTROLLER
   NS_DECL_NSIAUTOCOMPLETESEARCH
   NS_DECL_NSIAUTOCOMPLETEINPUT
-  NS_DECL_NSIFORMAUTOCOMPLETEOBSERVER
+  NS_DECL_NSIFORMFILLCOMPLETEOBSERVER
+  NS_DECL_NSIDOMEVENTLISTENER
+  NS_DECL_NSIOBSERVER
   NS_DECL_NSIMUTATIONOBSERVER
 
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsFormFillController,
@@ -54,11 +59,10 @@ class nsFormFillController final : public nsIFormFillController,
 
   nsFormFillController();
 
+  static already_AddRefed<nsFormFillController> GetSingleton();
+
  protected:
   MOZ_CAN_RUN_SCRIPT virtual ~nsFormFillController();
-
-  void AddWindowListeners(nsPIDOMWindowOuter* aWindow);
-  MOZ_CAN_RUN_SCRIPT void RemoveWindowListeners(nsPIDOMWindowOuter* aWindow);
 
   MOZ_CAN_RUN_SCRIPT
   void StartControllingInput(mozilla::dom::HTMLInputElement* aInput);
@@ -69,6 +73,8 @@ class nsFormFillController final : public nsIFormFillController,
   MOZ_CAN_RUN_SCRIPT
   nsresult HandleFocus(mozilla::dom::HTMLInputElement* aInput);
 
+  void AttachListeners(mozilla::dom::EventTarget* aEventTarget);
+
   /**
    * Checks that aElement is a type of element we want to fill, then calls
    * StartControllingInput on it.
@@ -76,8 +82,18 @@ class nsFormFillController final : public nsIFormFillController,
   MOZ_CAN_RUN_SCRIPT
   void MaybeStartControllingInput(mozilla::dom::HTMLInputElement* aElement);
 
-  nsresult PerformInputListAutoComplete(const nsAString& aSearch,
-                                        nsIAutoCompleteResult** aResult);
+  // clears the reference mRestartAfterAttributeChangeTask before running
+  // MaybeStartControllingInput()
+  MOZ_CAN_RUN_SCRIPT
+  void MaybeStartControllingInputScheduled(
+      mozilla::dom::HTMLInputElement* aElement);
+
+  // cancels a scheduled AttributeChangeTask and clears the reference
+  // mRestartAfterAttributeChangeTask
+  MOZ_CAN_RUN_SCRIPT
+  void MaybeCancelAttributeChangeTask();
+
+  void MaybeObserveDataListMutations();
 
   MOZ_CAN_RUN_SCRIPT void RevalidateDataList();
   bool RowMatch(nsFormHistory* aHistory, uint32_t aIndex,
@@ -92,34 +108,25 @@ class nsFormFillController final : public nsIFormFillController,
 
   bool IsTextControl(nsINode* aNode);
 
-  nsresult StartQueryLoginReputation(mozilla::dom::HTMLInputElement* aInput);
-
   // members //////////////////////////////////////////
 
   nsCOMPtr<nsIAutoCompleteController> mController;
-  nsCOMPtr<nsILoginAutoCompleteSearch> mLoginManagerAC;
-  nsCOMPtr<nsILoginReputationService> mLoginReputationService;
   mozilla::dom::HTMLInputElement* mFocusedInput;
+  RefPtr<mozilla::CancelableRunnable> mRestartAfterAttributeChangeTask;
 
   // mListNode is a <datalist> element which, is set, has the form fill
   // controller as a mutation observer for it.
   nsINode* mListNode;
   nsCOMPtr<nsIAutoCompletePopup> mFocusedPopup;
 
-  nsInterfaceHashtable<nsRefPtrHashKey<mozilla::dom::Document>,
-                       nsIAutoCompletePopup>
-      mPopups;
-
-  // The observer passed to StartSearch. It will be notified when the search is
-  // complete or the data from a datalist changes.
+  // The observer passed to StartSearch. It will be notified when the search
+  // is complete or the data from a datalist changes.
   nsCOMPtr<nsIAutoCompleteObserver> mLastListener;
 
   // This is cleared by StopSearch().
-  nsCOMPtr<nsIFormAutoComplete> mLastFormAutoComplete;
   nsString mLastSearchString;
 
-  nsDataHashtable<nsPtrHashKey<const nsINode>, bool> mPwmgrInputs;
-  nsDataHashtable<nsPtrHashKey<const nsINode>, bool> mAutofillInputs;
+  nsTHashMap<nsPtrHashKey<const nsINode>, bool> mAutoCompleteInputs;
 
   uint16_t mFocusAfterRightClickThreshold;
   uint32_t mTimeout;
@@ -132,6 +139,8 @@ class nsFormFillController final : public nsIFormFillController,
   bool mForceComplete;
   bool mSuppressOnInput;
   bool mPasswordPopupAutomaticallyOpened;
+  bool mAutoCompleteActive = false;
+  bool mInvalidatePreviousResult = false;
 };
 
 #endif  // __nsFormFillController__

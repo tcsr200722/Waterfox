@@ -5,7 +5,6 @@
 
 /* eslint-env browser */
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../shared/test/shared-head.js */
 
 // Load the shared-head file first.
 Services.scriptloader.loadSubScript(
@@ -13,17 +12,16 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-// Load the shared Redux helpers into this compartment.
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
-  this
-);
-
 /* import-globals-from helper-mocks.js */
 Services.scriptloader.loadSubScript(CHROME_URL_ROOT + "helper-mocks.js", this);
 
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/shared-head.js",
+  this
+);
+
 // Make sure the ADB addon is removed and ADB is stopped when the test ends.
-registerCleanupFunction(async function() {
+registerCleanupFunction(async function () {
   // Reset the selected tool in case we opened about:devtools-toolbox to
   // avoid side effects between tests.
   Services.prefs.clearUserPref("devtools.toolbox.selectedTool");
@@ -31,19 +29,19 @@ registerCleanupFunction(async function() {
   try {
     const {
       adbAddon,
-    } = require("devtools/client/shared/remote-debugging/adb/adb-addon");
+    } = require("resource://devtools/client/shared/remote-debugging/adb/adb-addon.js");
     await adbAddon.uninstall();
   } catch (e) {
     // Will throw if the addon is already uninstalled, ignore exceptions here.
   }
   const {
     adbProcess,
-  } = require("devtools/client/shared/remote-debugging/adb/adb-process");
+  } = require("resource://devtools/client/shared/remote-debugging/adb/adb-process.js");
   await adbProcess.kill();
 
   const {
     remoteClientManager,
-  } = require("devtools/client/shared/remote-debugging/remote-client-manager");
+  } = require("resource://devtools/client/shared/remote-debugging/remote-client-manager.js");
   await remoteClientManager.removeAllClients();
 });
 
@@ -83,18 +81,54 @@ async function openAboutDevtoolsToolbox(
   shouldWaitToolboxReady = true
 ) {
   info("Open about:devtools-toolbox page");
+
+  info("Wait for the target to appear: " + targetText);
+  await waitUntil(() => findDebugTargetByText(targetText, doc));
+
   const target = findDebugTargetByText(targetText, doc);
-  ok(target, `${targetText} tab target appeared`);
+  ok(target, `${targetText} target appeared`);
+
+  const {
+    DEBUG_TARGETS,
+  } = require("resource://devtools/client/aboutdebugging/src/constants.js");
+  const isWebExtension = target.dataset.qaTargetType == DEBUG_TARGETS.EXTENSION;
+
   const inspectButton = target.querySelector(".qa-debug-target-inspect-button");
   ok(inspectButton, `Inspect button for ${targetText} appeared`);
   inspectButton.click();
+  const onToolboxReady = gDevTools.once("toolbox-ready");
   await Promise.all([
-    waitUntil(() => tab.nextElementSibling),
-    waitForRequestsToSettle(win.AboutDebugging.store),
-    shouldWaitToolboxReady
-      ? gDevTools.once("toolbox-ready")
-      : Promise.resolve(),
+    waitForAboutDebuggingRequests(win.AboutDebugging.store),
+    shouldWaitToolboxReady ? onToolboxReady : Promise.resolve(),
   ]);
+
+  // WebExtension open a toolbox in a dedicated window
+  if (isWebExtension) {
+    const toolbox = await onToolboxReady;
+    // For some reason the test helpers prevents the toolbox from being automatically focused on opening,
+    // whereas it is IRL.
+    const focusedWin = Services.focus.focusedWindow;
+    if (focusedWin?.top != toolbox.win) {
+      info("Wait for the toolbox window to be focused");
+      await new Promise(r => {
+        // focus event only fired on the chrome event handler and in capture phase
+        toolbox.win.docShell.chromeEventHandler.addEventListener("focus", r, {
+          once: true,
+          capture: true,
+        });
+        toolbox.win.focus();
+      });
+      info("The toolbox is focused");
+    }
+    return {
+      devtoolsBrowser: null,
+      devtoolsDocument: toolbox.doc,
+      devtoolsTab: null,
+      devtoolsWindow: toolbox.win,
+    };
+  }
+
+  await waitUntil(() => tab.nextElementSibling);
 
   info("Wait for about:devtools-toolbox tab will be selected");
   const devtoolsTab = tab.nextElementSibling;
@@ -130,7 +164,7 @@ async function closeAboutDevtoolsToolbox(
   const devtoolsBrowser = devtoolsTab.linkedBrowser;
   const devtoolsWindow = devtoolsBrowser.contentWindow;
   const toolbox = getToolbox(devtoolsWindow);
-  await toolbox.target.client.waitForRequestsToSettle();
+  await toolbox.commands.client.waitForRequestsToSettle();
 
   info("Close about:devtools-toolbox page");
   const onToolboxDestroyed = gDevTools.once("toolbox-destroyed");
@@ -152,18 +186,29 @@ async function closeAboutDevtoolsToolbox(
     () => !findDebugTargetByText("Toolbox - ", aboutDebuggingDocument)
   );
 
-  await waitForRequestsToSettle(win.AboutDebugging.store);
+  await waitForAboutDebuggingRequests(win.AboutDebugging.store);
+}
+
+async function closeWebExtAboutDevtoolsToolbox(devtoolsWindow, win) {
+  // Wait for all requests to settle on the opened about:devtools toolbox.
+  const toolbox = getToolbox(devtoolsWindow);
+  await toolbox.commands.client.waitForRequestsToSettle();
+
+  info("Close the toolbox and wait for its destruction");
+  await toolbox.destroy();
+
+  await waitForAboutDebuggingRequests(win.AboutDebugging.store);
 }
 
 async function reloadAboutDebugging(tab) {
   info("reload about:debugging");
 
-  await refreshTab(tab);
+  await reloadBrowser(tab.linkedBrowser);
   const browser = tab.linkedBrowser;
   const document = browser.contentDocument;
   const window = browser.contentWindow;
   info("wait for the initial about:debugging requests to settle");
-  await waitForRequestsToSettle(window.AboutDebugging.store);
+  await waitForAboutDebuggingRequests(window.AboutDebugging.store);
 
   return document;
 }
@@ -180,10 +225,10 @@ function waitForRequestsSuccess(store) {
 }
 
 /**
- * Wait for all client requests to settle, meaning here that no new request has been
- * dispatched after the provided delay.
+ * Wait for all aboutdebugging REQUEST_*_SUCCESS actions to settle, meaning here
+ * that no new request has been dispatched after the provided delay.
  */
-async function waitForRequestsToSettle(store, delay = 500) {
+async function waitForAboutDebuggingRequests(store, delay = 500) {
   let hasSettled = false;
 
   // After each iteration of this while loop, we check is the timerPromise had the time
@@ -215,18 +260,6 @@ async function waitForRequestsToSettle(store, delay = 500) {
   }
 }
 
-function waitForDispatch(store, type) {
-  return new Promise(resolve => {
-    store.dispatch({
-      type: "@@service/waitUntil",
-      predicate: action => action.type === type,
-      run: (dispatch, getState, action) => {
-        resolve(action);
-      },
-    });
-  });
-}
-
 /**
  * Navigate to "This Firefox"
  */
@@ -244,7 +277,7 @@ async function selectThisFirefoxPage(doc, store) {
   // Navigating to this-firefox will trigger a title change for the
   // about:debugging tab. This title change _might_ trigger a tablist update.
   // If it does, we should make sure to wait for pending tab requests.
-  await waitForRequestsToSettle(store);
+  await waitForAboutDebuggingRequests(store);
 }
 
 /**
@@ -366,7 +399,7 @@ async function openProfilerDialog(client, doc) {
 function getThisFirefoxString(aboutDebuggingWindow) {
   const loader = aboutDebuggingWindow.getBrowserLoaderForWindow();
   const { l10n } = loader.require(
-    "devtools/client/aboutdebugging/src/modules/l10n"
+    "resource://devtools/client/aboutdebugging/src/modules/l10n.js"
   );
   return l10n.getString("about-debugging-this-firefox-runtime-name");
 }
@@ -415,4 +448,79 @@ async function updateSelectedTab(browser, tab, store) {
     info("Wait for the tablist update after updating the selected tab");
     await onTabsSuccess;
   }
+}
+
+/**
+ * Synthesizes key input inside the DebugTargetInfo's URL component.
+ *
+ * @param {DevToolsToolbox} toolbox
+ *        The DevToolsToolbox debugging the target.
+ * @param {HTMLElement} inputEl
+ *        The <input> element to submit the URL with.
+ * @param {String}  url
+ *        The URL to navigate to.
+ */
+async function synthesizeUrlKeyInput(toolbox, inputEl, url) {
+  const { devtoolsDocument, devtoolsWindow } = toolbox;
+  info("Wait for URL input to be focused.");
+  const onInputFocused = waitUntil(
+    () => devtoolsDocument.activeElement === inputEl
+  );
+  inputEl.focus();
+  await onInputFocused;
+
+  info("Synthesize entering URL into text field");
+  const onInputChange = waitUntil(() => inputEl.value === url);
+  for (const key of url.split("")) {
+    EventUtils.synthesizeKey(key, {}, devtoolsWindow);
+  }
+  await onInputChange;
+
+  info("Submit URL to navigate to");
+  EventUtils.synthesizeKey("KEY_Enter");
+}
+
+/**
+ * Click on a given add-on widget button so that its browser actor is fired.
+ * Typically a popup would open, or a listener would be called in the background page.
+ *
+ * @param {String} addonId
+ *        The ID of the add-on to click on.
+ */
+function clickOnAddonWidget(addonId) {
+  // Devtools are in another window and may have the focus.
+  // Ensure focusing the browser window when clicking on the widget.
+  const focusedWin = Services.focus.focusedWindow;
+  if (focusedWin != window) {
+    window.focus();
+  }
+  // Find the browserAction button that will show the webextension popup.
+  const widgetId = addonId.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  const browserActionId = widgetId + "-browser-action";
+  const browserActionEl = window.document.getElementById(browserActionId);
+  ok(browserActionEl, "Got the browserAction button from the browser UI");
+
+  info("Show the web extension popup");
+  browserActionEl.firstElementChild.click();
+}
+
+// Create basic addon data as the DevToolsClient would return it.
+function createAddonData({
+  id,
+  name,
+  isSystem = false,
+  hidden = false,
+  temporary = false,
+}) {
+  return {
+    actor: `actorid-${id}`,
+    hidden,
+    iconURL: `moz-extension://${id}/icon-url.png`,
+    id,
+    manifestURL: `moz-extension://${id}/manifest-url.json`,
+    name,
+    isSystem,
+    temporarilyInstalled: temporary,
+    debuggable: true,
+  };
 }

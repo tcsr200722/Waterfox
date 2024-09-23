@@ -10,18 +10,10 @@
 #include "nsDebug.h"
 #include "nsIInputStream.h"
 #include "nsIOutputStream.h"
-#include "nsPrintfCString.h"
 #include "nsTArray.h"
 #include "nsString.h"
-#include "nsTArray.h"
-#include "nsThreadUtils.h"
-#include "nsNetUtil.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/StaticPrefs_browser.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/Logging.h"
-#include "mozilla/Unused.h"
-#include <algorithm>
+#include "mozilla/StaticPrefs_browser.h"
 
 using namespace mozilla;
 
@@ -32,8 +24,7 @@ static LazyLogModule gUrlClassifierPrefixSetLog("UrlClassifierPrefixSet");
 #define LOG_ENABLED() \
   MOZ_LOG_TEST(gUrlClassifierPrefixSetLog, mozilla::LogLevel::Debug)
 
-NS_IMPL_ISUPPORTS(nsUrlClassifierPrefixSet, nsIUrlClassifierPrefixSet,
-                  nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(nsUrlClassifierPrefixSet, nsIUrlClassifierPrefixSet)
 
 nsUrlClassifierPrefixSet::nsUrlClassifierPrefixSet()
     : mLock("nsUrlClassifierPrefixSet.mLock"), mTotalPrefixes(0) {}
@@ -41,17 +32,18 @@ nsUrlClassifierPrefixSet::nsUrlClassifierPrefixSet()
 NS_IMETHODIMP
 nsUrlClassifierPrefixSet::Init(const nsACString& aName) {
   mName = aName;
-  mMemoryReportPath = nsPrintfCString(
-      "explicit/storage/prefix-set/%s",
-      (!aName.IsEmpty() ? PromiseFlatCString(aName).get() : "?!"));
-
-  RegisterWeakMemoryReporter(this);
 
   return NS_OK;
 }
 
 nsUrlClassifierPrefixSet::~nsUrlClassifierPrefixSet() {
-  UnregisterWeakMemoryReporter(this);
+  MutexAutoLock lock(mLock);
+
+  for (uint32_t i = 0; i < mIndexDeltas.Length(); i++) {
+    mIndexDeltas[i].Clear();
+  }
+  mIndexDeltas.Clear();
+  mIndexPrefixes.Clear();
 }
 
 void nsUrlClassifierPrefixSet::Clear() {
@@ -186,10 +178,10 @@ nsresult nsUrlClassifierPrefixSet::MakePrefixSet(const uint32_t* aPrefixes,
 }
 
 nsresult nsUrlClassifierPrefixSet::GetPrefixesNative(
-    FallibleTArray<uint32_t>& outArray) {
+    FallibleTArray<uint32_t>& aOutArray) {
   MutexAutoLock lock(mLock);
 
-  if (!outArray.SetLength(mTotalPrefixes, fallible)) {
+  if (!aOutArray.SetLength(mTotalPrefixes, fallible)) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
@@ -202,7 +194,7 @@ nsresult nsUrlClassifierPrefixSet::GetPrefixesNative(
     if (prefixCnt >= mTotalPrefixes) {
       return NS_ERROR_FAILURE;
     }
-    outArray[prefixCnt++] = prefix;
+    aOutArray[prefixCnt++] = prefix;
 
     if (mIndexDeltas.IsEmpty()) {
       continue;
@@ -213,11 +205,47 @@ nsresult nsUrlClassifierPrefixSet::GetPrefixesNative(
       if (prefixCnt >= mTotalPrefixes) {
         return NS_ERROR_FAILURE;
       }
-      outArray[prefixCnt++] = prefix;
+      aOutArray[prefixCnt++] = prefix;
     }
   }
 
   NS_ASSERTION(mTotalPrefixes == prefixCnt, "Lengths are inconsistent");
+  return NS_OK;
+}
+
+nsresult nsUrlClassifierPrefixSet::GetPrefixByIndex(
+    uint32_t aIndex, uint32_t* aOutPrefix) const {
+  NS_ENSURE_ARG_POINTER(aOutPrefix);
+
+  MutexAutoLock lock(mLock);
+  MOZ_ASSERT(aIndex < mTotalPrefixes);
+
+  // We can directly get the target index if the delta algorithm didn't apply.
+  if (mIndexDeltas.IsEmpty()) {
+    *aOutPrefix = mIndexPrefixes[aIndex];
+    return NS_OK;
+  }
+
+  // The prefix set was compressed by the delta algorithm, we have to iterate
+  // the delta index to find out the right bucket.
+  for (uint32_t i = 0; i < mIndexDeltas.Length(); i++) {
+    // The target index is in the current delta bucket.
+    if (aIndex <= mIndexDeltas[i].Length()) {
+      MOZ_ASSERT(aIndex <= DELTAS_LIMIT);
+
+      uint32_t prefix = mIndexPrefixes[i];
+
+      for (uint32_t j = 0; j < aIndex; j++) {
+        prefix += mIndexDeltas[i][j];
+      }
+
+      *aOutPrefix = prefix;
+      break;
+    }
+
+    aIndex -= mIndexDeltas[i].Length() + 1;
+  }
+
   return NS_OK;
 }
 
@@ -314,25 +342,6 @@ nsUrlClassifierPrefixSet::Contains(uint32_t aPrefix, bool* aFound) {
   if (diff == 0) {
     *aFound = true;
   }
-
-  return NS_OK;
-}
-
-MOZ_DEFINE_MALLOC_SIZE_OF(UrlClassifierMallocSizeOf)
-
-NS_IMETHODIMP
-nsUrlClassifierPrefixSet::CollectReports(nsIHandleReportCallback* aHandleReport,
-                                         nsISupports* aData, bool aAnonymize) {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  // No need to get mLock here because this function does not directly touch
-  // the class's data members. (SizeOfIncludingThis() will get mLock, however.)
-
-  aHandleReport->Callback(
-      EmptyCString(), mMemoryReportPath, KIND_HEAP, UNITS_BYTES,
-      SizeOfIncludingThis(UrlClassifierMallocSizeOf),
-      NS_LITERAL_CSTRING("Memory used by the prefix set for a URL classifier."),
-      aData);
 
   return NS_OK;
 }
@@ -475,6 +484,8 @@ nsresult nsUrlClassifierPrefixSet::LoadPrefixes(nsCOMPtr<nsIInputStream>& in) {
 
 uint32_t nsUrlClassifierPrefixSet::CalculatePreallocateSize() const {
   uint32_t fileSize = 4 * sizeof(uint32_t);
+  MutexAutoLock lock(mLock);
+
   MOZ_RELEASE_ASSERT(mTotalPrefixes >= mIndexPrefixes.Length());
   uint32_t deltas = mTotalPrefixes - mIndexPrefixes.Length();
   fileSize += mIndexPrefixes.Length() * sizeof(uint32_t);
@@ -486,6 +497,12 @@ uint32_t nsUrlClassifierPrefixSet::CalculatePreallocateSize() const {
     fileSize += deltas * sizeof(uint16_t);
   }
   return fileSize;
+}
+
+uint32_t nsUrlClassifierPrefixSet::Length() const {
+  MutexAutoLock lock(mLock);
+
+  return mTotalPrefixes;
 }
 
 nsresult nsUrlClassifierPrefixSet::WritePrefixes(
@@ -540,7 +557,7 @@ nsresult nsUrlClassifierPrefixSet::WritePrefixes(
       totalDeltas += deltaLength;
       indexStarts.AppendElement(totalDeltas);
     }
-    indexStarts.RemoveElementAt(indexSize);  // we don't use the last element
+    indexStarts.RemoveLastElement();  // we don't use the last element
     MOZ_ASSERT(indexStarts.Length() == indexSize);
   }
 

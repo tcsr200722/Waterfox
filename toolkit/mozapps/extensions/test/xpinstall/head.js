@@ -1,7 +1,10 @@
 /* eslint no-unused-vars: ["error", {vars: "local", args: "none"}] */
 
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
+);
+const { PromptTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromptTestUtils.sys.mjs"
 );
 
 const RELATIVE_DIR = "toolkit/mozapps/extensions/test/xpinstall/";
@@ -9,7 +12,7 @@ const RELATIVE_DIR = "toolkit/mozapps/extensions/test/xpinstall/";
 const TESTROOT = "http://example.com/browser/" + RELATIVE_DIR;
 const TESTROOT2 = "http://example.org/browser/" + RELATIVE_DIR;
 const PROMPT_URL = "chrome://global/content/commonDialog.xhtml";
-const ADDONS_URL = "chrome://mozapps/content/extensions/extensions.xhtml";
+const ADDONS_URL = "chrome://mozapps/content/extensions/aboutaddons.html";
 const PREF_LOGGING_ENABLED = "extensions.logging.enabled";
 const PREF_INSTALL_REQUIREBUILTINCERTS =
   "extensions.install.requireBuiltInCerts";
@@ -32,6 +35,20 @@ function extractChromeRoot(path) {
     return "file://" + tmpdir.path + "/";
   }
   return chromeRootPath;
+}
+
+function setInstallTriggerPrefs() {
+  Services.prefs.setBoolPref("extensions.InstallTrigger.enabled", true);
+  Services.prefs.setBoolPref("extensions.InstallTriggerImpl.enabled", true);
+  // Relax the user input requirements while running tests that call this test helper.
+  Services.prefs.setBoolPref("xpinstall.userActivation.required", false);
+  registerCleanupFunction(clearInstallTriggerPrefs);
+}
+
+function clearInstallTriggerPrefs() {
+  Services.prefs.clearUserPref("extensions.InstallTrigger.enabled");
+  Services.prefs.clearUserPref("extensions.InstallTriggerImpl.enabled");
+  Services.prefs.clearUserPref("xpinstall.userActivation.required");
 }
 
 /**
@@ -111,24 +128,22 @@ var Harness = {
 
       Services.obs.addObserver(this, "addon-install-started");
       Services.obs.addObserver(this, "addon-install-disabled");
-      // XXX this breaks a bunch of stuff, see comment in onInstallCancelled
-      // Services.obs.addObserver(this, "addon-install-cancelled", false);
       Services.obs.addObserver(this, "addon-install-origin-blocked");
       Services.obs.addObserver(this, "addon-install-blocked");
       Services.obs.addObserver(this, "addon-install-failed");
-      Services.obs.addObserver(this, "addon-install-complete");
+
+      // For browser_auth tests which trigger auth dialogs.
+      Services.obs.addObserver(this, "common-dialog-loaded");
 
       this._boundWin = Cu.getWeakReference(win); // need this so our addon manager listener knows which window to use.
       AddonManager.addInstallListener(this);
       AddonManager.addAddonListener(this);
 
-      Services.wm.addListener(this);
-
       win.addEventListener("popupshown", this);
       win.PanelUI.notificationPanel.addEventListener("popupshown", this);
 
       var self = this;
-      registerCleanupFunction(async function() {
+      registerCleanupFunction(async function () {
         Services.prefs.clearUserPref(PREF_LOGGING_ENABLED);
         Services.prefs.clearUserPref(PREF_INSTALL_REQUIRESECUREORIGIN);
         Services.prefs.clearUserPref(
@@ -137,16 +152,14 @@ var Harness = {
 
         Services.obs.removeObserver(self, "addon-install-started");
         Services.obs.removeObserver(self, "addon-install-disabled");
-        // Services.obs.removeObserver(self, "addon-install-cancelled");
         Services.obs.removeObserver(self, "addon-install-origin-blocked");
         Services.obs.removeObserver(self, "addon-install-blocked");
         Services.obs.removeObserver(self, "addon-install-failed");
-        Services.obs.removeObserver(self, "addon-install-complete");
+
+        Services.obs.removeObserver(self, "common-dialog-loaded");
 
         AddonManager.removeInstallListener(self);
         AddonManager.removeAddonListener(self);
-
-        Services.wm.removeListener(self);
 
         win.removeEventListener("popupshown", self);
         win.PanelUI.notificationPanel.removeEventListener("popupshown", self);
@@ -159,7 +172,7 @@ var Harness = {
           "Should be no active installs at the end of the test"
         );
         await Promise.all(
-          aInstalls.map(async function(aInstall) {
+          aInstalls.map(async function (aInstall) {
             info(
               "Install for " +
                 aInstall.sourceURI +
@@ -197,7 +210,7 @@ var Harness = {
     let count = this.installCount;
 
     is(this.runningInstalls.length, 0, "Should be no running installs left");
-    this.runningInstalls.forEach(function(aInstall) {
+    this.runningInstalls.forEach(function (aInstall) {
       info(
         "Install for " + aInstall.sourceURI + " is in state " + aInstall.state
       );
@@ -223,40 +236,38 @@ var Harness = {
     }
   },
 
-  // Window open handling
-  windowReady(window) {
-    if (window.document.location.href == PROMPT_URL) {
-      var promptType = window.args.promptType;
-      let dialog = window.document.getElementById("commonDialog");
-      switch (promptType) {
-        case "alert":
-        case "alertCheck":
-        case "confirmCheck":
-        case "confirm":
-        case "confirmEx":
-          dialog.acceptDialog();
-          break;
-        case "promptUserAndPass":
-          // This is a login dialog, hopefully an authentication prompt
-          // for the xpi.
-          if (this.authenticationCallback) {
-            var auth = this.authenticationCallback();
-            if (auth && auth.length == 2) {
-              window.document.getElementById("loginTextbox").value = auth[0];
-              window.document.getElementById("password1Textbox").value =
-                auth[1];
-              dialog.acceptDialog();
-            } else {
-              dialog.cancelDialog();
-            }
+  promptReady(dialog) {
+    let promptType = dialog.args.promptType;
+
+    switch (promptType) {
+      case "alert":
+      case "alertCheck":
+      case "confirmCheck":
+      case "confirm":
+      case "confirmEx":
+        PromptTestUtils.handlePrompt(dialog, { buttonNumClick: 0 });
+        break;
+      case "promptUserAndPass":
+        // This is a login dialog, hopefully an authentication prompt
+        // for the xpi.
+        if (this.authenticationCallback) {
+          var auth = this.authenticationCallback();
+          if (auth && auth.length == 2) {
+            PromptTestUtils.handlePrompt(dialog, {
+              loginInput: auth[0],
+              passwordInput: auth[1],
+              buttonNumClick: 0,
+            });
           } else {
-            dialog.cancelDialog();
+            PromptTestUtils.handlePrompt(dialog, { buttonNumClick: 1 });
           }
-          break;
-        default:
-          ok(false, "prompt type " + promptType + " not handled in test.");
-          break;
-      }
+        } else {
+          PromptTestUtils.handlePrompt(dialog, { buttonNumClick: 1 });
+        }
+        break;
+      default:
+        ok(false, "prompt type " + promptType + " not handled in test.");
+        break;
     }
   },
 
@@ -276,10 +287,33 @@ var Harness = {
       }
     }
 
-    if (!result) {
-      panel.secondaryButton.click();
+    const panelEl = panel.closest("panel");
+    const panelState = panelEl.state;
+
+    const clickButton = () => {
+      info(`Clicking ${result ? "primary" : "secondary"} panel button`);
+      Assert.equal(
+        panelEl.state,
+        "open",
+        "Expect panel state to be open when clicking panel buttons"
+      );
+      if (!result) {
+        panel.secondaryButton.click();
+      } else {
+        panel.button.click();
+      }
+    };
+
+    if (panelState === "showing") {
+      info(
+        "panel is still showing, wait for 'popup-shown' topic to be notified"
+      );
+      BrowserUtils.promiseObserved(
+        "popup-shown",
+        shownPanel => shownPanel === panelEl
+      ).then(clickButton);
     } else {
-      panel.button.click();
+      clickButton();
     }
   },
 
@@ -349,25 +383,13 @@ var Harness = {
       installInfo.install();
     } else {
       this.expectingCancelled = true;
-      installInfo.installs.forEach(function(install) {
+      installInfo.installs.forEach(function (install) {
         install.cancel();
       });
       this.expectingCancelled = false;
       this.endTest();
     }
   },
-
-  // nsIWindowMediatorListener
-
-  onOpenWindow(xulWin) {
-    var domwindow = xulWin.docShell.domWindow;
-    var self = this;
-    waitForFocus(function() {
-      self.windowReady(domwindow);
-    }, domwindow);
-  },
-
-  onCloseWindow(window) {},
 
   // Addon Install Listener
 
@@ -420,8 +442,11 @@ var Harness = {
     );
     this.runningInstalls.splice(this.runningInstalls.indexOf(install), 1);
 
-    if (this.downloadCancelledCallback) {
-      this.downloadCancelledCallback(install);
+    if (
+      this.downloadCancelledCallback &&
+      this.downloadCancelledCallback(install) === false
+    ) {
+      return;
     }
     this.checkTestEnded();
   },
@@ -464,9 +489,7 @@ var Harness = {
 
   onInstallCancelled(install) {
     // This is ugly.  We have a bunch of tests that cancel installs
-    // but don't expect this event to be raised (they also don't
-    // expecte addon-install-cancelled to be raised but even though
-    // we have code to handle that, it is never attached, see setup() above)
+    // but don't expect this event to be raised.
     // For at least one test (browser_whitelist3.js), we used to generate
     // onDownloadCancelled when the user cancelled the installation at the
     // confirmation prompt.  We're now generating onInstallCancelled instead
@@ -487,7 +510,7 @@ var Harness = {
 
   // nsIObserver
 
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     var installInfo = subject.wrappedJSObject;
     switch (topic) {
       case "addon-install-started":
@@ -510,7 +533,7 @@ var Harness = {
         this.installBlocked(installInfo);
         break;
       case "addon-install-failed":
-        installInfo.installs.forEach(function(aInstall) {
+        installInfo.installs.forEach(function (aInstall) {
           isnot(
             this.runningInstalls.indexOf(aInstall),
             -1,
@@ -528,39 +551,11 @@ var Harness = {
           );
         }, this);
         break;
-      case "addon-install-complete":
-        installInfo.installs.forEach(function(aInstall) {
-          isnot(
-            this.runningInstalls.indexOf(aInstall),
-            -1,
-            "Should only see completed events for started installs"
-          );
-
-          is(aInstall.error, 0, "Completed installs should have no error");
-          ok(
-            !aInstall.appDisabled,
-            "Completed installs should not be appDisabled"
-          );
-
-          // Complete installs are either in the INSTALLED or CANCELLED state
-          // since the test may cancel installs the moment they complete.
-          ok(
-            aInstall.state == AddonManager.STATE_INSTALLED ||
-              aInstall.state == AddonManager.STATE_CANCELLED,
-            "Completed installs should be in the right state"
-          );
-
-          this.runningInstalls.splice(
-            this.runningInstalls.indexOf(aInstall),
-            1
-          );
-        }, this);
+      case "common-dialog-loaded":
+        this.promptReady(subject.Dialog);
         break;
     }
   },
 
-  QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsIWindowMediatorListener,
-  ]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 };

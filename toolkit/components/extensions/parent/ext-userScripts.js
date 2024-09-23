@@ -6,8 +6,8 @@
 
 "use strict";
 
-var { ExtensionUtils } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionUtils.jsm"
+var { ExtensionUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionUtils.sys.mjs"
 );
 
 var { ExtensionError } = ExtensionUtils;
@@ -43,12 +43,28 @@ class UserScriptParent {
       excludeGlobs: details.excludeGlobs,
       allFrames: details.allFrames,
       matchAboutBlank: details.matchAboutBlank,
+      // New matchOriginAsFallback option not supported in userScripts API
+      // because the current MV2-only userScripts API is deprecated and will be
+      // superseded by the new one in bug 1875475.
+      matchOriginAsFallback: false,
       runAt: details.runAt || "document_idle",
+      // "world" option is unsupported in the old userScripts API. The new one
+      // (bug 1875475) will support "USER_SCRIPT" (default) and "MAIN".
       jsPaths: details.js,
       userScriptOptions: {
         scriptMetadata: details.scriptMetadata,
       },
+      originAttributesPatterns: null,
     };
+
+    if (details.cookieStoreId != null) {
+      const cookieStoreIds = Array.isArray(details.cookieStoreId)
+        ? details.cookieStoreId
+        : [details.cookieStoreId];
+      options.originAttributesPatterns = cookieStoreIds.map(cookieStoreId =>
+        getOriginAttributesPatternForCookieStoreId(cookieStoreId)
+      );
+    }
 
     return options;
   }
@@ -102,9 +118,7 @@ this.userScripts = class extends ExtensionAPI {
       userScripts: {
         register: async details => {
           for (let origin of details.matches) {
-            if (
-              !extension.whiteListedHosts.subsumes(new MatchPattern(origin))
-            ) {
+            if (!extension.allowedOrigins.subsumes(new MatchPattern(origin))) {
               throw new ExtensionError(
                 `Permission denied to register a user script for ${origin}`
               );
@@ -115,17 +129,17 @@ this.userScripts = class extends ExtensionAPI {
           const { scriptId } = userScript;
 
           this.userScriptsMap.set(scriptId, userScript);
+          registeredScriptIds.add(scriptId);
 
           const scriptOptions = userScript.serialize();
 
-          await extension.broadcast("Extension:RegisterContentScript", {
-            id: extension.id,
-            options: scriptOptions,
-            scriptId,
-          });
-
           extension.registeredContentScripts.set(scriptId, scriptOptions);
           extension.updateContentScripts();
+
+          await extension.broadcast("Extension:RegisterContentScripts", {
+            id: extension.id,
+            scripts: [{ scriptId, options: scriptOptions }],
+          });
 
           return scriptId;
         },

@@ -23,3 +23,5 @@ use Mozilla's I18n APIs.
 
    locale
    dataintl
+   icu
+   icu4x

@@ -14,11 +14,13 @@ const {
   ENABLE_ALL_BLOCKED_URLS,
   DISABLE_ALL_BLOCKED_URLS,
   TOGGLE_BLOCKING_ENABLED,
-} = require("devtools/client/netmonitor/src/constants");
+  SYNCED_BLOCKED_URLS,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 function RequestBlocking() {
   return {
     blockedUrls: [],
+    blockingSynced: false,
     blockingEnabled: true,
   };
 }
@@ -43,9 +45,20 @@ function requestBlockingReducer(state = RequestBlocking(), action) {
       return disableAllBlockedUrls(state, action);
     case DISABLE_MATCHING_URLS:
       return disableOrRemoveMatchingUrls(state, action);
+    case SYNCED_BLOCKED_URLS:
+      return syncedBlockedUrls(state, action);
     default:
       return state;
   }
+}
+
+function syncedBlockedUrls(state, action) {
+  // Indicates whether the blocked url has been synced
+  // with the server once. We don't need to do it once netmonitor is open.
+  return {
+    ...state,
+    blockingSynced: action.synced,
+  };
 }
 
 function toggleBlockingEnabled(state, action) {
@@ -86,14 +99,14 @@ function removeBlockedUrl(state, action) {
   };
 }
 
-function removeAllBlockedUrls(state, action) {
+function removeAllBlockedUrls(state) {
   return {
     ...state,
     blockedUrls: [],
   };
 }
 
-function enableAllBlockedUrls(state, action) {
+function enableAllBlockedUrls(state) {
   const blockedUrls = state.blockedUrls.map(item => ({
     ...item,
     enabled: true,
@@ -104,7 +117,7 @@ function enableAllBlockedUrls(state, action) {
   };
 }
 
-function disableAllBlockedUrls(state, action) {
+function disableAllBlockedUrls(state) {
   const blockedUrls = state.blockedUrls.map(item => ({
     ...item,
     enabled: false,

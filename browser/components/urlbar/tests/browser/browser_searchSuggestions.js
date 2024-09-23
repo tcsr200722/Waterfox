@@ -17,15 +17,13 @@ const MAX_CHARS_PREF = "browser.urlbar.maxCharsForSearchSuggestions";
 add_task(async function prepare() {
   let suggestionsEnabled = Services.prefs.getBoolPref(SUGGEST_URLBAR_PREF);
   Services.prefs.setBoolPref(SUGGEST_URLBAR_PREF, true);
-  let engine = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME
-  );
-  let oldDefaultEngine = await Services.search.getDefault();
-  await Services.search.setDefault(engine);
+  await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME,
+    setAsDefault: true,
+  });
   await UrlbarTestUtils.formHistory.clear();
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     Services.prefs.setBoolPref(SUGGEST_URLBAR_PREF, suggestionsEnabled);
-    await Services.search.setDefault(oldDefaultEngine);
 
     // Clicking suggestions causes visits to search results pages, so clear that
     // history now.
@@ -39,7 +37,6 @@ add_task(async function clickSuggestion() {
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion, engineName] = await getFirstSuggestion();
@@ -59,9 +56,9 @@ add_task(async function clickSuggestion() {
   EventUtils.synthesizeMouseAtCenter(element, {}, window);
   await loadPromise;
 
-  let formHistory = (await UrlbarTestUtils.formHistory.search()).map(
-    entry => entry.value
-  );
+  let formHistory = (
+    await UrlbarTestUtils.formHistory.search({ source: engineName })
+  ).map(entry => entry.value);
   Assert.deepEqual(
     formHistory,
     ["foofoo"],
@@ -80,7 +77,6 @@ async function testPressEnterOnSuggestion(
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion, engineName] = await getFirstSuggestion();
@@ -115,9 +111,9 @@ async function testPressEnterOnSuggestion(
 
   if (!hasExpectedUrl) {
     await promiseFormHistory;
-    let formHistory = (await UrlbarTestUtils.formHistory.search()).map(
-      entry => entry.value
-    );
+    let formHistory = (
+      await UrlbarTestUtils.formHistory.search({ source: engineName })
+    ).map(entry => entry.value);
     Assert.deepEqual(
       formHistory,
       ["foofoo"],
@@ -134,14 +130,15 @@ add_task(async function plainEnterOnSuggestion() {
 });
 
 add_task(async function ctrlEnterOnSuggestion() {
-  await testPressEnterOnSuggestion("http://www.foofoo.com/", { ctrlKey: true });
+  await testPressEnterOnSuggestion("https://www.foofoo.com/", {
+    ctrlKey: true,
+  });
 });
 
 add_task(async function copySuggestionText() {
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion] = await getFirstSuggestion();
@@ -170,7 +167,6 @@ add_task(async function typeMaxChars() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
     value,
-    waitForFocus: SimpleTest.waitForFocus,
   });
 
   // Suggestions should be fetched since we allow them when typing, and the
@@ -268,7 +264,6 @@ add_task(async function heuristicAddsFormHistory() {
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
 
@@ -289,9 +284,11 @@ add_task(async function heuristicAddsFormHistory() {
   await loadPromise;
 
   await formHistoryPromise;
-  formHistory = (await UrlbarTestUtils.formHistory.search()).map(
-    entry => entry.value
-  );
+  formHistory = (
+    await UrlbarTestUtils.formHistory.search({
+      source: result.searchParams.engine,
+    })
+  ).map(entry => entry.value);
   Assert.deepEqual(
     formHistory,
     ["foo"],
@@ -300,6 +297,22 @@ add_task(async function heuristicAddsFormHistory() {
 
   BrowserTestUtils.removeTab(tab);
   await UrlbarTestUtils.formHistory.clear();
+});
+
+add_task(async function minChars() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.trending.featureGate", true]],
+  });
+  gURLBar.focus();
+
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "f",
+  });
+
+  // Suggestions shouldn't be fetched with single character queries.
+  await assertSuggestions([]);
+  await SpecialPowers.popPrefEnv();
 });
 
 async function getFirstSuggestion() {

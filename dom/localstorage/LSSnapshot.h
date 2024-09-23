@@ -7,21 +7,24 @@
 #ifndef mozilla_dom_localstorage_LSSnapshot_h
 #define mozilla_dom_localstorage_LSSnapshot_h
 
-#include "LSValue.h"
-
+#include <cstdint>
+#include <cstdlib>
+#include "ErrorList.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-
 #include "nsCOMPtr.h"
-#include "nsDataHashtable.h"
-#include "nsIRunnable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsIRunnable.h"
-#include "nsTHashtable.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsTArrayForwardDeclare.h"
+#include "nsTHashSet.h"
 
 class nsITimer;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class LSDatabase;
 class LSNotifyInfo;
@@ -87,27 +90,28 @@ class LSSnapshot final : public nsIRunnable {
 
   RefPtr<LSDatabase> mDatabase;
 
-  nsCOMPtr<nsITimer> mTimer;
+  nsCOMPtr<nsITimer> mIdleTimer;
 
   LSSnapshotChild* mActor;
 
-  nsTHashtable<nsStringHashKey> mLoadedItems;
-  nsTHashtable<nsStringHashKey> mUnknownItems;
-  nsDataHashtable<nsStringHashKey, nsString> mValues;
+  nsTHashSet<nsString> mLoadedItems;
+  nsTHashSet<nsString> mUnknownItems;
+  nsTHashMap<nsStringHashKey, nsString> mValues;
   UniquePtr<SnapshotWriteOptimizer> mWriteOptimizer;
   UniquePtr<nsTArray<LSWriteAndNotifyInfo>> mWriteAndNotifyInfos;
 
   uint32_t mInitLength;
   uint32_t mLength;
-  int64_t mExactUsage;
+  int64_t mUsage;
   int64_t mPeakUsage;
 
   LoadState mLoadState;
 
+  bool mHasOtherProcessDatabases;
   bool mHasOtherProcessObservers;
   bool mExplicit;
   bool mHasPendingStableStateCallback;
-  bool mHasPendingTimerCallback;
+  bool mHasPendingIdleTimerCallback;
   bool mDirty;
 
 #ifdef DEBUG
@@ -151,7 +155,11 @@ class LSSnapshot final : public nsIRunnable {
 
   void MarkDirty();
 
-  nsresult End();
+  nsresult ExplicitCheckpoint();
+
+  nsresult ExplicitEnd();
+
+  int64_t GetUsage() const;
 
  private:
   ~LSSnapshot();
@@ -168,19 +176,18 @@ class LSSnapshot final : public nsIRunnable {
 
   nsresult UpdateUsage(int64_t aDelta);
 
-  nsresult Checkpoint();
+  nsresult Checkpoint(bool aSync = false);
 
-  nsresult Finish();
+  nsresult Finish(bool aSync = false);
 
-  void CancelTimer();
+  void CancelIdleTimer();
 
-  static void TimerCallback(nsITimer* aTimer, void* aClosure);
+  static void IdleTimerCallback(nsITimer* aTimer, void* aClosure);
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIRUNNABLE
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_localstorage_LSSnapshot_h

@@ -20,6 +20,7 @@
 #include "nsPresContext.h"
 #include "nsStyleStructInlines.h"
 #include "nsTextFrame.h"
+#include "gfxContext.h"
 #include "RubyUtils.h"
 
 using namespace mozilla;
@@ -49,7 +50,7 @@ nsContainerFrame* NS_NewRubyBaseContainerFrame(PresShell* aPresShell,
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsRubyBaseContainerFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("RubyBaseContainer"), aResult);
+  return MakeFrameName(u"RubyBaseContainer"_ns, aResult);
 }
 #endif
 
@@ -236,32 +237,27 @@ void nsRubyBaseContainerFrame::AddInlinePrefISize(
 }
 
 /* virtual */
-bool nsRubyBaseContainerFrame::IsFrameOfType(uint32_t aFlags) const {
-  if (aFlags & (eSupportsCSSTransforms | eSupportsContainLayoutAndPaint)) {
-    return false;
-  }
-  return nsContainerFrame::IsFrameOfType(aFlags &
-                                         ~(nsIFrame::eLineParticipant));
-}
-
-/* virtual */
 bool nsRubyBaseContainerFrame::CanContinueTextRun() const { return true; }
 
 /* virtual */
-LogicalSize nsRubyBaseContainerFrame::ComputeSize(
+nsIFrame::SizeComputationResult nsRubyBaseContainerFrame::ComputeSize(
     gfxContext* aRenderingContext, WritingMode aWM, const LogicalSize& aCBSize,
     nscoord aAvailableISize, const LogicalSize& aMargin,
-    const LogicalSize& aBorder, const LogicalSize& aPadding,
+    const LogicalSize& aBorderPadding, const StyleSizeOverrides& aSizeOverrides,
     ComputeSizeFlags aFlags) {
   // Ruby base container frame is inline,
   // hence don't compute size before reflow.
-  return LogicalSize(aWM, NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE);
+  return {LogicalSize(aWM, NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE),
+          AspectRatioUsage::None};
 }
 
-/* virtual */
-nscoord nsRubyBaseContainerFrame::GetLogicalBaseline(
-    WritingMode aWritingMode) const {
-  return mBaseline;
+Maybe<nscoord> nsRubyBaseContainerFrame::GetNaturalBaselineBOffset(
+    WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+    BaselineExportContext) const {
+  if (aBaselineGroup == BaselineSharingGroup::Last) {
+    return Nothing{};
+  }
+  return Some(mBaseline);
 }
 
 struct nsRubyBaseContainerFrame::RubyReflowInput {
@@ -279,7 +275,6 @@ void nsRubyBaseContainerFrame::Reflow(nsPresContext* aPresContext,
                                       nsReflowStatus& aStatus) {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsRubyBaseContainerFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
   if (!aReflowInput.mLineLayout) {
@@ -331,7 +326,7 @@ void nsRubyBaseContainerFrame::Reflow(nsPresContext* aPresContext,
         availSize.ConvertTo(textContainer->GetWritingMode(), lineWM));
     reflowInputs.AppendElement(reflowInput);
     nsLineLayout* lineLayout =
-        new nsLineLayout(aPresContext, reflowInput->mFloatManager, reflowInput,
+        new nsLineLayout(aPresContext, reflowInput->mFloatManager, *reflowInput,
                          nullptr, aReflowInput.mLineLayout);
     lineLayout->SetSuppressLineWrap(true);
     lineLayouts.AppendElement(lineLayout);
@@ -339,7 +334,7 @@ void nsRubyBaseContainerFrame::Reflow(nsPresContext* aPresContext,
     // Line number is useless for ruby text
     // XXX nullptr here may cause problem, see comments for
     //     nsLineLayout::mBlockRI and nsLineLayout::AddFloat
-    lineLayout->Init(nullptr, reflowInput->CalcLineHeight(), -1);
+    lineLayout->Init(nullptr, reflowInput->GetLineHeight(), -1);
     reflowInput->mLineLayout = lineLayout;
 
     // Border and padding are suppressed on ruby text containers.
@@ -420,6 +415,8 @@ void nsRubyBaseContainerFrame::Reflow(nsPresContext* aPresContext,
     nsLayoutUtils::SetBSizeFromFontMetrics(this, aDesiredSize, borderPadding,
                                            lineWM, frameWM);
   }
+
+  ReflowAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput, aStatus);
 }
 
 /**
@@ -594,18 +591,23 @@ nscoord nsRubyBaseContainerFrame::ReflowOneColumn(
   for (uint32_t i = 0; i < rtcCount; i++) {
     nsRubyTextFrame* textFrame = aColumn.mTextFrames[i];
     if (textFrame) {
-      nsAutoString annotationText;
-      nsLayoutUtils::GetFrameTextContent(textFrame, annotationText);
-
-      // Per CSS Ruby spec, the content comparison for auto-hiding
-      // takes place prior to white spaces collapsing (white-space)
-      // and text transformation (text-transform), and ignores elements
-      // (considers only the textContent of the boxes). Which means
-      // using the content tree text comparison is correct.
-      if (annotationText.Equals(baseText)) {
-        textFrame->AddStateBits(NS_RUBY_TEXT_FRAME_AUTOHIDE);
+      bool isCollapsed = false;
+      if (textFrame->StyleVisibility()->mVisible == StyleVisibility::Collapse) {
+        isCollapsed = true;
       } else {
-        textFrame->RemoveStateBits(NS_RUBY_TEXT_FRAME_AUTOHIDE);
+        // Per CSS Ruby spec, the content comparison for auto-hiding
+        // takes place prior to white spaces collapsing (white-space)
+        // and text transformation (text-transform), and ignores elements
+        // (considers only the textContent of the boxes). Which means
+        // using the content tree text comparison is correct.
+        nsAutoString annotationText;
+        nsLayoutUtils::GetFrameTextContent(textFrame, annotationText);
+        isCollapsed = annotationText.Equals(baseText);
+      }
+      if (isCollapsed) {
+        textFrame->AddStateBits(NS_RUBY_TEXT_FRAME_COLLAPSED);
+      } else {
+        textFrame->RemoveStateBits(NS_RUBY_TEXT_FRAME_COLLAPSED);
       }
       RubyUtils::ClearReservedISize(textFrame);
 
@@ -678,7 +680,7 @@ nscoord nsRubyBaseContainerFrame::ReflowOneColumn(
     nscoord deltaISize = icoord - lineLayout->GetCurrentICoord();
     if (deltaISize > 0) {
       lineLayout->AdvanceICoord(deltaISize);
-      if (textFrame && !textFrame->IsAutoHidden()) {
+      if (textFrame && !textFrame->IsCollapsed()) {
         RubyUtils::SetReservedISize(textFrame, deltaISize);
       }
     }

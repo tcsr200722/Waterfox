@@ -3,15 +3,18 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-const { updateAppInfo } = ChromeUtils.import(
-  "resource://testing-common/AppInfo.jsm"
+const { updateAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
 );
-const { RecipeRunner } = ChromeUtils.import(
-  "resource://normandy/lib/RecipeRunner.jsm"
+const { RecipeRunner } = ChromeUtils.importESModule(
+  "resource://normandy/lib/RecipeRunner.sys.mjs"
 );
 
 // Test that new build IDs trigger immediate recipe runs
 add_task(async () => {
+  // This test assumes normandy is enabled.
+  Services.prefs.setBoolPref("app.normandy.enabled", true);
+
   updateAppInfo({
     appBuildID: "new-build-id",
     lastAppBuildID: "old-build-id",

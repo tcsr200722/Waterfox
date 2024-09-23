@@ -71,7 +71,7 @@ function test() {
 
   let newWindow, reopenedWindow;
 
-  function firstWindowObserver(aSubject, aTopic, aData) {
+  function firstWindowObserver(aSubject, aTopic) {
     if (aTopic == "domwindowopened") {
       newWindow = aSubject;
       Services.ww.unregisterNotification(firstWindowObserver);
@@ -79,7 +79,7 @@ function test() {
   }
   Services.ww.registerNotification(firstWindowObserver);
 
-  waitForBrowserState(lameMultiWindowState, function() {
+  waitForBrowserState(lameMultiWindowState, function () {
     // Close the window which isn't window
     BrowserTestUtils.closeWindow(newWindow).then(() => {
       // Now give it time to close
@@ -92,7 +92,7 @@ function test() {
 
       reopenedWindow.addEventListener(
         "load",
-        function() {
+        function () {
           reopenedWindow.gBrowser.tabContainer.addEventListener(
             "SSTabRestored",
             onSSTabRestored
@@ -107,15 +107,15 @@ function test() {
     readyEventCount = 0,
     tabRestoredCount = 0;
   // These will listen to the reopened closed window...
-  function onSSWindowStateBusy(aEvent) {
+  function onSSWindowStateBusy() {
     busyEventCount++;
   }
 
-  function onSSWindowStateReady(aEvent) {
+  function onSSWindowStateReady() {
     readyEventCount++;
   }
 
-  function onSSTabRestored(aEvent) {
+  function onSSTabRestored() {
     if (++tabRestoredCount < 4) {
       return;
     }

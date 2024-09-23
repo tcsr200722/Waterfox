@@ -4,18 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGSymbolElement_h
-#define mozilla_dom_SVGSymbolElement_h
+#ifndef DOM_SVG_SVGSYMBOLELEMENT_H_
+#define DOM_SVG_SVGSYMBOLELEMENT_H_
 
 #include "SVGViewportElement.h"
 
 nsresult NS_NewSVGSymbolElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGViewportElement SVGSymbolElementBase;
+using SVGSymbolElementBase = SVGViewportElement;
 
 class SVGSymbolElement final : public SVGSymbolElementBase {
  protected:
@@ -25,17 +24,21 @@ class SVGSymbolElement final : public SVGSymbolElementBase {
   explicit SVGSymbolElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
   ~SVGSymbolElement() = default;
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
+
+  Focusable IsFocusableWithoutStyle(IsFocusableFlags) override;
 
  public:
   // interfaces:
   NS_DECL_ISUPPORTS_INHERITED
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  NS_IMPL_FROMNODE_WITH_TAG(SVGSymbolElement, kNameSpaceID_SVG, symbol)
+
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+
+  bool CouldBeRendered() const;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGSymbolElement_h
+#endif  // DOM_SVG_SVGSYMBOLELEMENT_H_

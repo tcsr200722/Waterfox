@@ -12,9 +12,9 @@
 #include "WebAudioUtils.h"
 #include "DelayBuffer.h"
 #include "PlayingRefChangeHandler.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(DelayNode, AudioNode, mDelay)
 
@@ -49,9 +49,9 @@ class DelayNodeEngine final : public AudioNodeEngine {
   enum Parameters {
     DELAY,
   };
-  void RecvTimelineEvent(uint32_t aIndex, AudioTimelineEvent& aEvent) override {
+  void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
     MOZ_ASSERT(mDestination);
-    WebAudioUtils::ConvertAudioTimelineEventToTicks(aEvent, mDestination);
+    aEvent.ConvertToTicks(mDestination);
 
     switch (aIndex) {
       case DELAY:
@@ -66,6 +66,7 @@ class DelayNodeEngine final : public AudioNodeEngine {
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
     MOZ_ASSERT(aTrack->mSampleRate == mDestination->mSampleRate);
+    TRACE("DelayNodeEngine::ProcessBlock");
 
     if (!aInput.IsSilentOrSubnormal()) {
       if (mLeftOverData <= 0) {
@@ -173,8 +174,8 @@ class DelayNodeEngine final : public AudioNodeEngine {
 DelayNode::DelayNode(AudioContext* aContext, double aMaxDelay)
     : AudioNode(aContext, 2, ChannelCountMode::Max,
                 ChannelInterpretation::Speakers) {
-  CreateAudioParam(mDelay, DelayNodeEngine::DELAY, u"delayTime", 0.0f, 0.f,
-                   aMaxDelay);
+  mDelay = CreateAudioParam(DelayNodeEngine::DELAY, u"delayTime"_ns, 0.0f, 0.f,
+                            aMaxDelay);
   DelayNodeEngine* engine = new DelayNodeEngine(
       this, aContext->Destination(), aContext->SampleRate() * aMaxDelay);
   mTrack = AudioNodeTrack::Create(
@@ -200,7 +201,7 @@ already_AddRefed<DelayNode> DelayNode::Create(AudioContext& aAudioContext,
     return nullptr;
   }
 
-  audioNode->DelayTime()->SetValue(aOptions.mDelayTime);
+  audioNode->DelayTime()->SetInitialValue(aOptions.mDelayTime);
   return audioNode.forget();
 }
 
@@ -219,5 +220,4 @@ JSObject* DelayNode::WrapObject(JSContext* aCx,
   return DelayNode_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

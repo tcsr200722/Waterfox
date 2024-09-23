@@ -7,40 +7,55 @@
 #ifndef js_HeapAPI_h
 #define js_HeapAPI_h
 
+#include "mozilla/Atomics.h"
+#include "mozilla/BitSet.h"
+
 #include <limits.h>
 #include <type_traits>
 
-#include "jspubtd.h"
-
+#include "js/AllocPolicy.h"
 #include "js/GCAnnotations.h"
+#include "js/HashTable.h"
+#include "js/shadow/String.h"  // JS::shadow::String
+#include "js/shadow/Symbol.h"  // JS::shadow::Symbol
+#include "js/shadow/Zone.h"    // JS::shadow::Zone
 #include "js/TraceKind.h"
-#include "js/Utility.h"
-
-#ifndef JS_BITS_PER_WORD
-#  error \
-      "JS_BITS_PER_WORD must be defined. Did you forget to include js-config.h?"
-#endif
-
-struct JSExternalStringCallbacks;
+#include "js/TypeDecls.h"
 
 /* These values are private to the JS engine. */
 namespace js {
 
-JS_FRIEND_API bool CurrentThreadCanAccessZone(JS::Zone* zone);
+class NurseryDecommitTask;
+
+JS_PUBLIC_API bool CurrentThreadCanAccessZone(JS::Zone* zone);
+
+// To prevent false sharing, some data structures are aligned to a typical cache
+// line size.
+static constexpr size_t TypicalCacheLineSize = 64;
 
 namespace gc {
 
+class Arena;
 struct Cell;
+class TenuredChunk;
+class StoreBuffer;
+class TenuredCell;
 
 const size_t ArenaShift = 12;
 const size_t ArenaSize = size_t(1) << ArenaShift;
 const size_t ArenaMask = ArenaSize - 1;
 
-#ifdef JS_GC_SMALL_CHUNK_SIZE
-const size_t ChunkShift = 18;
+#if defined(XP_DARWIN) && defined(__aarch64__)
+const size_t PageShift = 14;
 #else
-const size_t ChunkShift = 20;
+const size_t PageShift = 12;
 #endif
+// Expected page size, so we could initialze ArenasPerPage at compile-time.
+// The actual system page size should be queried by SystemPageSize().
+const size_t PageSize = size_t(1) << PageShift;
+constexpr size_t ArenasPerPage = PageSize / ArenaSize;
+
+const size_t ChunkShift = 20;
 const size_t ChunkSize = size_t(1) << ChunkShift;
 const size_t ChunkMask = ChunkSize - 1;
 
@@ -49,39 +64,151 @@ const size_t CellAlignBytes = size_t(1) << CellAlignShift;
 const size_t CellAlignMask = CellAlignBytes - 1;
 
 const size_t CellBytesPerMarkBit = CellAlignBytes;
+const size_t MarkBitsPerCell = 2;
 
 /*
- * We sometimes use an index to refer to a cell in an arena. The index for a
- * cell is found by dividing by the cell alignment so not all indicies refer to
- * valid cells.
+ * The minimum cell size ends up as twice the cell alignment because the mark
+ * bitmap contains one bit per CellBytesPerMarkBit bytes (which is equal to
+ * CellAlignBytes) and we need two mark bits per cell.
  */
-const size_t ArenaCellIndexBytes = CellAlignBytes;
-const size_t MaxArenaCellIndex = ArenaSize / CellAlignBytes;
+const size_t MinCellSize = CellBytesPerMarkBit * MarkBitsPerCell;
 
-/* These are magic constants derived from actual offsets in gc/Heap.h. */
-#ifdef JS_GC_SMALL_CHUNK_SIZE
-const size_t ChunkMarkBitmapOffset = 258104;
-const size_t ChunkMarkBitmapBits = 31744;
-#else
-const size_t ChunkMarkBitmapOffset = 1032352;
-const size_t ChunkMarkBitmapBits = 129024;
-#endif
-const size_t ChunkRuntimeOffset = ChunkSize - sizeof(void*);
-const size_t ChunkTrailerSize = 2 * sizeof(uintptr_t) + sizeof(uint64_t);
-const size_t ChunkLocationOffset = ChunkSize - ChunkTrailerSize;
-const size_t ChunkStoreBufferOffset =
-    ChunkSize - ChunkTrailerSize + sizeof(uint64_t);
-const size_t ArenaZoneOffset = sizeof(size_t);
-const size_t ArenaHeaderSize =
-    sizeof(size_t) + 2 * sizeof(uintptr_t) + sizeof(size_t) + sizeof(uintptr_t);
+/*
+ * The mark bitmap has one bit per each possible cell start position. This
+ * wastes some space for larger GC things but allows us to avoid division by the
+ * cell's size when accessing the bitmap.
+ */
+const size_t ArenaBitmapBits = ArenaSize / CellBytesPerMarkBit;
+const size_t ArenaBitmapBytes = HowMany(ArenaBitmapBits, 8);
+const size_t ArenaBitmapWords = HowMany(ArenaBitmapBits, JS_BITS_PER_WORD);
 
-// The first word of a GC thing has certain requirements from the GC and is used
-// to store flags in the low bits.
-const size_t CellFlagBitsReservedForGC = 3;
+enum class ChunkKind : uint8_t {
+  Invalid = 0,
+  TenuredHeap,
+  NurseryToSpace,
+  NurseryFromSpace
+};
 
-// The first word can be used to store JSClass pointers for some thing kinds, so
-// these must be suitably aligned.
-const size_t JSClassAlignBytes = size_t(1) << CellFlagBitsReservedForGC;
+// The base class for all GC chunks, either in the nursery or in the tenured
+// heap memory. This structure is locatable from any GC pointer by aligning to
+// the chunk size.
+class ChunkBase {
+ protected:
+  // Initialize a tenured heap chunk.
+  explicit ChunkBase(JSRuntime* rt) {
+    MOZ_ASSERT((uintptr_t(this) & ChunkMask) == 0);
+    initBaseForTenuredChunk(rt);
+  }
+
+  void initBaseForTenuredChunk(JSRuntime* rt) {
+    runtime = rt;
+    storeBuffer = nullptr;
+    kind = ChunkKind::TenuredHeap;
+    nurseryChunkIndex = UINT8_MAX;
+  }
+
+  // Initialize a nursery chunk.
+  ChunkBase(JSRuntime* rt, StoreBuffer* sb, ChunkKind kind, uint8_t chunkIndex)
+      : storeBuffer(sb),
+        runtime(rt),
+        kind(kind),
+        nurseryChunkIndex(chunkIndex) {
+    MOZ_ASSERT(kind == ChunkKind::NurseryFromSpace ||
+               kind == ChunkKind::NurseryToSpace);
+    MOZ_ASSERT((uintptr_t(this) & ChunkMask) == 0);
+    MOZ_ASSERT(storeBuffer);
+  }
+
+ public:
+  ChunkKind getKind() const {
+    MOZ_ASSERT_IF(storeBuffer, kind == ChunkKind::NurseryToSpace ||
+                                   kind == ChunkKind::NurseryFromSpace);
+    MOZ_ASSERT_IF(!storeBuffer, kind == ChunkKind::TenuredHeap);
+    return kind;
+  }
+
+  // The store buffer for pointers from tenured things to things in this
+  // chunk. Will be non-null if and only if this is a nursery chunk.
+  StoreBuffer* storeBuffer;
+
+  // Provide quick access to the runtime from absolutely anywhere.
+  JSRuntime* runtime;
+
+  ChunkKind kind;
+
+  uint8_t nurseryChunkIndex;
+};
+
+// Information about tenured heap chunks.
+struct TenuredChunkInfo {
+ private:
+  friend class ChunkPool;
+  TenuredChunk* next = nullptr;
+  TenuredChunk* prev = nullptr;
+
+ public:
+  /* Number of free arenas, either committed or decommitted. */
+  uint32_t numArenasFree;
+
+  /* Number of free, committed arenas. */
+  uint32_t numArenasFreeCommitted;
+};
+
+/*
+ * Calculating ArenasPerChunk:
+ *
+ * To figure out how many Arenas will fit in a chunk we need to know how much
+ * extra space is available after we allocate the header data. This is a problem
+ * because the header size depends on the number of arenas in the chunk.
+ *
+ * The dependent fields are markBits, decommittedPages and
+ * freeCommittedArenas. markBits needs ArenaBitmapBytes bytes per arena,
+ * decommittedPages needs one bit per page and freeCommittedArenas needs one
+ * bit per arena.
+ *
+ * We can calculate an approximate value by dividing the number of bits of free
+ * space in the chunk by the number of bits needed per arena. This is an
+ * approximation because it doesn't take account of the fact that the variable
+ * sized fields must be rounded up to a whole number of words, or any padding
+ * the compiler adds between fields.
+ *
+ * Fortunately, for the chunk and arena size parameters we use this
+ * approximation turns out to be correct. If it were not we might need to adjust
+ * the arena count down by one to allow more space for the padding.
+ */
+const size_t BitsPerPageWithHeaders =
+    (ArenaSize + ArenaBitmapBytes) * ArenasPerPage * CHAR_BIT + ArenasPerPage +
+    1;
+const size_t ChunkBitsAvailable =
+    (ChunkSize - sizeof(ChunkBase) - sizeof(TenuredChunkInfo)) * CHAR_BIT;
+const size_t PagesPerChunk = ChunkBitsAvailable / BitsPerPageWithHeaders;
+const size_t ArenasPerChunk = PagesPerChunk * ArenasPerPage;
+const size_t FreeCommittedBits = ArenasPerChunk;
+const size_t DecommitBits = PagesPerChunk;
+const size_t BitsPerArenaWithHeaders =
+    (ArenaSize + ArenaBitmapBytes) * CHAR_BIT +
+    (DecommitBits / ArenasPerChunk) + 1;
+
+const size_t CalculatedChunkSizeRequired =
+    sizeof(ChunkBase) + sizeof(TenuredChunkInfo) +
+    RoundUp(ArenasPerChunk * ArenaBitmapBytes, sizeof(uintptr_t)) +
+    RoundUp(FreeCommittedBits, sizeof(uint32_t) * CHAR_BIT) / CHAR_BIT +
+    RoundUp(DecommitBits, sizeof(uint32_t) * CHAR_BIT) / CHAR_BIT +
+    ArenasPerChunk * ArenaSize;
+static_assert(CalculatedChunkSizeRequired <= ChunkSize,
+              "Calculated ArenasPerChunk is too large");
+
+const size_t CalculatedChunkPadSize = ChunkSize - CalculatedChunkSizeRequired;
+static_assert(CalculatedChunkPadSize * CHAR_BIT < BitsPerArenaWithHeaders,
+              "Calculated ArenasPerChunk is too small");
+
+static_assert(ArenasPerChunk == 252,
+              "Do not accidentally change our heap's density.");
+
+// Mark bitmaps are atomic because they can be written by gray unmarking on the
+// main thread while read by sweeping on a background thread. The former does
+// not affect the result of the latter.
+using MarkBitmapWord = mozilla::Atomic<uintptr_t, mozilla::Relaxed>;
 
 /*
  * Live objects are marked black or gray. Everything reachable from a JS root is
@@ -95,25 +222,101 @@ const size_t JSClassAlignBytes = size_t(1) << CellFlagBitsReservedForGC;
  */
 enum class ColorBit : uint32_t { BlackBit = 0, GrayOrBlackBit = 1 };
 
-/*
- * The "location" field in the Chunk trailer is a enum indicating various roles
- * of the chunk.
- */
-enum class ChunkLocation : uint32_t {
-  Invalid = 0,
-  Nursery = 1,
-  TenuredHeap = 2
+// Mark colors. Order is important here: the greater value the 'more marked' a
+// cell is.
+enum class MarkColor : uint8_t { Gray = 1, Black = 2 };
+
+// Mark bitmap for a tenured heap chunk.
+struct alignas(TypicalCacheLineSize) MarkBitmap {
+  static constexpr size_t WordCount = ArenaBitmapWords * ArenasPerChunk;
+  MarkBitmapWord bitmap[WordCount];
+
+  inline void getMarkWordAndMask(const TenuredCell* cell, ColorBit colorBit,
+                                 MarkBitmapWord** wordp, uintptr_t* maskp);
+
+  // The following are not exported and are defined in gc/Heap.h:
+  inline bool markBit(const TenuredCell* cell, ColorBit colorBit);
+  inline bool isMarkedAny(const TenuredCell* cell);
+  inline bool isMarkedBlack(const TenuredCell* cell);
+  inline bool isMarkedGray(const TenuredCell* cell);
+  inline bool markIfUnmarked(const TenuredCell* cell, MarkColor color);
+  inline bool markIfUnmarkedAtomic(const TenuredCell* cell, MarkColor color);
+  inline void markBlack(const TenuredCell* cell);
+  inline void markBlackAtomic(const TenuredCell* cell);
+  inline void copyMarkBit(TenuredCell* dst, const TenuredCell* src,
+                          ColorBit colorBit);
+  inline void unmark(const TenuredCell* cell);
+  inline MarkBitmapWord* arenaBits(Arena* arena);
 };
+
+static_assert(ArenaBitmapBytes * ArenasPerChunk == sizeof(MarkBitmap),
+              "Ensure our MarkBitmap actually covers all arenas.");
+
+// Bitmap with one bit per page used for decommitted page set.
+using ChunkPageBitmap = mozilla::BitSet<PagesPerChunk, uint32_t>;
+
+// Bitmap with one bit per arena used for free committed arena set.
+using ChunkArenaBitmap = mozilla::BitSet<ArenasPerChunk, uint32_t>;
+
+// Base class containing data members for a tenured heap chunk.
+class TenuredChunkBase : public ChunkBase {
+ public:
+  TenuredChunkInfo info;
+  MarkBitmap markBits;
+  ChunkArenaBitmap freeCommittedArenas;
+  ChunkPageBitmap decommittedPages;
+
+ protected:
+  explicit TenuredChunkBase(JSRuntime* runtime) : ChunkBase(runtime) {
+    info.numArenasFree = ArenasPerChunk;
+  }
+
+  void initAsDecommitted();
+};
+
+/*
+ * We sometimes use an index to refer to a cell in an arena. The index for a
+ * cell is found by dividing by the cell alignment so not all indices refer to
+ * valid cells.
+ */
+const size_t ArenaCellIndexBytes = CellAlignBytes;
+const size_t MaxArenaCellIndex = ArenaSize / CellAlignBytes;
+
+const size_t MarkBitmapWordBits = sizeof(MarkBitmapWord) * CHAR_BIT;
+
+constexpr size_t FirstArenaAdjustmentBits =
+    RoundUp(sizeof(gc::TenuredChunkBase), ArenaSize) / gc::CellBytesPerMarkBit;
+
+static_assert((FirstArenaAdjustmentBits % MarkBitmapWordBits) == 0);
+constexpr size_t FirstArenaAdjustmentWords =
+    FirstArenaAdjustmentBits / MarkBitmapWordBits;
+
+const size_t ChunkStoreBufferOffset = offsetof(ChunkBase, storeBuffer);
+const size_t ChunkMarkBitmapOffset = offsetof(TenuredChunkBase, markBits);
+
+// Hardcoded offsets into Arena class.
+const size_t ArenaZoneOffset = 2 * sizeof(uint32_t);
+const size_t ArenaHeaderSize = ArenaZoneOffset + 2 * sizeof(uintptr_t) +
+                               sizeof(size_t) + sizeof(uintptr_t);
+
+// The first word of a GC thing has certain requirements from the GC and is used
+// to store flags in the low bits.
+const size_t CellFlagBitsReservedForGC = 3;
+
+// The first word can be used to store JSClass pointers for some thing kinds, so
+// these must be suitably aligned.
+const size_t JSClassAlignBytes = size_t(1) << CellFlagBitsReservedForGC;
 
 #ifdef JS_DEBUG
 /* When downcasting, ensure we are actually the right type. */
-extern JS_FRIEND_API void AssertGCThingHasType(js::gc::Cell* cell,
+extern JS_PUBLIC_API void AssertGCThingHasType(js::gc::Cell* cell,
                                                JS::TraceKind kind);
 #else
 inline void AssertGCThingHasType(js::gc::Cell* cell, JS::TraceKind kind) {}
 #endif
 
 MOZ_ALWAYS_INLINE bool IsInsideNursery(const js::gc::Cell* cell);
+MOZ_ALWAYS_INLINE bool IsInsideNursery(const js::gc::TenuredCell* cell);
 
 } /* namespace gc */
 } /* namespace js */
@@ -177,120 +380,10 @@ enum StackKind {
  * initial value. In the browser this configured by the
  * javascript.options.mem.nursery.max_kb pref.
  */
-const uint32_t DefaultNurseryMaxBytes = 16 * js::gc::ChunkSize;
+const uint32_t DefaultNurseryMaxBytes = 64 * js::gc::ChunkSize;
 
 /* Default maximum heap size in bytes to pass to JS_NewContext(). */
 const uint32_t DefaultHeapMaxBytes = 32 * 1024 * 1024;
-
-namespace shadow {
-
-struct Zone {
-  enum GCState : uint8_t {
-    NoGC,
-    MarkBlackOnly,
-    MarkBlackAndGray,
-    Sweep,
-    Finished,
-    Compact
-  };
-
- protected:
-  JSRuntime* const runtime_;
-  JSTracer* const barrierTracer_;  // A pointer to the JSRuntime's |gcMarker|.
-  uint32_t needsIncrementalBarrier_;
-  GCState gcState_;
-
-  Zone(JSRuntime* runtime, JSTracer* barrierTracerArg)
-      : runtime_(runtime),
-        barrierTracer_(barrierTracerArg),
-        needsIncrementalBarrier_(0),
-        gcState_(NoGC) {}
-
- public:
-  bool needsIncrementalBarrier() const { return needsIncrementalBarrier_; }
-
-  JSTracer* barrierTracer() {
-    MOZ_ASSERT(needsIncrementalBarrier_);
-    MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(runtime_));
-    return barrierTracer_;
-  }
-
-  JSRuntime* runtimeFromMainThread() const {
-    MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(runtime_));
-    return runtime_;
-  }
-
-  // Note: Unrestricted access to the zone's runtime from an arbitrary
-  // thread can easily lead to races. Use this method very carefully.
-  JSRuntime* runtimeFromAnyThread() const { return runtime_; }
-
-  GCState gcState() const { return gcState_; }
-  bool wasGCStarted() const { return gcState_ != NoGC; }
-  bool isGCMarkingBlackOnly() const { return gcState_ == MarkBlackOnly; }
-  bool isGCMarkingBlackAndGray() const { return gcState_ == MarkBlackAndGray; }
-  bool isGCSweeping() const { return gcState_ == Sweep; }
-  bool isGCFinished() const { return gcState_ == Finished; }
-  bool isGCCompacting() const { return gcState_ == Compact; }
-  bool isGCMarking() const {
-    return isGCMarkingBlackOnly() || isGCMarkingBlackAndGray();
-  }
-  bool isGCSweepingOrCompacting() const {
-    return gcState_ == Sweep || gcState_ == Compact;
-  }
-
-  static MOZ_ALWAYS_INLINE JS::shadow::Zone* from(JS::Zone* zone) {
-    return reinterpret_cast<JS::shadow::Zone*>(zone);
-  }
-};
-
-struct String {
-  static const uint32_t ATOM_BIT = js::Bit(3);
-  static const uint32_t LINEAR_BIT = js::Bit(4);
-  static const uint32_t INLINE_CHARS_BIT = js::Bit(6);
-  static const uint32_t LATIN1_CHARS_BIT = js::Bit(9);
-  static const uint32_t EXTERNAL_FLAGS = LINEAR_BIT | js::Bit(8);
-  static const uint32_t TYPE_FLAGS_MASK = js::BitMask(9) - js::BitMask(3);
-  static const uint32_t PERMANENT_ATOM_MASK = ATOM_BIT | js::Bit(8);
-
-  uintptr_t flags_;
-#if JS_BITS_PER_WORD == 32
-  uint32_t length_;
-#endif
-
-  union {
-    const JS::Latin1Char* nonInlineCharsLatin1;
-    const char16_t* nonInlineCharsTwoByte;
-    JS::Latin1Char inlineStorageLatin1[1];
-    char16_t inlineStorageTwoByte[1];
-  };
-  const JSExternalStringCallbacks* externalCallbacks;
-
-  inline uint32_t flags() const { return uint32_t(flags_); }
-  inline uint32_t length() const {
-#if JS_BITS_PER_WORD == 32
-    return length_;
-#else
-    return uint32_t(flags_ >> 32);
-#endif
-  }
-
-  static bool isPermanentAtom(const js::gc::Cell* cell) {
-    uint32_t flags = reinterpret_cast<const String*>(cell)->flags();
-    return (flags & PERMANENT_ATOM_MASK) == PERMANENT_ATOM_MASK;
-  }
-};
-
-struct Symbol {
-  void* _1;
-  uint32_t code_;
-  static const uint32_t WellKnownAPILimit = 0x80000000;
-
-  static bool isWellKnownSymbol(const js::gc::Cell* cell) {
-    return reinterpret_cast<const Symbol*>(cell)->code_ < WellKnownAPILimit;
-  }
-};
-
-} /* namespace shadow */
 
 /**
  * A GC pointer, tagged with the trace kind.
@@ -299,7 +392,7 @@ struct Symbol {
  * is for use when that is not possible because a single pointer must point
  * to several kinds of GC thing.
  */
-class JS_FRIEND_API GCCellPtr {
+class JS_PUBLIC_API GCCellPtr {
  public:
   GCCellPtr() : GCCellPtr(nullptr) {}
 
@@ -322,9 +415,9 @@ class JS_FRIEND_API GCCellPtr {
   explicit GCCellPtr(const Value& v);
 
   JS::TraceKind kind() const {
-    JS::TraceKind traceKind = JS::TraceKind(ptr & OutOfLineTraceKindMask);
-    if (uintptr_t(traceKind) != OutOfLineTraceKindMask) {
-      return traceKind;
+    uintptr_t kindBits = ptr & OutOfLineTraceKindMask;
+    if (kindBits != OutOfLineTraceKindMask) {
+      return JS::TraceKind(kindBits);
     }
     return outOfLineKind();
   }
@@ -382,15 +475,15 @@ class JS_FRIEND_API GCCellPtr {
 
  private:
   static uintptr_t checkedCast(void* p, JS::TraceKind traceKind) {
-    js::gc::Cell* cell = static_cast<js::gc::Cell*>(p);
+    auto* cell = static_cast<js::gc::Cell*>(p);
     MOZ_ASSERT((uintptr_t(p) & OutOfLineTraceKindMask) == 0);
     AssertGCThingHasType(cell, traceKind);
-    // Note: the OutOfLineTraceKindMask bits are set on all out-of-line kinds
-    // so that we can mask instead of branching.
-    MOZ_ASSERT_IF(uintptr_t(traceKind) >= OutOfLineTraceKindMask,
-                  (uintptr_t(traceKind) & OutOfLineTraceKindMask) ==
-                      OutOfLineTraceKindMask);
-    return uintptr_t(p) | (uintptr_t(traceKind) & OutOfLineTraceKindMask);
+    // Store trace in the bottom bits of pointer for common kinds.
+    uintptr_t kindBits = uintptr_t(traceKind);
+    if (kindBits >= OutOfLineTraceKindMask) {
+      kindBits = OutOfLineTraceKindMask;
+    }
+    return uintptr_t(p) | kindBits;
   }
 
   JS::TraceKind outOfLineKind() const;
@@ -428,64 +521,96 @@ void ApplyGCThingTyped(GCCellPtr thing, F&& f) {
 // These are defined in the toplevel namespace instead of within JS so that
 // they won't shadow other operator== overloads (see bug 1456512.)
 
-inline bool operator==(const JS::GCCellPtr& ptr1, const JS::GCCellPtr& ptr2) {
+inline bool operator==(JS::GCCellPtr ptr1, JS::GCCellPtr ptr2) {
   return ptr1.asCell() == ptr2.asCell();
 }
 
-inline bool operator!=(const JS::GCCellPtr& ptr1, const JS::GCCellPtr& ptr2) {
+inline bool operator!=(JS::GCCellPtr ptr1, JS::GCCellPtr ptr2) {
   return !(ptr1 == ptr2);
 }
 
 namespace js {
 namespace gc {
+
+/* static */
+MOZ_ALWAYS_INLINE void MarkBitmap::getMarkWordAndMask(const TenuredCell* cell,
+                                                      ColorBit colorBit,
+                                                      MarkBitmapWord** wordp,
+                                                      uintptr_t* maskp) {
+  // Note: the JIT pre-barrier trampolines inline this code. Update
+  // MacroAssembler::emitPreBarrierFastPath code too when making changes here!
+
+  MOZ_ASSERT(size_t(colorBit) < MarkBitsPerCell);
+
+  size_t offset = uintptr_t(cell) & ChunkMask;
+  const size_t bit = offset / CellBytesPerMarkBit + size_t(colorBit);
+  size_t word = bit / MarkBitmapWordBits - FirstArenaAdjustmentWords;
+  MOZ_ASSERT(word < WordCount);
+  *wordp = &bitmap[word];
+  *maskp = uintptr_t(1) << (bit % MarkBitmapWordBits);
+}
+
 namespace detail {
 
-static MOZ_ALWAYS_INLINE uintptr_t* GetGCThingMarkBitmap(const uintptr_t addr) {
-  // Note: the JIT pre-barrier trampolines inline this code. Update that
-  // code too when making changes here!
-  MOZ_ASSERT(addr);
-  const uintptr_t bmap_addr = (addr & ~ChunkMask) | ChunkMarkBitmapOffset;
-  return reinterpret_cast<uintptr_t*>(bmap_addr);
+static MOZ_ALWAYS_INLINE ChunkBase* GetCellChunkBase(const Cell* cell) {
+  MOZ_ASSERT(cell);
+  auto* chunk = reinterpret_cast<ChunkBase*>(uintptr_t(cell) & ~ChunkMask);
+  MOZ_ASSERT(chunk->runtime);
+  MOZ_ASSERT(chunk->kind != ChunkKind::Invalid);
+  return chunk;
 }
 
-static MOZ_ALWAYS_INLINE void GetGCThingMarkWordAndMask(const uintptr_t addr,
-                                                        ColorBit colorBit,
-                                                        uintptr_t** wordp,
-                                                        uintptr_t* maskp) {
-  // Note: the JIT pre-barrier trampolines inline this code. Update that
-  // code too when making changes here!
-  MOZ_ASSERT(addr);
-  const size_t bit = (addr & js::gc::ChunkMask) / js::gc::CellBytesPerMarkBit +
-                     static_cast<uint32_t>(colorBit);
-  MOZ_ASSERT(bit < js::gc::ChunkMarkBitmapBits);
-  uintptr_t* bitmap = GetGCThingMarkBitmap(addr);
-  const uintptr_t nbits = sizeof(*bitmap) * CHAR_BIT;
-  *maskp = uintptr_t(1) << (bit % nbits);
-  *wordp = &bitmap[bit / nbits];
+static MOZ_ALWAYS_INLINE TenuredChunkBase* GetCellChunkBase(
+    const TenuredCell* cell) {
+  MOZ_ASSERT(cell);
+  auto* chunk =
+      reinterpret_cast<TenuredChunkBase*>(uintptr_t(cell) & ~ChunkMask);
+  MOZ_ASSERT(chunk->runtime);
+  MOZ_ASSERT(chunk->kind == ChunkKind::TenuredHeap);
+  return chunk;
 }
 
-static MOZ_ALWAYS_INLINE JS::Zone* GetTenuredGCThingZone(const uintptr_t addr) {
-  MOZ_ASSERT(addr);
-  const uintptr_t zone_addr = (addr & ~ArenaMask) | ArenaZoneOffset;
+static MOZ_ALWAYS_INLINE JS::Zone* GetTenuredGCThingZone(const void* ptr) {
+  // This takes a void* because the compiler can't see type relationships in
+  // this header. |ptr| must be a pointer to a tenured GC thing.
+  MOZ_ASSERT(ptr);
+  const uintptr_t zone_addr = (uintptr_t(ptr) & ~ArenaMask) | ArenaZoneOffset;
   return *reinterpret_cast<JS::Zone**>(zone_addr);
 }
 
-static MOZ_ALWAYS_INLINE bool TenuredCellIsMarkedGray(const Cell* cell) {
-  // Return true if GrayOrBlackBit is set and BlackBit is not set.
+static MOZ_ALWAYS_INLINE bool TenuredCellIsMarkedBlack(
+    const TenuredCell* cell) {
+  // Return true if BlackBit is set.
+
   MOZ_ASSERT(cell);
   MOZ_ASSERT(!js::gc::IsInsideNursery(cell));
 
-  uintptr_t *grayWord, grayMask;
-  js::gc::detail::GetGCThingMarkWordAndMask(
-      uintptr_t(cell), js::gc::ColorBit::GrayOrBlackBit, &grayWord, &grayMask);
-  if (!(*grayWord & grayMask)) {
-    return false;
-  }
+  MarkBitmapWord* blackWord;
+  uintptr_t blackMask;
+  TenuredChunkBase* chunk = GetCellChunkBase(cell);
+  chunk->markBits.getMarkWordAndMask(cell, js::gc::ColorBit::BlackBit,
+                                     &blackWord, &blackMask);
+  return *blackWord & blackMask;
+}
 
-  uintptr_t *blackWord, blackMask;
-  js::gc::detail::GetGCThingMarkWordAndMask(
-      uintptr_t(cell), js::gc::ColorBit::BlackBit, &blackWord, &blackMask);
-  return !(*blackWord & blackMask);
+static MOZ_ALWAYS_INLINE bool NonBlackCellIsMarkedGray(
+    const TenuredCell* cell) {
+  // Return true if GrayOrBlackBit is set. Callers should check BlackBit first.
+
+  MOZ_ASSERT(cell);
+  MOZ_ASSERT(!js::gc::IsInsideNursery(cell));
+  MOZ_ASSERT(!TenuredCellIsMarkedBlack(cell));
+
+  MarkBitmapWord* grayWord;
+  uintptr_t grayMask;
+  TenuredChunkBase* chunk = GetCellChunkBase(cell);
+  chunk->markBits.getMarkWordAndMask(cell, js::gc::ColorBit::GrayOrBlackBit,
+                                     &grayWord, &grayMask);
+  return *grayWord & grayMask;
+}
+
+static MOZ_ALWAYS_INLINE bool TenuredCellIsMarkedGray(const TenuredCell* cell) {
+  return !TenuredCellIsMarkedBlack(cell) && NonBlackCellIsMarkedGray(cell);
 }
 
 static MOZ_ALWAYS_INLINE bool CellIsMarkedGray(const Cell* cell) {
@@ -493,10 +618,12 @@ static MOZ_ALWAYS_INLINE bool CellIsMarkedGray(const Cell* cell) {
   if (js::gc::IsInsideNursery(cell)) {
     return false;
   }
-  return TenuredCellIsMarkedGray(cell);
+  return TenuredCellIsMarkedGray(reinterpret_cast<const TenuredCell*>(cell));
 }
 
-extern JS_PUBLIC_API bool CellIsMarkedGrayIfKnown(const Cell* cell);
+extern JS_PUBLIC_API bool CanCheckGrayBits(const TenuredCell* cell);
+
+extern JS_PUBLIC_API bool CellIsMarkedGrayIfKnown(const TenuredCell* cell);
 
 #ifdef DEBUG
 extern JS_PUBLIC_API void AssertCellIsNotGray(const Cell* cell);
@@ -504,30 +631,29 @@ extern JS_PUBLIC_API void AssertCellIsNotGray(const Cell* cell);
 extern JS_PUBLIC_API bool ObjectIsMarkedBlack(const JSObject* obj);
 #endif
 
-MOZ_ALWAYS_INLINE ChunkLocation GetCellLocation(const void* cell) {
-  uintptr_t addr = uintptr_t(cell);
-  addr &= ~js::gc::ChunkMask;
-  addr |= js::gc::ChunkLocationOffset;
-  return *reinterpret_cast<ChunkLocation*>(addr);
-}
-
-MOZ_ALWAYS_INLINE bool NurseryCellHasStoreBuffer(const void* cell) {
-  uintptr_t addr = uintptr_t(cell);
-  addr &= ~js::gc::ChunkMask;
-  addr |= js::gc::ChunkStoreBufferOffset;
-  return *reinterpret_cast<void**>(addr) != nullptr;
+MOZ_ALWAYS_INLINE bool CellHasStoreBuffer(const Cell* cell) {
+  return GetCellChunkBase(cell)->storeBuffer;
 }
 
 } /* namespace detail */
 
 MOZ_ALWAYS_INLINE bool IsInsideNursery(const Cell* cell) {
-  if (!cell) {
-    return false;
-  }
-  auto location = detail::GetCellLocation(cell);
-  MOZ_ASSERT(location == ChunkLocation::Nursery ||
-             location == ChunkLocation::TenuredHeap);
-  return location == ChunkLocation::Nursery;
+  MOZ_ASSERT(cell);
+  return detail::CellHasStoreBuffer(cell);
+}
+
+MOZ_ALWAYS_INLINE bool IsInsideNursery(const TenuredCell* cell) {
+  MOZ_ASSERT(cell);
+  MOZ_ASSERT(!IsInsideNursery(reinterpret_cast<const Cell*>(cell)));
+  return false;
+}
+
+// Return whether |cell| is in the region of the nursery currently being
+// collected.
+MOZ_ALWAYS_INLINE bool InCollectedNurseryRegion(const Cell* cell) {
+  MOZ_ASSERT(cell);
+  return detail::GetCellChunkBase(cell)->getKind() ==
+         ChunkKind::NurseryFromSpace;
 }
 
 // Allow use before the compiler knows the derivation of JSObject, JSString, and
@@ -541,20 +667,22 @@ MOZ_ALWAYS_INLINE bool IsInsideNursery(const JSString* str) {
 MOZ_ALWAYS_INLINE bool IsInsideNursery(const JS::BigInt* bi) {
   return IsInsideNursery(reinterpret_cast<const Cell*>(bi));
 }
+MOZ_ALWAYS_INLINE bool InCollectedNurseryRegion(const JSObject* obj) {
+  return InCollectedNurseryRegion(reinterpret_cast<const Cell*>(obj));
+}
 
-MOZ_ALWAYS_INLINE bool IsCellPointerValid(const void* cell) {
-  auto addr = uintptr_t(cell);
+MOZ_ALWAYS_INLINE bool IsCellPointerValid(const void* ptr) {
+  auto addr = uintptr_t(ptr);
   if (addr < ChunkSize || addr % CellAlignBytes != 0) {
     return false;
   }
-  auto location = detail::GetCellLocation(cell);
-  if (location == ChunkLocation::TenuredHeap) {
-    return !!detail::GetTenuredGCThingZone(addr);
+
+  auto* cell = reinterpret_cast<const Cell*>(ptr);
+  if (!IsInsideNursery(cell)) {
+    return detail::GetTenuredGCThingZone(cell) != nullptr;
   }
-  if (location == ChunkLocation::Nursery) {
-    return detail::NurseryCellHasStoreBuffer(cell);
-  }
-  return false;
+
+  return true;
 }
 
 MOZ_ALWAYS_INLINE bool IsCellPointerValidOrNull(const void* cell) {
@@ -569,16 +697,13 @@ MOZ_ALWAYS_INLINE bool IsCellPointerValidOrNull(const void* cell) {
 
 namespace JS {
 
-static MOZ_ALWAYS_INLINE Zone* GetTenuredGCThingZone(GCCellPtr thing) {
-  MOZ_ASSERT(!js::gc::IsInsideNursery(thing.asCell()));
-  return js::gc::detail::GetTenuredGCThingZone(thing.unsafeAsUIntPtr());
-}
+extern JS_PUBLIC_API Zone* GetTenuredGCThingZone(GCCellPtr thing);
 
 extern JS_PUBLIC_API Zone* GetNurseryCellZone(js::gc::Cell* cell);
 
 static MOZ_ALWAYS_INLINE Zone* GetGCThingZone(GCCellPtr thing) {
   if (!js::gc::IsInsideNursery(thing.asCell())) {
-    return js::gc::detail::GetTenuredGCThingZone(thing.unsafeAsUIntPtr());
+    return js::gc::detail::GetTenuredGCThingZone(thing.asCell());
   }
 
   return GetNurseryCellZone(thing.asCell());
@@ -586,19 +711,40 @@ static MOZ_ALWAYS_INLINE Zone* GetGCThingZone(GCCellPtr thing) {
 
 static MOZ_ALWAYS_INLINE Zone* GetStringZone(JSString* str) {
   if (!js::gc::IsInsideNursery(str)) {
-    return js::gc::detail::GetTenuredGCThingZone(
-        reinterpret_cast<uintptr_t>(str));
+    return js::gc::detail::GetTenuredGCThingZone(str);
   }
+
   return GetNurseryCellZone(reinterpret_cast<js::gc::Cell*>(str));
 }
 
 extern JS_PUBLIC_API Zone* GetObjectZone(JSObject* obj);
 
 static MOZ_ALWAYS_INLINE bool GCThingIsMarkedGray(GCCellPtr thing) {
-  if (thing.mayBeOwnedByOtherRuntime()) {
+  js::gc::Cell* cell = thing.asCell();
+  if (IsInsideNursery(cell)) {
     return false;
   }
-  return js::gc::detail::CellIsMarkedGrayIfKnown(thing.asCell());
+
+  auto* tenuredCell = reinterpret_cast<js::gc::TenuredCell*>(cell);
+  return js::gc::detail::CellIsMarkedGrayIfKnown(tenuredCell);
+}
+
+// Specialised gray marking check for use by the cycle collector. This is not
+// called during incremental GC or when the gray bits are invalid.
+static MOZ_ALWAYS_INLINE bool GCThingIsMarkedGrayInCC(GCCellPtr thing) {
+  js::gc::Cell* cell = thing.asCell();
+  if (IsInsideNursery(cell)) {
+    return false;
+  }
+
+  auto* tenuredCell = reinterpret_cast<js::gc::TenuredCell*>(cell);
+  if (!js::gc::detail::TenuredCellIsMarkedGray(tenuredCell)) {
+    return false;
+  }
+
+  MOZ_ASSERT(js::gc::detail::CanCheckGrayBits(tenuredCell));
+
+  return true;
 }
 
 extern JS_PUBLIC_API JS::TraceKind GCThingTraceKind(void* thing);
@@ -636,7 +782,7 @@ extern JS_PUBLIC_API void IncrementalPreWriteBarrier(GCCellPtr thing);
  * JS::TraceKind::Shape. |thing| should be non-null. The return value indicates
  * if anything was unmarked.
  */
-extern JS_FRIEND_API bool UnmarkGrayGCThingRecursively(GCCellPtr thing);
+extern JS_PUBLIC_API bool UnmarkGrayGCThingRecursively(GCCellPtr thing);
 
 }  // namespace JS
 
@@ -645,21 +791,12 @@ namespace gc {
 
 extern JS_PUBLIC_API void PerformIncrementalReadBarrier(JS::GCCellPtr thing);
 
-static MOZ_ALWAYS_INLINE bool IsIncrementalBarrierNeededOnTenuredGCThing(
-    const JS::GCCellPtr thing) {
-  MOZ_ASSERT(thing);
-  MOZ_ASSERT(!js::gc::IsInsideNursery(thing.asCell()));
-
+static MOZ_ALWAYS_INLINE void ExposeGCThingToActiveJS(JS::GCCellPtr thing) {
   // TODO: I'd like to assert !RuntimeHeapIsBusy() here but this gets
   // called while we are tracing the heap, e.g. during memory reporting
   // (see bug 1313318).
   MOZ_ASSERT(!JS::RuntimeHeapIsCollecting());
 
-  JS::Zone* zone = JS::GetTenuredGCThingZone(thing);
-  return JS::shadow::Zone::from(zone)->needsIncrementalBarrier();
-}
-
-static MOZ_ALWAYS_INLINE void ExposeGCThingToActiveJS(JS::GCCellPtr thing) {
   // GC things residing in the nursery cannot be gray: they have no mark bits.
   // All live objects in the nursery are moved to tenured at the beginning of
   // each GC slice, so the gray marker never sees nursery things.
@@ -667,19 +804,40 @@ static MOZ_ALWAYS_INLINE void ExposeGCThingToActiveJS(JS::GCCellPtr thing) {
     return;
   }
 
-  // There's nothing to do for permanent GC things that might be owned by
-  // another runtime.
-  if (thing.mayBeOwnedByOtherRuntime()) {
+  auto* cell = reinterpret_cast<TenuredCell*>(thing.asCell());
+  if (detail::TenuredCellIsMarkedBlack(cell)) {
     return;
   }
 
-  if (IsIncrementalBarrierNeededOnTenuredGCThing(thing)) {
+  // GC things owned by other runtimes are always black.
+  MOZ_ASSERT(!thing.mayBeOwnedByOtherRuntime());
+
+  auto* zone = JS::shadow::Zone::from(detail::GetTenuredGCThingZone(cell));
+  if (zone->needsIncrementalBarrier()) {
     PerformIncrementalReadBarrier(thing);
-  } else if (detail::TenuredCellIsMarkedGray(thing.asCell())) {
-    JS::UnmarkGrayGCThingRecursively(thing);
+  } else if (!zone->isGCPreparing() && detail::NonBlackCellIsMarkedGray(cell)) {
+    MOZ_ALWAYS_TRUE(JS::UnmarkGrayGCThingRecursively(thing));
   }
 
-  MOZ_ASSERT(!detail::TenuredCellIsMarkedGray(thing.asCell()));
+  MOZ_ASSERT_IF(!zone->isGCPreparing(), !detail::TenuredCellIsMarkedGray(cell));
+}
+
+static MOZ_ALWAYS_INLINE void IncrementalReadBarrier(JS::GCCellPtr thing) {
+  // This is a lighter version of ExposeGCThingToActiveJS that doesn't do gray
+  // unmarking.
+
+  if (IsInsideNursery(thing.asCell())) {
+    return;
+  }
+
+  auto* cell = reinterpret_cast<TenuredCell*>(thing.asCell());
+  auto* zone = JS::shadow::Zone::from(detail::GetTenuredGCThingZone(cell));
+  if (zone->needsIncrementalBarrier() &&
+      !detail::TenuredCellIsMarkedBlack(cell)) {
+    // GC things owned by other runtimes are always black.
+    MOZ_ASSERT(!thing.mayBeOwnedByOtherRuntime());
+    PerformIncrementalReadBarrier(thing);
+  }
 }
 
 template <typename T>
@@ -694,8 +852,7 @@ static MOZ_ALWAYS_INLINE bool EdgeNeedsSweepUnbarriered(JSObject** objp) {
     return false;
   }
 
-  auto zone =
-      JS::shadow::Zone::from(detail::GetTenuredGCThingZone(uintptr_t(*objp)));
+  auto zone = JS::shadow::Zone::from(detail::GetTenuredGCThingZone(*objp));
   if (!zone->isGCSweepingOrCompacting()) {
     return false;
   }

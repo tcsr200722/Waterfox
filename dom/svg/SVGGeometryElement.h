@@ -4,13 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGGeometryElement_h
-#define mozilla_dom_SVGGeometryElement_h
+#ifndef DOM_SVG_SVGGEOMETRYELEMENT_H_
+#define DOM_SVG_SVGGEOMETRYELEMENT_H_
 
 #include "mozilla/dom/SVGGraphicsElement.h"
 #include "mozilla/gfx/2D.h"
-#include "SVGAnimatedNumber.h"
-#include "nsISVGPoint.h"
+#include "mozilla/dom/SVGAnimatedNumber.h"
 
 namespace mozilla {
 
@@ -32,32 +31,33 @@ struct SVGMark {
 namespace dom {
 
 class DOMSVGAnimatedNumber;
+class DOMSVGPoint;
 
-typedef mozilla::dom::SVGGraphicsElement SVGGeometryElementBase;
+using SVGGeometryElementBase = mozilla::dom::SVGGraphicsElement;
 
 class SVGGeometryElement : public SVGGeometryElementBase {
  protected:
-  typedef mozilla::gfx::CapStyle CapStyle;
-  typedef mozilla::gfx::DrawTarget DrawTarget;
-  typedef mozilla::gfx::FillRule FillRule;
-  typedef mozilla::gfx::Float Float;
-  typedef mozilla::gfx::Matrix Matrix;
-  typedef mozilla::gfx::Path Path;
-  typedef mozilla::gfx::Point Point;
-  typedef mozilla::gfx::PathBuilder PathBuilder;
-  typedef mozilla::gfx::Rect Rect;
-  typedef mozilla::gfx::StrokeOptions StrokeOptions;
+  using CapStyle = mozilla::gfx::CapStyle;
+  using DrawTarget = mozilla::gfx::DrawTarget;
+  using FillRule = mozilla::gfx::FillRule;
+  using Float = mozilla::gfx::Float;
+  using Matrix = mozilla::gfx::Matrix;
+  using Path = mozilla::gfx::Path;
+  using Point = mozilla::gfx::Point;
+  using PathBuilder = mozilla::gfx::PathBuilder;
+  using Rect = mozilla::gfx::Rect;
+  using StrokeOptions = mozilla::gfx::StrokeOptions;
 
  public:
   explicit SVGGeometryElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-  virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
-  bool IsNodeOfType(uint32_t aFlags) const override;
+  NS_IMPL_FROMNODE_HELPER(SVGGeometryElement, IsSVGGeometryElement())
+
+  void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
+  bool IsSVGGeometryElement() const override { return true; }
 
   /**
    * Causes this element to discard any Path object that GetOrBuildPath may
@@ -175,6 +175,17 @@ class SVGGeometryElement : public SVGGeometryElementBase {
   virtual already_AddRefed<Path> BuildPath(PathBuilder* aBuilder) = 0;
 
   /**
+   * Get the distances from the origin of the path segments.
+   * For non-path elements that's just 0 and the total length of the shape.
+   */
+  virtual bool GetDistancesFromOriginToEndsOfVisibleSegments(
+      FallibleTArray<double>* aOutput) {
+    aOutput->Clear();
+    double distances[] = {0.0, GetTotalLength()};
+    return aOutput->AppendElements(Span<double>(distances), fallible);
+  }
+
+  /**
    * Returns a Path that can be used to measure the length of this elements
    * path, or to find the position at a given distance along it.
    *
@@ -190,6 +201,20 @@ class SVGGeometryElement : public SVGGeometryElementBase {
    * for content.
    */
   virtual already_AddRefed<Path> GetOrBuildPathForMeasuring();
+
+  /**
+   * If this shape element is a closed loop, this returns true. If it is an
+   * unclosed interval, this returns false. This function is used for motion
+   * path especially.
+   *
+   * 1. SVG Paths are closed loops only if the final command in the path list is
+   *    a closepath command ("z" or "Z"), otherwise they are unclosed intervals.
+   * 2. SVG circles, ellipses, polygons and rects are closed loops.
+   * 3. SVG lines and polylines are unclosed intervals.
+   *
+   * https://drafts.fxtf.org/motion/#path-distance
+   */
+  virtual bool IsClosedLoop() const { return false; }
 
   /**
    * Return |true| if some geometry properties (|x|, |y|, etc) are changed
@@ -216,15 +241,19 @@ class SVGGeometryElement : public SVGGeometryElementBase {
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedNumber> PathLength();
-  bool IsPointInFill(const DOMPointInit& aPoint);
-  bool IsPointInStroke(const DOMPointInit& aPoint);
-  float GetTotalLength();
-  already_AddRefed<nsISVGPoint> GetPointAtLength(float distance,
-                                                 ErrorResult& rv);
+  MOZ_CAN_RUN_SCRIPT bool IsPointInFill(const DOMPointInit& aPoint);
+  MOZ_CAN_RUN_SCRIPT bool IsPointInStroke(const DOMPointInit& aPoint);
+  MOZ_CAN_RUN_SCRIPT float GetTotalLengthForBinding();
+  MOZ_CAN_RUN_SCRIPT already_AddRefed<DOMSVGPoint> GetPointAtLength(
+      float distance, ErrorResult& rv);
 
  protected:
   // SVGElement method
-  virtual NumberAttributesInfo GetNumberInfo() override;
+  NumberAttributesInfo GetNumberInfo() override;
+
+  // d is a presentation attribute, so we would like to make sure style is
+  // up-to-date. This function flushes the style if the path attribute is d.
+  MOZ_CAN_RUN_SCRIPT void FlushStyleIfNeeded();
 
   SVGAnimatedNumber mPathLength;
   static NumberInfo sNumberInfo;
@@ -232,9 +261,11 @@ class SVGGeometryElement : public SVGGeometryElementBase {
 
  private:
   already_AddRefed<Path> GetOrBuildPathForHitTest();
+
+  float GetTotalLength();
 };
 
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGGeometryElement_h
+#endif  // DOM_SVG_SVGGEOMETRYELEMENT_H_

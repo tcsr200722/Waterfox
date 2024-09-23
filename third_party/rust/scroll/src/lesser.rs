@@ -1,12 +1,18 @@
-use std::io::{Result, Read, Write};
+use std::io::{Read, Result, Write};
+
 use crate::ctx::{FromCtx, IntoCtx, SizeWith};
 
-/// An extension trait to `std::io::Read` streams; this only deserializes simple types, like `u8`, `i32`, `f32`, `usize`, etc.
+/// An extension trait to `std::io::Read` streams; mainly targeted at reading primitive types with
+/// a known size.
 ///
-/// If you implement [`FromCtx`](trait.FromCtx.html) and [`SizeWith`](ctx/trait.SizeWith.html) for your type, you can then `ioread::<YourType>()` on a `Read`.  Note: [`FromCtx`](trait.FromCtx.html) is only meant for very simple types, and should _never_ fail.
+/// Requires types to implement [`FromCtx`](ctx/trait.FromCtx.html) and [`SizeWith`](ctx/trait.SizeWith.html).
 ///
-/// **NB** You should probably add `repr(packed)` or `repr(C)` and be very careful how you implement [`SizeWith`](ctx/trait.SizeWith.html), otherwise you
-/// will get IO errors failing to fill entire buffer (the size you specified in `SizeWith`), or out of bound errors (depending on your impl) in `from_ctx`
+/// **NB** You should probably add `repr(C)` and be very careful how you implement
+/// [`SizeWith`](ctx/trait.SizeWith.html), otherwise you will get IO errors failing to fill entire
+/// buffer (the size you specified in `SizeWith`), or out of bound errors (depending on your impl)
+/// in `from_ctx`.
+///
+/// Warning: Currently ioread/write uses a small 256-byte buffer and can not read/write larger types
 ///
 /// # Example
 /// ```rust
@@ -49,8 +55,7 @@ use crate::ctx::{FromCtx, IntoCtx, SizeWith};
 /// assert_eq!({foo_.bar}, bar);
 /// ```
 ///
-pub trait IOread<Ctx: Copy> : Read
-{
+pub trait IOread<Ctx: Copy>: Read {
     /// Reads the type `N` from `Self`, with a default parsing context.
     /// For the primitive numeric types, this will be at the host machine's endianness.
     ///
@@ -68,7 +73,10 @@ pub trait IOread<Ctx: Copy> : Read
     /// assert_eq!(0xefbe, beef);
     /// ```
     #[inline]
-    fn ioread<N: FromCtx<Ctx> + SizeWith<Ctx>>(&mut self) -> Result<N> where Ctx: Default {
+    fn ioread<N: FromCtx<Ctx> + SizeWith<Ctx>>(&mut self) -> Result<N>
+    where
+        Ctx: Default,
+    {
         let ctx = Ctx::default();
         self.ioread_with(ctx)
     }
@@ -97,8 +105,8 @@ pub trait IOread<Ctx: Copy> : Read
     fn ioread_with<N: FromCtx<Ctx> + SizeWith<Ctx>>(&mut self, ctx: Ctx) -> Result<N> {
         let mut scratch = [0u8; 256];
         let size = N::size_with(&ctx);
-        let mut buf = &mut scratch[0..size];
-        self.read_exact(&mut buf)?;
+        let buf = &mut scratch[0..size];
+        self.read_exact(buf)?;
         Ok(N::from_ctx(buf, ctx))
     }
 }
@@ -109,9 +117,8 @@ impl<Ctx: Copy, R: Read + ?Sized> IOread<Ctx> for R {}
 
 /// An extension trait to `std::io::Write` streams; this only serializes simple types, like `u8`, `i32`, `f32`, `usize`, etc.
 ///
-/// To write custom types with a single `iowrite::<YourType>` call, implement [`IntoCtx`](trait.IntoCtx.html) and [`SizeWith`](ctx/trait.SizeWith.html) for `YourType`.
-pub trait IOwrite<Ctx: Copy>: Write
-{
+/// To write custom types with a single `iowrite::<YourType>` call, implement [`IntoCtx`](ctx/trait.IntoCtx.html) and [`SizeWith`](ctx/trait.SizeWith.html) for `YourType`.
+pub trait IOwrite<Ctx: Copy>: Write {
     /// Writes the type `N` into `Self`, with the parsing context `ctx`.
     /// **NB**: this will panic if the type you're writing has a size greater than 256. Plans are to have this allocate in larger cases.
     ///
@@ -132,7 +139,10 @@ pub trait IOwrite<Ctx: Copy>: Write
     /// assert_eq!(bytes.into_inner(), [0xde, 0xad, 0xbe, 0xef,]);
     /// ```
     #[inline]
-    fn iowrite<N: SizeWith<Ctx> + IntoCtx<Ctx>>(&mut self, n: N) -> Result<()> where Ctx: Default {
+    fn iowrite<N: SizeWith<Ctx> + IntoCtx<Ctx>>(&mut self, n: N) -> Result<()>
+    where
+        Ctx: Default,
+    {
         let ctx = Ctx::default();
         self.iowrite_with(n, ctx)
     }

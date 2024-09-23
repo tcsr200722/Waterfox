@@ -10,7 +10,7 @@ function run_test() {
 add_test(function test_get_none() {
   let requestID = 0;
   let msgReply = "Notification:GetAll:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
     Assert.equal(0, message.data.notifications.length);
   };
@@ -25,7 +25,7 @@ add_test(function test_get_none() {
 add_test(function test_send_one() {
   let requestID = 1;
   let msgReply = "Notification:Save:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -40,7 +40,7 @@ add_test(function test_send_one() {
 add_test(function test_get_one() {
   let requestID = 2;
   let msgReply = "Notification:GetAll:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
     Assert.equal(1, message.data.notifications.length);
     // compare the content
@@ -57,7 +57,7 @@ add_test(function test_get_one() {
 add_test(function test_delete_one() {
   let requestID = 3;
   let msgReply = "Notification:Delete:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -72,7 +72,7 @@ add_test(function test_delete_one() {
 add_test(function test_get_none_again() {
   let requestID = 4;
   let msgReply = "Notification:GetAll:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
     Assert.equal(0, message.data.notifications.length);
   };
@@ -87,7 +87,7 @@ add_test(function test_get_none_again() {
 add_test(function test_delete_one_nonexistent() {
   let requestID = 5;
   let msgReply = "Notification:Delete:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -104,7 +104,7 @@ add_test(function test_send_two_get_one() {
   let calls = 0;
 
   let msgGetReply = "Notification:GetAll:Return:OK";
-  let msgGetHandler = function(message) {
+  let msgGetHandler = function (message) {
     Assert.equal(requestID + 2, message.data.requestID);
     Assert.equal(1, message.data.notifications.length);
     // compare the content
@@ -112,7 +112,7 @@ add_test(function test_send_two_get_one() {
   };
 
   let msgSaveReply = "Notification:Save:Return:OK";
-  let msgSaveHandler = function(message) {
+  let msgSaveHandler = function () {
     calls += 1;
     if (calls === 2) {
       addAndSend("Notification:GetAll", msgGetReply, msgGetHandler, {
@@ -151,7 +151,7 @@ add_test(function test_send_two_get_one() {
 add_test(function test_delete_previous() {
   let requestID = 8;
   let msgReply = "Notification:Delete:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -197,7 +197,7 @@ add_test(function test_send_two_get_one() {
 
   let msgSaveReply = "Notification:Save:Return:OK";
   let msgSaveCalls = 0;
-  let msgSaveHandler = function(message) {
+  let msgSaveHandler = function (message) {
     msgSaveCalls++;
     // Once both request have been sent, trigger getall
     if (msgSaveCalls === 2) {
@@ -237,7 +237,7 @@ add_test(function test_send_two_get_one() {
 add_test(function test_delete_previous() {
   let requestID = 15;
   let msgReply = "Notification:Delete:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -328,7 +328,7 @@ add_test(function test_send_two_get_two() {
 add_test(function test_delete_previous() {
   let requestID = 25;
   let msgReply = "Notification:Delete:Return:OK";
-  let msgHandler = function(message) {
+  let msgHandler = function (message) {
     Assert.equal(requestID, message.data.requestID);
   };
 
@@ -337,4 +337,90 @@ add_test(function test_delete_previous() {
     id: "{2bc883bf-2809-4432-b0f4-f54e10372764}",
     requestID,
   });
+});
+
+add_test(function test_notification_onDiskPersistence() {
+  let verifyDisk = async function (expectedId) {
+    const NOTIFICATION_STORE_PATH = PathUtils.join(
+      PathUtils.profileDir,
+      "notificationstore.json"
+    );
+
+    const onDiskNotificationStr = await IOUtils.readUTF8(
+      NOTIFICATION_STORE_PATH
+    );
+    return onDiskNotificationStr.includes(expectedId);
+  };
+
+  let persistedNotification = getNotificationObject(
+    systemNotification.origin,
+    "{315aaf98-6c72-48fe-8e2c-a841e1b00027}",
+    "" /* tag */,
+    true /* scope */
+  );
+
+  addAndSend(
+    "Notification:Save",
+    "Notification:Save:Return:OK",
+    async () => {
+      Assert.ok(await verifyDisk(persistedNotification.id));
+    },
+    {
+      origin: persistedNotification.origin,
+      notification: persistedNotification,
+      requestID: 2,
+    }
+  );
+
+  let nonPersistedNotification = getNotificationObject(
+    systemNotification.origin,
+    "{8110ed62-303f-4f9b-a257-a62487aaa09c}",
+    "" /* tag */,
+    true /* scope */
+  );
+
+  addAndSend(
+    "MemoryNotification:Save",
+    "MemoryNotification:Save:Return:OK",
+    async () => {
+      // memoryonly notification must not exist on disk.
+      Assert.ok(!(await verifyDisk(nonPersistedNotification.id)));
+    },
+    {
+      origin: nonPersistedNotification.origin,
+      notification: nonPersistedNotification,
+      requestID: 3,
+    }
+  );
+
+  let verifyMemory = function (message, expectedId) {
+    return message.data.notifications.some(notification => {
+      return notification.id == expectedId;
+    });
+  };
+
+  addAndSend(
+    "Notification:GetAll",
+    "Notification:GetAll:Return:OK",
+    message => {
+      Assert.ok(verifyMemory(message, persistedNotification.id));
+    },
+    {
+      origin: persistedNotification.origin,
+      requestID: 4,
+    }
+  );
+
+  addAndSend(
+    "MemoryNotification:GetAll",
+    "MemoryNotification:GetAll:Return:OK",
+    message => {
+      // memoryonly notification must exist in-memory
+      Assert.ok(verifyMemory(message, nonPersistedNotification.id));
+    },
+    {
+      origin: persistedNotification.origin,
+      requestID: 5,
+    }
+  );
 });

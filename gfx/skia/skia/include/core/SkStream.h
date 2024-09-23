@@ -11,32 +11,20 @@
 #include "include/core/SkData.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkScalar.h"
-#include "include/private/SkTo.h"
+#include "include/core/SkTypes.h"
+#include "include/private/base/SkCPUTypes.h"
+#include "include/private/base/SkTo.h"
 
-#include <memory.h>
-
-class SkStream;
-class SkStreamRewindable;
-class SkStreamSeekable;
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <utility>
 class SkStreamAsset;
-class SkStreamMemory;
 
 /**
  *  SkStream -- abstraction for a source of bytes. Subclasses can be backed by
  *  memory, or a file, or something else.
- *
- *  NOTE:
- *
- *  Classic "streams" APIs are sort of async, in that on a request for N
- *  bytes, they may return fewer than N bytes on a given call, in which case
- *  the caller can "try again" to get more bytes, eventually (modulo an error)
- *  receiving their total N bytes.
- *
- *  Skia streams behave differently. They are effectively synchronous, and will
- *  always return all N bytes of the request if possible. If they return fewer
- *  (the read() call returns the number of bytes read) then that means there is
- *  no more data (at EOF or hit an error). The caller should *not* call again
- *  in hopes of fulfilling more of the request.
  */
 class SK_API SkStream {
 public:
@@ -80,27 +68,30 @@ public:
     virtual size_t peek(void* /*buffer*/, size_t /*size*/) const { return 0; }
 
     /** Returns true when all the bytes in the stream have been read.
+     *  As SkStream represents synchronous I/O, isAtEnd returns false when the
+     *  final stream length isn't known yet, even when all the bytes available
+     *  so far have been read.
      *  This may return true early (when there are no more bytes to be read)
      *  or late (after the first unsuccessful read).
      */
     virtual bool isAtEnd() const = 0;
 
-    bool SK_WARN_UNUSED_RESULT readS8(int8_t*);
-    bool SK_WARN_UNUSED_RESULT readS16(int16_t*);
-    bool SK_WARN_UNUSED_RESULT readS32(int32_t*);
+    [[nodiscard]] bool readS8(int8_t*);
+    [[nodiscard]] bool readS16(int16_t*);
+    [[nodiscard]] bool readS32(int32_t*);
 
-    bool SK_WARN_UNUSED_RESULT readU8(uint8_t* i) { return this->readS8((int8_t*)i); }
-    bool SK_WARN_UNUSED_RESULT readU16(uint16_t* i) { return this->readS16((int16_t*)i); }
-    bool SK_WARN_UNUSED_RESULT readU32(uint32_t* i) { return this->readS32((int32_t*)i); }
+    [[nodiscard]] bool readU8(uint8_t* i) { return this->readS8((int8_t*)i); }
+    [[nodiscard]] bool readU16(uint16_t* i) { return this->readS16((int16_t*)i); }
+    [[nodiscard]] bool readU32(uint32_t* i) { return this->readS32((int32_t*)i); }
 
-    bool SK_WARN_UNUSED_RESULT readBool(bool* b) {
+    [[nodiscard]] bool readBool(bool* b) {
         uint8_t i;
         if (!this->readU8(&i)) { return false; }
         *b = (i != 0);
         return true;
     }
-    bool SK_WARN_UNUSED_RESULT readScalar(SkScalar*);
-    bool SK_WARN_UNUSED_RESULT readPackedUInt(size_t*);
+    [[nodiscard]] bool readScalar(SkScalar*);
+    [[nodiscard]] bool readPackedUInt(size_t*);
 
 //SkStreamRewindable
     /** Rewinds to the beginning of the stream. Returns true if the stream is known
@@ -122,7 +113,7 @@ public:
     }
 
 //SkStreamSeekable
-    /** Returns true if this stream can report it's current position. */
+    /** Returns true if this stream can report its current position. */
     virtual bool hasPosition() const { return false; }
     /** Returns the current position in the stream. If this cannot be done, returns 0. */
     virtual size_t getPosition() const { return 0; }
@@ -140,15 +131,15 @@ public:
     virtual bool move(long /*offset*/) { return false; }
 
 //SkStreamAsset
-    /** Returns true if this stream can report it's total length. */
+    /** Returns true if this stream can report its total length. */
     virtual bool hasLength() const { return false; }
     /** Returns the total length of the stream. If this cannot be done, returns 0. */
     virtual size_t getLength() const { return 0; }
 
 //SkStreamMemory
     /** Returns the starting address for the data. If this cannot be done, returns NULL. */
-    //TODO: replace with virtual const SkData* getData()
     virtual const void* getMemoryBase() { return nullptr; }
+    virtual sk_sp<SkData> getData() const { return nullptr; }
 
 private:
     virtual SkStream* onDuplicate() const { return nullptr; }
@@ -255,10 +246,10 @@ public:
 
     bool writeText(const char text[]) {
         SkASSERT(text);
-        return this->write(text, strlen(text));
+        return this->write(text, std::strlen(text));
     }
 
-    bool newline() { return this->write("\n", strlen("\n")); }
+    bool newline() { return this->write("\n", std::strlen("\n")); }
 
     bool writeDecAsText(int32_t);
     bool writeBigDecAsText(int64_t, int minDigits = 0);
@@ -296,8 +287,6 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-#include <stdio.h>
-
 /** A stream that wraps a C FILE* file stream. */
 class SK_API SkFILEStream : public SkStreamAsset {
 public:
@@ -308,10 +297,17 @@ public:
 
     /** Initialize the stream with an existing C FILE stream.
      *  The current position of the C FILE stream will be considered the
-     *  beginning of the SkFILEStream.
+     *  beginning of the SkFILEStream and the current seek end of the FILE will be the end.
      *  The C FILE stream will be closed in the destructor.
      */
     explicit SkFILEStream(FILE* file);
+
+    /** Initialize the stream with an existing C FILE stream.
+     *  The current position of the C FILE stream will be considered the
+     *  beginning of the SkFILEStream and size bytes later will be the end.
+     *  The C FILE stream will be closed in the destructor.
+     */
+    explicit SkFILEStream(FILE* file, size_t size);
 
     ~SkFILEStream() override;
 
@@ -345,19 +341,21 @@ public:
     size_t getLength() const override;
 
 private:
-    explicit SkFILEStream(std::shared_ptr<FILE>, size_t size, size_t offset);
-    explicit SkFILEStream(std::shared_ptr<FILE>, size_t size, size_t offset, size_t originalOffset);
+    explicit SkFILEStream(FILE*, size_t size, size_t start);
+    explicit SkFILEStream(std::shared_ptr<FILE>, size_t end, size_t start);
+    explicit SkFILEStream(std::shared_ptr<FILE>, size_t end, size_t start, size_t current);
 
     SkStreamAsset* onDuplicate() const override;
     SkStreamAsset* onFork() const override;
 
     std::shared_ptr<FILE> fFILE;
     // My own council will I keep on sizes and offsets.
-    size_t fSize;
-    size_t fOffset;
-    size_t fOriginalOffset;
+    // These are seek positions in the underling FILE, not offsets into the stream.
+    size_t fEnd;
+    size_t fStart;
+    size_t fCurrent;
 
-    typedef SkStreamAsset INHERITED;
+    using INHERITED = SkStreamAsset;
 };
 
 class SK_API SkMemoryStream : public SkStreamMemory {
@@ -394,10 +392,9 @@ public:
     */
     void setMemoryOwned(const void* data, size_t length);
 
-    sk_sp<SkData> asData() const { return fData; }
+    sk_sp<SkData> getData() const override { return fData; }
     void setData(sk_sp<SkData> data);
 
-    void skipToAlign4();
     const void* getAtPos();
 
     size_t read(void* buffer, size_t size) override;
@@ -430,7 +427,7 @@ private:
     sk_sp<SkData>   fData;
     size_t          fOffset;
 
-    typedef SkStreamMemory INHERITED;
+    using INHERITED = SkStreamMemory;
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -452,7 +449,7 @@ public:
 private:
     FILE* fFILE;
 
-    typedef SkWStream INHERITED;
+    using INHERITED = SkWStream;
 };
 
 class SK_API SkDynamicMemoryWStream : public SkWStream {
@@ -509,7 +506,7 @@ private:
     friend class SkBlockMemoryStream;
     friend class SkBlockMemoryRefCnt;
 
-    typedef SkWStream INHERITED;
+    using INHERITED = SkWStream;
 };
 
 #endif

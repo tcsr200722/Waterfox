@@ -6,10 +6,10 @@ use std::task::{Context, Poll};
 
 use crate::filter::{Filter, FilterBase, Internal};
 
-/// A filter that matches any route.
+/// A [`Filter`](crate::Filter) that matches any route.
 ///
 /// This can be a useful building block to build new filters from,
-/// since [`Filter`](crate::Filter) is otherwise a sealed trait.
+/// since [`Filter`] is otherwise a sealed trait.
 ///
 /// # Example
 ///
@@ -70,7 +70,7 @@ impl Future for AnyFut {
     type Output = Result<(), Infallible>;
 
     #[inline]
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(Ok(()))
     }
 }

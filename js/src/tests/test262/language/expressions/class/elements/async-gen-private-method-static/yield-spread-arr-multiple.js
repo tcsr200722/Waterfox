@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-static-methods-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/async-generators/yield-spread-arr-multiple.case
 // - src/async-generators/default/async-class-expr-static-private-method.template
@@ -42,8 +42,14 @@ var C = class {
 }
 
 // Test the private fields do not appear as properties before set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);
 
 var iter = C.gen();
 
@@ -54,7 +60,7 @@ item.then(({ done, value }) => {
   item = iter.next(value);
 
   item.then(({ done, value }) => {
-    assert(compareArray(value, arr));
+    assert.compareArray(value, arr);
     assert.sameValue(done, false);
   }).then($DONE, $DONE);
 }).catch($DONE);
@@ -62,5 +68,11 @@ item.then(({ done, value }) => {
 assert.sameValue(callCount, 1);
 
 // Test the private fields do not appear as properties after set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);

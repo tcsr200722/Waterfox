@@ -7,17 +7,22 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { KeyCodes } = require("devtools/client/shared/keycodes");
-const { LocalizationHelper } = require("devtools/shared/l10n");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const { KeyCodes } = require("resource://devtools/client/shared/keycodes.js");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
 
 const BoxModelEditable = createFactory(
-  require("devtools/client/inspector/boxmodel/components/BoxModelEditable")
+  require("resource://devtools/client/inspector/boxmodel/components/BoxModelEditable.js")
 );
 
-const Types = require("devtools/client/inspector/boxmodel/types");
+const Types = require("resource://devtools/client/inspector/boxmodel/types.js");
+
+const {
+  highlightSelectedNode,
+  unhighlightNode,
+} = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
 
 const SHARED_STRINGS_URI = "devtools/client/locales/shared.properties";
 const SHARED_L10N = new LocalizationHelper(SHARED_STRINGS_URI);
@@ -27,9 +32,8 @@ class BoxModelMain extends PureComponent {
     return {
       boxModel: PropTypes.shape(Types.boxModel).isRequired,
       boxModelContainer: PropTypes.object,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
       onShowBoxModelEditor: PropTypes.func.isRequired,
-      onShowBoxModelHighlighter: PropTypes.func.isRequired,
       onShowRulePreviewTooltip: PropTypes.func.isRequired,
     };
   }
@@ -42,7 +46,7 @@ class BoxModelMain extends PureComponent {
       focusable: false,
     };
 
-    this.getAriaActiveDescendant = this.getAriaActiveDescendant.bind(this);
+    this.getActiveDescendant = this.getActiveDescendant.bind(this);
     this.getBorderOrPaddingValue = this.getBorderOrPaddingValue.bind(this);
     this.getContextBox = this.getContextBox.bind(this);
     this.getDisplayPosition = this.getDisplayPosition.bind(this);
@@ -54,7 +58,7 @@ class BoxModelMain extends PureComponent {
     this.onHighlightMouseOver = this.onHighlightMouseOver.bind(this);
     this.onKeyDown = this.onKeyDown.bind(this);
     this.onLevelClick = this.onLevelClick.bind(this);
-    this.setAriaActive = this.setAriaActive.bind(this);
+    this.setActive = this.setActive.bind(this);
   }
 
   componentDidUpdate() {
@@ -100,7 +104,7 @@ class BoxModelMain extends PureComponent {
     };
   }
 
-  getAriaActiveDescendant() {
+  getActiveDescendant() {
     let { activeDescendant } = this.state;
 
     if (!activeDescendant) {
@@ -109,7 +113,7 @@ class BoxModelMain extends PureComponent {
         ? this.positionLayout
         : this.marginLayout;
       activeDescendant = nextLayout.getAttribute("data-box");
-      this.setAriaActive(nextLayout);
+      this.setActive(nextLayout);
     }
 
     return activeDescendant;
@@ -220,14 +224,10 @@ class BoxModelMain extends PureComponent {
    *         Node to be observed
    * @param  {Boolean} shiftKey
    *         Determines if shiftKey was pressed
-   * @param  {String} level
-   *         Current active layout
    */
-  moveFocus({ target, shiftKey }, level) {
+  moveFocus({ target, shiftKey }) {
     const editBoxes = [
-      ...this.positionLayout.querySelectorAll(
-        `[data-box="${level}"].boxmodel-editable`
-      ),
+      ...this.positionLayout.querySelectorAll("[data-box].boxmodel-editable"),
     ];
     const editingMode = target.tagName === "input";
     // target.nextSibling is input field
@@ -244,6 +244,7 @@ class BoxModelMain extends PureComponent {
     }
 
     const editBox = editBoxes[position];
+    this.setActive(editBox);
     editBox.focus();
 
     if (editingMode) {
@@ -252,17 +253,18 @@ class BoxModelMain extends PureComponent {
   }
 
   /**
-   * Active aria-level set to current layout.
+   * Active level set to current layout.
    *
    * @param  {Element} nextLayout
    *         Element of next layout that user has navigated to
    */
-  setAriaActive(nextLayout) {
+  setActive(nextLayout) {
     const { boxModelContainer } = this.props;
 
     // We set this attribute for testing purposes.
     if (boxModelContainer) {
-      boxModelContainer.setAttribute("activedescendant", nextLayout.className);
+      boxModelContainer.dataset.activeDescendantClassName =
+        nextLayout.className;
     }
 
     this.setState({
@@ -285,14 +287,16 @@ class BoxModelMain extends PureComponent {
         }
       } while (el.parentNode);
 
-      this.props.onHideBoxModelHighlighter();
+      this.props.dispatch(unhighlightNode());
     }
 
-    this.props.onShowBoxModelHighlighter({
-      region,
-      showOnly: region,
-      onlyRegionArea: true,
-    });
+    this.props.dispatch(
+      highlightSelectedNode({
+        region,
+        showOnly: region,
+        onlyRegionArea: true,
+      })
+    );
 
     event.preventDefault();
   }
@@ -312,7 +316,7 @@ class BoxModelMain extends PureComponent {
     const { target, keyCode } = event;
     const isEditable = target._editable || target.editor;
 
-    const level = this.getAriaActiveDescendant();
+    const level = this.getActiveDescendant();
     const editingMode = target.tagName === "input";
 
     switch (keyCode) {
@@ -338,7 +342,7 @@ class BoxModelMain extends PureComponent {
               return;
             }
 
-            this.setAriaActive(nextLayout);
+            this.setActive(nextLayout);
 
             if (target?._editable) {
               target.blur();
@@ -351,7 +355,7 @@ class BoxModelMain extends PureComponent {
       case KeyCodes.DOM_VK_TAB:
         if (isEditable) {
           event.preventDefault();
-          this.moveFocus(event, level);
+          this.moveFocus(event);
         }
         break;
       case KeyCodes.DOM_VK_ESCAPE:
@@ -369,7 +373,7 @@ class BoxModelMain extends PureComponent {
   }
 
   /**
-   * Update aria-active on mouse click.
+   * Update active on mouse click.
    *
    * @param  {Event} event
    *         The event triggered by a mouse click on the box model
@@ -379,7 +383,7 @@ class BoxModelMain extends PureComponent {
     const displayPosition = this.getDisplayPosition();
     const isContentBox = this.getContextBox();
 
-    // Avoid switching the aria active descendant to the position or content layout
+    // Avoid switching the active descendant to the position or content layout
     // if those are not editable.
     if (
       (!displayPosition && target == this.positionLayout) ||
@@ -388,10 +392,9 @@ class BoxModelMain extends PureComponent {
       return;
     }
 
-    const nextLayout = this.layouts[target.getAttribute("data-box")].get(
-      "click"
-    );
-    this.setAriaActive(nextLayout);
+    const nextLayout =
+      this.layouts[target.getAttribute("data-box")].get("click");
+    this.setActive(nextLayout);
 
     if (target?._editable) {
       target.blur();
@@ -401,6 +404,7 @@ class BoxModelMain extends PureComponent {
   render() {
     const {
       boxModel,
+      dispatch,
       onShowBoxModelEditor,
       onShowRulePreviewTooltip,
     } = this.props;
@@ -460,7 +464,10 @@ class BoxModelMain extends PureComponent {
             })
           )
         : dom.p(
-            { className: "boxmodel-size" },
+            {
+              className: "boxmodel-size",
+              id: "boxmodel-size-id",
+            },
             dom.span(
               { title: "content" },
               SHARED_L10N.getFormatStr("dimensions", width, height)
@@ -477,7 +484,7 @@ class BoxModelMain extends PureComponent {
         onClick: this.onLevelClick,
         onKeyDown: this.onKeyDown,
         onMouseOver: this.onHighlightMouseOver,
-        onMouseOut: this.props.onHideBoxModelHighlighter,
+        onMouseOut: () => dispatch(unhighlightNode()),
       },
       displayPosition
         ? dom.span(
@@ -496,12 +503,17 @@ class BoxModelMain extends PureComponent {
             className: "boxmodel-legend",
             "data-box": "margin",
             title: "margin",
+            role: "region",
+            "aria-level": "1", // margin, outermost box
+            "aria-owns":
+              "margin-top-id margin-right-id margin-bottom-id margin-left-id margins-div",
           },
           "margin"
         ),
         dom.div(
           {
             className: "boxmodel-margins",
+            id: "margins-div",
             "data-box": "margin",
             title: "margin",
             ref: div => {
@@ -513,12 +525,17 @@ class BoxModelMain extends PureComponent {
               className: "boxmodel-legend",
               "data-box": "border",
               title: "border",
+              role: "region",
+              "aria-level": "2", // margin -> border, second box
+              "aria-owns":
+                "border-top-width-id border-right-width-id border-bottom-width-id border-left-width-id borders-div",
             },
             "border"
           ),
           dom.div(
             {
               className: "boxmodel-borders",
+              id: "borders-div",
               "data-box": "border",
               title: "border",
               ref: div => {
@@ -530,22 +547,37 @@ class BoxModelMain extends PureComponent {
                 className: "boxmodel-legend",
                 "data-box": "padding",
                 title: "padding",
+                role: "region",
+                "aria-level": "3", // margin -> border -> padding
+                "aria-owns":
+                  "padding-top-id padding-right-id padding-bottom-id padding-left-id padding-div",
               },
               "padding"
             ),
             dom.div(
               {
                 className: "boxmodel-paddings",
+                id: "padding-div",
                 "data-box": "padding",
                 title: "padding",
+                "aria-owns": "boxmodel-contents-id",
                 ref: div => {
                   this.paddingLayout = div;
                 },
               },
               dom.div({
                 className: "boxmodel-contents",
+                id: "boxmodel-contents-id",
                 "data-box": "content",
                 title: "content",
+                role: "region",
+                "aria-level": "4", // margin -> border -> padding -> content
+                "aria-label": SHARED_L10N.getFormatStr(
+                  "boxModelSize.accessibleLabel",
+                  width,
+                  height
+                ),
+                "aria-owns": "boxmodel-size-id",
                 ref: div => {
                   this.contentLayout = div;
                 },

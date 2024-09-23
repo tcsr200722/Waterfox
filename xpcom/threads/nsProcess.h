@@ -14,8 +14,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Mutex.h"
 #include "nsIProcess.h"
-#include "nsIFile.h"
-#include "nsIObserver.h"
 #include "nsIObserver.h"
 #include "nsMaybeWeakPtr.h"
 #include "nsString.h"
@@ -34,6 +32,8 @@
     }                                                \
   }
 
+class nsIFile;
+
 class nsProcess final : public nsIProcess, public nsIObserver {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -44,6 +44,7 @@ class nsProcess final : public nsIProcess, public nsIObserver {
 
  private:
   ~nsProcess();
+  PRThread* CreateMonitorThread();
   static void Monitor(void* aArg);
   void ProcessComplete();
   nsresult CopyArgsAndRunProcess(bool aBlocking, const char** aArgs,
@@ -58,7 +59,7 @@ class nsProcess final : public nsIProcess, public nsIObserver {
 
   PRThread* mThread;
   mozilla::Mutex mLock;
-  bool mShutdown;
+  bool mShutdown MOZ_GUARDED_BY(mLock);
   bool mBlocking;
   bool mStartHidden;
   bool mNoShell;
@@ -70,11 +71,11 @@ class nsProcess final : public nsIProcess, public nsIObserver {
 
   // These members are modified by multiple threads, any accesses should be
   // protected with mLock.
-  int32_t mExitValue;
+  int32_t mExitValue MOZ_GUARDED_BY(mLock);
 #if defined(PROCESSMODEL_WINAPI)
-  HANDLE mProcess;
+  HANDLE mProcess MOZ_GUARDED_BY(mLock);
 #elif !defined(XP_UNIX)
-  PRProcess* mProcess;
+  PRProcess* mProcess MOZ_GUARDED_BY(mLock);
 #endif
 };
 

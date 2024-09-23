@@ -10,22 +10,30 @@
 #include <CoreFoundation/CFDictionary.h>  // For CFDictionaryRef
 #include <CoreMedia/CoreMedia.h>          // For CMVideoFormatDescriptionRef
 #include <VideoToolbox/VideoToolbox.h>    // For VTDecompressionSessionRef
+
+#include "AppleDecoderModule.h"
+#include "PerformanceRecorder.h"
 #include "PlatformDecoderModule.h"
 #include "ReorderQueue.h"
 #include "TimeUnits.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/gfx/Types.h"
+#include "mozilla/ProfilerUtils.h"
 
 namespace mozilla {
 
 DDLoggedTypeDeclNameAndBase(AppleVTDecoder, MediaDataDecoder);
 
-class AppleVTDecoder : public MediaDataDecoder,
-                       public DecoderDoctorLifeLogger<AppleVTDecoder> {
+class AppleVTDecoder final : public MediaDataDecoder,
+                             public DecoderDoctorLifeLogger<AppleVTDecoder> {
  public:
-  AppleVTDecoder(const VideoInfo& aConfig, TaskQueue* aTaskQueue,
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AppleVTDecoder, final);
+
+  AppleVTDecoder(const VideoInfo& aConfig,
                  layers::ImageContainer* aImageContainer,
-                 CreateDecoderParams::OptionSet aOptions);
+                 const CreateDecoderParams::OptionSet& aOptions,
+                 layers::KnowsCompositor* aKnowsCompositor,
+                 Maybe<TrackingId> aTrackingId);
 
   class AppleFrameRef {
    public:
@@ -55,10 +63,11 @@ class AppleVTDecoder : public MediaDataDecoder,
   }
 
   nsCString GetDescriptionName() const override {
-    return mIsHardwareAccelerated
-               ? NS_LITERAL_CSTRING("apple hardware VT decoder")
-               : NS_LITERAL_CSTRING("apple software VT decoder");
+    return mIsHardwareAccelerated ? "apple hardware VT decoder"_ns
+                                  : "apple software VT decoder"_ns;
   }
+
+  nsCString GetCodecName() const override;
 
   ConversionRequired NeedsConversion() const override {
     return ConversionRequired::kNeedAVCC;
@@ -70,6 +79,7 @@ class AppleVTDecoder : public MediaDataDecoder,
   void OnDecodeError(OSStatus aError);
 
  private:
+  friend class AppleDecoderModule;  // To access InitializeSession.
   virtual ~AppleVTDecoder();
   RefPtr<FlushPromise> ProcessFlush();
   RefPtr<DecodePromise> ProcessDrain();
@@ -77,9 +87,9 @@ class AppleVTDecoder : public MediaDataDecoder,
   void ProcessDecode(MediaRawData* aSample);
   void MaybeResolveBufferedFrames();
 
-  void AssertOnTaskQueueThread() {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
-  }
+  void MaybeRegisterCallbackThread();
+
+  void AssertOnTaskQueue() { MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn()); }
 
   AppleFrameRef* CreateAppleFrameRef(const MediaRawData* aSample);
   CFDictionaryRef CreateOutputConfiguration();
@@ -90,7 +100,10 @@ class AppleVTDecoder : public MediaDataDecoder,
   const uint32_t mDisplayWidth;
   const uint32_t mDisplayHeight;
   const gfx::YUVColorSpace mColorSpace;
+  const gfx::ColorSpace2 mColorPrimaries;
+  const gfx::TransferFunction mTransferFunction;
   const gfx::ColorRange mColorRange;
+  const gfx::ColorDepth mColorDepth;
 
   // Method to set up the decompression session.
   MediaResult InitializeSession();
@@ -98,17 +111,21 @@ class AppleVTDecoder : public MediaDataDecoder,
   CFDictionaryRef CreateDecoderSpecification();
   CFDictionaryRef CreateDecoderExtensions();
 
+  enum class StreamType { Unknown, H264, VP9, AV1 };
+  const StreamType mStreamType;
   const RefPtr<TaskQueue> mTaskQueue;
   const uint32_t mMaxRefFrames;
   const RefPtr<layers::ImageContainer> mImageContainer;
+  const RefPtr<layers::KnowsCompositor> mKnowsCompositor;
   const bool mUseSoftwareImages;
+  const Maybe<TrackingId> mTrackingId;
 
   // Set on reader/decode thread calling Flush() to indicate that output is
   // not required and so input samples on mTaskQueue need not be processed.
-  // Cleared on mTaskQueue in ProcessDrain().
   Atomic<bool> mIsFlushing;
+  std::atomic<ProfilerThreadId> mCallbackThreadId;
   // Protects mReorderQueue and mPromise.
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
   ReorderQueue mReorderQueue;
   MozMonitoredPromiseHolder<DecodePromise> mPromise;
 
@@ -120,6 +137,7 @@ class AppleVTDecoder : public MediaDataDecoder,
   CMVideoFormatDescriptionRef mFormat;
   VTDecompressionSessionRef mSession;
   Atomic<bool> mIsHardwareAccelerated;
+  PerformanceRecorderMulti<DecodeStage> mPerformanceRecorder;
 };
 
 }  // namespace mozilla

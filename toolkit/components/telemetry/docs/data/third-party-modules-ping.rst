@@ -1,3 +1,4 @@
+.. _third-party-modules-ping:
 
 "third-party-modules" ping
 ==========================
@@ -14,7 +15,9 @@ were loaded into Firefox processes.
       "environment": { ... },
       "payload": {
         "structVersion": 1,
-        "modules" [
+        // List of DLL filenames that are on the dynamic blocklist
+        "blockedModules": [<string>],
+        "modules": [
           {
             // The sanitized name of the module as resolved by the Windows loader.
             "resolvedDllName": <string>,
@@ -30,7 +33,7 @@ were loaded into Firefox processes.
           ... Additional modules (maximum 100)
         ],
         "processes": {
-          <string containing pid, formatted as "0x%x">: {
+          <string containing processType and pid, formatted as `${processType}.0x${pid}">`: {
             // Except for Default (which is remapped to "browser"), one of the process string names specified in xpcom/build/GeckoProcessTypes.h.
             "processType": <string>,
             // Elapsed time since process creation that this object was generated, in seconds.
@@ -59,7 +62,9 @@ were loaded into Firefox processes.
                 // Index of the element in the modules array that contains details about the module that was loaded during this event.
                 "moduleIndex": <int>,
                 // True if the module is included in the executable's Import Directory Table.
-                "isDependent": <bool>
+                "isDependent": <bool>,
+                // The status of DLL load. This corresponds to enum ModuleLoadInfo::Status.
+                "loadStatus": <int>
               },
               ... Additional events (maximum 50)
             ],
@@ -119,6 +124,7 @@ Notes
 
 Version History
 ~~~~~~~~~~~~~~~
+- Firefox 110: Added ``blockedModules`` (`bug 1808158 <https://bugzilla.mozilla.org/show_bug.cgi?id=1808158>`_).
 - Firefox 77: Added ``isDependent`` (`bug 1620118 <https://bugzilla.mozilla.org/show_bug.cgi?id=1620118>`_).
 - Firefox 71: Renamed from untrustedModules to third-party-modules with a revised schema (`bug 1542830 <https://bugzilla.mozilla.org/show_bug.cgi?id=1542830>`_).
 - Firefox 70: Added ``%SystemRoot%`` as an exemption to path sanitization (`bug 1573275 <https://bugzilla.mozilla.org/show_bug.cgi?id=1573275>`_).

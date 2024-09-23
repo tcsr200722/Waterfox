@@ -15,16 +15,16 @@ add_task(
     );
 
     Assert.ok(!!packet.frame);
-    Assert.ok(!!packet.frame.actor);
+    Assert.ok(!!packet.frame.getActorByID);
     Assert.equal(packet.frame.displayName, "stopMe");
-    threadFront.resume();
+    await threadFront.resume();
   })
 );
 
 function evalCode(debuggee) {
   debuggee.eval(
     "(" +
-      function() {
+      function () {
         function stopMe() {
           debugger;
         }

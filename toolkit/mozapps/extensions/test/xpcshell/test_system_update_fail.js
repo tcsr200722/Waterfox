@@ -2,7 +2,8 @@
 
 createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "2");
 
-let distroDir = FileUtils.getDir("ProfD", ["sysfeatures", "empty"], true);
+let distroDir = FileUtils.getDir("ProfD", ["sysfeatures", "empty"]);
+distroDir.create(Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
 registerDirectory("XREAppFeat", distroDir);
 add_task(() => initSystemAddonDirs());
 
@@ -81,15 +82,15 @@ const TEST_CONDITIONS = {
  * updateList: The set of add-ons the server should respond with.
  * test:       A function to run to perform the update check (replaces
  *             updateList)
- * fails:      An optional property, if true the update check is expected to
- *             fail.
+ * fails:      regex to test error in Assert.rejects.
  * finalState: An optional property, the expected final state of system add-ons,
  *             if missing the test condition's initialState is used.
  */
 const TESTS = {
   // Specifying an incorrect version should stop us updating anything
   badVersion: {
-    fails: true,
+    fails:
+      /Error: Rejecting updated system add-on set that either could not be downloaded or contained unusable add-ons./,
     updateList: [
       {
         id: "system2@tests.mozilla.org",
@@ -106,7 +107,8 @@ const TESTS = {
 
   // Specifying an invalid size should stop us updating anything
   badSize: {
-    fails: true,
+    fails:
+      /Error: Rejecting updated system add-on set that either could not be downloaded or contained unusable add-ons./,
     updateList: [
       {
         id: "system2@tests.mozilla.org",
@@ -124,7 +126,8 @@ const TESTS = {
 
   // Specifying an incorrect hash should stop us updating anything
   badHash: {
-    fails: true,
+    fails:
+      /Error: Rejecting updated system add-on set that either could not be downloaded or contained unusable add-ons./,
     updateList: [
       {
         id: "system2@tests.mozilla.org",
@@ -135,7 +138,7 @@ const TESTS = {
         id: "system3@tests.mozilla.org",
         version: "3.0",
         path: "system3_3.xpi",
-        hashFunction: "sha1",
+        hashFunction: "sha256",
         hashValue: "205a4c49bd513ebd30594e380c19e86bba1f83e2",
       },
     ],
@@ -143,7 +146,10 @@ const TESTS = {
 
   // A bad certificate should stop updates
   badCert: {
-    fails: true,
+    fails:
+      /Error: Rejecting updated system add-on set that either could not be downloaded or contained unusable add-ons./,
+    // true is not system addon signed
+    usePrivilegedSignatures: true,
     updateList: [
       {
         id: "system1@tests.mozilla.org",
@@ -166,7 +172,7 @@ add_task(async function setup() {
   await promiseShutdownManager();
 });
 
-add_task(async function() {
+add_task(async function () {
   for (let setupName of Object.keys(TEST_CONDITIONS)) {
     for (let testName of Object.keys(TESTS)) {
       info("Running test " + setupName + " " + testName);

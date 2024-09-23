@@ -19,7 +19,8 @@
 #include "nss.h"
 #include "pk11pqg.h"
 #include "pk11pub.h"
-#include "tls13esni.h"
+#include "tls13ech.h"
+#include "tls13psk.h"
 #include "tls13subcerts.h"
 
 static const sslSocketOps ssl_default_ops = { /* No SSL. */
@@ -78,7 +79,7 @@ static sslOptions ssl_defaults = {
     .enableOCSPStapling = PR_FALSE,
     .enableDelegatedCredentials = PR_FALSE,
     .enableALPN = PR_TRUE,
-    .reuseServerECDHEKey = PR_TRUE,
+    .reuseServerECDHEKey = PR_FALSE,
     .enableFallbackSCSV = PR_FALSE,
     .enableServerDhe = PR_TRUE,
     .enableExtendedMS = PR_TRUE,
@@ -88,22 +89,27 @@ static sslOptions ssl_defaults = {
     .enableTls13CompatMode = PR_FALSE,
     .enableDtls13VersionCompat = PR_FALSE,
     .enableDtlsShortHeader = PR_FALSE,
-    .enableHelloDowngradeCheck = PR_FALSE,
+    .enableHelloDowngradeCheck = PR_TRUE,
     .enableV2CompatibleHello = PR_FALSE,
     .enablePostHandshakeAuth = PR_FALSE,
-    .suppressEndOfEarlyData = PR_FALSE
+    .suppressEndOfEarlyData = PR_FALSE,
+    .enableTls13GreaseEch = PR_FALSE,
+    .enableTls13BackendEch = PR_FALSE,
+    .callExtensionWriterOnEchInner = PR_FALSE,
+    .enableGrease = PR_FALSE,
+    .enableChXtnPermutation = PR_FALSE
 };
 
 /*
  * default range of enabled SSL/TLS protocols
  */
 static SSLVersionRange versions_defaults_stream = {
-    SSL_LIBRARY_VERSION_TLS_1_0,
+    SSL_LIBRARY_VERSION_TLS_1_2,
     SSL_LIBRARY_VERSION_TLS_1_3
 };
 
 static SSLVersionRange versions_defaults_datagram = {
-    SSL_LIBRARY_VERSION_TLS_1_1,
+    SSL_LIBRARY_VERSION_TLS_1_2,
     SSL_LIBRARY_VERSION_TLS_1_2
 };
 
@@ -161,6 +167,7 @@ const sslNamedGroupDef ssl_named_groups[] = {
     ECGROUP(secp256r1, 256, SECP256R1, PR_TRUE),
     ECGROUP(secp384r1, 384, SECP384R1, PR_TRUE),
     ECGROUP(secp521r1, 521, SECP521R1, PR_TRUE),
+    { ssl_grp_kem_xyber768d00, 256, ssl_kea_ecdh_hybrid, SEC_OID_XYBER768D00, PR_TRUE },
     FFGROUP(2048),
     FFGROUP(3072),
     FFGROUP(4096),
@@ -370,16 +377,28 @@ ssl_DupSocket(sslSocket *os)
         ss->resumptionTokenCallback = os->resumptionTokenCallback;
         ss->resumptionTokenContext = os->resumptionTokenContext;
 
-        if (os->esniKeys) {
-            ss->esniKeys = tls13_CopyESNIKeys(os->esniKeys);
-            if (!ss->esniKeys) {
+        rv = tls13_CopyEchConfigs(&os->echConfigs, &ss->echConfigs);
+        if (rv != SECSuccess) {
+            goto loser;
+        }
+        if (os->echPrivKey && os->echPubKey) {
+            ss->echPrivKey = SECKEY_CopyPrivateKey(os->echPrivKey);
+            ss->echPubKey = SECKEY_CopyPublicKey(os->echPubKey);
+            if (!ss->echPrivKey || !ss->echPubKey) {
                 goto loser;
             }
         }
+
         if (os->antiReplay) {
             ss->antiReplay = tls13_RefAntiReplayContext(os->antiReplay);
             PORT_Assert(ss->antiReplay); /* Can't fail. */
             if (!ss->antiReplay) {
+                goto loser;
+            }
+        }
+        if (os->psk) {
+            ss->psk = tls13_CopyPsk(os->psk);
+            if (!ss->psk) {
                 goto loser;
             }
         }
@@ -469,9 +488,15 @@ ssl_DestroySocketContents(sslSocket *ss)
 
     ssl_ClearPRCList(&ss->ssl3.hs.dtlsSentHandshake, NULL);
     ssl_ClearPRCList(&ss->ssl3.hs.dtlsRcvdHandshake, NULL);
+    tls13_DestroyPskList(&ss->ssl3.hs.psks);
 
-    tls13_DestroyESNIKeys(ss->esniKeys);
     tls13_ReleaseAntiReplayContext(ss->antiReplay);
+
+    tls13_DestroyPsk(ss->psk);
+
+    tls13_DestroyEchConfigs(&ss->echConfigs);
+    SECKEY_DestroyPrivateKey(ss->echPrivKey);
+    SECKEY_DestroyPublicKey(ss->echPubKey);
 }
 
 /*
@@ -867,6 +892,14 @@ SSL_OptionSet(PRFileDesc *fd, PRInt32 which, PRIntn val)
 
         case SSL_SUPPRESS_END_OF_EARLY_DATA:
             ss->opt.suppressEndOfEarlyData = val;
+            break;
+
+        case SSL_ENABLE_GREASE:
+            ss->opt.enableGrease = val;
+            break;
+
+        case SSL_ENABLE_CH_EXTENSION_PERMUTATION:
+            ss->opt.enableChXtnPermutation = val;
             break;
 
         default:
@@ -1447,6 +1480,10 @@ SSL_CipherPolicySet(PRInt32 which, PRInt32 policy)
     if (rv != SECSuccess) {
         return rv;
     }
+    if (NSS_IsPolicyLocked()) {
+        PORT_SetError(SEC_ERROR_POLICY_LOCKED);
+        return SECFailure;
+    }
     return ssl_CipherPolicySet(which, policy);
 }
 
@@ -1493,9 +1530,14 @@ SECStatus
 SSL_CipherPrefSetDefault(PRInt32 which, PRBool enabled)
 {
     SECStatus rv = ssl_Init();
+    PRInt32 locks;
 
     if (rv != SECSuccess) {
         return rv;
+    }
+    rv = NSS_OptionGet(NSS_DEFAULT_LOCKS, &locks);
+    if ((rv == SECSuccess) && (locks & NSS_DEFAULT_SSL_LOCK)) {
+        return SECSuccess;
     }
     return ssl_CipherPrefSetDefault(which, enabled);
 }
@@ -1522,10 +1564,16 @@ SECStatus
 SSL_CipherPrefSet(PRFileDesc *fd, PRInt32 which, PRBool enabled)
 {
     sslSocket *ss = ssl_FindSocket(fd);
+    PRInt32 locks;
+    SECStatus rv;
 
     if (!ss) {
         SSL_DBG(("%d: SSL[%d]: bad socket in CipherPrefSet", SSL_GETPID(), fd));
         return SECFailure;
+    }
+    rv = NSS_OptionGet(NSS_DEFAULT_LOCKS, &locks);
+    if ((rv == SECSuccess) && (locks & NSS_DEFAULT_SSL_LOCK)) {
+        return SECSuccess;
     }
     if (ssl_IsRemovedCipherSuite(which))
         return SECSuccess;
@@ -1680,7 +1728,7 @@ NSS_SetDomesticPolicy(void)
     /* If we've already defined some policy oids, skip changing them */
     rv = NSS_GetAlgorithmPolicy(SEC_OID_APPLY_SSL_POLICY, &policy);
     if ((rv == SECSuccess) && (policy & NSS_USE_POLICY_IN_SSL)) {
-        return ssl_Init(); /* make sure the policies have bee loaded */
+        return ssl_Init(); /* make sure the policies have been loaded */
     }
 
     for (cipher = SSL_ImplementedCiphers; *cipher != 0; ++cipher) {
@@ -2060,23 +2108,35 @@ ssl_SelectDHEGroup(sslSocket *ss, const sslNamedGroupDef **groupDef)
         ssl_grp_ffdhe_custom, WEAK_DHE_SIZE, ssl_kea_dh,
         SEC_OID_TLS_DHE_CUSTOM, PR_TRUE
     };
+    PRInt32 minDH;
+    SECStatus rv;
+
+    // make sure we select a group consistent with our
+    // current policy policy
+    rv = NSS_OptionGet(NSS_DH_MIN_KEY_SIZE, &minDH);
+    if (rv != SECSuccess || minDH <= 0) {
+        minDH = DH_MIN_P_BITS;
+    }
 
     /* Only select weak groups in TLS 1.2 and earlier, but not if the client has
      * indicated that it supports an FFDHE named group. */
     if (ss->ssl3.dheWeakGroupEnabled &&
         ss->version < SSL_LIBRARY_VERSION_TLS_1_3 &&
-        !ss->xtnData.peerSupportsFfdheGroups) {
+        !ss->xtnData.peerSupportsFfdheGroups &&
+        weak_group_def.bits >= minDH) {
         *groupDef = &weak_group_def;
         return SECSuccess;
     }
     if (ss->ssl3.dhePreferredGroup &&
-        ssl_NamedGroupEnabled(ss, ss->ssl3.dhePreferredGroup)) {
+        ssl_NamedGroupEnabled(ss, ss->ssl3.dhePreferredGroup) &&
+        ss->ssl3.dhePreferredGroup->bits >= minDH) {
         *groupDef = ss->ssl3.dhePreferredGroup;
         return SECSuccess;
     }
     for (i = 0; i < SSL_NAMED_GROUP_COUNT; ++i) {
         if (ss->namedGroupPreferences[i] &&
-            ss->namedGroupPreferences[i]->keaType == ssl_kea_dh) {
+            ss->namedGroupPreferences[i]->keaType == ssl_kea_dh &&
+            ss->namedGroupPreferences[i]->bits >= minDH) {
             *groupDef = ss->namedGroupPreferences[i];
             return SECSuccess;
         }
@@ -2176,12 +2236,18 @@ ssl_NextProtoNegoCallback(void *arg, PRFileDesc *fd,
 {
     unsigned int i, j;
     sslSocket *ss = ssl_FindSocket(fd);
-
     if (!ss) {
         SSL_DBG(("%d: SSL[%d]: bad socket in ssl_NextProtoNegoCallback",
                  SSL_GETPID(), fd));
         return SECFailure;
     }
+    if (ss->opt.nextProtoNego.len == 0) {
+        SSL_DBG(("%d: SSL[%d]: ssl_NextProtoNegoCallback ALPN disabled",
+                 SSL_GETPID(), fd));
+        SSL3_SendAlert(ss, alert_fatal, unsupported_extension);
+        return SECFailure;
+    }
+
     PORT_Assert(protoMaxLen <= 255);
     if (protoMaxLen > 255) {
         PORT_SetError(SEC_ERROR_OUTPUT_LEN);
@@ -2221,7 +2287,7 @@ SSL_SetNextProtoNego(PRFileDesc *fd, const unsigned char *data,
         return SECFailure;
     }
 
-    if (ssl3_ValidateAppProtocol(data, length) != SECSuccess) {
+    if (length > 0 && ssl3_ValidateAppProtocol(data, length) != SECSuccess) {
         return SECFailure;
     }
 
@@ -2230,11 +2296,13 @@ SSL_SetNextProtoNego(PRFileDesc *fd, const unsigned char *data,
      * first protocol to the end of the list. */
     ssl_GetSSL3HandshakeLock(ss);
     SECITEM_FreeItem(&ss->opt.nextProtoNego, PR_FALSE);
-    SECITEM_AllocItem(NULL, &ss->opt.nextProtoNego, length);
-    size_t firstLen = data[0] + 1;
-    /* firstLen <= length is ensured by ssl3_ValidateAppProtocol. */
-    PORT_Memcpy(ss->opt.nextProtoNego.data + (length - firstLen), data, firstLen);
-    PORT_Memcpy(ss->opt.nextProtoNego.data, data + firstLen, length - firstLen);
+    if (length > 0) {
+        SECITEM_AllocItem(NULL, &ss->opt.nextProtoNego, length);
+        size_t firstLen = data[0] + 1;
+        /* firstLen <= length is ensured by ssl3_ValidateAppProtocol. */
+        PORT_Memcpy(ss->opt.nextProtoNego.data + (length - firstLen), data, firstLen);
+        PORT_Memcpy(ss->opt.nextProtoNego.data, data + firstLen, length - firstLen);
+    }
     ssl_ReleaseSSL3HandshakeLock(ss);
 
     return SSL_SetNextProtoCallback(fd, ssl_NextProtoNegoCallback, NULL);
@@ -2350,6 +2418,7 @@ SSL_ReconfigFD(PRFileDesc *model, PRFileDesc *fd)
 {
     sslSocket *sm = NULL, *ss = NULL;
     PRCList *cursor;
+    SECStatus rv;
 
     if (model == NULL) {
         PR_SetError(SEC_ERROR_INVALID_ARGS, 0);
@@ -2419,7 +2488,6 @@ SSL_ReconfigFD(PRFileDesc *model, PRFileDesc *fd)
     for (cursor = PR_NEXT_LINK(&sm->extensionHooks);
          cursor != &sm->extensionHooks;
          cursor = PR_NEXT_LINK(cursor)) {
-        SECStatus rv;
         sslCustomExtensionHooks *hook = (sslCustomExtensionHooks *)cursor;
         rv = SSL_InstallExtensionHooks(ss->fd, hook->type,
                                        hook->writer, hook->writerArg,
@@ -2445,12 +2513,19 @@ SSL_ReconfigFD(PRFileDesc *model, PRFileDesc *fd)
         }
     }
 
-    /* Copy ESNI. */
-    tls13_DestroyESNIKeys(ss->esniKeys);
-    ss->esniKeys = NULL;
-    if (sm->esniKeys) {
-        ss->esniKeys = tls13_CopyESNIKeys(sm->esniKeys);
-        if (!ss->esniKeys) {
+    /* Copy ECH. */
+    tls13_DestroyEchConfigs(&ss->echConfigs);
+    SECKEY_DestroyPrivateKey(ss->echPrivKey);
+    SECKEY_DestroyPublicKey(ss->echPubKey);
+    rv = tls13_CopyEchConfigs(&sm->echConfigs, &ss->echConfigs);
+    if (rv != SECSuccess) {
+        return NULL;
+    }
+    if (sm->echPrivKey && sm->echPubKey) {
+        /* Might be client (no keys). */
+        ss->echPrivKey = SECKEY_CopyPrivateKey(sm->echPrivKey);
+        ss->echPubKey = SECKEY_CopyPublicKey(sm->echPubKey);
+        if (!ss->echPrivKey || !ss->echPubKey) {
             return NULL;
         }
     }
@@ -2467,6 +2542,8 @@ SSL_ReconfigFD(PRFileDesc *model, PRFileDesc *fd)
             return NULL;
         }
     }
+
+    tls13_ResetHandshakePsks(sm, &ss->ssl3.hs.psks);
 
     if (sm->authCertificate)
         ss->authCertificate = sm->authCertificate;
@@ -2498,6 +2575,7 @@ SSL_ReconfigFD(PRFileDesc *model, PRFileDesc *fd)
         ss->handshakeCallbackData = sm->handshakeCallbackData;
     if (sm->pkcs11PinArg)
         ss->pkcs11PinArg = sm->pkcs11PinArg;
+
     return fd;
 }
 
@@ -3823,7 +3901,7 @@ loser:
     return SECFailure;
 }
 
-#if defined(XP_UNIX) || defined(XP_WIN32) || defined(XP_BEOS)
+#if defined(XP_UNIX) || defined(XP_WIN32)
 #define NSS_HAVE_GETENV 1
 #endif
 
@@ -4019,6 +4097,8 @@ ssl_NewEphemeralKeyPair(const sslNamedGroupDef *group,
     PR_INIT_CLIST(&pair->link);
     pair->group = group;
     pair->keys = keys;
+    pair->kemKeys = NULL;
+    pair->kemCt = NULL;
 
     return pair;
 }
@@ -4033,9 +4113,19 @@ ssl_CopyEphemeralKeyPair(sslEphemeralKeyPair *keyPair)
         return NULL; /* error already set */
     }
 
+    pair->kemCt = NULL;
+    if (keyPair->kemCt) {
+        pair->kemCt = SECITEM_DupItem(keyPair->kemCt);
+        if (!pair->kemCt) {
+            PORT_Free(pair);
+            return NULL;
+        }
+    }
+
     PR_INIT_CLIST(&pair->link);
     pair->group = keyPair->group;
     pair->keys = ssl_GetKeyPairRef(keyPair->keys);
+    pair->kemKeys = keyPair->kemKeys ? ssl_GetKeyPairRef(keyPair->kemKeys) : NULL;
 
     return pair;
 }
@@ -4048,6 +4138,8 @@ ssl_FreeEphemeralKeyPair(sslEphemeralKeyPair *keyPair)
     }
 
     ssl_FreeKeyPair(keyPair->keys);
+    ssl_FreeKeyPair(keyPair->kemKeys);
+    SECITEM_FreeItem(keyPair->kemCt, PR_TRUE);
     PR_REMOVE_LINK(&keyPair->link);
     PORT_Free(keyPair);
 }
@@ -4131,6 +4223,7 @@ ssl_NewSocket(PRBool makeLocks, SSLProtocolVariant protocolVariant)
     PR_INIT_CLIST(&ss->serverCerts);
     PR_INIT_CLIST(&ss->ephemeralKeyPairs);
     PR_INIT_CLIST(&ss->extensionHooks);
+    PR_INIT_CLIST(&ss->echConfigs);
 
     ss->dbHandle = CERT_GetDefaultCertDB();
 
@@ -4161,10 +4254,13 @@ ssl_NewSocket(PRBool makeLocks, SSLProtocolVariant protocolVariant)
     ssl3_InitExtensionData(&ss->xtnData, ss);
     PR_INIT_CLIST(&ss->ssl3.hs.dtlsSentHandshake);
     PR_INIT_CLIST(&ss->ssl3.hs.dtlsRcvdHandshake);
+    PR_INIT_CLIST(&ss->ssl3.hs.psks);
     dtls_InitTimers(ss);
 
-    ss->esniKeys = NULL;
+    ss->echPrivKey = NULL;
+    ss->echPubKey = NULL;
     ss->antiReplay = NULL;
+    ss->psk = NULL;
 
     if (makeLocks) {
         rv = ssl_MakeLocks(ss);
@@ -4231,8 +4327,11 @@ struct {
     void *function;
 } ssl_experimental_functions[] = {
 #ifndef SSL_DISABLE_EXPERIMENTAL_API
+    EXP(AddExternalPsk),
+    EXP(AddExternalPsk0Rtt),
     EXP(AeadDecrypt),
     EXP(AeadEncrypt),
+    EXP(CallExtensionWriterOnEchInner),
     EXP(CipherSuiteOrderGet),
     EXP(CipherSuiteOrderSet),
     EXP(CreateAntiReplayContext),
@@ -4243,9 +4342,12 @@ struct {
     EXP(DestroyAead),
     EXP(DestroyMaskingContext),
     EXP(DestroyResumptionTokenInfo),
-    EXP(EnableESNI),
-    EXP(EncodeESNIKeys),
+    EXP(EnableTls13BackendEch),
+    EXP(EnableTls13GreaseEch),
+    EXP(SetTls13GreaseEchSize),
+    EXP(EncodeEchConfigId),
     EXP(GetCurrentEpoch),
+    EXP(GetEchRetryConfigs),
     EXP(GetExtensionSupport),
     EXP(GetResumptionTokenInfo),
     EXP(HelloRetryRequestCallback),
@@ -4261,16 +4363,20 @@ struct {
     EXP(RecordLayerData),
     EXP(RecordLayerWriteCallback),
     EXP(ReleaseAntiReplayContext),
+    EXP(RemoveEchConfigs),
+    EXP(RemoveExternalPsk),
     EXP(SecretCallback),
     EXP(SendCertificateRequest),
     EXP(SendSessionTicket),
     EXP(SetAntiReplayContext),
+    EXP(SetClientEchConfigs),
     EXP(SetDtls13VersionWorkaround),
-    EXP(SetESNIKeyPair),
     EXP(SetMaxEarlyDataSize),
     EXP(SetResumptionTokenCallback),
     EXP(SetResumptionToken),
+    EXP(SetServerEchConfigs),
     EXP(SetTimeFunc),
+    EXP(SetCertificateCompressionAlgorithm),
 #endif
     { "", NULL }
 };
@@ -4304,6 +4410,57 @@ ssl_ClearPRCList(PRCList *list, void (*f)(void *))
         }
         PORT_Free(cursor);
     }
+}
+
+SECStatus
+SSLExp_EnableTls13GreaseEch(PRFileDesc *fd, PRBool enabled)
+{
+    sslSocket *ss = ssl_FindSocket(fd);
+    if (!ss) {
+        return SECFailure;
+    }
+    ss->opt.enableTls13GreaseEch = enabled;
+    return SECSuccess;
+}
+
+SECStatus
+SSLExp_SetTls13GreaseEchSize(PRFileDesc *fd, PRUint8 size)
+{
+    sslSocket *ss = ssl_FindSocket(fd);
+    if (!ss || size == 0) {
+        return SECFailure;
+    }
+    ssl_Get1stHandshakeLock(ss);
+    ssl_GetSSL3HandshakeLock(ss);
+
+    ss->ssl3.hs.greaseEchSize = size;
+
+    ssl_ReleaseSSL3HandshakeLock(ss);
+    ssl_Release1stHandshakeLock(ss);
+
+    return SECSuccess;
+}
+
+SECStatus
+SSLExp_EnableTls13BackendEch(PRFileDesc *fd, PRBool enabled)
+{
+    sslSocket *ss = ssl_FindSocket(fd);
+    if (!ss) {
+        return SECFailure;
+    }
+    ss->opt.enableTls13BackendEch = enabled;
+    return SECSuccess;
+}
+
+SECStatus
+SSLExp_CallExtensionWriterOnEchInner(PRFileDesc *fd, PRBool enabled)
+{
+    sslSocket *ss = ssl_FindSocket(fd);
+    if (!ss) {
+        return SECFailure;
+    }
+    ss->opt.callExtensionWriterOnEchInner = enabled;
+    return SECSuccess;
 }
 
 SECStatus

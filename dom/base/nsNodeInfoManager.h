@@ -17,7 +17,7 @@
 #include "mozilla/MruCache.h"
 #include "nsCOMPtr.h"                      // for member
 #include "nsCycleCollectionParticipant.h"  // for NS_DECL_CYCLE_*
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsStringFwd.h"
 
 class nsAtom;
@@ -26,27 +26,21 @@ class nsWindowSizes;
 template <class T>
 struct already_AddRefed;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Document;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 class nsNodeInfoManager final {
  private:
   ~nsNodeInfoManager();
 
  public:
-  nsNodeInfoManager();
+  explicit nsNodeInfoManager(mozilla::dom::Document* aDocument,
+                             nsIPrincipal* aPrincipal);
 
   NS_DECL_CYCLE_COLLECTION_SKIPPABLE_NATIVE_CLASS(nsNodeInfoManager)
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(nsNodeInfoManager)
-
-  /**
-   * Initialize the nodeinfo manager with a document.
-   */
-  nsresult Init(mozilla::dom::Document*);
 
   /**
    * Release the reference to the document, this will be called when
@@ -101,13 +95,16 @@ class nsNodeInfoManager final {
   /**
    * Returns true if SVG nodes in this document have real SVG semantics.
    */
-  bool SVGEnabled() { return mSVGEnabled.valueOr(InternalSVGEnabled()); }
+  bool SVGEnabled() {
+    return mSVGEnabled.valueOrFrom([this] { return InternalSVGEnabled(); });
+  }
 
   /**
    * Returns true if MathML nodes in this document have real MathML semantics.
    */
   bool MathMLEnabled() {
-    return mMathMLEnabled.valueOr(InternalMathMLEnabled());
+    return mMathMLEnabled.valueOrFrom(
+        [this] { return InternalMathMLEnabled(); });
   }
 
   mozilla::dom::DOMArena* GetArenaAllocator() { return mArena; }
@@ -157,11 +154,16 @@ class nsNodeInfoManager final {
     }
   };
 
-  nsDataHashtable<NodeInfoInnerKey, mozilla::dom::NodeInfo*> mNodeInfoHash;
+  nsTHashMap<NodeInfoInnerKey, mozilla::dom::NodeInfo*> mNodeInfoHash;
   mozilla::dom::Document* MOZ_NON_OWNING_REF mDocument;  // WEAK
   uint32_t mNonDocumentNodeInfos;
-  nsCOMPtr<nsIPrincipal> mPrincipal;  // Never null after Init() succeeds.
-  nsCOMPtr<nsIPrincipal> mDefaultPrincipal;  // Never null after Init() succeeds
+
+  // Note: it's important that mPrincipal is declared before mDefaultPrincipal,
+  // since the latter is initialized to the value of the former in the
+  // constructor's init list:
+  nsCOMPtr<nsIPrincipal> mPrincipal;         // Never null
+  nsCOMPtr<nsIPrincipal> mDefaultPrincipal;  // Never null
+
   mozilla::dom::NodeInfo* MOZ_NON_OWNING_REF
       mTextNodeInfo;  // WEAK to avoid circular ownership
   mozilla::dom::NodeInfo* MOZ_NON_OWNING_REF

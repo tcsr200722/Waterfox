@@ -8,9 +8,10 @@
 #define mozilla_layers_AnimationStorageData_h
 
 #include "mozilla/dom/Nullable.h"
-#include "mozilla/ComputedTimingFunction.h"  // for ComputedTimingFunction
-#include "mozilla/layers/LayersMessages.h"   // for TransformData, etc
-#include "mozilla/TimeStamp.h"               // for TimeStamp
+#include "mozilla/ServoStyleConsts.h"       // for ComputedTimingFunction
+#include "mozilla/layers/LayersMessages.h"  // for TransformData, etc
+#include "mozilla/layers/LayersTypes.h"     // for LayersId
+#include "mozilla/TimeStamp.h"              // for TimeStamp
 #include "mozilla/TimingParams.h"
 #include "X11UndefineNone.h"
 
@@ -25,9 +26,9 @@ namespace layers {
 
 struct PropertyAnimation {
   struct SegmentData {
-    RefPtr<RawServoAnimationValue> mStartValue;
-    RefPtr<RawServoAnimationValue> mEndValue;
-    Maybe<mozilla::ComputedTimingFunction> mFunction;
+    RefPtr<StyleAnimationValue> mStartValue;
+    RefPtr<StyleAnimationValue> mEndValue;
+    Maybe<mozilla::StyleComputedTimingFunction> mFunction;
     float mStartPortion;
     float mEndPortion;
     dom::CompositeOperation mStartComposite;
@@ -52,18 +53,33 @@ struct PropertyAnimation {
   float mPlaybackRate;
   dom::IterationCompositeOperation mIterationComposite;
   bool mIsNotPlaying;
+
+  // The information for scroll-driven animations.
+  Maybe<ScrollTimelineOptions> mScrollTimelineOptions;
+
+  void ResetLastCompositionValues() {
+    mCurrentIterationOnLastCompose = 0;
+    mSegmentIndexOnLastCompose = 0;
+    mProgressOnLastCompose.SetNull();
+    mPortionInSegmentOnLastCompose.SetNull();
+  }
 };
 
 struct PropertyAnimationGroup {
   nsCSSPropertyID mProperty;
 
   nsTArray<PropertyAnimation> mAnimations;
-  RefPtr<RawServoAnimationValue> mBaseStyle;
+  RefPtr<StyleAnimationValue> mBaseStyle;
 
   bool IsEmpty() const { return mAnimations.IsEmpty(); }
   void Clear() {
     mAnimations.Clear();
     mBaseStyle = nullptr;
+  }
+  void ResetLastCompositionValues() {
+    for (PropertyAnimation& animation : mAnimations) {
+      animation.ResetLastCompositionValues();
+    }
   }
 };
 
@@ -75,6 +91,9 @@ struct AnimationStorageData {
   Maybe<TransformData> mTransformData;
   // For motion path. We cached the gfx path for optimization.
   RefPtr<gfx::Path> mCachedMotionPath;
+  // This is used to communicate with the main-thread. E.g. to tell the fact
+  // that this animation needs to be pre-rendered again on the main-thread, etc.
+  LayersId mLayersId;
 
   AnimationStorageData() = default;
   AnimationStorageData(AnimationStorageData&& aOther) = default;

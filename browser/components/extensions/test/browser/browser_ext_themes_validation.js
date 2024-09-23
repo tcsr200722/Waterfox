@@ -1,9 +1,10 @@
 "use strict";
 
-PromiseTestUtils.whitelistRejectionsGlobally(/packaging errors/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/packaging errors/);
 
 /**
  * Helper function for testing a theme with invalid properties.
+ *
  * @param {object} invalidProps The invalid properties to load the theme with.
  */
 async function testThemeWithInvalidProperties(invalidProps) {

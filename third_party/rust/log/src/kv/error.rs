@@ -3,7 +3,7 @@ use std::fmt;
 /// An error encountered while working with structured data.
 #[derive(Debug)]
 pub struct Error {
-    inner: Inner
+    inner: Inner,
 }
 
 #[derive(Debug)]
@@ -11,6 +11,7 @@ enum Inner {
     #[cfg(feature = "std")]
     Boxed(std_support::BoxedError),
     Msg(&'static str),
+    Value(value_bag::Error),
     Fmt,
 }
 
@@ -21,6 +22,24 @@ impl Error {
             inner: Inner::Msg(msg),
         }
     }
+
+    // Not public so we don't leak the `value_bag` API
+    pub(super) fn from_value(err: value_bag::Error) -> Self {
+        Error {
+            inner: Inner::Value(err),
+        }
+    }
+
+    // Not public so we don't leak the `value_bag` API
+    pub(super) fn into_value(self) -> value_bag::Error {
+        match self.inner {
+            Inner::Value(err) => err,
+            #[cfg(feature = "kv_unstable_std")]
+            _ => value_bag::Error::boxed(self),
+            #[cfg(not(feature = "kv_unstable_std"))]
+            _ => value_bag::Error::msg("error inspecting a value"),
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -29,6 +48,7 @@ impl fmt::Display for Error {
         match &self.inner {
             #[cfg(feature = "std")]
             &Boxed(ref err) => err.fmt(f),
+            &Value(ref err) => err.fmt(f),
             &Msg(ref msg) => msg.fmt(f),
             &Fmt => fmt::Error.fmt(f),
         }
@@ -37,15 +57,7 @@ impl fmt::Display for Error {
 
 impl From<fmt::Error> for Error {
     fn from(_: fmt::Error) -> Self {
-        Error {
-            inner: Inner::Fmt,
-        }
-    }
-}
-
-impl From<Error> for fmt::Error {
-    fn from(_: Error) -> Self {
-        fmt::Error
+        Error { inner: Inner::Fmt }
     }
 }
 
@@ -54,7 +66,7 @@ mod std_support {
     use super::*;
     use std::{error, io};
 
-    pub(super) type BoxedError = Box<error::Error + Send + Sync>;
+    pub(super) type BoxedError = Box<dyn error::Error + Send + Sync>;
 
     impl Error {
         /// Create an error from a standard error type.
@@ -63,26 +75,16 @@ mod std_support {
             E: Into<BoxedError>,
         {
             Error {
-                inner: Inner::Boxed(err.into())
+                inner: Inner::Boxed(err.into()),
             }
         }
     }
 
-    impl error::Error for Error {
-        fn description(&self) -> &str {
-            "key values error"
-        }
-    }
+    impl error::Error for Error {}
 
     impl From<io::Error> for Error {
         fn from(err: io::Error) -> Self {
             Error::boxed(err)
-        }
-    }
-
-    impl From<Error> for io::Error {
-        fn from(err: Error) -> Self {
-            io::Error::new(io::ErrorKind::Other, err)
         }
     }
 }

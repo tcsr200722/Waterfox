@@ -2,10 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, print_function
-
-from optparse import OptionParser
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -13,22 +11,19 @@ import tarfile
 import tempfile
 import time
 import zipfile
-
-import requests
-
-from six import reraise
+from optparse import OptionParser
 
 import mozfile
 import mozinfo
+import requests
+from six import PY3, reraise
 
 try:
     import pefile
+
     has_pefile = True
 except ImportError:
     has_pefile = False
-
-if mozinfo.isMac:
-    from plistlib import readPlist
 
 
 TIMEOUT_UNINSTALL = 60
@@ -57,6 +52,13 @@ class UninstallError(Exception):
     """Thrown when uninstallation fails. Includes traceback if available."""
 
 
+def _readPlist(path):
+    if PY3:
+        with open(path, "rb") as fp:
+            return plistlib.load(fp)
+    return plistlib.readPlist(path)
+
+
 def get_binary(path, app_name):
     """Find the binary in the specified path, and return its path. If binary is
     not found throw an InvalidBinary exception.
@@ -68,18 +70,19 @@ def get_binary(path, app_name):
 
     # On OS X we can get the real binary from the app bundle
     if mozinfo.isMac:
-        plist = '%s/Contents/Info.plist' % path
+        plist = "%s/Contents/Info.plist" % path
         if not os.path.isfile(plist):
-            raise InvalidBinary('%s/Contents/Info.plist not found' % path)
+            raise InvalidBinary("%s/Contents/Info.plist not found" % path)
 
-        binary = os.path.join(path, 'Contents/MacOS/',
-                              readPlist(plist)['CFBundleExecutable'])
+        binary = os.path.join(
+            path, "Contents/MacOS/", _readPlist(plist)["CFBundleExecutable"]
+        )
 
     else:
         app_name = app_name.lower()
 
         if mozinfo.isWin:
-            app_name = app_name + '.exe'
+            app_name = app_name + ".exe"
 
         for root, dirs, files in os.walk(path):
             for filename in files:
@@ -105,7 +108,7 @@ def install(src, dest):
     """
     if not is_installer(src):
         msg = "{} is not a valid installer file".format(src)
-        if '://' in src:
+        if "://" in src:
             try:
                 return _install_url(src, dest)
             except Exception:
@@ -125,10 +128,12 @@ def install(src, dest):
     trbk = None
     try:
         install_dir = None
-        if src.lower().endswith('.dmg'):
+        if src.lower().endswith(".dmg"):
             install_dir = _install_dmg(src, dest)
-        elif src.lower().endswith('.exe'):
+        elif src.lower().endswith(".exe"):
             install_dir = _install_exe(src, dest)
+        elif src.lower().endswith(".msix"):
+            install_dir = _install_msix(src)
         elif zipfile.is_zipfile(src) or tarfile.is_tarfile(src):
             install_dir = mozfile.extract(src, dest)[0]
 
@@ -180,21 +185,21 @@ def is_installer(src):
     if mozinfo.isLinux:
         return tarfile.is_tarfile(src)
     elif mozinfo.isMac:
-        return src.lower().endswith('.dmg')
+        return src.lower().endswith(".dmg")
     elif mozinfo.isWin:
         if zipfile.is_zipfile(src):
             return True
 
-        if os.access(src, os.X_OK) and src.lower().endswith('.exe'):
+        if os.access(src, os.X_OK) and src.lower().endswith(".exe"):
             if has_pefile:
                 # try to determine if binary is actually a gecko installer
                 pe_data = pefile.PE(src)
                 data = {}
-                for info in getattr(pe_data, 'FileInfo', []):
-                    if info.Key == 'StringFileInfo':
+                for info in getattr(pe_data, "FileInfo", []):
+                    if info.Key == "StringFileInfo":
                         for string in info.StringTable:
                             data.update(string.entries)
-                return 'BuildID' not in data
+                return "BuildID" not in data
             else:
                 # pefile not available, just assume a proper binary was passed in
                 return True
@@ -209,23 +214,34 @@ def uninstall(install_folder):
     :param install_folder: Path of the installation folder
 
     """
+    # Uninstallation for MSIX applications is totally different than
+    # any other installs...
+    if "WindowsApps" in install_folder:
+        # At the time of writing, the package installation directory is always
+        # the package full name, so this assumption is valid (for now....).
+        packageFullName = install_folder.split("WindowsApps\\")[1].split("\\")[0]
+        cmd = f"powershell.exe Remove-AppxPackage -Package {packageFullName}"
+        subprocess.check_call(cmd)
+        return
+
     install_folder = os.path.realpath(install_folder)
-    assert os.path.isdir(install_folder), \
+    assert os.path.isdir(install_folder), (
         'installation folder "%s" exists.' % install_folder
+    )
 
     # On Windows we have to use the uninstaller. If it's not available fallback
     # to the directory removal code
     if mozinfo.isWin:
-        uninstall_folder = '%s\\uninstall' % install_folder
-        log_file = '%s\\uninstall.log' % uninstall_folder
+        uninstall_folder = "%s\\uninstall" % install_folder
+        log_file = "%s\\uninstall.log" % uninstall_folder
 
         if os.path.isfile(log_file):
             trbk = None
             try:
-                cmdArgs = ['%s\\uninstall\helper.exe' % install_folder, '/S']
+                cmdArgs = ["%s\\uninstall\\helper.exe" % install_folder, "/S"]
                 result = subprocess.call(cmdArgs)
                 if result != 0:
-                    raise Exception('Execution of uninstaller failed.')
+                    raise Exception("Execution of uninstaller failed.")
 
                 # The uninstaller spawns another process so the subprocess call
                 # returns immediately. We have to wait until the uninstall
@@ -235,11 +251,13 @@ def uninstall(install_folder):
                     time.sleep(1)
 
                     if time.time() > end_time:
-                        raise Exception('Failure removing uninstall folder.')
+                        raise Exception("Failure removing uninstall folder.")
 
             except Exception as ex:
                 cls, exc, trbk = sys.exc_info()
-                error = UninstallError('Failed to uninstall %s (%s)' % (install_folder, str(ex)))
+                error = UninstallError(
+                    "Failed to uninstall %s (%s)" % (install_folder, str(ex))
+                )
                 reraise(UninstallError, error, trbk)
 
             finally:
@@ -263,8 +281,8 @@ def _install_url(url, dest):
     r = requests.get(url, stream=True)
     name = tempfile.mkstemp()[1]
     try:
-        with open(name, 'w+b') as fh:
-            for chunk in r.iter_content(chunk_size=16*1024):
+        with open(name, "w+b") as fh:
+            for chunk in r.iter_content(chunk_size=16 * 1024):
                 fh.write(chunk)
         result = install(name, dest)
     finally:
@@ -285,13 +303,19 @@ def _install_dmg(src, dest):
         # According to the Apple doc, the hdiutil output is stable and is based on the tab
         # separators
         # Therefor, $3 should give us the mounted path
-        appDir = subprocess.check_output('hdiutil attach -nobrowse -noautoopen "%s"'
-                                         '|grep /Volumes/'
-                                         '|awk \'BEGIN{FS="\t"} {print $3}\'' % str(src),
-                                         shell=True).strip().decode('ascii')
+        appDir = (
+            subprocess.check_output(
+                'hdiutil attach -nobrowse -noautoopen "%s"'
+                "|grep /Volumes/"
+                "|awk 'BEGIN{FS=\"\t\"} {print $3}'" % str(src),
+                shell=True,
+            )
+            .strip()
+            .decode("ascii")
+        )
 
         for appFile in os.listdir(appDir):
-            if appFile.endswith('.app'):
+            if appFile.endswith(".app"):
                 appName = appFile
                 break
 
@@ -307,8 +331,7 @@ def _install_dmg(src, dest):
 
     finally:
         if appDir:
-            subprocess.check_call('hdiutil detach "%s" -quiet' % appDir,
-                                  shell=True)
+            subprocess.check_call('hdiutil detach "%s" -quiet' % appDir, shell=True)
 
     return dest
 
@@ -325,10 +348,10 @@ def _install_exe(src, dest):
     # The installer doesn't automatically create a sub folder. Lets guess the
     # best name from the src file name
     filename = os.path.basename(src)
-    dest = os.path.join(dest, filename.split('.')[0])
+    dest = os.path.join(dest, filename.split(".")[0])
 
     # possibly gets around UAC in vista (still need to run as administrator)
-    os.environ['__compat_layer'] = 'RunAsInvoker'
+    os.environ["__compat_layer"] = "RunAsInvoker"
     cmd = '"%s" /extractdir=%s' % (src, os.path.realpath(dest))
 
     subprocess.check_call(cmd)
@@ -336,20 +359,66 @@ def _install_exe(src, dest):
     return dest
 
 
+def _get_msix_install_location(pkg):
+    with zipfile.ZipFile(pkg) as zf:
+        # First, we pull the app identity out of the AppxManifest...
+        with zf.open("AppxManifest.xml") as am:
+            for line in am.readlines():
+                line = line.decode("utf-8")
+                if "<Identity" in line:
+                    for part in line.split(" "):
+                        if part.startswith("Name"):
+                            pkgname = part.split("=")[-1].strip('"\r\n')
+
+                            # ...then we can use it to find the install location
+                            # with this cmdlet
+                            cmd = (
+                                f'powershell.exe "Get-AppxPackage" "-Name" "{pkgname}"'
+                            )
+                            for line in (
+                                subprocess.check_output(cmd)
+                                .decode("utf-8")
+                                .splitlines()
+                            ):
+                                if line.startswith("InstallLocation"):
+                                    return "C:{}".format(line.split(":")[-1].strip())
+
+    raise Exception(f"Couldn't find install location of {pkg}")
+
+
+def _install_msix(src):
+    """Install the MSIX package and return the installation path.
+
+    Arguments:
+    src -- MSIX package to install
+
+    """
+    # possibly gets around UAC in vista (still need to run as administrator)
+    cmd = f'powershell.exe "Add-AppxPackage" "-Path" "{src}"'
+    subprocess.check_call(cmd)
+
+    return _get_msix_install_location(src)
+
+
 def install_cli(argv=sys.argv[1:]):
     parser = OptionParser(usage="usage: %prog [options] installer")
-    parser.add_option('-d', '--destination',
-                      dest='dest',
-                      default=os.getcwd(),
-                      help='Directory to install application into. '
-                           '[default: "%default"]')
-    parser.add_option('--app', dest='app',
-                      default='firefox',
-                      help='Application being installed. [default: %default]')
+    parser.add_option(
+        "-d",
+        "--destination",
+        dest="dest",
+        default=os.getcwd(),
+        help="Directory to install application into. " '[default: "%default"]',
+    )
+    parser.add_option(
+        "--app",
+        dest="app",
+        default="firefox",
+        help="Application being installed. [default: %default]",
+    )
 
     (options, args) = parser.parse_args(argv)
     if not len(args) == 1:
-        parser.error('An installer file has to be specified.')
+        parser.error("An installer file has to be specified.")
 
     src = args[0]
 
@@ -368,7 +437,7 @@ def uninstall_cli(argv=sys.argv[1:]):
 
     (options, args) = parser.parse_args(argv)
     if not len(args) == 1:
-        parser.error('An installation path has to be specified.')
+        parser.error("An installation path has to be specified.")
 
     # Run it
     uninstall(argv[0])

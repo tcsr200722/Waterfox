@@ -19,6 +19,7 @@
 #include "nsString.h"
 #include "nsWeakReference.h"
 #include "mozilla/dom/Document.h"
+#include "nsIHttpChannel.h"
 #include "nsIPrincipal.h"
 #include "nsContentUtils.h"  // for kLoadAsData
 #include "nsThreadUtils.h"
@@ -96,7 +97,7 @@ nsForceXMLListener::OnStartRequest(nsIRequest* aRequest) {
   aRequest->GetStatus(&status);
   nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest);
   if (channel && NS_SUCCEEDED(status)) {
-    channel->SetContentType(NS_LITERAL_CSTRING("text/xml"));
+    channel->SetContentType("text/xml"_ns);
   }
 
   return mListener->OnStartRequest(aRequest);
@@ -109,7 +110,8 @@ nsForceXMLListener::OnStopRequest(nsIRequest* aRequest, nsresult aStatusCode) {
 
 nsSyncLoader::~nsSyncLoader() {
   if (mLoading && mChannel) {
-    mChannel->Cancel(NS_BINDING_ABORTED);
+    mChannel->CancelWithReason(NS_BINDING_ABORTED,
+                               "nsSyncLoader::~nsSyncLoader"_ns);
   }
 }
 
@@ -130,8 +132,8 @@ nsresult nsSyncLoader::LoadDocument(nsIChannel* aChannel, bool aChannelIsSync,
   nsCOMPtr<nsIHttpChannel> http = do_QueryInterface(mChannel);
   if (http) {
     rv = http->SetRequestHeader(
-        NS_LITERAL_CSTRING("Accept"),
-        NS_LITERAL_CSTRING(
+        "Accept"_ns,
+        nsLiteralCString(
             "text/xml,application/xml,application/xhtml+xml,*/*;q=0.1"),
         false);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
@@ -157,7 +159,7 @@ nsresult nsSyncLoader::LoadDocument(nsIChannel* aChannel, bool aChannelIsSync,
 
   // Create document
   nsCOMPtr<Document> document;
-  rv = NS_NewXMLDocument(getter_AddRefs(document));
+  rv = NS_NewXMLDocument(getter_AddRefs(document), nullptr, nullptr);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Start the document load. Do this before we attach the load listener
@@ -291,12 +293,12 @@ nsresult nsSyncLoadService::LoadDocument(
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (!aForceToXML) {
-    channel->SetContentType(NS_LITERAL_CSTRING("text/xml"));
+    channel->SetContentType("text/xml"_ns);
   }
 
   // if the load needs to enforce CORS, then force the load to be async
   bool isSync =
-      !(aSecurityFlags & nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS) &&
+      !(aSecurityFlags & nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT) &&
       (aURI->SchemeIs("chrome") || aURI->SchemeIs("resource"));
   RefPtr<nsSyncLoader> loader = new nsSyncLoader();
   return loader->LoadDocument(channel, isSync, aForceToXML, aReferrerPolicy,
@@ -344,9 +346,8 @@ nsresult nsSyncLoadService::PushSyncStreamToListener(
 
       if (readCount > UINT32_MAX) readCount = UINT32_MAX;
 
-      rv = aListener->OnDataAvailable(
-          aChannel, in, (uint32_t)std::min(sourceOffset, (uint64_t)UINT32_MAX),
-          (uint32_t)readCount);
+      rv = aListener->OnDataAvailable(aChannel, in, sourceOffset,
+                                      (uint32_t)readCount);
       if (NS_FAILED(rv)) {
         break;
       }

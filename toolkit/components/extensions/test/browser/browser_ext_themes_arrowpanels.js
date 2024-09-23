@@ -2,10 +2,12 @@
 
 function openIdentityPopup() {
   let promise = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
-  gIdentityHandler._identityBox.click();
+  gIdentityHandler._identityIconBox.click();
   return promise;
 }
 
@@ -21,7 +23,7 @@ function closeIdentityPopup() {
 // This test checks applied WebExtension themes that attempt to change
 // popup properties
 
-add_task(async function test_popup_styling(browser, accDoc) {
+add_task(async function test_popup_styling() {
   const POPUP_BACKGROUND_COLOR = "#FF0000";
   const POPUP_TEXT_COLOR = "#008000";
   const POPUP_BORDER_COLOR = "#0000FF";
@@ -48,15 +50,13 @@ add_task(async function test_popup_styling(browser, accDoc) {
 
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "https://example.com" },
-    async function(browser) {
+    async function () {
       await extension.startup();
 
       // Open the information arrow panel
       await openIdentityPopup();
 
-      let arrowContent = gIdentityHandler._identityPopup.shadowRoot.querySelector(
-        ".panel-arrowcontent"
-      );
+      let arrowContent = gIdentityHandler._identityPopup.panelContent;
       let arrowContentComputedStyle = window.getComputedStyle(arrowContent);
       // Ensure popup background color was set properly
       Assert.equal(
@@ -73,16 +73,7 @@ add_task(async function test_popup_styling(browser, accDoc) {
       );
 
       // Ensure popup border color was set properly
-      if (AppConstants.platform == "macosx") {
-        Assert.ok(
-          arrowContentComputedStyle
-            .getPropertyValue("box-shadow")
-            .includes(`rgb(${hexToRGB(POPUP_BORDER_COLOR).join(", ")})`),
-          "Popup border color should be set"
-        );
-      } else {
-        testBorderColor(arrowContent, POPUP_BORDER_COLOR);
-      }
+      testBorderColor(arrowContent, POPUP_BORDER_COLOR);
 
       await closeIdentityPopup();
       await extension.unload();

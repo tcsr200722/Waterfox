@@ -3,6 +3,10 @@
 
 "use strict";
 
+const { TOGGLE_POLICIES } = ChromeUtils.importESModule(
+  "resource://gre/modules/PictureInPictureControls.sys.mjs"
+);
+
 const TEST_ROOT = getRootDirectory(gTestPath).replace(
   "chrome://mochitests/content",
   "http://example.com"
@@ -15,15 +19,89 @@ const TEST_PAGE = TEST_ROOT + "test-page.html";
 const TEST_PAGE_2 = TEST_ROOT_2 + "test-page.html";
 const TEST_PAGE_WITH_IFRAME = TEST_ROOT_2 + "test-page-with-iframe.html";
 const TEST_PAGE_WITH_SOUND = TEST_ROOT + "test-page-with-sound.html";
+const TEST_PAGE_WITHOUT_AUDIO = TEST_ROOT + "test-page-without-audio.html";
+const TEST_PAGE_WITH_NAN_VIDEO_DURATION =
+  TEST_ROOT + "test-page-with-nan-video-duration.html";
+const TEST_PAGE_WITH_WEBVTT = TEST_ROOT + "test-page-with-webvtt.html";
+const TEST_PAGE_MULTIPLE_CONTEXTS =
+  TEST_ROOT + "test-page-multiple-contexts.html";
+const TEST_PAGE_TRANSPARENT_NESTED_IFRAMES =
+  TEST_ROOT + "test-transparent-nested-iframes.html";
+const TEST_PAGE_PIP_DISABLED = TEST_ROOT + "test-page-pipDisabled.html";
 const WINDOW_TYPE = "Toolkit:PictureInPicture";
-const TOGGLE_ID = "pictureInPictureToggleButton";
-const HOVER_VIDEO_OPACITY = 0.8;
-const HOVER_TOGGLE_OPACITY = 1.0;
+const TOGGLE_POSITION_PREF =
+  "media.videocontrols.picture-in-picture.video-toggle.position";
+/* As of Bug 1811312, 80% toggle opacity is for the PiP toggle experiment control. */
+const DEFAULT_TOGGLE_OPACITY = 0.8;
+const HAS_USED_PREF =
+  "media.videocontrols.picture-in-picture.video-toggle.has-used";
+const SHARED_DATA_KEY = "PictureInPicture:SiteOverrides";
+// Used for clearing the size and location of the PiP window
+const PLAYER_URI = "chrome://global/content/pictureinpicture/player.xhtml";
+const ACCEPTABLE_DIFFERENCE = 2;
+
+/**
+ * We currently ship with a few different variations of the
+ * Picture-in-Picture toggle. The tests for Picture-in-Picture include tests
+ * that check the style rules of various parts of the toggle. Since each toggle
+ * variation has different style rules, we introduce a structure here to
+ * describe the appearance of the toggle at different stages for the tests.
+ *
+ * The top-level structure looks like this:
+ *
+ * {
+ *   rootID (String): The ID of the root element of the toggle.
+ *   stages (Object): An Object representing the styles of the toggle at
+ *     different stages of its use. Each property represents a different
+ *     stage that can be tested. Right now, those stages are:
+ *
+ *     hoverVideo:
+ *       When the mouse is hovering the video but not the toggle.
+ *
+ *     hoverToggle:
+ *       When the mouse is hovering both the video and the toggle.
+ *
+ *       Both stages must be assigned an Object with the following properties:
+ *
+ *       opacities:
+ *         This should be set to an Object where the key is a CSS selector for
+ *         an element, and the value is a double for what the eventual opacity
+ *         of that element should be set to.
+ *
+ *       hidden:
+ *         This should be set to an Array of CSS selector strings for elements
+ *         that should be hidden during a particular stage.
+ * }
+ *
+ * DEFAULT_TOGGLE_STYLES is the set of styles for the default variation of the
+ * toggle.
+ */
+const DEFAULT_TOGGLE_STYLES = {
+  rootID: "pictureInPictureToggle",
+  stages: {
+    hoverVideo: {
+      opacities: {
+        ".pip-wrapper": DEFAULT_TOGGLE_OPACITY,
+      },
+      hidden: [".pip-expanded"],
+    },
+
+    hoverToggle: {
+      opacities: {
+        ".pip-wrapper": 1.0,
+      },
+      hidden: [".pip-expanded"],
+    },
+  },
+};
 
 /**
  * Given a browser and the ID for a <video> element, triggers
  * Picture-in-Picture for that <video>, and resolves with the
  * Picture-in-Picture window once it is ready to be used.
+ *
+ * If triggerFn is not specified, then open using the
+ * MozTogglePictureInPicture event.
  *
  * @param {Element,BrowsingContext} browser The <xul:browser> or
  * BrowsingContext hosting the <video>
@@ -31,24 +109,48 @@ const HOVER_TOGGLE_OPACITY = 1.0;
  * @param {String} videoID The ID of the video to trigger
  * Picture-in-Picture on.
  *
+ * @param {boolean} triggerFn Use the given function to open the pip window,
+ *                  which runs in the parent process.
+ *
  * @return Promise
  * @resolves With the Picture-in-Picture window when ready.
  */
-async function triggerPictureInPicture(browser, videoID) {
+async function triggerPictureInPicture(browser, videoID, triggerFn) {
   let domWindowOpened = BrowserTestUtils.domWindowOpenedAndLoaded(null);
-  let videoReady = SpecialPowers.spawn(browser, [videoID], async videoID => {
-    let video = content.document.getElementById(videoID);
-    let event = new content.CustomEvent("MozTogglePictureInPicture", {
-      bubbles: true,
+
+  let videoReady = null;
+  if (triggerFn) {
+    await SpecialPowers.spawn(browser, [videoID], async videoID => {
+      let video = content.document.getElementById(videoID);
+      video.focus();
     });
-    video.dispatchEvent(event);
-    await ContentTaskUtils.waitForCondition(() => {
-      return video.isCloningElementVisually;
-    }, "Video is being cloned visually.");
-  });
+
+    triggerFn();
+
+    videoReady = SpecialPowers.spawn(browser, [videoID], async videoID => {
+      let video = content.document.getElementById(videoID);
+      await ContentTaskUtils.waitForCondition(() => {
+        return video.isCloningElementVisually;
+      }, "Video is being cloned visually.");
+    });
+  } else {
+    videoReady = SpecialPowers.spawn(browser, [videoID], async videoID => {
+      let video = content.document.getElementById(videoID);
+      let event = new content.CustomEvent("MozTogglePictureInPicture", {
+        bubbles: true,
+      });
+      video.dispatchEvent(event);
+      await ContentTaskUtils.waitForCondition(() => {
+        return video.isCloningElementVisually;
+      }, "Video is being cloned visually.");
+    });
+  }
   let win = await domWindowOpened;
-  await win.promiseDocumentFlushed(() => {});
-  await videoReady;
+  await Promise.all([
+    SimpleTest.promiseFocus(win),
+    win.promiseDocumentFlushed(() => {}),
+    videoReady,
+  ]);
   return win;
 }
 
@@ -86,10 +188,31 @@ async function assertShowingMessage(browser, videoID, expected) {
 }
 
 /**
+ * Tests if a video is currently being cloned for a given content browser. Provides a
+ * good indicator for answering if this video is currently open in PiP.
+ *
+ * @param {Browser} browser
+ *   The content browser or browsing contect that the video lives in
+ * @param {string} videoId
+ *   The id associated with the video
+ *
+ * @returns {bool}
+ *   Whether the video is currently being cloned (And is most likely open in PiP)
+ */
+function assertVideoIsBeingCloned(browser, selector) {
+  return SpecialPowers.spawn(browser, [selector], async slctr => {
+    let video = content.document.querySelector(slctr);
+    await ContentTaskUtils.waitForCondition(() => {
+      return video.isCloningElementVisually;
+    }, "Video is being cloned visually.");
+  });
+}
+
+/**
  * Ensures that each of the videos loaded inside of a document in a
  * <browser> have reached the HAVE_ENOUGH_DATA readyState.
  *
- * @param {Element} browser The <xul:browser> hosting the <video>(s)
+ * @param {Element} browser The <xul:browser> hosting the <video>(s) or the browsing context
  *
  * @return Promise
  * @resolves When each <video> is in the HAVE_ENOUGH_DATA readyState.
@@ -102,8 +225,10 @@ async function ensureVideosReady(browser) {
   await SpecialPowers.spawn(browser, [], async () => {
     let videos = this.content.document.querySelectorAll("video");
     for (let video of videos) {
+      video.currentTime = 0;
       if (video.readyState < content.HTMLMediaElement.HAVE_ENOUGH_DATA) {
-        await ContentTaskUtils.waitForEvent(video, "canplay");
+        info(`Waiting for 'canplaythrough' for '${video.id}'`);
+        await ContentTaskUtils.waitForEvent(video, "canplaythrough");
       }
     }
   });
@@ -116,8 +241,10 @@ async function ensureVideosReady(browser) {
  * @param {Element} browser The <xul:browser> that has the <video> in it.
  * @param {String} videoID The ID of the video element that we expect the toggle
  * to appear on.
- * @param {float} opacityThreshold The threshold that we expect the toggle opacity
- * to reach or exceed within the time limit.
+ * @param {String} stage The stage for which the opacity is going to change. This
+ * should be one of "hoverVideo" or "hoverToggle".
+ * @param {Object} toggleStyles Optional argument. See the documentation for the
+ * DEFAULT_TOGGLE_STYLES object for a sense of what styleRules is expected to be.
  *
  * @return Promise
  * @resolves When the check has completed.
@@ -125,25 +252,50 @@ async function ensureVideosReady(browser) {
 async function toggleOpacityReachesThreshold(
   browser,
   videoID,
-  opacityThreshold
+  stage,
+  toggleStyles = DEFAULT_TOGGLE_STYLES
 ) {
-  let args = { videoID, TOGGLE_ID, opacityThreshold };
+  let togglePosition = Services.prefs.getStringPref(
+    TOGGLE_POSITION_PREF,
+    "right"
+  );
+  let hasUsed = Services.prefs.getBoolPref(HAS_USED_PREF, false);
+  let toggleStylesForStage = toggleStyles.stages[stage];
+  info(
+    `Testing toggle for stage ${stage} ` +
+      `in position ${togglePosition}, has used: ${hasUsed}`
+  );
+
+  let args = { videoID, toggleStylesForStage, togglePosition, hasUsed };
   await SpecialPowers.spawn(browser, [args], async args => {
-    let { videoID, TOGGLE_ID, opacityThreshold } = args;
+    let { videoID, toggleStylesForStage } = args;
 
     let video = content.document.getElementById(videoID);
     let shadowRoot = video.openOrClosedShadowRoot;
-    let toggle = shadowRoot.getElementById(TOGGLE_ID);
 
-    await ContentTaskUtils.waitForCondition(
-      () => {
-        let opacity = parseFloat(this.content.getComputedStyle(toggle).opacity);
-        return opacity >= opacityThreshold;
-      },
-      `Toggle should have opacity >= ${opacityThreshold}`,
-      100,
-      100
-    );
+    for (let hiddenElement of toggleStylesForStage.hidden) {
+      let el = shadowRoot.querySelector(hiddenElement);
+      ok(
+        ContentTaskUtils.isHidden(el),
+        `Expected ${hiddenElement} to be hidden.`
+      );
+    }
+
+    for (let opacityElement in toggleStylesForStage.opacities) {
+      let opacityThreshold = toggleStylesForStage.opacities[opacityElement];
+      let el = shadowRoot.querySelector(opacityElement);
+
+      await ContentTaskUtils.waitForCondition(
+        () => {
+          let opacity = parseFloat(this.content.getComputedStyle(el).opacity);
+          return opacity >= opacityThreshold;
+        },
+        `Toggle element ${opacityElement} should have eventually reached ` +
+          `target opacity ${opacityThreshold}`,
+        100,
+        100
+      );
+    }
 
     ok(true, "Toggle reached target opacity.");
   });
@@ -158,29 +310,35 @@ async function toggleOpacityReachesThreshold(
  * @param {String} videoID The ID of the video element that we expect the toggle
  * to appear on.
  * @param {Number} policy Optional argument. If policy is defined, then it should
- * be one of the values in the TOGGLE_POLICIES from PictureInPictureTogglePolicy.jsm.
+ * be one of the values in the TOGGLE_POLICIES from PictureInPictureControls.sys.mjs.
  * If undefined, this function will ensure no policy attribute is set.
  *
  * @return Promise
  * @resolves When the check has completed.
  */
-async function assertTogglePolicy(browser, videoID, policy) {
-  let args = { videoID, TOGGLE_ID, policy };
+async function assertTogglePolicy(
+  browser,
+  videoID,
+  policy,
+  toggleStyles = DEFAULT_TOGGLE_STYLES
+) {
+  let toggleID = toggleStyles.rootID;
+  let args = { videoID, toggleID, policy };
   await SpecialPowers.spawn(browser, [args], async args => {
-    let { videoID, TOGGLE_ID, policy } = args;
+    let { videoID, toggleID, policy } = args;
 
     let video = content.document.getElementById(videoID);
     let shadowRoot = video.openOrClosedShadowRoot;
     let controlsOverlay = shadowRoot.querySelector(".controlsOverlay");
-    let toggle = shadowRoot.getElementById(TOGGLE_ID);
+    let toggle = shadowRoot.getElementById(toggleID);
 
     await ContentTaskUtils.waitForCondition(() => {
       return controlsOverlay.classList.contains("hovering");
     }, "Waiting for the hovering state to be set on the video.");
 
     if (policy) {
-      const { TOGGLE_POLICY_STRINGS } = ChromeUtils.import(
-        "resource://gre/modules/PictureInPictureTogglePolicy.jsm"
+      const { TOGGLE_POLICY_STRINGS } = ChromeUtils.importESModule(
+        "resource://gre/modules/PictureInPictureControls.sys.mjs"
       );
       let policyAttr = toggle.getAttribute("policy");
       Assert.equal(
@@ -242,6 +400,28 @@ async function assertSawMouseEvents(
 }
 
 /**
+ * Tests that a click event is fire in web content when clicking on the page.
+ *
+ * Note: This function will only work on pages that load the
+ * click-event-helper.js script.
+ *
+ * @param {Element} browser The <xul:browser> that will receive the mouse
+ * events.
+ * @return Promise
+ * @resolves When the check has completed.
+ */
+async function assertSawClickEventOnly(browser) {
+  let mouseEvents = await SpecialPowers.spawn(browser, [], async () => {
+    return this.content.wrappedJSObject.getRecordedEvents();
+  });
+  Assert.deepEqual(
+    mouseEvents,
+    ["click"],
+    "Expected to get the right mouse events."
+  );
+}
+
+/**
  * Ensures that a <video> inside of a <browser> is scrolled into view,
  * and then returns the coordinates of its Picture-in-Picture toggle as well
  * as whether or not the <video> element is showing the built-in controls.
@@ -259,6 +439,20 @@ async function assertSawMouseEvents(
  * displayed.
  */
 async function prepareForToggleClick(browser, videoID) {
+  // Synthesize a mouse move just outside of the video to ensure that
+  // the video is in a non-hovering state. We'll go 5 pixels to the
+  // left and above the top-left corner.
+  await BrowserTestUtils.synthesizeMouse(
+    `#${videoID}`,
+    -5,
+    -5,
+    {
+      type: "mousemove",
+    },
+    browser,
+    false
+  );
+
   // For each video, make sure it's scrolled into view, and get the rect for
   // the toggle while we're at it.
   let args = { videoID };
@@ -274,8 +468,8 @@ async function prepareForToggleClick(browser, videoID) {
       // mousemove events. We don't exactly know when that IntersectionObserver
       // will fire, so we poll a special testing function that will tell us when
       // the video that we care about is being tracked.
-      let { PictureInPictureToggleChild } = ChromeUtils.import(
-        "resource://gre/actors/PictureInPictureChild.jsm"
+      let { PictureInPictureToggleChild } = ChromeUtils.importESModule(
+        "resource://gre/actors/PictureInPictureChild.sys.mjs"
       );
       await ContentTaskUtils.waitForCondition(
         () => {
@@ -287,6 +481,17 @@ async function prepareForToggleClick(browser, videoID) {
       );
     }
 
+    let shadowRoot = video.openOrClosedShadowRoot;
+    let controlsOverlay = shadowRoot.querySelector(".controlsOverlay");
+    await ContentTaskUtils.waitForCondition(
+      () => {
+        return !controlsOverlay.classList.contains("hovering");
+      },
+      "Waiting for the video to not be hovered.",
+      100,
+      100
+    );
+
     return {
       controls: video.controls,
     };
@@ -294,8 +499,8 @@ async function prepareForToggleClick(browser, videoID) {
 }
 
 /**
- * Returns the client rect for the toggle if it's supposed to be visible
- * on hover. Otherwise, returns the client rect for the video with the
+ * Returns client rect info for the toggle if it's supposed to be visible
+ * on hover. Otherwise, returns client rect info for the video with the
  * associated ID.
  *
  * @param {Element} browser The <xul:browser> that has the <video> loaded in it.
@@ -305,19 +510,33 @@ async function prepareForToggleClick(browser, videoID) {
  * @resolves With the following Object structure:
  *   {
  *     top: <Number>,
- *     right: <Number>,
  *     left: <Number>,
- *     bottom: <Number>,
+ *     width: <Number>,
+ *     height: <Number>,
  *   }
  */
-async function getToggleClientRect(browser, videoID) {
-  let args = { videoID, TOGGLE_ID };
+async function getToggleClientRect(
+  browser,
+  videoID,
+  toggleStyles = DEFAULT_TOGGLE_STYLES
+) {
+  let args = { videoID, toggleID: toggleStyles.rootID };
   return ContentTask.spawn(browser, args, async args => {
-    let { videoID, TOGGLE_ID } = args;
+    const { Rect } = ChromeUtils.importESModule(
+      "resource://gre/modules/Geometry.sys.mjs"
+    );
+
+    let { videoID, toggleID } = args;
     let video = content.document.getElementById(videoID);
     let shadowRoot = video.openOrClosedShadowRoot;
-    let toggle = shadowRoot.getElementById(TOGGLE_ID);
-    let rect = toggle.getBoundingClientRect();
+    let toggle = shadowRoot.getElementById(toggleID);
+    let rect = Rect.fromRect(toggle.getBoundingClientRect());
+
+    let clickableChildren = toggle.querySelectorAll(".clickable");
+    for (let child of clickableChildren) {
+      let childRect = Rect.fromRect(child.getBoundingClientRect());
+      rect.expandToContain(childRect);
+    }
 
     if (!rect.width && !rect.height) {
       rect = video.getBoundingClientRect();
@@ -325,11 +544,63 @@ async function getToggleClientRect(browser, videoID) {
 
     return {
       top: rect.top,
-      right: rect.right,
       left: rect.left,
-      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
     };
   });
+}
+
+/**
+ * This function will hover over the middle of the video and then
+ * hover over the toggle.
+ * @param browser The current browser
+ * @param videoID The video element id
+ */
+async function hoverToggle(browser, videoID) {
+  await prepareForToggleClick(browser, videoID);
+
+  // Hover the mouse over the video to reveal the toggle.
+  await BrowserTestUtils.synthesizeMouseAtCenter(
+    `#${videoID}`,
+    {
+      type: "mousemove",
+    },
+    browser
+  );
+  await BrowserTestUtils.synthesizeMouseAtCenter(
+    `#${videoID}`,
+    {
+      type: "mouseover",
+    },
+    browser
+  );
+
+  info("Checking toggle policy");
+  await assertTogglePolicy(browser, videoID, null);
+
+  let toggleClientRect = await getToggleClientRect(browser, videoID);
+
+  info("Hovering the toggle rect now.");
+  let toggleCenterX = toggleClientRect.left + toggleClientRect.width / 2;
+  let toggleCenterY = toggleClientRect.top + toggleClientRect.height / 2;
+
+  await BrowserTestUtils.synthesizeMouseAtPoint(
+    toggleCenterX,
+    toggleCenterY,
+    {
+      type: "mousemove",
+    },
+    browser
+  );
+  await BrowserTestUtils.synthesizeMouseAtPoint(
+    toggleCenterX,
+    toggleCenterY,
+    {
+      type: "mouseover",
+    },
+    browser
+  );
 }
 
 /**
@@ -340,8 +611,9 @@ async function getToggleClientRect(browser, videoID) {
  * @param {String} testURL The URL of the page with the <video> elements.
  * @param {Object} expectations An object with the following schema:
  *   <video-element-id>: {
- *     canToggle: Boolean
- *     policy: Number (optional)
+ *     canToggle: {Boolean}
+ *     policy: {Number} (optional)
+ *     styleRules: {Object} (optional)
  *   }
  * If canToggle is true, then it's expected that moving the mouse over the
  * video and then clicking in the toggle region should open a
@@ -349,7 +621,11 @@ async function getToggleClientRect(browser, videoID) {
  * in this region will not result in the window opening.
  *
  * If policy is defined, then it should be one of the values in the
- * TOGGLE_POLICIES from PictureInPictureTogglePolicy.jsm.
+ * TOGGLE_POLICIES from PictureInPictureControls.sys.mjs.
+ *
+ * See the documentation for the DEFAULT_TOGGLE_STYLES object for a sense
+ * of what styleRules is expected to be. If left undefined, styleRules will
+ * default to DEFAULT_TOGGLE_STYLES.
  *
  * @param {async Function} prepFn An optional asynchronous function to run
  * before running the toggle test. The function is passed the opened
@@ -369,13 +645,21 @@ async function testToggle(testURL, expectations, prepFn = async () => {}) {
       await prepFn(browser);
       await ensureVideosReady(browser);
 
-      for (let [videoID, { canToggle, policy }] of Object.entries(
-        expectations
-      )) {
+      for (let [
+        videoID,
+        { canToggle, policy, toggleStyles, shouldSeeClickEventAfterToggle },
+      ] of Object.entries(expectations)) {
         await SimpleTest.promiseFocus(browser);
         info(`Testing video with id: ${videoID}`);
 
-        await testToggleHelper(browser, videoID, canToggle, policy);
+        await testToggleHelper(
+          browser,
+          videoID,
+          canToggle,
+          policy,
+          toggleStyles,
+          shouldSeeClickEventAfterToggle
+        );
       }
     }
   );
@@ -391,12 +675,21 @@ async function testToggle(testURL, expectations, prepFn = async () => {}) {
  * @param {Boolean} canToggle True if we expect the toggle to be visible and
  * clickable by the mouse for the associated video.
  * @param {Number} policy Optional argument. If policy is defined, then it should
- * be one of the values in the TOGGLE_POLICIES from PictureInPictureTogglePolicy.jsm.
+ * be one of the values in the TOGGLE_POLICIES from PictureInPictureControls.sys.mjs.
+ * @param {Object} toggleStyles Optional argument. See the documentation for the
+ * DEFAULT_TOGGLE_STYLES object for a sense of what styleRules is expected to be.
  *
  * @return Promise
  * @resolves When the check for the toggle is complete.
  */
-async function testToggleHelper(browser, videoID, canToggle, policy) {
+async function testToggleHelper(
+  browser,
+  videoID,
+  canToggle,
+  policy,
+  toggleStyles,
+  shouldSeeClickEventAfterToggle
+) {
   let { controls } = await prepareForToggleClick(browser, videoID);
 
   // Hover the mouse over the video to reveal the toggle.
@@ -416,37 +709,39 @@ async function testToggleHelper(browser, videoID, canToggle, policy) {
   );
 
   info("Checking toggle policy");
-  await assertTogglePolicy(browser, videoID, policy);
+  await assertTogglePolicy(browser, videoID, policy, toggleStyles);
 
   if (canToggle) {
     info("Waiting for toggle to become visible");
     await toggleOpacityReachesThreshold(
       browser,
       videoID,
-      HOVER_VIDEO_OPACITY,
-      policy
+      "hoverVideo",
+      toggleStyles
     );
   }
 
-  let toggleClientRect = await getToggleClientRect(browser, videoID);
+  let toggleClientRect = await getToggleClientRect(
+    browser,
+    videoID,
+    toggleStyles
+  );
 
   info("Hovering the toggle rect now.");
-  // The toggle center, because of how it slides out, is actually outside
-  // of the bounds of a click event. For now, we move the mouse in by a
-  // hard-coded 2 pixels along the x and y axis to achieve the hover.
-  let toggleLeft = toggleClientRect.left + 2;
-  let toggleTop = toggleClientRect.top + 2;
+  let toggleCenterX = toggleClientRect.left + toggleClientRect.width / 2;
+  let toggleCenterY = toggleClientRect.top + toggleClientRect.height / 2;
+
   await BrowserTestUtils.synthesizeMouseAtPoint(
-    toggleLeft,
-    toggleTop,
+    toggleCenterX,
+    toggleCenterY,
     {
       type: "mousemove",
     },
     browser
   );
   await BrowserTestUtils.synthesizeMouseAtPoint(
-    toggleLeft,
-    toggleTop,
+    toggleCenterX,
+    toggleCenterY,
     {
       type: "mouseover",
     },
@@ -458,8 +753,8 @@ async function testToggleHelper(browser, videoID, canToggle, policy) {
     await toggleOpacityReachesThreshold(
       browser,
       videoID,
-      HOVER_TOGGLE_OPACITY,
-      policy
+      "hoverToggle",
+      toggleStyles
     );
   }
 
@@ -467,8 +762,8 @@ async function testToggleHelper(browser, videoID, canToggle, policy) {
   info("Right-clicking on toggle.");
 
   await BrowserTestUtils.synthesizeMouseAtPoint(
-    toggleLeft,
-    toggleTop,
+    toggleCenterX,
+    toggleCenterY,
     { button: 2 },
     browser
   );
@@ -501,25 +796,35 @@ async function testToggleHelper(browser, videoID, canToggle, policy) {
     );
     let domWindowOpened = BrowserTestUtils.domWindowOpenedAndLoaded(null);
     await BrowserTestUtils.synthesizeMouseAtPoint(
-      toggleLeft,
-      toggleTop,
+      toggleCenterX,
+      toggleCenterY,
       {},
       browser
     );
     let win = await domWindowOpened;
     ok(win, "A Picture-in-Picture window opened.");
+
+    await assertVideoIsBeingCloned(browser, "#" + videoID);
+
     await BrowserTestUtils.closeWindow(win);
 
-    // Make sure that clicking on the toggle resulted in no mouse button events
-    // being fired in content.
-    await assertSawMouseEvents(browser, false);
+    // We do get a "Click" sometimes, it depends on many
+    // factors such as whether the video has control and
+    // the style of the toggle.
+    if (shouldSeeClickEventAfterToggle) {
+      await assertSawClickEventOnly(browser);
+    } else {
+      // Make sure that clicking on the toggle resulted in no mouse button events
+      // being fired in content.
+      await assertSawMouseEvents(browser, false);
+    }
   } else {
     info(
       "Clicking on toggle, and expecting no Picture-in-Picture window opens"
     );
     await BrowserTestUtils.synthesizeMouseAtPoint(
-      toggleLeft,
-      toggleTop,
+      toggleCenterX,
+      toggleCenterY,
       {},
       browser
     );
@@ -570,6 +875,17 @@ async function promiseFullscreenEntered(window, asyncFn) {
   await BrowserTestUtils.waitForCondition(() => {
     return !TelemetryStopwatch.running("FULLSCREEN_CHANGE_MS");
   });
+
+  if (AppConstants.platform == "macosx") {
+    // On macOS, the fullscreen transition takes some extra time
+    // to complete, and we don't receive events for it. We need to
+    // wait for it to complete or else input events in the next test
+    // might get eaten up. This is the best we can currently do.
+    //
+    // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+    dump(`BJW promiseFullscreenEntered: waiting for 2 second timeout.\n`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
 }
 
 /**
@@ -603,4 +919,235 @@ async function promiseFullscreenExited(window, asyncFn) {
     // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
+}
+
+/**
+ * Helper function that ensures that the "This video is
+ * playing in Picture-in-Picture mode" message works,
+ * then closes the player window
+ *
+ * @param {Element} browser The <xul:browser> that has the <video> loaded in it.
+ * @param {String} videoID The ID of the video that has the toggle.
+ * @param {Element} pipWin The Picture-in-Picture window that was opened
+ * @param {Boolean} iframe True if the test is on an Iframe, which modifies
+ * the test behavior
+ */
+async function ensureMessageAndClosePiP(browser, videoID, pipWin, isIframe) {
+  try {
+    await assertShowingMessage(browser, videoID, true);
+  } finally {
+    let uaWidgetUpdate = null;
+    if (isIframe) {
+      uaWidgetUpdate = SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForEvent(
+          content.windowRoot,
+          "UAWidgetSetupOrChange",
+          true /* capture */
+        );
+      });
+    } else {
+      uaWidgetUpdate = BrowserTestUtils.waitForContentEvent(
+        browser,
+        "UAWidgetSetupOrChange",
+        true /* capture */
+      );
+    }
+    await BrowserTestUtils.closeWindow(pipWin);
+    await uaWidgetUpdate;
+  }
+}
+
+/**
+ * Helper function that returns True if the specified video is paused
+ * and False if the specified video is not paused.
+ *
+ * @param {Element} browser The <xul:browser> that has the <video> loaded in it.
+ * @param {String} videoID The ID of the video to check.
+ */
+async function isVideoPaused(browser, videoID) {
+  return SpecialPowers.spawn(browser, [videoID], async videoID => {
+    return content.document.getElementById(videoID).paused;
+  });
+}
+
+/**
+ * Helper function that returns True if the specified video is muted
+ * and False if the specified video is not muted.
+ *
+ * @param {Element} browser The <xul:browser> that has the <video> loaded in it.
+ * @param {String} videoID The ID of the video to check.
+ */
+async function isVideoMuted(browser, videoID) {
+  return SpecialPowers.spawn(browser, [videoID], async videoID => {
+    return content.document.getElementById(videoID).muted;
+  });
+}
+
+/**
+ * Initializes videos and text tracks for the current test case.
+ * First track is the default track to be loaded onto the video.
+ * Once initialization is done, play then pause the requested video.
+ * so that text tracks are loaded.
+ * @param {Element} browser The <xul:browser> hosting the <video>
+ * @param {String} videoID The ID of the video being checked
+ * @param {Integer} defaultTrackIndex The index of the track to be loaded, or none if -1
+ * @param {String} trackMode the mode that the video's textTracks should be set to
+ */
+async function prepareVideosAndWebVTTTracks(
+  browser,
+  videoID,
+  defaultTrackIndex = 0,
+  trackMode = "showing"
+) {
+  info("Preparing video and initial text tracks");
+  await ensureVideosReady(browser);
+  await SpecialPowers.spawn(
+    browser,
+    [{ videoID, defaultTrackIndex, trackMode }],
+    async args => {
+      let video = content.document.getElementById(args.videoID);
+      let tracks = video.textTracks;
+
+      is(tracks.length, 5, "Number of tracks loaded should be 5");
+
+      // Enable track for originating video
+      if (args.defaultTrackIndex >= 0) {
+        info(`Loading track ${args.defaultTrackIndex + 1}`);
+        let track = tracks[args.defaultTrackIndex];
+        tracks.mode = args.trackMode;
+        track.mode = args.trackMode;
+      }
+
+      // Briefly play the video to load text tracks onto the pip window.
+      info("Playing video to load text tracks");
+      video.play();
+      info("Pausing video");
+      video.pause();
+      ok(video.paused, "Video should be paused before proceeding with test");
+    }
+  );
+}
+
+/**
+ * Plays originating video until the next cue is loaded.
+ * Once the next cue is loaded, pause the video.
+ * @param {Element} browser The <xul:browser> hosting the <video>
+ * @param {String} videoID The ID of the video being checked
+ * @param {Integer} textTrackIndex The index of the track to be loaded, or none if -1
+ */
+async function waitForNextCue(browser, videoID, textTrackIndex = 0) {
+  if (textTrackIndex < 0) {
+    ok(false, "Cannot wait for next cue with invalid track index");
+  }
+
+  await SpecialPowers.spawn(
+    browser,
+    [{ videoID, textTrackIndex }],
+    async args => {
+      let video = content.document.getElementById(args.videoID);
+      info("Playing video to activate next cue");
+      video.play();
+      ok(!video.paused, "Video is playing");
+
+      info("Waiting until cuechange is called");
+      await ContentTaskUtils.waitForEvent(
+        video.textTracks[args.textTrackIndex],
+        "cuechange"
+      );
+
+      info("Pausing video to read text track");
+      video.pause();
+      ok(video.paused, "Video is paused");
+    }
+  );
+}
+
+/**
+ * The PiP window saves the positon when closed and sometimes we don't want
+ * this information to persist to other tests. This function will clear the
+ * position so the PiP window will open in the default position.
+ */
+function clearSavedPosition() {
+  let xulStore = Services.xulStore;
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "left", NaN);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "top", NaN);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "width", NaN);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "height", NaN);
+}
+
+function overrideSavedPosition(left, top, width, height) {
+  let xulStore = Services.xulStore;
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "left", left);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "top", top);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "width", width);
+  xulStore.setValue(PLAYER_URI, "picture-in-picture", "height", height);
+}
+
+/**
+ * Function used to filter events when waiting for the correct number
+ * telemetry events.
+ * @param {String} expected The expected string or undefined
+ * @param {String} actual The actual string
+ * @returns true if the expected is undefined or if expected matches actual
+ */
+function matches(expected, actual) {
+  if (expected === undefined) {
+    return true;
+  }
+  return expected === actual;
+}
+
+/**
+ * Function that waits for the expected number of events aftering filtering.
+ * @param {Object} filter An object containing optional filters
+ *  {
+ *    category: (optional) The category of the event. Ex. "pictureinpicture"
+ *    method: (optional) The method of the event. Ex. "create"
+ *    object: (optional) The object of the event. Ex. "player"
+ *  }
+ * @param {Number} length The number of events to wait for
+ * @param {String} process Should be "content" or "parent" depending on the event
+ */
+async function waitForTelemeryEvents(filter, length, process) {
+  let {
+    category: filterCategory,
+    method: filterMethod,
+    object: filterObject,
+  } = filter;
+
+  let events = [];
+  await TestUtils.waitForCondition(
+    () => {
+      events = Services.telemetry.snapshotEvents(
+        Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
+        false
+      )[process];
+      if (!events) {
+        return false;
+      }
+
+      let filtered = events
+        .map(([, /* timestamp */ category, method, object, value, extra]) => {
+          // We don't care about the `timestamp` value.
+          // Tests that examine that value should use `snapshotEvents` directly.
+          return [category, method, object, value, extra];
+        })
+        .filter(([category, method, object]) => {
+          return (
+            matches(filterCategory, category) &&
+            matches(filterMethod, method) &&
+            matches(filterObject, object)
+          );
+        });
+      info(JSON.stringify(filtered, null, 2));
+      return filtered && filtered.length >= length;
+    },
+    `Waiting for ${length} pictureinpicture telemetry event(s) with filter ${JSON.stringify(
+      filter,
+      null,
+      2
+    )}`,
+    200,
+    100
+  );
 }

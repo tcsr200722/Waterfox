@@ -18,7 +18,7 @@ The HTTP cache is usually queried by the networking stack when browsing the web.
 
 The HTTP cache lives in the parent process, and so any read and write operations need to be initiated in the parent process. Thankfully, however, the HTTP cache accepts data using `nsIOutputStream` and serves it using `nsIInputStream`. We can send `nsIInputStream` over the message manager, and convert an `nsIInputStream` into an `nsIOutputStream`, so we have everything we need to efficiently communicate with the "privileged about content process" to save and retrieve page data.
 
-The official documentation for the HTTP cache [can be found here](https://developer.mozilla.org/en-US/docs/Mozilla/HTTP_cache).
+The official documentation for the HTTP cache [can be found here](https://firefox-source-docs.mozilla.org/networking/cache2/doc.html).
 
 ### `AboutHomeStartupCache`
 
@@ -46,7 +46,7 @@ This singleton component lives inside of the "privileged about content process",
 
 When the `AboutRedirector` in the "privileged about content process" notices that a request has been made to `about:home`, it asks `nsIAboutNewTabService` to return a new `nsIChannel` for that document. The `AboutNewTabChildService` then checks to see if the `AboutHomeStartupCacheChild` can return an `nsIChannel` for any cached content.
 
-If, at this point, nothing has been streamed from the parent, we fall back to loading the dynamic `about:home` document. This might occur if the cache doesn't exist yet, or if we were too slow to pull it off of the disk.
+If, at this point, nothing has been streamed from the parent, we fall back to loading the dynamic `about:home` document. This might occur if the cache doesn't exist yet, or if we were too slow to pull it off of the disk. Subsequent attempts to load `about:home` will bypass the cache and load the dynamic document instead. This is true even if the privileged about content process crashes and a new one is created.
 
 The `AboutHomeStartupCacheChild` will also be responsible for generating the cache periodically. Periodically, the `AboutNewTabService` will send down the most up-to-date state for `about:home` from the parent process, and then the `AboutHomeStartupCacheChild` will generate document markup using ReactDOMServer within a `ChromeWorker`. After that's generated, the "privileged about content process" will send up `nsIInputStream` instances for both the markup and the script for the initial page state. The `AboutHomeStartupCache` singleton inside of `BrowserGlue` is responsible for receiving those `nsIInputStream`'s and persisting them in the HTTP cache for the next start.
 
@@ -73,7 +73,7 @@ It's possible that the composition or layout of `about:home` will change over ti
 
 To do this, we set a version number on the cache entry, and ensure that the version number is equal to our expectations on startup. If the version number does not match our expectation, then the cache is discarded and the `about:home` document will be rendered dynamically.
 
-The version number is statically defined inside of `AboutHomeStartupCache`. Simply increase that number to invalidate caches with lesser version numbers.
+The version number is currently set to the application build ID. This means that when the application updates, the cache is invalidated on the first restart after a browser update is applied.
 
 ## Handling errors
 

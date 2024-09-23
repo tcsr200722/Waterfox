@@ -21,7 +21,7 @@
   --accessibility-tree-row-height: 21px;
   --accessibility-unfocused-tree-focused-node-background: var(--grey-20);
   --accessibility-unfocused-tree-focused-node-twisty-fill: var(--theme-icon-dimmed-color);
-  --accessibility-link-color: var(--blue-60);
+  --accessibility-link-color: var(--theme-link-color);
   --accessibility-link-color-active: var(--blue-70);
   --accessibility-body-background-a90: rgba(255, 255, 255, 0.9);
   --accessibility-code-background: var(--grey-20);
@@ -30,7 +30,6 @@
 :root.theme-dark {
   --accessibility-unfocused-tree-focused-node-background: var(--grey-70);
   --accessibility-unfocused-tree-focused-node-twisty-fill: var(--theme-selection-color);
-  --accessibility-link-color: var(--theme-highlight-blue);
   --accessibility-link-color-active: var(--blue-40);
   --accessibility-body-background-a90: rgba(42, 42, 46, 0.9);
   --accessibility-code-background: var(--grey-70);
@@ -129,7 +128,6 @@ body {
   outline-offset: -2px;
   box-shadow: 0 0 0 2px var(--accessibility-toolbar-focus-alpha30);
   border-radius: 2px;
-  -moz-outline-radius: 2px;
 }
 
 .devtools-toolbar {
@@ -228,7 +226,7 @@ body {
 }
 
 .tooltip-container .menuitem > .command[role="link"] {
-  -moz-appearance: none;
+  appearance: none;
   border: none;
   color: var(--theme-arrowpanel-color);
   background-color: transparent;
@@ -236,12 +234,12 @@ body {
   width: 100%;
 }
 
-/* @remove after release 68 (See Bug 1551574) */
 .devtools-toolbar .beta {
   color: var(--theme-highlight-blue);
   font-size: 80%;
   font-weight: 500;
   margin-inline-end: 3px;
+  margin-inline-start: 4px;
 }
 
 #audit-progress-container {
@@ -290,6 +288,7 @@ body {
 .description img {
   margin-inline-end: 12px;
   flex-basis: 42px;
+  height: 42px;
   flex-shrink: 0;
   -moz-context-properties: fill;
   fill: var(--grey-40);
@@ -380,20 +379,20 @@ body {
   border: 0;
 }
 
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected {
+.treeTable:not(:focus, :focus-within) .treeRow.selected {
   background-color: var(--accessibility-unfocused-tree-focused-node-background);
 }
 
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected .theme-twisty {
+.treeTable:not(:focus, :focus-within) .treeRow.selected .theme-twisty {
   fill: var(--accessibility-unfocused-tree-focused-node-twisty-fill);
 }
 
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected *,
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected .treeLabelCell:after {
+.treeTable:not(:focus, :focus-within) .treeRow.selected *,
+.treeTable:not(:focus, :focus-within) .treeRow.selected .treeLabelCell:after {
   color: inherit;
 }
 
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected .objectBox-string {
+.treeTable:not(:focus, :focus-within) .treeRow.selected .objectBox-string {
   color: var(--string-color);
 }
 
@@ -491,7 +490,6 @@ body {
   outline: 2px solid var(--accessibility-toolbar-focus);
   outline-offset: -2px;
   box-shadow: 0 0 0 2px var(--accessibility-toolbar-focus-alpha30);
-  -moz-outline-radius: 2px;
 }
 
 .treeTable:focus-within .treeRow.selected .badges .badge {
@@ -500,7 +498,7 @@ body {
   color: var(--theme-selection-color);
 }
 
-.treeTable:not(:focus):not(:focus-within) .treeRow.selected .badges .badge {
+.treeTable:not(:focus, :focus-within) .treeRow.selected .badges .badge {
   color: var(--badge-color);
 }
 
@@ -609,17 +607,17 @@ body {
 
 .accessible .tree:focus .node.focused .open-inspector,
 .accessible .tree .tree-node-active .node.focused .open-inspector {
-  background-color: var(--grey-30);
+  fill: var(--grey-30);
 }
 
 .accessible .tree:focus .node.focused:hover .open-inspector,
 .accessible .tree .tree-node-active .node.focused:hover .open-inspector {
-  background-color: var(--theme-selection-color);
+  fill: var(--theme-selection-color);
 }
 
 .accessible .tree .tree-node-active .node.focused .open-inspector:focus,
 .accessible .tree .tree-node-active .node.focused:hover .open-inspector:focus {
-  background-color: var(--grey-40);
+  fill: var(--grey-40);
 }
 
 .accessible .tree .arrow {
@@ -658,17 +656,17 @@ body {
 
 .accessible .tree:focus .node.focused .open-accessibility-inspector,
 .accessible .tree .tree-node-active .node.focused .open-accessibility-inspector {
-  background-color: var(--grey-30);
+  fill: var(--grey-30);
 }
 
 .accessible .tree:focus .node.focused:hover .open-accessibility-inspector,
 .accessible .tree .tree-node-active .node.focused:hover .open-accessibility-inspector {
-  background-color: var(--theme-selection-color);
+  fill: var(--theme-selection-color);
 }
 
 .accessible .tree .tree-node-active .node.focused .open-accessibility-inspector:focus,
 .accessible .tree .tree-node-active .node.focused:hover .open-accessibility-inspector:focus {
-  background-color: var(--grey-40);
+  fill: var(--grey-40);
 }
 
 .accessible .tree .objectBox-accessible,
@@ -806,7 +804,7 @@ body {
   margin-inline-start: 1px;
 }
 
-.accessibility-color-contrast .accessibility-contrast-value:not(:first-child):not(:empty):before {
+.accessibility-color-contrast .accessibility-contrast-value:not(:first-child, :empty):before {
   margin-inline-start: 4px;
 }
 
@@ -832,7 +830,7 @@ body {
 }
 
 .devtools-toolbar .toolbar-menu-button.active,
-.devtools-toolbar .toolbar-menu-button.active.devtools-button:not(:empty):not(.checked):not(:disabled):focus {
+.devtools-toolbar .toolbar-menu-button.active.devtools-button:not(:empty, .checked, :disabled):focus {
   color: var(--theme-toolbar-selected-color);
 }
 

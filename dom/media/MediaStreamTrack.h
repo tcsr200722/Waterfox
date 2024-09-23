@@ -17,6 +17,7 @@
 #include "nsError.h"
 #include "nsID.h"
 #include "nsIPrincipal.h"
+#include "PerformanceRecorder.h"
 
 namespace mozilla {
 
@@ -29,7 +30,6 @@ class MediaTrackGraphImpl;
 class MediaTrackListener;
 class DirectMediaTrackListener;
 class PeerConnectionImpl;
-class PeerConnectionMedia;
 class PeerIdentity;
 class ProcessedMediaTrack;
 class RemoteSourceStreamInfo;
@@ -54,10 +54,8 @@ class MediaStreamTrackSource : public nsISupports {
   NS_DECL_CYCLE_COLLECTION_CLASS(MediaStreamTrackSource)
 
  public:
-  class Sink : public SupportsWeakPtr<Sink> {
+  class Sink : public SupportsWeakPtr {
    public:
-    MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackSource::Sink)
-
     /**
      * Must be constant throughout the Sink's lifetime.
      *
@@ -107,8 +105,12 @@ class MediaStreamTrackSource : public nsISupports {
     virtual ~Sink() = default;
   };
 
-  MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel)
-      : mPrincipal(aPrincipal), mLabel(aLabel), mStopped(false) {}
+  MediaStreamTrackSource(nsIPrincipal* aPrincipal, const nsString& aLabel,
+                         TrackingId aTrackingId)
+      : mPrincipal(aPrincipal),
+        mLabel(aLabel),
+        mTrackingId(std::move(aTrackingId)),
+        mStopped(false) {}
 
   /**
    * Use to clean up any resources that have to be cleaned before the
@@ -142,6 +144,12 @@ class MediaStreamTrackSource : public nsISupports {
    * MediaStreamTrack::GetLabel (see spec) calls through to here.
    */
   void GetLabel(nsAString& aLabel) { aLabel.Assign(mLabel); }
+
+  /**
+   * Whether this TrackSource provides video frames with an alpha channel. Only
+   * applies to video sources. Used by HTMLVideoElement.
+   */
+  virtual bool HasAlpha() const { return false; }
 
   /**
    * Forwards a photo request to backends that support it. Other backends return
@@ -263,8 +271,8 @@ class MediaStreamTrackSource : public nsISupports {
     MOZ_ASSERT(NS_IsMainThread());
     for (auto& sink : mSinks.Clone()) {
       if (!sink) {
-        MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
-        mSinks.RemoveElement(sink);
+        DebugOnly<bool> removed = mSinks.RemoveElement(sink);
+        MOZ_ASSERT(!removed, "Sink was not explicitly removed");
         continue;
       }
       sink->PrincipalChanged();
@@ -280,8 +288,8 @@ class MediaStreamTrackSource : public nsISupports {
     MOZ_ASSERT(NS_IsMainThread());
     for (auto& sink : mSinks.Clone()) {
       if (!sink) {
-        MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
-        mSinks.RemoveElement(sink);
+        DebugOnly<bool> removed = mSinks.RemoveElement(sink);
+        MOZ_ASSERT(!removed, "Sink was not explicitly removed");
         continue;
       }
       sink->MutedChanged(aNewState);
@@ -296,8 +304,8 @@ class MediaStreamTrackSource : public nsISupports {
     MOZ_ASSERT(NS_IsMainThread());
     for (auto& sink : mSinks.Clone()) {
       if (!sink) {
-        MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
-        mSinks.RemoveElement(sink);
+        DebugOnly<bool> removed = mSinks.RemoveElement(sink);
+        MOZ_ASSERT(!removed, "Sink was not explicitly removed");
         continue;
       }
       sink->OverrideEnded();
@@ -310,46 +318,26 @@ class MediaStreamTrackSource : public nsISupports {
   // Currently registered sinks.
   nsTArray<WeakPtr<Sink>> mSinks;
 
+ public:
   // The label of the track we are the source of per the MediaStreamTrack spec.
   const nsString mLabel;
 
+  // Set for all video sources; an id for tracking the source of the video
+  // frames for this track.
+  const TrackingId mTrackingId;
+
+ protected:
   // True if all MediaStreamTrack users have unregistered from this source and
   // Stop() has been called.
   bool mStopped;
 };
 
 /**
- * Basic implementation of MediaStreamTrackSource that doesn't forward Stop().
- */
-class BasicTrackSource : public MediaStreamTrackSource {
- public:
-  explicit BasicTrackSource(
-      nsIPrincipal* aPrincipal,
-      const MediaSourceEnum aMediaSource = MediaSourceEnum::Other)
-      : MediaStreamTrackSource(aPrincipal, nsString()),
-        mMediaSource(aMediaSource) {}
-
-  MediaSourceEnum GetMediaSource() const override { return mMediaSource; }
-
-  void Stop() override {}
-  void Disable() override {}
-  void Enable() override {}
-
- protected:
-  ~BasicTrackSource() = default;
-
-  const MediaSourceEnum mMediaSource;
-};
-
-/**
  * Base class that consumers of a MediaStreamTrack can use to get notifications
  * about state changes in the track.
  */
-class MediaStreamTrackConsumer
-    : public SupportsWeakPtr<MediaStreamTrackConsumer> {
+class MediaStreamTrackConsumer : public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackConsumer)
-
   /**
    * Called when the track's readyState transitions to "ended".
    * Unlike the "ended" event exposed to script this is called for any reason,
@@ -400,11 +388,9 @@ class MediaStreamTrackConsumer
  *   (*) is a copy of A's mInputTrack
  */
 // clang-format on
-class MediaStreamTrack : public DOMEventTargetHelper,
-                         public SupportsWeakPtr<MediaStreamTrack> {
+class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // PeerConnection and friends need to know our owning DOMStream and track id.
   friend class mozilla::PeerConnectionImpl;
-  friend class mozilla::PeerConnectionMedia;
   friend class mozilla::SourceStreamInfo;
   friend class mozilla::RemoteSourceStreamInfo;
 
@@ -422,8 +408,6 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
                                            DOMEventTargetHelper)
-
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrack)
 
   nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
   JSObject* WrapObject(JSContext* aCx,
@@ -597,6 +581,7 @@ class MediaStreamTrack : public DOMEventTargetHelper,
 
   /**
    * Sets this track's muted state without raising any events.
+   * Only really set by cloning. See MutedChanged for runtime changes.
    */
   void SetMuted(bool aMuted) { mMuted = aMuted; }
 

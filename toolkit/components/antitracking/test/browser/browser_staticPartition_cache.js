@@ -21,7 +21,7 @@ async function checkCache(suffixes, originAttributes) {
   const data = await new Promise(resolve => {
     let cacheEntries = [];
     let cacheVisitor = {
-      onCacheStorageInfo(num, consumption) {},
+      onCacheStorageInfo() {},
       onCacheEntryInfo(uri, idEnhance) {
         cacheEntries.push({ uri, idEnhance });
       },
@@ -32,7 +32,7 @@ async function checkCache(suffixes, originAttributes) {
     };
     // Visiting the disk cache also visits memory storage so we do not
     // need to use Services.cache2.memoryCacheStorage() here.
-    let storage = Services.cache2.diskCacheStorage(loadContextInfo, false);
+    let storage = Services.cache2.diskCacheStorage(loadContextInfo);
     storage.asyncVisitStorage(cacheVisitor, true);
   });
 
@@ -44,12 +44,14 @@ async function checkCache(suffixes, originAttributes) {
     );
     ok(
       foundEntryCount > 0,
-      `Cache entries expected for ${suffix} and OA=${originAttributes}`
+      `Cache entries expected for ${suffix} and OA=${JSON.stringify(
+        originAttributes
+      )}`
     );
   }
 }
 
-add_task(async function() {
+add_task(async function () {
   info("Disable predictor and accept all");
   await SpecialPowers.pushPrefEnv({
     set: [
@@ -62,7 +64,7 @@ add_task(async function() {
   const tests = [
     {
       prefValue: true,
-      originAttributes: { firstPartyDomain: "(http,example.org)" },
+      originAttributes: { partitionKey: "(http,example.org)" },
     },
     {
       prefValue: false,
@@ -87,7 +89,7 @@ add_task(async function() {
 
     info("Let's load a page to populate some entries");
     let tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser));
-    BrowserTestUtils.loadURI(tab.linkedBrowser, cacheURL);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, cacheURL);
     await BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, cacheURL);
 
     let argObj = {
@@ -96,92 +98,96 @@ add_task(async function() {
         "http://example.net/browser/browser/components/originattributes/test/browser/",
     };
 
-    await SpecialPowers.spawn(tab.linkedBrowser, [argObj], async function(arg) {
-      let videoURL = arg.urlPrefix + "file_thirdPartyChild.video.ogv";
-      let audioURL = arg.urlPrefix + "file_thirdPartyChild.audio.ogg";
-      let URLSuffix = "?r=" + arg.randomSuffix;
+    await SpecialPowers.spawn(
+      tab.linkedBrowser,
+      [argObj],
+      async function (arg) {
+        // The CSS cache needs to be cleared in-process.
+        content.windowUtils.clearSharedStyleSheetCache();
 
-      // Create the audio and video elements.
-      let audio = content.document.createElement("audio");
-      let video = content.document.createElement("video");
-      let audioSource = content.document.createElement("source");
+        let videoURL = arg.urlPrefix + "file_thirdPartyChild.video.webm";
+        let audioURL = arg.urlPrefix + "file_thirdPartyChild.audio.ogg";
+        let URLSuffix = "?r=" + arg.randomSuffix;
 
-      // Append the audio element into the body, and wait until they're finished.
-      await new content.Promise(resolve => {
-        let audioLoaded = false;
+        // Create the audio and video elements.
+        let audio = content.document.createElement("audio");
+        let video = content.document.createElement("video");
+        let audioSource = content.document.createElement("source");
 
-        let audioListener = () => {
-          Assert.ok(true, `Audio suspended: ${audioURL + URLSuffix}`);
-          audio.removeEventListener("suspend", audioListener);
+        // Append the audio element into the body, and wait until they're finished.
+        await new content.Promise(resolve => {
+          let audioLoaded = false;
 
-          audioLoaded = true;
-          if (audioLoaded) {
+          let audioListener = () => {
+            Assert.ok(true, `Audio suspended: ${audioURL + URLSuffix}`);
+            audio.removeEventListener("suspend", audioListener);
+
+            audioLoaded = true;
+            if (audioLoaded) {
+              resolve();
+            }
+          };
+
+          Assert.ok(true, `Loading audio: ${audioURL + URLSuffix}`);
+
+          // Add the event listeners before everything in case we lose events.
+          audio.addEventListener("suspend", audioListener);
+
+          // Assign attributes for the audio element.
+          audioSource.setAttribute("src", audioURL + URLSuffix);
+          audioSource.setAttribute("type", "audio/ogg");
+
+          audio.appendChild(audioSource);
+          audio.autoplay = true;
+
+          content.document.body.appendChild(audio);
+        });
+
+        // Append the video element into the body, and wait until it's finished.
+        await new content.Promise(resolve => {
+          let listener = () => {
+            Assert.ok(true, `Video suspended: ${videoURL + URLSuffix}`);
+            video.removeEventListener("suspend", listener);
             resolve();
-          }
-        };
+          };
 
-        Assert.ok(true, `Loading audio: ${audioURL + URLSuffix}`);
+          Assert.ok(true, `Loading video: ${videoURL + URLSuffix}`);
 
-        // Add the event listeners before everything in case we lose events.
-        audio.addEventListener("suspend", audioListener);
+          // Add the event listener before everything in case we lose the event.
+          video.addEventListener("suspend", listener);
 
-        // Assign attributes for the audio element.
-        audioSource.setAttribute("src", audioURL + URLSuffix);
-        audioSource.setAttribute("type", "audio/ogg");
+          // Assign attributes for the video element.
+          video.setAttribute("src", videoURL + URLSuffix);
+          video.setAttribute("type", "video/ogg");
 
-        audio.appendChild(audioSource);
-        audio.autoplay = true;
-
-        content.document.body.appendChild(audio);
-      });
-
-      // Append the video element into the body, and wait until it's finished.
-      await new content.Promise(resolve => {
-        let listener = () => {
-          Assert.ok(true, `Video suspended: ${videoURL + URLSuffix}`);
-          video.removeEventListener("suspend", listener);
-          resolve();
-        };
-
-        Assert.ok(true, `Loading video: ${videoURL + URLSuffix}`);
-
-        // Add the event listener before everything in case we lose the event.
-        video.addEventListener("suspend", listener);
-
-        // Assign attributes for the video element.
-        video.setAttribute("src", videoURL + URLSuffix);
-        video.setAttribute("type", "video/ogg");
-
-        content.document.body.appendChild(video);
-      });
-    });
+          content.document.body.appendChild(video);
+        });
+      }
+    );
 
     let maybePartitionedSuffixes = [
       "iframe.html",
       "link.css",
       "script.js",
       "img.png",
+      "favicon.png",
       "object.png",
       "embed.png",
       "xhr.html",
       "worker.xhr.html",
       "audio.ogg",
-      "video.ogv",
+      "video.webm",
       "fetch.html",
       "worker.fetch.html",
       "request.html",
       "worker.request.html",
       "import.js",
       "worker.js",
+      "sharedworker.js",
     ];
 
     info("Query the cache (maybe) partitioned cache");
     await checkCache(maybePartitionedSuffixes, test.originAttributes);
-
-    let notPartitionedSuffixes = ["sharedworker.js"];
-
-    info("Query the cache not partitioned cache");
-    await checkCache(notPartitionedSuffixes, {});
 
     gBrowser.removeCurrentTab();
   }

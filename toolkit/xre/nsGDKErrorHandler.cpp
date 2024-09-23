@@ -6,14 +6,18 @@
 #include "nsGDKErrorHandler.h"
 
 #include <gtk/gtk.h>
-#include <gdk/gdkx.h>
+#ifdef MOZ_X11
+#  include <gdk/gdkx.h>
+#endif
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "nsDebug.h"
 #include "nsString.h"
-#include "nsX11ErrorHandler.h"
+#ifdef MOZ_X11
+#  include "nsX11ErrorHandler.h"
+#endif
 
 #include "prenv.h"
 
@@ -26,6 +30,7 @@
  */
 static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
                             const gchar* message, gpointer user_data) {
+#ifdef MOZ_X11
   if (strstr(message, "X Window System error")) {
     XErrorEvent event;
     nsDependentCString buffer(message);
@@ -35,7 +40,7 @@ static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
      * (Details: serial XXXX error_code XXXX request_code XXXX (XXXX) minor_code
      * XXXX)
      */
-    NS_NAMED_LITERAL_CSTRING(serialString, "(Details: serial ");
+    constexpr auto serialString = "(Details: serial "_ns;
     int32_t start = buffer.Find(serialString);
     if (start == kNotFound) {
       MOZ_CRASH_UNSAFE(message);
@@ -48,7 +53,7 @@ static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
       MOZ_CRASH_UNSAFE(message);
     }
 
-    NS_NAMED_LITERAL_CSTRING(errorCodeString, " error_code ");
+    constexpr auto errorCodeString = " error_code "_ns;
     if (!StringBeginsWith(Substring(endptr, buffer.EndReading()),
                           errorCodeString)) {
       MOZ_CRASH_UNSAFE(message);
@@ -60,7 +65,7 @@ static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
       MOZ_CRASH_UNSAFE(message);
     }
 
-    NS_NAMED_LITERAL_CSTRING(requestCodeString, " request_code ");
+    constexpr auto requestCodeString = " request_code "_ns;
     if (!StringBeginsWith(Substring(endptr, buffer.EndReading()),
                           requestCodeString)) {
       MOZ_CRASH_UNSAFE(message);
@@ -73,9 +78,8 @@ static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
       MOZ_CRASH_UNSAFE(message);
     }
 
-    NS_NAMED_LITERAL_CSTRING(minorCodeString, " minor_code ");
-    start = buffer.Find(minorCodeString, /* aIgnoreCase = */ false,
-                        endptr - buffer.BeginReading());
+    constexpr auto minorCodeString = " minor_code "_ns;
+    start = buffer.Find(minorCodeString, endptr - buffer.BeginReading());
     if (!start) {
       MOZ_CRASH_UNSAFE(message);
     }
@@ -92,7 +96,9 @@ static void GdkErrorHandler(const gchar* log_domain, GLogLevelFlags log_level,
     event.resourceid = 0;
 
     X11Error(event.display, &event);
-  } else {
+  } else
+#endif
+  {
     g_log_default_handler(log_domain, log_level, message, user_data);
     MOZ_CRASH_UNSAFE(message);
   }
@@ -103,7 +109,9 @@ void InstallGdkErrorHandler() {
                     (GLogLevelFlags)(G_LOG_LEVEL_ERROR | G_LOG_FLAG_FATAL |
                                      G_LOG_FLAG_RECURSION),
                     GdkErrorHandler, nullptr);
+#ifdef MOZ_X11
   if (PR_GetEnv("MOZ_X_SYNC")) {
     XSynchronize(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), X11True);
   }
+#endif
 }

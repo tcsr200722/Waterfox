@@ -10,6 +10,7 @@
 
 #![allow(unstable_name_collisions)]
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 //! Memory allocation APIs
 
@@ -49,7 +50,7 @@ impl UnstableLayoutMethods for Layout {
         //    valid.
         //
         // 2. `len + align - 1` can overflow by at most `align - 1`,
-        //    so the &-mask wth `!(align - 1)` will ensure that in the
+        //    so the &-mask with `!(align - 1)` will ensure that in the
         //    case of overflow, `len_rounded_up` will itself be 0.
         //    Thus the returned padding, when added to `len`, yields 0,
         //    which trivially satisfies the alignment `align`.
@@ -66,8 +67,8 @@ impl UnstableLayoutMethods for Layout {
         let padded_size = self
             .size()
             .checked_add(self.padding_needed_for(self.align()))
-            .ok_or(new_layout_err())?;
-        let alloc_size = padded_size.checked_mul(n).ok_or(new_layout_err())?;
+            .ok_or_else(new_layout_err)?;
+        let alloc_size = padded_size.checked_mul(n).ok_or_else(new_layout_err)?;
 
         unsafe {
             // self.align is already known to be valid and alloc_size has been
@@ -381,11 +382,11 @@ pub unsafe trait Alloc {
         let old_size = layout.size();
 
         if new_size >= old_size {
-            if let Ok(()) = self.grow_in_place(ptr, layout.clone(), new_size) {
+            if let Ok(()) = self.grow_in_place(ptr, layout, new_size) {
                 return Ok(ptr);
             }
         } else if new_size < old_size {
-            if let Ok(()) = self.shrink_in_place(ptr, layout.clone(), new_size) {
+            if let Ok(()) = self.shrink_in_place(ptr, layout, new_size) {
                 return Ok(ptr);
             }
         }
@@ -700,9 +701,7 @@ pub unsafe trait Alloc {
         Self: Sized,
     {
         match Layout::array::<T>(n) {
-            Ok(ref layout) if layout.size() > 0 => unsafe {
-                self.alloc(layout.clone()).map(|p| p.cast())
-            },
+            Ok(layout) if layout.size() > 0 => unsafe { self.alloc(layout).map(|p| p.cast()) },
             _ => Err(AllocErr),
         }
     }
@@ -753,7 +752,7 @@ pub unsafe trait Alloc {
         match (Layout::array::<T>(n_old), Layout::array::<T>(n_new)) {
             (Ok(ref k_old), Ok(ref k_new)) if k_old.size() > 0 && k_new.size() > 0 => {
                 debug_assert!(k_old.align() == k_new.align());
-                self.realloc(ptr.cast(), k_old.clone(), k_new.size())
+                self.realloc(ptr.cast(), *k_old, k_new.size())
                     .map(NonNull::cast)
             }
             _ => Err(AllocErr),
@@ -785,7 +784,10 @@ pub unsafe trait Alloc {
         Self: Sized,
     {
         match Layout::array::<T>(n) {
-            Ok(ref k) if k.size() > 0 => Ok(self.dealloc(ptr.cast(), k.clone())),
+            Ok(k) if k.size() > 0 => {
+                self.dealloc(ptr.cast(), k);
+                Ok(())
+            }
             _ => Err(AllocErr),
         }
     }

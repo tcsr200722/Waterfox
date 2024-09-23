@@ -11,11 +11,11 @@
 
   function testIntroductionType() {
     extractIntroType();
-    ok(introType == "scriptElement", 'Check introduction type');
+    ok(introType == "srcScript", 'Check introduction type');
     SimpleTest.finish();
   }
 </script>
 <iframe src="iframe_extractIntroType.html"></iframe>
-<script type="module" src="module_extractIntroType.js">
+<script type="module" src="module_extractIntroType.mjs">
 </script>
 <body onload='testIntroductionType()'></body>

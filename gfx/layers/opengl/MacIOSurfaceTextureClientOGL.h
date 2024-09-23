@@ -25,6 +25,10 @@ class MacIOSurfaceTextureData : public TextureData {
 
   ~MacIOSurfaceTextureData();
 
+  TextureType GetTextureType() const override {
+    return TextureType::MacIOSurface;
+  }
+
   void FillInfo(TextureData::Info& aInfo) const override;
 
   bool Lock(OpenMode) override;
@@ -34,6 +38,9 @@ class MacIOSurfaceTextureData : public TextureData {
   already_AddRefed<gfx::DrawTarget> BorrowDrawTarget() override;
 
   bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
+
+  void GetSubDescriptor(
+      RemoteDecoderVideoSubDescriptor* const aOutDesc) override;
 
   void Deallocate(LayersIPCChannel*) override;
 

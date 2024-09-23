@@ -44,15 +44,6 @@ class nsInlineFrame : public nsContainerFrame {
   virtual nsresult GetFrameName(nsAString& aResult) const override;
 #endif
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    if (aFlags & (eSupportsCSSTransforms | eSupportsContainLayoutAndPaint)) {
-      return false;
-    }
-    return nsContainerFrame::IsFrameOfType(
-        aFlags &
-        ~(nsIFrame::eBidiInlineContainer | nsIFrame::eLineParticipant));
-  }
-
   virtual void InvalidateFrame(uint32_t aDisplayItemKey = 0,
                                bool aRebuildDisplayItems = true) override;
   virtual void InvalidateFrameWithRect(
@@ -67,20 +58,22 @@ class nsInlineFrame : public nsContainerFrame {
       PeekOffsetCharacterOptions aOptions =
           PeekOffsetCharacterOptions()) override;
 
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
-  virtual nsresult StealFrame(nsIFrame* aChild) override;
+  void Destroy(DestroyContext&) override;
+
+  void StealFrame(nsIFrame* aChild) override;
 
   // nsIHTMLReflow overrides
   virtual void AddInlineMinISize(gfxContext* aRenderingContext,
                                  InlineMinISizeData* aData) override;
   virtual void AddInlinePrefISize(gfxContext* aRenderingContext,
                                   InlinePrefISizeData* aData) override;
-  virtual mozilla::LogicalSize ComputeSize(
-      gfxContext* aRenderingContext, mozilla::WritingMode aWritingMode,
+  SizeComputationResult ComputeSize(
+      gfxContext* aRenderingContext, mozilla::WritingMode aWM,
       const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) override;
+      const mozilla::LogicalSize& aMargin,
+      const mozilla::LogicalSize& aBorderPadding,
+      const mozilla::StyleSizeOverrides& aSizeOverrides,
+      mozilla::ComputeSizeFlags aFlags) override;
   virtual nsRect ComputeTightBounds(DrawTarget* aDrawTarget) const override;
   virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
                       const ReflowInput& aReflowInput,
@@ -92,8 +85,10 @@ class nsInlineFrame : public nsContainerFrame {
   virtual bool CanContinueTextRun() const override;
 
   virtual void PullOverflowsFromPrevInFlow() override;
-  virtual nscoord GetLogicalBaseline(
-      mozilla::WritingMode aWritingMode) const override;
+
+  Maybe<nscoord> GetNaturalBaselineBOffset(
+      mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+      BaselineExportContext) const override;
   virtual bool DrainSelfOverflowList() override;
 
   /**
@@ -102,9 +97,9 @@ class nsInlineFrame : public nsContainerFrame {
   bool IsFirst() const {
     // If the frame's bidi visual state is set, return is-first state
     // else return true if it's the first continuation.
-    return (GetStateBits() & NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET)
-               ? !!(GetStateBits() & NS_INLINE_FRAME_BIDI_VISUAL_IS_FIRST)
-               : (!GetPrevInFlow());
+    return HasAnyStateBits(NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET)
+               ? HasAnyStateBits(NS_INLINE_FRAME_BIDI_VISUAL_IS_FIRST)
+               : !GetPrevInFlow();
   }
 
   /**
@@ -113,9 +108,9 @@ class nsInlineFrame : public nsContainerFrame {
   bool IsLast() const {
     // If the frame's bidi visual state is set, return is-last state
     // else return true if it's the last continuation.
-    return (GetStateBits() & NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET)
-               ? !!(GetStateBits() & NS_INLINE_FRAME_BIDI_VISUAL_IS_LAST)
-               : (!GetNextInFlow());
+    return HasAnyStateBits(NS_INLINE_FRAME_BIDI_VISUAL_STATE_IS_SET)
+               ? HasAnyStateBits(NS_INLINE_FRAME_BIDI_VISUAL_IS_LAST)
+               : !GetNextInFlow();
   }
 
   // Restyles the block wrappers around our non-inline-outside kids.
@@ -146,8 +141,7 @@ class nsInlineFrame : public nsContainerFrame {
       : nsContainerFrame(aStyle, aPresContext, aID),
         mBaseline(NS_INTRINSIC_ISIZE_UNKNOWN) {}
 
-  virtual LogicalSides GetLogicalSkipSides(
-      const ReflowInput* aReflowInput = nullptr) const override;
+  LogicalSides GetLogicalSkipSides() const override;
 
   void ReflowFrames(nsPresContext* aPresContext,
                     const ReflowInput& aReflowInput, InlineReflowInput& rs,

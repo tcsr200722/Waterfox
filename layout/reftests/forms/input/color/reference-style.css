@@ -7,10 +7,11 @@ div.input-color-swatch {
   box-sizing: border-box;
   border: 1px solid grey;
   display: block;
-  background-color:#000000; /* default color for input type color */
+  background-color: #000000; /* default color for input type color */
 }
 
 button.input-color {
   width: 64px;
-  height: 23px;
+  height: 32px;
+  padding: 4px; /* widget-supplied padding */
 }

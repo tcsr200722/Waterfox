@@ -44,8 +44,8 @@ function startTests()
   inputBox._input.focus();
   testNum = 0;
 
-  ({onSpellCheck} = ChromeUtils.import(
-    "resource://testing-common/AsyncSpellCheckTestHelper.jsm"));
+  ({onSpellCheck} = ChromeUtils.importESModule(
+    "resource://testing-common/AsyncSpellCheckTestHelper.sys.mjs"));
   onSpellCheck(inputBox._input, function () {
     bringUpContextMenu(inputBox);
   });
@@ -79,7 +79,7 @@ function runContextMenuTest()
         var undoAddDict = inputBox.getMenuItem("spell-undo-add-to-dictionary");
         ok(!undoAddDict.hidden, "Is Undo Add to Dictioanry visible?");
 
-        var separator = inputBox.getMenuItem("spell-suggestions-separator");
+        separator = inputBox.getMenuItem("spell-suggestions-separator");
         ok(!separator.hidden, "Is separator hidden?");
 
         undoAddDict.doCommand();

@@ -8,6 +8,7 @@
 
 #include "prio.h"
 #include "nsASocketHandler.h"
+#include "nsCOMPtr.h"
 #include "nsIServerSocket.h"
 #include "mozilla/Mutex.h"
 
@@ -40,7 +41,7 @@ class nsServerSocket : public nsASocketHandler, public nsIServerSocket {
 
  protected:
   virtual ~nsServerSocket();
-  PRFileDesc* mFD;
+  PRFileDesc* mFD{nullptr};
   nsCOMPtr<nsIServerSocketListener> mListener;
 
  private:
@@ -50,12 +51,15 @@ class nsServerSocket : public nsASocketHandler, public nsIServerSocket {
   // try attaching our socket (mFD) to the STS's poll list.
   nsresult TryAttach();
 
+  nsresult InitWithAddressInternal(const PRNetAddr* aAddr, int32_t aBackLog,
+                                   bool aDualStack = false);
+
   // lock protects access to mListener; so it is not cleared while being used.
-  mozilla::Mutex mLock;
-  PRNetAddr mAddr;
+  mozilla::Mutex mLock MOZ_UNANNOTATED{"nsServerSocket.mLock"};
+  PRNetAddr mAddr = {.raw = {0, {0}}};
   nsCOMPtr<nsIEventTarget> mListenerTarget;
-  bool mAttached;
-  bool mKeepWhenOffline;
+  bool mAttached{false};
+  bool mKeepWhenOffline{false};
 };
 
 }  // namespace net

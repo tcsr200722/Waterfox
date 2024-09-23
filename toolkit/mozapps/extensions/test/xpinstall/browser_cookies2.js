@@ -3,6 +3,9 @@
 // are set
 // This verifies bug 462739
 function test() {
+  // This test depends on InstallTrigger.install availability.
+  setInstallTriggerPrefs();
+
   Harness.installEndedCallback = install_ended;
   Harness.installsCompletedCallback = finish_test;
   Harness.setup();
@@ -17,7 +20,8 @@ function test() {
     true,
     Date.now() / 1000 + 60,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTP
   );
 
   PermissionTestUtils.add(
@@ -33,7 +37,7 @@ function test() {
     })
   );
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser,
     TESTROOT + "installtrigger.html?" + triggers
   );

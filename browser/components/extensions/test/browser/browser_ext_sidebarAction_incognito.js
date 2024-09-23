@@ -3,10 +3,6 @@
 "use strict";
 
 add_task(async function test_sidebarAction_not_allowed() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       sidebar_action: {
@@ -118,7 +114,7 @@ add_task(async function test_sidebarAction_not_allowed() {
         </html>
       `,
 
-      "sidebar.js": function() {
+      "sidebar.js": function () {
         window.onload = () => {
           browser.test.sendMessage("sidebar");
         };
@@ -128,11 +124,14 @@ add_task(async function test_sidebarAction_not_allowed() {
 
   await extension.startup();
   let sidebarID = `${makeWidgetId(extension.id)}-sidebar-action`;
-  ok(SidebarUI.sidebars.has(sidebarID), "sidebar exists in non-private window");
+  ok(
+    SidebarController.sidebars.has(sidebarID),
+    "sidebar exists in non-private window"
+  );
 
   let winData = await getIncognitoWindow();
 
-  let hasSidebar = winData.win.SidebarUI.sidebars.has(sidebarID);
+  let hasSidebar = winData.win.SidebarController.sidebars.has(sidebarID);
   ok(!hasSidebar, "sidebar does not exist in private window");
   // Test API access to private window data.
   extension.sendMessage(winData.details);

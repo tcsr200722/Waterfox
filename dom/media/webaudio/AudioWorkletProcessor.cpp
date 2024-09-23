@@ -8,16 +8,14 @@
 
 #include "mozilla/dom/AudioWorkletNodeBinding.h"
 #include "mozilla/dom/AudioWorkletProcessorBinding.h"
+#include "mozilla/dom/AudioWorkletGlobalScope.h"
 #include "mozilla/dom/MessagePort.h"
+#include "mozilla/dom/WorkletGlobalScope.h"
 #include "nsIGlobalObject.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(AudioWorkletProcessor, mParent, mPort)
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(AudioWorkletProcessor, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(AudioWorkletProcessor, Release)
 
 AudioWorkletProcessor::AudioWorkletProcessor(nsIGlobalObject* aParent,
                                              MessagePort* aPort)
@@ -48,5 +46,4 @@ JSObject* AudioWorkletProcessor::WrapObject(JSContext* aCx,
   return AudioWorkletProcessor_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

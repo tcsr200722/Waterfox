@@ -10,11 +10,14 @@
 #include "nsString.h"
 #include "nsError.h"
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/FormData.h"
 
+#include "js/Utility.h"  // JS::FreePolicy
+
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class BodyUtil final {
@@ -29,7 +32,8 @@ class BodyUtil final {
    */
   static void ConsumeArrayBuffer(JSContext* aCx,
                                  JS::MutableHandle<JSObject*> aValue,
-                                 uint32_t aInputLength, uint8_t* aInput,
+                                 uint32_t aInputLength,
+                                 UniquePtr<uint8_t[], JS::FreePolicy> aInput,
                                  ErrorResult& aRv);
 
   /**
@@ -42,13 +46,23 @@ class BodyUtil final {
                                             uint8_t* aInput, ErrorResult& aRv);
 
   /**
+   * Creates an Uint8Array from an array, assigning the result to |aValue|.
+   * The array buffer takes ownership of |aInput|, which must be allocated
+   * by |malloc|.
+   */
+  static void ConsumeBytes(JSContext* aCx, JS::MutableHandle<JSObject*> aValue,
+                           uint32_t aInputLength,
+                           UniquePtr<uint8_t[], JS::FreePolicy> aInput,
+                           ErrorResult& aRv);
+
+  /**
    * Creates a form data object from a UTF-8 encoded |aStr|. Returns |nullptr|
    * and sets |aRv| to MSG_BAD_FORMDATA if |aStr| contains invalid data.
    */
-  static already_AddRefed<FormData> ConsumeFormData(nsIGlobalObject* aParent,
-                                                    const nsCString& aMimeType,
-                                                    const nsCString& aStr,
-                                                    ErrorResult& aRv);
+  static already_AddRefed<FormData> ConsumeFormData(
+      nsIGlobalObject* aParent, const nsCString& aMimeType,
+      const nsACString& aMixedCaseMimeType, const nsCString& aStr,
+      ErrorResult& aRv);
 
   /**
    * UTF-8 decodes |aInput| into |aText|. The caller may free |aInput|

@@ -6,10 +6,13 @@
 #ifndef GLCONTEXTPROVIDER_H_
 #define GLCONTEXTPROVIDER_H_
 
+#include "mozilla/AlreadyAddRefed.h"
+
 #include "GLContextTypes.h"
 #include "SurfaceTypes.h"
 
 #include "nsSize.h"  // for gfx::IntSize (needed by GLContextProviderImpl.h below)
+#include "nsStringFwd.h"  // needed by GLContextProviderImpl.h below
 
 class nsIWidget;
 
@@ -41,26 +44,20 @@ namespace gl {
 #  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderCGL
 #endif
 
-#if defined(MOZ_X11)
-#  define GL_CONTEXT_PROVIDER_NAME GLContextProviderGLX
-#  include "GLContextProviderImpl.h"
-#  undef GL_CONTEXT_PROVIDER_NAME
-#  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderGLX
-#endif
-
 #define GL_CONTEXT_PROVIDER_NAME GLContextProviderEGL
 #include "GLContextProviderImpl.h"
 #undef GL_CONTEXT_PROVIDER_NAME
-#ifndef GL_CONTEXT_PROVIDER_DEFAULT
-#  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderEGL
-#endif
 
-#if defined(MOZ_WAYLAND)
-#  define GL_CONTEXT_PROVIDER_NAME GLContextProviderWayland
+#if defined(MOZ_WIDGET_GTK)
+#  ifdef MOZ_X11
+#    define GL_CONTEXT_PROVIDER_NAME GLContextProviderGLX
+#    include "GLContextProviderImpl.h"
+#    undef GL_CONTEXT_PROVIDER_NAME
+#  endif
+#  define GL_CONTEXT_PROVIDER_NAME GLContextProviderLinux
 #  include "GLContextProviderImpl.h"
 #  undef GL_CONTEXT_PROVIDER_NAME
-#  undef GL_CONTEXT_PROVIDER_DEFAULT
-#  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderWayland
+#  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderLinux
 #endif
 
 #if defined(MOZ_WIDGET_UIKIT)
@@ -70,6 +67,10 @@ namespace gl {
 #  ifndef GL_CONTEXT_PROVIDER_DEFAULT
 #    define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderEAGL
 #  endif
+#endif
+
+#ifndef GL_CONTEXT_PROVIDER_DEFAULT
+#  define GL_CONTEXT_PROVIDER_DEFAULT GLContextProviderEGL
 #endif
 
 #ifdef MOZ_GL_PROVIDER

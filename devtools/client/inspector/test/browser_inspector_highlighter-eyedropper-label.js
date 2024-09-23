@@ -65,30 +65,41 @@ const TEST_DATA = [
   },
   {
     desc: "Move the mouse to the top left",
-    getCoordinates: (width, height) => {
+    getCoordinates: () => {
       return { x: 0, y: 0 };
     },
     expectedPositions: { top: false, right: true, left: false },
   },
   {
     desc: "Move the mouse to the top right",
-    getCoordinates: (width, height) => {
+    getCoordinates: width => {
       return { x: width, y: 0 };
     },
     expectedPositions: { top: false, right: false, left: true },
   },
 ];
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_PAGE);
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
+    TEST_PAGE
+  );
   const helper = await getHighlighterHelperFor(HIGHLIGHTER_TYPE)({
     inspector,
-    testActor,
+    highlighterTestFront,
   });
   helper.prefix = ID;
 
   const { mouse, show, hide, finalize } = helper;
-  let { width, height } = await testActor.getBoundingClientRect("html");
+  let { width, height } = await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [],
+    () => {
+      const rect = content.document
+        .querySelector("html")
+        .getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+  );
 
   // This test fails in non-e10s windows if we use width and height. For some reasons, the
   // mouse events can't be dispatched/handled properly when we try to move the eyedropper

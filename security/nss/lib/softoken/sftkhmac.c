@@ -31,6 +31,14 @@ sftk_HMACMechanismToHash(CK_MECHANISM_TYPE mech)
             return HASH_AlgSHA384;
         case CKM_SHA512_HMAC:
             return HASH_AlgSHA512;
+        case CKM_SHA3_224_HMAC:
+            return HASH_AlgSHA3_224;
+        case CKM_SHA3_256_HMAC:
+            return HASH_AlgSHA3_256;
+        case CKM_SHA3_384_HMAC:
+            return HASH_AlgSHA3_384;
+        case CKM_SHA3_512_HMAC:
+            return HASH_AlgSHA3_512;
     }
     return HASH_AlgNULL;
 }
@@ -69,6 +77,7 @@ SetupMAC(CK_MECHANISM_PTR mech, SFTKObject *key)
 
     ctx = PORT_Alloc(sizeof(sftk_MACConstantTimeCtx));
     if (!ctx) {
+        PORT_Memset(secret, 0, secretLength);
         return NULL;
     }
 
@@ -76,6 +85,7 @@ SetupMAC(CK_MECHANISM_PTR mech, SFTKObject *key)
     ctx->secretLength = secretLength;
     ctx->hash = HASH_GetRawHashObject(alg);
     ctx->totalLength = params->ulBodyTotalLen;
+    PORT_Memset(secret, 0, secretLength);
 
     return ctx;
 }
@@ -188,7 +198,7 @@ sftk_MACConstantTime_EndHash(void *pctx, void *out, unsigned int *outLength,
 void
 sftk_MACConstantTime_DestroyContext(void *pctx, PRBool free)
 {
-    PORT_Free(pctx);
+    PORT_ZFree(pctx, sizeof(sftk_MACConstantTimeCtx));
 }
 
 CK_RV
@@ -217,7 +227,7 @@ CK_RV
 sftk_MAC_Init(sftk_MACCtx *ctx, CK_MECHANISM_TYPE mech, SFTKObject *key)
 {
     SFTKAttribute *keyval = NULL;
-    PRBool isFIPS = (key->slot->slotID == FIPS_SLOT_ID);
+    PRBool isFIPS = sftk_isFIPS(key->slot->slotID);
     CK_RV ret = CKR_OK;
 
     /* Find the actual value of the key. */
@@ -232,7 +242,9 @@ sftk_MAC_Init(sftk_MACCtx *ctx, CK_MECHANISM_TYPE mech, SFTKObject *key)
                            keyval->attrib.ulValueLen, isFIPS);
 
 done:
-    sftk_FreeAttribute(keyval);
+    if (keyval) {
+        sftk_FreeAttribute(keyval);
+    }
     return ret;
 }
 
@@ -261,6 +273,10 @@ sftk_MAC_InitRaw(sftk_MACCtx *ctx, CK_MECHANISM_TYPE mech, const unsigned char *
         case CKM_SHA256_HMAC:
         case CKM_SHA384_HMAC:
         case CKM_SHA512_HMAC:
+        case CKM_SHA3_224_HMAC:
+        case CKM_SHA3_256_HMAC:
+        case CKM_SHA3_384_HMAC:
+        case CKM_SHA3_512_HMAC:
             hashObj = HASH_GetRawHashObject(sftk_HMACMechanismToHash(mech));
 
             /* Because we condition above only on hashes we know to be valid,
@@ -337,6 +353,10 @@ sftk_MAC_Reset(sftk_MACCtx *ctx)
         case CKM_SHA256_HMAC:
         case CKM_SHA384_HMAC:
         case CKM_SHA512_HMAC:
+        case CKM_SHA3_224_HMAC:
+        case CKM_SHA3_256_HMAC:
+        case CKM_SHA3_384_HMAC:
+        case CKM_SHA3_512_HMAC:
             HMAC_Begin(ctx->mac.hmac);
             break;
         case CKM_AES_CMAC:
@@ -355,7 +375,7 @@ sftk_MAC_Reset(sftk_MACCtx *ctx)
 }
 
 CK_RV
-sftk_MAC_Update(sftk_MACCtx *ctx, CK_BYTE_PTR data, unsigned int data_len)
+sftk_MAC_Update(sftk_MACCtx *ctx, const CK_BYTE *data, unsigned int data_len)
 {
     switch (ctx->mech) {
         case CKM_MD2_HMAC:
@@ -365,6 +385,10 @@ sftk_MAC_Update(sftk_MACCtx *ctx, CK_BYTE_PTR data, unsigned int data_len)
         case CKM_SHA256_HMAC:
         case CKM_SHA384_HMAC:
         case CKM_SHA512_HMAC:
+        case CKM_SHA3_224_HMAC:
+        case CKM_SHA3_256_HMAC:
+        case CKM_SHA3_384_HMAC:
+        case CKM_SHA3_512_HMAC:
             /* HMAC doesn't indicate failure in the return code. */
             HMAC_Update(ctx->mac.hmac, data, data_len);
             break;
@@ -397,6 +421,10 @@ sftk_MAC_Finish(sftk_MACCtx *ctx, CK_BYTE_PTR result, unsigned int *result_len, 
         case CKM_SHA256_HMAC:
         case CKM_SHA384_HMAC:
         case CKM_SHA512_HMAC:
+        case CKM_SHA3_224_HMAC:
+        case CKM_SHA3_256_HMAC:
+        case CKM_SHA3_384_HMAC:
+        case CKM_SHA3_512_HMAC:
             /* HMAC doesn't indicate failure in the return code. Additionally,
              * unlike CMAC, it doesn't support partial results. This means that we
              * need to allocate a buffer if max_result_len < ctx->mac_size. */

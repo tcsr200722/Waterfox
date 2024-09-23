@@ -1,3 +1,4 @@
+use super::assert_sink;
 use crate::never::Never;
 use core::marker::PhantomData;
 use core::pin::Pin;
@@ -26,39 +27,33 @@ pub struct Drain<T> {
 /// # Ok::<(), futures::never::Never>(()) }).unwrap();
 /// ```
 pub fn drain<T>() -> Drain<T> {
-    Drain { marker: PhantomData }
+    assert_sink::<T, Never, _>(Drain { marker: PhantomData })
 }
 
 impl<T> Unpin for Drain<T> {}
 
+impl<T> Clone for Drain<T> {
+    fn clone(&self) -> Self {
+        drain()
+    }
+}
+
 impl<T> Sink<T> for Drain<T> {
     type Error = Never;
 
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(
-        self: Pin<&mut Self>,
-        _item: T,
-    ) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, _item: T) -> Result<(), Self::Error> {
         Ok(())
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 }

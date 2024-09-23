@@ -7,12 +7,11 @@
 #include "nsIInputStream.h"
 #include "nsIChannel.h"
 #include "nsError.h"
-#include "GeckoProfiler.h"
+#include "mozilla/ProfilerLabels.h"
 
 #include <limits>
 
-nsIncrementalStreamLoader::nsIncrementalStreamLoader()
-    : mData(), mBytesConsumed(0) {}
+nsIncrementalStreamLoader::nsIncrementalStreamLoader() = default;
 
 NS_IMETHODIMP
 nsIncrementalStreamLoader::Init(nsIIncrementalStreamLoaderObserver* observer) {
@@ -21,10 +20,7 @@ nsIncrementalStreamLoader::Init(nsIIncrementalStreamLoaderObserver* observer) {
   return NS_OK;
 }
 
-nsresult nsIncrementalStreamLoader::Create(nsISupports* aOuter, REFNSIID aIID,
-                                           void** aResult) {
-  if (aOuter) return NS_ERROR_NO_AGGREGATION;
-
+nsresult nsIncrementalStreamLoader::Create(REFNSIID aIID, void** aResult) {
   RefPtr<nsIncrementalStreamLoader> it = new nsIncrementalStreamLoader();
   return it->QueryInterface(aIID, aResult);
 }
@@ -35,14 +31,14 @@ NS_IMPL_ISUPPORTS(nsIncrementalStreamLoader, nsIIncrementalStreamLoader,
 
 NS_IMETHODIMP
 nsIncrementalStreamLoader::GetNumBytesRead(uint32_t* aNumBytes) {
-  *aNumBytes = mBytesConsumed + mData.length();
+  *aNumBytes = mBytesRead;
   return NS_OK;
 }
 
 /* readonly attribute nsIRequest request; */
 NS_IMETHODIMP
 nsIncrementalStreamLoader::GetRequest(nsIRequest** aRequest) {
-  NS_IF_ADDREF(*aRequest = mRequest);
+  *aRequest = do_AddRef(mRequest).take();
   return NS_OK;
 }
 
@@ -161,9 +157,7 @@ nsresult nsIncrementalStreamLoader::WriteSegmentFun(
     }
   }
 
-  self->mBytesConsumed += consumedCount;
   *writeCount = count;
-
   return NS_OK;
 }
 
@@ -180,10 +174,17 @@ nsIncrementalStreamLoader::OnDataAvailable(nsIRequest* request,
   uint32_t countRead;
   nsresult rv = inStr->ReadSegments(WriteSegmentFun, this, count, &countRead);
   mRequest = nullptr;
+  NS_ENSURE_SUCCESS(rv, rv);
+  mBytesRead += countRead;
   return rv;
 }
 
 void nsIncrementalStreamLoader::ReleaseData() { mData.clearAndFree(); }
 
 NS_IMETHODIMP
-nsIncrementalStreamLoader::CheckListenerChain() { return NS_OK; }
+nsIncrementalStreamLoader::CheckListenerChain() {
+  return NS_ERROR_NO_INTERFACE;
+}
+
+NS_IMETHODIMP
+nsIncrementalStreamLoader::OnDataFinished(nsresult aStatus) { return NS_OK; }

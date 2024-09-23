@@ -1,9 +1,8 @@
-// |reftest| skip -- Intl.DateTimeFormat-datetimestyle is not supported
 // Copyright 2018 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: Checks the order of getting options for the DateTimeFormat constructor.
 includes: [compareArray.js]
 features: [Intl.DateTimeFormat-datetimestyle]
@@ -12,24 +11,15 @@ features: [Intl.DateTimeFormat-datetimestyle]
 // To be merged into constructor-options-order.js when the feature is removed.
 
 const expected = [
-  // ToDateTimeOptions step 4.
-  "weekday", "year", "month", "day",
-  // ToDateTimeOptions step 5.
-  "hour", "minute", "second",
-
-  // InitializeDateTimeFormat step 4.
+  // CreateDateTimeFormat step 4.
   "localeMatcher",
-  // InitializeDateTimeFormat step 6.
+  // CreateDateTimeFormat step 12.
   "hour12",
-  // InitializeDateTimeFormat step 7.
+  // CreateDateTimeFormat step 13.
   "hourCycle",
-  // InitializeDateTimeFormat step 22.
+  // CreateDateTimeFormat step 29.
   "timeZone",
-  // InitializeDateTimeFormat step 28.
-  "dateStyle",
-  // InitializeDateTimeFormat step 30.
-  "timeStyle",
-  // InitializeDateTimeFormat step 33.
+  // CreateDateTimeFormat step 36.
   "weekday",
   "era",
   "year",
@@ -40,6 +30,10 @@ const expected = [
   "second",
   "timeZoneName",
   "formatMatcher",
+  // CreateDateTimeFormat step 38.
+  "dateStyle",
+  // CreateDateTimeFormat step 40.
+  "timeStyle",
 ];
 
 const actual = [];

@@ -6,14 +6,23 @@ const URI =
   "/browser/browser/components/contextualidentity/test/browser/saveLink.sjs";
 
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window);
+MockFilePicker.init(window.browsingContext);
 
-add_task(async function setup() {
+add_setup(async function () {
   info("Setting the prefs.");
 
   // make sure userContext is enabled.
   await SpecialPowers.pushPrefEnv({
-    set: [["privacy.userContext.enabled", true]],
+    set: [
+      ["privacy.userContext.enabled", true],
+      // This test does a redirect from https to http and it checks the
+      // cookies. This is incompatible with the cookie SameSite schemeful
+      // feature and we need to disable it.
+      ["network.cookie.sameSite.schemeful", false],
+      // This Test trys to download mixed content
+      // so we need to make sure that this is not blocked
+      ["dom.block_download_insecure", false],
+    ],
   });
 });
 
@@ -77,7 +86,7 @@ add_task(async function test() {
     mockTransferRegisterer.register();
   });
 
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     mockTransferRegisterer.unregister();
     MockFilePicker.cleanup();
     tempDir.remove(true);
@@ -108,7 +117,6 @@ add_task(async function test() {
   await BrowserTestUtils.closeWindow(win);
 });
 
-/* import-globals-from ../../../../../toolkit/content/tests/browser/common/mockTransfer.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/content/tests/browser/common/mockTransfer.js",
   this

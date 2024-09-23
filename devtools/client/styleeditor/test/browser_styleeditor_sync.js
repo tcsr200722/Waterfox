@@ -19,13 +19,12 @@ const expectedText = `
   `;
 
 async function closeAndReopenToolbox() {
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  await gDevTools.closeToolbox(target);
+  await gDevTools.closeToolboxForTab(gBrowser.selectedTab);
   const { ui: newui } = await openStyleEditor();
   return newui;
 }
 
-add_task(async function() {
+add_task(async function () {
   await addTab(TESTCASE_URI);
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
@@ -65,7 +64,7 @@ add_task(async function() {
   const textContent = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
-    async function() {
+    async function () {
       return content.document.querySelector("style").textContent;
     }
   );

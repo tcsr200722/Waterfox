@@ -4,11 +4,13 @@
 
 "use strict";
 
-const Services = require("Services");
+const {
+  getLongStringFullText,
+} = require("resource://devtools/client/shared/string-utils.js");
 
 // Helper tracer. Should be generic sharable by other modules (bug 1171927)
 const trace = {
-  log: function(...args) {},
+  log() {},
 };
 
 /**
@@ -16,11 +18,10 @@ const trace = {
  * HTTP requests executed by the page (including inner iframes).
  */
 function HarCollector(options) {
-  this.webConsoleFront = options.webConsoleFront;
-  this.devToolsClient = options.devToolsClient;
+  this.commands = options.commands;
 
-  this.onNetworkEvent = this.onNetworkEvent.bind(this);
-  this.onNetworkEventUpdate = this.onNetworkEventUpdate.bind(this);
+  this.onResourceAvailable = this.onResourceAvailable.bind(this);
+  this.onResourceUpdated = this.onResourceUpdated.bind(this);
   this.onRequestHeaders = this.onRequestHeaders.bind(this);
   this.onRequestCookies = this.onRequestCookies.bind(this);
   this.onRequestPostData = this.onRequestPostData.bind(this);
@@ -35,17 +36,27 @@ function HarCollector(options) {
 HarCollector.prototype = {
   // Connection
 
-  start: function() {
-    this.webConsoleFront.on("networkEvent", this.onNetworkEvent);
-    this.devToolsClient.on("networkEventUpdate", this.onNetworkEventUpdate);
+  async start() {
+    await this.commands.resourceCommand.watchResources(
+      [this.commands.resourceCommand.TYPES.NETWORK_EVENT],
+      {
+        onAvailable: this.onResourceAvailable,
+        onUpdated: this.onResourceUpdated,
+      }
+    );
   },
 
-  stop: function() {
-    this.webConsoleFront.off("networkEvent", this.onNetworkEvent);
-    this.devToolsClient.off("networkEventUpdate", this.onNetworkEventUpdate);
+  async stop() {
+    await this.commands.resourceCommand.unwatchResources(
+      [this.commands.resourceCommand.TYPES.NETWORK_EVENT],
+      {
+        onAvailable: this.onResourceAvailable,
+        onUpdated: this.onResourceUpdated,
+      }
+    );
   },
 
-  clear: function() {
+  clear() {
     // Any pending requests events will be ignored (they turn
     // into zombies, since not present in the files array).
     this.files = new Map();
@@ -55,7 +66,7 @@ HarCollector.prototype = {
     this.requests = [];
   },
 
-  waitForHarLoad: function() {
+  waitForHarLoad() {
     // There should be yet another timeout e.g.:
     // 'devtools.netmonitor.har.pageLoadTimeout'
     // that should force export even if page isn't fully loaded.
@@ -67,7 +78,7 @@ HarCollector.prototype = {
     });
   },
 
-  waitForResponses: function() {
+  waitForResponses() {
     trace.log("HarCollector.waitForResponses; " + this.requests.length);
 
     // All requests for additional data must be received to have complete
@@ -106,7 +117,7 @@ HarCollector.prototype = {
    * of time. The time is set in preferences:
    * 'devtools.netmonitor.har.pageLoadedTimeout'
    */
-  waitForTimeout: function() {
+  waitForTimeout() {
     // The auto-export is not done if the timeout is set to zero (or less).
     // This is useful in cases where the export is done manually through
     // API exposed to the content.
@@ -128,7 +139,7 @@ HarCollector.prototype = {
     });
   },
 
-  resetPageLoadTimeout: function() {
+  resetPageLoadTimeout() {
     // Remove the current timeout.
     if (this.pageLoadTimeout) {
       trace.log("HarCollector.resetPageLoadTimeout;");
@@ -146,169 +157,169 @@ HarCollector.prototype = {
 
   // Collected Data
 
-  getFile: function(actorId) {
+  getFile(actorId) {
     return this.files.get(actorId);
   },
 
-  getItems: function() {
+  getItems() {
     return this.items;
   },
 
   // Event Handlers
 
-  onNetworkEvent: function(packet) {
-    trace.log("HarCollector.onNetworkEvent; ", packet);
+  onResourceAvailable(resources) {
+    for (const resource of resources) {
+      trace.log("HarCollector.onNetworkEvent; ", resource);
 
-    const {
-      actor,
-      startedDateTime,
-      request: { method, url },
-      isXHR,
-    } = packet;
-    const startTime = Date.parse(startedDateTime);
+      const { actor, startedDateTime, method, url, isXHR } = resource;
+      const startTime = Date.parse(startedDateTime);
 
-    if (this.firstRequestStart == -1) {
-      this.firstRequestStart = startTime;
-    }
-
-    if (this.lastRequestEnd < startTime) {
-      this.lastRequestEnd = startTime;
-    }
-
-    let file = this.getFile(actor);
-    if (file) {
-      console.error(
-        "HarCollector.onNetworkEvent; ERROR " + "existing file conflict!"
-      );
-      return;
-    }
-
-    file = {
-      id: actor,
-      startedDeltaMs: startTime - this.firstRequestStart,
-      startedMs: startTime,
-      method: method,
-      url: url,
-      isXHR: isXHR,
-    };
-
-    this.files.set(actor, file);
-
-    // Mimic the Net panel data structure
-    this.items.push(file);
-  },
-
-  onNetworkEventUpdate: function(packet) {
-    const actor = packet.from;
-
-    // Skip events from unknown actors (not in the list).
-    // It can happen when there are zombie requests received after
-    // the target is closed or multiple tabs are attached through
-    // one connection (one DevToolsClient object).
-    const file = this.getFile(packet.from);
-    if (!file) {
-      return;
-    }
-
-    trace.log(
-      "HarCollector.onNetworkEventUpdate; " + packet.updateType,
-      packet
-    );
-
-    const includeResponseBodies = Services.prefs.getBoolPref(
-      "devtools.netmonitor.har.includeResponseBodies"
-    );
-
-    let request;
-    switch (packet.updateType) {
-      case "requestHeaders":
-        request = this.getData(
-          actor,
-          "getRequestHeaders",
-          this.onRequestHeaders
-        );
-        break;
-      case "requestCookies":
-        request = this.getData(
-          actor,
-          "getRequestCookies",
-          this.onRequestCookies
-        );
-        break;
-      case "requestPostData":
-        request = this.getData(
-          actor,
-          "getRequestPostData",
-          this.onRequestPostData
-        );
-        break;
-      case "responseHeaders":
-        request = this.getData(
-          actor,
-          "getResponseHeaders",
-          this.onResponseHeaders
-        );
-        break;
-      case "responseCookies":
-        request = this.getData(
-          actor,
-          "getResponseCookies",
-          this.onResponseCookies
-        );
-        break;
-      case "responseStart":
-        file.httpVersion = packet.response.httpVersion;
-        file.status = packet.response.status;
-        file.statusText = packet.response.statusText;
-        break;
-      case "responseContent":
-        file.contentSize = packet.contentSize;
-        file.mimeType = packet.mimeType;
-        file.transferredSize = packet.transferredSize;
-
-        if (includeResponseBodies) {
-          request = this.getData(
-            actor,
-            "getResponseContent",
-            this.onResponseContent
-          );
-        }
-        break;
-      case "eventTimings":
-        request = this.getData(actor, "getEventTimings", this.onEventTimings);
-        break;
-    }
-
-    if (request) {
-      this.requests.push(request);
-    }
-
-    this.resetPageLoadTimeout();
-  },
-
-  getData: function(actor, method, callback) {
-    return new Promise(resolve => {
-      if (!this.webConsoleFront[method]) {
-        console.error("HarCollector.getData: ERROR Unknown method!");
-        resolve();
+      if (this.firstRequestStart == -1) {
+        this.firstRequestStart = startTime;
       }
 
-      const file = this.getFile(actor);
+      if (this.lastRequestEnd < startTime) {
+        this.lastRequestEnd = startTime;
+      }
 
-      trace.log(
-        "HarCollector.getData; REQUEST " + method + ", " + file.url,
-        file
+      let file = this.getFile(actor);
+      if (file) {
+        console.error(
+          "HarCollector.onNetworkEvent; ERROR " + "existing file conflict!"
+        );
+        continue;
+      }
+
+      file = {
+        id: actor,
+        startedDeltaMs: startTime - this.firstRequestStart,
+        startedMs: startTime,
+        method,
+        url,
+        isXHR,
+      };
+
+      this.files.set(actor, file);
+
+      // Mimic the Net panel data structure
+      this.items.push(file);
+    }
+  },
+
+  onResourceUpdated(updates) {
+    for (const { resource } of updates) {
+      // Skip events from unknown actors (not in the list).
+      // It can happen when there are zombie requests received after
+      // the target is closed or multiple tabs are attached through
+      // one connection (one DevToolsClient object).
+      const file = this.getFile(resource.actor);
+      if (!file) {
+        return;
+      }
+
+      const includeResponseBodies = Services.prefs.getBoolPref(
+        "devtools.netmonitor.har.includeResponseBodies"
       );
 
-      this.webConsoleFront[method](actor, response => {
+      [
+        {
+          type: "eventTimings",
+          method: "getEventTimings",
+          callbackName: "onEventTimings",
+        },
+        {
+          type: "requestHeaders",
+          method: "getRequestHeaders",
+          callbackName: "onRequestHeaders",
+        },
+        {
+          type: "requestPostData",
+          method: "getRequestPostData",
+          callbackName: "onRequestPostData",
+        },
+        {
+          type: "responseHeaders",
+          method: "getResponseHeaders",
+          callbackName: "onResponseHeaders",
+        },
+        { type: "responseStart" },
+        {
+          type: "responseContent",
+          method: "getResponseContent",
+          callbackName: "onResponseContent",
+        },
+        {
+          type: "requestCookies",
+          method: "getRequestCookies",
+          callbackName: "onRequestCookies",
+        },
+        {
+          type: "responseCookies",
+          method: "getResponseCookies",
+          callbackName: "onResponseCookies",
+        },
+      ].forEach(updateType => {
         trace.log(
-          "HarCollector.getData; RESPONSE " + method + ", " + file.url,
-          response
+          "HarCollector.onNetworkEventUpdate; " + updateType.type,
+          resource
         );
-        callback(response);
-        resolve(response);
+
+        let request;
+        if (resource[`${updateType.type}Available`]) {
+          if (updateType.type == "responseStart") {
+            file.httpVersion = resource.httpVersion;
+            file.status = resource.status;
+            file.statusText = resource.statusText;
+          } else if (updateType.type == "responseContent") {
+            file.contentSize = resource.contentSize;
+            file.mimeType = resource.mimeType;
+            file.transferredSize = resource.transferredSize;
+            if (includeResponseBodies) {
+              request = this.getData(
+                resource.actor,
+                updateType.method,
+                this[updateType.callbackName]
+              );
+            }
+          } else {
+            request = this.getData(
+              resource.actor,
+              updateType.method,
+              this[updateType.callbackName]
+            );
+          }
+        }
+
+        if (request) {
+          this.requests.push(request);
+        }
+        this.resetPageLoadTimeout();
       });
-    });
+    }
+  },
+
+  async getData(actor, method, callback) {
+    const file = this.getFile(actor);
+
+    trace.log(
+      "HarCollector.getData; REQUEST " + method + ", " + file.url,
+      file
+    );
+
+    // Bug 1519082: We don't create fronts for NetworkEvent actors,
+    // so that we have to do the request manually via DevToolsClient.request()
+    const packet = {
+      to: actor,
+      type: method,
+    };
+    const response = await this.commands.client.request(packet);
+
+    trace.log(
+      "HarCollector.getData; RESPONSE " + method + ", " + file.url,
+      response
+    );
+    callback(response);
+    return response;
   },
 
   /**
@@ -317,7 +328,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onRequestHeaders: function(response) {
+  onRequestHeaders(response) {
     const file = this.getFile(response.from);
     file.requestHeaders = response;
 
@@ -330,7 +341,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onRequestCookies: function(response) {
+  onRequestCookies(response) {
     const file = this.getFile(response.from);
     file.requestCookies = response;
 
@@ -343,7 +354,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onRequestPostData: function(response) {
+  onRequestPostData(response) {
     trace.log("HarCollector.onRequestPostData;", response);
 
     const file = this.getFile(response.from);
@@ -364,7 +375,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onResponseHeaders: function(response) {
+  onResponseHeaders(response) {
     const file = this.getFile(response.from);
     file.responseHeaders = response;
 
@@ -377,7 +388,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onResponseCookies: function(response) {
+  onResponseCookies(response) {
     const file = this.getFile(response.from);
     file.responseCookies = response;
 
@@ -390,7 +401,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onResponseContent: function(response) {
+  onResponseContent(response) {
     const file = this.getFile(response.from);
     file.responseContent = response;
 
@@ -409,7 +420,7 @@ HarCollector.prototype = {
    * @param object response
    *        The message received from the server.
    */
-  onEventTimings: function(response) {
+  onEventTimings(response) {
     const file = this.getFile(response.from);
     file.eventTimings = response;
     file.totalTime = response.totalTime;
@@ -417,7 +428,7 @@ HarCollector.prototype = {
 
   // Helpers
 
-  getLongHeaders: function(headers) {
+  getLongHeaders(headers) {
     for (const header of headers) {
       if (typeof header.value == "object") {
         try {
@@ -442,8 +453,8 @@ HarCollector.prototype = {
    *         A promise that is resolved when the full string contents
    *         are available, or rejected if something goes wrong.
    */
-  getString: function(stringGrip) {
-    const promise = this.webConsoleFront.getString(stringGrip);
+  async getString(stringGrip) {
+    const promise = getLongStringFullText(this.commands.client, stringGrip);
     this.requests.push(promise);
     return promise;
   },

@@ -8,7 +8,6 @@
 #define mozilla_RestyleManager_h
 
 #include "mozilla/AutoRestore.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/OverflowChangedTracker.h"
 #include "mozilla/ServoElementSnapshot.h"
@@ -17,18 +16,16 @@
 #include "nsPresContext.h"
 #include "nsPresContextInlines.h"  // XXX Shouldn't be included by header though
 #include "nsStringFwd.h"
+#include "nsTHashSet.h"
 
 class nsAttrValue;
-class nsCSSFrameConstructor;
 class nsAtom;
-class nsIContent;
 class nsIFrame;
 class nsStyleChangeList;
 class nsStyleChangeList;
 
 namespace mozilla {
 
-class EventStates;
 class ServoStyleSet;
 
 namespace dom {
@@ -69,13 +66,11 @@ class ServoRestyleState {
   // our children too if we're out of flow since they aren't necessarily
   // parented in DOM order, and thus a change handled by a DOM ancestor doesn't
   // necessarily mean that it's handled for an ancestor frame.
-  enum class Type {
-    InFlow,
-    OutOfFlow,
-  };
+  enum class CanUseHandledHints : bool { No = false, Yes };
 
   ServoRestyleState(const nsIFrame& aOwner, ServoRestyleState& aParentState,
-                    nsChangeHint aHintForThisFrame, Type aType,
+                    nsChangeHint aHintForThisFrame,
+                    CanUseHandledHints aCanUseHandledHints,
                     bool aAssertWrapperRestyleLength = true)
       : mStyleSet(aParentState.mStyleSet),
         mChangeList(aParentState.mChangeList),
@@ -84,7 +79,7 @@ class ServoRestyleState {
             aParentState.mPendingScrollAnchorSuppressions),
         mPendingWrapperRestyleOffset(
             aParentState.mPendingWrapperRestyles.Length()),
-        mChangesHandled(aType == Type::InFlow
+        mChangesHandled(bool(aCanUseHandledHints)
                             ? aParentState.mChangesHandled | aHintForThisFrame
                             : aHintForThisFrame)
 #ifdef DEBUG
@@ -93,7 +88,7 @@ class ServoRestyleState {
         mAssertWrapperRestyleLength(aAssertWrapperRestyleLength)
 #endif
   {
-    if (aType == Type::InFlow) {
+    if (bool(aCanUseHandledHints)) {
       AssertOwner(aParentState);
     }
   }
@@ -245,7 +240,7 @@ class RestyleManager {
     // If ProcessRestyledFrames is tracking frames which have been
     // destroyed (to avoid re-visiting them), add this one to its set.
     if (mDestroyedFrames) {
-      mDestroyedFrames->PutEntry(aFrame);
+      mDestroyedFrames->Insert(aFrame);
     }
   }
 
@@ -362,13 +357,48 @@ class RestyleManager {
   void ProcessPendingRestyles();
   void ProcessAllPendingAttributeAndStateInvalidations();
 
-  void ContentStateChanged(nsIContent* aContent, EventStates aStateMask);
+  void ElementStateChanged(Element*, dom::ElementState);
+
+  void CustomStatesWillChange(Element&);
+  void CustomStateChanged(Element&, nsAtom* aState);
+  void MaybeRestyleForNthOfCustomState(ServoStyleSet&, Element&,
+                                       nsAtom* aState);
+
+  /**
+   * Posts restyle hints for siblings of an element and their descendants if the
+   * element's parent has NODE_HAS_SLOW_SELECTOR_NTH_OF and the element has a
+   * relevant state dependency.
+   */
+  void MaybeRestyleForNthOfState(ServoStyleSet& aStyleSet, dom::Element* aChild,
+                                 dom::ElementState aChangedBits);
+
   void AttributeWillChange(Element* aElement, int32_t aNameSpaceID,
                            nsAtom* aAttribute, int32_t aModType);
   void ClassAttributeWillBeChangedBySMIL(dom::Element* aElement);
   void AttributeChanged(dom::Element* aElement, int32_t aNameSpaceID,
                         nsAtom* aAttribute, int32_t aModType,
                         const nsAttrValue* aOldValue);
+
+  /**
+   * Restyle an element's previous and/or next siblings.
+   */
+  void RestyleSiblingsForNthOf(dom::Element* aChild,
+                               NodeSelectorFlags aParentFlags);
+
+  /**
+   * Posts restyle hints for siblings of an element and their descendants if the
+   * element's parent has NODE_HAS_SLOW_SELECTOR_NTH_OF and the element has a
+   * relevant attribute dependency.
+   */
+  void MaybeRestyleForNthOfAttribute(dom::Element* aChild, nsAtom* aAttribute,
+                                     const nsAttrValue* aOldValue);
+
+  void MaybeRestyleForRelativeSelectorAttribute(dom::Element* aElement,
+                                                nsAtom* aAttribute,
+                                                const nsAttrValue* aOldValue);
+  void MaybeRestyleForRelativeSelectorState(ServoStyleSet& aStyleSet,
+                                            dom::Element* aElement,
+                                            dom::ElementState aChangedBits);
 
   // This is only used to reparent things when moving them in/out of the
   // ::first-line.
@@ -474,8 +504,11 @@ class RestyleManager {
 
   ServoStyleSet* StyleSet() const { return PresContext()->StyleSet(); }
 
+  void RestylePreviousSiblings(nsIContent* aStartingSibling);
+  void RestyleSiblingsStartingWith(nsIContent* aStartingSibling);
+
   void RestyleForEmptyChange(Element* aContainer);
-  void MaybeRestyleForEdgeChildChange(Element* aContainer,
+  void MaybeRestyleForEdgeChildChange(nsINode* aContainer,
                                       nsIContent* aChangedChild);
 
   bool IsDisconnected() const { return !mPresContext; }
@@ -503,10 +536,6 @@ class RestyleManager {
     return mPresContext;
   }
 
-  nsCSSFrameConstructor* FrameConstructor() const {
-    return PresContext()->FrameConstructor();
-  }
-
  private:
   nsPresContext* mPresContext;  // weak, can be null after Disconnect().
   uint64_t mRestyleGeneration;
@@ -515,8 +544,7 @@ class RestyleManager {
   // Used to keep track of frames that have been destroyed during
   // ProcessRestyledFrames, so we don't try to touch them again even if
   // they're referenced again later in the changelist.
-  mozilla::UniquePtr<nsTHashtable<nsPtrHashKey<const nsIFrame>>>
-      mDestroyedFrames;
+  mozilla::UniquePtr<nsTHashSet<const nsIFrame*>> mDestroyedFrames;
 
  protected:
   // True if we're in the middle of a nsRefreshDriver refresh

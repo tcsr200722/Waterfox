@@ -9,12 +9,13 @@
 
 #include "MainThreadUtils.h"
 #include "mozilla/dom/ServiceWorkerBinding.h"  // For ServiceWorkerState
+#include "mozilla/dom/ServiceWorkerDescriptor.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/OriginAttributes.h"
+#include "mozilla/TimeStamp.h"
 #include "nsIServiceWorkerManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ClientInfoAndState;
 class ClientState;
@@ -60,6 +61,12 @@ class ServiceWorkerInfo final : public nsIServiceWorkerInfo {
 
   enum { Unknown, Enabled, Disabled } mHandlesFetch;
 
+  uint32_t mNavigationFaultCount;
+
+  // Testing helper to trigger fetch event cancellation when not NS_OK.
+  // See `nsIServiceWorkerInfo::testingInjectCancellation`.
+  nsresult mTestingInjectCancellation;
+
   ~ServiceWorkerInfo();
 
   // Generates a unique id for the service worker, with zero being treated as
@@ -95,6 +102,11 @@ class ServiceWorkerInfo final : public nsIServiceWorkerInfo {
     mSkipWaitingFlag = true;
   }
 
+  void ReportNavigationFault() {
+    MOZ_ASSERT(NS_IsMainThread());
+    mNavigationFaultCount++;
+  }
+
   ServiceWorkerInfo(nsIPrincipal* aPrincipal, const nsACString& aScope,
                     uint64_t aRegistrationId, uint64_t aRegistrationVersion,
                     const nsACString& aScriptSpec, const nsAString& aCacheName,
@@ -113,6 +125,8 @@ class ServiceWorkerInfo final : public nsIServiceWorkerInfo {
   uint64_t ID() const { return mDescriptor.Id(); }
 
   const ServiceWorkerDescriptor& Descriptor() const { return mDescriptor; }
+
+  nsresult TestingInjectCancellation() { return mTestingInjectCancellation; }
 
   void UpdateState(ServiceWorkerState aState);
 
@@ -164,7 +178,6 @@ class ServiceWorkerInfo final : public nsIServiceWorkerInfo {
   }
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerinfo_h

@@ -6,6 +6,7 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "mozilla/LoadContext.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Element.h"
@@ -169,8 +170,8 @@ LoadContext::SetRemoteSubframes(bool aUseRemoteSubframes) {
 }
 
 NS_IMETHODIMP
-LoadContext::GetScriptableOriginAttributes(JSContext* aCx,
-                                           JS::MutableHandleValue aAttrs) {
+LoadContext::GetScriptableOriginAttributes(
+    JSContext* aCx, JS::MutableHandle<JS::Value> aAttrs) {
   bool ok = ToJSValue(aCx, mOriginAttributes, aAttrs);
   NS_ENSURE_TRUE(ok, NS_ERROR_FAILURE);
   return NS_OK;

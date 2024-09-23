@@ -18,9 +18,11 @@ use style_traits::{CssWriter, ParseError, ToCss};
     ComputeSquaredDistance,
     Copy,
     Debug,
+    Deserialize,
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
+    Serialize,
     ToAnimatedZero,
     ToAnimatedValue,
     ToComputedValue,
@@ -63,7 +65,7 @@ impl<L> Size2D<L> {
     {
         let first = parse_one(context, input)?;
         let second = input
-            .try(|i| parse_one(context, i))
+            .try_parse(|i| parse_one(context, i))
             .unwrap_or_else(|_| first.clone());
         Ok(Self::new(first, second))
     }
@@ -80,7 +82,7 @@ where
         self.width.to_css(dest)?;
 
         if self.height != self.width {
-            dest.write_str(" ")?;
+            dest.write_char(' ')?;
             self.height.to_css(dest)?;
         }
 

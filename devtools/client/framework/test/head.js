@@ -1,16 +1,49 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-/* import-globals-from ../../shared/test/shared-head.js */
-/* import-globals-from ../../shared/test/telemetry-test-helpers.js */
-
 // shared-head.js handles imports, constants, and utility functions
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
   this
 );
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/devtools/client/inspector/test/shared-head.js",
+  this
+);
 
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
+
+/**
+ * Retrieve all tool ids compatible with a target created for the provided tab.
+ *
+ * @param {XULTab} tab
+ *        The tab for which we want to get the list of supported toolIds
+ * @return {Array<String>} array of tool ids
+ */
+async function getSupportedToolIds(tab) {
+  info("Getting the entire list of tools supported in this tab");
+
+  let shouldDestroyToolbox = false;
+
+  // Get the toolbox for this tab, or create one if needed.
+  let toolbox = gDevTools.getToolboxForTab(tab);
+  if (!toolbox) {
+    toolbox = await gDevTools.showToolboxForTab(tab);
+    shouldDestroyToolbox = true;
+  }
+
+  const toolIds = gDevTools
+    .getToolDefinitionArray()
+    .filter(def => def.isToolSupported(toolbox))
+    .map(def => def.id);
+
+  if (shouldDestroyToolbox) {
+    // Only close the toolbox if it was explicitly created here.
+    await toolbox.destroy();
+  }
+
+  return toolIds;
+}
 
 function toggleAllTools(state) {
   for (const [, tool] of gDevTools._tools) {
@@ -26,70 +59,15 @@ function toggleAllTools(state) {
 }
 
 async function getParentProcessActors(callback) {
-  const { DevToolsServer } = require("devtools/server/devtools-server");
-  const { DevToolsClient } = require("devtools/client/devtools-client");
+  const commands = await CommandsFactory.forMainProcess();
+  const mainProcessTargetFront = await commands.descriptorFront.getTarget();
 
-  DevToolsServer.init();
-  DevToolsServer.registerAllActors();
-  DevToolsServer.allowChromeProcess = true;
-
-  SimpleTest.registerCleanupFunction(() => {
-    DevToolsServer.destroy();
-  });
-
-  const client = new DevToolsClient(DevToolsServer.connectPipe());
-  await client.connect();
-  const mainProcessDescriptor = await client.mainRoot.getMainProcess();
-  const mainProcessTargetFront = await mainProcessDescriptor.getTarget();
-
-  callback(client, mainProcessTargetFront);
+  callback(commands.client, mainProcessTargetFront);
 }
 
 function getSourceActor(aSources, aURL) {
   const item = aSources.getItemForAttachment(a => a.source.url === aURL);
   return item && item.value;
-}
-
-/**
- * Wait for a content -> chrome message on the message manager (the window
- * messagemanager is used).
- * @param {String} name The message name
- * @return {Promise} A promise that resolves to the response data when the
- * message has been received
- */
-function waitForContentMessage(name) {
-  info("Expecting message " + name + " from content");
-
-  const mm = gBrowser.selectedBrowser.messageManager;
-
-  return new Promise(resolve => {
-    mm.addMessageListener(name, function onMessage(msg) {
-      mm.removeMessageListener(name, onMessage);
-      resolve(msg.data);
-    });
-  });
-}
-
-/**
- * Send an async message to the frame script (chrome -> content) and wait for a
- * response message with the same name (content -> chrome).
- * @param {String} name The message name. Should be one of the messages defined
- * in doc_frame_script.js
- * @param {Object} data Optional data to send along
- * @param {Boolean} expectResponse If set to false, don't wait for a response
- * with the same name from the content script. Defaults to true.
- * @return {Promise} Resolves to the response data if a response is expected,
- * immediately resolves otherwise
- */
-function executeInContent(name, data = {}, expectResponse = true) {
-  info("Sending message " + name + " to content");
-  const mm = gBrowser.selectedBrowser.messageManager;
-
-  mm.sendAsyncMessage(name, data);
-  if (expectResponse) {
-    return waitForContentMessage(name);
-  }
-  return promise.resolve();
 }
 
 /**
@@ -141,14 +119,11 @@ function createScript(url) {
   info(`Creating script: ${url}`);
   // This is not ideal if called multiple times, as it loads the frame script
   // separately each time.  See bug 1443680.
-  loadFrameScriptUtils();
-  const command = `
-    let script = document.createElement("script");
-    script.setAttribute("src", "${url}");
-    document.body.appendChild(script);
-    null;
-  `;
-  return evalInDebuggee(command);
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [url], urlChild => {
+    const script = content.document.createElement("script");
+    script.setAttribute("src", urlChild);
+    content.document.body.appendChild(script);
+  });
 }
 
 /**
@@ -161,16 +136,24 @@ function createScript(url) {
 function waitForSourceLoad(toolbox, url) {
   info(`Waiting for source ${url} to be available...`);
   return new Promise(resolve => {
-    const target = toolbox.target;
+    const { resourceCommand } = toolbox;
 
-    function sourceHandler(sourceEvent) {
-      if (sourceEvent && sourceEvent.source && sourceEvent.source.url === url) {
-        resolve();
-        target.off("source-updated", sourceHandler);
+    function onAvailable(sources) {
+      for (const source of sources) {
+        if (source.url === url) {
+          resourceCommand.unwatchResources([resourceCommand.TYPES.SOURCE], {
+            onAvailable,
+          });
+          resolve();
+        }
       }
     }
-
-    target.on("source-updated", sourceHandler);
+    resourceCommand.watchResources([resourceCommand.TYPES.SOURCE], {
+      onAvailable,
+      // Ignore the cached resources as we always listen *before*
+      // the action creating a source.
+      ignoreExistingResources: true,
+    });
   });
 }
 
@@ -190,11 +173,9 @@ function DevToolPanel(iframeWindow, toolbox) {
 }
 
 DevToolPanel.prototype = {
-  open: function() {
+  open() {
     return new Promise(resolve => {
       executeSoon(() => {
-        this._isReady = true;
-        this.emit("ready");
         resolve(this);
       });
     });
@@ -212,13 +193,7 @@ DevToolPanel.prototype = {
     return this._toolbox;
   },
 
-  get isReady() {
-    return this._isReady;
-  },
-
-  _isReady: false,
-
-  destroy: function() {
+  destroy() {
     return Promise.resolve(null);
   },
 };
@@ -455,5 +430,61 @@ function loadFTL(toolbox, path) {
 
   if (win.MozXULElement) {
     win.MozXULElement.insertFTLIfNeeded(path);
+  }
+}
+
+/**
+ * Emit a reload key shortcut from a given toolbox, and wait for the reload to
+ * be completed.
+ *
+ * @param {String} shortcut
+ *        The key shortcut to send, as expected by the devtools shortcuts
+ *        helpers (eg. "CmdOrCtrl+F5").
+ * @param {Toolbox} toolbox
+ *        The toolbox through which the event should be emitted.
+ */
+async function sendToolboxReloadShortcut(shortcut, toolbox) {
+  const promises = [];
+
+  // If we have a jsdebugger panel, wait for it to complete its reload.
+  const jsdebugger = toolbox.getPanel("jsdebugger");
+  if (jsdebugger) {
+    promises.push(jsdebugger.once("reloaded"));
+  }
+
+  // If we have an inspector panel, wait for it to complete its reload.
+  const inspector = toolbox.getPanel("inspector");
+  if (inspector) {
+    promises.push(
+      inspector.once("reloaded"),
+      inspector.once("inspector-updated")
+    );
+  }
+
+  const loadPromise = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+  promises.push(loadPromise);
+
+  info("Focus the toolbox window and emit the reload shortcut: " + shortcut);
+  toolbox.win.focus();
+  synthesizeKeyShortcut(shortcut, toolbox.win);
+
+  info("Wait for page and toolbox reload promises");
+  await Promise.all(promises);
+}
+
+function getErrorIcon(toolbox) {
+  return toolbox.doc.querySelector(".toolbox-error");
+}
+
+function getErrorIconCount(toolbox) {
+  const textContent = getErrorIcon(toolbox)?.textContent;
+  try {
+    const int = parseInt(textContent, 10);
+    // 99+ parses to 99, so we check if the parsedInt does not match the textContent.
+    return int.toString() === textContent ? int : textContent;
+  } catch (e) {
+    // In case the parseInt threw, return the actual textContent so the test can display
+    // an easy to debug failure.
+    return textContent;
   }
 }

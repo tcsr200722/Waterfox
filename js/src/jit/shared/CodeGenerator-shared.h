@@ -11,15 +11,15 @@
 
 #include <utility>
 
+#include "jit/InlineScriptTree.h"
 #include "jit/JitcodeMap.h"
-#include "jit/JitFrames.h"
 #include "jit/LIR.h"
 #include "jit/MacroAssembler.h"
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
+#include "jit/SafepointIndex.h"
 #include "jit/Safepoints.h"
 #include "jit/Snapshots.h"
-#include "jit/VMFunctions.h"
 
 namespace js {
 namespace jit {
@@ -31,18 +31,12 @@ class IonIC;
 
 class OutOfLineTruncateSlow;
 
-struct ReciprocalMulConstants {
-  int64_t multiplier;
-  int32_t shiftAmount;
-};
-
 class CodeGeneratorShared : public LElementVisitor {
   js::Vector<OutOfLineCode*, 0, SystemAllocPolicy> outOfLineCode_;
 
-  MacroAssembler& ensureMasm(MacroAssembler* masm);
+  MacroAssembler& ensureMasm(MacroAssembler* masm, TempAllocator& alloc,
+                             CompileRealm* realm);
   mozilla::Maybe<IonHeapMacroAssembler> maybeMasm_;
-
-  bool useWasmStackArgumentAbi_;
 
  public:
   MacroAssembler& masm;
@@ -53,7 +47,6 @@ class CodeGeneratorShared : public LElementVisitor {
   LBlock* current;
   SnapshotWriter snapshots_;
   RecoverWriter recovers_;
-  mozilla::Maybe<TrampolinePtr> deoptTable_;
 #ifdef DEBUG
   uint32_t pushedArgs_;
 #endif
@@ -65,11 +58,11 @@ class CodeGeneratorShared : public LElementVisitor {
   // Label for the common return path.
   NonAssertingLabel returnLabel_;
 
+  // Amount of bytes allocated for incoming args. Used for Wasm return calls.
+  uint32_t inboundStackArgBytes_;
+
   js::Vector<CodegenSafepointIndex, 0, SystemAllocPolicy> safepointIndices_;
   js::Vector<OsiIndex, 0, SystemAllocPolicy> osiIndices_;
-
-  // Mapping from bailout table ID to an offset in the snapshot buffer.
-  js::Vector<SnapshotOffset, 0, SystemAllocPolicy> bailouts_;
 
   // Allocated data space needed at runtime.
   js::Vector<uint8_t, 0, SystemAllocPolicy> runtimeData_;
@@ -84,58 +77,31 @@ class CodeGeneratorShared : public LElementVisitor {
   };
   js::Vector<CompileTimeICInfo, 0, SystemAllocPolicy> icInfo_;
 
-#ifdef JS_TRACE_LOGGING
-  struct PatchableTLEvent {
-    CodeOffset offset;
-    const char* event;
-    PatchableTLEvent(CodeOffset offset, const char* event)
-        : offset(offset), event(event) {}
-  };
-  js::Vector<PatchableTLEvent, 0, SystemAllocPolicy> patchableTLEvents_;
-  js::Vector<CodeOffset, 0, SystemAllocPolicy> patchableTLScripts_;
-#endif
-
  protected:
   js::Vector<NativeToBytecode, 0, SystemAllocPolicy> nativeToBytecodeList_;
-  uint8_t* nativeToBytecodeMap_;
+  UniquePtr<uint8_t> nativeToBytecodeMap_;
   uint32_t nativeToBytecodeMapSize_;
   uint32_t nativeToBytecodeTableOffset_;
-  uint32_t nativeToBytecodeNumRegions_;
-
-  JSScript** nativeToBytecodeScriptList_;
-  uint32_t nativeToBytecodeScriptListLength_;
 
   bool isProfilerInstrumentationEnabled() {
     return gen->isProfilerInstrumentationEnabled();
   }
 
-  bool stringsCanBeInNursery() const { return gen->stringsCanBeInNursery(); }
-
-  bool bigIntsCanBeInNursery() const { return gen->bigIntsCanBeInNursery(); }
+  gc::Heap initialStringHeap() const { return gen->initialStringHeap(); }
+  gc::Heap initialBigIntHeap() const { return gen->initialBigIntHeap(); }
 
  protected:
   // The offset of the first instruction of the OSR entry block from the
   // beginning of the code buffer.
-  size_t osrEntryOffset_;
+  mozilla::Maybe<size_t> osrEntryOffset_ = {};
 
   TempAllocator& alloc() const { return graph.mir().alloc(); }
 
-  inline void setOsrEntryOffset(size_t offset) {
-    MOZ_ASSERT(osrEntryOffset_ == 0);
-    osrEntryOffset_ = offset;
-  }
-  inline size_t getOsrEntryOffset() const { return osrEntryOffset_; }
+  void setOsrEntryOffset(size_t offset) { osrEntryOffset_.emplace(offset); }
 
-  // The offset of the first instruction of the body.
-  // This skips the arguments type checks.
-  size_t skipArgCheckEntryOffset_;
-
-  inline void setSkipArgCheckEntryOffset(size_t offset) {
-    MOZ_ASSERT(skipArgCheckEntryOffset_ == 0);
-    skipArgCheckEntryOffset_ = offset;
-  }
-  inline size_t getSkipArgCheckEntryOffset() const {
-    return skipArgCheckEntryOffset_;
+  size_t getOsrEntryOffset() const {
+    MOZ_RELEASE_ASSERT(osrEntryOffset_.isSome());
+    return *osrEntryOffset_;
   }
 
   typedef js::Vector<CodegenSafepointIndex, 8, SystemAllocPolicy>
@@ -152,44 +118,34 @@ class CodeGeneratorShared : public LElementVisitor {
   // The initial size of the frame in bytes. These are bytes beyond the
   // constant header present for every Ion frame, used for pre-determined
   // spills.
-  int32_t frameDepth_;
+  uint32_t frameDepth_;
 
-  // Frame class this frame's size falls into (see IonFrame.h).
-  FrameSizeClass frameClass_;
+  // Offset in bytes to the incoming arguments, relative to the frame pointer.
+  uint32_t offsetOfArgsFromFP_ = 0;
 
-  // For arguments to the current function.
-  inline int32_t ArgToStackOffset(int32_t slot) const;
-
-  inline int32_t SlotToStackOffset(int32_t slot) const;
-  inline int32_t StackOffsetToSlot(int32_t offset) const;
+  // Offset in bytes of the stack region reserved for passed argument Values.
+  uint32_t offsetOfPassedArgSlots_ = 0;
 
   // For argument construction for calls. Argslots are Value-sized.
-  inline int32_t StackOffsetOfPassedArg(int32_t slot) const;
+  inline Address AddressOfPassedArg(uint32_t slot) const;
+  inline uint32_t UnusedStackBytesForCall(uint32_t numArgSlots) const;
 
-  inline int32_t ToStackOffset(LAllocation a) const;
-  inline int32_t ToStackOffset(const LAllocation* a) const;
-
+  template <BaseRegForAddress Base = BaseRegForAddress::Default>
   inline Address ToAddress(const LAllocation& a) const;
+
+  template <BaseRegForAddress Base = BaseRegForAddress::Default>
   inline Address ToAddress(const LAllocation* a) const;
 
-  // Returns the offset from FP to address incoming stack arguments
-  // when we use wasm stack argument abi (useWasmStackArgumentAbi()).
-  inline int32_t ToFramePointerOffset(LAllocation a) const;
-  inline int32_t ToFramePointerOffset(const LAllocation* a) const;
+  static inline Address ToAddress(Register elements, const LAllocation* index,
+                                  Scalar::Type type,
+                                  int32_t offsetAdjustment = 0);
 
-  uint32_t frameSize() const {
-    return frameClass_ == FrameSizeClass::None() ? frameDepth_
-                                                 : frameClass_.frameSize();
-  }
+  uint32_t frameSize() const { return frameDepth_; }
 
  protected:
   bool addNativeToBytecodeEntry(const BytecodeSite* site);
   void dumpNativeToBytecodeEntries();
   void dumpNativeToBytecodeEntry(uint32_t idx);
-
-  void setUseWasmStackArgumentAbi() { useWasmStackArgumentAbi_ = true; }
-
-  bool useWasmStackArgumentAbi() const { return useWasmStackArgumentAbi_; }
 
  public:
   MIRGenerator& mirGen() const { return *gen; }
@@ -213,8 +169,7 @@ class CodeGeneratorShared : public LElementVisitor {
   };
 
  protected:
-  MOZ_MUST_USE
-  bool allocateData(size_t size, size_t* offset) {
+  [[nodiscard]] bool allocateData(size_t size, size_t* offset) {
     MOZ_ASSERT(size % sizeof(void*) == 0);
     *offset = runtimeData_.length();
     masm.propagateOOM(runtimeData_.appendN(0, size));
@@ -243,21 +198,20 @@ class CodeGeneratorShared : public LElementVisitor {
   void encode(LRecoverInfo* recover);
   void encode(LSnapshot* snapshot);
   void encodeAllocation(LSnapshot* snapshot, MDefinition* def,
-                        uint32_t* startIndex);
-
-  // Attempts to assign a BailoutId to a snapshot, if one isn't already set.
-  // If the bailout table is full, this returns false, which is not a fatal
-  // error (the code generator may use a slower bailout mechanism).
-  bool assignBailoutId(LSnapshot* snapshot);
+                        uint32_t* startIndex, bool hasSideEffects);
 
   // Encode all encountered safepoints in CG-order, and resolve |indices| for
   // safepoint offsets.
   bool encodeSafepoints();
 
   // Fixup offsets of native-to-bytecode map.
-  bool createNativeToBytecodeScriptList(JSContext* cx);
-  bool generateCompactNativeToBytecodeMap(JSContext* cx, JitCode* code);
-  void verifyCompactNativeToBytecodeMap(JitCode* code);
+  bool createNativeToBytecodeScriptList(JSContext* cx,
+                                        IonEntry::ScriptList& scripts);
+  bool generateCompactNativeToBytecodeMap(JSContext* cx, JitCode* code,
+                                          IonEntry::ScriptList& scripts);
+  void verifyCompactNativeToBytecodeMap(JitCode* code,
+                                        const IonEntry::ScriptList& scripts,
+                                        uint32_t numRegions);
 
   // Mark the safepoint on |ins| as corresponding to the current assembler
   // location. The location should be just after a call.
@@ -278,11 +232,10 @@ class CodeGeneratorShared : public LElementVisitor {
 
   OutOfLineCode* oolTruncateDouble(
       FloatRegister src, Register dest, MInstruction* mir,
-      wasm::BytecodeOffset callOffset = wasm::BytecodeOffset());
-  void emitTruncateDouble(FloatRegister src, Register dest,
-                          MTruncateToInt32* mir);
-  void emitTruncateFloat32(FloatRegister src, Register dest,
-                           MTruncateToInt32* mir);
+      wasm::BytecodeOffset callOffset = wasm::BytecodeOffset(),
+      bool preserveInstance = false);
+  void emitTruncateDouble(FloatRegister src, Register dest, MInstruction* mir);
+  void emitTruncateFloat32(FloatRegister src, Register dest, MInstruction* mir);
 
   void emitPreBarrier(Register elements, const LAllocation* index);
   void emitPreBarrier(Address address);
@@ -367,7 +320,8 @@ class CodeGeneratorShared : public LElementVisitor {
   inline void restoreLive(LInstruction* ins);
   inline void restoreLiveIgnore(LInstruction* ins, LiveRegisterSet reg);
 
-  // Save/restore all registers that are both live and volatile.
+  // Get/save/restore all registers that are both live and volatile.
+  inline LiveRegisterSet liveVolatileRegs(LInstruction* ins);
   inline void saveLiveVolatile(LInstruction* ins);
   inline void restoreLiveVolatile(LInstruction* ins);
 
@@ -375,6 +329,13 @@ class CodeGeneratorShared : public LElementVisitor {
   template <typename T>
   void pushArg(const T& t) {
     masm.Push(t);
+#ifdef DEBUG
+    pushedArgs_++;
+#endif
+  }
+
+  void pushArg(jsid id, Register temp) {
+    masm.Push(id, temp);
 #ifdef DEBUG
     pushedArgs_++;
 #endif
@@ -399,8 +360,6 @@ class CodeGeneratorShared : public LElementVisitor {
 
  protected:
   void addIC(LInstruction* lir, size_t cacheIndex);
-
-  ReciprocalMulConstants computeDivisionConstants(uint32_t d, int maxLog);
 
  protected:
   bool generatePrologue();
@@ -433,56 +392,7 @@ class CodeGeneratorShared : public LElementVisitor {
 
   bool omitOverRecursedCheck() const;
 
-#ifdef JS_TRACE_LOGGING
- protected:
-  void emitTracelogScript(bool isStart);
-  void emitTracelogTree(bool isStart, uint32_t textId);
-  void emitTracelogTree(bool isStart, const char* text,
-                        TraceLoggerTextId enabledTextId);
-#endif
-
  public:
-#ifdef JS_TRACE_LOGGING
-  void emitTracelogScriptStart() { emitTracelogScript(/* isStart =*/true); }
-  void emitTracelogScriptStop() { emitTracelogScript(/* isStart =*/false); }
-  void emitTracelogStartEvent(uint32_t textId) {
-    emitTracelogTree(/* isStart =*/true, textId);
-  }
-  void emitTracelogStopEvent(uint32_t textId) {
-    emitTracelogTree(/* isStart =*/false, textId);
-  }
-  // Log an arbitrary text. The TraceloggerTextId is used to toggle the
-  // logging on and off.
-  // Note: the text is not copied and need to be kept alive until linking.
-  void emitTracelogStartEvent(const char* text,
-                              TraceLoggerTextId enabledTextId) {
-    emitTracelogTree(/* isStart =*/true, text, enabledTextId);
-  }
-  void emitTracelogStopEvent(const char* text,
-                             TraceLoggerTextId enabledTextId) {
-    emitTracelogTree(/* isStart =*/false, text, enabledTextId);
-  }
-  void emitTracelogIonStart() {
-    emitTracelogScriptStart();
-    emitTracelogStartEvent(TraceLogger_IonMonkey);
-  }
-  void emitTracelogIonStop() {
-    emitTracelogStopEvent(TraceLogger_IonMonkey);
-    emitTracelogScriptStop();
-  }
-#else
-  void emitTracelogScriptStart() {}
-  void emitTracelogScriptStop() {}
-  void emitTracelogStartEvent(uint32_t textId) {}
-  void emitTracelogStopEvent(uint32_t textId) {}
-  void emitTracelogStartEvent(const char* text,
-                              TraceLoggerTextId enabledTextId) {}
-  void emitTracelogStopEvent(const char* text,
-                             TraceLoggerTextId enabledTextId) {}
-  void emitTracelogIonStart() {}
-  void emitTracelogIonStop() {}
-#endif
-
   bool isGlobalObject(JSObject* object);
 };
 
@@ -505,8 +415,6 @@ class OutOfLineCode : public TempObject {
   uint32_t framePushed() const { return framePushed_; }
   void setBytecodeSite(const BytecodeSite* site) { site_ = site; }
   const BytecodeSite* bytecodeSite() const { return site_; }
-  jsbytecode* pc() const { return site_->pc(); }
-  JSScript* script() const { return site_->script(); }
 };
 
 // For OOL paths that want a specific-typed code generator.
@@ -539,6 +447,16 @@ class OutOfLineWasmTruncateCheckBase : public OutOfLineCodeBase<CodeGen> {
         input_(input),
         output_(output),
         output64_(Register64::Invalid()),
+        flags_(mir->flags()),
+        bytecodeOffset_(mir->bytecodeOffset()) {}
+
+  OutOfLineWasmTruncateCheckBase(MWasmBuiltinTruncateToInt64* mir,
+                                 FloatRegister input, Register64 output)
+      : fromType_(mir->input()->type()),
+        toType_(MIRType::Int64),
+        input_(input),
+        output_(Register::Invalid()),
+        output64_(output),
         flags_(mir->flags()),
         bytecodeOffset_(mir->bytecodeOffset()) {}
 

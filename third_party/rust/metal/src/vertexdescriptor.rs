@@ -5,8 +5,9 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use cocoa::foundation::NSUInteger;
+use super::NSUInteger;
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexformat>
 #[repr(u64)]
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -65,6 +66,7 @@ pub enum MTLVertexFormat {
     Half = 53,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexstepfunction>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum MTLVertexStepFunction {
@@ -75,12 +77,12 @@ pub enum MTLVertexStepFunction {
     PerPatchControlPoint = 4,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor>
 pub enum MTLVertexBufferLayoutDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLVertexBufferLayoutDescriptor;
     pub struct VertexBufferLayoutDescriptor;
-    pub struct VertexBufferLayoutDescriptorRef;
 }
 
 impl VertexBufferLayoutDescriptor {
@@ -118,12 +120,12 @@ impl VertexBufferLayoutDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptorarray>
 pub enum MTLVertexBufferLayoutDescriptorArray {}
 
 foreign_obj_type! {
     type CType = MTLVertexBufferLayoutDescriptorArray;
     pub struct VertexBufferLayoutDescriptorArray;
-    pub struct VertexBufferLayoutDescriptorArrayRef;
 }
 
 impl VertexBufferLayoutDescriptorArrayRef {
@@ -131,7 +133,11 @@ impl VertexBufferLayoutDescriptorArrayRef {
         unsafe { msg_send![self, objectAtIndexedSubscript: index] }
     }
 
-    pub fn set_object_at(&self, index: NSUInteger, layout: Option<&VertexBufferLayoutDescriptorRef>) {
+    pub fn set_object_at(
+        &self,
+        index: NSUInteger,
+        layout: Option<&VertexBufferLayoutDescriptorRef>,
+    ) {
         unsafe {
             msg_send![self, setObject:layout
                    atIndexedSubscript:index]
@@ -139,12 +145,12 @@ impl VertexBufferLayoutDescriptorArrayRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexattributedescriptor>
 pub enum MTLVertexAttributeDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLVertexAttributeDescriptor;
     pub struct VertexAttributeDescriptor;
-    pub struct VertexAttributeDescriptorRef;
 }
 
 impl VertexAttributeDescriptor {
@@ -182,12 +188,12 @@ impl VertexAttributeDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexattributedescriptorarray>
 pub enum MTLVertexAttributeDescriptorArray {}
 
 foreign_obj_type! {
     type CType = MTLVertexAttributeDescriptorArray;
     pub struct VertexAttributeDescriptorArray;
-    pub struct VertexAttributeDescriptorArrayRef;
 }
 
 impl VertexAttributeDescriptorArrayRef {
@@ -195,7 +201,11 @@ impl VertexAttributeDescriptorArrayRef {
         unsafe { msg_send![self, objectAtIndexedSubscript: index] }
     }
 
-    pub fn set_object_at(&self, index: NSUInteger, attribute: Option<&VertexAttributeDescriptorRef>) {
+    pub fn set_object_at(
+        &self,
+        index: NSUInteger,
+        attribute: Option<&VertexAttributeDescriptorRef>,
+    ) {
         unsafe {
             msg_send![self, setObject:attribute
                    atIndexedSubscript:index]
@@ -203,12 +213,12 @@ impl VertexAttributeDescriptorArrayRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlvertexdescriptor>
 pub enum MTLVertexDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLVertexDescriptor;
     pub struct VertexDescriptor;
-    pub struct VertexDescriptorRef;
 }
 
 impl VertexDescriptor {

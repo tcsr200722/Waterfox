@@ -28,7 +28,11 @@ impl Default for Endian {
 impl From<bool> for Endian {
     #[inline]
     fn from(little_endian: bool) -> Self {
-        if little_endian { LE } else { BE }
+        if little_endian {
+            LE
+        } else {
+            BE
+        }
     }
 }
 
@@ -39,9 +43,6 @@ impl Endian {
     }
     #[inline]
     pub fn is_little(&self) -> bool {
-        match *self {
-            LE => true,
-            _ => false,
-        }
+        *self == LE
     }
 }

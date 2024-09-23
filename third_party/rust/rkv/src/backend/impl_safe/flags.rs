@@ -9,25 +9,15 @@
 // specific language governing permissions and limitations under the License.
 
 use bitflags::bitflags;
-use serde_derive::{
-    Deserialize,
-    Serialize,
-};
+use serde_derive::{Deserialize, Serialize};
 
-use crate::backend::common::{
-    DatabaseFlags,
-    EnvironmentFlags,
-    WriteFlags,
-};
-use crate::backend::traits::{
-    BackendDatabaseFlags,
-    BackendEnvironmentFlags,
-    BackendFlags,
-    BackendWriteFlags,
+use crate::backend::{
+    common::{DatabaseFlags, EnvironmentFlags, WriteFlags},
+    traits::{BackendDatabaseFlags, BackendEnvironmentFlags, BackendFlags, BackendWriteFlags},
 };
 
 bitflags! {
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
     pub struct EnvironmentFlagsImpl: u32 {
         const NIL = 0b0000_0000;
     }
@@ -64,7 +54,7 @@ impl Into<EnvironmentFlagsImpl> for EnvironmentFlags {
 }
 
 bitflags! {
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
     pub struct DatabaseFlagsImpl: u32 {
         const NIL = 0b0000_0000;
         #[cfg(feature = "db-dup-sort")]
@@ -92,9 +82,10 @@ impl Into<DatabaseFlagsImpl> for DatabaseFlags {
             DatabaseFlags::REVERSE_KEY => unimplemented!(),
             #[cfg(feature = "db-dup-sort")]
             DatabaseFlags::DUP_SORT => DatabaseFlagsImpl::DUP_SORT,
+            #[cfg(feature = "db-dup-sort")]
+            DatabaseFlags::DUP_FIXED => unimplemented!(),
             #[cfg(feature = "db-int-key")]
             DatabaseFlags::INTEGER_KEY => DatabaseFlagsImpl::INTEGER_KEY,
-            DatabaseFlags::DUP_FIXED => unimplemented!(),
             DatabaseFlags::INTEGER_DUP => unimplemented!(),
             DatabaseFlags::REVERSE_DUP => unimplemented!(),
         }
@@ -102,7 +93,7 @@ impl Into<DatabaseFlagsImpl> for DatabaseFlags {
 }
 
 bitflags! {
-    #[derive(Default, Serialize, Deserialize)]
+    #[derive(Default, Serialize, Deserialize, PartialEq, Eq, Debug, Clone, Copy)]
     pub struct WriteFlagsImpl: u32 {
         const NIL = 0b0000_0000;
     }

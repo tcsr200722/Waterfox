@@ -1,6 +1,8 @@
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 var httpserver = new HttpServer();
 var index = 0;
@@ -26,7 +28,7 @@ function triggerNextTest() {
   channel.asyncOpen(new ChannelListener(checkValueAndTrigger, null));
 }
 
-function checkValueAndTrigger(request, data, ctx) {
+function checkValueAndTrigger(request, data) {
   Assert.equal(tests[index].expected, data);
 
   if (index < tests.length - 1) {
@@ -51,7 +53,7 @@ function run_test() {
 
 function handler(metadata, response) {
   try {
-    var IMS = metadata.getHeader("If-Modified-Since");
+    metadata.getHeader("If-Modified-Since");
     response.setStatusLine(metadata.httpVersion, 500, "Failed");
     var msg = "Client should not set If-Modified-Since header";
     response.bodyOutputStream.write(msg, msg.length);

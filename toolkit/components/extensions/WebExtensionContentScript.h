@@ -13,19 +13,23 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/Variant.h"
-#include "mozilla/dom/WindowProxyHolder.h"
 #include "mozilla/extensions/MatchGlob.h"
 #include "mozilla/extensions/MatchPattern.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
 #include "nsIDocShell.h"
+#include "nsPIDOMWindow.h"
 #include "nsWrapperCache.h"
 
 class nsILoadInfo;
 class nsPIDOMWindowOuter;
 
 namespace mozilla {
+namespace dom {
+class WindowGlobalChild;
+}
+
 namespace extensions {
 
 using dom::Nullable;
@@ -46,11 +50,20 @@ class MOZ_STACK_CLASS DocInfo final {
   // URL().InheritsPrincipal() is true.
   nsIPrincipal* Principal() const;
 
-  // Returns the URL of the document's principal. Note that this must *only*
-  // be called for content principals.
+  // Returns the URL to use for matching against the content script's match
+  // patterns. For content principals, this is usually equal to URL().
+  // Similarly for null principals when IsNonOpaqueURL() is true.
+  // For null principals with a precursor, their precursor is used.
+  // In all other cases, URL() is returned.
   const URLInfo& PrincipalURL() const;
 
+  // Whether match_origin_as_fallback must be set in order for PrincipalURL()
+  // to be eligible for matching the document.
+  bool RequiresMatchOriginAsFallback() const;
+
   bool IsTopLevel() const;
+  bool IsTopLevelOpaqueAboutBlank() const;
+  bool IsSameOriginWithTop() const;
   bool ShouldMatchActiveTabPermission() const;
 
   uint64_t FrameID() const;
@@ -86,8 +99,10 @@ class MOZ_STACK_CLASS DocInfo final {
 
   const URLInfo mURL;
   mutable Maybe<const URLInfo> mPrincipalURL;
+  mutable Maybe<bool> mRequiresMatchOriginAsFallback;
 
   mutable Maybe<bool> mIsTopLevel;
+  mutable Maybe<bool> mIsTopLevelOpaqueAboutBlank;
 
   mutable Maybe<nsCOMPtr<nsIPrincipal>> mPrincipal;
   mutable Maybe<uint64_t> mFrameID;
@@ -100,7 +115,7 @@ class MOZ_STACK_CLASS DocInfo final {
 
 class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MozDocumentMatcher)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MozDocumentMatcher)
 
   using MatchGlobArray = nsTArray<RefPtr<MatchGlob>>;
 
@@ -108,15 +123,14 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
       dom::GlobalObject& aGlobal, const dom::MozDocumentMatcherInit& aInit,
       ErrorResult& aRv);
 
-  bool Matches(const DocInfo& aDoc) const;
-  bool MatchesURI(const URLInfo& aURL) const;
+  bool Matches(const DocInfo& aDoc, bool aIgnorePermissions) const;
+  bool Matches(const DocInfo& aDoc) const { return Matches(aDoc, false); }
 
-  bool MatchesLoadInfo(const URLInfo& aURL, nsILoadInfo* aLoadInfo) const {
-    return Matches({aURL, aLoadInfo});
-  }
-  bool MatchesWindow(const dom::WindowProxyHolder& aWindow) const {
-    return Matches(aWindow.get()->GetDOMWindow());
-  }
+  bool MatchesURI(const URLInfo& aURL, bool aIgnorePermissions) const;
+  bool MatchesURI(const URLInfo& aURL) const { return MatchesURI(aURL, false); }
+
+  bool MatchesWindowGlobal(dom::WindowGlobalChild& aWindow,
+                           bool aIgnorePermissions) const;
 
   WebExtensionPolicy* GetExtension() { return mExtension; }
 
@@ -124,7 +138,9 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   const WebExtensionPolicy* Extension() const { return mExtension; }
 
   bool AllFrames() const { return mAllFrames; }
+  bool CheckPermissions() const { return mCheckPermissions; }
   bool MatchAboutBlank() const { return mMatchAboutBlank; }
+  bool MatchOriginAsFallback() const { return mMatchOriginAsFallback; }
 
   MatchPatternSet* Matches() { return mMatches; }
   const MatchPatternSet* GetMatches() const { return mMatches; }
@@ -132,18 +148,15 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   MatchPatternSet* GetExcludeMatches() { return mExcludeMatches; }
   const MatchPatternSet* GetExcludeMatches() const { return mExcludeMatches; }
 
-  void GetIncludeGlobs(Nullable<MatchGlobArray>& aGlobs) {
-    ToNullable(mExcludeGlobs, aGlobs);
-  }
-  void GetExcludeGlobs(Nullable<MatchGlobArray>& aGlobs) {
-    ToNullable(mExcludeGlobs, aGlobs);
-  }
-
   Nullable<uint64_t> GetFrameID() const { return mFrameID; }
+
+  void GetOriginAttributesPatterns(JSContext* aCx,
+                                   JS::MutableHandle<JS::Value> aVal,
+                                   ErrorResult& aError) const;
 
   WebExtensionPolicy* GetParentObject() const { return mExtension; }
   virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::HandleObject aGivenProto) override;
+                               JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
   friend class WebExtensionPolicy;
@@ -166,38 +179,24 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   Nullable<MatchGlobSet> mExcludeGlobs;
 
   bool mAllFrames;
+  bool mCheckPermissions;
   Nullable<uint64_t> mFrameID;
   bool mMatchAboutBlank;
-
- private:
-  template <typename T, typename U>
-  void ToNullable(const Nullable<T>& aInput, Nullable<U>& aOutput) {
-    if (aInput.IsNull()) {
-      aOutput.SetNull();
-    } else {
-      aOutput.SetValue(aInput.Value());
-    }
-  }
-
-  template <typename T, typename U>
-  void ToNullable(const Nullable<T>& aInput, Nullable<nsTArray<U>>& aOutput) {
-    if (aInput.IsNull()) {
-      aOutput.SetNull();
-    } else {
-      aOutput.SetValue(aInput.Value().Clone());
-    }
-  }
+  bool mMatchOriginAsFallback;
+  Nullable<dom::Sequence<OriginAttributesPattern>> mOriginAttributesPatterns;
 };
 
 class WebExtensionContentScript final : public MozDocumentMatcher {
  public:
   using RunAtEnum = dom::ContentScriptRunAt;
+  using ExecutionWorld = dom::ContentScriptExecutionWorld;
 
   static already_AddRefed<WebExtensionContentScript> Constructor(
       dom::GlobalObject& aGlobal, WebExtensionPolicy& aExtension,
       const ContentScriptInit& aInit, ErrorResult& aRv);
 
   RunAtEnum RunAt() const { return mRunAt; }
+  ExecutionWorld World() const { return mWorld; }
 
   void GetCssPaths(nsTArray<nsString>& aPaths) const {
     aPaths.AppendElements(mCssPaths);
@@ -207,7 +206,7 @@ class WebExtensionContentScript final : public MozDocumentMatcher {
   }
 
   virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::HandleObject aGivenProto) override;
+                               JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
   friend class WebExtensionPolicy;
@@ -223,6 +222,7 @@ class WebExtensionContentScript final : public MozDocumentMatcher {
   nsTArray<nsString> mJsPaths;
 
   RunAtEnum mRunAt;
+  ExecutionWorld mWorld;
 };
 
 }  // namespace extensions

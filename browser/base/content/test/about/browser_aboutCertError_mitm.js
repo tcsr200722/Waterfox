@@ -18,6 +18,7 @@ add_task(async function checkMitmPriming() {
     set: [
       [PREF_MITM_PRIMING, true],
       [PREF_MITM_PRIMING_ENDPOINT, UNKNOWN_ISSUER],
+      [PREF_ENTERPRISE_ROOTS, false],
     ],
   });
 
@@ -28,23 +29,35 @@ add_task(async function checkMitmPriming() {
     () => {
       gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, UNKNOWN_ISSUER);
       browser = gBrowser.selectedBrowser;
-      certErrorLoaded = BrowserTestUtils.waitForErrorPage(browser);
+      // The page will reload by itself after the initial canary request, so we wait
+      // until the AboutNetErrorLoad event has happened twice.
+      certErrorLoaded = new Promise(resolve => {
+        let loaded = 0;
+        let removeEventListener = BrowserTestUtils.addContentEventListener(
+          browser,
+          "AboutNetErrorLoad",
+          () => {
+            if (++loaded == 2) {
+              removeEventListener();
+              resolve();
+            }
+          },
+          { capture: false, wantUntrusted: true }
+        );
+      });
     },
     false
   );
 
   await certErrorLoaded;
 
-  // The page will reload after the initial canary request, so we'll just
-  // wait until we're seeing the dedicated MitM page.
-  await TestUtils.waitForCondition(function() {
-    return SpecialPowers.spawn(browser, [], () => {
-      return (
-        content.document.body.getAttribute("code") ==
-        "MOZILLA_PKIX_ERROR_MITM_DETECTED"
-      );
-    });
-  }, "Loads the MitM error page.");
+  await SpecialPowers.spawn(browser, [], () => {
+    is(
+      content.document.body.getAttribute("code"),
+      "MOZILLA_PKIX_ERROR_MITM_DETECTED",
+      "MitM error page has loaded."
+    );
+  });
 
   ok(true, "Successfully loaded the MitM error page.");
 
@@ -54,24 +67,24 @@ add_task(async function checkMitmPriming() {
     "Stored the correct issuer"
   );
 
-  await SpecialPowers.spawn(browser, [], () => {
-    let mitmName1 = content.document.querySelector(
-      "#errorShortDescText .mitm-name"
-    );
-    ok(
-      ContentTaskUtils.is_visible(mitmName1),
-      "Potential man in the middle is displayed"
-    );
-    is(mitmName1.textContent, "Unknown CA", "Shows the name of the issuer.");
+  await SpecialPowers.spawn(browser, [], async () => {
+    const shortDesc = content.document.querySelector("#errorShortDesc");
+    const whatToDo = content.document.querySelector("#errorWhatToDoText");
 
-    let mitmName2 = content.document.querySelector(
-      "#errorWhatToDoText .mitm-name"
+    await ContentTaskUtils.waitForCondition(
+      () => shortDesc.textContent != "" && whatToDo.textContent != "",
+      "DOM localization has been updated"
     );
+
     ok(
-      ContentTaskUtils.is_visible(mitmName2),
-      "Potential man in the middle is displayed"
+      shortDesc.textContent.includes("Unknown CA"),
+      "Shows the name of the issuer."
     );
-    is(mitmName2.textContent, "Unknown CA", "Shows the name of the issuer.");
+
+    ok(
+      whatToDo.textContent.includes("Unknown CA"),
+      "Shows the name of the issuer."
+    );
   });
 
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
@@ -102,7 +115,22 @@ add_task(async function checkMitmAutoEnableEnterpriseRoots() {
     () => {
       gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, UNKNOWN_ISSUER);
       browser = gBrowser.selectedBrowser;
-      certErrorLoaded = BrowserTestUtils.waitForErrorPage(browser);
+      // The page will reload by itself after the initial canary request, so we wait
+      // until the AboutNetErrorLoad event has happened twice.
+      certErrorLoaded = new Promise(resolve => {
+        let loaded = 0;
+        let removeEventListener = BrowserTestUtils.addContentEventListener(
+          browser,
+          "AboutNetErrorLoad",
+          () => {
+            if (++loaded == 2) {
+              removeEventListener();
+              resolve();
+            }
+          },
+          { capture: false, wantUntrusted: true }
+        );
+      });
     },
     false
   );
@@ -110,16 +138,13 @@ add_task(async function checkMitmAutoEnableEnterpriseRoots() {
   await certErrorLoaded;
   await prefChanged;
 
-  // The page will reload after the initial canary request, so we'll just
-  // wait until we're seeing the dedicated MitM page.
-  await TestUtils.waitForCondition(function() {
-    return SpecialPowers.spawn(browser, [], () => {
-      return (
-        content.document.body.getAttribute("code") ==
-        "MOZILLA_PKIX_ERROR_MITM_DETECTED"
-      );
-    });
-  }, "Loads the MitM error page.");
+  await SpecialPowers.spawn(browser, [], () => {
+    is(
+      content.document.body.getAttribute("code"),
+      "MOZILLA_PKIX_ERROR_MITM_DETECTED",
+      "MitM error page has loaded."
+    );
+  });
 
   ok(true, "Successfully loaded the MitM error page.");
 

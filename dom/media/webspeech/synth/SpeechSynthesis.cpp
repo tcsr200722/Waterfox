@@ -11,6 +11,7 @@
 #include "mozilla/dom/Element.h"
 
 #include "mozilla/dom/SpeechSynthesisBinding.h"
+#include "mozilla/dom/WindowGlobalChild.h"
 #include "SpeechSynthesis.h"
 #include "nsContentUtils.h"
 #include "nsSynthVoiceRegistry.h"
@@ -25,8 +26,7 @@ mozilla::LogModule* GetSpeechSynthLog() {
 }
 #define LOG(type, msg) MOZ_LOG(GetSpeechSynthLog(), type, msg)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(SpeechSynthesis)
 
@@ -42,8 +42,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(SpeechSynthesis,
                                                   DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCurrentTask)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSpeechQueue)
-  for (auto iter = tmp->mVoiceCache.Iter(); !iter.Done(); iter.Next()) {
-    SpeechSynthesisVoice* voice = iter.UserData();
+  for (SpeechSynthesisVoice* voice : tmp->mVoiceCache.Values()) {
     cb.NoteXPCOMChild(voice);
   }
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
@@ -66,6 +65,7 @@ SpeechSynthesis::SpeechSynthesis(nsPIDOMWindowInner* aParent)
   if (obs) {
     obs->AddObserver(this, "inner-window-destroyed", true);
     obs->AddObserver(this, "synth-voices-changed", true);
+    obs->AddObserver(this, "synth-voices-error", true);
   }
 }
 
@@ -120,11 +120,18 @@ void SpeechSynthesis::Speak(SpeechSynthesisUtterance& aUtterance) {
 
   mSpeechQueue.AppendElement(&aUtterance);
 
-  // If we only have one item in the queue, we aren't pre-paused, and
-  // we have voices available, speak it.
-  if (mSpeechQueue.Length() == 1 && !mCurrentTask && !mHoldQueue &&
-      HasVoices()) {
-    AdvanceQueue();
+  if (mSpeechQueue.Length() == 1) {
+    RefPtr<WindowGlobalChild> wgc =
+        WindowGlobalChild::GetByInnerWindowId(mInnerID);
+    if (wgc) {
+      wgc->BlockBFCacheFor(BFCacheStatus::HAS_ACTIVE_SPEECH_SYNTHESIS);
+    }
+
+    // If we only have one item in the queue, we aren't pre-paused, and
+    // we have voices available, speak it.
+    if (!mCurrentTask && !mHoldQueue && HasVoices()) {
+      AdvanceQueue();
+    }
   }
 }
 
@@ -140,12 +147,8 @@ void SpeechSynthesis::AdvanceQueue() {
 
   nsAutoString docLang;
   nsCOMPtr<nsPIDOMWindowInner> window = GetOwner();
-  Document* doc = window ? window->GetExtantDoc() : nullptr;
-
-  if (doc) {
-    Element* elm = doc->GetHtmlElement();
-
-    if (elm) {
+  if (Document* doc = window ? window->GetExtantDoc() : nullptr) {
+    if (Element* elm = doc->GetHtmlElement()) {
       elm->GetLang(docLang);
     }
   }
@@ -162,7 +165,7 @@ void SpeechSynthesis::Cancel() {
   if (!mSpeechQueue.IsEmpty() && HasSpeakingTask()) {
     // Remove all queued utterances except for current one, we will remove it
     // in OnEnd
-    mSpeechQueue.RemoveElementsAt(1, mSpeechQueue.Length() - 1);
+    mSpeechQueue.RemoveLastElements(mSpeechQueue.Length() - 1);
   } else {
     mSpeechQueue.Clear();
   }
@@ -203,6 +206,13 @@ void SpeechSynthesis::OnEnd(const nsSpeechTask* aTask) {
 
   if (!mSpeechQueue.IsEmpty()) {
     mSpeechQueue.RemoveElementAt(0);
+    if (mSpeechQueue.IsEmpty()) {
+      RefPtr<WindowGlobalChild> wgc =
+          WindowGlobalChild::GetByInnerWindowId(mInnerID);
+      if (wgc) {
+        wgc->UnblockBFCacheFor(BFCacheStatus::HAS_ACTIVE_SPEECH_SYNTHESIS);
+      }
+    }
   }
 
   mCurrentTask = nullptr;
@@ -216,7 +226,8 @@ void SpeechSynthesis::GetVoices(
   nsCOMPtr<nsPIDOMWindowInner> window = GetOwner();
   nsCOMPtr<nsIDocShell> docShell = window ? window->GetDocShell() : nullptr;
 
-  if (nsContentUtils::ShouldResistFingerprinting(docShell)) {
+  if (nsContentUtils::ShouldResistFingerprinting(docShell,
+                                                 RFPTarget::SpeechSynthesis)) {
     return;
   }
 
@@ -249,7 +260,7 @@ void SpeechSynthesis::GetVoices(
 
   for (uint32_t i = 0; i < aResult.Length(); i++) {
     SpeechSynthesisVoice* voice = aResult[i];
-    mVoiceCache.Put(voice->mUri, RefPtr{voice});
+    mVoiceCache.InsertOrUpdate(voice->mUri, RefPtr{voice});
   }
 }
 
@@ -289,17 +300,34 @@ SpeechSynthesis::Observe(nsISupports* aSubject, const char* aTopic,
     nsCOMPtr<nsPIDOMWindowInner> window = GetOwner();
     nsCOMPtr<nsIDocShell> docShell = window ? window->GetDocShell() : nullptr;
 
-    if (!nsContentUtils::ShouldResistFingerprinting(docShell)) {
-      DispatchTrustedEvent(NS_LITERAL_STRING("voiceschanged"));
+    if (!nsContentUtils::ShouldResistFingerprinting(
+            docShell, RFPTarget::SpeechSynthesis)) {
+      DispatchTrustedEvent(u"voiceschanged"_ns);
       // If we have a pending item, and voices become available, speak it.
       if (!mCurrentTask && !mHoldQueue && HasVoices()) {
         AdvanceQueue();
       }
+    }
+  } else if (strcmp(aTopic, "synth-voices-error") == 0) {
+    NS_WARNING("SpeechSynthesis::Observe: synth-voices-error");
+    LOG(LogLevel::Debug, ("SpeechSynthesis::onvoiceserror"));
+    nsCOMPtr<nsPIDOMWindowInner> window = GetOwner();
+
+    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+    if (obs) {
+      obs->NotifyObservers(window, "chrome-synth-voices-error", aData);
+    }
+
+    if (!mSpeechQueue.IsEmpty()) {
+      for (RefPtr<SpeechSynthesisUtterance>& utterance : mSpeechQueue) {
+        utterance->DispatchSpeechSynthesisEvent(u"error"_ns, 0, nullptr, 0,
+                                                u""_ns);
+      }
+      mSpeechQueue.Clear();
     }
   }
 
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

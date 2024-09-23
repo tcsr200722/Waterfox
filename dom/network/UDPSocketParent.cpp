@@ -5,9 +5,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "UDPSocketParent.h"
+#include "UDPSocket.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIUDPSocket.h"
 #include "nsINetAddr.h"
+#include "nsNetCID.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/ipc/InputStreamUtils.h"
@@ -16,7 +18,7 @@
 #include "mozilla/net/PNeckoParent.h"
 #include "nsIPermissionManager.h"
 #include "mozilla/ipc/PBackgroundParent.h"
-#include "mtransport/runnable_utils.h"
+#include "transport/runnable_utils.h"
 
 namespace mozilla {
 
@@ -38,7 +40,7 @@ bool UDPSocketParent::Init(nsIPrincipal* aPrincipal,
                            const nsACString& aFilter) {
   MOZ_ASSERT_IF(mBackgroundManager, !aPrincipal);
   // will be used once we move all UDPSocket to PBackground, or
-  // if we add in Principal checking for mtransport
+  // if we add in Principal checking for dom/media/webrtc/transport
   Unused << mBackgroundManager;
 
   mPrincipal = aPrincipal;
@@ -102,6 +104,7 @@ mozilla::ipc::IPCResult UDPSocketParent::RecvBind(
 
   UDPSOCKET_LOG(
       ("%s: SendCallbackOpened: %s:%u", __FUNCTION__, addr.get(), port));
+  mAddress = {addr, port};
   mozilla::Unused << SendCallbackOpened(UDPAddressInfo(addr, port));
 
   return IPC_OK();
@@ -139,8 +142,7 @@ nsresult UDPSocketParent::BindInternal(const nsCString& aHost,
       return NS_ERROR_FAILURE;
     }
 
-    mozilla::net::NetAddr addr;
-    PRNetAddrToNetAddr(&prAddr, &addr);
+    mozilla::net::NetAddr addr(&prAddr);
     rv = sock->InitWithAddress(&addr, mPrincipal, aAddressReuse,
                                /* optional_argc = */ 1);
   }
@@ -215,7 +217,7 @@ static void CheckSTSThread() {
 // should be done there.
 mozilla::ipc::IPCResult UDPSocketParent::RecvConnect(
     const UDPAddressInfo& aAddressInfo) {
-  nsCOMPtr<nsIEventTarget> target = GetCurrentThreadEventTarget();
+  nsCOMPtr<nsIEventTarget> target = GetCurrentSerialEventTarget();
   Unused << NS_WARN_IF(NS_FAILED(GetSTSThread()->Dispatch(
       WrapRunnable(RefPtr<UDPSocketParent>(this), &UDPSocketParent::DoConnect,
                    mSocket, target, aAddressInfo),
@@ -288,9 +290,7 @@ nsresult UDPSocketParent::ConnectInternal(const nsCString& aHost,
     return NS_ERROR_FAILURE;
   }
 
-  mozilla::net::NetAddr addr;
-  PRNetAddrToNetAddr(&prAddr, &addr);
-
+  mozilla::net::NetAddr addr(&prAddr);
   rv = mSocket->Connect(&addr);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -320,6 +320,9 @@ mozilla::ipc::IPCResult UDPSocketParent::RecvOutgoingData(
 
     bool allowed;
     const nsTArray<uint8_t>& data(aData.get_ArrayOfuint8_t());
+    UDPSOCKET_LOG(("%s(%s:%d): Filtering outgoing packet", __FUNCTION__,
+                   mAddress.addr().get(), mAddress.port()));
+
     rv = mFilter->FilterPacket(&aAddr.get_NetAddr(), data.Elements(),
                                data.Length(), nsISocketFilter::SF_OUTGOING,
                                &allowed);
@@ -357,7 +360,8 @@ void UDPSocketParent::Send(const nsTArray<uint8_t>& aData,
     }
     case UDPSocketAddr::TNetAddr: {
       const NetAddr& addr(aAddr.get_NetAddr());
-      rv = mSocket->SendWithAddress(&addr, aData, &count);
+      rv = mSocket->SendWithAddress(&addr, aData.Elements(), aData.Length(),
+                                    &count);
       break;
     }
     default:
@@ -490,6 +494,8 @@ UDPSocketParent::OnPacketReceived(nsIUDPSocket* aSocket,
     bool allowed;
     mozilla::net::NetAddr addr;
     fromAddr->GetNetAddr(&addr);
+    UDPSOCKET_LOG(("%s(%s:%d): Filtering incoming packet", __FUNCTION__,
+                   mAddress.addr().get(), mAddress.port()));
     nsresult rv = mFilter->FilterPacket(&addr, (const uint8_t*)buffer, len,
                                         nsISocketFilter::SF_INCOMING, &allowed);
     // Receiving unallowed data, drop.
@@ -506,8 +512,7 @@ UDPSocketParent::OnPacketReceived(nsIUDPSocket* aSocket,
     FireInternalError(__LINE__);
     return NS_ERROR_OUT_OF_MEMORY;
   }
-  nsTArray<uint8_t> infallibleArray;
-  infallibleArray.SwapElements(fallibleArray);
+  nsTArray<uint8_t> infallibleArray{std::move(fallibleArray)};
 
   // compose callback
   mozilla::Unused << SendCallbackReceivedData(UDPAddressInfo(ip, port),
@@ -530,8 +535,8 @@ void UDPSocketParent::FireInternalError(uint32_t aLineNo) {
     return;
   }
 
-  mozilla::Unused << SendCallbackError(NS_LITERAL_CSTRING("Internal error"),
-                                       NS_LITERAL_CSTRING(__FILE__), aLineNo);
+  mozilla::Unused << SendCallbackError("Internal error"_ns,
+                                       nsLiteralCString(__FILE__), aLineNo);
 }
 
 void UDPSocketParent::SendInternalError(const nsCOMPtr<nsIEventTarget>& aThread,

@@ -1,12 +1,20 @@
 // ----------------------------------------------------------------------------
-// Tests installing an add-on from a local file with whitelisting disabled.
-// This should be blocked by the whitelist check.
+// Tests installing an add-on from a local file with file origins disabled.
+// This should be blocked by the origin allowed check.
 function test() {
+  // This test currently depends on InstallTrigger.install availability.
+  setInstallTriggerPrefs();
+
+  // prompt prior to download
+  SpecialPowers.pushPrefEnv({
+    set: [["extensions.postDownloadThirdPartyPrompt", false]],
+  });
+
   Harness.installBlockedCallback = allow_blocked;
   Harness.installsCompletedCallback = finish_test;
   Harness.setup();
 
-  // Disable file request whitelisting, installing by file referrer should be blocked.
+  // Disable local file install, installing by file referrer should be blocked.
   Services.prefs.setBoolPref("xpinstall.whitelist.fileRequest", false);
 
   var cr = Cc["@mozilla.org/chrome/chrome-registry;1"].getService(
@@ -26,13 +34,13 @@ function test() {
     })
   );
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser,
     xpipath + "installtrigger.html?" + triggers
   );
 }
 
-function allow_blocked(installInfo) {
+function allow_blocked() {
   ok(true, "Seen blocked");
   return false;
 }

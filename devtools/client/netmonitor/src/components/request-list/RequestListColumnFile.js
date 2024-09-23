@@ -4,20 +4,32 @@
 
 "use strict";
 
-const { Component } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  Component,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const {
+  L10N,
+} = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/redux/visibility-handler-connect.js");
 const {
   propertiesEqual,
-} = require("devtools/client/netmonitor/src/utils/request-utils");
+} = require("resource://devtools/client/netmonitor/src/utils/request-utils.js");
+const {
+  getFormattedTime,
+} = require("resource://devtools/client/netmonitor/src/utils/format-utils.js");
 
-const UPDATED_FILE_PROPS = ["urlDetails"];
+const UPDATED_FILE_PROPS = ["urlDetails", "waitingTime"];
 
 class RequestListColumnFile extends Component {
   static get propTypes() {
     return {
       item: PropTypes.object.isRequired,
+      slowLimit: PropTypes.number,
+      onWaterfallMouseDown: PropTypes.func,
     };
   }
 
@@ -31,7 +43,9 @@ class RequestListColumnFile extends Component {
 
   render() {
     const {
-      item: { urlDetails },
+      item: { urlDetails, waitingTime },
+      slowLimit,
+      onWaterfallMouseDown,
     } = this.props;
 
     const originalFileURL = urlDetails.url;
@@ -50,14 +64,28 @@ class RequestListColumnFile extends Component {
         ? originalFileURL
         : ORIGINAL_FILE_URL + "\n\n" + DECODED_FILE_URL;
 
+    const isSlow = slowLimit > 0 && !!waitingTime && waitingTime > slowLimit;
+
     return dom.td(
       {
         className: "requests-list-column requests-list-file",
         title: fileToolTip,
       },
-      requestedFile
+      dom.div({}, requestedFile),
+      isSlow &&
+        dom.div({
+          title: L10N.getFormatStr(
+            "netmonitor.audits.slowIconTooltip",
+            getFormattedTime(waitingTime),
+            getFormattedTime(slowLimit)
+          ),
+          onMouseDown: onWaterfallMouseDown,
+          className: "requests-list-slow-button",
+        })
     );
   }
 }
 
-module.exports = RequestListColumnFile;
+module.exports = connect(state => ({
+  slowLimit: state.ui.slowLimit,
+}))(RequestListColumnFile);

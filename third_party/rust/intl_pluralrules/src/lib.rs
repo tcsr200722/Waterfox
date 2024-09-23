@@ -1,6 +1,6 @@
 //! A crate for generating plural rule operands from numberical input.
 //!
-//! This crate generates plural operands according to the specifications outlined at [Unicode's website](http://unicode.org/reports/tr35/tr35-numbers.html#Operands).
+//! This crate generates plural operands according to the specifications outlined at [Unicode's website](https://unicode.org/reports/tr35/tr35-numbers.html#Operands).
 //!
 //! Input is supported for int, float, and &str.
 //!
@@ -27,7 +27,7 @@
 
 /// A public AST module for plural rule representations.
 pub mod operands;
-#[cfg_attr(tarpaulin, skip)]
+#[cfg(not(tarpaulin_include))]
 mod rules;
 
 use std::convert::TryInto;
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn version_test() {
-        assert_eq!(CLDR_VERSION, 36);
+        assert_eq!(CLDR_VERSION, 37);
     }
 
     #[test]

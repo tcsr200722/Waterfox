@@ -9,9 +9,14 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/Types.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/TaskFactory.h"
+
+#ifdef MOZ_WIDGET_ANDROID
+#  include "mozilla/java/CompositorSurfaceManagerWrappers.h"
+#endif
 
 namespace mozilla {
 namespace ipc {
@@ -45,7 +50,11 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
     // Shutdown().
     virtual void OnProcessUnexpectedShutdown(GPUProcessHost* aHost) {}
 
-    virtual void OnRemoteProcessDeviceReset(GPUProcessHost* aHost) {}
+    virtual void OnRemoteProcessDeviceReset(
+        GPUProcessHost* aHost, const DeviceResetReason& aReason,
+        const DeviceResetDetectPlace& aPlace) {}
+
+    virtual void OnProcessDeclaredStable() {}
   };
 
   explicit GPUProcessHost(Listener* listener);
@@ -71,7 +80,11 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   // GPUProcessHost.
   //
   // After this returns, the attached Listener is no longer used.
-  void Shutdown();
+  //
+  // Setting aUnexpectedShutdown = true indicates that this is being called to
+  // clean up resources in response to an unexpected shutdown having been
+  // detected.
+  void Shutdown(bool aUnexpectedShutdown = false);
 
   // Return the actor for the top-level actor of the process. If the process
   // has not connected yet, this returns null.
@@ -90,13 +103,20 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   TimeStamp GetLaunchTime() const { return mLaunchTime; }
 
   // Called on the IO thread.
-  void OnChannelConnected(int32_t peer_pid) override;
-  void OnChannelError() override;
+  void OnChannelConnected(base::ProcessId peer_pid) override;
 
   void SetListener(Listener* aListener);
 
-  // Used for tests and diagnostics
-  void KillProcess();
+  // Kills the GPU process. Used in normal operation to recover from an error,
+  // as well as for tests and diagnostics.
+  void KillProcess(bool aGenerateMinidump);
+
+  // Causes the GPU process to crash. Used for tests and diagnostics
+  void CrashProcess();
+
+#ifdef MOZ_WIDGET_ANDROID
+  java::CompositorSurfaceManager::Param GetCompositorSurfaceManager();
+#endif
 
  private:
   ~GPUProcessHost();
@@ -112,7 +132,7 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   void OnChannelClosed();
 
   // Kill the remote process, triggering IPC shutdown.
-  void KillHard(const char* aReason);
+  void KillHard(bool aGenerateMinidump);
 
   void DestroyProcess();
 
@@ -124,7 +144,7 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   enum class LaunchPhase { Unlaunched, Waiting, Complete };
   LaunchPhase mLaunchPhase;
 
-  UniquePtr<GPUChild> mGPUChild;
+  RefPtr<GPUChild> mGPUChild;
   uint64_t mProcessToken;
 
   UniquePtr<mozilla::ipc::SharedPreferenceSerializer> mPrefSerializer;
@@ -133,6 +153,13 @@ class GPUProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   bool mChannelClosed;
 
   TimeStamp mLaunchTime;
+
+#ifdef MOZ_WIDGET_ANDROID
+  // Binder interface used to send compositor surfaces to GPU process. There is
+  // one instance per GPU process which gets initialized after launch, then
+  // multiple compositors can take a reference to it.
+  java::CompositorSurfaceManager::GlobalRef mCompositorSurfaceManager;
+#endif
 };
 
 }  // namespace gfx

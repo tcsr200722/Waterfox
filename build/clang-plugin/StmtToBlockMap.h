@@ -18,13 +18,13 @@ inline SmallVector<const Stmt *, 1> getParentStmts(const Stmt *S,
                                                    ASTContext *Context) {
   SmallVector<const Stmt *, 1> Result;
 
-  ASTContext::DynTypedNodeList Parents = Context->getParents(*S);
+  auto Parents = Context->getParents(*S);
 
-  SmallVector<ast_type_traits::DynTypedNode, 1> NodesToProcess(Parents.begin(),
-                                                               Parents.end());
+  SmallVector<clang::DynTypedNode, 1> NodesToProcess(Parents.begin(),
+                                                     Parents.end());
 
   while (!NodesToProcess.empty()) {
-    ast_type_traits::DynTypedNode Node = NodesToProcess.back();
+    clang::DynTypedNode Node = NodesToProcess.back();
     NodesToProcess.pop_back();
 
     if (const auto *S = Node.get<Stmt>()) {
@@ -53,7 +53,7 @@ public:
       : Context(TheContext) {
     for (const auto *B : *TheCFG) {
       for (size_t I = 0; I < B->size(); ++I) {
-        if (Optional<CFGStmt> S = (*B)[I].getAs<CFGStmt>()) {
+        if (auto S = (*B)[I].getAs<CFGStmt>()) {
           Map[S->getStmt()] = std::make_pair(B, I);
         }
       }

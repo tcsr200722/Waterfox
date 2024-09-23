@@ -8,19 +8,23 @@
 "use strict";
 
 const TEST_URI =
-  "data:text/html;charset=utf-8,Web Console test for executing input selection";
+  "data:text/html;charset=utf-8,<!DOCTYPE html>Web Console test for executing input selection";
 
-add_task(async function() {
+add_task(async function () {
   await pushPref("devtools.webconsole.input.editor", true);
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const expression = `x = 10;x;
-    x = 20;x;`;
+  const expression = `x = "first assignment";x;
+    x = "second assignment";x;`;
 
   info("Evaluate the whole expression");
   setInputValue(hud, expression);
 
-  let onResultMessage = waitForMessage(hud, "20", ".result");
+  let onResultMessage = waitForMessageByType(
+    hud,
+    "second assignment",
+    ".result"
+  );
   synthesizeKeyboardEvaluation();
   await onResultMessage;
   ok(true, "The whole expression is evaluated when there's no selection");
@@ -30,13 +34,13 @@ add_task(async function() {
     { line: 0, ch: 0 },
     { line: 0, ch: expression.split("\n")[0].length }
   );
-  onResultMessage = waitForMessage(hud, "10", ".result");
+  onResultMessage = waitForMessageByType(hud, "first assignment", ".result");
   synthesizeKeyboardEvaluation();
   await onResultMessage;
   ok(true, "Only the expression on the first line was evaluated");
 
   info("Check that it also works when clicking on the Run button");
-  onResultMessage = waitForMessage(hud, "10", ".result");
+  onResultMessage = waitForMessageByType(hud, "first assignment", ".result");
   hud.ui.outputNode
     .querySelector(".webconsole-editor-toolbar-executeButton")
     .click();
@@ -46,19 +50,16 @@ add_task(async function() {
     "Only the expression on the first line was evaluated when clicking the Run button"
   );
 
-  info("Check that this works in inline mode as well");
+  info("Check that this is disabled in inline mode");
   await toggleLayout(hud);
   hud.ui.jsterm.editor.setSelection(
     { line: 0, ch: 0 },
     { line: 0, ch: expression.split("\n")[0].length }
   );
-  onResultMessage = waitForMessage(hud, "10", ".result");
+  onResultMessage = waitForMessageByType(hud, "second assignment", ".result");
   synthesizeKeyboardEvaluation();
   await onResultMessage;
-  ok(
-    true,
-    "Only the expression on the first line was evaluated in inline mode"
-  );
+  ok(true, "The whole expression was evaluated in inline mode");
 });
 
 function synthesizeKeyboardEvaluation() {

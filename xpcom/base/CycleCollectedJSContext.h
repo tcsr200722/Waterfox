@@ -7,31 +7,27 @@
 #ifndef mozilla_CycleCollectedJSContext_h
 #define mozilla_CycleCollectedJSContext_h
 
-#include <queue>
+#include <deque>
 
 #include "mozilla/Attributes.h"
-#include "mozilla/DeferredFinalize.h"
-#include "mozilla/LinkedList.h"
-#include "mozilla/mozalloc.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/AtomList.h"
 #include "mozilla/dom/Promise.h"
-#include "jsapi.h"
 #include "js/GCVector.h"
 #include "js/Promise.h"
 
 #include "nsCOMPtr.h"
-#include "nsCycleCollectionParticipant.h"
+#include "nsRefPtrHashtable.h"
 #include "nsTArray.h"
 
 class nsCycleCollectionNoteRootCallback;
 class nsIRunnable;
 class nsThread;
-class nsWrapperCache;
 
 namespace mozilla {
 class AutoSlowOperation;
 
+class CycleCollectedJSContext;
 class CycleCollectedJSRuntime;
 
 namespace dom {
@@ -50,6 +46,7 @@ struct CycleCollectorResults {
 
   void Init() {
     mForcedGC = false;
+    mSuspectedAtCCStart = 0;
     mMergedZones = false;
     mAnyManual = false;
     mVisitedRefCounted = 0;
@@ -66,6 +63,7 @@ struct CycleCollectorResults {
   bool mMergedZones;
   // mAnyManual is true if any slice was manually triggered, and at shutdown.
   bool mAnyManual;
+  uint32_t mSuspectedAtCCStart;
   uint32_t mVisitedRefCounted;
   uint32_t mVisitedGCed;
   uint32_t mFreedRefCounted;
@@ -85,8 +83,57 @@ class MicroTaskRunnable {
   virtual ~MicroTaskRunnable() = default;
 };
 
+// Store the suppressed mictotasks in another microtask so that operations
+// for the microtask queue as a whole keep working.
+class SuppressedMicroTasks : public MicroTaskRunnable {
+ public:
+  explicit SuppressedMicroTasks(CycleCollectedJSContext* aContext);
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void Run(AutoSlowOperation& aAso) final {}
+  virtual bool Suppressed();
+
+  CycleCollectedJSContext* mContext;
+  uint64_t mSuppressionGeneration;
+  std::deque<RefPtr<MicroTaskRunnable>> mSuppressedMicroTaskRunnables;
+};
+
+// Support for JS FinalizationRegistry objects, which allow a JS callback to be
+// registered that is called when objects die.
+//
+// We keep a vector of functions that call back into the JS engine along
+// with their associated incumbent globals, one per FinalizationRegistry object
+// that has pending cleanup work. These are run in their own task.
+class FinalizationRegistryCleanup {
+ public:
+  explicit FinalizationRegistryCleanup(CycleCollectedJSContext* aContext);
+  void Init();
+  void Destroy();
+  void QueueCallback(JSFunction* aDoCleanup, JSObject* aIncumbentGlobal);
+  MOZ_CAN_RUN_SCRIPT void DoCleanup();
+
+ private:
+  static void QueueCallback(JSFunction* aDoCleanup, JSObject* aIncumbentGlobal,
+                            void* aData);
+
+  class CleanupRunnable;
+
+  struct Callback {
+    JSFunction* mCallbackFunction;
+    JSObject* mIncumbentGlobal;
+    void trace(JSTracer* trc);
+  };
+
+  // This object is part of CycleCollectedJSContext, so it's safe to have a raw
+  // pointer to its containing context here.
+  CycleCollectedJSContext* mContext;
+
+  using CallbackVector = JS::GCVector<Callback, 0, InfallibleAllocPolicy>;
+  JS::PersistentRooted<CallbackVector> mCallbacks;
+};
+
 class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   friend class CycleCollectedJSRuntime;
+  friend class SuppressedMicroTasks;
 
  protected:
   CycleCollectedJSContext();
@@ -100,15 +147,8 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
  private:
-  static JSObject* GetIncumbentGlobalCallback(JSContext* aCx);
-  static bool EnqueuePromiseJobCallback(JSContext* aCx,
-                                        JS::HandleObject aPromise,
-                                        JS::HandleObject aJob,
-                                        JS::HandleObject aAllocationSite,
-                                        JS::HandleObject aIncumbentGlobal,
-                                        void* aData);
   static void PromiseRejectionTrackerCallback(
-      JSContext* aCx, bool aMutedErrors, JS::HandleObject aPromise,
+      JSContext* aCx, bool aMutedErrors, JS::Handle<JSObject*> aPromise,
       JS::PromiseRejectionHandlingState state, void* aData);
 
   void AfterProcessMicrotasks();
@@ -120,11 +160,6 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   void CleanupIDBTransactions(uint32_t aRecursionDepth);
 
  public:
-  enum DeferredFinalizeType {
-    FinalizeIncrementally,
-    FinalizeNow,
-  };
-
   virtual dom::WorkerJSContext* GetAsWorkerJSContext() { return nullptr; }
   virtual dom::WorkletJSContext* GetAsWorkletJSContext() { return nullptr; }
 
@@ -136,8 +171,8 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   already_AddRefed<dom::Exception> GetPendingException() const;
   void SetPendingException(dom::Exception* aException);
 
-  std::queue<RefPtr<MicroTaskRunnable>>& GetMicroTaskQueue();
-  std::queue<RefPtr<MicroTaskRunnable>>& GetDebuggerMicroTaskQueue();
+  std::deque<RefPtr<MicroTaskRunnable>>& GetMicroTaskQueue();
+  std::deque<RefPtr<MicroTaskRunnable>>& GetDebuggerMicroTaskQueue();
 
   JSContext* Context() const {
     MOZ_ASSERT(mJSContext);
@@ -152,6 +187,8 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   void SetTargetedMicroTaskRecursionDepth(uint32_t aDepth) {
     mTargetedMicroTaskRecursionDepth = aDepth;
   }
+
+  void UpdateMicroTaskSuppressionGeneration() { ++mSuppressionGeneration; }
 
  protected:
   JSContext* MaybeContext() const { return mJSContext; }
@@ -170,8 +207,9 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   virtual void AfterProcessTask(uint32_t aRecursionDepth);
 
-  // Check whether we need an idle GC task.
-  void IsIdleGCTaskNeeded() const;
+  // Check whether any eager thresholds have been reached, which would mean
+  // an idle GC task (minor or major) would be useful.
+  virtual void MaybePokeGC();
 
   uint32_t RecursionDepth() const;
 
@@ -203,8 +241,6 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
       PerformMicroTaskCheckPoint();
     }
   }
-
-  bool IsInMicroTask() const { return mMicroTaskLevel != 0; }
 
   uint32_t MicroTaskLevel() const { return mMicroTaskLevel; }
 
@@ -250,21 +286,19 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   // interruptions; see the comments on JS::AutoDebuggerJobQueueInterruption for
   // details.
   JSObject* getIncumbentGlobal(JSContext* cx) override;
-  bool enqueuePromiseJob(JSContext* cx, JS::HandleObject promise,
-                         JS::HandleObject job, JS::HandleObject allocationSite,
-                         JS::HandleObject incumbentGlobal) override;
+  bool enqueuePromiseJob(JSContext* cx, JS::Handle<JSObject*> promise,
+                         JS::Handle<JSObject*> job,
+                         JS::Handle<JSObject*> allocationSite,
+                         JS::Handle<JSObject*> incumbentGlobal) override;
   // MOZ_CAN_RUN_SCRIPT_BOUNDARY for now so we don't have to change SpiderMonkey
   // headers.  The caller presumably knows this can run script (like everything
   // in SpiderMonkey!) and will deal.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   void runJobs(JSContext* cx) override;
   bool empty() const override;
+  bool isDrainingStopped() const override { return false; }
   class SavedMicroTaskQueue;
   js::UniquePtr<SavedJobQueue> saveJobQueue(JSContext*) override;
-
-  static void CleanupFinalizationRegistryCallback(JSObject* aRegistry,
-                                                  void* aData);
-  void QueueFinalizationRegistryForCleanup(JSObject* aRegistry);
 
  private:
   CycleCollectedJSRuntime* mRuntime;
@@ -290,8 +324,10 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
 
   uint32_t mMicroTaskLevel;
 
-  std::queue<RefPtr<MicroTaskRunnable>> mPendingMicroTaskRunnables;
-  std::queue<RefPtr<MicroTaskRunnable>> mDebuggerMicroTaskQueue;
+  std::deque<RefPtr<MicroTaskRunnable>> mPendingMicroTaskRunnables;
+  std::deque<RefPtr<MicroTaskRunnable>> mDebuggerMicroTaskQueue;
+  RefPtr<SuppressedMicroTasks> mSuppressedMicroTasks;
+  uint64_t mSuppressionGeneration;
 
   // How many times the debugger has interrupted execution, possibly creating
   // microtask checkpoints in places that they would not normally occur.
@@ -325,10 +361,8 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
 
   class NotifyUnhandledRejections final : public CancelableRunnable {
    public:
-    NotifyUnhandledRejections(CycleCollectedJSContext* aCx,
-                              PromiseArray&& aPromises)
+    explicit NotifyUnhandledRejections(PromiseArray&& aPromises)
         : CancelableRunnable("NotifyUnhandledRejections"),
-          mCx(aCx),
           mUnhandledRejections(std::move(aPromises)) {}
 
     NS_IMETHOD Run() final;
@@ -336,18 +370,10 @@ class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
     nsresult Cancel() final;
 
    private:
-    CycleCollectedJSContext* mCx;
     PromiseArray mUnhandledRejections;
   };
 
-  // Support for JS FinalizationRegistry objects.
-  //
-  // These allow a JS callback to be registered that is called when an object
-  // dies. The browser part of the implementation keeps a vector of
-  // FinalizationRegistries with pending callbacks here.
-  friend class CleanupFinalizationRegistriesRunnable;
-  using ObjectVector = JS::GCVector<JSObject*, 0, InfallibleAllocPolicy>;
-  JS::PersistentRooted<ObjectVector> mFinalizationRegistriesToCleanUp;
+  FinalizationRegistryCleanup mFinalizationRegistryCleanup;
 };
 
 class MOZ_STACK_CLASS nsAutoMicroTask {

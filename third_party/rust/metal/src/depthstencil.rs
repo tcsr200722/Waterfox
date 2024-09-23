@@ -5,8 +5,10 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+use crate::DeviceRef;
 use objc::runtime::{NO, YES};
 
+/// See <https://developer.apple.com/documentation/metal/mtlcomparefunction>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum MTLCompareFunction {
@@ -20,6 +22,7 @@ pub enum MTLCompareFunction {
     Always = 7,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlstenciloperation>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum MTLStencilOperation {
@@ -33,12 +36,12 @@ pub enum MTLStencilOperation {
     DecrementWrap = 7,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlstencildescriptor>
 pub enum MTLStencilDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLStencilDescriptor;
     pub struct StencilDescriptor;
-    pub struct StencilDescriptorRef;
 }
 
 impl StencilDescriptor {
@@ -100,12 +103,12 @@ impl StencilDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtldepthstencildescriptor>
 pub enum MTLDepthStencilDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLDepthStencilDescriptor;
     pub struct DepthStencilDescriptor;
-    pub struct DepthStencilDescriptorRef;
 }
 
 impl DepthStencilDescriptor {
@@ -127,13 +130,7 @@ impl DepthStencilDescriptorRef {
     }
 
     pub fn depth_write_enabled(&self) -> bool {
-        unsafe {
-            match msg_send![self, isDepthWriteEnabled] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isDepthWriteEnabled] }
     }
 
     pub fn set_depth_write_enabled(&self, enabled: bool) {
@@ -155,12 +152,39 @@ impl DepthStencilDescriptorRef {
     pub fn set_back_face_stencil(&self, descriptor: Option<&StencilDescriptorRef>) {
         unsafe { msg_send![self, setBackFaceStencil: descriptor] }
     }
+
+    pub fn label(&self) -> &str {
+        unsafe {
+            let label = msg_send![self, label];
+            crate::nsstring_as_str(label)
+        }
+    }
+
+    pub fn set_label(&self, label: &str) {
+        unsafe {
+            let nslabel = crate::nsstring_from_str(label);
+            let () = msg_send![self, setLabel: nslabel];
+        }
+    }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtldepthstencilstate>
 pub enum MTLDepthStencilState {}
 
 foreign_obj_type! {
     type CType = MTLDepthStencilState;
     pub struct DepthStencilState;
-    pub struct DepthStencilStateRef;
+}
+
+impl DepthStencilStateRef {
+    pub fn device(&self) -> &DeviceRef {
+        unsafe { msg_send![self, device] }
+    }
+
+    pub fn label(&self) -> &str {
+        unsafe {
+            let label = msg_send![self, label];
+            crate::nsstring_as_str(label)
+        }
+    }
 }

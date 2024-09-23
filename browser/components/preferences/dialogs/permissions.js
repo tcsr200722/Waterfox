@@ -2,30 +2,46 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+var { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const lazy = {};
+
+XPCOMUtils.defineLazyServiceGetter(
+  lazy,
+  "contentBlockingAllowList",
+  "@mozilla.org/content-blocking-allow-list;1",
+  "nsIContentBlockingAllowList"
 );
 
 const permissionExceptionsL10n = {
   trackingprotection: {
-    window: "permissions-exceptions-etp-window",
-    description: "permissions-exceptions-etp-desc",
+    window: "permissions-exceptions-etp-window2",
+    description: "permissions-exceptions-manage-etp-desc",
   },
   cookie: {
-    window: "permissions-exceptions-cookie-window",
+    window: "permissions-exceptions-cookie-window2",
     description: "permissions-exceptions-cookie-desc",
   },
   popup: {
-    window: "permissions-exceptions-popup-window",
+    window: "permissions-exceptions-popup-window2",
     description: "permissions-exceptions-popup-desc",
   },
   "login-saving": {
-    window: "permissions-exceptions-saved-logins-window",
-    description: "permissions-exceptions-saved-logins-desc",
+    window: "permissions-exceptions-saved-passwords-window",
+    description: "permissions-exceptions-saved-passwords-desc",
+  },
+  "https-only-load-insecure": {
+    window: "permissions-exceptions-https-only-window2",
+    description: "permissions-exceptions-https-only-desc2",
   },
   install: {
-    window: "permissions-exceptions-addons-window",
+    window: "permissions-exceptions-addons-window2",
     description: "permissions-exceptions-addons-desc",
   },
 };
@@ -47,22 +63,43 @@ var gPermissionManager = {
   _list: null,
   _removeButton: null,
   _removeAllButton: null,
+  _forcedHTTP: null,
 
   onLoad() {
     let params = window.arguments[0];
     document.mozSubdialogReady = this.init(params);
   },
 
+  /**
+   * @param {Object} params
+   * @param {string} params.permissionType Permission type for which the dialog should be shown
+   * @param {string} params.prefilledHost The value which the URL field should initially contain
+   * @param {boolean} params.blockVisible Display the "Block" button in the dialog
+   * @param {boolean} params.sessionVisible Display the "Allow for Session" button in the dialog (Only for Cookie & HTTPS-Only permissions)
+   * @param {boolean} params.allowVisible Display the "Allow" button in the dialog
+   * @param {boolean} params.disableETPVisible Display the "Add Exception" button in the dialog (Only for ETP permissions)
+   * @param {boolean} params.hideStatusColumn Hide the "Status" column in the dialog
+   * @param {boolean} params.forcedHTTP Save inputs whose URI has a HTTPS scheme with a HTTP scheme (Used by HTTPS-Only)
+   */
   async init(params) {
     if (!this._isObserving) {
       Services.obs.addObserver(this, "perm-changed");
       this._isObserving = true;
     }
 
+    document.addEventListener("dialogaccept", () => this.onApplyChanges());
+
     this._type = params.permissionType;
     this._list = document.getElementById("permissionsBox");
     this._removeButton = document.getElementById("removePermission");
     this._removeAllButton = document.getElementById("removeAllPermissions");
+
+    this._btnCookieSession = document.getElementById("btnCookieSession");
+    this._btnBlock = document.getElementById("btnBlock");
+    this._btnDisableETP = document.getElementById("btnDisableETP");
+    this._btnAllow = document.getElementById("btnAllow");
+    this._btnHttpsOnlyOff = document.getElementById("btnHttpsOnlyOff");
+    this._btnHttpsOnlyOffTmp = document.getElementById("btnHttpsOnlyOffTmp");
 
     let permissionsText = document.getElementById("permissionsText");
 
@@ -70,23 +107,37 @@ var gPermissionManager = {
     document.l10n.setAttributes(permissionsText, l10n.description);
     document.l10n.setAttributes(document.documentElement, l10n.window);
 
+    let urlFieldVisible =
+      params.blockVisible ||
+      params.sessionVisible ||
+      params.allowVisible ||
+      params.disableETPVisible;
+
+    this._urlField = document.getElementById("url");
+    this._urlField.value = params.prefilledHost;
+    this._urlField.hidden = !urlFieldVisible;
+
+    this._forcedHTTP = params.forcedHTTP;
+
     await document.l10n.translateElements([
       permissionsText,
       document.documentElement,
     ]);
 
+    document.getElementById("btnDisableETP").hidden = !params.disableETPVisible;
     document.getElementById("btnBlock").hidden = !params.blockVisible;
-    document.getElementById("btnSession").hidden = !params.sessionVisible;
+    document.getElementById("btnCookieSession").hidden = !(
+      params.sessionVisible && this._type == "cookie"
+    );
+    document.getElementById("btnHttpsOnlyOff").hidden = !(
+      this._type == "https-only-load-insecure"
+    );
+    document.getElementById("btnHttpsOnlyOffTmp").hidden = !(
+      params.sessionVisible && this._type == "https-only-load-insecure"
+    );
     document.getElementById("btnAllow").hidden = !params.allowVisible;
 
-    let urlFieldVisible =
-      params.blockVisible || params.sessionVisible || params.allowVisible;
-
-    let urlField = document.getElementById("url");
-    urlField.value = params.prefilledHost;
-    urlField.hidden = !urlFieldVisible;
-
-    this.onHostInput(urlField);
+    this.onHostInput(this._urlField);
 
     let urlLabel = document.getElementById("urlLabel");
     urlLabel.hidden = !urlFieldVisible;
@@ -106,7 +157,7 @@ var gPermissionManager = {
     this._loadPermissions();
     this.buildPermissionsList();
 
-    urlField.focus();
+    this._urlField.focus();
   },
 
   uninit() {
@@ -161,26 +212,43 @@ var gPermissionManager = {
     return (
       capability == Ci.nsIPermissionManager.ALLOW_ACTION ||
       capability == Ci.nsIPermissionManager.DENY_ACTION ||
-      capability == Ci.nsICookiePermission.ACCESS_SESSION
+      capability == Ci.nsICookiePermission.ACCESS_SESSION ||
+      // Bug 1753600 there are still a few legacy cookies around that have the capability 9,
+      // _getCapabilityL10nId will throw if it receives a capability of 9
+      // that is not in combination with the type https-only-load-insecure
+      (capability ==
+        Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION &&
+        this._type == "https-only-load-insecure")
     );
   },
 
   _getCapabilityL10nId(capability) {
-    let stringKey = null;
+    // HTTPS-Only Mode phrases exceptions as turning it off
+    if (this._type == "https-only-load-insecure") {
+      return this._getHttpsOnlyCapabilityL10nId(capability);
+    }
+
     switch (capability) {
       case Ci.nsIPermissionManager.ALLOW_ACTION:
-        stringKey = "permissions-capabilities-listitem-allow";
-        break;
+        return "permissions-capabilities-listitem-allow";
       case Ci.nsIPermissionManager.DENY_ACTION:
-        stringKey = "permissions-capabilities-listitem-block";
-        break;
+        return "permissions-capabilities-listitem-block";
       case Ci.nsICookiePermission.ACCESS_SESSION:
-        stringKey = "permissions-capabilities-listitem-allow-session";
-        break;
+        return "permissions-capabilities-listitem-allow-session";
       default:
         throw new Error(`Unknown capability: ${capability}`);
     }
-    return stringKey;
+  },
+
+  _getHttpsOnlyCapabilityL10nId(capability) {
+    switch (capability) {
+      case Ci.nsIPermissionManager.ALLOW_ACTION:
+        return "permissions-capabilities-listitem-off";
+      case Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION:
+        return "permissions-capabilities-listitem-off-temporarily";
+      default:
+        throw new Error(`Unknown HTTPS-Only Mode capability: ${capability}`);
+    }
   },
 
   _addPermissionToList(perm) {
@@ -188,6 +256,15 @@ var gPermissionManager = {
       return;
     }
     if (!this._isCapabilitySupported(perm.capability)) {
+      return;
+    }
+
+    // Skip private browsing session permissions.
+    if (
+      perm.principal.privateBrowsingId !==
+        Services.scriptSecurityManager.DEFAULT_PRIVATE_BROWSING_ID &&
+      perm.expireType === Services.perms.EXPIRE_SESSION
+    ) {
       return;
     }
 
@@ -230,6 +307,9 @@ var gPermissionManager = {
       // permissions from being entered by the user.
       try {
         let uri = Services.io.newURI(input_url);
+        if (this._forcedHTTP && uri.schemeIs("https")) {
+          uri = uri.mutate().setScheme("http").finalize();
+        }
         let principal = Services.scriptSecurityManager.createContentPrincipal(
           uri,
           {}
@@ -239,14 +319,25 @@ var gPermissionManager = {
         }
         principals.push(principal);
       } catch (ex) {
+        // If the `input_url` already starts with http:// or https://, it is
+        // definetely invalid here and can't be fixed by prefixing it with
+        // http:// or https://.
+        if (
+          input_url.startsWith("http://") ||
+          input_url.startsWith("https://")
+        ) {
+          throw ex;
+        }
         this._addNewPrincipalToList(
           principals,
           Services.io.newURI("http://" + input_url)
         );
-        this._addNewPrincipalToList(
-          principals,
-          Services.io.newURI("https://" + input_url)
-        );
+        if (!this._forcedHTTP) {
+          this._addNewPrincipalToList(
+            principals,
+            Services.io.newURI("https://" + input_url)
+          );
+        }
       }
     } catch (ex) {
       document.l10n
@@ -259,7 +350,13 @@ var gPermissionManager = {
         });
       return;
     }
-
+    // In case of an ETP exception we compute the contentBlockingAllowList principal
+    // to align with the allow list behavior triggered by the protections panel
+    if (this._type == "trackingprotection") {
+      principals = principals.map(
+        lazy.contentBlockingAllowList.computeContentBlockingAllowListPrincipal
+      );
+    }
     for (let principal of principals) {
       this._addOrModifyPermission(principal, capability);
     }
@@ -305,31 +402,33 @@ var gPermissionManager = {
   },
 
   _createPermissionListItem(permission) {
+    let disabledByPolicy = this._permissionDisabledByPolicy(permission);
     let richlistitem = document.createXULElement("richlistitem");
     richlistitem.setAttribute("origin", permission.origin);
     let row = document.createXULElement("hbox");
-    row.setAttribute("flex", "1");
+    row.setAttribute("style", "flex: 1");
 
     let hbox = document.createXULElement("hbox");
     let website = document.createXULElement("label");
+    website.setAttribute("disabled", disabledByPolicy);
+    website.setAttribute("class", "website-name-value");
     website.setAttribute("value", permission.origin);
-    hbox.setAttribute("width", "0");
     hbox.setAttribute("class", "website-name");
-    hbox.setAttribute("flex", "3");
+    hbox.setAttribute("style", "flex: 3 3; width: 0");
     hbox.appendChild(website);
     row.appendChild(hbox);
 
     if (!this._hideStatusColumn) {
       hbox = document.createXULElement("hbox");
       let capability = document.createXULElement("label");
+      capability.setAttribute("disabled", disabledByPolicy);
       capability.setAttribute("class", "website-capability-value");
       document.l10n.setAttributes(
         capability,
         this._getCapabilityL10nId(permission.capability)
       );
-      hbox.setAttribute("width", "0");
       hbox.setAttribute("class", "website-name");
-      hbox.setAttribute("flex", "1");
+      hbox.setAttribute("style", "flex: 1; width: 0");
       hbox.appendChild(capability);
       row.appendChild(hbox);
     }
@@ -339,8 +438,13 @@ var gPermissionManager = {
   },
 
   onWindowKeyPress(event) {
-    if (event.keyCode == KeyEvent.DOM_VK_ESCAPE) {
-      window.close();
+    // Prevent dialog.js from closing the dialog when the user submits the input
+    // field via the return key.
+    if (
+      event.keyCode == KeyEvent.DOM_VK_RETURN &&
+      document.activeElement == this._urlField
+    ) {
+      event.preventDefault();
     }
   },
 
@@ -361,14 +465,29 @@ var gPermissionManager = {
 
   onHostKeyPress(event) {
     if (event.keyCode == KeyEvent.DOM_VK_RETURN) {
-      document.getElementById("btnAllow").click();
+      if (!document.getElementById("btnAllow").hidden) {
+        document.getElementById("btnAllow").click();
+      } else if (!document.getElementById("btnBlock").hidden) {
+        document.getElementById("btnBlock").click();
+      } else if (!document.getElementById("btnHttpsOnlyOff").hidden) {
+        document.getElementById("btnHttpsOnlyOff").click();
+      } else if (!document.getElementById("btnDisableETP").hidden) {
+        document.getElementById("btnDisableETP").click();
+      }
     }
   },
 
   onHostInput(siteField) {
-    document.getElementById("btnSession").disabled = !siteField.value;
-    document.getElementById("btnBlock").disabled = !siteField.value;
-    document.getElementById("btnAllow").disabled = !siteField.value;
+    this._btnCookieSession.disabled =
+      this._btnCookieSession.hidden || !siteField.value;
+    this._btnHttpsOnlyOff.disabled =
+      this._btnHttpsOnlyOff.hidden || !siteField.value;
+    this._btnHttpsOnlyOffTmp.disabled =
+      this._btnHttpsOnlyOffTmp.hidden || !siteField.value;
+    this._btnBlock.disabled = this._btnBlock.hidden || !siteField.value;
+    this._btnDisableETP.disabled =
+      this._btnDisableETP.hidden || !siteField.value;
+    this._btnAllow.disabled = this._btnAllow.hidden || !siteField.value;
   },
 
   _setRemoveButtonState() {
@@ -377,15 +496,31 @@ var gPermissionManager = {
     }
 
     let hasSelection = this._list.selectedIndex >= 0;
-    let hasRows = this._list.itemCount > 0;
-    this._removeButton.disabled = !hasSelection;
-    this._removeAllButton.disabled = !hasRows;
+
+    let disabledByPolicy = false;
+    if (Services.policies.status === Services.policies.ACTIVE && hasSelection) {
+      let origin = this._list.selectedItem.getAttribute("origin");
+      disabledByPolicy = this._permissionDisabledByPolicy(
+        this._permissions.get(origin)
+      );
+    }
+
+    this._removeButton.disabled = !hasSelection || disabledByPolicy;
+    let disabledItems = this._list.querySelectorAll(
+      "label.website-name-value[disabled='true']"
+    );
+
+    this._removeAllButton.disabled =
+      this._list.itemCount == disabledItems.length;
   },
 
   onPermissionDelete() {
     let richlistitem = this._list.selectedItem;
     let origin = richlistitem.getAttribute("origin");
     let permission = this._permissions.get(origin);
+    if (this._permissionDisabledByPolicy(permission)) {
+      return;
+    }
 
     this._removePermission(permission);
 
@@ -394,6 +529,9 @@ var gPermissionManager = {
 
   onAllPermissionsDelete() {
     for (let permission of this._permissions.values()) {
+      if (this._permissionDisabledByPolicy(permission)) {
+        continue;
+      }
       this._removePermission(permission);
     }
 
@@ -415,10 +553,22 @@ var gPermissionManager = {
     }
 
     for (let p of this._permissionsToAdd.values()) {
-      Services.perms.addFromPrincipal(p.principal, p.type, p.capability);
+      // If this sets the HTTPS-Only exemption only for this
+      // session, then the expire-type has to be set.
+      if (
+        p.capability ==
+        Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION
+      ) {
+        Services.perms.addFromPrincipal(
+          p.principal,
+          p.type,
+          p.capability,
+          Ci.nsIPermissionManager.EXPIRE_SESSION
+        );
+      } else {
+        Services.perms.addFromPrincipal(p.principal, p.type, p.capability);
+      }
     }
-
-    window.close();
   },
 
   buildPermissionsList(sortCol) {
@@ -442,6 +592,17 @@ var gPermissionManager = {
     this._list.appendChild(frag);
 
     this._setRemoveButtonState();
+  },
+
+  _permissionDisabledByPolicy(permission) {
+    let permissionObject = Services.perms.getPermissionObject(
+      permission.principal,
+      this._type,
+      false
+    );
+    return (
+      permissionObject?.expireType == Ci.nsIPermissionManager.EXPIRE_POLICY
+    );
   },
 
   _sortPermissions(list, frag, column) {

@@ -4,6 +4,7 @@
 
 import os
 import re
+import subprocess
 
 # py2-compat
 try:
@@ -12,52 +13,60 @@ except ImportError:
     JSONDecodeError = ValueError
 
 from mozfile import which
-
 from mozlint import result
-from mozlint.util import pip
 from mozlint.util.implementation import LintProcess
 
 here = os.path.abspath(os.path.dirname(__file__))
-CODESPELL_REQUIREMENTS_PATH = os.path.join(here, 'codespell_requirements.txt')
+CODESPELL_REQUIREMENTS_PATH = os.path.join(here, "codespell_requirements.txt")
 
 CODESPELL_NOT_FOUND = """
 Could not find codespell! Install codespell and try again.
 
     $ pip install -U --require-hashes -r {}
-""".strip().format(CODESPELL_REQUIREMENTS_PATH)
+""".strip().format(
+    CODESPELL_REQUIREMENTS_PATH
+)
 
 
 CODESPELL_INSTALL_ERROR = """
 Unable to install correct version of codespell
 Try to install it manually with:
     $ pip install -U --require-hashes -r {}
-""".strip().format(CODESPELL_REQUIREMENTS_PATH)
+""".strip().format(
+    CODESPELL_REQUIREMENTS_PATH
+)
 
 results = []
 
-CODESPELL_FORMAT_REGEX = re.compile(r'(.*):(.*): (.*) ==> (.*)$')
+CODESPELL_FORMAT_REGEX = re.compile(r"(.*):(.*): (.*) ==> (.*)$")
 
 
 class CodespellProcess(LintProcess):
+    fixed = 0
+    _fix = None
 
     def process_line(self, line):
         try:
             match = CODESPELL_FORMAT_REGEX.match(line)
             abspath, line, typo, correct = match.groups()
         except AttributeError:
-            print('Unable to match regex against output: {}'.format(line))
+            if "FIXED: " not in line:
+                print("Unable to match regex against output: {}".format(line))
             return
+
+        if CodespellProcess._fix:
+            CodespellProcess.fixed += 1
 
         # Ignore false positive like aParent (which would be fixed to apparent)
         # See https://github.com/lucasdemarchi/codespell/issues/314
-        m = re.match(r'^[a-z][A-Z][a-z]*', typo)
+        m = re.match(r"^[a-z][A-Z][a-z]*", typo)
         if m:
             return
         res = {
-            'path': abspath,
-            'message': typo.strip() + " ==> " + correct,
-            'level': 'error',
-            'lineno': line,
+            "path": abspath,
+            "message": typo.strip() + " ==> " + correct,
+            "level": "error",
+            "lineno": line,
         }
         results.append(result.from_config(self.config, **res))
 
@@ -76,52 +85,84 @@ def get_codespell_binary():
     Returns the path of the first codespell binary available
     if not found returns None
     """
-    binary = os.environ.get('CODESPELL')
+    binary = os.environ.get("CODESPELL")
     if binary:
         return binary
 
-    return which('codespell')
+    return which("codespell")
 
 
 def setup(root, **lintargs):
-    if not pip.reinstall_program(CODESPELL_REQUIREMENTS_PATH):
+    virtualenv_manager = lintargs["virtualenv_manager"]
+    try:
+        virtualenv_manager.install_pip_requirements(
+            CODESPELL_REQUIREMENTS_PATH, quiet=True
+        )
+    except subprocess.CalledProcessError:
         print(CODESPELL_INSTALL_ERROR)
         return 1
 
 
+def get_codespell_version(binary):
+    return subprocess.check_output(
+        [which("python"), binary, "--version"],
+        universal_newlines=True,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def get_ignored_words_file(config):
+    config_root = os.path.dirname(config["path"])
+    return os.path.join(config_root, "spell", "exclude-list.txt")
+
+
 def lint(paths, config, fix=None, **lintargs):
-    log = lintargs['log']
+    log = lintargs["log"]
     binary = get_codespell_binary()
     if not binary:
         print(CODESPELL_NOT_FOUND)
-        if 'MOZ_AUTOMATION' in os.environ:
+        if "MOZ_AUTOMATION" in os.environ:
             return 1
         return []
 
-    config['root'] = lintargs['root']
+    config["root"] = lintargs["root"]
 
-    skip_files = ''
-    if 'exclude' in config:
-        skip_files = '--skip=*.dic,{}'.format(','.join(config['exclude']))
+    exclude_list = get_ignored_words_file(config)
+    cmd_args = [
+        which("python"),
+        binary,
+        "--disable-colors",
+        # Silence some warnings:
+        # 1: disable warnings about wrong encoding
+        # 2: disable warnings about binary file
+        # 4: shut down warnings about automatic fixes
+        #    that were disabled in dictionary.
+        "--quiet-level=7",
+        "--ignore-words=" + exclude_list,
+    ]
 
-    exclude_list = os.path.join(here, 'exclude-list.txt')
-    cmd_args = [which('python'),
-                binary,
-                '--disable-colors',
-                # Silence some warnings:
-                # 1: disable warnings about wrong encoding
-                # 2: disable warnings about binary file
-                # 4: shut down warnings about automatic fixes
-                #    that were disabled in dictionary.
-                '--quiet-level=7',
-                '--ignore-words=' + exclude_list,
-                skip_files]
+    if "exclude" in config:
+        cmd_args.append("--skip=*.dic,{}".format(",".join(config["exclude"])))
+
+    log.debug("Command: {}".format(" ".join(cmd_args)))
+    log.debug("Version: {}".format(get_codespell_version(binary)))
 
     if fix:
-        cmd_args.append('--write-changes')
-    log.debug("Command: {}".format(' '.join(cmd_args)))
+        CodespellProcess._fix = True
 
     base_command = cmd_args + paths
-
     run_process(config, base_command)
-    return results
+
+    if fix:
+        global results
+        results = []
+        cmd_args.append("--write-changes")
+        log.debug("Command: {}".format(" ".join(cmd_args)))
+        log.debug("Version: {}".format(get_codespell_version(binary)))
+        base_command = cmd_args + paths
+        run_process(config, base_command)
+        CodespellProcess.fixed = CodespellProcess.fixed - len(results)
+    else:
+        CodespellProcess.fixed = 0
+
+    return {"results": results, "fixed": CodespellProcess.fixed}

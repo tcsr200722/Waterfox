@@ -1,16 +1,17 @@
 "use strict";
 
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
 );
 
 const ROOT = getRootDirectory(gTestPath).replace(
   "chrome://mochitests/content/",
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.com/"
 );
 let pageWithAlert = ROOT + "openPromptOffTimeout.html";
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   Services.perms.removeAll();
 });
 
@@ -21,7 +22,10 @@ registerCleanupFunction(function() {
  * the user to enable this automatically re-selecting. We then check that
  * checking the checkbox does actually enable that behaviour.
  */
-add_task(async function() {
+add_task(async function test_modal_ui() {
+  // Make sure we clear the focus tab permission set in the previous test
+  PermissionTestUtils.remove(pageWithAlert, "focus-tab-by-prompt");
+
   let firstTab = gBrowser.selectedTab;
   // load page that opens prompt when page is hidden
   let openedTab = await BrowserTestUtils.openNewForegroundTab(
@@ -31,8 +35,7 @@ add_task(async function() {
   );
   let openedTabGotAttentionPromise = BrowserTestUtils.waitForAttribute(
     "attention",
-    openedTab,
-    "true"
+    openedTab
   );
   // switch away from that tab again - this triggers the alert.
   await BrowserTestUtils.switchTab(gBrowser, firstTab);
@@ -40,35 +43,51 @@ add_task(async function() {
   await openedTabGotAttentionPromise;
   // check for attention attribute
   is(
-    openedTab.getAttribute("attention"),
-    "true",
+    openedTab.hasAttribute("attention"),
+    true,
     "Tab with alert should have 'attention' attribute."
   );
   ok(!openedTab.selected, "Tab with alert should not be selected");
 
   // switch tab back, and check the checkbox is displayed:
   await BrowserTestUtils.switchTab(gBrowser, openedTab);
-  // check the prompt is there, and the extra row is present
+  // check the prompt is there
   let promptElements = openedTab.linkedBrowser.parentNode.querySelectorAll(
-    "tabmodalprompt"
+    ".content-prompt-dialog"
   );
+
+  let dialogBox = gBrowser.getTabDialogBox(openedTab.linkedBrowser);
+  let contentPromptManager = dialogBox.getContentDialogManager();
   is(promptElements.length, 1, "There should be 1 prompt");
-  let ourPromptElement = promptElements[0];
-  let checkbox = ourPromptElement.querySelector(
-    "checkbox[label*='example.com']"
+  is(
+    contentPromptManager._dialogs.length,
+    1,
+    "Content prompt manager should have 1 dialog box."
   );
+
+  // make sure the checkbox appears and that the permission for allowing tab switching
+  // is set when the checkbox is tickted and the dialog is accepted
+  let dialog = contentPromptManager._dialogs[0];
+
+  await dialog._dialogReady;
+
+  let dialogDoc = dialog._frame.contentWindow.document;
+  let checkbox = dialogDoc.querySelector("checkbox[label*='example.com']");
+  let button = dialogDoc.querySelector("#commonDialog").getButton("accept");
+
   ok(checkbox, "The checkbox should be there");
   ok(!checkbox.checked, "Checkbox shouldn't be checked");
+
   // tick box and accept dialog
   checkbox.checked = true;
-  let ourPrompt = openedTab.linkedBrowser.tabModalPromptBox.getPrompt(
-    ourPromptElement
-  );
-  ourPrompt.onButtonClick(0);
+  button.click();
   // Wait for that click to actually be handled completely.
-  await new Promise(function(resolve) {
+  await new Promise(function (resolve) {
     Services.tm.dispatchToMainThread(resolve);
   });
+
+  ok(!contentPromptManager._dialogs.length, "Dialog should be closed");
+
   // check permission is set
   is(
     Services.perms.ALLOW_ACTION,
@@ -78,23 +97,27 @@ add_task(async function() {
 
   // Check if the control center shows the correct permission.
   let shown = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    event => event.target == gPermissionPanel._permissionPopup
   );
-  gIdentityHandler._identityBox.click();
+  gPermissionPanel._identityPermissionBox.click();
   await shown;
   let labelText = SitePermissions.getPermissionLabel("focus-tab-by-prompt");
   let permissionsList = document.getElementById(
-    "identity-popup-permission-list"
+    "permission-popup-permission-list"
   );
-  let label = permissionsList.querySelector(".identity-popup-permission-label");
+  let label = permissionsList.querySelector(
+    ".permission-popup-permission-label"
+  );
   is(label.textContent, labelText);
-  gIdentityHandler._identityPopup.hidePopup();
+  gPermissionPanel.hidePopup();
 
   // Check if the identity icon signals granted permission.
   ok(
-    gIdentityHandler._identityBox.classList.contains("grantedPermissions"),
-    "identity-box signals granted permissions"
+    gPermissionPanel._identityPermissionBox.hasAttribute("hasPermissions"),
+    "identity-permission-box signals granted permissions"
   );
 
   let openedTabSelectedPromise = BrowserTestUtils.waitForAttribute(
@@ -102,6 +125,7 @@ add_task(async function() {
     openedTab,
     "true"
   );
+
   // switch to other tab again
   await BrowserTestUtils.switchTab(gBrowser, firstTab);
 
@@ -109,6 +133,11 @@ add_task(async function() {
   // Note that the switchTab promise doesn't actually guarantee anything about *which*
   // tab ends up as selected when its event fires, so using that here wouldn't work.
   await openedTabSelectedPromise;
+
+  Assert.strictEqual(contentPromptManager._dialogs.length, 1, "Dialog opened.");
+  dialog = contentPromptManager._dialogs[0];
+  await dialog._dialogReady;
+
   // should be switched back
   ok(openedTab.selected, "Ta-dah, the other tab should now be selected again!");
 
@@ -116,7 +145,7 @@ add_task(async function() {
   // to ensure that the prompt is open before removing the opened tab, because the
   // promise callback of 'openedTabSelectedPromise' could be done at the middle of
   // RemotePrompt.openTabPrompt() while 'DOMModalDialogClosed' event is fired.
-  await TestUtils.waitForTick();
+  // await TestUtils.waitForTick();
 
-  BrowserTestUtils.removeTab(openedTab);
+  await BrowserTestUtils.removeTab(openedTab);
 });

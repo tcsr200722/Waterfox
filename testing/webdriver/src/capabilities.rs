@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use crate::common::MAX_SAFE_INTEGER;
 use crate::error::{ErrorStatus, WebDriverError, WebDriverResult};
 use serde_json::{Map, Value};
@@ -46,6 +50,28 @@ pub trait BrowserCapabilities {
     /// Indicates that interactability checks will be applied to `<input type=file>`.
     fn strict_file_interactability(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
 
+    /// Whether a WebSocket URL for the created session has to be returned
+    fn web_socket_url(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
+    /// Indicates whether the endpoint node supports all Virtual Authenticators commands.
+    fn webauthn_virtual_authenticators(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
+    /// Indicates whether the endpoint node WebAuthn WebDriver implementation supports the User
+    /// Verification Method extension.
+    fn webauthn_extension_uvm(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
+    /// Indicates whether the endpoint node WebAuthn WebDriver implementation supports the prf
+    /// extension.
+    fn webauthn_extension_prf(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
+    /// Indicates whether the endpoint node WebAuthn WebDriver implementation supports the
+    /// largeBlob extension.
+    fn webauthn_extension_large_blob(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
+    /// Indicates whether the endpoint node WebAuthn WebDriver implementation supports the credBlob
+    /// extension.
+    fn webauthn_extension_cred_blob(&mut self, _: &Capabilities) -> WebDriverResult<bool>;
+
     fn accept_proxy(
         &mut self,
         proxy_settings: &Map<String, Value>,
@@ -57,7 +83,7 @@ pub trait BrowserCapabilities {
     /// Check that custom properties containing ":" have the correct data types.
     /// Properties that are unrecognised must be ignored i.e. return without
     /// error.
-    fn validate_custom(&self, name: &str, value: &Value) -> WebDriverResult<()>;
+    fn validate_custom(&mut self, name: &str, value: &Value) -> WebDriverResult<()>;
 
     /// Check if custom properties are accepted capabilites
     ///
@@ -112,12 +138,12 @@ impl SpecNewSessionParameters {
     fn validate<T: BrowserCapabilities>(
         &self,
         mut capabilities: Capabilities,
-        browser_capabilities: &T,
+        browser_capabilities: &mut T,
     ) -> WebDriverResult<Capabilities> {
         // Filter out entries with the value `null`
         let null_entries = capabilities
             .iter()
-            .filter(|&(_, ref value)| **value == Value::Null)
+            .filter(|&(_, value)| *value == Value::Null)
             .map(|(k, _)| k.clone())
             .collect::<Vec<String>>();
         for key in null_entries {
@@ -128,7 +154,13 @@ impl SpecNewSessionParameters {
             match &**key {
                 x @ "acceptInsecureCerts"
                 | x @ "setWindowRect"
-                | x @ "strictFileInteractability" => {
+                | x @ "strictFileInteractability"
+                | x @ "webSocketUrl"
+                | x @ "webauthn:virtualAuthenticators"
+                | x @ "webauthn:extension:uvm"
+                | x @ "webauthn:extension:prf"
+                | x @ "webauthn:extension:largeBlob"
+                | x @ "webauthn:extension:credBlob" => {
                     if !value.is_boolean() {
                         return Err(WebDriverError::new(
                             ErrorStatus::InvalidArgument,
@@ -148,7 +180,7 @@ impl SpecNewSessionParameters {
                 "proxy" => SpecNewSessionParameters::validate_proxy(value)?,
                 "timeouts" => SpecNewSessionParameters::validate_timeouts(value)?,
                 "unhandledPromptBehavior" => {
-                    SpecNewSessionParameters::validate_unhandled_prompt_behaviour(value)?
+                    SpecNewSessionParameters::validate_unhandled_prompt_behavior(value)?
                 }
                 x => {
                     if !x.contains(':') {
@@ -165,6 +197,12 @@ impl SpecNewSessionParameters {
                 }
             }
         }
+
+        // With a value of `false` the capability needs to be removed.
+        if let Some(Value::Bool(false)) = capabilities.get(&"webSocketUrl".to_string()) {
+            capabilities.remove(&"webSocketUrl".to_string());
+        }
+
         Ok(capabilities)
     }
 
@@ -217,11 +255,11 @@ impl SpecNewSessionParameters {
 
                 "proxyAutoconfigUrl" => match value.as_str() {
                     Some(x) => {
-                        Url::parse(x).or_else(|_| {
-                            Err(WebDriverError::new(
+                        Url::parse(x).map_err(|_| {
+                            WebDriverError::new(
                                 ErrorStatus::InvalidArgument,
                                 format!("proxyAutoconfigUrl is not a valid URL: {}", x),
-                            ))
+                            )
                         })?;
                     }
                     None => {
@@ -297,18 +335,18 @@ impl SpecNewSessionParameters {
                 }
 
                 // Temporarily add a scheme so the host can be parsed as URL
-                let url = Url::parse(&format!("http://{}", host)).or_else(|_| {
-                    Err(WebDriverError::new(
+                let url = Url::parse(&format!("http://{}", host)).map_err(|_| {
+                    WebDriverError::new(
                         ErrorStatus::InvalidArgument,
                         format!("{} is not a valid URL: {}", entry, host),
-                    ))
+                    )
                 })?;
 
                 if url.username() != ""
-                    || url.password() != None
+                    || url.password().is_some()
                     || url.path() != "/"
-                    || url.query() != None
-                    || url.fragment() != None
+                    || url.query().is_some()
+                    || url.fragment().is_some()
                 {
                     return Err(WebDriverError::new(
                         ErrorStatus::InvalidArgument,
@@ -377,19 +415,65 @@ impl SpecNewSessionParameters {
         Ok(())
     }
 
-    fn validate_unhandled_prompt_behaviour(value: &Value) -> WebDriverResult<()> {
-        let behaviour = try_opt!(
-            value.as_str(),
-            ErrorStatus::InvalidArgument,
-            format!("unhandledPromptBehavior is not a string: {}", value)
-        );
+    fn validate_unhandled_prompt_behavior(value: &Value) -> WebDriverResult<()> {
+        match value {
+            Value::Object(obj) => {
+                // Unhandled Prompt Behavior type as used by WebDriver BiDi
+                for (key, value) in obj {
+                    match &**key {
+                        x @ "alert"
+                        | x @ "beforeUnload"
+                        | x @ "confirm"
+                        | x @ "default"
+                        | x @ "prompt" => {
+                            let behavior = try_opt!(
+                                value.as_str(),
+                                ErrorStatus::InvalidArgument,
+                                format!(
+                                    "'{}' unhandledPromptBehavior value is not a string: {}",
+                                    x, value
+                                )
+                            );
 
-        match behaviour {
-            "accept" | "accept and notify" | "dismiss" | "dismiss and notify" | "ignore" => {}
-            x => {
+                            match behavior {
+                                "accept" | "accept and notify" | "dismiss"
+                                | "dismiss and notify" | "ignore" => {}
+                                x => {
+                                    return Err(WebDriverError::new(
+                                        ErrorStatus::InvalidArgument,
+                                        format!(
+                                            "'{}' unhandledPromptBehavior value is invalid: {}",
+                                            x, behavior
+                                        ),
+                                    ))
+                                }
+                            }
+                        }
+                        x => {
+                            return Err(WebDriverError::new(
+                                ErrorStatus::InvalidArgument,
+                                format!("Invalid unhandledPromptBehavior entry: {}", x),
+                            ))
+                        }
+                    }
+                }
+            }
+            Value::String(behavior) => match behavior.as_str() {
+                "accept" | "accept and notify" | "dismiss" | "dismiss and notify" | "ignore" => {}
+                x => {
+                    return Err(WebDriverError::new(
+                        ErrorStatus::InvalidArgument,
+                        format!("Invalid unhandledPromptBehavior value: {}", x),
+                    ))
+                }
+            },
+            _ => {
                 return Err(WebDriverError::new(
                     ErrorStatus::InvalidArgument,
-                    format!("Invalid unhandledPromptBehavior value: {}", x),
+                    format!(
+                        "unhandledPromptBehavior is neither an object nor a string: {}",
+                        value
+                    ),
                 ))
             }
         }
@@ -444,7 +528,7 @@ impl CapabilitiesMatching for SpecNewSessionParameters {
                                 .ok()
                                 .and_then(|x| x);
 
-                            if value.as_str() != browserValue.as_ref().map(|x| &**x) {
+                            if value.as_str() != browserValue.as_deref() {
                                 return false;
                             }
                         }
@@ -457,7 +541,7 @@ impl CapabilitiesMatching for SpecNewSessionParameters {
                             let version_cond = value.as_str().unwrap_or("");
                             if let Some(version) = browserValue {
                                 if !browser_capabilities
-                                    .compare_browser_version(&*version, version_cond)
+                                    .compare_browser_version(&version, version_cond)
                                     .unwrap_or(false)
                                 {
                                     return false;
@@ -471,7 +555,7 @@ impl CapabilitiesMatching for SpecNewSessionParameters {
                                 .platform_name(merged)
                                 .ok()
                                 .and_then(|x| x);
-                            if value.as_str() != browserValue.as_ref().map(|x| &**x) {
+                            if value.as_str() != browserValue.as_deref() {
                                 return false;
                             }
                         }
@@ -506,8 +590,60 @@ impl CapabilitiesMatching for SpecNewSessionParameters {
                             let default = Map::new();
                             let proxy = value.as_object().unwrap_or(&default);
                             if !browser_capabilities
-                                .accept_proxy(&proxy, merged)
+                                .accept_proxy(proxy, merged)
                                 .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webSocketUrl" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities.web_socket_url(merged).unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webauthn:virtualAuthenticators" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities
+                                    .webauthn_virtual_authenticators(merged)
+                                    .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webauthn:extension:uvm" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities
+                                    .webauthn_extension_uvm(merged)
+                                    .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webauthn:extension:prf" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities
+                                    .webauthn_extension_prf(merged)
+                                    .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webauthn:extension:largeBlob" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities
+                                    .webauthn_extension_large_blob(merged)
+                                    .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                        }
+                        "webauthn:extension:credBlob" => {
+                            if value.as_bool().unwrap_or(false)
+                                && !browser_capabilities
+                                    .webauthn_extension_cred_blob(merged)
+                                    .unwrap_or(false)
                             {
                                 return false;
                             }
@@ -701,6 +837,41 @@ mod tests {
         caps.required.insert("foo2".into(), "bar2".into());
 
         assert_de(&caps, json);
+    }
+
+    #[test]
+    fn test_validate_unhandled_prompt_behavior() {
+        fn validate_prompt_behavior(v: Value) -> WebDriverResult<()> {
+            SpecNewSessionParameters::validate_unhandled_prompt_behavior(&v)
+        }
+
+        // capability as string
+        validate_prompt_behavior(json!("accept")).unwrap();
+        validate_prompt_behavior(json!("accept and notify")).unwrap();
+        validate_prompt_behavior(json!("dismiss")).unwrap();
+        validate_prompt_behavior(json!("dismiss and notify")).unwrap();
+        validate_prompt_behavior(json!("ignore")).unwrap();
+        assert!(validate_prompt_behavior(json!("foo")).is_err());
+
+        // capability as object
+        let types = ["alert", "beforeUnload", "confirm", "default", "prompt"];
+        let handlers = [
+            "accept",
+            "accept and notify",
+            "dismiss",
+            "dismiss and notify",
+            "ignore",
+        ];
+        for promptType in types {
+            assert!(validate_prompt_behavior(json!({promptType: "foo"})).is_err());
+            for handler in handlers {
+                validate_prompt_behavior(json!({promptType: handler})).unwrap();
+            }
+        }
+
+        for handler in handlers {
+            assert!(validate_prompt_behavior(json!({"foo": handler})).is_err());
+        }
     }
 
     #[test]

@@ -3,7 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { RetVal, generateActorSpec } = require("devtools/shared/protocol");
+const {
+  RetVal,
+  generateActorSpec,
+  Option,
+} = require("resource://devtools/shared/protocol.js");
 
 const webExtensionDescriptorSpec = generateActorSpec({
   typeName: "webExtensionDescriptor",
@@ -14,7 +18,12 @@ const webExtensionDescriptorSpec = generateActorSpec({
       response: { addon: RetVal("json") },
     },
 
-    // FF70+ The method is now called getTarget`
+    terminateBackgroundScript: {
+      request: {},
+      response: {},
+    },
+
+    // @backward-compat { version 70 } The method is now called getTarget
     connect: {
       request: {},
       response: { form: RetVal("json") },
@@ -23,6 +32,25 @@ const webExtensionDescriptorSpec = generateActorSpec({
     getTarget: {
       request: {},
       response: { form: RetVal("json") },
+    },
+
+    reloadDescriptor: {
+      request: {
+        bypassCache: Option(0, "boolean"),
+      },
+      response: {},
+    },
+    getWatcher: {
+      request: {
+        isServerTargetSwitchingEnabled: Option(0, "boolean"),
+      },
+      response: RetVal("watcher"),
+    },
+  },
+
+  events: {
+    "descriptor-destroyed": {
+      type: "descriptor-destroyed",
     },
   },
 });

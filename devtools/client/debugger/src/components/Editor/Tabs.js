@@ -2,67 +2,39 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React, { PureComponent } from "react";
-import ReactDOM from "react-dom";
-import { connect } from "../../utils/connect";
+import React, { PureComponent } from "devtools/client/shared/vendor/react";
+import {
+  div,
+  ul,
+  li,
+  span,
+} from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import {
+  getSourceTabs,
   getSelectedSource,
   getSourcesForTabs,
   getIsPaused,
   getCurrentThread,
-  getContext,
-} from "../../selectors";
+  getBlackBoxRanges,
+} from "../../selectors/index";
 import { isVisible } from "../../utils/ui";
 
 import { getHiddenTabs } from "../../utils/tabs";
-import { getFilename, isPretty, getFileURL } from "../../utils/source";
-import actions from "../../actions";
-
-import { debounce } from "lodash";
-import "./Tabs.css";
+import { isPretty, getFileURL } from "../../utils/source";
+import actions from "../../actions/index";
 
 import Tab from "./Tab";
-import { PaneToggleButton } from "../shared/Button";
+import { PaneToggleButton } from "../shared/Button/index";
 import Dropdown from "../shared/Dropdown";
 import AccessibleImage from "../shared/AccessibleImage";
 import CommandBar from "../SecondaryPanes/CommandBar";
 
-import type { Source, Context } from "../../types";
-import type { TabsSources } from "../../reducers/types";
+const { debounce } = require("resource://devtools/shared/debounce.js");
 
-type OwnProps = {|
-  horizontal: boolean,
-  startPanelCollapsed: boolean,
-  endPanelCollapsed: boolean,
-|};
-type Props = {
-  cx: Context,
-  tabSources: TabsSources,
-  selectedSource: ?Source,
-  horizontal: boolean,
-  startPanelCollapsed: boolean,
-  endPanelCollapsed: boolean,
-  moveTab: typeof actions.moveTab,
-  moveTabBySourceId: typeof actions.moveTabBySourceId,
-  closeTab: typeof actions.closeTab,
-  togglePaneCollapse: typeof actions.togglePaneCollapse,
-  showSource: typeof actions.showSource,
-  selectSource: typeof actions.selectSource,
-  isPaused: boolean,
-};
-
-type State = {
-  dropdownShown: boolean,
-  hiddenTabs: TabsSources,
-};
-
-function haveTabSourcesChanged(
-  tabSources: TabsSources,
-  prevTabSources: TabsSources
-): boolean {
+function haveTabSourcesChanged(tabSources, prevTabSources) {
   if (tabSources.length !== prevTabSources.length) {
     return true;
   }
@@ -76,21 +48,8 @@ function haveTabSourcesChanged(
   return false;
 }
 
-class Tabs extends PureComponent<Props, State> {
-  onTabContextMenu: Function;
-  showContextMenu: Function;
-  updateHiddenTabs: Function;
-  toggleSourcesDropdown: Function;
-  renderDropdownSource: Function;
-  renderTabs: Function;
-  renderDropDown: Function;
-  renderStartPanelToggleButton: Function;
-  renderEndPanelToggleButton: Function;
-  onResize: Function;
-  _draggedSource: ?Source;
-  _draggedSourceIndex: ?number;
-
-  constructor(props: Props) {
+class Tabs extends PureComponent {
+  constructor(props) {
     super(props);
     this.state = {
       dropdownShown: false,
@@ -102,25 +61,24 @@ class Tabs extends PureComponent<Props, State> {
     });
   }
 
-  get draggedSource() {
-    return this._draggedSource == null
-      ? { url: null, id: null }
-      : this._draggedSource;
+  static get propTypes() {
+    return {
+      endPanelCollapsed: PropTypes.bool.isRequired,
+      horizontal: PropTypes.bool.isRequired,
+      isPaused: PropTypes.bool.isRequired,
+      moveTab: PropTypes.func.isRequired,
+      moveTabBySourceId: PropTypes.func.isRequired,
+      selectSource: PropTypes.func.isRequired,
+      selectedSource: PropTypes.object,
+      blackBoxRanges: PropTypes.object.isRequired,
+      startPanelCollapsed: PropTypes.bool.isRequired,
+      tabSources: PropTypes.array.isRequired,
+      tabs: PropTypes.array.isRequired,
+      togglePaneCollapse: PropTypes.func.isRequired,
+    };
   }
 
-  set draggedSource(source: ?Source) {
-    this._draggedSource = source;
-  }
-
-  get draggedSourceIndex() {
-    return this._draggedSourceIndex == null ? -1 : this._draggedSourceIndex;
-  }
-
-  set draggedSourceIndex(index: ?number) {
-    this._draggedSourceIndex = index;
-  }
-
-  componentDidUpdate(prevProps: Props) {
+  componentDidUpdate(prevProps) {
     if (
       this.props.selectedSource !== prevProps.selectedSource ||
       haveTabSourcesChanged(this.props.tabSources, prevProps.tabSources)
@@ -161,7 +119,8 @@ class Tabs extends PureComponent<Props, State> {
       isVisible() &&
       hiddenTabs.find(tab => tab.id == selectedSource.id)
     ) {
-      return moveTab(selectedSource.url, 0);
+      moveTab(selectedSource.url, 0);
+      return;
     }
 
     this.setState({ hiddenTabs });
@@ -173,54 +132,61 @@ class Tabs extends PureComponent<Props, State> {
     }));
   }
 
-  getIconClass(source: Source) {
+  getIconClass(source) {
     if (isPretty(source)) {
       return "prettyPrint";
     }
-    if (source.isBlackBoxed) {
+    if (this.props.blackBoxRanges[source.url]) {
       return "blackBox";
     }
     return "file";
   }
 
-  renderDropdownSource = (source: Source) => {
-    const { cx, selectSource } = this.props;
-    const filename = getFilename(source);
+  renderDropdownSource = source => {
+    const { selectSource } = this.props;
 
-    const onClick = () => selectSource(cx, source.id);
-    return (
-      <li key={source.id} onClick={onClick} title={getFileURL(source, false)}>
-        <AccessibleImage
-          className={`dropdown-icon ${this.getIconClass(source)}`}
-        />
-        <span className="dropdown-label">{filename}</span>
-      </li>
+    const onClick = () => selectSource(source);
+    return li(
+      {
+        key: source.id,
+        onClick,
+        title: getFileURL(source, false),
+      },
+      React.createElement(AccessibleImage, {
+        className: `dropdown-icon ${this.getIconClass(source)}`,
+      }),
+      span(
+        {
+          className: "dropdown-label",
+        },
+        source.shortName
+      )
     );
   };
 
-  onTabDragStart = (source: Source, index: number) => {
-    this.draggedSource = source;
-    this.draggedSourceIndex = index;
+  // Note that these three listener will be called from Tab component
+  // so that e.target will be Tab's DOM (and not Tabs one).
+  onTabDragStart = e => {
+    this.draggedSourceId = e.target.dataset.sourceId;
+    this.draggedSourceIndex = e.target.dataset.index;
   };
 
   onTabDragEnd = () => {
-    this.draggedSource = null;
-    this.draggedSourceIndex = null;
+    this.draggedSourceId = null;
+    this.draggedSourceIndex = -1;
   };
 
-  onTabDragOver = (e: any, source: Source, hoveredTabIndex: number) => {
+  onTabDragOver = e => {
+    e.preventDefault();
+
+    const hoveredTabIndex = e.target.dataset.index;
     const { moveTabBySourceId } = this.props;
+
     if (hoveredTabIndex === this.draggedSourceIndex) {
       return;
     }
 
-    const tabDOM = ReactDOM.findDOMNode(
-      this.refs[`tab_${source.id}`].getWrappedInstance()
-    );
-
-    /* $FlowIgnore: tabDOM.nodeType will always be of Node.ELEMENT_NODE since it comes from a ref;
-      however; the return type of findDOMNode is null | Element | Text */
-    const tabDOMRect = tabDOM.getBoundingClientRect();
+    const tabDOMRect = e.target.getBoundingClientRect();
     const { pageX: mouseCursorX } = e;
     if (
       /* Case: the mouse cursor moves into the left half of any target tab */
@@ -232,7 +198,7 @@ class Tabs extends PureComponent<Props, State> {
         hoveredTabIndex > this.draggedSourceIndex
           ? hoveredTabIndex - 1
           : hoveredTabIndex;
-      moveTabBySourceId(this.draggedSource.id, targetTab);
+      moveTabBySourceId(this.draggedSourceId, targetTab);
       this.draggedSourceIndex = targetTab;
     } else if (
       /* Case: the mouse cursor moves into the right half of any target tab */
@@ -244,106 +210,106 @@ class Tabs extends PureComponent<Props, State> {
         hoveredTabIndex < this.draggedSourceIndex
           ? hoveredTabIndex + 1
           : hoveredTabIndex;
-      moveTabBySourceId(this.draggedSource.id, targetTab);
+      moveTabBySourceId(this.draggedSourceId, targetTab);
       this.draggedSourceIndex = targetTab;
     }
   };
 
   renderTabs() {
-    const { tabSources } = this.props;
-    if (!tabSources) {
-      return;
+    const { tabs } = this.props;
+    if (!tabs) {
+      return null;
     }
-
-    return (
-      <div className="source-tabs" ref="sourceTabs">
-        {tabSources.map((source, index) => {
-          return (
-            <Tab
-              onDragStart={_ => this.onTabDragStart(source, index)}
-              onDragOver={e => {
-                this.onTabDragOver(e, source, index);
-                e.preventDefault();
-              }}
-              onDragEnd={this.onTabDragEnd}
-              key={index}
-              source={source}
-              ref={`tab_${source.id}`}
-            />
-          );
-        })}
-      </div>
+    return div(
+      {
+        className: "source-tabs",
+        ref: "sourceTabs",
+      },
+      tabs.map(({ source, sourceActor }, index) => {
+        return React.createElement(Tab, {
+          onDragStart: this.onTabDragStart,
+          onDragOver: this.onTabDragOver,
+          onDragEnd: this.onTabDragEnd,
+          key: source.id + sourceActor?.id,
+          index,
+          source,
+          sourceActor,
+        });
+      })
     );
   }
 
   renderDropdown() {
     const { hiddenTabs } = this.state;
-    if (!hiddenTabs || hiddenTabs.length == 0) {
+    if (!hiddenTabs || !hiddenTabs.length) {
       return null;
     }
-
-    const Panel = <ul>{hiddenTabs.map(this.renderDropdownSource)}</ul>;
-    const icon = <AccessibleImage className="more-tabs" />;
-
-    return <Dropdown panel={Panel} icon={icon} />;
+    const panel = ul(null, hiddenTabs.map(this.renderDropdownSource));
+    const icon = React.createElement(AccessibleImage, {
+      className: "more-tabs",
+    });
+    return React.createElement(Dropdown, {
+      panel,
+      icon,
+    });
   }
 
   renderCommandBar() {
     const { horizontal, endPanelCollapsed, isPaused } = this.props;
     if (!endPanelCollapsed || !isPaused) {
-      return;
+      return null;
     }
-
-    return <CommandBar horizontal={horizontal} />;
+    return React.createElement(CommandBar, {
+      horizontal,
+    });
   }
 
   renderStartPanelToggleButton() {
-    return (
-      <PaneToggleButton
-        position="start"
-        collapsed={this.props.startPanelCollapsed}
-        handleClick={(this.props.togglePaneCollapse: any)}
-      />
-    );
+    return React.createElement(PaneToggleButton, {
+      position: "start",
+      collapsed: this.props.startPanelCollapsed,
+      handleClick: this.props.togglePaneCollapse,
+    });
   }
 
   renderEndPanelToggleButton() {
     const { horizontal, endPanelCollapsed, togglePaneCollapse } = this.props;
     if (!horizontal) {
-      return;
+      return null;
     }
-
-    return (
-      <PaneToggleButton
-        position="end"
-        collapsed={endPanelCollapsed}
-        handleClick={(togglePaneCollapse: any)}
-        horizontal={horizontal}
-      />
-    );
+    return React.createElement(PaneToggleButton, {
+      position: "end",
+      collapsed: endPanelCollapsed,
+      handleClick: togglePaneCollapse,
+      horizontal,
+    });
   }
 
   render() {
-    return (
-      <div className="source-header">
-        {this.renderStartPanelToggleButton()}
-        {this.renderTabs()}
-        {this.renderDropdown()}
-        {this.renderEndPanelToggleButton()}
-        {this.renderCommandBar()}
-      </div>
+    return div(
+      {
+        className: "source-header",
+      },
+      this.renderStartPanelToggleButton(),
+      this.renderTabs(),
+      this.renderDropdown(),
+      this.renderEndPanelToggleButton(),
+      this.renderCommandBar()
     );
   }
 }
 
-const mapStateToProps = state => ({
-  cx: getContext(state),
-  selectedSource: getSelectedSource(state),
-  tabSources: getSourcesForTabs(state),
-  isPaused: getIsPaused(state, getCurrentThread(state)),
-});
+const mapStateToProps = state => {
+  return {
+    selectedSource: getSelectedSource(state),
+    tabSources: getSourcesForTabs(state),
+    tabs: getSourceTabs(state),
+    blackBoxRanges: getBlackBoxRanges(state),
+    isPaused: getIsPaused(state, getCurrentThread(state)),
+  };
+};
 
-export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+export default connect(mapStateToProps, {
   selectSource: actions.selectSource,
   moveTab: actions.moveTab,
   moveTabBySourceId: actions.moveTabBySourceId,

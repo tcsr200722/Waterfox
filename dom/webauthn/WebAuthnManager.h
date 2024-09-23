@@ -9,6 +9,8 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/RandomNum.h"
+#include "mozilla/dom/AbortSignal.h"
 #include "mozilla/dom/PWebAuthnTransaction.h"
 #include "mozilla/dom/WebAuthnManagerBase.h"
 
@@ -42,13 +44,17 @@
  *
  */
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+class Credential;
+
+enum class WebAuthnTransactionType { Create, Get };
 
 class WebAuthnTransaction {
  public:
-  explicit WebAuthnTransaction(const RefPtr<Promise>& aPromise)
-      : mPromise(aPromise), mId(NextId()), mVisibilityChanged(false) {
+  explicit WebAuthnTransaction(const RefPtr<Promise>& aPromise,
+                               WebAuthnTransactionType aType)
+      : mPromise(aPromise), mId(NextId()), mType(aType) {
     MOZ_ASSERT(mId > 0);
   }
 
@@ -58,17 +64,19 @@ class WebAuthnTransaction {
   // Unique transaction id.
   uint64_t mId;
 
-  // Whether or not visibility has changed for the window during this
-  // transaction
-  bool mVisibilityChanged;
+  WebAuthnTransactionType mType;
 
  private:
-  // Generates a unique id for new transactions. This doesn't have to be unique
-  // forever, it's sufficient to differentiate between temporally close
-  // transactions, where messages can intersect. Can overflow.
+  // Generates a probabilistically unique ID for the new transaction. IDs are 53
+  // bits, as they are used in javascript. We use a random value if possible,
+  // otherwise a counter.
   static uint64_t NextId() {
-    static uint64_t id = 0;
-    return ++id;
+    static uint64_t counter = 0;
+    Maybe<uint64_t> rand = mozilla::RandomUint64();
+    uint64_t id =
+        rand.valueOr(++counter) & UINT64_C(0x1fffffffffffff);  // 2^53 - 1
+    // The transaction ID 0 is reserved.
+    return id ? id : 1;
   }
 };
 
@@ -82,13 +90,17 @@ class WebAuthnManager final : public WebAuthnManagerBase, public AbortFollower {
 
   already_AddRefed<Promise> MakeCredential(
       const PublicKeyCredentialCreationOptions& aOptions,
-      const Optional<OwningNonNull<AbortSignal>>& aSignal);
+      const Optional<OwningNonNull<AbortSignal>>& aSignal, ErrorResult& aError);
 
   already_AddRefed<Promise> GetAssertion(
       const PublicKeyCredentialRequestOptions& aOptions,
-      const Optional<OwningNonNull<AbortSignal>>& aSignal);
+      const bool aConditionallyMediated,
+      const Optional<OwningNonNull<AbortSignal>>& aSignal, ErrorResult& aError);
 
-  already_AddRefed<Promise> Store(const Credential& aCredential);
+  already_AddRefed<Promise> Store(const Credential& aCredential,
+                                  ErrorResult& aError);
+
+  already_AddRefed<Promise> IsUVPAA(GlobalObject& aGlobal, ErrorResult& aError);
 
   // WebAuthnManagerBase
 
@@ -104,20 +116,29 @@ class WebAuthnManager final : public WebAuthnManagerBase, public AbortFollower {
 
   // AbortFollower
 
-  void Abort() override;
-
- protected:
-  // Cancels the current transaction (by sending a Cancel message to the
-  // parent) and rejects it by calling RejectTransaction().
-  void CancelTransaction(const nsresult& aError);
-  // Upon a visibility change, makes note of it in the current transaction.
-  void HandleVisibilityChange() override;
+  void RunAbortAlgorithm() override;
 
  private:
   virtual ~WebAuthnManager();
 
-  // Rejects the current transaction and calls ClearTransaction().
-  void RejectTransaction(const nsresult& aError);
+  // Send a Cancel message to the parent, reject the promise with the given
+  // reason (an nsresult or JS::Handle<JS::Value>), and clear the transaction.
+  template <typename T>
+  void CancelTransaction(const T& aReason) {
+    CancelParent();
+    RejectTransaction(aReason);
+  }
+
+  // Resolve the promise with the given credential.
+  void ResolveTransaction(const RefPtr<PublicKeyCredential>& aCredential);
+
+  // Reject the promise with the given reason (an nsresult or JS::Value), and
+  // clear the transaction.
+  template <typename T>
+  void RejectTransaction(const T& aReason);
+
+  // Send a Cancel message to the parent.
+  void CancelParent();
 
   // Clears all information we have about the current transaction.
   void ClearTransaction();
@@ -136,7 +157,6 @@ inline void ImplCycleCollectionUnlink(WebAuthnTransaction& aTransaction) {
   ImplCycleCollectionUnlink(aTransaction.mPromise);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_WebAuthnManager_h

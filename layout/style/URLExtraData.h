@@ -11,10 +11,8 @@
 
 #include <utility>
 
-#include "ReferrerInfo.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/UserAgentStyleSheetID.h"
-#include "mozilla/dom/URL.h"
 #include "nsCOMPtr.h"
 #include "nsIPrincipal.h"
 #include "nsIReferrerInfo.h"
@@ -23,6 +21,8 @@
 namespace mozilla {
 
 struct URLExtraData {
+  static bool ChromeRulesEnabled(nsIURI* aURI);
+
   URLExtraData(already_AddRefed<nsIURI> aBaseURI,
                already_AddRefed<nsIReferrerInfo> aReferrerInfo,
                already_AddRefed<nsIPrincipal> aPrincipal)
@@ -35,7 +35,7 @@ struct URLExtraData {
     // When we hold the URI data of a style sheet, referrer is always
     // equal to the sheet URI.
     nsCOMPtr<nsIURI> referrer = mReferrerInfo->GetOriginalReferrer();
-    mIsChrome = referrer ? dom::IsChromeURI(referrer) : false;
+    mChromeRulesEnabled = ChromeRulesEnabled(referrer);
   }
 
   URLExtraData(nsIURI* aBaseURI, nsIReferrerInfo* aReferrerInfo,
@@ -49,12 +49,20 @@ struct URLExtraData {
   nsIReferrerInfo* ReferrerInfo() const { return mReferrerInfo; }
   nsIPrincipal* Principal() const { return mPrincipal; }
 
+  bool ChromeRulesEnabled() const { return mChromeRulesEnabled; }
+
   static URLExtraData* Dummy() {
     MOZ_ASSERT(sDummy);
     return sDummy;
   }
-  static void InitDummy();
-  static void ReleaseDummy();
+
+  static URLExtraData* DummyChrome() {
+    MOZ_ASSERT(sDummyChrome);
+    return sDummyChrome;
+  }
+
+  static void Init();
+  static void Shutdown();
 
   // URLExtraData objects that shared style sheets use a sheet ID index to
   // refer to.
@@ -68,10 +76,10 @@ struct URLExtraData {
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
   nsCOMPtr<nsIPrincipal> mPrincipal;
 
-  // True if referrer is a chrome:// URI.
-  bool mIsChrome;
+  bool mChromeRulesEnabled;
 
   static StaticRefPtr<URLExtraData> sDummy;
+  static StaticRefPtr<URLExtraData> sDummyChrome;
 };
 
 }  // namespace mozilla

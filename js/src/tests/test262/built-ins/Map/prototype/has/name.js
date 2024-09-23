@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.1.3.7
+esid: sec-map.prototype.has
 description: >
   Map.prototype.has.name value and descriptor.
 info: |
@@ -12,13 +12,11 @@ info: |
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(
-  Map.prototype.has.name, 'has',
-  'The value of `Map.prototype.has.name` is `"has"`'
-);
-
-verifyNotEnumerable(Map.prototype.has, 'name');
-verifyNotWritable(Map.prototype.has, 'name');
-verifyConfigurable(Map.prototype.has, 'name');
+verifyProperty(Map.prototype.has, "name", {
+  value: "has",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

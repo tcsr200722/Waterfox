@@ -7,10 +7,14 @@
 #ifndef mozilla_dom_StorageNotifierService_h
 #define mozilla_dom_StorageNotifierService_h
 
+#include "nsISupportsImpl.h"
+#include "nsTObserverArray.h"
+
+class nsIEventTarget;
+class nsIPrincipal;
 class nsPIDOMWindowInner;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class StorageEvent;
 
@@ -30,6 +34,8 @@ class StorageNotificationObserver {
                                           bool aPrivateBrowsing) = 0;
 
   virtual bool IsPrivateBrowsing() const = 0;
+
+  virtual nsIPrincipal* GetEffectiveCookiePrincipal() const = 0;
 
   virtual nsIPrincipal* GetEffectiveStoragePrincipal() const = 0;
 
@@ -65,7 +71,6 @@ class StorageNotifierService final {
   nsTObserverArray<RefPtr<StorageNotificationObserver>> mObservers;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_StorageNotifierService_h

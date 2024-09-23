@@ -7,6 +7,7 @@
 
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/ScopeExit.h"
 #include "nsIURI.h"
 #include "nsExternalProtocolHandler.h"
 #include "nsString.h"
@@ -16,6 +17,7 @@
 #include "nsServiceManagerUtils.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
+#include "nsIRedirectHistoryEntry.h"
 #include "nsNetUtil.h"
 #include "nsContentSecurityManager.h"
 #include "nsExternalHelperAppService.h"
@@ -119,7 +121,8 @@ NS_IMETHODIMP nsExtProtocolChannel::SetNotificationCallbacks(
 }
 
 NS_IMETHODIMP
-nsExtProtocolChannel::GetSecurityInfo(nsISupports** aSecurityInfo) {
+nsExtProtocolChannel::GetSecurityInfo(
+    nsITransportSecurityInfo** aSecurityInfo) {
   *aSecurityInfo = nullptr;
   return NS_OK;
 }
@@ -146,24 +149,37 @@ nsresult nsExtProtocolChannel::OpenURL() {
   nsCOMPtr<nsIExternalProtocolService> extProtService(
       do_GetService(NS_EXTERNALPROTOCOLSERVICE_CONTRACTID));
 
+  auto cleanup = mozilla::MakeScopeExit([&] {
+    mCallbacks = nullptr;
+    mListener = nullptr;
+  });
+
   if (extProtService) {
-#ifdef DEBUG
     nsAutoCString urlScheme;
     mUrl->GetScheme(urlScheme);
     bool haveHandler = false;
     extProtService->ExternalProtocolHandlerExists(urlScheme.get(),
                                                   &haveHandler);
-    NS_ASSERTION(haveHandler,
-                 "Why do we have a channel for this url if we don't support "
-                 "the protocol?");
-#endif
+    if (!haveHandler) {
+      return NS_ERROR_UNKNOWN_PROTOCOL;
+    }
 
     RefPtr<mozilla::dom::BrowsingContext> ctx;
     rv = mLoadInfo->GetTargetBrowsingContext(getter_AddRefs(ctx));
     if (NS_FAILED(rv)) {
-      goto finish;
+      return rv;
     }
-    rv = extProtService->LoadURI(mUrl, ctx);
+
+    RefPtr<nsIPrincipal> triggeringPrincipal = mLoadInfo->TriggeringPrincipal();
+    RefPtr<nsIPrincipal> redirectPrincipal;
+    if (!mLoadInfo->RedirectChain().IsEmpty()) {
+      mLoadInfo->RedirectChain().LastElement()->GetPrincipal(
+          getter_AddRefs(redirectPrincipal));
+    }
+    rv = extProtService->LoadURI(mUrl, triggeringPrincipal, redirectPrincipal,
+                                 ctx, mLoadInfo->GetLoadTriggeredFromExternal(),
+                                 mLoadInfo->GetHasValidUserGestureActivation(),
+                                 mLoadInfo->GetIsNewWindowTarget());
 
     if (NS_SUCCEEDED(rv) && mListener) {
       mStatus = NS_ERROR_NO_CONTENT;
@@ -178,9 +194,6 @@ nsresult nsExtProtocolChannel::OpenURL() {
     }
   }
 
-finish:
-  mCallbacks = nullptr;
-  mListener = nullptr;
   return rv;
 }
 
@@ -210,7 +223,7 @@ NS_IMETHODIMP nsExtProtocolChannel::AsyncOpen(nsIStreamListener* aListener) {
       mLoadInfo->GetSecurityMode() == 0 ||
           mLoadInfo->GetInitialSecurityCheckDone() ||
           (mLoadInfo->GetSecurityMode() ==
-               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL &&
            mLoadInfo->GetLoadingPrincipal() &&
            mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
       "security flags in loadInfo but doContentSecurityCheck() not called");
@@ -338,6 +351,20 @@ NS_IMETHODIMP nsExtProtocolChannel::GetStatus(nsresult* status) {
   return NS_OK;
 }
 
+NS_IMETHODIMP nsExtProtocolChannel::SetCanceledReason(
+    const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsExtProtocolChannel::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsExtProtocolChannel::CancelWithReason(
+    nsresult aStatus, const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
+}
+
 NS_IMETHODIMP nsExtProtocolChannel::Cancel(nsresult status) {
   if (NS_SUCCEEDED(mStatus)) {
     mStatus = status;
@@ -413,15 +440,13 @@ NS_IMETHODIMP nsExtProtocolChannel::NotifyClassificationFlags(
   return NS_OK;
 }
 
-NS_IMETHODIMP nsExtProtocolChannel::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
+NS_IMETHODIMP nsExtProtocolChannel::Delete() {
   // nothing to do
   return NS_OK;
 }
 
-NS_IMETHODIMP nsExtProtocolChannel::Delete() {
-  // nothing to do
-  return NS_OK;
+NS_IMETHODIMP nsExtProtocolChannel::GetRemoteType(nsACString& aRemoteType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP nsExtProtocolChannel::OnStartRequest(nsIRequest* aRequest) {
@@ -467,39 +492,11 @@ NS_IMETHODIMP nsExternalProtocolHandler::GetScheme(nsACString& aScheme) {
   return NS_OK;
 }
 
-NS_IMETHODIMP nsExternalProtocolHandler::GetDefaultPort(int32_t* aDefaultPort) {
-  *aDefaultPort = 0;
-  return NS_OK;
-}
-
 NS_IMETHODIMP
 nsExternalProtocolHandler::AllowPort(int32_t port, const char* scheme,
                                      bool* _retval) {
   // don't override anything.
   *_retval = false;
-  return NS_OK;
-}
-// returns TRUE if the OS can handle this protocol scheme and false otherwise.
-bool nsExternalProtocolHandler::HaveExternalProtocolHandler(nsIURI* aURI) {
-  MOZ_ASSERT(aURI);
-  nsAutoCString scheme;
-  aURI->GetScheme(scheme);
-
-  nsCOMPtr<nsIExternalProtocolService> extProtSvc(
-      do_GetService(NS_EXTERNALPROTOCOLSERVICE_CONTRACTID));
-  if (!extProtSvc) {
-    return false;
-  }
-
-  bool haveHandler = false;
-  extProtSvc->ExternalProtocolHandlerExists(scheme.get(), &haveHandler);
-  return haveHandler;
-}
-
-NS_IMETHODIMP nsExternalProtocolHandler::GetProtocolFlags(uint32_t* aUritype) {
-  // Make it norelative since it is a simple uri
-  *aUritype = URI_NORELATIVE | URI_NOAUTH | URI_LOADABLE_BY_ANYONE |
-              URI_NON_PERSISTABLE | URI_DOES_NOT_RETURN_DATA;
   return NS_OK;
 }
 
@@ -508,14 +505,6 @@ nsExternalProtocolHandler::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
                                       nsIChannel** aRetval) {
   NS_ENSURE_TRUE(aURI, NS_ERROR_UNKNOWN_PROTOCOL);
   NS_ENSURE_TRUE(aRetval, NS_ERROR_UNKNOWN_PROTOCOL);
-
-  // Only try to return a channel if we have a protocol handler for the url.
-  // nsOSHelperAppService::LoadUriInternal relies on this to check trustedness
-  // for some platforms at least.  (win uses ::ShellExecute and unix uses
-  // gnome_url_show.)
-  if (!HaveExternalProtocolHandler(aURI)) {
-    return NS_ERROR_UNKNOWN_PROTOCOL;
-  }
 
   nsCOMPtr<nsIChannel> channel = new nsExtProtocolChannel(aURI, aLoadInfo);
   channel.forget(aRetval);

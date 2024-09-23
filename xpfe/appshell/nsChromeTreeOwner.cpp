@@ -10,7 +10,6 @@
 
 // Helper Classes
 #include "nsString.h"
-#include "nsIEmbeddingSiteWindow.h"
 #include "nsIDocShellTreeItem.h"
 
 // Interfaces needed to include
@@ -18,6 +17,7 @@
 #include "nsIAuthPrompt.h"
 #include "nsIWebProgress.h"
 #include "nsIWidget.h"
+#include "mozilla/Try.h"
 #include "mozilla/dom/Element.h"
 
 using namespace mozilla;
@@ -77,10 +77,6 @@ NS_IMETHODIMP nsChromeTreeOwner::GetInterface(const nsIID& aIID, void** aSink) {
     NS_ENSURE_STATE(mAppWindow);
     return mAppWindow->GetInterface(aIID, aSink);
   }
-  if (aIID.Equals(NS_GET_IID(nsIEmbeddingSiteWindow))) {
-    NS_ENSURE_STATE(mAppWindow);
-    return mAppWindow->GetInterface(aIID, aSink);
-  }
   if (aIID.Equals(NS_GET_IID(nsIAppWindow))) {
     NS_ENSURE_STATE(mAppWindow);
     return mAppWindow->QueryInterface(aIID, aSink);
@@ -128,6 +124,13 @@ NS_IMETHODIMP
 nsChromeTreeOwner::GetPrimaryRemoteTab(nsIRemoteTab** aTab) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetPrimaryRemoteTab(aTab);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::GetPrimaryContentBrowsingContext(
+    mozilla::dom::BrowsingContext** aBc) {
+  NS_ENSURE_STATE(mAppWindow);
+  return mAppWindow->GetPrimaryContentBrowsingContext(aBc);
 }
 
 NS_IMETHODIMP
@@ -250,20 +253,13 @@ NS_IMETHODIMP nsChromeTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
   return NS_OK;
 }
 
-NS_IMETHODIMP nsChromeTreeOwner::Create() {
-  NS_ASSERTION(false, "You can't call this");
-  return NS_ERROR_UNEXPECTED;
-}
-
 NS_IMETHODIMP nsChromeTreeOwner::Destroy() {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->Destroy();
 }
 
-NS_IMETHODIMP nsChromeTreeOwner::GetUnscaledDevicePixelsPerCSSPixel(
-    double* aScale) {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->GetUnscaledDevicePixelsPerCSSPixel(aScale);
+double nsChromeTreeOwner::GetWidgetCSSToDeviceScale() {
+  return mAppWindow ? mAppWindow->GetWidgetCSSToDeviceScale() : 1.0;
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::GetDevicePixelsPerDesktopPixel(
@@ -309,6 +305,30 @@ NS_IMETHODIMP nsChromeTreeOwner::GetPositionAndSize(int32_t* x, int32_t* y,
                                                     int32_t* cx, int32_t* cy) {
   NS_ENSURE_STATE(mAppWindow);
   return mAppWindow->GetPositionAndSize(x, y, cx, cy);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::SetDimensions(DimensionRequest&& aRequest) {
+  NS_ENSURE_STATE(mAppWindow);
+  if (aRequest.mDimensionKind == DimensionKind::Outer) {
+    return mAppWindow->SetDimensions(std::move(aRequest));
+  }
+
+  MOZ_TRY(aRequest.SupplementFrom(this));
+  return aRequest.ApplyInnerTo(this, /* aAsRootShell */ true);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::GetDimensions(DimensionKind aDimensionKind, int32_t* aX,
+                                 int32_t* aY, int32_t* aCX, int32_t* aCY) {
+  NS_ENSURE_STATE(mAppWindow);
+  if (aDimensionKind == DimensionKind::Outer) {
+    return mAppWindow->GetDimensions(aDimensionKind, aX, aY, aCX, aCY);
+  }
+  if (aY || aX) {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
+  return GetRootShellSize(aCX, aCY);
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::Repaint(bool aForce) {
@@ -371,11 +391,6 @@ NS_IMETHODIMP nsChromeTreeOwner::GetMainWidget(nsIWidget** aMainWidget) {
   NS_IF_ADDREF(*aMainWidget);
 
   return NS_OK;
-}
-
-NS_IMETHODIMP nsChromeTreeOwner::SetFocus() {
-  NS_ENSURE_STATE(mAppWindow);
-  return mAppWindow->SetFocus();
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::GetTitle(nsAString& aTitle) {

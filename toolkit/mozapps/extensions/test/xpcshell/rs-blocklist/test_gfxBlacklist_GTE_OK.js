@@ -17,7 +17,6 @@ async function run_test() {
   }
 
   gfxInfo.QueryInterface(Ci.nsIGfxInfoDebug);
-  gfxInfo.fireTestProcess();
 
   // Set the vendor/device ID, etc, to match the test file.
   switch (Services.appinfo.OS) {
@@ -30,6 +29,8 @@ async function run_test() {
       break;
     case "Linux":
       // We don't support driver versions on Linux.
+      // XXX don't we? Seems like we do since bug 1294232 with the change in
+      // https://hg.mozilla.org/mozilla-central/diff/8962b8d9b7a6/widget/GfxInfoBase.cpp
       do_test_finished();
       return;
     case "Darwin":
@@ -59,7 +60,7 @@ async function run_test() {
     do_test_finished();
   }
 
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+  Services.obs.addObserver(function () {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
     executeSoon(checkBlacklist);

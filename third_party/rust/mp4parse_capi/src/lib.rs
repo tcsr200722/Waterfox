@@ -5,7 +5,6 @@
 //! # Examples
 //!
 //! ```rust
-//! extern crate mp4parse_capi;
 //! use std::io::Read;
 //!
 //! extern fn buf_read(buf: *mut u8, size: usize, userdata: *mut std::os::raw::c_void) -> isize {
@@ -16,8 +15,8 @@
 //!        Err(_) => -1,
 //!    }
 //! }
-//!
-//! let mut file = std::fs::File::open("../mp4parse/tests/minimal.mp4").unwrap();
+//! let capi_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+//! let mut file = std::fs::File::open(capi_dir + "/../mp4parse/tests/minimal.mp4").unwrap();
 //! let io = mp4parse_capi::Mp4parseIo {
 //!     read: Some(buf_read),
 //!     userdata: &mut file as *mut _ as *mut std::os::raw::c_void
@@ -35,29 +34,26 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-extern crate byteorder;
-extern crate mp4parse;
-extern crate num_traits;
-
 use byteorder::WriteBytesExt;
-use num_traits::{PrimInt, Zero};
+use mp4parse::unstable::rational_scale;
+use std::convert::TryFrom;
+use std::convert::TryInto;
+
 use std::io::Read;
 
 // Symbols we need from our rust api.
-use mp4parse::read_avif;
-use mp4parse::read_mp4;
 use mp4parse::serialize_opus_header;
+use mp4parse::unstable::{create_sample_table, CheckedInteger, Indice};
+use mp4parse::AV1ConfigBox;
 use mp4parse::AudioCodecSpecific;
 use mp4parse::AvifContext;
 use mp4parse::CodecType;
-use mp4parse::Error;
 use mp4parse::MediaContext;
-use mp4parse::MediaScaledTime;
-use mp4parse::MediaTimeScale;
+// Re-exported so consumers don't have to depend on mp4parse as well
+pub use mp4parse::ParseStrictness;
 use mp4parse::SampleEntry;
+pub use mp4parse::Status as Mp4parseStatus;
 use mp4parse::Track;
-use mp4parse::TrackScaledTime;
-use mp4parse::TrackTimeScale;
 use mp4parse::TrackType;
 use mp4parse::TryBox;
 use mp4parse::TryHashMap;
@@ -75,35 +71,21 @@ struct HashMap;
 struct String;
 
 #[repr(C)]
-#[derive(PartialEq, Debug)]
-pub enum Mp4parseStatus {
-    Ok = 0,
-    BadArg = 1,
-    Invalid = 2,
-    Unsupported = 3,
-    Eof = 4,
-    Io = 5,
-    Oom = 6,
-}
-
-#[repr(C)]
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug, Default)]
 pub enum Mp4parseTrackType {
+    #[default]
     Video = 0,
-    Audio = 1,
-    Metadata = 2,
+    Picture = 1,
+    AuxiliaryVideo = 2,
+    Audio = 3,
+    Metadata = 4,
 }
 
-impl Default for Mp4parseTrackType {
-    fn default() -> Self {
-        Mp4parseTrackType::Video
-    }
-}
-
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[repr(C)]
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug, Default)]
 pub enum Mp4parseCodec {
+    #[default]
     Unknown,
     Aac,
     Flac,
@@ -117,17 +99,18 @@ pub enum Mp4parseCodec {
     Ac3,
     Ec3,
     Alac,
-}
-
-impl Default for Mp4parseCodec {
-    fn default() -> Self {
-        Mp4parseCodec::Unknown
-    }
+    H263,
+    Hevc,
+    #[cfg(feature = "3gpp")]
+    AMRNB,
+    #[cfg(feature = "3gpp")]
+    AMRWB,
 }
 
 #[repr(C)]
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug, Default)]
 pub enum Mp4ParseEncryptionSchemeType {
+    #[default]
     None,
     Cenc,
     Cbc1,
@@ -138,55 +121,37 @@ pub enum Mp4ParseEncryptionSchemeType {
     // be exposed in future, should the spec change.
 }
 
-impl Default for Mp4ParseEncryptionSchemeType {
-    fn default() -> Self {
-        Mp4ParseEncryptionSchemeType::None
-    }
-}
-
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct Mp4parseTrackInfo {
     pub track_type: Mp4parseTrackType,
     pub track_id: u32,
     pub duration: u64,
-    pub media_time: i64, // wants to be u64? understand how elst adjustment works
-                         // TODO(kinetik): include crypto guff
-}
-
-#[repr(C)]
-#[derive(Default, Debug, PartialEq)]
-pub struct Mp4parseIndice {
-    /// The byte offset in the file where the indexed sample begins.
-    pub start_offset: u64,
-    /// The byte offset in the file where the indexed sample ends. This is
-    /// equivalent to `start_offset` + the length in bytes of the indexed
-    /// sample. Typically this will be the `start_offset` of the next sample
-    /// in the file.
-    pub end_offset: u64,
-    /// The time in microseconds when the indexed sample should be displayed.
-    /// Analogous to the concept of presentation time stamp (pts).
-    pub start_composition: i64,
-    /// The time in microseconds when the indexed sample should stop being
-    /// displayed. Typically this would be the `start_composition` time of the
-    /// next sample if samples were ordered by composition time.
-    pub end_composition: i64,
-    /// The time in microseconds that the indexed sample should be decoded at.
-    /// Analogous to the concept of decode time stamp (dts).
-    pub start_decode: i64,
-    /// Set if the indexed sample is a sync sample. The meaning of sync is
-    /// somewhat codec specific, but essentially amounts to if the sample is a
-    /// key frame.
-    pub sync: bool,
+    pub media_time: CheckedInteger<i64>,
+    pub time_scale: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub struct Mp4parseByteData {
-    pub length: u32,
+    pub length: usize,
     // cheddar can't handle generic type, so it needs to be multiple data types here.
     pub data: *const u8,
-    pub indices: *const Mp4parseIndice,
+    pub indices: *const Indice,
+}
+
+impl Mp4parseByteData {
+    fn with_data(slice: &[u8]) -> Self {
+        Self {
+            length: slice.len(),
+            data: if !slice.is_empty() {
+                slice.as_ptr()
+            } else {
+                std::ptr::null()
+            },
+            indices: std::ptr::null(),
+        }
+    }
 }
 
 impl Default for Mp4parseByteData {
@@ -201,12 +166,12 @@ impl Default for Mp4parseByteData {
 
 impl Mp4parseByteData {
     fn set_data(&mut self, data: &[u8]) {
-        self.length = data.len() as u32;
+        self.length = data.len();
         self.data = data.as_ptr();
     }
 
-    fn set_indices(&mut self, data: &[Mp4parseIndice]) {
-        self.length = data.len() as u32;
+    fn set_indices(&mut self, data: &[Indice]) {
+        self.length = data.len();
         self.indices = data.as_ptr();
     }
 }
@@ -217,9 +182,23 @@ pub struct Mp4parsePsshInfo {
     pub data: Mp4parseByteData,
 }
 
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum OptionalFourCc {
+    None,
+    Some([u8; 4]),
+}
+
+impl Default for OptionalFourCc {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct Mp4parseSinfInfo {
+    pub original_format: OptionalFourCc,
     pub scheme_type: Mp4ParseEncryptionSchemeType,
     pub is_encrypted: u8,
     pub iv_size: u8,
@@ -297,7 +276,8 @@ impl Default for Mp4parseTrackVideoInfo {
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct Mp4parseFragmentInfo {
-    pub fragment_duration: u64,
+    pub fragment_duration: u64, // in ticks
+    pub time_scale: u64,
     // TODO:
     // info in trex box.
 }
@@ -307,13 +287,72 @@ pub struct Mp4parseParser {
     context: MediaContext,
     opus_header: TryHashMap<u32, TryVec<u8>>,
     pssh_data: TryVec<u8>,
-    sample_table: TryHashMap<u32, TryVec<Mp4parseIndice>>,
+    sample_table: TryHashMap<u32, TryVec<Indice>>,
     // Store a mapping from track index (not id) to associated sample
     // descriptions. Because each track has a variable number of sample
     // descriptions, and because we need the data to live long enough to be
     // copied out by callers, we store these on the parser struct.
     audio_track_sample_descriptions: TryHashMap<u32, TryVec<Mp4parseTrackAudioSampleInfo>>,
     video_track_sample_descriptions: TryHashMap<u32, TryVec<Mp4parseTrackVideoSampleInfo>>,
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub enum Mp4parseAvifLoopMode {
+    #[default]
+    NoEdits,
+    LoopByCount,
+    LoopInfinitely,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct Mp4parseAvifInfo {
+    pub premultiplied_alpha: bool,
+    pub major_brand: [u8; 4],
+    pub unsupported_features_bitfield: u32,
+    /// The size of the image; should never be null unless using permissive parsing
+    pub spatial_extents: *const mp4parse::ImageSpatialExtentsProperty,
+    pub nclx_colour_information: *const mp4parse::NclxColourInformation,
+    pub icc_colour_information: Mp4parseByteData,
+    pub image_rotation: mp4parse::ImageRotation,
+    pub image_mirror: *const mp4parse::ImageMirror,
+    pub pixel_aspect_ratio: *const mp4parse::PixelAspectRatio,
+
+    /// Whether there is a `pitm` reference to the color image present.
+    pub has_primary_item: bool,
+    /// Bit depth for the item referenced by `pitm`, or 0 if values are inconsistent.
+    pub primary_item_bit_depth: u8,
+    /// Whether there is an `auxl` reference to the `pitm`-accompanying
+    /// alpha image present.
+    pub has_alpha_item: bool,
+    /// Bit depth for the alpha item used by the `pitm`, or 0 if values are inconsistent.
+    pub alpha_item_bit_depth: u8,
+
+    /// Whether there is a sequence. Can be true with no primary image.
+    pub has_sequence: bool,
+    /// Indicates whether the EditListBox requests that the image be looped.
+    pub loop_mode: Mp4parseAvifLoopMode,
+    /// Number of times to loop the animation during playback.
+    ///
+    /// The duration of the animation specified in `elst` must be looped to fill the
+    /// duration of the color track. If the resulting loop count is not an integer,
+    /// then it will be ceiled to play past and fill the entire track's duration.
+    pub loop_count: u64,
+    /// The color track's ID, which must be valid if has_sequence is true.
+    pub color_track_id: u32,
+    pub color_track_bit_depth: u8,
+    /// The track ID of the alpha track, will be 0 if no alpha track is present.
+    pub alpha_track_id: u32,
+    pub alpha_track_bit_depth: u8,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct Mp4parseAvifImage {
+    pub primary_image: Mp4parseByteData,
+    /// If no alpha item exists, members' `.length` will be 0 and `.data` will be null
+    pub alpha_image: Mp4parseByteData,
 }
 
 /// A unified interface for the parsers which have different contexts, but
@@ -323,11 +362,11 @@ trait ContextParser
 where
     Self: Sized,
 {
-    type Context: Default;
+    type Context;
 
     fn with_context(context: Self::Context) -> Self;
 
-    fn read<T: Read>(io: &mut T, context: &mut Self::Context) -> mp4parse::Result<()>;
+    fn read<T: Read>(io: &mut T, strictness: ParseStrictness) -> mp4parse::Result<Self::Context>;
 }
 
 impl Mp4parseParser {
@@ -350,14 +389,17 @@ impl ContextParser for Mp4parseParser {
         }
     }
 
-    fn read<T: Read>(io: &mut T, context: &mut Self::Context) -> mp4parse::Result<()> {
-        read_mp4(io, context)
+    fn read<T: Read>(io: &mut T, _strictness: ParseStrictness) -> mp4parse::Result<Self::Context> {
+        let r = mp4parse::read_mp4(io);
+        log::debug!("mp4parse::read_mp4 -> {:?}", r);
+        r
     }
 }
 
 #[derive(Default)]
 pub struct Mp4parseAvifParser {
     context: AvifContext,
+    sample_table: TryHashMap<u32, TryVec<Indice>>,
 }
 
 impl Mp4parseAvifParser {
@@ -370,11 +412,19 @@ impl ContextParser for Mp4parseAvifParser {
     type Context = AvifContext;
 
     fn with_context(context: Self::Context) -> Self {
-        Self { context }
+        Self {
+            context,
+            ..Default::default()
+        }
     }
 
-    fn read<T: Read>(io: &mut T, context: &mut Self::Context) -> mp4parse::Result<()> {
-        read_avif(io, context)
+    fn read<T: Read>(io: &mut T, strictness: ParseStrictness) -> mp4parse::Result<Self::Context> {
+        let r = mp4parse::read_avif(io, strictness);
+        if r.is_err() {
+            log::debug!("{:?}", r);
+        }
+        log::trace!("mp4parse::read_avif -> {:?}", r);
+        r
     }
 }
 
@@ -431,7 +481,7 @@ pub unsafe extern "C" fn mp4parse_new(
     io: *const Mp4parseIo,
     parser_out: *mut *mut Mp4parseParser,
 ) -> Mp4parseStatus {
-    mp4parse_new_common(io, parser_out)
+    mp4parse_new_common(io, ParseStrictness::Normal, parser_out)
 }
 
 /// Allocate an `Mp4parseAvifParser*` to read from the supplied `Mp4parseIo`.
@@ -446,13 +496,15 @@ pub unsafe extern "C" fn mp4parse_new(
 #[no_mangle]
 pub unsafe extern "C" fn mp4parse_avif_new(
     io: *const Mp4parseIo,
+    strictness: ParseStrictness,
     parser_out: *mut *mut Mp4parseAvifParser,
 ) -> Mp4parseStatus {
-    mp4parse_new_common(io, parser_out)
+    mp4parse_new_common(io, strictness, parser_out)
 }
 
 unsafe fn mp4parse_new_common<P: ContextParser>(
     io: *const Mp4parseIo,
+    strictness: ParseStrictness,
     parser_out: *mut *mut P,
 ) -> Mp4parseStatus {
     // Validate arguments from C.
@@ -464,7 +516,7 @@ unsafe fn mp4parse_new_common<P: ContextParser>(
     {
         Mp4parseStatus::BadArg
     } else {
-        match mp4parse_new_common_safe(&mut (*io).clone()) {
+        match mp4parse_new_common_safe(&mut (*io).clone(), strictness) {
             Ok(parser) => {
                 *parser_out = parser;
                 Mp4parseStatus::Ok
@@ -476,41 +528,13 @@ unsafe fn mp4parse_new_common<P: ContextParser>(
 
 fn mp4parse_new_common_safe<T: Read, P: ContextParser>(
     io: &mut T,
+    strictness: ParseStrictness,
 ) -> Result<*mut P, Mp4parseStatus> {
-    let mut context = P::Context::default();
-
-    P::read(io, &mut context)
-        .map(|_| P::with_context(context))
-        .and_then(TryBox::try_new)
+    P::read(io, strictness)
+        .map(P::with_context)
+        .and_then(|x| TryBox::try_new(x).map_err(mp4parse::Error::from))
         .map(TryBox::into_raw)
         .map_err(Mp4parseStatus::from)
-}
-
-impl From<mp4parse::Error> for Mp4parseStatus {
-    fn from(error: mp4parse::Error) -> Self {
-        match error {
-            Error::NoMoov | Error::InvalidData(_) => Mp4parseStatus::Invalid,
-            Error::Unsupported(_) => Mp4parseStatus::Unsupported,
-            Error::UnexpectedEOF => Mp4parseStatus::Eof,
-            Error::Io(_) => {
-                // Getting std::io::ErrorKind::UnexpectedEof is normal
-                // but our From trait implementation should have converted
-                // those to our Error::UnexpectedEOF variant.
-                Mp4parseStatus::Io
-            }
-            Error::OutOfMemory => Mp4parseStatus::Oom,
-        }
-    }
-}
-
-impl From<Result<(), Mp4parseStatus>> for Mp4parseStatus {
-    fn from(result: Result<(), Mp4parseStatus>) -> Self {
-        match result {
-            Ok(()) => Mp4parseStatus::Ok,
-            Err(Mp4parseStatus::Ok) => unreachable!(),
-            Err(e) => e,
-        }
-    }
 }
 
 /// Free an `Mp4parseParser*` allocated by `mp4parse_new()`.
@@ -566,47 +590,6 @@ pub unsafe extern "C" fn mp4parse_get_track_count(
     Mp4parseStatus::Ok
 }
 
-/// Calculate numerator * scale / denominator, if possible.
-///
-/// Applying the associativity of integer arithmetic, we divide first
-/// and add the remainder after multiplying each term separately
-/// to preserve precision while leaving more headroom. That is,
-/// (n * s) / d is split into floor(n / d) * s + (n % d) * s / d.
-///
-/// Return None on overflow or if the denominator is zero.
-fn rational_scale<T, S>(numerator: T, denominator: T, scale2: S) -> Option<T>
-where
-    T: PrimInt + Zero,
-    S: PrimInt,
-{
-    if denominator.is_zero() {
-        return None;
-    }
-
-    let integer = numerator / denominator;
-    let remainder = numerator % denominator;
-    num_traits::cast(scale2).and_then(|s| match integer.checked_mul(&s) {
-        Some(integer) => remainder
-            .checked_mul(&s)
-            .and_then(|remainder| (remainder / denominator).checked_add(&integer)),
-        None => None,
-    })
-}
-
-fn media_time_to_us(time: MediaScaledTime, scale: MediaTimeScale) -> Option<u64> {
-    let microseconds_per_second = 1_000_000;
-    rational_scale::<u64, u64>(time.0, scale.0, microseconds_per_second)
-}
-
-fn track_time_to_us<T>(time: TrackScaledTime<T>, scale: TrackTimeScale<T>) -> Option<T>
-where
-    T: PrimInt + Zero,
-{
-    assert_eq!(time.1, scale.1);
-    let microseconds_per_second = 1_000_000;
-    rational_scale::<T, u64>(time.0, scale.0, microseconds_per_second)
-}
-
 /// Fill the supplied `Mp4parseTrackInfo` with metadata for `track`.
 ///
 /// # Safety
@@ -638,6 +621,8 @@ pub unsafe extern "C" fn mp4parse_get_track_info(
 
     info.track_type = match context.tracks[track_index].track_type {
         TrackType::Video => Mp4parseTrackType::Video,
+        TrackType::Picture => Mp4parseTrackType::Picture,
+        TrackType::AuxiliaryVideo => Mp4parseTrackType::AuxiliaryVideo,
         TrackType::Audio => Mp4parseTrackType::Audio,
         TrackType::Metadata => Mp4parseTrackType::Metadata,
         TrackType::Unknown => return Mp4parseStatus::Unsupported,
@@ -645,29 +630,33 @@ pub unsafe extern "C" fn mp4parse_get_track_info(
 
     let track = &context.tracks[track_index];
 
-    if let (Some(track_timescale), Some(context_timescale)) = (track.timescale, context.timescale) {
-        let media_time = match track.media_time.map_or(Some(0), |media_time| {
-            track_time_to_us(media_time, track_timescale)
-        }) {
-            Some(time) => time as i64,
-            None => return Mp4parseStatus::Invalid,
-        };
-        let empty_duration = match track.empty_duration.map_or(Some(0), |empty_duration| {
-            media_time_to_us(empty_duration, context_timescale)
-        }) {
-            Some(time) => time as i64,
-            None => return Mp4parseStatus::Invalid,
-        };
-        info.media_time = media_time - empty_duration;
+    if let (Some(timescale), Some(context_timescale)) = (track.timescale, context.timescale) {
+        info.time_scale = timescale.0 as u32;
+        let media_time: CheckedInteger<u64> = track
+            .media_time
+            .map_or(0.into(), |media_time| media_time.0.into());
 
-        if let Some(track_duration) = track.duration {
-            match track_time_to_us(track_duration, track_timescale) {
-                Some(duration) => info.duration = duration,
+        // Empty duration is in the context's timescale, convert it and return it in the track's
+        // timescale
+        let empty_duration: CheckedInteger<u64> =
+            match track.empty_duration.map_or(Some(0), |empty_duration| {
+                rational_scale(empty_duration.0, context_timescale.0, timescale.0)
+            }) {
+                Some(time) => mp4parse::unstable::CheckedInteger(time),
                 None => return Mp4parseStatus::Invalid,
+            };
+
+        info.media_time = match media_time - empty_duration {
+            Some(difference) => difference,
+            None => return Mp4parseStatus::Invalid,
+        };
+
+        match track.duration {
+            Some(duration) => info.duration = duration.0,
+            None => {
+                // Duration unknown; stagefright returns 0 for this.
+                info.duration = 0
             }
-        } else {
-            // Duration unknown; stagefright returns 0 for this.
-            info.duration = 0
         }
     } else {
         return Mp4parseStatus::Invalid;
@@ -677,7 +666,6 @@ pub unsafe extern "C" fn mp4parse_get_track_info(
         Some(track_id) => track_id,
         None => return Mp4parseStatus::Invalid,
     };
-
     Mp4parseStatus::Ok
 }
 
@@ -759,6 +747,14 @@ fn get_track_audio_info(
             }
             AudioCodecSpecific::MP3 => Mp4parseCodec::Mp3,
             AudioCodecSpecific::ALACSpecificBox(_) => Mp4parseCodec::Alac,
+            #[cfg(feature = "3gpp")]
+            AudioCodecSpecific::AMRSpecificBox(_) => {
+                if audio.codec_type == CodecType::AMRNB {
+                    Mp4parseCodec::AMRNB
+                } else {
+                    Mp4parseCodec::AMRWB
+                }
+            }
         };
         sample_info.channels = audio.channelcount as u16;
         sample_info.bit_depth = audio.samplesize;
@@ -770,9 +766,9 @@ fn get_track_audio_info(
                 if esds.codec_esds.len() > std::u32::MAX as usize {
                     return Err(Mp4parseStatus::Invalid);
                 }
-                sample_info.extra_data.length = esds.codec_esds.len() as u32;
+                sample_info.extra_data.length = esds.codec_esds.len();
                 sample_info.extra_data.data = esds.codec_esds.as_ptr();
-                sample_info.codec_specific_config.length = esds.decoder_specific_data.len() as u32;
+                sample_info.codec_specific_config.length = esds.decoder_specific_data.len();
                 sample_info.codec_specific_config.data = esds.decoder_specific_data.as_ptr();
                 if let Some(rate) = esds.audio_sample_rate {
                     sample_info.sample_rate = rate;
@@ -794,7 +790,7 @@ fn get_track_audio_info(
                 if streaminfo.block_type != 0 || streaminfo.data.len() != 34 {
                     return Err(Mp4parseStatus::Invalid);
                 }
-                sample_info.codec_specific_config.length = streaminfo.data.len() as u32;
+                sample_info.codec_specific_config.length = streaminfo.data.len();
                 sample_info.codec_specific_config.data = streaminfo.data.as_ptr();
             }
             AudioCodecSpecific::OpusSpecificBox(ref opus) => {
@@ -809,17 +805,19 @@ fn get_track_audio_info(
                             if v.len() > std::u32::MAX as usize {
                                 return Err(Mp4parseStatus::Invalid);
                             }
-                            sample_info.codec_specific_config.length = v.len() as u32;
+                            sample_info.codec_specific_config.length = v.len();
                             sample_info.codec_specific_config.data = v.as_ptr();
                         }
                     }
                 }
             }
             AudioCodecSpecific::ALACSpecificBox(ref alac) => {
-                sample_info.codec_specific_config.length = alac.data.len() as u32;
+                sample_info.codec_specific_config.length = alac.data.len();
                 sample_info.codec_specific_config.data = alac.data.as_ptr();
             }
             AudioCodecSpecific::MP3 | AudioCodecSpecific::LPCM => (),
+            #[cfg(feature = "3gpp")]
+            AudioCodecSpecific::AMRSpecificBox(_) => (),
         }
 
         if let Some(p) = audio
@@ -827,6 +825,8 @@ fn get_track_audio_info(
             .iter()
             .find(|sinf| sinf.tenc.is_some())
         {
+            sample_info.protected_data.original_format =
+                OptionalFourCc::Some(p.original_format.value);
             sample_info.protected_data.scheme_type = match p.scheme_type {
                 Some(ref scheme_type_box) => {
                     match scheme_type_box.scheme_type.value.as_ref() {
@@ -844,14 +844,10 @@ fn get_track_audio_info(
                 sample_info.protected_data.is_encrypted = tenc.is_encrypted;
                 sample_info.protected_data.iv_size = tenc.iv_size;
                 sample_info.protected_data.kid.set_data(&(tenc.kid));
-                sample_info.protected_data.crypt_byte_block = match tenc.crypt_byte_block_count {
-                    Some(n) => n,
-                    None => 0,
-                };
-                sample_info.protected_data.skip_byte_block = match tenc.skip_byte_block_count {
-                    Some(n) => n,
-                    None => 0,
-                };
+                sample_info.protected_data.crypt_byte_block =
+                    tenc.crypt_byte_block_count.unwrap_or(0);
+                sample_info.protected_data.skip_byte_block =
+                    tenc.skip_byte_block_count.unwrap_or(0);
                 if let Some(ref iv_vec) = tenc.constant_iv {
                     if iv_vec.len() > std::u32::MAX as usize {
                         return Err(Mp4parseStatus::Invalid);
@@ -966,6 +962,11 @@ fn mp4parse_get_track_video_info_safe(
             VideoCodecSpecific::VPxConfig(_) => Mp4parseCodec::Vp9,
             VideoCodecSpecific::AV1Config(_) => Mp4parseCodec::Av1,
             VideoCodecSpecific::AVCConfig(_) => Mp4parseCodec::Avc,
+            VideoCodecSpecific::H263Config(_) => Mp4parseCodec::H263,
+            VideoCodecSpecific::HEVCConfig(_) => Mp4parseCodec::Hevc,
+            #[cfg(feature = "mp4v")]
+            VideoCodecSpecific::ESDSConfig(_) => Mp4parseCodec::Mp4v,
+            #[cfg(not(feature = "mp4v"))]
             VideoCodecSpecific::ESDSConfig(_) =>
             // MP4V (14496-2) video is unsupported.
             {
@@ -976,7 +977,12 @@ fn mp4parse_get_track_video_info_safe(
         sample_info.image_height = video.height;
 
         match video.codec_specific {
-            VideoCodecSpecific::AVCConfig(ref data) | VideoCodecSpecific::ESDSConfig(ref data) => {
+            VideoCodecSpecific::AV1Config(ref config) => {
+                sample_info.extra_data.set_data(&config.raw_config);
+            }
+            VideoCodecSpecific::AVCConfig(ref data)
+            | VideoCodecSpecific::ESDSConfig(ref data)
+            | VideoCodecSpecific::HEVCConfig(ref data) => {
                 sample_info.extra_data.set_data(data);
             }
             _ => {}
@@ -987,6 +993,8 @@ fn mp4parse_get_track_video_info_safe(
             .iter()
             .find(|sinf| sinf.tenc.is_some())
         {
+            sample_info.protected_data.original_format =
+                OptionalFourCc::Some(p.original_format.value);
             sample_info.protected_data.scheme_type = match p.scheme_type {
                 Some(ref scheme_type_box) => {
                     match scheme_type_box.scheme_type.value.as_ref() {
@@ -1004,14 +1012,10 @@ fn mp4parse_get_track_video_info_safe(
                 sample_info.protected_data.is_encrypted = tenc.is_encrypted;
                 sample_info.protected_data.iv_size = tenc.iv_size;
                 sample_info.protected_data.kid.set_data(&(tenc.kid));
-                sample_info.protected_data.crypt_byte_block = match tenc.crypt_byte_block_count {
-                    Some(n) => n,
-                    None => 0,
-                };
-                sample_info.protected_data.skip_byte_block = match tenc.skip_byte_block_count {
-                    Some(n) => n,
-                    None => 0,
-                };
+                sample_info.protected_data.crypt_byte_block =
+                    tenc.crypt_byte_block_count.unwrap_or(0);
+                sample_info.protected_data.skip_byte_block =
+                    tenc.skip_byte_block_count.unwrap_or(0);
                 if let Some(ref iv_vec) = tenc.constant_iv {
                     if iv_vec.len() > std::u32::MAX as usize {
                         return Err(Mp4parseStatus::Invalid);
@@ -1041,34 +1045,227 @@ fn mp4parse_get_track_video_info_safe(
     Ok(())
 }
 
+/// Return a struct containing meta information read by previous
+/// `mp4parse_avif_new()` call.
+///
+/// `color_track_id`and `alpha_track_id` will be 0 if has_sequence is false.
+/// `alpha_track_id` will be 0 if no alpha aux track is present.
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences both the parser and
+/// avif_info raw pointers passed into it. Callers should ensure the parser
+/// pointer points to a valid `Mp4parseAvifParser`, and that the avif_info
+/// pointer points to a valid `Mp4parseAvifInfo`.
+#[no_mangle]
+pub unsafe extern "C" fn mp4parse_avif_get_info(
+    parser: *const Mp4parseAvifParser,
+    avif_info: *mut Mp4parseAvifInfo,
+) -> Mp4parseStatus {
+    if parser.is_null() || avif_info.is_null() {
+        return Mp4parseStatus::BadArg;
+    }
+
+    if let Ok(info) = mp4parse_avif_get_info_safe((*parser).context()) {
+        *avif_info = info;
+        Mp4parseStatus::Ok
+    } else {
+        Mp4parseStatus::Invalid
+    }
+}
+
+fn mp4parse_avif_get_info_safe(context: &AvifContext) -> mp4parse::Result<Mp4parseAvifInfo> {
+    let info = Mp4parseAvifInfo {
+        premultiplied_alpha: context.premultiplied_alpha,
+        major_brand: context.major_brand.value,
+        unsupported_features_bitfield: context.unsupported_features.into_bitfield(),
+        spatial_extents: context.spatial_extents_ptr()?,
+        nclx_colour_information: context
+            .nclx_colour_information_ptr()
+            .unwrap_or(Ok(std::ptr::null()))?,
+        icc_colour_information: Mp4parseByteData::with_data(
+            context.icc_colour_information().unwrap_or(Ok(&[]))?,
+        ),
+        image_rotation: context.image_rotation()?,
+        image_mirror: context.image_mirror_ptr()?,
+        pixel_aspect_ratio: context.pixel_aspect_ratio_ptr()?,
+
+        has_primary_item: context.primary_item_is_present(),
+        primary_item_bit_depth: 0,
+        has_alpha_item: context.alpha_item_is_present(),
+        alpha_item_bit_depth: 0,
+
+        has_sequence: false,
+        loop_mode: Mp4parseAvifLoopMode::NoEdits,
+        loop_count: 0,
+        color_track_id: 0,
+        color_track_bit_depth: 0,
+        alpha_track_id: 0,
+        alpha_track_bit_depth: 0,
+    };
+
+    fn get_bit_depth(data: &[u8]) -> u8 {
+        if !data.is_empty() && data.iter().all(|v| *v == data[0]) {
+            data[0]
+        } else {
+            0
+        }
+    }
+    let primary_item_bit_depth =
+        get_bit_depth(context.primary_item_bits_per_channel().unwrap_or(Ok(&[]))?);
+    let alpha_item_bit_depth =
+        get_bit_depth(context.alpha_item_bits_per_channel().unwrap_or(Ok(&[]))?);
+
+    if let Some(sequence) = &context.sequence {
+        // Tracks must have track_id and samples
+        fn get_track<T>(tracks: &TryVec<Track>, pred: T) -> Option<&Track>
+        where
+            T: Fn(&Track) -> bool,
+        {
+            tracks.iter().find(|track| {
+                if track.track_id.is_none() {
+                    return false;
+                }
+                match &track.stsc {
+                    Some(stsc) => {
+                        if stsc.samples.is_empty() {
+                            return false;
+                        }
+                        if !pred(track) {
+                            return false;
+                        }
+                        stsc.samples.iter().any(|chunk| chunk.samples_per_chunk > 0)
+                    }
+                    _ => false,
+                }
+            })
+        }
+
+        // Color track will be the first track found
+        let color_track = match get_track(&sequence.tracks, |_| true) {
+            Some(v) => v,
+            _ => return Ok(info),
+        };
+
+        // Alpha track will be the first track found with auxl.aux_for_track_id set to color_track's id
+        let alpha_track = get_track(&sequence.tracks, |track| match &track.tref {
+            Some(tref) => tref.has_auxl_reference(color_track.track_id.unwrap()),
+            _ => false,
+        });
+
+        fn get_av1c(track: &Track) -> Option<&AV1ConfigBox> {
+            if let Some(stsd) = &track.stsd {
+                for entry in &stsd.descriptions {
+                    if let SampleEntry::Video(video_entry) = entry {
+                        if let VideoCodecSpecific::AV1Config(av1c) = &video_entry.codec_specific {
+                            return Some(av1c);
+                        }
+                    }
+                }
+            }
+
+            None
+        }
+
+        let color_track_id = color_track.track_id.unwrap();
+        let color_track_bit_depth = match get_av1c(color_track) {
+            Some(av1c) => av1c.bit_depth,
+            _ => return Ok(info),
+        };
+
+        let (alpha_track_id, alpha_track_bit_depth) = match alpha_track {
+            Some(track) => (
+                track.track_id.unwrap(),
+                match get_av1c(track) {
+                    Some(av1c) => av1c.bit_depth,
+                    _ => return Ok(info),
+                },
+            ),
+            _ => (0, 0),
+        };
+
+        let (loop_mode, loop_count) = match color_track.tkhd.as_ref().map(|tkhd| tkhd.duration) {
+            Some(movie_duration) if movie_duration == std::u64::MAX => {
+                (Mp4parseAvifLoopMode::LoopInfinitely, 0)
+            }
+            Some(movie_duration) => match color_track.looped {
+                Some(true) => match color_track.edited_duration.map(|v| v.0) {
+                    Some(segment_duration) => {
+                        match movie_duration.checked_div(segment_duration).and_then(|n| {
+                            match movie_duration.checked_rem(segment_duration) {
+                                Some(0) => Some(n.saturating_sub(1)),
+                                Some(_) => Some(n),
+                                None => None,
+                            }
+                        }) {
+                            Some(n) => (Mp4parseAvifLoopMode::LoopByCount, n),
+                            None => (Mp4parseAvifLoopMode::LoopInfinitely, 0),
+                        }
+                    }
+                    None => (Mp4parseAvifLoopMode::NoEdits, 0),
+                },
+                Some(false) => (Mp4parseAvifLoopMode::LoopByCount, 0),
+                None => (Mp4parseAvifLoopMode::NoEdits, 0),
+            },
+            None => (Mp4parseAvifLoopMode::LoopInfinitely, 0),
+        };
+
+        return Ok(Mp4parseAvifInfo {
+            primary_item_bit_depth,
+            alpha_item_bit_depth,
+            has_sequence: true,
+            loop_mode,
+            loop_count,
+            color_track_id,
+            color_track_bit_depth,
+            alpha_track_id,
+            alpha_track_bit_depth,
+            ..info
+        });
+    }
+
+    Ok(info)
+}
+
 /// Return a pointer to the primary item parsed by previous `mp4parse_avif_new()` call.
 ///
 /// # Safety
 ///
 /// This function is unsafe because it dereferences both the parser and
-/// primary_item raw pointers passed into it. Callers should ensure the parser
-/// pointer points to a valid `Mp4parseAvifParser`, and that the primary_item
-/// pointer points to a valid `Mp4parseByteData`. If there was not a previous
+/// avif_image raw pointers passed into it. Callers should ensure the parser
+/// pointer points to a valid `Mp4parseAvifParser`, and that the avif_image
+/// pointer points to a valid `Mp4parseAvifImage`. If there was not a previous
 /// successful call to `mp4parse_avif_read()`, no guarantees are made as to
-/// the state of `primary_item`.
+/// the state of `avif_image`. If `avif_image.alpha_image.coded_data` is set to
+/// a positive `length` and non-null `data`, then the `avif_image` contains a
+/// valid alpha channel data. Otherwise, the image is opaque.
 #[no_mangle]
-pub unsafe extern "C" fn mp4parse_avif_get_primary_item(
-    parser: *mut Mp4parseAvifParser,
-    primary_item: *mut Mp4parseByteData,
+pub unsafe extern "C" fn mp4parse_avif_get_image(
+    parser: *const Mp4parseAvifParser,
+    avif_image: *mut Mp4parseAvifImage,
 ) -> Mp4parseStatus {
-    if parser.is_null() {
+    if parser.is_null() || avif_image.is_null() {
         return Mp4parseStatus::BadArg;
     }
 
-    // Initialize fields to default values to ensure all fields are always valid.
-    *primary_item = Default::default();
+    if let Ok(image) = mp4parse_avif_get_image_safe(&*parser) {
+        *avif_image = image;
+        Mp4parseStatus::Ok
+    } else {
+        Mp4parseStatus::Invalid
+    }
+}
 
-    let context = (*parser).context();
-
-    // TODO: check for a valid parsed context. See https://github.com/mozilla/mp4parse-rust/issues/195
-    (*primary_item).set_data(&context.primary_item);
-
-    Mp4parseStatus::Ok
+pub fn mp4parse_avif_get_image_safe(
+    parser: &Mp4parseAvifParser,
+) -> mp4parse::Result<Mp4parseAvifImage> {
+    let context = parser.context();
+    Ok(Mp4parseAvifImage {
+        primary_image: Mp4parseByteData::with_data(
+            context.primary_item_coded_data().unwrap_or(&[]),
+        ),
+        alpha_image: Mp4parseByteData::with_data(context.alpha_item_coded_data().unwrap_or(&[])),
+    })
 }
 
 /// Fill the supplied `Mp4parseByteData` with index information from `track`.
@@ -1092,37 +1289,103 @@ pub unsafe extern "C" fn mp4parse_get_indice_table(
     // Initialize fields to default values to ensure all fields are always valid.
     *indices = Default::default();
 
-    get_indice_table(&mut *parser, track_id, &mut *indices).into()
+    get_indice_table(
+        &(*parser).context,
+        &mut (*parser).sample_table,
+        track_id,
+        &mut *indices,
+    )
+    .into()
+}
+
+/// Fill the supplied `Mp4parseByteData` with index information from `track`.
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences both the parser and
+/// indices raw pointers passed to it. Callers should ensure the parser
+/// points to a valid `Mp4parseAvifParser` and indices points to a valid
+/// `Mp4parseByteData`.
+#[no_mangle]
+pub unsafe extern "C" fn mp4parse_avif_get_indice_table(
+    parser: *mut Mp4parseAvifParser,
+    track_id: u32,
+    indices: *mut Mp4parseByteData,
+    timescale: *mut u64,
+) -> Mp4parseStatus {
+    if parser.is_null() {
+        return Mp4parseStatus::BadArg;
+    }
+
+    if indices.is_null() {
+        return Mp4parseStatus::BadArg;
+    }
+
+    if timescale.is_null() {
+        return Mp4parseStatus::BadArg;
+    }
+
+    // Initialize fields to default values to ensure all fields are always valid.
+    *indices = Default::default();
+
+    if let Some(sequence) = &(*parser).context.sequence {
+        // Use the top level timescale, and the track timescale if present.
+        let mut found_timescale = false;
+        if let Some(context_timescale) = sequence.timescale {
+            *timescale = context_timescale.0;
+            found_timescale = true;
+        }
+        let maybe_track_timescale = match sequence
+            .tracks
+            .iter()
+            .find(|track| track.track_id == Some(track_id))
+        {
+            Some(track) => track.timescale,
+            _ => None,
+        };
+        if let Some(track_timescale) = maybe_track_timescale {
+            found_timescale = true;
+            *timescale = track_timescale.0;
+        }
+        if !found_timescale {
+            return Mp4parseStatus::Invalid;
+        }
+        return get_indice_table(
+            sequence,
+            &mut (*parser).sample_table,
+            track_id,
+            &mut *indices,
+        )
+        .into();
+    }
+
+    Mp4parseStatus::BadArg
 }
 
 fn get_indice_table(
-    parser: &mut Mp4parseParser,
+    context: &MediaContext,
+    sample_table_cache: &mut TryHashMap<u32, TryVec<Indice>>,
     track_id: u32,
     indices: &mut Mp4parseByteData,
 ) -> Result<(), Mp4parseStatus> {
-    let Mp4parseParser {
-        context,
-        sample_table: index_table,
-        ..
-    } = parser;
     let tracks = &context.tracks;
     let track = match tracks.iter().find(|track| track.track_id == Some(track_id)) {
         Some(t) => t,
         _ => return Err(Mp4parseStatus::Invalid),
     };
 
-    if let Some(v) = index_table.get(&track_id) {
+    if let Some(v) = sample_table_cache.get(&track_id) {
         indices.set_indices(v);
         return Ok(());
     }
 
-    let media_time = match (&track.media_time, &track.timescale) {
-        (&Some(t), &Some(s)) => track_time_to_us(t, s).map(|v| v as i64),
+    let media_time = match &track.media_time {
+        &Some(t) => i64::try_from(t.0).ok().map(Into::into),
         _ => None,
     };
 
-    let empty_duration = match (&track.empty_duration, &context.timescale) {
-        (&Some(e), &Some(s)) => media_time_to_us(e, s).map(|v| v as i64),
+    let empty_duration: Option<CheckedInteger<_>> = match &track.empty_duration {
+        &Some(e) => i64::try_from(e.0).ok().map(Into::into),
         _ => None,
     };
 
@@ -1130,331 +1393,19 @@ fn get_indice_table(
     // 'media_time' maps start time onward, 'empty_duration' adds time offset
     // before first frame is displayed.
     let offset_time = match (empty_duration, media_time) {
-        (Some(e), Some(m)) => e - m,
+        (Some(e), Some(m)) => (e - m).ok_or(Err(Mp4parseStatus::Invalid))?,
         (Some(e), None) => e,
         (None, Some(m)) => m,
-        _ => 0,
+        _ => 0.into(),
     };
 
     if let Some(v) = create_sample_table(track, offset_time) {
         indices.set_indices(&v);
-        index_table.insert(track_id, v)?;
+        sample_table_cache.insert(track_id, v)?;
         return Ok(());
     }
 
     Err(Mp4parseStatus::Invalid)
-}
-
-// Convert a 'ctts' compact table to full table by iterator,
-// (sample_with_the_same_offset_count, offset) => (offset), (offset), (offset) ...
-//
-// For example:
-// (2, 10), (4, 9) into (10, 10, 9, 9, 9, 9) by calling next_offset_time().
-struct TimeOffsetIterator<'a> {
-    cur_sample_range: std::ops::Range<u32>,
-    cur_offset: i64,
-    ctts_iter: Option<std::slice::Iter<'a, mp4parse::TimeOffset>>,
-    track_id: usize,
-}
-
-impl<'a> Iterator for TimeOffsetIterator<'a> {
-    type Item = i64;
-
-    fn next(&mut self) -> Option<i64> {
-        let has_sample = self.cur_sample_range.next().or_else(|| {
-            // At end of current TimeOffset, find the next TimeOffset.
-            let iter = match self.ctts_iter {
-                Some(ref mut v) => v,
-                _ => return None,
-            };
-            let offset_version;
-            self.cur_sample_range = match iter.next() {
-                Some(v) => {
-                    offset_version = v.time_offset;
-                    0..v.sample_count
-                }
-                _ => {
-                    offset_version = mp4parse::TimeOffsetVersion::Version0(0);
-                    0..0
-                }
-            };
-
-            self.cur_offset = match offset_version {
-                mp4parse::TimeOffsetVersion::Version0(i) => i64::from(i),
-                mp4parse::TimeOffsetVersion::Version1(i) => i64::from(i),
-            };
-
-            self.cur_sample_range.next()
-        });
-
-        has_sample.and(Some(self.cur_offset))
-    }
-}
-
-impl<'a> TimeOffsetIterator<'a> {
-    fn next_offset_time(&mut self) -> TrackScaledTime<i64> {
-        match self.next() {
-            Some(v) => TrackScaledTime::<i64>(v as i64, self.track_id),
-            _ => TrackScaledTime::<i64>(0, self.track_id),
-        }
-    }
-}
-
-// Convert 'stts' compact table to full table by iterator,
-// (sample_count_with_the_same_time, time) => (time, time, time) ... repeats
-// sample_count_with_the_same_time.
-//
-// For example:
-// (2, 3000), (1, 2999) to (3000, 3000, 2999).
-struct TimeToSampleIterator<'a> {
-    cur_sample_count: std::ops::Range<u32>,
-    cur_sample_delta: u32,
-    stts_iter: std::slice::Iter<'a, mp4parse::Sample>,
-    track_id: usize,
-}
-
-impl<'a> Iterator for TimeToSampleIterator<'a> {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<u32> {
-        let has_sample = self.cur_sample_count.next().or_else(|| {
-            self.cur_sample_count = match self.stts_iter.next() {
-                Some(v) => {
-                    self.cur_sample_delta = v.sample_delta;
-                    0..v.sample_count
-                }
-                _ => 0..0,
-            };
-
-            self.cur_sample_count.next()
-        });
-
-        has_sample.and(Some(self.cur_sample_delta))
-    }
-}
-
-impl<'a> TimeToSampleIterator<'a> {
-    fn next_delta(&mut self) -> TrackScaledTime<i64> {
-        match self.next() {
-            Some(v) => TrackScaledTime::<i64>(i64::from(v), self.track_id),
-            _ => TrackScaledTime::<i64>(0, self.track_id),
-        }
-    }
-}
-
-// Convert 'stco' compact table to full table by iterator.
-// (start_chunk_num, sample_number) => (start_chunk_num, sample_number),
-//                                     (start_chunk_num + 1, sample_number),
-//                                     (start_chunk_num + 2, sample_number),
-//                                     ...
-//                                     (next start_chunk_num, next sample_number),
-//                                     ...
-//
-// For example:
-// (1, 5), (5, 10), (9, 2) => (1, 5), (2, 5), (3, 5), (4, 5), (5, 10), (6, 10),
-// (7, 10), (8, 10), (9, 2)
-struct SampleToChunkIterator<'a> {
-    chunks: std::ops::Range<u32>,
-    sample_count: u32,
-    stsc_peek_iter: std::iter::Peekable<std::slice::Iter<'a, mp4parse::SampleToChunk>>,
-    remain_chunk_count: u32, // total chunk number from 'stco'.
-}
-
-impl<'a> Iterator for SampleToChunkIterator<'a> {
-    type Item = (u32, u32);
-
-    fn next(&mut self) -> Option<(u32, u32)> {
-        let has_chunk = self.chunks.next().or_else(|| {
-            self.chunks = self.locate();
-            self.remain_chunk_count
-                .checked_sub(self.chunks.len() as u32)
-                .and_then(|res| {
-                    self.remain_chunk_count = res;
-                    self.chunks.next()
-                })
-        });
-
-        has_chunk.map(|id| (id, self.sample_count))
-    }
-}
-
-impl<'a> SampleToChunkIterator<'a> {
-    fn locate(&mut self) -> std::ops::Range<u32> {
-        loop {
-            return match (self.stsc_peek_iter.next(), self.stsc_peek_iter.peek()) {
-                (Some(next), Some(peek)) if next.first_chunk == peek.first_chunk => {
-                    // Invalid entry, skip it and will continue searching at
-                    // next loop iteration.
-                    continue;
-                }
-                (Some(next), Some(peek)) if next.first_chunk > 0 && peek.first_chunk > 0 => {
-                    self.sample_count = next.samples_per_chunk;
-                    (next.first_chunk - 1)..(peek.first_chunk - 1)
-                }
-                (Some(next), None) if next.first_chunk > 0 => {
-                    self.sample_count = next.samples_per_chunk;
-                    // Total chunk number in 'stsc' could be different to 'stco',
-                    // there could be more chunks at the last 'stsc' record.
-                    match next.first_chunk.checked_add(self.remain_chunk_count) {
-                        Some(r) => (next.first_chunk - 1)..r - 1,
-                        _ => 0..0,
-                    }
-                }
-                _ => 0..0,
-            };
-        }
-    }
-}
-
-fn create_sample_table(track: &Track, track_offset_time: i64) -> Option<TryVec<Mp4parseIndice>> {
-    let timescale = match track.timescale {
-        Some(ref t) => TrackTimeScale::<i64>(t.0 as i64, t.1),
-        _ => return None,
-    };
-
-    let (stsc, stco, stsz, stts) = match (&track.stsc, &track.stco, &track.stsz, &track.stts) {
-        (&Some(ref a), &Some(ref b), &Some(ref c), &Some(ref d)) => (a, b, c, d),
-        _ => return None,
-    };
-
-    // According to spec, no sync table means every sample is sync sample.
-    let has_sync_table = match track.stss {
-        Some(_) => true,
-        _ => false,
-    };
-
-    let mut sample_table = TryVec::new();
-    let mut sample_size_iter = stsz.sample_sizes.iter();
-
-    // Get 'stsc' iterator for (chunk_id, chunk_sample_count) and calculate the sample
-    // offset address.
-    let stsc_iter = SampleToChunkIterator {
-        chunks: (0..0),
-        sample_count: 0,
-        stsc_peek_iter: stsc.samples.as_slice().iter().peekable(),
-        remain_chunk_count: stco.offsets.len() as u32,
-    };
-
-    for i in stsc_iter {
-        let chunk_id = i.0 as usize;
-        let sample_counts = i.1;
-        let mut cur_position = match stco.offsets.get(chunk_id) {
-            Some(&i) => i,
-            _ => return None,
-        };
-        for _ in 0..sample_counts {
-            let start_offset = cur_position;
-            let end_offset = match (stsz.sample_size, sample_size_iter.next()) {
-                (_, Some(t)) => start_offset + u64::from(*t),
-                (t, _) if t > 0 => start_offset + u64::from(t),
-                _ => 0,
-            };
-            if end_offset == 0 {
-                return None;
-            }
-            cur_position = end_offset;
-
-            sample_table
-                .push(Mp4parseIndice {
-                    start_offset,
-                    end_offset,
-                    start_composition: 0,
-                    end_composition: 0,
-                    start_decode: 0,
-                    sync: !has_sync_table,
-                })
-                .ok()?;
-        }
-    }
-
-    // Mark the sync sample in sample_table according to 'stss'.
-    if let Some(ref v) = track.stss {
-        for iter in &v.samples {
-            match iter
-                .checked_sub(1)
-                .and_then(|idx| sample_table.get_mut(idx as usize))
-            {
-                Some(elem) => elem.sync = true,
-                _ => return None,
-            }
-        }
-    }
-
-    let ctts_iter = match track.ctts {
-        Some(ref v) => Some(v.samples.as_slice().iter()),
-        _ => None,
-    };
-
-    let mut ctts_offset_iter = TimeOffsetIterator {
-        cur_sample_range: (0..0),
-        cur_offset: 0,
-        ctts_iter,
-        track_id: track.id,
-    };
-
-    let mut stts_iter = TimeToSampleIterator {
-        cur_sample_count: (0..0),
-        cur_sample_delta: 0,
-        stts_iter: stts.samples.as_slice().iter(),
-        track_id: track.id,
-    };
-
-    // sum_delta is the sum of stts_iter delta.
-    // According to sepc:
-    //      decode time => DT(n) = DT(n-1) + STTS(n)
-    //      composition time => CT(n) = DT(n) + CTTS(n)
-    // Note:
-    //      composition time needs to add the track offset time from 'elst' table.
-    let mut sum_delta = TrackScaledTime::<i64>(0, track.id);
-    for sample in sample_table.as_mut_slice() {
-        let decode_time = sum_delta;
-        sum_delta = sum_delta + stts_iter.next_delta();
-
-        // ctts_offset is the current sample offset time.
-        let ctts_offset = ctts_offset_iter.next_offset_time();
-
-        let start_composition = track_time_to_us(decode_time + ctts_offset, timescale);
-
-        let end_composition = track_time_to_us(sum_delta + ctts_offset, timescale);
-
-        let start_decode = track_time_to_us(decode_time, timescale);
-
-        match (start_composition, end_composition, start_decode) {
-            (Some(s_c), Some(e_c), Some(s_d)) => {
-                sample.start_composition = s_c + track_offset_time;
-                sample.end_composition = e_c + track_offset_time;
-                sample.start_decode = s_d;
-            }
-            _ => return None,
-        }
-    }
-
-    // Correct composition end time due to 'ctts' causes composition time re-ordering.
-    //
-    // Composition end time is not in specification. However, gecko needs it, so we need to
-    // calculate to correct the composition end time.
-    if !sample_table.is_empty() {
-        // Create an index table refers to sample_table and sorted by start_composisiton time.
-        let mut sort_table = TryVec::new();
-        for i in 0..sample_table.len() {
-            sort_table.push(i).ok()?;
-        }
-
-        sort_table.sort_by_key(|i| match sample_table.get(*i) {
-            Some(v) => v.start_composition,
-            _ => 0,
-        });
-
-        for indices in sort_table.windows(2) {
-            if let [current_index, peek_index] = *indices {
-                let next_start_composition_time = sample_table[peek_index].start_composition;
-                let sample = &mut sample_table[current_index];
-                sample.end_composition = next_start_composition_time;
-            }
-        }
-    }
-
-    Some(sample_table)
 }
 
 /// Fill the supplied `Mp4parseFragmentInfo` with metadata from fragmented file.
@@ -1489,13 +1440,11 @@ pub unsafe extern "C" fn mp4parse_get_fragment_info(
     };
 
     if let (Some(time), Some(scale)) = (duration, context.timescale) {
-        info.fragment_duration = match media_time_to_us(time, scale) {
-            Some(time_us) => time_us as u64,
-            None => return Mp4parseStatus::Invalid,
-        }
-    }
-
-    Mp4parseStatus::Ok
+        info.fragment_duration = time.0;
+        info.time_scale = scale.0;
+        return Mp4parseStatus::Ok;
+    };
+    Mp4parseStatus::Invalid
 }
 
 /// Determine if an mp4 file is fragmented. A fragmented file needs mvex table
@@ -1530,7 +1479,7 @@ pub unsafe extern "C" fn mp4parse_is_fragmented(
     iter.find(|track| track.track_id == Some(track_id))
         .map_or(Mp4parseStatus::BadArg, |track| {
             match (&track.stsc, &track.stco, &track.stts) {
-                (&Some(ref stsc), &Some(ref stco), &Some(ref stts))
+                (Some(stsc), Some(stco), Some(stts))
                     if stsc.samples.is_empty()
                         && stco.offsets.is_empty()
                         && stts.samples.is_empty() =>
@@ -1582,17 +1531,13 @@ fn get_pssh_info(
 
     pssh_data.clear();
     for pssh in &context.psshs {
-        let content_len = pssh.box_content.len();
-        if content_len > std::u32::MAX as usize {
-            return Err(Mp4parseStatus::Invalid);
-        }
+        let content_len = pssh
+            .box_content
+            .len()
+            .try_into()
+            .map_err(|_| Mp4parseStatus::Invalid)?;
         let mut data_len = TryVec::new();
-        if data_len
-            .write_u32::<byteorder::NativeEndian>(content_len as u32)
-            .is_err()
-        {
-            return Err(Mp4parseStatus::Io);
-        }
+        data_len.write_u32::<byteorder::NativeEndian>(content_len)?;
         pssh_data.extend_from_slice(pssh.system_id.as_slice())?;
         pssh_data.extend_from_slice(data_len.as_slice())?;
         pssh_data.extend_from_slice(pssh.box_content.as_slice())?;
@@ -1612,8 +1557,8 @@ extern "C" fn error_read(_: *mut u8, _: usize, _: *mut std::os::raw::c_void) -> 
 extern "C" fn valid_read(buf: *mut u8, size: usize, userdata: *mut std::os::raw::c_void) -> isize {
     let input: &mut std::fs::File = unsafe { &mut *(userdata as *mut _) };
 
-    let mut buf = unsafe { std::slice::from_raw_parts_mut(buf, size) };
-    match input.read(&mut buf) {
+    let buf = unsafe { std::slice::from_raw_parts_mut(buf, size) };
+    match input.read(buf) {
         Ok(n) => n as isize,
         Err(_) => -1,
     }
@@ -1666,9 +1611,7 @@ fn arg_validation() {
 
         let mut dummy_info = Mp4parseTrackInfo {
             track_type: Mp4parseTrackType::Video,
-            track_id: 0,
-            duration: 0,
-            media_time: 0,
+            ..Default::default()
         };
         assert_eq!(
             Mp4parseStatus::BadArg,
@@ -1736,9 +1679,7 @@ fn arg_validation_with_parser() {
 
         let mut dummy_info = Mp4parseTrackInfo {
             track_type: Mp4parseTrackType::Video,
-            track_id: 0,
-            duration: 0,
-            media_time: 0,
+            ..Default::default()
         };
         assert_eq!(
             Mp4parseStatus::BadArg,
@@ -1810,16 +1751,14 @@ fn minimal_mp4_get_track_info() {
 
     let mut info = Mp4parseTrackInfo {
         track_type: Mp4parseTrackType::Video,
-        track_id: 0,
-        duration: 0,
-        media_time: 0,
+        ..Default::default()
     };
     assert_eq!(Mp4parseStatus::Ok, unsafe {
         mp4parse_get_track_info(parser, 0, &mut info)
     });
     assert_eq!(info.track_type, Mp4parseTrackType::Video);
     assert_eq!(info.track_id, 1);
-    assert_eq!(info.duration, 40000);
+    assert_eq!(info.duration, 512);
     assert_eq!(info.media_time, 0);
 
     assert_eq!(Mp4parseStatus::Ok, unsafe {
@@ -1827,8 +1766,8 @@ fn minimal_mp4_get_track_info() {
     });
     assert_eq!(info.track_type, Mp4parseTrackType::Audio);
     assert_eq!(info.track_id, 2);
-    assert_eq!(info.duration, 61333);
-    assert_eq!(info.media_time, 21333);
+    assert_eq!(info.duration, 2944);
+    assert_eq!(info.media_time, 1024);
 
     unsafe {
         mp4parse_free(parser);
@@ -1884,9 +1823,7 @@ fn minimal_mp4_get_track_info_invalid_track_number() {
 
     let mut info = Mp4parseTrackInfo {
         track_type: Mp4parseTrackType::Video,
-        track_id: 0,
-        duration: 0,
-        media_time: 0,
+        ..Default::default()
     };
     assert_eq!(Mp4parseStatus::BadArg, unsafe {
         mp4parse_get_track_info(parser, 3, &mut info)
@@ -1916,33 +1853,22 @@ fn minimal_mp4_get_track_info_invalid_track_number() {
 }
 
 #[test]
-fn rational_scale_overflow() {
-    assert_eq!(rational_scale::<u64, u64>(17, 3, 1000), Some(5666));
-    let large = 0x4000_0000_0000_0000;
-    assert_eq!(rational_scale::<u64, u64>(large, 2, 2), Some(large));
-    assert_eq!(rational_scale::<u64, u64>(large, 4, 4), Some(large));
-    assert_eq!(rational_scale::<u64, u64>(large, 2, 8), None);
-    assert_eq!(rational_scale::<u64, u64>(large, 8, 4), Some(large / 2));
-    assert_eq!(rational_scale::<u64, u64>(large + 1, 4, 4), Some(large + 1));
-    assert_eq!(rational_scale::<u64, u64>(large, 40, 1000), None);
-}
+fn parse_no_timescale() {
+    let mut file = std::fs::File::open("tests/no_timescale.mp4").expect("Unknown file");
+    let io = Mp4parseIo {
+        read: Some(valid_read),
+        userdata: &mut file as *mut _ as *mut std::os::raw::c_void,
+    };
 
-#[test]
-fn media_time_overflow() {
-    let scale = MediaTimeScale(90000);
-    let duration = MediaScaledTime(9_007_199_254_710_000);
-    assert_eq!(
-        media_time_to_us(duration, scale),
-        Some(100_079_991_719_000_000)
-    );
-}
+    unsafe {
+        let mut parser = std::ptr::null_mut();
+        let mut rv = mp4parse_new(&io, &mut parser);
+        assert_eq!(rv, Mp4parseStatus::Ok);
+        assert!(!parser.is_null());
 
-#[test]
-fn track_time_overflow() {
-    let scale = TrackTimeScale(44100u64, 0);
-    let duration = TrackScaledTime(4_413_527_634_807_900u64, 0);
-    assert_eq!(
-        track_time_to_us(duration, scale),
-        Some(100_079_991_719_000_000)
-    );
+        // The file has a video track, but the track has a timescale of 0, so.
+        let mut track_info = Mp4parseTrackInfo::default();
+        rv = mp4parse_get_track_info(parser, 0, &mut track_info);
+        assert_eq!(rv, Mp4parseStatus::Invalid);
+    };
 }

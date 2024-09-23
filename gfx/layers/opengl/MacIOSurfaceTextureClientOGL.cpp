@@ -41,7 +41,7 @@ MacIOSurfaceTextureData* MacIOSurfaceTextureData::Create(const IntSize& aSize,
   }
 
   RefPtr<MacIOSurface> surf = MacIOSurface::CreateIOSurface(
-      aSize.width, aSize.height, 1.0, aFormat == SurfaceFormat::B8G8R8A8);
+      aSize.width, aSize.height, aFormat == SurfaceFormat::B8G8R8A8);
   if (!surf) {
     return nullptr;
   }
@@ -50,10 +50,17 @@ MacIOSurfaceTextureData* MacIOSurfaceTextureData::Create(const IntSize& aSize,
 }
 
 bool MacIOSurfaceTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
-  aOutDescriptor = SurfaceDescriptorMacIOSurface(
-      mSurface->GetIOSurfaceID(), mSurface->GetContentsScaleFactor(),
-      !mSurface->HasAlpha(), mSurface->GetYUVColorSpace());
+  aOutDescriptor = SurfaceDescriptorMacIOSurface(mSurface->GetIOSurfaceID(),
+                                                 !mSurface->HasAlpha(),
+                                                 mSurface->GetYUVColorSpace());
   return true;
+}
+
+void MacIOSurfaceTextureData::GetSubDescriptor(
+    RemoteDecoderVideoSubDescriptor* const aOutDesc) {
+  *aOutDesc = SurfaceDescriptorMacIOSurface(mSurface->GetIOSurfaceID(),
+                                            !mSurface->HasAlpha(),
+                                            mSurface->GetYUVColorSpace());
 }
 
 void MacIOSurfaceTextureData::FillInfo(TextureData::Info& aInfo) const {
@@ -61,16 +68,12 @@ void MacIOSurfaceTextureData::FillInfo(TextureData::Info& aInfo) const {
                             mSurface->GetDevicePixelHeight());
   aInfo.format =
       mSurface->HasAlpha() ? SurfaceFormat::B8G8R8A8 : SurfaceFormat::B8G8R8X8;
-  aInfo.hasIntermediateBuffer = false;
   aInfo.hasSynchronization = false;
   aInfo.supportsMoz2D = true;
   aInfo.canExposeMappedData = false;
 }
 
-bool MacIOSurfaceTextureData::Lock(OpenMode) {
-  mSurface->Lock(false);
-  return true;
-}
+bool MacIOSurfaceTextureData::Lock(OpenMode) { return mSurface->Lock(false); }
 
 void MacIOSurfaceTextureData::Unlock() { mSurface->Unlock(false); }
 

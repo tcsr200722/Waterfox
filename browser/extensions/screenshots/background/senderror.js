@@ -2,14 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* globals startBackground, analytics, communication, makeUuid, Raven, catcher, auth, log */
+/* globals startBackground, analytics, communication, catcher, log, browser, getStrings */
 
 "use strict";
 
-this.senderror = (function() {
+this.senderror = (function () {
   const exports = {};
-
-  const manifest = browser.runtime.getManifest();
 
   // Do not show an error more than every ERROR_TIME_LIMIT milliseconds:
   const ERROR_TIME_LIMIT = 3000;
@@ -35,12 +33,6 @@ this.senderror = (function() {
       titleKey: "screenshots-unshootable-page-error-title",
       infoKey: "screenshots-unshootable-page-error-details",
     },
-    SHOT_PAGE: {
-      titleKey: "screenshots-self-screenshot-error-title",
-    },
-    MY_SHOTS: {
-      titleKey: "screenshots-self-screenshot-error-title",
-    },
     EMPTY_SELECTION: {
       titleKey: "screenshots-empty-selection-error-title",
     },
@@ -61,12 +53,12 @@ this.senderror = (function() {
 
   let lastErrorTime;
 
-  exports.showError = async function(error) {
-    if (lastErrorTime && (Date.now() - lastErrorTime) < ERROR_TIME_LIMIT) {
+  exports.showError = async function (error) {
+    if (lastErrorTime && Date.now() - lastErrorTime < ERROR_TIME_LIMIT) {
       return;
     }
     lastErrorTime = Date.now();
-    const id = makeUuid();
+    const id = crypto.randomUUID();
     let popupMessage = error.popupMessage || "generic";
     if (!messages[popupMessage]) {
       popupMessage = "generic";
@@ -74,9 +66,9 @@ this.senderror = (function() {
 
     let item = messages[popupMessage];
     if (!("title" in item)) {
-      let keys = [{id: item.titleKey}];
+      let keys = [{ id: item.titleKey }];
       if ("infoKey" in item) {
-        keys.push({id: item.infoKey});
+        keys.push({ id: item.infoKey });
       }
 
       [item.title, item.info] = await getStrings(keys);
@@ -102,18 +94,10 @@ this.senderror = (function() {
     }
   };
 
-  exports.reportError = function(e) {
+  exports.reportError = function (e) {
     if (!analytics.isTelemetryEnabled()) {
       log.error("Telemetry disabled. Not sending critical error:", e);
       return;
-    }
-    const dsn = auth.getSentryPublicDSN();
-    if (!dsn) {
-      log.warn("Screenshots error:", e);
-      return;
-    }
-    if (!Raven.isSetup()) {
-      Raven.config(dsn, {allowSecretKey: true}).install();
     }
     const exception = new Error(e.message);
     exception.stack = e.multilineStack || e.stack || undefined;
@@ -128,21 +112,26 @@ this.senderror = (function() {
     }
     const rest = {};
     for (const attr in e) {
-      if (!["name", "message", "stack", "multilineStack", "popupMessage", "version", "sentryPublicDSN", "help", "fromMakeError"].includes(attr)) {
+      if (
+        ![
+          "name",
+          "message",
+          "stack",
+          "multilineStack",
+          "popupMessage",
+          "version",
+          "sentryPublicDSN",
+          "help",
+          "fromMakeError",
+        ].includes(attr)
+      ) {
         rest[attr] = e[attr];
       }
     }
     rest.stack = exception.stack;
-    Raven.captureException(exception, {
-      logger: "addon",
-      tags: {category: e.popupMessage},
-      release: manifest.version,
-      message: exception.message,
-      extra: rest,
-    });
   };
 
-  catcher.registerHandler((errorObj) => {
+  catcher.registerHandler(errorObj => {
     if (!errorObj.noPopup) {
       exports.showError(errorObj);
     }

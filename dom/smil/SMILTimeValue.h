@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILTimeValue_h
-#define mozilla_SMILTimeValue_h
+#ifndef DOM_SMIL_SMILTIMEVALUE_H_
+#define DOM_SMIL_SMILTIMEVALUE_H_
 
 #include "mozilla/SMILTypes.h"
 #include "nsDebug.h"
@@ -68,6 +68,8 @@ class SMILTimeValue {
     return value;
   }
 
+  static SMILTimeValue Zero() { return SMILTimeValue(SMILTime(0L)); }
+
   bool IsIndefinite() const { return mState == STATE_INDEFINITE; }
   void SetIndefinite() {
     mState = STATE_INDEFINITE;
@@ -88,10 +90,22 @@ class SMILTimeValue {
     return mState == STATE_DEFINITE ? mMilliseconds : kUnresolvedMillis;
   }
 
+  bool IsZero() const {
+    return mState == STATE_DEFINITE ? mMilliseconds == 0 : false;
+  }
+
   void SetMillis(SMILTime aMillis) {
     mState = STATE_DEFINITE;
     mMilliseconds = aMillis;
   }
+
+  /*
+   * EnsureNonZero ensures values such as 0.0001s are not represented as 0
+   * for values where 0 is invalid.
+   */
+  enum class Rounding : uint8_t { EnsureNonZero, Nearest };
+
+  void SetMillis(double aMillis, Rounding aRounding);
 
   int8_t CompareTo(const SMILTimeValue& aOther) const;
 
@@ -128,4 +142,4 @@ class SMILTimeValue {
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILTimeValue_h
+#endif  // DOM_SMIL_SMILTIMEVALUE_H_

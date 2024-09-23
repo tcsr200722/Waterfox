@@ -14,8 +14,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Title)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLTitleElement::HTMLTitleElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
@@ -35,7 +34,7 @@ JSObject* HTMLTitleElement::WrapNode(JSContext* cx,
   return HTMLTitleElement_Binding::Wrap(cx, this, aGivenProto);
 }
 
-void HTMLTitleElement::GetText(DOMString& aText, ErrorResult& aError) {
+void HTMLTitleElement::GetText(DOMString& aText, ErrorResult& aError) const {
   if (!nsContentUtils::GetNodeTextContent(this, false, aText, fallible)) {
     aError = NS_ERROR_OUT_OF_MEMORY;
   }
@@ -73,11 +72,11 @@ nsresult HTMLTitleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void HTMLTitleElement::UnbindFromTree(bool aNullParent) {
+void HTMLTitleElement::UnbindFromTree(UnbindContext& aContext) {
   SendTitleChangeEvent(false);
 
   // Let this fall through.
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 void HTMLTitleElement::DoneAddingChildren(bool aHaveNotified) {
@@ -93,5 +92,4 @@ void HTMLTitleElement::SendTitleChangeEvent(bool aBound) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

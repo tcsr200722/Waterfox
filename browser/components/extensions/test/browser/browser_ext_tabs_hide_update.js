@@ -1,6 +1,8 @@
 "use strict";
 
-ChromeUtils.import("resource://testing-common/AddonTestUtils.jsm", this);
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
+);
 
 AddonTestUtils.initMochitest(this);
 
@@ -26,7 +28,7 @@ function getExtension() {
     let tabs = await browser.tabs.query({ url: "http://example.com/" });
     let testTab = tabs[0];
 
-    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
       if ("hidden" in changeInfo) {
         browser.test.assertEq(tabId, testTab.id, "correct tab was hidden");
         browser.test.assertTrue(changeInfo.hidden, "tab is hidden");
@@ -48,7 +50,7 @@ function getExtension() {
   let extdata = {
     manifest: {
       version: "1.0",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID,
         },
@@ -85,7 +87,7 @@ add_task(async function test_tabs_update() {
   let extdata = {
     manifest: {
       version: "2.0",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID,
         },
@@ -99,7 +101,7 @@ add_task(async function test_tabs_update() {
   // Test that update does hide tabs when tabHide permission is removed.
   extdata.manifest = {
     version: "3.0",
-    applications: {
+    browser_specific_settings: {
       gecko: {
         id: ID,
       },

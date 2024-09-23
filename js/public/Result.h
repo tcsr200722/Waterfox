@@ -17,13 +17,13 @@
  * can't fail, don't use Result. Otherwise:
  *
  *     JS::Result<>  - function can fail, doesn't return anything on success
- *         (defaults to `JS::Result<JS::Ok, JS::Error&>`)
- *     JS::Result<JS::OOM&> - like JS::Result<>, but fails only on OOM
+ *         (defaults to `JS::Result<JS::Ok, JS::Error>`)
+ *     JS::Result<JS::Ok, JS::OOM> - like JS::Result<>, but fails only on OOM
  *
  *     JS::Result<Data>  - function can fail, returns Data on success
- *     JS::Result<Data, JS::OOM&>  - returns Data, fails only on OOM
+ *     JS::Result<Data, JS::OOM>  - returns Data, fails only on OOM
  *
- *     mozilla::GenericErrorResult<JS::Error&> - always fails
+ *     mozilla::GenericErrorResult<JS::Error> - always fails
  *
  * That last type is like a Result with no success type. It's used for
  * functions like `js::ReportNotFunction` that always return an error
@@ -59,34 +59,6 @@
  * value of `GetObjectThrug(cx, obj)` is assigned to the variable `thrug`.
  *
  *
- * ## Checking Results when your return type is not Result
- *
- * This header defines alternatives to MOZ_TRY and MOZ_TRY_VAR for when you
- * need to call a `Result` function from a function that uses false or nullptr
- * to indicate errors:
- *
- *     JS_TRY_OR_RETURN_FALSE(cx, DefenestrateObject(cx, obj));
- *     JS_TRY_VAR_OR_RETURN_FALSE(cx, v, GetObjectThrug(cx, obj));
- *
- *     JS_TRY_OR_RETURN_NULL(cx, DefenestrateObject(cx, obj));
- *     JS_TRY_VAR_OR_RETURN_NULL(cx, v, GetObjectThrug(cx, obj));
- *
- * When TRY is not what you want, because you need to do some cleanup or
- * recovery on error, use this idiom:
- *
- *     if (!cx->resultToBool(expr_that_is_a_Result)) {
- *         ... your recovery code here ...
- *     }
- *
- * In place of a tail call, you can use one of these methods:
- *
- *     return cx->resultToBool(expr);  // false on error
- *     return cx->resultToPtr(expr);  // null on error
- *
- * Once we are using `Result` everywhere, including in public APIs, all of
- * these will go away.
- *
- *
  * ## GC safety
  *
  * When a function returns a `JS::Result<JSObject*>`, it is the program's
@@ -120,74 +92,82 @@
 
 #include "mozilla/Result.h"
 
-/**
- * Evaluate the boolean expression expr. If it's true, do nothing.
- * If it's false, return an error result.
- */
-#define JS_TRY_BOOL_TO_RESULT(cx, expr)       \
-  do {                                        \
-    bool ok_ = (expr);                        \
-    if (!ok_) return (cx)->boolToResult(ok_); \
-  } while (0)
-
-/**
- * JS_TRY_OR_RETURN_FALSE(cx, expr) runs expr to compute a Result value.
- * On success, nothing happens; on error, it returns false immediately.
- *
- * Implementation note: this involves cx because this may eventually
- * do the work of setting a pending exception or reporting OOM.
- */
-#define JS_TRY_OR_RETURN_FALSE(cx, expr)                           \
-  do {                                                             \
-    auto tmpResult_ = (expr);                                      \
-    if (tmpResult_.isErr()) return (cx)->resultToBool(tmpResult_); \
-  } while (0)
-
-/**
- * Like JS_TRY_OR_RETURN_FALSE, but returning nullptr on error,
- * rather than false.
- */
-#define JS_TRY_OR_RETURN_NULL(cx, expr)                 \
-  do {                                                  \
-    auto tmpResult_ = (expr);                           \
-    if (tmpResult_.isErr()) {                           \
-      MOZ_ALWAYS_FALSE((cx)->resultToBool(tmpResult_)); \
-      return nullptr;                                   \
-    }                                                   \
-  } while (0)
-
-#define JS_TRY_VAR_OR_RETURN_FALSE(cx, target, expr)               \
-  do {                                                             \
-    auto tmpResult_ = (expr);                                      \
-    if (tmpResult_.isErr()) return (cx)->resultToBool(tmpResult_); \
-    (target) = tmpResult_.unwrap();                                \
-  } while (0)
-
-#define JS_TRY_VAR_OR_RETURN_NULL(cx, target, expr)     \
-  do {                                                  \
-    auto tmpResult_ = (expr);                           \
-    if (tmpResult_.isErr()) {                           \
-      MOZ_ALWAYS_FALSE((cx)->resultToBool(tmpResult_)); \
-      return nullptr;                                   \
-    }                                                   \
-    (target) = tmpResult_.unwrap();                     \
-  } while (0)
-
 namespace JS {
 
 using mozilla::Ok;
+
+template <typename T>
+struct UnusedZero;
 
 /**
  * Type representing a JS error or exception. At the moment this only
  * "represents" an error in a rather abstract way.
  */
 struct Error {
-  // Ensure sizeof(Error) > 1 so that Result<V, Error&> can use pointer
-  // tagging.
-  int dummy;
+  // Since we claim UnusedZero<Error>::value and HasFreeLSB<Error>::value ==
+  // true below, we must only use positive even enum values.
+  enum class ErrorKind : uintptr_t { Unspecified = 2, OOM = 4 };
+
+  const ErrorKind kind = ErrorKind::Unspecified;
+
+  Error() = default;
+
+ protected:
+  friend struct UnusedZero<Error>;
+
+  constexpr MOZ_IMPLICIT Error(ErrorKind aKind) : kind(aKind) {}
 };
 
-struct OOM : public Error {};
+struct OOM : Error {
+  constexpr OOM() : Error(ErrorKind::OOM) {}
+
+ protected:
+  friend struct UnusedZero<OOM>;
+
+  using Error::Error;
+};
+
+template <typename T>
+struct UnusedZero {
+  using StorageType = std::underlying_type_t<Error::ErrorKind>;
+
+  static constexpr bool value = true;
+  static constexpr StorageType nullValue = 0;
+
+  static constexpr void AssertValid(StorageType aValue) {}
+  static constexpr T Inspect(const StorageType& aValue) {
+    return static_cast<Error::ErrorKind>(aValue);
+  }
+  static constexpr T Unwrap(StorageType aValue) {
+    return static_cast<Error::ErrorKind>(aValue);
+  }
+  static constexpr StorageType Store(T aValue) {
+    return static_cast<StorageType>(aValue.kind);
+  }
+};
+
+}  // namespace JS
+
+namespace mozilla::detail {
+
+template <>
+struct UnusedZero<JS::Error> : JS::UnusedZero<JS::Error> {};
+
+template <>
+struct UnusedZero<JS::OOM> : JS::UnusedZero<JS::OOM> {};
+
+template <>
+struct HasFreeLSB<JS::Error> {
+  static const bool value = true;
+};
+
+template <>
+struct HasFreeLSB<JS::OOM> {
+  static const bool value = true;
+};
+}  // namespace mozilla::detail
+
+namespace JS {
 
 /**
  * `Result` is intended to be the return type of JSAPI calls and internal
@@ -204,14 +184,14 @@ struct OOM : public Error {};
  *     return. JS `catch` blocks can't catch this kind of failure,
  *     and JS `finally` blocks don't execute.
  */
-template <typename V = Ok, typename E = Error&>
+template <typename V = Ok, typename E = Error>
 using Result = mozilla::Result<V, E>;
 
 static_assert(sizeof(Result<>) == sizeof(uintptr_t),
               "Result<> should be pointer-sized");
 
-static_assert(sizeof(Result<int*, Error&>) == sizeof(uintptr_t),
-              "Result<V*, Error&> should be pointer-sized");
+static_assert(sizeof(Result<int*, Error>) == sizeof(uintptr_t),
+              "Result<V*, Error> should be pointer-sized");
 
 }  // namespace JS
 

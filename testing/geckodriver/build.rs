@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 // Writes build information to ${OUT_DIR}/build-info.rs which is included in
 // the program during compilation:
 //
@@ -42,13 +46,11 @@ fn get_build_info(dir: &Path) -> Box<dyn BuildInfo> {
         Box::new(Hg {})
     } else if Path::exists(&dir.join(".git")) {
         Box::new(Git {})
+    } else if let Some(parent) = dir.parent() {
+        get_build_info(parent)
     } else {
-        if let Some(parent) = dir.parent() {
-            get_build_info(parent)
-        } else {
-            eprintln!("unable to detect vcs");
-            Box::new(Noop {})
-        }
+        eprintln!("unable to detect vcs");
+        Box::new(Noop {})
     }
 }
 
@@ -77,11 +79,11 @@ impl Hg {
 
 impl BuildInfo for Hg {
     fn hash(&self) -> Option<String> {
-        self.exec(&["log", "-r.", "-T{node|short}"])
+        self.exec(["log", "-r.", "-T{node|short}"])
     }
 
     fn date(&self) -> Option<String> {
-        self.exec(&["log", "-r.", "-T{date|isodate}"])
+        self.exec(["log", "-r.", "-T{date|isodate}"])
     }
 }
 
@@ -103,13 +105,13 @@ impl Git {
     }
 
     fn to_hg_sha(&self, git_sha: String) -> Option<String> {
-        self.exec(&["cinnabar", "git2hg", &git_sha])
+        self.exec(["cinnabar", "git2hg", &git_sha])
     }
 }
 
 impl BuildInfo for Git {
     fn hash(&self) -> Option<String> {
-        self.exec(&["rev-parse", "HEAD"])
+        self.exec(["rev-parse", "HEAD"])
             .and_then(|sha| self.to_hg_sha(sha))
             .map(|mut s| {
                 s.truncate(12);
@@ -118,7 +120,7 @@ impl BuildInfo for Git {
     }
 
     fn date(&self) -> Option<String> {
-        self.exec(&["log", "-1", "--date=short", "--pretty=format:%cd"])
+        self.exec(["log", "-1", "--date=short", "--pretty=format:%cd"])
     }
 }
 

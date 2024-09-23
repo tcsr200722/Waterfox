@@ -9,11 +9,14 @@
 
 #include "XMLHttpRequest.h"
 #include "XMLHttpRequestString.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/BodyExtractor.h"
 #include "mozilla/dom/TypedArray.h"
 
-namespace mozilla {
-namespace dom {
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "mozilla/dom/BlobImpl.h"
+
+namespace mozilla::dom {
 
 class Proxy;
 class DOMString;
@@ -21,7 +24,8 @@ class SendRunnable;
 class StrongWorkerRef;
 class WorkerPrivate;
 
-class XMLHttpRequestWorker final : public XMLHttpRequest {
+class XMLHttpRequestWorker final : public SupportsWeakPtr,
+                                   public XMLHttpRequest {
  public:
   // This defines the xhr.response value.
   struct ResponseData {
@@ -58,6 +62,7 @@ class XMLHttpRequestWorker final : public XMLHttpRequest {
   RefPtr<XMLHttpRequestUpload> mUpload;
   WorkerPrivate* mWorkerPrivate;
   RefPtr<StrongWorkerRef> mWorkerRef;
+  RefPtr<XMLHttpRequestWorker> mPinnedSelfRef;
   RefPtr<Proxy> mProxy;
 
   XMLHttpRequestResponseType mResponseType;
@@ -74,6 +79,7 @@ class XMLHttpRequestWorker final : public XMLHttpRequest {
   bool mBackgroundRequest;
   bool mWithCredentials;
   bool mCanceled;
+  bool mFlagSendActive;
 
   bool mMozAnon;
   bool mMozSystem;
@@ -235,9 +241,8 @@ class XMLHttpRequestWorker final : public XMLHttpRequest {
 
   void MaybeDispatchPrematureAbortEvents(ErrorResult& aRv);
 
-  void DispatchPrematureAbortEvent(EventTarget* aTarget,
-                                   const nsAString& aEventType,
-                                   bool aUploadTarget, ErrorResult& aRv);
+  void FireEvent(EventTarget* aTarget, const EventType& aEventType,
+                 bool aUploadTarget, ErrorResult& aRv);
 
   void Send(JSContext* aCx, JS::Handle<JSObject*> aBody, ErrorResult& aRv);
 
@@ -246,7 +251,6 @@ class XMLHttpRequestWorker final : public XMLHttpRequest {
   void ResetResponseData();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_workers_xmlhttprequest_h__

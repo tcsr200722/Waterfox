@@ -15,13 +15,14 @@
 
 namespace IPC {
 class Message;
-}
+class MessageReader;
+class MessageWriter;
+}  // namespace IPC
 class PickleIterator;
 
 namespace mozilla {
 namespace ipc {
 
-class AutoIPCStream;
 class PBackgroundChild;
 class PBackgroundParent;
 
@@ -92,20 +93,14 @@ class SharedJSAllocatedData final {
  *   to send a structured clone that may include blobs or transferables such as
  *   message ports.
  * - To send the data, instantiate a StructuredCloneData instance and Write()
- *   into it like a normal structure clone.  When you are ready to send the
- *   ClonedMessageData-bearing IPC message, use the appropriate
- *   BuildClonedMessageDataFor{Parent,Child,BackgroundParent,BackgroundChild}
+ *   into it like a normal structured clone.  When you are ready to send the
+ *   ClonedMessageData-bearing IPC message, call the BuildClonedMessageData
  *   method to populate the ClonedMessageData and then send it before your
  *   StructuredCloneData instance is destroyed.  (Buffer borrowing is used
  *   under-the-hood to avoid duplicating the serialized data, requiring this.)
- * - To receive the data, instantiate a StructuredCloneData and use the
- *   appropriate {Borrow,Copy,Steal}FromClonedMessageDataFor{Parent,Child,
- *   BackgroundParent,BackgroundChild} method.  See the memory management
- *   section for more info.
- *
- * Variations:
- * - If transferables are not allowed (ex: BroadcastChannel), then use the
- *   StructuredCloneDataNoTransfers subclass instead of StructuredCloneData.
+ * - To receive the data, instantiate a StructuredCloneData and then call
+ *   the BorrowFromClonedMessageData method.  See the memory management
+ *   section for more information.
  *
  * ## Memory Management ##
  *
@@ -126,20 +121,19 @@ class SharedJSAllocatedData final {
  * - Steal: Steal the buffers from the underlying JSStructuredCloneData so that
  *   it's safe for the StructuredCloneData to outlive the source data.  This is
  *   safe to use with IPC-provided ClonedMessageData instances because
- *   JSStructuredCloneData's IPC ParamTraits::Read method uses ExtractBuffers,
- *   returning a fatal false if unable to extract.  (And
- *   SerializedStructuredCloneBuffer wraps/defers to it.)  But if it's possible
- *   the ClonedMessageData came from a different source that might have borrowed
- *   the buffers itself, then things will crash.  That would be a pretty crazy
- *   implementation; if you see one, change it to use SharedJSAllocatedData.
+ *   JSStructuredCloneData's IPC ParamTraits::Read method copies the relevant
+ *   data into owned buffers.  But if it's possible the ClonedMessageData came
+ *   from a different source that might have borrowed the buffers itself, then
+ *   things will crash.  That would be a pretty strange implementation; if you
+ *   see one, change it to use SharedJSAllocatedData.
  *
  * 1: Specifically, in the Write() case an owning SharedJSAllocatedData is
  *    created efficiently (by stealing from StructuredCloneHolder).  The
- *    BuildClonedMessageDataFor* method can be called at any time and it will
+ *    BuildClonedMessageData method can be called at any time and it will
  *    borrow the underlying memory.  While it would be even better if
  *    SerializedStructuredCloneBuffer could hold a SharedJSAllocatedData ref,
- *    there's no reason you can't wait to BuildClonedMessageDataFor* until you
- *    need to make the IPC Send* call.
+ *    there's no reason you can't wait to call the BuildClonedMessageData
+ *    method until you need to make the IPC Send* call.
  */
 class StructuredCloneData : public StructuredCloneHolder {
  public:
@@ -191,44 +185,18 @@ class StructuredCloneData : public StructuredCloneHolder {
              const JS::CloneDataPolicy& aCloneDataPolicy,
              ErrorResult& aRv) override;
 
-  // Actor-varying methods to convert the structured clone stored in this holder
-  // by a previous call to Write() into ClonedMessageData IPC representation.
-  // (Blobs are represented in IPC by IPCBlob actors, so we need the parent to
-  // be able to create them.)
-  bool BuildClonedMessageDataForParent(ContentParent* aParent,
-                                       ClonedMessageData& aClonedData);
-  bool BuildClonedMessageDataForChild(ContentChild* aChild,
-                                      ClonedMessageData& aClonedData);
-  bool BuildClonedMessageDataForBackgroundParent(
-      mozilla::ipc::PBackgroundParent* aParent, ClonedMessageData& aClonedData);
-  bool BuildClonedMessageDataForBackgroundChild(
-      mozilla::ipc::PBackgroundChild* aChild, ClonedMessageData& aClonedData);
+  // Method to convert the structured clone stored in this holder by a previous
+  // call to Write() into ClonedMessageData IPC representation.
+  bool BuildClonedMessageData(ClonedMessageData& aClonedData);
 
-  // Actor-varying and memory-management-strategy-varying methods to initialize
-  // this holder from a ClonedMessageData representation.
-  void BorrowFromClonedMessageDataForParent(
-      const ClonedMessageData& aClonedData);
-  void BorrowFromClonedMessageDataForChild(
-      const ClonedMessageData& aClonedData);
-  void BorrowFromClonedMessageDataForBackgroundParent(
-      const ClonedMessageData& aClonedData);
-  void BorrowFromClonedMessageDataForBackgroundChild(
-      const ClonedMessageData& aClonedData);
+  // Memory-management-strategy-varying methods to initialize this holder from a
+  // ClonedMessageData representation.
+  void BorrowFromClonedMessageData(const ClonedMessageData& aClonedData);
 
-  void CopyFromClonedMessageDataForParent(const ClonedMessageData& aClonedData);
-  void CopyFromClonedMessageDataForChild(const ClonedMessageData& aClonedData);
-  void CopyFromClonedMessageDataForBackgroundParent(
-      const ClonedMessageData& aClonedData);
-  void CopyFromClonedMessageDataForBackgroundChild(
-      const ClonedMessageData& aClonedData);
+  void CopyFromClonedMessageData(const ClonedMessageData& aClonedData);
 
-  // The steal variants of course take a non-const ClonedMessageData.
-  void StealFromClonedMessageDataForParent(ClonedMessageData& aClonedData);
-  void StealFromClonedMessageDataForChild(ClonedMessageData& aClonedData);
-  void StealFromClonedMessageDataForBackgroundParent(
-      ClonedMessageData& aClonedData);
-  void StealFromClonedMessageDataForBackgroundChild(
-      ClonedMessageData& aClonedData);
+  // The steal variant of course takes a non-const ClonedMessageData.
+  void StealFromClonedMessageData(ClonedMessageData& aClonedData);
 
   // Initialize this instance, borrowing the contents of the given
   // JSStructuredCloneData.  You are responsible for ensuring that this
@@ -273,13 +241,9 @@ class StructuredCloneData : public StructuredCloneHolder {
 
   bool SupportsTransferring() { return mSupportsTransferring; }
 
-  FallibleTArray<mozilla::ipc::AutoIPCStream>& IPCStreams() {
-    return mIPCStreams;
-  }
-
   // For IPC serialization
-  void WriteIPCParams(IPC::Message* aMessage) const;
-  bool ReadIPCParams(const IPC::Message* aMessage, PickleIterator* aIter);
+  void WriteIPCParams(IPC::MessageWriter* aWriter) const;
+  bool ReadIPCParams(IPC::MessageReader* aReader);
 
  protected:
   already_AddRefed<SharedJSAllocatedData> TakeSharedData();
@@ -288,9 +252,6 @@ class StructuredCloneData : public StructuredCloneHolder {
   JSStructuredCloneData mExternalData;
   RefPtr<SharedJSAllocatedData> mSharedData;
 
-  // This array is needed because AutoIPCStream DTOR must be executed after the
-  // sending of the data via IPC. This will be fixed by bug 1353475.
-  FallibleTArray<mozilla::ipc::AutoIPCStream> mIPCStreams;
   bool mInitialized;
 };
 

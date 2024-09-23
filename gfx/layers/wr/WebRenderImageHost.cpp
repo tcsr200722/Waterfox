@@ -8,19 +8,28 @@
 
 #include <utility>
 
-#include "LayersLogging.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/AsyncImagePipelineManager.h"
-#include "mozilla/layers/Compositor.h"                // for Compositor
+#include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/CompositorVsyncScheduler.h"  // for CompositorVsyncScheduler
-#include "mozilla/layers/Effects.h"  // for TexturedEffect, Effect, etc
-#include "mozilla/layers/LayerManagerComposite.h"  // for TexturedEffect, Effect, etc
+#include "mozilla/layers/KnowsCompositor.h"
+#include "mozilla/layers/RemoteTextureHostWrapper.h"
+#include "mozilla/layers/RemoteTextureMap.h"
 #include "mozilla/layers/WebRenderBridgeParent.h"
 #include "mozilla/layers/WebRenderTextureHost.h"
+#include "mozilla/ProfilerMarkers.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/StaticPrefs_webgl.h"
 #include "nsAString.h"
 #include "nsDebug.h"          // for NS_WARNING, NS_ASSERTION
 #include "nsPrintfCString.h"  // for nsPrintfCString
 #include "nsString.h"         // for nsAutoCString
+
+#if XP_WIN
+#  include "mozilla/layers/GpuProcessD3D11TextureMap.h"
+#  include "mozilla/layers/TextureHostWrapperD3D11.h"
+#endif
 
 namespace mozilla {
 
@@ -31,16 +40,32 @@ namespace layers {
 class ISurfaceAllocator;
 
 WebRenderImageHost::WebRenderImageHost(const TextureInfo& aTextureInfo)
-    : CompositableHost(aTextureInfo),
-      ImageComposite(),
-      mCurrentAsyncImageManager(nullptr) {}
+    : CompositableHost(aTextureInfo), mCurrentAsyncImageManager(nullptr) {}
 
-WebRenderImageHost::~WebRenderImageHost() { MOZ_ASSERT(mWrBridges.empty()); }
+WebRenderImageHost::~WebRenderImageHost() {
+  MOZ_ASSERT(mPendingRemoteTextureWrappers.empty());
+  MOZ_ASSERT(mWrBridges.empty());
+}
+
+void WebRenderImageHost::OnReleased() {
+  if (!mPendingRemoteTextureWrappers.empty()) {
+    mPendingRemoteTextureWrappers.clear();
+  }
+}
 
 void WebRenderImageHost::UseTextureHost(
     const nsTArray<TimedTexture>& aTextures) {
   CompositableHost::UseTextureHost(aTextures);
   MOZ_ASSERT(aTextures.Length() >= 1);
+
+  if (!mPendingRemoteTextureWrappers.empty()) {
+    mPendingRemoteTextureWrappers.clear();
+  }
+
+  if (mCurrentTextureHost &&
+      mCurrentTextureHost->AsRemoteTextureHostWrapper()) {
+    mCurrentTextureHost = nullptr;
+  }
 
   nsTArray<TimedImage> newImages;
 
@@ -62,16 +87,16 @@ void WebRenderImageHost::UseTextureHost(
     img.mFrameID = t.mFrameID;
     img.mProducerID = t.mProducerID;
     img.mTextureHost->SetCropRect(img.mPictureRect);
-    img.mTextureHost->Updated();
   }
 
   SetImages(std::move(newImages));
 
   if (GetAsyncRef()) {
     for (const auto& it : mWrBridges) {
-      WebRenderBridgeParent* wrBridge = it.second;
+      RefPtr<WebRenderBridgeParent> wrBridge = it.second->WrBridge();
       if (wrBridge && wrBridge->CompositorScheduler()) {
-        wrBridge->CompositorScheduler()->ScheduleComposition();
+        wrBridge->CompositorScheduler()->ScheduleComposition(
+            wr::RenderReasons::ASYNC_IMAGE);
       }
     }
   }
@@ -87,7 +112,7 @@ void WebRenderImageHost::UseTextureHost(
           img.mFrameID > mLastFrameID || img.mProducerID != mLastProducerID;
       if (frameComesAfter && !img.mTimeStamp.IsNull()) {
         for (const auto& it : mWrBridges) {
-          WebRenderBridgeParent* wrBridge = it.second;
+          RefPtr<WebRenderBridgeParent> wrBridge = it.second->WrBridge();
           if (wrBridge) {
             wrBridge->AsyncImageManager()->CompositeUntil(
                 img.mTimeStamp + TimeDuration::FromMilliseconds(BIAS_TIME_MS));
@@ -99,9 +124,129 @@ void WebRenderImageHost::UseTextureHost(
   }
 }
 
-void WebRenderImageHost::UseComponentAlphaTextures(
-    TextureHost* aTextureOnBlack, TextureHost* aTextureOnWhite) {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
+void WebRenderImageHost::PushPendingRemoteTexture(
+    const RemoteTextureId aTextureId, const RemoteTextureOwnerId aOwnerId,
+    const base::ProcessId aForPid, const gfx::IntSize aSize,
+    const TextureFlags aFlags) {
+  // Ensure aOwnerId is the same as RemoteTextureOwnerId of pending
+  // RemoteTextures.
+  if (!mPendingRemoteTextureWrappers.empty()) {
+    auto* wrapper =
+        mPendingRemoteTextureWrappers.front()->AsRemoteTextureHostWrapper();
+    MOZ_ASSERT(wrapper);
+    if (wrapper->mOwnerId != aOwnerId || wrapper->mForPid != aForPid) {
+      // Clear when RemoteTextureOwner is different.
+      mPendingRemoteTextureWrappers.clear();
+      mWaitingReadyCallback = false;
+      mWaitForRemoteTextureOwner = true;
+    }
+  }
+
+  // Check if waiting for remote texture owner is allowed.
+  if (!(aFlags & TextureFlags::WAIT_FOR_REMOTE_TEXTURE_OWNER)) {
+    mWaitForRemoteTextureOwner = false;
+  }
+
+  RefPtr<TextureHost> texture =
+      RemoteTextureMap::Get()->GetOrCreateRemoteTextureHostWrapper(
+          aTextureId, aOwnerId, aForPid, aSize, aFlags);
+  MOZ_ASSERT(texture);
+  mPendingRemoteTextureWrappers.push_back(
+      CompositableTextureHostRef(texture.get()));
+}
+
+void WebRenderImageHost::UseRemoteTexture() {
+  if (mPendingRemoteTextureWrappers.empty()) {
+    return;
+  }
+
+  const bool useReadyCallback = bool(GetAsyncRef());
+  CompositableTextureHostRef texture;
+
+  if (useReadyCallback) {
+    if (mWaitingReadyCallback) {
+      return;
+    }
+    MOZ_ASSERT(!mWaitingReadyCallback);
+
+    auto readyCallback = [self = RefPtr<WebRenderImageHost>(this)](
+                             const RemoteTextureInfo aInfo) {
+      RefPtr<nsIRunnable> runnable = NS_NewRunnableFunction(
+          "WebRenderImageHost::UseRemoteTexture",
+          [self = std::move(self), aInfo]() {
+            MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+
+            if (self->mPendingRemoteTextureWrappers.empty()) {
+              return;
+            }
+
+            auto* wrapper = self->mPendingRemoteTextureWrappers.front()
+                                ->AsRemoteTextureHostWrapper();
+            MOZ_ASSERT(wrapper);
+            if (wrapper->mOwnerId != aInfo.mOwnerId ||
+                wrapper->mForPid != aInfo.mForPid) {
+              // obsoleted callback
+              return;
+            }
+
+            self->mWaitingReadyCallback = false;
+            self->UseRemoteTexture();
+          });
+
+      CompositorThread()->Dispatch(runnable.forget());
+    };
+
+    // Check which of the pending remote textures is the most recent and ready.
+    while (!mPendingRemoteTextureWrappers.empty()) {
+      auto* wrapper =
+          mPendingRemoteTextureWrappers.front()->AsRemoteTextureHostWrapper();
+
+      if (mWaitForRemoteTextureOwner) {
+        // XXX remove sync wait
+        RemoteTextureMap::Get()->WaitForRemoteTextureOwner(wrapper);
+      }
+      mWaitingReadyCallback = !RemoteTextureMap::Get()->CheckRemoteTextureReady(
+          wrapper->GetRemoteTextureInfo(), readyCallback);
+      if (mWaitingReadyCallback) {
+        break;
+      }
+      RemoteTextureMap::Get()->GetRemoteTexture(wrapper);
+      texture = mPendingRemoteTextureWrappers.front();
+      mPendingRemoteTextureWrappers.pop_front();
+    }
+  } else {
+    texture = mPendingRemoteTextureWrappers.front();
+    auto* wrapper = texture->AsRemoteTextureHostWrapper();
+    mPendingRemoteTextureWrappers.pop_front();
+    MOZ_ASSERT(mPendingRemoteTextureWrappers.empty());
+
+    if (mWaitForRemoteTextureOwner) {
+      if (StaticPrefs::gfx_remote_texture_wait_owner_at_image_host()) {
+        RemoteTextureMap::Get()->WaitForRemoteTextureOwner(wrapper);
+      } else {
+        wrapper->EnableWaitForRemoteTextureOwner(true);
+      }
+    }
+    mWaitForRemoteTextureOwner = false;
+  }
+
+  if (!texture ||
+      (GetAsyncRef() &&
+       !texture->AsRemoteTextureHostWrapper()->IsReadyForRendering())) {
+    return;
+  }
+
+  SetCurrentTextureHost(texture);
+
+  if (GetAsyncRef()) {
+    for (const auto& it : mWrBridges) {
+      RefPtr<WebRenderBridgeParent> wrBridge = it.second->WrBridge();
+      if (wrBridge && wrBridge->CompositorScheduler()) {
+        wrBridge->CompositorScheduler()->ScheduleComposition(
+            wr::RenderReasons::ASYNC_IMAGE);
+      }
+    }
+  }
 }
 
 void WebRenderImageHost::CleanupResources() {
@@ -124,13 +269,33 @@ TimeStamp WebRenderImageHost::GetCompositionTime() const {
   return time;
 }
 
-TextureHost* WebRenderImageHost::GetAsTextureHost(IntRect* aPictureRect) {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-  return nullptr;
+CompositionOpportunityId WebRenderImageHost::GetCompositionOpportunityId()
+    const {
+  CompositionOpportunityId id;
+
+  MOZ_ASSERT(mCurrentAsyncImageManager);
+  if (mCurrentAsyncImageManager) {
+    id = mCurrentAsyncImageManager->GetCompositionOpportunityId();
+  }
+  return id;
+}
+
+void WebRenderImageHost::AppendImageCompositeNotification(
+    const ImageCompositeNotificationInfo& aInfo) const {
+  if (mCurrentAsyncImageManager) {
+    mCurrentAsyncImageManager->AppendImageCompositeNotification(aInfo);
+  }
 }
 
 TextureHost* WebRenderImageHost::GetAsTextureHostForComposite(
     AsyncImagePipelineManager* aAsyncImageManager) {
+  MOZ_ASSERT(aAsyncImageManager);
+
+  if (mCurrentTextureHost &&
+      mCurrentTextureHost->AsRemoteTextureHostWrapper()) {
+    return mCurrentTextureHost;
+  }
+
   mCurrentAsyncImageManager = aAsyncImageManager;
   const auto onExit =
       mozilla::MakeScopeExit([&]() { mCurrentAsyncImageManager = nullptr; });
@@ -149,22 +314,45 @@ TextureHost* WebRenderImageHost::GetAsTextureHostForComposite(
 
   const TimedImage* img = GetImage(imageIndex);
 
-  if (mLastFrameID != img->mFrameID || mLastProducerID != img->mProducerID) {
-    if (mAsyncRef) {
-      ImageCompositeNotificationInfo info;
-      info.mImageBridgeProcessId = mAsyncRef.mProcessId;
-      info.mNotification = ImageCompositeNotification(
-          mAsyncRef.mHandle, img->mTimeStamp,
-          mCurrentAsyncImageManager->GetCompositionTime(), img->mFrameID,
-          img->mProducerID);
-      mCurrentAsyncImageManager->AppendImageCompositeNotification(info);
-    }
-    mLastFrameID = img->mFrameID;
-    mLastProducerID = img->mProducerID;
-  }
-  SetCurrentTextureHost(img->mTextureHost);
+  RefPtr<TextureHost> texture = img->mTextureHost.get();
+#if XP_WIN
+  // Convert YUV BufferTextureHost to TextureHostWrapperD3D11 if possible
+  if (texture->AsBufferTextureHost()) {
+    auto identifier = aAsyncImageManager->GetTextureFactoryIdentifier();
+    const bool tryConvertToNV12 =
+        StaticPrefs::gfx_video_convert_yuv_to_nv12_image_host_win() &&
+        identifier.mSupportsD3D11NV12 &&
+        KnowsCompositor::SupportsD3D11(identifier) &&
+        texture->GetFormat() == gfx::SurfaceFormat::YUV;
+    if (tryConvertToNV12) {
+      PROFILER_MARKER_TEXT("WebRenderImageHost", GRAPHICS, {},
+                           "Try ConvertToNV12"_ns);
 
-  UpdateBias(imageIndex);
+      if (!mTextureAllocator) {
+        mTextureAllocator = new TextureWrapperD3D11Allocator();
+      }
+      RefPtr<TextureHost> textureWrapper =
+          TextureHostWrapperD3D11::CreateFromBufferTexture(mTextureAllocator,
+                                                           texture);
+      if (textureWrapper) {
+        texture = textureWrapper;
+      }
+    } else if (profiler_thread_is_being_profiled_for_markers() &&
+               StaticPrefs::gfx_video_convert_yuv_to_nv12_image_host_win() &&
+               texture->GetFormat() == gfx::SurfaceFormat::YUV) {
+      nsPrintfCString str("No ConvertToNV12 D3D11 %d NV12 %d",
+                          KnowsCompositor::SupportsD3D11(identifier),
+                          identifier.mSupportsD3D11NV12);
+      PROFILER_MARKER_TEXT("WebRenderImageHost", GRAPHICS, {}, str);
+    }
+  }
+#endif
+  SetCurrentTextureHost(texture);
+
+  if (mCurrentAsyncImageManager->GetCompositionTime()) {
+    // We are in a composition. Send ImageCompositeNotifications.
+    OnFinishRendering(imageIndex, img, mAsyncRef.mProcessId, mAsyncRef.mHandle);
+  }
 
   return mCurrentTextureHost;
 }
@@ -174,41 +362,6 @@ void WebRenderImageHost::SetCurrentTextureHost(TextureHost* aTexture) {
     return;
   }
   mCurrentTextureHost = aTexture;
-}
-
-void WebRenderImageHost::Attach(Layer* aLayer, TextureSourceProvider* aProvider,
-                                AttachFlags aFlags) {}
-
-void WebRenderImageHost::Composite(
-    Compositor* aCompositor, LayerComposite* aLayer, EffectChain& aEffectChain,
-    float aOpacity, const gfx::Matrix4x4& aTransform,
-    const gfx::SamplingFilter aSamplingFilter, const gfx::IntRect& aClipRect,
-    const nsIntRegion* aVisibleRegion, const Maybe<gfx::Polygon>& aGeometry) {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-}
-
-void WebRenderImageHost::SetTextureSourceProvider(
-    TextureSourceProvider* aProvider) {
-  if (mTextureSourceProvider != aProvider) {
-    for (const auto& img : Images()) {
-      img.mTextureHost->SetTextureSourceProvider(aProvider);
-    }
-  }
-  CompositableHost::SetTextureSourceProvider(aProvider);
-}
-
-void WebRenderImageHost::PrintInfo(std::stringstream& aStream,
-                                   const char* aPrefix) {
-  aStream << aPrefix;
-  aStream << nsPrintfCString("WebRenderImageHost (0x%p)", this).get();
-
-  nsAutoCString pfx(aPrefix);
-  pfx += "  ";
-  for (const auto& img : Images()) {
-    aStream << "\n";
-    img.mTextureHost->PrintInfo(aStream, pfx.get());
-    AppendToString(aStream, img.mPictureRect, " [picture-rect=", "]");
-  }
 }
 
 void WebRenderImageHost::Dump(std::stringstream& aStream, const char* aPrefix,
@@ -221,28 +374,6 @@ void WebRenderImageHost::Dump(std::stringstream& aStream, const char* aPrefix,
   }
 }
 
-already_AddRefed<gfx::DataSourceSurface> WebRenderImageHost::GetAsSurface() {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-  return nullptr;
-}
-
-bool WebRenderImageHost::Lock() {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-  return false;
-}
-
-void WebRenderImageHost::Unlock() {
-  MOZ_ASSERT_UNREACHABLE("unexpected to be called");
-}
-
-IntSize WebRenderImageHost::GetImageSize() {
-  const TimedImage* img = ChooseImage();
-  if (img) {
-    return IntSize(img->mPictureRect.Width(), img->mPictureRect.Height());
-  }
-  return IntSize();
-}
-
 void WebRenderImageHost::SetWrBridge(const wr::PipelineId& aPipelineId,
                                      WebRenderBridgeParent* aWrBridge) {
   MOZ_ASSERT(aWrBridge);
@@ -251,7 +382,9 @@ void WebRenderImageHost::SetWrBridge(const wr::PipelineId& aPipelineId,
   const auto it = mWrBridges.find(wr::AsUint64(aPipelineId));
   MOZ_ASSERT(it == mWrBridges.end());
 #endif
-  mWrBridges.emplace(wr::AsUint64(aPipelineId), aWrBridge);
+  RefPtr<WebRenderBridgeParentRef> ref =
+      aWrBridge->GetWebRenderBridgeParentRef();
+  mWrBridges.emplace(wr::AsUint64(aPipelineId), ref);
 }
 
 void WebRenderImageHost::ClearWrBridge(const wr::PipelineId& aPipelineId,

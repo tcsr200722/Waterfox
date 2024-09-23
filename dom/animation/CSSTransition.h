@@ -7,7 +7,9 @@
 #ifndef mozilla_dom_CSSTransition_h
 #define mozilla_dom_CSSTransition_h
 
+#include "mozilla/ComputedTiming.h"
 #include "mozilla/dom/Animation.h"
+#include "mozilla/AnimatedPropertyID.h"
 #include "mozilla/StyleAnimationValue.h"
 #include "AnimationCommon.h"
 
@@ -18,11 +20,12 @@ namespace dom {
 
 class CSSTransition final : public Animation {
  public:
-  explicit CSSTransition(nsIGlobalObject* aGlobal)
-      : dom::Animation(aGlobal),
+  explicit CSSTransition(nsIGlobalObject* aGlobal,
+                         const AnimatedPropertyID& aProperty)
+      : Animation(aGlobal),
         mPreviousTransitionPhase(TransitionPhase::Idle),
         mNeedsNewAnimationIndexWhenRun(false),
-        mTransitionProperty(eCSSProperty_UNKNOWN) {}
+        mTransitionProperty(aProperty) {}
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -67,11 +70,11 @@ class CSSTransition final : public Animation {
     mOwningElement = OwningElementRef();
   }
 
-  void SetEffectFromStyle(AnimationEffect* aEffect);
+  void SetEffectFromStyle(KeyframeEffect*);
 
-  void Tick() override;
+  void Tick(TickState&) override;
 
-  nsCSSPropertyID TransitionProperty() const;
+  const AnimatedPropertyID& TransitionProperty() const;
   AnimationValue ToValue() const;
 
   bool HasLowerCompositeOrderThan(const CSSTransition& aOther) const;
@@ -129,7 +132,7 @@ class CSSTransition final : public Animation {
     TimeDuration mStartTime;
     double mPlaybackRate;
     TimingParams mTiming;
-    Maybe<ComputedTimingFunction> mTimingFunction;
+    Maybe<StyleComputedTimingFunction> mTimingFunction;
     AnimationValue mFromValue, mToValue;
   };
   void SetReplacedTransition(
@@ -196,7 +199,7 @@ class CSSTransition final : public Animation {
   // information in order to determine if there is an existing transition
   // for a given style change. We can't store that information on the
   // effect however since it can be replaced using the Web Animations API.
-  nsCSSPropertyID mTransitionProperty;
+  AnimatedPropertyID mTransitionProperty;
   AnimationValue mTransitionToValue;
 
   // This is the start value to be used for a check for whether a
@@ -223,22 +226,6 @@ class CSSTransition final : public Animation {
 };
 
 }  // namespace dom
-
-template <>
-struct AnimationTypeTraits<dom::CSSTransition> {
-  static nsAtom* ElementPropertyAtom() {
-    return nsGkAtoms::transitionsProperty;
-  }
-  static nsAtom* BeforePropertyAtom() {
-    return nsGkAtoms::transitionsOfBeforeProperty;
-  }
-  static nsAtom* AfterPropertyAtom() {
-    return nsGkAtoms::transitionsOfAfterProperty;
-  }
-  static nsAtom* MarkerPropertyAtom() {
-    return nsGkAtoms::transitionsOfMarkerProperty;
-  }
-};
 
 }  // namespace mozilla
 

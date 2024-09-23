@@ -9,16 +9,22 @@
 
 #include "base/thread.h"
 #include "chrome/common/ipc_channel.h"
+#include "mojo/core/ports/port_ref.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/ipc/ScopedPort.h"
 
 class ResourceDispatcher;
 
 // Child processes's background thread should derive from this class.
-class ChildThread : public IPC::Channel::Listener, public base::Thread {
+class ChildThread : public base::Thread {
  public:
   // Creates the thread.
-  explicit ChildThread(Thread::Options options);
+  ChildThread(Thread::Options options, base::ProcessId parent_pid);
   virtual ~ChildThread();
+
+  mozilla::ipc::ScopedPort TakeInitialPort() {
+    return std::move(initial_port_);
+  }
 
  protected:
   friend class ChildProcess;
@@ -30,24 +36,19 @@ class ChildThread : public IPC::Channel::Listener, public base::Thread {
   // Returns the one child thread.
   static ChildThread* current();
 
-  mozilla::UniquePtr<IPC::Channel> TakeChannel() { return std::move(channel_); }
-
   // Thread implementation.
   virtual void Init() override;
   virtual void CleanUp() override;
 
  private:
-  // IPC::Channel::Listener implementation:
-  virtual void OnMessageReceived(IPC::Message&& msg) override;
-  virtual void OnChannelError() override;
-
   // The message loop used to run tasks on the thread that started this thread.
   MessageLoop* owner_loop_;
 
-  std::wstring channel_name_;
-  mozilla::UniquePtr<IPC::Channel> channel_;
+  mozilla::ipc::ScopedPort initial_port_;
 
   Thread::Options options_;
+
+  base::ProcessId parent_pid_;
 
   DISALLOW_EVIL_CONSTRUCTORS(ChildThread);
 };

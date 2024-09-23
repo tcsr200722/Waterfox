@@ -6,9 +6,12 @@
 
 "use strict";
 
+// The test times out on slow platforms (e.g. linux ccov)
+requestLongerTimeout(2);
+
 // We create a very big page here in order to make the :screenshot command fail on
 // purpose.
-const TEST_URI = `data:text/html;charset=utf8,
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html>
    <style>
      body { margin:0; }
      .big { width:20000px; height:20000px; }
@@ -17,7 +20,7 @@ const TEST_URI = `data:text/html;charset=utf8,
    <div class="big"></div>
    <div class="small"></div>`;
 
-add_task(async function() {
+add_task(async function () {
   await addTab(TEST_URI);
 
   const hud = await openConsole();
@@ -25,19 +28,21 @@ add_task(async function() {
 
   await testTruncationWarning(hud);
   await testDPRWarning(hud);
-  await testErrorMessage(hud);
 });
 
 async function testTruncationWarning(hud) {
   info("Check that large screenshots get cut off if necessary");
 
-  let onMessages = waitForMessages({
+  let onMessages = waitForMessagesByType({
     hud,
     messages: [
-      { text: "Screenshot copied to clipboard." },
       {
-        text:
-          "The image was cut off to 10000×10000 as the resulting image was too large",
+        text: "Screenshot copied to clipboard.",
+        typeSelector: ".console-api",
+      },
+      {
+        text: "The image was cut off to 10000×10000 as the resulting image was too large",
+        typeSelector: ".console-api",
       },
     ],
   });
@@ -51,10 +56,11 @@ async function testTruncationWarning(hud) {
   is(width, 10000, "The resulting image is 10000px wide");
   is(height, 10000, "The resulting image is 10000px high");
 
-  onMessages = waitForMessages({
+  onMessages = waitForMessageByType(
     hud,
-    messages: [{ text: "Screenshot copied to clipboard." }],
-  });
+    "Screenshot copied to clipboard.",
+    ".console-api"
+  );
   execute(hud, ":screenshot --clipboard --selector .small --dpr 1");
   await onMessages;
 
@@ -64,51 +70,29 @@ async function testTruncationWarning(hud) {
 }
 
 async function testDPRWarning(hud) {
-  info("Check that fullpage screenshots are taken at dpr 1");
+  info("Check that DPR is reduced to 1 after failure");
 
-  // This is only relevant on machines that actually have a dpr that's higher than 1. If
-  // the current test machine already has a dpr of 1, then the command won't change it and
-  // no warning will be displayed in the console.
-  const machineDPR = await getMachineDPR();
-  if (machineDPR <= 1) {
-    info("This machine already has a dpr of 1, no need to test this");
-    return;
-  }
-
-  const onMessages = waitForMessages({
+  const onMessages = waitForMessagesByType({
     hud,
     messages: [
-      { text: "Screenshot copied to clipboard." },
       {
-        text:
-          "The image was cut off to 10000×10000 as the resulting image was too large",
+        text: "Screenshot copied to clipboard.",
+        typeSelector: ".console-api",
       },
       {
-        text:
-          "The device pixel ratio was reduced to 1 as the resulting image was too large",
+        text: "The image was cut off to 10000×10000 as the resulting image was too large",
+        typeSelector: ".console-api",
+      },
+      {
+        text: "The device pixel ratio was reduced to 1 as the resulting image was too large",
+        typeSelector: ".console-api",
       },
     ],
   });
-  execute(hud, ":screenshot --clipboard --fullpage");
+  execute(hud, ":screenshot --clipboard --fullpage --dpr 1000");
   await onMessages;
 
-  ok(true, "Expected messages were displayed");
-}
-
-async function testErrorMessage(hud) {
-  info("Check that when a screenshot fails, an error message is displayed");
-
-  await executeAndWaitForMessage(
-    hud,
-    ":screenshot --clipboard --dpr 1000",
-    "Error creating the image. The resulting image was probably too large."
-  );
-}
-
-function getMachineDPR() {
-  return SpecialPowers.spawn(
-    gBrowser.selectedBrowser,
-    [],
-    () => content.devicePixelRatio
-  );
+  const { width, height } = await getImageSizeFromClipboard();
+  is(width, 10000, "The resulting image is 10000px wide");
+  is(height, 10000, "The resulting image is 10000px high");
 }

@@ -8,46 +8,84 @@
 
 #include "mozilla/ReflowOutput.h"
 #include "mozilla/ReflowInput.h"
-
-void nsOverflowAreas::UnionWith(const nsOverflowAreas& aOther) {
-  // FIXME: We should probably change scrollable overflow to use
-  // UnionRectIncludeEmpty (but leave visual overflow using UnionRect).
-  NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
-    mRects[otype].UnionRect(mRects[otype], aOther.mRects[otype]);
-  }
-}
-
-void nsOverflowAreas::UnionAllWith(const nsRect& aRect) {
-  // FIXME: We should probably change scrollable overflow to use
-  // UnionRectIncludeEmpty (but leave visual overflow using UnionRect).
-  NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
-    mRects[otype].UnionRect(mRects[otype], aRect);
-  }
-}
-
-void nsOverflowAreas::SetAllTo(const nsRect& aRect) {
-  NS_FOR_FRAME_OVERFLOW_TYPES(otype) { mRects[otype] = aRect; }
-}
+#include "mozilla/WritingModes.h"
 
 namespace mozilla {
+
+static bool IsValidOverflowRect(const nsRect& aRect) {
+  // `IsEmpty` in the context of `nsRect` means "width OR height is zero."
+  // However, in the context of overflow, the rect having one axis as zero is
+  // NOT considered empty.
+  if (MOZ_LIKELY(!aRect.IsEmpty())) {
+    return true;
+  }
+
+  // Be defensive and consider rects with any negative size as invalid.
+  return !aRect.IsEqualEdges(nsRect()) && aRect.Width() >= 0 &&
+         aRect.Height() >= 0;
+}
+
+/* static */
+nsRect OverflowAreas::GetOverflowClipRect(const nsRect& aRectToClip,
+                                          const nsRect& aBounds,
+                                          PhysicalAxes aClipAxes,
+                                          const nsSize& aOverflowMargin) {
+  auto inflatedBounds = aBounds;
+  inflatedBounds.Inflate(aOverflowMargin);
+  auto clip = aRectToClip;
+  if (aClipAxes.contains(PhysicalAxis::Vertical)) {
+    clip.y = inflatedBounds.y;
+    clip.height = inflatedBounds.height;
+  }
+  if (aClipAxes.contains(PhysicalAxis::Horizontal)) {
+    clip.x = inflatedBounds.x;
+    clip.width = inflatedBounds.width;
+  }
+  return clip;
+}
+
+/* static */
+void OverflowAreas::ApplyOverflowClippingOnRect(nsRect& aOverflowRect,
+                                                const nsRect& aBounds,
+                                                PhysicalAxes aClipAxes,
+                                                const nsSize& aOverflowMargin) {
+  aOverflowRect = aOverflowRect.Intersect(
+      GetOverflowClipRect(aOverflowRect, aBounds, aClipAxes, aOverflowMargin));
+}
+
+void OverflowAreas::UnionWith(const OverflowAreas& aOther) {
+  if (IsValidOverflowRect(aOther.InkOverflow())) {
+    InkOverflow().UnionRect(InkOverflow(), aOther.InkOverflow());
+  }
+  if (IsValidOverflowRect(aOther.ScrollableOverflow())) {
+    ScrollableOverflow().UnionRect(ScrollableOverflow(),
+                                   aOther.ScrollableOverflow());
+  }
+}
+
+void OverflowAreas::UnionAllWith(const nsRect& aRect) {
+  if (!IsValidOverflowRect(aRect)) {
+    // Same as `UnionWith()` - avoid losing information.
+    return;
+  }
+  InkOverflow().UnionRect(InkOverflow(), aRect);
+  ScrollableOverflow().UnionRect(ScrollableOverflow(), aRect);
+}
+
+void OverflowAreas::SetAllTo(const nsRect& aRect) {
+  InkOverflow() = aRect;
+  ScrollableOverflow() = aRect;
+}
 
 ReflowOutput::ReflowOutput(const ReflowInput& aReflowInput)
     : ReflowOutput(aReflowInput.GetWritingMode()) {}
 
 void ReflowOutput::SetOverflowAreasToDesiredBounds() {
-  NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
-    mOverflowAreas.Overflow(otype).SetRect(0, 0, Width(), Height());
-  }
+  mOverflowAreas.SetAllTo(nsRect(0, 0, Width(), Height()));
 }
 
 void ReflowOutput::UnionOverflowAreasWithDesiredBounds() {
-  // FIXME: We should probably change scrollable overflow to use
-  // UnionRectIncludeEmpty (but leave visual overflow using UnionRect).
-  nsRect rect(0, 0, Width(), Height());
-  NS_FOR_FRAME_OVERFLOW_TYPES(otype) {
-    nsRect& o = mOverflowAreas.Overflow(otype);
-    o.UnionRect(o, rect);
-  }
+  mOverflowAreas.UnionAllWith(nsRect(0, 0, Width(), Height()));
 }
 
 }  // namespace mozilla

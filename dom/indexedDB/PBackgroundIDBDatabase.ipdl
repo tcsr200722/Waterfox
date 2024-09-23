@@ -3,52 +3,37 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 include protocol PBackgroundIDBDatabaseFile;
-include protocol PBackgroundIDBDatabaseRequest;
 include protocol PBackgroundIDBFactory;
 include protocol PBackgroundIDBTransaction;
 include protocol PBackgroundIDBVersionChangeTransaction;
-include protocol PBackgroundMutableFile;
-include protocol PChildToParentStream; // FIXME: bug 792908
-include protocol PFileDescriptorSet; // FIXME: bug 792908
-include protocol PIPCBlobInputStream; // FIXME: bug 792908
-include protocol PParentToChildStream; // FIXME: bug 792908
 
 include IPCBlob;
 include InputStreamParams;
 include PBackgroundIDBSharedTypes;
 
 include "mozilla/dom/indexedDB/SerializationHelpers.h";
+include "mozilla/dom/indexedDB/ActorsChild.h";
 
-using struct mozilla::null_t
-  from "ipc/IPCMessageUtils.h";
+using struct mozilla::null_t from "mozilla/ipc/IPCCore.h";
 
 using mozilla::dom::IDBTransaction::Mode
+  from "mozilla/dom/IDBTransaction.h";
+
+using mozilla::dom::IDBTransaction::Durability
   from "mozilla/dom/IDBTransaction.h";
 
 namespace mozilla {
 namespace dom {
 namespace indexedDB {
 
-struct CreateFileParams
-{
-  nsString name;
-  nsString type;
-};
-
-union DatabaseRequestParams
-{
-  CreateFileParams;
-};
-
+[ChildImpl="indexedDB::BackgroundDatabaseChild", ParentImpl=virtual]
 sync protocol PBackgroundIDBDatabase
 {
   manager PBackgroundIDBFactory;
 
   manages PBackgroundIDBDatabaseFile;
-  manages PBackgroundIDBDatabaseRequest;
   manages PBackgroundIDBTransaction;
   manages PBackgroundIDBVersionChangeTransaction;
-  manages PBackgroundMutableFile;
 
 parent:
   async DeleteMe();
@@ -59,9 +44,7 @@ parent:
 
   async PBackgroundIDBDatabaseFile(IPCBlob blob);
 
-  async PBackgroundIDBDatabaseRequest(DatabaseRequestParams params);
-
-  async PBackgroundIDBTransaction(nsString[] objectStoreNames, Mode mode);
+  async PBackgroundIDBTransaction(nsString[] objectStoreNames, Mode mode, Durability durability);
 
 child:
   async __delete__();
@@ -76,8 +59,6 @@ child:
                                                uint64_t requestedVersion,
                                                int64_t nextObjectStoreId,
                                                int64_t nextIndexId);
-
-  async PBackgroundMutableFile(nsString name, nsString type);
 };
 
 } // namespace indexedDB

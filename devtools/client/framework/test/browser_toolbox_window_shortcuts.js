@@ -6,7 +6,7 @@
 var Startup = Cc["@mozilla.org/devtools/startup-clh;1"].getService(
   Ci.nsISupports
 ).wrappedJSObject;
-var { Toolbox } = require("devtools/client/framework/toolbox");
+var { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 
 var toolbox,
   toolIDs,
@@ -15,7 +15,7 @@ var toolbox,
   modifiedPrefs = [];
 
 async function test() {
-  addTab("about:blank").then(async function() {
+  addTab("about:blank").then(async function () {
     toolIDs = [];
     for (const [id, definition] of gDevTools._tools) {
       const shortcut = Startup.KeyShortcuts.filter(s => s.toolId == id)[0];
@@ -35,10 +35,13 @@ async function test() {
         }
       }
     }
-    const target = await TargetFactory.forTab(gBrowser.selectedTab);
+    const tab = gBrowser.selectedTab;
     idIndex = 0;
     gDevTools
-      .showToolbox(target, toolIDs[0], Toolbox.HostType.WINDOW)
+      .showToolboxForTab(tab, {
+        toolId: toolIDs[0],
+        hostType: Toolbox.HostType.WINDOW,
+      })
       .then(testShortcuts);
   });
 }
@@ -89,7 +92,7 @@ function selectCB(id) {
 }
 
 function tidyUp() {
-  toolbox.destroy().then(function() {
+  toolbox.destroy().then(function () {
     gBrowser.removeCurrentTab();
 
     for (const pref of modifiedPrefs) {

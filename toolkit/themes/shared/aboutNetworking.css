@@ -19,8 +19,10 @@ body {
 }
 
 #refreshDiv {
+  display: flex;
+  align-items: center;
   justify-content: flex-end;
-  margin-bottom: 0.5em;
+  margin-bottom: var(--space-small);
 }
 
 #refreshButton {
@@ -74,5 +76,9 @@ th {
 
 td {
   padding-bottom: 0.25em;
-  border-bottom: 1px solid var(--in-content-box-border-color);
+  border-bottom: 1px solid var(--in-content-border-color);
+}
+
+#clearHTTPCache {
+  margin-bottom: var(--space-xlarge);
 }

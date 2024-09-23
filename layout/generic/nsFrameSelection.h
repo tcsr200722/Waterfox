@@ -7,9 +7,15 @@
 #ifndef nsFrameSelection_h___
 #define nsFrameSelection_h___
 
+#include <stdint.h>
+#include "mozilla/intl/BidiEmbeddingLevel.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/CaretAssociationHint.h"
+#include "mozilla/CompactPair.h"
+#include "mozilla/EnumSet.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/dom/Highlight.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/Result.h"
 #include "mozilla/TextRange.h"
@@ -20,12 +26,11 @@
 #include "nsISelectionListener.h"
 #include "nsITableCellLayout.h"
 #include "WordMovementType.h"
-#include "CaretAssociationHint.h"
 #include "nsBidiPresUtils.h"
 
 class nsRange;
 
-#define BIDI_LEVEL_UNDEFINED 0x80
+#define BIDI_LEVEL_UNDEFINED mozilla::intl::BidiEmbeddingLevel(0x80)
 
 //----------------------------------------------------------------------
 
@@ -41,6 +46,7 @@ struct SelectionDetails {
   int32_t mStart;
   int32_t mEnd;
   mozilla::SelectionType mSelectionType;
+  mozilla::dom::HighlightSelectionData mHighlightData;
   mozilla::TextRangeStyle mTextRangeStyle;
   mozilla::UniquePtr<SelectionDetails> mNext;
 };
@@ -58,25 +64,67 @@ struct SelectionCustomColors {
 
 namespace mozilla {
 class PresShell;
-}  // namespace mozilla
 
 /** PeekOffsetStruct is used to group various arguments (both input and output)
- *  that are passed to nsFrame::PeekOffset(). See below for the description of
+ *  that are passed to nsIFrame::PeekOffset(). See below for the description of
  *  individual arguments.
  */
-struct MOZ_STACK_CLASS nsPeekOffsetStruct {
-  enum class ForceEditableRegion {
-    No,
-    Yes,
-  };
+enum class PeekOffsetOption : uint16_t {
+  // Whether to allow jumping across line boundaries.
+  //
+  // Used with: eSelectCharacter, eSelectWord.
+  JumpLines,
 
-  nsPeekOffsetStruct(
-      nsSelectionAmount aAmount, nsDirection aDirection, int32_t aStartOffset,
-      nsPoint aDesiredCaretPos, bool aJumpLines, bool aScrollViewStop,
-      bool aIsKeyboardSelect, bool aVisual, bool aExtend,
-      ForceEditableRegion = ForceEditableRegion::No,
-      mozilla::EWordMovementType aWordMovementType = mozilla::eDefaultBehavior,
-      bool aTrimSpaces = true);
+  // Whether we should preserve or trim spaces at begin/end of content
+  PreserveSpaces,
+
+  // Whether to stop when reaching a scroll view boundary.
+  //
+  // Used with: eSelectCharacter, eSelectWord, eSelectLine.
+  StopAtScroller,
+
+  // Whether to stop when reaching a placeholder frame.
+  StopAtPlaceholder,
+
+  // Whether the peeking is done in response to a keyboard action.
+  //
+  // Used with: eSelectWord.
+  IsKeyboardSelect,
+
+  // Whether bidi caret behavior is visual (set) or logical (unset).
+  //
+  // Used with: eSelectCharacter, eSelectWord, eSelectBeginLine, eSelectEndLine.
+  Visual,
+
+  // Whether the selection is being extended or moved.
+  Extend,
+
+  // If true, the offset has to end up in an editable node, otherwise we'll keep
+  // searching.
+  ForceEditableRegion,
+};
+
+using PeekOffsetOptions = EnumSet<PeekOffsetOption>;
+
+struct MOZ_STACK_CLASS PeekOffsetStruct {
+  PeekOffsetStruct(nsSelectionAmount aAmount, nsDirection aDirection,
+                   int32_t aStartOffset, nsPoint aDesiredCaretPos,
+                   // Passing by value here is intentional because EnumSet
+                   // is optimized as uint*_t in opt builds.
+                   const PeekOffsetOptions aOptions,
+                   EWordMovementType aWordMovementType = eDefaultBehavior,
+                   const dom::Element* aAncestorLimiter = nullptr);
+
+  /**
+   * Return true if the ancestor limiter is not specified or if the content for
+   * aFrame is an inclusive descendant of mAncestorLimiter.
+   */
+  [[nodiscard]] bool FrameContentIsInAncestorLimiter(
+      const nsIFrame* aFrame) const {
+    return !mAncestorLimiter ||
+           (aFrame->GetContent() &&
+            aFrame->GetContent()->IsInclusiveDescendantOf(mAncestorLimiter));
+  }
 
   // Note: Most arguments (input and output) are only used with certain values
   // of mAmount. These values are indicated for each argument below.
@@ -114,39 +162,14 @@ struct MOZ_STACK_CLASS nsPeekOffsetStruct {
   const nsPoint mDesiredCaretPos;
 
   // An enum that determines whether to prefer the start or end of a word or to
-  // use the default beahvior, which is a combination of direction and the
+  // use the default behavior, which is a combination of direction and the
   // platform-based pref "layout.word_select.eat_space_to_next_word"
-  mozilla::EWordMovementType mWordMovementType;
+  EWordMovementType mWordMovementType;
 
-  // Whether to allow jumping across line boundaries.
-  //
-  // Used with: eSelectCharacter, eSelectWord.
-  const bool mJumpLines;
+  PeekOffsetOptions mOptions;
 
-  // mTrimSpaces: Whether we should trim spaces at begin/end of content
-  const bool mTrimSpaces;
-
-  // Whether to stop when reaching a scroll view boundary.
-  //
-  // Used with: eSelectCharacter, eSelectWord, eSelectLine.
-  const bool mScrollViewStop;
-
-  // Whether the peeking is done in response to a keyboard action.
-  //
-  // Used with: eSelectWord.
-  const bool mIsKeyboardSelect;
-
-  // Whether bidi caret behavior is visual (true) or logical (false).
-  //
-  // Used with: eSelectCharacter, eSelectWord, eSelectBeginLine, eSelectEndLine.
-  const bool mVisual;
-
-  // Whether the selection is being extended or moved.
-  const bool mExtend;
-
-  // If true, the offset has to end up in an editable node, otherwise we'll keep
-  // searching.
-  const bool mForceEditableRegion;
+  // The ancestor limiter element to peek offset.
+  const dom::Element* const mAncestorLimiter;
 
   /*** Output arguments ***/
 
@@ -167,12 +190,15 @@ struct MOZ_STACK_CLASS nsPeekOffsetStruct {
   // logically after the caret".
   //
   // Used with: eSelectLine, eSelectBeginLine, eSelectEndLine.
-  mozilla::CaretAssociationHint mAttach;
+  CaretAssociationHint mAttach;
 };
+
+}  // namespace mozilla
 
 struct nsPrevNextBidiLevels {
   void SetData(nsIFrame* aFrameBefore, nsIFrame* aFrameAfter,
-               nsBidiLevel aLevelBefore, nsBidiLevel aLevelAfter) {
+               mozilla::intl::BidiEmbeddingLevel aLevelBefore,
+               mozilla::intl::BidiEmbeddingLevel aLevelAfter) {
     mFrameBefore = aFrameBefore;
     mFrameAfter = aFrameAfter;
     mLevelBefore = aLevelBefore;
@@ -180,14 +206,16 @@ struct nsPrevNextBidiLevels {
   }
   nsIFrame* mFrameBefore;
   nsIFrame* mFrameAfter;
-  nsBidiLevel mLevelBefore;
-  nsBidiLevel mLevelAfter;
+  mozilla::intl::BidiEmbeddingLevel mLevelBefore;
+  mozilla::intl::BidiEmbeddingLevel mLevelAfter;
 };
 
 namespace mozilla {
 class SelectionChangeEventDispatcher;
 namespace dom {
+class Highlight;
 class Selection;
+enum class ClickSelectionType { NotApplicable, Double, Triple };
 }  // namespace dom
 
 /**
@@ -204,11 +232,10 @@ enum class TableSelectionMode : uint32_t {
 };
 
 }  // namespace mozilla
-class nsIScrollableFrame;
 
 class nsFrameSelection final {
  public:
-  typedef mozilla::CaretAssociationHint CaretAssociateHint;
+  using CaretAssociationHint = mozilla::CaretAssociationHint;
 
   /*interfaces for addref and release and queryinterface*/
 
@@ -239,11 +266,41 @@ class nsFrameSelection final {
    * @param aHint will tell the selection which direction geometrically to
    * actually show the caret on. 1 = end of this line 0 = beginning of this line
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult HandleClick(nsIContent* aNewFocus,
-                                                   uint32_t aContentOffset,
-                                                   uint32_t aContentEndOffset,
-                                                   FocusMode aFocusMode,
-                                                   CaretAssociateHint aHint);
+  MOZ_CAN_RUN_SCRIPT nsresult HandleClick(nsIContent* aNewFocus,
+                                          uint32_t aContentOffset,
+                                          uint32_t aContentEndOffset,
+                                          FocusMode aFocusMode,
+                                          CaretAssociationHint aHint);
+
+ public:
+  /**
+   * Sets the type of the selection based on whether a selection is created
+   * by doubleclick, long tapping a word or tripleclick.
+   *
+   * @param aClickSelectionType   ClickSelectionType::Double if the selection
+   *                              is created by doubleclick,
+   *                              ClickSelectionType::Triple if the selection
+   *                              is created by tripleclick.
+   */
+  void SetClickSelectionType(
+      mozilla::dom::ClickSelectionType aClickSelectionType) {
+    mClickSelectionType = aClickSelectionType;
+  }
+
+  /**
+   * Returns true if the selection was created by doubleclick or
+   * long tap over a word.
+   */
+  [[nodiscard]] bool IsDoubleClickSelection() const {
+    return mClickSelectionType == mozilla::dom::ClickSelectionType::Double;
+  }
+
+  /**
+   * Returns true if the selection was created by triple click
+   */
+  [[nodiscard]] bool IsTripleClickSelection() const {
+    return mClickSelectionType == mozilla::dom::ClickSelectionType::Triple;
+  }
 
   /**
    * HandleDrag extends the selection to contain the frame closest to aPoint.
@@ -256,9 +313,7 @@ class nsFrameSelection final {
    *
    * @param aPoint is relative to aFrame
    */
-  // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY void HandleDrag(nsIFrame* aFrame,
-                                              const nsPoint& aPoint);
+  MOZ_CAN_RUN_SCRIPT void HandleDrag(nsIFrame* aFrame, const nsPoint& aPoint);
 
   /**
    * HandleTableSelection will set selection to a table, cell, etc
@@ -372,7 +427,7 @@ class nsFrameSelection final {
    *
    * @param aState is the new state of drag
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
+  MOZ_CAN_RUN_SCRIPT
   void SetDragState(bool aState);
 
   /**
@@ -400,6 +455,31 @@ class nsFrameSelection final {
   mozilla::dom::Selection* GetSelection(
       mozilla::SelectionType aSelectionType) const;
 
+  /**
+   * @brief Adds a highlight selection for `aHighlight`.
+   */
+  MOZ_CAN_RUN_SCRIPT void AddHighlightSelection(
+      nsAtom* aHighlightName, mozilla::dom::Highlight& aHighlight);
+  /**
+   * @brief Removes the Highlight selection identified by `aHighlightName`.
+   */
+  MOZ_CAN_RUN_SCRIPT void RemoveHighlightSelection(nsAtom* aHighlightName);
+
+  /**
+   * @brief Adds a new range to the highlight selection.
+   *
+   * If there is no highlight selection for the given highlight yet, it is
+   * created using |AddHighlightSelection|.
+   */
+  MOZ_CAN_RUN_SCRIPT void AddHighlightSelectionRange(
+      nsAtom* aHighlightName, mozilla::dom::Highlight& aHighlight,
+      mozilla::dom::AbstractRange& aRange);
+
+  /**
+   * @brief Removes a range from a highlight selection.
+   */
+  MOZ_CAN_RUN_SCRIPT void RemoveHighlightSelectionRange(
+      nsAtom* aHighlightName, mozilla::dom::AbstractRange& aRange);
   /**
    * ScrollSelectionIntoView scrolls a region of the selection,
    * so that it is visible in the scrolled view.
@@ -431,18 +511,6 @@ class nsFrameSelection final {
   bool IsValidSelectionPoint(nsINode* aNode) const;
 
   /**
-   * Given a node and its child offset, return the nsIFrame and the offset into
-   * that frame.
-   *
-   * @param aNode input parameter for the node to look at
-   * @param aOffset offset into above node.
-   * @param aReturnOffset will contain offset into frame.
-   */
-  static nsIFrame* GetFrameForNodeOffset(nsIContent* aNode, int32_t aOffset,
-                                         CaretAssociateHint aHint,
-                                         int32_t* aReturnOffset);
-
-  /**
    * GetFrameToPageSelect() returns a frame which is ancestor limit of
    * per-page selection.  The frame may not be scrollable.  E.g.,
    * when selection ancestor limit is set to a frame of an editing host of
@@ -471,15 +539,16 @@ class nsFrameSelection final {
                                        nsIFrame* aFrame,
                                        SelectionIntoView aSelectionIntoView);
 
-  void SetHint(CaretAssociateHint aHintRight) { mCaret.mHint = aHintRight; }
-  CaretAssociateHint GetHint() const { return mCaret.mHint; }
+  void SetHint(CaretAssociationHint aHintRight) { mCaret.mHint = aHintRight; }
+  CaretAssociationHint GetHint() const { return mCaret.mHint; }
 
-  void SetCaretBidiLevelAndMaybeSchedulePaint(nsBidiLevel aLevel);
+  void SetCaretBidiLevelAndMaybeSchedulePaint(
+      mozilla::intl::BidiEmbeddingLevel aLevel);
 
   /**
    * GetCaretBidiLevel gets the caret bidi level.
    */
-  nsBidiLevel GetCaretBidiLevel() const;
+  mozilla::intl::BidiEmbeddingLevel GetCaretBidiLevel() const;
 
   /**
    * UndefineCaretBidiLevel sets the caret bidi level to "undefined".
@@ -609,12 +678,6 @@ class nsFrameSelection final {
                                                      eLogical);
   }
 
-  /**
-   * Select All will generally be called from the nsiselectioncontroller
-   * implementations. it will select the whole doc
-   */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult SelectAll();
-
   /** Sets/Gets The display selection enum.
    */
   void SetDisplaySelection(int16_t aState) { mDisplaySelection = aState; }
@@ -638,17 +701,17 @@ class nsFrameSelection final {
    * by the selection during MouseDown processing. It can be nullptr
    * if the data is no longer valid.
    */
-  bool HasDelayedCaretData() { return mDelayedMouseEvent.mIsValid; }
-  bool IsShiftDownInDelayedCaretData() {
+  bool HasDelayedCaretData() const { return mDelayedMouseEvent.mIsValid; }
+  bool IsShiftDownInDelayedCaretData() const {
     NS_ASSERTION(mDelayedMouseEvent.mIsValid, "No valid delayed caret data");
     return mDelayedMouseEvent.mIsShift;
   }
-  uint32_t GetClickCountInDelayedCaretData() {
+  uint32_t GetClickCountInDelayedCaretData() const {
     NS_ASSERTION(mDelayedMouseEvent.mIsValid, "No valid delayed caret data");
     return mDelayedMouseEvent.mClickCount;
   }
 
-  bool MouseDownRecorded() {
+  bool MouseDownRecorded() const {
     return !GetDragState() && HasDelayedCaretData() &&
            GetClickCountInDelayedCaretData() < 2;
   }
@@ -689,21 +752,6 @@ class nsFrameSelection final {
                                              bool aJumpLines) const;
 
   /**
-   * GetFrameFromLevel will scan in a given direction
-   * until it finds a frame with a Bidi level less than or equal to a given
-   * level. It will return the last frame before this.
-   *
-   * @param aPresContext is the context to use
-   * @param aFrameIn is the frame to start from
-   * @param aDirection is the direction to scan
-   * @param aBidiLevel is the level to search for
-   * @param aFrameOut will hold the frame returned
-   */
-  nsresult GetFrameFromLevel(nsIFrame* aFrameIn, nsDirection aDirection,
-                             nsBidiLevel aBidiLevel,
-                             nsIFrame** aFrameOut) const;
-
-  /**
    * MaintainSelection will track the normal selection as being "sticky".
    * Dragging or extending selection will never allow for a subset
    * (or the whole) of the maintained selection to become unselected.
@@ -714,10 +762,9 @@ class nsFrameSelection final {
    */
   nsresult MaintainSelection(nsSelectionAmount aAmount = eSelectNoAmount);
 
-  nsresult ConstrainFrameAndPointToAnchorSubtree(nsIFrame* aFrame,
-                                                 const nsPoint& aPoint,
-                                                 nsIFrame** aRetFrame,
-                                                 nsPoint& aRetPoint) const;
+  MOZ_CAN_RUN_SCRIPT nsresult ConstrainFrameAndPointToAnchorSubtree(
+      nsIFrame* aFrame, const nsPoint& aPoint, nsIFrame** aRetFrame,
+      nsPoint& aRetPoint) const;
 
   /**
    * @param aPresShell is the parameter to be used for most of the other calls
@@ -731,39 +778,75 @@ class nsFrameSelection final {
   nsFrameSelection(mozilla::PresShell* aPresShell, nsIContent* aLimiter,
                    bool aAccessibleCaretEnabled);
 
-  void StartBatchChanges();
-
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   /**
+   * @param aRequesterFuncName function name which wants to start the batch.
+   * This won't be stored nor exposed to selection listeners etc, used only for
+   * logging.
+   */
+  void StartBatchChanges(const char* aRequesterFuncName);
+
+  /**
+   * @param aRequesterFuncName function name which wants to end the batch.
+   * This won't be stored nor exposed to selection listeners etc, used only for
+   * logging.
    * @param aReasons potentially multiple of the reasons defined in
    * nsISelectionListener.idl
    */
-  void EndBatchChanges(int16_t aReasons = nsISelectionListener::NO_REASON);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void EndBatchChanges(
+      const char* aRequesterFuncName,
+      int16_t aReasons = nsISelectionListener::NO_REASON);
 
   mozilla::PresShell* GetPresShell() const { return mPresShell; }
 
   void DisconnectFromPresShell();
-  nsresult ClearNormalSelection();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult ClearNormalSelection();
 
   // Table selection support.
-  static nsITableCellLayout* GetCellLayout(nsIContent* aCellContent);
+  static nsITableCellLayout* GetCellLayout(const nsIContent* aCellContent);
 
  private:
   ~nsFrameSelection();
 
-  MOZ_CAN_RUN_SCRIPT
-  nsresult TakeFocus(nsIContent* aNewFocus, uint32_t aContentOffset,
-                     uint32_t aContentEndOffset, CaretAssociateHint aHint,
-                     FocusMode aFocusMode);
+  // TODO: in case an error is returned, it sometimes refers to a programming
+  // error, in other cases to runtime errors. This deserves to be cleaned up.
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult
+  TakeFocus(nsIContent& aNewFocus, uint32_t aContentOffset,
+            uint32_t aContentEndOffset, CaretAssociationHint aHint,
+            FocusMode aFocusMode);
 
+  /**
+   * After moving the caret, its Bidi level is set according to the following
+   * rules:
+   *
+   * After moving over a character with left/right arrow, set to the Bidi level
+   * of the last moved over character. After Home and End, set to the paragraph
+   * embedding level. After up/down arrow, PageUp/Down, set to the lower level
+   * of the 2 surrounding characters. After mouse click, set to the level of the
+   * current frame.
+   *
+   * The following two methods use GetPrevNextBidiLevels to determine the new
+   * Bidi level. BidiLevelFromMove is called when the caret is moved in response
+   * to a keyboard event
+   *
+   * @param aPresShell is the presentation shell
+   * @param aNode is the content node
+   * @param aContentOffset is the new caret position, as an offset into aNode
+   * @param aAmount is the amount of the move that gave the caret its new
+   * position
+   * @param aHint is the hint indicating in what logical direction the caret
+   * moved
+   */
   void BidiLevelFromMove(mozilla::PresShell* aPresShell, nsIContent* aNode,
                          uint32_t aContentOffset, nsSelectionAmount aAmount,
-                         CaretAssociateHint aHint);
+                         CaretAssociationHint aHint);
+  /**
+   * BidiLevelFromClick is called when the caret is repositioned by clicking the
+   * mouse
+   *
+   * @param aNode is the content node
+   * @param aContentOffset is the new caret position, as an offset into aNode
+   */
   void BidiLevelFromClick(nsIContent* aNewFocus, uint32_t aContentOffset);
-  static nsPrevNextBidiLevels GetPrevNextBidiLevels(nsIContent* aNode,
-                                                    uint32_t aContentOffset,
-                                                    CaretAssociateHint aHint,
-                                                    bool aJumpLines);
 
   /**
    * @param aReasons potentially multiple of the reasons defined in
@@ -791,6 +874,8 @@ class nsFrameSelection final {
     return retval;
   }
 
+  nsSelectionAmount GetCaretMoveAmount() { return mCaretMoveAmount; }
+
   bool IsUserSelectionReason() const {
     return (mSelectionChangeReasons &
             (nsISelectionListener::DRAG_REASON |
@@ -814,10 +899,11 @@ class nsFrameSelection final {
                                         CaretMovementStyle aMovementStyle);
 
   /**
-   * PeekOffsetForCaretMove() only peek offset for caret move.  I.e., won't
-   * change selection ranges nor bidi information.
+   * PeekOffsetForCaretMove() only peek offset for caret move from the focus
+   * point of the normal selection.  I.e., won't change selection ranges nor
+   * bidi information.
    */
-  mozilla::Result<nsPeekOffsetStruct, nsresult> PeekOffsetForCaretMove(
+  mozilla::Result<mozilla::PeekOffsetStruct, nsresult> PeekOffsetForCaretMove(
       nsDirection aDirection, bool aContinueSelection,
       const nsSelectionAmount aAmount, CaretMovementStyle aMovementStyle,
       const nsPoint& aDesiredCaretPos) const;
@@ -833,60 +919,39 @@ class nsFrameSelection final {
                                  const nsSelectionAmount aAmount,
                                  CaretMovementStyle aMovementStyle);
 
-  /**
-   * IsIntraLineCaretMove() is a helper method for PeekOffsetForCaretMove()
-   * and CreateRangeExtendedToSomwhereFromNormalSelection().  This returns
-   * whether aAmount is intra line move or is crossing hard line break.
-   * This returns error if aMount is not supported by the methods.
-   */
-  static mozilla::Result<bool, nsresult> IsIntraLineCaretMove(
-      nsSelectionAmount aAmount) {
-    switch (aAmount) {
-      case eSelectCharacter:
-      case eSelectCluster:
-      case eSelectWord:
-      case eSelectWordNoSpace:
-      case eSelectBeginLine:
-      case eSelectEndLine:
-        return true;
-      case eSelectLine:
-        return false;
-      default:
-        return mozilla::Err(NS_ERROR_FAILURE);
-    }
-  }
-
   void InvalidateDesiredCaretPos();  // do not listen to mDesiredCaretPos.mValue
                                      // you must get another.
 
   bool IsBatching() const { return mBatching.mCounter > 0; }
 
-  void SetChangesDuringBatchingFlag() {
-    MOZ_ASSERT(mBatching.mCounter > 0);
-
-    mBatching.mChangesDuringBatching = true;
-  }
+  enum class IsBatchingEnd : bool { No, Yes };
 
   // nsFrameSelection may get deleted when calling this,
   // so remember to use nsCOMPtr when needed.
   MOZ_CAN_RUN_SCRIPT
-  nsresult NotifySelectionListeners(mozilla::SelectionType aSelectionType);
+  nsresult NotifySelectionListeners(
+      mozilla::SelectionType aSelectionType,
+      IsBatchingEnd aEndBatching = IsBatchingEnd::No);
 
-  static nsresult GetCellIndexes(nsIContent* aCell, int32_t& aRowIndex,
+  static nsresult GetCellIndexes(const nsIContent* aCell, int32_t& aRowIndex,
                                  int32_t& aColIndex);
 
   static nsIContent* GetFirstCellNodeInRange(const nsRange* aRange);
   // Returns non-null table if in same table, null otherwise
-  static nsIContent* IsInSameTable(nsIContent* aContent1,
-                                   nsIContent* aContent2);
+  static nsIContent* IsInSameTable(const nsIContent* aContent1,
+                                   const nsIContent* aContent2);
   // Might return null
-  static nsIContent* GetParentTable(nsIContent* aCellNode);
+  static nsIContent* GetParentTable(const nsIContent* aCellNode);
 
   ////////////BEGIN nsFrameSelection members
 
   RefPtr<mozilla::dom::Selection>
       mDomSelections[sizeof(mozilla::kPresentSelectionTypes) /
                      sizeof(mozilla::SelectionType)];
+
+  nsTArray<
+      mozilla::CompactPair<RefPtr<nsAtom>, RefPtr<mozilla::dom::Selection>>>
+      mHighlightSelections;
 
   struct TableSelection {
     // Get our first range, if its first selected node is a cell.  If this does
@@ -922,7 +987,7 @@ class nsFrameSelection final {
                                mozilla::dom::Selection& aNormalSelection);
 
     MOZ_CAN_RUN_SCRIPT nsresult
-    UnselectCells(nsIContent* aTable, int32_t aStartRowIndex,
+    UnselectCells(const nsIContent* aTable, int32_t aStartRowIndex,
                   int32_t aStartColumnIndex, int32_t aEndRowIndex,
                   int32_t aEndColumnIndex, bool aRemoveOutsideOfCellRange,
                   mozilla::dom::Selection& aNormalSelection);
@@ -936,24 +1001,48 @@ class nsFrameSelection final {
     mozilla::TableSelectionMode mMode = mozilla::TableSelectionMode::None;
     int32_t mSelectedCellIndex = 0;
     bool mDragSelectingCells = false;
+
+   private:
+    struct MOZ_STACK_CLASS FirstAndLastCell {
+      nsCOMPtr<nsIContent> mFirst;
+      nsCOMPtr<nsIContent> mLast;
+    };
+
+    mozilla::Result<FirstAndLastCell, nsresult>
+    FindFirstAndLastCellOfRowOrColumn(const nsIContent& aCellContent) const;
+
+    [[nodiscard]] MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult HandleDragSelecting(
+        mozilla::TableSelectionMode aTarget, nsIContent* aChildContent,
+        const mozilla::WidgetMouseEvent* aMouseEvent,
+        mozilla::dom::Selection& aNormalSelection);
+
+    [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult HandleMouseUpOrDown(
+        mozilla::TableSelectionMode aTarget, bool aDragState,
+        nsIContent* aChildContent, nsINode* aParentContent,
+        int32_t aContentOffset, const mozilla::WidgetMouseEvent* aMouseEvent,
+        mozilla::dom::Selection& aNormalSelection);
+
+    class MOZ_STACK_CLASS RowAndColumnRelation;
   };
 
   TableSelection mTableSelection;
 
   struct MaintainedRange {
     /**
-     * @return true iff the point (aContent, aOffset) is inside and not at the
-     * boundaries of mRange.
+     * Ensure anchor and focus of aNormalSelection are ordered appropriately
+     * relative to the maintained range.
      */
-    MOZ_CAN_RUN_SCRIPT bool AdjustNormalSelection(
+    MOZ_CAN_RUN_SCRIPT void AdjustNormalSelection(
         const nsIContent* aContent, int32_t aOffset,
         mozilla::dom::Selection& aNormalSelection) const;
 
     /**
-     * @param aScrollViewStop see `nsPeekOffsetStruct::mScrollViewStop`.
+     * @param aStopAtScroller   If yes, this will
+     *                          set `PeekOffsetOption::StopAtScroller`.
      */
+    enum class StopAtScroller : bool { No, Yes };
     void AdjustContentOffsets(nsIFrame::ContentOffsets& aOffsets,
-                              bool aScrollViewStop) const;
+                              StopAtScroller aStopAtScroller) const;
 
     void MaintainAnchorFocusRange(
         const mozilla::dom::Selection& aNormalSelection,
@@ -967,7 +1056,6 @@ class nsFrameSelection final {
 
   struct Batching {
     uint32_t mCounter = 0;
-    bool mChangesDuringBatching = false;
   };
 
   Batching mBatching;
@@ -987,26 +1075,22 @@ class nsFrameSelection final {
   int16_t mSelectionChangeReasons = nsISelectionListener::NO_REASON;
   // For visual display purposes.
   int16_t mDisplaySelection = nsISelectionController::SELECTION_OFF;
+  nsSelectionAmount mCaretMoveAmount = eSelectNoAmount;
 
   struct Caret {
     // Hint to tell if the selection is at the end of this line or beginning of
     // next.
-    CaretAssociateHint mHint = mozilla::CARET_ASSOCIATE_BEFORE;
-    nsBidiLevel mBidiLevel = BIDI_LEVEL_UNDEFINED;
-    int8_t mMovementStyle = 0;
+    CaretAssociationHint mHint = CaretAssociationHint::Before;
+    mozilla::intl::BidiEmbeddingLevel mBidiLevel = BIDI_LEVEL_UNDEFINED;
 
     bool IsVisualMovement(bool aContinueSelection,
-                          CaretMovementStyle aMovementStyle) const {
-      return aMovementStyle == eVisual ||
-             (aMovementStyle == eUsePrefStyle &&
-              (mMovementStyle == 1 ||
-               (mMovementStyle == 2 && !aContinueSelection)));
-    }
+                          CaretMovementStyle aMovementStyle) const;
   };
 
   Caret mCaret;
 
-  nsBidiLevel mKbdBidiLevel = NSBIDI_LTR;
+  mozilla::intl::BidiEmbeddingLevel mKbdBidiLevel =
+      mozilla::intl::BidiEmbeddingLevel::LTR();
 
   class DesiredCaretPos {
    public:
@@ -1039,6 +1123,41 @@ class nsFrameSelection final {
 
   bool mDragState = false;  // for drag purposes
   bool mAccessibleCaretEnabled = false;
+
+  // Records if a selection was created by doubleclicking or tripleclicking
+  // a word. This information is needed later on to determine if a leading
+  // or trailing whitespace needs to be removed as well to achieve
+  // native behaviour on macOS.
+  mozilla::dom::ClickSelectionType mClickSelectionType =
+      mozilla::dom::ClickSelectionType::NotApplicable;
+};
+
+/**
+ * Selection Batcher class that supports multiple FrameSelections.
+ */
+class MOZ_STACK_CLASS AutoFrameSelectionBatcher {
+ public:
+  explicit AutoFrameSelectionBatcher(const char* aFunctionName,
+                                     size_t aEstimatedSize = 1)
+      : mFunctionName(aFunctionName) {
+    mFrameSelections.SetCapacity(aEstimatedSize);
+  }
+  ~AutoFrameSelectionBatcher() {
+    for (const auto& frameSelection : mFrameSelections) {
+      frameSelection->EndBatchChanges(mFunctionName);
+    }
+  }
+  void AddFrameSelection(nsFrameSelection* aFrameSelection) {
+    if (!aFrameSelection) {
+      return;
+    }
+    aFrameSelection->StartBatchChanges(mFunctionName);
+    mFrameSelections.AppendElement(aFrameSelection);
+  }
+
+ private:
+  const char* mFunctionName;
+  AutoTArray<RefPtr<nsFrameSelection>, 1> mFrameSelections;
 };
 
 #endif /* nsFrameSelection_h___ */

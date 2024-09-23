@@ -13,7 +13,6 @@ use bits_client::{
 use comedy::error::HResult as ComedyError;
 use nserror::{nsresult, NS_ERROR_FAILURE};
 use nsstring::nsCString;
-use std::convert::From;
 use xpcom::interfaces::nsIBits;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -66,7 +65,7 @@ pub enum ErrorType {
 
 impl ErrorType {
     pub fn bits_code(&self) -> i32 {
-        let val = match self {
+        match self {
             ErrorType::NullArgument => nsIBits::ERROR_TYPE_NULL_ARGUMENT,
             ErrorType::InvalidArgument => nsIBits::ERROR_TYPE_INVALID_ARGUMENT,
             ErrorType::NotInitialized => nsIBits::ERROR_TYPE_NOT_INITIALIZED,
@@ -119,8 +118,7 @@ impl ErrorType {
             ErrorType::BitsStateCancelled => nsIBits::ERROR_TYPE_BITS_STATE_CANCELLED,
             ErrorType::BitsStateUnexpected => nsIBits::ERROR_TYPE_BITS_STATE_UNEXPECTED,
             ErrorType::FailedToConnectToBcm => nsIBits::ERROR_TYPE_FAILED_TO_CONNECT_TO_BCM,
-        };
-        val as i32
+        }
     }
 }
 

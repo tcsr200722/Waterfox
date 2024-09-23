@@ -5,10 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "nsBidiUtils.h"
 
-namespace mozilla {
-static const uint32_t kMinRTLChar = 0x0590;
-}  // namespace mozilla
-
 #define ARABIC_TO_HINDI_DIGIT_INCREMENT \
   (START_HINDI_DIGITS - START_ARABIC_DIGITS)
 #define PERSIAN_TO_HINDI_DIGIT_INCREMENT \
@@ -55,12 +51,11 @@ char16_t HandleNumberInChar(char16_t aChar, bool aPrevCharArabic,
       // for clipboard handling
       // XXX do we really want to convert numerals when copying text?
       if (aPrevCharArabic) {
-        if (aNumFlag == IBMBIDI_NUMERAL_PERSIANCONTEXT)
-          return NUM_TO_PERSIAN(aChar);
-        else
-          return NUM_TO_HINDI(aChar);
-      } else
-        return NUM_TO_ARABIC(aChar);
+        return aNumFlag == IBMBIDI_NUMERAL_PERSIANCONTEXT
+                   ? NUM_TO_PERSIAN(aChar)
+                   : NUM_TO_HINDI(aChar);
+      }
+      return NUM_TO_ARABIC(aChar);
     case IBMBIDI_NUMERAL_NOMINAL:
     default:
       return aChar;

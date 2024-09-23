@@ -3,8 +3,10 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details.
 
-use cubeb_core::{Context, DeviceCollectionRef, DeviceId, DeviceRef, DeviceType, Result, Stream,
-                 StreamParams, StreamParamsRef};
+use cubeb_core::{
+    Context, DeviceCollectionRef, DeviceId, DeviceRef, DeviceType, InputProcessingParams, Result,
+    Stream, StreamParams, StreamParamsRef,
+};
 use ffi;
 use std::ffi::CStr;
 use std::os::raw::c_void;
@@ -15,13 +17,14 @@ pub trait ContextOps {
     fn max_channel_count(&mut self) -> Result<u32>;
     fn min_latency(&mut self, params: StreamParams) -> Result<u32>;
     fn preferred_sample_rate(&mut self) -> Result<u32>;
+    fn supported_input_processing_params(&mut self) -> Result<InputProcessingParams>;
     fn enumerate_devices(
         &mut self,
         devtype: DeviceType,
         collection: &DeviceCollectionRef,
     ) -> Result<()>;
     fn device_collection_destroy(&mut self, collection: &mut DeviceCollectionRef) -> Result<()>;
-    #[cfg_attr(feature = "cargo-clippy", allow(too_many_arguments))]
+    #[allow(clippy::too_many_arguments)]
     fn stream_init(
         &mut self,
         stream_name: Option<&CStr>,
@@ -45,12 +48,14 @@ pub trait ContextOps {
 pub trait StreamOps {
     fn start(&mut self) -> Result<()>;
     fn stop(&mut self) -> Result<()>;
-    fn reset_default_device(&mut self) -> Result<()>;
     fn position(&mut self) -> Result<u64>;
     fn latency(&mut self) -> Result<u32>;
     fn input_latency(&mut self) -> Result<u32>;
     fn set_volume(&mut self, volume: f32) -> Result<()>;
+    fn set_name(&mut self, name: &CStr) -> Result<()>;
     fn current_device(&mut self) -> Result<&DeviceRef>;
+    fn set_input_mute(&mut self, mute: bool) -> Result<()>;
+    fn set_input_processing_params(&mut self, params: InputProcessingParams) -> Result<()>;
     fn device_destroy(&mut self, device: &DeviceRef) -> Result<()>;
     fn register_device_changed_callback(
         &mut self,

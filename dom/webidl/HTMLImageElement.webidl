@@ -16,7 +16,7 @@ interface imgIRequest;
 interface URI;
 interface nsIStreamListener;
 
-[NamedConstructor=Image(optional unsigned long width, optional unsigned long height),
+[LegacyFactoryFunction=Image(optional unsigned long width, optional unsigned long height),
  Exposed=Window]
 interface HTMLImageElement : HTMLElement {
   [HTMLConstructor] constructor();
@@ -41,13 +41,17 @@ interface HTMLImageElement : HTMLElement {
            attribute unsigned long height;
            [CEReactions, SetterThrows]
            attribute DOMString decoding;
-           [CEReactions, SetterThrows, Pref="dom.image-lazy-loading.enabled"]
+           [CEReactions, SetterThrows]
            attribute DOMString loading;
+           [Pref="network.fetchpriority.enabled", CEReactions]
+           attribute DOMString fetchPriority;
   readonly attribute unsigned long naturalWidth;
   readonly attribute unsigned long naturalHeight;
   readonly attribute boolean complete;
            [NewObject]
-           Promise<void> decode();
+           Promise<undefined> decode();
+           [NewObject, ChromeOnly]
+           Promise<sequence<ImageText>> recognizeCurrentImageText();
 };
 
 // http://www.whatwg.org/specs/web-apps/current-work/#other-elements,-attributes-and-apis
@@ -63,7 +67,7 @@ partial interface HTMLImageElement {
            [CEReactions, SetterThrows]
            attribute DOMString longDesc;
 
-  [CEReactions, SetterThrows] attribute [TreatNullAs=EmptyString] DOMString border;
+  [CEReactions, SetterThrows] attribute [LegacyNullToEmptyString] DOMString border;
 };
 
 // [Update me: not in whatwg spec yet]
@@ -97,25 +101,23 @@ interface mixin MozImageLoadingContent {
 
   [ChromeOnly]
   attribute boolean loadingEnabled;
-  [ChromeOnly]
-  readonly attribute short imageBlockingStatus;
   /**
    * Same as addNativeObserver but intended for scripted observers or observers
    * from another or without a document.
    */
   [ChromeOnly]
-  void addObserver(imgINotificationObserver aObserver);
+  undefined addObserver(imgINotificationObserver aObserver);
   /**
    * Same as removeNativeObserver but intended for scripted observers or
    * observers from another or without a document.
    */
   [ChromeOnly]
-  void removeObserver(imgINotificationObserver aObserver);
+  undefined removeObserver(imgINotificationObserver aObserver);
   [ChromeOnly,Throws]
   imgIRequest? getRequest(long aRequestType);
   [ChromeOnly,Throws]
   long getRequestType(imgIRequest aRequest);
-  [ChromeOnly,Throws]
+  [ChromeOnly]
   readonly attribute URI? currentURI;
   // Gets the final URI of the current request, if available.
   // Otherwise, returns null.
@@ -128,9 +130,7 @@ interface mixin MozImageLoadingContent {
    * @throws NS_ERROR_NOT_AVAILABLE if there is no current URI to reload
    */
   [ChromeOnly,Throws]
-  void forceReload(optional boolean aNotify = true);
-  [ChromeOnly]
-  void forceImageState(boolean aForce, unsigned long long aState);
+  undefined forceReload(optional boolean aNotify = true);
 };
 
 HTMLImageElement includes MozImageLoadingContent;

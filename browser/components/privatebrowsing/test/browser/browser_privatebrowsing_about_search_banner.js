@@ -5,8 +5,8 @@
 // This test makes sure that about:privatebrowsing correctly shows the search
 // banner.
 
-const { AboutPrivateBrowsingParent } = ChromeUtils.import(
-  "resource:///actors/AboutPrivateBrowsingParent.jsm"
+const { AboutPrivateBrowsingParent } = ChromeUtils.importESModule(
+  "resource:///actors/AboutPrivateBrowsingParent.sys.mjs"
 );
 
 const PREF_UI_ENABLED = "browser.search.separatePrivateDefault.ui.enabled";
@@ -16,13 +16,12 @@ const PREF_MAX_SEARCH_BANNER_SHOW_COUNT =
   "browser.search.separatePrivateDefault.ui.banner.max";
 const MAX_SHOW_COUNT = 5;
 
-add_task(async function setup() {
+add_setup(async function () {
   SpecialPowers.pushPrefEnv({
     set: [
       [PREF_UI_ENABLED, false],
       [PREF_BANNER_SHOWN, 0],
       [PREF_MAX_SEARCH_BANNER_SHOW_COUNT, MAX_SHOW_COUNT],
-      ["browser.urlbar.disableExtendForTests", true],
     ],
   });
 
@@ -39,7 +38,7 @@ add_task(async function test_not_shown_if_pref_off() {
 
   const { win, tab } = await openAboutPrivateBrowsing();
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -69,7 +68,7 @@ add_task(async function test_not_shown_if_max_count_0() {
   });
   const { win, tab } = await openAboutPrivateBrowsing();
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -108,7 +107,7 @@ add_task(async function test_show_banner_first() {
     "Should have incremented the amount of times shown."
   );
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -127,7 +126,7 @@ add_task(async function test_show_banner_first() {
 
   const { win: win1, tab: tab1 } = await openAboutPrivateBrowsing();
 
-  await SpecialPowers.spawn(tab1, [], async function() {
+  await SpecialPowers.spawn(tab1, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -167,7 +166,7 @@ add_task(async function test_show_banner_max_times() {
       "Should have incremented the amount of times shown."
     );
 
-    await SpecialPowers.spawn(tab, [], async function() {
+    await SpecialPowers.spawn(tab, [], async function () {
       await ContentTaskUtils.waitForCondition(
         () =>
           content.document.documentElement.hasAttribute(
@@ -193,7 +192,7 @@ add_task(async function test_show_banner_max_times() {
 
   const { win, tab } = await openAboutPrivateBrowsing();
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -220,7 +219,7 @@ add_task(async function test_show_banner_close_no_more() {
 
   const { win, tab } = await openAboutPrivateBrowsing();
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(
@@ -238,7 +237,7 @@ add_task(async function test_show_banner_close_no_more() {
 
     await ContentTaskUtils.waitForCondition(
       () =>
-        ContentTaskUtils.is_hidden(
+        ContentTaskUtils.isHidden(
           content.document.getElementById("search-banner")
         ),
       "should have closed the in-content search banner after clicking close"
@@ -277,7 +276,7 @@ add_task(async function test_show_banner_open_preferences_and_no_more() {
       () => {
         tab.contentWindow.addEventListener(
           "load",
-          async function() {
+          async function () {
             await finalPrefPaneLoaded;
             resolve();
           },
@@ -288,7 +287,7 @@ add_task(async function test_show_banner_open_preferences_and_no_more() {
     );
   });
 
-  await SpecialPowers.spawn(tab, [], async function() {
+  await SpecialPowers.spawn(tab, [], async function () {
     await ContentTaskUtils.waitForCondition(
       () =>
         content.document.documentElement.hasAttribute(

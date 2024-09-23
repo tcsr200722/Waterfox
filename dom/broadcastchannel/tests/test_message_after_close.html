@@ -13,7 +13,7 @@ let a = new BroadcastChannel('a');
 let b = new BroadcastChannel('a');
 let count = 0;
 
-a.onmessage = function(e) {
+a.onmessage = function() {
   ++count;
   a.close();
 
@@ -29,5 +29,3 @@ for (let i = 0; i < 100; ++i) {
 </script>
 </body>
 </html>
-
-

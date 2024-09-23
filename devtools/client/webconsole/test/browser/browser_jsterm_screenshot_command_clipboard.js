@@ -13,16 +13,13 @@ const TEST_URI =
 // to keep tests consistant across OSs we are setting the dpr to 1
 const dpr = "--dpr 1";
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
   ok(hud, "web console opened");
 
   await testClipboard(hud);
   await testFullpageClipboard(hud);
   await testSelectorClipboard(hud);
-
-  // overflow
-  await createScrollbarOverflow();
   await testFullpageClipboardScrollbar(hud);
 });
 
@@ -67,30 +64,35 @@ async function testSelectorClipboard(hud) {
   await executeScreenshotClipboardCommand(hud, command);
 
   const imgSize1 = await getImageSizeFromClipboard();
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [imgSize1], function(
-    imgSize
-  ) {
-    const img = content.document.querySelector("#testImage");
-    is(
-      imgSize.width,
-      img.clientWidth,
-      "Selector Clipboard: Image width matches element size"
-    );
-    is(
-      imgSize.height,
-      img.clientHeight,
-      "Selector Clipboard: Image height matches element size"
-    );
-  });
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [imgSize1],
+    function (imgSize) {
+      const img = content.document.querySelector("#testImage");
+      is(
+        imgSize.width,
+        img.clientWidth,
+        "Selector Clipboard: Image width matches element size"
+      );
+      is(
+        imgSize.height,
+        img.clientHeight,
+        "Selector Clipboard: Image height matches element size"
+      );
+    }
+  );
 }
 
 async function testFullpageClipboardScrollbar(hud) {
+  info("Test taking a fullpage image that overflows");
+  await createScrollbarOverflow();
+
   const command = `:screenshot --fullpage --clipboard ${dpr}`;
   await executeScreenshotClipboardCommand(hud, command);
   const contentSize = await getContentSize();
-  const scrollbarSize = await getScrollbarSize();
   const imgSize = await getImageSizeFromClipboard();
 
+  const scrollbarSize = await getScrollbarSize();
   is(
     imgSize.width,
     contentSize.innerWidth +
@@ -117,10 +119,11 @@ async function testFullpageClipboardScrollbar(hud) {
  * @param {String} command
  */
 function executeScreenshotClipboardCommand(hud, command) {
-  return executeAndWaitForMessage(
+  return executeAndWaitForMessageByType(
     hud,
     command,
-    "Screenshot copied to clipboard."
+    "Screenshot copied to clipboard.",
+    ".console-api"
   );
 }
 
@@ -130,16 +133,20 @@ async function createScrollbarOverflow() {
   // (non-floating scrollbars).  With default OS settings, this means Windows
   // and Linux are affected, but Mac is not.  For Mac to exhibit this behavior,
   // change System Preferences -> General -> Show scroll bars to Always.
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     content.document.body.classList.add("overflow");
+    return content.windowUtils.flushLayoutWithoutThrottledAnimations();
   });
+
+  // Let's wait for next tick so scrollbars have the time to be rendered
+  await waitForTick();
 }
 
 async function getScrollbarSize() {
   const scrollbarSize = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
-    function() {
+    function () {
       const winUtils = content.windowUtils;
       const scrollbarHeight = {};
       const scrollbarWidth = {};
@@ -158,7 +165,7 @@ async function getContentSize() {
   const contentSize = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
-    function() {
+    function () {
       return {
         scrollMaxY: content.scrollMaxY,
         scrollMaxX: content.scrollMaxX,

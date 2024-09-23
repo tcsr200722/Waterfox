@@ -7,18 +7,20 @@
 #ifndef nsThreadPool_h__
 #define nsThreadPool_h__
 
-#include "nsIThreadPool.h"
 #include "nsIThread.h"
+#include "nsIThreadPool.h"
 #include "nsIRunnable.h"
 #include "nsCOMArray.h"
 #include "nsCOMPtr.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/CondVar.h"
 #include "mozilla/EventQueue.h"
+#include "mozilla/LinkedList.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/Monitor.h"
+
+class nsIThread;
 
 class nsThreadPool final : public mozilla::Runnable, public nsIThreadPool {
  public:
@@ -29,28 +31,41 @@ class nsThreadPool final : public mozilla::Runnable, public nsIThreadPool {
 
   nsThreadPool();
 
+  static void InitTLS();
+  static nsThreadPool* GetCurrentThreadPool();
+
  private:
   ~nsThreadPool();
+
+  struct MRUIdleEntry;  // forward declaration only, see nsThreadPool.cpp
 
   void ShutdownThread(nsIThread* aThread);
   nsresult PutEvent(nsIRunnable* aEvent);
   nsresult PutEvent(already_AddRefed<nsIRunnable> aEvent, uint32_t aFlags);
+  void NotifyChangeToAllIdleThreads() MOZ_REQUIRES(mMutex);
 
-  nsCOMArray<nsIThread> mThreads;
+#ifdef DEBUG
+  void DebugLogPoolStatus(mozilla::MutexAutoLock& aProofOfLock,
+                          MRUIdleEntry* aWakingEntry = nullptr)
+      MOZ_REQUIRES(mMutex);
+#endif
+
   mozilla::Mutex mMutex;
-  mozilla::CondVar mEventsAvailable;
-  mozilla::EventQueue mEvents;
-  uint32_t mThreadLimit;
-  uint32_t mIdleThreadLimit;
-  uint32_t mIdleThreadTimeout;
-  uint32_t mIdleCount;
-  uint32_t mStackSize;
-  nsCOMPtr<nsIThreadPoolListener> mListener;
-  bool mShutdown;
-  bool mRegressiveMaxIdleTime;
+  nsCOMArray<nsIThread> mThreads MOZ_GUARDED_BY(mMutex);
+  mozilla::EventQueue mEvents MOZ_GUARDED_BY(mMutex);
+  uint32_t mThreadLimit MOZ_GUARDED_BY(mMutex);
+  uint32_t mIdleThreadLimit MOZ_GUARDED_BY(mMutex);
+  mozilla::TimeDuration mIdleThreadGraceTimeout MOZ_GUARDED_BY(mMutex);
+  mozilla::TimeDuration mIdleThreadMaxTimeout MOZ_GUARDED_BY(mMutex);
+  mozilla::LinkedList<MRUIdleEntry> mMRUIdleThreads MOZ_GUARDED_BY(mMutex);
+  nsIThread::QoSPriority mQoSPriority MOZ_GUARDED_BY(mMutex);
+  uint32_t mStackSize MOZ_GUARDED_BY(mMutex);
+  nsCOMPtr<nsIThreadPoolListener> mListener MOZ_GUARDED_BY(mMutex);
+  mozilla::Atomic<bool, mozilla::Relaxed> mShutdown;
   mozilla::Atomic<bool, mozilla::Relaxed> mIsAPoolThreadFree;
-  nsCString mName;
-  nsThreadPoolNaming mThreadNaming;
+  // set once before we start threads
+  nsCString mName MOZ_GUARDED_BY(mMutex);
+  nsThreadPoolNaming mThreadNaming;  // all data inside this is atomic
 };
 
 #define NS_THREADPOOL_CID                            \

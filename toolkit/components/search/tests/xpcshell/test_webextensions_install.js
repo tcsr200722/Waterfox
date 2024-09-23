@@ -3,116 +3,229 @@
 
 "use strict";
 
-const {
-  createAppInfo,
-  promiseRestartManager,
-  promiseShutdownManager,
-  promiseStartupManager,
-} = AddonTestUtils;
+const { promiseShutdownManager, promiseStartupManager } = AddonTestUtils;
 
-SearchTestUtils.initXPCShellAddonManager(this);
-
-async function restart() {
-  Services.search.reset();
-  await promiseRestartManager();
-  await Services.search.init();
-}
+let gBaseUrl;
 
 async function getEngineNames() {
   let engines = await Services.search.getEngines();
   return engines.map(engine => engine._name);
 }
 
-add_task(async function setup() {
-  await useTestEngines("test-extensions");
+add_setup(async function () {
+  let server = useHttpServer();
+  server.registerContentType("sjs", "sjs");
+  gBaseUrl = `http://localhost:${server.identity.primaryPort}/`;
+
+  await SearchTestUtils.useTestEngines("test-extensions");
   await promiseStartupManager();
+
+  Services.locale.availableLocales = [
+    ...Services.locale.availableLocales,
+    "af",
+  ];
 
   registerCleanupFunction(async () => {
     await promiseShutdownManager();
-    Services.prefs.clearUserPref("browser.search.geoSpecificDefaults");
     Services.prefs.clearUserPref("browser.search.region");
   });
 });
 
 add_task(async function basic_install_test() {
-  Services.prefs.setBoolPref("browser.search.geoSpecificDefaults", false);
   await Services.search.init();
-  await promiseAfterCache();
+  await promiseAfterSettings();
 
-  // On first boot, we get the list.json defaults
+  // On first boot, we get the configuration defaults
   Assert.deepEqual(await getEngineNames(), ["Plain", "Special"]);
 
   // User installs a new search engine
-  let extension = await SearchTestUtils.installSearchExtension();
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      encoding: "windows-1252",
+    },
+    { skipUnload: true }
+  );
   Assert.deepEqual((await getEngineNames()).sort(), [
     "Example",
     "Plain",
     "Special",
   ]);
 
-  await forceExpiration();
+  let engine = await Services.search.getEngineByName("Example");
+  Assert.equal(
+    engine.wrappedJSObject.queryCharset,
+    "windows-1252",
+    "Should have the correct charset"
+  );
 
   // User uninstalls their engine
   await extension.awaitStartup();
   await extension.unload();
-  await promiseAfterCache();
+  await promiseAfterSettings();
   Assert.deepEqual(await getEngineNames(), ["Plain", "Special"]);
 });
 
-add_task(async function basic_multilocale_test() {
-  await forceExpiration();
-  Region._setRegion("an", false);
-
-  await withGeoServer(
-    async function cont(requests) {
-      await restart();
-      Assert.deepEqual(await getEngineNames(), [
-        "Plain",
-        "Special",
-        "Multilocale AN",
-      ]);
+add_task(async function test_install_duplicate_engine() {
+  let name = "Plain";
+  consoleAllowList.push(`An engine called ${name} already exists`);
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      name,
+      search_url: "https://example.com/plain",
     },
-    { visibleDefaultEngines: ["multilocale-an"] }
+    { skipUnload: true }
   );
+
+  let engine = await Services.search.getEngineByName("Plain");
+  let submission = engine.getSubmission("foo");
+  Assert.equal(
+    submission.uri.spec,
+    SearchUtils.newSearchConfigEnabled
+      ? "https://duckduckgo.com/?t=ffsb&q=foo"
+      : "https://duckduckgo.com/?q=foo&t=ffsb",
+    "Should have not changed the app provided engine."
+  );
+
+  // User uninstalls their engine
+  await extension.unload();
 });
 
-add_task(async function complex_multilocale_test() {
-  await forceExpiration();
-  Region._setRegion("af", false);
+add_task(
+  // Not needed for new configuration.
+  { skip_if: () => SearchUtils.newSearchConfigEnabled },
+  async function basic_multilocale_test() {
+    await promiseSetHomeRegion("an");
 
-  await withGeoServer(
-    async function cont(requests) {
-      await restart();
-      Assert.deepEqual(await getEngineNames(), [
-        "Plain",
-        "Special",
-        "Multilocale AF",
-        "Multilocale AN",
-      ]);
+    Assert.deepEqual(await getEngineNames(), [
+      "Plain",
+      "Special",
+      "Multilocale AN",
+    ]);
+  }
+);
+
+add_task(
+  // Not needed for new configuration.
+  { skip_if: () => SearchUtils.newSearchConfigEnabled },
+  async function complex_multilocale_test() {
+    await promiseSetHomeRegion("af");
+
+    Assert.deepEqual(await getEngineNames(), [
+      "Plain",
+      "Special",
+      "Multilocale AF",
+      "Multilocale AN",
+    ]);
+  }
+);
+
+add_task(
+  // Not needed for new configuration.
+  { skip_if: () => SearchUtils.newSearchConfigEnabled },
+  async function test_manifest_selection() {
+    // Sets the home region without updating.
+    Region._setHomeRegion("an", false);
+    await promiseSetLocale("af");
+
+    let engine = await Services.search.getEngineByName("Multilocale AN");
+    Assert.ok(
+      (await engine.getIconURL()).endsWith("favicon-an.ico"),
+      "Should have the correct favicon for an extension of one locale using a different locale."
+    );
+    Assert.equal(
+      engine.description,
+      "A enciclopedia Libre",
+      "Should have the correct engine name for an extension of one locale using a different locale."
+    );
+  }
+);
+
+add_task(async function test_load_favicon_invalid() {
+  let observed = TestUtils.consoleMessageObserved(msg => {
+    return msg.wrappedJSObject.arguments[0].includes(
+      "Content type does not match expected"
+    );
+  });
+
+  // User installs a new search engine
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      favicon_url: `${gBaseUrl}/head_search.js`,
     },
-    { visibleDefaultEngines: ["multilocale-af", "multilocale-an"] }
+    { skipUnload: true }
   );
+
+  await observed;
+
+  let engine = await Services.search.getEngineByName("Example");
+  Assert.equal(
+    null,
+    await engine.getIconURL(),
+    "Should not have set an iconURI"
+  );
+
+  // User uninstalls their engine
+  await extension.awaitStartup();
+  await extension.unload();
+  await promiseAfterSettings();
 });
-add_task(async function test_manifest_selection() {
-  await forceExpiration();
-  Region._setRegion("an", false);
-  Services.locale.availableLocales = ["af"];
-  Services.locale.requestedLocales = ["af"];
 
-  await withGeoServer(
-    async function cont(requests) {
-      await restart();
-      let engine = await Services.search.getEngineByName("Multilocale AN");
-      Assert.ok(
-        engine.iconURI.spec.endsWith("favicon-an.ico"),
-        "Should have the correct favicon for an extension of one locale using a different locale."
-      );
-      Assert.equal(
-        engine.description,
-        "A enciclopedia Libre",
-        "Should have the correct engine name for an extension of one locale using a different locale."
-      );
+add_task(async function test_load_favicon_invalid_redirect() {
+  let observed = TestUtils.consoleMessageObserved(msg => {
+    return msg.wrappedJSObject.arguments[0].includes(
+      "Content type does not match expected"
+    );
+  });
+
+  // User installs a new search engine
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      favicon_url: `${gDataUrl}/iconsRedirect.sjs?type=invalid`,
     },
-    { visibleDefaultEngines: ["multilocale-an"] }
+    { skipUnload: true }
   );
+
+  await observed;
+
+  let engine = await Services.search.getEngineByName("Example");
+  Assert.equal(
+    null,
+    await engine.getIconURL(),
+    "Should not have set an iconURI"
+  );
+
+  // User uninstalls their engine
+  await extension.awaitStartup();
+  await extension.unload();
+  await promiseAfterSettings();
+});
+
+add_task(async function test_load_favicon_redirect() {
+  let promiseIconChanged = SearchTestUtils.promiseSearchNotification(
+    SearchUtils.MODIFIED_TYPE.ICON_CHANGED,
+    SearchUtils.TOPIC_ENGINE_MODIFIED
+  );
+
+  // User installs a new search engine
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      favicon_url: `${gDataUrl}/iconsRedirect.sjs`,
+    },
+    { skipUnload: true }
+  );
+
+  let engine = await Services.search.getEngineByName("Example");
+
+  await promiseIconChanged;
+
+  Assert.ok(await engine.getIconURL(), "Should have set an iconURI");
+  Assert.ok(
+    (await engine.getIconURL()).startsWith("data:image/x-icon;base64,"),
+    "Should have saved the expected content type for the icon"
+  );
+
+  // User uninstalls their engine
+  await extension.awaitStartup();
+  await extension.unload();
+  await promiseAfterSettings();
 });

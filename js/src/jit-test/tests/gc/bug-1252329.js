@@ -1,4 +1,4 @@
-// |jit-test| allow-oom; skip-if: helperThreadCount() == 0 || !('oomAfterAllocations' in this)
+// |jit-test| allow-oom; skip-if: helperThreadCount() == 0 || !hasFunction.oomAfterAllocations
 
 var lfcode = new Array();
 lfcode.push("5");
@@ -22,8 +22,9 @@ function loadFile(lfVarx) {
             case 5:
                 var lfGlobal = newGlobal();
                 for (lfLocal in this) {}
-                lfGlobal.offThreadCompileScript(lfVarx);
-                lfGlobal.runOffThreadScript();
+                lfGlobal.offThreadCompileToStencil(lfVarx);
+                var stencil = lfGlobal.finishOffThreadStencil();
+                lfGlobal.evalStencil(stencil);
         }
     } else if (!isNaN(lfVarx)) {
         lfRunTypeId = parseInt(lfVarx);

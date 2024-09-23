@@ -15,7 +15,7 @@
 
 #include "mozilla/Atomics.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Result.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/StaticPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
@@ -24,7 +24,9 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsWeakReference.h"
+#include "nsXULAppAPI.h"
 #include <atomic>
+#include <functional>
 
 class nsIFile;
 
@@ -96,6 +98,8 @@ class Preferences final : public nsIPrefService,
   friend class ::nsPrefBranch;
 
  public:
+  using WritePrefFilePromise = MozPromise<bool, nsresult, false>;
+
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIPREFSERVICE
   NS_FORWARD_NSIPREFBRANCH(mRootBranch->)
@@ -216,12 +220,16 @@ class Preferences final : public nsIPrefService,
   static nsresult Lock(const char* aPrefName);
   static nsresult Unlock(const char* aPrefName);
   static bool IsLocked(const char* aPrefName);
+  static bool IsSanitized(const char* aPrefName);
 
   // Clears user set pref. Fails if run outside the parent process.
   static nsresult ClearUser(const char* aPrefName);
 
   // Whether the pref has a user value or not.
   static bool HasUserValue(const char* aPref);
+
+  // Whether the pref has a user value or not.
+  static bool HasDefaultValue(const char* aPref);
 
   // Adds/Removes the observer for the root pref branch. See nsIPrefBranch.idl
   // for details.
@@ -253,9 +261,11 @@ class Preferences final : public nsIPrefService,
   // Note: All preference strings *must* be statically-allocated string
   // literals.
   static nsresult AddStrongObservers(nsIObserver* aObserver,
-                                     const char** aPrefs);
-  static nsresult AddWeakObservers(nsIObserver* aObserver, const char** aPrefs);
-  static nsresult RemoveObservers(nsIObserver* aObserver, const char** aPrefs);
+                                     const char* const* aPrefs);
+  static nsresult AddWeakObservers(nsIObserver* aObserver,
+                                   const char* const* aPrefs);
+  static nsresult RemoveObservers(nsIObserver* aObserver,
+                                  const char* const* aPrefs);
 
   // Registers/Unregisters the callback function for the aPref.
   template <typename T = void>
@@ -319,28 +329,28 @@ class Preferences final : public nsIPrefService,
   // Unregister call as was passed to the Register call.
   template <typename T = void>
   static nsresult RegisterCallbacks(PrefChangedFunc aCallback,
-                                    const char** aPrefs,
+                                    const char* const* aPrefs,
                                     T* aClosure = nullptr) {
     return RegisterCallbacks(aCallback, aPrefs, aClosure, ExactMatch);
   }
   static nsresult RegisterCallbacksAndCall(PrefChangedFunc aCallback,
-                                           const char** aPrefs,
+                                           const char* const* aPrefs,
                                            void* aClosure = nullptr);
   template <typename T = void>
   static nsresult UnregisterCallbacks(PrefChangedFunc aCallback,
-                                      const char** aPrefs,
+                                      const char* const* aPrefs,
                                       T* aClosure = nullptr) {
     return UnregisterCallbacks(aCallback, aPrefs, aClosure, ExactMatch);
   }
   template <typename T = void>
   static nsresult RegisterPrefixCallbacks(PrefChangedFunc aCallback,
-                                          const char** aPrefs,
+                                          const char* const* aPrefs,
                                           T* aClosure = nullptr) {
     return RegisterCallbacks(aCallback, aPrefs, aClosure, PrefixMatch);
   }
   template <typename T = void>
   static nsresult UnregisterPrefixCallbacks(PrefChangedFunc aCallback,
-                                            const char** aPrefs,
+                                            const char* const* aPrefs,
                                             T* aClosure = nullptr) {
     return UnregisterCallbacks(aCallback, aPrefs, aClosure, PrefixMatch);
   }
@@ -393,87 +403,10 @@ class Preferences final : public nsIPrefService,
                               PrefixMatch);
   }
 
-  // Adds the aVariable to cache table. |aVariable| must be a pointer for a
-  // static variable. The value will be modified when the pref value is changed
-  // but note that even if you modified it, the value isn't assigned to the
-  // pref.
-  static void AddBoolVarCache(bool* aVariable, const nsACString& aPref,
-                              bool aDefault = false);
-  template <MemoryOrdering Order>
-  static void AddAtomicBoolVarCache(Atomic<bool, Order>* aVariable,
-                                    const nsACString& aPref,
-                                    bool aDefault = false);
-  static void AddIntVarCache(int32_t* aVariable, const nsACString& aPref,
-                             int32_t aDefault = 0);
-  template <MemoryOrdering Order>
-  static void AddAtomicIntVarCache(Atomic<int32_t, Order>* aVariable,
-                                   const nsACString& aPref,
-                                   int32_t aDefault = 0);
-  static void AddUintVarCache(uint32_t* aVariable, const nsACString& aPref,
-                              uint32_t aDefault = 0);
-  template <MemoryOrdering Order>
-  static void AddAtomicUintVarCache(Atomic<uint32_t, Order>* aVariable,
-                                    const nsACString& aPref,
-                                    uint32_t aDefault = 0);
-  static void AddFloatVarCache(float* aVariable, const nsACString& aPref,
-                               float aDefault = 0.0f);
-
-  static void AddAtomicFloatVarCache(std::atomic<float>* aVariable,
-                                     const nsACString& aPref,
-                                     float aDefault = 0.0f);
-
-  template <int N>
-  static void AddBoolVarCache(bool* aVariable, const char (&aPref)[N],
-                              bool aDefault = false) {
-    return AddBoolVarCache(aVariable, nsLiteralCString(aPref), aDefault);
-  }
-  template <MemoryOrdering Order, int N>
-  static void AddAtomicBoolVarCache(Atomic<bool, Order>* aVariable,
-                                    const char (&aPref)[N],
-                                    bool aDefault = false) {
-    return AddAtomicBoolVarCache<Order>(aVariable, nsLiteralCString(aPref),
-                                        aDefault);
-  }
-  template <int N>
-  static void AddIntVarCache(int32_t* aVariable, const char (&aPref)[N],
-                             int32_t aDefault = 0) {
-    return AddIntVarCache(aVariable, nsLiteralCString(aPref), aDefault);
-  }
-  template <MemoryOrdering Order, int N>
-  static void AddAtomicIntVarCache(Atomic<int32_t, Order>* aVariable,
-                                   const char (&aPref)[N],
-                                   int32_t aDefault = 0) {
-    return AddAtomicIntVarCache<Order>(aVariable, nsLiteralCString(aPref),
-                                       aDefault);
-  }
-  template <int N>
-  static void AddUintVarCache(uint32_t* aVariable, const char (&aPref)[N],
-                              uint32_t aDefault = 0) {
-    return AddUintVarCache(aVariable, nsLiteralCString(aPref), aDefault);
-  }
-  template <MemoryOrdering Order, int N>
-  static void AddAtomicUintVarCache(Atomic<uint32_t, Order>* aVariable,
-                                    const char (&aPref)[N],
-                                    uint32_t aDefault = 0) {
-    return AddAtomicUintVarCache<Order>(aVariable, nsLiteralCString(aPref),
-                                        aDefault);
-  }
-  template <int N>
-  static void AddFloatVarCache(float* aVariable, const char (&aPref)[N],
-                               float aDefault = 0.0f) {
-    return AddFloatVarCache(aVariable, nsLiteralCString(aPref), aDefault);
-  }
-
-  template <int N>
-  static void AddAtomicFloatVarCache(std::atomic<float>* aVariable,
-                                     const char (&aPref)[N],
-                                     float aDefault = 0.0f) {
-    return AddAtomicFloatVarCache(aVariable, nsLiteralCString(aPref), aDefault);
-  }
-
   // When a content process is created these methods are used to pass changed
   // prefs in bulk from the parent process, via shared memory.
-  static void SerializePreferences(nsCString& aStr);
+  static void SerializePreferences(nsCString& aStr,
+                                   bool aIsDestinationWebContentProcess);
   static void DeserializePreferences(char* aStr, size_t aPrefsLen);
 
   static mozilla::ipc::FileDescriptor EnsureSnapshot(size_t* aSize);
@@ -481,7 +414,9 @@ class Preferences final : public nsIPrefService,
 
   // When a single pref is changed in the parent process, these methods are
   // used to pass the update to content processes.
-  static void GetPreference(dom::Pref* aPref);
+  static void GetPreference(dom::Pref* aPref,
+                            const GeckoProcessType aDestinationProcessType,
+                            const nsACString& aDestinationRemoteType);
   static void SetPreference(const dom::Pref& aPref);
 
 #ifdef DEBUG
@@ -499,6 +434,9 @@ class Preferences final : public nsIPrefService,
   // preferences.
   nsresult SavePrefFileBlocking();
   nsresult SavePrefFileAsynchronous();
+
+  // If this is false, only blocking writes, on main thread are allowed.
+  bool AllowOffMainThreadSave();
 
  private:
   virtual ~Preferences();
@@ -519,10 +457,11 @@ class Preferences final : public nsIPrefService,
 
   // Off main thread is only respected for the default aFile value (nullptr).
   nsresult SavePrefFileInternal(nsIFile* aFile, SaveMethod aSaveMethod);
-  nsresult WritePrefFile(nsIFile* aFile, SaveMethod aSaveMethod);
+  nsresult WritePrefFile(
+      nsIFile* aFile, SaveMethod aSaveMethod,
+      UniquePtr<MozPromiseHolder<WritePrefFilePromise>> aPromise = nullptr);
 
-  // If this is false, only blocking writes, on main thread are allowed.
-  bool AllowOffMainThreadSave();
+  nsresult ResetUserPrefs();
 
   // Helpers for implementing
   // Register(Prefix)Callback/Unregister(Prefix)Callback.
@@ -551,10 +490,10 @@ class Preferences final : public nsIPrefService,
                                           void* aClosure, MatchKind aMatchKind);
 
   static nsresult RegisterCallbacks(PrefChangedFunc aCallback,
-                                    const char** aPrefs, void* aClosure,
+                                    const char* const* aPrefs, void* aClosure,
                                     MatchKind aMatchKind);
   static nsresult UnregisterCallbacks(PrefChangedFunc aCallback,
-                                      const char** aPrefs, void* aClosure,
+                                      const char* const* aPrefs, void* aClosure,
                                       MatchKind aMatchKind);
 
   template <typename T>
@@ -586,6 +525,8 @@ class Preferences final : public nsIPrefService,
 
  private:
   nsCOMPtr<nsIFile> mCurrentFile;
+  // Time since unix epoch in ms (JS Date compatible)
+  PRTime mUserPrefsFileLastModifiedAtStartup = 0;
   bool mDirty = false;
   bool mProfileShutdown = false;
   // We wait a bit after prefs are dirty before writing them. In this period,
@@ -601,6 +542,18 @@ class Preferences final : public nsIPrefService,
   // Init static members. Returns true on success.
   static bool InitStaticMembers();
 };
+
+extern Atomic<bool, Relaxed> sOmitBlocklistedPrefValues;
+extern Atomic<bool, Relaxed> sCrashOnBlocklistedPref;
+
+bool IsPreferenceSanitized(const char* aPref);
+
+const char kFissionEnforceBlockList[] =
+    "fission.enforceBlocklistedPrefsInSubprocesses";
+const char kFissionOmitBlockListValues[] =
+    "fission.omitBlocklistedPrefsInSubprocesses";
+
+void OnFissionBlocklistPrefChange(const char* aPref, void* aData);
 
 }  // namespace mozilla
 

@@ -4,7 +4,7 @@
 
 "use strict";
 
-const asyncStorage = require("devtools/shared/async-storage");
+const asyncStorage = require("resource://devtools/shared/async-storage.js");
 
 /*
  * asyncStoreHelper wraps asyncStorage so that it is easy to define project
@@ -35,13 +35,13 @@ function asyncStoreHelper(root, mappings) {
         return value || getMappingDefaultValue(key);
       },
       set(value) {
-        return asyncStorage.setItem(`${root}.${getMappingKey(key)}`, value);
+        asyncStorage.setItem(`${root}.${getMappingKey(key)}`, value);
       },
     })
   );
 
   store = new Proxy(store, {
-    set: function(target, property, value, receiver) {
+    set(target, property) {
       if (!mappings.hasOwnProperty(property)) {
         throw new Error(`AsyncStore: ${property} is not defined in mappings`);
       }

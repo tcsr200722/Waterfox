@@ -4,34 +4,28 @@
 
 "use strict";
 
-const promise = require("promise");
-const CssLogic = require("devtools/shared/inspector/css-logic");
-const { ELEMENT_STYLE } = require("devtools/shared/specs/styles");
-const TextProperty = require("devtools/client/inspector/rules/models/text-property");
-const Services = require("Services");
+const {
+  style: { ELEMENT_STYLE },
+} = require("resource://devtools/shared/constants.js");
+const CssLogic = require("resource://devtools/shared/inspector/css-logic.js");
+const TextProperty = require("resource://devtools/client/inspector/rules/models/text-property.js");
 
 loader.lazyRequireGetter(
   this,
-  "updateSourceLink",
-  "devtools/client/inspector/rules/actions/rules",
-  true
-);
-loader.lazyRequireGetter(
-  this,
   "promiseWarn",
-  "devtools/client/inspector/shared/utils",
+  "resource://devtools/client/inspector/shared/utils.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "parseNamedDeclarations",
-  "devtools/shared/css/parsing-utils",
+  "resource://devtools/shared/css/parsing-utils.js",
   true
 );
 
 const STYLE_INSPECTOR_PROPERTIES =
   "devtools/shared/locales/styleinspector.properties";
-const { LocalizationHelper } = require("devtools/shared/l10n");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
 const STYLE_INSPECTOR_L10N = new LocalizationHelper(STYLE_INSPECTOR_PROPERTIES);
 
 /**
@@ -56,15 +50,23 @@ class Rule {
   constructor(elementStyle, options) {
     this.elementStyle = elementStyle;
     this.domRule = options.rule;
-    this.matchedSelectors = options.matchedSelectors || [];
+    this.compatibilityIssues = null;
+
+    if (this.domRule.hasMatchedSelectorIndexesTrait) {
+      this.matchedSelectorIndexes = options.matchedSelectorIndexes || [];
+    } else {
+      // @backward-compat { version 128 } this.matchedDesugaredSelectors can be removed
+      // once 128 hits release
+      this.matchedDesugaredSelectors = options.matchedDesugaredSelectors || [];
+    }
+
     this.pseudoElement = options.pseudoElement || "";
     this.isSystem = options.isSystem;
     this.isUnmatched = options.isUnmatched || false;
     this.inherited = options.inherited || null;
     this.keyframes = options.keyframes || null;
+    this.userAdded = options.rule.userAdded;
 
-    this.mediaText =
-      this.domRule && this.domRule.mediaText ? this.domRule.mediaText : "";
     this.cssProperties = this.elementStyle.ruleView.cssProperties;
     this.inspector = this.elementStyle.ruleView.inspector;
     this.store = this.elementStyle.ruleView.store;
@@ -75,33 +77,19 @@ class Rule {
     this.textProps = this.textProps.concat(this._getDisabledProperties());
 
     this.getUniqueSelector = this.getUniqueSelector.bind(this);
-    this.onDeclarationsUpdated = this.onDeclarationsUpdated.bind(this);
-    this.onLocationChanged = this.onLocationChanged.bind(this);
     this.onStyleRuleFrontUpdated = this.onStyleRuleFrontUpdated.bind(this);
-    this.updateSourceLocation = this.updateSourceLocation.bind(this);
 
-    // Added in Firefox 72 for backwards compatibility of initial fix for Bug 1557689.
-    // See follow-up fix in Bug 1593944.
-    if (this.domRule.traits.emitsRuleUpdatedEvent) {
-      this.domRule.on("rule-updated", this.onStyleRuleFrontUpdated);
-    } else {
-      this.domRule.on("declarations-updated", this.onDeclarationsUpdated);
-    }
+    this.domRule.on("rule-updated", this.onStyleRuleFrontUpdated);
   }
 
   destroy() {
-    if (this.unsubscribeSourceMap) {
-      this.unsubscribeSourceMap();
+    if (this._unsubscribeSourceMap) {
+      this._unsubscribeSourceMap();
     }
 
-    // Added in Firefox 72
-    if (this.domRule.traits.emitsRuleUpdatedEvent) {
-      this.domRule.off("rule-updated", this.onStyleRuleFrontUpdated);
-    } else {
-      this.domRule.off("declarations-updated", this.onDeclarationsUpdated);
-    }
-
-    this.domRule.off("location-changed", this.onLocationChanged);
+    this.domRule.off("rule-updated", this.onStyleRuleFrontUpdated);
+    this.compatibilityIssues = null;
+    this.destroyed = true;
   }
 
   get declarations() {
@@ -120,41 +108,27 @@ class Rule {
   }
 
   get selector() {
-    return {
+    const data = {
       getUniqueSelector: this.getUniqueSelector,
-      matchedSelectors: this.matchedSelectors,
       selectors: this.domRule.selectors,
+      selectorsSpecificity: this.domRule.selectorsSpecificity,
+      selectorWarnings: this.domRule.selectors,
       selectorText: this.keyframes ? this.domRule.keyText : this.selectorText,
     };
-  }
 
-  get sourceLink() {
-    return {
-      label: this.getSourceText(
-        CssLogic.shortSource({ href: this.sourceLocation.url })
-      ),
-      title: this.getSourceText(this.sourceLocation.url),
-    };
+    if (this.domRule.hasMatchedSelectorIndexesTrait) {
+      data.matchedSelectorIndexes = this.matchedSelectorIndexes;
+    } else {
+      // @backward-compat { version 128 } matchedDesugaredSelectors can be removed
+      // once 128 hits release
+      data.matchedDesugaredSelectors = this.matchedDesugaredSelectors;
+    }
+
+    return data;
   }
 
   get sourceMapURLService() {
     return this.inspector.toolbox.sourceMapURLService;
-  }
-
-  /**
-   * Returns the original source location which includes the original URL, line and
-   * column numbers.
-   */
-  get sourceLocation() {
-    if (!this._sourceLocation) {
-      this._sourceLocation = {
-        column: this.ruleColumn,
-        line: this.ruleLine,
-        url: this.sheet ? this.sheet.href || this.sheet.nodeHref : null,
-      };
-    }
-
-    return this._sourceLocation;
   }
 
   get title() {
@@ -163,7 +137,7 @@ class Rule {
       title += ":" + this.ruleLine;
     }
 
-    return title + (this.mediaText ? " @media " + this.mediaText : "");
+    return title;
   }
 
   get inheritedSource() {
@@ -237,6 +211,35 @@ class Rule {
   }
 
   /**
+   * Get the declaration block issues from the compatibility actor
+   * @returns A promise that resolves with an array of objects in following form:
+   *    {
+   *      // Type of compatibility issue
+   *      type: <string>,
+   *      // The CSS declaration that has compatibility issues
+   *      property: <string>,
+   *      // Alias to the given CSS property
+   *      alias: <Array>,
+   *      // Link to MDN documentation for the particular CSS rule
+   *      url: <string>,
+   *      deprecated: <boolean>,
+   *      experimental: <boolean>,
+   *      // An array of all the browsers that don't support the given CSS rule
+   *      unsupportedBrowsers: <Array>,
+   *    }
+   */
+  async getCompatibilityIssues() {
+    if (!this.compatibilityIssues) {
+      this.compatibilityIssues =
+        this.inspector.commands.inspectorCommand.getCSSDeclarationBlockIssues(
+          this.domRule.declarations
+        );
+    }
+
+    return this.compatibilityIssues;
+  }
+
+  /**
    * Returns the TextProperty with the given id or undefined if it cannot be found.
    *
    * @param {String|null} id
@@ -246,33 +249,6 @@ class Rule {
    */
   getDeclaration(id) {
     return id ? this.textProps.find(textProp => textProp.id === id) : undefined;
-  }
-
-  /**
-   * Returns a formatted source text of the given stylesheet URL with its source line
-   * and @media text.
-   *
-   * @param  {String} url
-   *         The stylesheet URL.
-   */
-  getSourceText(url) {
-    if (this.isSystem) {
-      return `${STYLE_INSPECTOR_L10N.getStr("rule.userAgentStyles")} ${
-        this.title
-      }`;
-    }
-
-    let sourceText = url;
-
-    if (this.sourceLocation.line > 0) {
-      sourceText += ":" + this.sourceLocation.line;
-    }
-
-    if (this.mediaText) {
-      sourceText += " @media " + this.mediaText;
-    }
-
-    return sourceText;
   }
 
   /**
@@ -290,7 +266,7 @@ class Rule {
       selector = await this.inherited.getUniqueSelector();
     } else {
       // This is an inline style from the current node.
-      selector = this.inspector.selectionCssSelector;
+      selector = await this.inspector.selection.nodeFront.getUniqueSelector();
     }
 
     return selector;
@@ -376,7 +352,7 @@ class Rule {
 
     // Store disabled properties in the disabled store.
     const disabled = this.elementStyle.store.disabled;
-    if (disabledProps.length > 0) {
+    if (disabledProps.length) {
       disabled.set(this.domRule, disabledProps);
     } else {
       disabled.delete(this.domRule);
@@ -452,8 +428,7 @@ class Rule {
   applyProperties(modifier) {
     // If there is already a pending modification, we have to wait
     // until it settles before applying the next modification.
-    const resultPromise = promise
-      .resolve(this._applyingModifications)
+    const resultPromise = Promise.resolve(this._applyingModifications)
       .then(() => {
         const modifications = this.domRule.startModifyingProperties(
           this.cssProperties
@@ -538,6 +513,7 @@ class Rule {
    **@return {Promise}
    */
   previewPropertyValue(property, value, priority) {
+    this.elementStyle.ruleView.emitForTests("start-preview-property-value");
     const modifications = this.domRule.startModifyingProperties(
       this.cssProperties
     );
@@ -613,26 +589,17 @@ class Rule {
     const textProps = [];
     const store = this.elementStyle.store;
 
-    // Starting with FF49, StyleRuleActors provide parsed declarations.
-    let props = this.domRule.declarations;
-    if (!props.length) {
-      // If the authored text has an invalid property, it will show up
-      // as nameless.  Skip these as we don't currently have a good
-      // way to display them.
-      props = parseNamedDeclarations(
-        this.cssProperties.isKnown,
-        this.domRule.authoredText,
-        true
-      );
-    }
-
-    for (const prop of props) {
+    for (const prop of this.domRule.declarations) {
       const name = prop.name;
       // In an inherited rule, we only show inherited properties.
       // However, we must keep all properties in order for rule
       // rewriting to work properly.  So, compute the "invisible"
       // property here.
-      const invisible = this.inherited && !this.cssProperties.isInherited(name);
+      const inherits = prop.isCustomProperty
+        ? prop.inherits
+        : this.cssProperties.isInherited(name);
+      const invisible = this.inherited && !inherits;
+
       const value = store.userProperties.getProperty(
         this.domRule,
         name,
@@ -685,7 +652,13 @@ class Rule {
    * properties as needed.
    */
   refresh(options) {
-    this.matchedSelectors = options.matchedSelectors || [];
+    if (this.domRule.hasMatchedSelectorIndexesTrait) {
+      this.matchedSelectorIndexes = options.matchedSelectorIndexes || [];
+    } else {
+      // @backward-compat { version 128 } this.matchedDesugaredSelectors can be removed
+      // once 128 hits release
+      this.matchedDesugaredSelectors = options.matchedDesugaredSelectors || [];
+    }
     const newTextProps = this._getTextProperties();
 
     // The element style rule behaves differently on refresh. We basically need to update
@@ -871,6 +844,43 @@ class Rule {
   }
 
   /**
+   * @returns {Boolean} Whether or not the rule is in a layer
+   */
+  isInLayer() {
+    return this.domRule.ancestorData.some(({ type }) => type === "layer");
+  }
+
+  /**
+   * Return whether this rule and the one passed are in the same layer,
+   * (as in described in the spec; this is not checking that the 2 rules are children
+   * of the same CSSLayerBlockRule)
+   *
+   * @param {Rule} otherRule: The rule we want to compare with
+   * @returns {Boolean}
+   */
+  isInDifferentLayer(otherRule) {
+    const filterLayer = ({ type }) => type === "layer";
+    const thisLayers = this.domRule.ancestorData.filter(filterLayer);
+    const otherRuleLayers = otherRule.domRule.ancestorData.filter(filterLayer);
+
+    if (thisLayers.length !== otherRuleLayers.length) {
+      return true;
+    }
+
+    return thisLayers.some((layer, i) => {
+      const otherRuleLayer = otherRuleLayers[i];
+      // For named layers, we can compare the layer name directly, since we want to identify
+      // the actual layer, not the specific CSSLayerBlockRule.
+      // For nameless layers though, we don't have a choice and we can only identify them
+      // via their CSSLayerBlockRule, so we're using the rule actorID.
+      return (
+        (layer.value || layer.actorID) !==
+        (otherRuleLayer.value || otherRuleLayer.actorID)
+      );
+    });
+  }
+
+  /**
    * See whether this rule has any non-invisible properties.
    * @return {Boolean} true if there is any visible property, or false
    *         if all properties are invisible
@@ -882,96 +892,6 @@ class Rule {
       }
     }
     return false;
-  }
-
-  /**
-   * TODO: Remove after Firefox 75. Keep until then for backwards-compatibility for Bug
-   * 1557689 which has an updated fix from Bug 1593944.
-   * Handler for "declarations-updated" events fired from the StyleRuleActor for a
-   * CSS rule when the status of any of its CSS declarations change.
-   *
-   * Check whether the used/unused status of any declaration has changed and update the
-   * inactive CSS indicator in the UI accordingly.
-   *
-   * @param {Array} declarations
-   *        List of objects describing all CSS declarations of this CSS rule.
-   *        @See StyleRuleActor._declarations
-   */
-  onDeclarationsUpdated(declarations) {
-    this.textProps.forEach((textProp, index) => {
-      const isUsedPrevious = textProp.isUsed().used;
-      const isUsedCurrent = declarations[index].isUsed.used;
-
-      // Skip if property used state did not change.
-      if (isUsedPrevious === isUsedCurrent) {
-        return;
-      }
-
-      // Replace the method called by TextPropertyEditor to check whether the CSS
-      // declaration is used with the updated declaration's `isUsed` object.
-      // TODO: convert from Object to Boolean. See Bug 1574471
-      textProp.isUsed = () => declarations[index].isUsed;
-
-      // Reflect the new active/inactive flag state in the UI.
-      textProp.editor.updatePropertyUsedIndicator();
-    });
-  }
-
-  /**
-   * Handler for "location-changed" events fired from the StyleRuleActor. This could
-   * occur by adding a new declaration to the rule. Updates the source location of the
-   * rule. This will overwrite the source map location.
-   */
-  onLocationChanged() {
-    const url = this.sheet ? this.sheet.href || this.sheet.nodeHref : null;
-    this.updateSourceLocation(url, this.ruleLine, this.ruleColumn);
-  }
-
-  /**
-   * Subscribes the rule to the source map service to map the the original source
-   * location.
-   */
-  subscribeToLocationChange() {
-    const { url, line, column } = this.sourceLocation;
-
-    if (url && !this.isSystem && this.domRule.type !== ELEMENT_STYLE) {
-      // Subscribe returns an unsubscribe function that can be called on destroy.
-      this.unsubscribeSourceMap = this.sourceMapURLService.subscribe(
-        url,
-        line,
-        column,
-        (enabled, sourceUrl, sourceLine, sourceColumn) => {
-          if (enabled) {
-            // Only update the source location if source map is in use.
-            this.updateSourceLocation(sourceUrl, sourceLine, sourceColumn);
-          }
-        }
-      );
-    }
-
-    this.domRule.on("location-changed", this.onLocationChanged);
-  }
-
-  /**
-   * Handler for any location changes called from the SourceMapURLService and can also be
-   * called from onLocationChanged(). Updates the source location for the rule.
-   *
-   * @param  {String} url
-   *         The original URL.
-   * @param  {Number} line
-   *         The original line number.
-   * @param  {number} column
-   *         The original column number.
-   */
-  updateSourceLocation(url, line, column) {
-    this._sourceLocation = {
-      column,
-      line,
-      url,
-    };
-    this.store.dispatch(
-      updateSourceLink(this.domRule.actorID, this.sourceLink)
-    );
   }
 }
 

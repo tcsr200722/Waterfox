@@ -7,14 +7,12 @@
 #ifndef nsUrlClassifierPrefixSet_h_
 #define nsUrlClassifierPrefixSet_h_
 
-#include "nsISupportsUtils.h"
-#include "nsID.h"
-#include "nsIMemoryReporter.h"
 #include "nsIUrlClassifierPrefixSet.h"
-#include "nsTArray.h"
+#include "nsISupports.h"
 #include "nsToolkitCompsCID.h"
+#include "nsString.h"
+#include "nsTArray.h"
 #include "mozilla/FileUtils.h"
-#include "mozilla/MemoryReporting.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Poison.h"
 
@@ -29,8 +27,7 @@ class VariableLengthPrefixSet;
 }  // namespace safebrowsing
 }  // namespace mozilla
 
-class nsUrlClassifierPrefixSet final : public nsIUrlClassifierPrefixSet,
-                                       public nsIMemoryReporter {
+class nsUrlClassifierPrefixSet final : public nsIUrlClassifierPrefixSet {
  public:
   nsUrlClassifierPrefixSet();
 
@@ -40,29 +37,32 @@ class nsUrlClassifierPrefixSet final : public nsIUrlClassifierPrefixSet,
   NS_IMETHOD Contains(uint32_t aPrefix, bool* aFound) override;
   NS_IMETHOD IsEmpty(bool* aEmpty) override;
 
-  nsresult GetPrefixesNative(FallibleTArray<uint32_t>& outArray);
+  nsresult GetPrefixesNative(FallibleTArray<uint32_t>& aOutArray);
+  nsresult GetPrefixByIndex(uint32_t aIndex, uint32_t* aOutPrefix) const;
   nsresult WritePrefixes(nsCOMPtr<nsIOutputStream>& out) const;
   nsresult LoadPrefixes(nsCOMPtr<nsIInputStream>& in);
   uint32_t CalculatePreallocateSize() const;
+  uint32_t Length() const;
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
   NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_NSIMEMORYREPORTER
 
   friend class mozilla::safebrowsing::VariableLengthPrefixSet;
 
  private:
-  virtual ~nsUrlClassifierPrefixSet();
+  virtual ~nsUrlClassifierPrefixSet() MOZ_REQUIRES(mLock);
 
   static const uint32_t DELTAS_LIMIT = 120;
   static const uint32_t MAX_INDEX_DIFF = (1 << 16);
   static const uint32_t PREFIXSET_VERSION_MAGIC = 1;
 
-  void Clear();
-  nsresult MakePrefixSet(const uint32_t* aArray, uint32_t aLength);
-  uint32_t BinSearch(uint32_t start, uint32_t end, uint32_t target) const;
-  bool IsEmptyInternal() const;
+  void Clear() MOZ_REQUIRES(mLock);
+  nsresult MakePrefixSet(const uint32_t* aArray, uint32_t aLength)
+      MOZ_REQUIRES(mLock);
+  uint32_t BinSearch(uint32_t start, uint32_t end, uint32_t target) const
+      MOZ_REQUIRES(mLock);
+  bool IsEmptyInternal() const MOZ_REQUIRES(mLock);
 
   // Lock to prevent races between the url-classifier thread (which does most
   // of the operations) and the main thread (which does memory reporting).
@@ -71,20 +71,19 @@ class nsUrlClassifierPrefixSet final : public nsIUrlClassifierPrefixSet,
   mutable mozilla::Mutex mLock;
   // list of fully stored prefixes, that also form the
   // start of a run of deltas in mIndexDeltas.
-  nsTArray<uint32_t> mIndexPrefixes;
+  nsTArray<uint32_t> mIndexPrefixes MOZ_GUARDED_BY(mLock);
   // array containing arrays of deltas from indices.
   // Index to the place that matches the closest lower
   // prefix from mIndexPrefix. Then every "delta" corresponds
   // to a prefix in the PrefixSet.
   // This array could be empty when we decide to store all the prefixes
   // in mIndexPrefixes.
-  nsTArray<nsTArray<uint16_t> > mIndexDeltas;
+  nsTArray<nsTArray<uint16_t> > mIndexDeltas MOZ_GUARDED_BY(mLock);
 
   // how many prefixes we have.
-  uint32_t mTotalPrefixes;
+  uint32_t mTotalPrefixes MOZ_GUARDED_BY(mLock);
 
-  nsCString mName;
-  nsCString mMemoryReportPath;
+  nsCString mName;  // Set in Init() only
   mozilla::CorruptionCanary mCanary;
 };
 

@@ -7,20 +7,21 @@
 #ifndef jit_arm_Assembler_arm_h
 #define jit_arm_Assembler_arm_h
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/MathAlgorithms.h"
 
 #include <algorithm>
+#include <iterator>
+#include <type_traits>
 
 #include "jit/arm/Architecture-arm.h"
 #include "jit/arm/disasm/Disasm-arm.h"
 #include "jit/CompactBuffer.h"
 #include "jit/JitCode.h"
-#include "jit/JitRealm.h"
 #include "jit/shared/Assembler-shared.h"
 #include "jit/shared/Disassembler-shared.h"
 #include "jit/shared/IonAssemblerBufferWithConstantPools.h"
+#include "wasm/WasmTypeDecls.h"
 
 union PoolHintPun;
 
@@ -66,6 +67,17 @@ struct SecondScratchRegisterScope : public AutoRegisterScope {
   explicit SecondScratchRegisterScope(MacroAssembler& masm);
 };
 
+class MOZ_RAII AutoNonDefaultSecondScratchRegister {
+ public:
+  explicit AutoNonDefaultSecondScratchRegister(MacroAssembler& masm,
+                                               Register reg);
+  ~AutoNonDefaultSecondScratchRegister();
+
+ private:
+  Register prevSecondScratch_;
+  MacroAssembler& masm_;
+};
+
 static constexpr Register OsrFrameReg = r3;
 static constexpr Register CallTempReg0 = r5;
 static constexpr Register CallTempReg1 = r6;
@@ -80,8 +92,7 @@ static constexpr Register IntArgReg2 = r2;
 static constexpr Register IntArgReg3 = r3;
 static constexpr Register HeapReg = r10;
 static constexpr Register CallTempNonArgRegs[] = {r5, r6, r7, r8};
-static const uint32_t NumCallTempNonArgRegs =
-    mozilla::ArrayLength(CallTempNonArgRegs);
+static const uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
 
 // These register assignments for the 64-bit atomic ops are frequently too
 // constraining, but we have no way of expressing looser constraints to the
@@ -100,6 +111,8 @@ static constexpr Register64 CmpXchgNew64 =
     Register64(CmpXchgNewHi, CmpXchgNewLo);
 static constexpr Register CmpXchgOutLo = IntArgReg0;
 static constexpr Register CmpXchgOutHi = IntArgReg1;
+static constexpr Register64 CmpXchgOut64 =
+    Register64(CmpXchgOutHi, CmpXchgOutLo);
 
 // Exchange: Any two non-equal odd/even pairs would do for `new` and `out`.
 
@@ -118,8 +131,12 @@ static constexpr Register64 FetchOpVal64 =
     Register64(FetchOpValHi, FetchOpValLo);
 static constexpr Register FetchOpTmpLo = IntArgReg2;
 static constexpr Register FetchOpTmpHi = IntArgReg3;
+static constexpr Register64 FetchOpTmp64 =
+    Register64(FetchOpTmpHi, FetchOpTmpLo);
 static constexpr Register FetchOpOutLo = IntArgReg0;
 static constexpr Register FetchOpOutHi = IntArgReg1;
+static constexpr Register64 FetchOpOut64 =
+    Register64(FetchOpOutHi, FetchOpOutLo);
 
 class ABIArgGenerator {
   unsigned intRegIndex_;
@@ -147,6 +164,7 @@ class ABIArgGenerator {
   ABIArg next(MIRType argType);
   ABIArg& current() { return current_; }
   uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
+  void increaseStackOffset(uint32_t bytes) { stackOffset_ += bytes; }
 };
 
 bool IsUnaligned(const wasm::MemoryAccessDesc& access);
@@ -158,7 +176,7 @@ static constexpr Register ABINonArgReg2 = r6;
 static constexpr Register ABINonArgReg3 = r7;
 
 // This register may be volatile or nonvolatile. Avoid d15 which is the
-// ScratchDoubleReg.
+// ScratchDoubleReg_.
 static constexpr FloatRegister ABINonArgDoubleReg{FloatRegisters::d8,
                                                   VFPRegister::Double};
 
@@ -173,21 +191,31 @@ static constexpr Register ABINonVolatileReg = r6;
 // and non-volatile registers.
 static constexpr Register ABINonArgReturnVolatileReg = lr;
 
-// TLS pointer argument register for WebAssembly functions. This must not alias
-// any other register used for passing function arguments or return values.
-// Preserved by WebAssembly functions.
-static constexpr Register WasmTlsReg = r9;
+// Instance pointer argument register for WebAssembly functions. This must not
+// alias any other register used for passing function arguments or return
+// values. Preserved by WebAssembly functions.
+static constexpr Register InstanceReg = r9;
 
 // Registers used for wasm table calls. These registers must be disjoint
-// from the ABI argument registers, WasmTlsReg and each other.
+// from the ABI argument registers, InstanceReg and each other.
 static constexpr Register WasmTableCallScratchReg0 = ABINonArgReg0;
 static constexpr Register WasmTableCallScratchReg1 = ABINonArgReg1;
 static constexpr Register WasmTableCallSigReg = ABINonArgReg2;
 static constexpr Register WasmTableCallIndexReg = ABINonArgReg3;
 
+// Registers used for ref calls.
+static constexpr Register WasmCallRefCallScratchReg0 = ABINonArgReg0;
+static constexpr Register WasmCallRefCallScratchReg1 = ABINonArgReg1;
+static constexpr Register WasmCallRefReg = ABINonArgReg3;
+
+// Registers used for wasm tail calls operations.
+static constexpr Register WasmTailCallInstanceScratchReg = ABINonArgReg1;
+static constexpr Register WasmTailCallRAScratchReg = lr;
+static constexpr Register WasmTailCallFPScratchReg = ABINonArgReg3;
+
 // Register used as a scratch along the return path in the fast js -> wasm stub
-// code.  This must not overlap ReturnReg, JSReturnOperand, or WasmTlsReg.  It
-// must be a volatile register.
+// code.  This must not overlap ReturnReg, JSReturnOperand, or InstanceReg.
+// It must be a volatile register.
 static constexpr Register WasmJitEntryReturnScratch = r5;
 
 static constexpr Register PreBarrierReg = r1;
@@ -217,34 +245,43 @@ static constexpr FloatRegister ReturnFloat32Reg = {FloatRegisters::d0,
 static constexpr FloatRegister ReturnDoubleReg = {FloatRegisters::d0,
                                                   VFPRegister::Double};
 static constexpr FloatRegister ReturnSimd128Reg = InvalidFloatReg;
-static constexpr FloatRegister ScratchFloat32Reg = {FloatRegisters::s30,
-                                                    VFPRegister::Single};
-static constexpr FloatRegister ScratchDoubleReg = {FloatRegisters::d15,
-                                                   VFPRegister::Double};
+static constexpr FloatRegister ScratchFloat32Reg_ = {FloatRegisters::s30,
+                                                     VFPRegister::Single};
+static constexpr FloatRegister ScratchDoubleReg_ = {FloatRegisters::d15,
+                                                    VFPRegister::Double};
 static constexpr FloatRegister ScratchSimd128Reg = InvalidFloatReg;
 static constexpr FloatRegister ScratchUIntReg = {FloatRegisters::d15,
                                                  VFPRegister::UInt};
 static constexpr FloatRegister ScratchIntReg = {FloatRegisters::d15,
                                                 VFPRegister::Int};
 
+// Do not reference ScratchFloat32Reg_ directly, use ScratchFloat32Scope
+// instead.
 struct ScratchFloat32Scope : public AutoFloatRegisterScope {
   explicit ScratchFloat32Scope(MacroAssembler& masm)
-      : AutoFloatRegisterScope(masm, ScratchFloat32Reg) {}
-};
-struct ScratchDoubleScope : public AutoFloatRegisterScope {
-  explicit ScratchDoubleScope(MacroAssembler& masm)
-      : AutoFloatRegisterScope(masm, ScratchDoubleReg) {}
+      : AutoFloatRegisterScope(masm, ScratchFloat32Reg_) {}
 };
 
-// Registerd used in RegExpMatcher instruction (do not use JSReturnOperand).
+// Do not reference ScratchDoubleReg_ directly, use ScratchDoubleScope instead.
+struct ScratchDoubleScope : public AutoFloatRegisterScope {
+  explicit ScratchDoubleScope(MacroAssembler& masm)
+      : AutoFloatRegisterScope(masm, ScratchDoubleReg_) {}
+};
+
+// Registers used by RegExpMatcher and RegExpExecMatch stubs (do not use
+// JSReturnOperand).
 static constexpr Register RegExpMatcherRegExpReg = CallTempReg0;
 static constexpr Register RegExpMatcherStringReg = CallTempReg1;
 static constexpr Register RegExpMatcherLastIndexReg = CallTempReg2;
 
-// Registerd used in RegExpTester instruction (do not use ReturnReg).
-static constexpr Register RegExpTesterRegExpReg = CallTempReg0;
-static constexpr Register RegExpTesterStringReg = CallTempReg1;
-static constexpr Register RegExpTesterLastIndexReg = CallTempReg2;
+// Registers used by RegExpExecTest stub (do not use ReturnReg).
+static constexpr Register RegExpExecTestRegExpReg = CallTempReg0;
+static constexpr Register RegExpExecTestStringReg = CallTempReg1;
+
+// Registers used by RegExpSearcher stub (do not use ReturnReg).
+static constexpr Register RegExpSearcherRegExpReg = CallTempReg0;
+static constexpr Register RegExpSearcherStringReg = CallTempReg1;
+static constexpr Register RegExpSearcherLastIndexReg = CallTempReg2;
 
 static constexpr FloatRegister d0 = {FloatRegisters::d0, VFPRegister::Double};
 static constexpr FloatRegister d1 = {FloatRegisters::d1, VFPRegister::Double};
@@ -294,6 +331,10 @@ static_assert(JitStackAlignment % SimdMemoryAlignment == 0,
 
 static const uint32_t WasmStackAlignment = SimdMemoryAlignment;
 static const uint32_t WasmTrapInstructionLength = 4;
+
+// See comments in wasm::GenerateFunctionPrologue.  The difference between these
+// is the size of the largest callable prologue on the platform.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
 
 static const Scale ScalePointer = TimesFour;
 
@@ -1238,10 +1279,6 @@ class Assembler : public AssemblerShared {
 #endif
   }
 
-  // We need to wait until an AutoJitContextAlloc is created by the
-  // MacroAssembler, before allocating any space.
-  void initWithAllocator() { m_buffer.initWithAllocator(); }
-
   void setUnlimitedBuffer() { m_buffer.setUnlimited(); }
 
   static Condition InvertCondition(Condition cond);
@@ -1249,10 +1286,6 @@ class Assembler : public AssemblerShared {
   static Condition ConditionWithoutEqual(Condition cond);
 
   static DoubleCondition InvertCondition(DoubleCondition cond);
-
-  void writeRelocation(BufferOffset src) {
-    jumpRelocations_.writeUnsigned(src.getOffset());
-  }
 
   void writeDataRelocation(BufferOffset offset, ImmGCPtr ptr) {
     // Raw GC pointer relocations and Value relocations both end up in
@@ -1323,6 +1356,7 @@ class Assembler : public AssemblerShared {
   // Write a single instruction into the instruction stream.  Very hot,
   // inlined for performance
   MOZ_ALWAYS_INLINE BufferOffset writeInst(uint32_t x) {
+    MOZ_ASSERT(hasCreator());
     BufferOffset offs = m_buffer.putInt(x);
 #ifdef JS_DISASM_ARM
     spew(m_buffer.getInstOrNull(offs));
@@ -1630,6 +1664,12 @@ class Assembler : public AssemblerShared {
   BufferOffset as_vdtm(LoadStore st, Register rn, VFPRegister vd, int length,
                        /* also has update conditions */ Condition c = Always);
 
+  // vldr/vstr variants that handle unaligned accesses.  These encode as NEON
+  // single-element instructions and can only be used if NEON is available.
+  // Here, vd must be tagged as a float or double register.
+  BufferOffset as_vldr_unaligned(VFPRegister vd, Register rn);
+  BufferOffset as_vstr_unaligned(VFPRegister vd, Register rn);
+
   BufferOffset as_vimm(VFPRegister vd, VFPImm imm, Condition c = Always);
 
   BufferOffset as_vmrs(Register r, Condition c = Always);
@@ -1665,7 +1705,10 @@ class Assembler : public AssemblerShared {
 
   static bool SupportsFloatingPoint() { return HasVFP(); }
   static bool SupportsUnalignedAccesses() { return HasARMv7(); }
-  static bool SupportsFastUnalignedAccesses() { return false; }
+  // Note, returning false here is technically wrong, but one has to go via the
+  // as_vldr_unaligned and as_vstr_unaligned instructions to get proper behavior
+  // and those are NEON-specific and have to be asked for specifically.
+  static bool SupportsFastUnalignedFPAccesses() { return false; }
 
   static bool HasRoundInstruction(RoundingMode mode) { return false; }
 
@@ -1673,7 +1716,7 @@ class Assembler : public AssemblerShared {
   void addPendingJump(BufferOffset src, ImmPtr target, RelocationKind kind) {
     enoughMemory_ &= jumps_.append(RelativePatch(target.value, kind));
     if (kind == RelocationKind::JITCODE) {
-      writeRelocation(src);
+      jumpRelocations_.writeUnsigned(src.getOffset());
     }
   }
 
@@ -1856,8 +1899,6 @@ class Assembler : public AssemblerShared {
   static void ToggleToJmp(CodeLocationLabel inst_);
   static void ToggleToCmp(CodeLocationLabel inst_);
 
-  static uint8_t* BailoutTableStart(uint8_t* code);
-
   static size_t ToggledCallSize(uint8_t* code);
   static void ToggleCall(CodeLocationLabel inst_, bool enabled);
 
@@ -1939,7 +1980,11 @@ class InstDTR : public Instruction {
   // TODO: Replace the initialization with something that is safer.
   InstDTR(LoadStore ls, IsByte_ ib, Index mode, Register rt, DTRAddr addr,
           Assembler::Condition c)
-      : Instruction(ls | ib | mode | RT(rt) | addr.encode() | IsDTR, c) {}
+      : Instruction(std::underlying_type_t<LoadStore>(ls) |
+                        std::underlying_type_t<IsByte_>(ib) |
+                        std::underlying_type_t<Index>(mode) | RT(rt) |
+                        addr.encode() | IsDTR,
+                    c) {}
 
   static bool IsTHIS(const Instruction& i);
   static InstDTR* AsTHIS(const Instruction& i);
@@ -2187,16 +2232,6 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
   return true;
 }
 
-#if !defined(JS_CODEGEN_ARM_HARDFP) || defined(JS_SIMULATOR_ARM)
-
-static inline uint32_t GetArgStackDisp(uint32_t arg) {
-  MOZ_ASSERT(!UseHardFpABI());
-  MOZ_ASSERT(arg >= NumIntArgRegs);
-  return (arg - NumIntArgRegs) * sizeof(intptr_t);
-}
-
-#endif
-
 #if defined(JS_CODEGEN_ARM_HARDFP) || defined(JS_SIMULATOR_ARM)
 
 static inline bool GetFloat32ArgReg(uint32_t usedIntArgs,
@@ -2218,47 +2253,6 @@ static inline bool GetDoubleArgReg(uint32_t usedIntArgs, uint32_t usedFloatArgs,
   }
   *out = VFPRegister(usedFloatArgs >> 1, VFPRegister::Double);
   return true;
-}
-
-static inline uint32_t GetIntArgStackDisp(uint32_t usedIntArgs,
-                                          uint32_t usedFloatArgs,
-                                          uint32_t* padding) {
-  MOZ_ASSERT(UseHardFpABI());
-  MOZ_ASSERT(usedIntArgs >= NumIntArgRegs);
-  uint32_t doubleSlots =
-      std::max(0, (int32_t)usedFloatArgs - (int32_t)NumFloatArgRegs);
-  doubleSlots *= 2;
-  int intSlots = usedIntArgs - NumIntArgRegs;
-  return (intSlots + doubleSlots + *padding) * sizeof(intptr_t);
-}
-
-static inline uint32_t GetFloat32ArgStackDisp(uint32_t usedIntArgs,
-                                              uint32_t usedFloatArgs,
-                                              uint32_t* padding) {
-  MOZ_ASSERT(UseHardFpABI());
-  MOZ_ASSERT(usedFloatArgs >= NumFloatArgRegs);
-  uint32_t intSlots = 0;
-  if (usedIntArgs > NumIntArgRegs) {
-    intSlots = usedIntArgs - NumIntArgRegs;
-  }
-  uint32_t float32Slots = usedFloatArgs - NumFloatArgRegs;
-  return (intSlots + float32Slots + *padding) * sizeof(intptr_t);
-}
-
-static inline uint32_t GetDoubleArgStackDisp(uint32_t usedIntArgs,
-                                             uint32_t usedFloatArgs,
-                                             uint32_t* padding) {
-  MOZ_ASSERT(UseHardFpABI());
-  MOZ_ASSERT(usedFloatArgs >= NumFloatArgRegs);
-  uint32_t intSlots = 0;
-  if (usedIntArgs > NumIntArgRegs) {
-    intSlots = usedIntArgs - NumIntArgRegs;
-    // Update the amount of padding required.
-    *padding += (*padding + usedIntArgs) % 2;
-  }
-  uint32_t doubleSlots = usedFloatArgs - NumFloatArgRegs;
-  doubleSlots *= 2;
-  return (intSlots + doubleSlots + *padding) * sizeof(intptr_t);
 }
 
 #endif

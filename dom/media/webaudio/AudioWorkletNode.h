@@ -9,14 +9,15 @@
 
 #include "AudioNode.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AudioParamMap;
 struct AudioWorkletNodeOptions;
 class MessagePort;
 struct NamedAudioParamTimeline;
 struct ProcessorErrorDetails;
+template <typename KeyType, typename ValueType>
+class Record;
 
 class AudioWorkletNode : public AudioNode {
  public:
@@ -30,7 +31,7 @@ class AudioWorkletNode : public AudioNode {
       const nsAString& aName, const AudioWorkletNodeOptions& aOptions,
       ErrorResult& aRv);
 
-  AudioParamMap* GetParameters(ErrorResult& aRv) const;
+  AudioParamMap* GetParameters(ErrorResult& aRv);
 
   MessagePort* Port() const { return mPort; };
 
@@ -62,7 +63,6 @@ class AudioWorkletNode : public AudioNode {
   uint16_t mOutputCount;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // AudioWorkletNode_h_

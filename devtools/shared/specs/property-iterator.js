@@ -9,7 +9,7 @@ const {
   Option,
   RetVal,
   types,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 types.addDictType("propertyiterator.data", {
   ownProperties: "nullable:json",
@@ -23,7 +23,9 @@ const propertyIteratorSpec = generateActorSpec({
       request: {
         indexes: Option(0, "array:number"),
       },
-      response: RetVal("array:string"),
+      response: {
+        names: RetVal("array:string"),
+      },
     },
     slice: {
       request: {

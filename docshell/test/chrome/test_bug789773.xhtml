@@ -26,26 +26,26 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=789773
    */
   SimpleTest.waitForExplicitFinish();
 
-  const {AppConstants} = ChromeUtils.import("resource://gre/modules/AppConstants.jsm");
+  const {AppConstants} = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
+  );
 
   var calledListenerForBrowserChromeURL = false;
   var testProgressListener = {
     START_DOC: Ci.nsIWebProgressListener.STATE_START | Ci.nsIWebProgressListener.STATE_IS_DOCUMENT,
-    onStateChange: function(wp, req, stateFlags, status) {
+    onStateChange(wp, req, stateFlags) {
       let browserChromeFileName = AppConstants.BROWSER_CHROME_URL.split("/").reverse()[0];
       if (req.name.includes(browserChromeFileName)) {
         wp.DOMWindow; // Force the lazy creation of a DOM window.
         calledListenerForBrowserChromeURL = true;
       }
-      if (req.name.includes("mozilla.xhtml") && (stateFlags & Ci.nsIWebProgressListener.STATE_STOP))
+      if (req.name.includes("mozilla.html") && (stateFlags & Ci.nsIWebProgressListener.STATE_STOP))
         finishTest();
     },
-    QueryInterface: function(iid) {
-      if (iid.equals(Ci.nsISupportsWeakReference) ||
-          iid.equals(Ci.nsIWebProgressListener))
-        return this;
-      throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
-    }
+    QueryInterface: ChromeUtils.generateQI([
+      "nsIWebProgressListener",
+      "nsISupportsWeakReference",
+    ]),
   }
 
    // Add our progress listener

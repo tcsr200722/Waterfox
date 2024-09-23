@@ -11,11 +11,13 @@
 #include "xpcpublic.h"
 
 #include "mozilla/AbstractThread.h"
-#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/extensions/StreamFilterChild.h"
 #include "mozilla/extensions/StreamFilterEvents.h"
 #include "mozilla/extensions/StreamFilterParent.h"
+#include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/RootedDictionary.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsLiteralString.h"
@@ -78,7 +80,7 @@ void StreamFilter::Connect() {
   if (cc) {
     cc->SendInitStreamFilter(mChannelId, addonId)
         ->Then(
-            GetCurrentThreadSerialEventTarget(), __func__,
+            GetCurrentSerialEventTarget(), __func__,
             [self](mozilla::ipc::Endpoint<PStreamFilterChild>&& aEndpoint) {
               self->FinishConnect(std::move(aEndpoint));
             },
@@ -88,7 +90,7 @@ void StreamFilter::Connect() {
   } else {
     StreamFilterParent::Create(nullptr, mChannelId, addonId)
         ->Then(
-            GetCurrentThreadSerialEventTarget(), __func__,
+            GetCurrentSerialEventTarget(), __func__,
             [self](mozilla::ipc::Endpoint<PStreamFilterChild>&& aEndpoint) {
               self->FinishConnect(std::move(aEndpoint));
             },
@@ -101,9 +103,6 @@ void StreamFilter::FinishConnect(
   if (aEndpoint.IsValid()) {
     MOZ_RELEASE_ASSERT(aEndpoint.Bind(mActor));
     mActor->RecvInitialized(true);
-
-    // IPC now owns this reference.
-    Unused << do_AddRef(mActor);
   } else {
     mActor->RecvInitialized(false);
   }
@@ -124,18 +123,6 @@ bool StreamFilter::CheckAlive() {
  * Binding methods
  *****************************************************************************/
 
-template <typename T>
-static inline bool ReadTypedArrayData(nsTArray<uint8_t>& aData, const T& aArray,
-                                      ErrorResult& aRv) {
-  aArray.ComputeState();
-  if (!aData.SetLength(aArray.Length(), fallible)) {
-    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-    return false;
-  }
-  memcpy(aData.Elements(), aArray.Data(), aArray.Length());
-  return true;
-}
-
 void StreamFilter::Write(const ArrayBufferOrUint8Array& aData,
                          ErrorResult& aRv) {
   if (!mActor) {
@@ -144,20 +131,12 @@ void StreamFilter::Write(const ArrayBufferOrUint8Array& aData,
   }
 
   nsTArray<uint8_t> data;
-
-  bool ok;
-  if (aData.IsArrayBuffer()) {
-    ok = ReadTypedArrayData(data, aData.GetAsArrayBuffer(), aRv);
-  } else if (aData.IsUint8Array()) {
-    ok = ReadTypedArrayData(data, aData.GetAsUint8Array(), aRv);
-  } else {
-    MOZ_ASSERT_UNREACHABLE("Argument should be ArrayBuffer or Uint8Array");
+  if (!AppendTypedArrayDataTo(aData, data)) {
+    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return;
   }
 
-  if (ok) {
-    mActor->Write(std::move(data), aRv);
-  }
+  mActor->Write(std::move(data), aRv);
 }
 
 StreamFilterStatus StreamFilter::Status() const {
@@ -222,17 +201,19 @@ void StreamFilter::FireDataEvent(const nsTArray<uint8_t>& aData) {
   init.mBubbles = false;
   init.mCancelable = false;
 
-  auto buffer = ArrayBuffer::Create(cx, aData.Length(), aData.Elements());
-  if (!buffer) {
+  ErrorResult error;
+  auto buffer = ArrayBuffer::Create(cx, aData, error);
+  if (error.Failed()) {
     // TODO: There is no way to recover from this. This chunk of data is lost.
-    FireErrorEvent(NS_LITERAL_STRING("Out of memory"));
+    error.SuppressException();
+    FireErrorEvent(u"Out of memory"_ns);
     return;
   }
 
   init.mData.Init(buffer);
 
   RefPtr<StreamFilterDataEvent> event =
-      StreamFilterDataEvent::Constructor(this, NS_LITERAL_STRING("data"), init);
+      StreamFilterDataEvent::Constructor(this, u"data"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);
@@ -242,7 +223,7 @@ void StreamFilter::FireErrorEvent(const nsAString& aError) {
   MOZ_ASSERT(mError.IsEmpty());
 
   mError = aError;
-  FireEvent(NS_LITERAL_STRING("error"));
+  FireEvent(u"error"_ns);
 }
 
 /*****************************************************************************
@@ -255,7 +236,8 @@ bool StreamFilter::IsAllowedInContext(JSContext* aCx, JSObject* /* unused */) {
                                              nsGkAtoms::webRequestBlocking);
 }
 
-JSObject* StreamFilter::WrapObject(JSContext* aCx, HandleObject aGivenProto) {
+JSObject* StreamFilter::WrapObject(JSContext* aCx,
+                                   JS::Handle<JSObject*> aGivenProto) {
   return StreamFilter_Binding::Wrap(aCx, this, aGivenProto);
 }
 

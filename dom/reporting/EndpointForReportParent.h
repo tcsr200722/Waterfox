@@ -10,6 +10,10 @@
 #include "mozilla/dom/PEndpointForReportParent.h"
 
 namespace mozilla {
+namespace ipc {
+class PrincipalInfo;
+}
+
 namespace dom {
 
 class EndpointForReport;
@@ -20,7 +24,7 @@ class EndpointForReportParent final : public PEndpointForReportParent {
 
   EndpointForReportParent();
 
-  void Run(const nsString& aGroupName,
+  void Run(const nsAString& aGroupName,
            const mozilla::ipc::PrincipalInfo& aPrincipalInfo);
 
  private:

@@ -8,25 +8,40 @@
 
 #include "frontend/BytecodeEmitter.h"
 #include "frontend/EmitterScope.h"
-#include "frontend/IfEmitter.h"
-#include "frontend/SourceNotes.h"
+#include "frontend/ParserAtom.h"  // TaggedParserAtomIndex
 #include "vm/Opcodes.h"
-#include "vm/Scope.h"
 #include "vm/StencilEnums.h"  // TryNoteKind
 
 using namespace js;
 using namespace js::frontend;
 
-using mozilla::Maybe;
 using mozilla::Nothing;
 
 ForOfEmitter::ForOfEmitter(BytecodeEmitter* bce,
                            const EmitterScope* headLexicalEmitterScope,
-                           bool allowSelfHostedIter, IteratorKind iterKind)
+                           SelfHostedIter selfHostedIter, IteratorKind iterKind
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+                           ,
+                           HasUsingDeclarationInHead hasUsingDeclarationInHead
+#endif
+                           )
     : bce_(bce),
-      allowSelfHostedIter_(allowSelfHostedIter),
+      selfHostedIter_(selfHostedIter),
       iterKind_(iterKind),
-      headLexicalEmitterScope_(headLexicalEmitterScope) {}
+      headLexicalEmitterScope_(headLexicalEmitterScope) {
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+  MOZ_ASSERT_IF(hasUsingDeclarationInHead == HasUsingDeclarationInHead::Yes,
+                headLexicalEmitterScope->hasEnvironment());
+  if (hasUsingDeclarationInHead == HasUsingDeclarationInHead::Yes) {
+    // The using bindings are closed over and stored in the lexical environment
+    // object for headLexicalEmitterScope.
+    // Mark that the environment has disposables for them to be disposed on
+    // every iteration.
+    MOZ_ASSERT(headLexicalEmitterScope == bce_->innermostEmitterScope());
+    bce_->innermostEmitterScope()->setHasDisposables();
+  }
+#endif
+}
 
 bool ForOfEmitter::emitIterated() {
   MOZ_ASSERT(state_ == State::Start);
@@ -42,18 +57,25 @@ bool ForOfEmitter::emitIterated() {
   return true;
 }
 
-bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
+bool ForOfEmitter::emitInitialize(uint32_t forPos) {
   MOZ_ASSERT(state_ == State::Iterated);
 
   tdzCacheForIteratedValue_.reset();
 
+  //                [stack] # if AllowContentWithNext
+  //                [stack] NEXT ITER
+  //                [stack] # elif AllowContentWith
+  //                [stack] ITERABLE ITERFN SYNC_ITERFN?
+  //                [stack] # else
+  //                [stack] ITERABLE
+
   if (iterKind_ == IteratorKind::Async) {
-    if (!bce_->emitAsyncIterator()) {
+    if (!bce_->emitAsyncIterator(selfHostedIter_)) {
       //            [stack] NEXT ITER
       return false;
     }
   } else {
-    if (!bce_->emitIterator()) {
+    if (!bce_->emitIterator(selfHostedIter_)) {
       //            [stack] NEXT ITER
       return false;
     }
@@ -63,7 +85,7 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
   // stack.
 
   int32_t iterDepth = bce_->bytecodeSection().stackDepth();
-  loopInfo_.emplace(bce_, iterDepth, allowSelfHostedIter_, iterKind_);
+  loopInfo_.emplace(bce_, iterDepth, selfHostedIter_, iterKind_);
 
   if (!loopInfo_->emitLoopHead(bce_, Nothing())) {
     //              [stack] NEXT ITER
@@ -83,7 +105,28 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
                ScopeKind::Lexical);
 
     if (headLexicalEmitterScope_->hasEnvironment()) {
-      if (!bce_->emit1(JSOp::RecreateLexicalEnv)) {
+#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT
+      if (headLexicalEmitterScope_->hasDisposables()) {
+        // Before recreation of the lexical environment, we must dispose
+        // the disposables of the previous iteration.
+        //
+        // Emitting the bytecode to dispose over here means
+        // that we will have one extra disposal at the start of the loop which
+        // is a no op because there arent any disposables added yet.
+        //
+        // There also wouldn't be a dispose operation for the environment
+        // object recreated for the last iteration, where it leaves the loop
+        // before evaluating the body statement.
+        //
+        // TODO: Move the handling of emitting this bytecode to UsingEmitter
+        // (bug 1900756)
+        if (!bce_->emit1(JSOp::DisposeDisposables)) {
+          return false;
+        }
+      }
+#endif
+      if (!bce_->emitInternedScopeOp(headLexicalEmitterScope_->index(),
+                                     JSOp::RecreateLexicalEnv)) {
         //          [stack] NEXT ITER
         return false;
       }
@@ -100,10 +143,8 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
 #endif
 
   // Make sure this code is attributed to the "for".
-  if (forPos) {
-    if (!bce_->updateSourceCoordNotes(*forPos)) {
-      return false;
-    }
+  if (!bce_->updateSourceCoordNotes(forPos)) {
+    return false;
   }
 
   if (!bce_->emit1(JSOp::Dup2)) {
@@ -111,7 +152,8 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
     return false;
   }
 
-  if (!bce_->emitIteratorNext(forPos, iterKind_, allowSelfHostedIter_)) {
+  if (!bce_->emitIteratorNext(mozilla::Some(forPos), iterKind_,
+                              selfHostedIter_)) {
     //              [stack] NEXT ITER RESULT
     return false;
   }
@@ -120,7 +162,8 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
     //              [stack] NEXT ITER RESULT RESULT
     return false;
   }
-  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->names().done)) {
+  if (!bce_->emitAtomOp(JSOp::GetProp,
+                        TaggedParserAtomIndex::WellKnown::done())) {
     //              [stack] NEXT ITER RESULT DONE
     return false;
   }
@@ -128,7 +171,7 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
   // if (done) break;
   MOZ_ASSERT(bce_->innermostNestableControl == loopInfo_.ptr(),
              "must be at the top-level of the loop");
-  if (!bce_->emitJump(JSOp::IfNe, &loopInfo_->breaks)) {
+  if (!bce_->emitJump(JSOp::JumpIfTrue, &loopInfo_->breaks)) {
     //              [stack] NEXT ITER RESULT
     return false;
   }
@@ -137,7 +180,8 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
   //
   // Note that ES 13.7.5.13, step 5.c says getting result.value does not
   // call IteratorClose, so start TryNoteKind::ForOfIterClose after the GetProp.
-  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->names().value)) {
+  if (!bce_->emitAtomOp(JSOp::GetProp,
+                        TaggedParserAtomIndex::WellKnown::value())) {
     //              [stack] NEXT ITER VALUE
     return false;
   }
@@ -165,7 +209,7 @@ bool ForOfEmitter::emitBody() {
   return true;
 }
 
-bool ForOfEmitter::emitEnd(const Maybe<uint32_t>& iteratedPos) {
+bool ForOfEmitter::emitEnd(uint32_t iteratedPos) {
   MOZ_ASSERT(state_ == State::Body);
 
   MOZ_ASSERT(bce_->bytecodeSection().stackDepth() == loopDepth_ + 1,
@@ -185,10 +229,8 @@ bool ForOfEmitter::emitEnd(const Maybe<uint32_t>& iteratedPos) {
   // which corresponds to the iteration protocol.
   // This is a bit misleading for 2nd and later iterations and might need
   // some fix (bug 1482003).
-  if (iteratedPos) {
-    if (!bce_->updateSourceCoordNotes(*iteratedPos)) {
-      return false;
-    }
+  if (!bce_->updateSourceCoordNotes(iteratedPos)) {
+    return false;
   }
 
   if (!bce_->emit1(JSOp::Pop)) {

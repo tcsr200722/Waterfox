@@ -11,48 +11,47 @@
 /* :::::::::: button :::::::::: */
 
 button {
-  -moz-appearance: button;
   margin: 1px 5px 2px;
   min-width: 6.3em;
   color: ButtonText;
   text-shadow: none;
 }
 
-.button-box {
-  -moz-appearance: button-focus;
-}
-
-.button-icon {
-  margin-inline-end: 2px;
-}
-
 .button-text {
   margin: 0;
+  margin-inline-start: 2px;
   text-align: center;
 }
 
 /* .......... hover state .......... */
 
-button:hover:not(:-moz-any(:active,[disabled="true"],[open="true"],[checked="true"],[default="true"])) {
+button:where(:hover:not([checked="true"])) {
   color: -moz-buttonhovertext;
 }
 
 /* .......... active state .......... */
 
-button:-moz-any(:hover:active,[open="true"]):not([default="true"]):not([disabled="true"]) {
-  color: -moz-gtk-buttonactivetext;
+button:where(:hover:active, [open="true"]) {
+  color: -moz-buttonactivetext;
 }
 
 /* .......... disabled state .......... */
 
-button[disabled="true"] {
+button:where([disabled="true"]) {
   color: GrayText;
+}
+
+/* .......... focused state .......... */
+
+button:where(:focus-visible) {
+  outline: auto;
 }
 
 /* ::::: menu buttons ::::: */
 
 .button-menu-dropmarker {
-  -moz-appearance: toolbarbutton-dropdown;
+  appearance: auto;
+  -moz-default-appearance: toolbarbutton-dropdown;
 }
 
 /* ::::: plain buttons ::::: */
@@ -60,17 +59,4 @@ button[disabled="true"] {
 button.plain {
   margin: 0 !important;
   padding: 0 !important;
-}
-
-button[type="disclosure"] {
-  margin: 0;
-  -moz-appearance: none;
-  list-style-image: url("chrome://global/skin/icons/twisty-collapsed.svg");
-  -moz-context-properties: fill;
-  fill: currentColor;
-  min-width: 0;
-}
-
-button[type="disclosure"][open="true"] {
-  list-style-image: url("chrome://global/skin/icons/twisty-expanded.svg");
 }

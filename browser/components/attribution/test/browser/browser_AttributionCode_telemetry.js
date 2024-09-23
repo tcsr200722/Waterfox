@@ -1,37 +1,9 @@
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryTestUtils",
-  "resource://testing-common/TelemetryTestUtils.jsm"
-);
-const { AttributionCode } = ChromeUtils.import(
-  "resource:///modules/AttributionCode.jsm"
-);
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
-const { sinon } = ChromeUtils.import("resource://testing-common/Sinon.jsm");
-
-async function writeAttributionFile(data) {
-  let appDir = Services.dirsvc.get("LocalAppData", Ci.nsIFile);
-  let file = appDir.clone();
-  file.append(Services.appinfo.vendor || "mozilla");
-  file.append(AppConstants.MOZ_APP_NAME);
-
-  await OS.File.makeDir(file.path, { from: appDir.path, ignoreExisting: true });
-
-  file.append("postSigningData");
-  await OS.File.writeAtomic(file.path, data);
-}
-
-add_task(function setup() {
-  // Clear cache call is only possible in a testing environment
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  env.set("XPCSHELL_TEST_PROFILE_DIR", "testing");
-
-  registerCleanupFunction(() => {
-    env.set("XPCSHELL_TEST_PROFILE_DIR", null);
-  });
+ChromeUtils.defineESModuleGetters(this, {
+  TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
 });
+const { AttributionIOUtils } = ChromeUtils.importESModule(
+  "resource:///modules/AttributionCode.sys.mjs"
+);
 
 add_task(async function test_parse_error() {
   registerCleanupFunction(async () => {
@@ -54,17 +26,24 @@ add_task(async function test_parse_error() {
   );
 
   // Write an invalid file to trigger a decode error
-  await AttributionCode.deleteFileAsync();
-  AttributionCode._clearCache();
-  await writeAttributionFile(""); // empty string is invalid
-  result = await AttributionCode.getAttrDataAsync();
-  Assert.deepEqual(result, {}, "Should have failed to parse");
+  // Skip this for MSIX packages though - we can't write or delete
+  // the attribution file there, everything happens in memory instead.
+  if (
+    AppConstants.platform === "win" &&
+    !Services.sysinfo.getProperty("hasWinPackageId")
+  ) {
+    await AttributionCode.deleteFileAsync();
+    AttributionCode._clearCache();
+    await AttributionCode.writeAttributionFile("");
+    result = await AttributionCode.getAttrDataAsync();
+    Assert.deepEqual(result, {}, "Should have failed to parse");
 
-  // `assertHistogram` also ensures that `read_error` index 0 is 0
-  // as we should not have recorded telemetry from the previous `getAttrDataAsync` call
-  TelemetryTestUtils.assertHistogram(histogram, 1, 1);
-  // Reset
-  histogram.clear();
+    // `assertHistogram` also ensures that `read_error` index 0 is 0
+    // as we should not have recorded telemetry from the previous `getAttrDataAsync` call
+    TelemetryTestUtils.assertHistogram(histogram, INDEX_DECODE_ERROR, 1);
+    // Reset
+    histogram.clear();
+  }
 });
 
 add_task(async function test_read_error() {
@@ -75,23 +54,41 @@ add_task(async function test_read_error() {
   const histogram = Services.telemetry.getHistogramById(
     "BROWSER_ATTRIBUTION_ERRORS"
   );
-  const sandbox = sinon.createSandbox();
+
   // Delete the file to trigger a read error
   await AttributionCode.deleteFileAsync();
   AttributionCode._clearCache();
   // Clear any existing telemetry
   histogram.clear();
 
-  // Force a read error
-  const stub = sandbox.stub(OS.File, "read");
-  stub.throws(() => new Error("read_error"));
+  // Force the file to exist but then cause a read error
+  let oldExists = AttributionIOUtils.exists;
+  AttributionIOUtils.exists = () => true;
+
+  let oldRead = AttributionIOUtils.read;
+  AttributionIOUtils.read = () => {
+    throw new Error("read_error");
+  };
+
+  // On MSIX builds, AttributionIOUtils.read is not used; AttributionCode.msixCampaignId is.
+  // Ensure we override that as well.
+  let oldMsixCampaignId = AttributionCode.msixCampaignId;
+  AttributionCode.msixCampaignId = async () => {
+    throw new Error("read_error");
+  };
+
+  registerCleanupFunction(() => {
+    AttributionIOUtils.exists = oldExists;
+    AttributionIOUtils.read = oldRead;
+    AttributionCode.msixCampaignId = oldMsixCampaignId;
+  });
+
   // Try to read the file
   await AttributionCode.getAttrDataAsync();
 
   // It should record the read error
-  TelemetryTestUtils.assertHistogram(histogram, 0, 1);
+  TelemetryTestUtils.assertHistogram(histogram, INDEX_READ_ERROR, 1);
 
   // Clear any existing telemetry
   histogram.clear();
-  sandbox.restore();
 });

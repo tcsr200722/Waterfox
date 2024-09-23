@@ -7,11 +7,11 @@
 #include "nsString.h"
 #include "jsapi.h"
 #include "js/CallNonGenericMethod.h"
+#include "js/Object.h"              // JS::GetClass, JS::GetReservedSlot
+#include "js/PropertyAndElement.h"  // JS_DefineFunctions
 #include "js/PropertySpec.h"
-#include "mozJSComponentLoader.h"
-#include "nsZipArchive.h"
+#include "nsIThread.h"
 
-#include "mozilla/Scoped.h"
 #include "mozilla/Services.h"
 #include "nsIObserverService.h"
 #include "nsThreadUtils.h"
@@ -73,7 +73,7 @@ enum { WITNESS_SLOT_EVENT, WITNESS_INSTANCES_SLOTS };
  */
 already_AddRefed<FinalizationEvent> ExtractFinalizationEvent(
     JSObject* objSelf) {
-  JS::Value slotEvent = JS_GetReservedSlot(objSelf, WITNESS_SLOT_EVENT);
+  JS::Value slotEvent = JS::GetReservedSlot(objSelf, WITNESS_SLOT_EVENT);
   if (slotEvent.isUndefined()) {
     // Forget() has been called
     return nullptr;
@@ -90,7 +90,7 @@ already_AddRefed<FinalizationEvent> ExtractFinalizationEvent(
  * Unless method Forget() has been called, the finalizer displays an error
  * message.
  */
-void Finalize(JSFreeOp* fop, JSObject* objSelf) {
+void Finalize(JS::GCContext* gcx, JSObject* objSelf) {
   RefPtr<FinalizationEvent> event = ExtractFinalizationEvent(objSelf);
   if (event == nullptr || gShuttingDown) {
     // NB: event will be null if Forget() has been called
@@ -124,7 +124,7 @@ static const JSClass sWitnessClass = {
     &sWitnessClassOps};
 
 bool IsWitness(JS::Handle<JS::Value> v) {
-  return v.isObject() && JS_GetClass(&v.toObject()) == &sWitnessClass;
+  return v.isObject() && JS::GetClass(&v.toObject()) == &sWitnessClass;
 }
 
 /**

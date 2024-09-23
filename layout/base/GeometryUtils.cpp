@@ -7,19 +7,22 @@
 #include "GeometryUtils.h"
 
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/dom/CharacterData.h"
 #include "mozilla/dom/DOMPointBinding.h"
 #include "mozilla/dom/GeometryUtilsBinding.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Text.h"
+#include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/DOMPoint.h"
 #include "mozilla/dom/DOMQuad.h"
 #include "mozilla/dom/DOMRect.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "nsIFrame.h"
+#include "nsContainerFrame.h"
+#include "nsContentUtils.h"
 #include "nsCSSFrameConstructor.h"
 #include "nsLayoutUtils.h"
-#include "nsSVGUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -143,7 +146,7 @@ static nsIFrame* GetFirstNonAnonymousFrameForNode(nsINode* aNode) {
  */
 static nsRect GetBoxRectForFrame(nsIFrame** aFrame, CSSBoxType aType) {
   nsRect r;
-  nsIFrame* f = nsSVGUtils::GetOuterSVGFrameAndCoveredRegion(*aFrame, &r);
+  nsIFrame* f = SVGUtils::GetOuterSVGFrameAndCoveredRegion(*aFrame, &r);
   if (f && f != *aFrame) {
     // For non-outer SVG frames, the BoxType is ignored.
     *aFrame = f;
@@ -191,7 +194,7 @@ class AccumulateQuadCallback : public nsLayoutUtils::BoxCallback {
     }
   }
 
-  virtual void AddBox(nsIFrame* aFrame) override {
+  void AddBox(nsIFrame* aFrame) override {
     nsIFrame* f = aFrame;
     if (mBoxType == CSSBoxType::Margin && f->IsTableFrame()) {
       // Margin boxes for table frames should be taken from the table wrapper
@@ -207,8 +210,8 @@ class AccumulateQuadCallback : public nsLayoutUtils::BoxCallback {
           CSSPoint(nsPresContext::AppUnitsToFloatCSSPixels(appUnits[i].x),
                    nsPresContext::AppUnitsToFloatCSSPixels(appUnits[i].y));
     }
-    nsLayoutUtils::TransformResult rv =
-        nsLayoutUtils::TransformPoints(f, mRelativeToFrame, 4, points);
+    nsLayoutUtils::TransformResult rv = nsLayoutUtils::TransformPoints(
+        RelativeTo{f}, RelativeTo{mRelativeToFrame}, 4, points);
     if (rv == nsLayoutUtils::TRANSFORM_SUCCEEDED) {
       CSSPoint delta(
           nsPresContext::AppUnitsToFloatCSSPixels(mRelativeToBoxTopLeft.x),
@@ -327,7 +330,7 @@ void GetBoxQuadsFromWindowOrigin(nsINode* aNode,
   BoxQuadOptions bqo(aOptions);
 
   RefPtr<Document> topInProcessDoc =
-      nsContentUtils::GetRootDocument(aNode->OwnerDoc());
+      nsContentUtils::GetInProcessSubtreeRootDocument(aNode->OwnerDoc());
 
   OwningGeometryNode ogn;
   ogn.SetAsDocument() = topInProcessDoc;
@@ -422,8 +425,8 @@ static void TransformPoints(nsINode* aTo, const GeometryNode& aFrom,
   for (uint32_t i = 0; i < aPointCount; ++i) {
     aPoints[i] += fromOffsetGfx;
   }
-  nsLayoutUtils::TransformResult rv =
-      nsLayoutUtils::TransformPoints(fromFrame, toFrame, aPointCount, aPoints);
+  nsLayoutUtils::TransformResult rv = nsLayoutUtils::TransformPoints(
+      RelativeTo{fromFrame}, RelativeTo{toFrame}, aPointCount, aPoints);
   if (rv == nsLayoutUtils::TRANSFORM_SUCCEEDED) {
     CSSPoint toOffsetGfx(nsPresContext::AppUnitsToFloatCSSPixels(toOffset.x),
                          nsPresContext::AppUnitsToFloatCSSPixels(toOffset.y));
@@ -452,8 +455,7 @@ already_AddRefed<DOMQuad> ConvertQuadFromNode(
   if (aRv.Failed()) {
     return nullptr;
   }
-  RefPtr<DOMQuad> result = new DOMQuad(aTo->GetParentObject().mObject, points);
-  return result.forget();
+  return MakeAndAddRef<DOMQuad>(aTo->GetParentObject().mObject, points);
 }
 
 already_AddRefed<DOMQuad> ConvertRectFromNode(
@@ -470,8 +472,7 @@ already_AddRefed<DOMQuad> ConvertRectFromNode(
   if (aRv.Failed()) {
     return nullptr;
   }
-  RefPtr<DOMQuad> result = new DOMQuad(aTo->GetParentObject().mObject, points);
-  return result.forget();
+  return MakeAndAddRef<DOMQuad>(aTo->GetParentObject().mObject, points);
 }
 
 already_AddRefed<DOMPoint> ConvertPointFromNode(
@@ -487,9 +488,8 @@ already_AddRefed<DOMPoint> ConvertPointFromNode(
   if (aRv.Failed()) {
     return nullptr;
   }
-  RefPtr<DOMPoint> result =
-      new DOMPoint(aTo->GetParentObject().mObject, point.x, point.y);
-  return result.forget();
+  return MakeAndAddRef<DOMPoint>(aTo->GetParentObject().mObject, point.x,
+                                 point.y);
 }
 
 }  // namespace mozilla

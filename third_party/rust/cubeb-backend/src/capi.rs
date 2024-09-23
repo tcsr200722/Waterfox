@@ -3,11 +3,14 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details
 
-use {ContextOps, StreamOps};
-use cubeb_core::{ffi, DeviceCollectionRef, DeviceRef, DeviceType, StreamParams, StreamParamsRef};
+use cubeb_core::{
+    ffi, DeviceCollectionRef, DeviceRef, DeviceType, InputProcessingParams, StreamParams,
+    StreamParamsRef,
+};
 use std::ffi::CStr;
 use std::mem;
 use std::os::raw::{c_char, c_int, c_void};
+use {ContextOps, StreamOps};
 
 // Helper macro for unwrapping `Result` values from rust-api calls
 // while returning early with a c-api error code if the value of the
@@ -26,7 +29,7 @@ macro_rules! as_opt_ref {
         } else {
             Some(StreamParamsRef::from_ptr($e))
         }
-    }
+    };
 }
 
 #[macro_export]
@@ -38,6 +41,8 @@ macro_rules! capi_new(
             get_max_channel_count: Some($crate::capi::capi_get_max_channel_count::<$ctx>),
             get_min_latency: Some($crate::capi::capi_get_min_latency::<$ctx>),
             get_preferred_sample_rate: Some($crate::capi::capi_get_preferred_sample_rate::<$ctx>),
+            get_supported_input_processing_params:
+                Some($crate::capi::capi_get_supported_input_processing_params::<$ctx>),
             enumerate_devices: Some($crate::capi::capi_enumerate_devices::<$ctx>),
             device_collection_destroy: Some($crate::capi::capi_device_collection_destroy::<$ctx>),
             destroy: Some($crate::capi::capi_destroy::<$ctx>),
@@ -45,13 +50,15 @@ macro_rules! capi_new(
             stream_destroy: Some($crate::capi::capi_stream_destroy::<$stm>),
             stream_start: Some($crate::capi::capi_stream_start::<$stm>),
             stream_stop: Some($crate::capi::capi_stream_stop::<$stm>),
-            stream_reset_default_device:
-                Some($crate::capi::capi_stream_reset_default_device::<$stm>),
             stream_get_position: Some($crate::capi::capi_stream_get_position::<$stm>),
             stream_get_latency: Some($crate::capi::capi_stream_get_latency::<$stm>),
             stream_get_input_latency: Some($crate::capi::capi_stream_get_input_latency::<$stm>),
             stream_set_volume: Some($crate::capi::capi_stream_set_volume::<$stm>),
+            stream_set_name: Some($crate::capi::capi_stream_set_name::<$stm>),
             stream_get_current_device: Some($crate::capi::capi_stream_get_current_device::<$stm>),
+            stream_set_input_mute: Some($crate::capi::capi_stream_set_input_mute::<$stm>),
+            stream_set_input_processing_params:
+                Some($crate::capi::capi_stream_set_input_processing_params::<$stm>),
             stream_device_destroy: Some($crate::capi::capi_stream_device_destroy::<$stm>),
             stream_register_device_changed_callback:
                 Some($crate::capi::capi_stream_register_device_changed_callback::<$stm>),
@@ -59,6 +66,12 @@ macro_rules! capi_new(
                 Some($crate::capi::capi_register_device_collection_changed::<$ctx>)
         }));
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `context` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_init<CTX: ContextOps>(
     c: *mut *mut ffi::cubeb,
     context_name: *const c_char,
@@ -72,11 +85,23 @@ pub unsafe extern "C" fn capi_init<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_get_backend_id<CTX: ContextOps>(c: *mut ffi::cubeb) -> *const c_char {
     let ctx = &mut *(c as *mut CTX);
     ctx.backend_id().as_ptr()
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `max_channels` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_get_max_channel_count<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     max_channels: *mut u32,
@@ -87,6 +112,12 @@ pub unsafe extern "C" fn capi_get_max_channel_count<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `latency_frames` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_get_min_latency<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     param: ffi::cubeb_stream_params,
@@ -98,6 +129,12 @@ pub unsafe extern "C" fn capi_get_min_latency<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `rate` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_get_preferred_sample_rate<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     rate: *mut u32,
@@ -108,6 +145,27 @@ pub unsafe extern "C" fn capi_get_preferred_sample_rate<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `params` pointers.
+/// The caller should ensure those pointers are valid.
+pub unsafe extern "C" fn capi_get_supported_input_processing_params<CTX: ContextOps>(
+    c: *mut ffi::cubeb,
+    params: *mut ffi::cubeb_input_processing_params,
+) -> c_int {
+    let ctx = &mut *(c as *mut CTX);
+    *params = _try!(ctx.supported_input_processing_params()).bits();
+    ffi::CUBEB_OK
+}
+
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `collection` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_enumerate_devices<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     devtype: ffi::cubeb_device_type,
@@ -120,6 +178,12 @@ pub unsafe extern "C" fn capi_enumerate_devices<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` and `collection` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_device_collection_destroy<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     collection: *mut ffi::cubeb_device_collection,
@@ -130,10 +194,23 @@ pub unsafe extern "C" fn capi_device_collection_destroy<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_destroy<CTX>(c: *mut ffi::cubeb) {
     let _: Box<CTX> = Box::from_raw(c as *mut _);
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `c`, `s`, `stream_name`, `input_stream_params`,
+/// `output_stream_params`, `data_callback`, `state_callback`, and `user_ptr` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_init<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     s: *mut *mut ffi::cubeb_stream,
@@ -170,10 +247,22 @@ pub unsafe extern "C" fn capi_stream_init<CTX: ContextOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_stream_destroy<STM>(s: *mut ffi::cubeb_stream) {
     let _ = Box::from_raw(s as *mut STM);
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_stream_start<STM: StreamOps>(s: *mut ffi::cubeb_stream) -> c_int {
     let stm = &mut *(s as *mut STM);
 
@@ -181,6 +270,12 @@ pub unsafe extern "C" fn capi_stream_start<STM: StreamOps>(s: *mut ffi::cubeb_st
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_stream_stop<STM: StreamOps>(s: *mut ffi::cubeb_stream) -> c_int {
     let stm = &mut *(s as *mut STM);
 
@@ -188,15 +283,12 @@ pub unsafe extern "C" fn capi_stream_stop<STM: StreamOps>(s: *mut ffi::cubeb_str
     ffi::CUBEB_OK
 }
 
-pub unsafe extern "C" fn capi_stream_reset_default_device<STM: StreamOps>(
-    s: *mut ffi::cubeb_stream,
-) -> c_int {
-    let stm = &mut *(s as *mut STM);
-
-    _try!(stm.reset_default_device());
-    ffi::CUBEB_OK
-}
-
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `position` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_get_position<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     position: *mut u64,
@@ -207,6 +299,12 @@ pub unsafe extern "C" fn capi_stream_get_position<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `latency` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_get_latency<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     latency: *mut u32,
@@ -217,6 +315,12 @@ pub unsafe extern "C" fn capi_stream_get_latency<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `latency` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_get_input_latency<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     latency: *mut u32,
@@ -227,6 +331,12 @@ pub unsafe extern "C" fn capi_stream_get_input_latency<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure that pointer is valid.
 pub unsafe extern "C" fn capi_stream_set_volume<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     volume: f32,
@@ -237,6 +347,32 @@ pub unsafe extern "C" fn capi_stream_set_volume<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `name` pointers.
+/// The caller should ensure those pointers are valid.
+pub unsafe extern "C" fn capi_stream_set_name<STM: StreamOps>(
+    s: *mut ffi::cubeb_stream,
+    name: *const c_char,
+) -> c_int {
+    let stm = &mut *(s as *mut STM);
+    let anchor = &();
+    if let Some(name) = opt_cstr(anchor, name) {
+        _try!(stm.set_name(name));
+        ffi::CUBEB_OK
+    } else {
+        ffi::CUBEB_ERROR_INVALID_PARAMETER
+    }
+}
+
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `device` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_get_current_device<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     device: *mut *mut ffi::cubeb_device,
@@ -247,6 +383,42 @@ pub unsafe extern "C" fn capi_stream_get_current_device<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure those pointers are valid.
+pub unsafe extern "C" fn capi_stream_set_input_mute<STM: StreamOps>(
+    s: *mut ffi::cubeb_stream,
+    mute: c_int,
+) -> c_int {
+    let stm = &mut *(s as *mut STM);
+    _try!(stm.set_input_mute(mute != 0));
+    ffi::CUBEB_OK
+}
+
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` pointer.
+/// The caller should ensure those pointers are valid.
+pub unsafe extern "C" fn capi_stream_set_input_processing_params<STM: StreamOps>(
+    s: *mut ffi::cubeb_stream,
+    params: ffi::cubeb_input_processing_params,
+) -> c_int {
+    let stm = &mut *(s as *mut STM);
+    _try!(stm.set_input_processing_params(InputProcessingParams::from_bits_truncate(params)));
+    ffi::CUBEB_OK
+}
+
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `device` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_device_destroy<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     device: *mut ffi::cubeb_device,
@@ -257,6 +429,12 @@ pub unsafe extern "C" fn capi_stream_device_destroy<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s` and `device_changed_callback` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_stream_register_device_changed_callback<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     device_changed_callback: ffi::cubeb_device_changed_callback,
@@ -267,6 +445,13 @@ pub unsafe extern "C" fn capi_stream_register_device_changed_callback<STM: Strea
     ffi::CUBEB_OK
 }
 
+/// # Safety
+///
+/// Entry point from C code.
+///
+/// This function is unsafe because it dereferences the given `s`, `collection_changed_callback`, and
+/// `user_ptr` pointers.
+/// The caller should ensure those pointers are valid.
 pub unsafe extern "C" fn capi_register_device_collection_changed<CTX: ContextOps>(
     c: *mut ffi::cubeb,
     devtype: ffi::cubeb_device_type,

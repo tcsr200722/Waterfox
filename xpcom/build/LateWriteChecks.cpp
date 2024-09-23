@@ -10,20 +10,14 @@
 #include "mozilla/PoisonIOInterposer.h"
 #include "mozilla/ProcessedStack.h"
 #include "mozilla/SHA1.h"
-#include "mozilla/Scoped.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
-#include "mozilla/Mutex.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsLocalFile.h"
 #include "nsPrintfCString.h"
-#ifndef ANDROID
-#  include "nsTerminator.h"
-#endif
 #include "mozilla/StackWalk.h"
-#include "plstr.h"
 #include "prio.h"
 
 #ifdef XP_WIN
@@ -64,7 +58,7 @@ class SHA1Stream {
     va_list list;
     va_start(list, aFormat);
     nsAutoCString str;
-    str.AppendPrintf(aFormat, list);
+    str.AppendVprintf(aFormat, list);
     va_end(list);
     mSHA1.update(str.get(), str.Length());
     mozilla::Unused << fwrite(str.get(), 1, str.Length(), mFile);
@@ -133,8 +127,7 @@ void LateWriteObserver::Observe(
   // concurrently from many writes, so we use multiple temporary files.
   std::vector<uintptr_t> rawStack;
 
-  MozStackWalk(RecordStackWalker, /* skipFrames */ 0, /* maxFrames */ 0,
-               &rawStack);
+  MozStackWalk(RecordStackWalker, nullptr, /* maxFrames */ 0, &rawStack);
   mozilla::Telemetry::ProcessedStack stack =
       mozilla::Telemetry::GetStackAndModules(rawStack);
 
@@ -199,11 +192,6 @@ void LateWriteObserver::Observe(
     sha1Stream.Printf("%d %x\n", frame.mModIndex, (unsigned)frame.mOffset);
   }
 
-#ifndef ANDROID
-  sha1Stream.Printf("%d\n", mozilla::nsTerminator::IsCheckingLateWrites());
-#else
-  sha1Stream.Printf("%d\n", false);
-#endif
   mozilla::SHA1Sum::Hash sha1;
   sha1Stream.Finish(sha1);
 
@@ -214,7 +202,7 @@ void LateWriteObserver::Observe(
 
   // We append the sha1 of the contents to the file name. This provides a simple
   // client side deduplication.
-  nsAutoString finalName(NS_LITERAL_STRING("Telemetry.LateWriteFinal-"));
+  nsAutoString finalName(u"Telemetry.LateWriteFinal-"_ns);
   for (int i = 0; i < 20; ++i) {
     finalName.AppendPrintf("%02x", sha1[i]);
   }
@@ -225,7 +213,6 @@ void LateWriteObserver::Observe(
 /******************************* Setup/Teardown *******************************/
 
 static mozilla::StaticAutoPtr<LateWriteObserver> sLateWriteObserver;
-mozilla::Mutex* mMutex = nullptr;
 
 namespace mozilla {
 
@@ -238,20 +225,13 @@ void InitLateWriteChecks() {
       sLateWriteObserver = new LateWriteObserver(nativePath.get());
     }
   }
-  mMutex = new Mutex("LateWriteCheck::mMutex");
 }
 
 void BeginLateWriteChecks() {
-  if (mMutex) {
-    MutexAutoLock lock(*mMutex);
-  }
-
   if (sLateWriteObserver) {
     IOInterposer::Register(IOInterposeObserver::OpWriteFSync,
                            sLateWriteObserver);
   }
-  delete mMutex;
-  mMutex = nullptr;
 }
 
 void StopLateWriteChecks() {

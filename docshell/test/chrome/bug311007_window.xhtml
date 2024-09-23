@@ -8,8 +8,11 @@
         onload="startup();"
         title="bug 311007 test">
 
+  <script src="chrome://mochikit/content/chrome-harness.js" />
   <script type="application/javascript" src="docshell_helpers.js"></script>
   <script type="application/javascript"><![CDATA[
+  // `content` is the id of the browser element used for the test.
+  /* global content */
 /*
    Regression test for bug 283733 and bug 307027.
 
@@ -45,15 +48,12 @@ function WebProgressListener() {
 }
 
 WebProgressListener.prototype = {
-  QueryInterface: function(aIID) {
-    if (aIID.equals(Ci.nsIWebProgressListener) ||
-        aIID.equals(Ci.nsISupportsWeakReference) ||
-        aIID.equals(Ci.nsISupports))
-      return this;
-    throw Components.Exception("", Cr.NS_NOINTERFACE);
-  },
+  QueryInterface: ChromeUtils.generateQI([
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
+  ]),
 
-  onLocationChange: function(aWebProgress, aRequest, aLocation, aFlags) {
+  onLocationChange(aWebProgress, aRequest, aLocation, aFlags) {
     setTimeout(this._callback, 0, aWebProgress, aRequest, aLocation, aFlags);
   },
 
@@ -94,7 +94,7 @@ function step1B(aWebProgress, aRequest, aLocation, aFlags) {
                  .LOCATION_CHANGE_ERROR_PAGE),
      "This page is an error page.");
 
-  ok(!(aWebProgress.QueryInterface(Ci.nsIDocShell)
+  ok(!(document.getElementById("content")
                    .browsingContext
                    .secureBrowserUI.state &
        Ci.nsIWebProgressListener.STATE_IS_SECURE),
@@ -105,7 +105,7 @@ function step1B(aWebProgress, aRequest, aLocation, aFlags) {
 }
 
 /******************************************************************************
- * Step 2: Load a HTTPS page, and confirm it's secure. 
+ * Step 2: Load a HTTPS page, and confirm it's secure.
  ******************************************************************************/
 
 function step2A() {
@@ -124,7 +124,7 @@ function step2B(aWebProgress, aRequest, aLocation, aFlags) {
                   .LOCATION_CHANGE_ERROR_PAGE),
      "This page is not an error page.");
 
-  ok((aWebProgress.QueryInterface(Ci.nsIDocShell)
+  ok((document.getElementById("content")
                   .browsingContext
                   .secureBrowserUI.state &
       Ci.nsIWebProgressListener.STATE_IS_SECURE),
@@ -155,7 +155,7 @@ function step3B(aWebProgress, aRequest, aLocation, aFlags) {
                   .LOCATION_CHANGE_ERROR_PAGE),
      "This page is not an error page.");
 
-  ok((aWebProgress.QueryInterface(Ci.nsIDocShell)
+  ok((document.getElementById("content")
                   .browsingContext
                   .secureBrowserUI.state &
       Ci.nsIWebProgressListener.STATE_IS_SECURE),
@@ -186,15 +186,16 @@ function step4B(aWebProgress, aRequest, aLocation, aFlags) {
                  .LOCATION_CHANGE_ERROR_PAGE),
      "This page is an error page.");
 
-  ok(!(aWebProgress.QueryInterface(Ci.nsIDocShell)
+  ok(!(document.getElementById("content")
                    .browsingContext
                    .secureBrowserUI.state &
        Ci.nsIWebProgressListener.STATE_IS_SECURE),
      "This is not a secure page (4)");
 
   /* End. */
-  aWebProgress.removeProgressListener(gListener);
-  delete(gListener);
+  document.getElementById("content")
+          .webProgress.removeProgressListener(gListener);
+  gListener = null;
   finish();
 }
   ]]></script>

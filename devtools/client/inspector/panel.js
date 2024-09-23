@@ -4,8 +4,8 @@
 
 "use strict";
 
-function InspectorPanel(iframeWindow, toolbox) {
-  this._inspector = new iframeWindow.Inspector(toolbox);
+function InspectorPanel(iframeWindow, toolbox, commands) {
+  this._inspector = new iframeWindow.Inspector(toolbox, commands);
 }
 InspectorPanel.prototype = {
   open() {
@@ -13,7 +13,7 @@ InspectorPanel.prototype = {
   },
 
   destroy() {
-    return this._inspector.destroy();
+    this._inspector.destroy();
   },
 };
 exports.InspectorPanel = InspectorPanel;

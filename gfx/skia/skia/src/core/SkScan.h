@@ -9,24 +9,19 @@
 #ifndef SkScan_DEFINED
 #define SkScan_DEFINED
 
+#include "include/core/SkPoint.h"
 #include "include/core/SkRect.h"
-#include "include/private/SkFixed.h"
-#include <atomic>
+#include "include/private/base/SkFixed.h"
 
-class SkRasterClip;
-class SkRegion;
 class SkBlitter;
 class SkPath;
+class SkRasterClip;
+class SkRegion;
 
 /** Defines a fixed-point rectangle, identical to the integer SkIRect, but its
     coordinates are treated as SkFixed rather than int32_t.
 */
 typedef SkIRect SkXRect;
-
-extern std::atomic<bool> gSkUseAnalyticAA;
-extern std::atomic<bool> gSkForceAnalyticAA;
-
-class AdditiveBlitter;
 
 class SkScan {
 public:
@@ -40,6 +35,12 @@ public:
     typedef void (*HairRCProc)(const SkPoint[], int count, const SkRasterClip&, SkBlitter*);
 
     static void FillPath(const SkPath&, const SkIRect&, SkBlitter*);
+
+    // Paths of a certain size cannot be anti-aliased unless externally tiled (handled by SkDraw).
+    // SkBitmapDevice automatically tiles, SkAAClip does not so SkRasterClipStack converts AA clips
+    // to BW clips if that's the case. SkRegion uses this to know when to tile and union smaller
+    // SkRegions together.
+    static bool PathRequiresTiling(const SkIRect& bounds);
 
     ///////////////////////////////////////////////////////////////////////////
     // rasterclip
@@ -67,7 +68,7 @@ public:
     static void HairRoundPath(const SkPath&, const SkRasterClip&, SkBlitter*);
     static void AntiHairRoundPath(const SkPath&, const SkRasterClip&, SkBlitter*);
 
-    // Needed by do_fill_path in SkScanPriv.h
+    // Needed by SkRegion::setPath
     static void FillPath(const SkPath&, const SkRegion& clip, SkBlitter*);
 
 private:
@@ -87,8 +88,6 @@ private:
     static void HairLineRgn(const SkPoint[], int count, const SkRegion*, SkBlitter*);
     static void AntiHairLineRgn(const SkPoint[], int count, const SkRegion*, SkBlitter*);
     static void AAAFillPath(const SkPath& path, SkBlitter* blitter, const SkIRect& pathIR,
-                            const SkIRect& clipBounds, bool forceRLE);
-    static void SAAFillPath(const SkPath& path, SkBlitter* blitter, const SkIRect& pathIR,
                             const SkIRect& clipBounds, bool forceRLE);
 };
 

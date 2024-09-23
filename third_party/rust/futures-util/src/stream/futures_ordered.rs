@@ -1,19 +1,26 @@
 use crate::stream::{FuturesUnordered, StreamExt};
-use futures_core::future::Future;
-use futures_core::stream::Stream;
-use futures_core::task::{Context, Poll};
-use pin_utils::unsafe_pinned;
+use alloc::collections::binary_heap::{BinaryHeap, PeekMut};
 use core::cmp::Ordering;
 use core::fmt::{self, Debug};
 use core::iter::FromIterator;
 use core::pin::Pin;
-use alloc::collections::binary_heap::{BinaryHeap, PeekMut};
+use futures_core::future::Future;
+use futures_core::ready;
+use futures_core::stream::Stream;
+use futures_core::{
+    task::{Context, Poll},
+    FusedStream,
+};
+use pin_project_lite::pin_project;
 
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-#[derive(Debug)]
-struct OrderWrapper<T> {
-    data: T, // A future or a future's output
-    index: usize,
+pin_project! {
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    #[derive(Debug)]
+    struct OrderWrapper<T> {
+        #[pin]
+        data: T, // A future or a future's output
+        index: isize,
+    }
 }
 
 impl<T> PartialEq for OrderWrapper<T> {
@@ -37,27 +44,21 @@ impl<T> Ord for OrderWrapper<T> {
     }
 }
 
-impl<T> OrderWrapper<T> {
-    unsafe_pinned!(data: T);
-}
-
 impl<T> Future for OrderWrapper<T>
-    where T: Future
+where
+    T: Future,
 {
     type Output = OrderWrapper<T::Output>;
 
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
-        self.as_mut().data().as_mut().poll(cx)
-            .map(|output| OrderWrapper { data: output, index: self.index })
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let index = self.index;
+        self.project().data.poll(cx).map(|output| OrderWrapper { data: output, index })
     }
 }
 
 /// An unbounded queue of futures.
 ///
-/// This "combinator" is similar to `FuturesUnordered`, but it imposes an order
+/// This "combinator" is similar to [`FuturesUnordered`], but it imposes a FIFO order
 /// on top of the set of futures. While futures in the set will race to
 /// completion in parallel, results will only be returned in the order their
 /// originating futures were added to the queue.
@@ -94,8 +95,8 @@ impl<T> Future for OrderWrapper<T>
 pub struct FuturesOrdered<T: Future> {
     in_progress_queue: FuturesUnordered<OrderWrapper<T>>,
     queued_outputs: BinaryHeap<OrderWrapper<T::Output>>,
-    next_incoming_index: usize,
-    next_outgoing_index: usize,
+    next_incoming_index: isize,
+    next_outgoing_index: isize,
 }
 
 impl<T: Future> Unpin for FuturesOrdered<T> {}
@@ -105,8 +106,8 @@ impl<Fut: Future> FuturesOrdered<Fut> {
     ///
     /// The returned `FuturesOrdered` does not contain any futures and, in this
     /// state, `FuturesOrdered::poll_next` will return `Poll::Ready(None)`.
-    pub fn new() -> FuturesOrdered<Fut> {
-        FuturesOrdered {
+    pub fn new() -> Self {
+        Self {
             in_progress_queue: FuturesUnordered::new(),
             queued_outputs: BinaryHeap::new(),
             next_incoming_index: 0,
@@ -134,29 +135,47 @@ impl<Fut: Future> FuturesOrdered<Fut> {
     /// This function will not call `poll` on the submitted future. The caller
     /// must ensure that `FuturesOrdered::poll` is called in order to receive
     /// task notifications.
+    #[deprecated(note = "use `push_back` instead")]
     pub fn push(&mut self, future: Fut) {
-        let wrapped = OrderWrapper {
-            data: future,
-            index: self.next_incoming_index,
-        };
+        self.push_back(future);
+    }
+
+    /// Pushes a future to the back of the queue.
+    ///
+    /// This function submits the given future to the internal set for managing.
+    /// This function will not call `poll` on the submitted future. The caller
+    /// must ensure that `FuturesOrdered::poll` is called in order to receive
+    /// task notifications.
+    pub fn push_back(&mut self, future: Fut) {
+        let wrapped = OrderWrapper { data: future, index: self.next_incoming_index };
         self.next_incoming_index += 1;
+        self.in_progress_queue.push(wrapped);
+    }
+
+    /// Pushes a future to the front of the queue.
+    ///
+    /// This function submits the given future to the internal set for managing.
+    /// This function will not call `poll` on the submitted future. The caller
+    /// must ensure that `FuturesOrdered::poll` is called in order to receive
+    /// task notifications. This future will be the next future to be returned
+    /// complete.
+    pub fn push_front(&mut self, future: Fut) {
+        let wrapped = OrderWrapper { data: future, index: self.next_outgoing_index - 1 };
+        self.next_outgoing_index -= 1;
         self.in_progress_queue.push(wrapped);
     }
 }
 
 impl<Fut: Future> Default for FuturesOrdered<Fut> {
-    fn default() -> FuturesOrdered<Fut> {
-        FuturesOrdered::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl<Fut: Future> Stream for FuturesOrdered<Fut> {
     type Item = Fut::Output;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = &mut *self;
 
         // Check to see if we've already received the next value
@@ -199,7 +218,27 @@ impl<Fut: Future> FromIterator<Fut> for FuturesOrdered<Fut> {
     where
         T: IntoIterator<Item = Fut>,
     {
-        let acc = FuturesOrdered::new();
-        iter.into_iter().fold(acc, |mut acc, item| { acc.push(item); acc })
+        let acc = Self::new();
+        iter.into_iter().fold(acc, |mut acc, item| {
+            acc.push_back(item);
+            acc
+        })
+    }
+}
+
+impl<Fut: Future> FusedStream for FuturesOrdered<Fut> {
+    fn is_terminated(&self) -> bool {
+        self.in_progress_queue.is_terminated() && self.queued_outputs.is_empty()
+    }
+}
+
+impl<Fut: Future> Extend<Fut> for FuturesOrdered<Fut> {
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Fut>,
+    {
+        for item in iter {
+            self.push_back(item);
+        }
     }
 }

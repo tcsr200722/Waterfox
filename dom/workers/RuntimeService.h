@@ -12,18 +12,20 @@
 #include "nsIObserver.h"
 
 #include "js/ContextOptions.h"
+#include "MainThreadUtils.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/SafeRefPtr.h"
 #include "mozilla/dom/workerinternals/JSSettings.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/StaticPtr.h"
 #include "nsClassHashtable.h"
 #include "nsHashKeys.h"
 #include "nsTArray.h"
 
-class nsITimer;
 class nsPIDOMWindowInner;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 struct WorkerLoadInfo;
 class WorkerThread;
 
@@ -52,32 +54,21 @@ class RuntimeService final : public nsIObserver {
     }
   };
 
-  struct IdleThreadInfo {
-    RefPtr<WorkerThread> mThread;
-    mozilla::TimeStamp mExpirationTime;
-  };
-
   mozilla::Mutex mMutex;
 
   // Protected by mMutex.
-  nsClassHashtable<nsCStringHashKey, WorkerDomainInfo> mDomainMap;
-
-  // Protected by mMutex.
-  nsTArray<IdleThreadInfo> mIdleThreadArray;
+  nsClassHashtable<nsCStringHashKey, WorkerDomainInfo> mDomainMap
+      MOZ_GUARDED_BY(mMutex);
 
   // *Not* protected by mMutex.
-  nsClassHashtable<nsPtrHashKey<nsPIDOMWindowInner>, nsTArray<WorkerPrivate*> >
+  nsClassHashtable<nsPtrHashKey<const nsPIDOMWindowInner>,
+                   nsTArray<WorkerPrivate*> >
       mWindowMap;
 
-  // Only used on the main thread.
-  nsCOMPtr<nsITimer> mIdleThreadTimer;
-
-  static UniquePtr<workerinternals::JSSettings> sDefaultJSSettings;
+  static StaticAutoPtr<workerinternals::JSSettings> sDefaultJSSettings;
 
  public:
   struct NavigatorProperties {
-    nsString mAppName;
-    nsString mAppNameOverridden;
     nsString mAppVersion;
     nsString mAppVersionOverridden;
     nsString mPlatform;
@@ -101,27 +92,26 @@ class RuntimeService final : public nsIObserver {
 
   static RuntimeService* GetService();
 
-  bool RegisterWorker(WorkerPrivate* aWorkerPrivate);
+  bool RegisterWorker(WorkerPrivate& aWorkerPrivate);
 
-  void UnregisterWorker(WorkerPrivate* aWorkerPrivate);
+  void UnregisterWorker(WorkerPrivate& aWorkerPrivate);
 
-  void CancelWorkersForWindow(nsPIDOMWindowInner* aWindow);
+  void CancelWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-  void FreezeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+  void FreezeWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-  void ThawWorkersForWindow(nsPIDOMWindowInner* aWindow);
+  void ThawWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-  void SuspendWorkersForWindow(nsPIDOMWindowInner* aWindow);
+  void SuspendWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-  void ResumeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+  void ResumeWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-  void PropagateFirstPartyStorageAccessGranted(nsPIDOMWindowInner* aWindow);
+  void PropagateStorageAccessPermissionGranted(
+      const nsPIDOMWindowInner& aWindow);
 
   const NavigatorProperties& GetNavigatorProperties() const {
     return mNavigatorProperties;
   }
-
-  void NoteIdleThread(WorkerThread* aThread);
 
   static void GetDefaultJSSettings(workerinternals::JSSettings& aSettings) {
     AssertIsOnMainThread();
@@ -133,8 +123,6 @@ class RuntimeService final : public nsIObserver {
     AssertIsOnMainThread();
     sDefaultJSSettings->contextOptions = aContextOptions;
   }
-
-  void UpdateAppNameOverridePreference(const nsAString& aValue);
 
   void UpdateAppVersionOverridePreference(const nsAString& aValue);
 
@@ -173,9 +161,13 @@ class RuntimeService final : public nsIObserver {
 
   void MemoryPressureAllWorkers();
 
-  uint32_t ClampedHardwareConcurrency() const;
+  uint32_t ClampedHardwareConcurrency(bool aShouldResistFingerprinting) const;
 
   void CrashIfHanging();
+
+  bool IsShuttingDown() const { return mShuttingDown; }
+
+  void DumpRunningWorkers();
 
  private:
   RuntimeService();
@@ -187,18 +179,19 @@ class RuntimeService final : public nsIObserver {
 
   void Cleanup();
 
-  void AddAllTopLevelWorkersToArray(nsTArray<WorkerPrivate*>& aWorkers);
+  void AddAllTopLevelWorkersToArray(nsTArray<WorkerPrivate*>& aWorkers)
+      MOZ_REQUIRES(mMutex);
 
-  void GetWorkersForWindow(nsPIDOMWindowInner* aWindow,
-                           nsTArray<WorkerPrivate*>& aWorkers);
+  nsTArray<WorkerPrivate*> GetWorkersForWindow(
+      const nsPIDOMWindowInner& aWindow) const;
 
-  bool ScheduleWorker(WorkerPrivate* aWorkerPrivate);
+  bool ScheduleWorker(WorkerPrivate& aWorkerPrivate);
 
-  static void ShutdownIdleThreads(nsITimer* aTimer, void* aClosure);
+  template <typename Func>
+  void BroadcastAllWorkers(const Func& aFunc);
 };
 
 }  // namespace workerinternals
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_workers_runtimeservice_h__ */

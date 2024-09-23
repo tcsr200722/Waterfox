@@ -10,17 +10,39 @@
 #include "mozilla/layers/APZInputBridge.h"
 #include "mozilla/layers/PAPZInputBridgeChild.h"
 
+#include "mozilla/layers/GeckoContentControllerTypes.h"
+
 namespace mozilla {
 namespace layers {
 
+class RemoteCompositorSession;
+
 class APZInputBridgeChild : public PAPZInputBridgeChild, public APZInputBridge {
-  NS_INLINE_DECL_REFCOUNTING(APZInputBridgeChild, final)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(APZInputBridgeChild, final)
+  using TapType = GeckoContentController_TapType;
 
  public:
-  APZInputBridgeChild();
+  static RefPtr<APZInputBridgeChild> Create(
+      const uint64_t& aProcessToken,
+      Endpoint<PAPZInputBridgeChild>&& aEndpoint);
+
   void Destroy();
 
-  APZEventResult ReceiveInputEvent(InputData& aEvent) override;
+  void SetCompositorSession(RemoteCompositorSession* aSession);
+
+  APZEventResult ReceiveInputEvent(
+      InputData& aEvent,
+      InputBlockCallback&& aCallback = InputBlockCallback()) override;
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
+  mozilla::ipc::IPCResult RecvHandleTap(
+      const TapType& aType, const LayoutDevicePoint& aPoint,
+      const Modifiers& aModifiers, const ScrollableLayerGuid& aGuid,
+      const uint64_t& aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
+
+  mozilla::ipc::IPCResult RecvCallInputBlockCallback(
+      uint64_t aInputBlockId, const APZHandledResult& handledResult);
 
  protected:
   void ProcessUnhandledEvent(LayoutDeviceIntPoint* aRefPoint,
@@ -28,14 +50,32 @@ class APZInputBridgeChild : public PAPZInputBridgeChild, public APZInputBridge {
                              uint64_t* aOutFocusSequenceNumber,
                              LayersId* aOutLayersId) override;
 
-  void UpdateWheelTransaction(LayoutDeviceIntPoint aRefPoint,
-                              EventMessage aEventMessage) override;
+  void UpdateWheelTransaction(
+      LayoutDeviceIntPoint aRefPoint, EventMessage aEventMessage,
+      const Maybe<ScrollableLayerGuid>& aTargetGuid) override;
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
+
+  explicit APZInputBridgeChild(const uint64_t& aProcessToken);
   virtual ~APZInputBridgeChild();
 
  private:
-  bool mDestroyed;
+  void Open(Endpoint<PAPZInputBridgeChild>&& aEndpoint);
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
+  void HandleTapOnMainThread(
+      const TapType& aType, const LayoutDevicePoint& aPoint,
+      const Modifiers& aModifiers, const ScrollableLayerGuid& aGuid,
+      const uint64_t& aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
+
+  bool mIsOpen;
+  uint64_t mProcessToken;
+  MOZ_NON_OWNING_REF RemoteCompositorSession* mCompositorSession = nullptr;
+
+  using InputBlockCallbackMap =
+      std::unordered_map<uint64_t, InputBlockCallback>;
+  InputBlockCallbackMap mInputBlockCallbacks;
 };
 
 }  // namespace layers

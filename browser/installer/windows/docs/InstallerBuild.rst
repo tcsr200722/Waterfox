@@ -31,6 +31,11 @@ You can build installers (and the entire application) with official branding by 
 Build process
 -------------
 
+.. note::
+
+   If you intend to distribute your build to others, you'll want to add
+   ``ac_add_options --with-redist`` in your ``mozconfig``.
+
 Both the full and stub installers are built through a similar process, which is summarized here along with references to the relevant bits of code.
 
 Most of this procedure is done in `makensis.mk <https://searchfox.org/mozilla-central/source/toolkit/mozapps/installer/windows/nsis/makensis.mk>`_ and in the `mach repackage <https://searchfox.org/mozilla-central/rev/2b9779c59390ecc47be7a70d99753653d8eb5afc/python/mozbuild/mozbuild/mach_commands.py#2166>`_ command.
@@ -46,4 +51,3 @@ Most of this procedure is done in `makensis.mk <https://searchfox.org/mozilla-ce
 
 
 If this is an official build running on Mozilla automation infrastructure, then after this the installers will be signed, like other build products. Release engineering owns that process, it's not within the scope of this documentation.
-

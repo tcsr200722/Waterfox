@@ -9,6 +9,7 @@
 
 #include <functional>
 
+#include "mozilla/dom/ServiceWorkerOpPromise.h"
 #include "nsISupportsImpl.h"
 
 #include "ServiceWorkerEvents.h"
@@ -16,13 +17,13 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/RemoteWorkerChild.h"
 #include "mozilla/dom/ServiceWorkerOpArgs.h"
 #include "mozilla/dom/WorkerRunnable.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class FetchEventOpProxyChild;
 
@@ -49,6 +50,8 @@ class ServiceWorkerOp : public RemoteWorkerChild::Op {
   bool MaybeStart(RemoteWorkerChild* aOwner,
                   RemoteWorkerChild::State& aState) final;
 
+  void StartOnMainThread(RefPtr<RemoteWorkerChild>& aOwner) final;
+
   void Cancel() final;
 
  protected:
@@ -59,8 +62,13 @@ class ServiceWorkerOp : public RemoteWorkerChild::Op {
   bool IsTerminationOp() const;
 
   // Override to provide a runnable that's not a `ServiceWorkerOpRunnable.`
-  virtual RefPtr<WorkerRunnable> GetRunnable(WorkerPrivate* aWorkerPrivate);
+  virtual RefPtr<WorkerThreadRunnable> GetRunnable(
+      WorkerPrivate* aWorkerPrivate);
 
+  // Overridden by ServiceWorkerOp subclasses, it should return true when
+  // the ServiceWorkerOp was executed successfully (and false if it did fail).
+  // Content throwing an exception during event dispatch is still considered
+  // success.
   virtual bool Exec(JSContext* aCx, WorkerPrivate* aWorkerPrivate) = 0;
 
   // Override to reject any additional MozPromises that subclasses may contain.
@@ -130,9 +138,11 @@ class FetchEventOp final : public ExtendableEventOp,
    * `{Resolved,Reject}Callback()` are use to handle the
    * `FetchEvent::RespondWith()` promise.
    */
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
   void MaybeFinished();
 
@@ -164,9 +174,27 @@ class FetchEventOp final : public ExtendableEventOp,
 
   // Worker thread only; set when `FetchEvent::RespondWith()` is called.
   Maybe<FetchEventRespondWithClosure> mRespondWithClosure;
+
+  // Must be set to `nullptr` on the worker thread because `Promise`'s
+  // destructor must be called on the worker thread.
+  RefPtr<Promise> mHandled;
+
+  // Must be set to `nullptr` on the worker thread because `Promise`'s
+  // destructor must be called on the worker thread.
+  RefPtr<Promise> mPreloadResponse;
+
+  // Holds the callback that resolves mPreloadResponse.
+  MozPromiseRequestHolder<FetchEventPreloadResponseAvailablePromise>
+      mPreloadResponseAvailablePromiseRequestHolder;
+  MozPromiseRequestHolder<FetchEventPreloadResponseTimingPromise>
+      mPreloadResponseTimingPromiseRequestHolder;
+  MozPromiseRequestHolder<FetchEventPreloadResponseEndPromise>
+      mPreloadResponseEndPromiseRequestHolder;
+
+  TimeStamp mFetchHandlerStart;
+  TimeStamp mFetchHandlerFinish;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerop_h__

@@ -18,8 +18,8 @@ const DirectoryService = CC(
 );
 const Process = CC("@mozilla.org/process/util;1", "nsIProcess", "init");
 
-const currentThread = Cc["@mozilla.org/thread-manager;1"].getService()
-  .currentThread;
+const currentThread =
+  Cc["@mozilla.org/thread-manager;1"].getService().currentThread;
 
 var socks_test_server = null;
 var socks_listen_port = -1;
@@ -41,11 +41,11 @@ function runScriptSubprocess(script, args) {
     do_throw("Can't find xpcshell binary");
   }
 
-  var script = do_get_file(script);
+  var file = do_get_file(script);
   var proc = new Process(bin);
-  var args = [script.path].concat(args);
+  var procArgs = [file.path].concat(args);
 
-  proc.run(false, args, args.length);
+  proc.run(false, procArgs, procArgs.length);
 
   return proc;
 }
@@ -125,6 +125,7 @@ SocksClient.prototype = {
     if (len == 0) {
       print("server: client closed!");
       Assert.equal(this.state, STATE_GOT_PONG);
+      this.close();
       this.server.testCompleted(this);
       return;
     }
@@ -186,7 +187,7 @@ SocksClient.prototype = {
   },
 
   checkSocksGreeting() {
-    if (this.inbuf.length == 0) {
+    if (!this.inbuf.length) {
       return;
     }
 
@@ -356,14 +357,12 @@ SocksClient.prototype = {
     this.outbuf += "PING!";
     this.inbuf = [];
     this.waitWrite(this.client_out);
-    this.waitRead(this.client_in);
   },
 
   checkPong() {
     var pong = buf2str(this.inbuf);
     Assert.equal(pong, "PONG!");
     this.state = STATE_GOT_PONG;
-    this.waitRead(this.client_in);
   },
 
   close() {
@@ -400,6 +399,7 @@ SocksTestServer.prototype = {
       }
     }
     do_throw("No test case with id " + id);
+    return null;
   },
 
   testCompleted(client) {
@@ -461,7 +461,7 @@ SocksTestServer.prototype = {
     this.client_connections.push(client);
   },
 
-  onStopListening(socket) {},
+  onStopListening() {},
 
   close() {
     if (this.client_subprocess) {
@@ -472,9 +472,6 @@ SocksTestServer.prototype = {
       }
       this.client_subprocess = null;
     }
-    for (var client of this.client_connections) {
-      client.close();
-    }
     this.client_connections = [];
     if (this.listener) {
       this.listener.close();
@@ -482,11 +479,6 @@ SocksTestServer.prototype = {
     }
   },
 };
-
-function test_timeout() {
-  socks_test_server.close();
-  do_throw("SOCKS test took too long!");
-}
 
 function run_test() {
   socks_test_server = new SocksTestServer();
@@ -524,6 +516,5 @@ function run_test() {
   });
   socks_test_server.runClientSubprocess();
 
-  do_timeout(120 * 1000, test_timeout);
   do_test_pending();
 }

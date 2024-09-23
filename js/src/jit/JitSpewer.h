@@ -7,16 +7,18 @@
 #ifndef jit_JitSpewer_h
 #define jit_JitSpewer_h
 
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/IntegerPrintfMacros.h"
 
 #include <stdarg.h>
 
 #include "jit/JSONSpewer.h"
+#include "js/Printer.h"
+#include "js/TypeDecls.h"
 
-#include "js/RootingAPI.h"
-
-#include "vm/Printer.h"
+enum JSValueType : uint8_t;
 
 namespace js {
 namespace jit {
@@ -39,10 +41,14 @@ namespace jit {
   _(Range)                                 \
   /* Information during LICM */            \
   _(LICM)                                  \
+  /* Information during Branch Hinting */  \
+  _(BranchHint)                            \
   /* Info about fold linear constants */   \
   _(FLAC)                                  \
   /* Effective address analysis info */    \
   _(EAA)                                   \
+  /* Wasm Bounds Check Elimination */      \
+  _(WasmBCE)                               \
   /* Information during regalloc */        \
   _(RegAlloc)                              \
   /* Information during inlining */        \
@@ -57,10 +63,14 @@ namespace jit {
   _(Profiling)                             \
   /* Debug info about the I$ */            \
   _(CacheFlush)                            \
+  /* Info about redundant shape guards */  \
+  _(RedundantShapeGuards)                  \
+  /* Info about redundant GC barriers */   \
+  _(RedundantGCBarriers)                   \
+  /* Info about loads used as keys */      \
+  _(MarkLoadsUsedAsPropertyKeys)           \
   /* Output a list of MIR expressions */   \
   _(MIRExpressions)                        \
-  /* Spew Tracelogger summary stats */     \
-  _(ScriptStats)                           \
                                            \
   /* BASELINE COMPILER SPEW */             \
                                            \
@@ -105,7 +115,9 @@ namespace jit {
   /* Generated WarpSnapshots */            \
   _(WarpSnapshots)                         \
   /* CacheIR transpiler logging */         \
-  _(WarpTranspiler)
+  _(WarpTranspiler)                        \
+  /* Trial inlining for Warp */            \
+  _(WarpTrialInlining)
 
 enum JitSpewChannel {
 #define JITSPEW_CHANNEL(name) JitSpew_##name,
@@ -189,6 +201,8 @@ void EnableChannel(JitSpewChannel channel);
 void DisableChannel(JitSpewChannel channel);
 void EnableIonDebugSyncLogging();
 void EnableIonDebugAsyncLogging();
+
+const char* ValTypeToString(JSValueType type);
 
 #  define JitSpewIfEnabled(channel, fmt, ...) \
     do {                                      \

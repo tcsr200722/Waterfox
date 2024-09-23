@@ -9,6 +9,8 @@
 
 #include "mozilla/java/GeckoBundleWrappers.h"
 
+#include "jsapi.h"
+
 namespace mozilla {
 namespace jni {
 
@@ -16,8 +18,9 @@ namespace jni {
   nsTArray<jni::String::LocalRef> _##name##_keys; \
   nsTArray<jni::Object::LocalRef> _##name##_values;
 
-#define GECKOBUNDLE_PUT(name, key, value)                                 \
-  _##name##_keys.AppendElement(jni::StringParam(NS_LITERAL_STRING(key))); \
+#define GECKOBUNDLE_PUT(name, key, value)                     \
+  _##name##_keys.AppendElement(                               \
+      jni::StringParam(NS_LITERAL_STRING_FROM_CSTRING(key))); \
   _##name##_values.AppendElement(value);
 
 #define GECKOBUNDLE_FINISH(name)                                            \
@@ -33,6 +36,9 @@ namespace jni {
   }                                                                         \
   auto name =                                                               \
       mozilla::java::GeckoBundle::New(_##name##_jkeys, _##name##_jvalues);
+
+nsresult BoxData(JSContext* aCx, JS::Handle<JS::Value> aData,
+                 jni::Object::LocalRef& aOut, bool aObjectOnly);
 
 }  // namespace jni
 }  // namespace mozilla

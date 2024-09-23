@@ -8,7 +8,9 @@
 #define mozilla_dom_TCPSocket_h
 
 #include "mozilla/dom/TCPSocketBinding.h"
+#include "mozilla/dom/TypedArray.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "nsIProxyInfo.h"
 #include "nsITransport.h"
 #include "nsIStreamListener.h"
 #include "nsIAsyncInputStream.h"
@@ -16,6 +18,7 @@
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
 #include "nsITCPSocketCallback.h"
+#include "nsIProtocolProxyCallback.h"
 #include "js/RootingAPI.h"
 
 class nsISocketTransport;
@@ -68,7 +71,8 @@ class TCPSocket final : public DOMEventTargetHelper,
                         public nsIInputStreamCallback,
                         public nsIObserver,
                         public nsSupportsWeakReference,
-                        public nsITCPSocketCallback {
+                        public nsITCPSocketCallback,
+                        public nsIProtocolProxyCallback {
  public:
   TCPSocket(nsIGlobalObject* aGlobal, const nsAString& aHost, uint16_t aPort,
             bool aSsl, bool aUseArrayBuffers);
@@ -82,15 +86,18 @@ class TCPSocket final : public DOMEventTargetHelper,
   NS_DECL_NSIINPUTSTREAMCALLBACK
   NS_DECL_NSIOBSERVER
   NS_DECL_NSITCPSOCKETCALLBACK
+  NS_DECL_NSIPROTOCOLPROXYCALLBACK
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
   static bool ShouldTCPSocketExist(JSContext* aCx, JSObject* aGlobal);
 
+  nsISocketTransport* GetTransport() const { return mTransport.get(); }
+
   void GetHost(nsAString& aHost);
-  uint32_t Port();
-  bool Ssl();
+  uint32_t Port() const;
+  bool Ssl() const;
   uint64_t BufferedAmount() const { return mBufferedAmount; }
   void Suspend();
   void Resume(ErrorResult& aRv);
@@ -100,7 +107,7 @@ class TCPSocket final : public DOMEventTargetHelper,
   bool Send(const ArrayBuffer& aData, uint32_t aByteOffset,
             const Optional<uint32_t>& aByteLength, ErrorResult& aRv);
   TCPReadyState ReadyState();
-  TCPSocketBinaryType BinaryType();
+  TCPSocketBinaryType BinaryType() const;
   void UpgradeToSecure(ErrorResult& aRv);
 
   static already_AddRefed<TCPSocket> Constructor(const GlobalObject& aGlobal,
@@ -119,8 +126,7 @@ class TCPSocket final : public DOMEventTargetHelper,
   // Used by the TCPServerSocketChild implementation when a new connection is
   // accepted.
   static already_AddRefed<TCPSocket> CreateAcceptedSocket(
-      nsIGlobalObject* aGlobal, TCPSocketChild* aSocketBridge,
-      bool aUseArrayBuffers);
+      nsIGlobalObject* aGlobal, TCPSocketChild* aBridge, bool aUseArrayBuffers);
 
   // Initialize this socket's associated IPC actor in the parent process.
   void SetSocketBridgeParent(TCPSocketParent* aBridgeParent);
@@ -133,7 +139,7 @@ class TCPSocket final : public DOMEventTargetHelper,
   IMPL_EVENT_HANDLER(error);
   IMPL_EVENT_HANDLER(close);
 
-  nsresult Init();
+  nsresult Init(nsIProxyInfo* aProxyInfo);
 
   // Inform this socket that a buffered send() has completed sending.
   void NotifyCopyComplete(nsresult aStatus);
@@ -146,7 +152,7 @@ class TCPSocket final : public DOMEventTargetHelper,
   ~TCPSocket();
 
   // Initialize this socket with an existing IPC actor.
-  void InitWithSocketChild(TCPSocketChild* aBridge);
+  void InitWithSocketChild(TCPSocketChild* aSocketBridge);
   // Initialize this socket from an existing low-level connection.
   nsresult InitWithTransport(nsISocketTransport* aTransport);
   // Initialize the input/output streams for this socket object.
@@ -158,7 +164,11 @@ class TCPSocket final : public DOMEventTargetHelper,
   bool Send(nsIInputStream* aStream, uint32_t aByteLength);
   // Begin an asynchronous copy operation if one is not already in progress.
   nsresult EnsureCopying();
-  // Enable TLS on this socket.
+  // Re-calculate buffered amount.
+  void CalculateBufferedAmount();
+  // Helper function, should be called by ActivateTLS(), only.
+  void ActivateTLSHelper();
+  // Enable TLS on this socket, dispatch to STSThread if necessary.
   void ActivateTLS();
   // Dispatch an error event if necessary, then dispatch a "close" event.
   nsresult MaybeReportErrorAndCloseIfOpen(nsresult status);
@@ -168,6 +178,8 @@ class TCPSocket final : public DOMEventTargetHelper,
                          JS::Handle<JS::Value> aData);
   // Helper for Close/CloseImmediately
   void CloseHelper(bool waitForUnsentData);
+
+  nsresult ResolveProxy();
 
   TCPReadyState mReadyState;
   // Whether to use strings or array buffers for the "data" event.
@@ -186,6 +198,8 @@ class TCPSocket final : public DOMEventTargetHelper,
   nsCOMPtr<nsISocketTransport> mTransport;
   nsCOMPtr<nsIInputStream> mSocketInputStream;
   nsCOMPtr<nsIOutputStream> mSocketOutputStream;
+
+  nsCOMPtr<nsICancelable> mProxyRequest;
 
   // Input stream machinery
   nsCOMPtr<nsIInputStreamPump> mInputStreamPump;

@@ -3,7 +3,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/
 
 import requests
-
 from telemetry_harness.testcase import TelemetryTestCase
 
 
@@ -25,9 +24,7 @@ class TestPingServer(TelemetryTestCase):
                 "Accept": "text/plain",
             }
 
-            response = requests.post(
-                self.pings_url, json=data, headers=headers
-            )
+            response = requests.post(self.pings_url, json=data, headers=headers)
 
             self.assertEqual(
                 response.status_code,

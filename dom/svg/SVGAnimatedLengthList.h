@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDLENGTHLIST_H__
-#define MOZILLA_SVGANIMATEDLENGTHLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDLENGTHLIST_H_
+#define DOM_SVG_SVGANIMATEDLENGTHLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILAttr.h"
@@ -42,6 +42,14 @@ class SVGAnimatedLengthList {
 
  public:
   SVGAnimatedLengthList() = default;
+
+  SVGAnimatedLengthList& operator=(const SVGAnimatedLengthList& aOther) {
+    mBaseVal = aOther.mBaseVal;
+    if (aOther.mAnimVal) {
+      mAnimVal = MakeUnique<SVGLengthList>(*aOther.mAnimVal);
+    }
+    return *this;
+  }
 
   /**
    * Because it's so important that mBaseVal and its DOMSVGLengthList wrapper
@@ -101,15 +109,16 @@ class SVGAnimatedLengthList {
     bool mCanZeroPadList;  // See SVGLengthListAndInfo::CanZeroPadList
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
-        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aValue) override;
   };
 };
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDLENGTHLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDLENGTHLIST_H_

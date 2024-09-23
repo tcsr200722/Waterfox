@@ -11,13 +11,18 @@
 #include "mozilla/Monitor.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ThreadEventQueue.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
+#include "GeckoProfiler.h"
 #include "nsThread.h"
 #include "nsThreadManager.h"
 #include "nsThreadUtils.h"
+
+#include <android/api-level.h>
+#include <pthread.h>
 
 using namespace mozilla;
 
@@ -53,9 +58,9 @@ class AndroidUiThread : public nsThread {
  public:
   NS_INLINE_DECL_REFCOUNTING_INHERITED(AndroidUiThread, nsThread)
   AndroidUiThread()
-      : nsThread(MakeNotNull<ThreadEventQueue<mozilla::EventQueue>*>(
-                     MakeUnique<mozilla::EventQueue>()),
-                 nsThread::NOT_MAIN_THREAD, 0) {}
+      : nsThread(
+            MakeNotNull<ThreadEventQueue*>(MakeUnique<mozilla::EventQueue>()),
+            nsThread::NOT_MAIN_THREAD, {.stackSize = 0}) {}
 
   nsresult Dispatch(already_AddRefed<nsIRunnable> aEvent,
                     uint32_t aFlags) override;
@@ -69,12 +74,8 @@ class AndroidUiThread : public nsThread {
 NS_IMETHODIMP
 AndroidUiThread::Dispatch(already_AddRefed<nsIRunnable> aEvent,
                           uint32_t aFlags) {
-  if (aFlags & NS_DISPATCH_SYNC) {
-    return nsThread::Dispatch(std::move(aEvent), aFlags);
-  } else {
-    EnqueueTask(std::move(aEvent), 0);
-    return NS_OK;
-  }
+  EnqueueTask(std::move(aEvent), 0);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -164,10 +165,42 @@ class CreateOnUiThread : public Runnable {
     sThread = new AndroidUiThread();
     sThread->InitCurrentThread();
     sThread->SetObserver(new ThreadObserver());
+    RegisterThreadWithProfiler();
     sMessageLoop =
         new MessageLoop(MessageLoop::TYPE_MOZILLA_ANDROID_UI, sThread.get());
     lock.NotifyAll();
     return NS_OK;
+  }
+
+ private:
+  static void RegisterThreadWithProfiler() {
+#if defined(MOZ_GECKO_PROFILER)
+    // We don't use the PROFILER_REGISTER_THREAD macro here because by this
+    // point the Android UI thread is already quite a ways into its stack;
+    // the profiler's sampler thread will ignore a lot of frames if we do not
+    // provide a better value for the stack top. We'll manually obtain that
+    // info via pthreads.
+
+    // Fallback address if any pthread calls fail
+    char fallback;
+    char* stackTop = &fallback;
+
+    auto regOnExit = MakeScopeExit(
+        [&stackTop]() { profiler_register_thread("AndroidUI", stackTop); });
+
+    pthread_attr_t attrs;
+    if (pthread_getattr_np(pthread_self(), &attrs)) {
+      return;
+    }
+
+    void* stackBase;
+    size_t stackSize;
+    if (pthread_attr_getstack(&attrs, &stackBase, &stackSize)) {
+      return;
+    }
+
+    stackTop = static_cast<char*>(stackBase) + stackSize - 1;
+#endif  // defined(MOZ_GECKO_PROFILER)
   }
 };
 
@@ -193,6 +226,7 @@ class DestroyOnUiThread : public Runnable {
     delete sMessageLoop;
     sMessageLoop = nullptr;
     MOZ_ASSERT(sThread);
+    PROFILER_UNREGISTER_THREAD();
     nsThreadManager::get().UnregisterCurrentThread(*sThread);
     sThread = nullptr;
     mDestroyed = true;

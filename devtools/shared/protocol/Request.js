@@ -4,13 +4,12 @@
 
 "use strict";
 
-const { extend } = require("devtools/shared/extend");
+const { extend } = require("resource://devtools/shared/extend.js");
 var {
   findPlaceholders,
-  describeTemplate,
   getPath,
-} = require("devtools/shared/protocol/utils");
-var { types } = require("devtools/shared/protocol/types");
+} = require("resource://devtools/shared/protocol/utils.js");
+var { types } = require("resource://devtools/shared/protocol/types.js");
 
 /**
  * Manages a request template.
@@ -19,7 +18,7 @@ var { types } = require("devtools/shared/protocol/types");
  *    The request template.
  * @construcor
  */
-var Request = function(template = {}) {
+var Request = function (template = {}) {
   this.type = template.type;
   this.template = template;
   this.args = findPlaceholders(template, Arg);
@@ -35,7 +34,7 @@ Request.prototype = {
    *    The object making the request.
    * @returns a request packet.
    */
-  write: function(fnArgs, ctx) {
+  write(fnArgs, ctx) {
     const ret = {};
     for (const key in this.template) {
       const value = this.template[key];
@@ -65,7 +64,7 @@ Request.prototype = {
    *    The object making the request.
    * @returns an arguments array
    */
-  read: function(packet, ctx) {
+  read(packet, ctx) {
     const fnArgs = [];
     for (const templateArg of this.args) {
       const arg = templateArg.placeholder;
@@ -74,10 +73,6 @@ Request.prototype = {
       arg.read(getPath(packet, path), ctx, fnArgs, name);
     }
     return fnArgs;
-  },
-
-  describe: function() {
-    return describeTemplate(this.template);
   },
 };
 
@@ -104,33 +99,26 @@ exports.Request = Request;
  *    The argument should be marshalled as this type.
  * @constructor
  */
-var Arg = function(index, type) {
+var Arg = function (index, type) {
   this.index = index;
   // Prevent force loading all Arg types by accessing it only when needed
-  loader.lazyGetter(this, "type", function() {
+  loader.lazyGetter(this, "type", function () {
     return types.getType(type);
   });
 };
 
 Arg.prototype = {
-  write: function(arg, ctx) {
+  write(arg, ctx) {
     return this.type.write(arg, ctx);
   },
 
-  read: function(v, ctx, outArgs) {
+  read(v, ctx, outArgs) {
     outArgs[this.index] = this.type.read(v, ctx);
-  },
-
-  describe: function() {
-    return {
-      _arg: this.index,
-      type: this.type.name,
-    };
   },
 };
 
 // Outside of protocol.js, Arg is called as factory method, without the new keyword.
-exports.Arg = function(index, type) {
+exports.Arg = function (index, type) {
   return new Arg(index, type);
 };
 
@@ -151,12 +139,12 @@ exports.Arg = function(index, type) {
  *    The argument should be marshalled as this type.
  * @constructor
  */
-var Option = function(index, type) {
+var Option = function (index, type) {
   Arg.call(this, index, type);
 };
 
 Option.prototype = extend(Arg.prototype, {
-  write: function(arg, ctx, name) {
+  write(arg, ctx, name) {
     // Ignore if arg is undefined or null; allow other falsy values
     if (arg == undefined || arg[name] == undefined) {
       return undefined;
@@ -164,7 +152,7 @@ Option.prototype = extend(Arg.prototype, {
     const v = arg[name];
     return this.type.write(v, ctx);
   },
-  read: function(v, ctx, outArgs, name) {
+  read(v, ctx, outArgs, name) {
     if (outArgs[this.index] === undefined) {
       outArgs[this.index] = {};
     }
@@ -173,16 +161,9 @@ Option.prototype = extend(Arg.prototype, {
     }
     outArgs[this.index][name] = this.type.read(v, ctx);
   },
-
-  describe: function() {
-    return {
-      _option: this.index,
-      type: this.type.name,
-    };
-  },
 });
 
 // Outside of protocol.js, Option is called as factory method, without the new keyword.
-exports.Option = function(index, type) {
+exports.Option = function (index, type) {
   return new Option(index, type);
 };

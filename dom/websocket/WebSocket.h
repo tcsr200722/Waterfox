@@ -12,7 +12,6 @@
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/WebSocketBinding.h"  // for BinaryType
 #include "mozilla/DOMEventTargetHelper.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Mutex.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
@@ -28,6 +27,8 @@ class nsIInputStream;
 class nsITransportProvider;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class Blob;
@@ -55,9 +56,7 @@ class WebSocket final : public DOMEventTargetHelper {
   virtual void DisconnectFromOwner() override;
 
   mozilla::Maybe<EventCallbackDebuggerNotificationType>
-  GetDebuggerNotificationType() const override {
-    return mozilla::Some(EventCallbackDebuggerNotificationType::Websocket);
-  }
+  GetDebuggerNotificationType() const override;
 
   // nsWrapperCache
   virtual JSObject* WrapObject(JSContext* cx,
@@ -141,6 +140,8 @@ class WebSocket final : public DOMEventTargetHelper {
   nsresult CreateAndDispatchCloseEvent(bool aWasClean, uint16_t aCode,
                                        const nsAString& aReason);
 
+  static bool IsValidProtocolString(const nsString& aValue);
+
   // if there are "strong event listeners" (see comment in WebSocket.cpp) or
   // outgoing not sent messages then this method keeps the object alive
   // when js doesn't have strong references to it.
@@ -182,7 +183,7 @@ class WebSocket final : public DOMEventTargetHelper {
   mozilla::Mutex mMutex;
 
   // This value should not be used directly but use ReadyState() instead.
-  uint16_t mReadyState;
+  uint16_t mReadyState MOZ_GUARDED_BY(mMutex);
 };
 
 }  // namespace dom

@@ -38,6 +38,18 @@ const MOCK_CC_STORAGE = [{
   "cc-exp-year": 2022,
 }];
 
+const MOCK_CC_STORAGE_EXPECTED_FILL = [{
+  "cc-name": "John Doe",
+  "cc-number": "4929001587121045",
+  "cc-exp-month": "04",
+  "cc-exp-year": 2017,
+}, {
+  "cc-name": "Timothy Berners-Lee",
+  "cc-number": "5103059495477870",
+  "cc-exp-month": "12",
+  "cc-exp-year": 2022,
+}];
+
 initPopupListener();
 
 add_task(async function setup_storage() {
@@ -57,14 +69,10 @@ async function checkIsFormCleared(patch = {}) {
     const expectedValue = patch[elem.id] || "";
     checkFieldValue(elem, expectedValue);
     await checkFieldHighlighted(elem, false);
-    await checkFieldPreview(elem, "");
   }
 }
 
 async function confirmClear(selector) {
-  await SpecialPowers.pushPrefEnv({
-    set: [["dom.input_events.beforeinput.enabled", true]],
-  });
   info("Await for clearing input");
   let promise = new Promise(resolve => {
     let beforeInputFired = false;
@@ -73,8 +81,8 @@ async function confirmClear(selector) {
       beforeInputFired = true;
       ok(event instanceof InputEvent,
          '"beforeinput" event should be dispatched with InputEvent interface');
-      is(event.cancelable, true,
-         '"beforeinput" event should be cancelable');
+      is(event.cancelable, SpecialPowers.getBoolPref("dom.input_event.allow_to_cancel_set_user_input"),
+         `"beforeinput" event should be cancelable unless it's disabled by the pref`);
       is(event.bubbles, true,
          '"beforeinput" event should always bubble');
       is(event.inputType, "insertReplacementText",
@@ -116,6 +124,12 @@ add_task(async function simple_clear() {
   await triggerPopupAndHoverItem("#tel", 0);
   await confirmClear("#tel");
   await checkIsFormCleared();
+
+  // Ensure the correctness of the autocomplete popup after the form is cleared
+  synthesizeKey("KEY_ArrowDown");
+  await expectPopup();
+
+  is(4, getMenuEntries().labels.length, `Checking length of expected menu`);
 });
 
 add_task(async function clear_adapted_record() {
@@ -146,8 +160,11 @@ add_task(async function clear_distinct_section() {
 
   document.getElementById("form1").reset();
   await triggerPopupAndHoverItem("#cc-name", 0);
-  let osKeyStoreLoginShown = waitForOSKeyStoreLogin(true);
-  await triggerAutofillAndCheckProfile(MOCK_CC_STORAGE[0]);
+  let osKeyStoreLoginShown = Promise.resolve();
+  if(OSKeyStore.canReauth()) {
+    osKeyStoreLoginShown = waitForOSKeyStoreLogin(true);
+  }
+  await triggerAutofillAndCheckProfile(MOCK_CC_STORAGE_EXPECTED_FILL[0]);
   await osKeyStoreLoginShown;
 
   await triggerPopupAndHoverItem("#organization", 0);
@@ -155,7 +172,7 @@ add_task(async function clear_distinct_section() {
   await triggerPopupAndHoverItem("#street-address", 0);
   await confirmClear("#street-address");
 
-  for (const [id, val] of Object.entries(MOCK_CC_STORAGE[0])) {
+  for (const [id, val] of Object.entries(MOCK_CC_STORAGE_EXPECTED_FILL[0])) {
     const element = document.getElementById(id);
     if (!element) {
       return;
@@ -167,6 +184,8 @@ add_task(async function clear_distinct_section() {
   await triggerPopupAndHoverItem("#cc-name", 0);
   await confirmClear("#cc-name");
   await checkIsFormCleared();
+  // Enforcing this since it is unable to change back in chaos mode.
+  SpecialPowers.clearUserPref("toolkit.osKeyStore.unofficialBuildOnlyLogin");
 });
 
 </script>

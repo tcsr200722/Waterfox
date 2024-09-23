@@ -7,13 +7,13 @@
 #define PlaceholderTransaction_h
 
 #include "EditAggregateTransaction.h"
+#include "EditorForwards.h"
+#include "SelectionState.h"
+
 #include "mozilla/Maybe.h"
-#include "mozilla/SelectionState.h"
 #include "mozilla/WeakPtr.h"
 
 namespace mozilla {
-
-class EditorBase;
 
 /**
  * An aggregate transaction that knows how to absorb all subsequent
@@ -22,9 +22,8 @@ class EditorBase;
  * transactions it has absorbed.
  */
 
-class PlaceholderTransaction final
-    : public EditAggregateTransaction,
-      public SupportsWeakPtr<PlaceholderTransaction> {
+class PlaceholderTransaction final : public EditAggregateTransaction,
+                                     public SupportsWeakPtr {
  protected:
   PlaceholderTransaction(EditorBase& aEditorBase, nsStaticAtom& aName,
                          Maybe<SelectionState>&& aSelState);
@@ -48,13 +47,10 @@ class PlaceholderTransaction final
     return transaction.forget();
   }
 
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(PlaceholderTransaction)
-
   NS_DECL_ISUPPORTS_INHERITED
 
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(PlaceholderTransaction,
                                            EditAggregateTransaction)
-  // ------------ EditAggregateTransaction -----------------------
 
   NS_DECL_EDITTRANSACTIONBASE
   NS_DECL_EDITTRANSACTIONBASE_GETASMETHODS_OVERRIDE(PlaceholderTransaction)
@@ -62,7 +58,7 @@ class PlaceholderTransaction final
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD RedoTransaction() override;
   NS_IMETHOD Merge(nsITransaction* aTransaction, bool* aDidMerge) override;
 
-  bool StartSelectionEquals(SelectionState& aSelectionState);
+  void AppendChild(EditTransactionBase& aTransaction);
 
   nsresult EndPlaceHolderBatch();
 

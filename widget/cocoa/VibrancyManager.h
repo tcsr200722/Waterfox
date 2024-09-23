@@ -7,30 +7,24 @@
 #ifndef VibrancyManager_h
 #define VibrancyManager_h
 
-#include "mozilla/Assertions.h"
-#include "nsClassHashtable.h"
-#include "nsRegion.h"
-#include "nsTArray.h"
-#include "ViewRegion.h"
+#include "mozilla/EnumeratedArray.h"
+#include "Units.h"
 
-#import <Foundation/NSGeometry.h>
-
-@class NSColor;
 @class NSView;
 class nsChildView;
 
 namespace mozilla {
 
+class ViewRegion;
+
 enum class VibrancyType {
-  LIGHT,
-  DARK,
-  TOOLTIP,
-  MENU,
-  HIGHLIGHTED_MENUITEM,
-  SHEET,
-  SOURCE_LIST,
-  SOURCE_LIST_SELECTION,
-  ACTIVE_SOURCE_LIST_SELECTION
+  // Add new values here, or update MaxEnumValue below if you add them after.
+  Titlebar,
+};
+
+template <>
+struct MaxContiguousEnumValue<VibrancyType> {
+  static constexpr auto value = VibrancyType::Titlebar;
 };
 
 /**
@@ -56,10 +50,10 @@ class VibrancyManager {
    * @param aContainerView  The view that's going to be the superview of the
    *   NSVisualEffectViews which will be created for vibrant regions.
    */
-  VibrancyManager(const nsChildView& aCoordinateConverter, NSView* aContainerView)
-      : mCoordinateConverter(aCoordinateConverter), mContainerView(aContainerView) {
-    MOZ_ASSERT(SystemSupportsVibrancy(), "Don't instantiate this if !SystemSupportsVibrancy()");
-  }
+  VibrancyManager(const nsChildView& aCoordinateConverter,
+                  NSView* aContainerView);
+
+  ~VibrancyManager();
 
   /**
    * Update the placement of the NSVisualEffectViews inside the container
@@ -69,35 +63,13 @@ class VibrancyManager {
    * @param aRegion The vibrant area, in device pixels.
    * @return Whether the region changed.
    */
-  bool UpdateVibrantRegion(VibrancyType aType, const LayoutDeviceIntRegion& aRegion);
-
-  bool HasVibrantRegions() { return !mVibrantRegions.IsEmpty(); }
-
-  LayoutDeviceIntRegion GetUnionOfVibrantRegions() const;
-
-  /**
-   * Check whether the operating system supports vibrancy at all.
-   * You may only create a VibrancyManager instance if this returns true.
-   * @return Whether VibrancyManager can be used on this OS.
-   */
-  static bool SystemSupportsVibrancy();
-
-  /**
-   * Create an NSVisualEffectView for the specified vibrancy type. The return
-   * value is not autoreleased. We return an object of type NSView* because we
-   * compile with an SDK that does not contain a definition for
-   * NSVisualEffectView.
-   * @param aIsContainer Whether this NSView will have child views. This value
-   *                     affects hit testing: Container views will pass through
-   *                     hit testing requests to their children, and leaf views
-   *                     will be transparent to hit testing.
-   */
-  static NSView* CreateEffectView(VibrancyType aType, BOOL aIsContainer = NO);
+  bool UpdateVibrantRegion(VibrancyType aType,
+                           const LayoutDeviceIntRegion& aRegion);
 
  protected:
   const nsChildView& mCoordinateConverter;
   NSView* mContainerView;
-  nsClassHashtable<nsUint32HashKey, ViewRegion> mVibrantRegions;
+  EnumeratedArray<VibrancyType, UniquePtr<ViewRegion>> mVibrantRegions;
 };
 
 }  // namespace mozilla

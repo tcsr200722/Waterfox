@@ -7,10 +7,9 @@
 #include "FileSystem.h"
 #include "FileSystemRootDirectoryEntry.h"
 #include "mozilla/dom/FileSystemBinding.h"
-#include "nsContentUtils.h"
+#include "nsIDUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(FileSystem, mParent, mRoot)
 
@@ -29,20 +28,14 @@ already_AddRefed<FileSystem> FileSystem::Create(nsIGlobalObject* aGlobalObject)
   MOZ_ASSERT(aGlobalObject);
 
   nsID id;
-  nsresult rv = nsContentUtils::GenerateUUIDInPlace(id);
+  nsresult rv = nsID::GenerateUUIDInPlace(id);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return nullptr;
   }
 
-  char chars[NSID_LENGTH];
-  id.ToProvidedString(chars);
+  NSID_TrimBracketsUTF16 name(id);
 
-  // Any fileSystem has an unique ID. We use UUID, but our generator produces
-  // UUID in this format '{' + UUID + '}'. We remove them with these +1 and -2.
-  nsAutoCString name(Substring(chars + 1, chars + NSID_LENGTH - 2));
-
-  RefPtr<FileSystem> fs =
-      new FileSystem(aGlobalObject, NS_ConvertUTF8toUTF16(name));
+  RefPtr<FileSystem> fs = new FileSystem(aGlobalObject, name);
 
   return fs.forget();
 }
@@ -64,5 +57,4 @@ void FileSystem::CreateRoot(const Sequence<RefPtr<FileSystemEntry>>& aEntries) {
   mRoot = new FileSystemRootDirectoryEntry(mParent, aEntries, this);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

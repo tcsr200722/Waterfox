@@ -1,18 +1,13 @@
-extern crate crossbeam_utils;
-extern crate rayon_core;
-
-#[macro_use]
-extern crate scoped_tls;
-
 use crossbeam_utils::thread;
 use rayon_core::ThreadPoolBuilder;
 
 #[derive(PartialEq, Eq, Debug)]
 struct Local(i32);
 
-scoped_thread_local!(static LOCAL: Local);
+scoped_tls::scoped_thread_local!(static LOCAL: Local);
 
 #[test]
+#[cfg_attr(any(target_os = "emscripten", target_family = "wasm"), ignore)]
 fn missing_scoped_tls() {
     LOCAL.set(&Local(42), || {
         let pool = ThreadPoolBuilder::new()
@@ -27,6 +22,7 @@ fn missing_scoped_tls() {
 }
 
 #[test]
+#[cfg_attr(any(target_os = "emscripten", target_family = "wasm"), ignore)]
 fn spawn_scoped_tls_threadpool() {
     LOCAL.set(&Local(42), || {
         LOCAL.with(|x| {
@@ -69,6 +65,7 @@ fn spawn_scoped_tls_threadpool() {
 }
 
 #[test]
+#[cfg_attr(any(target_os = "emscripten", target_family = "wasm"), ignore)]
 fn build_scoped_tls_threadpool() {
     LOCAL.set(&Local(42), || {
         LOCAL.with(|x| {
@@ -96,7 +93,7 @@ fn build_scoped_tls_threadpool() {
                     },
                 )
                 .expect("thread pool created");
-            // Internally, `crossbeam::scope` will wait for the threads to exit before returning.
+            // Internally, `std::thread::scope` will wait for the threads to exit before returning.
         });
     });
 }

@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -9,7 +8,7 @@
  * going to the function b's call-site.
  */
 
-async function testFinish({ threadFront, devToolsClient }) {
+async function testFinish({ devToolsClient }) {
   await close(devToolsClient);
 
   do_test_finished();
@@ -81,7 +80,7 @@ async function stepOverInA(dbg, func, frameIndex, expectedLocation) {
 }
 
 function run_test() {
-  return (async function() {
+  return (async function () {
     const dbg = await setupTestFromUrl("stepping.js");
 
     info(`Test step over with the 1st frame`);

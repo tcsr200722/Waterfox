@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const osPrefs = Cc["@mozilla.org/intl/ospreferences;1"].getService(
   Ci.mozIOSPreferences
 );
@@ -70,7 +69,7 @@ add_test(function test_requestedLocales_matchOS() {
   Services.prefs.setCharPref(PREF_REQUESTED_LOCALES, "ar-IR");
 
   const observer = {
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, aTopic) {
       switch (aTopic) {
         case REQ_LOC_CHANGE_EVENT:
           const reqLocs = localeService.requestedLocales;
@@ -98,7 +97,7 @@ add_test(function test_requestedLocales_onChange() {
   Services.prefs.setCharPref(PREF_REQUESTED_LOCALES, "ar-IR");
 
   const observer = {
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, aTopic) {
       switch (aTopic) {
         case REQ_LOC_CHANGE_EVENT:
           const reqLocs = localeService.requestedLocales;
@@ -152,7 +151,6 @@ add_test(function test_isAppLocaleRTL_pseudo() {
 
   localeService.availableLocales = ["en-US"];
   localeService.requestedLocales = ["en-US"];
-  Services.prefs.setIntPref("intl.uidirection", -1);
   Services.prefs.setCharPref("intl.l10n.pseudo", "");
 
   Assert.ok(localeService.isAppLocaleRTL === false);

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "LookupCache.h"
+#include "LookupCacheV4.h"
 #include "HashStore.h"
 #include "nsIFileStreams.h"
 #include "nsISeekableStream.h"
@@ -16,6 +17,12 @@
 #include "prprf.h"
 #include "Classifier.h"
 #include "nsUrlClassifierInfo.h"
+#include "nsUrlClassifierUtils.h"
+#include "nsUrlClassifierDBService.h"
+
+#ifdef DEBUG
+#  include "nsPrintfCString.h"
+#endif
 
 // We act as the main entry point for all the real lookups,
 // so note that those are not done to the actual HashStore.
@@ -83,8 +90,37 @@ struct ValueTraits<nsACString> {
   }
 };
 
+void CStringToHexString(const nsACString& aIn, nsACString& aOut) {
+  static const char* const lut = "0123456789ABCDEF";
+
+  size_t len = aIn.Length();
+  MOZ_ASSERT(len <= COMPLETE_SIZE);
+
+  aOut.SetCapacity(2 * len);
+  for (size_t i = 0; i < aIn.Length(); ++i) {
+    const char c = static_cast<char>(aIn[i]);
+    aOut.Append(lut[(c >> 4) & 0x0F]);
+    aOut.Append(lut[c & 15]);
+  }
+}
+
+#ifdef DEBUG
+nsCString GetFormattedTimeString(int64_t aCurTimeSec) {
+  PRExplodedTime pret;
+  PR_ExplodeTime(aCurTimeSec * PR_USEC_PER_SEC, PR_GMTParameters, &pret);
+
+  return nsPrintfCString("%04d-%02d-%02d %02d:%02d:%02d UTC", pret.tm_year,
+                         pret.tm_month + 1, pret.tm_mday, pret.tm_hour,
+                         pret.tm_min, pret.tm_sec);
+}
+#endif
+
+}  // end of unnamed namespace.
+////////////////////////////////////////////////////////////////////////
+
 template <typename T>
-static nsresult WriteValue(nsIOutputStream* aOutputStream, const T& aValue) {
+nsresult LookupCache::WriteValue(nsIOutputStream* aOutputStream,
+                                 const T& aValue) {
   uint32_t writeLength = ValueTraits<T>::Length(aValue);
   MOZ_ASSERT(writeLength <= LookupCacheV4::MAX_METADATA_VALUE_LENGTH,
              "LookupCacheV4::MAX_METADATA_VALUE_LENGTH is too small.");
@@ -107,7 +143,7 @@ static nsresult WriteValue(nsIOutputStream* aOutputStream, const T& aValue) {
 }
 
 template <typename T>
-static nsresult ReadValue(nsIInputStream* aInputStream, T& aValue) {
+nsresult LookupCache::ReadValue(nsIInputStream* aInputStream, T& aValue) {
   nsresult rv;
 
   uint32_t readLength;
@@ -137,33 +173,13 @@ static nsresult ReadValue(nsIInputStream* aInputStream, T& aValue) {
   return rv;
 }
 
-void CStringToHexString(const nsACString& aIn, nsACString& aOut) {
-  static const char* const lut = "0123456789ABCDEF";
-
-  size_t len = aIn.Length();
-  MOZ_ASSERT(len <= COMPLETE_SIZE);
-
-  aOut.SetCapacity(2 * len);
-  for (size_t i = 0; i < aIn.Length(); ++i) {
-    const char c = static_cast<char>(aIn[i]);
-    aOut.Append(lut[(c >> 4) & 0x0F]);
-    aOut.Append(lut[c & 15]);
-  }
-}
-
-#ifdef DEBUG
-nsCString GetFormattedTimeString(int64_t aCurTimeSec) {
-  PRExplodedTime pret;
-  PR_ExplodeTime(aCurTimeSec * PR_USEC_PER_SEC, PR_GMTParameters, &pret);
-
-  return nsPrintfCString("%04d-%02d-%02d %02d:%02d:%02d UTC", pret.tm_year,
-                         pret.tm_month + 1, pret.tm_mday, pret.tm_hour,
-                         pret.tm_min, pret.tm_sec);
-}
-#endif
-
-}  // end of unnamed namespace.
-////////////////////////////////////////////////////////////////////////
+// These symbols are referenced from another compilation unit, but their
+// implementation depends on local symbols. Workaround this by forcing their
+// instantiation there.
+template nsresult mozilla::safebrowsing::LookupCache::WriteValue(
+    nsIOutputStream*, nsTSubstring<char> const&);
+template nsresult mozilla::safebrowsing::LookupCache::ReadValue(
+    nsIInputStream*, nsTSubstring<char>&);
 
 LookupCache::LookupCache(const nsACString& aTableName,
                          const nsACString& aProvider,
@@ -171,7 +187,8 @@ LookupCache::LookupCache(const nsACString& aTableName,
     : mPrimed(false),
       mTableName(aTableName),
       mProvider(aProvider),
-      mRootStoreDirectory(aRootStoreDir) {
+      mRootStoreDirectory(aRootStoreDir),
+      mVLPrefixSet(nullptr) {
   UpdateRootDirHandle(mRootStoreDirectory);
 }
 
@@ -192,6 +209,8 @@ nsresult LookupCache::Open() {
 }
 
 nsresult LookupCache::Init() {
+  MOZ_ASSERT(!mVLPrefixSet);
+
   mVLPrefixSet = new VariableLengthPrefixSet();
   nsresult rv = mVLPrefixSet->Init(mTableName);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -363,29 +382,29 @@ void LookupCache::GetCacheInfo(nsIUrlClassifierCacheInfo** aCache) const {
   RefPtr<nsUrlClassifierCacheInfo> info = new nsUrlClassifierCacheInfo;
   info->table = mTableName;
 
-  for (auto iter = mFullHashCache.ConstIter(); !iter.Done(); iter.Next()) {
+  for (const auto& cacheEntry : mFullHashCache) {
     RefPtr<nsUrlClassifierCacheEntry> entry = new nsUrlClassifierCacheEntry;
 
     // Set prefix of the cache entry.
-    nsAutoCString prefix(reinterpret_cast<const char*>(&iter.Key()),
+    nsAutoCString prefix(reinterpret_cast<const char*>(&cacheEntry.GetKey()),
                          PREFIX_SIZE);
     CStringToHexString(prefix, entry->prefix);
 
     // Set expiry of the cache entry.
-    CachedFullHashResponse* response = iter.UserData();
+    CachedFullHashResponse* response = cacheEntry.GetWeak();
     entry->expirySec = response->negativeCacheExpirySec;
 
     // Set positive cache.
     FullHashExpiryCache& fullHashes = response->fullHashes;
-    for (auto iter2 = fullHashes.ConstIter(); !iter2.Done(); iter2.Next()) {
+    for (const auto& fullHashEntry : fullHashes) {
       RefPtr<nsUrlClassifierPositiveCacheEntry> match =
           new nsUrlClassifierPositiveCacheEntry;
 
       // Set fullhash of positive cache entry.
-      CStringToHexString(iter2.Key(), match->fullhash);
+      CStringToHexString(fullHashEntry.GetKey(), match->fullhash);
 
       // Set expiry of positive cache entry.
-      match->expirySec = iter2.Data();
+      match->expirySec = fullHashEntry.GetData();
 
       entry->matches.AppendElement(
           static_cast<nsIUrlClassifierPositiveCacheEntry*>(match));
@@ -412,16 +431,16 @@ bool LookupCache::IsCanonicalizedIP(const nsACString& aHost) {
   return false;
 }
 
-// This is used when the URL is created by CreatePairwiseWhiteListURI(),
+// This is used when the URL is created by CreatePairwiseEntityListURI(),
 // which returns an URI like "toplevel.page/?resource=third.party.domain"
 // The fragment rule for the hostname(toplevel.page) is still the same
 // as Safe Browsing protocol.
 // The difference is that we always keep the path and query string and
 // generate an additional fragment by removing the leading component of
 // third.party.domain. This is to make sure we can find a match when a
-// whitelisted domain is eTLD.
+// exceptionlisted domain is eTLD.
 /* static */
-nsresult LookupCache::GetLookupWhitelistFragments(
+nsresult LookupCache::GetLookupEntitylistFragments(
     const nsACString& aSpec, nsTArray<nsCString>* aFragments) {
   aFragments->Clear();
 
@@ -434,8 +453,8 @@ nsresult LookupCache::GetLookupWhitelistFragments(
 
   // Fallback to use default fragment rule when the URL doesn't contain
   // "/?resoruce=" because this means the URL is not generated in
-  // CreatePairwiseWhiteListURI()
-  if (!FindInReadable(NS_LITERAL_CSTRING("/?resource="), iter, iter_end)) {
+  // CreatePairwiseEntityListURI()
+  if (!FindInReadable("/?resource="_ns, iter, iter_end)) {
     return GetLookupFragments(aSpec, aFragments);
   }
 
@@ -453,7 +472,7 @@ nsresult LookupCache::GetLookupWhitelistFragments(
     topLevelURL.BeginReading(begin);
     topLevelURL.EndReading(end);
     int numTopLevelURLComponents = 0;
-    while (RFindInReadable(NS_LITERAL_CSTRING("."), begin, end) &&
+    while (RFindInReadable("."_ns, begin, end) &&
            numTopLevelURLComponents < MAX_HOST_COMPONENTS) {
       // don't bother checking toplevel domains
       if (++numTopLevelURLComponents >= 2) {
@@ -470,7 +489,7 @@ nsresult LookupCache::GetLookupWhitelistFragments(
    * Since the number of the domain name part in the third-party URL searching
    * is always less than or equal to eTLD+1, we remove the leading
    * component from the third-party domain to make sure we can find a match
-   * if the whitelisted domain stoed in the entity list is eTLD.
+   * if the exceptionlisted domain stoed in the entity list is eTLD.
    */
   nsTArray<nsCString> thirdPartyURLs;
   thirdPartyURLs.AppendElement(thirdPartyURL);
@@ -540,7 +559,7 @@ nsresult LookupCache::GetLookupFragments(const nsACString& aSpec,
     host.BeginReading(begin);
     host.EndReading(end);
     int numHostComponents = 0;
-    while (RFindInReadable(NS_LITERAL_CSTRING("."), begin, end) &&
+    while (RFindInReadable("."_ns, begin, end) &&
            numHostComponents < MAX_HOST_COMPONENTS) {
       // don't bother checking toplevel domains
       if (++numHostComponents >= 2) {
@@ -590,9 +609,9 @@ nsresult LookupCache::GetLookupFragments(const nsACString& aSpec,
   if (!pathToAdd.Equals(path)) {
     paths.AppendElement(path);
   }
-  // Check an empty path (for whole-domain blacklist entries)
-  if (!paths.Contains(EmptyCString())) {
-    paths.AppendElement(EmptyCString());
+  // Check an empty path (for whole-domain blocklist entries)
+  if (!paths.Contains(""_ns)) {
+    paths.AppendElement(""_ns);
   }
 
   for (uint32_t hostIndex = 0; hostIndex < hosts.Length(); hostIndex++) {
@@ -659,22 +678,23 @@ void LookupCache::DumpCache() const {
     return;
   }
 
-  for (auto iter = mFullHashCache.ConstIter(); !iter.Done(); iter.Next()) {
-    CachedFullHashResponse* response = iter.UserData();
+  for (const auto& cacheEntry : mFullHashCache) {
+    CachedFullHashResponse* response = cacheEntry.GetWeak();
 
     nsAutoCString prefix;
     CStringToHexString(
-        nsCString(reinterpret_cast<const char*>(&iter.Key()), PREFIX_SIZE),
+        nsCString(reinterpret_cast<const char*>(&cacheEntry.GetKey()),
+                  PREFIX_SIZE),
         prefix);
     LOG(("Cache prefix(%s): %s, Expiry: %s", mTableName.get(), prefix.get(),
          GetFormattedTimeString(response->negativeCacheExpirySec).get()));
 
     FullHashExpiryCache& fullHashes = response->fullHashes;
-    for (auto iter2 = fullHashes.ConstIter(); !iter2.Done(); iter2.Next()) {
+    for (const auto& fullHashEntry : fullHashes) {
       nsAutoCString fullhash;
-      CStringToHexString(iter2.Key(), fullhash);
+      CStringToHexString(fullHashEntry.GetKey(), fullhash);
       LOG(("  - %s, Expiry: %s", fullhash.get(),
-           GetFormattedTimeString(iter2.Data()).get()));
+           GetFormattedTimeString(fullHashEntry.GetData()).get()));
     }
   }
 }
@@ -919,6 +939,13 @@ nsresult LookupCacheV2::GetPrefixes(FallibleTArray<uint32_t>& aAddPrefixes,
   return mVLPrefixSet->GetFixedLengthPrefixes(&aAddPrefixes, &aAddCompletes);
 }
 
+nsresult LookupCacheV2::GetPrefixByIndex(uint32_t aIndex,
+                                         uint32_t* aOutPrefix) const {
+  NS_ENSURE_ARG_POINTER(aOutPrefix);
+
+  return mVLPrefixSet->GetFixedLengthPrefixByIndex(aIndex, aOutPrefix);
+}
+
 void LookupCacheV2::AddGethashResultToCache(
     const AddCompleteArray& aAddCompletes, const MissPrefixArray& aMissPrefixes,
     int64_t aExpirySec) {
@@ -933,16 +960,16 @@ void LookupCacheV2::AddGethashResultToCache(
         reinterpret_cast<const char*>(add.CompleteHash().buf), COMPLETE_SIZE);
 
     CachedFullHashResponse* response =
-        mFullHashCache.LookupOrAdd(add.ToUint32());
+        mFullHashCache.GetOrInsertNew(add.ToUint32());
     response->negativeCacheExpirySec = defaultExpirySec;
 
     FullHashExpiryCache& fullHashes = response->fullHashes;
-    fullHashes.Put(fullhash, defaultExpirySec);
+    fullHashes.InsertOrUpdate(fullhash, defaultExpirySec);
   }
 
   for (const Prefix& prefix : aMissPrefixes) {
     CachedFullHashResponse* response =
-        mFullHashCache.LookupOrAdd(prefix.ToUint32());
+        mFullHashCache.GetOrInsertNew(prefix.ToUint32());
 
     response->negativeCacheExpirySec = defaultExpirySec;
   }
@@ -999,7 +1026,7 @@ nsresult LookupCacheV2::ClearLegacyFile() {
     return rv;
   }
 
-  rv = file->AppendNative(mTableName + NS_LITERAL_CSTRING(".pset"));
+  rv = file->AppendNative(mTableName + ".pset"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -1022,12 +1049,10 @@ nsresult LookupCacheV2::ClearLegacyFile() {
   return NS_OK;
 }
 
-nsCString LookupCacheV2::GetPrefixSetSuffix() const {
-  return NS_LITERAL_CSTRING(".vlpset");
-}
+nsCString LookupCacheV2::GetPrefixSetSuffix() const { return ".vlpset"_ns; }
 
 // Support creating built-in entries for phsihing, malware, unwanted, harmful,
-// tracking/tracking whitelist and flash block tables.
+// tracking/tracking exceptionlist and flash block tables.
 //
 nsresult LookupCacheV2::LoadMozEntries() {
   // We already have the entries, return
@@ -1039,32 +1064,26 @@ nsresult LookupCacheV2::LoadMozEntries() {
 
   if (mTableName.EqualsLiteral("moztest-phish-simple")) {
     // Entries for phishing table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/its-a-trap.html"));
+    entries.AppendElement("itisatrap.org/firefox/its-a-trap.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-malware-simple")) {
     // Entries for malware table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/its-an-attack.html"));
+    entries.AppendElement("itisatrap.org/firefox/its-an-attack.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-unwanted-simple")) {
     // Entries for unwanted table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/unwanted.html"));
+    entries.AppendElement("itisatrap.org/firefox/unwanted.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-harmful-simple")) {
     // Entries for harmfule tables
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/harmful.html"));
+    entries.AppendElement("itisatrap.org/firefox/harmful.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-track-simple")) {
     // Entries for tracking table
-    entries.AppendElement(NS_LITERAL_CSTRING("trackertest.org/"));
-    entries.AppendElement(NS_LITERAL_CSTRING("itisatracker.org/"));
+    entries.AppendElement("trackertest.org/"_ns);
+    entries.AppendElement("itisatracker.org/"_ns);
   } else if (mTableName.EqualsLiteral("moztest-trackwhite-simple")) {
-    // Entries for tracking whitelist table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/?resource=itisatracker.org"));
+    // Entries for tracking entitylist table
+    entries.AppendElement("itisatrap.org/?resource=itisatracker.org"_ns);
   } else if (mTableName.EqualsLiteral("moztest-block-simple")) {
     // Entries for flash block table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/blocked.html"));
+    entries.AppendElement("itisatrap.org/firefox/blocked.html"_ns);
   } else {
     MOZ_ASSERT_UNREACHABLE();
   }

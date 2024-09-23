@@ -7,46 +7,52 @@
 const {
   prepareMessage,
   getNaturalOrder,
-} = require("devtools/client/webconsole/utils/messages");
+} = require("resource://devtools/client/webconsole/utils/messages.js");
 const {
   IdGenerator,
-} = require("devtools/client/webconsole/utils/id-generator");
+} = require("resource://devtools/client/webconsole/utils/id-generator.js");
 const {
   batchActions,
-} = require("devtools/client/shared/redux/middleware/debounce");
+} = require("resource://devtools/client/shared/redux/middleware/debounce.js");
 
 const {
-  MESSAGES_ADD,
-  NETWORK_MESSAGE_UPDATE,
-  NETWORK_UPDATE_REQUEST,
-  MESSAGES_CLEAR,
-  MESSAGES_CLEAR_LOGPOINT,
-  MESSAGE_OPEN,
+  CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
   MESSAGE_CLOSE,
-  MESSAGE_TYPE,
+  MESSAGE_OPEN,
   MESSAGE_REMOVE,
-  MESSAGE_UPDATE_PAYLOAD,
+  MESSAGE_TYPE,
+  MESSAGES_ADD,
+  MESSAGES_CLEAR,
+  MESSAGES_DISABLE,
+  NETWORK_MESSAGES_UPDATE,
+  NETWORK_UPDATES_REQUEST,
   PRIVATE_MESSAGES_CLEAR,
-} = require("devtools/client/webconsole/constants");
+  TARGET_MESSAGES_REMOVE,
+} = require("resource://devtools/client/webconsole/constants.js");
 
 const defaultIdGenerator = new IdGenerator();
 
-function messagesAdd(packets, idGenerator = null) {
+function messagesAdd(packets, idGenerator = null, persistLogs = false) {
   if (idGenerator == null) {
     idGenerator = defaultIdGenerator;
   }
-  const messages = packets.map(packet => prepareMessage(packet, idGenerator));
+  const messages = packets.map(packet =>
+    prepareMessage(packet, idGenerator, persistLogs)
+  );
   // Sort the messages by their timestamps.
   messages.sort(getNaturalOrder);
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].type === MESSAGE_TYPE.CLEAR) {
-      return batchActions([
-        messagesClear(),
-        {
-          type: MESSAGES_ADD,
-          messages: messages.slice(i),
-        },
-      ]);
+
+  if (!persistLogs) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === MESSAGE_TYPE.CLEAR) {
+        return batchActions([
+          messagesClear(),
+          {
+            type: MESSAGES_ADD,
+            messages: messages.slice(i),
+          },
+        ]);
+      }
     }
   }
 
@@ -64,16 +70,23 @@ function messagesClear() {
   };
 }
 
-function messagesClearLogpoint(logpointId) {
+function messagesDisable(ids) {
   return {
-    type: MESSAGES_CLEAR_LOGPOINT,
-    logpointId,
+    type: MESSAGES_DISABLE,
+    ids,
   };
 }
 
 function privateMessagesClear() {
   return {
     type: PRIVATE_MESSAGES_CLEAR,
+  };
+}
+
+function targetMessagesRemove(targetFront) {
+  return {
+    type: TARGET_MESSAGES_REMOVE,
+    targetFront,
   };
 }
 
@@ -93,49 +106,34 @@ function messageClose(id) {
 
 /**
  * Make a query on the server to get a list of DOM elements matching the given
- * CSS selectors and set the result as a message's additional data payload.
+ * CSS selectors and store the information in the state.
  *
- * @param {String} id
- *        Message ID
- * @param {String} cssSelectors
- *        CSS selectors string to use in the querySelectorAll() call
- * @return {[type]} [description]
+ * @param {Message} message
+ *        The CSSWarning message
  */
-function messageGetMatchingElements(id, cssSelectors) {
-  return async ({ dispatch, client, getState }) => {
+function messageGetMatchingElements(message) {
+  return async ({ dispatch, commands }) => {
     try {
       // We need to do the querySelectorAll using the target the message is coming from,
       // as well as with the window the warning message was emitted from.
-      const message = getState().messages.messagesById.get(id);
       const selectedTargetFront = message?.targetFront;
 
-      const response = await client.evaluateJSAsync(
-        `document.querySelectorAll('${cssSelectors}')`,
+      const response = await commands.scriptCommand.execute(
+        `document.querySelectorAll('${message.cssSelectors}')`,
         {
           selectedTargetFront,
           innerWindowID: message.innerWindowID,
+          disableBreaks: true,
         }
       );
-      dispatch(messageUpdatePayload(id, response.result));
+      dispatch({
+        type: CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
+        id: message.id,
+        elements: response.result,
+      });
     } catch (err) {
       console.error(err);
     }
-  };
-}
-
-/**
- * Associate additional data with a message without mutating the original message object.
- *
- * @param {String} id
- *        Message ID
- * @param {Object} data
- *        Object with arbitrary data.
- */
-function messageUpdatePayload(id, data) {
-  return {
-    type: MESSAGE_UPDATE_PAYLOAD,
-    id,
-    data,
   };
 }
 
@@ -146,38 +144,36 @@ function messageRemove(id) {
   };
 }
 
-function networkMessageUpdate(packet, idGenerator = null, response) {
+function networkMessageUpdates(packets, idGenerator = null) {
   if (idGenerator == null) {
     idGenerator = defaultIdGenerator;
   }
 
-  const message = prepareMessage(packet, idGenerator);
+  const messages = packets.map(packet => prepareMessage(packet, idGenerator));
 
   return {
-    type: NETWORK_MESSAGE_UPDATE,
-    message,
-    response,
+    type: NETWORK_MESSAGES_UPDATE,
+    messages,
   };
 }
 
-function networkUpdateRequest(id, data) {
+function networkUpdateRequests(updates) {
   return {
-    type: NETWORK_UPDATE_REQUEST,
-    id,
-    data,
+    type: NETWORK_UPDATES_REQUEST,
+    updates,
   };
 }
 
 module.exports = {
   messagesAdd,
   messagesClear,
-  messagesClearLogpoint,
+  messagesDisable,
   messageOpen,
   messageClose,
   messageRemove,
   messageGetMatchingElements,
-  messageUpdatePayload,
-  networkMessageUpdate,
-  networkUpdateRequest,
+  networkMessageUpdates,
+  networkUpdateRequests,
   privateMessagesClear,
+  targetMessagesRemove,
 };

@@ -1,8 +1,10 @@
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
-XPCOMUtils.defineLazyGetter(this, "URL", function() {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -13,7 +15,7 @@ var httpbody = "0123456789";
 var last = 0,
   max = 0;
 
-const STATUS_RECEIVING_FROM = 0x804b0006;
+const STATUS_RECEIVING_FROM = 0x4b0006;
 const LOOPS = 50000;
 
 const TYPE_ONSTATUS = 1;
@@ -22,11 +24,15 @@ const TYPE_ONSTARTREQUEST = 3;
 const TYPE_ONDATAAVAILABLE = 4;
 const TYPE_ONSTOPREQUEST = 5;
 
-var progressCallback = {
+var ProgressCallback = function () {};
+
+ProgressCallback.prototype = {
   _listener: null,
   _got_onstartrequest: false,
   _got_onstatus_after_onstartrequest: false,
   _last_callback_handled: null,
+  statusArg: "",
+  finish: null,
 
   QueryInterface: ChromeUtils.generateQI([
     "nsIProgressEventSink",
@@ -68,6 +74,7 @@ var progressCallback = {
 
     this._listener.onStopRequest(request, status);
     delete this._listener;
+    this.finish();
   },
 
   onProgress(request, progress, progressMax) {
@@ -92,31 +99,38 @@ var progressCallback = {
     }
     this._last_callback_handled = TYPE_ONSTATUS;
 
-    Assert.equal(statusArg, "localhost");
+    Assert.equal(statusArg, this.statusArg);
     this.mStatus = status;
   },
 
   mStatus: 0,
 };
 
-function run_test() {
-  httpserver.registerPathHandler(testpath, serverHandler);
-  httpserver.start(-1);
-  var channel = setupChannel(testpath);
-  channel.asyncOpen(progressCallback);
-  do_test_pending();
+registerCleanupFunction(async () => {
+  await httpserver.stop();
+});
+
+function chanPromise(uri, statusArg) {
+  return new Promise(resolve => {
+    var chan = NetUtil.newChannel({
+      uri,
+      loadUsingSystemPrincipal: true,
+    });
+    chan.QueryInterface(Ci.nsIHttpChannel);
+    chan.requestMethod = "GET";
+    let listener = new ProgressCallback();
+    listener.statusArg = statusArg;
+    chan.notificationCallbacks = listener;
+    listener.finish = resolve;
+    chan.asyncOpen(listener);
+  });
 }
 
-function setupChannel(path) {
-  var chan = NetUtil.newChannel({
-    uri: URL + path,
-    loadUsingSystemPrincipal: true,
-  });
-  chan.QueryInterface(Ci.nsIHttpChannel);
-  chan.requestMethod = "GET";
-  chan.notificationCallbacks = progressCallback;
-  return chan;
-}
+add_task(async function test_http1_1() {
+  httpserver.registerPathHandler(testpath, serverHandler);
+  httpserver.start(-1);
+  await chanPromise(URL + testpath, "localhost");
+});
 
 function serverHandler(metadata, response) {
   response.setHeader("Content-Type", "text/plain", false);
@@ -125,8 +139,7 @@ function serverHandler(metadata, response) {
   }
 }
 
-function checkRequest(request, data, context) {
+function checkRequest() {
   Assert.equal(last, httpbody.length * LOOPS);
   Assert.equal(max, httpbody.length * LOOPS);
-  httpserver.stop(do_test_finished);
 }

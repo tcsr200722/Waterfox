@@ -45,7 +45,9 @@ const kEventConstructors = {
                                                        },
                                              },
   BlobEvent:                                 { create (aName, aProps) {
-                                                         return new BlobEvent(aName, aProps);
+                                                         return new BlobEvent(aName, {
+                                                           data: new Blob([]),
+                                                         });
                                                        },
                                              },
   CallEvent:                                 { create (aName, aProps) {
@@ -73,6 +75,10 @@ const kEventConstructors = {
                                                          e.initCompositionEvent(aName, aProps.bubbles, aProps.cancelable,
                                                                                 aProps.view, aProps.data, aProps.locale);
                                                          return e;
+                                                       },
+                                             },
+  ContentVisibilityAutoStateChangeEvent:     { create (aName, aProps) {
+                                                         return new ContentVisibilityAutoStateChangeEvent(aName, aProps);
                                                        },
                                              },
   CustomEvent:                               { create (aName, aProps) {
@@ -344,8 +350,18 @@ const kEventConstructors = {
                                                        },
                                                chromeOnly: true,
                                              },
+  StyleSheetRemovedEvent:                    { create (aName, aProps) {
+                                                         return new StyleSheetRemovedEvent(aName, aProps);
+                                                       },
+                                               chromeOnly: true,
+                                             },
   SubmitEvent:                               { create (aName, aProps) {
                                                          return new SubmitEvent(aName, aProps);
+                                                       },
+                                             },
+  TaskPriorityChangeEvent:                   { create (aName, aProps) {
+                                                         aProps.previousPriority = "user-blocking";
+                                                         return new TaskPriorityChangeEvent(aName, aProps);
                                                        },
                                              },
   TCPSocketErrorEvent:                       { create(aName, aProps) {
@@ -360,8 +376,19 @@ const kEventConstructors = {
                                                          return new TCPServerSocketEvent(aName, aProps);
                                                        },
                                              },
+  TextEvent :                                { create (aName, aProps) {
+                                                         var e = document.createEvent("textevent");
+                                                         e.initTextEvent("textInput", aProps.bubbles, aProps.cancelable,
+                                                                         aProps.view, aProps.data);
+                                                         return e;
+                                                       },
+                                             },
   TimeEvent:                                 { create: null
                                                // Cannot create untrusted event from JS
+                                             },
+  ToggleEvent:                               { create(aName, aProps) {
+                                                         return new ToggleEvent(aName, aProps);
+                                                       },
                                              },
   TouchEvent:                                { create (aName, aProps) {
                                                          var e = document.createEvent("touchevent");
@@ -444,7 +471,7 @@ function test() {
       continue;
     }
     if (typeof(event.getModifierState) == "function") {
-      const kModifiers = [ "Shift", "Control", "Alt", "AltGr", "Meta", "CapsLock", "ScrollLock", "NumLock", "OS", "Fn", "FnLock", "Symbol", "SymbolLock" ];
+      const kModifiers = [ "Shift", "Control", "Alt", "AltGr", "Meta", "CapsLock", "ScrollLock", "NumLock", "Fn", "FnLock", "Symbol", "SymbolLock" ];
       for (var j = 0; j < kModifiers.length; j++) {
         ok(true, "Calling " + props[i] + ".getModifierState(" + kModifiers[j] + ")...");
         var modifierState = event.getModifierState(kModifiers[j]);
@@ -457,7 +484,8 @@ function test() {
 SimpleTest.waitForExplicitFinish();
 SpecialPowers.pushPrefEnv(
   {"set": [["dom.w3c_touch_events.legacy_apis.enabled", true],
-           ["dom.formdata.event.enabled", true]]},
+           ["layout.css.content-visibility.enabled", true],
+           ["dom.events.textevent.enabled", true]]},
   function() {
     test();
     SimpleTest.finish();

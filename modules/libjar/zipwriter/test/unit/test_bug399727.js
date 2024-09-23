@@ -23,7 +23,7 @@ BinaryComparer.prototype = {
   length: null,
   callback: null,
 
-  onStartRequest(aRequest) {},
+  onStartRequest() {},
 
   onStopRequest(aRequest, aStatusCode) {
     this.fileStream.close();
@@ -102,6 +102,6 @@ function run_test() {
     Ci.nsIInputStreamPump
   );
   pump.init(fstream, 0, 0, true);
-  pump.asyncRead(converter, null);
+  pump.asyncRead(converter);
   do_test_pending();
 }

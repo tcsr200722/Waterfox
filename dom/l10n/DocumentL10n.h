@@ -7,18 +7,17 @@
 #ifndef mozilla_dom_l10n_DocumentL10n_h
 #define mozilla_dom_l10n_DocumentL10n_h
 
-#include "mozilla/dom/Document.h"
 #include "mozilla/dom/DOMLocalization.h"
 
-namespace mozilla {
-namespace dom {
+class nsIContentSink;
+
+namespace mozilla::dom {
+
+class Document;
 
 enum class DocumentL10nState {
   // State set when the DocumentL10n gets constructed.
-  Uninitialized = 0,
-
-  // State set when the DocumentL10n is activated and ready to be used.
-  Activated,
+  Constructed = 0,
 
   // State set when the initial translation got triggered. This happens
   // if DocumentL10n was constructed during parsing of the document.
@@ -47,14 +46,10 @@ class DocumentL10n final : public DOMLocalization {
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DocumentL10n, DOMLocalization)
 
-  static RefPtr<DocumentL10n> Create(Document* aDocument);
-
-  void Activate(const bool aLazy);
+  static RefPtr<DocumentL10n> Create(Document* aDocument, bool aSync);
 
  protected:
-  explicit DocumentL10n(Document* aDocument);
-  bool Init();
-
+  explicit DocumentL10n(Document* aDocument, bool aSync);
   virtual ~DocumentL10n() = default;
 
   RefPtr<Document> mDocument;
@@ -73,7 +68,7 @@ class DocumentL10n final : public DOMLocalization {
 
   void InitialTranslationCompleted(bool aL10nCached);
 
-  Document* GetDocument() { return mDocument; };
+  Document* GetDocument() const { return mDocument; };
   void OnCreatePresShell();
 
   void ConnectRoot(nsINode& aNode, bool aTranslate, ErrorResult& aRv);
@@ -83,7 +78,6 @@ class DocumentL10n final : public DOMLocalization {
   bool mBlockingLayout = false;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_l10n_DocumentL10n_h

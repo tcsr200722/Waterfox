@@ -208,7 +208,19 @@ extern nsresult NS_CopySegmentToBuffer(nsIInputStream* aInputStream,
  *
  * @see nsIOutputStream.idl for a description of this function's parameters.
  */
-extern nsresult NS_CopySegmentToBuffer(nsIOutputStream* aOutputStream,
+extern nsresult NS_CopyBufferToSegment(nsIOutputStream* aOutputStream,
+                                       void* aClosure, char* aToSegment,
+                                       uint32_t aFromOffset, uint32_t aCount,
+                                       uint32_t* aReadCount);
+
+/**
+ * This function is intended to be passed to nsIOutputStream::WriteSegments to
+ * copy data into the nsIOutputStream from a nsIInputStream passed as the
+ * aClosure parameter to the WriteSegments function.
+ *
+ * @see nsIOutputStream.idl for a description of this function's parameters.
+ */
+extern nsresult NS_CopyStreamToSegment(nsIOutputStream* aOutputStream,
                                        void* aClosure, char* aToSegment,
                                        uint32_t aFromOffset, uint32_t aCount,
                                        uint32_t* aReadCount);
@@ -306,9 +318,15 @@ extern nsresult NS_CloneInputStream(nsIInputStream* aSource,
  * The last step is to use nsIStreamTransportService and create a pipe in order
  * to expose a non-blocking async inputStream and read |aSource| data from
  * a separate thread.
+ *
+ * In case we need to create a pipe, |aCloseWhenDone| will be used to create the
+ * inputTransport, |aFlags|, |aSegmentSize|, |asegmentCount| will be used to
+ * open the inputStream. If true, the input stream will be closed after it has
+ * been read. Read more in nsITransport.idl.
  */
 extern nsresult NS_MakeAsyncNonBlockingInputStream(
     already_AddRefed<nsIInputStream> aSource,
-    nsIAsyncInputStream** aAsyncInputStream);
+    nsIAsyncInputStream** aAsyncInputStream, bool aCloseWhenDone = true,
+    uint32_t aFlags = 0, uint32_t aSegmentSize = 0, uint32_t aSegmentCount = 0);
 
 #endif  // !nsStreamUtils_h__

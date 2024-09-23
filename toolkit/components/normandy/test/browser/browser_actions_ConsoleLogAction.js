@@ -1,8 +1,14 @@
 "use strict";
 
-ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
-ChromeUtils.import("resource://normandy/actions/ConsoleLogAction.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Uptake.jsm", this);
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
+);
+const { ConsoleLogAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/ConsoleLogAction.sys.mjs"
+);
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
 
 // Test that logging works
 add_task(async function logging_works() {
@@ -25,7 +31,7 @@ add_task(async function logging_works() {
 // test that argument validation works
 decorate_task(
   withStub(Uptake, "reportRecipe"),
-  async function arguments_are_validated(reportRecipeStub) {
+  async function arguments_are_validated({ reportRecipeStub }) {
     const action = new ConsoleLogAction();
     const infoStub = sinon.stub(action.log, "info");
 

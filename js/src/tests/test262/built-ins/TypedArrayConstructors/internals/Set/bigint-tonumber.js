@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2018 Valerie Young. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -48,18 +49,14 @@ info: |
     Result: Throw a TypeError Exception
 
 includes: [testTypedArray.js]
-features: [BigInt, TypedArray]
+features: [align-detached-buffer-semantics-with-web-reality, BigInt, TypedArray]
 ---*/
-
-var typedArray;
-
 testWithTypedArrayConstructors(function(TA) {
+  var typedArray = new TA(1);
 
-    typedArray = new TA(1);
-    assert.throws(TypeError, function() {
-      typedArray[0] = 1n;
-    });
+  assert.throws(TypeError, function() {
+    typedArray[0] = 1n;
   });
-
+});
 
 reportCompare(0, 0);

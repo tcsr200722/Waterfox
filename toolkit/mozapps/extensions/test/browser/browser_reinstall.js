@@ -5,8 +5,8 @@
 // Tests that upgrading bootstrapped add-ons behaves correctly while the
 // manager is open
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
 
 const ID = "reinstall@tests.mozilla.org";
@@ -15,8 +15,7 @@ const testIdSuffix = "@tests.mozilla.org";
 let gManagerWindow, xpi1, xpi2;
 
 function htmlDoc() {
-  return gManagerWindow.document.getElementById("html-view-browser")
-    .contentDocument;
+  return gManagerWindow.document;
 }
 
 function get_list_item_count() {
@@ -31,7 +30,7 @@ function removeItem(item) {
 
 function hasPendingMessage(item, msg) {
   let messageBar = htmlDoc().querySelector(
-    `message-bar[addon-id="${item.addon.id}"`
+    `moz-message-bar[addon-id="${item.addon.id}"`
   );
   is_element_visible(messageBar, msg);
 }
@@ -48,7 +47,7 @@ async function check_addon(aAddon, aVersion) {
   is(get_list_item_count(), 1, "Should be one item in the list");
   is(aAddon.version, aVersion, "Add-on should have the right version");
 
-  let item = get_addon_element(gManagerWindow, ID);
+  let item = getAddonCard(gManagerWindow, ID);
   ok(!!item, "Should see the add-on in the list");
 
   // Force XBL to apply
@@ -78,7 +77,7 @@ async function wait_for_addon_item_added(addonId) {
     htmlDoc().querySelector("addon-list"),
     "add"
   );
-  const item = get_addon_element(gManagerWindow, addonId);
+  const item = getAddonCard(gManagerWindow, addonId);
   ok(item, `Found addon card for ${addonId}`);
 }
 
@@ -87,13 +86,13 @@ async function wait_for_addon_item_removed(addonId) {
     htmlDoc().querySelector("addon-list"),
     "remove"
   );
-  const item = get_addon_element(gManagerWindow, addonId);
+  const item = getAddonCard(gManagerWindow, addonId);
   ok(!item, `There shouldn't be an addon card for ${addonId}`);
 }
 
 function wait_for_addon_item_updated(addonId) {
   return BrowserTestUtils.waitForEvent(
-    get_addon_element(gManagerWindow, addonId),
+    getAddonCard(gManagerWindow, addonId),
     "update"
   );
 }
@@ -164,7 +163,7 @@ async function test_upgrade_pending_uninstall_v1_to_v2() {
   await check_addon(addon, "1.0");
   ok(!addon.userDisabled, "Add-on should not be disabled");
 
-  let item = get_addon_element(gManagerWindow, ID);
+  let item = getAddonCard(gManagerWindow, ID);
 
   let promiseItemRemoved = wait_for_addon_item_removed(ID);
   removeItem(item);
@@ -210,7 +209,7 @@ async function test_upgrade_pending_uninstall_disabled_v1_to_v2() {
   await check_addon(addon, "1.0");
   ok(addon.userDisabled, "Add-on should be disabled");
 
-  let item = get_addon_element(gManagerWindow, ID);
+  let item = getAddonCard(gManagerWindow, ID);
 
   let promiseItemRemoved = wait_for_addon_item_removed(ID);
   removeItem(item);
@@ -240,18 +239,18 @@ async function test_upgrade_pending_uninstall_disabled_v1_to_v2() {
   is(get_list_item_count(), 0, "Should be no items in the list");
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   xpi1 = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
       version: "1.0",
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 
   xpi2 = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
       version: "2.0",
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 

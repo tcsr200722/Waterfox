@@ -4,12 +4,10 @@
 
  :root {
   --breadcrumb-id-class-color: #909090;
-  --breadcrumb-pseudo-class-text-color: var(--yellow-70) ;
  }
 
  .theme-dark:root {
   --breadcrumb-id-class-color: var(--theme-text-color-strong);
-  --breadcrumb-pseudo-class-text-color: var(--yellow-50);
  }
 
 /* Inspector HTMLBreadcrumbs */
@@ -27,7 +25,7 @@
 
 .scrollbutton-up,
 .scrollbutton-down {
-  -moz-appearance: none;
+  appearance: none;
   background: transparent;
   box-shadow: none;
   border: none;
@@ -39,7 +37,7 @@
 
 .scrollbutton-up > .toolbarbutton-icon,
 .scrollbutton-down > .toolbarbutton-icon {
-  -moz-appearance: none;
+  appearance: none;
   width: 20px;
   height: 16px;
   background-size: 16px;
@@ -89,19 +87,8 @@
 .breadcrumbs-widget-item {
   background-color: transparent;
   border: none;
-  margin-inline-start: 10px;
-  margin-inline-end: 1px;
+  margin-inline: 10px 1px;
   padding: 0;
-}
-
-.breadcrumbs-widget-item > .button-box {
-  border: none;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-:root[platform="win"] .breadcrumbs-widget-item:-moz-focusring > .button-box {
-  border-width: 0;
 }
 
 .breadcrumbs-widget-item:first-child::before {
@@ -142,5 +129,5 @@
 }
 
 .breadcrumbs-widget-item-pseudo-classes {
-  color: var(--breadcrumb-pseudo-class-text-color);
+  color: var(--pseudo-class-text-color);
 }

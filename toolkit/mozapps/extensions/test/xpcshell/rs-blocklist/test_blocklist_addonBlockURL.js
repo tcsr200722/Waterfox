@@ -3,6 +3,9 @@
 
 "use strict";
 
+// useMLBF=true case is covered by test_blocklist_mlbf.js
+enable_blocklist_v2_instead_of_useMLBF();
+
 const BLOCKLIST_DATA = [
   {
     id: "foo",

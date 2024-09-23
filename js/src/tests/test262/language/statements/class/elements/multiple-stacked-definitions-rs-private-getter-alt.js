@@ -1,4 +1,3 @@
-// |reftest| skip -- class-methods-private,class-fields-private is not supported
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-private-getter-alt.case
 // - src/class-elements/productions/cls-decl-multiple-stacked-definitions.template
@@ -109,8 +108,14 @@ class C {
 var c = new C();
 
 assert.sameValue(c.foo, "foobar");
-assert.sameValue(Object.hasOwnProperty.call(C, "foo"), false);
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "foo"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "foo"),
+  "foo doesn't appear as an own property on the C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "foo"),
+  "foo doesn't appear as an own property on the C prototype"
+);
 
 verifyProperty(c, "foo", {
   value: "foobar",
@@ -120,8 +125,14 @@ verifyProperty(c, "foo", {
 });
 
 assert.sameValue(c.bar, "barbaz");
-assert.sameValue(Object.hasOwnProperty.call(C, "bar"), false);
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "bar"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "bar"),
+  "bar doesn't appear as an own property on the C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "bar"),
+  "bar doesn't appear as an own property on the C prototype"
+);
 
 verifyProperty(c, "bar", {
   value: "barbaz",

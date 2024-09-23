@@ -9,15 +9,12 @@
 
 #include "js/TypeDecls.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/RefPtr.h"
 #include "nsCSSPseudoElements.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Animation;
 class Element;
@@ -26,7 +23,7 @@ class UnrestrictedDoubleOrKeyframeAnimationOptions;
 class CSSPseudoElement final : public nsWrapperCache {
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(CSSPseudoElement)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(CSSPseudoElement)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(CSSPseudoElement)
 
  protected:
   virtual ~CSSPseudoElement();
@@ -49,10 +46,7 @@ class CSSPseudoElement final : public nsWrapperCache {
     aRetVal.Append(
         nsDependentAtomString(nsCSSPseudoElements::GetPseudoAtom(mPseudoType)));
   }
-  already_AddRefed<dom::Element> Element() const {
-    RefPtr<dom::Element> retVal(mOriginatingElement);
-    return retVal.forget();
-  }
+  dom::Element* Element() const { return mOriginatingElement.get(); }
 
   // Given an element:pseudoType pair, returns the CSSPseudoElement stored as a
   // property on |aElement|. If there is no CSSPseudoElement for the specified
@@ -74,7 +68,6 @@ class CSSPseudoElement final : public nsWrapperCache {
   PseudoStyleType mPseudoType;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_CSSPseudoElement_h

@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 // Import common head.
 /* import-globals-from ../../../../../toolkit/components/places/tests/head_common.js */
 var commonFile = do_get_file(
@@ -18,14 +16,14 @@ if (commonFile) {
 
 // Put any other stuff relative to this test folder below.
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUIUtils",
-  "resource:///modules/PlacesUIUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+});
 
 // Needed by some test that relies on having an app registered.
-ChromeUtils.import("resource://testing-common/AppInfo.jsm", this);
+const { updateAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
+);
 updateAppInfo({
   name: "PlacesTest",
   ID: "{230de50e-4cd1-11dc-8314-0800200c9a66}",
@@ -37,24 +35,16 @@ updateAppInfo({
 const DEFAULT_BOOKMARKS_ON_TOOLBAR = 1;
 const DEFAULT_BOOKMARKS_ON_MENU = 1;
 
-function checkItemHasAnnotation(guid, name) {
-  return PlacesUtils.promiseItemId(guid).then(id => {
-    let hasAnnotation = PlacesUtils.annotations.itemHasAnnotation(id, name);
-    Assert.ok(hasAnnotation, `Expected annotation ${name}`);
-  });
-}
-
-var createCorruptDB = async function() {
-  let dbPath = OS.Path.join(OS.Constants.Path.profileDir, "places.sqlite");
-  await OS.File.remove(dbPath);
+var createCorruptDB = async function () {
+  let dbPath = PathUtils.join(PathUtils.profileDir, "places.sqlite");
+  await IOUtils.remove(dbPath);
 
   // Create a corrupt database.
-  let dir = await OS.File.getCurrentDirectory();
-  let src = OS.Path.join(dir, "corruptDB.sqlite");
-  await OS.File.copy(src, dbPath);
+  let src = PathUtils.join(do_get_cwd().path, "corruptDB.sqlite");
+  await IOUtils.copy(src, dbPath);
 
   // Check there's a DB now.
-  Assert.ok(await OS.File.exists(dbPath), "should have a DB now");
+  Assert.ok(await IOUtils.exists(dbPath), "should have a DB now");
 };
 
 const SINGLE_TRY_TIMEOUT = 100;
@@ -64,19 +54,18 @@ const NUMBER_OF_TRIES = 30;
  * Similar to waitForConditionPromise, but poll for an asynchronous value
  * every SINGLE_TRY_TIMEOUT ms, for no more than tryCount times.
  *
- * @param promiseFn
+ * @param {Function} promiseFn
  *        A function to generate a promise, which resolves to the expected
  *        asynchronous value.
- * @param timeoutMsg
+ * @param {msg} timeoutMsg
  *        The reason to reject the returned promise with.
- * @param [optional] tryCount
+ * @param {number} [tryCount]
  *        Maximum times to try before rejecting the returned promise with
  *        timeoutMsg, defaults to NUMBER_OF_TRIES.
- * @return {Promise}
- * @resolves to the asynchronous value being polled.
- * @rejects if the asynchronous value is not available after tryCount attempts.
+ * @returns {Promise} to the asynchronous value being polled.
+ * @throws if the asynchronous value is not available after tryCount attempts.
  */
-var waitForResolvedPromise = async function(
+var waitForResolvedPromise = async function (
   promiseFn,
   timeoutMsg,
   tryCount = NUMBER_OF_TRIES

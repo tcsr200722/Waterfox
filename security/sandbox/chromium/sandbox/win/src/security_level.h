@@ -58,6 +58,14 @@ enum IntegrityLevel {
 //                             |              | Authent-users  |          |
 //                             |              | User           |          |
 // ----------------------------|--------------|----------------|----------|
+// USER_RESTRICTED_NON_ADMIN   | Users        | All except:    | Traverse |
+//                             | Everyone     | Users          |          |
+//                             | Interactive  | Everyone       |          |
+//                             | Local        | Interactive    |          |
+//                             | Authent-users| Local          |          |
+//                             | User         | Authent-users  |          |
+//                             |              | User           |          |
+// ----------------------------|--------------|----------------|----------|
 // USER_NON_ADMIN              | None         | All except:    | Traverse |
 //                             |              | Users          |          |
 //                             |              | Everyone       |          |
@@ -86,6 +94,7 @@ enum TokenLevel {
   USER_RESTRICTED,
   USER_LIMITED,
   USER_INTERACTIVE,
+  USER_RESTRICTED_NON_ADMIN,
   USER_NON_ADMIN,
   USER_RESTRICTED_SAME_ACCESS,
   USER_UNPROTECTED,
@@ -281,6 +290,10 @@ const MitigationFlags MITIGATION_RESTRICT_INDIRECT_BRANCH_PREDICTION =
 // leaving it enabled in the common case. Corresponds to
 // PROCESS_CREATION_MITIGATION_POLICY_CONTROL_FLOW_GUARD_ALWAYS_ON.
 const MitigationFlags MITIGATION_CONTROL_FLOW_GUARD_DISABLE = 0x80000000;
+
+// This enables CET User Shadow Stack for compatible modules and corresponds to
+// PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_ALWAYS_ON.
+const MitigationFlags MITIGATION_CET_COMPAT_MODE = 0x40000000;
 
 }  // namespace sandbox
 

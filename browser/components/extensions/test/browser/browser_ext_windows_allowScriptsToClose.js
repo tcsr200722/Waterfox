@@ -6,7 +6,7 @@
 add_task(async function test_allowScriptsToClose() {
   const files = {
     "dummy.html": "<meta charset=utf-8><script src=close.js></script>",
-    "close.js": function() {
+    "close.js": function () {
       window.close();
       if (!window.closed) {
         browser.test.sendMessage("close-failed");
@@ -53,9 +53,8 @@ add_task(async function test_allowScriptsToClose() {
 
   extension.sendMessage("create+execute", { url: example });
   win = await BrowserTestUtils.waitForNewWindow();
-  await extension.awaitMessage("close-failed");
-  info("script prevented from closing the window");
-  win.close();
+  await BrowserTestUtils.windowClosed(win);
+  info("script allowed to close the window");
 
   extension.sendMessage("create+execute", {
     url: example,

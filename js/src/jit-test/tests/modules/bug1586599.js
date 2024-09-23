@@ -1,5 +1,3 @@
-load(libdir + "dummyModuleResolveHook.js");
-
 let m1 = parseModule(`
 function x() {
     return 1;
@@ -9,9 +7,10 @@ function y() {
 }
 export { x, y };
 `);
-m1.declarationInstantiation();
-m1.evaluation();
-moduleRepo.m1 = m1;
+moduleLink(m1);
+moduleEvaluate(m1);
+
+registerModule('m1', m1);
 
 let m2 = parseModule(`
 import {x, y} from "m1";
@@ -27,5 +26,5 @@ test(1);
 y();
 test(2);
 `);
-m2.declarationInstantiation();
-m2.evaluation();
+moduleLink(m2);
+moduleEvaluate(m2);

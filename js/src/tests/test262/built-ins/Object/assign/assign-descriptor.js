@@ -3,13 +3,14 @@
 
 /*---
 description: Testing descriptor property of Object.assign
-includes:
-    - propertyHelper.js
+includes: [propertyHelper.js]
 es6id: 19.1.2.1
 ---*/
 
-verifyWritable(Object, "assign");
-verifyNotEnumerable(Object, "assign");
-verifyConfigurable(Object, "assign");
+verifyProperty(Object, "assign", {
+  writable: true,
+  enumerable: false,
+  configurable: true,
+});
 
 reportCompare(0, 0);

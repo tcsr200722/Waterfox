@@ -3,21 +3,24 @@
 
 "use strict";
 
-const asyncStorage = require("devtools/shared/async-storage");
+const asyncStorage = require("resource://devtools/shared/async-storage.js");
 
 // Test that the flexbox highlighter color change in the color picker is committed when
 // RETURN is pressed.
 
 const TEST_URI = URL_ROOT + "doc_flexbox_specific_cases.html";
 
-add_task(async function() {
+add_task(async function () {
   // Make sure there are no custom highlighter colors stored before starting.
   await asyncStorage.removeItem("flexboxInspectorHostColors");
 
   await addTab(TEST_URI);
   const { inspector, flexboxInspector, layoutView } = await openLayoutView();
   const { document: doc } = flexboxInspector;
-  const { highlighters, store } = inspector;
+  const { store } = inspector;
+  const HIGHLIGHTER_TYPE = inspector.highlighters.TYPES.FLEXBOX;
+  const { waitForHighlighterTypeShown, waitForHighlighterTypeHidden } =
+    getHighlighterTestHelpers(inspector);
   const cPicker = layoutView.swatchColorPickerTooltip;
   const spectrum = cPicker.spectrum;
 
@@ -44,7 +47,7 @@ add_task(async function() {
   );
 
   info("Toggling ON the flexbox highlighter.");
-  const onHighlighterShown = highlighters.once("flexbox-highlighter-shown");
+  const onHighlighterShown = waitForHighlighterTypeShown(HIGHLIGHTER_TYPE);
   const onCheckboxChange = waitUntilState(
     store,
     state => state.flexbox.highlighted
@@ -83,7 +86,7 @@ add_task(async function() {
   );
 
   info("Toggling OFF the flexbox highlighter.");
-  const onHighlighterHidden = highlighters.once("flexbox-highlighter-hidden");
+  const onHighlighterHidden = waitForHighlighterTypeHidden(HIGHLIGHTER_TYPE);
   checkbox.click();
   await onHighlighterHidden;
 });

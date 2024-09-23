@@ -1,13 +1,8 @@
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
 "use strict";
 
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
-const { setTimeout } = ChromeUtils.import("resource://gre/modules/Timer.jsm");
-
-const env = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
+const { setTimeout } = ChromeUtils.importESModule(
+  "resource://gre/modules/Timer.sys.mjs"
 );
 
 const MAX_ROUND_TRIP_TIME_MS = AppConstants.DEBUG || AppConstants.ASAN ? 18 : 9;
@@ -25,7 +20,7 @@ let read = pipe => {
   });
 };
 
-let readAll = async function(pipe) {
+let readAll = async function (pipe) {
   let result = [];
   let string;
   while ((string = await pipe.readString())) {
@@ -36,10 +31,10 @@ let readAll = async function(pipe) {
 };
 
 add_task(async function setup() {
-  PYTHON = await Subprocess.pathSearch(env.get("PYTHON"));
+  PYTHON = await Subprocess.pathSearch(Services.env.get("PYTHON"));
 
-  PYTHON_BIN = OS.Path.basename(PYTHON);
-  PYTHON_DIR = OS.Path.dirname(PYTHON);
+  PYTHON_BIN = PathUtils.filename(PYTHON);
+  PYTHON_DIR = PathUtils.parent(PYTHON);
 });
 
 add_task(async function test_subprocess_io() {
@@ -164,10 +159,7 @@ add_task(async function test_subprocess_huge() {
   // This should be large enough to fill most pipe input/output buffers.
   const MESSAGE_SIZE = 1024 * 16;
 
-  let msg =
-    Array(MESSAGE_SIZE)
-      .fill("0123456789abcdef")
-      .join("") + "\n";
+  let msg = Array(MESSAGE_SIZE).fill("0123456789abcdef").join("") + "\n";
 
   proc.stdin.write(msg);
 
@@ -221,8 +213,9 @@ add_task(
       equal(exitCode, 0, "Got expected exit code");
     }
 
-    ok(
-      roundTripTime <= MAX_ROUND_TRIP_TIME_MS,
+    Assert.lessOrEqual(
+      roundTripTime,
+      MAX_ROUND_TRIP_TIME_MS,
       `Expected round trip time (${roundTripTime}ms) to be less than ${MAX_ROUND_TRIP_TIME_MS}ms`
     );
   }
@@ -375,7 +368,7 @@ add_task(async function test_subprocess_force_close() {
 
   await Assert.rejects(
     readPromise,
-    function(e) {
+    function (e) {
       equal(
         e.errorCode,
         Subprocess.ERROR_END_OF_FILE,
@@ -406,7 +399,7 @@ add_task(async function test_subprocess_eof() {
 
   await Assert.rejects(
     readPromise,
-    function(e) {
+    function (e) {
       equal(
         e.errorCode,
         Subprocess.ERROR_END_OF_FILE,
@@ -438,7 +431,7 @@ add_task(async function test_subprocess_invalid_json() {
 
   await Assert.rejects(
     readPromise,
-    function(e) {
+    function (e) {
       equal(
         e.errorCode,
         Subprocess.ERROR_INVALID_JSON,
@@ -454,13 +447,14 @@ add_task(async function test_subprocess_invalid_json() {
   equal(exitCode, 0, "Got expected exit code");
 });
 
-if (AppConstants.isPlatformAndVersionAtLeast("win", "6")) {
+if (AppConstants.platform == "win") {
   add_task(async function test_subprocess_inherited_descriptors() {
-    let { libc, win32 } = ChromeUtils.import(
-      "resource://gre/modules/subprocess/subprocess_win.jsm",
-      null
+    let { libc, win32 } = ChromeUtils.importESModule(
+      "resource://gre/modules/subprocess/subprocess_win.sys.mjs"
     );
-    const { ctypes } = ChromeUtils.import("resource://gre/modules/ctypes.jsm");
+    const { ctypes } = ChromeUtils.importESModule(
+      "resource://gre/modules/ctypes.sys.mjs"
+    );
 
     let secAttr = new win32.SECURITY_ATTRIBUTES();
     secAttr.nLength = win32.SECURITY_ATTRIBUTES.size;
@@ -523,7 +517,7 @@ add_task(async function test_subprocess_pathSearch() {
 
   await Assert.rejects(
     promise,
-    function(error) {
+    function (error) {
       return error.errorCode == Subprocess.ERROR_BAD_EXECUTABLE;
     },
     "Subprocess.call should fail for a bad executable"
@@ -531,11 +525,8 @@ add_task(async function test_subprocess_pathSearch() {
 });
 
 add_task(async function test_subprocess_workdir() {
-  let procDir = await OS.File.getCurrentDirectory();
-  let tmpDirFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
-  tmpDirFile.initWithPath(OS.Constants.Path.tmpDir);
-  tmpDirFile.normalize();
-  let tmpDir = tmpDirFile.path;
+  let procDir = Services.dirsvc.get("CurWorkD", Ci.nsIFile).path;
+  let tmpDir = PathUtils.normalize(PathUtils.tempDir);
 
   notEqual(
     procDir,
@@ -574,13 +565,6 @@ add_task(async function test_subprocess_workdir() {
     dir,
     tmpDir,
     "Process should launch in the directory specified in `workdir`"
-  );
-
-  dir = await OS.File.getCurrentDirectory();
-  equal(
-    dir,
-    procDir,
-    "`workdir` should not change the working directory of the current process"
   );
 });
 
@@ -642,8 +626,9 @@ add_task(async function test_subprocess_kill_timeout() {
   // testing the timeout there.
   if (AppConstants.platform != "win") {
     let diff = Date.now() - startTime;
-    ok(
-      diff >= TIMEOUT,
+    Assert.greaterOrEqual(
+      diff,
+      TIMEOUT,
       `Process was killed after ${diff}ms (expected ~${TIMEOUT}ms)`
     );
   }
@@ -683,30 +668,37 @@ add_task(async function test_subprocess_arguments() {
 add_task(async function test_subprocess_environment() {
   let environment = {
     FOO: "BAR",
+    EMPTY: "",
+    IGNORED: null,
   };
 
   // Our Windows environment can't handle launching python without
   // PATH variables.
   if (AppConstants.platform == "win") {
     Object.assign(environment, {
-      PATH: env.get("PATH"),
-      PATHEXT: env.get("PATHEXT"),
+      PATH: Services.env.get("PATH"),
+      PATHEXT: Services.env.get("PATHEXT"),
+      SYSTEMROOT: Services.env.get("SYSTEMROOT"),
     });
   }
 
-  env.set("BAR", "BAZ");
+  Services.env.set("BAR", "BAZ");
 
   let proc = await Subprocess.call({
     command: PYTHON,
-    arguments: ["-u", TEST_SCRIPT, "env", "FOO", "BAR"],
+    arguments: ["-u", TEST_SCRIPT, "env", "FOO", "BAR", "EMPTY", "IGNORED"],
     environment,
   });
 
   let foo = await read(proc.stdout);
   let bar = await read(proc.stdout);
+  let empty = await read(proc.stdout);
+  let ignored = await read(proc.stdout);
 
   equal(foo, "BAR", "Got expected $FOO value");
-  equal(bar, "", "Got expected $BAR value");
+  equal(bar, "!", "Got expected $BAR value");
+  equal(empty, "", "Got expected $EMPTY value");
+  equal(ignored, "!", "Got expected $IGNORED value");
 
   let { exitCode } = await proc.wait();
 
@@ -714,7 +706,9 @@ add_task(async function test_subprocess_environment() {
 });
 
 add_task(async function test_subprocess_environmentAppend() {
-  env.set("VALUE_FROM_BASE_ENV", "untouched");
+  Services.env.set("VALUE_FROM_BASE_ENV", "untouched");
+  Services.env.set("VALUE_FROM_BASE_ENV_EMPTY", "untouched");
+  Services.env.set("VALUE_FROM_BASE_ENV_REMOVED", "untouched");
 
   let proc = await Subprocess.call({
     command: PYTHON,
@@ -723,21 +717,37 @@ add_task(async function test_subprocess_environmentAppend() {
       TEST_SCRIPT,
       "env",
       "VALUE_FROM_BASE_ENV",
+      "VALUE_FROM_BASE_ENV_EMPTY",
+      "VALUE_FROM_BASE_ENV_REMOVED",
       "VALUE_APPENDED_ONCE",
     ],
     environmentAppend: true,
     environment: {
+      VALUE_FROM_BASE_ENV_EMPTY: "",
+      VALUE_FROM_BASE_ENV_REMOVED: null,
       VALUE_APPENDED_ONCE: "soon empty",
     },
   });
 
   let valueFromBaseEnv = await read(proc.stdout);
+  let valueFromBaseEnvEmpty = await read(proc.stdout);
+  let valueFromBaseEnvRemoved = await read(proc.stdout);
   let valueAppendedOnce = await read(proc.stdout);
 
   equal(
     valueFromBaseEnv,
     "untouched",
     "Got expected $VALUE_FROM_BASE_ENV value"
+  );
+  equal(
+    valueFromBaseEnvEmpty,
+    "",
+    "Got expected $VALUE_FROM_BASE_ENV_EMPTY value"
+  );
+  equal(
+    valueFromBaseEnvRemoved,
+    "!",
+    "Got expected $VALUE_FROM_BASE_ENV_REMOVED value"
   );
   equal(
     valueAppendedOnce,
@@ -769,7 +779,7 @@ add_task(async function test_subprocess_environmentAppend() {
     "untouched",
     "Got expected $VALUE_FROM_BASE_ENV value"
   );
-  equal(valueAppendedOnce, "", "Got expected $VALUE_APPENDED_ONCE value");
+  equal(valueAppendedOnce, "!", "Got expected $VALUE_APPENDED_ONCE value");
 
   ({ exitCode } = await proc.wait());
 
@@ -778,9 +788,8 @@ add_task(async function test_subprocess_environmentAppend() {
 
 if (AppConstants.platform !== "win") {
   add_task(async function test_subprocess_nonASCII() {
-    const { libc } = ChromeUtils.import(
-      "resource://gre/modules/subprocess/subprocess_unix.jsm",
-      null
+    const { libc } = ChromeUtils.importESModule(
+      "resource://gre/modules/subprocess/subprocess_unix.sys.mjs"
     );
 
     // Use TextDecoder rather than a string with a \xff escape, since
@@ -802,7 +811,7 @@ if (AppConstants.platform !== "win") {
 
     equal(foo, val, "Got expected $FOO value");
 
-    env.set("FOO", "");
+    Services.env.set("FOO", "");
 
     let { exitCode } = await proc.wait();
 
@@ -822,7 +831,7 @@ add_task(async function test_bad_executable() {
 
   await Assert.rejects(
     promise,
-    function(error) {
+    function (error) {
       if (AppConstants.platform == "win") {
         return /Failed to create process/.test(error.message);
       }
@@ -839,7 +848,7 @@ add_task(async function test_bad_executable() {
 
   await Assert.rejects(
     promise,
-    function(error) {
+    function (error) {
       return error.errorCode == Subprocess.ERROR_BAD_EXECUTABLE;
     },
     "Subprocess.call should fail for a bad executable"
@@ -847,12 +856,11 @@ add_task(async function test_bad_executable() {
 });
 
 add_task(async function test_cleanup() {
-  let { SubprocessImpl } = ChromeUtils.import(
-    "resource://gre/modules/Subprocess.jsm",
-    null
+  let { getSubprocessImplForTest } = ChromeUtils.importESModule(
+    "resource://gre/modules/Subprocess.sys.mjs"
   );
 
-  let worker = SubprocessImpl.Process.getWorker();
+  let worker = getSubprocessImplForTest().Process.getWorker();
 
   let openFiles = await worker.call("getOpenFiles", []);
   let processes = await worker.call("getProcesses", []);

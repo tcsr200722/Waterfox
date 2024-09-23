@@ -23,8 +23,12 @@
 #endif
 
 #ifdef MOZ_WIDGET_ANDROID
-#  include "AndroidBridge.h"
+#  include "AndroidBuild.h"
 #  include "mozilla/java/GeckoAppShellWrappers.h"
+#endif
+
+#ifdef MOZ_BACKGROUNDTASKS
+#  include "mozilla/BackgroundTasks.h"
 #endif
 
 #include "mozilla/Services.h"
@@ -65,14 +69,6 @@ static const ManifestDirective kParsingTable[] = {
   {
     "manifest",         1, true, false,
     &nsComponentManagerImpl::ManifestManifest, nullptr,
-  },
-  {
-    "component",        2, false, false,
-    &nsComponentManagerImpl::ManifestComponent, nullptr,
-  },
-  {
-    "contract",         2, false, false,
-    &nsComponentManagerImpl::ManifestContract, nullptr,
   },
   {
     "category",         3, false, false,
@@ -122,7 +118,7 @@ void LogMessage(const char* aMsg, ...) {
   va_end(args);
 
   nsCOMPtr<nsIConsoleMessage> error =
-      new nsConsoleMessage(NS_ConvertUTF8toUTF16(formatted.get()).get());
+      new nsConsoleMessage(NS_ConvertUTF8toUTF16(formatted.get()));
   console->LogMessage(error);
 }
 
@@ -158,8 +154,8 @@ void LogMessageWithContext(FileLocation& aFile, uint32_t aLineNumber,
 
   nsresult rv = error->Init(
       NS_ConvertUTF8toUTF16(formatted.get()), NS_ConvertUTF8toUTF16(file),
-      EmptyString(), aLineNumber, 0, nsIScriptError::warningFlag,
-      "chrome registration", false /* from private window */,
+      u""_ns, aLineNumber, 0, nsIScriptError::warningFlag,
+      "chrome registration"_ns, false /* from private window */,
       true /* from chrome context */);
   if (NS_FAILED(rv)) {
     return;
@@ -270,8 +266,7 @@ static bool CheckOsFlag(const nsAString& aFlag, const nsAString& aData,
   bool result = CheckStringFlag(aFlag, aData, aValue, aResult);
 #if defined(XP_UNIX) && !defined(XP_DARWIN) && !defined(ANDROID)
   if (result && aResult == eBad) {
-    result =
-        CheckStringFlag(aFlag, aData, NS_LITERAL_STRING("likeunix"), aResult);
+    result = CheckStringFlag(aFlag, aData, u"likeunix"_ns, aResult);
   }
 #endif
   return result;
@@ -390,25 +385,29 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
   nsChromeRegistry::ManifestProcessingContext chromecx(aType, aFile);
   nsresult rv;
 
-  NS_NAMED_LITERAL_STRING(kContentAccessible, "contentaccessible");
-  NS_NAMED_LITERAL_STRING(kRemoteEnabled, "remoteenabled");
-  NS_NAMED_LITERAL_STRING(kRemoteRequired, "remoterequired");
-  NS_NAMED_LITERAL_STRING(kApplication, "application");
-  NS_NAMED_LITERAL_STRING(kAppVersion, "appversion");
-  NS_NAMED_LITERAL_STRING(kGeckoVersion, "platformversion");
-  NS_NAMED_LITERAL_STRING(kOs, "os");
-  NS_NAMED_LITERAL_STRING(kOsVersion, "osversion");
-  NS_NAMED_LITERAL_STRING(kABI, "abi");
-  NS_NAMED_LITERAL_STRING(kProcess, "process");
+  constexpr auto kContentAccessible = u"contentaccessible"_ns;
+  constexpr auto kRemoteEnabled = u"remoteenabled"_ns;
+  constexpr auto kRemoteRequired = u"remoterequired"_ns;
+  constexpr auto kApplication = u"application"_ns;
+  constexpr auto kAppVersion = u"appversion"_ns;
+  constexpr auto kGeckoVersion = u"platformversion"_ns;
+  constexpr auto kOs = u"os"_ns;
+  constexpr auto kOsVersion = u"osversion"_ns;
+  constexpr auto kABI = u"abi"_ns;
+  constexpr auto kProcess = u"process"_ns;
 #if defined(MOZ_WIDGET_ANDROID)
-  NS_NAMED_LITERAL_STRING(kTablet, "tablet");
+  constexpr auto kTablet = u"tablet"_ns;
 #endif
+  // You might expect this to be guarded by MOZ_BACKGROUNDTASKS, but it's not
+  // possible to have conditional manifest contents, so we need to recognize and
+  // discard these tokens even when MOZ_BACKGROUNDTASKS is not set.
+  constexpr auto kBackgroundTask = u"backgroundtask"_ns;
 
-  NS_NAMED_LITERAL_STRING(kMain, "main");
-  NS_NAMED_LITERAL_STRING(kContent, "content");
+  constexpr auto kMain = u"main"_ns;
+  constexpr auto kContent = u"content"_ns;
 
   // Obsolete
-  NS_NAMED_LITERAL_STRING(kXPCNativeWrappers, "xpcnativewrappers");
+  constexpr auto kXPCNativeWrappers = u"xpcnativewrappers"_ns;
 
   nsAutoString appID;
   nsAutoString appVersion;
@@ -472,9 +471,9 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
                             gtk_minor_version);
 #elif defined(MOZ_WIDGET_ANDROID)
   bool isTablet = false;
-  if (mozilla::AndroidBridge::Bridge()) {
-    mozilla::AndroidBridge::Bridge()->GetStaticStringField(
-        "android/os/Build$VERSION", "RELEASE", osVersion);
+  if (jni::IsAvailable()) {
+    jni::String::LocalRef release = java::sdk::Build::VERSION::RELEASE();
+    osVersion.Assign(release->ToString());
     isTablet = java::GeckoAppShell::IsTablet();
   }
 #endif
@@ -484,10 +483,6 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
   } else {
     process = kMain;
   }
-
-  // Because contracts must be registered after CIDs, we save and process them
-  // at the end.
-  nsTArray<CachedDirective> contracts;
 
   char* token;
   char* newline = aBuf;
@@ -572,6 +567,14 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
 #if defined(MOZ_WIDGET_ANDROID)
     TriState stTablet = eUnspecified;
 #endif
+#ifdef MOZ_BACKGROUNDTASKS
+    // When in background task mode, default to not registering
+    // category directivies unless backgroundtask=1 is specified.
+    TriState stBackgroundTask = (BackgroundTasks::IsBackgroundTaskMode() &&
+                                 strcmp("category", directive->directive) == 0)
+                                    ? eBad
+                                    : eUnspecified;
+#endif
     int flags = 0;
 
     while ((token = nsCRT::strtok(whitespace, kWhitespace, &whitespace)) &&
@@ -597,6 +600,18 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
         continue;
       }
 #endif
+
+      // You might expect this to be guarded by MOZ_BACKGROUNDTASKS, it's not
+      // possible to have conditional manifest contents.
+      bool flag;
+      if (CheckFlag(kBackgroundTask, wtoken, flag)) {
+#if defined(MOZ_BACKGROUNDTASKS)
+        // Background task mode is active: filter.
+        stBackgroundTask =
+            (flag == BackgroundTasks::IsBackgroundTaskMode()) ? eOK : eBad;
+#endif /* defined(MOZ_BACKGROUNDTASKS) */
+        continue;
+      }
 
       if (directive->contentflags) {
         bool flag;
@@ -632,6 +647,9 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
 #ifdef MOZ_WIDGET_ANDROID
         stTablet == eBad ||
 #endif
+#ifdef MOZ_BACKGROUNDTASKS
+        stBackgroundTask == eBad ||
+#endif
         stABI == eBad || stProcess == eBad) {
       continue;
     }
@@ -642,8 +660,7 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
       }
 
       if (!nsChromeRegistry::gChromeRegistry) {
-        nsCOMPtr<nsIChromeRegistry> cr =
-            mozilla::services::GetChromeRegistryService();
+        nsCOMPtr<nsIChromeRegistry> cr = mozilla::services::GetChromeRegistry();
         if (!nsChromeRegistry::gChromeRegistry) {
           LogMessageWithContext(aFile, line,
                                 "Chrome registry isn't available yet.");
@@ -657,11 +674,5 @@ void ParseManifest(NSLocationType aType, FileLocation& aFile, char* aBuf,
       (nsComponentManagerImpl::gComponentManager->*(directive->mgrfunc))(
           mgrcx, line, argv);
     }
-  }
-
-  for (uint32_t i = 0; i < contracts.Length(); ++i) {
-    CachedDirective& d = contracts[i];
-    nsComponentManagerImpl::gComponentManager->ManifestContract(mgrcx, d.lineno,
-                                                                d.argv);
   }
 }

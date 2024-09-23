@@ -1,10 +1,14 @@
-add_task(async function() {
+add_task(async function () {
   info("Starting subResources test");
 
   await SpecialPowers.flushPrefEnv();
   await SpecialPowers.pushPrefEnv({
     set: [
       ["network.cookie.cookieBehavior", Ci.nsICookieService.BEHAVIOR_REJECT],
+      [
+        "network.cookie.cookieBehavior.pbmode",
+        Ci.nsICookieService.BEHAVIOR_REJECT,
+      ],
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.pbmode.enabled", false],
       ["privacy.trackingprotection.annotate_channels", true],
@@ -23,7 +27,7 @@ add_task(async function() {
   // The previous function reloads the browser, so wait for it to load again!
   await BrowserTestUtils.browserLoaded(browser);
 
-  await SpecialPowers.spawn(browser, [], async function(obj) {
+  await SpecialPowers.spawn(browser, [], async function () {
     await new content.Promise(async resolve => {
       let document = content.document;
       let window = document.defaultView;
@@ -63,10 +67,10 @@ add_task(async function() {
   BrowserTestUtils.removeTab(tab);
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Cleaning up.");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

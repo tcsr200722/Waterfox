@@ -3,8 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const Services = require("Services");
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 /**
  * Shortcuts for lazily accessing and setting various preferences.
@@ -38,8 +37,16 @@ function PrefsHelper(prefsRoot = "", prefsBlueprint = {}) {
   const cache = new Map();
 
   for (const accessorName in prefsBlueprint) {
-    const [prefType, prefName] = prefsBlueprint[accessorName];
-    map(this, cache, accessorName, prefType, prefsRoot, prefName);
+    const [prefType, prefName, fallbackValue] = prefsBlueprint[accessorName];
+    map(
+      this,
+      cache,
+      accessorName,
+      prefType,
+      prefsRoot,
+      prefName,
+      fallbackValue
+    );
   }
 
   const observer = makeObserver(this, cache, prefsRoot, prefsBlueprint);
@@ -54,15 +61,17 @@ function PrefsHelper(prefsRoot = "", prefsBlueprint = {}) {
  * @param string prefType
  * @param string prefsRoot
  * @param string prefName
+ * @param string|int|boolean fallbackValue
  * @return any
  */
-function get(cache, prefType, prefsRoot, prefName) {
+function get(cache, prefType, prefsRoot, prefName, fallbackValue) {
   const cachedPref = cache.get(prefName);
   if (cachedPref !== undefined) {
     return cachedPref;
   }
   const value = Services.prefs["get" + prefType + "Pref"](
-    [prefsRoot, prefName].join(".")
+    [prefsRoot, prefName].join("."),
+    fallbackValue
   );
   cache.set(prefName, value);
   return value;
@@ -97,6 +106,7 @@ function set(cache, prefType, prefsRoot, prefName, value) {
  * @param string prefType
  * @param string prefsRoot
  * @param string prefName
+ * @param string|int|boolean fallbackValue
  * @param array serializer [optional]
  */
 function map(
@@ -106,6 +116,7 @@ function map(
   prefType,
   prefsRoot,
   prefName,
+  fallbackValue,
   serializer = { in: e => e, out: e => e }
 ) {
   if (prefName in self) {
@@ -115,14 +126,23 @@ function map(
     );
   }
   if (prefType == "Json") {
-    map(self, cache, accessorName, "Char", prefsRoot, prefName, {
-      in: JSON.parse,
-      out: JSON.stringify,
-    });
+    map(
+      self,
+      cache,
+      accessorName,
+      "String",
+      prefsRoot,
+      prefName,
+      fallbackValue,
+      {
+        in: JSON.parse,
+        out: JSON.stringify,
+      }
+    );
     return;
   }
   if (prefType == "Float") {
-    map(self, cache, accessorName, "Char", prefsRoot, prefName, {
+    map(self, cache, accessorName, "Char", prefsRoot, prefName, fallbackValue, {
       in: Number.parseFloat,
       out: n => n + "",
     });
@@ -130,8 +150,11 @@ function map(
   }
 
   Object.defineProperty(self, accessorName, {
-    get: () => serializer.in(get(cache, prefType, prefsRoot, prefName)),
-    set: e => set(cache, prefType, prefsRoot, prefName, serializer.out(e)),
+    get: () =>
+      serializer.in(get(cache, prefType, prefsRoot, prefName, fallbackValue)),
+    set: e => {
+      set(cache, prefType, prefsRoot, prefName, serializer.out(e));
+    },
   });
 }
 
@@ -164,14 +187,14 @@ function accessorNameForPref(somePrefName, prefsBlueprint) {
  */
 function makeObserver(self, cache, prefsRoot, prefsBlueprint) {
   return {
-    register: function() {
+    register() {
       this._branch = Services.prefs.getBranch(prefsRoot + ".");
       this._branch.addObserver("", this);
     },
-    unregister: function() {
+    unregister() {
       this._branch.removeObserver("", this);
     },
-    observe: function(subject, topic, prefName) {
+    observe(subject, topic, prefName) {
       // If this particular pref isn't handled by the blueprint object,
       // even though it's in the specified branch, ignore it.
       const accessorName = accessorNameForPref(prefName, prefsBlueprint);
@@ -190,26 +213,27 @@ exports.PrefsHelper = PrefsHelper;
  * A PreferenceObserver observes a pref branch for pref changes.
  * It emits an event for each preference change.
  */
-function PrefObserver(branchName) {
-  this.branchName = branchName;
-  this.branch = Services.prefs.getBranch(branchName);
-  this.branch.addObserver("", this);
+class PrefObserver extends EventEmitter {
+  constructor(branchName) {
+    super();
 
-  EventEmitter.decorate(this);
+    this.#branchName = branchName;
+    this.#branch = Services.prefs.getBranch(branchName);
+    this.#branch.addObserver("", this);
+  }
+
+  #branchName;
+  #branch;
+
+  observe(subject, topic, data) {
+    if (topic == "nsPref:changed") {
+      this.emit(this.#branchName + data);
+    }
+  }
+
+  destroy() {
+    this.#branch.removeObserver("", this);
+  }
 }
 
 exports.PrefObserver = PrefObserver;
-
-PrefObserver.prototype = {
-  observe: function(subject, topic, data) {
-    if (topic == "nsPref:changed") {
-      this.emit(this.branchName + data);
-    }
-  },
-
-  destroy: function() {
-    if (this.branch) {
-      this.branch.removeObserver("", this);
-    }
-  },
-};

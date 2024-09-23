@@ -1,5 +1,6 @@
 ﻿// © 2016 and later: Unicode, Inc. and others.
-// License & terms of use: http://www.unicode.org/copyright.html#License
+// License & terms of use: http://www.unicode.org/copyright.html
+// Generated using tools/cldr/cldr-to-icu/build-icu-data.xml
 tg{
     Languages{
         af{"африкаанс"}
@@ -32,7 +33,7 @@ tg{
         dv{"дивеҳӣ"}
         dz{"дзонгха"}
         el{"юнонӣ"}
-        en{"англисӣ"}
+        en{"Англисӣ"}
         en_AU{"англисии австралиягӣ"}
         en_CA{"англисии канадагӣ"}
         en_GB{"англисии британӣ"}
@@ -151,7 +152,7 @@ tg{
         to{"тонганӣ"}
         tr{"туркӣ"}
         tt{"тоторӣ"}
-        tzm{"тамазайти атласи марказӣ"}
+        tzm{"тамазайти Атласи Марказӣ"}
         ug{"ӯйғурӣ"}
         uk{"украинӣ"}
         und{"забони номаълум"}
@@ -175,12 +176,14 @@ tg{
     }
     Languages%short{
         en_GB{"англисӣ (ШМ)"}
+        en_US{"англисӣ (ИМ)"}
     }
     Scripts{
         Arab{"Арабӣ"}
         Cyrl{"Кириллӣ"}
         Hans{"Осонфаҳм"}
         Hant{"Анъанавӣ"}
+        Kore{"Кореягӣ"}
         Latn{"Лотинӣ"}
         Zxxx{"Нонавишта"}
         Zzzz{"Скрипти номаълум"}
@@ -201,11 +204,10 @@ tg{
             latn{"Рақамҳои ғарбӣ"}
         }
     }
-    Version{"37"}
     codePatterns{
-        language{"{0}"}
-        script{"{0}"}
-        territory{"{0}"}
+        language{"Забон: {0}"}
+        script{"Скрипт: {0}"}
+        territory{"Минтақа: {0}"}
     }
     localeDisplayPattern{
         keyTypePattern{"{0}: {1}"}

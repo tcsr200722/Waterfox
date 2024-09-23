@@ -7,18 +7,18 @@
 
 use super::*;
 
-use cocoa::foundation::NSUInteger;
-
+/// See <https://developer.apple.com/documentation/metal/mtlloadaction>
 #[repr(u64)]
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum MTLLoadAction {
     DontCare = 0,
     Load = 1,
     Clear = 2,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlstoreaction>
 #[repr(u64)]
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum MTLStoreAction {
     DontCare = 0,
     Store = 1,
@@ -28,19 +28,20 @@ pub enum MTLStoreAction {
     CustomSampleDepthStore = 5,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlclearcolor>
 #[repr(C)]
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct MTLClearColor {
-    red: f64,
-    green: f64,
-    blue: f64,
-    alpha: f64,
+    pub red: f64,
+    pub green: f64,
+    pub blue: f64,
+    pub alpha: f64,
 }
 
 impl MTLClearColor {
     #[inline]
     pub fn new(red: f64, green: f64, blue: f64, alpha: f64) -> Self {
-        MTLClearColor {
+        Self {
             red,
             green,
             blue,
@@ -49,6 +50,7 @@ impl MTLClearColor {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlmultisamplestencilresolvefilter>
 #[repr(u32)]
 #[allow(non_camel_case_types)]
 pub enum MTLMultisampleStencilResolveFilter {
@@ -56,12 +58,12 @@ pub enum MTLMultisampleStencilResolveFilter {
     DepthResolvedSample = 1,
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpassattachmentdescriptor>
 pub enum MTLRenderPassAttachmentDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassAttachmentDescriptor;
     pub struct RenderPassAttachmentDescriptor;
-    pub struct RenderPassAttachmentDescriptorRef;
 }
 
 impl RenderPassAttachmentDescriptorRef {
@@ -146,13 +148,13 @@ impl RenderPassAttachmentDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpasscolorattachmentdescriptor>
 pub enum MTLRenderPassColorAttachmentDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassColorAttachmentDescriptor;
     pub struct RenderPassColorAttachmentDescriptor;
-    pub struct RenderPassColorAttachmentDescriptorRef;
-    type ParentType = RenderPassAttachmentDescriptorRef;
+    type ParentType = RenderPassAttachmentDescriptor;
 }
 
 impl RenderPassColorAttachmentDescriptor {
@@ -174,13 +176,13 @@ impl RenderPassColorAttachmentDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpassdepthattachmentdescriptor>
 pub enum MTLRenderPassDepthAttachmentDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassDepthAttachmentDescriptor;
     pub struct RenderPassDepthAttachmentDescriptor;
-    pub struct RenderPassDepthAttachmentDescriptorRef;
-    type ParentType = RenderPassAttachmentDescriptorRef;
+    type ParentType = RenderPassAttachmentDescriptor;
 }
 
 impl RenderPassDepthAttachmentDescriptorRef {
@@ -193,13 +195,13 @@ impl RenderPassDepthAttachmentDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpassstencilattachmentdescriptor>
 pub enum MTLRenderPassStencilAttachmentDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassStencilAttachmentDescriptor;
     pub struct RenderPassStencilAttachmentDescriptor;
-    pub struct RenderPassStencilAttachmentDescriptorRef;
-    type ParentType = RenderPassAttachmentDescriptorRef;
+    type ParentType = RenderPassAttachmentDescriptor;
 }
 
 impl RenderPassStencilAttachmentDescriptorRef {
@@ -223,12 +225,12 @@ impl RenderPassStencilAttachmentDescriptorRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpasscolorattachmentdescriptorarray>
 pub enum MTLRenderPassColorAttachmentDescriptorArray {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassColorAttachmentDescriptorArray;
     pub struct RenderPassColorAttachmentDescriptorArray;
-    pub struct RenderPassColorAttachmentDescriptorArrayRef;
 }
 
 impl RenderPassColorAttachmentDescriptorArrayRef {
@@ -248,20 +250,123 @@ impl RenderPassColorAttachmentDescriptorArrayRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpasssamplebufferattachmentdescriptor>
+pub enum MTLRenderPassSampleBufferAttachmentDescriptor {}
+
+foreign_obj_type! {
+    type CType = MTLRenderPassSampleBufferAttachmentDescriptor;
+    pub struct RenderPassSampleBufferAttachmentDescriptor;
+}
+
+impl RenderPassSampleBufferAttachmentDescriptor {
+    pub fn new() -> Self {
+        let class = class!(MTLRenderPassSampleBufferAttachmentDescriptor);
+        unsafe { msg_send![class, new] }
+    }
+}
+
+impl RenderPassSampleBufferAttachmentDescriptorRef {
+    pub fn sample_buffer(&self) -> &CounterSampleBufferRef {
+        unsafe { msg_send![self, sampleBuffer] }
+    }
+
+    pub fn set_sample_buffer(&self, sample_buffer: &CounterSampleBufferRef) {
+        unsafe { msg_send![self, setSampleBuffer: sample_buffer] }
+    }
+
+    pub fn start_of_vertex_sample_index(&self) -> NSUInteger {
+        unsafe { msg_send![self, startOfVertexSampleIndex] }
+    }
+
+    pub fn set_start_of_vertex_sample_index(&self, start_of_vertex_sample_index: NSUInteger) {
+        unsafe {
+            msg_send![
+                self,
+                setStartOfVertexSampleIndex: start_of_vertex_sample_index
+            ]
+        }
+    }
+
+    pub fn end_of_vertex_sample_index(&self) -> NSUInteger {
+        unsafe { msg_send![self, endOfVertexSampleIndex] }
+    }
+
+    pub fn set_end_of_vertex_sample_index(&self, end_of_vertex_sample_index: NSUInteger) {
+        unsafe { msg_send![self, setEndOfVertexSampleIndex: end_of_vertex_sample_index] }
+    }
+
+    pub fn start_of_fragment_sample_index(&self) -> NSUInteger {
+        unsafe { msg_send![self, startOfFragmentSampleIndex] }
+    }
+
+    pub fn set_start_of_fragment_sample_index(&self, start_of_fragment_sample_index: NSUInteger) {
+        unsafe {
+            msg_send![
+                self,
+                setStartOfFragmentSampleIndex: start_of_fragment_sample_index
+            ]
+        }
+    }
+
+    pub fn end_of_fragment_sample_index(&self) -> NSUInteger {
+        unsafe { msg_send![self, endOfFragmentSampleIndex] }
+    }
+
+    pub fn set_end_of_fragment_sample_index(&self, end_of_fragment_sample_index: NSUInteger) {
+        unsafe {
+            msg_send![
+                self,
+                setEndOfFragmentSampleIndex: end_of_fragment_sample_index
+            ]
+        }
+    }
+}
+
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpasssamplebufferattachmentdescriptorarray>
+pub enum MTLRenderPassSampleBufferAttachmentDescriptorArray {}
+
+foreign_obj_type! {
+    type CType = MTLRenderPassSampleBufferAttachmentDescriptorArray;
+    pub struct RenderPassSampleBufferAttachmentDescriptorArray;
+}
+
+impl RenderPassSampleBufferAttachmentDescriptorArrayRef {
+    pub fn object_at(
+        &self,
+        index: NSUInteger,
+    ) -> Option<&RenderPassSampleBufferAttachmentDescriptorRef> {
+        unsafe { msg_send![self, objectAtIndexedSubscript: index] }
+    }
+
+    pub fn set_object_at(
+        &self,
+        index: NSUInteger,
+        attachment: Option<&RenderPassSampleBufferAttachmentDescriptorRef>,
+    ) {
+        unsafe {
+            msg_send![self, setObject:attachment
+                     atIndexedSubscript:index]
+        }
+    }
+}
+
+/// ## Important!
+/// When configuring a [`MTLTextureDescriptor`] object for use with an attachment, set its usage
+/// value to renderTarget if you already know that you intend to use the resulting MTLTexture object in
+/// an attachment. This may significantly improve your app’s performance with certain hardware.
+///
+/// See <https://developer.apple.com/documentation/metal/mtlrenderpassdescriptor>
 pub enum MTLRenderPassDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLRenderPassDescriptor;
     pub struct RenderPassDescriptor;
-    pub struct RenderPassDescriptorRef;
 }
 
 impl RenderPassDescriptor {
+    /// Creates a default render pass descriptor with no attachments.
     pub fn new<'a>() -> &'a RenderPassDescriptorRef {
-        unsafe {
-            let class = class!(MTLRenderPassDescriptorInternal);
-            msg_send![class, renderPassDescriptor]
-        }
+        unsafe { msg_send![class!(MTLRenderPassDescriptor), renderPassDescriptor] }
     }
 }
 
@@ -330,5 +435,9 @@ impl RenderPassDescriptorRef {
 
     pub fn set_default_raster_sample_count(&self, count: NSUInteger) {
         unsafe { msg_send![self, setDefaultRasterSampleCount: count] }
+    }
+
+    pub fn sample_buffer_attachments(&self) -> &RenderPassSampleBufferAttachmentDescriptorArrayRef {
+        unsafe { msg_send![self, sampleBufferAttachments] }
     }
 }

@@ -1,14 +1,24 @@
-use futures_core::future::{FusedFuture, Future};
-use futures_core::task::{Context, Poll, Waker};
-use slab::Slab;
-use std::{fmt, mem};
 use std::cell::UnsafeCell;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::{fmt, mem};
+
+use slab::Slab;
+
+use futures_core::future::{FusedFuture, Future};
+use futures_core::task::{Context, Poll, Waker};
 
 /// A futures-aware mutex.
+///
+/// # Fairness
+///
+/// This mutex provides no fairness guarantees. Tasks may not acquire the mutex
+/// in the order that they requested the lock, and it's possible for a single task
+/// which repeatedly takes the lock to starve other tasks, which may be left waiting
+/// indefinitely.
 pub struct Mutex<T: ?Sized> {
     state: AtomicUsize,
     waiters: StdMutex<Slab<Waiter>>,
@@ -32,8 +42,8 @@ impl<T> From<T> for Mutex<T> {
 }
 
 impl<T: Default> Default for Mutex<T> {
-    fn default() -> Mutex<T> {
-        Mutex::new(Default::default())
+    fn default() -> Self {
+        Self::new(Default::default())
     }
 }
 
@@ -45,27 +55,26 @@ enum Waiter {
 impl Waiter {
     fn register(&mut self, waker: &Waker) {
         match self {
-            Waiter::Waiting(w) if waker.will_wake(w) => {},
-            _ => *self = Waiter::Waiting(waker.clone()),
+            Self::Waiting(w) if waker.will_wake(w) => {}
+            _ => *self = Self::Waiting(waker.clone()),
         }
     }
 
     fn wake(&mut self) {
-        match mem::replace(self, Waiter::Woken) {
-            Waiter::Waiting(waker) => waker.wake(),
-            Waiter::Woken => {},
+        match mem::replace(self, Self::Woken) {
+            Self::Waiting(waker) => waker.wake(),
+            Self::Woken => {}
         }
     }
 }
 
-#[allow(clippy::identity_op)] // https://github.com/rust-lang/rust-clippy/issues/3445
 const IS_LOCKED: usize = 1 << 0;
 const HAS_WAITERS: usize = 1 << 1;
 
 impl<T> Mutex<T> {
     /// Creates a new futures-aware mutex.
-    pub fn new(t: T) -> Mutex<T> {
-        Mutex {
+    pub fn new(t: T) -> Self {
+        Self {
             state: AtomicUsize::new(0),
             waiters: StdMutex::new(Slab::new()),
             value: UnsafeCell::new(t),
@@ -100,15 +109,32 @@ impl<T: ?Sized> Mutex<T> {
         }
     }
 
+    /// Attempt to acquire the lock immediately.
+    ///
+    /// If the lock is currently held, this will return `None`.
+    pub fn try_lock_owned(self: &Arc<Self>) -> Option<OwnedMutexGuard<T>> {
+        let old_state = self.state.fetch_or(IS_LOCKED, Ordering::Acquire);
+        if (old_state & IS_LOCKED) == 0 {
+            Some(OwnedMutexGuard { mutex: self.clone() })
+        } else {
+            None
+        }
+    }
+
     /// Acquire the lock asynchronously.
     ///
     /// This method returns a future that will resolve once the lock has been
     /// successfully acquired.
     pub fn lock(&self) -> MutexLockFuture<'_, T> {
-        MutexLockFuture {
-            mutex: Some(self),
-            wait_key: WAIT_KEY_NONE,
-        }
+        MutexLockFuture { mutex: Some(self), wait_key: WAIT_KEY_NONE }
+    }
+
+    /// Acquire the lock asynchronously.
+    ///
+    /// This method returns a future that will resolve once the lock has been
+    /// successfully acquired.
+    pub fn lock_owned(self: Arc<Self>) -> OwnedMutexLockFuture<T> {
+        OwnedMutexLockFuture { mutex: Some(self), wait_key: WAIT_KEY_NONE }
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -137,7 +163,7 @@ impl<T: ?Sized> Mutex<T> {
         if wait_key != WAIT_KEY_NONE {
             let mut waiters = self.waiters.lock().unwrap();
             match waiters.remove(wait_key) {
-                Waiter::Waiting(_) => {},
+                Waiter::Waiting(_) => {}
                 Waiter::Woken => {
                     // We were awoken, but then dropped before we could
                     // wake up to acquire the lock. Wake up another
@@ -169,7 +195,118 @@ impl<T: ?Sized> Mutex<T> {
 }
 
 // Sentinel for when no slot in the `Slab` has been dedicated to this object.
-const WAIT_KEY_NONE: usize = usize::max_value();
+const WAIT_KEY_NONE: usize = usize::MAX;
+
+/// A future which resolves when the target mutex has been successfully acquired, owned version.
+pub struct OwnedMutexLockFuture<T: ?Sized> {
+    // `None` indicates that the mutex was successfully acquired.
+    mutex: Option<Arc<Mutex<T>>>,
+    wait_key: usize,
+}
+
+impl<T: ?Sized> fmt::Debug for OwnedMutexLockFuture<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedMutexLockFuture")
+            .field("was_acquired", &self.mutex.is_none())
+            .field("mutex", &self.mutex)
+            .field(
+                "wait_key",
+                &(if self.wait_key == WAIT_KEY_NONE { None } else { Some(self.wait_key) }),
+            )
+            .finish()
+    }
+}
+
+impl<T: ?Sized> FusedFuture for OwnedMutexLockFuture<T> {
+    fn is_terminated(&self) -> bool {
+        self.mutex.is_none()
+    }
+}
+
+impl<T: ?Sized> Future for OwnedMutexLockFuture<T> {
+    type Output = OwnedMutexGuard<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        let mutex = this.mutex.as_ref().expect("polled OwnedMutexLockFuture after completion");
+
+        if let Some(lock) = mutex.try_lock_owned() {
+            mutex.remove_waker(this.wait_key, false);
+            this.mutex = None;
+            return Poll::Ready(lock);
+        }
+
+        {
+            let mut waiters = mutex.waiters.lock().unwrap();
+            if this.wait_key == WAIT_KEY_NONE {
+                this.wait_key = waiters.insert(Waiter::Waiting(cx.waker().clone()));
+                if waiters.len() == 1 {
+                    mutex.state.fetch_or(HAS_WAITERS, Ordering::Relaxed); // released by mutex unlock
+                }
+            } else {
+                waiters[this.wait_key].register(cx.waker());
+            }
+        }
+
+        // Ensure that we haven't raced `MutexGuard::drop`'s unlock path by
+        // attempting to acquire the lock again.
+        if let Some(lock) = mutex.try_lock_owned() {
+            mutex.remove_waker(this.wait_key, false);
+            this.mutex = None;
+            return Poll::Ready(lock);
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<T: ?Sized> Drop for OwnedMutexLockFuture<T> {
+    fn drop(&mut self) {
+        if let Some(mutex) = self.mutex.as_ref() {
+            // This future was dropped before it acquired the mutex.
+            //
+            // Remove ourselves from the map, waking up another waiter if we
+            // had been awoken to acquire the lock.
+            mutex.remove_waker(self.wait_key, true);
+        }
+    }
+}
+
+/// An RAII guard returned by the `lock_owned` and `try_lock_owned` methods.
+/// When this structure is dropped (falls out of scope), the lock will be
+/// unlocked.
+pub struct OwnedMutexGuard<T: ?Sized> {
+    mutex: Arc<Mutex<T>>,
+}
+
+impl<T: ?Sized + fmt::Debug> fmt::Debug for OwnedMutexGuard<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedMutexGuard")
+            .field("value", &&**self)
+            .field("mutex", &self.mutex)
+            .finish()
+    }
+}
+
+impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
+    fn drop(&mut self) {
+        self.mutex.unlock()
+    }
+}
+
+impl<T: ?Sized> Deref for OwnedMutexGuard<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        unsafe { &*self.mutex.value.get() }
+    }
+}
+
+impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.mutex.value.get() }
+    }
+}
 
 /// A future which resolves when the target mutex has been successfully acquired.
 pub struct MutexLockFuture<'a, T: ?Sized> {
@@ -183,13 +320,10 @@ impl<T: ?Sized> fmt::Debug for MutexLockFuture<'_, T> {
         f.debug_struct("MutexLockFuture")
             .field("was_acquired", &self.mutex.is_none())
             .field("mutex", &self.mutex)
-            .field("wait_key", &(
-                    if self.wait_key == WAIT_KEY_NONE {
-                        None
-                    } else {
-                        Some(self.wait_key)
-                    }
-                ))
+            .field(
+                "wait_key",
+                &(if self.wait_key == WAIT_KEY_NONE { None } else { Some(self.wait_key) }),
+            )
             .finish()
     }
 }
@@ -281,16 +415,13 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
         // Don't run the `drop` method for MutexGuard. The ownership of the underlying
         // locked state is being moved to the returned MappedMutexGuard.
         mem::forget(this);
-        MappedMutexGuard { mutex, value }
+        MappedMutexGuard { mutex, value, _marker: PhantomData }
     }
 }
 
 impl<T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MutexGuard")
-            .field("value", &&**self)
-            .field("mutex", &self.mutex)
-            .finish()
+        f.debug_struct("MutexGuard").field("value", &&**self).field("mutex", &self.mutex).finish()
     }
 }
 
@@ -318,6 +449,7 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 pub struct MappedMutexGuard<'a, T: ?Sized, U: ?Sized> {
     mutex: &'a Mutex<T>,
     value: *mut U,
+    _marker: PhantomData<&'a mut U>,
 }
 
 impl<'a, T: ?Sized, U: ?Sized> MappedMutexGuard<'a, T, U> {
@@ -347,7 +479,7 @@ impl<'a, T: ?Sized, U: ?Sized> MappedMutexGuard<'a, T, U> {
         // Don't run the `drop` method for MappedMutexGuard. The ownership of the underlying
         // locked state is being moved to the returned MappedMutexGuard.
         mem::forget(this);
-        MappedMutexGuard { mutex, value }
+        MappedMutexGuard { mutex, value, _marker: PhantomData }
     }
 }
 
@@ -387,15 +519,27 @@ unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 // It's safe to switch which thread the acquire is being attempted on so long as
 // `T` can be accessed on that thread.
 unsafe impl<T: ?Sized + Send> Send for MutexLockFuture<'_, T> {}
+
 // doesn't have any interesting `&self` methods (only Debug)
 unsafe impl<T: ?Sized> Sync for MutexLockFuture<'_, T> {}
+
+// It's safe to switch which thread the acquire is being attempted on so long as
+// `T` can be accessed on that thread.
+unsafe impl<T: ?Sized + Send> Send for OwnedMutexLockFuture<T> {}
+
+// doesn't have any interesting `&self` methods (only Debug)
+unsafe impl<T: ?Sized> Sync for OwnedMutexLockFuture<T> {}
 
 // Safe to send since we don't track any thread-specific details-- the inner
 // lock is essentially spinlock-equivalent (attempt to flip an atomic bool)
 unsafe impl<T: ?Sized + Send> Send for MutexGuard<'_, T> {}
 unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
-unsafe impl<T: ?Sized + Send, U: ?Sized> Send for MappedMutexGuard<'_, T, U> {}
-unsafe impl<T: ?Sized + Sync, U: ?Sized> Sync for MappedMutexGuard<'_, T, U> {}
+
+unsafe impl<T: ?Sized + Send> Send for OwnedMutexGuard<T> {}
+unsafe impl<T: ?Sized + Sync> Sync for OwnedMutexGuard<T> {}
+
+unsafe impl<T: ?Sized + Send, U: ?Sized + Send> Send for MappedMutexGuard<'_, T, U> {}
+unsafe impl<T: ?Sized + Sync, U: ?Sized + Sync> Sync for MappedMutexGuard<'_, T, U> {}
 
 #[test]
 fn test_mutex_guard_debug_not_recurse() {

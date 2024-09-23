@@ -13,32 +13,38 @@
 #![cfg_attr(
     feature = "nightly",
     feature(
-        alloc_layout_extra,
-        allocator_api,
-        ptr_offset_from,
         test,
         core_intrinsics,
         dropck_eyepatch,
-        specialization,
+        min_specialization,
+        extend_one,
+        allocator_api,
+        slice_ptr_get,
+        maybe_uninit_array_assume_init,
+        strict_provenance
     )
 )]
 #![allow(
     clippy::doc_markdown,
     clippy::module_name_repetitions,
-    clippy::must_use_candidate
+    clippy::must_use_candidate,
+    clippy::option_if_let_else,
+    clippy::redundant_else,
+    clippy::manual_map,
+    clippy::missing_safety_doc,
+    clippy::missing_errors_doc
 )]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
+#![cfg_attr(feature = "nightly", warn(fuzzy_provenance_casts))]
+#![cfg_attr(feature = "nightly", allow(internal_features))]
 
 #[cfg(test)]
 #[macro_use]
 extern crate std;
 
-#[cfg(has_extern_crate_alloc)]
 #[cfg_attr(test, macro_use)]
 extern crate alloc;
-#[cfg(not(has_extern_crate_alloc))]
-extern crate std as alloc;
 
 #[cfg(feature = "nightly")]
 #[cfg(doctest)]
@@ -58,6 +64,11 @@ pub mod raw {
     pub use inner::*;
 
     #[cfg(feature = "rayon")]
+    /// [rayon]-based parallel iterator types for hash maps.
+    /// You will rarely need to interact with it directly unless you have need
+    /// to name one of the iterator types.
+    ///
+    /// [rayon]: https://docs.rs/rayon/1.0/rayon
     pub mod rayon {
         pub use crate::external_trait_impls::rayon::raw::*;
     }
@@ -71,6 +82,7 @@ mod map;
 mod rustc_entry;
 mod scopeguard;
 mod set;
+mod table;
 
 pub mod hash_map {
     //! A hash map implemented with quadratic probing and SIMD lookup.
@@ -103,18 +115,73 @@ pub mod hash_set {
         pub use crate::external_trait_impls::rayon::set::*;
     }
 }
+pub mod hash_table {
+    //! A hash table implemented with quadratic probing and SIMD lookup.
+    pub use crate::table::*;
+
+    #[cfg(feature = "rayon")]
+    /// [rayon]-based parallel iterator types for hash tables.
+    /// You will rarely need to interact with it directly unless you have need
+    /// to name one of the iterator types.
+    ///
+    /// [rayon]: https://docs.rs/rayon/1.0/rayon
+    pub mod rayon {
+        pub use crate::external_trait_impls::rayon::table::*;
+    }
+}
 
 pub use crate::map::HashMap;
 pub use crate::set::HashSet;
+pub use crate::table::HashTable;
 
-/// Augments `AllocErr` with a `CapacityOverflow` variant.
+#[cfg(feature = "equivalent")]
+pub use equivalent::Equivalent;
+
+// This is only used as a fallback when building as part of `std`.
+#[cfg(not(feature = "equivalent"))]
+/// Key equivalence trait.
+///
+/// This trait defines the function used to compare the input value with the
+/// map keys (or set values) during a lookup operation such as [`HashMap::get`]
+/// or [`HashSet::contains`].
+/// It is provided with a blanket implementation based on the
+/// [`Borrow`](core::borrow::Borrow) trait.
+///
+/// # Correctness
+///
+/// Equivalent values must hash to the same value.
+pub trait Equivalent<K: ?Sized> {
+    /// Checks if this value is equivalent to the given key.
+    ///
+    /// Returns `true` if both values are equivalent, and `false` otherwise.
+    ///
+    /// # Correctness
+    ///
+    /// When this function returns `true`, both `self` and `key` must hash to
+    /// the same value.
+    fn equivalent(&self, key: &K) -> bool;
+}
+
+#[cfg(not(feature = "equivalent"))]
+impl<Q: ?Sized, K: ?Sized> Equivalent<K> for Q
+where
+    Q: Eq,
+    K: core::borrow::Borrow<Q>,
+{
+    fn equivalent(&self, key: &K) -> bool {
+        self == key.borrow()
+    }
+}
+
+/// The error type for `try_reserve` methods.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum CollectionAllocErr {
+pub enum TryReserveError {
     /// Error due to the computed capacity exceeding the collection's maximum
     /// (usually `isize::MAX` bytes).
     CapacityOverflow,
-    /// Error due to the allocator.
-    AllocErr {
+
+    /// The memory allocator returned an error
+    AllocError {
         /// The layout of the allocation request that failed.
         layout: alloc::alloc::Layout,
     },

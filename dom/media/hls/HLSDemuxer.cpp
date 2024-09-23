@@ -27,18 +27,18 @@ using media::TimeInterval;
 using media::TimeIntervals;
 using media::TimeUnit;
 
-static VideoInfo::Rotation getVideoInfoRotation(int aRotation) {
+static VideoRotation getVideoInfoRotation(int aRotation) {
   switch (aRotation) {
     case 0:
-      return VideoInfo::Rotation::kDegree_0;
+      return VideoRotation::kDegree_0;
     case 90:
-      return VideoInfo::Rotation::kDegree_90;
+      return VideoRotation::kDegree_90;
     case 180:
-      return VideoInfo::Rotation::kDegree_180;
+      return VideoRotation::kDegree_180;
     case 270:
-      return VideoInfo::Rotation::kDegree_270;
+      return VideoRotation::kDegree_270;
     default:
-      return VideoInfo::Rotation::kDegree_0;
+      return VideoRotation::kDegree_0;
   }
 }
 
@@ -119,7 +119,7 @@ class HLSDemuxer::HLSDemuxerCallbacksSupport
     mDemuxer = nullptr;
   }
 
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
 
  private:
   ~HLSDemuxerCallbacksSupport() {}
@@ -127,8 +127,9 @@ class HLSDemuxer::HLSDemuxerCallbacksSupport
 };
 
 HLSDemuxer::HLSDemuxer(int aPlayerId)
-    : mTaskQueue(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
-                               /* aSupportsTailDispatch = */ false)) {
+    : mTaskQueue(TaskQueue::Create(
+          GetMediaThreadPool(MediaThreadType::SUPERVISOR), "HLSDemuxer",
+          /* aSupportsTailDispatch = */ false)) {
   MOZ_ASSERT(NS_IsMainThread());
   HLSDemuxerCallbacksSupport::Init();
   mJavaCallbacks = java::GeckoHLSDemuxerWrapper::Callbacks::New();
@@ -369,9 +370,11 @@ void HLSTrackDemuxer::UpdateMediaInfo(int index) {
     jni::ByteArray::LocalRef csdBytes = audioInfoObj->CodecSpecificData();
     if (csdBytes) {
       auto&& csd = csdBytes->GetElements();
-      audioInfo->mCodecSpecificConfig->Clear();
-      audioInfo->mCodecSpecificConfig->AppendElements(
-          reinterpret_cast<uint8_t*>(&csd[0]), csd.Length());
+      AudioCodecSpecificBinaryBlob blob;
+      blob.mBinaryBlob->AppendElements(reinterpret_cast<uint8_t*>(&csd[0]),
+                                       csd.Length());
+      audioInfo->mCodecSpecificConfig =
+          AudioCodecSpecificVariant{std::move(blob)};
     }
   } else {
     infoObj = mParent->mHLSDemuxerWrapper->GetVideoInfo(index);
@@ -398,7 +401,8 @@ void HLSTrackDemuxer::UpdateMediaInfo(int index) {
 }
 
 CryptoSample HLSTrackDemuxer::ExtractCryptoSample(
-    size_t aSampleSize, java::sdk::CryptoInfo::LocalRef aCryptoInfo) {
+    size_t aSampleSize,
+    java::sdk::MediaCodec::CryptoInfo::LocalRef aCryptoInfo) {
   if (!aCryptoInfo) {
     return CryptoSample{};
   }
@@ -446,11 +450,10 @@ CryptoSample HLSTrackDemuxer::ExtractCryptoSample(
       msg = "Error when extracting clear data.";
       break;
     }
-    // Data in mPlainSizes is uint16_t, NumBytesOfClearData is int32_t
-    // , so need a for loop to copy
-    for (const auto& b : clearData->GetElements()) {
-      crypto.mPlainSizes.AppendElement(b);
-    }
+    auto&& clearArr = clearData->GetElements();
+    // Data in mPlainSizes is uint32_t, NumBytesOfClearData is int32_t
+    crypto.mPlainSizes.AppendElements(reinterpret_cast<uint32_t*>(&clearArr[0]),
+                                      clearArr.Length());
 
     mozilla::jni::IntArray::LocalRef encryptedData;
     if (NS_FAILED(aCryptoInfo->NumBytesOfEncryptedData(&encryptedData))) {
@@ -477,7 +480,7 @@ CryptoSample HLSTrackDemuxer::ExtractCryptoSample(
 
 RefPtr<MediaRawData> HLSTrackDemuxer::ConvertToMediaRawData(
     java::GeckoHLSSample::LocalRef aSample) {
-  java::sdk::BufferInfo::LocalRef info = aSample->Info();
+  java::sdk::MediaCodec::BufferInfo::LocalRef info = aSample->Info();
   // Currently extract PTS, Size and Data without Crypto information.
   // Transform java Sample into MediaRawData
   RefPtr<MediaRawData> mrd = new MediaRawData();
@@ -577,7 +580,7 @@ HLSTrackDemuxer::DoSkipToNextRandomAccessPoint(const TimeUnit& aTimeThreshold) {
       break;
     }
     if (sample->IsKeyFrame()) {
-      java::sdk::BufferInfo::LocalRef info = sample->Info();
+      java::sdk::MediaCodec::BufferInfo::LocalRef info = sample->Info();
       int64_t presentationTimeUs = 0;
       if (NS_SUCCEEDED(info->PresentationTimeUs(&presentationTimeUs)) &&
           TimeUnit::FromMicroseconds(presentationTimeUs) >= aTimeThreshold) {

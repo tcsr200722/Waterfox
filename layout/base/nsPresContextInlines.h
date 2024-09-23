@@ -7,14 +7,15 @@
 #ifndef nsPresContextInlines_h
 #define nsPresContextInlines_h
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/PresShell.h"
 #include "nsCSSFrameConstructor.h"
 
 inline mozilla::ServoStyleSet* nsPresContext::StyleSet() const {
-  return mDocument->StyleSetForPresShellOrMediaQueryEvaluation();
+  return mDocument->StyleSetForPresShell();
 }
 
-inline nsCSSFrameConstructor* nsPresContext::FrameConstructor() {
+inline nsCSSFrameConstructor* nsPresContext::FrameConstructor() const {
   return PresShell()->FrameConstructor();
 }
 

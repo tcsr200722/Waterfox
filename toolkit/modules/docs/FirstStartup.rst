@@ -56,26 +56,17 @@ List of phases
   spinning. This state will persist until either all startup tasks
   have finished, or time-out has been reached.
 
-  The time-out defaults to 5 seconds, but is configurable via the
+  The time-out defaults to 30 seconds, but is configurable via the
   ``first-startup.timeout`` pref, which is specified in milliseconds.
 
 ``FirstStartup.TIMED_OUT``
 
   The time-out has been reached before startup tasks are complete.
 
-  This status code is reported to Telemetry via the ``firstStartup.statusCode``
-  scalar.
-
 ``FirstStartup.SUCCESS``
 
   All startup tasks have completed successfully, and application startup may resume.
 
-  This status code is reported to Telemetry via the ``firstStartup.statusCode``
-  scalar.
-
 ``FirstStartup.UNSUPPORTED``
 
   No startup tasks are supported, and `FirstStartup` exited.
-
-  This status code is reported to Telemetry via the ``firstStartup.statusCode``
-  scalar.

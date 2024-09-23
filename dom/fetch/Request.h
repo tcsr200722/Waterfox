@@ -17,17 +17,16 @@
 #include "mozilla/dom/RequestBinding.h"
 #include "mozilla/dom/SafeRefPtr.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Headers;
 class InternalHeaders;
-class RequestOrUSVString;
+class RequestOrUTF8String;
 
 class Request final : public FetchBody<Request>, public nsWrapperCache {
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(Request,
-                                                         FetchBody<Request>)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS_INHERITED(Request,
+                                                        FetchBody<Request>)
 
  public:
   Request(nsIGlobalObject* aOwner, SafeRefPtr<InternalRequest> aRequest,
@@ -38,12 +37,7 @@ class Request final : public FetchBody<Request>, public nsWrapperCache {
     return Request_Binding::Wrap(aCx, this, aGivenProto);
   }
 
-  void GetUrl(nsAString& aUrl) const {
-    nsAutoCString url;
-    mRequest->GetURL(url);
-    CopyUTF8toUTF16(url, aUrl);
-  }
-
+  void GetUrl(nsACString& aUrl) const { mRequest->GetURL(aUrl); }
   void GetMethod(nsCString& aMethod) const { aMethod = mRequest->mMethod; }
 
   RequestMode Mode() const { return mRequest->mMode; }
@@ -54,23 +48,28 @@ class Request final : public FetchBody<Request>, public nsWrapperCache {
 
   RequestRedirect Redirect() const { return mRequest->GetRedirectMode(); }
 
+  RequestPriority Priority() const { return mRequest->GetPriorityMode(); }
+
   void GetIntegrity(nsAString& aIntegrity) const {
     aIntegrity = mRequest->GetIntegrity();
   }
+
+  bool Keepalive() const { return mRequest->GetKeepalive(); }
 
   bool MozErrors() const { return mRequest->MozErrors(); }
 
   RequestDestination Destination() const { return mRequest->Destination(); }
 
-  void OverrideContentPolicyType(nsContentPolicyType aContentPolicyType) {
-    mRequest->OverrideContentPolicyType(aContentPolicyType);
+  void OverrideContentPolicyType(uint32_t aContentPolicyType) {
+    mRequest->OverrideContentPolicyType(
+        static_cast<nsContentPolicyType>(aContentPolicyType));
   }
 
   bool IsContentPolicyTypeOverridden() const {
     return mRequest->IsContentPolicyTypeOverridden();
   }
 
-  void GetReferrer(nsAString& aReferrer) const {
+  void GetReferrer(nsACString& aReferrer) const {
     mRequest->GetReferrer(aReferrer);
   }
 
@@ -101,14 +100,15 @@ class Request final : public FetchBody<Request>, public nsWrapperCache {
   const nsAString& BodyLocalPath() const { return mRequest->BodyLocalPath(); }
 
   static SafeRefPtr<Request> Constructor(const GlobalObject& aGlobal,
-                                         const RequestOrUSVString& aInput,
+                                         const RequestOrUTF8String& aInput,
                                          const RequestInit& aInit,
                                          ErrorResult& rv);
 
   static SafeRefPtr<Request> Constructor(nsIGlobalObject* aGlobal,
                                          JSContext* aCx,
-                                         const RequestOrUSVString& aInput,
+                                         const RequestOrUTF8String& aInput,
                                          const RequestInit& aInit,
+                                         const CallerType aCallerType,
                                          ErrorResult& rv);
 
   nsIGlobalObject* GetParentObject() const { return mOwner; }
@@ -125,6 +125,7 @@ class Request final : public FetchBody<Request>, public nsWrapperCache {
 
   // This can return a null AbortSignalImpl.
   AbortSignalImpl* GetSignalImpl() const override;
+  AbortSignalImpl* GetSignalImplToConsumeBody() const final;
 
  private:
   ~Request();
@@ -136,7 +137,6 @@ class Request final : public FetchBody<Request>, public nsWrapperCache {
   RefPtr<AbortSignal> mSignal;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_Request_h

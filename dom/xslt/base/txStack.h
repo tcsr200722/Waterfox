@@ -27,12 +27,7 @@ class txStack : private nsTArray<void*> {
    * @param obj a pointer to the object that is to be added to the
    * top of this stack.
    */
-  inline nsresult push(void* aObject) {
-    // XXX(Bug 1631371) Check if this should use a fallible operation as it
-    // pretended earlier, or change the return type to void.
-    AppendElement(aObject);
-    return NS_OK;
-  }
+  inline void push(void* aObject) { AppendElement(aObject); }
 
   /**
    * Removes and returns the specified object from the top of this
@@ -44,9 +39,7 @@ class txStack : private nsTArray<void*> {
     void* object = nullptr;
     NS_ASSERTION(!isEmpty(), "popping from empty stack");
     if (!isEmpty()) {
-      const uint32_t count = Length() - 1;
-      object = ElementAt(count);
-      RemoveElementAt(count);
+      object = PopLastElement();
     }
     return object;
   }

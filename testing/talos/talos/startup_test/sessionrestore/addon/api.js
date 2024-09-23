@@ -6,26 +6,32 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
+/* globals Services, XPCOMUtils */
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
-  Services: "resource://gre/modules/Services.jsm",
-  SessionStartup: "resource:///modules/sessionstore/SessionStartup.jsm",
-  setTimeout: "resource://gre/modules/Timer.jsm",
-  StartupPerformance: "resource:///modules/sessionstore/StartupPerformance.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  SessionStartup: "resource:///modules/sessionstore/SessionStartup.sys.mjs",
+  StartupPerformance:
+    "resource:///modules/sessionstore/StartupPerformance.sys.mjs",
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
 /* globals ExtensionAPI */
 
 this.sessionrestore = class extends ExtensionAPI {
   onStartup() {
+    this.promiseIdleFinished = Promise.withResolvers();
+    Services.obs.addObserver(this, "browser-idle-startup-tasks-finished");
     // run() is async but we don't want to await or return it here,
     // since the extension should be considered started even before
     // run() has finished all its work.
     this.run();
+  }
+
+  observe(subject, topic) {
+    if (topic == "browser-idle-startup-tasks-finished") {
+      this.promiseIdleFinished.resolve();
+    }
   }
 
   async ensureTalosParentProfiler() {
@@ -36,8 +42,8 @@ this.sessionrestore = class extends ExtensionAPI {
     // the profile to disk.
     async function getTalosParentProfiler() {
       try {
-        var { TalosParentProfiler } = ChromeUtils.import(
-          "resource://talos-powers/TalosParentProfiler.jsm"
+        var { TalosParentProfiler } = ChromeUtils.importESModule(
+          "resource://talos-powers/TalosParentProfiler.sys.mjs"
         );
         return TalosParentProfiler;
       } catch (err) {
@@ -51,6 +57,23 @@ this.sessionrestore = class extends ExtensionAPI {
 
   async finishProfiling(msg) {
     await this.ensureTalosParentProfiler();
+
+    // In rare circumstances, it's possible for the session file to be read
+    // into memory and for SessionStore to report itself as initialized before
+    // the initial window has had a chance to finish setting itself up. To
+    // account for this, we ensure that BrowserWindowTracker.windowCount is
+    // not zero - and if it is, we wait for the first window to finish opening
+    // before proceeding.
+    if (!BrowserWindowTracker.windowCount) {
+      const BROWSER_WINDOW_READY_TOPIC = "browser-delayed-startup-finished";
+      await new Promise(resolve => {
+        let observe = async () => {
+          Services.obs.removeObserver(observe, BROWSER_WINDOW_READY_TOPIC);
+          resolve();
+        };
+        Services.obs.addObserver(observe, BROWSER_WINDOW_READY_TOPIC);
+      });
+    }
 
     let win = BrowserWindowTracker.getTopWindow();
     let args = win.arguments[0];
@@ -68,7 +91,7 @@ this.sessionrestore = class extends ExtensionAPI {
       this.TalosParentProfiler.initFromURLQueryParams(url.search);
     }
 
-    await this.TalosParentProfiler.pause(msg);
+    await this.TalosParentProfiler.subtestEnd(msg);
     await this.TalosParentProfiler.finishStartupProfiling();
   }
 
@@ -122,18 +145,22 @@ this.sessionrestore = class extends ExtensionAPI {
         ? StartupPerformance.latestRestoredTimeStamp
         : startup_info.sessionRestored;
       let duration = restoreTime - startup_info.process;
+      let win = BrowserWindowTracker.getTopWindow();
 
       // Report data to Talos, if possible.
       dump("__start_report" + duration + "__end_report\n\n");
 
       // Next one is required by the test harness but not used.
-      // eslint-disable-next-line mozilla/avoid-Date-timing
-      dump("__startTimestamp" + Date.now() + "__endTimestamp\n\n");
+      dump("__startTimestamp" + win.performance.now() + "__endTimestamp\n\n");
     } catch (ex) {
       dump(`SessionRestoreTalosTest: error ${ex}\n`);
       dump(ex.stack);
       dump("\n");
     }
+
+    // Ensure we wait for idle to finish so that we can have a clean shutdown
+    // that isn't happening in the middle of start-up.
+    await this.promiseIdleFinished.promise;
 
     Services.startup.quit(Services.startup.eForceQuit);
   }

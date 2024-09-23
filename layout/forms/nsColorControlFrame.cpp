@@ -9,7 +9,6 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
 #include "nsCSSPseudoElements.h"
-#include "nsCheckboxRadioFrame.h"
 #include "nsGkAtoms.h"
 #include "nsIFormControl.h"
 #include "mozilla/PresShell.h"
@@ -39,16 +38,14 @@ NS_QUERYFRAME_HEAD(nsColorControlFrame)
   NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
 NS_QUERYFRAME_TAIL_INHERITING(nsHTMLButtonControlFrame)
 
-void nsColorControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                      PostDestroyData& aPostDestroyData) {
-  nsCheckboxRadioFrame::RegUnRegAccessKey(static_cast<nsIFrame*>(this), false);
-  aPostDestroyData.AddAnonymousContent(mColorContent.forget());
-  nsHTMLButtonControlFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+void nsColorControlFrame::Destroy(DestroyContext& aContext) {
+  aContext.AddAnonymousContent(mColorContent.forget());
+  nsHTMLButtonControlFrame::Destroy(aContext);
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsColorControlFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("ColorControl"), aResult);
+  return MakeFrameName(u"ColorControl"_ns, aResult);
 }
 #endif
 
@@ -105,7 +102,7 @@ nsresult nsColorControlFrame::UpdateColor() {
 
   // Set the background-color CSS property of the swatch element to this color.
   return mColorContent->SetAttr(kNameSpaceID_None, nsGkAtoms::style,
-                                NS_LITERAL_STRING("background-color:") + color,
+                                u"background-color:"_ns + color,
                                 /* aNotify */ true);
 }
 
@@ -118,7 +115,7 @@ nsresult nsColorControlFrame::AttributeChanged(int32_t aNameSpaceID,
   // still a color control, which might not be the case if the type attribute
   // was removed/changed.
   nsCOMPtr<nsIFormControl> fctrl = do_QueryInterface(GetContent());
-  if (fctrl->ControlType() == NS_FORM_INPUT_COLOR &&
+  if (fctrl->ControlType() == FormControlType::InputColor &&
       aNameSpaceID == kNameSpaceID_None && nsGkAtoms::value == aAttribute) {
     UpdateColor();
   }

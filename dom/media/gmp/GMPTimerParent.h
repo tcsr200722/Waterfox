@@ -9,12 +9,10 @@
 #include "mozilla/gmp/PGMPTimerParent.h"
 #include "nsITimer.h"
 #include "nsCOMPtr.h"
-#include "nsClassHashtable.h"
-#include "nsHashKeys.h"
+#include "nsTHashSet.h"
 #include "mozilla/Monitor.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
 
 class GMPTimerParent : public PGMPTimerParent {
   friend class PGMPTimerParent;
@@ -46,14 +44,13 @@ class GMPTimerParent : public PGMPTimerParent {
 
   void TimerExpired(Context* aContext);
 
-  nsTHashtable<nsPtrHashKey<Context>> mTimers;
+  nsTHashSet<Context*> mTimers;
 
   nsCOMPtr<nsISerialEventTarget> mGMPEventTarget;
 
   bool mIsOpen;
 };
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp
 
 #endif  // GMPTimerParent_h_

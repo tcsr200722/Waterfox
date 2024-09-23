@@ -6,12 +6,13 @@
 
 #include "mozilla/dom/CallbackInterface.h"
 #include "jsapi.h"
+#include "js/CallAndConstruct.h"  // JS::IsCallable
 #include "js/CharacterEncoding.h"
+#include "js/PropertyAndElement.h"  // JS_GetProperty, JS_GetPropertyById
 #include "mozilla/dom/BindingUtils.h"
 #include "nsPrintfCString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 bool CallbackInterface::GetCallableProperty(
     BindingCallContext& cx, JS::Handle<jsid> aPropId,
@@ -21,7 +22,7 @@ bool CallbackInterface::GetCallableProperty(
     return false;
   }
   if (!aCallable.isObject() || !JS::IsCallable(&aCallable.toObject())) {
-    JS::RootedString propId(cx, JSID_TO_STRING(aPropId));
+    JS::Rooted<JSString*> propId(cx, aPropId.toString());
     JS::UniqueChars propName = JS_EncodeStringToUTF8(cx, propId);
     nsPrintfCString description("Property '%s'", propName.get());
     cx.ThrowErrorMessage<MSG_NOT_CALLABLE>(description.get());
@@ -31,5 +32,4 @@ bool CallbackInterface::GetCallableProperty(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

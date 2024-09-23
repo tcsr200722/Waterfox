@@ -9,9 +9,9 @@
 #include "GLContext.h"
 #include "GLScreenBuffer.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/StaticPrefs_webgl.h"
 #include "SharedSurfaceGL.h"
 #include "WebRenderBridgeChild.h"
-#include "RenderRootStateManager.h"
 
 namespace mozilla {
 namespace layers {
@@ -20,14 +20,14 @@ CompositableForwarder* WebRenderCanvasRenderer::GetForwarder() {
   return mManager->WrBridge();
 }
 
-void WebRenderCanvasRenderer::Initialize(const CanvasInitializeData& aData) {
-  ShareableCanvasRenderer::Initialize(aData);
+WebRenderCanvasRendererAsync::~WebRenderCanvasRendererAsync() {
+  if (mPipelineId.isSome()) {
+    mManager->RemovePipelineIdForCompositable(mPipelineId.ref());
+    mPipelineId.reset();
+  }
 }
 
-WebRenderCanvasRendererAsync::~WebRenderCanvasRendererAsync() { Destroy(); }
-
-void WebRenderCanvasRendererAsync::Initialize(
-    const CanvasInitializeData& aData) {
+void WebRenderCanvasRendererAsync::Initialize(const CanvasRendererData& aData) {
   WebRenderCanvasRenderer::Initialize(aData);
 
   ClearCachedResources();
@@ -35,47 +35,40 @@ void WebRenderCanvasRendererAsync::Initialize(
 
 bool WebRenderCanvasRendererAsync::CreateCompositable() {
   if (!mCanvasClient) {
-    TextureFlags flags = TextureFlags::DEFAULT;
-    if (mOriginPos == gl::OriginPos::BottomLeft) {
-      flags |= TextureFlags::ORIGIN_BOTTOM_LEFT;
+    auto compositableFlags = TextureFlags::NO_FLAGS;
+    if (!mData.mIsAlphaPremult) {
+      // WR needs this flag marked on the compositable, not just the texture.
+      compositableFlags |= TextureFlags::NON_PREMULTIPLIED;
     }
-
-    if (IsOpaque()) {
-      flags |= TextureFlags::IS_OPAQUE;
-    }
-
-    if (!mIsAlphaPremultiplied) {
-      flags |= TextureFlags::NON_PREMULTIPLIED;
-    }
-
-    mCanvasClient = CanvasClient::CreateCanvasClient(GetCanvasClientType(),
-                                                     GetForwarder(), flags);
-    if (!mCanvasClient) {
-      return false;
-    }
-
+    mCanvasClient = new CanvasClient(GetForwarder(), compositableFlags);
     mCanvasClient->Connect();
   }
-
-  if (!mPipelineId) {
-    // Alloc async image pipeline id.
-    mPipelineId = Some(
-        mManager->WrBridge()->GetCompositorBridgeChild()->GetNextPipelineId());
-    mManager->AddPipelineIdForCompositable(mPipelineId.ref(),
-                                           mCanvasClient->GetIPCHandle());
-  }
-
   return true;
 }
 
-void WebRenderCanvasRendererAsync::ClearCachedResources() {
-  if (mPipelineId.isSome()) {
-    mManager->RemovePipelineIdForCompositable(mPipelineId.ref());
-    mPipelineId.reset();
+void WebRenderCanvasRendererAsync::EnsurePipeline() {
+  MOZ_ASSERT(mCanvasClient);
+  if (!mCanvasClient) {
+    return;
   }
+
+  if (mPipelineId) {
+    return;
+  }
+
+  // Alloc async image pipeline id.
+  mPipelineId = Some(
+      mManager->WrBridge()->GetCompositorBridgeChild()->GetNextPipelineId());
+  mManager->AddPipelineIdForCompositable(
+      mPipelineId.ref(), mCanvasClient->GetIPCHandle(),
+      CompositableHandleOwner::WebRenderBridge);
 }
 
-void WebRenderCanvasRendererAsync::Destroy() {
+bool WebRenderCanvasRendererAsync::HasPipeline() {
+  return mPipelineId.isSome();
+}
+
+void WebRenderCanvasRendererAsync::ClearCachedResources() {
   if (mPipelineId.isSome()) {
     mManager->RemovePipelineIdForCompositable(mPipelineId.ref());
     mPipelineId.reset();

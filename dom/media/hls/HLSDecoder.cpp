@@ -6,6 +6,7 @@
 
 #include "HLSDecoder.h"
 #include "AndroidBridge.h"
+#include "base/process_util.h"
 #include "DecoderTraits.h"
 #include "HLSDemuxer.h"
 #include "HLSUtils.h"
@@ -16,9 +17,12 @@
 #include "MediaShutdownManager.h"
 #include "mozilla/java/GeckoHLSResourceWrapperNatives.h"
 #include "nsContentUtils.h"
+#include "nsIChannel.h"
+#include "nsIURL.h"
 #include "nsNetUtil.h"
 #include "nsThreadUtils.h"
 #include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/StaticPrefs_media.h"
 
@@ -43,7 +47,7 @@ class HLSResourceCallbacksSupport
 
  private:
   ~HLSResourceCallbacksSupport() {}
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
   HLSDecoder* mDecoder;
 };
 
@@ -130,7 +134,8 @@ HLSDecoder::~HLSDecoder() {
   HLS_DEBUG("HLSDecoder", "~HLSDecoder(): allocated=%zu", sAllocatedInstances);
 }
 
-MediaDecoderStateMachine* HLSDecoder::CreateStateMachine() {
+MediaDecoderStateMachineBase* HLSDecoder::CreateStateMachine(
+    bool aDisableExternalEngine) {
   MOZ_ASSERT(NS_IsMainThread());
 
   MediaFormatReaderInit init;
@@ -139,15 +144,17 @@ MediaDecoderStateMachine* HLSDecoder::CreateStateMachine() {
   init.mCrashHelper = GetOwner()->CreateGMPCrashHelper();
   init.mFrameStats = mFrameStats;
   init.mMediaDecoderOwnerID = mOwner;
+  static Atomic<uint32_t> sTrackingIdCounter(0);
+  init.mTrackingId =
+      Some(TrackingId(TrackingId::Source::HLSDecoder, sTrackingIdCounter++,
+                      TrackingId::TrackAcrossProcesses::Yes));
   mReader = new MediaFormatReader(
       init, new HLSDemuxer(mHLSResourceWrapper->GetPlayerId()));
 
   return new MediaDecoderStateMachine(this, mReader);
 }
 
-bool HLSDecoder::IsEnabled() {
-  return StaticPrefs::media_hls_enabled() && (jni::GetAPIVersion() >= 16);
-}
+bool HLSDecoder::IsEnabled() { return StaticPrefs::media_hls_enabled(); }
 
 bool HLSDecoder::IsSupportedType(const MediaContainerType& aContainerType) {
   return IsEnabled() && DecoderTraits::IsHttpLiveStreamingType(aContainerType);
@@ -164,7 +171,8 @@ nsresult HLSDecoder::Load(nsIChannel* aChannel) {
   mChannel = aChannel;
   nsCString spec;
   Unused << mURI->GetSpec(spec);
-  ;
+  mUsageRecorded = false;
+
   HLSResourceCallbacksSupport::Init();
   mJavaCallbacks = java::GeckoHLSResourceWrapper::Callbacks::New();
   mCallbackSupport = new HLSResourceCallbacksSupport(this);
@@ -177,13 +185,7 @@ nsresult HLSDecoder::Load(nsIChannel* aChannel) {
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-
-  SetStateMachine(CreateStateMachine());
-  NS_ENSURE_TRUE(GetStateMachine(), NS_ERROR_FAILURE);
-
-  GetStateMachine()->DispatchIsLiveStream(false);
-
-  return InitializeStateMachine();
+  return CreateAndInitStateMachine(false);
 }
 
 void HLSDecoder::AddSizeOfResources(ResourceSizes* aSizes) {
@@ -254,13 +256,36 @@ void HLSDecoder::NotifyDataArrived() {
 void HLSDecoder::NotifyLoad(nsCString aMediaUrl) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_DIAGNOSTIC_ASSERT(!IsShutdown());
-  UpdateCurrentPrincipal(aMediaUrl);
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = NS_NewURI(getter_AddRefs(uri), aMediaUrl.Data());
+  NS_ENSURE_SUCCESS_VOID(rv);
+
+  RecordMediaUsage(uri);
+  UpdateCurrentPrincipal(uri);
+}
+
+void HLSDecoder::RecordMediaUsage(nsIURI* aMediaUri) {
+  if (mUsageRecorded) {
+    return;
+  }
+
+  nsresult rv;
+  nsCOMPtr<nsIURL> url = do_QueryInterface(aMediaUri, &rv);
+  NS_ENSURE_SUCCESS_VOID(rv);
+
+  // TODO: get hostname. See bug 1887053.
+  nsAutoCString mediaExt;
+  Unused << url->GetFileExtension(mediaExt);
+  glean::hls::MediaLoadExtra extra = {.mediaExtension = Some(mediaExt.get())};
+  glean::hls::media_load.Record(Some(extra));
+  mUsageRecorded = true;
 }
 
 // Should be called when the decoder loads media from a URL to ensure the
 // principal of the media element is appropriately set for CORS.
-void HLSDecoder::UpdateCurrentPrincipal(nsCString aMediaUrl) {
-  nsCOMPtr<nsIPrincipal> principal = GetContentPrincipal(aMediaUrl);
+void HLSDecoder::UpdateCurrentPrincipal(nsIURI* aMediaUri) {
+  nsCOMPtr<nsIPrincipal> principal = GetContentPrincipal(aMediaUri);
   MOZ_DIAGNOSTIC_ASSERT(principal);
 
   // Check the subsumption of old and new principals. Should be either
@@ -281,23 +306,19 @@ void HLSDecoder::UpdateCurrentPrincipal(nsCString aMediaUrl) {
 }
 
 already_AddRefed<nsIPrincipal> HLSDecoder::GetContentPrincipal(
-    nsCString aMediaUrl) {
-  nsCOMPtr<nsIURI> uri;
-  nsresult rv = NS_NewURI(getter_AddRefs(uri), aMediaUrl.Data());
-  NS_ENSURE_SUCCESS(rv, nullptr);
+    nsIURI* aMediaUri) {
   RefPtr<dom::HTMLMediaElement> element = GetOwner()->GetMediaElement();
-  NS_ENSURE_SUCCESS(rv, nullptr);
   nsSecurityFlags securityFlags =
       element->ShouldCheckAllowOrigin()
-          ? nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS
-          : nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS;
+          ? nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT
+          : nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT;
   if (element->GetCORSMode() == CORS_USE_CREDENTIALS) {
     securityFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
   }
   nsCOMPtr<nsIChannel> channel;
-  rv = NS_NewChannel(getter_AddRefs(channel), uri,
-                     static_cast<dom::Element*>(element), securityFlags,
-                     nsIContentPolicy::TYPE_INTERNAL_VIDEO);
+  nsresult rv = NS_NewChannel(
+      getter_AddRefs(channel), aMediaUri, static_cast<dom::Element*>(element),
+      securityFlags, nsIContentPolicy::TYPE_INTERNAL_VIDEO);
   NS_ENSURE_SUCCESS(rv, nullptr);
   nsCOMPtr<nsIPrincipal> principal;
   nsIScriptSecurityManager* secMan = nsContentUtils::GetSecurityManager();

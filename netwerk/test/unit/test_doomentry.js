@@ -9,8 +9,8 @@
 "use strict";
 
 function doom(url, callback) {
-  get_cache_service()
-    .diskCacheStorage(Services.loadContextInfo.default, false)
+  Services.cache2
+    .diskCacheStorage(Services.loadContextInfo.default)
     .asyncDoomURI(createURI(url), "", {
       onCacheEntryDoomed(result) {
         callback(result);
@@ -39,7 +39,7 @@ function write_entry() {
     "disk",
     Ci.nsICacheStorage.OPEN_TRUNCATE,
     null,
-    function(status, entry) {
+    function (status, entry) {
       write_entry_cont(entry, entry.openOutputStream(0, -1));
     }
   );
@@ -49,7 +49,6 @@ function write_entry_cont(entry, ostream) {
   var data = "testdata";
   write_and_check(ostream, data, data.length);
   ostream.close();
-  entry.close();
   doom("http://testentry/", check_doom1);
 }
 
@@ -65,19 +64,17 @@ function check_doom2(status) {
     "disk",
     Ci.nsICacheStorage.OPEN_TRUNCATE,
     null,
-    function(status, entry) {
+    function (stat, entry) {
       write_entry2(entry, entry.openOutputStream(0, -1));
     }
   );
 }
 
-var gEntry;
 var gOstream;
 function write_entry2(entry, ostream) {
   // write some data and doom the entry while it is active
   var data = "testdata";
   write_and_check(ostream, data, data.length);
-  gEntry = entry;
   gOstream = ostream;
   doom("http://testentry/", check_doom3);
 }
@@ -88,7 +85,6 @@ function check_doom3(status) {
   var data = "testdata";
   write_and_check(gOstream, data, data.length);
   gOstream.close();
-  gEntry.close();
   // dooming the same entry again should fail
   doom("http://testentry/", check_doom4);
 }

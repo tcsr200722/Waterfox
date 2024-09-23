@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGNUMBERLIST_H__
-#define MOZILLA_SVGNUMBERLIST_H__
+#ifndef DOM_SVG_SVGNUMBERLIST_H_
+#define DOM_SVG_SVGNUMBERLIST_H_
 
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
@@ -39,6 +39,15 @@ class SVGNumberList {
  public:
   SVGNumberList() = default;
   ~SVGNumberList() = default;
+
+  SVGNumberList& operator=(const SVGNumberList& aOther) {
+    mNumbers.ClearAndRetainStorage();
+    // Best-effort, really.
+    Unused << mNumbers.AppendElements(aOther.mNumbers, fallible);
+    return *this;
+  }
+
+  SVGNumberList(const SVGNumberList& aOther) { *this = aOther; }
 
   // Only methods that don't make/permit modification to this list are public.
   // Only our friend classes can access methods that may change us.
@@ -75,6 +84,7 @@ class SVGNumberList {
    * which case the list will be left unmodified.
    */
   nsresult CopyFrom(const SVGNumberList& rhs);
+  void SwapWith(SVGNumberList& aRhs) { mNumbers.SwapElements(aRhs.mNumbers); }
 
   float& operator[](uint32_t aIndex) { return mNumbers[aIndex]; }
 
@@ -185,4 +195,4 @@ class SVGNumberListAndInfo : public SVGNumberList {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGNUMBERLIST_H__
+#endif  // DOM_SVG_SVGNUMBERLIST_H_

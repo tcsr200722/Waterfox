@@ -34,8 +34,8 @@
  * up.
  */
 
-#ifndef mozilla_dom_SVGMatrix_h
-#define mozilla_dom_SVGMatrix_h
+#ifndef DOM_SVG_SVGMATRIX_H_
+#define DOM_SVG_SVGMATRIX_H_
 
 #include "DOMSVGTransform.h"
 #include "gfxMatrix.h"
@@ -43,8 +43,7 @@
 #include "nsWrapperCache.h"
 #include "mozilla/Attributes.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * DOM wrapper for an SVG matrix.
@@ -52,7 +51,7 @@ namespace dom {
 class SVGMatrix final : public nsWrapperCache {
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(SVGMatrix)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(SVGMatrix)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(SVGMatrix)
 
   /**
    * Ctor for SVGMatrix objects that belong to a DOMSVGTransform.
@@ -67,14 +66,10 @@ class SVGMatrix final : public nsWrapperCache {
 
   explicit SVGMatrix(const gfxMatrix& aMatrix) : mMatrix(aMatrix) {}
 
-  const gfxMatrix& GetMatrix() const {
-    return mTransform ? mTransform->Matrixgfx() : mMatrix;
-  }
-
   // WebIDL
   DOMSVGTransform* GetParentObject() const;
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
 
   float A() const { return static_cast<float>(GetMatrix()._11); }
   void SetA(float aA, ErrorResult& rv);
@@ -105,6 +100,10 @@ class SVGMatrix final : public nsWrapperCache {
  private:
   ~SVGMatrix() = default;
 
+  const gfxMatrix& GetMatrix() const {
+    return mTransform ? mTransform->Matrixgfx() : mMatrix;
+  }
+
   void SetMatrix(const gfxMatrix& aMatrix) {
     if (mTransform) {
       mTransform->SetMatrix(aMatrix);
@@ -125,7 +124,6 @@ class SVGMatrix final : public nsWrapperCache {
   gfxMatrix mMatrix;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGMatrix_h
+#endif  // DOM_SVG_SVGMATRIX_H_

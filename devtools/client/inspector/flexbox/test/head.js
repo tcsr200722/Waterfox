@@ -1,21 +1,12 @@
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../test/head.js */
-/* import-globals-from ../../../inspector/rules/test/head.js */
-/* import-globals-from ../../../inspector/test/shared-head.js */
-/* import-globals-from ../../../shared/test/shared-redux-head.js */
+
 "use strict";
 
 // Import the inspector's head.js first (which itself imports shared-head.js).
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/inspector/test/head.js",
-  this
-);
-
-// Load the shared Redux helpers into this compartment.
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
   this
 );
 
@@ -47,21 +38,22 @@ registerCleanupFunction(() => {
  *
  * @param  {DOMNode} button
  *         The flexbox highlighter toggle button in the flex container panel.
- * @param  {HighlightersOverlay} highlighters
- *         The HighlightersOverlay instance.
- * @param  {Store} store
- *         The Redux store instance.
+ * @param  {Inspector} inspector
+ *         Inspector panel instance.
  */
-async function toggleHighlighterON(button, highlighters, store) {
+async function toggleHighlighterON(button, inspector) {
   info("Toggling ON the flexbox highlighter from the layout panel.");
-  const onHighlighterShown = highlighters.once("flexbox-highlighter-shown");
+  const { waitForHighlighterTypeShown } = getHighlighterTestHelpers(inspector);
+  const onHighlighterShown = waitForHighlighterTypeShown(
+    inspector.highlighters.TYPES.FLEXBOX
+  );
+  const { store } = inspector;
   const onToggleChange = waitUntilState(
     store,
     state => state.flexbox.highlighted
   );
   button.click();
-  await onHighlighterShown;
-  await onToggleChange;
+  await Promise.all([onHighlighterShown, onToggleChange]);
 }
 
 /**
@@ -70,19 +62,20 @@ async function toggleHighlighterON(button, highlighters, store) {
  *
  * @param  {DOMNode} button
  *         The flexbox highlighter toggle button in the flex container panel.
- * @param  {HighlightersOverlay} highlighters
- *         The HighlightersOverlay instance.
- * @param  {Store} store
- *         The Redux store instance.
+ * @param  {Inspector} inspector
+ *         Inspector panel instance.
  */
-async function toggleHighlighterOFF(button, highlighters, store) {
+async function toggleHighlighterOFF(button, inspector) {
   info("Toggling OFF the flexbox highlighter from the layout panel.");
-  const onHighlighterHidden = highlighters.once("flexbox-highlighter-hidden");
+  const { waitForHighlighterTypeHidden } = getHighlighterTestHelpers(inspector);
+  const onHighlighterHidden = waitForHighlighterTypeHidden(
+    inspector.highlighters.TYPES.FLEXBOX
+  );
+  const { store } = inspector;
   const onToggleChange = waitUntilState(
     store,
     state => !state.flexbox.highlighted
   );
   button.click();
-  await onHighlighterHidden;
-  await onToggleChange;
+  await Promise.all([onHighlighterHidden, onToggleChange]);
 }

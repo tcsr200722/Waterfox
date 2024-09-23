@@ -44,16 +44,23 @@ add_task(async function reload_tab() {
   await tabReloaded;
 
   is(
+    gBrowser.getIcon(customizeTab),
+    "chrome://browser/skin/customize.svg",
+    "Tab should have customize icon"
+  );
+  is(
     customizeTab.getAttribute("customizemode"),
     "true",
     "Tab should be in customize mode"
   );
-  ok(
-    customizationContainer.clientWidth > 0,
+  Assert.greater(
+    customizationContainer.clientWidth,
+    0,
     "Customization container should be visible (X)"
   );
-  ok(
-    customizationContainer.clientHeight > 0,
+  Assert.greater(
+    customizationContainer.clientHeight,
+    0,
     "Customization container should be visible (Y)"
   );
 
@@ -72,16 +79,23 @@ add_task(async function reload_tab() {
   await customizePromise;
 
   is(
+    gBrowser.getIcon(customizeTab),
+    "chrome://browser/skin/customize.svg",
+    "Tab should still have customize icon"
+  );
+  is(
     customizeTab.getAttribute("customizemode"),
     "true",
     "Tab should still be in customize mode"
   );
-  ok(
-    customizationContainer.clientWidth > 0,
+  Assert.greater(
+    customizationContainer.clientWidth,
+    0,
     "Customization container should still be visible (X)"
   );
-  ok(
-    customizationContainer.clientHeight > 0,
+  Assert.greater(
+    customizationContainer.clientHeight,
+    0,
     "Customization container should still be visible (Y)"
   );
 

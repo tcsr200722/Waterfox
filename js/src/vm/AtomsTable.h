@@ -11,84 +11,116 @@
 #ifndef vm_AtomsTable_h
 #define vm_AtomsTable_h
 
-#include <type_traits>  // std::{enable_if_t,is_const_v}
-
+#include "gc/Barrier.h"
 #include "js/GCHashTable.h"
 #include "js/TypeDecls.h"
-#include "vm/JSAtom.h"
+#include "js/Vector.h"
+#include "vm/StringType.h"
 
 /*
- * The atoms table is a mapping from strings to JSAtoms that supports concurrent
- * access and incremental sweeping.
- *
- * The table is partitioned based on the key into multiple sub-tables. Each
- * sub-table is protected by a lock to ensure safety when accessed by helper
- * threads. Concurrent access improves performance of off-thread parsing which
- * frequently creates large numbers of atoms. Locking is only required when
- * off-thread parsing is running.
+ * The atoms table is a mapping from strings to JSAtoms that supports
+ * incremental sweeping.
  */
 
 namespace js {
 
-// Take all atoms table locks to allow iterating over cells in the atoms zone.
-class MOZ_RAII AutoLockAllAtoms {
-  JSRuntime* runtime;
-
- public:
-  explicit AutoLockAllAtoms(JSRuntime* rt);
-  ~AutoLockAllAtoms();
-};
-
-// This is a tagged pointer to an atom that duplicates the atom's pinned flag so
-// that we don't have to check the atom itself when marking pinned atoms (there
-// can be a great many atoms). See bug 1445196.
-class AtomStateEntry {
-  uintptr_t bits;
-
-  static const uintptr_t NO_TAG_MASK = uintptr_t(-1) - 1;
-
- public:
-  AtomStateEntry() : bits(0) {}
-  AtomStateEntry(const AtomStateEntry& other) = default;
-  AtomStateEntry(JSAtom* ptr, bool tagged)
-      : bits(uintptr_t(ptr) | uintptr_t(tagged)) {
-    MOZ_ASSERT((uintptr_t(ptr) & 0x1) == 0);
-  }
-
-  bool isPinned() const { return bits & 0x1; }
-
-  /*
-   * Non-branching code sequence. Note that the const_cast is safe because
-   * the hash function doesn't consider the tag to be a portion of the key.
-   */
-  void setPinned(bool pinned) const {
-    const_cast<AtomStateEntry*>(this)->bits |= uintptr_t(pinned);
-  }
-
-  JSAtom* asPtrUnbarriered() const {
-    MOZ_ASSERT(bits);
-    return reinterpret_cast<JSAtom*>(bits & NO_TAG_MASK);
-  }
-
-  JSAtom* asPtr(JSContext* cx) const;
-
-  bool needsSweep() {
-    JSAtom* atom = asPtrUnbarriered();
-    return gc::IsAboutToBeFinalizedUnbarriered(&atom);
-  }
-};
-
 struct AtomHasher {
   struct Lookup;
   static inline HashNumber hash(const Lookup& l);
-  static MOZ_ALWAYS_INLINE bool match(const AtomStateEntry& entry,
+  static MOZ_ALWAYS_INLINE bool match(const WeakHeapPtr<JSAtom*>& entry,
                                       const Lookup& lookup);
-  static void rekey(AtomStateEntry& k, const AtomStateEntry& newKey) {
+  static void rekey(WeakHeapPtr<JSAtom*>& k,
+                    const WeakHeapPtr<JSAtom*>& newKey) {
     k = newKey;
   }
 };
 
-using AtomSet = JS::GCHashSet<AtomStateEntry, AtomHasher, SystemAllocPolicy>;
+struct js::AtomHasher::Lookup {
+  union {
+    const JS::Latin1Char* latin1Chars;
+    const char16_t* twoByteChars;
+    const char* utf8Bytes;
+  };
+  enum { TwoByteChar, Latin1, UTF8 } type;
+  size_t length;
+  size_t byteLength;
+  const JSAtom* atom; /* Optional. */
+  JS::AutoCheckCannotGC nogc;
+
+  HashNumber hash;
+
+  MOZ_ALWAYS_INLINE Lookup(const char* utf8Bytes, size_t byteLen, size_t length,
+                           HashNumber hash)
+      : utf8Bytes(utf8Bytes),
+        type(UTF8),
+        length(length),
+        byteLength(byteLen),
+        atom(nullptr),
+        hash(hash) {}
+
+  MOZ_ALWAYS_INLINE Lookup(const char16_t* chars, size_t length)
+      : twoByteChars(chars),
+        type(TwoByteChar),
+        length(length),
+        atom(nullptr),
+        hash(mozilla::HashString(chars, length)) {}
+
+  MOZ_ALWAYS_INLINE Lookup(const JS::Latin1Char* chars, size_t length)
+      : latin1Chars(chars),
+        type(Latin1),
+        length(length),
+        atom(nullptr),
+        hash(mozilla::HashString(chars, length)) {}
+
+  MOZ_ALWAYS_INLINE Lookup(HashNumber hash, const char16_t* chars,
+                           size_t length)
+      : twoByteChars(chars),
+        type(TwoByteChar),
+        length(length),
+        atom(nullptr),
+        hash(hash) {
+    MOZ_ASSERT(hash == mozilla::HashString(chars, length));
+  }
+
+  MOZ_ALWAYS_INLINE Lookup(HashNumber hash, const JS::Latin1Char* chars,
+                           size_t length)
+      : latin1Chars(chars),
+        type(Latin1),
+        length(length),
+        atom(nullptr),
+        hash(hash) {
+    MOZ_ASSERT(hash == mozilla::HashString(chars, length));
+  }
+
+  inline explicit Lookup(const JSAtom* atom)
+      : type(atom->hasLatin1Chars() ? Latin1 : TwoByteChar),
+        length(atom->length()),
+        atom(atom),
+        hash(atom->hash()) {
+    if (type == Latin1) {
+      latin1Chars = atom->latin1Chars(nogc);
+      MOZ_ASSERT(mozilla::HashString(latin1Chars, length) == hash);
+    } else {
+      MOZ_ASSERT(type == TwoByteChar);
+      twoByteChars = atom->twoByteChars(nogc);
+      MOZ_ASSERT(mozilla::HashString(twoByteChars, length) == hash);
+    }
+  }
+
+  // Return: true iff the string in |atom| matches the string in this Lookup.
+  bool StringsMatch(const JSAtom& atom) const;
+};
+
+// Note: Use a 'class' here to make forward declarations easier to use.
+class AtomSet : public JS::GCHashSet<WeakHeapPtr<JSAtom*>, AtomHasher,
+                                     SystemAllocPolicy> {
+  using Base =
+      JS::GCHashSet<WeakHeapPtr<JSAtom*>, AtomHasher, SystemAllocPolicy>;
+
+ public:
+  AtomSet() = default;
+  explicit AtomSet(size_t length) : Base(length){};
+};
 
 // This class is a wrapper for AtomSet that is used to ensure the AtomSet is
 // not modified. It should only expose read-only methods from AtomSet.
@@ -115,103 +147,52 @@ class FrozenAtomSet {
 };
 
 class AtomsTable {
-  static const size_t PartitionShift = 5;
-  static const size_t PartitionCount = 1 << PartitionShift;
-
   // Use a low initial capacity for atom hash tables to avoid penalizing
   // runtimes which create a small number of atoms.
   static const size_t InitialTableSize = 16;
 
-  // A single partition, representing a subset of the atoms in the table.
-  struct Partition {
-    explicit Partition(uint32_t index);
-    ~Partition();
+  // The main atoms set.
+  AtomSet atoms;
 
-    // Lock that must be held to access this set.
-    Mutex lock;
+  // Set of atoms added while the |atoms| set is being swept.
+  AtomSet* atomsAddedWhileSweeping;
 
-    // The atoms in this set.
-    AtomSet atoms;
-
-    // Set of atoms added while the |atoms| set is being swept.
-    AtomSet* atomsAddedWhileSweeping;
-  };
-
-  Partition* partitions[PartitionCount];
-
-#ifdef DEBUG
-  bool allPartitionsLocked = false;
-#endif
+  // List of pinned atoms that are traced in every GC.
+  Vector<JSAtom*, 0, SystemAllocPolicy> pinnedAtoms;
 
  public:
-  class AutoLock;
-
   // An iterator used for sweeping atoms incrementally.
-  class SweepIterator {
-    AtomsTable& atoms;
-    size_t partitionIndex;
-    mozilla::Maybe<AtomSet::Enum> atomsIter;
+  using SweepIterator = AtomSet::Enum;
 
-    void settle();
-    void startSweepingPartition();
-    void finishSweepingPartition();
-
-   public:
-    explicit SweepIterator(AtomsTable& atoms);
-    bool empty() const;
-    JSAtom* front() const;
-    void removeFront();
-    void popFront();
-  };
-
+  AtomsTable();
   ~AtomsTable();
   bool init();
 
-  template <typename Chars>
-  MOZ_ALWAYS_INLINE JSAtom* atomizeAndCopyChars(
-      JSContext* cx, Chars chars, size_t length, PinningBehavior pin,
+  template <typename CharT>
+  MOZ_ALWAYS_INLINE JSAtom* atomizeAndCopyCharsNonStaticValidLength(
+      JSContext* cx, const CharT* chars, size_t length,
       const mozilla::Maybe<uint32_t>& indexValue,
       const AtomHasher::Lookup& lookup);
 
-  template <typename CharT,
-            typename = std::enable_if_t<!std::is_const_v<CharT>>>
-  MOZ_ALWAYS_INLINE JSAtom* atomizeAndCopyChars(
-      JSContext* cx, CharT* chars, size_t length, PinningBehavior pin,
-      const mozilla::Maybe<uint32_t>& indexValue,
-      const AtomHasher::Lookup& lookup) {
-    return atomizeAndCopyChars(cx, const_cast<const CharT*>(chars), length, pin,
-                               indexValue, lookup);
-  }
+  bool maybePinExistingAtom(JSContext* cx, JSAtom* atom);
 
-  void pinExistingAtom(JSContext* cx, JSAtom* atom);
-
-  void tracePinnedAtoms(JSTracer* trc, const AutoAccessAtomsZone& access);
+  void tracePinnedAtoms(JSTracer* trc);
 
   // Sweep all atoms non-incrementally.
   void traceWeak(JSTracer* trc);
 
-  bool startIncrementalSweep();
+  bool startIncrementalSweep(mozilla::Maybe<SweepIterator>& atomsToSweepOut);
 
   // Sweep some atoms incrementally and return whether we finished.
   bool sweepIncrementally(SweepIterator& atomsToSweep, SliceBudget& budget);
 
-#ifdef DEBUG
-  bool mainThreadHasAllLocks() const { return allPartitionsLocked; }
-#endif
-
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 
  private:
-  // Map a key to a partition based on its hash.
-  MOZ_ALWAYS_INLINE size_t getPartitionIndex(const AtomHasher::Lookup& lookup);
-
-  void tracePinnedAtomsInSet(JSTracer* trc, AtomSet& atoms);
-  void mergeAtomsAddedWhileSweeping(Partition& partition);
-
-  friend class AutoLockAllAtoms;
-  void lockAll();
-  void unlockAll();
+  void mergeAtomsAddedWhileSweeping();
 };
+
+bool AtomIsPinned(JSContext* cx, JSAtom* atom);
 
 }  // namespace js
 

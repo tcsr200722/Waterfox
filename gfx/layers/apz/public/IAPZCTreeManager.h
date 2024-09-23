@@ -21,13 +21,14 @@ namespace layers {
 
 class APZInputBridge;
 class KeyboardMap;
+struct ZoomTarget;
 
 enum AllowedTouchBehavior {
   NONE = 0,
   VERTICAL_PAN = 1 << 0,
   HORIZONTAL_PAN = 1 << 1,
   PINCH_ZOOM = 1 << 2,
-  DOUBLE_TAP_ZOOM = 1 << 3,
+  ANIMATING_ZOOM = 1 << 3,
   UNKNOWN = 1 << 4
 };
 
@@ -35,10 +36,14 @@ enum ZoomToRectBehavior : uint32_t {
   DEFAULT_BEHAVIOR = 0,
   DISABLE_ZOOM_OUT = 1 << 0,
   PAN_INTO_VIEW_ONLY = 1 << 1,
-  ONLY_ZOOM_TO_DEFAULT_SCALE = 1 << 2
+  ONLY_ZOOM_TO_DEFAULT_SCALE = 1 << 2,
+  ZOOM_TO_FOCUSED_INPUT = 1 << 3,
 };
 
+enum class BrowserGestureResponse : bool;
+
 class AsyncDragMetrics;
+struct APZHandledResult;
 
 class IAPZCTreeManager {
   NS_INLINE_DECL_THREADSAFE_VIRTUAL_REFCOUNTING(IAPZCTreeManager)
@@ -56,7 +61,7 @@ class IAPZCTreeManager {
    * |aFlags| is a combination of the ZoomToRectBehavior enum values.
    */
   virtual void ZoomToRect(const ScrollableLayerGuid& aGuid,
-                          const CSSRect& aRect,
+                          const ZoomTarget& aZoomTarget,
                           const uint32_t aFlags = DEFAULT_BEHAVIOR) = 0;
 
   /**
@@ -105,6 +110,9 @@ class IAPZCTreeManager {
    */
   virtual void SetAllowedTouchBehavior(
       uint64_t aInputBlockId, const nsTArray<TouchBehaviorFlags>& aValues) = 0;
+
+  virtual void SetBrowserGestureResponse(uint64_t aInputBlockId,
+                                         BrowserGestureResponse aResponse) = 0;
 
   virtual void StartScrollbarDrag(const ScrollableLayerGuid& aGuid,
                                   const AsyncDragMetrics& aDragMetrics) = 0;

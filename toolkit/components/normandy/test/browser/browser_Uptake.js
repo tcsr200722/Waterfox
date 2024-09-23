@@ -1,7 +1,8 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Uptake.jsm", this);
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
 
 const Telemetry = Services.telemetry;
 

@@ -9,7 +9,8 @@ use core::{
     arch::wasm32,
     sync::atomic::{AtomicI32, Ordering},
 };
-use std::{convert::TryFrom, thread, time::Instant};
+use std::time::{Duration, Instant};
+use std::{convert::TryFrom, thread};
 
 // Helper type for putting a thread to sleep until some other thread wakes it up
 pub struct ThreadParker {
@@ -44,7 +45,7 @@ impl super::ThreadParkerT for ThreadParker {
     #[inline]
     unsafe fn park(&self) {
         while self.parked.load(Ordering::Acquire) == PARKED {
-            let r = unsafe { wasm32::i32_atomic_wait(self.ptr(), PARKED, -1) };
+            let r = wasm32::memory_atomic_wait32(self.ptr(), PARKED, -1);
             // we should have either woken up (0) or got a not-equal due to a
             // race (1). We should never time out (2)
             debug_assert!(r == 0 || r == 1);
@@ -56,7 +57,7 @@ impl super::ThreadParkerT for ThreadParker {
         while self.parked.load(Ordering::Acquire) == PARKED {
             if let Some(left) = timeout.checked_duration_since(Instant::now()) {
                 let nanos_left = i64::try_from(left.as_nanos()).unwrap_or(i64::max_value());
-                let r = unsafe { wasm32::i32_atomic_wait(self.ptr(), PARKED, nanos_left) };
+                let r = wasm32::memory_atomic_wait32(self.ptr(), PARKED, nanos_left);
                 debug_assert!(r == 0 || r == 1 || r == 2);
             } else {
                 return false;
@@ -85,7 +86,7 @@ pub struct UnparkHandle(*mut i32);
 impl super::UnparkHandleT for UnparkHandle {
     #[inline]
     unsafe fn unpark(self) {
-        let num_notified = unsafe { wasm32::atomic_notify(self.0 as *mut i32, 1) };
+        let num_notified = wasm32::memory_atomic_notify(self.0 as *mut i32, 1);
         debug_assert!(num_notified == 0 || num_notified == 1);
     }
 }

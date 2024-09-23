@@ -19,17 +19,21 @@
 using namespace js;
 using namespace js::jit;
 
+const char* const js::jit::LIROpNames[] = {
+#define OPNAME(op, ...) #op,
+    LIR_OPCODE_LIST(OPNAME)
+#undef OPNAME
+};
+
 LIRGraph::LIRGraph(MIRGraph* mir)
-    : blocks_(),
-      constantPool_(mir->alloc()),
+    : constantPool_(mir->alloc()),
       constantPoolMap_(mir->alloc()),
       safepoints_(mir->alloc()),
       nonCallSafepoints_(mir->alloc()),
       numVirtualRegisters_(0),
       numInstructions_(1),  // First id is 1.
-      localSlotCount_(0),
+      localSlotsSize_(0),
       argumentSlotCount_(0),
-      entrySnapshot_(nullptr),
       mir_(*mir) {}
 
 bool LIRGraph::addConstantToPool(const Value& v, uint32_t* index) {
@@ -67,7 +71,7 @@ void LIRGraph::dump() {
 #endif
 
 LBlock::LBlock(MBasicBlock* from)
-    : block_(from), phis_(), entryMoveGroup_(nullptr), exitMoveGroup_(nullptr) {
+    : block_(from), entryMoveGroup_(nullptr), exitMoveGroup_(nullptr) {
   from->assignLir(this);
 }
 
@@ -245,6 +249,9 @@ bool LRecoverInfo::appendDefinition(MDefinition* def) {
 
 bool LRecoverInfo::appendResumePoint(MResumePoint* rp) {
   // Stores should be recovered first.
+  if (!rp->storesEmpty()) {
+    hasSideEffects_ = true;
+  }
   for (auto iter(rp->storesBegin()), end(rp->storesEnd()); iter != end;
        ++iter) {
     if (!appendDefinition(iter->operand)) {
@@ -288,11 +295,10 @@ bool LRecoverInfo::init(MResumePoint* rp) {
 }
 
 LSnapshot::LSnapshot(LRecoverInfo* recoverInfo, BailoutKind kind)
-    : numSlots_(TotalOperandCount(recoverInfo) * BOX_PIECES),
-      slots_(nullptr),
+    : slots_(nullptr),
       recoverInfo_(recoverInfo),
       snapshotOffset_(INVALID_SNAPSHOT_OFFSET),
-      bailoutId_(INVALID_BAILOUT_ID),
+      numSlots_(TotalOperandCount(recoverInfo) * BOX_PIECES),
       bailoutKind_(kind) {}
 
 bool LSnapshot::init(MIRGenerator* gen) {
@@ -327,7 +333,7 @@ void LSnapshot::rewriteRecoveredInput(LUse input) {
 #ifdef JS_JITSPEW
 void LNode::printName(GenericPrinter& out, Opcode op) {
   static const char* const names[] = {
-#  define LIROP(x) #  x,
+#  define LIROP(x) #x,
       LIR_OPCODE_LIST(LIROP)
 #  undef LIROP
   };
@@ -359,6 +365,8 @@ static const char* DefTypeName(LDefinition::Type type) {
       return "o";
     case LDefinition::SLOTS:
       return "s";
+    case LDefinition::WASM_ANYREF:
+      return "wr";
     case LDefinition::FLOAT32:
       return "f";
     case LDefinition::DOUBLE:
@@ -408,18 +416,18 @@ UniqueChars LDefinition::toString() const {
 static UniqueChars PrintUse(const LUse* use) {
   switch (use->policy()) {
     case LUse::REGISTER:
-      return JS_smprintf("v%u:r", use->virtualRegister());
+      return JS_smprintf("v%u:R", use->virtualRegister());
     case LUse::FIXED:
-      return JS_smprintf("v%u:%s", use->virtualRegister(),
+      return JS_smprintf("v%u:F:%s", use->virtualRegister(),
                          AnyRegister::FromCode(use->registerCode()).name());
     case LUse::ANY:
-      return JS_smprintf("v%u:r?", use->virtualRegister());
+      return JS_smprintf("v%u:A", use->virtualRegister());
     case LUse::KEEPALIVE:
-      return JS_smprintf("v%u:*", use->virtualRegister());
+      return JS_smprintf("v%u:KA", use->virtualRegister());
     case LUse::STACK:
-      return JS_smprintf("v%u:s", use->virtualRegister());
+      return JS_smprintf("v%u:S", use->virtualRegister());
     case LUse::RECOVERED_INPUT:
-      return JS_smprintf("v%u:**", use->virtualRegister());
+      return JS_smprintf("v%u:RI", use->virtualRegister());
     default:
       MOZ_CRASH("invalid use policy");
   }
@@ -434,9 +442,49 @@ UniqueChars LAllocation::toString() const {
   } else {
     switch (kind()) {
       case LAllocation::CONSTANT_VALUE:
-      case LAllocation::CONSTANT_INDEX:
-        buf = JS_smprintf("c");
-        break;
+      case LAllocation::CONSTANT_INDEX: {
+        const MConstant* c = toConstant();
+        switch (c->type()) {
+          case MIRType::Int32:
+            buf = JS_smprintf("%d", c->toInt32());
+            break;
+          case MIRType::Int64:
+            buf = JS_smprintf("%" PRId64, c->toInt64());
+            break;
+          case MIRType::IntPtr:
+            buf = JS_smprintf("%" PRIxPTR, c->toIntPtr());
+            break;
+          case MIRType::String:
+            // If a JSContext is a available, output the actual string
+            if (JSContext* cx = TlsContext.get()) {
+              Sprinter spr(cx);
+              if (!spr.init()) {
+                oomUnsafe.crash("LAllocation::toString()");
+              }
+              spr.putString(cx, c->toString());
+              buf = spr.release();
+            } else {
+              buf = JS_smprintf("string");
+            }
+            break;
+          case MIRType::Symbol:
+            buf = JS_smprintf("sym");
+            break;
+          case MIRType::Object:
+          case MIRType::Null:
+            buf = JS_smprintf("obj %p", c->toObjectOrNull());
+            break;
+          case MIRType::Shape:
+            buf = JS_smprintf("shape");
+            break;
+          default:
+            if (c->isTypeRepresentableAsDouble()) {
+              buf = JS_smprintf("%g", c->numberToDouble());
+            } else {
+              buf = JS_smprintf("const");
+            }
+        }
+      } break;
       case LAllocation::GPR:
         buf = JS_smprintf("%s", toGeneralReg()->reg().name());
         break;
@@ -487,6 +535,14 @@ static void PrintOperands(GenericPrinter& out, T* node) {
 void LNode::printOperands(GenericPrinter& out) {
   if (isMoveGroup()) {
     toMoveGroup()->printOperands(out);
+    return;
+  }
+  if (isInteger()) {
+    out.printf(" (%d)", toInteger()->i32());
+    return;
+  }
+  if (isInteger64()) {
+    out.printf(" (%" PRId64 ")", toInteger64()->i64());
     return;
   }
 
@@ -641,24 +697,40 @@ bool LMoveGroup::add(LAllocation from, LAllocation to, LDefinition::Type type) {
   }
 
   // Check that SIMD moves are aligned according to ABI requirements.
-  if (LDefinition(type).type() == LDefinition::SIMD128) {
-    MOZ_ASSERT(from.isMemory() || from.isFloatReg());
-    if (from.isMemory()) {
-      if (from.isArgument()) {
-        MOZ_ASSERT(from.toArgument()->index() % SimdMemoryAlignment == 0);
-      } else {
-        MOZ_ASSERT(from.toStackSlot()->slot() % SimdMemoryAlignment == 0);
-      }
-    }
-    MOZ_ASSERT(to.isMemory() || to.isFloatReg());
-    if (to.isMemory()) {
-      if (to.isArgument()) {
-        MOZ_ASSERT(to.toArgument()->index() % SimdMemoryAlignment == 0);
-      } else {
-        MOZ_ASSERT(to.toStackSlot()->slot() % SimdMemoryAlignment == 0);
-      }
-    }
-  }
+  // clang-format off
+# ifdef ENABLE_WASM_SIMD
+    // Alignment is not currently required for SIMD on x86/x64/arm64.  See also
+    // CodeGeneratorShared::CodeGeneratorShared and in general everywhere
+    // SimdMemoryAignment is used.  Likely, alignment requirements will return.
+#   if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64) || \
+       defined(JS_CODEGEN_ARM64)
+      // No need for any check on x86/x64/arm64.
+#   else
+#     error "Need to consider SIMD alignment on this target."
+      // The following code may be of use if we need alignment checks on
+      // some future target.
+      //if (LDefinition(type).type() == LDefinition::SIMD128) {
+      //  MOZ_ASSERT(from.isMemory() || from.isFloatReg());
+      //  if (from.isMemory()) {
+      //    if (from.isArgument()) {
+      //      MOZ_ASSERT(from.toArgument()->index() % SimdMemoryAlignment == 0);
+      //    } else {
+      //      MOZ_ASSERT(from.toStackSlot()->slot() % SimdMemoryAlignment == 0);
+      //    }
+      //  }
+      //  MOZ_ASSERT(to.isMemory() || to.isFloatReg());
+      //  if (to.isMemory()) {
+      //    if (to.isArgument()) {
+      //      MOZ_ASSERT(to.toArgument()->index() % SimdMemoryAlignment == 0);
+      //    } else {
+      //      MOZ_ASSERT(to.toStackSlot()->slot() % SimdMemoryAlignment == 0);
+      //    }
+      //  }
+      //}
+#   endif
+# endif
+  // clang-format on
+
 #endif
   return moves_.append(LMove(from, to, type));
 }

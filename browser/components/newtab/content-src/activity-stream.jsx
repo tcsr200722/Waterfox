@@ -2,18 +2,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { Base } from "content-src/components/Base/Base";
 import { DetectUserSessionStart } from "content-src/lib/detect-user-session-start";
 import { initStore } from "content-src/lib/init-store";
 import { Provider } from "react-redux";
 import React from "react";
 import ReactDOM from "react-dom";
-import { reducers } from "common/Reducers.jsm";
+import { reducers } from "common/Reducers.sys.mjs";
 
-export const NewTab = ({ store, isFirstrun }) => (
+export const NewTab = ({ store }) => (
   <Provider store={store}>
-    <Base isFirstrun={isFirstrun} />
+    <Base />
   </Provider>
 );
 
@@ -43,24 +43,12 @@ export function renderWithoutState() {
     doRequest();
   }
 
-  ReactDOM.hydrate(
-    <NewTab
-      store={store}
-      isFirstrun={global.document.location.href === "about:welcome"}
-    />,
-    document.getElementById("root")
-  );
+  ReactDOM.hydrate(<NewTab store={store} />, document.getElementById("root"));
 }
 
 export function renderCache(initialState) {
   const store = initStore(reducers, initialState);
   new DetectUserSessionStart(store).sendEventOrAddListener();
 
-  ReactDOM.hydrate(
-    <NewTab
-      store={store}
-      isFirstrun={global.document.location.href === "about:welcome"}
-    />,
-    document.getElementById("root")
-  );
+  ReactDOM.hydrate(<NewTab store={store} />, document.getElementById("root"));
 }

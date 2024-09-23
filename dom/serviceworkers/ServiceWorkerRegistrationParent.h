@@ -9,8 +9,7 @@
 
 #include "mozilla/dom/PServiceWorkerRegistrationParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IPCServiceWorkerRegistrationDescriptor;
 class ServiceWorkerRegistrationProxy;
@@ -20,6 +19,8 @@ class ServiceWorkerRegistrationParent final
   RefPtr<ServiceWorkerRegistrationProxy> mProxy;
   bool mDeleteSent;
 
+  ~ServiceWorkerRegistrationParent();
+
   // PServiceWorkerRegistrationParent
   void ActorDestroy(ActorDestroyReason aReason) override;
 
@@ -28,19 +29,30 @@ class ServiceWorkerRegistrationParent final
   mozilla::ipc::IPCResult RecvUnregister(
       UnregisterResolver&& aResolver) override;
 
-  mozilla::ipc::IPCResult RecvUpdate(const nsCString& aNewestWorkerScriptUrl,
+  mozilla::ipc::IPCResult RecvUpdate(const nsACString& aNewestWorkerScriptUrl,
                                      UpdateResolver&& aResolver) override;
 
+  mozilla::ipc::IPCResult RecvSetNavigationPreloadEnabled(
+      const bool& aEnabled,
+      SetNavigationPreloadEnabledResolver&& aResolver) override;
+
+  mozilla::ipc::IPCResult RecvSetNavigationPreloadHeader(
+      const nsACString& aHeader,
+      SetNavigationPreloadHeaderResolver&& aResolver) override;
+
+  mozilla::ipc::IPCResult RecvGetNavigationPreloadState(
+      GetNavigationPreloadStateResolver&& aResolver) override;
+
  public:
+  NS_INLINE_DECL_REFCOUNTING(ServiceWorkerRegistrationParent, override);
+
   ServiceWorkerRegistrationParent();
-  ~ServiceWorkerRegistrationParent();
 
   void Init(const IPCServiceWorkerRegistrationDescriptor& aDescriptor);
 
   void MaybeSendDelete();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerregistrationparent_h__

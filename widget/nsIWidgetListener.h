@@ -65,7 +65,9 @@ class nsIWidgetListener {
    * Called when a window is moved to location (x, y). Returns true if the
    * notification was handled. Coordinates are outer window screen coordinates.
    */
-  virtual bool WindowMoved(nsIWidget* aWidget, int32_t aX, int32_t aY);
+  enum class ByMoveToRect : bool { No, Yes };
+  virtual bool WindowMoved(nsIWidget* aWidget, int32_t aX, int32_t aY,
+                           ByMoveToRect);
 
   /**
    * Called when a window is resized to (width, height). Returns true if the
@@ -78,12 +80,6 @@ class nsIWidgetListener {
    * Called when the size mode (minimized, maximized, fullscreen) is changed.
    */
   virtual void SizeModeChanged(nsSizeMode aSizeMode);
-
-  /**
-   * Called when the DPI (device resolution scaling factor) is changed,
-   * such that UI elements may need to be rescaled.
-   */
-  virtual void UIResolutionChanged();
 
 #if defined(MOZ_WIDGET_ANDROID)
   virtual void DynamicToolbarMaxHeightChanged(mozilla::ScreenIntCoord aHeight);
@@ -102,14 +98,10 @@ class nsIWidgetListener {
                              nsIWidget** aActualBelow);
 
   /**
-   * Called when the window will enter or leave the fullscreen state.
+   * Called when the macOS titlebar is shown while in fullscreen.
    */
-  virtual void FullscreenWillChange(bool aInFullscreen);
-
-  /**
-   * Called when the window entered or left the fullscreen state.
-   */
-  virtual void FullscreenChanged(bool aInFullscreen);
+  virtual void MacFullscreenMenubarOverlapChanged(
+      mozilla::DesktopCoord aOverlapAmount);
 
   /**
    * Called when the occlusion state is changed.

@@ -17,6 +17,7 @@
 #include "nsReadableUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
+#include "nsXULAppAPI.h"
 #include "prlink.h"
 
 #include <math.h>
@@ -121,8 +122,7 @@ struct nsSpeechDispatcherDynamicFunction {
   nsSpeechDispatcherFunc* function;
 };
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 StaticRefPtr<SpeechDispatcherService> SpeechDispatcherService::sSingleton;
 
@@ -322,6 +322,7 @@ void SpeechDispatcherService::Setup() {
 
   if (!speechdLib) {
     NS_WARNING("Failed to load speechd library");
+    NotifyError(u"lib-missing"_ns);
     return;
   }
 
@@ -329,6 +330,7 @@ void SpeechDispatcherService::Setup() {
     // There is no version getter function, so we rely on a symbol that was
     // introduced in release 0.8.2 in order to check for ABI compatibility.
     NS_WARNING("Unsupported version of speechd detected");
+    NotifyError(u"lib-too-old"_ns);
     return;
   }
 
@@ -340,6 +342,7 @@ void SpeechDispatcherService::Setup() {
       NS_WARNING(nsPrintfCString("Failed to find speechd symbol for'%s'",
                                  kSpeechDispatcherSymbols[i].functionName)
                      .get());
+      NotifyError(u"missing-symbol"_ns);
       return;
     }
   }
@@ -348,6 +351,7 @@ void SpeechDispatcherService::Setup() {
       spd_open("firefox", "web speech api", "who", SPD_MODE_THREADED);
   if (!mSpeechdClient) {
     NS_WARNING("Failed to call spd_open");
+    NotifyError(u"open-fail"_ns);
     return;
   }
 
@@ -373,35 +377,21 @@ void SpeechDispatcherService::Setup() {
       NS_EscapeURL(list[i]->name, -1,
                    esc_OnlyNonASCII | esc_Spaces | esc_AlwaysCopy, name);
       uri.Append(NS_ConvertUTF8toUTF16(name));
-      ;
+
       uri.AppendLiteral("?");
 
       nsAutoCString lang(list[i]->language);
 
-      if (strcmp(list[i]->variant, "none") != 0) {
-        // In speech dispatcher, the variant will usually be the locale subtag
-        // with another, non-standard suptag after it. We keep the first one
-        // and convert it to uppercase.
-        const char* v = list[i]->variant;
-        const char* hyphen = strchr(v, '-');
-        nsDependentCSubstring variant(v, hyphen ? hyphen - v : strlen(v));
-        ToUpperCase(variant);
-
-        // eSpeak uses UK which is not a valid region subtag in BCP47.
-        if (variant.EqualsLiteral("UK")) {
-          variant.AssignLiteral("GB");
-        }
-
-        lang.AppendLiteral("-");
-        lang.Append(variant);
-      }
-
       uri.Append(NS_ConvertUTF8toUTF16(lang));
 
-      mVoices.Put(uri, MakeRefPtr<SpeechDispatcherVoice>(
-                           NS_ConvertUTF8toUTF16(list[i]->name),
-                           NS_ConvertUTF8toUTF16(lang)));
+      mVoices.InsertOrUpdate(uri, MakeRefPtr<SpeechDispatcherVoice>(
+                                      NS_ConvertUTF8toUTF16(list[i]->name),
+                                      NS_ConvertUTF8toUTF16(lang)));
     }
+  }
+
+  if (mVoices.Count() == 0) {
+    NotifyError(u"no-voices"_ns);
   }
 
   NS_DispatchToMainThread(
@@ -413,16 +403,28 @@ void SpeechDispatcherService::Setup() {
 
 // private methods
 
+void SpeechDispatcherService::NotifyError(const nsString& aError) {
+  if (!NS_IsMainThread()) {
+    NS_DispatchToMainThread(NewRunnableMethod<const nsString>(
+        "dom::SpeechDispatcherService::NotifyError", this,
+        &SpeechDispatcherService::NotifyError, aError));
+    return;
+  }
+
+  RefPtr<nsSynthVoiceRegistry> registry = nsSynthVoiceRegistry::GetInstance();
+  DebugOnly<nsresult> rv = registry->NotifyVoicesError(aError);
+}
+
 void SpeechDispatcherService::RegisterVoices() {
   RefPtr<nsSynthVoiceRegistry> registry = nsSynthVoiceRegistry::GetInstance();
-  for (auto iter = mVoices.Iter(); !iter.Done(); iter.Next()) {
-    RefPtr<SpeechDispatcherVoice>& voice = iter.Data();
+  for (const auto& entry : mVoices) {
+    const RefPtr<SpeechDispatcherVoice>& voice = entry.GetData();
 
     // This service can only speak one utterance at a time, so we set
     // aQueuesUtterances to true in order to track global state and schedule
     // access to this service.
     DebugOnly<nsresult> rv =
-        registry->AddVoice(this, iter.Key(), voice->mName, voice->mLanguage,
+        registry->AddVoice(this, entry.GetKey(), voice->mName, voice->mLanguage,
                            voice->mName.EqualsLiteral("default"), true);
 
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to add voice");
@@ -502,7 +504,7 @@ SpeechDispatcherService::Speak(const nsAString& aText, const nsAString& aUri,
       return NS_ERROR_FAILURE;
     }
 
-    mCallbacks.Put(msg_id, std::move(callback));
+    mCallbacks.InsertOrUpdate(msg_id, std::move(callback));
   } else {
     // Speech dispatcher does not work well with empty strings.
     // In that case, don't send empty string to speechd,
@@ -553,5 +555,4 @@ void SpeechDispatcherService::EventNotify(uint32_t aMsgId, uint32_t aState) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

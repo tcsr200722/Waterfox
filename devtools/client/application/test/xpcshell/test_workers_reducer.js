@@ -3,19 +3,22 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
 
-const { Ci } = require("chrome");
-
 const {
   updateCanDebugWorkers,
   updateWorkers,
-} = require("devtools/client/application/src/actions/workers.js");
+} = require("resource://devtools/client/application/src/actions/workers.js");
+
+const {
+  START_WORKER,
+  UNREGISTER_WORKER,
+} = require("resource://devtools/client/application/src/constants.js");
 
 const {
   workersReducer,
   WorkersState,
-} = require("devtools/client/application/src/reducers/workers-state.js");
+} = require("resource://devtools/client/application/src/reducers/workers-state.js");
 
-add_task(async function() {
+add_task(async function () {
   info("Test workers reducer: UPDATE_CAN_DEBUG_WORKERS action");
 
   function testUpdateCanDebugWorkers(flagValue) {
@@ -33,7 +36,7 @@ add_task(async function() {
   testUpdateCanDebugWorkers(true);
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Test workers reducer: UPDATE_WORKERS action");
   const state = WorkersState();
 
@@ -49,14 +52,14 @@ add_task(async function() {
           id: "w1",
           state: Ci.nsIServiceWorkerInfo.STATE_ACTIVATED,
           url: "https://example.com/w1.js",
-          workerTargetFront: { foo: "bar" },
+          workerDescriptorFront: { foo: "bar" },
           stateText: "activated",
         },
         {
           id: "w2",
           state: Ci.nsIServiceWorkerInfo.STATE_INSTALLED,
           url: "https://example.com/w2.js",
-          workerTargetFront: undefined,
+          workerDescriptorFront: undefined,
           stateText: "installed",
         },
       ],
@@ -73,7 +76,7 @@ add_task(async function() {
         {
           id: "w1",
           url: "https://example.com/w1.js",
-          workerTargetFront: rawData[0].workers[0].workerTargetFront,
+          workerDescriptorFront: rawData[0].workers[0].workerDescriptorFront,
           registrationFront: rawData[0].registration,
           state: Ci.nsIServiceWorkerInfo.STATE_ACTIVATED,
           stateText: "activated",
@@ -81,7 +84,7 @@ add_task(async function() {
         {
           id: "w2",
           url: "https://example.com/w2.js",
-          workerTargetFront: undefined,
+          workerDescriptorFront: undefined,
           registrationFront: rawData[0].registration,
           state: Ci.nsIServiceWorkerInfo.STATE_INSTALLED,
           stateText: "installed",
@@ -93,4 +96,20 @@ add_task(async function() {
   const action = updateWorkers(rawData);
   const newState = workersReducer(state, action);
   deepEqual(newState.list, expectedData, "workers contains the expected list");
+});
+
+add_task(async function () {
+  info("Test workers reducer: START_WORKER action");
+  const state = WorkersState();
+  const action = { type: START_WORKER };
+  const newState = workersReducer(state, action);
+  deepEqual(state, newState, "workers state stays the same");
+});
+
+add_task(async function () {
+  info("Test workers reducer: UNREGISTER_WORKER action");
+  const state = WorkersState();
+  const action = { type: UNREGISTER_WORKER };
+  const newState = workersReducer(state, action);
+  deepEqual(state, newState, "workers state stays the same");
 });

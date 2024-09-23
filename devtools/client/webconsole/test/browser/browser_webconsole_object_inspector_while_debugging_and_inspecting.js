@@ -10,34 +10,34 @@ const TEST_URI =
   "https://example.com/browser/devtools/client/webconsole/" +
   "test/browser/test-eval-in-stackframe.html";
 
-add_task(async function() {
+add_task(async function () {
   // TODO: Remove this pref change when middleware for terminating requests
   // when closing a panel is implemented
   await pushPref("devtools.debugger.features.inline-preview", false);
 
   const hud = await openNewTabAndConsole(TEST_URI);
+  const tab = gBrowser.selectedTab;
 
   info("Switch to the debugger");
   await openDebugger();
 
   info("Switch to the inspector");
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  await gDevTools.showToolbox(target, "inspector");
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: "inspector",
+  });
 
   info("Call firstCall() and wait for the debugger statement to be reached.");
-  const toolbox = gDevTools.getToolbox(target);
   const dbg = createDebuggerContext(toolbox);
   await pauseDebugger(dbg);
 
   info("Switch back to the console");
-  await gDevTools.showToolbox(target, "webconsole");
+  await gDevTools.showToolboxForTab(tab, { toolId: "webconsole" });
 
   info("Test logging and inspecting objects while on a breakpoint.");
-  const message = await executeAndWaitForMessage(
+  const message = await executeAndWaitForResultMessage(
     hud,
     "fooObj",
-    '{ testProp2: "testValue2" }',
-    ".result"
+    '{ testProp2: "testValue2" }'
   );
 
   const objectInspectors = [...message.node.querySelectorAll(".tree")];
@@ -57,14 +57,14 @@ add_task(async function() {
   );
 
   // The object inspector now looks like:
-  // {...}
+  // Object { testProp2: "testValue2" }
   // |  testProp2: "testValue2"
   // |  <prototype>: Object { ... }
 
   const oiNodes = oi.querySelectorAll(".node");
   is(oiNodes.length, 3, "There is the expected number of nodes in the tree");
 
-  ok(oiNodes[0].textContent.includes(`{\u2026}`));
+  ok(oiNodes[0].textContent.includes(`Object { testProp2: "testValue2" }`));
   ok(oiNodes[1].textContent.includes(`testProp2: "testValue2"`));
   ok(oiNodes[2].textContent.includes(`<prototype>: Object { \u2026 }`));
 });

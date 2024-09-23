@@ -26,7 +26,7 @@ addAccessibleTask(
     is(n1Label.getAttributeValue("AXTitle"), "Label");
 
     let n2 = getNativeInterface(accDoc, "n2");
-    is(n2.getAttributeValue("AXDescription"), "TwoLabels");
+    is(n2.getAttributeValue("AXDescription"), "Two Labels");
 
     let n3 = getNativeInterface(accDoc, "n3");
     is(n3.getAttributeValue("AXDescription"), "ARIA Label");
@@ -41,5 +41,71 @@ addAccessibleTask(
   (browser, accDoc) => {
     let fieldset = getNativeInterface(accDoc, "fieldset");
     is(fieldset.getAttributeValue("AXDescription"), "Fields");
+  }
+);
+
+/**
+ * Test to see that list items don't get titled groups
+ */
+addAccessibleTask(
+  `<ul style="list-style: none;"><li id="unstyled-item">Hello</li></ul>
+   <ul><li id="styled-item">World</li></ul>`,
+  (browser, accDoc) => {
+    let unstyledItem = getNativeInterface(accDoc, "unstyled-item");
+    is(unstyledItem.getAttributeValue("AXTitle"), "");
+
+    let styledItem = getNativeInterface(accDoc, "unstyled-item");
+    is(styledItem.getAttributeValue("AXTitle"), "");
+  }
+);
+
+/**
+ * Test that we fire a title changed notification
+ */
+addAccessibleTask(
+  `<div id="elem" aria-label="Hello world"></div>`,
+  async (browser, accDoc) => {
+    let elem = getNativeInterface(accDoc, "elem");
+    is(elem.getAttributeValue("AXTitle"), "Hello world");
+    let evt = waitForMacEvent("AXTitleChanged", "elem");
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document
+        .getElementById("elem")
+        .setAttribute("aria-label", "Hello universe");
+    });
+    await evt;
+    is(elem.getAttributeValue("AXTitle"), "Hello universe");
+  }
+);
+
+/**
+ * Test articles supply only labels not titles
+ */
+addAccessibleTask(
+  `<article id="article" aria-label="Hello world"></article>`,
+  async (browser, accDoc) => {
+    let article = getNativeInterface(accDoc, "article");
+    is(article.getAttributeValue("AXDescription"), "Hello world");
+    ok(!article.getAttributeValue("AXTitle"));
+  }
+);
+
+/**
+ * Test text and number inputs supply only labels not titles
+ */
+addAccessibleTask(
+  `<label for="input">Your favorite number?</label><input type="text" name="input" value="11" id="input" aria-label="The best number you know of">`,
+  async (browser, accDoc) => {
+    let input = getNativeInterface(accDoc, "input");
+    is(input.getAttributeValue("AXDescription"), "The best number you know of");
+    ok(!input.getAttributeValue("AXTitle"));
+    let evt = waitForEvent(EVENT_SHOW, "input");
+    await SpecialPowers.spawn(browser, [], () => {
+      content.document.getElementById("input").setAttribute("type", "number");
+    });
+    await evt;
+    input = getNativeInterface(accDoc, "input");
+    is(input.getAttributeValue("AXDescription"), "The best number you know of");
+    ok(!input.getAttributeValue("AXTitle"));
   }
 );

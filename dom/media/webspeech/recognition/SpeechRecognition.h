@@ -14,7 +14,7 @@
 #include "nsWrapperCache.h"
 #include "nsTArray.h"
 #include "js/TypeDecls.h"
-
+#include "nsProxyRelease.h"
 #include "DOMMediaStream.h"
 #include "nsITimer.h"
 #include "MediaTrackGraph.h"
@@ -52,10 +52,8 @@ LogModule* GetSpeechRecognitionLog();
 
 class SpeechRecognition final : public DOMEventTargetHelper,
                                 public nsIObserver,
-                                public DOMMediaStream::TrackListener,
-                                public SupportsWeakPtr<SpeechRecognition> {
+                                public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(SpeechRecognition)
   explicit SpeechRecognition(nsPIDOMWindowInner* aOwnerWindow);
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -134,17 +132,42 @@ class SpeechRecognition final : public DOMEventTargetHelper,
     EVENT_COUNT
   };
 
-  void NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) override;
+  void NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack);
 
+  class TrackListener final : public DOMMediaStream::TrackListener {
+   public:
+    NS_DECL_ISUPPORTS_INHERITED
+    NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(TrackListener,
+                                             DOMMediaStream::TrackListener)
+    explicit TrackListener(SpeechRecognition* aSpeechRecognition)
+        : mSpeechRecognition(aSpeechRecognition) {}
+    void NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack) override {
+      mSpeechRecognition->NotifyTrackAdded(aTrack);
+    }
+
+   private:
+    virtual ~TrackListener() = default;
+    RefPtr<SpeechRecognition> mSpeechRecognition;
+  };
+
+  // aMessage should be valid UTF-8, but invalid UTF-8 byte sequences are
+  // replaced with the REPLACEMENT CHARACTER on conversion to UTF-16.
   void DispatchError(EventType aErrorType,
                      SpeechRecognitionErrorCode aErrorCode,
-                     const nsAString& aMessage);
+                     const nsACString& aMessage);
+  template <int N>
+  void DispatchError(EventType aErrorType,
+                     SpeechRecognitionErrorCode aErrorCode,
+                     const char (&aMessage)[N]) {
+    DispatchError(aErrorType, aErrorCode, nsLiteralCString(aMessage));
+  }
   uint32_t FillSamplesBuffer(const int16_t* aSamples, uint32_t aSampleCount);
   uint32_t SplitSamplesBuffer(const int16_t* aSamplesBuffer,
                               uint32_t aSampleCount,
                               nsTArray<RefPtr<SharedBuffer>>& aResult);
   AudioSegment* CreateAudioSegment(nsTArray<RefPtr<SharedBuffer>>& aChunks);
-  void FeedAudioData(already_AddRefed<SharedBuffer> aSamples,
+  void FeedAudioData(nsMainThreadPtrHandle<SpeechRecognition>& aRecognition,
+                     already_AddRefed<SharedBuffer> aSamples,
                      uint32_t aDuration, MediaTrackListener* aProvider,
                      TrackRate aTrackRate);
 
@@ -259,6 +282,8 @@ class SpeechRecognition final : public DOMEventTargetHelper,
   // a conforming implementation.
   uint32_t mMaxAlternatives;
 
+  RefPtr<TrackListener> mListener;
+
   void ProcessTestEventRequest(nsISupports* aSubject,
                                const nsAString& aEventName);
 
@@ -269,6 +294,8 @@ class SpeechRecognition final : public DOMEventTargetHelper,
 class SpeechEvent : public Runnable {
  public:
   SpeechEvent(SpeechRecognition* aRecognition,
+              SpeechRecognition::EventType aType);
+  SpeechEvent(nsMainThreadPtrHandle<SpeechRecognition>& aRecognition,
               SpeechRecognition::EventType aType);
 
   ~SpeechEvent();
@@ -283,7 +310,7 @@ class SpeechEvent : public Runnable {
   friend class SpeechRecognition;
 
  private:
-  SpeechRecognition* mRecognition;
+  nsMainThreadPtrHandle<SpeechRecognition> mRecognition;
 
   // for AUDIO_DATA events, keep a reference to the provider
   // of the data (i.e., the SpeechTrackListener) to ensure it

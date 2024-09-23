@@ -10,8 +10,8 @@
 let faviconURI = Services.io.newURI(
   "http://example.org/tests/toolkit/components/places/tests/browser/favicon-normal16.png"
 );
-add_task(async function() {
-  registerCleanupFunction(async function() {
+add_task(async function () {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.eraseEverything();
     await PlacesUtils.history.clear();
   });
@@ -21,15 +21,11 @@ add_task(async function() {
   // point we can be sure previous calls didn't send a notification.
   let lastPageURI = Services.io.newURI("http://example.com/verification");
   let promiseIconChanged = PlacesTestUtils.waitForNotification(
-    "onPageChanged",
-    (uri, prop, value) => {
-      return (
-        prop == Ci.nsINavHistoryObserver.ATTRIBUTE_FAVICON &&
-        uri.equals(lastPageURI) &&
-        value == SMALLPNG_DATA_URI.spec
-      );
-    },
-    "history"
+    "favicon-changed",
+    events =>
+      events.some(
+        e => e.url == lastPageURI.spec && e.faviconUrl == SMALLPNG_DATA_URI.spec
+      )
   );
 
   info("Test null page uri");
@@ -112,9 +108,9 @@ add_task(async function() {
 
   info("Test error icon");
   // This error icon must stay in sync with FAVICON_ERRORPAGE_URL in
-  // nsIFaviconService.idl, aboutCertError.xhtml and netError.xhtml.
+  // nsIFaviconService.idl and aboutNetError.html.
   let faviconErrorPageURI = Services.io.newURI(
-    "chrome://global/skin/icons/warning.svg"
+    "chrome://global/skin/icons/info.svg"
   );
   pageURI = Services.io.newURI("http://example.com/errorIcon");
   await PlacesTestUtils.addVisits({

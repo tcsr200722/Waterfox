@@ -2,9 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import types
+
+import six
 
 import mozunit
 import pytest
@@ -14,7 +14,7 @@ from marionette_harness.runner.serve import iter_proc, iter_url
 
 
 def teardown_function(func):
-    for server in [server for server in iter_proc(serve.servers) if server.is_alive]:
+    for server in [s for s in iter_proc(serve.servers) if s.is_alive]:
         server.stop()
         server.kill()
 
@@ -37,7 +37,7 @@ def test_start():
     assert "http" in serve.servers
     assert "https" in serve.servers
     for url in iter_url(serve.servers):
-        assert isinstance(url, types.StringTypes)
+        assert isinstance(url, six.string_types)
 
 
 def test_start_with_custom_root(tmpdir_factory):
@@ -56,7 +56,7 @@ def test_iter_proc():
 def test_iter_url():
     serve.start()
     for url in iter_url(serve.servers):
-        assert isinstance(url, types.StringTypes)
+        assert isinstance(url, six.string_types)
 
 
 def test_where_is():
@@ -66,4 +66,4 @@ def test_where_is():
 
 
 if __name__ == "__main__":
-    mozunit.main('-p', 'no:terminalreporter', '--log-tbpl=-', '--capture', 'no')
+    mozunit.main("-p", "no:terminalreporter", "--log-tbpl=-", "--capture", "no")

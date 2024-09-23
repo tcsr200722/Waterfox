@@ -1,7 +1,9 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Sqlite } = ChromeUtils.import("resource://gre/modules/Sqlite.jsm");
+const { Sqlite } = ChromeUtils.importESModule(
+  "resource://gre/modules/Sqlite.sys.mjs"
+);
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -10,49 +12,77 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsITrackingDBService"
 );
 
-XPCOMUtils.defineLazyGetter(this, "TRACK_DB_PATH", function() {
-  return OS.Path.join(OS.Constants.Path.profileDir, "protections.sqlite");
+ChromeUtils.defineLazyGetter(this, "TRACK_DB_PATH", function () {
+  return PathUtils.join(PathUtils.profileDir, "protections.sqlite");
 });
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ContentBlockingAllowList",
-  "resource://gre/modules/ContentBlockingAllowList.jsm"
+ChromeUtils.defineESModuleGetters(this, {
+  ContentBlockingAllowList:
+    "resource://gre/modules/ContentBlockingAllowList.sys.mjs",
+});
+
+var { UrlClassifierTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
 );
 
-var { UrlClassifierTestUtils } = ChromeUtils.import(
-  "resource://testing-common/UrlClassifierTestUtils.jsm"
-);
-var protectionsPopup = document.getElementById("protections-popup");
-var protectionsPopupMainView = document.getElementById(
-  "protections-popup-mainView"
-);
-var protectionsPopupHeader = document.getElementById(
-  "protections-popup-mainView-panel-header"
-);
-
-async function openProtectionsPanel(toast) {
-  let popupShownPromise = BrowserTestUtils.waitForEvent(
-    protectionsPopup,
+async function waitForProtectionsPanelToast() {
+  await BrowserTestUtils.waitForEvent(
+    gProtectionsHandler._protectionsPopup,
     "popupshown"
   );
-  let shieldIconContainer = document.getElementById(
+  Assert.ok(
+    gProtectionsHandler._protectionsPopup.hasAttribute("toast"),
+    "Protections panel toast is shown."
+  );
+
+  await BrowserTestUtils.waitForEvent(
+    gProtectionsHandler._protectionsPopup,
+    "popuphidden"
+  );
+}
+
+async function openProtectionsPanel(toast, win = window) {
+  let popupShownPromise = BrowserTestUtils.waitForEvent(
+    win,
+    "popupshown",
+    true,
+    e => e.target.id == "protections-popup"
+  );
+  let shieldIconContainer = win.document.getElementById(
     "tracking-protection-icon-container"
+  );
+
+  // Register a promise to wait for the tooltip to be shown.
+  let tooltip = win.document.getElementById("tracking-protection-icon-tooltip");
+  let tooltipShownPromise = BrowserTestUtils.waitForPopupEvent(
+    tooltip,
+    "shown"
   );
 
   // Move out than move over the shield icon to trigger the hover event in
   // order to fetch tracker count.
-  EventUtils.synthesizeMouseAtCenter(gURLBar.textbox, {
-    type: "mousemove",
-  });
-  EventUtils.synthesizeMouseAtCenter(shieldIconContainer, {
-    type: "mousemove",
-  });
+  EventUtils.synthesizeMouseAtCenter(
+    win.gURLBar.textbox,
+    {
+      type: "mousemove",
+    },
+    win
+  );
+  EventUtils.synthesizeMouseAtCenter(
+    shieldIconContainer,
+    {
+      type: "mousemove",
+    },
+    win
+  );
+
+  // Wait for the tooltip to be shown.
+  await tooltipShownPromise;
 
   if (!toast) {
-    EventUtils.synthesizeMouseAtCenter(shieldIconContainer, {});
+    EventUtils.synthesizeMouseAtCenter(shieldIconContainer, {}, win);
   } else {
-    gProtectionsHandler.showProtectionsPopup({ toast });
+    win.gProtectionsHandler.showProtectionsPopup({ toast });
   }
 
   await popupShownPromise;
@@ -60,8 +90,10 @@ async function openProtectionsPanel(toast) {
 
 async function openProtectionsPanelWithKeyNav() {
   let popupShownPromise = BrowserTestUtils.waitForEvent(
-    protectionsPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    e => e.target.id == "protections-popup"
   );
 
   gURLBar.focus();
@@ -74,7 +106,11 @@ async function openProtectionsPanelWithKeyNav() {
   await popupShownPromise;
 }
 
-async function closeProtectionsPanel() {
+async function closeProtectionsPanel(win = window) {
+  let protectionsPopup = win.document.getElementById("protections-popup");
+  if (!protectionsPopup) {
+    return;
+  }
   let popuphiddenPromise = BrowserTestUtils.waitForEvent(
     protectionsPopup,
     "popuphidden"
@@ -124,7 +160,7 @@ async function waitForAboutProtectionsTab() {
 
   // When the graph is built it means the messaging has finished,
   // we can close the tab.
-  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
     await ContentTaskUtils.waitForCondition(() => {
       let bars = content.document.querySelectorAll(".graph-bar");
       return bars.length;
@@ -162,17 +198,10 @@ function promiseTabLoadEvent(tab, url) {
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
 
   if (url) {
-    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;
-}
-
-function openIdentityPopup() {
-  let mainView = document.getElementById("identity-popup-mainView");
-  let viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
-  gIdentityHandler._identityBox.click();
-  return viewShown;
 }
 
 function waitForSecurityChange(numChanges = 1, win = null) {

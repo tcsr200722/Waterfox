@@ -14,6 +14,8 @@
 <script class="testbody" type="application/javascript">
 "use strict";
 
+const { MESSAGE_CATEGORY } = require("devtools/shared/constants");
+
 const previousEnabled = window.docShell.cssErrorReportingEnabled;
 window.docShell.cssErrorReportingEnabled = true;
 
@@ -33,8 +35,8 @@ function doPageErrors() {
     {
       errorMessage: /fooColor/,
       sourceName: /.+/,
-      category: "CSS Parser",
-      timeStamp: /^\d+$/,
+      category: MESSAGE_CATEGORY.CSS_PARSER,
+      timeStamp: FRACTIONAL_NUMBER_REGEX,
       error: false,
       warning: true,
     },
@@ -42,7 +44,7 @@ function doPageErrors() {
       errorMessage: /doTheImpossible/,
       sourceName: /.+/,
       category: "chrome javascript",
-      timeStamp: /^\d+$/,
+      timeStamp: FRACTIONAL_NUMBER_REGEX,
       error: true,
       warning: false,
     },
@@ -72,22 +74,19 @@ function doConsoleCalls() {
     {
       level: "log",
       filename: /test_cached_messages/,
-      functionName: "doConsoleCalls",
-      timeStamp: /^\d+$/,
+      timeStamp: FRACTIONAL_NUMBER_REGEX,
       arguments: ["foobarBaz-log", { type: "undefined" }],
     },
     {
       level: "info",
       filename: /test_cached_messages/,
-      functionName: "doConsoleCalls",
-      timeStamp: /^\d+$/,
+      timeStamp: FRACTIONAL_NUMBER_REGEX,
       arguments: ["foobarBaz-info", { type: "null" }],
     },
     {
       level: "warn",
       filename: /test_cached_messages/,
-      functionName: "doConsoleCalls",
-      timeStamp: /^\d+$/,
+      timeStamp: FRACTIONAL_NUMBER_REGEX,
       arguments: ["foobarBaz-warn", { type: "object", actor: /[a-z]/ }],
     },
   ];
@@ -107,41 +106,39 @@ let consoleAPIListener, consoleServiceListener;
 let consoleAPICalls = 0;
 let pageErrors = 0;
 
-const handlers = {
-  onConsoleAPICall: async function onConsoleAPICall(message) {
-    for (const msg of expectedConsoleCalls) {
-      if (msg.functionName == message.functionName &&
-          msg.filename.test(message.filename)) {
-        consoleAPICalls++;
-        break;
-      }
+async function onConsoleAPICall(message) {
+  for (const msg of expectedConsoleCalls) {
+    if (msg.functionName == message.functionName &&
+        msg.filename.test(message.filename)) {
+      consoleAPICalls++;
+      break;
     }
-    if (consoleAPICalls == expectedConsoleCalls.length) {
-      await checkConsoleAPICache();
-    }
-  },
+  }
+  if (consoleAPICalls == expectedConsoleCalls.length) {
+    await checkConsoleAPICache();
+  }
+}
 
-  onConsoleServiceMessage: async function onConsoleServiceMessage(message) {
-    if (!(message instanceof Ci.nsIScriptError)) {
-      return;
+async function onConsoleServiceMessage(message) {
+  if (!(message instanceof Ci.nsIScriptError)) {
+    return;
+  }
+  for (const msg of expectedPageErrors) {
+    if (msg.category == message.category &&
+        msg.errorMessage.test(message.errorMessage)) {
+      pageErrors++;
+      break;
     }
-    for (const msg of expectedPageErrors) {
-      if (msg.category == message.category &&
-          msg.errorMessage.test(message.errorMessage)) {
-        pageErrors++;
-        break;
-      }
-    }
-    if (pageErrors == expectedPageErrors.length) {
-      await testPageErrors();
-    }
-  },
-};
+  }
+  if (pageErrors == expectedPageErrors.length) {
+    await testPageErrors();
+  }
+}
 
 function startTest() {
   removeEventListener("load", startTest);
 
-  consoleAPIListener = new ConsoleAPIListener(top, handlers);
+  consoleAPIListener = new ConsoleAPIListener(top, onConsoleAPICall);
   consoleAPIListener.init();
 
   doConsoleCalls();
@@ -164,8 +161,7 @@ function onCachedConsoleAPI(state, response) {
 
   for (const {message} of msgs) {
     for (const expected of expectedConsoleCalls) {
-      if (expected.functionName == message.functionName &&
-          expected.filename.test(message.filename)) {
+      if (expected.filename.test(message.filename)) {
         expectedConsoleCalls.splice(expectedConsoleCalls.indexOf(expected));
         checkConsoleAPICall(message, expected);
         break;
@@ -176,7 +172,7 @@ function onCachedConsoleAPI(state, response) {
   is(expectedConsoleCalls.length, 0, "all expected messages have been found");
 
   closeDebugger(state, function() {
-    consoleServiceListener = new ConsoleServiceListener(null, handlers);
+    consoleServiceListener = new ConsoleServiceListener(null, onConsoleServiceMessage);
     consoleServiceListener.init();
     doPageErrors();
   });

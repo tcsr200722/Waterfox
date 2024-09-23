@@ -6,12 +6,12 @@
 
 #include "ContentProcessMessageManager.h"
 
-#include "nsContentCID.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/MessageManagerBinding.h"
 #include "mozilla/dom/ParentProcessMessageManager.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ipc/SharedMap.h"
+#include "mozilla/HoldDropJSObjects.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -25,13 +25,12 @@ ContentProcessMessageManager::ContentProcessMessageManager(
 }
 
 ContentProcessMessageManager::~ContentProcessMessageManager() {
-  mAnonymousGlobalScopes.Clear();
   mozilla::DropJSObjects(this);
 }
 
 ContentProcessMessageManager* ContentProcessMessageManager::Get() {
   nsCOMPtr<nsIMessageSender> service =
-      do_GetService(NS_CHILDPROCESSMESSAGEMANAGER_CONTRACTID);
+      do_GetService("@mozilla.org/childprocessmessagemanager;1");
   if (!service) {
     return nullptr;
   }
@@ -40,7 +39,7 @@ ContentProcessMessageManager* ContentProcessMessageManager::Get() {
 }
 
 already_AddRefed<mozilla::dom::ipc::SharedMap>
-ContentProcessMessageManager::SharedData() {
+ContentProcessMessageManager::GetSharedData() {
   if (ContentChild* child = ContentChild::GetSingleton()) {
     return do_AddRef(child->SharedData());
   }
@@ -98,13 +97,14 @@ JSObject* ContentProcessMessageManager::WrapObject(
 }
 
 JSObject* ContentProcessMessageManager::GetOrCreateWrapper() {
-  JS::RootedValue val(RootingCx());
+  JS::Rooted<JS::Value> val(RootingCx());
   {
     // Scope to run ~AutoJSAPI before working with a raw JSObject*.
     AutoJSAPI jsapi;
     jsapi.Init();
 
     if (!GetOrCreateDOMReflectorNoWrap(jsapi.cx(), this, &val)) {
+      JS_ClearPendingException(jsapi.cx());
       return nullptr;
     }
   }
@@ -112,14 +112,18 @@ JSObject* ContentProcessMessageManager::GetOrCreateWrapper() {
   return &val.toObject();
 }
 
-void ContentProcessMessageManager::LoadScript(const nsAString& aURL) {
+bool ContentProcessMessageManager::LoadScript(const nsAString& aURL) {
   Init();
-  JS::Rooted<JSObject*> messageManager(mozilla::dom::RootingCx(),
-                                       GetOrCreateWrapper());
-  LoadScriptInternal(messageManager, aURL, true);
+  JSObject* wrapper = GetOrCreateWrapper();
+  if (wrapper) {
+    JS::Rooted<JSObject*> messageManager(mozilla::dom::RootingCx(), wrapper);
+    LoadScriptInternal(messageManager, aURL, true);
+    return true;
+  }
+  return false;
 }
 
 void ContentProcessMessageManager::SetInitialProcessData(
-    JS::HandleValue aInitialData) {
+    JS::Handle<JS::Value> aInitialData) {
   mMessageManager->SetInitialProcessData(aInitialData);
 }

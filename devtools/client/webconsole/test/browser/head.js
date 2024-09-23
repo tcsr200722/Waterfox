@@ -1,7 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../shared/test/telemetry-test-helpers.js */
 
 "use strict";
 
@@ -9,30 +8,27 @@
 
 // shared-head.js handles imports, constants, and utility functions
 // Load the shared-head file first.
-/* import-globals-from ../../../shared/test/shared-head.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
   this
 );
 
 // Import helpers for the new debugger
-/* import-globals-from ../../../debugger/test/mochitest/helpers/context.js */
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/helpers/context.js",
+  "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/shared-head.js",
   this
 );
 
-// Import helpers for the new debugger
-/* import-globals-from ../../../debugger/test/mochitest/helpers.js*/
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/helpers.js",
+  "chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/shared-head.js",
   this
 );
 
 var {
   BrowserConsoleManager,
-} = require("devtools/client/webconsole/browser-console-manager");
-var WCUL10n = require("devtools/client/webconsole/utils/l10n");
+} = require("resource://devtools/client/webconsole/browser-console-manager.js");
+
+var WCUL10n = require("resource://devtools/client/webconsole/utils/l10n.js");
 const DOCS_GA_PARAMS = `?${new URLSearchParams({
   utm_source: "mozilla",
   utm_medium: "firefox-console-errors",
@@ -44,9 +40,13 @@ const GA_PARAMS = `?${new URLSearchParams({
   utm_campaign: "default",
 })}`;
 
-const wcActions = require("devtools/client/webconsole/actions/index");
+const wcActions = require("resource://devtools/client/webconsole/actions/index.js");
 
-registerCleanupFunction(async function() {
+registerCleanupFunction(async function () {
+  // Reset all cookies, tests loading sjs_slow-response-test-server.sjs will
+  // set a foo cookie which might have side effects on other tests.
+  Services.cookies.removeAll();
+
   Services.prefs.clearUserPref("devtools.webconsole.ui.filterbar");
 
   // Reset all filter prefs between tests. First flushPrefEnv in case one of the
@@ -55,11 +55,6 @@ registerCleanupFunction(async function() {
   Services.prefs.getChildList("devtools.webconsole.filter").forEach(pref => {
     Services.prefs.clearUserPref(pref);
   });
-  const browserConsole = BrowserConsoleManager.getBrowserConsole();
-  if (browserConsole) {
-    await clearOutput(browserConsole);
-    await BrowserConsoleManager.toggleBrowserConsole();
-  }
 });
 
 /**
@@ -103,22 +98,24 @@ async function openNewTabWithIframesAndConsole(tabUrl, iframes) {
   // to handle remote frames (we don't support creating frames target when the toolbox
   // is already open).
   await addTab(tabUrl);
-  await ContentTask.spawn(gBrowser.selectedBrowser, iframes, async function(
-    urls
-  ) {
-    const iframesLoadPromises = urls.map((url, i) => {
-      const iframe = content.document.createElement("iframe");
-      iframe.classList.add(`iframe-${i + 1}`);
-      const onLoadIframe = new Promise(resolve => {
-        iframe.addEventListener("load", resolve, { once: true });
+  await ContentTask.spawn(
+    gBrowser.selectedBrowser,
+    iframes,
+    async function (urls) {
+      const iframesLoadPromises = urls.map((url, i) => {
+        const iframe = content.document.createElement("iframe");
+        iframe.classList.add(`iframe-${i + 1}`);
+        const onLoadIframe = new Promise(resolve => {
+          iframe.addEventListener("load", resolve, { once: true });
+        });
+        content.document.body.append(iframe);
+        iframe.src = url;
+        return onLoadIframe;
       });
-      content.document.body.append(iframe);
-      iframe.src = url;
-      return onLoadIframe;
-    });
 
-    await Promise.all(iframesLoadPromises);
-  });
+      await Promise.all(iframesLoadPromises);
+    }
+  );
 
   return openConsole();
 }
@@ -152,7 +149,9 @@ function logAllStoreChanges(hud) {
   // Adding logging each time the store is modified in order to check
   // the store state in case of failure.
   store.subscribe(() => {
-    const messages = [...store.getState().messages.messagesById.values()];
+    const messages = [
+      ...store.getState().messages.mutableMessagesById.values(),
+    ];
     const debugMessages = messages.map(
       ({ id, type, parameters, messageText }) => {
         return { id, type, parameters, messageText };
@@ -160,7 +159,7 @@ function logAllStoreChanges(hud) {
     );
     info(
       "messages : " +
-        JSON.stringify(debugMessages, function(key, value) {
+        JSON.stringify(debugMessages, function (key, value) {
           if (value && value.getGrip) {
             return value.getGrip();
           }
@@ -171,17 +170,20 @@ function logAllStoreChanges(hud) {
 }
 
 /**
- * Wait for messages in the web console output, resolving once they are received.
+ * Wait for messages with given message type in the web console output,
+ * resolving once they are received.
  *
  * @param object options
  *        - hud: the webconsole
  *        - messages: Array[Object]. An array of messages to match.
-            Current supported options:
- *            - text: Partial text match in .message-body
- *        - selector: {String} a selector that should match the message node. Defaults to
- *                             ".message".
+ *          Current supported options:
+ *            - text: {String} Partial text match in .message-body
+ *            - typeSelector: {String} A part of selector for the message, to
+ *                                     specify the message type.
+ * @return promise
+ *         A promise that is resolved to an array of the message nodes
  */
-function waitForMessages({ hud, messages, selector = ".message" }) {
+function waitForMessagesByType({ hud, messages }) {
   return new Promise(resolve => {
     const matchedMessages = [];
     hud.ui.on("new-messages", function messagesReceived(newMessages) {
@@ -189,6 +191,17 @@ function waitForMessages({ hud, messages, selector = ".message" }) {
         if (message.matched) {
           continue;
         }
+
+        const typeSelector = message.typeSelector;
+        if (!typeSelector) {
+          throw new Error("typeSelector property is required");
+        }
+        if (!typeSelector.startsWith(".")) {
+          throw new Error(
+            "typeSelector property start with a dot e.g. `.result`"
+          );
+        }
+        const selector = ".message" + typeSelector;
 
         for (const newMessage of newMessages) {
           const messageBody = newMessage.node.querySelector(`.message-body`);
@@ -225,12 +238,14 @@ function waitForMessages({ hud, messages, selector = ".message" }) {
  *
  * @param {Object} hud : the webconsole
  * @param {String} text : text included in .message-body
+ * @param {String} typeSelector : A part of selector for the message, to
+ *                                specify the message type.
  * @param {Number} repeat : expected repeat count in .message-repeats
  */
-function waitForRepeatedMessage(hud, text, repeat) {
+function waitForRepeatedMessageByType(hud, text, typeSelector, repeat) {
   return waitFor(() => {
     // Wait for a message matching the provided text.
-    const node = findMessage(hud, text);
+    const node = findMessageByType(hud, text, typeSelector);
     if (!node) {
       return false;
     }
@@ -246,17 +261,20 @@ function waitForRepeatedMessage(hud, text, repeat) {
 }
 
 /**
- * Wait for a single message in the web console output, resolving once it is received.
+ * Wait for a single message with given message type in the web console output,
+ * resolving with the first message that matches the query once it is received.
  *
  * @param {Object} hud : the webconsole
  * @param {String} text : text included in .message-body
- * @param {String} selector : A selector that should match the message node.
+ * @param {String} typeSelector : A part of selector for the message, to
+ *                                specify the message type.
+ * @return promise
+ *         A promise that is resolved to the message node
  */
-async function waitForMessage(hud, text, selector) {
-  const messages = await waitForMessages({
+async function waitForMessageByType(hud, text, typeSelector) {
+  const messages = await waitForMessagesByType({
     hud,
-    messages: [{ text }],
-    selector,
+    messages: [{ text, typeSelector }],
   });
   return messages[0];
 }
@@ -272,43 +290,63 @@ function execute(hud, input) {
 }
 
 /**
- * Execute an input expression and wait for a message with the expected text (and an
- * optional selector) to be displayed in the output.
+ * Execute an input expression and wait for a message with the expected text
+ * with given message type to be displayed in the output.
  *
  * @param {Object} hud : The webconsole.
  * @param {String} input : The input expression to execute.
- * @param {String} matchingText : A string that should match the message body content.
- * @param {String} selector : A selector that should match the message node.
+ * @param {String} matchingText : A string that should match the message body content.
+ * @param {String} typeSelector : A part of selector for the message, to
+ *                                specify the message type.
  */
-function executeAndWaitForMessage(
+function executeAndWaitForMessageByType(
   hud,
   input,
   matchingText,
-  selector = ".message"
+  typeSelector
 ) {
-  const onMessage = waitForMessage(hud, matchingText, selector);
+  const onMessage = waitForMessageByType(hud, matchingText, typeSelector);
   execute(hud, input);
   return onMessage;
 }
 
 /**
- * Set the input value, simulates the right keyboard event to evaluate it, depending on
- * if the console is in editor mode or not, and wait for a message with the expected text
- * (and an optional selector) to be displayed in the output.
+ * Type-specific wrappers for executeAndWaitForMessageByType
  *
  * @param {Object} hud : The webconsole.
  * @param {String} input : The input expression to execute.
- * @param {String} matchingText : A string that should match the message body content.
- * @param {String} selector : A selector that should match the message node.
+ * @param {String} matchingText : A string that should match the message body
+ *                                content.
  */
-function keyboardExecuteAndWaitForMessage(
+function executeAndWaitForResultMessage(hud, input, matchingText) {
+  return executeAndWaitForMessageByType(hud, input, matchingText, ".result");
+}
+
+function executeAndWaitForErrorMessage(hud, input, matchingText) {
+  return executeAndWaitForMessageByType(hud, input, matchingText, ".error");
+}
+
+/**
+ * Set the input value, simulates the right keyboard event to evaluate it,
+ * depending on if the console is in editor mode or not, and wait for a message
+ * with the expected text with given message type to be displayed in the output.
+ *
+ * @param {Object} hud : The webconsole.
+ * @param {String} input : The input expression to execute.
+ * @param {String} matchingText : A string that should match the message body
+ *                                content.
+ * @param {String} typeSelector : A part of selector for the message, to
+ *                                specify the message type.
+ */
+function keyboardExecuteAndWaitForMessageByType(
   hud,
   input,
   matchingText,
-  selector = ".message"
+  typeSelector
 ) {
+  hud.jsterm.focus();
   setInputValue(hud, input);
-  const onMessage = waitForMessage(hud, matchingText, selector);
+  const onMessage = waitForMessageByType(hud, matchingText, typeSelector);
   if (isEditorModeEnabled(hud)) {
     EventUtils.synthesizeKey("KEY_Enter", {
       [Services.appinfo.OS === "Darwin" ? "metaKey" : "ctrlKey"]: true,
@@ -320,66 +358,55 @@ function keyboardExecuteAndWaitForMessage(
 }
 
 /**
- * Wait for a predicate to return a result.
+ * Type-specific wrappers for keyboardExecuteAndWaitForMessageByType
  *
- * @param function condition
- *        Invoked once in a while until it returns a truthy value. This should be an
- *        idempotent function, since we have to run it a second time after it returns
- *        true in order to return the value.
- * @param string message [optional]
- *        A message to output if the condition fails.
- * @param number interval [optional]
- *        How often the predicate is invoked, in milliseconds.
- * @return object
- *         A promise that is resolved with the result of the condition.
+ * @param {Object} hud : The webconsole.
+ * @param {String} input : The input expression to execute.
+ * @param {String} matchingText : A string that should match the message body
+ *                                content.
  */
-async function waitFor(
-  condition,
-  message = "waitFor",
-  interval = 10,
-  maxTries = 500
-) {
-  await BrowserTestUtils.waitForCondition(
-    condition,
-    message,
-    interval,
-    maxTries
+function keyboardExecuteAndWaitForResultMessage(hud, input, matchingText) {
+  return keyboardExecuteAndWaitForMessageByType(
+    hud,
+    input,
+    matchingText,
+    ".result"
   );
-  return condition();
 }
 
 /**
- * Find a message in the output.
+ * Wait for a message to be logged and ensure it is logged only once.
  *
  * @param object hud
  *        The web console.
  * @param string text
  *        A substring that can be found in the message.
- * @param selector [optional]
- *        The selector to use in finding the message.
+ * @param string typeSelector
+ *        A part of selector for the message, to specify the message type.
  * @return {Node} the node corresponding the found message
  */
-function findMessage(hud, text, selector = ".message") {
-  const elements = findMessages(hud, text, selector);
-  return elements.pop();
-}
+async function checkUniqueMessageExists(hud, msg, typeSelector) {
+  info(`Checking "${msg}" was logged`);
+  let messages;
+  try {
+    messages = await waitFor(async () => {
+      const msgs = await findMessagesVirtualizedByType({
+        hud,
+        text: msg,
+        typeSelector,
+      });
+      return msgs.length ? msgs : null;
+    });
+  } catch (e) {
+    ok(false, `Message "${msg}" wasn't logged\n`);
+    return null;
+  }
 
-/**
- * Find multiple messages in the output.
- *
- * @param object hud
- *        The web console.
- * @param string text
- *        A substring that can be found in the message.
- * @param selector [optional]
- *        The selector to use in finding the message.
- */
-function findMessages(hud, text, selector = ".message") {
-  const messages = hud.ui.outputNode.querySelectorAll(selector);
-  const elements = Array.prototype.filter.call(messages, el =>
-    el.textContent.includes(text)
-  );
-  return elements;
+  is(messages.length, 1, `"${msg}" was logged once`);
+  const [messageEl] = messages;
+  const repeatNode = messageEl.querySelector(".message-repeats");
+  is(repeatNode, null, `"${msg}" wasn't repeated`);
+  return messageEl;
 }
 
 /**
@@ -409,7 +436,7 @@ async function openContextMenu(hud, element) {
  */
 function hideContextMenu(hud) {
   const popup = _getContextMenu(hud);
-  if (!popup) {
+  if (!popup || popup.state == "hidden") {
     return Promise.resolve();
   }
 
@@ -422,6 +449,27 @@ function _getContextMenu(hud) {
   const toolbox = hud.toolbox;
   const doc = toolbox ? toolbox.topWindow.document : hud.chromeWindow.document;
   return doc.getElementById("webconsole-menu");
+}
+
+/**
+ * Toggle Enable network monitoring setting
+ *
+ *  @param object hud
+ *         The web console.
+ *  @param boolean shouldBeSwitchedOn
+ *         The expected state the setting should be in after the toggle.
+ */
+async function toggleNetworkMonitoringConsoleSetting(hud, shouldBeSwitchedOn) {
+  const selector =
+    ".webconsole-console-settings-menu-item-enableNetworkMonitoring";
+  const settingChanged = waitFor(() => {
+    const el = getConsoleSettingElement(hud, selector);
+    return shouldBeSwitchedOn
+      ? el.getAttribute("aria-checked") === "true"
+      : el.getAttribute("aria-checked") !== "true";
+  });
+  await toggleConsoleSetting(hud, selector);
+  await settingChanged;
 }
 
 async function toggleConsoleSetting(hud, selector) {
@@ -476,40 +524,42 @@ function waitForNodeMutation(node, observeConfig = {}) {
  *
  * @param {Object} hud
  *        The webconsole
- * @param {Object} toolbox
- *        The toolbox
- * @param {String} text
- *        The text to search for. This should be contained in the
- *        message. The searching is done with @see findMessage.
- * @param {boolean} expectUrl
- *        Whether the URL in the opened source should match the link, or whether
- *        it is expected to be null.
- * @param {boolean} expectLine
- *        It indicates if there is the need to check the line.
- * @param {boolean} expectColumn
- *        It indicates if there is the need to check the column.
- * @param {String} logPointExpr
- *        The logpoint expression
+ * @param {Object} options
+ *        - text: {String} The text to search for. This should be contained in
+ *                         the message. The searching is done with
+ *                         @see findMessageByType.
+ *        - typeSelector: {string} A part of selector for the message, to
+ *                                 specify the message type.
+ *        - expectUrl: {boolean} Whether the URL in the opened source should
+ *                               match the link, or whether it is expected to
+ *                               be null.
+ *        - expectLine: {boolean} It indicates if there is the need to check
+ *                                the line.
+ *        - expectColumn: {boolean} It indicates if there is the need to check
+ *                                the column.
+ *        - logPointExpr: {String} The logpoint expression
  */
 async function testOpenInDebugger(
   hud,
-  toolbox,
-  text,
-  expectUrl = true,
-  expectLine = true,
-  expectColumn = true,
-  logPointExpr = undefined
+  {
+    text,
+    typeSelector,
+    expectUrl = true,
+    expectLine = true,
+    expectColumn = true,
+    logPointExpr = undefined,
+  }
 ) {
   info(`Finding message for open-in-debugger test; text is "${text}"`);
-  const messageNode = await waitFor(() => findMessage(hud, text));
-  const frameLinkNode = messageNode.querySelector(
-    ".message-location .frame-link"
+  const messageNode = await waitFor(() =>
+    findMessageByType(hud, text, typeSelector)
   );
-  ok(frameLinkNode, "The message does have a location link");
+  const locationNode = messageNode.querySelector(".message-location");
+  ok(locationNode, "The message does have a location link");
   await checkClickOnNode(
     hud,
-    toolbox,
-    frameLinkNode,
+    hud.toolbox,
+    locationNode,
     expectUrl,
     expectLine,
     expectColumn,
@@ -569,8 +619,8 @@ async function checkClickOnNode(
     ok(line, `source line found ("${line}")`);
 
     is(
-      dbg._selectors.getSelectedLocation(dbg._getState()).line,
-      line,
+      parseInt(dbg._selectors.getSelectedLocation(dbg._getState()).line, 10),
+      parseInt(line, 10),
       "expected source line"
     );
   }
@@ -579,8 +629,8 @@ async function checkClickOnNode(
     ok(column, `source column found ("${column}")`);
 
     is(
-      dbg._selectors.getSelectedLocation(dbg._getState()).column,
-      column,
+      parseInt(dbg._selectors.getSelectedLocation(dbg._getState()).column, 10),
+      parseInt(column, 10),
       "expected source column"
     );
   }
@@ -753,6 +803,7 @@ function checkInputValueAndCursorPosition(
 
   const inputValue = expectedStringWithCursor.replace("|", "");
   const { jsterm } = hud;
+
   is(getInputValue(hud), inputValue, "console input has expected value");
   const lines = expectedStringWithCursor.split("\n");
   const lineWithCursor = lines.findIndex(line => line.includes("|"));
@@ -817,25 +868,26 @@ async function openDebugger(options = {}) {
     options.tab = gBrowser.selectedTab;
   }
 
-  const target = await TargetFactory.forTab(options.tab);
-  let toolbox = gDevTools.getToolbox(target);
+  let toolbox = gDevTools.getToolboxForTab(options.tab);
   const dbgPanelAlreadyOpen = toolbox && toolbox.getPanel("jsdebugger");
   if (dbgPanelAlreadyOpen) {
     await toolbox.selectTool("jsdebugger");
 
     return {
-      target,
+      target: toolbox.target,
       toolbox,
       panel: toolbox.getCurrentPanel(),
     };
   }
 
-  toolbox = await gDevTools.showToolbox(target, "jsdebugger");
+  toolbox = await gDevTools.showToolboxForTab(options.tab, {
+    toolId: "jsdebugger",
+  });
   const panel = toolbox.getCurrentPanel();
 
   await toolbox.threadFront.getSources();
 
-  return { target, toolbox, panel };
+  return { target: toolbox.target, toolbox, panel };
 }
 
 async function openInspector(options = {}) {
@@ -843,9 +895,29 @@ async function openInspector(options = {}) {
     options.tab = gBrowser.selectedTab;
   }
 
-  const target = await TargetFactory.forTab(options.tab);
-  const toolbox = await gDevTools.showToolbox(target, "inspector");
+  const toolbox = await gDevTools.showToolboxForTab(options.tab, {
+    toolId: "inspector",
+  });
 
+  return toolbox.getCurrentPanel();
+}
+
+/**
+ * Open the netmonitor for the given tab, or the current one if none given.
+ *
+ * @param Element tab
+ *        Optional tab element for which you want open the netmonitor.
+ *        Defaults to current selected tab.
+ * @return Promise
+ *         A promise that is resolved with the netmonitor panel once the netmonitor is open.
+ */
+async function openNetMonitor(tab) {
+  tab = tab || gBrowser.selectedTab;
+  let toolbox = gDevTools.getToolboxForTab(tab);
+  if (!toolbox) {
+    toolbox = await gDevTools.showToolboxForTab(tab);
+  }
+  await toolbox.selectTool("netmonitor");
   return toolbox.getCurrentPanel();
 }
 
@@ -859,8 +931,10 @@ async function openInspector(options = {}) {
  *         A promise that is resolved with the console hud once the web console is open.
  */
 async function openConsole(tab) {
-  const target = await TargetFactory.forTab(tab || gBrowser.selectedTab);
-  const toolbox = await gDevTools.showToolbox(target, "webconsole");
+  tab = tab || gBrowser.selectedTab;
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: "webconsole",
+  });
   return toolbox.getCurrentPanel().hud;
 }
 
@@ -874,91 +948,10 @@ async function openConsole(tab) {
  *         A promise that is resolved once the web console is closed.
  */
 async function closeConsole(tab = gBrowser.selectedTab) {
-  const target = await TargetFactory.forTab(tab);
-  const toolbox = gDevTools.getToolbox(target);
+  const toolbox = gDevTools.getToolboxForTab(tab);
   if (toolbox) {
     await toolbox.destroy();
   }
-}
-
-/**
- * Fake clicking a link and return the URL we would have navigated to.
- * This function should be used to check external links since we can't access
- * network in tests.
- * This can also be used to test that a click will not be fired.
- *
- * @param ElementNode element
- *        The <a> element we want to simulate click on.
- * @param Object clickEventProps
- *        The custom properties which would be used to dispatch a click event
- * @returns Promise
- *          A Promise that is resolved when the link click simulation occured or
- *          when the click is not dispatched.
- *          The promise resolves with an object that holds the following properties
- *          - link: url of the link or null(if event not fired)
- *          - where: "tab" if tab is active or "tabshifted" if tab is inactive
- *            or null(if event not fired)
- */
-function simulateLinkClick(element, clickEventProps) {
-  return overrideOpenLink(() => {
-    if (clickEventProps) {
-      // Click on the link using the event properties.
-      element.dispatchEvent(clickEventProps);
-    } else {
-      // Click on the link.
-      element.click();
-    }
-  });
-}
-
-/**
- * Override the browserWindow open*Link function, executes the passed function and either
- * wait for:
- * - the link to be "opened"
- * - 1s before timing out
- * Then it puts back the original open*Link functions in browserWindow.
- *
- * @returns {Promise<Object>}: A promise resolving with an object of the following shape:
- * - link: The link that was "opened"
- * - where: If the link was opened in the background (null) or not ("tab").
- */
-function overrideOpenLink(fn) {
-  const browserWindow = Services.wm.getMostRecentWindow(
-    gDevTools.chromeWindowType
-  );
-
-  // Override LinkIn methods to prevent navigating.
-  const oldOpenTrustedLinkIn = browserWindow.openTrustedLinkIn;
-  const oldOpenWebLinkIn = browserWindow.openWebLinkIn;
-
-  const onOpenLink = new Promise(resolve => {
-    const openLinkIn = function(link, where) {
-      browserWindow.openTrustedLinkIn = oldOpenTrustedLinkIn;
-      browserWindow.openWebLinkIn = oldOpenWebLinkIn;
-      resolve({ link: link, where });
-    };
-    browserWindow.openWebLinkIn = browserWindow.openTrustedLinkIn = openLinkIn;
-    fn();
-  });
-
-  // Declare a timeout Promise that we can use to make sure openTrustedLinkIn or
-  // openWebLinkIn was not called.
-  let timeoutId;
-  const onTimeout = new Promise(function(resolve) {
-    timeoutId = setTimeout(() => {
-      browserWindow.openTrustedLinkIn = oldOpenTrustedLinkIn;
-      browserWindow.openWebLinkIn = oldOpenWebLinkIn;
-      timeoutId = null;
-      resolve({ link: null, where: null });
-    }, 1000);
-  });
-
-  onOpenLink.then(() => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  });
-  return Promise.race([onOpenLink, onTimeout]);
 }
 
 /**
@@ -975,7 +968,9 @@ async function openMessageInNetmonitor(toolbox, hud, url, urlInConsole) {
   // By default urlInConsole should be the same as the complete url.
   urlInConsole = urlInConsole || url;
 
-  const message = await waitFor(() => findMessage(hud, urlInConsole));
+  const message = await waitFor(() =>
+    findMessageByType(hud, urlInConsole, ".network")
+  );
 
   const onNetmonitorSelected = toolbox.once(
     "netmonitor-selected",
@@ -989,7 +984,7 @@ async function openMessageInNetmonitor(toolbox, hud, url, urlInConsole) {
     "#console-menu-open-in-network-panel"
   );
   ok(openInNetMenuItem, "open in network panel item is enabled");
-  openInNetMenuItem.click();
+  menuPopup.activateItem(openInNetMenuItem);
 
   const { panelWin } = await onNetmonitorSelected;
   ok(
@@ -1010,7 +1005,7 @@ async function openMessageInNetmonitor(toolbox, hud, url, urlInConsole) {
   await waitFor(() => {
     const selected = getSelectedRequest(store.getState());
     return selected && selected.url === url;
-  }, "network entry for the URL wasn't found");
+  }, `network entry for the URL "${url}" wasn't found`);
 
   ok(true, "The attached url is correct.");
 
@@ -1248,11 +1243,9 @@ async function waitForNoEagerEvaluationResult(hud) {
  * Selects a node in the inspector.
  *
  * @param {Object} toolbox
- * @param {Object} testActor: A test actor registered on the target. Needed to click on
- *                            the content element.
  * @param {String} selector: The selector for the node we want to select.
  */
-async function selectNodeWithPicker(toolbox, testActor, selector) {
+async function selectNodeWithPicker(toolbox, selector) {
   const inspector = toolbox.getPanel("inspector");
 
   const onPickerStarted = toolbox.nodePicker.once("picker-started");
@@ -1265,11 +1258,7 @@ async function selectNodeWithPicker(toolbox, testActor, selector) {
   const onPickerStopped = toolbox.nodePicker.once("picker-stopped");
   const onInspectorUpdated = inspector.once("inspector-updated");
 
-  testActor.synthesizeMouse({
-    selector,
-    center: true,
-    options: {},
-  });
+  await safeSynthesizeMouseEventAtCenterInContentPage(selector);
 
   await onPickerStopped;
   await onInspectorUpdated;
@@ -1452,15 +1441,15 @@ function isConfirmDialogOpened(toolbox) {
 }
 
 async function selectFrame(dbg, frame) {
-  const onScopes = waitForDispatch(dbg, "ADD_SCOPES");
-  await dbg.actions.selectFrame(dbg.selectors.getThreadContext(), frame);
+  const onScopes = waitForDispatch(dbg.store, "ADD_SCOPES");
+  await dbg.actions.selectFrame(frame);
   await onScopes;
 }
 
-async function pauseDebugger(dbg) {
+async function pauseDebugger(dbg, options = { shouldWaitForLoadScopes: true }) {
   info("Waiting for debugger to pause");
-  const onPaused = waitForPaused(dbg);
-  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
+  const onPaused = waitForPaused(dbg, null, options);
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     content.wrappedJSObject.firstCall();
   }).catch(() => {});
   await onPaused;
@@ -1503,8 +1492,8 @@ function isScrolledToBottom(container) {
  *                        Start the string with "|︎ " to indicate that the message is
  *                        inside a group and should be indented.
  */
-function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
-  const messages = findMessages(hud, "");
+async function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
+  const messages = await findAllMessagesVirtualized(hud);
   is(
     messages.length,
     expectedMessages.length,
@@ -1524,11 +1513,15 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
       ok(false, "Unexpected structure: an indented message isn't in a group");
     }
 
-    return groups[0].startsWith("▶︎⚠") || groups[0].startsWith("▼⚠");
+    return groups[0].startsWith("▼︎⚠");
   };
 
-  expectedMessages.forEach((expectedMessage, i) => {
-    const message = messages[i];
+  for (let [i, expectedMessage] of expectedMessages.entries()) {
+    // Refresh the reference to the message, as it may have been scrolled out of existence.
+    const message = await findMessageVirtualizedById({
+      hud,
+      messageId: messages[i].getAttribute("data-message-id"),
+    });
     info(`Checking "${expectedMessage}"`);
 
     // Collapsed Warning group
@@ -1539,7 +1532,7 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
         "There's a collapsed arrow"
       );
       is(
-        message.querySelector(".indent").getAttribute("data-indent"),
+        message.getAttribute("data-indent"),
         "0",
         "The warningGroup has the expected indent"
       );
@@ -1554,7 +1547,7 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
         "There's an expanded arrow"
       );
       is(
-        message.querySelector(".indent").getAttribute("data-indent"),
+        message.getAttribute("data-indent"),
         "0",
         "The warningGroup has the expected indent"
       );
@@ -1584,11 +1577,8 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
     // In-group message
     if (expectedMessage.startsWith("|")) {
       if (isInWarningGroup(i)) {
-        is(
-          message
-            .querySelector(".indent.warning-indent")
-            .getAttribute("data-indent"),
-          "1",
+        ok(
+          message.querySelector(".warning-indent"),
           "The message has the expected indent"
         );
       }
@@ -1596,7 +1586,7 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
       expectedMessage = expectedMessage.replace("| ", "");
     } else {
       is(
-        message.querySelector(".indent").getAttribute("data-indent"),
+        message.getAttribute("data-indent"),
         "0",
         "The message has the expected indent"
       );
@@ -1607,7 +1597,7 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
       `Message includes ` +
         `the expected "${expectedMessage}" content - "${message.textContent.trim()}"`
     );
-  });
+  }
 }
 
 /**
@@ -1622,7 +1612,7 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
 async function checkMessageStack(hud, text, expectedFrameLines) {
   info(`Checking message stack for "${text}"`);
   const msgNode = await waitFor(
-    () => findMessage(hud, text),
+    () => findErrorMessage(hud, text),
     `Couln't find message including "${text}"`
   );
   ok(!msgNode.classList.contains("open"), `Error logged not expanded`);
@@ -1714,9 +1704,14 @@ function toggleLayout(hud) {
  * Otherwise test will be shutdown too early and cause failure.
  */
 async function waitForLazyRequests(toolbox) {
-  const { wrapper } = toolbox.getCurrentPanel().hud.ui;
+  const ui = toolbox.getCurrentPanel().hud.ui;
   return waitUntil(() => {
-    return !wrapper.networkDataProvider.lazyRequestData.size;
+    return (
+      !ui.networkDataProvider.lazyRequestData.size &&
+      // Make sure that batched request updates are all complete
+      // as they trigger late lazy data requests.
+      !ui.wrapper.queuedRequestUpdates.length
+    );
   });
 }
 
@@ -1752,7 +1747,7 @@ function getContextSelectorItems(hud) {
   const list = doc.getElementById(
     "webconsole-console-evaluation-context-selector-menu-list"
   );
-  return Array.from(list.querySelectorAll("li.menuitem button"));
+  return Array.from(list.querySelectorAll("li.menuitem button, hr"));
 }
 
 /**
@@ -1760,11 +1755,8 @@ function getContextSelectorItems(hud) {
  * state.
  *
  * @param {WebConsole} hud
- * @param {Array<Object>} expected: An array of object which can have the following shape:
- *         - {String} label: The label of the target
- *         - {String} tooltip: The tooltip of the target element in the menu
- *         - {Boolean} checked: if the target should be selected or not
- *         - {Boolean} separator: if the element is a simple separator
+ * @param {Array<Object>} expected: An array of object (see checkContextSelectorMenuItemAt
+ *                        for expected properties)
  */
 function checkContextSelectorMenu(hud, expected) {
   const items = getContextSelectorItems(hud);
@@ -1775,30 +1767,41 @@ function checkContextSelectorMenu(hud, expected) {
     "The context selector menu has the expected number of items"
   );
 
-  expected.forEach(({ label, tooltip, checked, separator }, i) => {
-    const el = items[i];
-
-    if (separator === true) {
-      is(
-        el.getAttribute("role"),
-        "menuseparator",
-        "The element is a separator"
-      );
-      return;
-    }
-
-    const elChecked = el.getAttribute("aria-checked") === "true";
-    const elTooltip = el.getAttribute("title");
-    const elLabel = el.querySelector(".label").innerText;
-
-    is(elLabel, label, `The item has the expected label`);
-    is(elTooltip, tooltip, `Item "${label}" has the expected tooltip`);
-    is(
-      elChecked,
-      checked,
-      `Item "${label}" is ${checked ? "checked" : "unchecked"}`
-    );
+  expected.forEach((expectedItem, i) => {
+    checkContextSelectorMenuItemAt(hud, i, expectedItem);
   });
+}
+
+/**
+ * Check that the evaluation context selector menu has the expected item at the specified index.
+ *
+ * @param {WebConsole} hud
+ * @param {Number} index
+ * @param {Object} expected
+ * @param {String} expected.label: The label of the target
+ * @param {String} expected.tooltip: The tooltip of the target element in the menu
+ * @param {Boolean} expected.checked: if the target should be selected or not
+ * @param {Boolean} expected.separator: if the element is a simple separator
+ */
+function checkContextSelectorMenuItemAt(hud, index, expected) {
+  const el = getContextSelectorItems(hud).at(index);
+
+  if (expected.separator === true) {
+    is(el.getAttribute("role"), "menuseparator", "The element is a separator");
+    return;
+  }
+
+  const elChecked = el.getAttribute("aria-checked") === "true";
+  const elTooltip = el.getAttribute("title");
+  const elLabel = el.querySelector(".label").innerText;
+
+  is(elLabel, expected.label, `The item has the expected label`);
+  is(elTooltip, expected.tooltip, `Item "${elLabel}" has the expected tooltip`);
+  is(
+    elChecked,
+    expected.checked,
+    `Item "${elLabel}" is ${expected.checked ? "checked" : "unchecked"}`
+  );
 }
 
 /**
@@ -1810,7 +1813,7 @@ function checkContextSelectorMenu(hud, expected) {
 function selectTargetInContextSelector(hud, targetLabel) {
   const items = getContextSelectorItems(hud);
   const itemToSelect = items.find(
-    item => item.querySelector(".label").innerText === targetLabel
+    item => item.querySelector(".label")?.innerText === targetLabel
   );
   if (!itemToSelect) {
     ok(false, `Couldn't find target with "${targetLabel}" label`);
@@ -1835,7 +1838,11 @@ async function getImageSizeFromClipboard() {
   trans.init(null);
   trans.addDataFlavor(flavor);
 
-  clip.getData(trans, clipid.kGlobalClipboard);
+  clip.getData(
+    trans,
+    clipid.kGlobalClipboard,
+    SpecialPowers.wrap(window).browsingContext.currentWindowContext
+  );
   const data = {};
   trans.getTransferData(flavor, data);
 
@@ -1875,33 +1882,35 @@ async function getImageSizeFromClipboard() {
   // (which is value of the global `document` here). Doing so might push the
   // toolbox upwards, shrink the content page and fail the fullpage screenshot
   // test.
-  return SpecialPowers.spawn(gBrowser.selectedBrowser, [buffer], async function(
-    _buffer
-  ) {
-    const img = content.document.createElement("img");
-    const loaded = new Promise(r => {
-      img.addEventListener("load", r, { once: true });
-    });
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [buffer],
+    async function (_buffer) {
+      const img = content.document.createElement("img");
+      const loaded = new Promise(r => {
+        img.addEventListener("load", r, { once: true });
+      });
 
-    // Build a URL from the buffer passed to the ContentTask
-    const url = content.URL.createObjectURL(
-      new Blob([_buffer], { type: "image/png" })
-    );
+      // Build a URL from the buffer passed to the ContentTask
+      const url = content.URL.createObjectURL(
+        new Blob([_buffer], { type: "image/png" })
+      );
 
-    // Load the image
-    img.src = url;
-    content.document.documentElement.appendChild(img);
+      // Load the image
+      img.src = url;
+      content.document.documentElement.appendChild(img);
 
-    info("Waiting for the clipboard image to load in the content page");
-    await loaded;
+      info("Waiting for the clipboard image to load in the content page");
+      await loaded;
 
-    // Remove the image and revoke the URL.
-    img.remove();
-    content.URL.revokeObjectURL(url);
+      // Remove the image and revoke the URL.
+      img.remove();
+      content.URL.revokeObjectURL(url);
 
-    return {
-      width: img.width,
-      height: img.height,
-    };
-  });
+      return {
+        width: img.width,
+        height: img.height,
+      };
+    }
+  );
 }

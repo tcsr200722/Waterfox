@@ -2,28 +2,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-%include ../../../components/contextualidentity/content/usercontext.css
-
-:root {
-  --preference-selected-color: #0996f8;
-  --preference-unselected-color: #333;
-  --preference-active-color: #858585;
-}
+@import url("chrome://browser/content/usercontext/usercontext.css");
 
 #name {
-  -moz-box-flex: 1;
+  flex: 1;
 }
 
 .radio-buttons {
-  -moz-box-orient: horizontal;
+  flex-direction: row;
   margin-inline-start: 0.35rem;
 }
 
 .radio-buttons > radio {
-  -moz-user-select: none;
+  user-select: none;
   outline: 2px solid transparent;
   outline-offset: 4px;
-  -moz-outline-radius: 100%;
   min-block-size: 24px;
   min-inline-size: 24px;
   border-radius: 50%;
@@ -32,7 +25,7 @@
 }
 
 .icon-buttons > radio > .userContext-icon {
-  fill: #4d4d4d;
+  fill: var(--in-content-text-color);
 }
 
 .radio-buttons > radio {
@@ -45,13 +38,13 @@ radio > .userContext-icon {
 }
 
 .radio-buttons > radio[selected=true] {
-  outline-color: var(--preference-unselected-color);
+  outline-color: var(--in-content-text-color);
 }
 
 .radio-buttons > radio[focused=true] {
-  outline-color: var(--preference-selected-color);
+  outline-color: var(--in-content-accent-color);
 }
 
 .radio-buttons > radio:hover:active {
-  outline-color: var(--preference-active-color);
+  outline-color: var(--in-content-accent-color-active);
 }

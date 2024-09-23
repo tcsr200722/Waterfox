@@ -5,24 +5,45 @@
 #ifndef mozilla_ipc_TransportSecurityInfoUtils_h
 #define mozilla_ipc_TransportSecurityInfoUtils_h
 
-#include "nsCOMPtr.h"
+#include "CertVerifier.h"
+#include "ipc/EnumSerializer.h"
+#include "mozilla/RefPtr.h"
 #include "nsITransportSecurityInfo.h"
+#include "nsIX509Cert.h"
+
+class MessageReader;
+class MessageWriter;
 
 namespace IPC {
 
+template <typename>
+struct ParamTraits;
+
 template <>
 struct ParamTraits<nsITransportSecurityInfo*> {
-  static void Write(Message* aMsg, nsITransportSecurityInfo* aParam);
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
+  static void Write(MessageWriter* aWriter, nsITransportSecurityInfo* aParam);
+  static bool Read(MessageReader* aReader,
                    RefPtr<nsITransportSecurityInfo>* aResult);
 };
 
 template <>
 struct ParamTraits<nsIX509Cert*> {
-  static void Write(Message* aMsg, nsIX509Cert* aCert);
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   RefPtr<nsIX509Cert>* aResult);
+  static void Write(MessageWriter* aWriter, nsIX509Cert* aCert);
+  static bool Read(MessageReader* aReader, RefPtr<nsIX509Cert>* aResult);
 };
+
+template <>
+struct ParamTraits<nsITransportSecurityInfo::OverridableErrorCategory>
+    : public ContiguousEnumSerializerInclusive<
+          nsITransportSecurityInfo::OverridableErrorCategory,
+          nsITransportSecurityInfo::OverridableErrorCategory::ERROR_UNSET,
+          nsITransportSecurityInfo::OverridableErrorCategory::ERROR_TIME> {};
+
+template <>
+struct ParamTraits<mozilla::psm::EVStatus>
+    : public ContiguousEnumSerializerInclusive<mozilla::psm::EVStatus,
+                                               mozilla::psm::EVStatus::NotEV,
+                                               mozilla::psm::EVStatus::EV> {};
 
 }  // namespace IPC
 

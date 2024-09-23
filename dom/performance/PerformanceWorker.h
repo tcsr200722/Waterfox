@@ -9,14 +9,13 @@
 
 #include "Performance.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-class WorkerPrivate;
+class WorkerGlobalScope;
 
 class PerformanceWorker final : public Performance {
  public:
-  explicit PerformanceWorker(WorkerPrivate* aWorkerPrivate);
+  explicit PerformanceWorker(WorkerGlobalScope* aGlobalScope);
 
   PerformanceStorage* AsPerformanceStorage() override {
     MOZ_CRASH("This should not be called on workers.");
@@ -31,6 +30,10 @@ class PerformanceWorker final : public Performance {
   virtual PerformanceNavigation* Navigation() override {
     MOZ_CRASH("This should not be called on workers.");
     return nullptr;
+  }
+
+  virtual void SetFCPTimingEntry(PerformancePaintTiming* aEntry) override {
+    MOZ_CRASH("This should not be called on workers.");
   }
 
   TimeStamp CreationTimeStamp() const override;
@@ -58,7 +61,25 @@ class PerformanceWorker final : public Performance {
     MOZ_CRASH("This should not be called on workers.");
   }
 
-  bool CrossOriginIsolated() const override;
+  void UpdateNavigationTimingEntry() override {
+    MOZ_CRASH("This should not be called on workers.");
+  }
+
+  void InsertEventTimingEntry(PerformanceEventTiming*) override {
+    MOZ_CRASH("This should not be called on workers.");
+  }
+
+  void BufferEventTimingEntryIfNeeded(PerformanceEventTiming*) override {
+    MOZ_CRASH("This should not be called on workers.");
+  }
+
+  void DispatchPendingEventTimingEntries() override {
+    MOZ_CRASH("This should not be called on workders.");
+  }
+
+  class EventCounts* EventCounts() override {
+    MOZ_CRASH("This should not be called on workers");
+  }
 
  protected:
   ~PerformanceWorker();
@@ -68,12 +89,8 @@ class PerformanceWorker final : public Performance {
   void DispatchBufferFullEvent() override {
     // Nothing to do here. See bug 1432758.
   }
-
- private:
-  WorkerPrivate* mWorkerPrivate;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PerformanceWorker_h

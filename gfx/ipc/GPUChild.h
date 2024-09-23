@@ -27,19 +27,36 @@ class GPUChild final : public ipc::CrashReporterHelper<GeckoProcessType_GPU>,
   typedef mozilla::dom::MemoryReportRequestHost MemoryReportRequestHost;
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(GPUChild, final)
+
   explicit GPUChild(GPUProcessHost* aHost);
-  virtual ~GPUChild();
 
   void Init();
 
   bool EnsureGPUReady();
-  base::ProcessHandle GetChildProcessHandle();
+  void MarkWaitForVarUpdate() { mWaitForVarUpdate = true; }
+
+  // Notifies that an unexpected GPU process shutdown has been noticed by a
+  // different IPDL actor, and the GPU process is being torn down as a result.
+  // ActorDestroy may receive either NormalShutdown or AbnormalShutdown as a
+  // reason, depending on timings, but either way we treat the shutdown as
+  // abnormal.
+  void OnUnexpectedShutdown();
+
+  // Generates a minidump for the GPU process paired with one for the main
+  // process. Called prior to force-killing the process.
+  void GeneratePairedMinidump();
+
+  // Deletes a minidump created with GeneratePairedMinidump(). Should be called
+  // if killing the process fails after generating the minidump.
+  void DeletePairedMinidump();
 
   // gfxVarReceiver overrides.
   void OnVarChanged(const GfxVarUpdate& aVar) override;
 
   // PGPUChild overrides.
   mozilla::ipc::IPCResult RecvInitComplete(const GPUDeviceData& aData);
+  mozilla::ipc::IPCResult RecvDeclareStable();
   mozilla::ipc::IPCResult RecvReportCheckerboard(const uint32_t& aSeverity,
                                                  const nsCString& aLog);
   mozilla::ipc::IPCResult RecvCreateVRProcess();
@@ -61,26 +78,45 @@ class GPUChild final : public ipc::CrashReporterHelper<GeckoProcessType_GPU>,
   void ActorDestroy(ActorDestroyReason aWhy) override;
   mozilla::ipc::IPCResult RecvGraphicsError(const nsCString& aError);
   mozilla::ipc::IPCResult RecvNotifyUiObservers(const nsCString& aTopic);
-  mozilla::ipc::IPCResult RecvNotifyDeviceReset(const GPUDeviceData& aData);
+  mozilla::ipc::IPCResult RecvNotifyDeviceReset(
+      const GPUDeviceData& aData, const DeviceResetReason& aReason,
+      const DeviceResetDetectPlace& aPlace);
+  mozilla::ipc::IPCResult RecvNotifyOverlayInfo(const OverlayInfo aInfo);
+  mozilla::ipc::IPCResult RecvNotifySwapChainInfo(const SwapChainInfo aInfo);
+  mozilla::ipc::IPCResult RecvNotifyDisableRemoteCanvas();
+  mozilla::ipc::IPCResult RecvFlushMemory(const nsString& aReason);
   mozilla::ipc::IPCResult RecvAddMemoryReport(const MemoryReport& aReport);
-  mozilla::ipc::IPCResult RecvFinishMemoryReport(const uint32_t& aGeneration);
   mozilla::ipc::IPCResult RecvUpdateFeature(const Feature& aFeature,
                                             const FeatureFailure& aChange);
   mozilla::ipc::IPCResult RecvUsedFallback(const Fallback& aFallback,
                                            const nsCString& aMessage);
   mozilla::ipc::IPCResult RecvBHRThreadHang(const HangDetails& aDetails);
+  mozilla::ipc::IPCResult RecvUpdateMediaCodecsSupported(
+      const media::MediaCodecsSupported& aSupported);
+  mozilla::ipc::IPCResult RecvFOGData(ByteBuf&& aBuf);
 
   bool SendRequestMemoryReport(const uint32_t& aGeneration,
                                const bool& aAnonymize,
                                const bool& aMinimizeMemoryUsage,
                                const Maybe<ipc::FileDescriptor>& aDMDFile);
 
-  static void Destroy(UniquePtr<GPUChild>&& aChild);
+  static void Destroy(RefPtr<GPUChild>&& aChild);
 
  private:
+  virtual ~GPUChild();
+
   GPUProcessHost* mHost;
   UniquePtr<MemoryReportRequestHost> mMemoryReportRequest;
   bool mGPUReady;
+  bool mWaitForVarUpdate = false;
+  bool mUnexpectedShutdown = false;
+  // Whether a paired minidump has already been generated, meaning we do not
+  // need to create a crash report in ActorDestroy().
+  bool mCreatedPairedMinidumps = false;
+  // The number of paired minidumps that have been created during this session.
+  // Used to ensure we do not accumulate a large number of minidumps on disk
+  // that may never be submitted.
+  int mNumPairedMinidumpsCreated = 0;
 };
 
 }  // namespace gfx

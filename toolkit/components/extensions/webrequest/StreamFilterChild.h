@@ -11,12 +11,13 @@
 #include "mozilla/extensions/PStreamFilterChild.h"
 #include "mozilla/extensions/StreamFilter.h"
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/dom/StreamFilterBinding.h"
 #include "nsISupportsImpl.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace extensions {
 
 using mozilla::dom::StreamFilterStatus;
@@ -30,7 +31,7 @@ class StreamFilterChild final : public PStreamFilterChild,
   friend class PStreamFilterChild;
 
  public:
-  NS_INLINE_DECL_REFCOUNTING(StreamFilterChild)
+  NS_INLINE_DECL_REFCOUNTING(StreamFilterChild, final)
 
   StreamFilterChild() : mState(State::Uninitialized), mReceivedOnStop(false) {}
 
@@ -98,8 +99,6 @@ class StreamFilterChild final : public PStreamFilterChild,
   IPCResult RecvSuspended();
   IPCResult RecvResumed();
   IPCResult RecvFlushData();
-
-  virtual void ActorDealloc() override;
 
   void SetStreamFilter(StreamFilter* aStreamFilter) {
     mStreamFilter = aStreamFilter;

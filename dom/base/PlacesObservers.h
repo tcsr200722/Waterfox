@@ -11,11 +11,12 @@
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/PlacesObserversBinding.h"
 #include "mozilla/dom/PlacesEvent.h"
-#include "mozilla/ErrorResult.h"
+#include "mozilla/dom/PlacesEventCounts.h"
 #include "mozilla/places/INativePlacesEventCallback.h"
 #include "nsIWeakReferenceUtils.h"
 
 namespace mozilla {
+class ErrorResult;
 
 namespace dom {
 
@@ -49,12 +50,17 @@ class PlacesObservers {
   static void NotifyListeners(
       const Sequence<OwningNonNull<PlacesEvent>>& aEvents);
 
+  static StaticRefPtr<PlacesEventCounts> sCounts;
+  static already_AddRefed<PlacesEventCounts> Counts(const GlobalObject& global);
+
  private:
   static void RemoveListener(uint32_t aFlags, PlacesEventCallback& aCallback);
   static void RemoveListener(uint32_t aFlags,
                              PlacesWeakCallbackWrapper& aCallback);
   static void RemoveListener(uint32_t aFlags,
                              places::INativePlacesEventCallback* aCallback);
+
+  MOZ_CAN_RUN_SCRIPT static void NotifyNext();
 };
 
 }  // namespace dom

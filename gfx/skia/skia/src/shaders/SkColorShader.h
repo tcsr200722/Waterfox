@@ -1,5 +1,5 @@
 /*
- * Copyright 2007 The Android Open Source Project
+ * Copyright 2023 Google LLC
  *
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
@@ -8,7 +8,15 @@
 #ifndef SkColorShader_DEFINED
 #define SkColorShader_DEFINED
 
+#include "include/core/SkColor.h"
+#include "include/core/SkColorSpace.h"
+#include "include/core/SkFlattenable.h"
+#include "include/core/SkRefCnt.h"
 #include "src/shaders/SkShaderBase.h"
+
+class SkReadBuffer;
+class SkWriteBuffer;
+struct SkStageRec;
 
 /** \class SkColorShader
     A Shader that represents a single color. In general, this effect can be
@@ -26,23 +34,22 @@ public:
     bool isOpaque() const override;
     bool isConstant() const override { return true; }
 
-    GradientType asAGradient(GradientInfo* info) const override;
+    ShaderType type() const override { return ShaderType::kColor; }
 
-#if SK_SUPPORT_GPU
-    std::unique_ptr<GrFragmentProcessor> asFragmentProcessor(const GrFPArgs&) const override;
-#endif
+    SkColor color() const { return fColor; }
 
 private:
+    friend void ::SkRegisterColorShaderFlattenable();
     SK_FLATTENABLE_HOOKS(SkColorShader)
 
     void flatten(SkWriteBuffer&) const override;
 
-    bool onAsLuminanceColor(SkColor* lum) const override {
-        *lum = fColor;
+    bool onAsLuminanceColor(SkColor4f* lum) const override {
+        *lum = SkColor4f::FromColor(fColor);
         return true;
     }
 
-    bool onAppendStages(const SkStageRec&) const override;
+    bool appendStages(const SkStageRec&, const SkShaders::MatrixRec&) const override;
 
     SkColor fColor;
 };
@@ -51,21 +58,24 @@ class SkColor4Shader : public SkShaderBase {
 public:
     SkColor4Shader(const SkColor4f&, sk_sp<SkColorSpace>);
 
-    bool isOpaque()   const override { return fColor.isOpaque(); }
+    bool isOpaque() const override { return fColor.isOpaque(); }
     bool isConstant() const override { return true; }
 
-#if SK_SUPPORT_GPU
-    std::unique_ptr<GrFragmentProcessor> asFragmentProcessor(const GrFPArgs&) const override;
-#endif
+    ShaderType type() const override { return ShaderType::kColor4; }
+
+    sk_sp<SkColorSpace> colorSpace() const { return fColorSpace; }
+    SkColor4f color() const { return fColor; }
 
 private:
+    friend void ::SkRegisterColor4ShaderFlattenable();
     SK_FLATTENABLE_HOOKS(SkColor4Shader)
 
     void flatten(SkWriteBuffer&) const override;
-    bool onAppendStages(const SkStageRec&) const override;
+    bool onAsLuminanceColor(SkColor4f* lum) const override;
+    bool appendStages(const SkStageRec&, const SkShaders::MatrixRec&) const override;
 
     sk_sp<SkColorSpace> fColorSpace;
-    const SkColor4f     fColor;
+    const SkColor4f fColor;
 };
 
 #endif

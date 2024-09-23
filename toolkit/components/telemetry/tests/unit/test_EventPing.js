@@ -4,23 +4,11 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryStorage.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryUtils.jsm", this);
-ChromeUtils.import("resource://gre/modules/Preferences.jsm", this);
-ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm", this);
-ChromeUtils.import(
-  "resource://testing-common/TelemetryArchiveTesting.jsm",
-  this
-);
+ChromeUtils.defineESModuleGetters(this, {
+  TelemetryEventPing: "resource://gre/modules/EventPing.sys.mjs",
+});
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryEventPing",
-  "resource://gre/modules/EventPing.jsm"
-);
-
-function checkPingStructure(type, payload, options) {
+function checkPingStructure(type, payload) {
   Assert.equal(
     type,
     TelemetryEventPing.EVENT_PING_TYPE,
@@ -39,10 +27,12 @@ function checkPingStructure(type, payload, options) {
 }
 
 function fakePolicy(set, clear, send) {
-  let mod = ChromeUtils.import("resource://gre/modules/EventPing.jsm", null);
-  mod.Policy.setTimeout = set;
-  mod.Policy.clearTimeout = clear;
-  mod.Policy.sendPing = send;
+  let { Policy } = ChromeUtils.importESModule(
+    "resource://gre/modules/EventPing.sys.mjs"
+  );
+  Policy.setTimeout = set;
+  Policy.clearTimeout = clear;
+  Policy.sendPing = send;
 }
 
 function pass() {
@@ -94,7 +84,7 @@ add_task(async function test_eventLimitReached() {
   fakePolicy(pass, pass, fail);
   recordEvents(999);
   fakePolicy(
-    (callback, delay) => {
+    () => {
       Telemetry.recordEvent("telemetry.test", "test2", "object1");
       fakePolicy(pass, pass, (type, payload, options) => {
         checkPingStructure(type, payload, options);
@@ -130,7 +120,7 @@ add_task(async function test_eventLimitReached() {
   fakePolicy(fail, fail, fail);
   recordEvents(998);
   fakePolicy(
-    (callback, delay) => {
+    callback => {
       Telemetry.recordEvent("telemetry.test", "test2", "object2");
       Telemetry.recordEvent("telemetry.test", "test2", "object2");
       fakePolicy(pass, pass, (type, payload, options) => {
@@ -172,7 +162,7 @@ add_task(async function test_eventLimitReached() {
   // the two events we lost.
   fakePolicy(fail, fail, fail);
   recordEvents(999);
-  fakePolicy((callback, delay) => {
+  fakePolicy(callback => {
     fakePolicy(pass, pass, (type, payload, options) => {
       checkPingStructure(type, payload, options);
       Assert.ok(options.addClientId, "Adds the client id.");

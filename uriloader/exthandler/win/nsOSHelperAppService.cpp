@@ -12,19 +12,17 @@
 #include "nsIMIMEInfo.h"
 #include "nsMIMEInfoWin.h"
 #include "nsMimeTypes.h"
-#include "plstr.h"
 #include "nsNativeCharsetUtils.h"
 #include "nsLocalFile.h"
 #include "nsIWindowsRegKey.h"
 #include "nsXULAppAPI.h"
 #include "mozilla/UniquePtrExtensions.h"
-#include "mozilla/WindowsVersion.h"
 
 // shellapi.h is needed to build with WIN32_LEAN_AND_MEAN
 #include <shellapi.h>
 #include <shlwapi.h>
 
-#define LOG(args) MOZ_LOG(mLog, mozilla::LogLevel::Debug, args)
+#define LOG(...) MOZ_LOG(sLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
 
 // helper methods: forward declarations...
 static nsresult GetExtensionFromWindowsMimeDatabase(const nsACString& aMimeType,
@@ -63,7 +61,7 @@ static nsresult GetExtensionFromWindowsMimeDatabase(const nsACString& aMimeType,
                    nsIWindowsRegKey::ACCESS_QUERY_VALUE);
 
   if (NS_SUCCEEDED(rv))
-    regKey->ReadStringValue(NS_LITERAL_STRING("Extension"), aFileExtension);
+    regKey->ReadStringValue(u"Extension"_ns, aFileExtension);
 
   return NS_OK;
 }
@@ -97,7 +95,7 @@ nsresult nsOSHelperAppService::OSProtocolHandlerExists(
       }
 
       bool hasValue;
-      rv = regKey->HasValue(NS_LITERAL_STRING("URL Protocol"), &hasValue);
+      rv = regKey->HasValue(u"URL Protocol"_ns, &hasValue);
       if (NS_FAILED(rv)) {
         return NS_ERROR_FAILURE;
       }
@@ -120,23 +118,21 @@ NS_IMETHODIMP nsOSHelperAppService::GetApplicationDescription(
 
   NS_ConvertASCIItoUTF16 buf(aScheme);
 
-  if (mozilla::IsWin8OrLater()) {
-    wchar_t result[1024];
-    DWORD resultSize = 1024;
-    HRESULT hr = AssocQueryString(0x1000 /* ASSOCF_IS_PROTOCOL */,
-                                  ASSOCSTR_FRIENDLYAPPNAME, buf.get(), NULL,
-                                  result, &resultSize);
-    if (SUCCEEDED(hr)) {
-      _retval = result;
-      return NS_OK;
-    }
+  wchar_t result[1024];
+  DWORD resultSize = 1024;
+  HRESULT hr = AssocQueryString(0x1000 /* ASSOCF_IS_PROTOCOL */,
+                                ASSOCSTR_FRIENDLYAPPNAME, buf.get(), NULL,
+                                result, &resultSize);
+  if (SUCCEEDED(hr)) {
+    _retval = result;
+    return NS_OK;
   }
 
   NS_ENSURE_TRUE(mAppAssoc, NS_ERROR_NOT_AVAILABLE);
   wchar_t* pResult = nullptr;
   // We are responsible for freeing returned strings.
-  HRESULT hr = mAppAssoc->QueryCurrentDefault(buf.get(), AT_URLPROTOCOL,
-                                              AL_EFFECTIVE, &pResult);
+  hr = mAppAssoc->QueryCurrentDefault(buf.get(), AT_URLPROTOCOL, AL_EFFECTIVE,
+                                      &pResult);
   if (SUCCEEDED(hr)) {
     nsCOMPtr<nsIFile> app;
     nsAutoString appInfo(pResult);
@@ -210,7 +206,7 @@ nsresult nsOSHelperAppService::GetMIMEInfoFromRegistry(const nsString& fileType,
 
   // OK, the default value here is the description of the type.
   nsAutoString description;
-  rv = regKey->ReadStringValue(EmptyString(), description);
+  rv = regKey->ReadStringValue(u""_ns, description);
   if (NS_SUCCEEDED(rv)) pInfo->SetDescription(description);
 
   return NS_OK;
@@ -242,8 +238,8 @@ bool nsOSHelperAppService::typeFromExtEquals(const char16_t* aExt,
   if (NS_FAILED(rv)) return eq;
 
   nsAutoString type;
-  rv = regKey->ReadStringValue(NS_LITERAL_STRING("Content Type"), type);
-  if (NS_SUCCEEDED(rv)) eq = type.EqualsASCII(aType);
+  rv = regKey->ReadStringValue(u"Content Type"_ns, type);
+  if (NS_SUCCEEDED(rv)) eq = type.LowerCaseEqualsASCII(aType);
 
   return eq;
 }
@@ -294,12 +290,11 @@ nsresult nsOSHelperAppService::GetDefaultAppInfo(
     if (NS_FAILED(rv)) return NS_ERROR_FAILURE;
 
     // OK, the default value here is the description of the type.
-    rv = regKey->ReadStringValue(EmptyString(), handlerCommand);
+    rv = regKey->ReadStringValue(u""_ns, handlerCommand);
     if (NS_FAILED(rv)) {
       // Check if there is a DelegateExecute string
       nsAutoString delegateExecute;
-      rv = regKey->ReadStringValue(NS_LITERAL_STRING("DelegateExecute"),
-                                   delegateExecute);
+      rv = regKey->ReadStringValue(u"DelegateExecute"_ns, delegateExecute);
       NS_ENSURE_SUCCESS(rv, rv);
 
       // Look for InProcServer32
@@ -311,7 +306,7 @@ nsresult nsOSHelperAppService::GetDefaultAppInfo(
                         delegateExecuteRegPath,
                         nsIWindowsRegKey::ACCESS_QUERY_VALUE);
       if (NS_SUCCEEDED(rv)) {
-        rv = chkKey->ReadStringValue(EmptyString(), handlerCommand);
+        rv = chkKey->ReadStringValue(u""_ns, handlerCommand);
       }
 
       if (NS_FAILED(rv)) {
@@ -323,7 +318,7 @@ nsresult nsOSHelperAppService::GetDefaultAppInfo(
                           delegateExecuteRegPath,
                           nsIWindowsRegKey::ACCESS_QUERY_VALUE);
         NS_ENSURE_SUCCESS(rv, rv);
-        rv = chkKey->ReadStringValue(EmptyString(), handlerCommand);
+        rv = chkKey->ReadStringValue(u""_ns, handlerCommand);
         NS_ENSURE_SUCCESS(rv, rv);
       }
     }
@@ -366,23 +361,44 @@ already_AddRefed<nsMIMEInfoWin> nsOSHelperAppService::GetByExtension(
 
   RefPtr<nsMIMEInfoWin> mimeInfo = new nsMIMEInfoWin(typeToUse);
 
+  // Our extension APIs expect extensions without the '.', so normalize:
+  uint32_t dotlessIndex = aFileExt.First() != char16_t('.') ? 0 : 1;
+  nsAutoCString lowerFileExt =
+      NS_ConvertUTF16toUTF8(Substring(aFileExt, dotlessIndex));
+  ToLowerCase(lowerFileExt);
+  mimeInfo->AppendExtension(lowerFileExt);
+  mimeInfo->SetPreferredAction(nsIMIMEInfo::saveToDisk);
+
+  if (NS_FAILED(InternalSetDefaultsOnMIME(mimeInfo))) {
+    return nullptr;
+  }
+
+  return mimeInfo.forget();
+}
+
+nsresult nsOSHelperAppService::InternalSetDefaultsOnMIME(
+    nsMIMEInfoWin* aMIMEInfo) {
+  NS_ENSURE_ARG(aMIMEInfo);
+
+  nsAutoCString primaryExt;
+  aMIMEInfo->GetPrimaryExtension(primaryExt);
+
+  if (primaryExt.IsEmpty()) {
+    return NS_ERROR_FAILURE;
+  }
+
   // windows registry assumes your file extension is going to include the '.',
-  // but our APIs expect it to not be there, so make sure we normalize that bit.
-  nsAutoString fileExtToUse;
-  if (aFileExt.First() != char16_t('.')) fileExtToUse = char16_t('.');
-
-  fileExtToUse.Append(aFileExt);
-
-  // don't append the '.' for our APIs.
-  mimeInfo->AppendExtension(NS_ConvertUTF16toUTF8(Substring(fileExtToUse, 1)));
-  mimeInfo->SetPreferredAction(nsIMIMEInfo::useSystemDefault);
+  // but our APIs don't have it, so add it:
+  nsAutoString assocType = NS_ConvertUTF8toUTF16(primaryExt);
+  if (assocType.First() != char16_t('.')) {
+    assocType.Insert(char16_t('.'), 0);
+  }
 
   nsAutoString appInfo;
   bool found;
 
   // Retrieve the default application for this extension
-  NS_ENSURE_TRUE(mAppAssoc, nullptr);
-  nsString assocType(fileExtToUse);
+  NS_ENSURE_TRUE(mAppAssoc, NS_ERROR_NOT_AVAILABLE);
   wchar_t* pResult = nullptr;
   HRESULT hr = mAppAssoc->QueryCurrentDefault(assocType.get(), AT_FILEEXTENSION,
                                               AL_EFFECTIVE, &pResult);
@@ -398,7 +414,7 @@ already_AddRefed<nsMIMEInfoWin> nsOSHelperAppService::GetByExtension(
   if (appInfo.EqualsLiteral("XPSViewer.Document")) found = false;
 
   if (!found) {
-    return nullptr;
+    return NS_ERROR_NOT_AVAILABLE;
   }
 
   // Get other nsIMIMEInfo fields from registry, if possible.
@@ -407,16 +423,15 @@ already_AddRefed<nsMIMEInfoWin> nsOSHelperAppService::GetByExtension(
 
   if (NS_FAILED(GetDefaultAppInfo(appInfo, defaultDescription,
                                   getter_AddRefs(defaultApplication)))) {
-    return nullptr;
+    return NS_ERROR_NOT_AVAILABLE;
   }
 
-  mimeInfo->SetDefaultDescription(defaultDescription);
-  mimeInfo->SetDefaultApplicationHandler(defaultApplication);
+  aMIMEInfo->SetDefaultDescription(defaultDescription);
+  aMIMEInfo->SetDefaultApplicationHandler(defaultApplication);
 
   // Grab the general description
-  GetMIMEInfoFromRegistry(appInfo, mimeInfo);
-
-  return mimeInfo.forget();
+  GetMIMEInfoFromRegistry(appInfo, aMIMEInfo);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -439,9 +454,9 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
   bool haveMeaningfulMimeType =
       !aMIMEType.IsEmpty() &&
       !aMIMEType.LowerCaseEqualsLiteral(APPLICATION_OCTET_STREAM);
-  LOG(("Extension lookup on '%s' with mimetype '%s'%s\n", fileExtension.get(),
-       flatType.get(),
-       haveMeaningfulMimeType ? " (treated as meaningful)" : ""));
+  LOG("Extension lookup on '%S' with mimetype '%s'%s\n",
+      static_cast<const wchar_t*>(fileExtension.get()), flatType.get(),
+      haveMeaningfulMimeType ? " (treated as meaningful)" : "");
 
   RefPtr<nsMIMEInfoWin> mi;
 
@@ -454,9 +469,6 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
     // Without an extension from the mimetype or the file, we can't
     // do anything here.
     mi = new nsMIMEInfoWin(flatType.get());
-    if (!aFileExt.IsEmpty()) {
-      mi->AppendExtension(aFileExt);
-    }
     mi.forget(aMIMEInfo);
     return NS_OK;
   }
@@ -475,14 +487,14 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
        !typeFromExtEquals(fileExtension.get(), flatType.get()))) {
     usedMimeTypeExtensionForLookup = true;
     fileExtension = extensionFromMimeType;
-    LOG(("Now using '%s' mimetype's default file extension '%s' for lookup\n",
-         flatType.get(), fileExtension.get()));
+    LOG("Now using '%s' mimetype's default file extension '%S' for lookup\n",
+        flatType.get(), static_cast<const wchar_t*>(fileExtension.get()));
   }
 
   // If we have an extension, use it for lookup:
   mi = GetByExtension(fileExtension, flatType.get());
-  LOG(("Extension lookup on '%s' found: 0x%p\n", fileExtension.get(),
-       mi.get()));
+  LOG("Extension lookup on '%S' found: 0x%p\n",
+      static_cast<const wchar_t*>(fileExtension.get()), mi.get());
 
   if (mi) {
     bool hasDefault = false;
@@ -492,8 +504,9 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
     if (!hasDefault && !usedMimeTypeExtensionForLookup) {
       RefPtr<nsMIMEInfoWin> miFromMimeType =
           GetByExtension(extensionFromMimeType, flatType.get());
-      LOG(("Mime-based ext. lookup for '%s' found 0x%p\n",
-           extensionFromMimeType.get(), miFromMimeType.get()));
+      LOG("Mime-based ext. lookup for '%S' found 0x%p\n",
+          static_cast<const wchar_t*>(extensionFromMimeType.get()),
+          miFromMimeType.get());
       if (miFromMimeType) {
         nsAutoString desc;
         miFromMimeType->GetDefaultDescription(desc);
@@ -508,8 +521,8 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
   // different:
   if (!extensionFromMimeType.IsEmpty() && !usedMimeTypeExtensionForLookup) {
     mi = GetByExtension(extensionFromMimeType, flatType.get());
-    LOG(("Mime-based ext. lookup for '%s' found 0x%p\n",
-         extensionFromMimeType.get(), mi.get()));
+    LOG("Mime-based ext. lookup for '%S' found 0x%p\n",
+        static_cast<const wchar_t*>(extensionFromMimeType.get()), mi.get());
   }
   if (mi) {
     mi.forget(aMIMEInfo);
@@ -519,11 +532,19 @@ nsOSHelperAppService::GetMIMEInfoFromOS(const nsACString& aMIMEType,
   *aFound = false;
   mi = new nsMIMEInfoWin(flatType.get());
   // If we didn't resort to the mime type's extension, we must have had a
-  // valid extension, so stick it on the mime info.
+  // valid extension, so stick its lowercase version on the mime info.
   if (!usedMimeTypeExtensionForLookup) {
-    mi->AppendExtension(aFileExt);
+    nsAutoCString lowerFileExt;
+    ToLowerCase(aFileExt, lowerFileExt);
+    mi->AppendExtension(lowerFileExt);
   }
   mi.forget(aMIMEInfo);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsOSHelperAppService::UpdateDefaultAppInfo(nsIMIMEInfo* aMIMEInfo) {
+  InternalSetDefaultsOnMIME(static_cast<nsMIMEInfoWin*>(aMIMEInfo));
   return NS_OK;
 }
 
@@ -577,8 +598,7 @@ bool nsOSHelperAppService::GetMIMETypeFromOSForExtension(
   if (NS_FAILED(rv)) return false;
 
   nsAutoString mimeType;
-  if (NS_FAILED(regKey->ReadStringValue(NS_LITERAL_STRING("Content Type"),
-                                        mimeType)) ||
+  if (NS_FAILED(regKey->ReadStringValue(u"Content Type"_ns, mimeType)) ||
       mimeType.IsEmpty()) {
     return false;
   }

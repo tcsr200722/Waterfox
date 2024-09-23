@@ -6,6 +6,7 @@
 #include "TLSServerSocket.h"
 
 #include "mozilla/net/DNS.h"
+#include "mozilla/Components.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDependentSubstring.h"
 #include "nsIServerSocket.h"
@@ -25,8 +26,6 @@ namespace net {
 //-----------------------------------------------------------------------------
 // TLSServerSocket
 //-----------------------------------------------------------------------------
-
-TLSServerSocket::TLSServerSocket() : mServerCert(nullptr) {}
 
 NS_IMPL_ISUPPORTS_INHERITED(TLSServerSocket, nsServerSocket, nsITLSServerSocket)
 
@@ -66,9 +65,9 @@ void TLSServerSocket::CreateClientTransport(PRFileDesc* aClientFD,
   RefPtr<TLSServerConnectionInfo> info = new TLSServerConnectionInfo();
   info->mServerSocket = this;
   info->mTransport = trans;
-  nsCOMPtr<nsISupports> infoSupports =
-      NS_ISUPPORTS_CAST(nsITLSServerConnectionInfo*, info);
-  rv = trans->InitWithConnectedSocket(aClientFD, &aClientAddr, infoSupports);
+  nsCOMPtr<nsIInterfaceRequestor> infoInterfaceRequestor(info);
+  rv = trans->InitWithConnectedSocket(aClientFD, &aClientAddr,
+                                      infoInterfaceRequestor);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     mCondition = rv;
     return;
@@ -136,8 +135,7 @@ TLSServerSocket::GetServerCert(nsIX509Cert** aCert) {
   if (NS_WARN_IF(!aCert)) {
     return NS_ERROR_INVALID_POINTER;
   }
-  *aCert = mServerCert;
-  NS_IF_ADDREF(*aCert);
+  *aCert = do_AddRef(mServerCert).take();
   return NS_OK;
 }
 
@@ -265,17 +263,7 @@ TLSServerSecurityObserverProxy::OnHandshakeDoneRunnable::Run() {
 }  // namespace
 
 NS_IMPL_ISUPPORTS(TLSServerConnectionInfo, nsITLSServerConnectionInfo,
-                  nsITLSClientStatus)
-
-TLSServerConnectionInfo::TLSServerConnectionInfo()
-    : mServerSocket(nullptr),
-      mTransport(nullptr),
-      mPeerCert(nullptr),
-      mTlsVersionUsed(TLS_VERSION_UNKNOWN),
-      mKeyLength(0),
-      mMacLength(0),
-      mLock("TLSServerConnectionInfo.mLock"),
-      mSecurityObserver(nullptr) {}
+                  nsITLSClientStatus, nsIInterfaceRequestor)
 
 TLSServerConnectionInfo::~TLSServerConnectionInfo() {
   RefPtr<nsITLSServerSecurityObserver> observer;
@@ -317,8 +305,7 @@ TLSServerConnectionInfo::GetServerSocket(nsITLSServerSocket** aSocket) {
   if (NS_WARN_IF(!aSocket)) {
     return NS_ERROR_INVALID_POINTER;
   }
-  *aSocket = mServerSocket;
-  NS_IF_ADDREF(*aSocket);
+  *aSocket = do_AddRef(mServerSocket).take();
   return NS_OK;
 }
 
@@ -327,8 +314,7 @@ TLSServerConnectionInfo::GetStatus(nsITLSClientStatus** aStatus) {
   if (NS_WARN_IF(!aStatus)) {
     return NS_ERROR_INVALID_POINTER;
   }
-  *aStatus = this;
-  NS_IF_ADDREF(*aStatus);
+  *aStatus = do_AddRef(this).take();
   return NS_OK;
 }
 
@@ -337,8 +323,7 @@ TLSServerConnectionInfo::GetPeerCert(nsIX509Cert** aCert) {
   if (NS_WARN_IF(!aCert)) {
     return NS_ERROR_INVALID_POINTER;
   }
-  *aCert = mPeerCert;
-  NS_IF_ADDREF(*aCert);
+  *aCert = do_AddRef(mPeerCert).take();
   return NS_OK;
 }
 
@@ -375,6 +360,20 @@ TLSServerConnectionInfo::GetMacLength(uint32_t* aMacLength) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+TLSServerConnectionInfo::GetInterface(const nsIID& aIID, void** aResult) {
+  NS_ENSURE_ARG_POINTER(aResult);
+  *aResult = nullptr;
+
+  if (aIID.Equals(NS_GET_IID(nsITLSServerConnectionInfo))) {
+    *aResult = static_cast<nsITLSServerConnectionInfo*>(this);
+    NS_ADDREF_THIS();
+    return NS_OK;
+  }
+
+  return NS_NOINTERFACE;
+}
+
 // static
 void TLSServerConnectionInfo::HandshakeCallback(PRFileDesc* aFD, void* aArg) {
   RefPtr<TLSServerConnectionInfo> info =
@@ -393,8 +392,8 @@ nsresult TLSServerConnectionInfo::HandshakeCallback(PRFileDesc* aFD) {
 
   UniqueCERTCertificate clientCert(SSL_PeerCertificate(aFD));
   if (clientCert) {
-    nsCOMPtr<nsIX509CertDB> certDB =
-        do_GetService(NS_X509CERTDB_CONTRACTID, &rv);
+    nsCOMPtr<nsIX509CertDB> certDB;
+    certDB = mozilla::components::NSSCertificateDB::Service(&rv);
     if (NS_FAILED(rv)) {
       return rv;
     }

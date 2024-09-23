@@ -12,7 +12,7 @@
 #include "nsError.h"
 #include "nsThreadUtils.h"
 
-#include "ServiceWorkerPrivateImpl.h"
+#include "ServiceWorkerPrivate.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Unused.h"
@@ -28,13 +28,24 @@ RemoteWorkerControllerChild::RemoteWorkerControllerChild(
     RefPtr<RemoteWorkerObserver> aObserver)
     : mObserver(std::move(aObserver)) {
   AssertIsOnMainThread();
+  mRemoteWorkerLaunchStart = TimeStamp::Now();
   MOZ_ASSERT(mObserver);
 }
 
 PFetchEventOpChild* RemoteWorkerControllerChild::AllocPFetchEventOpChild(
-    const ServiceWorkerFetchEventOpArgs& aArgs) {
+    const ParentToParentServiceWorkerFetchEventOpArgs& aArgs) {
   MOZ_CRASH("PFetchEventOpChild actors must be manually constructed!");
   return nullptr;
+}
+
+TimeStamp RemoteWorkerControllerChild::GetRemoteWorkerLaunchStart() {
+  MOZ_ASSERT(mRemoteWorkerLaunchStart);
+  return mRemoteWorkerLaunchStart;
+}
+
+TimeStamp RemoteWorkerControllerChild::GetRemoteWorkerLaunchEnd() {
+  MOZ_ASSERT(mRemoteWorkerLaunchEnd);
+  return mRemoteWorkerLaunchEnd;
 }
 
 bool RemoteWorkerControllerChild::DeallocPFetchEventOpChild(
@@ -68,6 +79,7 @@ IPCResult RemoteWorkerControllerChild::RecvCreationFailed() {
 
 IPCResult RemoteWorkerControllerChild::RecvCreationSucceeded() {
   AssertIsOnMainThread();
+  mRemoteWorkerLaunchEnd = TimeStamp::Now();
 
   if (mObserver) {
     mObserver->CreationSucceeded();
@@ -79,6 +91,7 @@ IPCResult RemoteWorkerControllerChild::RecvCreationSucceeded() {
 IPCResult RemoteWorkerControllerChild::RecvErrorReceived(
     const ErrorValue& aError) {
   AssertIsOnMainThread();
+  mRemoteWorkerLaunchEnd = TimeStamp::Now();
 
   if (mObserver) {
     mObserver->ErrorReceived(aError);
@@ -102,9 +115,9 @@ IPCResult RemoteWorkerControllerChild::RecvSetServiceWorkerSkipWaitingFlag(
   AssertIsOnMainThread();
 
   if (mObserver) {
-    static_cast<ServiceWorkerPrivateImpl*>(mObserver.get())
+    static_cast<ServiceWorkerPrivate*>(mObserver.get())
         ->SetSkipWaitingFlag()
-        ->Then(GetCurrentThreadSerialEventTarget(), __func__,
+        ->Then(GetCurrentSerialEventTarget(), __func__,
                [resolve = std::move(aResolve)](
                    const GenericPromise::ResolveOrRejectValue& aResult) {
                  resolve(aResult.IsResolve() ? aResult.ResolveValue() : false);
@@ -137,7 +150,7 @@ void RemoteWorkerControllerChild::MaybeSendDelete() {
   RefPtr<RemoteWorkerControllerChild> self = this;
 
   SendShutdown()->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [self = std::move(self)](const ShutdownPromise::ResolveOrRejectValue&) {
         if (self->mIPCActive) {
           Unused << self->Send__delete__(self);

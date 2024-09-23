@@ -21,15 +21,6 @@ class BrowserProcessSubThread : public base::Thread {
   // An enumeration of the well-known threads.
   enum ID {
     IO,
-  // FILE,
-  // DB,
-  // HISTORY,
-#if defined(OS_LINUX) || defined(OS_SOLARIS)
-    // This thread has a second connection to the X server and is used
-    // to process UI requests when routing the request to the UI
-    // thread would risk deadlock.
-    BACKGROUND_X11,
-#endif
 
     // This identifier does not represent a thread.  Instead it counts
     // the number of well-known threads.  Insert new well-known
@@ -60,7 +51,8 @@ class BrowserProcessSubThread : public base::Thread {
   // The threads are not owned by this array.  Typically, the threads are owned
   // on the UI thread by the g_browser_process object.  ChromeThreads remove
   // themselves from this array upon destruction.
-  static BrowserProcessSubThread* sBrowserThreads[ID_COUNT];
+  static BrowserProcessSubThread* sBrowserThreads[ID_COUNT] MOZ_GUARDED_BY(
+      sLock);
 };
 
 inline void AssertIOThread() {

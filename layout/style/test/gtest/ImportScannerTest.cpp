@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 #include "mozilla/ImportScanner.h"
+#include "mozilla/StaticPrefs_layout.h"
 
 using namespace mozilla;
 
@@ -28,9 +29,9 @@ TEST(ImportScanner, Simple)
       "@import \"bazz)\"");
 
   ASSERT_EQ(urls.Length(), 3u);
-  ASSERT_EQ(urls[0], NS_LITERAL_STRING("bar"));
-  ASSERT_EQ(urls[1], NS_LITERAL_STRING("baz"));
-  ASSERT_EQ(urls[2], NS_LITERAL_STRING("bazz)"));
+  ASSERT_EQ(urls[0], u"bar"_ns);
+  ASSERT_EQ(urls[1], u"baz"_ns);
+  ASSERT_EQ(urls[2], u"bazz)"_ns);
 }
 
 TEST(ImportScanner, UrlWithQuotes)
@@ -44,9 +45,9 @@ TEST(ImportScanner, UrlWithQuotes)
       "@import\turL( 'bazz' ); ");
 
   ASSERT_EQ(urls.Length(), 3u);
-  ASSERT_EQ(urls[0], NS_LITERAL_STRING("bar"));
-  ASSERT_EQ(urls[1], NS_LITERAL_STRING("baz"));
-  ASSERT_EQ(urls[2], NS_LITERAL_STRING("bazz"));
+  ASSERT_EQ(urls[0], u"bar"_ns);
+  ASSERT_EQ(urls[1], u"baz"_ns);
+  ASSERT_EQ(urls[2], u"bazz"_ns);
 }
 
 TEST(ImportScanner, MediaIsIgnored)
@@ -59,7 +60,60 @@ TEST(ImportScanner, MediaIsIgnored)
       "@import\turL( bazz ) (max-width: 100px);");
 
   ASSERT_EQ(urls.Length(), 3u);
-  ASSERT_EQ(urls[0], NS_LITERAL_STRING("bar"));
-  ASSERT_EQ(urls[1], NS_LITERAL_STRING("baz"));
-  ASSERT_EQ(urls[2], NS_LITERAL_STRING("bazz"));
+  ASSERT_EQ(urls[0], u"bar"_ns);
+  ASSERT_EQ(urls[1], u"baz"_ns);
+  ASSERT_EQ(urls[2], u"bazz"_ns);
+}
+
+TEST(ImportScanner, Layers)
+{
+  auto urls = Scan(
+      "@layer foo, bar;\n"
+      "@import url(\"bar\") layer(foo);"
+      "@import url(\"baz\");"
+      "@import url(bazz);"
+      "@layer block {}"
+      // This one below is invalid now and shouldn't be scanned.
+      "@import\turL( 'bazzz' ); ");
+
+  ASSERT_EQ(urls.Length(), 3u);
+  ASSERT_EQ(urls[0], u"bar"_ns);
+  ASSERT_EQ(urls[1], u"baz"_ns);
+  ASSERT_EQ(urls[2], u"bazz"_ns);
+}
+
+TEST(ImportScanner, Supports)
+{
+  auto urls = Scan(
+      // Supported feature, should be included.
+      "@import url(bar) supports(display: block);"
+      // Unsupported feature, should not be included.
+      "@import url(baz) supports(foo: bar);"
+      // Supported condition with operator, should be included.
+      "@import url(bazz) supports((display: flex) and (display: block));"
+      // Unsupported condition with function, should be not included.
+      "@import url(bazzz) supports(selector(foo:bar(baz)));"
+      // Supported large condition with layer, supports, media list
+      "@import url(bazzzz) layer(A.B) supports(display: flex) (max-width: "
+      "100px)");
+
+  if (StaticPrefs::layout_css_import_supports_enabled()) {
+    // If the pref is enabled, expect the supports conditions to be evaluated
+    // and unsupported to not be emitted.
+
+    ASSERT_EQ(urls.Length(), 3u);
+    ASSERT_EQ(urls[0], u"bar"_ns);
+    ASSERT_EQ(urls[1], u"bazz"_ns);
+    ASSERT_EQ(urls[2], u"bazzzz"_ns);
+  } else {
+    // If disabled, all imports should be included as the supports conditions
+    // should be ignored.
+
+    ASSERT_EQ(urls.Length(), 5u);
+    ASSERT_EQ(urls[0], u"bar"_ns);
+    ASSERT_EQ(urls[1], u"baz"_ns);
+    ASSERT_EQ(urls[2], u"bazz"_ns);
+    ASSERT_EQ(urls[3], u"bazzz"_ns);
+    ASSERT_EQ(urls[4], u"bazzzz"_ns);
+  }
 }

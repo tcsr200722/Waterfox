@@ -50,6 +50,37 @@ TEST(PlainTextSerializer, ASCIIWithFlowedDelSp)
   << "Wrong HTML to ASCII text serialization with format=flowed; delsp=yes";
 }
 
+TEST(PlainTextSerializer, Bug1864820)
+{
+  nsString test(
+      uR"#(
+<html><body>
+&gt;&nbsp;&nbsp;label=master&amp;label=experimental&amp;product=chrome&amp;product=firefox&amp;product=safari&amp;aligned&amp;view=interop&amp;q=label%3Ainterop-2023-property
+<blockquote>
+&gt;&nbsp;&nbsp;label=master&amp;label=experimental&amp;product=chrome&amp;product=firefox&amp;product=safari&amp;aligned&amp;view=interop&amp;q=label%3Ainterop-2023-property
+</blockquote>
+</body></html>
+)#");
+
+  ConvertBufToPlainText(test,
+                        nsIDocumentEncoder::OutputFormatted |
+                            nsIDocumentEncoder::OutputPersistNBSP |
+                            nsIDocumentEncoder::OutputLFLineBreak |
+                            nsIDocumentEncoder::OutputFormatFlowed,
+                        kDefaultWrapColumn);
+
+  nsString result(
+      uR"#(
+ >  label=master&label=experimental&product=chrome&product=firefox&product=safari&aligned&view=interop&q=label%3Ainterop-2023-property
+
+     >  label=master&label=experimental&product=chrome&product=firefox&product=safari&aligned&view=interop&q=label%3Ainterop-2023-property
+)#");
+  result.Trim(" \n");
+  test.Trim(" \n");
+  ASSERT_TRUE(test.Equals(result))
+  << "Shouldn't hang with format=flowed: " << NS_ConvertUTF16toUTF8(test).get();
+}
+
 // Test for CJK with format=flowed; delsp=yes
 TEST(PlainTextSerializer, CJKWithFlowedDelSp)
 {
@@ -116,6 +147,36 @@ TEST(PlainTextSerializer, CJKWithDisallowLineBreaking)
   << "Wrong HTML to CJK text serialization with OutputDisallowLineBreaking";
 }
 
+// Test for Latin with DisallowLineBreaking
+TEST(PlainTextSerializer, LatinWithDisallowLineBreaking)
+{
+  nsString test;
+  test.AssignLiteral("<html><body>");
+  for (uint32_t i = 0; i < 400; i++) {
+    // Insert á (Latin Small Letter a with Acute) (U+00E1)
+    test.Append(0x00E1);
+  }
+  test.AppendLiteral("</body></html>\r\n");
+
+  ConvertBufToPlainText(test,
+                        nsIDocumentEncoder::OutputFormatted |
+                            nsIDocumentEncoder::OutputCRLineBreak |
+                            nsIDocumentEncoder::OutputLFLineBreak |
+                            nsIDocumentEncoder::OutputFormatFlowed |
+                            nsIDocumentEncoder::OutputDisallowLineBreaking,
+                        kDefaultWrapColumn);
+
+  // Create expect case.
+  nsString expect;
+  for (uint32_t i = 0; i < 400; i++) {
+    expect.Append(0x00E1);
+  }
+  expect.AppendLiteral(" \r\n\r\n");
+
+  ASSERT_TRUE(test.Equals(expect))
+  << "Wrong HTML to Latin text serialization with OutputDisallowLineBreaking";
+}
+
 // Test for ASCII with format=flowed; and quoted lines in preformatted span.
 TEST(PlainTextSerializer, PreformatFlowedQuotes)
 {
@@ -126,7 +187,7 @@ TEST(PlainTextSerializer, PreformatFlowedQuotes)
       "<html><body>"
       "<span style=\"white-space: pre-wrap;\" _moz_quote=\"true\">"
       "&gt; Firefox Firefox Firefox Firefox <br>"
-      "&gt; Firefox Firefox Firefox Firefox<br>"
+      "&gt; Firefox Firefox Firefox <b>Firefox</b><br>"
       "&gt;<br>"
       "&gt;&gt; Firefox Firefox Firefox Firefox <br>"
       "&gt;&gt; Firefox Firefox Firefox Firefox<br>"
@@ -142,15 +203,50 @@ TEST(PlainTextSerializer, PreformatFlowedQuotes)
   // create result case
   result.AssignLiteral(
       "> Firefox Firefox Firefox Firefox \r\n"
+      "> Firefox Firefox Firefox *Firefox*\r\n"
+      ">\r\n"
+      ">> Firefox Firefox Firefox Firefox \r\n"
+      ">> Firefox Firefox Firefox Firefox\r\n");
+
+  ASSERT_EQ(test, result) << "Wrong HTML to ASCII text serialization "
+                             "with format=flowed; and quoted "
+                             "lines using OutputFormatted";
+}
+
+// Test for ASCII with format=flowed; and not using OutputFormatted.
+TEST(PlainTextSerializer, OutputFormatFlowedAndWrapped)
+{
+  nsString test;
+  nsString result;
+
+  test.AssignLiteral(
+      "<html><body>"
+      "<span style=\"white-space: pre-wrap;\" _moz_quote=\"true\">"
+      "&gt; Firefox Firefox Firefox Firefox <br>"
+      "&gt; Firefox Firefox Firefox <b>Firefox</b><br>"
+      "&gt;<br>"
+      "&gt;&gt; Firefox Firefox Firefox Firefox <br>"
+      "&gt;&gt; Firefox Firefox Firefox Firefox<br>"
+      "</span></body></html>");
+
+  ConvertBufToPlainText(test,
+                        nsIDocumentEncoder::OutputWrap |
+                            nsIDocumentEncoder::OutputCRLineBreak |
+                            nsIDocumentEncoder::OutputLFLineBreak |
+                            nsIDocumentEncoder::OutputFormatFlowed,
+                        kDefaultWrapColumn);
+
+  // create result case
+  result.AssignLiteral(
+      "> Firefox Firefox Firefox Firefox \r\n"
       "> Firefox Firefox Firefox Firefox\r\n"
       ">\r\n"
       ">> Firefox Firefox Firefox Firefox \r\n"
       ">> Firefox Firefox Firefox Firefox\r\n");
 
-  ASSERT_TRUE(test.Equals(result))
-  << "Wrong HTML to ASCII text serialization "
-     "with format=flowed; and quoted "
-     "lines";
+  ASSERT_EQ(test, result) << "Wrong HTML to ASCII text serialization "
+                             "with format=flowed; and quoted "
+                             "lines using OutputWrap";
 }
 
 TEST(PlainTextSerializer, PrettyPrintedHtml)
@@ -255,4 +351,25 @@ TEST(PlainTextSerializer, OneHundredAndOneOL)
   nsAutoString expected;
   expected.AppendLiteral(" 1. X" NS_LINEBREAK);
   ASSERT_EQ(test, expected);
+}
+
+TEST(PlainTextSerializer, BlockQuoteCite)
+{
+  nsAutoString test;
+  test.AppendLiteral(u"<blockquote type=cite>hello world</blockquote>");
+
+  const uint32_t wrapColumn = 10;
+  ConvertBufToPlainText(test,
+                        nsIDocumentEncoder::OutputFormatted |
+                            nsIDocumentEncoder::OutputFormatFlowed |
+                            nsIDocumentEncoder::OutputCRLineBreak |
+                            nsIDocumentEncoder::OutputLFLineBreak,
+                        wrapColumn);
+
+  constexpr auto expect = NS_LITERAL_STRING_FROM_CSTRING(
+      "> hello \r\n"
+      "> world\r\n");
+
+  ASSERT_TRUE(test.Equals(expect))
+  << "Wrong blockquote cite to text serialization";
 }

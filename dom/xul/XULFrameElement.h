@@ -8,11 +8,11 @@
 #define XULFrameElement_h__
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/WindowProxyHolder.h"
 #include "js/TypeDecls.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsIOpenWindowInfo.h"
 #include "nsWrapperCache.h"
 #include "nsString.h"
 #include "nsXULElement.h"
@@ -22,6 +22,8 @@ class nsIWebNavigation;
 class nsFrameLoader;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class BrowsingContext;
@@ -39,6 +41,9 @@ class XULFrameElement final : public nsXULElement, public nsFrameLoaderOwner {
   already_AddRefed<nsIWebNavigation> GetWebNavigation();
   Nullable<WindowProxyHolder> GetContentWindow();
   Document* GetContentDocument();
+  uint64_t BrowserId();
+  nsIOpenWindowInfo* GetOpenWindowInfo() const;
+  void SetOpenWindowInfo(nsIOpenWindowInfo* aInfo);
 
   void SwapFrameLoaders(mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
                         mozilla::ErrorResult& rv);
@@ -48,15 +53,13 @@ class XULFrameElement final : public nsXULElement, public nsFrameLoaderOwner {
                         mozilla::ErrorResult& rv);
 
   // nsIContent
-  virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  virtual void UnbindFromTree(bool aNullParent) override;
-  virtual void DestroyContent() override;
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  void UnbindFromTree(UnbindContext&) override;
+  void DestroyContent() override;
 
-  virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
+  void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
 
   NS_IMPL_FROMNODE_HELPER(XULFrameElement,
                           IsAnyOfXULElements(nsGkAtoms::iframe,
@@ -70,6 +73,9 @@ class XULFrameElement final : public nsXULElement, public nsFrameLoaderOwner {
                      JS::Handle<JSObject*> aGivenProto) override;
 
   void LoadSrc();
+
+ private:
+  nsCOMPtr<nsIOpenWindowInfo> mOpenWindowInfo;
 };
 
 }  // namespace dom

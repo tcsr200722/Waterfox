@@ -9,11 +9,10 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/AnonymousContent.h"
-#include "mozilla/dom/Element.h"
 #include "nsCOMPtr.h"
 #include "nsIDOMEventListener.h"
-#include "nsIFrame.h"
-#include "nsISupportsBase.h"
+#include "nsIFrame.h"  // for WeakFrame only
+#include "nsISupports.h"
 #include "nsISupportsImpl.h"
 #include "nsLiteralString.h"
 #include "nsRect.h"
@@ -26,6 +25,7 @@ struct nsPoint;
 namespace mozilla {
 class PresShell;
 namespace dom {
+class Element;
 class Event;
 }  // namespace dom
 
@@ -130,9 +130,7 @@ class AccessibleCaret {
   // Element for 'Intersects' test. This is the container of the caret image
   // and text-overlay elements. See CreateCaretElement() for the content
   // structure.
-  dom::Element& CaretElement() const {
-    return mCaretElementHolder->ContentNode();
-  }
+  dom::Element& CaretElement() const { return *mCaretElementHolder->Host(); }
 
   // Ensures that the caret element is made "APZ aware" so that the APZ code
   // doesn't scroll the page when the user is trying to drag the caret.
@@ -150,23 +148,19 @@ class AccessibleCaret {
   float GetZoomLevel();
 
   // Element which contains the text overly for the 'Contains' test.
-  dom::Element* TextOverlayElement() const {
-    return mCaretElementHolder->GetElementById(sTextOverlayElementId);
-  }
+  dom::Element* TextOverlayElement() const;
 
   // Element which contains the caret image for 'Contains' test.
-  dom::Element* CaretImageElement() const {
-    return mCaretElementHolder->GetElementById(sCaretImageElementId);
-  }
+  dom::Element* CaretImageElement() const;
 
-  nsIFrame* RootFrame() const { return mPresShell->GetRootFrame(); }
+  nsIFrame* RootFrame() const;
 
   nsIFrame* CustomContentContainerFrame() const;
 
   // Transform Appearance to CSS id used in ua.css.
   static nsAutoString AppearanceString(Appearance aAppearance);
 
-  already_AddRefed<dom::Element> CreateCaretElement(dom::Document*) const;
+  void CreateCaretElement() const;
 
   // Inject caret element into custom content container.
   void InjectCaretElement(dom::Document*);
@@ -205,11 +199,12 @@ class AccessibleCaret {
 
   RefPtr<dom::AnonymousContent> mCaretElementHolder;
 
-  // mImaginaryCaretRect is relative to root frame.
+  // This cached rect is relative to the root frame, and is used in
+  // LogicalPosition() when dragging a caret.
   nsRect mImaginaryCaretRect;
 
-  // Cached mImaginaryCaretRect relative to the custom content container. This
-  // is used in SetPosition() to check whether the caret position has changed.
+  // This cached rect is relative to the custom content container, and is used
+  // in SetPosition() to check whether the caret position has changed.
   nsRect mImaginaryCaretRectInContainerFrame;
 
   // The reference frame we used to calculate mImaginaryCaretRect and
@@ -222,11 +217,6 @@ class AccessibleCaret {
   // A no-op touch-start listener which prevents APZ from panning when dragging
   // the caret.
   RefPtr<DummyTouchListener> mDummyTouchListener{new DummyTouchListener()};
-
-  // Static class variables
-  static const nsLiteralString sTextOverlayElementId;
-  static const nsLiteralString sCaretImageElementId;
-
 };  // class AccessibleCaret
 
 std::ostream& operator<<(std::ostream& aStream,

@@ -10,26 +10,27 @@
 #include <utility>
 
 #include "mozilla/AbstractThread.h"
-#include "mozilla/dom/JSExecutionManager.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/dom/JSExecutionManager.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla {
 
 /**
- * This class will wrap a nsIRunnable and dispatch it to the main thread
- * synchronously. This is different from nsIEventTarget.DISPATCH_SYNC:
- * this class does not spin the event loop waiting for the event to be
- * dispatched. This means that you don't risk reentrance from pending
- * messages, but you must be sure that the target thread does not ever block
- * on this thread, or else you will deadlock.
+ * This class will wrap a nsIRunnable and dispatch it to the target thread
+ * synchronously. This is different from
+ * NS_DispatchAndSpinEventLoopUntilComplete: this class does not spin the event
+ * loop waiting for the event to be dispatched. This means that you don't risk
+ * reentrance from pending messages, but you must be sure that the target thread
+ * does not ever block on this thread, or else you will deadlock.
  *
  * Typical usage:
- * RefPtr<SyncRunnable> sr = new SyncRunnable(new myrunnable...());
- * sr->DispatchToThread(t);
+ *   RefPtr<SyncRunnable> sr = new SyncRunnable(new myrunnable...());
+ *   sr->DispatchToThread(t);
  *
- * We also provide a convenience wrapper:
- * SyncRunnable::DispatchToThread(new myrunnable...());
+ * We also provide convenience wrappers:
+ *   SyncRunnable::DispatchToThread(pThread, new myrunnable...());
+ *   SyncRunnable::DispatchToThread(pThread, NS_NewRunnableFunction(...));
  *
  */
 class SyncRunnable : public Runnable {
@@ -46,7 +47,8 @@ class SyncRunnable : public Runnable {
         mMonitor("SyncRunnable"),
         mDone(false) {}
 
-  void DispatchToThread(nsIEventTarget* aThread, bool aForceDispatch = false) {
+  nsresult DispatchToThread(nsIEventTarget* aThread,
+                            bool aForceDispatch = false) {
     nsresult rv;
     bool on;
 
@@ -55,7 +57,7 @@ class SyncRunnable : public Runnable {
       MOZ_ASSERT(NS_SUCCEEDED(rv));
       if (NS_SUCCEEDED(rv) && on) {
         mRunnable->Run();
-        return;
+        return NS_OK;
       }
     }
 
@@ -70,36 +72,66 @@ class SyncRunnable : public Runnable {
         lock.Wait();
       }
     }
+    return rv;
   }
 
-  void DispatchToThread(AbstractThread* aThread, bool aForceDispatch = false) {
+  nsresult DispatchToThread(AbstractThread* aThread,
+                            bool aForceDispatch = false) {
     if (!aForceDispatch && aThread->IsCurrentThreadIn()) {
       mRunnable->Run();
-      return;
+      return NS_OK;
     }
 
     // Check we don't have tail dispatching here. Otherwise we will deadlock
     // ourself when spinning the loop below.
     MOZ_ASSERT(!aThread->RequiresTailDispatchFromCurrentThread());
 
-    aThread->Dispatch(RefPtr<nsIRunnable>(this).forget());
-    mozilla::MonitorAutoLock lock(mMonitor);
-    while (!mDone) {
-      lock.Wait();
+    nsresult rv = aThread->Dispatch(RefPtr<nsIRunnable>(this).forget());
+    if (NS_SUCCEEDED(rv)) {
+      mozilla::MonitorAutoLock lock(mMonitor);
+      while (!mDone) {
+        lock.Wait();
+      }
     }
+    return rv;
   }
 
-  static void DispatchToThread(nsIEventTarget* aThread, nsIRunnable* aRunnable,
-                               bool aForceDispatch = false) {
+  static nsresult DispatchToThread(nsIEventTarget* aThread,
+                                   nsIRunnable* aRunnable,
+                                   bool aForceDispatch = false) {
     RefPtr<SyncRunnable> s(new SyncRunnable(aRunnable));
-    s->DispatchToThread(aThread, aForceDispatch);
+    return s->DispatchToThread(aThread, aForceDispatch);
   }
 
-  static void DispatchToThread(AbstractThread* aThread, nsIRunnable* aRunnable,
-                               bool aForceDispatch = false) {
+  static nsresult DispatchToThread(AbstractThread* aThread,
+                                   nsIRunnable* aRunnable,
+                                   bool aForceDispatch = false) {
     RefPtr<SyncRunnable> s(new SyncRunnable(aRunnable));
-    s->DispatchToThread(aThread, aForceDispatch);
+    return s->DispatchToThread(aThread, aForceDispatch);
   }
+
+  static nsresult DispatchToThread(nsIEventTarget* aThread,
+                                   already_AddRefed<nsIRunnable> aRunnable,
+                                   bool aForceDispatch = false) {
+    RefPtr<SyncRunnable> s(new SyncRunnable(std::move(aRunnable)));
+    return s->DispatchToThread(aThread, aForceDispatch);
+  }
+
+  static nsresult DispatchToThread(AbstractThread* aThread,
+                                   already_AddRefed<nsIRunnable> aRunnable,
+                                   bool aForceDispatch = false) {
+    RefPtr<SyncRunnable> s(new SyncRunnable(std::move(aRunnable)));
+    return s->DispatchToThread(aThread, aForceDispatch);
+  }
+
+  // These deleted overloads prevent accidentally (if harmlessly) double-
+  // wrapping SyncRunnable, which was previously a common anti-pattern.
+  static nsresult DispatchToThread(nsIEventTarget* aThread,
+                                   SyncRunnable* aRunnable,
+                                   bool aForceDispatch = false) = delete;
+  static nsresult DispatchToThread(AbstractThread* aThread,
+                                   SyncRunnable* aRunnable,
+                                   bool aForceDispatch = false) = delete;
 
  protected:
   NS_IMETHOD Run() override {
@@ -117,7 +149,7 @@ class SyncRunnable : public Runnable {
  private:
   nsCOMPtr<nsIRunnable> mRunnable;
   mozilla::Monitor mMonitor;
-  bool mDone;
+  bool mDone MOZ_GUARDED_BY(mMonitor);
 };
 
 }  // namespace mozilla

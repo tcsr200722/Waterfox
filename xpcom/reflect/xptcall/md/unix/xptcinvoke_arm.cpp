@@ -118,7 +118,7 @@ typedef nsresult (*vtable_func)(nsISupports *, uint32_t, uint32_t, uint32_t);
 // once the function is compiled with a version of ASan that has dynamic-alloca
 // instrumentation enabled.
 
-MOZ_ASAN_BLACKLIST
+MOZ_ASAN_IGNORE
 EXPORT_XPCOM_API(nsresult)
 NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
                    uint32_t paramCount, nsXPTCVariant* params)
@@ -163,6 +163,18 @@ NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
 
   vtable = *reinterpret_cast<vtable_func **>(that);
   func = vtable[methodIndex];
+
+/* !!! IMPORTANT !!!
+ * In the case of paramCount = 0 (and also some other cases in practice but
+ * the compiler doesn't know about them), the stack_space is not initialized.
+ * Reading the stack_space is technically undefined behavior, but practically,
+ * the values we read from there only matter to the called function when they
+ * are initialized.
+ * The asm volatile block makes the compiler ignore that the stack_space
+ * may not be initialized, avoiding it optimizing away e.g. the first loop
+ * test in invoke_copy_to_stack.
+ */
+  asm volatile(";");
 
   return func(that, stack_space[base_size * 2 - 3],
                     stack_space[base_size * 2 - 2],

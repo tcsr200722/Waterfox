@@ -7,6 +7,7 @@
 #include "nsClipboardHelper.h"
 
 // basics
+#include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
 #include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
@@ -35,8 +36,10 @@ nsClipboardHelper::~nsClipboardHelper() {
  *****************************************************************************/
 
 NS_IMETHODIMP
-nsClipboardHelper::CopyStringToClipboard(const nsAString& aString,
-                                         int32_t aClipboardID) {
+nsClipboardHelper::CopyStringToClipboard(
+    const nsAString& aString, int32_t aClipboardID,
+    mozilla::dom::WindowContext* aSettingWindowContext,
+    SensitiveData aSensitive) {
   nsresult rv;
 
   // get the clipboard
@@ -45,21 +48,18 @@ nsClipboardHelper::CopyStringToClipboard(const nsAString& aString,
   NS_ENSURE_SUCCESS(rv, rv);
   NS_ENSURE_TRUE(clipboard, NS_ERROR_FAILURE);
 
-  bool clipboardSupported;
   // don't go any further if they're asking for the selection
   // clipboard on a platform which doesn't support it (i.e., unix)
-  if (nsIClipboard::kSelectionClipboard == aClipboardID) {
-    rv = clipboard->SupportsSelectionClipboard(&clipboardSupported);
-    NS_ENSURE_SUCCESS(rv, rv);
-    if (!clipboardSupported) return NS_ERROR_FAILURE;
+  if (nsIClipboard::kSelectionClipboard == aClipboardID &&
+      !clipboard->IsClipboardTypeSupported(nsIClipboard::kSelectionClipboard)) {
+    return NS_ERROR_FAILURE;
   }
 
   // don't go any further if they're asking for the find clipboard on a platform
   // which doesn't support it (i.e., non-osx)
-  if (nsIClipboard::kFindClipboard == aClipboardID) {
-    rv = clipboard->SupportsFindClipboard(&clipboardSupported);
-    NS_ENSURE_SUCCESS(rv, rv);
-    if (!clipboardSupported) return NS_ERROR_FAILURE;
+  if (nsIClipboard::kFindClipboard == aClipboardID &&
+      !clipboard->IsClipboardTypeSupported(nsIClipboard::kFindClipboard)) {
+    return NS_ERROR_FAILURE;
   }
 
   // create a transferable for putting data on the clipboard
@@ -69,9 +69,12 @@ nsClipboardHelper::CopyStringToClipboard(const nsAString& aString,
   NS_ENSURE_TRUE(trans, NS_ERROR_FAILURE);
 
   trans->Init(nullptr);
+  if (aSensitive == SensitiveData::Sensitive) {
+    trans->SetIsPrivateData(true);
+  }
 
   // Add the text data flavor to the transferable
-  rv = trans->AddDataFlavor(kUnicodeMime);
+  rv = trans->AddDataFlavor(kTextMime);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // get wStrings to hold clip data
@@ -84,41 +87,41 @@ nsClipboardHelper::CopyStringToClipboard(const nsAString& aString,
   rv = data->SetData(aString);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // qi the data object an |nsISupports| so that when the transferable holds
+  // Pass the data object as |nsISupports| so that when the transferable holds
   // onto it, it will addref the correct interface.
-  nsCOMPtr<nsISupports> genericData(do_QueryInterface(data, &rv));
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(genericData, NS_ERROR_FAILURE);
-
-  // set the transfer data
-  rv = trans->SetTransferData(kUnicodeMime, genericData);
+  rv = trans->SetTransferData(kTextMime, ToSupports(data));
   NS_ENSURE_SUCCESS(rv, rv);
 
   // put the transferable on the clipboard
-  rv = clipboard->SetData(trans, nullptr, aClipboardID);
+  rv = clipboard->SetData(trans, nullptr, aClipboardID, aSettingWindowContext);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsClipboardHelper::CopyString(const nsAString& aString) {
+nsClipboardHelper::CopyString(
+    const nsAString& aString,
+    mozilla::dom::WindowContext* aSettingWindowContext,
+    SensitiveData aSensitive) {
   nsresult rv;
 
   // copy to the global clipboard. it's bad if this fails in any way.
-  rv = CopyStringToClipboard(aString, nsIClipboard::kGlobalClipboard);
+  rv = CopyStringToClipboard(aString, nsIClipboard::kGlobalClipboard,
+                             aSettingWindowContext, aSensitive);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // unix also needs us to copy to the selection clipboard. this will
   // fail in CopyStringToClipboard if we're not on a platform that
   // supports the selection clipboard. (this could have been #ifdef
-  // XP_UNIX, but using the SupportsSelectionClipboard call is the
-  // more correct thing to do.
+  // XP_UNIX, but using the IsClipboardTypeSupported call is the more correct
+  // thing to do.
   //
   // if this fails in any way other than "not being unix", we'll get
   // the assertion we need in CopyStringToClipboard, and we needn't
   // assert again here.
-  CopyStringToClipboard(aString, nsIClipboard::kSelectionClipboard);
+  CopyStringToClipboard(aString, nsIClipboard::kSelectionClipboard,
+                        aSettingWindowContext, aSensitive);
 
   return NS_OK;
 }

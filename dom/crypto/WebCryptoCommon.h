@@ -7,12 +7,30 @@
 #ifndef mozilla_dom_WebCryptoCommon_h
 #define mozilla_dom_WebCryptoCommon_h
 
+// XXX Several of these dependencies could be removed by moving implementations
+// to the cpp file.
+
+#include <cstdint>
+#include <cstring>
 #include "js/StructuredClone.h"
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/dom/CryptoBuffer.h"
+#include "mozilla/fallible.h"
 #include "nsContentUtils.h"
-#include "nsString.h"
-#include "pk11pub.h"
+#include "nsLiteralString.h"
+#include "nsStringFwd.h"
+#include "pkcs11t.h"
+#include "plarena.h"
+#include "secasn1t.h"
+#include "seccomon.h"
+#include "secitem.h"
+#include "secoid.h"
+#include "secoidt.h"
+#include "ScopedNSSTypes.h"
+
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
 
 // WebCrypto algorithm names
 #define WEBCRYPTO_ALG_AES_CBC "AES-CBC"
@@ -92,9 +110,11 @@
 #define JWK_ALG_PS256 "PS256"
 #define JWK_ALG_PS384 "PS384"
 #define JWK_ALG_PS512 "PS512"
+// The JSON Web Algorithms spec (RFC 7518) uses the hash to identify these, not
+// the curve.
 #define JWK_ALG_ECDSA_P_256 "ES256"
 #define JWK_ALG_ECDSA_P_384 "ES384"
-#define JWK_ALG_ECDSA_P_521 "ES521"
+#define JWK_ALG_ECDSA_P_521 "ES512"
 
 // JWK usages
 #define JWK_USE_ENC "enc"
@@ -109,8 +129,7 @@ const SECItem SEC_OID_DATA_EC_DH = {
     siBuffer, (unsigned char*)id_ecDH,
     static_cast<unsigned int>(mozilla::ArrayLength(id_ecDH))};
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 inline bool ReadBuffer(JSStructuredCloneReader* aReader,
                        CryptoBuffer& aBuffer) {
@@ -179,7 +198,8 @@ inline CK_MECHANISM_TYPE MapAlgorithmNameToMechanism(const nsString& aName) {
 }
 
 #define NORMALIZED_EQUALS(aTest, aConst) \
-  nsContentUtils::EqualsIgnoreASCIICase(aTest, NS_LITERAL_STRING(aConst))
+  nsContentUtils::EqualsIgnoreASCIICase( \
+      aTest, NS_LITERAL_STRING_FROM_CSTRING(aConst))
 
 inline bool NormalizeToken(const nsString& aName, nsString& aDest) {
   // Algorithm names
@@ -253,7 +273,7 @@ inline bool CheckEncodedECParameters(const SECItem* aEcParams) {
   return true;
 }
 
-inline SECItem* CreateECParamsForCurve(const nsString& aNamedCurve,
+inline SECItem* CreateECParamsForCurve(const nsAString& aNamedCurve,
                                        PLArenaPool* aArena) {
   MOZ_ASSERT(aArena);
   SECOidTag curveOIDTag;
@@ -293,7 +313,10 @@ inline SECItem* CreateECParamsForCurve(const nsString& aNamedCurve,
   return params;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+// Implemented in CryptoKey.cpp
+UniqueSECKEYPublicKey CreateECPublicKey(const SECItem* aKeyData,
+                                        const nsAString& aNamedCurve);
+
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_WebCryptoCommon_h

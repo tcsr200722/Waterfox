@@ -3,12 +3,11 @@
 const PAGE =
   "data:text/html,<html><body>A%20regular,%20everyday,%20normal%20page.";
 const COMMENTS = "Here's my test comment!";
-const EMAIL = "foo@privacy.com";
 
 // Avoid timeouts, as in bug 1325530
 requestLongerTimeout(2);
 
-add_task(async function setup() {
+add_setup(async function () {
   await setupLocalCrashReportServer();
 });
 
@@ -30,10 +29,6 @@ add_task(async function setup() {
  *
  *        comments (String)
  *          The comments to put in the comment textarea
- *        email (String)
- *          The email address to put in the email address input
- *        emailMe (bool)
- *          The checked value of the "Email me" checkbox
  *        includeURL (bool)
  *          The checked value of the "Include URL" checkbox
  *
@@ -44,18 +39,16 @@ add_task(async function setup() {
  *        crash report's extra data should contain.
  * @returns Promise
  */
-function crashTabTestHelper(fieldValues, expectedExtra) {
+function crashTabTestHelper(fieldValues, expectedExtra, shouldFail = false) {
   return BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: PAGE,
     },
-    async function(browser) {
+    async function (browser) {
       let prefs = TabCrashHandler.prefs;
       let originalSendReport = prefs.getBoolPref("sendReport");
-      let originalEmailMe = prefs.getBoolPref("emailMe");
       let originalIncludeURL = prefs.getBoolPref("includeURL");
-      let originalEmail = prefs.getCharPref("email");
 
       let tab = gBrowser.getTabForBrowser(browser);
       await BrowserTestUtils.crashFrame(browser);
@@ -64,27 +57,19 @@ function crashTabTestHelper(fieldValues, expectedExtra) {
       // Since about:tabcrashed will run in the parent process, we can safely
       // manipulate its DOM nodes directly
       let comments = doc.getElementById("comments");
-      let email = doc.getElementById("email");
-      let emailMe = doc.getElementById("emailMe");
       let includeURL = doc.getElementById("includeURL");
 
       if (fieldValues.hasOwnProperty("comments")) {
         comments.value = fieldValues.comments;
       }
 
-      if (fieldValues.hasOwnProperty("email")) {
-        email.value = fieldValues.email;
-      }
-
-      if (fieldValues.hasOwnProperty("emailMe")) {
-        emailMe.checked = fieldValues.emailMe;
-      }
-
       if (fieldValues.hasOwnProperty("includeURL")) {
         includeURL.checked = fieldValues.includeURL;
       }
 
-      let crashReport = promiseCrashReport(expectedExtra);
+      let crashReport = shouldFail
+        ? promiseCrashReportFail()
+        : promiseCrashReport(expectedExtra);
       let restoreTab = browser.contentDocument.getElementById("restoreTab");
       restoreTab.click();
       await BrowserTestUtils.waitForEvent(tab, "SSTabRestored");
@@ -93,26 +78,29 @@ function crashTabTestHelper(fieldValues, expectedExtra) {
       // Submitting the crash report may have set some prefs regarding how to
       // send tab crash reports. Let's reset them for the next test.
       prefs.setBoolPref("sendReport", originalSendReport);
-      prefs.setBoolPref("emailMe", originalEmailMe);
       prefs.setBoolPref("includeURL", originalIncludeURL);
-      prefs.setCharPref("email", originalEmail);
     }
   );
 }
 
 /**
  * Tests what we send with the crash report by default. By default, we do not
- * send any comments, the URL of the crashing page, or the email address of
- * the user.
+ * send any comments or the URL of the crashing page.
  */
 add_task(async function test_default() {
+  let submissionBefore = Glean.crashSubmission.success.testGetValue();
   await crashTabTestHelper(
     {},
     {
+      SubmittedFrom: "CrashedTab",
+      Throttleable: "1",
       Comments: null,
       URL: "",
-      Email: null,
     }
+  );
+  Assert.equal(
+    submissionBefore + 1,
+    Glean.crashSubmission.success.testGetValue()
   );
 });
 
@@ -120,49 +108,21 @@ add_task(async function test_default() {
  * Test just sending a comment.
  */
 add_task(async function test_just_a_comment() {
+  let submissionBefore = Glean.crashSubmission.success.testGetValue();
   await crashTabTestHelper(
     {
+      SubmittedFrom: "CrashedTab",
+      Throttleable: "1",
       comments: COMMENTS,
     },
     {
       Comments: COMMENTS,
       URL: "",
-      Email: null,
     }
   );
-});
-
-/**
- * Test that we don't send email if emailMe is unchecked
- */
-add_task(async function test_no_email() {
-  await crashTabTestHelper(
-    {
-      email: EMAIL,
-      emailMe: false,
-    },
-    {
-      Comments: null,
-      URL: "",
-      Email: null,
-    }
-  );
-});
-
-/**
- * Test that we can send an email address if emailMe is checked
- */
-add_task(async function test_yes_email() {
-  await crashTabTestHelper(
-    {
-      email: EMAIL,
-      emailMe: true,
-    },
-    {
-      Comments: null,
-      URL: "",
-      Email: EMAIL,
-    }
+  Assert.equal(
+    submissionBefore + 1,
+    Glean.crashSubmission.success.testGetValue()
   );
 });
 
@@ -170,33 +130,77 @@ add_task(async function test_yes_email() {
  * Test that we will send the URL of the page if includeURL is checked.
  */
 add_task(async function test_send_URL() {
+  let submissionBefore = Glean.crashSubmission.success.testGetValue();
   await crashTabTestHelper(
     {
+      SubmittedFrom: "CrashedTab",
+      Throttleable: "1",
       includeURL: true,
     },
     {
       Comments: null,
       URL: PAGE,
-      Email: null,
     }
+  );
+  Assert.equal(
+    submissionBefore + 1,
+    Glean.crashSubmission.success.testGetValue()
   );
 });
 
 /**
- * Test that we can send comments, the email address, and the URL
+ * Test that we can send comments and the URL
  */
 add_task(async function test_send_all() {
+  let successBefore = Glean.crashSubmission.success.testGetValue();
+  let failureBefore = Glean.crashSubmission.failure.testGetValue();
   await crashTabTestHelper(
     {
+      SubmittedFrom: "CrashedTab",
+      Throttleable: "1",
       includeURL: true,
-      emailMe: true,
-      email: EMAIL,
       comments: COMMENTS,
     },
     {
       Comments: COMMENTS,
       URL: PAGE,
-      Email: EMAIL,
     }
+  );
+  Assert.equal(successBefore + 1, Glean.crashSubmission.success.testGetValue());
+  Assert.equal(failureBefore, Glean.crashSubmission.failure.testGetValue());
+});
+
+add_task(async function test_send_error() {
+  let successBefore = Glean.crashSubmission.success.testGetValue();
+  let failureBefore = Glean.crashSubmission.failure.testGetValue();
+
+  Assert.equal(
+    null,
+    Glean.crashSubmission.collectorErrors.unknown_error.testGetValue()
+  );
+  let invalidAnnotation =
+    Glean.crashSubmission.collectorErrors.malformed_invalid_annotation_value.testGetValue();
+
+  await crashTabTestHelper(
+    {
+      SubmittedFrom: "CrashedTab",
+      Throttleable: "0",
+      comments: "fail-me://malformed_invalid_annotation_value",
+    },
+    {
+      Comments: "fail-me://malformed_invalid_annotation_value",
+    },
+    /* shouldFail */ true
+  );
+  Assert.equal(successBefore, Glean.crashSubmission.success.testGetValue());
+  Assert.equal(failureBefore + 1, Glean.crashSubmission.failure.testGetValue());
+
+  Assert.equal(
+    null,
+    Glean.crashSubmission.collectorErrors.unknown_error.testGetValue()
+  );
+  Assert.equal(
+    invalidAnnotation + 1,
+    Glean.crashSubmission.collectorErrors.malformed_invalid_annotation_value.testGetValue()
   );
 });

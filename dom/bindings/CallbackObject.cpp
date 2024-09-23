@@ -15,14 +15,13 @@
 #include "xpcprivate.h"
 #include "WorkerPrivate.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "WorkerScope.h"
 #include "jsapi.h"
 #include "js/ContextOptions.h"
 #include "nsJSPrincipals.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CallbackObject)
   NS_INTERFACE_MAP_ENTRY(mozilla::dom::CallbackObject)
@@ -30,9 +29,9 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CallbackObject)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(CallbackObject)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(CallbackObject)
+NS_IMPL_CYCLE_COLLECTING_RELEASE_WITH_LAST_RELEASE(CallbackObject, Reset())
 
-NS_IMPL_CYCLE_COLLECTION_MULTI_ZONE_JSHOLDER_CLASS(CallbackObject)
+NS_IMPL_CYCLE_COLLECTION_CLASS(CallbackObject)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CallbackObject)
   tmp->ClearJSReferences();
@@ -100,8 +99,8 @@ void CallbackObject::FinishSlowJSInitIfMoreThanOneOwner(JSContext* aCx) {
   MOZ_ASSERT(mRefCnt.get() > 0);
   if (mRefCnt.get() > 1) {
     mozilla::HoldJSObjects(this);
-    if (JS::ContextOptionsRef(aCx).asyncStack()) {
-      JS::RootedObject stack(aCx);
+    if (JS::IsAsyncStackCaptureEnabledForRealm(aCx)) {
+      JS::Rooted<JSObject*> stack(aCx);
       if (!JS::CaptureCurrentStack(aCx, &stack)) {
         JS_ClearPendingException(aCx);
       }
@@ -148,7 +147,7 @@ void CallbackObject::GetDescription(nsACString& aOutString) {
   jsapi.Init();
   JSContext* cx = jsapi.cx();
 
-  JS::RootedObject rootedCallback(cx, unwrappedCallback);
+  JS::Rooted<JSObject*> rootedCallback(cx, unwrappedCallback);
   JSAutoRealm ar(cx, rootedCallback);
 
   JS::Rooted<JSFunction*> rootedFunction(cx,
@@ -158,7 +157,8 @@ void CallbackObject::GetDescription(nsACString& aOutString) {
     return;
   }
 
-  JS::Rooted<JSString*> displayId(cx, JS_GetFunctionDisplayId(rootedFunction));
+  JS::Rooted<JSString*> displayId(
+      cx, JS_GetMaybePartialFunctionDisplayId(rootedFunction));
   if (displayId) {
     nsAutoJSString funcNameStr;
     if (funcNameStr.init(cx, displayId)) {
@@ -199,6 +199,10 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
       mErrorResult(aRv),
       mExceptionHandling(aExceptionHandling),
       mIsMainThread(NS_IsMainThread()) {
+  MOZ_ASSERT_IF(aExceptionHandling == eReportExceptions ||
+                    aExceptionHandling == eRethrowExceptions,
+                !aRealm);
+
   CycleCollectedJSContext* ccjs = CycleCollectedJSContext::Get();
   if (ccjs) {
     ccjs->EnterMicroTask();
@@ -264,6 +268,7 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
     return;
   }
 
+  AutoAllowLegacyScriptExecution exemption;
   mAutoEntryScript.emplace(globalObject, aExecutionReason, mIsMainThread);
   mAutoEntryScript->SetWebIDLCallerPrincipal(webIDLCallerPrincipal);
   nsIGlobalObject* incumbent = aCallback->IncumbentGlobalOrNull();
@@ -317,29 +322,8 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
 bool CallbackObject::CallSetup::ShouldRethrowException(
     JS::Handle<JS::Value> aException) {
   if (mExceptionHandling == eRethrowExceptions) {
-    if (!mRealm) {
-      // Caller didn't ask us to filter for only exceptions we subsume.
-      return true;
-    }
-
-    // On workers, we don't have nsIPrincipals to work with.  But we also only
-    // have one realm, so check whether mRealm is the same as the current realm
-    // of mCx.
-    if (mRealm == js::GetContextRealm(mCx)) {
-      return true;
-    }
-
-    MOZ_ASSERT(NS_IsMainThread());
-
-    // At this point mCx is in the realm of our unwrapped callback, so just
-    // check whether the principal of mRealm subsumes that of the current
-    // realm/global of mCx.
-    nsIPrincipal* callerPrincipal =
-        nsJSPrincipals::get(JS::GetRealmPrincipals(mRealm));
-    nsIPrincipal* calleePrincipal = nsContentUtils::SubjectPrincipal();
-    if (callerPrincipal->SubsumesConsideringDomain(calleePrincipal)) {
-      return true;
-    }
+    MOZ_ASSERT(!mRealm);
+    return true;
   }
 
   MOZ_ASSERT(mRealm);
@@ -447,5 +431,4 @@ already_AddRefed<nsISupports> CallbackObjectHolderBase::ToXPCOMCallback(
   return retval.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

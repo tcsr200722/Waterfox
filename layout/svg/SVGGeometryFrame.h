@@ -4,56 +4,56 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __SVGGEOMETRYFRAME_H__
-#define __SVGGEOMETRYFRAME_H__
+#ifndef LAYOUT_SVG_SVGGEOMETRYFRAME_H_
+#define LAYOUT_SVG_SVGGEOMETRYFRAME_H_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DisplaySVGItem.h"
+#include "mozilla/ISVGDisplayableFrame.h"
 #include "gfxMatrix.h"
 #include "gfxRect.h"
-#include "nsDisplayList.h"
-#include "nsFrame.h"
-#include "nsSVGDisplayableFrame.h"
-#include "nsLiteralString.h"
-#include "nsQueryFrame.h"
-#include "nsSVGUtils.h"
+#include "nsIFrame.h"
 
 namespace mozilla {
+
+class DisplaySVGGeometry;
+class PresShell;
 class SVGGeometryFrame;
 class SVGMarkerObserver;
-class nsDisplaySVGGeometry;
+
 namespace gfx {
 class DrawTarget;
 }  // namespace gfx
+
+namespace image {
+struct imgDrawingParams;
+}  // namespace image
+
 }  // namespace mozilla
 
 class gfxContext;
 class nsAtom;
 class nsIFrame;
-class nsSVGMarkerFrame;
 
 struct nsRect;
-
-namespace mozilla {
-class PresShell;
-}  // namespace mozilla
 
 nsIFrame* NS_NewSVGGeometryFrame(mozilla::PresShell* aPresShell,
                                  mozilla::ComputedStyle* aStyle);
 
 namespace mozilla {
 
-class SVGGeometryFrame : public nsFrame, public nsSVGDisplayableFrame {
-  typedef mozilla::gfx::DrawTarget DrawTarget;
+class SVGGeometryFrame final : public nsIFrame, public ISVGDisplayableFrame {
+  using DrawTarget = gfx::DrawTarget;
 
   friend nsIFrame* ::NS_NewSVGGeometryFrame(mozilla::PresShell* aPresShell,
                                             ComputedStyle* aStyle);
 
-  friend class nsDisplaySVGGeometry;
+  friend class DisplaySVGGeometry;
 
  protected:
   SVGGeometryFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                    nsIFrame::ClassID aID = kClassID)
-      : nsFrame(aStyle, aPresContext, aID) {
+      : nsIFrame(aStyle, aPresContext, aID) {
     AddStateBits(NS_FRAME_SVG_LAYOUT | NS_FRAME_MAY_BE_TRANSFORMED);
   }
 
@@ -62,112 +62,80 @@ class SVGGeometryFrame : public nsFrame, public nsSVGDisplayableFrame {
   NS_DECL_FRAMEARENA_HELPERS(SVGGeometryFrame)
 
   // nsIFrame interface:
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) override;
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    if (aFlags & eSupportsContainLayoutAndPaint) {
-      return false;
-    }
+  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+                            int32_t aModType) override;
 
-    return nsFrame::IsFrameOfType(aFlags & ~nsIFrame::eSVG);
-  }
+  void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
 
-  virtual nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                    int32_t aModType) override;
-
-  virtual void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
-
-  virtual bool IsSVGTransformed(
-      Matrix* aOwnTransforms = nullptr,
-      Matrix* aFromParentTransforms = nullptr) const override;
+  bool IsSVGTransformed(Matrix* aOwnTransforms = nullptr,
+                        Matrix* aFromParentTransforms = nullptr) const override;
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("SVGGeometry"), aResult);
+  nsresult GetFrameName(nsAString& aResult) const override {
+    return MakeFrameName(u"SVGGeometry"_ns, aResult);
   }
 #endif
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
   // SVGGeometryFrame methods
   gfxMatrix GetCanvasTM();
 
- protected:
-  // nsSVGDisplayableFrame interface:
-  virtual void PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
-                        imgDrawingParams& aImgParams,
-                        const nsIntRect* aDirtyRect = nullptr) override;
-  virtual nsIFrame* GetFrameForPoint(const gfxPoint& aPoint) override;
-  virtual void ReflowSVG() override;
-  virtual void NotifySVGChanged(uint32_t aFlags) override;
-  virtual SVGBBox GetBBoxContribution(const Matrix& aToBBoxUserspace,
-                                      uint32_t aFlags) override;
-  virtual bool IsDisplayContainer() override { return false; }
-
-  /**
-   * This function returns a set of bit flags indicating which parts of the
-   * element (fill, stroke, bounds) should intercept pointer events. It takes
-   * into account the type of element and the value of the 'pointer-events'
-   * property on the element.
-   */
-  virtual uint16_t GetHitTestFlags();
+  bool IsInvisible() const;
 
  private:
+  // ISVGDisplayableFrame interface:
+  void PaintSVG(gfxContext& aContext, const gfxMatrix& aTransform,
+                imgDrawingParams& aImgParams) override;
+  nsIFrame* GetFrameForPoint(const gfxPoint& aPoint) override;
+  void ReflowSVG() override;
+  void NotifySVGChanged(uint32_t aFlags) override;
+  SVGBBox GetBBoxContribution(const Matrix& aToBBoxUserspace,
+                              uint32_t aFlags) override;
+  bool IsDisplayContainer() override { return false; }
+
   enum { eRenderFill = 1, eRenderStroke = 2 };
   void Render(gfxContext* aContext, uint32_t aRenderComponents,
               const gfxMatrix& aTransform, imgDrawingParams& aImgParams);
 
-  virtual bool CreateWebRenderCommands(
+  bool CreateWebRenderCommands(
       mozilla::wr::DisplayListBuilder& aBuilder,
       mozilla::wr::IpcResourceUpdateQueue& aResources,
       const mozilla::layers::StackingContextHelper& aSc,
       mozilla::layers::RenderRootStateManager* aManager,
-      nsDisplayListBuilder* aDisplayListBuilder, nsDisplaySVGGeometry* aItem,
-      bool aDryRun) {
-    MOZ_RELEASE_ASSERT(aDryRun, "You shouldn't be calling this directly");
-    return false;
-  }
+      nsDisplayListBuilder* aDisplayListBuilder, DisplaySVGGeometry* aItem,
+      bool aDryRun);
   /**
    * @param aMatrix The transform that must be multiplied onto aContext to
    *   establish this frame's SVG user space.
    */
   void PaintMarkers(gfxContext& aContext, const gfxMatrix& aTransform,
                     imgDrawingParams& aImgParams);
+
+  /*
+   * Get the stroke width that markers should use, accounting for
+   * non-scaling stroke.
+   */
+  float GetStrokeWidthForMarkers();
 };
 
 //----------------------------------------------------------------------
 // Display list item:
 
-class nsDisplaySVGGeometry final : public nsPaintedDisplayItem {
-  typedef mozilla::image::imgDrawingParams imgDrawingParams;
-
+class DisplaySVGGeometry final : public DisplaySVGItem {
  public:
-  nsDisplaySVGGeometry(nsDisplayListBuilder* aBuilder, SVGGeometryFrame* aFrame)
-      : nsPaintedDisplayItem(aBuilder, aFrame) {
-    MOZ_COUNT_CTOR(nsDisplaySVGGeometry);
-    MOZ_ASSERT(aFrame, "Must have a frame!");
-  }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplaySVGGeometry() { MOZ_COUNT_DTOR(nsDisplaySVGGeometry); }
-#endif
-
-  NS_DISPLAY_DECL_NAME("nsDisplaySVGGeometry", TYPE_SVG_GEOMETRY)
-
-  virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
-                       HitTestState* aState,
-                       nsTArray<nsIFrame*>* aOutFrames) override;
-  virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
-
-  nsDisplayItemGeometry* AllocateGeometry(
-      nsDisplayListBuilder* aBuilder) override {
-    return new nsDisplayItemGenericImageGeometry(this, aBuilder);
+  DisplaySVGGeometry(nsDisplayListBuilder* aBuilder, SVGGeometryFrame* aFrame)
+      : DisplaySVGItem(aBuilder, aFrame) {
+    MOZ_COUNT_CTOR(DisplaySVGGeometry);
   }
 
-  void ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
-                                 const nsDisplayItemGeometry* aGeometry,
-                                 nsRegion* aInvalidRegion) const override;
+  MOZ_COUNTED_DTOR_OVERRIDE(DisplaySVGGeometry)
+
+  NS_DISPLAY_DECL_NAME("DisplaySVGGeometry", TYPE_SVG_GEOMETRY)
 
   // Whether this part of the SVG should be natively handled by webrender,
   // potentially becoming an "active layer" inside a blob image.
@@ -185,7 +153,7 @@ class nsDisplaySVGGeometry final : public nsPaintedDisplayItem {
                                           /*aDryRun=*/true);
   }
 
-  virtual bool CreateWebRenderCommands(
+  bool CreateWebRenderCommands(
       mozilla::wr::DisplayListBuilder& aBuilder,
       mozilla::wr::IpcResourceUpdateQueue& aResources,
       const mozilla::layers::StackingContextHelper& aSc,
@@ -201,7 +169,13 @@ class nsDisplaySVGGeometry final : public nsPaintedDisplayItem {
     MOZ_ASSERT(result, "ShouldBeActive inconsistent with CreateWRCommands?");
     return result;
   }
+
+  bool IsInvisible() const override {
+    auto* frame = static_cast<SVGGeometryFrame*>(mFrame);
+    return frame->IsInvisible();
+  }
 };
+
 }  // namespace mozilla
 
-#endif  // __SVGGEOMETRYFRAME_H__
+#endif  // LAYOUT_SVG_SVGGEOMETRYFRAME_H_

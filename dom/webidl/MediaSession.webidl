@@ -13,7 +13,6 @@ enum MediaSessionPlaybackState {
   "playing"
 };
 
-// TODO: Implement the missing seekto (bug 1621403) and skipad (bug 1582569) actions
 enum MediaSessionAction {
   "play",
   "pause",
@@ -21,28 +20,30 @@ enum MediaSessionAction {
   "seekforward",
   "previoustrack",
   "nexttrack",
+  "skipad",
+  "seekto",
   "stop",
 };
 
-callback MediaSessionActionHandler = void(MediaSessionActionDetails details);
+callback MediaSessionActionHandler = undefined(MediaSessionActionDetails details);
 
-[Exposed=Window, Pref="dom.media.mediasession.enabled"]
+[Exposed=Window]
 interface MediaSession {
   attribute MediaMetadata? metadata;
 
   attribute MediaSessionPlaybackState playbackState;
 
-  void setActionHandler(MediaSessionAction action, MediaSessionActionHandler? handler);
+  undefined setActionHandler(MediaSessionAction action, MediaSessionActionHandler? handler);
 
   [Throws]
-  void setPositionState(optional MediaPositionState state = {});
+  undefined setPositionState(optional MediaPositionState state = {});
 
   // Fire the action handler. It's test-only for now.
   [ChromeOnly]
-  void notifyHandler(MediaSessionActionDetails details);
+  undefined notifyHandler(MediaSessionActionDetails details);
 };
 
-[Exposed=Window, Pref="dom.media.mediasession.enabled"]
+[Exposed=Window]
 interface MediaMetadata {
   [Throws]
   constructor(optional MediaMetadataInit init = {});
@@ -69,11 +70,12 @@ dictionary MediaImage {
   DOMString type = "";
 };
 
+// Spec issue https://github.com/w3c/mediasession/issues/254
 dictionary MediaSessionActionDetails {
   required MediaSessionAction action;
-  // Merge MediaSessionSeekActionDetails here:
-  // https://github.com/w3c/mediasession/issues/234
   double seekOffset;
+  double seekTime;
+  boolean fastSeek;
 };
 
 dictionary MediaPositionState {

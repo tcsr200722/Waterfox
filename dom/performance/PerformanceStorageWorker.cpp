@@ -5,12 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PerformanceStorageWorker.h"
+#include "Performance.h"
+#include "PerformanceResourceTiming.h"
+#include "PerformanceTiming.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerScope.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PerformanceProxyData {
  public:
@@ -19,9 +21,11 @@ class PerformanceProxyData {
                        const nsAString& aEntryName)
       : mData(std::move(aData)),
         mInitiatorType(aInitiatorType),
-        mEntryName(aEntryName) {}
+        mEntryName(aEntryName) {
+    MOZ_RELEASE_ASSERT(mData);
+  }
 
-  UniquePtr<PerformanceTimingData> mData;
+  UniquePtr<PerformanceTimingData> mData;  // always non-null
   nsString mInitiatorType;
   nsString mEntryName;
 };
@@ -35,7 +39,7 @@ class PerformanceEntryAdder final : public WorkerControlRunnable {
   PerformanceEntryAdder(WorkerPrivate* aWorkerPrivate,
                         PerformanceStorageWorker* aStorage,
                         UniquePtr<PerformanceProxyData>&& aData)
-      : WorkerControlRunnable(aWorkerPrivate, WorkerThreadUnchangedBusyCount),
+      : WorkerControlRunnable("PerformanceEntryAdder"),
         mStorage(aStorage),
         mData(std::move(aData)) {}
 
@@ -46,7 +50,7 @@ class PerformanceEntryAdder final : public WorkerControlRunnable {
 
   nsresult Cancel() override {
     mStorage->ShutdownOnWorker();
-    return WorkerRunnable::Cancel();
+    return NS_OK;
   }
 
   bool PreDispatch(WorkerPrivate* aWorkerPrivate) override { return true; }
@@ -69,6 +73,7 @@ already_AddRefed<PerformanceStorageWorker> PerformanceStorageWorker::Create(
 
   RefPtr<PerformanceStorageWorker> storage = new PerformanceStorageWorker();
 
+  MutexAutoLock lock(storage->mMutex);  // for thread-safety analysis
   storage->mWorkerRef = WeakWorkerRef::Create(
       aWorkerPrivate, [storage]() { storage->ShutdownOnWorker(); });
 
@@ -113,7 +118,21 @@ void PerformanceStorageWorker::AddEntry(nsIHttpChannel* aChannel,
 
   RefPtr<PerformanceEntryAdder> r =
       new PerformanceEntryAdder(workerPrivate, this, std::move(data));
-  Unused << NS_WARN_IF(!r->Dispatch());
+  Unused << NS_WARN_IF(!r->Dispatch(workerPrivate));
+}
+
+void PerformanceStorageWorker::AddEntry(
+    const nsString& aEntryName, const nsString& aInitiatorType,
+    UniquePtr<PerformanceTimingData>&& aData) {
+  MOZ_ASSERT(!NS_IsMainThread());
+  if (!aData) {
+    return;
+  }
+
+  UniquePtr<PerformanceProxyData> data = MakeUnique<PerformanceProxyData>(
+      std::move(aData), aInitiatorType, aEntryName);
+
+  AddEntryOnWorker(std::move(data));
 }
 
 void PerformanceStorageWorker::ShutdownOnWorker() {
@@ -123,7 +142,7 @@ void PerformanceStorageWorker::ShutdownOnWorker() {
     return;
   }
 
-  MOZ_ASSERT(IsCurrentThreadRunningWorker());
+  MOZ_ASSERT(!NS_IsMainThread());
 
   mWorkerRef = nullptr;
 }
@@ -162,5 +181,4 @@ void PerformanceStorageWorker::AddEntryOnWorker(
   performance->InsertResourceEntry(performanceEntry);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

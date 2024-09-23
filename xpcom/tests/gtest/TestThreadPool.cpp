@@ -19,9 +19,9 @@
 
 using namespace mozilla;
 
-class Task final : public Runnable {
+class TestTask final : public Runnable {
  public:
-  Task(int i, Atomic<int>& aCounter)
+  TestTask(int i, Atomic<int>& aCounter)
       : Runnable("TestThreadPool::Task"), mIndex(i), mCounter(aCounter) {}
 
   NS_IMETHOD Run() override {
@@ -36,7 +36,7 @@ class Task final : public Runnable {
   }
 
  private:
-  ~Task() = default;
+  ~TestTask() = default;
 
   int mIndex;
   Atomic<int>& mCounter;
@@ -49,7 +49,7 @@ TEST(ThreadPool, Main)
   Atomic<int> count(0);
 
   for (int i = 0; i < 100; ++i) {
-    nsCOMPtr<nsIRunnable> task = new Task(i, count);
+    nsCOMPtr<nsIRunnable> task = new TestTask(i, count);
     EXPECT_TRUE(task);
 
     pool->Dispatch(task, NS_DISPATCH_NORMAL);
@@ -65,7 +65,8 @@ TEST(ThreadPool, Parallelism)
 
   // Dispatch and sleep to ensure we have an idle thread
   nsCOMPtr<nsIRunnable> r0 = new Runnable("TestRunnable");
-  pool->Dispatch(r0, NS_DISPATCH_SYNC);
+  NS_DispatchAndSpinEventLoopUntilComplete("ThreadPool::Parallelism"_ns, pool,
+                                           do_AddRef(r0));
   PR_Sleep(PR_SecondsToInterval(2));
 
   class Runnable1 : public Runnable {
@@ -110,7 +111,7 @@ TEST(ThreadPool, Parallelism)
   // We should wake up the idle thread and spawn a new thread so these 2 events
   // can run in parallel. We will time out if r1 and r2 run in sequence for r1
   // won't finish until r2 finishes.
-  Monitor mon("ThreadPool::Parallelism");
+  Monitor mon MOZ_UNANNOTATED("ThreadPool::Parallelism");
   bool done = false;
   nsCOMPtr<nsIRunnable> r1 = new Runnable1(mon, done);
   nsCOMPtr<nsIRunnable> r2 = new Runnable2(mon, done);
@@ -126,7 +127,7 @@ TEST(ThreadPool, ShutdownWithTimeout)
 
   Atomic<int> allThreadsCount(0);
   for (int i = 0; i < 4; ++i) {
-    nsCOMPtr<nsIRunnable> task = new Task(i, allThreadsCount);
+    nsCOMPtr<nsIRunnable> task = new TestTask(i, allThreadsCount);
     EXPECT_TRUE(task);
 
     pool->Dispatch(task, NS_DISPATCH_NORMAL);
@@ -141,7 +142,7 @@ TEST(ThreadPool, ShutdownWithTimeout)
   Atomic<bool> shutdownAck(false);
   pool = new nsThreadPool();
   for (int i = 0; i < 3; ++i) {
-    nsCOMPtr<nsIRunnable> task = new Task(i, infiniteLoopCount);
+    nsCOMPtr<nsIRunnable> task = new TestTask(i, infiniteLoopCount);
     EXPECT_TRUE(task);
 
     pool->Dispatch(task, NS_DISPATCH_NORMAL);
@@ -174,7 +175,7 @@ TEST(ThreadPool, ShutdownWithTimeoutThenSleep)
   nsCOMPtr<nsIThreadPool> pool = new nsThreadPool();
 
   for (int i = 0; i < 3; ++i) {
-    nsCOMPtr<nsIRunnable> task = new Task(i, count);
+    nsCOMPtr<nsIRunnable> task = new TestTask(i, count);
     EXPECT_TRUE(task);
 
     pool->Dispatch(task, NS_DISPATCH_NORMAL);

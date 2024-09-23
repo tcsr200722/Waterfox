@@ -4,40 +4,49 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "GPUChild.h"
-#include "gfxConfig.h"
-#include "gfxPlatform.h"
+
 #include "GPUProcessHost.h"
 #include "GPUProcessManager.h"
+#include "GfxInfoBase.h"
+#include "TelemetryProbesReporter.h"
+#include "VideoUtils.h"
 #include "VRProcessManager.h"
+#include "gfxConfig.h"
+#include "gfxPlatform.h"
+#include "mozilla/Components.h"
+#include "mozilla/FOGIPC.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_media.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TelemetryIPC.h"
 #include "mozilla/dom/CheckerboardReportService.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/MemoryReportRequest.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/gfxVars.h"
 #if defined(XP_WIN)
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #endif
+#include "mozilla/HangDetails.h"
+#include "mozilla/RemoteDecoderManagerChild.h"  // For RemoteDecodeIn
+#include "mozilla/Unused.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/APZInputBridgeChild.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
-#include "mozilla/Unused.h"
-#include "mozilla/HangDetails.h"
+#include "nsHashPropertyBag.h"
+#include "nsIGfxInfo.h"
 #include "nsIObserverService.h"
-
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerParent.h"
-#endif
+#include "nsIPropertyBag2.h"
+#include "ProfilerParent.h"
 
 namespace mozilla {
 namespace gfx {
 
 using namespace layers;
 
-GPUChild::GPUChild(GPUProcessHost* aHost) : mHost(aHost), mGPUReady(false) {
-  MOZ_COUNT_CTOR(GPUChild);
-}
+GPUChild::GPUChild(GPUProcessHost* aHost) : mHost(aHost), mGPUReady(false) {}
 
-GPUChild::~GPUChild() { MOZ_COUNT_DTOR(GPUChild); }
+GPUChild::~GPUChild() = default;
 
 void GPUChild::Init() {
   nsTArray<GfxVarUpdate> updates = gfxVars::FetchNonDefaultVars();
@@ -48,9 +57,8 @@ void GPUChild::Init() {
       gfxConfig::GetValue(Feature::D3D11_COMPOSITING);
   devicePrefs.oglCompositing() =
       gfxConfig::GetValue(Feature::OPENGL_COMPOSITING);
-  devicePrefs.advancedLayers() = gfxConfig::GetValue(Feature::ADVANCED_LAYERS);
   devicePrefs.useD2D1() = gfxConfig::GetValue(Feature::DIRECT2D);
-  devicePrefs.webGPU() = gfxConfig::GetValue(Feature::WEBGPU);
+  devicePrefs.d3d11HwAngle() = gfxConfig::GetValue(Feature::D3D11_HW_ANGLE);
 
   nsTArray<LayerTreeIdMapping> mappings;
   LayerTreeOwnerTracker::Get()->Iterate(
@@ -58,19 +66,29 @@ void GPUChild::Init() {
         mappings.AppendElement(LayerTreeIdMapping(aLayersId, aProcessId));
       });
 
-  SendInit(updates, devicePrefs, mappings);
+  nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
+  nsTArray<GfxInfoFeatureStatus> features;
+  if (gfxInfo) {
+    auto* gfxInfoRaw = static_cast<widget::GfxInfoBase*>(gfxInfo.get());
+    features = gfxInfoRaw->GetAllFeatures();
+  }
+
+  SendInit(updates, devicePrefs, mappings, features,
+           GPUProcessManager::Get()->AllocateNamespace());
 
   gfxVars::AddReceiver(this);
 
-#ifdef MOZ_GECKO_PROFILER
   Unused << SendInitProfiler(ProfilerParent::CreateForProcess(OtherPid()));
-#endif
 }
 
 void GPUChild::OnVarChanged(const GfxVarUpdate& aVar) { SendUpdateVar(aVar); }
 
 bool GPUChild::EnsureGPUReady() {
-  if (mGPUReady) {
+  // On our initial process launch, we want to block on the GetDeviceStatus
+  // message. Additionally, we may have updated our compositor configuration
+  // through the gfxVars after fallback, in which case we want to ensure the
+  // GPU process has handled any updates before creating compositor sessions.
+  if (mGPUReady && !mWaitForVarUpdate) {
     return true;
   }
 
@@ -79,15 +97,45 @@ bool GPUChild::EnsureGPUReady() {
     return false;
   }
 
-  gfxPlatform::GetPlatform()->ImportGPUDeviceData(data);
-  Telemetry::AccumulateTimeDelta(Telemetry::GPU_PROCESS_LAUNCH_TIME_MS_2,
-                                 mHost->GetLaunchTime());
-  mGPUReady = true;
+  // Only import and collect telemetry for the initial GPU process launch.
+  if (!mGPUReady) {
+    gfxPlatform::GetPlatform()->ImportGPUDeviceData(data);
+    Telemetry::AccumulateTimeDelta(Telemetry::GPU_PROCESS_LAUNCH_TIME_MS_2,
+                                   mHost->GetLaunchTime());
+    mGPUReady = true;
+  }
+
+  mWaitForVarUpdate = false;
   return true;
 }
 
-base::ProcessHandle GPUChild::GetChildProcessHandle() {
-  return mHost->GetChildProcessHandle();
+void GPUChild::OnUnexpectedShutdown() { mUnexpectedShutdown = true; }
+
+void GPUChild::GeneratePairedMinidump() {
+  // At most generate the paired minidumps twice per session in order to
+  // avoid accumulating a large number of unsubmitted minidumps on disk.
+  if (mCrashReporter && mNumPairedMinidumpsCreated < 2) {
+    nsAutoCString additionalDumps("browser");
+    mCrashReporter->AddAnnotationNSCString(
+        CrashReporter::Annotation::additional_minidumps, additionalDumps);
+
+    nsAutoCString reason("GPUProcessKill");
+    mCrashReporter->AddAnnotationNSCString(
+        CrashReporter::Annotation::ipc_channel_error, reason);
+
+    if (mCrashReporter->GenerateMinidumpAndPair(mHost, "browser"_ns)) {
+      mCrashReporter->FinalizeCrashReport();
+      mCreatedPairedMinidumps = true;
+      mNumPairedMinidumpsCreated++;
+    }
+  }
+}
+
+void GPUChild::DeletePairedMinidump() {
+  if (mCrashReporter && mCreatedPairedMinidumps) {
+    mCrashReporter->DeleteCrashReport();
+    mCreatedPairedMinidumps = false;
+  }
 }
 
 mozilla::ipc::IPCResult GPUChild::RecvInitComplete(const GPUDeviceData& aData) {
@@ -100,6 +148,11 @@ mozilla::ipc::IPCResult GPUChild::RecvInitComplete(const GPUDeviceData& aData) {
   Telemetry::AccumulateTimeDelta(Telemetry::GPU_PROCESS_LAUNCH_TIME_MS_2,
                                  mHost->GetLaunchTime());
   mGPUReady = true;
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvDeclareStable() {
+  mHost->mListener->OnProcessDeclaredStable();
   return IPC_OK();
 }
 
@@ -195,9 +248,35 @@ mozilla::ipc::IPCResult GPUChild::RecvRecordDiscardedData(
 }
 
 mozilla::ipc::IPCResult GPUChild::RecvNotifyDeviceReset(
-    const GPUDeviceData& aData) {
+    const GPUDeviceData& aData, const DeviceResetReason& aReason,
+    const DeviceResetDetectPlace& aPlace) {
   gfxPlatform::GetPlatform()->ImportGPUDeviceData(aData);
-  mHost->mListener->OnRemoteProcessDeviceReset(mHost);
+  mHost->mListener->OnRemoteProcessDeviceReset(mHost, aReason, aPlace);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvNotifyOverlayInfo(
+    const OverlayInfo aInfo) {
+  gfxPlatform::GetPlatform()->SetOverlayInfo(aInfo);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvNotifySwapChainInfo(
+    const SwapChainInfo aInfo) {
+  gfxPlatform::GetPlatform()->SetSwapChainInfo(aInfo);
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvNotifyDisableRemoteCanvas() {
+  gfxPlatform::DisableRemoteCanvas();
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvFlushMemory(const nsString& aReason) {
+  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
+  if (os) {
+    os->NotifyObservers(nullptr, "memory-pressure", aReason.get());
+  }
   return IPC_OK();
 }
 
@@ -206,8 +285,27 @@ bool GPUChild::SendRequestMemoryReport(const uint32_t& aGeneration,
                                        const bool& aMinimizeMemoryUsage,
                                        const Maybe<FileDescriptor>& aDMDFile) {
   mMemoryReportRequest = MakeUnique<MemoryReportRequestHost>(aGeneration);
-  Unused << PGPUChild::SendRequestMemoryReport(aGeneration, aAnonymize,
-                                               aMinimizeMemoryUsage, aDMDFile);
+
+  PGPUChild::SendRequestMemoryReport(
+      aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile,
+      [&](const uint32_t& aGeneration2) {
+        if (GPUProcessManager* gpm = GPUProcessManager::Get()) {
+          if (GPUChild* child = gpm->GetGPUChild()) {
+            if (child->mMemoryReportRequest) {
+              child->mMemoryReportRequest->Finish(aGeneration2);
+              child->mMemoryReportRequest = nullptr;
+            }
+          }
+        }
+      },
+      [&](mozilla::ipc::ResponseRejectReason) {
+        if (GPUProcessManager* gpm = GPUProcessManager::Get()) {
+          if (GPUChild* child = gpm->GetGPUChild()) {
+            child->mMemoryReportRequest = nullptr;
+          }
+        }
+      });
+
   return true;
 }
 
@@ -219,28 +317,28 @@ mozilla::ipc::IPCResult GPUChild::RecvAddMemoryReport(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult GPUChild::RecvFinishMemoryReport(
-    const uint32_t& aGeneration) {
-  if (mMemoryReportRequest) {
-    mMemoryReportRequest->Finish(aGeneration);
-    mMemoryReportRequest = nullptr;
-  }
-  return IPC_OK();
-}
-
 void GPUChild::ActorDestroy(ActorDestroyReason aWhy) {
-  if (aWhy == AbnormalShutdown) {
-    GenerateCrashReport(OtherPid());
-
+  if (aWhy == AbnormalShutdown || mUnexpectedShutdown) {
     Telemetry::Accumulate(
         Telemetry::SUBPROCESS_ABNORMAL_ABORT,
         nsDependentCString(XRE_GeckoProcessTypeToString(GeckoProcessType_GPU)),
         1);
 
+    nsAutoString dumpId;
+    if (!mCreatedPairedMinidumps) {
+      GenerateCrashReport(OtherPid(), &dumpId);
+    } else if (mCrashReporter) {
+      dumpId = mCrashReporter->MinidumpID();
+    }
+
     // Notify the Telemetry environment so that we can refresh and do a
-    // subsession split
+    // subsession split. This also notifies the crash reporter on geckoview.
     if (nsCOMPtr<nsIObserverService> obsvc = services::GetObserverService()) {
-      obsvc->NotifyObservers(nullptr, "compositor:process-aborted", nullptr);
+      RefPtr<nsHashPropertyBag> props = new nsHashPropertyBag();
+      props->SetPropertyAsBool(u"abnormal"_ns, true);
+      props->SetPropertyAsAString(u"dumpID"_ns, dumpId);
+      obsvc->NotifyObservers((nsIPropertyBag2*)props,
+                             "compositor:process-aborted", nullptr);
     }
   }
 
@@ -276,19 +374,47 @@ mozilla::ipc::IPCResult GPUChild::RecvBHRThreadHang(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult GPUChild::RecvUpdateMediaCodecsSupported(
+    const media::MediaCodecsSupported& aSupported) {
+  if (ContainHardwareCodecsSupported(aSupported)) {
+    mozilla::TelemetryProbesReporter::ReportDeviceMediaCodecSupported(
+        aSupported);
+  }
+#if defined(XP_WIN)
+  // Do not propagate HEVC support if the pref is off
+  media::MediaCodecsSupported trimedSupported = aSupported;
+  if (aSupported.contains(
+          mozilla::media::MediaCodecsSupport::HEVCHardwareDecode) &&
+      StaticPrefs::media_wmf_hevc_enabled() != 1) {
+    trimedSupported -= mozilla::media::MediaCodecsSupport::HEVCHardwareDecode;
+  }
+  dom::ContentParent::BroadcastMediaCodecsSupportedUpdate(
+      RemoteDecodeIn::GpuProcess, trimedSupported);
+#else
+  dom::ContentParent::BroadcastMediaCodecsSupportedUpdate(
+      RemoteDecodeIn::GpuProcess, aSupported);
+#endif
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUChild::RecvFOGData(ByteBuf&& aBuf) {
+  glean::FOGData(std::move(aBuf));
+  return IPC_OK();
+}
+
 class DeferredDeleteGPUChild : public Runnable {
  public:
-  explicit DeferredDeleteGPUChild(UniquePtr<GPUChild>&& aChild)
+  explicit DeferredDeleteGPUChild(RefPtr<GPUChild>&& aChild)
       : Runnable("gfx::DeferredDeleteGPUChild"), mChild(std::move(aChild)) {}
 
   NS_IMETHODIMP Run() override { return NS_OK; }
 
  private:
-  UniquePtr<GPUChild> mChild;
+  RefPtr<GPUChild> mChild;
 };
 
 /* static */
-void GPUChild::Destroy(UniquePtr<GPUChild>&& aChild) {
+void GPUChild::Destroy(RefPtr<GPUChild>&& aChild) {
   NS_DispatchToMainThread(new DeferredDeleteGPUChild(std::move(aChild)));
 }
 

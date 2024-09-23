@@ -17,73 +17,198 @@
 //! [privacy-policy]: https://www.mozilla.org/privacy/
 //! [docs]: https://firefox-source-docs.mozilla.org/toolkit/components/glean/
 
-// No one is currently using the Glean SDK, so let's export it, so we know it gets
-// compiled.
-pub extern crate glean;
+use firefox_on_glean::{ipc, metrics, pings};
+use nserror::{nsresult, NS_ERROR_FAILURE, NS_OK};
+use nsstring::{nsACString, nsCString};
+use thin_vec::ThinVec;
 
-use std::ffi::CStr;
-use std::os::raw::c_char;
+#[macro_use]
+extern crate cstr;
+#[cfg_attr(not(target_os = "android"), macro_use)]
+extern crate xpcom;
 
-use nserror::{nsresult, NS_OK};
-use nsstring::nsACString;
+mod init;
+mod ohttp_pings;
 
-use client_info::ClientInfo;
-use glean_core::Configuration;
+pub use init::fog_init;
 
-mod api;
-mod client_info;
-mod core_metrics;
-
-/// Project FOG's entry point.
-///
-/// This assembles client information and the Glean configuration and then initializes the global
-/// Glean instance.
 #[no_mangle]
-pub unsafe extern "C" fn fog_init(
-    data_path: &nsACString,
-    app_build: &nsACString,
-    app_display_version: &nsACString,
-    channel: *const c_char,
-    os_version: &nsACString,
-    architecture: &nsACString,
-) -> nsresult {
-    log::debug!("Initializing FOG.");
+pub extern "C" fn fog_shutdown() {
+    glean::shutdown();
+}
 
-    let app_build = app_build.to_string();
-    let app_display_version = app_display_version.to_string();
+#[no_mangle]
+pub extern "C" fn fog_register_pings() {
+    pings::register_pings(None);
+}
 
-    let channel = CStr::from_ptr(channel);
-    let channel = Some(channel.to_string_lossy().to_string());
+static mut PENDING_BUF: Vec<u8> = Vec::new();
 
-    let os_version = os_version.to_string();
-    let architecture = architecture.to_string();
+// IPC serialization/deserialization methods
+// Crucially important that the first two not be called on multiple threads.
 
-    let client_info = ClientInfo {
-        app_build,
-        app_display_version,
-        channel,
-        os_version,
-        architecture,
+/// # Safety
+/// Only safe if only called on a single thread (the same single thread you call
+/// fog_give_ipc_buf on).
+#[no_mangle]
+pub unsafe extern "C" fn fog_serialize_ipc_buf() -> usize {
+    if let Some(buf) = ipc::take_buf() {
+        PENDING_BUF = buf;
+        PENDING_BUF.len()
+    } else {
+        PENDING_BUF = vec![];
+        0
+    }
+}
+
+/// # Safety
+/// Only safe if called on a single thread (the same single thread you call
+/// fog_serialize_ipc_buf on), and if buf points to an allocated buffer of at
+/// least buf_len bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fog_give_ipc_buf(buf: *mut u8, buf_len: usize) -> usize {
+    let pending_len = PENDING_BUF.len();
+    if buf.is_null() || buf_len < pending_len {
+        return 0;
+    }
+    std::ptr::copy_nonoverlapping(PENDING_BUF.as_ptr(), buf, pending_len);
+    PENDING_BUF = Vec::new();
+    pending_len
+}
+
+/// # Safety
+/// Only safe if buf points to an allocated buffer of at least buf_len bytes.
+/// No ownership is transfered to Rust by this method: caller owns the memory at
+/// buf before and after this call.
+#[no_mangle]
+pub unsafe extern "C" fn fog_use_ipc_buf(buf: *const u8, buf_len: usize) {
+    let slice = std::slice::from_raw_parts(buf, buf_len);
+    let res = ipc::replay_from_buf(slice);
+    if res.is_err() {
+        log::warn!("Unable to replay ipc buffer. This will result in data loss.");
+        metrics::fog_ipc::replay_failures.add(1);
+    }
+}
+
+/// Sets the debug tag for pings assembled in the future.
+/// Returns an error result if the provided value is not a valid tag.
+#[no_mangle]
+pub extern "C" fn fog_set_debug_view_tag(value: &nsACString) -> nsresult {
+    let result = glean::set_debug_view_tag(&value.to_string());
+    if result {
+        NS_OK
+    } else {
+        NS_ERROR_FAILURE
+    }
+}
+
+/// Submits a ping by name.
+#[no_mangle]
+pub extern "C" fn fog_submit_ping(ping_name: &nsACString) -> nsresult {
+    glean::submit_ping_by_name(&ping_name.to_string(), None);
+    NS_OK
+}
+
+/// Turns ping logging on or off.
+/// Returns an error if the logging failed to be configured.
+#[no_mangle]
+pub extern "C" fn fog_set_log_pings(value: bool) -> nsresult {
+    glean::set_log_pings(value);
+    NS_OK
+}
+
+/// Flushes ping-lifetime data to the db when delay_ping_lifetime_io is true.
+#[no_mangle]
+pub extern "C" fn fog_persist_ping_lifetime_data() -> nsresult {
+    glean::persist_ping_lifetime_data();
+    NS_OK
+}
+
+/// Indicate that an experiment is running.
+/// Glean will add an experiment annotation which is sent with pings.
+/// This information is not persisted between runs.
+///
+/// See [`glean_core::Glean::set_experiment_active`].
+#[no_mangle]
+pub extern "C" fn fog_set_experiment_active(
+    experiment_id: &nsACString,
+    branch: &nsACString,
+    extra_keys: &ThinVec<nsCString>,
+    extra_values: &ThinVec<nsCString>,
+) {
+    assert_eq!(
+        extra_keys.len(),
+        extra_values.len(),
+        "Experiment extra keys and values differ in length."
+    );
+    let extra = if extra_keys.is_empty() {
+        None
+    } else {
+        Some(
+            extra_keys
+                .iter()
+                .zip(extra_values.iter())
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
     };
-    log::debug!("Client Info: {:#?}", client_info);
+    glean::set_experiment_active(experiment_id.to_string(), branch.to_string(), extra);
+}
 
-    let upload_enabled = static_prefs::pref!("datareporting.healthreport.uploadEnabled");
-    let data_path = data_path.to_string();
-    let configuration = Configuration {
-        upload_enabled,
-        data_path,
-        application_id: "org-mozilla-firefox".to_string(),
-        max_events: None,
-        delay_ping_lifetime_io: false,
-    };
+/// Indicate that an experiment is no longer running.
+///
+/// See [`glean_core::Glean::set_experiment_inactive`].
+#[no_mangle]
+pub extern "C" fn fog_set_experiment_inactive(experiment_id: &nsACString) {
+    glean::set_experiment_inactive(experiment_id.to_string());
+}
 
-    log::debug!("Configuration: {:#?}", configuration);
+/// TEST ONLY FUNCTION
+///
+/// Returns true if the identified experiment is active.
+#[no_mangle]
+pub extern "C" fn fog_test_is_experiment_active(experiment_id: &nsACString) -> bool {
+    glean::test_is_experiment_active(experiment_id.to_string())
+}
 
-    if configuration.data_path.len() > 0 {
-        if let Err(e) = api::initialize(configuration, client_info) {
-            log::error!("Failed to init FOG due to {:?}", e);
+/// TEST ONLY FUNCTION
+///
+/// Fills `branch`, `extra_keys`, and `extra_values` with the identified experiment's data.
+/// Panics if the identified experiment isn't active.
+#[no_mangle]
+pub extern "C" fn fog_test_get_experiment_data(
+    experiment_id: &nsACString,
+    branch: &mut nsACString,
+    extra_keys: &mut ThinVec<nsCString>,
+    extra_values: &mut ThinVec<nsCString>,
+) {
+    let data = glean::test_get_experiment_data(experiment_id.to_string());
+    if let Some(data) = data {
+        branch.assign(&data.branch);
+        if let Some(extra) = data.extra {
+            let (data_keys, data_values): (Vec<_>, Vec<_>) = extra.iter().unzip();
+            extra_keys.extend(data_keys.into_iter().map(|key| key.into()));
+            extra_values.extend(data_values.into_iter().map(|value| value.into()));
         }
     }
+}
 
-    NS_OK
+/// Sets the remote feature configuration.
+///
+/// See [`glean_core::Glean::set_metrics_disabled_config`].
+#[no_mangle]
+pub extern "C" fn fog_apply_server_knobs_config(config_json: &nsACString) {
+    // Normalize null and empty strings to a stringified empty map
+    if config_json == "null" || config_json.is_empty() {
+        glean::glean_apply_server_knobs_config("{}".to_owned());
+    }
+    glean::glean_apply_server_knobs_config(config_json.to_string());
+}
+
+/// Performs Glean tasks when client state changes to inactive
+///
+/// See [`glean_core::Glean::handle_client_inactive`].
+#[no_mangle]
+pub extern "C" fn fog_internal_glean_handle_client_inactive() {
+    glean::handle_client_inactive();
 }

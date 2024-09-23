@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+#include "base/process_util.h"
+#include "GeckoProfiler.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/LateWriteChecks.h"
@@ -21,22 +23,24 @@
 #include "nsClassHashtable.h"
 #include "nsDebug.h"
 #include "nsDebugImpl.h"
+#include "nsPrintfCString.h"
 #include "NSPRLogModulesParser.h"
+#include "nsXULAppAPI.h"
 #include "LogCommandLineHandler.h"
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerMarkerPayload.h"
-#endif
 
 #include "prenv.h"
 #ifdef XP_WIN
+#  include <fcntl.h>
 #  include <process.h>
 #else
+#  include <sys/stat.h>  // for umask()
 #  include <sys/types.h>
 #  include <unistd.h>
 #endif
 
-// NB: Initial amount determined by auditing the codebase for the total amount
-//     of unique module names and padding up to the next power of 2.
+// NB: Amount determined by performing a typical browsing session and finding
+//     the maximum number of modules instantiated, and padding up to the next
+//     power of 2.
 const uint32_t kInitialModuleCount = 256;
 // When rotate option is added to the modules list, this is the hardcoded
 // number of files we create and rotate.  When there is rotate:40,
@@ -133,7 +137,7 @@ static const char* ExpandLogFileName(const char* aFilename,
 
   const char* pidTokenPtr = strstr(aFilename, kPIDToken);
   if (pidTokenPtr &&
-      SprintfLiteral(buffer, "%.*s%s%d%s%s",
+      SprintfLiteral(buffer, "%.*s%s%" PRIPID "%s%s",
                      static_cast<int>(pidTokenPtr - aFilename), aFilename,
                      XRE_IsParentProcess() ? "-main." : "-child.",
                      base::GetCurrentProcId(), pidTokenPtr + strlen(kPIDToken),
@@ -147,6 +151,147 @@ static const char* ExpandLogFileName(const char* aFilename,
   }
 
   return aFilename;
+}
+
+// Drop initial lines from the given file until it is less than or equal to the
+// given size.
+//
+// For simplicity and to reduce memory consumption, lines longer than the given
+// long line size may be broken.
+//
+// This function uses `mkstemp` and `rename` on POSIX systems and `_mktemp_s`
+// and `ReplaceFileA` on Win32 systems.  `ReplaceFileA` was introduced in
+// Windows 7 so it's available.
+bool LimitFileToLessThanSize(const char* aFilename, uint32_t aSize,
+                             uint16_t aLongLineSize = 16384) {
+  // `tempFilename` will be further updated below.
+  char tempFilename[2048];
+  SprintfLiteral(tempFilename, "%s.tempXXXXXX", aFilename);
+
+  bool failedToWrite = false;
+
+  {  // Scope `file` and `temp`, so that they are definitely closed.
+    ScopedCloseFile file(fopen(aFilename, "rb"));
+    if (!file) {
+      return false;
+    }
+
+    if (fseek(file.get(), 0, SEEK_END)) {
+      // If we can't seek for some reason, better to just not limit the log at
+      // all and hope to sort out large logs upon further analysis.
+      return false;
+    }
+
+    // `ftell` returns a positive `long`, which might be more than 32 bits.
+    uint64_t fileSize = static_cast<uint64_t>(ftell(file.get()));
+
+    if (fileSize <= aSize) {
+      return true;
+    }
+
+    uint64_t minBytesToDrop = fileSize - aSize;
+    uint64_t numBytesDropped = 0;
+
+    if (fseek(file.get(), 0, SEEK_SET)) {
+      // Same as above: if we can't seek, hope for the best.
+      return false;
+    }
+
+    ScopedCloseFile temp;
+
+#if defined(XP_WIN)
+    // This approach was cribbed from
+    // https://searchfox.org/mozilla-central/rev/868935867c6241e1302e64cf9be8f56db0fd0d1c/xpcom/build/LateWriteChecks.cpp#158.
+    HANDLE hFile;
+    do {
+      // mkstemp isn't supported so keep trying until we get a file.
+      _mktemp_s(tempFilename, strlen(tempFilename) + 1);
+      hFile = CreateFileA(tempFilename, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                          FILE_ATTRIBUTE_NORMAL, nullptr);
+    } while (GetLastError() == ERROR_FILE_EXISTS);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+      NS_WARNING("INVALID_HANDLE_VALUE");
+      return false;
+    }
+
+    int fd = _open_osfhandle((intptr_t)hFile, _O_APPEND);
+    if (fd == -1) {
+      NS_WARNING("_open_osfhandle failed!");
+      return false;
+    }
+
+    temp.reset(_fdopen(fd, "ab"));
+#elif defined(XP_UNIX)
+
+    // Coverity would prefer us to set a secure umask before using `mkstemp`.
+    // However, the umask is process-wide, so setting it may lead to difficult
+    // to debug complications; and it is fine for this particular short-lived
+    // temporary file to be insecure.
+    //
+    // coverity[SECURE_TEMP : FALSE]
+    int fd = mkstemp(tempFilename);
+    if (fd == -1) {
+      NS_WARNING("mkstemp failed!");
+      return false;
+    }
+    temp.reset(fdopen(fd, "ab"));
+#else
+#  error Do not know how to open named temporary file
+#endif
+
+    if (!temp) {
+      NS_WARNING(nsPrintfCString("could not open named temporary file %s",
+                                 tempFilename)
+                     .get());
+      return false;
+    }
+
+    // `fgets` always null terminates.  If the line is too long, it won't
+    // include a trailing '\n' but will be null-terminated.
+    UniquePtr<char[]> line = MakeUnique<char[]>(aLongLineSize + 1);
+    while (fgets(line.get(), aLongLineSize + 1, file.get())) {
+      if (numBytesDropped >= minBytesToDrop) {
+        if (fputs(line.get(), temp.get()) < 0) {
+          NS_WARNING(
+              nsPrintfCString("fputs failed: ferror %d\n", ferror(temp.get()))
+                  .get());
+          failedToWrite = true;
+          break;
+        }
+      } else {
+        // Binary mode avoids platform-specific wrinkles with text streams.  In
+        // particular, on Windows, `\r\n` gets read as `\n` (and the reverse
+        // when writing), complicating this calculation.
+        numBytesDropped += strlen(line.get());
+      }
+    }
+  }
+
+  // At this point, `file` and `temp` are closed, so we can remove and rename.
+  if (failedToWrite) {
+    remove(tempFilename);
+    return false;
+  }
+
+#if defined(XP_WIN)
+  if (!::ReplaceFileA(aFilename, tempFilename, nullptr, 0, 0, 0)) {
+    NS_WARNING(
+        nsPrintfCString("ReplaceFileA failed: %lu\n", GetLastError()).get());
+    return false;
+  }
+#elif defined(XP_UNIX)
+  if (rename(tempFilename, aFilename)) {
+    NS_WARNING(
+        nsPrintfCString("rename failed: %s (%d)\n", strerror(errno), errno)
+            .get());
+    return false;
+  }
+#else
+#  error Do not know how to atomically replace file
+#endif
+
+  return true;
 }
 
 }  // namespace detail
@@ -164,6 +309,9 @@ class LogModuleManager {
   LogModuleManager()
       : mModulesLock("logmodules"),
         mModules(kInitialModuleCount),
+#ifdef DEBUG
+        mLoggingModuleRegistered(0),
+#endif
         mPrintEntryCount(0),
         mOutFile(nullptr),
         mToReleaseFile(nullptr),
@@ -172,11 +320,12 @@ class LogModuleManager {
         mMainThread(PR_GetCurrentThread()),
         mSetFromEnv(false),
         mAddTimestamp(false),
-        mAddProfilerMarker(false),
+        mCaptureProfilerStack(false),
         mIsRaw(false),
         mIsSync(false),
         mRotate(0),
-        mInitialized(false) {}
+        mInitialized(false) {
+  }
 
   ~LogModuleManager() {
     detail::LogFile* logFile = mOutFile.exchange(nullptr);
@@ -215,8 +364,10 @@ class LogModuleManager {
     bool addTimestamp = false;
     bool isSync = false;
     bool isRaw = false;
-    bool isMarkers = false;
+    bool captureStacks = false;
     int32_t rotate = 0;
+    int32_t maxSize = 0;
+    bool prependHeader = false;
     const char* modules = PR_GetEnv("MOZ_LOG");
     if (!modules || !modules[0]) {
       modules = PR_GetEnv("MOZ_LOG_MODULES");
@@ -238,9 +389,10 @@ class LogModuleManager {
     // Need to capture `this` since `sLogModuleManager` is not set until after
     // initialization is complete.
     NSPRLogModulesParser(
-        modules, [this, &shouldAppend, &addTimestamp, &isSync, &isRaw, &rotate,
-                  &isMarkers](const char* aName, LogLevel aLevel,
-                              int32_t aValue) mutable {
+        modules,
+        [this, &shouldAppend, &addTimestamp, &isSync, &isRaw, &rotate, &maxSize,
+         &prependHeader, &captureStacks](const char* aName, LogLevel aLevel,
+                                         int32_t aValue) mutable {
           if (strcmp(aName, "append") == 0) {
             shouldAppend = true;
           } else if (strcmp(aName, "timestamp") == 0) {
@@ -251,8 +403,12 @@ class LogModuleManager {
             isRaw = true;
           } else if (strcmp(aName, "rotate") == 0) {
             rotate = (aValue << 20) / kRotateFilesNumber;
-          } else if (strcmp(aName, "profilermarkers") == 0) {
-            isMarkers = true;
+          } else if (strcmp(aName, "maxsize") == 0) {
+            maxSize = aValue << 20;
+          } else if (strcmp(aName, "prependheader") == 0) {
+            prependHeader = true;
+          } else if (strcmp(aName, "profilerstacks") == 0) {
+            captureStacks = true;
           } else {
             this->CreateOrGetModule(aName)->SetLevel(aLevel);
           }
@@ -263,10 +419,30 @@ class LogModuleManager {
     mIsSync = isSync;
     mIsRaw = isRaw;
     mRotate = rotate;
-    mAddProfilerMarker = isMarkers;
+    mCaptureProfilerStack = captureStacks;
 
     if (rotate > 0 && shouldAppend) {
       NS_WARNING("MOZ_LOG: when you rotate the log, you cannot use append!");
+    }
+
+    if (rotate > 0 && maxSize > 0) {
+      NS_WARNING(
+          "MOZ_LOG: when you rotate the log, you cannot use maxsize! (ignoring "
+          "maxsize)");
+      maxSize = 0;
+    }
+
+    if (maxSize > 0 && !shouldAppend) {
+      NS_WARNING(
+          "MOZ_LOG: when you limit the log to maxsize, you must use append! "
+          "(ignorning maxsize)");
+      maxSize = 0;
+    }
+
+    if (rotate > 0 && prependHeader) {
+      NS_WARNING(
+          "MOZ_LOG: when you rotate the log, you cannot use prependheader!");
+      prependHeader = false;
     }
 
     const char* logFile = PR_GetEnv("MOZ_LOG_FILE");
@@ -290,8 +466,15 @@ class LogModuleManager {
         }
       }
 
-      mOutFile = OpenFile(shouldAppend, mOutFileNum);
+      mOutFile = OpenFile(shouldAppend, mOutFileNum, maxSize);
       mSetFromEnv = true;
+    }
+
+    if (prependHeader && XRE_IsParentProcess()) {
+      va_list va;
+      empty_va(&va);
+      Print("Logger", LogLevel::Info, nullptr, "\n***\n\n", "Opening log\n",
+            va);
     }
   }
 
@@ -308,7 +491,7 @@ class LogModuleManager {
     char buf[2048];
     filename = detail::ExpandLogFileName(filename, buf);
 
-    // Can't use rotate at runtime yet.
+    // Can't use rotate or maxsize at runtime yet.
     MOZ_ASSERT(mRotate == 0,
                "We don't allow rotate for runtime logfile changes");
     mOutFilePath.reset(strdup(filename));
@@ -343,17 +526,25 @@ class LogModuleManager {
 
   void SetIsSync(bool aIsSync) { mIsSync = aIsSync; }
 
+  void SetCaptureStacks(bool aCaptureStacks) {
+    mCaptureProfilerStack = aCaptureStacks;
+  }
+
   void SetAddTimestamp(bool aAddTimestamp) { mAddTimestamp = aAddTimestamp; }
 
-  detail::LogFile* OpenFile(bool aShouldAppend, uint32_t aFileNum) {
+  detail::LogFile* OpenFile(bool aShouldAppend, uint32_t aFileNum,
+                            uint32_t aMaxSize = 0) {
     FILE* file;
 
     if (mRotate > 0) {
       char buf[2048];
       SprintfLiteral(buf, "%s.%d", mOutFilePath.get(), aFileNum);
 
-      // rotate doesn't support append.
+      // rotate doesn't support append (or maxsize).
       file = fopen(buf, "w");
+    } else if (aShouldAppend && aMaxSize > 0) {
+      detail::LimitFileToLessThanSize(mOutFilePath.get(), aMaxSize >> 1);
+      file = fopen(mOutFilePath.get(), "a");
     } else {
       file = fopen(mOutFilePath.get(), aShouldAppend ? "a" : "w");
     }
@@ -373,22 +564,31 @@ class LogModuleManager {
 
   LogModule* CreateOrGetModule(const char* aName) {
     OffTheBooksMutexAutoLock guard(mModulesLock);
-    LogModule* module = nullptr;
-    if (!mModules.Get(aName, &module)) {
-      module = new LogModule(aName, LogLevel::Disabled);
-      mModules.Put(aName, module);
-    }
-
-    return module;
+    return mModules
+        .LookupOrInsertWith(
+            aName,
+            [&] {
+#ifdef DEBUG
+              if (++mLoggingModuleRegistered > kInitialModuleCount) {
+                NS_WARNING(
+                    "kInitialModuleCount too low, consider increasing its "
+                    "value");
+              }
+#endif
+              return UniquePtr<LogModule>(
+                  new LogModule{aName, LogLevel::Disabled});
+            })
+        .get();
   }
 
   void Print(const char* aName, LogLevel aLevel, const char* aFmt,
              va_list aArgs) MOZ_FORMAT_PRINTF(4, 0) {
-    Print(aName, aLevel, nullptr, aFmt, aArgs);
+    Print(aName, aLevel, nullptr, "", aFmt, aArgs);
   }
 
   void Print(const char* aName, LogLevel aLevel, const TimeStamp* aStart,
-             const char* aFmt, va_list aArgs) MOZ_FORMAT_PRINTF(5, 0) {
+             const char* aPrepend, const char* aFmt, va_list aArgs)
+      MOZ_FORMAT_PRINTF(6, 0) {
     AutoSuspendLateWriteChecks suspendLateWriteChecks;
     long pid = static_cast<long>(base::GetCurrentProcId());
     const size_t kBuffSize = 1024;
@@ -417,19 +617,39 @@ class LogModuleManager {
       charsWritten = strlen(buffToWrite);
     }
 
-#ifdef MOZ_GECKO_PROFILER
-    if (mAddProfilerMarker && profiler_can_accept_markers()) {
-      if (aStart) {
-        PROFILER_ADD_MARKER_WITH_PAYLOAD(
-            "LogMessages", OTHER, LogMarkerPayload,
-            (aName, buffToWrite, *aStart, TimeStamp::Now()));
-      } else {
-        PROFILER_ADD_MARKER_WITH_PAYLOAD(
-            "LogMessages", OTHER, LogMarkerPayload,
-            (aName, buffToWrite, TimeStamp::Now()));
-      }
+    if (profiler_thread_is_being_profiled_for_markers()) {
+      struct LogMarker {
+        static constexpr Span<const char> MarkerTypeName() {
+          return MakeStringSpan("Log");
+        }
+        static void StreamJSONMarkerData(
+            baseprofiler::SpliceableJSONWriter& aWriter,
+            const ProfilerString8View& aModule,
+            const ProfilerString8View& aText) {
+          aWriter.StringProperty("module", aModule);
+          aWriter.StringProperty("name", aText);
+        }
+        static MarkerSchema MarkerTypeDisplay() {
+          using MS = MarkerSchema;
+          MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
+          schema.SetTableLabel("({marker.data.module}) {marker.data.name}");
+          schema.AddKeyLabelFormatSearchable("module", "Module",
+                                             MS::Format::String,
+                                             MS::Searchable::Searchable);
+          schema.AddKeyLabelFormatSearchable("name", "Name", MS::Format::String,
+                                             MS::Searchable::Searchable);
+          return schema;
+        }
+      };
+
+      profiler_add_marker(
+          "LogMessages", geckoprofiler::category::OTHER,
+          {aStart ? MarkerTiming::IntervalUntilNowFrom(*aStart)
+                  : MarkerTiming::InstantNow(),
+           MarkerStack::MaybeCapture(mCaptureProfilerStack)},
+          LogMarker{}, ProfilerString8View::WrapNullTerminatedString(aName),
+          ProfilerString8View::WrapNullTerminatedString(buffToWrite));
     }
-#endif
 
     // Determine if a newline needs to be appended to the message.
     const char* newline = "";
@@ -468,19 +688,19 @@ class LogModuleManager {
 
     if (!mAddTimestamp && !aStart) {
       if (!mIsRaw) {
-        fprintf_stderr(out, "[%s %ld: %s]: %s/%s %s%s",
+        fprintf_stderr(out, "%s[%s %ld: %s]: %s/%s %s%s", aPrepend,
                        nsDebugImpl::GetMultiprocessMode(), pid,
                        currentThreadName, ToLogStr(aLevel), aName, buffToWrite,
                        newline);
       } else {
-        fprintf_stderr(out, "%s%s", buffToWrite, newline);
+        fprintf_stderr(out, "%s%s%s", aPrepend, buffToWrite, newline);
       }
     } else {
       if (aStart) {
         // XXX is there a reasonable way to convert one to the other?  this is
         // bad
         PRTime prnow = PR_Now();
-        TimeStamp tmnow = TimeStamp::NowUnfuzzed();
+        TimeStamp tmnow = TimeStamp::Now();
         TimeDuration duration = tmnow - *aStart;
         PRTime prstart = prnow - duration.ToMicroseconds();
 
@@ -491,22 +711,24 @@ class LogModuleManager {
         // Ignore that the start time might be in a different day
         fprintf_stderr(
             out,
-            "%04d-%02d-%02d %02d:%02d:%02d.%06d -> %02d:%02d:%02d.%06d UTC "
+            "%s%04d-%02d-%02d %02d:%02d:%02d.%06d -> %02d:%02d:%02d.%06d UTC "
             "(%.1gms)- [%s %ld: %s]: %s/%s %s%s",
-            now.tm_year, now.tm_month + 1, start.tm_mday, start.tm_hour,
-            start.tm_min, start.tm_sec, start.tm_usec, now.tm_hour, now.tm_min,
-            now.tm_sec, now.tm_usec, duration.ToMilliseconds(),
-            nsDebugImpl::GetMultiprocessMode(), pid, currentThreadName,
-            ToLogStr(aLevel), aName, buffToWrite, newline);
+            aPrepend, now.tm_year, now.tm_month + 1, start.tm_mday,
+            start.tm_hour, start.tm_min, start.tm_sec, start.tm_usec,
+            now.tm_hour, now.tm_min, now.tm_sec, now.tm_usec,
+            duration.ToMilliseconds(), nsDebugImpl::GetMultiprocessMode(), pid,
+            currentThreadName, ToLogStr(aLevel), aName, buffToWrite, newline);
       } else {
         PRExplodedTime now;
         PR_ExplodeTime(PR_Now(), PR_GMTParameters, &now);
-        fprintf_stderr(
-            out,
-            "%04d-%02d-%02d %02d:%02d:%02d.%06d UTC - [%s %ld: %s]: %s/%s %s%s",
-            now.tm_year, now.tm_month + 1, now.tm_mday, now.tm_hour, now.tm_min,
-            now.tm_sec, now.tm_usec, nsDebugImpl::GetMultiprocessMode(), pid,
-            currentThreadName, ToLogStr(aLevel), aName, buffToWrite, newline);
+        fprintf_stderr(out,
+                       "%s%04d-%02d-%02d %02d:%02d:%02d.%06d UTC - [%s %ld: "
+                       "%s]: %s/%s %s%s",
+                       aPrepend, now.tm_year, now.tm_month + 1, now.tm_mday,
+                       now.tm_hour, now.tm_min, now.tm_sec, now.tm_usec,
+                       nsDebugImpl::GetMultiprocessMode(), pid,
+                       currentThreadName, ToLogStr(aLevel), aName, buffToWrite,
+                       newline);
       }
     }
 
@@ -552,10 +774,20 @@ class LogModuleManager {
     }
   }
 
+  void DisableModules() {
+    OffTheBooksMutexAutoLock guard(mModulesLock);
+    for (auto& m : mModules) {
+      (*(m.GetModifiableData()))->SetLevel(LogLevel::Disabled);
+    }
+  }
+
  private:
   OffTheBooksMutex mModulesLock;
   nsClassHashtable<nsCharPtrHashKey, LogModule> mModules;
 
+#ifdef DEBUG
+  Atomic<uint32_t, ReleaseAcquire> mLoggingModuleRegistered;
+#endif
   // Print() entry counter, actually reflects concurrent use of the current
   // output file.  ReleaseAcquire ensures that manipulation with mOutFile
   // and mToReleaseFile is synchronized by manipulation with this value.
@@ -578,7 +810,7 @@ class LogModuleManager {
   PRThread* mMainThread;
   bool mSetFromEnv;
   Atomic<bool, Relaxed> mAddTimestamp;
-  Atomic<bool, Relaxed> mAddProfilerMarker;
+  Atomic<bool, Relaxed> mCaptureProfilerStack;
   Atomic<bool, Relaxed> mIsRaw;
   Atomic<bool, Relaxed> mIsSync;
   int32_t mRotate;
@@ -611,6 +843,12 @@ void LogModule::SetAddTimestamp(bool aAddTimestamp) {
 void LogModule::SetIsSync(bool aIsSync) {
   sLogModuleManager->SetIsSync(aIsSync);
 }
+
+void LogModule::SetCaptureStacks(bool aCaptureStacks) {
+  sLogModuleManager->SetCaptureStacks(aCaptureStacks);
+}
+
+void LogModule::DisableModules() { sLogModuleManager->DisableModules(); }
 
 // This function is defined in gecko_logger/src/lib.rs
 // We mirror the level in rust code so we don't get forwarded all of the
@@ -661,7 +899,7 @@ void LogModule::Printv(LogLevel aLevel, const TimeStamp* aStart,
   MOZ_ASSERT(sLogModuleManager != nullptr);
 
   // Forward to LogModule manager w/ level and name
-  sLogModuleManager->Print(Name(), aLevel, aStart, aFmt, aArgs);
+  sLogModuleManager->Print(Name(), aLevel, aStart, "", aFmt, aArgs);
 }
 
 }  // namespace mozilla
@@ -672,13 +910,12 @@ extern "C" {
 // log modules.
 void ExternMozLog(const char* aModule, mozilla::LogLevel aLevel,
                   const char* aMsg) {
-  MOZ_ASSERT(sLogModuleManager != nullptr);
+  MOZ_ASSERT(mozilla::sLogModuleManager != nullptr);
 
-  LogModule* m = sLogModuleManager->CreateOrGetModule(aModule);
+  mozilla::LogModule* m =
+      mozilla::sLogModuleManager->CreateOrGetModule(aModule);
   if (MOZ_LOG_TEST(m, aLevel)) {
-    va_list va;
-    empty_va(&va);
-    m->Printv(aLevel, aMsg, va);
+    mozilla::detail::log_print(m, aLevel, "%s", aMsg);
   }
 }
 

@@ -7,25 +7,28 @@
 #include "ClientManagerOpParent.h"
 
 #include "ClientManagerService.h"
+#include "mozilla/dom/PClientManagerParent.h"
 #include "mozilla/ipc/BackgroundParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::BackgroundParent;
 
 template <typename Method, typename... Args>
 void ClientManagerOpParent::DoServiceOp(Method aMethod, Args&&... aArgs) {
+  ThreadsafeContentParentHandle* originContent =
+      BackgroundParent::GetContentParentHandle(Manager()->Manager());
+
   // Note, we need perfect forarding of the template type in order
   // to allow already_AddRefed<> to be passed as an arg.
   RefPtr<ClientOpPromise> p =
-      (mService->*aMethod)(std::forward<Args>(aArgs)...);
+      (mService->*aMethod)(originContent, std::forward<Args>(aArgs)...);
 
   // Capturing `this` is safe here because we disconnect the promise in
   // ActorDestroy() which ensures neither lambda is called if the actor
   // is destroyed before the source operation completes.
   p->Then(
-       GetCurrentThreadSerialEventTarget(), __func__,
+       GetCurrentSerialEventTarget(), __func__,
        [this](const mozilla::dom::ClientOpResult& aResult) {
          mPromiseRequestHolder.Complete();
          Unused << PClientManagerOpParent::Send__delete__(this, aResult);
@@ -79,5 +82,4 @@ void ClientManagerOpParent::Init(const ClientOpConstructorArgs& aArgs) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -11,8 +11,7 @@
 #include "TemporaryFileBlobImpl.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 TemporaryIPCBlobParent::TemporaryIPCBlobParent() : mActive(true) {}
 
@@ -45,7 +44,7 @@ mozilla::ipc::IPCResult TemporaryIPCBlobParent::CreateAndShareFile() {
   // must close the original (and clean up the NSPR descriptor).
   PR_Close(fd);
 
-  Unused << SendFileDesc(fdd);
+  (void)SendFileDesc(fdd);
   return IPC_OK();
 }
 
@@ -54,7 +53,7 @@ mozilla::ipc::IPCResult TemporaryIPCBlobParent::RecvOperationFailed() {
   mActive = false;
 
   // Nothing to do.
-  Unused << Send__delete__(this, NS_ERROR_FAILURE);
+  (void)Send__delete__(this, NS_ERROR_FAILURE);
   return IPC_OK();
 }
 
@@ -78,13 +77,13 @@ mozilla::ipc::IPCResult TemporaryIPCBlobParent::RecvOperationDone(
   PR_Close(prfile);
 
   IPCBlob ipcBlob;
-  nsresult rv = IPCBlobUtils::Serialize(blobImpl, Manager(), ipcBlob);
+  nsresult rv = IPCBlobUtils::Serialize(blobImpl, ipcBlob);
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    Unused << Send__delete__(this, NS_ERROR_FAILURE);
+    (void)Send__delete__(this, NS_ERROR_FAILURE);
     return IPC_OK();
   }
 
-  Unused << Send__delete__(this, ipcBlob);
+  (void)Send__delete__(this, ipcBlob);
   return IPC_OK();
 }
 
@@ -96,9 +95,8 @@ mozilla::ipc::IPCResult TemporaryIPCBlobParent::SendDeleteError(nsresult aRv) {
   MOZ_ASSERT(mActive);
   mActive = false;
 
-  Unused << Send__delete__(this, aRv);
+  (void)Send__delete__(this, aRv);
   return IPC_OK();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

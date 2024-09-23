@@ -2,19 +2,19 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /**
- * Test that search suggestions from SearchSuggestionController.jsm operate
+ * Test that search suggestions from SearchSuggestionController.sys.mjs operate
  * correctly in private mode.
  */
 
 "use strict";
 
-const { SearchSuggestionController } = ChromeUtils.import(
-  "resource://gre/modules/SearchSuggestionController.jsm"
+const { SearchSuggestionController } = ChromeUtils.importESModule(
+  "resource://gre/modules/SearchSuggestionController.sys.mjs"
 );
 
 let engine;
 
-add_task(async function setup() {
+add_setup(async function () {
   Services.prefs.setBoolPref("browser.search.suggest.enabled", true);
 
   let server = useHttpServer();
@@ -28,12 +28,9 @@ add_task(async function setup() {
     method: "GET",
   };
 
-  [engine] = await addTestEngines([
-    {
-      name: engineData.name,
-      xmlFileName: "engineMaker.sjs?" + JSON.stringify(engineData),
-    },
-  ]);
+  engine = await SearchTestUtils.installOpenSearchEngine({
+    url: `${gDataUrl}engineMaker.sjs?${JSON.stringify(engineData)}`,
+  });
 });
 
 add_task(async function test_suggestions_in_private_mode_enabled() {

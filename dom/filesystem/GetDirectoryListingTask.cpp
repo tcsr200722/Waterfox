@@ -15,11 +15,11 @@
 #include "mozilla/dom/PFileSystemParams.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/UnionTypes.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "nsIFile.h"
 #include "nsString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * GetDirectoryListingTaskChild
@@ -176,7 +176,7 @@ GetDirectoryListingTaskParent::Create(
     const FileSystemGetDirectoryListingParams& aParam,
     FileSystemRequestParent* aParent, ErrorResult& aRv) {
   MOZ_ASSERT(XRE_IsParentProcess(), "Only call from parent process!");
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aFileSystem);
 
   RefPtr<GetDirectoryListingTaskParent> task =
@@ -199,13 +199,13 @@ GetDirectoryListingTaskParent::GetDirectoryListingTaskParent(
       mDOMPath(aParam.domPath()),
       mFilters(aParam.filters()) {
   MOZ_ASSERT(XRE_IsParentProcess(), "Only call from parent process!");
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aFileSystem);
 }
 
 FileSystemResponseValue GetDirectoryListingTaskParent::GetSuccessRequestResult(
     ErrorResult& aRv) const {
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
 
   nsTArray<FileSystemDirectoryListingResponseData> inputs;
 
@@ -235,8 +235,7 @@ FileSystemResponseValue GetDirectoryListingTaskParent::GetSuccessRequestResult(
       blobImpl->SetDOMPath(filePath);
 
       IPCBlob ipcBlob;
-      rv =
-          IPCBlobUtils::Serialize(blobImpl, mRequestParent->Manager(), ipcBlob);
+      rv = IPCBlobUtils::Serialize(blobImpl, ipcBlob);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         continue;
       }
@@ -252,7 +251,7 @@ FileSystemResponseValue GetDirectoryListingTaskParent::GetSuccessRequestResult(
   }
 
   FileSystemDirectoryListingResponse response;
-  response.data().SwapElements(inputs);
+  response.data() = std::move(inputs);
   return response;
 }
 
@@ -318,8 +317,14 @@ nsresult GetDirectoryListingTaskParent::IOWork() {
         !currFile) {
       break;
     }
-    bool isSpecial, isFile;
-    if (NS_WARN_IF(NS_FAILED(currFile->IsSpecial(&isSpecial))) || isSpecial) {
+    bool isLink, isSpecial, isFile;
+    if (NS_WARN_IF(NS_FAILED(currFile->IsSymlink(&isLink)) ||
+                   NS_FAILED(currFile->IsSpecial(&isSpecial))) ||
+        // Although we allow explicit individual selection of symlinks via the
+        // file picker, we do not process symlinks in directory traversal.  Our
+        // specific policy decision is documented at
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=1813299#c20
+        isLink || isSpecial) {
       continue;
     }
     if (NS_WARN_IF(NS_FAILED(currFile->IsFile(&isFile)) ||
@@ -363,5 +368,4 @@ nsresult GetDirectoryListingTaskParent::GetTargetPath(nsAString& aPath) const {
   return mTargetPath->GetPath(aPath);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

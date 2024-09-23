@@ -2,129 +2,142 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React, { PureComponent } from "react";
-import { connect } from "../../../utils/connect";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import React, { PureComponent } from "devtools/client/shared/vendor/react";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import Popup from "./Popup";
 
-import {
-  getPreview,
-  getThreadContext,
-  getCurrentThread,
-  getHighlightedCalls,
-} from "../../../selectors";
-import actions from "../../../actions";
+import { getIsCurrentThreadPaused } from "../../../selectors/index";
+import actions from "../../../actions/index";
+import { features } from "../../../utils/prefs";
 
-import type { ThreadContext, HighlightedCalls } from "../../../types";
+const EXCEPTION_MARKER = "mark-text-exception";
 
-import type { Preview as PreviewType } from "../../../reducers/types";
-
-type OwnProps = {|
-  editor: any,
-  editorRef: ?HTMLDivElement,
-|};
-type Props = {
-  cx: ThreadContext,
-  editor: any,
-  editorRef: ?HTMLDivElement,
-  highlightedCalls: ?HighlightedCalls,
-  preview: ?PreviewType,
-  clearPreview: typeof actions.clearPreview,
-  addExpression: typeof actions.addExpression,
-  updatePreview: typeof actions.updatePreview,
-};
-
-type State = {
-  selecting: boolean,
-};
-
-class Preview extends PureComponent<Props, State> {
+class Preview extends PureComponent {
   target = null;
-  constructor(props: Props) {
+  constructor(props) {
     super(props);
     this.state = { selecting: false };
   }
 
+  static get propTypes() {
+    return {
+      editor: PropTypes.object.isRequired,
+      editorRef: PropTypes.object.isRequired,
+      isPaused: PropTypes.bool.isRequired,
+      getExceptionPreview: PropTypes.func.isRequired,
+      getPreview: PropTypes.func,
+    };
+  }
+
   componentDidMount() {
-    this.updateListeners();
+    if (features.codemirrorNext) {
+      this.props.editor.on("tokenenter", this.onTokenEnter);
+      this.props.editor.addEditorDOMEventListeners({
+        mouseup: this.onMouseUp,
+        mousedown: this.onMouseDown,
+        scroll: this.onScroll,
+      });
+    } else {
+      const { codeMirror } = this.props.editor;
+      const codeMirrorWrapper = codeMirror.getWrapperElement();
+      codeMirror.on("tokenenter", this.onTokenEnter);
+      codeMirror.on("scroll", this.onScroll);
+      codeMirrorWrapper.addEventListener("mouseup", this.onMouseUp);
+      codeMirrorWrapper.addEventListener("mousedown", this.onMouseDown);
+    }
   }
 
   componentWillUnmount() {
-    const { codeMirror } = this.props.editor;
-    const codeMirrorWrapper = codeMirror.getWrapperElement();
+    if (features.codemirrorNext) {
+      this.props.editor.off("tokenenter", this.onTokenEnter);
+      this.props.editor.removeEditorDOMEventListeners({
+        mouseup: this.onMouseUp,
+        mousedown: this.onMouseDown,
+        scroll: this.onScroll,
+      });
+    } else {
+      const { codeMirror } = this.props.editor;
+      const codeMirrorWrapper = codeMirror.getWrapperElement();
 
-    codeMirror.off("tokenenter", this.onTokenEnter);
-    codeMirror.off("scroll", this.onScroll);
-    codeMirrorWrapper.removeEventListener("mouseup", this.onMouseUp);
-    codeMirrorWrapper.removeEventListener("mousedown", this.onMouseDown);
-  }
-
-  updateListeners(prevProps: ?Props) {
-    const { codeMirror } = this.props.editor;
-    const codeMirrorWrapper = codeMirror.getWrapperElement();
-    codeMirror.on("tokenenter", this.onTokenEnter);
-    codeMirror.on("scroll", this.onScroll);
-    codeMirrorWrapper.addEventListener("mouseup", this.onMouseUp);
-    codeMirrorWrapper.addEventListener("mousedown", this.onMouseDown);
-  }
-
-  onTokenEnter = ({ target, tokenPos }: any) => {
-    const { cx, editor, updatePreview, highlightedCalls } = this.props;
-
-    if (cx.isPaused && !this.state.selecting && highlightedCalls === null) {
-      updatePreview(cx, target, tokenPos, editor.codeMirror);
+      codeMirror.off("tokenenter", this.onTokenEnter);
+      codeMirror.off("scroll", this.onScroll);
+      codeMirrorWrapper.removeEventListener("mouseup", this.onMouseUp);
+      codeMirrorWrapper.removeEventListener("mousedown", this.onMouseDown);
     }
+  }
+
+  // Note that these events are emitted by utils/editor/tokens.js
+  onTokenEnter = async ({ target, tokenPos }) => {
+    // Use a temporary object to uniquely identify the asynchronous processing of this user event
+    // and bail out if we started hovering another token.
+    const tokenId = {};
+    this.currentTokenId = tokenId;
+
+    const { editor, getPreview, getExceptionPreview } = this.props;
+    const isTargetException = target.classList.contains(EXCEPTION_MARKER);
+
+    let preview;
+    if (isTargetException) {
+      preview = await getExceptionPreview(target, tokenPos, editor);
+    }
+
+    if (!preview && this.props.isPaused && !this.state.selecting) {
+      preview = await getPreview(target, tokenPos, editor);
+    }
+
+    // Prevent modifying state and showing this preview if we started hovering another token
+    if (!preview || this.currentTokenId !== tokenId) {
+      return;
+    }
+    this.setState({ preview });
   };
 
   onMouseUp = () => {
-    if (this.props.cx.isPaused) {
+    if (this.props.isPaused) {
       this.setState({ selecting: false });
-      return true;
     }
   };
 
   onMouseDown = () => {
-    if (this.props.cx.isPaused) {
+    if (this.props.isPaused) {
       this.setState({ selecting: true });
-      return true;
     }
   };
 
   onScroll = () => {
-    if (this.props.cx.isPaused) {
-      this.props.clearPreview(this.props.cx);
+    if (this.props.isPaused) {
+      this.clearPreview();
     }
   };
 
+  clearPreview = () => {
+    this.setState({ preview: null });
+  };
+
   render() {
-    const { preview } = this.props;
+    const { preview } = this.state;
     if (!preview || this.state.selecting) {
       return null;
     }
-
-    return (
-      <Popup
-        preview={preview}
-        editor={this.props.editor}
-        editorRef={this.props.editorRef}
-      />
-    );
+    return React.createElement(Popup, {
+      preview,
+      editor: this.props.editor,
+      editorRef: this.props.editorRef,
+      clearPreview: this.clearPreview,
+    });
   }
 }
 
 const mapStateToProps = state => {
-  const thread = getCurrentThread(state);
   return {
-    highlightedCalls: getHighlightedCalls(state, thread),
-    cx: getThreadContext(state),
-    preview: getPreview(state),
+    isPaused: getIsCurrentThreadPaused(state),
   };
 };
 
-export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
-  clearPreview: actions.clearPreview,
+export default connect(mapStateToProps, {
   addExpression: actions.addExpression,
-  updatePreview: actions.updatePreview,
+  getPreview: actions.getPreview,
+  getExceptionPreview: actions.getExceptionPreview,
 })(Preview);

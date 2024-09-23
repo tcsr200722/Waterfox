@@ -17,15 +17,16 @@
         title="331215 test">
 
   <script type="application/javascript"><![CDATA[
-    const {BrowserTestUtils} = ChromeUtils.import("resource://testing-common/BrowserTestUtils.jsm");
+    const {BrowserTestUtils} = ChromeUtils.importESModule(
+      "resource://testing-common/BrowserTestUtils.sys.mjs"
+    );
 
     var gFindBar = null;
     var gBrowser;
 
-    var imports = ["SimpleTest", "ok", "info"];
-    for (var name of imports) {
-      window[name] = window.arguments[0][name];
-    }
+    var SimpleTest = window.arguments[0].SimpleTest;
+    var info = window.arguments[0].info;
+    var ok = window.arguments[0].ok;
     SimpleTest.requestLongerTimeout(2);
 
     function startTest() {
@@ -45,7 +46,7 @@
       gBrowser = document.getElementById(browserId);
       gFindBar.browser = gBrowser;
       let promise = BrowserTestUtils.browserLoaded(gBrowser);
-      BrowserTestUtils.loadURI(gBrowser, "data:text/plain,latest");
+      BrowserTestUtils.startLoadingURIString(gBrowser, "data:text/plain,latest");
       await promise;
       await onDocumentLoaded();
     }
@@ -67,7 +68,7 @@
     function promiseEnterStringIntoFindField(aString) {
       return new Promise(resolve => {
         let listener = {
-          onFindResult: function(result) {
+          onFindResult(result) {
             if (result.result == Ci.nsITypeAheadFind.FIND_FOUND && result.searchString != aString)
               return;
             gFindBar.browser.finder.removeResultListener(listener);

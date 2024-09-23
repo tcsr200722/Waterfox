@@ -13,8 +13,10 @@ const actionTypes = {
   AUTOCOMPLETE_TOGGLE: "AUTOCOMPLETE_TOGGLE",
   BATCH_ACTIONS: "BATCH_ACTIONS",
   CLEAR_HISTORY: "CLEAR_HISTORY",
+  ENABLE_NETWORK_MONITORING: "ENABLE_NETWORK_MONITORING",
   EDITOR_TOGGLE: "EDITOR_TOGGLE",
   EDITOR_ONBOARDING_DISMISS: "EDITOR_ONBOARDING_DISMISS",
+  EDITOR_PRETTY_PRINT: "EDITOR_PRETTY_PRINT",
   EVALUATE_EXPRESSION: "EVALUATE_EXPRESSION",
   SET_TERMINAL_INPUT: "SET_TERMINAL_INPUT",
   SET_TERMINAL_EAGER_RESULT: "SET_TERMINAL_EAGER_RESULT",
@@ -26,13 +28,13 @@ const actionTypes = {
   INITIALIZE: "INITIALIZE",
   MESSAGE_CLOSE: "MESSAGE_CLOSE",
   MESSAGE_OPEN: "MESSAGE_OPEN",
-  MESSAGE_UPDATE_PAYLOAD: "MESSAGE_UPDATE_PAYLOAD",
+  CSS_MESSAGE_ADD_MATCHING_ELEMENTS: "CSS_MESSAGE_ADD_MATCHING_ELEMENTS",
   MESSAGE_REMOVE: "MESSAGE_REMOVE",
   MESSAGES_ADD: "MESSAGES_ADD",
   MESSAGES_CLEAR: "MESSAGES_CLEAR",
-  MESSAGES_CLEAR_LOGPOINT: "MESSAGES_CLEAR_LOGPOINT",
-  NETWORK_MESSAGE_UPDATE: "NETWORK_MESSAGE_UPDATE",
-  NETWORK_UPDATE_REQUEST: "NETWORK_UPDATE_REQUEST",
+  MESSAGES_DISABLE: "MESSAGES_DISABLE",
+  NETWORK_MESSAGES_UPDATE: "NETWORK_MESSAGES_UPDATE",
+  NETWORK_UPDATES_REQUEST: "NETWORK_UPDATES_REQUEST",
   PERSIST_TOGGLE: "PERSIST_TOGGLE",
   PRIVATE_MESSAGES_CLEAR: "PRIVATE_MESSAGES_CLEAR",
   REMOVE_NOTIFICATION: "REMOVE_NOTIFICATION",
@@ -40,9 +42,10 @@ const actionTypes = {
   REVERSE_SEARCH_INPUT_TOGGLE: "REVERSE_SEARCH_INPUT_TOGGLE",
   SELECT_NETWORK_MESSAGE_TAB: "SELECT_NETWORK_MESSAGE_TAB",
   SHOW_OBJECT_IN_SIDEBAR: "SHOW_OBJECT_IN_SIDEBAR",
-  SHOW_CONTENT_MESSAGES_TOGGLE: "SHOW_CONTENT_MESSAGES_TOGGLE",
   SIDEBAR_CLOSE: "SIDEBAR_CLOSE",
   SPLIT_CONSOLE_CLOSE_BUTTON_TOGGLE: "SPLIT_CONSOLE_CLOSE_BUTTON_TOGGLE",
+  SHOW_EVALUATION_NOTIFICATION: "SHOW_EVALUATION_NOTIFICATION",
+  TARGET_MESSAGES_REMOVE: "TARGET_MESSAGES_REMOVE",
   TIMESTAMPS_TOGGLE: "TIMESTAMPS_TOGGLE",
   UPDATE_HISTORY_POSITION: "UPDATE_HISTORY_POSITION",
   REVERSE_SEARCH_INPUT_CHANGE: "REVERSE_SEARCH_INPUT_CHANGE",
@@ -52,7 +55,6 @@ const actionTypes = {
   WARNING_GROUPS_TOGGLE: "WARNING_GROUPS_TOGGLE",
   WILL_NAVIGATE: "WILL_NAVIGATE",
   EDITOR_SET_WIDTH: "EDITOR_SET_WIDTH",
-  TARGET_AVAILABLE: "TARGET_AVAILABLE",
 };
 
 const prefs = {
@@ -76,19 +78,17 @@ const prefs = {
       INPUT_HISTORY_COUNT: "devtools.webconsole.inputHistoryCount",
       // Is editor mode enabled.
       EDITOR: "input.editor",
-      // Display content messages in the browser console.
-      CONTENT_MESSAGES: "devtools.browserconsole.contentMessages",
       // Display timestamp in messages.
       MESSAGE_TIMESTAMP: "devtools.webconsole.timestampMessages",
       // Store the editor width.
       EDITOR_WIDTH: "input.editorWidth",
       // Show the Editor onboarding UI
       EDITOR_ONBOARDING: "devtools.webconsole.input.editorOnboarding",
-      // Show the Input Context the selector in the browser toolbox
-      CONTEXT_SELECTOR_BROWSER_TOOLBOX: "devtools.webconsole.input.context",
-      // Show the Input Context the selector in the content toolbox
-      CONTEXT_SELECTOR_CONTENT_TOOLBOX:
-        "devtools.contenttoolbox.webconsole.input.context",
+      // Show the Input Context the selector
+      CONTEXT_SELECTOR: "devtools.webconsole.input.context",
+      // Persist the "enable network monitoring" option
+      ENABLE_NETWORK_MONITORING:
+        "devtools.browserconsole.enableNetworkMonitoring",
     },
     FEATURES: {
       // We use the same pref to enable the sidebar on webconsole and browser console.
@@ -96,7 +96,6 @@ const prefs = {
       AUTOCOMPLETE: "devtools.webconsole.input.autocomplete",
       EAGER_EVALUATION: "devtools.webconsole.input.eagerEvaluation",
       GROUP_WARNINGS: "devtools.webconsole.groupWarningMessages",
-      BROWSER_TOOLBOX_FISSION: "devtools.browsertoolbox.fission",
     },
   },
 };
@@ -145,17 +144,21 @@ const chromeRDPEnums = {
     SECURITY: "security",
     OTHER: "other",
     DEPRECATION: "deprecation",
+    // Related to JavaScript Tracer
+    JSTRACER: "jstracer",
   },
   MESSAGE_TYPE: {
     LOG: "log",
     DIR: "dir",
     TABLE: "table",
+    // Related to console.trace() (and not the JavaScript Tracer)
     TRACE: "trace",
     CLEAR: "clear",
     START_GROUP: "startGroup",
     START_GROUP_COLLAPSED: "startGroupCollapsed",
     END_GROUP: "endGroup",
     CONTENT_BLOCKING_GROUP: "contentBlockingWarningGroup",
+    STORAGE_ISOLATION_GROUP: "storageIsolationWarningGroup",
     TRACKING_PROTECTION_GROUP: "trackingProtectionWarningGroup",
     COOKIE_SAMESITE_GROUP: "cookieSameSiteGroup",
     CORS_GROUP: "CORSWarningGroup",
@@ -172,6 +175,8 @@ const chromeRDPEnums = {
     // output anything (e.g. `console.time()` calls).
     NULL_MESSAGE: "nullMessage",
     NAVIGATION_MARKER: "navigationMarker",
+    SIMPLE_TABLE: "simpleTable",
+    JSTRACER: "jstracer",
   },
   MESSAGE_LEVEL: {
     LOG: "log",
@@ -194,6 +199,16 @@ const historyCommands = {
   HISTORY_FORWARD: 1,
 };
 
+const urls = {
+  // URL opened when executing `:help` command in the input
+  HELP_URL:
+    "https://firefox-source-docs.mozilla.org/devtools-user/web_console/helpers/",
+};
+
+const evaluationNotifications = {
+  ORIGINAL_VARIABLE_MAPPING: "originalVariableMapping",
+};
+
 // Combine into a single constants object
 module.exports = Object.assign(
   {
@@ -209,5 +224,8 @@ module.exports = Object.assign(
   chromeRDPEnums,
   jstermCommands,
   prefs,
-  historyCommands
+  historyCommands,
+  urls,
+  historyCommands,
+  evaluationNotifications
 );

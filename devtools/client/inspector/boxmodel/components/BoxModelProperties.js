@@ -7,16 +7,16 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { LocalizationHelper } = require("devtools/shared/l10n");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
 
 const ComputedProperty = createFactory(
-  require("devtools/client/inspector/boxmodel/components/ComputedProperty")
+  require("resource://devtools/client/inspector/boxmodel/components/ComputedProperty.js")
 );
 
-const Types = require("devtools/client/inspector/boxmodel/types");
+const Types = require("resource://devtools/client/inspector/boxmodel/types.js");
 
 const BOXMODEL_STRINGS_URI = "devtools/client/locales/boxmodel.properties";
 const BOXMODEL_L10N = new LocalizationHelper(BOXMODEL_STRINGS_URI);
@@ -25,8 +25,7 @@ class BoxModelProperties extends PureComponent {
   static get propTypes() {
     return {
       boxModel: PropTypes.shape(Types.boxModel).isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
     };
   }
@@ -79,12 +78,7 @@ class BoxModelProperties extends PureComponent {
   }
 
   render() {
-    const {
-      boxModel,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
-      setSelectedNode,
-    } = this.props;
+    const { boxModel, dispatch, setSelectedNode } = this.props;
     const { layout } = boxModel;
 
     const layoutInfo = [
@@ -97,16 +91,13 @@ class BoxModelProperties extends PureComponent {
     ];
 
     const properties = layoutInfo.map(info => {
-      const {
-        referenceElement,
-        referenceElementType,
-      } = this.getReferenceElement(info);
+      const { referenceElement, referenceElementType } =
+        this.getReferenceElement(info);
 
       return ComputedProperty({
+        dispatch,
         key: info,
         name: info,
-        onHideBoxModelHighlighter,
-        onShowBoxModelHighlighterForNode,
         referenceElement,
         referenceElementType,
         setSelectedNode,
@@ -119,11 +110,19 @@ class BoxModelProperties extends PureComponent {
       dom.div(
         {
           className: "layout-properties-header",
+          role: "heading",
+          "aria-level": "3",
           onDoubleClick: this.onToggleExpander,
         },
         dom.span({
           className: "layout-properties-expander theme-twisty",
           open: this.state.isOpen,
+          role: "button",
+          "aria-label": BOXMODEL_L10N.getStr(
+            this.state.isOpen
+              ? "boxmodel.propertiesHideLabel"
+              : "boxmodel.propertiesShowLabel"
+          ),
           onClick: this.onToggleExpander,
         }),
         BOXMODEL_L10N.getStr("boxmodel.propertiesLabel")
@@ -132,7 +131,7 @@ class BoxModelProperties extends PureComponent {
         {
           className: "layout-properties-wrapper devtools-monospace",
           hidden: !this.state.isOpen,
-          tabIndex: 0,
+          role: "table",
         },
         properties
       )

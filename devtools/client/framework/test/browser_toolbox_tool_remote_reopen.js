@@ -3,7 +3,9 @@
 
 "use strict";
 
-const { DevToolsServer } = require("devtools/server/devtools-server");
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
 
 // Bug 1277805: Too slow for debug runs
 requestLongerTimeout(2);
@@ -34,38 +36,37 @@ requestLongerTimeout(2);
  * which leads to the tools failing if they don't destroy their fronts.
  */
 
-function runTools(target) {
-  return (async function() {
-    const toolIds = gDevTools
-      .getToolDefinitionArray()
-      .filter(def => def.isTargetSupported(target))
-      .map(def => def.id);
-
+function runTools(tab) {
+  return (async function () {
     let toolbox;
-    for (let index = 0; index < toolIds.length; index++) {
-      const toolId = toolIds[index];
-
-      info("About to open " + index + "/" + toolId);
-      toolbox = await gDevTools.showToolbox(target, toolId, "window");
+    const toolIds = await getSupportedToolIds(tab);
+    for (const toolId of toolIds) {
+      info("About to open " + toolId);
+      toolbox = await gDevTools.showToolboxForTab(tab, {
+        toolId,
+        hostType: "window",
+      });
       ok(toolbox, "toolbox exists for " + toolId);
       is(toolbox.currentToolId, toolId, "currentToolId should be " + toolId);
 
       const panel = toolbox.getCurrentPanel();
-      ok(panel.isReady, toolId + " panel should be ready");
+      ok(panel, toolId + " panel has been registered in the toolbox");
     }
 
+    const client = toolbox.commands.client;
     await toolbox.destroy();
+
+    // We need to check the client after the toolbox destruction.
+    return client;
   })();
 }
 
 function test() {
-  (async function() {
+  (async function () {
     toggleAllTools(true);
     const tab = await addTab("about:blank");
 
-    const target = await TargetFactory.forTab(tab);
-    const { client } = target;
-    await runTools(target);
+    const client = await runTools(tab);
 
     const rootFronts = [...client.mainRoot.fronts.values()];
 
@@ -85,13 +86,6 @@ function test() {
       for (const actor of pool.__poolMap.keys()) {
         // Ignore the root front as it is only release on client close
         if (actor == "root") {
-          continue;
-        }
-        // Bug 1056342: Profiler fails today because of framerate actor, but
-        // this appears more complex to rework, so leave it for that bug to
-        // resolve.
-        if (actor.includes("framerateActor")) {
-          todo(false, "Front for " + actor + " still held in pool!");
           continue;
         }
         ok(false, "Front for " + actor + " still held in pool!");

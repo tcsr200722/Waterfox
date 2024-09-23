@@ -2,14 +2,14 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-PromiseTestUtils.whitelistRejectionsGlobally(/packaging errors/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/packaging errors/);
 
 function getExtension(page_action) {
   return ExtensionTestUtils.loadExtension({
     manifest: {
       page_action,
     },
-    background: function() {
+    background: function () {
       browser.test.onMessage.addListener(
         async ({ method, param, expect, msg }) => {
           let result = await browser.pageAction[method](param);
@@ -59,11 +59,11 @@ let tests = [
 let urls = ["http://example.com/", "http://mochi.test:8888/", "about:rights"];
 
 function getId(tab) {
-  let {
+  const {
     Management: {
       global: { tabTracker },
     },
-  } = ChromeUtils.import("resource://gre/modules/Extension.jsm", null);
+  } = ChromeUtils.importESModule("resource://gre/modules/Extension.sys.mjs");
   getId = tabTracker.getId.bind(tabTracker); // eslint-disable-line no-func-assign
   return getId(tab);
 }
@@ -267,10 +267,14 @@ add_task(async function test_pageAction_restrictScheme_false() {
         hide_matches: ["*://*/*"],
       },
     },
-    background: function() {
-      browser.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+    background: function () {
+      let articleReady = Promise.withResolvers();
+      browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (changeInfo.url && changeInfo.url.startsWith("about:reader")) {
           browser.test.sendMessage("readerModeEntered");
+        }
+        if (tab.isArticle && tab.url.includes("/readerModeArticle.html")) {
+          articleReady.resolve();
         }
       });
 
@@ -280,17 +284,28 @@ add_task(async function test_pageAction_restrictScheme_false() {
           return;
         }
 
+        browser.test.log("Waiting for tab.isArticle to be true");
+        await articleReady.promise;
+        browser.test.log("Toggling reader mode");
         browser.tabs.toggleReaderMode();
       });
+
+      browser.tabs.query(
+        { url: "*://example.com/*/readerModeArticle.html" },
+        tabs => {
+          if (tabs[0].isArticle) {
+            articleReady.resolve();
+          }
+        }
+      );
     },
   });
 
   async function expectPageAction(extension, tab, isShown) {
     await promiseAnimationFrame();
     let widgetId = makeWidgetId(extension.id);
-    let pageActionId = BrowserPageActions.urlbarButtonNodeIDForActionID(
-      widgetId
-    );
+    let pageActionId =
+      BrowserPageActions.urlbarButtonNodeIDForActionID(widgetId);
     let iconEl = document.getElementById(pageActionId);
 
     if (isShown) {

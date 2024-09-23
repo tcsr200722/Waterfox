@@ -8,27 +8,34 @@
 
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
+#include "mozilla/webgpu/WebGPUTypes.h"
+#include "nsTArray.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
+class BindGroupLayout;
 class Device;
 
 class RenderPipeline final : public ObjectBase, public ChildOf<Device> {
+  const RawId mImplicitPipelineLayoutId;
+  const nsTArray<RawId> mImplicitBindGroupLayoutIds;
+
  public:
   GPU_DECL_CYCLE_COLLECTION(RenderPipeline)
   GPU_DECL_JS_WRAP(RenderPipeline)
 
-  RenderPipeline(Device* const aParent, RawId aId);
-
   const RawId mId;
+
+  RenderPipeline(Device* const aParent, RawId aId,
+                 RawId aImplicitPipelineLayoutId,
+                 nsTArray<RawId>&& aImplicitBindGroupLayoutIds);
+  already_AddRefed<BindGroupLayout> GetBindGroupLayout(uint32_t index) const;
 
  private:
   virtual ~RenderPipeline();
   void Cleanup();
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #endif  // GPU_RenderPipeline_H_

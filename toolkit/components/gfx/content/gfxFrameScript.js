@@ -4,8 +4,6 @@
 
 /* eslint-env mozilla/frame-script */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const gfxFrameScript = {
   domUtils: null,
 
@@ -25,7 +23,7 @@ const gfxFrameScript = {
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
     };
     webNav.loadURI(
-      "chrome://gfxsanity/content/sanitytest.html",
+      Services.io.newURI("chrome://gfxsanity/content/sanitytest.html"),
       loadURIOptions
     );
   },
@@ -47,7 +45,7 @@ const gfxFrameScript = {
     return aUri.endsWith("/sanitytest.html");
   },
 
-  onStateChange(webProgress, req, flags, status) {
+  onStateChange(webProgress, req, flags) {
     if (
       webProgress.isTopLevel &&
       flags & Ci.nsIWebProgressListener.STATE_STOP &&
@@ -66,9 +64,9 @@ const gfxFrameScript = {
 
   // Needed to support web progress listener
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIWebProgressListener,
-    Ci.nsISupportsWeakReference,
-    Ci.nsIObserver,
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
+    "nsIObserver",
   ]),
 };
 

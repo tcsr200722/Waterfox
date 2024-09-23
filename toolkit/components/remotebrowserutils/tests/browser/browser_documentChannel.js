@@ -1,22 +1,10 @@
 /* eslint-env webextensions */
 "use strict";
 
-const { E10SUtils } = ChromeUtils.import(
-  "resource://gre/modules/E10SUtils.jsm"
-);
-
 const PRINT_POSTDATA = httpURL("print_postdata.sjs");
 const FILE_DUMMY = fileURL("dummy_page.html");
 const DATA_URL = "data:text/html,Hello%2C World!";
 const DATA_STRING = "Hello, World!";
-
-const DOCUMENT_CHANNEL_PREF = "browser.tabs.documentchannel";
-
-async function setPref() {
-  await SpecialPowers.pushPrefEnv({
-    set: [[DOCUMENT_CHANNEL_PREF, true]],
-  });
-}
 
 async function performLoad(browser, opts, action) {
   let loadedPromise = BrowserTestUtils.browserLoaded(
@@ -49,14 +37,14 @@ const EXTENSION_DATA = {
   async background() {
     browser.test.log("background script running");
     browser.webRequest.onAuthRequired.addListener(
-      async details => {
+      async () => {
         browser.test.log("webRequest onAuthRequired");
 
         // A blocking request that returns a promise exercises a codepath that
         // sets the notificationCallbacks on the channel to a JS object that we
         // can't do directly QueryObject on with expected results.
         // This triggered a crash which was fixed in bug 1528188.
-        return new Promise((resolve, reject) => {
+        return new Promise(resolve => {
           setTimeout(resolve, 0);
         });
       },
@@ -67,7 +55,7 @@ const EXTENSION_DATA = {
       async details => {
         browser.test.log("webRequest onBeforeRequest");
         let isRedirect =
-          details.originUrl == browser.extension.getURL("redirect.html") &&
+          details.originUrl == browser.runtime.getURL("redirect.html") &&
           details.url.endsWith("print_postdata.sjs");
         let url = this.extUrl ? this.extUrl : details.url + "?redirected";
         return isRedirect ? { redirectUrl: url } : {};
@@ -98,12 +86,11 @@ async function postFrom(start, target) {
       gBrowser,
       url: start,
     },
-    async function(browser) {
+    async function (browser) {
       info("Test tab ready: postFrom " + start);
 
       // Create the form element in our loaded URI.
-      await SpecialPowers.spawn(browser, [{ target }], function({ target }) {
-        // eslint-disable-next-line no-unsanitized/property
+      await SpecialPowers.spawn(browser, [{ target }], function ({ target }) {
         content.document.body.innerHTML = `
         <form method="post" action="${target}">
           <input type="text" name="initialRemoteType" value="${Services.appinfo.remoteType}">
@@ -148,21 +135,15 @@ async function postFrom(start, target) {
   );
 }
 
-async function loadAndGetProcessID(browser, target, expectedProcessSwitch) {
+async function loadAndGetProcessID(browser, target) {
   info(`Performing GET load: ${target}`);
   await performLoad(
     browser,
     {
       maybeErrorPage: true,
     },
-    async () => {
-      BrowserTestUtils.loadURI(browser, target);
-      if (expectedProcessSwitch) {
-        await BrowserTestUtils.waitForEvent(
-          gBrowser.getTabForBrowser(browser),
-          "SSTabRestored"
-        );
-      }
+    () => {
+      BrowserTestUtils.startLoadingURIString(browser, target);
     }
   );
 
@@ -185,7 +166,7 @@ async function testLoadAndRedirect(
       gBrowser,
       url: start,
     },
-    async function(_browser) {
+    async function (_browser) {
       info("Test tab ready: getFrom " + start);
 
       let browser = gBrowser.selectedBrowser;
@@ -195,11 +176,7 @@ async function testLoadAndRedirect(
 
       info(`firstProcessID: ${firstProcessID}`);
 
-      let secondProcessID = await loadAndGetProcessID(
-        browser,
-        target,
-        expectedProcessSwitch
-      );
+      let secondProcessID = await loadAndGetProcessID(browser, target);
 
       info(`secondProcessID: ${secondProcessID}`);
       Assert.equal(firstProcessID != secondProcessID, expectedProcessSwitch);
@@ -208,11 +185,7 @@ async function testLoadAndRedirect(
         return;
       }
 
-      let thirdProcessID = await loadAndGetProcessID(
-        browser,
-        add307(target),
-        expectedProcessSwitch
-      );
+      let thirdProcessID = await loadAndGetProcessID(browser, add307(target));
 
       info(`thirdProcessID: ${thirdProcessID}`);
       Assert.equal(firstProcessID != thirdProcessID, expectedProcessSwitch);
@@ -222,27 +195,23 @@ async function testLoadAndRedirect(
 }
 
 add_task(async function test_enabled() {
-  await setPref();
+  // Force only one webIsolated content process to ensure same-origin loads
+  // always end in the same process.
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.ipc.processCount.webIsolated", 1]],
+  });
 
-  // With the pref enabled, URIs should correctly switch processes & the POST
+  // URIs should correctly switch processes & the POST
   // should succeed.
   info("ENABLED -- FILE -- raw URI load");
   let resp = await postFrom(FILE_DUMMY, PRINT_POSTDATA);
-  if (SpecialPowers.useRemoteSubframes) {
-    ok(E10SUtils.isWebRemoteType(resp.remoteType), "process switch");
-  } else {
-    is(resp.remoteType, E10SUtils.FILE_REMOTE_TYPE, "No process switch");
-  }
+  ok(E10SUtils.isWebRemoteType(resp.remoteType), "process switch");
   is(resp.location, PRINT_POSTDATA, "correct location");
   is(resp.body, "initialRemoteType=file", "correct POST body");
 
   info("ENABLED -- FILE -- 307-redirect URI load");
   let resp307 = await postFrom(FILE_DUMMY, add307(PRINT_POSTDATA));
-  if (SpecialPowers.useRemoteSubframes) {
-    ok(E10SUtils.isWebRemoteType(resp307.remoteType), "process switch");
-  } else {
-    is(resp307.remoteType, E10SUtils.FILE_REMOTE_TYPE, "No process switch");
-  }
+  ok(E10SUtils.isWebRemoteType(resp307.remoteType), "process switch");
   is(resp307.location, PRINT_POSTDATA, "correct location");
   is(resp307.body, "initialRemoteType=file", "correct POST body");
 
@@ -289,8 +258,6 @@ async function sendMessage(ext, method, url) {
 
 // TODO: Currently no test framework for ftp://.
 add_task(async function test_protocol() {
-  await setPref();
-
   // TODO: Processes should be switched due to navigation of different origins.
   await testLoadAndRedirect("data:,foo", false, true);
 
@@ -305,8 +272,7 @@ add_task(async function test_protocol() {
       PRINT_POSTDATA
     );
 
-    // TODO: Processes should be switched due to navigation of different origins.
-    is(respExtRedirect.remoteType, "extension", "process switch");
+    ok(E10SUtils.isWebRemoteType(respExtRedirect.remoteType), "process switch");
     is(respExtRedirect.location, DATA_URL, "correct location");
     is(respExtRedirect.body, DATA_STRING, "correct POST body");
   });

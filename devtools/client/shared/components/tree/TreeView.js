@@ -4,7 +4,7 @@
 "use strict";
 
 // Make this available to both AMD and CJS environments
-define(function(require, exports, module) {
+define(function (require, exports, module) {
   const {
     cloneElement,
     Component,
@@ -222,6 +222,7 @@ define(function(require, exports, module) {
         selected: props.selected,
         active: props.active,
         lastSelectedIndex: props.defaultSelectFirstNode ? 0 : null,
+        mouseDown: false,
       };
 
       this.treeRef = createRef();
@@ -241,7 +242,8 @@ define(function(require, exports, module) {
       this.renderRows = this.renderRows.bind(this);
     }
 
-    componentWillReceiveProps(nextProps) {
+    // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+    UNSAFE_componentWillReceiveProps(nextProps) {
       const { expandedNodes, selected } = nextProps;
       const state = {
         expandedNodes,
@@ -253,6 +255,26 @@ define(function(require, exports, module) {
       }
 
       this.setState(Object.assign({}, this.state, state));
+    }
+
+    shouldComponentUpdate(nextProps, nextState) {
+      const {
+        expandedNodes,
+        columns,
+        selected,
+        active,
+        lastSelectedIndex,
+        mouseDown,
+      } = this.state;
+
+      return (
+        expandedNodes !== nextState.expandedNodes ||
+        columns !== nextState.columns ||
+        selected !== nextState.selected ||
+        active !== nextState.active ||
+        lastSelectedIndex !== nextState.lastSelectedIndex ||
+        mouseDown === nextState.mouseDown
+      );
     }
 
     componentDidUpdate() {
@@ -313,6 +335,9 @@ define(function(require, exports, module) {
     // Event Handlers
 
     onFocus(_event) {
+      if (this.state.mouseDown) {
+        return;
+      }
       // Set focus to the first element, if none is selected or activated
       // This is needed because keyboard navigation won't work without an element being selected
       this.componentDidUpdate();
@@ -320,14 +345,14 @@ define(function(require, exports, module) {
 
     // eslint-disable-next-line complexity
     onKeyDown(event) {
-      const keyEligibleForFirstLetterNavigation =
-        event.key.length === 1 &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        !event.altKey;
+      const keyEligibleForFirstLetterNavigation = event.key.length === 1;
       if (
-        !SUPPORTED_KEYS.includes(event.key) &&
-        !keyEligibleForFirstLetterNavigation
+        (!SUPPORTED_KEYS.includes(event.key) &&
+          !keyEligibleForFirstLetterNavigation) ||
+        event.shiftKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
       ) {
         return;
       }
@@ -388,14 +413,12 @@ define(function(require, exports, module) {
             this.selectRow(firstRow, { alignTo: "top" });
           }
           break;
-
         case "End":
           const lastRow = rows[rows.length - 1];
           if (lastRow) {
             this.selectRow(lastRow, { alignTo: "bottom" });
           }
           break;
-
         case "Enter":
         case " ":
           // On space or enter make selected row active. This means keyboard
@@ -600,15 +623,15 @@ define(function(require, exports, module) {
           // A label for the child node
           name: provider.getLabel(child),
           // Data type of the child node (used for CSS customization)
-          type: type,
+          type,
           // Class attribute computed from the type.
           rowClass: "treeRow-" + type,
           // Level of the child within the hierarchy (top == 0)
           level: provider.getLevel ? provider.getLevel(child, level) : level,
           // True if this node has children.
-          hasChildren: hasChildren,
+          hasChildren,
           // Value associated with this node (as provided by the data provider)
-          value: value,
+          value,
           // True if the node is expanded.
           open: this.isExpanded(nodePath),
           // Node path
@@ -647,7 +670,7 @@ define(function(require, exports, module) {
 
         const props = Object.assign({}, this.props, {
           key: `${member.path}-${member.active ? "active" : "inactive"}`,
-          member: member,
+          member,
           columns: this.state.columns,
           id: member.path,
           ref: row => row && this.rows.push(row),
@@ -716,6 +739,8 @@ define(function(require, exports, module) {
           onFocus: this.onFocus,
           onKeyDown: this.onKeyDown,
           onContextMenu: onContextMenuTree && onContextMenuTree.bind(this),
+          onMouseDown: () => this.setState({ mouseDown: true }),
+          onMouseUp: () => this.setState({ mouseDown: false }),
           onClick: () => {
             // Focus should always remain on the tree container itself.
             this.treeRef.current.focus();

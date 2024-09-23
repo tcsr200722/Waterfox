@@ -5,11 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XMLStylesheetProcessingInstruction.h"
+
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/FetchPriority.h"
+#include "mozilla/dom/ReferrerInfo.h"
 #include "nsContentUtils.h"
 #include "nsNetUtil.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // nsISupports implementation
 
@@ -46,10 +49,11 @@ nsresult XMLStylesheetProcessingInstruction::BindToTree(BindContext& aContext,
   return rv;
 }
 
-void XMLStylesheetProcessingInstruction::UnbindFromTree(bool aNullParent) {
+void XMLStylesheetProcessingInstruction::UnbindFromTree(
+    UnbindContext& aContext) {
   nsCOMPtr<Document> oldDoc = GetUncomposedDoc();
 
-  ProcessingInstruction::UnbindFromTree(aNullParent);
+  ProcessingInstruction::UnbindFromTree(aContext);
   Unused << UpdateStyleSheetInternal(oldDoc, nullptr);
 }
 
@@ -133,11 +137,12 @@ XMLStylesheetProcessingInstruction::GetStyleSheetInfo() {
       CORS_NONE,
       title,
       media,
-      /* integrity = */ EmptyString(),
-      /* nonce = */ EmptyString(),
+      /* integrity = */ u""_ns,
+      /* nonce = */ u""_ns,
       alternate ? HasAlternateRel::Yes : HasAlternateRel::No,
       IsInline::No,
       IsExplicitlyEnabled::No,
+      FetchPriority::Auto,
   });
 }
 
@@ -152,5 +157,4 @@ XMLStylesheetProcessingInstruction::CloneDataNode(
                        XMLStylesheetProcessingInstruction(ni.forget(), data));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

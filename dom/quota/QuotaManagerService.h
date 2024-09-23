@@ -7,14 +7,22 @@
 #ifndef mozilla_dom_quota_QuotaManagerService_h
 #define mozilla_dom_quota_QuotaManagerService_h
 
-#include "mozilla/dom/ipc/IdType.h"
+#include <cstdint>
+#include "ErrorList.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/HalBatteryInformation.h"
-#include "mozilla/UniquePtr.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "nsIObserver.h"
 #include "nsIQuotaManagerService.h"
+#include "nsISupports.h"
 
 #define QUOTAMANAGER_SERVICE_CONTRACTID \
   "@mozilla.org/dom/quota-manager-service;1"
+
+class nsIPrincipal;
+class nsIQuotaRequest;
+class nsIQuotaUsageCallback;
+class nsIQuotaUsageRequest;
 
 namespace mozilla {
 namespace ipc {
@@ -27,8 +35,7 @@ namespace hal {
 class BatteryInformation;
 }
 
-namespace dom {
-namespace quota {
+namespace dom::quota {
 
 class QuotaChild;
 class QuotaManager;
@@ -36,7 +43,7 @@ class QuotaManager;
 class QuotaManagerService final : public nsIQuotaManagerService,
                                   public nsIObserver,
                                   public hal::BatteryObserver {
-  typedef mozilla::ipc::PBackgroundChild PBackgroundChild;
+  using PBackgroundChild = mozilla::ipc::PBackgroundChild;
 
   class BackgroundCreateCallback;
   class PendingRequestInfo;
@@ -89,8 +96,7 @@ class QuotaManagerService final : public nsIQuotaManagerService,
   void Notify(const hal::BatteryInformation& aBatteryInfo) override;
 };
 
-}  // namespace quota
-}  // namespace dom
+}  // namespace dom::quota
 }  // namespace mozilla
 
 #endif /* mozilla_dom_quota_QuotaManagerService_h */

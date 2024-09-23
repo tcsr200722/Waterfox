@@ -7,10 +7,12 @@
 #include "mozilla/dom/Event.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/NativeKeyBindingsType.h"
 #include "mozilla/StaticPrefs_test.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TextInputProcessor.h"
+#include "mozilla/WritingModes.h"
 #include "mozilla/widget/IMEData.h"
 #include "mozilla/dom/KeyboardEvent.h"
 #include "nsContentUtils.h"
@@ -31,10 +33,10 @@ namespace mozilla {
 
 class TextInputProcessorNotification final
     : public nsITextInputProcessorNotification {
-  typedef IMENotification::SelectionChangeData SelectionChangeData;
-  typedef IMENotification::SelectionChangeDataBase SelectionChangeDataBase;
-  typedef IMENotification::TextChangeData TextChangeData;
-  typedef IMENotification::TextChangeDataBase TextChangeDataBase;
+  using SelectionChangeData = IMENotification::SelectionChangeData;
+  using SelectionChangeDataBase = IMENotification::SelectionChangeDataBase;
+  using TextChangeData = IMENotification::TextChangeData;
+  using TextChangeDataBase = IMENotification::TextChangeDataBase;
 
  public:
   explicit TextInputProcessorNotification(const char* aType)
@@ -50,8 +52,12 @@ class TextInputProcessorNotification final
         mSelectionChangeData(aSelectionChangeData) {
     // SelectionChangeDataBase::mString still refers nsString instance owned
     // by aSelectionChangeData.  So, this needs to copy the instance.
-    nsString* string = new nsString(aSelectionChangeData.String());
-    mSelectionChangeData.mString = string;
+    if (aSelectionChangeData.HasRange()) {
+      mSelectionChangeData.mString =
+          new nsString(aSelectionChangeData.String());
+    } else {
+      mSelectionChangeData.mString = nullptr;
+    }
   }
 
   NS_DECL_ISUPPORTS
@@ -67,6 +73,9 @@ class TextInputProcessorNotification final
       return NS_ERROR_INVALID_ARG;
     }
     if (IsSelectionChange()) {
+      if (!mSelectionChangeData.HasRange()) {
+        return NS_ERROR_NOT_AVAILABLE;
+      }
       *aOffset = mSelectionChangeData.mOffset;
       return NS_OK;
     }
@@ -78,8 +87,18 @@ class TextInputProcessorNotification final
   }
 
   // "notify-selection-change"
+  NS_IMETHOD GetHasRange(bool* aHasRange) final {
+    if (IsSelectionChange()) {
+      *aHasRange = mSelectionChangeData.HasRange();
+      return NS_OK;
+    }
+    return NS_ERROR_NOT_AVAILABLE;
+  }
   NS_IMETHOD GetText(nsAString& aText) final {
     if (IsSelectionChange()) {
+      if (!mSelectionChangeData.HasRange()) {
+        return NS_ERROR_NOT_AVAILABLE;
+      }
       aText = mSelectionChangeData.String();
       return NS_OK;
     }
@@ -102,6 +121,9 @@ class TextInputProcessorNotification final
       return NS_ERROR_INVALID_ARG;
     }
     if (IsSelectionChange()) {
+      if (!mSelectionChangeData.HasRange()) {
+        return NS_ERROR_NOT_AVAILABLE;
+      }
       *aLength = mSelectionChangeData.Length();
       return NS_OK;
     }
@@ -113,6 +135,9 @@ class TextInputProcessorNotification final
       return NS_ERROR_INVALID_ARG;
     }
     if (IsSelectionChange()) {
+      if (!mSelectionChangeData.HasRange()) {
+        return NS_ERROR_NOT_AVAILABLE;
+      }
       *aReversed = mSelectionChangeData.mReversed;
       return NS_OK;
     }
@@ -231,7 +256,7 @@ class TextInputProcessorNotification final
 
  protected:
   virtual ~TextInputProcessorNotification() {
-    if (IsSelectionChange()) {
+    if (IsSelectionChange() && mSelectionChangeData.mString) {
       delete mSelectionChangeData.mString;
       mSelectionChangeData.mString = nullptr;
     }
@@ -985,35 +1010,52 @@ nsresult TextInputProcessor::PrepareKeyboardEventToDispatch(
             aKeyboardEvent.mKeyNameIndex);
   }
 
-  aKeyboardEvent.mIsSynthesizedByTIP = !mForTests;
+  aKeyboardEvent.mIsSynthesizedByTIP = true;
+  aKeyboardEvent.mFlags.mIsSynthesizedForTests = mForTests;
+
+  return NS_OK;
+}
+
+nsresult TextInputProcessor::InitEditCommands(
+    WidgetKeyboardEvent& aKeyboardEvent) const {
+  MOZ_ASSERT(XRE_IsContentProcess());
+  MOZ_ASSERT(aKeyboardEvent.mMessage == eKeyPress);
 
   // When this emulates real input only in content process, we need to
   // initialize edit commands with the main process's widget via PuppetWidget
   // because they are initialized by BrowserParent before content process treats
   // them.
-  if (aKeyboardEvent.mIsSynthesizedByTIP && !XRE_IsParentProcess()) {
-    // Note that retrieving edit commands from content process is expensive.
-    // Let's skip it when the keyboard event is inputting text.
-    if (!aKeyboardEvent.IsInputtingText()) {
-      // FYI: WidgetKeyboardEvent::InitAllEditCommands() isn't available here
-      //      since it checks whether it's called in the main process to
-      //      avoid performance issues so that we need to initialize each
-      //      command manually here.
-      if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
-              nsIWidget::NativeKeyBindingsForSingleLineEditor))) {
-        return NS_ERROR_NOT_AVAILABLE;
-      }
-      if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
-              nsIWidget::NativeKeyBindingsForMultiLineEditor))) {
-        return NS_ERROR_NOT_AVAILABLE;
-      }
-      if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
-              nsIWidget::NativeKeyBindingsForRichTextEditor))) {
-        return NS_ERROR_NOT_AVAILABLE;
-      }
-    } else {
-      aKeyboardEvent.PreventNativeKeyBindings();
-    }
+  // And also when this synthesizes keyboard events for tests, we need default
+  // shortcut keys on the platform for making any developers get constant
+  // results in any environments.
+
+  // Note that retrieving edit commands via PuppetWidget is expensive.
+  // Let's skip it when the keyboard event is inputting text.
+  if (aKeyboardEvent.IsInputtingText()) {
+    aKeyboardEvent.PreventNativeKeyBindings();
+    return NS_OK;
+  }
+
+  Maybe<WritingMode> writingMode;
+  if (RefPtr<TextEventDispatcher> dispatcher = mDispatcher) {
+    writingMode = dispatcher->MaybeQueryWritingModeAtSelection();
+  }
+
+  // FYI: WidgetKeyboardEvent::InitAllEditCommands() isn't available here
+  //      since it checks whether it's called in the main process to
+  //      avoid performance issues so that we need to initialize each
+  //      command manually here.
+  if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
+          NativeKeyBindingsType::SingleLineEditor, writingMode))) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
+          NativeKeyBindingsType::MultiLineEditor, writingMode))) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  if (NS_WARN_IF(!aKeyboardEvent.InitEditCommandsFor(
+          NativeKeyBindingsType::RichTextEditor, writingMode))) {
+    return NS_ERROR_NOT_AVAILABLE;
   }
 
   return NS_OK;
@@ -1053,6 +1095,8 @@ nsresult TextInputProcessor::KeydownInternal(
 
   // We shouldn't modify the internal WidgetKeyboardEvent.
   WidgetKeyboardEvent keyEvent(aKeyboardEvent);
+  keyEvent.mFlags.mIsTrusted = true;
+  keyEvent.mMessage = eKeyDown;
   nsresult rv = PrepareKeyboardEventToDispatch(keyEvent, aKeyFlags);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -1104,8 +1148,26 @@ nsresult TextInputProcessor::KeydownInternal(
                         ? KEYDOWN_IS_CONSUMED
                         : KEYEVENT_NOT_CONSUMED;
 
-  if (aAllowToDispatchKeypress &&
-      kungFuDeathGrip->MaybeDispatchKeypressEvents(keyEvent, status)) {
+  if (!aAllowToDispatchKeypress) {
+    return NS_OK;
+  }
+
+  keyEvent.mMessage = eKeyPress;
+
+  // Only `eKeyPress` events, editor wants to execute system default edit
+  // commands mapped to the key combination.  In e10s world, edit commands can
+  // be retrieved only in the parent process due to the performance reason.
+  // Therefore, BrowserParent initializes edit commands for all cases before
+  // sending the event to focused content process.  For emulating this, we
+  // need to do it now for synthesizing `eKeyPress` events if and only if
+  // we're dispatching the events in a content process.
+  if (XRE_IsContentProcess()) {
+    nsresult rv = InitEditCommands(keyEvent);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  }
+  if (kungFuDeathGrip->MaybeDispatchKeypressEvents(keyEvent, status)) {
     aConsumedFlags |= (status == nsEventStatus_eConsumeNoDefault)
                           ? KEYPRESS_IS_CONSUMED
                           : KEYEVENT_NOT_CONSUMED;
@@ -1147,6 +1209,8 @@ nsresult TextInputProcessor::KeyupInternal(
 
   // We shouldn't modify the internal WidgetKeyboardEvent.
   WidgetKeyboardEvent keyEvent(aKeyboardEvent);
+  keyEvent.mFlags.mIsTrusted = true;
+  keyEvent.mMessage = eKeyUp;
   nsresult rv = PrepareKeyboardEventToDispatch(keyEvent, aKeyFlags);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -1183,6 +1247,71 @@ nsresult TextInputProcessor::KeyupInternal(
       aDoDefault ? nsEventStatus_eIgnore : nsEventStatus_eConsumeNoDefault;
   kungFuDeathGrip->DispatchKeyboardEvent(eKeyUp, keyEvent, status);
   aDoDefault = (status != nsEventStatus_eConsumeNoDefault);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+TextInputProcessor::InsertTextWithKeyPress(const nsAString& aString,
+                                           Event* aDOMKeyEvent,
+                                           uint32_t aKeyFlags,
+                                           uint8_t aOptionalArgc,
+                                           bool* aDoDefault) {
+  MOZ_RELEASE_ASSERT(aDoDefault, "aDoDefault must not be nullptr");
+  MOZ_RELEASE_ASSERT(nsContentUtils::IsCallerChrome());
+
+  nsresult rv = IsValidStateForComposition();
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  if (aOptionalArgc < 1) {
+    aDOMKeyEvent = nullptr;
+  }
+  if (aOptionalArgc < 2) {
+    aKeyFlags = 0;
+  }
+  *aDoDefault = !(aKeyFlags & KEY_DEFAULT_PREVENTED);
+
+  WidgetKeyboardEvent* const originalKeyEvent =
+      aDOMKeyEvent ? aDOMKeyEvent->WidgetEventPtr()->AsKeyboardEvent()
+                   : nullptr;
+  if (NS_WARN_IF(aDOMKeyEvent && !originalKeyEvent)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  WidgetKeyboardEvent keyEvent(true, eKeyPress, nullptr);
+  if (originalKeyEvent) {
+    keyEvent = WidgetKeyboardEvent(*originalKeyEvent);
+    keyEvent.mFlags.mIsTrusted = true;
+    keyEvent.mMessage = eKeyPress;
+  }
+  keyEvent.mKeyNameIndex = KEY_NAME_INDEX_USE_STRING;
+  keyEvent.mKeyValue = aString;
+  rv = PrepareKeyboardEventToDispatch(keyEvent, aKeyFlags);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+  // Do not dispatch modifier key events even if the source event is a modifier
+  // key event because modifier state should be changed before this.
+  // TODO: In some test scenarios, we may need a new flag to use the given
+  // modifier state as-is.
+  keyEvent.mModifiers = GetActiveModifiers();
+
+  // See KeyDownInternal() for the detail of this.
+  if (XRE_IsContentProcess()) {
+    nsresult rv = InitEditCommands(keyEvent);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  }
+
+  nsEventStatus status =
+      *aDoDefault ? nsEventStatus_eIgnore : nsEventStatus_eConsumeNoDefault;
+  RefPtr<TextEventDispatcher> dispatcher(mDispatcher);
+  if (dispatcher->MaybeDispatchKeypressEvents(keyEvent, status)) {
+    *aDoDefault = (status != nsEventStatus_eConsumeNoDefault);
+  }
+
   return NS_OK;
 }
 

@@ -8,6 +8,7 @@
 #include "nsIURI.h"
 #include "nsIURIMutator.h"
 #include "nsIURL.h"
+#include "nsIXULRuntime.h"
 #include "nsUrlClassifierUtils.h"
 #include "nsTArray.h"
 #include "nsReadableUtils.h"
@@ -30,10 +31,10 @@
 #include "nsIObserverService.h"
 #include "nsIPrefBranch.h"
 #include "nsIPrefService.h"
-#include "nsMemory.h"
 #include "nsPIDOMWindow.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadManager.h"
+#include "nsTHashSet.h"
 #include "Classifier.h"
 #include "Entries.h"
 #include "prprf.h"
@@ -270,15 +271,35 @@ nsUrlClassifierUtils::GetKeyForURI(nsIURI* uri, nsACString& _retval) {
   rv = innerURI->GetPathQueryRef(path);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // strip out anchors
+  // Strip fragment and query because canonicalization only applies to path
   int32_t ref = path.FindChar('#');
-  if (ref != kNotFound) path.SetLength(ref);
+  if (ref != kNotFound) {
+    path.SetLength(ref);
+  }
+
+  int32_t query = path.FindChar('?');
+  if (query != kNotFound) {
+    path.SetLength(query);
+  }
 
   nsAutoCString temp;
   rv = CanonicalizePath(path, temp);
   NS_ENSURE_SUCCESS(rv, rv);
 
   _retval.Append(temp);
+
+  if (query != kNotFound) {
+    nsAutoCString query;
+    rv = innerURI->GetQuery(query);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // We have to canonicalize the query too based on
+    // https://developers.google.com/safe-browsing/v4/urls-hashing?hl=en#canonicalization
+    rv = CanonicalizeQuery(query, temp);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    _retval.Append(temp);
+  }
 
   return NS_OK;
 }
@@ -302,16 +323,11 @@ static const struct {
     {"goog-badbinurl-proto", MALICIOUS_BINARY},            // 7
     {"goog-downloadwhite-proto", CSD_DOWNLOAD_WHITELIST},  // 9
 
-    // For login reputation
-    {"goog-passwordwhite-proto", CSD_WHITELIST},  // 8
-
     // For testing purpose.
     {"moztest-phish-proto", SOCIAL_ENGINEERING_PUBLIC},  // 2
     {"test-phish-proto", SOCIAL_ENGINEERING_PUBLIC},     // 2
     {"moztest-unwanted-proto", UNWANTED_SOFTWARE},       // 3
     {"test-unwanted-proto", UNWANTED_SOFTWARE},          // 3
-    {"moztest-passwordwhite-proto", CSD_WHITELIST},      // 8
-    {"test-passwordwhite-proto", CSD_WHITELIST},         // 8
 };
 
 NS_IMETHODIMP
@@ -349,11 +365,11 @@ nsUrlClassifierUtils::GetProvider(const nsACString& aTableName,
   nsCString* provider = nullptr;
 
   if (IsTestTable(aTableName)) {
-    aProvider = NS_LITERAL_CSTRING(TESTING_TABLE_PROVIDER_NAME);
+    aProvider = nsLiteralCString(TESTING_TABLE_PROVIDER_NAME);
   } else if (mProviderDict.Get(aTableName, &provider)) {
-    aProvider = provider ? *provider : EmptyCString();
+    aProvider = provider ? *provider : ""_ns;
   } else {
-    aProvider = EmptyCString();
+    aProvider.Truncate();
   }
   return NS_OK;
 }
@@ -362,15 +378,12 @@ NS_IMETHODIMP
 nsUrlClassifierUtils::GetTelemetryProvider(const nsACString& aTableName,
                                            nsACString& aProvider) {
   GetProvider(aTableName, aProvider);
-  // Whitelist known providers to avoid reporting on private ones.
+  // Exceptionlist known providers to avoid reporting on private ones.
   // An empty provider is treated as "other"
-  if (!NS_LITERAL_CSTRING("mozilla").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("google").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("google4").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("baidu").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("mozcn").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING("yandex").Equals(aProvider) &&
-      !NS_LITERAL_CSTRING(TESTING_TABLE_PROVIDER_NAME).Equals(aProvider)) {
+  if (!"mozilla"_ns.Equals(aProvider) && !"google"_ns.Equals(aProvider) &&
+      !"google4"_ns.Equals(aProvider) && !"baidu"_ns.Equals(aProvider) &&
+      !"mozcn"_ns.Equals(aProvider) && !"yandex"_ns.Equals(aProvider) &&
+      !nsLiteralCString(TESTING_TABLE_PROVIDER_NAME).Equals(aProvider)) {
     aProvider.AssignLiteral("other");
   }
 
@@ -533,9 +546,9 @@ static nsresult GetSpecWithoutSensitiveData(nsIURI* aUri, nsACString& aSpec) {
   if (url) {
     nsCOMPtr<nsIURI> clone;
     rv = NS_MutateURI(url)
-             .SetQuery(EmptyCString())
-             .SetRef(EmptyCString())
-             .SetUserPass(EmptyCString())
+             .SetQuery(""_ns)
+             .SetRef(""_ns)
+             .SetUserPass(""_ns)
              .Finalize(clone);
     NS_ENSURE_SUCCESS(rv, rv);
     rv = clone->GetAsciiSpec(aSpec);
@@ -832,7 +845,7 @@ nsresult nsUrlClassifierUtils::ReadProvidersFromPrefs(ProviderDictType& aDict) {
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Collect providers from childArray.
-  nsTHashtable<nsCStringHashKey> providers;
+  nsTHashSet<nsCString> providers;
   for (auto& child : childArray) {
     auto dotPos = child.FindChar('.');
     if (dotPos < 0) {
@@ -841,16 +854,15 @@ nsresult nsUrlClassifierUtils::ReadProvidersFromPrefs(ProviderDictType& aDict) {
 
     nsDependentCSubstring provider = Substring(child, 0, dotPos);
 
-    providers.PutEntry(provider);
+    providers.Insert(provider);
   }
 
   // Now we have all providers. Check which one owns |aTableName|.
   // e.g. The owning lists of provider "google" is defined in
   // "browser.safebrowsing.provider.google.lists".
-  for (auto itr = providers.Iter(); !itr.Done(); itr.Next()) {
-    auto entry = itr.Get();
-    nsCString provider(entry->GetKey());
-    nsPrintfCString owninListsPref("%s.lists", provider.get());
+  for (const auto& provider : providers) {
+    nsPrintfCString owninListsPref("%s.lists",
+                                   nsPromiseFlatCString{provider}.get());
 
     nsAutoCString owningLists;
     nsresult rv = prefBranch->GetCharPref(owninListsPref.get(), owningLists);
@@ -863,7 +875,7 @@ nsresult nsUrlClassifierUtils::ReadProvidersFromPrefs(ProviderDictType& aDict) {
     nsTArray<nsCString> tables;
     Classifier::SplitTables(owningLists, tables);
     for (auto tableName : tables) {
-      aDict.Put(tableName, new nsCString(provider));
+      aDict.InsertOrUpdate(tableName, MakeUnique<nsCString>(provider));
     }
   }
 
@@ -906,6 +918,25 @@ nsresult nsUrlClassifierUtils::CanonicalizePath(const nsACString& path,
 
   SpecialEncode(decodedPath, true, _retval);
   // XXX: lowercase the path?
+
+  return NS_OK;
+}
+
+nsresult nsUrlClassifierUtils::CanonicalizeQuery(const nsACString& query,
+                                                 nsACString& _retval) {
+  _retval.Truncate();
+  _retval.Append('?');
+
+  // Unescape the query
+  nsAutoCString unescaped;
+  if (!NS_UnescapeURL(PromiseFlatCString(query).get(),
+                      PromiseFlatCString(query).Length(), 0, unescaped)) {
+    unescaped.Assign(query);
+  }
+
+  // slash folding does not apply to the query parameters, but we need to
+  // percent-escape all characters that are <= ASCII 32, >= 127, "#", or "%"
+  SpecialEncode(unescaped, false, _retval);
 
   return NS_OK;
 }
@@ -1047,7 +1078,7 @@ void nsUrlClassifierUtils::CanonicalNum(const nsACString& num, uint32_t bytes,
     if (_retval.IsEmpty()) {
       _retval.Assign(buf);
     } else {
-      _retval = nsDependentCString(buf) + NS_LITERAL_CSTRING(".") + _retval;
+      _retval = nsDependentCString(buf) + "."_ns + _retval;
     }
     val >>= 8;
   }
@@ -1084,22 +1115,21 @@ bool nsUrlClassifierUtils::SpecialEncode(const nsACString& url,
 }
 
 bool nsUrlClassifierUtils::ShouldURLEscape(const unsigned char c) const {
-  return c <= 32 || c == '%' || c >= 127;
+  return c <= 32 || c == '%' || c == '#' || c >= 127;
 }
 
 // moztest- tables are built-in created in LookupCache, they contain hardcoded
 // url entries in it. moztest tables don't support updates.
 // static
 bool nsUrlClassifierUtils::IsMozTestTable(const nsACString& aTableName) {
-  return StringBeginsWith(aTableName, NS_LITERAL_CSTRING("moztest-"));
+  return StringBeginsWith(aTableName, "moztest-"_ns);
 }
 
 // test- tables are used by testcases and can add custom test entries
 // through update API.
 // static
 bool nsUrlClassifierUtils::IsTestTable(const nsACString& aTableName) {
-  return IsMozTestTable(aTableName) ||
-         StringBeginsWith(aTableName, NS_LITERAL_CSTRING("test"));
+  return IsMozTestTable(aTableName) || StringBeginsWith(aTableName, "test"_ns);
 }
 
 bool nsUrlClassifierUtils::IsInSafeMode() {

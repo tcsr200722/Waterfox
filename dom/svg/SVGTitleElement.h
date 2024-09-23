@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGTitleElement_h
-#define mozilla_dom_SVGTitleElement_h
+#ifndef DOM_SVG_SVGTITLEELEMENT_H_
+#define DOM_SVG_SVGTITLEELEMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "SVGElement.h"
@@ -13,10 +13,9 @@
 
 nsresult NS_NewSVGTitleElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGElement SVGTitleElementBase;
+using SVGTitleElementBase = SVGElement;
 
 class SVGTitleElement final : public SVGTitleElementBase,
                               public nsStubMutationObserver {
@@ -28,8 +27,8 @@ class SVGTitleElement final : public SVGTitleElementBase,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
   ~SVGTitleElement() = default;
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
   // interfaces:
@@ -42,19 +41,18 @@ class SVGTitleElement final : public SVGTitleElementBase,
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
 
-  virtual void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
-  virtual void DoneAddingChildren(bool aHaveNotified) override;
+  void DoneAddingChildren(bool aHaveNotified) override;
 
  private:
   void SendTitleChangeEvent(bool aBound);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGTitleElement_h
+#endif  // DOM_SVG_SVGTITLEELEMENT_H_

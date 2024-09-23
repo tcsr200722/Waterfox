@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.2.1.1
+esid: sec-set-constructor
 description: >
     Set ( [ iterable ] )
 
@@ -10,10 +10,11 @@ description: >
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Set.name, "Set", "The value of `Set.name` is `'Set'`");
-
-verifyNotEnumerable(Set, "name");
-verifyNotWritable(Set, "name");
-verifyConfigurable(Set, "name");
+verifyProperty(Set, "name", {
+  value: "Set",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

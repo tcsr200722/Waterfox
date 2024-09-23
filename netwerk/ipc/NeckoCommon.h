@@ -8,10 +8,14 @@
 #ifndef mozilla_net_NeckoCommon_h
 #define mozilla_net_NeckoCommon_h
 
+#include "mozilla/Preferences.h"
+#include "mozilla/Variant.h"
+#include "nsIRequest.h"
+#include "nsPrintfCString.h"
 #include "nsXULAppAPI.h"
 #include "prenv.h"
-#include "nsPrintfCString.h"
-#include "mozilla/Preferences.h"
+
+class nsIStreamListener;
 
 namespace mozilla {
 namespace dom {
@@ -56,13 +60,13 @@ class BrowserChild;
 
 #define ENSURE_CALLED_BEFORE_ASYNC_OPEN()                                      \
   do {                                                                         \
-    if (mIsPending || mWasOpened) {                                            \
+    if (LoadIsPending() || LoadWasOpened()) {                                  \
       nsPrintfCString msg("'%s' called after AsyncOpen: %s +%d", __FUNCTION__, \
                           __FILE__, __LINE__);                                 \
       NECKO_MAYBE_ABORT(msg);                                                  \
     }                                                                          \
-    NS_ENSURE_TRUE(!mIsPending, NS_ERROR_IN_PROGRESS);                         \
-    NS_ENSURE_TRUE(!mWasOpened, NS_ERROR_ALREADY_OPENED);                      \
+    NS_ENSURE_TRUE(!LoadIsPending(), NS_ERROR_IN_PROGRESS);                    \
+    NS_ENSURE_TRUE(!LoadWasOpened(), NS_ERROR_ALREADY_OPENED);                 \
   } while (0)
 
 // Fails call if made after request observers (on-modify-request, etc) have been
@@ -70,12 +74,12 @@ class BrowserChild;
 
 #define ENSURE_CALLED_BEFORE_CONNECT()                                  \
   do {                                                                  \
-    if (mRequestObserversCalled) {                                      \
+    if (LoadRequestObserversCalled()) {                                 \
       nsPrintfCString msg("'%s' called too late: %s +%d", __FUNCTION__, \
                           __FILE__, __LINE__);                          \
       NECKO_MAYBE_ABORT(msg);                                           \
-      if (mIsPending) return NS_ERROR_IN_PROGRESS;                      \
-      MOZ_ASSERT(mWasOpened);                                           \
+      if (LoadIsPending()) return NS_ERROR_IN_PROGRESS;                 \
+      MOZ_ASSERT(LoadWasOpened());                                      \
       return NS_ERROR_ALREADY_OPENED;                                   \
     }                                                                   \
   } while (0)
@@ -104,11 +108,35 @@ class HttpChannelSecurityWarningReporter : public nsISupports {
   [[nodiscard]] virtual nsresult ReportSecurityMessage(
       const nsAString& aMessageTag, const nsAString& aMessageCategory) = 0;
   [[nodiscard]] virtual nsresult LogBlockedCORSRequest(
-      const nsAString& aMessage, const nsACString& aCategory) = 0;
+      const nsAString& aMessage, const nsACString& aCategory,
+      bool aIsWarning = false) = 0;
   [[nodiscard]] virtual nsresult LogMimeTypeMismatch(
       const nsACString& aMessageName, bool aWarning, const nsAString& aURL,
       const nsAString& aContentType) = 0;
 };
+
+struct OnStartRequestParams {
+  nsCOMPtr<nsIRequest> request;
+};
+struct OnDataAvailableParams {
+  nsCOMPtr<nsIRequest> request;
+  nsCString data;
+  uint64_t offset;
+  uint32_t count;
+};
+struct OnStopRequestParams {
+  nsCOMPtr<nsIRequest> request;
+  nsresult status;
+};
+struct OnAfterLastPartParams {
+  nsresult status;
+};
+using StreamListenerFunction =
+    mozilla::Variant<OnStartRequestParams, OnDataAvailableParams,
+                     OnStopRequestParams, OnAfterLastPartParams>;
+
+nsresult ForwardStreamListenerFunctions(nsTArray<StreamListenerFunction> aCalls,
+                                        nsIStreamListener* aParent);
 
 }  // namespace net
 }  // namespace mozilla

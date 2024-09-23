@@ -6,8 +6,8 @@
 /**
  * Tests if Request-Cookies and Response-Cookies are sorted in Cookies tab.
  */
-add_task(async function() {
-  const { tab, monitor } = await initNetMonitor(SIMPLE_UNSORTED_COOKIES_SJS, {
+add_task(async function () {
+  const { monitor } = await initNetMonitor(SIMPLE_UNSORTED_COOKIES_SJS, {
     requestCount: 1,
   });
   info("Starting test... ");
@@ -17,9 +17,8 @@ add_task(async function() {
 
   store.dispatch(Actions.batchEnable(false));
 
-  tab.linkedBrowser.reload();
-
   let wait = waitForNetworkEvents(monitor, 1);
+  await reloadBrowser();
   await wait;
 
   wait = waitForDOM(document, ".headers-overview");
@@ -33,13 +32,13 @@ add_task(async function() {
     { type: "mousedown" },
     document.querySelectorAll(".request-list-item")[0]
   );
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#cookies-tab")
-  );
+  clickOnSidebarTab(document, "cookies");
 
   info("Check if Request-Cookies and Response-Cookies are sorted");
   const expectedLabelValues = [
+    "__proto__",
+    "httpOnly",
+    "value",
     "bob",
     "httpOnly",
     "value",
@@ -49,12 +48,14 @@ add_task(async function() {
     "tom",
     "httpOnly",
     "value",
+    "__proto__",
     "bob",
     "foo",
     "tom",
   ];
+
   const labelCells = document.querySelectorAll(".treeLabelCell");
-  labelCells.forEach(function(val, index) {
+  labelCells.forEach(function (val, index) {
     is(
       val.innerText,
       expectedLabelValues[index],
@@ -64,5 +65,21 @@ add_task(async function() {
         expectedLabelValues[index]
     );
   });
+
+  const lastItem = document.querySelector(
+    "#cookies-panel .properties-view tr.treeRow:last-child"
+  );
+  lastItem.scrollIntoView();
+
+  info("Checking for unwanted scrollbars appearing in the tree view");
+  const view = document.querySelector(
+    "#cookies-panel .properties-view .treeTable"
+  );
+  is(scrolledToBottom(view), true, "The view is not scrollable");
+
   await teardown(monitor);
+
+  function scrolledToBottom(element) {
+    return element.scrollTop + element.clientHeight >= element.scrollHeight;
+  }
 });

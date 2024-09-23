@@ -9,7 +9,9 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -18,21 +20,25 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <sstream>
+#include <string>
 #include <tuple>
 #include <unordered_set>
 
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "BindingOperations.h"
 #include "FileOperations.h"
-#include "JSONFormatter.h"
 #include "StringOperations.h"
+#include "from-clangd/HeuristicResolver.h"
 
 #if CLANG_VERSION_MAJOR < 8
 // Starting with Clang 8.0 some basic functions have been renamed
@@ -65,6 +71,35 @@ std::string Objdir;
 // Absolute path where analysis JSON output will be stored.
 std::string Outdir;
 
+enum class FileType {
+  // The file was either in the source tree nor objdir. It might be a system
+  // include, for example.
+  Unknown,
+  // A file from the source tree.
+  Source,
+  // A file from the objdir.
+  Generated,
+};
+
+// Takes an absolute path to a file, and returns the type of file it is. If
+// it's a Source or Generated file, the provided inout path argument is modified
+// in-place so that it is relative to the source dir or objdir, respectively.
+FileType relativizePath(std::string& path) {
+  if (path.compare(0, Objdir.length(), Objdir) == 0) {
+    path.replace(0, Objdir.length(), GENERATED);
+    return FileType::Generated;
+  }
+  // Empty filenames can get turned into Srcdir when they are resolved as
+  // absolute paths, so we should exclude files that are exactly equal to
+  // Srcdir or anything outside Srcdir.
+  if (path.length() > Srcdir.length() && path.compare(0, Srcdir.length(), Srcdir) == 0) {
+    // Remove the trailing `/' as well.
+    path.erase(0, Srcdir.length() + 1);
+    return FileType::Source;
+  }
+  return FileType::Unknown;
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <sys/time.h>
 
@@ -87,6 +122,21 @@ static bool isValidIdentifier(std::string Input) {
   return true;
 }
 
+template <size_t N>
+static bool stringStartsWith(const std::string& Input,
+                             const char (&Prefix)[N]) {
+  return Input.length() > N - 1 && memcmp(Input.c_str(), Prefix, N - 1) == 0;
+}
+
+static bool isASCII(const std::string& Input) {
+  for (char C : Input) {
+    if (C & 0x80) {
+      return false;
+    }
+  }
+  return true;
+}
+
 struct RAIITracer {
   RAIITracer(const char *log) : mLog(log) {
     printf("<%s>\n", mLog);
@@ -103,31 +153,33 @@ struct RAIITracer {
 
 class IndexConsumer;
 
+bool isPure(FunctionDecl* D) {
+#if CLANG_VERSION_MAJOR >= 18
+  return D->isPureVirtual();
+#else
+  return D->isPure();
+#endif
+}
+
 // For each C++ file seen by the analysis (.cpp or .h), we track a
 // FileInfo. This object tracks whether the file is "interesting" (i.e., whether
 // it's in the source dir or the objdir). We also store the analysis output
 // here.
 struct FileInfo {
   FileInfo(std::string &Rname) : Realname(Rname) {
-    if (Rname.compare(0, Objdir.length(), Objdir) == 0) {
-      // We're in the objdir, so we are probably a generated header
-      // We use the escape character to indicate the objdir nature.
-      // Note that output also has the `/' already placed
-      Interesting = true;
-      Generated = true;
-      Realname.replace(0, Objdir.length(), GENERATED);
-      return;
-    }
-
-    // Empty filenames can get turned into Srcdir when they are resolved as
-    // absolute paths, so we should exclude files that are exactly equal to
-    // Srcdir or anything outside Srcdir.
-    Interesting = (Rname.length() > Srcdir.length()) &&
-                  (Rname.compare(0, Srcdir.length(), Srcdir) == 0);
-    Generated = false;
-    if (Interesting) {
-      // Remove the trailing `/' as well.
-      Realname.erase(0, Srcdir.length() + 1);
+    switch (relativizePath(Realname)) {
+      case FileType::Generated:
+        Interesting = true;
+        Generated = true;
+        break;
+      case FileType::Source:
+        Interesting = true;
+        Generated = false;
+        break;
+      case FileType::Unknown:
+        Interesting = false;
+        Generated = false;
+        break;
     }
   }
   std::string Realname;
@@ -143,6 +195,32 @@ class PreprocessorHook : public PPCallbacks {
 
 public:
   PreprocessorHook(IndexConsumer *C) : Indexer(C) {}
+
+  virtual void FileChanged(SourceLocation Loc, FileChangeReason Reason,
+                           SrcMgr::CharacteristicKind FileType,
+                           FileID PrevFID) override;
+
+  virtual void InclusionDirective(SourceLocation HashLoc,
+                                  const Token &IncludeTok,
+                                  StringRef FileName,
+                                  bool IsAngled,
+                                  CharSourceRange FileNameRange,
+#if CLANG_VERSION_MAJOR >= 16
+                                  OptionalFileEntryRef File,
+#elif CLANG_VERSION_MAJOR >= 15
+                                  Optional<FileEntryRef> File,
+#else
+                                  const FileEntry *File,
+#endif
+                                  StringRef SearchPath,
+                                  StringRef RelativePath,
+#if CLANG_VERSION_MAJOR >= 19
+                                  const Module *SuggestedModule,
+                                  bool ModuleImported,
+#else
+                                  const Module *Imported,
+#endif
+                                  SrcMgr::CharacteristicKind FileType) override;
 
   virtual void MacroDefined(const Token &Tok,
                             const MacroDirective *Md) override;
@@ -169,6 +247,7 @@ private:
   std::map<FileID, std::unique_ptr<FileInfo>> FileMap;
   MangleContext *CurMangleContext;
   ASTContext *AstContext;
+  std::unique_ptr<clangd::HeuristicResolver> Resolver;
 
   typedef RecursiveASTVisitor<IndexConsumer> Super;
 
@@ -198,7 +277,7 @@ private:
     if (It == FileMap.end()) {
       // We haven't seen this file before. We need to make the FileInfo
       // structure information ourselves
-      std::string Filename = SM.getFilename(Loc);
+      std::string Filename = std::string(SM.getFilename(Loc));
       std::string Absolute;
       // If Loc is a macro id rather than a file id, it Filename might be
       // empty. Also for some types of file locations that are clang-internal
@@ -380,6 +459,52 @@ private:
     return hash(Filename + std::string("@") + locationToString(Loc));
   }
 
+  bool isAcceptableSymbolChar(char c) {
+    return isalpha(c) || isdigit(c) || c == '_' || c == '/';
+  }
+
+  std::string mangleFile(std::string Filename, FileType Type) {
+    // "Mangle" the file path, such that:
+    // 1. The majority of paths will still be mostly human-readable.
+    // 2. The sanitization algorithm doesn't produce collisions where two
+    //    different unsanitized paths can result in the same sanitized paths.
+    // 3. The produced symbol doesn't cause problems with downstream consumers.
+    // In order to accomplish this, we keep alphanumeric chars, underscores,
+    // and slashes, and replace everything else with an "@xx" hex encoding.
+    // The majority of path characters are letters and slashes which don't get
+    // encoded, so that satisfies (1). Since "@" characters in the unsanitized
+    // path get encoded, there should be no "@" characters in the sanitized path
+    // that got preserved from the unsanitized input, so that should satisfy (2).
+    // And (3) was done by trial-and-error. Note in particular the dot (.)
+    // character needs to be encoded, or the symbol-search feature of mozsearch
+    // doesn't work correctly, as all dot characters in the symbol query get
+    // replaced by #.
+    for (size_t i = 0; i < Filename.length(); i++) {
+      char c = Filename[i];
+      if (isAcceptableSymbolChar(c)) {
+        continue;
+      }
+      char hex[4];
+      sprintf(hex, "@%02X", ((int)c) & 0xFF);
+      Filename.replace(i, 1, hex);
+      i += 2;
+    }
+
+    if (Type == FileType::Generated) {
+      // Since generated files may be different on different platforms,
+      // we need to include a platform-specific thing in the hash. Otherwise
+      // we can end up with hash collisions where different symbols from
+      // different platforms map to the same thing.
+      char* Platform = getenv("MOZSEARCH_PLATFORM");
+      Filename = std::string(Platform ? Platform : "") + std::string("@") + Filename;
+    }
+    return Filename;
+  }
+
+  std::string mangleURL(std::string Url) {
+    return mangleFile(Url, FileType::Source);
+  }
+
   std::string mangleQualifiedName(std::string Name) {
     std::replace(Name.begin(), Name.end(), ' ', '_');
     return Name;
@@ -387,6 +512,12 @@ private:
 
   std::string getMangledName(clang::MangleContext *Ctx,
                              const clang::NamedDecl *Decl) {
+    // Main functions will tend to collide because they inherently have similar
+    // signatures, so let's provide a custom location-based signature.
+    if (isa<FunctionDecl>(Decl) && cast<FunctionDecl>(Decl)->isMain()) {
+      return std::string("MF_") + mangleLocation(Decl->getLocation());
+    }
+
     if (isa<FunctionDecl>(Decl) && cast<FunctionDecl>(Decl)->isExternC()) {
       return cast<FunctionDecl>(Decl)->getNameAsString();
     }
@@ -399,6 +530,20 @@ private:
           isa<TagDecl>(DC)) {
         llvm::SmallVector<char, 512> Output;
         llvm::raw_svector_ostream Out(Output);
+#if CLANG_VERSION_MAJOR >= 11
+        // This code changed upstream in version 11:
+        // https://github.com/llvm/llvm-project/commit/29e1a16be8216066d1ed733a763a749aed13ff47
+        GlobalDecl GD;
+        if (const CXXConstructorDecl *D = dyn_cast<CXXConstructorDecl>(Decl)) {
+          GD = GlobalDecl(D, Ctor_Complete);
+        } else if (const CXXDestructorDecl *D =
+                       dyn_cast<CXXDestructorDecl>(Decl)) {
+          GD = GlobalDecl(D, Dtor_Complete);
+        } else {
+          GD = GlobalDecl(Decl);
+        }
+        Ctx->mangleName(GD, Out);
+#else
         if (const CXXConstructorDecl *D = dyn_cast<CXXConstructorDecl>(Decl)) {
           Ctx->mangleCXXCtor(D, CXXCtorType::Ctor_Complete, Out);
         } else if (const CXXDestructorDecl *D =
@@ -407,19 +552,26 @@ private:
         } else {
           Ctx->mangleName(Decl, Out);
         }
+#endif
         return Out.str().str();
       } else {
         return std::string("V_") + mangleLocation(Decl->getLocation()) +
-               std::string("_") + hash(Decl->getName());
+               std::string("_") + hash(std::string(Decl->getName()));
       }
-    } else if (isa<TagDecl>(Decl) || isa<TypedefNameDecl>(Decl) ||
-               isa<ObjCInterfaceDecl>(Decl)) {
+    } else if (isa<TagDecl>(Decl) || isa<ObjCInterfaceDecl>(Decl)) {
       if (!Decl->getIdentifier()) {
         // Anonymous.
         return std::string("T_") + mangleLocation(Decl->getLocation());
       }
 
       return std::string("T_") + mangleQualifiedName(getQualifiedName(Decl));
+    } else if (isa<TypedefNameDecl>(Decl)) {
+      if (!Decl->getIdentifier()) {
+        // Anonymous.
+        return std::string("TA_") + mangleLocation(Decl->getLocation());
+      }
+
+      return std::string("TA_") + mangleQualifiedName(getQualifiedName(Decl));
     } else if (isa<NamespaceDecl>(Decl) || isa<NamespaceAliasDecl>(Decl)) {
       if (!Decl->getIdentifier()) {
         // Anonymous.
@@ -494,6 +646,7 @@ public:
       clang::ItaniumMangleContext::create(Ctx, CI.getDiagnostics());
 
     AstContext = &Ctx;
+    Resolver = std::make_unique<clangd::HeuristicResolver>(Ctx);
     TraverseDecl(Ctx.getTranslationUnitDecl());
 
     // Emit the JSON data for all files now.
@@ -524,12 +677,7 @@ public:
       // Merge our results with the existing lines from the output file.
       // This ensures that header files that are included multiple times
       // in different ways are analyzed completely.
-
-      FILE *Fp = Lock.openFile();
-      if (!Fp) {
-        fprintf(stderr, "Unable to open input file %s\n", Filename.c_str());
-        exit(1);
-      }
+      std::ifstream Fin(Filename.c_str(), std::ios::in | std::ios::binary);
       FILE *OutFp = Lock.openTmp();
       if (!OutFp) {
         fprintf(stderr, "Unable to open tmp out file for %s\n", Filename.c_str());
@@ -542,13 +690,21 @@ public:
       std::string LastNewWritten;
 
       // Loop over the existing (sorted) lines in the analysis output file.
-      char Buffer[65536];
-      while (fgets(Buffer, sizeof(Buffer), Fp)) {
-        std::string OldLine(Buffer);
+      // (The good() check also handles the case where Fin did not exist when we
+      // went to open it.)
+      while(Fin.good()) {
+        std::string OldLine;
+        std::getline(Fin, OldLine);
+        // Skip blank lines.
+        if (OldLine.length() == 0) {
+          continue;
+        }
+        // We need to put the newlines back that getline() eats.
+        OldLine.push_back('\n');
 
         // Write any results from Info.Output that are lexicographically
         // smaller than OldLine (read from the existing file), but make sure
-        // to skip duplicates. Keep advacing NewLinesIter until we reach an
+        // to skip duplicates. Keep advancing NewLinesIter until we reach an
         // entry that is lexicographically greater than OldLine.
         for (; NewLinesIter != Info.Output.end(); NewLinesIter++) {
           if (*NewLinesIter > OldLine) {
@@ -562,7 +718,8 @@ public:
             continue;
           }
           if (fwrite(NewLinesIter->c_str(), NewLinesIter->length(), 1, OutFp) != 1) {
-            fprintf(stderr, "Unable to write to tmp output file for %s\n", Filename.c_str());
+            fprintf(stderr, "Unable to write %zu bytes[1] to tmp output file for %s\n",
+                    NewLinesIter->length(), Filename.c_str());
             exit(1);
           }
           LastNewWritten = *NewLinesIter;
@@ -570,13 +727,14 @@ public:
 
         // Write the entry read from the existing file.
         if (fwrite(OldLine.c_str(), OldLine.length(), 1, OutFp) != 1) {
-          fprintf(stderr, "Unable to write to tmp output file for %s\n", Filename.c_str());
+          fprintf(stderr, "Unable to write %zu bytes[2] to tmp output file for %s\n",
+                  OldLine.length(), Filename.c_str());
           exit(1);
         }
       }
 
-      // We finished reading from Fp
-      fclose(Fp);
+      // We finished reading from Fin
+      Fin.close();
 
       // Finish iterating our new results, discarding duplicates
       for (; NewLinesIter != Info.Output.end(); NewLinesIter++) {
@@ -584,7 +742,8 @@ public:
           continue;
         }
         if (fwrite(NewLinesIter->c_str(), NewLinesIter->length(), 1, OutFp) != 1) {
-          fprintf(stderr, "Unable to write to tmp output file for %s\n", Filename.c_str());
+          fprintf(stderr, "Unable to write %zu bytes[3] to tmp output file for %s\n",
+                  NewLinesIter->length(), Filename.c_str());
           exit(1);
         }
         LastNewWritten = *NewLinesIter;
@@ -597,24 +756,6 @@ public:
         fprintf(stderr, "Unable to move tmp output file into place for %s (err %d)\n", Filename.c_str(), errno);
         exit(1);
       }
-    }
-  }
-
-  // Return a list of mangled names of all the methods that the given method
-  // overrides.
-  void findOverriddenMethods(const CXXMethodDecl *Method,
-                             std::vector<std::string> &Symbols) {
-    std::string Mangled = getMangledName(CurMangleContext, Method);
-    Symbols.push_back(Mangled);
-
-    CXXMethodDecl::method_iterator Iter = Method->begin_overridden_methods();
-    CXXMethodDecl::method_iterator End = Method->end_overridden_methods();
-    for (; Iter != End; Iter++) {
-      const CXXMethodDecl *Decl = *Iter;
-      if (Decl->isTemplateInstantiation()) {
-        Decl = dyn_cast<CXXMethodDecl>(Decl->getTemplateInstantiationPattern());
-      }
-      return findOverriddenMethods(Decl, Symbols);
     }
   }
 
@@ -688,11 +829,11 @@ public:
     std::string Name;
 
     // Ultimately this becomes the "contextsym" JSON property.
-    std::vector<std::string> Symbols;
+    std::string Symbol;
 
     Context() {}
-    Context(std::string Name, std::vector<std::string> Symbols)
-        : Name(Name), Symbols(Symbols) {}
+    Context(std::string Name, std::string Symbol)
+        : Name(Name), Symbol(Symbol) {}
   };
 
   Context translateContext(NamedDecl *D) {
@@ -701,12 +842,7 @@ public:
       D = F->getTemplateInstantiationPattern();
     }
 
-    std::vector<std::string> Symbols = {getMangledName(CurMangleContext, D)};
-    if (CXXMethodDecl::classof(D)) {
-      Symbols.clear();
-      findOverriddenMethods(dyn_cast<CXXMethodDecl>(D), Symbols);
-    }
-    return Context(D->getQualifiedNameAsString(), Symbols);
+    return Context(D->getQualifiedNameAsString(), getMangledName(CurMangleContext, D));
   }
 
   Context getContext(SourceLocation Loc) {
@@ -740,32 +876,6 @@ public:
       Ctxt = Ctxt->Prev;
     }
     return Context();
-  }
-
-  static std::string concatSymbols(const std::vector<std::string> Symbols) {
-    if (Symbols.empty()) {
-      return "";
-    }
-
-    size_t Total = 0;
-    for (auto It = Symbols.begin(); It != Symbols.end(); It++) {
-      Total += It->length();
-    }
-    Total += Symbols.size() - 1;
-
-    std::string SymbolList;
-    SymbolList.reserve(Total);
-
-    for (auto It = Symbols.begin(); It != Symbols.end(); It++) {
-      std::string Symbol = *It;
-
-      if (It != Symbols.begin()) {
-        SymbolList.push_back(',');
-      }
-      SymbolList.append(Symbol);
-    }
-
-    return SymbolList;
   }
 
   // Analyzing template code is tricky. Suppose we have this code:
@@ -954,32 +1064,440 @@ public:
   }
 
   enum {
+    // Flag to omit the identifier from being cross-referenced across files.
+    // This is usually desired for local variables.
     NoCrossref = 1 << 0,
-    OperatorToken = 1 << 1,
+    // Flag to indicate the token with analysis data is not an identifier. Indicates
+    // we want to skip the check that tries to ensure a sane identifier token.
+    NotIdentifierToken = 1 << 1,
+    // This indicates that the end of the provided SourceRange is valid and
+    // should be respected. If this flag is not set, the visitIdentifier
+    // function should use only the start of the SourceRange and auto-detect
+    // the end based on whatever token is found at the start.
+    LocRangeEndValid = 1 << 2
   };
+
+  void emitStructuredInfo(SourceLocation Loc, const RecordDecl *decl) {
+    std::string json_str;
+    llvm::raw_string_ostream ros(json_str);
+    llvm::json::OStream J(ros);
+    // Start the top-level object.
+    J.objectBegin();
+
+    unsigned StartOffset = SM.getFileOffset(Loc);
+    unsigned EndOffset =
+        StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
+    J.attribute("loc", locationToString(Loc, EndOffset - StartOffset));
+    J.attribute("structured", 1);
+    J.attribute("pretty", getQualifiedName(decl));
+    J.attribute("sym", getMangledName(CurMangleContext, decl));
+
+    J.attribute("kind", TypeWithKeyword::getTagTypeKindName(decl->getTagKind()));
+
+    const ASTContext &C = *AstContext;
+    const ASTRecordLayout &Layout = C.getASTRecordLayout(decl);
+
+    J.attribute("sizeBytes", Layout.getSize().getQuantity());
+
+    emitBindingAttributes(J, *decl);
+
+    auto cxxDecl = dyn_cast<CXXRecordDecl>(decl);
+
+    if (cxxDecl) {
+      if (Layout.hasOwnVFPtr()) {
+        // Encode the size of virtual function table pointer
+        // instead of just true/false, for 2 reasons:
+        //  * having the size here is easier for the consumer
+        //  * the size string 4/8 is shorter than true/false in the analysis
+        //    file
+        const QualType ptrType = C.getUIntPtrType();
+        J.attribute("ownVFPtrBytes", C.getTypeSizeInChars(ptrType).getQuantity());
+      }
+
+      J.attributeBegin("supers");
+      J.arrayBegin();
+      for (const CXXBaseSpecifier &Base : cxxDecl->bases()) {
+        const CXXRecordDecl *BaseDecl = Base.getType()->getAsCXXRecordDecl();
+
+        J.objectBegin();
+
+        J.attribute("sym", getMangledName(CurMangleContext, BaseDecl));
+
+        if (Base.isVirtual()) {
+          CharUnits superOffsetBytes = Layout.getVBaseClassOffset(BaseDecl);
+          J.attribute("offsetBytes", superOffsetBytes.getQuantity());
+        } else {
+          CharUnits superOffsetBytes = Layout.getBaseClassOffset(BaseDecl);
+          J.attribute("offsetBytes", superOffsetBytes.getQuantity());
+        }
+
+        J.attributeBegin("props");
+        J.arrayBegin();
+        if (Base.isVirtual()) {
+          J.value("virtual");
+        }
+        J.arrayEnd();
+        J.attributeEnd();
+
+        J.objectEnd();
+      }
+      J.arrayEnd();
+      J.attributeEnd();
+
+      J.attributeBegin("methods");
+      J.arrayBegin();
+      for (const CXXMethodDecl *MethodDecl : cxxDecl->methods()) {
+        J.objectBegin();
+
+        J.attribute("pretty", getQualifiedName(MethodDecl));
+        J.attribute("sym", getMangledName(CurMangleContext, MethodDecl));
+
+        // TODO: Better figure out what to do for non-isUserProvided methods
+        // which means there's potentially semantic data that doesn't correspond
+        // to a source location in the source.  Should we be emitting
+        // structured info for those when we're processing the class here?
+
+        J.attributeBegin("props");
+        J.arrayBegin();
+        if (MethodDecl->isStatic()) {
+          J.value("static");
+        }
+        if (MethodDecl->isInstance()) {
+          J.value("instance");
+        }
+        if (MethodDecl->isVirtual()) {
+          J.value("virtual");
+        }
+        if (MethodDecl->isUserProvided()) {
+          J.value("user");
+        }
+        if (MethodDecl->isDefaulted()) {
+          J.value("defaulted");
+        }
+        if (MethodDecl->isDeleted()) {
+          J.value("deleted");
+        }
+        if (MethodDecl->isConstexpr()) {
+          J.value("constexpr");
+        }
+        J.arrayEnd();
+        J.attributeEnd();
+
+        J.objectEnd();
+      }
+      J.arrayEnd();
+      J.attributeEnd();
+    }
+
+    J.attributeBegin("fields");
+    J.arrayBegin();
+    uint64_t iField = 0;
+    for (RecordDecl::field_iterator It = decl->field_begin(),
+          End = decl->field_end(); It != End; ++It, ++iField) {
+      const FieldDecl &Field = **It;
+      uint64_t localOffsetBits = Layout.getFieldOffset(iField);
+      CharUnits localOffsetBytes = C.toCharUnitsFromBits(localOffsetBits);
+
+      J.objectBegin();
+      J.attribute("pretty", getQualifiedName(&Field));
+      J.attribute("sym", getMangledName(CurMangleContext, &Field));
+      QualType FieldType = Field.getType();
+      QualType CanonicalFieldType = FieldType.getCanonicalType();
+      J.attribute("type", CanonicalFieldType.getAsString());
+      const TagDecl *tagDecl = CanonicalFieldType->getAsTagDecl();
+      if (!tagDecl) {
+        // Try again piercing any pointers/references involved.  Note that our
+        // typesym semantics are dubious-ish and right now crossref just does
+        // some parsing of "type" itself until we improve this rep.
+        CanonicalFieldType = CanonicalFieldType->getPointeeType();
+        if (!CanonicalFieldType.isNull()) {
+          tagDecl = CanonicalFieldType->getAsTagDecl();
+        }
+      }
+      if (tagDecl) {
+        J.attribute("typesym", getMangledName(CurMangleContext, tagDecl));
+      }
+      J.attribute("offsetBytes", localOffsetBytes.getQuantity());
+      if (Field.isBitField()) {
+        J.attributeBegin("bitPositions");
+        J.objectBegin();
+
+        J.attribute("begin", unsigned(localOffsetBits - C.toBits(localOffsetBytes)));
+        J.attribute("width", Field.getBitWidthValue(C));
+
+        J.objectEnd();
+        J.attributeEnd();
+      } else {
+        // Try and get the field as a record itself so we can know its size, but
+        // we don't actually want to recurse into it.
+        if (auto FieldRec = Field.getType()->getAs<RecordType>()) {
+          auto const &FieldLayout = C.getASTRecordLayout(FieldRec->getDecl());
+          J.attribute("sizeBytes", FieldLayout.getSize().getQuantity());
+        } else {
+          // We were unable to get it as a record, which suggests it's a normal
+          // type, in which case let's just ask for the type size.  (Maybe this
+          // would also work for the above case too?)
+          uint64_t typeSizeBits = C.getTypeSize(Field.getType());
+          CharUnits typeSizeBytes = C.toCharUnitsFromBits(typeSizeBits);
+          J.attribute("sizeBytes", typeSizeBytes.getQuantity());
+        }
+      }
+      J.objectEnd();
+    }
+    J.arrayEnd();
+    J.attributeEnd();
+
+    // End the top-level object.
+    J.objectEnd();
+
+    FileInfo *F = getFileInfo(Loc);
+    // we want a newline.
+    ros << '\n';
+    F->Output.push_back(std::move(ros.str()));
+  }
+
+  void emitStructuredInfo(SourceLocation Loc, const FunctionDecl *decl) {
+    std::string json_str;
+    llvm::raw_string_ostream ros(json_str);
+    llvm::json::OStream J(ros);
+    // Start the top-level object.
+    J.objectBegin();
+
+    unsigned StartOffset = SM.getFileOffset(Loc);
+    unsigned EndOffset =
+        StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
+    J.attribute("loc", locationToString(Loc, EndOffset - StartOffset));
+    J.attribute("structured", 1);
+    J.attribute("pretty", getQualifiedName(decl));
+    J.attribute("sym", getMangledName(CurMangleContext, decl));
+
+    emitBindingAttributes(J, *decl);
+
+    J.attributeBegin("args");
+    J.arrayBegin();
+
+    for (auto param : decl->parameters()) {
+      J.objectBegin();
+
+      J.attribute("name", param->getName());
+      QualType ArgType = param->getOriginalType();
+      J.attribute("type", ArgType.getAsString());
+
+      QualType CanonicalArgType = ArgType.getCanonicalType();
+      const TagDecl *canonDecl = CanonicalArgType->getAsTagDecl();
+      if (!canonDecl) {
+        // Try again piercing any pointers/references involved.  Note that our
+        // typesym semantics are dubious-ish and right now crossref just does
+        // some parsing of "type" itself until we improve this rep.
+        CanonicalArgType = CanonicalArgType->getPointeeType();
+        if (!CanonicalArgType.isNull()) {
+          canonDecl = CanonicalArgType->getAsTagDecl();
+        }
+      }
+      if (canonDecl) {
+        J.attribute("typesym", getMangledName(CurMangleContext, canonDecl));
+      }
+
+      J.objectEnd();
+    }
+
+    J.arrayEnd();
+    J.attributeEnd();
+
+
+    auto cxxDecl = dyn_cast<CXXMethodDecl>(decl);
+
+    if (cxxDecl) {
+      J.attribute("kind", "method");
+      if (auto parentDecl = cxxDecl->getParent()) {
+        J.attribute("parentsym", getMangledName(CurMangleContext, parentDecl));
+      }
+
+      J.attributeBegin("overrides");
+      J.arrayBegin();
+      for (const CXXMethodDecl *MethodDecl : cxxDecl->overridden_methods()) {
+        J.objectBegin();
+
+        // TODO: Make sure we're doing template traversals appropriately...
+        // findOverriddenMethods (now removed) liked to do:
+        //   if (Decl->isTemplateInstantiation()) {
+        //     Decl = dyn_cast<CXXMethodDecl>(Decl->getTemplateInstantiationPattern());
+        //   }
+        // I think our pre-emptive dereferencing/avoidance of templates may
+        // protect us from this, but it needs more investigation.
+
+        J.attribute("sym", getMangledName(CurMangleContext, MethodDecl));
+
+        J.objectEnd();
+      }
+      J.arrayEnd();
+      J.attributeEnd();
+
+    } else {
+      J.attribute("kind", "function");
+    }
+
+    // ## Props
+    J.attributeBegin("props");
+    J.arrayBegin();
+    // some of these are only possible on a CXXMethodDecl, but we want them all
+    // in the same array, so condition these first ones.
+    if (cxxDecl) {
+      if (cxxDecl->isStatic()) {
+        J.value("static");
+      }
+      if (cxxDecl->isInstance()) {
+        J.value("instance");
+      }
+      if (cxxDecl->isVirtual()) {
+        J.value("virtual");
+      }
+      if (cxxDecl->isUserProvided()) {
+        J.value("user");
+      }
+    }
+    if (decl->isDefaulted()) {
+      J.value("defaulted");
+    }
+    if (decl->isDeleted()) {
+      J.value("deleted");
+    }
+    if (decl->isConstexpr()) {
+      J.value("constexpr");
+    }
+    J.arrayEnd();
+    J.attributeEnd();
+
+    // End the top-level object.
+    J.objectEnd();
+
+    FileInfo *F = getFileInfo(Loc);
+    // we want a newline.
+    ros << '\n';
+    F->Output.push_back(std::move(ros.str()));
+  }
+
+  /**
+   * Emit structured info for a field.  Right now the intent is for this to just
+   * be a pointer to its parent's structured info with this method entirely
+   * avoiding getting the ASTRecordLayout.
+   *
+   * TODO: Give more thought on where to locate the canonical info on fields and
+   * how to normalize their exposure over the web.  We could relink the info
+   * both at cross-reference time and web-server lookup time.  This is also
+   * called out in `analysis.md`.
+   */
+  void emitStructuredInfo(SourceLocation Loc, const FieldDecl *decl) {
+    // XXX the call to decl::getParent will assert below for ObjCIvarDecl
+    // instances because their DecContext is not a RecordDecl.  So just bail
+    // for now.
+    // TODO: better support ObjC.
+    if (const ObjCIvarDecl *D2 = dyn_cast<ObjCIvarDecl>(decl)) {
+      return;
+    }
+
+    std::string json_str;
+    llvm::raw_string_ostream ros(json_str);
+    llvm::json::OStream J(ros);
+    // Start the top-level object.
+    J.objectBegin();
+
+    unsigned StartOffset = SM.getFileOffset(Loc);
+    unsigned EndOffset =
+        StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
+    J.attribute("loc", locationToString(Loc, EndOffset - StartOffset));
+    J.attribute("structured", 1);
+    J.attribute("pretty", getQualifiedName(decl));
+    J.attribute("sym", getMangledName(CurMangleContext, decl));
+    J.attribute("kind", "field");
+
+    if (auto parentDecl = decl->getParent()) {
+      J.attribute("parentsym", getMangledName(CurMangleContext, parentDecl));
+    }
+
+    // End the top-level object.
+    J.objectEnd();
+
+    FileInfo *F = getFileInfo(Loc);
+    // we want a newline.
+    ros << '\n';
+    F->Output.push_back(std::move(ros.str()));
+  }
+
+  /**
+   * Emit structured info for a variable if it is a static class member.
+   */
+  void emitStructuredInfo(SourceLocation Loc, const VarDecl *decl) {
+    const auto *parentDecl = dyn_cast_or_null<RecordDecl>(decl->getDeclContext());
+
+    std::string json_str;
+    llvm::raw_string_ostream ros(json_str);
+    llvm::json::OStream J(ros);
+    // Start the top-level object.
+    J.objectBegin();
+
+    unsigned StartOffset = SM.getFileOffset(Loc);
+    unsigned EndOffset =
+        StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
+    J.attribute("loc", locationToString(Loc, EndOffset - StartOffset));
+    J.attribute("structured", 1);
+    J.attribute("pretty", getQualifiedName(decl));
+    J.attribute("sym", getMangledName(CurMangleContext, decl));
+    J.attribute("kind", "field");
+
+    if (parentDecl) {
+      J.attribute("parentsym", getMangledName(CurMangleContext, parentDecl));
+    }
+
+    emitBindingAttributes(J, *decl);
+
+    // End the top-level object.
+    J.objectEnd();
+
+    FileInfo *F = getFileInfo(Loc);
+    // we want a newline.
+    ros << '\n';
+    F->Output.push_back(std::move(ros.str()));
+  }
+
+  // XXX Type annotating.
+  // QualType is the type class.  It has helpers like TagDecl via getAsTagDecl.
+  // ValueDecl exposes a getType() method.
+  //
+  // Arguably it makes sense to only expose types that Searchfox has definitions
+  // for as first-class.  Probably the way to go is like context/contextsym.
+  // We expose a "type" which is just a human-readable string which has no
+  // semantic purposes and is just a display string, plus then a "typesym" which
+  // we expose if we were able to map the type.
+  //
+  // Other meta-info: field offsets.  Ancestor types.
 
   // This is the only function that emits analysis JSON data. It should be
   // called for each identifier that corresponds to a symbol.
   void visitIdentifier(const char *Kind, const char *SyntaxKind,
-                       std::string QualName, SourceLocation Loc,
-                       const std::vector<std::string> &Symbols,
+                       llvm::StringRef QualName, SourceRange LocRange,
+                       std::string Symbol,
+                       QualType MaybeType = QualType(),
                        Context TokenContext = Context(), int Flags = 0,
                        SourceRange PeekRange = SourceRange(),
-                       SourceRange NestingRange = SourceRange()) {
+                       SourceRange NestingRange = SourceRange(),
+                       std::vector<SourceRange> *ArgRanges = nullptr) {
+    SourceLocation Loc = LocRange.getBegin();
     if (!shouldVisit(Loc)) {
       return;
     }
 
     // Find the file positions corresponding to the token.
     unsigned StartOffset = SM.getFileOffset(Loc);
-    unsigned EndOffset =
-        StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
+    unsigned EndOffset = (Flags & LocRangeEndValid)
+        ? SM.getFileOffset(LocRange.getEnd())
+        : StartOffset + Lexer::MeasureTokenLength(Loc, SM, CI.getLangOpts());
 
     std::string LocStr = locationToString(Loc, EndOffset - StartOffset);
     std::string RangeStr = locationToString(Loc, EndOffset - StartOffset);
     std::string PeekRangeStr;
 
-    if (!(Flags & OperatorToken)) {
+    if (!(Flags & NotIdentifierToken)) {
       // Get the token's characters so we can make sure it's a valid token.
       const char *StartChars = SM.getCharacterData(Loc);
       std::string Text(StartChars, EndOffset - StartOffset);
@@ -990,105 +1508,132 @@ public:
 
     FileInfo *F = getFileInfo(Loc);
 
-    std::string SymbolList;
+    if (!(Flags & NoCrossref)) {
+      std::string json_str;
+      llvm::raw_string_ostream ros(json_str);
+      llvm::json::OStream J(ros);
+      // Start the top-level object.
+      J.objectBegin();
 
-    // Reserve space in symbolList for everything in `symbols`. `symbols` can
-    // contain some very long strings.
-    size_t Total = 0;
-    for (auto It = Symbols.begin(); It != Symbols.end(); It++) {
-      Total += It->length();
-    }
-
-    // Space for commas.
-    Total += Symbols.size() - 1;
-    SymbolList.reserve(Total);
-
-    // For each symbol, generate one "target":1 item. We want to find this line
-    // if someone searches for any one of these symbols.
-    for (auto It = Symbols.begin(); It != Symbols.end(); It++) {
-      std::string Symbol = *It;
-
-      if (!(Flags & NoCrossref)) {
-        JSONFormatter Fmt;
-
-        Fmt.add("loc", LocStr);
-        Fmt.add("target", 1);
-        Fmt.add("kind", Kind);
-        Fmt.add("pretty", QualName);
-        Fmt.add("sym", Symbol);
-        if (!TokenContext.Name.empty()) {
-          Fmt.add("context", TokenContext.Name);
+      J.attribute("loc", LocStr);
+      J.attribute("target", 1);
+      J.attribute("kind", Kind);
+      J.attribute("pretty", QualName.data());
+      J.attribute("sym", Symbol);
+      if (!TokenContext.Name.empty()) {
+        J.attribute("context", TokenContext.Name);
+      }
+      if (!TokenContext.Symbol.empty()) {
+        J.attribute("contextsym", TokenContext.Symbol);
+      }
+      if (PeekRange.isValid()) {
+        PeekRangeStr = lineRangeToString(PeekRange);
+        if (!PeekRangeStr.empty()) {
+          J.attribute("peekRange", PeekRangeStr);
         }
-        std::string ContextSymbol = concatSymbols(TokenContext.Symbols);
-        if (!ContextSymbol.empty()) {
-          Fmt.add("contextsym", ContextSymbol);
-        }
-        if (PeekRange.isValid()) {
-          PeekRangeStr = lineRangeToString(PeekRange);
-          if (!PeekRangeStr.empty()) {
-            Fmt.add("peekRange", PeekRangeStr);
+      }
+
+      if (ArgRanges) {
+        J.attributeBegin("argRanges");
+        J.arrayBegin();
+
+        for (auto range : *ArgRanges) {
+          std::string ArgRangeStr = fullRangeToString(range);
+          if (!ArgRangeStr.empty()) {
+            J.value(ArgRangeStr);
           }
         }
 
-        std::string S;
-        Fmt.format(S);
-        F->Output.push_back(std::move(S));
+        J.arrayEnd();
+        J.attributeEnd();
       }
 
-      if (It != Symbols.begin()) {
-        SymbolList.push_back(',');
-      }
-      SymbolList.append(Symbol);
+      // End the top-level object.
+      J.objectEnd();
+      // we want a newline.
+      ros << '\n';
+      F->Output.push_back(std::move(ros.str()));
     }
 
     // Generate a single "source":1 for all the symbols. If we search from here,
     // we want to union the results for every symbol in `symbols`.
-    JSONFormatter Fmt;
+    std::string json_str;
+    llvm::raw_string_ostream ros(json_str);
+    llvm::json::OStream J(ros);
+    // Start the top-level object.
+    J.objectBegin();
 
-    Fmt.add("loc", RangeStr);
-    Fmt.add("source", 1);
+    J.attribute("loc", RangeStr);
+    J.attribute("source", 1);
 
     if (NestingRange.isValid()) {
       std::string NestingRangeStr = fullRangeToString(NestingRange);
       if (!NestingRangeStr.empty()) {
-        Fmt.add("nestingRange", NestingRangeStr);
+        J.attribute("nestingRange", NestingRangeStr);
       }
     }
 
     std::string Syntax;
     if (Flags & NoCrossref) {
-      Fmt.add("syntax", "");
+      J.attribute("syntax", "");
     } else {
       Syntax = Kind;
       Syntax.push_back(',');
       Syntax.append(SyntaxKind);
-      Fmt.add("syntax", Syntax);
+      J.attribute("syntax", Syntax);
+    }
+
+    if (!MaybeType.isNull()) {
+      J.attribute("type", MaybeType.getAsString());
+      QualType canonical = MaybeType.getCanonicalType();
+      const TagDecl *decl = canonical->getAsTagDecl();
+      if (!decl) {
+        // Try again piercing any pointers/references involved.  Note that our
+        // typesym semantics are dubious-ish and right now crossref just does
+        // some parsing of "type" itself until we improve this rep.
+        canonical = canonical->getPointeeType();
+        if (!canonical.isNull()) {
+          decl = canonical->getAsTagDecl();
+        }
+      }
+      if (decl) {
+        std::string Mangled = getMangledName(CurMangleContext, decl);
+        J.attribute("typesym", Mangled);
+      }
     }
 
     std::string Pretty(SyntaxKind);
     Pretty.push_back(' ');
-    Pretty.append(QualName);
-    Fmt.add("pretty", Pretty);
+    Pretty.append(QualName.data());
+    J.attribute("pretty", Pretty);
 
-    Fmt.add("sym", SymbolList);
+    J.attribute("sym", Symbol);
 
     if (Flags & NoCrossref) {
-      Fmt.add("no_crossref", 1);
+      J.attribute("no_crossref", 1);
     }
 
-    std::string Buf;
-    Fmt.format(Buf);
-    F->Output.push_back(std::move(Buf));
-  }
+    if (ArgRanges) {
+      J.attributeBegin("argRanges");
+      J.arrayBegin();
 
-  void visitIdentifier(const char *Kind, const char *SyntaxKind,
-                       std::string QualName, SourceLocation Loc, std::string Symbol,
-                       Context TokenContext = Context(), int Flags = 0,
-                       SourceRange PeekRange = SourceRange(),
-                       SourceRange NestingRange = SourceRange()) {
-    std::vector<std::string> V = {Symbol};
-    visitIdentifier(Kind, SyntaxKind, QualName, Loc, V, TokenContext, Flags,
-                    PeekRange, NestingRange);
+      for (auto range : *ArgRanges) {
+          std::string ArgRangeStr = fullRangeToString(range);
+          if (!ArgRangeStr.empty()) {
+            J.value(ArgRangeStr);
+          }
+      }
+
+      J.arrayEnd();
+      J.attributeEnd();
+    }
+
+    // End the top-level object.
+    J.objectEnd();
+
+    // we want a newline.
+    ros << '\n';
+    F->Output.push_back(std::move(ros.str()));
   }
 
   void normalizeLocation(SourceLocation *Loc) {
@@ -1248,15 +1793,19 @@ public:
     int Flags = 0;
     const char *Kind = "def";
     const char *PrettyKind = "?";
+    bool wasTemplate = false;
     SourceRange PeekRange(D->getBeginLoc(), D->getEndLoc());
     // The nesting range identifies the left brace and right brace, which
     // heavily depends on the AST node type.
     SourceRange NestingRange;
+    QualType qtype = QualType();
     if (FunctionDecl *D2 = dyn_cast<FunctionDecl>(D)) {
       if (D2->isTemplateInstantiation()) {
+        wasTemplate = true;
         D = D2->getTemplateInstantiationPattern();
       }
-      Kind = D2->isThisDeclarationADefinition() ? "def" : "decl";
+      // We treat pure virtual declarations as definitions.
+      Kind = (D2->isThisDeclarationADefinition() || isPure(D2)) ? "def" : "decl";
       PrettyKind = "function";
       PeekRange = getFunctionPeekRange(D2);
 
@@ -1279,7 +1828,7 @@ public:
         NestingRange = getCompoundStmtRange(D2->getBody());
       }
     } else if (TagDecl *D2 = dyn_cast<TagDecl>(D)) {
-      Kind = D2->isThisDeclarationADefinition() ? "def" : "decl";
+      Kind = D2->isThisDeclarationADefinition() ? "def" : "forward";
       PrettyKind = "type";
 
       if (D2->isThisDeclarationADefinition() && D2->getDefinition() == D2) {
@@ -1288,10 +1837,11 @@ public:
       } else {
         PeekRange = SourceRange();
       }
-    } else if (isa<TypedefNameDecl>(D)) {
-      Kind = "def";
+    } else if (TypedefNameDecl *D2 = dyn_cast<TypedefNameDecl>(D)) {
+      Kind = "alias";
       PrettyKind = "type";
       PeekRange = SourceRange(Loc, Loc);
+      qtype = D2->getUnderlyingType();
     } else if (VarDecl *D2 = dyn_cast<VarDecl>(D)) {
       if (D2->isLocalVarDeclOrParm()) {
         Flags = NoCrossref;
@@ -1322,16 +1872,16 @@ public:
       return true;
     }
 
+    if (ValueDecl *D2 = dyn_cast<ValueDecl>(D)) {
+      qtype = D2->getType();
+    }
+
     SourceRange CommentRange = getCommentRange(D);
     PeekRange = combineRanges(PeekRange, CommentRange);
     PeekRange = validateRange(Loc, PeekRange);
     NestingRange = validateRange(Loc, NestingRange);
 
-    std::vector<std::string> Symbols = {getMangledName(CurMangleContext, D)};
-    if (CXXMethodDecl::classof(D)) {
-      Symbols.clear();
-      findOverriddenMethods(dyn_cast<CXXMethodDecl>(D), Symbols);
-    }
+    std::string Symbol = getMangledName(CurMangleContext, D);
 
     // In the case of destructors, Loc might point to the ~ character. In that
     // case we want to skip to the name of the class. However, Loc might also
@@ -1365,8 +1915,57 @@ public:
       }
     }
 
-    visitIdentifier(Kind, PrettyKind, getQualifiedName(D), Loc, Symbols,
+    visitIdentifier(Kind, PrettyKind, getQualifiedName(D), SourceRange(Loc), Symbol,
+                    qtype,
                     getContext(D), Flags, PeekRange, NestingRange);
+
+    // In-progress structured info emission.
+    if (RecordDecl *D2 = dyn_cast<RecordDecl>(D)) {
+      if (D2->isThisDeclarationADefinition() &&
+          // XXX getASTRecordLayout doesn't work for dependent types, so we
+          // avoid calling into emitStructuredInfo for now if there's a
+          // dependent type or if we're in any kind of template context.  This
+          // should be re-evaluated once this is working for normal classes and
+          // we can better evaluate what is useful.
+          !D2->isDependentType() &&
+          !TemplateStack) {
+        if (auto *D3 = dyn_cast<CXXRecordDecl>(D2)) {
+          findBindingToJavaClass(*AstContext, *D3);
+          findBoundAsJavaClasses(*AstContext, *D3);
+        }
+        emitStructuredInfo(Loc, D2);
+      }
+    }
+    if (FunctionDecl *D2 = dyn_cast<FunctionDecl>(D)) {
+      if ((D2->isThisDeclarationADefinition() || isPure(D2)) &&
+          // a clause at the top should have generalized and set wasTemplate so
+          // it shouldn't be the case that isTemplateInstantiation() is true.
+          !D2->isTemplateInstantiation() &&
+          !wasTemplate &&
+          !D2->isFunctionTemplateSpecialization() &&
+          !TemplateStack) {
+        if (auto *D3 = dyn_cast<CXXMethodDecl>(D2)) {
+          findBindingToJavaMember(*AstContext, *D3);
+        } else {
+          findBindingToJavaFunction(*AstContext, *D2);
+        }
+        emitStructuredInfo(Loc, D2);
+      }
+    }
+    if (FieldDecl *D2 = dyn_cast<FieldDecl>(D)) {
+      if (!D2->isTemplated() &&
+          !TemplateStack) {
+        emitStructuredInfo(Loc, D2);
+      }
+    }
+    if (VarDecl *D2 = dyn_cast<VarDecl>(D)) {
+      if (!D2->isTemplated() &&
+          !TemplateStack &&
+          isa<CXXRecordDecl>(D2->getDeclContext())) {
+        findBindingToJavaConstant(*AstContext, *D2);
+        emitStructuredInfo(Loc, D2);
+      }
+    }
 
     return true;
   }
@@ -1387,7 +1986,7 @@ public:
     // FIXME: Need to do something different for list initialization.
 
     visitIdentifier("use", "constructor", getQualifiedName(Ctor), Loc, Mangled,
-                    getContext(Loc));
+                    QualType(), getContext(Loc));
 
     return true;
   }
@@ -1416,7 +2015,7 @@ public:
       // Just take the first token.
       CXXOperatorCallExpr *Op = dyn_cast<CXXOperatorCallExpr>(E);
       Loc = Op->getOperatorLoc();
-      Flags |= OperatorToken;
+      Flags |= NotIdentifierToken;
     } else if (MemberExpr::classof(CalleeExpr)) {
       MemberExpr *Member = dyn_cast<MemberExpr>(CalleeExpr);
       Loc = Member->getMemberLoc();
@@ -1433,8 +2032,14 @@ public:
       return true;
     }
 
+    std::vector<SourceRange> argRanges;
+    for (auto argExpr : E->arguments()) {
+      argRanges.push_back(argExpr->getSourceRange());
+    }
+
     visitIdentifier("use", "function", getQualifiedName(NamedCallee), Loc, Mangled,
-                    getContext(Loc), Flags);
+                    E->getCallReturnType(*AstContext), getContext(Loc), Flags,
+                    SourceRange(), SourceRange(), &argRanges);
 
     return true;
   }
@@ -1449,7 +2054,7 @@ public:
     TagDecl *Decl = L.getDecl();
     std::string Mangled = getMangledName(CurMangleContext, Decl);
     visitIdentifier("use", "type", getQualifiedName(Decl), Loc, Mangled,
-                    getContext(Loc));
+                    L.getType(), getContext(Loc));
     return true;
   }
 
@@ -1463,7 +2068,7 @@ public:
     NamedDecl *Decl = L.getTypedefNameDecl();
     std::string Mangled = getMangledName(CurMangleContext, Decl);
     visitIdentifier("use", "type", getQualifiedName(Decl), Loc, Mangled,
-                    getContext(Loc));
+                    L.getType(), getContext(Loc));
     return true;
   }
 
@@ -1477,7 +2082,7 @@ public:
     NamedDecl *Decl = L.getDecl();
     std::string Mangled = getMangledName(CurMangleContext, Decl);
     visitIdentifier("use", "type", getQualifiedName(Decl), Loc, Mangled,
-                    getContext(Loc));
+                    L.getType(), getContext(Loc));
     return true;
   }
 
@@ -1493,14 +2098,28 @@ public:
       NamedDecl *Decl = D->getTemplatedDecl();
       std::string Mangled = getMangledName(CurMangleContext, Decl);
       visitIdentifier("use", "type", getQualifiedName(Decl), Loc, Mangled,
-                      getContext(Loc));
+                      QualType(), getContext(Loc));
     } else if (TypeAliasTemplateDecl *D = dyn_cast<TypeAliasTemplateDecl>(Td)) {
       NamedDecl *Decl = D->getTemplatedDecl();
       std::string Mangled = getMangledName(CurMangleContext, Decl);
       visitIdentifier("use", "type", getQualifiedName(Decl), Loc, Mangled,
-                      getContext(Loc));
+                      QualType(), getContext(Loc));
     }
 
+    return true;
+  }
+
+  bool VisitDependentNameTypeLoc(DependentNameTypeLoc L) {
+    SourceLocation Loc = L.getNameLoc();
+    normalizeLocation(&Loc);
+    if (!isInterestingLocation(Loc)) {
+      return true;
+    }
+
+    for (const NamedDecl *D :
+         Resolver->resolveDependentNameType(L.getTypePtr())) {
+      visitHeuristicResult(Loc, D);
+    }
     return true;
   }
 
@@ -1524,7 +2143,7 @@ public:
       }
       std::string Mangled = getMangledName(CurMangleContext, Decl);
       visitIdentifier("use", "variable", getQualifiedName(Decl), Loc, Mangled,
-                      getContext(Loc), Flags);
+                      D2->getType(), getContext(Loc), Flags);
     } else if (isa<FunctionDecl>(Decl)) {
       const FunctionDecl *F = dyn_cast<FunctionDecl>(Decl);
       if (F->isTemplateInstantiation()) {
@@ -1533,11 +2152,11 @@ public:
 
       std::string Mangled = getMangledName(CurMangleContext, Decl);
       visitIdentifier("use", "function", getQualifiedName(Decl), Loc, Mangled,
-                      getContext(Loc));
+                      E->getType(), getContext(Loc));
     } else if (isa<EnumConstantDecl>(Decl)) {
       std::string Mangled = getMangledName(CurMangleContext, Decl);
       visitIdentifier("use", "enum", getQualifiedName(Decl), Loc, Mangled,
-                      getContext(Loc));
+                      E->getType(), getContext(Loc));
     }
 
     return true;
@@ -1564,7 +2183,7 @@ public:
       FieldDecl *Member = Ci->getMember();
       std::string Mangled = getMangledName(CurMangleContext, Member);
       visitIdentifier("use", "field", getQualifiedName(Member), Loc, Mangled,
-                      getContext(D));
+                      Member->getType(), getContext(D));
     }
 
     return true;
@@ -1581,7 +2200,56 @@ public:
     if (FieldDecl *Field = dyn_cast<FieldDecl>(Decl)) {
       std::string Mangled = getMangledName(CurMangleContext, Field);
       visitIdentifier("use", "field", getQualifiedName(Field), Loc, Mangled,
-                      getContext(Loc));
+                      Field->getType(), getContext(Loc));
+    }
+    return true;
+  }
+
+  // Helper function for producing heuristic results for usages in dependent
+  // code. These should be distinguished from concrete results (obtained for
+  // dependent code using the AutoTemplateContext machinery) once bug 1833552 is
+  // fixed.
+  // We don't expect this method to be intentionally called multiple times for
+  // a given (Loc, NamedDecl) pair because our callers should be mutually
+  // exclusive AST node types. However, it's fine if this method is called
+  // multiple time for a given pair because we explicitly de-duplicate records
+  // with an identical string representation (which is a good reason to have
+  // this helper, as it ensures identical representations).
+  void visitHeuristicResult(SourceLocation Loc, const NamedDecl *ND) {
+    if (const TemplateDecl *TD = dyn_cast<TemplateDecl>(ND)) {
+      ND = TD->getTemplatedDecl();
+    }
+    QualType MaybeType;
+    const char *SyntaxKind = nullptr;
+    if (const FunctionDecl *F = dyn_cast<FunctionDecl>(ND)) {
+      MaybeType = F->getType();
+      SyntaxKind = "function";
+    } else if (const FieldDecl *F = dyn_cast<FieldDecl>(ND)) {
+      MaybeType = F->getType();
+      SyntaxKind = "field";
+    } else if (const EnumConstantDecl *E = dyn_cast<EnumConstantDecl>(ND)) {
+      MaybeType = E->getType();
+      SyntaxKind = "enum";
+    } else if (const TypedefNameDecl *T = dyn_cast<TypedefNameDecl>(ND)) {
+      MaybeType = T->getUnderlyingType();
+      SyntaxKind = "type";
+    }
+    if (SyntaxKind) {
+      std::string Mangled = getMangledName(CurMangleContext, ND);
+      visitIdentifier("use", SyntaxKind, getQualifiedName(ND), Loc, Mangled,
+                      MaybeType, getContext(Loc));
+    }
+  }
+
+  bool VisitOverloadExpr(OverloadExpr *E) {
+    SourceLocation Loc = E->getExprLoc();
+    normalizeLocation(&Loc);
+    if (!isInterestingLocation(Loc)) {
+      return true;
+    }
+
+    for (auto *Candidate : E->decls()) {
+      visitHeuristicResult(Loc, Candidate);
     }
     return true;
   }
@@ -1593,10 +2261,91 @@ public:
       return true;
     }
 
+    // If possible, provide a heuristic result without instantiation.
+    for (const NamedDecl *D : Resolver->resolveMemberExpr(E)) {
+      visitHeuristicResult(Loc, D);
+    }
+
+    // Also record this location so that if we have instantiations, we can
+    // gather more accurate results from them.
     if (TemplateStack) {
       TemplateStack->visitDependent(Loc);
     }
     return true;
+  }
+
+  bool VisitDependentScopeDeclRefExpr(DependentScopeDeclRefExpr *E) {
+    SourceLocation Loc = E->getLocation();
+    normalizeLocation(&Loc);
+    if (!isInterestingLocation(Loc)) {
+      return true;
+    }
+
+    for (const NamedDecl *D : Resolver->resolveDeclRefExpr(E)) {
+      visitHeuristicResult(Loc, D);
+    }
+    return true;
+  }
+
+  bool VisitStringLiteral(StringLiteral *E) {
+    if (E->getCharByteWidth() != 1) {
+      return true;
+    }
+
+    StringRef sref = E->getString();
+    std::string s = sref.str();
+
+    if (!stringStartsWith(s, "chrome://") &&
+        !stringStartsWith(s, "resource://")) {
+      return true;
+    }
+
+    if (!isASCII(s)) {
+      return true;
+    }
+
+    SourceLocation Loc = E->getStrTokenLoc(0);
+    normalizeLocation(&Loc);
+
+    std::string symbol = std::string("URL_") + mangleURL(s);
+
+    visitIdentifier("use", "file", StringRef(s), Loc, symbol,
+                    QualType(), Context(),
+                    NotIdentifierToken | LocRangeEndValid);
+
+    return true;
+  }
+
+  void enterSourceFile(SourceLocation Loc) {
+    normalizeLocation(&Loc);
+    FileInfo* newFile = getFileInfo(Loc);
+    if (!newFile->Interesting) {
+      return;
+    }
+    FileType type = newFile->Generated ? FileType::Generated : FileType::Source;
+    std::string symbol =
+        std::string("FILE_") + mangleFile(newFile->Realname, type);
+
+    // We use an explicit zero-length source range at the start of the file. If we
+    // don't set the LocRangeEndValid flag, the visitIdentifier code will use the
+    // entire first token, which could be e.g. a long multiline-comment.
+    visitIdentifier("def", "file", newFile->Realname, SourceRange(Loc),
+                    symbol, QualType(), Context(),
+                    NotIdentifierToken | LocRangeEndValid);
+  }
+
+  void inclusionDirective(SourceRange FileNameRange, const FileEntry* File) {
+    std::string includedFile(File->tryGetRealPathName());
+    FileType type = relativizePath(includedFile);
+    if (type == FileType::Unknown) {
+      return;
+    }
+    std::string symbol =
+        std::string("FILE_") + mangleFile(includedFile, type);
+
+    visitIdentifier("use", "file", includedFile, FileNameRange, symbol,
+                    QualType(), Context(),
+                    NotIdentifierToken | LocRangeEndValid);
   }
 
   void macroDefined(const Token &Tok, const MacroDirective *Macro) {
@@ -1612,7 +2361,7 @@ public:
     IdentifierInfo *Ident = Tok.getIdentifierInfo();
     if (Ident) {
       std::string Mangled =
-          std::string("M_") + mangleLocation(Loc, Ident->getName());
+          std::string("M_") + mangleLocation(Loc, std::string(Ident->getName()));
       visitIdentifier("def", "macro", Ident->getName(), Loc, Mangled);
     }
   }
@@ -1634,11 +2383,59 @@ public:
     if (Ident) {
       std::string Mangled =
           std::string("M_") +
-          mangleLocation(Macro->getDefinitionLoc(), Ident->getName());
+          mangleLocation(Macro->getDefinitionLoc(), std::string(Ident->getName()));
       visitIdentifier("use", "macro", Ident->getName(), Loc, Mangled);
     }
   }
 };
+
+void PreprocessorHook::FileChanged(SourceLocation Loc, FileChangeReason Reason,
+                                   SrcMgr::CharacteristicKind FileType,
+                                   FileID PrevFID = FileID()) {
+  switch (Reason) {
+    case PPCallbacks::RenameFile:
+    case PPCallbacks::SystemHeaderPragma:
+      // Don't care about these, since we want the actual on-disk filenames
+      break;
+    case PPCallbacks::EnterFile:
+      Indexer->enterSourceFile(Loc);
+      break;
+    case PPCallbacks::ExitFile:
+      // Don't care about exiting files
+      break;
+  }
+}
+
+void PreprocessorHook::InclusionDirective(SourceLocation HashLoc,
+                                          const Token &IncludeTok,
+                                          StringRef FileName,
+                                          bool IsAngled,
+                                          CharSourceRange FileNameRange,
+#if CLANG_VERSION_MAJOR >= 16
+                                          OptionalFileEntryRef File,
+#elif CLANG_VERSION_MAJOR >= 15
+                                          Optional<FileEntryRef> File,
+#else
+                                          const FileEntry *File,
+#endif
+                                          StringRef SearchPath,
+                                          StringRef RelativePath,
+#if CLANG_VERSION_MAJOR >= 19
+                                          const Module *SuggestedModule,
+                                          bool ModuleImported,
+#else
+                                          const Module *Imported,
+#endif
+                                          SrcMgr::CharacteristicKind FileType) {
+#if CLANG_VERSION_MAJOR >= 15
+  if (!File) {
+    return;
+  }
+  Indexer->inclusionDirective(FileNameRange.getAsRange(), &File->getFileEntry());
+#else
+  Indexer->inclusionDirective(FileNameRange.getAsRange(), File);
+#endif
+}
 
 void PreprocessorHook::MacroDefined(const Token &Tok,
                                     const MacroDirective *Md) {

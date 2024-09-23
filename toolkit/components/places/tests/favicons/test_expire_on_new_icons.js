@@ -15,37 +15,36 @@ add_task(async function test_expire_associated() {
     {
       name: "favicon-normal16.png",
       mimeType: "image/png",
-      expire: PlacesUtils.toPRTime(new Date(1)), // Very old.
+      expired: true,
     },
     {
       name: "favicon-normal32.png",
       mimeType: "image/png",
-      expire: 0,
     },
     {
       name: "favicon-big64.png",
       mimeType: "image/png",
-      expire: 0,
     },
   ];
 
   for (let icon of favicons) {
-    let data = readFileData(do_get_file(icon.name));
-    PlacesUtils.favicons.replaceFaviconData(
-      NetUtil.newURI(TEST_URL + icon.name),
-      data,
-      icon.mimeType,
-      icon.expire
+    let dataURL = await readFileDataAsDataURL(
+      do_get_file(icon.name),
+      icon.mimeType
     );
-    await setFaviconForPage(TEST_URL, TEST_URL + icon.name);
-    if (icon.expire != 0) {
-      PlacesUtils.favicons.replaceFaviconData(
-        NetUtil.newURI(TEST_URL + icon.name),
-        data,
-        icon.mimeType,
-        icon.expire
+    await PlacesTestUtils.setFaviconForPage(
+      TEST_URL,
+      TEST_URL + icon.name,
+      dataURL
+    );
+    if (icon.expired) {
+      await expireIconRelationsForPage(TEST_URL);
+      // Add the same icon to another page.
+      await PlacesTestUtils.setFaviconForPage(
+        TEST_URL2,
+        TEST_URL + icon.name,
+        dataURL
       );
-      await setFaviconForPage(TEST_URL2, TEST_URL + icon.name);
     }
   }
 
@@ -89,29 +88,22 @@ add_task(async function test_expire_root() {
 
   // Insert an expired icon.
   let iconURI = NetUtil.newURI(pageURI.spec + "favicon-normal16.png");
-  PlacesUtils.favicons.replaceFaviconDataFromDataURL(
-    iconURI,
-    SMALLPNG_DATA_URI.spec,
-    PlacesUtils.toPRTime(new Date(1)),
-    systemPrincipal
-  );
-  await setFaviconForPage(pageURI, iconURI);
-
+  await PlacesTestUtils.setFaviconForPage(pageURI, iconURI, SMALLPNG_DATA_URI);
   Assert.equal(
     await countEntries("moz_icons_to_pages"),
     1,
     "There should be 1 association"
   );
+  // Set an expired time on the icon-page relation.
+  await expireIconRelationsForPage(pageURI.spec);
 
   // Now insert a new root icon.
   let rootIconURI = NetUtil.newURI(pageURI.spec + "favicon.ico");
-  PlacesUtils.favicons.replaceFaviconDataFromDataURL(
+  await PlacesTestUtils.setFaviconForPage(
+    pageURI,
     rootIconURI,
-    SMALLPNG_DATA_URI.spec,
-    0,
-    systemPrincipal
+    SMALLPNG_DATA_URI
   );
-  await setFaviconForPage(pageURI, rootIconURI);
 
   // Only the root icon should have survived.
   Assert.equal(
@@ -125,3 +117,27 @@ add_task(async function test_expire_root() {
     "There should be no associations"
   );
 });
+
+async function expireIconRelationsForPage(url) {
+  // Set an expired time on the icon-page relation.
+  await PlacesUtils.withConnectionWrapper("expireFavicon", async db => {
+    await db.execute(
+      `
+      UPDATE moz_icons_to_pages SET expire_ms = 0
+      WHERE page_id = (SELECT id FROM moz_pages_w_icons WHERE page_url = :url)
+      `,
+      { url }
+    );
+    // Also ensure the icon is not expired, here we should only replace entries
+    // based on their association expiration, not the icon expiration.
+    let count = (
+      await db.execute(
+        `
+        SELECT count(*) FROM moz_icons
+        WHERE expire_ms < strftime('%s','now','localtime','utc') * 1000
+        `
+      )
+    )[0].getResultByIndex(0);
+    Assert.equal(count, 0, "All the icons should have future expiration");
+  });
+}

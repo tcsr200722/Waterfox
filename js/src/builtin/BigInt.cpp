@@ -6,17 +6,12 @@
 
 #include "builtin/BigInt.h"
 
-#include "jsapi.h"
-
-#include "builtin/TypedObject.h"
-#include "gc/Tracer.h"
+#include "jit/InlinableNatives.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/PropertySpec.h"
-#include "js/TracingAPI.h"
-#include "vm/ArrayBufferObject.h"
 #include "vm/BigIntType.h"
-#include "vm/SelfHosting.h"
-#include "vm/TaggedProto.h"
 
+#include "vm/GeckoProfiler-inl.h"
 #include "vm/JSObject-inl.h"
 
 using namespace js;
@@ -27,6 +22,7 @@ static MOZ_ALWAYS_INLINE bool IsBigInt(HandleValue v) {
 
 // BigInt proposal section 5.1.3
 static bool BigIntConstructor(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSConstructorProfilerEntry pseudoFrame(cx, "BigInt");
   CallArgs args = CallArgsFromVp(argc, vp);
 
   // Step 1.
@@ -118,6 +114,7 @@ bool BigIntObject::toString_impl(JSContext* cx, const CallArgs& args) {
 }
 
 bool BigIntObject::toString(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "BigInt.prototype", "toString");
   CallArgs args = CallArgsFromVp(argc, vp);
   return CallNonGenericMethod<IsBigInt, toString_impl>(cx, args);
 }
@@ -142,6 +139,8 @@ bool BigIntObject::toLocaleString_impl(JSContext* cx, const CallArgs& args) {
 }
 
 bool BigIntObject::toLocaleString(JSContext* cx, unsigned argc, Value* vp) {
+  AutoJSMethodProfilerEntry pseudoFrame(cx, "BigInt.prototype",
+                                        "toLocaleString");
   CallArgs args = CallArgsFromVp(argc, vp);
   return CallNonGenericMethod<IsBigInt, toLocaleString_impl>(cx, args);
 }
@@ -207,16 +206,15 @@ const ClassSpec BigIntObject::classSpec_ = {
     BigIntObject::methods,
     BigIntObject::properties};
 
-// The class is named "Object" as a workaround for bug 1277801.
 const JSClass BigIntObject::class_ = {
-    "Object",
+    "BigInt",
     JSCLASS_HAS_CACHED_PROTO(JSProto_BigInt) |
         JSCLASS_HAS_RESERVED_SLOTS(RESERVED_SLOTS),
     JS_NULL_CLASS_OPS, &BigIntObject::classSpec_};
 
 const JSClass BigIntObject::protoClass_ = {
-    js_Object_str, JSCLASS_HAS_CACHED_PROTO(JSProto_BigInt), JS_NULL_CLASS_OPS,
-    &BigIntObject::classSpec_};
+    "BigInt.prototype", JSCLASS_HAS_CACHED_PROTO(JSProto_BigInt),
+    JS_NULL_CLASS_OPS, &BigIntObject::classSpec_};
 
 const JSPropertySpec BigIntObject::properties[] = {
     // BigInt proposal section 5.3.5
@@ -232,4 +230,5 @@ const JSFunctionSpec BigIntObject::methods[] = {
     JS_FS_END};
 
 const JSFunctionSpec BigIntObject::staticMethods[] = {
-    JS_FN("asUintN", asUintN, 2, 0), JS_FN("asIntN", asIntN, 2, 0), JS_FS_END};
+    JS_INLINABLE_FN("asUintN", asUintN, 2, 0, BigIntAsUintN),
+    JS_INLINABLE_FN("asIntN", asIntN, 2, 0, BigIntAsIntN), JS_FS_END};

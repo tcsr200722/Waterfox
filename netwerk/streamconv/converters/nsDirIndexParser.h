@@ -18,10 +18,10 @@ class nsITextToSubURI;
 
 class nsDirIndexParser : public nsIDirIndexParser {
  private:
-  virtual ~nsDirIndexParser();
+  virtual ~nsDirIndexParser() = default;
 
-  nsDirIndexParser();
-  nsresult Init();
+  nsDirIndexParser() = default;
+  void Init();
 
  public:
   NS_DECL_ISUPPORTS
@@ -31,34 +31,27 @@ class nsDirIndexParser : public nsIDirIndexParser {
 
   static already_AddRefed<nsIDirIndexParser> CreateInstance() {
     RefPtr<nsDirIndexParser> parser = new nsDirIndexParser();
-    if (NS_FAILED(parser->Init())) {
-      return nullptr;
-    }
+    parser->Init();
     return parser.forget();
   }
 
   enum fieldType {
     FIELD_UNKNOWN = 0,  // MUST be 0
     FIELD_FILENAME,
-    FIELD_DESCRIPTION,
     FIELD_CONTENTLENGTH,
     FIELD_LASTMODIFIED,
-    FIELD_CONTENTTYPE,
     FIELD_FILETYPE
   };
 
  protected:
   nsCOMPtr<nsIDirIndexListener> mListener;
 
-  nsCString mEncoding;
-  nsCString mComment;
   nsCString mBuf;
-  int32_t mLineStart;
-  bool mHasDescription;
-  int mFormat[8];
+  int32_t mLineStart{0};
+  int mFormat[8]{-1};
 
-  nsresult ProcessData(nsIRequest* aRequest, nsISupports* aCtxt);
-  void ParseFormat(const char* buf);
+  nsresult ProcessData(nsIRequest* aRequest);
+  void ParseFormat(const char* aFormatStr);
   void ParseData(nsIDirIndex* aIdx, char* aDataStr, int32_t lineLen);
 
   struct Field {
@@ -67,9 +60,6 @@ class nsDirIndexParser : public nsIDirIndexParser {
   };
 
   static Field gFieldTable[];
-
-  static nsrefcnt gRefCntParser;
-  static nsITextToSubURI* gTextToSubURI;
 };
 
 #endif

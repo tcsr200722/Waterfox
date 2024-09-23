@@ -7,110 +7,128 @@
 #ifndef nsPluginArray_h___
 #define nsPluginArray_h___
 
-#include "nsTArray.h"
 #include "nsWeakReference.h"
-#include "nsIObserver.h"
 #include "nsWrapperCache.h"
-#include "nsPIDOMWindow.h"
-#include "mozilla/dom/BindingDeclarations.h"
+#include "nsCOMPtr.h"
+#include "nsString.h"
+#include "nsTArray.h"
+#include "mozilla/Array.h"
 
+class nsPIDOMWindowInner;
 class nsPluginElement;
+class nsMimeTypeArray;
 class nsMimeType;
-class nsIInternalPluginTag;
 
-class nsPluginArray final : public nsIObserver,
-                            public nsSupportsWeakReference,
+/**
+ * Array class backing HTML's navigator.plugins.  This always holds references
+ * to the hard-coded set of PDF plugins defined by HTML but it only consults
+ * them if "pdfjs.disabled" is false.  There is never more than one of these
+ * per DOM window.
+ */
+class nsPluginArray final : public nsSupportsWeakReference,
                             public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(nsPluginArray,
-                                                         nsIObserver)
-
-  // nsIObserver
-  NS_DECL_NSIOBSERVER
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsPluginArray)
 
   explicit nsPluginArray(nsPIDOMWindowInner* aWindow);
   nsPIDOMWindowInner* GetParentObject() const;
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  // nsPluginArray registers itself as an observer with a weak reference.
-  // This can't be done in the constructor, because at that point its
-  // refcount is 0 (and it gets destroyed upon registration). So, Init()
-  // must be called after construction.
-  void Init();
-  void Invalidate();
-
-  void GetMimeTypes(nsTArray<RefPtr<nsMimeType>>& aMimeTypes);
-  void GetCTPMimeTypes(nsTArray<RefPtr<nsMimeType>>& aMimeTypes);
-
-  static void NotifyHiddenPluginTouched(nsPluginElement* aElement);
+  nsMimeTypeArray* MimeTypeArray() { return mMimeTypeArray; }
 
   // PluginArray WebIDL methods
+  uint32_t Length() { return ForceNoPlugins() ? 0 : ArrayLength(mPlugins); }
 
-  nsPluginElement* Item(uint32_t aIndex, mozilla::dom::CallerType aCallerType);
-  nsPluginElement* NamedItem(const nsAString& aName,
-                             mozilla::dom::CallerType aCallerType);
-  void Refresh(bool aReloadDocuments);
-  nsPluginElement* IndexedGetter(uint32_t aIndex, bool& aFound,
-                                 mozilla::dom::CallerType aCallerType);
-  nsPluginElement* NamedGetter(const nsAString& aName, bool& aFound,
-                               mozilla::dom::CallerType aCallerType);
-  uint32_t Length(mozilla::dom::CallerType aCallerType);
-  void GetSupportedNames(nsTArray<nsString>& aRetval,
-                         mozilla::dom::CallerType aCallerType);
+  nsPluginElement* Item(uint32_t aIndex) {
+    bool unused;
+    return IndexedGetter(aIndex, unused);
+  }
+
+  nsPluginElement* NamedItem(const nsAString& aName) {
+    bool unused;
+    return NamedGetter(aName, unused);
+  }
+
+  nsPluginElement* IndexedGetter(uint32_t aIndex, bool& aFound);
+
+  nsPluginElement* NamedGetter(const nsAString& aName, bool& aFound);
+
+  void GetSupportedNames(nsTArray<nsString>& aRetval);
+
+  void Refresh() {}
 
  private:
   virtual ~nsPluginArray();
 
-  bool AllowPlugins() const;
-  void EnsurePlugins();
+  bool ForceNoPlugins();
 
+  RefPtr<nsMimeTypeArray> mMimeTypeArray;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
-  nsTArray<RefPtr<nsPluginElement>> mPlugins;
-  /* A separate list of click-to-play plugins that we don't tell content
-   * about but keep track of so we can still prompt the user to click to play.
-   */
-  nsTArray<RefPtr<nsPluginElement>> mCTPPlugins;
+  mozilla::Array<RefPtr<nsPluginElement>, 5> mPlugins;
 };
 
+/**
+ * Plugin class backing entries in HTML's navigator.plugins array.  There is
+ * a fixed set of these, as defined by HTML.
+ */
 class nsPluginElement final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsPluginElement)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsPluginElement)
 
-  nsPluginElement(nsPIDOMWindowInner* aWindow,
-                  nsIInternalPluginTag* aPluginTag);
+  explicit nsPluginElement(nsPluginArray* aPluginArray,
+                           nsPIDOMWindowInner* aWindow, const nsAString& aName);
 
-  nsPIDOMWindowInner* GetParentObject() const;
+  nsPluginArray* GetParentObject() const;
+
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  nsIInternalPluginTag* PluginTag() const { return mPluginTag; }
-
   // Plugin WebIDL methods
+  void GetDescription(nsString& retval) const { retval = kDescription; }
 
-  void GetDescription(nsString& retval) const;
-  void GetFilename(nsString& retval) const;
-  void GetVersion(nsString& retval) const;
-  void GetName(nsString& retval) const;
-  nsMimeType* Item(uint32_t index);
-  nsMimeType* NamedItem(const nsAString& name);
-  nsMimeType* IndexedGetter(uint32_t index, bool& found);
-  nsMimeType* NamedGetter(const nsAString& name, bool& found);
+  void GetFilename(nsString& retval) const { retval = kFilename; }
+
+  void GetName(nsString& retval) const { retval = mName; }
+  const nsString& Name() const { return mName; }
+
+  nsMimeType* Item(uint32_t index) {
+    bool unused;
+    return IndexedGetter(index, unused);
+  }
+
+  nsMimeType* NamedItem(const nsAString& name) {
+    bool unused;
+    return NamedGetter(name, unused);
+  }
+
   uint32_t Length();
+
+  nsMimeType* IndexedGetter(uint32_t index, bool& found);
+
+  nsMimeType* NamedGetter(const nsAString& name, bool& found);
+
   void GetSupportedNames(nsTArray<nsString>& retval);
 
-  nsTArray<RefPtr<nsMimeType>>& MimeTypes();
-
  protected:
-  ~nsPluginElement();
+  virtual ~nsPluginElement() = default;
 
-  void EnsurePluginMimeTypes();
+  nsMimeTypeArray* MimeTypeArray() { return mPluginArray->MimeTypeArray(); }
 
+  static constexpr nsLiteralString kDescription =
+      u"Portable Document Format"_ns;
+  static constexpr nsLiteralString kFilename = u"internal-pdf-viewer"_ns;
+
+  // Note that this creates an explicit reference cycle:
+  //
+  // nsPluginElement -> nsPluginArray -> nsPluginElement
+  //
+  // We rely on the cycle collector to break this cycle.
+  RefPtr<nsPluginArray> mPluginArray;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
-  nsCOMPtr<nsIInternalPluginTag> mPluginTag;
-  nsTArray<RefPtr<nsMimeType>> mMimeTypes;
+  nsString mName;
 };
 
 #endif /* nsPluginArray_h___ */

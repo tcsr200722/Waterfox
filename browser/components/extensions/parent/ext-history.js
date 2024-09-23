@@ -6,13 +6,8 @@
 
 "use strict";
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
 var { normalizeTime } = ExtensionCommon;
@@ -49,62 +44,70 @@ const getTransition = transitionType => {
 };
 
 /*
- * Converts a nsINavHistoryResultNode into a HistoryItem
- *
- * https://developer.mozilla.org/en-US/docs/XPCOM_Interface_Reference/nsINavHistoryResultNode
+ * Converts a mozIStorageRow into a HistoryItem
  */
-const convertNodeToHistoryItem = node => {
+const convertRowToHistoryItem = row => {
   return {
-    id: node.pageGuid,
-    url: node.uri,
-    title: node.title,
-    lastVisitTime: PlacesUtils.toDate(node.time).getTime(),
-    visitCount: node.accessCount,
+    id: row.getResultByName("guid"),
+    url: row.getResultByName("url"),
+    title: row.getResultByName("page_title"),
+    lastVisitTime: PlacesUtils.toDate(
+      row.getResultByName("last_visit_date")
+    ).getTime(),
+    visitCount: row.getResultByName("visit_count"),
   };
 };
 
 /*
- * Converts a nsINavHistoryResultNode into a VisitItem
- *
- * https://developer.mozilla.org/en-US/docs/XPCOM_Interface_Reference/nsINavHistoryResultNode
+ * Converts a mozIStorageRow into a VisitItem
  */
-const convertNodeToVisitItem = node => {
+const convertRowToVisitItem = row => {
   return {
-    id: node.pageGuid,
-    visitId: String(node.visitId),
-    visitTime: PlacesUtils.toDate(node.time).getTime(),
-    referringVisitId: String(node.fromVisitId),
-    transition: getTransition(node.visitType),
+    id: row.getResultByName("guid"),
+    visitId: String(row.getResultByName("id")),
+    visitTime: PlacesUtils.toDate(row.getResultByName("visit_date")).getTime(),
+    referringVisitId: String(row.getResultByName("from_visit")),
+    transition: getTransition(row.getResultByName("visit_type")),
   };
 };
 
 /*
- * Converts a nsINavHistoryContainerResultNode into an array of objects
- *
- * https://developer.mozilla.org/en-US/docs/XPCOM_Interface_Reference/nsINavHistoryContainerResultNode
+ * Converts a mozIStorageResultSet into an array of objects
  */
-const convertNavHistoryContainerResultNode = (container, converter) => {
-  let results = [];
-  container.containerOpen = true;
-  for (let i = 0; i < container.childCount; i++) {
-    let node = container.getChild(i);
-    results.push(converter(node));
+const accumulateNavHistoryResults = (resultSet, converter, results) => {
+  let row;
+  while ((row = resultSet.getNextRow())) {
+    results.push(converter(row));
   }
-  container.containerOpen = false;
-  return results;
 };
 
-var _observer;
+function executeAsyncQuery(historyQuery, options, resultConverter) {
+  let results = [];
+  return new Promise((resolve, reject) => {
+    PlacesUtils.history.asyncExecuteLegacyQuery(historyQuery, options, {
+      handleResult(resultSet) {
+        accumulateNavHistoryResults(resultSet, resultConverter, results);
+      },
+      handleError(error) {
+        reject(
+          new Error(
+            "Async execution error (" + error.result + "): " + error.message
+          )
+        );
+      },
+      handleCompletion() {
+        resolve(results);
+      },
+    });
+  });
+}
 
-const getHistoryObserver = () => {
-  if (!_observer) {
-    _observer = new (class extends EventEmitter {
-      onDeleteURI(uri, guid, reason) {
-        this.emit("visitRemoved", { allHistory: false, urls: [uri.spec] });
-      }
-      handlePlacesEvents(events) {
-        for (let event of events) {
-          let visit = {
+this.history = class extends ExtensionAPIPersistent {
+  PERSISTENT_EVENTS = {
+    onVisited({ fire }) {
+      const listener = events => {
+        for (const event of events) {
+          const visit = {
             id: event.pageGuid,
             url: event.url,
             title: event.lastKnownTitle || "",
@@ -112,40 +115,91 @@ const getHistoryObserver = () => {
             visitCount: event.visitCount,
             typedCount: event.typedCount,
           };
-          this.emit("visited", visit);
+          fire.sync(visit);
         }
-      }
-      onBeginUpdateBatch() {}
-      onEndUpdateBatch() {}
-      onTitleChanged(uri, title) {
-        this.emit("titleChanged", { url: uri.spec, title: title });
-      }
-      onClearHistory() {
-        this.emit("visitRemoved", { allHistory: true, urls: [] });
-      }
-      onPageChanged() {}
-      onFrecencyChanged() {}
-      onManyFrecenciesChanged() {}
-      onDeleteVisits(uri, partialRemoval, guid, reason) {
-        if (!partialRemoval) {
-          this.emit("visitRemoved", { allHistory: false, urls: [uri.spec] });
-        }
-      }
-    })();
-    PlacesUtils.observers.addListener(
-      ["page-visited"],
-      _observer.handlePlacesEvents.bind(_observer)
-    );
-    PlacesUtils.history.addObserver(_observer);
-  }
-  return _observer;
-};
+      };
 
-this.history = class extends ExtensionAPI {
+      PlacesUtils.observers.addListener(["page-visited"], listener);
+      return {
+        unregister() {
+          PlacesUtils.observers.removeListener(["page-visited"], listener);
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+    onVisitRemoved({ fire }) {
+      const listener = events => {
+        const removedURLs = [];
+
+        for (const event of events) {
+          switch (event.type) {
+            case "history-cleared": {
+              fire.sync({ allHistory: true, urls: [] });
+              break;
+            }
+            case "page-removed": {
+              if (!event.isPartialVisistsRemoval) {
+                removedURLs.push(event.url);
+              }
+              break;
+            }
+          }
+        }
+
+        if (removedURLs.length) {
+          fire.sync({ allHistory: false, urls: removedURLs });
+        }
+      };
+
+      PlacesUtils.observers.addListener(
+        ["history-cleared", "page-removed"],
+        listener
+      );
+      return {
+        unregister() {
+          PlacesUtils.observers.removeListener(
+            ["history-cleared", "page-removed"],
+            listener
+          );
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+    onTitleChanged({ fire }) {
+      const listener = events => {
+        for (const event of events) {
+          const titleChanged = {
+            id: event.pageGuid,
+            url: event.url,
+            title: event.title,
+          };
+          fire.sync(titleChanged);
+        }
+      };
+
+      PlacesUtils.observers.addListener(["page-title-changed"], listener);
+      return {
+        unregister() {
+          PlacesUtils.observers.removeListener(
+            ["page-title-changed"],
+            listener
+          );
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+  };
+
   getAPI(context) {
     return {
       history: {
-        addUrl: function(details) {
+        addUrl: function (details) {
           let transition, date;
           try {
             transition = getTransitionType(details.transition);
@@ -172,11 +226,11 @@ this.history = class extends ExtensionAPI {
           }
         },
 
-        deleteAll: function() {
+        deleteAll: function () {
           return PlacesUtils.history.clear();
         },
 
-        deleteRange: function(filter) {
+        deleteRange: function (filter) {
           let newFilter = {
             beginDate: normalizeTime(filter.startTime),
             endDate: normalizeTime(filter.endTime),
@@ -187,13 +241,13 @@ this.history = class extends ExtensionAPI {
             .then(() => undefined);
         },
 
-        deleteUrl: function(details) {
+        deleteUrl: function (details) {
           let url = details.url;
           // History.remove returns a boolean, but our API should return nothing
           return PlacesUtils.history.remove(url).then(() => undefined);
         },
 
-        search: function(query) {
+        search: function (query) {
           let beginTime =
             query.startTime == null
               ? PlacesUtils.toPRTime(Date.now() - 24 * 60 * 60 * 1000)
@@ -217,18 +271,14 @@ this.history = class extends ExtensionAPI {
           historyQuery.searchTerms = query.text;
           historyQuery.beginTime = beginTime;
           historyQuery.endTime = endTime;
-          let queryResult = PlacesUtils.history.executeQuery(
+          return executeAsyncQuery(
             historyQuery,
-            options
-          ).root;
-          let results = convertNavHistoryContainerResultNode(
-            queryResult,
-            convertNodeToHistoryItem
+            options,
+            convertRowToHistoryItem
           );
-          return Promise.resolve(results);
         },
 
-        getVisits: function(details) {
+        getVisits: function (details) {
           let url = details.url;
           if (!url) {
             return Promise.reject({
@@ -243,60 +293,32 @@ this.history = class extends ExtensionAPI {
 
           let historyQuery = PlacesUtils.history.getNewQuery();
           historyQuery.uri = Services.io.newURI(url);
-          let queryResult = PlacesUtils.history.executeQuery(
+          return executeAsyncQuery(
             historyQuery,
-            options
-          ).root;
-          let results = convertNavHistoryContainerResultNode(
-            queryResult,
-            convertNodeToVisitItem
+            options,
+            convertRowToVisitItem
           );
-          return Promise.resolve(results);
         },
 
         onVisited: new EventManager({
           context,
-          name: "history.onVisited",
-          register: fire => {
-            let listener = (event, data) => {
-              fire.sync(data);
-            };
-
-            getHistoryObserver().on("visited", listener);
-            return () => {
-              getHistoryObserver().off("visited", listener);
-            };
-          },
+          module: "history",
+          event: "onVisited",
+          extensionApi: this,
         }).api(),
 
         onVisitRemoved: new EventManager({
           context,
-          name: "history.onVisitRemoved",
-          register: fire => {
-            let listener = (event, data) => {
-              fire.sync(data);
-            };
-
-            getHistoryObserver().on("visitRemoved", listener);
-            return () => {
-              getHistoryObserver().off("visitRemoved", listener);
-            };
-          },
+          module: "history",
+          event: "onVisitRemoved",
+          extensionApi: this,
         }).api(),
 
         onTitleChanged: new EventManager({
           context,
-          name: "history.onTitleChanged",
-          register: fire => {
-            let listener = (event, data) => {
-              fire.sync(data);
-            };
-
-            getHistoryObserver().on("titleChanged", listener);
-            return () => {
-              getHistoryObserver().off("titleChanged", listener);
-            };
-          },
+          module: "history",
+          event: "onTitleChanged",
+          extensionApi: this,
         }).api(),
       },
     };

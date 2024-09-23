@@ -4,39 +4,39 @@
 
 "use strict";
 
-const { PureComponent } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  PureComponent,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 loader.lazyRequireGetter(
   this,
   "getNodeRep",
-  "devtools/client/inspector/shared/node-reps"
+  "resource://devtools/client/inspector/shared/node-reps.js"
 );
 
-const Types = require("devtools/client/inspector/flexbox/types");
+const Types = require("resource://devtools/client/inspector/flexbox/types.js");
+
+const {
+  highlightNode,
+  unhighlightNode,
+} = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
 
 class FlexItem extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       flexItem: PropTypes.shape(Types.flexItem).isRequired,
       index: PropTypes.number.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
       scrollToTop: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
     };
   }
 
   render() {
-    const {
-      flexItem,
-      index,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
-      scrollToTop,
-      setSelectedNode,
-    } = this.props;
+    const { dispatch, flexItem, index, scrollToTop, setSelectedNode } =
+      this.props;
     const { nodeFront } = flexItem;
 
     return dom.button(
@@ -46,10 +46,10 @@ class FlexItem extends PureComponent {
           e.stopPropagation();
           scrollToTop();
           setSelectedNode(nodeFront);
-          onHideBoxModelHighlighter();
+          dispatch(unhighlightNode());
         },
-        onMouseOut: () => onHideBoxModelHighlighter(),
-        onMouseOver: () => onShowBoxModelHighlighterForNode(nodeFront),
+        onMouseOut: () => dispatch(unhighlightNode()),
+        onMouseOver: () => dispatch(highlightNode(nodeFront)),
       },
       dom.span({ className: "flex-item-index" }, index),
       getNodeRep(nodeFront)

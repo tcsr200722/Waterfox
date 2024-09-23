@@ -107,8 +107,8 @@ interface mozIVisitInfoCallback : nsISupports
    * handleResult and handleError, respectively, if/once
    * results/errors occur.
    */
-  readonly attribute bool ignoreResults;
-  readonly attribute bool ignoreErrors;
+  readonly attribute boolean ignoreResults;
+  readonly attribute boolean ignoreErrors;
 };
 
 [scriptable, function, uuid(994092bf-936f-449b-8dd6-0941e024360d)]
@@ -128,11 +128,11 @@ interface mozIVisitedStatusCallback : nsISupports
 
 /**
  * This interface contains APIs for cpp consumers.
- * Javascript consumers should look at History.jsm instead,
+ * Javascript consumers should look at History.sys.mjs instead,
  * that is exposed through PlacesUtils.history.
  *
  * If you're evaluating adding a new history API, it should
- * usually go to History.jsm, unless it needs to do long and
+ * usually go to History.sys.mjs, unless it needs to do long and
  * expensive work in a batch, then it could be worth doing
  * that in History.cpp.
  */
@@ -152,9 +152,6 @@ interface mozIAsyncHistory : nsISupports
    * @param [optional] aCallback
    *        A mozIVisitInfoCallback object which consists of callbacks to be
    *        notified for successful and/or failed changes.
-   * @param [optional] aGroupNotifications
-   *        If set to true, the implementation will attempt to avoid using
-   *        per-place/visit notifications as much as possible.
    *
    * @throws NS_ERROR_INVALID_ARG
    *         - Passing in NULL for aPlaceInfo.
@@ -168,8 +165,7 @@ interface mozIAsyncHistory : nsISupports
    */
   [implicit_jscontext]
   void updatePlaces(in jsval aPlaceInfo,
-                    [optional] in mozIVisitInfoCallback aCallback,
-                    [optional] in bool aGroupNotifications);
+                    [optional] in mozIVisitInfoCallback aCallback);
 
   /**
    * Checks if a given URI has been visited.
@@ -181,4 +177,10 @@ interface mozIAsyncHistory : nsISupports
    */
   void isURIVisited(in nsIURI aURI,
                     in mozIVisitedStatusCallback aCallback);
+
+  /**
+   * Helper to clear any internal state caches, like the recent URIs list.
+   * This may be useful in testing code.
+   */
+  void clearCache();
 };

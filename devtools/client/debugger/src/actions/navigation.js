@@ -2,18 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import { clearDocuments } from "../utils/editor";
 import sourceQueue from "../utils/source-queue";
 
-import { updateThreads } from "./threads";
-import { evaluateExpressions } from "./expressions";
-
 import { clearWasmStates } from "../utils/wasm";
-import { getMainThread, getThreadContext } from "../selectors";
-import type { Action, ThunkArgs } from "./types";
-import type { ActorId, URL } from "../types";
+import { getMainThread } from "../selectors/index";
+import { evaluateExpressionsForCurrentContext } from "../actions/expressions";
 
 /**
  * Redux actions for the navigation state
@@ -24,19 +17,11 @@ import type { ActorId, URL } from "../types";
  * @memberof actions/navigation
  * @static
  */
-export function willNavigate(event: Object) {
-  return async function({
-    dispatch,
-    getState,
-    client,
-    sourceMaps,
-    parser,
-  }: ThunkArgs) {
+export function willNavigate(event) {
+  return async function ({ dispatch, getState, sourceMapLoader }) {
     sourceQueue.clear();
-    sourceMaps.clearSourceMaps();
+    sourceMapLoader.clearSourceMaps();
     clearWasmStates();
-    clearDocuments();
-    parser.clear();
     const thread = getMainThread(getState());
 
     dispatch({
@@ -46,40 +31,21 @@ export function willNavigate(event: Object) {
   };
 }
 
-export function connect(
-  url: URL,
-  actor: ActorId,
-  traits: Object,
-  isWebExtension: boolean
-) {
-  return async function({ dispatch, getState }: ThunkArgs) {
-    await dispatch(updateThreads());
-    await dispatch(
-      ({
-        type: "CONNECT",
-        mainThread: {
-          url,
-          actor,
-          type: "mainThread",
-          name: L10N.getStr("mainThread"),
-        },
-        traits,
-        isWebExtension,
-      }: Action)
-    );
-
-    const cx = getThreadContext(getState());
-    dispatch(evaluateExpressions(cx));
-  };
-}
-
 /**
  * @memberof actions/navigation
  * @static
  */
 export function navigated() {
-  return async function({ dispatch, panel }: ThunkArgs) {
-    await dispatch(updateThreads());
+  return async function ({ dispatch, panel }) {
+    try {
+      // Update the watched expressions once the page is fully loaded
+      await dispatch(evaluateExpressionsForCurrentContext());
+    } catch (e) {
+      // This may throw if we resume during the page load.
+      // browser_dbg-debugger-buttons.js highlights this, especially on MacOS or when ran many times
+      console.error("Failed to update expression on navigation", e);
+    }
+
     panel.emit("reloaded");
   };
 }

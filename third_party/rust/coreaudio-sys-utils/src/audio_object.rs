@@ -1,3 +1,4 @@
+use crate::dispatch::*;
 use coreaudio_sys::*;
 use std::fmt;
 use std::os::raw::c_void;
@@ -77,6 +78,7 @@ pub fn audio_object_set_property_data<T>(
     size: usize,
     data: *const T,
 ) -> OSStatus {
+    debug_assert_running_serially();
     unsafe {
         AudioObjectSetPropertyData(
             id,
@@ -99,6 +101,7 @@ pub fn audio_object_add_property_listener<T>(
     listener: audio_object_property_listener_proc,
     data: *mut T,
 ) -> OSStatus {
+    debug_assert_running_serially();
     unsafe { AudioObjectAddPropertyListener(id, address, Some(listener), data as *mut c_void) }
 }
 
@@ -108,30 +111,39 @@ pub fn audio_object_remove_property_listener<T>(
     listener: audio_object_property_listener_proc,
     data: *mut T,
 ) -> OSStatus {
+    debug_assert_running_serially();
     unsafe { AudioObjectRemovePropertyListener(id, address, Some(listener), data as *mut c_void) }
 }
 
-#[derive(Debug)]
-pub struct PropertySelector(AudioObjectPropertySelector);
+#[derive(Debug, PartialEq)]
+pub enum PropertySelector {
+    DefaultOutputDevice,
+    DefaultInputDevice,
+    DeviceIsAlive,
+    DataSource,
+    Unknown,
+}
 
-impl PropertySelector {
-    pub fn new(selector: AudioObjectPropertySelector) -> Self {
-        Self(selector)
+impl From<AudioObjectPropertySelector> for PropertySelector {
+    fn from(p: AudioObjectPropertySelector) -> Self {
+        use coreaudio_sys as sys;
+        match p {
+            sys::kAudioHardwarePropertyDefaultOutputDevice => Self::DefaultOutputDevice,
+            sys::kAudioHardwarePropertyDefaultInputDevice => Self::DefaultInputDevice,
+            sys::kAudioDevicePropertyDeviceIsAlive => Self::DeviceIsAlive,
+            sys::kAudioDevicePropertyDataSource => Self::DataSource,
+            _ => Self::Unknown,
+        }
     }
 }
 
 impl fmt::Display for PropertySelector {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use coreaudio_sys as sys;
-        let s = match self.0 {
-            sys::kAudioHardwarePropertyDefaultOutputDevice => {
-                "kAudioHardwarePropertyDefaultOutputDevice"
-            }
-            sys::kAudioHardwarePropertyDefaultInputDevice => {
-                "kAudioHardwarePropertyDefaultInputDevice"
-            }
-            sys::kAudioDevicePropertyDeviceIsAlive => "kAudioDevicePropertyDeviceIsAlive",
-            sys::kAudioDevicePropertyDataSource => "kAudioDevicePropertyDataSource",
+        let s = match self {
+            Self::DefaultOutputDevice => "kAudioHardwarePropertyDefaultOutputDevice",
+            Self::DefaultInputDevice => "kAudioHardwarePropertyDefaultInputDevice",
+            Self::DeviceIsAlive => "kAudioDevicePropertyDeviceIsAlive",
+            Self::DataSource => "kAudioDevicePropertyDataSource",
             _ => "Unknown",
         };
         write!(f, "{}", s)

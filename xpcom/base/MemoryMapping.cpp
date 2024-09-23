@@ -11,6 +11,7 @@
 
 #include <fstream>
 #include <string>
+#include <sstream>
 
 namespace mozilla {
 
@@ -103,15 +104,22 @@ const T* FindEntry(const char* aName, const T (&aEntries)[n]) {
 using Perm = MemoryMapping::Perm;
 using PermSet = MemoryMapping::PermSet;
 
-nsresult GetMemoryMappings(nsTArray<MemoryMapping>& aMappings) {
-  std::ifstream stream("/proc/self/smaps");
+nsresult GetMemoryMappings(nsTArray<MemoryMapping>& aMappings, pid_t aPid) {
+  std::ifstream stream;
+  if (aPid == 0) {
+    stream.open("/proc/self/smaps");
+  } else {
+    std::ostringstream path;
+    path << "/proc/" << aPid << "/smaps" << std::ends;
+    stream.open(path.str());
+  }
   if (stream.fail()) {
     return NS_ERROR_FAILURE;
   }
 
   MemoryMapping* current = nullptr;
-  std::string buffer;
-  while (std::getline(stream, buffer)) {
+  std::string line;
+  while (std::getline(stream, line)) {
     size_t start, end, offset;
     char flags[4] = "---";
     char name[512];
@@ -123,7 +131,7 @@ nsresult GetMemoryMappings(nsTArray<MemoryMapping>& aMappings) {
     //
     // 1487118a7000-148711a5a000 r-xp 00000000 103:03 54004561                  /usr/lib/libc-2.27.so
     // clang-format on
-    if (sscanf(buffer.c_str(), "%zx-%zx %4c %zx %*u:%*u %*u %511s\n", &start,
+    if (sscanf(line.c_str(), "%zx-%zx %4c %zx %*u:%*u %*u %511s\n", &start,
                &end, flags, &offset, name) >= 4) {
       PermSet perms;
       if (flags[0] == 'r') {
@@ -149,9 +157,8 @@ nsresult GetMemoryMappings(nsTArray<MemoryMapping>& aMappings) {
       continue;
     }
 
-    nsAutoCStringN<128> line(buffer.c_str());
     char* savePtr;
-    char* fieldName = strtok_r(line.BeginWriting(), ":", &savePtr);
+    char* fieldName = strtok_r(line.data(), ":", &savePtr);
     if (!fieldName) {
       continue;
     }

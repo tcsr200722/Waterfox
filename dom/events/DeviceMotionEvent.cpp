@@ -7,8 +7,7 @@
 #include "mozilla/dom/DeviceMotionEvent.h"
 #include "nsContentUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /******************************************************************************
  * DeviceMotionEvent
@@ -55,8 +54,6 @@ void DeviceMotionEvent::InitDeviceMotionEvent(
       this, aRotationRate.mAlpha, aRotationRate.mBeta, aRotationRate.mGamma);
   mInterval = aInterval;
   if (!aTimeStamp.IsNull()) {
-    mEvent->mTime = aTimeStamp.Value();
-
     static mozilla::TimeStamp sInitialNow = mozilla::TimeStamp::Now();
     static uint64_t sInitialEventTime = aTimeStamp.Value();
     mEvent->mTimeStamp =
@@ -98,9 +95,6 @@ already_AddRefed<DeviceMotionEvent> DeviceMotionEvent::Constructor(
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(DeviceAcceleration, mOwner)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(DeviceAcceleration, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(DeviceAcceleration, Release)
-
 DeviceAcceleration::DeviceAcceleration(DeviceMotionEvent* aOwner,
                                        const Nullable<double>& aX,
                                        const Nullable<double>& aY,
@@ -115,9 +109,6 @@ DeviceAcceleration::~DeviceAcceleration() = default;
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(DeviceRotationRate, mOwner)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(DeviceRotationRate, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(DeviceRotationRate, Release)
-
 DeviceRotationRate::DeviceRotationRate(DeviceMotionEvent* aOwner,
                                        const Nullable<double>& aAlpha,
                                        const Nullable<double>& aBeta,
@@ -126,8 +117,7 @@ DeviceRotationRate::DeviceRotationRate(DeviceMotionEvent* aOwner,
 
 DeviceRotationRate::~DeviceRotationRate() = default;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

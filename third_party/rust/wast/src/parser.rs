@@ -2,11 +2,10 @@
 //!
 //! This module contains the traits, abstractions, and utilities needed to
 //! define custom parsers for WebAssembly text format items. This module exposes
-//! a recursive descent parsing strategy and centers around the
-//! [`Parse`](crate::parser::Parse) trait for defining new fragments of
-//! WebAssembly text syntax.
+//! a recursive descent parsing strategy and centers around the [`Parse`] trait
+//! for defining new fragments of WebAssembly text syntax.
 //!
-//! The top-level [`parse`](crate::parser::parse) function can be used to fully parse AST fragments:
+//! The top-level [`parse`] function can be used to fully parse AST fragments:
 //!
 //! ```
 //! use wast::Wat;
@@ -20,11 +19,11 @@
 //! # }
 //! ```
 //!
-//! and you can also define your own new syntax with the
-//! [`Parse`](crate::parser::Parse) trait:
+//! and you can also define your own new syntax with the [`Parse`] trait:
 //!
 //! ```
-//! use wast::{kw, Import, Func};
+//! use wast::kw;
+//! use wast::core::{Import, Func};
 //! use wast::parser::{Parser, Parse, Result};
 //!
 //! // Fields of a WebAssembly which only allow imports and functions, and all
@@ -41,7 +40,7 @@
 //!         // parentheses. The `parens` function here ensures that what we
 //!         // parse inside of it is surrounded by `(` and `)`.
 //!         let mut imports = Vec::new();
-//!         while parser.peek2::<kw::import>() {
+//!         while parser.peek2::<kw::import>()? {
 //!             let import = parser.parens(|p| p.parse())?;
 //!             imports.push(import);
 //!         }
@@ -63,14 +62,29 @@
 //! This module is heavily inspired by [`syn`](https://docs.rs/syn) so you can
 //! likely also draw inspiration from the excellent examples in the `syn` crate.
 
-use crate::lexer::{Comment, Float, Integer, Lexer, Source, Token};
-use crate::{Error, Span};
+use crate::lexer::{Float, Integer, Lexer, Token, TokenKind};
+use crate::token::Span;
+use crate::Error;
+use bumpalo::Bump;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::usize;
 
-/// A top-level convenience parseing function that parss a `T` from `buf` and
+/// The maximum recursive depth of parens to parse.
+///
+/// This is sort of a fundamental limitation of the way this crate is
+/// designed. Everything is done through recursive descent parsing which
+/// means, well, that we're recursively going down the stack as we parse
+/// nested data structures. While we can handle this for wasm expressions
+/// since that's a pretty local decision, handling this for nested
+/// modules/components which be far trickier. For now we just say that when
+/// the parser goes too deep we return an error saying there's too many
+/// nested items. It would be great to not return an error here, though!
+pub(crate) const MAX_PARENS_DEPTH: usize = 100;
+
+/// A top-level convenience parsing function that parses a `T` from `buf` and
 /// requires that all tokens in `buf` are consume.
 ///
 /// This generic parsing function can be used to parse any `T` implementing the
@@ -106,7 +120,7 @@ use std::usize;
 pub fn parse<'a, T: Parse<'a>>(buf: &'a ParseBuffer<'a>) -> Result<T> {
     let parser = buf.parser();
     let result = parser.parse()?;
-    if parser.cursor().advance_token().is_none() {
+    if parser.cursor().token()?.is_none() {
         Ok(result)
     } else {
         Err(parser.error("extra tokens remaining after parse"))
@@ -118,7 +132,7 @@ pub fn parse<'a, T: Parse<'a>>(buf: &'a ParseBuffer<'a>) -> Result<T> {
 /// The [`Parse`] trait is main abstraction you'll be working with when defining
 /// custom parser or custom syntax for your WebAssembly text format (or when
 /// using the official format items). Almost all items in the
-/// [`ast`](crate::ast) module implement the [`Parse`] trait, and you'll
+/// [`core`](crate::core) module implement the [`Parse`] trait, and you'll
 /// commonly use this with:
 ///
 /// * The top-level [`parse`] function to parse an entire input.
@@ -139,7 +153,7 @@ pub fn parse<'a, T: Parse<'a>>(buf: &'a ParseBuffer<'a>) -> Result<T> {
 /// (import "foo" "bar" (func (type 0)))
 /// ```
 ///
-/// but the [`Import`](crate::ast::Import) type parser looks like:
+/// but the [`Import`](crate::core::Import) type parser looks like:
 ///
 /// ```
 /// # use wast::kw;
@@ -170,7 +184,8 @@ pub fn parse<'a, T: Parse<'a>>(buf: &'a ParseBuffer<'a>) -> Result<T> {
 /// before all functions. An example [`Parse`] implementation might look like:
 ///
 /// ```
-/// use wast::{Import, Func, kw};
+/// use wast::core::{Import, Func};
+/// use wast::kw;
 /// use wast::parser::{Parser, Parse, Result};
 ///
 /// // Fields of a WebAssembly which only allow imports and functions, and all
@@ -187,7 +202,7 @@ pub fn parse<'a, T: Parse<'a>>(buf: &'a ParseBuffer<'a>) -> Result<T> {
 ///         // parentheses. The `parens` function here ensures that what we
 ///         // parse inside of it is surrounded by `(` and `)`.
 ///         let mut imports = Vec::new();
-///         while parser.peek2::<kw::import>() {
+///         while parser.peek2::<kw::import>()? {
 ///             let import = parser.parens(|p| p.parse())?;
 ///             imports.push(import);
 ///         }
@@ -228,6 +243,15 @@ pub trait Parse<'a>: Sized {
     fn parse(parser: Parser<'a>) -> Result<Self>;
 }
 
+impl<'a, T> Parse<'a> for Box<T>
+where
+    T: Parse<'a>,
+{
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        Ok(Box::new(parser.parse()?))
+    }
+}
+
 /// A trait for types which be used to "peek" to see if they're the next token
 /// in an input stream of [`Parser`].
 ///
@@ -249,7 +273,17 @@ pub trait Peek {
     /// Returns `true` if [`Parse`] for this type is highly likely to succeed
     /// failing no other error conditions happening (like an integer literal
     /// being too big).
-    fn peek(cursor: Cursor<'_>) -> bool;
+    fn peek(cursor: Cursor<'_>) -> Result<bool>;
+
+    /// The same as `peek`, except it checks the token immediately following
+    /// the current token.
+    fn peek2(mut cursor: Cursor<'_>) -> Result<bool> {
+        match cursor.token()? {
+            Some(token) => cursor.advance_past(&token),
+            None => return Ok(false),
+        }
+        Self::peek(cursor)
+    }
 
     /// Returns a human-readable name of this token to display when generating
     /// errors about this token missing.
@@ -258,7 +292,7 @@ pub trait Peek {
 
 /// A convenience type definition for `Result` where the error is hardwired to
 /// [`Error`].
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A low-level buffer of tokens which represents a completely lexed file.
 ///
@@ -266,23 +300,30 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// tokens internally. A `ParseBuffer` only used to pass to the top-level
 /// [`parse`] function.
 pub struct ParseBuffer<'a> {
-    // list of tokens from the tokenized source (including whitespace and
-    // comments), and the second element is how to skip this token, if it can be
-    // skipped.
-    tokens: Box<[(Source<'a>, Cell<NextTokenAt>)]>,
-    input: &'a str,
-    cur: Cell<usize>,
+    lexer: Lexer<'a>,
+    cur: Cell<Position>,
     known_annotations: RefCell<HashMap<String, usize>>,
+    depth: Cell<usize>,
+    strings: Bump,
 }
 
-#[derive(Copy, Clone, Debug)]
-enum NextTokenAt {
-    /// Haven't computed where the next token is yet.
-    Unknown,
-    /// Previously computed the index of the next token.
-    Index(usize),
-    /// There is no next token, this is the last token.
-    Eof,
+/// The current position within a `Lexer` that we're at. This simultaneously
+/// stores the byte position that the lexer was last positioned at as well as
+/// the next significant token.
+///
+/// Note that "significant" here does not mean that `token` is the next token
+/// to be lexed at `offset`. Instead it's the next non-whitespace,
+/// non-annotation, non-coment token. This simple cache-of-sorts avoids
+/// re-parsing tokens the majority of the time, or at least that's the
+/// intention.
+///
+/// If `token` is set to `None` then it means that either it hasn't been
+/// calculated at or the lexer is at EOF. Basically it means go talk to the
+/// lexer.
+#[derive(Copy, Clone)]
+struct Position {
+    offset: usize,
+    token: Option<Token>,
 }
 
 /// An in-progress parser for the tokens of a WebAssembly text file.
@@ -315,7 +356,7 @@ pub struct Lookahead1<'a> {
 #[derive(Copy, Clone)]
 pub struct Cursor<'a> {
     parser: Parser<'a>,
-    cur: usize,
+    pos: Position,
 }
 
 impl ParseBuffer<'_> {
@@ -325,79 +366,102 @@ impl ParseBuffer<'_> {
     ///
     /// Returns an error if `input` fails to lex.
     pub fn new(input: &str) -> Result<ParseBuffer<'_>> {
-        let mut tokens = Vec::new();
-        for token in Lexer::new(input) {
-            tokens.push((token?, Cell::new(NextTokenAt::Unknown)));
-        }
-        let ret = ParseBuffer {
-            tokens: tokens.into_boxed_slice(),
-            cur: Cell::new(0),
-            input,
+        ParseBuffer::new_with_lexer(Lexer::new(input))
+    }
+
+    /// Creates a new [`ParseBuffer`] by lexing the given `input` completely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `input` fails to lex.
+    pub fn new_with_lexer(lexer: Lexer<'_>) -> Result<ParseBuffer<'_>> {
+        Ok(ParseBuffer {
+            lexer,
+            depth: Cell::new(0),
+            cur: Cell::new(Position {
+                offset: 0,
+                token: None,
+            }),
             known_annotations: Default::default(),
-        };
-        ret.validate_annotations()?;
-        Ok(ret)
+            strings: Default::default(),
+        })
     }
 
     fn parser(&self) -> Parser<'_> {
         Parser { buf: self }
     }
 
-    // Validates that all annotations properly parse in that they have balanced
-    // delimiters. This is required since while parsing we generally skip
-    // annotations and there's no real opportunity to return a parse error.
-    fn validate_annotations(&self) -> Result<()> {
-        use crate::lexer::Source::*;
-        use crate::lexer::Token::*;
-        enum State {
-            None,
-            LParen,
-            Annotation { depth: usize, span: Span },
-        }
-        let mut state = State::None;
-        for token in self.tokens.iter() {
-            state = match (&token.0, state) {
-                // From nothing, a `(` starts the search for an annotation
-                (Token(LParen(_)), State::None) => State::LParen,
-                // ... otherwise in nothing we alwyas preserve that state.
-                (_, State::None) => State::None,
-
-                // If the previous state was an `LParen`, we may have an
-                // annotation if the next keyword is reserved
-                (Token(Reserved(s)), State::LParen) if s.starts_with("@") && s.len() > 0 => {
-                    let offset = self.input_pos(s);
-                    State::Annotation {
-                        span: Span { offset },
-                        depth: 1,
-                    }
-                }
-                // ... otherwise anything after an `LParen` kills the lparen
-                // state.
-                (_, State::LParen) => State::None,
-
-                // Once we're in an annotation we need to balance parentheses,
-                // so handle the depth changes.
-                (Token(LParen(_)), State::Annotation { span, depth }) => State::Annotation {
-                    span,
-                    depth: depth + 1,
-                },
-                (Token(RParen(_)), State::Annotation { depth: 1, .. }) => State::None,
-                (Token(RParen(_)), State::Annotation { span, depth }) => State::Annotation {
-                    span,
-                    depth: depth - 1,
-                },
-                // ... and otherwise all tokens are allowed in annotations.
-                (_, s @ State::Annotation { .. }) => s,
-            };
-        }
-        if let State::Annotation { span, .. } = state {
-            return Err(Error::new(span, format!("unclosed annotation")));
-        }
-        Ok(())
+    /// Stores an owned allocation in this `Parser` to attach the lifetime of
+    /// the vector to `self`.
+    ///
+    /// This will return a reference to `s`, but one that's safely rooted in the
+    /// `Parser`.
+    fn push_str(&self, s: Vec<u8>) -> &[u8] {
+        self.strings.alloc_slice_copy(&s)
     }
 
-    fn input_pos(&self, src: &str) -> usize {
-        src.as_ptr() as usize - self.input.as_ptr() as usize
+    /// Lexes the next "significant" token from the `pos` specified.
+    ///
+    /// This will skip irrelevant tokens such as whitespace, comments, and
+    /// unknown annotations.
+    fn advance_token(&self, mut pos: usize) -> Result<Option<Token>> {
+        let token = loop {
+            let token = match self.lexer.parse(&mut pos)? {
+                Some(token) => token,
+                None => return Ok(None),
+            };
+            match token.kind {
+                // Always skip whitespace and comments.
+                TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment => {
+                    continue
+                }
+
+                // If an lparen is seen then this may be skipped if it's an
+                // annotation of the form `(@foo ...)`. In this situation
+                // everything up to and including the closing rparen is skipped.
+                //
+                // Note that the annotation is only skipped if it's an unknown
+                // annotation as known annotations are specifically registered
+                // as "someone's gonna parse this".
+                TokenKind::LParen => {
+                    if let Some(annotation) = self.lexer.annotation(pos) {
+                        match self.known_annotations.borrow().get(annotation) {
+                            Some(0) | None => {
+                                self.skip_annotation(&mut pos)?;
+                                continue;
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                    break token;
+                }
+                _ => break token,
+            }
+        };
+        Ok(Some(token))
+    }
+
+    fn skip_annotation(&self, pos: &mut usize) -> Result<()> {
+        let mut depth = 1;
+        let span = Span { offset: *pos };
+        loop {
+            let token = match self.lexer.parse(pos)? {
+                Some(token) => token,
+                None => {
+                    break Err(Error::new(span, "unclosed annotation".to_string()));
+                }
+            };
+            match token.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -412,20 +476,21 @@ impl<'a> Parser<'a> {
     /// Note that if `false` is returned there *may* be more comments. Comments
     /// and whitespace are not considered for whether this parser is empty.
     pub fn is_empty(self) -> bool {
-        match self.cursor().advance_token() {
-            Some(Token::RParen(_)) | None => true,
-            Some(_) => false, // more tokens to parse!
+        match self.cursor().token() {
+            Ok(Some(token)) => matches!(token.kind, TokenKind::RParen),
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 
     pub(crate) fn has_meaningful_tokens(self) -> bool {
-        self.buf.tokens[self.cursor().cur..]
-            .iter()
-            .any(|(t, _)| match t {
-                Source::Token(_) => true,
-                Source::Comment(_) => false,
-                Source::Whitespace(_) => false,
-            })
+        self.buf.lexer.iter(0).any(|t| match t {
+            Ok(token) => !matches!(
+                token.kind,
+                TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment
+            ),
+            Err(_) => true,
+        })
     }
 
     /// Parses a `T` from this [`Parser`].
@@ -448,21 +513,21 @@ impl<'a> Parser<'a> {
     /// [spec]: https://webassembly.github.io/spec/core/text/types.html#table-types
     ///
     /// ```text
-    /// tabletype ::= lim:limits et:elemtype
+    /// tabletype ::= lim:limits et:reftype
     /// ```
     ///
     /// so to parse a [`TableType`] we recursively need to parse a [`Limits`]
-    /// and a [`TableElemType`]
+    /// and a [`RefType`]
     ///
     /// ```
-    /// # use wast::*;
+    /// # use wast::core::*;
     /// # use wast::parser::*;
-    /// struct TableType {
+    /// struct TableType<'a> {
     ///     limits: Limits,
-    ///     elem: TableElemType,
+    ///     elem: RefType<'a>,
     /// }
     ///
-    /// impl<'a> Parse<'a> for TableType {
+    /// impl<'a> Parse<'a> for TableType<'a> {
     ///     fn parse(parser: Parser<'a>) -> Result<Self> {
     ///         // parse the `lim` then `et` in sequence
     ///         Ok(TableType {
@@ -473,9 +538,9 @@ impl<'a> Parser<'a> {
     /// }
     /// ```
     ///
-    /// [`Limits`]: crate::ast::Limits
-    /// [`TableType`]: crate::ast::TableType
-    /// [`TableElemType`]: crate::ast::TableElemType
+    /// [`Limits`]: crate::core::Limits
+    /// [`TableType`]: crate::core::TableType
+    /// [`RefType`]: crate::core::RefType
     pub fn parse<T: Parse<'a>>(self) -> Result<T> {
         T::parse(self)
     }
@@ -520,7 +585,7 @@ impl<'a> Parser<'a> {
     ///         let min = parser.parse()?;
     ///
     ///         // ... and then test if there's a second number before parsing
-    ///         let max = if parser.peek::<u32>() {
+    ///         let max = if parser.peek::<u32>()? {
     ///             Some(parser.parse()?)
     ///         } else {
     ///             None
@@ -532,20 +597,30 @@ impl<'a> Parser<'a> {
     /// ```
     ///
     /// [spec]: https://webassembly.github.io/spec/core/text/types.html#limits
-    /// [`Limits`]: crate::ast::Limits
-    pub fn peek<T: Peek>(self) -> bool {
+    /// [`Limits`]: crate::core::Limits
+    pub fn peek<T: Peek>(self) -> Result<bool> {
         T::peek(self.cursor())
     }
 
     /// Same as the [`Parser::peek`] method, except checks the next token, not
     /// the current token.
-    pub fn peek2<T: Peek>(self) -> bool {
+    pub fn peek2<T: Peek>(self) -> Result<bool> {
+        T::peek2(self.cursor())
+    }
+
+    /// Same as the [`Parser::peek2`] method, except checks the next next token,
+    /// not the next token.
+    pub fn peek3<T: Peek>(self) -> Result<bool> {
         let mut cursor = self.cursor();
-        if cursor.advance_token().is_some() {
-            T::peek(cursor)
-        } else {
-            false
+        match cursor.token()? {
+            Some(token) => cursor.advance_past(&token),
+            None => return Ok(false),
         }
+        match cursor.token()? {
+            Some(token) => cursor.advance_past(&token),
+            None => return Ok(false),
+        }
+        T::peek(cursor)
     }
 
     /// A helper structure to perform a sequence of `peek` operations and if
@@ -572,7 +647,7 @@ impl<'a> Parser<'a> {
     /// parsing an [`Index`] we can do:
     ///
     /// ```
-    /// # use wast::*;
+    /// # use wast::token::*;
     /// # use wast::parser::*;
     /// enum Index<'a> {
     ///     Num(u32),
@@ -582,9 +657,9 @@ impl<'a> Parser<'a> {
     /// impl<'a> Parse<'a> for Index<'a> {
     ///     fn parse(parser: Parser<'a>) -> Result<Self> {
     ///         let mut l = parser.lookahead1();
-    ///         if l.peek::<Id>() {
+    ///         if l.peek::<Id>()? {
     ///             Ok(Index::Id(parser.parse()?))
-    ///         } else if l.peek::<u32>() {
+    ///         } else if l.peek::<u32>()? {
     ///             Ok(Index::Num(parser.parse()?))
     ///         } else {
     ///             // produces error message of `expected identifier or u32`
@@ -595,8 +670,8 @@ impl<'a> Parser<'a> {
     /// ```
     ///
     /// [spec]: https://webassembly.github.io/spec/core/text/modules.html#indices
-    /// [`Index`]: crate::ast::Index
-    /// [`Id`]: crate::ast::Id
+    /// [`Index`]: crate::token::Index
+    /// [`Id`]: crate::token::Id
     pub fn lookahead1(self) -> Lookahead1<'a> {
         Lookahead1 {
             attempts: Vec::new(),
@@ -626,7 +701,8 @@ impl<'a> Parser<'a> {
     /// the exact definition, but it's close enough!
     ///
     /// ```
-    /// # use wast::*;
+    /// # use wast::kw;
+    /// # use wast::core::*;
     /// # use wast::parser::*;
     /// struct Module<'a> {
     ///     fields: Vec<ModuleField<'a>>,
@@ -648,37 +724,60 @@ impl<'a> Parser<'a> {
     /// }
     /// ```
     pub fn parens<T>(self, f: impl FnOnce(Parser<'a>) -> Result<T>) -> Result<T> {
+        self.buf.depth.set(self.buf.depth.get() + 1);
         let before = self.buf.cur.get();
         let res = self.step(|cursor| {
-            let mut cursor = match cursor.lparen() {
+            let mut cursor = match cursor.lparen()? {
                 Some(rest) => rest,
                 None => return Err(cursor.error("expected `(`")),
             };
-            cursor.parser.buf.cur.set(cursor.cur);
+            cursor.parser.buf.cur.set(cursor.pos);
             let result = f(cursor.parser)?;
-            cursor.cur = cursor.parser.buf.cur.get();
-            match cursor.rparen() {
+
+            // Reset our cursor's state to whatever the current state of the
+            // parser is.
+            cursor.pos = cursor.parser.buf.cur.get();
+
+            match cursor.rparen()? {
                 Some(rest) => Ok((result, rest)),
                 None => Err(cursor.error("expected `)`")),
             }
         });
+        self.buf.depth.set(self.buf.depth.get() - 1);
         if res.is_err() {
             self.buf.cur.set(before);
         }
-        return res;
+        res
+    }
+
+    /// Return the depth of nested parens we've parsed so far.
+    ///
+    /// This is a low-level method that is only useful for implementing
+    /// recursion limits in custom parsers.
+    pub fn parens_depth(&self) -> usize {
+        self.buf.depth.get()
+    }
+
+    /// Checks that the parser parens depth hasn't exceeded the maximum depth.
+    pub(crate) fn depth_check(&self) -> Result<()> {
+        if self.parens_depth() > MAX_PARENS_DEPTH {
+            Err(self.error("item nesting too deep"))
+        } else {
+            Ok(())
+        }
     }
 
     fn cursor(self) -> Cursor<'a> {
         Cursor {
             parser: self,
-            cur: self.buf.cur.get(),
+            pos: self.buf.cur.get(),
         }
     }
 
     /// A low-level parsing method you probably won't use.
     ///
     /// This is used to implement parsing of the most primitive types in the
-    /// [`ast`](crate::ast) module. You probably don't want to use this, but
+    /// [`core`](crate::core) module. You probably don't want to use this, but
     /// probably want to use something like [`Parser::parse`] or
     /// [`Parser::parens`].
     pub fn step<F, T>(self, f: F) -> Result<T>
@@ -686,7 +785,7 @@ impl<'a> Parser<'a> {
         F: FnOnce(Cursor<'a>) -> Result<(T, Cursor<'a>)>,
     {
         let (result, cursor) = f(self.cursor())?;
-        self.buf.cur.set(cursor.cur);
+        self.buf.cur.set(cursor.pos);
         Ok(result)
     }
 
@@ -697,16 +796,25 @@ impl<'a> Parser<'a> {
     /// right location in the input stream, and the `msg` here is arbitrary text
     /// used to associate with the error and indicate why it was generated.
     pub fn error(self, msg: impl fmt::Display) -> Error {
-        self.error_at(self.cursor().cur_span(), &msg)
+        self.error_at(self.cursor().cur_span(), msg)
     }
 
-    fn error_at(self, span: Span, msg: &dyn fmt::Display) -> Error {
-        Error::parse(span, self.buf.input, msg.to_string())
+    /// Creates an error whose line/column information is pointing at the
+    /// given span.
+    pub fn error_at(self, span: Span, msg: impl fmt::Display) -> Error {
+        Error::parse(span, self.buf.lexer.input(), msg.to_string())
     }
 
     /// Returns the span of the current token
     pub fn cur_span(&self) -> Span {
         self.cursor().cur_span()
+    }
+
+    /// Returns the span of the previous token
+    pub fn prev_span(&self) -> Span {
+        self.cursor()
+            .prev_span()
+            .unwrap_or_else(|| Span::from_offset(0))
     }
 
     /// Registers a new known annotation with this parser to allow parsing
@@ -758,7 +866,8 @@ impl<'a> Parser<'a> {
     /// to get an idea of how this works:
     ///
     /// ```
-    /// # use wast::*;
+    /// # use wast::kw;
+    /// # use wast::token::NameAnnotation;
     /// # use wast::parser::*;
     /// struct Module<'a> {
     ///     name: Option<NameAnnotation<'a>>,
@@ -789,7 +898,8 @@ impl<'a> Parser<'a> {
     /// registered *before* we parse the parentheses of the annotation.
     ///
     /// ```
-    /// # use wast::*;
+    /// # use wast::{kw, annotation};
+    /// # use wast::core::Custom;
     /// # use wast::parser::*;
     /// struct Module<'a> {
     ///     fields: Vec<ModuleField<'a>>,
@@ -825,7 +935,7 @@ impl<'a> Parser<'a> {
     ///         // annotation with the parser we known that `peek` methods like
     ///         // this, working on the annotation token, are enabled to ever
     ///         // return `true`.
-    ///         if parser.peek::<annotation::custom>() {
+    ///         if parser.peek::<annotation::custom>()? {
     ///             return Ok(ModuleField::Custom(parser.parse()?));
     ///         }
     ///
@@ -866,17 +976,120 @@ impl<'a> Cursor<'a> {
     ///
     /// Does not take into account whitespace or comments.
     pub fn cur_span(&self) -> Span {
-        let offset = match self.clone().advance_token() {
-            Some(t) => self.parser.buf.input_pos(t.src()),
-            None => self.parser.buf.input.len(),
+        let offset = match self.token() {
+            Ok(Some(t)) => t.offset,
+            Ok(None) => self.parser.buf.lexer.input().len(),
+            Err(_) => self.pos.offset,
         };
         Span { offset }
+    }
+
+    /// Returns the span of the previous `Token` token.
+    ///
+    /// Does not take into account whitespace or comments.
+    pub(crate) fn prev_span(&self) -> Option<Span> {
+        // TODO
+        Some(Span {
+            offset: self.pos.offset,
+        })
+        // let (token, _) = self.parser.buf.tokens.get(self.cur.checked_sub(1)?)?;
+        // Some(Span {
+        //     offset: token.offset,
+        // })
     }
 
     /// Same as [`Parser::error`], but works with the current token in this
     /// [`Cursor`] instead.
     pub fn error(&self, msg: impl fmt::Display) -> Error {
-        self.parser.error_at(self.cur_span(), &msg)
+        self.parser.error_at(self.cur_span(), msg)
+    }
+
+    /// Tests whether the next token is an lparen
+    pub fn peek_lparen(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::LParen,
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is an rparen
+    pub fn peek_rparen(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::RParen,
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is an id
+    pub fn peek_id(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::Id,
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is reserved
+    pub fn peek_reserved(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::Reserved,
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is a keyword
+    pub fn peek_keyword(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::Keyword,
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is an integer
+    pub fn peek_integer(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::Integer(_),
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is a float
+    pub fn peek_float(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::Float(_),
+                ..
+            })
+        ))
+    }
+
+    /// Tests whether the next token is a string
+    pub fn peek_string(self) -> Result<bool> {
+        Ok(matches!(
+            self.token()?,
+            Some(Token {
+                kind: TokenKind::String,
+                ..
+            })
+        ))
     }
 
     /// Attempts to advance this cursor if the current token is a `(`.
@@ -886,11 +1099,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn lparen(mut self) -> Option<Self> {
-        match self.advance_token()? {
-            Token::LParen(_) => Some(self),
-            _ => None,
+    pub fn lparen(mut self) -> Result<Option<Self>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::LParen => {}
+            _ => return Ok(None),
         }
+        self.advance_past(&token);
+        Ok(Some(self))
     }
 
     /// Attempts to advance this cursor if the current token is a `)`.
@@ -900,11 +1119,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn rparen(mut self) -> Option<Self> {
-        match self.advance_token()? {
-            Token::RParen(_) => Some(self),
-            _ => None,
+    pub fn rparen(mut self) -> Result<Option<Self>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::RParen => {}
+            _ => return Ok(None),
         }
+        self.advance_past(&token);
+        Ok(Some(self))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -916,11 +1141,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn id(mut self) -> Option<(&'a str, Self)> {
-        match self.advance_token()? {
-            Token::Id(id) => Some((&id[1..], self)),
-            _ => None,
+    pub fn id(mut self) -> Result<Option<(&'a str, Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::Id => {}
+            _ => return Ok(None),
         }
+        self.advance_past(&token);
+        Ok(Some((token.id(self.parser.buf.lexer.input()), self)))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -932,11 +1163,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn keyword(mut self) -> Option<(&'a str, Self)> {
-        match self.advance_token()? {
-            Token::Keyword(id) => Some((id, self)),
-            _ => None,
+    pub fn keyword(mut self) -> Result<Option<(&'a str, Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::Keyword => {}
+            _ => return Ok(None),
         }
+        self.advance_past(&token);
+        Ok(Some((token.keyword(self.parser.buf.lexer.input()), self)))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -948,11 +1185,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn reserved(mut self) -> Option<(&'a str, Self)> {
-        match self.advance_token()? {
-            Token::Reserved(id) => Some((id, self)),
-            _ => None,
+    pub fn reserved(mut self) -> Result<Option<(&'a str, Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::Reserved => {}
+            _ => return Ok(None),
         }
+        self.advance_past(&token);
+        Ok(Some((token.reserved(self.parser.buf.lexer.input()), self)))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -964,11 +1207,20 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn integer(mut self) -> Option<(&'a Integer<'a>, Self)> {
-        match self.advance_token()? {
-            Token::Integer(i) => Some((i, self)),
-            _ => None,
-        }
+    pub fn integer(mut self) -> Result<Option<(Integer<'a>, Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        let i = match token.kind {
+            TokenKind::Integer(i) => i,
+            _ => return Ok(None),
+        };
+        self.advance_past(&token);
+        Ok(Some((
+            token.integer(self.parser.buf.lexer.input(), i),
+            self,
+        )))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -980,11 +1232,17 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn float(mut self) -> Option<(&'a Float<'a>, Self)> {
-        match self.advance_token()? {
-            Token::Float(f) => Some((f, self)),
-            _ => None,
-        }
+    pub fn float(mut self) -> Result<Option<(Float<'a>, Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        let f = match token.kind {
+            TokenKind::Float(f) => f,
+            _ => return Ok(None),
+        };
+        self.advance_past(&token);
+        Ok(Some((token.float(self.parser.buf.lexer.input(), f), self)))
     }
 
     /// Attempts to advance this cursor if the current token is a
@@ -996,172 +1254,64 @@ impl<'a> Cursor<'a> {
     ///
     /// This function will automatically skip over any comments, whitespace, or
     /// unknown annotations.
-    pub fn string(mut self) -> Option<(&'a [u8], Self)> {
-        match self.advance_token()? {
-            Token::String { val, .. } => Some((&**val, self)),
-            _ => None,
+    pub fn string(mut self) -> Result<Option<(&'a [u8], Self)>> {
+        let token = match self.token()? {
+            Some(token) => token,
+            None => return Ok(None),
+        };
+        match token.kind {
+            TokenKind::String => {}
+            _ => return Ok(None),
         }
+        let string = match token.string(self.parser.buf.lexer.input()) {
+            Cow::Borrowed(s) => s,
+            Cow::Owned(s) => self.parser.buf.push_str(s),
+        };
+        self.advance_past(&token);
+        Ok(Some((string, self)))
     }
 
     /// Attempts to advance this cursor if the current token is a
-    /// [`Token::Reserved`](crate::lexer::Token) and looks like the start of an
-    /// annotation.
-    ///
-    /// [Annotations][annotation] are a WebAssembly proposal for the text format
-    /// which allows placing structured text inside of a text file, for example
-    /// to specify the name section or other custom sections.
-    ///
-    /// This function will attempt to see if the current token is the `@foo`
-    /// part of the annotation. This requires the previous token to be `(` and
-    /// the current token is `Reserved` which starts with `@` and has a nonzero
-    /// length for the following name.
-    ///
-    /// Note that this will skip *unknown* annoations. Only pre-registered
-    /// annotations will be returned here.
-    ///
-    /// This function will automatically skip over any comments, whitespace, or
-    /// unknown annotations.
-    ///
-    /// [annotation]: https://github.com/WebAssembly/annotations
-    pub fn annotation(self) -> Option<(&'a str, Self)> {
-        let (token, cursor) = self.reserved()?;
-        if !token.starts_with("@") || token.len() <= 1 {
-            return None;
-        }
-        match &self.parser.buf.tokens.get(self.cur.wrapping_sub(1))?.0 {
-            Source::Token(Token::LParen(_)) => Some((&token[1..], cursor)),
-            _ => None,
-        }
-    }
-
-    /// Attempts to advance this cursor if the current token is a
-    /// [`Source::Comment`](crate::lexer::Comment)
+    /// [`Token::LineComment`](crate::lexer::Token) or a
+    /// [`Token::BlockComment`](crate::lexer::Token)
     ///
     /// This function will only skip whitespace, no other tokens.
-    pub fn comment(mut self) -> Option<(&'a Comment<'a>, Self)> {
+    pub fn comment(mut self) -> Result<Option<(&'a str, Self)>> {
+        let start = self.pos.offset;
+        self.pos.token = None;
         let comment = loop {
-            match &self.parser.buf.tokens.get(self.cur)?.0 {
-                Source::Token(_) => return None,
-                Source::Comment(c) => {
-                    self.cur += 1;
-                    break c;
+            let token = match self.parser.buf.lexer.parse(&mut self.pos.offset)? {
+                Some(token) => token,
+                None => return Ok(None),
+            };
+            match token.kind {
+                TokenKind::LineComment | TokenKind::BlockComment => {
+                    break token.src(self.parser.buf.lexer.input());
                 }
-                Source::Whitespace(_) => {
-                    self.cur += 1;
+                TokenKind::Whitespace => {}
+                _ => {
+                    self.pos.offset = start;
+                    return Ok(None);
                 }
             }
         };
-        Some((comment, self))
+        Ok(Some((comment, self)))
     }
 
-    fn advance_token(&mut self) -> Option<&'a Token<'a>> {
-        let known_annotations = self.parser.buf.known_annotations.borrow();
-        let is_known_annotation = |name: &str| match known_annotations.get(name) {
-            Some(0) | None => false,
-            Some(_) => true,
-        };
-
-        loop {
-            let (token, next) = self.parser.buf.tokens.get(self.cur)?;
-
-            // If we're currently pointing at a token, and it's not the start
-            // of an annotation, then we return that token and advance
-            // ourselves to just after that token.
-            if let Source::Token(t) = token {
-                match self.annotation_start() {
-                    Some(n) if !is_known_annotation(n) => {}
-                    _ => {
-                        self.cur += 1;
-                        return Some(t);
-                    }
-                }
-            }
-
-            // ... otherwise we need to skip the current token, and possibly
-            // more. Here we're skipping whitespace, comments, annotations, etc.
-            // Basically stuff that's intended to not be that relevant to the
-            // text format. This is a pretty common operation, though, and we
-            // may do it multiple times through peeks and such. As a result
-            // this is somewhat cached.
-            //
-            // The `next` field, if "unknown", means we haven't calculated the
-            // next token. Otherwise it's an index of where to resume searching
-            // for the next token.
-            //
-            // Note that this entire operation happens in a loop (hence the
-            // "somewhat cached") because the set of known annotations is
-            // dynamic and we can't cache which annotations are skipped. What we
-            // can do though is cache the number of tokens in the annotation so
-            // we know how to skip ahead of it.
-            match next.get() {
-                NextTokenAt::Unknown => match self.find_next() {
-                    Some(i) => {
-                        next.set(NextTokenAt::Index(i));
-                        self.cur = i;
-                    }
-                    None => {
-                        next.set(NextTokenAt::Eof);
-                        return None;
-                    }
-                },
-                NextTokenAt::Eof => return None,
-                NextTokenAt::Index(i) => self.cur = i,
-            }
+    fn token(&self) -> Result<Option<Token>> {
+        match self.pos.token {
+            Some(token) => Ok(Some(token)),
+            None => self.parser.buf.advance_token(self.pos.offset),
         }
     }
 
-    fn annotation_start(&self) -> Option<&'a str> {
-        match self.parser.buf.tokens.get(self.cur).map(|p| &p.0) {
-            Some(Source::Token(Token::LParen(_))) => {}
-            _ => return None,
-        }
-        let reserved = match self.parser.buf.tokens.get(self.cur + 1).map(|p| &p.0) {
-            Some(Source::Token(Token::Reserved(n))) => n,
-            _ => return None,
-        };
-        if reserved.starts_with("@") && reserved.len() > 1 {
-            Some(&reserved[1..])
-        } else {
-            None
-        }
-    }
-
-    /// Finds the next "real" token from the current position onwards.
-    ///
-    /// This is a somewhat expensive operation to call quite a lot, so it's
-    /// cached in the token list. See the comment above in `advance_token` for
-    /// how this works.
-    ///
-    /// Returns the index of the next relevant token to parse
-    fn find_next(mut self) -> Option<usize> {
-        // If we're pointing to the start of annotation we need to skip it
-        // in its entirety, so match the parentheses and figure out where
-        // the annotation ends.
-        if self.annotation_start().is_some() {
-            let mut depth = 1;
-            self.cur += 1;
-            while depth > 0 {
-                match &self.parser.buf.tokens.get(self.cur)?.0 {
-                    Source::Token(Token::LParen(_)) => depth += 1,
-                    Source::Token(Token::RParen(_)) => depth -= 1,
-                    _ => {}
-                }
-                self.cur += 1;
-            }
-            return Some(self.cur);
-        }
-
-        // ... otherwise we're pointing at whitespace/comments, so we need to
-        // figure out how many of them we can skip.
-        loop {
-            let (token, _) = self.parser.buf.tokens.get(self.cur)?;
-            // and otherwise we skip all comments/whitespace and otherwise
-            // get real intersted once a normal `Token` pops up.
-            match token {
-                Source::Token(_) => return Some(self.cur),
-                _ => self.cur += 1,
-            }
-        }
+    fn advance_past(&mut self, token: &Token) {
+        self.pos.offset = token.offset + (token.len as usize);
+        self.pos.token = self
+            .parser
+            .buf
+            .advance_token(self.pos.offset)
+            .unwrap_or(None);
     }
 }
 
@@ -1170,13 +1320,13 @@ impl Lookahead1<'_> {
     /// [`Lookahead1`] references.
     ///
     /// For more information see [`Parser::lookahead1`] and [`Parser::peek`]
-    pub fn peek<T: Peek>(&mut self) -> bool {
-        if self.parser.peek::<T>() {
+    pub fn peek<T: Peek>(&mut self) -> Result<bool> {
+        Ok(if self.parser.peek::<T>()? {
             true
         } else {
             self.attempts.push(T::display());
             false
-        }
+        })
     }
 
     /// Generates an error message saying that one of the tokens passed to
@@ -1215,7 +1365,7 @@ impl Lookahead1<'_> {
 
 impl<'a, T: Peek + Parse<'a>> Parse<'a> for Option<T> {
     fn parse(parser: Parser<'a>) -> Result<Option<T>> {
-        if parser.peek::<T>() {
+        if parser.peek::<T>()? {
             Ok(Some(parser.parse()?))
         } else {
             Ok(None)

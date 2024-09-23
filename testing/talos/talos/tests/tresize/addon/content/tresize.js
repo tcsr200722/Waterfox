@@ -7,8 +7,8 @@
  */
 
 async function runTest(callback, locationSearch) {
-  const INCREMENT = 2;
-  const MAX = 300;
+  const INCREMENT = 3;
+  const MAX = 200;
 
   // Measure the time it take for the provided action to trigger a
   // MozAfterPaint event.  This function ensures that the event being
@@ -23,7 +23,7 @@ async function runTest(callback, locationSearch) {
         }
 
         if (marker) {
-          Profiler.pause(marker);
+          Profiler.subtestEnd(marker);
         }
         window.removeEventListener("MozAfterPaint", painted, true);
         let time = event.paintTimeStamp - startTime;
@@ -31,7 +31,7 @@ async function runTest(callback, locationSearch) {
       }
       window.addEventListener("MozAfterPaint", painted, true);
       if (marker) {
-        Profiler.resume(marker);
+        Profiler.subtestStart(marker);
       }
       startTime = window.performance.now();
       action();

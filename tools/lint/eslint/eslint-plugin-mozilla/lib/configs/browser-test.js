@@ -18,11 +18,13 @@ module.exports = {
     ContentTask: false,
     ContentTaskUtils: false,
     EventUtils: false,
+    IOUtils: false,
+    PathUtils: false,
     PromiseDebugging: false,
     SpecialPowers: false,
     TestUtils: false,
-    XPCNativeWrapper: false,
     addLoadEvent: false,
+    add_setup: false,
     add_task: false,
     content: false,
     executeSoon: false,
@@ -45,6 +47,8 @@ module.exports = {
     registerCleanupFunction: false,
     requestLongerTimeout: false,
     setExpectedFailuresForSelfTest: false,
+    stringContains: false,
+    stringMatches: false,
     todo: false,
     todo_is: false,
     todo_isnot: false,
@@ -53,12 +57,35 @@ module.exports = {
     waitForFocus: false,
   },
 
-  plugins: ["mozilla"],
+  overrides: [
+    {
+      // Some directories have multiple kinds of tests, and some rules
+      // don't work well for plain mochitests, so disable those.
+      files: ["*.html", "*.xhtml"],
+      // plain/chrome mochitests don't automatically include Assert, so
+      // autofixing `ok()` to Assert.something is bad.
+      rules: {
+        "mozilla/no-comparison-or-assignment-inside-ok": "off",
+      },
+    },
+  ],
+
+  plugins: ["mozilla", "@microsoft/sdl"],
 
   rules: {
     "mozilla/import-content-task-globals": "error",
     "mozilla/import-headjs-globals": "error",
     "mozilla/mark-test-function-used": "error",
+    "mozilla/no-addtask-setup": "error",
     "mozilla/no-arbitrary-setTimeout": "error",
+    "mozilla/no-comparison-or-assignment-inside-ok": "error",
+    "mozilla/no-redeclare-with-import-autofix": [
+      "error",
+      { errorForNonImports: false },
+    ],
+    // Turn off no-unsanitized for tests, as we do want to be able to use
+    // these for testing.
+    "no-unsanitized/method": "off",
+    "no-unsanitized/property": "off",
   },
 };

@@ -4,20 +4,18 @@
 
 const baseURL = getRootDirectory(gTestPath).replace(
   "chrome://mochitests/content",
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.com"
 );
 
-add_task(async function test_opening_blocked_popups() {
+async function test_opening_blocked_popups(testURL) {
   // Enable the popup blocker.
   await SpecialPowers.pushPrefEnv({
     set: [["dom.disable_open_during_load", true]],
   });
 
   // Open the test page.
-  let tab = await BrowserTestUtils.openNewForegroundTab(
-    gBrowser,
-    "data:text/html,Hello"
-  );
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, testURL);
 
   let popupframeBC = await SpecialPowers.spawn(
     tab.linkedBrowser,
@@ -48,7 +46,7 @@ add_task(async function test_opening_blocked_popups() {
     "pagehide",
     true
   );
-  await SpecialPowers.spawn(tab.linkedBrowser, [baseURL], async function(uri) {
+  await SpecialPowers.spawn(tab.linkedBrowser, [baseURL], async function (uri) {
     let iframe = content.document.createElement("iframe");
     content.document.body.appendChild(iframe);
     iframe.src = uri;
@@ -66,7 +64,7 @@ add_task(async function test_opening_blocked_popups() {
     true
   );
   // Now navigate the subframe.
-  await SpecialPowers.spawn(popupframeBC, [], async function() {
+  await SpecialPowers.spawn(popupframeBC, [], async function () {
     content.document.location.href = "about:blank";
   });
   await pageHideHappened;
@@ -117,4 +115,14 @@ add_task(async function test_opening_blocked_popups() {
   );
 
   BrowserTestUtils.removeTab(tab);
+}
+
+add_task(async function () {
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  await test_opening_blocked_popups("http://example.com/");
+});
+
+add_task(async function () {
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  await test_opening_blocked_popups("http://w3c-test.org/");
 });

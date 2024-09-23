@@ -7,13 +7,15 @@
 #ifndef NSWINDOW_H_
 #define NSWINDOW_H_
 
+#include "AndroidGraphics.h"
 #include "nsBaseWidget.h"
 #include "gfxPoint.h"
-#include "nsIIdleServiceInternal.h"
+#include "nsIUserIdleServiceInternal.h"
 #include "nsTArray.h"
 #include "EventDispatcher.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/java/GeckoBundleWrappers.h"
+#include "mozilla/java/GeckoSessionNatives.h"
+#include "mozilla/java/WebResponseWrappers.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticPtr.h"
@@ -33,7 +35,12 @@ class UiCompositorControllerChild;
 }  // namespace layers
 
 namespace widget {
+class AndroidView;
 class GeckoEditableSupport;
+class GeckoViewSupport;
+class LayerViewSupport;
+class NPZCSupport;
+class PlatformCompositorWidgetDelegate;
 }  // namespace widget
 
 namespace ipc {
@@ -42,7 +49,7 @@ class Shmem;
 
 namespace a11y {
 class SessionAccessibility;
-}
+}  // namespace a11y
 }  // namespace mozilla
 
 class nsWindow final : public nsBaseWidget {
@@ -50,14 +57,13 @@ class nsWindow final : public nsBaseWidget {
   virtual ~nsWindow();
 
  public:
-  using nsBaseWidget::GetLayerManager;
+  using nsBaseWidget::GetWindowRenderer;
 
   nsWindow();
 
   NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, nsBaseWidget)
 
   static void InitNatives();
-  void SetScreenId(uint32_t aScreenId) { mScreenId = aScreenId; }
   void OnGeckoViewReady();
   RefPtr<mozilla::MozPromise<bool, bool, false>> OnLoadRequest(
       nsIURI* aUri, int32_t aWindowType, int32_t aFlags,
@@ -65,139 +71,37 @@ class nsWindow final : public nsBaseWidget {
       bool aIsTopLevel);
 
  private:
-  uint32_t mScreenId;
-
-  // An Event subclass that guards against stale events.
-  template <typename Lambda, bool IsStatic = Lambda::isStatic,
-            typename InstanceType = typename Lambda::ThisArgType,
-            class Impl = typename Lambda::TargetClass>
-  class WindowEvent;
-
- public:
-  // Smart pointer for holding a pointer back to the nsWindow inside a native
-  // object class. The nsWindow pointer is automatically cleared when the
-  // nsWindow is destroyed, and a WindowPtr<Impl>::Locked class is provided
-  // for thread-safe access to the nsWindow pointer off of the Gecko thread.
-  template <class Impl>
-  class WindowPtr;
-
-  // Smart pointer for holding a pointer to a native object class. The
-  // pointer is automatically cleared when the object is destroyed.
-  template <class Impl>
-  class NativePtr final {
-    friend WindowPtr<Impl>;
-    friend nsWindow;
-
-    static const char sName[];
-
-    WindowPtr<Impl>* mPtr;
-    Impl* mImpl;
-    mozilla::Mutex mImplLock;
-
-    NativePtr() : mPtr(nullptr), mImpl(nullptr), mImplLock(sName) {}
-    ~NativePtr() { MOZ_ASSERT(!mPtr); }
-
-   public:
-    class Locked;
-
-    operator Impl*() const {
-      MOZ_ASSERT(NS_IsMainThread());
-      return mImpl;
-    }
-
-    Impl* operator->() const { return operator Impl*(); }
-
-    template <class Cls, typename... Args>
-    void Attach(const mozilla::jni::LocalRef<Cls>& aInstance, nsWindow* aWindow,
-                Args&&... aArgs);
-    template <class Cls, typename T>
-    void Detach(const mozilla::jni::Ref<Cls, T>& aInstance);
-  };
-
-  template <class Impl>
-  class WindowPtr final {
-    friend NativePtr<Impl>;
-
-    NativePtr<Impl>* mPtr;
-    nsWindow* mWindow;
-    mozilla::Mutex mWindowLock;
-
-   public:
-    class Locked final : private mozilla::MutexAutoLock {
-      nsWindow* const mWindow;
-
-     public:
-      explicit Locked(WindowPtr<Impl>& aPtr)
-          : mozilla::MutexAutoLock(aPtr.mWindowLock), mWindow(aPtr.mWindow) {}
-
-      operator nsWindow*() const { return mWindow; }
-      nsWindow* operator->() const { return mWindow; }
-    };
-
-    WindowPtr(NativePtr<Impl>* aPtr, nsWindow* aWindow);
-
-    ~WindowPtr() {
-      MOZ_ASSERT(NS_IsMainThread());
-      if (!mPtr) {
-        return;
-      }
-      mPtr->mPtr = nullptr;
-      mPtr->mImpl = nullptr;
-    }
-
-    operator nsWindow*() const {
-      MOZ_ASSERT(NS_IsMainThread());
-      return mWindow;
-    }
-
-    nsWindow* operator->() const { return operator nsWindow*(); }
-  };
+  // Unique ID given to each widget, used to map Surfaces to widgets
+  // in the CompositorSurfaceManager.
+  int32_t mWidgetId;
 
  private:
-  class AndroidView final : public nsIAndroidView {
-    virtual ~AndroidView() {}
+  RefPtr<mozilla::widget::AndroidView> mAndroidView;
 
-   public:
-    const RefPtr<mozilla::widget::EventDispatcher> mEventDispatcher{
-        new mozilla::widget::EventDispatcher()};
-
-    AndroidView() {}
-
-    NS_DECL_ISUPPORTS
-    NS_DECL_NSIANDROIDVIEW
-
-    NS_FORWARD_NSIANDROIDEVENTDISPATCHER(mEventDispatcher->)
-
-    mozilla::java::GeckoBundle::GlobalRef mInitData;
-  };
-
-  RefPtr<AndroidView> mAndroidView;
-
-  class LayerViewSupport;
   // Object that implements native LayerView calls.
-  // Owned by the Java LayerView instance.
-  NativePtr<LayerViewSupport> mLayerViewSupport;
+  // Owned by the Java Compositor instance.
+  mozilla::jni::NativeWeakPtr<mozilla::widget::LayerViewSupport>
+      mLayerViewSupport;
 
-  class NPZCSupport;
   // Object that implements native NativePanZoomController calls.
   // Owned by the Java NativePanZoomController instance.
-  NativePtr<NPZCSupport> mNPZCSupport;
+  mozilla::jni::NativeWeakPtr<mozilla::widget::NPZCSupport> mNPZCSupport;
 
   // Object that implements native GeckoEditable calls.
   // Strong referenced by the Java instance.
-  NativePtr<mozilla::widget::GeckoEditableSupport> mEditableSupport;
+  mozilla::jni::NativeWeakPtr<mozilla::widget::GeckoEditableSupport>
+      mEditableSupport;
   mozilla::jni::Object::GlobalRef mEditableParent;
 
   // Object that implements native SessionAccessibility calls.
   // Strong referenced by the Java instance.
-  NativePtr<mozilla::a11y::SessionAccessibility> mSessionAccessibility;
+  mozilla::jni::NativeWeakPtr<mozilla::a11y::SessionAccessibility>
+      mSessionAccessibility;
 
-  class GeckoViewSupport;
   // Object that implements native GeckoView calls and associated states.
   // nullptr for nsWindows that were not opened from GeckoView.
-  // Because other objects get destroyed in the mGeckOViewSupport destructor,
-  // keep it last in the list, so its destructor is called first.
-  mozilla::UniquePtr<GeckoViewSupport> mGeckoViewSupport;
+  mozilla::jni::NativeWeakPtr<mozilla::widget::GeckoViewSupport>
+      mGeckoViewSupport;
 
   mozilla::Atomic<bool, mozilla::ReleaseAcquire> mContentDocumentDisplayed;
 
@@ -210,22 +114,27 @@ class nsWindow final : public nsBaseWidget {
   static mozilla::Modifiers GetModifiers(int32_t aMetaState);
   static mozilla::TimeStamp GetEventTimeStamp(int64_t aEventTime);
 
-  void OnSizeChanged(const mozilla::gfx::IntSize& aSize);
-
   void InitEvent(mozilla::WidgetGUIEvent& event,
                  LayoutDeviceIntPoint* aPoint = 0);
 
   void UpdateOverscrollVelocity(const float aX, const float aY);
   void UpdateOverscrollOffset(const float aX, const float aY);
 
-  mozilla::widget::EventDispatcher* GetEventDispatcher() const {
-    if (mAndroidView) {
-      return mAndroidView->mEventDispatcher;
-    }
-    return nullptr;
-  }
+  mozilla::widget::EventDispatcher* GetEventDispatcher() const;
 
-  void NotifyDisablingWebRender();
+  void PassExternalResponse(mozilla::java::WebResponse::Param aResponse);
+
+  void ShowDynamicToolbar();
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void OnDragEvent(
+      int32_t aAction, int64_t aTime, float aX, float aY,
+      mozilla::jni::Object::Param aDropData);
+  void StartDragAndDrop(mozilla::java::sdk::Bitmap::LocalRef aBitmap);
+  void UpdateDragImage(mozilla::java::sdk::Bitmap::LocalRef aBitmap);
+
+  void DetachNatives();
+
+  mozilla::Mutex& GetDestroyMutex() { return mDestroyMutex; }
 
   //
   // nsIWidget
@@ -235,23 +144,21 @@ class nsWindow final : public nsBaseWidget {
   [[nodiscard]] virtual nsresult Create(nsIWidget* aParent,
                                         nsNativeWidget aNativeParent,
                                         const LayoutDeviceIntRect& aRect,
-                                        nsWidgetInitData* aInitData) override;
+                                        InitData* aInitData) override;
   virtual void Destroy() override;
-  virtual nsresult ConfigureChildren(
-      const nsTArray<nsIWidget::Configuration>&) override;
   virtual void SetParent(nsIWidget* aNewParent) override;
   virtual nsIWidget* GetParent(void) override;
   virtual float GetDPI() override;
   virtual double GetDefaultScaleInternal() override;
   virtual void Show(bool aState) override;
   virtual bool IsVisible() const override;
-  virtual void ConstrainPosition(bool aAllowSlop, int32_t* aX,
-                                 int32_t* aY) override;
+  virtual void ConstrainPosition(DesktopIntPoint&) override;
   virtual void Move(double aX, double aY) override;
   virtual void Resize(double aWidth, double aHeight, bool aRepaint) override;
   virtual void Resize(double aX, double aY, double aWidth, double aHeight,
                       bool aRepaint) override;
   void SetZIndex(int32_t aZIndex) override;
+  virtual nsSizeMode SizeMode() override { return mSizeMode; }
   virtual void SetSizeMode(nsSizeMode aMode) override;
   virtual void Enable(bool aState) override;
   virtual bool IsEnabled() const override;
@@ -262,13 +169,9 @@ class nsWindow final : public nsBaseWidget {
   virtual nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
                                  nsEventStatus& aStatus) override;
   nsEventStatus DispatchEvent(mozilla::WidgetGUIEvent* aEvent);
-  virtual already_AddRefed<nsIScreen> GetWidgetScreen() override;
-  virtual nsresult MakeFullScreen(bool aFullScreen,
-                                  nsIScreen* aTargetScreen = nullptr) override;
-  void SetCursor(nsCursor aDefaultCursor, imgIContainer* aImageCursor,
-                 uint32_t aHotspotX, uint32_t aHotspotY) override {}
+  virtual nsresult MakeFullScreen(bool aFullScreen) override;
+  void SetCursor(const Cursor& aDefaultCursor) override;
   void* GetNativeData(uint32_t aDataType) override;
-  void SetNativeData(uint32_t aDataType, uintptr_t aVal) override;
   virtual nsresult SetTitle(const nsAString& aTitle) override { return NS_OK; }
   [[nodiscard]] virtual nsresult GetAttention(int32_t aCycleCount) override {
     return NS_ERROR_NOT_IMPLEMENTED;
@@ -279,10 +182,10 @@ class nsWindow final : public nsBaseWidget {
                                const InputContextAction& aAction) override;
   virtual InputContext GetInputContext() override;
 
-  LayerManager* GetLayerManager(
-      PLayerTransactionChild* aShadowManager = nullptr,
-      LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-      LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
+  WindowRenderer* GetWindowRenderer() override;
+
+  void NotifyCompositorSessionLost(
+      mozilla::layers::CompositorSession* aSession) override;
 
   virtual bool NeedsPaint() override;
 
@@ -301,11 +204,17 @@ class nsWindow final : public nsBaseWidget {
                                       uint32_t aPointerOrientation,
                                       nsIObserver* aObserver) override;
   nsresult SynthesizeNativeMouseEvent(LayoutDeviceIntPoint aPoint,
-                                      uint32_t aNativeMessage,
-                                      uint32_t aModifierFlags,
+                                      NativeMouseMessage aNativeMessage,
+                                      mozilla::MouseButton aButton,
+                                      nsIWidget::Modifiers aModifierFlags,
                                       nsIObserver* aObserver) override;
   nsresult SynthesizeNativeMouseMove(LayoutDeviceIntPoint aPoint,
                                      nsIObserver* aObserver) override;
+
+  void SetCompositorWidgetDelegate(CompositorWidgetDelegate* delegate) override;
+
+  virtual void GetCompositorWidgetInitData(
+      mozilla::widget::CompositorWidgetInitData* aInitData) override;
 
   mozilla::layers::CompositorBridgeChild* GetCompositorBridgeChild() const;
 
@@ -318,15 +227,13 @@ class nsWindow final : public nsBaseWidget {
 
   mozilla::jni::Object::Ref& GetEditableParent() { return mEditableParent; }
 
-  mozilla::a11y::SessionAccessibility* GetSessionAccessibility() {
-    return mSessionAccessibility;
-  }
+  RefPtr<mozilla::a11y::SessionAccessibility> GetSessionAccessibility();
 
   void RecvToolbarAnimatorMessageFromCompositor(int32_t aMessage) override;
   void UpdateRootFrameMetrics(const ScreenPoint& aScrollOffset,
                               const CSSToScreenScale& aZoom) override;
-  void RecvScreenPixels(mozilla::ipc::Shmem&& aMem,
-                        const ScreenIntSize& aSize) override;
+  void RecvScreenPixels(mozilla::ipc::Shmem&& aMem, const ScreenIntSize& aSize,
+                        bool aNeedsYFlip) override;
   void UpdateDynamicToolbarMaxHeight(mozilla::ScreenIntCoord aHeight) override;
   mozilla::ScreenIntCoord GetDynamicToolbarMaxHeight() const override {
     return mDynamicToolbarMaxHeight;
@@ -336,6 +243,9 @@ class nsWindow final : public nsBaseWidget {
 
   virtual mozilla::ScreenIntMargin GetSafeAreaInsets() const override;
   void UpdateSafeAreaInsets(const mozilla::ScreenIntMargin& aSafeAreaInsets);
+
+  mozilla::jni::NativeWeakPtr<mozilla::widget::NPZCSupport>
+  GetNPZCSupportWeakPtr();
 
  protected:
   void BringToFront();
@@ -352,12 +262,12 @@ class nsWindow final : public nsBaseWidget {
   nsTArray<nsWindow*> mChildren;
   nsWindow* mParent;
 
-  nsCOMPtr<nsIIdleServiceInternal> mIdleService;
+  nsCOMPtr<nsIUserIdleServiceInternal> mIdleService;
   mozilla::ScreenIntCoord mDynamicToolbarMaxHeight;
   mozilla::ScreenIntMargin mSafeAreaInsets;
 
+  nsSizeMode mSizeMode;
   bool mIsFullScreen;
-  bool mIsDisablingWebRender;
 
   bool UseExternalCompositingSurface() const override { return true; }
 
@@ -369,28 +279,19 @@ class nsWindow final : public nsBaseWidget {
   void CreateLayerManager();
   void RedrawAll();
 
+  void OnSizeChanged(const mozilla::gfx::IntSize& aSize);
+
   mozilla::layers::LayersId GetRootLayerId() const;
   RefPtr<mozilla::layers::UiCompositorControllerChild>
   GetUiCompositorControllerChild();
+
+  mozilla::widget::PlatformCompositorWidgetDelegate* mCompositorWidgetDelegate;
+
+  mozilla::Mutex mDestroyMutex;
+
+  friend class mozilla::widget::GeckoViewSupport;
+  friend class mozilla::widget::LayerViewSupport;
+  friend class mozilla::widget::NPZCSupport;
 };
-
-// Explicit template declarations to make clang be quiet.
-template <>
-const char nsWindow::NativePtr<nsWindow::LayerViewSupport>::sName[];
-template <>
-const char nsWindow::NativePtr<mozilla::widget::GeckoEditableSupport>::sName[];
-template <>
-const char nsWindow::NativePtr<mozilla::a11y::SessionAccessibility>::sName[];
-template <>
-const char nsWindow::NativePtr<nsWindow::NPZCSupport>::sName[];
-
-template <class Impl>
-nsWindow::WindowPtr<Impl>::WindowPtr(NativePtr<Impl>* aPtr, nsWindow* aWindow)
-    : mPtr(aPtr), mWindow(aWindow), mWindowLock(NativePtr<Impl>::sName) {
-  MOZ_ASSERT(NS_IsMainThread());
-  if (mPtr) {
-    mPtr->mPtr = this;
-  }
-}
 
 #endif /* NSWINDOW_H_ */

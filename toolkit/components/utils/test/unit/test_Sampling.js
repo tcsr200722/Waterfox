@@ -1,8 +1,7 @@
 "use strict";
 
-ChromeUtils.import(
-  "resource://gre/modules/components-utils/Sampling.jsm",
-  this
+const { Sampling } = ChromeUtils.importESModule(
+  "resource://gre/modules/components-utils/Sampling.sys.mjs"
 );
 
 add_task(async function testStableSample() {

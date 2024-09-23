@@ -8,6 +8,7 @@
 #include "js/Class.h"
 #include "js/GCAPI.h"
 #include "js/Id.h"
+#include "js/Object.h"  // JS::GetClass, JS::GetReservedSlot
 #include "js/Wrapper.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -15,42 +16,47 @@
 #include "mozilla/ErrorResult.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/dom/BindingNames.h"
 #include "mozilla/dom/DOMJSClass.h"
-#include "mozilla/dom/DOMJSProxyHandler.h"
+#include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/JSSlots.h"
 #include "mozilla/dom/PrototypeList.h"
+#include "mozilla/dom/ProxyHandlerUtils.h"
 #include "mozilla/dom/RegisterBindings.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsTHashtable.h"
 #include "WrapperFactory.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static JSObject* FindNamedConstructorForXray(
     JSContext* aCx, JS::Handle<jsid> aId, const WebIDLNameTableEntry* aEntry) {
   JSObject* interfaceObject =
       GetPerInterfaceObjectHandle(aCx, aEntry->mConstructorId, aEntry->mCreate,
-                                  /* aDefineOnGlobal = */ false);
+                                  DefineInterfaceProperty::No);
   if (!interfaceObject) {
     return nullptr;
   }
 
-  // This is a call over Xrays, so we will actually use the return value
-  // (instead of just having it defined on the global now).  Check for named
-  // constructors with this id, in case that's what the caller is asking for.
-  for (unsigned slot = DOM_INTERFACE_SLOTS_BASE;
-       slot < JSCLASS_RESERVED_SLOTS(js::GetObjectClass(interfaceObject));
-       ++slot) {
-    JSObject* constructor =
-        &js::GetReservedSlot(interfaceObject, slot).toObject();
-    if (JS_GetFunctionId(JS_GetObjectFunction(constructor)) ==
-        JSID_TO_STRING(aId)) {
-      return constructor;
+  if (IsInterfaceObject(interfaceObject)) {
+    // This is a call over Xrays, so we will actually use the return value
+    // (instead of just having it defined on the global now).  Check for named
+    // constructors with this id, in case that's what the caller is asking for.
+    for (unsigned slot = INTERFACE_OBJECT_FIRST_LEGACY_FACTORY_FUNCTION;
+         slot < INTERFACE_OBJECT_MAX_SLOTS; ++slot) {
+      const JS::Value& v = js::GetFunctionNativeReserved(interfaceObject, slot);
+      if (!v.isObject()) {
+        break;
+      }
+      JSObject* constructor = &v.toObject();
+      if (JS_GetMaybePartialFunctionId(JS_GetObjectFunction(constructor)) ==
+          aId.toString()) {
+        return constructor;
+      }
     }
   }
 
-  // None of the named constructors match, so the caller must want the
+  // None of the legacy factory functions match, so the caller must want the
   // interface object itself.
   return interfaceObject;
 }
@@ -58,10 +64,11 @@ static JSObject* FindNamedConstructorForXray(
 /* static */
 bool WebIDLGlobalNameHash::DefineIfEnabled(
     JSContext* aCx, JS::Handle<JSObject*> aObj, JS::Handle<jsid> aId,
-    JS::MutableHandle<JS::PropertyDescriptor> aDesc, bool* aFound) {
-  MOZ_ASSERT(JSID_IS_STRING(aId), "Check for string id before calling this!");
+    JS::MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> aDesc,
+    bool* aFound) {
+  MOZ_ASSERT(aId.isString(), "Check for string id before calling this!");
 
-  const WebIDLNameTableEntry* entry = GetEntry(JSID_TO_LINEAR_STRING(aId));
+  const WebIDLNameTableEntry* entry = GetEntry(aId.toLinearString());
   if (!entry) {
     *aFound = false;
     return true;
@@ -148,14 +155,19 @@ bool WebIDLGlobalNameHash::DefineIfEnabled(
       return Throw(aCx, NS_ERROR_FAILURE);
     }
 
-    FillPropertyDescriptor(aDesc, aObj, 0, JS::ObjectValue(*constructor));
+    aDesc.set(mozilla::Some(JS::PropertyDescriptor::Data(
+        JS::ObjectValue(*constructor), {JS::PropertyAttribute::Configurable,
+                                        JS::PropertyAttribute::Writable})));
     return true;
   }
 
+  // We've already checked whether the interface is enabled (see
+  // checkEnabledForScope above), so it's fine to pass
+  // DefineInterfaceProperty::Always here.
   JS::Rooted<JSObject*> interfaceObject(
       aCx,
       GetPerInterfaceObjectHandle(aCx, entry->mConstructorId, entry->mCreate,
-                                  /* aDefineOnGlobal = */ true));
+                                  DefineInterfaceProperty::Always));
   if (NS_WARN_IF(!interfaceObject)) {
     return Throw(aCx, NS_ERROR_FAILURE);
   }
@@ -163,16 +175,15 @@ bool WebIDLGlobalNameHash::DefineIfEnabled(
   // We've already defined the property.  We indicate this to the caller
   // by filling a property descriptor with JS::UndefinedValue() as the
   // value.  We still have to fill in a property descriptor, though, so
-  // that the caller knows the property is in fact on this object.  It
-  // doesn't matter what we pass for the "readonly" argument here.
-  FillPropertyDescriptor(aDesc, aObj, JS::UndefinedValue(), false);
-
+  // that the caller knows the property is in fact on this object.
+  aDesc.set(
+      mozilla::Some(JS::PropertyDescriptor::Data(JS::UndefinedValue(), {})));
   return true;
 }
 
 /* static */
 bool WebIDLGlobalNameHash::MayResolve(jsid aId) {
-  return GetEntry(JSID_TO_LINEAR_STRING(aId)) != nullptr;
+  return GetEntry(aId.toLinearString()) != nullptr;
 }
 
 /* static */
@@ -188,9 +199,9 @@ bool WebIDLGlobalNameHash::GetNames(JSContext* aCx, JS::Handle<JSObject*> aObj,
     if ((aNameType == AllNames ||
          !cache->HasEntryInSlot(entry.mConstructorId)) &&
         (!entry.mEnabled || entry.mEnabled(aCx, aObj))) {
-      JSString* str =
-          JS_AtomizeStringN(aCx, sNames + entry.mNameOffset, entry.mNameLength);
-      if (!str || !aNames.append(PropertyKey::fromNonIntAtom(str))) {
+      JSString* str = JS_AtomizeStringN(aCx, BindingName(entry.mNameOffset),
+                                        entry.mNameLength);
+      if (!str || !aNames.append(JS::PropertyKey::NonIntAtom(str))) {
         return false;
       }
     }
@@ -215,7 +226,7 @@ bool WebIDLGlobalNameHash::ResolveForSystemGlobal(JSContext* aCx,
   }
 
   // We don't resolve any non-string entries.
-  if (!JSID_IS_STRING(aId)) {
+  if (!aId.isString()) {
     return true;
   }
 
@@ -225,11 +236,14 @@ bool WebIDLGlobalNameHash::ResolveForSystemGlobal(JSContext* aCx,
   MOZ_ASSERT(!xpc::WrapperFactory::IsXrayWrapper(aObj), "Xrays not supported!");
 
   // Look up the corresponding entry in the name table, and resolve if enabled.
-  const WebIDLNameTableEntry* entry = GetEntry(JSID_TO_LINEAR_STRING(aId));
+  const WebIDLNameTableEntry* entry = GetEntry(aId.toLinearString());
   if (entry && (!entry->mEnabled || entry->mEnabled(aCx, aObj))) {
+    // We've already checked whether the interface is enabled (see
+    // entry->mEnabled above), so it's fine to pass
+    // DefineInterfaceProperty::Always here.
     if (NS_WARN_IF(!GetPerInterfaceObjectHandle(
             aCx, entry->mConstructorId, entry->mCreate,
-            /* aDefineOnGlobal = */ true))) {
+            DefineInterfaceProperty::Always))) {
       return Throw(aCx, NS_ERROR_FAILURE);
     }
 
@@ -259,9 +273,9 @@ bool WebIDLGlobalNameHash::NewEnumerateSystemGlobal(
   for (size_t i = 0; i < sCount; ++i) {
     const WebIDLNameTableEntry& entry = sEntries[i];
     if (!entry.mEnabled || entry.mEnabled(aCx, aObj)) {
-      JSString* str =
-          JS_AtomizeStringN(aCx, sNames + entry.mNameOffset, entry.mNameLength);
-      if (!str || !aProperties.append(PropertyKey::fromNonIntAtom(str))) {
+      JSString* str = JS_AtomizeStringN(aCx, BindingName(entry.mNameOffset),
+                                        entry.mNameLength);
+      if (!str || !aProperties.append(JS::PropertyKey::NonIntAtom(str))) {
         return false;
       }
     }
@@ -269,5 +283,4 @@ bool WebIDLGlobalNameHash::NewEnumerateSystemGlobal(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -3,16 +3,18 @@
 
 "use strict";
 
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
+    async function (browser) {
       const BASE1 = getRootDirectory(gTestPath).replace(
         "chrome://mochitests/content",
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com"
       );
       const BASE2 = getRootDirectory(gTestPath).replace(
         "chrome://mochitests/content",
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://test1.example.com"
       );
       const URL = BASE1 + "onload_message.html";
@@ -28,10 +30,10 @@ add_task(async function() {
         true,
         true
       );
-      await SpecialPowers.spawn(
+      let browserIds = await SpecialPowers.spawn(
         browser,
         [{ base1: BASE1, base2: BASE2 }],
-        async function({ base1, base2 }) {
+        async function ({ base1, base2 }) {
           let top = content;
           top.name = "top";
           top.location.href += "#top";
@@ -105,12 +107,14 @@ add_task(async function() {
           // wish to confirm that targeting is able to find
           // appropriate browsing contexts.
 
-          // BrowsingContext.findWithName requires access checks, which
-          // can only be performed in the process of the accessor BC's
-          // docShell.
+          // WindowGlobalChild.findBrowsingContextWithName requires access
+          // checks, which can only be performed in the process of the accessor
+          // WindowGlobalChild.
           function findWithName(bc, name) {
-            return content.SpecialPowers.spawn(bc, [bc, name], (bc, name) => {
-              return bc.findWithName(name);
+            return content.SpecialPowers.spawn(bc, [name], name => {
+              return content.windowGlobalChild.findBrowsingContextWithName(
+                name
+              );
             });
           }
 
@@ -172,10 +176,58 @@ add_task(async function() {
             }
             await unreachable(start, seventh);
           }
+
+          let topBrowserId = topBC.browserId;
+          Assert.greater(topBrowserId, 0, "Should have a browser ID.");
+          for (let [name, bc] of Object.entries({
+            first,
+            second,
+            third,
+            fourth,
+            fifth,
+          })) {
+            is(
+              bc.browserId,
+              topBrowserId,
+              `${name} frame should have the same browserId as top.`
+            );
+          }
+
+          Assert.greater(sixth.browserId, 0, "sixth should have a browserId.");
+          isnot(
+            sixth.browserId,
+            topBrowserId,
+            "sixth frame should have a different browserId to top."
+          );
+
+          return [topBrowserId, sixth.browserId];
         }
       );
 
-      for (let tab of await Promise.all([sixth, seventh])) {
+      [sixth, seventh] = await Promise.all([sixth, seventh]);
+
+      is(
+        browser.browserId,
+        browserIds[0],
+        "browser should have the right browserId."
+      );
+      is(
+        browser.browsingContext.browserId,
+        browserIds[0],
+        "browser's BrowsingContext should have the right browserId."
+      );
+      is(
+        sixth.linkedBrowser.browserId,
+        browserIds[1],
+        "sixth should have the right browserId."
+      );
+      is(
+        sixth.linkedBrowser.browsingContext.browserId,
+        browserIds[1],
+        "sixth's BrowsingContext should have the right browserId."
+      );
+
+      for (let tab of [sixth, seventh]) {
         BrowserTestUtils.removeTab(tab);
       }
     }

@@ -7,9 +7,6 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
   const MozXULTextElement = MozElements.MozElementMixin(XULTextElement);
 
   let gInsertSeparator = false;
@@ -70,7 +67,7 @@
       this.formatAccessKey();
     }
 
-    _onClick(event) {
+    _onClick() {
       let controlElement = this.labeledControlElement;
       if (!controlElement || this.disabled) {
         return;
@@ -242,7 +239,7 @@
     if (!element.isConnected) {
       return;
     }
-    if (element.previousSibling instanceof Text) {
+    if (Text.isInstance(element.previousSibling)) {
       element.previousSibling.appendData(element.textContent);
     } else {
       element.parentNode.insertBefore(element.firstChild, element);
@@ -300,7 +297,6 @@
 
     set href(val) {
       this.setAttribute("href", val);
-      return val;
     }
 
     get href() {
@@ -316,9 +312,8 @@
       var uri = null;
       try {
         const nsISSM = Ci.nsIScriptSecurityManager;
-        const secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-          nsISSM
-        );
+        const secMan =
+          Cc["@mozilla.org/scriptsecuritymanager;1"].getService(nsISSM);
 
         uri = Services.io.newURI(href);
 
@@ -340,7 +335,7 @@
             uri.scheme +
             ": link using \
                          the text-link binding.";
-          Cu.reportError(msg);
+          console.error(msg);
           return;
         }
 
@@ -351,12 +346,12 @@
         // if the scheme is not an exposed protocol, then opening this link
         // should be deferred to the system's external protocol handler
         if (!protocolSvc.isExposedProtocol(uri.scheme)) {
-          protocolSvc.loadURI(uri);
+          protocolSvc.loadURI(uri, principal);
           aEvent.preventDefault();
           return;
         }
       } catch (ex) {
-        Cu.reportError(ex);
+        console.error(ex);
       }
 
       aEvent.preventDefault();

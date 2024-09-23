@@ -29,9 +29,11 @@ var testData = [
   ["VK_BACK_SPACE", "", !OPEN, !SELECTED],
   ["d", "display", OPEN, SELECTED],
   ["VK_DOWN", "dominant-baseline", OPEN, SELECTED],
+  ["VK_DOWN", "d", OPEN, SELECTED],
   ["VK_DOWN", "direction", OPEN, SELECTED],
   ["VK_DOWN", "display", OPEN, SELECTED],
   ["VK_UP", "direction", OPEN, SELECTED],
+  ["VK_UP", "d", OPEN, SELECTED],
   ["VK_UP", "dominant-baseline", OPEN, SELECTED],
   ["VK_UP", "display", OPEN, SELECTED],
   ["VK_BACK_SPACE", "d", !OPEN, !SELECTED],
@@ -68,15 +70,15 @@ var testData = [
 
 const TEST_URI = "<h1 style='font: 24px serif'>Header</h1>";
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { toolbox, inspector, view, testActor } = await openRuleView();
+  const { toolbox, inspector, view } = await openRuleView();
 
   info("Test autocompletion after 1st page load");
   await runAutocompletionTest(toolbox, inspector, view);
 
   info("Test autocompletion after page navigation");
-  await reloadPage(inspector, testActor);
+  await reloadBrowser();
   await runAutocompletionTest(toolbox, inspector, view);
 });
 
@@ -92,6 +94,9 @@ async function runAutocompletionTest(toolbox, inspector, view) {
 
   info("Starting to test for css property completion");
   for (let i = 0; i < testData.length; i++) {
+    if (!testData[i].length) {
+      continue;
+    }
     await testCompletion(testData[i], editor, view);
   }
 }

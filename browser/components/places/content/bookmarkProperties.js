@@ -51,18 +51,13 @@
  */
 
 /* import-globals-from editBookmark.js */
-/* import-globals-from controller.js */
 
 /* Shared Places Import - change other consumers if you change this: */
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  PlacesUIUtils: "resource:///modules/PlacesUIUtils.jsm",
-  PlacesTransactions: "resource://gre/modules/PlacesTransactions.jsm",
-  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 XPCOMUtils.defineLazyScriptGetter(
   this,
@@ -81,8 +76,6 @@ const BOOKMARK_FOLDER = 1;
 
 const ACTION_EDIT = 0;
 const ACTION_ADD = 1;
-
-var elementsHeight = new Map();
 
 var BookmarkPropertiesPanel = {
   /** UI Text Strings */
@@ -107,32 +100,23 @@ var BookmarkPropertiesPanel = {
   _hiddenRows: [],
 
   /**
-   * This method returns the correct label for the dialog's "accept"
-   * button based on the variant of the dialog.
+   * @returns {string}
+   *   This method returns the correct label for the dialog's "accept"
+   *   button based on the variant of the dialog.
    */
   _getAcceptLabel: function BPP__getAcceptLabel() {
-    if (this._action == ACTION_ADD) {
-      if (this._URIs.length) {
-        return this._strings.getString("dialogAcceptLabelAddMulti");
-      }
-
-      if (this._dummyItem) {
-        return this._strings.getString("dialogAcceptLabelAddItem");
-      }
-
-      return this._strings.getString("dialogAcceptLabelSaveItem");
-    }
-    return this._strings.getString("dialogAcceptLabelEdit");
+    return this._strings.getString("dialogAcceptLabelSaveItem");
   },
 
   /**
-   * This method returns the correct title for the current variant
-   * of this dialog.
+   * @returns {string}
+   *   This method returns the correct title for the current variant
+   *   of this dialog.
    */
   _getDialogTitle: function BPP__getDialogTitle() {
     if (this._action == ACTION_ADD) {
       if (this._itemType == BOOKMARK_ITEM) {
-        return this._strings.getString("dialogTitleAddBookmark");
+        return this._strings.getString("dialogTitleAddNewBookmark2");
       }
 
       // add folder
@@ -143,10 +127,14 @@ var BookmarkPropertiesPanel = {
         return this._strings.getString("dialogTitleAddMulti");
       }
 
-      return this._strings.getString("dialogTitleAddFolder");
+      return this._strings.getString("dialogTitleAddBookmarkFolder");
     }
     if (this._action == ACTION_EDIT) {
-      return this._strings.getFormattedString("dialogTitleEdit", [this._title]);
+      if (this._itemType === BOOKMARK_ITEM) {
+        return this._strings.getString("dialogTitleEditBookmark2");
+      }
+
+      return this._strings.getString("dialogTitleEditBookmarkFolder");
     }
     return "";
   },
@@ -170,9 +158,9 @@ var BookmarkPropertiesPanel = {
       if ("defaultInsertionPoint" in dialogInfo) {
         this._defaultInsertionPoint = dialogInfo.defaultInsertionPoint;
       } else {
+        let parentGuid = await PlacesUIUtils.defaultParentGuid;
         this._defaultInsertionPoint = new PlacesInsertionPoint({
-          parentId: PlacesUtils.bookmarksMenuFolderId,
-          parentGuid: PlacesUtils.bookmarks.menuGuid,
+          parentGuid,
         });
       }
 
@@ -236,13 +224,10 @@ var BookmarkPropertiesPanel = {
    * dialog to initialize the state of the panel.
    */
   async onDialogLoad() {
-    await this._determineItemInfo();
-
-    document.title = this._getDialogTitle();
-    document.addEventListener("dialogaccept", function() {
+    document.addEventListener("dialogaccept", function () {
       BookmarkPropertiesPanel.onDialogAccept();
     });
-    document.addEventListener("dialogcancel", function() {
+    document.addEventListener("dialogcancel", function () {
       BookmarkPropertiesPanel.onDialogCancel();
     });
 
@@ -251,12 +236,32 @@ var BookmarkPropertiesPanel = {
       .getElementById("bookmarkpropertiesdialog")
       .getButton("accept");
     acceptButton.disabled = true;
+    await this._determineItemInfo();
+    document.title = this._getDialogTitle();
 
-    // Allow initialization to complete in a truely async manner so that we're
-    // not blocking the main thread.
-    this._initDialog().catch(ex => {
-      Cu.reportError(`Failed to initialize dialog: ${ex}`);
-    });
+    // Set adjustable title
+    let title = { raw: document.title };
+    document.documentElement.setAttribute("headertitle", JSON.stringify(title));
+
+    let iconUrl = this._getIconUrl();
+    if (iconUrl) {
+      document.documentElement.style.setProperty(
+        "--icon-url",
+        `url(${iconUrl})`
+      );
+    }
+
+    await this._initDialog();
+  },
+
+  _getIconUrl() {
+    let url = "chrome://browser/skin/bookmark-hollow.svg";
+
+    if (this._action === ACTION_EDIT && this._itemType === BOOKMARK_ITEM) {
+      url = window.arguments[0]?.node?.icon;
+    }
+
+    return url;
   },
 
   /**
@@ -270,49 +275,40 @@ var BookmarkPropertiesPanel = {
     acceptButton.label = this._getAcceptLabel();
     let acceptButtonDisabled = false;
 
-    // Do not use sizeToContent, otherwise, due to bug 90276, the dialog will
-    // grow at every opening.
-    // Since elements can be uncollapsed asynchronously, we must observe their
-    // mutations and resize the dialog using a cached element size.
-    this._height = window.outerHeight;
+    // Since elements can be unhidden asynchronously, we must observe their
+    // mutations and resize the dialog accordingly.
     this._mutationObserver = new MutationObserver(mutations => {
-      for (let mutation of mutations) {
-        let target = mutation.target;
-        let id = target.id;
-        if (!/^editBMPanel_.*(Row|Checkbox)$/.test(id)) {
-          continue;
+      for (let { target, oldValue } of mutations) {
+        let hidden = target.getAttribute("hidden") == "true";
+        if (
+          target.classList.contains("hideable") &&
+          hidden != (oldValue == "true")
+        ) {
+          // To support both kind of dialogs (window and dialog-box) we need
+          // both resizeBy and sizeToContent, otherwise either the dialog
+          // doesn't resize, or it gets empty unused space.
+          if (hidden) {
+            let diff = this._mutationObserver._heightsById.get(target.id);
+            window.resizeBy(0, -diff);
+          } else {
+            let diff = target.getBoundingClientRect().height;
+            this._mutationObserver._heightsById.set(target.id, diff);
+            window.resizeBy(0, diff);
+          }
+          window.sizeToContent();
         }
-
-        let collapsed = target.getAttribute("collapsed") === "true";
-        let wasCollapsed = mutation.oldValue === "true";
-        if (collapsed == wasCollapsed) {
-          continue;
-        }
-
-        if (collapsed) {
-          this._height -= elementsHeight.get(id);
-          elementsHeight.delete(id);
-        } else {
-          elementsHeight.set(id, target.getBoundingClientRect().height);
-          this._height += elementsHeight.get(id);
-        }
-        window.resizeTo(window.outerWidth, this._height);
       }
     });
-
+    this._mutationObserver._heightsById = new Map();
     this._mutationObserver.observe(document, {
       subtree: true,
       attributeOldValue: true,
-      attributeFilter: ["collapsed"],
+      attributeFilter: ["hidden"],
     });
-
-    // Some controls are flexible and we want to update their cached size when
-    // the dialog is resized.
-    window.addEventListener("resize", this);
 
     switch (this._action) {
       case ACTION_EDIT:
-        gEditItemOverlay.initPanel({
+        await gEditItemOverlay.initPanel({
           node: this._node,
           hiddenRows: this._hiddenRows,
           focusedElement: "first",
@@ -322,7 +318,7 @@ var BookmarkPropertiesPanel = {
       case ACTION_ADD:
         this._node = await this._promiseNewItem();
         // Edit the new item
-        gEditItemOverlay.initPanel({
+        await gEditItemOverlay.initPanel({
           node: this._node,
           hiddenRows: this._hiddenRows,
           postData: this._postData,
@@ -373,14 +369,6 @@ var BookmarkPropertiesPanel = {
             .getButton("accept").disabled = !this._inputIsValid();
         }
         break;
-      case "resize":
-        for (let [id, oldHeight] of elementsHeight) {
-          let newHeight = document.getElementById(id).getBoundingClientRect()
-            .height;
-          this._height += -oldHeight + newHeight;
-          elementsHeight.set(id, newHeight);
-        }
-        break;
     }
   },
 
@@ -396,8 +384,6 @@ var BookmarkPropertiesPanel = {
     this._mutationObserver.disconnect();
     delete this._mutationObserver;
 
-    window.removeEventListener("resize", this);
-
     // Calling removeEventListener with arguments which do not identify any
     // currently registered EventListener on the EventTarget has no effect.
     this._element("locationField").removeEventListener("input", this);
@@ -406,13 +392,16 @@ var BookmarkPropertiesPanel = {
 
   onDialogAccept() {
     // We must blur current focused element to save its changes correctly
-    document.commandDispatcher.focusedElement.blur();
+    document.commandDispatcher.focusedElement?.blur();
+
+    // Get the states to compare bookmark and editedBookmark
+    window.arguments[0].bookmarkState = gEditItemOverlay._bookmarkState;
+
     // We have to uninit the panel first, otherwise late changes could force it
     // to commit more transactions.
     gEditItemOverlay.uninitPanel(true);
-    if (this._node.bookmarkGuid) {
-      window.arguments[0].bookmarkGuid = this._node.bookmarkGuid;
-    }
+
+    window.arguments[0].bookmarkGuid = this._node.bookmarkGuid;
   },
 
   onDialogCancel() {
@@ -424,7 +413,7 @@ var BookmarkPropertiesPanel = {
   /**
    * This method checks to see if the input fields are in a valid state.
    *
-   * @returns  true if the input is valid, false otherwise
+   * @returns {boolean} true if the input is valid, false otherwise
    */
   _inputIsValid: function BPP__inputIsValid() {
     if (
@@ -447,16 +436,16 @@ var BookmarkPropertiesPanel = {
    * Determines whether the input with the given ID contains a
    * string that can be converted into an nsIURI.
    *
-   * @param aTextboxID
+   * @param {number} aTextboxID
    *        the ID of the textbox element whose contents we'll test
    *
-   * @returns true if the textbox contains a valid URI string, false otherwise
+   * @returns {boolean} true if the textbox contains a valid URI string, false otherwise
    */
   _containsValidURI: function BPP__containsValidURI(aTextboxID) {
     try {
       var value = this._element(aTextboxID).value;
       if (value) {
-        PlacesUIUtils.createFixedURI(value);
+        Services.uriFixup.getFixupURIInfo(value);
         return true;
       }
     } catch (e) {}
@@ -472,20 +461,14 @@ var BookmarkPropertiesPanel = {
    */
   async _getInsertionPointDetails() {
     return [
-      this._defaultInsertionPoint.itemId,
       await this._defaultInsertionPoint.getIndex(),
       this._defaultInsertionPoint.guid,
     ];
   },
 
   async _promiseNewItem() {
-    let [
-      containerId,
-      index,
-      parentGuid,
-    ] = await this._getInsertionPointDetails();
+    let [index, parentGuid] = await this._getInsertionPointDetails();
 
-    let itemGuid;
     let info = { parentGuid, index, title: this._title };
     if (this._itemType == BOOKMARK_ITEM) {
       info.url = this._uri;
@@ -498,24 +481,20 @@ var BookmarkPropertiesPanel = {
 
       if (this._charSet) {
         PlacesUIUtils.setCharsetForPage(this._uri, this._charSet, window).catch(
-          Cu.reportError
+          console.error
         );
       }
-
-      itemGuid = await PlacesTransactions.NewBookmark(info).transact();
     } else if (this._itemType == BOOKMARK_FOLDER) {
       // NewFolder requires a url rather than uri.
       info.children = this._URIs.map(item => {
         return { url: item.uri, title: item.title };
       });
-      itemGuid = await PlacesTransactions.NewFolder(info).transact();
     } else {
       throw new Error(`unexpected value for _itemType:  ${this._itemType}`);
     }
-
     return Object.freeze({
-      itemId: await PlacesUtils.promiseItemId(itemGuid),
-      bookmarkGuid: itemGuid,
+      index,
+      bookmarkGuid: PlacesUtils.bookmarks.unsavedGuid,
       title: this._title,
       uri: this._uri ? this._uri.spec : "",
       type:
@@ -523,10 +502,18 @@ var BookmarkPropertiesPanel = {
           ? Ci.nsINavHistoryResultNode.RESULT_TYPE_URI
           : Ci.nsINavHistoryResultNode.RESULT_TYPE_FOLDER,
       parent: {
-        itemId: containerId,
         bookmarkGuid: parentGuid,
         type: Ci.nsINavHistoryResultNode.RESULT_TYPE_FOLDER,
       },
+      children: info.children,
     });
   },
 };
+
+document.addEventListener("DOMContentLoaded", function () {
+  // Content initialization is asynchronous, thus set mozSubdialogReady
+  // immediately to properly wait for it.
+  document.mozSubdialogReady = BookmarkPropertiesPanel.onDialogLoad()
+    .catch(ex => console.error(`Failed to initialize dialog: ${ex}`))
+    .then(() => window.sizeToContent());
+});

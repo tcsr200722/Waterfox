@@ -9,7 +9,7 @@
 #ifndef LIBANGLE_TRACE_H_
 #define LIBANGLE_TRACE_H_
 
-#include <platform/Platform.h>
+#include <platform/PlatformMethods.h>
 #include "third_party/trace_event/trace_event.h"
 
 // TODO: Pass platform directly to these methods. http://anglebug.com/1892
@@ -20,5 +20,7 @@
 #define ANGLE_TRACE_EVENT_INSTANT0(CATEGORY, EVENT) \
     TRACE_EVENT_INSTANT0(ANGLEPlatformCurrent(), CATEGORY, EVENT)
 #define ANGLE_TRACE_EVENT0(CATEGORY, EVENT) TRACE_EVENT0(ANGLEPlatformCurrent(), CATEGORY, EVENT)
+#define ANGLE_TRACE_EVENT1(CATEGORY, EVENT, NAME, PARAM) \
+    TRACE_EVENT1(ANGLEPlatformCurrent(), CATEGORY, EVENT, NAME, PARAM)
 
 #endif  // LIBANGLE_TRACE_H_

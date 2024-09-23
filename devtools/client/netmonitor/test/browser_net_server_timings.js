@@ -6,7 +6,7 @@
 /**
  * Tests if server side timings are displayed
  */
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(HTTPS_CUSTOM_GET_URL, {
     requestCount: 1,
   });
@@ -19,7 +19,7 @@ add_task(async function() {
   await SpecialPowers.spawn(
     tab.linkedBrowser,
     [SERVER_TIMINGS_TYPE_SJS],
-    async function(url) {
+    async function (url) {
       content.wrappedJSObject.performRequests(1, url);
     }
   );
@@ -29,17 +29,22 @@ add_task(async function() {
   const timingsSelector = "#timings-panel .tabpanel-summary-container.server";
   wait = waitForDOM(document, timingsSelector, 4);
 
+  AccessibilityUtils.setEnv({
+    // Keyboard users will will see the sidebar when the request row is
+    // selected. Accessibility is handled on the container level.
+    actionCountRule: false,
+    interactiveRule: false,
+    labelRule: false,
+  });
   EventUtils.sendMouseEvent(
     { type: "click" },
     document.querySelectorAll(".request-list-item")[0]
   );
+  AccessibilityUtils.resetEnv();
 
   store.dispatch(Actions.toggleNetworkDetails());
 
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#timings-tab")
-  );
+  clickOnSidebarTab(document, "timings");
   await wait;
 
   // Check the UI contains server side timings and correct values

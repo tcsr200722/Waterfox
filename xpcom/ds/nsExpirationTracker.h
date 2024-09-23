@@ -7,16 +7,25 @@
 #ifndef NSEXPIRATIONTRACKER_H_
 #define NSEXPIRATIONTRACKER_H_
 
-#include "mozilla/Logging.h"
+#include <cstring>
+#include "MainThreadUtils.h"
+#include "nsAlgorithm.h"
+#include "nsDebug.h"
 #include "nsTArray.h"
 #include "nsITimer.h"
 #include "nsCOMPtr.h"
-#include "nsComponentManagerUtils.h"
 #include "nsIEventTarget.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsISupports.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
-#include "mozilla/Attributes.h"
+#include "nscore.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Likely.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/RefCountType.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
 
 /**
@@ -85,6 +94,9 @@ struct nsExpirationState {
  * For creating a thread-safe tracker, you can define a subclass inheriting this
  * base class and specialize the Mutex and AutoLock to be used.
  *
+ * For an example of using ExpirationTrackerImpl with a DataMutex
+ * @see mozilla::gfx::GradientCache.
+ *
  */
 template <typename T, uint32_t K, typename Mutex, typename AutoLock>
 class ExpirationTrackerImpl {
@@ -109,28 +121,22 @@ class ExpirationTrackerImpl {
         mEventTarget(aEventTarget) {
     static_assert(K >= 2 && K <= nsExpirationState::NOT_TRACKED,
                   "Unsupported number of generations (must be 2 <= K <= 15)");
-    MOZ_ASSERT(NS_IsMainThread());
-    if (mEventTarget) {
-      bool current = false;
-      // NOTE: The following check+crash could be condensed into a
-      // MOZ_RELEASE_ASSERT, but that triggers a segfault during compilation in
-      // clang 3.8. Once we don't have to care about clang 3.8 anymore, though,
-      // we can convert to MOZ_RELEASE_ASSERT here.
-      if (MOZ_UNLIKELY(NS_FAILED(mEventTarget->IsOnCurrentThread(&current)) ||
-                       !current)) {
-        MOZ_CRASH("Provided event target must be on the main thread");
-      }
+    // If we are not initialized on the main thread, the owner is responsible
+    // for dealing with memory pressure events.
+    if (NS_IsMainThread()) {
+      mObserver = new ExpirationTrackerObserver();
+      mObserver->Init(this);
     }
-    mObserver = new ExpirationTrackerObserver();
-    mObserver->Init(this);
   }
 
   virtual ~ExpirationTrackerImpl() {
-    MOZ_ASSERT(NS_IsMainThread());
     if (mTimer) {
       mTimer->Cancel();
     }
-    mObserver->Destroy();
+    if (mObserver) {
+      MOZ_ASSERT(NS_IsMainThread());
+      mObserver->Destroy();
+    }
   }
 
   /**
@@ -189,12 +195,13 @@ class ExpirationTrackerImpl {
     MOZ_ASSERT(generation.Length() > index && generation[index] == aObj,
                "Object is lying about its index");
     // Move the last object to fill the hole created by removing aObj
-    uint32_t last = generation.Length() - 1;
-    T* lastObj = generation[last];
-    generation[index] = lastObj;
+    T* lastObj = generation.PopLastElement();
+    // XXX It looks weird that index might point to the element that was just
+    // removed. Is that really correct?
+    if (index < generation.Length()) {
+      generation[index] = lastObj;
+    }
     lastObj->GetExpirationState()->mIndexInGeneration = index;
-    generation.RemoveElementAt(last);
-    MOZ_ASSERT(generation.Length() == last);
     state->mGeneration = nsExpirationState::NOT_TRACKED;
     // We do not check whether we need to stop the timer here. The timer
     // will check that itself next time it fires. Checking here would not
@@ -449,17 +456,10 @@ class ExpirationTrackerImpl {
     if (mTimer || !mTimerPeriod) {
       return NS_OK;
     }
-    nsCOMPtr<nsIEventTarget> target = mEventTarget;
-    if (!target && !NS_IsMainThread()) {
-      // TimerCallback should always be run on the main thread to prevent races
-      // to the destruction of the tracker.
-      target = do_GetMainThread();
-      NS_ENSURE_STATE(target);
-    }
 
     return NS_NewTimerWithFuncCallback(
         getter_AddRefs(mTimer), TimerCallback, this, mTimerPeriod,
-        nsITimer::TYPE_REPEATING_SLACK_LOW_PRIORITY, mName, target);
+        nsITimer::TYPE_REPEATING_SLACK_LOW_PRIORITY, mName, mEventTarget);
   }
 };
 
@@ -492,12 +492,12 @@ class nsExpirationTracker
   Lock mLock;
 
   AutoLock FakeLock() {
-    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(nsExpirationTracker);
     return AutoLock(mLock);
   }
 
   Lock& GetMutex() override {
-    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
+    NS_ASSERT_OWNINGTHREAD(nsExpirationTracker);
     return mLock;
   }
 
@@ -514,6 +514,8 @@ class nsExpirationTracker
   void NotifyHandlerEnd() final {}
 
  protected:
+  NS_DECL_OWNINGTHREAD
+
   virtual void NotifyExpired(T* aObj) = 0;
 
  public:
@@ -522,7 +524,9 @@ class nsExpirationTracker
       : ::detail::SingleThreadedExpirationTracker<T, K>(aTimerPeriod, aName,
                                                         aEventTarget) {}
 
-  virtual ~nsExpirationTracker() = default;
+  virtual ~nsExpirationTracker() {
+    NS_ASSERT_OWNINGTHREAD(nsExpirationTracker);
+  }
 
   nsresult AddObject(T* aObj) {
     return this->AddObjectLocked(aObj, FakeLock());

@@ -4,14 +4,12 @@
 
 "use strict";
 
-const Services = require("Services");
-const { LocalizationHelper } = require("devtools/shared/l10n");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
 );
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
-const Telemetry = require("devtools/client/shared/telemetry");
-const { DOMHelpers } = require("devtools/shared/dom-helpers");
+const DevToolsUtils = require("resource://devtools/shared/DevToolsUtils.js");
+const { DOMHelpers } = require("resource://devtools/shared/dom-helpers.js");
 
 // The min-width of toolbox and browser toolbox.
 const WIDTH_CHEVRON_AND_MEATBALL = 50;
@@ -21,13 +19,13 @@ const ZOOM_VALUE_PREF = "devtools.toolbox.zoomValue";
 loader.lazyRequireGetter(
   this,
   "Toolbox",
-  "devtools/client/framework/toolbox",
+  "resource://devtools/client/framework/toolbox.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "Hosts",
-  "devtools/client/framework/toolbox-hosts",
+  "resource://devtools/client/framework/toolbox-hosts.js",
   true
 );
 
@@ -56,8 +54,18 @@ const LAST_HOST = "devtools.toolbox.host";
 const PREVIOUS_HOST = "devtools.toolbox.previousHost";
 let ID_COUNTER = 1;
 
-function ToolboxHostManager(target, hostType, hostOptions) {
-  this.target = target;
+function ToolboxHostManager(commands, hostType, hostOptions) {
+  this.commands = commands;
+
+  // When debugging a local tab, we keep a reference of the current tab into which the toolbox is displayed.
+  // This will only change from the descriptor's localTab when we start debugging popups (i.e. window.open).
+  this.currentTab = this.commands.descriptorFront.localTab;
+
+  // Keep the previously instantiated Host for all tabs where we displayed the Toolbox.
+  // This will only be useful when we start debugging popups (i.e. window.open).
+  // This is used to re-use the previous host instance when we re-select the original tab
+  // we were debugging before the popup opened.
+  this.hostPerTab = new Map();
 
   this.frameId = ID_COUNTER++;
 
@@ -69,34 +77,36 @@ function ToolboxHostManager(target, hostType, hostOptions) {
       hostType = Services.prefs.getCharPref(LAST_HOST);
     }
   }
+  this.eventController = new AbortController();
   this.host = this.createHost(hostType, hostOptions);
   this.hostType = hostType;
-  this.telemetry = new Telemetry();
   this.setMinWidthWithZoom = this.setMinWidthWithZoom.bind(this);
+  this._onMessage = this._onMessage.bind(this);
   Services.prefs.addObserver(ZOOM_VALUE_PREF, this.setMinWidthWithZoom);
 }
 
 ToolboxHostManager.prototype = {
   async create(toolId) {
     await this.host.create();
+    if (this.currentTab) {
+      this.hostPerTab.set(this.currentTab, this.host);
+    }
 
     this.host.frame.setAttribute("aria-label", L10N.getStr("toolbox.label"));
-    this.host.frame.ownerDocument.defaultView.addEventListener("message", this);
-    // We have to listen on capture as no event fires on bubble
-    this.host.frame.addEventListener("unload", this, true);
-
-    const msSinceProcessStart = parseInt(
-      this.telemetry.msSinceProcessStart(),
-      10
+    this.host.frame.ownerDocument.defaultView.addEventListener(
+      "message",
+      this._onMessage,
+      { signal: this.eventController.signal }
     );
+
     const toolbox = new Toolbox(
-      this.target,
+      this.commands,
       toolId,
       this.host.type,
       this.host.frame.contentWindow,
-      this.frameId,
-      msSinceProcessStart
+      this.frameId
     );
+    toolbox.once("destroyed", this._onToolboxDestroyed.bind(this));
 
     // Prevent reloading the toolbox when loading the tools in a tab
     // (e.g. from about:debugging)
@@ -105,15 +115,11 @@ ToolboxHostManager.prototype = {
       this.host.frame.setAttribute("src", "about:devtools-toolbox");
     }
 
-    // We set an attribute on the toolbox iframe so that apps do not need
-    // access to the toolbox internals in order to get the session ID.
-    this.host.frame.setAttribute("session_id", msSinceProcessStart);
-
     this.setMinWidthWithZoom();
     return toolbox;
   },
 
-  setMinWidthWithZoom: function() {
+  setMinWidthWithZoom() {
     const zoomValue = parseFloat(Services.prefs.getCharPref(ZOOM_VALUE_PREF));
 
     if (isNaN(zoomValue)) {
@@ -124,42 +130,28 @@ ToolboxHostManager.prototype = {
       this.hostType === Toolbox.HostType.LEFT ||
       this.hostType === Toolbox.HostType.RIGHT
     ) {
-      this.host.frame.minWidth =
-        WIDTH_CHEVRON_AND_MEATBALL_AND_CLOSE * zoomValue;
+      this.host.frame.style.minWidth =
+        WIDTH_CHEVRON_AND_MEATBALL_AND_CLOSE * zoomValue + "px";
     } else if (
       this.hostType === Toolbox.HostType.WINDOW ||
       this.hostType === Toolbox.HostType.PAGE ||
       this.hostType === Toolbox.HostType.BROWSERTOOLBOX
     ) {
-      this.host.frame.minWidth = WIDTH_CHEVRON_AND_MEATBALL * zoomValue;
+      this.host.frame.style.minWidth =
+        WIDTH_CHEVRON_AND_MEATBALL * zoomValue + "px";
     }
   },
 
-  handleEvent(event) {
-    switch (event.type) {
-      case "message":
-        this.onMessage(event);
-        break;
-      case "unload":
-        // On unload, host iframe already lost its contentWindow attribute, so
-        // we can only compare against locations. Here we filter two very
-        // different cases: preliminary about:blank document as well as iframes
-        // like tool iframes.
-        if (!event.target.location.href.startsWith("about:devtools-toolbox")) {
-          break;
-        }
-        // Don't destroy the host during unload event (esp., don't remove the
-        // iframe from DOM!). Otherwise the unload event for the toolbox
-        // document doesn't fire within the toolbox *document*! This is
-        // the unload event that fires on the toolbox *iframe*.
-        DevToolsUtils.executeSoon(() => {
-          this.destroy();
-        });
-        break;
-    }
+  _onToolboxDestroyed() {
+    // Delay self-destruction to let the debugger complete async destruction.
+    // Otherwise it throws when running browser_dbg-breakpoints-in-evaled-sources.js
+    // because the promise middleware delay each promise action using setTimeout...
+    DevToolsUtils.executeSoon(() => {
+      this.destroy();
+    });
   },
 
-  onMessage(event) {
+  _onMessage(event) {
     if (!event.data) {
       return;
     }
@@ -173,8 +165,14 @@ ToolboxHostManager.prototype = {
       case "switch-host":
         this.switchHost(msg.hostType);
         break;
+      case "switch-host-to-tab":
+        this.switchHostToTab(msg.tabBrowsingContextID);
+        break;
       case "raise-host":
         this.host.raise();
+        this.postMessage({
+          name: "host-raised",
+        });
         break;
       case "set-host-title":
         this.host.setTitle(msg.title);
@@ -189,10 +187,18 @@ ToolboxHostManager.prototype = {
 
   destroy() {
     Services.prefs.removeObserver(ZOOM_VALUE_PREF, this.setMinWidthWithZoom);
+    this.eventController.abort();
+    this.eventController = null;
     this.destroyHost();
+    // When we are debugging popup, we created host for each popup opened
+    // in some other tabs. Ensure destroying them here.
+    for (const host of this.hostPerTab.values()) {
+      host.destroy();
+    }
+    this.hostPerTab.clear();
     this.host = null;
     this.hostType = null;
-    this.target = null;
+    this.commands = null;
   },
 
   /**
@@ -212,12 +218,27 @@ ToolboxHostManager.prototype = {
     if (!Hosts[hostType]) {
       throw new Error("Unknown hostType: " + hostType);
     }
-
-    const newHost = new Hosts[hostType](this.target.localTab, options);
+    const newHost = new Hosts[hostType](this.currentTab, options);
     return newHost;
   },
 
-  async switchHost(hostType) {
+  /**
+   * Migrate the toolbox to a new host, while keeping it fully functional.
+   * The toolbox's iframe will be moved as-is to the new host.
+   *
+   * @param {String} hostType
+   *        The new type of host to spawn
+   * @param {Boolean} destroyPreviousHost
+   *        Defaults to true. If false is passed, we will avoid destroying
+   *        the previous host. This is helpful for popup debugging,
+   *        where we migrate the toolbox between two tabs. In this scenario
+   *        we are reusing previously instantiated hosts. This is especially
+   *        useful when we close the current tab and have to have an
+   *        already instantiated host to migrate to. If we don't have one,
+   *        the toolbox iframe will already be destroyed before we have a chance
+   *        to migrate it.
+   */
+  async switchHost(hostType, destroyPreviousHost = true) {
     if (hostType == "previous") {
       // Switch to the last used host for the toolbox UI.
       // This is determined by the devtools.toolbox.previousHost pref.
@@ -246,8 +267,9 @@ ToolboxHostManager.prototype = {
 
     // change toolbox document's parent to the new host
     newIframe.swapFrameLoaders(iframe);
-
-    this.destroyHost();
+    if (destroyPreviousHost) {
+      this.destroyHost();
+    }
 
     if (
       this.hostType !== Toolbox.HostType.BROWSERTOOLBOX &&
@@ -257,10 +279,16 @@ ToolboxHostManager.prototype = {
     }
 
     this.host = newHost;
+    if (this.currentTab) {
+      this.hostPerTab.set(this.currentTab, newHost);
+    }
     this.hostType = hostType;
     this.host.setTitle(this.host.frame.contentWindow.document.title);
-    this.host.frame.ownerDocument.defaultView.addEventListener("message", this);
-    this.host.frame.addEventListener("unload", this, true);
+    this.host.frame.ownerDocument.defaultView.addEventListener(
+      "message",
+      this._onMessage,
+      { signal: this.eventController.signal }
+    );
 
     this.setMinWidthWithZoom();
 
@@ -279,21 +307,51 @@ ToolboxHostManager.prototype = {
   },
 
   /**
+   * When we are debugging popup, we are moving around the toolbox between original tab
+   * and popup tabs. This method will only move the host to a new tab, while
+   * keeping the same host type.
+   *
+   * @param {String} tabBrowsingContextID
+   *        The ID of the browsing context of the tab we want to move to.
+   */
+  async switchHostToTab(tabBrowsingContextID) {
+    const { gBrowser } = this.host.frame.ownerDocument.defaultView;
+
+    const previousTab = this.currentTab;
+    const newTab = gBrowser.tabs.find(
+      tab => tab.linkedBrowser.browsingContext.id == tabBrowsingContextID
+    );
+    // Note that newTab will be undefined when the popup opens in a new top level window.
+    if (newTab && newTab != previousTab) {
+      this.currentTab = newTab;
+      const newHost = this.hostPerTab.get(this.currentTab);
+      if (newHost) {
+        newHost.frame.swapFrameLoaders(this.host.frame);
+        this.host = newHost;
+      } else {
+        await this.switchHost(this.hostType, false);
+      }
+      previousTab.addEventListener(
+        "TabSelect",
+        event => {
+          this.switchHostToTab(event.target.linkedBrowser.browsingContext.id);
+        },
+        { once: true, signal: this.eventController.signal }
+      );
+    }
+
+    this.postMessage({
+      name: "switched-host-to-tab",
+      browsingContextID: tabBrowsingContextID,
+    });
+  },
+
+  /**
    * Destroy the current host, and remove event listeners from its frame.
    *
    * @return {promise} to be resolved when the host is destroyed.
    */
   destroyHost() {
-    // When Firefox toplevel is closed, the frame may already be detached and
-    // the top level document gone
-    if (this.host.frame.ownerDocument.defaultView) {
-      this.host.frame.ownerDocument.defaultView.removeEventListener(
-        "message",
-        this
-      );
-    }
-    this.host.frame.removeEventListener("unload", this, true);
-
     return this.host.destroy();
   },
 };

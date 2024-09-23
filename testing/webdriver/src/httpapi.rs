@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use http::Method;
 use serde_json::Value;
 
@@ -5,9 +9,8 @@ use crate::command::{VoidWebDriverExtensionCommand, WebDriverCommand, WebDriverE
 use crate::error::WebDriverResult;
 use crate::Parameters;
 
-pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'static str, Route<U>)>
-{
-    return vec![
+pub fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'static str, Route<U>)> {
+    vec![
         (Method::POST, "/session", Route::NewSession),
         (Method::DELETE, "/session/{sessionId}", Route::DeleteSession),
         (Method::POST, "/session/{sessionId}/url", Route::Get),
@@ -116,13 +119,13 @@ pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'st
         ),
         (
             Method::POST,
-            "/session/{sessionId}/elements",
-            Route::FindElements,
+            "/session/{sessionId}/element/{elementId}/element",
+            Route::FindElementElement,
         ),
         (
             Method::POST,
-            "/session/{sessionId}/element/{elementId}/element",
-            Route::FindElementElement,
+            "/session/{sessionId}/elements",
+            Route::FindElements,
         ),
         (
             Method::POST,
@@ -130,9 +133,24 @@ pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'st
             Route::FindElementElements,
         ),
         (
+            Method::POST,
+            "/session/{sessionId}/shadow/{shadowId}/element",
+            Route::FindShadowRootElement,
+        ),
+        (
+            Method::POST,
+            "/session/{sessionId}/shadow/{shadowId}/elements",
+            Route::FindShadowRootElements,
+        ),
+        (
             Method::GET,
             "/session/{sessionId}/element/active",
             Route::GetActiveElement,
+        ),
+        (
+            Method::GET,
+            "/session/{sessionId}/element/{elementId}/shadow",
+            Route::GetShadowRoot,
         ),
         (
             Method::GET,
@@ -163,6 +181,16 @@ pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'st
             Method::GET,
             "/session/{sessionId}/element/{elementId}/text",
             Route::GetElementText,
+        ),
+        (
+            Method::GET,
+            "/session/{sessionId}/element/{elementId}/computedlabel",
+            Route::GetComputedLabel,
+        ),
+        (
+            Method::GET,
+            "/session/{sessionId}/element/{elementId}/computedrole",
+            Route::GetComputedRole,
         ),
         (
             Method::GET,
@@ -279,9 +307,45 @@ pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'st
             "/session/{sessionId}/actions",
             Route::ReleaseActions,
         ),
+        (Method::POST, "/session/{sessionId}/permissions", Route::SetPermission),
         (Method::POST, "/session/{sessionId}/print", Route::Print),
+        (
+            Method::POST,
+            "/sessions/{sessionId}/webauthn/authenticator",
+            Route::WebAuthnAddVirtualAuthenticator,
+        ),
+        (
+            Method::DELETE,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}",
+            Route::WebAuthnRemoveVirtualAuthenticator,
+        ),
+        (
+            Method::POST,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}/credential",
+            Route::WebAuthnAddCredential,
+        ),
+        (
+            Method::GET,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}/credentials",
+            Route::WebAuthnGetCredentials,
+        ),
+        (
+            Method::DELETE,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}/credentials/{credentialId}",
+            Route::WebAuthnRemoveCredential,
+        ),
+        (
+            Method::DELETE,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}/credentials",
+            Route::WebAuthnRemoveAllCredentials,
+        ),
+        (
+            Method::POST,
+            "/sessions/{sessionId}/webauthn/authenticator/{authenticatorId}/uv",
+            Route::WebAuthnSetUserVerified,
+        ),
         (Method::GET, "/status", Route::Status),
-    ];
+    ]
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -315,13 +379,18 @@ pub enum Route<U: WebDriverExtensionRoute> {
     FindElements,
     FindElementElement,
     FindElementElements,
+    FindShadowRootElement,
+    FindShadowRootElements,
     GetActiveElement,
+    GetShadowRoot,
     IsDisplayed,
     IsSelected,
     GetElementAttribute,
     GetElementProperty,
     GetCSSValue,
     GetElementText,
+    GetComputedLabel,
+    GetComputedRole,
     GetElementTagName,
     GetElementRect,
     IsEnabled,
@@ -346,8 +415,16 @@ pub enum Route<U: WebDriverExtensionRoute> {
     TakeScreenshot,
     TakeElementScreenshot,
     Print,
+    SetPermission,
     Status,
     Extension(U),
+    WebAuthnAddVirtualAuthenticator,
+    WebAuthnRemoveVirtualAuthenticator,
+    WebAuthnAddCredential,
+    WebAuthnGetCredentials,
+    WebAuthnRemoveCredential,
+    WebAuthnRemoveAllCredentials,
+    WebAuthnSetUserVerified,
 }
 
 pub trait WebDriverExtensionRoute: Clone + Send + PartialEq {

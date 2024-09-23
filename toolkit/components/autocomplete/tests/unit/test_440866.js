@@ -43,7 +43,7 @@ AutoCompleteInput.prototype = {
   popupOpen: false,
 
   popup: {
-    setSelectedIndex(aIndex) {},
+    setSelectedIndex() {},
     invalidate() {},
 
     // nsISupports implementation
@@ -61,12 +61,9 @@ function AutoCompleteResult(aValues, aComments, aStyles) {
   this._values = aValues;
   this._comments = aComments;
   this._styles = aStyles;
-
-  if (this._values.length) {
-    this.searchResult = Ci.nsIAutoCompleteResult.RESULT_SUCCESS;
-  } else {
-    this.searchResult = Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
-  }
+  this.searchResult = this._values.length
+    ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS
+    : Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
 }
 AutoCompleteResult.prototype = {
   constructor: AutoCompleteResult,
@@ -101,7 +98,7 @@ AutoCompleteResult.prototype = {
     return this._styles[aIndex];
   },
 
-  getImageAt(aIndex) {
+  getImageAt() {
     return "";
   },
 
@@ -109,7 +106,11 @@ AutoCompleteResult.prototype = {
     return this.getValueAt(aIndex);
   },
 
-  removeValueAt(aRowIndex) {},
+  isRemovableAt() {
+    return true;
+  },
+
+  removeValueAt() {},
 
   // nsISupports implementation
   QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteResult"]),
@@ -148,7 +149,7 @@ AutoCompleteSearch.prototype = {
   ]),
 
   // nsIFactory implementation
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };
@@ -160,9 +161,7 @@ AutoCompleteSearch.prototype = {
 function registerAutoCompleteSearch(aSearch) {
   var name = "@mozilla.org/autocomplete/search;1?name=" + aSearch.name;
 
-  var uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(
-    Ci.nsIUUIDGenerator
-  );
+  var uuidGenerator = Services.uuid;
   var cid = uuidGenerator.generateUUID();
 
   var desc = "Test AutoCompleteSearch";
@@ -216,13 +215,13 @@ function run_test() {
   var input = new AutoCompleteInput([emptySearch.name, regularSearch.name]);
   var numSearchesStarted = 0;
 
-  input.onSearchBegin = function() {
+  input.onSearchBegin = function () {
     numSearchesStarted++;
     Assert.equal(numSearchesStarted, 1);
     Assert.equal(input.searchCount, 2);
   };
 
-  input.onSearchComplete = function() {
+  input.onSearchComplete = function () {
     Assert.equal(numSearchesStarted, 1);
 
     Assert.equal(

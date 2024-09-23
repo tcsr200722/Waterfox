@@ -5,7 +5,7 @@
 /* Toolbars */
 .devtools-toolbar,
 .devtools-sidebar-tabs tabs {
-  -moz-appearance: none;
+  appearance: none;
   padding: 0;
   border-width: 0;
   border-bottom-width: 1px;
@@ -45,6 +45,11 @@
   margin-inline-start: -3px; /* This needs to match .devtools-toolbar's padding */
 }
 
+.devtools-input-toolbar .devtools-button {
+  /* adjust outline offset so it's not clipped */
+  --theme-outline-offset: -2px;
+}
+
 /* Expected space around a separator:
  * -----------------------
  *            4
@@ -63,13 +68,13 @@
 
 /* In-tools sidebar */
 .devtools-sidebar-tabs {
-  -moz-appearance: none;
+  appearance: none;
   margin: 0;
   height: 100%;
 }
 
 .devtools-sidebar-tabs > tabpanels {
-  -moz-appearance: none;
+  appearance: none;
   background: transparent;
   padding: 0;
   border: 0;
@@ -88,7 +93,7 @@
 }
 
 .devtools-sidebar-alltabs {
-  -moz-appearance: none;
+  appearance: none;
   height: 24px;
   line-height: 24px;
   padding: 0 4px;
@@ -108,7 +113,7 @@
 }
 
 .devtools-sidebar-tabs tabs > tab {
-  -moz-appearance: none;
+  appearance: none;
   /* We want to match the height of a toolbar with a toolbarbutton
    * First, we need to replicated the padding of toolbar (4px),
    * then we need to take the border of the buttons into account (1px).
@@ -119,7 +124,7 @@
   text-align: center;
   background-color: transparent;
   color: inherit;
-  -moz-box-flex: 1;
+  flex: 1;
   border-width: 0;
   border-inline-start-width: 1px;
   border-style: solid;

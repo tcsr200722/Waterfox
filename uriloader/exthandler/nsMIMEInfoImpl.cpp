@@ -11,26 +11,43 @@
 #include "nsIFile.h"
 #include "nsIFileURL.h"
 #include "nsEscape.h"
+#include "nsComponentManagerUtils.h"
 #include "nsCURILoader.h"
 #include "nsCExternalHandlerService.h"
 #include "nsIExternalProtocolService.h"
-#include "nsMimeTypes.h"
+#include "nsIObserverService.h"
+#include "nsISupportsPrimitives.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/StaticPrefs_browser.h"
+#include "xpcpublic.h"
 
 static bool sInitializedOurData = false;
-StaticRefPtr<nsIFile> sOurAppFile;
+mozilla::StaticRefPtr<nsIFile> sOurAppFile;
 
-static already_AddRefed<nsIFile> GetCanonicalExecutable(nsIFile* aFile) {
+/* static */
+already_AddRefed<nsIFile> nsMIMEInfoBase::GetCanonicalExecutable(
+    nsIFile* aFile) {
   nsCOMPtr<nsIFile> binary = aFile;
 #ifdef XP_MACOSX
+  nsAutoString path;
+  if (binary) {
+    binary->GetPath(path);
+  }
+  if (!StringEndsWith(path, u".app"_ns) && path.RFind(u".app/"_ns) == -1) {
+    // This shouldn't ever happen with Firefox's own binary, tracked in
+    // sOurAppFile, but might happen when called with other files.
+    return binary.forget();
+  }
   nsAutoString leafName;
   if (binary) {
     binary->GetLeafName(leafName);
   }
-  while (binary && !StringEndsWith(leafName, NS_LITERAL_STRING(".app"))) {
+  while (binary && !StringEndsWith(leafName, u".app"_ns)) {
     nsCOMPtr<nsIFile> parent;
     binary->GetParent(getter_AddRefs(parent));
-    binary = parent;
+    binary = std::move(parent);
     if (binary) {
       binary->GetLeafName(leafName);
     }
@@ -46,7 +63,7 @@ static void EnsureAppDetailsAvailable() {
   sInitializedOurData = true;
   nsCOMPtr<nsIFile> binary;
   XRE_GetBinaryPath(getter_AddRefs(binary));
-  sOurAppFile = GetCanonicalExecutable(binary);
+  sOurAppFile = nsMIMEInfoBase::GetCanonicalExecutable(binary);
   ClearOnShutdown(&sOurAppFile);
 }
 
@@ -67,14 +84,16 @@ NS_INTERFACE_MAP_END
 nsMIMEInfoBase::nsMIMEInfoBase(const char* aMIMEType)
     : mSchemeOrType(aMIMEType),
       mClass(eMIMEInfo),
-      mPreferredAction(nsIMIMEInfo::saveToDisk),
-      mAlwaysAskBeforeHandling(true) {}
+      mAlwaysAskBeforeHandling(
+          mozilla::StaticPrefs::
+              browser_download_always_ask_before_handling_new_types()) {}
 
 nsMIMEInfoBase::nsMIMEInfoBase(const nsACString& aMIMEType)
     : mSchemeOrType(aMIMEType),
       mClass(eMIMEInfo),
-      mPreferredAction(nsIMIMEInfo::saveToDisk),
-      mAlwaysAskBeforeHandling(true) {}
+      mAlwaysAskBeforeHandling(
+          mozilla::StaticPrefs::
+              browser_download_always_ask_before_handling_new_types()) {}
 
 // Constructor for a handler that lets the caller specify whether this is a
 // MIME handler or a protocol handler.  In the long run, these will be distinct
@@ -84,8 +103,10 @@ nsMIMEInfoBase::nsMIMEInfoBase(const nsACString& aMIMEType)
 nsMIMEInfoBase::nsMIMEInfoBase(const nsACString& aType, HandlerClass aClass)
     : mSchemeOrType(aType),
       mClass(aClass),
-      mPreferredAction(nsIMIMEInfo::saveToDisk),
-      mAlwaysAskBeforeHandling(true) {}
+      mAlwaysAskBeforeHandling(
+          mozilla::StaticPrefs::
+              browser_download_always_ask_before_handling_new_types() ||
+          aClass != eMIMEInfo) {}
 
 nsMIMEInfoBase::~nsMIMEInfoBase() {}
 
@@ -124,10 +145,14 @@ nsMIMEInfoBase::SetPrimaryExtension(const nsACString& aExtension) {
     mExtensions.RemoveElementAt(i);
   }
   mExtensions.InsertElementAt(0, aExtension);
+  mIsDefaultAppInfoFresh = false;
   return NS_OK;
 }
 
 void nsMIMEInfoBase::AddUniqueExtension(const nsACString& aExtension) {
+  if (mExtensions.IsEmpty()) {
+    mIsDefaultAppInfoFresh = false;
+  }
   if (!aExtension.IsEmpty() &&
       !mExtensions.Contains(aExtension,
                             nsCaseInsensitiveCStringArrayComparator())) {
@@ -206,6 +231,11 @@ nsMIMEInfoBase::GetDefaultDescription(nsAString& aDefaultDescription) {
 }
 
 NS_IMETHODIMP
+nsMIMEInfoBase::GetDefaultExecutable(nsIFile** aExecutable) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 nsMIMEInfoBase::GetPreferredApplicationHandler(
     nsIHandlerApp** aPreferredAppHandler) {
   *aPreferredAppHandler = mPreferredApplication;
@@ -258,25 +288,6 @@ nsMIMEInfoBase::SetAlwaysAskBeforeHandling(bool aAlwaysAsk) {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsMIMEInfoBase::IsPdf(bool* isPdf) {
-  if (mSchemeOrType == APPLICATION_PDF) {
-    *isPdf = true;
-    return NS_OK;
-  }
-
-  nsAutoCString fileExt;
-  nsresult rv = GetPrimaryExtension(fileExt);
-
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  *isPdf = fileExt.LowerCaseEqualsASCII("pdf") ||
-           fileExt.LowerCaseEqualsASCII(".pdf");
-  return NS_OK;
-}
-
 /* static */
 nsresult nsMIMEInfoBase::GetLocalFileFromURI(nsIURI* aURI, nsIFile** aFile) {
   nsresult rv;
@@ -304,6 +315,10 @@ nsMIMEInfoBase::LaunchWithFile(nsIFile* aFile) {
   NS_ASSERTION(mClass == eMIMEInfo,
                "nsMIMEInfoBase should have mClass == eMIMEInfo");
 
+  if (AutomationOnlyCheckIfLaunchStubbed(aFile)) {
+    return NS_OK;
+  }
+
   if (mPreferredAction == useSystemDefault) {
     return LaunchDefaultWithFile(aFile);
   }
@@ -326,8 +341,29 @@ nsMIMEInfoBase::LaunchWithFile(nsIFile* aFile) {
   return NS_ERROR_INVALID_ARG;
 }
 
+bool nsMIMEInfoBase::AutomationOnlyCheckIfLaunchStubbed(nsIFile* aFile) {
+  // This is pretty gross and hacky, but otherwise we can't automatically
+  // test this, and we keep breaking edgecases around this, so...
+  if (!xpc::IsInAutomation()) {
+    return false;
+  }
+  nsAutoString path;
+  aFile->GetPath(path);
+  nsCOMPtr<nsISupportsPRBool> canOpen =
+      do_CreateInstance("@mozilla.org/supports-PRBool;1");
+  canOpen->SetData(true);
+  nsCOMPtr<nsIObserverService> observerService =
+      mozilla::services::GetObserverService();
+  observerService->NotifyObservers(canOpen, "test-only-opening-downloaded-file",
+                                   path.get());
+  bool data = true;
+  canOpen->GetData(&data);
+  return !data;
+}
+
 NS_IMETHODIMP
-nsMIMEInfoBase::LaunchWithURI(nsIURI* aURI, BrowsingContext* aBrowsingContext) {
+nsMIMEInfoBase::LaunchWithURI(nsIURI* aURI,
+                              mozilla::dom::BrowsingContext* aBrowsingContext) {
   // This is only being called with protocol handlers
   NS_ASSERTION(mClass == eProtocolInfo,
                "nsMIMEInfoBase should be a protocol handler");
@@ -438,23 +474,37 @@ nsresult nsMIMEInfoBase::LaunchWithIProcess(nsIFile* aApp, const int aArgc,
 // nsMIMEInfoImpl implementation
 NS_IMETHODIMP
 nsMIMEInfoImpl::GetDefaultDescription(nsAString& aDefaultDescription) {
-  if (mDefaultAppDescription.IsEmpty() && mDefaultApplication) {
-    // Don't want to cache this, just in case someone resets the app
-    // without changing the description....
-    mDefaultApplication->GetLeafName(aDefaultDescription);
-  } else {
-    aDefaultDescription = mDefaultAppDescription;
+  if (mDefaultAppDescription.IsEmpty()) {
+    nsCOMPtr<nsIFile> defaultApp = GetDefaultApplication();
+    if (defaultApp) {
+      // Don't want to cache this, just in case someone resets the app
+      // without changing the description....
+      defaultApp->GetLeafName(aDefaultDescription);
+      return NS_OK;
+    }
   }
+  aDefaultDescription = mDefaultAppDescription;
 
   return NS_OK;
+}
+
+NS_IMETHODIMP nsMIMEInfoImpl::GetDefaultExecutable(nsIFile** aExecutable) {
+  nsCOMPtr<nsIFile> defaultApp = GetDefaultApplication();
+  if (defaultApp) {
+    defaultApp.forget(aExecutable);
+    return NS_OK;
+  }
+
+  return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
 nsMIMEInfoImpl::GetHasDefaultHandler(bool* _retval) {
   *_retval = !mDefaultAppDescription.IsEmpty();
-  if (mDefaultApplication) {
+  nsCOMPtr<nsIFile> defaultApp = GetDefaultApplication();
+  if (defaultApp) {
     bool exists;
-    *_retval = NS_SUCCEEDED(mDefaultApplication->Exists(&exists)) && exists;
+    *_retval = NS_SUCCEEDED(defaultApp->Exists(&exists)) && exists;
   }
   return NS_OK;
 }
@@ -462,11 +512,12 @@ nsMIMEInfoImpl::GetHasDefaultHandler(bool* _retval) {
 NS_IMETHODIMP
 nsMIMEInfoImpl::IsCurrentAppOSDefault(bool* _retval) {
   *_retval = false;
-  if (mDefaultApplication) {
+  nsCOMPtr<nsIFile> defaultApp = GetDefaultApplication();
+  if (defaultApp) {
     // Determine if the default executable is our executable.
     EnsureAppDetailsAvailable();
     bool isSame = false;
-    nsresult rv = mDefaultApplication->Equals(sOurAppFile, &isSame);
+    nsresult rv = defaultApp->Equals(sOurAppFile, &isSame);
     if (NS_FAILED(rv)) {
       return rv;
     }
@@ -476,9 +527,12 @@ nsMIMEInfoImpl::IsCurrentAppOSDefault(bool* _retval) {
 }
 
 nsresult nsMIMEInfoImpl::LaunchDefaultWithFile(nsIFile* aFile) {
-  if (!mDefaultApplication) return NS_ERROR_FILE_NOT_FOUND;
+  nsCOMPtr<nsIFile> defaultApp = GetDefaultApplication();
+  if (!defaultApp) {
+    return NS_ERROR_FILE_NOT_FOUND;
+  }
 
-  return LaunchWithIProcess(mDefaultApplication, aFile->NativePath());
+  return LaunchWithIProcess(defaultApp, aFile->NativePath());
 }
 
 NS_IMETHODIMP

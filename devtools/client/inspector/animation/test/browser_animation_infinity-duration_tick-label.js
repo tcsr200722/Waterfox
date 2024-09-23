@@ -6,7 +6,7 @@
 // Test of the content of tick label on timeline header
 // with the animation which has infinity duration.
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_infinity_duration.html");
   const { inspector, panel } = await openAnimationInspector();
 
@@ -19,11 +19,11 @@ add_task(async function() {
   );
 
   info("Check the tick label content with infinity duration animation only");
-  await selectNodeAndWaitForAnimations(".infinity", inspector);
-  is(
-    panel.querySelector(".animation-list-container .tick-label:last-child")
-      .textContent,
-    "\u221E",
-    "The content should be \u221E"
+  await selectNode(".infinity", inspector);
+  await waitUntil(
+    () =>
+      panel.querySelector(".animation-list-container .tick-label:last-child")
+        .textContent === "\u221E"
   );
+  ok(true, "The content should be \u221E");
 });

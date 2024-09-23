@@ -4,15 +4,20 @@
 
 "use strict";
 
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 loader.lazyRequireGetter(
   this,
   "HTMLTooltip",
-  "devtools/client/shared/widgets/tooltip/HTMLTooltip",
+  "resource://devtools/client/shared/widgets/tooltip/HTMLTooltip.js",
   true
 );
-loader.lazyRequireGetter(this, "colorUtils", "devtools/shared/css/color", true);
+loader.lazyRequireGetter(
+  this,
+  "colorUtils",
+  "resource://devtools/shared/css/color.js",
+  true
+);
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 let itemIdCounter = 0;
@@ -25,7 +30,7 @@ let itemIdCounter = 0;
  *        The toolbox document to attach the autocomplete popup panel.
  * @param {Object} options
  *        An object consiting any of the following options:
- *        - listId {String} The id for the list <LI> element.
+ *        - listId {String} The id for the list <UL> element.
  *        - position {String} The position for the tooltip ("top" or "bottom").
  *        - useXulWrapper {Boolean} If the tooltip is hosted in a XUL document, use a
  *          XUL panel in order to use all the screen viewport available (defaults to false).
@@ -34,6 +39,9 @@ let itemIdCounter = 0;
  *        - onSelect {String} Callback called when the selected index is updated.
  *        - onClick {String} Callback called when the autocomplete popup receives a click
  *          event. The selectedIndex will already be updated if need be.
+ *        - input {Element} Optional input element the popup will be bound to. If provided
+ *          the event listeners for navigating the autocomplete list are going to be
+ *          automatically added.
  */
 function AutocompletePopup(toolboxDoc, options = {}) {
   EventEmitter.decorate(this);
@@ -55,6 +63,14 @@ function AutocompletePopup(toolboxDoc, options = {}) {
   this.selectedIndex = -1;
 
   this.onClick = this.onClick.bind(this);
+  this.onInputKeyDown = this.onInputKeyDown.bind(this);
+  this.onInputBlur = this.onInputBlur.bind(this);
+
+  if (options.input) {
+    this.input = options.input;
+    options.input.addEventListener("keydown", this.onInputKeyDown);
+    options.input.addEventListener("blur", this.onInputBlur);
+  }
 }
 
 AutocompletePopup.prototype = {
@@ -109,29 +125,94 @@ AutocompletePopup.prototype = {
       "devtools-autocomplete-popup",
       "devtools-monospace"
     );
-    // Stop this appearing as an alert to accessibility.
-    this._tooltip.panel.setAttribute("role", "presentation");
     this._tooltip.panel.appendChild(this.list);
     this._tooltip.setContentSize({ height: "auto" });
 
     return this._tooltip;
   },
 
-  onSelect: function(e) {
+  onInputKeyDown(event) {
+    // Only handle the even if the popup is opened.
+    if (!this.isOpen) {
+      return;
+    }
+
+    if (
+      this.selectedItem &&
+      this.onClickCallback &&
+      (event.key === "Enter" ||
+        (event.key === "ArrowRight" && !event.shiftKey) ||
+        (event.key === "Tab" && !event.shiftKey))
+    ) {
+      this.onClickCallback(event, this.selectedItem);
+
+      // Prevent the associated keypress to be triggered.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    // Close the popup when the user hit Left Arrow, but let the keypress be triggered
+    // so the cursor moves as the user wanted.
+    if (event.key === "ArrowLeft" && !event.shiftKey) {
+      this.clearItems();
+      this.hidePopup();
+      return;
+    }
+
+    // Close the popup when the user hit Escape.
+    if (event.key === "Escape") {
+      this.clearItems();
+      this.hidePopup();
+      // Prevent the associated keypress to be triggered.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      this.selectNextItem();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      this.selectPreviousItem();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  },
+
+  onInputBlur() {
+    if (this.isOpen) {
+      this.clearItems();
+      this.hidePopup();
+    }
+  },
+
+  onSelect(e) {
     if (this.onSelectCallback) {
       this.onSelectCallback(e);
     }
   },
 
-  onClick: function(e) {
-    const item = e.target.closest(".autocomplete-item");
-    if (item && typeof item.dataset.index !== "undefined") {
-      this.selectItemAtIndex(parseInt(item.dataset.index, 10));
+  onClick(e) {
+    const itemEl = e.target.closest(".autocomplete-item");
+    const index =
+      typeof itemEl?.dataset?.index !== "undefined"
+        ? parseInt(itemEl.dataset.index, 10)
+        : null;
+
+    if (index !== null) {
+      this.selectItemAtIndex(index);
     }
 
     this.emit("popup-click");
+
     if (this.onClickCallback) {
-      this.onClickCallback(e);
+      const item = index !== null ? this.items[index] : null;
+      this.onClickCallback(e, item);
     }
   },
 
@@ -139,7 +220,7 @@ AutocompletePopup.prototype = {
    * Open the autocomplete popup panel.
    *
    * @param {Node} anchor
-   *        Optional node to anchor the panel to.
+   *        Optional node to anchor the panel to. Will default to this.input if it exists.
    * @param {Number} xOffset
    *        Horizontal offset in pixels from the left of the node to the left
    *        of the popup.
@@ -150,7 +231,11 @@ AutocompletePopup.prototype = {
    *        The position of item to select.
    * @param {Object} options: Check `selectItemAtIndex` for more information.
    */
-  openPopup: async function(anchor, xOffset = 0, yOffset = 0, index, options) {
+  async openPopup(anchor, xOffset = 0, yOffset = 0, index, options) {
+    if (!anchor && this.input) {
+      anchor = this.input;
+    }
+
     // Retrieve the anchor's document active element to add accessibility metadata.
     this._activeElement = anchor.ownerDocument.activeElement;
 
@@ -189,7 +274,7 @@ AutocompletePopup.prototype = {
    *        -  {Boolean} preventSelectCallback: true to not call this.onSelectCallback as
    *                     during the initial autoSelect.
    */
-  selectItemAtIndex: function(index, options = {}) {
+  selectItemAtIndex(index, options = {}) {
     const { preventSelectCallback } = options;
 
     if (!Number.isInteger(index)) {
@@ -230,7 +315,7 @@ AutocompletePopup.prototype = {
   /**
    * Hide the autocomplete popup panel.
    */
-  hidePopup: function() {
+  hidePopup() {
     this._pendingShowPromise = null;
     this.tooltip.once("hidden", () => {
       this.emit("popup-closed");
@@ -254,7 +339,7 @@ AutocompletePopup.prototype = {
    * same code. It is the responsability of the client code to perform DOM
    * cleanup.
    */
-  destroy: function() {
+  destroy() {
     this._pendingShowPromise = null;
     if (this.isOpen) {
       this.hidePopup();
@@ -274,6 +359,12 @@ AutocompletePopup.prototype = {
       this._tooltip = null;
     }
 
+    if (this.input) {
+      this.input.addEventListener("keydown", this.onInputKeyDown);
+      this.input.addEventListener("blur", this.onInputBlur);
+      this.input = null;
+    }
+
     this._document = null;
   },
 
@@ -285,7 +376,7 @@ AutocompletePopup.prototype = {
    *
    * @return {Object} The autocomplete item at index index.
    */
-  getItemAtIndex: function(index) {
+  getItemAtIndex(index) {
     return this.items[index];
   },
 
@@ -294,7 +385,7 @@ AutocompletePopup.prototype = {
    *
    * @return {Array} The array of autocomplete items.
    */
-  getItems: function() {
+  getItems() {
     // Return a copy of the array to avoid side effects from the caller code.
     return this.items.slice(0);
   },
@@ -310,7 +401,7 @@ AutocompletePopup.prototype = {
    *        -  {Boolean} preventSelectCallback: true to not call this.onSelectCallback as
    *                     during the initial autoSelect.
    */
-  setItems: function(items, selectedIndex, options) {
+  setItems(items, selectedIndex, options) {
     this.clearItems();
 
     // If there is no new items, no need to do unecessary work.
@@ -345,13 +436,25 @@ AutocompletePopup.prototype = {
       maxLabelLength = Math.max(label.length, maxLabelLength);
     });
 
-    this.list.style.width = maxLabelLength + 3 + "ch";
+    // The popup should be as wide as its longest item.
+    // We need to account for the inline padding
+    const fragmentClone = fragment.cloneNode(true);
+    let width = `calc(${
+      maxLabelLength + 3
+    }ch + 2 * var(--autocomplete-item-padding-inline, 0px))`;
+    // As well as add more space if we're displaying color swatches
+    if (fragment.querySelector(".autocomplete-colorswatch")) {
+      width = `calc(${width} + var(--autocomplete-item-color-swatch-size) + 2 * var(--autocomplete-item-color-swatch-margin-inline))`;
+    }
+    this.list.style.width = width;
     this.list.appendChild(fragment);
+    // Update the clone content to match the current list content.
+    this._listClone.appendChild(fragmentClone);
 
     this.selectItemAtIndex(selectedIndex, options);
   },
 
-  _scrollElementIntoViewIfNeeded: function(element) {
+  _scrollElementIntoViewIfNeeded(element) {
     const quads = element.getBoxQuads({
       relativeTo: this.tooltip.panel,
       createFramesForSuppressedWhitespace: false,
@@ -374,9 +477,12 @@ AutocompletePopup.prototype = {
   /**
    * Clear all the items from the autocomplete list.
    */
-  clearItems: function() {
+  clearItems() {
     if (this._list) {
       this._list.innerHTML = "";
+    }
+    if (this._listClone) {
+      this._listClone.innerHTML = "";
     }
 
     this.items = [];
@@ -412,7 +518,7 @@ AutocompletePopup.prototype = {
    * @param {String} id
    *        The id (as in DOM id) of the currently selected autocomplete suggestion
    */
-  _setActiveDescendant: function(id) {
+  _setActiveDescendant(id) {
     if (!this._activeElement) {
       return;
     }
@@ -426,21 +532,13 @@ AutocompletePopup.prototype = {
       anchorDoc.documentElement.appendChild(this._listClone);
     }
 
-    // Update the clone content to match the current list content.
-    const clone = this.list.cloneNode(true);
-    clone.className = "devtools-autocomplete-list-aria-clone";
-    this._listClone.replaceWith(clone);
-
-    // We also need to update the reference.
-    this._listClone = clone;
-
     this._activeElement.setAttribute("aria-activedescendant", id);
   },
 
   /**
    * Clear the aria-activedescendant attribute on the current active element.
    */
-  _clearActiveDescendant: function() {
+  _clearActiveDescendant() {
     if (!this._activeElement) {
       return;
     }
@@ -448,7 +546,7 @@ AutocompletePopup.prototype = {
     this._activeElement.removeAttribute("aria-activedescendant");
   },
 
-  createListItem: function(item, index, selected) {
+  createListItem(item, index, selected) {
     const listItem = this._document.createElementNS(HTML_NS, "li");
     // Items must have an id for accessibility.
     listItem.setAttribute("id", "autocomplete-item-" + itemIdCounter++);
@@ -530,7 +628,7 @@ AutocompletePopup.prototype = {
    * @return {Object}
    *         The newly selected item object.
    */
-  selectNextItem: function() {
+  selectNextItem() {
     if (this.selectedIndex < this.items.length - 1) {
       this.selectItemAtIndex(this.selectedIndex + 1);
     } else {
@@ -545,7 +643,7 @@ AutocompletePopup.prototype = {
    * @return {Object}
    *         The newly-selected item object.
    */
-  selectPreviousItem: function() {
+  selectPreviousItem() {
     if (this.selectedIndex > 0) {
       this.selectItemAtIndex(this.selectedIndex - 1);
     } else {
@@ -562,7 +660,7 @@ AutocompletePopup.prototype = {
    * @return {Object}
    *         The newly-selected item object.
    */
-  selectNextPageItem: function() {
+  selectNextPageItem() {
     const nextPageIndex = this.selectedIndex + this._itemsPerPane + 1;
     this.selectItemAtIndex(Math.min(nextPageIndex, this.itemCount - 1));
     return this.selectedItem;
@@ -575,7 +673,7 @@ AutocompletePopup.prototype = {
    * @return {Object}
    *         The newly-selected item object.
    */
-  selectPreviousPageItem: function() {
+  selectPreviousPageItem() {
     const prevPageIndex = this.selectedIndex - this._itemsPerPane - 1;
     this.selectItemAtIndex(Math.max(prevPageIndex, 0));
     return this.selectedItem;
@@ -588,7 +686,7 @@ AutocompletePopup.prototype = {
    * @return {Boolean}
    *         If the object represents a proper colour or not.
    */
-  _isValidColor: function(color) {
+  _isValidColor(color) {
     const colorObj = new colorUtils.CssColor(color);
     return colorObj.valid && !colorObj.specialValue;
   },

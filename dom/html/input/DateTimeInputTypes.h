@@ -9,8 +9,7 @@
 
 #include "mozilla/dom/InputType.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class DateTimeInputTypeBase : public InputType {
  public:
@@ -19,19 +18,21 @@ class DateTimeInputTypeBase : public InputType {
   bool IsValueMissing() const override;
   bool IsRangeOverflow() const override;
   bool IsRangeUnderflow() const override;
-  bool HasStepMismatch(bool aUseZeroIfValueNaN) const override;
+  bool HasStepMismatch() const override;
   bool HasBadInput() const override;
 
   nsresult GetRangeOverflowMessage(nsAString& aMessage) override;
   nsresult GetRangeUnderflowMessage(nsAString& aMessage) override;
 
-  nsresult MinMaxStepAttrChanged() override;
+  void MinMaxStepAttrChanged() override;
 
  protected:
   explicit DateTimeInputTypeBase(HTMLInputElement* aInputElement)
       : InputType(aInputElement) {}
 
   bool IsMutable() const override;
+
+  nsresult GetBadInputMessage(nsAString& aMessage) override = 0;
 
   /**
    * This method converts aValue (milliseconds within a day) to hours, minutes,
@@ -59,14 +60,9 @@ class DateInputType : public DateTimeInputTypeBase {
     return new (aMemory) DateInputType(aInputElement);
   }
 
-  // Currently, for input date and time, only date can have an invalid value, as
-  // we forbid or autocorrect values that are not in the valid range for time.
-  // For example, in 12hr format, if user enters '2' in the hour field, it will
-  // be treated as '02' and automatically advance to the next field.
   nsresult GetBadInputMessage(nsAString& aMessage) override;
 
-  bool ConvertStringToNumber(nsAString& aValue,
-                             Decimal& aResultValue) const override;
+  StringToNumberResult ConvertStringToNumber(const nsAString&) const override;
   bool ConvertNumberToString(Decimal aValue,
                              nsAString& aResultString) const override;
 
@@ -82,8 +78,9 @@ class TimeInputType : public DateTimeInputTypeBase {
     return new (aMemory) TimeInputType(aInputElement);
   }
 
-  bool ConvertStringToNumber(nsAString& aValue,
-                             Decimal& aResultValue) const override;
+  nsresult GetBadInputMessage(nsAString& aMessage) override;
+
+  StringToNumberResult ConvertStringToNumber(const nsAString&) const override;
   bool ConvertNumberToString(Decimal aValue,
                              nsAString& aResultString) const override;
   bool IsRangeOverflow() const override;
@@ -108,8 +105,8 @@ class WeekInputType : public DateTimeInputTypeBase {
     return new (aMemory) WeekInputType(aInputElement);
   }
 
-  bool ConvertStringToNumber(nsAString& aValue,
-                             Decimal& aResultValue) const override;
+  nsresult GetBadInputMessage(nsAString& aMessage) override;
+  StringToNumberResult ConvertStringToNumber(const nsAString&) const override;
   bool ConvertNumberToString(Decimal aValue,
                              nsAString& aResultString) const override;
 
@@ -125,8 +122,8 @@ class MonthInputType : public DateTimeInputTypeBase {
     return new (aMemory) MonthInputType(aInputElement);
   }
 
-  bool ConvertStringToNumber(nsAString& aValue,
-                             Decimal& aResultValue) const override;
+  nsresult GetBadInputMessage(nsAString& aMessage) override;
+  StringToNumberResult ConvertStringToNumber(const nsAString&) const override;
   bool ConvertNumberToString(Decimal aValue,
                              nsAString& aResultString) const override;
 
@@ -142,8 +139,8 @@ class DateTimeLocalInputType : public DateTimeInputTypeBase {
     return new (aMemory) DateTimeLocalInputType(aInputElement);
   }
 
-  bool ConvertStringToNumber(nsAString& aValue,
-                             Decimal& aResultValue) const override;
+  nsresult GetBadInputMessage(nsAString& aMessage) override;
+  StringToNumberResult ConvertStringToNumber(const nsAString&) const override;
   bool ConvertNumberToString(Decimal aValue,
                              nsAString& aResultString) const override;
 
@@ -152,7 +149,6 @@ class DateTimeLocalInputType : public DateTimeInputTypeBase {
       : DateTimeInputTypeBase(aInputElement) {}
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_DateTimeInputTypes_h__ */

@@ -1,8 +1,4 @@
 function frameScript() {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-
   function eventHandler(e) {
     if (!docShell) {
       sendAsyncMessage("Test:Fail", "docShell is null");
@@ -15,7 +11,7 @@ function frameScript() {
     ]);
   }
 
-  let outerID = content.windowUtils.outerWindowID;
+  let outerID = content.docShell.outerWindowID;
   function onOuterWindowDestroyed(subject, topic, data) {
     if (docShell) {
       sendAsyncMessage("Test:Fail", "docShell is non-null");
@@ -86,7 +82,7 @@ function test() {
 
   let browser = newTab.linkedBrowser;
   let frameLoader = browser.frameLoader;
-  ok(frameLoader !== null, "frameLoader looks okay");
+  Assert.notStrictEqual(frameLoader, null, "frameLoader looks okay");
 
   browser.messageManager.loadFrameScript(
     "data:,(" + frameScript.toString() + ")()",
@@ -105,10 +101,15 @@ function test() {
   browser.messageManager.addMessageListener(
     "Test:Event",
     msg => {
-      ok(msg.target === browser, "<browser> is correct");
-      ok(msg.targetFrameLoader === frameLoader, "frameLoader is correct");
-      ok(
-        browser.frameLoader === null,
+      Assert.strictEqual(msg.target, browser, "<browser> is correct");
+      Assert.strictEqual(
+        msg.targetFrameLoader,
+        frameLoader,
+        "frameLoader is correct"
+      );
+      Assert.strictEqual(
+        browser.frameLoader,
+        null,
         "browser frameloader null during teardown"
       );
 

@@ -3,27 +3,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "GMPLog.h"
 #include "GMPStorage.h"
 #include "nsClassHashtable.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
+
+#define LOG(msg, ...)                   \
+  MOZ_LOG(GetGMPLog(), LogLevel::Debug, \
+          ("GMPMemoryStorage=%p, " msg, this, ##__VA_ARGS__))
 
 class GMPMemoryStorage : public GMPStorage {
  public:
-  GMPErr Open(const nsCString& aRecordName) override {
+  GMPMemoryStorage(const nsACString& aNodeId, const nsAString& aGMPName) {
+    LOG("Created GMPMemoryStorage, nodeId=%s, gmpName=%s",
+        aNodeId.BeginReading(), NS_ConvertUTF16toUTF8(aGMPName).get());
+  }
+  ~GMPMemoryStorage() { LOG("Destroyed GMPMemoryStorage"); }
+
+  GMPErr Open(const nsACString& aRecordName) override {
     MOZ_ASSERT(!IsOpen(aRecordName));
 
-    Record* record = nullptr;
-    if (!mRecords.Get(aRecordName, &record)) {
-      record = new Record();
-      mRecords.Put(aRecordName, record);
-    }
+    Record* record = mRecords.GetOrInsertNew(aRecordName);
     record->mIsOpen = true;
     return GMPNoErr;
   }
 
-  bool IsOpen(const nsCString& aRecordName) const override {
+  bool IsOpen(const nsACString& aRecordName) const override {
     const Record* record = mRecords.Get(aRecordName);
     if (!record) {
       return false;
@@ -31,7 +37,7 @@ class GMPMemoryStorage : public GMPStorage {
     return record->mIsOpen;
   }
 
-  GMPErr Read(const nsCString& aRecordName,
+  GMPErr Read(const nsACString& aRecordName,
               nsTArray<uint8_t>& aOutBytes) override {
     const Record* record = mRecords.Get(aRecordName);
     if (!record) {
@@ -41,7 +47,7 @@ class GMPMemoryStorage : public GMPStorage {
     return GMPNoErr;
   }
 
-  GMPErr Write(const nsCString& aRecordName,
+  GMPErr Write(const nsACString& aRecordName,
                const nsTArray<uint8_t>& aBytes) override {
     Record* record = nullptr;
     if (!mRecords.Get(aRecordName, &record)) {
@@ -51,7 +57,7 @@ class GMPMemoryStorage : public GMPStorage {
     return GMPNoErr;
   }
 
-  void Close(const nsCString& aRecordName) override {
+  void Close(const nsACString& aRecordName) override {
     Record* record = nullptr;
     if (!mRecords.Get(aRecordName, &record)) {
       return;
@@ -73,9 +79,11 @@ class GMPMemoryStorage : public GMPStorage {
   nsClassHashtable<nsCStringHashKey, Record> mRecords;
 };
 
-already_AddRefed<GMPStorage> CreateGMPMemoryStorage() {
-  return RefPtr<GMPStorage>(new GMPMemoryStorage()).forget();
+already_AddRefed<GMPStorage> CreateGMPMemoryStorage(const nsACString& aNodeId,
+                                                    const nsAString& aGMPName) {
+  return RefPtr<GMPStorage>(new GMPMemoryStorage(aNodeId, aGMPName)).forget();
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+#undef LOG
+
+}  // namespace mozilla::gmp

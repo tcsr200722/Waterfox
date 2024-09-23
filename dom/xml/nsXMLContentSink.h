@@ -7,6 +7,7 @@
 #ifndef nsXMLContentSink_h__
 #define nsXMLContentSink_h__
 
+#include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin
 #include "mozilla/Attributes.h"
 #include "nsContentSink.h"
 #include "nsIXMLContentSink.h"
@@ -24,22 +25,15 @@ class nsIContent;
 class nsIParser;
 class nsTextNode;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class NodeInfo;
 class ProcessingInstruction;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-typedef enum {
+enum XMLContentSinkState {
   eXMLContentSinkState_InProlog,
   eXMLContentSinkState_InDocumentElement,
   eXMLContentSinkState_InEpilog
-} XMLContentSinkState;
-
-struct StackNode {
-  nsCOMPtr<nsIContent> mContent;
-  uint32_t mNumFlushed;
 };
 
 class nsXMLContentSink : public nsContentSink,
@@ -47,6 +41,11 @@ class nsXMLContentSink : public nsContentSink,
                          public nsITransformObserver,
                          public nsIExpatSink {
  public:
+  struct StackNode {
+    nsCOMPtr<nsIContent> mContent;
+    uint32_t mNumFlushed;
+  };
+
   nsXMLContentSink();
 
   nsresult Init(mozilla::dom::Document* aDoc, nsIURI* aURL,
@@ -55,8 +54,7 @@ class nsXMLContentSink : public nsContentSink,
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
 
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED_NO_UNLINK(nsXMLContentSink,
-                                                     nsContentSink)
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(nsXMLContentSink, nsContentSink)
 
   NS_DECL_NSIEXPATSINK
 
@@ -65,7 +63,7 @@ class nsXMLContentSink : public nsContentSink,
   NS_IMETHOD WillBuildModel(nsDTDMode aDTDMode) override;
   NS_IMETHOD DidBuildModel(bool aTerminated) override;
   NS_IMETHOD WillInterrupt(void) override;
-  NS_IMETHOD WillResume(void) override;
+  void WillResume() override;
   NS_IMETHOD SetParser(nsParserBase* aParser) override;
   virtual void InitialTranslationCompleted() override;
   virtual void FlushPendingNotifications(mozilla::FlushType aType) override;
@@ -73,12 +71,17 @@ class nsXMLContentSink : public nsContentSink,
   virtual nsISupports* GetTarget() override;
   virtual bool IsScriptExecuting() override;
   virtual void ContinueInterruptedParsingAsync() override;
+  bool IsPrettyPrintXML() const override { return mPrettyPrintXML; }
+  bool IsPrettyPrintHasSpecialRoot() const override {
+    return mPrettyPrintHasSpecialRoot;
+  }
 
   // nsITransformObserver
-  NS_IMETHOD OnDocumentCreated(
-      mozilla::dom::Document* aResultDocument) override;
-  NS_IMETHOD OnTransformDone(nsresult aResult,
+  nsresult OnDocumentCreated(mozilla::dom::Document* aSourceDocument,
                              mozilla::dom::Document* aResultDocument) override;
+  nsresult OnTransformDone(mozilla::dom::Document* aSourceDocument,
+                           nsresult aResult,
+                           mozilla::dom::Document* aResultDocument) override;
 
   // nsICSSLoaderObserver
   NS_IMETHOD StyleSheetLoaded(mozilla::StyleSheet* aSheet, bool aWasDeferred,
@@ -99,7 +102,8 @@ class nsXMLContentSink : public nsContentSink,
   // stylesheets are all done loading.
   virtual void MaybeStartLayout(bool aIgnorePendingSheets);
 
-  virtual nsresult AddAttributes(const char16_t** aNode, Element* aElement);
+  virtual nsresult AddAttributes(const char16_t** aNode,
+                                 mozilla::dom::Element* aElement);
   nsresult AddText(const char16_t* aString, int32_t aLength);
 
   virtual bool OnOpenContainer(const char16_t** aAtts, uint32_t aAttsCount,
@@ -147,7 +151,8 @@ class nsXMLContentSink : public nsContentSink,
   virtual nsresult ProcessStyleLinkFromHeader(
       const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
       const nsAString& aIntegrity, const nsAString& aType,
-      const nsAString& aMedia, const nsAString& aReferrerPolicy) override;
+      const nsAString& aMedia, const nsAString& aReferrerPolicy,
+      const nsAString& aFetchPriority) override;
 
   // Try to handle an XSLT style link.  If NS_OK is returned and aWasXSLT is not
   // null, *aWasXSLT will be set to whether we processed this link as XSLT.

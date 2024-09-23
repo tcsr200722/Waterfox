@@ -10,6 +10,7 @@
 #include "nsIFile.h"
 #include "nsINIParser.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/Try.h"
 #include "mozilla/URLPreloader.h"
 
 using namespace mozilla;
@@ -168,8 +169,8 @@ nsresult nsINIParser::GetString(const char* aSection, const char* aKey,
 }
 
 nsresult nsINIParser::GetSections(INISectionCallback aCB, void* aClosure) {
-  for (auto iter = mSections.Iter(); !iter.Done(); iter.Next()) {
-    if (!aCB(iter.Key(), aClosure)) {
+  for (const auto& key : mSections.Keys()) {
+    if (!aCB(key, aClosure)) {
       break;
     }
   }
@@ -199,28 +200,29 @@ nsresult nsINIParser::SetString(const char* aSection, const char* aKey,
     return NS_ERROR_INVALID_ARG;
   }
 
-  INIValue* v;
-  if (!mSections.Get(aSection, &v)) {
-    v = new INIValue(aKey, aValue);
-
-    mSections.Put(aSection, v);
-    return NS_OK;
-  }
-
-  // Check whether this key has already been specified; overwrite
-  // if so, or append if not.
-  while (v) {
-    if (!strcmp(aKey, v->key)) {
-      v->SetValue(aValue);
-      break;
+  mSections.WithEntryHandle(aSection, [&](auto&& entry) {
+    if (!entry) {
+      entry.Insert(MakeUnique<INIValue>(aKey, aValue));
+      return;
     }
-    if (!v->next) {
-      v->next = MakeUnique<INIValue>(aKey, aValue);
-      break;
+
+    INIValue* v = entry->get();
+
+    // Check whether this key has already been specified; overwrite
+    // if so, or append if not.
+    while (v) {
+      if (!strcmp(aKey, v->key)) {
+        v->SetValue(aValue);
+        break;
+      }
+      if (!v->next) {
+        v->next = MakeUnique<INIValue>(aKey, aValue);
+        break;
+      }
+      v = v->next.get();
     }
-    v = v->next.get();
-  }
-  NS_ASSERTION(v, "v should never be null coming out of this loop");
+    NS_ASSERTION(v, "v should never be null coming out of this loop");
+  });
 
   return NS_OK;
 }
@@ -240,8 +242,7 @@ nsresult nsINIParser::DeleteString(const char* aSection, const char* aKey) {
     if (!val->next) {
       mSections.Remove(aSection);
     } else {
-      mSections.Put(aSection, val->next.release());
-      delete val;
+      mSections.InsertOrUpdate(aSection, std::move(val->next));
     }
     return NS_OK;
   }
@@ -276,13 +277,13 @@ nsresult nsINIParser::RenameSection(const char* aSection,
     return NS_ERROR_INVALID_ARG;
   }
 
-  if (mSections.Get(aNewName, nullptr)) {
+  if (mSections.Contains(aNewName)) {
     return NS_ERROR_ILLEGAL_VALUE;
   }
 
   mozilla::UniquePtr<INIValue> val;
   if (mSections.Remove(aSection, &val)) {
-    mSections.Put(aNewName, val.release());
+    mSections.InsertOrUpdate(aNewName, std::move(val));
   } else {
     return NS_ERROR_FAILURE;
   }
@@ -293,15 +294,7 @@ nsresult nsINIParser::RenameSection(const char* aSection,
 nsresult nsINIParser::WriteToFile(nsIFile* aFile) {
   nsCString buffer;
 
-  for (auto iter = mSections.Iter(); !iter.Done(); iter.Next()) {
-    buffer.AppendPrintf("[%s]\n", iter.Key());
-    INIValue* val = iter.UserData();
-    while (val) {
-      buffer.AppendPrintf("%s=%s\n", val->key, val->value);
-      val = val->next.get();
-    }
-    buffer.AppendLiteral("\n");
-  }
+  WriteToString(buffer);
 
   FILE* writeFile;
   nsresult rv = aFile->OpenANSIFileDesc("w", &writeFile);
@@ -316,4 +309,16 @@ nsresult nsINIParser::WriteToFile(nsIFile* aFile) {
 
   fclose(writeFile);
   return NS_OK;
+}
+
+void nsINIParser::WriteToString(nsACString& aOutput) {
+  for (const auto& entry : mSections) {
+    aOutput.AppendPrintf("[%s]\n", entry.GetKey());
+    INIValue* val = entry.GetWeak();
+    while (val) {
+      aOutput.AppendPrintf("%s=%s\n", val->key, val->value);
+      val = val->next.get();
+    }
+    aOutput.AppendLiteral("\n");
+  }
 }

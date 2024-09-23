@@ -10,8 +10,7 @@
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/WorkerRef.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Information about a main or worker thread stack trace that can be accessed
 // from either kind of thread. When a worker thread stack is serialized, the
@@ -25,18 +24,18 @@ class SerializedStackHolder {
   RefPtr<ThreadSafeWorkerRef> mWorkerRef;
 
   // Write aStack's data into mHolder.
-  void WriteStack(JSContext* aCx, JS::HandleObject aStack);
+  void WriteStack(JSContext* aCx, JS::Handle<JSObject*> aStack);
 
  public:
   SerializedStackHolder();
 
   // Fill this holder with a main or worklet thread stack.
   void SerializeMainThreadOrWorkletStack(JSContext* aCx,
-                                         JS::HandleObject aStack);
+                                         JS::Handle<JSObject*> aStack);
 
   // Fill this holder with a worker thread stack.
   void SerializeWorkerStack(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
-                            JS::HandleObject aStack);
+                            JS::Handle<JSObject*> aStack);
 
   // Fill this holder with the current thread's current stack.
   void SerializeCurrentStack(JSContext* aCx);
@@ -54,6 +53,9 @@ class SerializedStackHolder {
 // Browsing Context or worker's WatchedByDevTools flag is set, so this should
 // be checked before creating the stack.
 UniquePtr<SerializedStackHolder> GetCurrentStackForNetMonitor(JSContext* aCx);
+
+// Construct a stack for the current thread.
+UniquePtr<SerializedStackHolder> GetCurrentStack(JSContext* aCx);
 
 // If aStackHolder is non-null, this notifies the net monitor that aStackHolder
 // is the stack from which aChannel originates. This must be called on the main
@@ -74,7 +76,6 @@ void ConvertSerializedStackToJSON(UniquePtr<SerializedStackHolder> aStackHolder,
 void NotifyNetworkMonitorAlternateStack(nsISupports* aChannel,
                                         const nsAString& aStackJSON);
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_SerializedStackHolder_h

@@ -32,8 +32,10 @@ typedef enum {
     ssl_hs_finished = 20,
     ssl_hs_certificate_status = 22,
     ssl_hs_key_update = 24,
+    ssl_hs_compressed_certificate = 25,
     ssl_hs_next_proto = 67,
-    ssl_hs_message_hash = 254, /* Not a real message. */
+    ssl_hs_message_hash = 254,           /* Not a real message. */
+    ssl_hs_ech_outer_client_hello = 257, /* Not a real message. */
 } SSLHandshakeType;
 
 typedef enum {
@@ -41,7 +43,7 @@ typedef enum {
     ssl_ct_alert = 21,
     ssl_ct_handshake = 22,
     ssl_ct_application_data = 23,
-    ssl_ct_ack = 25
+    ssl_ct_ack = 26
 } SSLContentType;
 
 typedef enum {
@@ -82,6 +84,8 @@ typedef enum {
     ssl_kea_ecdh_psk = 5,
     ssl_kea_dh_psk = 6,
     ssl_kea_tls13_any = 7,
+    ssl_kea_ecdh_hybrid = 8,
+    ssl_kea_ecdh_hybrid_psk = 9,
     ssl_kea_size /* number of ssl_kea_ algorithms */
 } SSLKEAType;
 
@@ -184,6 +188,12 @@ typedef enum {
     ssl_auth_size /* number of authentication types */
 } SSLAuthType;
 
+typedef enum {
+    ssl_psk_none = 0,
+    ssl_psk_resume = 1,
+    ssl_psk_external = 2,
+} SSLPskType;
+
 /* This is defined for backward compatibility reasons */
 #define ssl_auth_rsa ssl_auth_rsa_decrypt
 
@@ -250,8 +260,9 @@ typedef enum {
     ssl_grp_ffdhe_4096 = 258,
     ssl_grp_ffdhe_6144 = 259,
     ssl_grp_ffdhe_8192 = 260,
-    ssl_grp_none = 65537,        /* special value */
-    ssl_grp_ffdhe_custom = 65538 /* special value */
+    ssl_grp_kem_xyber768d00 = 25497, /* draft-tls-westerbaan-xyber768d00-02 */
+    ssl_grp_none = 65537,            /* special value */
+    ssl_grp_ffdhe_custom = 65538     /* special value */
 } SSLNamedGroup;
 
 typedef struct SSLExtraServerCertDataStr {
@@ -358,6 +369,20 @@ typedef struct SSLChannelInfoStr {
      */
     PRBool peerDelegCred;
 
+    /* The following fields were added in NSS 3.54. */
+    /* Indicates what type of PSK, if any, was used in a handshake. */
+    SSLPskType pskType;
+
+    /* The following fields were added in NSS 3.60 */
+    /* This field is PR_TRUE when the connection is established
+     * with TLS 1.3 Encrypted Client Hello. */
+    PRBool echAccepted;
+
+    /* The following field was added in NSS 3.66 */
+    /* This filed is PR_TRUE if the FIPS indicator is true for the
+     * current connection */
+    PRBool isFIPS;
+
     /* When adding new fields to this structure, please document the
      * NSS version in which they were added. */
 } SSLChannelInfo;
@@ -366,12 +391,13 @@ typedef struct SSLChannelInfoStr {
 #define ssl_preinfo_version (1U << 0)
 #define ssl_preinfo_cipher_suite (1U << 1)
 #define ssl_preinfo_0rtt_cipher_suite (1U << 2)
-/* ssl_preinfo_peer_auth covers peerDelegCred, authKeyBits, and scheme. Not
- * included in ssl_preinfo_all as it is client-only. */
+/* ssl_preinfo_peer_auth covers peerDelegCred, authKeyBits,
+ * and scheme. Not included in ssl_preinfo_all as it is client-only. */
 #define ssl_preinfo_peer_auth (1U << 3)
+#define ssl_preinfo_ech (1U << 4)
 /* ssl_preinfo_all doesn't contain ssl_preinfo_0rtt_cipher_suite because that
  * field is only set if 0-RTT is sent (client) or accepted (server). */
-#define ssl_preinfo_all (ssl_preinfo_version | ssl_preinfo_cipher_suite)
+#define ssl_preinfo_all (ssl_preinfo_version | ssl_preinfo_cipher_suite | ssl_preinfo_ech)
 
 typedef struct SSLPreliminaryChannelInfoStr {
     /* On return, SSL_GetPreliminaryChannelInfo sets |length| to the smaller of
@@ -418,6 +444,15 @@ typedef struct SSLPreliminaryChannelInfoStr {
     PRBool peerDelegCred;
     PRUint32 authKeyBits;
     SSLSignatureScheme signatureScheme;
+
+    /* The following fields were added in NSS 3.60. */
+    PRBool echAccepted;
+    /* If the application configured ECH but |!echAccepted|, authCertificate
+     * should use the following hostname extracted from the ECHConfig. */
+    const char* echPublicName;
+
+    /* The following field was added in NSS 3.88. */
+    PRBool ticketSupportsEarlyData;
 
     /* When adding new fields to this structure, please document the
      * NSS version in which they were added. */
@@ -506,6 +541,7 @@ typedef enum {
     ssl_signed_cert_timestamp_xtn = 18,
     ssl_padding_xtn = 21,
     ssl_extended_master_secret_xtn = 23,
+    ssl_certificate_compression_xtn = 27,
     ssl_record_size_limit_xtn = 28,
     ssl_delegated_credentials_xtn = 34,
     ssl_session_ticket_xtn = 35,
@@ -520,10 +556,14 @@ typedef enum {
     ssl_tls13_post_handshake_auth_xtn = 49,
     ssl_signature_algorithms_cert_xtn = 50,
     ssl_tls13_key_share_xtn = 51,
+    /* TLS 1.3 GREASE extension dummy type for builders. */
+    ssl_tls13_grease_xtn = 0x0a0a,
     ssl_next_proto_nego_xtn = 13172, /* Deprecated. */
     ssl_renegotiation_info_xtn = 0xff01,
     ssl_tls13_short_header_xtn = 0xff03, /* Deprecated. */
-    ssl_tls13_encrypted_sni_xtn = 0xffce,
+    ssl_tls13_outer_extensions_xtn = 0xfd00,
+    ssl_tls13_encrypted_client_hello_xtn = 0xfe0d,
+    ssl_tls13_encrypted_sni_xtn = 0xffce, /* Deprecated. */
 } SSLExtensionType;
 
 /* This is the old name for the supported_groups extensions. */
@@ -532,7 +572,7 @@ typedef enum {
 /* SSL_MAX_EXTENSIONS includes the maximum number of extensions that are
  * supported for any single message type.  That is, a ClientHello; ServerHello
  * and TLS 1.3 NewSessionTicket and HelloRetryRequest extensions have fewer. */
-#define SSL_MAX_EXTENSIONS 21
+#define SSL_MAX_EXTENSIONS 22
 
 /* Deprecated */
 typedef enum {
@@ -544,5 +584,26 @@ typedef enum {
     ssl_ff_dhe_8192_group = 5,
     ssl_dhe_group_max
 } SSLDHEGroupType;
+
+/* RFC 8879: TLS Certificate Compression - 3. Negotiating Certificate Compression
+** enum {
+**  zlib(1),
+**  brotli(2),
+**  zstd(3),
+**  (65535)
+** } CertificateCompressionAlgorithm;
+*/
+typedef PRUint16 SSLCertificateCompressionAlgorithmID;
+
+typedef struct SSLCertificateCompressionAlgorithmStr {
+    SSLCertificateCompressionAlgorithmID id;
+    const char* name;
+    SECStatus (*encode)(const SECItem* input, SECItem* output);
+    /* outputLen is the length of the output buffer passed by NSS to the decode function.
+     * Decode should return an error code if the decoding fails or the output buffer is not big enough.
+     * usedLen is an outparam which indicates the number of bytes the decoder consumed from output.
+     * Note: usedLen is always <= outputLen. */
+    SECStatus (*decode)(const SECItem* input, unsigned char* output, size_t outputLen, size_t* usedLen);
+} SSLCertificateCompressionAlgorithm;
 
 #endif /* __sslt_h_ */

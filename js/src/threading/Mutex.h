@@ -36,7 +36,7 @@ struct MutexId {
 // we must override it and make Mutex a friend.
 class MutexImpl : public mozilla::detail::MutexImpl {
  protected:
-  MutexImpl() : mozilla::detail::MutexImpl() {}
+  MutexImpl() {}
 
   friend class Mutex;
 };
@@ -50,39 +50,34 @@ class Mutex {
  private:
   MutexImpl impl_;
 
+#ifdef DEBUG
+  const MutexId id_;
+  Mutex* prev_ = nullptr;
+  ThreadId owningThread_;
+
+  static MOZ_THREAD_LOCAL(Mutex*) HeldMutexStack;
+#endif
+
  public:
 #ifdef DEBUG
   static bool Init();
+
+  explicit Mutex(const MutexId& id) : id_(id) { MOZ_ASSERT(id_.order != 0); }
+
+  void lock();
+  bool tryLock();
+  void unlock();
+  bool isOwnedByCurrentThread() const;
+  void assertOwnedByCurrentThread() const;
 #else
   static bool Init() { return true; }
-#endif
 
-  explicit Mutex(const MutexId& id)
-#ifdef DEBUG
-      : id_(id)
-#endif
-  {
-    MOZ_ASSERT(id_.order != 0);
-  }
+  explicit Mutex(const MutexId& id) {}
 
-#ifdef DEBUG
-  void lock();
-  void unlock();
-#else
   void lock() { impl_.lock(); }
+  bool tryLock() { return impl_.tryLock(); }
   void unlock() { impl_.unlock(); }
-#endif
-
-#ifdef DEBUG
- public:
-  bool ownedByCurrentThread() const;
-
- private:
-  const MutexId id_;
-  Mutex* prev_ = nullptr;
-  mozilla::Maybe<ThreadId> owningThread_;
-
-  static MOZ_THREAD_LOCAL(Mutex*) HeldMutexStack;
+  void assertOwnedByCurrentThread() const {};
 #endif
 
  private:

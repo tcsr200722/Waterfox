@@ -5,20 +5,22 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRSystem.h"
+
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/XRPermissionRequest.h"
 #include "mozilla/dom/XRSession.h"
 #include "mozilla/dom/BindingCallContext.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsThreadUtils.h"
 #include "gfxVR.h"
 #include "VRDisplayClient.h"
 #include "VRManagerChild.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace gfx;
 
@@ -120,8 +122,8 @@ already_AddRefed<Promise> XRSystem::IsSessionSupported(XRSessionMode aMode,
 }
 
 already_AddRefed<Promise> XRSystem::RequestSession(
-    JSContext* aCx, XRSessionMode aMode, const XRSessionInit& aOptions,
-    CallerType aCallerType, ErrorResult& aRv) {
+    XRSessionMode aMode, const XRSessionInit& aOptions, CallerType aCallerType,
+    ErrorResult& aRv) {
   nsCOMPtr<nsIGlobalObject> global = GetParentObject();
   NS_ENSURE_TRUE(global, nullptr);
 
@@ -131,23 +133,23 @@ already_AddRefed<Promise> XRSystem::RequestSession(
   bool immersive = (aMode == XRSessionMode::Immersive_vr ||
                     aMode == XRSessionMode::Immersive_ar);
 
-  if (immersive || aOptions.mRequiredFeatures.WasPassed() ||
-      aOptions.mOptionalFeatures.WasPassed()) {
-    if (!UserActivation::IsHandlingUserInput() &&
-        aCallerType != CallerType::System &&
-        StaticPrefs::dom_vr_require_gesture()) {
-      // A user gesture is required.
-      promise->MaybeRejectWithSecurityError("A user gesture is required.");
-      return promise.forget();
-    }
-  }
-
   // The document must be a responsible document, active and focused.
   nsCOMPtr<Document> responsibleDocument = GetDocumentIfCurrent();
   if (!responsibleDocument) {
     // The document is not trustworthy
     promise->MaybeRejectWithSecurityError("This document is not responsible.");
     return promise.forget();
+  }
+
+  if (immersive || aOptions.mRequiredFeatures.WasPassed() ||
+      aOptions.mOptionalFeatures.WasPassed()) {
+    if (!responsibleDocument->HasValidTransientUserGestureActivation() &&
+        aCallerType != CallerType::System &&
+        StaticPrefs::dom_vr_require_gesture()) {
+      // A user gesture is required.
+      promise->MaybeRejectWithSecurityError("A user gesture is required.");
+      return promise.forget();
+    }
   }
 
   nsTArray<XRReferenceSpaceType> requiredReferenceSpaceTypes;
@@ -164,49 +166,25 @@ already_AddRefed<Promise> XRSystem::RequestSession(
     requiredReferenceSpaceTypes.AppendElement(XRReferenceSpaceType::Local);
   }
 
-  BindingCallContext callCx(aCx, "XRSystem.requestSession");
-
   if (aOptions.mRequiredFeatures.WasPassed()) {
-    const Sequence<JS::Value>& arr = (aOptions.mRequiredFeatures.Value());
-    for (const JS::Value& val : arr) {
-      if (!val.isNull() && !val.isUndefined()) {
-        bool bFound = false;
-        JS::RootedValue v(aCx, val);
-        int index = 0;
-        if (FindEnumStringIndex<false>(
-                callCx, v, XRReferenceSpaceTypeValues::strings,
-                "XRReferenceSpaceType", "Argument 2 of XR.requestSession",
-                &index)) {
-          if (index >= 0) {
-            requiredReferenceSpaceTypes.AppendElement(
-                static_cast<XRReferenceSpaceType>(index));
-            bFound = true;
-          }
-        }
-        if (!bFound) {
-          promise->MaybeRejectWithNotSupportedError(
-              "A required feature for the XRSession is not available.");
-          return promise.forget();
-        }
+    for (const nsString& val : aOptions.mRequiredFeatures.Value()) {
+      Maybe<XRReferenceSpaceType> type =
+          StringToEnum<XRReferenceSpaceType>(val);
+      if (type.isNothing()) {
+        promise->MaybeRejectWithNotSupportedError(
+            "A required feature for the XRSession is not available.");
+        return promise.forget();
       }
+      requiredReferenceSpaceTypes.AppendElement(type.value());
     }
   }
 
   if (aOptions.mOptionalFeatures.WasPassed()) {
-    const Sequence<JS::Value>& arr = (aOptions.mOptionalFeatures.Value());
-    for (const JS::Value& val : arr) {
-      if (!val.isNull() && !val.isUndefined()) {
-        JS::RootedValue v(aCx, val);
-        int index = 0;
-        if (FindEnumStringIndex<false>(
-                callCx, v, XRReferenceSpaceTypeValues::strings,
-                "XRReferenceSpaceType", "Argument 2 of XR.requestSession",
-                &index)) {
-          if (index >= 0) {
-            optionalReferenceSpaceTypes.AppendElement(
-                static_cast<XRReferenceSpaceType>(index));
-          }
-        }
+    for (const nsString& val : aOptions.mOptionalFeatures.Value()) {
+      Maybe<XRReferenceSpaceType> type =
+          StringToEnum<XRReferenceSpaceType>(val);
+      if (type.isSome()) {
+        optionalReferenceSpaceTypes.AppendElement(type.value());
       }
     }
   }
@@ -476,11 +454,11 @@ void XRSystem::NotifyVRDisplayMounted(uint32_t aDisplayID) {}
 void XRSystem::NotifyVRDisplayUnmounted(uint32_t aDisplayID) {}
 
 void XRSystem::NotifyVRDisplayConnect(uint32_t aDisplayID) {
-  DispatchTrustedEvent(NS_LITERAL_STRING("devicechange"));
+  DispatchTrustedEvent(u"devicechange"_ns);
 }
 
 void XRSystem::NotifyVRDisplayDisconnect(uint32_t aDisplayID) {
-  DispatchTrustedEvent(NS_LITERAL_STRING("devicechange"));
+  DispatchTrustedEvent(u"devicechange"_ns);
 }
 
 void XRSystem::NotifyVRDisplayPresentChange(uint32_t aDisplayID) {}
@@ -611,9 +589,6 @@ uint32_t RequestSessionRequest::GetPresentationGroup() const {
 // IsSessionSupportedRequest cycle collection
 NS_IMPL_CYCLE_COLLECTION(IsSessionSupportedRequest, mPromise)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(IsSessionSupportedRequest, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(IsSessionSupportedRequest, Release)
-
 XRSessionMode IsSessionSupportedRequest::GetSessionMode() const {
   return mSessionMode;
 }
@@ -631,9 +606,8 @@ XRRequestSessionPermissionRequest::XRRequestSessionPermissionRequest(
     AllowCallback&& aAllowCallback,
     AllowAnySiteCallback&& aAllowAnySiteCallback,
     CancelCallback&& aCancelCallback)
-    : ContentPermissionRequestBase(aNodePrincipal, aWindow,
-                                   NS_LITERAL_CSTRING("dom.xr"),
-                                   NS_LITERAL_CSTRING("xr")),
+    : ContentPermissionRequestBase(aNodePrincipal, aWindow, "dom.xr"_ns,
+                                   "xr"_ns),
       mAllowCallback(std::move(aAllowCallback)),
       mAllowAnySiteCallback(std::move(aAllowAnySiteCallback)),
       mCancelCallback(std::move(aCancelCallback)),
@@ -656,7 +630,7 @@ XRRequestSessionPermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-XRRequestSessionPermissionRequest::Allow(JS::HandleValue aChoices) {
+XRRequestSessionPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   nsTArray<PermissionChoice> choices;
   nsresult rv = TranslateChoices(aChoices, mPermissionRequests, choices);
   if (NS_FAILED(rv)) {
@@ -702,8 +676,4 @@ XRRequestSessionPermissionRequest::Create(
 // RequestSessionRequest cycle collection
 NS_IMPL_CYCLE_COLLECTION(RequestSessionRequest, mPromise)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(RequestSessionRequest, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(RequestSessionRequest, Release)
-
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

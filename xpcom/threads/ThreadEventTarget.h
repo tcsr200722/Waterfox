@@ -13,12 +13,14 @@
 #include "nsISerialEventTarget.h"
 
 namespace mozilla {
+class DelayedRunnable;
 
 // ThreadEventTarget handles the details of posting an event to a thread. It can
 // be used with any ThreadTargetSink implementation.
 class ThreadEventTarget final : public nsISerialEventTarget {
  public:
-  ThreadEventTarget(ThreadTargetSink* aSink, bool aIsMainThread);
+  ThreadEventTarget(ThreadTargetSink* aSink, bool aIsMainThread,
+                    bool aBlockDispatch);
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIEVENTTARGET_FULL
@@ -30,7 +32,7 @@ class ThreadEventTarget final : public nsISerialEventTarget {
 
   // Sets the thread for which IsOnCurrentThread returns true to the current
   // thread.
-  void SetCurrentThread();
+  void SetCurrentThread(PRThread* aThread);
   // Call ClearCurrentThread() before the PRThread is deleted on thread join.
   void ClearCurrentThread();
 
@@ -42,11 +44,18 @@ class ThreadEventTarget final : public nsISerialEventTarget {
     return aMallocSizeOf(this) + n;
   }
 
+#ifdef DEBUG
+  static void XPCOMShutdownThreadsNotificationFinished();
+#endif
+
  private:
-  ~ThreadEventTarget() = default;
+  ~ThreadEventTarget();
 
   RefPtr<ThreadTargetSink> mSink;
-  bool mIsMainThread;
+#ifdef DEBUG
+  const bool mIsMainThread;
+#endif
+  const bool mBlockDispatch;
 };
 
 }  // namespace mozilla

@@ -1,5 +1,7 @@
 "use strict";
 
+Services.prefs.setBoolPref("extensions.manifestV3.enabled", true);
+
 const server = createHttpServer({ hosts: ["example.com"] });
 
 server.registerPathHandler("/dummy", (request, response) => {
@@ -8,40 +10,73 @@ server.registerPathHandler("/dummy", (request, response) => {
   response.write("<!DOCTYPE html><html></html>");
 });
 
+server.registerPathHandler("/worker.js", (request, response) => {
+  response.setStatusLine(request.httpVersion, 200, "OK");
+  response.setHeader("Content-Type", "application/javascript", false);
+  response.write("let x = true;");
+});
+
+const baseCSP = [];
+// Keep in sync with extensions.webextensions.base-content-security-policy
+baseCSP[2] = {
+  "script-src": [
+    "'unsafe-eval'",
+    "'wasm-unsafe-eval'",
+    "'unsafe-inline'",
+    "blob:",
+    "filesystem:",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "https://*",
+    "moz-extension:",
+    "'self'",
+  ],
+};
+// Keep in sync with extensions.webextensions.base-content-security-policy.v3
+baseCSP[3] = {
+  "script-src": ["'self'", "'wasm-unsafe-eval'"],
+};
+
+/**
+ * @typedef TestPolicyExpects
+ * @type {object}
+ * @param {boolean} workerEvalAllowed
+ * @param {boolean} workerImportScriptsAllowed
+ * @param {boolean} workerWasmAllowed
+ */
+
 /**
  * Tests that content security policies for an add-on are actually applied to *
  * documents that belong to it. This tests both the base policies and add-on
  * specific policies, and ensures that the parsed policies applied to the
  * document's principal match what was specified in the policy string.
  *
- * @param {object} [customCSP]
+ * @param {object} options
+ * @param {number} [options.manifest_version]
+ * @param {object} [options.customCSP]
+ * @param {TestPolicyExpects} options.expects
  */
-async function testPolicy(customCSP = null) {
+async function testPolicy({
+  manifest_version = 2,
+  customCSP = null,
+  expects = {},
+}) {
+  info(
+    `Enter tests for extension CSP with ${JSON.stringify({
+      manifest_version,
+      customCSP,
+    })}`
+  );
+
   let baseURL;
 
-  let baseCSP = {
-    "object-src": [
-      "blob:",
-      "filesystem:",
-      "https://*",
-      "moz-extension:",
-      "'self'",
-    ],
-    "script-src": [
-      "'unsafe-eval'",
-      "'unsafe-inline'",
-      "blob:",
-      "filesystem:",
-      "https://*",
-      "moz-extension:",
-      "'self'",
-    ],
-  };
-
   let addonCSP = {
-    "object-src": ["'self'"],
     "script-src": ["'self'"],
   };
+
+  if (manifest_version < 3) {
+    addonCSP["script-src"].push("'wasm-unsafe-eval'");
+  }
 
   let content_security_policy = null;
 
@@ -56,8 +91,13 @@ async function testPolicy(customCSP = null) {
   }
 
   function checkSource(name, policy, expected) {
+    // fallback to script-src when comparing worker-src if policy does not include worker-src
+    let policySrc =
+      name != "worker-src" || policy[name]
+        ? policy[name]
+        : policy["script-src"];
     equal(
-      JSON.stringify(policy[name].sort()),
+      JSON.stringify(policySrc.sort()),
       JSON.stringify(expected[name].sort()),
       `Expected value for ${name}`
     );
@@ -67,29 +107,85 @@ async function testPolicy(customCSP = null) {
     let policies = csp["csp-policies"];
 
     info(`Base policy for ${location}`);
+    let base = baseCSP[manifest_version];
 
     equal(policies[0]["report-only"], false, "Policy is not report-only");
-    checkSource("object-src", policies[0], baseCSP);
-    checkSource("script-src", policies[0], baseCSP);
+    for (let key in base) {
+      checkSource(key, policies[0], base);
+    }
 
     info(`Add-on policy for ${location}`);
 
     equal(policies[1]["report-only"], false, "Policy is not report-only");
-    checkSource("object-src", policies[1], addonCSP);
-    checkSource("script-src", policies[1], addonCSP);
+    for (let key in addonCSP) {
+      checkSource(key, policies[1], addonCSP);
+    }
   }
 
   function background() {
     browser.test.sendMessage(
       "base-url",
-      browser.extension.getURL("").replace(/\/$/, "")
+      browser.runtime.getURL("").replace(/\/$/, "")
     );
 
-    browser.test.sendMessage("background-csp", window.getCSP());
+    browser.test.sendMessage("background-csp", window.getCsp());
   }
 
   function tabScript() {
-    browser.test.sendMessage("tab-csp", window.getCSP());
+    browser.test.sendMessage("tab-csp", window.getCsp());
+
+    const worker = new Worker("worker.js");
+    worker.onmessage = event => {
+      browser.test.sendMessage("worker-csp", event.data);
+    };
+
+    worker.postMessage({});
+  }
+
+  function testWorker(port) {
+    this.onmessage = () => {
+      let importScriptsAllowed;
+      let evalAllowed;
+      let wasmAllowed;
+
+      try {
+        eval("let y = true;"); // eslint-disable-line no-eval
+        evalAllowed = true;
+      } catch (e) {
+        evalAllowed = false;
+      }
+
+      try {
+        new WebAssembly.Module(
+          new Uint8Array([0, 0x61, 0x73, 0x6d, 0x1, 0, 0, 0])
+        );
+        wasmAllowed = true;
+      } catch (e) {
+        wasmAllowed = false;
+      }
+
+      try {
+        // eslint-disable-next-line no-undef
+        importScripts(`http://127.0.0.1:${port}/worker.js`);
+        importScriptsAllowed = true;
+      } catch (e) {
+        importScriptsAllowed = false;
+      }
+
+      postMessage({ evalAllowed, importScriptsAllowed, wasmAllowed });
+    };
+  }
+
+  let web_accessible_resources = ["content.html", "tab.html"];
+  if (manifest_version == 3) {
+    let extension_pages = content_security_policy;
+    content_security_policy = {
+      extension_pages,
+    };
+    let resources = web_accessible_resources;
+    web_accessible_resources = [
+      { resources, matches: ["http://example.com/*"] },
+    ];
   }
 
   let extension = ExtensionTestUtils.loadExtension({
@@ -102,12 +198,13 @@ async function testPolicy(customCSP = null) {
       "tab.js": tabScript,
 
       "content.html": `<html><head><meta charset="utf-8"></head></html>`,
+      "worker.js": `(${testWorker})(${server.identity.primaryPort})`,
     },
 
     manifest: {
+      manifest_version,
       content_security_policy,
-
-      web_accessible_resources: ["content.html", "tab.html"],
+      web_accessible_resources,
     },
   });
 
@@ -117,11 +214,11 @@ async function testPolicy(customCSP = null) {
       "DOMWindowCreated",
       event => {
         let win = event.target.ownerGlobal;
-        function getCSP() {
+        function getCsp() {
           let { cspJSON } = win.document;
           return win.wrappedJSObject.JSON.parse(cspJSON);
         }
-        Cu.exportFunction(getCSP, win, { defineAs: "getCSP" });
+        Cu.exportFunction(getCsp, win, { defineAs: "getCsp" });
       },
       true
     );
@@ -129,7 +226,7 @@ async function testPolicy(customCSP = null) {
   let frameScriptURL = `data:,(${encodeURI(frameScript)}).call(this)`;
   Services.mm.loadFrameScript(frameScriptURL, true, true);
 
-  info(`Testing CSP for policy: ${content_security_policy}`);
+  info(`Testing CSP for policy: ${JSON.stringify(content_security_policy)}`);
 
   await extension.startup();
 
@@ -145,7 +242,7 @@ async function testPolicy(customCSP = null) {
   );
 
   let contentCSP = await contentPage.spawn(
-    `${baseURL}/content.html`,
+    [`${baseURL}/content.html`],
     async src => {
       let doc = this.content.document;
 
@@ -157,7 +254,7 @@ async function testPolicy(customCSP = null) {
         frame.onload = resolve;
       });
 
-      return frame.contentWindow.wrappedJSObject.getCSP();
+      return frame.contentWindow.wrappedJSObject.getCsp();
     }
   );
 
@@ -169,6 +266,15 @@ async function testPolicy(customCSP = null) {
 
   checkCSP(contentCSP, "content frame");
 
+  let workerCSP = await extension.awaitMessage("worker-csp");
+  equal(
+    workerCSP.importScriptsAllowed,
+    expects.workerImportAllowed,
+    "worker importScript"
+  );
+  equal(workerCSP.evalAllowed, expects.workerEvalAllowed, "worker eval");
+  equal(workerCSP.wasmAllowed, expects.workerWasmAllowed, "worker wasm");
+
   await contentPage.close();
   await tabPage.close();
 
@@ -178,18 +284,79 @@ async function testPolicy(customCSP = null) {
 }
 
 add_task(async function testCSP() {
-  await testPolicy(null);
+  await testPolicy({
+    manifest_version: 2,
+    customCSP: null,
+    expects: {
+      workerEvalAllowed: false,
+      workerImportAllowed: false,
+      workerWasmAllowed: true,
+    },
+  });
 
   let hash =
     "'sha256-NjZhMDQ1YjQ1MjEwMmM1OWQ4NDBlYzA5N2Q1OWQ5NDY3ZTEzYTNmMzRmNjQ5NGU1MzlmZmQzMmMxYmIzNWYxOCAgLQo='";
 
   await testPolicy({
-    "object-src": "'self' https://*.example.com",
-    "script-src": `'self' https://*.example.com 'unsafe-eval' ${hash}`,
+    manifest_version: 2,
+    customCSP: {
+      "script-src": `'self' https://*.example.com 'unsafe-eval' ${hash}`,
+    },
+    expects: {
+      workerEvalAllowed: true,
+      workerImportAllowed: false,
+      workerWasmAllowed: true,
+    },
   });
 
   await testPolicy({
-    "object-src": "'none'",
-    "script-src": `'self'`,
+    manifest_version: 2,
+    customCSP: {
+      "script-src": `'self'`,
+    },
+    expects: {
+      workerEvalAllowed: false,
+      workerImportAllowed: false,
+      workerWasmAllowed: true,
+    },
+  });
+
+  await testPolicy({
+    manifest_version: 3,
+    customCSP: {
+      "script-src": `'self' ${hash}`,
+      "worker-src": `'self'`,
+    },
+    expects: {
+      workerEvalAllowed: false,
+      workerImportAllowed: false,
+      workerWasmAllowed: false,
+    },
+  });
+
+  await testPolicy({
+    manifest_version: 3,
+    customCSP: {
+      "script-src": `'self'`,
+      "worker-src": `'self'`,
+    },
+    expects: {
+      workerEvalAllowed: false,
+      workerImportAllowed: false,
+      workerWasmAllowed: false,
+    },
+  });
+
+  await testPolicy({
+    manifest_version: 3,
+    customCSP: {
+      "script-src": `'self' 'wasm-unsafe-eval'`,
+      "worker-src": `'self' 'wasm-unsafe-eval'`,
+    },
+    expects: {
+      workerEvalAllowed: false,
+      workerImportAllowed: false,
+      workerWasmAllowed: true,
+    },
   });
 });

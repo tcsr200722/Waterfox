@@ -13,6 +13,8 @@
 namespace mozilla {
 namespace widget {
 
+enum class TransparencyMode : uint8_t;
+
 namespace remote_backbuffer {
 class Client;
 }
@@ -28,8 +30,12 @@ class CompositorWidgetParent final : public PCompositorWidgetParent,
 
   bool PreRender(WidgetRenderingContext*) override;
   void PostRender(WidgetRenderingContext*) override;
-  already_AddRefed<gfx::DrawTarget> StartRemoteDrawing() override;
-  void EndRemoteDrawing() override;
+  already_AddRefed<gfx::DrawTarget> StartRemoteDrawingInRegion(
+      const LayoutDeviceIntRegion& aInvalidRegion,
+      layers::BufferMode* aBufferMode) override;
+  void EndRemoteDrawingInRegion(
+      gfx::DrawTarget* aDrawTarget,
+      const LayoutDeviceIntRegion& aInvalidRegion) override;
   bool NeedsToDeferEndRemoteDrawing() override;
   LayoutDeviceIntSize GetClientSize() override;
   already_AddRefed<gfx::DrawTarget> GetBackBufferDrawTarget(
@@ -39,14 +45,17 @@ class CompositorWidgetParent final : public PCompositorWidgetParent,
   bool InitCompositor(layers::Compositor* aCompositor) override;
   bool IsHidden() const override;
 
-  bool HasGlass() const override;
+  nsSizeMode GetWindowSizeMode() const override;
+  bool GetWindowIsFullyOccluded() const override;
 
   mozilla::ipc::IPCResult RecvInitialize(
       const RemoteBackbufferHandles& aRemoteHandles) override;
   mozilla::ipc::IPCResult RecvEnterPresentLock() override;
   mozilla::ipc::IPCResult RecvLeavePresentLock() override;
   mozilla::ipc::IPCResult RecvUpdateTransparency(
-      const nsTransparencyMode& aMode) override;
+      const TransparencyMode& aMode) override;
+  mozilla::ipc::IPCResult RecvNotifyVisibilityUpdated(
+      const nsSizeMode& aSizeMode, const bool& aIsFullyOccluded) override;
   mozilla::ipc::IPCResult RecvClearTransparentWindow() override;
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
@@ -68,11 +77,11 @@ class CompositorWidgetParent final : public PCompositorWidgetParent,
   gfx::CriticalSection mPresentLock;
 
   // Transparency handling.
-  mozilla::Atomic<nsTransparencyMode, MemoryOrdering::Relaxed>
-      mTransparencyMode;
+  mozilla::Atomic<uint32_t, MemoryOrdering::Relaxed> mTransparencyMode;
 
-  // Locked back buffer of BasicCompositor
-  uint8_t* mLockedBackBufferData;
+  // Visibility handling.
+  mozilla::Atomic<nsSizeMode, MemoryOrdering::Relaxed> mSizeMode;
+  mozilla::Atomic<bool, MemoryOrdering::Relaxed> mIsFullyOccluded;
 
   std::unique_ptr<remote_backbuffer::Client> mRemoteBackbufferClient;
 };

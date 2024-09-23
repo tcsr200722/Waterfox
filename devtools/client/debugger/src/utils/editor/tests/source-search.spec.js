@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import {
   find,
   searchSourceForHighlight,
@@ -108,8 +106,8 @@ describe("source-search", () => {
           to: () => to,
         }),
       };
-      const ed = { alignLine: jest.fn() };
-      const ctx = { cm, ed };
+      const editor = { alignLine: jest.fn() };
+      const ctx = { cm, editor };
 
       expect(ctx.cm.state).toEqual({});
       searchSourceForHighlight(ctx, false, "test", false, modifiers, line, 1);
@@ -122,7 +120,7 @@ describe("source-search", () => {
       );
       expect(ctx.cm.getCursor).toHaveBeenCalledWith("anchor");
       expect(ctx.cm.getCursor).toHaveBeenCalledWith("head");
-      expect(ed.alignLine).toHaveBeenCalledWith(line, "center");
+      expect(editor.alignLine).toHaveBeenCalledWith(line, "center");
       expect(cm.setSelection).toHaveBeenCalledWith(from, to);
     });
   });

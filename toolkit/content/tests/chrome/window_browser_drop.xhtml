@@ -2,7 +2,8 @@
 <?xml-stylesheet href="chrome://global/skin" type="text/css"?>
 
 <window title="Browser Drop Tests"
-        xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+        xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml">
 
   <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"/>
   <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"/>
@@ -10,13 +11,13 @@
 <script>
 <![CDATA[
 
-const { ContentTask } = ChromeUtils.import("resource://testing-common/ContentTask.jsm");
+const { ContentTask } = ChromeUtils.importESModule(
+  "resource://testing-common/ContentTask.sys.mjs"
+);
 
 function dropOnRemoteBrowserAsync(browser, data, shouldExpectStateChange) {
   ContentTask.setTestScope(window); // Need this so is/isnot/ok are available inside the contenttask
   return ContentTask.spawn(browser, {data, shouldExpectStateChange}, async function({data, shouldExpectStateChange}) {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
     if (!content.document.documentElement) {
       // Wait until the testing document gets loaded.
       await new Promise(resolve => {
@@ -46,7 +47,7 @@ function dropOnRemoteBrowserAsync(browser, data, shouldExpectStateChange) {
     } catch (ex) {
       if (shouldExpectStateChange) {
         ok(false, "Should not have gotten an exception from the dropped link handler, but got: " + ex);
-        Cu.reportError(ex);
+        console.error(ex);
       }
     }
 
@@ -59,7 +60,7 @@ async function expectLink(browser, expectedLinks, data, testid, onbody=false) {
   let lastLinksPromise = new Promise(resolve => {
     browser.droppedLinkHandler = function(event, links) {
       info(`droppedLinkHandler called, received links ${JSON.stringify(links)}`);
-      if (expectedLinks.length == 0) {
+      if (!expectedLinks.length) {
         ok(false, `droppedLinkHandler called for ${JSON.stringify(links)} which we didn't expect.`);
       }
       lastLinks = links;
@@ -73,14 +74,14 @@ async function expectLink(browser, expectedLinks, data, testid, onbody=false) {
   }
   let links;
   if (browser.isRemoteBrowser) {
-    let remoteLinks = await dropOnRemoteBrowserAsync(browser, data, expectedLinks.length != 0);
+    let remoteLinks = await dropOnRemoteBrowserAsync(browser, data, expectedLinks.length);
     is(remoteLinks.length, expectedLinks.length, testid + " remote links length");
     for (let i = 0, length = remoteLinks.length; i < length; i++) {
       is(remoteLinks[i].url, expectedLinks[i].url, testid + "[" + i + "] remote link");
       is(remoteLinks[i].name, expectedLinks[i].name, testid + "[" + i + "] remote name");
     }
 
-    if (expectedLinks.length == 0) {
+    if (!expectedLinks.length) {
       // There is no way to check if nothing happens asynchronously.
       return;
     }
@@ -230,10 +231,19 @@ function ok(v, n) { window.arguments[0].SimpleTest.ok(v,n); }
 ]]>
 </script>
 
-<browser id="chromechild" src="about:blank"/>
-<browser id="contentchild" type="content" width="100" height="100"
-         src="data:text/html,&lt;html draggable='true'&gt;&lt;body draggable='true' style='width: 100px; height: 100px;' ondragover='event.preventDefault()' ondrop='if (window.stopMode) event.stopPropagation(); if (window.cancelMode) event.preventDefault();'&gt;&lt;/body&gt;&lt;/html&gt;"/>
+<html:style>
+  /* FIXME: This is just preserving behavior from before bug 1656081.
+   * Without this there's one subtest that fails, but the browser
+   * elements were zero-sized before so... */
+  browser {
+    min-width: 0;
+    min-height: 0;
+  }
+</html:style>
 
-<browser id="remote-contentchild" type="content" width="100" height="100" remote="true"
+<browser id="chromechild" src="about:blank"/>
+<browser id="contentchild" type="content" style="width: 100px; height: 100px"
+         src="data:text/html,&lt;html draggable='true'&gt;&lt;body draggable='true' style='width: 100px; height: 100px;' ondragover='event.preventDefault()' ondrop='if (window.stopMode) event.stopPropagation(); if (window.cancelMode) event.preventDefault();'&gt;&lt;/body&gt;&lt;/html&gt;"/>
+<browser id="remote-contentchild" type="content" remote="true" style="width: 100px; height: 100px"
          src="data:text/html,&lt;html draggable='true'&gt;&lt;body draggable='true' style='width: 100px; height: 100px;' ondragover='event.preventDefault()' ondrop='if (window.stopMode) event.stopPropagation(); if (window.cancelMode) event.preventDefault();'&gt;&lt;/body&gt;&lt;/html&gt;"/>
 </window>

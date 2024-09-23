@@ -61,10 +61,42 @@ struct EnumTypeFitsWithin
                 "must provide an integral type");
 };
 
+/**
+ * Get the underlying value of an enum, but typesafe.
+ *
+ * example:
+ *
+ *   enum class Pet : int16_t {
+ *     Cat,
+ *     Dog,
+ *     Fish
+ *   };
+ *   enum class Plant {
+ *     Flower,
+ *     Tree,
+ *     Vine
+ *   };
+ *   UnderlyingValue(Pet::Fish) -> int16_t(2)
+ *   UnderlyingValue(Plant::Tree) -> int(1)
+ */
+template <typename T>
+inline constexpr auto UnderlyingValue(const T v) {
+  static_assert(std::is_enum_v<T>);
+  return static_cast<typename std::underlying_type<T>::type>(v);
+}
+
 /*
- * Provides information about highest enum member value.
- * Each specialization of struct MaxEnumValue should define
- * "static constexpr unsigned int value".
+ * Specialize either MaxContiguousEnumValue or MaxEnumValue to provide the
+ * highest enum member value for an enum class. Note that specializing
+ * MaxContiguousEnumValue will make MaxEnumValue just take its value from the
+ * MaxContiguousEnumValue specialization.
+ *
+ * Specialize MinContiguousEnumValue and MaxContiguousEnumValue to provide both
+ * lowest and highest enum member values for an enum class with contiguous
+ * values.
+ *
+ * Each specialization of these structs should define "static constexpr" member
+ * variable named "value".
  *
  * example:
  *
@@ -78,11 +110,39 @@ struct EnumTypeFitsWithin
  *   template <>
  *   struct MaxEnumValue<ExampleEnum>
  *   {
- *     static constexpr unsigned int value = static_cast<unsigned int>(HAMSTER);
+ *     static constexpr ExampleEnumvalue = HAMSTER;
  *   };
  */
+
 template <typename T>
-struct MaxEnumValue;  // no need to define the primary template
+struct MinContiguousEnumValue {
+  static constexpr T value = static_cast<T>(0);
+};
+
+template <typename T>
+struct MaxContiguousEnumValue;
+
+template <typename T>
+struct MaxEnumValue {
+  static constexpr auto value = MaxContiguousEnumValue<T>::value;
+};
+
+// Provides the min and max values for a contiguous enum (requires at least
+// MaxContiguousEnumValue to be defined).
+template <typename T>
+struct ContiguousEnumValues {
+  static constexpr auto min = MinContiguousEnumValue<T>::value;
+  static constexpr auto max = MaxContiguousEnumValue<T>::value;
+};
+
+// Provides the total number of values for a contiguous enum (requires at least
+// MaxContiguousEnumValue to be defined).
+template <typename T>
+struct ContiguousEnumSize {
+  static constexpr size_t value =
+      UnderlyingValue(ContiguousEnumValues<T>::max) + 1 -
+      UnderlyingValue(ContiguousEnumValues<T>::min);
+};
 
 }  // namespace mozilla
 

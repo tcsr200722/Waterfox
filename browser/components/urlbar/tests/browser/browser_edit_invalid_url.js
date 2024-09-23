@@ -5,9 +5,9 @@
 // modifies the selected url, or just closes the results pane, we do a visit
 // rather than searching for the trimmed string.
 
-const url = BrowserUtils.trimURLProtocol + "invalid.somehost/mytest";
+const url = BrowserUIUtils.trimURLProtocol + "invalid.somehost/mytest";
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.trimURLs", true]],
   });
@@ -18,7 +18,6 @@ add_task(async function setup() {
 add_task(async function test_escape() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus,
     value: "invalid",
   });
   // Look for our result.
@@ -51,7 +50,6 @@ add_task(async function test_escape() {
 add_task(async function test_edit_url() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus,
     value: "invalid",
   });
   // Look for our result.

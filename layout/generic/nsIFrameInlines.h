@@ -8,24 +8,22 @@
 #define nsIFrameInlines_h___
 
 #include "mozilla/dom/ElementInlines.h"
+#include "mozilla/ComputedStyleInlines.h"
 #include "nsContainerFrame.h"
+#include "nsIContentInlines.h"
+#include "nsLayoutUtils.h"
 #include "nsPlaceholderFrame.h"
-#include "nsStyleStructInlines.h"
 #include "nsCSSAnonBoxes.h"
 #include "nsFrameManager.h"
 
-bool nsIFrame::IsSVGGeometryFrameOrSubclass() const {
-  return IsSVGGeometryFrame() || IsSVGImageFrame();
-}
-
 bool nsIFrame::IsFlexItem() const {
   return GetParent() && GetParent()->IsFlexContainerFrame() &&
-         !(GetStateBits() & NS_FRAME_OUT_OF_FLOW);
+         !HasAnyStateBits(NS_FRAME_OUT_OF_FLOW);
 }
 
 bool nsIFrame::IsGridItem() const {
   return GetParent() && GetParent()->IsGridContainerFrame() &&
-         !(GetStateBits() & NS_FRAME_OUT_OF_FLOW);
+         !HasAnyStateBits(NS_FRAME_OUT_OF_FLOW);
 }
 
 bool nsIFrame::IsFlexOrGridContainer() const {
@@ -33,13 +31,13 @@ bool nsIFrame::IsFlexOrGridContainer() const {
 }
 
 bool nsIFrame::IsFlexOrGridItem() const {
-  return !(GetStateBits() & NS_FRAME_OUT_OF_FLOW) && GetParent() &&
+  return !HasAnyStateBits(NS_FRAME_OUT_OF_FLOW) && GetParent() &&
          GetParent()->IsFlexOrGridContainer();
 }
 
 bool nsIFrame::IsMasonry(mozilla::LogicalAxis aAxis) const {
   MOZ_DIAGNOSTIC_ASSERT(IsGridContainerFrame());
-  return HasAnyStateBits(aAxis == mozilla::eLogicalAxisBlock
+  return HasAnyStateBits(aAxis == mozilla::LogicalAxis::Block
                              ? NS_STATE_GRID_IS_ROW_MASONRY
                              : NS_STATE_GRID_IS_COL_MASONRY);
 }
@@ -50,14 +48,21 @@ bool nsIFrame::IsTableCaption() const {
              mozilla::PseudoStyleType::tableWrapper;
 }
 
-bool nsIFrame::IsFloating() const { return StyleDisplay()->IsFloating(this); }
+bool nsIFrame::IsFloating() const {
+  return HasAnyStateBits(NS_FRAME_OUT_OF_FLOW) &&
+         StyleDisplay()->IsFloating(this);
+}
 
 bool nsIFrame::IsAbsPosContainingBlock() const {
-  return StyleDisplay()->IsAbsPosContainingBlock(this);
+  return Style()->IsAbsPosContainingBlock(this);
 }
 
 bool nsIFrame::IsFixedPosContainingBlock() const {
-  return StyleDisplay()->IsFixedPosContainingBlock(this);
+  return Style()->IsFixedPosContainingBlock(this);
+}
+
+bool nsIFrame::IsRelativelyOrStickyPositioned() const {
+  return StyleDisplay()->IsRelativelyOrStickyPositioned(this);
 }
 
 bool nsIFrame::IsRelativelyPositioned() const {
@@ -70,8 +75,18 @@ bool nsIFrame::IsStickyPositioned() const {
 
 bool nsIFrame::IsAbsolutelyPositioned(
     const nsStyleDisplay* aStyleDisplay) const {
-  const nsStyleDisplay* disp = StyleDisplayWithOptionalParam(aStyleDisplay);
-  return disp->IsAbsolutelyPositioned(this);
+  return HasAnyStateBits(NS_FRAME_OUT_OF_FLOW) &&
+         StyleDisplayWithOptionalParam(aStyleDisplay)
+             ->IsAbsolutelyPositioned(this);
+}
+
+inline bool nsIFrame::IsTrueOverflowContainer() const {
+  return HasAnyStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER) &&
+         !IsAbsolutelyPositioned();
+  // XXXfr This check isn't quite correct, because it doesn't handle cases
+  //      where the out-of-flow has overflow.. but that's rare.
+  //      We'll need to revisit the way abspos continuations are handled later
+  //      for various reasons, this detail is one of them. See bug 154892
 }
 
 bool nsIFrame::IsBlockOutside() const {
@@ -99,93 +114,6 @@ mozilla::StyleDisplay nsIFrame::GetDisplay() const {
   return StyleDisplay()->GetDisplay(this);
 }
 
-nscoord nsIFrame::SynthesizeBaselineBOffsetFromMarginBox(
-    mozilla::WritingMode aWM, BaselineSharingGroup aGroup) const {
-  MOZ_ASSERT(!aWM.IsOrthogonalTo(GetWritingMode()));
-  auto margin = GetLogicalUsedMargin(aWM);
-  if (aGroup == BaselineSharingGroup::First) {
-    if (aWM.IsAlphabeticalBaseline()) {
-      // First baseline for inverted-line content is the block-start margin
-      // edge, as the frame is in effect "flipped" for alignment purposes.
-      return MOZ_UNLIKELY(aWM.IsLineInverted()) ? -margin.BStart(aWM)
-                                                : BSize(aWM) + margin.BEnd(aWM);
-    }
-    nscoord marginBoxCenter = (BSize(aWM) + margin.BStartEnd(aWM)) / 2;
-    return marginBoxCenter - margin.BStart(aWM);
-  }
-  MOZ_ASSERT(aGroup == BaselineSharingGroup::Last);
-  if (aWM.IsAlphabeticalBaseline()) {
-    // Last baseline for inverted-line content is the block-start margin edge,
-    // as the frame is in effect "flipped" for alignment purposes.
-    return MOZ_UNLIKELY(aWM.IsLineInverted()) ? BSize(aWM) + margin.BStart(aWM)
-                                              : -margin.BEnd(aWM);
-  }
-  // Round up for central baseline offset, to be consistent with ::First.
-  nscoord marginBoxSize = BSize(aWM) + margin.BStartEnd(aWM);
-  nscoord marginBoxCenter = (marginBoxSize / 2) + (marginBoxSize % 2);
-  return marginBoxCenter - margin.BEnd(aWM);
-}
-
-nscoord nsIFrame::SynthesizeBaselineBOffsetFromBorderBox(
-    mozilla::WritingMode aWM, BaselineSharingGroup aGroup) const {
-  MOZ_ASSERT(!aWM.IsOrthogonalTo(GetWritingMode()));
-  nscoord borderBoxSize = BSize(aWM);
-  if (aGroup == BaselineSharingGroup::First) {
-    return MOZ_LIKELY(aWM.IsAlphabeticalBaseline()) ? borderBoxSize
-                                                    : borderBoxSize / 2;
-  }
-  MOZ_ASSERT(aGroup == BaselineSharingGroup::Last);
-  // Round up for central baseline offset, to be consistent with ::First.
-  auto borderBoxCenter = (borderBoxSize / 2) + (borderBoxSize % 2);
-  return MOZ_LIKELY(aWM.IsAlphabeticalBaseline()) ? 0 : borderBoxCenter;
-}
-
-nscoord nsIFrame::SynthesizeBaselineBOffsetFromContentBox(
-    mozilla::WritingMode aWM, BaselineSharingGroup aGroup) const {
-  mozilla::WritingMode wm = GetWritingMode();
-  MOZ_ASSERT(!aWM.IsOrthogonalTo(wm));
-  const auto bp = GetLogicalUsedBorderAndPadding(wm)
-                      .ApplySkipSides(GetLogicalSkipSides())
-                      .ConvertTo(aWM, wm);
-
-  if (MOZ_UNLIKELY(aWM.IsCentralBaseline())) {
-    nscoord contentBoxBSize = BSize(aWM) - bp.BStartEnd(aWM);
-    if (aGroup == BaselineSharingGroup::First) {
-      return contentBoxBSize / 2 + bp.BStart(aWM);
-    }
-    // Return the same center position as for ::First, but as offset from end:
-    nscoord halfContentBoxBSize = (contentBoxBSize / 2) + (contentBoxBSize % 2);
-    return halfContentBoxBSize + bp.BEnd(aWM);
-  }
-  if (aGroup == BaselineSharingGroup::First) {
-    // First baseline for inverted-line content is the block-start content
-    // edge, as the frame is in effect "flipped" for alignment purposes.
-    return MOZ_UNLIKELY(aWM.IsLineInverted()) ? bp.BStart(aWM)
-                                              : BSize(aWM) - bp.BEnd(aWM);
-  }
-  // Last baseline for inverted-line content is the block-start content edge,
-  // as the frame is in effect "flipped" for alignment purposes.
-  return MOZ_UNLIKELY(aWM.IsLineInverted()) ? BSize(aWM) - bp.BStart(aWM)
-                                            : bp.BEnd(aWM);
-}
-
-nscoord nsIFrame::BaselineBOffset(mozilla::WritingMode aWM,
-                                  BaselineSharingGroup aBaselineGroup,
-                                  AlignmentContext aAlignmentContext) const {
-  MOZ_ASSERT(!aWM.IsOrthogonalTo(GetWritingMode()));
-  nscoord baseline;
-  if (GetNaturalBaselineBOffset(aWM, aBaselineGroup, &baseline)) {
-    return baseline;
-  }
-  if (aAlignmentContext == AlignmentContext::Inline) {
-    return SynthesizeBaselineBOffsetFromMarginBox(aWM, aBaselineGroup);
-  }
-  if (aAlignmentContext == AlignmentContext::Table) {
-    return SynthesizeBaselineBOffsetFromContentBox(aWM, aBaselineGroup);
-  }
-  return SynthesizeBaselineBOffsetFromBorderBox(aWM, aBaselineGroup);
-}
-
 void nsIFrame::PropagateWritingModeToSelfAndAncestors(
     mozilla::WritingMode aWM) {
   MOZ_ASSERT(IsCanvasFrame());
@@ -195,7 +123,7 @@ void nsIFrame::PropagateWritingModeToSelfAndAncestors(
 }
 
 nsContainerFrame* nsIFrame::GetInFlowParent() const {
-  if (GetStateBits() & NS_FRAME_OUT_OF_FLOW) {
+  if (HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
     nsIFrame* ph =
         FirstContinuation()->GetProperty(nsIFrame::PlaceholderFrameProperty());
     return ph->GetParent();
@@ -242,17 +170,12 @@ nsIFrame* nsIFrame::GetClosestFlattenedTreeAncestorPrimaryFrame() const {
 }
 
 nsPoint nsIFrame::GetNormalPosition(bool* aHasProperty) const {
-  nsPoint* normalPosition = GetProperty(NormalPositionProperty());
-  if (normalPosition) {
-    if (aHasProperty) {
-      *aHasProperty = true;
-    }
-    return *normalPosition;
-  }
+  bool hasProperty;
+  nsPoint normalPosition = GetProperty(NormalPositionProperty(), &hasProperty);
   if (aHasProperty) {
-    *aHasProperty = false;
+    *aHasProperty = hasProperty;
   }
-  return GetPosition();
+  return hasProperty ? normalPosition : GetPosition();
 }
 
 mozilla::LogicalPoint nsIFrame::GetLogicalNormalPosition(
@@ -262,6 +185,10 @@ mozilla::LogicalPoint nsIFrame::GetLogicalNormalPosition(
   // right instead of the left
   return mozilla::LogicalPoint(aWritingMode, GetNormalPosition(),
                                aContainerSize - mRect.Size());
+}
+
+bool nsIFrame::ContentIsEditable() const {
+  return mContent && mContent->IsEditable();
 }
 
 #endif

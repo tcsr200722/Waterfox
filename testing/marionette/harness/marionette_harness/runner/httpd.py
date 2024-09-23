@@ -9,23 +9,15 @@ Marionette.
 
 """
 
-from __future__ import absolute_import, print_function
-
 import argparse
 import os
 import select
 import sys
 import time
 
-from wptserve import (
-    handlers,
-    request,
-    routes as default_routes,
-    server
-)
-
 from six.moves.urllib import parse as urlparse
-
+from wptserve import handlers, request, server
+from wptserve import routes as default_routes
 
 root = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 default_doc_root = os.path.join(root, "www")
@@ -51,7 +43,7 @@ def http_auth_handler(req, response):
 
     else:
         response.status = 401
-        response.headers.set("WWW-Authenticate", "Basic realm=\"secret\"")
+        response.headers.set("WWW-Authenticate", 'Basic realm="secret"')
         response.content = content.format("restricted")
 
 
@@ -64,7 +56,7 @@ def upload_handler(request, response):
 def slow_loading_handler(request, response):
     # Allow the test specify the delay for delivering the content
     params = dict(urlparse.parse_qsl(request.url_parts.query))
-    delay = int(params.get('delay', 5))
+    delay = int(params.get("delay", 5))
     time.sleep(delay)
 
     # Do not allow the page to be cached to circumvent the bfcache of the browser
@@ -74,7 +66,49 @@ def slow_loading_handler(request, response):
 <title>Slow page loading</title>
 
 <p>Delay: <span id="delay">{}</span></p>
-""".format(delay)
+""".format(
+        delay
+    )
+
+
+@handlers.handler
+def slow_coop_handler(request, response):
+    # Allow the test specify the delay for delivering the content
+    params = dict(urlparse.parse_qsl(request.url_parts.query))
+    delay = int(params.get("delay", 5))
+    time.sleep(delay)
+
+    # Isolate the browsing context exclusively to same-origin documents
+    response.headers.set("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.set("Cache-Control", "no-cache, no-store")
+    response.content = """<!doctype html>
+<meta charset="UTF-8">
+<title>Slow cross-origin page loading</title>
+
+<p>Delay: <span id="delay">{}</span></p>
+""".format(
+        delay
+    )
+
+
+@handlers.handler
+def update_xml_handler(request, response):
+    response.headers.set("Content-Type", "text/xml")
+    mar_digest = (
+        "75cd68e6c98c84c435cd27e353f5b4f6a3f2c50f6802aa9bf62b47e47138757306769fd9befa08793635ee649"
+        "2319253480860b4aa8ed9ee1caaa4c83ebc90b9"
+    )
+    response.content = """
+    <updates>
+        <update type="minor" displayVersion="9999.0" appVersion="9999.0" platformVersion="9999.0"
+                buildID="20220627075547">
+            <patch type="complete" URL="{}://{}/update/complete.mar" size="86612"
+                   hashFunction="sha512" hashValue="{}"/>
+        </update>
+    </updates>
+    """.format(
+        request.url_parts.scheme, request.url_parts.netloc, mar_digest
+    )
 
 
 class NotAliveError(Exception):
@@ -82,13 +116,19 @@ class NotAliveError(Exception):
     to have been started, and it has not.
 
     """
+
     pass
 
 
 class FixtureServer(object):
-
-    def __init__(self, doc_root, url="http://127.0.0.1:0", use_ssl=False,
-                 ssl_cert=None, ssl_key=None):
+    def __init__(
+        self,
+        doc_root,
+        url="http://127.0.0.1:0",
+        use_ssl=False,
+        ssl_cert=None,
+        ssl_key=None,
+    ):
         if not os.path.isdir(doc_root):
             raise ValueError("Server root is not a directory: %s" % doc_root)
 
@@ -102,25 +142,30 @@ class FixtureServer(object):
         if port is None:
             port = 0
 
-        routes = [("POST", "/file_upload", upload_handler),
-                  ("GET", "/http_auth", http_auth_handler),
-                  ("GET", "/slow", slow_loading_handler),
-                  ]
+        routes = [
+            ("POST", "/file_upload", upload_handler),
+            ("GET", "/http_auth", http_auth_handler),
+            ("GET", "/slow", slow_loading_handler),
+            ("GET", "/slow-coop", slow_coop_handler),
+            ("GET", "/update.xml", update_xml_handler),
+        ]
         routes.extend(default_routes.routes)
 
-        self._httpd = server.WebTestHttpd(host=host,
-                                          port=port,
-                                          bind_address=True,
-                                          doc_root=doc_root,
-                                          routes=routes,
-                                          use_ssl=True if scheme == "https" else False,
-                                          certificate=ssl_cert,
-                                          key_file=ssl_key)
+        self._httpd = server.WebTestHttpd(
+            host=host,
+            port=port,
+            bind_address=True,
+            doc_root=doc_root,
+            routes=routes,
+            use_ssl=True if scheme == "https" else False,
+            certificate=ssl_cert,
+            key_file=ssl_key,
+        )
 
-    def start(self, block=False):
+    def start(self):
         if self.is_alive:
             return
-        self._httpd.start(block=block)
+        self._httpd.start()
 
     def wait(self):
         if not self.is_alive:
@@ -159,25 +204,40 @@ class FixtureServer(object):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Specialised HTTP server for testing Marionette.")
-    parser.add_argument("url", help="""
+        description="Specialised HTTP server for testing Marionette."
+    )
+    parser.add_argument(
+        "url",
+        help="""
 service address including scheme, hostname, port, and prefix for document root,
-e.g. \"https://0.0.0.0:0/base/\"""")
+e.g. \"https://0.0.0.0:0/base/\"""",
+    )
     parser.add_argument(
-        "-r", dest="doc_root", default=default_doc_root,
-        help="path to document root (default %(default)s)")
+        "-r",
+        dest="doc_root",
+        default=default_doc_root,
+        help="path to document root (default %(default)s)",
+    )
     parser.add_argument(
-        "-c", dest="ssl_cert", default=default_ssl_cert,
-        help="path to SSL certificate (default %(default)s)")
+        "-c",
+        dest="ssl_cert",
+        default=default_ssl_cert,
+        help="path to SSL certificate (default %(default)s)",
+    )
     parser.add_argument(
-        "-k", dest="ssl_key", default=default_ssl_key,
-        help="path to SSL certificate key (default %(default)s)")
+        "-k",
+        dest="ssl_key",
+        default=default_ssl_key,
+        help="path to SSL certificate key (default %(default)s)",
+    )
     args = parser.parse_args()
 
-    httpd = FixtureServer(args.doc_root, args.url,
-                          ssl_cert=args.ssl_cert,
-                          ssl_key=args.ssl_key)
+    httpd = FixtureServer(
+        args.doc_root, args.url, ssl_cert=args.ssl_cert, ssl_key=args.ssl_key
+    )
     httpd.start()
-    print("{0}: started fixture server on {1}".format(sys.argv[0], httpd.get_url("/")),
-          file=sys.stderr)
+    print(
+        "{0}: started fixture server on {1}".format(sys.argv[0], httpd.get_url("/")),
+        file=sys.stderr,
+    )
     httpd.wait()

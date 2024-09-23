@@ -7,7 +7,7 @@
  * The menu is not tested since it uses the same code as the toolbar.
  */
 
-add_task(async function() {
+add_task(async function () {
   const PAGE_URI = NetUtil.newURI("http://places.test/");
   const ICON_URI = NetUtil.newURI(
     "http://mochi.test:8888/browser/browser/components/places/tests/browser/favicon-normal16.png"
@@ -18,7 +18,7 @@ add_task(async function() {
   let wasCollapsed = toolbar.collapsed;
   if (wasCollapsed) {
     await promiseSetToolbarVisibility(toolbar, true);
-    registerCleanupFunction(async function() {
+    registerCleanupFunction(async function () {
       await promiseSetToolbarVisibility(toolbar, false);
     });
   }
@@ -28,9 +28,9 @@ add_task(async function() {
   let promiseSidebarLoaded = new Promise(resolve => {
     sidebar.addEventListener("load", resolve, { capture: true, once: true });
   });
-  SidebarUI.show("viewBookmarksSidebar");
+  SidebarController.show("viewBookmarksSidebar");
   registerCleanupFunction(() => {
-    SidebarUI.hide();
+    SidebarController.hide();
   });
   await promiseSidebarLoaded;
 
@@ -40,7 +40,7 @@ add_task(async function() {
     title: "test icon",
     parentGuid: PlacesUtils.bookmarks.toolbarGuid,
   });
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.remove(bm);
   });
 
@@ -55,7 +55,10 @@ add_task(async function() {
   let sidebarRect = await getRectForSidebarItem(bm.guid);
   let sidebarShot1 = TestUtils.screenshotArea(sidebarRect, window);
 
-  await new Promise(resolve => {
+  info("Toolbar: " + toolbarShot1);
+  info("Sidebar: " + sidebarShot1);
+
+  let iconURI = await new Promise(resolve => {
     PlacesUtils.favicons.setAndFetchFaviconForPage(
       PAGE_URI,
       ICON_URI,
@@ -65,36 +68,35 @@ add_task(async function() {
       Services.scriptSecurityManager.getSystemPrincipal()
     );
   });
+  Assert.ok(iconURI.equals(ICON_URI), "Succesfully set the icon");
 
   // The icon is read asynchronously from the network, we don't have an easy way
-  // to wait for that.
-  await new Promise(resolve => {
-    setTimeout(resolve, 3000);
-  });
+  // to wait for that, thus we must poll.
+  await TestUtils.waitForCondition(() => {
+    // Assert.notEqual truncates the strings, so it is unusable here for failure
+    // debugging purposes.
+    let toolbarShot2 = TestUtils.screenshotArea(toolbarElt, window);
+    if (toolbarShot1 != toolbarShot2) {
+      info("After toolbar: " + toolbarShot2);
+    }
+    return toolbarShot1 != toolbarShot2;
+  }, "Waiting for the toolbar icon to update");
 
-  // Assert.notEqual truncates the strings, so it is unusable here for failure
-  // debugging purposes.
-  let toolbarShot2 = TestUtils.screenshotArea(toolbarElt, window);
-  if (toolbarShot1 != toolbarShot2) {
-    info("Before toolbar: " + toolbarShot1);
-    info("After toolbar: " + toolbarShot2);
-  }
-  Assert.notEqual(toolbarShot1, toolbarShot2, "The UI should have updated");
-
-  let sidebarShot2 = TestUtils.screenshotArea(sidebarRect, window);
-  if (sidebarShot1 != sidebarShot2) {
-    info("Before sidebar: " + sidebarShot1);
-    info("After sidebar: " + sidebarShot2);
-  }
-  Assert.notEqual(sidebarShot1, sidebarShot2, "The UI should have updated");
+  await TestUtils.waitForCondition(() => {
+    let sidebarShot2 = TestUtils.screenshotArea(sidebarRect, window);
+    if (sidebarShot1 != sidebarShot2) {
+      info("After sidebar: " + sidebarShot2);
+    }
+    return sidebarShot1 != sidebarShot2;
+  }, "Waiting for the sidebar icon to update");
 });
 
 /**
  * Get Element for a bookmark in the bookmarks toolbar.
  *
- * @param guid
+ * @param {string} guid
  *        GUID of the item to search.
- * @returns DOM Node of the element.
+ * @returns {object} DOM Node of the element.
  */
 function getNodeForToolbarItem(guid) {
   return Array.from(
@@ -105,9 +107,9 @@ function getNodeForToolbarItem(guid) {
 /**
  * Get a rect for a bookmark in the bookmarks sidebar
  *
- * @param guid
+ * @param {string} guid
  *        GUID of the item to search.
- * @returns DOM Node of the element.
+ * @returns {object} DOM Node of the element.
  */
 async function getRectForSidebarItem(guid) {
   let sidebar = document.getElementById("sidebar");

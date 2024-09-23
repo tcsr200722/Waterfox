@@ -8,178 +8,22 @@
 #define mozilla_layers_AnimationHelper_h
 
 #include "mozilla/dom/Nullable.h"
-#include "mozilla/ComputedTimingFunction.h"  // for ComputedTimingFunction
 #include "mozilla/layers/AnimationStorageData.h"
 #include "mozilla/layers/LayersMessages.h"     // for TransformData, etc
 #include "mozilla/webrender/WebRenderTypes.h"  // for RenderRoot
 #include "mozilla/TimeStamp.h"                 // for TimeStamp
 #include "mozilla/TimingParams.h"
-#include "mozilla/Variant.h"
+#include "mozilla/Types.h"  // for SideBits
 #include "X11UndefineNone.h"
+#include <unordered_map>
 
-namespace mozilla {
-struct AnimationValue;
-
-namespace dom {
-enum class CompositeOperation : uint8_t;
-enum class IterationCompositeOperation : uint8_t;
-};  // namespace dom
-
-namespace layers {
+namespace mozilla::layers {
 class Animation;
+class APZSampler;
+class CompositorAnimationStorage;
+struct AnimatedValue;
 
 typedef nsTArray<layers::Animation> AnimationArray;
-
-struct AnimationTransform {
-  /*
-   * This transform is calculated from sampleanimation in device pixel
-   * and used by compositor.
-   */
-  gfx::Matrix4x4 mTransformInDevSpace;
-  /*
-   * This transform is calculated from frame and used by getOMTAStyle()
-   * for OMTA testing.
-   */
-  gfx::Matrix4x4 mFrameTransform;
-  TransformData mData;
-};
-
-struct AnimatedValue final {
-  typedef Variant<AnimationTransform, float, nscolor> AnimatedValueType;
-
-  const AnimatedValueType& Value() const { return mValue; }
-  const AnimationTransform& Transform() const {
-    return mValue.as<AnimationTransform>();
-  }
-  const float& Opacity() const { return mValue.as<float>(); }
-  const nscolor& Color() const { return mValue.as<nscolor>(); }
-  template <typename T>
-  bool Is() const {
-    return mValue.is<T>();
-  }
-
-  AnimatedValue(gfx::Matrix4x4&& aTransformInDevSpace,
-                gfx::Matrix4x4&& aFrameTransform, const TransformData& aData)
-      : mValue(
-            AsVariant(AnimationTransform{std::move(aTransformInDevSpace),
-                                         std::move(aFrameTransform), aData})) {}
-
-  explicit AnimatedValue(const float& aValue) : mValue(AsVariant(aValue)) {}
-
-  explicit AnimatedValue(nscolor aValue) : mValue(AsVariant(aValue)) {}
-
-  void SetTransform(gfx::Matrix4x4&& aTransformInDevSpace,
-                    gfx::Matrix4x4&& aFrameTransform,
-                    const TransformData& aData) {
-    MOZ_ASSERT(mValue.is<AnimationTransform>());
-    AnimationTransform& previous = mValue.as<AnimationTransform>();
-    previous.mTransformInDevSpace = std::move(aTransformInDevSpace);
-    previous.mFrameTransform = std::move(aFrameTransform);
-    if (previous.mData != aData) {
-      previous.mData = aData;
-    }
-  }
-  void SetOpacity(float aOpacity) {
-    MOZ_ASSERT(mValue.is<float>());
-    mValue.as<float>() = aOpacity;
-  }
-  void SetColor(nscolor aColor) {
-    MOZ_ASSERT(mValue.is<nscolor>());
-    mValue.as<nscolor>() = aColor;
-  }
-
- private:
-  AnimatedValueType mValue;
-};
-
-// CompositorAnimationStorage stores the animations and animated values
-// keyed by a CompositorAnimationsId. The "animations" are a representation of
-// an entire animation over time, while the "animated values" are values sampled
-// from the animations at a particular point in time.
-//
-// There is one CompositorAnimationStorage per CompositorBridgeParent (i.e.
-// one per browser window), and the CompositorAnimationsId key is unique within
-// a particular CompositorAnimationStorage instance.
-//
-// Each layer which has animations gets a CompositorAnimationsId key, and reuses
-// that key during its lifetime. Likewise, in layers-free webrender, a display
-// item that is animated (e.g. nsDisplayTransform) gets a CompositorAnimationsId
-// key and reuses that key (it persists the key via the frame user-data
-// mechanism).
-class CompositorAnimationStorage final {
-  typedef nsClassHashtable<nsUint64HashKey, AnimatedValue> AnimatedValueTable;
-  typedef nsDataHashtable<nsUint64HashKey, AnimationStorageData>
-      AnimationsTable;
-
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CompositorAnimationStorage)
- public:
-  /**
-   * Set the animation transform based on the unique id and also
-   * set up |aFrameTransform| and |aData| for OMTA testing.
-   * If |aPreviousValue| is not null, the animation transform replaces the value
-   * in the |aPreviousValue|.
-   * NOTE: |aPreviousValue| should be the value for the |aId|.
-   */
-  void SetAnimatedValue(uint64_t aId, AnimatedValue* aPreviousValue,
-                        gfx::Matrix4x4&& aTransformInDevSpace,
-                        gfx::Matrix4x4&& aFrameTransform,
-                        const TransformData& aData);
-
-  /**
-   * Similar to above but for opacity.
-   */
-  void SetAnimatedValue(uint64_t aId, AnimatedValue* aPreviousValue,
-                        float aOpacity);
-
-  /**
-   * Similar to above but for color.
-   */
-  void SetAnimatedValue(uint64_t aId, AnimatedValue* aPreviousValue,
-                        nscolor aColor);
-
-  /**
-   * Return the animated value if a given id can map to its animated value
-   */
-  AnimatedValue* GetAnimatedValue(const uint64_t& aId) const;
-
-  OMTAValue GetOMTAValue(const uint64_t& aId) const;
-
-  /**
-   * Return the iterator of animated value table
-   */
-  AnimatedValueTable::Iterator ConstAnimatedValueTableIter() const {
-    return mAnimatedValues.ConstIter();
-  }
-
-  uint32_t AnimatedValueCount() const { return mAnimatedValues.Count(); }
-
-  /**
-   * Set the animations based on the unique id
-   */
-  void SetAnimations(uint64_t aId, const AnimationArray& aAnimations);
-
-  /**
-   * Return the iterator of animations table
-   */
-  AnimationsTable::Iterator ConstAnimationsTableIter() const {
-    return mAnimations.ConstIter();
-  }
-
-  uint32_t AnimationsCount() const { return mAnimations.Count(); }
-
-  /**
-   * Clear AnimatedValues and Animations data
-   */
-  void Clear();
-  void ClearById(const uint64_t& aId);
-
- private:
-  ~CompositorAnimationStorage(){};
-
- private:
-  AnimatedValueTable mAnimatedValues;
-  AnimationsTable mAnimations;
-};
 
 /**
  * This utility class allows reusing code between the webrender and
@@ -188,7 +32,22 @@ class CompositorAnimationStorage final {
  */
 class AnimationHelper {
  public:
-  enum class SampleResult { None, Skipped, Sampled };
+  struct SampleResult {
+    enum class Type : uint8_t { None, Skipped, Sampled };
+    enum class Reason : uint8_t { None, ScrollToDelayPhase };
+    Type mType = Type::None;
+    Reason mReason = Reason::None;
+
+    SampleResult() = default;
+    SampleResult(Type aType, Reason aReason) : mType(aType), mReason(aReason) {}
+
+    static SampleResult Skipped() { return {Type::Skipped, Reason::None}; }
+    static SampleResult Sampled() { return {Type::Sampled, Reason::None}; }
+
+    bool IsNone() { return mType == Type::None; }
+    bool IsSkipped() { return mType == Type::Skipped; }
+    bool IsSampled() { return mType == Type::Sampled; }
+  };
 
   /**
    * Sample animations based on a given time stamp for a element(layer) with
@@ -205,6 +64,14 @@ class AnimationHelper {
    * call of this function,
    * SampleResult::Sampled if the animation output was updated.
    *
+   * The only exception is the scroll-driven animation. When the user move the
+   * scrollbar to make the animations go from active phase to delay phase, this
+   * returns SampleResult::None but sets its |mReason| to
+   * Reason::ScrollToDelayPhase. The caller can check this flag so we can store
+   * the base style into the hash table to make sure we have the correct
+   * rendering result. The base style stays in the hash table until we sync with
+   * main thread.
+   *
    * Using the same example from ExtractAnimations (below):
    *
    * Input |aPropertyAnimationGroups| (ignoring the base animation style):
@@ -220,19 +87,20 @@ class AnimationHelper {
    * that it reduces each property group to a single output value:
    *
    * [
-   *   { rotate, RawServoAnimationValue },
-   *   { scale, RawServoAnimationValue },
-   *   { transform, RawServoAnimationValue },
+   *   { rotate, StyleAnimationValue },
+   *   { scale, StyleAnimationValue },
+   *   { transform, StyleAnimationValue },
    * ]
    *
    * For transform animations, the caller (SampleAnimations) will combine the
    * result of the various transform properties into a final matrix.
    */
   static SampleResult SampleAnimationForEachNode(
-      TimeStamp aPreviousFrameTime, TimeStamp aCurrentFrameTime,
-      const AnimatedValue* aPreviousValue,
+      const APZSampler* aAPZSampler, const LayersId& aLayersId,
+      const MutexAutoLock& aProofOfMapLock, TimeStamp aPreviousFrameTime,
+      TimeStamp aCurrentFrameTime, const AnimatedValue* aPreviousValue,
       nsTArray<PropertyAnimationGroup>& aPropertyAnimationGroups,
-      nsTArray<RefPtr<RawServoAnimationValue>>& aAnimationValues);
+      nsTArray<RefPtr<StyleAnimationValue>>& aAnimationValues);
 
   /**
    * Extract organized animation data by property into an array of
@@ -268,9 +136,15 @@ class AnimationHelper {
    * In the process of grouping these animations, we also convert their values
    * from the rather compact representation we use for transferring across the
    * IPC boundary into something we can readily use for sampling.
+   *
+   * Note: the animation groups:
+   * 1. transform-like properties: transfrom, translate, rotate, scale,
+   *                               offset-*.
+   * 2. opacity property: opacity.
+   * 3. background color property: background-color.
    */
   static AnimationStorageData ExtractAnimations(
-      const AnimationArray& aAnimations);
+      const LayersId& aLayersId, const AnimationArray& aAnimations);
 
   /**
    * Get a unique id to represent the compositor animation between child
@@ -282,32 +156,25 @@ class AnimationHelper {
   static uint64_t GetNextCompositorAnimationsId();
 
   /**
-   * Sample animation based a given time stamp |aTime| and the animation
-   * data inside CompositorAnimationStorage |aStorage|. The animated values
-   * after sampling will be stored in CompositorAnimationStorage as well.
-   *
-   * Returns true if there is any animation.
-   * Note that even if there are only in-delay phase animations (i.e. not
-   * visually effective), this function returns true to ensure we composite
-   * again on the next tick.
-   *
-   * Note: This is called only by WebRender.
-   */
-  static bool SampleAnimations(CompositorAnimationStorage* aStorage,
-                               TimeStamp aPreviousFrameTime,
-                               TimeStamp aCurrentFrameTime);
-
-  /**
    * Convert an array of animation values into a matrix given the corresponding
    * transform parameters. |aValue| must be a transform-like value
    * (e.g. transform, translate etc.).
    */
   static gfx::Matrix4x4 ServoAnimationValueToMatrix4x4(
-      const nsTArray<RefPtr<RawServoAnimationValue>>& aValue,
+      const nsTArray<RefPtr<StyleAnimationValue>>& aValue,
       const TransformData& aTransformData, gfx::Path* aCachedMotionPath);
+
+  /**
+   * Returns true if |aPrerenderedRect| transformed by |aTransform| were
+   * composited in |aClipRect| there appears area which wasn't pre-rendered
+   * on the main-thread. I.e. checkerboarding.
+   */
+  static bool ShouldBeJank(const LayoutDeviceRect& aPrerenderedRect,
+                           SideBits aOverflowedSides,
+                           const gfx::Matrix4x4& aTransform,
+                           const ParentLayerRect& aClipRect);
 };
 
-}  // namespace layers
-}  // namespace mozilla
+}  // namespace mozilla::layers
 
 #endif  // mozilla_layers_AnimationHelper_h

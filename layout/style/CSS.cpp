@@ -9,35 +9,63 @@
 #include "CSS.h"
 
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/HighlightRegistry.h"
 #include "mozilla/ServoBindings.h"
-#include "nsGlobalWindow.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/DocumentInlines.h"
 #include "nsStyleUtil.h"
 #include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* static */
-bool CSS::Supports(const GlobalObject& aGlobal, const nsAString& aProperty,
-                   const nsAString& aValue, ErrorResult& aRv) {
-  NS_ConvertUTF16toUTF8 property(aProperty);
-  NS_ConvertUTF16toUTF8 value(aValue);
-  return Servo_CSSSupports2(&property, &value);
+bool CSS::Supports(const GlobalObject&, const nsACString& aProperty,
+                   const nsACString& aValue) {
+  return Servo_CSSSupports2(&aProperty, &aValue);
 }
 
 /* static */
-bool CSS::Supports(const GlobalObject& aGlobal, const nsAString& aCondition,
-                   ErrorResult& aRv) {
-  NS_ConvertUTF16toUTF8 cond(aCondition);
-  return Servo_CSSSupports(&cond);
+bool CSS::Supports(const GlobalObject&, const nsACString& aCondition) {
+  return Servo_CSSSupports(&aCondition, /* ua = */ false, /* chrome = */ false,
+                           /* quirks = */ false);
 }
 
 /* static */
-void CSS::Escape(const GlobalObject& aGlobal, const nsAString& aIdent,
+void CSS::Escape(const GlobalObject&, const nsAString& aIdent,
                  nsAString& aReturn) {
   nsStyleUtil::AppendEscapedCSSIdent(aIdent, aReturn);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+static Document* GetDocument(const GlobalObject& aGlobal) {
+  nsCOMPtr<nsPIDOMWindowInner> window =
+      do_QueryInterface(aGlobal.GetAsSupports());
+  MOZ_DIAGNOSTIC_ASSERT(window, "CSS is only exposed to window globals");
+  if (!window) {
+    return nullptr;
+  }
+  return window->GetExtantDoc();
+}
+
+/* static */
+HighlightRegistry* CSS::GetHighlights(const GlobalObject& aGlobal,
+                                      ErrorResult& aRv) {
+  Document* doc = GetDocument(aGlobal);
+  if (!doc) {
+    aRv.ThrowUnknownError("No document associated to this global?");
+    return nullptr;
+  }
+  return &doc->HighlightRegistry();
+}
+
+/* static */
+void CSS::RegisterProperty(const GlobalObject& aGlobal,
+                           const PropertyDefinition& aDefinition,
+                           ErrorResult& aRv) {
+  Document* doc = GetDocument(aGlobal);
+  if (!doc) {
+    return aRv.ThrowUnknownError("No document associated to this global?");
+  }
+  doc->EnsureStyleSet().RegisterProperty(aDefinition, aRv);
+}
+
+}  // namespace mozilla::dom

@@ -27,14 +27,13 @@
 #include "jit/arm64/vixl/Cpu-vixl.h"
 #include "jit/arm64/vixl/Simulator-vixl.h"
 #include "jit/arm64/vixl/Utils-vixl.h"
-#include "util/Windows.h"
+#include "util/WindowsWrapper.h"
 
-#if defined(XP_IOS)
+#if defined(XP_DARWIN)
 #  include <libkern/OSCacheControl.h>
 #endif
 
 namespace vixl {
-
 
 // Currently computes I and D cache line size.
 void CPU::SetUp() {
@@ -69,13 +68,16 @@ void CPU::SetUp() {
 
 
 uint32_t CPU::GetCacheType() {
-#if defined(__aarch64__) && !defined(_MSC_VER)
+#if defined(__aarch64__) && !defined(_MSC_VER) && !defined(XP_DARWIN) && !defined(__OpenBSD__)
   uint64_t cache_type_register;
   // Copy the content of the cache type register to a core register.
   __asm__ __volatile__ ("mrs %[ctr], ctr_el0"  // NOLINT
                         : [ctr] "=r" (cache_type_register));
-  VIXL_ASSERT(IsUint32(cache_type_register));
-  return static_cast<uint32_t>(cache_type_register);
+  // The top bits are reserved, or report information about MTE which currently
+  // we discard. This will likely need to be changed to just return
+  // cache_type_register when we update VIXL next.
+  uint64_t mask = 0xffffffffull;
+  return static_cast<uint32_t>(cache_type_register & mask);
 #else
   // This will lead to a cache with 1 byte long lines, which is fine since
   // neither EnsureIAndDCacheCoherency nor the simulator will need this
@@ -84,16 +86,20 @@ uint32_t CPU::GetCacheType() {
 #endif
 }
 
-
-void CPU::EnsureIAndDCacheCoherency(void *address, size_t length) {
+void CPU::EnsureIAndDCacheCoherency(void* address, size_t length) {
 #if defined(JS_SIMULATOR_ARM64) && defined(JS_CACHE_SIMULATOR_ARM64)
-  // This code attempt to emulate what the following assembly sequence is doing,
-  // which is sending the information to other cores that some cache line have
-  // to be invalidated and applying them on the current core.
+  // This code attempts to emulate what the following assembly sequence is
+  // doing, which is sending the information to all cores that some cache line
+  // have to be invalidated and invalidating them only on the current core.
   //
   // This is done by recording the current range to be flushed to all
   // simulators, then if there is a simulator associated with the current
   // thread, applying all flushed ranges as the "isb" instruction would do.
+  //
+  // As we have no control over the CPU cores used by the code generator and the
+  // execution threads, this code assumes that each thread runs on its own core.
+  //
+  // See Bug 1529933 for more detailed explanation of this issue.
   using js::jit::SimulatorProcess;
   js::jit::AutoLockSimulatorCache alsc;
   if (length > 0) {
@@ -105,9 +111,9 @@ void CPU::EnsureIAndDCacheCoherency(void *address, size_t length) {
   }
 #elif defined(_MSC_VER) && defined(_M_ARM64)
   FlushInstructionCache(GetCurrentProcess(), address, length);
-#elif defined(XP_IOS)
-  sys_icache_invalidate(code, size);
-#elif defined(__aarch64__)
+#elif defined(XP_DARWIN)
+  sys_icache_invalidate(address, length);
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__android__) || defined(__FreeBSD__))
   // Implement the cache synchronisation for all targets where AArch64 is the
   // host, even if we're building the simulator for an AAarch64 host. This
   // allows for cases where the user wants to simulate code as well as run it
@@ -184,20 +190,42 @@ void CPU::EnsureIAndDCacheCoherency(void *address, size_t length) {
     iline += isize;
   } while (iline < end);
 
-  __asm__ __volatile__ (
-    // Make sure that the instruction cache operations (above) take effect
-    // before the isb (below).
-    "   dsb  ish\n"
+  __asm__ __volatile__(
+      // Make sure that the instruction cache operations (above) take effect
+      // before the isb (below).
+      "   dsb  ish\n"
 
-    // Ensure that any instructions already in the pipeline are discarded and
-    // reloaded from the new data.
-    // isb : Instruction Synchronisation Barrier
-    "   isb\n"
-    : : : "memory");
+      // Ensure that any instructions already in the pipeline are discarded and
+      // reloaded from the new data.
+      // isb : Instruction Synchronisation Barrier
+      "   isb\n"
+      :
+      :
+      : "memory");
+#elif defined(__aarch64__) && !defined(__OpenBSD__)
+# error Please check/implement the cache invalidation code for your OS
+
 #else
   // If the host isn't AArch64, we must be using the simulator, so this function
   // doesn't have to do anything.
   USE(address, length);
+#endif
+}
+
+void CPU::FlushExecutionContext() {
+#if defined(JS_SIMULATOR_ARM64) && defined(JS_CACHE_SIMULATOR_ARM64)
+  // Performing an 'isb' will ensure the current core instruction pipeline is
+  // synchronized with an icache flush executed by another core.
+  using js::jit::SimulatorProcess;
+  js::jit::AutoLockSimulatorCache alsc;
+  Simulator* sim = vixl::Simulator::Current();
+  if (sim) {
+    sim->FlushICache();
+  }
+#elif defined(__aarch64__)
+  // Ensure that any instructions already in the pipeline are discarded and
+  // reloaded from the icache.
+  __asm__ __volatile__("isb\n" : : : "memory");
 #endif
 }
 

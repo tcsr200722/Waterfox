@@ -4,9 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/dom/IdleDeadline.h"
+
 #include <algorithm>
 
-#include "mozilla/dom/IdleDeadline.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/IdleDeadlineBinding.h"
 #include "mozilla/dom/Performance.h"
 #include "nsCOMPtr.h"
@@ -14,8 +16,7 @@
 #include "nsDOMNavigationTiming.h"
 #include "nsPIDOMWindow.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(IdleDeadline, mWindow, mGlobal)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(IdleDeadline)
@@ -59,7 +60,9 @@ DOMHighResTimeStamp IdleDeadline::TimeRemaining() {
       return 0.0;
     }
 
-    return std::max(mDeadline - performance->Now(), 0.0);
+    // The web API doesn't expect deadlines > 50ms, but conversion from the
+    // internal API may lead to some rounding errors.
+    return std::min(std::max(mDeadline - performance->Now(), 0.0), 50.0);
   }
 
   // If there's no window, we're in a system scope, and can just use
@@ -70,5 +73,4 @@ DOMHighResTimeStamp IdleDeadline::TimeRemaining() {
 
 bool IdleDeadline::DidTimeout() const { return mDidTimeout; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

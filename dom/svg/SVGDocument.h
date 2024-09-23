@@ -4,15 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGDocument_h
-#define mozilla_dom_SVGDocument_h
+#ifndef DOM_SVG_SVGDOCUMENT_H_
+#define DOM_SVG_SVGDOCUMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/XMLDocument.h"
 
 namespace mozilla {
-
-class SVGContextPaint;
 
 namespace dom {
 
@@ -23,19 +21,7 @@ class SVGDocument final : public XMLDocument {
  public:
   SVGDocument() : XMLDocument("image/svg+xml") { mType = eSVG; }
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-
-  void SetCurrentContextPaint(const SVGContextPaint* aContextPaint) {
-    mCurrentContextPaint = aContextPaint;
-  }
-
-  const SVGContextPaint* GetCurrentContextPaint() const {
-    return mCurrentContextPaint;
-  }
-
- private:
-  // This is maintained by AutoSetRestoreSVGContextPaint.
-  const SVGContextPaint* mCurrentContextPaint = nullptr;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 };
 
 inline SVGDocument* Document::AsSVGDocument() {
@@ -43,7 +29,12 @@ inline SVGDocument* Document::AsSVGDocument() {
   return static_cast<SVGDocument*>(this);
 }
 
+inline const SVGDocument* Document::AsSVGDocument() const {
+  MOZ_ASSERT(IsSVGDocument());
+  return static_cast<const SVGDocument*>(this);
+}
+
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGDocument_h
+#endif  // DOM_SVG_SVGDOCUMENT_H_

@@ -1,8 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-ChromeUtils.import("resource://testing-common/OSKeyStoreTestUtils.jsm", this);
-
 add_task(async function test() {
   await SpecialPowers.pushPrefEnv({
     set: [["dom.events.testing.asyncClipboard", true]],
@@ -10,7 +8,7 @@ add_task(async function test() {
 
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:logins" },
-    async function(browser) {
+    async function (browser) {
       let TEST_LOGIN = {
         guid: "70a",
         username: "jared",
@@ -18,7 +16,7 @@ add_task(async function test() {
         origin: "https://www.example.com",
       };
 
-      await SpecialPowers.spawn(browser, [TEST_LOGIN], async function(login) {
+      await SpecialPowers.spawn(browser, [TEST_LOGIN], async function (login) {
         let loginItem = Cu.waiveXrays(
           content.document.querySelector("login-item")
         );
@@ -38,9 +36,9 @@ add_task(async function test() {
         );
       });
 
-      let testCases = [[TEST_LOGIN.username, ".copy-username-button"]];
+      let testCases = [[TEST_LOGIN.username, "copy-username-button"]];
       if (OSKeyStoreTestUtils.canTestOSKeyStoreLogin()) {
-        testCases[1] = [TEST_LOGIN.password, ".copy-password-button"];
+        testCases[1] = [TEST_LOGIN.password, "copy-password-button"];
       }
 
       for (let testCase of testCases) {
@@ -51,46 +49,57 @@ add_task(async function test() {
         info(
           "waiting for " + testObj.expectedValue + " to be placed on clipboard"
         );
-        let reauthObserved = true;
+        let reauthObserved = Promise.resolve();
         if (testObj.copyButtonSelector.includes("password")) {
-          reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
+          if (OSKeyStore.canReauth()) {
+            reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
+          }
         }
 
         await SimpleTest.promiseClipboardChange(
           testObj.expectedValue,
           async () => {
-            await SpecialPowers.spawn(browser, [testObj], async function(
-              aTestObj
-            ) {
-              let loginItem = content.document.querySelector("login-item");
-              let copyButton = loginItem.shadowRoot.querySelector(
-                aTestObj.copyButtonSelector
-              );
-              info("Clicking 'copy' button");
-              copyButton.click();
-            });
+            await SpecialPowers.spawn(
+              browser,
+              [testObj],
+              async function (aTestObj) {
+                let loginItem = content.document.querySelector("login-item");
+                let copyButton = loginItem.shadowRoot.querySelector(
+                  aTestObj.copyButtonSelector
+                );
+                info("Clicking 'copy' button");
+                copyButton.click();
+              }
+            );
           }
         );
         await reauthObserved;
-        ok(true, testObj.expectedValue + " is on clipboard now");
+        Assert.ok(true, testObj.expectedValue + " is on clipboard now");
 
-        await SpecialPowers.spawn(browser, [testObj], async function(aTestObj) {
-          let loginItem = Cu.waiveXrays(
-            content.document.querySelector("login-item")
-          );
-          let copyButton = loginItem.shadowRoot.querySelector(
-            aTestObj.copyButtonSelector
-          );
-          let otherCopyButton =
-            copyButton == loginItem._copyUsernameButton
-              ? loginItem._copyPasswordButton
-              : loginItem._copyUsernameButton;
-          ok(
-            !otherCopyButton.dataset.copied,
-            "The other copy button should have the 'copied' state removed"
-          );
-          ok(copyButton.dataset.copied, "Success message should be shown");
-        });
+        await SpecialPowers.spawn(
+          browser,
+          [testObj],
+          async function (aTestObj) {
+            let loginItem = Cu.waiveXrays(
+              content.document.querySelector("login-item")
+            );
+            let copyButton = loginItem.shadowRoot.querySelector(
+              aTestObj.copyButtonSelector
+            );
+            let otherCopyButton =
+              copyButton == loginItem._copyUsernameButton
+                ? loginItem._copyPasswordButton
+                : loginItem._copyUsernameButton;
+            Assert.ok(
+              !otherCopyButton.dataset.copied,
+              "The other copy button should have the 'copied' state removed"
+            );
+            Assert.ok(
+              copyButton.dataset.copied,
+              "Success message should be shown"
+            );
+          }
+        );
       }
 
       // Wait for the 'copied' attribute to get removed from the copyPassword

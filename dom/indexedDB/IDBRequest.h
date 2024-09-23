@@ -10,8 +10,11 @@
 #include "js/RootingAPI.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/IDBRequestBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "nsCycleCollectionParticipant.h"
 #include "ReportInternalError.h"
 #include "SafeRefPtr.h"
@@ -31,7 +34,6 @@ class ErrorResult;
 
 namespace dom {
 
-class DOMException;
 class IDBCursor;
 class IDBDatabase;
 class IDBFactory;
@@ -42,6 +44,17 @@ template <typename>
 struct Nullable;
 class OwningIDBObjectStoreOrIDBIndexOrIDBCursor;
 class StrongWorkerRef;
+
+namespace detail {
+// This class holds the IID for use with NS_GET_IID.
+class PrivateIDBRequest {
+ public:
+  NS_DECLARE_STATIC_IID_ACCESSOR(PRIVATE_IDBREQUEST_IID)
+};
+
+NS_DEFINE_STATIC_IID_ACCESSOR(PrivateIDBRequest, PRIVATE_IDBREQUEST_IID)
+
+}  // namespace detail
 
 class IDBRequest : public DOMEventTargetHelper {
  protected:
@@ -64,15 +77,15 @@ class IDBRequest : public DOMEventTargetHelper {
   bool mHaveResultOrErrorCode;
 
  public:
-  [[nodiscard]] static RefPtr<IDBRequest> Create(
+  [[nodiscard]] static MovingNotNull<RefPtr<IDBRequest>> Create(
       JSContext* aCx, IDBDatabase* aDatabase,
       SafeRefPtr<IDBTransaction> aTransaction);
 
-  [[nodiscard]] static RefPtr<IDBRequest> Create(
+  [[nodiscard]] static MovingNotNull<RefPtr<IDBRequest>> Create(
       JSContext* aCx, IDBObjectStore* aSource, IDBDatabase* aDatabase,
       SafeRefPtr<IDBTransaction> aTransaction);
 
-  [[nodiscard]] static RefPtr<IDBRequest> Create(
+  [[nodiscard]] static MovingNotNull<RefPtr<IDBRequest>> Create(
       JSContext* aCx, IDBIndex* aSource, IDBDatabase* aDatabase,
       SafeRefPtr<IDBTransaction> aTransaction);
 
@@ -186,7 +199,7 @@ class IDBRequest : public DOMEventTargetHelper {
   Maybe<IDBTransaction&> MaybeTransactionRef() const {
     AssertIsOnOwningThread();
 
-    return mTransaction ? SomeRef(*mTransaction) : Nothing();
+    return mTransaction.maybeDeref();
   }
 
   IDBTransaction& MutableTransactionRef() const {
@@ -241,15 +254,12 @@ class IDBOpenDBRequest final : public IDBRequest {
 
   RefPtr<StrongWorkerRef> mWorkerRef;
 
-  const bool mFileHandleDisabled;
   bool mIncreasedActiveDatabaseCount;
 
  public:
   [[nodiscard]] static RefPtr<IDBOpenDBRequest> Create(
       JSContext* aCx, SafeRefPtr<IDBFactory> aFactory,
       nsIGlobalObject* aGlobal);
-
-  bool IsFileHandleDisabled() const { return mFileHandleDisabled; }
 
   void SetTransaction(SafeRefPtr<IDBTransaction> aTransaction);
 
@@ -258,8 +268,6 @@ class IDBOpenDBRequest final : public IDBRequest {
   void NoteComplete();
 
   // EventTarget
-  virtual nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
-
   IMPL_EVENT_HANDLER(blocked);
   IMPL_EVENT_HANDLER(upgradeneeded);
 
@@ -271,8 +279,7 @@ class IDBOpenDBRequest final : public IDBRequest {
                                JS::Handle<JSObject*> aGivenProto) override;
 
  private:
-  IDBOpenDBRequest(SafeRefPtr<IDBFactory> aFactory, nsIGlobalObject* aGlobal,
-                   bool aFileHandleDisabled);
+  IDBOpenDBRequest(SafeRefPtr<IDBFactory> aFactory, nsIGlobalObject* aGlobal);
 
   ~IDBOpenDBRequest();
 

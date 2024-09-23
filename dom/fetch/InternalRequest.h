@@ -14,17 +14,22 @@
 #include "mozilla/LoadTainting.h"
 #include "mozilla/UniquePtr.h"
 
+#include "nsIChannelEventSink.h"
 #include "nsIInputStream.h"
 #include "nsISupportsImpl.h"
+#include "mozilla/net/NeckoChannelParams.h"
 #ifdef DEBUG
 #  include "nsIURLParser.h"
 #  include "nsNetCID.h"
 #  include "nsServiceManagerUtils.h"
 #endif
 
+using mozilla::net::RedirectHistoryEntryInfo;
+
 namespace mozilla {
 
 namespace ipc {
+class PBackgroundChild;
 class PrincipalInfo;
 }  // namespace ipc
 
@@ -32,39 +37,42 @@ namespace dom {
 
 /*
  * The mapping of RequestDestination and nsContentPolicyType is currently as the
- * following.  Note that this mapping is not perfect yet (see the TODO comments
- * below for examples).
+ * following.
  *
  * RequestDestination| nsContentPolicyType
  * ------------------+--------------------
- * audio             | TYPE_INTERNAL_AUDIO
- * audioworklet      | TYPE_INTERNAL_AUDIOWORKLET
- * document          | TYPE_DOCUMENT, TYPE_INTERNAL_IFRAME, TYPE_SUBDOCUMENT
- * embed             | TYPE_INTERNAL_EMBED
- * font              | TYPE_FONT, TYPE_INTERNAL_FONT_PRELOAD
- * image             | TYPE_INTERNAL_IMAGE, TYPE_INTERNAL_IMAGE_PRELOAD,
+ * "audio"           | TYPE_INTERNAL_AUDIO
+ * "audioworklet"    | TYPE_INTERNAL_AUDIOWORKLET
+ * "document"        | TYPE_DOCUMENT
+ * "embed"           | TYPE_INTERNAL_EMBED
+ * "font"            | TYPE_FONT, TYPE_INTERNAL_FONT_PRELOAD
+ * "frame"           | TYPE_INTERNAL_FRAME
+ * "iframe"          | TYPE_SUBDOCUMENT, TYPE_INTERNAL_IFRAME
+ * "image"           | TYPE_INTERNAL_IMAGE, TYPE_INTERNAL_IMAGE_PRELOAD,
  *                   | TYPE_IMAGE, TYPE_INTERNAL_IMAGE_FAVICON, TYPE_IMAGESET
- * manifest          | TYPE_WEB_MANIFEST
- * object            | TYPE_INTERNAL_OBJECT, TYPE_OBJECT
+ * "manifest"        | TYPE_WEB_MANIFEST
+ * "object"          | TYPE_INTERNAL_OBJECT, TYPE_OBJECT
  * "paintworklet"    | TYPE_INTERNAL_PAINTWORKLET
- * report"           | TODO
- * script            | TYPE_INTERNAL_SCRIPT, TYPE_INTERNAL_SCRIPT_PRELOAD,
+ * "report"          | TYPE_CSP_REPORT
+ * "script"          | TYPE_INTERNAL_SCRIPT, TYPE_INTERNAL_SCRIPT_PRELOAD,
  *                   | TYPE_INTERNAL_MODULE, TYPE_INTERNAL_MODULE_PRELOAD,
  *                   | TYPE_SCRIPT,
  *                   | TYPE_INTERNAL_SERVICE_WORKER,
- *                   | TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS
- * sharedworker      | TYPE_INTERNAL_SHARED_WORKER
- * serviceworker     | The spec lists this as a valid value for the enum,
+ *                   | TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS,
+ *                   | TYPE_INTERNAL_CHROMEUTILS_COMPILED_SCRIPT
+ *                   | TYPE_INTERNAL_FRAME_MESSAGEMANAGER_SCRIPT
+ * "sharedworker"    | TYPE_INTERNAL_SHARED_WORKER
+ * "serviceworker"   | The spec lists this as a valid value for the enum,
  *                   | however it is impossible to observe a request with this
  *                   | destination value.
- * style             | TYPE_INTERNAL_STYLESHEET,
+ * "style"           | TYPE_INTERNAL_STYLESHEET,
  *                   | TYPE_INTERNAL_STYLESHEET_PRELOAD,
  *                   | TYPE_STYLESHEET
- * track             | TYPE_INTERNAL_TRACK
- * video             | TYPE_INTERNAL_VIDEO
- * worker            | TYPE_INTERNAL_WORKER
- * xslt              | TYPE_XSLT
- * _empty            | Default for everything else.
+ * "track"           | TYPE_INTERNAL_TRACK
+ * "video"           | TYPE_INTERNAL_VIDEO
+ * "worker"          | TYPE_INTERNAL_WORKER, TYPE_INTERNAL_WORKER_STATIC_MODULE
+ * "xslt"            | TYPE_XSLT
+ * ""                | Default for everything else.
  *
  */
 
@@ -84,11 +92,15 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
                   RequestCache aCacheMode, RequestMode aMode,
                   RequestRedirect aRequestRedirect,
                   RequestCredentials aRequestCredentials,
-                  const nsAString& aReferrer, ReferrerPolicy aReferrerPolicy,
+                  const nsACString& aReferrer, ReferrerPolicy aReferrerPolicy,
+                  RequestPriority aPriority,
                   nsContentPolicyType aContentPolicyType,
                   const nsAString& aIntegrity);
 
   explicit InternalRequest(const IPCInternalRequest& aIPCRequest);
+
+  void ToIPCInternalRequest(IPCInternalRequest* aIPCRequest,
+                            mozilla::ipc::PBackgroundChild* aManager);
 
   SafeRefPtr<InternalRequest> Clone();
 
@@ -147,9 +159,9 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
   void GetURLListWithoutFragment(nsTArray<nsCString>& aURLList) {
     aURLList.Assign(mURLList);
   }
-  void GetReferrer(nsAString& aReferrer) const { aReferrer.Assign(mReferrer); }
+  void GetReferrer(nsACString& aReferrer) const { aReferrer.Assign(mReferrer); }
 
-  void SetReferrer(const nsAString& aReferrer) {
+  void SetReferrer(const nsACString& aReferrer) {
 #ifdef DEBUG
     bool validReferrer = false;
     if (aReferrer.IsEmpty() ||
@@ -167,10 +179,9 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
         uint32_t pathPos;
         int32_t pathLen;
 
-        NS_ConvertUTF16toUTF8 ref(aReferrer);
-        nsresult rv =
-            parser->ParseURL(ref.get(), ref.Length(), &schemePos, &schemeLen,
-                             &authorityPos, &authorityLen, &pathPos, &pathLen);
+        nsresult rv = parser->ParseURL(
+            aReferrer.BeginReading(), aReferrer.Length(), &schemePos,
+            &schemeLen, &authorityPos, &authorityLen, &pathPos, &pathLen);
         if (NS_FAILED(rv)) {
           NS_WARNING("Invalid referrer URL!");
         } else if (schemeLen < 0 || authorityLen < 0) {
@@ -205,6 +216,10 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
 
   void SetSkipServiceWorker() { mSkipServiceWorker = true; }
 
+  bool SkipWasmCaching() const { return mSkipWasmCaching; }
+
+  void SetSkipWasmCaching() { mSkipWasmCaching = true; }
+
   bool IsSynchronous() const { return mSynchronous; }
 
   RequestMode Mode() const { return mMode; }
@@ -235,11 +250,21 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
     mRedirectMode = aRedirectMode;
   }
 
+  RequestPriority GetPriorityMode() const { return mPriorityMode; }
+
+  void SetPriorityMode(RequestPriority aPriorityMode) {
+    mPriorityMode = aPriorityMode;
+  }
+
   const nsString& GetIntegrity() const { return mIntegrity; }
 
   void SetIntegrity(const nsAString& aIntegrity) {
     mIntegrity.Assign(aIntegrity);
   }
+
+  bool GetKeepalive() const { return mKeepalive; }
+
+  void SetKeepalive(const bool aKeepalive) { mKeepalive = aKeepalive; }
 
   bool MozErrors() const { return mMozErrors; }
 
@@ -318,7 +343,6 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
 
   // Takes ownership of the principal info.
   void SetPrincipalInfo(UniquePtr<mozilla::ipc::PrincipalInfo> aPrincipalInfo);
-
   const UniquePtr<mozilla::ipc::PrincipalInfo>& GetPrincipalInfo() const {
     return mPrincipalInfo;
   }
@@ -343,6 +367,36 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
     return mEmbedderPolicy;
   }
 
+  void SetInterceptionTriggeringPrincipalInfo(
+      UniquePtr<mozilla::ipc::PrincipalInfo> aPrincipalInfo);
+
+  const UniquePtr<mozilla::ipc::PrincipalInfo>&
+  GetInterceptionTriggeringPrincipalInfo() const {
+    return mInterceptionTriggeringPrincipalInfo;
+  }
+
+  nsContentPolicyType InterceptionContentPolicyType() const {
+    return mInterceptionContentPolicyType;
+  }
+  void SetInterceptionContentPolicyType(nsContentPolicyType aContentPolicyType);
+
+  const nsTArray<RedirectHistoryEntryInfo>& InterceptionRedirectChain() const {
+    return mInterceptionRedirectChain;
+  }
+
+  void SetInterceptionRedirectChain(
+      const nsTArray<RedirectHistoryEntryInfo>& aRedirectChain) {
+    mInterceptionRedirectChain = aRedirectChain;
+  }
+
+  const bool& InterceptionFromThirdParty() const {
+    return mInterceptionFromThirdParty;
+  }
+
+  void SetInterceptionFromThirdParty(bool aFromThirdParty) {
+    mInterceptionFromThirdParty = aFromThirdParty;
+  }
+
  private:
   struct ConstructorGuard {};
 
@@ -355,10 +409,7 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
   // by the spec at https://fetch.spec.whatwg.org/#concept-request-destination.
   // Note that while the HTML spec for the "Link" element and its "as" attribute
   // (https://html.spec.whatwg.org/#attr-link-as) reuse fetch's definition of
-  // destination, and the Link class has an internal Link::AsDestination enum
-  // type, the latter is only a support type to map the string values via
-  // Link::ParseAsValue and Link::AsValueToContentPolicy to our canonical
-  // nsContentPolicyType.
+  // destination.
   static RequestDestination MapContentPolicyTypeToRequestDestination(
       nsContentPolicyType aContentPolicyType);
 
@@ -392,7 +443,7 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
   // Empty string: no-referrer
   // "about:client": client (default)
   // URL: an URL
-  nsString mReferrer;
+  nsCString mReferrer;
   ReferrerPolicy mReferrerPolicy;
 
   // This will be used for request created from Window or Worker contexts
@@ -404,10 +455,13 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
   LoadTainting mResponseTainting = LoadTainting::Basic;
   RequestCache mCacheMode;
   RequestRedirect mRedirectMode;
+  RequestPriority mPriorityMode = RequestPriority::Auto;
   nsString mIntegrity;
+  bool mKeepalive = false;
   bool mMozErrors = false;
   nsCString mFragment;
   bool mSkipServiceWorker = false;
+  bool mSkipWasmCaching = false;
   bool mSynchronous = false;
   bool mUnsafeRequest = false;
   bool mUseURLCredentials = false;
@@ -419,6 +473,26 @@ class InternalRequest final : public AtomicSafeRefCounted<InternalRequest> {
       nsILoadInfo::EMBEDDER_POLICY_NULL;
 
   UniquePtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
+
+  // Following members are specific for the FetchEvent.request or
+  // NavigationPreload request which is extracted from the
+  // InterceptedHttpChannel.
+  // Notice that these members would not be copied when calling
+  // InternalRequest::GetRequestConstructorCopy() since these information should
+  // not be propagated when copying the Request in ServiceWorker script.
+
+  // This is the trigging principalInfo of the InterceptedHttpChannel.
+  UniquePtr<mozilla::ipc::PrincipalInfo> mInterceptionTriggeringPrincipalInfo;
+
+  // This is the contentPolicyType of the InterceptedHttpChannel.
+  nsContentPolicyType mInterceptionContentPolicyType{
+      nsIContentPolicy::TYPE_INVALID};
+
+  // This is the redirect history of the InterceptedHttpChannel.
+  CopyableTArray<RedirectHistoryEntryInfo> mInterceptionRedirectChain;
+
+  // This indicates that the InterceptedHttpChannel is a third party channel.
+  bool mInterceptionFromThirdParty{false};
 };
 
 }  // namespace dom

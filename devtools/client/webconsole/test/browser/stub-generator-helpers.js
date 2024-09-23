@@ -3,9 +3,6 @@
 
 "use strict";
 
-const ChromeUtils = require("ChromeUtils");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-
 const {
   getAdHocFrontOrPrimitiveGrip,
 } = require("devtools/client/fronts/object");
@@ -14,26 +11,20 @@ const CHROME_PREFIX = "chrome://mochitests/content/browser/";
 const STUBS_FOLDER = "devtools/client/webconsole/test/node/fixtures/stubs/";
 const STUBS_UPDATE_ENV = "WEBCONSOLE_STUBS_UPDATE";
 
-async function createResourceWatcherForTab(tab) {
-  // Avoid mocha to try to load these module and fail while doing it when running node tests
+async function createCommandsForTab(tab) {
   const {
-    ResourceWatcher,
-  } = require("devtools/shared/resources/resource-watcher");
-  const { TargetList } = require("devtools/shared/resources/target-list");
-  const { TargetFactory } = require("devtools/client/framework/target");
+    CommandsFactory,
+  } = require("devtools/shared/commands/commands-factory");
+  const commands = await CommandsFactory.forTab(tab);
+  return commands;
+}
 
-  const target = await TargetFactory.forTab(tab);
-  const targetList = new TargetList(target.client.mainRoot, target);
-
-  await target.attach();
-  // Attach the thread actor in order to ensure having sources
-  // and have the `sourceId` attribute correctly set.
-  const threadFront = await target.attachThread({});
-  // Resume the thread, otherwise it stays pause and we prevent JS from running
-  await threadFront.resume();
-
-  await targetList.startListening();
-  return new ResourceWatcher(targetList);
+async function createCommandsForMainProcess() {
+  const {
+    CommandsFactory,
+  } = require("devtools/shared/commands/commands-factory");
+  const commands = await CommandsFactory.forMainProcess();
+  return commands;
 }
 
 // eslint-disable-next-line complexity
@@ -56,7 +47,7 @@ function getCleanedPacket(key, packet) {
     return packet;
   }
 
-  // If the stub already exist, we want to ignore irrelevant properties (actor, timer, …)
+  // If the stub already exist, we want to ignore irrelevant properties (generated id, timer, …)
   // that might changed and "pollute" the diff resulting from this stub generation.
   const existingPacket = stubPackets.get(safeKey);
   const res = Object.assign({}, packet, {
@@ -69,10 +60,6 @@ function getCleanedPacket(key, packet) {
 
   if (res.startedDateTime) {
     res.startedDateTime = existingPacket.startedDateTime;
-  }
-
-  if (res.actor) {
-    res.actor = existingPacket.actor;
   }
 
   if (res.channelId) {
@@ -93,7 +80,9 @@ function getCleanedPacket(key, packet) {
       }
     }
     // Clean innerWindowId on the message prop.
-    res.message.innerWindowID = existingPacket.message.innerWindowID;
+    if (existingPacket.message.innerWindowID) {
+      res.message.innerWindowID = existingPacket.message.innerWindowID;
+    }
 
     if (Array.isArray(res.message.arguments)) {
       res.message.arguments = res.message.arguments.map((argument, i) => {
@@ -105,9 +94,6 @@ function getCleanedPacket(key, packet) {
         const existingArgument = existingPacket.message.arguments[i];
 
         if (existingArgument && newArgument._grip) {
-          // Clean actor ids on each message.arguments item.
-          copyExistingActor(newArgument, existingArgument);
-
           // `window`'s properties count can vary from OS to OS, so we
           // clean the `ownPropertyLength` property from the grip.
           if (newArgument._grip.class === "Window") {
@@ -134,105 +120,14 @@ function getCleanedPacket(key, packet) {
     }
   }
 
-  if (res?.exception?.actor && existingPacket.exception.actor) {
-    // Clean actor ids on evaluation exception
-    copyExistingActor(res.exception, existingPacket.exception);
-  }
-
-  if (res.result && res.result._grip && existingPacket.result) {
-    // Clean actor ids on evaluation result messages.
-    copyExistingActor(res.result, existingPacket.result);
-  }
-
-  if (
-    res?.result?._grip?.promiseState?.reason &&
-    existingPacket?.result?._grip?.promiseState?.reason
-  ) {
-    // Clean actor ids on evaluation promise result messages.
-    copyExistingActor(
-      res.result._grip.promiseState.reason,
-      existingPacket.result._grip.promiseState.reason
-    );
-  }
-
-  if (
-    res?.result?._grip?.promiseState?.timeToSettle &&
-    existingPacket?.result?._grip?.promiseState?.timeToSettle
-  ) {
-    res.result._grip.promiseState.timeToSettle =
-      existingPacket.result._grip.promiseState.timeToSettle;
-  }
-
-  if (res.exception && existingPacket.exception) {
-    // Clean actor ids on exception messages.
-    copyExistingActor(res.exception, existingPacket.exception);
-
-    if (
-      res.exception._grip &&
-      res.exception._grip.preview &&
-      existingPacket.exception._grip &&
-      existingPacket.exception._grip.preview
-    ) {
-      if (
-        typeof res.exception._grip.preview.message === "object" &&
-        res.exception._grip.preview.message._grip.type === "longString" &&
-        typeof existingPacket.exception._grip.preview.message === "object" &&
-        existingPacket.exception._grip.preview.message._grip.type ===
-          "longString"
-      ) {
-        copyExistingActor(
-          res.exception._grip.preview.message,
-          existingPacket.exception._grip.preview.message
-        );
-      }
-    }
-
-    if (
-      typeof res.exceptionMessage === "object" &&
-      res.exceptionMessage._grip &&
-      res.exceptionMessage._grip.type === "longString"
-    ) {
-      copyExistingActor(res.exceptionMessage, existingPacket.exceptionMessage);
-    }
-  }
-
   if (res.eventActor) {
-    // Clean actor ids and startedDateTime on network messages.
-    res.eventActor.actor = existingPacket.eventActor.actor;
-    res.eventActor.startedDateTime = existingPacket.eventActor.startedDateTime;
+    // Clean startedDateTime on network messages.
+    res.eventActor.startedDateTime = existingPacket.startedDateTime;
   }
 
   if (res.pageError) {
     // Clean innerWindowID on pageError messages.
     res.pageError.innerWindowID = existingPacket.pageError.innerWindowID;
-
-    if (
-      typeof res.pageError.errorMessage === "object" &&
-      res.pageError.errorMessage._grip &&
-      res.pageError.errorMessage._grip.type === "longString"
-    ) {
-      copyExistingActor(
-        res.pageError.errorMessage,
-        existingPacket.pageError.errorMessage
-      );
-    }
-
-    if (
-      res.pageError.exception?._grip?.preview?.message?._grip &&
-      existingPacket.pageError.exception?._grip?.preview?.message?._grip
-    ) {
-      copyExistingActor(
-        res.pageError.exception._grip.preview.message,
-        existingPacket.pageError.exception._grip.preview.message
-      );
-    }
-
-    if (res.pageError.exception && existingPacket.pageError.exception) {
-      copyExistingActor(
-        res.pageError.exception,
-        existingPacket.pageError.exception
-      );
-    }
 
     if (res.pageError.sourceId) {
       res.pageError.sourceId = existingPacket.pageError.sourceId;
@@ -255,7 +150,11 @@ function getCleanedPacket(key, packet) {
   if (Array.isArray(res.exceptionStack)) {
     res.exceptionStack = res.exceptionStack.map((frame, i) => {
       const existingFrame = existingPacket.exceptionStack[i];
-      if (frame && existingFrame && frame.sourceId) {
+      // We're replacing sourceId here even if the property in frame is null to avoid
+      // a frequent intermittent. The sourceId is retrieved from the Debugger#findSources
+      // API, which is not deterministic (See https://searchfox.org/mozilla-central/rev/b172dd415c475e8b2899560e6005b3a953bead2a/js/src/doc/Debugger/Debugger.md#367-375)
+      // This should be fixed in Bug 1717037.
+      if (frame && existingFrame && "sourceId" in frame) {
         frame.sourceId = existingFrame.sourceId;
       }
       return frame;
@@ -277,57 +176,22 @@ function getCleanedPacket(key, packet) {
     res.packet = Object.assign({}, res.packet, override);
   }
 
-  if (res.networkInfo) {
-    if (res.networkInfo.startedDateTime) {
-      res.networkInfo.startedDateTime =
-        existingPacket.networkInfo.startedDateTime;
-    }
-
-    if (res.networkInfo.totalTime) {
-      res.networkInfo.totalTime = existingPacket.networkInfo.totalTime;
-    }
-
-    if (res.networkInfo.actor) {
-      res.networkInfo.actor = existingPacket.networkInfo.actor;
-    }
-
-    if (res.networkInfo.request && res.networkInfo.request.headersSize) {
-      res.networkInfo.request.headersSize =
-        existingPacket.networkInfo.request.headersSize;
-    }
-
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.headersSize !== undefined
-    ) {
-      res.networkInfo.response.headersSize =
-        existingPacket.networkInfo.response.headersSize;
-    }
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.bodySize !== undefined
-    ) {
-      res.networkInfo.response.bodySize =
-        existingPacket.networkInfo.response.bodySize;
-    }
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.transferredSize !== undefined
-    ) {
-      res.networkInfo.response.transferredSize =
-        existingPacket.networkInfo.response.transferredSize;
-    }
+  if (res.startedDateTime) {
+    res.startedDateTime = existingPacket.startedDateTime;
   }
 
-  if (res.updates && Array.isArray(res.updates)) {
-    res.updates.sort();
+  if (res.totalTime && existingPacket.totalTime) {
+    res.totalTime = existingPacket.totalTime;
   }
 
-  if (res.helperResult) {
-    copyExistingActor(
-      res.helperResult.object,
-      existingPacket.helperResult.object
-    );
+  if (res.securityState && existingPacket.securityState) {
+    res.securityState = existingPacket.securityState;
+  }
+
+  // waitingTime can be very small and rounded to 0. However this is still a
+  // valid waiting time, so check isNaN instead of a simple truthy check.
+  if (!isNaN(res.waitingTime) && existingPacket.waitingTime) {
+    res.waitingTime = existingPacket.waitingTime;
   }
 
   return res;
@@ -337,11 +201,12 @@ function cleanTimeStamp(packet) {
   // We want to have the same timestamp for every stub, so they won't be re-sorted when
   // adding them to the store.
   const uniqueTimeStamp = 1572867483805;
-
+  // lowercased timestamp
   if (packet.timestamp) {
     packet.timestamp = uniqueTimeStamp;
   }
 
+  // camelcased timestamp
   if (packet.timeStamp) {
     packet.timeStamp = uniqueTimeStamp;
   }
@@ -373,40 +238,17 @@ function cleanTimeStamp(packet) {
   if (packet?.pageError?.timeStamp) {
     packet.pageError.timeStamp = uniqueTimeStamp;
   }
-
-  if (packet?.networkInfo?.timeStamp) {
-    packet.networkInfo.timeStamp = uniqueTimeStamp;
-  }
-}
-
-function copyExistingActor(a, b) {
-  if (!a || !b) {
-    return;
-  }
-
-  if (a.actorID && b.actorID) {
-    a.actorID = b.actorID;
-  }
-
-  if (a.actor && b.actor) {
-    a.actor = b.actor;
-  }
-
-  if (a._grip && b._grip && a._grip.actor && b._grip.actor) {
-    a._grip.actor = b._grip.actor;
-  }
 }
 
 /**
  * Write stubs to a given file
  *
- * @param {Object} env
  * @param {String} fileName: The file to write the stubs in.
  * @param {Map} packets: A Map of the packets.
  * @param {Boolean} isNetworkMessage: Is the packets are networkMessage packets
  */
-async function writeStubsToFile(env, fileName, packets, isNetworkMessage) {
-  const mozRepo = env.get("MOZ_DEVELOPER_REPO_DIR");
+async function writeStubsToFile(fileName, packets, isNetworkMessage) {
+  const mozRepo = Services.env.get("MOZ_DEVELOPER_REPO_DIR");
   const filePath = `${mozRepo}/${STUBS_FOLDER + fileName}`;
 
   const serializedPackets = Array.from(packets.entries()).map(
@@ -423,17 +265,17 @@ async function writeStubsToFile(env, fileName, packets, isNetworkMessage) {
 "use strict";
 
 /*
- * THIS FILE IS AUTOGENERATED. DO NOT MODIFY BY HAND. RUN TESTS IN FIXTURES/ TO UPDATE.
+ * THIS FILE IS AUTOGENERATED. DO NOT MODIFY BY HAND. SEE devtools/client/webconsole/test/README.md.
  */
 
 const {
   parsePacketsWithFronts,
-} = require("chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/stub-generator-helpers");
-const { prepareMessage } = require("devtools/client/webconsole/utils/messages");
+} = require("chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/stub-generator-helpers.js");
+const { prepareMessage } = require("resource://devtools/client/webconsole/utils/messages.js");
 const {
   ConsoleMessage,
   NetworkEventMessage,
-} = require("devtools/client/webconsole/types");
+} = require("resource://devtools/client/webconsole/types.js");
 
 const rawPackets = new Map();
 ${serializedPackets.join("\n\n")}
@@ -443,9 +285,7 @@ const stubPackets = parsePacketsWithFronts(rawPackets);
 
 const stubPreparedMessages = new Map();
 for (const [key, packet] of Array.from(stubPackets.entries())) {
-  const transformedPacket = prepareMessage(${
-    isNetworkMessage ? "packet.networkInfo || packet" : "packet"
-  }, {
+  const transformedPacket = prepareMessage(${"packet"}, {
     getNextId: () => "1",
   });
   const message = ${
@@ -463,20 +303,74 @@ module.exports = {
 };
 `;
 
-  await OS.File.writeAtomic(filePath, fileContent);
+  await IOUtils.write(filePath, new TextEncoder().encode(fileContent));
 }
 
 function getStubFile(fileName) {
   return require(CHROME_PREFIX + STUBS_FOLDER + fileName);
 }
 
-function getSerializedPacket(packet) {
+function sortObjectKeys(obj) {
+  const isArray = Array.isArray(obj);
+  const isObject = Object.prototype.toString.call(obj) === "[object Object]";
+  const isFront = obj?._grip;
+
+  if (isObject && !isFront) {
+    // Reorder keys for objects, but skip fronts to avoid infinite recursion.
+    const sortedKeys = Object.keys(obj).sort((k1, k2) => k1.localeCompare(k2));
+    const withSortedKeys = {};
+    sortedKeys.forEach(k => {
+      withSortedKeys[k] = k !== "stacktrace" ? sortObjectKeys(obj[k]) : obj[k];
+    });
+    return withSortedKeys;
+  } else if (isArray) {
+    return obj.map(item => sortObjectKeys(item));
+  }
+  return obj;
+}
+
+/**
+ * @param {Object} packet
+ *        The packet to serialize.
+ * @param {Object} options
+ * @param {Boolean} options.sortKeys
+ *        Pass true to sort all keys alphabetically in the packet before serialization.
+ *        For instance stub comparison should not fail if the order of properties changed.
+ * @param {Boolean} options.replaceActorIds
+ *        Pass true to replace actorIDs with a fake one so it's easier to compare stubs
+ *        that includes grips.
+ */
+function getSerializedPacket(
+  packet,
+  { sortKeys = false, replaceActorIds = false } = {}
+) {
+  if (sortKeys) {
+    packet = sortObjectKeys(packet);
+  }
+
+  const actorIdPlaceholder = "XXX";
+
   return JSON.stringify(
     packet,
-    function(_, value) {
+    function (key, value) {
       // The message can have fronts that we need to serialize
       if (value && value._grip) {
-        return { _grip: value._grip, actorID: value.actorID };
+        return {
+          _grip: value._grip,
+          actorID: replaceActorIds ? actorIdPlaceholder : value.actorID,
+        };
+      }
+
+      if (
+        replaceActorIds &&
+        (key === "actor" || key === "actorID" || key === "sourceId") &&
+        typeof value === "string"
+      ) {
+        return actorIdPlaceholder;
+      }
+
+      if (key === "resourceId") {
+        return undefined;
       }
 
       return value;
@@ -532,10 +426,12 @@ function parsePacketAndCreateFronts(packet) {
 
 module.exports = {
   STUBS_UPDATE_ENV,
-  createResourceWatcherForTab,
+  createCommandsForTab,
+  createCommandsForMainProcess,
   getStubFile,
   getCleanedPacket,
   getSerializedPacket,
   parsePacketsWithFronts,
+  parsePacketAndCreateFronts,
   writeStubsToFile,
 };

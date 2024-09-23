@@ -3,15 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import { formatSymbols } from "../utils/formatSymbols";
 import { populateSource, populateOriginalSource } from "./helpers";
 import cases from "jest-in-case";
 
 cases(
   "Parser.getSymbols",
-  ({ name, file, original, type }) => {
+  ({ file, original, type }) => {
     const source = original
       ? populateOriginalSource(file, type)
       : populateSource(file, type);
@@ -32,6 +30,7 @@ cases(
     { name: "call expression", file: "callExpressions" },
     { name: "object expressions", file: "object-expressions" },
     { name: "optional chaining", file: "optional-chaining" },
+    { name: "private fields", file: "private-fields" },
     {
       name: "finds symbols in an html file",
       file: "parseScriptTags",
@@ -46,5 +45,7 @@ cases(
     { name: "flow", file: "flow", original: true },
     { name: "jsx", file: "jsx", original: true },
     { name: "destruct", file: "destructuring" },
+
+    { name: "regexp", file: "regexp" },
   ]
 );

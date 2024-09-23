@@ -11,7 +11,7 @@ add_task(async function test_checkForErrorSection() {
     gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, validCert);
   });
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     let infoGroups;
     let downloadLinkContainers = [];
 
@@ -51,9 +51,8 @@ add_task(async function test_checkForErrorSection() {
     certChain = certChain.join("").replace(/(\r\n|\n|\r)/gm, "");
 
     for (let i = 0; i < certTabs.length; i++) {
-      let downloadLink = downloadLinkContainers[i].querySelector(
-        ".download-link"
-      );
+      let downloadLink =
+        downloadLinkContainers[i].querySelector(".download-link");
 
       let downloadChainLink = downloadLinkContainers[i].querySelector(
         ".download-link-chain"
@@ -66,12 +65,29 @@ add_task(async function test_checkForErrorSection() {
       let linkCert = downloadLink.getAttribute("href");
       linkCert = linkCert.replace("data:,", "");
       linkCert = decodeURI(linkCert);
+      let certLineLength = Math.max(
+        ...linkCert.split(/\r\n|\n|\r/m).map(x => x.length)
+      );
       linkCert = linkCert.replace(/(\r\n|\n|\r)/gm, "");
 
       let downloadChainCert = downloadChainLink.getAttribute("href");
       downloadChainCert = downloadChainCert.replace("data:,", "");
       downloadChainCert = decodeURI(downloadChainCert);
+      let chainLineLength = Math.max(
+        ...downloadChainCert.split(/\r\n|\n|\r/m).map(x => x.length)
+      );
       downloadChainCert = downloadChainCert.replace(/(\r\n|\n|\r)/gm, "");
+
+      Assert.lessOrEqual(
+        certLineLength,
+        64,
+        "PEM cert line length should be capped to 64"
+      );
+      Assert.lessOrEqual(
+        chainLineLength,
+        64,
+        "PEM chain line length should be capped to 64"
+      );
 
       Assert.equal(
         cert,

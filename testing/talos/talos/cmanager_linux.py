@@ -1,15 +1,13 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
-from __future__ import absolute_import, print_function
-
 import re
 import subprocess
 
 from cmanager_base import CounterManager
 
 
-def xrestop(binary='xrestop'):
+def xrestop(binary="xrestop"):
     """
     python front-end to running xrestop:
     http://www.freedesktop.org/wiki/Software/xrestop
@@ -34,12 +32,13 @@ def xrestop(binary='xrestop'):
         total bytes   : ~4728761
     """
 
-    process_regex = re.compile(r'([0-9]+) - (.*) \( PID: *(.*) *\):')
+    process_regex = re.compile(r"([0-9]+) - (.*) \( PID: *(.*) *\):")
 
-    args = ['-m', '1', '-b']
+    args = ["-m", "1", "-b"]
     command = [binary] + args
-    process = subprocess.Popen(command,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+    )
     stdout, stderr = process.communicate()
     if process.returncode:
         raise Exception(
@@ -66,7 +65,7 @@ def xrestop(binary='xrestop'):
         else:
             if not pid:
                 continue
-            counter, value = line.split(':', 1)
+            counter, value = line.split(":", 1)
             counter = counter.strip()
             value = value.strip()
             retval[pid][counter] = value
@@ -76,14 +75,13 @@ def xrestop(binary='xrestop'):
 
 def GetPrivateBytes(pids):
     """Calculate the amount of private, writeable memory allocated to a
-       process.
-       This code was adapted from 'pmap.c', part of the procps project.
+    process.
+    This code was adapted from 'pmap.c', part of the procps project.
     """
     privateBytes = 0
     for pid in pids:
-        mapfile = '/proc/%s/maps' % pid
+        mapfile = "/proc/%s/maps" % pid
         with open(mapfile) as maps:
-
             private = 0
 
             for line in maps:
@@ -111,10 +109,9 @@ def GetResidentSize(pids):
 
     RSS = 0
     for pid in pids:
-        file = '/proc/%s/status' % pid
+        file = "/proc/%s/status" % pid
 
         with open(file) as status:
-
             for line in status:
                 if line.find("VmRSS") >= 0:
                     RSS += int(line.split()[1]) * 1024
@@ -129,36 +126,38 @@ def GetXRes(pids):
     xres_output = xrestop()
     for pid in pids:
         if pid in xres_output:
-            data = xres_output[pid]['total bytes']
-            data = data.lstrip('~')  # total bytes is like '~4728761'
+            data = xres_output[pid]["total bytes"]
+            data = data.lstrip("~")  # total bytes is like '~4728761'
             try:
                 data = float(data)
                 XRes += data
             except ValueError:
                 print("Invalid data, not a float")
                 raise
-        else:
-            raise Exception("Could not find PID=%s in xrestop output" % pid)
+        # Content processes generally won't use X11 after bug 1635451,
+        # so failing to find the process isn't an error.
     return XRes
 
 
 class LinuxCounterManager(CounterManager):
     """This class manages the monitoring of a process with any number of
-       counters.
+    counters.
 
-       A counter can be any function that takes an argument of one pid and
-       returns a piece of data about that process.
-       Some examples are: CalcCPUTime, GetResidentSize, and GetPrivateBytes
+    A counter can be any function that takes an argument of one pid and
+    returns a piece of data about that process.
+    Some examples are: CalcCPUTime, GetResidentSize, and GetPrivateBytes
     """
 
-    counterDict = {"Private Bytes": GetPrivateBytes,
-                   "RSS": GetResidentSize,
-                   "XRes": GetXRes}
+    counterDict = {
+        "Private Bytes": GetPrivateBytes,
+        "RSS": GetResidentSize,
+        "XRes": GetXRes,
+    }
 
     def __init__(self, process_name, process, counters):
         """Args:
-             counters: A list of counters to monitor. Any counters whose name
-             does not match a key in 'counterDict' will be ignored.
+        counters: A list of counters to monitor. Any counters whose name
+        does not match a key in 'counterDict' will be ignored.
         """
 
         CounterManager.__init__(self)
@@ -177,7 +176,6 @@ class LinuxCounterManager(CounterManager):
     def pidList(self):
         """Updates the list of PIDs we're interested in"""
         try:
-            return [self.process.pid] + [child.pid
-                                         for child in self.process.children()]
+            return [self.process.pid] + [child.pid for child in self.process.children()]
         except Exception:
             print("WARNING: problem updating child PID's")

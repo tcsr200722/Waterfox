@@ -4,10 +4,12 @@
 
 const CC = Components.Constructor;
 
-let { ForgetAboutSite } = ChromeUtils.import(
-  "resource://gre/modules/ForgetAboutSite.jsm"
+let { ForgetAboutSite } = ChromeUtils.importESModule(
+  "resource://gre/modules/ForgetAboutSite.sys.mjs"
 );
-let { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+let { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const USER_CONTEXTS = ["default", "personal"];
 const TEST_HOST = "example.com";
@@ -54,19 +56,6 @@ function loadImagePageHandler(metadata, response) {
   response.bodyOutputStream.write(body, body.length);
 }
 
-async function openTabInUserContext(uri, userContextId) {
-  // Open the tab in the correct userContextId.
-  let tab = BrowserTestUtils.addTab(gBrowser, uri, { userContextId });
-
-  // Select tab and make sure its browser is focused.
-  gBrowser.selectedTab = tab;
-  tab.ownerGlobal.focus();
-
-  let browser = gBrowser.getBrowserForTab(tab);
-  await BrowserTestUtils.browserLoaded(browser);
-  return { tab, browser };
-}
-
 function getCookiesForOA(host, userContextId) {
   return Services.cookies.getCookiesFromHost(host, { userContextId });
 }
@@ -75,17 +64,15 @@ function createURI(uri) {
   return Services.io.newURI(uri);
 }
 
-function getCacheStorage(where, lci, appcache) {
+function getCacheStorage(where, lci) {
   if (!lci) {
     lci = Services.loadContextInfo.default;
   }
   switch (where) {
     case "disk":
-      return Services.cache2.diskCacheStorage(lci, false);
+      return Services.cache2.diskCacheStorage(lci);
     case "memory":
       return Services.cache2.memoryCacheStorage(lci);
-    case "appcache":
-      return Services.cache2.appCacheStorage(lci, appcache);
     case "pin":
       return Services.cache2.pinningCacheStorage(lci);
   }
@@ -97,20 +84,18 @@ function OpenCacheEntry(key, where, flags, lci) {
     key = createURI(key);
     function CacheListener() {}
     CacheListener.prototype = {
-      _appCache: null,
-
       QueryInterface: ChromeUtils.generateQI(["nsICacheEntryOpenCallback"]),
 
-      onCacheEntryCheck(entry, appCache) {
+      onCacheEntryCheck() {
         return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
       },
 
-      onCacheEntryAvailable(entry, isnew, appCache, status) {
+      onCacheEntryAvailable() {
         resolve();
       },
 
       run() {
-        let storage = getCacheStorage(where, lci, this._appCache);
+        let storage = getCacheStorage(where, lci);
         storage.asyncOpenURI(key, "", flags, this);
       },
     };
@@ -297,7 +282,7 @@ async function test_storage_cleared() {
     await SpecialPowers.spawn(
       tabInfo.browser,
       [{ userContext: USER_CONTEXTS[userContextId] }],
-      async function(arg) {
+      async function (arg) {
         // Check that the local storage has been set correctly.
         Assert.equal(
           content.localStorage.getItem("userContext"),
@@ -326,7 +311,7 @@ async function test_storage_cleared() {
         let storeRequest = store.get(1);
 
         await new Promise(done => {
-          storeRequest.onsuccess = event => {
+          storeRequest.onsuccess = () => {
             let res = storeRequest.result;
             Assert.equal(
               res.userContext,
@@ -356,7 +341,7 @@ async function test_storage_cleared() {
     );
 
     // Check that do storages be cleared or not.
-    await SpecialPowers.spawn(tabInfo.browser, [], async function() {
+    await SpecialPowers.spawn(tabInfo.browser, [], async function () {
       // Check that does the local storage be cleared or not.
       Assert.ok(
         !content.localStorage.getItem("userContext"),
@@ -394,7 +379,7 @@ async function test_storage_cleared() {
   }
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // Make sure userContext is enabled.
   await SpecialPowers.pushPrefEnv({
     set: [["privacy.userContext.enabled", true]],

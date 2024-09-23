@@ -2,17 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import parseScriptTags from "parse-script-tags";
+import { parseScriptTags } from "./parse-script-tags";
 import * as babelParser from "@babel/parser";
 import * as t from "@babel/types";
-import isEmpty from "lodash/isEmpty";
 import { getSource } from "../sources";
 
-import type { SourceId } from "../../../types";
-
-let ASTs = new Map();
+const ASTs = new Map();
 
 function _parse(code, opts) {
   return babelParser.parse(code, {
@@ -26,9 +21,15 @@ const sourceOptions = {
     sourceType: "unambiguous",
     tokens: true,
     plugins: [
+      "classStaticBlock",
+      "classPrivateProperties",
+      "classPrivateMethods",
+      "classProperties",
       "objectRestSpread",
       "optionalChaining",
+      "privateIn",
       "nullishCoalescingOperator",
+      "regexpUnicodeSets",
     ],
   },
   original: {
@@ -42,6 +43,9 @@ const sourceOptions = {
       "nullishCoalescingOperator",
       "decorators-legacy",
       "objectRestSpread",
+      "classStaticBlock",
+      "classPrivateProperties",
+      "classPrivateMethods",
       "classProperties",
       "exportDefaultFrom",
       "exportNamespaceFrom",
@@ -50,21 +54,21 @@ const sourceOptions = {
       "functionSent",
       "dynamicImport",
       "react-jsx",
+      "regexpUnicodeSets",
     ],
   },
 };
 
-export function parse(text: ?string, opts?: Object): any {
-  let ast;
+export function parse(text, opts) {
+  let ast = {};
   if (!text) {
-    return;
+    return ast;
   }
 
   try {
     ast = _parse(text, opts);
   } catch (error) {
     console.error(error);
-    ast = {};
   }
 
   return ast;
@@ -85,7 +89,7 @@ function vueParser({ source, line }) {
 }
 function parseVueScript(code) {
   if (typeof code !== "string") {
-    return;
+    return {};
   }
 
   let ast;
@@ -106,14 +110,18 @@ function parseVueScript(code) {
   return ast;
 }
 
-export function parseConsoleScript(text: string, opts?: Object): Object | null {
+export function parseConsoleScript(text, opts) {
   try {
     return _parse(text, {
       plugins: [
+        "classStaticBlock",
+        "classPrivateProperties",
+        "classPrivateMethods",
         "objectRestSpread",
         "dynamicImport",
         "nullishCoalescingOperator",
         "optionalChaining",
+        "regexpUnicodeSets",
       ],
       ...opts,
       allowAwaitOutsideFunction: true,
@@ -123,11 +131,11 @@ export function parseConsoleScript(text: string, opts?: Object): Object | null {
   }
 }
 
-export function parseScript(text: string, opts?: Object) {
+export function parseScript(text, opts) {
   return _parse(text, opts);
 }
 
-export function getAst(sourceId: SourceId) {
+export function getAst(sourceId) {
   if (ASTs.has(sourceId)) {
     return ASTs.get(sourceId);
   }
@@ -174,18 +182,15 @@ export function getAst(sourceId: SourceId) {
   return ast;
 }
 
-export function clearASTs() {
-  ASTs = new Map();
+export function clearASTs(sourceIds) {
+  for (const sourceId of sourceIds) {
+    ASTs.delete(sourceId);
+  }
 }
 
-type Visitor = { enter: Function };
-export function traverseAst<T>(
-  sourceId: SourceId,
-  visitor: Visitor,
-  state?: T
-) {
+export function traverseAst(sourceId, visitor, state) {
   const ast = getAst(sourceId);
-  if (isEmpty(ast)) {
+  if (!ast || !Object.keys(ast).length) {
     return null;
   }
 
@@ -193,7 +198,7 @@ export function traverseAst<T>(
   return ast;
 }
 
-export function hasNode(rootNode: Node, predicate: Function) {
+export function hasNode(rootNode, predicate) {
   try {
     t.traverse(rootNode, {
       enter: (node, ancestors) => {
@@ -210,7 +215,7 @@ export function hasNode(rootNode: Node, predicate: Function) {
   return false;
 }
 
-export function replaceNode(ancestors: Object[], node: Object) {
+export function replaceNode(ancestors, node) {
   const parent = ancestors[ancestors.length - 1];
 
   if (typeof parent.index === "number") {

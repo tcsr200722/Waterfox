@@ -10,11 +10,15 @@ Test preset with no subcommand
   Commit message:
   try: -b do -p linux -u mochitests -t none --tag foo
   
+  mach try command: `./mach try --no-push --no-artifact --preset foo`
+  
   Pushed via `mach try syntax`
 
   $ ./mach try syntax $testargs --preset foo
   Commit message:
   try: -b do -p linux -u mochitests -t none --tag foo
+  
+  mach try command: `./mach try syntax --no-push --no-artifact --preset foo`
   
   Pushed via `mach try syntax`
 
@@ -59,11 +63,15 @@ Test preset with syntax subcommand
   Commit message:
   try: -b do -p win32 -u none -t all --tag bar
   
+  mach try command: `./mach try syntax --no-push --no-artifact --preset bar`
+  
   Pushed via `mach try syntax`
 
   $ ./mach try $testargs --preset bar
   Commit message:
   try: -b do -p win32 -u none -t all --tag bar
+  
+  mach try command: `./mach try --no-push --no-artifact --preset bar`
   
   Pushed via `mach try syntax`
 
@@ -71,10 +79,10 @@ Test preset with syntax subcommand
   Presets from */mozbuild/try_presets.yml: (glob)
   
     bar:
+      dry_run: true
       no_artifact: true
       platforms:
       - win32
-      push: false
       selector: syntax
       tags:
       - bar
@@ -96,10 +104,10 @@ Test preset with syntax subcommand
     
   $ ./mach try syntax $testargs --edit-presets
   bar:
+    dry_run: true
     no_artifact: true
     platforms:
     - win32
-    push: false
     selector: syntax
     tags:
     - bar
@@ -128,18 +136,25 @@ Test preset with fuzzy subcommand
   Commit message:
   Fuzzy query='foo
   
+  mach try command: `./mach try fuzzy --no-push --no-artifact --preset baz`
+  
   Pushed via `mach try fuzzy`
   Calculated try_task_config.json:
   {
-      "env": {
-          "TRY_SELECTOR": "fuzzy"
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "rebuild": 5,
+              "tasks": [
+                  "test/foo-debug",
+                  "test/foo-opt"
+              ]
+          }
       },
-      "rebuild": 5,
-      "tasks": [
-          "test/foo-debug",
-          "test/foo-opt"
-      ],
-      "version": 1
+      "version": 2
   }
   
 
@@ -147,18 +162,25 @@ Test preset with fuzzy subcommand
   Commit message:
   Fuzzy query='foo
   
+  mach try command: `./mach try --no-push --no-artifact --preset baz`
+  
   Pushed via `mach try fuzzy`
   Calculated try_task_config.json:
   {
-      "env": {
-          "TRY_SELECTOR": "fuzzy"
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "rebuild": 5,
+              "tasks": [
+                  "test/foo-debug",
+                  "test/foo-opt"
+              ]
+          }
       },
-      "rebuild": 5,
-      "tasks": [
-          "test/foo-debug",
-          "test/foo-opt"
-      ],
-      "version": 1
+      "version": 2
   }
   
  
@@ -168,19 +190,26 @@ Queries can be appended to presets
   Commit message:
   Fuzzy query='foo&query='build
   
+  mach try command: `./mach try fuzzy --no-push --no-artifact --preset baz -q "'build"`
+  
   Pushed via `mach try fuzzy`
   Calculated try_task_config.json:
   {
-      "env": {
-          "TRY_SELECTOR": "fuzzy"
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "rebuild": 5,
+              "tasks": [
+                  "build-baz",
+                  "test/foo-debug",
+                  "test/foo-opt"
+              ]
+          }
       },
-      "rebuild": 5,
-      "tasks": [
-          "build-baz",
-          "test/foo-debug",
-          "test/foo-opt"
-      ],
-      "version": 1
+      "version": 2
   }
   
 
@@ -188,17 +217,24 @@ Queries can be appended to presets
   Commit message:
   Fuzzy query='foo&query='opt
   
+  mach try command: `./mach try --no-push --no-artifact --preset baz -xq "'opt"`
+  
   Pushed via `mach try fuzzy`
   Calculated try_task_config.json:
   {
-      "env": {
-          "TRY_SELECTOR": "fuzzy"
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "rebuild": 5,
+              "tasks": [
+                  "test/foo-opt"
+              ]
+          }
       },
-      "rebuild": 5,
-      "tasks": [
-          "test/foo-opt"
-      ],
-      "version": 1
+      "version": 2
   }
   
 
@@ -206,10 +242,10 @@ Queries can be appended to presets
   Presets from */mozbuild/try_presets.yml: (glob)
   
     bar:
+      dry_run: true
       no_artifact: true
       platforms:
       - win32
-      push: false
       selector: syntax
       tags:
       - bar
@@ -218,10 +254,10 @@ Queries can be appended to presets
       tests:
       - none
     baz:
+      dry_run: true
       no_artifact: true
-      push: false
       query:
-      - '''foo'
+      - "'foo"
       rebuild: 5
       selector: fuzzy
     foo:
@@ -238,10 +274,10 @@ Queries can be appended to presets
     
   $ ./mach try fuzzy $testargs --edit-presets
   bar:
+    dry_run: true
     no_artifact: true
     platforms:
     - win32
-    push: false
     selector: syntax
     tags:
     - bar
@@ -250,10 +286,10 @@ Queries can be appended to presets
     tests:
     - none
   baz:
+    dry_run: true
     no_artifact: true
-    push: false
     query:
-    - '''foo'
+    - "'foo"
     rebuild: 5
     selector: fuzzy
   foo:
@@ -267,5 +303,108 @@ Queries can be appended to presets
     - none
     tests:
     - mochitests
+
+Test gecko-profile argument handling. Add in profiling to a preset.
+
+  $ ./mach try fuzzy $testargs --preset baz --gecko-profile-features=nostacksampling,cpu
+  Commit message:
+  Fuzzy query='foo
+  
+  mach try command: `./mach try fuzzy --no-push --no-artifact --preset baz --gecko-profile-features=nostacksampling,cpu`
+  
+  Pushed via `mach try fuzzy`
+  Calculated try_task_config.json:
+  {
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "gecko-profile": true,
+              "gecko-profile-features": "nostacksampling,cpu",
+              "rebuild": 5,
+              "tasks": [
+                  "test/foo-debug",
+                  "test/foo-opt"
+              ]
+          }
+      },
+      "version": 2
+  }
+  
+Check whether the gecko-profile flags can be used from a preset, and check
+dashes vs underscores (presets save with underscores to match ArgumentParser
+settings; everything else uses dashes.)
+
+  $ ./mach try fuzzy $testargs --save profile -q "'foo" --rebuild 5 --gecko-profile-features=nostacksampling,cpu
+  preset saved, run with: --preset=profile
+
+  $ ./mach try fuzzy $testargs --preset profile
+  Commit message:
+  Fuzzy query='foo
+  
+  mach try command: `./mach try fuzzy --no-push --no-artifact --preset profile`
+  
+  Pushed via `mach try fuzzy`
+  Calculated try_task_config.json:
+  {
+      "parameters": {
+          "optimize_target_tasks": false,
+          "try_task_config": {
+              "env": {
+                  "TRY_SELECTOR": "fuzzy"
+              },
+              "gecko-profile": true,
+              "gecko-profile-features": "nostacksampling,cpu",
+              "rebuild": 5,
+              "tasks": [
+                  "test/foo-debug",
+                  "test/foo-opt"
+              ]
+          }
+      },
+      "version": 2
+  }
+  
+  $ EDITOR=cat ./mach try fuzzy $testargs --edit-preset profile
+  bar:
+    dry_run: true
+    no_artifact: true
+    platforms:
+    - win32
+    selector: syntax
+    tags:
+    - bar
+    talos:
+    - all
+    tests:
+    - none
+  baz:
+    dry_run: true
+    no_artifact: true
+    query:
+    - "'foo"
+    rebuild: 5
+    selector: fuzzy
+  foo:
+    no_artifact: true
+    platforms:
+    - linux
+    selector: syntax
+    tags:
+    - foo
+    talos:
+    - none
+    tests:
+    - mochitests
+  profile:
+    dry_run: true
+    gecko_profile_features: nostacksampling,cpu
+    no_artifact: true
+    query:
+    - "'foo"
+    rebuild: 5
+    selector: fuzzy
 
   $ rm $MOZBUILD_STATE_PATH/try_presets.yml

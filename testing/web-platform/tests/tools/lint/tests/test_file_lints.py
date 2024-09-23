@@ -1,10 +1,10 @@
-from __future__ import unicode_literals
+# mypy: allow-untyped-defs
 
 from ..lint import check_file_contents
 from .base import check_errors
+import io
 import os
 import pytest
-import six
 
 INTERESTING_FILE_NAMES = {
     "python": [
@@ -26,7 +26,7 @@ INTERESTING_FILE_NAMES = {
 
 def check_with_files(input_bytes):
     return {
-        filename: (check_file_contents("", filename, six.BytesIO(input_bytes)), kind)
+        filename: (check_file_contents("", filename, io.BytesIO(input_bytes)), kind)
         for (filename, kind) in
         (
             (os.path.join("html", filename), kind)
@@ -233,6 +233,16 @@ def test_no_missing_deps():
             assert errors == []
 
 
+def test_html_invalid_syntax():
+    error_map = check_with_files(b"<!doctype html><div/>")
+
+    for (filename, (errors, kind)) in error_map.items():
+        check_errors(errors)
+
+        if kind == "web-lax":
+            assert errors == [("HTML INVALID SYNTAX", "Test-file line has a non-void HTML tag with /> syntax", filename, 1)]
+
+
 def test_meta_timeout():
     code = b"""
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -330,6 +340,71 @@ def test_multiple_testharnessreport():
         if kind in ["web-lax", "web-strict"]:
             assert errors == [
                 ("MULTIPLE-TESTHARNESSREPORT", "More than one `<script src='/resources/testharnessreport.js'>`", filename, None),
+            ]
+        elif kind == "python":
+            assert errors == [
+                ("PARSE-FAILED", "Unable to parse file", filename, 2),
+            ]
+
+
+def test_testdriver_in_unsupported():
+    code = b"""
+<html xmlns="http://www.w3.org/1999/xhtml">
+<link rel="match" href="test-ref.html"/>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+</html>
+"""
+    error_map = check_with_files(code)
+
+    for (filename, (errors, kind)) in error_map.items():
+        check_errors(errors)
+
+        if kind in ["web-lax", "web-strict"]:
+            assert errors == [
+                (
+                    "NON-EXISTENT-REF",
+                    "Reference test with a non-existent 'match' relationship reference: "
+                    "'test-ref.html'",
+                    filename,
+                    None,
+                ),
+                (
+                    "TESTDRIVER-IN-UNSUPPORTED-TYPE",
+                    "testdriver.js included in a reftest test, which doesn't support "
+                    "testdriver.js",
+                    filename,
+                    None,
+                ),
+            ]
+        elif kind == "python":
+            assert errors == [
+                ("PARSE-FAILED", "Unable to parse file", filename, 2),
+            ]
+
+
+def test_early_testdriver_vendor():
+    code = b"""
+<html xmlns="http://www.w3.org/1999/xhtml">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<script src="/resources/testdriver.js"></script>
+</html>
+"""
+    error_map = check_with_files(code)
+
+    for (filename, (errors, kind)) in error_map.items():
+        check_errors(errors)
+
+        if kind in ["web-lax", "web-strict"]:
+            assert errors == [
+                ("EARLY-TESTDRIVER-VENDOR",
+                    "Test file has an instance of "
+                    "`<script src='/resources/testdriver-vendor.js'>` "
+                    "prior to `<script src='/resources/testdriver.js'>`",
+                    filename,
+                    None),
             ]
         elif kind == "python":
             assert errors == [
@@ -515,16 +590,16 @@ def test_testdriver_vendor_path():
         check_errors(errors)
 
         if kind == "python":
-            expected = set([("PARSE-FAILED", "Unable to parse file", filename, 1)])
+            expected = {("PARSE-FAILED", "Unable to parse file", filename, 1)}
         elif kind in ["web-lax", "web-strict"]:
-            expected = set([
+            expected = {
                 ("MISSING-TESTDRIVER-VENDOR", "Missing `<script src='/resources/testdriver-vendor.js'>`", filename, None),
                 ("TESTDRIVER-VENDOR-PATH", "testdriver-vendor.js script seen with incorrect path", filename, None),
                 ("TESTDRIVER-VENDOR-PATH", "testdriver-vendor.js script seen with incorrect path", filename, None),
                 ("TESTDRIVER-VENDOR-PATH", "testdriver-vendor.js script seen with incorrect path", filename, None),
                 ("TESTDRIVER-VENDOR-PATH", "testdriver-vendor.js script seen with incorrect path", filename, None),
                 ("TESTDRIVER-VENDOR-PATH", "testdriver-vendor.js script seen with incorrect path", filename, None)
-            ])
+            }
         else:
             expected = set()
 
@@ -583,9 +658,8 @@ def test_variant_missing():
 # A corresponding "positive" test cannot be written because the manifest
 # SourceFile implementation raises a runtime exception for the condition this
 # linting rule describes
-@pytest.mark.parametrize("content", ["",
-                                     "?"
-                                     "#"])
+@pytest.mark.parametrize("content", ["?foo"
+                                     "#bar"])
 def test_variant_malformed_negative(content):
     code = """\
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -633,26 +707,39 @@ def test_late_timeout():
             ]
 
 
-# Note: This test checks the print *statement* (which doesn't exist in python 3).
-#       The print *function* is checked in test_print_function below.
-@pytest.mark.skipif(six.PY3, reason="Cannot parse print statements from python 3")
-def test_print_statement():
-    error_map = check_with_files(b"def foo():\n  print 'statement'\n  print\n")
+def test_reference_in_non_reference():
+    code = b"""
+<html xmlns="http://www.w3.org/1999/xhtml">
+<link rel="match" href="test-ref.html"/>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+</html>
+"""
+    error_map = check_with_files(code)
 
     for (filename, (errors, kind)) in error_map.items():
         check_errors(errors)
 
-        if kind == "python":
+        if kind in ["web-lax", "web-strict"]:
             assert errors == [
-                ("PRINT STATEMENT", "A server-side python support file contains a `print` statement", filename, 2),
-                ("PRINT STATEMENT", "A server-side python support file contains a `print` statement", filename, 3),
+                (
+                    "NON-EXISTENT-REF",
+                    "Reference test with a non-existent 'match' relationship reference: "
+                    "'test-ref.html'",
+                    filename,
+                    None,
+                ),
+                (
+                    "REFERENCE-IN-OTHER-TYPE",
+                    "Reference link included in a testharness test",
+                    filename,
+                    None,
+                ),
             ]
-        elif kind == "web-strict":
+        elif kind == "python":
             assert errors == [
-                ("PARSE-FAILED", "Unable to parse file", filename, None),
+                ("PARSE-FAILED", "Unable to parse file", filename, 2),
             ]
-        else:
-            assert errors == []
 
 
 def test_print_function():
@@ -733,7 +820,7 @@ def fifth():
 def test_open_mode():
     for method in ["open", "file"]:
         code = open_mode_code.format(method).encode("utf-8")
-        errors = check_file_contents("", "test.py", six.BytesIO(code))
+        errors = check_file_contents("", "test.py", io.BytesIO(code))
         check_errors(errors)
 
         message = ("File opened without providing an explicit mode (note: " +
@@ -745,27 +832,6 @@ def test_open_mode():
         ]
 
 
-@pytest.mark.parametrize(
-    "filename,expect_error",
-    [
-        ("foo/bar.html", False),
-        ("css/bar.html", True),
-    ])
-def test_css_support_file(filename, expect_error):
-    errors = check_file_contents("", filename, six.BytesIO(b""))
-    check_errors(errors)
-
-    if expect_error:
-        assert errors == [
-            ('SUPPORT-WRONG-DIR',
-             'Support file not in support directory',
-             filename,
-             None),
-        ]
-    else:
-        assert errors == []
-
-
 def test_css_missing_file_in_css():
     code = b"""\
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -773,7 +839,7 @@ def test_css_missing_file_in_css():
 <script src="/resources/testharnessreport.js"></script>
 </html>
 """
-    errors = check_file_contents("", "css/foo/bar.html", six.BytesIO(code))
+    errors = check_file_contents("", "css/foo/bar.html", io.BytesIO(code))
     check_errors(errors)
 
     assert errors == [
@@ -783,9 +849,159 @@ def test_css_missing_file_in_css():
          None),
     ]
 
+def test_valid_meta_file():
+    code = b"""\
+spec: url
+suggested_reviewers:
+  - username
+"""
+    errors = check_file_contents("", "css/META.yml", io.BytesIO(code))
+    check_errors(errors)
+
+    assert errors == []
+
+def test_invalid_meta_file():
+    code = b"""\
+- test
+"""
+    # Check when the file is named correctly. It should find the error.
+    errors = check_file_contents("", "css/META.yml", io.BytesIO(code))
+    check_errors(errors)
+
+    assert errors == [
+        ('INVALID-META-FILE',
+         'The META.yml is not a YAML file with the expected structure',
+         "css/META.yml",
+         None),
+    ]
+
+    # Check when the file is named incorrectly. It should not find the error.
+    errors = check_file_contents("", "css/OTHER_META.yml", io.BytesIO(code))
+    check_errors(errors)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("files,yml,expected_errors", [
+    (
+        ["file1.txt", "file2.txt", "file3.txt"],
+        b"""\
+features:
+- name: feature1
+  files:
+  - file1.txt
+""",
+        []
+    ),
+    (
+        ["file1.txt", "file2.txt", "file3.txt"],
+        b"""\
+features:
+- name: feature1
+  files:
+  - file*.txt
+""",
+        []
+    ),
+    (
+        ["file1.txt", "file2.txt", "file3.txt"],
+        b"""\
+features:
+- name: feature1
+  files:
+  - file*.txt
+  - foo.txt
+""",
+        [
+            ("MISSING-WEB-FEATURES-FILE",
+             "The WEB_FEATURES.yml file references a test that does not exist: 'foo.txt'",
+             "css/WEB_FEATURES.yml",
+             None),
+        ]
+    ),
+    (
+        ["bar1.txt", "bar2.txt", "bar3.txt"],
+        b"""\
+features:
+- name: feature1
+  files:
+  - file*.txt
+  - bar*.txt
+""",
+        [
+            ("MISSING-WEB-FEATURES-FILE",
+             "The WEB_FEATURES.yml file references a test that does not exist: 'file*.txt'",
+             "css/WEB_FEATURES.yml",
+             None),
+        ]
+    ),
+    (
+        ["file1.txt", "file2.txt", "file3.txt"],
+        b"""\
+features:
+- name: feature1
+  files:
+  - foo.txt
+""",
+        [
+            ("MISSING-WEB-FEATURES-FILE",
+             "The WEB_FEATURES.yml file references a test that does not exist: 'foo.txt'",
+             "css/WEB_FEATURES.yml",
+             None),
+        ]
+    ),
+    (
+        ["file1.txt", "file2.txt", "file3.txt"],
+        b"""\
+features:
+- name: feature1
+  files: "**"
+""",
+        []
+    ),
+])
+def test_valid_web_features_file(monkeypatch, files, yml, expected_errors):
+    def listdir(dir):
+        if dir.endswith("css"):
+            return files
+
+    def is_file(file):
+        if os.path.basename(file) in files:
+            return True
+        return False
+
+    monkeypatch.setattr(os.path, "isfile", is_file)
+    monkeypatch.setattr(os, "listdir", listdir)
+    errors = check_file_contents("", "css/WEB_FEATURES.yml", io.BytesIO(yml))
+    check_errors(errors)
+
+    assert errors == expected_errors
+
+
+def test_invalid_web_features_file():
+    code = b"""\
+- test
+"""
+    # Check when the value is named correctly. It should find the error.
+    errors = check_file_contents("", "css/WEB_FEATURES.yml", io.BytesIO(code))
+    check_errors(errors)
+
+    assert errors == [
+        ('INVALID-WEB-FEATURES-FILE',
+         'The WEB_FEATURES.yml file contains an invalid structure',
+         "css/WEB_FEATURES.yml",
+         None),
+    ]
+
+    # Check when the value is named incorrectly. It should not find the error.
+    errors = check_file_contents("", "css/OTHER_WEB_FEATURES.yml", io.BytesIO(code))
+    check_errors(errors)
+
+    assert errors == []
+
 
 def test_css_missing_file_manual():
-    errors = check_file_contents("", "css/foo/bar-manual.html", six.BytesIO(b""))
+    errors = check_file_contents("", "css/foo/bar-manual.html", io.BytesIO(b""))
     check_errors(errors)
 
     assert errors == [
@@ -806,7 +1022,7 @@ def test_css_missing_file_tentative():
 
     # The tentative flag covers tests that make assertions 'not yet required by
     # any specification', so they need not have a specification link.
-    errors = check_file_contents("", "css/foo/bar.tentative.html", six.BytesIO(code))
+    errors = check_file_contents("", "css/foo/bar.tentative.html", io.BytesIO(code))
     assert not errors
 
 
@@ -820,7 +1036,7 @@ def test_css_missing_file_tentative():
     (b"""// META: timeout=long\n""", None),
     (b"""//  META: timeout=long\n""", None),
     (b"""// META: script=foo.js\n""", None),
-    (b"""// META: variant=\n""", None),
+    (b"""// META: variant=\n""", (1, "MALFORMED-VARIANT")),
     (b"""// META: variant=?wss\n""", None),
     (b"""# META:\n""", None),
     (b"""\n// META: timeout=long\n""", (2, "STRAY-METADATA")),
@@ -832,9 +1048,11 @@ def test_css_missing_file_tentative():
     (b"""// META: foobar\n""", (1, "BROKEN-METADATA")),
     (b"""// META: foo=bar\n""", (1, "UNKNOWN-METADATA")),
     (b"""// META: timeout=bar\n""", (1, "UNKNOWN-TIMEOUT-METADATA")),
+    (b"""// META: script=/resources/testharness.js""", (1, "MULTIPLE-TESTHARNESS")),
+    (b"""// META: script=/resources/testharnessreport.js""", (1, "MULTIPLE-TESTHARNESSREPORT")),
 ])
 def test_script_metadata(filename, input, error):
-    errors = check_file_contents("", filename, six.BytesIO(input))
+    errors = check_file_contents("", filename, io.BytesIO(input))
     check_errors(errors)
 
     if error is not None:
@@ -845,6 +1063,13 @@ def test_script_metadata(filename, input, error):
             "BROKEN-METADATA": "Metadata comment is not formatted correctly",
             "UNKNOWN-TIMEOUT-METADATA": "Unexpected value for timeout metadata",
             "UNKNOWN-METADATA": "Unexpected kind of metadata",
+            "MALFORMED-VARIANT": (
+                f"{filename} `META: variant=...` value must be a non empty "
+                "string and start with '?' or '#'"),
+            "MULTIPLE-TESTHARNESS": (
+                "More than one `<script src='/resources/testharness.js'>`"),
+            "MULTIPLE-TESTHARNESSREPORT": (
+                "More than one `<script src='/resources/testharnessreport.js'>`"),
         }
         assert errors == [
             (kind,
@@ -875,7 +1100,7 @@ def test_script_metadata(filename, input, error):
 def test_script_globals_metadata(globals, error):
     filename = "foo.any.js"
     input = b"""// META: global=%s\n""" % globals
-    errors = check_file_contents("", filename, six.BytesIO(input))
+    errors = check_file_contents("", filename, io.BytesIO(input))
     check_errors(errors)
 
     if error is not None:
@@ -906,7 +1131,7 @@ def test_script_globals_metadata(globals, error):
 ])
 def test_python_metadata(input, error):
     filename = "test.py"
-    errors = check_file_contents("", filename, six.BytesIO(input))
+    errors = check_file_contents("", filename, io.BytesIO(input))
     check_errors(errors)
 
     if error is not None:

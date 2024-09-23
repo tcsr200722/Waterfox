@@ -72,11 +72,9 @@ layers::OffsetRange ShmSegmentsWriter::Write(Range<uint8_t> aBytes) {
       if (!AllocChunk()) {
         // Allocation failed, so roll back to the state at the start of this
         // Write() call and abort.
-        for (size_t i = mSmallAllocs.Length(); currAllocLen < i; i--) {
-          MOZ_ASSERT(i > 0);
-          RefCountedShmem& shm = mSmallAllocs.ElementAt(i - 1);
+        while (mSmallAllocs.Length() > currAllocLen) {
+          RefCountedShmem shm = mSmallAllocs.PopLastElement();
           RefCountedShm::Dealloc(mShmAllocator, shm);
-          mSmallAllocs.RemoveElementAt(i - 1);
         }
         MOZ_ASSERT(mSmallAllocs.Length() == currAllocLen);
         return layers::OffsetRange(0, start, 0);
@@ -129,8 +127,7 @@ bool ShmSegmentsWriter::AllocChunk() {
 
 layers::OffsetRange ShmSegmentsWriter::AllocLargeChunk(size_t aSize) {
   ipc::Shmem shm;
-  auto shmType = ipc::SharedMemory::SharedMemoryType::TYPE_BASIC;
-  if (!mShmAllocator->AllocShmem(aSize, shmType, &shm)) {
+  if (!mShmAllocator->AllocShmem(aSize, &shm)) {
     gfxCriticalNote
         << "ShmSegmentsWriter failed to allocate large chunk of size " << aSize;
     MOZ_ASSERT(false, "ShmSegmentsWriter fails to allocate large chunk");
@@ -145,8 +142,8 @@ void ShmSegmentsWriter::Flush(nsTArray<RefCountedShmem>& aSmallAllocs,
                               nsTArray<ipc::Shmem>& aLargeAllocs) {
   MOZ_ASSERT(aSmallAllocs.IsEmpty());
   MOZ_ASSERT(aLargeAllocs.IsEmpty());
-  mSmallAllocs.SwapElements(aSmallAllocs);
-  mLargeAllocs.SwapElements(aLargeAllocs);
+  aSmallAllocs = std::move(mSmallAllocs);
+  aLargeAllocs = std::move(mLargeAllocs);
   mCursor = 0;
 }
 
@@ -340,12 +337,6 @@ bool IpcResourceUpdateQueue::AddBlobImage(BlobImageKey key,
   return true;
 }
 
-void IpcResourceUpdateQueue::AddPrivateExternalImage(
-    wr::ExternalImageId aExtId, wr::ImageKey aKey, wr::ImageDescriptor aDesc) {
-  mUpdates.AppendElement(
-      layers::OpAddPrivateExternalImage(aExtId, aKey, aDesc));
-}
-
 void IpcResourceUpdateQueue::AddSharedExternalImage(wr::ExternalImageId aExtId,
                                                     wr::ImageKey aKey) {
   mUpdates.AppendElement(layers::OpAddSharedExternalImage(aExtId, aKey));
@@ -359,7 +350,7 @@ void IpcResourceUpdateQueue::PushExternalImageForTexture(
   MOZ_RELEASE_ASSERT(aTexture->GetIPDLActor()->GetIPCChannel() ==
                      mWriter.WrBridge()->GetIPCChannel());
   mUpdates.AppendElement(layers::OpPushExternalImageForTexture(
-      aExtId, aKey, nullptr, aTexture->GetIPDLActor(), aIsUpdate));
+      aExtId, aKey, WrapNotNull(aTexture->GetIPDLActor()), aIsUpdate));
 }
 
 bool IpcResourceUpdateQueue::UpdateImageBuffer(
@@ -386,13 +377,6 @@ bool IpcResourceUpdateQueue::UpdateBlobImage(BlobImageKey aKey,
   mUpdates.AppendElement(layers::OpUpdateBlobImage(aDescriptor, bytes, aKey,
                                                    aVisibleRect, aDirtyRect));
   return true;
-}
-
-void IpcResourceUpdateQueue::UpdatePrivateExternalImage(
-    wr::ExternalImageId aExtId, wr::ImageKey aKey,
-    const wr::ImageDescriptor& aDesc, ImageIntRect aDirtyRect) {
-  mUpdates.AppendElement(
-      layers::OpUpdatePrivateExternalImage(aExtId, aKey, aDesc, aDirtyRect));
 }
 
 void IpcResourceUpdateQueue::UpdateSharedExternalImage(
@@ -459,8 +443,7 @@ void IpcResourceUpdateQueue::Flush(
     nsTArray<layers::OpUpdateResource>& aUpdates,
     nsTArray<layers::RefCountedShmem>& aSmallAllocs,
     nsTArray<ipc::Shmem>& aLargeAllocs) {
-  aUpdates.Clear();
-  mUpdates.SwapElements(aUpdates);
+  aUpdates = std::move(mUpdates);
   mWriter.Flush(aSmallAllocs, aLargeAllocs);
 }
 

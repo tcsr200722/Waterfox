@@ -1,10 +1,10 @@
 [
   {
+    "filename": "host-utils-121.0a1.en-US.linux-x86_64.tar.gz",
+    "size": 148723677,
     "algorithm": "sha512",
-    "visibility": "public",
-    "filename": "host-utils-77.0a1.en-US.linux-x86_64.tar.gz",
+    "digest": "25120413d09996a3f3b85927e3dacab4570f091bdf4d025e4452901fe95a66285bf126b8fbc7b861ba34de627fa0b5a48c88ec0c7f63fae11db54ed0c6e3d16e",
     "unpack": true,
-    "digest": "3aa2390122e3b2e4710b4cb20700b874e06c7fd3d9e3c4e5997eb84402aaf18a46b4e71ab8b6cfeae75542e1628c4f0b7085bb00d17587282257a82126020695",
-    "size": 102554873
+    "visibility": "public"
   }
 ]

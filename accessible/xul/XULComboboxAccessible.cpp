@@ -5,13 +5,14 @@
 
 #include "XULComboboxAccessible.h"
 
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
 #include "nsAccessibilityService.h"
 #include "DocAccessible.h"
 #include "nsCoreUtils.h"
-#include "Role.h"
+#include "mozilla/a11y/Role.h"
 #include "States.h"
 
+#include "mozilla/dom/Element.h"
 #include "nsIDOMXULMenuListElement.h"
 
 using namespace mozilla::a11y;
@@ -37,22 +38,27 @@ uint64_t XULComboboxAccessible::NativeState() const {
   //     STATE_COLLAPSED
 
   // Get focus status from base class
-  uint64_t state = Accessible::NativeState();
+  uint64_t state = LocalAccessible::NativeState();
 
   nsCOMPtr<nsIDOMXULMenuListElement> menuList = Elm()->AsXULMenuList();
   if (menuList) {
     bool isOpen = false;
     menuList->GetOpen(&isOpen);
-    if (isOpen)
+    if (isOpen) {
       state |= states::EXPANDED;
-    else
+    } else {
       state |= states::COLLAPSED;
+    }
   }
 
   return state | states::HASPOPUP;
 }
 
-void XULComboboxAccessible::Description(nsString& aDescription) {
+bool XULComboboxAccessible::IsAcceptableChild(nsIContent* aContent) const {
+  return AccessibleWrap::IsAcceptableChild(aContent) && !aContent->IsText();
+}
+
+void XULComboboxAccessible::Description(nsString& aDescription) const {
   aDescription.Truncate();
   // Use description of currently focused option
   nsCOMPtr<nsIDOMXULMenuListElement> menuListElm = Elm()->AsXULMenuList();
@@ -61,7 +67,7 @@ void XULComboboxAccessible::Description(nsString& aDescription) {
   nsCOMPtr<dom::Element> focusedOptionItem;
   menuListElm->GetSelectedItem(getter_AddRefs(focusedOptionItem));
   if (focusedOptionItem && mDoc) {
-    Accessible* focusedOptionAcc = mDoc->GetAccessible(focusedOptionItem);
+    LocalAccessible* focusedOptionAcc = mDoc->GetAccessible(focusedOptionItem);
     if (focusedOptionAcc) focusedOptionAcc->Description(aDescription);
   }
 }
@@ -74,10 +80,7 @@ void XULComboboxAccessible::Value(nsString& aValue) const {
   if (menuList) menuList->GetLabel(aValue);
 }
 
-uint8_t XULComboboxAccessible::ActionCount() const {
-  // Just one action (click).
-  return 1;
-}
+bool XULComboboxAccessible::HasPrimaryAction() const { return true; }
 
 bool XULComboboxAccessible::DoAction(uint8_t aIndex) const {
   if (aIndex != XULComboboxAccessible::eAction_Click) return false;
@@ -101,10 +104,11 @@ void XULComboboxAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
 
   bool isDroppedDown = false;
   menuList->GetOpen(&isDroppedDown);
-  if (isDroppedDown)
+  if (isDroppedDown) {
     aName.AssignLiteral("close");
-  else
+  } else {
     aName.AssignLiteral("open");
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -115,9 +119,10 @@ bool XULComboboxAccessible::IsActiveWidget() const {
                                          nsGkAtoms::_true, eIgnoreCase)) {
     int32_t childCount = mChildren.Length();
     for (int32_t idx = 0; idx < childCount; idx++) {
-      Accessible* child = mChildren[idx];
-      if (child->Role() == roles::ENTRY)
+      LocalAccessible* child = mChildren[idx];
+      if (child->Role() == roles::ENTRY) {
         return FocusMgr()->HasDOMFocus(child->GetContent());
+      }
     }
     return false;
   }

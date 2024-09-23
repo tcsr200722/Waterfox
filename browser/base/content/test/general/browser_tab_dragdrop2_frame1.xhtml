@@ -88,9 +88,7 @@ function createPanel(attrs)
   var button = document.createXULElement("button");
   panel.appendChild(button);
   button.label = "OK";
-  button.width = 120;
-  button.height = 40;
-  button.setAttribute("style", "-moz-appearance: none; border: 0; margin: 0;");
+  button.setAttribute("style", "-moz-appearance: none; border: 0; margin: 0; height: 40px; width: 120px;");
   panel.setAttribute("style", "-moz-appearance: none; border: 0; margin: 0;");
   return document.documentElement.appendChild(panel);
 }
@@ -111,46 +109,38 @@ var tests = [
   {
     testname: "normal panel",
     attrs: { },
-    test: function(panel) {
+    test(panel) {
       panel.openPopupAtScreen(200, 210);
     },
-    result: function(testname, panel) {
+    result(testname, panel) {
       if (my_debug) alert(testname);
-      var panelrect = panel.getBoundingClientRect();
+      panel.getBoundingClientRect();
     }
   },
   {
     // only noautohide panels support titlebars, so one shouldn't be shown here
     testname: "autohide panel with titlebar",
     attrs: { titlebar: "normal" },
-    test: function(panel) {
+    test(panel) {
       panel.openPopupAtScreen(200, 210);
     },
-    result: function(testname, panel) {
+    result(testname, panel) {
       if (my_debug) alert(testname);
-      var panelrect = panel.getBoundingClientRect();
+      panel.getBoundingClientRect();
     }
   },
   {
     testname: "noautohide panel with titlebar",
     attrs: { noautohide: true, titlebar: "normal" },
-    test: function(panel) {
+    test(panel) {
       waitSteps = 25;
       panel.openPopupAtScreen(200, 210);
     },
-    result: function(testname, panel) {
+    result(testname, panel) {
       if (my_debug) alert(testname);
-      var panelrect = panel.getBoundingClientRect();
+      panel.getBoundingClientRect();
 
-      var gotMouseEvent = false;
-      function mouseMoved(event)
-      {
-        gotMouseEvent = true;
-      }
-
-      panel.addEventListener("mousemove", mouseMoved, true);
       synthesizeMouse(panel, 10, 10, { type: "mousemove" });
-      panel.removeEventListener("mousemove", mouseMoved, true);
 
       var tree = $("tree");
       tree.currentIndex = 0;

@@ -10,7 +10,6 @@
 #include "nsCOMPtr.h"
 #include "mozilla/dom/Document.h"
 #include "nsWrapperCache.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Span.h"
 #include "mozilla/dom/DOMParserBinding.h"
 #include "mozilla/dom/TypedArray.h"
@@ -18,6 +17,8 @@
 class nsIGlobalObject;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class DOMParser final : public nsISupports, public nsWrapperCache {
@@ -27,7 +28,7 @@ class DOMParser final : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMParser)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DOMParser)
 
   // WebIDL API
   static already_AddRefed<DOMParser> Constructor(const GlobalObject& aOwner,
@@ -76,7 +77,7 @@ class DOMParser final : public nsISupports, public nsWrapperCache {
 
  private:
   DOMParser(nsIGlobalObject* aOwner, nsIPrincipal* aDocPrincipal,
-            nsIURI* aDocumentURI, nsIURI* aBaseURI);
+            nsIURI* aDocumentURI);
 
   already_AddRefed<Document> SetUpDocument(DocumentFlavor aFlavor,
                                            ErrorResult& aRv);
@@ -84,7 +85,6 @@ class DOMParser final : public nsISupports, public nsWrapperCache {
   nsCOMPtr<nsIGlobalObject> mOwner;
   nsCOMPtr<nsIPrincipal> mPrincipal;
   nsCOMPtr<nsIURI> mDocumentURI;
-  nsCOMPtr<nsIURI> mBaseURI;
 
   bool mForceEnableXULXBL;
   bool mForceEnableDTD;

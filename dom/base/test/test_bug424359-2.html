@@ -36,7 +36,7 @@ function loadFileContent(aFile, aCharset) {
                                null,      // aLoadingNode
                                SpecialPowers.Services.scriptSecurityManager.getSystemPrincipal(),
                                null,      // aTriggeringPrincipal
-                               SpecialPowers.Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                               SpecialPowers.Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                                SpecialPowers.Ci.nsIContentPolicy.TYPE_OTHER);
 
     var cis = SpecialPowers.Ci.nsIConverterInputStream;
@@ -228,7 +228,7 @@ function testHtmlSerializer_1 () {
   encoder.init(document, "text/html", de.OutputLFLineBreak | de.OutputSelectionOnly | de.OutputRaw);
   encoder.setNode(node);
   out = encoder.encodeToString();
-  expected = '<hr id="shortattr6" noshade="noshade">';
+  expected = '<hr noshade="noshade" id="shortattr6">';
   is(out, expected, "test short attr #6");
 
   node = document.getElementById('shortattr7');

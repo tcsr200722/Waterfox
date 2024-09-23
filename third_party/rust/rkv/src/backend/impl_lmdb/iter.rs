@@ -22,12 +22,12 @@ pub struct IterImpl<'i, C> {
 }
 
 impl<'i, C> IterImpl<'i, C> {
-    pub(crate) fn new(mut cursor: C, to_iter: impl FnOnce(&mut C) -> lmdb::Iter<'i>) -> IterImpl<'i, C> {
+    pub(crate) fn new(
+        mut cursor: C,
+        to_iter: impl FnOnce(&mut C) -> lmdb::Iter<'i>,
+    ) -> IterImpl<'i, C> {
         let iter = to_iter(&mut cursor);
-        IterImpl {
-            cursor,
-            iter,
-        }
+        IterImpl { cursor, iter }
     }
 }
 
@@ -36,6 +36,6 @@ impl<'i, C> BackendIter<'i> for IterImpl<'i, C> {
 
     #[allow(clippy::type_complexity)]
     fn next(&mut self) -> Option<Result<(&'i [u8], &'i [u8]), Self::Error>> {
-        self.iter.next().map(|e| e.map_err(ErrorImpl))
+        self.iter.next().map(|e| e.map_err(ErrorImpl::LmdbError))
     }
 }

@@ -6,6 +6,7 @@
 
 #include "CaptureTask.h"
 #include "gfxUtils.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/ImageCapture.h"
 #include "mozilla/dom/ImageCaptureError.h"
 #include "mozilla/dom/ImageEncoder.h"
@@ -109,8 +110,14 @@ void CaptureTask::NotifyRealtimeTrackData(MediaTrackGraph* aGraph,
    public:
     explicit EncodeComplete(CaptureTask* aTask) : mTask(aTask) {}
 
+    bool CanBeDeletedOnAnyThread() override {
+      // EncodeComplete is used from the main thread only.
+      return false;
+    }
+
     nsresult ReceiveBlobImpl(
         already_AddRefed<dom::BlobImpl> aBlobImpl) override {
+      MOZ_ASSERT(NS_IsMainThread());
       RefPtr<dom::BlobImpl> blobImpl(aBlobImpl);
       mTask->TaskComplete(blobImpl.forget(), NS_OK);
       mTask = nullptr;
@@ -150,7 +157,7 @@ void CaptureTask::NotifyRealtimeTrackData(MediaTrackGraph* aGraph,
 
     // Encode image.
     nsresult rv;
-    nsAutoString type(NS_LITERAL_STRING("image/jpeg"));
+    nsAutoString type(u"image/jpeg"_ns);
     nsAutoString options;
     rv = dom::ImageEncoder::ExtractDataFromLayersImageAsync(
         type, options, false, image, false, new EncodeComplete(this));
@@ -184,7 +191,7 @@ void CaptureTask::PostTrackEndEvent() {
 
   IC_LOG("Got MediaTrack track removed or finished event.");
   nsCOMPtr<nsIRunnable> event = new TrackEndRunnable(this);
-  SchedulerGroup::Dispatch(TaskCategory::Other, event.forget());
+  SchedulerGroup::Dispatch(event.forget());
 }
 
 }  // namespace mozilla

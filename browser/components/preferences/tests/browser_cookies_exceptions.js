@@ -19,7 +19,7 @@ add_task(async function testAllow() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -52,7 +52,7 @@ add_task(async function testBlock() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -85,7 +85,7 @@ add_task(async function testAllowAgain() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -152,7 +152,7 @@ add_task(async function testAdd() {
 
       PermissionTestUtils.remove(uri, "popup");
     },
-    params => {
+    () => {
       return [
         {
           type: "popup",
@@ -178,7 +178,7 @@ add_task(async function testAllowHTTPSWithPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -204,7 +204,7 @@ add_task(async function testBlockHTTPSWithPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -230,7 +230,7 @@ add_task(async function testAllowAgainHTTPSWithPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -288,7 +288,7 @@ add_task(async function testAllowPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -321,7 +321,7 @@ add_task(async function testBlockPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -354,7 +354,7 @@ add_task(async function testAllowAgainPort() {
       apply();
       await observeAllPromise;
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -450,7 +450,7 @@ add_task(async function testSort() {
         PermissionTestUtils.remove(uri, "cookie");
       }
     },
-    params => {
+    () => {
       return [
         {
           type: "cookie",
@@ -475,6 +475,35 @@ add_task(async function testSort() {
   );
 });
 
+add_task(async function testPrivateBrowsingSessionPermissionsAreHidden() {
+  await runTest(
+    async params => {
+      assertListContents(params, []);
+
+      let uri = Services.io.newURI("http://test.com");
+      let privateBrowsingPrincipal =
+        Services.scriptSecurityManager.createContentPrincipal(uri, {
+          privateBrowsingId: 1,
+        });
+
+      // Add a session permission for private browsing.
+      PermissionTestUtils.add(
+        privateBrowsingPrincipal,
+        "cookie",
+        Services.perms.ALLOW_ACTION,
+        Services.perms.EXPIRE_SESSION
+      );
+
+      assertListContents(params, []);
+
+      PermissionTestUtils.remove(uri, "cookie");
+    },
+    () => {
+      return [];
+    }
+  );
+});
+
 function assertListContents(params, expected) {
   Assert.equal(params.richlistbox.itemCount, expected.length);
 
@@ -492,7 +521,7 @@ function assertListContents(params, expected) {
 }
 
 async function runTest(test, getObservances) {
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.clearUserPref("privacy.history.custom");
   });
 
@@ -529,59 +558,11 @@ async function runTest(test, getObservances) {
     allow: Ci.nsIPermissionManager.ALLOW_ACTION,
     deny: Ci.nsIPermissionManager.DENY_ACTION,
   };
-  let btnApplyChanges = doc.getElementById("btnApplyChanges");
+  let btnApplyChanges = doc.querySelector("dialog").getButton("accept");
   let observances = getObservances(params);
   let observeAllPromise = createObserveAllPromise(observances);
 
   await test(params, observeAllPromise, () => btnApplyChanges.doCommand());
 
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
-}
-
-function createObserveAllPromise(observances) {
-  return new Promise(resolve => {
-    let permObserver = {
-      observe(aSubject, aTopic, aData) {
-        if (aTopic != "perm-changed") {
-          return;
-        }
-
-        if (!observances.length) {
-          // Should fail here as we are not expecting a notification, but we
-          // don't. See bug 1063410.
-          return;
-        }
-
-        info(`observed perm-changed (remaining ${observances.length - 1})`);
-
-        let permission = aSubject.QueryInterface(Ci.nsIPermission);
-        let expected = observances.shift();
-
-        is(aData, expected.data, "type of message should be the same");
-        for (let prop of ["type", "capability"]) {
-          if (expected[prop]) {
-            is(
-              permission[prop],
-              expected[prop],
-              'property: "' + prop + '" should be equal'
-            );
-          }
-        }
-
-        if (expected.origin) {
-          is(
-            permission.principal.origin,
-            expected.origin,
-            'property: "origin" should be equal'
-          );
-        }
-
-        if (!observances.length) {
-          Services.obs.removeObserver(permObserver, "perm-changed");
-          executeSoon(resolve);
-        }
-      },
-    };
-    Services.obs.addObserver(permObserver, "perm-changed");
-  });
 }

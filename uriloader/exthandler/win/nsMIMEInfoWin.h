@@ -22,8 +22,11 @@ class nsMIMEInfoWin : public nsMIMEInfoBase, public nsIPropertyBag {
 
   NS_IMETHOD LaunchWithFile(nsIFile* aFile) override;
   NS_IMETHOD GetHasDefaultHandler(bool* _retval) override;
+  NS_IMETHOD GetDefaultExecutable(nsIFile** aExecutable) override;
   NS_IMETHOD GetPossibleLocalHandlers(nsIArray** _retval) override;
   NS_IMETHOD IsCurrentAppOSDefault(bool* _retval) override;
+
+  void UpdateDefaultInfoIfStale();
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIPROPERTYBAG
@@ -33,6 +36,11 @@ class nsMIMEInfoWin : public nsMIMEInfoBase, public nsIPropertyBag {
   }
 
  protected:
+  nsIFile* GetDefaultApplication() {
+    UpdateDefaultInfoIfStale();
+    return mDefaultApplication;
+  }
+
   virtual nsresult LoadUriInternal(nsIURI* aURI);
   virtual nsresult LaunchDefaultWithFile(nsIFile* aFile);
 
@@ -61,7 +69,7 @@ class nsMIMEInfoWin : public nsMIMEInfoBase, public nsIPropertyBag {
 
   // Helper routine used in tracking app lists
   void ProcessPath(nsCOMPtr<nsIMutableArray>& appList,
-                   nsTArray<nsString>& trackList,
+                   nsTArray<nsString>& trackList, const nsAutoString& appId,
                    const nsAString& appFilesystemCommand);
 
   // Helper routine to call mozilla::ShellExecuteByExplorer

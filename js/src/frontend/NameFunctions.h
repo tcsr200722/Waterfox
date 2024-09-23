@@ -7,16 +7,19 @@
 #ifndef frontend_NameFunctions_h
 #define frontend_NameFunctions_h
 
-#include "mozilla/Attributes.h"
-
 #include "js/TypeDecls.h"
 
 namespace js {
+
+class FrontendContext;
+
 namespace frontend {
 
 class ParseNode;
+class ParserAtomsTable;
 
-MOZ_MUST_USE bool NameFunctions(JSContext* cx, ParseNode* pn);
+[[nodiscard]] bool NameFunctions(FrontendContext* fc,
+                                 ParserAtomsTable& parserAtoms, ParseNode* pn);
 
 } /* namespace frontend */
 } /* namespace js */

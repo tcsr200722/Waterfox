@@ -1,9 +1,5 @@
-const { ProfileAge } = ChromeUtils.import(
-  "resource://gre/modules/ProfileAge.jsm"
-);
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { CommonUtils } = ChromeUtils.import(
-  "resource://services-common/utils.js"
+const { ProfileAge } = ChromeUtils.importESModule(
+  "resource://gre/modules/ProfileAge.sys.mjs"
 );
 
 const gProfD = do_get_profile();
@@ -12,10 +8,10 @@ let ID = 0;
 // Creates a unique profile directory to use for a test.
 function withDummyProfile(task) {
   return async () => {
-    let profile = OS.Path.join(gProfD.path, "" + ID++);
-    await OS.File.makeDir(profile);
+    let profile = PathUtils.join(gProfD.path, "" + ID++);
+    await IOUtils.makeDirectory(profile);
     await task(profile);
-    await OS.File.removeDir(profile);
+    await IOUtils.remove(profile, { recursive: true });
   };
 }
 
@@ -42,13 +38,11 @@ add_task(
   withDummyProfile(async profile => {
     const CREATED_TIME = Date.now() - 2000;
     const RESET_TIME = Date.now() - 1000;
+    const RECOVERY_TIME = Date.now() - 500;
 
-    await CommonUtils.writeJSON(
-      {
-        created: CREATED_TIME,
-      },
-      OS.Path.join(profile, "times.json")
-    );
+    await IOUtils.writeJSON(PathUtils.join(profile, "times.json"), {
+      created: CREATED_TIME,
+    });
 
     let times = await ProfileAge(profile);
     Assert.equal(
@@ -73,14 +67,21 @@ add_task(
     );
     await promise;
 
-    let results = await CommonUtils.readJSON(
-      OS.Path.join(profile, "times.json")
+    let recoveryPromise = times.recordRecoveredFromBackup(RECOVERY_TIME);
+    Assert.equal(
+      await times2.recoveredFromBackup,
+      RECOVERY_TIME,
+      "Should have seen the right backup recovery time in the second instance immediately."
     );
+    await recoveryPromise;
+
+    let results = await IOUtils.readJSON(PathUtils.join(profile, "times.json"));
     Assert.deepEqual(
       results,
       {
         created: CREATED_TIME,
         reset: RESET_TIME,
+        recoveredFromBackup: RECOVERY_TIME,
       },
       "Should have seen the right results."
     );
@@ -99,9 +100,7 @@ add_task(
       times.recordProfileReset(RESET_TIME2),
     ]);
 
-    let results = await CommonUtils.readJSON(
-      OS.Path.join(profile, "times.json")
-    );
+    let results = await IOUtils.readJSON(PathUtils.join(profile, "times.json"));
     delete results.firstUse;
     Assert.deepEqual(
       results,
@@ -117,18 +116,36 @@ add_task(
   withDummyProfile(async profile => {
     const CREATED_TIME = Date.now() - 1000;
 
-    await CommonUtils.writeJSON(
-      {
-        created: CREATED_TIME,
-        firstUse: null,
-      },
-      OS.Path.join(profile, "times.json")
-    );
+    await IOUtils.writeJSON(PathUtils.join(profile, "times.json"), {
+      created: CREATED_TIME,
+      firstUse: null,
+    });
 
     let times = await ProfileAge(profile);
     Assert.ok(
       (await times.firstUse) <= Date.now(),
       "Should have initialised a first use time."
+    );
+  })
+);
+
+add_task(
+  withDummyProfile(async profile => {
+    const RECOVERY_TIME = Date.now() - 1000;
+    const RECOVERY_TIME2 = Date.now() - 2000;
+
+    // The last call to recordRecoveredFromBackup should always win.
+    let times = await ProfileAge(profile);
+    await Promise.all([
+      times.recordRecoveredFromBackup(RECOVERY_TIME),
+      times.recordRecoveredFromBackup(RECOVERY_TIME2),
+    ]);
+
+    let results = await IOUtils.readJSON(PathUtils.join(profile, "times.json"));
+    Assert.equal(
+      results.recoveredFromBackup,
+      RECOVERY_TIME2,
+      "Should have seen the right results."
     );
   })
 );

@@ -6,15 +6,18 @@
 #ifndef CANVASIMAGECACHE_H_
 #define CANVASIMAGECACHE_H_
 
+#include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/gfx/Rect.h"
 #include "nsSize.h"
 
 namespace mozilla {
 namespace dom {
 class Element;
-class HTMLCanvasElement;
+class CanvasRenderingContext2D;
 }  // namespace dom
 namespace gfx {
+class DrawTarget;
 class SourceSurface;
 }  // namespace gfx
 }  // namespace mozilla
@@ -23,34 +26,44 @@ class imgIContainer;
 namespace mozilla {
 
 class CanvasImageCache {
-  typedef mozilla::gfx::SourceSurface SourceSurface;
+  using SourceSurface = mozilla::gfx::SourceSurface;
 
  public:
   /**
-   * Notify that image element aImage was drawn to aCanvas element
+   * Notify that image element aImage was drawn to aContext canvas
    * using the first frame of aRequest's image. The data for the surface is
    * in aSurface, and the image size is in aSize. aIntrinsicSize is the size
    * the surface is intended to be rendered at.
    */
   static void NotifyDrawImage(dom::Element* aImage,
-                              dom::HTMLCanvasElement* aCanvas,
-                              SourceSurface* aSource, const gfx::IntSize& aSize,
-                              const gfx::IntSize& aIntrinsicSize);
+                              dom::CanvasRenderingContext2D* aContext,
+                              gfx::DrawTarget* aTarget, SourceSurface* aSource,
+                              const gfx::IntSize& aSize,
+                              const gfx::IntSize& aIntrinsicSize,
+                              const Maybe<gfx::IntRect>& aCropRect);
+
+  /**
+   * Notify that aContext is being destroyed.
+   */
+  static void NotifyCanvasDestroyed(dom::CanvasRenderingContext2D* aContext);
 
   /**
    * Check whether aImage has recently been drawn any canvas. If we return
    * a non-null surface, then the same image was recently drawn into a canvas.
    */
-  static SourceSurface* LookupAllCanvas(dom::Element* aImage);
+  static SourceSurface* LookupAllCanvas(dom::Element* aImage,
+                                        gfx::DrawTarget* aTarget);
 
   /**
-   * Like the top above, but restricts the lookup to only aCanvas. This is
+   * Like the top above, but restricts the lookup to only aContext. This is
    * required for CORS security.
    */
   static SourceSurface* LookupCanvas(dom::Element* aImage,
-                                     dom::HTMLCanvasElement* aCanvas,
+                                     dom::CanvasRenderingContext2D* aContext,
+                                     gfx::DrawTarget* aTarget,
                                      gfx::IntSize* aSizeOut,
-                                     gfx::IntSize* aIntrinsicSizeOut);
+                                     gfx::IntSize* aIntrinsicSizeOut,
+                                     Maybe<gfx::IntRect>* aCropRectOut);
 };
 
 }  // namespace mozilla

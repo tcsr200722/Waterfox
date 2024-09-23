@@ -4,6 +4,11 @@
 
 "use strict";
 
+add_setup(async () => {
+  // Ensure all bookmarks cleared before the test starts.
+  await PlacesUtils.bookmarks.eraseEverything();
+});
+
 add_task(async function test() {
   let bookmark = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.toolbarGuid,
@@ -27,7 +32,7 @@ add_task(async function test() {
 
   let sidebar = await promiseLoadedSidebar("viewBookmarksSidebar");
   registerCleanupFunction(() => {
-    SidebarUI.hide();
+    SidebarController.hide();
   });
 
   // Focus the tree and check if its controller is returned.
@@ -38,14 +43,25 @@ add_task(async function test() {
     window,
     "placesCmd_copy"
   );
-  let treeController = tree.controllers.getControllerForCommand(
-    "placesCmd_copy"
-  );
-  ok(controller == treeController, "tree controller was returned");
+  let treeController =
+    tree.controllers.getControllerForCommand("placesCmd_copy");
+  Assert.equal(controller, treeController, "tree controller was returned");
 
   // Open the context menu for a toolbar item, and check if the toolbar's
   // controller is returned.
   let toolbarItems = document.getElementById("PlacesToolbarItems");
+  // Ensure the toolbar has displayed the bookmark. This might be async, so
+  // wait a little if necessary.
+  await TestUtils.waitForCondition(
+    () => toolbarItems.children.length == 1,
+    "Should have only one item on the toolbar"
+  );
+
+  let placesContext = document.getElementById("placesContext");
+  let popupShownPromise = BrowserTestUtils.waitForEvent(
+    placesContext,
+    "popupshown"
+  );
   EventUtils.synthesizeMouse(
     toolbarItems.children[0],
     4,
@@ -53,18 +69,29 @@ add_task(async function test() {
     { type: "contextmenu", button: 2 },
     window
   );
+  await popupShownPromise;
+
   controller = PlacesUIUtils.getControllerForCommand(window, "placesCmd_copy");
   let toolbarController = document
     .getElementById("PlacesToolbar")
     .controllers.getControllerForCommand("placesCmd_copy");
-  ok(controller == toolbarController, "the toolbar controller was returned");
+  Assert.equal(
+    controller,
+    toolbarController,
+    "the toolbar controller was returned"
+  );
 
-  document.getElementById("placesContext").hidePopup();
+  let popupHiddenPromise = BrowserTestUtils.waitForEvent(
+    placesContext,
+    "popuphidden"
+  );
+  placesContext.hidePopup();
+  await popupHiddenPromise;
 
   // Now that the context menu is closed, try to get the tree controller again.
   tree.focus();
   controller = PlacesUIUtils.getControllerForCommand(window, "placesCmd_copy");
-  ok(controller == treeController, "tree controller was returned");
+  Assert.equal(controller, treeController, "tree controller was returned");
 
   if (wasCollapsed) {
     await promiseSetToolbarVisibility(toolbar, false);
@@ -76,12 +103,12 @@ function promiseLoadedSidebar(cmd) {
     let sidebar = document.getElementById("sidebar");
     sidebar.addEventListener(
       "load",
-      function() {
+      function () {
         executeSoon(() => resolve(sidebar));
       },
       { capture: true, once: true }
     );
 
-    SidebarUI.show(cmd);
+    SidebarController.show(cmd);
   });
 }

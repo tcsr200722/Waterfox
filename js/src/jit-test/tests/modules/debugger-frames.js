@@ -31,7 +31,7 @@ dbg.onDebuggerStatement = function (frame) {
     // The frame's environement is a module environment.
     let env = frame.environment;
     assertEq(env.type, 'declarative');
-    assertEq(env.callee, null);
+    assertEq(env.calleeScript, null);
 
     // Top level module definitions and imports are visible.
     assertArrayEq(env.names().sort(), ['a', 'b', 'c', 'x', 'y', 'z']);
@@ -57,23 +57,16 @@ dbg.onDebuggerStatement = function (frame) {
 
 f = g2.eval(
 `
-    let moduleRepo = {};
-    setModuleResolveHook(function(module, specifier) {
-        if (specifier in moduleRepo)
-            return moduleRepo[specifier];
-        throw "Module '" + specifier + "' not found";
-    });
-
     // Set up a module to import from.
-    a = moduleRepo['a'] = parseModule(
+    a = registerModule('a', parseModule(
     \`
         export var a = 1;
         export let b = 2;
         export const c = 3;
         export function f(x) { return x + 1; }
-    \`);
-    a.declarationInstantiation();
-    a.evaluation();
+    \`));
+    moduleLink(a);
+    moduleEvaluate(a);
 
     let m = parseModule(
     \`
@@ -85,6 +78,6 @@ f = g2.eval(
         eval("");
         debugger;
     \`);
-    m.declarationInstantiation();
-    m.evaluation();
+    moduleLink(m);
+    moduleEvaluate(m);
 `);

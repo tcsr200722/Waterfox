@@ -4,22 +4,11 @@
 
 "use strict";
 
-// Avoid leaks by using tmp for imports...
-var tmp = {};
-ChromeUtils.import("resource://gre/modules/Promise.jsm", tmp);
-ChromeUtils.import("resource:///modules/CustomizableUI.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/AppConstants.jsm", tmp);
-ChromeUtils.import(
-  "resource://testing-common/CustomizableUITestUtils.jsm",
-  tmp
-);
-var { Promise, CustomizableUI, AppConstants, CustomizableUITestUtils } = tmp;
-
-var EventUtils = {};
-Services.scriptloader.loadSubScript(
-  "chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
-  EventUtils
-);
+ChromeUtils.defineESModuleGetters(this, {
+  CustomizableUI: "resource:///modules/CustomizableUI.sys.mjs",
+  CustomizableUITestUtils:
+    "resource://testing-common/CustomizableUITestUtils.sys.mjs",
+});
 
 /**
  * Instance of CustomizableUITestUtils for the current browser window.
@@ -46,15 +35,15 @@ function createDummyXULButton(id, label, win = window) {
 
 var gAddedToolbars = new Set();
 
-function createToolbarWithPlacements(id, placements = []) {
+function createToolbarWithPlacements(id, placements = [], properties = {}) {
   gAddedToolbars.add(id);
   let tb = document.createXULElement("toolbar");
   tb.id = id;
   tb.setAttribute("customizable", "true");
-  CustomizableUI.registerArea(id, {
-    type: CustomizableUI.TYPE_TOOLBAR,
-    defaultPlacements: placements,
-  });
+
+  properties.type = CustomizableUI.TYPE_TOOLBAR;
+  properties.defaultPlacements = placements;
+  CustomizableUI.registerArea(id, properties);
   gNavToolbox.appendChild(tb);
   CustomizableUI.registerToolbarNode(tb);
   return tb;
@@ -92,9 +81,11 @@ function createOverflowableToolbarWithPlacements(id, placements) {
 
   tb.setAttribute("customizable", "true");
   tb.setAttribute("overflowable", "true");
-  tb.setAttribute("overflowpanel", overflowPanel.id);
-  tb.setAttribute("overflowtarget", overflowList.id);
-  tb.setAttribute("overflowbutton", chevron.id);
+  tb.setAttribute("default-overflowpanel", overflowPanel.id);
+  tb.setAttribute("default-overflowtarget", overflowList.id);
+  tb.setAttribute("default-overflowbutton", chevron.id);
+  tb.setAttribute("addon-webext-overflowbutton", "unified-extensions-button");
+  tb.setAttribute("addon-webext-overflowtarget", "overflowed-extensions-list");
 
   gNavToolbox.appendChild(tb);
   CustomizableUI.registerToolbarNode(tb);
@@ -276,7 +267,7 @@ function openAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
   return new Promise(resolve => {
     let win = OpenBrowserWindow(aOptions);
     if (aWaitForDelayedStartup) {
-      Services.obs.addObserver(function onDS(aSubject, aTopic, aData) {
+      Services.obs.addObserver(function onDS(aSubject) {
         if (aSubject != win) {
           return;
         }
@@ -286,7 +277,7 @@ function openAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
     } else {
       win.addEventListener(
         "load",
-        function() {
+        function () {
           resolve(win);
         },
         { once: true }
@@ -299,7 +290,7 @@ function promiseWindowClosed(win) {
   return new Promise(resolve => {
     win.addEventListener(
       "unload",
-      function() {
+      function () {
         resolve();
       },
       { once: true }
@@ -318,7 +309,7 @@ function promisePanelElementShown(win, aPanel) {
     let timeoutId = win.setTimeout(() => {
       reject("Panel did not show within 20 seconds.");
     }, 20000);
-    function onPanelOpen(e) {
+    function onPanelOpen() {
       aPanel.removeEventListener("popupshown", onPanelOpen);
       win.clearTimeout(timeoutId);
       resolve();
@@ -337,7 +328,7 @@ function promisePanelElementHidden(win, aPanel) {
     let timeoutId = win.setTimeout(() => {
       reject("Panel did not hide within 20 seconds.");
     }, 20000);
-    function onPanelClose(e) {
+    function onPanelClose() {
       aPanel.removeEventListener("popuphidden", onPanelClose);
       win.clearTimeout(timeoutId);
       executeSoon(resolve);
@@ -361,7 +352,7 @@ function subviewShown(aSubview) {
     let timeoutId = win.setTimeout(() => {
       reject("Subview (" + aSubview.id + ") did not show within 20 seconds.");
     }, 20000);
-    function onViewShown(e) {
+    function onViewShown() {
       aSubview.removeEventListener("ViewShown", onViewShown);
       win.clearTimeout(timeoutId);
       resolve();
@@ -376,33 +367,13 @@ function subviewHidden(aSubview) {
     let timeoutId = win.setTimeout(() => {
       reject("Subview (" + aSubview.id + ") did not hide within 20 seconds.");
     }, 20000);
-    function onViewHiding(e) {
+    function onViewHiding() {
       aSubview.removeEventListener("ViewHiding", onViewHiding);
       win.clearTimeout(timeoutId);
       resolve();
     }
     aSubview.addEventListener("ViewHiding", onViewHiding);
   });
-}
-
-function waitForCondition(aConditionFn, aMaxTries = 50, aCheckInterval = 100) {
-  function tryNow() {
-    tries++;
-    if (aConditionFn()) {
-      deferred.resolve();
-    } else if (tries < aMaxTries) {
-      tryAgain();
-    } else {
-      deferred.reject("Condition timed out: " + aConditionFn.toSource());
-    }
-  }
-  function tryAgain() {
-    setTimeout(tryNow, aCheckInterval);
-  }
-  let deferred = Promise.defer();
-  let tries = 0;
-  tryAgain();
-  return deferred.promise;
 }
 
 function waitFor(aTimeout = 100) {
@@ -422,7 +393,7 @@ function waitFor(aTimeout = 100) {
 function promiseTabLoadEvent(aTab, aURL) {
   let browser = aTab.linkedBrowser;
 
-  BrowserTestUtils.loadURI(browser, aURL);
+  BrowserTestUtils.startLoadingURIString(browser, aURL);
   return BrowserTestUtils.browserLoaded(browser);
 }
 
@@ -435,7 +406,7 @@ function promiseTabLoadEvent(aTab, aURL) {
  * @return {Promise} resolved when the requisite mutation shows up.
  */
 function promiseAttributeMutation(aNode, aAttribute, aFilterFn) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     info("waiting for mutation of attribute '" + aAttribute + "'.");
     let obs = new MutationObserver(mutations => {
       for (let mut of mutations) {
@@ -525,4 +496,35 @@ function waitForElementShown(element) {
     let rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   });
+}
+
+/**
+ * Opens the history panel through the history toolbarbutton in the
+ * navbar and returns a promise that resolves as soon as the panel is open
+ * is showing.
+ */
+async function openHistoryPanel(doc = document) {
+  await waitForOverflowButtonShown();
+  await doc.getElementById("nav-bar").overflowable.show();
+  info("Menu panel was opened");
+
+  let historyButton = doc.getElementById("history-panelmenu");
+  Assert.ok(historyButton, "History button appears in Panel Menu");
+
+  historyButton.click();
+
+  let historyPanel = doc.getElementById("PanelUI-history");
+  return BrowserTestUtils.waitForEvent(historyPanel, "ViewShown");
+}
+
+/**
+ * Closes the history panel and returns a promise that resolves as sooon
+ * as the panel is closed.
+ */
+async function hideHistoryPanel(doc = document) {
+  let historyView = doc.getElementById("PanelUI-history");
+  let historyPanel = historyView.closest("panel");
+  let promise = BrowserTestUtils.waitForEvent(historyPanel, "popuphidden");
+  historyPanel.hidePopup();
+  return promise;
 }

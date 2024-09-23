@@ -4,67 +4,109 @@
 
 "use strict";
 
-const { Cu } = require("chrome");
-const Services = require("Services");
+const { DevToolsShim } = ChromeUtils.importESModule(
+  "chrome://devtools-startup/content/DevToolsShim.sys.mjs"
+);
 
-const {
-  DevToolsShim,
-} = require("chrome://devtools-startup/content/DevToolsShim.jsm");
+const { DEFAULT_SANDBOX_NAME } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/Loader.sys.mjs"
+);
+
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserToolboxLauncher:
+    "resource://devtools/client/framework/browser-toolbox/Launcher.sys.mjs",
+});
 
 loader.lazyRequireGetter(
   this,
-  "TargetFactory",
-  "devtools/client/framework/target",
+  "LocalTabCommandsFactory",
+  "resource://devtools/client/framework/local-tab-commands-factory.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "CommandsFactory",
+  "resource://devtools/shared/commands/commands-factory.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "ToolboxHostManager",
-  "devtools/client/framework/toolbox-host-manager",
+  "resource://devtools/client/framework/toolbox-host-manager.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "BrowserConsoleManager",
-  "devtools/client/webconsole/browser-console-manager",
+  "resource://devtools/client/webconsole/browser-console-manager.js",
   true
 );
-loader.lazyRequireGetter(this, "Telemetry", "devtools/client/shared/telemetry");
-loader.lazyImporter(
+loader.lazyRequireGetter(
   this,
-  "BrowserToolboxLauncher",
-  "resource://devtools/client/framework/browser-toolbox/Launcher.jsm"
+  "Toolbox",
+  "resource://devtools/client/framework/toolbox.js",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "Telemetry",
+  "resource://devtools/client/shared/telemetry.js"
 );
 
 const {
   defaultTools: DefaultTools,
   defaultThemes: DefaultThemes,
-} = require("devtools/client/definitions");
-const EventEmitter = require("devtools/shared/event-emitter");
+} = require("resource://devtools/client/definitions.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 const {
   getTheme,
   setTheme,
+  getAutoTheme,
   addThemeObserver,
   removeThemeObserver,
-} = require("devtools/client/shared/theme");
+} = require("resource://devtools/client/shared/theme.js");
 
 const FORBIDDEN_IDS = new Set(["toolbox", ""]);
 const MAX_ORDINAL = 99;
+const POPUP_DEBUG_PREF = "devtools.popups.debug";
+const DEVTOOLS_ALWAYS_ON_TOP = "devtools.toolbox.alwaysOnTop";
 
 /**
  * DevTools is a class that represents a set of developer tools, it holds a
  * set of tools and keeps track of open toolboxes in the browser.
  */
 function DevTools() {
+  // We should be careful to always load a unique instance of this module:
+  // - only in the parent process
+  // - only in the "shared JSM global" spawn by mozJSModuleLoader
+  //   The server codebase typically use another global named "DevTools global",
+  //   which will load duplicated instances of all the modules -or- another
+  //   DevTools module loader named "DevTools (Server Module loader)".
+  //   Also the realm location is appended the loading callsite, so only check
+  //   the beginning of the string.
+  if (
+    Services.appinfo.processType != Services.appinfo.PROCESS_TYPE_DEFAULT ||
+    !Cu.getRealmLocation(globalThis).startsWith(DEFAULT_SANDBOX_NAME)
+  ) {
+    throw new Error(
+      "This module should be loaded in the parent process only, in the shared global."
+    );
+  }
+
   this._tools = new Map(); // Map<toolId, tool>
   this._themes = new Map(); // Map<themeId, theme>
-  this._toolboxes = new Map(); // Map<target, toolbox>
+  this._toolboxesPerCommands = new Map(); // Map<commands, toolbox>
   // List of toolboxes that are still in process of creation
-  this._creatingToolboxes = new Map(); // Map<target, toolbox Promise>
+  this._creatingToolboxes = new Map(); // Map<commands, toolbox Promise>
 
   EventEmitter.decorate(this);
   this._telemetry = new Telemetry();
   this._telemetry.setEventRecordingEnabled(true);
+
+  // List of all commands of debugged local Web Extension.
+  this._commandsPromiseByWebExtId = new Map(); // Map<extensionId, commands>
 
   // Listen for changes to the theme pref.
   this._onThemeChanged = this._onThemeChanged.bind(this);
@@ -153,27 +195,13 @@ DevTools.prototype = {
    * Removes all tools that match the given |toolId|
    * Needed so that add-ons can remove themselves when they are deactivated
    *
-   * @param {string|object} tool
-   *        Definition or the id of the tool to unregister. Passing the
-   *        tool id should be avoided as it is a temporary measure.
+   * @param {string} toolId
+   *        The id of the tool to unregister.
    * @param {boolean} isQuitApplication
    *        true to indicate that the call is due to app quit, so we should not
    *        cause a cascade of costly events
    */
-  unregisterTool(tool, isQuitApplication) {
-    let toolId = null;
-    if (typeof tool == "string") {
-      toolId = tool;
-      tool = this._tools.get(tool);
-    } else {
-      const { Deprecated } = require("resource://gre/modules/Deprecated.jsm");
-      Deprecated.warning(
-        "Deprecation WARNING: gDevTools.unregisterTool(tool) is " +
-          "deprecated. You should unregister a tool using its toolId: " +
-          "gDevTools.unregisterTool(toolId)."
-      );
-      toolId = tool.id;
-    }
+  unregisterTool(toolId, isQuitApplication) {
     this._tools.delete(toolId);
 
     if (!isQuitApplication) {
@@ -280,6 +308,15 @@ DevTools.prototype = {
   },
 
   /**
+   * Returns the name of the default (auto) theme for devtools.
+   *
+   * @return {string} theme
+   */
+  getAutoTheme() {
+    return getAutoTheme();
+  },
+
+  /**
    * Called when the developer tools theme changes.
    */
   _onThemeChanged() {
@@ -355,7 +392,7 @@ DevTools.prototype = {
       !isCoreTheme &&
       theme.id == currTheme
     ) {
-      setTheme("light");
+      setTheme("auto");
 
       this.emit("theme-unregistered", theme);
     }
@@ -417,22 +454,24 @@ DevTools.prototype = {
   },
 
   /**
-   * Called from SessionStore.jsm in mozilla-central when saving the current state.
+   * Called from SessionStore.sys.mjs in mozilla-central when saving the current state.
    *
    * @param {Object} state
    *                 A SessionStore state object that gets modified by reference
    */
-  saveDevToolsSession: function(state) {
-    state.browserConsole = BrowserConsoleManager.getBrowserConsoleSessionState();
-    state.browserToolbox = BrowserToolboxLauncher.getBrowserToolboxSessionState();
+  saveDevToolsSession(state) {
+    state.browserConsole =
+      BrowserConsoleManager.getBrowserConsoleSessionState();
+    state.browserToolbox =
+      lazy.BrowserToolboxLauncher.getBrowserToolboxSessionState();
   },
 
   /**
    * Restore the devtools session state as provided by SessionStore.
    */
-  restoreDevToolsSession: async function({ browserConsole, browserToolbox }) {
+  async restoreDevToolsSession({ browserConsole, browserToolbox }) {
     if (browserToolbox) {
-      BrowserToolboxLauncher.init();
+      lazy.BrowserToolboxLauncher.init();
     }
 
     if (browserConsole && !BrowserConsoleManager.getBrowserConsole()) {
@@ -447,42 +486,49 @@ DevTools.prototype = {
   _firstShowToolbox: true,
 
   /**
-   * Show a Toolbox for a target (either by creating a new one, or if a toolbox
-   * already exists for the target, by bring to the front the existing one)
-   * If |toolId| is specified then the displayed toolbox will have the
-   * specified tool selected.
-   * If |hostType| is specified then the toolbox will be displayed using the
-   * specified HostType.
+   * Show a Toolbox for a given "commands" (either by creating a new one, or if a
+   * toolbox already exists for the commands, by bringing to the front the
+   * existing one).
    *
-   * @param {Target} target
-   *         The target the toolbox will debug
-   * @param {string} toolId
-   *        The id of the tool to show
-   * @param {Toolbox.HostType} hostType
-   *        The type of host (bottom, window, left, right)
-   * @param {object} hostOptions
-   *        Options for host specifically
-   * @param {Number} startTime
-   *        Optional, indicates the time at which the user event related to this toolbox
-   *        opening started. This is a `Cu.now()` timing.
-   * @param {string} reason
-   *        Reason the tool was opened
-   * @param {boolean} shouldRaiseToolbox
-   *        Whether we need to raise the toolbox or not.
+   * If a Toolbox already exists, we will still update it based on some of the
+   * provided parameters:
+   *   - if |toolId| is provided then the toolbox will switch to the specified
+   *     tool.
+   *   - if |hostType| is provided then the toolbox will be switched to the
+   *     specified HostType.
+   *
+   * @param {Commands Object} commands
+   *         The commands object which designates which context the toolbox will debug
+   * @param {Object}
+   *        - {String} toolId
+   *          The id of the tool to show
+   *        - {Toolbox.HostType} hostType
+   *          The type of host (bottom, window, left, right)
+   *        - {object} hostOptions
+   *          Options for host specifically
+   *        - {Number} startTime
+   *          Indicates the time at which the user event related to
+   *          this toolbox opening started. This is a `Cu.now()` timing.
+   *        - {string} reason
+   *          Reason the tool was opened
+   *        - {boolean} raise
+   *          Whether we need to raise the toolbox or not.
    *
    * @return {Toolbox} toolbox
    *        The toolbox that was opened
    */
   async showToolbox(
-    target,
-    toolId,
-    hostType,
-    hostOptions,
-    startTime,
-    reason = "toolbox_show",
-    shouldRaiseToolbox = true
+    commands,
+    {
+      toolId,
+      hostType,
+      startTime,
+      raise = true,
+      reason = "toolbox_show",
+      hostOptions,
+    } = {}
   ) {
-    let toolbox = this._toolboxes.get(target);
+    let toolbox = this._toolboxesPerCommands.get(commands);
 
     if (toolbox) {
       if (hostType != null && toolbox.hostType != hostType) {
@@ -495,26 +541,26 @@ DevTools.prototype = {
         await toolbox.selectTool(toolId, reason);
       }
 
-      if (shouldRaiseToolbox) {
-        toolbox.raise();
+      if (raise) {
+        await toolbox.raise();
       }
     } else {
-      // As toolbox object creation is async, we have to be careful about races
-      // Check for possible already in process of loading toolboxes before
-      // actually trying to create a new one.
-      const promise = this._creatingToolboxes.get(target);
+      // Toolbox creation is async, we have to be careful about races.
+      // Check if we are already waiting for a Toolbox for the provided
+      // commands before creating a new one.
+      const promise = this._creatingToolboxes.get(commands);
       if (promise) {
         return promise;
       }
-      const toolboxPromise = this.createToolbox(
-        target,
+      const toolboxPromise = this._createToolbox(
+        commands,
         toolId,
         hostType,
         hostOptions
       );
-      this._creatingToolboxes.set(target, toolboxPromise);
+      this._creatingToolboxes.set(commands, toolboxPromise);
       toolbox = await toolboxPromise;
-      this._creatingToolboxes.delete(target);
+      this._creatingToolboxes.delete(commands);
 
       if (startTime) {
         this.logToolboxOpenTime(toolbox, startTime);
@@ -538,6 +584,93 @@ DevTools.prototype = {
     );
 
     return toolbox;
+  },
+
+  /**
+   * Show the toolbox for a given tab. If a toolbox already exists for this tab
+   * the existing toolbox will be raised. Otherwise a new toolbox is created.
+   *
+   * Relies on `showToolbox`, see its jsDoc for additional information and
+   * arguments description.
+   *
+   * Also used by 3rd party tools (eg wptrunner) and exposed by
+   * DevToolsShim.sys.mjs.
+   *
+   * @param {XULTab} tab
+   *        The tab the toolbox will debug
+   * @param {Object} options
+   *        Various options that will be forwarded to `showToolbox`. See the
+   *        JSDoc on this method.
+   */
+  async showToolboxForTab(
+    tab,
+    { toolId, hostType, startTime, raise, reason, hostOptions } = {}
+  ) {
+    // Popups are debugged via the toolbox of their opener document/tab.
+    // So avoid opening dedicated toolbox for them.
+    if (
+      tab.linkedBrowser.browsingContext.opener &&
+      Services.prefs.getBoolPref(POPUP_DEBUG_PREF)
+    ) {
+      const openerTab = tab.ownerGlobal.gBrowser.getTabForBrowser(
+        tab.linkedBrowser.browsingContext.opener.embedderElement
+      );
+      const openerCommands = await LocalTabCommandsFactory.getCommandsForTab(
+        openerTab
+      );
+      if (this.getToolboxForCommands(openerCommands)) {
+        console.log(
+          "Can't open a toolbox for this document as this is debugged from its opener tab"
+        );
+        return null;
+      }
+    }
+    const commands = await LocalTabCommandsFactory.createCommandsForTab(tab);
+    return this.showToolbox(commands, {
+      toolId,
+      hostType,
+      startTime,
+      raise,
+      reason,
+      hostOptions,
+    });
+  },
+
+  /**
+   * Open a Toolbox in a dedicated top-level window for debugging a local WebExtension.
+   * This will re-open a previously opened toolbox if we try to re-debug the same extension.
+   *
+   * Note that this will spawn a new DevToolsClient.
+   *
+   * @param {String} extensionId
+   *        ID of the extension to debug.
+   * @param {Object} (optional)
+   *        - {String} toolId
+   *          The id of the tool to show
+   */
+  async showToolboxForWebExtension(extensionId, { toolId } = {}) {
+    // Ensure spawning only one commands instance per extension at a time by caching its commands.
+    // showToolbox will later reopen the previously opened toolbox if called with the same
+    // commands.
+    let commandsPromise = this._commandsPromiseByWebExtId.get(extensionId);
+    if (!commandsPromise) {
+      commandsPromise = CommandsFactory.forAddon(extensionId);
+      this._commandsPromiseByWebExtId.set(extensionId, commandsPromise);
+    }
+    const commands = await commandsPromise;
+    commands.client.once("closed").then(() => {
+      this._commandsPromiseByWebExtId.delete(extensionId);
+    });
+
+    return this.showToolbox(commands, {
+      hostType: Toolbox.HostType.WINDOW,
+      hostOptions: {
+        // The toolbox is always displayed on top so that we can keep
+        // the DevTools visible while interacting with the Firefox window.
+        alwaysOnTop: Services.prefs.getBoolPref(DEVTOOLS_ALWAYS_ON_TOP, false),
+      },
+      toolId,
+    });
   },
 
   /**
@@ -594,29 +727,24 @@ DevTools.prototype = {
     return toolId;
   },
 
-  async createToolbox(target, toolId, hostType, hostOptions) {
-    const manager = new ToolboxHostManager(target, hostType, hostOptions);
+  /**
+   * Unconditionally create a new Toolbox instance for the provided commands.
+   * See `showToolbox` for the arguments' jsdoc.
+   */
+  async _createToolbox(commands, toolId, hostType, hostOptions) {
+    const manager = new ToolboxHostManager(commands, hostType, hostOptions);
 
     const toolbox = await manager.create(toolId);
 
-    this._toolboxes.set(target, toolbox);
-
-    this.emit("toolbox-created", toolbox);
+    this._toolboxesPerCommands.set(commands, toolbox);
 
     toolbox.once("destroy", () => {
       this.emit("toolbox-destroy", toolbox);
     });
 
     toolbox.once("destroyed", () => {
-      this._toolboxes.delete(target);
+      this._toolboxesPerCommands.delete(commands);
       this.emit("toolbox-destroyed", toolbox);
-    });
-    // If the document navigates to another process, the current target will be
-    // destroyed in favor of a new one. So acknowledge this swap here.
-    toolbox.on("switch-target", newTarget => {
-      this._toolboxes.delete(target);
-      this._toolboxes.set(newTarget, toolbox);
-      target = newTarget;
     });
 
     await toolbox.open();
@@ -626,77 +754,87 @@ DevTools.prototype = {
   },
 
   /**
-   * Return the toolbox for a given target.
+   * Return the toolbox for a given commands object.
    *
-   * @param  {object} target
-   *         Target value e.g. the target that owns this toolbox
+   * @param  {Commands Object} commands
+   *         Debugging context commands that owns this toolbox
    *
    * @return {Toolbox} toolbox
-   *         The toolbox that is debugging the given target
+   *         The toolbox that is debugging the given context designated by the commands
    */
-  getToolbox(target) {
-    return this._toolboxes.get(target);
+  getToolboxForCommands(commands) {
+    return this._toolboxesPerCommands.get(commands);
   },
 
   /**
-   * Close the toolbox for a given target
-   *
-   * @return promise
-   *         This promise will resolve to false if no toolbox was found
-   *         associated to the target. true, if the toolbox was successfully
-   *         closed.
+   * TabDescriptorFront requires a synchronous method and don't have a reference to its
+   * related commands object. So expose something handcrafted just for this.
    */
-  async closeToolbox(target) {
-    let toolbox = await this._creatingToolboxes.get(target);
+  getToolboxForDescriptorFront(descriptorFront) {
+    for (const [commands, toolbox] of this._toolboxesPerCommands) {
+      if (commands.descriptorFront == descriptorFront) {
+        return toolbox;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * Retrieve an existing toolbox for the provided tab if it was created before.
+   * Returns null otherwise.
+   *
+   * @param {XULTab} tab
+   *        The browser tab.
+   * @return {Toolbox}
+   *        Returns tab's toolbox object.
+   */
+  getToolboxForTab(tab) {
+    return this.getToolboxes().find(
+      t => t.commands.descriptorFront.localTab === tab
+    );
+  },
+
+  /**
+   * Close the toolbox for a given tab.
+   *
+   * @return {Promise} Returns a promise that resolves either:
+   *         - immediately if no Toolbox was found
+   *         - or after toolbox.destroy() resolved if a Toolbox was found
+   */
+  async closeToolboxForTab(tab) {
+    const commands = await LocalTabCommandsFactory.getCommandsForTab(tab);
+
+    let toolbox = await this._creatingToolboxes.get(commands);
     if (!toolbox) {
-      toolbox = this._toolboxes.get(target);
+      toolbox = this._toolboxesPerCommands.get(commands);
     }
     if (!toolbox) {
-      return false;
+      return;
     }
     await toolbox.destroy();
-    return true;
-  },
-
-  /**
-   * Wrapper on TargetFactory.forTab, constructs a Target for the provided tab.
-   *
-   * @param  {XULTab} tab
-   *         The tab to use in creating a new target.
-   *
-   * @return {Target} A target object
-   */
-  getTargetForTab: function(tab) {
-    return TargetFactory.forTab(tab);
   },
 
   /**
    * Compatibility layer for web-extensions. Used by DevToolsShim for
    * browser/components/extensions/ext-devtools.js
    *
-   * web-extensions need to use dedicated instances of Target and cannot reuse the
-   * cached instances managed by DevTools target factory.
+   * web-extensions need to use dedicated instances of Commands and cannot reuse the
+   * cached instances managed by DevTools.
+   * Note that is will end up being cached in WebExtension codebase, via
+   * DevToolsExtensionPageContextParent.getDevToolsCommands.
    */
-  createTargetForTab: function(tab) {
-    return TargetFactory.createTargetForTab(tab);
-  },
-
-  /**
-   * Compatibility layer for web-extensions. Used by DevToolsShim for
-   * browser/components/extensions/ext-devtools-inspectedWindow.js
-   */
-  createWebExtensionInspectedWindowFront: function(tabTarget) {
-    return tabTarget.getFront("webExtensionInspectedWindow");
+  createCommandsForTabForWebExtension(tab) {
+    return CommandsFactory.forTab(tab, { isWebExtension: true });
   },
 
   /**
    * Compatibility layer for web-extensions. Used by DevToolsShim for
    * toolkit/components/extensions/ext-c-toolkit.js
    */
-  openBrowserConsole: function() {
+  openBrowserConsole() {
     const {
       BrowserConsoleManager,
-    } = require("devtools/client/webconsole/browser-console-manager");
+    } = require("resource://devtools/client/webconsole/browser-console-manager.js");
     BrowserConsoleManager.openBrowserConsoleOrFocus();
   },
 
@@ -715,21 +853,17 @@ DevTools.prototype = {
    *         markup view.
    */
   async inspectNode(tab, domReference, startTime) {
-    const target = await TargetFactory.forTab(tab);
-
-    const toolbox = await gDevTools.showToolbox(
-      target,
-      "inspector",
-      null,
-      null,
+    const toolbox = await gDevTools.showToolboxForTab(tab, {
+      toolId: "inspector",
       startTime,
-      "inspect_dom"
-    );
+      reason: "inspect_dom",
+    });
     const inspector = toolbox.getCurrentPanel();
 
-    const nodeFront = await inspector.inspectorFront.getNodeActorFromContentDomReference(
-      domReference
-    );
+    const nodeFront =
+      await inspector.inspectorFront.getNodeActorFromContentDomReference(
+        domReference
+      );
     if (!nodeFront) {
       return;
     }
@@ -763,15 +897,10 @@ DevTools.prototype = {
    *         selected in the accessibility inspector.
    */
   async inspectA11Y(tab, domReference, startTime) {
-    const target = await TargetFactory.forTab(tab);
-
-    const toolbox = await gDevTools.showToolbox(
-      target,
-      "accessibility",
-      null,
-      null,
-      startTime
-    );
+    const toolbox = await gDevTools.showToolboxForTab(tab, {
+      toolId: "accessibility",
+      startTime,
+    });
     const inspectorFront = await toolbox.target.getFront("inspector");
     const nodeFront = await inspectorFront.getNodeActorFromContentDomReference(
       domReference
@@ -798,7 +927,7 @@ DevTools.prototype = {
   destroy({ shuttingDown }) {
     // Do not cleanup everything during firefox shutdown.
     if (!shuttingDown) {
-      for (const [, toolbox] of this._toolboxes) {
+      for (const [, toolbox] of this._toolboxesPerCommands) {
         toolbox.destroy();
       }
     }
@@ -821,7 +950,7 @@ DevTools.prototype = {
     }
 
     // Cleaning down the toolboxes: i.e.
-    //   for (let [target, toolbox] of this._toolboxes) toolbox.destroy();
+    //   for (let [, toolbox] of this._toolboxesPerCommands) toolbox.destroy();
     // Is taken care of by the gDevToolsBrowser.forgetBrowserWindow
   },
 
@@ -832,7 +961,21 @@ DevTools.prototype = {
    *   An array of toolboxes.
    */
   getToolboxes() {
-    return Array.from(this._toolboxes.values());
+    return Array.from(this._toolboxesPerCommands.values());
+  },
+
+  /**
+   * Returns whether the given tab has toolbox.
+   *
+   * @param {XULTab} tab
+   *        The browser tab.
+   * @return {boolean}
+   *        Returns true if the tab has toolbox.
+   */
+  hasToolboxForTab(tab) {
+    return this.getToolboxes().some(
+      t => t.commands.descriptorFront.localTab === tab
+    );
   },
 };
 

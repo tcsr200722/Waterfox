@@ -2,10 +2,12 @@
 // to tests on auto MochiTest system with minimum changes.
 // Author: Maksim Lebedev <alessarik@gmail.com>
 
+/* eslint-disable mozilla/no-comparison-or-assignment-inside-ok */
+
 // Function allows to prepare our tests after load document
 addEventListener(
   "load",
-  function(event) {
+  function (event) {
     console.log("OnLoad external document");
     prepareTest();
   },
@@ -16,7 +18,7 @@ addEventListener(
 function prepareTest() {
   SimpleTest.waitForExplicitFinish();
   SimpleTest.requestCompleteLog();
-  turnOnPointerEvents(startTest);
+  startTest();
 }
 
 function setImplicitPointerCapture(capture, callback) {
@@ -29,24 +31,10 @@ function setImplicitPointerCapture(capture, callback) {
   );
 }
 
-function turnOnPointerEvents(callback) {
-  console.log("SET dom.w3c_pointer_events.enabled as TRUE");
-  console.log("SET layout.css.touch_action.enabled as TRUE");
-  SpecialPowers.pushPrefEnv(
-    {
-      set: [
-        ["dom.w3c_pointer_events.enabled", true],
-        ["layout.css.touch_action.enabled", true],
-      ],
-    },
-    callback
-  );
-}
-
 var utils = SpecialPowers.Ci.nsIDOMWindowUtils;
 
 // Mouse Event Helper Object
-var MouseEventHelper = (function() {
+var MouseEventHelper = (function () {
   return {
     MOUSE_ID: utils.DEFAULT_MOUSE_POINTER_ID,
     PEN_ID: utils.DEFAULT_PEN_POINTER_ID,
@@ -221,6 +209,18 @@ function sendTouchEvent(int_win, elemId, touchEventType, params) {
   }
 }
 
+// Helper function to trigger drag and drop.
+async function doDragAndDrop(int_win, srcElemId, destElemId, params = {}) {
+  params.srcElement = int_win.document.getElementById(srcElemId);
+  params.destElement = int_win.document.getElementById(destElemId);
+  params.srcWindow = int_win;
+  params.destWindow = int_win;
+  params.id = MouseEventHelper.MOUSE_ID;
+  // This is basically for android which has a larger drag threshold.
+  params.stepY = params.stepY || 25;
+  await synthesizePlainDragAndDrop(params);
+}
+
 // Helper function to run Point Event test in a new tab.
 function runTestInNewWindow(aFile) {
   var testURL =
@@ -233,16 +233,18 @@ function runTestInNewWindow(aFile) {
   // event is fired.
   testWindow.addEventListener(
     "DOMContentLoaded",
-    function() {
+    function () {
       var e = testWindow.document.createElement("script");
       e.type = "text/javascript";
-      e.src = "mochitest_support_internal.js";
+      e.src =
+        "../".repeat(aFile.split("/").length - 1) +
+        "mochitest_support_internal.js";
       testWindow.document.getElementsByTagName("head")[0].appendChild(e);
     },
     { once: true }
   );
 
-  window.addEventListener("message", function(aEvent) {
+  window.addEventListener("message", function (aEvent) {
     switch (aEvent.data.type) {
       case "START":
         // Update constants
@@ -250,23 +252,21 @@ function runTestInNewWindow(aFile) {
         MouseEventHelper.PEN_ID = aEvent.data.message.penId;
         TouchEventHelper.TOUCH_ID = aEvent.data.message.touchId;
 
-        turnOnPointerEvents(() => {
-          executeTest(testWindow);
-        });
-        return;
+        executeTest(testWindow);
+        break;
       case "RESULT":
         // Should not perform checking after SimpleTest.finish().
         if (!testDone) {
           ok(aEvent.data.result, aEvent.data.message);
         }
-        return;
+        break;
       case "FIN":
         testDone = true;
         MouseEventHelper.checkExitState();
         TouchEventHelper.checkExitState();
         testWindow.close();
         SimpleTest.finish();
-        return;
+        break;
     }
   });
 }

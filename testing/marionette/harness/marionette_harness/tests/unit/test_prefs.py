@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import six
 
 from marionette_driver import geckoinstance
@@ -32,18 +30,21 @@ class TestPreferences(MarionetteTestCase):
         required_prefs = geckoinstance.GeckoInstance.required_prefs
 
         for key, value in six.iteritems(required_prefs):
-            self.assertEqual(self.marionette.get_pref(key), value,
-                             "Preference {} hasn't been set to {}".format(key, repr(value)))
+            self.assertEqual(
+                self.marionette.get_pref(key),
+                value,
+                "Preference {} hasn't been set to {}".format(key, repr(value)),
+            )
 
     def test_desktop_instance_preferences(self):
         required_prefs = geckoinstance.DesktopInstance.desktop_prefs
 
         for key, value in six.iteritems(required_prefs):
-            if key in ["browser.tabs.remote.autostart"]:
-                return
-
-            self.assertEqual(self.marionette.get_pref(key), value,
-                             "Preference {} hasn't been set to {}".format(key, value))
+            self.assertEqual(
+                self.marionette.get_pref(key),
+                value,
+                "Preference {} hasn't been set to {}".format(key, value),
+            )
 
     def test_clear_pref(self):
         self.assertIsNone(self.marionette.get_pref(self.prefs["bool"]))
@@ -88,13 +89,15 @@ class TestPreferences(MarionetteTestCase):
 
         self.marionette.set_pref(pref_default, "default_value", default_branch=True)
         self.assertEqual(self.marionette.get_pref(pref_default), "default_value")
-        self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                         "default_value")
+        self.assertEqual(
+            self.marionette.get_pref(pref_default, default_branch=True), "default_value"
+        )
 
         self.marionette.set_pref(pref_default, "user_value")
         self.assertEqual(self.marionette.get_pref(pref_default), "user_value")
-        self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                         "default_value")
+        self.assertEqual(
+            self.marionette.get_pref(pref_default, default_branch=True), "default_value"
+        )
 
         self.marionette.clear_pref(pref_default)
         self.assertEqual(self.marionette.get_pref(pref_default), "default_value")
@@ -103,12 +106,14 @@ class TestPreferences(MarionetteTestCase):
         # Without a given value type the properties URL will be returned only
         pref_complex = "browser.menu.showCharacterEncoding"
         properties_file = "chrome://browser/locale/browser.properties"
-        self.assertEqual(self.marionette.get_pref(pref_complex, default_branch=True),
-                         properties_file)
+        self.assertEqual(
+            self.marionette.get_pref(pref_complex, default_branch=True), properties_file
+        )
 
         # Otherwise the property named like the pref will be translated
-        value = self.marionette.get_pref(pref_complex, default_branch=True,
-                                         value_type="nsIPrefLocalizedString")
+        value = self.marionette.get_pref(
+            pref_complex, default_branch=True, value_type="nsIPrefLocalizedString"
+        )
         self.assertNotEqual(value, properties_file)
 
     def test_set_prefs(self):
@@ -123,16 +128,21 @@ class TestPreferences(MarionetteTestCase):
         self.marionette.set_prefs({pref_default: "default_value"}, default_branch=True)
 
         # Set user values
-        prefs = {self.prefs["bool"]: True, self.prefs["int"]: 42,
-                 self.prefs["string"]: "abc", pref_default: "user_value"}
+        prefs = {
+            self.prefs["bool"]: True,
+            self.prefs["int"]: 42,
+            self.prefs["string"]: "abc",
+            pref_default: "user_value",
+        }
         self.marionette.set_prefs(prefs)
 
         self.assertTrue(self.marionette.get_pref(self.prefs["bool"]))
         self.assertEqual(self.marionette.get_pref(self.prefs["int"]), 42)
         self.assertEqual(self.marionette.get_pref(self.prefs["string"]), "abc")
         self.assertEqual(self.marionette.get_pref(pref_default), "user_value")
-        self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                         "default_value")
+        self.assertEqual(
+            self.marionette.get_pref(pref_default, default_branch=True), "default_value"
+        )
 
     def test_using_prefs(self):
         # Test that multiple preferences can be set with "using_prefs", and that
@@ -141,24 +151,30 @@ class TestPreferences(MarionetteTestCase):
         pref_not_existent = "marionette.test.not_existent1"
         pref_default = "marionette.test.pref_default3"
 
-        self.marionette.set_prefs({self.prefs["string"]: "abc",
-                                   self.prefs["int"]: 42,
-                                   self.prefs["bool"]: False,
-                                   })
+        self.marionette.set_prefs(
+            {
+                self.prefs["string"]: "abc",
+                self.prefs["int"]: 42,
+                self.prefs["bool"]: False,
+            }
+        )
         self.assertFalse(self.marionette.get_pref(self.prefs["bool"]))
         self.assertEqual(self.marionette.get_pref(self.prefs["int"]), 42)
         self.assertEqual(self.marionette.get_pref(self.prefs["string"]), "abc")
         self.assertIsNone(self.marionette.get_pref(pref_not_existent))
 
-        with self.marionette.using_prefs({self.prefs["bool"]: True,
-                                          self.prefs["int"]: 24,
-                                          self.prefs["string"]: "def",
-                                          pref_not_existent: "existent"}):
-
+        with self.marionette.using_prefs(
+            {
+                self.prefs["bool"]: True,
+                self.prefs["int"]: 24,
+                self.prefs["string"]: "def",
+                pref_not_existent: "existent",
+            }
+        ):
             self.assertTrue(self.marionette.get_pref(self.prefs["bool"]), True)
-            self.assertEquals(self.marionette.get_pref(self.prefs["int"]), 24)
-            self.assertEquals(self.marionette.get_pref(self.prefs["string"]), "def")
-            self.assertEquals(self.marionette.get_pref(pref_not_existent), "existent")
+            self.assertEqual(self.marionette.get_pref(self.prefs["int"]), 24)
+            self.assertEqual(self.marionette.get_pref(self.prefs["string"]), "def")
+            self.assertEqual(self.marionette.get_pref(pref_not_existent), "existent")
 
         self.assertFalse(self.marionette.get_pref(self.prefs["bool"]))
         self.assertEqual(self.marionette.get_pref(self.prefs["int"]), 42)
@@ -167,15 +183,20 @@ class TestPreferences(MarionetteTestCase):
 
         # Using context with default branch
         self.marionette.set_pref(pref_default, "default_value", default_branch=True)
-        self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                         "default_value")
+        self.assertEqual(
+            self.marionette.get_pref(pref_default, default_branch=True), "default_value"
+        )
 
-        with self.marionette.using_prefs({pref_default: "new_value"}, default_branch=True):
-            self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                             "new_value")
+        with self.marionette.using_prefs(
+            {pref_default: "new_value"}, default_branch=True
+        ):
+            self.assertEqual(
+                self.marionette.get_pref(pref_default, default_branch=True), "new_value"
+            )
 
-        self.assertEqual(self.marionette.get_pref(pref_default, default_branch=True),
-                         "default_value")
+        self.assertEqual(
+            self.marionette.get_pref(pref_default, default_branch=True), "default_value"
+        )
 
     def test_using_prefs_exception(self):
         # Test that throwing an exception inside the context manager doesn"t
@@ -184,9 +205,9 @@ class TestPreferences(MarionetteTestCase):
 
         try:
             with self.marionette.using_prefs({self.prefs["string"]: "def"}):
-                self.assertEquals(self.marionette.get_pref(self.prefs["string"]), "def")
+                self.assertEqual(self.marionette.get_pref(self.prefs["string"]), "def")
                 self.marionette.execute_script("return foo.bar.baz;")
         except JavascriptException:
             pass
 
-        self.assertEquals(self.marionette.get_pref(self.prefs["string"]), "abc")
+        self.assertEqual(self.marionette.get_pref(self.prefs["string"]), "abc")

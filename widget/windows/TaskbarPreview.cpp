@@ -44,13 +44,7 @@ TaskbarPreview::TaskbarPreview(ITaskbarList4* aTaskbar,
       mController(aController),
       mWnd(aHWND),
       mVisible(false),
-      mDocShell(do_GetWeakReference(aShell)) {
-  // TaskbarPreview may outlive the WinTaskbar that created it
-  ::CoInitialize(nullptr);
-
-  WindowHook& hook = GetWindowHook();
-  hook.AddMonitor(WM_DESTROY, MainWindowHook, this);
-}
+      mDocShell(do_GetWeakReference(aShell)) {}
 
 TaskbarPreview::~TaskbarPreview() {
   // Avoid dangling pointer
@@ -65,6 +59,19 @@ TaskbarPreview::~TaskbarPreview() {
   mTaskbar = nullptr;
 
   ::CoUninitialize();
+}
+
+nsresult TaskbarPreview::Init() {
+  // TaskbarPreview may outlive the WinTaskbar that created it
+  if (FAILED(::CoInitialize(nullptr))) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  WindowHook* hook = GetWindowHook();
+  if (!hook) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  return hook->AddMonitor(WM_DESTROY, MainWindowHook, this);
 }
 
 NS_IMETHODIMP
@@ -133,9 +140,6 @@ NS_IMETHODIMP
 TaskbarPreview::Invalidate() {
   if (!mVisible) return NS_OK;
 
-  // DWM Composition is required for previews
-  if (!gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) return NS_OK;
-
   HWND previewWindow = PreviewWindow();
   return FAILED(DwmInvalidateIconicBitmaps(previewWindow)) ? NS_ERROR_FAILURE
                                                            : NS_OK;
@@ -163,9 +167,11 @@ nsresult TaskbarPreview::Enable() {
   if (CanMakeTaskbarCalls()) {
     rv = UpdateTaskbarProperties();
   } else if (IsWindowAvailable()) {
-    WindowHook& hook = GetWindowHook();
-    hook.AddMonitor(nsAppShell::GetTaskbarButtonCreatedMessage(),
-                    MainWindowHook, this);
+    WindowHook* hook = GetWindowHook();
+    MOZ_ASSERT(hook,
+               "IsWindowAvailable() should have eliminated the null case.");
+    hook->AddMonitor(nsAppShell::GetTaskbarButtonCreatedMessage(),
+                     MainWindowHook, this);
   }
   return rv;
 }
@@ -176,9 +182,10 @@ nsresult TaskbarPreview::Disable() {
     return NS_OK;
   }
 
-  WindowHook& hook = GetWindowHook();
-  (void)hook.RemoveMonitor(nsAppShell::GetTaskbarButtonCreatedMessage(),
-                           MainWindowHook, this);
+  WindowHook* hook = GetWindowHook();
+  MOZ_ASSERT(hook, "IsWindowAvailable() should have eliminated the null case.");
+  (void)hook->RemoveMonitor(nsAppShell::GetTaskbarButtonCreatedMessage(),
+                            MainWindowHook, this);
 
   return NS_OK;
 }
@@ -194,8 +201,9 @@ bool TaskbarPreview::IsWindowAvailable() const {
 }
 
 void TaskbarPreview::DetachFromNSWindow() {
-  WindowHook& hook = GetWindowHook();
-  hook.RemoveMonitor(WM_DESTROY, MainWindowHook, this);
+  if (WindowHook* hook = GetWindowHook()) {
+    hook->RemoveMonitor(WM_DESTROY, MainWindowHook, this);
+  }
   mWnd = nullptr;
 }
 
@@ -252,16 +260,16 @@ bool TaskbarPreview::CanMakeTaskbarCalls() {
   if (mVisible) {
     nsWindow* window = WinUtils::GetNSWindowPtr(mWnd);
     NS_ASSERTION(window, "Could not get nsWindow from HWND");
-    return window->HasTaskbarIconBeenCreated();
+    return window ? window->HasTaskbarIconBeenCreated() : false;
   }
   return false;
 }
 
-WindowHook& TaskbarPreview::GetWindowHook() {
+WindowHook* TaskbarPreview::GetWindowHook() {
   nsWindow* window = WinUtils::GetNSWindowPtr(mWnd);
   NS_ASSERTION(window, "Cannot use taskbar previews in an embedded context!");
 
-  return window->GetWindowHook();
+  return window ? &window->GetWindowHook() : nullptr;
 }
 
 void TaskbarPreview::EnableCustomDrawing(HWND aHWND, bool aEnable) {
@@ -334,36 +342,43 @@ TaskbarPreviewCallback::Done(nsISupports* aCanvas, bool aDrawBorder) {
   }
   RefPtr<gfxWindowsSurface> target = new gfxWindowsSurface(
       source->GetSize(), gfx::SurfaceFormat::A8R8G8B8_UINT32);
-  if (!target) {
+  if (target->CairoStatus() != CAIRO_STATUS_SUCCESS) {
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<gfx::DataSourceSurface> srcSurface = source->GetDataSurface();
+  using DataSrcSurf = gfx::DataSourceSurface;
+  RefPtr<DataSrcSurf> srcSurface = source->GetDataSurface();
   RefPtr<gfxImageSurface> imageSurface = target->GetAsImageSurface();
   if (!srcSurface || !imageSurface) {
     return NS_ERROR_FAILURE;
   }
 
-  gfx::DataSourceSurface::MappedSurface sourceMap;
-  srcSurface->Map(gfx::DataSourceSurface::READ, &sourceMap);
-  mozilla::gfx::CopySurfaceDataToPackedArray(
-      sourceMap.mData, imageSurface->Data(), srcSurface->GetSize(),
-      sourceMap.mStride, BytesPerPixel(srcSurface->GetFormat()));
-  srcSurface->Unmap();
+  if (DataSrcSurf::ScopedMap const sourceMap(srcSurface, DataSrcSurf::READ);
+      sourceMap.IsMapped()) {
+    mozilla::gfx::CopySurfaceDataToPackedArray(
+        sourceMap.GetData(), imageSurface->Data(), srcSurface->GetSize(),
+        sourceMap.GetStride(), BytesPerPixel(srcSurface->GetFormat()));
+  } else if (source->GetSize().IsEmpty()) {
+    // A zero-size source-surface probably shouldn't happen, but is harmless
+    // here. Fall through.
+  } else {
+    return NS_ERROR_FAILURE;
+  }
 
   HDC hDC = target->GetDC();
   HBITMAP hBitmap = (HBITMAP)GetCurrentObject(hDC, OBJ_BITMAP);
 
   DWORD flags = aDrawBorder ? DWM_SIT_DISPLAYFRAME : 0;
-  POINT pptClient = {0, 0};
   HRESULT hr;
   if (!mIsThumbnail) {
+    POINT pptClient = {0, 0};
     hr = DwmSetIconicLivePreviewBitmap(mPreview->PreviewWindow(), hBitmap,
                                        &pptClient, flags);
   } else {
     hr = DwmSetIconicThumbnail(mPreview->PreviewWindow(), hBitmap, flags);
   }
   MOZ_ASSERT(SUCCEEDED(hr));
+  mozilla::Unused << hr;
   return NS_OK;
 }
 

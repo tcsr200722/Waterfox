@@ -4,7 +4,7 @@ const g = new Global({value: "i32", mutable:true}, 0);
 
 const code = wasmTextToBinary(`(module
     (global $g (import "" "g") (mut i32))
-    (func $start (set_global $g (i32.add (get_global $g) (i32.const 1))))
+    (func $start (global.set $g (i32.add (global.get $g) (i32.const 1))))
     (start $start)
 )`);
 const module = new Module(code);
@@ -34,7 +34,7 @@ instantiate(code, importObj).then(({module,instance}) => {
 drainJobQueue();
 assertEq(g.value, 3);
 
-if (wasmStreamingIsSupported()) {
+if (wasmStreamingEnabled()) {
   g.value = 0;
   instantiateStreaming(code, importObj).then(({module,instance}) => {
       assertEq(module instanceof Module, true);

@@ -1,19 +1,20 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetrySession.jsm", this);
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
+);
+const { TelemetrySession } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetrySession.sys.mjs"
+);
 
 // The @mozilla/xre/app-info;1 XPCOM object provided by the xpcshell test harness doesn't
-// implement the nsIXULAppInfo interface, which is needed by Services.jsm and
-// TelemetrySession.jsm. updateAppInfo() creates and registers a minimal mock app-info.
-const { updateAppInfo } = ChromeUtils.import(
-  "resource://testing-common/AppInfo.jsm"
+// implement the nsIXULAppInfo interface, which is needed by Services and
+// TelemetrySession.sys.mjs. updateAppInfo() creates and registers a minimal mock app-info.
+const { updateAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
 );
 updateAppInfo();
-
-var gGlobalScope = this;
 
 function getSimpleMeasurementsFromTelemetryController() {
   return TelemetrySession.getPayload().simpleMeasurements;
@@ -21,7 +22,7 @@ function getSimpleMeasurementsFromTelemetryController() {
 
 add_task(async function test_setup() {
   // Telemetry needs the AddonManager.
-  loadAddonManager();
+  await loadAddonManager();
   finishAddonManagerStartup();
   fakeIntlReady();
   // Make profile available for |TelemetryController.testShutdown()|.
@@ -39,9 +40,9 @@ add_task(async function actualTest() {
   await TelemetryController.testSetup();
 
   // Test the module logic
-  let tmp = {};
-  ChromeUtils.import("resource://gre/modules/TelemetryTimestamps.jsm", tmp);
-  let TelemetryTimestamps = tmp.TelemetryTimestamps;
+  let { TelemetryTimestamps } = ChromeUtils.importESModule(
+    "resource://gre/modules/TelemetryTimestamps.sys.mjs"
+  );
   let now = Date.now();
   TelemetryTimestamps.add("foo");
   Assert.ok(TelemetryTimestamps.get().foo != null); // foo was added

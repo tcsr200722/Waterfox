@@ -16,9 +16,7 @@
 #ifndef BASE_EINTR_WRAPPER_H_
 #define BASE_EINTR_WRAPPER_H_
 
-#include "build/build_config.h"
-
-#if defined(OS_POSIX)
+#if defined(XP_UNIX)
 
 #  include <errno.h>
 
@@ -43,11 +41,21 @@
       eintr_wrapper_result;                                 \
     })
 
+#  define HANDLE_RV_EINTR(x)                   \
+    ({                                         \
+      decltype(x) eintr_wrapper_result;        \
+      do {                                     \
+        eintr_wrapper_result = (x);            \
+      } while (eintr_wrapper_result == EINTR); \
+      eintr_wrapper_result;                    \
+    })
+
 #else
 
 #  define HANDLE_EINTR(x) (x)
 #  define IGNORE_EINTR(x) (x)
+#  define HANDLE_RV_EINTR(x) (x)
 
-#endif  // OS_POSIX
+#endif  // XP_UNIX
 
 #endif  // !BASE_EINTR_WRAPPER_H_

@@ -1,19 +1,28 @@
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "QueryCache",
-  "resource://activity-stream/lib/ASRouterTargeting.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  ASRouter: "resource:///modules/asrouter/ASRouter.sys.mjs",
+
+  DiscoveryStreamFeed:
+    "resource://activity-stream/lib/DiscoveryStreamFeed.sys.mjs",
+
+  FeatureCallout: "resource:///modules/asrouter/FeatureCallout.sys.mjs",
+
+  FeatureCalloutBroker:
+    "resource:///modules/asrouter/FeatureCalloutBroker.sys.mjs",
+
+  FeatureCalloutMessages:
+    "resource:///modules/asrouter/FeatureCalloutMessages.sys.mjs",
+
+  ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  QueryCache: "resource:///modules/asrouter/ASRouterTargeting.sys.mjs",
+});
 
 // We import sinon here to make it available across all mochitest test files
-// eslint-disable-next-line no-unused-vars
-const { sinon } = ChromeUtils.import("resource://testing-common/Sinon.jsm");
+const { sinon } = ChromeUtils.importESModule(
+  "resource://testing-common/Sinon.sys.mjs"
+);
 
 function popPrefs() {
   return SpecialPowers.popPrefEnv();
@@ -22,14 +31,8 @@ function pushPrefs(...prefs) {
   return SpecialPowers.pushPrefEnv({ set: prefs });
 }
 
-// eslint-disable-next-line no-unused-vars
-async function setDefaultTopSites() {
-  // The pref for TopSites is empty by default.
-  await pushPrefs([
-    "browser.newtabpage.activity-stream.default.sites",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.amazon.com/,https://www.reddit.com/,https://www.wikipedia.org/,https://twitter.com/",
-  ]);
-  // Toggle the feed off and on as a workaround to read the new prefs.
+// Toggle the feed off and on as a workaround to read the new prefs.
+async function toggleTopsitesPref() {
   await pushPrefs([
     "browser.newtabpage.activity-stream.feeds.system.topsites",
     false,
@@ -38,13 +41,35 @@ async function setDefaultTopSites() {
     "browser.newtabpage.activity-stream.feeds.system.topsites",
     true,
   ]);
+}
+
+async function setDefaultTopSites() {
+  // The pref for TopSites is empty by default.
+  await pushPrefs([
+    "browser.newtabpage.activity-stream.default.sites",
+    "https://www.youtube.com/,https://www.facebook.com/,https://www.amazon.com/,https://www.reddit.com/,https://www.wikipedia.org/,https://twitter.com/",
+  ]);
+  await toggleTopsitesPref();
   await pushPrefs([
     "browser.newtabpage.activity-stream.improvesearch.topSiteSearchShortcuts",
     true,
   ]);
 }
 
-// eslint-disable-next-line no-unused-vars
+async function setTestTopSites() {
+  await pushPrefs([
+    "browser.newtabpage.activity-stream.improvesearch.topSiteSearchShortcuts",
+    false,
+  ]);
+  // The pref for TopSites is empty by default.
+  // Using a topsite with example.com allows us to open the topsite without a network request.
+  await pushPrefs([
+    "browser.newtabpage.activity-stream.default.sites",
+    "https://example.com/",
+  ]);
+  await toggleTopsitesPref();
+}
+
 async function clearHistoryAndBookmarks() {
   await PlacesUtils.bookmarks.eraseEverything();
   await PlacesUtils.history.clear();
@@ -86,7 +111,6 @@ function refreshHighlightsFeed() {
  * Helper to populate the Highlights section with bookmark cards.
  * @param count Number of items to add.
  */
-// eslint-disable-next-line no-unused-vars
 async function addHighlightsBookmarks(count) {
   const bookmarks = new Array(count).fill(null).map((entry, i) => ({
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
@@ -145,7 +169,6 @@ function addContentHelpers() {
  * @param browserURL {optional String}
  *   {String} This parameter is used to explicitly specify URL opened in new tab
  */
-// eslint-disable-next-line no-unused-vars
 function test_newtab(testInfo, browserURL = "about:newtab") {
   // Extract any test parts or default to just the single content task
   let { before, test: contentTask, after } = testInfo;
@@ -210,8 +233,8 @@ function test_newtab(testInfo, browserURL = "about:newtab") {
       await after(contentResult);
     } finally {
       // Clean up for next tests
-      await scopedPopPrefs();
       BrowserTestUtils.removeTab(tab);
+      await scopedPopPrefs();
     }
   };
 

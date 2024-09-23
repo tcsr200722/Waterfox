@@ -9,6 +9,7 @@ add_task(async function test() {
   await PlacesUtils.bookmarks.eraseEverything();
   await PlacesUtils.history.clear();
   await PlacesTestUtils.addVisits(["http://example.com/"]);
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   registerCleanupFunction(async () => {
     await PlacesUtils.history.clear();
   });
@@ -16,7 +17,6 @@ add_task(async function test() {
   // Search for "e".  It should autofill to example.com/.
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus,
     value: "e",
     fireInputEvent: true,
   });

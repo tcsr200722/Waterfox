@@ -16,15 +16,15 @@
 #include "nsNodeInfoManager.h"
 #include "nsContentUtils.h"
 #include "nsDocElementCreatedNotificationRunner.h"
+#include "mozilla/Encoding.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/Services.h"
+#include "mozilla/Components.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIPrincipal.h"
 #include "nsIMultiPartChannel.h"
 #include "nsProxyRelease.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 MediaDocumentStreamListener::MediaDocumentStreamListener(
     MediaDocument* aDocument)
@@ -40,11 +40,6 @@ MediaDocumentStreamListener::~MediaDocumentStreamListener() {
 
 NS_IMPL_ISUPPORTS(MediaDocumentStreamListener, nsIRequestObserver,
                   nsIStreamListener, nsIThreadRetargetableStreamListener)
-
-void MediaDocumentStreamListener::SetStreamListener(
-    nsIStreamListener* aListener) {
-  mNextStream = aListener;
-}
 
 NS_IMETHODIMP
 MediaDocumentStreamListener::OnStartRequest(nsIRequest* request) {
@@ -94,6 +89,20 @@ MediaDocumentStreamListener::OnDataAvailable(nsIRequest* request,
 }
 
 NS_IMETHODIMP
+MediaDocumentStreamListener::OnDataFinished(nsresult aStatus) {
+  if (!mNextStream) {
+    return NS_ERROR_FAILURE;
+  }
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetable =
+      do_QueryInterface(mNextStream);
+  if (retargetable) {
+    return retargetable->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 MediaDocumentStreamListener::CheckListenerChain() {
   nsCOMPtr<nsIThreadRetargetableStreamListener> retargetable =
       do_QueryInterface(mNextStream);
@@ -111,12 +120,14 @@ const char* const MediaDocument::sFormatNames[4] = {
     ""                       // eWithDimAndFile
 };
 
-MediaDocument::MediaDocument()
-    : nsHTMLDocument(), mDidInitialDocumentSetup(false) {}
+MediaDocument::MediaDocument() : mDidInitialDocumentSetup(false) {
+  mCompatMode = eCompatibility_FullStandards;
+}
 MediaDocument::~MediaDocument() = default;
 
-nsresult MediaDocument::Init() {
-  nsresult rv = nsHTMLDocument::Init();
+nsresult MediaDocument::Init(nsIPrincipal* aPrincipal,
+                             nsIPrincipal* aPartitionedPrincipal) {
+  nsresult rv = nsHTMLDocument::Init(aPrincipal, aPartitionedPrincipal);
   NS_ENSURE_SUCCESS(rv, rv);
 
   mIsSyntheticDocument = true;
@@ -124,14 +135,11 @@ nsresult MediaDocument::Init() {
   return NS_OK;
 }
 
-nsresult MediaDocument::StartDocumentLoad(const char* aCommand,
-                                          nsIChannel* aChannel,
-                                          nsILoadGroup* aLoadGroup,
-                                          nsISupports* aContainer,
-                                          nsIStreamListener** aDocListener,
-                                          bool aReset, nsIContentSink* aSink) {
-  nsresult rv = Document::StartDocumentLoad(
-      aCommand, aChannel, aLoadGroup, aContainer, aDocListener, aReset, aSink);
+nsresult MediaDocument::StartDocumentLoad(
+    const char* aCommand, nsIChannel* aChannel, nsILoadGroup* aLoadGroup,
+    nsISupports* aContainer, nsIStreamListener** aDocListener, bool aReset) {
+  nsresult rv = Document::StartDocumentLoad(aCommand, aChannel, aLoadGroup,
+                                            aContainer, aDocListener, aReset);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -183,7 +191,6 @@ nsresult MediaDocument::CreateSyntheticDocument() {
   MOZ_ASSERT(!InitialSetupHasBeenDone());
 
   // Synthesize an empty html document
-  nsresult rv;
 
   RefPtr<mozilla::dom::NodeInfo> nodeInfo;
   nodeInfo = mNodeInfoManager->GetNodeInfo(
@@ -193,8 +200,11 @@ nsresult MediaDocument::CreateSyntheticDocument() {
   NS_ENSURE_TRUE(root, NS_ERROR_OUT_OF_MEMORY);
 
   NS_ASSERTION(GetChildCount() == 0, "Shouldn't have any kids");
-  rv = AppendChildTo(root, false);
-  NS_ENSURE_SUCCESS(rv, rv);
+  ErrorResult rv;
+  AppendChildTo(root, false, rv);
+  if (rv.Failed()) {
+    return rv.StealNSResult();
+  }
 
   nodeInfo = mNodeInfoManager->GetNodeInfo(
       nsGkAtoms::head, nullptr, kNameSpaceID_XHTML, nsINode::ELEMENT_NODE);
@@ -209,15 +219,14 @@ nsresult MediaDocument::CreateSyntheticDocument() {
   RefPtr<nsGenericHTMLElement> metaContent =
       NS_NewHTMLMetaElement(nodeInfo.forget());
   NS_ENSURE_TRUE(metaContent, NS_ERROR_OUT_OF_MEMORY);
-  metaContent->SetAttr(kNameSpaceID_None, nsGkAtoms::name,
-                       NS_LITERAL_STRING("viewport"), true);
+  metaContent->SetAttr(kNameSpaceID_None, nsGkAtoms::name, u"viewport"_ns,
+                       true);
 
-  metaContent->SetAttr(
-      kNameSpaceID_None, nsGkAtoms::content,
-      NS_LITERAL_STRING("width=device-width; height=device-height;"), true);
-  head->AppendChildTo(metaContent, false);
+  metaContent->SetAttr(kNameSpaceID_None, nsGkAtoms::content,
+                       u"width=device-width; height=device-height;"_ns, true);
+  head->AppendChildTo(metaContent, false, IgnoreErrors());
 
-  root->AppendChildTo(head, false);
+  root->AppendChildTo(head, false, IgnoreErrors());
 
   nodeInfo = mNodeInfoManager->GetNodeInfo(
       nsGkAtoms::body, nullptr, kNameSpaceID_XHTML, nsINode::ELEMENT_NODE);
@@ -225,7 +234,7 @@ nsresult MediaDocument::CreateSyntheticDocument() {
   RefPtr<nsGenericHTMLElement> body = NS_NewHTMLBodyElement(nodeInfo.forget());
   NS_ENSURE_TRUE(body, NS_ERROR_OUT_OF_MEMORY);
 
-  root->AppendChildTo(body, false);
+  root->AppendChildTo(body, false, IgnoreErrors());
 
   return NS_OK;
 }
@@ -287,13 +296,14 @@ nsresult MediaDocument::LinkStylesheet(const nsAString& aStylesheet) {
   RefPtr<nsGenericHTMLElement> link = NS_NewHTMLLinkElement(nodeInfo.forget());
   NS_ENSURE_TRUE(link, NS_ERROR_OUT_OF_MEMORY);
 
-  link->SetAttr(kNameSpaceID_None, nsGkAtoms::rel,
-                NS_LITERAL_STRING("stylesheet"), true);
+  link->SetAttr(kNameSpaceID_None, nsGkAtoms::rel, u"stylesheet"_ns, true);
 
   link->SetAttr(kNameSpaceID_None, nsGkAtoms::href, aStylesheet, true);
 
+  ErrorResult rv;
   Element* head = GetHeadElement();
-  return head->AppendChildTo(link, false);
+  head->AppendChildTo(link, false, rv);
+  return rv.StealNSResult();
 }
 
 nsresult MediaDocument::LinkScript(const nsAString& aScript) {
@@ -305,13 +315,15 @@ nsresult MediaDocument::LinkScript(const nsAString& aScript) {
       NS_NewHTMLScriptElement(nodeInfo.forget());
   NS_ENSURE_TRUE(script, NS_ERROR_OUT_OF_MEMORY);
 
-  script->SetAttr(kNameSpaceID_None, nsGkAtoms::type,
-                  NS_LITERAL_STRING("text/javascript"), true);
+  script->SetAttr(kNameSpaceID_None, nsGkAtoms::type, u"text/javascript"_ns,
+                  true);
 
   script->SetAttr(kNameSpaceID_None, nsGkAtoms::src, aScript, true);
 
+  ErrorResult rv;
   Element* head = GetHeadElement();
-  return head->AppendChildTo(script, false);
+  head->AppendChildTo(script, false, rv);
+  return rv.StealNSResult();
 }
 
 void MediaDocument::FormatStringFromName(const char* aName,
@@ -321,7 +333,7 @@ void MediaDocument::FormatStringFromName(const char* aName,
   if (!spoofLocale) {
     if (!mStringBundle) {
       nsCOMPtr<nsIStringBundleService> stringService =
-          mozilla::services::GetStringBundleService();
+          mozilla::components::StringBundle::Service();
       if (stringService) {
         stringService->CreateBundle(NSMEDIADOCUMENT_PROPERTIES_URI,
                                     getter_AddRefs(mStringBundle));
@@ -333,7 +345,7 @@ void MediaDocument::FormatStringFromName(const char* aName,
   } else {
     if (!mStringBundleEnglish) {
       nsCOMPtr<nsIStringBundleService> stringService =
-          mozilla::services::GetStringBundleService();
+          mozilla::components::StringBundle::Service();
       if (stringService) {
         stringService->CreateBundle(NSMEDIADOCUMENT_PROPERTIES_URI_en_US,
                                     getter_AddRefs(mStringBundleEnglish));
@@ -396,5 +408,4 @@ void MediaDocument::UpdateTitleAndCharset(const nsACString& aTypeStr,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

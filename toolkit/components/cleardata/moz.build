@@ -5,31 +5,34 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 TESTING_JS_MODULES += [
-    'SiteDataTestUtils.jsm',
+    "SiteDataTestUtils.sys.mjs",
 ]
 
 XPIDL_SOURCES += [
-    'nsIClearDataService.idl',
+    "nsIClearDataService.idl",
 ]
 
-XPIDL_MODULE = 'toolkit_cleardata'
+XPIDL_MODULE = "toolkit_cleardata"
 
 EXTRA_JS_MODULES += [
-    'ClearDataService.jsm',
-    'ServiceWorkerCleanUp.jsm',
+    "ClearDataService.sys.mjs",
+    "PrincipalsCollector.sys.mjs",
+    "ServiceWorkerCleanUp.sys.mjs",
 ]
 
 XPCOM_MANIFESTS += [
-    'components.conf',
+    "components.conf",
 ]
 
-XPCSHELL_TESTS_MANIFESTS += ['tests/unit/xpcshell.ini']
+XPCSHELL_TESTS_MANIFESTS += ["tests/unit/xpcshell.toml"]
 
-BROWSER_CHROME_MANIFESTS += ['tests/browser/browser.ini']
+BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.toml"]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+MARIONETTE_MANIFESTS += ["tests/marionette/manifest.toml"]
 
-with Files('**'):
-    BUG_COMPONENT = ('Toolkit', 'Data Sanitization')
+include("/ipc/chromium/chromium-config.mozbuild")
 
-FINAL_LIBRARY = 'xul'
+with Files("**"):
+    BUG_COMPONENT = ("Toolkit", "Data Sanitization")
+
+FINAL_LIBRARY = "xul"

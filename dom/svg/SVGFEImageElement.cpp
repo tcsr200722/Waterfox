@@ -6,7 +6,9 @@
 
 #include "mozilla/dom/SVGFEImageElement.h"
 
-#include "mozilla/EventStates.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/SVGFEImageElementBinding.h"
 #include "mozilla/dom/SVGFilterElement.h"
 #include "mozilla/dom/UserActivation.h"
@@ -14,9 +16,7 @@
 #include "mozilla/RefPtr.h"
 #include "nsContentUtils.h"
 #include "nsLayoutUtils.h"
-#include "nsSVGUtils.h"
 #include "nsNetUtil.h"
-#include "SVGObserverUtils.h"
 #include "imgIContainer.h"
 #include "gfx2DGlue.h"
 
@@ -24,8 +24,7 @@ NS_IMPL_NS_NEW_SVG_ELEMENT(FEImage)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEImageElement::WrapNode(JSContext* aCx,
                                       JS::Handle<JSObject*> aGivenProto) {
@@ -50,10 +49,10 @@ SVGFEImageElement::SVGFEImageElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGFEImageElementBase(std::move(aNodeInfo)), mImageAnimationMode(0) {
   // We start out broken
-  AddStatesSilently(NS_EVENT_STATE_BROKEN);
+  AddStatesSilently(ElementState::BROKEN);
 }
 
-SVGFEImageElement::~SVGFEImageElement() { DestroyImageLoadingContent(); }
+SVGFEImageElement::~SVGFEImageElement() { nsImageLoadingContent::Destroy(); }
 
 //----------------------------------------------------------------------
 
@@ -88,6 +87,10 @@ nsresult SVGFEImageElement::LoadSVGImage(bool aForce, bool aNotify) {
   return LoadImage(href, aForce, aNotify, eImageLoadType_Normal);
 }
 
+bool SVGFEImageElement::ShouldLoadImage() const {
+  return LoadingEnabled() && OwnerDoc()->ShouldLoadImages();
+}
+
 //----------------------------------------------------------------------
 // EventTarget methods:
 
@@ -98,25 +101,38 @@ void SVGFEImageElement::AsyncEventRunning(AsyncEventDispatcher* aEvent) {
 //----------------------------------------------------------------------
 // nsIContent methods:
 
-NS_IMETHODIMP_(bool)
-SVGFEImageElement::IsAttributeMapped(const nsAtom* name) const {
-  static const MappedAttributeEntry* const map[] = {sGraphicsMap};
-
-  return FindAttributeDependence(name, map) ||
-         SVGFEImageElementBase::IsAttributeMapped(name);
+bool SVGFEImageElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                                       const nsAString& aValue,
+                                       nsIPrincipal* aMaybeScriptedPrincipal,
+                                       nsAttrValue& aResult) {
+  if (aNamespaceID == kNameSpaceID_None &&
+      aAttribute == nsGkAtoms::crossorigin) {
+    ParseCORSValue(aValue, aResult);
+    return true;
+  }
+  return SVGFEImageElementBase::ParseAttribute(
+      aNamespaceID, aAttribute, aValue, aMaybeScriptedPrincipal, aResult);
 }
 
-nsresult SVGFEImageElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                         const nsAttrValue* aValue,
-                                         const nsAttrValue* aOldValue,
-                                         nsIPrincipal* aSubjectPrincipal,
-                                         bool aNotify) {
+void SVGFEImageElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                                     const nsAttrValue* aValue,
+                                     const nsAttrValue* aOldValue,
+                                     nsIPrincipal* aSubjectPrincipal,
+                                     bool aNotify) {
   if (aName == nsGkAtoms::href && (aNamespaceID == kNameSpaceID_XLink ||
                                    aNamespaceID == kNameSpaceID_None)) {
     if (aValue) {
-      LoadSVGImage(true, aNotify);
+      if (ShouldLoadImage()) {
+        LoadSVGImage(true, aNotify);
+      }
     } else {
       CancelImageRequests(aNotify);
+    }
+  } else if (aNamespaceID == kNameSpaceID_None &&
+             aName == nsGkAtoms::crossorigin) {
+    if (aNotify && GetCORSMode() != AttrValueToCORSMode(aOldValue) &&
+        ShouldLoadImage()) {
+      ForceReload(aNotify, IgnoreErrors());
     }
   }
 
@@ -139,24 +155,29 @@ nsresult SVGFEImageElement::BindToTree(BindContext& aContext,
 
   nsImageLoadingContent::BindToTree(aContext, aParent);
 
-  if (mStringAttributes[HREF].IsExplicitlySet() ||
-      mStringAttributes[XLINK_HREF].IsExplicitlySet()) {
+  if ((mStringAttributes[HREF].IsExplicitlySet() ||
+       mStringAttributes[XLINK_HREF].IsExplicitlySet()) &&
+      ShouldLoadImage()) {
     nsContentUtils::AddScriptRunner(
         NewRunnableMethod("dom::SVGFEImageElement::MaybeLoadSVGImage", this,
                           &SVGFEImageElement::MaybeLoadSVGImage));
   }
 
+  if (aContext.InComposedDoc()) {
+    aContext.OwnerDoc().SetUseCounter(eUseCounter_custom_feImage);
+  }
+
   return rv;
 }
 
-void SVGFEImageElement::UnbindFromTree(bool aNullParent) {
-  nsImageLoadingContent::UnbindFromTree(aNullParent);
-  SVGFEImageElementBase::UnbindFromTree(aNullParent);
+void SVGFEImageElement::UnbindFromTree(UnbindContext& aContext) {
+  nsImageLoadingContent::UnbindFromTree();
+  SVGFEImageElementBase::UnbindFromTree(aContext);
 }
 
-EventStates SVGFEImageElement::IntrinsicState() const {
-  return SVGFEImageElementBase::IntrinsicState() |
-         nsImageLoadingContent::ImageState();
+void SVGFEImageElement::DestroyContent() {
+  nsImageLoadingContent::Destroy();
+  SVGFEImageElementBase::DestroyContent();
 }
 
 //----------------------------------------------------------------------
@@ -171,10 +192,17 @@ already_AddRefed<DOMSVGAnimatedString> SVGFEImageElement::Href() {
 }
 
 //----------------------------------------------------------------------
+//  nsImageLoadingContent methods:
+
+CORSMode SVGFEImageElement::GetCORSMode() {
+  return AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin));
+}
+
+//----------------------------------------------------------------------
 // nsIDOMSVGFEImageElement methods
 
 FilterPrimitiveDescription SVGFEImageElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   nsIFrame* frame = GetPrimaryFrame();
@@ -192,19 +220,23 @@ FilterPrimitiveDescription SVGFEImageElement::GetPrimitiveDescription(
   }
 
   RefPtr<SourceSurface> image;
+  nsIntSize nativeSize;
   if (imageContainer) {
+    if (NS_FAILED(imageContainer->GetWidth(&nativeSize.width))) {
+      nativeSize.width = kFallbackIntrinsicWidthInPixels;
+    }
+    if (NS_FAILED(imageContainer->GetHeight(&nativeSize.height))) {
+      nativeSize.height = kFallbackIntrinsicHeightInPixels;
+    }
     uint32_t flags =
         imgIContainer::FLAG_SYNC_DECODE | imgIContainer::FLAG_ASYNC_NOTIFY;
-    image = imageContainer->GetFrame(imgIContainer::FRAME_CURRENT, flags);
+    image = imageContainer->GetFrameAtSize(nativeSize,
+                                           imgIContainer::FRAME_CURRENT, flags);
   }
 
   if (!image) {
     return FilterPrimitiveDescription();
   }
-
-  IntSize nativeSize;
-  imageContainer->GetWidth(&nativeSize.width);
-  imageContainer->GetHeight(&nativeSize.height);
 
   Matrix viewBoxTM = SVGContentUtils::GetViewBoxTransform(
       aFilterSubregion.width, aFilterSubregion.height, 0, 0, nativeSize.width,
@@ -253,10 +285,8 @@ bool SVGFEImageElement::OutputIsTainted(const nsTArray<bool>& aInputsAreTainted,
     return true;
   }
 
-  int32_t corsmode;
-  if (NS_SUCCEEDED(currentRequest->GetCORSMode(&corsmode)) &&
-      corsmode != imgIRequest::CORS_NONE) {
-    // If CORS was used to load the image, the page is allowed to read from it.
+  // If CORS was used to load the image, the page is allowed to read from it.
+  if (nsLayoutUtils::ImageRequestUsesCORS(currentRequest)) {
     return false;
   }
 
@@ -335,12 +365,27 @@ void SVGFEImageElement::Notify(imgIRequest* aRequest, int32_t aType,
   if (aType == imgINotificationObserver::LOAD_COMPLETE ||
       aType == imgINotificationObserver::FRAME_UPDATE ||
       aType == imgINotificationObserver::SIZE_AVAILABLE) {
-    if (GetParent() && GetParent()->IsSVGElement(nsGkAtoms::filter)) {
-      SVGObserverUtils::InvalidateDirectRenderingObservers(
-          static_cast<SVGFilterElement*>(GetParent()));
+    if (auto* filter = SVGFilterElement::FromNodeOrNull(GetParent())) {
+      SVGObserverUtils::InvalidateDirectRenderingObservers(filter);
     }
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+void SVGFEImageElement::DidAnimateAttribute(int32_t aNameSpaceID,
+                                            nsAtom* aAttribute) {
+  if ((aNameSpaceID == kNameSpaceID_None ||
+       aNameSpaceID == kNameSpaceID_XLink) &&
+      aAttribute == nsGkAtoms::href) {
+    bool hrefIsSet =
+        mStringAttributes[SVGFEImageElement::HREF].IsExplicitlySet() ||
+        mStringAttributes[SVGFEImageElement::XLINK_HREF].IsExplicitlySet();
+    if (hrefIsSet) {
+      LoadSVGImage(true, true);
+    } else {
+      CancelImageRequests(true);
+    }
+  }
+  SVGFEImageElementBase::DidAnimateAttribute(aNameSpaceID, aAttribute);
+}
+
+}  // namespace mozilla::dom

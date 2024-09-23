@@ -44,11 +44,18 @@ addAccessibleTask(
     );
 
     ok(select.actionNames.includes("AXPress"), "Selectt has press action");
-    // These three events happen in quick succession when select is pressed
+    // These four events happen in quick succession when select is pressed
     let events = Promise.all([
       waitForMacEvent("AXMenuOpened"),
       waitForMacEvent("AXSelectedChildrenChanged"),
-      waitForMacEvent("AXFocusedUIElementChanged"),
+      waitForMacEvent(
+        "AXFocusedUIElementChanged",
+        e => e.getAttributeValue("AXRole") == "AXPopUpButton"
+      ),
+      waitForMacEvent(
+        "AXFocusedUIElementChanged",
+        e => e.getAttributeValue("AXRole") == "AXMenuItem"
+      ),
     ]);
     select.performAction("AXPress");
     // Only capture the target of AXMenuOpened (first element)
@@ -69,12 +76,8 @@ addAccessibleTask(
     let menuParent = menu.getAttributeValue("AXParent");
     is(
       menuParent.getAttributeValue("AXRole"),
-      "AXGroup",
-      "dropdown parent is a group"
-    );
-    ok(
-      menuParent.attributeNames.includes("AXMain"),
-      "group is main/root element"
+      "AXPopUpButton",
+      "dropdown parent is a popup button"
     );
 
     let menuItems = menu.getAttributeValue("AXChildren").map(c => {
@@ -140,6 +143,7 @@ addAccessibleTask(
     events = Promise.all([
       waitForMacEvent("AXMenuClosed"),
       waitForMacEvent("AXFocusedUIElementChanged"),
+      waitForMacEvent("AXSelectedChildrenChanged"),
     ]);
     menuItem.performAction("AXPress");
     let [, newFocus] = await events;
@@ -147,6 +151,11 @@ addAccessibleTask(
       newFocus.getAttributeValue("AXRole"),
       "AXPopUpButton",
       "Newly focused element is AXPopupButton"
+    );
+    is(
+      newFocus.getAttributeValue("AXDOMIdentifier"),
+      "select",
+      "Should return focus to select"
     );
     is(
       newFocus.getAttributeValue("AXValue"),

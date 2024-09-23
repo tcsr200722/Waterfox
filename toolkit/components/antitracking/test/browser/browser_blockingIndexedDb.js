@@ -1,4 +1,4 @@
-/* import-globals-from antitracking_head.js */
+requestLongerTimeout(4);
 
 AntiTracking.runTestInNormalAndPrivateMode(
   "IndexedDB",
@@ -20,11 +20,12 @@ AntiTracking.runTestInNormalAndPrivateMode(
   // Cleanup callback
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });
-  }
+  },
+  [["dom.indexedDB.hide_in_pbmode.enabled", false]]
 );
 
 AntiTracking.runTestInNormalAndPrivateMode(
@@ -45,12 +46,18 @@ AntiTracking.runTestInNormalAndPrivateMode(
     /* import-globals-from storageAccessAPIHelpers.js */
     await callRequestStorageAccess();
 
+    let effectiveCookieBehavior = SpecialPowers.isContentWindowPrivate(window)
+      ? SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior.pbmode"
+        )
+      : SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior"
+        );
+
     let shouldThrow = [
       SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT,
       SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN,
-    ].includes(
-      SpecialPowers.Services.prefs.getIntPref("network.cookie.cookieBehavior")
-    );
+    ].includes(effectiveCookieBehavior);
 
     let hasThrown;
     try {
@@ -70,11 +77,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   // non-blocking callback
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     indexedDB.open("test", "1");
     ok(true, "IDB should be allowed");
@@ -88,12 +91,12 @@ AntiTracking.runTestInNormalAndPrivateMode(
   // Cleanup callback
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });
   },
-  null,
+  [["dom.indexedDB.hide_in_pbmode.enabled", false]],
   false,
   false
 );

@@ -47,11 +47,11 @@ int SandboxBrokerClient::DoCall(const Request* aReq, const char* aPath,
                                              getpid(), aPath + kProcSelfLen);
     if (static_cast<size_t>(len) < sizeof(rewrittenPath)) {
       if (SandboxInfo::Get().Test(SandboxInfo::kVerbose)) {
-        SANDBOX_LOG_ERROR("rewriting %s -> %s", aPath, rewrittenPath);
+        SANDBOX_LOG("rewriting %s -> %s", aPath, rewrittenPath);
       }
       path = rewrittenPath;
     } else {
-      SANDBOX_LOG_ERROR("not rewriting unexpectedly long path %s", aPath);
+      SANDBOX_LOG("not rewriting unexpectedly long path %s", aPath);
     }
   }
 
@@ -113,8 +113,8 @@ int SandboxBrokerClient::DoCall(const Request* aReq, const char* aPath,
     return -recvErrno;
   }
   if (recvd == 0) {
-    SANDBOX_LOG_ERROR("Unexpected EOF, op %d flags 0%o path %s", aReq->mOp,
-                      aReq->mFlags, path);
+    SANDBOX_LOG("Unexpected EOF, op %d flags 0%o path %s", aReq->mOp,
+                aReq->mFlags, path);
     return -EIO;
   }
   MOZ_ASSERT(static_cast<size_t>(recvd) <= ios[0].iov_len + ios[1].iov_len);
@@ -132,8 +132,8 @@ int SandboxBrokerClient::DoCall(const Request* aReq, const char* aPath,
     // actually exist, if it's something that's optional or part of a
     // search path (e.g., shared libraries).  In those cases, this
     // error message is expected.
-    SANDBOX_LOG_ERROR("Failed errno %d op %s flags 0%o path %s", resp.mError,
-                      OperationDescription[aReq->mOp], aReq->mFlags, path);
+    SANDBOX_LOG("Failed errno %d op %s flags 0%o path %s", resp.mError,
+                OperationDescription[aReq->mOp], aReq->mFlags, path);
   }
   if (openedFd >= 0) {
     close(openedFd);
@@ -159,11 +159,19 @@ int SandboxBrokerClient::Access(const char* aPath, int aMode) {
 }
 
 int SandboxBrokerClient::Stat(const char* aPath, statstruct* aStat) {
+  if (!aPath || !aStat) {
+    return -EFAULT;
+  }
+
   Request req = {SANDBOX_FILE_STAT, 0, sizeof(statstruct)};
   return DoCall(&req, aPath, nullptr, (void*)aStat, false);
 }
 
 int SandboxBrokerClient::LStat(const char* aPath, statstruct* aStat) {
+  if (!aPath || !aStat) {
+    return -EFAULT;
+  }
+
   Request req = {SANDBOX_FILE_STAT, O_NOFOLLOW, sizeof(statstruct)};
   return DoCall(&req, aPath, nullptr, (void*)aStat, false);
 }
@@ -211,7 +219,7 @@ int SandboxBrokerClient::Readlink(const char* aPath, void* aBuff,
 
 int SandboxBrokerClient::Connect(const sockaddr_un* aAddr, size_t aLen,
                                  int aType) {
-  static const size_t maxLen = sizeof(aAddr->sun_path);
+  static constexpr size_t maxLen = sizeof(aAddr->sun_path);
   const char* path = aAddr->sun_path;
   const auto addrEnd = reinterpret_cast<const char*>(aAddr) + aLen;
   // Ensure that the length isn't impossibly small.
@@ -227,6 +235,25 @@ int SandboxBrokerClient::Connect(const sockaddr_un* aAddr, size_t aLen,
   if (bufLen > maxLen) {
     bufLen = maxLen;
   }
+
+  // Try to handle abstract addresses where the address (the part
+  // after the leading null byte) resembles a pathname: a leading
+  // slash and no embedded nulls.
+  //
+  // `DoCall` expects null-terminated strings, but in this case the
+  // "path" is terminated by the sockaddr length (without a null), so
+  // we need to make a copy.
+  if (bufLen >= 2 && path[0] == '\0' && path[1] == '/' &&
+      !memchr(path + 1, '\0', bufLen - 1)) {
+    char tmpBuf[maxLen];
+    MOZ_RELEASE_ASSERT(bufLen - 1 < maxLen);
+    memcpy(tmpBuf, path + 1, bufLen - 1);
+    tmpBuf[bufLen - 1] = '\0';
+
+    const Request req = {SANDBOX_SOCKET_CONNECT_ABSTRACT, aType, 0};
+    return DoCall(&req, tmpBuf, nullptr, nullptr, true);
+  }
+
   // Require null-termination.  (Linux doesn't require it, but
   // applications usually null-terminate for portability, and not
   // handling unterminated strings means we don't have to copy the path.)
@@ -234,9 +261,10 @@ int SandboxBrokerClient::Connect(const sockaddr_un* aAddr, size_t aLen,
   if (pathLen == bufLen) {
     return -ENAMETOOLONG;
   }
-  // Abstract addresses aren't handled (yet?).
+
+  // Abstract addresses are handled only in some specific case, error in others
   if (pathLen == 0) {
-    return -ECONNREFUSED;
+    return -ENETUNREACH;
   }
 
   const Request req = {SANDBOX_SOCKET_CONNECT, aType, 0};

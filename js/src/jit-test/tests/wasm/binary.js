@@ -79,8 +79,8 @@ wasmEval(moduleWithSections([v2vSigSection]));
 wasmEval(moduleWithSections([sigSection([i2vSig])]));
 wasmEval(moduleWithSections([sigSection([v2vSig, i2vSig])]));
 
-assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([{args:[], ret:100}])])), CompileError, /bad type/);
-assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([{args:[100], ret:VoidCode}])])), CompileError, /bad type/);
+assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([{args:[], ret:33}])])), CompileError, /bad type/);
+assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([{args:[33], ret:VoidCode}])])), CompileError, /bad type/);
 
 assertThrowsInstanceOf(() => wasmEval(moduleWithSections([sigSection([]), declSection([0])])), CompileError, /signature index out of range/);
 assertThrowsInstanceOf(() => wasmEval(moduleWithSections([v2vSigSection, declSection([1])])), CompileError, /signature index out of range/);
@@ -108,10 +108,10 @@ wasmEval(moduleWithSections([tableSection(0)]));
 wasmEval(moduleWithSections([elemSection([])]));
 wasmEval(moduleWithSections([tableSection(0), elemSection([])]));
 wasmEval(moduleWithSections([tableSection(1), elemSection([{offset:1, elems:[]}])]));
-assertErrorMessage(() => wasmEval(moduleWithSections([tableSection(1), elemSection([{offset:0, elems:[0]}])])), CompileError, /table element out of range/);
+assertErrorMessage(() => wasmEval(moduleWithSections([tableSection(1), elemSection([{offset:0, elems:[0]}])])), CompileError, /element index out of range/);
 wasmEval(moduleWithSections([v2vSigSection, declSection([0]), tableSection(1), elemSection([{offset:0, elems:[0]}]), bodySection([v2vBody])]));
 wasmEval(moduleWithSections([v2vSigSection, declSection([0]), tableSection(2), elemSection([{offset:0, elems:[0,0]}]), bodySection([v2vBody])]));
-assertErrorMessage(() => wasmEval(moduleWithSections([v2vSigSection, declSection([0]), tableSection(2), elemSection([{offset:0, elems:[0,1]}]), bodySection([v2vBody])])), CompileError, /table element out of range/);
+assertErrorMessage(() => wasmEval(moduleWithSections([v2vSigSection, declSection([0]), tableSection(2), elemSection([{offset:0, elems:[0,1]}]), bodySection([v2vBody])])), CompileError, /element index out of range/);
 wasmEval(moduleWithSections([v2vSigSection, declSection([0,0,0]), tableSection(4), elemSection([{offset:0, elems:[0,1,0,2]}]), bodySection([v2vBody, v2vBody, v2vBody])]));
 wasmEval(moduleWithSections([sigSection([v2vSig,i2vSig]), declSection([0,0,1]), tableSection(3), elemSection([{offset:0,elems:[0,1,2]}]), bodySection([v2vBody, v2vBody, v2vBody])]));
 
@@ -119,7 +119,7 @@ wasmEval(moduleWithSections([tableSection0()]));
 
 wasmEval(moduleWithSections([memorySection(0)]));
 
-function invalidMemorySection2() {
+function memorySection2() {
     var body = [];
     body.push(...varU32(2));           // number of memories
     body.push(...varU32(0x0));
@@ -130,10 +130,14 @@ function invalidMemorySection2() {
 }
 
 wasmEval(moduleWithSections([memorySection0()]));
-assertErrorMessage(() => wasmEval(moduleWithSections([invalidMemorySection2()])), CompileError, /number of memories must be at most one/);
+if (wasmMultiMemoryEnabled()) {
+    wasmEval(moduleWithSections([memorySection2()]));
+} else {
+    assertErrorMessage(() => wasmEval(moduleWithSections([memorySection2()])), CompileError, /number of memories must be at most one/);
+}
 
 // Test early 'end'
-const bodyMismatch = /function body length mismatch/;
+const bodyMismatch = /(function body length mismatch)|(operators remaining after end of function)/;
 assertErrorMessage(() => wasmEval(moduleWithSections([v2vSigSection, declSection([0]), bodySection([funcBody({locals:[], body:[EndCode]})])])), CompileError, bodyMismatch);
 assertErrorMessage(() => wasmEval(moduleWithSections([v2vSigSection, declSection([0]), bodySection([funcBody({locals:[], body:[UnreachableCode,EndCode]})])])), CompileError, bodyMismatch);
 assertErrorMessage(() => wasmEval(moduleWithSections([v2vSigSection, declSection([0]), bodySection([funcBody({locals:[], body:[EndCode,UnreachableCode]})])])), CompileError, bodyMismatch);
@@ -217,20 +221,18 @@ assertErrorMessage(() => wasmEval(moduleWithSections([
 
 // Diagnose invalid block signature types.
 for (var bad of [0xff, 1, 0x3f])
-    assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([v2vSig]), declSection([0]), bodySection([funcBody({locals:[], body:[BlockCode, bad, EndCode]})])])), CompileError, /invalid .*block type/);
+    assertErrorMessage(() => wasmEval(moduleWithSections([sigSection([v2vSig]), declSection([0]), bodySection([funcBody({locals:[], body:[BlockCode, bad, EndCode]})])])), CompileError, /(invalid .*block type)|(unknown type)/);
 
 const multiValueModule = moduleWithSections([sigSection([v2vSig]), declSection([0]), bodySection([funcBody({locals:[], body:[BlockCode, 0, EndCode]})])]);
-if (wasmMultiValueEnabled()) {
-    // In this test module, 0 denotes a void-to-void block type.
-    assertEq(WebAssembly.validate(multiValueModule), true);
-} else {
-    assertErrorMessage(() => wasmEval(multiValueModule), CompileError, /invalid .*block type/);
-}
+// In this test module, 0 denotes a void-to-void block type.
+assertEq(WebAssembly.validate(multiValueModule), true);
 
-// Ensure all invalid opcodes rejected
+// Ensure all invalid opcodes are rejected.  Note that the game here (and for
+// the prefixed cases below) is to present only opcodes which will be rejected by
+// *both* Baseline and Ion.
 for (let op of undefinedOpcodes) {
     let binary = moduleWithSections([v2vSigSection, declSection([0]), bodySection([funcBody({locals:[], body:[op]})])]);
-    assertErrorMessage(() => wasmEval(binary), CompileError, /unrecognized opcode/);
+    assertErrorMessage(() => wasmEval(binary), CompileError, /((unrecognized|Unknown) opcode)|(tail calls support is not enabled)|(Exceptions support is not enabled)|(Unexpected EOF)/);
     assertEq(WebAssembly.validate(binary), false);
 }
 
@@ -241,7 +243,7 @@ function checkIllegalPrefixed(prefix, opcode) {
                                      declSection([0]),
                                      bodySection([funcBody({locals:[],
                                                             body:[prefix, ...varU32(opcode)]})])]);
-    assertErrorMessage(() => wasmEval(binary), CompileError, /unrecognized opcode/);
+    assertErrorMessage(() => wasmEval(binary), CompileError, /((unrecognized|Unknown) opcode)|(Unknown.*subopcode)|(Unexpected EOF)|(SIMD support is not enabled)|(invalid lane index)/);
     assertEq(WebAssembly.validate(binary), false);
 }
 
@@ -250,10 +252,17 @@ function checkIllegalPrefixed(prefix, opcode) {
 let reservedGc = {};
 if (wasmGcEnabled()) {
     reservedGc = {
-        0x0: true,
-        0x3: true,
-        0x6: true,
-        0x7: true
+      // Structure operations
+      0x00: true, 0x01: true, 0x02: true, 0x03: true, 0x04: true, 0x05: true,
+      // Array operations
+      0x06: true, 0x07: true, 0x08: true, 0x09: true, 0x0a: true, 0x0b: true,
+      0x0c: true, 0x0d: true, 0x0e: true, 0x0f: true, 0x10: true, 0x11: true,
+      0x12: true, 0x13: true,
+      // Ref operations
+      0x14: true, 0x15: true, 0x16: true, 0x17: true, 0x18: true, 0x19: true,
+      0x1a: true, 0x1b: true,
+      // i31 operations
+      0x1c: true, 0x1d: true, 0x1e: true,
     };
 }
 for (let i = 0; i < 256; i++) {
@@ -297,19 +306,19 @@ for (let i = 0; i < 256; i++) {
 // Illegal SIMD opcodes - the upper bound is actually very large, not much to be
 // done about that.
 
-if (!wasmSimdSupported()) {
-    for (let i = 0; i < 256; i++) {
+if (!wasmSimdEnabled()) {
+    for (let i = 0; i < 0x130; i++) {
         checkIllegalPrefixed(SimdPrefix, i);
     }
 } else {
     let reservedSimd = [
-        0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e,
-        0x5f, 0x64, 0x67, 0x68, 0x69, 0x6a, 0x74, 0x75, 0x7a, 0x7c, 0x7d, 0x7e,
-        0x7f, 0x84, 0x94, 0x9a, 0x9c, 0x9d, 0x9e, 0x9f, 0xa4, 0xa5, 0xa6, 0xaf,
-        0xb0, 0xb2, 0xb3, 0xb4, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, 0xc0, 0xc2,
-        0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcf, 0xd0, 0xd2, 0xd3,
-        0xd4, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xea,
-        0xeb, 0xee, 0xf6, 0xf7, 0xfc, 0xfd, 0xfe, 0xff ];
+        0x9a, 0xa2, 0xa5, 0xa6, 0xaf, 0xb0, 0xb2, 0xb3, 0xb4, 0xbb,
+        0xc2, 0xc5, 0xc6, 0xcf, 0xd0, 0xd2, 0xd3, 0xd4, 0xe2, 0xee,
+        0x115, 0x116, 0x117,
+        0x118, 0x119, 0x11a, 0x11b, 0x11c, 0x11d, 0x11e, 0x11f,
+        0x120, 0x121, 0x122, 0x123, 0x124, 0x125, 0x126, 0x127,
+        0x128, 0x129, 0x12a, 0x12b, 0x12c, 0x12d, 0x12e, 0x12f,
+    ];
     for (let i of reservedSimd) {
         checkIllegalPrefixed(SimdPrefix, i);
     }
@@ -323,7 +332,7 @@ for (let prefix of [ThreadPrefix, MiscPrefix, SimdPrefix, MozPrefix]) {
     // Prefix without a subsequent opcode.  We must ask funcBody not to add an
     // End code after the prefix, so the body really is just the prefix byte.
     let binary = moduleWithSections([v2vSigSection, declSection([0]), bodySection([funcBody({locals:[], body:[prefix]}, /*withEndCode=*/false)])]);
-    assertErrorMessage(() => wasmEval(binary), CompileError, /unable to read opcode/);
+    assertErrorMessage(() => wasmEval(binary), CompileError, /(unable to read opcode)|(Unexpected EOF)|(Unknown opcode)/);
     assertEq(WebAssembly.validate(binary), false);
 }
 
@@ -385,3 +394,19 @@ function testValidNameSectionWithProfiling() {
     disableGeckoProfiling();
 }
 testValidNameSectionWithProfiling();
+
+// Memory alignment can use non-minimal LEB128
+wasmEval(moduleWithSections([
+    v2vSigSection,
+    declSection([0]),
+    memorySection(0),
+    bodySection([
+        funcBody({locals: [], body: [
+            I32ConstCode, 0x00, // i32.const 0
+            I32Load,
+                0x81, 0x00, // alignment 1, non-minimal
+                0x00, // offset 0
+            DropCode,
+        ]}),
+    ]),
+]));

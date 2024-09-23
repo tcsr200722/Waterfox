@@ -7,8 +7,7 @@
 #ifndef mozilla_dom_gamepad_GamepadTouchState_h_
 #define mozilla_dom_gamepad_GamepadTouchState_h_
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 struct GamepadTouchState {
   uint32_t touchId;
@@ -25,8 +24,8 @@ struct GamepadTouchState {
         isSurfaceDimensionsValid(false) {}
 
   bool operator==(const GamepadTouchState& aTouch) const {
-    return touchId == aTouch.touchId && touchId == aTouch.touchId &&
-           surfaceId == aTouch.surfaceId && position[0] == aTouch.position[0] &&
+    return touchId == aTouch.touchId && surfaceId == aTouch.surfaceId &&
+           position[0] == aTouch.position[0] &&
            position[1] == aTouch.position[1] &&
            surfaceDimensions[0] == aTouch.surfaceDimensions[0] &&
            surfaceDimensions[1] == aTouch.surfaceDimensions[1] &&
@@ -38,7 +37,6 @@ struct GamepadTouchState {
   }
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_gamepad_GamepadTouchState_h_

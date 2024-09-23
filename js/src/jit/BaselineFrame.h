@@ -9,19 +9,22 @@
 
 #include <algorithm>
 
+#include "jit/CalleeToken.h"
 #include "jit/JitFrames.h"
+#include "jit/ScriptFromCalleeToken.h"
 #include "vm/Stack.h"
 
 namespace js {
 namespace jit {
 
 class ICEntry;
+class ICScript;
+class JSJitFrameIter;
 
 // The stack looks like this, fp is the frame pointer:
 //
 // fp+y   arguments
-// fp+x   JitFrameLayout (frame header)
-// fp  => saved frame pointer
+// fp  => JitFrameLayout (frame header)
 // fp-x   BaselineFrame
 //        locals
 //        stack values
@@ -60,6 +63,7 @@ class BaselineFrame {
   ICEntry* interpreterICEntry_;
 
   JSObject* envChain_;        // Environment chain (always initialized).
+  ICScript* icScript_;        // IC script (initialized if Warp is enabled).
   ArgumentsObject* argsObj_;  // If HAS_ARGS_OBJ, the arguments object.
 
   // We need to split the Value into 2 fields of 32 bits, otherwise the C++
@@ -69,12 +73,11 @@ class BaselineFrame {
   uint32_t flags_;
 #ifdef DEBUG
   // Size of the frame. Stored in DEBUG builds when calling into C++. This is
-  // the saved frame pointer (FramePointerOffset) + BaselineFrame::Size() + the
-  // size of the local and expression stack Values.
+  // BaselineFrame::Size() + the size of the local and expression stack Values.
   //
   // We don't store this in release builds because it's redundant with the frame
-  // size stored in the frame descriptor (frame iterators can compute this value
-  // from the descriptor). In debug builds it's still useful for assertions.
+  // size computed from the frame pointers. In debug builds it's still useful
+  // for assertions.
   uint32_t debugFrameSize_;
 #else
   uint32_t unused_;
@@ -83,11 +86,7 @@ class BaselineFrame {
   uint32_t hiReturnValue_;
 
  public:
-  // Distance between the frame pointer and the frame header (return address).
-  // This is the old frame pointer saved in the prologue.
-  static const uint32_t FramePointerOffset = sizeof(void*);
-
-  MOZ_MUST_USE bool initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
+  [[nodiscard]] bool initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
 
 #ifdef DEBUG
   uint32_t debugFrameSize() const { return debugFrameSize_; }
@@ -96,7 +95,6 @@ class BaselineFrame {
 
   JSObject* environmentChain() const { return envChain_; }
   void setEnvironmentChain(JSObject* envChain) { envChain_ = envChain; }
-  inline JSObject** addressOfEnvironmentChain() { return &envChain_; }
 
   template <typename SpecificEnvironment>
   inline void pushOnEnvironmentChain(SpecificEnvironment& env);
@@ -104,30 +102,38 @@ class BaselineFrame {
   inline void popOffEnvironmentChain();
   inline void replaceInnermostEnvironment(EnvironmentObject& env);
 
-  CalleeToken calleeToken() const {
-    uint8_t* pointer = (uint8_t*)this + Size() + offsetOfCalleeToken();
-    return *(CalleeToken*)pointer;
-  }
+  CalleeToken calleeToken() const { return framePrefix()->calleeToken(); }
   void replaceCalleeToken(CalleeToken token) {
-    uint8_t* pointer = (uint8_t*)this + Size() + offsetOfCalleeToken();
-    *(CalleeToken*)pointer = token;
+    framePrefix()->replaceCalleeToken(token);
   }
   bool isConstructing() const {
     return CalleeTokenIsConstructing(calleeToken());
   }
-  JSScript* script() const { return ScriptFromCalleeToken(calleeToken()); }
+  JSScript* script() const {
+    return MaybeForwardedScriptFromCalleeToken(calleeToken());
+  }
   JSFunction* callee() const { return CalleeTokenToFunction(calleeToken()); }
   Value calleev() const { return ObjectValue(*callee()); }
 
   size_t numValueSlots(size_t frameSize) const {
     MOZ_ASSERT(frameSize == debugFrameSize());
 
-    MOZ_ASSERT(frameSize >=
-               BaselineFrame::FramePointerOffset + BaselineFrame::Size());
-    frameSize -= BaselineFrame::FramePointerOffset + BaselineFrame::Size();
+    MOZ_ASSERT(frameSize >= BaselineFrame::Size());
+    frameSize -= BaselineFrame::Size();
 
     MOZ_ASSERT((frameSize % sizeof(Value)) == 0);
     return frameSize / sizeof(Value);
+  }
+
+  Value newTarget() const {
+    MOZ_ASSERT(isFunctionFrame());
+    MOZ_ASSERT(!callee()->isArrow());
+
+    if (isConstructing()) {
+      unsigned pushedArgs = std::max(numFormalArgs(), numActualArgs());
+      return argv()[pushedArgs];
+    }
+    return UndefinedValue();
   }
 
 #ifdef DEBUG
@@ -135,19 +141,25 @@ class BaselineFrame {
 #endif
 
   Value* valueSlot(size_t slot) const {
+#ifndef ENABLE_PORTABLE_BASELINE_INTERP
+    // Assert that we're within the frame, but only if the "debug
+    // frame size" has been set. Ordinarily if we are in C++ code
+    // looking upward at a baseline frame, it will be, because it is
+    // set for the *previous* frame when we push an exit frame and
+    // call back into C++ from generated baseline code. However, the
+    // portable baseline interpreter uses accessors on BaselineFrame
+    // directly within the active frame and so the "debug frame size"
+    // hasn't been set (and it would be expensive to constantly update
+    // it). Because this is only used for assertions, and is not
+    // needed for correctness, we can disable this check below when
+    // PBL is enabled.
     MOZ_ASSERT(slot < debugNumValueSlots());
+#endif
     return (Value*)this - (slot + 1);
   }
 
-  Value topStackValue(uint32_t frameSize) const {
-    size_t numSlots = numValueSlots(frameSize);
-    MOZ_ASSERT(numSlots > 0);
-    return *valueSlot(numSlots - 1);
-  }
-
   static size_t frameSizeForNumValueSlots(size_t numValueSlots) {
-    return BaselineFrame::FramePointerOffset + BaselineFrame::Size() +
-           numValueSlots * sizeof(Value);
+    return BaselineFrame::Size() + numValueSlots * sizeof(Value);
   }
 
   Value& unaliasedFormal(
@@ -172,78 +184,43 @@ class BaselineFrame {
     return *valueSlot(i);
   }
 
-  unsigned numActualArgs() const {
-    return *(size_t*)(reinterpret_cast<const uint8_t*>(this) +
-                      BaselineFrame::Size() + offsetOfNumActualArgs());
-  }
+  unsigned numActualArgs() const { return framePrefix()->numActualArgs(); }
   unsigned numFormalArgs() const { return script()->function()->nargs(); }
   Value& thisArgument() const {
     MOZ_ASSERT(isFunctionFrame());
-    return *(Value*)(reinterpret_cast<const uint8_t*>(this) +
-                     BaselineFrame::Size() + offsetOfThis());
+    return framePrefix()->thisv();
   }
-  Value* argv() const {
-    return (Value*)(reinterpret_cast<const uint8_t*>(this) +
-                    BaselineFrame::Size() + offsetOfArg(0));
-  }
+  Value* argv() const { return framePrefix()->actualArgs(); }
 
- private:
-  Value* evalNewTargetAddress() const {
-    MOZ_ASSERT(isEvalFrame());
-    MOZ_ASSERT(script()->isDirectEvalInFunction());
-    return (Value*)(reinterpret_cast<const uint8_t*>(this) +
-                    BaselineFrame::Size() + offsetOfEvalNewTarget());
-  }
+  [[nodiscard]] bool saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                        ArrayObject* dest) const;
 
  public:
-  Value newTarget() const {
-    if (isEvalFrame()) {
-      return *evalNewTargetAddress();
-    }
-    MOZ_ASSERT(isFunctionFrame());
-    if (callee()->isArrow()) {
-      return callee()->getExtendedSlot(FunctionExtended::ARROW_NEWTARGET_SLOT);
-    }
-    if (isConstructing()) {
-      return *(Value*)(reinterpret_cast<const uint8_t*>(this) +
-                       BaselineFrame::Size() +
-                       offsetOfArg(std::max(numFormalArgs(), numActualArgs())));
-    }
-    return UndefinedValue();
-  }
-
   void prepareForBaselineInterpreterToJitOSR() {
     // Clearing the RUNNING_IN_INTERPRETER flag is sufficient, but we also null
     // out the interpreter fields to ensure we don't use stale values.
     flags_ &= ~RUNNING_IN_INTERPRETER;
     interpreterScript_ = nullptr;
     interpreterPC_ = nullptr;
-    interpreterICEntry_ = nullptr;
   }
 
-  void initInterpFieldsForGeneratorThrowOrReturn(JSScript* script,
-                                                 jsbytecode* pc) {
-    // Note: we can initialize interpreterICEntry_ to nullptr because it won't
-    // be used anyway (we are going to enter the exception handler).
-    flags_ |= RUNNING_IN_INTERPRETER;
-    interpreterScript_ = script;
-    interpreterPC_ = pc;
-    interpreterICEntry_ = nullptr;
-  }
+ private:
+  bool uninlineIsProfilerSamplingEnabled(JSContext* cx);
 
+ public:
   // Switch a JIT frame on the stack to Interpreter mode. The caller is
   // responsible for patching the return address into this frame to a location
   // in the interpreter code. Also assert profiler sampling has been suppressed
   // so the sampler thread doesn't see an inconsistent state while we are
   // patching frames.
   void switchFromJitToInterpreter(JSContext* cx, jsbytecode* pc) {
-    MOZ_ASSERT(!cx->isProfilerSamplingEnabled());
+    MOZ_ASSERT(!uninlineIsProfilerSamplingEnabled(cx));
     MOZ_ASSERT(!runningInInterpreter());
     flags_ |= RUNNING_IN_INTERPRETER;
     setInterpreterFields(pc);
   }
   void switchFromJitToInterpreterAtPrologue(JSContext* cx) {
-    MOZ_ASSERT(!cx->isProfilerSamplingEnabled());
+    MOZ_ASSERT(!uninlineIsProfilerSamplingEnabled(cx));
     MOZ_ASSERT(!runningInInterpreter());
     flags_ |= RUNNING_IN_INTERPRETER;
     setInterpreterFieldsForPrologue(script());
@@ -255,7 +232,7 @@ class BaselineFrame {
   // pc anyway so we can avoid the overhead.
   void switchFromJitToInterpreterForExceptionHandler(JSContext* cx,
                                                      jsbytecode* pc) {
-    MOZ_ASSERT(!cx->isProfilerSamplingEnabled());
+    MOZ_ASSERT(!uninlineIsProfilerSamplingEnabled(cx));
     MOZ_ASSERT(!runningInInterpreter());
     flags_ |= RUNNING_IN_INTERPRETER;
     interpreterScript_ = script();
@@ -274,6 +251,19 @@ class BaselineFrame {
     MOZ_ASSERT(runningInInterpreter());
     return interpreterPC_;
   }
+  jsbytecode*& interpreterPC() {
+    MOZ_ASSERT(runningInInterpreter());
+    return interpreterPC_;
+  }
+
+  ICEntry* interpreterICEntry() const {
+    MOZ_ASSERT(runningInInterpreter());
+    return interpreterICEntry_;
+  }
+  ICEntry*& interpreterICEntry() {
+    MOZ_ASSERT(runningInInterpreter());
+    return interpreterICEntry_;
+  }
 
   void setInterpreterFields(JSScript* script, jsbytecode* pc);
 
@@ -284,6 +274,12 @@ class BaselineFrame {
   // Initialize interpreter fields for resuming in the prologue (before the
   // argument type check ICs).
   void setInterpreterFieldsForPrologue(JSScript* script);
+
+  ICScript* icScript() const { return icScript_; }
+  void setICScript(ICScript* icScript) { icScript_ = icScript; }
+
+  // The script that owns the current ICScript.
+  JSScript* outerScript() const;
 
   bool hasReturnValue() const { return flags_ & HAS_RVAL; }
   MutableHandleValue returnValue() {
@@ -304,16 +300,22 @@ class BaselineFrame {
 
   inline CallObject& callObj() const;
 
+  void setFlag(uint32_t flag) { flags_ |= flag; }
   void setFlags(uint32_t flags) { flags_ = flags; }
-  uint32_t* addressOfFlags() { return &flags_; }
 
-  inline MOZ_MUST_USE bool pushLexicalEnvironment(JSContext* cx,
-                                                  Handle<LexicalScope*> scope);
-  inline MOZ_MUST_USE bool freshenLexicalEnvironment(JSContext* cx);
-  inline MOZ_MUST_USE bool recreateLexicalEnvironment(JSContext* cx);
+  [[nodiscard]] inline bool pushLexicalEnvironment(JSContext* cx,
+                                                   Handle<LexicalScope*> scope);
+  template <bool IsDebuggee>
+  [[nodiscard]] inline bool freshenLexicalEnvironment(
+      JSContext* cx, const jsbytecode* pc = nullptr);
+  template <bool IsDebuggee>
+  [[nodiscard]] inline bool recreateLexicalEnvironment(
+      JSContext* cx, const jsbytecode* pc = nullptr);
 
-  MOZ_MUST_USE bool initFunctionEnvironmentObjects(JSContext* cx);
-  MOZ_MUST_USE bool pushVarEnvironment(JSContext* cx, HandleScope scope);
+  [[nodiscard]] bool initFunctionEnvironmentObjects(JSContext* cx);
+  [[nodiscard]] bool pushClassBodyEnvironment(JSContext* cx,
+                                              Handle<ClassBodyScope*> scope);
+  [[nodiscard]] bool pushVarEnvironment(JSContext* cx, Handle<Scope*> scope);
 
   void initArgsObjUnchecked(ArgumentsObject& argsobj) {
     flags_ |= HAS_ARGS_OBJ;
@@ -343,33 +345,16 @@ class BaselineFrame {
   bool isGlobalFrame() const { return script()->isGlobalCode(); }
   bool isModuleFrame() const { return script()->isModule(); }
   bool isEvalFrame() const { return script()->isForEval(); }
-  bool isFunctionFrame() const { return CalleeTokenIsFunction(calleeToken()); }
+  bool isFunctionFrame() const {
+    return CalleeTokenIsFunction(calleeToken()) && !isModuleFrame();
+  }
   bool isDebuggerEvalFrame() const { return false; }
 
   JitFrameLayout* framePrefix() const {
-    uint8_t* fp = (uint8_t*)this + Size() + FramePointerOffset;
+    uint8_t* fp = (uint8_t*)this + Size();
     return (JitFrameLayout*)fp;
   }
 
-  // Methods below are used by the compiler.
-  static size_t offsetOfCalleeToken() {
-    return FramePointerOffset + js::jit::JitFrameLayout::offsetOfCalleeToken();
-  }
-  static size_t offsetOfThis() {
-    return FramePointerOffset + js::jit::JitFrameLayout::offsetOfThis();
-  }
-  static size_t offsetOfEvalNewTarget() {
-    return FramePointerOffset +
-           js::jit::JitFrameLayout::offsetOfEvalNewTarget();
-  }
-  static size_t offsetOfArg(size_t index) {
-    return FramePointerOffset +
-           js::jit::JitFrameLayout::offsetOfActualArg(index);
-  }
-  static size_t offsetOfNumActualArgs() {
-    return FramePointerOffset +
-           js::jit::JitFrameLayout::offsetOfNumActualArgs();
-  }
   static size_t Size() { return sizeof(BaselineFrame); }
 
   // The reverseOffsetOf methods below compute the offset relative to the
@@ -415,15 +400,16 @@ class BaselineFrame {
   static int reverseOffsetOfInterpreterICEntry() {
     return -int(Size()) + offsetof(BaselineFrame, interpreterICEntry_);
   }
+  static int reverseOffsetOfICScript() {
+    return -int(Size()) + offsetof(BaselineFrame, icScript_);
+  }
   static int reverseOffsetOfLocal(size_t index) {
     return -int(Size()) - (index + 1) * sizeof(Value);
   }
 };
 
 // Ensure the frame is 8-byte aligned (required on ARM).
-static_assert(((sizeof(BaselineFrame) + BaselineFrame::FramePointerOffset) %
-               8) == 0,
-              "frame (including frame pointer) must be 8-byte aligned");
+static_assert((sizeof(BaselineFrame) % 8) == 0, "frame must be 8-byte aligned");
 
 }  // namespace jit
 }  // namespace js

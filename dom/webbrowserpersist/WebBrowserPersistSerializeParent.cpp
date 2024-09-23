@@ -50,7 +50,7 @@ mozilla::ipc::IPCResult WebBrowserPersistSerializeParent::RecvWriteData(
 }
 
 mozilla::ipc::IPCResult WebBrowserPersistSerializeParent::Recv__delete__(
-    const nsCString& aContentType, const nsresult& aStatus) {
+    const nsACString& aContentType, const nsresult& aStatus) {
   if (NS_SUCCEEDED(mOutputError)) {
     mOutputError = aStatus;
   }
@@ -69,7 +69,7 @@ void WebBrowserPersistSerializeParent::ActorDestroy(ActorDestroyReason aWhy) {
                           nsCOMPtr<nsIOutputStream>, nsCString, nsresult>(
             "nsIWebBrowserPersistWriteCompletion::OnFinish", mFinish,
             &nsIWebBrowserPersistWriteCompletion::OnFinish, mDocument, mStream,
-            EmptyCString(), NS_ERROR_FAILURE);
+            ""_ns, NS_ERROR_FAILURE);
     NS_DispatchToCurrentThread(errorLater);
     mFinish = nullptr;
   }

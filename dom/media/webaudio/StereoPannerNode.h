@@ -9,10 +9,10 @@
 
 #include "AudioNode.h"
 #include "nsPrintfCString.h"
+#include "mozilla/RefCounted.h"
 #include "mozilla/dom/StereoPannerNodeBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AudioContext;
 struct StereoPannerOptions;
@@ -69,7 +69,6 @@ class StereoPannerNode final : public AudioNode {
   RefPtr<AudioParam> mPan;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

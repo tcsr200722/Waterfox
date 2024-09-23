@@ -6,41 +6,39 @@
 // Check that when the viewport is resized, the computed-view refreshes.
 
 const TEST_URI =
-  "data:text/html;charset=utf-8,<html><style>" +
-  "div {" +
-  "  width: 500px;" +
-  "  height: 10px;" +
-  "  background: purple;" +
-  "} " +
-  "@media screen and (max-width: 200px) {" +
-  "  div { " +
-  "    width: 100px;" +
-  "  }" +
-  "};" +
-  "</style><div></div></html>";
+  "data:text/html;charset=utf-8," +
+  `
+  <meta name="viewport" content="width=device-width">
+  <style>
+  div {
+    width: 500px;
+    height: 10px;
+    background: purple;
+  }
+  @media screen and (max-width: 200px) {
+    div {
+      width: 100px;
+    }
+  };
+  </style><div></div></html>
+`;
 
-addRDMTask(
-  TEST_URI,
-  async function({ ui, manager }) {
-    info(
-      "Open the responsive design mode and set its size to 500x500 to start"
-    );
-    await setViewportSize(ui, manager, 500, 500);
+addRDMTask(TEST_URI, async function ({ ui, manager }) {
+  info("Open the responsive design mode and set its size to 500x500 to start");
+  await setViewportSize(ui, manager, 500, 500);
 
-    info("Open the inspector, computed-view and select the test node");
-    const { inspector, view } = await openComputedView();
-    await selectNode("div", inspector);
+  info("Open the inspector, computed-view and select the test node");
+  const { inspector, view } = await openComputedView();
+  await selectNode("div", inspector);
 
-    info("Try shrinking the viewport and checking the applied styles");
-    await testShrink(view, inspector, ui, manager);
+  info("Try shrinking the viewport and checking the applied styles");
+  await testShrink(view, inspector, ui, manager);
 
-    info("Try growing the viewport and checking the applied styles");
-    await testGrow(view, inspector, ui, manager);
+  info("Try growing the viewport and checking the applied styles");
+  await testGrow(view, inspector, ui, manager);
 
-    await closeToolbox();
-  },
-  { usingBrowserUI: true }
-);
+  await closeToolbox();
+});
 
 async function testShrink(computedView, inspector, ui, manager) {
   is(computedWidth(computedView), "500px", "Should show 500px initially.");

@@ -94,6 +94,10 @@ FileDescriptorFile::GetNativeLeafName(nsACString& aLeafName) {
   return mFile->GetNativeLeafName(aLeafName);
 }
 
+NS_IMETHODIMP FileDescriptorFile::GetDisplayName(nsAString& aLeafName) {
+  return mFile->GetDisplayName(aLeafName);
+}
+
 nsresult FileDescriptorFile::GetTarget(nsAString& aRetVal) {
   return mFile->GetTarget(aRetVal);
 }
@@ -146,7 +150,8 @@ NS_IMETHODIMP
 FileDescriptorFile::Normalize() { return NS_ERROR_NOT_IMPLEMENTED; }
 
 NS_IMETHODIMP
-FileDescriptorFile::Create(uint32_t aType, uint32_t aPermissions) {
+FileDescriptorFile::Create(uint32_t aType, uint32_t aPermissions,
+                           bool aSkipAncestors) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -245,6 +250,18 @@ FileDescriptorFile::MoveToNative(nsIFile* aNewParent,
 }
 
 NS_IMETHODIMP
+FileDescriptorFile::MoveToFollowingLinks(nsIFile* aNewParent,
+                                         const nsAString& aNewName) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::MoveToFollowingLinksNative(nsIFile* aNewParent,
+                                               const nsACString& aNewName) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 FileDescriptorFile::RenameTo(nsIFile* aNewParentDir,
                              const nsAString& aNewName) {
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -257,7 +274,9 @@ FileDescriptorFile::RenameToNative(nsIFile* aNewParentDir,
 }
 
 NS_IMETHODIMP
-FileDescriptorFile::Remove(bool aRecursive) { return NS_ERROR_NOT_IMPLEMENTED; }
+FileDescriptorFile::Remove(bool aRecursive, uint32_t* aRemoveCount) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 NS_IMETHODIMP
 FileDescriptorFile::GetPermissions(uint32_t* aPermissions) {
@@ -280,6 +299,26 @@ FileDescriptorFile::SetPermissionsOfLink(uint32_t aPermissions) {
 }
 
 NS_IMETHODIMP
+FileDescriptorFile::GetLastAccessedTime(PRTime* aLastAccessedTime) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::SetLastAccessedTime(PRTime aLastAccessedTime) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::GetLastAccessedTimeOfLink(PRTime* aLastAccessedTime) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::SetLastAccessedTimeOfLink(PRTime aLastAccessedTime) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 FileDescriptorFile::GetLastModifiedTime(PRTime* aLastModTime) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -296,6 +335,16 @@ FileDescriptorFile::GetLastModifiedTimeOfLink(PRTime* aLastModTimeOfLink) {
 
 NS_IMETHODIMP
 FileDescriptorFile::SetLastModifiedTimeOfLink(PRTime aLastModTimeOfLink) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::GetCreationTime(PRTime* aCreationTime) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::GetCreationTimeOfLink(PRTime* aCreationTime) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -375,6 +424,11 @@ FileDescriptorFile::Load(PRLibrary** aRetVal) {
 
 NS_IMETHODIMP
 FileDescriptorFile::GetDiskSpaceAvailable(int64_t* aDiskSpaceAvailable) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+FileDescriptorFile::GetDiskCapacity(int64_t* aDiskCapacity) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

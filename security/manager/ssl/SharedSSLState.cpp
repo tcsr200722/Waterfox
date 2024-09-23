@@ -8,6 +8,8 @@
 #include "nsClientAuthRemember.h"
 #include "nsComponentManagerUtils.h"
 #include "nsICertOverrideService.h"
+#include "mozilla/OriginAttributes.h"
+#include "nsNSSComponent.h"
 #include "nsIObserverService.h"
 #include "mozilla/Services.h"
 #include "nsThreadUtils.h"
@@ -44,8 +46,8 @@ class MainThreadClearer : public SyncRunnableBase {
       nsCOMPtr<nsICertOverrideService> icos =
           do_GetService(NS_CERTOVERRIDE_CONTRACTID);
       if (icos) {
-        icos->ClearValidityOverride(
-            NS_LITERAL_CSTRING("all:temporary-certificates"), 0);
+        icos->ClearValidityOverride("all:temporary-certificates"_ns, 0,
+                                    OriginAttributes());
       }
     }
 

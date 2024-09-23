@@ -6,22 +6,24 @@
 #if !defined(VPXDecoder_h_)
 #  define VPXDecoder_h_
 
+#  include <stdint.h>
+#  include <vpx/vp8dx.h>
+#  include <vpx/vpx_codec.h>
+#  include <vpx/vpx_decoder.h>
+
 #  include "PlatformDecoderModule.h"
 #  include "mozilla/Span.h"
-
-#  include <stdint.h>
 #  include "mozilla/gfx/Types.h"
-#  include "vpx/vp8dx.h"
-#  include "vpx/vpx_codec.h"
-#  include "vpx/vpx_decoder.h"
 
 namespace mozilla {
 
 DDLoggedTypeDeclNameAndBase(VPXDecoder, MediaDataDecoder);
 
-class VPXDecoder : public MediaDataDecoder,
-                   public DecoderDoctorLifeLogger<VPXDecoder> {
+class VPXDecoder final : public MediaDataDecoder,
+                         public DecoderDoctorLifeLogger<VPXDecoder> {
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VPXDecoder, final);
+
   explicit VPXDecoder(const CreateDecoderParams& aParams);
 
   RefPtr<InitPromise> Init() override;
@@ -30,8 +32,9 @@ class VPXDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("libvpx video decoder");
+    return "libvpx video decoder"_ns;
   }
+  nsCString GetCodecName() const override;
 
   enum Codec : uint8_t {
     VP8 = 1 << 0,
@@ -61,6 +64,7 @@ class VPXDecoder : public MediaDataDecoder,
 
   struct VPXStreamInfo {
     gfx::IntSize mImage;
+    bool mDisplayAndImageDifferent = false;
     gfx::IntSize mDisplay;
     bool mKeyFrame = false;
 
@@ -90,7 +94,38 @@ class VPXDecoder : public MediaDataDecoder,
         case 5:
           return gfx::YUVColorSpace::BT2020;
         default:
-          return gfx::YUVColorSpace::UNKNOWN;
+          return gfx::YUVColorSpace::Default;
+      }
+    }
+
+    uint8_t mColorPrimaries = gfx::CICP::ColourPrimaries::CP_UNSPECIFIED;
+    gfx::ColorSpace2 ColorPrimaries() const {
+      switch (mColorPrimaries) {
+        case gfx::CICP::ColourPrimaries::CP_BT709:
+          return gfx::ColorSpace2::BT709;
+        case gfx::CICP::ColourPrimaries::CP_UNSPECIFIED:
+          return gfx::ColorSpace2::BT709;
+        case gfx::CICP::ColourPrimaries::CP_BT2020:
+          return gfx::ColorSpace2::BT2020;
+        default:
+          return gfx::ColorSpace2::BT709;
+      }
+    }
+
+    uint8_t mTransferFunction =
+        gfx::CICP::TransferCharacteristics::TC_UNSPECIFIED;
+    gfx::TransferFunction TransferFunction() const {
+      switch (mTransferFunction) {
+        case gfx::CICP::TransferCharacteristics::TC_BT709:
+          return gfx::TransferFunction::BT709;
+        case gfx::CICP::TransferCharacteristics::TC_SRGB:
+          return gfx::TransferFunction::SRGB;
+        case gfx::CICP::TransferCharacteristics::TC_SMPTE2084:
+          return gfx::TransferFunction::PQ;
+        case gfx::CICP::TransferCharacteristics::TC_HLG:
+          return gfx::TransferFunction::HLG;
+        default:
+          return gfx::TransferFunction::BT709;
       }
     }
 
@@ -138,6 +173,14 @@ class VPXDecoder : public MediaDataDecoder,
   static bool GetStreamInfo(Span<const uint8_t> aBuffer, VPXStreamInfo& aInfo,
                             Codec aCodec);
 
+  static void GetVPCCBox(MediaByteBuffer* aDestBox, const VPXStreamInfo& aInfo);
+  // Set extradata for a VP8/VP9 track, returning false if the codec was
+  // invalid.
+  static bool SetVideoInfo(VideoInfo* aDestInfo, const nsAString& aCodec);
+
+  static void SetChroma(VPXStreamInfo& aDestInfo, uint8_t chroma);
+  static void ReadVPCCBox(VPXStreamInfo& aDestInfo, MediaByteBuffer* aBox);
+
  private:
   ~VPXDecoder();
   RefPtr<DecodePromise> ProcessDecode(MediaRawData* aSample);
@@ -153,10 +196,11 @@ class VPXDecoder : public MediaDataDecoder,
   // VPx alpha decoder state
   vpx_codec_ctx_t mVPXAlpha;
 
-  const VideoInfo& mInfo;
+  const VideoInfo mInfo;
 
   const Codec mCodec;
   const bool mLowLatency;
+  const Maybe<TrackingId> mTrackingId;
 };
 
 }  // namespace mozilla

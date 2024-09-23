@@ -34,16 +34,12 @@ add_task(async function test_add_interesting_window() {
   // Send a message that will cause the content to change its location
   // to someplace more interesting. We've disabled auto updates from
   // the browser, so the parent won't know about this
-  await SpecialPowers.spawn(browser, [PAGE], async function(newPage) {
+  await SpecialPowers.spawn(browser, [PAGE], async function (newPage) {
     content.location = newPage;
   });
 
-  if (Services.prefs.getBoolPref("fission.sessionHistoryInParent", false)) {
-    let tab = newWin.gBrowser.selectedTab;
-    await promiseOnHistoryReplaceEntry(tab);
-  } else {
-    await promiseOnHistoryReplaceEntryInChild(browser);
-  }
+  await promiseOnHistoryReplaceEntry(browser);
+
   // Clear out the userTypedValue so that the new window looks like
   // it's really not worth restoring.
   browser.userTypedValue = null;
@@ -110,20 +106,20 @@ add_task(async function test_remove_uninteresting_window() {
   // site.
   let tab = newWin.gBrowser.selectedTab;
   let browser = tab.linkedBrowser;
-  BrowserTestUtils.loadURI(browser, PAGE);
+  BrowserTestUtils.startLoadingURIString(browser, PAGE);
 
   await BrowserTestUtils.browserLoaded(browser, false, PAGE);
   await TabStateFlusher.flush(browser);
 
   // Send a message that will cause the content to purge its
   // history entries and make itself seem uninteresting.
-  await SpecialPowers.spawn(browser, [], async function() {
+  await SpecialPowers.spawn(browser, [], async function () {
     // Epic hackery to make this browser seem suddenly boring.
-    docShell.setCurrentURI(Services.io.newURI("about:blank"));
-
-    let { sessionHistory } = docShell.QueryInterface(Ci.nsIWebNavigation);
-    sessionHistory.legacySHistory.PurgeHistory(sessionHistory.count);
+    docShell.setCurrentURIForSessionStore(Services.io.newURI("about:blank"));
   });
+
+  let { sessionHistory } = browser.browsingContext;
+  sessionHistory.purgeHistory(sessionHistory.count);
 
   // Once this windowClosed Promise resolves, we should have finished
   // the flush and revisited our decision to put this window into
@@ -175,7 +171,7 @@ add_task(async function test_synchronously_remove_window_state() {
   // interesting.
   let newWin = await BrowserTestUtils.openNewBrowserWindow();
   let browser = newWin.gBrowser.selectedBrowser;
-  BrowserTestUtils.loadURI(browser, PAGE);
+  BrowserTestUtils.startLoadingURIString(browser, PAGE);
   await BrowserTestUtils.browserLoaded(browser, false, PAGE);
   await TabStateFlusher.flush(browser);
 

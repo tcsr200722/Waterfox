@@ -35,9 +35,16 @@ class JsWindowActorTransport {
     this._addListener();
   }
 
-  close() {
+  /**
+   * @param {object} options
+   * @param {boolean} options.isModeSwitching
+   *        true when this is called as the result of a change to the devtools.browsertoolbox.scope pref
+   */
+  close(options) {
     this._removeListener();
-    this.hooks.onClosed();
+    if (this.hooks.onTransportClosed) {
+      this.hooks.onTransportClosed(null, options);
+    }
   }
 
   _onPacketReceived(eventName, { data }) {
@@ -53,10 +60,6 @@ class JsWindowActorTransport {
 
   startBulkSend() {
     throw new Error("startBulkSend not implemented for JsWindowActorTransport");
-  }
-
-  swapBrowser(jsWindowActor) {
-    throw new Error("swapBrowser not implemented for JsWindowActorTransport");
   }
 }
 

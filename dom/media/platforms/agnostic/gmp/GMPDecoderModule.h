@@ -21,13 +21,16 @@
 // (because NodeIds are random strings which can't contain the '-' character),
 // so there's no way a malicious GMP can harvest, store, and then report any
 // privacy sensitive data about what users are watching.
-#  define SHARED_GMP_DECODING_NODE_ID NS_LITERAL_CSTRING("gmp-shared-decoding")
+#  define SHARED_GMP_DECODING_NODE_ID "gmp-shared-decoding"_ns
 
 namespace mozilla {
 
 class GMPDecoderModule : public PlatformDecoderModule {
+  template <typename T, typename... Args>
+  friend already_AddRefed<T> MakeAndAddRef(Args&&...);
+
  public:
-  GMPDecoderModule();
+  static already_AddRefed<PlatformDecoderModule> Create();
 
   // Decode thread.
   already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
@@ -37,14 +40,17 @@ class GMPDecoderModule : public PlatformDecoderModule {
   already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
       const CreateDecoderParams& aParams) override;
 
-  bool SupportsMimeType(const nsACString& aMimeType,
-                        DecoderDoctorDiagnostics* aDiagnostics) const override;
+  media::DecodeSupportSet SupportsMimeType(
+      const nsACString& aMimeType,
+      DecoderDoctorDiagnostics* aDiagnostics) const override;
 
-  static bool SupportsMimeType(const nsACString& aMimeType,
-                               const Maybe<nsCString>& aGMP);
+  static media::DecodeSupportSet SupportsMimeType(
+      const nsACString& aMimeType, const nsACString& aApi,
+      const Maybe<nsCString>& aKeySystem);
 
  private:
-  virtual ~GMPDecoderModule();
+  GMPDecoderModule() = default;
+  virtual ~GMPDecoderModule() = default;
 };
 
 }  // namespace mozilla

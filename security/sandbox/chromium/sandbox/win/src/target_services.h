@@ -14,8 +14,6 @@ namespace sandbox {
 class ProcessState {
  public:
   ProcessState();
-  // Returns true if kernel32.dll has been loaded.
-  bool IsKernel32Loaded() const;
   // Returns true if main has been called.
   bool InitCalled() const;
   // Returns true if LowerToken has been called.
@@ -23,13 +21,14 @@ class ProcessState {
   // Returns true if Csrss is connected.
   bool IsCsrssConnected() const;
   // Set the current state.
-  void SetKernel32Loaded();
   void SetInitCalled();
   void SetRevertedToSelf();
   void SetCsrssConnected(bool csrss_connected);
 
  private:
-  int process_state_;
+  enum class ProcessStateInternal { NONE = 0, INIT_CALLED, REVERTED_TO_SELF };
+
+  ProcessStateInternal process_state_;
   bool csrss_connected_;
   DISALLOW_COPY_AND_ASSIGN(ProcessState);
 };
@@ -46,11 +45,8 @@ class TargetServicesBase : public TargetServices {
   ResultCode Init() override;
   void LowerToken() override;
   ProcessState* GetState() override;
-  ResultCode DuplicateHandle(HANDLE source_handle,
-                             DWORD target_process_id,
-                             HANDLE* target_handle,
-                             DWORD desired_access,
-                             DWORD options) override;
+  ResultCode GetComplexLineBreaks(const WCHAR* text, uint32_t length,
+                                  uint8_t* break_before) final;
 
   // Factory method.
   static TargetServicesBase* GetInstance();

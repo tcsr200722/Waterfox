@@ -3,22 +3,19 @@
 
 "use strict";
 
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function() {
+    async function () {
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus,
         value: "a",
       });
 
       // Since the current tab is blank the preferences pane will load there
       let loaded = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
       await UrlbarTestUtils.promisePopupClose(window, () => {
-        let button = document.getElementById(
-          "urlbar-anon-search-settings-compact"
-        );
+        let button = document.getElementById("urlbar-anon-search-settings");
         EventUtils.synthesizeMouseAtCenter(button, {});
       });
       await loaded;

@@ -1,22 +1,24 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use crate::logging;
-use base64;
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
 use hyper::Method;
 use serde::de::{self, Deserialize, Deserializer};
-use serde_json::{self, Value};
+use serde_json::Value;
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
 use uuid::Uuid;
 use webdriver::command::{WebDriverCommand, WebDriverExtensionCommand};
-use webdriver::common::WebElement;
-use webdriver::error::{ErrorStatus, WebDriverError, WebDriverResult};
+use webdriver::error::WebDriverResult;
 use webdriver::httpapi::WebDriverExtensionRoute;
 use webdriver::Parameters;
 
-pub const CHROME_ELEMENT_KEY: &str = "chromeelement-9fc5-4b51-a3c8-01716eedeb04";
-
 pub fn extension_routes() -> Vec<(Method, &'static str, GeckoExtensionRoute)> {
-    return vec![
+    vec![
         (
             Method::GET,
             "/session/{sessionId}/moz/context",
@@ -26,16 +28,6 @@ pub fn extension_routes() -> Vec<(Method, &'static str, GeckoExtensionRoute)> {
             Method::POST,
             "/session/{sessionId}/moz/context",
             GeckoExtensionRoute::SetContext,
-        ),
-        (
-            Method::POST,
-            "/session/{sessionId}/moz/xbl/{elementId}/anonymous_children",
-            GeckoExtensionRoute::XblAnonymousChildren,
-        ),
-        (
-            Method::POST,
-            "/session/{sessionId}/moz/xbl/{elementId}/anonymous_by_attribute",
-            GeckoExtensionRoute::XblAnonymousByAttribute,
         ),
         (
             Method::POST,
@@ -52,15 +44,13 @@ pub fn extension_routes() -> Vec<(Method, &'static str, GeckoExtensionRoute)> {
             "/session/{sessionId}/moz/screenshot/full",
             GeckoExtensionRoute::TakeFullScreenshot,
         ),
-    ];
+    ]
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum GeckoExtensionRoute {
     GetContext,
     SetContext,
-    XblAnonymousChildren,
-    XblAnonymousByAttribute,
     InstallAddon,
     UninstallAddon,
     TakeFullScreenshot,
@@ -71,7 +61,7 @@ impl WebDriverExtensionRoute for GeckoExtensionRoute {
 
     fn command(
         &self,
-        params: &Parameters,
+        _params: &Parameters,
         body_data: &Value,
     ) -> WebDriverResult<WebDriverCommand<GeckoExtensionCommand>> {
         use self::GeckoExtensionRoute::*;
@@ -80,26 +70,6 @@ impl WebDriverExtensionRoute for GeckoExtensionRoute {
             GetContext => GeckoExtensionCommand::GetContext,
             SetContext => {
                 GeckoExtensionCommand::SetContext(serde_json::from_value(body_data.clone())?)
-            }
-            XblAnonymousChildren => {
-                let element_id = try_opt!(
-                    params.get("elementId"),
-                    ErrorStatus::InvalidArgument,
-                    "Missing elementId parameter"
-                );
-                let element = WebElement(element_id.as_str().to_string());
-                GeckoExtensionCommand::XblAnonymousChildren(element)
-            }
-            XblAnonymousByAttribute => {
-                let element_id = try_opt!(
-                    params.get("elementId"),
-                    ErrorStatus::InvalidArgument,
-                    "Missing elementId parameter"
-                );
-                GeckoExtensionCommand::XblAnonymousByAttribute(
-                    WebElement(element_id.as_str().into()),
-                    serde_json::from_value(body_data.clone())?,
-                )
             }
             InstallAddon => {
                 GeckoExtensionCommand::InstallAddon(serde_json::from_value(body_data.clone())?)
@@ -114,12 +84,10 @@ impl WebDriverExtensionRoute for GeckoExtensionRoute {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub enum GeckoExtensionCommand {
     GetContext,
     SetContext(GeckoContextParameters),
-    XblAnonymousChildren(WebElement),
-    XblAnonymousByAttribute(WebElement, XblLocatorParameters),
     InstallAddon(AddonInstallParameters),
     UninstallAddon(AddonUninstallParameters),
     TakeFullScreenshot,
@@ -133,14 +101,12 @@ impl WebDriverExtensionCommand for GeckoExtensionCommand {
             InstallAddon(x) => Some(serde_json::to_value(x).unwrap()),
             SetContext(x) => Some(serde_json::to_value(x).unwrap()),
             UninstallAddon(x) => Some(serde_json::to_value(x).unwrap()),
-            XblAnonymousByAttribute(_, x) => Some(serde_json::to_value(x).unwrap()),
-            XblAnonymousChildren(_) => None,
             TakeFullScreenshot => None,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AddonInstallParameters {
     pub path: String,
     pub temporary: Option<bool>,
@@ -156,21 +122,21 @@ impl<'de> Deserialize<'de> for AddonInstallParameters {
         struct Base64 {
             addon: String,
             temporary: Option<bool>,
-        };
+        }
 
         #[derive(Debug, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Path {
             path: String,
             temporary: Option<bool>,
-        };
+        }
 
         #[derive(Debug, Deserialize)]
         #[serde(untagged)]
         enum Helper {
             Base64(Base64),
             Path(Path),
-        };
+        }
 
         let params = match Helper::deserialize(deserializer)? {
             Helper::Path(ref mut data) => AddonInstallParameters {
@@ -178,7 +144,9 @@ impl<'de> Deserialize<'de> for AddonInstallParameters {
                 temporary: data.temporary,
             },
             Helper::Base64(ref mut data) => {
-                let content = base64::decode(&data.addon).map_err(de::Error::custom)?;
+                let content = BASE64_STANDARD
+                    .decode(&data.addon)
+                    .map_err(de::Error::custom)?;
 
                 let path = env::temp_dir()
                     .as_path()
@@ -204,30 +172,30 @@ impl<'de> Deserialize<'de> for AddonInstallParameters {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddonUninstallParameters {
     pub id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GeckoContext {
     Content,
     Chrome,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeckoContextParameters {
     pub context: GeckoContext,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct XblLocatorParameters {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct LogOptions {
     pub level: Option<logging::Level>,
 }
@@ -371,23 +339,5 @@ mod tests {
         assert!(serde_json::from_value::<P>(json!({})).is_err());
         assert!(serde_json::from_value::<P>(json!({ "context": null })).is_err());
         assert!(serde_json::from_value::<P>(json!({"context": "foo"})).is_err());
-    }
-
-    #[test]
-    fn test_json_xbl_anonymous_by_attribute() {
-        let locator = XblLocatorParameters {
-            name: "foo".to_string(),
-            value: "bar".to_string(),
-        };
-        assert_de(&locator, json!({"name": "foo", "value": "bar"}));
-    }
-
-    #[test]
-    fn test_json_xbl_anonymous_by_attribute_with_name_invalid() {
-        type P = XblLocatorParameters;
-        assert!(serde_json::from_value::<P>(json!({"value": "bar"})).is_err());
-        assert!(serde_json::from_value::<P>(json!({"name": null, "value": "bar"})).is_err());
-        assert!(serde_json::from_value::<P>(json!({"name": "foo"})).is_err());
-        assert!(serde_json::from_value::<P>(json!({"name": "foo", "value": null})).is_err());
     }
 }

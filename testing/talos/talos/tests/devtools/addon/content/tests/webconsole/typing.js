@@ -10,14 +10,15 @@ const {
   runTest,
   testSetup,
   testTeardown,
-} = require("../head");
+  waitForTick,
+} = require("damp-test/tests/head");
 
 const TEST_NAME = "console.typing";
 const LOGS_NUMBER = 500;
 
-module.exports = async function() {
-  const input = "z".repeat(20);
-  await testSetup(`data:text/html,<meta charset=utf8><script>
+module.exports = async function () {
+  const input = "abcdefghijklmnopqrst";
+  await testSetup(`data:text/html,<!DOCTYPE html><meta charset=utf8><script>
     for (let i = 0; i < ${LOGS_NUMBER}; i++) {
       const key = "item" + i;
       console.log(i, key, [i], {key});
@@ -32,9 +33,17 @@ module.exports = async function() {
   const { jsterm } = hud;
 
   // Wait for all the logs to be displayed.
-  await waitFor(
-    () => hud.ui.outputNode.querySelectorAll(".message").length >= LOGS_NUMBER
-  );
+  await waitFor(() => {
+    const messages = Array.from(
+      hud.ui.outputNode.querySelectorAll(".message-body")
+    );
+    return (
+      messages.find(message => message.textContent.includes(`item0`)) &&
+      messages.find(message =>
+        message.textContent.includes(`item${LOGS_NUMBER - 1}`)
+      )
+    );
+  });
 
   jsterm.focus();
 
@@ -42,16 +51,22 @@ module.exports = async function() {
 
   // Simulate typing in the input.
   for (const char of Array.from(input)) {
+    const onPopupOpened = jsterm.autocompletePopup.isOpen
+      ? null
+      : jsterm.autocompletePopup.once("popup-opened");
     const onAutocompleteUpdated = jsterm.once("autocomplete-updated");
     jsterm.insertStringAtCursor(char);
     // We need to trigger autocompletion update to show the popup.
     jsterm.props.autocompleteUpdate();
     await onAutocompleteUpdated;
+    await onPopupOpened;
+    await waitForTick();
   }
 
   test.done();
-
-  const onPopupClosed = jsterm.autocompletePopup.once("popup-closed");
+  const onPopupClosed = jsterm.autocompletePopup.isOpen
+    ? jsterm.autocompletePopup.once("popup-closed")
+    : null;
   jsterm.clearCompletion();
   await onPopupClosed;
 

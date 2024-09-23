@@ -25,6 +25,7 @@ class APZCBasicTester : public APZCTesterBase {
 
  protected:
   virtual void SetUp() {
+    APZCTesterBase::SetUp();
     APZThreadUtils::SetThreadAssertionsEnabled(false);
     APZThreadUtils::SetControllerThread(NS_GetCurrentThread());
 
@@ -35,6 +36,15 @@ class APZCBasicTester : public APZCTesterBase {
         new TestAsyncPanZoomController(LayersId{0}, mcc, tm, mGestureBehavior);
     apzc->SetFrameMetrics(TestFrameMetrics());
     apzc->GetScrollMetadata().SetIsLayersIdRoot(true);
+    // Since we're working with just one APZC, make it the root-content one.
+    // Tests that want to test the behaviour of a non-root-content APZC
+    // generally want to do so in a context where it has a root-content
+    // ancestor, and so would use APZCTreeManagerTester.
+    // Note that some tests overwrite the initial FrameMetrics; such tests
+    // still need to take care that the root-content flag is set on the new
+    // FrameMetrics they set (if they care about root-content behaviours like
+    // zooming).
+    apzc->GetFrameMetrics().SetIsRootContent(true);
   }
 
   /**
@@ -53,11 +63,14 @@ class APZCBasicTester : public APZCTesterBase {
     apzc->Destroy();
     tm->ClearTree();
     tm->ClearContentController();
+
+    APZCTesterBase::TearDown();
   }
 
   void MakeApzcWaitForMainThread() { apzc->SetWaitForMainThread(); }
 
   void MakeApzcZoomable() {
+    MOZ_ASSERT(apzc->GetFrameMetrics().IsRootContent());
     apzc->UpdateZoomConstraints(ZoomConstraints(
         true, true, CSSToParentLayerScale(0.25f), CSSToParentLayerScale(4.0f)));
   }
@@ -67,8 +80,6 @@ class APZCBasicTester : public APZCTesterBase {
                                                 CSSToParentLayerScale(1.0f),
                                                 CSSToParentLayerScale(1.0f)));
   }
-
-  void PanIntoOverscroll();
 
   /**
    * Sample animations once, 1 ms later than the last sample.
@@ -80,37 +91,16 @@ class APZCBasicTester : public APZCTesterBase {
     mcc->AdvanceBy(increment);
     apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
   }
-
   /**
-   * Sample animations until we recover from overscroll.
-   * @param aExpectedScrollOffset the expected reported scroll offset
-   *                              throughout the animation
+   * Sample animations one frame, 17 ms later than the last sample.
    */
-  void SampleAnimationUntilRecoveredFromOverscroll(
-      const ParentLayerPoint& aExpectedScrollOffset) {
-    const TimeDuration increment = TimeDuration::FromMilliseconds(1);
-    bool recoveredFromOverscroll = false;
+  void SampleAnimationOneFrame() {
+    const TimeDuration increment = TimeDuration::FromMilliseconds(17);
     ParentLayerPoint pointOut;
     AsyncTransform viewTransformOut;
-    while (apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut)) {
-      // The reported scroll offset should be the same throughout.
-      EXPECT_EQ(aExpectedScrollOffset, pointOut);
-
-      // Trigger computation of the overscroll tranform, to make sure
-      // no assetions fire during the calculation.
-      apzc->GetOverscrollTransform(AsyncPanZoomController::eForHitTesting);
-
-      if (!apzc->IsOverscrolled()) {
-        recoveredFromOverscroll = true;
-      }
-
-      mcc->AdvanceBy(increment);
-    }
-    EXPECT_TRUE(recoveredFromOverscroll);
-    apzc->AssertStateIsReset();
+    mcc->AdvanceBy(increment);
+    apzc->SampleContentTransformForFrame(&viewTransformOut, pointOut);
   }
-
-  void TestOverscroll();
 
   AsyncPanZoomController::GestureBehavior mGestureBehavior;
   RefPtr<TestAPZCTreeManager> tm;

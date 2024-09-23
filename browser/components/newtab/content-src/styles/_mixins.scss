@@ -1,11 +1,11 @@
 // Shared styling of article images shown as background
 @mixin image-as-background {
-  background-color: var(--newtab-card-placeholder-color);
+  background-color: var(--newtab-element-secondary-color);
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
   border-radius: 4px;
-  box-shadow: inset 0 0 0 0.5px $black-15;
+  box-shadow: $shadow-image-inset;
 }
 
 // Note: lineHeight and fontSize should be unitless but can be derived from pixel values
@@ -47,4 +47,16 @@
   transition: box-shadow 150ms;
   border-radius: 4px;
   outline: none;
+}
+
+// Some wallpapers are light/dark, and may not match the user set contrast,
+// so some text, icons, etc that are displayed over the wallpaper need a contrast fix.
+@mixin wallpaper-contrast-fix {
+  .lightWallpaper & {
+    color-scheme: light;
+  }
+
+  .darkWallpaper & {
+    color-scheme: dark;
+  }
 }

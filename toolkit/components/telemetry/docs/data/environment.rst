@@ -37,7 +37,7 @@ Structure:
       settings: {
         addonCompatibilityCheckEnabled: <bool>, // Whether application compatibility is respected for add-ons
         blocklistEnabled: <bool>, // true on failure
-        isDefaultBrowser: <bool>, // null on failure and until session restore completes, not available on Android
+        isDefaultBrowser: <bool>, // whether Firefox is the default browser. On Windows, this is operationalized as whether Firefox is the default HTTP protocol handler and the default HTML file handler.
         defaultSearchEngine: <string>, // e.g. "yahoo"
         defaultSearchEngineData: {, // data about the current default engine
           name: <string>, // engine name, e.g. "Yahoo"; or "NONE" if no default
@@ -49,10 +49,10 @@ Structure:
         defaultPrivateSearchEngine: {,
           // data about the current default engine for private browsing mode. Same as defaultSearchEngineData.
         },
-        searchCohort: <string>, // optional, contains an identifier for any active search A/B experiments
         launcherProcessState: <integer>, // optional, values correspond to values of mozilla::LauncherRegistryInfo::EnabledState enum
         e10sEnabled: <bool>, // whether e10s is on, i.e. browser tabs open by default in a different process
         e10sMultiProcesses: <integer>, // Maximum number of processes that will be launched for regular web content
+        fissionEnabled: <bool>, // whether fission is enabled this session, and subframes can load in a different process
         telemetryEnabled: <bool>, // false on failure
         locale: <string>, // e.g. "it", null on failure
         intl: {
@@ -67,6 +67,7 @@ Structure:
           channel: <string>, // e.g. "release", null on failure
           enabled: <bool>, // true on failure
           autoDownload: <bool>, // true on failure
+          background: <bool>, // Indicates whether updates may be installed when Firefox is not running.
         },
         userPrefs: {
           // Only prefs which are changed are listed in this block
@@ -83,9 +84,13 @@ Structure:
           variation: <string>, // name/id of the variation cohort used in the enrolled funnel experiment
           experiment: <string>, // name/id of the enrolled funnel experiment
           ua: <string>, // identifier derived from the user agent downloading the installer, e.g., chrome, Google Chrome 123
+          dltoken: <string>, // Unique token created at Firefox download time. ex: c18f86a3-f228-4d98-91bb-f90135c0aa9c
+          msstoresignedin: <boolean>, // optional, only present if the installation was done through the Microsoft Store, and was able to retrieve the "campaign ID" it was first installed with. this value is "true" if the user was signed into the Microsoft Store when they first installed, and false otherwise
+          dlsource: <string>, // identifier that indicate where installations of Firefox originate
         },
         sandbox: {
           effectiveContentProcessLevel: <integer>,
+          contentWin32kLockdownState: <integer>,
         }
       },
       // Optional, missing if fetching the information failed or had not yet completed.
@@ -99,7 +104,7 @@ Structure:
         creationDate: <integer>, // integer days since UNIX epoch, e.g. 16446
         resetDate: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
         firstUseDate: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
-        wasCanary: <bool>, // Android only: true if this profile previously had a canary client ID
+        recoveredFromBackup: <integer>, // integer days since UNIX epoch, e.g. 16446 - optional
       },
       partner: { // This section may not be immediately available on startup
         distributionId: <string>, // pref "distribution.id", null on failure
@@ -115,11 +120,15 @@ Structure:
         memoryMB: <number>,
         virtualMaxMB: <number>, // windows-only
         isWow64: <bool>, // windows-only
-	isWowARM64: <bool>, // windows-only
+        isWowARM64: <bool>, // windows-only
+        hasWinPackageId: <bool>, // windows-only
+        winPackageFamilyName: <string>, // windows-only
         cpu: {
             count: <number>,  // desktop only, e.g. 8, or null on failure - logical cpus
             cores: <number>, // desktop only, e.g., 4, or null on failure - physical cores
             vendor: <string>, // desktop only, e.g. "GenuineIntel", or null on failure
+            name: <string>, // desktop only, e.g. "Intel(R) Core(TM) i9-8950HK CPU @ 2.90GHz",
+                            // or null on failure
             family: <number>, // desktop only, null on failure
             model: <number, // desktop only, null on failure
             stepping: <number>, // desktop only, null on failure
@@ -152,7 +161,9 @@ Structure:
             installYear: <number>, // windows only or null on failure
             locale: <string>, // "en" or null on failure
             hasPrefetch: <bool>, // windows only, or null on failure
-            hasSuperfetch: <bool>, // windows only, or nul on failure
+            hasSuperfetch: <bool>, // windows only, or null on failure
+            distro: <string>, // linux only, or null on failure
+            distroVersion: <string>, // linux only, or null on failure
         },
         hdd: {
           profile: { // hdd where the profile folder is located
@@ -176,6 +187,7 @@ Structure:
             DWriteEnabled: <bool>, // null on failure
             ContentBackend: <string> // One of "Cairo", "Skia", or "Direct2D 1.1"
             Headless: <bool>, // null on failure
+            TargetFrameRate: <number>, // frame rate in Hz, typically 60 or more
             //DWriteVersion: <string>, // temporarily removed, pending bug 1154500
             adapters: [
               {
@@ -217,6 +229,8 @@ Structure:
               //   "disabled"    - User explicitly disabled this default feature.
               //   "failed"      - This feature was attempted but failed to initialize.
               //   "available"   - User has this feature available.
+              // The status can also include a ":" followed by a reason
+              // e.g. "FEATURE_FAILURE_WEBRENDER_VIDEO_CRASH_INTEL_23.20.16.4973"
               d3d11: { // This feature is Windows-only.
                 status: <string>,
                 warp: <bool>,           // Software rendering (WARP) mode was chosen.
@@ -232,9 +246,18 @@ Structure:
               gpuProcess: { // Out-of-process compositing ("GPU process") feature
                 status: <string>, // "Available" means currently in use
               },
-              advancedLayers: { // Advanced Layers compositing. Only present if D3D11 enabled.
-                status: <string>,    // See the status codes above.
+              hwCompositing: { // hardware acceleration. i.e. whether we try using the GPU
+                status: <string>
               },
+              wrCompositor: { // native OS compositor (CA, DComp, etc.)
+                status: <string>
+              }
+              wrSoftware: { // Software backend for WebRender, only computed when 'compositor' is 'webrender'
+                status: <string>
+              }
+              openglCompositing: { // OpenGL compositing.
+                status: <string>
+              }
             },
           },
         appleModelId: <string>, // Mac only or null on failure
@@ -254,12 +277,13 @@ Structure:
             appDisabled: <bool>,
             version: <string>,
             scope: <integer>,
-            type: <string>, // "extension", "service", ...
+            type: <string>, // "extension", "locale", ...
             foreignInstall: <bool>,
             hasBinaryComponents: <bool>,
             installDay: <number>, // days since UNIX epoch, 0 on failure
             updateDay: <number>, // days since UNIX epoch, 0 on failure
-            signedState: <integer>, // whether the add-on is signed by AMO, only present for extensions
+            signedState: <integer>, // whether the add-on is signed by AMO
+            signedTypes: <string>, // JSON-stringified array of signature types found (see nsIAppSignatureInfo's SignatureAlgorithm enum)
             isSystem: <bool>, // true if this is a System Add-on
             isWebExtension: <bool>, // true if this is a WebExtension
             multiprocessCompatible: <bool>, // true if this add-on does *not* require e10s shims
@@ -279,20 +303,9 @@ Structure:
           hasBinaryComponents: <bool>
           installDay: <number>, // days since UNIX epoch, 0 on failure
           updateDay: <number>, // days since UNIX epoch, 0 on failure
+          signedState: <integer>, // whether the add-on is signed by AMO
+          signedTypes: <string>, // JSON-stringified array of signature types found (see nsIAppSignatureInfo's SignatureAlgorithm enum)
         },
-        activePlugins: [
-          {
-            name: <string>,
-            version: <string>,
-            description: <string>,
-            blocklisted: <bool>,
-            disabled: <bool>,
-            clicktoplay: <bool>,
-            mimeTypes: [<string>, ...],
-            updateDay: <number>, // days since UNIX epoch, 0 on failure
-          },
-          ...
-        ],
         activeGMPlugins: {
             <gmp id>: {
                 version: <string>,
@@ -367,11 +380,6 @@ This object contains the same information as ``defaultSearchEngineData``. It
 is only reported if the ``browser.search.separatePrivateDefault`` preference is
 set to ``true``.
 
-searchCohort
-~~~~~~~~~~~~
-
-If the user has been enrolled into a search default change experiment, this contains the string identifying the experiment the user is taking part in. Most user profiles will never be part of any search default change experiment, and will not send this value.
-
 userPrefs
 ~~~~~~~~~
 
@@ -381,15 +389,99 @@ Each key in the object is the name of a preference. A key's value depends on the
 
 The following is a partial list of `collected preferences <https://searchfox.org/mozilla-central/search?q=const+DEFAULT_ENVIRONMENT_PREFS&path=>`_.
 
+- ``browser.migrate.interactions.bookmarks``: True if the user has imported bookmarks from another browser before. This preference gets transferred during profile resets.
+
+- ``browser.migrate.interactions.csvpasswords``: True if the user has imported passwords through the migration wizard from a CSV file. This preference gets transferred during profile resets.
+
+- ``browser.migrate.interactions.history``: True if the user has imported history from another browser before. This preference gets transferred during profile resets.
+
+- ``browser.migrate.interactions.passwords``: True if the user has imported passwords from another browser before. This preference gets transferred during profile resets.
+
+- ``browser.privatebrowsing.autostart``: True if the user has enabled the permanent private browsing mode. Defaults to false.
+
 - ``browser.search.suggest.enabled``: The "master switch" for search suggestions everywhere in Firefox (search bar, urlbar, etc.). Defaults to true.
+
+- ``browser.urlbar.autoFill``: The global preference for whether autofill in the urlbar is enabled. When false, all types of autofill are disabled.
+
+- ``browser.urlbar.autoFill.adaptiveHistory.enabled``: True if adaptive history autofill in the urlbar is enabled.
+
+- ``browser.urlbar.dnsResolveSingleWordsAfterSearch``: Controls when to DNS resolve single word search strings, after they were searched for. If the string is resolved as a valid host, show a "Did you mean to go to 'host'" prompt. 0: Never resolve, 1: Use heuristics, 2. Always resolve. Defaults to 0.
+
+- ``browser.urlbar.quicksuggest.onboardingDialogChoice``: The user's choice in the Firefox Suggest onboarding dialog. If the dialog was shown multiple times, this records the user's most recent choice. Values are the following. Empty string: The user has not made a choice (e.g., because the dialog hasn't been shown). ``accept_2`` is recorded when the user accepts the dialog and opts in, ``reject_2`` is recorded when the user rejects the dialog and opts out, ``learn_more_1`` is recorded when the user clicks "Learn more" on the introduction section (the user remains opted out), ``learn_more_2`` is recorded when the user clicks "Learn more" on the main section (the user remains opted out), ``close_1`` is recorded when the user clicks close button on the introduction section (the user remains opted out), ``not_now_2`` is recorded when the user clicks "Not now" link on main section (the user remains opted out), ``dismiss_1`` recorded when the user dismisses the dialog on the introduction section (the user remains opted out), ``dismiss_2`` recorded when the user dismisses the dialog on main (the user remains opted out).
+
+- ``browser.urlbar.quicksuggest.dataCollection.enabled``: Whether the user has opted in to data collection for Firefox Suggest. This pref is set to true when the user opts in to the Firefox Suggest onboarding dialog modal. The user can also toggle the pref using a toggle switch in the Firefox Suggest preferences UI.
+
+- ``browser.urlbar.showSearchTerms.enabled``: True if to show the search term in the urlbar while on a default search engine results page.
+
+- ``browser.urlbar.suggest.quicksuggest.nonsponsored``: True if non-sponsored Firefox Suggest suggestions are enabled in the urlbar.
+
+- ``browser.urlbar.suggest.quicksuggest.sponsored``: True if sponsored Firefox Suggest suggestions are enabled in the urlbar.
 
 - ``browser.urlbar.suggest.searches``: True if search suggestions are enabled in the urlbar. Defaults to false.
 
 - ``browser.zoom.full`` (deprecated): True if zoom is enabled for both text and images, that is if "Zoom Text Only" is not enabled. Defaults to true. This preference was collected in Firefox 50 to 52 (`Bug 979323 <https://bugzilla.mozilla.org/show_bug.cgi?id=979323>`_).
 
-- ``fission.autostart``: True if fission is enabled at startup. Default to false. For more information please visit `the project wiki page <https://wiki.mozilla.org/Project_Fission>`_.
-
 - ``security.tls.version.enable-deprecated``: True if deprecated versions of TLS (1.0 and 1.1) have been enabled by the user. Defaults to false.
+
+- ``privacy.firstparty.isolate``: True if the user has changed the (unsupported, hidden) First Party Isolation preference. Defaults to false.
+
+- ``privacy.resistFingerprinting``: True if the user has changed the (unsupported, hidden) Resist Fingerprinting preference. Defaults to false.
+
+- ``toolkit.telemetry.pioneerId``: The state of the Pioneer ID. If set, then user is enrolled in Pioneer. Note that this does *not* collect the value.
+
+- ``app.normandy.test-prefs.bool``: Test pref that will help troubleshoot uneven unenrollment in experiments. Defaults to false.
+
+- ``app.normandy.test-prefs.integer``: Test pref that will help troubleshoot uneven unenrollment in experiments. Defaults to 0.
+
+- ``app.normandy.test-prefs.string``: Test pref that will help troubleshoot uneven unenrollment in experiments. Defaults to "".
+
+- ``network.trr.mode``: User-set DNS over HTTPS mode. Defaults to 0.
+
+- ``network.trr.strict_native_fallback``: Whether strict fallback mode is enabled for DoH mode 2. Defaults to true on Nightly, false elsewhere.
+
+- ``extensions.InstallTriggerImpl.enabled``: Whether the InstallTrigger implementation should be enabled (or hidden and none of its methods available).
+
+- ``extensions.InstallTrigger.enabled``: Whether the InstallTrigger implementation should be enabled (or completely hidden), separate from InstallTriggerImpl because InstallTrigger is improperly used also for UA detection.
+
+- ``extensions.eventPages.enabled``: Whether non-persistent background pages (also known as Event pages) should be enabled for `"manifest_version": 2` extensions.
+
+- ``extensions.quarantinedDomains.enabled``: Whether "Quarantined Domains" is enabled.
+
+- ``extensions.manifestV3.enabled``: Whether `"manifest_version": 3` extensions should be allowed to install successfully.
+
+- ``media.gmp-gmpopenh264.enabled``: Whether OpenH264 is enabled.
+
+- ``media.gmp-gmpopenh264.lastDownload``: When OpenH264 was last downloaded as seconds since Jan 1, 1970.
+
+- ``media.gmp-gmpopenh264.lastDownloadFailed``: When OpenH264 was last downloaded unsuccessfully as seconds since Jan 1, 1970.
+
+- ``media.gmp-gmpopenh264.lastDownloadFailReason``: The exception value when OpenH264 was last failed to downloaded.
+
+- ``media.gmp-gmpopenh264.lastInstallFailed``: When OpenH264 installation last failed as seconds since Jan 1, 1970.
+
+- ``media.gmp-gmpopenh264.lastInstallStart``: When OpenH264 installation was last started as seconds since Jan 1, 1970.
+
+- ``media.gmp-gmpopenh264.lastUpdate``: When OpenH264 was last updated as seconds since Jan 1, 1970.
+
+- ``media.gmp-gmpopenh264.visible``: Whether OpenH264 is visible.
+
+- ``media.gmp-manager.lastCheck``: When the gmp-manager last checked for updates as seconds since Jan 1, 1970.
+
+- ``media.gmp-manager.lastEmptyCheck``: When the gmp-manager last checked for updates and there was nothing to install as seconds since Jan 1, 1970.
+
+- ``nimbus.qa.pref-1``: Used to monitor the results of pref-setting test experiments.
+
+- ``nimbus.qa.pref-2``: Used to monitor the results of pref-setting test experiments.
+
+- ``signon.firefoxRelay.feature``: User choice regarding Firefox Relay integration with Firefox Password Manager. Can be one of undefined, "available", "offered", "enabled" or "disabled".
+
+- ``dom.popup_allowed_events``: Which events should allow popups. Only exposed with about:config.
+
+- ``intl.ime.use_composition_events_for_insert_text``: Whether a set of composition events is fired when user inserts text without keyboard events nor composing state of a composition (only on Linux and macOS).
+
+- ``xpinstall.signatures.required``: Whether XPI files cryptographic signatures are being verified and enforced.
+
+- ``xpinstall.signatures.weakSignaturesTemporarilyAllowed``: Whether new XPI files only signed with weak signature algorithms are still allowed to be installed
 
 attribution
 ~~~~~~~~~~~
@@ -408,6 +500,26 @@ This object contains data about the state of Firefox's sandbox.
 Specific keys are:
 
 - ``effectiveContentProcessLevel``: The meanings of the values are OS dependent. Details of the meanings can be found in the `Firefox prefs file <https://hg.mozilla.org/mozilla-central/file/tip/browser/app/profile/firefox.js>`_. The value here is the effective value, not the raw value, some platforms enforce a minimum sandbox level. If there is an error calculating this, it will be ``null``.
+- ``contentWin32kLockdownState``: The status of Win32k Lockdown for Content process.
+
+  - LockdownEnabled = 1 - After Firefox 98, this value will no longer appear in Telemetry.
+  - MissingWebRender = 2
+  - OperatingSystemNotSupported = 3
+  - PrefNotSet = 4 - After Firefox 98, this value will no longer appear in Telemetry.
+  - MissingRemoteWebGL = 5
+  - MissingNonNativeTheming = 6
+  - DisabledByEnvVar = 7 - MOZ_ENABLE_WIN32K is set
+  - DisabledBySafeMode = 8
+  - DisabledByE10S = 9 - E10S is disabled for whatever reason
+  - DisabledByUserPref = 10 - The user manually set security.sandbox.content.win32k-disable to false
+  - EnabledByUserPref = 11 - The user manually set security.sandbox.content.win32k-disable to true
+  - DisabledByControlGroup = 12 - The user is in the Control Group, so it is disabled
+  - EnabledByTreatmentGroup = 13 - The user is in the Treatment Group, so it is enabled
+  - DisabledByDefault = 14 - The default value of the pref is false
+  - EnabledByDefault = 15 - The default value of the pref is true
+  - DecodersArentRemote = 16 - Some decoder is not remoted to RDD Process (checks PDMFactory::AllDecodersAreRemote)
+  - IncompatibleMitigationPolicy = 17 - Some incompatible Windows Exploit Mitigation policies are enabled
+
 
 profile
 -------
@@ -438,11 +550,12 @@ The time of the first use of profile. If this is an old profile where we can't
 determine this this field will not be present.
 It's read from a file-stored timestamp from the client's profile directory.
 
-wasCanary
-~~~~~~~~~
+recoveredFromBackup
+~~~~~~~~~~~~~~~~~~~
 
-Android-only. This attribute is set to ``true`` if the client ID was erroneously set to a canary client ID before
-and later reset to a new random client ID. The attribute is not included if the client ID was not changed.
+The time that this profile was recovered from a backup. If the profile was never
+recovered from a backup, this field will not be present.
+It's read from a file-stored timestamp from the client's profile directory.
 
 partner
 -------
@@ -482,19 +595,14 @@ addons
 activeAddons
 ~~~~~~~~~~~~
 
-Starting from Firefox 44, the length of the following string fields: ``name``, ``description`` and ``version`` is limited to 100 characters. The same limitation applies to the same fields in ``theme`` and ``activePlugins``.
+Starting from Firefox 44, the length of the following string fields: ``name``, ``description`` and ``version`` is limited to 100 characters. The same limitation applies to the same fields in ``theme``.
 
 Some of the fields in the record for each add-on are not available during startup.  The fields that will always be present are ``id``, ``version``, ``type``, ``updateDate``, ``scope``, ``isSystem``, ``isWebExtension``, and ``multiprocessCompatible``.  All the other fields documented above become present shortly after the ``sessionstore-windows-restored`` observer topic is notified.
-
-activePlugins
-~~~~~~~~~~~~~
-
-Just like activeAddons, up-to-date information is not available immediately during startup. The field will be populated with dummy information until the blocklist is loaded. At the latest, this will happen just after the ``sessionstore-windows-restored`` observer topic is notified.
 
 activeGMPPlugins
 ~~~~~~~~~~~~~~~~
 
-Just like activePlugins, this will report dummy values until the blocklist is loaded.
+Up-to-date information is not available immediately during startup. The field will be populated with dummy information until the blocklist is loaded. At the latest, this will happen just after the ``sessionstore-windows-restored`` observer topic is notified.
 
 experiments
 -----------
@@ -505,10 +613,16 @@ For each experiment we collect the
 - ``type`` (Optional. Like ``normandy-exp``, max length 20 characters)
 - ``enrollmentId`` (Optional. Like ``5bae2134-e121-46c2-aa00-232f3f5855c5``, max length 40 characters)
 
-In the event any of these fields are truncated, a warning is printed to the console.
+In the event any of these fields are truncated, a warning is printed to the console
+
+Note that this list includes other types of deliveries, including Normandy rollouts and Nimbus feature defaults.
 
 Version History
 ---------------
+
+- Firefox 88:
+
+  - Removed ``addons.activePlugins`` as part of removing NPAPI plugin support. (`bug 1682030 <https://bugzilla.mozilla.org/show_bug.cgi?id=1682030>`_)
 
 - Firefox 70:
 

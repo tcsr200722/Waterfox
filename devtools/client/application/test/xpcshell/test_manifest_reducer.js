@@ -9,14 +9,14 @@ const {
   FETCH_MANIFEST_SUCCESS,
   RESET_MANIFEST,
   MANIFEST_MEMBER_VALUE_TYPES,
-} = require("devtools/client/application/src/constants.js");
+} = require("resource://devtools/client/application/src/constants.js");
 
-const { ICON, COLOR, STRING } = MANIFEST_MEMBER_VALUE_TYPES;
+const { ICON, COLOR, STRING, URL } = MANIFEST_MEMBER_VALUE_TYPES;
 
 const {
   manifestReducer,
   ManifestState,
-} = require("devtools/client/application/src/reducers/manifest-state.js");
+} = require("resource://devtools/client/application/src/reducers/manifest-state.js");
 
 const MANIFEST_PROCESSING = [
   // empty manifest
@@ -49,11 +49,15 @@ const MANIFEST_PROCESSING = [
     source: {
       name: "Foo",
       background_color: "#FF0000",
+      start_url: "https://example.com/?q=foo",
+      scope: "https://example.com",
     },
     processed: {
       identity: [{ key: "name", value: "Foo", type: STRING }],
       presentation: [
         { key: "background_color", value: "#FF0000", type: COLOR },
+        { key: "start_url", value: "https://example.com/?q=foo", type: URL },
+        { key: "scope", value: "https://example.com", type: URL },
       ],
     },
   },
@@ -127,7 +131,7 @@ const MANIFEST_PROCESSING = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   info("Test manifest reducer: FETCH_MANIFEST_START action");
 
   const state = ManifestState();
@@ -137,7 +141,7 @@ add_task(async function() {
   equal(newState.isLoading, true, "Loading flag is true");
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Test manifest reducer: FETCH_MANIFEST_FAILURE action");
 
   const state = Object.assign(ManifestState(), { isLoading: true });
@@ -149,7 +153,7 @@ add_task(async function() {
   equal(newState.manifest, null, "Manifest is null");
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Test manifest reducer: FETCH_MANIFEST_SUCCESS action");
 
   // test manifest processing
@@ -158,7 +162,7 @@ add_task(async function() {
   });
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Test manifest reducer: RESET_MANIFEST action");
 
   const state = Object.assign(ManifestState(), {

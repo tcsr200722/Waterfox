@@ -5,35 +5,9 @@
 
 const {
   Arg,
-  Option,
   RetVal,
   generateActorSpec,
-} = require("devtools/shared/protocol");
-
-const highlighterSpec = generateActorSpec({
-  typeName: "highlighter",
-
-  methods: {
-    showBoxModel: {
-      request: {
-        node: Arg(0, "domnode"),
-        region: Option(1),
-        hideInfoBar: Option(1),
-        hideGuides: Option(1),
-        showOnly: Option(1),
-        onlyRegionArea: Option(1),
-      },
-    },
-    hideBoxModel: {
-      request: {},
-    },
-    pick: {},
-    pickAndFocus: {},
-    cancelPick: {},
-  },
-});
-
-exports.highlighterSpec = highlighterSpec;
+} = require("resource://devtools/shared/protocol.js");
 
 const customHighlighterSpec = generateActorSpec({
   typeName: "customhighlighter",

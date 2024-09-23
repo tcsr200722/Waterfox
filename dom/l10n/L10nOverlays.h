@@ -7,12 +7,15 @@
 #ifndef mozilla_dom_l10n_L10nOverlays_h
 #define mozilla_dom_l10n_L10nOverlays_h
 
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/L10nOverlaysBinding.h"
 #include "mozilla/dom/LocalizationBinding.h"
 
-namespace mozilla {
-namespace dom {
+class nsINode;
+
+namespace mozilla::dom {
+
+class DocumentFragment;
+class Element;
 
 class L10nOverlays {
  public:
@@ -34,19 +37,6 @@ class L10nOverlays {
                                ErrorResult& aRv);
 
  private:
-  /**
-   * Check if attribute is allowed for the given element.
-   *
-   * This method is used by the sanitizer when the translation markup contains
-   * DOM attributes, or when the translation has traits which map to DOM
-   * attributes.
-   *
-   * `aExplicitlyAllowed` can be passed as a list of attributes explicitly
-   * allowed on this element.
-   */
-  static bool IsAttrNameLocalizable(const nsAtom* nameAtom, Element* aElement,
-                                    nsTArray<nsString>* aExplicitlyAllowed);
-
   /**
    * Create a text node from text content of an Element.
    */
@@ -116,7 +106,6 @@ class L10nOverlays {
   static bool ContainsMarkup(const nsACString& aStr);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

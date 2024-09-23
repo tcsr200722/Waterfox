@@ -11,8 +11,7 @@
 #include "mozilla/css/Rule.h"
 #include "nsICSSDeclaration.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // A CSSFontFaceRuleDecl is always embeded in a CSSFontFaceRule.
 class CSSFontFaceRule;
@@ -21,11 +20,12 @@ class CSSFontFaceRuleDecl final : public nsICSSDeclaration {
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIDOMCSSSTYLEDECLARATION_HELPER
 
-  nsINode* GetParentObject() final;
+  nsINode* GetAssociatedNode() const final;
+  nsISupports* GetParentObject() const final;
   void IndexedGetter(uint32_t aIndex, bool& aFound,
                      nsACString& aPropName) final;
 
-  void GetPropertyValue(nsCSSFontDesc aFontDescID, nsAString& aResult) const;
+  void GetPropertyValue(nsCSSFontDesc aFontDescID, nsACString& aResult) const;
 
   JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
 
@@ -33,7 +33,7 @@ class CSSFontFaceRuleDecl final : public nsICSSDeclaration {
   // For accessing the constructor.
   friend class CSSFontFaceRule;
 
-  explicit CSSFontFaceRuleDecl(already_AddRefed<RawServoFontFaceRule> aDecl)
+  explicit CSSFontFaceRuleDecl(already_AddRefed<StyleLockedFontFaceRule> aDecl)
       : mRawRule(std::move(aDecl)) {}
 
   ~CSSFontFaceRuleDecl() = default;
@@ -41,7 +41,8 @@ class CSSFontFaceRuleDecl final : public nsICSSDeclaration {
   inline CSSFontFaceRule* ContainingRule();
   inline const CSSFontFaceRule* ContainingRule() const;
 
-  RefPtr<RawServoFontFaceRule> mRawRule;
+  RefPtr<StyleLockedFontFaceRule> mRawRule;
+  void SetRawAfterClone(RefPtr<StyleLockedFontFaceRule>);
 
  private:
   void* operator new(size_t size) noexcept(true) = delete;
@@ -49,7 +50,7 @@ class CSSFontFaceRuleDecl final : public nsICSSDeclaration {
 
 class CSSFontFaceRule final : public css::Rule {
  public:
-  CSSFontFaceRule(already_AddRefed<RawServoFontFaceRule> aRawRule,
+  CSSFontFaceRule(already_AddRefed<StyleLockedFontFaceRule> aRawRule,
                   StyleSheet* aSheet, css::Rule* aParentRule, uint32_t aLine,
                   uint32_t aColumn)
       : css::Rule(aSheet, aParentRule, aLine, aColumn),
@@ -62,11 +63,12 @@ class CSSFontFaceRule final : public css::Rule {
                                                          css::Rule)
   bool IsCCLeaf() const final;
 
-  RawServoFontFaceRule* Raw() const { return mDecl.mRawRule; }
+  StyleLockedFontFaceRule* Raw() const { return mDecl.mRawRule; }
+  void SetRawAfterClone(RefPtr<StyleLockedFontFaceRule>);
 
   // WebIDL interface
-  uint16_t Type() const final;
-  void GetCssText(nsAString& aCssText) const final;
+  StyleCssRuleType Type() const final;
+  void GetCssText(nsACString& aCssText) const final;
   nsICSSDeclaration* Style();
 
   // Methods of mozilla::css::Rule
@@ -97,7 +99,6 @@ inline const CSSFontFaceRule* CSSFontFaceRuleDecl::ContainingRule() const {
       reinterpret_cast<const char*>(this) - offsetof(CSSFontFaceRule, mDecl));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_CSSFontFaceRule_h

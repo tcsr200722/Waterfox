@@ -17,7 +17,7 @@ Services.scriptloader.loadSubScript(
 const TAB_URL_1 = "data:text/html,<title>TAB1</title>";
 const TAB_URL_2 = "data:text/html,<title>TAB2</title>";
 
-add_task(async function() {
+add_task(async function () {
   info("Force all debug target panes to be expanded");
   prepareCollapsibilitiesTest();
 
@@ -34,9 +34,8 @@ add_task(async function() {
     thisFirefoxString,
     document
   );
-  const thisFirefoxLink = thisFirefoxSidebarItem.querySelector(
-    ".qa-sidebar-link"
-  );
+  const thisFirefoxLink =
+    thisFirefoxSidebarItem.querySelector(".qa-sidebar-link");
   ok(thisFirefoxSidebarItem, "Found the ThisFirefox sidebar item");
   ok(
     isSidebarItemSelected(thisFirefoxSidebarItem),
@@ -49,7 +48,7 @@ add_task(async function() {
   info("Wait for the tab to appear in the debug targets with the correct name");
   await waitUntil(() => findDebugTargetByText("TAB1", document));
 
-  await waitForRequestsToSettle(AboutDebugging.store);
+  await waitForAboutDebuggingRequests(AboutDebugging.store);
   info("Click on the Connect item in the sidebar");
   connectLink.click();
 
@@ -103,7 +102,7 @@ add_task(async function() {
   );
   await waitUntil(() => !findDebugTargetByText("TAB2", document));
 
-  await waitForRequestsToSettle(AboutDebugging.store);
+  await waitForAboutDebuggingRequests(AboutDebugging.store);
 
   await removeTab(tab);
 });

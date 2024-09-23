@@ -19,7 +19,7 @@ const STORAGE_SYNC_PREF = "webextensions.storage.sync.enabled";
  *        either "local" or "sync" according to what we want to test
  * @param {string} prop
  *        "key" to look up using the storage API
- * @param {Object} value
+ * @param {object} value
  *        "value" to compare against
  */
 async function checkGetImpl(areaName, prop, value) {
@@ -108,7 +108,7 @@ function test_config_flag_needed() {
       manifest: {
         permissions: ["storage"],
       },
-      background: `(${background})(${checkGetImpl})`,
+      background,
     });
 
     await extension.startup();
@@ -119,48 +119,65 @@ function test_config_flag_needed() {
   return runWithPrefs([[STORAGE_SYNC_PREF, false]], testFn);
 }
 
-function test_sync_reloading_extensions_works() {
-  async function testFn() {
-    // Just some random extension ID that we can re-use
-    const extensionId = "my-extension-id@1";
+async function test_storage_after_reload(areaName, { expectPersistency }) {
+  // Just some random extension ID that we can re-use
+  const extensionId = "my-extension-id@1";
 
-    function loadExtension() {
-      function background() {
-        browser.storage.sync.set({ a: "b" }).then(() => {
-          browser.test.notifyPass("set-works");
-        });
-      }
-
-      return ExtensionTestUtils.loadExtension(
-        {
-          manifest: {
-            permissions: ["storage"],
-          },
-          background: `(${background})()`,
-        },
-        extensionId
+  function loadExtension() {
+    async function background(areaName) {
+      browser.test.sendMessage(
+        "initialItems",
+        await browser.storage[areaName].get(null)
       );
+      await browser.storage[areaName].set({ a: "b" });
+      browser.test.notifyPass("set-works");
     }
 
+    return ExtensionTestUtils.loadExtension({
+      manifest: {
+        browser_specific_settings: { gecko: { id: extensionId } },
+        permissions: ["storage"],
+      },
+      background: `(${background})("${areaName}")`,
+    });
+  }
+
+  let extension1 = loadExtension();
+  await extension1.startup();
+
+  Assert.deepEqual(
+    await extension1.awaitMessage("initialItems"),
+    {},
+    "No stored items at first"
+  );
+
+  await extension1.awaitFinish("set-works");
+  await extension1.unload();
+
+  let extension2 = loadExtension();
+  await extension2.startup();
+
+  Assert.deepEqual(
+    await extension2.awaitMessage("initialItems"),
+    expectPersistency ? { a: "b" } : {},
+    `Expect ${areaName} stored items ${
+      expectPersistency ? "to" : "not"
+    } be available after restart`
+  );
+
+  await extension2.awaitFinish("set-works");
+  await extension2.unload();
+}
+
+function test_sync_reloading_extensions_works() {
+  return runWithPrefs([[STORAGE_SYNC_PREF, true]], async () => {
     ok(
       Services.prefs.getBoolPref(STORAGE_SYNC_PREF, false),
       "The `${STORAGE_SYNC_PREF}` should be set to true"
     );
 
-    let extension1 = loadExtension();
-
-    await extension1.startup();
-    await extension1.awaitFinish("set-works");
-    await extension1.unload();
-
-    let extension2 = loadExtension();
-
-    await extension2.startup();
-    await extension2.awaitFinish("set-works");
-    await extension2.unload();
-  }
-
-  return runWithPrefs([[STORAGE_SYNC_PREF, true]], testFn);
+    await test_storage_after_reload("sync", { expectPersistency: true });
+  });
 }
 
 async function test_background_page_storage(testAreaName) {
@@ -213,6 +230,37 @@ async function test_background_page_storage(testAreaName) {
       clearGlobalChanges();
     }
 
+    // Regression test for https://bugzilla.mozilla.org/show_bug.cgi?id=1645598
+    async function testNonExistingKeys(storage, storageAreaDesc) {
+      let data = await storage.get({ test6: 6 });
+      browser.test.assertEq(
+        `{"test6":6}`,
+        JSON.stringify(data),
+        `Use default value when not stored for ${storageAreaDesc}`
+      );
+
+      data = await storage.get({ test6: null });
+      browser.test.assertEq(
+        `{"test6":null}`,
+        JSON.stringify(data),
+        `Use default value, even if null for ${storageAreaDesc}`
+      );
+
+      data = await storage.get("test6");
+      browser.test.assertEq(
+        `{}`,
+        JSON.stringify(data),
+        `Empty result if key is not found for ${storageAreaDesc}`
+      );
+
+      data = await storage.get(["test6", "test7"]);
+      browser.test.assertEq(
+        `{}`,
+        JSON.stringify(data),
+        `Empty result if list of keys is not found for ${storageAreaDesc}`
+      );
+    }
+
     async function testFalseyValues(areaName) {
       let storage = browser.storage[areaName];
       const dataInitial = {
@@ -260,7 +308,9 @@ async function test_background_page_storage(testAreaName) {
       await checkChanges(areaName, onUpdatedFalsey, "set non-falsey values");
 
       // Clear the storage state.
+      await testNonExistingKeys(storage, `${areaName} before clearing`);
       await storage.clear();
+      await testNonExistingKeys(storage, `${areaName} after clearing`);
       await globalChanges;
       clearGlobalChanges();
     }
@@ -269,7 +319,7 @@ async function test_background_page_storage(testAreaName) {
       this.testKey1 = "testValue1";
     }
 
-    CustomObj.prototype.toString = function() {
+    CustomObj.prototype.toString = function () {
       return '{"testKey2":"testValue2"}';
     };
 
@@ -486,7 +536,7 @@ async function test_background_page_storage(testAreaName) {
           "customObj keys correct"
         );
 
-        if (areaName === "local") {
+        if (areaName === "local" || areaName === "session") {
           browser.test.assertEq(
             String(date),
             String(obj.date),
@@ -497,7 +547,7 @@ async function test_background_page_storage(testAreaName) {
             obj.regexp.toString(),
             "regexp part correct"
           );
-          // storage.local doesn't call toJSON
+          // storage.local and .session don't use toJSON().
           browser.test.assertEq(
             "testValue1",
             obj.customObj.testKey1,
@@ -625,6 +675,8 @@ async function test_background_page_storage(testAreaName) {
         promise = runTests("local");
       } else if (msg === "test-sync") {
         promise = runTests("sync");
+      } else if (msg === "test-session") {
+        promise = runTests("session");
       }
       promise.then(() => browser.test.sendMessage("test-finished"));
     });
@@ -651,11 +703,11 @@ async function test_background_page_storage(testAreaName) {
 
 function test_storage_sync_requires_real_id() {
   async function testFn() {
-    async function backgroundScript() {
+    async function background() {
       const EXCEPTION_MESSAGE =
-        "The storage API is not available with a temporary addon ID. " +
+        "The storage API will not work with a temporary addon ID. " +
         "Please add an explicit addon ID to your manifest. " +
-        "For more information see https://bugzil.la/1323228.";
+        "For more information see https://mzl.la/3lPk1aE.";
 
       await browser.test.assertRejects(
         browser.storage.sync.set({ foo: "bar" }),
@@ -666,7 +718,7 @@ function test_storage_sync_requires_real_id() {
     }
 
     let extensionData = {
-      background: `(${backgroundScript})(${checkGetImpl})`,
+      background,
       manifest: {
         permissions: ["storage"],
       },
@@ -702,7 +754,7 @@ async function test_background_storage_area_no_bytes_in_use(area) {
   const extensionDef = {
     manifest: {
       permissions: ["storage"],
-      applications: { gecko: { id: EXT_ID } },
+      browser_specific_settings: { gecko: { id: EXT_ID } },
     },
     background: `(${check_storage_area_no_bytes_in_use})("${area}")`,
   };
@@ -725,6 +777,8 @@ async function test_contentscript_storage_area_no_bytes_in_use(area) {
         checkImpl("local");
       } else if (msg === "test-sync") {
         checkImpl("sync");
+      } else if (msg === "test-session") {
+        checkImpl("session");
       } else {
         browser.test.fail(`Unexpected test message received: ${msg}`);
         browser.test.sendMessage("test-complete");
@@ -827,7 +881,7 @@ async function test_background_storage_area_with_bytes_in_use(
   const extensionDef = {
     manifest: {
       permissions: ["storage"],
-      applications: { gecko: { id: EXT_ID } },
+      browser_specific_settings: { gecko: { id: EXT_ID } },
     },
     background: `(${check_storage_area_with_bytes_in_use})("${area}", ${expectQuota})`,
   };
@@ -1152,6 +1206,8 @@ async function testStorageContentScript(checkGet) {
       promise = runTests("local");
     } else if (msg === "test-sync") {
       promise = runTests("sync");
+    } else if (msg === "test-session") {
+      promise = runTests("session");
     }
     promise.then(() => browser.test.sendMessage("test-finished"));
   });
@@ -1191,4 +1247,154 @@ async function test_contentscript_storage(storageType) {
 
   await extension.unload();
   await contentPage.close();
+}
+
+async function test_storage_empty_events(areaName) {
+  async function background(areaName) {
+    let eventCount = 0;
+
+    browser.storage[areaName].onChanged.addListener(changes => {
+      browser.test.sendMessage("onChanged", [++eventCount, changes]);
+    });
+
+    browser.test.onMessage.addListener(async (method, arg) => {
+      let result = await browser.storage[areaName][method](arg);
+      browser.test.sendMessage("result", result);
+    });
+
+    browser.test.sendMessage("ready");
+  }
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: { permissions: ["storage"] },
+    background: `(${background})("${areaName}")`,
+  });
+
+  await extension.startup();
+  await extension.awaitMessage("ready");
+
+  async function callStorageMethod(method, arg) {
+    info(`call storage.${areaName}.${method}(${JSON.stringify(arg) ?? ""})`);
+    extension.sendMessage(method, arg);
+    await extension.awaitMessage("result");
+  }
+
+  async function expectEvent(expectCount, expectChanges) {
+    equal(
+      JSON.stringify([expectCount, expectChanges]),
+      JSON.stringify(await extension.awaitMessage("onChanged")),
+      "Correct onChanged events count and data in the last changes notified."
+    );
+  }
+
+  await callStorageMethod("set", { alpha: 1 });
+  await expectEvent(1, { alpha: { newValue: 1 } });
+
+  await callStorageMethod("set", {});
+  // Setting nothing doesn't trigger onChanged event.
+
+  await callStorageMethod("set", { beta: 12 });
+  await expectEvent(2, { beta: { newValue: 12 } });
+
+  await callStorageMethod("remove", "alpha");
+  await expectEvent(3, { alpha: { oldValue: 1 } });
+
+  await callStorageMethod("remove", "alpha");
+  // Trying to remove alpha again doesn't trigger onChanged.
+
+  await callStorageMethod("clear");
+  await expectEvent(4, { beta: { oldValue: 12 } });
+
+  await callStorageMethod("clear");
+  // Clear again wothout onChanged. Test will fail on unexpected event/message.
+
+  await extension.unload();
+}
+
+async function test_storage_change_event_page(areaName) {
+  async function testOnChanged(targetIsStorageArea) {
+    function backgroundTestStorageTopNamespace(areaName) {
+      browser.storage.onChanged.addListener((changes, area) => {
+        browser.test.assertEq(area, areaName, "Expected areaName");
+        browser.test.assertEq(
+          JSON.stringify(changes),
+          `{"storageKey":{"newValue":"newStorageValue"}}`,
+          "Expected changes"
+        );
+        browser.test.sendMessage("onChanged_was_fired");
+      });
+    }
+    function backgroundTestStorageAreaNamespace(areaName) {
+      browser.storage[areaName].onChanged.addListener((changes, ...args) => {
+        browser.test.assertEq(args.length, 0, "no more args after changes");
+        browser.test.assertEq(
+          JSON.stringify(changes),
+          `{"storageKey":{"newValue":"newStorageValue"}}`,
+          `Expected changes via ${areaName}.onChanged event`
+        );
+        browser.test.sendMessage("onChanged_was_fired");
+      });
+    }
+    let background, onChangedName;
+    if (targetIsStorageArea) {
+      // Test storage.local.onChanged / storage.sync.onChanged.
+      background = backgroundTestStorageAreaNamespace;
+      onChangedName = `${areaName}.onChanged`;
+    } else {
+      background = backgroundTestStorageTopNamespace;
+      onChangedName = "onChanged";
+    }
+    let extension = ExtensionTestUtils.loadExtension({
+      manifest: {
+        permissions: ["storage"],
+        background: { persistent: false },
+      },
+      background: `(${background})("${areaName}")`,
+      files: {
+        "trigger-change.html": `
+          <!DOCTYPE html><meta charset="utf-8">
+          <script src="trigger-change.js"></script>
+        `,
+        "trigger-change.js": async () => {
+          let areaName = location.search.slice(1);
+          await browser.storage[areaName].set({
+            storageKey: "newStorageValue",
+          });
+          browser.test.sendMessage("tried_to_trigger_change");
+        },
+      },
+    });
+    await extension.startup();
+    assertPersistentListeners(extension, "storage", onChangedName, {
+      primed: false,
+    });
+
+    await extension.terminateBackground();
+    assertPersistentListeners(extension, "storage", onChangedName, {
+      primed: true,
+    });
+
+    // Now trigger the event
+    let contentPage = await ExtensionTestUtils.loadContentPage(
+      `moz-extension://${extension.uuid}/trigger-change.html?${areaName}`
+    );
+    await extension.awaitMessage("tried_to_trigger_change");
+    await contentPage.close();
+    await extension.awaitMessage("onChanged_was_fired");
+
+    assertPersistentListeners(extension, "storage", onChangedName, {
+      primed: false,
+    });
+    await extension.unload();
+  }
+
+  async function testFn() {
+    // Test browser.storage.onChanged.addListener
+    await testOnChanged(/* targetIsStorageArea */ false);
+    // Test browser.storage.local.onChanged.addListener
+    // and browser.storage.sync.onChanged.addListener, depending on areaName.
+    await testOnChanged(/* targetIsStorageArea */ true);
+  }
+
+  return runWithPrefs([["extensions.eventPages.enabled", true]], testFn);
 }

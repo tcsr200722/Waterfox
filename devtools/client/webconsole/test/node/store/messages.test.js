@@ -4,14 +4,15 @@
 
 const {
   getAllMessagesUiById,
-  getAllMessagesPayloadById,
+  getAllCssMessagesMatchingElements,
   getAllNetworkMessagesUpdateById,
   getAllRepeatById,
+  getAllDisabledMessagesById,
   getCurrentGroup,
   getGroupsById,
-  getAllMessagesById,
+  getMutableMessagesById,
   getVisibleMessages,
-} = require("devtools/client/webconsole/selectors/messages");
+} = require("resource://devtools/client/webconsole/selectors/messages.js");
 
 const {
   clonePacket,
@@ -20,23 +21,29 @@ const {
   getMessageAt,
   setupActions,
   setupStore,
-} = require("devtools/client/webconsole/test/node/helpers");
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
 const {
   stubPackets,
   stubPreparedMessages,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
-const { MESSAGE_TYPE } = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
+const {
+  MESSAGE_TYPE,
+  CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
+} = require("resource://devtools/client/webconsole/constants.js");
+const {
+  createWarningGroupMessage,
+} = require("resource://devtools/client/webconsole/utils/messages.js");
 
 const expect = require("expect");
 
 describe("Message reducer:", () => {
   let actions;
 
-  before(() => {
+  beforeAll(() => {
     actions = setupActions();
   });
 
-  describe("messagesById", () => {
+  describe("mutableMessagesById", () => {
     it("adds a message to an empty store", () => {
       const { dispatch, getState } = setupStore();
 
@@ -60,7 +67,7 @@ describe("Message reducer:", () => {
       packet2.message.timeStamp = 2;
       dispatch(actions.messagesAdd([packet, packet2]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(1);
       const repeat = getAllRepeatById(getState());
@@ -84,7 +91,7 @@ describe("Message reducer:", () => {
       packet.message.lineNumber = packet.message.lineNumber + 1;
       dispatch(actions.messagesAdd([packet]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(3);
 
@@ -105,7 +112,7 @@ describe("Message reducer:", () => {
       packet.pageError.timeStamp = 2;
       dispatch(actions.messagesAdd([packet]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(1);
 
@@ -131,7 +138,7 @@ describe("Message reducer:", () => {
       packet.pageError.lineNumber = packet.pageError.lineNumber + 1;
       dispatch(actions.messagesAdd([packet]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(3);
 
@@ -151,7 +158,7 @@ describe("Message reducer:", () => {
       packet.pageError.timeStamp = 2;
       dispatch(actions.messagesAdd([packet]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(1);
 
@@ -172,7 +179,7 @@ describe("Message reducer:", () => {
         logKey,
       ]);
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(4);
       const repeat = getAllRepeatById(getState());
@@ -184,7 +191,7 @@ describe("Message reducer:", () => {
     it("doesn't increment undefined messages coming from different places", () => {
       const { getState } = setupStore(["console.log(undefined)", "undefined"]);
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(2);
 
       const repeat = getAllRepeatById(getState());
@@ -197,7 +204,7 @@ describe("Message reducer:", () => {
         { actions }
       );
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(3);
       const repeat = getAllRepeatById(getState());
       expect(Object.keys(repeat).length).toBe(0);
@@ -208,21 +215,21 @@ describe("Message reducer:", () => {
 
       const nanPacket = stubPackets.get("console.log(NaN)");
       dispatch(actions.messagesAdd([nanPacket, nanPacket]));
-      let messages = getAllMessagesById(getState());
+      let messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(1);
       let repeat = getAllRepeatById(getState());
       expect(repeat[getLastMessage(getState()).id]).toBe(2);
 
       const undefinedPacket = stubPackets.get("console.log(undefined)");
       dispatch(actions.messagesAdd([undefinedPacket, undefinedPacket]));
-      messages = getAllMessagesById(getState());
+      messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(2);
       repeat = getAllRepeatById(getState());
       expect(repeat[getLastMessage(getState()).id]).toBe(2);
 
       const nullPacket = stubPackets.get("console.log(null)");
       dispatch(actions.messagesAdd([nullPacket, nullPacket]));
-      messages = getAllMessagesById(getState());
+      messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(3);
       repeat = getAllRepeatById(getState());
       expect(repeat[getLastMessage(getState()).id]).toBe(2);
@@ -238,7 +245,7 @@ describe("Message reducer:", () => {
       const packet2 = stubPackets.get("console.log(undefined)");
       dispatch(actions.messagesAdd([packet2]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(2);
 
       const repeat = getAllRepeatById(getState());
@@ -246,12 +253,48 @@ describe("Message reducer:", () => {
       expect(repeat[getLastMessage(getState()).id]).toBe(undefined);
     });
 
+    it("does not increment repeat after adding similar warning group", () => {
+      const { dispatch, getState } = setupStore();
+
+      // Mocking a warning message that would create a warning group
+      const warningMessage = stubPreparedMessages.get(
+        "ReferenceError: asdf is not defined"
+      );
+      warningMessage.messageText =
+        "The resource at “https://evil.com” was blocked.";
+      warningMessage.category = "cookieBlockedPermission";
+
+      const type = MESSAGE_TYPE.CONTENT_BLOCKING_GROUP;
+      const firstMessageId = `${warningMessage.type}-${warningMessage.innerWindowID}`;
+      const message1 = createWarningGroupMessage(
+        firstMessageId,
+        type,
+        warningMessage
+      );
+      const secondMessageId = `${warningMessage.type}-${
+        warningMessage.innerWindowID + 10
+      }`;
+      const message2 = createWarningGroupMessage(
+        secondMessageId,
+        type,
+        warningMessage
+      );
+
+      dispatch(actions.messagesAdd([message1, message2]));
+
+      const messages = getMutableMessagesById(getState());
+      expect(messages.size).toBe(2);
+
+      const repeat = getAllRepeatById(getState());
+      expect(Object.keys(repeat).length).toBe(0);
+    });
+
     it("adds a message in response to console.clear()", () => {
       const { dispatch, getState } = setupStore([]);
 
       dispatch(actions.messagesAdd([stubPackets.get("console.clear()")]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
       expect(messages.size).toBe(1);
       expect(getFirstMessage(getState()).parameters[0]).toBe(
@@ -271,13 +314,14 @@ describe("Message reducer:", () => {
       dispatch(actions.messagesClear());
 
       const state = getState();
-      expect(getAllMessagesById(state).size).toBe(0);
+      expect(getMutableMessagesById(state).size).toBe(0);
       expect(getVisibleMessages(state).length).toBe(0);
       expect(getAllMessagesUiById(state).length).toBe(0);
       expect(getGroupsById(state).size).toBe(0);
-      expect(getAllMessagesPayloadById(state).size).toBe(0);
+      expect(getAllCssMessagesMatchingElements(state).size).toBe(0);
       expect(getCurrentGroup(state)).toBe(null);
       expect(getAllRepeatById(state)).toEqual({});
+      expect(state.messages.mutableMessagesOrder).toEqual([]);
     });
 
     it("cleans the repeatsById object when messages are pruned", () => {
@@ -335,12 +379,15 @@ describe("Message reducer:", () => {
         dispatch(actions.messagesAdd([packet]));
       }
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(logLimit);
       expect(getFirstMessage(getState()).parameters[0]).toBe(`message num 3`);
       expect(getLastMessage(getState()).parameters[0]).toBe(
         `message num ${logLimit + 2}`
       );
+
+      const { mutableMessagesOrder } = getState().messages;
+      expect(mutableMessagesOrder.length).toBe(logLimit);
     });
 
     it("properly limits number of messages when there are nested groups", () => {
@@ -378,10 +425,13 @@ describe("Message reducer:", () => {
       }
 
       const visibleMessages = getVisibleMessages(getState());
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
+      const { mutableMessagesOrder } = getState().messages;
 
       expect(messages.size).toBe(logLimit);
       expect(visibleMessages.length).toBe(logLimit);
+      expect(mutableMessagesOrder.length).toBe(logLimit);
+
       expect(messages.get(visibleMessages[0]).parameters[0]).toBe(`message-0`);
       expect(messages.get(visibleMessages[logLimit - 1]).parameters[0]).toBe(
         `message-${logLimit - 1}`
@@ -412,7 +462,7 @@ describe("Message reducer:", () => {
       }
 
       const visibleMessages = getVisibleMessages(getState());
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       // We should have three times the logLimit since each group has one message inside.
       expect(messages.size).toBe(logLimit * 3);
 
@@ -450,7 +500,7 @@ describe("Message reducer:", () => {
         dispatch(actions.messagesAdd([packetGroupEnd]));
       }
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       // We should have three times the logLimit since each group has two message inside.
       expect(messages.size).toBe(logLimit * 3);
 
@@ -477,7 +527,7 @@ describe("Message reducer:", () => {
       const message = stubPackets.get("console.time('bar')");
       dispatch(actions.messagesAdd([message]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(0);
     });
 
@@ -497,7 +547,7 @@ describe("Message reducer:", () => {
       const message = stubPackets.get("console.group('bar')");
       dispatch(actions.messagesAdd([message]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(1);
     });
 
@@ -536,7 +586,7 @@ describe("Message reducer:", () => {
       const isNotGroupEnd = p => p !== groupEndPacket;
       const messageCount = packets.filter(isNotGroupEnd).length;
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       const visibleMessages = getVisibleMessages(getState());
       expect(messages.size).toBe(messageCount);
       expect(visibleMessages.length).toBe(messageCount);
@@ -552,7 +602,7 @@ describe("Message reducer:", () => {
         ])
       );
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(2);
       expect(getLastMessage(getState()).groupId).toBe(
         getFirstMessage(getState()).id
@@ -565,7 +615,7 @@ describe("Message reducer:", () => {
       const message = stubPackets.get("console.groupEnd('bar')");
       dispatch(actions.messagesAdd([message]));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(0);
     });
 
@@ -602,7 +652,74 @@ describe("Message reducer:", () => {
 
       dispatch(actions.messagesAdd([packet]));
       // The message should not be added to the state.
-      expect(getAllMessagesById(getState()).size).toBe(0);
+      expect(getMutableMessagesById(getState()).size).toBe(0);
+    });
+  });
+
+  describe("mutableMessagesOrder", () => {
+    it("adds a message to an empty store", () => {
+      const { dispatch, getState } = setupStore();
+
+      const packet = stubPackets.get("console.log('foobar', 'test')");
+      dispatch(actions.messagesAdd([packet]));
+
+      const { mutableMessagesOrder } = getState().messages;
+      expect(mutableMessagesOrder.length).toBe(1);
+      expect(mutableMessagesOrder[0]).toBe(
+        // Don't get getMessageIndexAt/getFirstMessage since it relies on mutableMessagesOrder
+        [...getMutableMessagesById(getState()).keys()][0]
+      );
+    });
+
+    it("reorder messages", () => {
+      const { dispatch, getState } = setupStore();
+
+      const naNpacket = stubPackets.get("console.log(NaN)");
+      dispatch(actions.messagesAdd([naNpacket]));
+
+      // Add a message that has a shorter timestamp than the previous one, and thus, should
+      // be displayed before
+      const nullPacket = clonePacket(stubPackets.get("console.log(null)"));
+      nullPacket.message.timeStamp = naNpacket.message.timeStamp - 10;
+      dispatch(actions.messagesAdd([nullPacket]));
+
+      // Add a message that should be display between the 2 previous messages
+      const undefinedPacket = clonePacket(
+        stubPackets.get("console.log(undefined)")
+      );
+      undefinedPacket.message.timeStamp = naNpacket.message.timeStamp - 5;
+      dispatch(actions.messagesAdd([undefinedPacket]));
+
+      const { mutableMessagesOrder } = getState().messages;
+      const [nanMessage, nullMessage, undefinedMessage] = [
+        ...getMutableMessagesById(getState()).values(),
+      ];
+      const visibleMessages = getVisibleMessages(getState());
+
+      // Checking that messages in the Map are the expected ones
+      expect(nanMessage.parameters[0].type).toBe("NaN");
+      expect(nullMessage.parameters[0].type).toBe("null");
+      expect(undefinedMessage.parameters[0].type).toBe("undefined");
+
+      // Check that mutableMessagesOrder has the message ids in the chronological order
+      expect(mutableMessagesOrder).toEqual([
+        nullMessage.id,
+        undefinedMessage.id,
+        nanMessage.id,
+      ]);
+
+      // Since we didn't filtered anything, visibleMessages should be similar to mutableMessagesOrder
+      expect(mutableMessagesOrder).toEqual(visibleMessages);
+
+      // Check that visibleMessages is computed from mutableMessagesOrder when filtering
+      dispatch(actions.filterToggle("log"));
+      expect(getVisibleMessages(getState())).toEqual([]);
+      dispatch(actions.filterToggle("log"));
+      expect(getVisibleMessages(getState())).toEqual([
+        nullMessage.id,
+        undefinedMessage.id,
+        nanMessage.id,
+      ]);
     });
   });
 
@@ -881,15 +998,9 @@ describe("Message reducer:", () => {
       let updatePacket = clonePacket(stubPackets.get("GET request update"));
 
       packet.actor = "message1";
-      updatePacket.networkInfo.actor = "message1";
+      updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1"]);
@@ -897,15 +1008,9 @@ describe("Message reducer:", () => {
       packet = clonePacket(stubPackets.get("GET request"));
       updatePacket = stubPackets.get("XHR GET request update");
       packet.actor = "message2";
-      updatePacket.networkInfo.actor = "message2";
+      updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1", "message2"]);
@@ -915,16 +1020,10 @@ describe("Message reducer:", () => {
       const { dispatch, getState } = setupStore(["XHR GET request"]);
 
       const updatePacket = stubPackets.get("XHR GET request update");
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
-      expect(Object.keys(networkUpdates).length > 0).toBe(true);
+      expect(!!Object.keys(networkUpdates).length).toBe(true);
 
       dispatch(actions.messagesClear());
 
@@ -945,40 +1044,22 @@ describe("Message reducer:", () => {
         stubPackets.get("XHR GET request update")
       );
       packet.actor = "message1";
-      updatePacket.networkInfo.actor = "message1";
+      updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       packet.actor = "message2";
-      updatePacket.networkInfo.actor = "message2";
+      updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       packet.actor = "message3";
-      updatePacket.networkInfo.actor = "message3";
+      updatePacket.actor = "message3";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdates([updatePacket], null));
 
       // Check that we have the expected data.
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       const [
         firstNetworkMessageId,
         secondNetworkMessageId,
@@ -1019,68 +1100,86 @@ describe("Message reducer:", () => {
     });
   });
 
-  describe("messagesPayloadById", () => {
-    it("resets messagesPayloadById in response to MESSAGES_CLEAR action", () => {
+  describe("cssMessagesMatchingElements", () => {
+    it("resets cssMessagesMatchingElements in response to MESSAGES_CLEAR action", () => {
       const { dispatch, getState } = setupStore([
-        "console.table(['a', 'b', 'c'])",
+        `Unknown property ‘such-unknown-property’.  Declaration dropped.`,
       ]);
 
-      const data = Symbol("tableData");
-      dispatch(
-        actions.messageUpdatePayload(getFirstMessage(getState()).id, data)
-      );
-      const table = getAllMessagesPayloadById(getState());
-      expect(table.size).toBe(1);
-      expect(table.get(getFirstMessage(getState()).id)).toBe(data);
+      const data = Symbol();
+      dispatch({
+        type: CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
+        id: getFirstMessage(getState()).id,
+        elements: data,
+      });
+
+      const matchingElements = getAllCssMessagesMatchingElements(getState());
+      expect(matchingElements.size).toBe(1);
+      expect(matchingElements.get(getFirstMessage(getState()).id)).toBe(data);
 
       dispatch(actions.messagesClear());
 
-      expect(getAllMessagesPayloadById(getState()).size).toBe(0);
+      expect(getAllCssMessagesMatchingElements(getState()).size).toBe(0);
     });
 
-    it("cleans the messagesPayloadById property when messages are pruned", () => {
+    it("cleans the cssMessagesMatchingElements property when messages are pruned", () => {
       const { dispatch, getState } = setupStore([], {
         storeOptions: {
           logLimit: 2,
         },
       });
 
-      // Add 2 table message and their data.
+      // Add 2 css warnings message and their associated data.
       dispatch(
-        actions.messagesAdd([stubPackets.get("console.table(['a', 'b', 'c'])")])
+        actions.messagesAdd([
+          stubPackets.get(
+            `Unknown property ‘such-unknown-property’.  Declaration dropped.`
+          ),
+        ])
       );
       dispatch(
         actions.messagesAdd([
-          stubPackets.get("console.table(['red', 'green', 'blue']);"),
+          stubPackets.get(
+            `Error in parsing value for ‘padding-top’.  Declaration dropped.`
+          ),
         ])
       );
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
 
-      const tableData1 = Symbol();
-      const tableData2 = Symbol();
+      const data1 = Symbol();
+      const data2 = Symbol();
       const [id1, id2] = [...messages.keys()];
-      dispatch(actions.messageUpdatePayload(id1, tableData1));
-      dispatch(actions.messageUpdatePayload(id2, tableData2));
 
-      let table = getAllMessagesPayloadById(getState());
-      expect(table.size).toBe(2);
+      dispatch({
+        type: CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
+        id: id1,
+        elements: data1,
+      });
+      dispatch({
+        type: CSS_MESSAGE_ADD_MATCHING_ELEMENTS,
+        id: id2,
+        elements: data2,
+      });
 
-      // This addition will remove the first table message.
+      let matchingElements = getAllCssMessagesMatchingElements(getState());
+      expect(matchingElements.size).toBe(2);
+
+      // This addition will remove the first css warning.
       dispatch(
         actions.messagesAdd([stubPackets.get("console.log(undefined)")])
       );
 
-      table = getAllMessagesPayloadById(getState());
-      expect(table.size).toBe(1);
-      expect(table.get(id2)).toBe(tableData2);
+      matchingElements = getAllCssMessagesMatchingElements(getState());
+      expect(matchingElements.size).toBe(1);
+      expect(matchingElements.get(id2)).toBe(data2);
 
-      // This addition will remove the second table message.
+      // This addition will remove the second css warning.
       dispatch(
         actions.messagesAdd([stubPackets.get("console.log('foobar', 'test')")])
       );
 
-      expect(getAllMessagesPayloadById(getState()).size).toBe(0);
+      expect(getAllCssMessagesMatchingElements(getState()).size).toBe(0);
     });
   });
 
@@ -1107,7 +1206,7 @@ describe("Message reducer:", () => {
       dispatch(actions.messagesAdd([packet1, packet2, packet3]));
 
       // There is still only two messages being logged,
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
       expect(messages.size).toBe(2);
 
       // the second one being repeated 3 times
@@ -1132,14 +1231,75 @@ describe("Message reducer:", () => {
       const secondTraceMessage = getMessageAt(getState(), 2);
       dispatch(actions.messageRemove(secondTraceMessage.id));
 
-      const messages = getAllMessagesById(getState());
+      const messages = getMutableMessagesById(getState());
+      const { mutableMessagesOrder } = getState().messages;
       // The messages was removed
       expect(messages.size).toBe(3);
+      expect(mutableMessagesOrder.length).toBe(3);
 
       // Its id was removed from the messagesUI property as well
       expanded = getAllMessagesUiById(getState());
       expect(expanded.length).toBe(1);
       expect(expanded.includes(secondTraceMessage.id)).toBeFalsy();
+    });
+  });
+
+  describe("disabledMessagesById", () => {
+    it("adds messages ids to disabledMessagesById when message disable action is called", () => {
+      const { dispatch, getState } = setupStore();
+
+      dispatch(actions.messagesDisable(["message1", "message2"]));
+
+      const disabledMessages = getAllDisabledMessagesById(getState());
+      expect(disabledMessages).toEqual(["message1", "message2"]);
+    });
+
+    it("clears disabledMessagesById in response to MESSAGES_CLEAR action", () => {
+      const { dispatch, getState } = setupStore();
+
+      dispatch(actions.messagesDisable(["message1", "message2"]));
+
+      let disabledMessages = getAllDisabledMessagesById(getState());
+      expect(disabledMessages).toEqual(["message1", "message2"]);
+
+      dispatch(actions.messagesClear());
+
+      disabledMessages = getAllDisabledMessagesById(getState());
+      expect(disabledMessages).toEqual([]);
+    });
+
+    it("remove message id from disabledMessagesById when the message is removed", () => {
+      const { dispatch, getState } = setupStore(
+        [
+          "console.log('foobar', 'test')",
+          "XHR GET request update",
+          "console.log(undefined)",
+        ],
+        {
+          actions,
+          storeOptions: {
+            logLimit: 3,
+          },
+        }
+      );
+
+      // This is `console.log('foobar', 'test'`
+      const firstMessageId = getMessageAt(getState(), 0).id;
+      // This is for `XHR GET request update`
+      const secondMessageId = getMessageAt(getState(), 1).id;
+
+      dispatch(actions.messagesDisable([firstMessageId, secondMessageId]));
+
+      let disabledMessages = getAllDisabledMessagesById(getState());
+      expect(disabledMessages).toEqual([firstMessageId, secondMessageId]);
+
+      // Adding a new message should prune the first(oldest) message and should
+      // remove its id from the disabled messages list.
+      const packet = stubPackets.get("GET request");
+      dispatch(actions.messagesAdd([packet]));
+
+      disabledMessages = getAllDisabledMessagesById(getState());
+      expect(disabledMessages).toEqual([secondMessageId]);
     });
   });
 });

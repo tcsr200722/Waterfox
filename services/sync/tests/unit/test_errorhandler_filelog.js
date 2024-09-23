@@ -1,12 +1,20 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { Service } = ChromeUtils.import("resource://services-sync/service.js");
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+// `Service` is used as a global in head_helpers.js.
+// eslint-disable-next-line no-unused-vars
+const { Service } = ChromeUtils.importESModule(
+  "resource://services-sync/service.sys.mjs"
+);
+const { logManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsCommon.sys.mjs"
+);
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
 
-const logsdir = FileUtils.getDir("ProfD", ["weave", "logs"], true);
+const logsdir = FileUtils.getDir("ProfD", ["weave", "logs"]);
+logsdir.create(Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
 
 // Delay to wait before cleanup, to allow files to age.
 // This is so large because the file timestamp granularity is per-second, and
@@ -15,8 +23,6 @@ const logsdir = FileUtils.getDir("ProfD", ["weave", "logs"], true);
 const CLEANUP_DELAY = 2000;
 const DELAY_BUFFER = 500; // Buffer for timers on different OS platforms.
 
-var errorHandler = Service.errorHandler;
-
 function run_test() {
   validate_all_future_pings();
   run_next_test();
@@ -24,21 +30,23 @@ function run_test() {
 
 add_test(function test_noOutput() {
   // Ensure that the log appender won't print anything.
-  errorHandler._logManager._fileAppender.level = Log.Level.Fatal + 1;
+  logManager._fileAppender.level = Log.Level.Fatal + 1;
 
   // Clear log output from startup.
-  Svc.Prefs.set("log.appender.file.logOnSuccess", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", false);
   Svc.Obs.notify("weave:service:sync:finish");
   Svc.Obs.add("weave:service:reset-file-log", function onResetFileLogOuter() {
     Svc.Obs.remove("weave:service:reset-file-log", onResetFileLogOuter);
     // Clear again without having issued any output.
-    Svc.Prefs.set("log.appender.file.logOnSuccess", true);
+    Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", true);
 
     Svc.Obs.add("weave:service:reset-file-log", function onResetFileLogInner() {
       Svc.Obs.remove("weave:service:reset-file-log", onResetFileLogInner);
 
-      errorHandler._logManager._fileAppender.level = Log.Level.Trace;
-      Svc.Prefs.resetBranch("");
+      logManager._fileAppender.level = Log.Level.Trace;
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
 
@@ -48,7 +56,7 @@ add_test(function test_noOutput() {
 });
 
 add_test(function test_logOnSuccess_false() {
-  Svc.Prefs.set("log.appender.file.logOnSuccess", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", false);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   log.info("this won't show up");
@@ -58,7 +66,9 @@ add_test(function test_logOnSuccess_false() {
     // No log file was written.
     Assert.ok(!logsdir.directoryEntries.hasMoreElements());
 
-    Svc.Prefs.resetBranch("");
+    for (const pref of Svc.PrefBranch.getChildList("")) {
+      Svc.PrefBranch.clearUserPref(pref);
+    }
     run_next_test();
   });
 
@@ -72,7 +82,7 @@ function readFile(file, callback) {
       uri: NetUtil.newURI(file),
       loadUsingSystemPrincipal: true,
     },
-    function(inputStream, statusCode, request) {
+    function (inputStream, statusCode) {
       let data = NetUtil.readInputStreamToString(
         inputStream,
         inputStream.available()
@@ -83,7 +93,7 @@ function readFile(file, callback) {
 }
 
 add_test(function test_logOnSuccess_true() {
-  Svc.Prefs.set("log.appender.file.logOnSuccess", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", true);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   const MESSAGE = "this WILL show up";
@@ -101,7 +111,7 @@ add_test(function test_logOnSuccess_true() {
     Assert.ok(!entries.hasMoreElements());
 
     // Ensure the log message was actually written to file.
-    readFile(logfile, function(error, data) {
+    readFile(logfile, function (error, data) {
       Assert.ok(Components.isSuccessCode(error));
       Assert.notEqual(data.indexOf(MESSAGE), -1);
 
@@ -113,7 +123,9 @@ add_test(function test_logOnSuccess_true() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
   });
@@ -123,7 +135,7 @@ add_test(function test_logOnSuccess_true() {
 });
 
 add_test(function test_sync_error_logOnError_false() {
-  Svc.Prefs.set("log.appender.file.logOnError", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", false);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   log.info("this won't show up");
@@ -133,7 +145,9 @@ add_test(function test_sync_error_logOnError_false() {
     // No log file was written.
     Assert.ok(!logsdir.directoryEntries.hasMoreElements());
 
-    Svc.Prefs.resetBranch("");
+    for (const pref of Svc.PrefBranch.getChildList("")) {
+      Svc.PrefBranch.clearUserPref(pref);
+    }
     run_next_test();
   });
 
@@ -142,7 +156,7 @@ add_test(function test_sync_error_logOnError_false() {
 });
 
 add_test(function test_sync_error_logOnError_true() {
-  Svc.Prefs.set("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   const MESSAGE = "this WILL show up";
@@ -160,7 +174,7 @@ add_test(function test_sync_error_logOnError_true() {
     Assert.ok(!entries.hasMoreElements());
 
     // Ensure the log message was actually written to file.
-    readFile(logfile, function(error, data) {
+    readFile(logfile, function (error, data) {
       Assert.ok(Components.isSuccessCode(error));
       Assert.notEqual(data.indexOf(MESSAGE), -1);
 
@@ -172,7 +186,9 @@ add_test(function test_sync_error_logOnError_true() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
   });
@@ -182,7 +198,7 @@ add_test(function test_sync_error_logOnError_true() {
 });
 
 add_test(function test_login_error_logOnError_false() {
-  Svc.Prefs.set("log.appender.file.logOnError", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", false);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   log.info("this won't show up");
@@ -192,7 +208,9 @@ add_test(function test_login_error_logOnError_false() {
     // No log file was written.
     Assert.ok(!logsdir.directoryEntries.hasMoreElements());
 
-    Svc.Prefs.resetBranch("");
+    for (const pref of Svc.PrefBranch.getChildList("")) {
+      Svc.PrefBranch.clearUserPref(pref);
+    }
     run_next_test();
   });
 
@@ -201,7 +219,7 @@ add_test(function test_login_error_logOnError_false() {
 });
 
 add_test(function test_login_error_logOnError_true() {
-  Svc.Prefs.set("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   const MESSAGE = "this WILL show up";
@@ -219,7 +237,7 @@ add_test(function test_login_error_logOnError_true() {
     Assert.ok(!entries.hasMoreElements());
 
     // Ensure the log message was actually written to file.
-    readFile(logfile, function(error, data) {
+    readFile(logfile, function (error, data) {
       Assert.ok(Components.isSuccessCode(error));
       Assert.notEqual(data.indexOf(MESSAGE), -1);
 
@@ -231,7 +249,9 @@ add_test(function test_login_error_logOnError_true() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
   });
@@ -241,15 +261,17 @@ add_test(function test_login_error_logOnError_true() {
 });
 
 add_test(function test_noNewFailed_noErrorLog() {
-  Svc.Prefs.set("log.appender.file.logOnError", true);
-  Svc.Prefs.set("log.appender.file.logOnSuccess", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", false);
 
   Svc.Obs.add("weave:service:reset-file-log", function onResetFileLog() {
     Svc.Obs.remove("weave:service:reset-file-log", onResetFileLog);
     // No log file was written.
     Assert.ok(!logsdir.directoryEntries.hasMoreElements());
 
-    Svc.Prefs.resetBranch("");
+    for (const pref of Svc.PrefBranch.getChildList("")) {
+      Svc.PrefBranch.clearUserPref(pref);
+    }
     run_next_test();
   });
   // failed is nonzero and newFailed is zero -- shouldn't write a log.
@@ -265,8 +287,8 @@ add_test(function test_noNewFailed_noErrorLog() {
 });
 
 add_test(function test_newFailed_errorLog() {
-  Svc.Prefs.set("log.appender.file.logOnError", true);
-  Svc.Prefs.set("log.appender.file.logOnSuccess", false);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnSuccess", false);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   const MESSAGE = "this WILL show up 2";
@@ -284,7 +306,7 @@ add_test(function test_newFailed_errorLog() {
     Assert.ok(!entries.hasMoreElements());
 
     // Ensure the log message was actually written to file.
-    readFile(logfile, function(error, data) {
+    readFile(logfile, function (error, data) {
       Assert.ok(Components.isSuccessCode(error));
       Assert.notEqual(data.indexOf(MESSAGE), -1);
 
@@ -296,7 +318,9 @@ add_test(function test_newFailed_errorLog() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
   });
@@ -314,8 +338,8 @@ add_test(function test_newFailed_errorLog() {
 });
 
 add_test(function test_errorLog_dumpAddons() {
-  Svc.Prefs.set("log.logger", "Trace");
-  Svc.Prefs.set("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setStringPref("log.logger", "Trace");
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
 
   Svc.Obs.add("weave:service:reset-file-log", function onResetFileLog() {
     Svc.Obs.remove("weave:service:reset-file-log", onResetFileLog);
@@ -328,7 +352,7 @@ add_test(function test_errorLog_dumpAddons() {
     Assert.ok(!entries.hasMoreElements());
 
     // Ensure we logged some addon list (which is probably empty)
-    readFile(logfile, function(error, data) {
+    readFile(logfile, function (error, data) {
       Assert.ok(Components.isSuccessCode(error));
       Assert.notEqual(data.indexOf("Addons installed"), -1);
 
@@ -340,7 +364,9 @@ add_test(function test_errorLog_dumpAddons() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     });
   });
@@ -350,21 +376,23 @@ add_test(function test_errorLog_dumpAddons() {
 });
 
 // Check that error log files are deleted above an age threshold.
-add_test(function test_logErrorCleanup_age() {
+add_test(async function test_logErrorCleanup_age() {
   _("Beginning test_logErrorCleanup_age.");
   let maxAge = CLEANUP_DELAY / 1000;
   let oldLogs = [];
   let numLogs = 10;
   let errString = "some error log\n";
 
-  Svc.Prefs.set("log.appender.file.logOnError", true);
-  Svc.Prefs.set("log.appender.file.maxErrorAge", maxAge);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setIntPref("log.appender.file.maxErrorAge", maxAge);
 
   _("Making some files.");
+  const logsDir = PathUtils.join(PathUtils.profileDir, "weave", "logs");
+  await IOUtils.makeDirectory(logsDir);
   for (let i = 0; i < numLogs; i++) {
     let now = Date.now();
     let filename = "error-sync-" + now + "" + i + ".txt";
-    let newLog = FileUtils.getFile("ProfD", ["weave", "logs", filename]);
+    let newLog = new FileUtils.File(PathUtils.join(logsDir, filename));
     let foStream = FileUtils.openFileOutputStream(newLog);
     foStream.write(errString, errString.length);
     foStream.close();
@@ -385,7 +413,7 @@ add_test(function test_logErrorCleanup_age() {
       Assert.ok(entries.hasMoreElements());
       let logfile = entries.getNext().QueryInterface(Ci.nsIFile);
       Assert.ok(
-        oldLogs.every(function(e) {
+        oldLogs.every(function (e) {
           return e != logfile.leafName;
         })
       );
@@ -399,7 +427,9 @@ add_test(function test_logErrorCleanup_age() {
         // Stupid Windows box.
       }
 
-      Svc.Prefs.resetBranch("");
+      for (const pref of Svc.PrefBranch.getChildList("")) {
+        Svc.PrefBranch.clearUserPref(pref);
+      }
       run_next_test();
     }
   );
@@ -418,7 +448,7 @@ add_test(function test_logErrorCleanup_age() {
 });
 
 add_task(async function test_remove_log_on_startOver() {
-  Svc.Prefs.set("log.appender.file.logOnError", true);
+  Svc.PrefBranch.setBoolPref("log.appender.file.logOnError", true);
 
   let log = Log.repository.getLogger("Sync.Test.FileLog");
   const MESSAGE = "this WILL show up";

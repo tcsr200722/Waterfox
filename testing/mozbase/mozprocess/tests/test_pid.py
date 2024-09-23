@@ -1,15 +1,10 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import
-
 import os
 
 import mozunit
-
-from mozprocess import processhandler
-
 import proctest
-
+from mozprocess import processhandler
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -25,9 +20,9 @@ class ProcTestPid(proctest.ProcTest):
 
     def test_pid_while_running(self):
         """Process is started, and pid is checked."""
-        p = processhandler.ProcessHandler([self.python, self.proclaunch,
-                                           "process_normal_finish.ini"],
-                                          cwd=here)
+        p = processhandler.ProcessHandler(
+            [self.python, self.proclaunch, "process_normal_finish.ini"], cwd=here
+        )
         p.run()
 
         self.assertIsNotNone(p.pid)
@@ -37,9 +32,9 @@ class ProcTestPid(proctest.ProcTest):
 
     def test_pid_after_kill(self):
         """Process is killed, and pid is checked."""
-        p = processhandler.ProcessHandler([self.python, self.proclaunch,
-                                           "process_normal_finish.ini"],
-                                          cwd=here)
+        p = processhandler.ProcessHandler(
+            [self.python, self.proclaunch, "process_normal_finish.ini"], cwd=here
+        )
         p.run()
         p.kill()
 
@@ -47,5 +42,5 @@ class ProcTestPid(proctest.ProcTest):
         self.determine_status(p)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

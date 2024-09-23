@@ -56,7 +56,7 @@ class DecodePool final : public nsIObserver {
 
   /// True if the DecodePool is being shutdown. This may only be called by
   /// threads from the pool to check if they should keep working or not.
-  bool IsShuttingDown() const;
+  static bool IsShuttingDown();
 
   /// Ask the DecodePool to run @aTask asynchronously and return immediately.
   void AsyncRun(IDecodingTask* aTask);
@@ -83,9 +83,9 @@ class DecodePool final : public nsIObserver {
    * who want to deliver data to workers on the DecodePool can use this event
    * target.
    *
-   * @return An nsIEventTarget interface to the thread pool's I/O thread.
+   * @return An nsISerialEventTarget interface to the thread pool's I/O thread.
    */
-  already_AddRefed<nsIEventTarget> GetIOEventTarget();
+  already_AddRefed<nsISerialEventTarget> GetIOEventTarget();
 
  private:
   friend class DecodePoolWorker;
@@ -95,12 +95,11 @@ class DecodePool final : public nsIObserver {
 
   static StaticRefPtr<DecodePool> sSingleton;
   static uint32_t sNumCores;
-
-  RefPtr<DecodePoolImpl> mImpl;
+  bool mShuttingDown = false;
 
   // mMutex protects mIOThread.
   Mutex mMutex;
-  nsCOMPtr<nsIThread> mIOThread;
+  nsCOMPtr<nsIThread> mIOThread MOZ_GUARDED_BY(mMutex);
 };
 
 }  // namespace image

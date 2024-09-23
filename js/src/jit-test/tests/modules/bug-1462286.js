@@ -1,10 +1,8 @@
-load(libdir + "dummyModuleResolveHook.js");
-
-let a = moduleRepo['a'] = parseModule(`
+let a = registerModule('a', parseModule(`
   export var { ... get } = { x: "foo" };
-`);
+`));
 
 let m = parseModule("import { get } from 'a'; export { get };");
-m.declarationInstantiation();
-m.evaluation()
+moduleLink(m);
+moduleEvaluate(m)
 assertEq(getModuleEnvironmentValue(m, "get").x, "foo");

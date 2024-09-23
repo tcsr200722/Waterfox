@@ -1,3 +1,5 @@
+// |jit-test| --enable-import-assertions
+
 load(libdir + "match.js");
 load(libdir + "asserts.js");
 
@@ -7,12 +9,22 @@ program = (elts) => Pattern({
     type: "Program",
     body: elts
 })
-exportDeclaration = (declaration, specifiers, source, isDefault) => Pattern({
+exportDeclaration = (declaration, specifiers, moduleRequest, isDefault) => Pattern({
     type: "ExportDeclaration",
     declaration: declaration,
     specifiers: specifiers,
-    source: source,
+    moduleRequest: moduleRequest,
     isDefault: isDefault
+});
+moduleRequest = (specifier, attributes) => Pattern({
+    type: "ModuleRequest",
+    source: specifier,
+    attributes: attributes
+});
+importAttribute = (key, value) => Pattern({
+    type: "ImportAttribute",
+    key: key,
+    value : value
 });
 exportSpecifier = (id, name) => Pattern({
     type: "ExportSpecifier",
@@ -222,7 +234,10 @@ program([
                 ident("a")
             )
         ],
-        lit("b"),
+        moduleRequest(
+            lit("b"),
+            [],
+        ),
         false
     )
 ]).assert(parseAsModule("export { a } from 'b'"));
@@ -233,7 +248,10 @@ program([
         [
             exportBatchSpecifier()
         ],
-        lit("a"),
+        moduleRequest(
+            lit("a"),
+            [],
+        ),
         false
     )
 ]).assert(parseAsModule("export * from 'a'"));
@@ -370,6 +388,71 @@ program([
     )
 ]).assert(parseAsModule("export default 1234"));
 
+if (getRealmConfiguration("importAttributes")) {
+    program([
+        exportDeclaration(
+            null,
+            [
+                exportSpecifier(
+                    ident("a"),
+                    ident("a")
+                )
+            ],
+            moduleRequest(
+                lit("b"),
+                [
+                    importAttribute(ident('type'), lit('js')),
+                ]
+            ),
+            false
+        )
+    ]).assert(parseAsModule("export { a } from 'b'  assert { type: 'js' } "));
+
+    program([
+        exportDeclaration(
+            null,
+            [
+                exportSpecifier(
+                    ident("a"),
+                    ident("a")
+                )
+            ],
+            moduleRequest(
+                lit("b"),
+                [
+                    importAttribute(ident('foo'), lit('bar')),
+                ],
+            ),
+            false
+        )
+    ]).assert(parseAsModule("export { a } from 'b'  assert { foo: 'bar', } "));
+
+    program([
+        exportDeclaration(
+            null,
+            [
+                exportSpecifier(
+                    ident("a"),
+                    ident("a")
+                )
+            ],
+            moduleRequest(
+                lit("b"),
+                [
+                    importAttribute(ident('type'), lit('js')),
+                    importAttribute(ident('foo'), lit('bar')),
+                    importAttribute(ident('test'), lit('123')),
+                ]
+            ),
+            false
+        )
+    ]).assert(parseAsModule("export { a } from 'b'  assert { type: 'js', foo: 'bar', 'test': '123' } "));
+
+    assertThrowsInstanceOf(function () {
+        parseAsModule("export { a } from 'b'  assert { type: type }");
+    }, SyntaxError);
+}
+
 assertThrowsInstanceOf(function () {
    parseAsModule("export default 1234 5678");
 }, SyntaxError);
@@ -379,9 +462,9 @@ var loc = parseAsModule("export { a as b } from 'c'", {
 }).body[0].loc;
 
 assertEq(loc.start.line, 1);
-assertEq(loc.start.column, 0);
+assertEq(loc.start.column, 1);
 assertEq(loc.start.line, 1);
-assertEq(loc.end.column, 26);
+assertEq(loc.end.column, 27);
 
 assertThrowsInstanceOf(function () {
    parseAsModule("function f() { export a }");
@@ -412,7 +495,10 @@ program([
                 ident("true")
             ),
         ],
-        lit("b"),
+        moduleRequest(
+            lit("b"),
+            [],
+        ),
         false
     )
 ]).assert(parseAsModule("export { true } from 'b'"));
@@ -426,7 +512,10 @@ program([
                 ident("name")
             ),
         ],
-        lit("b"),
+        moduleRequest(
+            lit("b"),
+            [],
+        ),
         false
     )
 ]).assert(parseAsModule("export { true as name } from 'b'"));

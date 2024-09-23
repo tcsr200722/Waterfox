@@ -5,7 +5,7 @@
 
 // This test makes sure that opening a new tab in private browsing mode opens about:privatebrowsing
 add_task(async function testPBNewTab() {
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     for (let win of windowsToClose) {
       await BrowserTestUtils.closeWindow(win);
     }
@@ -44,19 +44,14 @@ add_task(async function testPBNewTab() {
 
 async function openNewTab(aWindow, aExpectedURL) {
   // Open a new tab
-  aWindow.BrowserOpenTab();
-
+  aWindow.BrowserCommands.openTab();
   let browser = aWindow.gBrowser.selectedBrowser;
-  let loadPromise = BrowserTestUtils.browserLoaded(
-    browser,
-    false,
-    aExpectedURL
-  );
-  let alreadyLoaded = await ContentTask.spawn(browser, aExpectedURL, url => {
-    let doc = content.document;
-    return doc && doc.readyState === "complete" && doc.location.href == url;
-  });
-  if (!alreadyLoaded) {
-    await loadPromise;
+
+  // We're already loaded.
+  if (browser.currentURI.spec === aExpectedURL) {
+    return;
   }
+
+  // Wait for any location change.
+  await BrowserTestUtils.waitForLocationChange(aWindow.gBrowser);
 }

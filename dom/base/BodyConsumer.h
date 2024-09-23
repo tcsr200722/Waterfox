@@ -10,14 +10,12 @@
 #include "mozilla/dom/AbortSignal.h"
 #include "mozilla/dom/MutableBlobStorage.h"
 #include "nsIInputStreamPump.h"
-#include "nsNetUtil.h"
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
 
 class nsIThread;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Promise;
 class ThreadSafeWorkerRef;
@@ -31,12 +29,13 @@ class BodyConsumer final : public nsIObserver,
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOBSERVER
 
-  enum ConsumeType {
-    CONSUME_ARRAYBUFFER,
-    CONSUME_BLOB,
-    CONSUME_FORMDATA,
-    CONSUME_JSON,
-    CONSUME_TEXT,
+  enum class ConsumeType {
+    ArrayBuffer,
+    Blob,
+    Bytes,
+    FormData,
+    JSON,
+    Text,
   };
 
   /**
@@ -50,20 +49,23 @@ class BodyConsumer final : public nsIObserver,
    * @param aSignalImpl an AbortSignal object. Optional.
    * @param aType the consume type.
    * @param aBodyBlobURISpec this is used only if the consume type is
-   *          CONSUME_BLOB. Optional.
+   *          ConsumeType::Blob. Optional.
    * @param aBodyLocalPath local path in case the blob is created from a local
-   *          file. Used only by CONSUME_BLOB. Optional.
-   * @param aBodyMimeType the mime-type for blob. Used only by CONSUME_BLOB.
-   *          Optional.
+   *          file. Used only by ConsumeType::Blob. Optional.
+   * @param aBodyMimeType the mime-type for blob. Used only by
+   * ConsumeType::Blob. Optional.
+   * @param aMixedCaseMimeType is needed to get mixed case multipart
+   *          boundary value to FormDataParser.
    * @param aBlobStorageType Blobs can be saved in temporary file. This is the
-   *          type of blob storage to use. Used only by CONSUME_BLOB.
+   *          type of blob storage to use. Used only by ConsumeType::Blob.
    * @param aRv An ErrorResult.
    */
   static already_AddRefed<Promise> Create(
-      nsIGlobalObject* aGlobal, nsIEventTarget* aMainThreadEventTarget,
+      nsIGlobalObject* aGlobal, nsISerialEventTarget* aMainThreadEventTarget,
       nsIInputStream* aBodyStream, AbortSignalImpl* aSignalImpl,
       ConsumeType aType, const nsACString& aBodyBlobURISpec,
       const nsAString& aBodyLocalPath, const nsACString& aBodyMimeType,
+      const nsACString& aMixedCaseMimeType,
       MutableBlobStorage::MutableBlobStorageType aBlobStorageType,
       ErrorResult& aRv);
 
@@ -90,14 +92,15 @@ class BodyConsumer final : public nsIObserver,
   }
 
   // AbortFollower
-  void Abort() override;
+  void RunAbortAlgorithm() override;
 
  private:
-  BodyConsumer(nsIEventTarget* aMainThreadEventTarget,
+  BodyConsumer(nsISerialEventTarget* aMainThreadEventTarget,
                nsIGlobalObject* aGlobalObject, nsIInputStream* aBodyStream,
                Promise* aPromise, ConsumeType aType,
                const nsACString& aBodyBlobURISpec,
                const nsAString& aBodyLocalPath, const nsACString& aBodyMimeType,
+               const nsACString& aMixedCaseMimeType,
                MutableBlobStorage::MutableBlobStorageType aBlobStorageType);
 
   ~BodyConsumer();
@@ -107,13 +110,14 @@ class BodyConsumer final : public nsIObserver,
   void AssertIsOnTargetThread() const;
 
   nsCOMPtr<nsIThread> mTargetThread;
-  nsCOMPtr<nsIEventTarget> mMainThreadEventTarget;
+  nsCOMPtr<nsISerialEventTarget> mMainThreadEventTarget;
 
   // This is nullified when the consuming of the body starts.
   nsCOMPtr<nsIInputStream> mBodyStream;
 
   MutableBlobStorage::MutableBlobStorageType mBlobStorageType;
   nsCString mBodyMimeType;
+  nsCString mMixedCaseMimeType;
 
   nsCString mBodyBlobURISpec;
   nsString mBodyLocalPath;
@@ -134,7 +138,6 @@ class BodyConsumer final : public nsIObserver,
   bool mShuttingDown;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_BodyConsumer_h

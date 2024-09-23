@@ -14,6 +14,8 @@
 #include "mozilla/dom/VRDisplayBinding.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Base64.h"
+#include "mozilla/ProfilerMarkers.h"
+#include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
 #include "Navigator.h"
@@ -28,8 +30,7 @@
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 VRFieldOfView::VRFieldOfView(nsISupports* aParent, double aUpDegrees,
                              double aRightDegrees, double aDownDegrees,
@@ -115,33 +116,15 @@ void VRDisplay::UpdateVRDisplays(nsTArray<RefPtr<VRDisplay>>& aDisplays,
 }
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(VRFieldOfView, mParent)
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VRFieldOfView, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VRFieldOfView, Release)
 
 JSObject* VRFieldOfView::WrapObject(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {
   return VRFieldOfView_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(VREyeParameters)
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(VREyeParameters)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mParent, mFOV)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
-  tmp->mOffset = nullptr;
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(VREyeParameters)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mParent, mFOV)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(VREyeParameters)
-  NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
-  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mOffset)
-NS_IMPL_CYCLE_COLLECTION_TRACE_END
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VREyeParameters, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VREyeParameters, Release)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WITH_JS_MEMBERS(VREyeParameters,
+                                                      (mParent, mFOV),
+                                                      (mOffset))
 
 VREyeParameters::VREyeParameters(nsISupports* aParent,
                                  const gfx::Point3D& aEyeTranslation,
@@ -164,9 +147,8 @@ void VREyeParameters::GetOffset(JSContext* aCx,
   if (!mOffset) {
     // Lazily create the Float32Array
     mOffset =
-        dom::Float32Array::Create(aCx, this, 3, mEyeTranslation.components);
-    if (!mOffset) {
-      aRv.NoteJSContextException(aCx);
+        dom::Float32Array::Create(aCx, this, mEyeTranslation.components, aRv);
+    if (aRv.Failed()) {
       return;
     }
   }
@@ -213,17 +195,13 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(VRStageParameters)
       mSittingToStandingTransformArray)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VRStageParameters, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VRStageParameters, Release)
-
 void VRStageParameters::GetSittingToStandingTransform(
     JSContext* aCx, JS::MutableHandle<JSObject*> aRetval, ErrorResult& aRv) {
   if (!mSittingToStandingTransformArray) {
     // Lazily create the Float32Array
     mSittingToStandingTransformArray = dom::Float32Array::Create(
-        aCx, this, 16, mSittingToStandingTransform.components);
-    if (!mSittingToStandingTransformArray) {
-      aRv.NoteJSContextException(aCx);
+        aCx, this, mSittingToStandingTransform.components, aRv);
+    if (aRv.Failed()) {
       return;
     }
   }
@@ -231,8 +209,6 @@ void VRStageParameters::GetSittingToStandingTransform(
 }
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(VRDisplayCapabilities, mParent)
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VRDisplayCapabilities, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VRDisplayCapabilities, Release)
 
 JSObject* VRDisplayCapabilities::WrapObject(JSContext* aCx,
                                             JS::Handle<JSObject*> aGivenProto) {
@@ -260,7 +236,7 @@ void VRPose::GetPosition(JSContext* aCx, JS::MutableHandle<JSObject*> aRetval,
       bool(mVRState.flags &
            gfx::VRDisplayCapabilityFlags::Cap_PositionEmulated);
   SetFloat32Array(aCx, this, aRetval, mPosition,
-                  valid ? mVRState.pose.position : nullptr, 3, aRv);
+                  valid ? mVRState.pose.position.data() : nullptr, 3, aRv);
 }
 
 void VRPose::GetLinearVelocity(JSContext* aCx,
@@ -271,7 +247,8 @@ void VRPose::GetLinearVelocity(JSContext* aCx,
       bool(mVRState.flags &
            gfx::VRDisplayCapabilityFlags::Cap_PositionEmulated);
   SetFloat32Array(aCx, this, aRetval, mLinearVelocity,
-                  valid ? mVRState.pose.linearVelocity : nullptr, 3, aRv);
+                  valid ? mVRState.pose.linearVelocity.data() : nullptr, 3,
+                  aRv);
 }
 
 void VRPose::GetLinearAcceleration(JSContext* aCx,
@@ -280,7 +257,8 @@ void VRPose::GetLinearAcceleration(JSContext* aCx,
   const bool valid = bool(
       mVRState.flags & gfx::VRDisplayCapabilityFlags::Cap_LinearAcceleration);
   SetFloat32Array(aCx, this, aRetval, mLinearAcceleration,
-                  valid ? mVRState.pose.linearAcceleration : nullptr, 3, aRv);
+                  valid ? mVRState.pose.linearAcceleration.data() : nullptr, 3,
+                  aRv);
 }
 
 void VRPose::GetOrientation(JSContext* aCx,
@@ -289,7 +267,7 @@ void VRPose::GetOrientation(JSContext* aCx,
   const bool valid =
       bool(mVRState.flags & gfx::VRDisplayCapabilityFlags::Cap_Orientation);
   SetFloat32Array(aCx, this, aRetval, mOrientation,
-                  valid ? mVRState.pose.orientation : nullptr, 4, aRv);
+                  valid ? mVRState.pose.orientation.data() : nullptr, 4, aRv);
 }
 
 void VRPose::GetAngularVelocity(JSContext* aCx,
@@ -298,7 +276,8 @@ void VRPose::GetAngularVelocity(JSContext* aCx,
   const bool valid =
       bool(mVRState.flags & gfx::VRDisplayCapabilityFlags::Cap_Orientation);
   SetFloat32Array(aCx, this, aRetval, mAngularVelocity,
-                  valid ? mVRState.pose.angularVelocity : nullptr, 3, aRv);
+                  valid ? mVRState.pose.angularVelocity.data() : nullptr, 3,
+                  aRv);
 }
 
 void VRPose::GetAngularAcceleration(JSContext* aCx,
@@ -307,7 +286,8 @@ void VRPose::GetAngularAcceleration(JSContext* aCx,
   const bool valid = bool(
       mVRState.flags & gfx::VRDisplayCapabilityFlags::Cap_AngularAcceleration);
   SetFloat32Array(aCx, this, aRetval, mAngularAcceleration,
-                  valid ? mVRState.pose.angularAcceleration : nullptr, 3, aRv);
+                  valid ? mVRState.pose.angularAcceleration.data() : nullptr, 3,
+                  aRv);
 }
 
 void VRPose::Update(const gfx::VRHMDSensorState& aState) { mVRState = aState; }
@@ -379,7 +359,7 @@ uint32_t VRDisplay::DisplayId() const {
 
 void VRDisplay::GetDisplayName(nsAString& aDisplayName) const {
   const gfx::VRDisplayInfo& info = mClient->GetDisplayInfo();
-  aDisplayName = NS_ConvertUTF8toUTF16(info.GetDisplayName());
+  CopyUTF8toUTF16(MakeStringSpan(info.GetDisplayName()), aDisplayName);
 }
 
 void VRDisplay::UpdateFrameInfo() {
@@ -656,7 +636,7 @@ NS_IMPL_RELEASE_INHERITED(VRDisplay, DOMEventTargetHelper)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(VRDisplay)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, DOMEventTargetHelper)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, EventTarget)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(VRFrameData)
@@ -681,9 +661,6 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(VRFrameData)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mRightProjectionMatrix)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mRightViewMatrix)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VRFrameData, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VRFrameData, Release)
 
 VRFrameData::VRFrameData(nsISupports* aParent)
     : mParent(aParent),
@@ -786,9 +763,9 @@ void VRFrameInfo::Update(const gfx::VRDisplayInfo& aInfo,
       aInfo.mDisplayState.eyeFOV[gfx::VRDisplayState::Eye_Right];
   mRightProjection =
       rightFOV.ConstructProjectionMatrix(aDepthNear, aDepthFar, true);
-  memcpy(mLeftView.components, aState.leftViewMatrix,
+  memcpy(mLeftView.components, aState.leftViewMatrix.data(),
          sizeof(aState.leftViewMatrix));
-  memcpy(mRightView.components, aState.rightViewMatrix,
+  memcpy(mRightView.components, aState.rightViewMatrix.data(),
          sizeof(aState.rightViewMatrix));
 }
 
@@ -802,5 +779,4 @@ bool VRFrameInfo::IsDirty() { return mVRState.timestamp == 0; }
 
 void VRFrameInfo::Clear() { mVRState.Clear(); }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

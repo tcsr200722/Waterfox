@@ -16,12 +16,15 @@
 <pre id="test">
 
 <script class="testbody" type="text/javascript">
-const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const {BrowserTestUtils} = ChromeUtils.import("resource://testing-common/BrowserTestUtils.jsm");
+const {BrowserTestUtils} = ChromeUtils.importESModule(
+  "resource://testing-common/BrowserTestUtils.sys.mjs"
+);
 ;
-const {TestUtils} = ChromeUtils.import("resource://testing-common/TestUtils.jsm");
+const {TestUtils} = ChromeUtils.importESModule(
+  "resource://testing-common/TestUtils.sys.mjs"
+);
 
-var mainWindow = window.docShell.rootTreeItem.domWindow;
+var mainWindow = window.browsingContext.topChromeWindow;
 const SJS = "mochi.test:8888/chrome/toolkit/components/url-classifier/tests/mochitest/report.sjs";
 const BASE_URL = "http://" + SJS + "?";
 
@@ -72,7 +75,7 @@ function testOnWindow(aTestData, aCallback, aTestCreater) {
       let notification = await BrowserTestUtils.waitForNotificationBar(win.gBrowser, browser, "blocked-badware-page");
       ok(notification, "Notification box should be displayed");
 
-      let buttons = notification.getElementsByTagName("button");
+      let buttons = notification.buttonContainer.getElementsByTagName("button");
       let button = buttons[1];
       if (aTestData.provider != "google" && aTestData.provider != "google4") {
         is(button, undefined, "Report button should not be showed");
@@ -95,12 +98,12 @@ function testOnWindow(aTestData, aCallback, aTestCreater) {
 
 var createBlockedIframe = function(aWindow, aBrowser, aTopUrl, aUrl) {
   (async function() {
-    await BrowserTestUtils.loadURI(aBrowser, aTopUrl);
+    BrowserTestUtils.startLoadingURIString(aBrowser, aTopUrl);
     await BrowserTestUtils.browserLoaded(aBrowser);
 
     await SpecialPowers.spawn(aBrowser, [aUrl], async function(url) {
       return new Promise(resolve => {
-        let listener = e => {
+        let listener = () => {
           docShell.chromeEventHandler.removeEventListener("AboutBlockedLoaded", listener, false, true);
           resolve();
         };
@@ -117,9 +120,9 @@ var createBlockedIframe = function(aWindow, aBrowser, aTopUrl, aUrl) {
   })();
 };
 
-var createBlockedPage = function(aWindow, aBrowser, aTopUrl, aUrl) {
+var createBlockedPage = function(aWindow, aBrowser, aTopUrl) {
   (async function() {
-    await BrowserTestUtils.loadURI(aBrowser, aTopUrl);
+    BrowserTestUtils.startLoadingURIString(aBrowser, aTopUrl);
     await BrowserTestUtils.waitForContentEvent(aBrowser, "DOMContentLoaded");
 
     let doc = aWindow.gBrowser.contentDocument;

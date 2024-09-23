@@ -46,7 +46,6 @@
 #include "user_atomic.h"
 #include "netinet/sctp_pcb.h"
 
-struct mbstat mbstat;
 #define KIPC_MAX_LINKHDR        4       /* int: max length of link header (see sys/sysclt.h) */
 #define KIPC_MAX_PROTOHDR	5	/* int: max length of network header (see sys/sysclt.h)*/
 int max_linkhdr = KIPC_MAX_LINKHDR;
@@ -81,8 +80,6 @@ static void	mb_dtor_clust(void *, void *);
 static int mbuf_constructor_dup(struct mbuf *m, int pkthdr, short type)
 {
 	int flags = pkthdr;
-	if (type == MT_NOINIT)
-		return (0);
 
 	m->m_next = NULL;
 	m->m_nextpkt = NULL;
@@ -272,9 +269,9 @@ m_clget(struct mbuf *m, int how)
 		mclust_ret = SCTP_ZONE_GET(zone_clust, char);
 #endif
 		/*mclust_ret = umem_cache_alloc(zone_clust, UMEM_DEFAULT);*/
-		if (NULL == mclust_ret) {
-			SCTPDBG(SCTP_DEBUG_USR, "Memory allocation failure in %s\n", __func__);
-		}
+		/* if (NULL == mclust_ret) { */
+		SCTPDBG(SCTP_DEBUG_USR, "Memory allocation failure in %s\n", __func__);
+		/* } */
 	}
 
 #if USING_MBUF_CONSTRUCTOR
@@ -284,6 +281,166 @@ m_clget(struct mbuf *m, int how)
 #else
 	clust_constructor_dup(mclust_ret, m);
 #endif
+}
+
+struct mbuf *
+m_getm2(struct mbuf *m, int len, int how, short type, int flags, int allonebuf)
+{
+	struct mbuf *mb, *nm = NULL, *mtail = NULL;
+	int size, mbuf_threshold, space_needed = len;
+
+	KASSERT(len >= 0, ("%s: len is < 0", __func__));
+
+	/* Validate flags. */
+	flags &= (M_PKTHDR | M_EOR);
+
+	/* Packet header mbuf must be first in chain. */
+	if ((flags & M_PKTHDR) && m != NULL) {
+		flags &= ~M_PKTHDR;
+	}
+
+	if (allonebuf == 0)
+		mbuf_threshold = SCTP_BASE_SYSCTL(sctp_mbuf_threshold_count);
+	else
+		mbuf_threshold = 1;
+
+	/* Loop and append maximum sized mbufs to the chain tail. */
+	while (len > 0) {
+		if ((!allonebuf && len >= MCLBYTES) || (len > (int)(((mbuf_threshold - 1) * MLEN) + MHLEN))) {
+			mb = m_gethdr(how, type);
+			MCLGET(mb, how);
+			size = MCLBYTES;
+			/* SCTP_BUF_LEN(mb) = MCLBYTES; */
+		} else if (flags & M_PKTHDR) {
+			mb = m_gethdr(how, type);
+			if (len < MHLEN) {
+				size = len;
+			} else {
+				size = MHLEN;
+			}
+		} else {
+			mb = m_get(how, type);
+			if (len < MLEN) {
+				size = len;
+			} else {
+				size = MLEN;
+			}
+		}
+
+		/* Fail the whole operation if one mbuf can't be allocated. */
+		if (mb == NULL) {
+			if (nm != NULL)
+				m_freem(nm);
+			return (NULL);
+		}
+
+		if (allonebuf != 0 && size < space_needed) {
+			m_freem(mb);
+			return (NULL);
+		}
+
+		/* Book keeping. */
+		len -= size;
+		if (mtail != NULL)
+			mtail->m_next = mb;
+		else
+			nm = mb;
+		mtail = mb;
+		flags &= ~M_PKTHDR;     /* Only valid on the first mbuf. */
+	}
+	if (flags & M_EOR) {
+		mtail->m_flags |= M_EOR;  /* Only valid on the last mbuf. */
+	}
+
+	/* If mbuf was supplied, append new chain to the end of it. */
+	if (m != NULL) {
+		for (mtail = m; mtail->m_next != NULL; mtail = mtail->m_next);
+		mtail->m_next = nm;
+		mtail->m_flags &= ~M_EOR;
+	} else {
+		m = nm;
+	}
+
+	return (m);
+}
+
+/*
+ * Copy the contents of uio into a properly sized mbuf chain.
+ */
+struct mbuf *
+m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
+{
+	struct mbuf *m, *mb;
+	int error, length;
+	ssize_t total;
+	int progress = 0;
+
+	/*
+	 * len can be zero or an arbitrary large value bound by
+	 * the total data supplied by the uio.
+	 */
+	if (len > 0)
+		total = min(uio->uio_resid, len);
+	else
+		total = uio->uio_resid;
+	/*
+	 * The smallest unit returned by m_getm2() is a single mbuf
+	 * with pkthdr.  We can't align past it.
+	 */
+	if (align >= MHLEN)
+		return (NULL);
+	/*
+	 * Give us the full allocation or nothing.
+	 * If len is zero return the smallest empty mbuf.
+	 */
+	m = m_getm2(NULL, (int)max(total + align, 1), how, MT_DATA, flags, 0);
+	if (m == NULL)
+		return (NULL);
+	m->m_data += align;
+
+	/* Fill all mbufs with uio data and update header information. */
+	for (mb = m; mb != NULL; mb = mb->m_next) {
+		length = (int)min(M_TRAILINGSPACE(mb), total - progress);
+		error = uiomove(mtod(mb, void *), length, uio);
+		if (error) {
+			m_freem(m);
+			return (NULL);
+		}
+
+		mb->m_len = length;
+		progress += length;
+		if (flags & M_PKTHDR)
+			m->m_pkthdr.len += length;
+	}
+	KASSERT(progress == total, ("%s: progress != total", __func__));
+
+	return (m);
+}
+
+u_int
+m_length(struct mbuf *m0, struct mbuf **last)
+{
+	struct mbuf *m;
+	u_int len;
+
+	len = 0;
+	for (m = m0; m != NULL; m = m->m_next) {
+		len += m->m_len;
+		if (m->m_next == NULL)
+			break;
+	}
+	if (last != NULL)
+	*last = m;
+	return (len);
+}
+
+struct mbuf *
+m_last(struct mbuf *m)
+{
+	while (m->m_next) {
+		m = m->m_next;
+	}
+	return (m);
 }
 
 /*
@@ -313,7 +470,7 @@ m_tag_free(struct m_tag *t)
  * XXX probably should be called m_tag_init, but that was already taken.
  */
 static __inline void
-m_tag_setup(struct m_tag *t, u_int32_t cookie, int type, int len)
+m_tag_setup(struct m_tag *t, uint32_t cookie, int type, int len)
 {
 
 	t->m_tag_id = type;
@@ -347,7 +504,7 @@ mbuf_initialize(void *dummy)
 #else
 	zone_mbuf = umem_cache_create(MBUF_MEM_NAME, MSIZE, 0,
 	                              mb_ctor_mbuf, mb_dtor_mbuf, NULL,
-	                              NUULL,
+	                              NULL,
 	                              NULL, 0);
 #endif
 	/*zone_ext_refcnt = umem_cache_create(MBUF_EXTREFCNT_MEM_NAME, sizeof(u_int), 0,
@@ -375,26 +532,6 @@ mbuf_initialize(void *dummy)
 	/* __Userspace__ Add umem_reap here for low memory situation?
 	 *
 	 */
-
-
-	/*
-	 * [Re]set counters and local statistics knobs.
-	 *
-	 */
-
-	mbstat.m_mbufs = 0;
-	mbstat.m_mclusts = 0;
-	mbstat.m_drain = 0;
-	mbstat.m_msize = MSIZE;
-	mbstat.m_mclbytes = MCLBYTES;
-	mbstat.m_minclsize = MINCLSIZE;
-	mbstat.m_mlen = MLEN;
-	mbstat.m_mhlen = MHLEN;
-	mbstat.m_numtypes = MT_NTYPES;
-
-	mbstat.m_mcfail = mbstat.m_mpfail = 0;
-	mbstat.sf_iocnt = 0;
-	mbstat.sf_allocwait = mbstat.sf_allocfail = 0;
 
 }
 
@@ -437,13 +574,6 @@ mb_ctor_mbuf(void *mem, void *arg, int flgs)
 	args = (struct mb_args *)arg;
 	flags = args->flags;
 	type = args->type;
-
-	/*
-	 * The mbuf is initialized later.
-	 *
-	 */
-	if (type == MT_NOINIT)
-		return (0);
 
 	m->m_next = NULL;
 	m->m_nextpkt = NULL;
@@ -749,7 +879,6 @@ m_pullup(struct mbuf *n, int len)
 	return (m);
 bad:
 	m_freem(n);
-	mbstat.m_mpfail++;	/* XXX: No consistency. */
 	return (NULL);
 }
 
@@ -885,16 +1014,14 @@ m_pulldown(struct mbuf *m, int off, int len, int *offp)
 	 * easy cases first.
 	 * we need to use m_copydata() to get data from <n->m_next, 0>.
 	 */
-	if ((off == 0 || offp) && M_TRAILINGSPACE(n) >= tlen
-	    && writable) {
+	if ((off == 0 || offp) && (M_TRAILINGSPACE(n) >= tlen) && writable) {
 		m_copydata(n->m_next, 0, tlen, mtod(n, caddr_t) + n->m_len);
 		n->m_len += tlen;
 		m_adj(n->m_next, tlen);
 		goto ok;
 	}
 
-	if ((off == 0 || offp) && M_LEADINGSPACE(n->m_next) >= hlen
-	    && writable) {
+	if ((off == 0 || offp) && (M_LEADINGSPACE(n->m_next) >= hlen) && writable) {
 		n->m_next->m_data -= hlen;
 		n->m_next->m_len += hlen;
 		memcpy( mtod(n->m_next, caddr_t), mtod(n, caddr_t) + off,hlen);
@@ -994,7 +1121,6 @@ m_copym(struct mbuf *m, int off0, int len, int wait)
 		return (NULL);
 	}
 #endif
-
 	if (off == 0 && m->m_flags & M_PKTHDR)
 		copyhdr = 1;
 	while (off > 0) {
@@ -1039,13 +1165,10 @@ m_copym(struct mbuf *m, int off0, int len, int wait)
 		m = m->m_next;
 		np = &n->m_next;
 	}
-	if (top == NULL)
-		mbstat.m_mcfail++;	/* XXX: No consistency. */
 
 	return (top);
 nospace:
 	m_freem(top);
-	mbstat.m_mcfail++;	/* XXX: No consistency. */
 	return (NULL);
 }
 
@@ -1107,7 +1230,7 @@ m_tag_copy(struct m_tag *t, int how)
 
 /* Get a packet tag structure along with specified data following. */
 struct m_tag *
-m_tag_alloc(u_int32_t cookie, int type, int len, int wait)
+m_tag_alloc(uint32_t cookie, int type, int len, int wait)
 {
 	struct m_tag *t;
 
@@ -1178,6 +1301,38 @@ out:	if (((m = m0)->m_flags & M_PKTHDR) && (m->m_pkthdr.len < totlen))
 		m->m_pkthdr.len = totlen;
 }
 
+/*
+ * Apply function f to the data in an mbuf chain starting "off" bytes from
+ * the beginning, continuing for "len" bytes.
+ */
+int
+m_apply(struct mbuf *m, int off, int len,
+        int (*f)(void *, void *, u_int), void *arg)
+{
+	u_int count;
+	int rval;
+
+	KASSERT(off >= 0, ("m_apply, negative off %d", off));
+	KASSERT(len >= 0, ("m_apply, negative len %d", len));
+	while (off > 0) {
+		KASSERT(m != NULL, ("m_apply, offset > size of mbuf chain"));
+		if (off < m->m_len)
+			break;
+		off -= m->m_len;
+		m = m->m_next;
+	}
+	while (len > 0) {
+		KASSERT(m != NULL, ("m_apply, offset > size of mbuf chain"));
+		count = min(m->m_len - off, len);
+		rval = (*f)(arg, mtod(m, caddr_t) + off, count);
+		if (rval)
+			return (rval);
+		len -= count;
+		off = 0;
+		m = m->m_next;
+	}
+	return (0);
+}
 
 /*
  * Lesser-used path for M_PREPEND:

@@ -6,20 +6,20 @@
 
 #include "vm/ArgumentsObject-inl.h"
 
+#include "mozilla/Maybe.h"
 #include "mozilla/PodOperations.h"
 
 #include <algorithm>
 
-#include "gc/FreeOp.h"
+#include "gc/GCContext.h"
+#include "jit/CalleeToken.h"
 #include "jit/JitFrames.h"
 #include "util/BitArray.h"
-#include "vm/AsyncFunction.h"
 #include "vm/GlobalObject.h"
 #include "vm/Stack.h"
 
 #include "gc/Nursery-inl.h"
 #include "vm/FrameIter-inl.h"  // js::FrameIter::unaliasedForEachActual
-#include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
 #include "vm/Stack-inl.h"
 
@@ -36,7 +36,7 @@ RareArgumentsData* RareArgumentsData::create(JSContext* cx,
                                              ArgumentsObject* obj) {
   size_t bytes = RareArgumentsData::bytesRequired(obj->initialLength());
 
-  uint8_t* data = AllocateObjectBuffer<uint8_t>(cx, obj, bytes);
+  uint8_t* data = AllocateCellBuffer<uint8_t>(cx, obj, bytes);
   if (!data) {
     return nullptr;
   }
@@ -48,6 +48,12 @@ RareArgumentsData* RareArgumentsData::create(JSContext* cx,
   return new (data) RareArgumentsData();
 }
 
+ArgumentsData::ArgumentsData(uint32_t numArgs) : args(numArgs) {
+  // |args| must be the last field.
+  static_assert(offsetof(ArgumentsData, args) + sizeof(args) ==
+                sizeof(ArgumentsData));
+}
+
 bool ArgumentsObject::createRareData(JSContext* cx) {
   MOZ_ASSERT(!data()->rareData);
 
@@ -57,6 +63,7 @@ bool ArgumentsObject::createRareData(JSContext* cx) {
   }
 
   data()->rareData = rareData;
+  markElementOverridden();
   return true;
 }
 
@@ -70,50 +77,37 @@ bool ArgumentsObject::markElementDeleted(JSContext* cx, uint32_t i) {
   return true;
 }
 
-static void CopyStackFrameArguments(const AbstractFramePtr frame,
-                                    GCPtrValue* dst, unsigned totalArgs) {
-  MOZ_ASSERT_IF(frame.isInterpreterFrame(),
-                !frame.asInterpreterFrame()->runningInJit());
-
-  MOZ_ASSERT(std::max(frame.numActualArgs(), frame.numFormalArgs()) ==
-             totalArgs);
-
-  /* Copy arguments. */
-  Value* src = frame.argv();
-  Value* end = src + totalArgs;
-  while (src != end) {
-    (dst++)->init(*src++);
-  }
-}
-
 /* static */
 void ArgumentsObject::MaybeForwardToCallObject(AbstractFramePtr frame,
                                                ArgumentsObject* obj,
                                                ArgumentsData* data) {
   JSScript* script = frame.script();
-  if (frame.callee()->needsCallObject() && script->argumentsAliasesFormals()) {
+  if (frame.callee()->needsCallObject() && script->argsObjAliasesFormals()) {
     obj->initFixedSlot(MAYBE_CALL_SLOT, ObjectValue(frame.callObj()));
     for (PositionalFormalParameterIter fi(script); fi; fi++) {
       if (fi.closedOver()) {
-        data->args[fi.argumentSlot()] = MagicEnvSlotValue(fi.location().slot());
+        data->args.setElement(obj, fi.argumentSlot(),
+                              MagicEnvSlotValue(fi.location().slot()));
+        obj->markArgumentForwarded();
       }
     }
   }
 }
 
 /* static */
-void ArgumentsObject::MaybeForwardToCallObject(jit::JitFrameLayout* frame,
-                                               HandleObject callObj,
+void ArgumentsObject::MaybeForwardToCallObject(JSFunction* callee,
+                                               JSObject* callObj,
                                                ArgumentsObject* obj,
                                                ArgumentsData* data) {
-  JSFunction* callee = jit::CalleeTokenToFunction(frame->calleeToken());
   JSScript* script = callee->nonLazyScript();
-  if (callee->needsCallObject() && script->argumentsAliasesFormals()) {
+  if (callee->needsCallObject() && script->argsObjAliasesFormals()) {
     MOZ_ASSERT(callObj && callObj->is<CallObject>());
-    obj->initFixedSlot(MAYBE_CALL_SLOT, ObjectValue(*callObj.get()));
+    obj->initFixedSlot(MAYBE_CALL_SLOT, ObjectValue(*callObj));
     for (PositionalFormalParameterIter fi(script); fi; fi++) {
       if (fi.closedOver()) {
-        data->args[fi.argumentSlot()] = MagicEnvSlotValue(fi.location().slot());
+        data->args.setElement(obj, fi.argumentSlot(),
+                              MagicEnvSlotValue(fi.location().slot()));
+        obj->markArgumentForwarded();
       }
     }
   }
@@ -124,8 +118,20 @@ struct CopyFrameArgs {
 
   explicit CopyFrameArgs(AbstractFramePtr frame) : frame_(frame) {}
 
-  void copyArgs(JSContext*, GCPtrValue* dst, unsigned totalArgs) const {
-    CopyStackFrameArguments(frame_, dst, totalArgs);
+  void copyActualArgs(ArgumentsObject* owner, GCOwnedArray<Value>& args,
+                      unsigned numActuals) const {
+    MOZ_ASSERT_IF(frame_.isInterpreterFrame(),
+                  !frame_.asInterpreterFrame()->runningInJit());
+
+    // Copy arguments.
+    Value* src = frame_.argv();
+    Value* end = src + numActuals;
+    args.withOwner(owner, [&](auto& args) {
+      auto* dst = args.begin();
+      while (src != end) {
+        (dst++)->init(*src++);
+      }
+    });
   }
 
   /*
@@ -144,28 +150,18 @@ struct CopyJitFrameArgs {
   CopyJitFrameArgs(jit::JitFrameLayout* frame, HandleObject callObj)
       : frame_(frame), callObj_(callObj) {}
 
-  void copyArgs(JSContext*, GCPtrValue* dstBase, unsigned totalArgs) const {
-    unsigned numActuals = frame_->numActualArgs();
-    unsigned numFormals =
-        jit::CalleeTokenToFunction(frame_->calleeToken())->nargs();
-    MOZ_ASSERT(numActuals <= totalArgs);
-    MOZ_ASSERT(numFormals <= totalArgs);
-    MOZ_ASSERT(std::max(numActuals, numFormals) == totalArgs);
+  void copyActualArgs(ArgumentsObject* owner, GCOwnedArray<Value>& args,
+                      unsigned numActuals) const {
+    MOZ_ASSERT(frame_->numActualArgs() == numActuals);
 
-    /* Copy all arguments. */
-    Value* src = frame_->argv() + 1; /* +1 to skip this. */
+    Value* src = frame_->actualArgs();
     Value* end = src + numActuals;
-    GCPtrValue* dst = dstBase;
-    while (src != end) {
-      (dst++)->init(*src++);
-    }
-
-    if (numActuals < numFormals) {
-      GCPtrValue* dstEnd = dstBase + totalArgs;
-      while (dst != dstEnd) {
-        (dst++)->init(UndefinedValue());
+    args.withOwner(owner, [&](auto& args) {
+      auto* dst = args.begin();
+      while (src != end) {
+        (dst++)->init(*src++);
       }
-    }
+    });
   }
 
   /*
@@ -173,33 +169,43 @@ struct CopyJitFrameArgs {
    * call object is the canonical location for formals.
    */
   void maybeForwardToCallObject(ArgumentsObject* obj, ArgumentsData* data) {
-    ArgumentsObject::MaybeForwardToCallObject(frame_, callObj_, obj, data);
+    JSFunction* callee = jit::CalleeTokenToFunction(frame_->calleeToken());
+    ArgumentsObject::MaybeForwardToCallObject(callee, callObj_, obj, data);
   }
 };
 
 struct CopyScriptFrameIterArgs {
   ScriptFrameIter& iter_;
+  RootedValueVector actualArgs_;
 
-  explicit CopyScriptFrameIterArgs(ScriptFrameIter& iter) : iter_(iter) {}
+  explicit CopyScriptFrameIterArgs(JSContext* cx, ScriptFrameIter& iter)
+      : iter_(iter), actualArgs_(cx) {}
 
-  void copyArgs(JSContext* cx, GCPtrValue* dstBase, unsigned totalArgs) const {
-    /* Copy actual arguments. */
-    iter_.unaliasedForEachActual(cx, CopyToHeap(dstBase));
-
-    /* Define formals which are not part of the actuals. */
+  // Used to copy arguments to actualArgs_ to simplify copyArgs and
+  // ArgumentsObject allocation.
+  [[nodiscard]] bool init(JSContext* cx) {
     unsigned numActuals = iter_.numActualArgs();
-    unsigned numFormals = iter_.calleeTemplate()->nargs();
-    MOZ_ASSERT(numActuals <= totalArgs);
-    MOZ_ASSERT(numFormals <= totalArgs);
-    MOZ_ASSERT(std::max(numActuals, numFormals) == totalArgs);
-
-    if (numActuals < numFormals) {
-      GCPtrValue* dst = dstBase + numActuals;
-      GCPtrValue* dstEnd = dstBase + totalArgs;
-      while (dst != dstEnd) {
-        (dst++)->init(UndefinedValue());
-      }
+    if (!actualArgs_.reserve(numActuals)) {
+      return false;
     }
+
+    // Append actual arguments.
+    iter_.unaliasedForEachActual(
+        cx, [this](const Value& v) { actualArgs_.infallibleAppend(v); });
+    MOZ_RELEASE_ASSERT(actualArgs_.length() == numActuals);
+    return true;
+  }
+
+  void copyActualArgs(ArgumentsObject* owner, GCOwnedArray<Value>& args,
+                      unsigned numActuals) const {
+    MOZ_ASSERT(actualArgs_.length() == numActuals);
+
+    args.withOwner(owner, [&](auto& args) {
+      auto* dst = args.begin();
+      for (Value v : actualArgs_) {
+        (dst++)->init(v);
+      }
+    });
   }
 
   /*
@@ -214,49 +220,73 @@ struct CopyScriptFrameIterArgs {
   }
 };
 
+struct CopyInlinedArgs {
+  HandleValueArray args_;
+  HandleObject callObj_;
+  HandleFunction callee_;
+
+  CopyInlinedArgs(HandleValueArray args, HandleObject callObj,
+                  HandleFunction callee)
+      : args_(args), callObj_(callObj), callee_(callee) {}
+
+  void copyActualArgs(ArgumentsObject* owner, GCOwnedArray<Value>& args,
+                      unsigned numActuals) const {
+    MOZ_ASSERT(numActuals <= args_.length());
+
+    args.withOwner(owner, [&](auto& args) {
+      auto* dst = args.begin();
+      for (uint32_t i = 0; i < numActuals; i++) {
+        (dst++)->init(args_[i]);
+      }
+    });
+  }
+
+  /*
+   * If a call object exists and the arguments object aliases formals, the
+   * call object is the canonical location for formals.
+   */
+  void maybeForwardToCallObject(ArgumentsObject* obj, ArgumentsData* data) {
+    ArgumentsObject::MaybeForwardToCallObject(callee_, callObj_, obj, data);
+  }
+};
+
 ArgumentsObject* ArgumentsObject::createTemplateObject(JSContext* cx,
                                                        bool mapped) {
   const JSClass* clasp = mapped ? &MappedArgumentsObject::class_
                                 : &UnmappedArgumentsObject::class_;
 
-  RootedObject proto(
-      cx, GlobalObject::getOrCreateObjectPrototype(cx, cx->global()));
-  if (!proto) {
-    return nullptr;
-  }
+  RootedObject proto(cx, &cx->global()->getObjectPrototype());
 
-  RootedObjectGroup group(
-      cx, ObjectGroup::defaultNewGroup(cx, clasp, TaggedProto(proto.get())));
-  if (!group) {
-    return nullptr;
-  }
-
-  RootedShape shape(
-      cx, EmptyShape::getInitialShape(cx, clasp, TaggedProto(proto),
-                                      FINALIZE_KIND, BaseShape::INDEXED));
+  constexpr ObjectFlags objectFlags = {ObjectFlag::Indexed};
+  Rooted<SharedShape*> shape(cx, SharedShape::getInitialShape(
+                                     cx, clasp, cx->realm(), TaggedProto(proto),
+                                     FINALIZE_KIND, objectFlags));
   if (!shape) {
     return nullptr;
   }
 
   AutoSetNewObjectMetadata metadata(cx);
-  JSObject* base;
-  JS_TRY_VAR_OR_RETURN_NULL(
-      cx, base,
-      NativeObject::create(cx, FINALIZE_KIND, gc::TenuredHeap, shape, group));
+  auto* obj = NativeObject::create<ArgumentsObject>(cx, FINALIZE_KIND,
+                                                    gc::Heap::Tenured, shape);
+  if (!obj) {
+    return nullptr;
+  }
 
-  ArgumentsObject* obj = &base->as<js::ArgumentsObject>();
   obj->initFixedSlot(ArgumentsObject::DATA_SLOT, PrivateValue(nullptr));
   return obj;
 }
 
-ArgumentsObject* Realm::maybeArgumentsTemplateObject(bool mapped) const {
-  return mapped ? mappedArgumentsTemplate_ : unmappedArgumentsTemplate_;
+ArgumentsObject* GlobalObject::maybeArgumentsTemplateObject(bool mapped) const {
+  return mapped ? data().mappedArgumentsTemplate
+                : data().unmappedArgumentsTemplate;
 }
 
-ArgumentsObject* Realm::getOrCreateArgumentsTemplateObject(JSContext* cx,
-                                                           bool mapped) {
-  WeakHeapPtr<ArgumentsObject*>& obj =
-      mapped ? mappedArgumentsTemplate_ : unmappedArgumentsTemplate_;
+/* static */
+ArgumentsObject* GlobalObject::getOrCreateArgumentsTemplateObject(JSContext* cx,
+                                                                  bool mapped) {
+  GlobalObjectData& data = cx->global()->data();
+  HeapPtr<ArgumentsObject*>& obj =
+      mapped ? data.mappedArgumentsTemplate : data.unmappedArgumentsTemplate;
 
   ArgumentsObject* templateObj = obj;
   if (templateObj) {
@@ -268,7 +298,7 @@ ArgumentsObject* Realm::getOrCreateArgumentsTemplateObject(JSContext* cx,
     return nullptr;
   }
 
-  obj.set(templateObj);
+  obj.init(templateObj);
   return templateObj;
 }
 
@@ -276,59 +306,54 @@ template <typename CopyArgs>
 /* static */
 ArgumentsObject* ArgumentsObject::create(JSContext* cx, HandleFunction callee,
                                          unsigned numActuals, CopyArgs& copy) {
+  // Self-hosted code should use the more efficient ArgumentsLength and
+  // GetArgument intrinsics instead of `arguments`.
+  MOZ_ASSERT(!callee->isSelfHostedBuiltin());
+
   bool mapped = callee->baseScript()->hasMappedArgsObj();
   ArgumentsObject* templateObj =
-      cx->realm()->getOrCreateArgumentsTemplateObject(cx, mapped);
+      GlobalObject::getOrCreateArgumentsTemplateObject(cx, mapped);
   if (!templateObj) {
     return nullptr;
   }
 
-  RootedShape shape(cx, templateObj->lastProperty());
-  RootedObjectGroup group(cx, templateObj->group());
+  Rooted<SharedShape*> shape(cx, templateObj->sharedShape());
 
   unsigned numFormals = callee->nargs();
   unsigned numArgs = std::max(numActuals, numFormals);
   unsigned numBytes = ArgumentsData::bytesRequired(numArgs);
 
-  Rooted<ArgumentsObject*> obj(cx);
-  ArgumentsData* data = nullptr;
-  {
-    // The copyArgs call below can allocate objects, so add this block scope
-    // to make sure we set the metadata for this arguments object first.
-    AutoSetNewObjectMetadata metadata(cx);
-
-    JSObject* base;
-    JS_TRY_VAR_OR_RETURN_NULL(
-        cx, base,
-        NativeObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, shape, group));
-    obj = &base->as<ArgumentsObject>();
-
-    data = reinterpret_cast<ArgumentsData*>(
-        AllocateObjectBuffer<uint8_t>(cx, obj, numBytes));
-    if (!data) {
-      // Make the object safe for GC.
-      obj->initFixedSlot(DATA_SLOT, PrivateValue(nullptr));
-      return nullptr;
-    }
-
-    data->numArgs = numArgs;
-    data->rareData = nullptr;
-
-    // Initialize |args| with a pattern that is safe for GC tracing.
-    for (unsigned i = 0; i < numArgs; i++) {
-      data->args[i].init(UndefinedValue());
-    }
-
-    InitReservedSlot(obj, DATA_SLOT, data, numBytes, MemoryUse::ArgumentsData);
-    obj->initFixedSlot(CALLEE_SLOT, ObjectValue(*callee));
+  AutoSetNewObjectMetadata metadata(cx);
+  auto* obj = NativeObject::create<ArgumentsObject>(cx, FINALIZE_KIND,
+                                                    gc::Heap::Default, shape);
+  if (!obj) {
+    return nullptr;
   }
-  MOZ_ASSERT(data != nullptr);
 
-  /* Copy [0, numArgs) into data->slots. */
-  copy.copyArgs(cx, data->args, numArgs);
+  ArgumentsData* data = reinterpret_cast<ArgumentsData*>(
+      AllocateCellBuffer<uint8_t>(cx, obj, numBytes));
+  if (!data) {
+    // Make the object safe for GC.
+    obj->initFixedSlot(DATA_SLOT, PrivateValue(nullptr));
+    return nullptr;
+  }
 
+  new (data) ArgumentsData(numArgs);
+
+  InitReservedSlot(obj, DATA_SLOT, data, numBytes, MemoryUse::ArgumentsData);
+  obj->initFixedSlot(CALLEE_SLOT, ObjectValue(*callee));
   obj->initFixedSlot(INITIAL_LENGTH_SLOT,
                      Int32Value(numActuals << PACKED_BITS_COUNT));
+
+  // Copy [0, numActuals) into data->args.
+  copy.copyActualArgs(obj, data->args, numActuals);
+
+  // Fill in missing arguments with |undefined|.
+  data->args.withOwner(obj, [&](auto& args) {
+    for (size_t i = numActuals; i < numArgs; i++) {
+      args[i].init(UndefinedValue());
+    }
+  });
 
   copy.maybeForwardToCallObject(obj, data);
 
@@ -354,7 +379,10 @@ ArgumentsObject* ArgumentsObject::createExpected(JSContext* cx,
 ArgumentsObject* ArgumentsObject::createUnexpected(JSContext* cx,
                                                    ScriptFrameIter& iter) {
   RootedFunction callee(cx, iter.callee(cx));
-  CopyScriptFrameIterArgs copy(iter);
+  CopyScriptFrameIterArgs copy(cx, iter);
+  if (!copy.init(cx)) {
+    return nullptr;
+  }
   return create(cx, callee, iter.numActualArgs(), copy);
 }
 
@@ -378,6 +406,76 @@ ArgumentsObject* ArgumentsObject::createForIon(JSContext* cx,
 }
 
 /* static */
+ArgumentsObject* ArgumentsObject::createFromValueArray(
+    JSContext* cx, HandleValueArray argsArray, HandleFunction callee,
+    HandleObject scopeChain, uint32_t numActuals) {
+  MOZ_ASSERT(numActuals <= MaxInlinedArgs);
+  RootedObject callObj(
+      cx, scopeChain->is<CallObject>() ? scopeChain.get() : nullptr);
+  CopyInlinedArgs copy(argsArray, callObj, callee);
+  return create(cx, callee, numActuals, copy);
+}
+
+/* static */
+ArgumentsObject* ArgumentsObject::createForInlinedIon(JSContext* cx,
+                                                      Value* args,
+                                                      HandleFunction callee,
+                                                      HandleObject scopeChain,
+                                                      uint32_t numActuals) {
+  RootedExternalValueArray rootedArgs(cx, numActuals, args);
+  HandleValueArray argsArray =
+      HandleValueArray::fromMarkedLocation(numActuals, args);
+
+  return createFromValueArray(cx, argsArray, callee, scopeChain, numActuals);
+}
+
+template <typename CopyArgs>
+/* static */
+ArgumentsObject* ArgumentsObject::finishPure(
+    JSContext* cx, ArgumentsObject* obj, JSFunction* callee, JSObject* callObj,
+    unsigned numActuals, CopyArgs& copy) {
+  unsigned numFormals = callee->nargs();
+  unsigned numArgs = std::max(numActuals, numFormals);
+  unsigned numBytes = ArgumentsData::bytesRequired(numArgs);
+
+  ArgumentsData* data = reinterpret_cast<ArgumentsData*>(
+      AllocateCellBuffer<uint8_t>(cx, obj, numBytes));
+  if (!data) {
+    // Make the object safe for GC. Don't report OOM, the slow path will
+    // retry the allocation.
+    cx->recoverFromOutOfMemory();
+    obj->initFixedSlot(DATA_SLOT, PrivateValue(nullptr));
+    return nullptr;
+  }
+
+  new (data) ArgumentsData(numArgs);
+
+  obj->initFixedSlot(INITIAL_LENGTH_SLOT,
+                     Int32Value(numActuals << PACKED_BITS_COUNT));
+  obj->initFixedSlot(DATA_SLOT, PrivateValue(data));
+  AddCellMemory(obj, numBytes, MemoryUse::ArgumentsData);
+  obj->initFixedSlot(MAYBE_CALL_SLOT, UndefinedValue());
+  obj->initFixedSlot(CALLEE_SLOT, ObjectValue(*callee));
+
+  copy.copyActualArgs(obj, data->args, numActuals);
+
+  // Fill in missing arguments with |undefined|.
+  data->args.withOwner(obj, [&](auto& args) {
+    for (size_t i = numActuals; i < numArgs; i++) {
+      args[i].init(UndefinedValue());
+    }
+  });
+
+  if (callObj && callee->needsCallObject()) {
+    copy.maybeForwardToCallObject(obj, data);
+  }
+
+  MOZ_ASSERT(obj->initialLength() == numActuals);
+  MOZ_ASSERT(!obj->hasOverriddenLength());
+  return obj;
+}
+
+/* static */
 ArgumentsObject* ArgumentsObject::finishForIonPure(JSContext* cx,
                                                    jit::JitFrameLayout* frame,
                                                    JSObject* scopeChain,
@@ -391,58 +489,47 @@ ArgumentsObject* ArgumentsObject::finishForIonPure(JSContext* cx,
   CopyJitFrameArgs copy(frame, callObj);
 
   unsigned numActuals = frame->numActualArgs();
-  unsigned numFormals = callee->nargs();
-  unsigned numArgs = std::max(numActuals, numFormals);
-  unsigned numBytes = ArgumentsData::bytesRequired(numArgs);
 
-  ArgumentsData* data = reinterpret_cast<ArgumentsData*>(
-      AllocateObjectBuffer<uint8_t>(cx, obj, numBytes));
-  if (!data) {
-    // Make the object safe for GC. Don't report OOM, the slow path will
-    // retry the allocation.
-    cx->recoverFromOutOfMemory();
-    obj->initFixedSlot(DATA_SLOT, PrivateValue(nullptr));
-    return nullptr;
-  }
+  return finishPure(cx, obj, callee, callObj, numActuals, copy);
+}
 
-  data->numArgs = numArgs;
-  data->rareData = nullptr;
+/* static */
+ArgumentsObject* ArgumentsObject::finishInlineForIonPure(
+    JSContext* cx, JSObject* rawCallObj, JSFunction* rawCallee, Value* args,
+    uint32_t numActuals, ArgumentsObject* obj) {
+  // JIT code calls this directly (no callVM), because it's faster, so we're
+  // not allowed to GC in here.
+  AutoUnsafeCallWithABI unsafe;
 
-  obj->initFixedSlot(INITIAL_LENGTH_SLOT,
-                     Int32Value(numActuals << PACKED_BITS_COUNT));
-  obj->initFixedSlot(DATA_SLOT, PrivateValue(data));
-  AddCellMemory(obj, numBytes, MemoryUse::ArgumentsData);
-  obj->initFixedSlot(MAYBE_CALL_SLOT, UndefinedValue());
-  obj->initFixedSlot(CALLEE_SLOT, ObjectValue(*callee));
+  MOZ_ASSERT(numActuals <= MaxInlinedArgs);
 
-  copy.copyArgs(cx, data->args, numArgs);
+  RootedObject callObj(cx, rawCallObj);
+  RootedFunction callee(cx, rawCallee);
+  RootedExternalValueArray rootedArgs(cx, numActuals, args);
+  HandleValueArray argsArray =
+      HandleValueArray::fromMarkedLocation(numActuals, args);
 
-  if (callObj && callee->needsCallObject()) {
-    copy.maybeForwardToCallObject(obj, data);
-  }
+  CopyInlinedArgs copy(argsArray, callObj, callee);
 
-  MOZ_ASSERT(obj->initialLength() == numActuals);
-  MOZ_ASSERT(!obj->hasOverriddenLength());
-  return obj;
+  return finishPure(cx, obj, callee, callObj, numActuals, copy);
 }
 
 /* static */
 bool ArgumentsObject::obj_delProperty(JSContext* cx, HandleObject obj,
                                       HandleId id, ObjectOpResult& result) {
   ArgumentsObject& argsobj = obj->as<ArgumentsObject>();
-  if (JSID_IS_INT(id)) {
-    unsigned arg = unsigned(JSID_TO_INT(id));
-    if (arg < argsobj.initialLength() && !argsobj.isElementDeleted(arg)) {
+  if (id.isInt()) {
+    unsigned arg = unsigned(id.toInt());
+    if (argsobj.isElement(arg)) {
       if (!argsobj.markElementDeleted(cx, arg)) {
         return false;
       }
     }
-  } else if (JSID_IS_ATOM(id, cx->names().length)) {
+  } else if (id.isAtom(cx->names().length)) {
     argsobj.markLengthOverridden();
-  } else if (JSID_IS_ATOM(id, cx->names().callee)) {
+  } else if (id.isAtom(cx->names().callee)) {
     argsobj.as<MappedArgumentsObject>().markCalleeOverridden();
-  } else if (JSID_IS_SYMBOL(id) &&
-             JSID_TO_SYMBOL(id) == cx->wellKnownSymbols().iterator) {
+  } else if (id.isWellKnownSymbol(JS::SymbolCode::iterator)) {
     argsobj.markIteratorOverridden();
   }
   return result.succeed();
@@ -452,36 +539,32 @@ bool ArgumentsObject::obj_delProperty(JSContext* cx, HandleObject obj,
 bool ArgumentsObject::obj_mayResolve(const JSAtomState& names, jsid id,
                                      JSObject*) {
   // Arguments might resolve indexes, Symbol.iterator, or length/callee.
-  if (JSID_IS_ATOM(id)) {
-    JSAtom* atom = JSID_TO_ATOM(id);
-    uint32_t index;
-    if (atom->isIndex(&index)) {
-      return true;
-    }
-    return atom == names.length || atom == names.callee;
+  if (id.isAtom()) {
+    JSAtom* atom = id.toAtom();
+    return atom->isIndex() || atom == names.length || atom == names.callee;
   }
 
   return id.isInt() || id.isWellKnownSymbol(JS::SymbolCode::iterator);
 }
 
-static bool MappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
-                            MutableHandleValue vp) {
+bool js::MappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
+                         MutableHandleValue vp) {
   MappedArgumentsObject& argsobj = obj->as<MappedArgumentsObject>();
-  if (JSID_IS_INT(id)) {
+  if (id.isInt()) {
     /*
      * arg can exceed the number of arguments if a script changed the
      * prototype to point to another Arguments object with a bigger argc.
      */
-    unsigned arg = unsigned(JSID_TO_INT(id));
-    if (arg < argsobj.initialLength() && !argsobj.isElementDeleted(arg)) {
+    unsigned arg = unsigned(id.toInt());
+    if (argsobj.isElement(arg)) {
       vp.set(argsobj.element(arg));
     }
-  } else if (JSID_IS_ATOM(id, cx->names().length)) {
+  } else if (id.isAtom(cx->names().length)) {
     if (!argsobj.hasOverriddenLength()) {
       vp.setInt32(argsobj.initialLength());
     }
   } else {
-    MOZ_ASSERT(JSID_IS_ATOM(id, cx->names().callee));
+    MOZ_ASSERT(id.isAtom(cx->names().callee));
     if (!argsobj.hasOverriddenCallee()) {
       vp.setObject(argsobj.callee());
     }
@@ -489,40 +572,27 @@ static bool MappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
   return true;
 }
 
-static bool MappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
-                            HandleValue v, ObjectOpResult& result) {
-  if (!obj->is<MappedArgumentsObject>()) {
-    return result.succeed();
-  }
+bool js::MappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
+                         HandleValue v, ObjectOpResult& result) {
   Handle<MappedArgumentsObject*> argsobj = obj.as<MappedArgumentsObject>();
 
-  Rooted<PropertyDescriptor> desc(cx);
+  Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
   if (!GetOwnPropertyDescriptor(cx, argsobj, id, &desc)) {
     return false;
   }
-  MOZ_ASSERT(desc.object());
-  unsigned attrs = desc.attributes();
-  MOZ_ASSERT(!(attrs & JSPROP_READONLY));
-  attrs &= (JSPROP_ENUMERATE | JSPROP_PERMANENT); /* only valid attributes */
+  MOZ_ASSERT(desc.isSome());
+  MOZ_ASSERT(desc->isDataDescriptor());
+  MOZ_ASSERT(desc->writable());
+  MOZ_ASSERT(!desc->resolving());
 
-  RootedFunction callee(cx, &argsobj->callee());
-  RootedScript script(cx, JSFunction::getOrCreateScript(cx, callee));
-  if (!script) {
-    return false;
-  }
-
-  if (JSID_IS_INT(id)) {
-    unsigned arg = unsigned(JSID_TO_INT(id));
-    if (arg < argsobj->initialLength() && !argsobj->isElementDeleted(arg)) {
-      argsobj->setElement(cx, arg, v);
-      if (arg < script->function()->nargs()) {
-        jit::JitScript::MonitorArgType(cx, script, arg, v);
-      }
+  if (id.isInt()) {
+    unsigned arg = unsigned(id.toInt());
+    if (argsobj->isElement(arg)) {
+      argsobj->setElement(arg, v);
       return result.succeed();
     }
   } else {
-    MOZ_ASSERT(JSID_IS_ATOM(id, cx->names().length) ||
-               JSID_IS_ATOM(id, cx->names().callee));
+    MOZ_ASSERT(id.isAtom(cx->names().length) || id.isAtom(cx->names().callee));
   }
 
   /*
@@ -533,23 +603,20 @@ static bool MappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
    * the user has changed the prototype to an object that has a setter for
    * this id.
    */
+  Rooted<PropertyDescriptor> desc_(cx, *desc);
+  desc_.setValue(v);
   ObjectOpResult ignored;
   return NativeDeleteProperty(cx, argsobj, id, ignored) &&
-         NativeDefineDataProperty(cx, argsobj, id, v, attrs, result);
+         NativeDefineProperty(cx, argsobj, id, desc_, result);
 }
 
-static bool DefineArgumentsIterator(JSContext* cx,
-                                    Handle<ArgumentsObject*> argsobj) {
-  RootedId iteratorId(cx, SYMBOL_TO_JSID(cx->wellKnownSymbols().iterator));
-  HandlePropertyName shName = cx->names().ArrayValues;
-  RootedAtom name(cx, cx->names().values);
-  RootedValue val(cx);
-  if (!GlobalObject::getSelfHostedFunction(cx, cx->global(), shName, name, 0,
-                                           &val)) {
-    return false;
-  }
-  return NativeDefineDataProperty(cx, argsobj, iteratorId, val,
-                                  JSPROP_RESOLVING);
+/* static */
+bool ArgumentsObject::getArgumentsIterator(JSContext* cx,
+                                           MutableHandleValue val) {
+  Handle<PropertyName*> shName = cx->names().dollar_ArrayValues_;
+  Rooted<JSAtom*> name(cx, cx->names().values);
+  return GlobalObject::getSelfHostedFunction(cx, cx->global(), shName, name, 0,
+                                             val);
 }
 
 /* static */
@@ -575,7 +642,12 @@ bool ArgumentsObject::reifyIterator(JSContext* cx,
     return true;
   }
 
-  if (!DefineArgumentsIterator(cx, obj)) {
+  RootedId iteratorId(cx, PropertyKey::Symbol(cx->wellKnownSymbols().iterator));
+  RootedValue val(cx);
+  if (!ArgumentsObject::getArgumentsIterator(cx, &val)) {
+    return false;
+  }
+  if (!NativeDefineDataProperty(cx, obj, iteratorId, val, JSPROP_RESOLVING)) {
     return false;
   }
 
@@ -584,37 +656,69 @@ bool ArgumentsObject::reifyIterator(JSContext* cx,
 }
 
 /* static */
+bool MappedArgumentsObject::reifyCallee(JSContext* cx,
+                                        Handle<MappedArgumentsObject*> obj) {
+  if (obj->hasOverriddenCallee()) {
+    return true;
+  }
+
+  Rooted<PropertyKey> key(cx, NameToId(cx->names().callee));
+  Rooted<Value> val(cx, ObjectValue(obj->callee()));
+  if (!NativeDefineDataProperty(cx, obj, key, val, JSPROP_RESOLVING)) {
+    return false;
+  }
+
+  obj->markCalleeOverridden();
+  return true;
+}
+
+static bool ResolveArgumentsProperty(JSContext* cx,
+                                     Handle<ArgumentsObject*> obj, HandleId id,
+                                     PropertyFlags flags, bool* resolvedp) {
+  MOZ_ASSERT(id.isInt() || id.isAtom(cx->names().length) ||
+             id.isAtom(cx->names().callee));
+  MOZ_ASSERT(flags.isCustomDataProperty());
+
+  if (!NativeObject::addCustomDataProperty(cx, obj, id, flags)) {
+    return false;
+  }
+
+  *resolvedp = true;
+  return true;
+}
+
+/* static */
 bool MappedArgumentsObject::obj_resolve(JSContext* cx, HandleObject obj,
                                         HandleId id, bool* resolvedp) {
   Rooted<MappedArgumentsObject*> argsobj(cx, &obj->as<MappedArgumentsObject>());
 
-  if (JSID_IS_SYMBOL(id) &&
-      JSID_TO_SYMBOL(id) == cx->wellKnownSymbols().iterator) {
+  if (id.isWellKnownSymbol(JS::SymbolCode::iterator)) {
     if (argsobj->hasOverriddenIterator()) {
       return true;
     }
 
-    if (!DefineArgumentsIterator(cx, argsobj)) {
+    if (!reifyIterator(cx, argsobj)) {
       return false;
     }
     *resolvedp = true;
     return true;
   }
 
-  unsigned attrs = JSPROP_RESOLVING;
-  if (JSID_IS_INT(id)) {
-    uint32_t arg = uint32_t(JSID_TO_INT(id));
-    if (arg >= argsobj->initialLength() || argsobj->isElementDeleted(arg)) {
+  PropertyFlags flags = {PropertyFlag::CustomDataProperty,
+                         PropertyFlag::Configurable, PropertyFlag::Writable};
+  if (id.isInt()) {
+    uint32_t arg = uint32_t(id.toInt());
+    if (!argsobj->isElement(arg)) {
       return true;
     }
 
-    attrs |= JSPROP_ENUMERATE;
-  } else if (JSID_IS_ATOM(id, cx->names().length)) {
+    flags.setFlag(PropertyFlag::Enumerable);
+  } else if (id.isAtom(cx->names().length)) {
     if (argsobj->hasOverriddenLength()) {
       return true;
     }
   } else {
-    if (!JSID_IS_ATOM(id, cx->names().callee)) {
+    if (!id.isAtom(cx->names().callee)) {
       return true;
     }
 
@@ -623,13 +727,7 @@ bool MappedArgumentsObject::obj_resolve(JSContext* cx, HandleObject obj,
     }
   }
 
-  if (!NativeDefineAccessorProperty(cx, argsobj, id, MappedArgGetter,
-                                    MappedArgSetter, attrs)) {
-    return false;
-  }
-
-  *resolvedp = true;
-  return true;
+  return ResolveArgumentsProperty(cx, argsobj, id, flags, resolvedp);
 }
 
 /* static */
@@ -650,19 +748,86 @@ bool MappedArgumentsObject::obj_enumerate(JSContext* cx, HandleObject obj) {
     return false;
   }
 
-  id = SYMBOL_TO_JSID(cx->wellKnownSymbols().iterator);
+  id = PropertyKey::Symbol(cx->wellKnownSymbols().iterator);
   if (!HasOwnProperty(cx, argsobj, id, &found)) {
     return false;
   }
 
   for (unsigned i = 0; i < argsobj->initialLength(); i++) {
-    id = INT_TO_JSID(i);
+    id = PropertyKey::Int(i);
     if (!HasOwnProperty(cx, argsobj, id, &found)) {
       return false;
     }
   }
 
   return true;
+}
+
+static bool DefineMappedIndex(JSContext* cx, Handle<MappedArgumentsObject*> obj,
+                              HandleId id,
+                              MutableHandle<PropertyDescriptor> desc,
+                              ObjectOpResult& result) {
+  // The custom data properties (see MappedArgGetter, MappedArgSetter) have to
+  // be (re)defined manually because PropertyDescriptor and NativeDefineProperty
+  // don't support these special properties.
+  //
+  // This exists in order to let JS code change the configurable/enumerable
+  // attributes for these properties.
+  //
+  // Note: because this preserves the default mapped-arguments behavior, we
+  // don't need to mark elements as overridden or deleted.
+
+  MOZ_ASSERT(id.isInt());
+  MOZ_ASSERT(obj->isElement(id.toInt()));
+  MOZ_ASSERT(!obj->containsDenseElement(id.toInt()));
+
+  MOZ_ASSERT(!desc.isAccessorDescriptor());
+
+  // Mapped properties aren't used when defining a non-writable property.
+  MOZ_ASSERT(!desc.hasWritable() || desc.writable());
+
+  // First, resolve the property to simplify the code below.
+  PropertyResult prop;
+  if (!NativeLookupOwnProperty<CanGC>(cx, obj, id, &prop)) {
+    return false;
+  }
+
+  MOZ_ASSERT(prop.isNativeProperty());
+
+  PropertyInfo propInfo = prop.propertyInfo();
+  MOZ_ASSERT(propInfo.writable());
+  MOZ_ASSERT(propInfo.isCustomDataProperty());
+
+  // Change the property's attributes by implementing the relevant parts of
+  // ValidateAndApplyPropertyDescriptor (ES2021 draft, 10.1.6.3), in particular
+  // steps 4 and 9.
+
+  // Determine whether the property should be configurable and/or enumerable.
+  bool configurable = propInfo.configurable();
+  bool enumerable = propInfo.enumerable();
+  if (configurable) {
+    if (desc.hasConfigurable()) {
+      configurable = desc.configurable();
+    }
+    if (desc.hasEnumerable()) {
+      enumerable = desc.enumerable();
+    }
+  } else {
+    // Property is not configurable so disallow any attribute changes.
+    if ((desc.hasConfigurable() && desc.configurable()) ||
+        (desc.hasEnumerable() && enumerable != desc.enumerable())) {
+      return result.fail(JSMSG_CANT_REDEFINE_PROP);
+    }
+  }
+
+  PropertyFlags flags = propInfo.flags();
+  flags.setFlag(PropertyFlag::Configurable, configurable);
+  flags.setFlag(PropertyFlag::Enumerable, enumerable);
+  if (!NativeObject::changeCustomDataPropAttributes(cx, obj, id, flags)) {
+    return false;
+  }
+
+  return result.succeed();
 }
 
 // ES 2017 draft 9.4.4.2
@@ -676,40 +841,39 @@ bool MappedArgumentsObject::obj_defineProperty(JSContext* cx, HandleObject obj,
 
   // Steps 2-3.
   bool isMapped = false;
-  if (JSID_IS_INT(id)) {
-    unsigned arg = unsigned(JSID_TO_INT(id));
-    isMapped =
-        arg < argsobj->initialLength() && !argsobj->isElementDeleted(arg);
+  if (id.isInt()) {
+    unsigned arg = unsigned(id.toInt());
+    isMapped = argsobj->isElement(arg);
   }
 
   // Step 4.
   Rooted<PropertyDescriptor> newArgDesc(cx, desc);
 
   // Step 5.
+  bool defineMapped = false;
   if (!desc.isAccessorDescriptor() && isMapped) {
     // Step 5.a.
     if (desc.hasWritable() && !desc.writable()) {
       if (!desc.hasValue()) {
-        RootedValue v(cx, argsobj->element(JSID_TO_INT(id)));
+        RootedValue v(cx, argsobj->element(id.toInt()));
         newArgDesc.setValue(v);
       }
-      newArgDesc.setGetter(nullptr);
-      newArgDesc.setSetter(nullptr);
     } else {
-      // In this case the live mapping is supposed to keep working,
-      // we have to pass along the Getter/Setter otherwise they are
-      // overwritten.
-      newArgDesc.setGetter(MappedArgGetter);
-      newArgDesc.setSetter(MappedArgSetter);
-      newArgDesc.value().setUndefined();
-      newArgDesc.attributesRef() |= JSPROP_IGNORE_VALUE;
+      // In this case the live mapping is supposed to keep working.
+      defineMapped = true;
     }
   }
 
   // Step 6. NativeDefineProperty will lookup [[Value]] for us.
-  if (!NativeDefineProperty(cx, obj.as<NativeObject>(), id, newArgDesc,
-                            result)) {
-    return false;
+  if (defineMapped) {
+    if (!DefineMappedIndex(cx, argsobj, id, &newArgDesc, result)) {
+      return false;
+    }
+  } else {
+    if (!NativeDefineProperty(cx, obj.as<NativeObject>(), id, newArgDesc,
+                              result)) {
+      return false;
+    }
   }
   // Step 7.
   if (!result.ok()) {
@@ -718,22 +882,14 @@ bool MappedArgumentsObject::obj_defineProperty(JSContext* cx, HandleObject obj,
 
   // Step 8.
   if (isMapped) {
-    unsigned arg = unsigned(JSID_TO_INT(id));
+    unsigned arg = unsigned(id.toInt());
     if (desc.isAccessorDescriptor()) {
       if (!argsobj->markElementDeleted(cx, arg)) {
         return false;
       }
     } else {
       if (desc.hasValue()) {
-        RootedFunction callee(cx, &argsobj->callee());
-        RootedScript script(cx, JSFunction::getOrCreateScript(cx, callee));
-        if (!script) {
-          return false;
-        }
-        argsobj->setElement(cx, arg, desc.value());
-        if (arg < script->function()->nargs()) {
-          jit::JitScript::MonitorArgType(cx, script, arg, desc.value());
-        }
+        argsobj->setElement(arg, desc.value());
       }
       if (desc.hasWritable() && !desc.writable()) {
         if (!argsobj->markElementDeleted(cx, arg)) {
@@ -747,21 +903,21 @@ bool MappedArgumentsObject::obj_defineProperty(JSContext* cx, HandleObject obj,
   return result.succeed();
 }
 
-static bool UnmappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
-                              MutableHandleValue vp) {
+bool js::UnmappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
+                           MutableHandleValue vp) {
   UnmappedArgumentsObject& argsobj = obj->as<UnmappedArgumentsObject>();
 
-  if (JSID_IS_INT(id)) {
+  if (id.isInt()) {
     /*
      * arg can exceed the number of arguments if a script changed the
      * prototype to point to another Arguments object with a bigger argc.
      */
-    unsigned arg = unsigned(JSID_TO_INT(id));
-    if (arg < argsobj.initialLength() && !argsobj.isElementDeleted(arg)) {
+    unsigned arg = unsigned(id.toInt());
+    if (argsobj.isElement(arg)) {
       vp.set(argsobj.element(arg));
     }
   } else {
-    MOZ_ASSERT(JSID_IS_ATOM(id, cx->names().length));
+    MOZ_ASSERT(id.isAtom(cx->names().length));
     if (!argsobj.hasOverriddenLength()) {
       vp.setInt32(argsobj.initialLength());
     }
@@ -769,30 +925,27 @@ static bool UnmappedArgGetter(JSContext* cx, HandleObject obj, HandleId id,
   return true;
 }
 
-static bool UnmappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
-                              HandleValue v, ObjectOpResult& result) {
-  if (!obj->is<UnmappedArgumentsObject>()) {
-    return result.succeed();
-  }
+bool js::UnmappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
+                           HandleValue v, ObjectOpResult& result) {
   Handle<UnmappedArgumentsObject*> argsobj = obj.as<UnmappedArgumentsObject>();
 
-  Rooted<PropertyDescriptor> desc(cx);
+  Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
   if (!GetOwnPropertyDescriptor(cx, argsobj, id, &desc)) {
     return false;
   }
-  MOZ_ASSERT(desc.object());
-  unsigned attrs = desc.attributes();
-  MOZ_ASSERT(!(attrs & JSPROP_READONLY));
-  attrs &= (JSPROP_ENUMERATE | JSPROP_PERMANENT); /* only valid attributes */
+  MOZ_ASSERT(desc.isSome());
+  MOZ_ASSERT(desc->isDataDescriptor());
+  MOZ_ASSERT(desc->writable());
+  MOZ_ASSERT(!desc->resolving());
 
-  if (JSID_IS_INT(id)) {
-    unsigned arg = unsigned(JSID_TO_INT(id));
+  if (id.isInt()) {
+    unsigned arg = unsigned(id.toInt());
     if (arg < argsobj->initialLength()) {
-      argsobj->setElement(cx, arg, v);
+      argsobj->setElement(arg, v);
       return result.succeed();
     }
   } else {
-    MOZ_ASSERT(JSID_IS_ATOM(id, cx->names().length));
+    MOZ_ASSERT(id.isAtom(cx->names().length));
   }
 
   /*
@@ -800,9 +953,11 @@ static bool UnmappedArgSetter(JSContext* cx, HandleObject obj, HandleId id,
    * simple data property. Note that we rely on ArgumentsObject::obj_delProperty
    * to set the corresponding override-bit.
    */
+  Rooted<PropertyDescriptor> desc_(cx, *desc);
+  desc_.setValue(v);
   ObjectOpResult ignored;
   return NativeDeleteProperty(cx, argsobj, id, ignored) &&
-         NativeDefineDataProperty(cx, argsobj, id, v, attrs, result);
+         NativeDefineProperty(cx, argsobj, id, desc_, result);
 }
 
 /* static */
@@ -811,28 +966,26 @@ bool UnmappedArgumentsObject::obj_resolve(JSContext* cx, HandleObject obj,
   Rooted<UnmappedArgumentsObject*> argsobj(cx,
                                            &obj->as<UnmappedArgumentsObject>());
 
-  if (JSID_IS_SYMBOL(id) &&
-      JSID_TO_SYMBOL(id) == cx->wellKnownSymbols().iterator) {
+  if (id.isWellKnownSymbol(JS::SymbolCode::iterator)) {
     if (argsobj->hasOverriddenIterator()) {
       return true;
     }
 
-    if (!DefineArgumentsIterator(cx, argsobj)) {
+    if (!reifyIterator(cx, argsobj)) {
       return false;
     }
     *resolvedp = true;
     return true;
   }
 
-  if (JSID_IS_ATOM(id, cx->names().callee)) {
+  if (id.isAtom(cx->names().callee)) {
     RootedObject throwTypeError(
         cx, GlobalObject::getOrCreateThrowTypeError(cx, cx->global()));
     if (!throwTypeError) {
       return false;
     }
 
-    unsigned attrs =
-        JSPROP_RESOLVING | JSPROP_PERMANENT | JSPROP_GETTER | JSPROP_SETTER;
+    unsigned attrs = JSPROP_RESOLVING | JSPROP_PERMANENT;
     if (!NativeDefineAccessorProperty(cx, argsobj, id, throwTypeError,
                                       throwTypeError, attrs)) {
       return false;
@@ -842,15 +995,16 @@ bool UnmappedArgumentsObject::obj_resolve(JSContext* cx, HandleObject obj,
     return true;
   }
 
-  unsigned attrs = JSPROP_RESOLVING;
-  if (JSID_IS_INT(id)) {
-    uint32_t arg = uint32_t(JSID_TO_INT(id));
-    if (arg >= argsobj->initialLength() || argsobj->isElementDeleted(arg)) {
+  PropertyFlags flags = {PropertyFlag::CustomDataProperty,
+                         PropertyFlag::Configurable, PropertyFlag::Writable};
+  if (id.isInt()) {
+    uint32_t arg = uint32_t(id.toInt());
+    if (!argsobj->isElement(arg)) {
       return true;
     }
 
-    attrs |= JSPROP_ENUMERATE;
-  } else if (JSID_IS_ATOM(id, cx->names().length)) {
+    flags.setFlag(PropertyFlag::Enumerable);
+  } else if (id.isAtom(cx->names().length)) {
     if (argsobj->hasOverriddenLength()) {
       return true;
     }
@@ -858,13 +1012,7 @@ bool UnmappedArgumentsObject::obj_resolve(JSContext* cx, HandleObject obj,
     return true;
   }
 
-  if (!NativeDefineAccessorProperty(cx, argsobj, id, UnmappedArgGetter,
-                                    UnmappedArgSetter, attrs)) {
-    return false;
-  }
-
-  *resolvedp = true;
-  return true;
+  return ResolveArgumentsProperty(cx, argsobj, id, flags, resolvedp);
 }
 
 /* static */
@@ -886,13 +1034,13 @@ bool UnmappedArgumentsObject::obj_enumerate(JSContext* cx, HandleObject obj) {
     return false;
   }
 
-  id = SYMBOL_TO_JSID(cx->wellKnownSymbols().iterator);
+  id = PropertyKey::Symbol(cx->wellKnownSymbols().iterator);
   if (!HasOwnProperty(cx, argsobj, id, &found)) {
     return false;
   }
 
   for (unsigned i = 0; i < argsobj->initialLength(); i++) {
-    id = INT_TO_JSID(i);
+    id = PropertyKey::Int(i);
     if (!HasOwnProperty(cx, argsobj, id, &found)) {
       return false;
     }
@@ -901,24 +1049,24 @@ bool UnmappedArgumentsObject::obj_enumerate(JSContext* cx, HandleObject obj) {
   return true;
 }
 
-void ArgumentsObject::finalize(JSFreeOp* fop, JSObject* obj) {
+void ArgumentsObject::finalize(JS::GCContext* gcx, JSObject* obj) {
   MOZ_ASSERT(!IsInsideNursery(obj));
   ArgumentsObject& argsobj = obj->as<ArgumentsObject>();
   if (argsobj.data()) {
-    fop->free_(&argsobj, argsobj.maybeRareData(),
+    gcx->free_(&argsobj, argsobj.maybeRareData(),
                RareArgumentsData::bytesRequired(argsobj.initialLength()),
                MemoryUse::RareArgumentsData);
-    fop->free_(&argsobj, argsobj.data(),
-               ArgumentsData::bytesRequired(argsobj.data()->numArgs),
+    gcx->free_(&argsobj, argsobj.data(),
+               ArgumentsData::bytesRequired(argsobj.data()->numArgs()),
                MemoryUse::ArgumentsData);
   }
 }
 
 void ArgumentsObject::trace(JSTracer* trc, JSObject* obj) {
   ArgumentsObject& argsobj = obj->as<ArgumentsObject>();
-  if (ArgumentsData* data =
-          argsobj.data()) {  // Template objects have no ArgumentsData.
-    TraceRange(trc, data->numArgs, data->begin(), js_arguments_str);
+  // Template objects have no ArgumentsData.
+  if (ArgumentsData* data = argsobj.data()) {
+    data->args.trace(trc);
   }
 }
 
@@ -935,44 +1083,25 @@ size_t ArgumentsObject::objectMoved(JSObject* dst, JSObject* src) {
   Nursery& nursery = dst->runtimeFromMainThread()->gc.nursery();
 
   size_t nbytesTotal = 0;
-  uint32_t nDataBytes = ArgumentsData::bytesRequired(nsrc->data()->numArgs);
-  if (!nursery.isInside(nsrc->data())) {
-    nursery.removeMallocedBufferDuringMinorGC(nsrc->data());
-  } else {
-    AutoEnterOOMUnsafeRegion oomUnsafe;
-    uint8_t* data = nsrc->zone()->pod_malloc<uint8_t>(nDataBytes);
-    if (!data) {
-      oomUnsafe.crash(
-          "Failed to allocate ArgumentsObject data while tenuring.");
-    }
-    ndst->initFixedSlot(DATA_SLOT, PrivateValue(data));
 
-    mozilla::PodCopy(data, reinterpret_cast<uint8_t*>(nsrc->data()),
-                     nDataBytes);
+  ArgumentsData* data = nsrc->data();
+  uint32_t nDataBytes = ArgumentsData::bytesRequired(nsrc->data()->numArgs());
+  Nursery::WasBufferMoved result = nursery.maybeMoveBufferOnPromotion(
+      &data, dst, nDataBytes, MemoryUse::ArgumentsData);
+  if (result == Nursery::BufferMoved) {
+    ndst->initFixedSlot(DATA_SLOT, PrivateValue(data));
     nbytesTotal += nDataBytes;
   }
 
-  AddCellMemory(ndst, nDataBytes, MemoryUse::ArgumentsData);
-
-  if (RareArgumentsData* srcRareData = nsrc->maybeRareData()) {
-    uint32_t nbytes = RareArgumentsData::bytesRequired(nsrc->initialLength());
-    if (!nursery.isInside(srcRareData)) {
-      nursery.removeMallocedBufferDuringMinorGC(srcRareData);
-    } else {
-      AutoEnterOOMUnsafeRegion oomUnsafe;
-      uint8_t* dstRareData = nsrc->zone()->pod_malloc<uint8_t>(nbytes);
-      if (!dstRareData) {
-        oomUnsafe.crash(
-            "Failed to allocate RareArgumentsData data while tenuring.");
-      }
-      ndst->data()->rareData = (RareArgumentsData*)dstRareData;
-
-      mozilla::PodCopy(dstRareData, reinterpret_cast<uint8_t*>(srcRareData),
-                       nbytes);
-      nbytesTotal += nbytes;
+  if (RareArgumentsData* rareData = nsrc->maybeRareData()) {
+    uint32_t nRareBytes =
+        RareArgumentsData::bytesRequired(nsrc->initialLength());
+    Nursery::WasBufferMoved result = nursery.maybeMoveBufferOnPromotion(
+        &rareData, dst, nRareBytes, MemoryUse::RareArgumentsData);
+    if (result == Nursery::BufferMoved) {
+      ndst->data()->rareData = rareData;
+      nbytesTotal += nRareBytes;
     }
-
-    AddCellMemory(ndst, nbytes, MemoryUse::RareArgumentsData);
   }
 
   return nbytesTotal;
@@ -993,7 +1122,6 @@ const JSClassOps MappedArgumentsObject::classOps_ = {
     ArgumentsObject::obj_mayResolve,       // mayResolve
     ArgumentsObject::finalize,             // finalize
     nullptr,                               // call
-    nullptr,                               // hasInstance
     nullptr,                               // construct
     ArgumentsObject::trace,                // trace
 };
@@ -1038,7 +1166,6 @@ const JSClassOps UnmappedArgumentsObject::classOps_ = {
     ArgumentsObject::obj_mayResolve,         // mayResolve
     ArgumentsObject::finalize,               // finalize
     nullptr,                                 // call
-    nullptr,                                 // hasInstance
     nullptr,                                 // construct
     ArgumentsObject::trace,                  // trace
 };

@@ -5,9 +5,9 @@
 
 // Test for the toolbox tabs rearrangement when the visibility of toolbox buttons were changed.
 
-const { Toolbox } = require("devtools/client/framework/toolbox");
+const { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 
-add_task(async function() {
+add_task(async function () {
   const tab = await addTab("about:blank");
   const toolbox = await openToolboxForTab(
     tab,
@@ -19,10 +19,8 @@ add_task(async function() {
   );
 
   const win = getWindow(toolbox);
-  const {
-    outerWidth: originalWindowWidth,
-    outerHeight: originalWindowHeight,
-  } = win;
+  const { outerWidth: originalWindowWidth, outerHeight: originalWindowHeight } =
+    win;
   registerCleanupFunction(() => {
     for (const preference of toolboxButtonPreferences) {
       Services.prefs.clearUserPref(preference);
@@ -40,14 +38,21 @@ add_task(async function() {
     "Test the count of shown devtools tab after making all buttons to be visible"
   );
   await resizeWindow(toolbox, 800);
+
+  // Bug 1770282 - On MacOS the tabs aren't available right away and could cause intermittent failure
+  await waitFor(() => {
+    return !!toolbox.doc.querySelector(".devtools-tab");
+  });
+
   // Once, make all toolbox button to be invisible.
   setToolboxButtonsVisibility(checkButtons, false);
   // Get count of shown devtools tab elements.
   const initialTabCount = toolbox.doc.querySelectorAll(".devtools-tab").length;
   // Make all toolbox button to be visible.
   setToolboxButtonsVisibility(checkButtons, true);
-  ok(
-    toolbox.doc.querySelectorAll(".devtools-tab").length < initialTabCount,
+  Assert.less(
+    toolbox.doc.querySelectorAll(".devtools-tab").length,
+    initialTabCount,
     "Count of shown devtools tab should decreased"
   );
 

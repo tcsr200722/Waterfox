@@ -29,33 +29,27 @@ void gfx_critical_error(const char* msg);
 void gecko_printf_stderr_output(const char* msg);
 void* get_proc_address_from_glcontext(void* glcontext_ptr,
                                       const char* procname);
-void gecko_profiler_register_thread(const char* threadname);
-void gecko_profiler_unregister_thread();
 
-void gecko_profiler_start_marker(const char* name);
-void gecko_profiler_end_marker(const char* name);
-void gecko_profiler_event_marker(const char* name);
-void gecko_profiler_add_text_marker(const char* name, const char* text_ptr,
-                                    size_t text_len, uint64_t microseconds);
 bool gecko_profiler_thread_is_being_profiled();
 
 // IMPORTANT: Keep this synchronized with enumerate_interners in
 // gfx/wr/webrender_api
-#define WEBRENDER_FOR_EACH_INTERNER(macro) \
-  macro(clip);                             \
-  macro(prim);                             \
-  macro(normal_border);                    \
-  macro(image_border);                     \
-  macro(image);                            \
-  macro(yuv_image);                        \
-  macro(line_decoration);                  \
-  macro(linear_grad);                      \
-  macro(radial_grad);                      \
-  macro(conic_grad);                       \
-  macro(picture);                          \
-  macro(text_run);                         \
-  macro(filterdata);                       \
-  macro(backdrop);
+#define WEBRENDER_FOR_EACH_INTERNER(macro, comma_like_delim) \
+  macro(clip) comma_like_delim macro(prim)                   \
+  comma_like_delim macro(normal_border)                      \
+  comma_like_delim macro(image_border)                       \
+  comma_like_delim macro(image)                              \
+  comma_like_delim macro(yuv_image)                          \
+  comma_like_delim macro(line_decoration)                    \
+  comma_like_delim macro(linear_grad)                        \
+  comma_like_delim macro(radial_grad)                        \
+  comma_like_delim macro(conic_grad)                         \
+  comma_like_delim macro(picture)                            \
+  comma_like_delim macro(text_run)                           \
+  comma_like_delim macro(filterdata)                         \
+  comma_like_delim macro(backdrop_capture)                   \
+  comma_like_delim macro(backdrop_render)                    \
+  comma_like_delim macro(polyon)
 
 // Prelude of types necessary before including webrender_ffi_generated.h
 namespace mozilla {
@@ -65,7 +59,7 @@ namespace wr {
 // it. Work around that by re-declaring it here.
 #define DECLARE_MEMBER(id) uintptr_t id;
 struct InternerSubReport {
-  WEBRENDER_FOR_EACH_INTERNER(DECLARE_MEMBER)
+  WEBRENDER_FOR_EACH_INTERNER(DECLARE_MEMBER, )
 };
 
 #undef DECLARE_MEMBER
@@ -78,8 +72,6 @@ struct WrPipelineInfo;
 struct WrPipelineIdAndEpoch;
 using WrPipelineIdEpochs = nsTArray<WrPipelineIdAndEpoch>;
 
-const uint64_t ROOT_CLIP_CHAIN = ~0;
-
 }  // namespace wr
 }  // namespace mozilla
 
@@ -91,13 +83,19 @@ void apz_run_updater(mozilla::wr::WrWindowId aWindowId);
 void apz_deregister_updater(mozilla::wr::WrWindowId aWindowId);
 
 void apz_register_sampler(mozilla::wr::WrWindowId aWindowId);
-void apz_sample_transforms(
-    mozilla::wr::WrWindowId aWindowId, mozilla::wr::Transaction* aTransaction,
-    const mozilla::wr::WrPipelineIdEpochs* aPipelineEpochs);
+void apz_sample_transforms(mozilla::wr::WrWindowId aWindowId,
+                           const uint64_t* aGeneratedFrameId,
+                           mozilla::wr::Transaction* aTransaction);
 void apz_deregister_sampler(mozilla::wr::WrWindowId aWindowId);
+
+void omta_register_sampler(mozilla::wr::WrWindowId aWindowId);
+void omta_sample(mozilla::wr::WrWindowId aWindowId,
+                 mozilla::wr::Transaction* aTransaction);
+void omta_deregister_sampler(mozilla::wr::WrWindowId aWindowId);
 }  // extern "C"
 
-// Work-around wingdi.h define which conflcits with WR color constant
+// Work-around Solaris define which conflcits with WR color constant, see
+// bug 1773491.
 #pragma push_macro("TRANSPARENT")
 #undef TRANSPARENT
 
@@ -105,12 +103,11 @@ void apz_deregister_sampler(mozilla::wr::WrWindowId aWindowId);
 
 #pragma pop_macro("TRANSPARENT")
 
-// More functions invoked from Rust code. These are down here because they
-// refer to data structures from webrender_ffi_generated.h
-extern "C" {
-void record_telemetry_time(mozilla::wr::TelemetryProbe aProbe,
-                           uint64_t aTimeNs);
-}
+template struct mozilla::wr::Point2D<int32_t, mozilla::wr::DevicePixel>;
+template struct mozilla::wr::Point2D<int, mozilla::wr::WorldPixel>;
+template struct mozilla::wr::Point2D<float, mozilla::wr::WorldPixel>;
+template struct mozilla::wr::Box2D<int32_t, mozilla::wr::DevicePixel>;
+template struct mozilla::wr::Box2D<int, mozilla::wr::LayoutPixel>;
 
 namespace mozilla {
 namespace wr {

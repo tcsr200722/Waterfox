@@ -9,6 +9,9 @@
     'variables': {
       'debug_optimization_level': '2',
     },
+    'cflags_cc': [
+        '-Wno-vla-extension',
+    ],
     'target_conditions': [
       [ '_type=="executable"', {
         'libraries!': [
@@ -50,17 +53,11 @@
       ],
       'conditions': [
         ['fuzz_oss==0', {
-          'sources': [
-            '<!@(ls <(DEPTH)/fuzz/libFuzzer/*.cpp)',
-          ],
-          'cflags/': [
-            ['exclude', '-fsanitize-coverage'],
-          ],
-          'xcode_settings': {
-            'OTHER_CFLAGS/': [
-              ['exclude', '-fsanitize-coverage'],
-            ],
-          },
+          'all_dependent_settings': {
+            'libraries': [
+              '-fsanitize=fuzzer',
+             ],
+          }
         }, {
           'all_dependent_settings': {
             'libraries': ['-lFuzzingEngine'],

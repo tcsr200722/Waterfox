@@ -83,6 +83,7 @@ typedef struct ZipEnd_ {
 #define LOCALSIG 0x04034B50l
 #define CENTRALSIG 0x02014B50l
 #define ENDSIG 0x06054B50l
+#define ENDSIG64 0x6064B50l
 
 /* extra fields */
 #define EXTENDED_TIMESTAMP_FIELD 0x5455
@@ -99,9 +100,5 @@ typedef struct ZipEnd_ {
 #define TOKENIZED 7
 #define DEFLATED 8
 #define UNSUPPORTED 0xFF
-/* non-standard extension */
-#ifdef NIGHTLY_BUILD
-#  define MOZ_JAR_BROTLI 0x81
-#endif
 
 #endif /* _zipstruct_h */

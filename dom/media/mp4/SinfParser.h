@@ -8,6 +8,7 @@
 #include "mozilla/ResultExtensions.h"
 #include "Atom.h"
 #include "AtomType.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 
@@ -17,7 +18,7 @@ class Sinf : public Atom {
  public:
   Sinf()
       : mDefaultIVSize(0),
-        mDefaultEncryptionType(),
+
         mDefaultCryptByteBlock(0),
         mDefaultSkipByteBlock(0) {}
   explicit Sinf(Box& aBox);

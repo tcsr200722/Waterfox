@@ -6,13 +6,15 @@
 
 /* rendering object for HTML <br> elements */
 
+#include "mozilla/CaretAssociationHint.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/HTMLBRElement.h"
 #include "gfxContext.h"
 #include "nsCOMPtr.h"
 #include "nsContainerFrame.h"
 #include "nsFontMetrics.h"
-#include "nsFrame.h"
+#include "nsHTMLParts.h"
+#include "nsIFrame.h"
 #include "nsPresContext.h"
 #include "nsLineLayout.h"
 #include "nsStyleConsts.h"
@@ -27,7 +29,7 @@ using namespace mozilla;
 
 namespace mozilla {
 
-class BRFrame final : public nsFrame {
+class BRFrame final : public nsIFrame {
  public:
   NS_DECL_FRAMEARENA_HELPERS(BRFrame)
 
@@ -37,40 +39,44 @@ class BRFrame final : public nsFrame {
   ContentOffsets CalcContentOffsetsFromFramePoint(
       const nsPoint& aPoint) override;
 
-  virtual FrameSearchResult PeekOffsetNoAmount(bool aForward,
-                                               int32_t* aOffset) override;
-  virtual FrameSearchResult PeekOffsetCharacter(
+  FrameSearchResult PeekOffsetNoAmount(bool aForward,
+                                       int32_t* aOffset) override;
+  FrameSearchResult PeekOffsetCharacter(
       bool aForward, int32_t* aOffset,
       PeekOffsetCharacterOptions aOptions =
           PeekOffsetCharacterOptions()) override;
-  virtual FrameSearchResult PeekOffsetWord(
-      bool aForward, bool aWordSelectEatSpace, bool aIsKeyboardSelect,
-      int32_t* aOffset, PeekWordState* aState, bool aTrimSpaces) override;
+  FrameSearchResult PeekOffsetWord(bool aForward, bool aWordSelectEatSpace,
+                                   bool aIsKeyboardSelect, int32_t* aOffset,
+                                   PeekWordState* aState,
+                                   bool aTrimSpaces) override;
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
-  virtual void AddInlineMinISize(gfxContext* aRenderingContext,
-                                 InlineMinISizeData* aData) override;
-  virtual void AddInlinePrefISize(gfxContext* aRenderingContext,
-                                  InlinePrefISizeData* aData) override;
-  virtual nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetPrefISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetLogicalBaseline(
-      mozilla::WritingMode aWritingMode) const override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
+  void AddInlineMinISize(gfxContext* aRenderingContext,
+                         InlineMinISizeData* aData) override;
+  void AddInlinePrefISize(gfxContext* aRenderingContext,
+                          InlinePrefISizeData* aData) override;
+  nscoord GetMinISize(gfxContext* aRenderingContext) override;
+  nscoord GetPrefISize(gfxContext* aRenderingContext) override;
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eLineParticipant));
-  }
+  Maybe<nscoord> GetNaturalBaselineBOffset(
+      WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+      BaselineExportContext) const override;
 
 #ifdef ACCESSIBILITY
-  virtual mozilla::a11y::AccType AccessibleType() override;
+  mozilla::a11y::AccType AccessibleType() override;
+#endif
+
+#ifdef DEBUG_FRAME_DUMP
+  nsresult GetFrameName(nsAString& aResult) const override {
+    return MakeFrameName(u"BR"_ns, aResult);
+  }
 #endif
 
  protected:
-  explicit BRFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
-      : nsFrame(aStyle, aPresContext, kClassID),
+  BRFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
+      : nsIFrame(aStyle, aPresContext, kClassID),
         mAscent(NS_INTRINSIC_ISIZE_UNKNOWN) {}
 
   virtual ~BRFrame();
@@ -92,7 +98,6 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
                      const ReflowInput& aReflowInput, nsReflowStatus& aStatus) {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("BRFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aMetrics, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
   WritingMode wm = aReflowInput.GetWritingMode();
@@ -132,7 +137,7 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
       RefPtr<nsFontMetrics> fm =
           nsLayoutUtils::GetInflatedFontMetricsForFrame(this);
       if (fm) {
-        nscoord logicalHeight = aReflowInput.CalcLineHeight();
+        nscoord logicalHeight = aReflowInput.GetLineHeight();
         finalSize.BSize(wm) = logicalHeight;
         aMetrics.SetBlockStartAscent(nsLayoutUtils::GetCenteredFontBaseline(
             fm, logicalHeight, wm.IsLineInverted()));
@@ -151,12 +156,7 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
     }
 
     // Return our reflow status
-    StyleClear breakType = aReflowInput.mStyleDisplay->mBreakType;
-    if (StyleClear::None == breakType) {
-      breakType = StyleClear::Line;
-    }
-
-    aStatus.SetInlineLineBreakAfter(breakType);
+    aStatus.SetInlineLineBreakAfter(aReflowInput.mStyleDisplay->mClear);
     ll->SetLineEndsInBR(true);
   }
 
@@ -164,8 +164,6 @@ void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   aMetrics.SetOverflowAreasToDesiredBounds();
 
   mAscent = aMetrics.BlockStartAscent();
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aMetrics);
 }
 
 /* virtual */
@@ -187,21 +185,18 @@ void BRFrame::AddInlinePrefISize(gfxContext* aRenderingContext,
 }
 
 /* virtual */
-nscoord BRFrame::GetMinISize(gfxContext* aRenderingContext) {
-  nscoord result = 0;
-  DISPLAY_MIN_INLINE_SIZE(this, result);
-  return result;
-}
+nscoord BRFrame::GetMinISize(gfxContext* aRenderingContext) { return 0; }
 
 /* virtual */
-nscoord BRFrame::GetPrefISize(gfxContext* aRenderingContext) {
-  nscoord result = 0;
-  DISPLAY_PREF_INLINE_SIZE(this, result);
-  return result;
-}
+nscoord BRFrame::GetPrefISize(gfxContext* aRenderingContext) { return 0; }
 
-nscoord BRFrame::GetLogicalBaseline(mozilla::WritingMode aWritingMode) const {
-  return mAscent;
+Maybe<nscoord> BRFrame::GetNaturalBaselineBOffset(
+    WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+    BaselineExportContext) const {
+  if (aBaselineGroup == BaselineSharingGroup::Last) {
+    return Nothing{};
+  }
+  return Some(mAscent);
 }
 
 nsIFrame::ContentOffsets BRFrame::CalcContentOffsetsFromFramePoint(
@@ -209,9 +204,9 @@ nsIFrame::ContentOffsets BRFrame::CalcContentOffsetsFromFramePoint(
   ContentOffsets offsets;
   offsets.content = mContent->GetParent();
   if (offsets.content) {
-    offsets.offset = offsets.content->ComputeIndexOf(mContent);
+    offsets.offset = offsets.content->ComputeIndexOf_Deprecated(mContent);
     offsets.secondaryOffset = offsets.offset;
-    offsets.associate = CARET_ASSOCIATE_AFTER;
+    offsets.associate = CaretAssociationHint::After;
   }
   return offsets;
 }

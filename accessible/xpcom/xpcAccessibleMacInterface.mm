@@ -1,4 +1,6 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format off */
+/* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -8,245 +10,53 @@
 
 #include "nsCocoaUtils.h"
 #include "nsContentUtils.h"
+#include "nsIObserverService.h"
+#include "nsISimpleEnumerator.h"
 #include "nsIXPConnect.h"
 #include "mozilla/dom/ToJSValue.h"
+#include "mozilla/Services.h"
+#include "nsString.h"
+#include "js/PropertyAndElement.h"  // JS_Enumerate, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_HasOwnProperty, JS_SetUCProperty
 
 #import "mozAccessible.h"
 
 using namespace mozilla::a11y;
 
-// A mapping of "AX" attributes to getters and setters expected by NSAccessibilityProtocol
-// The values in gAttributeToPropertyMap were generated using the folling snippet in the browser
-// toolbox:
-//
-// let r = /when clients request NSAccessibility(\w+)Attribute.*\n@property(?: \(getter =
-// (\w+))?.*\W(\w+)\sAPI_AVA/g
-// fetch('https://raw.githubusercontent.com/phracker/MacOSX-SDKs/master/MacOSX10.15.sdk' +
-//   '/System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSAccessibilityProtocols.h')
-//   .then((response) => response.text()).then((data) => {
-//     let pairs =
-//       [...data.matchAll(r)].map(e => ['AX' + e[1], e[2] ? e[2] : e[3], "set" +
-//       e[3].substr(0,1).toLocaleUpperCase() + e[3].substr(1) + ":"]);
-//     let output = "static NSDictionary* gAttributeToPropertyMap = @{\n";
-//     for (let [attr, getter, setter] of pairs) {
-//       output += `  @"${attr}" : @[@"${getter}", @"${setter}"],\n`;
-//     }
-//     output += "};";
-//   console.log(output);
-//   });
+// xpcAccessibleMacNSObjectWrapper
 
-static NSDictionary* gAttributeToPropertyMap = @{
-  @"AXSize" : @[ @"accessibilityFrame", @"setAccessibilityFrame:" ],
-  @"AXFocused" : @[ @"isAccessibilityFocused", @"setAccessibilityFocused:" ],
-  @"AXTopLevelUIElement" :
-      @[ @"accessibilityTopLevelUIElement", @"setAccessibilityTopLevelUIElement:" ],
-  @"AXURL" : @[ @"accessibilityURL", @"setAccessibilityURL:" ],
-  @"AXValue" : @[ @"accessibilityValue", @"setAccessibilityValue:" ],
-  @"AXValueDescription" :
-      @[ @"accessibilityValueDescription", @"setAccessibilityValueDescription:" ],
-  @"AXVisibleChildren" : @[ @"accessibilityVisibleChildren", @"setAccessibilityVisibleChildren:" ],
-  @"AXSubrole" : @[ @"accessibilitySubrole", @"setAccessibilitySubrole:" ],
-  @"AXTitle" : @[ @"accessibilityTitle", @"setAccessibilityTitle:" ],
-  @"AXTitleUIElement" : @[ @"accessibilityTitleUIElement", @"setAccessibilityTitleUIElement:" ],
-  @"AXNextContents" : @[ @"accessibilityNextContents", @"setAccessibilityNextContents:" ],
-  @"AXOrientation" : @[ @"accessibilityOrientation", @"setAccessibilityOrientation:" ],
-  @"AXOverflowButton" : @[ @"accessibilityOverflowButton", @"setAccessibilityOverflowButton:" ],
-  @"AXParent" : @[ @"accessibilityParent", @"setAccessibilityParent:" ],
-  @"AXPlaceholderValue" :
-      @[ @"accessibilityPlaceholderValue", @"setAccessibilityPlaceholderValue:" ],
-  @"AXPreviousContents" :
-      @[ @"accessibilityPreviousContents", @"setAccessibilityPreviousContents:" ],
-  @"AXRole" : @[ @"accessibilityRole", @"setAccessibilityRole:" ],
-  @"AXRoleDescription" : @[ @"accessibilityRoleDescription", @"setAccessibilityRoleDescription:" ],
-  @"AXSearchButton" : @[ @"accessibilitySearchButton", @"setAccessibilitySearchButton:" ],
-  @"AXSearchMenu" : @[ @"accessibilitySearchMenu", @"setAccessibilitySearchMenu:" ],
-  @"AXSelected" : @[ @"isAccessibilitySelected", @"setAccessibilitySelected:" ],
-  @"AXSelectedChildren" :
-      @[ @"accessibilitySelectedChildren", @"setAccessibilitySelectedChildren:" ],
-  @"AXServesAsTitleForUIElements" : @[
-    @"accessibilityServesAsTitleForUIElements", @"setAccessibilityServesAsTitleForUIElements:"
-  ],
-  @"AXShownMenu" : @[ @"accessibilityShownMenu", @"setAccessibilityShownMenu:" ],
-  @"AXMinValue" : @[ @"accessibilityMinValue", @"setAccessibilityMinValue:" ],
-  @"AXMaxValue" : @[ @"accessibilityMaxValue", @"setAccessibilityMaxValue:" ],
-  @"AXLinkedUIElements" :
-      @[ @"accessibilityLinkedUIElements", @"setAccessibilityLinkedUIElements:" ],
-  @"AXWindow" : @[ @"accessibilityWindow", @"setAccessibilityWindow:" ],
-  @"AXIdentifier" : @[ @"accessibilityIdentifier", @"setAccessibilityIdentifier:" ],
-  @"AXHelp" : @[ @"accessibilityHelp", @"setAccessibilityHelp:" ],
-  @"AXFilename" : @[ @"accessibilityFilename", @"setAccessibilityFilename:" ],
-  @"AXExpanded" : @[ @"isAccessibilityExpanded", @"setAccessibilityExpanded:" ],
-  @"AXEdited" : @[ @"isAccessibilityEdited", @"setAccessibilityEdited:" ],
-  @"AXEnabled" : @[ @"isAccessibilityEnabled", @"setAccessibilityEnabled:" ],
-  @"AXChildren" : @[ @"accessibilityChildren", @"setAccessibilityChildren:" ],
-  @"AXClearButton" : @[ @"accessibilityClearButton", @"setAccessibilityClearButton:" ],
-  @"AXCancelButton" : @[ @"accessibilityCancelButton", @"setAccessibilityCancelButton:" ],
-  @"AXContainsProtectedContent" :
-      @[ @"isAccessibilityProtectedContent", @"setAccessibilityProtectedContent:" ],
-  @"AXContents" : @[ @"accessibilityContents", @"setAccessibilityContents:" ],
-  @"AXDescription" : @[ @"accessibilityLabel", @"setAccessibilityLabel:" ],
-  @"AXAlternateUIVisible" :
-      @[ @"isAccessibilityAlternateUIVisible", @"setAccessibilityAlternateUIVisible:" ],
-  @"AXSharedFocusElements" :
-      @[ @"accessibilitySharedFocusElements", @"setAccessibilitySharedFocusElements:" ],
-  @"AXRequired" : @[ @"accessibilityRequired", @"setAccessibilityRequired:" ],
-  @"AXFocusedUIElement" : @[
-    @"accessibilityApplicationFocusedUIElement", @"setAccessibilityApplicationFocusedUIElement:"
-  ],
-  @"AXMainWindow" : @[ @"accessibilityMainWindow", @"setAccessibilityMainWindow:" ],
-  @"AXHidden" : @[ @"isAccessibilityHidden", @"setAccessibilityHidden:" ],
-  @"AXFrontmost" : @[ @"isAccessibilityFrontmost", @"setAccessibilityFrontmost:" ],
-  @"AXFocusedWindow" : @[ @"accessibilityFocusedWindow", @"setAccessibilityFocusedWindow:" ],
-  @"AXWindows" : @[ @"accessibilityWindows", @"setAccessibilityWindows:" ],
-  @"AXExtrasMenuBar" : @[ @"accessibilityExtrasMenuBar", @"setAccessibilityExtrasMenuBar:" ],
-  @"AXMenuBar" : @[ @"accessibilityMenuBar", @"setAccessibilityMenuBar:" ],
-  @"AXColumnTitles" : @[ @"accessibilityColumnTitles", @"setAccessibilityColumnTitles:" ],
-  @"AXOrderedByRow" : @[ @"isAccessibilityOrderedByRow", @"setAccessibilityOrderedByRow:" ],
-  @"AXHorizontalUnits" : @[ @"accessibilityHorizontalUnits", @"setAccessibilityHorizontalUnits:" ],
-  @"AXVerticalUnits" : @[ @"accessibilityVerticalUnits", @"setAccessibilityVerticalUnits:" ],
-  @"AXHorizontalUnitDescription" :
-      @[ @"accessibilityHorizontalUnitDescription", @"setAccessibilityHorizontalUnitDescription:" ],
-  @"AXVerticalUnitDescription" :
-      @[ @"accessibilityVerticalUnitDescription", @"setAccessibilityVerticalUnitDescription:" ],
-  @"AXHandles" : @[ @"accessibilityHandles", @"setAccessibilityHandles:" ],
-  @"AXWarningValue" : @[ @"accessibilityWarningValue", @"setAccessibilityWarningValue:" ],
-  @"AXCriticalValue" : @[ @"accessibilityCriticalValue", @"setAccessibilityCriticalValue:" ],
-  @"AXDisclosing" : @[ @"isAccessibilityDisclosed", @"setAccessibilityDisclosed:" ],
-  @"AXDisclosedByRow" : @[ @"accessibilityDisclosedByRow", @"setAccessibilityDisclosedByRow:" ],
-  @"AXDisclosedRows" : @[ @"accessibilityDisclosedRows", @"setAccessibilityDisclosedRows:" ],
-  @"AXDisclosureLevel" : @[ @"accessibilityDisclosureLevel", @"setAccessibilityDisclosureLevel:" ],
-  @"AXMarkerUIElements" :
-      @[ @"accessibilityMarkerUIElements", @"setAccessibilityMarkerUIElements:" ],
-  @"AXMarkerValues" : @[ @"accessibilityMarkerValues", @"setAccessibilityMarkerValues:" ],
-  @"AXMarkerGroupUIElement" :
-      @[ @"accessibilityMarkerGroupUIElement", @"setAccessibilityMarkerGroupUIElement:" ],
-  @"AXUnits" : @[ @"accessibilityUnits", @"setAccessibilityUnits:" ],
-  @"AXUnitDescription" : @[ @"accessibilityUnitDescription", @"setAccessibilityUnitDescription:" ],
-  @"AXMarkerType" : @[ @"accessibilityRulerMarkerType", @"setAccessibilityRulerMarkerType:" ],
-  @"AXMarkerTypeDescription" :
-      @[ @"accessibilityMarkerTypeDescription", @"setAccessibilityMarkerTypeDescription:" ],
-  @"AXHorizontalScrollBar" :
-      @[ @"accessibilityHorizontalScrollBar", @"setAccessibilityHorizontalScrollBar:" ],
-  @"AXVerticalScrollBar" :
-      @[ @"accessibilityVerticalScrollBar", @"setAccessibilityVerticalScrollBar:" ],
-  @"AXAllowedValues" : @[ @"accessibilityAllowedValues", @"setAccessibilityAllowedValues:" ],
-  @"AXLabelUIElements" : @[ @"accessibilityLabelUIElements", @"setAccessibilityLabelUIElements:" ],
-  @"AXLabelValue" : @[ @"accessibilityLabelValue", @"setAccessibilityLabelValue:" ],
-  @"AXSplitters" : @[ @"accessibilitySplitters", @"setAccessibilitySplitters:" ],
-  @"AXDecrementButton" : @[ @"accessibilityDecrementButton", @"setAccessibilityDecrementButton:" ],
-  @"AXIncrementButton" : @[ @"accessibilityIncrementButton", @"setAccessibilityIncrementButton:" ],
-  @"AXTabs" : @[ @"accessibilityTabs", @"setAccessibilityTabs:" ],
-  @"AXHeader" : @[ @"accessibilityHeader", @"setAccessibilityHeader:" ],
-  @"AXColumnCount" : @[ @"accessibilityColumnCount", @"setAccessibilityColumnCount:" ],
-  @"AXRowCount" : @[ @"accessibilityRowCount", @"setAccessibilityRowCount:" ],
-  @"AXIndex" : @[ @"accessibilityIndex", @"setAccessibilityIndex:" ],
-  @"AXColumns" : @[ @"accessibilityColumns", @"setAccessibilityColumns:" ],
-  @"AXRows" : @[ @"accessibilityRows", @"setAccessibilityRows:" ],
-  @"AXVisibleRows" : @[ @"accessibilityVisibleRows", @"setAccessibilityVisibleRows:" ],
-  @"AXSelectedRows" : @[ @"accessibilitySelectedRows", @"setAccessibilitySelectedRows:" ],
-  @"AXVisibleColumns" : @[ @"accessibilityVisibleColumns", @"setAccessibilityVisibleColumns:" ],
-  @"AXSelectedColumns" : @[ @"accessibilitySelectedColumns", @"setAccessibilitySelectedColumns:" ],
-  @"AXSortDirection" : @[ @"accessibilitySortDirection", @"setAccessibilitySortDirection:" ],
-  @"AXRowHeaderUIElements" :
-      @[ @"accessibilityRowHeaderUIElements", @"setAccessibilityRowHeaderUIElements:" ],
-  @"AXSelectedCells" : @[ @"accessibilitySelectedCells", @"setAccessibilitySelectedCells:" ],
-  @"AXVisibleCells" : @[ @"accessibilityVisibleCells", @"setAccessibilityVisibleCells:" ],
-  @"AXColumnHeaderUIElements" :
-      @[ @"accessibilityColumnHeaderUIElements", @"setAccessibilityColumnHeaderUIElements:" ],
-  @"AXRowIndexRange" : @[ @"accessibilityRowIndexRange", @"setAccessibilityRowIndexRange:" ],
-  @"AXColumnIndexRange" :
-      @[ @"accessibilityColumnIndexRange", @"setAccessibilityColumnIndexRange:" ],
-  @"AXInsertionPointLineNumber" :
-      @[ @"accessibilityInsertionPointLineNumber", @"setAccessibilityInsertionPointLineNumber:" ],
-  @"AXSharedCharacterRange" :
-      @[ @"accessibilitySharedCharacterRange", @"setAccessibilitySharedCharacterRange:" ],
-  @"AXSharedTextUIElements" :
-      @[ @"accessibilitySharedTextUIElements", @"setAccessibilitySharedTextUIElements:" ],
-  @"AXVisibleCharacterRange" :
-      @[ @"accessibilityVisibleCharacterRange", @"setAccessibilityVisibleCharacterRange:" ],
-  @"AXNumberOfCharacters" :
-      @[ @"accessibilityNumberOfCharacters", @"setAccessibilityNumberOfCharacters:" ],
-  @"AXSelectedText" : @[ @"accessibilitySelectedText", @"setAccessibilitySelectedText:" ],
-  @"AXSelectedTextRange" :
-      @[ @"accessibilitySelectedTextRange", @"setAccessibilitySelectedTextRange:" ],
-  @"AXSelectedTextRanges" :
-      @[ @"accessibilitySelectedTextRanges", @"setAccessibilitySelectedTextRanges:" ],
-  @"AXToolbarButton" : @[ @"accessibilityToolbarButton", @"setAccessibilityToolbarButton:" ],
-  @"AXModal" : @[ @"isAccessibilityModal", @"setAccessibilityModal:" ],
-  @"AXProxy" : @[ @"accessibilityProxy", @"setAccessibilityProxy:" ],
-  @"AXMain" : @[ @"isAccessibilityMain", @"setAccessibilityMain:" ],
-  @"AXFullScreenButton" :
-      @[ @"accessibilityFullScreenButton", @"setAccessibilityFullScreenButton:" ],
-  @"AXGrowArea" : @[ @"accessibilityGrowArea", @"setAccessibilityGrowArea:" ],
-  @"AXDocument" : @[ @"accessibilityDocument", @"setAccessibilityDocument:" ],
-  @"AXDefaultButton" : @[ @"accessibilityDefaultButton", @"setAccessibilityDefaultButton:" ],
-  @"AXCloseButton" : @[ @"accessibilityCloseButton", @"setAccessibilityCloseButton:" ],
-  @"AXZoomButton" : @[ @"accessibilityZoomButton", @"setAccessibilityZoomButton:" ],
-  @"AXMinimizeButton" : @[ @"accessibilityMinimizeButton", @"setAccessibilityMinimizeButton:" ],
-  @"AXMinimized" : @[ @"isAccessibilityMinimized", @"setAccessibilityMinimized:" ],
-};
+NS_IMPL_ISUPPORTS(xpcAccessibleMacNSObjectWrapper,
+                  nsIAccessibleMacNSObjectWrapper)
 
-// The values in gActionToMethodMap were generated using the folling snippet in the browser
-// toolbox:
-//
-// let r = /when clients perform NSAccessibility(\w+)Action.*\n-.*\W(\w+)\sAPI_AVA/g
-// fetch('https://raw.githubusercontent.com/phracker/MacOSX-SDKs/master/MacOSX10.15.sdk' +
-//   '/System/Library/Frameworks/AppKit.framework/Versions/C/Headers/NSAccessibilityProtocols.h')
-//   .then((response) => response.text()).then((data) => {
-//     let pairs =
-//       [...data.matchAll(r)].map(e => ['AX' + e[1], e[2]]);
-//     console.log("static NSDictionary* gActionToMethodMap = @{")
-//     for (let [attr, selector] of pairs) {
-//       console.log(`  @"${attr}" : @"${selector}",`);
-//     }
-//     console.log("};");
-//   });
-
-static NSDictionary* gActionToMethodMap = @{
-  @"AXCancel" : @"accessibilityPerformCancel",
-  @"AXConfirm" : @"accessibilityPerformConfirm",
-  @"AXDecrement" : @"accessibilityPerformDecrement",
-  @"AXDelete" : @"accessibilityPerformDelete",
-  @"AXIncrement" : @"accessibilityPerformIncrement",
-  @"AXPick" : @"accessibilityPerformPick",
-  @"AXPress" : @"accessibilityPerformPress",
-  @"AXRaise" : @"accessibilityPerformRaise",
-  @"AXShowAlternateUI" : @"accessibilityPerformShowAlternateUI",
-  @"AXShowDefaultUI" : @"accessibilityPerformShowDefaultUI",
-  @"AXShowMenu" : @"accessibilityPerformShowMenu",
-};
-
-NS_IMPL_ISUPPORTS(xpcAccessibleMacInterface, nsIAccessibleMacInterface)
-
-xpcAccessibleMacInterface::xpcAccessibleMacInterface(AccessibleOrProxy aObj) {
-  mNativeObject = GetNativeFromGeckoAccessible(aObj);
+xpcAccessibleMacNSObjectWrapper::xpcAccessibleMacNSObjectWrapper(id aNativeObj)
+    : mNativeObject(aNativeObj) {
   [mNativeObject retain];
 }
 
-xpcAccessibleMacInterface::xpcAccessibleMacInterface(id aNativeObj) : mNativeObject(aNativeObj) {
-  [mNativeObject retain];
+xpcAccessibleMacNSObjectWrapper::~xpcAccessibleMacNSObjectWrapper() {
+  [mNativeObject release];
 }
 
-xpcAccessibleMacInterface::~xpcAccessibleMacInterface() { [mNativeObject release]; }
+id xpcAccessibleMacNSObjectWrapper::GetNativeObject() { return mNativeObject; }
+
+// xpcAccessibleMacInterface
+
+NS_IMPL_ISUPPORTS_INHERITED(xpcAccessibleMacInterface,
+                            xpcAccessibleMacNSObjectWrapper,
+                            nsIAccessibleMacInterface)
+
+xpcAccessibleMacInterface::xpcAccessibleMacInterface(Accessible* aObj)
+    : xpcAccessibleMacNSObjectWrapper(GetNativeFromGeckoAccessible(aObj)) {}
 
 NS_IMETHODIMP
-xpcAccessibleMacInterface::GetAttributeNames(nsTArray<nsString>& aAttributeNames) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT
+xpcAccessibleMacInterface::GetAttributeNames(
+    nsTArray<nsString>& aAttributeNames) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
 
   if (!mNativeObject || [mNativeObject isExpired]) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  NSMutableSet* attributeNames =
-      [NSMutableSet setWithArray:[mNativeObject accessibilityAttributeNames]];
-
-  for (NSString* key in gAttributeToPropertyMap) {
-    if (SupportsSelector(NSSelectorFromString(gAttributeToPropertyMap[key][0]))) {
-      [attributeNames addObject:key];
-    }
-  }
-
-  for (NSString* name in attributeNames) {
+  for (NSString* name in [mNativeObject accessibilityAttributeNames]) {
     nsAutoString attribName;
     nsCocoaUtils::GetStringForNSString(name, attribName);
     aAttributeNames.AppendElement(attribName);
@@ -254,28 +64,39 @@ xpcAccessibleMacInterface::GetAttributeNames(nsTArray<nsString>& aAttributeNames
 
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE)
 }
 
 NS_IMETHODIMP
-xpcAccessibleMacInterface::GetActionNames(nsTArray<nsString>& aActionNames) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT
+xpcAccessibleMacInterface::GetParameterizedAttributeNames(
+    nsTArray<nsString>& aAttributeNames) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
 
   if (!mNativeObject || [mNativeObject isExpired]) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  NSMutableSet* actionNames = [NSMutableSet setWithArray:[mNativeObject accessibilityActionNames]];
-
-  for (NSString* key in gActionToMethodMap) {
-    if (SupportsSelector(NSSelectorFromString(gActionToMethodMap[key]))) {
-      [actionNames addObject:key];
-    }
+  for (NSString* name in
+       [mNativeObject accessibilityParameterizedAttributeNames]) {
+    nsAutoString attribName;
+    nsCocoaUtils::GetStringForNSString(name, attribName);
+    aAttributeNames.AppendElement(attribName);
   }
 
-  // Bug 1625316: Support accessibilityCustomActions too.
+  return NS_OK;
 
-  for (NSString* name in actionNames) {
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE)
+}
+
+NS_IMETHODIMP
+xpcAccessibleMacInterface::GetActionNames(nsTArray<nsString>& aActionNames) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
+
+  if (!mNativeObject || [mNativeObject isExpired]) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  for (NSString* name in [mNativeObject accessibilityActionNames]) {
     nsAutoString actionName;
     nsCocoaUtils::GetStringForNSString(name, actionName);
     aActionNames.AppendElement(actionName);
@@ -283,69 +104,50 @@ xpcAccessibleMacInterface::GetActionNames(nsTArray<nsString>& aActionNames) {
 
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE)
 }
 
 NS_IMETHODIMP
 xpcAccessibleMacInterface::PerformAction(const nsAString& aActionName) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
 
   if (!mNativeObject || [mNativeObject isExpired]) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
   NSString* actionName = nsCocoaUtils::ToNSString(aActionName);
-  if (NSString* selectorString = gActionToMethodMap[actionName]) {
-    SEL selector = NSSelectorFromString(selectorString);
-    if (SupportsSelector(selector)) {
-      [mNativeObject performSelector:selector];
-      return NS_OK;
-    }
-  }
-
   [mNativeObject accessibilityPerformAction:actionName];
 
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE)
 }
 
 NS_IMETHODIMP
-xpcAccessibleMacInterface::GetAttributeValue(const nsAString& aAttributeName, JSContext* aCx,
+xpcAccessibleMacInterface::GetAttributeValue(const nsAString& aAttributeName,
+                                             JSContext* aCx,
                                              JS::MutableHandleValue aResult) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
 
   if (!mNativeObject || [mNativeObject isExpired]) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
   NSString* attribName = nsCocoaUtils::ToNSString(aAttributeName);
-  if (NSArray* selectors = gAttributeToPropertyMap[attribName]) {
-    SEL selector = NSSelectorFromString(selectors[0]);
-    if (SupportsSelector(selector)) {
-      return NSObjectToJsValue([mNativeObject performSelector:selector], aCx, aResult);
-    }
-  }
+  return NSObjectToJsValue(
+      [mNativeObject accessibilityAttributeValue:attribName], aCx, aResult);
 
-  return NSObjectToJsValue([mNativeObject accessibilityAttributeValue:attribName], aCx, aResult);
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE)
 }
 
 NS_IMETHODIMP
-xpcAccessibleMacInterface::IsAttributeSettable(const nsAString& aAttributeName, bool* aIsSettable) {
+xpcAccessibleMacInterface::IsAttributeSettable(const nsAString& aAttributeName,
+                                               bool* aIsSettable) {
   NS_ENSURE_ARG_POINTER(aIsSettable);
 
   NSString* attribName = nsCocoaUtils::ToNSString(aAttributeName);
-  if (NSArray* selectors = gAttributeToPropertyMap[attribName]) {
-    SEL selector = NSSelectorFromString(selectors[1]);
-    if (SupportsSelector(selector)) {
-      *aIsSettable = true;
-      return NS_OK;
-    }
-  }
-
-  if ([mNativeObject respondsToSelector:@selector(accessibilityIsAttributeSettable:)]) {
+  if ([mNativeObject
+          respondsToSelector:@selector(accessibilityIsAttributeSettable:)]) {
     *aIsSettable = [mNativeObject accessibilityIsAttributeSettable:attribName];
     return NS_OK;
   }
@@ -355,41 +157,15 @@ xpcAccessibleMacInterface::IsAttributeSettable(const nsAString& aAttributeName, 
 
 NS_IMETHODIMP
 xpcAccessibleMacInterface::SetAttributeValue(const nsAString& aAttributeName,
-                                             JS::HandleValue aAttributeValue, JSContext* aCx) {
+                                             JS::HandleValue aAttributeValue,
+                                             JSContext* aCx) {
   nsresult rv = NS_OK;
   id obj = JsValueToNSObject(aAttributeValue, aCx, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
   NSString* attribName = nsCocoaUtils::ToNSString(aAttributeName);
-  if (NSArray* selectors = gAttributeToPropertyMap[attribName]) {
-    SEL selector = NSSelectorFromString(selectors[1]);
-    if (SupportsSelector(selector)) {
-      if ([obj isKindOfClass:[NSValue class]]) {
-        // If this is a simple data type the setter function doesn't
-        // take an NSObject, but takes a primitive instead. We need to
-        // do this NSInvocation dance to call it.
-        NSMethodSignature* sig = [mNativeObject methodSignatureForSelector:selector];
-        NSInvocation* inv = [NSInvocation invocationWithMethodSignature:sig];
-        [inv setSelector:selector];
-        [inv setTarget:mNativeObject];
-        if (strcmp([(NSValue*)obj objCType], @encode(BOOL)) == 0) {
-          BOOL arg = [obj boolValue];
-          [inv setArgument:&arg atIndex:2];
-        } else if (strcmp([(NSValue*)obj objCType], @encode(int)) == 0) {
-          int arg = [obj intValue];
-          [inv setArgument:&arg atIndex:2];
-        } else {
-          return NS_ERROR_FAILURE;
-        }
-        [inv invoke];
-      } else {
-        [mNativeObject performSelector:selector withObject:obj];
-      }
-      return NS_OK;
-    }
-  }
-
-  if ([mNativeObject respondsToSelector:@selector(accessibilitySetValue:forAttribute:)]) {
+  if ([mNativeObject respondsToSelector:@selector(accessibilitySetValue:
+                                                           forAttribute:)]) {
     // The NSObject has an attribute setter, call that.
     [mNativeObject accessibilitySetValue:obj forAttribute:attribName];
     return NS_OK;
@@ -398,16 +174,31 @@ xpcAccessibleMacInterface::SetAttributeValue(const nsAString& aAttributeName,
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+NS_IMETHODIMP
+xpcAccessibleMacInterface::GetParameterizedAttributeValue(
+    const nsAString& aAttributeName, JS::HandleValue aParameter, JSContext* aCx,
+    JS::MutableHandleValue aResult) {
+  nsresult rv = NS_OK;
+  id paramObj = JsValueToNSObject(aParameter, aCx, &rv);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  NSString* attribName = nsCocoaUtils::ToNSString(aAttributeName);
+  return NSObjectToJsValue([mNativeObject accessibilityAttributeValue:attribName
+                                                         forParameter:paramObj],
+                           aCx, aResult);
+}
+
 bool xpcAccessibleMacInterface::SupportsSelector(SEL aSelector) {
   // return true if we have this selector, and if isAccessibilitySelectorAllowed
   // is implemented too whether it is "allowed".
   return [mNativeObject respondsToSelector:aSelector] &&
-         (![mNativeObject respondsToSelector:@selector(isAccessibilitySelectorAllowed:selector:)] ||
+         (![mNativeObject respondsToSelector:@selector
+                          (isAccessibilitySelectorAllowed:selector:)] ||
           [mNativeObject isAccessibilitySelectorAllowed:aSelector]);
 }
 
-nsresult xpcAccessibleMacInterface::NSObjectToJsValue(id aObj, JSContext* aCx,
-                                                      JS::MutableHandleValue aResult) {
+nsresult xpcAccessibleMacInterface::NSObjectToJsValue(
+    id aObj, JSContext* aCx, JS::MutableHandleValue aResult) {
   if (!aObj) {
     aResult.set(JS::NullValue());
   } else if ([aObj isKindOfClass:[NSString class]]) {
@@ -424,7 +215,8 @@ nsresult xpcAccessibleMacInterface::NSObjectToJsValue(id aObj, JSContext* aCx,
         return NS_ERROR_FAILURE;
       }
     } else {
-      if (!mozilla::dom::ToJSValue(aCx, [(NSNumber*)aObj doubleValue], aResult)) {
+      if (!mozilla::dom::ToJSValue(aCx, [(NSNumber*)aObj doubleValue],
+                                   aResult)) {
         return NS_ERROR_FAILURE;
       }
     }
@@ -432,23 +224,33 @@ nsresult xpcAccessibleMacInterface::NSObjectToJsValue(id aObj, JSContext* aCx,
              strcmp([(NSValue*)aObj objCType], @encode(NSPoint)) == 0) {
     NSPoint point = [(NSValue*)aObj pointValue];
     return NSObjectToJsValue(
-        @[ [NSNumber numberWithDouble:point.x], [NSNumber numberWithDouble:point.y] ], aCx,
-        aResult);
+        @[
+          [NSNumber numberWithDouble:point.x],
+          [NSNumber numberWithDouble:point.y]
+        ],
+        aCx, aResult);
   } else if ([aObj isKindOfClass:[NSValue class]] &&
              strcmp([(NSValue*)aObj objCType], @encode(NSSize)) == 0) {
     NSSize size = [(NSValue*)aObj sizeValue];
     return NSObjectToJsValue(
-        @[ [NSNumber numberWithDouble:size.width], [NSNumber numberWithDouble:size.height] ], aCx,
-        aResult);
+        @[
+          [NSNumber numberWithDouble:size.width],
+          [NSNumber numberWithDouble:size.height]
+        ],
+        aCx, aResult);
   } else if ([aObj isKindOfClass:[NSValue class]] &&
              strcmp([(NSValue*)aObj objCType], @encode(NSRange)) == 0) {
     NSRange range = [(NSValue*)aObj rangeValue];
-    return NSObjectToJsValue(@[ @(range.location), @(range.length) ], aCx, aResult);
-  } else if ([aObj respondsToSelector:@selector(isAccessibilityElement)]) {
-    // We expect all of our accessibility objects to implement isAccessibilityElement
-    // at the very least. If it is implemented we will assume its an accessibility object.
-    nsCOMPtr<nsIAccessibleMacInterface> obj = new xpcAccessibleMacInterface(aObj);
-    return nsContentUtils::WrapNative(aCx, obj, &NS_GET_IID(nsIAccessibleMacInterface), aResult);
+    return NSObjectToJsValue(@[ @(range.location), @(range.length) ], aCx,
+                             aResult);
+  } else if ([aObj isKindOfClass:[NSValue class]] &&
+             strcmp([(NSValue*)aObj objCType], @encode(NSRect)) == 0) {
+    NSRect rect = [(NSValue*)aObj rectValue];
+    return NSObjectToJsValue(@{
+      @"origin" : [NSValue valueWithPoint:rect.origin],
+      @"size" : [NSValue valueWithSize:rect.size]
+    },
+                             aCx, aResult);
   } else if ([aObj isKindOfClass:[NSArray class]]) {
     NSArray* objArr = (NSArray*)aObj;
 
@@ -466,20 +268,88 @@ nsresult xpcAccessibleMacInterface::NSObjectToJsValue(id aObj, JSContext* aCx,
       return NS_ERROR_FAILURE;
     }
     aResult.setObject(*arrayObj);
+  } else if ([aObj isKindOfClass:[NSDictionary class]]) {
+    JS::RootedObject obj(aCx, JS_NewPlainObject(aCx));
+    for (NSString* key in aObj) {
+      nsAutoString strKey;
+      nsCocoaUtils::GetStringForNSString(key, strKey);
+      JS::RootedValue value(aCx);
+      nsresult rv = NSObjectToJsValue(aObj[key], aCx, &value);
+      NS_ENSURE_SUCCESS(rv, rv);
+      JS_SetUCProperty(aCx, obj, strKey.get(), strKey.Length(), value);
+    }
+    aResult.setObject(*obj);
+  } else if ([aObj isKindOfClass:[NSAttributedString class]]) {
+    NSAttributedString* attrStr = (NSAttributedString*)aObj;
+    __block NSMutableArray* attrRunArray = [[NSMutableArray alloc] init];
+
+    [attrStr
+        enumerateAttributesInRange:NSMakeRange(0, [attrStr length])
+                           options:
+                               NSAttributedStringEnumerationLongestEffectiveRangeNotRequired
+                        usingBlock:^(NSDictionary* attributes, NSRange range,
+                                     BOOL* stop) {
+                          NSString* str =
+                              [[attrStr string] substringWithRange:range];
+                          if (!str || !attributes) {
+                            return;
+                          }
+
+                          NSMutableDictionary* attrRun =
+                              [attributes mutableCopy];
+                          attrRun[@"string"] = str;
+
+                          [attrRunArray addObject:attrRun];
+                        }];
+
+    // The attributed string is represented in js as an array of objects.
+    // Each object represents a run of text where the "string" property is the
+    // string value and all the AX* properties are the attributes.
+    return NSObjectToJsValue(attrRunArray, aCx, aResult);
+  } else if (CFGetTypeID(aObj) == CGColorGetTypeID()) {
+    const CGFloat* components = CGColorGetComponents((CGColorRef)aObj);
+    NSString* hexString = [NSString
+        stringWithFormat:@"#%02x%02x%02x", (int)(components[0] * 0xff),
+                         (int)(components[1] * 0xff),
+                         (int)(components[2] * 0xff)];
+    return NSObjectToJsValue(hexString, aCx, aResult);
+  } else if ([aObj respondsToSelector:@selector(isAccessibilityElement)]) {
+    // We expect all of our accessibility objects to implement
+    // isAccessibilityElement at the very least. If it is implemented we will
+    // assume its an accessibility object.
+    nsCOMPtr<nsIAccessibleMacInterface> obj =
+        new xpcAccessibleMacInterface(aObj);
+    return nsContentUtils::WrapNative(
+        aCx, obj, &NS_GET_IID(nsIAccessibleMacInterface), aResult);
   } else {
-    return NS_ERROR_NOT_IMPLEMENTED;
+    // If this is any other kind of NSObject, just wrap it and return it.
+    // It will be opaque and immutable on the JS side, but it can be
+    // brought back to us in an argument.
+    nsCOMPtr<nsIAccessibleMacNSObjectWrapper> obj =
+        new xpcAccessibleMacNSObjectWrapper(aObj);
+    return nsContentUtils::WrapNative(
+        aCx, obj, &NS_GET_IID(nsIAccessibleMacNSObjectWrapper), aResult);
   }
 
   return NS_OK;
 }
 
-id xpcAccessibleMacInterface::JsValueToNSObject(JS::HandleValue aValue, JSContext* aCx,
+id xpcAccessibleMacInterface::JsValueToNSObject(JS::HandleValue aValue,
+                                                JSContext* aCx,
                                                 nsresult* aResult) {
   *aResult = NS_OK;
   if (aValue.isInt32()) {
     return [NSNumber numberWithInteger:aValue.toInt32()];
   } else if (aValue.isBoolean()) {
     return [NSNumber numberWithBool:aValue.toBoolean()];
+  } else if (aValue.isString()) {
+    nsAutoJSString temp;
+    if (!temp.init(aCx, aValue)) {
+      NS_WARNING("cannot init string with given value");
+      *aResult = NS_ERROR_FAILURE;
+      return nil;
+    }
+    return nsCocoaUtils::ToNSString(temp);
   } else if (aValue.isObject()) {
     JS::Rooted<JSObject*> obj(aCx, aValue.toObjectOrNull());
 
@@ -510,22 +380,35 @@ id xpcAccessibleMacInterface::JsValueToNSObject(JS::HandleValue aValue, JSContex
       return JsValueToNSValue(obj, aCx, aResult);
     }
 
+    bool hasObjectType;
+    bool hasObject;
+    JS_HasOwnProperty(aCx, obj, "objectType", &hasObjectType);
+    JS_HasOwnProperty(aCx, obj, "object", &hasObject);
+    if (hasObjectType && hasObject) {
+      // A js object representing an NSDictionary looks like this:
+      // { objectType: "NSDictionary", value: {k: v, k: v, ...} }
+      return JsValueToSpecifiedNSObject(obj, aCx, aResult);
+    }
+
     // This may be another nsIAccessibleMacInterface instance.
     // If so, return the wrapped NSObject.
     nsCOMPtr<nsIXPConnect> xpc = nsIXPConnect::XPConnect();
 
     nsCOMPtr<nsIXPConnectWrappedNative> wrappedObj;
-    nsresult rv = xpc->GetWrappedNativeOfJSObject(aCx, obj, getter_AddRefs(wrappedObj));
+    nsresult rv =
+        xpc->GetWrappedNativeOfJSObject(aCx, obj, getter_AddRefs(wrappedObj));
     NS_ENSURE_SUCCESS(rv, nil);
-    nsCOMPtr<nsIAccessibleMacInterface> macIface = do_QueryInterface(wrappedObj->Native());
-    return macIface->GetNativeMacAccessible();
+    nsCOMPtr<nsIAccessibleMacNSObjectWrapper> macObjIface =
+        do_QueryInterface(wrappedObj->Native());
+    return macObjIface->GetNativeObject();
   }
 
   *aResult = NS_ERROR_FAILURE;
   return nil;
 }
 
-id xpcAccessibleMacInterface::JsValueToNSValue(JS::HandleObject aObject, JSContext* aCx,
+id xpcAccessibleMacInterface::JsValueToNSValue(JS::HandleObject aObject,
+                                               JSContext* aCx,
                                                nsresult* aResult) {
   *aResult = NS_ERROR_FAILURE;
   JS::RootedValue valueTypeValue(aCx);
@@ -573,29 +456,126 @@ id xpcAccessibleMacInterface::JsValueToNSValue(JS::HandleObject aObject, JSConte
     }
 
     *aResult = NS_OK;
-    return [NSValue valueWithRange:NSMakeRange(locationValue.toInt32(), lengthValue.toInt32())];
+    return [NSValue valueWithRange:NSMakeRange(locationValue.toInt32(),
+                                               lengthValue.toInt32())];
   }
 
   return nil;
 }
 
-void xpcAccessibleMacInterface::FireEvent(id aNativeObj, id aNotification) {
-  if (nsCOMPtr<nsIObserverService> obsService = services::GetObserverService()) {
+id xpcAccessibleMacInterface::JsValueToSpecifiedNSObject(
+    JS::HandleObject aObject, JSContext* aCx, nsresult* aResult) {
+  *aResult = NS_ERROR_FAILURE;
+  JS::RootedValue objectTypeValue(aCx);
+  if (!JS_GetProperty(aCx, aObject, "objectType", &objectTypeValue)) {
+    NS_WARNING("Could not get objectType");
+    return nil;
+  }
+
+  JS::RootedValue objectValue(aCx);
+  if (!JS_GetProperty(aCx, aObject, "object", &objectValue)) {
+    NS_WARNING("Could not get object");
+    return nil;
+  }
+
+  nsAutoJSString objectType;
+  if (!objectTypeValue.isString()) {
+    NS_WARNING("objectType is not a string");
+    return nil;
+  }
+
+  if (!objectType.init(aCx, objectTypeValue)) {
+    NS_WARNING("cannot init string with object type");
+    return nil;
+  }
+
+  bool isObject = objectValue.isObjectOrNull();
+  if (!isObject) {
+    NS_WARNING("object is not a JSON object");
+    return nil;
+  }
+
+  JS::Rooted<JSObject*> object(aCx, objectValue.toObjectOrNull());
+
+  if (objectType.EqualsLiteral("NSDictionary")) {
+    JS::Rooted<JS::IdVector> ids(aCx, JS::IdVector(aCx));
+    if (!JS_Enumerate(aCx, object, &ids)) {
+      NS_WARNING("Unable to get keys from dictionary object");
+      return nil;
+    }
+
+    NSMutableDictionary* dict = [[NSMutableDictionary alloc] init];
+
+    for (size_t i = 0, n = ids.length(); i < n; i++) {
+      nsresult rv = NS_OK;
+      // get current key
+      JS::RootedValue currentKey(aCx);
+      JS_IdToValue(aCx, ids[i], &currentKey);
+      id unwrappedKey = JsValueToNSObject(currentKey, aCx, &rv);
+      NS_ENSURE_SUCCESS(rv, nil);
+      MOZ_ASSERT([unwrappedKey isKindOfClass:[NSString class]]);
+
+      // get associated value for current key
+      JS::RootedValue currentValue(aCx);
+      JS_GetPropertyById(aCx, object, ids[i], &currentValue);
+      id unwrappedValue = JsValueToNSObject(currentValue, aCx, &rv);
+      NS_ENSURE_SUCCESS(rv, nil);
+      dict[unwrappedKey] = unwrappedValue;
+    }
+
+    *aResult = NS_OK;
+    return dict;
+  }
+
+  return nil;
+}
+
+NS_IMPL_ISUPPORTS(xpcAccessibleMacEvent, nsIAccessibleMacEvent)
+
+xpcAccessibleMacEvent::xpcAccessibleMacEvent(id aNativeObj, id aData)
+    : mNativeObject(aNativeObj), mData(aData) {
+  [mNativeObject retain];
+  [mData retain];
+}
+
+xpcAccessibleMacEvent::~xpcAccessibleMacEvent() {
+  [mNativeObject release];
+  [mData release];
+}
+
+NS_IMETHODIMP
+xpcAccessibleMacEvent::GetMacIface(nsIAccessibleMacInterface** aMacIface) {
+  RefPtr<xpcAccessibleMacInterface> macIface =
+      new xpcAccessibleMacInterface(mNativeObject);
+  macIface.forget(aMacIface);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+xpcAccessibleMacEvent::GetData(JSContext* aCx, JS::MutableHandleValue aData) {
+  return xpcAccessibleMacInterface::NSObjectToJsValue(mData, aCx, aData);
+}
+
+void xpcAccessibleMacEvent::FireEvent(id aNativeObj, id aNotification,
+                                      id aUserInfo) {
+  if (nsCOMPtr<nsIObserverService> obsService =
+          services::GetObserverService()) {
     nsCOMPtr<nsISimpleEnumerator> observers;
     // Get all observers for the mac event topic.
-    obsService->EnumerateObservers(NS_ACCESSIBLE_MAC_EVENT_TOPIC, getter_AddRefs(observers));
+    obsService->EnumerateObservers(NS_ACCESSIBLE_MAC_EVENT_TOPIC,
+                                   getter_AddRefs(observers));
     if (observers) {
       bool hasObservers = false;
       observers->HasMoreElements(&hasObservers);
       // If we have observers, notify them.
       if (hasObservers) {
-        nsCOMPtr<nsIAccessibleMacInterface> xpcIface = new xpcAccessibleMacInterface(aNativeObj);
+        nsCOMPtr<nsIAccessibleMacEvent> xpcIface =
+            new xpcAccessibleMacEvent(aNativeObj, aUserInfo);
         nsAutoString notificationStr;
         nsCocoaUtils::GetStringForNSString(aNotification, notificationStr);
-        obsService->NotifyObservers(xpcIface, NS_ACCESSIBLE_MAC_EVENT_TOPIC, notificationStr.get());
+        obsService->NotifyObservers(xpcIface, NS_ACCESSIBLE_MAC_EVENT_TOPIC,
+                                    notificationStr.get());
       }
     }
   }
 }
-
-id xpcAccessibleMacInterface::GetNativeMacAccessible() const { return mNativeObject; }

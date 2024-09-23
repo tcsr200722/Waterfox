@@ -1,10 +1,12 @@
 /* eslint max-len: ["error", 80] */
 "use strict";
 
-const { ClientID } = ChromeUtils.import("resource://gre/modules/ClientID.jsm");
+const { ClientID } = ChromeUtils.importESModule(
+  "resource://gre/modules/ClientID.sys.mjs"
+);
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
 
 AddonTestUtils.initMochitest(this);
@@ -39,11 +41,15 @@ function isNoticeVisible(win) {
   return message && message.offsetHeight > 0;
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
-      // Enable clientid - see Discovery.jsm for the first two prefs.
+      // Enable clientid - see Discovery.sys.mjs for the first two prefs.
       ["browser.discovery.enabled", true],
+      // Enabling the Data Upload pref may upload data.
+      // Point data reporting services to localhost so the data doesn't escape.
+      ["toolkit.telemetry.server", "https://localhost:1337"],
+      ["telemetry.fog.test.localhost_port", -1],
       ["datareporting.healthreport.uploadEnabled", true],
       ["extensions.getAddons.discovery.api_url", `${serverBaseUrl}discoapi`],
       ["app.support.baseURL", `${serverBaseUrl}sumo/`],
@@ -72,7 +78,7 @@ add_task(async function clientid_enabled() {
   // which is sha256(TelemetryUtils.knownClientId).
   // This happens because at the end of the test, the pushPrefEnv from setup is
   // reverted, which resets datareporting.healthreport.uploadEnabled to false.
-  // When TelemetryController.jsm detects this, it asynchronously resets the
+  // When TelemetryController.sys.mjs detects this, it asynchronously resets the
   // ClientID to knownClientId - which may happen at the next run of the test.
   // TODO: Fix this together with bug 1537933
   //
@@ -81,8 +87,6 @@ add_task(async function clientid_enabled() {
     await requestPromise,
     "Moz-Client-Id should be set when telemetry & discovery are enabled"
   );
-
-  Services.telemetry.clearEvents();
 
   let tabbrowser = win.windowRoot.ownerGlobal.gBrowser;
   let expectedUrl = `${serverBaseUrl}sumo/personalized-addons`;
@@ -95,19 +99,6 @@ add_task(async function clientid_enabled() {
   BrowserTestUtils.removeTab(tab);
 
   await closeView(win);
-
-  assertAboutAddonsTelemetryEvents(
-    [
-      [
-        "addonsManager",
-        "link",
-        "aboutAddons",
-        "disconotice",
-        { view: "discover" },
-      ],
-    ],
-    { methods: ["link"] }
-  );
 });
 
 // Test that the clientid is not sent when disabled via prefs.

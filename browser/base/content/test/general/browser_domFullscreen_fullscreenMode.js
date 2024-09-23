@@ -1,4 +1,3 @@
-/* eslint-env mozilla/frame-script */
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
 
 "use strict";
@@ -37,7 +36,7 @@ const FS_CHANGE_BOTH = FS_CHANGE_DOM | FS_CHANGE_SIZE;
 function waitForDocActivated(aBrowser) {
   return SpecialPowers.spawn(aBrowser, [], () => {
     return ContentTaskUtils.waitForCondition(
-      () => docShell.isActive && content.document.hasFocus()
+      () => content.browsingContext.isActive && content.document.hasFocus()
     );
   });
 }
@@ -134,22 +133,23 @@ function checkState(expectedStates, contentStates) {
 }
 
 const kPage =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.org/browser/browser/" +
   "base/content/test/general/dummy_page.html";
 
-add_task(async function() {
+add_task(async function () {
   await pushPrefs(
     ["full-screen-api.transition-duration.enter", "0 0"],
     ["full-screen-api.transition-duration.leave", "0 0"]
   );
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     if (window.fullScreen) {
       let fullscreenPromise = waitForFullscreenChanges(
         gBrowser.selectedBrowser,
         FS_CHANGE_SIZE
       );
-      executeSoon(() => BrowserFullScreen());
+      executeSoon(() => BrowserCommands.fullScreen());
       await fullscreenPromise;
     }
   });
@@ -195,7 +195,7 @@ add_task(async function() {
     // dispatched synchronously, which would cause the event listener
     // miss that event and wait infinitely.
     fullscreenPromise = waitForFullscreenChanges(browser, FS_CHANGE_SIZE);
-    executeSoon(() => BrowserFullScreen());
+    executeSoon(() => BrowserCommands.fullScreen());
     contentStates = await fullscreenPromise;
     checkState({ inDOMFullscreen: false, inFullscreen: true }, contentStates);
 
@@ -228,7 +228,7 @@ add_task(async function() {
     if (window.fullScreen) {
       info("> Cleanup");
       fullscreenPromise = waitForFullscreenChanges(browser, FS_CHANGE_SIZE);
-      executeSoon(() => BrowserFullScreen());
+      executeSoon(() => BrowserCommands.fullScreen());
       await fullscreenPromise;
     }
   }

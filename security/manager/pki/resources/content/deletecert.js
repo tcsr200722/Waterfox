@@ -7,34 +7,36 @@
 /**
  * @file Implements the functionality of deletecert.xhtml: a dialog that allows a
  *       user to confirm whether to delete certain certificates.
- * @argument {String} window.arguments[0]
+ * @param {string} window.arguments.0
  *           One of the tab IDs listed in certManager.xhtml.
- * @argument {nsICertTreeItem[]} window.arguments[1]
- *           An array of cert tree items representing the certs to delete.
- * @argument {DeleteCertReturnValues} window.arguments[2]
+ * @param {object[]} window.arguments.1
+ *           An array of objects representing the certs to delete.
+ *           Each must have a 'cert' property or a 'hostPort' property.
+ * @param {DeleteCertReturnValues} window.arguments.2
  *           Object holding the return values of calling the dialog.
  */
 
 /**
  * @typedef DeleteCertReturnValues
- * @type Object
- * @property {Boolean} deleteConfirmed
+ * @type {object}
+ * @property {boolean} deleteConfirmed
  *           Set to true if the user confirmed deletion of the given certs,
  *           false otherwise.
  */
 
 /**
- * Returns the element to represent the given nsICertTreeItem.
- * @param {nsICertTreeItem} certTreeItem
+ * Returns the element to represent the given cert to delete.
+ *
+ * @param {object} certToDelete
  *        The item to represent.
  * @returns {Element}
  *          A element of each cert tree item.
  */
-function getLabelForCertTreeItem(certTreeItem) {
+function getLabelForCertToDelete(certToDelete) {
   let element = document.createXULElement("label");
-  let cert = certTreeItem.cert;
+  let cert = certToDelete.cert;
   if (!cert) {
-    element.setAttribute("value", certTreeItem.hostPort);
+    element.setAttribute("value", certToDelete.hostPort);
     return element;
   }
 
@@ -70,7 +72,7 @@ function onLoad() {
       prefixForType = "delete-user-cert-";
       break;
     case "websites_tab":
-      prefixForType = "delete-ssl-cert-";
+      prefixForType = "delete-ssl-override-";
       break;
     case "ca_tab":
       prefixForType = "delete-ca-cert-";
@@ -93,10 +95,10 @@ function onLoad() {
   document.addEventListener("dialogcancel", onDialogCancel);
 
   let box = document.getElementById("certlist");
-  let certTreeItems = window.arguments[1];
-  for (let certTreeItem of certTreeItems) {
+  let certsToDelete = window.arguments[1];
+  for (let certToDelete of certsToDelete) {
     let listItem = document.createXULElement("richlistitem");
-    let label = getLabelForCertTreeItem(certTreeItem);
+    let label = getLabelForCertToDelete(certToDelete);
     listItem.appendChild(label);
     box.appendChild(listItem);
   }

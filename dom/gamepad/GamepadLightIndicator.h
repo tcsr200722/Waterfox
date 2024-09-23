@@ -8,17 +8,18 @@
 #define mozilla_dom_gamepad_GamepadLightIndicator_h
 
 #include "mozilla/dom/GamepadLightIndicatorBinding.h"
+#include "mozilla/dom/GamepadHandle.h"
+#include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class GamepadLightIndicator final : public nsISupports, public nsWrapperCache {
  public:
-  GamepadLightIndicator(nsISupports* aParent, uint32_t aGamepadId,
+  GamepadLightIndicator(nsISupports* aParent, GamepadHandle aGamepadHandle,
                         uint32_t aIndex);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(GamepadLightIndicator)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(GamepadLightIndicator)
 
   static GamepadLightIndicatorType DefaultType() {
     return GamepadLightIndicatorType::Rgb;
@@ -43,11 +44,10 @@ class GamepadLightIndicator final : public nsISupports, public nsWrapperCache {
 
   nsCOMPtr<nsISupports> mParent;
   GamepadLightIndicatorType mType;
-  uint32_t mGamepadId;
+  GamepadHandle mGamepadHandle;
   uint32_t mIndex;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_gamepad_GamepadLightIndicator_h

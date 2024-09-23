@@ -8,7 +8,7 @@ cyclicalObject.foo = cyclicalObject;
 var cyclicalArray = [];
 cyclicalArray.push(cyclicalArray);
 
-function makeCrazyNested(obj, count) {
+function makeNested(obj, count) {
   var innermostobj;
   for (var i = 0; i < count; i++) {
     obj.foo = { bar: 5 };
@@ -18,15 +18,15 @@ function makeCrazyNested(obj, count) {
   return innermostobj;
 }
 
-var crazyNestedObject = {};
-makeCrazyNested(crazyNestedObject, 100);
+var nestedObject = {};
+makeNested(nestedObject, 100);
 
-var crazyCyclicalObject = {};
-var innermost = makeCrazyNested(crazyCyclicalObject, 1000);
-innermost.baz = crazyCyclicalObject;
+var cyclicalObject = {};
+var innermost = makeNested(cyclicalObject, 1000);
+innermost.baz = cyclicalObject;
 
 var objectWithSaneGetter = {};
-objectWithSaneGetter.__defineGetter__("foo", function() {
+objectWithSaneGetter.__defineGetter__("foo", function () {
   return 5;
 });
 
@@ -41,7 +41,7 @@ objectWithSaneGetter2.prototype = {
 const throwingGetterThrownString = "bad";
 
 var objectWithThrowingGetter = {};
-objectWithThrowingGetter.__defineGetter__("foo", function() {
+objectWithThrowingGetter.__defineGetter__("foo", function () {
   throw throwingGetterThrownString;
 });
 
@@ -103,12 +103,12 @@ var messages = [
   },
   {
     type: "object",
-    value: crazyNestedObject,
-    jsonValue: JSON.stringify(crazyNestedObject),
+    value: nestedObject,
+    jsonValue: JSON.stringify(nestedObject),
   },
   {
     type: "object",
-    value: crazyCyclicalObject,
+    value: cyclicalObject,
   },
   {
     type: "object",
@@ -176,12 +176,12 @@ var messages = [
   {
     type: "number",
     shouldEqual: true,
-    value: 238573459843702923492399923049,
+    value: 12345678901234567000,
   },
   {
     type: "number",
     shouldEqual: true,
-    value: -238573459843702923492399923049,
+    value: -12345678901234567000,
   },
   {
     type: "number",
@@ -320,7 +320,7 @@ for (let index = 0; index < messages.length; index++) {
   }
 }
 
-onmessage = function(event) {
+onmessage = function (event) {
   for (let index = 0; index < messages.length; index++) {
     var exception = undefined;
 
@@ -341,12 +341,14 @@ onmessage = function(event) {
       (exception !== undefined && !messages[index].exception) ||
       (exception === undefined && messages[index].exception)
     ) {
-      throw "Exception inconsistency [index = " +
+      throw (
+        "Exception inconsistency [index = " +
         index +
         ", " +
         messages[index].toSource() +
         "]: " +
-        exception;
+        exception
+      );
     }
   }
 };

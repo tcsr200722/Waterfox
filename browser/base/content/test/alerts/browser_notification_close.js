@@ -1,14 +1,15 @@
 "use strict";
 
-const { PlacesTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PlacesTestUtils.jsm"
+const { PlacesTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PlacesTestUtils.sys.mjs"
 );
 
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
 );
 
 let notificationURL =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.org/browser/browser/base/content/test/alerts/file_dom_notifications.html";
 let oldShowFavicons;
 
@@ -20,17 +21,16 @@ add_task(async function test_notificationClose() {
   Services.prefs.setBoolPref("alerts.showFavicons", true);
 
   await PlacesTestUtils.addVisits(notificationURI);
-  let faviconURI = await new Promise(resolve => {
-    let uri = makeURI(
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC"
-    );
-    PlacesUtils.favicons.setAndFetchFaviconForPage(
+  let dataURL = makeURI(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC"
+  );
+  await new Promise(resolve => {
+    PlacesUtils.favicons.setFaviconForPage(
       notificationURI,
-      uri,
-      true,
-      PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-      uriResult => resolve(uriResult),
-      Services.scriptSecurityManager.getSystemPrincipal()
+      dataURL,
+      dataURL,
+      null,
+      resolve
     );
   });
 
@@ -51,28 +51,22 @@ add_task(async function test_notificationClose() {
         return;
       }
 
-      let alertTitleLabel = alertWindow.document.getElementById(
-        "alertTitleLabel"
-      );
+      let alertTitleLabel =
+        alertWindow.document.getElementById("alertTitleLabel");
       is(
         alertTitleLabel.value,
         "Test title",
         "Title text of notification should be present"
       );
-      let alertTextLabel = alertWindow.document.getElementById(
-        "alertTextLabel"
-      );
+      let alertTextLabel =
+        alertWindow.document.getElementById("alertTextLabel");
       is(
         alertTextLabel.textContent,
         "Test body 2",
         "Body text of notification should be present"
       );
       let alertIcon = alertWindow.document.getElementById("alertIcon");
-      is(
-        alertIcon.src,
-        faviconURI.spec,
-        "Icon of notification should be present"
-      );
+      is(alertIcon.src, dataURL.spec, "Icon of notification should be present");
 
       let alertCloseButton = alertWindow.document.querySelector(".close-icon");
       is(alertCloseButton.localName, "toolbarbutton", "close button found");
@@ -89,8 +83,9 @@ add_task(async function test_notificationClose() {
       let currentTime = alertWindow.Date.now();
       // The notification will self-close at 12 seconds, so this checks
       // that the notification closed before the timeout.
-      ok(
-        currentTime - closedTime < 5000,
+      Assert.less(
+        currentTime - closedTime,
+        5000,
         "Close requested at " +
           closedTime +
           ", actually closed at " +

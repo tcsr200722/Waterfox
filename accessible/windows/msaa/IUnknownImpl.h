@@ -47,31 +47,31 @@ class AutoRefCnt {
 }  // namespace a11y
 }  // namespace mozilla
 
-#define DECL_IUNKNOWN                                               \
- public:                                                            \
-  virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**); \
-  ULONG STDMETHODCALLTYPE AddRef() final {                          \
-    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");            \
-    ++mRefCnt;                                                      \
-    return mRefCnt;                                                 \
-  }                                                                 \
-  ULONG STDMETHODCALLTYPE Release() final {                         \
-    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                \
-    --mRefCnt;                                                      \
-    if (mRefCnt) return mRefCnt;                                    \
-                                                                    \
-    delete this;                                                    \
-    return 0;                                                       \
-  }                                                                 \
-                                                                    \
- private:                                                           \
-  mozilla::a11y::AutoRefCnt mRefCnt;                                \
-                                                                    \
+#define DECL_IUNKNOWN                                                        \
+ public:                                                                     \
+  virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override; \
+  ULONG STDMETHODCALLTYPE AddRef() override {                                \
+    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                     \
+    ++mRefCnt;                                                               \
+    return mRefCnt;                                                          \
+  }                                                                          \
+  ULONG STDMETHODCALLTYPE Release() override {                               \
+    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                         \
+    --mRefCnt;                                                               \
+    if (mRefCnt) return mRefCnt;                                             \
+                                                                             \
+    delete this;                                                             \
+    return 0;                                                                \
+  }                                                                          \
+                                                                             \
+ private:                                                                    \
+  mozilla::a11y::AutoRefCnt mRefCnt;                                         \
+                                                                             \
  public:
 
 #define DECL_IUNKNOWN_INHERITED \
  public:                        \
-  virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**);
+  virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
 
 #define IMPL_IUNKNOWN_QUERY_HEAD(Class)                     \
   STDMETHODIMP                                              \
@@ -146,6 +146,18 @@ class AutoRefCnt {
   IMPL_IUNKNOWN_QUERY_CLASS(Super1);                            \
   IMPL_IUNKNOWN_QUERY_CLASS(Super2);                            \
   IMPL_IUNKNOWN_QUERY_TAIL_INHERITED(Super0)
+
+/**
+ * Overrides AddRef and Release to call a specific base class.
+ * If you are inheriting a single class (e.g. to override some methods), you
+ * shouldn't need to use this. However, if you are inheriting from a COM
+ * implementation and also inheriting additional COM interfaces, you will need
+ * to use this to specify which base implements reference counting.
+ */
+#define IMPL_IUNKNOWN_REFCOUNTING_INHERITED(BaseClass)                      \
+ public:                                                                    \
+  ULONG STDMETHODCALLTYPE AddRef() override { return BaseClass::AddRef(); } \
+  ULONG STDMETHODCALLTYPE Release() override { return BaseClass::Release(); }
 
 namespace mozilla {
 namespace a11y {

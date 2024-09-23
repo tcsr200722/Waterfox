@@ -16,15 +16,29 @@
 #include "js/MemoryFunctions.h"  // JS_FOR_EACH_PUBLIC_MEMORY_USE
 
 namespace js {
-namespace gc {
 
-// Mark colors. Order is important here: the greater value the 'more marked' a
-// cell is.
-enum class MarkColor : uint8_t { Gray = 1, Black = 2 };
+// [SMDOC] AllowGC template parameter
+//
+// AllowGC is a template parameter for functions that support both with and
+// without GC operation.
+//
+// The CanGC variant of the function can trigger a garbage collection, and
+// should set a pending exception on failure.
+//
+// The NoGC variant of the function cannot trigger a garbage collection, and
+// should not set any pending exception on failure.  This variant can be called
+// in fast paths where the caller has unrooted pointers.  The failure means we
+// need to perform GC to allocate an object. The caller can fall back to a slow
+// path that roots pointers before calling a CanGC variant of the function,
+// without having to clear a pending exception.
+enum AllowGC { NoGC = 0, CanGC = 1 };
+
+namespace gc {
 
 // The phases of an incremental GC.
 #define GCSTATES(D) \
   D(NotActive)      \
+  D(Prepare)        \
   D(MarkRoots)      \
   D(Mark)           \
   D(Sweep)          \
@@ -37,6 +51,39 @@ enum class State {
   GCSTATES(MAKE_STATE)
 #undef MAKE_STATE
 };
+
+#define JS_FOR_EACH_ZEAL_MODE(D)         \
+  D(RootsChange, 1)                      \
+  D(Alloc, 2)                            \
+  D(VerifierPre, 4)                      \
+  D(YieldBeforeRootMarking, 6)           \
+  D(GenerationalGC, 7)                   \
+  D(YieldBeforeMarking, 8)               \
+  D(YieldBeforeSweeping, 9)              \
+  D(IncrementalMultipleSlices, 10)       \
+  D(IncrementalMarkingValidator, 11)     \
+  D(ElementsBarrier, 12)                 \
+  D(CheckHashTablesOnMinorGC, 13)        \
+  D(Compact, 14)                         \
+  D(CheckHeapAfterGC, 15)                \
+  D(YieldBeforeSweepingAtoms, 17)        \
+  D(CheckGrayMarking, 18)                \
+  D(YieldBeforeSweepingCaches, 19)       \
+  D(YieldBeforeSweepingObjects, 21)      \
+  D(YieldBeforeSweepingNonObjects, 22)   \
+  D(YieldBeforeSweepingPropMapTrees, 23) \
+  D(CheckWeakMapMarking, 24)             \
+  D(YieldWhileGrayMarking, 25)
+
+enum class ZealMode {
+#define ZEAL_MODE(name, value) name = value,
+  JS_FOR_EACH_ZEAL_MODE(ZEAL_MODE)
+#undef ZEAL_MODE
+      Count,
+  Limit = Count - 1
+};
+
+} /* namespace gc */
 
 // Reasons we reset an ongoing incremental GC or perform a non-incremental GC.
 #define GC_ABORT_REASONS(D)      \
@@ -52,45 +99,11 @@ enum class State {
   D(CompartmentRevived, 9)       \
   D(GrayRootBufferingFailed, 10) \
   D(JitCodeBytesTrigger, 11)
-enum class AbortReason {
+enum class GCAbortReason {
 #define MAKE_REASON(name, num) name = num,
   GC_ABORT_REASONS(MAKE_REASON)
 #undef MAKE_REASON
 };
-
-#define JS_FOR_EACH_ZEAL_MODE(D)       \
-  D(RootsChange, 1)                    \
-  D(Alloc, 2)                          \
-  D(VerifierPre, 4)                    \
-  D(GenerationalGC, 7)                 \
-  D(YieldBeforeMarking, 8)             \
-  D(YieldBeforeSweeping, 9)            \
-  D(IncrementalMultipleSlices, 10)     \
-  D(IncrementalMarkingValidator, 11)   \
-  D(ElementsBarrier, 12)               \
-  D(CheckHashTablesOnMinorGC, 13)      \
-  D(Compact, 14)                       \
-  D(CheckHeapAfterGC, 15)              \
-  D(CheckNursery, 16)                  \
-  D(YieldBeforeSweepingAtoms, 17)      \
-  D(CheckGrayMarking, 18)              \
-  D(YieldBeforeSweepingCaches, 19)     \
-  D(YieldBeforeSweepingTypes, 20)      \
-  D(YieldBeforeSweepingObjects, 21)    \
-  D(YieldBeforeSweepingNonObjects, 22) \
-  D(YieldBeforeSweepingShapeTrees, 23) \
-  D(CheckWeakMapMarking, 24)           \
-  D(YieldWhileGrayMarking, 25)
-
-enum class ZealMode {
-#define ZEAL_MODE(name, value) name = value,
-  JS_FOR_EACH_ZEAL_MODE(ZEAL_MODE)
-#undef ZEAL_MODE
-      Count,
-  Limit = Count - 1
-};
-
-} /* namespace gc */
 
 #define JS_FOR_EACH_INTERNAL_MEMORY_USE(_) \
   _(ArrayBufferContents)                   \
@@ -102,21 +115,24 @@ enum class ZealMode {
   _(BigIntDigits)                          \
   _(ScopeData)                             \
   _(WeakMapObject)                         \
-  _(ShapeChildren)                         \
-  _(ShapeCache)                            \
+  _(ShapeSetForAdd)                        \
+  _(PropMapChildren)                       \
+  _(PropMapTable)                          \
   _(ModuleBindingMap)                      \
+  _(ModuleCyclicFields)                    \
+  _(ModuleSyntheticFields)                 \
+  _(ModuleExports)                         \
+  _(ModuleImportAttributes)                \
   _(BaselineScript)                        \
   _(IonScript)                             \
   _(ArgumentsData)                         \
   _(RareArgumentsData)                     \
-  _(RegExpStatics)                         \
   _(RegExpSharedBytecode)                  \
   _(RegExpSharedNamedCaptureData)          \
+  _(RegExpSharedNamedCaptureSliceData)     \
   _(TypedArrayElements)                    \
-  _(TypeDescrTraceList)                    \
   _(NativeIterator)                        \
   _(JitScript)                             \
-  _(ObjectGroupAddendum)                   \
   _(ScriptDebugScript)                     \
   _(BreakpointSite)                        \
   _(Breakpoint)                            \
@@ -131,21 +147,24 @@ enum class ZealMode {
   _(WasmResolveResponseClosure)            \
   _(WasmModule)                            \
   _(WasmTableTable)                        \
+  _(WasmExceptionData)                     \
+  _(WasmTagType)                           \
   _(FileObjectFile)                        \
   _(Debugger)                              \
   _(DebuggerFrameGeneratorInfo)            \
   _(DebuggerFrameIterData)                 \
   _(DebuggerOnStepHandler)                 \
   _(DebuggerOnPopHandler)                  \
-  _(RealmInstrumentation)                  \
   _(ICUObject)                             \
   _(FinalizationRegistryRecordVector)      \
-  _(FinalizationRegistryRecordSet)         \
   _(FinalizationRegistryRegistrations)     \
   _(FinalizationRecordVector)              \
-  _(ZoneAllocPolicy)                       \
+  _(TrackedAllocPolicy)                    \
   _(SharedArrayRawBuffer)                  \
-  _(XDRBufferElements)
+  _(XDRBufferElements)                     \
+  _(GlobalObjectData)                      \
+  _(ProxyExternalValueArray)               \
+  _(WasmTrailerBlock)
 
 #define JS_FOR_EACH_MEMORY_USE(_)  \
   JS_FOR_EACH_PUBLIC_MEMORY_USE(_) \

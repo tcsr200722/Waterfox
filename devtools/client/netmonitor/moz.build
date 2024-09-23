@@ -2,20 +2,18 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-DIRS += [
-    'src'
+DIRS += ["src"]
+
+DevToolsModules("initializer.js", "panel.js")
+
+XPCSHELL_TESTS_MANIFESTS += ["test/xpcshell/xpcshell.toml"]
+
+BROWSER_CHROME_MANIFESTS += [
+    "test/browser.toml",
+    "test/browser_http3.toml",
 ]
 
-DevToolsModules(
-    'initializer.js',
-    'panel.js'
-)
+with Files("**"):
+    BUG_COMPONENT = ("DevTools", "Netmonitor")
 
-XPCSHELL_TESTS_MANIFESTS += ['test/xpcshell/xpcshell.ini']
-
-BROWSER_CHROME_MANIFESTS += ['test/browser.ini']
-
-with Files('**'):
-    BUG_COMPONENT = ('DevTools', 'Netmonitor')
-
-SPHINX_TREES['/devtools/netmonitor'] = 'docs'
+SPHINX_TREES["/devtools/netmonitor"] = "docs"

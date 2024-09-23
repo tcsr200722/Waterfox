@@ -618,19 +618,15 @@ already_AddRefed<DataSourceSurface> FilterNodeSoftware::GetOutput(
   IntRect requestedRect;
   RefPtr<DataSourceSurface> cachedOutput;
 
-  // Lock the cache and retrieve a cached surface if we have one and it can
+  // Retrieve a cached surface if we have one and it can
   // satisfy this request, or else request a rect we will compute and cache
-  {
-    MutexAutoLock lock(mCacheMutex);
-
-    if (!mCachedRect.Contains(aRect)) {
-      RequestRect(aRect);
-      requestedRect = mRequestedRect;
-    } else {
-      MOZ_ASSERT(mCachedOutput, "cached rect but no cached output?");
-      cachedRect = mCachedRect;
-      cachedOutput = mCachedOutput;
-    }
+  if (!mCachedRect.Contains(aRect)) {
+    RequestRect(aRect);
+    requestedRect = mRequestedRect;
+  } else {
+    MOZ_ASSERT(mCachedOutput, "cached rect but no cached output?");
+    cachedRect = mCachedRect;
+    cachedOutput = mCachedOutput;
   }
 
   if (!cachedOutput) {
@@ -638,8 +634,6 @@ already_AddRefed<DataSourceSurface> FilterNodeSoftware::GetOutput(
     cachedOutput = Render(requestedRect);
 
     // Update the cache for future requests
-    MutexAutoLock lock(mCacheMutex);
-
     mCachedOutput = cachedOutput;
     if (!mCachedOutput) {
       mCachedRect = IntRect();
@@ -710,6 +704,7 @@ void FilterNodeSoftware::RequestInputRect(uint32_t aInputEnumIndex,
   }
   RefPtr<FilterNodeSoftware> filter = mInputFilters[inputIndex];
   MOZ_ASSERT(filter, "missing input");
+
   filter->RequestRect(filter->GetOutputRectInRect(aRect));
 }
 
@@ -796,7 +791,14 @@ FilterNodeSoftware::GetInputDataSourceSurface(
     IntRect srcRect = aTransparencyPaddedSourceRect->Intersect(aRect);
     surface =
         GetDataSurfaceInRect(surface, surfaceRect, srcRect, EDGE_MODE_NONE);
-    surfaceRect = srcRect;
+    if (surface) {
+      surfaceRect = srcRect;
+    } else {
+      // Padding the surface with transparency failed, probably due to size
+      // restrictions. Since |surface| is now null, set the surfaceRect to
+      // empty so that we're consistent.
+      surfaceRect.SetEmpty();
+    }
   }
 
   RefPtr<DataSourceSurface> result =
@@ -889,7 +891,6 @@ void FilterNodeSoftware::FilterInvalidated(FilterNodeSoftware* aFilter) {
 }
 
 void FilterNodeSoftware::Invalidate() {
-  MutexAutoLock lock(mCacheMutex);
   mCachedOutput = nullptr;
   mCachedRect = IntRect();
   for (std::vector<FilterInvalidationListener*>::iterator it =
@@ -899,8 +900,7 @@ void FilterNodeSoftware::Invalidate() {
   }
 }
 
-FilterNodeSoftware::FilterNodeSoftware()
-    : mCacheMutex("FilterNodeSoftware::mCacheMutex") {}
+FilterNodeSoftware::FilterNodeSoftware() {}
 
 FilterNodeSoftware::~FilterNodeSoftware() {
   MOZ_ASSERT(
@@ -1008,10 +1008,9 @@ static CompositionOp ToBlendOp(BlendMode aOp) {
       return CompositionOp::OP_COLOR;
     case BLEND_MODE_LUMINOSITY:
       return CompositionOp::OP_LUMINOSITY;
-    default:
-      return CompositionOp::OP_OVER;
   }
 
+  MOZ_ASSERT_UNREACHABLE("Unexpected BlendMode");
   return CompositionOp::OP_OVER;
 }
 
@@ -1058,7 +1057,7 @@ already_AddRefed<DataSourceSurface> FilterNodeBlendSoftware::Render(
   }
 
   RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
-      BackendType::CAIRO, targetMap.GetData(), target->GetSize(),
+      BackendType::SKIA, targetMap.GetData(), target->GetSize(),
       targetMap.GetStride(), target->GetFormat());
 
   if (!dt) {
@@ -1193,7 +1192,7 @@ already_AddRefed<DataSourceSurface> FilterNodeTransformSoftware::Render(
   }
 
   RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
-      BackendType::CAIRO, mapping.mData, surf->GetSize(), mapping.mStride,
+      BackendType::SKIA, mapping.mData, surf->GetSize(), mapping.mStride,
       surf->GetFormat());
   if (!dt) {
     gfxWarning() << "FilterNodeTransformSoftware::Render failed in "
@@ -1764,15 +1763,9 @@ void FilterNodeComponentTransferSoftware::SetAttribute(uint32_t aIndex,
 void FilterNodeComponentTransferSoftware::GenerateLookupTable(
     ptrdiff_t aComponent, uint8_t aTables[4][256], bool aDisabled) {
   if (aDisabled) {
-    static uint8_t sIdentityLookupTable[256];
-    static bool sInitializedIdentityLookupTable = false;
-    if (!sInitializedIdentityLookupTable) {
-      for (int32_t i = 0; i < 256; i++) {
-        sIdentityLookupTable[i] = i;
-      }
-      sInitializedIdentityLookupTable = true;
+    for (int32_t i = 0; i < 256; ++i) {
+      aTables[aComponent][i] = i;
     }
-    memcpy(aTables[aComponent], sIdentityLookupTable, 256);
   } else {
     FillLookupTable(aComponent, aTables[aComponent]);
   }
@@ -2549,12 +2542,12 @@ IntRect FilterNodeConvolveMatrixSoftware::InflatedSourceRect(
   }
 
   IntMargin margin;
-  margin.left = ceil(mTarget.x * mKernelUnitLength.width);
-  margin.top = ceil(mTarget.y * mKernelUnitLength.height);
-  margin.right =
-      ceil((mKernelSize.width - mTarget.x - 1) * mKernelUnitLength.width);
-  margin.bottom =
-      ceil((mKernelSize.height - mTarget.y - 1) * mKernelUnitLength.height);
+  margin.left = static_cast<int32_t>(ceil(mTarget.x * mKernelUnitLength.width));
+  margin.top = static_cast<int32_t>(ceil(mTarget.y * mKernelUnitLength.height));
+  margin.right = static_cast<int32_t>(
+      ceil((mKernelSize.width - mTarget.x - 1) * mKernelUnitLength.width));
+  margin.bottom = static_cast<int32_t>(
+      ceil((mKernelSize.height - mTarget.y - 1) * mKernelUnitLength.height));
 
   IntRect srcRect = aDestRect;
   srcRect.Inflate(margin);
@@ -2568,12 +2561,14 @@ IntRect FilterNodeConvolveMatrixSoftware::InflatedDestRect(
   }
 
   IntMargin margin;
-  margin.left =
-      ceil((mKernelSize.width - mTarget.x - 1) * mKernelUnitLength.width);
-  margin.top =
-      ceil((mKernelSize.height - mTarget.y - 1) * mKernelUnitLength.height);
-  margin.right = ceil(mTarget.x * mKernelUnitLength.width);
-  margin.bottom = ceil(mTarget.y * mKernelUnitLength.height);
+  margin.left = static_cast<int32_t>(
+      ceil((mKernelSize.width - mTarget.x - 1) * mKernelUnitLength.width));
+  margin.top = static_cast<int32_t>(
+      ceil((mKernelSize.height - mTarget.y - 1) * mKernelUnitLength.height));
+  margin.right =
+      static_cast<int32_t>(ceil(mTarget.x * mKernelUnitLength.width));
+  margin.bottom =
+      static_cast<int32_t>(ceil(mTarget.y * mKernelUnitLength.height));
 
   IntRect destRect = aSourceRect;
   destRect.Inflate(margin);
@@ -2583,7 +2578,7 @@ IntRect FilterNodeConvolveMatrixSoftware::InflatedDestRect(
 IntRect FilterNodeConvolveMatrixSoftware::GetOutputRectInRect(
     const IntRect& aRect) {
   IntRect srcRequest = InflatedSourceRect(aRect);
-  IntRect srcOutput = GetInputRectInRect(IN_COLOR_MATRIX_IN, srcRequest);
+  IntRect srcOutput = GetInputRectInRect(IN_CONVOLVE_MATRIX_IN, srcRequest);
   return InflatedDestRect(srcOutput).Intersect(aRect);
 }
 
@@ -2930,6 +2925,7 @@ already_AddRefed<DataSourceSurface> FilterNodeCompositeSoftware::Render(
         case COMPOSITE_OPERATOR_OVER:
         case COMPOSITE_OPERATOR_ATOP:
         case COMPOSITE_OPERATOR_XOR:
+        case COMPOSITE_OPERATOR_LIGHTER:
           // dest is unchanged.
           break;
         case COMPOSITE_OPERATOR_OUT:
@@ -3347,10 +3343,8 @@ static inline Point3D Normalized(const Point3D& vec) {
 template <typename LightType, typename LightingType>
 FilterNodeLightingSoftware<LightType, LightingType>::FilterNodeLightingSoftware(
     const char* aTypeName)
-    : mLock("FilterNodeLightingSoftware"),
-      mSurfaceScale(0)
-#if defined(MOZILLA_INTERNAL_API) && \
-    (defined(DEBUG) || defined(FORCE_BUILD_REFCNT_LOGGING))
+    : mSurfaceScale(0)
+#if defined(MOZILLA_INTERNAL_API) && defined(NS_BUILD_REFCNT_LOGGING)
       ,
       mTypeName(aTypeName)
 #endif
@@ -3621,8 +3615,6 @@ FilterNodeLightingSoftware<LightType, LightingType>::DoRender(
   uint8_t* targetData = targetMap.GetData();
   int32_t targetStride = targetMap.GetStride();
 
-  MutexAutoLock lock(mLock);
-
   uint32_t lightColor = ColorToBGRA(mColor);
   mLight.Prepare();
   mLighting.Prepare();
@@ -3716,7 +3708,11 @@ uint32_t SpecularLightingSoftware::LightPixel(const Point3D& aNormal,
                                               const Point3D& aVectorToLight,
                                               uint32_t aColor) {
   Point3D vectorToEye(0, 0, 1);
-  Point3D halfwayVector = Normalized(aVectorToLight + vectorToEye);
+  Point3D halfwayVector = aVectorToLight + vectorToEye;
+  Float halfwayLength = halfwayVector.Length();
+  if (halfwayLength > 0) {
+    halfwayVector /= halfwayLength;
+  }
   Float dotNH = aNormal.DotProduct(halfwayVector);
   uint16_t dotNHi =
       uint16_t(dotNH * (dotNH >= 0) * (1 << PowCache::sInputIntPrecisionBits));

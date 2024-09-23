@@ -5,11 +5,11 @@
 /* eslint-disable no-unused-vars */
 declTest("test observer triggering actor creation", {
   async test(browser) {
-    await SpecialPowers.spawn(browser, [], async function() {
+    await SpecialPowers.spawn(browser, [], async function () {
       const TOPIC = "test-js-content-actor-child-observer";
       Services.obs.notifyObservers(content.window, TOPIC, "dataString");
 
-      let child = ChromeUtils.contentChild;
+      let child = ChromeUtils.domProcessChild;
       let actorChild = child.getActor("TestProcessActor");
       ok(actorChild, "JSProcessActorChild should have value.");
       ok(
@@ -25,11 +25,11 @@ declTest("test observer triggering actor creation", {
 
 declTest("test observers with null data", {
   async test(browser) {
-    await SpecialPowers.spawn(browser, [], async function() {
+    await SpecialPowers.spawn(browser, [], async function () {
       const TOPIC = "test-js-content-actor-child-observer";
       Services.obs.notifyObservers(content.window, TOPIC);
 
-      let child = ChromeUtils.contentChild;
+      let child = ChromeUtils.domProcessChild;
       let actorChild = child.getActor("TestProcessActor");
       ok(actorChild, "JSProcessActorChild should have value.");
       let { subject, topic, data } = actorChild.lastObserved;

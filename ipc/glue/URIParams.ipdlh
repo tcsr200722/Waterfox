@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 
-using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
 
 include PBackgroundSharedTypes;
 
@@ -69,11 +69,6 @@ struct IconURIParams
   int32_t iconState;
 };
 
-struct NullPrincipalURIParams
-{
-  // Purposefully empty. Null principal URIs do not round-trip.
-};
-
 struct HostObjectURIParams
 {
   SimpleURIParams simpleParams;
@@ -86,11 +81,12 @@ union URIParams
   StandardURLParams;
   JARURIParams;
   IconURIParams;
-  NullPrincipalURIParams;
   JSURIParams;
   SimpleNestedURIParams;
   HostObjectURIParams;
   DefaultURIParams;
+  NestedAboutURIParams;
+  SubstitutingJARURIParams;
 };
 
 struct JSURIParams
@@ -103,6 +99,18 @@ struct SimpleNestedURIParams
 {
   SimpleURIParams simpleParams;
   URIParams innerURI;
+};
+
+struct NestedAboutURIParams
+{
+  SimpleNestedURIParams nestedParams;
+  URIParams? baseURI;
+};
+
+struct SubstitutingJARURIParams
+{
+  URIParams source;
+  JARURIParams resolved;
 };
 
 } // namespace ipc

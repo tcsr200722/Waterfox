@@ -8,6 +8,7 @@
 #define __CrossOriginWrapper_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/Maybe.h"
 
 #include "js/Wrapper.h"
 
@@ -20,7 +21,8 @@ class WaiveXrayWrapper : public js::CrossCompartmentWrapper {
 
   virtual bool getOwnPropertyDescriptor(
       JSContext* cx, JS::Handle<JSObject*> wrapper, JS::Handle<jsid> id,
-      JS::MutableHandle<JS::PropertyDescriptor> desc) const override;
+      JS::MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc)
+      const override;
   virtual bool getPrototype(JSContext* cx, JS::Handle<JSObject*> wrapper,
                             JS::MutableHandle<JSObject*> protop) const override;
   virtual bool getPrototypeIfOrdinary(
@@ -37,8 +39,6 @@ class WaiveXrayWrapper : public js::CrossCompartmentWrapper {
   virtual bool nativeCall(JSContext* cx, JS::IsAcceptableThis test,
                           JS::NativeImpl impl,
                           const JS::CallArgs& args) const override;
-  virtual bool hasInstance(JSContext* cx, JS::HandleObject wrapper,
-                           JS::MutableHandleValue v, bool* bp) const override;
 
   static const WaiveXrayWrapper singleton;
 };

@@ -53,11 +53,11 @@ inline nsresult nsresultForErrno(int aErr) {
     case 0:
       return NS_OK;
 #ifdef EDQUOT
-    case EDQUOT: /* Quota exceeded */
-                 // FALLTHROUGH to return NS_ERROR_FILE_DISK_FULL
+    case EDQUOT:        /* Quota exceeded */
+      [[fallthrough]];  // to NS_ERROR_FILE_NO_DEVICE_SPACE
 #endif
     case ENOSPC:
-      return NS_ERROR_FILE_DISK_FULL;
+      return NS_ERROR_FILE_NO_DEVICE_SPACE;
 #ifdef EISDIR
     case EISDIR: /*      Is a directory. */
       return NS_ERROR_FILE_IS_DIRECTORY;
@@ -67,7 +67,7 @@ inline nsresult nsresultForErrno(int aErr) {
     case ENOEXEC: /*     Executable file format error. */
       return NS_ERROR_FILE_EXECUTION_FAILED;
     case ENOENT:
-      return NS_ERROR_FILE_TARGET_DOES_NOT_EXIST;
+      return NS_ERROR_FILE_NOT_FOUND;
     case ENOTDIR:
       return NS_ERROR_FILE_DESTINATION_NOT_DIR;
 #ifdef ELOOP
@@ -89,15 +89,8 @@ inline nsresult nsresultForErrno(int aErr) {
     case EROFS: /*     Read-only file system. */
       return NS_ERROR_FILE_READ_ONLY;
 #endif
-      /*
-       * On AIX 4.3, ENOTEMPTY is defined as EEXIST,
-       * so there can't be cases for both without
-       * preprocessing.
-       */
-#if ENOTEMPTY != EEXIST
     case ENOTEMPTY:
       return NS_ERROR_FILE_DIR_NOT_EMPTY;
-#endif /* ENOTEMPTY != EEXIST */
     /* Note that nsIFile.createUnique() returns
        NS_ERROR_FILE_TOO_BIG when it cannot create a temporary
        file with a unique filename.
@@ -108,6 +101,11 @@ inline nsresult nsresultForErrno(int aErr) {
     */
     case EFBIG: /*     File too large. */
       return NS_ERROR_FILE_TOO_BIG;
+
+#ifdef ENOATTR
+    case ENOATTR:
+      return NS_ERROR_NOT_AVAILABLE;
+#endif  // ENOATTR
 
     default:
       return NS_ERROR_FAILURE;

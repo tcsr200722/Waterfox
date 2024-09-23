@@ -49,6 +49,7 @@ function createTestingEnvironment(markerFileOnly = false) {
  * marker-file, a databse file, and a directory exist in current idb directory.
  */
 
+/* exported testSteps */
 async function testSteps() {
   SpecialPowers.setBoolPref("dom.quotaManager.testing", true);
 
@@ -56,9 +57,12 @@ async function testSteps() {
 
   info("Verifying initialization");
 
+  let request = initStorage();
+  await requestFinished(request);
+
   createTestingEnvironment();
 
-  let request = initStorageAndChromeOrigin("persistent");
+  request = initPersistentOrigin(getSystemPrincipal());
   await requestFinished(request);
 
   let testingFiles = getTestingFiles();

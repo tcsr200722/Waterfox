@@ -88,7 +88,7 @@ function* testSteps() {
   let request = init(continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode == NS_OK, "Initialization succeeded");
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
   info("Verifying storage");
 
@@ -124,18 +124,31 @@ function* testSteps() {
 
       exists = metadata2File.exists();
       ok(exists, "Metadata file does exist");
+    }
+  }
 
+  info("Initializing temporary storage");
+
+  request = initTemporaryStorage(continueToNextStepSync);
+  yield undefined;
+
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
+
+  info("Initializing origins");
+
+  for (const origin of origins) {
+    if (!origin.obsolete) {
       info("Initializing origin");
 
       let principal = getPrincipal(origin.url);
-      request = initStorageAndOrigin(
-        principal,
+      request = initTemporaryOrigin(
         origin.persistence,
+        principal,
         continueToNextStepSync
       );
       yield undefined;
 
-      ok(request.resultCode == NS_OK, "Initialization succeeded");
+      Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
       ok(!request.result, "Origin directory wasn't created");
     }

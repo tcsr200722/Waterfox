@@ -33,7 +33,8 @@ AlertNotification::Init(const nsAString& aName, const nsAString& aImageURL,
                         bool aTextClickable, const nsAString& aCookie,
                         const nsAString& aDir, const nsAString& aLang,
                         const nsAString& aData, nsIPrincipal* aPrincipal,
-                        bool aInPrivateBrowsing, bool aRequireInteraction) {
+                        bool aInPrivateBrowsing, bool aRequireInteraction,
+                        bool aSilent, const nsTArray<uint32_t>& aVibrate) {
   mName = aName;
   mImageURL = aImageURL;
   mTitle = aTitle;
@@ -46,6 +47,15 @@ AlertNotification::Init(const nsAString& aName, const nsAString& aImageURL,
   mPrincipal = aPrincipal;
   mInPrivateBrowsing = aInPrivateBrowsing;
   mRequireInteraction = aRequireInteraction;
+  mSilent = aSilent;
+  mVibrate = aVibrate.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+AlertNotification::SetActions(
+    const nsTArray<RefPtr<nsIAlertAction>>& aActions) {
+  mActions = aActions.Clone();
   return NS_OK;
 }
 
@@ -138,8 +148,38 @@ AlertNotification::GetActionable(bool* aActionable) {
 }
 
 NS_IMETHODIMP
+AlertNotification::GetSilent(bool* aSilent) {
+  *aSilent = mSilent;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+AlertNotification::GetVibrate(nsTArray<uint32_t>& aVibrate) {
+  aVibrate = mVibrate.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+AlertNotification::GetActions(nsTArray<RefPtr<nsIAlertAction>>& aActions) {
+  aActions = mActions.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 AlertNotification::GetSource(nsAString& aSource) {
   nsAlertsUtils::GetSourceHostPort(mPrincipal, aSource);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+AlertNotification::GetOpaqueRelaunchData(nsAString& aOpaqueRelaunchData) {
+  aOpaqueRelaunchData = mOpaqueRelaunchData;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+AlertNotification::SetOpaqueRelaunchData(const nsAString& aOpaqueRelaunchData) {
+  mOpaqueRelaunchData = aOpaqueRelaunchData;
   return NS_OK;
 }
 

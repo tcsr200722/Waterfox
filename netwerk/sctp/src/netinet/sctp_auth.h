@@ -32,11 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef __FreeBSD__
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/sys/netinet/sctp_auth.h 310590 2016-12-26 11:06:41Z tuexen $");
-#endif
-
 #ifndef _NETINET_SCTP_AUTH_H_
 #define _NETINET_SCTP_AUTH_H_
 
@@ -99,8 +94,6 @@ typedef struct sctp_authinformation {
 	uint16_t recv_keyid;	/* last recv keyid (cached) */
 } sctp_authinfo_t;
 
-
-
 /*
  * Macros
  */
@@ -149,7 +142,6 @@ extern void sctp_auth_key_acquire(struct sctp_tcb *stcb, uint16_t keyid);
 extern void sctp_auth_key_release(struct sctp_tcb *stcb, uint16_t keyid,
     int so_locked);
 
-
 /* hmac list handling */
 extern sctp_hmaclist_t *sctp_alloc_hmaclist(uint16_t num_hmacs);
 extern void sctp_free_hmaclist(sctp_hmaclist_t *list);
@@ -170,8 +162,6 @@ extern uint32_t sctp_get_auth_chunk_len(uint16_t hmac_algo);
 extern uint32_t sctp_get_hmac_digest_len(uint16_t hmac_algo);
 extern uint32_t sctp_hmac(uint16_t hmac_algo, uint8_t *key, uint32_t keylen,
     uint8_t *text, uint32_t textlen, uint8_t *digest);
-extern int sctp_verify_hmac(uint16_t hmac_algo, uint8_t *key, uint32_t keylen,
-    uint8_t *text, uint32_t textlen, uint8_t *digest, uint32_t digestlen);
 extern uint32_t sctp_compute_hmac(uint16_t hmac_algo, sctp_key_t *key,
     uint8_t *text, uint32_t textlen, uint8_t *digest);
 extern int sctp_auth_is_supported_hmac(sctp_hmaclist_t *list, uint16_t id);
@@ -204,7 +194,7 @@ extern struct mbuf *sctp_add_auth_chunk(struct mbuf *m, struct mbuf **m_end,
 extern int sctp_handle_auth(struct sctp_tcb *stcb, struct sctp_auth_chunk *ch,
     struct mbuf *m, uint32_t offset);
 extern void sctp_notify_authentication(struct sctp_tcb *stcb,
-    uint32_t indication, uint16_t keyid, uint16_t alt_keyid, int so_locked);
+    uint32_t indication, uint16_t keyid, int so_locked);
 extern int sctp_validate_init_auth_params(struct mbuf *m, int offset,
     int limit);
 extern void sctp_initialize_auth_params(struct sctp_inpcb *inp,

@@ -6,21 +6,21 @@
 const PREF_DISALLOW_ENTERPRISE = "browser.policies.testing.disallowEnterprise";
 
 add_task(async function test_enterprise_only_policies() {
-  let { Policies } = ChromeUtils.import(
-    "resource:///modules/policies/Policies.jsm"
+  let { Policies } = ChromeUtils.importESModule(
+    "resource:///modules/policies/Policies.sys.mjs"
   );
 
   let normalPolicyRan = false,
     enterprisePolicyRan = false;
 
   Policies.NormalPolicy = {
-    onProfileAfterChange(manager, param) {
+    onProfileAfterChange() {
       normalPolicyRan = true;
     },
   };
 
   Policies.EnterpriseOnlyPolicy = {
-    onProfileAfterChange(manager, param) {
+    onProfileAfterChange() {
       enterprisePolicyRan = true;
     },
   };

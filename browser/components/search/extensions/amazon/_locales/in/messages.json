@@ -6,12 +6,12 @@
     "message": "Amazon.in Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.in/exec/obidos/external-search/"
+    "message": "https://www.amazon.in/s"
   },
   "searchForm": {
     "message": "https://www.amazon.in/"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended&sourceid=Mozilla-search"
+    "message": "k={searchTerms}"
   }
 }

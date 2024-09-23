@@ -38,16 +38,14 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
   MOZ_CAN_RUN_SCRIPT
   nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
-  virtual bool IsLink(nsIURI** aURI) const override;
-  virtual void GetLinkTarget(nsAString& aTarget) override;
-  virtual already_AddRefed<nsIURI> GetHrefURI() const override;
+
+  void GetLinkTargetImpl(nsAString& aTarget) override;
+  already_AddRefed<nsIURI> GetHrefURI() const override;
 
   virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  virtual void UnbindFromTree(bool aNullParent = true) override;
+  virtual void UnbindFromTree(UnbindContext&) override;
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-
-  virtual EventStates IntrinsicState() const override;
 
   // WebIDL
   void GetAlt(DOMString& aValue) { GetHTMLAttr(nsGkAtoms::alt, aValue); }
@@ -66,12 +64,11 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
     SetHTMLAttr(nsGkAtoms::shape, aShape, aError);
   }
 
-  // argument type nsAString for nsContextMenuInfo
-  void GetHref(nsAString& aValue) {
+  void GetHref(nsACString& aValue) {
     GetURIAttr(nsGkAtoms::href, nullptr, aValue);
   }
-  void SetHref(const nsAString& aHref, ErrorResult& aError) {
-    SetHTMLAttr(nsGkAtoms::href, aHref, aError);
+  void SetHref(const nsACString& aHref, ErrorResult& aError) {
+    SetHTMLAttr(nsGkAtoms::href, NS_ConvertUTF8toUTF16(aHref), aError);
   }
 
   void GetTarget(DOMString& aValue);
@@ -87,13 +84,11 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
   }
 
   void GetPing(DOMString& aValue) { GetHTMLAttr(nsGkAtoms::ping, aValue); }
-
   void SetPing(const nsAString& aPing, ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::ping, aPing, aError);
   }
 
   void GetRel(DOMString& aValue) { GetHTMLAttr(nsGkAtoms::rel, aValue); }
-
   void SetRel(const nsAString& aRel, ErrorResult& aError) {
     SetHTMLAttr(nsGkAtoms::rel, aRel, aError);
   }
@@ -103,7 +98,7 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
     SetHTMLAttr(nsGkAtoms::referrerpolicy, aValue, rv);
   }
   void GetReferrerPolicy(nsAString& aReferrer) {
-    GetEnumAttr(nsGkAtoms::referrerpolicy, EmptyCString().get(), aReferrer);
+    GetEnumAttr(nsGkAtoms::referrerpolicy, "", aReferrer);
   }
 
   // The Link::GetOrigin is OK for us
@@ -143,9 +138,6 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
     SetHTMLBoolAttr(nsGkAtoms::nohref, aValue, aError);
   }
 
-  void ToString(nsAString& aSource);
-  void Stringify(nsAString& aResult) { GetHref(aResult); }
-
   void NodeInfoChanged(Document* aOldDoc) final {
     ClearHasPendingLinkUpdate();
     nsGenericHTMLElement::NodeInfoChanged(aOldDoc);
@@ -157,11 +149,11 @@ class HTMLAreaElement final : public nsGenericHTMLElement, public Link {
   virtual JSObject* WrapNode(JSContext* aCx,
                              JS::Handle<JSObject*> aGivenProto) override;
 
-  virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
+  virtual void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                            const nsAttrValue* aValue,
+                            const nsAttrValue* aOldValue,
+                            nsIPrincipal* aSubjectPrincipal,
+                            bool aNotify) override;
 
   RefPtr<nsDOMTokenList> mRelList;
 };

@@ -38,8 +38,6 @@ $(RUNNABLE_TIERS)::
 binaries::
 	+$(MAKE) recurse_compile
 
-# Carefully avoid $(eval) type of rule generation, which makes pymake slower
-# than necessary.
 # Get current tier and corresponding subtiers from the data in root.mk.
 CURRENT_TIER := $(filter $(foreach tier,$(RUNNABLE_TIERS) $(non_default_tiers),recurse_$(tier) $(tier)-deps),$(MAKECMDGOALS))
 ifneq (,$(filter-out 0 1,$(words $(CURRENT_TIER))))
@@ -69,8 +67,8 @@ CURRENT_DIRS := $($(CURRENT_TIER)_dirs)
 # Need a list of compile targets because we can't use pattern rules:
 # https://savannah.gnu.org/bugs/index.php?42833
 # Only recurse the paths starting with RECURSE_BASE_DIR when provided.
-.PHONY: $(compile_targets) $(syms_targets)
-$(compile_targets) $(syms_targets):
+.PHONY: $(pre_compile_targets) $(compile_targets) $(syms_targets)
+$(pre_compile_targets) $(compile_targets) $(syms_targets):
 	$(if $(filter $(RECURSE_BASE_DIR)%,$@),$(call RECURSE,$(@F),$(@D)))
 
 $(syms_targets): %/syms: %/target
@@ -86,11 +84,6 @@ endif
 # symbols can be dumped on demand locally.
 .PHONY: recurse_syms
 recurse_syms: $(syms_targets)
-
-# Ensure dump_syms gets built before any syms targets, all of which depend on it.
-ifneq (,$(filter toolkit/crashreporter/google-breakpad/src/tools/%/dump_syms/host,$(compile_targets)))
-$(syms_targets): $(filter toolkit/crashreporter/google-breakpad/src/tools/%/dump_syms/host,$(compile_targets))
-endif
 
 # The compile tier has different rules from other tiers.
 ifneq ($(CURRENT_TIER),compile)
@@ -162,31 +155,27 @@ recurse:
 	$(LOOP_OVER_DIRS)
 
 ifeq (.,$(DEPTH))
-# Interdependencies for parallel export.
-js/xpconnect/src/export: dom/bindings/export xpcom/xpidl/export
-accessible/xpcom/export: xpcom/xpidl/export
 
-# The Android SDK bindings needs to build the Java generator code
-# source code in order to write the SDK bindings.
-widget/android/bindings/export: mobile/android/base/export
-
-# The widget JNI wrapper generator code needs to build the GeckoView
-# source code in order to find JNI wrapper annotations.
-widget/android/export: mobile/android/base/export
+# This is required so that the pre-export tier sees the rules in
+# mobile/android
+ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+recurse_pre-export: mobile/android/pre-export
+endif
 
 # CSS2Properties.webidl needs ServoCSSPropList.py from layout/style
-dom/bindings/export: layout/style/export
+dom/bindings/export: layout/style/ServoCSSPropList.py
 
 # Various telemetry histogram files need ServoCSSPropList.py from layout/style
-toolkit/components/telemetry/export: layout/style/export
+toolkit/components/telemetry/export: layout/style/ServoCSSPropList.py
 
-# The update agent needs to link to the updatecommon library, but the build system does not
-# currently have a good way of expressing this dependency.
-toolkit/components/updateagent/target: toolkit/mozapps/update/common/target
+ifeq ($(TARGET_ENDIANNESS),big)
+config/external/icu/data/target-objects: config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub
+config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub: config/external/icu/icupkg/host
+endif
 
 ifdef ENABLE_CLANG_PLUGIN
 # Only target rules use the clang plugin.
-$(filter %/target %/target-objects,$(filter-out config/export config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets))): build/clang-plugin/host build/clang-plugin/tests/target-objects
+$(filter %/target %/target-objects,$(filter-out config/export config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets))) security/rlbox/pre-compile media/libsoundtouch/src/pre-compile: build/clang-plugin/host build/clang-plugin/tests/target-objects
 build/clang-plugin/tests/target-objects: build/clang-plugin/host
 # clang-plugin tests require js-confdefs.h on js standalone builds and mozilla-config.h on
 # other builds, because they are -include'd.
@@ -203,21 +192,9 @@ endif
 
 # Interdependencies that moz.build world don't know about yet for compilation.
 # Note some others are hardcoded or "guessed" in recursivemake.py and emitter.py
-ifeq ($(MOZ_WIDGET_TOOLKIT),gtk)
-toolkit/library/target: widget/gtk/mozgtk/gtk3/target
-endif
-
-ifndef MOZ_FOLD_LIBS
-ifndef MOZ_SYSTEM_NSS
-netwerk/test/http3server/target: security/nss/lib/nss/nss_nss3/target security/nss/lib/ssl/ssl_ssl3/target
-endif
-ifndef MOZ_SYSTEM_NSPR
-netwerk/test/http3server/target: config/external/nspr/pr/target
-endif
-else
-ifndef MOZ_SYSTEM_NSS
-netwerk/test/http3server/target: security/target
-endif
+ifdef MOZ_USING_WASM_SANDBOXING
+dom/media/ogg/target-objects extensions/spellcheck/hunspell/glue/target-objects gfx/thebes/target-objects parser/expat/target-objects parser/htmlparser/target-objects gfx/ots/src/target-objects: security/rlbox/pre-compile
+dom/media/target-objects dom/media/mediasink/target-objects: media/libsoundtouch/src/pre-compile
 endif
 
 # Most things are built during compile (target/host), but some things happen during export
@@ -225,23 +202,24 @@ endif
 $(addprefix build/unix/stdc++compat/,target host) build/clang-plugin/host: config/export
 
 # Rust targets, and export targets that run cbindgen need
-# $topobjdir/.cargo/config to be preprocessed first. Ideally, we'd only set it
+# $topobjdir/.cargo/config.toml to be preprocessed first. Ideally, we'd only set it
 # as a dependency of the rust targets, but unfortunately, that pushes Make to
 # execute them much later than we'd like them to be when the file doesn't exist
 # prior to Make running. So we also set it as a dependency of pre-export, which
 # ensures it exists before recursing the rust targets and the export targets
 # that run cbindgen, tricking Make into keeping them early.
-$(rust_targets) gfx/webrender_bindings/export layout/style/export xpcom/base/export: $(DEPTH)/.cargo/config
+# When $topobjdir/.cargo/config exists from an old build, we also remove it because
+# cargo will prefer to use it rather than config.toml.
+CARGO_CONFIG_DEPS = $(DEPTH)/.cargo/config.toml
+ifneq (,$(wildcard $(DEPTH)/.cargo/config))
+CARGO_CONFIG_DEPS += $(MDDEPDIR)/cargo-config-cleanup.stub
+endif
+$(rust_targets): $(CARGO_CONFIG_DEPS)
 ifndef TEST_MOZBUILD
-pre-export:: $(DEPTH)/.cargo/config
+recurse_pre-export: $(CARGO_CONFIG_DEPS)
 endif
 
-# When building gtest as part of the build (LINK_GTEST_DURING_COMPILE),
-# force the build system to get to it first, so that it can be linked
-# quickly without LTO, allowing the build system to go ahead with
-# plain gkrust and libxul while libxul-gtest is being linked and
-# dump-sym'ed.
-ifneq (,$(filter toolkit/library/gtest/rust/target,$(compile_targets)))
-toolkit/library/rust/target: toolkit/library/gtest/rust/target
-endif
+$(MDDEPDIR)/cargo-config-cleanup.stub:
+	rm $(DEPTH)/.cargo/config
+	touch $@
 endif

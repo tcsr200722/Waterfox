@@ -32,9 +32,15 @@ add_task(async () => {
     ],
   });
 
-  let service = getProfileService();
   let { profile: selectedProfile, didCreate } = selectStartupProfile();
   checkStartupReason("firstrun-claimed-default");
+  let { databaseVersion, profileCount } = getTelemetryScalars();
+  Assert.equal(
+    databaseVersion,
+    "1",
+    "Old database file was present at startup."
+  );
+  Assert.equal(profileCount, 3, "Should be three profiles.");
 
   let hash = xreDirProvider.getInstallHash();
   let profileData = readProfilesIni();
@@ -120,8 +126,4 @@ add_task(async () => {
     );
     Assert.equal(selectedProfile.name, "mydefault");
   }
-  Assert.ok(
-    !service.createdAlternateProfile,
-    "Should not have created an alternate profile."
-  );
 });

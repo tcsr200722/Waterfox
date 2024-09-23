@@ -7,12 +7,13 @@
 #ifndef mozilla_dom_WorkerCSPEventListener_h
 #define mozilla_dom_WorkerCSPEventListener_h
 
+#include "mozilla/dom/WorkerRef.h"
 #include "mozilla/Mutex.h"
 #include "nsIContentSecurityPolicy.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+class WeakWorkerRef;
 class WorkerRef;
 class WorkerPrivate;
 
@@ -31,10 +32,9 @@ class WorkerCSPEventListener final : public nsICSPEventListener {
   Mutex mMutex;
 
   // Protected by mutex.
-  RefPtr<WeakWorkerRef> mWorkerRef;
+  RefPtr<WeakWorkerRef> mWorkerRef MOZ_GUARDED_BY(mMutex);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_WorkerCSPEventListener_h

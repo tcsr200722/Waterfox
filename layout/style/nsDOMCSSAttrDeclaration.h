@@ -11,6 +11,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/DocGroup.h"
+#include "mozilla/ServoTypes.h"
 #include "nsDOMCSSDeclaration.h"
 
 struct RawServoUnlockedDeclarationBlock;
@@ -19,6 +20,7 @@ namespace mozilla {
 
 class SMILValue;
 class SVGAnimatedLength;
+class SVGAnimatedPathSegList;
 
 namespace dom {
 class DomGroup;
@@ -34,7 +36,7 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
   nsDOMCSSAttributeDeclaration(Element* aContent, bool aIsSMILOverride);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SKIPPABLE_SCRIPT_HOLDER_CLASS_AMBIGUOUS(
+  NS_DECL_CYCLE_COLLECTION_SKIPPABLE_WRAPPERCACHE_CLASS_AMBIGUOUS(
       nsDOMCSSAttributeDeclaration, nsICSSDeclaration)
 
   mozilla::DeclarationBlock* GetOrCreateCSSDeclaration(
@@ -45,17 +47,24 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
 
   mozilla::css::Rule* GetParentRule() override { return nullptr; }
 
-  nsINode* GetParentObject() override { return mElement; }
+  nsINode* GetAssociatedNode() const override { return mElement; }
+  nsINode* GetParentObject() const override { return mElement; }
 
   nsresult SetSMILValue(const nsCSSPropertyID aPropID, const SMILValue& aValue);
   nsresult SetSMILValue(const nsCSSPropertyID aPropID,
                         const SVGAnimatedLength& aLength);
+  nsresult SetSMILValue(const nsCSSPropertyID,
+                        const mozilla::SVGAnimatedPathSegList& aPath);
+  void ClearSMILValue(const nsCSSPropertyID aPropID) {
+    // Put empty string in override style for our property
+    SetPropertyValue(aPropID, ""_ns, nullptr, mozilla::IgnoreErrors());
+  }
 
   void SetPropertyValue(const nsCSSPropertyID aPropID, const nsACString& aValue,
                         nsIPrincipal* aSubjectPrincipal,
                         mozilla::ErrorResult& aRv) override;
 
-  static void MutationClosureFunction(void* aData);
+  static void MutationClosureFunction(void* aData, nsCSSPropertyID);
 
   void GetPropertyChangeClosure(
       mozilla::DeclarationBlockMutationClosure* aClosure,
@@ -63,7 +72,7 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
     if (!mIsSMILOverride) {
       aClosure->function = MutationClosureFunction;
       aClosure->data = aClosureData;
-      aClosureData->mClosure = MutationClosureFunction;
+      aClosureData->mShouldBeCalled = true;
       aClosureData->mElement = mElement;
     }
   }
@@ -74,7 +83,7 @@ class nsDOMCSSAttributeDeclaration final : public nsDOMCSSDeclaration {
   nsresult SetCSSDeclaration(
       mozilla::DeclarationBlock* aDecl,
       mozilla::MutationClosureData* aClosureData) override;
-  mozilla::dom::Document* DocToUpdate() override;
+  mozilla::dom::Document* DocToUpdate() final;
 
   RefPtr<Element> mElement;
 

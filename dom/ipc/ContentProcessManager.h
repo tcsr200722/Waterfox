@@ -11,10 +11,9 @@
 #include "mozilla/dom/TabContext.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "nsTArray.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class ContentParent;
 
 class ContentProcessManager final {
@@ -80,13 +79,12 @@ class ContentProcessManager final {
  private:
   static StaticAutoPtr<ContentProcessManager> sSingleton;
 
-  nsDataHashtable<nsUint64HashKey, ContentParent*> mContentParentMap;
-  nsDataHashtable<nsUint64HashKey, BrowserParent*> mBrowserParentMap;
+  nsTHashMap<nsUint64HashKey, ContentParent*> mContentParentMap;
+  nsTHashMap<nsUint64HashKey, BrowserParent*> mBrowserParentMap;
 
   MOZ_COUNTED_DEFAULT_CTOR(ContentProcessManager);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ContentProcessManager_h

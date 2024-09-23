@@ -7,27 +7,10 @@
 #include "ClientManagerChild.h"
 #include "ClientManagerParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-PClientManagerChild* AllocClientManagerChild() {
-  MOZ_ASSERT_UNREACHABLE(
-      "Default ClientManagerChild allocator should not be invoked");
-  return nullptr;
-}
-
-bool DeallocClientManagerChild(PClientManagerChild* aActor) {
-  delete aActor;
-  return true;
-}
-
-PClientManagerParent* AllocClientManagerParent() {
-  return new ClientManagerParent();
-}
-
-bool DeallocClientManagerParent(PClientManagerParent* aActor) {
-  delete aActor;
-  return true;
+already_AddRefed<PClientManagerParent> AllocClientManagerParent() {
+  return MakeAndAddRef<ClientManagerParent>();
 }
 
 void InitClientManagerParent(PClientManagerParent* aActor) {
@@ -35,5 +18,4 @@ void InitClientManagerParent(PClientManagerParent* aActor) {
   actor->Init();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

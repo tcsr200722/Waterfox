@@ -4,11 +4,13 @@
 
 #include "xpcAccessibilityService.h"
 
-#include "nsAccessiblePivot.h"
+#include "mozilla/dom/Document.h"
+
+#include "xpcAccessiblePivot.h"
 #include "nsAccessibilityService.h"
-#include "Platform.h"
 #include "xpcAccessibleApplication.h"
 #include "xpcAccessibleDocument.h"
+#include "xpcAccessibleTextLeafRange.h"
 
 #ifdef A11Y_LOG
 #  include "Logging.h"
@@ -40,8 +42,9 @@ NS_IMETHODIMP_(MozExternalRefCountType)
 xpcAccessibilityService::AddRef(void) {
   MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(xpcAccessibilityService)
   MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");
-  if (!nsAutoRefCnt::isThreadSafe)
+  if (!nsAutoRefCnt::isThreadSafe) {
     NS_ASSERT_OWNINGTHREAD(xpcAccessibilityService);
+  }
   nsrefcnt count = ++mRefCnt;
   NS_LOG_ADDREF(this, count, "xpcAccessibilityService", sizeof(*this));
 
@@ -120,7 +123,31 @@ xpcAccessibilityService::GetAccessibleFor(nsINode* aNode,
 
   DocAccessible* document = accService->GetDocAccessible(aNode->OwnerDoc());
   if (document) {
-    NS_IF_ADDREF(*aAccessible = ToXPC(document->GetAccessible(aNode)));
+    NS_IF_ADDREF(*aAccessible =
+                     ToXPC(document->GetAccessibleEvenIfNotInMap(aNode)));
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+xpcAccessibilityService::GetAccessibleDescendantFor(
+    nsINode* aNode, nsIAccessible** aAccessible) {
+  NS_ENSURE_ARG_POINTER(aAccessible);
+  *aAccessible = nullptr;
+  if (!aNode) {
+    return NS_OK;
+  }
+
+  nsAccessibilityService* accService = GetAccService();
+  if (!accService) {
+    return NS_ERROR_SERVICE_NOT_AVAILABLE;
+  }
+
+  DocAccessible* document = accService->GetDocAccessible(aNode->OwnerDoc());
+  if (document) {
+    NS_IF_ADDREF(*aAccessible =
+                     ToXPC(document->GetAccessibleOrDescendant(aNode)));
   }
 
   return NS_OK;
@@ -193,7 +220,7 @@ xpcAccessibilityService::GetAccessibleFromCache(nsINode* aNode,
   // document accessibles are not stored in the document cache, however an
   // "unofficially" shutdown document (i.e. not from DocManager) can still
   // exist in the document cache.
-  Accessible* accessible = accService->FindAccessibleInCache(aNode);
+  LocalAccessible* accessible = accService->FindAccessibleInCache(aNode);
   if (!accessible && aNode->IsDocument()) {
     accessible = mozilla::a11y::GetExistingDocAccessible(aNode->AsDocument());
   }
@@ -209,11 +236,23 @@ xpcAccessibilityService::CreateAccessiblePivot(nsIAccessible* aRoot,
   NS_ENSURE_ARG(aRoot);
   *aPivot = nullptr;
 
-  Accessible* accessibleRoot = aRoot->ToInternalAccessible();
-  NS_ENSURE_TRUE(accessibleRoot, NS_ERROR_INVALID_ARG);
-
-  nsAccessiblePivot* pivot = new nsAccessiblePivot(accessibleRoot);
+  xpcAccessiblePivot* pivot = new xpcAccessiblePivot(aRoot);
   NS_ADDREF(*aPivot = pivot);
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+xpcAccessibilityService::CreateTextLeafPoint(
+    nsIAccessible* aAccessible, int32_t aOffset,
+    nsIAccessibleTextLeafPoint** aPoint) {
+  NS_ENSURE_ARG_POINTER(aPoint);
+  NS_ENSURE_ARG(aAccessible);
+  *aPoint = nullptr;
+
+  RefPtr<xpcAccessibleTextLeafPoint> point =
+      new xpcAccessibleTextLeafPoint(aAccessible, aOffset);
+  point.forget(aPoint);
 
   return NS_OK;
 }
@@ -262,7 +301,6 @@ nsresult NS_GetAccessibilityService(nsIAccessibilityService** aResult) {
   }
 
   xpcAccessibilityService* service = new xpcAccessibilityService();
-  NS_ENSURE_TRUE(service, NS_ERROR_OUT_OF_MEMORY);
   xpcAccessibilityService::gXPCAccessibilityService = service;
   NS_ADDREF(*aResult = service);
 

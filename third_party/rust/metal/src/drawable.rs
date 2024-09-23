@@ -5,16 +5,22 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+use super::NSUInteger;
+
+/// See <https://developer.apple.com/documentation/metal/mtldrawable>
 pub enum MTLDrawable {}
 
 foreign_obj_type! {
     type CType = MTLDrawable;
     pub struct Drawable;
-    pub struct DrawableRef;
 }
 
 impl DrawableRef {
     pub fn present(&self) {
         unsafe { msg_send![self, present] }
+    }
+
+    pub fn drawable_id(&self) -> NSUInteger {
+        unsafe { msg_send![self, drawableID] }
     }
 }

@@ -7,7 +7,7 @@ async function focusWindow(win) {
   let promise = new Promise(resolve => {
     win.addEventListener(
       "focus",
-      function() {
+      function () {
         resolve();
       },
       { capture: true, once: true }
@@ -32,7 +32,7 @@ function getDialogDoc() {
       if (childDocShell.busyFlags != Ci.nsIDocShell.BUSY_FLAGS_NONE) {
         continue;
       }
-      var childDoc = childDocShell.contentViewer.DOMDocument;
+      var childDoc = childDocShell.docViewer.DOMDocument;
       if (
         childDoc.location.href !=
           "chrome://global/content/commonDialog.xhtml" &&
@@ -72,16 +72,15 @@ function getAuthPrompt() {
 
 async function loadAccessRestrictedURL(browser, url, username, password) {
   let browserLoaded = BrowserTestUtils.browserLoaded(browser);
-  BrowserTestUtils.loadURI(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
 
-  let promptDoc = await waitForAuthPrompt();
-  let dialogUI = promptDoc.defaultView.Dialog.ui;
-  ok(dialogUI, "Got expected HTTP auth dialog Dialog.ui");
+  // Wait for the auth prompt, enter the login details and close the prompt
+  await PromptTestUtils.handleNextPrompt(
+    browser,
+    { modalType: Ci.nsIPrompt.MODAL_TYPE_TAB, promptType: "promptUserAndPass" },
+    { buttonNumClick: 0, loginInput: username, passwordInput: password }
+  );
 
-  // fill and submit the dialog form
-  dialogUI.loginTextbox.value = username;
-  dialogUI.password1Textbox.value = password;
-  promptDoc.getElementById("commonDialog").acceptDialog();
   await SimpleTest.promiseFocus(browser.ownerGlobal);
   await browserLoaded;
 }
@@ -114,7 +113,7 @@ let privateWin;
 add_task(async function test_setup() {
   normalWin = await BrowserTestUtils.openNewBrowserWindow({ private: false });
   privateWin = await BrowserTestUtils.openNewBrowserWindow({ private: true });
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
 });
 
 add_task(async function test_normal_popup_notification_1() {
@@ -125,7 +124,7 @@ add_task(async function test_normal_popup_notification_1() {
       gBrowser: normalWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -134,15 +133,23 @@ add_task(async function test_normal_popup_notification_1() {
           "#pass": "notifyp1",
         }
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
         PopupNotifications,
         browser
       );
-      ok(notif, "got notification popup");
+      Assert.ok(notif, "got notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => !notif.dismissed,
@@ -162,20 +169,20 @@ add_task(async function test_private_popup_notification_2() {
   const capturePrefValue = Services.prefs.getBoolPref(
     PRIVATE_BROWSING_CAPTURE_PREF
   );
-  ok(
+  Assert.ok(
     capturePrefValue,
     `Expect ${PRIVATE_BROWSING_CAPTURE_PREF} to default to true`
   );
 
   // clear existing logins for parity with the previous test
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
   await focusWindow(privateWin);
   await BrowserTestUtils.withNewTab(
     {
       gBrowser: privateWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -184,15 +191,23 @@ add_task(async function test_private_popup_notification_2() {
           "#pass": "notifyp1",
         }
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
         PopupNotifications,
         browser
       );
-      ok(notif, "Expected notification popup");
+      Assert.ok(notif, "Expected notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => notif.dismissed,
@@ -209,7 +224,10 @@ add_task(async function test_private_popup_notification_2() {
           "#password-notification-visibilityToggle"
         );
 
-        ok(!toggleCheckbox.hidden, "Toggle should be visible upon 1st opening");
+        Assert.ok(
+          !toggleCheckbox.hidden,
+          "Toggle should be visible upon 1st opening"
+        );
 
         info("Hiding popup.");
         let promiseHidden = BrowserTestUtils.waitForEvent(panel, "popuphidden");
@@ -221,13 +239,20 @@ add_task(async function test_private_popup_notification_2() {
         notif.anchorElement.click();
         await promiseShown;
 
-        ok(toggleCheckbox.hidden, "Toggle should be hidden upon 2nd opening");
+        Assert.ok(
+          toggleCheckbox.hidden,
+          "Toggle should be hidden upon 2nd opening"
+        );
 
         await cleanupDoorhanger(notif);
       }
     }
   );
-  is(Services.logins.getAllLogins().length, 0, "No logins were saved");
+  Assert.equal(
+    (await Services.logins.getAllLogins()).length,
+    0,
+    "No logins were saved"
+  );
 });
 
 add_task(async function test_private_popup_notification_no_capture_pref_2b() {
@@ -242,7 +267,7 @@ add_task(async function test_private_popup_notification_no_capture_pref_2b() {
   Services.prefs.setBoolPref(PRIVATE_BROWSING_CAPTURE_PREF, false);
 
   // clear existing logins for parity with the previous test
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
 
   await focusWindow(privateWin);
   await BrowserTestUtils.withNewTab(
@@ -250,7 +275,7 @@ add_task(async function test_private_popup_notification_no_capture_pref_2b() {
       gBrowser: privateWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -259,8 +284,16 @@ add_task(async function test_private_popup_notification_no_capture_pref_2b() {
           "#pass": "notifyp1",
         }
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
@@ -273,13 +306,17 @@ add_task(async function test_private_popup_notification_no_capture_pref_2b() {
         capturePrefValue
       );
 
-      ok(!notif, "Expected no notification popup");
+      Assert.ok(!notif, "Expected no notification popup");
       if (notif) {
         await cleanupDoorhanger(notif);
       }
     }
   );
-  is(Services.logins.getAllLogins().length, 0, "No logins were saved");
+  Assert.equal(
+    (await Services.logins.getAllLogins()).length,
+    0,
+    "No logins were saved"
+  );
 });
 
 add_task(async function test_normal_popup_notification_3() {
@@ -288,11 +325,11 @@ add_task(async function test_normal_popup_notification_3() {
       "match existing username/password: no popup notification should appear"
   );
 
-  Services.logins.removeAllLogins();
-  Services.logins.addLogin(login);
-  let allLogins = Services.logins.getAllLogins();
+  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.addLoginAsync(login);
+  let allLogins = await Services.logins.getAllLogins();
   // Sanity check the HTTP login exists.
-  is(allLogins.length, 1, "Should have the HTTP login");
+  Assert.equal(allLogins.length, 1, "Should have the HTTP login");
   let timeLastUsed = allLogins[0].timeLastUsed;
   let loginGuid = allLogins[0].guid;
 
@@ -302,7 +339,7 @@ add_task(async function test_normal_popup_notification_3() {
       gBrowser: normalWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -311,23 +348,31 @@ add_task(async function test_normal_popup_notification_3() {
           "#pass": "notifyp1",
         }
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
 
       let notif = getCaptureDoorhanger("any", PopupNotifications, browser);
-      ok(!notif, "got no notification popup");
+      Assert.ok(!notif, "got no notification popup");
       if (notif) {
         await cleanupDoorhanger(notif);
       }
     }
   );
-  allLogins = Services.logins.getAllLogins();
-  is(
+  allLogins = await Services.logins.getAllLogins();
+  Assert.equal(
     allLogins[0].guid,
     loginGuid,
     "Sanity-check we are comparing the same login record"
   );
-  ok(
+  Assert.ok(
     allLogins[0].timeLastUsed > timeLastUsed,
     "The timeLastUsed timestamp has been updated"
   );
@@ -339,11 +384,11 @@ add_task(async function test_private_popup_notification_3b() {
       " match existing username/password: no popup notification should appear"
   );
 
-  Services.logins.removeAllLogins();
-  Services.logins.addLogin(login);
-  let allLogins = Services.logins.getAllLogins();
+  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.addLoginAsync(login);
+  let allLogins = await Services.logins.getAllLogins();
   // Sanity check the HTTP login exists.
-  is(allLogins.length, 1, "Should have the HTTP login");
+  Assert.equal(allLogins.length, 1, "Should have the HTTP login");
   let timeLastUsed = allLogins[0].timeLastUsed;
   let loginGuid = allLogins[0].guid;
 
@@ -353,7 +398,7 @@ add_task(async function test_private_popup_notification_3b() {
       gBrowser: privateWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -362,24 +407,32 @@ add_task(async function test_private_popup_notification_3b() {
           "#pass": "notifyp1",
         }
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
 
       let notif = getCaptureDoorhanger("any", PopupNotifications, browser);
 
-      ok(!notif, "got no notification popup");
+      Assert.ok(!notif, "got no notification popup");
       if (notif) {
         await cleanupDoorhanger(notif);
       }
     }
   );
-  allLogins = Services.logins.getAllLogins();
-  is(
+  allLogins = await Services.logins.getAllLogins();
+  Assert.equal(
     allLogins[0].guid,
     loginGuid,
     "Sanity-check we are comparing the same login record"
   );
-  is(
+  Assert.equal(
     allLogins[0].timeLastUsed,
     timeLastUsed,
     "The timeLastUsed timestamp has not been updated"
@@ -391,11 +444,11 @@ add_task(async function test_normal_new_password_4() {
     "test 4: run with a login, outside of private mode," +
       " add a new password: popup notification should appear"
   );
-  Services.logins.removeAllLogins();
-  Services.logins.addLogin(login);
-  let allLogins = Services.logins.getAllLogins();
+  Services.logins.removeAllUserFacingLogins();
+  await Services.logins.addLoginAsync(login);
+  let allLogins = await Services.logins.getAllLogins();
   // Sanity check the HTTP login exists.
-  is(allLogins.length, 1, "Should have the HTTP login");
+  Assert.equal(allLogins.length, 1, "Should have the HTTP login");
   let timeLastUsed = allLogins[0].timeLastUsed;
   let loginGuid = allLogins[0].guid;
 
@@ -405,7 +458,7 @@ add_task(async function test_normal_new_password_4() {
       gBrowser: normalWin.gBrowser,
       url: form2Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -414,13 +467,17 @@ add_task(async function test_normal_new_password_4() {
           "#newpass": "notifyp2",
         }
       );
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
       let notif = getCaptureDoorhanger(
         "password-change",
         PopupNotifications,
         browser
       );
-      ok(notif, "got notification popup");
+      Assert.ok(notif, "got notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => !notif.dismissed,
@@ -432,13 +489,13 @@ add_task(async function test_normal_new_password_4() {
   );
   // We put up a doorhanger, but didn't interact with it, so we expect the login timestamps
   // to be unchanged
-  allLogins = Services.logins.getAllLogins();
-  is(
+  allLogins = await Services.logins.getAllLogins();
+  Assert.equal(
     allLogins[0].guid,
     loginGuid,
     "Sanity-check we are comparing the same login record"
   );
-  is(
+  Assert.equal(
     allLogins[0].timeLastUsed,
     timeLastUsed,
     "The timeLastUsed timestamp was not updated"
@@ -454,14 +511,14 @@ add_task(async function test_private_new_password_5() {
   const capturePrefValue = Services.prefs.getBoolPref(
     PRIVATE_BROWSING_CAPTURE_PREF
   );
-  ok(
+  Assert.ok(
     capturePrefValue,
     `Expect ${PRIVATE_BROWSING_CAPTURE_PREF} to default to true`
   );
 
-  let allLogins = Services.logins.getAllLogins();
+  let allLogins = await Services.logins.getAllLogins();
   // Sanity check the HTTP login exists.
-  is(allLogins.length, 1, "Should have the HTTP login");
+  Assert.equal(allLogins.length, 1, "Should have the HTTP login");
   let timeLastUsed = allLogins[0].timeLastUsed;
   let loginGuid = allLogins[0].guid;
 
@@ -471,7 +528,7 @@ add_task(async function test_private_new_password_5() {
       gBrowser: privateWin.gBrowser,
       url: form2Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -480,13 +537,17 @@ add_task(async function test_private_new_password_5() {
           "#newpass": "notifyp2",
         }
       );
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
       let notif = getCaptureDoorhanger(
         "password-change",
         PopupNotifications,
         browser
       );
-      ok(notif, "Expected notification popup");
+      Assert.ok(notif, "Expected notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => !notif.dismissed,
@@ -498,13 +559,13 @@ add_task(async function test_private_new_password_5() {
   );
   // We put up a doorhanger, but didn't interact with it, so we expect the login timestamps
   // to be unchanged
-  allLogins = Services.logins.getAllLogins();
-  is(
+  allLogins = await Services.logins.getAllLogins();
+  Assert.equal(
     allLogins[0].guid,
     loginGuid,
     "Sanity-check we are comparing the same login record"
   );
-  is(
+  Assert.equal(
     allLogins[0].timeLastUsed,
     timeLastUsed,
     "The timeLastUsed timestamp has not been updated"
@@ -523,7 +584,7 @@ add_task(async function test_normal_with_login_6() {
       gBrowser: normalWin.gBrowser,
       url: form2Url,
     },
-    async function(browser) {
+    async function (browser) {
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
@@ -532,13 +593,17 @@ add_task(async function test_normal_with_login_6() {
           "#newpass": "notifyp2",
         }
       );
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
       let notif = getCaptureDoorhanger(
         "password-change",
         PopupNotifications,
         browser
       );
-      ok(notif, "got notification popup");
+      Assert.ok(notif, "got notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => !notif.dismissed,
@@ -553,10 +618,14 @@ add_task(async function test_normal_with_login_6() {
 
 add_task(async function test_normal_autofilled_7() {
   info("test 7: verify that the user/pass pair was autofilled");
-  Services.logins.addLogin(login);
+  await Services.logins.addLoginAsync(login);
 
   // Sanity check the HTTP login exists.
-  is(Services.logins.getAllLogins().length, 1, "Should have the HTTP login");
+  Assert.equal(
+    (await Services.logins.getAllLogins()).length,
+    1,
+    "Should have the HTTP login"
+  );
 
   await focusWindow(normalWin);
   await BrowserTestUtils.withNewTab(
@@ -564,11 +633,11 @@ add_task(async function test_normal_autofilled_7() {
       gBrowser: normalWin.gBrowser,
       url: "about:blank",
     },
-    async function(browser) {
+    async function (browser) {
       // Add the observer before loading the form page
       let formFilled = listenForTestNotification("FormProcessed");
       await SimpleTest.promiseFocus(browser.ownerGlobal);
-      await BrowserTestUtils.loadURI(browser, form1Url);
+      BrowserTestUtils.startLoadingURIString(browser, form1Url);
       await formFilled;
 
       // the form should have been autofilled, so submit without updating field values
@@ -577,8 +646,16 @@ add_task(async function test_normal_autofilled_7() {
         "formsubmit.sjs",
         {}
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
     }
   );
 });
@@ -586,7 +663,11 @@ add_task(async function test_normal_autofilled_7() {
 add_task(async function test_private_not_autofilled_8() {
   info("test 8: verify that the user/pass pair was not autofilled");
   // Sanity check the HTTP login exists.
-  is(Services.logins.getAllLogins().length, 1, "Should have the HTTP login");
+  Assert.equal(
+    (await Services.logins.getAllLogins()).length,
+    1,
+    "Should have the HTTP login"
+  );
 
   let formFilled = listenForTestNotification("FormProcessed");
 
@@ -596,15 +677,15 @@ add_task(async function test_private_not_autofilled_8() {
       gBrowser: privateWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       await formFilled;
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
         {}
       );
-      ok(!fieldValues.username, "Checking submitted username");
-      ok(!fieldValues.password, "Checking submitted password");
+      Assert.ok(!fieldValues.username, "Checking submitted username");
+      Assert.ok(!fieldValues.password, "Checking submitted password");
     }
   );
 });
@@ -613,7 +694,7 @@ add_task(async function test_private_not_autofilled_8() {
 // add_task(async function test_private_autocomplete_9() {
 //   info("test 9: verify that the user/pass pair was available for autocomplete");
 //   // Sanity check the HTTP login exists.
-//   is(Services.logins.getAllLogins().length, 1, "Should have the HTTP login");
+//   Assert.equal((await Services.logins.getAllLogins()).length, 1, "Should have the HTTP login");
 
 //   await focusWindow(privateWin);
 //   await BrowserTestUtils.withNewTab({
@@ -621,7 +702,7 @@ add_task(async function test_private_not_autofilled_8() {
 //     url: form1Url,
 //   }, async function(browser) {
 //     let popup = document.getElementById("PopupAutoComplete");
-//     ok(popup, "Got popup");
+//     Assert.ok(popup, "Got popup");
 
 //     let promiseShown = BrowserTestUtils.waitForEvent(popup, "popupshown");
 
@@ -630,7 +711,7 @@ add_task(async function test_private_not_autofilled_8() {
 //       content.document.getElementById("user").focus();
 //     });
 //     await promiseShown;
-//     ok(promiseShown, "autocomplete shown");
+//     Assert.ok(promiseShown, "autocomplete shown");
 
 //     let promiseFormInput = ContentTask.spawn(browser, null, async function() {
 //       let doc = content.document;
@@ -646,8 +727,8 @@ add_task(async function test_private_not_autofilled_8() {
 //     await promiseFormInput;
 
 //     let fieldValues = await submitFormAndGetResults(browser, "formsubmit.sjs", {});
-//     is(fieldValues.username, "notifyu1", "Checking submitted username");
-//     is(fieldValues.password, "notifyp1", "Checking submitted password");
+//     Assert.equal(fieldValues.username, "notifyu1", "Checking submitted username");
+//     Assert.equal(fieldValues.password, "notifyp1", "Checking submitted password");
 //   });
 // });
 
@@ -656,7 +737,11 @@ add_task(async function test_normal_autofilled_10() {
     "test 10: verify that the user/pass pair does get autofilled in non-private window"
   );
   // Sanity check the HTTP login exists.
-  is(Services.logins.getAllLogins().length, 1, "Should have the HTTP login");
+  Assert.equal(
+    (await Services.logins.getAllLogins()).length,
+    1,
+    "Should have the HTTP login"
+  );
 
   let formFilled = listenForTestNotification("FormProcessed");
 
@@ -666,15 +751,23 @@ add_task(async function test_normal_autofilled_10() {
       gBrowser: normalWin.gBrowser,
       url: form1Url,
     },
-    async function(browser) {
+    async function (browser) {
       await formFilled;
       let fieldValues = await submitFormAndGetResults(
         browser,
         "formsubmit.sjs",
         {}
       );
-      is(fieldValues.username, "notifyu1", "Checking submitted username");
-      is(fieldValues.password, "notifyp1", "Checking submitted password");
+      Assert.equal(
+        fieldValues.username,
+        "notifyu1",
+        "Checking submitted username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "notifyp1",
+        "Checking submitted password"
+      );
     }
   );
 });
@@ -683,7 +776,7 @@ add_task(async function test_normal_http_basic_auth() {
   info(
     "test normal/basic-auth: verify that we get a doorhanger after basic-auth login"
   );
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
   clearHttpAuths();
 
   await focusWindow(normalWin);
@@ -692,15 +785,15 @@ add_task(async function test_normal_http_basic_auth() {
       gBrowser: normalWin.gBrowser,
       url: "https://example.com",
     },
-    async function(browser) {
+    async function (browser) {
       await loadAccessRestrictedURL(browser, authUrl, "test", "testpass");
-      ok(true, "Auth-required page loaded");
+      Assert.ok(true, "Auth-required page loaded");
 
       // verify result in the response document
       let fieldValues = await SpecialPowers.spawn(
         browser,
         [[]],
-        async function() {
+        async function () {
           let username = content.document.getElementById("user").textContent;
           let password = content.document.getElementById("pass").textContent;
           let ok = content.document.getElementById("ok").textContent;
@@ -711,16 +804,24 @@ add_task(async function test_normal_http_basic_auth() {
           };
         }
       );
-      is(fieldValues.ok, "PASS", "Checking authorization passed");
-      is(fieldValues.username, "test", "Checking authorized username");
-      is(fieldValues.password, "testpass", "Checking authorized password");
+      Assert.equal(fieldValues.ok, "PASS", "Checking authorization passed");
+      Assert.equal(
+        fieldValues.username,
+        "test",
+        "Checking authorized username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "testpass",
+        "Checking authorized password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
         PopupNotifications,
         browser
       );
-      ok(notif, "got notification popup");
+      Assert.ok(notif, "got notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => !notif.dismissed,
@@ -736,13 +837,13 @@ add_task(async function test_private_http_basic_auth() {
   info(
     "test private/basic-auth: verify that we don't get a doorhanger after basic-auth login"
   );
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
   clearHttpAuths();
 
   const capturePrefValue = Services.prefs.getBoolPref(
     PRIVATE_BROWSING_CAPTURE_PREF
   );
-  ok(
+  Assert.ok(
     capturePrefValue,
     `Expect ${PRIVATE_BROWSING_CAPTURE_PREF} to default to true`
   );
@@ -753,22 +854,30 @@ add_task(async function test_private_http_basic_auth() {
       gBrowser: privateWin.gBrowser,
       url: "https://example.com",
     },
-    async function(browser) {
+    async function (browser) {
       await loadAccessRestrictedURL(browser, authUrl, "test", "testpass");
 
       let fieldValues = await getFormSubmitResponseResult(
         browser,
         "authenticate.sjs"
       );
-      is(fieldValues.username, "test", "Checking authorized username");
-      is(fieldValues.password, "testpass", "Checking authorized password");
+      Assert.equal(
+        fieldValues.username,
+        "test",
+        "Checking authorized username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "testpass",
+        "Checking authorized password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
         PopupNotifications,
         browser
       );
-      ok(notif, "got notification popup");
+      Assert.ok(notif, "got notification popup");
       if (notif) {
         await TestUtils.waitForCondition(
           () => notif.dismissed,
@@ -791,7 +900,7 @@ add_task(async function test_private_http_basic_auth_no_capture_pref() {
   );
   Services.prefs.setBoolPref(PRIVATE_BROWSING_CAPTURE_PREF, false);
 
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
   clearHttpAuths();
 
   await focusWindow(privateWin);
@@ -800,15 +909,23 @@ add_task(async function test_private_http_basic_auth_no_capture_pref() {
       gBrowser: privateWin.gBrowser,
       url: "https://example.com",
     },
-    async function(browser) {
+    async function (browser) {
       await loadAccessRestrictedURL(browser, authUrl, "test", "testpass");
 
       let fieldValues = await getFormSubmitResponseResult(
         browser,
         "authenticate.sjs"
       );
-      is(fieldValues.username, "test", "Checking authorized username");
-      is(fieldValues.password, "testpass", "Checking authorized password");
+      Assert.equal(
+        fieldValues.username,
+        "test",
+        "Checking authorized username"
+      );
+      Assert.equal(
+        fieldValues.password,
+        "testpass",
+        "Checking authorized password"
+      );
 
       let notif = getCaptureDoorhanger(
         "password-save",
@@ -821,7 +938,7 @@ add_task(async function test_private_http_basic_auth_no_capture_pref() {
         capturePrefValue
       );
 
-      ok(!notif, "got no notification popup");
+      Assert.ok(!notif, "got no notification popup");
       if (notif) {
         await cleanupDoorhanger(notif);
       }

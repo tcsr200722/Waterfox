@@ -2,395 +2,399 @@
 
 requestLongerTimeout(2);
 
-const gHttpTestRoot = "http://example.com/browser/dom/base/test/";
+const gHttpTestRoot = "https://example.com/browser/dom/base/test/";
 
-/**
- * Enable local telemetry recording for the duration of the tests.
- */
-var gOldContentCanRecord = false;
-var gOldParentCanRecord = false;
-add_task(async function test_initialize() {
-  let Telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(
-    Ci.nsITelemetry
-  );
-  gOldParentCanRecord = Telemetry.canRecordExtended;
-  Telemetry.canRecordExtended = true;
-
+add_setup(async function test_initialize() {
   await SpecialPowers.pushPrefEnv({
     set: [
-      // Because canRecordExtended is a per-process variable, we need to make sure
-      // that all of the pages load in the same content process. Limit the number
-      // of content processes to at most 1 (or 0 if e10s is off entirely).
-      ["dom.ipc.processCount", 1],
       ["layout.css.use-counters.enabled", true],
       ["layout.css.use-counters-unimplemented.enabled", true],
     ],
   });
-
-  gOldContentCanRecord = await SpecialPowers.spawn(
-    gBrowser.selectedBrowser,
-    [],
-    function() {
-      let telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(
-        Ci.nsITelemetry
-      );
-      let old = telemetry.canRecordExtended;
-      telemetry.canRecordExtended = true;
-      return old;
-    }
-  );
-  info("canRecord for content: " + gOldContentCanRecord);
 });
 
-add_task(async function() {
-  // Check that use counters are incremented by SVGs loaded directly in iframes.
-  await check_use_counter_iframe(
-    "file_use_counter_svg_getElementById.svg",
-    "SVGSVGELEMENT_GETELEMENTBYID"
+async function grabCounters(counters, before) {
+  let result = { sentinel: await ensureData(before?.sentinel) };
+  await Services.fog.testFlushAllChildren();
+  result.gleanPage = Object.fromEntries(
+    counters.map(c => [
+      c.name,
+      Glean[`useCounter${c.glean[0]}Page`][c.glean[1]].testGetValue() ?? 0,
+    ])
   );
-  await check_use_counter_iframe(
-    "file_use_counter_svg_currentScale.svg",
-    "SVGSVGELEMENT_CURRENTSCALE_getter"
+  result.gleanDoc = Object.fromEntries(
+    counters.map(c => [
+      c.name,
+      Glean[`useCounter${c.glean[0]}Doc`][c.glean[1]].testGetValue() ?? 0,
+    ])
   );
-  await check_use_counter_iframe(
-    "file_use_counter_svg_currentScale.svg",
-    "SVGSVGELEMENT_CURRENTSCALE_setter"
-  );
-
-  // Check for longhands.
-  await check_use_counter_iframe(
-    "file_use_counter_style.html",
-    "CSS_PROPERTY_BackgroundImage"
-  );
-
-  // Check for shorthands.
-  await check_use_counter_iframe(
-    "file_use_counter_style.html",
-    "CSS_PROPERTY_Padding"
-  );
-
-  // Check for aliases.
-  await check_use_counter_iframe(
-    "file_use_counter_style.html",
-    "CSS_PROPERTY_MozTransform"
-  );
-
-  // Check for counted unknown properties.
-  await check_use_counter_iframe(
-    "file_use_counter_style.html",
-    "CSS_PROPERTY_WebkitPaddingStart"
-  );
-
-  // Check that even loads from the imglib cache update use counters.  The
-  // images should still be there, because we just loaded them in the last
-  // set of tests.  But we won't get updated counts for the document
-  // counters, because we won't be re-parsing the SVG documents.
-  await check_use_counter_iframe(
-    "file_use_counter_svg_getElementById.svg",
-    "SVGSVGELEMENT_GETELEMENTBYID",
-    false
-  );
-  await check_use_counter_iframe(
-    "file_use_counter_svg_currentScale.svg",
-    "SVGSVGELEMENT_CURRENTSCALE_getter",
-    false
-  );
-  await check_use_counter_iframe(
-    "file_use_counter_svg_currentScale.svg",
-    "SVGSVGELEMENT_CURRENTSCALE_setter",
-    false
-  );
-
-  // Check that use counters are incremented by SVGs loaded as images.
-  // Note that SVG images are not permitted to execute script, so we can only
-  // check for properties here.
-  await check_use_counter_img(
-    "file_use_counter_svg_getElementById.svg",
-    "CSS_PROPERTY_Fill"
-  );
-  await check_use_counter_img(
-    "file_use_counter_svg_currentScale.svg",
-    "CSS_PROPERTY_Fill"
-  );
-
-  // Check that use counters are incremented by directly loading SVGs
-  // that reference patterns defined in another SVG file.
-  await check_use_counter_direct(
-    "file_use_counter_svg_fill_pattern.svg",
-    "CSS_PROPERTY_FillOpacity",
-    /*xfail=*/ true
-  );
-
-  // Check that use counters are incremented by directly loading SVGs
-  // that reference patterns defined in the same file or in data: URLs.
-  await check_use_counter_direct(
-    "file_use_counter_svg_fill_pattern_internal.svg",
-    "CSS_PROPERTY_FillOpacity"
-  );
-
-  // data: URLs don't correctly propagate to their referring document yet.
-  //yield check_use_counter_direct("file_use_counter_svg_fill_pattern_data.svg",
-  //                               "PROPERTY_FILL_OPACITY");
-});
-
-add_task(async function() {
-  let Telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(
-    Ci.nsITelemetry
-  );
-  Telemetry.canRecordExtended = gOldParentCanRecord;
-
-  await SpecialPowers.spawn(
-    gBrowser.selectedBrowser,
-    [{ oldCanRecord: gOldContentCanRecord }],
-    async function(arg) {
-      await new Promise(resolve => {
-        let telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(
-          Ci.nsITelemetry
-        );
-        telemetry.canRecordExtended = arg.oldCanRecord;
-        resolve();
-      });
-    }
-  );
-});
-
-function grabHistogramsFromContent(use_counter_middlefix, page_before = null) {
-  let telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(
-    Ci.nsITelemetry
-  );
-  let gather = () => {
-    let snapshots;
-    if (Services.appinfo.browserTabsRemoteAutostart) {
-      snapshots = telemetry.getSnapshotForHistograms("main", false).content;
-    } else {
-      snapshots = telemetry.getSnapshotForHistograms("main", false).parent;
-    }
-    let checkGet = probe => {
-      return snapshots[probe] ? snapshots[probe].sum : 0;
-    };
-    return [
-      checkGet("USE_COUNTER2_" + use_counter_middlefix + "_PAGE"),
-      checkGet("USE_COUNTER2_" + use_counter_middlefix + "_DOCUMENT"),
-      checkGet("CONTENT_DOCUMENTS_DESTROYED"),
-      checkGet("TOP_LEVEL_CONTENT_DOCUMENTS_DESTROYED"),
-    ];
-  };
-  return BrowserTestUtils.waitForCondition(() => {
-    return page_before != gather()[0];
-  }).then(gather, gather);
+  result.glean_docs_destroyed =
+    Glean.useCounter.contentDocumentsDestroyed.testGetValue();
+  result.glean_toplevel_destroyed =
+    Glean.useCounter.topLevelContentDocumentsDestroyed.testGetValue();
+  return result;
 }
 
-var check_use_counter_iframe = async function(
-  file,
-  use_counter_middlefix,
-  check_documents = true
-) {
-  info("checking " + file + " with histogram " + use_counter_middlefix);
-
-  let newTab = BrowserTestUtils.addTab(gBrowser, "about:blank");
-  gBrowser.selectedTab = newTab;
-  newTab.linkedBrowser.stop();
-
-  // Hold on to the current values of the telemetry histograms we're
-  // interested in.
-  let [
-    histogram_page_before,
-    histogram_document_before,
-    histogram_docs_before,
-    histogram_toplevel_docs_before,
-  ] = await grabHistogramsFromContent(use_counter_middlefix);
-
-  BrowserTestUtils.loadURI(
-    gBrowser.selectedBrowser,
-    gHttpTestRoot + "file_use_counter_outer.html"
-  );
-  await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-
-  // Inject our desired file into the iframe of the newly-loaded page.
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [{ file }], function(
-    opts
-  ) {
-    let iframe = content.document.getElementById("content");
-    iframe.src = opts.file;
-
-    return new Promise(resolve => {
-      let listener = event => {
-        event.target.removeEventListener("load", listener, true);
-        resolve();
-      };
-      iframe.addEventListener("load", listener, true);
-    });
-  });
-
-  // Tear down the page.
-  let tabClosed = BrowserTestUtils.waitForTabClosing(newTab);
-  gBrowser.removeTab(newTab);
-  await tabClosed;
-
-  // Grab histograms again and compare.
-  let [
-    histogram_page_after,
-    histogram_document_after,
-    histogram_docs_after,
-    histogram_toplevel_docs_after,
-  ] = await grabHistogramsFromContent(
-    use_counter_middlefix,
-    histogram_page_before
-  );
-
-  is(
-    histogram_page_after,
-    histogram_page_before + 1,
-    "page counts for " + use_counter_middlefix + " after are correct"
-  );
-  ok(
-    histogram_toplevel_docs_after >= histogram_toplevel_docs_before + 1,
-    "top level document counts are correct"
-  );
-  if (check_documents) {
-    is(
-      histogram_document_after,
-      histogram_document_before + 1,
-      "document counts for " + use_counter_middlefix + " after are correct"
-    );
+function assertRange(before, after, key, range) {
+  before = before[key];
+  after = after[key];
+  let desc = key + " are correct";
+  if (Array.isArray(range)) {
+    let [min, max] = range;
+    Assert.greaterOrEqual(after, before + min, desc);
+    Assert.lessOrEqual(after, before + max, desc);
+  } else {
+    Assert.equal(after, before + range, desc);
   }
-};
+}
 
-var check_use_counter_img = async function(file, use_counter_middlefix) {
-  info(
-    "checking " + file + " as image with histogram " + use_counter_middlefix
+async function test_once(
+  { counters, toplevel_docs, docs, ignore_sentinel },
+  callback
+) {
+  // Hold on to the current values of the data we're interested in.
+  // Opening an about:blank tab shouldn't change those.
+  let before = await grabCounters(counters);
+
+  await callback();
+
+  let after = await grabCounters(counters, ignore_sentinel ? null : before);
+
+  // Compare before and after.
+  for (let counter of counters) {
+    let name = counter.name;
+    let value = counter.value ?? 1;
+    if (!counter.xfail) {
+      is(
+        after.gleanPage[name],
+        before.gleanPage[name] + value,
+        `Glean page counts for ${name} are correct`
+      );
+      is(
+        after.gleanDoc[name],
+        before.gleanDoc[name] + value,
+        `Glean document counts for ${name} are correct`
+      );
+    }
+  }
+
+  assertRange(before, after, "glean_toplevel_destroyed", toplevel_docs);
+  assertRange(before, after, "glean_docs_destroyed", docs);
+}
+
+add_task(async function test_page_counters() {
+  const TESTS = [
+    // Check that use counters are incremented by SVGs loaded directly in iframes.
+    {
+      type: "iframe",
+      filename: "file_use_counter_svg_getElementById.svg",
+      counters: [
+        {
+          name: "SVGSVGELEMENT_GETELEMENTBYID",
+          glean: ["", "svgsvgelementGetelementbyid"],
+        },
+      ],
+    },
+    {
+      type: "iframe",
+      filename: "file_use_counter_svg_currentScale.svg",
+      counters: [
+        {
+          name: "SVGSVGELEMENT_CURRENTSCALE_getter",
+          glean: ["", "svgsvgelementCurrentscaleGetter"],
+        },
+        {
+          name: "SVGSVGELEMENT_CURRENTSCALE_setter",
+          glean: ["", "svgsvgelementCurrentscaleSetter"],
+        },
+      ],
+    },
+
+    {
+      type: "iframe",
+      filename: "file_use_counter_style.html",
+      counters: [
+        // Check for longhands.
+        {
+          name: "CSS_PROPERTY_BackgroundImage",
+          glean: ["Css", "cssBackgroundImage"],
+        },
+        // Check for shorthands.
+        { name: "CSS_PROPERTY_Padding", glean: ["Css", "cssPadding"] },
+        // Check for aliases.
+        {
+          name: "CSS_PROPERTY_MozAppearance",
+          glean: ["Css", "cssMozAppearance"],
+        },
+        // Check for counted unknown properties.
+        {
+          name: "CSS_PROPERTY_WebkitPaddingStart",
+          glean: ["Css", "webkitPaddingStart"],
+        },
+      ],
+    },
+
+    // Check that even loads from the imglib cache update use counters.  The
+    // images should still be there, because we just loaded them in the last
+    // set of tests.  But we won't get updated counts for the document
+    // counters, because we won't be re-parsing the SVG documents.
+    {
+      type: "iframe",
+      filename: "file_use_counter_svg_getElementById.svg",
+      counters: [
+        {
+          name: "SVGSVGELEMENT_GETELEMENTBYID",
+          glean: ["", "svgsvgelementGetelementbyid"],
+        },
+      ],
+    },
+    {
+      type: "iframe",
+      filename: "file_use_counter_svg_currentScale.svg",
+      counters: [
+        {
+          name: "SVGSVGELEMENT_CURRENTSCALE_getter",
+          glean: ["", "svgsvgelementCurrentscaleGetter"],
+        },
+        {
+          name: "SVGSVGELEMENT_CURRENTSCALE_setter",
+          glean: ["", "svgsvgelementCurrentscaleSetter"],
+        },
+      ],
+    },
+
+    // Check that use counters are incremented by SVGs loaded as images.
+    // Note that SVG images are not permitted to execute script, so we can only
+    // check for properties here.
+    {
+      type: "img",
+      filename: "file_use_counter_svg_getElementById.svg",
+      counters: [{ name: "CSS_PROPERTY_Fill", glean: ["Css", "cssFill"] }],
+    },
+    {
+      type: "img",
+      filename: "file_use_counter_svg_currentScale.svg",
+      counters: [{ name: "CSS_PROPERTY_Fill", glean: ["Css", "cssFill"] }],
+    },
+
+    // Check that use counters are incremented by directly loading SVGs
+    // that reference patterns defined in another SVG file.
+    {
+      type: "direct",
+      filename: "file_use_counter_svg_fill_pattern.svg",
+      counters: [
+        {
+          name: "CSS_PROPERTY_FillOpacity",
+          glean: ["Css", "cssFillOpacity"],
+          xfail: true,
+        },
+      ],
+    },
+
+    // Check that use counters are incremented by directly loading SVGs
+    // that reference patterns defined in the same file or in data: URLs.
+    {
+      type: "direct",
+      filename: "file_use_counter_svg_fill_pattern_internal.svg",
+      counters: [
+        { name: "CSS_PROPERTY_FillOpacity", glean: ["Css", "cssFillOpacity"] },
+      ],
+    },
+
+    // Check that use counters are incremented in a display:none iframe.
+    {
+      type: "undisplayed-iframe",
+      filename: "file_use_counter_svg_currentScale.svg",
+      counters: [
+        {
+          name: "SVGSVGELEMENT_CURRENTSCALE_getter",
+          glean: ["", "svgsvgelementCurrentscaleGetter"],
+        },
+      ],
+    },
+
+    // Check that a document that comes out of the bfcache reports any new use
+    // counters recorded on it.
+    {
+      type: "direct",
+      filename: "file_use_counter_bfcache.html",
+      waitForExplicitFinish: true,
+      counters: [
+        {
+          name: "SVGSVGELEMENT_GETELEMENTBYID",
+          glean: ["", "svgsvgelementGetelementbyid"],
+        },
+      ],
+    },
+
+    // // data: URLs don't correctly propagate to their referring document yet.
+    // {
+    //   type: "direct",
+    //   filename: "file_use_counter_svg_fill_pattern_data.svg",
+    //   counters: [
+    //     { name: "PROPERTY_FILL_OPACITY" },
+    //   ],
+    // },
+  ];
+
+  for (let test of TESTS) {
+    let file = test.filename;
+    info(`checking ${file} (${test.type})`);
+
+    let options = {
+      counters: test.counters,
+      // bfcache test navigates a bunch of times and thus creates multiple top
+      // level document entries, as expected. Whether the last document is
+      // destroyed is a bit racy, see bug 1842800, so for now we allow it
+      // with +/- 1.
+      toplevel_docs: file == "file_use_counter_bfcache.html" ? [5, 6] : 1,
+      docs: [test.type == "img" ? 2 : 1, Infinity],
+    };
+
+    await test_once(options, async function () {
+      // Load the test file in the new tab, either directly or via
+      // file_use_counter_outer{,_display_none}.html, depending on the test type.
+      let url, targetElement;
+      switch (test.type) {
+        case "iframe":
+          url = gHttpTestRoot + "file_use_counter_outer.html";
+          targetElement = "content";
+          break;
+        case "undisplayed-iframe":
+          url = gHttpTestRoot + "file_use_counter_outer_display_none.html";
+          targetElement = "content";
+          break;
+        case "img":
+          url = gHttpTestRoot + "file_use_counter_outer.html";
+          targetElement = "display";
+          break;
+        case "direct":
+          url = gHttpTestRoot + file;
+          targetElement = null;
+          break;
+        default:
+          throw `unexpected type ${test.type}`;
+      }
+
+      let waitForFinish = null;
+      if (test.waitForExplicitFinish) {
+        is(
+          test.type,
+          "direct",
+          `cannot use waitForExplicitFinish with test type ${test.type}`
+        );
+        // Wait until the tab changes its hash to indicate it has finished.
+        waitForFinish = BrowserTestUtils.waitForLocationChange(
+          gBrowser,
+          url + "#finished"
+        );
+      }
+
+      let newTab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
+      if (waitForFinish) {
+        await waitForFinish;
+      }
+
+      if (targetElement) {
+        // Inject our desired file into the target element of the newly-loaded page.
+        await SpecialPowers.spawn(
+          gBrowser.selectedBrowser,
+          [{ file, targetElement }],
+          function (opts) {
+            let target = content.document.getElementById(opts.targetElement);
+            target.src = opts.file;
+
+            return new Promise(resolve => {
+              let listener = event => {
+                event.target.removeEventListener("load", listener, true);
+                resolve();
+              };
+              target.addEventListener("load", listener, true);
+            });
+          }
+        );
+      }
+
+      // Tear down the page.
+      await BrowserTestUtils.removeTab(newTab);
+    });
+  }
+});
+
+add_task(async function test_extension_counters() {
+  let options = {
+    counters: [],
+    docs: 0,
+    toplevel_docs: 0,
+    ignore_sentinel: true,
+  };
+  await test_once(options, async function () {
+    let extension = ExtensionTestUtils.loadExtension({
+      manifest: {
+        page_action: {
+          default_popup: "page.html",
+          browser_style: false,
+        },
+      },
+      async background() {
+        let [tab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        await browser.pageAction.show(tab.id);
+        browser.test.sendMessage("ready");
+      },
+      files: {
+        "page.html": `<!DOCTYPE html>
+          <meta charset="utf-8">
+          <!-- Enough to trigger the use counter -->
+          <style>:root { opacity: .5 }</style>
+        `,
+      },
+    });
+
+    await extension.startup();
+    info("Extension started up");
+
+    await extension.awaitMessage("ready");
+
+    await extension.unload();
+    info("Extension unloaded");
+  });
+});
+
+async function ensureData(prevSentinelValue = null) {
+  ok(
+    !prevSentinelValue ||
+      ("page" in prevSentinelValue && "doc" in prevSentinelValue),
+    `Sentinel's valid: ${JSON.stringify(prevSentinelValue)}`
   );
-
-  let newTab = BrowserTestUtils.addTab(gBrowser, "about:blank");
-  gBrowser.selectedTab = newTab;
-  newTab.linkedBrowser.stop();
-
-  // Hold on to the current values of the telemetry histograms we're
-  // interested in.
-  let [
-    histogram_page_before,
-    histogram_document_before,
-    histogram_docs_before,
-    histogram_toplevel_docs_before,
-  ] = await grabHistogramsFromContent(use_counter_middlefix);
-
-  BrowserTestUtils.loadURI(
-    gBrowser.selectedBrowser,
-    gHttpTestRoot + "file_use_counter_outer.html"
-  );
-  await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-
-  // Inject our desired file into the img of the newly-loaded page.
-  await SpecialPowers.spawn(
-    gBrowser.selectedBrowser,
-    [{ file }],
-    async function(opts) {
-      let img = content.document.getElementById("display");
-      img.src = opts.file;
-
-      return new Promise(resolve => {
-        let listener = event => {
-          img.removeEventListener("load", listener, true);
-          resolve();
-        };
-        img.addEventListener("load", listener, true);
-      });
+  // Unfortunately, document destruction (when use counter reporting happens)
+  // happens at some time later than the removal of the tab.
+  // To wait for the use counters to be reported, we repeatedly flush IPC and
+  // check for a change in the "sentinel" use counters
+  // `use.counter.css.{page|doc}.css_marker_mid`.
+  return BrowserTestUtils.waitForCondition(
+    async () => {
+      await Services.fog.testFlushAllChildren();
+      return (
+        !prevSentinelValue ||
+        (prevSentinelValue?.page !=
+          Glean.useCounterCssPage.cssMarkerMid.testGetValue() &&
+          prevSentinelValue?.doc !=
+            Glean.useCounterCssDoc.cssMarkerMid.testGetValue())
+      );
+    },
+    "ensureData",
+    100,
+    Infinity
+  ).then(
+    () => ({
+      doc: Glean.useCounterCssPage.cssMarkerMid.testGetValue(),
+      page: Glean.useCounterCssDoc.cssMarkerMid.testGetValue(),
+    }),
+    msg => {
+      throw msg;
     }
   );
-
-  // Tear down the page.
-  let tabClosed = BrowserTestUtils.waitForTabClosing(newTab);
-  gBrowser.removeTab(newTab);
-  await tabClosed;
-
-  // Grab histograms again and compare.
-  let [
-    histogram_page_after,
-    histogram_document_after,
-    histogram_docs_after,
-    histogram_toplevel_docs_after,
-  ] = await grabHistogramsFromContent(
-    use_counter_middlefix,
-    histogram_page_before
-  );
-  is(
-    histogram_page_after,
-    histogram_page_before + 1,
-    "page counts for " + use_counter_middlefix + " after are correct"
-  );
-  is(
-    histogram_document_after,
-    histogram_document_before + 1,
-    "document counts for " + use_counter_middlefix + " after are correct"
-  );
-  ok(
-    histogram_toplevel_docs_after >= histogram_toplevel_docs_before + 1,
-    "top level document counts are correct"
-  );
-  // 2 documents: one for the outer html page containing the <img> element, and
-  // one for the SVG image itself.
-  ok(
-    histogram_docs_after >= histogram_docs_before + 2,
-    "document counts are correct"
-  );
-};
-
-var check_use_counter_direct = async function(
-  file,
-  use_counter_middlefix,
-  xfail = false
-) {
-  info("checking " + file + " with histogram " + use_counter_middlefix);
-
-  let newTab = BrowserTestUtils.addTab(gBrowser, "about:blank");
-  gBrowser.selectedTab = newTab;
-  newTab.linkedBrowser.stop();
-
-  // Hold on to the current values of the telemetry histograms we're
-  // interested in.
-  let [
-    histogram_page_before,
-    histogram_document_before,
-    histogram_docs_before,
-    histogram_toplevel_docs_before,
-  ] = await grabHistogramsFromContent(use_counter_middlefix);
-
-  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, gHttpTestRoot + file);
-  await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-
-  // Tear down the page.
-  let tabClosed = BrowserTestUtils.waitForTabClosing(newTab);
-  gBrowser.removeTab(newTab);
-  await tabClosed;
-
-  // Grab histograms again and compare.
-  let [
-    histogram_page_after,
-    histogram_document_after,
-    histogram_docs_after,
-    histogram_toplevel_docs_after,
-  ] = await grabHistogramsFromContent(
-    use_counter_middlefix,
-    histogram_page_before
-  );
-  if (!xfail) {
-    is(
-      histogram_page_after,
-      histogram_page_before + 1,
-      "page counts for " + use_counter_middlefix + " after are correct"
-    );
-    is(
-      histogram_document_after,
-      histogram_document_before + 1,
-      "document counts for " + use_counter_middlefix + " after are correct"
-    );
-  }
-  ok(
-    histogram_toplevel_docs_after >= histogram_toplevel_docs_before + 1,
-    "top level document counts are correct"
-  );
-  ok(
-    histogram_docs_after >= histogram_docs_before + 1,
-    "document counts are correct"
-  );
-};
+}

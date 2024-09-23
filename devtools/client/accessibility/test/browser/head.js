@@ -1,14 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
-/* import-globals-from ../../../shared/test/shared-head.js */
-/* import-globals-from ../../../inspector/test/shared-head.js */
-
 /* global waitUntilState, gBrowser */
 /* exported addTestTab, checkTreeState, checkSidebarState, checkAuditState, selectRow,
-            toggleRow, toggleMenuItem, addA11yPanelTestsTask, reload, navigate,
+            toggleRow, toggleMenuItem, addA11yPanelTestsTask, navigate,
             openSimulationMenu, toggleSimulationOption, TREE_FILTERS_MENU_ID,
-            PREFS_MENU_ID, checkHighlighted */
+            PREFS_MENU_ID */
 
 "use strict";
 
@@ -24,16 +21,10 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-// Load the shared Redux helpers into this compartment.
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
-  this
-);
-
 const {
   ORDERED_PROPS,
   PREF_KEYS,
-} = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/client/accessibility/constants.js");
 
 // Enable the Accessibility panel
 Services.prefs.setBoolPref("devtools.accessibility.enabled", true);
@@ -46,32 +37,6 @@ const MENU_INDEXES = {
   [TREE_FILTERS_MENU_ID]: 0,
   [PREFS_MENU_ID]: 1,
 };
-
-/**
- * Enable accessibility service and wait for a11y init event.
- * @return {Object}  instance of accessibility service.
- */
-async function initA11y() {
-  if (Services.appinfo.accessibilityEnabled) {
-    return Cc["@mozilla.org/accessibilityService;1"].getService(
-      Ci.nsIAccessibilityService
-    );
-  }
-
-  const initPromise = new Promise(resolve => {
-    const observe = () => {
-      Services.obs.removeObserver(observe, "a11y-init-or-shutdown");
-      resolve();
-    };
-    Services.obs.addObserver(observe, "a11y-init-or-shutdown");
-  });
-
-  const a11yService = Cc["@mozilla.org/accessibilityService;1"].getService(
-    Ci.nsIAccessibilityService
-  );
-  await initPromise;
-  return a11yService;
-}
 
 /**
  * Wait for accessibility service to shut down. We consider it shut down when
@@ -118,9 +83,7 @@ async function shutdownAccessibility(browser) {
 
 registerCleanupFunction(async () => {
   info("Cleaning up...");
-  Services.prefs.clearUserPref("devtools.accessibility.auto-init.enabled");
   Services.prefs.clearUserPref("devtools.accessibility.enabled");
-  Services.prefs.clearUserPref("devtools.contenttoolbox.fission");
 });
 
 const EXPANDABLE_PROPS = ["actions", "states", "attributes"];
@@ -141,11 +104,7 @@ async function addTestTab(url) {
   const doc = win.document;
   const store = win.view.store;
 
-  const enableButton = doc.getElementById("accessibility-enable-button");
-  // If enable button is not found, asume the tool is already enabled.
-  if (enableButton) {
-    EventUtils.sendMouseEvent({ type: "click" }, enableButton, win);
-  }
+  win.focus();
 
   await waitUntilState(
     store,
@@ -175,8 +134,9 @@ async function addTestTab(url) {
  * @return a promise that is resolved once the panel is open.
  */
 async function initAccessibilityPanel(tab = gBrowser.selectedTab) {
-  const target = await TargetFactory.forTab(tab);
-  const toolbox = await gDevTools.showToolbox(target, "accessibility");
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: "accessibility",
+  });
   return toolbox.getCurrentPanel();
 }
 
@@ -284,20 +244,23 @@ function checkLevel(row, expected) {
  */
 async function checkTreeState(doc, expected) {
   info("Checking tree state.");
-  const hasExpectedStructure = await BrowserTestUtils.waitForCondition(
-    () =>
-      [...doc.querySelectorAll(".treeRow")].every((row, i) => {
-        const { role, name, badges, selected, level } = expected[i];
-        return (
-          row.querySelector(".treeLabelCell").textContent === role &&
-          row.querySelector(".treeValueCell").textContent === name &&
-          compareBadges(row.querySelector(".badges"), badges) &&
-          checkSelected(row, selected) &&
-          checkLevel(row, level)
-        );
-      }),
-    "Wait for the right tree update."
-  );
+  const hasExpectedStructure = await BrowserTestUtils.waitForCondition(() => {
+    const rows = [...doc.querySelectorAll(".treeRow")];
+    if (rows.length !== expected.length) {
+      return false;
+    }
+
+    return rows.every((row, i) => {
+      const { role, name, badges, selected, level } = expected[i];
+      return (
+        row.querySelector(".treeLabelCell").textContent === role &&
+        row.querySelector(".treeValueCell").textContent === name &&
+        compareBadges(row.querySelector(".badges"), badges) &&
+        checkSelected(row, selected) &&
+        checkLevel(row, level)
+      );
+    });
+  }, "Wait for the right tree update.");
 
   ok(hasExpectedStructure, "Tree structure is correct.");
 }
@@ -551,7 +514,13 @@ async function selectProperty(doc, id) {
         return node.firstChild.classList.contains("focused");
       }
 
+      AccessibilityUtils.setEnv({
+        // Keyboard navigation is handled on the container level using arrow
+        // keys.
+        nonNegativeTabIndexRule: false,
+      });
       EventUtils.sendMouseEvent({ type: "click" }, node, win);
+      AccessibilityUtils.resetEnv();
       selected = true;
     } else {
       const tree = doc.querySelector(".tree");
@@ -571,11 +540,16 @@ async function selectProperty(doc, id) {
  */
 function selectRow(doc, rowNumber) {
   info(`Selecting row ${rowNumber}.`);
+  AccessibilityUtils.setEnv({
+    // Keyboard navigation is handled on the container level using arrow keys.
+    nonNegativeTabIndexRule: false,
+  });
   EventUtils.sendMouseEvent(
     { type: "click" },
     doc.querySelectorAll(".treeRow")[rowNumber],
     doc.defaultView
   );
+  AccessibilityUtils.resetEnv();
 }
 
 /**
@@ -591,7 +565,13 @@ async function toggleRow(doc, rowNumber) {
 
   info(`${expected ? "Expanding" : "Collapsing"} row ${rowNumber}.`);
 
+  AccessibilityUtils.setEnv({
+    // We intentionally remove the twisty from the accessibility tree in the
+    // TreeView component and handle keyboard navigation using the arrow keys.
+    mustHaveAccessibleRule: false,
+  });
   EventUtils.sendMouseEvent({ type: "click" }, twisty, win);
+  AccessibilityUtils.resetEnv();
   await BrowserTestUtils.waitForCondition(
     () =>
       !twisty.classList.contains("devtools-throbber") &&
@@ -669,7 +649,9 @@ async function findAccessibleFor(
   {
     toolbox: { target },
     panel: {
-      accessibilityProxy: { accessibleWalkerFront },
+      accessibilityProxy: {
+        accessibilityFront: { accessibleWalkerFront },
+      },
     },
   },
   selector
@@ -809,11 +791,8 @@ function addA11yPanelTestsTask(tests, uri, msg, options) {
  *         Resolves when the toolbox and tab have been destroyed and closed.
  */
 async function closeTabToolboxAccessibility(tab = gBrowser.selectedTab) {
-  if (TargetFactory.isKnownTab(tab)) {
-    const target = await TargetFactory.forTab(tab);
-    if (target) {
-      await gDevTools.closeToolbox(target);
-    }
+  if (gDevTools.hasToolboxForTab(tab)) {
+    await gDevTools.closeToolboxForTab(tab);
   }
 
   await shutdownAccessibility(gBrowser.getBrowserForTab(tab));
@@ -832,37 +811,9 @@ async function closeTabToolboxAccessibility(tab = gBrowser.selectedTab) {
 function addA11YPanelTask(msg, uri, task, options = {}) {
   add_task(async function a11YPanelTask() {
     info(msg);
-    if (options.remoteIframe) {
-      await pushPref("devtools.contenttoolbox.fission", true);
-    }
 
     const env = await addTestTab(buildURL(uri, options));
     await task(env);
     await closeTabToolboxAccessibility(env.tab);
-  });
-}
-
-/**
- * Reload panel target.
- * @param  {Object} target             Panel target.
- * @param  {String} waitForTargetEvent Event to wait for after reload.
- */
-function reload(target, waitForTargetEvent = "navigate") {
-  executeSoon(() => target.reload());
-  return once(target, waitForTargetEvent);
-}
-
-/**
- * Wait and check that the state of the accessibility tab in the toolbox is
- * correct.
- * @param {Object}   toolbox
- *                   DevTools toolbox to be checked.
- * @param {Boolean}  expected
- *                   Expected highlighted state of the accessibility tab.
- */
-async function checkHighlighted(toolbox, expected) {
-  await BrowserTestUtils.waitForCondition(async function() {
-    const isHighlighted = await toolbox.isToolHighlighted("accessibility");
-    return isHighlighted === expected;
   });
 }

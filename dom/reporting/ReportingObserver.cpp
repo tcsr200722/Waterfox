@@ -5,14 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/ReportingObserver.h"
+#include "mozilla/dom/Report.h"
 #include "mozilla/dom/ReportingBinding.h"
 #include "nsContentUtils.h"
 #include "nsIGlobalObject.h"
+#include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(ReportingObserver)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ReportingObserver)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(ReportingObserver)
   tmp->Disconnect();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mReports)
@@ -26,10 +27,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(ReportingObserver)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCallback)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(ReportingObserver)
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(ReportingObserver, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(ReportingObserver, Release)
 
 /* static */
 already_AddRefed<ReportingObserver> ReportingObserver::Constructor(
@@ -83,10 +80,10 @@ void ReportingObserver::TakeRecords(nsTArray<RefPtr<Report>>& aRecords) {
 
 namespace {
 
-class ReportRunnable final : public CancelableRunnable {
+class ReportRunnable final : public DiscardableRunnable {
  public:
   explicit ReportRunnable(nsIGlobalObject* aGlobal)
-      : CancelableRunnable("ReportRunnable"), mGlobal(aGlobal) {}
+      : DiscardableRunnable("ReportRunnable"), mGlobal(aGlobal) {}
 
   // MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is MOZ_CAN_RUN_SCRIPT.  See
   // bug 1535398.
@@ -136,8 +133,7 @@ void ReportingObserver::MaybeNotify() {
   }
 
   // Let's take the ownership of the reports.
-  nsTArray<RefPtr<Report>> list;
-  list.SwapElements(mReports);
+  nsTArray<RefPtr<Report>> list = std::move(mReports);
 
   Sequence<OwningNonNull<Report>> reports;
   for (Report* report : list) {
@@ -153,5 +149,4 @@ void ReportingObserver::MaybeNotify() {
 
 void ReportingObserver::ForgetReports() { mReports.Clear(); }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

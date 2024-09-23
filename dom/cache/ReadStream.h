@@ -7,7 +7,7 @@
 #ifndef mozilla_dom_cache_ReadStream_h
 #define mozilla_dom_cache_ReadStream_h
 
-#include "mozilla/ErrorResult.h"
+#include "mozilla/dom/SafeRefPtr.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
@@ -17,11 +17,9 @@
 #include "nsTArrayForwardDeclare.h"
 
 namespace mozilla {
-namespace ipc {
-class AutoIPCStream;
-}  // namespace ipc
-namespace dom {
-namespace cache {
+class ErrorResult;
+
+namespace dom::cache {
 
 class CacheReadStream;
 class PCacheStreamControlParent;
@@ -49,8 +47,10 @@ class ReadStream final : public nsIInputStream {
  public:
   // Interface that lets the StreamControl classes interact with
   // our private inner stream.
-  class Controllable {
+  class Controllable : public AtomicSafeRefCounted<Controllable> {
    public:
+    virtual ~Controllable() = default;
+
     // Closes the stream, notifies the stream control, and then forgets
     // the stream control.
     virtual void CloseStream() = 0;
@@ -59,11 +59,9 @@ class ReadStream final : public nsIInputStream {
     // notify.
     virtual void CloseStreamWithoutReporting() = 0;
 
-    virtual bool MatchId(const nsID& aId) const = 0;
-
     virtual bool HasEverBeenRead() const = 0;
 
-    NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
+    MOZ_DECLARE_REFCOUNTED_TYPENAME(ReadStream::Controllable);
   };
 
   static already_AddRefed<ReadStream> Create(
@@ -76,19 +74,12 @@ class ReadStream final : public nsIInputStream {
       PCacheStreamControlParent* aControl, const nsID& aId,
       nsIInputStream* aStream);
 
-  void Serialize(
-      Maybe<CacheReadStream>* aReadStreamOut,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList,
-      ErrorResult& aRv);
-  void Serialize(
-      CacheReadStream* aReadStreamOut,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList,
-      ErrorResult& aRv);
+  void Serialize(Maybe<CacheReadStream>* aReadStreamOut, ErrorResult& aRv);
+  void Serialize(CacheReadStream* aReadStreamOut, ErrorResult& aRv);
 
  private:
   class Inner;
 
-  explicit ReadStream(Inner* aInner);
   ~ReadStream();
 
   // Hold a strong ref to an inner class that actually implements the
@@ -96,9 +87,11 @@ class ReadStream final : public nsIInputStream {
   // ReadStream guarantees it will call Close() on the inner stream.
   // This is essential for the inner stream to avoid dealing with the
   // implicit close that can happen when a stream is destroyed.
-  RefPtr<Inner> mInner;
+  SafeRefPtr<ReadStream::Inner> mInner;
 
  public:
+  explicit ReadStream(SafeRefPtr<ReadStream::Inner> aInner);
+
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_DOM_CACHE_READSTREAM_IID);
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIINPUTSTREAM
@@ -106,8 +99,7 @@ class ReadStream final : public nsIInputStream {
 
 NS_DEFINE_STATIC_IID_ACCESSOR(ReadStream, NS_DOM_CACHE_READSTREAM_IID);
 
-}  // namespace cache
-}  // namespace dom
+}  // namespace dom::cache
 }  // namespace mozilla
 
 #endif  // mozilla_dom_cache_ReadStream_h

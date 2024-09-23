@@ -9,18 +9,19 @@
 
 #include "nsISupportsImpl.h"
 #include "nsIPrincipal.h"
-#include "nsTHashtable.h"
+#include "nsThreadUtils.h"
+#include "nsTHashSet.h"
 #include "nsString.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/BrowsingContextGroup.h"
-#include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/HTMLSlotElement.h"
-#include "mozilla/PerformanceCounter.h"
-#include "mozilla/PerformanceTypes.h"
 
 namespace mozilla {
 class AbstractThread;
 namespace dom {
+
+class CustomElementReactionsStack;
+class JSExecutionManager;
 
 // Two browsing contexts are considered "related" if they are reachable from one
 // another through window.opener, window.parent, or window.frames. This is the
@@ -38,7 +39,8 @@ class DocGroup final {
  public:
   typedef nsTArray<Document*>::iterator Iterator;
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DocGroup)
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DocGroup)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(DocGroup)
 
   static already_AddRefed<DocGroup> Create(
       BrowsingContextGroup* aBrowsingContextGroup, const nsACString& aKey);
@@ -46,20 +48,16 @@ class DocGroup final {
   // Returns NS_ERROR_FAILURE and sets |aString| to an empty string if the TLD
   // service isn't available. Returns NS_OK on success, but may still set
   // |aString| may still be set to an empty string.
-  static MOZ_MUST_USE nsresult GetKey(nsIPrincipal* aPrincipal,
-                                      bool aCrossOriginIsolated,
-                                      nsACString& aKey);
+  [[nodiscard]] static nsresult GetKey(nsIPrincipal* aPrincipal,
+                                       bool aCrossOriginIsolated,
+                                       nsACString& aKey);
 
   bool MatchesKey(const nsACString& aKey) { return aKey == mKey; }
 
   const nsACString& GetKey() const { return mKey; }
 
-  PerformanceCounter* GetPerformanceCounter() { return mPerformanceCounter; }
-
   JSExecutionManager* GetExecutionManager() const { return mExecutionManager; }
   void SetExecutionManager(JSExecutionManager*);
-
-  RefPtr<PerformanceInfoPromise> ReportPerformanceInfo();
 
   BrowsingContextGroup* GetBrowsingContextGroup() const {
     return mBrowsingContextGroup;
@@ -67,14 +65,7 @@ class DocGroup final {
 
   mozilla::dom::DOMArena* ArenaAllocator() { return mArena; }
 
-  mozilla::dom::CustomElementReactionsStack* CustomElementReactionsStack() {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (!mReactionsStack) {
-      mReactionsStack = new mozilla::dom::CustomElementReactionsStack();
-    }
-
-    return mReactionsStack;
-  }
+  mozilla::dom::CustomElementReactionsStack* CustomElementReactionsStack();
 
   // Adding documents to a DocGroup should be done through
   // BrowsingContextGroup::AddDocument (which in turn calls
@@ -96,13 +87,6 @@ class DocGroup final {
     return mDocuments.end();
   }
 
-  nsresult Dispatch(TaskCategory aCategory,
-                    already_AddRefed<nsIRunnable>&& aRunnable);
-
-  nsISerialEventTarget* EventTargetFor(TaskCategory aCategory) const;
-
-  AbstractThread* AbstractMainThreadFor(TaskCategory aCategory);
-
   // Return a pointer that can be continually checked to see if access to this
   // DocGroup is valid. This pointer should live at least as long as the
   // DocGroup.
@@ -112,20 +96,13 @@ class DocGroup final {
   // microtask.
   void SignalSlotChange(HTMLSlotElement& aSlot);
 
-  void MoveSignalSlotListTo(nsTArray<RefPtr<HTMLSlotElement>>& aDest);
+  nsTArray<RefPtr<HTMLSlotElement>> MoveSignalSlotList();
 
   // List of DocGroups that has non-empty signal slot list.
   static AutoTArray<RefPtr<DocGroup>, 2>* sPendingDocGroups;
 
   // Returns true if any of its documents are active but not in the bfcache.
   bool IsActive() const;
-
-  nsresult QueueIframePostMessages(already_AddRefed<nsIRunnable>&& aRunnable,
-                                   uint64_t aWindowId);
-
-  void TryFlushIframePostMessages(uint64_t aWindowId);
-
-  static bool TryToLoadIframesInBackground();
 
   const nsID& AgentClusterId() const { return mAgentClusterId; }
 
@@ -136,16 +113,11 @@ class DocGroup final {
 
   ~DocGroup();
 
-  void FlushIframePostMessageQueue();
   nsCString mKey;
   nsTArray<Document*> mDocuments;
   RefPtr<mozilla::dom::CustomElementReactionsStack> mReactionsStack;
   nsTArray<RefPtr<HTMLSlotElement>> mSignalSlotList;
-  RefPtr<mozilla::PerformanceCounter> mPerformanceCounter;
   RefPtr<BrowsingContextGroup> mBrowsingContextGroup;
-  RefPtr<mozilla::ThrottledEventQueue> mIframePostMessageQueue;
-  nsTHashtable<nsUint64HashKey> mIframesUsedPostMessageQueue;
-  nsCOMPtr<nsISerialEventTarget> mEventTarget;
 
   // non-null if the JS execution for this docgroup is regulated with regards
   // to worker threads. This should only be used when we are forcing serialized

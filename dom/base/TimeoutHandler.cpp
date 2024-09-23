@@ -7,10 +7,10 @@
 #include "TimeoutHandler.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "nsJSUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 //-----------------------------------------------------------------------------
 // TimeoutHandler
@@ -103,7 +103,7 @@ CallbackTimeoutHandler::CallbackTimeoutHandler(
   mArgs = std::move(aArguments);
 }
 
-NS_IMPL_CYCLE_COLLECTION_MULTI_ZONE_JSHOLDER_CLASS(CallbackTimeoutHandler)
+NS_IMPL_CYCLE_COLLECTION_CLASS(CallbackTimeoutHandler)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CallbackTimeoutHandler)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
@@ -117,8 +117,9 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(CallbackTimeoutHandler)
     JSObject* obj = tmp->mFunction->CallablePreserveColor();
     JSFunction* fun =
         JS_GetObjectFunction(js::UncheckedUnwrapWithoutExpose(obj));
-    if (fun && JS_GetFunctionId(fun)) {
-      JSLinearString* funId = JS_ASSERT_STRING_IS_LINEAR(JS_GetFunctionId(fun));
+    if (fun && JS_GetMaybePartialFunctionId(fun)) {
+      JSLinearString* funId =
+          JS_ASSERT_STRING_IS_LINEAR(JS_GetMaybePartialFunctionId(fun));
       size_t size = 1 + JS_PutEscapedLinearString(nullptr, 0, funId, 0);
       char* funIdName = new char[size];
       if (funIdName) {
@@ -175,5 +176,4 @@ void CallbackTimeoutHandler::GetDescription(nsACString& aOutString) {
   mFunction->GetDescription(aOutString);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

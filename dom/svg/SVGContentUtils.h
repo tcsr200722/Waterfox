@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGCONTENTUTILS_H
-#define MOZILLA_SVGCONTENTUTILS_H
+#ifndef DOM_SVG_SVGCONTENTUTILS_H_
+#define DOM_SVG_SVGCONTENTUTILS_H_
 
 // include math.h to pick up definition of M_ maths defines e.g. M_PI
 #include <math.h>
@@ -13,9 +13,9 @@
 #include "mozilla/gfx/2D.h"  // for StrokeOptions
 #include "mozilla/gfx/Matrix.h"
 #include "mozilla/RangedPtr.h"
-#include "mozilla/ServoStyleConsts.h"
 #include "nsError.h"
 #include "nsStringFwd.h"
+#include "nsTArray.h"
 #include "gfx2DGlue.h"
 #include "nsDependentSubstring.h"
 
@@ -30,6 +30,7 @@ class SVGAnimatedTransformList;
 class SVGAnimatedPreserveAspectRatio;
 class SVGContextPaint;
 class SVGPreserveAspectRatio;
+union StyleLengthPercentageUnion;
 namespace dom {
 class Document;
 class Element;
@@ -71,30 +72,19 @@ enum SVGTransformTypes {
 
 /**
  * Functions generally used by SVG Content classes. Functions here
- * should not generally depend on layout methods/classes e.g. nsSVGUtils
+ * should not generally depend on layout methods/classes e.g. SVGUtils
  */
 class SVGContentUtils {
  public:
-  typedef mozilla::gfx::Float Float;
-  typedef mozilla::gfx::Matrix Matrix;
-  typedef mozilla::gfx::Rect Rect;
-  typedef mozilla::gfx::StrokeOptions StrokeOptions;
+  using Float = gfx::Float;
+  using Matrix = gfx::Matrix;
+  using Rect = gfx::Rect;
+  using StrokeOptions = gfx::StrokeOptions;
 
   /*
    * Get the outer SVG element of an nsIContent
    */
   static dom::SVGSVGElement* GetOuterSVGElement(dom::SVGElement* aSVGElement);
-
-  /**
-   * Activates the animation element aContent as a result of navigation to the
-   * fragment identifier that identifies aContent. aContent must be an instance
-   * of nsSVGAnimationElement.
-   *
-   * This is just a shim to allow nsSVGAnimationElement::ActivateByHyperlink to
-   * be called from layout/base without adding to that directory's include
-   * paths.
-   */
-  static void ActivateByHyperlink(nsIContent* aContent);
 
   /**
    * Moz2D's StrokeOptions requires someone else to own its mDashPattern
@@ -152,7 +142,7 @@ class SVGContentUtils {
   static void GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
                                dom::SVGElement* aElement,
                                const ComputedStyle* aComputedStyle,
-                               mozilla::SVGContextPaint* aContextPaint,
+                               const SVGContextPaint* aContextPaint,
                                StrokeOptionFlags aFlags = eAllStrokeOptions);
 
   /**
@@ -164,9 +154,9 @@ class SVGContentUtils {
    * and 'stroke-opacity' properties to, say, return zero if they are "none" or
    * "0", respectively.
    */
-  static Float GetStrokeWidth(dom::SVGElement* aElement,
+  static Float GetStrokeWidth(const dom::SVGElement* aElement,
                               const ComputedStyle* aComputedStyle,
-                              mozilla::SVGContextPaint* aContextPaint);
+                              const SVGContextPaint* aContextPaint);
 
   /*
    * Get the number of CSS px (user units) per em (i.e. the em-height in user
@@ -175,9 +165,9 @@ class SVGContentUtils {
    * XXX document the conditions under which these may fail, and what they
    * return in those cases.
    */
-  static float GetFontSize(mozilla::dom::Element* aElement);
-  static float GetFontSize(nsIFrame* aFrame);
-  static float GetFontSize(ComputedStyle*, nsPresContext*);
+  static float GetFontSize(const mozilla::dom::Element* aElement);
+  static float GetFontSize(const nsIFrame* aFrame);
+  static float GetFontSize(const ComputedStyle*, nsPresContext*);
   /*
    * Get the number of CSS px (user units) per ex (i.e. the x-height in user
    * units) for an nsIContent
@@ -185,17 +175,29 @@ class SVGContentUtils {
    * XXX document the conditions under which these may fail, and what they
    * return in those cases.
    */
-  static float GetFontXHeight(mozilla::dom::Element* aElement);
-  static float GetFontXHeight(nsIFrame* aFrame);
-  static float GetFontXHeight(ComputedStyle*, nsPresContext*);
+  static float GetFontXHeight(const mozilla::dom::Element* aElement);
+  static float GetFontXHeight(const nsIFrame* aFrame);
+  static float GetFontXHeight(const ComputedStyle*, nsPresContext*);
+
+  /*
+   * Get the number of CSS px (user units) per lh (i.e. the line-height in
+   * user units) for an nsIContent.
+   *
+   * Requires the element be styled - if not, a default value assuming
+   * the font-size of 16px and line-height of 1.2 is returned.
+   */
+  static float GetLineHeight(const mozilla::dom::Element* aElement);
 
   /*
    * Report a localized error message to the error console.
    */
-  static nsresult ReportToConsole(dom::Document* doc, const char* aWarning,
+  static nsresult ReportToConsole(const dom::Document* doc,
+                                  const char* aWarning,
                                   const nsTArray<nsString>& aParams);
 
-  static Matrix GetCTM(dom::SVGElement* aElement, bool aScreenCTM);
+  static Matrix GetCTM(dom::SVGElement* aElement);
+
+  static Matrix GetScreenCTM(dom::SVGElement* aElement);
 
   /**
    * Gets the tight bounds-space stroke bounds of the non-scaling-stroked rect
@@ -215,7 +217,7 @@ class SVGContentUtils {
    * Check if this is one of the SVG elements that SVG 1.1 Full says
    * establishes a viewport: svg, symbol, image or foreignObject.
    */
-  static bool EstablishesViewport(nsIContent* aContent);
+  static bool EstablishesViewport(const nsIContent* aContent);
 
   static mozilla::dom::SVGViewportElement* GetNearestViewportElement(
       const nsIContent* aContent);
@@ -317,11 +319,19 @@ class SVGContentUtils {
    */
   static bool ParseInteger(const nsAString& aString, int32_t& aValue);
 
+  // XXX This should rather use LengthPercentage instead of
+  // StyleLengthPercentageUnion, but that's a type alias defined in
+  // ServoStyleConsts.h, and we don't want to avoid including that large header
+  // with all its dependencies. If a forwarding header were generated by
+  // cbindgen, we could include that.
+  // https://github.com/eqrion/cbindgen/issues/617 addresses this.
   /**
    * Converts a LengthPercentage into a userspace value, resolving percentage
    * values relative to aContent's SVG viewport.
    */
-  static float CoordToFloat(dom::SVGElement* aContent, const LengthPercentage&);
+  static float CoordToFloat(const dom::SVGElement* aContent,
+                            const StyleLengthPercentageUnion&,
+                            uint8_t aCtxType = SVGContentUtils::XY);
   /**
    * Parse the SVG path string
    * Returns a path
@@ -347,4 +357,4 @@ class SVGContentUtils {
 
 }  // namespace mozilla
 
-#endif
+#endif  // DOM_SVG_SVGCONTENTUTILS_H_

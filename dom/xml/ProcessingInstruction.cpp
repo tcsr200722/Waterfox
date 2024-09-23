@@ -42,8 +42,7 @@ NS_NewXMLProcessingInstruction(nsNodeInfoManager* aNodeInfoManager,
   return instance.forget();
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 ProcessingInstruction::ProcessingInstruction(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -58,9 +57,9 @@ ProcessingInstruction::ProcessingInstruction(
 
 ProcessingInstruction::~ProcessingInstruction() = default;
 
-StyleSheet* ProcessingInstruction::GetSheet() const {
+StyleSheet* ProcessingInstruction::GetSheetForBindings() const {
   if (const auto* linkStyle = LinkStyle::FromNode(*this)) {
-    return linkStyle->GetSheet();
+    return linkStyle->GetSheetForBindings();
   }
   return nullptr;
 }
@@ -86,7 +85,7 @@ already_AddRefed<CharacterData> ProcessingInstruction::CloneDataNode(
   return do_AddRef(new (nim) ProcessingInstruction(ni.forget(), data));
 }
 
-#ifdef DEBUG
+#ifdef MOZ_DOM_LIST
 void ProcessingInstruction::List(FILE* out, int32_t aIndent) const {
   int32_t index;
   for (index = aIndent; --index >= 0;) fputs("  ", out);
@@ -105,5 +104,4 @@ void ProcessingInstruction::DumpContent(FILE* out, int32_t aIndent,
                                         bool aDumpAll) const {}
 #endif
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

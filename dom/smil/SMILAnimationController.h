@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILAnimationController_h
-#define mozilla_SMILAnimationController_h
+#ifndef DOM_SMIL_SMILANIMATIONCONTROLLER_H_
+#define DOM_SMIL_SMILANIMATIONCONTROLLER_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILCompositorTable.h"
@@ -16,7 +16,9 @@
 #include "nsTArray.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
-#include "nsRefreshDriver.h"
+#include "nsRefreshObservers.h"
+
+class nsRefreshDriver;
 
 namespace mozilla {
 struct SMILTargetIdentifier;
@@ -48,15 +50,15 @@ class SMILAnimationController final : public SMILTimeContainer,
   void Disconnect();
 
   // SMILContainer
-  virtual void Pause(uint32_t aType) override;
-  virtual void Resume(uint32_t aType) override;
-  virtual SMILTime GetParentTime() const override;
+  void Pause(uint32_t aType) override;
+  void Resume(uint32_t aType) override;
+  SMILTime GetParentTime() const override;
 
   // nsARefreshObserver
   NS_IMETHOD_(MozExternalRefCountType) AddRef() override;
   NS_IMETHOD_(MozExternalRefCountType) Release() override;
 
-  virtual void WillRefresh(mozilla::TimeStamp aTime) override;
+  void WillRefresh(mozilla::TimeStamp aTime) override;
 
   // Methods for registering and enumerating animation elements
   void RegisterAnimationElement(
@@ -105,31 +107,32 @@ class SMILAnimationController final : public SMILTimeContainer,
     return mMightHavePendingStyleUpdates;
   }
 
-  bool PreTraverse();
-  bool PreTraverseInSubtree(mozilla::dom::Element* aRoot);
+  void PreTraverse();
+  void PreTraverseInSubtree(mozilla::dom::Element* aRoot);
 
  protected:
   ~SMILAnimationController();
 
-  // Typedefs
-  typedef nsPtrHashKey<SMILTimeContainer> TimeContainerPtrKey;
-  typedef nsTHashtable<TimeContainerPtrKey> TimeContainerHashtable;
-  typedef nsPtrHashKey<mozilla::dom::SVGAnimationElement>
-      AnimationElementPtrKey;
-  typedef nsTHashtable<AnimationElementPtrKey> AnimationElementHashtable;
+  // alias declarations
+  using TimeContainerPtrKey = nsPtrHashKey<SMILTimeContainer>;
+  using TimeContainerHashtable = nsTHashtable<TimeContainerPtrKey>;
+  using AnimationElementPtrKey = nsPtrHashKey<dom::SVGAnimationElement>;
+  using AnimationElementHashtable = nsTHashtable<AnimationElementPtrKey>;
 
   // Returns mDocument's refresh driver, if it's got one.
   nsRefreshDriver* GetRefreshDriver();
 
   // Methods for controlling whether we're sampling
-  void StartSampling(nsRefreshDriver* aRefreshDriver);
+  void UpdateSampling();
+  bool ShouldSample() const;
+
   void StopSampling(nsRefreshDriver* aRefreshDriver);
 
   // Wrapper for StartSampling that defers if no animations are registered.
   void MaybeStartSampling(nsRefreshDriver* aRefreshDriver);
 
   // Sample-related callbacks and implementation helpers
-  virtual void DoSample() override;
+  void DoSample() override;
   void DoSample(bool aSkipUnchangedContainers);
 
   void RewindElements();
@@ -141,15 +144,15 @@ class SMILAnimationController final : public SMILTimeContainer,
 
   static void AddAnimationToCompositorTable(
       mozilla::dom::SVGAnimationElement* aElement,
-      SMILCompositorTable* aCompositorTable, bool& aStyleFlushNeeded);
+      SMILCompositorTable* aCompositorTable);
 
   static bool GetTargetIdentifierForAnimation(
       mozilla::dom::SVGAnimationElement* aAnimElem,
       SMILTargetIdentifier& aResult);
 
   // Methods for adding/removing time containers
-  virtual nsresult AddChild(SMILTimeContainer& aChild) override;
-  virtual void RemoveChild(SMILTimeContainer& aChild) override;
+  nsresult AddChild(SMILTimeContainer& aChild) override;
+  void RemoveChild(SMILTimeContainer& aChild) override;
 
   void FlagDocumentNeedsFlush();
 
@@ -178,20 +181,16 @@ class SMILAnimationController final : public SMILTimeContainer,
   // This behaviour does not affect pausing (since we're not *expecting* any
   // samples then) nor seeking (where the SMIL model behaves somewhat
   // differently such as not dispatching events).
-  SMILTime mAvgTimeBetweenSamples;
+  SMILTime mAvgTimeBetweenSamples = 0;
 
-  bool mResampleNeeded;
-  // If we're told to start sampling but there are no animation elements we just
-  // record the time, set the following flag, and then wait until we have an
-  // animation element. Then we'll reset this flag and actually start sampling.
-  bool mDeferredStartSampling;
-  bool mRunningSample;
+  bool mResampleNeeded = false;
+  bool mRunningSample = false;
 
   // Are we registered with our document's refresh driver?
-  bool mRegisteredWithRefreshDriver;
+  bool mRegisteredWithRefreshDriver = false;
 
   // Have we updated animated values without adding them to the restyle tracker?
-  bool mMightHavePendingStyleUpdates;
+  bool mMightHavePendingStyleUpdates = false;
 
   // Store raw ptr to mDocument.  It owns the controller, so controller
   // shouldn't outlive it
@@ -206,4 +205,4 @@ class SMILAnimationController final : public SMILTimeContainer,
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILAnimationController_h
+#endif  // DOM_SMIL_SMILANIMATIONCONTROLLER_H_

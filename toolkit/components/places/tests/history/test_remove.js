@@ -1,7 +1,7 @@
 /* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 
-// Tests for `History.remove`, as implemented in History.jsm
+// Tests for `History.remove`, as implemented in History.sys.mjs
 
 "use strict";
 
@@ -16,7 +16,7 @@ add_task(async function test_remove_single() {
   await PlacesTestUtils.addVisits(WITNESS_URI);
   Assert.ok(page_in_database(WITNESS_URI));
 
-  let remover = async function(name, filter, options) {
+  let remover = async function (name, filter, options) {
     info(name);
     info(JSON.stringify(options));
     info("Setting up visit");
@@ -39,67 +39,64 @@ add_task(async function test_remove_single() {
     }
 
     let shouldRemove = !options.addBookmark;
-    let observer;
+    let placesEventListener;
     let promiseObserved = new Promise((resolve, reject) => {
-      observer = {
-        onBeginUpdateBatch() {},
-        onEndUpdateBatch() {},
-        onTitleChanged(aUri) {
-          reject(new Error("Unexpected call to onTitleChanged " + aUri.spec));
-        },
-        onClearHistory() {
-          reject("Unexpected call to onClearHistory");
-        },
-        onPageChanged(aUri) {
-          reject(new Error("Unexpected call to onPageChanged " + aUri.spec));
-        },
-        onFrecencyChanged(aURI) {
-          try {
-            Assert.ok(!shouldRemove, "Observing onFrecencyChanged");
-            Assert.equal(
-              aURI.spec,
-              uri.spec,
-              "Observing effect on the right uri"
-            );
-          } finally {
-            resolve();
+      placesEventListener = events => {
+        for (const event of events) {
+          switch (event.type) {
+            case "page-title-changed": {
+              reject(
+                "Unexpected page-title-changed event happens on " + event.url
+              );
+              break;
+            }
+            case "history-cleared": {
+              reject("Unexpected history-cleared event happens");
+              break;
+            }
+            case "pages-rank-changed": {
+              try {
+                Assert.ok(!shouldRemove, "Observing pages-rank-changed event");
+              } finally {
+                resolve();
+              }
+              break;
+            }
+            case "page-removed": {
+              Assert.equal(
+                event.isRemovedFromStore,
+                shouldRemove,
+                "Observe page-removed event with right removal type"
+              );
+              Assert.equal(
+                event.url,
+                uri.spec,
+                "Observing effect on the right uri"
+              );
+              resolve();
+              break;
+            }
           }
-        },
-        onManyFrecenciesChanged() {
-          try {
-            Assert.ok(!shouldRemove, "Observing onManyFrecenciesChanged");
-          } finally {
-            resolve();
-          }
-        },
-        onDeleteURI(aURI) {
-          try {
-            Assert.ok(shouldRemove, "Observing onDeleteURI");
-            Assert.equal(
-              aURI.spec,
-              uri.spec,
-              "Observing effect on the right uri"
-            );
-          } finally {
-            resolve();
-          }
-        },
-        onDeleteVisits(aURI) {
-          Assert.equal(
-            aURI.spec,
-            uri.spec,
-            "Observing onDeleteVisits on the right uri"
-          );
-        },
+        }
       };
     });
-    PlacesUtils.history.addObserver(observer);
+    PlacesObservers.addListener(
+      [
+        "page-title-changed",
+        "history-cleared",
+        "pages-rank-changed",
+        "page-removed",
+      ],
+      placesEventListener
+    );
 
     info("Performing removal");
     let removed = false;
     if (options.useCallback) {
       let onRowCalled = false;
-      let guid = do_get_guid_for_uri(uri);
+      let guid = await PlacesTestUtils.getDatabaseValue("moz_places", "guid", {
+        url: uri,
+      });
       removed = await PlacesUtils.history.remove(removeArg, page => {
         Assert.equal(onRowCalled, false, "Callback has not been called yet");
         onRowCalled = true;
@@ -117,7 +114,15 @@ add_task(async function test_remove_single() {
     }
 
     await promiseObserved;
-    PlacesUtils.history.removeObserver(observer);
+    PlacesObservers.removeListener(
+      [
+        "page-title-changed",
+        "history-cleared",
+        "pages-rank-changed",
+        "page-removed",
+      ],
+      placesEventListener
+    );
 
     Assert.equal(visits_in_database(uri), 0, "History entry has disappeared");
     Assert.notEqual(
@@ -155,7 +160,8 @@ add_task(async function test_remove_single() {
         );
         await remover(
           "Testing History.remove() with a single string guid",
-          x => do_get_guid_for_uri(x),
+          async x =>
+            PlacesTestUtils.getDatabaseValue("moz_places", "guid", { url: x }),
           options
         );
         await remover(
@@ -170,7 +176,8 @@ add_task(async function test_remove_single() {
         );
         await remover(
           "Testing History.remove() with a single string guid in an array",
-          x => [do_get_guid_for_uri(x)],
+          x =>
+            PlacesTestUtils.getDatabaseValue("moz_places", "guid", { url: x }),
           options
         );
       }
@@ -285,20 +292,7 @@ add_task(async function test_orphans() {
   );
   // Also create a root icon.
   let faviconURI = Services.io.newURI(uri.spec + "favicon.ico");
-  PlacesUtils.favicons.replaceFaviconDataFromDataURL(
-    faviconURI,
-    SMALLPNG_DATA_URI.spec,
-    0,
-    Services.scriptSecurityManager.getSystemPrincipal()
-  );
-  PlacesUtils.favicons.setAndFetchFaviconForPage(
-    uri,
-    faviconURI,
-    true,
-    PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-    null,
-    Services.scriptSecurityManager.getSystemPrincipal()
-  );
+  await PlacesTestUtils.setFaviconForPage(uri, faviconURI, SMALLPNG_DATA_URI);
 
   await PlacesUtils.history.update({
     url: uri,

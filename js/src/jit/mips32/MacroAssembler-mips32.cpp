@@ -13,12 +13,15 @@
 #include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/JitFrames.h"
+#include "jit/JitRuntime.h"
 #include "jit/MacroAssembler.h"
 #include "jit/mips32/Simulator-mips32.h"
 #include "jit/MoveEmitter.h"
 #include "jit/SharedICRegisters.h"
 #include "util/Memory.h"
 #include "vm/JitActivation.h"  // js::jit::JitActivation
+#include "vm/JSContext.h"
+#include "wasm/WasmStubs.h"
 
 #include "jit/MacroAssembler-inl.h"
 
@@ -114,6 +117,12 @@ void MacroAssemblerMIPSCompat::convertDoubleToFloat32(FloatRegister src,
   as_cvtsd(dest, src);
 }
 
+void MacroAssemblerMIPSCompat::convertDoubleToPtr(FloatRegister src,
+                                                  Register dest, Label* fail,
+                                                  bool negativeZeroCheck) {
+  convertDoubleToInt32(src, dest, fail, negativeZeroCheck);
+}
+
 const int CauseBitPos = int(Assembler::CauseI);
 const int CauseBitCount = 1 + int(Assembler::CauseV) - int(Assembler::CauseI);
 const int CauseIOrVMask = ((1 << int(Assembler::CauseI)) |
@@ -205,8 +214,8 @@ void MacroAssemblerMIPS::ma_liPatchable(Register dest, ImmWord imm) {
 // Arithmetic-based ops.
 
 // Add.
-void MacroAssemblerMIPS::ma_addTestOverflow(Register rd, Register rs,
-                                            Register rt, Label* overflow) {
+void MacroAssemblerMIPS::ma_add32TestOverflow(Register rd, Register rs,
+                                              Register rt, Label* overflow) {
   MOZ_ASSERT_IF(rs == rd, rs != rt);
   MOZ_ASSERT(rs != ScratchRegister);
   MOZ_ASSERT(rt != ScratchRegister);
@@ -232,8 +241,8 @@ void MacroAssemblerMIPS::ma_addTestOverflow(Register rd, Register rs,
   ma_b(SecondScratchReg, Imm32(0), overflow, Assembler::LessThan);
 }
 
-void MacroAssemblerMIPS::ma_addTestOverflow(Register rd, Register rs, Imm32 imm,
-                                            Label* overflow) {
+void MacroAssemblerMIPS::ma_add32TestOverflow(Register rd, Register rs,
+                                              Imm32 imm, Label* overflow) {
   MOZ_ASSERT(rs != ScratchRegister);
   MOZ_ASSERT(rs != SecondScratchReg);
   MOZ_ASSERT(rd != ScratchRegister);
@@ -266,8 +275,8 @@ void MacroAssemblerMIPS::ma_addTestOverflow(Register rd, Register rs, Imm32 imm,
 }
 
 // Subtract.
-void MacroAssemblerMIPS::ma_subTestOverflow(Register rd, Register rs,
-                                            Register rt, Label* overflow) {
+void MacroAssemblerMIPS::ma_sub32TestOverflow(Register rd, Register rs,
+                                              Register rt, Label* overflow) {
   // The rs == rt case should probably be folded at MIR stage.
   // Happens for Number_isInteger*. Not worth specializing here.
   MOZ_ASSERT_IF(rs == rd, rs != rt);
@@ -1747,7 +1756,7 @@ void MacroAssemblerMIPSCompat::restoreStackPointer() {
 }
 
 void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
-    void* handler, Label* profilerExitTail) {
+    Label* profilerExitTail) {
   // Reserve space for exception information.
   int size = (sizeof(ResumeFromException) + ABIStackAlignment) &
              ~(ABIStackAlignment - 1);
@@ -1755,33 +1764,40 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   ma_move(a0, StackPointer);  // Use a0 since it is a first function argument
 
   // Call the handler.
+  using Fn = void (*)(ResumeFromException* rfe);
   asMasm().setupUnalignedABICall(a1);
   asMasm().passABIArg(a0);
-  asMasm().callWithABI(handler, MoveOp::GENERAL,
-                       CheckUnsafeCallWithABI::DontCheckHasExitFrame);
+  asMasm().callWithABI<Fn, HandleException>(
+      ABIType::General, CheckUnsafeCallWithABI::DontCheckHasExitFrame);
 
   Label entryFrame;
   Label catch_;
   Label finally;
-  Label return_;
+  Label returnBaseline;
+  Label returnIon;
   Label bailout;
   Label wasm;
+  Label wasmCatch;
 
   // Already clobbered a0, so use it...
-  load32(Address(StackPointer, offsetof(ResumeFromException, kind)), a0);
+  load32(Address(StackPointer, ResumeFromException::offsetOfKind()), a0);
   asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_ENTRY_FRAME),
-                    &entryFrame);
-  asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_CATCH), &catch_);
-  asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_FINALLY), &finally);
-  asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_FORCED_RETURN), &return_);
-  asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_BAILOUT), &bailout);
-  asMasm().branch32(Assembler::Equal, a0,
-                    Imm32(ResumeFromException::RESUME_WASM), &wasm);
+                    Imm32(ExceptionResumeKind::EntryFrame), &entryFrame);
+  asMasm().branch32(Assembler::Equal, a0, Imm32(ExceptionResumeKind::Catch),
+                    &catch_);
+  asMasm().branch32(Assembler::Equal, a0, Imm32(ExceptionResumeKind::Finally),
+                    &finally);
+  asMasm().branch32(Assembler::Equal, r0,
+                    Imm32(ExceptionResumeKind::ForcedReturnBaseline),
+                    &returnBaseline);
+  asMasm().branch32(Assembler::Equal, r0,
+                    Imm32(ExceptionResumeKind::ForcedReturnIon), &returnIon);
+  asMasm().branch32(Assembler::Equal, a0, Imm32(ExceptionResumeKind::Bailout),
+                    &bailout);
+  asMasm().branch32(Assembler::Equal, a0, Imm32(ExceptionResumeKind::Wasm),
+                    &wasm);
+  asMasm().branch32(Assembler::Equal, a0, Imm32(ExceptionResumeKind::WasmCatch),
+                    &wasmCatch);
 
   breakpoint();  // Invalid kind.
 
@@ -1789,7 +1805,7 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   // and return from the entry frame.
   bind(&entryFrame);
   asMasm().moveValue(MagicValue(JS_ION_ERROR), JSReturnOperand);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, stackPointer)),
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
           StackPointer);
 
   // We're going to be returning by the ion calling convention
@@ -1800,49 +1816,60 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   // If we found a catch handler, this must be a baseline frame. Restore
   // state and jump to the catch block.
   bind(&catch_);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, target)), a0);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, framePointer)),
-          BaselineFrameReg);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, stackPointer)),
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfTarget()), a0);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
+          FramePointer);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
           StackPointer);
   jump(a0);
 
-  // If we found a finally block, this must be a baseline frame. Push
-  // two values expected by JSOp::Retsub: BooleanValue(true) and the
-  // exception.
+  // If we found a finally block, this must be a baseline frame. Push two
+  // values expected by the finally block: the exception and BooleanValue(true).
   bind(&finally);
   ValueOperand exception = ValueOperand(a1, a2);
-  loadValue(Address(sp, offsetof(ResumeFromException, exception)), exception);
+  loadValue(Address(sp, ResumeFromException::offsetOfException()), exception);
 
-  loadPtr(Address(sp, offsetof(ResumeFromException, target)), a0);
-  loadPtr(Address(sp, offsetof(ResumeFromException, framePointer)),
-          BaselineFrameReg);
-  loadPtr(Address(sp, offsetof(ResumeFromException, stackPointer)), sp);
+  loadPtr(Address(sp, ResumeFromException::offsetOfTarget()), a0);
+  loadPtr(Address(sp, ResumeFromException::offsetOfFramePointer()),
+          FramePointer);
+  loadPtr(Address(sp, ResumeFromException::offsetOfStackPointer()), sp);
 
-  pushValue(BooleanValue(true));
   pushValue(exception);
+  pushValue(BooleanValue(true));
   jump(a0);
 
-  // Only used in debug mode. Return BaselineFrame->returnValue() to the
-  // caller.
-  bind(&return_);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, framePointer)),
-          BaselineFrameReg);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, stackPointer)),
+  // Return BaselineFrame->returnValue() to the caller.
+  // Used in debug mode and for GeneratorReturn.
+  Label profilingInstrumentation;
+  bind(&returnBaseline);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
+          FramePointer);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
           StackPointer);
-  loadValue(
-      Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfReturnValue()),
-      JSReturnOperand);
-  ma_move(StackPointer, BaselineFrameReg);
-  pop(BaselineFrameReg);
+  loadValue(Address(FramePointer, BaselineFrame::reverseOffsetOfReturnValue()),
+            JSReturnOperand);
+  ma_move(StackPointer, FramePointer);
+  pop(FramePointer);
+  jump(&profilingInstrumentation);
+
+  // Return the given value to the caller.
+  bind(&returnIon);
+  loadValue(Address(StackPointer, ResumeFromException::offsetOfException()),
+            JSReturnOperand);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
+          FramePointer);
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
+          StackPointer);
 
   // If profiling is enabled, then update the lastProfilingFrame to refer to
-  // caller frame before returning.
+  // caller frame before returning. This code is shared by ForcedReturnIon
+  // and ForcedReturnBaseline.
+  bind(&profilingInstrumentation);
   {
     Label skipProfilingInstrumentation;
     // Test if profiler enabled.
     AbsoluteAddress addressOfEnabled(
-        GetJitContext()->runtime->geckoProfiler().addressOfEnabled());
+        asMasm().runtime()->geckoProfiler().addressOfEnabled());
     asMasm().branch32(Assembler::Equal, addressOfEnabled, Imm32(0),
                       &skipProfilingInstrumentation);
     jump(profilerExitTail);
@@ -1854,20 +1881,25 @@ void MacroAssemblerMIPSCompat::handleFailureWithHandlerTail(
   // If we are bailing out to baseline to handle an exception, jump to
   // the bailout tail stub. Load 1 (true) in ReturnReg to indicate success.
   bind(&bailout);
-  loadPtr(Address(sp, offsetof(ResumeFromException, bailoutInfo)), a2);
+  loadPtr(Address(sp, ResumeFromException::offsetOfBailoutInfo()), a2);
   ma_li(ReturnReg, Imm32(1));
-  loadPtr(Address(sp, offsetof(ResumeFromException, target)), a1);
+  loadPtr(Address(sp, ResumeFromException::offsetOfTarget()), a1);
   jump(a1);
 
   // If we are throwing and the innermost frame was a wasm frame, reset SP and
   // FP; SP is pointing to the unwound return address to the wasm entry, so
   // we can just ret().
   bind(&wasm);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, framePointer)),
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfFramePointer()),
           FramePointer);
-  loadPtr(Address(StackPointer, offsetof(ResumeFromException, stackPointer)),
+  loadPtr(Address(StackPointer, ResumeFromException::offsetOfStackPointer()),
           StackPointer);
+  ma_li(InstanceReg, ImmWord(wasm::FailInstanceReg));
   ret();
+
+  // Found a wasm catch handler, restore state and jump to it.
+  bind(&wasmCatch);
+  wasm::GenerateJumpToCatchHandler(asMasm(), sp, a1, a2);
 }
 
 CodeOffset MacroAssemblerMIPSCompat::toggledJump(Label* label) {
@@ -1905,7 +1937,7 @@ void MacroAssemblerMIPSCompat::profilerEnterFrame(Register framePtr,
 }
 
 void MacroAssemblerMIPSCompat::profilerExitFrame() {
-  jump(GetJitContext()->runtime->jitRuntime()->getProfilerExitFrameTail());
+  jump(asMasm().runtime()->jitRuntime()->getProfilerExitFrameTail());
 }
 
 void MacroAssembler::subFromStackPtr(Imm32 imm32) {
@@ -1917,6 +1949,10 @@ void MacroAssembler::subFromStackPtr(Imm32 imm32) {
 //{{{ check_macroassembler_style
 // ===============================================================
 // Stack manipulation functions.
+
+size_t MacroAssembler::PushRegsInMaskSizeInBytes(LiveRegisterSet set) {
+  return set.gprs().size() * sizeof(intptr_t) + set.fpus().getPushSizeInBytes();
+}
 
 void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
   int32_t diffF = set.fpus().getPushSizeInBytes();
@@ -2030,7 +2066,7 @@ void MacroAssembler::storeRegsInMask(LiveRegisterSet set, Address dest,
 
 void MacroAssembler::setupUnalignedABICall(Register scratch) {
   MOZ_ASSERT(!IsCompilingWasm(), "wasm should only use aligned ABI calls");
-  setupABICall();
+  setupNativeABICall();
   dynamicAlignment_ = true;
 
   ma_move(scratch, StackPointer);
@@ -2079,7 +2115,7 @@ void MacroAssembler::callWithABIPre(uint32_t* stackAdjust, bool callFromWasm) {
   assertStackAlignment(ABIStackAlignment);
 }
 
-void MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result,
+void MacroAssembler::callWithABIPost(uint32_t stackAdjust, ABIType result,
                                      bool callFromWasm) {
   // Restore ra value (as stored in callWithABIPre()).
   loadPtr(Address(StackPointer, stackAdjust - sizeof(intptr_t)), ra);
@@ -2099,7 +2135,7 @@ void MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result,
 #endif
 }
 
-void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
+void MacroAssembler::callWithABINoProfiler(Register fun, ABIType result) {
   // Load the callee in t9, no instruction between the lw and call
   // should clobber it. Note that we can't use fun.base because it may
   // be one of the IntArg registers clobbered before the call.
@@ -2110,8 +2146,7 @@ void MacroAssembler::callWithABINoProfiler(Register fun, MoveOp::Type result) {
   callWithABIPost(stackAdjust, result);
 }
 
-void MacroAssembler::callWithABINoProfiler(const Address& fun,
-                                           MoveOp::Type result) {
+void MacroAssembler::callWithABINoProfiler(const Address& fun, ABIType result) {
   // Load the callee in t9, as above.
   loadPtr(Address(fun.base, fun.offset), t9);
   uint32_t stackAdjust;
@@ -2133,10 +2168,10 @@ void MacroAssembler::moveValue(const TypedOrValueRegister& src,
   AnyRegister reg = src.typedReg();
 
   if (!IsFloatingPointType(type)) {
-    mov(ImmWord(MIRTypeToTag(type)), dest.typeReg());
     if (reg.gpr() != dest.payloadReg()) {
       move32(reg.gpr(), dest.payloadReg());
     }
+    mov(ImmWord(MIRTypeToTag(type)), dest.typeReg());
     return;
   }
 
@@ -2246,17 +2281,16 @@ void MacroAssembler::branchTestValue(Condition cond, const ValueOperand& lhs,
 // Memory access primitives.
 template <typename T>
 void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
-                                       MIRType valueType, const T& dest,
-                                       MIRType slotType) {
+                                       MIRType valueType, const T& dest) {
+  MOZ_ASSERT(valueType < MIRType::Value);
+
   if (valueType == MIRType::Double) {
     storeDouble(value.reg().typedReg().fpu(), dest);
     return;
   }
 
-  // Store the type tag if needed.
-  if (valueType != slotType) {
-    storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
-  }
+  // Store the type tag.
+  storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
 
   // Store the payload.
   if (value.constant()) {
@@ -2268,24 +2302,23 @@ void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
 
 template void MacroAssembler::storeUnboxedValue(const ConstantOrRegister& value,
                                                 MIRType valueType,
-                                                const Address& dest,
-                                                MIRType slotType);
+                                                const Address& dest);
 template void MacroAssembler::storeUnboxedValue(
     const ConstantOrRegister& value, MIRType valueType,
-    const BaseObjectElementIndex& dest, MIRType slotType);
+    const BaseObjectElementIndex& dest);
 
 void MacroAssembler::PushBoxed(FloatRegister reg) { Push(reg); }
 
-void MacroAssembler::wasmBoundsCheck(Condition cond, Register index,
-                                     Register boundsCheckLimit, Label* label) {
-  ma_b(index, boundsCheckLimit, label, cond);
+void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
+                                       Register boundsCheckLimit, Label* ok) {
+  ma_b(index, boundsCheckLimit, ok, cond);
 }
 
-void MacroAssembler::wasmBoundsCheck(Condition cond, Register index,
-                                     Address boundsCheckLimit, Label* label) {
+void MacroAssembler::wasmBoundsCheck32(Condition cond, Register index,
+                                       Address boundsCheckLimit, Label* ok) {
   SecondScratchRegisterScope scratch2(*this);
   load32(boundsCheckLimit, SecondScratchReg);
-  ma_b(index, SecondScratchReg, label, cond);
+  ma_b(index, SecondScratchReg, ok, cond);
 }
 
 void MacroAssembler::wasmTruncateDoubleToUInt32(FloatRegister input,
@@ -2377,6 +2410,10 @@ void MacroAssemblerMIPSCompat::wasmLoadI64Impl(
   uint32_t offset = access.offset();
   MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
 
+  MOZ_ASSERT(!access.isZeroExtendSimd128Load());
+  MOZ_ASSERT(!access.isSplatSimd128Load());
+  MOZ_ASSERT(!access.isWidenSimd128Load());
+
   // Maybe add the offset.
   if (offset) {
     asMasm().movePtr(ptr, ptrScratch);
@@ -2464,8 +2501,8 @@ void MacroAssemblerMIPSCompat::wasmLoadI64Impl(
 void MacroAssemblerMIPSCompat::wasmStoreI64Impl(
     const wasm::MemoryAccessDesc& access, Register64 value, Register memoryBase,
     Register ptr, Register ptrScratch, Register tmp) {
+  access.assertOffsetInGuardPages();
   uint32_t offset = access.offset();
-  MOZ_ASSERT(offset < wasm::MaxOffsetGuardLimit);
   MOZ_ASSERT_IF(offset, ptrScratch != InvalidReg);
 
   // Maybe add the offset.
@@ -2704,27 +2741,27 @@ static void AtomicFetchOp64(MacroAssembler& masm,
   masm.load64(Address(SecondScratchReg, 0), output);
 
   switch (op) {
-    case AtomicFetchAddOp:
+    case AtomicOp::Add:
       masm.as_addu(temp.low, output.low, value.low);
       masm.as_sltu(temp.high, temp.low, output.low);
       masm.as_addu(temp.high, temp.high, output.high);
       masm.as_addu(temp.high, temp.high, value.high);
       break;
-    case AtomicFetchSubOp:
+    case AtomicOp::Sub:
       masm.as_sltu(temp.high, output.low, value.low);
       masm.as_subu(temp.high, output.high, temp.high);
       masm.as_subu(temp.low, output.low, value.low);
       masm.as_subu(temp.high, temp.high, value.high);
       break;
-    case AtomicFetchAndOp:
+    case AtomicOp::And:
       masm.as_and(temp.low, output.low, value.low);
       masm.as_and(temp.high, output.high, value.high);
       break;
-    case AtomicFetchOrOp:
+    case AtomicOp::Or:
       masm.as_or(temp.low, output.low, value.low);
       masm.as_or(temp.high, output.high, value.high);
       break;
-    case AtomicFetchXorOp:
+    case AtomicOp::Xor:
       masm.as_xor(temp.low, output.low, value.low);
       masm.as_xor(temp.high, output.high, value.high);
       break;
@@ -2766,6 +2803,18 @@ void MacroAssembler::convertUInt64ToDouble(Register64 src, FloatRegister dest,
   mulDouble(ScratchDoubleReg, dest);
   convertUInt32ToDouble(src.low, ScratchDoubleReg);
   addDouble(ScratchDoubleReg, dest);
+}
+
+void MacroAssembler::convertInt64ToDouble(Register64 src, FloatRegister dest) {
+  convertInt32ToDouble(src.high, dest);
+  loadConstantDouble(TO_DOUBLE_HIGH_SCALE, ScratchDoubleReg);
+  mulDouble(ScratchDoubleReg, dest);
+  convertUInt32ToDouble(src.low, ScratchDoubleReg);
+  addDouble(ScratchDoubleReg, dest);
+}
+
+void MacroAssembler::convertIntPtrToDouble(Register src, FloatRegister dest) {
+  convertInt32ToDouble(src, dest);
 }
 
 //}}} check_macroassembler_style

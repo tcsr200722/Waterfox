@@ -21,7 +21,7 @@
 #include "nsTHashtable.h"
 #include "prio.h"
 
-//#define DEBUG_HANDLES 1
+// #define DEBUG_HANDLES 1
 
 class nsIFile;
 class nsITimer;
@@ -139,7 +139,7 @@ class CacheFileHandles {
   already_AddRefed<CacheFileHandle> NewHandle(const SHA1Sum::Hash*,
                                               bool aPriority,
                                               CacheFileHandle::PinningStatus);
-  void RemoveHandle(CacheFileHandle* aHandlle);
+  void RemoveHandle(CacheFileHandle* aHandle);
   void GetAllHandles(nsTArray<RefPtr<CacheFileHandle> >* _retval);
   void GetActiveHandles(nsTArray<RefPtr<CacheFileHandle> >* _retval);
   void ClearAll();
@@ -155,8 +155,8 @@ class CacheFileHandles {
 
   class HandleHashKey : public PLDHashEntryHdr {
    public:
-    typedef const SHA1Sum::Hash& KeyType;
-    typedef const SHA1Sum::Hash* KeyTypePointer;
+    using KeyType = const SHA1Sum::Hash&;
+    using KeyTypePointer = const SHA1Sum::Hash*;
 
     explicit HandleHashKey(KeyTypePointer aKey) {
       MOZ_COUNT_CTOR(HandleHashKey);
@@ -266,6 +266,8 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   static nsresult Init();
   static nsresult Shutdown();
   static nsresult OnProfile();
+  static nsresult OnDelayedStartupFinished();
+  static nsresult OnIdleDaily();
   static already_AddRefed<nsIEventTarget> IOTarget();
   static already_AddRefed<CacheIOThread> IOThread();
   static bool IsOnIOThread();
@@ -285,9 +287,17 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
                            CacheFileIOListener* aCallback);
   static nsresult Read(CacheFileHandle* aHandle, int64_t aOffset, char* aBuf,
                        int32_t aCount, CacheFileIOListener* aCallback);
+  // This function must be called with a callback. The caller is responsible for
+  // releasing |aBuf|.
   static nsresult Write(CacheFileHandle* aHandle, int64_t aOffset,
                         const char* aBuf, int32_t aCount, bool aValidate,
                         bool aTruncate, CacheFileIOListener* aCallback);
+  // Similar to the above, but without the callback. Note that |aBuf| will be
+  // released by CacheFileIOManager.
+  static nsresult WriteWithoutCallback(CacheFileHandle* aHandle,
+                                       int64_t aOffset, char* aBuf,
+                                       int32_t aCount, bool aValidate,
+                                       bool aTruncate);
   // PinningDoomRestriction:
   // NO_RESTRICTION
   //    no restriction is checked, the file is simply always doomed
@@ -316,7 +326,8 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   static nsresult EvictIfOverLimit();
   static nsresult EvictAll();
   static nsresult EvictByContext(nsILoadContextInfo* aLoadContextInfo,
-                                 bool aPinning, const nsAString& aOrigin);
+                                 bool aPinned, const nsAString& aOrigin,
+                                 const nsAString& aBaseDomain = u""_ns);
 
   static nsresult InitIndexEntry(CacheFileHandle* aHandle,
                                  OriginAttrsHash aOriginAttrsHash,
@@ -384,7 +395,7 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
                          bool aTruncate);
   nsresult DoomFileInternal(
       CacheFileHandle* aHandle,
-      PinningDoomRestriction aPinningStatusRestriction = NO_RESTRICTION);
+      PinningDoomRestriction aPinningDoomRestriction = NO_RESTRICTION);
   nsresult DoomFileByKeyInternal(const SHA1Sum::Hash* aHash);
   nsresult MaybeReleaseNSPRHandleInternal(CacheFileHandle* aHandle,
                                           bool aIgnoreShutdownLag = false);
@@ -396,7 +407,8 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   nsresult OverLimitEvictionInternal();
   nsresult EvictAllInternal();
   nsresult EvictByContextInternal(nsILoadContextInfo* aLoadContextInfo,
-                                  bool aPinning, const nsAString& aOrigin);
+                                  bool aPinned, const nsAString& aOrigin,
+                                  const nsAString& aBaseDomain = u""_ns);
 
   nsresult TrashDirectory(nsIFile* aFile);
   static void OnTrashTimer(nsITimer* aTimer, void* aClosure);
@@ -428,6 +440,14 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   static nsresult CacheIndexStateChanged();
   void CacheIndexStateChangedInternal();
 
+  // Dispatches a purgeHTTP background task to delete the cache directoy
+  // indicated by aCacheDirName.
+  // When this feature is enabled, a task will be dispatched at shutdown
+  // or after browser startup (to cleanup potential left-over directories)
+  nsresult DispatchPurgeTask(const nsCString& aCacheDirName,
+                             const nsCString& aSecondsToWait,
+                             const nsCString& aPurgeExtension);
+
   // Smart size calculation. UpdateSmartCacheSize() must be called on IO thread.
   // It is called in EvictIfOverLimitInternal() just before we decide whether to
   // start overlimit eviction or not and also in OverLimitEvictionInternal()
@@ -442,7 +462,7 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   TimeStamp mStartTime;
   // Set true on the IO thread, CLOSE level as part of the internal shutdown
   // procedure.
-  bool mShuttingDown;
+  bool mShuttingDown{false};
   RefPtr<CacheIOThread> mIOThread;
   nsCOMPtr<nsIFile> mCacheDirectory;
 #if defined(MOZ_WIDGET_ANDROID)
@@ -452,19 +472,19 @@ class CacheFileIOManager final : public nsITimerCallback, public nsINamed {
   // w/o the profile name in the path.  Here it is stored.
   nsCOMPtr<nsIFile> mCacheProfilelessDirectory;
 #endif
-  bool mTreeCreated;
-  bool mTreeCreationFailed;
+  bool mTreeCreated{false};
+  bool mTreeCreationFailed{false};
   CacheFileHandles mHandles;
   nsTArray<CacheFileHandle*> mHandlesByLastUsed;
   nsTArray<CacheFileHandle*> mSpecialHandles;
   nsTArray<RefPtr<CacheFile> > mScheduledMetadataWrites;
   nsCOMPtr<nsITimer> mMetadataWritesTimer;
-  bool mOverLimitEvicting;
+  bool mOverLimitEvicting{false};
   // When overlimit eviction is too slow and cache size reaches 105% of the
   // limit, this flag is set and no other content is cached to prevent
   // uncontrolled cache growing.
-  bool mCacheSizeOnHardLimit;
-  bool mRemovingTrashDirs;
+  bool mCacheSizeOnHardLimit{false};
+  bool mRemovingTrashDirs{false};
   nsCOMPtr<nsITimer> mTrashTimer;
   nsCOMPtr<nsIFile> mTrashDir;
   nsCOMPtr<nsIDirectoryEnumerator> mTrashDirEnumerator;

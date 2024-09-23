@@ -4,70 +4,50 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/DynamicallyLinkedFunctionPtr.h"
 #include "mozilla/WindowsProcessMitigations.h"
 
 #include <processthreadsapi.h>
 
-#if (_WIN32_WINNT < 0x0602)
-BOOL WINAPI GetProcessMitigationPolicy(
-    HANDLE hProcess, PROCESS_MITIGATION_POLICY MitigationPolicy, PVOID lpBuffer,
-    SIZE_T dwLength);
-#endif  // (_WIN32_WINNT < 0x0602)
+#include "mozilla/Assertions.h"
+#include "mozilla/DynamicallyLinkedFunctionPtr.h"
 
-// MinGW does not have these definitions in winnt.h yet
-#if defined(__MINGW32__)
-constexpr PROCESS_MITIGATION_POLICY ProcessPayloadRestrictionPolicy =
-    static_cast<PROCESS_MITIGATION_POLICY>(12);
-
-typedef struct _PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY {
-  union {
-    DWORD Flags;
-    struct {
-      DWORD EnableExportAddressFilter : 1;
-      DWORD AuditExportAddressFilter : 1;
-      DWORD EnableExportAddressFilterPlus : 1;
-      DWORD AuditExportAddressFilterPlus : 1;
-      DWORD EnableImportAddressFilter : 1;
-      DWORD AuditImportAddressFilter : 1;
-      DWORD EnableRopStackPivot : 1;
-      DWORD AuditRopStackPivot : 1;
-      DWORD EnableRopCallerCheck : 1;
-      DWORD AuditRopCallerCheck : 1;
-      DWORD EnableRopSimExec : 1;
-      DWORD AuditRopSimExec : 1;
-      DWORD ReservedFlags : 20;
-    } DUMMYSTRUCTNAME;
-  } DUMMYUNIONNAME;
-} PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY,
-    *PPROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY;
-#endif  // defined(__MINGW32__)
+static_assert(sizeof(PROCESS_MITIGATION_DYNAMIC_CODE_POLICY) == 4);
 
 namespace mozilla {
 
 static decltype(&::GetProcessMitigationPolicy)
 FetchGetProcessMitigationPolicyFunc() {
-  static const StaticDynamicallyLinkedFunctionPtr<decltype(
-      &::GetProcessMitigationPolicy)>
+  static const StaticDynamicallyLinkedFunctionPtr<
+      decltype(&::GetProcessMitigationPolicy)>
       pGetProcessMitigationPolicy(L"kernel32.dll",
                                   "GetProcessMitigationPolicy");
   return pGetProcessMitigationPolicy;
 }
 
+static bool sWin32kLockedDownInPolicy = false;
+
 MFBT_API bool IsWin32kLockedDown() {
-  auto pGetProcessMitigationPolicy = FetchGetProcessMitigationPolicyFunc();
-  if (!pGetProcessMitigationPolicy) {
-    return false;
-  }
+  static bool sWin32kLockedDown = []() {
+    auto pGetProcessMitigationPolicy = FetchGetProcessMitigationPolicyFunc();
 
-  PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY polInfo;
-  if (!pGetProcessMitigationPolicy(::GetCurrentProcess(),
-                                   ProcessSystemCallDisablePolicy, &polInfo,
-                                   sizeof(polInfo))) {
-    return false;
-  }
+    PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY polInfo;
+    if (!pGetProcessMitigationPolicy ||
+        !pGetProcessMitigationPolicy(::GetCurrentProcess(),
+                                     ProcessSystemCallDisablePolicy, &polInfo,
+                                     sizeof(polInfo))) {
+      // We failed to get pointer to GetProcessMitigationPolicy or the call
+      // to it failed, so just return what the sandbox policy says.
+      return sWin32kLockedDownInPolicy;
+    }
 
-  return polInfo.DisallowWin32kSystemCalls;
+    return !!polInfo.DisallowWin32kSystemCalls;
+  }();
+
+  return sWin32kLockedDown;
+}
+
+MFBT_API void SetWin32kLockedDownInPolicy() {
+  sWin32kLockedDownInPolicy = true;
 }
 
 MFBT_API bool IsDynamicCodeDisabled() {
@@ -100,6 +80,22 @@ MFBT_API bool IsEafPlusEnabled() {
   }
 
   return polInfo.EnableExportAddressFilterPlus;
+}
+
+MFBT_API bool IsUserShadowStackEnabled() {
+  auto pGetProcessMitigationPolicy = FetchGetProcessMitigationPolicyFunc();
+  if (!pGetProcessMitigationPolicy) {
+    return false;
+  }
+
+  PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY polInfo;
+  if (!pGetProcessMitigationPolicy(::GetCurrentProcess(),
+                                   ProcessUserShadowStackPolicy, &polInfo,
+                                   sizeof(polInfo))) {
+    return false;
+  }
+
+  return polInfo.EnableUserShadowStack;
 }
 
 }  // namespace mozilla

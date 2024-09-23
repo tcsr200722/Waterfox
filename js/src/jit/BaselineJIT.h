@@ -7,26 +7,41 @@
 #ifndef jit_BaselineJIT_h
 #define jit_BaselineJIT_h
 
+#include "mozilla/Assertions.h"
+#include "mozilla/Likely.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Span.h"
 
-#include "ds/LifoAlloc.h"
-#include "jit/Bailouts.h"
+#include <stddef.h>
+#include <stdint.h>
+
+#include "jsfriendapi.h"
+
+#include "jit/IonTypes.h"
 #include "jit/JitCode.h"
+#include "jit/JitContext.h"
+#include "jit/JitOptions.h"
 #include "jit/shared/Assembler-shared.h"
+#include "js/Principals.h"
+#include "js/TypeDecls.h"
+#include "js/Vector.h"
+#include "threading/ProtectedData.h"
 #include "util/TrailingArray.h"
-#include "vm/EnvironmentObject.h"
-#include "vm/JSContext.h"
-#include "vm/Realm.h"
-#include "vm/TraceLogging.h"
+#include "vm/JSScript.h"
 
 namespace js {
+
+class InterpreterFrame;
+class RunState;
+
 namespace jit {
 
-class ICEntry;
-class ICStub;
-class ReturnAddressEntry;
+class BaselineFrame;
+class ExceptionBailoutInfo;
+class IonCompileTask;
+class JitActivation;
+class JSJitFrameIter;
 
 // Base class for entries mapping a pc offset to a native code offset.
 class BasePCToNativeEntry {
@@ -96,17 +111,12 @@ class RetAddrEntry {
     // An IC for a JOF_IC op.
     IC,
 
-    // A prologue IC.
-    PrologueIC,
-
     // A callVM for an op.
     CallVM,
 
-    // A callVM not for an op (e.g., in the prologue).
+    // A callVM not for an op (e.g., in the prologue) that can't
+    // trigger debug mode.
     NonOpCallVM,
-
-    // A callVM for the warmup counter.
-    WarmupCounter,
 
     // A callVM for the over-recursion check on function entry.
     StackCheck,
@@ -173,17 +183,17 @@ class RetAddrEntry {
 //    RetAddrEntry[]          retAddrEntries()
 //    OSREntry[]              osrEntries()
 //    DebugTrapEntry[]        debugTrapEntries()
-//    uint32_t[]              traceLoggerToggleOffsets()
 //
 // Note: The arrays are arranged in order of descending alignment requires so
 // that padding is not required.
-class alignas(uintptr_t) BaselineScript final : public TrailingArray {
+class alignas(uintptr_t) BaselineScript final
+    : public TrailingArray<BaselineScript> {
  private:
   // Code pointer containing the actual method.
   HeapPtr<JitCode*> method_ = nullptr;
 
   // An ion compilation that is ready, but isn't linked yet.
-  IonCompileTask* pendingIonCompileTask_ = nullptr;
+  MainThreadData<IonCompileTask*> pendingIonCompileTask_{nullptr};
 
   // Baseline Interpreter can enter Baseline Compiler code at this address. This
   // is right after the warm-up counter check in the prologue.
@@ -193,15 +203,6 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
   uint32_t profilerEnterToggleOffset_ = 0;
   uint32_t profilerExitToggleOffset_ = 0;
 
-  // The offsets and event used for Tracelogger toggling.
-#ifdef JS_TRACE_LOGGING
-#  ifdef DEBUG
-  bool traceLoggerScriptsEnabled_ = false;
-  bool traceLoggerEngineEnabled_ = false;
-#  endif
-  TraceLoggerEvent traceLoggerScriptEvent_ = {};
-#endif
-
  private:
   // Offset (in bytes) from `this` to the start of each trailing array. Each
   // array ends where following one begins. There is no implicit padding (except
@@ -210,7 +211,6 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
   Offset retAddrEntriesOffset_ = 0;
   Offset osrEntriesOffset_ = 0;
   Offset debugTrapEntriesOffset_ = 0;
-  Offset traceLoggerToggleOffsetsOffset_ = 0;
   Offset allocBytes_ = 0;
 
   // See `Flag` type below.
@@ -248,9 +248,6 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
   Offset retAddrEntriesOffset() const { return retAddrEntriesOffset_; }
   Offset osrEntriesOffset() const { return osrEntriesOffset_; }
   Offset debugTrapEntriesOffset() const { return debugTrapEntriesOffset_; }
-  Offset traceLoggerToggleOffsetsOffset() const {
-    return traceLoggerToggleOffsetsOffset_;
-  }
   Offset endOffset() const { return allocBytes_; }
 
   // Use BaselineScript::New to create new instances. It will properly
@@ -264,8 +261,7 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
 
   template <typename T>
   mozilla::Span<T> makeSpan(Offset start, Offset end) {
-    return mozilla::MakeSpan(offsetToPointer<T>(start),
-                             numElements<T>(start, end));
+    return mozilla::Span{offsetToPointer<T>(start), numElements<T>(start, end)};
   }
 
   // We store the native code address corresponding to each bytecode offset in
@@ -282,27 +278,17 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
     return makeSpan<OSREntry>(osrEntriesOffset(), debugTrapEntriesOffset());
   }
   mozilla::Span<DebugTrapEntry> debugTrapEntries() {
-    return makeSpan<DebugTrapEntry>(debugTrapEntriesOffset(),
-                                    traceLoggerToggleOffsetsOffset());
+    return makeSpan<DebugTrapEntry>(debugTrapEntriesOffset(), endOffset());
   }
-
-#ifdef JS_TRACE_LOGGING
-  // By default tracelogger is disabled. Therefore we disable the logging code
-  // by default. We store the offsets we must patch to enable the logging.
-  mozilla::Span<uint32_t> traceLoggerToggleOffsets() {
-    return makeSpan<uint32_t>(traceLoggerToggleOffsetsOffset(), endOffset());
-  }
-#endif
 
  public:
   static BaselineScript* New(JSContext* cx, uint32_t warmUpCheckPrologueOffset,
                              uint32_t profilerEnterToggleOffset,
                              uint32_t profilerExitToggleOffset,
                              size_t retAddrEntries, size_t osrEntries,
-                             size_t debugTrapEntries, size_t resumeEntries,
-                             size_t traceLoggerToggleOffsetEntries);
+                             size_t debugTrapEntries, size_t resumeEntries);
 
-  static void Destroy(JSFreeOp* fop, BaselineScript* script);
+  static void Destroy(JS::GCContext* gcx, BaselineScript* script);
 
   void trace(JSTracer* trc);
 
@@ -341,7 +327,7 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
                                                RetAddrEntry::Kind kind);
   const RetAddrEntry& prologueRetAddrEntry(RetAddrEntry::Kind kind);
   const RetAddrEntry& retAddrEntryFromReturnOffset(CodeOffset returnOffset);
-  const RetAddrEntry& retAddrEntryFromReturnAddress(uint8_t* returnAddr);
+  const RetAddrEntry& retAddrEntryFromReturnAddress(const uint8_t* returnAddr);
 
   uint8_t* nativeCodeForOSREntry(uint32_t pcOffset);
 
@@ -370,23 +356,11 @@ class alignas(uintptr_t) BaselineScript final : public TrailingArray {
     return flags_ & PROFILER_INSTRUMENTATION_ON;
   }
 
-#ifdef JS_TRACE_LOGGING
-  void initTraceLogger(JSScript* script, const Vector<CodeOffset>& offsets);
-  void toggleTraceLoggerScripts(JSScript* script, bool enable);
-  void toggleTraceLoggerEngine(bool enable);
-
-  static size_t offsetOfTraceLoggerScriptEvent() {
-    return offsetof(BaselineScript, traceLoggerScriptEvent_);
-  }
-#endif
-
   static size_t offsetOfResumeEntriesOffset() {
     static_assert(sizeof(Offset) == sizeof(uint32_t),
                   "JIT expect Offset to be uint32_t");
     return offsetof(BaselineScript, resumeEntriesOffset_);
   }
-
-  static void writeBarrierPre(Zone* zone, BaselineScript* script);
 
   bool hasPendingIonCompileTask() const { return !!pendingIonCompileTask_; }
 
@@ -424,15 +398,12 @@ bool CanBaselineInterpretScript(JSScript* script);
 bool BaselineCompileFromBaselineInterpreter(JSContext* cx, BaselineFrame* frame,
                                             uint8_t** res);
 
-void FinishDiscardBaselineScript(JSFreeOp* fop, JSScript* script);
+void FinishDiscardBaselineScript(JS::GCContext* gcx, JSScript* script);
 
 void AddSizeOfBaselineData(JSScript* script, mozilla::MallocSizeOf mallocSizeOf,
                            size_t* data);
 
 void ToggleBaselineProfiling(JSContext* cx, bool enable);
-
-void ToggleBaselineTraceLoggerScripts(JSRuntime* runtime, bool enable);
-void ToggleBaselineTraceLoggerEngine(JSRuntime* runtime, bool enable);
 
 struct alignas(uintptr_t) BaselineBailoutInfo {
   // Pointer into the current C stack, where overwriting will start.
@@ -449,20 +420,17 @@ struct alignas(uintptr_t) BaselineBailoutInfo {
   // The native code address to resume into.
   void* resumeAddr = nullptr;
 
-  // If non-null, we have to type monitor the top stack value for this pc (we
-  // resume right after it).
-  jsbytecode* monitorPC = nullptr;
-
   // The bytecode pc of try block and fault block.
   jsbytecode* tryPC = nullptr;
   jsbytecode* faultPC = nullptr;
 
+  // We use this to transfer exception information out from
+  // buildExpressionStack, since it would be too risky to throw from
+  // there.
+  jsid tempId = PropertyKey::Void();
+
   // Number of baseline frames to push on the stack.
   uint32_t numFrames = 0;
-
-  // Size of the innermost BaselineFrame. This is equivalent to
-  // BaselineFrame::debugFrameSize_ in debug builds.
-  uint32_t frameSizeOfInnerMostFrame = 0;
 
   // The bailout kind.
   mozilla::Maybe<BailoutKind> bailoutKind = {};
@@ -471,17 +439,23 @@ struct alignas(uintptr_t) BaselineBailoutInfo {
   BaselineBailoutInfo(const BaselineBailoutInfo&) = default;
 
   void operator=(const BaselineBailoutInfo&) = delete;
+
+  void trace(JSTracer* aTrc);
 };
 
-MOZ_MUST_USE bool BailoutIonToBaseline(
+enum class BailoutReason {
+  Normal,
+  ExceptionHandler,
+  Invalidate,
+};
+
+[[nodiscard]] bool BailoutIonToBaseline(
     JSContext* cx, JitActivation* activation, const JSJitFrameIter& iter,
-    bool invalidate, BaselineBailoutInfo** bailoutInfo,
-    const ExceptionBailoutInfo* exceptionInfo);
+    BaselineBailoutInfo** bailoutInfo,
+    const ExceptionBailoutInfo* exceptionInfo, BailoutReason reason);
 
 MethodStatus BaselineCompile(JSContext* cx, JSScript* script,
                              bool forceDebugInstrumentation = false);
-
-static const unsigned BASELINE_MAX_ARGS_LENGTH = 20000;
 
 // Class storing the generated Baseline Interpreter code for the runtime.
 class BaselineInterpreter {
@@ -590,8 +564,8 @@ class BaselineInterpreter {
   void toggleCodeCoverageInstrumentation(bool enable);
 };
 
-MOZ_MUST_USE bool GenerateBaselineInterpreter(JSContext* cx,
-                                              BaselineInterpreter& interpreter);
+[[nodiscard]] bool GenerateBaselineInterpreter(
+    JSContext* cx, BaselineInterpreter& interpreter);
 
 inline bool IsBaselineJitEnabled(JSContext* cx) {
   if (MOZ_UNLIKELY(!IsBaselineInterpreterEnabled())) {

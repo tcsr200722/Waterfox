@@ -19,7 +19,7 @@ using namespace ipc;
 namespace dom {
 
 SharedWorkerParent::SharedWorkerParent()
-    : mBackgroundEventTarget(GetCurrentThreadEventTarget()),
+    : mBackgroundEventTarget(GetCurrentSerialEventTarget()),
       mStatus(eInit),
       mSuspended(false),
       mFrozen(false) {

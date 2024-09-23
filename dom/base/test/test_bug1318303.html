@@ -40,9 +40,7 @@
      obj instanceof objLC;
      obj = SpecialPowers.wrap(obj);
 
-     ok(obj.pluginFallbackType == objLC.PLUGIN_ALTERNATE,
-        "expected alternate fallback mode");
-
+     is(obj.displayedType, objLC.TYPE_FALLBACK, "expected fallback");
     </script>
   </head>
 </html>

@@ -1,8 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 /* eslint no-unused-vars: [2, {"vars": "local", "args": "none"}] */
-/* import-globals-from ../../shared/test/shared-head.js */
-/* import-globals-from ../../framework/test/head.js */
 
 "use strict";
 
@@ -63,13 +61,11 @@ async function addJsonViewTab(
   const tab = await Promise.race([tabAdded, tabLoaded]);
   const browser = tab.linkedBrowser;
 
-  // Load devtools/shared/test/frame-script-utils.js
-  loadFrameScriptUtils();
   const rootDir = getRootDirectory(gTestPath);
 
   // Catch RequireJS errors (usually timeouts)
   const error = tabLoaded.then(() =>
-    SpecialPowers.spawn(browser, [], function() {
+    SpecialPowers.spawn(browser, [], function () {
       return new Promise((resolve, reject) => {
         const { requirejs } = content.wrappedJSObject;
         if (requirejs) {
@@ -87,16 +83,12 @@ async function addJsonViewTab(
   await Promise.race([
     error,
     // eslint-disable-next-line no-shadow
-    ContentTask.spawn(browser, data, async function(data) {
+    ContentTask.spawn(browser, data, async function (data) {
       // Check if there is a JSONView object.
       const { JSONView } = content.wrappedJSObject;
       if (!JSONView) {
         throw new Error("The JSON Viewer did not load.");
       }
-
-      // Load frame script with helpers for JSON View tests.
-      const frameScriptUrl = data.rootDir + "doc_frame_script.js";
-      Services.scriptloader.loadSubScript(frameScriptUrl, {}, "UTF-8");
 
       const docReadyStates = ["loading", "interactive", "complete"];
       const docReadyIndex = docReadyStates.indexOf(data.docReadyState);
@@ -142,8 +134,10 @@ async function addJsonViewTab(
 function clickJsonNode(selector) {
   info("Expanding node: '" + selector + "'");
 
-  const browser = gBrowser.selectedBrowser;
-  return BrowserTestUtils.synthesizeMouseAtCenter(selector, {}, browser);
+  // eslint-disable-next-line no-shadow
+  return ContentTask.spawn(gBrowser.selectedBrowser, selector, selector => {
+    content.document.querySelector(selector).click();
+  });
 }
 
 /**
@@ -152,21 +146,45 @@ function clickJsonNode(selector) {
 function selectJsonViewContentTab(name) {
   info("Selecting tab: '" + name + "'");
 
-  const browser = gBrowser.selectedBrowser;
-  const selector = ".tabs-menu .tabs-menu-item." + name + " a";
-  return BrowserTestUtils.synthesizeMouseAtCenter(selector, {}, browser);
+  // eslint-disable-next-line no-shadow
+  return ContentTask.spawn(gBrowser.selectedBrowser, name, async name => {
+    const tabsSelector = ".tabs-menu .tabs-menu-item";
+    const targetTabSelector = `${tabsSelector}.${CSS.escape(name)}`;
+    const targetTab = content.document.querySelector(targetTabSelector);
+    const targetTabIndex = Array.prototype.indexOf.call(
+      content.document.querySelectorAll(tabsSelector),
+      targetTab
+    );
+    const targetTabButton = targetTab.querySelector("a");
+    await new Promise(resolve => {
+      content.addEventListener(
+        "TabChanged",
+        ({ detail: { index } }) => {
+          is(index, targetTabIndex, "Hm?");
+          if (index === targetTabIndex) {
+            resolve();
+          }
+        },
+        { once: true }
+      );
+      targetTabButton.click();
+    });
+    is(
+      targetTabButton.getAttribute("aria-selected"),
+      "true",
+      "Tab is now selected"
+    );
+  });
 }
 
 function getElementCount(selector) {
   info("Get element count: '" + selector + "'");
 
-  const data = {
-    selector: selector,
-  };
-
-  return executeInContent("Test:JsonView:GetElementCount", data).then(
-    result => {
-      return result.count;
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    selectorChild => {
+      return content.document.querySelectorAll(selectorChild).length;
     }
   );
 }
@@ -174,32 +192,42 @@ function getElementCount(selector) {
 function getElementText(selector) {
   info("Get element text: '" + selector + "'");
 
-  const data = {
-    selector: selector,
-  };
-
-  return executeInContent("Test:JsonView:GetElementText", data).then(result => {
-    return result.text;
-  });
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    selectorChild => {
+      const element = content.document.querySelector(selectorChild);
+      return element ? element.textContent : null;
+    }
+  );
 }
 
 function getElementAttr(selector, attr) {
   info("Get attribute '" + attr + "' for element '" + selector + "'");
 
-  const data = { selector, attr };
-  return executeInContent("Test:JsonView:GetElementAttr", data).then(
-    result => result.text
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, attr],
+    (selectorChild, attrChild) => {
+      const element = content.document.querySelector(selectorChild);
+      return element ? element.getAttribute(attrChild) : null;
+    }
   );
 }
 
 function focusElement(selector) {
   info("Focus element: '" + selector + "'");
 
-  const data = {
-    selector: selector,
-  };
-
-  return executeInContent("Test:JsonView:FocusElement", data);
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    selectorChild => {
+      const element = content.document.querySelector(selectorChild);
+      if (element) {
+        element.focus();
+      }
+    }
+  );
 }
 
 /**
@@ -211,12 +239,20 @@ function focusElement(selector) {
 function sendString(str, selector) {
   info("Send string: '" + str + "'");
 
-  const data = {
-    selector: selector,
-    str: str,
-  };
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, str],
+    (selectorChild, strChild) => {
+      if (selectorChild) {
+        const element = content.document.querySelector(selectorChild);
+        if (element) {
+          element.focus();
+        }
+      }
 
-  return executeInContent("Test:JsonView:SendString", data);
+      EventUtils.sendString(strChild, content);
+    }
+  );
 }
 
 function waitForTime(delay) {
@@ -224,7 +260,35 @@ function waitForTime(delay) {
 }
 
 function waitForFilter() {
-  return executeInContent("Test:JsonView:WaitForFilter");
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+    return new Promise(resolve => {
+      const firstRow = content.document.querySelector(
+        ".jsonPanelBox .treeTable .treeRow"
+      );
+
+      // Check if the filter is already set.
+      if (firstRow.classList.contains("hidden")) {
+        resolve();
+        return;
+      }
+
+      // Wait till the first row has 'hidden' class set.
+      const observer = new content.MutationObserver(function (mutations) {
+        for (let i = 0; i < mutations.length; i++) {
+          const mutation = mutations[i];
+          if (mutation.attributeName == "class") {
+            if (firstRow.classList.contains("hidden")) {
+              observer.disconnect();
+              resolve();
+              break;
+            }
+          }
+        }
+      });
+
+      observer.observe(firstRow, { attributes: true });
+    });
+  });
 }
 
 function normalizeNewLines(value) {

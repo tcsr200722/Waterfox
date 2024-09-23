@@ -79,6 +79,10 @@ async function checkState(browser) {
 }
 
 add_task(async function test() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.navigation.requireUserInteraction", false]],
+  });
+
   // Tests session restore functionality of history.pushState and
   // history.replaceState().  (Bug 500328)
 
@@ -88,8 +92,8 @@ add_task(async function test() {
   let state;
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
-      BrowserTestUtils.loadURI(browser, "http://example.com");
+    async function (browser) {
+      BrowserTestUtils.startLoadingURIString(browser, "http://example.com");
       await BrowserTestUtils.browserLoaded(browser);
 
       // After these push/replaceState calls, the window should have three
@@ -114,7 +118,7 @@ add_task(async function test() {
   // restore into the old tab, but that's not a real use case anyway.
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
+    async function (browser) {
       let tab2 = gBrowser.getTabForBrowser(browser);
 
       let tabRestoredPromise = promiseTabRestored(tab2);

@@ -2,15 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "Units.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ViewportFrame.h"
 #include "mozilla/ViewportUtils.h"
+#include "mozilla/dom/BrowserChild.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/InputAPZContext.h"
 #include "mozilla/layers/ScrollableLayerGuid.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "nsIContent.h"
 #include "nsIFrame.h"
-#include "nsIScrollableFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsQueryFrame.h"
 #include "nsStyleStruct.h"
@@ -72,9 +74,10 @@ CSSToCSSMatrix4x4 GetVisualToLayoutTransform(PresShell* aContext) {
   ScrollableLayerGuid::ViewID targetScrollId =
       InputAPZContext::GetTargetLayerGuid().mScrollId;
   if (targetScrollId == ScrollableLayerGuid::NULL_SCROLL_ID) {
-    if (nsIFrame* rootScrollFrame = aContext->GetRootScrollFrame()) {
-      targetScrollId =
-          nsLayoutUtils::FindOrCreateIDFor(rootScrollFrame->GetContent());
+    if (nsIFrame* rootScrollContainerFrame =
+            aContext->GetRootScrollContainerFrame()) {
+      targetScrollId = nsLayoutUtils::FindOrCreateIDFor(
+          rootScrollContainerFrame->GetContent());
     }
   }
   return ViewportUtils::GetVisualToLayoutTransform(targetScrollId);
@@ -113,6 +116,119 @@ nsPoint ViewportUtils::LayoutToVisual(const nsPoint& aPt, PresShell* aContext) {
   return CSSPoint::ToAppUnits(transformed);
 }
 
+LayoutDevicePoint ViewportUtils::DocumentRelativeLayoutToVisual(
+    const LayoutDevicePoint& aPoint, PresShell* aShell) {
+  ScrollableLayerGuid::ViewID targetScrollId =
+      nsLayoutUtils::ScrollIdForRootScrollFrame(aShell->GetPresContext());
+  auto visualToLayout =
+      ViewportUtils::GetVisualToLayoutTransform<LayoutDevicePixel>(
+          targetScrollId);
+  return visualToLayout.Inverse().TransformPoint(aPoint);
+}
+
+LayoutDeviceRect ViewportUtils::DocumentRelativeLayoutToVisual(
+    const LayoutDeviceRect& aRect, PresShell* aShell) {
+  ScrollableLayerGuid::ViewID targetScrollId =
+      nsLayoutUtils::ScrollIdForRootScrollFrame(aShell->GetPresContext());
+  auto visualToLayout =
+      ViewportUtils::GetVisualToLayoutTransform<LayoutDevicePixel>(
+          targetScrollId);
+  return visualToLayout.Inverse().TransformBounds(aRect);
+}
+
+LayoutDeviceRect ViewportUtils::DocumentRelativeLayoutToVisual(
+    const LayoutDeviceIntRect& aRect, PresShell* aShell) {
+  return DocumentRelativeLayoutToVisual(IntRectToRect(aRect), aShell);
+}
+
+CSSRect ViewportUtils::DocumentRelativeLayoutToVisual(const CSSRect& aRect,
+                                                      PresShell* aShell) {
+  ScrollableLayerGuid::ViewID targetScrollId =
+      nsLayoutUtils::ScrollIdForRootScrollFrame(aShell->GetPresContext());
+  auto visualToLayout =
+      ViewportUtils::GetVisualToLayoutTransform(targetScrollId);
+  return visualToLayout.Inverse().TransformBounds(aRect);
+}
+
+template <class SourceUnits, class DestUnits>
+gfx::PointTyped<DestUnits> TransformPointOrRect(
+    const gfx::Matrix4x4Typed<SourceUnits, DestUnits>& aMatrix,
+    const gfx::PointTyped<SourceUnits>& aPoint) {
+  return aMatrix.TransformPoint(aPoint);
+}
+
+template <class SourceUnits, class DestUnits>
+gfx::RectTyped<DestUnits> TransformPointOrRect(
+    const gfx::Matrix4x4Typed<SourceUnits, DestUnits>& aMatrix,
+    const gfx::RectTyped<SourceUnits>& aRect) {
+  return aMatrix.TransformBounds(aRect);
+}
+
+template <class LDPointOrRect>
+LDPointOrRect ConvertToScreenRelativeVisual(const LDPointOrRect& aInput,
+                                            nsPresContext* aCtx) {
+  MOZ_ASSERT(aCtx);
+
+  LDPointOrRect layoutToVisual(aInput);
+  nsIFrame* prevRootFrame = nullptr;
+  nsPresContext* prevCtx = nullptr;
+
+  // Walk up to the rootmost prescontext, transforming as we go.
+  for (nsPresContext* ctx = aCtx; ctx; ctx = ctx->GetParentPresContext()) {
+    PresShell* shell = ctx->PresShell();
+    nsIFrame* rootFrame = shell->GetRootFrame();
+    if (prevRootFrame) {
+      // Convert layoutToVisual from being relative to `prevRootFrame`
+      // to being relative to `rootFrame` (layout space).
+      nscoord apd = prevCtx->AppUnitsPerDevPixel();
+      nsPoint offset = prevRootFrame->GetOffsetToCrossDoc(rootFrame, apd);
+      layoutToVisual += LayoutDevicePoint::FromAppUnits(offset, apd);
+    }
+    if (shell->GetResolution() != 1.0) {
+      // Found the APZ zoom root, so do the layout -> visual conversion.
+      layoutToVisual =
+          ViewportUtils::DocumentRelativeLayoutToVisual(layoutToVisual, shell);
+    }
+
+    prevRootFrame = rootFrame;
+    prevCtx = ctx;
+  }
+
+  // If we're in a nested content process, the above traversal will not have
+  // encountered the APZ zoom root. The translation part of the layout-to-visual
+  // transform will be included in |rootScreenRect.TopLeft()|, added below
+  // (that ultimately comes from nsIWidget::WidgetToScreenOffset(), which for an
+  // OOP iframe's widget includes this translation), but the scale part needs to
+  // be computed and added separately.
+  Scale2D enclosingResolution =
+      ViewportUtils::TryInferEnclosingResolution(prevCtx->GetPresShell());
+  if (enclosingResolution != Scale2D{1.0f, 1.0f}) {
+    layoutToVisual = TransformPointOrRect(
+        LayoutDeviceToLayoutDeviceMatrix4x4::Scaling(
+            enclosingResolution.xScale, enclosingResolution.yScale, 1.0f),
+        layoutToVisual);
+  }
+
+  // Then we do the conversion from the rootmost presContext's root frame (in
+  // visual space) to screen space.
+  LayoutDeviceIntRect rootScreenRect =
+      LayoutDeviceIntRect::FromAppUnitsToNearest(
+          prevRootFrame->GetScreenRectInAppUnits(),
+          prevCtx->AppUnitsPerDevPixel());
+
+  return layoutToVisual + rootScreenRect.TopLeft();
+}
+
+LayoutDevicePoint ViewportUtils::ToScreenRelativeVisual(
+    const LayoutDevicePoint& aPt, nsPresContext* aCtx) {
+  return ConvertToScreenRelativeVisual(aPt, aCtx);
+}
+
+LayoutDeviceRect ViewportUtils::ToScreenRelativeVisual(
+    const LayoutDeviceRect& aRect, nsPresContext* aCtx) {
+  return ConvertToScreenRelativeVisual(aRect, aCtx);
+}
+
 // Definitions of the two explicit instantiations forward declared in the header
 // file. This causes code for these instantiations to be emitted into the object
 // file for ViewportUtils.cpp.
@@ -128,7 +244,7 @@ const nsIFrame* ViewportUtils::IsZoomedContentRoot(const nsIFrame* aFrame) {
   }
   if (aFrame->Type() == LayoutFrameType::Canvas ||
       aFrame->Type() == LayoutFrameType::PageSequence) {
-    nsIScrollableFrame* sf = do_QueryFrame(aFrame->GetParent());
+    ScrollContainerFrame* sf = do_QueryFrame(aFrame->GetParent());
     if (sf && sf->IsRootScrollFrameOfDocument() &&
         aFrame->PresContext()->IsRootContentDocumentCrossProcess()) {
       return aFrame->GetParent();
@@ -137,11 +253,48 @@ const nsIFrame* ViewportUtils::IsZoomedContentRoot(const nsIFrame* aFrame) {
              StylePositionProperty::Fixed) {
     if (ViewportFrame* viewportFrame = do_QueryFrame(aFrame->GetParent())) {
       if (viewportFrame->PresContext()->IsRootContentDocumentCrossProcess()) {
-        return viewportFrame->PresShell()->GetRootScrollFrame();
+        return viewportFrame->PresShell()->GetRootScrollContainerFrame();
       }
     }
   }
   return nullptr;
+}
+
+Scale2D ViewportUtils::TryInferEnclosingResolution(PresShell* aShell) {
+  if (!XRE_IsContentProcess()) {
+    return {1.0f, 1.0f};
+  }
+  MOZ_ASSERT(aShell && aShell->GetPresContext());
+  MOZ_ASSERT(!aShell->GetPresContext()->GetParentPresContext(),
+             "TryInferEnclosingResolution can only be called for a root pres "
+             "shell within a process");
+  if (dom::BrowserChild* bc = dom::BrowserChild::GetFrom(aShell)) {
+    if (!bc->IsTopLevel()) {
+      // The enclosing resolution is not directly available in the BrowserChild.
+      // The closest thing available is GetChildToParentConversionMatrix(),
+      // which also includes any enclosing CSS transforms.
+      // The behaviour implemented here will not provide an accurate answer
+      // in the presence of CSS transforms, but it tries to do something
+      // reasonable:
+      //  - If there are no enclosing CSS transforms, it will return the
+      //    resolution.
+      //  - If the enclosing transforms contain scales and translations only,
+      //    it will return the resolution times the CSS transform scale
+      //    (choosing the x-scale if they are different).
+      //  - Otherwise, it will return the resolution times a scale component
+      //    of the transform as returned by Matrix4x4Typed::Decompose().
+      //  - If the enclosing transform is sufficiently complex that
+      //    Decompose() returns false, give up and return 1.0.
+      gfx::Point3DTyped<gfx::UnknownUnits> translation;
+      gfx::Quaternion rotation;
+      gfx::Point3DTyped<gfx::UnknownUnits> scale;
+      if (bc->GetChildToParentConversionMatrix().Decompose(translation,
+                                                           rotation, scale)) {
+        return {scale.x, scale.y};
+      }
+    }
+  }
+  return {1.0f, 1.0f};
 }
 
 }  // namespace mozilla

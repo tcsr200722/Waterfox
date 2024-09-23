@@ -14,6 +14,7 @@
 #include "MediaTrackConstraints.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RelativeTimeline.h"
+#include "mozilla/WeakPtr.h"
 
 namespace mozilla {
 
@@ -49,7 +50,7 @@ class OverlayImage;
  */
 class DOMMediaStream : public DOMEventTargetHelper,
                        public RelativeTimeline,
-                       public SupportsWeakPtr<DOMMediaStream> {
+                       public SupportsWeakPtr {
   typedef dom::MediaStreamTrack MediaStreamTrack;
   typedef dom::AudioStreamTrack AudioStreamTrack;
   typedef dom::VideoStreamTrack VideoStreamTrack;
@@ -58,11 +59,10 @@ class DOMMediaStream : public DOMEventTargetHelper,
  public:
   typedef dom::MediaTrackConstraints MediaTrackConstraints;
 
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(DOMMediaStream)
-
-  class TrackListener {
+  class TrackListener : public nsISupports {
    public:
-    virtual ~TrackListener() = default;
+    NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+    NS_DECL_CYCLE_COLLECTION_CLASS(TrackListener)
 
     /**
      * Called when the DOMMediaStream has a live track added, either by
@@ -95,6 +95,9 @@ class DOMMediaStream : public DOMEventTargetHelper,
      * Called when the DOMMediaStream has become inaudible.
      */
     virtual void NotifyInaudible(){};
+
+   protected:
+    virtual ~TrackListener() = default;
   };
 
   explicit DOMMediaStream(nsPIDOMWindowInner* aWindow);
@@ -103,7 +106,6 @@ class DOMMediaStream : public DOMEventTargetHelper,
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DOMMediaStream, DOMEventTargetHelper)
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_DOMMEDIASTREAM_IID)
 
-  nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
@@ -225,9 +227,6 @@ class DOMMediaStream : public DOMEventTargetHelper,
   nsresult DispatchTrackEvent(const nsAString& aName,
                               const RefPtr<MediaStreamTrack>& aTrack);
 
-  // We need this to track our parent object.
-  nsCOMPtr<nsPIDOMWindowInner> mWindow;
-
   // MediaStreamTracks contained by this DOMMediaStream.
   nsTArray<RefPtr<MediaStreamTrack>> mTracks;
 
@@ -241,7 +240,7 @@ class DOMMediaStream : public DOMEventTargetHelper,
   nsTArray<nsCOMPtr<nsISupports>> mConsumersToKeepAlive;
 
   // The track listeners subscribe to changes in this stream's track set.
-  nsTArray<TrackListener*> mTrackListeners;
+  nsTArray<RefPtr<TrackListener>> mTrackListeners;
 
   // True if this stream has live tracks.
   bool mActive = false;

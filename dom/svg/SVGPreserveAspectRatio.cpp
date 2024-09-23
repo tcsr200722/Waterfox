@@ -19,14 +19,6 @@ namespace mozilla {
 NS_SVG_VAL_IMPL_CYCLE_COLLECTION_WRAPPERCACHED(DOMSVGPreserveAspectRatio,
                                                mSVGElement)
 
-NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMSVGPreserveAspectRatio)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMSVGPreserveAspectRatio)
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGPreserveAspectRatio)
-  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-NS_INTERFACE_MAP_END
-
 static const char* sAlignStrings[] = {
     "none",     "xMinYMin", "xMidYMin", "xMaxYMin", "xMinYMid",
     "xMidYMid", "xMaxYMid", "xMinYMax", "xMidYMax", "xMaxYMax"};

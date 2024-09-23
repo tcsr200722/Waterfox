@@ -12,7 +12,7 @@ Services.scriptloader.loadSubScript(
  * Check that telemetry events are recorded when navigating between different
  * about:debugging pages.
  */
-add_task(async function() {
+add_task(async function () {
   // enable USB devices mocks
   const mocks = new Mocks();
 
@@ -32,7 +32,7 @@ add_task(async function() {
   info("Navigate to 'USB device runtime' page");
   await navigateToUSBRuntime(mocks, document);
   checkSelectPageEvent("runtime", sessionId);
-  await waitForRequestsToSettle(window.AboutDebugging.store);
+  await waitForAboutDebuggingRequests(window.AboutDebugging.store);
 
   await removeTab(tab);
 });

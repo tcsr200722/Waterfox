@@ -5,10 +5,15 @@
 
 #include "DeleteNodeTransaction.h"
 
+#include "EditorBase.h"
+#include "EditorDOMPoint.h"
 #include "HTMLEditUtils.h"
-#include "mozilla/EditorBase.h"
-#include "mozilla/SelectionState.h"  // RangeUpdater
-#include "mozilla/TextEditor.h"
+#include "SelectionState.h"  // RangeUpdater
+#include "TextEditor.h"
+
+#include "mozilla/Logging.h"
+#include "mozilla/ToString.h"
+
 #include "nsDebug.h"
 #include "nsError.h"
 #include "nsAString.h"
@@ -28,18 +33,48 @@ already_AddRefed<DeleteNodeTransaction> DeleteNodeTransaction::MaybeCreate(
 
 DeleteNodeTransaction::DeleteNodeTransaction(EditorBase& aEditorBase,
                                              nsIContent& aContentToDelete)
-    : mEditorBase(&aEditorBase),
+    : DeleteContentTransactionBase(aEditorBase),
       mContentToDelete(&aContentToDelete),
-      mParentNode(aContentToDelete.GetParentNode()) {}
+      mParentNode(aContentToDelete.GetParentNode()) {
+  MOZ_DIAGNOSTIC_ASSERT_IF(
+      aEditorBase.IsHTMLEditor(),
+      HTMLEditUtils::IsRemovableNode(aContentToDelete) ||
+          // It's okay to delete text node if it's added by `HTMLEditor` since
+          // remaining it may be noisy for the users.
+          (aContentToDelete.IsText() &&
+           aContentToDelete.HasFlag(NS_MAYBE_MODIFIED_FREQUENTLY)));
+  NS_ASSERTION(
+      !aEditorBase.IsHTMLEditor() ||
+          HTMLEditUtils::IsRemovableNode(aContentToDelete),
+      "Deleting non-editable text node, please write a test for this!!");
+}
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED(DeleteNodeTransaction, EditTransactionBase,
-                                   mEditorBase, mContentToDelete, mParentNode,
-                                   mRefContent)
+std::ostream& operator<<(std::ostream& aStream,
+                         const DeleteNodeTransaction& aTransaction) {
+  aStream << "{ mContentToDelete=" << aTransaction.mContentToDelete.get();
+  if (aTransaction.mContentToDelete) {
+    aStream << " (" << *aTransaction.mContentToDelete << ")";
+  }
+  aStream << ", mParentNode=" << aTransaction.mParentNode.get();
+  if (aTransaction.mParentNode) {
+    aStream << " (" << *aTransaction.mParentNode << ")";
+  }
+  aStream << ", mRefContent=" << aTransaction.mRefContent.get();
+  if (aTransaction.mRefContent) {
+    aStream << " (" << *aTransaction.mRefContent << ")";
+  }
+  aStream << ", mEditorBase=" << aTransaction.mEditorBase.get() << " }";
+  return aStream;
+}
 
-NS_IMPL_ADDREF_INHERITED(DeleteNodeTransaction, EditTransactionBase)
-NS_IMPL_RELEASE_INHERITED(DeleteNodeTransaction, EditTransactionBase)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(DeleteNodeTransaction,
+                                   DeleteContentTransactionBase,
+                                   mContentToDelete, mParentNode, mRefContent)
+
+NS_IMPL_ADDREF_INHERITED(DeleteNodeTransaction, DeleteContentTransactionBase)
+NS_IMPL_RELEASE_INHERITED(DeleteNodeTransaction, DeleteContentTransactionBase)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DeleteNodeTransaction)
-NS_INTERFACE_MAP_END_INHERITING(EditTransactionBase)
+NS_INTERFACE_MAP_END_INHERITING(DeleteContentTransactionBase)
 
 bool DeleteNodeTransaction::CanDoIt() const {
   if (NS_WARN_IF(!mContentToDelete) || NS_WARN_IF(!mEditorBase) ||
@@ -51,16 +86,15 @@ bool DeleteNodeTransaction::CanDoIt() const {
 }
 
 NS_IMETHODIMP DeleteNodeTransaction::DoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p DeleteNodeTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!CanDoIt())) {
     return NS_OK;
   }
 
-  if (mEditorBase->IsTextEditor() && mContentToDelete->IsText()) {
-    uint32_t length = mContentToDelete->AsText()->TextLength();
-    if (length > 0) {
-      mEditorBase->AsTextEditor()->WillDeleteText(length, 0, length);
-    }
-  }
+  MOZ_ASSERT_IF(mEditorBase->IsTextEditor(), !mContentToDelete->IsText());
 
   // Remember which child mContentToDelete was (by remembering which child was
   // next).  Note that mRefContent can be nullptr.
@@ -79,8 +113,15 @@ NS_IMETHODIMP DeleteNodeTransaction::DoTransaction() {
   return error.StealNSResult();
 }
 
-MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP
-DeleteNodeTransaction::UndoTransaction() {
+EditorDOMPoint DeleteNodeTransaction::SuggestPointToPutCaret() const {
+  return EditorDOMPoint();
+}
+
+NS_IMETHODIMP DeleteNodeTransaction::UndoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p DeleteNodeTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!CanDoIt())) {
     // This is a legal state, the transaction is a no-op.
     return NS_OK;
@@ -93,35 +134,24 @@ DeleteNodeTransaction::UndoTransaction() {
   // XXX Perhaps, we should check `refContent` is a child of `parentNode`,
   //     and if it's not, we should stop undoing or something.
   parentNode->InsertBefore(contentToDelete, refContent, error);
+  // InsertBefore() may call MightThrowJSException() even if there is no error.
+  // We don't need the flag here.
+  error.WouldReportJSException();
   if (error.Failed()) {
     NS_WARNING("nsINode::InsertBefore() failed");
     return error.StealNSResult();
-  }
-  if (editorBase->IsTextEditor() && contentToDelete->IsText()) {
-    uint32_t length = contentToDelete->AsText()->TextLength();
-    if (length > 0) {
-      nsresult rv = MOZ_KnownLive(editorBase->AsTextEditor())
-                        ->DidInsertText(length, 0, length);
-      if (NS_FAILED(rv)) {
-        NS_WARNING("TextEditor::DidInsertText() failed");
-        return rv;
-      }
-    }
   }
   return NS_OK;
 }
 
 NS_IMETHODIMP DeleteNodeTransaction::RedoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p DeleteNodeTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!CanDoIt())) {
     // This is a legal state, the transaction is a no-op.
     return NS_OK;
-  }
-
-  if (mEditorBase->IsTextEditor() && mContentToDelete->IsText()) {
-    uint32_t length = mContentToDelete->AsText()->TextLength();
-    if (length > 0) {
-      mEditorBase->AsTextEditor()->WillDeleteText(length, 0, length);
-    }
   }
 
   mEditorBase->RangeUpdaterRef().SelAdjDeleteNode(*mContentToDelete);

@@ -120,6 +120,16 @@ class WebGLTexture final : public WebGLContextBoundObject,
   // You almost certainly don't want to query mMaxMipmapLevel.
   // You almost certainly want MaxEffectiveMipmapLevel().
 
+  // These "dirty" flags are set when the level is updated (eg indirectly by
+  // clamping) and cleared when we tell the driver.
+  enum MipmapLevelState : uint8_t {
+    MIPMAP_LEVEL_DEFAULT,
+    MIPMAP_LEVEL_CLEAN,
+    MIPMAP_LEVEL_DIRTY
+  };
+  MipmapLevelState mBaseMipmapLevelState = MIPMAP_LEVEL_DEFAULT;
+  MipmapLevelState mMaxMipmapLevelState = MIPMAP_LEVEL_DEFAULT;
+
   webgl::SamplingState mSamplingState;
 
   mutable const GLint* mCurSwizzle =
@@ -149,7 +159,30 @@ class WebGLTexture final : public WebGLContextBoundObject,
   // -
 
   const auto& Immutable() const { return mImmutable; }
-  const auto& BaseMipmapLevel() const { return mBaseMipmapLevel; }
+  const auto& ImmutableLevelCount() const { return mImmutableLevelCount; }
+
+  // ES3.0 p150
+  uint32_t Es3_level_base() const {
+    const auto level_prime_base = mBaseMipmapLevel;
+    const auto level_immut = mImmutableLevelCount;
+
+    if (!mImmutable) return level_prime_base;
+    return std::min(level_prime_base, level_immut - 1u);
+  }
+  uint32_t Es3_level_max() const {
+    const auto level_base = Es3_level_base();
+    const auto level_prime_max = mMaxMipmapLevel;
+    const auto level_immut = mImmutableLevelCount;
+
+    if (!mImmutable) return level_prime_max;
+    return std::min(std::max(level_base, level_prime_max), level_immut - 1u);
+  }
+
+  // GLES 3.0.5 p158: `q`
+  uint32_t Es3_q() const;  // "effective max mip level"
+
+  // -
+
   const auto& FaceCount() const { return mFaceCount; }
 
   // We can just max this out to 31, which is the number of unsigned bits in
@@ -170,6 +203,14 @@ class WebGLTexture final : public WebGLContextBoundObject,
   ~WebGLTexture() override;
 
  public:
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf mso) const {
+    return CacheInvalidator::SizeOfExcludingThis(mso) +
+           mSamplingCache.SizeOfExcludingThis(mso);
+  }
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf mso) const {
+    return mso(this) + SizeOfExcludingThis(mso);
+  }
+
   ////////////////////////////////////
   // GL calls
   bool BindTexture(TexTarget texTarget);
@@ -201,10 +242,8 @@ class WebGLTexture final : public WebGLContextBoundObject,
                   const uvec3& size);
 
   // TexSubImage iff `!respecFormat`
-  void TexImage(GLenum imageTarget, uint32_t level, GLenum respecFormat,
-                const uvec3& offset, const uvec3& size,
-                const webgl::PackingInfo& pi, const TexImageSource& src,
-                const dom::HTMLCanvasElement& canvas);
+  void TexImage(uint32_t level, GLenum respecFormat, const uvec3& offset,
+                const webgl::PackingInfo& pi, const webgl::TexUnpackBlobDesc&);
 
   // CompressedTexSubImage iff `sub`
   void CompressedTexImage(bool sub, GLenum imageTarget, uint32_t level,
@@ -224,10 +263,6 @@ class WebGLTexture final : public WebGLContextBoundObject,
   void ClampLevelBaseAndMax();
   void RefreshSwizzle() const;
 
- public:
-  uint32_t EffectiveMaxLevel() const;  // GLES 3.0.5 p158: `q`
-
- protected:
   static uint8_t FaceForTarget(TexImageTarget texImageTarget) {
     GLenum rawTexImageTarget = texImageTarget.get();
     switch (rawTexImageTarget) {

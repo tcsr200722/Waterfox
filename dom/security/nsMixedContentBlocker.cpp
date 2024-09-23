@@ -46,16 +46,21 @@
 #include "mozilla/ipc/URIUtils.h"
 #include "mozilla/net/DNS.h"
 #include "mozilla/net/DocumentLoadListener.h"
+#include "mozilla/net/DocumentChannel.h"
+
+#include "mozilla/dom/nsHTTPSOnlyUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 
+static mozilla::LazyLogModule sMCBLog("MCBLog");
+
 enum nsMixedContentBlockerMessageType { eBlocked = 0x00, eUserOverride = 0x01 };
 
-// Whitelist of hostnames that should be considered secure contexts even when
+// Allowlist of hostnames that should be considered secure contexts even when
 // served over http:// or ws://
-nsCString* nsMixedContentBlocker::sSecurecontextWhitelist = nullptr;
-bool nsMixedContentBlocker::sSecurecontextWhitelistCached = false;
+nsCString* nsMixedContentBlocker::sSecurecontextAllowlist = nullptr;
+bool nsMixedContentBlocker::sSecurecontextAllowlistCached = false;
 
 enum MixedContentHSTSState {
   MCB_HSTS_PASSIVE_NO_HSTS = 0,
@@ -72,7 +77,7 @@ static void LogMixedContentMessage(
     MixedContentTypes aClassification, nsIURI* aContentLocation,
     uint64_t aInnerWindowID, nsMixedContentBlockerMessageType aMessageType,
     nsIURI* aRequestingLocation,
-    const nsACString& aOverruleMessageLookUpKeyWithThis = EmptyCString()) {
+    const nsACString& aOverruleMessageLookUpKeyWithThis = ""_ns) {
   nsAutoCString messageCategory;
   uint32_t severityFlag;
   nsAutoCString messageLookupKey;
@@ -143,6 +148,16 @@ nsMixedContentBlocker::AsyncOnChannelRedirect(
     return NS_OK;
   }
 
+  // Don't do these checks if we're switching from DocumentChannel
+  // to a real channel. In that case, we should already have done
+  // the checks in the parent process. AsyncOnChannelRedirect
+  // isn't called in the content process if we switch process,
+  // so checking here would just hide bugs in the process switch
+  // cases.
+  if (RefPtr<net::DocumentChannel> docChannel = do_QueryObject(aOldChannel)) {
+    return NS_OK;
+  }
+
   nsresult rv;
   nsCOMPtr<nsIURI> oldUri;
   rv = aOldChannel->GetURI(getter_AddRefs(oldUri));
@@ -168,9 +183,7 @@ nsMixedContentBlocker::AsyncOnChannelRedirect(
   }
 
   int16_t decision = REJECT_REQUEST;
-  rv = ShouldLoad(newUri, loadInfo,
-                  EmptyCString(),  // aMimeGuess
-                  &decision);
+  rv = ShouldLoad(newUri, loadInfo, &decision);
   if (NS_FAILED(rv)) {
     autoCallback.DontCallback();
     aOldChannel->Cancel(NS_ERROR_DOM_BAD_URI);
@@ -193,15 +206,13 @@ nsMixedContentBlocker::AsyncOnChannelRedirect(
  */
 NS_IMETHODIMP
 nsMixedContentBlocker::ShouldLoad(nsIURI* aContentLocation,
-                                  nsILoadInfo* aLoadInfo,
-                                  const nsACString& aMimeGuess,
-                                  int16_t* aDecision) {
+                                  nsILoadInfo* aLoadInfo, int16_t* aDecision) {
   // We pass in false as the first parameter to ShouldLoad(), because the
   // callers of this method don't know whether the load went through cached
   // image redirects.  This is handled by direct callers of the static
   // ShouldLoad.
   nsresult rv = ShouldLoad(false,  // aHadInsecureImageRedirect
-                           aContentLocation, aLoadInfo, aMimeGuess, aDecision);
+                           aContentLocation, aLoadInfo, true, aDecision);
 
   if (*aDecision == nsIContentPolicy::REJECT_REQUEST) {
     NS_SetRequestBlockingReason(aLoadInfo,
@@ -213,79 +224,74 @@ nsMixedContentBlocker::ShouldLoad(nsIURI* aContentLocation,
 
 bool nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackHost(
     const nsACString& aAsciiHost) {
-  if (aAsciiHost.EqualsLiteral("::1") ||
-      aAsciiHost.EqualsLiteral("localhost")) {
+  if (mozilla::net::IsLoopbackHostname(aAsciiHost)) {
     return true;
-  }
-
-  PRNetAddr tempAddr;
-  memset(&tempAddr, 0, sizeof(PRNetAddr));
-
-  if (PR_StringToNetAddr(PromiseFlatCString(aAsciiHost).get(), &tempAddr) !=
-      PR_SUCCESS) {
-    return false;
   }
 
   using namespace mozilla::net;
   NetAddr addr;
-  PRNetAddrToNetAddr(&tempAddr, &addr);
+  if (NS_FAILED(addr.InitFromString(aAsciiHost))) {
+    return false;
+  }
 
   // Step 4 of
   // https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy says
   // we should only consider [::1]/128 as a potentially trustworthy IPv6
   // address, whereas for IPv4 127.0.0.1/8 are considered as potentially
-  // trustworthy.  We already handled "[::1]" above, so all that's remained to
-  // handle here are IPv4 loopback addresses.
-  return IsIPAddrV4(&addr) && IsLoopBackAddress(&addr);
+  // trustworthy.
+  return addr.IsLoopBackAddressWithoutIPv6Mapping();
 }
 
 bool nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackURL(nsIURI* aURL) {
+  if (!aURL) {
+    return false;
+  }
   nsAutoCString asciiHost;
   nsresult rv = aURL->GetAsciiHost(asciiHost);
   NS_ENSURE_SUCCESS(rv, false);
   return IsPotentiallyTrustworthyLoopbackHost(asciiHost);
 }
 
-/* Maybe we have a .onion URL. Treat it as whitelisted as well if
- * `dom.securecontext.whitelist_onions` is `true`.
+/* Maybe we have a .onion URL. Treat it as trustworthy as well if
+ * `dom.securecontext.allowlist_onions` is `true`.
  */
 bool nsMixedContentBlocker::IsPotentiallyTrustworthyOnion(nsIURI* aURL) {
-  if (!StaticPrefs::dom_securecontext_whitelist_onions()) {
+  if (!StaticPrefs::dom_securecontext_allowlist_onions()) {
     return false;
   }
 
   nsAutoCString host;
   nsresult rv = aURL->GetHost(host);
   NS_ENSURE_SUCCESS(rv, false);
-  return StringEndsWith(host, NS_LITERAL_CSTRING(".onion"));
+  return StringEndsWith(host, ".onion"_ns);
 }
 
 // static
 void nsMixedContentBlocker::OnPrefChange(const char* aPref, void* aClosure) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!strcmp(aPref, "dom.securecontext.whitelist"));
-  Preferences::GetCString("dom.securecontext.whitelist",
-                          *sSecurecontextWhitelist);
+  MOZ_ASSERT(!strcmp(aPref, "dom.securecontext.allowlist"));
+  Preferences::GetCString("dom.securecontext.allowlist",
+                          *sSecurecontextAllowlist);
 }
 
 // static
-void nsMixedContentBlocker::GetSecureContextWhiteList(nsACString& aList) {
+void nsMixedContentBlocker::GetSecureContextAllowList(nsACString& aList) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (!sSecurecontextWhitelistCached) {
-    MOZ_ASSERT(!sSecurecontextWhitelist);
-    sSecurecontextWhitelistCached = true;
-    sSecurecontextWhitelist = new nsCString();
+  if (!sSecurecontextAllowlistCached) {
+    MOZ_ASSERT(!sSecurecontextAllowlist);
+    sSecurecontextAllowlistCached = true;
+    sSecurecontextAllowlist = new nsCString();
     Preferences::RegisterCallbackAndCall(OnPrefChange,
-                                         "dom.securecontext.whitelist");
+                                         "dom.securecontext.allowlist");
   }
-  aList = *sSecurecontextWhitelist;
+  aList = *sSecurecontextAllowlist;
 }
 
 // static
 void nsMixedContentBlocker::Shutdown() {
-  if (sSecurecontextWhitelist) {
-    delete sSecurecontextWhitelist;
-    sSecurecontextWhitelist = nullptr;
+  if (sSecurecontextAllowlist) {
+    delete sSecurecontextAllowlist;
+    sSecurecontextAllowlist = nullptr;
   }
 }
 
@@ -334,30 +340,78 @@ bool nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin(nsIURI* aURI) {
   }
 
   // If a host is not considered secure according to the default algorithm, then
-  // check to see if it has been whitelisted by the user.  We only apply this
-  // whitelist for network resources, i.e., those with scheme "http" or "ws".
+  // check to see if it has been allowlisted by the user.  We only apply this
+  // allowlist for network resources, i.e., those with scheme "http" or "ws".
   // The pref should contain a comma-separated list of hostnames.
 
   if (!scheme.EqualsLiteral("http") && !scheme.EqualsLiteral("ws")) {
     return false;
   }
 
-  nsAutoCString whitelist;
-  GetSecureContextWhiteList(whitelist);
-  nsCCharSeparatedTokenizer tokenizer(whitelist, ',');
-  while (tokenizer.hasMoreTokens()) {
-    const nsACString& allowedHost = tokenizer.nextToken();
+  nsAutoCString allowlist;
+  GetSecureContextAllowList(allowlist);
+  for (const nsACString& allowedHost :
+       nsCCharSeparatedTokenizer(allowlist, ',').ToRange()) {
     if (host.Equals(allowedHost)) {
       return true;
     }
   }
 
-  // Maybe we have a .onion URL. Treat it as whitelisted as well if
-  // `dom.securecontext.whitelist_onions` is `true`.
+  // Maybe we have a .onion URL. Treat it as trustworthy as well if
+  // `dom.securecontext.allowlist_onions` is `true`.
   if (nsMixedContentBlocker::IsPotentiallyTrustworthyOnion(aURI)) {
     return true;
   }
   return false;
+}
+
+/* static */
+bool nsMixedContentBlocker::IsUpgradableContentType(nsContentPolicyType aType,
+                                                    bool aConsiderPrefs) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (aConsiderPrefs &&
+      !StaticPrefs::security_mixed_content_upgrade_display_content()) {
+    return false;
+  }
+
+  switch (aType) {
+    case nsIContentPolicy::TYPE_INTERNAL_IMAGE:
+    case nsIContentPolicy::TYPE_INTERNAL_IMAGE_PRELOAD:
+      return !aConsiderPrefs ||
+             StaticPrefs::
+                 security_mixed_content_upgrade_display_content_image();
+    case nsIContentPolicy::TYPE_INTERNAL_AUDIO:
+      return !aConsiderPrefs ||
+             StaticPrefs::
+                 security_mixed_content_upgrade_display_content_audio();
+    case nsIContentPolicy::TYPE_INTERNAL_VIDEO:
+      return !aConsiderPrefs ||
+             StaticPrefs::
+                 security_mixed_content_upgrade_display_content_video();
+    default:
+      return false;
+  }
+}
+
+/*
+ * Return the URI of the precusor principal or the URI of aPrincipal if there is
+ * no precursor URI.
+ */
+static already_AddRefed<nsIURI> GetPrincipalURIOrPrecursorPrincipalURI(
+    nsIPrincipal* aPrincipal) {
+  nsCOMPtr<nsIPrincipal> precursorPrincipal =
+      aPrincipal->GetPrecursorPrincipal();
+
+#ifdef DEBUG
+  if (precursorPrincipal) {
+    MOZ_ASSERT(aPrincipal->GetIsNullPrincipal(),
+               "Only Null Principals should have a Precursor Principal");
+  }
+#endif
+
+  return precursorPrincipal ? precursorPrincipal->GetURI()
+                            : aPrincipal->GetURI();
 }
 
 /* Static version of ShouldLoad() that contains all the Mixed Content Blocker
@@ -366,7 +420,7 @@ bool nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin(nsIURI* aURI) {
 nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
                                            nsIURI* aContentLocation,
                                            nsILoadInfo* aLoadInfo,
-                                           const nsACString& aMimeGuess,
+                                           bool aReportError,
                                            int16_t* aDecision) {
   // Asserting that we are on the main thread here and hence do not have to lock
   // and unlock security.mixed_content.block_active_content and
@@ -374,22 +428,55 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   // them.
   MOZ_ASSERT(NS_IsMainThread());
 
-  uint32_t contentType = aLoadInfo->InternalContentPolicyType();
-  nsCOMPtr<nsISupports> requestingContext = aLoadInfo->GetLoadingContext();
+  if (MOZ_UNLIKELY(MOZ_LOG_TEST(sMCBLog, LogLevel::Verbose))) {
+    nsAutoCString asciiUrl;
+    aContentLocation->GetAsciiSpec(asciiUrl);
+    MOZ_LOG(sMCBLog, LogLevel::Verbose, ("shouldLoad:"));
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  - contentLocation: %s", asciiUrl.get()));
+  }
+
+  nsContentPolicyType internalContentType =
+      aLoadInfo->InternalContentPolicyType();
   nsCOMPtr<nsIPrincipal> loadingPrincipal = aLoadInfo->GetLoadingPrincipal();
   nsCOMPtr<nsIPrincipal> triggeringPrincipal = aLoadInfo->TriggeringPrincipal();
+
+  if (MOZ_UNLIKELY(MOZ_LOG_TEST(sMCBLog, LogLevel::Verbose))) {
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  - internalContentPolicyType: %s",
+             NS_CP_ContentTypeName(internalContentType)));
+
+    if (loadingPrincipal != nullptr) {
+      nsAutoCString loadingPrincipalAsciiUrl;
+      loadingPrincipal->GetAsciiSpec(loadingPrincipalAsciiUrl);
+      MOZ_LOG(sMCBLog, LogLevel::Verbose,
+              ("  - loadingPrincipal: %s", loadingPrincipalAsciiUrl.get()));
+    } else {
+      MOZ_LOG(sMCBLog, LogLevel::Verbose, ("  - loadingPrincipal: (nullptr)"));
+    }
+
+    nsAutoCString triggeringPrincipalAsciiUrl;
+    triggeringPrincipal->GetAsciiSpec(triggeringPrincipalAsciiUrl);
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  - triggeringPrincipal: %s", triggeringPrincipalAsciiUrl.get()));
+  }
+
   RefPtr<WindowContext> requestingWindow =
       WindowContext::GetById(aLoadInfo->GetInnerWindowID());
+
+  bool isPreload = nsContentUtils::IsPreloadType(internalContentType);
 
   // The content policy type that we receive may be an internal type for
   // scripts.  Let's remember if we have seen a worker type, and reset it to the
   // external type in all cases right now.
   bool isWorkerType =
-      contentType == nsIContentPolicy::TYPE_INTERNAL_WORKER ||
-      contentType == nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER ||
-      contentType == nsIContentPolicy::TYPE_INTERNAL_SERVICE_WORKER;
-  contentType =
-      nsContentUtils::InternalContentPolicyTypeToExternal(contentType);
+      internalContentType == nsIContentPolicy::TYPE_INTERNAL_WORKER ||
+      internalContentType ==
+          nsIContentPolicy::TYPE_INTERNAL_WORKER_STATIC_MODULE ||
+      internalContentType == nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER ||
+      internalContentType == nsIContentPolicy::TYPE_INTERNAL_SERVICE_WORKER;
+  ExtContentPolicyType contentType =
+      nsContentUtils::InternalContentPolicyTypeToExternal(internalContentType);
 
   // Assume active (high risk) content and blocked by default
   MixedContentTypes classification = eMixedScript;
@@ -449,40 +536,51 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   // properties as WebSockets w.r.t. mixed content. XHR's handling of redirects
   // amplifies these concerns.
   //
-  // TYPE_SAVEAS_DOWNLOAD: Save-link-as feature is used to download a resource
-  // without involving a docShell. This kind of loading must be always be
-  // allowed.
-
-  static_assert(TYPE_DATAREQUEST == TYPE_XMLHTTPREQUEST,
-                "TYPE_DATAREQUEST is not a synonym for "
-                "TYPE_XMLHTTPREQUEST");
+  // TYPE_PROXIED_WEBRTC_MEDIA: Ordinarily, webrtc uses low-level sockets for
+  // peer-to-peer media, which bypasses this code entirely. However, when a
+  // web proxy is being used, the TCP and TLS webrtc connections are routed
+  // through the web proxy (using HTTP CONNECT), which causes these connections
+  // to be checked. We just skip mixed content blocking in that case.
 
   switch (contentType) {
     // The top-level document cannot be mixed content by definition
-    case TYPE_DOCUMENT:
+    case ExtContentPolicy::TYPE_DOCUMENT:
       *aDecision = ACCEPT;
       return NS_OK;
     // Creating insecure websocket connections in a secure page is blocked
     // already in the websocket constructor. We don't need to check the blocking
     // here and we don't want to un-block
-    case TYPE_WEBSOCKET:
+    case ExtContentPolicy::TYPE_WEBSOCKET:
       *aDecision = ACCEPT;
       return NS_OK;
 
-    // Creating insecure connections for a save-as link download is acceptable.
-    // This download is completely disconnected from the docShell, but still
-    // using the same loading principal.
-    case TYPE_SAVEAS_DOWNLOAD:
+      // TYPE_SAVEAS_DOWNLOAD: Save-link-as feature is used to download a
+      // resource
+      // without involving a docShell. This kind of loading must be
+      // allowed, if not disabled in the preferences.
+      // Creating insecure connections for a save-as link download is
+      // acceptable. This download is completely disconnected from the docShell,
+      // but still using the same loading principal.
+
+    case ExtContentPolicy::TYPE_SAVEAS_DOWNLOAD:
+      *aDecision = ACCEPT;
+      return NS_OK;
+      break;
+
+    // It does not make sense to subject webrtc media connections to mixed
+    // content blocking, since those connections are peer-to-peer and will
+    // therefore almost never match the origin.
+    case ExtContentPolicy::TYPE_PROXIED_WEBRTC_MEDIA:
       *aDecision = ACCEPT;
       return NS_OK;
 
     // Static display content is considered moderate risk for mixed content so
     // these will be blocked according to the mixed display preference
-    case TYPE_IMAGE:
-    case TYPE_MEDIA:
+    case ExtContentPolicy::TYPE_IMAGE:
+    case ExtContentPolicy::TYPE_MEDIA:
       classification = eMixedDisplay;
       break;
-    case TYPE_OBJECT_SUBREQUEST:
+    case ExtContentPolicy::TYPE_OBJECT_SUBREQUEST:
       if (StaticPrefs::security_mixed_content_block_object_subrequest()) {
         classification = eMixedScript;
       } else {
@@ -493,27 +591,30 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
     // Active content (or content with a low value/risk-of-blocking ratio)
     // that has been explicitly evaluated; listed here for documentation
     // purposes and to avoid the assertion and warning for the default case.
-    case TYPE_BEACON:
-    case TYPE_CSP_REPORT:
-    case TYPE_DTD:
-    case TYPE_FETCH:
-    case TYPE_FONT:
-    case TYPE_IMAGESET:
-    case TYPE_OBJECT:
-    case TYPE_SCRIPT:
-    case TYPE_STYLESHEET:
-    case TYPE_SUBDOCUMENT:
-    case TYPE_PING:
-    case TYPE_WEB_MANIFEST:
-    case TYPE_XMLHTTPREQUEST:
-    case TYPE_XSLT:
-    case TYPE_OTHER:
-    case TYPE_SPECULATIVE:
+    case ExtContentPolicy::TYPE_BEACON:
+    case ExtContentPolicy::TYPE_CSP_REPORT:
+    case ExtContentPolicy::TYPE_DTD:
+    case ExtContentPolicy::TYPE_FETCH:
+    case ExtContentPolicy::TYPE_FONT:
+    case ExtContentPolicy::TYPE_UA_FONT:
+    case ExtContentPolicy::TYPE_IMAGESET:
+    case ExtContentPolicy::TYPE_OBJECT:
+    case ExtContentPolicy::TYPE_SCRIPT:
+    case ExtContentPolicy::TYPE_STYLESHEET:
+    case ExtContentPolicy::TYPE_SUBDOCUMENT:
+    case ExtContentPolicy::TYPE_PING:
+    case ExtContentPolicy::TYPE_WEB_MANIFEST:
+    case ExtContentPolicy::TYPE_XMLHTTPREQUEST:
+    case ExtContentPolicy::TYPE_XSLT:
+    case ExtContentPolicy::TYPE_OTHER:
+    case ExtContentPolicy::TYPE_SPECULATIVE:
+    case ExtContentPolicy::TYPE_WEB_TRANSPORT:
+    case ExtContentPolicy::TYPE_WEB_IDENTITY:
       break;
 
-    // This content policy works as a whitelist.
-    default:
+    case ExtContentPolicy::TYPE_INVALID:
       MOZ_ASSERT(false, "Mixed content of unknown type");
+      // Do not add default: so that compilers can catch the missing case.
   }
 
   // Make sure to get the URI the load started with. No need to check
@@ -524,6 +625,10 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   if (!innerContentLocation) {
     NS_ERROR("Can't get innerURI from aContentLocation");
     *aDecision = REJECT_REQUEST;
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  -> decision: Request will be rejected because the innermost "
+             "URI could not be "
+             "retrieved"));
     return NS_OK;
   }
 
@@ -568,22 +673,21 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   // 2) If aLoadingPrincipal does not provide a requestingLocation, then
   // we fall back to to querying the requestingLocation from
   // aTriggeringPrincipal.
-  nsCOMPtr<nsIURI> requestingLocation;
-  auto* baseLoadingPrincipal = BasePrincipal::Cast(loadingPrincipal);
-  if (baseLoadingPrincipal) {
-    baseLoadingPrincipal->GetURI(getter_AddRefs(requestingLocation));
-  }
+  nsCOMPtr<nsIURI> requestingLocation =
+      GetPrincipalURIOrPrecursorPrincipalURI(loadingPrincipal);
   if (!requestingLocation) {
-    auto* baseTriggeringPrincipal = BasePrincipal::Cast(triggeringPrincipal);
-    if (baseTriggeringPrincipal) {
-      baseTriggeringPrincipal->GetURI(getter_AddRefs(requestingLocation));
-    }
+    requestingLocation =
+        GetPrincipalURIOrPrecursorPrincipalURI(triggeringPrincipal);
   }
 
   // 3) Giving up. We still don't have a requesting location, therefore we can't
   // tell if this is a mixed content load. Deny to be safe.
   if (!requestingLocation) {
     *aDecision = REJECT_REQUEST;
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  -> decision: Request will be rejected because no requesting "
+             "location could be "
+             "gathered."));
     return NS_OK;
   }
 
@@ -594,12 +698,20 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   if (!innerRequestingLocation) {
     NS_ERROR("Can't get innerURI from requestingLocation");
     *aDecision = REJECT_REQUEST;
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  -> decision: Request will be rejected because the innermost "
+             "URI of the "
+             "requesting location could be gathered."));
     return NS_OK;
   }
 
   bool parentIsHttps = innerRequestingLocation->SchemeIs("https");
   if (!parentIsHttps) {
     *aDecision = ACCEPT;
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  -> decision: Request will be allowed because the requesting "
+             "location is not using "
+             "HTTPS."));
     return NS_OK;
   }
 
@@ -615,6 +727,9 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
     MOZ_ASSERT(!isHttpsScheme);
 #endif
     *aDecision = REJECT_REQUEST;
+    MOZ_LOG(sMCBLog, LogLevel::Verbose,
+            ("  -> decision: Request will be rejected, trying to load a worker "
+             "from an insecure origin."));
     return NS_OK;
   }
 
@@ -624,8 +739,8 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
     return NS_OK;
   }
 
-  // If https-only mode is enabled we'll upgrade this later anyway
-  if (StaticPrefs::dom_security_https_only_mode()) {
+  // Check if https-only mode upgrades this later anyway
+  if (nsHTTPSOnlyUtils::IsSafeToAcceptCORSOrMixedContent(aLoadInfo)) {
     *aDecision = ACCEPT;
     return NS_OK;
   }
@@ -645,7 +760,8 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   // Carve-out: if we're in the parent and we're loading media, e.g. through
   // webbrowserpersist, don't reject it if we can't find a docshell.
   if (XRE_IsParentProcess() && !requestingWindow &&
-      (contentType == TYPE_IMAGE || contentType == TYPE_MEDIA)) {
+      (contentType == ExtContentPolicy::TYPE_IMAGE ||
+       contentType == ExtContentPolicy::TYPE_MEDIA)) {
     *aDecision = ACCEPT;
     return NS_OK;
   }
@@ -661,12 +777,13 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   // pref "security.mixed_content.upgrade_display_content" is true.
   // This behaves like GetUpgradeInsecureRequests above in that the channel will
   // be upgraded to https before fetching any data from the netwerk.
-  bool isUpgradableDisplayType =
-      nsContentUtils::IsUpgradableDisplayType(contentType) &&
-      StaticPrefs::security_mixed_content_upgrade_display_content();
-  if (isHttpScheme && isUpgradableDisplayType) {
-    *aDecision = ACCEPT;
-    return NS_OK;
+  if (isHttpScheme) {
+    bool isUpgradableContentType =
+        IsUpgradableContentType(internalContentType, /* aConsiderPrefs */ true);
+    if (isUpgradableContentType) {
+      *aDecision = ACCEPT;
+      return NS_OK;
+    }
   }
 
   // The page might have set the CSP directive 'block-all-mixed-content' which
@@ -685,15 +802,19 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
     CopyUTF8toUTF16(spec, *params.AppendElement());
 
     CSP_LogLocalizedStr("blockAllMixedContent", params,
-                        EmptyString(),  // aSourceFile
-                        EmptyString(),  // aScriptSample
-                        0,              // aLineNumber
-                        0,              // aColumnNumber
-                        nsIScriptError::errorFlag,
-                        NS_LITERAL_CSTRING("blockAllMixedContent"),
+                        u""_ns,  // aSourceFile
+                        u""_ns,  // aScriptSample
+                        0,       // aLineNumber
+                        1,       // aColumnNumber
+                        nsIScriptError::errorFlag, "blockAllMixedContent"_ns,
                         requestingWindow->Id(),
                         !!aLoadInfo->GetOriginAttributes().mPrivateBrowsingId);
     *aDecision = REJECT_REQUEST;
+    MOZ_LOG(
+        sMCBLog, LogLevel::Verbose,
+        ("  -> decision: Request will be rejected because the CSP directive "
+         "'block-all-mixed-content' was set while trying to load data from "
+         "a non-secure origin."));
     return NS_OK;
   }
 
@@ -703,10 +824,11 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   bool rootHasSecureConnection = topWC->GetIsSecure();
   bool allowMixedContent = topWC->GetAllowMixedContent();
 
-  // When navigating an iframe, the iframe may be https
-  // but its parents may not be.  Check the parents to see if any of them are
-  // https. If none of the parents are https, allow the load.
-  if (contentType == TYPE_SUBDOCUMENT && !rootHasSecureConnection) {
+  // When navigating an iframe, the iframe may be https but its parents may not
+  // be. Check the parents to see if any of them are https. If none of the
+  // parents are https, allow the load.
+  if (contentType == ExtContentPolicyType::TYPE_SUBDOCUMENT &&
+      !rootHasSecureConnection && !parentIsHttps) {
     bool httpsParentExists = false;
 
     RefPtr<WindowContext> curWindow = requestingWindow;
@@ -757,10 +879,12 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
   }
 
   // set hasMixedContentObjectSubrequest on this object if necessary
-  if (contentType == TYPE_OBJECT_SUBREQUEST) {
+  if (contentType == ExtContentPolicyType::TYPE_OBJECT_SUBREQUEST &&
+      aReportError) {
     if (!StaticPrefs::security_mixed_content_block_object_subrequest()) {
       nsAutoCString messageLookUpKey(
           "LoadingMixedDisplayObjectSubrequestDeprecation");
+
       LogMixedContentMessage(classification, aContentLocation, topWC->Id(),
                              eUserOverride, requestingLocation,
                              messageLookUpKey);
@@ -779,6 +903,11 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
       newState |= nsIWebProgressListener::STATE_LOADED_MIXED_DISPLAY_CONTENT;
     } else {
       *aDecision = nsIContentPolicy::REJECT_REQUEST;
+      MOZ_LOG(sMCBLog, LogLevel::Verbose,
+              ("  -> decision: Request will be rejected because the content is "
+               "display "
+               "content (blocked by pref "
+               "security.mixed_content.block_display_content)."));
       newState |= nsIWebProgressListener::STATE_BLOCKED_MIXED_DISPLAY_CONTENT;
     }
   } else {
@@ -795,21 +924,30 @@ nsresult nsMixedContentBlocker::ShouldLoad(bool aHadInsecureImageRedirect,
       // User has not overriden the pref by Disabling protection. Reject the
       // request and update the security state.
       *aDecision = nsIContentPolicy::REJECT_REQUEST;
+      MOZ_LOG(sMCBLog, LogLevel::Verbose,
+              ("  -> decision: Request will be rejected because the content is "
+               "active "
+               "content (blocked by pref "
+               "security.mixed_content.block_active_content)."));
       // The user has not overriden the pref, so make sure they still have an
       // option by calling nativeDocShell which will invoke the doorhanger
       newState |= nsIWebProgressListener::STATE_BLOCKED_MIXED_ACTIVE_CONTENT;
     }
   }
 
-  LogMixedContentMessage(classification, aContentLocation, topWC->Id(),
-                         (*aDecision == nsIContentPolicy::REJECT_REQUEST)
-                             ? eBlocked
-                             : eUserOverride,
-                         requestingLocation);
+  // To avoid duplicate errors on the console, we do not report blocked
+  // preloads to the console.
+  if (!isPreload && aReportError) {
+    LogMixedContentMessage(classification, aContentLocation, topWC->Id(),
+                           (*aDecision == nsIContentPolicy::REJECT_REQUEST)
+                               ? eBlocked
+                               : eUserOverride,
+                           requestingLocation);
+  }
 
   // Notify the top WindowContext of the flags we've computed, and it
   // will handle updating any relevant security UI.
-  topWC->AddMixedContentSecurityState(newState);
+  topWC->AddSecurityState(newState);
   return NS_OK;
 }
 
@@ -847,18 +985,27 @@ bool nsMixedContentBlocker::URISafeToBeLoadedInSecureContext(nsIURI* aURI) {
           &schemeSecure))) {
     return false;
   }
+
+  MOZ_LOG(sMCBLog, LogLevel::Verbose,
+          ("  - URISafeToBeLoadedInSecureContext:"));
+  MOZ_LOG(sMCBLog, LogLevel::Verbose, ("    - schemeLocal: %i", schemeLocal));
+  MOZ_LOG(sMCBLog, LogLevel::Verbose,
+          ("    - schemeNoReturnData: %i", schemeNoReturnData));
+  MOZ_LOG(sMCBLog, LogLevel::Verbose,
+          ("    - schemeInherits: %i", schemeInherits));
+  MOZ_LOG(sMCBLog, LogLevel::Verbose, ("    - schemeSecure: %i", schemeSecure));
   return (schemeLocal || schemeNoReturnData || schemeInherits || schemeSecure);
 }
 
 NS_IMETHODIMP
 nsMixedContentBlocker::ShouldProcess(nsIURI* aContentLocation,
                                      nsILoadInfo* aLoadInfo,
-                                     const nsACString& aMimeGuess,
                                      int16_t* aDecision) {
   if (!aContentLocation) {
     // aContentLocation may be null when a plugin is loading without an
     // associated URI resource
-    if (aLoadInfo->GetExternalContentPolicyType() == TYPE_OBJECT) {
+    if (aLoadInfo->GetExternalContentPolicyType() ==
+        ExtContentPolicyType::TYPE_OBJECT) {
       *aDecision = ACCEPT;
       return NS_OK;
     }
@@ -869,7 +1016,7 @@ nsMixedContentBlocker::ShouldProcess(nsIURI* aContentLocation,
     return NS_ERROR_FAILURE;
   }
 
-  return ShouldLoad(aContentLocation, aLoadInfo, aMimeGuess, aDecision);
+  return ShouldLoad(aContentLocation, aLoadInfo, aDecision);
 }
 
 // Record information on when HSTS would have made mixed content not mixed
@@ -890,8 +1037,7 @@ void nsMixedContentBlocker::AccumulateMixedContentHSTS(
   if (NS_FAILED(rv)) {
     return;
   }
-  rv = sss->IsSecureURI(nsISiteSecurityService::HEADER_HSTS, aURI, 0,
-                        aOriginAttributes, nullptr, nullptr, &hsts);
+  rv = sss->IsSecureURI(aURI, aOriginAttributes, &hsts);
   if (NS_FAILED(rv)) {
     return;
   }

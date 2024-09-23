@@ -11,8 +11,7 @@
 #include "nsGenericHTMLElement.h"
 #include "mozilla/dom/HTMLFormElement.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class HTMLLegendElement final : public nsGenericHTMLElement {
  public:
@@ -27,12 +26,12 @@ class HTMLLegendElement final : public nsGenericHTMLElement {
                      const mozilla::dom::CallerType aCallerType,
                      ErrorResult& aError) override;
 
-  virtual bool PerformAccesskey(bool aKeyCausesActivation,
-                                bool aIsTrustedEvent) override;
+  virtual Result<bool, nsresult> PerformAccesskey(
+      bool aKeyCausesActivation, bool aIsTrustedEvent) override;
 
   // nsIContent
   virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  virtual void UnbindFromTree(bool aNullParent = true) override;
+  virtual void UnbindFromTree(UnbindContext&) override;
   virtual bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
                               const nsAString& aValue,
                               nsIPrincipal* aMaybeScriptedPrincipal,
@@ -41,12 +40,6 @@ class HTMLLegendElement final : public nsGenericHTMLElement {
                                               int32_t aModType) const override;
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-
-  Element* GetFormElement() const {
-    nsCOMPtr<nsIFormControl> fieldsetControl = do_QueryInterface(GetFieldSet());
-
-    return fieldsetControl ? fieldsetControl->GetFormElement() : nullptr;
-  }
 
   enum class LegendAlignValue : uint8_t {
     Left,
@@ -57,11 +50,21 @@ class HTMLLegendElement final : public nsGenericHTMLElement {
     InlineStart,
     InlineEnd,
   };
+
+  /**
+   * Return the align value to use for the given fieldset writing-mode.
+   * (This method resolves Left/Right to the appropriate InlineStart/InlineEnd).
+   * @param aCBWM the fieldset writing-mode
+   * @note we only parse left/right/center, so this method returns Center,
+   * InlineStart or InlineEnd.
+   */
+  LegendAlignValue LogicalAlign(mozilla::WritingMode aCBWM) const;
+
   /**
    * WebIDL Interface
    */
 
-  already_AddRefed<HTMLFormElement> GetForm();
+  HTMLFormElement* GetForm() const;
 
   void GetAlign(DOMString& aAlign) { GetHTMLAttr(nsGkAtoms::align, aAlign); }
 
@@ -70,7 +73,7 @@ class HTMLLegendElement final : public nsGenericHTMLElement {
   }
 
   nsINode* GetScopeChainParent() const override {
-    Element* form = GetFormElement();
+    Element* form = GetForm();
     return form ? form : nsGenericHTMLElement::GetScopeChainParent();
   }
 
@@ -87,7 +90,6 @@ class HTMLLegendElement final : public nsGenericHTMLElement {
   nsIContent* GetFieldSet() const;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_HTMLLegendElement_h */

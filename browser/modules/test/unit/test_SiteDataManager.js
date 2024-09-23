@@ -3,40 +3,64 @@
  */
 "use strict";
 
+// We intend to add tests that add real quota manager data to test
+// data size fetching in the new clear history dialog.
+// Bug 1874387 - Add a test to SiteDataManager to test data size display in the new clear
+// history dialog using real quota manager data
+
+ChromeUtils.defineESModuleGetters(this, {
+  SiteDataManager: "resource:///modules/SiteDataManager.sys.mjs",
+  SiteDataTestUtils: "resource://testing-common/SiteDataTestUtils.sys.mjs",
+  PermissionTestUtils: "resource://testing-common/PermissionTestUtils.sys.mjs",
+});
+
 const EXAMPLE_ORIGIN = "https://www.example.com";
 const EXAMPLE_ORIGIN_2 = "https://example.org";
 const EXAMPLE_ORIGIN_3 = "http://localhost:8000";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { SiteDataManager } = ChromeUtils.import(
-  "resource:///modules/SiteDataManager.jsm"
-);
-const { SiteDataTestUtils } = ChromeUtils.import(
-  "resource://testing-common/SiteDataTestUtils.jsm"
-);
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "setTimeout",
-  "resource://gre/modules/Timer.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TestUtils",
-  "resource://testing-common/TestUtils.jsm"
-);
+let p =
+  Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+    EXAMPLE_ORIGIN
+  );
+let partitionKey = `(${p.scheme},${p.baseDomain})`;
+let EXAMPLE_ORIGIN_2_PARTITIONED =
+  Services.scriptSecurityManager.createContentPrincipal(
+    Services.io.newURI(EXAMPLE_ORIGIN_2),
+    {
+      partitionKey,
+    }
+  ).origin;
 
 add_task(function setup() {
   do_get_profile();
 });
 
 add_task(async function testGetSites() {
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo1", "bar1");
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo2", "bar2");
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo1",
+    value: "bar1",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo2",
+    value: "bar2",
+  });
+
+  // Cookie of EXAMPLE_ORIGIN_2 partitioned under EXAMPLE_ORIGIN.
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2_PARTITIONED,
+    name: "foo3",
+    value: "bar3",
+  });
+  // IndexedDB storage of EXAMPLE_ORIGIN_2 partitioned under EXAMPLE_ORIGIN.
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN, 4096);
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN_2, "foo", "bar");
+  await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2_PARTITIONED, 4096);
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2,
+    name: "foo",
+    value: "bar",
+  });
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2, 2048);
   await SiteDataTestUtils.persist(EXAMPLE_ORIGIN_2);
 
@@ -52,16 +76,12 @@ add_task(async function testGetSites() {
     "example.com",
     "Has the correct base domain for example.com"
   );
-  Assert.equal(
-    site1.host,
-    "www.example.com",
-    "Has the correct host for example.com"
-  );
-  Assert.greater(site1.usage, 4096, "Has correct usage for example.com");
+  // 4096 partitioned + 4096 unpartitioned.
+  Assert.greater(site1.usage, 4096 * 2, "Has correct usage for example.com");
   Assert.equal(site1.persisted, false, "example.com is not persisted");
   Assert.equal(
     site1.cookies.length,
-    2,
+    3, // 2 top level, 1 partitioned.
     "Has correct number of cookies for example.com"
   );
   Assert.ok(
@@ -77,11 +97,6 @@ add_task(async function testGetSites() {
     site2.baseDomain,
     "example.org",
     "Has the correct base domain for example.org"
-  );
-  Assert.equal(
-    site2.host,
-    "example.org",
-    "Has the correct host for example.org"
   );
   Assert.greater(site2.usage, 2048, "Has correct usage for example.org");
   Assert.equal(site2.persisted, true, "example.org is persisted");
@@ -125,10 +140,28 @@ add_task(async function testRemove() {
   let uri = Services.io.newURI(EXAMPLE_ORIGIN);
   PermissionTestUtils.add(uri, "camera", Services.perms.ALLOW_ACTION);
 
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo1", "bar1");
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo2", "bar2");
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo1",
+    value: "bar1",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo2",
+    value: "bar2",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2_PARTITIONED,
+    name: "foo3",
+    value: "bar3",
+  });
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN, 4096);
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN_2, "foo", "bar");
+  await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2_PARTITIONED, 4096);
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2,
+    name: "foo",
+    value: "bar",
+  });
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2, 2048);
   await SiteDataTestUtils.persist(EXAMPLE_ORIGIN_2);
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_3, 2048);
@@ -139,7 +172,7 @@ add_task(async function testRemove() {
 
   Assert.equal(sites.length, 3, "Has three sites.");
 
-  await SiteDataManager.remove(["localhost"]);
+  await SiteDataManager.remove("localhost");
 
   sites = await SiteDataManager.getSites();
 
@@ -151,7 +184,7 @@ add_task(async function testRemove() {
 
   Assert.equal(sites.length, 1, "Has one site.");
   Assert.equal(
-    sites[0].host,
+    sites[0].baseDomain,
     "example.org",
     "Has not cleared data for example.org"
   );
@@ -182,10 +215,28 @@ add_task(async function testRemoveSiteData() {
   let uri = Services.io.newURI(EXAMPLE_ORIGIN);
   PermissionTestUtils.add(uri, "camera", Services.perms.ALLOW_ACTION);
 
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo1", "bar1");
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN, "foo2", "bar2");
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo1",
+    value: "bar1",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN,
+    name: "foo2",
+    value: "bar2",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2_PARTITIONED,
+    name: "foo3",
+    value: "bar3",
+  });
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN, 4096);
-  SiteDataTestUtils.addToCookies(EXAMPLE_ORIGIN_2, "foo", "bar");
+  await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2_PARTITIONED, 4096);
+  SiteDataTestUtils.addToCookies({
+    origin: EXAMPLE_ORIGIN_2,
+    name: "foo",
+    value: "bar",
+  });
   await SiteDataTestUtils.addToIndexedDB(EXAMPLE_ORIGIN_2, 2048);
   await SiteDataTestUtils.persist(EXAMPLE_ORIGIN_2);
 

@@ -44,10 +44,13 @@ static intptr_t vector_reader(uint8_t* buffer, uintptr_t size, void* userdata) {
   if (source->location > source->buffer.size()) {
     return -1;
   }
-  uintptr_t available = source->buffer.size() - source->location;
+  uintptr_t available =
+      source->buffer.data() ? source->buffer.size() - source->location : 0;
   uintptr_t length = std::min(available, size);
-  memcpy(buffer, source->buffer.data() + source->location, length);
-  source->location += length;
+  if (length) {
+    memcpy(buffer, source->buffer.data() + source->location, length);
+    source->location += length;
+  }
   return length;
 }
 
@@ -89,12 +92,12 @@ TEST(rust, MP4MetadataEmpty)
   io = {vector_reader, &buf};
   rv = mp4parse_new(&io, &parser);
   ASSERT_EQ(parser, nullptr);
-  EXPECT_EQ(rv, MP4PARSE_STATUS_INVALID);
+  EXPECT_EQ(rv, MP4PARSE_STATUS_MOOV_MISSING);
 
   buf.buffer.reserve(4097);
   rv = mp4parse_new(&io, &parser);
   ASSERT_EQ(parser, nullptr);
-  EXPECT_EQ(rv, MP4PARSE_STATUS_INVALID);
+  EXPECT_EQ(rv, MP4PARSE_STATUS_MOOV_MISSING);
 
   // Empty buffers should fail.
   buf.buffer.resize(4097, 0);

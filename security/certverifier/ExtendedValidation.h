@@ -12,7 +12,7 @@
 namespace mozilla {
 namespace pkix {
 struct CertPolicyId;
-}
+}  // namespace pkix
 }  // namespace mozilla
 
 namespace mozilla {
@@ -21,24 +21,20 @@ namespace psm {
 nsresult LoadExtendedValidationInfo();
 
 /**
- * Finds the first policy OID in the given cert that is known to be an EV policy
- * OID.
+ * Finds all policy OIDs in the given cert that are known to be EV policy OIDs.
  *
  * @param cert
- *        The cert to find the first EV policy of.
- * @param policy
- *        The found policy.
- * @param policyOidTag
- *        The OID tag of the found policy.
- * @return true if a suitable policy was found, false otherwise.
+ *        The bytes of the cert to find the EV policies of.
+ * @param policies
+ *        The found policies.
  */
-bool GetFirstEVPolicy(CERTCertificate& cert,
-                      /*out*/ mozilla::pkix::CertPolicyId& policy,
-                      /*out*/ SECOidTag& policyOidTag);
+void GetKnownEVPolicies(
+    const nsTArray<uint8_t>& cert,
+    /*out*/ nsTArray<mozilla::pkix::CertPolicyId>& policies);
 
 // CertIsAuthoritativeForEVPolicy does NOT evaluate whether the cert is trusted
 // or distrusted.
-bool CertIsAuthoritativeForEVPolicy(const UniqueCERTCertificate& cert,
+bool CertIsAuthoritativeForEVPolicy(const nsTArray<uint8_t>& cert,
                                     const mozilla::pkix::CertPolicyId& policy);
 
 }  // namespace psm

@@ -7,20 +7,21 @@
 #ifndef nsRangeFrame_h___
 #define nsRangeFrame_h___
 
-#include "mozilla/Attributes.h"
 #include "mozilla/Decimal.h"
 #include "mozilla/EventForwards.h"
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
-#include "nsIDOMEventListener.h"
 #include "nsCOMPtr.h"
+#include "nsTArray.h"
 
 class nsDisplayRangeFocusRing;
 
 namespace mozilla {
+class ListMutationObserver;
 class PresShell;
 namespace dom {
 class Event;
+class HTMLInputElement;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -29,64 +30,50 @@ class nsRangeFrame final : public nsContainerFrame,
   friend nsIFrame* NS_NewRangeFrame(mozilla::PresShell* aPresShell,
                                     ComputedStyle* aStyle);
 
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) override;
+
   friend class nsDisplayRangeFocusRing;
 
   explicit nsRangeFrame(ComputedStyle* aStyle, nsPresContext* aPresContext);
   virtual ~nsRangeFrame();
 
-  typedef mozilla::PseudoStyleType PseudoStyleType;
-  typedef mozilla::dom::Element Element;
+  using Element = mozilla::dom::Element;
 
  public:
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS(nsRangeFrame)
 
   // nsIFrame overrides
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
-
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
   void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                         const nsDisplayListSet& aLists) override;
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("Range"), aResult);
+  nsresult GetFrameName(nsAString& aResult) const override {
+    return MakeFrameName(u"Range"_ns, aResult);
   }
 #endif
 
 #ifdef ACCESSIBILITY
-  virtual mozilla::a11y::AccType AccessibleType() override;
+  mozilla::a11y::AccType AccessibleType() override;
 #endif
 
   // nsIAnonymousContentCreator
-  virtual nsresult CreateAnonymousContent(
-      nsTArray<ContentInfo>& aElements) override;
-  virtual void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
-                                        uint32_t aFilter) override;
+  nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) override;
+  void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
+                                uint32_t aFilter) override;
 
-  virtual nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                    int32_t aModType) override;
+  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+                            int32_t aModType) override;
 
-  virtual mozilla::LogicalSize ComputeAutoSize(
-      gfxContext* aRenderingContext, mozilla::WritingMode aWM,
-      const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) override;
-
-  virtual nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetPrefISize(gfxContext* aRenderingContext) override;
-
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock));
-  }
+  nscoord GetMinISize(gfxContext* aRenderingContext) override;
+  nscoord GetPrefISize(gfxContext* aRenderingContext) override;
 
   /**
    * Returns true if the slider's thumb moves horizontally, or else false if it
@@ -110,6 +97,18 @@ class nsRangeFrame final : public nsContainerFrame,
     return GetWritingMode().IsPhysicalRTL();
   }
 
+  /**
+   * Returns true if the range progresses upwards (for vertical ranges in
+   * horizontal writing mode, or for bidi-RTL in vertical mode). Only
+   * relevant when IsHorizontal() is false.
+   */
+  bool IsUpwards() const {
+    MOZ_ASSERT(!IsHorizontal());
+    mozilla::WritingMode wm = GetWritingMode();
+    return wm.GetBlockDir() == mozilla::WritingMode::BlockDir::TB ||
+           wm.GetInlineDir() == mozilla::WritingMode::InlineDir::BTT;
+  }
+
   double GetMin() const;
   double GetMax() const;
   double GetValue() const;
@@ -121,6 +120,14 @@ class nsRangeFrame final : public nsContainerFrame,
    * maximum).
    */
   double GetValueAsFractionOfRange();
+
+  /**
+   * Returns the given value as a fraction of the difference between the input's
+   * minimum and its maximum (i.e. returns 0.0 when the value is the same as the
+   * input's minimum, and returns 1.0 when the value is the same as the input's
+   * maximum).
+   */
+  double GetDoubleAsFractionOfRange(const mozilla::Decimal& value);
 
   /**
    * Returns whether the frame and its child should use the native style.
@@ -138,23 +145,33 @@ class nsRangeFrame final : public nsContainerFrame,
    */
   void UpdateForValueChange();
 
+  nsTArray<mozilla::Decimal> TickMarks();
+
+  /**
+   * Returns the given value's offset from the range's nearest list tick mark
+   * or NaN if there are no tick marks.
+   */
+  mozilla::Decimal NearestTickMark(const mozilla::Decimal& aValue);
+
+ protected:
+  mozilla::dom::HTMLInputElement& InputElement() const;
+
  private:
   // Return our preferred size in the cross-axis (the axis perpendicular
   // to the direction of movement of the thumb).
-  nscoord AutoCrossSize(nscoord aEm);
-
-  nsresult MakeAnonymousDiv(Element** aResult, PseudoStyleType aPseudoType,
-                            nsTArray<ContentInfo>& aElements);
+  nscoord AutoCrossSize();
 
   // Helper function which reflows the anonymous div frames.
   void ReflowAnonymousContent(nsPresContext* aPresContext,
                               ReflowOutput& aDesiredSize,
+                              const mozilla::LogicalSize& aContentBoxSize,
                               const ReflowInput& aReflowInput);
 
-  void DoUpdateThumbPosition(nsIFrame* aThumbFrame, const nsSize& aRangeSize);
+  void DoUpdateThumbPosition(nsIFrame* aThumbFrame,
+                             const nsSize& aRangeContentBoxSize);
 
   void DoUpdateRangeProgressFrame(nsIFrame* aProgressFrame,
-                                  const nsSize& aRangeSize);
+                                  const nsSize& aRangeContentBoxSize);
 
   /**
    * The div used to show the ::-moz-range-track pseudo-element.
@@ -176,22 +193,11 @@ class nsRangeFrame final : public nsContainerFrame,
    */
   nsCOMPtr<Element> mThumbDiv;
 
-  class DummyTouchListener final : public nsIDOMEventListener {
-   private:
-    ~DummyTouchListener() = default;
-
-   public:
-    NS_DECL_ISUPPORTS
-
-    NS_IMETHOD HandleEvent(mozilla::dom::Event* aEvent) override {
-      return NS_OK;
-    }
-  };
-
   /**
-   * A no-op touch-listener used for APZ purposes (see nsRangeFrame::Init).
+   * This mutation observer is used to invalidate paint when the @list changes,
+   * when a @list exists.
    */
-  RefPtr<DummyTouchListener> mDummyTouchListener;
+  RefPtr<mozilla::ListMutationObserver> mListMutationObserver;
 };
 
 #endif

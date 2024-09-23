@@ -15,18 +15,19 @@ exports[`CompatibilityApp component renders with settings 1`] = `
             "component": <IssuePane
               issues={Array []}
             />,
-            "header": "Selected Element",
+            "header": "compatibility-selected-element-header",
             "id": "compatibility-app--selected-element-pane",
             "opened": true,
           },
           Object {
             "component": Array [
               <IssuePane
+                dispatch={[Function]}
                 issues={Array []}
               />,
               null,
             ],
-            "header": "All Issues",
+            "header": "compatibility-all-elements-header",
             "id": "compatibility-app--all-elements-pane",
             "opened": true,
           },
@@ -56,18 +57,19 @@ exports[`CompatibilityApp component renders zero issues 1`] = `
             "component": <IssuePane
               issues={Array []}
             />,
-            "header": "Selected Element",
+            "header": "compatibility-selected-element-header",
             "id": "compatibility-app--selected-element-pane",
             "opened": true,
           },
           Object {
             "component": Array [
               <IssuePane
+                dispatch={[Function]}
                 issues={Array []}
               />,
               null,
             ],
-            "header": "All Issues",
+            "header": "compatibility-all-elements-header",
             "id": "compatibility-app--all-elements-pane",
             "opened": true,
           },

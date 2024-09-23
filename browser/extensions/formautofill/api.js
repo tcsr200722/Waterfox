@@ -4,30 +4,16 @@
 
 "use strict";
 
-/* globals ExtensionAPI */
+/* globals ExtensionAPI, Services, XPCOMUtils */
 
 const CACHED_STYLESHEETS = new WeakMap();
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormAutofill",
-  "resource://formautofill/FormAutofill.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormAutofillStatus",
-  "resource://formautofill/FormAutofillParent.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "AutoCompleteParent",
-  "resource://gre/actors/AutoCompleteParent.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  FormAutofill: "resource://autofill/FormAutofill.sys.mjs",
+  FormAutofillParent: "resource://autofill/FormAutofillParent.sys.mjs",
+  FormAutofillStatus: "resource://autofill/FormAutofillParent.sys.mjs",
+  AutoCompleteParent: "resource://gre/actors/AutoCompleteParent.sys.mjs",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -55,44 +41,71 @@ function insertStyleSheet(domWindow, url) {
   }
 }
 
-function onMaybeOpenPopup(domWindow) {
+function ensureCssLoaded(domWindow) {
   if (CACHED_STYLESHEETS.has(domWindow)) {
     // This window already has autofill stylesheets.
     return;
   }
 
   insertStyleSheet(domWindow, "chrome://formautofill/content/formautofill.css");
-  insertStyleSheet(
-    domWindow,
-    "resource://formautofill/autocomplete-item-shared.css"
-  );
-  insertStyleSheet(domWindow, "resource://formautofill/autocomplete-item.css");
-}
-
-function isAvailable() {
-  let availablePref = Services.prefs.getCharPref(
-    "extensions.formautofill.available"
-  );
-  if (availablePref == "on") {
-    return true;
-  } else if (availablePref == "detect") {
-    let locale = Services.locale.requestedLocale;
-    let region = Services.prefs.getCharPref("browser.search.region", "");
-    let supportedCountries = Services.prefs
-      .getCharPref("extensions.formautofill.supportedCountries")
-      .split(",");
-    if (
-      !Services.prefs.getBoolPref("extensions.formautofill.supportRTL") &&
-      Services.locale.isAppLocaleRTL
-    ) {
-      return false;
-    }
-    return locale == "en-US" && supportedCountries.includes(region);
-  }
-  return false;
 }
 
 this.formautofill = class extends ExtensionAPI {
+  /**
+   * Adjusts and checks form autofill preferences during startup.
+   *
+   * @param {boolean} addressAutofillAvailable
+   * @param {boolean} creditCardAutofillAvailable
+   */
+  adjustAndCheckFormAutofillPrefs(
+    addressAutofillAvailable,
+    creditCardAutofillAvailable
+  ) {
+    // Reset the sync prefs in case the features were previously available
+    // but aren't now.
+    if (!creditCardAutofillAvailable) {
+      Services.prefs.clearUserPref(
+        "services.sync.engine.creditcards.available"
+      );
+    }
+    if (!addressAutofillAvailable) {
+      Services.prefs.clearUserPref("services.sync.engine.addresses.available");
+    }
+
+    if (!addressAutofillAvailable && !creditCardAutofillAvailable) {
+      Services.prefs.clearUserPref("dom.forms.autocomplete.formautofill");
+      Services.telemetry.scalarSet("formautofill.availability", false);
+      return;
+    }
+
+    // This pref is used for web contents to detect the autocomplete feature.
+    // When it's true, "element.autocomplete" will return tokens we currently
+    // support -- otherwise it'll return an empty string.
+    Services.prefs.setBoolPref("dom.forms.autocomplete.formautofill", true);
+    Services.telemetry.scalarSet("formautofill.availability", true);
+
+    // These "*.available" prefs determines whether the "addresses"/"creditcards" sync engine is
+    // available (ie, whether it is shown in any UI etc) - it *does not* determine
+    // whether the engine is actually enabled or not.
+    if (FormAutofill.isAutofillAddressesAvailable) {
+      Services.prefs.setBoolPref(
+        "services.sync.engine.addresses.available",
+        true
+      );
+    } else {
+      Services.prefs.clearUserPref("services.sync.engine.addresses.available");
+    }
+    if (FormAutofill.isAutofillCreditCardsAvailable) {
+      Services.prefs.setBoolPref(
+        "services.sync.engine.creditcards.available",
+        true
+      );
+    } else {
+      Services.prefs.clearUserPref(
+        "services.sync.engine.creditcards.available"
+      );
+    }
+  }
   onStartup() {
     // We have to do this before actually determining if we're enabled, since
     // there are scripts inside of the core browser code that depend on the
@@ -126,61 +139,39 @@ this.formautofill = class extends ExtensionAPI {
     if (this.autofillManifest) {
       Components.manager.addBootstrappedManifestLocation(this.autofillManifest);
     } else {
-      Cu.reportError(
+      console.error(
         "Cannot find formautofill chrome.manifest for registring translated strings"
       );
     }
-
-    if (!isAvailable()) {
-      Services.prefs.clearUserPref("dom.forms.autocomplete.formautofill");
-      // reset the sync related prefs incase the feature was previously available
-      // but isn't now.
-      Services.prefs.clearUserPref("services.sync.engine.addresses.available");
-      Services.prefs.clearUserPref(
-        "services.sync.engine.creditcards.available"
-      );
-      Services.telemetry.scalarSet("formautofill.availability", false);
+    let addressAutofillAvailable = FormAutofill.isAutofillAddressesAvailable;
+    let creditCardAutofillAvailable =
+      FormAutofill.isAutofillCreditCardsAvailable;
+    this.adjustAndCheckFormAutofillPrefs(
+      addressAutofillAvailable,
+      creditCardAutofillAvailable
+    );
+    if (!creditCardAutofillAvailable && !addressAutofillAvailable) {
       return;
     }
-
-    // This pref is used for web contents to detect the autocomplete feature.
-    // When it's true, "element.autocomplete" will return tokens we currently
-    // support -- otherwise it'll return an empty string.
-    Services.prefs.setBoolPref("dom.forms.autocomplete.formautofill", true);
-    Services.telemetry.scalarSet("formautofill.availability", true);
-
-    // This pref determines whether the "addresses"/"creditcards" sync engine is
-    // available (ie, whether it is shown in any UI etc) - it *does not* determine
-    // whether the engine is actually enabled or not.
-    Services.prefs.setBoolPref(
-      "services.sync.engine.addresses.available",
-      true
-    );
-    if (FormAutofill.isAutofillCreditCardsAvailable) {
-      Services.prefs.setBoolPref(
-        "services.sync.engine.creditcards.available",
-        true
-      );
-    } else {
-      Services.prefs.clearUserPref(
-        "services.sync.engine.creditcards.available"
-      );
-    }
-
-    // Listen for the autocomplete popup message to lazily append our stylesheet related to the popup.
-    AutoCompleteParent.addPopupStateListener(onMaybeOpenPopup);
+    // Listen for the autocomplete popup message
+    // or the form submitted message (which may trigger a
+    // doorhanger) to lazily append our stylesheets related
+    // to the autocomplete feature.
+    AutoCompleteParent.addPopupStateListener(ensureCssLoaded);
+    FormAutofillParent.addMessageObserver(this);
+    this.onFormSubmitted = (data, window) => ensureCssLoaded(window);
 
     FormAutofillStatus.init();
 
     ChromeUtils.registerWindowActor("FormAutofill", {
       parent: {
-        moduleURI: "resource://formautofill/FormAutofillParent.jsm",
+        esModuleURI: "resource://autofill/FormAutofillParent.sys.mjs",
       },
       child: {
-        moduleURI: "resource://formautofill/FormAutofillChild.jsm",
+        esModuleURI: "resource://autofill/FormAutofillChild.sys.mjs",
         events: {
           focusin: {},
-          DOMFormBeforeSubmit: {},
+          "form-submission-detected": { createActor: false },
         },
       },
       allFrames: true,
@@ -205,7 +196,8 @@ this.formautofill = class extends ExtensionAPI {
 
     ChromeUtils.unregisterWindowActor("FormAutofill");
 
-    AutoCompleteParent.removePopupStateListener(onMaybeOpenPopup);
+    AutoCompleteParent.removePopupStateListener(ensureCssLoaded);
+    FormAutofillParent.removeMessageObserver(this);
 
     for (let win of Services.wm.getEnumerator("navigator:browser")) {
       let cachedStyleSheets = CACHED_STYLESHEETS.get(win);

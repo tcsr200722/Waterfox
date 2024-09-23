@@ -6,9 +6,10 @@
 
 "use strict";
 
-const TEST_URI = "data:text/html;charset=utf-8,Web Console test for bug 595350";
+const TEST_URI =
+  "data:text/html;charset=utf-8,<!DOCTYPE html>Web Console test for bug 595350";
 
-add_task(async function() {
+add_task(async function () {
   requestLongerTimeout(3);
   // Bug 1518138: GC heuristics are broken for this test, so that the test
   // ends up running out of memory. Try to work-around the problem by GCing
@@ -23,10 +24,9 @@ add_task(async function() {
   info("Test tabs added in first window");
 
   info("Open a second window");
+  const windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
   const win2 = OpenBrowserWindow();
-  await new Promise(r => {
-    win2.addEventListener("load", r, { capture: true, once: true });
-  });
+  await windowOpenedPromise;
 
   info("Add test tabs in second window");
   const tab3 = await addTab(TEST_URI, { window: win2 });
@@ -37,15 +37,17 @@ add_task(async function() {
   for (const tab of tabs) {
     // Open the console in tab${i}.
     const hud = await openConsole(tab);
-    const browser = hud.currentTarget.localTab.linkedBrowser;
+    const browser = hud.commands.descriptorFront.localTab.linkedBrowser;
     const message = "message for tab " + tabs.indexOf(tab);
 
     // Log a message in the newly opened console.
-    const onMessage = waitForMessage(hud, message);
-    await SpecialPowers.spawn(browser, [message], function(msg) {
+    const onMessage = waitForMessageByType(hud, message, ".console-api");
+    await SpecialPowers.spawn(browser, [message], function (msg) {
       content.console.log(msg);
     });
     await onMessage;
+
+    await hud.toolbox.sourceMapURLService.waitForSourcesLoading();
   }
 
   const onConsolesDestroyed = waitForNEvents("web-console-destroyed", 4);

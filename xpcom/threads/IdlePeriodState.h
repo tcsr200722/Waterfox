@@ -25,6 +25,7 @@
 class nsIIdlePeriod;
 
 namespace mozilla {
+class TaskManager;
 namespace ipc {
 class IdleSchedulerChild;
 }  // namespace ipc
@@ -69,6 +70,13 @@ class IdlePeriodState {
   // locks. Consumers must ClearCachedIdleDeadline() once they are done.
   void UpdateCachedIdleDeadline(const MutexAutoUnlock& aProofOfUnlock) {
     mCachedIdleDeadline = GetIdleDeadlineInternal(false, aProofOfUnlock);
+  }
+
+  // If we have local idle deadline, but don't have an idle token, this will
+  // request such from the parent process when this is called in a child
+  // process.
+  void RequestIdleDeadlineIfNeeded(const MutexAutoUnlock& aProofOfUnlock) {
+    GetIdleDeadlineInternal(false, aProofOfUnlock);
   }
 
   // Reset our cached idle deadline, so we stop allowing idle runnables to run.
@@ -171,17 +179,12 @@ class IdlePeriodState {
 
   // If we're in a content process, we use mIdleScheduler to communicate with
   // the parent process for purposes of cross-process idle tracking.
-  RefPtr<ipc::IdleSchedulerChild> mIdleScheduler;
+  RefPtr<mozilla::ipc::IdleSchedulerChild> mIdleScheduler;
 
   // Our cached idle deadline.  This is set by UpdateCachedIdleDeadline() and
   // cleared by ClearCachedIdleDeadline().  Consumers should do the former while
   // not holding any locks, but may do the latter while holding locks.
   TimeStamp mCachedIdleDeadline;
-
-  // mIdleSchedulerInitialized is true if our mIdleScheduler has been
-  // initialized.  It may be null even after initialiazation, in various
-  // situations.
-  bool mIdleSchedulerInitialized = false;
 
   // mActive is true when the PrioritizedEventQueue or TaskController we are
   // associated with is running tasks.

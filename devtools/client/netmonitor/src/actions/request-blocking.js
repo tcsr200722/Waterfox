@@ -4,8 +4,6 @@
 
 "use strict";
 
-const Services = require("Services");
-
 const {
   ADD_BLOCKED_URL,
   TOGGLE_BLOCKING_ENABLED,
@@ -16,22 +14,23 @@ const {
   ENABLE_ALL_BLOCKED_URLS,
   DISABLE_ALL_BLOCKED_URLS,
   DISABLE_MATCHING_URLS,
+  SYNCED_BLOCKED_URLS,
   OPEN_ACTION_BAR,
   SELECT_ACTION_BAR_TAB,
   PANELS,
-} = require("devtools/client/netmonitor/src/constants");
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 function toggleRequestBlockingPanel() {
-  return (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     const state = getState();
-    state.ui.networkActionOpen &&
-    state.ui.selectedActionBarTabId === PANELS.BLOCKING
-      ? dispatch({ type: OPEN_ACTION_BAR, open: false })
-      : dispatch({ type: OPEN_ACTION_BAR, open: true });
-    dispatch({
-      type: SELECT_ACTION_BAR_TAB,
-      id: PANELS.BLOCKING,
-    });
+    if (
+      state.ui.networkActionOpen &&
+      state.ui.selectedActionBarTabId === PANELS.BLOCKING
+    ) {
+      dispatch(closeRequestBlocking());
+    } else {
+      dispatch(await openRequestBlocking());
+    }
   };
 }
 
@@ -83,35 +82,58 @@ function updateBlockedUrl(oldUrl, newUrl) {
   };
 }
 
+async function openRequestBlocking() {
+  return async ({ dispatch, getState, commands }) => {
+    const state = getState();
+    if (!state.requestBlocking.blockingSynced) {
+      const blockedUrls = state.requestBlocking.blockedUrls;
+      const responses = await commands.networkCommand.getBlockedUrls();
+      const urls = responses.flat();
+      if (urls.length !== blockedUrls.length) {
+        urls.forEach(url => dispatch(addBlockedUrl(url)));
+      }
+      dispatch({ type: SYNCED_BLOCKED_URLS, synced: true });
+    }
+
+    dispatch({ type: OPEN_ACTION_BAR, open: true });
+    dispatch({
+      type: SELECT_ACTION_BAR_TAB,
+      id: PANELS.BLOCKING,
+    });
+  };
+}
+
+function closeRequestBlocking() {
+  return ({ dispatch }) => {
+    dispatch({ type: OPEN_ACTION_BAR, open: false });
+    dispatch({
+      type: SELECT_ACTION_BAR_TAB,
+      id: PANELS.BLOCKING,
+    });
+  };
+}
+
 function openRequestBlockingAndAddUrl(url) {
-  return (dispatch, getState) => {
+  return async ({ dispatch }) => {
     const showBlockingPanel = Services.prefs.getBoolPref(
       "devtools.netmonitor.features.requestBlocking"
     );
 
     if (showBlockingPanel) {
-      dispatch({ type: OPEN_ACTION_BAR, open: true });
-      dispatch({
-        type: SELECT_ACTION_BAR_TAB,
-        id: PANELS.BLOCKING,
-      });
+      dispatch(await openRequestBlocking());
     }
     dispatch({ type: ADD_BLOCKED_URL, url });
   };
 }
 
 function openRequestBlockingAndDisableUrls(url) {
-  return (dispatch, getState) => {
+  return async ({ dispatch }) => {
     const showBlockingPanel = Services.prefs.getBoolPref(
       "devtools.netmonitor.features.requestBlocking"
     );
 
     if (showBlockingPanel) {
-      dispatch({ type: OPEN_ACTION_BAR, open: true });
-      dispatch({
-        type: SELECT_ACTION_BAR_TAB,
-        id: PANELS.BLOCKING,
-      });
+      dispatch(await openRequestBlocking());
     }
 
     dispatch({ type: DISABLE_MATCHING_URLS, url });

@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::error_recording::{record_error, ErrorType};
+use crate::common_metric_data::CommonMetricDataInternal;
+use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorType};
 use crate::metrics::Metric;
 use crate::metrics::MetricType;
 use crate::storage::StorageManager;
@@ -14,36 +15,42 @@ use crate::Glean;
 /// Used to store explicit non-negative integers.
 #[derive(Clone, Debug)]
 pub struct QuantityMetric {
-    meta: CommonMetricData,
+    meta: CommonMetricDataInternal,
 }
 
 impl MetricType for QuantityMetric {
-    fn meta(&self) -> &CommonMetricData {
+    fn meta(&self) -> &CommonMetricDataInternal {
         &self.meta
-    }
-
-    fn meta_mut(&mut self) -> &mut CommonMetricData {
-        &mut self.meta
     }
 }
 
+// IMPORTANT:
+//
+// When changing this implementation, make sure all the operations are
+// also declared in the related trait in `../traits/`.
 impl QuantityMetric {
-    /// Create a new quantity metric.
+    /// Creates a new quantity metric.
     pub fn new(meta: CommonMetricData) -> Self {
-        Self { meta }
+        Self { meta: meta.into() }
     }
 
-    /// Set the value. Must be non-negative.
+    /// Sets the value. Must be non-negative.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
-    /// * `glean` - The Glean instance this metric belongs to.
     /// * `value` - The value. Must be non-negative.
     ///
     /// ## Notes
     ///
     /// Logs an error if the `value` is negative.
-    pub fn set(&self, glean: &Glean, value: i64) {
+    pub fn set(&self, value: i64) {
+        let metric = self.clone();
+        crate::launch_with_glean(move |glean| metric.set_sync(glean, value))
+    }
+
+    /// Sets the value synchronously. Must be non-negative.
+    #[doc(hidden)]
+    pub fn set_sync(&self, glean: &Glean, value: i64) {
         if !self.should_record(glean) {
             return;
         }
@@ -64,19 +71,63 @@ impl QuantityMetric {
             .record(glean, &self.meta, &Metric::Quantity(value))
     }
 
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Get the currently stored value as an integer.
-    ///
-    /// This doesn't clear the stored value.
-    pub fn test_get_value(&self, glean: &Glean, storage_name: &str) -> Option<i64> {
-        match StorageManager.snapshot_metric(
+    /// Get current value.
+    #[doc(hidden)]
+    pub fn get_value<'a, S: Into<Option<&'a str>>>(
+        &self,
+        glean: &Glean,
+        ping_name: S,
+    ) -> Option<i64> {
+        let queried_ping_name = ping_name
+            .into()
+            .unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
+
+        match StorageManager.snapshot_metric_for_test(
             glean.storage(),
-            storage_name,
+            queried_ping_name,
             &self.meta.identifier(glean),
+            self.meta.inner.lifetime,
         ) {
             Some(Metric::Quantity(i)) => Some(i),
             _ => None,
         }
+    }
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Gets the currently stored value as an integer.
+    ///
+    /// This doesn't clear the stored value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
+    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<i64> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
+    }
+
+    /// **Exported for test purposes.**
+    ///
+    /// Gets the number of recorded errors for the given metric and error type.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The type of error
+    ///
+    /// # Returns
+    ///
+    /// The number of errors reported.
+    pub fn test_get_num_recorded_errors(&self, error: ErrorType) -> i32 {
+        crate::block_on_dispatcher();
+
+        crate::core::with_glean(|glean| {
+            test_get_num_recorded_errors(glean, self.meta(), error).unwrap_or(0)
+        })
     }
 }

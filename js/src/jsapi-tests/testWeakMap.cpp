@@ -6,9 +6,29 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gc/Zone.h"
-#include "js/Array.h"  // JS::GetArrayLength
+#include "js/Array.h"               // JS::GetArrayLength
+#include "js/Exception.h"           // JS_IsExceptionPending
+#include "js/GlobalObject.h"        // JS_NewGlobalObject
+#include "js/PropertyAndElement.h"  // JS_DefineProperty
+#include "js/WeakMap.h"
 #include "jsapi-tests/tests.h"
 #include "vm/Realm.h"
+
+using namespace js;
+
+static bool checkSize(JSContext* cx, JS::HandleObject map, uint32_t expected) {
+  JS::RootedObject keys(cx);
+  if (!JS_NondeterministicGetWeakMapKeys(cx, map, &keys)) {
+    return false;
+  }
+
+  uint32_t length;
+  if (!JS::GetArrayLength(cx, keys, &length)) {
+    return false;
+  }
+
+  return length == expected;
+}
 
 JSObject* keyDelegate = nullptr;
 
@@ -16,57 +36,118 @@ BEGIN_TEST(testWeakMap_basicOperations) {
   JS::RootedObject map(cx, JS::NewWeakMapObject(cx));
   CHECK(IsWeakMapObject(map));
 
-  JS::RootedObject key(cx, newKey());
-  CHECK(key);
-  CHECK(!IsWeakMapObject(key));
+  JS::RootedValue key(cx, JS::ObjectOrNullValue(newKey()));
+  CHECK(!key.isNull());
+  CHECK(!JS::IsWeakMapObject(&key.toObject()));
 
   JS::RootedValue r(cx);
   CHECK(GetWeakMapEntry(cx, map, key, &r));
   CHECK(r.isUndefined());
 
-  CHECK(checkSize(map, 0));
+  CHECK(checkSize(cx, map, 0));
 
   JS::RootedValue val(cx, JS::Int32Value(1));
   CHECK(SetWeakMapEntry(cx, map, key, val));
 
   CHECK(GetWeakMapEntry(cx, map, key, &r));
   CHECK(r == val);
-  CHECK(checkSize(map, 1));
+  CHECK(checkSize(cx, map, 1));
 
   JS_GC(cx);
 
   CHECK(GetWeakMapEntry(cx, map, key, &r));
   CHECK(r == val);
-  CHECK(checkSize(map, 1));
+  CHECK(checkSize(cx, map, 1));
 
-  key = nullptr;
+  key.setUndefined();
   JS_GC(cx);
 
-  CHECK(checkSize(map, 0));
+  CHECK(checkSize(cx, map, 0));
 
   return true;
 }
 
 JSObject* newKey() { return JS_NewPlainObject(cx); }
+END_TEST(testWeakMap_basicOperations)
 
-bool checkSize(JS::HandleObject map, uint32_t expected) {
-  JS::RootedObject keys(cx);
-  CHECK(JS_NondeterministicGetWeakMapKeys(cx, map, &keys));
+BEGIN_TEST(testWeakMap_setWeakMapEntry_invalid_key) {
+  JS::RootedObject map(cx, JS::NewWeakMapObject(cx));
+  CHECK(IsWeakMapObject(map));
+  CHECK(checkSize(cx, map, 0));
 
-  uint32_t length;
-  CHECK(JS::GetArrayLength(cx, keys, &length));
-  CHECK(length == expected);
+  JS::RootedString test(cx, JS_NewStringCopyZ(cx, "test"));
+  // sym is a Symbol in global Symbol registry and hence can't be used as a key.
+  JS::RootedSymbol sym(cx, JS::GetSymbolFor(cx, test));
+  JS::RootedValue key(cx, JS::SymbolValue(sym));
+  CHECK(!key.isUndefined());
+
+  JS::RootedValue val(cx, JS::Int32Value(1));
+
+  CHECK(!JS_IsExceptionPending(cx));
+  CHECK(SetWeakMapEntry(cx, map, key, val) == false);
+
+  CHECK(JS_IsExceptionPending(cx));
+  JS::Rooted<JS::Value> exn(cx);
+  CHECK(JS_GetPendingException(cx, &exn));
+  JS::Rooted<JSObject*> obj(cx, &exn.toObject());
+  JSErrorReport* err = JS_ErrorFromException(cx, obj);
+  CHECK(err->exnType == JSEXN_TYPEERR);
+
+  JS_ClearPendingException(cx);
+
+  JS::RootedValue r(cx);
+  CHECK(GetWeakMapEntry(cx, map, key, &r));
+  CHECK(r == JS::UndefinedValue());
+  CHECK(checkSize(cx, map, 0));
 
   return true;
 }
-END_TEST(testWeakMap_basicOperations)
+END_TEST(testWeakMap_setWeakMapEntry_invalid_key)
+
+#ifdef NIGHTLY_BUILD
+BEGIN_TEST(testWeakMap_basicOperations_symbols_as_keys) {
+  JS::RootedObject map(cx, JS::NewWeakMapObject(cx));
+  CHECK(IsWeakMapObject(map));
+
+  JS::RootedString test(cx, JS_NewStringCopyZ(cx, "test"));
+  JS::RootedSymbol sym(cx, JS::NewSymbol(cx, test));
+  CHECK(sym);
+  JS::RootedValue key(cx, JS::SymbolValue(sym));
+
+  JS::RootedValue r(cx);
+  CHECK(GetWeakMapEntry(cx, map, key, &r));
+  CHECK(r.isUndefined());
+
+  CHECK(checkSize(cx, map, 0));
+
+  JS::RootedValue val(cx, JS::Int32Value(1));
+  CHECK(SetWeakMapEntry(cx, map, key, val));
+
+  CHECK(GetWeakMapEntry(cx, map, key, &r));
+  CHECK(r == val);
+  CHECK(checkSize(cx, map, 1));
+
+  JS_GC(cx);
+
+  CHECK(GetWeakMapEntry(cx, map, key, &r));
+  CHECK(r == val);
+  CHECK(checkSize(cx, map, 1));
+
+  sym = nullptr;
+  key.setUndefined();
+  JS_GC(cx);
+
+  CHECK(checkSize(cx, map, 0));
+
+  return true;
+}
+END_TEST(testWeakMap_basicOperations_symbols_as_keys)
+#endif
 
 BEGIN_TEST(testWeakMap_keyDelegates) {
-#ifdef JS_GC_ZEAL
   AutoLeaveZeal nozeal(cx);
-#endif /* JS_GC_ZEAL */
 
-  JS_SetGCParameter(cx, JSGC_MODE, JSGC_MODE_ZONE_INCREMENTAL);
+  AutoGCParameter param(cx, JSGC_INCREMENTAL_GC_ENABLED, true);
   JS_GC(cx);
   JS::RootedObject map(cx, JS::NewWeakMapObject(cx));
   CHECK(map);
@@ -96,31 +177,26 @@ BEGIN_TEST(testWeakMap_keyDelegates) {
    * zone to finish marking before the delegate zone.
    */
   CHECK(newCCW(map, delegateRoot));
-  js::SliceBudget budget(js::WorkBudget(1000000));
-  cx->runtime()->gc.startDebugGC(GC_NORMAL, budget);
-  if (JS::IsIncrementalGCInProgress(cx)) {
-    cx->runtime()->gc.finishGC(JS::GCReason::DEBUG_GC);
-  }
+  performIncrementalGC();
 #ifdef DEBUG
   CHECK(map->zone()->lastSweepGroupIndex() <
         delegateRoot->zone()->lastSweepGroupIndex());
 #endif
 
   /* Add our entry to the weakmap. */
+  JS::RootedValue keyVal(cx, JS::ObjectValue(*key));
   JS::RootedValue val(cx, JS::Int32Value(1));
-  CHECK(SetWeakMapEntry(cx, map, key, val));
-  CHECK(checkSize(map, 1));
+  CHECK(SetWeakMapEntry(cx, map, keyVal, val));
+  CHECK(checkSize(cx, map, 1));
 
-  /* Check the delegate keeps the entry alive even if the key is not reachable.
+  /*
+   * Check the delegate keeps the entry alive even if the key is not reachable.
    */
   key = nullptr;
+  keyVal.setUndefined();
   CHECK(newCCW(map, delegateRoot));
-  budget = js::SliceBudget(js::WorkBudget(100000));
-  cx->runtime()->gc.startDebugGC(GC_NORMAL, budget);
-  if (JS::IsIncrementalGCInProgress(cx)) {
-    cx->runtime()->gc.finishGC(JS::GCReason::DEBUG_GC);
-  }
-  CHECK(checkSize(map, 1));
+  performIncrementalGC();
+  CHECK(checkSize(cx, map, 1));
 
   /*
    * Check that the zones finished marking at the same time, which is
@@ -135,7 +211,7 @@ BEGIN_TEST(testWeakMap_keyDelegates) {
   delegateRoot = nullptr;
   keyDelegate = nullptr;
   JS_GC(cx);
-  CHECK(checkSize(map, 0));
+  CHECK(checkSize(cx, map, 0));
 
   return true;
 }
@@ -152,7 +228,7 @@ static size_t DelegateObjectMoved(JSObject* obj, JSObject* old) {
 
 JSObject* newKey() {
   static const JSClass keyClass = {
-      "keyWithDelegate", JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(1),
+      "keyWithDelegate", JSCLASS_HAS_RESERVED_SLOTS(1),
       JS_NULL_CLASS_OPS, JS_NULL_CLASS_SPEC,
       JS_NULL_CLASS_EXT, JS_NULL_OBJECT_OPS};
 
@@ -202,7 +278,6 @@ JSObject* newDelegate() {
       nullptr,                   // mayResolve
       nullptr,                   // finalize
       nullptr,                   // call
-      nullptr,                   // hasInstance
       nullptr,                   // construct
       JS_GlobalObjectTraceHook,  // trace
   };
@@ -232,14 +307,18 @@ JSObject* newDelegate() {
   return global;
 }
 
-bool checkSize(JS::HandleObject map, uint32_t expected) {
-  JS::RootedObject keys(cx);
-  CHECK(JS_NondeterministicGetWeakMapKeys(cx, map, &keys));
+void performIncrementalGC() {
+  JSRuntime* rt = cx->runtime();
+  js::SliceBudget budget(js::WorkBudget(1000));
+  rt->gc.startDebugGC(JS::GCOptions::Normal, budget);
 
-  uint32_t length;
-  CHECK(JS::GetArrayLength(cx, keys, &length));
-  CHECK(length == expected);
-
-  return true;
+  // Wait until we've started marking before finishing the GC
+  // non-incrementally.
+  while (rt->gc.state() == gc::State::Prepare) {
+    rt->gc.debugGCSlice(budget);
+  }
+  if (JS::IsIncrementalGCInProgress(cx)) {
+    rt->gc.finishGC(JS::GCReason::DEBUG_GC);
+  }
 }
 END_TEST(testWeakMap_keyDelegates)

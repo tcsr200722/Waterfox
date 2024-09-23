@@ -27,8 +27,7 @@ static mozilla::LazyLogModule gMediaStreamTrackLog("MediaStreamTrack");
 
 using namespace mozilla::media;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(MediaStreamTrackSource)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(MediaStreamTrackSource)
@@ -51,8 +50,7 @@ auto MediaStreamTrackSource::ApplyConstraints(
     const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType)
     -> RefPtr<ApplyConstraintsPromise> {
   return ApplyConstraintsPromise::CreateAndReject(
-      MakeRefPtr<MediaMgrError>(MediaMgrError::Name::OverconstrainedError,
-                                NS_LITERAL_STRING("")),
+      MakeRefPtr<MediaMgrError>(MediaMgrError::Name::OverconstrainedError, ""),
       __func__);
 }
 
@@ -124,12 +122,9 @@ class MediaStreamTrack::MTGListener : public MediaTrackListener {
       return;
     }
 
-    AbstractThread* mainThread =
-        nsGlobalWindowInner::Cast(mTrack->GetParentObject())
-            ->AbstractMainThreadFor(TaskCategory::Other);
-    mainThread->Dispatch(NewRunnableMethod("MediaStreamTrack::OverrideEnded",
-                                           mTrack.get(),
-                                           &MediaStreamTrack::OverrideEnded));
+    AbstractThread::MainThread()->Dispatch(
+        NewRunnableMethod("MediaStreamTrack::OverrideEnded", mTrack.get(),
+                          &MediaStreamTrack::OverrideEnded));
   }
 
   void NotifyEnded(MediaTrackGraph* aGraph) override {
@@ -295,8 +290,8 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  mTrack->SetEnabled(mEnabled ? DisabledTrackMode::ENABLED
-                              : DisabledTrackMode::SILENCE_BLACK);
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   NotifyEnabledChanged();
 }
 
@@ -322,12 +317,14 @@ void MediaStreamTrack::GetSettings(dom::MediaTrackSettings& aResult,
   GetSource().GetSettings(aResult);
 
   // Spoof values when privacy.resistFingerprinting is true.
-  if (!nsContentUtils::ResistFingerprinting(aCallerType)) {
+  nsIGlobalObject* global = mWindow ? mWindow->AsGlobal() : nullptr;
+  if (!nsContentUtils::ShouldResistFingerprinting(
+          aCallerType, global, RFPTarget::StreamVideoFacingMode)) {
     return;
   }
   if (aResult.mFacingMode.WasPassed()) {
     aResult.mFacingMode.Value().AssignASCII(
-        VideoFacingModeEnumValues::GetString(VideoFacingModeEnum::User));
+        GetEnumString(VideoFacingModeEnum::User));
   }
 }
 
@@ -361,7 +358,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
   GetSource()
       .ApplyConstraints(aConstraints, aCallerType)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [this, self, promise, aConstraints](bool aDummy) {
             if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
@@ -459,8 +456,12 @@ void MediaStreamTrack::MutedChanged(bool aNewState) {
       ("MediaStreamTrack %p became %s", this, aNewState ? "muted" : "unmuted"));
 
   mMuted = aNewState;
-  nsString eventName =
-      aNewState ? NS_LITERAL_STRING("mute") : NS_LITERAL_STRING("unmute");
+
+  if (Ended()) {
+    return;
+  }
+
+  nsString eventName = aNewState ? u"mute"_ns : u"unmute"_ns;
   DispatchTrustedEvent(eventName);
 }
 
@@ -573,7 +574,7 @@ void MediaStreamTrack::OverrideEnded() {
 
   NotifyEnded();
 
-  DispatchTrustedEvent(NS_LITERAL_STRING("ended"));
+  DispatchTrustedEvent(u"ended"_ns);
 }
 
 void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
@@ -631,5 +632,4 @@ already_AddRefed<MediaInputPort> MediaStreamTrack::ForwardTrackContentsTo(
   return aTrack->AllocateInputPort(mTrack);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGPOINTLIST_H__
-#define MOZILLA_SVGPOINTLIST_H__
+#ifndef DOM_SVG_SVGPOINTLIST_H_
+#define DOM_SVG_SVGPOINTLIST_H_
 
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
@@ -23,7 +23,6 @@ namespace mozilla {
 namespace dom {
 class DOMSVGPoint;
 class DOMSVGPointList;
-class nsISVGPoint;
 }  // namespace dom
 
 /**
@@ -36,7 +35,6 @@ class nsISVGPoint;
  * The DOM wrapper class for this class is DOMSVGPointList.
  */
 class SVGPointList {
-  friend class dom::nsISVGPoint;
   friend class SVGAnimatedPointList;
   friend class dom::DOMSVGPointList;
   friend class dom::DOMSVGPoint;
@@ -44,6 +42,15 @@ class SVGPointList {
  public:
   SVGPointList() = default;
   ~SVGPointList() = default;
+
+  SVGPointList& operator=(const SVGPointList& aOther) {
+    mItems.ClearAndRetainStorage();
+    // Best-effort, really.
+    Unused << mItems.AppendElements(aOther.mItems, fallible);
+    return *this;
+  }
+
+  SVGPointList(const SVGPointList& aOther) { *this = aOther; }
 
   // Only methods that don't make/permit modification to this list are public.
   // Only our friend classes can access methods that may change us.
@@ -83,6 +90,7 @@ class SVGPointList {
    * which case the list will be left unmodified.
    */
   nsresult CopyFrom(const SVGPointList& rhs);
+  void SwapWith(SVGPointList& aRhs) { mItems.SwapElements(aRhs.mItems); }
 
   SVGPoint& operator[](uint32_t aIndex) { return mItems[aIndex]; }
 
@@ -205,4 +213,4 @@ class SVGPointListAndInfo : public SVGPointList {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGPOINTLIST_H__
+#endif  // DOM_SVG_SVGPOINTLIST_H_

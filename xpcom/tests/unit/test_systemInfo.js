@@ -12,9 +12,9 @@ function run_test() {
     "memmapalign",
     "memsize",
   ];
-  let sysInfo = Cc["@mozilla.org/system-info;1"].getService(Ci.nsIPropertyBag2);
+  let sysInfo = Services.sysinfo;
 
-  PROPERTIES.forEach(function(aPropertyName) {
+  PROPERTIES.forEach(function (aPropertyName) {
     print("Testing property: " + aPropertyName);
     let value = sysInfo.getProperty(aPropertyName);
     Assert.ok(!!value);

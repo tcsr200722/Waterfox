@@ -7,11 +7,9 @@
 #ifndef mozilla_dom_FeaturePolicy_h
 #define mozilla_dom_FeaturePolicy_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Feature.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsString.h"
+#include "nsIPrincipal.h"
+#include "nsStringFwd.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
@@ -20,8 +18,7 @@
  * ~~~~~~~~~~~~~
  *
  * Each document and each HTMLIFrameElement have a FeaturePolicy object which is
- * used to allow or deny features in their contexts. FeaturePolicy is active
- * when pref dom.security.featurePolicy.enabled is set to true.
+ * used to allow or deny features in their contexts.
  *
  * FeaturePolicy is composed by a set of directives configured by the
  * 'Feature-Policy' HTTP Header and the 'allow' attribute in HTMLIFrameElements.
@@ -55,21 +52,34 @@
  * HTTP header support.
  **/
 
-class nsIHttpChannel;
 class nsINode;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Document;
+class BrowsingContext;
+class Feature;
+template <typename T>
+class Optional;
 
 class FeaturePolicyUtils;
+
+struct FeaturePolicyInfo final {
+  CopyableTArray<nsString> mInheritedDeniedFeatureNames;
+  CopyableTArray<nsString> mAttributeEnabledFeatureNames;
+  nsString mDeclaredString;
+  nsCOMPtr<nsIPrincipal> mDefaultOrigin;
+  nsCOMPtr<nsIPrincipal> mSelfOrigin;
+  nsCOMPtr<nsIPrincipal> mSrcOrigin;
+};
+
+using MaybeFeaturePolicyInfo = Maybe<FeaturePolicyInfo>;
 
 class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   friend class FeaturePolicyUtils;
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(FeaturePolicy)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(FeaturePolicy)
 
   explicit FeaturePolicy(nsINode* aNode);
 
@@ -86,6 +96,9 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
 
   // Inherits the policy from the 'parent' context if it exists.
   void InheritPolicy(FeaturePolicy* aParentFeaturePolicy);
+
+  // Inherits the policy from the 'parent' context if it exists.
+  void InheritPolicy(const FeaturePolicyInfo& aContainerFeaturePolicyInfo);
 
   // Sets the declarative part of the policy. This can be from the HTTP header
   // or for the 'allow' HTML attribute.
@@ -138,9 +151,12 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   void GetAllowlistForFeature(const nsAString& aFeatureName,
                               nsTArray<nsString>& aList) const;
 
-  void GetInheritedDeniedFeatureNames(
-      nsTArray<nsString>& aInheritedDeniedFeatureNames) {
-    aInheritedDeniedFeatureNames = mInheritedDeniedFeatureNames.Clone();
+  const nsTArray<nsString>& InheritedDeniedFeatureNames() const {
+    return mInheritedDeniedFeatureNames;
+  }
+
+  const nsTArray<nsString>& AttributeEnabledFeatureNames() const {
+    return mAttributeEnabledFeatureNames;
   }
 
   void SetInheritedDeniedFeatureNames(
@@ -148,11 +164,12 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
     mInheritedDeniedFeatureNames = aInheritedDeniedFeatureNames.Clone();
   }
 
-  void GetDeclaredString(nsAString& aDeclaredString) {
-    aDeclaredString = mDeclaredString;
-  }
+  const nsAString& DeclaredString() const { return mDeclaredString; }
+
   nsIPrincipal* GetSelfOrigin() const { return mSelfOrigin; }
   nsIPrincipal* GetSrcOrigin() const { return mSrcOrigin; }
+
+  FeaturePolicyInfo ToFeaturePolicyInfo() const;
 
  private:
   ~FeaturePolicy() = default;
@@ -177,6 +194,9 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   // current context.
   nsTArray<nsString> mInheritedDeniedFeatureNames;
 
+  // The list of features that have been enabled via MaybeSetAllowedPolicy.
+  nsTArray<nsString> mAttributeEnabledFeatureNames;
+
   // This is set of feature names when the parent allows all for that feature.
   nsTArray<nsString> mParentAllowedAllFeatures;
 
@@ -196,7 +216,6 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   nsCOMPtr<nsIPrincipal> mSrcOrigin;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_FeaturePolicy_h

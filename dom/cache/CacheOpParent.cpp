@@ -6,20 +6,18 @@
 
 #include "mozilla/dom/cache/CacheOpParent.h"
 
+#include "mozilla/ErrorResult.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/cache/AutoUtils.h"
 #include "mozilla/dom/cache/ManagerId.h"
 #include "mozilla/dom/cache/ReadStream.h"
 #include "mozilla/dom/cache/SavedTypes.h"
-#include "mozilla/ipc/FileDescriptorSetParent.h"
 #include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
-using mozilla::ipc::FileDescriptorSetParent;
 using mozilla::ipc::PBackgroundParent;
 
 CacheOpParent::CacheOpParent(PBackgroundParent* aIpcManager, CacheId aCacheId,
@@ -49,8 +47,8 @@ void CacheOpParent::Execute(const SafeRefPtr<ManagerId>& aManagerId) {
 
   auto managerOrErr = cache::Manager::AcquireCreateIfNonExistent(aManagerId);
   if (NS_WARN_IF(managerOrErr.isErr())) {
-    ErrorResult result(managerOrErr.unwrapErr());
-    Unused << Send__delete__(this, std::move(result), void_t());
+    (void)Send__delete__(this, CopyableErrorResult(managerOrErr.unwrapErr()),
+                         void_t());
     return;
   }
 
@@ -104,14 +102,14 @@ void CacheOpParent::WaitForVerification(PrincipalVerifier* aVerifier) {
   MOZ_DIAGNOSTIC_ASSERT(!mVerifier);
 
   mVerifier = aVerifier;
-  mVerifier->AddListener(this);
+  mVerifier->AddListener(*this);
 }
 
 void CacheOpParent::ActorDestroy(ActorDestroyReason aReason) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
 
   if (mVerifier) {
-    mVerifier->RemoveListener(this);
+    mVerifier->RemoveListener(*this);
     mVerifier = nullptr;
   }
 
@@ -127,12 +125,11 @@ void CacheOpParent::OnPrincipalVerified(
     nsresult aRv, const SafeRefPtr<ManagerId>& aManagerId) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
 
-  mVerifier->RemoveListener(this);
+  mVerifier->RemoveListener(*this);
   mVerifier = nullptr;
 
   if (NS_WARN_IF(NS_FAILED(aRv))) {
-    ErrorResult result(aRv);
-    Unused << Send__delete__(this, std::move(result), void_t());
+    (void)Send__delete__(this, CopyableErrorResult(aRv), void_t());
     return;
   }
 
@@ -150,7 +147,7 @@ void CacheOpParent::OnOpComplete(ErrorResult&& aRv,
   // Never send an op-specific result if we have an error.  Instead, send
   // void_t() to ensure that we don't leak actors on the child side.
   if (NS_WARN_IF(aRv.Failed())) {
-    Unused << Send__delete__(this, std::move(aRv), void_t());
+    (void)Send__delete__(this, CopyableErrorResult(std::move(aRv)), void_t());
     return;
   }
 
@@ -158,7 +155,7 @@ void CacheOpParent::OnOpComplete(ErrorResult&& aRv,
     ProcessCrossOriginResourcePolicyHeader(aRv,
                                            aStreamInfo->mSavedResponseList);
     if (NS_WARN_IF(aRv.Failed())) {
-      Unused << Send__delete__(this, std::move(aRv), void_t());
+      (void)Send__delete__(this, CopyableErrorResult(std::move(aRv)), void_t());
       return;
     }
   }
@@ -193,7 +190,8 @@ void CacheOpParent::OnOpComplete(ErrorResult&& aRv,
     }
   }
 
-  Unused << Send__delete__(this, std::move(aRv), result.SendAsOpResult());
+  (void)Send__delete__(this, CopyableErrorResult(std::move(aRv)),
+                       result.SendAsOpResult());
 }
 
 already_AddRefed<nsIInputStream> CacheOpParent::DeserializeCacheStream(
@@ -213,37 +211,33 @@ already_AddRefed<nsIInputStream> CacheOpParent::DeserializeCacheStream(
   }
 
   // Option 2: A stream was serialized using normal methods or passed
-  //           as a PChildToParentStream actor.  Use the standard method for
-  //           extracting the resulting stream.
+  //           as a DataPipe.  Use the standard method for extracting the
+  //           resulting stream.
   return DeserializeIPCStream(readStream.stream());
 }
 
 void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
     ErrorResult& aRv, const nsTArray<SavedResponse>& aResponses) {
+  if (!StaticPrefs::browser_tabs_remote_useCrossOriginEmbedderPolicy()) {
+    return;
+  }
   // Only checking for match/matchAll.
-  RequestMode mode = RequestMode::No_cors;
   nsILoadInfo::CrossOriginEmbedderPolicy loadingCOEP =
       nsILoadInfo::EMBEDDER_POLICY_NULL;
-  Maybe<PrincipalInfo> principalInfo;
+  Maybe<mozilla::ipc::PrincipalInfo> principalInfo;
   switch (mOpArgs.type()) {
     case CacheOpArgs::TCacheMatchArgs: {
-      mode = mOpArgs.get_CacheMatchArgs().request().mode();
-      loadingCOEP =
-          mOpArgs.get_CacheMatchArgs().request().loadingEmbedderPolicy();
-      principalInfo = mOpArgs.get_CacheMatchArgs().request().principalInfo();
+      const auto& request = mOpArgs.get_CacheMatchArgs().request();
+      loadingCOEP = request.loadingEmbedderPolicy();
+      principalInfo = request.principalInfo();
       break;
     }
     case CacheOpArgs::TCacheMatchAllArgs: {
       if (mOpArgs.get_CacheMatchAllArgs().maybeRequest().isSome()) {
-        mode = mOpArgs.get_CacheMatchAllArgs().maybeRequest().ref().mode();
-        loadingCOEP = mOpArgs.get_CacheMatchAllArgs()
-                          .maybeRequest()
-                          .ref()
-                          .loadingEmbedderPolicy();
-        principalInfo = mOpArgs.get_CacheMatchAllArgs()
-                            .maybeRequest()
-                            .ref()
-                            .principalInfo();
+        const auto& request =
+            mOpArgs.get_CacheMatchAllArgs().maybeRequest().ref();
+        loadingCOEP = request.loadingEmbedderPolicy();
+        principalInfo = request.principalInfo();
       }
       break;
     }
@@ -252,31 +246,28 @@ void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
     }
   }
 
-  // skip checking for CORS mode
-  if (mode == RequestMode::Cors) {
-    return;
-  }
-
   // skip checking if the request has no principal for same-origin/same-site
   // checking.
   if (principalInfo.isNothing() ||
-      principalInfo.ref().type() != PrincipalInfo::TContentPrincipalInfo) {
+      principalInfo.ref().type() !=
+          mozilla::ipc::PrincipalInfo::TContentPrincipalInfo) {
     return;
   }
-  const ContentPrincipalInfo& contentPrincipalInfo =
+  const mozilla::ipc::ContentPrincipalInfo& contentPrincipalInfo =
       principalInfo.ref().get_ContentPrincipalInfo();
 
-  nsAutoCString corp;
   for (auto it = aResponses.cbegin(); it != aResponses.cend(); ++it) {
-    corp.Assign(EmptyCString());
-    for (auto headerIt = it->mValue.headers().cbegin();
-         headerIt != it->mValue.headers().cend(); ++headerIt) {
-      if (headerIt->name().Equals(
-              NS_LITERAL_CSTRING("Cross-Origin-Resource-Policy"))) {
-        corp = headerIt->value();
-        break;
-      }
+    if (it->mValue.type() != ResponseType::Opaque &&
+        it->mValue.type() != ResponseType::Opaqueredirect) {
+      continue;
     }
+
+    const auto& headers = it->mValue.headers();
+    const RequestCredentials credentials = it->mValue.credentials();
+    const auto corpHeaderIt =
+        std::find_if(headers.cbegin(), headers.cend(), [](const auto& header) {
+          return header.name().EqualsLiteral("Cross-Origin-Resource-Policy");
+        });
 
     // According to https://github.com/w3c/ServiceWorker/issues/1490, the cache
     // response is expected with CORP header, otherwise, throw the type error.
@@ -284,7 +275,7 @@ void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
     // https://wicg.github.io/cross-origin-embedder-policy/#corp-check.
     // For fetch, if the response has no CORP header, "same-origin" checking
     // will be performed.
-    if (corp.IsEmpty() &&
+    if (corpHeaderIt == headers.cend() &&
         loadingCOEP == nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
       aRv.ThrowTypeError("Response is expected with CORP header.");
       return;
@@ -294,15 +285,29 @@ void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
     // checking.
     if (it->mValue.principalInfo().isNothing() ||
         it->mValue.principalInfo().ref().type() !=
-            PrincipalInfo::TContentPrincipalInfo) {
+            mozilla::ipc::PrincipalInfo::TContentPrincipalInfo) {
       continue;
     }
 
-    const ContentPrincipalInfo& responseContentPrincipalInfo =
+    const mozilla::ipc::ContentPrincipalInfo& responseContentPrincipalInfo =
         it->mValue.principalInfo().ref().get_ContentPrincipalInfo();
 
+    nsCString corp =
+        corpHeaderIt == headers.cend() ? EmptyCString() : corpHeaderIt->value();
+
+    if (corp.IsEmpty()) {
+      if (loadingCOEP == nsILoadInfo::EMBEDDER_POLICY_CREDENTIALLESS) {
+        // This means the request of this request doesn't have
+        // credentials, so it's safe for us to return.
+        if (credentials == RequestCredentials::Omit) {
+          return;
+        }
+        corp = "same-origin";
+      }
+    }
+
     if (corp.EqualsLiteral("same-origin")) {
-      if (responseContentPrincipalInfo == contentPrincipalInfo) {
+      if (responseContentPrincipalInfo != contentPrincipalInfo) {
         aRv.ThrowTypeError("Response is expected from same origin.");
         return;
       }
@@ -316,6 +321,4 @@ void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
   }
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

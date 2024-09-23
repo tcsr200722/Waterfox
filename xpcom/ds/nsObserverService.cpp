@@ -17,14 +17,15 @@
 #include "nsThreadUtils.h"
 #include "nsEnumeratorUtils.h"
 #include "xpcpublic.h"
+#include "mozilla/AppShutdown.h"
 #include "mozilla/net/NeckoCommon.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Try.h"
 #include "nsString.h"
-#include "GeckoProfiler.h"
-
-static const uint32_t kMinTelemetryNotifyObserversLatencyMs = 1;
 
 // Log module for nsObserverService logging...
 //
@@ -98,12 +99,12 @@ nsObserverService::CollectReports(nsIHandleReportCallback* aHandleReport,
     nsPrintfCString suspectPath("observer-service-suspect/referent(topic=%s)",
                                 suspect.mTopic);
     aHandleReport->Callback(
-        /* process */ EmptyCString(), suspectPath, KIND_OTHER, UNITS_COUNT,
+        /* process */ ""_ns, suspectPath, KIND_OTHER, UNITS_COUNT,
         suspect.mReferentCount,
-        NS_LITERAL_CSTRING("A topic with a suspiciously large number of "
-                           "referents.  This may be symptomatic of a leak "
-                           "if the number of referents is high with "
-                           "respect to the number of windows."),
+        nsLiteralCString("A topic with a suspiciously large number of "
+                         "referents.  This may be symptomatic of a leak "
+                         "if the number of referents is high with "
+                         "respect to the number of windows."),
         aData);
   }
 
@@ -149,8 +150,7 @@ void nsObserverService::Shutdown() {
   mObserverTopicTable.Clear();
 }
 
-nsresult nsObserverService::Create(nsISupports* aOuter, const nsIID& aIID,
-                                   void** aInstancePtr) {
+nsresult nsObserverService::Create(const nsIID& aIID, void** aInstancePtr) {
   LOG(("nsObserverService::Create()"));
 
   RefPtr<nsObserverService> os = new nsObserverService();
@@ -180,20 +180,21 @@ nsresult nsObserverService::EnsureValidCall() const {
 }
 
 nsresult nsObserverService::FilterHttpOnTopics(const char* aTopic) {
-  // Specifically allow http-on-opening-request and http-on-stop-request in the
-  // child process; see bug 1269765.
+  // Specifically allow some http-on-* observer notifications in the child
+  // process.
   if (mozilla::net::IsNeckoChild() && !strncmp(aTopic, "http-on-", 8) &&
+      strcmp(aTopic, "http-on-before-stop-request") &&
       strcmp(aTopic, "http-on-failed-opening-request") &&
+      strcmp(aTopic, "http-on-image-cache-response") &&
       strcmp(aTopic, "http-on-opening-request") &&
       strcmp(aTopic, "http-on-stop-request")) {
     nsCOMPtr<nsIConsoleService> console(
         do_GetService(NS_CONSOLESERVICE_CONTRACTID));
     nsCOMPtr<nsIScriptError> error(
         do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
-    error->Init(NS_LITERAL_STRING(
-                    "http-on-* observers only work in the parent process"),
-                EmptyString(), EmptyString(), 0, 0, nsIScriptError::warningFlag,
-                "chrome javascript", false /* from private window */,
+    error->Init(u"http-on-* observers only work in the parent process"_ns,
+                u""_ns, u""_ns, 0, 0, nsIScriptError::warningFlag,
+                "chrome javascript"_ns, false /* from private window */,
                 true /* from chrome context */);
     console->LogMessage(error);
 
@@ -276,22 +277,16 @@ NS_IMETHODIMP nsObserverService::NotifyObservers(nsISupports* aSubject,
     return NS_ERROR_INVALID_ARG;
   }
 
-  mozilla::TimeStamp start = TimeStamp::Now();
+  MOZ_ASSERT(AppShutdown::IsNoOrLegalShutdownTopic(aTopic));
 
-  AUTO_PROFILER_TEXT_MARKER_CAUSE("NotifyObservers", nsDependentCString(aTopic),
-                                  OTHER, Nothing(), profiler_get_backtrace());
+  AUTO_PROFILER_MARKER_TEXT("NotifyObservers", OTHER, MarkerStack::Capture(),
+                            nsDependentCString(aTopic));
   AUTO_PROFILER_LABEL_DYNAMIC_CSTR_NONSENSITIVE(
       "nsObserverService::NotifyObservers", OTHER, aTopic);
 
   nsObserverList* observerList = mObserverTopicTable.GetEntry(aTopic);
   if (observerList) {
     observerList->NotifyObservers(aSubject, aTopic, aSomeData);
-  }
-
-  uint32_t latencyMs = round((TimeStamp::Now() - start).ToMilliseconds());
-  if (latencyMs >= kMinTelemetryNotifyObserversLatencyMs) {
-    Telemetry::Accumulate(Telemetry::NOTIFY_OBSERVERS_LATENCY_MS,
-                          nsDependentCString(aTopic), latencyMs);
   }
 
   return NS_OK;
@@ -316,6 +311,10 @@ nsObserverService::UnmarkGrayStrongObservers() {
   return NS_OK;
 }
 
+bool nsObserverService::HasObservers(const char* aTopic) {
+  return mObserverTopicTable.Contains(aTopic);
+}
+
 namespace {
 
 class NotifyWhenScriptSafeRunnable : public mozilla::Runnable {
@@ -333,7 +332,7 @@ class NotifyWhenScriptSafeRunnable : public mozilla::Runnable {
     }
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     const char16_t* data = mData.IsVoid() ? nullptr : mData.get();
     return mObs->NotifyObservers(mSubject, mTopic.get(), data);
   }

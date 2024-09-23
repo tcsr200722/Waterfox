@@ -6,33 +6,33 @@
 #ifndef nsSocketTransportService2_h__
 #define nsSocketTransportService2_h__
 
-#include "nsPISocketTransportService.h"
-#include "nsIThreadInternal.h"
-#include "nsIRunnable.h"
-#include "nsCOMPtr.h"
-#include "prinrval.h"
-#include "mozilla/Logging.h"
-#include "prinit.h"
-#include "nsIObserver.h"
+#include "PollableEvent.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/LinkedList.h"
+#include "mozilla/Logging.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/net/DashboardTypes.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/Tuple.h"
-#include "nsITimer.h"
-#include "mozilla/UniquePtr.h"
-#include "PollableEvent.h"
 
-class nsASocketHandler;
+#include "mozilla/UniquePtr.h"
+#include "mozilla/net/DashboardTypes.h"
+#include "nsCOMPtr.h"
+#include "nsASocketHandler.h"
+#include "nsIDirectTaskDispatcher.h"
+#include "nsIObserver.h"
+#include "nsIRunnable.h"
+#include "nsIThreadInternal.h"
+#include "nsITimer.h"
+#include "nsPISocketTransportService.h"
+#include "prinit.h"
+#include "prinrval.h"
+
 struct PRPollDesc;
 class nsIPrefBranch;
 
 //-----------------------------------------------------------------------------
 
 namespace mozilla {
-class AbstractThread;
 namespace net {
 
 //
@@ -87,7 +87,9 @@ class nsSocketTransportService final : public nsPISocketTransportService,
                                        public nsISerialEventTarget,
                                        public nsIThreadObserver,
                                        public nsIRunnable,
-                                       public nsIObserver {
+                                       public nsIObserver,
+                                       public nsINamed,
+                                       public nsIDirectTaskDispatcher {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSPISOCKETTRANSPORTSERVICE
@@ -97,6 +99,10 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   NS_DECL_NSITHREADOBSERVER
   NS_DECL_NSIRUNNABLE
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSINAMED
+  NS_DECL_NSIDIRECTTASKDISPATCHER
+
+  static const uint32_t SOCKET_LIMIT_MIN = 50U;
 
   nsSocketTransportService();
 
@@ -120,12 +126,6 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   bool IsTelemetryEnabledAndNotSleepPhase();
   PRIntervalTime MaxTimeForPrClosePref() { return mMaxTimeForPrClosePref; }
 
-  bool IsEsniEnabled() {
-    return mEsniEnabled && !mTrustedMitmDetected && !mNotTrustedMitmDetected;
-  }
-
-  void SetNotTrustedMitmDetected() { mNotTrustedMitmDetected = true; }
-
   // According the preference value of `network.socket.forcePort` this method
   // possibly remaps the port number passed as the arg.
   void ApplyPortRemap(uint16_t* aPort);
@@ -143,27 +143,38 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   // misc (any thread)
   //-------------------------------------------------------------------------
 
-  nsCOMPtr<nsIThread> mThread;  // protected by mLock
-  // We create an AbstractThread for mThread thread so that we can use direct
-  // task dispatching with MozPromise, which is similar (but not identical to)
-  // the microtask semantics of JS promises.
-  RefPtr<AbstractThread> mAbstractThread;
-  UniquePtr<PollableEvent> mPollableEvent;
+  // The value is guaranteed to be valid and not dangling while on the socket
+  // thread as mThread is only ever reset after it's been shutdown.
+  // This member should only ever be read on the socket thread.
+  nsIThread* mRawThread{nullptr};
 
-  // Returns mThread, protecting the get-and-addref with mLock
+  // Returns mThread in a thread-safe manner.
   already_AddRefed<nsIThread> GetThreadSafely();
+  // Same as above, but return mThread as a nsIDirectTaskDispatcher
+  already_AddRefed<nsIDirectTaskDispatcher> GetDirectTaskDispatcherSafely();
 
   //-------------------------------------------------------------------------
   // initialization and shutdown (any thread)
   //-------------------------------------------------------------------------
 
-  Mutex mLock;
-  bool mInitialized;
-  bool mShuttingDown;
-  // indicates whether we are currently in the
-  // process of shutting down
-  bool mOffline;
-  bool mGoingOffline;
+  Atomic<bool> mInitialized{false};
+  // indicates whether we are currently in the process of shutting down
+  Atomic<bool> mShuttingDown{false};
+
+  Mutex mLock{"nsSocketTransportService::mLock"};
+  // Variables in the next section protected by mLock
+
+  // mThread and mDirectTaskDispatcher are only ever modified on the main
+  // thread. Will be set on Init and set to null after shutdown. You must access
+  // mThread and mDirectTaskDispatcher outside the main thread via respectively
+  // GetThreadSafely and GetDirectTaskDispatchedSafely().
+  nsCOMPtr<nsIThread> mThread MOZ_GUARDED_BY(mLock);
+  // We store a pointer to mThread as a direct task dispatcher to avoid having
+  // to do do_QueryInterface whenever we need to access the interface.
+  nsCOMPtr<nsIDirectTaskDispatcher> mDirectTaskDispatcher MOZ_GUARDED_BY(mLock);
+  UniquePtr<PollableEvent> mPollableEvent MOZ_GUARDED_BY(mLock);
+  bool mOffline MOZ_GUARDED_BY(mLock) = false;
+  bool mGoingOffline MOZ_GUARDED_BY(mLock) = false;
 
   // Detaches all sockets.
   void Reset(bool aGuardLocals);
@@ -181,12 +192,17 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   // where k=0,1,2,...
   //-------------------------------------------------------------------------
 
-  struct SocketContext {
-    PRFileDesc* mFD;
-    nsASocketHandler* mHandler;
-    PRIntervalTime mPollStartEpoch;  // time we started to poll this socket
-
+  class SocketContext {
    public:
+    SocketContext(PRFileDesc* aFD,
+                  already_AddRefed<nsASocketHandler>&& aHandler,
+                  PRIntervalTime aPollStartEpoch)
+        : mFD(aFD), mHandler(aHandler), mPollStartEpoch(aPollStartEpoch) {}
+    SocketContext(PRFileDesc* aFD, nsASocketHandler* aHandler,
+                  PRIntervalTime aPollStartEpoch)
+        : mFD(aFD), mHandler(aHandler), mPollStartEpoch(aPollStartEpoch) {}
+    ~SocketContext() = default;
+
     // Returns true iff the socket has not been signalled longer than
     // the desired timeout (mHandler->mPollTimeout).
     bool IsTimedOut(PRIntervalTime now) const;
@@ -205,32 +221,31 @@ class nsSocketTransportService final : public nsPISocketTransportService,
     // that mPollStartEpoch is not reset in between.  We have to manually
     // call this on every iteration over sockets to ensure the epoch reset.
     void MaybeResetEpoch();
+
+    PRFileDesc* mFD;
+    RefPtr<nsASocketHandler> mHandler;
+    PRIntervalTime mPollStartEpoch;  // time we started to poll this socket
   };
 
-  SocketContext* mActiveList; /* mListSize entries */
-  SocketContext* mIdleList;   /* mListSize entries */
-  nsIThread* mRawThread;
+  using SocketContextList = AutoTArray<SocketContext, SOCKET_LIMIT_MIN>;
+  int64_t SockIndex(SocketContextList& aList, SocketContext* aSock);
 
-  uint32_t mActiveListSize;
-  uint32_t mIdleListSize;
-  uint32_t mActiveCount;
-  uint32_t mIdleCount;
+  SocketContextList mActiveList;
+  SocketContextList mIdleList;
 
-  nsresult DetachSocket(SocketContext*, SocketContext*);
-  nsresult AddToIdleList(SocketContext*);
-  nsresult AddToPollList(SocketContext*);
-  void RemoveFromIdleList(SocketContext*);
-  void RemoveFromPollList(SocketContext*);
+  nsresult DetachSocket(SocketContextList& listHead, SocketContext*);
+  void AddToIdleList(SocketContext* sock);
+  void AddToPollList(SocketContext* sock);
+  void RemoveFromIdleList(SocketContext* sock);
+  void RemoveFromPollList(SocketContext* sock);
   void MoveToIdleList(SocketContext* sock);
   void MoveToPollList(SocketContext* sock);
 
-  bool GrowActiveList();
-  bool GrowIdleList();
   void InitMaxCount();
 
   // Total bytes number transfered through all the sockets except active ones
-  uint64_t mSentBytesCount;
-  uint64_t mReceivedBytesCount;
+  uint64_t mSentBytesCount{0};
+  uint64_t mReceivedBytesCount{0};
   //-------------------------------------------------------------------------
   // poll list (socket thread only)
   //
@@ -238,13 +253,13 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   // event cannot be created).
   //-------------------------------------------------------------------------
 
-  PRPollDesc* mPollList; /* mListSize + 1 entries */
+  nsTArray<PRPollDesc> mPollList;
 
   PRIntervalTime PollTimeout(
       PRIntervalTime now);  // computes ideal poll timeout
   nsresult DoPollIteration(TimeDuration* pollDuration);
   // perfoms a single poll iteration
-  int32_t Poll(TimeDuration* pollDuration, PRIntervalTime now);
+  int32_t Poll(TimeDuration* pollDuration, PRIntervalTime ts);
   // calls PR_Poll.  the out param
   // interval indicates the poll
   // duration in seconds.
@@ -260,24 +275,24 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   nsresult UpdatePrefs();
   static void UpdatePrefs(const char* aPref, void* aSelf);
   void UpdateSendBufferPref();
-  int32_t mSendBufferSize;
+  int32_t mSendBufferSize{0};
   // Number of seconds of connection is idle before first keepalive ping.
-  int32_t mKeepaliveIdleTimeS;
+  int32_t mKeepaliveIdleTimeS{600};
   // Number of seconds between retries should keepalive pings fail.
-  int32_t mKeepaliveRetryIntervalS;
+  int32_t mKeepaliveRetryIntervalS{1};
   // Number of keepalive probes to send.
-  int32_t mKeepaliveProbeCount;
+  int32_t mKeepaliveProbeCount{kDefaultTCPKeepCount};
   // True if TCP keepalive is enabled globally.
-  bool mKeepaliveEnabledPref;
+  bool mKeepaliveEnabledPref{false};
   // Timeout of pollable event signalling.
-  TimeDuration mPollableEventTimeout;
+  TimeDuration mPollableEventTimeout MOZ_GUARDED_BY(mLock);
 
-  Atomic<bool> mServingPendingQueue;
-  Atomic<int32_t, Relaxed> mMaxTimePerPollIter;
+  Atomic<bool> mServingPendingQueue{false};
+  Atomic<int32_t, Relaxed> mMaxTimePerPollIter{100};
   Atomic<PRIntervalTime, Relaxed> mMaxTimeForPrClosePref;
   // Timestamp of the last network link change event, tracked
   // also on child processes.
-  Atomic<PRIntervalTime, Relaxed> mLastNetworkLinkChangeTime;
+  Atomic<PRIntervalTime, Relaxed> mLastNetworkLinkChangeTime{0};
   // Preference for how long we do busy wait after network link
   // change has been detected.
   Atomic<PRIntervalTime, Relaxed> mNetworkLinkChangeBusyWaitPeriod;
@@ -287,7 +302,7 @@ class nsSocketTransportService final : public nsPISocketTransportService,
 
   // Between a computer going to sleep and waking up the PR_*** telemetry
   // will be corrupted - so do not record it.
-  Atomic<bool, Relaxed> mSleepPhase;
+  Atomic<bool, Relaxed> mSleepPhase{false};
   nsCOMPtr<nsITimer> mAfterWakeUpTimer;
 
   // Lazily created array of forced port remappings.  The tuple members meaning
@@ -296,7 +311,8 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   // <1> the less-or-equal port number of the range to remap
   // <2> the port number to remap to, when the given port number falls to the
   // range
-  typedef CopyableTArray<Tuple<uint16_t, uint16_t, uint16_t>> TPortRemapping;
+  using TPortRemapping =
+      CopyableTArray<std::tuple<uint16_t, uint16_t, uint16_t>>;
   Maybe<TPortRemapping> mPortRemapping;
 
   // Called on the socket thread to apply the mapping build on the main thread
@@ -306,23 +322,18 @@ class nsSocketTransportService final : public nsPISocketTransportService,
   void OnKeepaliveEnabledPrefChange();
   void NotifyKeepaliveEnabledPrefChange(SocketContext* sock);
 
-  // Socket thread only for dynamically adjusting max socket size
-#if defined(XP_WIN)
-  void ProbeMaxCount();
-#endif
-  bool mProbedMaxCount;
-
+  // Report socket status to about:networking
   void AnalyzeConnection(nsTArray<SocketInfo>* data, SocketContext* context,
                          bool aActive);
 
   void ClosePrivateConnections();
-  void DetachSocketWithGuard(bool aGuardLocals, SocketContext* socketList,
+  void DetachSocketWithGuard(bool aGuardLocals, SocketContextList& socketList,
                              int32_t index);
 
   void MarkTheLastElementOfPendingQueue();
 
 #if defined(XP_WIN)
-  Atomic<bool> mPolling;
+  Atomic<bool> mPolling{false};
   nsCOMPtr<nsITimer> mPollRepairTimer;
   void StartPollWatchdog();
   void DoPollRepair();
@@ -332,9 +343,7 @@ class nsSocketTransportService final : public nsPISocketTransportService,
 
   void TryRepairPollableEvent();
 
-  bool mEsniEnabled;
-  bool mTrustedMitmDetected;
-  bool mNotTrustedMitmDetected;
+  CopyableTArray<nsCOMPtr<nsISTSShutdownObserver>> mShutdownObservers;
 };
 
 extern nsSocketTransportService* gSocketTransportService;

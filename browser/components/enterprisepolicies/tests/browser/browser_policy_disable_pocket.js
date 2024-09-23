@@ -7,12 +7,14 @@ const PREF_POCKET = "extensions.pocket.enabled";
 
 async function checkPocket(shouldBeEnabled) {
   return BrowserTestUtils.waitForCondition(() => {
-    return !!PageActions.actionForID("pocket") == shouldBeEnabled;
+    return (
+      !!CustomizableUI.getWidget("save-to-pocket-button") == shouldBeEnabled
+    );
   }, "Expecting Pocket to be " + shouldBeEnabled);
 }
 
 add_task(async function test_disable_firefox_screenshots() {
-  await BrowserTestUtils.withNewTab("data:text/html,Test", async function() {
+  await BrowserTestUtils.withNewTab("data:text/html,Test", async function () {
     // Sanity check to make sure Pocket is enabled on tests
     await checkPocket(true);
 

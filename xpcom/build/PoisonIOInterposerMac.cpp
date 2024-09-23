@@ -5,7 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PoisonIOInterposer.h"
-#include "mach_override.h"
+// Disabled until bug 1658385 is fixed.
+#ifndef __aarch64__
+#  include "mach_override.h"
+#endif
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
@@ -18,7 +21,6 @@
 #include "nsPrintfCString.h"
 #include "mozilla/StackWalk.h"
 #include "nsTraceRefcnt.h"
-#include "plstr.h"
 #include "prio.h"
 
 #include <algorithm>
@@ -97,7 +99,7 @@ void MacIOAutoObservation::Filename(nsAString& aFilename) {
 
   char filename[MAXPATHLEN];
   if (fcntl(mFd, F_GETPATH, filename) != -1) {
-    mFilename = NS_ConvertUTF8toUTF16(filename);
+    CopyUTF8toUTF16(filename, mFilename);
   } else {
     mFilename.Truncate();
   }
@@ -326,14 +328,24 @@ void InitPoisonIOInterposer() {
     if (!d->Function) {
       continue;
     }
+
+    // Disable the interposer on arm64 until there's
+    // a mach_override_ptr implementation.
+#ifndef __aarch64__
+    // Temporarily disable the interposer on macOS x64
+    // while dynamic code disablement rides the trains.
+#  ifdef MOZ_INTERPOSER_FORCE_MACOS_X64
     DebugOnly<mach_error_t> t =
         mach_override_ptr(d->Function, d->Wrapper, &d->Buffer);
     MOZ_ASSERT(t == err_none);
+#  endif  // MOZ_INTERPOSER_FORCE_MACOS_X64
+#endif
   }
 }
 
 void OnlyReportDirtyWrites() { sOnlyReportDirtyWrites = true; }
 
+// Never called! See bug 1647107.
 void ClearPoisonIOInterposer() {
   // Not sure how or if we can unpoison the functions. Would be nice, but no
   // worries we won't need to do this anyway.

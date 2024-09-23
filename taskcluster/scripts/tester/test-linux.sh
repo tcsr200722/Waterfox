@@ -35,6 +35,7 @@ fi
 : MOZHARNESS_SCRIPT             ${MOZHARNESS_SCRIPT}
 : MOZHARNESS_CONFIG             ${MOZHARNESS_CONFIG}
 : MOZHARNESS_OPTIONS            ${MOZHARNESS_OPTIONS}
+: MOZ_ENABLE_WAYLAND            ${MOZ_ENABLE_WAYLAND}
 : NEED_XVFB                     ${NEED_XVFB:=true}
 : NEED_WINDOW_MANAGER           ${NEED_WINDOW_MANAGER:=false}
 : NEED_PULSEAUDIO               ${NEED_PULSEAUDIO:=false}
@@ -60,7 +61,7 @@ maybe_start_pulse() {
     if $NEED_PULSEAUDIO; then
         # call pulseaudio for Ubuntu only
         if [ $DISTRIBUTION == "Ubuntu" ]; then
-            pulseaudio --fail --daemonize --start
+            pulseaudio --daemonize --log-level=4 --log-time=1 --log-target=stderr --start --fail -vvvvv --exit-idle-time=-1 --cleanup-shm --dump-conf
         fi
     fi
 }
@@ -73,16 +74,34 @@ fi
 if [[ -z ${MOZHARNESS_SCRIPT} ]]; then fail "MOZHARNESS_SCRIPT is not set"; fi
 if [[ -z ${MOZHARNESS_CONFIG} ]]; then fail "MOZHARNESS_CONFIG is not set"; fi
 
+if [ $MOZ_ENABLE_WAYLAND ]; then
+  NEED_XVFB=true
+  NEED_WINDOW_MANAGER=true
+fi
+
 # make sure artifact directories exist
 mkdir -p "$WORKSPACE/logs"
 mkdir -p "$WORKING_DIR/artifacts/public"
 mkdir -p "$WORKSPACE/build/blobber_upload_dir"
+
+cleanup_mutter() {
+    local mutter_pids=`ps aux | grep 'mutter --wayland' | grep -v grep | awk '{print $2}'`
+    if [ "$mutter_pids" != "" ]; then
+        echo "Killing the following Mutter processes: $mutter_pids"
+        sudo kill $mutter_pids
+    else
+        echo "No Mutter processes to kill"
+    fi
+}
 
 cleanup() {
     local rv=$?
     if [[ -s $HOME/.xsession-errors ]]; then
       # To share X issues
       cp "$HOME/.xsession-errors" "$WORKING_DIR/artifacts/public/xsession-errors.log"
+    fi
+    if [ $MOZ_ENABLE_WAYLAND ]; then
+        cleanup_mutter
     fi
     if $NEED_XVFB; then
         cleanup_xvfb
@@ -105,7 +124,7 @@ download_mozharness() {
     while [[ $attempt < $max_attempts ]]; do
         if curl --fail -o mozharness.zip --retry 10 -L $MOZHARNESS_URL; then
             rm -rf mozharness
-            if unzip -q mozharness.zip; then
+            if unzip -q mozharness.zip -d mozharness; then
                 return 0
             fi
             echo "error unzipping mozharness.zip" >&2
@@ -151,7 +170,12 @@ if $NEED_WINDOW_MANAGER; then
         echo DESKTOP_SESSION=ubuntu > $HOME/.xsessionrc
     elif [ $DISTRIBUTION == "Ubuntu" ] && [ $RELEASE == "18.04" ]; then
         echo export DESKTOP_SESSION=gnome > $HOME/.xsessionrc
-        echo export XDG_SESSION_TYPE=x11 >> $HOME/.xsessionrc
+        echo export XDG_CURRENT_DESKTOP=GNOME > $HOME/.xsessionrc
+        if [ $MOZ_ENABLE_WAYLAND ]; then
+            echo export XDG_SESSION_TYPE=wayland >> $HOME/.xsessionrc
+        else
+            echo export XDG_SESSION_TYPE=x11 >> $HOME/.xsessionrc
+        fi
     else
         :
     fi
@@ -159,7 +183,11 @@ if $NEED_WINDOW_MANAGER; then
     # DISPLAY has already been set above
     # XXX: it would be ideal to add a semaphore logic to make sure that the
     # window manager is ready
-    /etc/X11/Xsession 2>&1 &
+    (
+        # if env var is >8K, we have a seg fault in xsession
+        unset MOZHARNESS_TEST_PATHS
+        /etc/X11/Xsession 2>&1 &
+    )
 
     # Turn off the screen saver and screen locking
     gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
@@ -177,12 +205,37 @@ if $NEED_WINDOW_MANAGER; then
         eval `dbus-launch --sh-syntax`
     fi
     eval `echo '' | /usr/bin/gnome-keyring-daemon -r -d --unlock --components=secrets`
+
+    # Run mutter as nested wayland compositor to provide Wayland environment
+    # on top of XVfb.
+    if [ $MOZ_ENABLE_WAYLAND ]; then
+      env | grep "DISPLAY"
+      export XDG_RUNTIME_DIR=$WORKING_DIR
+      mutter --display=:0 --wayland --nested &
+      export WAYLAND_DISPLAY=wayland-0
+      retry_count=0
+      max_retries=5
+      until [ $retry_count -gt $max_retries ]; do
+        if [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+            retry_count=$(($max_retries + 1))
+        else
+            retry_count=$(($retry_count + 1))
+            echo "Waiting for Mutter, retry: $retry_count"
+            sleep 2
+        fi
+      done
+    fi
 fi
 
-if [ $NEED_COMPIZ == "true" ]  && [ $RELEASE == "16.04" ]; then
+if [[ $NEED_COMPIZ == true ]]  && [[ $RELEASE == 16.04 ]]; then
     compiz 2>&1 &
-elif [ $NEED_COMPIZ == "true" ] && [ $RELEASE == "18.04" ]; then
+elif [[ $NEED_COMPIZ == true ]] && [[ $RELEASE == 18.04 ]]; then
     compiz --replace 2>&1 &
+fi
+
+# Bug 1607713 - set cursor position to 0,0 to avoid odd libx11 interaction
+if [ $NEED_WINDOW_MANAGER ] && [ $DISPLAY == ':0' ]; then
+    xwit -root -warp 0 0
 fi
 
 maybe_start_pulse
@@ -205,10 +258,6 @@ if [ -n "$MOZHARNESS_OPTIONS" ]; then
     done
 fi
 
-# Use |mach python| if a source checkout exists so in-tree packages are
-# available.
-[[ -x "${GECKO_PATH}/mach" ]] && python="${GECKO_PATH}/mach python" || python="python2.7"
-
 # Save the computed mozharness command to a binary which is useful for
 # interactive mode.
 mozharness_bin="$HOME/bin/run-mozharness"
@@ -218,7 +267,7 @@ echo -e "#!/usr/bin/env bash
 # Some mozharness scripts assume base_work_dir is in
 # the current working directory, see bug 1279237
 cd "$WORKSPACE"
-cmd=\"${python} ${MOZHARNESS_PATH}/scripts/${MOZHARNESS_SCRIPT} ${config_cmds} ${options} ${@} \${@}\"
+cmd=\"${PYTHON:-python3} ${MOZHARNESS_PATH}/scripts/${MOZHARNESS_SCRIPT} ${config_cmds} ${options} ${@} \${@}\"
 echo \"Running: \${cmd}\"
 exec \${cmd}" > ${mozharness_bin}
 chmod +x ${mozharness_bin}
@@ -233,6 +282,6 @@ fi
 # Run a custom mach command (this is typically used by action tasks to run
 # harnesses in a particular way)
 if [ "$CUSTOM_MACH_COMMAND" ]; then
-    eval "'$WORKSPACE/build/tests/mach' ${CUSTOM_MACH_COMMAND} ${@}"
+    eval "'$WORKSPACE/build/venv/bin/python' '$WORKSPACE/build/tests/mach' ${CUSTOM_MACH_COMMAND} ${@}"
     exit $?
 fi

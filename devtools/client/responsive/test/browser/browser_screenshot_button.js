@@ -3,65 +3,42 @@
 
 "use strict";
 
-// Test global exit button
+// Test global screenshot button
 
 const TEST_URL = "data:text/html;charset=utf-8,";
 
-const { OS } = require("resource://gre/modules/osfile.jsm");
+addRDMTask(TEST_URL, async function ({ ui }) {
+  const { toolWindow } = ui;
+  const { store, document } = toolWindow;
 
-async function waitUntilScreenshot() {
-  const { Downloads } = require("resource://gre/modules/Downloads.jsm");
-  const list = await Downloads.getList(Downloads.ALL);
+  info("Click the screenshot button");
+  const screenshotButton = document.getElementById("screenshot-button");
+  screenshotButton.click();
 
-  return new Promise(function(resolve) {
-    const view = {
-      onDownloadAdded: download => {
-        download.whenSucceeded().then(() => {
-          resolve(download.target.path);
-          list.removeView(view);
-        });
-      },
-    };
+  const whenScreenshotSucceeded = waitUntilScreenshot();
 
-    list.addView(view);
-  });
-}
+  const filePath = await whenScreenshotSucceeded;
+  const image = new Image();
+  image.src = PathUtils.toFileURI(filePath);
 
-addRDMTask(
-  TEST_URL,
-  async function({ ui }) {
-    const { toolWindow } = ui;
-    const { store, document } = toolWindow;
+  await once(image, "load");
 
-    info("Click the screenshot button");
-    const screenshotButton = document.getElementById("screenshot-button");
-    screenshotButton.click();
+  // We have only one viewport at the moment
+  const viewport = store.getState().viewports[0];
+  const ratio = window.devicePixelRatio;
 
-    const whenScreenshotSucceeded = waitUntilScreenshot();
+  is(
+    image.width,
+    viewport.width * ratio,
+    "screenshot width has the expected width"
+  );
 
-    const filePath = await whenScreenshotSucceeded;
-    const image = new Image();
-    image.src = OS.Path.toFileURI(filePath);
+  is(
+    image.height,
+    viewport.height * ratio,
+    "screenshot width has the expected height"
+  );
 
-    await once(image, "load");
-
-    // We have only one viewport at the moment
-    const viewport = store.getState().viewports[0];
-    const ratio = window.devicePixelRatio;
-
-    is(
-      image.width,
-      viewport.width * ratio,
-      "screenshot width has the expected width"
-    );
-
-    is(
-      image.height,
-      viewport.height * ratio,
-      "screenshot width has the expected height"
-    );
-
-    await OS.File.remove(filePath);
-  },
-  { usingBrowserUI: true }
-);
+  await IOUtils.remove(filePath);
+  await resetDownloads();
+});

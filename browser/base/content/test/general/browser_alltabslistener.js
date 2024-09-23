@@ -7,16 +7,9 @@ function getOriginalURL(request) {
 }
 
 var gFrontProgressListener = {
-  onProgressChange(
-    aWebProgress,
-    aRequest,
-    aCurSelfProgress,
-    aMaxSelfProgress,
-    aCurTotalProgress,
-    aMaxTotalProgress
-  ) {},
+  onProgressChange() {},
 
-  onStateChange(aWebProgress, aRequest, aStateFlags, aStatus) {
+  onStateChange(aWebProgress, aRequest, aStateFlags) {
     var url = getOriginalURL(aRequest);
     if (url == "about:blank") {
       return;
@@ -25,37 +18,17 @@ var gFrontProgressListener = {
     info(
       "FrontProgress (" + url + "): " + state + " 0x" + aStateFlags.toString(16)
     );
-    Assert.less(
-      gFrontNotificationsPos,
-      gFrontNotifications.length,
-      "Got an expected notification for the front notifications listener"
-    );
-    is(
-      state,
-      gFrontNotifications[gFrontNotificationsPos],
-      "Got a notification for the front notifications listener"
-    );
-    gFrontNotificationsPos++;
+    assertCorrectBrowserAndEventOrderForFront(state);
   },
 
-  onLocationChange(aWebProgress, aRequest, aLocationURI, aFlags) {
+  onLocationChange(aWebProgress, aRequest, aLocationURI) {
     var url = getOriginalURL(aRequest);
     if (url == "about:blank") {
       return;
     }
     var state = "onLocationChange";
     info("FrontProgress: " + state + " " + aLocationURI.spec);
-    Assert.less(
-      gFrontNotificationsPos,
-      gFrontNotifications.length,
-      "Got an expected notification for the front notifications listener"
-    );
-    is(
-      state,
-      gFrontNotifications[gFrontNotificationsPos],
-      "Got a notification for the front notifications listener"
-    );
-    gFrontNotificationsPos++;
+    assertCorrectBrowserAndEventOrderForFront(state);
   },
 
   onSecurityChange(aWebProgress, aRequest, aState) {
@@ -65,22 +38,26 @@ var gFrontProgressListener = {
     }
     var state = "onSecurityChange";
     info("FrontProgress (" + url + "): " + state + " 0x" + aState.toString(16));
-    Assert.less(
-      gFrontNotificationsPos,
-      gFrontNotifications.length,
-      "Got an expected notification for the front notifications listener"
-    );
-    is(
-      state,
-      gFrontNotifications[gFrontNotificationsPos],
-      "Got a notification for the front notifications listener"
-    );
-    gFrontNotificationsPos++;
+    assertCorrectBrowserAndEventOrderForFront(state);
   },
 };
 
+function assertCorrectBrowserAndEventOrderForFront(aEventName) {
+  Assert.less(
+    gFrontNotificationsPos,
+    gFrontNotifications.length,
+    "Got an expected notification for the front notifications listener"
+  );
+  is(
+    aEventName,
+    gFrontNotifications[gFrontNotificationsPos],
+    "Got a notification for the front notifications listener"
+  );
+  gFrontNotificationsPos++;
+}
+
 var gAllProgressListener = {
-  onStateChange(aBrowser, aWebProgress, aRequest, aStateFlags, aStatus) {
+  onStateChange(aBrowser, aWebProgress, aRequest, aStateFlags) {
     var url = getOriginalURL(aRequest);
     if (url == "about:blank") {
       // ignore initial about blank
@@ -90,19 +67,11 @@ var gAllProgressListener = {
     info(
       "AllProgress (" + url + "): " + state + " 0x" + aStateFlags.toString(16)
     );
-    ok(
-      aBrowser == gTestBrowser,
-      state + " notification came from the correct browser"
-    );
-    Assert.less(
-      gAllNotificationsPos,
-      gAllNotifications.length,
-      "Got an expected notification for the all notifications listener"
-    );
-    is(
+    assertCorrectBrowserAndEventOrderForAll(state, aBrowser);
+    assertReceivedFlags(
       state,
       gAllNotifications[gAllNotificationsPos],
-      "Got a notification for the all notifications listener"
+      aStateFlags
     );
     gAllNotificationsPos++;
 
@@ -129,19 +98,11 @@ var gAllProgressListener = {
     }
     var state = "onLocationChange";
     info("AllProgress: " + state + " " + aLocationURI.spec);
-    ok(
-      aBrowser == gTestBrowser,
-      state + " notification came from the correct browser"
-    );
-    Assert.less(
-      gAllNotificationsPos,
-      gAllNotifications.length,
-      "Got an expected notification for the all notifications listener"
-    );
-    is(
-      state,
+    assertCorrectBrowserAndEventOrderForAll(state, aBrowser);
+    assertReceivedFlags(
+      "onLocationChange",
       gAllNotifications[gAllNotificationsPos],
-      "Got a notification for the all notifications listener"
+      aFlags
     );
     gAllNotificationsPos++;
   },
@@ -154,15 +115,7 @@ var gAllProgressListener = {
     }
     var state = "onSecurityChange";
     info("AllProgress (" + url + "): " + state + " 0x" + aState.toString(16));
-    ok(
-      aBrowser == gTestBrowser,
-      state + " notification came from the correct browser"
-    );
-    Assert.less(
-      gAllNotificationsPos,
-      gAllNotifications.length,
-      "Got an expected notification for the all notifications listener"
-    );
+    assertCorrectBrowserAndEventOrderForAll(state, aBrowser);
     is(
       state,
       gAllNotifications[gAllNotificationsPos],
@@ -171,6 +124,36 @@ var gAllProgressListener = {
     gAllNotificationsPos++;
   },
 };
+
+function assertCorrectBrowserAndEventOrderForAll(aState, aBrowser) {
+  Assert.equal(
+    aBrowser,
+    gTestBrowser,
+    aState + " notification came from the correct browser"
+  );
+  Assert.less(
+    gAllNotificationsPos,
+    gAllNotifications.length,
+    "Got an expected notification for the all notifications listener"
+  );
+}
+
+function assertReceivedFlags(aState, aObjOrEvent, aFlags) {
+  if (aObjOrEvent !== null && typeof aObjOrEvent === "object") {
+    is(
+      aState,
+      aObjOrEvent.state,
+      "Got a notification for the all notifications listener"
+    );
+    is(aFlags, aFlags & aObjOrEvent.flags, `Got correct flags for ${aState}`);
+  } else {
+    is(
+      aState,
+      aObjOrEvent,
+      "Got a notification for the all notifications listener"
+    );
+  }
+}
 
 var gFrontNotifications,
   gAllNotifications,
@@ -186,23 +169,6 @@ var gTestPage =
 const kBasePage =
   "http://mochi.test:8888/browser/browser/base/content/test/general/dummy_page.html";
 var gNextTest;
-
-function setExpectationForCrossDomainFrontBrowserLoad() {
-  // In fission, we swap remoteness for this load, and we'll get sent a
-  // notification to ensure the security state shown by the browser remains
-  // correct after the remoteness change - we need to account for that:
-  if (gFissionBrowser) {
-    gFrontNotifications = [
-      "onStateChange",
-      "onSecurityChange",
-      "onLocationChange",
-      "onSecurityChange",
-      "onStateChange",
-    ];
-  } else {
-    gFrontNotifications = gAllNotifications;
-  }
-}
 
 async function test() {
   waitForExplicitFinish();
@@ -226,8 +192,8 @@ async function test() {
     BrowserTestUtils.browserStopped(gBackgroundBrowser, kBasePage),
     BrowserTestUtils.browserStopped(gForegroundBrowser, kBasePage),
   ];
-  BrowserTestUtils.loadURI(gBackgroundBrowser, kBasePage);
-  BrowserTestUtils.loadURI(gForegroundBrowser, kBasePage);
+  BrowserTestUtils.startLoadingURIString(gBackgroundBrowser, kBasePage);
+  BrowserTestUtils.startLoadingURIString(gForegroundBrowser, kBasePage);
   await Promise.all(promises);
   // If we process switched, the tabbrowser may still be processing the state_stop
   // notification here because of how microtasks work. Ensure that that has
@@ -242,7 +208,7 @@ function runTest(browser, url, next) {
   gAllNotificationsPos = 0;
   gNextTest = next;
   gTestBrowser = browser;
-  BrowserTestUtils.loadURI(browser, url);
+  BrowserTestUtils.startLoadingURIString(browser, url);
 }
 
 function startTest1() {
@@ -250,19 +216,21 @@ function startTest1() {
   gBrowser.addProgressListener(gFrontProgressListener);
   gBrowser.addTabsProgressListener(gAllProgressListener);
 
-  setExpectationForCrossDomainFrontBrowserLoad();
+  gFrontNotifications = gAllNotifications;
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   runTest(gForegroundBrowser, "http://example.org" + gTestPage, startTest2);
 }
 
 function startTest2() {
   info("\nTest 2");
-  setExpectationForCrossDomainFrontBrowserLoad();
+  gFrontNotifications = gAllNotifications;
   runTest(gForegroundBrowser, "https://example.com" + gTestPage, startTest3);
 }
 
 function startTest3() {
   info("\nTest 3");
   gFrontNotifications = [];
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   runTest(gBackgroundBrowser, "http://example.org" + gTestPage, startTest4);
 }
 
@@ -285,13 +253,66 @@ function startTest5() {
   gBrowser.selectedTab = gForegroundTab;
   gBrowser.addProgressListener(gFrontProgressListener);
 
-  setExpectationForCrossDomainFrontBrowserLoad();
+  gFrontNotifications = gAllNotifications;
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   runTest(gForegroundBrowser, "http://example.org" + gTestPage, startTest6);
 }
 
 function startTest6() {
   info("\nTest 6");
   gFrontNotifications = [];
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  runTest(gBackgroundBrowser, "http://example.org" + gTestPage, startTest7);
+}
+
+// Navigate from remote to non-remote
+function startTest7() {
+  info("\nTest 7");
+  gFrontNotifications = [];
+  gAllNotifications = [
+    "onStateChange",
+    "onLocationChange",
+    "onSecurityChange",
+    {
+      state: "onLocationChange",
+      flags: Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT,
+    }, // dummy onLocationChange event
+    "onStateChange",
+  ];
+  runTest(gBackgroundBrowser, "about:preferences", startTest8);
+}
+
+// Navigate from non-remote to non-remote
+function startTest8() {
+  info("\nTest 8");
+  gFrontNotifications = [];
+  gAllNotifications = [
+    "onStateChange",
+    {
+      state: "onStateChange",
+      flags:
+        Ci.nsIWebProgressListener.STATE_IS_REDIRECTED_DOCUMENT |
+        Ci.nsIWebProgressListener.STATE_IS_REQUEST |
+        Ci.nsIWebProgressListener.STATE_START,
+    },
+    "onLocationChange",
+    "onSecurityChange",
+    "onStateChange",
+  ];
+  runTest(gBackgroundBrowser, "about:config", startTest9);
+}
+
+// Navigate from non-remote to remote
+function startTest9() {
+  info("\nTest 9");
+  gFrontNotifications = [];
+  gAllNotifications = [
+    "onStateChange",
+    "onLocationChange",
+    "onSecurityChange",
+    "onStateChange",
+  ];
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   runTest(gBackgroundBrowser, "http://example.org" + gTestPage, finishTest);
 }
 

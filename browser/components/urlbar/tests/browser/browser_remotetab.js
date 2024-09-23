@@ -8,8 +8,8 @@
 
 "use strict";
 
-const { SyncedTabs } = ChromeUtils.import(
-  "resource://services-sync/SyncedTabs.jsm"
+const { SyncedTabs } = ChromeUtils.importESModule(
+  "resource://services-sync/SyncedTabs.sys.mjs"
 );
 
 const TEST_URL = `${TEST_BASE_URL}dummy_page.html`;
@@ -27,12 +27,12 @@ const REMOTE_TAB = {
       url: TEST_URL,
       icon: UrlbarUtils.ICON.DEFAULT,
       client: "7cqCr77ptzX3",
-      lastUsed: 1452124677,
+      lastUsed: Math.floor(Date.now() / 1000),
     },
   ],
 };
 
-add_task(async function setup() {
+add_setup(async function () {
   sandbox = sinon.createSandbox();
 
   let originalSyncedTabsInternal = SyncedTabs._internal;
@@ -76,10 +76,9 @@ add_task(async function setup() {
 add_task(async function test_remotetab_opens() {
   await BrowserTestUtils.withNewTab(
     { url: "about:robots", gBrowser },
-    async function() {
+    async function () {
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "Test Remote",
       });
 

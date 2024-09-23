@@ -4,17 +4,20 @@
 "use strict";
 
 const {
+  CLIENT_IS_THUNDERBIRD,
   ON_PROFILE_CHANGE_NOTIFICATION,
   WEBCHANNEL_ID,
   log,
-} = ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
-const { CryptoUtils } = ChromeUtils.import(
-  "resource://services-crypto/utils.js"
+} = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsCommon.sys.mjs"
 );
-const {
-  FxAccountsWebChannel,
-  FxAccountsWebChannelHelpers,
-} = ChromeUtils.import("resource://gre/modules/FxAccountsWebChannel.jsm", null);
+const { CryptoUtils } = ChromeUtils.importESModule(
+  "resource://services-crypto/utils.sys.mjs"
+);
+const { FxAccountsWebChannel, FxAccountsWebChannelHelpers } =
+  ChromeUtils.importESModule(
+    "resource://gre/modules/FxAccountsWebChannel.sys.mjs"
+  );
 
 const URL_STRING = "https://example.com";
 
@@ -24,7 +27,7 @@ const mockSendingContext = {
   eventTarget: {},
 };
 
-add_test(function() {
+add_test(function () {
   validationHelper(undefined, "Error: Missing configuration options");
 
   validationHelper(
@@ -53,6 +56,11 @@ add_test(function() {
 });
 
 add_task(async function test_rejection_reporting() {
+  Services.prefs.setBoolPref(
+    "browser.tabs.remote.separatePrivilegedMozillaWebContentProcess",
+    false
+  );
+
   let mockMessage = {
     command: "fxaccounts:login",
     messageId: "1234",
@@ -150,13 +158,78 @@ add_test(function test_exception_reporting() {
   channel._channelCallback(WEBCHANNEL_ID, mockMessage, mockSendingContext);
 });
 
+add_test(function test_error_message_remove_profile_path() {
+  const errors = {
+    windows: {
+      err: new Error(
+        "Win error 183 during operation rename on file C:\\Users\\Some Computer\\AppData\\Roaming\\" +
+          "Mozilla\\BrowserWorks\\Profiles\\dbzjmzxa.default\\signedInUser.json (Cannot create a file)"
+      ),
+      expected:
+        "Error: Win error 183 during operation rename on file C:[REDACTED]signedInUser.json (Cannot create a file)",
+    },
+    unix: {
+      err: new Error(
+        "Unix error 28 during operation write on file /Users/someuser/Library/Application Support/" +
+          "Firefox/Profiles/dbzjmzxa.default-release-7/signedInUser.json (No space left on device)"
+      ),
+      expected:
+        "Error: Unix error 28 during operation write on file [REDACTED]signedInUser.json (No space left on device)",
+    },
+    netpath: {
+      err: new Error(
+        "Win error 32 during operation rename on file \\\\SVC.LOC\\HOMEDIRS$\\USERNAME\\BrowserWorks\\" +
+          "Firefox\\Profiles\\dbzjmzxa.default-release-7\\signedInUser.json (No space left on device)"
+      ),
+      expected:
+        "Error: Win error 32 during operation rename on file [REDACTED]signedInUser.json (No space left on device)",
+    },
+    mount: {
+      err: new Error(
+        "Win error 649 during operation rename on file C:\\SnapVolumes\\MountPoints\\" +
+          "{9e399ec5-0000-0000-0000-100000000000}\\SVROOT\\Users\\username\\AppData\\Roaming\\BrowserWorks\\Waterfox\\" +
+          "Profiles\\dbzjmzxa.default-release\\signedInUser.json (The create operation failed)"
+      ),
+      expected:
+        "Error: Win error 649 during operation rename on file C:[REDACTED]signedInUser.json " +
+        "(The create operation failed)",
+    },
+  };
+  const mockMessage = {
+    command: "fxaccounts:sync_preferences",
+    messageId: "1234",
+  };
+  const channel = new FxAccountsWebChannel({
+    channel_id: WEBCHANNEL_ID,
+    content_uri: URL_STRING,
+  });
+
+  let testNum = 0;
+  const toTest = Object.keys(errors).length;
+  for (const key in errors) {
+    let error = errors[key];
+    channel._channel.send = message => {
+      equal(
+        message.data.error.message,
+        error.expected,
+        "Should remove the profile path from the error message"
+      );
+      testNum++;
+      if (testNum === toTest) {
+        run_next_test();
+      }
+    };
+    channel._sendError(error.err, mockMessage, mockSendingContext);
+  }
+});
+
 add_test(function test_profile_image_change_message() {
   var mockMessage = {
     command: "profile:change",
     data: { uid: "foo" },
   };
 
-  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function(subject, topic, data) {
+  makeObserver(ON_PROFILE_CHANGE_NOTIFICATION, function (subject, topic, data) {
     Assert.equal(data, "foo");
     run_next_test();
   });
@@ -187,6 +260,31 @@ add_test(function test_login_message() {
     },
   });
 
+  channel._channelCallback(WEBCHANNEL_ID, mockMessage, mockSendingContext);
+});
+
+add_test(function test_oauth_login() {
+  const mockData = {
+    code: "oauth code",
+    state: "state parameter",
+    declinedSyncEngines: ["tabs", "creditcards"],
+    offeredSyncEngines: ["tabs", "creditcards", "history"],
+  };
+  const mockMessage = {
+    command: "fxaccounts:oauth_login",
+    data: mockData,
+  };
+  const channel = new FxAccountsWebChannel({
+    channel_id: WEBCHANNEL_ID,
+    content_uri: URL_STRING,
+    helpers: {
+      oauthLogin(data) {
+        Assert.deepEqual(data, mockData);
+        run_next_test();
+        return Promise.resolve();
+      },
+    },
+  });
   channel._channelCallback(WEBCHANNEL_ID, mockMessage, mockSendingContext);
 });
 
@@ -311,7 +409,7 @@ add_test(function test_fxa_status_message() {
   });
 
   channel._channel = {
-    send(response, sendingContext) {
+    send(response) {
       Assert.equal(response.command, "fxaccounts:fxa_status");
       Assert.equal(response.messageId, 123);
 
@@ -377,6 +475,9 @@ add_test(function test_helpers_should_allow_relink_different_email() {
 add_task(async function test_helpers_login_without_customize_sync() {
   let helpers = new FxAccountsWebChannelHelpers({
     fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve(null);
+      },
       _internal: {
         setSignedInUser(accountData) {
           return new Promise(resolve => {
@@ -385,12 +486,6 @@ add_task(async function test_helpers_login_without_customize_sync() {
 
             // verifiedCanLinkAccount should be stripped in the data.
             Assert.equal(false, "verifiedCanLinkAccount" in accountData);
-
-            // previously signed in user preference is updated.
-            Assert.equal(
-              helpers.getPreviousAccountNameHashPref(),
-              CryptoUtils.sha256Base64("testuser@testuser.com")
-            );
 
             resolve();
           });
@@ -423,6 +518,134 @@ add_task(async function test_helpers_login_without_customize_sync() {
   );
 });
 
+add_task(async function test_helpers_login_set_previous_account_name_hash() {
+  let helpers = new FxAccountsWebChannelHelpers({
+    fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve(null);
+      },
+      _internal: {
+        setSignedInUser() {
+          return new Promise(resolve => {
+            // previously signed in user preference is updated.
+            Assert.equal(
+              helpers.getPreviousAccountNameHashPref(),
+              CryptoUtils.sha256Base64("newuser@testuser.com")
+            );
+            resolve();
+          });
+        },
+      },
+      telemetry: {
+        recordConnection() {},
+      },
+    },
+    weaveXPCOM: {
+      whenLoaded() {},
+      Weave: {
+        Service: {
+          configure() {},
+        },
+      },
+    },
+  });
+
+  // ensure the previous account pref is overwritten.
+  helpers.setPreviousAccountNameHashPref("lastuser@testuser.com");
+
+  await helpers.login({
+    email: "newuser@testuser.com",
+    verifiedCanLinkAccount: true,
+    customizeSync: false,
+    verified: true,
+  });
+});
+
+add_task(async function test_helpers_login_another_user_signed_in() {
+  let helpers = new FxAccountsWebChannelHelpers({
+    fxAccounts: {
+      getSignedInUser() {
+        return Promise.resolve({ uid: "foo" });
+      },
+      _internal: {
+        setSignedInUser(accountData) {
+          return new Promise(resolve => {
+            // ensure fxAccounts is informed of the new user being signed in.
+            Assert.equal(accountData.email, "testuser@testuser.com");
+            resolve();
+          });
+        },
+      },
+      telemetry: {
+        recordConnection: sinon.spy(),
+      },
+    },
+    weaveXPCOM: {
+      whenLoaded() {},
+      Weave: {
+        Service: {
+          configure() {},
+        },
+      },
+    },
+  });
+  helpers._disconnect = sinon.spy();
+
+  await helpers.login({
+    email: "testuser@testuser.com",
+    verifiedCanLinkAccount: true,
+    customizeSync: false,
+  });
+  Assert.ok(
+    helpers._fxAccounts.telemetry.recordConnection.calledWith([], "webchannel")
+  );
+  Assert.ok(helpers._disconnect.called);
+});
+
+add_task(
+  async function test_helpers_login_dont_set_previous_account_name_hash_for_unverified_emails() {
+    let helpers = new FxAccountsWebChannelHelpers({
+      fxAccounts: {
+        _internal: {
+          setSignedInUser() {
+            return new Promise(resolve => {
+              // previously signed in user preference should not be updated.
+              Assert.equal(
+                helpers.getPreviousAccountNameHashPref(),
+                CryptoUtils.sha256Base64("lastuser@testuser.com")
+              );
+              resolve();
+            });
+          },
+        },
+        getSignedInUser() {
+          return Promise.resolve(null);
+        },
+        telemetry: {
+          recordConnection() {},
+        },
+      },
+      weaveXPCOM: {
+        whenLoaded() {},
+        Weave: {
+          Service: {
+            configure() {},
+          },
+        },
+      },
+    });
+
+    // ensure the previous account pref is overwritten.
+    helpers.setPreviousAccountNameHashPref("lastuser@testuser.com");
+
+    await helpers.login({
+      email: "newuser@testuser.com",
+      verifiedCanLinkAccount: true,
+      customizeSync: false,
+    });
+  }
+);
+
 add_task(async function test_helpers_login_with_customize_sync() {
   let helpers = new FxAccountsWebChannelHelpers({
     fxAccounts: {
@@ -438,6 +661,9 @@ add_task(async function test_helpers_login_with_customize_sync() {
             resolve();
           });
         },
+      },
+      getSignedInUser() {
+        return Promise.resolve(null);
       },
       telemetry: {
         recordConnection: sinon.spy(),
@@ -464,6 +690,7 @@ add_task(async function test_helpers_login_with_customize_sync() {
 });
 
 add_task(
+  { skip_if: () => CLIENT_IS_THUNDERBIRD },
   async function test_helpers_login_with_customize_sync_and_declined_engines() {
     let configured = false;
     let helpers = new FxAccountsWebChannelHelpers({
@@ -480,6 +707,9 @@ add_task(
               resolve();
             });
           },
+        },
+        getSignedInUser() {
+          return Promise.resolve(null);
         },
         telemetry: {
           recordConnection: sinon.spy(),
@@ -577,6 +807,9 @@ add_task(async function test_helpers_login_with_offered_sync_engines() {
             resolve(accountData);
           },
         },
+        getSignedInUser() {
+          return Promise.resolve(null);
+        },
         telemetry: {
           recordConnection() {},
         },
@@ -633,6 +866,9 @@ add_task(async function test_helpers_login_nothing_offered() {
           async setSignedInUser(accountData) {
             resolve(accountData);
           },
+        },
+        getSignedInUser() {
+          return Promise.resolve(null);
         },
         telemetry: {
           recordConnection() {},
@@ -691,7 +927,7 @@ add_test(function test_helpers_open_sync_preferences() {
   let mockBrowser = {
     loadURI(uri) {
       Assert.equal(
-        uri,
+        uri.spec,
         "about:preferences?entrypoint=fxa%3Averification_complete#sync"
       );
       run_next_test();
@@ -777,10 +1013,7 @@ add_task(async function test_helpers_getFxaStatus_allowed_signedInUser() {
 
     // These properties are filtered and should not
     // be returned to the requester.
-    Assert.equal(false, "kSync" in signedInUser);
-    Assert.equal(false, "kXCS" in signedInUser);
-    Assert.equal(false, "kExtSync" in signedInUser);
-    Assert.equal(false, "kExtKbHash" in signedInUser);
+    Assert.equal(false, "scopedKeys" in signedInUser);
   });
 });
 
@@ -1129,6 +1362,7 @@ add_task(async function test_helpers_change_password() {
             Assert.ok(credentials.hasOwnProperty("unwrapBKey"));
             Assert.ok(credentials.hasOwnProperty("device"));
             Assert.equal(null, credentials.device);
+            Assert.equal(null, credentials.encryptedSendTabKeys);
             // "foo" isn't a field known by storage, so should be dropped.
             Assert.ok(!credentials.hasOwnProperty("foo"));
             wasCalled.updateUserAccountData = true;
@@ -1185,7 +1419,7 @@ add_task(async function test_helpers_change_password_with_error() {
 });
 
 function makeObserver(aObserveTopic, aObserveFunc) {
-  let callback = function(aSubject, aTopic, aData) {
+  let callback = function (aSubject, aTopic, aData) {
     log.debug("observed " + aTopic + " " + aData);
     if (aTopic == aObserveTopic) {
       removeMe();

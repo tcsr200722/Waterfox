@@ -9,8 +9,13 @@
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Printf.h"
+#include "mozilla/ResultExtensions.h"
 
 #include "nsASCIIMask.h"
+#include "nsCharTraits.h"
+#include "nsISupports.h"
+#include "nsString.h"
+#include "nsTArray.h"
 
 // It's not worthwhile to reallocate the buffer and memcpy the
 // contents over when the size difference isn't large. With
@@ -32,11 +37,31 @@ const uint32_t kNsStringBufferShrinkingThreshold = 384;
 
 using double_conversion::DoubleToStringConverter;
 
-template <typename T>
-const typename nsTSubstring<T>::size_type nsTSubstring<T>::kMaxCapacity =
-    (nsTSubstring<T>::size_type(-1) / 2 - sizeof(nsStringBuffer)) /
-        sizeof(nsTSubstring<T>::char_type) -
-    2;
+// ---------------------------------------------------------------------------
+
+static const char16_t gNullChar = 0;
+
+char* const nsCharTraits<char>::sEmptyBuffer =
+    (char*)const_cast<char16_t*>(&gNullChar);
+char16_t* const nsCharTraits<char16_t>::sEmptyBuffer =
+    const_cast<char16_t*>(&gNullChar);
+
+// ---------------------------------------------------------------------------
+
+static void ReleaseData(void* aData, nsAString::DataFlags aFlags) {
+  if (aFlags & nsAString::DataFlags::REFCOUNTED) {
+    mozilla::StringBuffer::FromData(aData)->Release();
+  } else if (aFlags & nsAString::DataFlags::OWNED) {
+    // Treat this as destruction of a "StringAdopt" object for leak
+    // tracking purposes.
+    MOZ_LOG_DTOR(aData, "StringAdopt", 1);
+
+    free(aData);
+  }
+  // otherwise, nothing to do.
+}
+
+// ---------------------------------------------------------------------------
 
 #ifdef XPCOM_STRING_CONSTRUCTOR_OUT_OF_LINE
 template <typename T>
@@ -45,10 +70,8 @@ nsTSubstring<T>::nsTSubstring(char_type* aData, size_type aLength,
     : ::mozilla::detail::nsTStringRepr<T>(aData, aLength, aDataFlags,
                                           aClassFlags) {
   AssertValid();
-  MOZ_RELEASE_ASSERT(CheckCapacity(aLength), "String is too large.");
 
   if (aDataFlags & DataFlags::OWNED) {
-    STRING_STAT_INCREMENT(Adopt);
     MOZ_LOG_CTOR(this->mData, "StringAdopt", 1);
   }
 }
@@ -63,23 +86,24 @@ inline const nsTAutoString<T>* AsAutoString(const nsTSubstring<T>* aStr) {
 }
 
 template <typename T>
-mozilla::BulkWriteHandle<T> nsTSubstring<T>::BulkWrite(
-    size_type aCapacity, size_type aPrefixToPreserve, bool aAllowShrinking,
-    nsresult& aRv) {
+mozilla::Result<mozilla::BulkWriteHandle<T>, nsresult>
+nsTSubstring<T>::BulkWrite(size_type aCapacity, size_type aPrefixToPreserve,
+                           bool aAllowShrinking) {
   auto r = StartBulkWriteImpl(aCapacity, aPrefixToPreserve, aAllowShrinking);
   if (MOZ_UNLIKELY(r.isErr())) {
-    aRv = r.unwrapErr();
-    return mozilla::BulkWriteHandle<T>(nullptr, 0);
+    return r.propagateErr();
   }
-  aRv = NS_OK;
   return mozilla::BulkWriteHandle<T>(this, r.unwrap());
 }
 
 template <typename T>
-mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
-    size_type aCapacity, size_type aPrefixToPreserve, bool aAllowShrinking,
-    size_type aSuffixLength, size_type aOldSuffixStart,
-    size_type aNewSuffixStart) {
+auto nsTSubstring<T>::StartBulkWriteImpl(size_type aCapacity,
+                                         size_type aPrefixToPreserve,
+                                         bool aAllowShrinking,
+                                         size_type aSuffixLength,
+                                         size_type aOldSuffixStart,
+                                         size_type aNewSuffixStart)
+    -> mozilla::Result<size_type, nsresult> {
   // Note! Capacity does not include room for the terminating null char.
 
   MOZ_ASSERT(aPrefixToPreserve <= aCapacity,
@@ -92,7 +116,7 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
   // If zero capacity is requested, set the string to the special empty
   // string.
   if (MOZ_UNLIKELY(!aCapacity)) {
-    ::ReleaseData(this->mData, this->mDataFlags);
+    ReleaseData(this->mData, this->mDataFlags);
     SetToEmptyBuffer();
     return 0;
   }
@@ -114,19 +138,17 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
       char_traits::move(this->mData + aNewSuffixStart,
                         this->mData + aOldSuffixStart, aSuffixLength);
       if (aSuffixLength) {
-        char_traits::uninitialize(
-            this->mData + aPrefixToPreserve,
-            XPCOM_MIN(size_t(aNewSuffixStart - aPrefixToPreserve),
-                      kNsStringBufferMaxPoison));
+        char_traits::uninitialize(this->mData + aPrefixToPreserve,
+                                  XPCOM_MIN(aNewSuffixStart - aPrefixToPreserve,
+                                            kNsStringBufferMaxPoison));
         char_traits::uninitialize(
             this->mData + aNewSuffixStart + aSuffixLength,
-            XPCOM_MIN(size_t(curCapacity + 1 - aNewSuffixStart - aSuffixLength),
+            XPCOM_MIN(curCapacity + 1 - aNewSuffixStart - aSuffixLength,
                       kNsStringBufferMaxPoison));
       } else {
-        char_traits::uninitialize(
-            this->mData + aPrefixToPreserve,
-            XPCOM_MIN(size_t(curCapacity + 1 - aPrefixToPreserve),
-                      kNsStringBufferMaxPoison));
+        char_traits::uninitialize(this->mData + aPrefixToPreserve,
+                                  XPCOM_MIN(curCapacity + 1 - aPrefixToPreserve,
+                                            kNsStringBufferMaxPoison));
       }
       return curCapacity;
     }
@@ -150,9 +172,9 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
     // If |aCapacity > kMaxCapacity|, then our doubling algorithm may not be
     // able to allocate it.  Just bail out in cases like that.  We don't want
     // to be allocating 2GB+ strings anyway.
-    static_assert((sizeof(nsStringBuffer) & 0x1) == 0,
-                  "bad size for nsStringBuffer");
-    if (MOZ_UNLIKELY(!CheckCapacity(aCapacity))) {
+    static_assert((sizeof(mozilla::StringBuffer) & 0x1) == 0,
+                  "bad size for mozilla::StringBuffer");
+    if (MOZ_UNLIKELY(!this->CheckCapacity(aCapacity))) {
       return mozilla::Err(NS_ERROR_OUT_OF_MEMORY);
     }
 
@@ -162,10 +184,10 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
     // least 1.125, rounding up to the nearest MiB.
     const size_type slowGrowthThreshold = 8 * 1024 * 1024;
 
-    // nsStringBuffer allocates sizeof(nsStringBuffer) + passed size, and
-    // storageSize below wants extra 1 * sizeof(char_type).
+    // mozilla::StringBuffer allocates sizeof(mozilla::StringBuffer) + passed
+    // size, and storageSize below wants extra 1 * sizeof(char_type).
     const size_type neededExtraSpace =
-        sizeof(nsStringBuffer) / sizeof(char_type) + 1;
+        sizeof(mozilla::StringBuffer) / sizeof(char_type) + 1;
 
     size_type temp;
     if (aCapacity >= slowGrowthThreshold) {
@@ -174,8 +196,8 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
       temp = XPCOM_MAX(aCapacity, minNewCapacity) + neededExtraSpace;
 
       // Round up to the next multiple of MiB, but ensure the expected
-      // capacity doesn't include the extra space required by nsStringBuffer
-      // and null-termination.
+      // capacity doesn't include the extra space required by
+      // mozilla::StringBuffer and null-termination.
       const size_t MiB = 1 << 20;
       temp = (MiB * ((temp + MiB - 1) / MiB)) - neededExtraSpace;
     } else {
@@ -184,7 +206,7 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
           mozilla::RoundUpPow2(aCapacity + neededExtraSpace) - neededExtraSpace;
     }
 
-    newCapacity = XPCOM_MIN(temp, kMaxCapacity);
+    newCapacity = XPCOM_MIN(temp, base_string_type::kMaxCapacity);
     MOZ_ASSERT(newCapacity >= aCapacity,
                "should have hit the early return at the top");
     // Avoid shrinking if the new buffer size is close to the old. Note that
@@ -200,7 +222,8 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
       // Since we allocate only by powers of 2 we always fit into a full
       // mozjemalloc bucket, it's not useful to use realloc, which may spend
       // time uselessly copying too much.
-      nsStringBuffer* newHdr = nsStringBuffer::Alloc(storageSize).take();
+      mozilla::StringBuffer* newHdr =
+          mozilla::StringBuffer::Alloc(storageSize).take();
       if (newHdr) {
         newData = (char_type*)newHdr->Data();
       } else if (shrinking) {
@@ -227,25 +250,23 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
     char_traits::move(newData + aNewSuffixStart, oldData + aOldSuffixStart,
                       aSuffixLength);
     if (aSuffixLength) {
-      char_traits::uninitialize(
-          this->mData + aPrefixToPreserve,
-          XPCOM_MIN(size_t(aNewSuffixStart - aPrefixToPreserve),
-                    kNsStringBufferMaxPoison));
+      char_traits::uninitialize(this->mData + aPrefixToPreserve,
+                                XPCOM_MIN(aNewSuffixStart - aPrefixToPreserve,
+                                          kNsStringBufferMaxPoison));
       char_traits::uninitialize(
           this->mData + aNewSuffixStart + aSuffixLength,
-          XPCOM_MIN(size_t(newCapacity + 1 - aNewSuffixStart - aSuffixLength),
+          XPCOM_MIN(newCapacity + 1 - aNewSuffixStart - aSuffixLength,
                     kNsStringBufferMaxPoison));
     } else {
-      char_traits::uninitialize(
-          this->mData + aPrefixToPreserve,
-          XPCOM_MIN(size_t(newCapacity + 1 - aPrefixToPreserve),
-                    kNsStringBufferMaxPoison));
+      char_traits::uninitialize(this->mData + aPrefixToPreserve,
+                                XPCOM_MIN(newCapacity + 1 - aPrefixToPreserve,
+                                          kNsStringBufferMaxPoison));
     }
   } else {
     char_traits::copy(newData, oldData, aPrefixToPreserve);
     char_traits::copy(newData + aNewSuffixStart, oldData + aOldSuffixStart,
                       aSuffixLength);
-    ::ReleaseData(oldData, oldFlags);
+    ReleaseData(oldData, oldFlags);
   }
 
   return newCapacity;
@@ -253,11 +274,10 @@ mozilla::Result<uint32_t, nsresult> nsTSubstring<T>::StartBulkWriteImpl(
 
 template <typename T>
 void nsTSubstring<T>::FinishBulkWriteImpl(size_type aLength) {
-  MOZ_ASSERT(aLength != UINT32_MAX, "OOM magic value passed as length.");
   if (aLength) {
     FinishBulkWriteImplImpl(aLength);
   } else {
-    ::ReleaseData(this->mData, this->mDataFlags);
+    ReleaseData(this->mData, this->mDataFlags);
     SetToEmptyBuffer();
   }
   AssertValid();
@@ -265,7 +285,7 @@ void nsTSubstring<T>::FinishBulkWriteImpl(size_type aLength) {
 
 template <typename T>
 void nsTSubstring<T>::Finalize() {
-  ::ReleaseData(this->mData, this->mDataFlags);
+  ReleaseData(this->mData, this->mDataFlags);
   // this->mData, this->mLength, and this->mDataFlags are purposefully left
   // dangling
 }
@@ -275,7 +295,7 @@ bool nsTSubstring<T>::ReplacePrep(index_type aCutStart, size_type aCutLength,
                                   size_type aNewLength) {
   aCutLength = XPCOM_MIN(aCutLength, this->mLength - aCutStart);
 
-  mozilla::CheckedInt<size_type> newTotalLen = this->mLength;
+  mozilla::CheckedInt<size_type> newTotalLen = this->Length();
   newTotalLen += aNewLength;
   newTotalLen -= aCutLength;
   if (!newTotalLen.isValid()) {
@@ -301,7 +321,7 @@ bool nsTSubstring<T>::ReplacePrepInternal(index_type aCutStart,
   size_type oldSuffixStart = aCutStart + aCutLen;
   size_type suffixLength = this->mLength - oldSuffixStart;
 
-  mozilla::Result<uint32_t, nsresult> r = StartBulkWriteImpl(
+  mozilla::Result<size_type, nsresult> r = StartBulkWriteImpl(
       aNewLen, aCutStart, false, suffixLength, oldSuffixStart, newSuffixStart);
   if (r.isErr()) {
     return false;
@@ -317,11 +337,11 @@ typename nsTSubstring<T>::size_type nsTSubstring<T>::Capacity() const {
   size_type capacity;
   if (this->mDataFlags & DataFlags::REFCOUNTED) {
     // if the string is readonly, then we pretend that it has no capacity.
-    nsStringBuffer* hdr = nsStringBuffer::FromData(this->mData);
+    mozilla::StringBuffer* hdr = mozilla::StringBuffer::FromData(this->mData);
     if (hdr->IsReadonly()) {
       capacity = 0;
     } else {
-      capacity = (hdr->StorageSize() / sizeof(char_type)) - 1;
+      capacity = (size_t(hdr->StorageSize()) / sizeof(char_type)) - 1;
     }
   } else if (this->mDataFlags & DataFlags::INLINE) {
     MOZ_ASSERT(this->mClassFlags & ClassFlags::INLINE);
@@ -346,7 +366,7 @@ bool nsTSubstring<T>::EnsureMutable(size_type aNewLen) {
       return true;
     }
     if ((this->mDataFlags & DataFlags::REFCOUNTED) &&
-        !nsStringBuffer::FromData(this->mData)->IsReadonly()) {
+        !mozilla::StringBuffer::FromData(this->mData)->IsReadonly()) {
       return true;
     }
 
@@ -429,11 +449,11 @@ bool nsTSubstring<T>::AssignASCII(const char* aData, size_type aLength,
 
   // A Unicode string can't depend on an ASCII string buffer,
   // so this dependence check only applies to CStrings.
-#ifdef CharT_is_char
-  if (this->IsDependentOn(aData, aData + aLength)) {
-    return Assign(string_type(aData, aLength), aFallible);
+  if constexpr (std::is_same_v<T, char>) {
+    if (this->IsDependentOn(aData, aData + aLength)) {
+      return Assign(string_type(aData, aLength), aFallible);
+    }
   }
-#endif
 
   auto r = StartBulkWriteImpl(aLength, 0, true);
   if (MOZ_UNLIKELY(r.isErr())) {
@@ -446,7 +466,7 @@ bool nsTSubstring<T>::AssignASCII(const char* aData, size_type aLength,
 
 template <typename T>
 void nsTSubstring<T>::AssignLiteral(const char_type* aData, size_type aLength) {
-  ::ReleaseData(this->mData, this->mDataFlags);
+  ReleaseData(this->mData, this->mDataFlags);
   SetData(const_cast<char_type*>(aData), aLength,
           DataFlags::TERMINATED | DataFlags::LITERAL);
 }
@@ -481,15 +501,16 @@ bool nsTSubstring<T>::Assign(const self_type& aStr,
     NS_ASSERTION(aStr.mDataFlags & DataFlags::TERMINATED,
                  "shared, but not terminated");
 
-    ::ReleaseData(this->mData, this->mDataFlags);
+    ReleaseData(this->mData, this->mDataFlags);
 
     SetData(aStr.mData, aStr.mLength,
             DataFlags::TERMINATED | DataFlags::REFCOUNTED);
 
     // get an owning reference to the this->mData
-    nsStringBuffer::FromData(this->mData)->AddRef();
+    mozilla::StringBuffer::FromData(this->mData)->AddRef();
     return true;
-  } else if (aStr.mDataFlags & DataFlags::LITERAL) {
+  }
+  if (aStr.mDataFlags & DataFlags::LITERAL) {
     MOZ_ASSERT(aStr.mDataFlags & DataFlags::TERMINATED, "Unterminated literal");
 
     AssignLiteral(aStr.mData, aStr.mLength);
@@ -508,6 +529,24 @@ void nsTSubstring<T>::Assign(self_type&& aStr) {
 }
 
 template <typename T>
+void nsTSubstring<T>::AssignOwned(self_type&& aStr) {
+  MOZ_ASSERT(aStr.mDataFlags & (DataFlags::REFCOUNTED | DataFlags::OWNED),
+             "neither shared nor owned");
+
+  // If they have a REFCOUNTED or OWNED buffer, we can avoid a copy - so steal
+  // their buffer and reset them to the empty string.
+
+  // |aStr| should be null-terminated
+  MOZ_ASSERT(aStr.mDataFlags & DataFlags::TERMINATED,
+             "shared or owned, but not terminated");
+
+  ReleaseData(this->mData, this->mDataFlags);
+
+  SetData(aStr.mData, aStr.mLength, aStr.mDataFlags);
+  aStr.SetToEmptyBuffer();
+}
+
+template <typename T>
 bool nsTSubstring<T>::Assign(self_type&& aStr, const fallible_t& aFallible) {
   // We're moving |aStr| in this method, so we need to try to steal the data,
   // and in the fallback perform a copy-assignment followed by a truncation of
@@ -519,17 +558,7 @@ bool nsTSubstring<T>::Assign(self_type&& aStr, const fallible_t& aFallible) {
   }
 
   if (aStr.mDataFlags & (DataFlags::REFCOUNTED | DataFlags::OWNED)) {
-    // If they have a REFCOUNTED or OWNED buffer, we can avoid a copy - so steal
-    // their buffer and reset them to the empty string.
-
-    // |aStr| should be null-terminated
-    NS_ASSERTION(aStr.mDataFlags & DataFlags::TERMINATED,
-                 "shared or owned, but not terminated");
-
-    ::ReleaseData(this->mData, this->mDataFlags);
-
-    SetData(aStr.mData, aStr.mLength, aStr.mDataFlags);
-    aStr.SetToEmptyBuffer();
+    AssignOwned(std::move(aStr));
     return true;
   }
 
@@ -550,40 +579,51 @@ void nsTSubstring<T>::Assign(const substring_tuple_type& aTuple) {
 }
 
 template <typename T>
-bool nsTSubstring<T>::Assign(const substring_tuple_type& aTuple,
-                             const fallible_t& aFallible) {
-  if (aTuple.IsDependentOn(this->mData, this->mData + this->mLength)) {
-    // take advantage of sharing here...
-    return Assign(string_type(aTuple), aFallible);
-  }
+bool nsTSubstring<T>::AssignNonDependent(const substring_tuple_type& aTuple,
+                                         size_type aTupleLength,
+                                         const mozilla::fallible_t& aFallible) {
+  NS_ASSERTION(aTuple.Length() == aTupleLength, "wrong length passed");
 
-  size_type length = aTuple.Length();
-
-  mozilla::Result<uint32_t, nsresult> r = StartBulkWriteImpl(length);
+  auto r = StartBulkWriteImpl(aTupleLength);
   if (r.isErr()) {
     return false;
   }
 
-  aTuple.WriteTo(this->mData, length);
+  aTuple.WriteTo(this->mData, aTupleLength);
 
-  FinishBulkWriteImpl(length);
+  FinishBulkWriteImpl(aTupleLength);
   return true;
+}
+
+template <typename T>
+bool nsTSubstring<T>::Assign(const substring_tuple_type& aTuple,
+                             const fallible_t& aFallible) {
+  const auto [isDependentOnThis, tupleLength] =
+      aTuple.IsDependentOnWithLength(this->mData, this->mData + this->mLength);
+  if (isDependentOnThis) {
+    string_type temp;
+    self_type& tempSubstring = temp;
+    if (!tempSubstring.AssignNonDependent(aTuple, tupleLength, aFallible)) {
+      return false;
+    }
+    AssignOwned(std::move(temp));
+    return true;
+  }
+
+  return AssignNonDependent(aTuple, tupleLength, aFallible);
 }
 
 template <typename T>
 void nsTSubstring<T>::Adopt(char_type* aData, size_type aLength) {
   if (aData) {
-    ::ReleaseData(this->mData, this->mDataFlags);
+    ReleaseData(this->mData, this->mDataFlags);
 
     if (aLength == size_type(-1)) {
       aLength = char_traits::length(aData);
     }
 
-    MOZ_RELEASE_ASSERT(CheckCapacity(aLength), "adopting a too-long string");
-
     SetData(aData, aLength, DataFlags::TERMINATED | DataFlags::OWNED);
 
-    STRING_STAT_INCREMENT(Adopt);
     // Treat this as construction of a "StringAdopt" object for leak
     // tracking purposes.
     MOZ_LOG_CTOR(this->mData, "StringAdopt", 1);
@@ -660,18 +700,22 @@ bool nsTSubstring<T>::Replace(index_type aCutStart, size_type aCutLength,
 template <typename T>
 void nsTSubstring<T>::Replace(index_type aCutStart, size_type aCutLength,
                               const substring_tuple_type& aTuple) {
-  if (aTuple.IsDependentOn(this->mData, this->mData + this->mLength)) {
-    nsTAutoString<T> temp(aTuple);
+  const auto [isDependentOnThis, tupleLength] =
+      aTuple.IsDependentOnWithLength(this->mData, this->mData + this->mLength);
+
+  if (isDependentOnThis) {
+    nsTAutoString<T> temp;
+    if (!temp.AssignNonDependent(aTuple, tupleLength, mozilla::fallible)) {
+      AllocFailed(tupleLength);
+    }
     Replace(aCutStart, aCutLength, temp);
     return;
   }
 
-  size_type length = aTuple.Length();
-
   aCutStart = XPCOM_MIN(aCutStart, this->Length());
 
-  if (ReplacePrep(aCutStart, aCutLength, length) && length > 0) {
-    aTuple.WriteTo(this->mData + aCutStart, length);
+  if (ReplacePrep(aCutStart, aCutLength, tupleLength) && tupleLength > 0) {
+    aTuple.WriteTo(this->mData + aCutStart, tupleLength);
   }
 }
 
@@ -778,12 +822,13 @@ bool nsTSubstring<T>::AppendASCII(const char* aData, size_type aLength,
     return true;
   }
 
-#ifdef CharT_is_char
-  // 16-bit string can't depend on an 8-bit buffer
-  if (MOZ_UNLIKELY(this->IsDependentOn(aData, aData + aLength))) {
-    return Append(string_type(aData, aLength), mozilla::fallible);
+  if constexpr (std::is_same_v<T, char>) {
+    // 16-bit string can't depend on an 8-bit buffer
+    if (MOZ_UNLIKELY(this->IsDependentOn(aData, aData + aLength))) {
+      return Append(string_type(aData, aLength), mozilla::fallible);
+    }
   }
-#endif
+
   size_type oldLen = this->mLength;
   mozilla::CheckedInt<size_type> newLen(oldLen);
   newLen += aLength;
@@ -827,7 +872,8 @@ void nsTSubstring<T>::Append(const substring_tuple_type& aTuple) {
 template <typename T>
 bool nsTSubstring<T>::Append(const substring_tuple_type& aTuple,
                              const fallible_t& aFallible) {
-  size_type tupleLength = aTuple.Length();
+  const auto [isDependentOnThis, tupleLength] =
+      aTuple.IsDependentOnWithLength(this->mData, this->mData + this->mLength);
 
   if (MOZ_UNLIKELY(!tupleLength)) {
     // Avoid undoing the effect of SetCapacity() if both
@@ -835,8 +881,7 @@ bool nsTSubstring<T>::Append(const substring_tuple_type& aTuple,
     return true;
   }
 
-  if (MOZ_UNLIKELY(
-          aTuple.IsDependentOn(this->mData, this->mData + this->mLength))) {
+  if (MOZ_UNLIKELY(isDependentOnThis)) {
     return Append(string_type(aTuple), aFallible);
   }
 
@@ -869,8 +914,7 @@ bool nsTSubstring<T>::SetCapacity(size_type aCapacity, const fallible_t&) {
   // logical length.
   size_type capacity = XPCOM_MAX(aCapacity, length);
 
-  mozilla::Result<uint32_t, nsresult> r =
-      StartBulkWriteImpl(capacity, length, true);
+  auto r = StartBulkWriteImpl(capacity, length, true);
   if (r.isErr()) {
     return false;
   }
@@ -906,9 +950,8 @@ void nsTSubstring<T>::SetLength(size_type aLength) {
 template <typename T>
 bool nsTSubstring<T>::SetLength(size_type aLength,
                                 const fallible_t& aFallible) {
-  size_type preserve = XPCOM_MIN(aLength, this->mLength);
-  mozilla::Result<uint32_t, nsresult> r =
-      StartBulkWriteImpl(aLength, preserve, true);
+  size_type preserve = XPCOM_MIN(aLength, this->Length());
+  auto r = StartBulkWriteImpl(aLength, preserve, true);
   if (r.isErr()) {
     return false;
   }
@@ -920,7 +963,7 @@ bool nsTSubstring<T>::SetLength(size_type aLength,
 
 template <typename T>
 void nsTSubstring<T>::Truncate() {
-  ::ReleaseData(this->mData, this->mDataFlags);
+  ReleaseData(this->mData, this->mDataFlags);
   SetToEmptyBuffer();
   AssertValid();
 }
@@ -934,135 +977,6 @@ void nsTSubstring<T>::SetIsVoid(bool aVal) {
     this->mDataFlags &= ~DataFlags::VOIDED;
   }
 }
-
-namespace mozilla {
-namespace detail {
-
-template <typename T>
-typename nsTStringRepr<T>::char_type nsTStringRepr<T>::First() const {
-  MOZ_RELEASE_ASSERT(this->mLength > 0, "|First()| called on an empty string");
-  return this->mData[0];
-}
-
-template <typename T>
-typename nsTStringRepr<T>::char_type nsTStringRepr<T>::Last() const {
-  MOZ_RELEASE_ASSERT(this->mLength > 0, "|Last()| called on an empty string");
-  return this->mData[this->mLength - 1];
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const self_type& aStr) const {
-  return this->mLength == aStr.mLength &&
-         char_traits::compare(this->mData, aStr.mData, this->mLength) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const self_type& aStr,
-                              comparator_type aComp) const {
-  return this->mLength == aStr.mLength &&
-         aComp(this->mData, aStr.mData, this->mLength, aStr.mLength) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const substring_tuple_type& aTuple) const {
-  return Equals(substring_type(aTuple));
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const substring_tuple_type& aTuple,
-                              comparator_type aComp) const {
-  return Equals(substring_type(aTuple), aComp);
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const char_type* aData) const {
-  // unfortunately, some callers pass null :-(
-  if (!aData) {
-    MOZ_ASSERT_UNREACHABLE("null data pointer");
-    return this->mLength == 0;
-  }
-
-  // XXX avoid length calculation?
-  size_type length = char_traits::length(aData);
-  return this->mLength == length &&
-         char_traits::compare(this->mData, aData, this->mLength) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Equals(const char_type* aData,
-                              comparator_type aComp) const {
-  // unfortunately, some callers pass null :-(
-  if (!aData) {
-    MOZ_ASSERT_UNREACHABLE("null data pointer");
-    return this->mLength == 0;
-  }
-
-  // XXX avoid length calculation?
-  size_type length = char_traits::length(aData);
-  return this->mLength == length &&
-         aComp(this->mData, aData, this->mLength, length) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::EqualsASCII(const char* aData, size_type aLen) const {
-  return this->mLength == aLen &&
-         char_traits::compareASCII(this->mData, aData, aLen) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::EqualsASCII(const char* aData) const {
-  return char_traits::compareASCIINullTerminated(this->mData, this->mLength,
-                                                 aData) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::EqualsLatin1(const char* aData,
-                                    const size_type aLength) const {
-  return (this->mLength == aLength) &&
-         char_traits::equalsLatin1(this->mData, aData, aLength);
-}
-
-template <typename T>
-bool nsTStringRepr<T>::LowerCaseEqualsASCII(const char* aData,
-                                            size_type aLen) const {
-  return this->mLength == aLen &&
-         char_traits::compareLowerCaseToASCII(this->mData, aData, aLen) == 0;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::LowerCaseEqualsASCII(const char* aData) const {
-  return char_traits::compareLowerCaseToASCIINullTerminated(
-             this->mData, this->mLength, aData) == 0;
-}
-
-template <typename T>
-typename nsTStringRepr<T>::size_type nsTStringRepr<T>::CountChar(
-    char_type aChar) const {
-  const char_type* start = this->mData;
-  const char_type* end = this->mData + this->mLength;
-
-  return NS_COUNT(start, end, aChar);
-}
-
-template <typename T>
-int32_t nsTStringRepr<T>::FindChar(char_type aChar, index_type aOffset) const {
-  if (aOffset < this->mLength) {
-    const char_type* result = char_traits::find(this->mData + aOffset,
-                                                this->mLength - aOffset, aChar);
-    if (result) {
-      return result - this->mData;
-    }
-  }
-  return -1;
-}
-
-template <typename T>
-bool nsTStringRepr<T>::Contains(char_type aChar) const {
-  return FindChar(aChar) != kNotFound;
-}
-
-}  // namespace detail
-}  // namespace mozilla
 
 template <typename T>
 void nsTSubstring<T>::StripChar(char_type aChar) {
@@ -1128,12 +1042,24 @@ void nsTSubstring<T>::StripTaggedASCII(const ASCIIMaskArray& aToStrip) {
     return;
   }
 
+  size_t untaggedPrefixLength = 0;
+  for (; untaggedPrefixLength < this->mLength; ++untaggedPrefixLength) {
+    uint32_t theChar = (uint32_t)this->mData[untaggedPrefixLength];
+    if (mozilla::ASCIIMask::IsMasked(aToStrip, theChar)) {
+      break;
+    }
+  }
+
+  if (untaggedPrefixLength == this->mLength) {
+    return;
+  }
+
   if (!EnsureMutable()) {
     AllocFailed(this->mLength);
   }
 
-  char_type* to = this->mData;
-  char_type* from = this->mData;
+  char_type* to = this->mData + untaggedPrefixLength;
+  char_type* from = to;
   char_type* end = this->mData + this->mLength;
 
   while (from < end) {
@@ -1187,7 +1113,7 @@ void nsTSubstring<T>::AppendPrintf(const char* aFormat, ...) {
 }
 
 template <typename T>
-void nsTSubstring<T>::AppendPrintf(const char* aFormat, va_list aAp) {
+void nsTSubstring<T>::AppendVprintf(const char* aFormat, va_list aAp) {
   PrintfAppend<T> appender(this);
   bool r = appender.vprint(aFormat, aAp);
   if (!r) {
@@ -1272,64 +1198,13 @@ static int FormatWithoutTrailingZeros(char (&aBuf)[40], double aDouble,
                                       int aPrecision) {
   static const DoubleToStringConverter converter(
       DoubleToStringConverter::UNIQUE_ZERO |
+          DoubleToStringConverter::NO_TRAILING_ZERO |
           DoubleToStringConverter::EMIT_POSITIVE_EXPONENT_SIGN,
       "Infinity", "NaN", 'e', -6, 21, 6, 1);
   double_conversion::StringBuilder builder(aBuf, sizeof(aBuf));
-  bool exponential_notation = false;
-  converter.ToPrecision(aDouble, aPrecision, &exponential_notation, &builder);
+  converter.ToPrecision(aDouble, aPrecision, &builder);
   int length = builder.position();
-  char* formattedDouble = builder.Finalize();
-
-  // If we have a shorter string than aPrecision, it means we have a special
-  // value (NaN or Infinity).  All other numbers will be formatted with at
-  // least aPrecision digits.
-  if (length <= aPrecision) {
-    return length;
-  }
-
-  char* end = formattedDouble + length;
-  char* decimalPoint = strchr(aBuf, '.');
-  // No trailing zeros to remove.
-  if (!decimalPoint) {
-    return length;
-  }
-
-  if (MOZ_UNLIKELY(exponential_notation)) {
-    // We need to check for cases like 1.00000e-10 (yes, this is
-    // disgusting).
-    char* exponent = end - 1;
-    for (;; --exponent) {
-      if (*exponent == 'e') {
-        break;
-      }
-    }
-    char* zerosBeforeExponent = exponent - 1;
-    for (; zerosBeforeExponent != decimalPoint; --zerosBeforeExponent) {
-      if (*zerosBeforeExponent != '0') {
-        break;
-      }
-    }
-    if (zerosBeforeExponent == decimalPoint) {
-      --zerosBeforeExponent;
-    }
-    // Slide the exponent to the left over the trailing zeros.  Don't
-    // worry about copying the trailing NUL character.
-    size_t exponentSize = end - exponent;
-    memmove(zerosBeforeExponent + 1, exponent, exponentSize);
-    length -= exponent - (zerosBeforeExponent + 1);
-  } else {
-    char* trailingZeros = end - 1;
-    for (; trailingZeros != decimalPoint; --trailingZeros) {
-      if (*trailingZeros != '0') {
-        break;
-      }
-    }
-    if (trailingZeros == decimalPoint) {
-      --trailingZeros;
-    }
-    length -= end - (trailingZeros + 1);
-  }
-
+  builder.Finalize();
   return length;
 }
 
@@ -1351,7 +1226,7 @@ template <typename T>
 size_t nsTSubstring<T>::SizeOfExcludingThisIfUnshared(
     mozilla::MallocSizeOf aMallocSizeOf) const {
   if (this->mDataFlags & DataFlags::REFCOUNTED) {
-    return nsStringBuffer::FromData(this->mData)
+    return mozilla::StringBuffer::FromData(this->mData)
         ->SizeOfIncludingThisIfUnshared(aMallocSizeOf);
   }
   if (this->mDataFlags & DataFlags::OWNED) {
@@ -1375,7 +1250,7 @@ size_t nsTSubstring<T>::SizeOfExcludingThisEvenIfShared(
   // This is identical to SizeOfExcludingThisIfUnshared except for the
   // DataFlags::REFCOUNTED case.
   if (this->mDataFlags & DataFlags::REFCOUNTED) {
-    return nsStringBuffer::FromData(this->mData)
+    return mozilla::StringBuffer::FromData(this->mData)
         ->SizeOfIncludingThisEvenIfShared(aMallocSizeOf);
   }
   if (this->mDataFlags & DataFlags::OWNED) {
@@ -1397,44 +1272,11 @@ size_t nsTSubstring<T>::SizeOfIncludingThisEvenIfShared(
 }
 
 template <typename T>
-inline nsTSubstringSplitter<T>::nsTSubstringSplitter(
-    const nsTSubstring<T>* aStr, char_type aDelim)
-    : mStr(aStr), mArray(nullptr), mDelim(aDelim) {
-  if (mStr->IsEmpty()) {
-    mArraySize = 0;
-    return;
-  }
-
-  size_type delimCount = mStr->CountChar(aDelim);
-  mArraySize = delimCount + 1;
-  mArray.reset(new nsTDependentSubstring<T>[mArraySize]);
-
-  size_t seenParts = 0;
-  size_type start = 0;
-  do {
-    MOZ_ASSERT(seenParts < mArraySize);
-    int32_t offset = mStr->FindChar(aDelim, start);
-    if (offset != -1) {
-      size_type length = static_cast<size_type>(offset) - start;
-      mArray[seenParts++].Rebind(mStr->Data() + start, length);
-      start = static_cast<size_type>(offset) + 1;
-    } else {
-      // Get the remainder
-      mArray[seenParts++].Rebind(mStr->Data() + start, mStr->Length() - start);
-      break;
-    }
-  } while (start < mStr->Length());
-}
-
-template <typename T>
 nsTSubstringSplitter<T> nsTSubstring<T>::Split(const char_type aChar) const {
-  return nsTSubstringSplitter<T>(this, aChar);
-}
-
-template <typename T>
-const nsTDependentSubstring<T>&
-    nsTSubstringSplitter<T>::nsTSubstringSplit_Iter::operator*() const {
-  return mObj.Get(mPos);
+  return nsTSubstringSplitter<T>(
+      nsTCharSeparatedTokenizerTemplate<
+          NS_TokenizerIgnoreNothing, T,
+          nsTokenizerFlags::IncludeEmptyTokenAtEnd>(*this, aChar));
 }
 
 // Common logic for nsTSubstring<T>::ToInteger and nsTSubstring<T>::ToInteger64.
@@ -1463,7 +1305,7 @@ int_type ToIntegerCommon(const nsTSubstring<T>& aSrc, nsresult* aErrorCode,
   //     16 we'd skip the 'G', and parse just 'e' returning 14.
   while ((cp < endcp) && (!done)) {
     switch (*cp++) {
-      // clang-format off
+        // clang-format off
       case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
       case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
       case '0': case '1': case '2': case '3': case '4':
@@ -1472,6 +1314,9 @@ int_type ToIntegerCommon(const nsTSubstring<T>& aSrc, nsresult* aErrorCode,
         break;
       // clang-format on
       case '-':
+        if constexpr (!std::is_signed_v<int_type>) {
+          return 0;
+        }
         negate = true;
         break;
       default:
@@ -1498,16 +1343,14 @@ int_type ToIntegerCommon(const nsTSubstring<T>& aSrc, nsresult* aErrorCode,
       if (10 == aRadix) {
         // Invalid base 10 digit, error out.
         return 0;
-      } else {
-        result = (aRadix * result) + ((theChar - 'A') + 10);
       }
+      result = (aRadix * result) + ((theChar - 'A') + 10);
     } else if ((theChar >= 'a') && (theChar <= 'f')) {
       if (10 == aRadix) {
         // Invalid base 10 digit, error out.
         return 0;
-      } else {
-        result = (aRadix * result) + ((theChar - 'a') + 10);
       }
+      result = (aRadix * result) + ((theChar - 'a') + 10);
     } else if ((('X' == theChar) || ('x' == theChar)) && result == 0) {
       // For some reason we support a leading 'x' regardless of radix. For
       // example: "000000x500", aRadix = 10 would be parsed as 500 rather
@@ -1541,6 +1384,12 @@ int32_t nsTSubstring<T>::ToInteger(nsresult* aErrorCode,
   return ToIntegerCommon<T, int32_t>(*this, aErrorCode, aRadix);
 }
 
+template <typename T>
+uint32_t nsTSubstring<T>::ToUnsignedInteger(nsresult* aErrorCode,
+                                            uint32_t aRadix) const {
+  return ToIntegerCommon<T, uint32_t>(*this, aErrorCode, aRadix);
+}
+
 /**
  * nsTSubstring::ToInteger64
  */
@@ -1549,3 +1398,310 @@ int64_t nsTSubstring<T>::ToInteger64(nsresult* aErrorCode,
                                      uint32_t aRadix) const {
   return ToIntegerCommon<T, int64_t>(*this, aErrorCode, aRadix);
 }
+
+/**
+ * nsTSubstring::Mid
+ */
+template <typename T>
+typename nsTSubstring<T>::size_type nsTSubstring<T>::Mid(
+    self_type& aResult, index_type aStartPos, size_type aLengthToCopy) const {
+  if (aStartPos == 0 && aLengthToCopy >= this->mLength) {
+    aResult = *this;
+  } else {
+    aResult = Substring(*this, aStartPos, aLengthToCopy);
+  }
+
+  return aResult.mLength;
+}
+
+/**
+ * nsTSubstring::StripWhitespace
+ */
+
+template <typename T>
+void nsTSubstring<T>::StripWhitespace() {
+  if (!StripWhitespace(mozilla::fallible)) {
+    this->AllocFailed(this->mLength);
+  }
+}
+
+template <typename T>
+bool nsTSubstring<T>::StripWhitespace(const fallible_t&) {
+  if (!this->EnsureMutable()) {
+    return false;
+  }
+
+  this->StripTaggedASCII(mozilla::ASCIIMask::MaskWhitespace());
+  return true;
+}
+
+/**
+ * nsTSubstring::ReplaceChar,ReplaceSubstring
+ */
+
+template <typename T>
+void nsTSubstring<T>::ReplaceChar(char_type aOldChar, char_type aNewChar) {
+  int32_t i = this->FindChar(aOldChar);
+  if (i == kNotFound) {
+    return;
+  }
+
+  if (!this->EnsureMutable()) {
+    this->AllocFailed(this->mLength);
+  }
+  for (; i != kNotFound; i = this->FindChar(aOldChar, i + 1)) {
+    this->mData[i] = aNewChar;
+  }
+}
+
+template <typename T>
+void nsTSubstring<T>::ReplaceChar(const string_view& aSet, char_type aNewChar) {
+  int32_t i = this->FindCharInSet(aSet);
+  if (i == kNotFound) {
+    return;
+  }
+
+  if (!this->EnsureMutable()) {
+    this->AllocFailed(this->mLength);
+  }
+  for (; i != kNotFound; i = this->FindCharInSet(aSet, i + 1)) {
+    this->mData[i] = aNewChar;
+  }
+}
+
+template <typename T>
+void nsTSubstring<T>::ReplaceSubstring(const char_type* aTarget,
+                                       const char_type* aNewValue) {
+  ReplaceSubstring(nsTDependentString<T>(aTarget),
+                   nsTDependentString<T>(aNewValue));
+}
+
+template <typename T>
+bool nsTSubstring<T>::ReplaceSubstring(const char_type* aTarget,
+                                       const char_type* aNewValue,
+                                       const fallible_t& aFallible) {
+  return ReplaceSubstring(nsTDependentString<T>(aTarget),
+                          nsTDependentString<T>(aNewValue), aFallible);
+}
+
+template <typename T>
+void nsTSubstring<T>::ReplaceSubstring(const self_type& aTarget,
+                                       const self_type& aNewValue) {
+  if (!ReplaceSubstring(aTarget, aNewValue, mozilla::fallible)) {
+    // Note that this may wildly underestimate the allocation that failed, as
+    // we could have been replacing multiple copies of aTarget.
+    this->AllocFailed(this->mLength + (aNewValue.Length() - aTarget.Length()));
+  }
+}
+
+template <typename T>
+bool nsTSubstring<T>::ReplaceSubstring(const self_type& aTarget,
+                                       const self_type& aNewValue,
+                                       const fallible_t&) {
+  struct Segment {
+    uint32_t mBegin, mLength;
+    Segment(uint32_t aBegin, uint32_t aLength)
+        : mBegin(aBegin), mLength(aLength) {}
+  };
+
+  if (aTarget.Length() == 0) {
+    return true;
+  }
+
+  // Remember all of the non-matching parts.
+  AutoTArray<Segment, 16> nonMatching;
+  uint32_t i = 0;
+  mozilla::CheckedUint32 newLength;
+  while (true) {
+    int32_t r = this->Find(aTarget, i);
+    int32_t until = (r == kNotFound) ? this->Length() - i : r - i;
+    nonMatching.AppendElement(Segment(i, until));
+    newLength += until;
+    if (r == kNotFound) {
+      break;
+    }
+
+    newLength += aNewValue.Length();
+    i = r + aTarget.Length();
+    if (i >= this->Length()) {
+      // Add an auxiliary entry at the end of the list to help as an edge case
+      // for the algorithms below.
+      nonMatching.AppendElement(Segment(this->Length(), 0));
+      break;
+    }
+  }
+
+  if (!newLength.isValid()) {
+    return false;
+  }
+
+  // If there's only one non-matching segment, then the target string was not
+  // found, and there's nothing to do.
+  if (nonMatching.Length() == 1) {
+    MOZ_ASSERT(
+        nonMatching[0].mBegin == 0 && nonMatching[0].mLength == this->Length(),
+        "We should have the correct non-matching segment.");
+    return true;
+  }
+
+  // Make sure that we can mutate our buffer.
+  // Note that we always allocate at least an this->mLength sized buffer,
+  // because the rest of the algorithm relies on having access to all of the
+  // original string.  In other words, we over-allocate in the shrinking case.
+  uint32_t oldLen = this->Length();
+  auto r =
+      this->StartBulkWriteImpl(XPCOM_MAX(oldLen, newLength.value()), oldLen);
+  if (r.isErr()) {
+    return false;
+  }
+
+  if (aTarget.Length() >= aNewValue.Length()) {
+    // In the shrinking case, start filling the buffer from the beginning.
+    const uint32_t delta = (aTarget.Length() - aNewValue.Length());
+    for (i = 1; i < nonMatching.Length(); ++i) {
+      // When we move the i'th non-matching segment into position, we need to
+      // account for the characters deleted by the previous |i| replacements by
+      // subtracting |i * delta|.
+      const char_type* sourceSegmentPtr = this->mData + nonMatching[i].mBegin;
+      char_type* destinationSegmentPtr =
+          this->mData + nonMatching[i].mBegin - i * delta;
+      // Write the i'th replacement immediately before the new i'th non-matching
+      // segment.
+      char_traits::copy(destinationSegmentPtr - aNewValue.Length(),
+                        aNewValue.Data(), aNewValue.Length());
+      char_traits::move(destinationSegmentPtr, sourceSegmentPtr,
+                        nonMatching[i].mLength);
+    }
+  } else {
+    // In the growing case, start filling the buffer from the end.
+    const uint32_t delta = (aNewValue.Length() - aTarget.Length());
+    for (i = nonMatching.Length() - 1; i > 0; --i) {
+      // When we move the i'th non-matching segment into position, we need to
+      // account for the characters added by the previous |i| replacements by
+      // adding |i * delta|.
+      const char_type* sourceSegmentPtr = this->mData + nonMatching[i].mBegin;
+      char_type* destinationSegmentPtr =
+          this->mData + nonMatching[i].mBegin + i * delta;
+      char_traits::move(destinationSegmentPtr, sourceSegmentPtr,
+                        nonMatching[i].mLength);
+      // Write the i'th replacement immediately before the new i'th non-matching
+      // segment.
+      char_traits::copy(destinationSegmentPtr - aNewValue.Length(),
+                        aNewValue.Data(), aNewValue.Length());
+    }
+  }
+
+  // Adjust the length and make sure the string is null terminated.
+  this->FinishBulkWriteImpl(newLength.value());
+
+  return true;
+}
+
+/**
+ * nsTSubstring::Trim
+ */
+
+template <typename T>
+void nsTSubstring<T>::Trim(const std::string_view& aSet, bool aTrimLeading,
+                           bool aTrimTrailing, bool aIgnoreQuotes) {
+  char_type* start = this->mData;
+  char_type* end = this->mData + this->mLength;
+
+  // skip over quotes if requested
+  if (aIgnoreQuotes && this->mLength > 2 &&
+      this->mData[0] == this->mData[this->mLength - 1] &&
+      (this->mData[0] == '\'' || this->mData[0] == '"')) {
+    ++start;
+    --end;
+  }
+
+  if (aTrimLeading) {
+    uint32_t cutStart = start - this->mData;
+    uint32_t cutLength = 0;
+
+    // walk forward from start to end
+    for (; start != end; ++start, ++cutLength) {
+      if ((*start & ~0x7F) ||  // non-ascii
+          aSet.find(char(*start)) == std::string_view::npos) {
+        break;
+      }
+    }
+
+    if (cutLength) {
+      this->Cut(cutStart, cutLength);
+
+      // reset iterators
+      start = this->mData + cutStart;
+      end = this->mData + this->mLength - cutStart;
+    }
+  }
+
+  if (aTrimTrailing) {
+    uint32_t cutEnd = end - this->mData;
+    uint32_t cutLength = 0;
+
+    // walk backward from end to start
+    --end;
+    for (; end >= start; --end, ++cutLength) {
+      if ((*end & ~0x7F) ||  // non-ascii
+          aSet.find(char(*end)) == std::string_view::npos) {
+        break;
+      }
+    }
+
+    if (cutLength) {
+      this->Cut(cutEnd - cutLength, cutLength);
+    }
+  }
+}
+
+/**
+ * nsTSubstring::CompressWhitespace.
+ */
+
+template <typename T>
+void nsTSubstring<T>::CompressWhitespace(bool aTrimLeading,
+                                         bool aTrimTrailing) {
+  // Quick exit
+  if (this->mLength == 0) {
+    return;
+  }
+
+  if (!this->EnsureMutable()) {
+    this->AllocFailed(this->mLength);
+  }
+
+  const ASCIIMaskArray& mask = mozilla::ASCIIMask::MaskWhitespace();
+
+  char_type* to = this->mData;
+  char_type* from = this->mData;
+  char_type* end = this->mData + this->mLength;
+
+  // Compresses runs of whitespace down to a normal space ' ' and convert
+  // any whitespace to a normal space.  This assumes that whitespace is
+  // all standard 7-bit ASCII.
+  bool skipWS = aTrimLeading;
+  while (from < end) {
+    uint32_t theChar = *from++;
+    if (mozilla::ASCIIMask::IsMasked(mask, theChar)) {
+      if (!skipWS) {
+        *to++ = ' ';
+        skipWS = true;
+      }
+    } else {
+      *to++ = theChar;
+      skipWS = false;
+    }
+  }
+
+  // If we need to trim the trailing whitespace, back up one character.
+  if (aTrimTrailing && skipWS && to > this->mData) {
+    to--;
+  }
+
+  *to = char_type(0);  // add the null
+  this->mLength = to - this->mData;
+}
+
+template class nsTSubstring<char>;
+template class nsTSubstring<char16_t>;

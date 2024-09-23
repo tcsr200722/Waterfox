@@ -5,7 +5,7 @@
 "use strict";
 
 // This is a UA widget. It runs in per-origin UA widget scope,
-// to be loaded by UAWidgetsChild.jsm.
+// to be loaded by UAWidgetsChild.sys.mjs.
 
 /*
  * This is the class of entry. It will construct the actual implementation
@@ -64,30 +64,34 @@ this.VideoControlsWidget = class {
     // the underlying element state hasn't changed in ways that we
     // care about. This can happen if the property is set again
     // without a value change.
-    if (
-      this.impl &&
-      this.impl.constructor == newImpl &&
-      this.impl.elementStateMatches(this.element)
-    ) {
+    if (this.impl && this.impl.constructor == newImpl) {
+      this.impl.onchange();
       return;
     }
     if (this.impl) {
-      this.impl.destructor();
+      this.impl.teardown();
       this.shadowRoot.firstChild.remove();
     }
     if (newImpl) {
       this.impl = new newImpl(this.shadowRoot, this.prefs);
-      this.impl.onsetup();
+
+      this.mDirection = "ltr";
+      let intlUtils = this.window.intlUtils;
+      if (intlUtils) {
+        this.mDirection = intlUtils.isAppLocaleRTL() ? "rtl" : "ltr";
+      }
+
+      this.impl.onsetup(this.mDirection);
     } else {
       this.impl = undefined;
     }
   }
 
-  destructor() {
+  teardown() {
     if (!this.impl) {
       return;
     }
-    this.impl.destructor();
+    this.impl.teardown();
     this.shadowRoot.firstChild.remove();
     delete this.impl;
   }
@@ -101,6 +105,9 @@ this.VideoControlsWidget = class {
 
     this.impl.onPrefChange(prefName, prefValue);
   }
+
+  // If you change this, also change SEEK_TIME_SECS in PictureInPictureChild.sys.mjs
+  static SEEK_TIME_SECS = 5;
 
   static isPictureInPictureVideo(someVideo) {
     return someVideo.isCloningElementVisually;
@@ -141,6 +148,19 @@ this.VideoControlsWidget = class {
     reflowedDimensions
   ) {
     if (
+      prefs[
+        "media.videocontrols.picture-in-picture.respect-disablePictureInPicture"
+      ] &&
+      someVideo.disablePictureInPicture
+    ) {
+      return false;
+    }
+
+    if (isNaN(someVideo.duration)) {
+      return false;
+    }
+
+    if (
       prefs["media.videocontrols.picture-in-picture.video-toggle.always-show"]
     ) {
       return true;
@@ -163,20 +183,52 @@ this.VideoControlsWidget = class {
       return false;
     }
 
-    if (!someVideo.mozHasAudio) {
-      return false;
-    }
-
-    // Bug 1592539 - It's possible to confuse the underlying visual
-    // cloning mechanism by switching which video stream a <video> is
-    // rendering. We try to head that case off for now by hiding the
-    // Picture-in-Picture capability on <video> elements that have
-    // srcObject != null.
-    if (someVideo.srcObject) {
-      return false;
-    }
-
     return true;
+  }
+
+  /**
+   * Some variations on the Picture-in-Picture toggle are being experimented with.
+   * These variations have slightly different setup parameters from the currently
+   * shipping toggle, so this method sets up the experimental toggles in the event
+   * that they're being used. It also will enable the appropriate stylesheet for
+   * the preferred toggle experiment.
+   *
+   * @param {Object} prefs
+   *   The preferences set that was passed to the UAWidget.
+   * @param {ShadowRoot} shadowRoot
+   *   The shadowRoot of the <video> element where the video controls are.
+   * @param {Element} toggle
+   *   The toggle element.
+   * @param {Object} reflowedDimensions
+   *   An object representing the reflowed dimensions of the <video>. Properties
+   *   are:
+   *
+   *     videoWidth (Number):
+   *       The width of the video in pixels.
+   *
+   *     videoHeight (Number):
+   *       The height of the video in pixels.
+   */
+  static setupToggle(prefs, toggle, reflowedDimensions) {
+    // These thresholds are all in pixels
+    const SMALL_VIDEO_WIDTH_MAX = 320;
+    const MEDIUM_VIDEO_WIDTH_MAX = 720;
+
+    let isSmall = reflowedDimensions.videoWidth <= SMALL_VIDEO_WIDTH_MAX;
+    toggle.toggleAttribute("small-video", isSmall);
+    toggle.toggleAttribute(
+      "medium-video",
+      !isSmall && reflowedDimensions.videoWidth <= MEDIUM_VIDEO_WIDTH_MAX
+    );
+
+    toggle.setAttribute(
+      "position",
+      prefs["media.videocontrols.picture-in-picture.video-toggle.position"]
+    );
+    toggle.toggleAttribute(
+      "has-used",
+      prefs["media.videocontrols.picture-in-picture.video-toggle.has-used"]
+    );
   }
 };
 
@@ -189,8 +241,10 @@ this.VideoControlsImplWidget = class {
     this.window = this.document.defaultView;
   }
 
-  onsetup() {
+  onsetup(direction) {
     this.generateContent();
+
+    this.shadowRoot.firstElementChild.setAttribute("localedir", direction);
 
     this.Utils = {
       debug: false,
@@ -212,6 +266,7 @@ this.VideoControlsImplWidget = class {
       fullscreenButton: null,
       layoutControls: null,
       isShowingPictureInPictureMessage: false,
+      l10n: this.l10n,
 
       textTracksCount: 0,
       videoEvents: [
@@ -239,12 +294,15 @@ this.VideoControlsImplWidget = class {
         "durationchange",
       ],
 
-      showHours: false,
       firstFrameShown: false,
       timeUpdateCount: 0,
       maxCurrentTimeSeen: 0,
       isPausedByDragging: false,
       _isAudioOnly: false,
+
+      get isAudioTag() {
+        return this.video.localName == "audio";
+      },
 
       get isAudioOnly() {
         return this._isAudioOnly;
@@ -345,7 +403,6 @@ this.VideoControlsImplWidget = class {
         );
         // It would be nice to retain maxCurrentTimeSeen, but it would be difficult
         // to determine if the media source changed while we were detached.
-        this.initPositionDurationBox();
         this.maxCurrentTimeSeen = currentTime;
         this.showPosition(currentTime, duration);
 
@@ -360,15 +417,10 @@ this.VideoControlsImplWidget = class {
           }
 
           // We have to check again if the media has audio here.
-          if (!this.isAudioOnly && !this.video.mozHasAudio) {
-            this.muteButton.setAttribute("noAudio", "true");
-            this.muteButton.disabled = true;
-          }
+          let noAudio = !this.isAudioOnly && !this.video.mozHasAudio;
+          this.muteButton.toggleAttribute("noAudio", noAudio);
+          this.muteButton.disabled = noAudio;
         }
-
-        // We should lock the orientation if we are already in
-        // fullscreen.
-        this.updateOrientationState(this.isVideoInFullScreen);
 
         // The video itself might not be fullscreen, but part of the
         // document might be, in which case we set this attribute to
@@ -402,13 +454,9 @@ this.VideoControlsImplWidget = class {
           this.statusIcon.setAttribute("type", "error");
           this.updateErrorText();
           this.setupStatusFader(true);
-        } else if (VideoControlsWidget.isPictureInPictureVideo(this.video)) {
-          this.setShowPictureInPictureMessage(true);
         }
 
-        // Default the Picture-in-Picture toggle button to being hidden. We might unhide it
-        // later if we determine that this video is qualified to show it.
-        this.pictureInPictureToggleButton.setAttribute("hidden", true);
+        this.updatePictureInPictureMessage();
 
         if (this.video.readyState >= this.video.HAVE_METADATA) {
           // According to the spec[1], at the HAVE_METADATA (or later) state, we know
@@ -425,105 +473,12 @@ this.VideoControlsImplWidget = class {
           this.clickToPlay,
         ];
 
-        let throwOnGet = {
-          get() {
-            throw new Error("Please don't trigger reflow. See bug 1493525.");
-          },
-        };
-
         for (let control of adjustableControls) {
           if (!control) {
             break;
           }
 
-          Object.defineProperties(control, {
-            // We should directly access CSSOM to get pre-defined style instead of
-            // retrieving computed dimensions from layout.
-            minWidth: {
-              get: () => {
-                let controlId = control.id;
-                let propertyName = `--${controlId}-width`;
-                if (control.modifier) {
-                  propertyName += "-" + control.modifier;
-                }
-                let preDefinedSize = this.controlBarComputedStyles.getPropertyValue(
-                  propertyName
-                );
-
-                // The stylesheet from <link> might not be loaded if the
-                // element was inserted into a hidden iframe.
-                // We can safely return 0 here for now, given that the controls
-                // will be resized again, by the resizevideocontrols event,
-                // from nsVideoFrame, when the element is visible.
-                if (!preDefinedSize) {
-                  return 0;
-                }
-
-                return parseInt(preDefinedSize, 10);
-              },
-            },
-            offsetLeft: throwOnGet,
-            offsetTop: throwOnGet,
-            offsetWidth: throwOnGet,
-            offsetHeight: throwOnGet,
-            offsetParent: throwOnGet,
-            clientLeft: throwOnGet,
-            clientTop: throwOnGet,
-            clientWidth: throwOnGet,
-            clientHeight: throwOnGet,
-            getClientRects: throwOnGet,
-            getBoundingClientRect: throwOnGet,
-            isAdjustableControl: {
-              value: true,
-            },
-            modifier: {
-              value: "",
-              writable: true,
-            },
-            isWanted: {
-              value: true,
-              writable: true,
-            },
-            hidden: {
-              set: v => {
-                control._isHiddenExplicitly = v;
-                control._updateHiddenAttribute();
-              },
-              get: () => {
-                return (
-                  control.hasAttribute("hidden") ||
-                  control.classList.contains("fadeout")
-                );
-              },
-            },
-            hiddenByAdjustment: {
-              set: v => {
-                control._isHiddenByAdjustment = v;
-                control._updateHiddenAttribute();
-              },
-              get: () => control._isHiddenByAdjustment,
-            },
-            _isHiddenByAdjustment: {
-              value: false,
-              writable: true,
-            },
-            _isHiddenExplicitly: {
-              value: false,
-              writable: true,
-            },
-            _updateHiddenAttribute: {
-              value: () => {
-                if (
-                  control._isHiddenExplicitly ||
-                  control._isHiddenByAdjustment
-                ) {
-                  control.setAttribute("hidden", "");
-                } else {
-                  control.removeAttribute("hidden");
-                }
-              },
-            },
-          });
+          this.defineControlProperties(control);
         }
         this.adjustControlSize();
 
@@ -533,24 +488,123 @@ this.VideoControlsImplWidget = class {
         this.updateVolumeControls();
       },
 
+      defineControlProperties(control) {
+        let throwOnGet = {
+          get() {
+            throw new Error("Please don't trigger reflow. See bug 1493525.");
+          },
+        };
+        Object.defineProperties(control, {
+          // We should directly access CSSOM to get pre-defined style instead of
+          // retrieving computed dimensions from layout.
+          minWidth: {
+            get: () => {
+              let controlId = control.id;
+              let propertyName = `--${controlId}-width`;
+              if (control.modifier) {
+                propertyName += "-" + control.modifier;
+              }
+              let preDefinedSize =
+                this.controlBarComputedStyles.getPropertyValue(propertyName);
+
+              // The stylesheet from <link> might not be loaded if the
+              // element was inserted into a hidden iframe.
+              // We can safely return 0 here for now, given that the controls
+              // will be resized again, by the resizevideocontrols event,
+              // from nsVideoFrame, when the element is visible.
+              if (!preDefinedSize) {
+                return 0;
+              }
+
+              return parseInt(preDefinedSize, 10);
+            },
+          },
+          offsetLeft: throwOnGet,
+          offsetTop: throwOnGet,
+          offsetWidth: throwOnGet,
+          offsetHeight: throwOnGet,
+          offsetParent: throwOnGet,
+          clientLeft: throwOnGet,
+          clientTop: throwOnGet,
+          clientWidth: throwOnGet,
+          clientHeight: throwOnGet,
+          getClientRects: throwOnGet,
+          getBoundingClientRect: throwOnGet,
+          isAdjustableControl: {
+            value: true,
+          },
+          modifier: {
+            value: "",
+            writable: true,
+          },
+          isWanted: {
+            value: true,
+            writable: true,
+          },
+          hidden: {
+            set: v => {
+              control._isHiddenExplicitly = v;
+              control._updateHiddenAttribute();
+            },
+            get: () => {
+              return (
+                control.hasAttribute("hidden") ||
+                control.classList.contains("fadeout")
+              );
+            },
+          },
+          hiddenByAdjustment: {
+            set: v => {
+              control._isHiddenByAdjustment = v;
+              control._updateHiddenAttribute();
+            },
+            get: () => control._isHiddenByAdjustment,
+          },
+          _isHiddenByAdjustment: {
+            value: false,
+            writable: true,
+          },
+          _isHiddenExplicitly: {
+            value: false,
+            writable: true,
+          },
+          _updateHiddenAttribute: {
+            value: () => {
+              control.toggleAttribute(
+                "hidden",
+                control._isHiddenExplicitly || control._isHiddenByAdjustment
+              );
+            },
+          },
+        });
+      },
+
       updatePictureInPictureToggleDisplay() {
         if (this.isAudioOnly) {
-          this.pictureInPictureToggleButton.setAttribute("hidden", true);
+          this.pictureInPictureToggle.hidden = true;
           return;
         }
 
+        // We only want to show the toggle when the closed captions menu
+        // is closed, in order to avoid visual overlap.
         if (
           this.pipToggleEnabled &&
           !this.isShowingPictureInPictureMessage &&
+          this.textTrackListContainer.hidden &&
           VideoControlsWidget.shouldShowPictureInPictureToggle(
             this.prefs,
             this.video,
             this.reflowedDimensions
           )
         ) {
-          this.pictureInPictureToggleButton.removeAttribute("hidden");
+          this.pictureInPictureToggle.hidden = false;
+          VideoControlsWidget.setupToggle(
+            this.prefs,
+            this.pictureInPictureToggle,
+            this.reflowedDimensions
+          );
         } else {
-          this.pictureInPictureToggleButton.setAttribute("hidden", true);
+          this.pictureInPictureToggle.hidden = true;
         }
       },
 
@@ -700,7 +754,7 @@ this.VideoControlsImplWidget = class {
               );
             }
             break;
-          case "loadedmetadata":
+          case "loadedmetadata": {
             // If a <video> doesn't have any video data, treat it as <audio>
             // and show the controls (they won't fade back out)
             if (
@@ -716,13 +770,13 @@ this.VideoControlsImplWidget = class {
               Math.round(this.video.currentTime * 1000),
               Math.round(this.video.duration * 1000)
             );
-            if (!this.isAudioOnly && !this.video.mozHasAudio) {
-              this.muteButton.setAttribute("noAudio", "true");
-              this.muteButton.disabled = true;
-            }
+            let noAudio = !this.isAudioOnly && !this.video.mozHasAudio;
+            this.muteButton.toggleAttribute("noAudio", noAudio);
+            this.muteButton.disabled = noAudio;
             this.adjustControlSize();
             this.updatePictureInPictureToggleDisplay();
             break;
+          }
           case "durationchange":
             this.updatePictureInPictureToggleDisplay();
             break;
@@ -735,7 +789,7 @@ this.VideoControlsImplWidget = class {
             this.controlsSpacer.removeAttribute("aria-label");
             this.statusOverlay.removeAttribute("status");
             this.statusIcon.setAttribute("type", "throbber");
-            this.isAudioOnly = this.video.localName == "audio";
+            this.isAudioOnly = this.isAudioTag;
             this.setPlayButtonState(true);
             this.setupNewLoadState();
             this.setupStatusFader();
@@ -861,6 +915,7 @@ this.VideoControlsImplWidget = class {
               case this.textTrackList:
                 const index = +aEvent.originalTarget.getAttribute("index");
                 this.changeTextTrack(index);
+                this.closedCaptionButton.focus();
                 break;
               case this.videocontrols:
                 // Prevent any click event within media controls from dispatching through to video.
@@ -875,10 +930,25 @@ this.VideoControlsImplWidget = class {
             // Since this event come from the layout, this is the only place
             // we are sure of that probing into layout won't trigger or force
             // reflow.
+            // FIXME(emilio): We should rewrite this to just use
+            // ResizeObserver, probably.
             this.reflowTriggeringCallValidator.isReflowTriggeringPropsAllowed = true;
             this.updateReflowedDimensions();
             this.reflowTriggeringCallValidator.isReflowTriggeringPropsAllowed = false;
+
+            let scrubberWasHidden = this.scrubberStack.hidden;
             this.adjustControlSize();
+            if (scrubberWasHidden && !this.scrubberStack.hidden) {
+              // requestAnimationFrame + setTimeout of 0ms is a best effort way to avoid
+              // triggering reflows, but cannot fully guarantee a reflow will not happen.
+              this.window.requestAnimationFrame(() =>
+                this.window.setTimeout(() => {
+                  this.reflowTriggeringCallValidator.isReflowTriggeringPropsAllowed = true;
+                  this.updateReflowedDimensions();
+                  this.reflowTriggeringCallValidator.isReflowTriggeringPropsAllowed = false;
+                }, 0)
+              );
+            }
             this.updatePictureInPictureToggleDisplay();
             break;
           case "fullscreenchange":
@@ -923,6 +993,57 @@ this.VideoControlsImplWidget = class {
             break;
           case "media-videoCasting":
             this.updateCasting(aEvent.detail);
+            break;
+          case "focusin":
+            // Show the controls to highlight the focused control, but only
+            // under certain conditions:
+            if (
+              this.prefs["media.videocontrols.keyboard-tab-to-all-controls"] &&
+              // The click-to-play overlay must already be hidden (we don't
+              // hide controls when the overlay is visible).
+              this.clickToPlay.hidden &&
+              // Don't do this if the controls are static.
+              this.dynamicControls &&
+              // If the mouse is hovering over the control bar, the controls
+              // are already showing and they shouldn't hide, so don't mess
+              // with them.
+              // We use "div:hover" instead of just ":hover" so this works in
+              // quirks mode documents. See
+              // https://quirks.spec.whatwg.org/#the-active-and-hover-quirk
+              !this.controlBar.matches("div:hover")
+            ) {
+              this.startFadeIn(this.controlBar);
+              this.window.clearTimeout(this._hideControlsTimeout);
+              this._hideControlsTimeout = this.window.setTimeout(
+                () => this._hideControlsFn(),
+                this.HIDE_CONTROLS_TIMEOUT_MS
+              );
+            }
+            break;
+          case "mousedown":
+            // We only listen for mousedown on sliders.
+            // If this slider isn't focused already, mousedown will focus it.
+            // We don't want that because it will then handle additional keys.
+            // For example, we don't want the up/down arrow keys to seek after
+            // the scrubber is clicked. To prevent that, we need to redirect
+            // focus. However, dragging only works while the slider is focused,
+            // so we must redirect focus after mouseup.
+            if (
+              this.prefs["media.videocontrols.keyboard-tab-to-all-controls"] &&
+              !aEvent.currentTarget.matches(":focus")
+            ) {
+              aEvent.currentTarget.addEventListener(
+                "mouseup",
+                aEvent => {
+                  if (aEvent.currentTarget.matches(":focus")) {
+                    // We can't use target.blur() because that will blur the
+                    // video element as well.
+                    this.video.focus();
+                  }
+                },
+                { once: true }
+              );
+            }
             break;
           default:
             this.log("!!! control event " + aEvent.type + " not handled!");
@@ -972,13 +1093,11 @@ this.VideoControlsImplWidget = class {
         );
       },
 
-      setShowPictureInPictureMessage(showMessage) {
-        if (showMessage) {
-          this.pictureInPictureOverlay.removeAttribute("hidden");
-        } else {
-          this.pictureInPictureOverlay.setAttribute("hidden", true);
-        }
-
+      updatePictureInPictureMessage() {
+        let showMessage =
+          !this.hasError() &&
+          VideoControlsWidget.isPictureInPictureVideo(this.video);
+        this.pictureInPictureOverlay.hidden = !showMessage;
         this.isShowingPictureInPictureMessage = showMessage;
       },
 
@@ -1039,8 +1158,7 @@ this.VideoControlsImplWidget = class {
         this.statusOverlay.setAttribute("status", error);
       },
 
-      formatTime(aTime, showHours = false) {
-        // Format the duration as "h:mm:ss" or "m:ss"
+      formatTime(aTime) {
         aTime = Math.round(aTime / 1000);
         let hours = Math.floor(aTime / 3600);
         let mins = Math.floor((aTime % 3600) / 60);
@@ -1049,7 +1167,7 @@ this.VideoControlsImplWidget = class {
         if (secs < 10) {
           secs = "0" + secs;
         }
-        if (hours || showHours) {
+        if (hours) {
           if (mins < 10) {
             mins = "0" + mins;
           }
@@ -1058,61 +1176,6 @@ this.VideoControlsImplWidget = class {
           timeString = mins + ":" + secs;
         }
         return timeString;
-      },
-
-      initPositionDurationBox() {
-        const positionTextNode = Array.prototype.find.call(
-          this.positionDurationBox.childNodes,
-          n => !!~n.textContent.search("#1")
-        );
-        const durationSpan = this.durationSpan;
-        const durationFormat = durationSpan.textContent;
-        const positionFormat = positionTextNode.textContent;
-
-        durationSpan.classList.add("duration");
-        durationSpan.setAttribute("role", "none");
-        durationSpan.id = "durationSpan";
-
-        Object.defineProperties(this.positionDurationBox, {
-          durationSpan: {
-            value: durationSpan,
-          },
-          position: {
-            set: v => {
-              positionTextNode.textContent = positionFormat.replace("#1", v);
-            },
-          },
-          duration: {
-            set: v => {
-              durationSpan.textContent = v
-                ? durationFormat.replace("#2", v)
-                : "";
-            },
-          },
-        });
-      },
-
-      showDuration(duration) {
-        let isInfinite = duration == Infinity;
-        this.log("Duration is " + duration + "ms.\n");
-
-        if (isNaN(duration) || isInfinite) {
-          duration = this.maxCurrentTimeSeen;
-        }
-
-        // If the duration is over an hour, thumb should show h:mm:ss instead of mm:ss
-        this.showHours = duration >= 3600000;
-
-        // Format the duration as "h:mm:ss" or "m:ss"
-        let timeString = isInfinite ? "" : this.formatTime(duration);
-        this.positionDurationBox.duration = timeString;
-
-        if (this.showHours) {
-          this.positionDurationBox.modifier = "long";
-          this.durationSpan.modifier = "long";
-        }
-
-        this.scrubber.max = duration;
       },
 
       pauseVideoDuringDragging() {
@@ -1126,18 +1189,19 @@ this.VideoControlsImplWidget = class {
         }
       },
 
-      onScrubberInput(e) {
+      onScrubberInput() {
         const duration = Math.round(this.video.duration * 1000); // in ms
         let time = this.scrubber.value;
 
         this.seekToPosition(time);
         this.showPosition(time, duration);
+        this.updateScrubberProgress();
 
         this.scrubber.isDragging = true;
         this.pauseVideoDuringDragging();
       },
 
-      onScrubberChange(e) {
+      onScrubberChange() {
         this.scrubber.isDragging = false;
 
         if (this.isPausedByDragging) {
@@ -1168,22 +1232,84 @@ this.VideoControlsImplWidget = class {
         this.video.muted = false;
       },
 
-      showPosition(currentTime, duration) {
+      showPosition(currentTimeMs, durationMs) {
         // If the duration is unknown (because the server didn't provide
         // it, or the video is a stream), then we want to fudge the duration
         // by using the maximum playback position that's been seen.
-        if (currentTime > this.maxCurrentTimeSeen) {
-          this.maxCurrentTimeSeen = currentTime;
+        if (currentTimeMs > this.maxCurrentTimeSeen) {
+          this.maxCurrentTimeSeen = currentTimeMs;
         }
-        this.showDuration(duration);
+        this.log(
+          "time update @ " + currentTimeMs + "ms of " + durationMs + "ms"
+        );
 
-        this.log("time update @ " + currentTime + "ms of " + duration + "ms");
+        let durationIsInfinite = durationMs == Infinity;
+        if (isNaN(durationMs) || durationIsInfinite) {
+          durationMs = this.maxCurrentTimeSeen;
+        }
+        this.log("durationMs is " + durationMs + "ms.\n");
 
-        let positionTime = this.formatTime(currentTime, this.showHours);
+        let scrubberProgress = Math.abs(
+          currentTimeMs / durationMs - this.scrubber.value / this.scrubber.max
+        );
+        let devPxProgress =
+          scrubberProgress *
+          this.reflowedDimensions.scrubberWidth *
+          this.window.devicePixelRatio;
+        // Hack: if we haven't updated the scrubber width to be non-0, but
+        // the scrubber stack is visible, assume there is progress.
+        // This should be rectified by the next time we do layout (see handling
+        // of resizevideocontrols events in handleEvent).
+        if (
+          !this.reflowedDimensions.scrubberWidth &&
+          !this.scrubberStack.hidden
+        ) {
+          devPxProgress = 1;
+        }
+        // Update the scrubber only if it will move by at least 1 pixel
+        // Note that this.scrubber.max can be "" if unitialized,
+        // and either or both of currentTimeMs or durationMs can be 0, leading
+        // to NaN or Infinity values for devPxProgress.
+        if (!this.scrubber.max || isNaN(devPxProgress) || devPxProgress > 0.5) {
+          this.scrubber.max = durationMs;
+          this.scrubber.value = currentTimeMs;
+          this.updateScrubberProgress();
+        }
 
-        this.scrubber.value = currentTime;
-        this.positionDurationBox.position = positionTime;
-        this.updateScrubberProgress();
+        // If the duration is over an hour, thumb should show h:mm:ss instead
+        // of mm:ss, which makes it bigger. We set the modifier prop which
+        // informs CSS custom properties used elsewhere to determine minimum
+        // widths we need to show stuff.
+        let modifier = durationMs >= 3600000 ? "long" : "";
+        this.positionDurationBox.modifier = this.durationSpan.modifier =
+          modifier;
+
+        // Update the text-based labels:
+        let position = this.formatTime(currentTimeMs);
+        let duration = durationIsInfinite ? "" : this.formatTime(durationMs);
+        if (
+          this.positionString != position ||
+          this.durationString != duration
+        ) {
+          // Only update the DOM if there is a visible change.
+          this._updatePositionLabels(position, duration);
+        }
+      },
+
+      _updatePositionLabels(position, duration) {
+        this.positionString = position;
+        this.durationString = duration;
+
+        this.l10n.setAttributes(
+          this.positionDurationBox,
+          "videocontrols-position-and-duration-labels",
+          { position, duration }
+        );
+        this.l10n.setAttributes(
+          this.scrubber,
+          "videocontrols-scrubber-position-and-duration",
+          { position, duration }
+        );
       },
 
       showBuffered() {
@@ -1229,8 +1355,21 @@ this.VideoControlsImplWidget = class {
         if (index >= 0) {
           endTime = Math.round(buffered.end(index) * 1000);
         }
-        this.bufferBar.max = duration;
-        this.bufferBar.value = endTime;
+        if (this.duration == duration && this.buffered == endTime) {
+          // Avoid modifying the DOM if there is no update to show.
+          return;
+        }
+
+        this.bufferBar.max = this.duration = duration;
+        this.bufferBar.value = this.buffered = endTime;
+        // Progress bars are automatically reported by screen readers even when
+        // they aren't focused, which intrudes on the audio being played.
+        // Ideally, we'd just change the a11y role of bufferBar, but there's
+        // no role which will let us just expose text via an ARIA attribute.
+        // Therefore, we hide bufferBar for a11y and expose the info as
+        // off-screen text.
+        this.bufferA11yVal.textContent =
+          (this.bufferBar.position * 100).toFixed() + "%";
       },
 
       _controlsHiddenByTimeout: false,
@@ -1348,7 +1487,7 @@ this.VideoControlsImplWidget = class {
           }
 
           this.startFadeOut(this.controlBar, false);
-          this.textTrackListContainer.hidden = true;
+          this.hideClosedCaptionMenu();
           this.window.clearTimeout(this._showControlsTimeout);
           this._controlsHiddenByTimeout = false;
         }
@@ -1425,6 +1564,8 @@ this.VideoControlsImplWidget = class {
         if (fadeIn) {
           if (element == this.controlBar) {
             this.controlsSpacer.removeAttribute("hideCursor");
+            // Ensure the Full Screen button is in the tab order.
+            this.fullscreenButton.removeAttribute("tabindex");
           }
 
           // hidden state should be controlled by adjustControlSize
@@ -1441,12 +1582,18 @@ this.VideoControlsImplWidget = class {
           // Unhide
           element.hidden = false;
         } else {
-          if (
-            element == this.controlBar &&
-            !this.hasError() &&
-            this.isVideoInFullScreen
-          ) {
-            this.controlsSpacer.setAttribute("hideCursor", true);
+          if (element == this.controlBar) {
+            if (!this.hasError() && this.isVideoInFullScreen) {
+              this.controlsSpacer.setAttribute("hideCursor", true);
+            }
+            if (
+              !this.prefs["media.videocontrols.keyboard-tab-to-all-controls"]
+            ) {
+              // The Full Screen button is currently the only tabbable button
+              // when the controls are shown. Remove it from the tab order when
+              // visually hidden to prevent visual confusion.
+              this.fullscreenButton.setAttribute("tabindex", "-1");
+            }
           }
 
           // No need to fade out if the hidden property returns true
@@ -1568,9 +1715,12 @@ this.VideoControlsImplWidget = class {
       },
 
       toggleFullscreen() {
-        this.isVideoInFullScreen
-          ? this.document.exitFullscreen()
-          : this.video.requestFullscreen();
+        // audio tags cannot toggle fullscreen
+        if (!this.isAudioTag) {
+          this.isVideoInFullScreen
+            ? this.document.exitFullscreen()
+            : this.video.requestFullscreen();
+        }
       },
 
       setFullscreenButtonState() {
@@ -1582,11 +1732,10 @@ this.VideoControlsImplWidget = class {
         this.controlBar.removeAttribute("fullscreen-unavailable");
         this.adjustControlSize();
 
-        var attrName = this.isVideoInFullScreen
-          ? "exitfullscreenlabel"
-          : "enterfullscreenlabel";
-        var value = this.fullscreenButton.getAttribute(attrName);
-        this.fullscreenButton.setAttribute("aria-label", value);
+        var id = this.isVideoInFullScreen
+          ? "videocontrols-exitfullscreen-button"
+          : "videocontrols-enterfullscreen-button";
+        this.l10n.setAttributes(this.fullscreenButton, id);
 
         if (this.isVideoInFullScreen) {
           this.fullscreenButton.setAttribute("fullscreened", "true");
@@ -1602,44 +1751,11 @@ this.VideoControlsImplWidget = class {
           this.videocontrols.removeAttribute("inDOMFullscreen");
         }
 
-        this.updateOrientationState(this.isVideoInFullScreen);
-
         if (this.isVideoInFullScreen) {
           this.startFadeOut(this.controlBar, true);
         }
 
         this.setFullscreenButtonState();
-      },
-
-      updateOrientationState(lock) {
-        if (!this.video.mozOrientationLockEnabled) {
-          return;
-        }
-        if (lock) {
-          if (this.video.mozIsOrientationLocked) {
-            return;
-          }
-          let dimenDiff = this.video.videoWidth - this.video.videoHeight;
-          if (dimenDiff > 0) {
-            this.video.mozIsOrientationLocked = this.window.screen.mozLockOrientation(
-              "landscape"
-            );
-          } else if (dimenDiff < 0) {
-            this.video.mozIsOrientationLocked = this.window.screen.mozLockOrientation(
-              "portrait"
-            );
-          } else {
-            this.video.mozIsOrientationLocked = this.window.screen.mozLockOrientation(
-              this.window.screen.orientation
-            );
-          }
-        } else {
-          if (!this.video.mozIsOrientationLocked) {
-            return;
-          }
-          this.window.screen.mozUnlockOrientation();
-          this.video.mozIsOrientationLocked = false;
-        }
       },
 
       clickToPlayClickHandler(e) {
@@ -1687,9 +1803,11 @@ this.VideoControlsImplWidget = class {
           this.playButton.removeAttribute("paused");
         }
 
-        var attrName = aPaused ? "playlabel" : "pauselabel";
-        var value = this.playButton.getAttribute(attrName);
-        this.playButton.setAttribute("aria-label", value);
+        var id = aPaused
+          ? "videocontrols-play-button"
+          : "videocontrols-pause-button";
+        this.l10n.setAttributes(this.playButton, id);
+        this.l10n.setAttributes(this.clickToPlay, id);
       },
 
       get isEffectivelyMuted() {
@@ -1698,16 +1816,49 @@ this.VideoControlsImplWidget = class {
 
       updateMuteButtonState() {
         var muted = this.isEffectivelyMuted;
+        this.muteButton.toggleAttribute("muted", muted);
 
-        if (muted) {
-          this.muteButton.setAttribute("muted", "true");
+        var id = muted
+          ? "videocontrols-unmute-button"
+          : "videocontrols-mute-button";
+        this.l10n.setAttributes(this.muteButton, id);
+      },
+
+      keyboardVolumeDecrease() {
+        const oldval = this.video.volume;
+        this.video.volume = oldval < 0.1 ? 0 : oldval - 0.1;
+        this.video.muted = false;
+      },
+
+      keyboardVolumeIncrease() {
+        const oldval = this.video.volume;
+        this.video.volume = oldval > 0.9 ? 1 : oldval + 0.1;
+        this.video.muted = false;
+      },
+
+      keyboardSeekBack(tenPercent) {
+        const oldval = this.video.currentTime;
+        let newval;
+        if (tenPercent) {
+          newval =
+            oldval -
+            (this.video.duration || this.maxCurrentTimeSeen / 1000) / 10;
         } else {
-          this.muteButton.removeAttribute("muted");
+          newval = oldval - VideoControlsWidget.SEEK_TIME_SECS;
         }
+        this.video.currentTime = Math.max(0, newval);
+      },
 
-        var attrName = muted ? "unmutelabel" : "mutelabel";
-        var value = this.muteButton.getAttribute(attrName);
-        this.muteButton.setAttribute("aria-label", value);
+      keyboardSeekForward(tenPercent) {
+        const oldval = this.video.currentTime;
+        const maxtime = this.video.duration || this.maxCurrentTimeSeen / 1000;
+        let newval;
+        if (tenPercent) {
+          newval = oldval + maxtime / 10;
+        } else {
+          newval = oldval + VideoControlsWidget.SEEK_TIME_SECS;
+        }
+        this.video.currentTime = Math.min(newval, maxtime);
       },
 
       keyHandler(event) {
@@ -1716,7 +1867,7 @@ this.VideoControlsImplWidget = class {
           return;
         }
 
-        var keystroke = "";
+        let keystroke = "";
         if (event.altKey) {
           keystroke += "alt-";
         }
@@ -1738,91 +1889,90 @@ this.VideoControlsImplWidget = class {
             keystroke += "accel-";
           }
         }
-        switch (event.keyCode) {
-          case this.window.KeyEvent.DOM_VK_UP:
-            keystroke += "upArrow";
-            break;
-          case this.window.KeyEvent.DOM_VK_DOWN:
-            keystroke += "downArrow";
-            break;
-          case this.window.KeyEvent.DOM_VK_LEFT:
-            keystroke += "leftArrow";
-            break;
-          case this.window.KeyEvent.DOM_VK_RIGHT:
-            keystroke += "rightArrow";
-            break;
-          case this.window.KeyEvent.DOM_VK_HOME:
-            keystroke += "home";
-            break;
-          case this.window.KeyEvent.DOM_VK_END:
-            keystroke += "end";
-            break;
-        }
-
-        if (String.fromCharCode(event.charCode) == " ") {
-          keystroke += "space";
+        if (event.key == " ") {
+          keystroke += "Space";
+        } else {
+          keystroke += event.key;
         }
 
         this.log("Got keystroke: " + keystroke);
-        var oldval, newval;
 
+        // If unmodified cursor keys are pressed when a slider is focused, we
+        // should act on that slider. For example, if we're focused on the
+        // volume slider, rightArrow should increase the volume, not seek.
+        // Normally, we'd just pass the keys through to the slider in this case.
+        // However, the native adjustment is too small, so we override it.
         try {
+          const target = event.originalTarget;
+          const allTabbable =
+            this.prefs["media.videocontrols.keyboard-tab-to-all-controls"];
           switch (keystroke) {
-            case "space" /* Play */:
-              let target = event.originalTarget;
+            case "Space" /* Play */:
               if (target.localName === "button" && !target.disabled) {
                 break;
               }
-
               this.togglePause();
               break;
-            case "downArrow" /* Volume decrease */:
-              oldval = this.video.volume;
-              this.video.volume = oldval < 0.1 ? 0 : oldval - 0.1;
-              this.video.muted = false;
+            case "ArrowDown" /* Volume decrease */:
+              if (allTabbable && target == this.scrubber) {
+                this.keyboardSeekBack(/* tenPercent */ false);
+              } else if (target.classList.contains("textTrackItem")) {
+                target.nextSibling?.focus();
+              } else {
+                this.keyboardVolumeDecrease();
+              }
               break;
-            case "upArrow" /* Volume increase */:
-              oldval = this.video.volume;
-              this.video.volume = oldval > 0.9 ? 1 : oldval + 0.1;
-              this.video.muted = false;
+            case "ArrowUp" /* Volume increase */:
+              if (allTabbable && target == this.scrubber) {
+                this.keyboardSeekForward(/* tenPercent */ false);
+              } else if (target.classList.contains("textTrackItem")) {
+                target.previousSibling?.focus();
+              } else {
+                this.keyboardVolumeIncrease();
+              }
               break;
-            case "accel-downArrow" /* Mute */:
+            case "accel-ArrowDown" /* Mute */:
               this.video.muted = true;
               break;
-            case "accel-upArrow" /* Unmute */:
+            case "accel-ArrowUp" /* Unmute */:
               this.video.muted = false;
               break;
-            case "leftArrow": /* Seek back 15 seconds */
-            case "accel-leftArrow" /* Seek back 10% */:
-              oldval = this.video.currentTime;
-              if (keystroke == "leftArrow") {
-                newval = oldval - 15;
+            case "ArrowLeft" /* Seek back 5 seconds */:
+              if (allTabbable && target == this.volumeControl) {
+                this.keyboardVolumeDecrease();
               } else {
-                newval =
-                  oldval -
-                  (this.video.duration || this.maxCurrentTimeSeen / 1000) / 10;
+                this.keyboardSeekBack(/* tenPercent */ false);
               }
-              this.video.currentTime = newval >= 0 ? newval : 0;
               break;
-            case "rightArrow": /* Seek forward 15 seconds */
-            case "accel-rightArrow" /* Seek forward 10% */:
-              oldval = this.video.currentTime;
-              var maxtime =
-                this.video.duration || this.maxCurrentTimeSeen / 1000;
-              if (keystroke == "rightArrow") {
-                newval = oldval + 15;
+            case "accel-ArrowLeft" /* Seek back 10% */:
+              this.keyboardSeekBack(/* tenPercent */ true);
+              break;
+            case "ArrowRight" /* Seek forward 5 seconds */:
+              if (allTabbable && target == this.volumeControl) {
+                this.keyboardVolumeIncrease();
               } else {
-                newval = oldval + maxtime / 10;
+                this.keyboardSeekForward(/* tenPercent */ false);
               }
-              this.video.currentTime = newval <= maxtime ? newval : maxtime;
               break;
-            case "home" /* Seek to beginning */:
+            case "accel-ArrowRight" /* Seek forward 10% */:
+              this.keyboardSeekForward(/* tenPercent */ true);
+              break;
+            case "Home" /* Seek to beginning */:
               this.video.currentTime = 0;
               break;
-            case "end" /* Seek to end */:
+            case "End" /* Seek to end */:
               if (this.video.currentTime != this.video.duration) {
                 this.video.currentTime =
                   this.video.duration || this.maxCurrentTimeSeen / 1000;
+              }
+              break;
+            case "Escape" /* Escape */:
+              if (
+                target.classList.contains("textTrackItem") &&
+                !this.textTrackListContainer.hidden
+              ) {
+                this.toggleClosedCaption();
+                this.closedCaptionButton.focus();
               }
               break;
             default:
@@ -1872,12 +2022,7 @@ this.VideoControlsImplWidget = class {
       },
 
       setCastingButtonState() {
-        if (this.isCastingOn) {
-          this.castingButton.setAttribute("enabled", "true");
-        } else {
-          this.castingButton.removeAttribute("enabled");
-        }
-
+        this.castingButton.toggleAttribute("enabled", this.isCastingOn);
         this.adjustControlSize();
       },
 
@@ -1904,22 +2049,15 @@ this.VideoControlsImplWidget = class {
       },
 
       setClosedCaptionButtonState() {
-        if (this.isClosedCaptionOn) {
-          this.closedCaptionButton.setAttribute("enabled", "true");
-        } else {
-          this.closedCaptionButton.removeAttribute("enabled");
-        }
-
+        this.closedCaptionButton.toggleAttribute(
+          "enabled",
+          this.isClosedCaptionOn
+        );
         let ttItems = this.textTrackList.childNodes;
 
         for (let tti of ttItems) {
           const idx = +tti.getAttribute("index");
-
-          if (idx == this.currentTextTrackIndex) {
-            tti.setAttribute("on", "true");
-          } else {
-            tti.removeAttribute("on");
-          }
+          tti.setAttribute("aria-checked", idx == this.currentTextTrackIndex);
         }
 
         this.adjustControlSize();
@@ -1950,6 +2088,7 @@ this.VideoControlsImplWidget = class {
 
         ttBtn.classList.add("textTrackItem");
         ttBtn.setAttribute("index", tt.index);
+        ttBtn.setAttribute("role", "menuitemradio");
 
         if (tt.mode === "showing" && tt.index) {
           this.changeTextTrack(tt.index);
@@ -1965,11 +2104,13 @@ this.VideoControlsImplWidget = class {
           }
         }
 
-        this.textTrackListContainer.hidden = true;
+        if (!this.textTrackListContainer.hidden) {
+          this.toggleClosedCaption();
+        }
       },
 
       onControlBarAnimationFinished() {
-        this.textTrackListContainer.hidden = true;
+        this.hideClosedCaptionMenu();
         this.video.dispatchEvent(
           new this.window.CustomEvent("controlbarchange")
         );
@@ -1982,11 +2123,53 @@ this.VideoControlsImplWidget = class {
         );
       },
 
+      hideClosedCaptionMenu() {
+        this.textTrackListContainer.hidden = true;
+        this.closedCaptionButton.setAttribute("aria-expanded", "false");
+        this.updatePictureInPictureToggleDisplay();
+      },
+
+      showClosedCaptionMenu() {
+        this.textTrackListContainer.hidden = false;
+        this.closedCaptionButton.setAttribute("aria-expanded", "true");
+        this.updatePictureInPictureToggleDisplay();
+      },
+
       toggleClosedCaption() {
         if (this.textTrackListContainer.hidden) {
-          this.textTrackListContainer.hidden = false;
+          this.showClosedCaptionMenu();
+          if (this.prefs["media.videocontrols.keyboard-tab-to-all-controls"]) {
+            // If we're about to hide the controls after focus, prevent that, as
+            // that will dismiss the CC menu before the user can use it.
+            this.textTrackList.firstChild.focus();
+            this.window.clearTimeout(this._hideControlsTimeout);
+            this._hideControlsTimeout = 0;
+          }
         } else {
-          this.textTrackListContainer.hidden = true;
+          this.hideClosedCaptionMenu();
+          // If the CC menu was shown via the keyboard, we may have prevented
+          // the controls from hiding. We can now hide them.
+          if (
+            this.prefs["media.videocontrols.keyboard-tab-to-all-controls"] &&
+            !this.controlBar.hidden &&
+            // The click-to-play overlay must already be hidden (we don't
+            // hide controls when the overlay is visible).
+            this.clickToPlay.hidden &&
+            // Don't do this if the controls are static.
+            this.dynamicControls &&
+            // If the mouse is hovering over the control bar, the controls
+            // shouldn't hide.
+            // We use "div:hover" instead of just ":hover" so this works in
+            // quirks mode documents. See
+            // https://quirks.spec.whatwg.org/#the-active-and-hover-quirk
+            !this.controlBar.matches("div:hover")
+          ) {
+            this.window.clearTimeout(this._hideControlsTimeout);
+            this._hideControlsTimeout = this.window.setTimeout(
+              () => this._hideControlsFn(),
+              this.HIDE_CONTROLS_TIMEOUT_MS
+            );
+          }
         }
       },
 
@@ -2033,6 +2216,16 @@ this.VideoControlsImplWidget = class {
         }
 
         this.setClosedCaptionButtonState();
+        // Hide the Closed Caption menu when the user moves focus
+        this.hideClosedCaptionMenu = this.hideClosedCaptionMenu.bind(this);
+        this.closedCaptionButton.addEventListener(
+          "focus",
+          this.hideClosedCaptionMenu
+        );
+        this.fullscreenButton.addEventListener(
+          "focus",
+          this.hideClosedCaptionMenu
+        );
       },
 
       log(msg) {
@@ -2074,7 +2267,7 @@ this.VideoControlsImplWidget = class {
           }
           let val = obj[prop];
           if (typeof val == "function") {
-            return function() {
+            return function () {
               return val.apply(obj, arguments);
             };
           }
@@ -2104,12 +2297,21 @@ this.VideoControlsImplWidget = class {
         // so that we don't run into bug 1495821 (see comment on adjustControlSize()
         // below)
         videocontrolsWidth: 0,
+
+        // Used to decide if updating the scrubber progress will make a visible
+        // change (ie. make it move by at least one pixel).
+        // The default value is set to Infinity so that any small change is
+        // assumed to cause a visible change until updateReflowedDimensions
+        // has been called. (See bug 1817604)
+        scrubberWidth: Infinity,
       },
 
       updateReflowedDimensions() {
         this.reflowedDimensions.videoHeight = this.video.clientHeight;
         this.reflowedDimensions.videoWidth = this.video.clientWidth;
-        this.reflowedDimensions.videocontrolsWidth = this.videocontrols.clientWidth;
+        this.reflowedDimensions.videocontrolsWidth =
+          this.videocontrols.clientWidth;
+        this.reflowedDimensions.scrubberWidth = this.scrubber.clientWidth;
       },
 
       /**
@@ -2169,7 +2371,18 @@ this.VideoControlsImplWidget = class {
         let widthUsed = minControlBarPaddingWidth;
         let preventAppendControl = false;
 
-        for (let control of this.prioritizedControls) {
+        for (let [index, control] of this.prioritizedControls.entries()) {
+          // The "durationSpan" element is disconnected from the document during l10n so
+          // we check if our reference to "durationSpan" is the connected one and if not we
+          // replace it with the correct one
+          if (control.id === "durationSpan" && !control.isConnected) {
+            const durationSpan = this.durationSpan;
+            if (durationSpan) {
+              this.defineControlProperties(durationSpan);
+              this.prioritizedControls[index] = durationSpan;
+              control = durationSpan;
+            }
+          }
           if (!control.isWanted) {
             control.hiddenByAdjustment = true;
             continue;
@@ -2193,7 +2406,7 @@ this.VideoControlsImplWidget = class {
 
         // Since the size of videocontrols is expanded with controlBar in <audio>, we
         // should fix the dimensions in order not to recursively trigger reflow afterwards.
-        if (this.video.localName == "audio") {
+        if (this.isAudioTag) {
           if (givenHeight) {
             // The height of controlBar should be capped with the bounds between controlBarMinHeight
             // and controlBarMinVisibleHeight.
@@ -2253,9 +2466,19 @@ this.VideoControlsImplWidget = class {
       },
 
       get pipToggleEnabled() {
-        return this.prefs[
-          "media.videocontrols.picture-in-picture.video-toggle.enabled"
-        ];
+        return (
+          this.prefs[
+            "media.videocontrols.picture-in-picture.video-toggle.enabled"
+          ] && this.prefs["media.videocontrols.picture-in-picture.enabled"]
+        );
+      },
+
+      get positionDurationBox() {
+        return this.shadowRoot.getElementById("positionDurationBox");
+      },
+
+      get durationSpan() {
+        return this.positionDurationBox?.getElementsByTagName("span")[0];
       },
 
       init(shadowRoot, prefs) {
@@ -2269,39 +2492,33 @@ this.VideoControlsImplWidget = class {
         this.shadowRoot = shadowRoot;
         this.prefs = prefs;
 
-        this.controlsContainer = this.shadowRoot.getElementById(
-          "controlsContainer"
-        );
+        this.controlsContainer =
+          this.shadowRoot.getElementById("controlsContainer");
         this.statusIcon = this.shadowRoot.getElementById("statusIcon");
         this.controlBar = this.shadowRoot.getElementById("controlBar");
         this.playButton = this.shadowRoot.getElementById("playButton");
-        this.controlBarSpacer = this.shadowRoot.getElementById(
-          "controlBarSpacer"
-        );
+        this.controlBarSpacer =
+          this.shadowRoot.getElementById("controlBarSpacer");
         this.muteButton = this.shadowRoot.getElementById("muteButton");
         this.volumeStack = this.shadowRoot.getElementById("volumeStack");
         this.volumeControl = this.shadowRoot.getElementById("volumeControl");
         this.progressBar = this.shadowRoot.getElementById("progressBar");
         this.bufferBar = this.shadowRoot.getElementById("bufferBar");
+        this.bufferA11yVal = this.shadowRoot.getElementById("bufferA11yVal");
         this.scrubberStack = this.shadowRoot.getElementById("scrubberStack");
         this.scrubber = this.shadowRoot.getElementById("scrubber");
         this.durationLabel = this.shadowRoot.getElementById("durationLabel");
         this.positionLabel = this.shadowRoot.getElementById("positionLabel");
-        this.positionDurationBox = this.shadowRoot.getElementById(
-          "positionDurationBox"
-        );
         this.statusOverlay = this.shadowRoot.getElementById("statusOverlay");
-        this.controlsOverlay = this.shadowRoot.getElementById(
-          "controlsOverlay"
-        );
+        this.controlsOverlay =
+          this.shadowRoot.getElementById("controlsOverlay");
         this.pictureInPictureOverlay = this.shadowRoot.getElementById(
           "pictureInPictureOverlay"
         );
         this.controlsSpacer = this.shadowRoot.getElementById("controlsSpacer");
         this.clickToPlay = this.shadowRoot.getElementById("clickToPlay");
-        this.fullscreenButton = this.shadowRoot.getElementById(
-          "fullscreenButton"
-        );
+        this.fullscreenButton =
+          this.shadowRoot.getElementById("fullscreenButton");
         this.castingButton = this.shadowRoot.getElementById("castingButton");
         this.closedCaptionButton = this.shadowRoot.getElementById(
           "closedCaptionButton"
@@ -2310,15 +2527,9 @@ this.VideoControlsImplWidget = class {
         this.textTrackListContainer = this.shadowRoot.getElementById(
           "textTrackListContainer"
         );
-        this.pictureInPictureToggleButton = this.shadowRoot.getElementById(
-          "pictureInPictureToggleButton"
+        this.pictureInPictureToggle = this.shadowRoot.getElementById(
+          "pictureInPictureToggle"
         );
-
-        if (this.positionDurationBox) {
-          this.durationSpan = this.positionDurationBox.getElementsByTagName(
-            "span"
-          )[0];
-        }
 
         let isMobile = this.window.navigator.appVersion.includes("Android");
         if (isMobile) {
@@ -2351,7 +2562,7 @@ this.VideoControlsImplWidget = class {
           this.volumeStack,
         ];
 
-        this.isAudioOnly = this.video.localName == "audio";
+        this.isAudioOnly = this.isAudioTag;
         this.setupInitialState();
         this.setupNewLoadState();
         this.initTextTracks();
@@ -2404,6 +2615,10 @@ this.VideoControlsImplWidget = class {
           { el: this.video.textTracks, type: "change" },
 
           { el: this.video, type: "media-videoCasting", touchOnly: true },
+
+          { el: this.controlBar, type: "focusin" },
+          { el: this.scrubber, type: "mousedown" },
+          { el: this.volumeControl, type: "mousedown" },
         ];
 
         for (let {
@@ -2573,116 +2788,128 @@ this.VideoControlsImplWidget = class {
     if (this.Utils.isTouchControls) {
       this.TouchUtils.init(this.shadowRoot, this.Utils);
     }
-    this.shadowRoot.firstChild.dispatchEvent(
-      new this.window.CustomEvent("VideoBindingAttached")
-    );
-
     this._setupEventListeners();
   }
 
   generateContent() {
-    /*
-     * Pass the markup through XML parser purely for the reason of loading the localization DTD.
-     * Remove it when migrate to Fluent.
-     */
     const parser = new this.window.DOMParser();
-    parser.forceEnableDTD();
     let parserDoc = parser.parseFromString(
-      `<!DOCTYPE bindings [
-      <!ENTITY % videocontrolsDTD SYSTEM "chrome://global/locale/videocontrols.dtd">
-      %videocontrolsDTD;
-      ]>
-      <div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
+      `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
+        <link rel="stylesheet" href="chrome://global/skin/media/pipToggle.css" />
+
         <div id="controlsContainer" class="controlsContainer" role="none">
           <div id="statusOverlay" class="statusOverlay stackItem" hidden="true">
             <div id="statusIcon" class="statusIcon"></div>
-            <bdi class="statusLabel" id="errorAborted">&error.aborted;</bdi>
-            <bdi class="statusLabel" id="errorNetwork">&error.network;</bdi>
-            <bdi class="statusLabel" id="errorDecode">&error.decode;</bdi>
-            <bdi class="statusLabel" id="errorSrcNotSupported">&error.srcNotSupported;</bdi>
-            <bdi class="statusLabel" id="errorNoSource">&error.noSource2;</bdi>
-            <bdi class="statusLabel" id="errorGeneric">&error.generic;</bdi>
+            <bdi class="statusLabel" id="errorAborted" data-l10n-id="videocontrols-error-aborted"></bdi>
+            <bdi class="statusLabel" id="errorNetwork" data-l10n-id="videocontrols-error-network"></bdi>
+            <bdi class="statusLabel" id="errorDecode" data-l10n-id="videocontrols-error-decode"></bdi>
+            <bdi class="statusLabel" id="errorSrcNotSupported" data-l10n-id="videocontrols-error-src-not-supported"></bdi>
+            <bdi class="statusLabel" id="errorNoSource" data-l10n-id="videocontrols-error-no-source"></bdi>
+            <bdi class="statusLabel" id="errorGeneric" data-l10n-id="videocontrols-error-generic"></bdi>
           </div>
 
           <div id="pictureInPictureOverlay" class="pictureInPictureOverlay stackItem" status="pictureInPicture" hidden="true">
             <div class="statusIcon" type="pictureInPicture"></div>
-            <bdi class="statusLabel" id="pictureInPicture">&status.pictureInPicture;</bdi>
+            <bdi class="statusLabel" id="pictureInPicture" data-l10n-id="videocontrols-status-picture-in-picture"></bdi>
           </div>
 
           <div id="controlsOverlay" class="controlsOverlay stackItem" role="none">
             <div class="controlsSpacerStack">
               <div id="controlsSpacer" class="controlsSpacer stackItem" role="none"></div>
-              <div id="clickToPlay" class="clickToPlay" hidden="true"></div>
+              <button id="clickToPlay" class="clickToPlay" hidden="true"></button>
             </div>
 
-            <button id="pictureInPictureToggleButton" class="pictureInPictureToggleButton">
-              <div id="pictureInPictureToggleIcon" class="pictureInPictureToggleIcon"></div>
-              <span class="pictureInPictureToggleLabel">&pictureInPicture.label;</span>
+            <button id="pictureInPictureToggle" class="pip-wrapper" position="left" hidden="true">
+              <div class="pip-small clickable"></div>
+              <div class="pip-expanded clickable">
+                <span class="pip-icon-label clickable">
+                  <span class="pip-icon"></span>
+                  <span class="pip-label" data-l10n-id="videocontrols-picture-in-picture-toggle-label2"></span>
+                </span>
+                <div class="pip-explainer clickable" data-l10n-id="videocontrols-picture-in-picture-explainer3"></div>
+              </div>
+              <div class="pip-icon clickable"></div>
             </button>
 
             <div id="controlBar" class="controlBar" role="none" hidden="true">
               <button id="playButton"
                       class="button playButton"
-                      playlabel="&playButton.playLabel;"
-                      pauselabel="&playButton.pauseLabel;"
                       tabindex="-1"/>
               <div id="scrubberStack" class="scrubberStack progressContainer" role="none">
                 <div class="progressBackgroundBar stackItem" role="none">
                   <div class="progressStack" role="none">
-                    <progress id="bufferBar" class="bufferBar" value="0" max="100" tabindex="-1"></progress>
-                    <progress id="progressBar" class="progressBar" value="0" max="100" tabindex="-1"></progress>
+                    <progress id="bufferBar" class="bufferBar" value="0" max="100" aria-hidden="true"></progress>
+                    <span class="a11y-only" role="status" aria-live="off">
+                      <span data-l10n-id="videocontrols-buffer-bar-label"></span>
+                      <span id="bufferA11yVal"></span>
+                    </span>
+                    <progress id="progressBar" class="progressBar" value="0" max="100" aria-hidden="true"></progress>
                   </div>
                 </div>
-                <input type="range" id="scrubber" class="scrubber" tabindex="-1"/>
+                <input type="range" id="scrubber" class="scrubber" tabindex="-1" data-l10n-attrs="aria-valuetext" value="0"/>
               </div>
               <bdi id="positionLabel" class="positionLabel" role="presentation"></bdi>
               <bdi id="durationLabel" class="durationLabel" role="presentation"></bdi>
               <bdi id="positionDurationBox" class="positionDurationBox" aria-hidden="true">
-                &positionAndDuration.nameFormat;
+                <span id="durationSpan" class="duration" role="none"
+                      data-l10n-name="position-duration-format"></span>
               </bdi>
               <div id="controlBarSpacer" class="controlBarSpacer" hidden="true" role="none"></div>
               <button id="muteButton"
                       class="button muteButton"
-                      mutelabel="&muteButton.muteLabel;"
-                      unmutelabel="&muteButton.unmuteLabel;"
                       tabindex="-1"/>
               <div id="volumeStack" class="volumeStack progressContainer" role="none">
                 <input type="range" id="volumeControl" class="volumeControl" min="0" max="100" step="1" tabindex="-1"
-                       aria-label="&volumeScrubber.label;"/>
+                       data-l10n-id="videocontrols-volume-control"/>
               </div>
               <button id="castingButton" class="button castingButton"
-                      aria-label="&castingButton.castingLabel;"/>
-              <button id="closedCaptionButton" class="button closedCaptionButton"/>
+                      data-l10n-id="videocontrols-casting-button-label"/>
+              <button id="closedCaptionButton" class="button closedCaptionButton" aria-controls="textTrackList"
+                      aria-haspopup="menu" aria-expanded="false" data-l10n-id="videocontrols-closed-caption-button"/>
+              <div id="textTrackListContainer" class="textTrackListContainer" hidden="true" role="presentation">
+                <div id="textTrackList" role="menu" class="textTrackList"
+                     data-l10n-id="videocontrols-closed-caption-off" data-l10n-attrs="offlabel"/>
+              </div>
               <button id="fullscreenButton"
-                      class="button fullscreenButton"
-                      enterfullscreenlabel="&fullscreenButton.enterfullscreenlabel;"
-                      exitfullscreenlabel="&fullscreenButton.exitfullscreenlabel;"/>
-            </div>
-            <div id="textTrackListContainer" class="textTrackListContainer" hidden="true">
-              <div id="textTrackList" class="textTrackList" offlabel="&closedCaption.off;"></div>
+                      class="button fullscreenButton"/>
             </div>
           </div>
         </div>
       </div>`,
       "application/xml"
     );
+    this.l10n = new this.window.DOMLocalization(
+      ["branding/brand.ftl", "toolkit/global/videocontrols.ftl"],
+      true
+    );
+    this.l10n.connectRoot(this.shadowRoot);
+    if (this.prefs["media.videocontrols.keyboard-tab-to-all-controls"]) {
+      // Make all of the individual controls tabbable.
+      for (const el of parserDoc.documentElement.querySelectorAll(
+        '[tabindex="-1"]'
+      )) {
+        el.removeAttribute("tabindex");
+      }
+    }
     this.shadowRoot.importNodeAndAppendChildAt(
       this.shadowRoot,
       parserDoc.documentElement,
       true
     );
+    this.l10n.translateRoots();
   }
 
-  elementStateMatches(element) {
-    let elementInPiP = VideoControlsWidget.isPictureInPictureVideo(element);
-    return this.isShowingPictureInPictureMessage == elementInPiP;
+  onchange() {
+    this.Utils.updatePictureInPictureMessage();
+    this.shadowRoot.firstChild.removeAttribute("flipped");
   }
 
-  destructor() {
+  teardown() {
     this.Utils.terminate();
     this.TouchUtils.terminate();
-    this.Utils.updateOrientationState(false);
+    this.l10n.disconnectRoot(this.shadowRoot);
+    this.l10n = null;
   }
 
   onPrefChange(prefName, prefValue) {
@@ -2719,11 +2946,14 @@ this.NoControlsMobileImplWidget = class {
     this.window = this.document.defaultView;
   }
 
-  onsetup() {
+  onsetup(direction) {
     this.generateContent();
 
+    this.shadowRoot.firstElementChild.setAttribute("localedir", direction);
+
     this.Utils = {
-      videoEvents: ["play", "playing", "MozNoControlsBlockedVideo"],
+      videoEvents: ["play", "playing"],
+      videoControlEvents: ["MozNoControlsBlockedVideo"],
       terminate() {
         for (let event of this.videoEvents) {
           try {
@@ -2731,6 +2961,12 @@ this.NoControlsMobileImplWidget = class {
               capture: true,
               mozSystemGroup: true,
             });
+          } catch (ex) {}
+        }
+
+        for (let event of this.videoControlEvents) {
+          try {
+            this.videocontrols.removeEventListener(event, this);
           } catch (ex) {}
         }
 
@@ -2790,13 +3026,11 @@ this.NoControlsMobileImplWidget = class {
         this.window = this.document.defaultView;
         this.shadowRoot = shadowRoot;
 
-        this.controlsContainer = this.shadowRoot.getElementById(
-          "controlsContainer"
-        );
+        this.controlsContainer =
+          this.shadowRoot.getElementById("controlsContainer");
         this.clickToPlay = this.shadowRoot.getElementById("clickToPlay");
-        this.noControlsOverlay = this.shadowRoot.getElementById(
-          "controlsContainer"
-        );
+        this.noControlsOverlay =
+          this.shadowRoot.getElementById("controlsContainer");
 
         let isMobile = this.window.navigator.appVersion.includes("Android");
         if (isMobile) {
@@ -2819,19 +3053,18 @@ this.NoControlsMobileImplWidget = class {
             mozSystemGroup: true,
           });
         }
+
+        for (let event of this.videoControlEvents) {
+          this.videocontrols.addEventListener(event, this);
+        }
       },
     };
     this.Utils.init(this.shadowRoot);
-    this.Utils.video.dispatchEvent(
-      new this.window.CustomEvent("MozNoControlsVideoBindingAttached")
-    );
   }
 
-  elementStateMatches(element) {
-    return true;
-  }
+  onchange() {}
 
-  destructor() {
+  teardown() {
     this.Utils.terminate();
   }
 
@@ -2840,23 +3073,14 @@ this.NoControlsMobileImplWidget = class {
   }
 
   generateContent() {
-    /*
-     * Pass the markup through XML parser purely for the reason of loading the localization DTD.
-     * Remove it when migrate to Fluent.
-     */
     const parser = new this.window.DOMParser();
-    parser.forceEnableDTD();
     let parserDoc = parser.parseFromString(
-      `<!DOCTYPE bindings [
-      <!ENTITY % videocontrolsDTD SYSTEM "chrome://global/locale/videocontrols.dtd">
-      %videocontrolsDTD;
-      ]>
-      <div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
+      `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <div id="controlsContainer" class="controlsContainer" role="none" hidden="true">
           <div class="controlsOverlay stackItem">
             <div class="controlsSpacerStack">
-              <div id="clickToPlay" class="clickToPlay"></div>
+              <button id="clickToPlay" class="clickToPlay"></button>
             </div>
           </div>
         </div>
@@ -2880,38 +3104,29 @@ this.NoControlsPictureInPictureImplWidget = class {
     this.window = this.document.defaultView;
   }
 
-  onsetup() {
+  onsetup(direction) {
     this.generateContent();
+
+    this.shadowRoot.firstElementChild.setAttribute("localedir", direction);
   }
 
-  elementStateMatches(element) {
-    return true;
-  }
+  onchange() {}
 
-  destructor() {}
+  teardown() {}
 
   onPrefChange(prefName, prefValue) {
     this.prefs[prefName] = prefValue;
   }
 
   generateContent() {
-    /*
-     * Pass the markup through XML parser purely for the reason of loading the localization DTD.
-     * Remove it when migrate to Fluent.
-     */
     const parser = new this.window.DOMParser();
-    parser.forceEnableDTD();
     let parserDoc = parser.parseFromString(
-      `<!DOCTYPE bindings [
-      <!ENTITY % videocontrolsDTD SYSTEM "chrome://global/locale/videocontrols.dtd">
-      %videocontrolsDTD;
-      ]>
-      <div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
+      `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <div id="controlsContainer" class="controlsContainer" role="none">
           <div class="pictureInPictureOverlay stackItem" status="pictureInPicture">
             <div id="statusIcon" class="statusIcon" type="pictureInPicture"></div>
-            <bdi class="statusLabel" id="pictureInPicture">&status.pictureInPicture;</bdi>
+            <bdi class="statusLabel" id="pictureInPicture" data-l10n-id="videocontrols-status-picture-in-picture"></bdi>
           </div>
           <div class="controlsOverlay stackItem"></div>
         </div>
@@ -2923,6 +3138,12 @@ this.NoControlsPictureInPictureImplWidget = class {
       parserDoc.documentElement,
       true
     );
+    this.l10n = new this.window.DOMLocalization([
+      "branding/brand.ftl",
+      "toolkit/global/videocontrols.ftl",
+    ]);
+    this.l10n.connectRoot(this.shadowRoot);
+    this.l10n.translateRoots();
   }
 };
 
@@ -2935,8 +3156,10 @@ this.NoControlsDesktopImplWidget = class {
     this.prefs = prefs;
   }
 
-  onsetup() {
+  onsetup(direction) {
     this.generateContent();
+
+    this.shadowRoot.firstElementChild.setAttribute("localedir", direction);
 
     this.Utils = {
       handleEvent(event) {
@@ -2956,6 +3179,8 @@ this.NoControlsDesktopImplWidget = class {
           }
           case "durationchange":
           // Intentional fall-through
+          case "emptied":
+          // Intentional fall-through
           case "loadedmetadata": {
             this.updatePictureInPictureToggleDisplay();
             break;
@@ -2972,9 +3197,14 @@ this.NoControlsDesktopImplWidget = class {
             this.reflowedDimensions
           )
         ) {
-          this.pictureInPictureToggleButton.removeAttribute("hidden");
+          this.pictureInPictureToggle.hidden = false;
+          VideoControlsWidget.setupToggle(
+            this.prefs,
+            this.pictureInPictureToggle,
+            this.reflowedDimensions
+          );
         } else {
-          this.pictureInPictureToggleButton.setAttribute("hidden", true);
+          this.pictureInPictureToggle.hidden = true;
         }
       },
 
@@ -2987,8 +3217,8 @@ this.NoControlsDesktopImplWidget = class {
         this.window = this.document.defaultView;
         this.shadowRoot = shadowRoot;
 
-        this.pictureInPictureToggleButton = this.shadowRoot.getElementById(
-          "pictureInPictureToggleButton"
+        this.pictureInPictureToggle = this.shadowRoot.getElementById(
+          "pictureInPictureToggle"
         );
 
         if (this.document.fullscreenElement) {
@@ -2997,7 +3227,7 @@ this.NoControlsDesktopImplWidget = class {
 
         // Default the Picture-in-Picture toggle button to being hidden. We might unhide it
         // later if we determine that this video is qualified to show it.
-        this.pictureInPictureToggleButton.setAttribute("hidden", true);
+        this.pictureInPictureToggle.hidden = true;
 
         if (this.video.readyState >= this.video.HAVE_METADATA) {
           // According to the spec[1], at the HAVE_METADATA (or later) state, we know
@@ -3012,6 +3242,7 @@ this.NoControlsDesktopImplWidget = class {
           capture: true,
         });
 
+        this.video.addEventListener("emptied", this);
         this.video.addEventListener("loadedmetadata", this);
         this.video.addEventListener("durationchange", this);
         this.videocontrols.addEventListener("resizevideocontrols", this);
@@ -3022,6 +3253,7 @@ this.NoControlsDesktopImplWidget = class {
           capture: true,
         });
 
+        this.video.removeEventListener("emptied", this);
         this.video.removeEventListener("loadedmetadata", this);
         this.video.removeEventListener("durationchange", this);
         this.videocontrols.removeEventListener("resizevideocontrols", this);
@@ -3030,7 +3262,8 @@ this.NoControlsDesktopImplWidget = class {
       updateReflowedDimensions() {
         this.reflowedDimensions.videoHeight = this.video.clientHeight;
         this.reflowedDimensions.videoWidth = this.video.clientWidth;
-        this.reflowedDimensions.videocontrolsWidth = this.videocontrols.clientWidth;
+        this.reflowedDimensions.videocontrolsWidth =
+          this.videocontrols.clientWidth;
       },
 
       reflowedDimensions: {
@@ -3042,19 +3275,19 @@ this.NoControlsDesktopImplWidget = class {
       },
 
       get pipToggleEnabled() {
-        return this.prefs[
-          "media.videocontrols.picture-in-picture.video-toggle.enabled"
-        ];
+        return (
+          this.prefs[
+            "media.videocontrols.picture-in-picture.video-toggle.enabled"
+          ] && this.prefs["media.videocontrols.picture-in-picture.enabled"]
+        );
       },
     };
     this.Utils.init(this.shadowRoot, this.prefs);
   }
 
-  elementStateMatches(element) {
-    return true;
-  }
+  onchange() {}
 
-  destructor() {
+  teardown() {
     this.Utils.terminate();
   }
 
@@ -3064,24 +3297,24 @@ this.NoControlsDesktopImplWidget = class {
   }
 
   generateContent() {
-    /*
-     * Pass the markup through XML parser purely for the reason of loading the localization DTD.
-     * Remove it when migrate to Fluent.
-     */
     const parser = new this.window.DOMParser();
-    parser.forceEnableDTD();
     let parserDoc = parser.parseFromString(
-      `<!DOCTYPE bindings [
-      <!ENTITY % videocontrolsDTD SYSTEM "chrome://global/locale/videocontrols.dtd">
-      %videocontrolsDTD;
-      ]>
-      <div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
+      `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
+        <link rel="stylesheet" href="chrome://global/skin/media/pipToggle.css" />
+
         <div id="controlsContainer" class="controlsContainer" role="none">
           <div class="controlsOverlay stackItem">
-            <button id="pictureInPictureToggleButton" class="pictureInPictureToggleButton">
-              <div id="pictureInPictureToggleIcon" class="pictureInPictureToggleIcon"></div>
-              <span class="pictureInPictureToggleLabel">&pictureInPicture.label;</span>
+            <button id="pictureInPictureToggle" class="pip-wrapper" position="left" hidden="true">
+              <div class="pip-small clickable"></div>
+              <div class="pip-expanded clickable">
+                <span class="pip-icon-label clickable">
+                  <span class="pip-icon"></span>
+                  <span class="pip-label" data-l10n-id="videocontrols-picture-in-picture-toggle-label2"></span>
+                </span>
+                <div class="pip-explainer clickable" data-l10n-id="videocontrols-picture-in-picture-explainer3"></div>
+              </div>
+              <div class="pip-icon"></div>
             </button>
           </div>
         </div>
@@ -3093,5 +3326,11 @@ this.NoControlsDesktopImplWidget = class {
       parserDoc.documentElement,
       true
     );
+    this.l10n = new this.window.DOMLocalization([
+      "branding/brand.ftl",
+      "toolkit/global/videocontrols.ftl",
+    ]);
+    this.l10n.connectRoot(this.shadowRoot);
+    this.l10n.translateRoots();
   }
 };

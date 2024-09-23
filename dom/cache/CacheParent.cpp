@@ -9,9 +9,7 @@
 #include "mozilla/dom/cache/CacheOpParent.h"
 #include "nsCOMPtr.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 // Declared in ActorUtils.h
 void DeallocPCacheParent(PCacheParent* aActor) { delete aActor; }
@@ -34,7 +32,8 @@ void CacheParent::ActorDestroy(ActorDestroyReason aReason) {
   mManager = nullptr;
 }
 
-PCacheOpParent* CacheParent::AllocPCacheOpParent(const CacheOpArgs& aOpArgs) {
+already_AddRefed<PCacheOpParent> CacheParent::AllocPCacheOpParent(
+    const CacheOpArgs& aOpArgs) {
   if (aOpArgs.type() != CacheOpArgs::TCacheMatchArgs &&
       aOpArgs.type() != CacheOpArgs::TCacheMatchAllArgs &&
       aOpArgs.type() != CacheOpArgs::TCachePutAllArgs &&
@@ -43,12 +42,7 @@ PCacheOpParent* CacheParent::AllocPCacheOpParent(const CacheOpArgs& aOpArgs) {
     MOZ_CRASH("Invalid operation sent to Cache actor!");
   }
 
-  return new CacheOpParent(Manager(), mCacheId, aOpArgs);
-}
-
-bool CacheParent::DeallocPCacheOpParent(PCacheOpParent* aActor) {
-  delete aActor;
-  return true;
+  return MakeAndAddRef<CacheOpParent>(Manager(), mCacheId, aOpArgs);
 }
 
 mozilla::ipc::IPCResult CacheParent::RecvPCacheOpConstructor(
@@ -59,13 +53,9 @@ mozilla::ipc::IPCResult CacheParent::RecvPCacheOpConstructor(
 }
 
 mozilla::ipc::IPCResult CacheParent::RecvTeardown() {
-  if (!Send__delete__(this)) {
-    // child process is gone, warn and allow actor to clean up normally
-    NS_WARNING("Cache failed to send delete.");
-  }
+  // If child process is gone, warn and allow actor to clean up normally
+  QM_WARNONLY_TRY(OkIf(Send__delete__(this)));
   return IPC_OK();
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

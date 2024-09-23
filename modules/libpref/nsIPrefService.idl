@@ -18,6 +18,30 @@ interface nsIPrefStatsCallback : nsISupports
   void visit(in ACString prefName, in unsigned long accessCount);
 };
 
+[scriptable, uuid(0a2dbc02-2218-4687-b151-33d890676e00)]
+interface nsIPrefObserver : nsISupports
+{
+  /**
+   * Invoked when a string preference is witnessed.  kind will be "Default" or "User".
+   */
+  void onStringPref(in string kind, in string name, in string value, in boolean isSticky, in boolean isLocked);
+
+  /**
+   * Invoked when a integer preference is witnessed.  kind will be "Default" or "User".
+   */
+  void onIntPref(in string kind, in string name, in long value, in boolean isSticky, in boolean isLocked);
+
+  /**
+   * Invoked when a boolean preference is witnessed.  kind will be "Default" or "User".
+   */
+  void onBoolPref(in string kind, in string name, in boolean value, in boolean isSticky, in boolean isLocked);
+
+  /**
+   * Invoked when the prefs parser encounters an error.
+   */
+  void onError(in string message);
+};
+
 /**
  * The nsIPrefService interface is the main entry point into the back end
  * preferences management library. The preference service is directly
@@ -39,12 +63,6 @@ interface nsIPrefService : nsISupports
   void resetPrefs();
 
   /**
-   * Called to reset all preferences with user set values back to the
-   * application default values.
-   */
-  void resetUserPrefs();
-
-  /**
    * Called to write current preferences state to a file.
    *
    * @param aFile The file to be written.
@@ -59,6 +77,24 @@ interface nsIPrefService : nsISupports
    * @see nsIFile
    */
   void savePrefFile(in nsIFile aFile);
+
+  /**
+   * Called to write current preferences state to a file off of the main thread.
+   * This differs from savePrefFile in that null is not accepted for the aFile
+   * parameter, and aFile cannot be pointing at the current preferences file.
+   *
+   * The backup will be written to disk off of the main thread, unless the
+   * preferences service is not configured to write to disk off of the main
+   * thread.
+   *
+   * @param aFile The file to be written.
+   * @returns A DOM promise that resolves when the backup is complete.
+   *
+   * @see readUserPrefsFromFile
+   * @see nsIFile
+   */
+  [implicit_jscontext]
+  Promise backupPrefFile(in nsIFile aFile);
 
   /**
    * Call to get a Preferences "Branch" which accesses user preference data.
@@ -144,6 +180,29 @@ interface nsIPrefService : nsISupports
    * This is not implemented in non-debug builds and will throw an error.
    */
   void resetStats();
+
+  /**
+   * Parse the given bytes, invoking callbacks on the given observer.
+   *
+   * This method does not modify any preferences.
+   *
+   * @param bytes The data to parse.  This data may be UTF-8 encoded, but is not
+   *              required to be so: the prefs parser will determine the encoding
+   *              automatically.
+   * @param observer The observer to invoke callbacks on.  Parsing errors will
+   *                 be reported via the onError callback.
+   * @param pathLabel An optional string with which to label errors.
+   */
+  void parsePrefsFromBuffer(in Array<uint8_t> bytes,
+                            in nsIPrefObserver observer,
+                            [optional] in string pathLabel);
+
+  /**
+   * Last modified time of the user pref file when initially read, in
+   * milliseconds. Can be 0 (unix epoch) if the file didn't exist when we
+   * started.
+   */
+  readonly attribute PRTime userPrefsFileLastModifiedAtStartup;
 };
 
 %{C++

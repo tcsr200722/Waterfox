@@ -4,24 +4,22 @@
 
 "use strict";
 
-const promise = require("promise");
-
 loader.lazyRequireGetter(
   this,
   "KeyCodes",
-  "devtools/client/shared/keycodes",
+  "resource://devtools/client/shared/keycodes.js",
   true
 );
 loader.lazyRequireGetter(
   this,
-  "getCSSLexer",
-  "devtools/shared/css/lexer",
+  "InspectorCSSParserWrapper",
+  "resource://devtools/shared/css/lexer.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "parseDeclarations",
-  "devtools/shared/css/parsing-utils",
+  "resource://devtools/shared/css/parsing-utils.js",
   true
 );
 
@@ -53,11 +51,11 @@ function advanceValidate(keyCode, value, insertionPoint) {
   // value.  Otherwise it's been inserted in some spot where it has a
   // valid meaning, like a comment or string.
   value = value.slice(0, insertionPoint) + ";" + value.slice(insertionPoint);
-  const lexer = getCSSLexer(value);
+  const lexer = new InspectorCSSParserWrapper(value);
   while (true) {
     const token = lexer.nextToken();
     if (token.endOffset > insertionPoint) {
-      if (token.tokenType === "symbol" && token.text === ";") {
+      if (token.tokenType === "Semicolon") {
         // The ";" is a terminator.
         return true;
       }
@@ -129,15 +127,16 @@ function createChild(parent, tagName, attributes = {}) {
  *         promise expected to resolve a LongStringActor instance
  * @return {Promise} promise resolving with the retrieved string as argument
  */
-function getLongString(longStringActorPromise) {
-  return longStringActorPromise
-    .then(longStringActor => {
-      return longStringActor.string().then(string => {
-        longStringActor.release().catch(console.error);
-        return string;
-      });
-    })
-    .catch(console.error);
+async function getLongString(longStringActorPromise) {
+  try {
+    const longStringActor = await longStringActorPromise;
+    const string = await longStringActor.string();
+    longStringActor.release().catch(console.error);
+    return string;
+  } catch (e) {
+    console.error(e);
+    return undefined;
+  }
 }
 
 /**
@@ -192,7 +191,7 @@ function getSelectorFromGrip(grip) {
  */
 function promiseWarn(error) {
   console.error(error);
-  return promise.reject(error);
+  return Promise.reject(error);
 }
 
 /**

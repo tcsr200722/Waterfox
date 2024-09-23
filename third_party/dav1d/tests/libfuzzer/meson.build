@@ -26,6 +26,10 @@
 # Build definition for the dav1d fuzzing binaries
 #
 
+if fuzzing_engine == 'none' and not have_fseeko
+    subdir_done()
+endif
+
 dav1d_fuzzer_sources =  files('dav1d_fuzzer.c')
 fuzzer_ldflags = []
 fuzzer_link_lang = {}
@@ -47,7 +51,6 @@ endif
 dav1d_fuzzer = executable('dav1d_fuzzer',
     dav1d_fuzzer_sources,
     include_directories: dav1d_inc_dirs,
-    c_args: [stackalign_flag, stackrealign_flag],
     link_args: fuzzer_ldflags,
     link_with : libdav1d,
     build_by_default: true,
@@ -58,7 +61,7 @@ dav1d_fuzzer = executable('dav1d_fuzzer',
 dav1d_fuzzer_mt = executable('dav1d_fuzzer_mt',
     dav1d_fuzzer_sources,
     include_directories: dav1d_inc_dirs,
-    c_args: [stackalign_flag, stackrealign_flag, '-DDAV1D_MT_FUZZING'],
+    c_args: ['-DDAV1D_MT_FUZZING'],
     link_args: fuzzer_ldflags,
     link_with : libdav1d,
     build_by_default: true,
@@ -88,7 +91,7 @@ if (objcopy.found() and
     dav1d_fuzzer_mem = executable('dav1d_fuzzer_mem',
         dav1d_fuzzer_sources + ['alloc_fail.c'],
         include_directories: dav1d_inc_dirs,
-        c_args: [stackalign_flag, stackrealign_flag, '-DDAV1D_ALLOC_FAIL'],
+        c_args: ['-DDAV1D_ALLOC_FAIL'],
         link_args: fuzzer_ldflags + [join_paths(libdav1d_af.full_path())],
         link_depends: libdav1d_af,
         build_by_default: false,

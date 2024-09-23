@@ -26,10 +26,7 @@ class nsMathMLmrootFrame final : public nsMathMLContainerFrame {
   friend nsIFrame* NS_NewMathMLmrootFrame(mozilla::PresShell* aPresShell,
                                           ComputedStyle* aStyle);
 
-  virtual void SetAdditionalComputedStyle(
-      int32_t aIndex, ComputedStyle* aComputedStyle) override;
-  virtual ComputedStyle* GetAdditionalComputedStyle(
-      int32_t aIndex) const override;
+  void DidSetComputedStyle(ComputedStyle* aOldStyle) override;
 
   virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
                     nsIFrame* aPrevInFlow) override;
@@ -62,6 +59,9 @@ class nsMathMLmrootFrame final : public nsMathMLContainerFrame {
 
   nsMathMLChar mSqrChar;
   nsRect mBarRect;
+
+ private:
+  bool ShouldUseRowFallback();
 };
 
 #endif /* nsMathMLmrootFrame_h___ */

@@ -9,10 +9,6 @@
  * loads.
  */
 
-const env = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
-);
-
 // Make sure media pre-loading is enabled on Android so that our <audio> and
 // <video> elements trigger the expected requests.
 Services.prefs.setIntPref("media.autoplay.default", Ci.nsIAutoplay.ALLOWED);
@@ -25,7 +21,16 @@ Services.prefs.setIntPref(
   4096
 );
 
-// ExtensionContent.jsm needs to know when it's running from xpcshell,
+// Do not limit the number of CSP reports.
+Services.prefs.setIntPref("security.csp.reporting.limit.count", 0);
+
+// Do not trunacate the blocked-uri in CSP reports for frame navigations.
+Services.prefs.setBoolPref(
+  "security.csp.truncate_blocked_uri_for_frame_navigations",
+  false
+);
+
+// ExtensionContent.sys.mjs needs to know when it's running from xpcshell,
 // to use the right timeout for content scripts executed at document_idle.
 ExtensionTestUtils.mockAppInfo();
 
@@ -39,7 +44,6 @@ var gContentSecurityPolicy = null;
 
 const BASE_URL = `http://example.com`;
 const CSP_REPORT_PATH = "/csp-report.sjs";
-const CSP_REPORT_URL = `http://csplog.example.net/csp-report.sjs`;
 
 /**
  * Registers a static HTML document with the given content at the given
@@ -85,8 +89,6 @@ const AUTOCLOSE_TAGS = new Set(["img", "input", "link", "source"]);
  *        The relative URL to use as the source of the element. Each
  *        load of this URL will have a separate set of query parameters
  *        appended to it, based on the values in `opts`.
- * @property {string} [srcAttr = "src"]
- *        The attribute in which to store the element's source URL.
  * @property {string} [srcAttr = "src"]
  *        The attribute in which to store the element's source URL.
  * @property {boolean} [liveSrc = false]
@@ -526,7 +528,6 @@ function testInlineCSS() {
     // Test creating <style> element from the extension side and then appending
     // to it using insertAdjacentHTML, with the same rules as above.
     testModifyAfterInject("insertAdjacentHTML", (style, css) => {
-      // eslint-disable-next-line no-unsanitized/method
       style.insertAdjacentHTML("beforeend", css);
     });
 
@@ -831,6 +832,8 @@ function computeBaseURLs(tests, expectedSources, forbiddenSources = {}) {
 
   function* iterSources(test, sources) {
     for (let [source, attrs] of Object.entries(sources)) {
+      // if a source defines attributes (e.g. liveSrc in PAGE_SOURCES etc.) then all
+      // attributes in the source must be matched by the test (see const TEST).
       if (Object.keys(attrs).every(attr => attrs[attr] === test[attr])) {
         yield `${BASE_URL}/${test.src}?source=${source}`;
       }
@@ -850,27 +853,39 @@ function computeBaseURLs(tests, expectedSources, forbiddenSources = {}) {
 }
 
 /**
+ * @typedef InjectedUrl
+ *        A URL present in styles injected by the content script.
+ * @type {object}
+ * @property {string} origin
+ *        The origin of the URL, one of "page", "contentScript", or "extension".
+ * @param {string} href
+ *        The URL string.
+ * @param {boolean} inline
+ *        If true, the URL is present in an inline stylesheet, which may be
+ *        blocked by CSP prior to parsing, depending on its origin.
+ */
+
+/**
+ * @typedef InjectedSource
+ *        An inline CSS source injected by the content script.
+ * @type {object}
+ * @param {string} origin
+ *        The origin of the CSS, one of "page", "contentScript", or "extension".
+ * @param {string} css
+ *        The CSS source text.
+ */
+
+/**
  * Generates a set of expected and forbidden URLs and sources based on the CSS
  * injected by our content script.
  *
  * @param {object} message
  *        The "css-sources" message sent by the content script, containing lists
  *        of CSS sources injected into the page.
- * @param {Array<object>} message.urls
+ * @param {Array<InjectedUrl>} message.urls
  *        A list of URLs present in styles injected by the content script.
- * @param {string} message.urls.*.origin
- *        The origin of the URL, one of "page", "contentScript", or "extension".
- * @param {string} message.urls.*.href
- *        The URL string.
- * @param {boolean} message.urls.*.inline
- *        If true, the URL is present in an inline stylesheet, which may be
- *        blocked by CSP prior to parsing, depending on its origin.
- * @param {Array<object>} message.sources
+ * @param {Array<InjectedSource>} message.sources
  *        A list of inline CSS sources injected by the content script.
- * @param {string} message.sources.*.origin
- *        The origin of the CSS, one of "page", "contentScript", or "extension".
- * @param {string} message.sources.*.css
- *        The CSS source text.
  * @param {boolean} [cspEnabled = false]
  *        If true, a strict CSP is enabled for this page, and inline page
  *        sources should be blocked. URLs present in these sources will not be
@@ -924,7 +939,7 @@ function computeExpectedForbiddenURLs(
  * @param {Promise<object>} urlsPromise
  *        A promise which resolves to an object containing expected and
  *        forbidden URL sets, as returned by {@see computeBaseURLs}.
- * @param {object<string, string>} origins
+ * @param {Object<string, string>} origins
  *        A mapping of origin parameters as they appear in URL query
  *        strings to the origin strings returned by corresponding
  *        principals. These values are used to test requests against
@@ -974,7 +989,7 @@ function awaitLoads(urlsPromise, origins) {
       }
     });
 
-    observer = (channel, topic, data) => {
+    observer = channel => {
       if (expectedURLs) {
         checkChannel(channel.QueryInterface(Ci.nsIChannel));
       } else {
@@ -1083,6 +1098,9 @@ const TESTS = [
   },
   // TODO: <frame> element, which requires a frameset document.
   {
+    // the blocked-uri for frame-navigations is the pre-path URI. For the
+    // purpose of this test we do not strip the blocked-uri by setting the
+    // preference 'truncate_blocked_uri_for_frame_navigations'
     element: ["iframe", {}],
     src: "iframe.html",
   },
@@ -1242,7 +1260,7 @@ function getOrigins(extension) {
     page: Services.scriptSecurityManager.createContentPrincipal(pageURI, {})
       .origin,
     contentScript: Cu.getObjectPrincipal(
-      Cu.Sandbox([extension.principal, pageURL])
+      Cu.Sandbox([pageURL, extension.principal])
     ).origin,
     extension: extension.principal.origin,
   };
@@ -1284,7 +1302,7 @@ add_task(async function test_contentscript_triggeringPrincipals() {
 add_task(async function test_contentscript_csp() {
   // TODO bug 1408193: We currently don't get the full set of CSP reports when
   // running in network scheduling chaos mode. It's not entirely clear why.
-  let chaosMode = parseInt(env.get("MOZ_CHAOSMODE"), 16);
+  let chaosMode = parseInt(Services.env.get("MOZ_CHAOSMODE"), 16);
   let checkCSPReports = !(chaosMode === 0 || chaosMode & 0x02);
 
   gContentSecurityPolicy = `default-src 'none' 'report-sample'; script-src 'nonce-deadbeef' 'unsafe-eval' 'report-sample'; report-uri ${CSP_REPORT_PATH};`;
@@ -1320,33 +1338,27 @@ add_task(async function test_contentscript_csp() {
  * content page.
  */
 add_task(async function test_extension_contentscript_csp() {
-  Services.prefs.setBoolPref("extensions.content_script_csp.enabled", true);
-  Services.prefs.setBoolPref(
-    "extensions.content_script_csp.report_only",
-    false
-  );
-
-  // Add reporting to base and default CSP as this cannot be done via manifest.
-  let baseCSP = Services.prefs.getStringPref(
-    "extensions.webextensions.base-content-security-policy"
-  );
-  Services.prefs.setStringPref(
-    "extensions.webextensions.base-content-security-policy",
-    `${baseCSP} report-uri ${CSP_REPORT_URL};`
-  );
-  Services.prefs.setStringPref(
-    "extensions.webextensions.default-content-security-policy",
-    `script-src 'self' 'report-sample'; object-src 'self' 'report-sample'; report-uri ${CSP_REPORT_URL};`
-  );
+  Services.prefs.setBoolPref("extensions.manifestV3.enabled", true);
 
   // TODO bug 1408193: We currently don't get the full set of CSP reports when
   // running in network scheduling chaos mode. It's not entirely clear why.
-  let chaosMode = parseInt(env.get("MOZ_CHAOSMODE"), 16);
+  let chaosMode = parseInt(Services.env.get("MOZ_CHAOSMODE"), 16);
   let checkCSPReports = !(chaosMode === 0 || chaosMode & 0x02);
 
   gContentSecurityPolicy = `default-src 'none' 'report-sample'; script-src 'nonce-deadbeef' 'unsafe-eval' 'report-sample'; report-uri ${CSP_REPORT_PATH};`;
 
-  let extension = ExtensionTestUtils.loadExtension(EXTENSION_DATA);
+  let data = {
+    ...EXTENSION_DATA,
+    manifest: {
+      ...EXTENSION_DATA.manifest,
+      manifest_version: 3,
+      host_permissions: ["http://example.com/*"],
+      granted_host_permissions: true,
+    },
+    temporarilyInstalled: true,
+  };
+
+  let extension = ExtensionTestUtils.loadExtension(data);
   await extension.startup();
 
   let urlsPromise = extension.awaitMessage("css-sources").then(msg => {
@@ -1369,4 +1381,5 @@ add_task(async function test_extension_contentscript_csp() {
 
   await extension.unload();
   await contentPage.close();
+  Services.prefs.clearUserPref("extensions.manifestV3.enabled");
 });

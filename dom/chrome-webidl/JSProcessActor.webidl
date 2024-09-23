@@ -20,7 +20,7 @@ interface JSProcessActorParent {
   [ChromeOnly]
   constructor();
 
-  readonly attribute nsIContentParent manager;
+  readonly attribute nsIDOMProcessParent manager;
 };
 JSProcessActorParent includes JSActor;
 
@@ -29,7 +29,7 @@ interface JSProcessActorChild {
   [ChromeOnly]
   constructor();
 
-  readonly attribute nsIContentChild manager;
+  readonly attribute nsIDOMProcessChild manager;
 };
 JSProcessActorChild includes JSActor;
 
@@ -46,7 +46,20 @@ dictionary ProcessActorOptions {
    * can prefix match remote type either `web` or `webIsolated`. If not passed,
    * all content processes are allowed to instantiate the actor.
    */
-  sequence<DOMString> remoteTypes;
+  sequence<UTF8String> remoteTypes;
+
+  /**
+   * If this is set to `true`, allow this actor to be created for the parent
+   * process.
+   */
+  boolean includeParent = false;
+
+  /**
+   * If true, the actor will be loaded in the loader dedicated to DevTools.
+   *
+   * This ultimately prevents DevTools to debug itself.
+   */
+  boolean loadInDevToolsLoader = false;
 
   /** This fields are used for configuring individual sides of the actor. */
   ProcessActorSidedOptions parent;
@@ -56,10 +69,27 @@ dictionary ProcessActorOptions {
 dictionary ProcessActorSidedOptions {
   /**
    * The JSM path which should be loaded for the actor on this side.
-   * If not passed, the specified side cannot receive messages, but may send
-   * them using `sendAsyncMessage` or `sendQuery`.
+   *
+   * Mutually exclusive with `esModuleURI`.
+   *
+   * If neither this nor `esModuleURI` is passed, the specified side cannot receive
+   * messages, but may send them using `sendAsyncMessage` or `sendQuery`.
+   *
+   * TODO: Remove this once m-c, c-c, and out-of-tree code migrations finish
+   *       (bug 1866732).
    */
-  required ByteString moduleURI;
+  ByteString moduleURI;
+
+  /**
+   * The ESM path which should be loaded for the actor on this side.
+   *
+   * Mutually exclusive with `moduleURI`.
+   *
+   * If neither this nor `moduleURI` is passed, the specified side cannot
+   * receive messages, but may send them using `sendAsyncMessage` or
+   * `sendQuery`.
+   */
+  ByteString esModuleURI;
 };
 
 dictionary ProcessActorChildOptions : ProcessActorSidedOptions {
@@ -67,10 +97,8 @@ dictionary ProcessActorChildOptions : ProcessActorSidedOptions {
    * An array of observer topics to listen to. An observer will be added for each
    * topic in the list.
    *
-   * Observer notifications in the list use nsGlobalContentInner or
-   * nsGlobalContentOuter object as their subject, and the events will only be
-   * dispatched to the corresponding content actor. If additional observer
-   * notification's subjects are needed, please file a bug for that.
-   **/
+   * Unlike for JSWindowActor, observers are always invoked, and do not need to
+   * pass an inner or outer window as subject.
+   */
   sequence<ByteString> observers;
 };

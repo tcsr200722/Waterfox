@@ -3,8 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* import-globals-from ../../../base/content/utilityOverlay.js */
-/* import-globals-from ../../../../toolkit/mozapps/preferences/fontbuilder.js */
+/* import-globals-from /browser/base/content/utilityOverlay.js */
+/* import-globals-from /toolkit/mozapps/preferences/fontbuilder.js */
 
 // browser.display.languageList LOCK ALL when LOCKED
 
@@ -27,12 +27,7 @@ window.addEventListener("load", () => gFontsDialog.onLoad());
 Preferences.addAll([
   { id: "font.language.group", type: "wstring" },
   { id: "browser.display.use_document_fonts", type: "int" },
-  { id: "intl.charset.fallback.override", type: "string" },
 ]);
-
-document.getElementById("FallbackGroupbox").hidden = Services.prefs.getBoolPref(
-  "intl.charset.detector.ng.enabled"
-);
 
 var gFontsDialog = {
   _selectLanguageGroupPromise: Promise.resolve(),
@@ -157,7 +152,7 @@ var gFontsDialog = {
           preference.setElementValue(element);
         }
       }
-    })().catch(Cu.reportError);
+    })().catch(console.error);
   },
 
   readFontLanguageGroup() {

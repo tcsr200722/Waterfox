@@ -1,4 +1,4 @@
-import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { DetectUserSessionStart } from "content-src/lib/detect-user-session-start";
 
 describe("detectUserSessionStart", () => {

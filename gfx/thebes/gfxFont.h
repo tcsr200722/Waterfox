@@ -7,53 +7,73 @@
 #ifndef GFX_FONT_H
 #define GFX_FONT_H
 
-#include "gfxTypes.h"
-#include "gfxFontEntry.h"
+#include <new>
+#include <utility>
+#include <functional>
+#include "PLDHashTable.h"
+#include "ThebesRLBoxTypes.h"
 #include "gfxFontVariations.h"
-#include "nsString.h"
-#include "gfxPoint.h"
-#include "gfxPattern.h"
-#include "nsTArray.h"
-#include "nsTHashtable.h"
-#include "nsHashKeys.h"
 #include "gfxRect.h"
-#include "nsExpirationTracker.h"
-#include "gfxPlatform.h"
-#include "nsAtom.h"
-#include "mozilla/HashFunctions.h"
-#include "nsIMemoryReporter.h"
-#include "nsIObserver.h"
-#include "mozilla/MemoryReporting.h"
+#include "gfxTypes.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/FontPropertyTypes.h"
+#include "mozilla/HashTable.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/MruCache.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/RWLock.h"
 #include "mozilla/TypedEnumBits.h"
-#include "MainThreadUtils.h"
-#include <algorithm>
-#include "DrawMode.h"
-#include "nsDataHashtable.h"
-#include "harfbuzz/hb.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/FontPaletteCache.h"
+#include "mozilla/gfx/MatrixFwd.h"
+#include "mozilla/gfx/Point.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/intl/UnicodeScriptCodes.h"
+#include "nsCOMPtr.h"
 #include "nsColor.h"
+#include "nsTHashMap.h"
+#include "nsTHashSet.h"
+#include "nsExpirationTracker.h"
 #include "nsFontMetrics.h"
-#include "mozilla/ServoUtils.h"
-#include "TextDrawTarget.h"
-#include "ThebesRLBoxTypes.h"
+#include "nsHashKeys.h"
+#include "nsIMemoryReporter.h"
+#include "nsIObserver.h"
+#include "nsISupports.h"
+#include "nsString.h"
+#include "nsTArray.h"
+#include "nsTHashtable.h"
+#include "nscore.h"
+#include "DrawMode.h"
 
-typedef struct _cairo cairo_t;
-typedef struct _cairo_scaled_font cairo_scaled_font_t;
-
-#ifdef DEBUG
-#  include <stdio.h>
-#endif
+// Only required for function bodies
+#include "gfxFontEntry.h"
+#include "gfxFontFeatures.h"
 
 class gfxContext;
-class gfxTextRun;
-class gfxFont;
+class gfxGraphiteShaper;
+class gfxHarfBuzzShaper;
 class gfxGlyphExtents;
+class gfxMathTable;
+class gfxPattern;
 class gfxShapedText;
 class gfxShapedWord;
 class gfxSkipChars;
-class gfxMathTable;
+class gfxTextRun;
+class nsIEventTarget;
+class nsITimer;
+struct gfxTextRunDrawCallbacks;
+
+namespace mozilla {
+class SVGContextPaint;
+namespace layout {
+class TextDrawTarget;
+}
+}  // namespace mozilla
+
+typedef struct _cairo cairo_t;
+typedef struct _cairo_scaled_font cairo_scaled_font_t;
 
 #define FONT_MAX_SIZE 2000.0
 
@@ -69,29 +89,19 @@ class gfxMathTable;
 #  define OBLIQUE_SKEW_FACTOR 0.25f
 #endif
 
-struct gfxTextRunDrawCallbacks;
-
-namespace mozilla {
-class SVGContextPaint;
-}  // namespace mozilla
-
 struct gfxFontStyle {
-  typedef mozilla::FontStretch FontStretch;
-  typedef mozilla::FontSlantStyle FontSlantStyle;
-  typedef mozilla::FontWeight FontWeight;
+  using FontStretch = mozilla::FontStretch;
+  using FontSlantStyle = mozilla::FontSlantStyle;
+  using FontWeight = mozilla::FontWeight;
+  using FontSizeAdjust = mozilla::StyleFontSizeAdjust;
 
   gfxFontStyle();
   gfxFontStyle(FontSlantStyle aStyle, FontWeight aWeight, FontStretch aStretch,
-               gfxFloat aSize, nsAtom* aLanguage, bool aExplicitLanguage,
-               float aSizeAdjust, bool aSystemFont, bool aPrinterFont,
-               bool aWeightSynthesis, bool aStyleSynthesis,
-               uint32_t aLanguageOverride);
-
-  // the language (may be an internal langGroup code rather than an actual
-  // language code) specified in the document or element's lang property,
-  // or inferred from the charset
-  RefPtr<nsAtom> language;
-
+               gfxFloat aSize, const FontSizeAdjust& aSizeAdjust,
+               bool aSystemFont, bool aPrinterFont, bool aWeightSynthesis,
+               bool aStyleSynthesis, bool aSmallCapsSynthesis,
+               bool aPositionSynthesis,
+               mozilla::StyleFontLanguageOverride aLanguageOverride);
   // Features are composed of (1) features from style rules (2) features
   // from feature settings rules and (3) family-specific features.  (1) and
   // (3) are guaranteed to be mutually exclusive
@@ -104,7 +114,7 @@ struct gfxFontStyle {
   // font matching occurs.
 
   // -- list of value tags for specific alternate features
-  mozilla::StyleVariantAlternatesList variantAlternates;
+  mozilla::StyleFontVariantAlternates variantAlternates;
 
   // -- object used to look these up once the font is matched
   RefPtr<gfxFontFeatureValueSet> featureValueLookup;
@@ -114,6 +124,9 @@ struct gfxFontStyle {
 
   // The logical size of the font, in pixels
   gfxFloat size;
+
+  // The optical size value to apply (if supported); negative means none.
+  float autoOpticalSize = -1.0f;
 
   // The aspect-value (ie., the ratio actualsize:actualxheight) that any
   // actual physical font created from this font structure must have when
@@ -134,11 +147,7 @@ struct gfxFontStyle {
   // but the font in use does not explicitly support this; the author can
   // use font-language-override to request the Serbian option in the font
   // in order to get correct glyph shapes.)
-  uint32_t languageOverride;
-
-  // The estimated background color behind the text. Enables a special
-  // rendering mode when NS_GET_A(.) > 0. Only used for text in the chrome.
-  nscolor fontSmoothingBackgroundColor;
+  mozilla::StyleFontLanguageOverride languageOverride;
 
   // The Font{Weight,Stretch,SlantStyle} fields are each a 16-bit type.
 
@@ -156,15 +165,18 @@ struct gfxFontStyle {
     return weight.IsNormal() && style.IsNormal() && stretch.IsNormal();
   }
 
-  // We pack these two small-integer fields into a single byte to avoid
+  // We pack these three small-integer fields into a single byte to avoid
   // overflowing an 8-byte boundary [in a 64-bit build] and ending up with
   // 7 bytes of padding at the end of the struct.
 
   // caps variant (small-caps, petite-caps, etc.)
-  uint8_t variantCaps : 4;  // uses range 0..6
+  uint8_t variantCaps : 3;  // uses range 0..6
 
   // sub/superscript variant
-  uint8_t variantSubSuper : 4;  // uses range 0..2
+  uint8_t variantSubSuper : 2;  // uses range 0..2
+
+  // font metric used as basis of font-size-adjust
+  uint8_t sizeAdjustBasis : 3;  // uses range 0..4
 
   // Say that this font is a system font and therefore does not
   // require certain fixup that we do for fonts from untrusted
@@ -177,26 +189,33 @@ struct gfxFontStyle {
   // Used to imitate -webkit-font-smoothing: antialiased
   bool useGrayscaleAntialiasing : 1;
 
-  // Whether synthetic styles are allowed
+  // Whether synthetic styles are allowed (required, in the case of position)
   bool allowSyntheticWeight : 1;
   bool allowSyntheticStyle : 1;
+  bool allowSyntheticSmallCaps : 1;
+  bool useSyntheticPosition : 1;
 
   // some variant features require fallback which complicates the shaping
   // code, so set up a bool to indicate when shaping with fallback is needed
   bool noFallbackVariantFeatures : 1;
 
-  // whether the |language| field comes from explicit lang tagging in the
-  // document, or was inferred from charset/system locale
-  bool explicitLanguage : 1;
-
   // Return the final adjusted font size for the given aspect ratio.
-  // Not meant to be called when sizeAdjust = -1.0.
+  // Not meant to be called when sizeAdjustBasis is NONE.
   gfxFloat GetAdjustedSize(gfxFloat aspect) const {
-    NS_ASSERTION(sizeAdjust >= 0.0,
-                 "Not meant to be called when sizeAdjust = -1.0");
+    MOZ_ASSERT(
+        FontSizeAdjust::Tag(sizeAdjustBasis) != FontSizeAdjust::Tag::None,
+        "Not meant to be called when sizeAdjustBasis is none");
     gfxFloat adjustedSize =
         std::max(NS_round(size * (sizeAdjust / aspect)), 1.0);
     return std::min(adjustedSize, FONT_MAX_SIZE);
+  }
+
+  // Some callers want to take a short-circuit path if they can be sure the
+  // adjusted size will be zero.
+  bool AdjustedSizeMustBeZero() const {
+    return size == 0.0 ||
+           (FontSizeAdjust::Tag(sizeAdjustBasis) != FontSizeAdjust::Tag::None &&
+            sizeAdjust == 0.0);
   }
 
   PLDHashNumber Hash() const;
@@ -212,27 +231,27 @@ struct gfxFontStyle {
   }
 
   bool Equals(const gfxFontStyle& other) const {
-    return (*reinterpret_cast<const uint64_t*>(&size) ==
-            *reinterpret_cast<const uint64_t*>(&other.size)) &&
+    return mozilla::NumbersAreBitwiseIdentical(size, other.size) &&
            (style == other.style) && (weight == other.weight) &&
            (stretch == other.stretch) && (variantCaps == other.variantCaps) &&
            (variantSubSuper == other.variantSubSuper) &&
            (allowSyntheticWeight == other.allowSyntheticWeight) &&
            (allowSyntheticStyle == other.allowSyntheticStyle) &&
+           (allowSyntheticSmallCaps == other.allowSyntheticSmallCaps) &&
+           (useSyntheticPosition == other.useSyntheticPosition) &&
            (systemFont == other.systemFont) &&
            (printerFont == other.printerFont) &&
            (useGrayscaleAntialiasing == other.useGrayscaleAntialiasing) &&
-           (explicitLanguage == other.explicitLanguage) &&
-           (language == other.language) &&
            (baselineOffset == other.baselineOffset) &&
-           (*reinterpret_cast<const uint32_t*>(&sizeAdjust) ==
-            *reinterpret_cast<const uint32_t*>(&other.sizeAdjust)) &&
+           mozilla::NumbersAreBitwiseIdentical(sizeAdjust, other.sizeAdjust) &&
+           (sizeAdjustBasis == other.sizeAdjustBasis) &&
            (featureSettings == other.featureSettings) &&
            (variantAlternates == other.variantAlternates) &&
            (featureValueLookup == other.featureValueLookup) &&
            (variationSettings == other.variationSettings) &&
            (languageOverride == other.languageOverride) &&
-           (fontSmoothingBackgroundColor == other.fontSmoothingBackgroundColor);
+           mozilla::NumbersAreBitwiseIdentical(autoOpticalSize,
+                                               other.autoOpticalSize);
   }
 };
 
@@ -240,11 +259,11 @@ struct gfxFontStyle {
  * Font cache design:
  *
  * The mFonts hashtable contains most fonts, indexed by (gfxFontEntry*, style).
- * It does not add a reference to the fonts it contains.
- * When a font's refcount decreases to zero, instead of deleting it we
- * add it to our expiration tracker.
- * The expiration tracker tracks fonts with zero refcount. After a certain
- * period of time, such fonts expire and are deleted.
+ * It maintains a strong reference to the fonts it contains.
+ * Whenever a font is accessed, it is marked as used to move it to a new
+ * generation in the tracker to avoid expiration.
+ * The expiration tracker will only expire fonts with a single reference, the
+ * cache itself. Fonts with more than one reference are marked as used.
  *
  * We're using 3 generations with a ten-second generation interval, so
  * zero-refcount fonts will be deleted 20-30 seconds after their refcount
@@ -268,36 +287,26 @@ struct FontCacheSizes {
   size_t mShapedWords;    // memory used by the per-font shapedWord caches
 };
 
-class gfxFontCacheExpirationTracker
-    : public ExpirationTrackerImpl<gfxFont, 3, ::detail::PlaceholderLock,
-                                   ::detail::PlaceholderAutoLock> {
+class gfxFontCache final
+    : public ExpirationTrackerImpl<gfxFont, 3, mozilla::Mutex,
+                                   mozilla::MutexAutoLock> {
  protected:
-  typedef ::detail::PlaceholderLock Lock;
-  typedef ::detail::PlaceholderAutoLock AutoLock;
-
-  Lock mLock;
-
-  AutoLock FakeLock() { return AutoLock(mLock); }
-
-  Lock& GetMutex() override {
-    mozilla::AssertIsMainThreadOrServoFontMetricsLocked();
-    return mLock;
-  }
-
- public:
+  // Expiration tracker implementation.
   enum { FONT_TIMEOUT_SECONDS = 10 };
 
-  explicit gfxFontCacheExpirationTracker(nsIEventTarget* aEventTarget)
-      : ExpirationTrackerImpl<gfxFont, 3, Lock, AutoLock>(
-            FONT_TIMEOUT_SECONDS * 1000, "gfxFontCache", aEventTarget) {}
-};
+  typedef mozilla::Mutex Lock;
+  typedef mozilla::MutexAutoLock AutoLock;
 
-class gfxFontCache final : private gfxFontCacheExpirationTracker {
+  // This protects the ExpirationTracker tables.
+  Lock mMutex = Lock("fontCacheExpirationMutex");
+
+  Lock& GetMutex() override { return mMutex; }
+
  public:
-  enum { SHAPED_WORD_TIMEOUT_SECONDS = 60 };
-
   explicit gfxFontCache(nsIEventTarget* aEventTarget);
   ~gfxFontCache();
+
+  enum { SHAPED_WORD_TIMEOUT_SECONDS = 60 };
 
   /*
    * Get the global gfxFontCache.  You must call Init() before
@@ -311,39 +320,56 @@ class gfxFontCache final : private gfxFontCacheExpirationTracker {
 
   // Look up a font in the cache. Returns null if there's nothing matching
   // in the cache
-  gfxFont* Lookup(const gfxFontEntry* aFontEntry, const gfxFontStyle* aStyle,
-                  const gfxCharacterMap* aUnicodeRangeMap);
+  already_AddRefed<gfxFont> Lookup(const gfxFontEntry* aFontEntry,
+                                   const gfxFontStyle* aStyle,
+                                   const gfxCharacterMap* aUnicodeRangeMap);
 
   // We created a new font (presumably because Lookup returned null);
   // put it in the cache. The font's refcount should be nonzero. It is
   // allowable to add a new font even if there is one already in the
-  // cache with the same key; we'll forget about the old one.
-  void AddNew(gfxFont* aFont);
+  // cache with the same key, as we may race with other threads to do
+  // the insertion -- in that case we will return the original font,
+  // and destroy the new one.
+  already_AddRefed<gfxFont> MaybeInsert(gfxFont* aFont);
 
-  // The font's refcount has gone to zero; give ownership of it to
-  // the cache. We delete it if it's not acquired again after a certain
-  // amount of time.
-  void NotifyReleased(gfxFont* aFont);
+  bool MaybeDestroy(gfxFont* aFont);
 
   // Cleans out the hashtable and removes expired fonts waiting for cleanup.
   // Other gfxFont objects may be still in use but they will be pushed
   // into the expiration queues and removed.
-  void Flush() {
-    mFonts.Clear();
-    AgeAllGenerations();
-  }
+  void Flush();
 
   void FlushShapedWordCaches();
   void NotifyGlyphsChanged();
+
+  void AgeCachedWords();
+
+  void RunWordCacheExpirationTimer() {
+    if (!mTimerRunning) {
+      mozilla::MutexAutoLock lock(mMutex);
+      if (!mTimerRunning && mWordCacheExpirationTimer) {
+        mWordCacheExpirationTimer->InitWithNamedFuncCallback(
+            WordCacheExpirationTimerCallback, this,
+            SHAPED_WORD_TIMEOUT_SECONDS * 1000, nsITimer::TYPE_REPEATING_SLACK,
+            "gfxFontCache::WordCacheExpiration");
+        mTimerRunning = true;
+      }
+    }
+  }
+  void PauseWordCacheExpirationTimer() {
+    if (mTimerRunning) {
+      mozilla::MutexAutoLock lock(mMutex);
+      if (mTimerRunning && mWordCacheExpirationTimer) {
+        mWordCacheExpirationTimer->Cancel();
+        mTimerRunning = false;
+      }
+    }
+  }
 
   void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                               FontCacheSizes* aSizes) const;
   void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                               FontCacheSizes* aSizes) const;
-
-  void AgeAllGenerations() { AgeAllGenerationsLocked(FakeLock()); }
-
-  void RemoveObject(gfxFont* aFont) { RemoveObjectLocked(aFont, FakeLock()); }
 
  protected:
   class MemoryReporter final : public nsIMemoryReporter {
@@ -364,18 +390,17 @@ class gfxFontCache final : private gfxFontCacheExpirationTracker {
   };
 
   nsresult AddObject(gfxFont* aFont) {
-    return AddObjectLocked(aFont, FakeLock());
+    AutoLock lock(mMutex);
+    return AddObjectLocked(aFont, lock);
   }
 
-  // This gets called when the timeout has expired on a zero-refcount
+  // This gets called when the timeout has expired on a single-refcount
   // font; we just delete it.
-  void NotifyExpiredLocked(gfxFont* aFont, const AutoLock&) override {
-    NotifyExpired(aFont);
-  }
+  void NotifyExpiredLocked(gfxFont* aFont, const AutoLock&)
+      MOZ_REQUIRES(mMutex) override;
+  void NotifyHandlerEnd() override;
 
-  void NotifyExpired(gfxFont* aFont);
-
-  void DestroyFont(gfxFont* aFont);
+  void DestroyDiscard(nsTArray<gfxFont*>& aDiscard);
 
   static gfxFontCache* gGlobalCache;
 
@@ -397,7 +422,7 @@ class gfxFontCache final : private gfxFontCacheExpirationTracker {
 
     // When constructing a new entry in the hashtable, we'll leave this
     // blank. The caller of Put() will fill this in.
-    explicit HashEntry(KeyTypePointer aStr) : mFont(nullptr) {}
+    explicit HashEntry(KeyTypePointer aStr) {}
 
     bool KeyEquals(const KeyTypePointer aKey) const;
     static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
@@ -407,17 +432,17 @@ class gfxFontCache final : private gfxFontCacheExpirationTracker {
     }
     enum { ALLOW_MEMMOVE = true };
 
-    // The cache tracks gfxFont objects whose refcount has dropped to zero,
-    // so they are not immediately deleted but may be "resurrected" if they
-    // have not yet expired from the tracker when they are needed again.
-    // See the custom AddRef/Release methods in gfxFont.
-    gfxFont* MOZ_UNSAFE_REF("tracking for deferred deletion") mFont;
+    gfxFont* MOZ_UNSAFE_REF("tracking for deferred deletion") mFont = nullptr;
   };
 
-  nsTHashtable<HashEntry> mFonts;
+  nsTHashtable<HashEntry> mFonts MOZ_GUARDED_BY(mMutex);
+
+  nsTArray<gfxFont*> mTrackerDiscard MOZ_GUARDED_BY(mMutex);
 
   static void WordCacheExpirationTimerCallback(nsITimer* aTimer, void* aCache);
-  nsCOMPtr<nsITimer> mWordCacheExpirationTimer;
+
+  nsCOMPtr<nsITimer> mWordCacheExpirationTimer MOZ_GUARDED_BY(mMutex);
+  std::atomic<bool> mTimerRunning = false;
 };
 
 class gfxTextPerfMetrics {
@@ -474,9 +499,14 @@ class gfxTextPerfMetrics {
 
 namespace mozilla {
 namespace gfx {
+
+class UnscaledFont;
+
 // Flags that live in the gfxShapedText::mFlags field.
 // (Note that gfxTextRun has an additional mFlags2 field for use
 // by textrun clients like nsTextFrame.)
+//
+// If you add a flag, please add support for it in gfxTextRun::Dump.
 enum class ShapedTextFlags : uint16_t {
   /**
    * When set, the text is RTL.
@@ -627,7 +657,7 @@ class gfxTextRunFactory {
 class gfxFontShaper {
  public:
   typedef mozilla::gfx::DrawTarget DrawTarget;
-  typedef mozilla::unicode::Script Script;
+  typedef mozilla::intl::Script Script;
 
   enum class RoundingFlags : uint8_t { kRoundX = 0x01, kRoundY = 0x02 };
 
@@ -642,6 +672,9 @@ class gfxFontShaper {
   // aShapedText to be updated; aLength is also the length of aText.
   virtual bool ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
                          uint32_t aOffset, uint32_t aLength, Script aScript,
+                         nsAtom* aLanguage,  // may be null, indicating no
+                                             // lang-specific shaping to be
+                                             // applied
                          bool aVertical, RoundingFlags aRounding,
                          gfxShapedText* aShapedText) = 0;
 
@@ -650,7 +683,7 @@ class gfxFontShaper {
   static void MergeFontFeatures(
       const gfxFontStyle* aStyle, const nsTArray<gfxFontFeature>& aFontFeatures,
       bool aDisableLigatures, const nsACString& aFamilyName, bool aAddSmallCaps,
-      void (*aHandleFeature)(const uint32_t&, uint32_t&, void*),
+      void (*aHandleFeature)(uint32_t, uint32_t, void*),
       void* aHandleFeatureData);
 
  protected:
@@ -683,7 +716,7 @@ MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(gfxFontShaper::RoundingFlags)
  */
 class gfxShapedText {
  public:
-  typedef mozilla::unicode::Script Script;
+  typedef mozilla::intl::Script Script;
 
   gfxShapedText(uint32_t aLength, mozilla::gfx::ShapedTextFlags aFlags,
                 uint16_t aAppUnitsPerDevUnit)
@@ -718,6 +751,9 @@ class gfxShapedText {
       // in appunits).
       FLAG_IS_SIMPLE_GLYPH = 0x80000000U,
 
+      // These flags are applicable to both "simple" and "complex" records.
+      COMMON_FLAGS_MASK = 0x70000000U,
+
       // Indicates whether a linebreak is allowed before this character;
       // this is a two-bit field that holds a FLAG_BREAK_TYPE_xxx value
       // indicating the kind of linebreak (if any) allowed here.
@@ -727,44 +763,52 @@ class gfxShapedText {
       FLAG_BREAK_TYPE_NONE = 0,
       FLAG_BREAK_TYPE_NORMAL = 1,
       FLAG_BREAK_TYPE_HYPHEN = 2,
+      // Allow break before this position if needed to avoid overflow:
+      FLAG_BREAK_TYPE_EMERGENCY_WRAP = 3,
 
       FLAG_CHAR_IS_SPACE = 0x10000000U,
 
-      // The advance is stored in appunits
+      // Fields present only when FLAG_IS_SIMPLE_GLYPH is /true/.
+      // The advance is stored in appunits as a 12-bit field:
       ADVANCE_MASK = 0x0FFF0000U,
       ADVANCE_SHIFT = 16,
-
+      // and the glyph ID is stored in the low 16 bits.
       GLYPH_MASK = 0x0000FFFFU,
 
+      // Fields present only when FLAG_IS_SIMPLE_GLYPH is /false/.
       // Non-simple glyphs may or may not have glyph data in the
-      // corresponding mDetailedGlyphs entry. They have the following
-      // flag bits:
+      // corresponding mDetailedGlyphs entry. They have a glyph count
+      // stored in the low 16 bits, and the following flag bits:
+      GLYPH_COUNT_MASK = 0x0000FFFFU,
 
       // When NOT set, indicates that this character corresponds to a
       // missing glyph and should be skipped (or possibly, render the character
       // Unicode value in some special way). If there are glyphs,
       // the mGlyphID is actually the UTF16 character code. The bit is
       // inverted so we can memset the array to zero to indicate all missing.
-      FLAG_NOT_MISSING = 0x01,
-      FLAG_NOT_CLUSTER_START = 0x02,
-      FLAG_NOT_LIGATURE_GROUP_START = 0x04,
+      FLAG_NOT_MISSING = 0x010000,
+      FLAG_NOT_CLUSTER_START = 0x020000,
+      FLAG_NOT_LIGATURE_GROUP_START = 0x040000,
+      // Flag bit 0x080000 is currently unused.
 
-      FLAG_CHAR_IS_TAB = 0x08,
-      FLAG_CHAR_IS_NEWLINE = 0x10,
+      // Certain types of characters are marked so that they can be given
+      // special treatment in rendering. This may require use of a "complex"
+      // CompressedGlyph record even for a character that would otherwise be
+      // treated as "simple".
+      CHAR_TYPE_FLAGS_MASK = 0xF00000,
+      FLAG_CHAR_IS_TAB = 0x100000,
+      FLAG_CHAR_IS_NEWLINE = 0x200000,
       // Per CSS Text Decoration Module Level 3, emphasis marks are not
       // drawn for any character in Unicode categories Z*, Cc, Cf, and Cn
       // which is not combined with any combining characters. This flag is
       // set for all those characters except 0x20 whitespace.
-      FLAG_CHAR_NO_EMPHASIS_MARK = 0x20,
+      FLAG_CHAR_NO_EMPHASIS_MARK = 0x400000,
       // Per CSS Text, letter-spacing is not applied to formatting chars
       // (category Cf). We mark those in the textrun so as to be able to
       // skip them when setting up spacing in nsTextFrame.
-      FLAG_CHAR_IS_FORMATTING_CONTROL = 0x40,
+      FLAG_CHAR_IS_FORMATTING_CONTROL = 0x800000,
 
-      CHAR_TYPE_FLAGS_MASK = 0x78,
-
-      GLYPH_COUNT_MASK = 0x00FFFF00U,
-      GLYPH_COUNT_SHIFT = 8
+      // The bits 0x0F000000 are currently unused in non-simple glyphs.
     };
 
     // "Simple glyphs" have a simple glyph ID, simple advance and their
@@ -783,25 +827,27 @@ class gfxShapedText {
       return (aAdvance & (ADVANCE_MASK >> ADVANCE_SHIFT)) == aAdvance;
     }
 
-    bool IsSimpleGlyph() const { return (mValue & FLAG_IS_SIMPLE_GLYPH) != 0; }
+    bool IsSimpleGlyph() const { return mValue & FLAG_IS_SIMPLE_GLYPH; }
     uint32_t GetSimpleAdvance() const {
+      MOZ_ASSERT(IsSimpleGlyph());
       return (mValue & ADVANCE_MASK) >> ADVANCE_SHIFT;
     }
-    uint32_t GetSimpleGlyph() const { return mValue & GLYPH_MASK; }
+    uint32_t GetSimpleGlyph() const {
+      MOZ_ASSERT(IsSimpleGlyph());
+      return mValue & GLYPH_MASK;
+    }
 
     bool IsMissing() const {
-      return (mValue & (FLAG_NOT_MISSING | FLAG_IS_SIMPLE_GLYPH)) == 0;
+      return !(mValue & (FLAG_NOT_MISSING | FLAG_IS_SIMPLE_GLYPH));
     }
     bool IsClusterStart() const {
-      return (mValue & FLAG_IS_SIMPLE_GLYPH) ||
-             !(mValue & FLAG_NOT_CLUSTER_START);
+      return IsSimpleGlyph() || !(mValue & FLAG_NOT_CLUSTER_START);
     }
     bool IsLigatureGroupStart() const {
-      return (mValue & FLAG_IS_SIMPLE_GLYPH) ||
-             !(mValue & FLAG_NOT_LIGATURE_GROUP_START);
+      return IsSimpleGlyph() || !(mValue & FLAG_NOT_LIGATURE_GROUP_START);
     }
     bool IsLigatureContinuation() const {
-      return (mValue & FLAG_IS_SIMPLE_GLYPH) == 0 &&
+      return !IsSimpleGlyph() &&
              (mValue & (FLAG_NOT_LIGATURE_GROUP_START | FLAG_NOT_MISSING)) ==
                  (FLAG_NOT_LIGATURE_GROUP_START | FLAG_NOT_MISSING);
     }
@@ -809,21 +855,20 @@ class gfxShapedText {
     // Return true if the original character was a normal (breakable,
     // trimmable) space (U+0020). Not true for other characters that
     // may happen to map to the space glyph (U+00A0).
-    bool CharIsSpace() const { return (mValue & FLAG_CHAR_IS_SPACE) != 0; }
+    bool CharIsSpace() const { return mValue & FLAG_CHAR_IS_SPACE; }
 
     bool CharIsTab() const {
-      return !IsSimpleGlyph() && (mValue & FLAG_CHAR_IS_TAB) != 0;
+      return !IsSimpleGlyph() && (mValue & FLAG_CHAR_IS_TAB);
     }
     bool CharIsNewline() const {
-      return !IsSimpleGlyph() && (mValue & FLAG_CHAR_IS_NEWLINE) != 0;
+      return !IsSimpleGlyph() && (mValue & FLAG_CHAR_IS_NEWLINE);
     }
     bool CharMayHaveEmphasisMark() const {
       return !CharIsSpace() &&
              (IsSimpleGlyph() || !(mValue & FLAG_CHAR_NO_EMPHASIS_MARK));
     }
     bool CharIsFormattingControl() const {
-      return !IsSimpleGlyph() &&
-             (mValue & FLAG_CHAR_IS_FORMATTING_CONTROL) != 0;
+      return !IsSimpleGlyph() && (mValue & FLAG_CHAR_IS_FORMATTING_CONTROL);
     }
 
     uint32_t CharTypeFlags() const {
@@ -831,8 +876,7 @@ class gfxShapedText {
     }
 
     void SetClusterStart(bool aIsClusterStart) {
-      NS_ASSERTION(!IsSimpleGlyph(),
-                   "can't call SetClusterStart on simple glyphs");
+      MOZ_ASSERT(!IsSimpleGlyph());
       if (aIsClusterStart) {
         mValue &= ~FLAG_NOT_CLUSTER_START;
       } else {
@@ -845,7 +889,7 @@ class gfxShapedText {
     }
     // Returns FLAGS_CAN_BREAK_BEFORE if the setting changed, 0 otherwise
     uint32_t SetCanBreakBefore(uint8_t aCanBreakBefore) {
-      NS_ASSERTION(aCanBreakBefore <= 2, "Bogus break-before value!");
+      MOZ_ASSERT(aCanBreakBefore <= 3, "Bogus break-flags value!");
       uint32_t breakMask = (uint32_t(aCanBreakBefore) << FLAGS_CAN_BREAK_SHIFT);
       uint32_t toggle = breakMask ^ (mValue & FLAGS_CAN_BREAK_BEFORE);
       mValue ^= toggle;
@@ -856,8 +900,8 @@ class gfxShapedText {
     // no extra flags (line-break or is_space) set.
     static CompressedGlyph MakeSimpleGlyph(uint32_t aAdvanceAppUnits,
                                            uint32_t aGlyph) {
-      NS_ASSERTION(IsSimpleAdvance(aAdvanceAppUnits), "Advance overflow");
-      NS_ASSERTION(IsSimpleGlyphID(aGlyph), "Glyph overflow");
+      MOZ_ASSERT(IsSimpleAdvance(aAdvanceAppUnits));
+      MOZ_ASSERT(IsSimpleGlyphID(aGlyph));
       CompressedGlyph g;
       g.mValue =
           FLAG_IS_SIMPLE_GLYPH | (aAdvanceAppUnits << ADVANCE_SHIFT) | aGlyph;
@@ -868,64 +912,75 @@ class gfxShapedText {
     // preserving line-break/is-space flags if present.
     CompressedGlyph& SetSimpleGlyph(uint32_t aAdvanceAppUnits,
                                     uint32_t aGlyph) {
-      NS_ASSERTION(!CharTypeFlags(), "Char type flags lost");
-      mValue = (mValue & (FLAGS_CAN_BREAK_BEFORE | FLAG_CHAR_IS_SPACE)) |
+      MOZ_ASSERT(!CharTypeFlags(), "Char type flags lost");
+      mValue = (mValue & COMMON_FLAGS_MASK) |
                MakeSimpleGlyph(aAdvanceAppUnits, aGlyph).mValue;
       return *this;
     }
 
     // Create a CompressedGlyph value representing a complex glyph record,
     // without any line-break or char-type flags.
-    static CompressedGlyph MakeComplex(bool aClusterStart, bool aLigatureStart,
-                                       uint32_t aGlyphCount) {
+    static CompressedGlyph MakeComplex(bool aClusterStart,
+                                       bool aLigatureStart) {
       CompressedGlyph g;
       g.mValue = FLAG_NOT_MISSING |
                  (aClusterStart ? 0 : FLAG_NOT_CLUSTER_START) |
-                 (aLigatureStart ? 0 : FLAG_NOT_LIGATURE_GROUP_START) |
-                 (aGlyphCount << GLYPH_COUNT_SHIFT);
+                 (aLigatureStart ? 0 : FLAG_NOT_LIGATURE_GROUP_START);
       return g;
     }
 
     // Assign a complex glyph value to an existing CompressedGlyph record,
     // preserving line-break/char-type flags if present.
-    CompressedGlyph& SetComplex(bool aClusterStart, bool aLigatureStart,
-                                uint32_t aGlyphCount) {
-      mValue = (mValue & (FLAGS_CAN_BREAK_BEFORE | FLAG_CHAR_IS_SPACE)) |
-               CharTypeFlags() |
-               MakeComplex(aClusterStart, aLigatureStart, aGlyphCount).mValue;
+    // This sets the glyphCount to zero; it will be updated when we call
+    // gfxShapedText::SetDetailedGlyphs.
+    CompressedGlyph& SetComplex(bool aClusterStart, bool aLigatureStart) {
+      mValue = (mValue & COMMON_FLAGS_MASK) | CharTypeFlags() |
+               MakeComplex(aClusterStart, aLigatureStart).mValue;
       return *this;
     }
 
     /**
+     * Mark a glyph record as being a missing-glyph.
      * Missing glyphs are treated as ligature group starts; don't mess with
      * the cluster-start flag (see bugs 618870 and 619286).
+     * We also preserve the glyph count here, as this is used after any
+     * required DetailedGlyphs (to store the char code for a hexbox) has been
+     * set up.
+     * This must be called *after* SetDetailedGlyphs is used for the relevant
+     * offset in the shaped-word, because that will mark it as not-missing.
      */
-    CompressedGlyph& SetMissing(uint32_t aGlyphCount) {
-      mValue = (mValue & (FLAGS_CAN_BREAK_BEFORE | FLAG_NOT_CLUSTER_START |
-                          FLAG_CHAR_IS_SPACE)) |
-               CharTypeFlags() | (aGlyphCount << GLYPH_COUNT_SHIFT);
+    CompressedGlyph& SetMissing() {
+      MOZ_ASSERT(!IsSimpleGlyph());
+      mValue &= ~(FLAG_NOT_MISSING | FLAG_NOT_LIGATURE_GROUP_START);
       return *this;
     }
+
     uint32_t GetGlyphCount() const {
-      NS_ASSERTION(!IsSimpleGlyph(), "Expected non-simple-glyph");
-      return (mValue & GLYPH_COUNT_MASK) >> GLYPH_COUNT_SHIFT;
+      MOZ_ASSERT(!IsSimpleGlyph());
+      return mValue & GLYPH_COUNT_MASK;
+    }
+    void SetGlyphCount(uint32_t aGlyphCount) {
+      MOZ_ASSERT(!IsSimpleGlyph());
+      MOZ_ASSERT(GetGlyphCount() == 0, "Glyph count already set");
+      MOZ_ASSERT(aGlyphCount <= 0xffff, "Glyph count out of range");
+      mValue |= FLAG_NOT_MISSING | aGlyphCount;
     }
 
     void SetIsSpace() { mValue |= FLAG_CHAR_IS_SPACE; }
     void SetIsTab() {
-      NS_ASSERTION(!IsSimpleGlyph(), "Expected non-simple-glyph");
+      MOZ_ASSERT(!IsSimpleGlyph());
       mValue |= FLAG_CHAR_IS_TAB;
     }
     void SetIsNewline() {
-      NS_ASSERTION(!IsSimpleGlyph(), "Expected non-simple-glyph");
+      MOZ_ASSERT(!IsSimpleGlyph());
       mValue |= FLAG_CHAR_IS_NEWLINE;
     }
     void SetNoEmphasisMark() {
-      NS_ASSERTION(!IsSimpleGlyph(), "Expected non-simple-glyph");
+      MOZ_ASSERT(!IsSimpleGlyph());
       mValue |= FLAG_CHAR_NO_EMPHASIS_MARK;
     }
     void SetIsFormattingControl() {
-      NS_ASSERTION(!IsSimpleGlyph(), "Expected non-simple-glyph");
+      MOZ_ASSERT(!IsSimpleGlyph());
       mValue |= FLAG_CHAR_IS_FORMATTING_CONTROL;
     }
 
@@ -956,8 +1011,10 @@ class gfxShapedText {
     mozilla::gfx::Point mOffset;
   };
 
-  void SetGlyphs(uint32_t aCharIndex, CompressedGlyph aGlyph,
-                 const DetailedGlyph* aGlyphs);
+  // Store DetailedGlyph records for the given index. (This does not modify
+  // the associated CompressedGlyph character-type or break flags.)
+  void SetDetailedGlyphs(uint32_t aIndex, uint32_t aGlyphCount,
+                         const DetailedGlyph* aGlyphs);
 
   void SetMissingGlyph(uint32_t aIndex, uint32_t aChar, gfxFont* aFont);
 
@@ -983,8 +1040,8 @@ class gfxShapedText {
     return mDetailedGlyphs->Get(aCharIndex);
   }
 
-  void AdjustAdvancesForSyntheticBold(float aSynBoldOffset, uint32_t aOffset,
-                                      uint32_t aLength);
+  void ApplyTrackingToClusters(gfxFloat aTrackingAdjustment, uint32_t aOffset,
+                               uint32_t aLength);
 
   // Mark clusters in the CompressedGlyph records, starting at aOffset,
   // based on the Unicode properties of the text in aString.
@@ -1057,7 +1114,8 @@ class gfxShapedText {
       DetailedGlyph details = {aGlyph.GetSimpleGlyph(),
                                (int32_t)aGlyph.GetSimpleAdvance(),
                                mozilla::gfx::Point()};
-      SetGlyphs(aIndex, CompressedGlyph().SetComplex(true, true, 1), &details);
+      aGlyph.SetComplex(true, true);
+      SetDetailedGlyphs(aIndex, 1, &details);
     }
   }
 
@@ -1190,7 +1248,7 @@ class gfxShapedText {
  */
 class gfxShapedWord final : public gfxShapedText {
  public:
-  typedef mozilla::unicode::Script Script;
+  typedef mozilla::intl::Script Script;
 
   // Create a ShapedWord that can hold glyphs for aLength characters,
   // with mCharacterGlyphs sized appropriately.
@@ -1202,7 +1260,8 @@ class gfxShapedWord final : public gfxShapedText {
   // glyph data; the caller must call gfxFont::ShapeText() with appropriate
   // parameters to set up the glyphs.
   static gfxShapedWord* Create(const uint8_t* aText, uint32_t aLength,
-                               Script aRunScript, uint16_t aAppUnitsPerDevUnit,
+                               Script aRunScript, nsAtom* aLanguage,
+                               uint16_t aAppUnitsPerDevUnit,
                                mozilla::gfx::ShapedTextFlags aFlags,
                                gfxFontShaper::RoundingFlags aRounding) {
     NS_ASSERTION(aLength <= gfxPlatform::GetPlatform()->WordCacheCharLimit(),
@@ -1218,12 +1277,13 @@ class gfxShapedWord final : public gfxShapedText {
     }
 
     // Construct in the pre-allocated storage, using placement new
-    return new (storage) gfxShapedWord(aText, aLength, aRunScript,
+    return new (storage) gfxShapedWord(aText, aLength, aRunScript, aLanguage,
                                        aAppUnitsPerDevUnit, aFlags, aRounding);
   }
 
   static gfxShapedWord* Create(const char16_t* aText, uint32_t aLength,
-                               Script aRunScript, uint16_t aAppUnitsPerDevUnit,
+                               Script aRunScript, nsAtom* aLanguage,
+                               uint16_t aAppUnitsPerDevUnit,
                                mozilla::gfx::ShapedTextFlags aFlags,
                                gfxFontShaper::RoundingFlags aRounding) {
     NS_ASSERTION(aLength <= gfxPlatform::GetPlatform()->WordCacheCharLimit(),
@@ -1236,7 +1296,8 @@ class gfxShapedWord final : public gfxShapedText {
       nsAutoCString narrowText;
       LossyAppendUTF16toASCII(nsDependentSubstring(aText, aLength), narrowText);
       return Create((const uint8_t*)(narrowText.BeginReading()), aLength,
-                    aRunScript, aAppUnitsPerDevUnit, aFlags, aRounding);
+                    aRunScript, aLanguage, aAppUnitsPerDevUnit, aFlags,
+                    aRounding);
     }
 
     uint32_t size = offsetof(gfxShapedWord, mCharGlyphsStorage) +
@@ -1246,7 +1307,7 @@ class gfxShapedWord final : public gfxShapedText {
       return nullptr;
     }
 
-    return new (storage) gfxShapedWord(aText, aLength, aRunScript,
+    return new (storage) gfxShapedWord(aText, aLength, aRunScript, aLanguage,
                                        aAppUnitsPerDevUnit, aFlags, aRounding);
   }
 
@@ -1278,6 +1339,7 @@ class gfxShapedWord final : public gfxShapedText {
   }
 
   Script GetScript() const { return mScript; }
+  nsAtom* GetLanguage() const { return mLanguage.get(); }
 
   gfxFontShaper::RoundingFlags GetRounding() const { return mRounding; }
 
@@ -1289,31 +1351,36 @@ class gfxShapedWord final : public gfxShapedText {
     return (aHash >> 28) ^ (aHash << 4) ^ aCh;
   }
 
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+
  private:
   // so that gfxTextRun can share our DetailedGlyphStore class
   friend class gfxTextRun;
 
   // Construct storage for a ShapedWord, ready to receive glyph data
   gfxShapedWord(const uint8_t* aText, uint32_t aLength, Script aRunScript,
-                uint16_t aAppUnitsPerDevUnit,
+                nsAtom* aLanguage, uint16_t aAppUnitsPerDevUnit,
                 mozilla::gfx::ShapedTextFlags aFlags,
                 gfxFontShaper::RoundingFlags aRounding)
       : gfxShapedText(aLength,
                       aFlags | mozilla::gfx::ShapedTextFlags::TEXT_IS_8BIT,
                       aAppUnitsPerDevUnit),
+        mLanguage(aLanguage),
         mScript(aRunScript),
         mRounding(aRounding),
         mAgeCounter(0) {
     memset(mCharGlyphsStorage, 0, aLength * sizeof(CompressedGlyph));
     uint8_t* text = reinterpret_cast<uint8_t*>(&mCharGlyphsStorage[aLength]);
     memcpy(text, aText, aLength * sizeof(uint8_t));
+    SetupClusterBoundaries(0, aText, aLength);
   }
 
   gfxShapedWord(const char16_t* aText, uint32_t aLength, Script aRunScript,
-                uint16_t aAppUnitsPerDevUnit,
+                nsAtom* aLanguage, uint16_t aAppUnitsPerDevUnit,
                 mozilla::gfx::ShapedTextFlags aFlags,
                 gfxFontShaper::RoundingFlags aRounding)
       : gfxShapedText(aLength, aFlags, aAppUnitsPerDevUnit),
+        mLanguage(aLanguage),
         mScript(aRunScript),
         mRounding(aRounding),
         mAgeCounter(0) {
@@ -1323,11 +1390,13 @@ class gfxShapedWord final : public gfxShapedText {
     SetupClusterBoundaries(0, aText, aLength);
   }
 
+  RefPtr<nsAtom> mLanguage;
   Script mScript;
 
   gfxFontShaper::RoundingFlags mRounding;
 
-  uint32_t mAgeCounter;
+  // With multithreaded shaping, this may be updated by any thread.
+  std::atomic<uint32_t> mAgeCounter;
 
   // The mCharGlyphsStorage array is actually a variable-size member;
   // when the ShapedWord is created, its size will be increased as necessary
@@ -1347,37 +1416,19 @@ class gfxFont {
   friend class gfxGraphiteShaper;
 
  protected:
-  typedef mozilla::gfx::DrawTarget DrawTarget;
-  typedef mozilla::unicode::Script Script;
-  typedef mozilla::SVGContextPaint SVGContextPaint;
+  using DrawTarget = mozilla::gfx::DrawTarget;
+  using Script = mozilla::intl::Script;
+  using SVGContextPaint = mozilla::SVGContextPaint;
 
-  typedef gfxFontShaper::RoundingFlags RoundingFlags;
+  using RoundingFlags = gfxFontShaper::RoundingFlags;
+  using ShapedTextFlags = mozilla::gfx::ShapedTextFlags;
 
  public:
-  typedef mozilla::FontSlantStyle FontSlantStyle;
+  using FontSlantStyle = mozilla::FontSlantStyle;
+  using FontSizeAdjust = mozilla::StyleFontSizeAdjust;
 
-  nsrefcnt AddRef(void) {
-    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");
-    if (mExpirationState.IsTracked()) {
-      gfxFontCache::GetCache()->RemoveObject(this);
-    }
-    ++mRefCnt;
-    NS_LOG_ADDREF(this, mRefCnt, "gfxFont", sizeof(*this));
-    return mRefCnt;
-  }
-  nsrefcnt Release(void) {
-    MOZ_ASSERT(0 != mRefCnt, "dup release");
-    --mRefCnt;
-    NS_LOG_RELEASE(this, mRefCnt, "gfxFont");
-    if (mRefCnt == 0) {
-      NotifyReleased();
-      // |this| may have been deleted.
-      return 0;
-    }
-    return mRefCnt;
-  }
-
-  int32_t GetRefCount() { return mRefCnt; }
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DESTROY(gfxFont, MaybeDestroy())
+  int32_t GetRefCount() { return int32_t(mRefCnt); }
 
   // options to specify the kind of AA to be used when creating a font
   typedef enum : uint8_t {
@@ -1388,26 +1439,27 @@ class gfxFont {
   } AntialiasOption;
 
  protected:
-  nsAutoRefCnt mRefCnt;
-
-  void NotifyReleased() {
-    gfxFontCache* cache = gfxFontCache::GetCache();
-    if (cache) {
-      // Don't delete just yet; return the object to the cache for
-      // possibly recycling within some time limit
-      cache->NotifyReleased(this);
-    } else {
-      // The cache may have already been shut down.
-      delete this;
-    }
-  }
-
   gfxFont(const RefPtr<mozilla::gfx::UnscaledFont>& aUnscaledFont,
           gfxFontEntry* aFontEntry, const gfxFontStyle* aFontStyle,
           AntialiasOption anAAOption = kAntialiasDefault);
 
- public:
   virtual ~gfxFont();
+
+  void MaybeDestroy() {
+    bool destroy = true;
+    if (gfxFontCache* fc = gfxFontCache::GetCache()) {
+      destroy = fc->MaybeDestroy(this);
+    }
+    if (destroy) {
+      Destroy();
+    }
+  }
+
+ public:
+  void Destroy() {
+    MOZ_ASSERT(GetRefCount() == 0);
+    delete this;
+  }
 
   bool Valid() const { return mIsValid; }
 
@@ -1441,15 +1493,21 @@ class gfxFont {
   const nsCString& GetName() const { return mFontEntry->Name(); }
   const gfxFontStyle* GetStyle() const { return &mStyle; }
 
-  virtual mozilla::UniquePtr<gfxFont> CopyWithAntialiasOption(
-      AntialiasOption anAAOption) {
+  virtual gfxFont* CopyWithAntialiasOption(AntialiasOption anAAOption) const {
     // platforms where this actually matters should override
     return nullptr;
   }
 
   gfxFloat GetAdjustedSize() const {
-    return mAdjustedSize > 0.0 ? mAdjustedSize
-                               : (mStyle.sizeAdjust == 0.0 ? 0.0 : mStyle.size);
+    // mAdjustedSize is cached here if not already set to a non-zero value;
+    // but it may be overridden by a value computed in metrics initialization
+    // from font-size-adjust.
+    if (mAdjustedSize < 0.0) {
+      mAdjustedSize = mStyle.AdjustedSizeMustBeZero()
+                          ? 0.0
+                          : mStyle.size * mFontEntry->mSizeAdjust;
+    }
+    return mAdjustedSize;
   }
 
   float FUnitsToDevUnitsFactor() const {
@@ -1459,18 +1517,18 @@ class gfxFont {
   }
 
   // check whether this is an sfnt we can potentially use with harfbuzz
-  bool FontCanSupportHarfBuzz() { return mFontEntry->HasCmapTable(); }
+  bool FontCanSupportHarfBuzz() const { return mFontEntry->HasCmapTable(); }
 
   // check whether this is an sfnt we can potentially use with Graphite
-  bool FontCanSupportGraphite() { return mFontEntry->HasGraphiteTables(); }
+  bool FontCanSupportGraphite() const {
+    return mFontEntry->HasGraphiteTables();
+  }
 
   // Whether this is a font that may be doing full-color rendering,
   // and therefore needs us to use a mask for text-shadow even when
   // we're not actually blurring.
-  bool AlwaysNeedsMaskForShadow() {
-    return mFontEntry->TryGetColorGlyphs() || mFontEntry->TryGetSVGData(this) ||
-           mFontEntry->HasFontTable(TRUETYPE_TAG('C', 'B', 'D', 'T')) ||
-           mFontEntry->HasFontTable(TRUETYPE_TAG('s', 'b', 'i', 'x'));
+  bool AlwaysNeedsMaskForShadow() const {
+    return mFontEntry->AlwaysNeedsMaskForShadow();
   }
 
   // whether a feature is supported by the font (limited to a small set
@@ -1506,8 +1564,13 @@ class gfxFont {
   virtual uint32_t GetGlyph(uint32_t unicode, uint32_t variation_selector) {
     return 0;
   }
-  // Return the horizontal advance of a glyph.
-  gfxFloat GetGlyphHAdvance(DrawTarget* aDrawTarget, uint16_t aGID);
+
+  // Return the advance of a glyph.
+  gfxFloat GetGlyphAdvance(uint16_t aGID, bool aVertical = false);
+
+  // Return the advance of a given Unicode char in isolation.
+  // Returns -1.0 if the char is not supported.
+  gfxFloat GetCharAdvance(uint32_t aUnicode, bool aVertical = false);
 
   gfxFloat SynthesizeSpaceWidth(uint32_t aCh);
 
@@ -1517,6 +1580,10 @@ class gfxFont {
 
   virtual bool ShouldHintMetrics() const { return true; }
   virtual bool ShouldRoundXOffset(cairo_t* aCairo) const { return true; }
+
+  // Return the font's owned harfbuzz shaper, creating and initializing it if
+  // necessary; returns null if shaper initialization has failed.
+  gfxHarfBuzzShaper* GetHarfBuzzShaper();
 
   // Font metrics
   struct Metrics {
@@ -1540,12 +1607,15 @@ class gfxFont {
 
     gfxFloat aveCharWidth;
     gfxFloat spaceWidth;
-    gfxFloat zeroWidth;  // -1 if there was no zero glyph
+    gfxFloat zeroWidth;         // -1 if there was no zero glyph
+    gfxFloat ideographicWidth;  // -1 if kWaterIdeograph is not supported
 
     gfxFloat ZeroOrAveCharWidth() const {
       return zeroWidth >= 0 ? zeroWidth : aveCharWidth;
     }
   };
+  // Unicode character used as basis for 'ic' unit:
+  static constexpr uint32_t kWaterIdeograph = 0x6C34;
 
   typedef nsFontMetrics::FontOrientation Orientation;
 
@@ -1554,10 +1624,17 @@ class gfxFont {
       return GetHorizontalMetrics();
     }
     if (!mVerticalMetrics) {
-      mVerticalMetrics = CreateVerticalMetrics();
+      CreateVerticalMetrics();
     }
     return *mVerticalMetrics;
   }
+
+  struct Baselines {
+    gfxFloat mAlphabetic;
+    gfxFloat mHanging;
+    gfxFloat mIdeographic;
+  };
+  Baselines GetBaselines(Orientation aOrientation);
 
   /**
    * We let layout specify spacing on either side of any
@@ -1626,7 +1703,7 @@ class gfxFont {
    * -- all glyphs use this font
    */
   void Draw(const gfxTextRun* aTextRun, uint32_t aStart, uint32_t aEnd,
-            mozilla::gfx::Point* aPt, const TextRunDrawParams& aRunParams,
+            mozilla::gfx::Point* aPt, TextRunDrawParams& aRunParams,
             mozilla::gfx::ShapedTextFlags aOrientation);
 
   /**
@@ -1680,16 +1757,16 @@ class gfxFont {
   nsExpirationState* GetExpirationState() { return &mExpirationState; }
 
   // Get the glyphID of a space
-  uint16_t GetSpaceGlyph() { return mSpaceGlyph; }
+  uint16_t GetSpaceGlyph() const { return mSpaceGlyph; }
 
   gfxGlyphExtents* GetOrCreateGlyphExtents(int32_t aAppUnitsPerDevUnit);
 
   void SetupGlyphExtents(DrawTarget* aDrawTarget, uint32_t aGlyphID,
                          bool aNeedTight, gfxGlyphExtents* aExtents);
 
-  virtual bool AllowSubpixelAA() { return true; }
+  virtual bool AllowSubpixelAA() const { return true; }
 
-  bool IsSyntheticBold() const { return mApplySyntheticBold; }
+  bool ApplySyntheticBold() const { return mApplySyntheticBold; }
 
   float AngleForSyntheticOblique() const;
   float SkewForSyntheticOblique() const;
@@ -1698,7 +1775,7 @@ class gfxFont {
   // For size S up to a threshold size T, we use (0.25 + 3S / 4T),
   // so that the result ranges from 0.25 to 1.0; thereafter,
   // simply use (S / T).
-  gfxFloat GetSyntheticBoldOffset() {
+  gfxFloat GetSyntheticBoldOffset() const {
     gfxFloat size = GetAdjustedSize();
     const gfxFloat threshold = 48.0;
     return size < threshold ? (0.25 + 0.75 * size / threshold)
@@ -1706,7 +1783,7 @@ class gfxFont {
   }
 
   gfxFontEntry* GetFontEntry() const { return mFontEntry.get(); }
-  bool HasCharacter(uint32_t ch) {
+  bool HasCharacter(uint32_t ch) const {
     if (!mIsValid || (mUnicodeRangeMap && !mUnicodeRangeMap->test(ch))) {
       return false;
     }
@@ -1721,7 +1798,7 @@ class gfxFont {
     mUnicodeRangeMap = aUnicodeRangeMap;
   }
 
-  uint16_t GetUVSGlyph(uint32_t aCh, uint32_t aVS) {
+  uint16_t GetUVSGlyph(uint32_t aCh, uint32_t aVS) const {
     if (!mIsValid) {
       return 0;
     }
@@ -1729,12 +1806,13 @@ class gfxFont {
   }
 
   template <typename T>
-  bool InitFakeSmallCapsRun(DrawTarget* aDrawTarget, gfxTextRun* aTextRun,
+  bool InitFakeSmallCapsRun(nsPresContext* aPresContext,
+                            DrawTarget* aDrawTarget, gfxTextRun* aTextRun,
                             const T* aText, uint32_t aOffset, uint32_t aLength,
                             FontMatchType aMatchType,
                             mozilla::gfx::ShapedTextFlags aOrientation,
-                            Script aScript, bool aSyntheticLower,
-                            bool aSyntheticUpper);
+                            Script aScript, nsAtom* aLanguage,
+                            bool aSyntheticLower, bool aSyntheticUpper);
 
   // call the (virtual) InitTextRun method to do glyph generation/shaping,
   // limiting the length of text passed by processing the run in multiple
@@ -1743,40 +1821,35 @@ class gfxFont {
   bool SplitAndInitTextRun(DrawTarget* aDrawTarget, gfxTextRun* aTextRun,
                            const T* aString, uint32_t aRunStart,
                            uint32_t aRunLength, Script aRunScript,
+                           nsAtom* aLanguage,
                            mozilla::gfx::ShapedTextFlags aOrientation);
 
-  // Get a ShapedWord representing the given text (either 8- or 16-bit)
-  // for use in setting up a gfxTextRun.
-  template <typename T>
-  gfxShapedWord* GetShapedWord(DrawTarget* aDrawTarget, const T* aText,
-                               uint32_t aLength, uint32_t aHash,
-                               Script aRunScript, bool aVertical,
-                               int32_t aAppUnitsPerDevUnit,
-                               mozilla::gfx::ShapedTextFlags aFlags,
-                               RoundingFlags aRounding,
-                               gfxTextPerfMetrics* aTextPerf);
-
-  // Ensure the ShapedWord cache is initialized. This MUST be called before
-  // any attempt to use GetShapedWord().
-  void InitWordCache() {
-    if (!mWordCache) {
-      mWordCache = mozilla::MakeUnique<nsTHashtable<CacheHashEntry>>();
-    }
-  }
+  // Get a ShapedWord representing a single space for use in setting up a
+  // gfxTextRun.
+  bool ProcessSingleSpaceShapedWord(
+      DrawTarget* aDrawTarget, bool aVertical, int32_t aAppUnitsPerDevUnit,
+      mozilla::gfx::ShapedTextFlags aFlags, RoundingFlags aRounding,
+      const std::function<void(gfxShapedWord*)>& aCallback);
 
   // Called by the gfxFontCache timer to increment the age of all the words,
-  // so that they'll expire after a sufficient period of non-use
-  void AgeCachedWords();
+  // so that they'll expire after a sufficient period of non-use.
+  // Returns true if the cache is now empty, otherwise false.
+  bool AgeCachedWords();
 
   // Discard all cached word records; called on memory-pressure notification.
   void ClearCachedWords() {
+    mozilla::AutoWriteLock lock(mLock);
     if (mWordCache) {
-      mWordCache->Clear();
+      ClearCachedWordsLocked();
     }
+  }
+  void ClearCachedWordsLocked() MOZ_REQUIRES(mLock) {
+    MOZ_ASSERT(mWordCache);
+    mWordCache->clear();
   }
 
   // Glyph rendering/geometry has changed, so invalidate data as necessary.
-  void NotifyGlyphsChanged();
+  void NotifyGlyphsChanged() const;
 
   virtual void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                                       FontCacheSizes* aSizes) const;
@@ -1800,11 +1873,17 @@ class gfxFont {
   }
 
   virtual already_AddRefed<mozilla::gfx::ScaledFont> GetScaledFont(
-      DrawTarget* aTarget) = 0;
+      const TextRunDrawParams& aRunParams) = 0;
+  already_AddRefed<mozilla::gfx::ScaledFont> GetScaledFont(
+      mozilla::gfx::DrawTarget* aDrawTarget);
 
-  void InitializeScaledFont();
+  // gfxFont implementations may cache ScaledFont versions other than the
+  // default, so InitializeScaledFont must support explicitly specifying
+  // which ScaledFonts to initialize.
+  void InitializeScaledFont(
+      const RefPtr<mozilla::gfx::ScaledFont>& aScaledFont);
 
-  bool KerningDisabled() { return mKerningSet && !mKerningEnabled; }
+  bool KerningDisabled() const { return mKerningSet && !mKerningEnabled; }
 
   /**
    * Subclass this object to be notified of glyph changes. Delete the object
@@ -1831,7 +1910,7 @@ class gfxFont {
   };
   friend class GlyphChangeObserver;
 
-  bool GlyphsMayChange() {
+  bool GlyphsMayChange() const {
     // Currently only fonts with SVG glyphs can have animated glyphs
     return mFontEntry->TryGetSVGData(this);
   }
@@ -1845,21 +1924,36 @@ class gfxFont {
   // If (and ONLY if) TryGetMathTable() has returned true, the MathTable()
   // method may be called to access the gfxMathTable data.
   bool TryGetMathTable();
-  gfxMathTable* MathTable() {
+  gfxMathTable* MathTable() const {
     MOZ_RELEASE_ASSERT(mMathTable,
                        "A successful call to TryGetMathTable() must be "
                        "performed before calling this function");
-    return mMathTable.get();
+    return mMathTable;
   }
 
   // Return a cloned font resized and offset to simulate sub/superscript
   // glyphs. This does not add a reference to the returned font.
-  gfxFont* GetSubSuperscriptFont(int32_t aAppUnitsPerDevPixel);
+  already_AddRefed<gfxFont> GetSubSuperscriptFont(
+      int32_t aAppUnitsPerDevPixel) const;
+
+  bool HasColorGlyphFor(uint32_t aCh, uint32_t aNextCh);
 
  protected:
-  virtual const Metrics& GetHorizontalMetrics() = 0;
+  virtual const Metrics& GetHorizontalMetrics() const = 0;
 
-  mozilla::UniquePtr<const Metrics> CreateVerticalMetrics();
+  void CreateVerticalMetrics();
+
+  bool MeasureGlyphs(const gfxTextRun* aTextRun, uint32_t aStart, uint32_t aEnd,
+                     BoundingBoxType aBoundingBoxType,
+                     DrawTarget* aRefDrawTarget, Spacing* aSpacing,
+                     gfxGlyphExtents* aExtents, bool aIsRTL,
+                     bool aNeedsGlyphExtents, RunMetrics& aMetrics,
+                     gfxFloat* aAdvanceMin, gfxFloat* aAdvanceMax);
+
+  bool MeasureGlyphs(const gfxTextRun* aTextRun, uint32_t aStart, uint32_t aEnd,
+                     BoundingBoxType aBoundingBoxType,
+                     DrawTarget* aRefDrawTarget, Spacing* aSpacing, bool aIsRTL,
+                     RunMetrics& aMetrics);
 
   // Template parameters for DrawGlyphs/DrawOneGlyph, used to select
   // simplified versions of the methods in the most common cases.
@@ -1903,7 +1997,7 @@ class gfxFont {
   // Return a font that is a "clone" of this one, but reduced to 80% size
   // (and with variantCaps set to normal). This does not add a reference to
   // the returned font.
-  gfxFont* GetSmallCapsFont();
+  already_AddRefed<gfxFont> GetSmallCapsFont() const;
 
   // subclasses may provide (possibly hinted) glyph widths (in font units);
   // if they do not override this, harfbuzz will use unhinted widths
@@ -1926,27 +2020,27 @@ class gfxFont {
   void RemoveGlyphChangeObserver(GlyphChangeObserver* aObserver);
 
   // whether font contains substitution lookups containing spaces
-  bool HasSubstitutionRulesWithSpaceLookups(Script aRunScript);
+  bool HasSubstitutionRulesWithSpaceLookups(Script aRunScript) const;
 
   // do spaces participate in shaping rules? if so, can't used word cache
   // Note that this function uses HasGraphiteSpaceContextuals, so it can only
   // return a "hint" to the correct answer. The  calling code must ensure it
   // performs safe actions independent of the value returned.
-  tainted_boolean_hint SpaceMayParticipateInShaping(Script aRunScript);
+  tainted_boolean_hint SpaceMayParticipateInShaping(Script aRunScript) const;
 
   // For 8-bit text, expand to 16-bit and then call the following method.
   bool ShapeText(DrawTarget* aContext, const uint8_t* aText,
                  uint32_t aOffset,  // dest offset in gfxShapedText
-                 uint32_t aLength, Script aScript, bool aVertical,
-                 RoundingFlags aRounding,
+                 uint32_t aLength, Script aScript, nsAtom* aLanguage,
+                 bool aVertical, RoundingFlags aRounding,
                  gfxShapedText* aShapedText);  // where to store the result
 
   // Call the appropriate shaper to generate glyphs for aText and store
   // them into aShapedText.
   virtual bool ShapeText(DrawTarget* aContext, const char16_t* aText,
                          uint32_t aOffset, uint32_t aLength, Script aScript,
-                         bool aVertical, RoundingFlags aRounding,
-                         gfxShapedText* aShapedText);
+                         nsAtom* aLanguage, bool aVertical,
+                         RoundingFlags aRounding, gfxShapedText* aShapedText);
 
   // Helper to adjust for synthetic bold and set character-type flags
   // in the shaped text; implementations of ShapeText should call this
@@ -1966,8 +2060,9 @@ class gfxFont {
   template <typename T>
   bool ShapeTextWithoutWordCache(DrawTarget* aDrawTarget, const T* aText,
                                  uint32_t aOffset, uint32_t aLength,
-                                 Script aScript, bool aVertical,
-                                 RoundingFlags aRounding, gfxTextRun* aTextRun);
+                                 Script aScript, nsAtom* aLanguage,
+                                 bool aVertical, RoundingFlags aRounding,
+                                 gfxTextRun* aTextRun);
 
   // Shape a fragment of text (a run that is known to contain only
   // "valid" characters, no newlines/tabs/other control chars).
@@ -1977,58 +2072,80 @@ class gfxFont {
   template <typename T>
   bool ShapeFragmentWithoutWordCache(DrawTarget* aDrawTarget, const T* aText,
                                      uint32_t aOffset, uint32_t aLength,
-                                     Script aScript, bool aVertical,
-                                     RoundingFlags aRounding,
+                                     Script aScript, nsAtom* aLanguage,
+                                     bool aVertical, RoundingFlags aRounding,
                                      gfxTextRun* aTextRun);
 
-  void CheckForFeaturesInvolvingSpace();
+  void CheckForFeaturesInvolvingSpace() const;
+
+  // Get a ShapedWord representing the given text (either 8- or 16-bit)
+  // for use in setting up a gfxTextRun.
+  template <typename T, typename Func>
+  bool ProcessShapedWordInternal(DrawTarget* aDrawTarget, const T* aText,
+                                 uint32_t aLength, uint32_t aHash,
+                                 Script aRunScript, nsAtom* aLanguage,
+                                 bool aVertical, int32_t aAppUnitsPerDevUnit,
+                                 mozilla::gfx::ShapedTextFlags aFlags,
+                                 RoundingFlags aRounding,
+                                 gfxTextPerfMetrics* aTextPerf, Func aCallback);
 
   // whether a given feature is included in feature settings from both the
   // font and the style. aFeatureOn set if resolved feature value is non-zero
   bool HasFeatureSet(uint32_t aFeature, bool& aFeatureOn);
 
   // used when analyzing whether a font has space contextual lookups
-  static nsDataHashtable<nsUint32HashKey, Script>* sScriptTagToCode;
-  static nsTHashtable<nsUint32HashKey>* sDefaultFeatures;
+  static mozilla::Atomic<nsTHashMap<nsUint32HashKey, Script>*> sScriptTagToCode;
+  static mozilla::Atomic<nsTHashSet<uint32_t>*> sDefaultFeatures;
 
   RefPtr<gfxFontEntry> mFontEntry;
+  mutable mozilla::RWLock mLock;
 
-  struct CacheHashKey {
+  // Note that WordCacheKey contains a pointer to the text of the word, which
+  // must be valid for as long as the key is in use. When using for a Lookup,
+  // the string may be local/temporary, but when storing in the HashMap, we
+  // set the Key text pointer to reference the text in the associated
+  // gfxShapedWord that is being stored.
+  struct WordCacheKey {
     union {
       const uint8_t* mSingle;
       const char16_t* mDouble;
     } mText;
     uint32_t mLength;
-    mozilla::gfx::ShapedTextFlags mFlags;
+    ShapedTextFlags mFlags;
     Script mScript;
+    RefPtr<nsAtom> mLanguage;
     int32_t mAppUnitsPerDevUnit;
     PLDHashNumber mHashKey;
     bool mTextIs8Bit;
     RoundingFlags mRounding;
 
-    CacheHashKey(const uint8_t* aText, uint32_t aLength, uint32_t aStringHash,
-                 Script aScriptCode, int32_t aAppUnitsPerDevUnit,
-                 mozilla::gfx::ShapedTextFlags aFlags, RoundingFlags aRounding)
+    WordCacheKey(const uint8_t* aText, uint32_t aLength, uint32_t aStringHash,
+                 Script aScriptCode, nsAtom* aLanguage,
+                 int32_t aAppUnitsPerDevUnit, ShapedTextFlags aFlags,
+                 RoundingFlags aRounding)
         : mLength(aLength),
           mFlags(aFlags),
           mScript(aScriptCode),
+          mLanguage(aLanguage),
           mAppUnitsPerDevUnit(aAppUnitsPerDevUnit),
           mHashKey(aStringHash + static_cast<int32_t>(aScriptCode) +
                    aAppUnitsPerDevUnit * 0x100 + uint16_t(aFlags) * 0x10000 +
-                   int(aRounding)),
+                   int(aRounding) + (aLanguage ? aLanguage->hash() : 0)),
           mTextIs8Bit(true),
           mRounding(aRounding) {
-      NS_ASSERTION(aFlags & mozilla::gfx::ShapedTextFlags::TEXT_IS_8BIT,
+      NS_ASSERTION(aFlags & ShapedTextFlags::TEXT_IS_8BIT,
                    "8-bit flag should have been set");
       mText.mSingle = aText;
     }
 
-    CacheHashKey(const char16_t* aText, uint32_t aLength, uint32_t aStringHash,
-                 Script aScriptCode, int32_t aAppUnitsPerDevUnit,
-                 mozilla::gfx::ShapedTextFlags aFlags, RoundingFlags aRounding)
+    WordCacheKey(const char16_t* aText, uint32_t aLength, uint32_t aStringHash,
+                 Script aScriptCode, nsAtom* aLanguage,
+                 int32_t aAppUnitsPerDevUnit, ShapedTextFlags aFlags,
+                 RoundingFlags aRounding)
         : mLength(aLength),
           mFlags(aFlags),
           mScript(aScriptCode),
+          mLanguage(aLanguage),
           mAppUnitsPerDevUnit(aAppUnitsPerDevUnit),
           mHashKey(aStringHash + static_cast<int32_t>(aScriptCode) +
                    aAppUnitsPerDevUnit * 0x100 + uint16_t(aFlags) * 0x10000 +
@@ -2041,77 +2158,74 @@ class gfxFont {
       // and we'll have to use an 8-to-16bit comparison in KeyEquals.
       mText.mDouble = aText;
     }
+
+    bool Matches(const WordCacheKey& aLookup) const;
+
+    class HashPolicy {
+     public:
+      typedef WordCacheKey Key;
+      typedef WordCacheKey Lookup;
+      static mozilla::HashNumber hash(const Lookup& aLookup) {
+        return aLookup.mHashKey;
+      }
+      static bool match(const Key& aKey, const Lookup& aLookup);
+    };
   };
 
-  class CacheHashEntry : public PLDHashEntryHdr {
-   public:
-    typedef const CacheHashKey& KeyType;
-    typedef const CacheHashKey* KeyTypePointer;
-
-    // When constructing a new entry in the hashtable, the caller of Put()
-    // will fill us in.
-    explicit CacheHashEntry(KeyTypePointer aKey) {}
-    CacheHashEntry(const CacheHashEntry&) = delete;
-    CacheHashEntry& operator=(const CacheHashEntry&) = delete;
-    CacheHashEntry(CacheHashEntry&&) = default;
-    CacheHashEntry& operator=(CacheHashEntry&&) = default;
-
-    bool KeyEquals(const KeyTypePointer aKey) const;
-
-    static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
-
-    static PLDHashNumber HashKey(const KeyTypePointer aKey) {
-      return aKey->mHashKey;
-    }
-
-    size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-      return aMallocSizeOf(mShapedWord.get());
-    }
-
-    enum { ALLOW_MEMMOVE = true };
-
-    mozilla::UniquePtr<gfxShapedWord> mShapedWord;
-  };
-
-  mozilla::UniquePtr<nsTHashtable<CacheHashEntry>> mWordCache;
+  mozilla::UniquePtr<
+      mozilla::HashMap<WordCacheKey, mozilla::UniquePtr<gfxShapedWord>,
+                       WordCacheKey::HashPolicy>>
+      mWordCache MOZ_GUARDED_BY(mLock);
 
   static const uint32_t kShapedWordCacheMaxAge = 3;
 
-  nsTArray<mozilla::UniquePtr<gfxGlyphExtents>> mGlyphExtentsArray;
-  mozilla::UniquePtr<nsTHashtable<nsPtrHashKey<GlyphChangeObserver>>>
-      mGlyphChangeObservers;
+  nsTArray<mozilla::UniquePtr<gfxGlyphExtents>> mGlyphExtentsArray
+      MOZ_GUARDED_BY(mLock);
+  mozilla::UniquePtr<nsTHashSet<GlyphChangeObserver*>> mGlyphChangeObservers
+      MOZ_GUARDED_BY(mLock);
 
   // a copy of the font without antialiasing, if needed for separate
   // measurement by mathml code
-  mozilla::UniquePtr<gfxFont> mNonAAFont;
+  mozilla::Atomic<gfxFont*> mNonAAFont;
 
   // we create either or both of these shapers when needed, depending
   // whether the font has graphite tables, and whether graphite shaping
   // is actually enabled
-  mozilla::UniquePtr<gfxFontShaper> mHarfBuzzShaper;
-  mozilla::UniquePtr<gfxFontShaper> mGraphiteShaper;
+  mozilla::Atomic<gfxHarfBuzzShaper*> mHarfBuzzShaper;
+  mozilla::Atomic<gfxGraphiteShaper*> mGraphiteShaper;
 
-  // if a userfont with unicode-range specified, contains map of *possible*
-  // ranges supported by font
+  // If a userfont with unicode-range specified, contains map of *possible*
+  // ranges supported by font. This is set during user-font initialization,
+  // before the font is available to other threads, and thereafter is inert
+  // so no guard is needed.
   RefPtr<gfxCharacterMap> mUnicodeRangeMap;
 
+  // This is immutable once initialized by the constructor, so does not need
+  // locking.
   RefPtr<mozilla::gfx::UnscaledFont> mUnscaledFont;
-  RefPtr<mozilla::gfx::ScaledFont> mAzureScaledFont;
+
+  mozilla::Atomic<mozilla::gfx::ScaledFont*> mAzureScaledFont;
 
   // For vertical metrics, created on demand.
-  mozilla::UniquePtr<const Metrics> mVerticalMetrics;
+  mozilla::Atomic<Metrics*> mVerticalMetrics;
 
   // Table used for MathML layout.
-  mozilla::UniquePtr<gfxMathTable> mMathTable;
+  mozilla::Atomic<gfxMathTable*> mMathTable;
 
   gfxFontStyle mStyle;
-  gfxFloat mAdjustedSize;
+  mutable gfxFloat mAdjustedSize;
+
+  // Tracking adjustment to be applied for CSS px size mCachedTrackingSize.
+  gfxFloat mTracking = 0.0;
+  gfxFloat mCachedTrackingSize = -1.0;
 
   // Conversion factor from font units to dev units; note that this may be
   // zero (in the degenerate case where mAdjustedSize has become zero).
   // This is OK because we only multiply by this factor, never divide.
   float mFUnitsConvFactor;
 
+  // This is guarded by gfxFontCache::GetCache()->GetMutex() but it is difficult
+  // to annotate that fact.
   nsExpirationState mExpirationState;
 
   // Glyph ID of the font's <space> glyph, zero if missing
@@ -2129,7 +2243,7 @@ class gfxFont {
   bool mKerningSet;      // kerning explicitly set?
   bool mKerningEnabled;  // if set, on or off?
 
-  bool mMathInitialized;  // TryGetMathTable() called?
+  mozilla::Atomic<bool> mMathInitialized;  // TryGetMathTable() called?
 
   // Helper for subclasses that want to initialize standard metrics from the
   // tables of sfnt (TrueType/OpenType) fonts.
@@ -2162,10 +2276,29 @@ class gfxFont {
 
   bool RenderColorGlyph(DrawTarget* aDrawTarget, gfxContext* aContext,
                         mozilla::layout::TextDrawTarget* aTextDrawer,
-                        mozilla::gfx::ScaledFont* scaledFont,
-                        mozilla::gfx::DrawOptions drawOptions,
-                        const mozilla::gfx::Point& aPoint,
-                        uint32_t aGlyphId) const;
+                        const FontDrawParams& aFontParams,
+                        const mozilla::gfx::Point& aPoint, uint32_t aGlyphId);
+
+  class ColorGlyphCache {
+   public:
+    ColorGlyphCache() = default;
+    ~ColorGlyphCache() = default;
+
+    void SetColors(mozilla::gfx::sRGBColor aCurrentColor,
+                   mozilla::gfx::FontPalette* aPalette);
+
+    mozilla::HashMap<uint32_t, RefPtr<mozilla::gfx::SourceSurface>> mCache;
+
+   private:
+    mozilla::gfx::sRGBColor mCurrentColor;
+    RefPtr<mozilla::gfx::FontPalette> mPalette;
+  };
+  mozilla::UniquePtr<ColorGlyphCache> mColorGlyphCache;
+
+  // Subclasses can override to return true if the platform is able to render
+  // COLR-font glyphs directly, instead of us painting the layers explicitly.
+  // (Currently used only for COLR.v0 fonts on macOS.)
+  virtual bool UseNativeColrFontSupport() const { return false; }
 
   // Bug 674909. When synthetic bolding text by drawing twice, need to
   // render using a pixel offset in device pixels, otherwise text
@@ -2185,21 +2318,30 @@ class gfxFont {
 // are dependent on the specific font, so they are set per GlyphRun.
 
 struct MOZ_STACK_CLASS TextRunDrawParams {
+  explicit TextRunDrawParams(mozilla::gfx::PaletteCache& aPaletteCache)
+      : paletteCache(aPaletteCache) {}
+
+  mozilla::gfx::PaletteCache& paletteCache;
   RefPtr<mozilla::gfx::DrawTarget> dt;
-  gfxContext* context;
-  gfxFont::Spacing* spacing;
-  gfxTextRunDrawCallbacks* callbacks;
-  mozilla::SVGContextPaint* runContextPaint;
-  mozilla::gfx::Float direction;
-  double devPerApp;
-  nscolor textStrokeColor;
-  gfxPattern* textStrokePattern;
-  const mozilla::gfx::StrokeOptions* strokeOpts;
-  const mozilla::gfx::DrawOptions* drawOpts;
-  DrawMode drawMode;
-  bool isVerticalRun;
-  bool isRTL;
-  bool paintSVGGlyphs;
+  gfxContext* context = nullptr;
+  gfxFont::Spacing* spacing = nullptr;
+  gfxTextRunDrawCallbacks* callbacks = nullptr;
+  mozilla::SVGContextPaint* runContextPaint = nullptr;
+  mozilla::layout::TextDrawTarget* textDrawer = nullptr;
+  mozilla::LayoutDeviceRect clipRect;
+  mozilla::gfx::Float direction = 1.0f;
+  double devPerApp = 1.0;
+  nscolor textStrokeColor = 0;
+  gfxPattern* textStrokePattern = nullptr;
+  const mozilla::gfx::StrokeOptions* strokeOpts = nullptr;
+  const mozilla::gfx::DrawOptions* drawOpts = nullptr;
+  nsAtom* fontPalette = nullptr;
+  DrawMode drawMode = DrawMode::GLYPH_FILL;
+  bool isVerticalRun = false;
+  bool isRTL = false;
+  bool paintSVGGlyphs = true;
+  bool allowGDI = true;
+  bool hasTextShadow = false;
 };
 
 struct MOZ_STACK_CLASS FontDrawParams {
@@ -2210,13 +2352,21 @@ struct MOZ_STACK_CLASS FontDrawParams {
   int32_t extraStrikes;
   mozilla::gfx::DrawOptions drawOptions;
   gfxFloat advanceDirection;
+  mozilla::gfx::sRGBColor currentColor;
+  RefPtr<mozilla::gfx::FontPalette> palette;
+  mozilla::gfx::Rect fontExtents;
   bool isVerticalFont;
   bool haveSVGGlyphs;
   bool haveColorGlyphs;
+  bool hasTextShadow;  // whether we're rendering with a text-shadow
 };
 
 struct MOZ_STACK_CLASS EmphasisMarkDrawParams {
+  EmphasisMarkDrawParams(gfxContext* aContext,
+                         mozilla::gfx::PaletteCache& aPaletteCache)
+      : context(aContext), paletteCache(aPaletteCache) {}
   gfxContext* context;
+  mozilla::gfx::PaletteCache& paletteCache;
   gfxFont::Spacing* spacing;
   gfxTextRun* mark;
   gfxFloat advance;

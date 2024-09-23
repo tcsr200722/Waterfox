@@ -40,15 +40,15 @@ var testData = [
 
 const TEST_URI = "<h1 style='color: red'>Header</h1>";
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { toolbox, inspector, view, testActor } = await openRuleView();
+  const { toolbox, inspector, view } = await openRuleView();
 
   info("Test autocompletion after 1st page load");
   await runAutocompletionTest(toolbox, inspector, view);
 
   info("Test autocompletion after page navigation");
-  await reloadPage(inspector, testActor);
+  await reloadBrowser();
   await runAutocompletionTest(toolbox, inspector, view);
 });
 
@@ -117,6 +117,14 @@ async function testCompletion(
   info("Checking the state");
   if (completion !== null) {
     is(editor.input.value, completion, "Correct value is autocompleted");
+  }
+
+  if (
+    key === "VK_RETURN" &&
+    !Services.prefs.getBoolPref("devtools.inspector.rule-view.focusNextOnEnter")
+  ) {
+    ok(!editor, "Enter does not move focus to next element");
+    return;
   }
 
   if (!open) {

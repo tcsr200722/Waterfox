@@ -1,10 +1,11 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/PromiseUtils.jsm", this);
-ChromeUtils.import("resource://normandy/lib/NormandyAddonManager.jsm", this);
+const { NormandyAddonManager } = ChromeUtils.importESModule(
+  "resource://normandy/lib/NormandyAddonManager.sys.mjs"
+);
 
-decorate_task(ensureAddonCleanup, async function download_and_install() {
-  const applyDeferred = PromiseUtils.defer();
+decorate_task(ensureAddonCleanup(), async function download_and_install() {
+  const applyDeferred = Promise.withResolvers();
 
   const [addonId, addonVersion] = await NormandyAddonManager.downloadAndInstall(
     {
@@ -35,9 +36,9 @@ decorate_task(ensureAddonCleanup, async function download_and_install() {
   await addon.uninstall();
 });
 
-decorate_task(ensureAddonCleanup, async function id_mismatch() {
-  const applyDeferred = PromiseUtils.defer();
-  const undoDeferred = PromiseUtils.defer();
+decorate_task(ensureAddonCleanup(), async function id_mismatch() {
+  const applyDeferred = Promise.withResolvers();
+  const undoDeferred = Promise.withResolvers();
 
   let error;
 
@@ -82,12 +83,12 @@ decorate_task(ensureAddonCleanup, async function id_mismatch() {
   await undoDeferred;
 
   const addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
-  is(addon, undefined, "add-on is not installed");
+  ok(!addon, "add-on is not installed");
 });
 
-decorate_task(ensureAddonCleanup, async function version_mismatch() {
-  const applyDeferred = PromiseUtils.defer();
-  const undoDeferred = PromiseUtils.defer();
+decorate_task(ensureAddonCleanup(), async function version_mismatch() {
+  const applyDeferred = Promise.withResolvers();
+  const undoDeferred = Promise.withResolvers();
 
   let error;
 
@@ -132,12 +133,12 @@ decorate_task(ensureAddonCleanup, async function version_mismatch() {
   await undoDeferred;
 
   const addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
-  is(addon, undefined, "add-on is not installed");
+  ok(!addon, "add-on is not installed");
 });
 
-decorate_task(ensureAddonCleanup, async function download_failure() {
-  const applyDeferred = PromiseUtils.defer();
-  const undoDeferred = PromiseUtils.defer();
+decorate_task(ensureAddonCleanup(), async function download_failure() {
+  const applyDeferred = Promise.withResolvers();
+  const undoDeferred = Promise.withResolvers();
 
   let error;
 
@@ -184,5 +185,5 @@ decorate_task(ensureAddonCleanup, async function download_failure() {
   await undoDeferred;
 
   const addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
-  is(addon, undefined, "add-on is not installed");
+  ok(!addon, "add-on is not installed");
 });

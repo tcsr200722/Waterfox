@@ -8,13 +8,12 @@
 #define mozilla_dom_MIDIOutput_h
 
 #include "mozilla/dom/MIDIPort.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
-#include "nsWrapperCache.h"
 
 struct JSContext;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class MIDIPortInfo;
@@ -26,10 +25,10 @@ class MIDIMessage;
  */
 class MIDIOutput final : public MIDIPort {
  public:
-  static MIDIOutput* Create(nsPIDOMWindowInner* aWindow,
-                            MIDIAccess* aMIDIAccessParent,
-                            const MIDIPortInfo& aPortInfo,
-                            const bool aSysexEnabled);
+  static RefPtr<MIDIOutput> Create(nsPIDOMWindowInner* aWindow,
+                                   MIDIAccess* aMIDIAccessParent,
+                                   const MIDIPortInfo& aPortInfo,
+                                   const bool aSysexEnabled);
   ~MIDIOutput() = default;
 
   JSObject* WrapObject(JSContext* aCx,
@@ -42,7 +41,7 @@ class MIDIOutput final : public MIDIPort {
   void Clear();
 
  private:
-  MIDIOutput(nsPIDOMWindowInner* aWindow, MIDIAccess* aMIDIAccessParent);
+  explicit MIDIOutput(nsPIDOMWindowInner* aWindow);
 };
 
 }  // namespace dom

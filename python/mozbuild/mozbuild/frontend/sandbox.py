@@ -17,26 +17,21 @@ KeyError are machine parseable. This machine-friendly data is used to present
 user-friendly error messages in the case of errors.
 """
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import os
-import six
 import sys
 import weakref
 
-from mozbuild.util import (
-    exec_,
-    ReadOnlyDict,
-)
-from .context import Context
+import six
 from mozpack.files import FileFinder
 
+from mozbuild.util import ReadOnlyDict
 
-default_finder = FileFinder('/')
+from .context import Context
+
+default_finder = FileFinder("/")
 
 
-def alphabetical_sorted(iterable, key=lambda x: x.lower(),
-                        reverse=False):
+def alphabetical_sorted(iterable, key=lambda x: x.lower(), reverse=False):
     """sorted() replacement for the sandbox, ordering alphabetically by
     default.
     """
@@ -105,23 +100,25 @@ class Sandbox(dict):
     Implementation note: Sandbox derives from dict because exec() insists that
     what it is given for namespaces is a dict.
     """
+
     # The default set of builtins.
-    BUILTINS = ReadOnlyDict({
-        # Only real Python built-ins should go here.
-        'None': None,
-        'False': False,
-        'True': True,
-        'sorted': alphabetical_sorted,
-        'int': int,
-        'set': set,
-        'tuple': tuple,
-    })
+    BUILTINS = ReadOnlyDict(
+        {
+            # Only real Python built-ins should go here.
+            "None": None,
+            "False": False,
+            "True": True,
+            "sorted": alphabetical_sorted,
+            "int": int,
+            "set": set,
+            "tuple": tuple,
+        }
+    )
 
     def __init__(self, context, finder=default_finder):
-        """Initialize a Sandbox ready for execution.
-        """
+        """Initialize a Sandbox ready for execution."""
         self._builtins = self.BUILTINS
-        dict.__setitem__(self, '__builtins__', self._builtins)
+        dict.__setitem__(self, "__builtins__", self._builtins)
 
         assert isinstance(self._builtins, ReadOnlyDict)
         assert isinstance(context, Context)
@@ -147,7 +144,7 @@ class Sandbox(dict):
     def _context(self):
         return self._active_contexts[-1]
 
-    def exec_file(self, path):
+    def exec_file(self, path, becomes_current_path=True):
         """Execute code at a path in the sandbox.
 
         The path must be absolute.
@@ -157,12 +154,13 @@ class Sandbox(dict):
         try:
             source = six.ensure_text(self._finder.get(path).read())
         except Exception:
-            raise SandboxLoadError(self._context.source_stack,
-                                   sys.exc_info()[2], read_error=path)
+            raise SandboxLoadError(
+                self._context.source_stack, sys.exc_info()[2], read_error=path
+            )
 
-        self.exec_source(source, path)
+        self.exec_source(source, path, becomes_current_path)
 
-    def exec_source(self, source, path=''):
+    def exec_source(self, source, path="", becomes_current_path=True):
         """Execute Python code within a string.
 
         The passed string should contain Python code to be executed. The string
@@ -172,26 +170,29 @@ class Sandbox(dict):
         does not perform extra path normalization. This can cause relative
         paths to behave weirdly.
         """
+
         def execute():
             # compile() inherits the __future__ from the module by default. We
             # do want Unicode literals.
-            code = compile(source, path, 'exec')
+            code = compile(source, path, "exec")
             # We use ourself as the global namespace for the execution. There
             # is no need for a separate local namespace as moz.build execution
             # is flat, namespace-wise.
             old_source = self._current_source
             self._current_source = source
             try:
-                exec_(code, self)
+                exec(code, self)
             finally:
                 self._current_source = old_source
 
-        self.exec_function(execute, path=path)
+        self.exec_function(
+            execute, path=path, becomes_current_path=becomes_current_path
+        )
 
-    def exec_function(self, func, args=(), kwargs={}, path='',
-                      becomes_current_path=True):
-        """Execute function with the given arguments in the sandbox.
-        """
+    def exec_function(
+        self, func, args=(), kwargs={}, path="", becomes_current_path=True
+    ):
+        """Execute function with the given arguments in the sandbox."""
         if path and becomes_current_path:
             self._context.push_source(path)
 
@@ -225,8 +226,9 @@ class Sandbox(dict):
                 # Add current file to the stack because it wasn't added before
                 # sandbox execution.
                 source_stack.append(path)
-            raise SandboxExecutionError(source_stack, type(actual), actual,
-                                        sys.exc_info()[2])
+            raise SandboxExecutionError(
+                source_stack, type(actual), actual, sys.exc_info()[2]
+            )
 
         except Exception:
             # Need to copy the stack otherwise we get a reference and that is
@@ -276,8 +278,8 @@ class Sandbox(dict):
         return dict.__getitem__(self, key)
 
     def __setitem__(self, key, value):
-        if key in self._builtins or key == '__builtins__':
-            raise KeyError('Cannot reassign builtins')
+        if key in self._builtins or key == "__builtins__":
+            raise KeyError("Cannot reassign builtins")
 
         if key.isupper():
             # Forbid assigning over a previously set value. Interestingly, when
@@ -288,21 +290,24 @@ class Sandbox(dict):
             # This means __setitem__ is called with the value that is already
             # in the dict, when doing +=, which is permitted.
             if key in self._context and self._context[key] is not value:
-                raise KeyError('global_ns', 'reassign', key)
+                raise KeyError("global_ns", "reassign", key)
 
-            if (key not in self._context and isinstance(value, (list, dict))
-                and not value):
-                raise KeyError('Variable %s assigned an empty value.' % key)
+            if (
+                key not in self._context
+                and isinstance(value, (list, dict))
+                and not value
+            ):
+                raise KeyError("Variable %s assigned an empty value." % key)
 
             self._context[key] = value
         else:
             dict.__setitem__(self, key, value)
 
     def get(self, key, default=None):
-        raise NotImplementedError('Not supported')
+        raise NotImplementedError("Not supported")
 
     def __iter__(self):
-        raise NotImplementedError('Not supported')
+        raise NotImplementedError("Not supported")
 
     def __contains__(self, key):
         if key.isupper():

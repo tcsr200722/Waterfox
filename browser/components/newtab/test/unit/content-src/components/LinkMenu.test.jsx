@@ -195,6 +195,62 @@ describe("<LinkMenu>", () => {
       options.find(o => o.id && o.id === "newtab-menu-remove-bookmark")
     );
   });
+  it("should show Archive from Pocket option for a saved Pocket item if CheckArchiveFromPocket", () => {
+    wrapper = shallow(
+      <LinkMenu
+        site={{ url: "", pocket_id: 1234 }}
+        source={"TOP_STORIES"}
+        options={["CheckArchiveFromPocket"]}
+        dispatch={() => {}}
+      />
+    );
+    const { options } = wrapper.find(ContextMenu).props();
+    assert.isDefined(
+      options.find(o => o.id && o.id === "newtab-menu-archive-pocket")
+    );
+  });
+  it("should show empty from no Pocket option for no saved Pocket item if CheckArchiveFromPocket", () => {
+    wrapper = shallow(
+      <LinkMenu
+        site={{ url: "" }}
+        source={"TOP_STORIES"}
+        options={["CheckArchiveFromPocket"]}
+        dispatch={() => {}}
+      />
+    );
+    const { options } = wrapper.find(ContextMenu).props();
+    assert.isUndefined(
+      options.find(o => o.id && o.id === "newtab-menu-archive-pocket")
+    );
+  });
+  it("should show Delete from Pocket option for a saved Pocket item if CheckDeleteFromPocket", () => {
+    wrapper = shallow(
+      <LinkMenu
+        site={{ url: "", pocket_id: 1234 }}
+        source={"TOP_STORIES"}
+        options={["CheckDeleteFromPocket"]}
+        dispatch={() => {}}
+      />
+    );
+    const { options } = wrapper.find(ContextMenu).props();
+    assert.isDefined(
+      options.find(o => o.id && o.id === "newtab-menu-delete-pocket")
+    );
+  });
+  it("should show empty from Pocket option for no saved Pocket item if CheckDeleteFromPocket", () => {
+    wrapper = shallow(
+      <LinkMenu
+        site={{ url: "" }}
+        source={"TOP_STORIES"}
+        options={["CheckDeleteFromPocket"]}
+        dispatch={() => {}}
+      />
+    );
+    const { options } = wrapper.find(ContextMenu).props();
+    assert.isUndefined(
+      options.find(o => o.id && o.id === "newtab-menu-archive-pocket")
+    );
+  });
   it("should show Open File option for a downloaded item", () => {
     wrapper = shallow(
       <LinkMenu
@@ -315,6 +371,7 @@ describe("<LinkMenu>", () => {
       type: "bookmark",
       typedBonus: true,
       url: "https://foo.com",
+      sponsored_tile_id: 12345,
     };
     const dispatch = sinon.stub();
     const propOptions = [
@@ -348,6 +405,7 @@ describe("<LinkMenu>", () => {
         url: FAKE_SITE.url,
         referrer: FAKE_SITE.referrer,
         typedBonus: FAKE_SITE.typedBonus,
+        sponsored_tile_id: FAKE_SITE.sponsored_tile_id,
       },
       "newtab-menu-open-new-private-window": {
         url: FAKE_SITE.url,
@@ -357,6 +415,10 @@ describe("<LinkMenu>", () => {
         {
           url: FAKE_SITE.url,
           pocket_id: FAKE_SITE.pocket_id,
+          isSponsoredTopSite: undefined,
+          position: 3,
+          tile_id: 12345,
+          is_pocket_card: false,
         },
       ],
       menu_action_webext_dismiss: {
@@ -369,7 +431,7 @@ describe("<LinkMenu>", () => {
         pocket_id: FAKE_SITE.pocket_id,
         forceBlock: FAKE_SITE.bookmarkGuid,
       },
-      "newtab-menu-pin": { site: { url: FAKE_SITE.url }, index: FAKE_INDEX },
+      "newtab-menu-pin": { site: FAKE_SITE, index: FAKE_INDEX },
       "newtab-menu-unpin": { site: { url: FAKE_SITE.url } },
       "newtab-menu-save-to-pocket": {
         site: { url: FAKE_SITE.url, title: FAKE_SITE.title },
@@ -483,7 +545,7 @@ describe("<LinkMenu>", () => {
         });
     });
     it(`should pin a SPOC with all of the site details sent`, () => {
-      const pinSpocTopSite = "PinSpocTopSite";
+      const pinSpocTopSite = "PinTopSite";
       const { options: spocOptions } = shallow(
         <LinkMenu
           site={FAKE_SITE}
@@ -518,6 +580,88 @@ describe("<LinkMenu>", () => {
         site: FAKE_SITE,
         index: FAKE_INDEX,
       });
+    });
+    it(`should create a proper BLOCK_URL action for a sponsored tile`, () => {
+      const site = {
+        hostname: "foo",
+        path: "foo",
+        referrer: "https://foo.com/ref",
+        title: "bar",
+        type: "bookmark",
+        typedBonus: true,
+        url: "https://foo.com",
+        sponsored_position: 1,
+      };
+      const { options: blockOptions } = shallow(
+        <LinkMenu
+          site={site}
+          siteInfo={{ value: { card_type: site.type } }}
+          dispatch={dispatch}
+          index={FAKE_INDEX}
+          isPrivateBrowsingEnabled={true}
+          platform={"default"}
+          options={["BlockUrl"]}
+          source={FAKE_SOURCE}
+          shouldSendImpressionStats={true}
+        />
+      )
+        .find(ContextMenu)
+        .props();
+      const [blockUrlOption] = blockOptions;
+
+      blockUrlOption.onClick(FAKE_EVENT);
+
+      assert.calledThrice(dispatch);
+      assert.ok(dispatch.firstCall.calledWith(blockUrlOption.action));
+      const expected = {
+        url: site.url,
+        pocket_id: undefined,
+        advertiser_name: site.hostname,
+        isSponsoredTopSite: 1,
+        position: 3,
+        is_pocket_card: false,
+      };
+      assert.deepEqual(blockUrlOption.action.data[0], expected);
+    });
+    it(`should create a proper BLOCK_URL action for a pocket item`, () => {
+      const site = {
+        hostname: "foo",
+        path: "foo",
+        referrer: "https://foo.com/ref",
+        title: "bar",
+        type: "CardGrid",
+        typedBonus: true,
+        url: "https://foo.com",
+      };
+      const { options: blockOptions } = shallow(
+        <LinkMenu
+          site={site}
+          siteInfo={{ value: { card_type: site.type } }}
+          dispatch={dispatch}
+          index={FAKE_INDEX}
+          isPrivateBrowsingEnabled={true}
+          platform={"default"}
+          options={["BlockUrl"]}
+          source={FAKE_SOURCE}
+          shouldSendImpressionStats={true}
+        />
+      )
+        .find(ContextMenu)
+        .props();
+      const [blockUrlOption] = blockOptions;
+
+      blockUrlOption.onClick(FAKE_EVENT);
+
+      assert.calledThrice(dispatch);
+      assert.ok(dispatch.firstCall.calledWith(blockUrlOption.action));
+      const expected = {
+        url: site.url,
+        pocket_id: undefined,
+        isSponsoredTopSite: undefined,
+        position: 3,
+        is_pocket_card: true,
+      };
+      assert.deepEqual(blockUrlOption.action.data[0], expected);
     });
   });
 });

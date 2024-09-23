@@ -5,22 +5,26 @@
 
 // Test the primary browser navigation UI to verify it's connected to the viewport.
 
-const DUMMY_1_URL = "http://example.com/";
-const TEST_URL = `${URL_ROOT}doc_page_state.html`;
-const DUMMY_2_URL = "http://example.com/browser/";
-const DUMMY_3_URL = "http://example.com/browser/devtools/";
+const DUMMY_1_URL = "https://example.com/";
+const TEST_URL = `${URL_ROOT_SSL}doc_page_state.html`;
+const DUMMY_2_URL = "https://example.com/browser/";
+const DUMMY_3_URL = "https://example.com/browser/devtools/";
 
 addRDMTask(
   null,
-  async function() {
+  async function () {
+    await SpecialPowers.pushPrefEnv({
+      set: [["browser.navigation.requireUserInteraction", false]],
+    });
+
     // Load up a sequence of pages:
     // 0. DUMMY_1_URL
     // 1. TEST_URL
     // 2. DUMMY_2_URL
     const tab = await addTab(DUMMY_1_URL);
     const browser = tab.linkedBrowser;
-    await load(browser, TEST_URL);
-    await load(browser, DUMMY_2_URL);
+    await navigateTo(TEST_URL);
+    await navigateTo(DUMMY_2_URL);
 
     // Check session history state
     let history = await getSessionHistory(browser);
@@ -72,7 +76,7 @@ addRDMTask(
       "contentTitle matches page 0"
     );
 
-    await load(browser, DUMMY_3_URL);
+    await navigateTo(DUMMY_3_URL);
 
     ok(browser.webNavigation.canGoBack, "Going back is allowed");
     ok(!browser.webNavigation.canGoForward, "Going forward is not allowed");
@@ -94,5 +98,5 @@ addRDMTask(
 
     await removeTab(tab);
   },
-  { usingBrowserUI: true, onlyPrefAndTask: true }
+  { onlyPrefAndTask: true }
 );

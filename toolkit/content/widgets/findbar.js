@@ -7,17 +7,8 @@
 // This is loaded into chrome windows with the subscript loader. Wrap in
 // a block to prevent accidentally leaking globals onto `window`.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
-  );
-  let LazyConstants = {};
-  ChromeUtils.defineModuleGetter(
-    LazyConstants,
-    "PluralForm",
-    "resource://gre/modules/PluralForm.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
   );
 
   const PREFS_TO_OBSERVE_BOOL = new Map([
@@ -43,30 +34,33 @@
       return `
       <hbox anonid="findbar-container" class="findbar-container" flex="1" align="center">
         <hbox anonid="findbar-textbox-wrapper" align="stretch">
-          <html:input anonid="findbar-textbox" class="findbar-textbox findbar-find-fast" />
+          <html:input anonid="findbar-textbox" class="findbar-textbox" />
           <toolbarbutton anonid="find-previous" class="findbar-find-previous tabbable"
             data-l10n-attrs="tooltiptext" data-l10n-id="findbar-previous"
             oncommand="onFindAgainCommand(true);" disabled="true" />
           <toolbarbutton anonid="find-next" class="findbar-find-next tabbable"
             data-l10n-id="findbar-next" oncommand="onFindAgainCommand(false);" disabled="true" />
         </hbox>
-        <toolbarbutton anonid="highlight" class="findbar-highlight findbar-button tabbable"
-          data-l10n-id="findbar-highlight-all2" oncommand="toggleHighlight(this.checked);" type="checkbox" />
-        <toolbarbutton anonid="find-case-sensitive" class="findbar-case-sensitive findbar-button tabbable"
-          data-l10n-id="findbar-case-sensitive" oncommand="_setCaseSensitivity(this.checked ? 1 : 0);" type="checkbox" />
-        <toolbarbutton anonid="find-match-diacritics" class="findbar-match-diacritics findbar-button tabbable"
-          data-l10n-id="findbar-match-diacritics" oncommand="_setDiacriticMatching(this.checked ? 1 : 0);" type="checkbox" />
-        <toolbarbutton anonid="find-entire-word" class="findbar-entire-word findbar-button tabbable"
-          data-l10n-id="findbar-entire-word" oncommand="toggleEntireWord(this.checked);" type="checkbox" />
-        <label anonid="match-case-status" class="findbar-find-fast" />
-        <label anonid="match-diacritics-status" class="findbar-find-fast" />
-        <label anonid="entire-word-status" class="findbar-find-fast" />
-        <label anonid="found-matches" class="findbar-find-fast found-matches" hidden="true" />
-        <image anonid="find-status-icon" class="findbar-find-fast find-status-icon" />
-        <description anonid="find-status" control="findbar-textbox" class="findbar-find-fast findbar-find-status" />
+        <checkbox anonid="highlight" class="findbar-highlight tabbable"
+          data-l10n-id="findbar-highlight-all2" oncommand="toggleHighlight(this.checked);"/>
+        <checkbox anonid="find-case-sensitive" class="findbar-case-sensitive tabbable"
+          data-l10n-id="findbar-case-sensitive" oncommand="_setCaseSensitivity(this.checked ? 1 : 0);"/>
+        <checkbox anonid="find-match-diacritics" class="findbar-match-diacritics tabbable"
+          data-l10n-id="findbar-match-diacritics" oncommand="_setDiacriticMatching(this.checked ? 1 : 0);"/>
+        <checkbox anonid="find-entire-word" class="findbar-entire-word tabbable"
+          data-l10n-id="findbar-entire-word" oncommand="toggleEntireWord(this.checked);"/>
+        <label anonid="match-case-status" class="findbar-label"
+          data-l10n-id="findbar-case-sensitive-status" hidden="true" />
+        <label anonid="match-diacritics-status" class="findbar-label"
+          data-l10n-id="findbar-match-diacritics-status" hidden="true" />
+        <label anonid="entire-word-status" class="findbar-label"
+          data-l10n-id="findbar-entire-word-status" hidden="true" />
+        <label anonid="found-matches" class="findbar-label found-matches" hidden="true" />
+        <image anonid="find-status-icon" class="find-status-icon" />
+        <description anonid="find-status" control="findbar-textbox" class="findbar-label findbar-find-status" />
       </hbox>
-      <toolbarbutton anonid="find-closebutton" class="findbar-closebutton close-icon"
-        data-l10n-id="findbar-find-button-close" oncommand="close();" />
+      <toolbarbutton anonid="find-closebutton" class="findbar-closebutton tabbable close-icon"
+        data-l10n-id="findbar-find-button-close" oncommand="close();"/>
       `;
     }
 
@@ -98,9 +92,15 @@
       this.setAttribute("noanim", "true");
       this.hidden = true;
       this.appendChild(this.constructor.fragment);
+      if (AppConstants.platform == "macosx") {
+        this.insertBefore(
+          this.getElement("find-closebutton"),
+          this.getElement("findbar-container")
+        );
+      }
 
       /**
-       * Please keep in sync with toolkit/modules/FindBarContent.jsm
+       * Please keep in sync with toolkit/modules/FindBarContent.sys.mjs
        */
       this.FIND_NORMAL = 0;
 
@@ -123,8 +123,6 @@
       this._browser = null;
 
       this._destroyed = false;
-
-      this._strBundle = null;
 
       this._xulBrowserWindow = null;
 
@@ -166,7 +164,7 @@
 
       window.addEventListener("unload", this.destroy);
 
-      this._findField.addEventListener("input", event => {
+      this._findField.addEventListener("input", () => {
         // We should do nothing during composition.  E.g., composing string
         // before converting may matches a forward word of expected word.
         // After that, even if user converts the composition string to the
@@ -232,17 +230,17 @@
         }
       });
 
-      this._findField.addEventListener("blur", event => {
+      this._findField.addEventListener("blur", () => {
         // Note: This code used to remove the selection
         // if it matched an editable.
         this.browser.finder.enableSelection();
       });
 
-      this._findField.addEventListener("focus", event => {
+      this._findField.addEventListener("focus", () => {
         this._updateBrowserWithState();
       });
 
-      this._findField.addEventListener("compositionstart", event => {
+      this._findField.addEventListener("compositionstart", () => {
         // Don't close the find toolbar while IME is composing.
         let findbar = this;
         findbar._isIMEComposing = true;
@@ -253,7 +251,7 @@
         }
       });
 
-      this._findField.addEventListener("compositionend", event => {
+      this._findField.addEventListener("compositionend", () => {
         this._isIMEComposing = false;
         if (this.findMode != this.FIND_NORMAL) {
           this._setFindCloseTimeout();
@@ -278,7 +276,6 @@
     set findMode(val) {
       this._findMode = val;
       this._updateBrowserWithState();
-      return val;
     }
 
     get findMode() {
@@ -287,7 +284,6 @@
 
     set prefillWithSelection(val) {
       this.setAttribute("prefillwithselection", val);
-      return val;
     }
 
     get prefillWithSelection() {
@@ -301,8 +297,7 @@
 
       // Watch out for lazy editor init
       if (this._findField.editor) {
-        let tm = this._findField.editor.transactionManager;
-        return !!(tm.numberOfUndoItems || tm.numberOfRedoItems);
+        return this._findField.editor.canUndo || this._findField.editor.canRedo;
       }
       return false;
     }
@@ -340,23 +335,16 @@
 
         this._browser.finder.addResultListener(this);
       }
-      return val;
     }
 
     get browser() {
       if (!this._browser) {
-        this._browser = document.getElementById(this.getAttribute("browserid"));
+        const id = this.getAttribute("browserid");
+        if (id) {
+          this._browser = document.getElementById(id);
+        }
       }
       return this._browser;
-    }
-
-    get strBundle() {
-      if (!this._strBundle) {
-        this._strBundle = Services.strings.createBundle(
-          "chrome://global/locale/findbar.properties"
-        );
-      }
-      return this._strBundle;
     }
 
     observe(subject, topic, prefName) {
@@ -411,9 +399,9 @@
     }
 
     /**
-     * This is necessary because the destructor isn't called when we are removed
-     * from a document that is not destroyed. This needs to be explicitly called
-     * in this case.
+     * This is necessary because custom elements don't have a "real" destructor.
+     * This method is called explicitly from disconnectedCallback, and from
+     * an unload event handler that we add.
      */
     destroy() {
       if (this._destroyed) {
@@ -422,9 +410,7 @@
       window.removeEventListener("unload", this.destroy);
       this._destroyed = true;
 
-      if (this.browser && this.browser.finder) {
-        this.browser.finder.destroy();
-      }
+      this.browser?._finder?.destroy();
 
       // Invoking this setter also removes the message listeners.
       this.browser = null;
@@ -548,6 +534,7 @@
       if (highlight !== this._highlightAll) {
         this._highlightAll = highlight;
         if (!fromPrefObserver) {
+          Services.telemetry.scalarAdd("findbar.highlight_all", 1);
           Services.prefs.setBoolPref("findbar.highlightAll", highlight);
         }
       }
@@ -573,16 +560,18 @@
       let statusLabel = this.getElement("match-case-status");
       checkbox.checked = caseSensitive;
 
-      statusLabel.value = caseSensitive ? this._caseSensitiveStr : "";
-
       // Show the checkbox on the full Find bar in non-auto mode.
       // Show the label in all other cases.
-      let hideCheckbox =
-        this.findMode != this.FIND_NORMAL ||
-        (this._typeAheadCaseSensitive != 0 &&
-          this._typeAheadCaseSensitive != 1);
-      checkbox.hidden = hideCheckbox;
-      statusLabel.hidden = !hideCheckbox;
+      if (
+        this.findMode == this.FIND_NORMAL &&
+        (this._typeAheadCaseSensitive == 0 || this._typeAheadCaseSensitive == 1)
+      ) {
+        checkbox.hidden = false;
+        statusLabel.hidden = true;
+      } else {
+        checkbox.hidden = true;
+        statusLabel.hidden = !caseSensitive;
+      }
 
       this.browser.finder.caseSensitive = caseSensitive;
     }
@@ -603,6 +592,7 @@
       this._find();
 
       this._dispatchFindEvent("casesensitivitychange");
+      Services.telemetry.scalarAdd("findbar.match_case", 1);
     }
 
     /**
@@ -623,15 +613,18 @@
       let statusLabel = this.getElement("match-diacritics-status");
       checkbox.checked = matchDiacritics;
 
-      statusLabel.value = matchDiacritics ? this._matchDiacriticsStr : "";
-
       // Show the checkbox on the full Find bar in non-auto mode.
       // Show the label in all other cases.
-      let hideCheckbox =
-        this.findMode != this.FIND_NORMAL ||
-        (this._matchDiacritics != 0 && this._matchDiacritics != 1);
-      checkbox.hidden = hideCheckbox;
-      statusLabel.hidden = !hideCheckbox;
+      if (
+        this.findMode == this.FIND_NORMAL &&
+        (this._matchDiacritics == 0 || this._matchDiacritics == 1)
+      ) {
+        checkbox.hidden = false;
+        statusLabel.hidden = true;
+      } else {
+        checkbox.hidden = true;
+        statusLabel.hidden = !matchDiacritics;
+      }
 
       this.browser.finder.matchDiacritics = matchDiacritics;
     }
@@ -652,6 +645,8 @@
       this._find();
 
       this._dispatchFindEvent("diacriticmatchingchange");
+
+      Services.telemetry.scalarAdd("findbar.match_diacritics", 1);
     }
 
     /**
@@ -663,13 +658,15 @@
       let statusLabel = this.getElement("entire-word-status");
       checkbox.checked = entireWord;
 
-      statusLabel.value = entireWord ? this._entireWordStr : "";
-
-      // Show the checkbox on the full Find bar in non-auto mode.
+      // Show the checkbox on the full Find bar.
       // Show the label in all other cases.
-      let hideCheckbox = this.findMode != this.FIND_NORMAL;
-      checkbox.hidden = hideCheckbox;
-      statusLabel.hidden = !hideCheckbox;
+      if (this.findMode == this.FIND_NORMAL) {
+        checkbox.hidden = false;
+        statusLabel.hidden = true;
+      } else {
+        checkbox.hidden = true;
+        statusLabel.hidden = !entireWord;
+      }
 
       this.browser.finder.entireWord = entireWord;
     }
@@ -684,6 +681,8 @@
       if (!fromPrefObserver) {
         // Just set the pref; our observer will change the find bar behavior.
         Services.prefs.setBoolPref("findbar.entireword", entireWord);
+
+        Services.telemetry.scalarAdd("findbar.whole_words", 1);
         return;
       }
 
@@ -706,23 +705,11 @@
         this.findMode = mode;
       }
 
-      if (!this._notFoundStr) {
-        var bundle = this.strBundle;
-        this._notFoundStr = bundle.GetStringFromName("NotFound");
-        this._wrappedToTopStr = bundle.GetStringFromName("WrappedToTop");
-        this._wrappedToBottomStr = bundle.GetStringFromName("WrappedToBottom");
-        this._normalFindStr = bundle.GetStringFromName("NormalFind");
-        this._fastFindStr = bundle.GetStringFromName("FastFind");
-        this._fastFindLinksStr = bundle.GetStringFromName("FastFindLinks");
-        this._caseSensitiveStr = bundle.GetStringFromName("CaseSensitive");
-        this._matchDiacriticsStr = bundle.GetStringFromName("MatchDiacritics");
-        this._entireWordStr = bundle.GetStringFromName("EntireWord");
-      }
-
       this._findFailedString = null;
 
       this._updateFindUI();
       if (this.hidden) {
+        Services.telemetry.scalarAdd("findbar.shown", 1);
         this.removeAttribute("noanim");
         this.hidden = false;
 
@@ -775,9 +762,7 @@
       this.browser.finder.removeSelection();
       // Clear value and undo/redo transactions
       this._findField.value = "";
-      if (this._findField.editor) {
-        this._findField.editor.transactionManager.clear();
-      }
+      this._findField.editor?.clearUndoRedo();
       this.toggleHighlight(false);
       this._updateStatusUI();
       this._enableFindButtons(false);
@@ -788,9 +773,7 @@
         return;
       }
 
-      // The event information comes from the child process. If we need more
-      // properties/information here, change the list of sent properties in
-      // browser-content.js.
+      // The event information comes from the child process.
       let event = new target.ownerGlobal.KeyboardEvent(
         fakeEvent.type,
         fakeEvent
@@ -963,13 +946,15 @@
         this._findField.classList.remove("minimal");
       }
 
+      let l10nId;
       if (this.findMode == this.FIND_TYPEAHEAD) {
-        this._findField.placeholder = this._fastFindStr;
+        l10nId = "findbar-fast-find";
       } else if (this.findMode == this.FIND_LINKS) {
-        this._findField.placeholder = this._fastFindLinksStr;
+        l10nId = "findbar-fast-find-links";
       } else {
-        this._findField.placeholder = this._normalFindStr;
+        l10nId = "findbar-normal-find";
       }
+      document.l10n.setAttributes(this._findField, l10nId);
     }
 
     _find(value) {
@@ -1058,30 +1043,41 @@
     }
 
     _updateStatusUI(res, findPrevious) {
+      let statusL10nId;
       switch (res) {
         case Ci.nsITypeAheadFind.FIND_WRAPPED:
           this._findStatusIcon.setAttribute("status", "wrapped");
-          this._findStatusDesc.textContent = findPrevious
-            ? this._wrappedToBottomStr
-            : this._wrappedToTopStr;
           this._findField.removeAttribute("status");
+          statusL10nId = findPrevious
+            ? "findbar-wrapped-to-bottom"
+            : "findbar-wrapped-to-top";
           break;
         case Ci.nsITypeAheadFind.FIND_NOTFOUND:
+          this._findStatusDesc.setAttribute("status", "notfound");
           this._findStatusIcon.setAttribute("status", "notfound");
-          this._findStatusDesc.textContent = this._notFoundStr;
           this._findField.setAttribute("status", "notfound");
+          this._foundMatches.hidden = true;
+          statusL10nId = "findbar-not-found";
           break;
         case Ci.nsITypeAheadFind.FIND_PENDING:
           this._findStatusIcon.setAttribute("status", "pending");
-          this._findStatusDesc.textContent = "";
           this._findField.removeAttribute("status");
+          this._findStatusDesc.removeAttribute("status");
+          statusL10nId = "";
           break;
         case Ci.nsITypeAheadFind.FIND_FOUND:
         default:
           this._findStatusIcon.removeAttribute("status");
-          this._findStatusDesc.textContent = "";
           this._findField.removeAttribute("status");
+          this._findStatusDesc.removeAttribute("status");
+          statusL10nId = "";
           break;
+      }
+      if (statusL10nId) {
+        document.l10n.setAttributes(this._findStatusDesc, statusL10nId);
+      } else {
+        delete this._findStatusDesc.dataset.l10nId;
+        this._findStatusDesc.textContent = "";
       }
     }
 
@@ -1129,10 +1125,7 @@
         );
       }
 
-      let { PromiseUtils } = ChromeUtils.import(
-        "resource://gre/modules/PromiseUtils.jsm"
-      );
-      this._startFindDeferred = PromiseUtils.defer();
+      this._startFindDeferred = Promise.withResolvers();
       let startFindPromise = this._startFindDeferred.promise;
 
       if (this.prefillWithSelection) {
@@ -1142,6 +1135,8 @@
       }
 
       if (this.prefillWithSelection && userWantsPrefill) {
+        this.browser.finder.getInitialSelection();
+
         // NB: We have to focus this._findField here so tests that send
         // key events can open and close the find bar synchronously.
         this._findField.focus();
@@ -1152,7 +1147,6 @@
         // jumbled up queries.
         this._findField.select();
 
-        this.browser.finder.getInitialSelection();
         return startFindPromise;
       }
 
@@ -1181,6 +1175,12 @@
      *                               otherwise.
      */
     onFindAgainCommand(findPrevious) {
+      if (findPrevious) {
+        Services.telemetry.scalarAdd("findbar.find_prev", 1);
+      } else {
+        Services.telemetry.scalarAdd("findbar.find_next", 1);
+      }
+
       let findString =
         this._browser.finder.searchString || this._findField.value;
       if (!findString) {
@@ -1293,28 +1293,21 @@
      *                 - {Number} current Vector of the current result.
      */
     onMatchesCountResult(result) {
-      if (result.total !== 0) {
-        if (result.total == -1) {
-          this._foundMatches.value = LazyConstants.PluralForm.get(
-            result.limit,
-            this.strBundle.GetStringFromName("FoundMatchesCountLimit")
-          ).replace("#1", result.limit);
-        } else {
-          this._foundMatches.value = LazyConstants.PluralForm.get(
-            result.total,
-            this.strBundle.GetStringFromName("FoundMatches")
-          )
-            .replace("#1", result.current)
-            .replace("#2", result.total);
-        }
-        this._foundMatches.hidden = false;
-      } else {
+      if (!result.total) {
+        delete this._foundMatches.dataset.l10nId;
         this._foundMatches.hidden = true;
-        this._foundMatches.value = "";
+        this._foundMatches.setAttribute("value", "");
+      } else {
+        const l10nId =
+          result.total === -1
+            ? "findbar-found-matches-count-limit"
+            : "findbar-found-matches";
+        this._foundMatches.hidden = false;
+        document.l10n.setAttributes(this._foundMatches, l10nId, result);
       }
     }
 
-    onHighlightFinished(result) {
+    onHighlightFinished() {
       // Noop.
     }
 

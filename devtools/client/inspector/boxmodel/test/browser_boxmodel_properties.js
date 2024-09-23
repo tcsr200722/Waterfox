@@ -48,7 +48,7 @@ const res1 = [
   },
   {
     property: "z-index",
-    value: 2,
+    value: "2",
   },
 ];
 
@@ -75,17 +75,17 @@ const res2 = [
   },
   {
     property: "z-index",
-    value: 5,
+    value: "5",
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { inspector, boxmodel, testActor } = await openLayoutView();
+  const { inspector, boxmodel } = await openLayoutView();
   await selectNode("div", inspector);
 
   await testInitialValues(inspector, boxmodel);
-  await testChangingValues(inspector, boxmodel, testActor);
+  await testChangingValues(inspector, boxmodel);
 });
 
 function testInitialValues(inspector, boxmodel) {
@@ -98,12 +98,12 @@ function testInitialValues(inspector, boxmodel) {
   }
 }
 
-async function testChangingValues(inspector, boxmodel, testActor) {
+async function testChangingValues(inspector, boxmodel) {
   info("Test that changing the document updates the box model");
   const doc = boxmodel.document;
 
   const onUpdated = waitForUpdate(inspector);
-  await testActor.setAttribute(
+  await setContentPageElementAttribute(
     "div",
     "style",
     "box-sizing:content-box;float:right;" +

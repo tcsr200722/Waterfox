@@ -9,6 +9,7 @@
 
 #include "debugger/DebugAPI.h"
 
+#include "gc/GC.h"
 #include "vm/GeneratorObject.h"
 #include "vm/PromiseObject.h"  // js::PromiseObject
 
@@ -45,27 +46,31 @@ void DebugAPI::onNewGlobalObject(JSContext* cx, Handle<GlobalObject*> global) {
 /* static */
 void DebugAPI::notifyParticipatesInGC(GlobalObject* global,
                                       uint64_t majorGCNumber) {
-  Realm::DebuggerVector& dbgs = global->getDebuggers();
+  JS::AutoAssertNoGC nogc;
+  Realm::DebuggerVector& dbgs = global->getDebuggers(nogc);
   if (!dbgs.empty()) {
-    slowPathNotifyParticipatesInGC(majorGCNumber, dbgs);
+    slowPathNotifyParticipatesInGC(majorGCNumber, dbgs, nogc);
   }
 }
 
 /* static */
 bool DebugAPI::onLogAllocationSite(JSContext* cx, JSObject* obj,
-                                   HandleSavedFrame frame,
+                                   Handle<SavedFrame*> frame,
                                    mozilla::TimeStamp when) {
-  Realm::DebuggerVector& dbgs = cx->global()->getDebuggers();
+  // slowPathOnLogAllocationSite creates GC things so we must suppress GC here.
+  gc::AutoSuppressGC nogc(cx);
+
+  Realm::DebuggerVector& dbgs = cx->global()->getDebuggers(nogc);
   if (dbgs.empty()) {
     return true;
   }
   RootedObject hobj(cx, obj);
-  return slowPathOnLogAllocationSite(cx, hobj, frame, when, dbgs);
+  return slowPathOnLogAllocationSite(cx, hobj, frame, when, dbgs, nogc);
 }
 
 /* static */
 bool DebugAPI::onLeaveFrame(JSContext* cx, AbstractFramePtr frame,
-                            jsbytecode* pc, bool ok) {
+                            const jsbytecode* pc, bool ok) {
   MOZ_ASSERT_IF(frame.isInterpreterFrame(),
                 frame.asInterpreterFrame() == cx->interpreterFrame());
   MOZ_ASSERT_IF(frame.hasScript() && frame.script()->isDebuggee(),
@@ -88,6 +93,14 @@ bool DebugAPI::onNewGenerator(JSContext* cx, AbstractFramePtr frame,
     return slowPathOnNewGenerator(cx, frame, genObj);
   }
   return true;
+}
+
+/* static */
+void DebugAPI::onGeneratorClosed(JSContext* cx,
+                                 AbstractGeneratorObject* genObj) {
+  if (cx->realm()->isDebuggee()) {
+    slowPathOnGeneratorClosed(cx, genObj);
+  }
 }
 
 /* static */
@@ -126,6 +139,15 @@ NativeResumeMode DebugAPI::onNativeCall(JSContext* cx, const CallArgs& args,
   }
 
   return NativeResumeMode::Continue;
+}
+
+/* static */
+bool DebugAPI::shouldAvoidSideEffects(JSContext* cx) {
+  if (MOZ_UNLIKELY(cx->realm()->isDebuggee())) {
+    return slowPathShouldAvoidSideEffects(cx);
+  }
+
+  return false;
 }
 
 /* static */

@@ -11,9 +11,9 @@
 #include "AudioNodeTrack.h"
 #include "AudioDestinationNode.h"
 #include "WebAudioUtils.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(GainNode, AudioNode, mGain)
 
@@ -34,9 +34,9 @@ class GainNodeEngine final : public AudioNodeEngine {
         mGain(1.f) {}
 
   enum Parameters { GAIN };
-  void RecvTimelineEvent(uint32_t aIndex, AudioTimelineEvent& aEvent) override {
+  void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
     MOZ_ASSERT(mDestination);
-    WebAudioUtils::ConvertAudioTimelineEventToTicks(aEvent, mDestination);
+    aEvent.ConvertToTicks(mDestination);
 
     switch (aIndex) {
       case GAIN:
@@ -50,6 +50,7 @@ class GainNodeEngine final : public AudioNodeEngine {
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
+    TRACE("GainNodeEngine::ProcessBlock");
     if (aInput.IsNull()) {
       // If input is silent, so is the output
       aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
@@ -109,7 +110,7 @@ class GainNodeEngine final : public AudioNodeEngine {
 GainNode::GainNode(AudioContext* aContext)
     : AudioNode(aContext, 2, ChannelCountMode::Max,
                 ChannelInterpretation::Speakers) {
-  CreateAudioParam(mGain, GainNodeEngine::GAIN, u"gain", 1.0f);
+  mGain = CreateAudioParam(GainNodeEngine::GAIN, u"gain"_ns, 1.0f);
   GainNodeEngine* engine = new GainNodeEngine(this, aContext->Destination());
   mTrack = AudioNodeTrack::Create(
       aContext, engine, AudioNodeTrack::NO_TRACK_FLAGS, aContext->Graph());
@@ -126,7 +127,7 @@ already_AddRefed<GainNode> GainNode::Create(AudioContext& aAudioContext,
     return nullptr;
   }
 
-  audioNode->Gain()->SetValue(aOptions.mGain);
+  audioNode->Gain()->SetInitialValue(aOptions.mGain);
   return audioNode.forget();
 }
 
@@ -145,5 +146,4 @@ JSObject* GainNode::WrapObject(JSContext* aCx,
   return GainNode_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

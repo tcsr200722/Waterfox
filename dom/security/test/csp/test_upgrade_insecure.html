@@ -28,7 +28,9 @@
  * received by the server (*.sjs) were actually *https* requests.
  */
 
-const {AppConstants} = SpecialPowers.Cu.import("resource://gre/modules/AppConstants.jsm", {});
+const { AppConstants } = SpecialPowers.ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
 
 const UPGRADE_POLICY =
   "upgrade-insecure-requests;" +               // upgrade all http requests to https
@@ -38,7 +40,7 @@ const UPGRADE_POLICY =
 
 const UPGRADE_POLICY_NO_DEFAULT_SRC =
   "upgrade-insecure-requests;" +               // upgrade all http requests to https
-  "script-src 'unsafe-inline' *";              // we have to whitelist the inline scripts
+  "script-src 'unsafe-inline' *";              // we have to allowlist the inline scripts
                                                // in the test.
 const NO_UPGRADE_POLICY =
   "default-src http: ws: 'unsafe-inline';" +   // allow http:// and ws://
@@ -142,7 +144,7 @@ function checkResults(result) {
     curTest.results.splice(index, 1);
   }
   // lets check if we are expecting more results to bubble up
-  if (curTest.results.length > 0) {
+  if (curTest.results.length) {
     return;
   }
   // lets see if we ran all the tests

@@ -3,8 +3,8 @@
 
 "use strict";
 
-const { CreditCard } = ChromeUtils.import(
-  "resource://gre/modules/CreditCard.jsm"
+const { CreditCard } = ChromeUtils.importESModule(
+  "resource://gre/modules/CreditCard.sys.mjs"
 );
 
 add_task(function isValidNumber() {
@@ -122,20 +122,15 @@ add_task(function isValidNumber() {
 });
 
 add_task(function test_formatMaskedNumber() {
-  function testFormat(number) {
-    let format = CreditCard.formatMaskedNumber(number);
-    Assert.equal(format.affix, "****", "Affix should always be four asterisks");
-    Assert.equal(
-      format.label,
-      number.substr(-4),
-      "The label should always be the last four digits of the card number"
-    );
+  function assertMaskedNumber(input, expected) {
+    const actual = CreditCard.formatMaskedNumber(input);
+    Assert.equal(actual, expected);
   }
-  testFormat("************0000");
-  testFormat("************1045");
-  testFormat("***********6806");
-  testFormat("**********0495");
-  testFormat("**********8250");
+  assertMaskedNumber("************0000", "****0000");
+  assertMaskedNumber("************1045", "****1045");
+  assertMaskedNumber("***********6806", "****6806");
+  assertMaskedNumber("**********0495", "****0495");
+  assertMaskedNumber("**********8250", "****8250");
 });
 
 add_task(function test_maskNumber() {
@@ -327,26 +322,59 @@ add_task(function test_normalize() {
   );
   card.expirationMonth = "0";
   ok(isNaN(card.expirationMonth), "Months below 1 are blocked");
-
   card.expirationMonth = card.expirationYear = undefined;
   card.expirationString = "2022/01";
   Assert.equal(card.expirationMonth, 1, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2022, "Year should be parsed correctly");
+
+  card.expirationString = "2028 / 05";
+  Assert.equal(card.expirationMonth, 5, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2028, "Year should be parsed correctly");
+
   card.expirationString = "2023-02";
   Assert.equal(card.expirationMonth, 2, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2023, "Year should be parsed correctly");
+
+  card.expirationString = "2029 - 09";
+  Assert.equal(card.expirationMonth, 9, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2029, "Year should be parsed correctly");
+
   card.expirationString = "03-2024";
   Assert.equal(card.expirationMonth, 3, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2024, "Year should be parsed correctly");
+
+  card.expirationString = "08 - 2024";
+  Assert.equal(card.expirationMonth, 8, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2024, "Year should be parsed correctly");
+
   card.expirationString = "04/2025";
   Assert.equal(card.expirationMonth, 4, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2025, "Year should be parsed correctly");
+
+  card.expirationString = "01 / 2023";
+  Assert.equal(card.expirationMonth, 1, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2023, "Year should be parsed correctly");
+
   card.expirationString = "05/26";
   Assert.equal(card.expirationMonth, 5, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2026, "Year should be parsed correctly");
+
+  card.expirationString = "   06 /  27 ";
+  Assert.equal(card.expirationMonth, 6, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2027, "Year should be parsed correctly");
+
+  card.expirationString = "04 / 25";
+  Assert.equal(card.expirationMonth, 4, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2025, "Year should be parsed correctly");
+
   card.expirationString = "27-6";
   Assert.equal(card.expirationMonth, 6, "Month should be parsed correctly");
   Assert.equal(card.expirationYear, 2027, "Year should be parsed correctly");
+
+  card.expirationString = "26 - 5";
+  Assert.equal(card.expirationMonth, 5, "Month should be parsed correctly");
+  Assert.equal(card.expirationYear, 2026, "Year should be parsed correctly");
+
   card.expirationString = "07/11";
   Assert.equal(
     card.expirationMonth,
@@ -356,6 +384,18 @@ add_task(function test_normalize() {
   Assert.equal(
     card.expirationYear,
     2011,
+    "Ambiguous year should be parsed correctly"
+  );
+
+  card.expirationString = "08 / 12";
+  Assert.equal(
+    card.expirationMonth,
+    8,
+    "Ambiguous month should be parsed correctly"
+  );
+  Assert.equal(
+    card.expirationYear,
+    2012,
     "Ambiguous year should be parsed correctly"
   );
 
@@ -402,7 +442,7 @@ add_task(async function test_label() {
 });
 
 add_task(async function test_network() {
-  let supportedNetworks = CreditCard.SUPPORTED_NETWORKS;
+  let supportedNetworks = CreditCard.getSupportedNetworks();
   Assert.ok(
     supportedNetworks.length,
     "There are > 0 supported credit card networks"
@@ -435,7 +475,7 @@ add_task(async function test_network() {
 });
 
 add_task(async function test_isValidNetwork() {
-  for (let network of CreditCard.SUPPORTED_NETWORKS) {
+  for (let network of CreditCard.getSupportedNetworks()) {
     Assert.ok(CreditCard.isValidNetwork(network), "supported network is valid");
   }
   Assert.ok(!CreditCard.isValidNetwork(), "undefined is not a valid network");
@@ -452,4 +492,127 @@ add_task(async function test_isValidNetwork() {
     !CreditCard.isValidNetwork("madeupnetwork"),
     "unknown network is invalid"
   );
+});
+
+add_task(async function test_getType() {
+  const RECOGNIZED_CARDS = [
+    // Edge cases
+    ["2221000000000000", "mastercard"],
+    ["2720000000000000", "mastercard"],
+    ["2200000000000000", "mir"],
+    ["2204000000000000", "mir"],
+    ["340000000000000", "amex"],
+    ["370000000000000", "amex"],
+    ["3000000000000000", "diners"],
+    ["3050000000000000", "diners"],
+    ["3095000000000000", "diners"],
+    ["36000000000000", "diners"],
+    ["3800000000000000", "diners"],
+    ["3900000000000000", "diners"],
+    ["3528000000000000", "jcb"],
+    ["3589000000000000", "jcb"],
+    ["4035000000000000", "cartebancaire"],
+    ["4360000000000000", "cartebancaire"],
+    ["4000000000000000", "visa"],
+    ["4999999999999999", "visa"],
+    ["5400000000000000", "mastercard"],
+    ["5500000000000000", "mastercard"],
+    ["5100000000000000", "mastercard"],
+    ["5399999999999999", "mastercard"],
+    ["6011000000000000", "discover"],
+    ["6221260000000000", "discover"],
+    ["6229250000000000", "discover"],
+    ["6240000000000000", "discover"],
+    ["6269990000000000", "discover"],
+    ["6282000000000000", "discover"],
+    ["6288990000000000", "discover"],
+    ["6400000000000000", "discover"],
+    ["6500000000000000", "discover"],
+    ["6200000000000000", "unionpay"],
+    ["8100000000000000", "unionpay"],
+    // Valid according to Luhn number
+    ["2204941877211882", "mir"],
+    ["2720994326581252", "mastercard"],
+    ["374542158116607", "amex"],
+    ["36006666333344", "diners"],
+    ["3541675340715696", "jcb"],
+    ["3543769248058305", "jcb"],
+    ["4035501428146300", "cartebancaire"],
+    ["4111111111111111", "visa"],
+    ["5346755600299631", "mastercard"],
+    ["5495770093313616", "mastercard"],
+    ["5574238524540144", "mastercard"],
+    ["6011029459267962", "discover"],
+    ["6278592974938779", "unionpay"],
+    ["8171999927660000", "unionpay"],
+    ["30569309025904", "diners"],
+    ["38520000023237", "diners"],
+  ];
+  for (let [value, type] of RECOGNIZED_CARDS) {
+    Assert.equal(
+      CreditCard.getType(value),
+      type,
+      `Expected ${value} to be recognized as ${type}`
+    );
+  }
+
+  const UNRECOGNIZED_CARDS = [
+    ["411111111111111", "15 digits"],
+    ["41111111111111111", "17 digits"],
+    ["", "empty"],
+    ["9111111111111111", "Unknown prefix"],
+  ];
+  for (let [value, reason] of UNRECOGNIZED_CARDS) {
+    Assert.equal(
+      CreditCard.getType(value),
+      null,
+      `Expected ${value} to not match any card because: ${reason}`
+    );
+  }
+});
+
+add_task(async function test_getNetworkFromName() {
+  const RECOGNIZED_NAMES = [
+    ["amex", "amex"],
+    ["American Express", "amex"],
+    ["american express", "amex"],
+    ["mastercard", "mastercard"],
+    ["master card", "mastercard"],
+    ["MasterCard", "mastercard"],
+    ["Master Card", "mastercard"],
+    ["Union Pay", "unionpay"],
+    ["UnionPay", "unionpay"],
+    ["Unionpay", "unionpay"],
+    ["unionpay", "unionpay"],
+
+    ["Unknown", null],
+    ["", null],
+  ];
+  for (let [value, type] of RECOGNIZED_NAMES) {
+    Assert.equal(
+      CreditCard.getNetworkFromName(value),
+      type,
+      `Expected ${value} to be recognized as ${type}`
+    );
+  }
+});
+
+add_task(async function test_normalizeCardNumber() {
+  let testCases = [
+    ["5495770093313616", "5495770093313616"],
+    ["5495 7700 9331 3616", "5495770093313616"],
+    [" 549 57700 93313 616 ", "5495770093313616"],
+    ["5495-7700-9331-3616", "5495770093313616"],
+    ["", null],
+    [undefined, null],
+    [null, null],
+  ];
+  for (let [input, expected] of testCases) {
+    let actual = CreditCard.normalizeCardNumber(input);
+    Assert.equal(
+      actual,
+      expected,
+      `Expected ${input} to normalize to ${expected}`
+    );
+  }
 });

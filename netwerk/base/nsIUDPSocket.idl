@@ -7,6 +7,7 @@
 
 interface nsINetAddr;
 interface nsIUDPSocketListener;
+interface nsIUDPSocketSyncListener;
 interface nsIUDPMessage;
 interface nsISocketTransport;
 interface nsIOutputStream;
@@ -30,7 +31,7 @@ native NetAddr(mozilla::net::NetAddr);
  *
  * An interface to a UDP socket that can accept incoming connections.
  */
-[scriptable, uuid(d423bf4e-4499-40cf-bc03-153e2bf206d1)]
+[scriptable, builtinclass, uuid(d423bf4e-4499-40cf-bc03-153e2bf206d1)]
 interface nsIUDPSocket : nsISupports
 {
     /**
@@ -108,6 +109,16 @@ interface nsIUDPSocket : nsISupports
     void asyncListen(in nsIUDPSocketListener aListener);
 
     /**
+     * This adds a nsIUDPSocketSyncListener listener (defined below).
+     * When data is available onPacketReceived is called and the lisener uses
+     * recvWithAddr to actually retrive data from the socket.
+     * The listener can be use only if it runs on the socket thread.
+     * If it is used off the socket thread there is a risk of triggering a bug
+     * in OS thatcan cause a crash.
+     */
+    [noscript] void syncListen(in nsIUDPSocketSyncListener aListener);
+
+    /**
      * connect
      *
      * This method connects the UDP socket to a remote UDP address.
@@ -115,7 +126,7 @@ interface nsIUDPSocket : nsISupports
      * @param aRemoteAddr
      *        The remote address to connect to
      */
-     void connect([const] in NetAddrPtr aAddr);
+    [noscript] void connect([const] in NetAddrPtr aAddr);
 
     /**
      * Returns the local address of this UDP socket
@@ -164,6 +175,15 @@ interface nsIUDPSocket : nsISupports
     unsigned long sendWithAddr(in nsINetAddr addr,
                                in Array<uint8_t> data);
 
+
+    /**
+     * Receive a datagram.
+     * @param addr The remote host address.
+     * @param data The buffer to store received datagram.
+     */
+    [noscript] void recvWithAddr(out NetAddr addr,
+                                 out Array<uint8_t> data);
+
     /**
      * sendWithAddress
      *
@@ -174,7 +194,8 @@ interface nsIUDPSocket : nsISupports
      * @return number of bytes written. (0 or length of data)
      */
     [noscript] unsigned long sendWithAddress([const] in NetAddrPtr addr,
-                                             in Array<uint8_t> data);
+                                             [array, size_is(length), const] in uint8_t data,
+                                             in unsigned long length);
 
     /**
      * sendBinaryStream
@@ -196,8 +217,8 @@ interface nsIUDPSocket : nsISupports
      * @param addr The remote host address.
      * @param stream The input stream to be sent. This must be a buffered stream implementation.
      */
-    void sendBinaryStreamWithAddress([const] in NetAddrPtr addr,
-                                     in nsIInputStream stream);
+    [noscript] void sendBinaryStreamWithAddress([const] in NetAddrPtr addr,
+                                                in nsIInputStream stream);
 
     /**
      * joinMulticast
@@ -272,6 +293,14 @@ interface nsIUDPSocket : nsISupports
      * The size of the send buffer. Default depends on the OS.
      */
     [noscript] attribute long sendBufferSize;
+
+    /**
+     * dontFragment
+     *
+     * The don't fragment flag.
+     * The socket must be initialized before calling this function.
+     */
+    [noscript] attribute boolean dontFragment;
 };
 
 /**
@@ -344,4 +373,35 @@ interface nsIUDPMessage : nsISupports
      */
     [implicit_jscontext] readonly attribute jsval rawData;
     [noscript, notxpcom, nostdcall] Uint8TArrayRef getDataAsTArray();
+};
+
+[uuid(99f3d085-3d69-45da-a2c2-a6176af617cb)]
+interface nsIUDPSocketSyncListener : nsISupports
+{
+    /**
+     * onPacketReceived
+     *
+     * This method is called when a client sends an UDP packet.
+     *
+     * @param aSocket
+     *        The UDP socket.
+     * @param aMessage
+     *        The message.
+     */
+    void onPacketReceived(in nsIUDPSocket aSocket);
+
+    /**
+     * onStopListening
+     *
+     * This method is called when the listening socket stops for some reason.
+     * The UDP socket is effectively dead after this notification.
+     *
+     * @param aSocket
+     *        The UDP socket.
+     * @param aStatus
+     *        The reason why the UDP socket stopped listening.  If the
+     *        UDP socket was manually closed, then this value will be
+     *        NS_BINDING_ABORTED.
+     */
+    void onStopListening(in nsIUDPSocket aSocket, in nsresult aStatus);
 };

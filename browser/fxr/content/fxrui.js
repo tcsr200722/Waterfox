@@ -31,15 +31,14 @@ let forwardButton = null;
 let refreshButton = null;
 let stopButton = null;
 
-let { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { PrivateBrowsingUtils } = ChromeUtils.import(
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
+const { PrivateBrowsingUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PrivateBrowsingUtils.sys.mjs"
 );
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 // Note: FxR UI uses a fork of browser-fullScreenAndPointerLock.js which removes
@@ -50,7 +49,7 @@ XPCOMUtils.defineLazyScriptGetter(
   "FullScreen",
   "chrome://fxr/content/fxr-fullScreen.js"
 );
-XPCOMUtils.defineLazyGetter(this, "gSystemPrincipal", () =>
+ChromeUtils.defineLazyGetter(this, "gSystemPrincipal", () =>
   Services.scriptSecurityManager.getSystemPrincipal()
 );
 
@@ -82,7 +81,7 @@ function setupBrowser() {
     browser.classList.add("browser_instance");
     document.getElementById("eBrowserContainer").appendChild(browser);
 
-    browser.loadUrlWithSystemPrincipal = function(url) {
+    browser.loadUrlWithSystemPrincipal = function (url) {
       this.loadURI(url, { triggeringPrincipal: gSystemPrincipal });
     };
 
@@ -96,10 +95,10 @@ function setupBrowser() {
     browser.addProgressListener(
       {
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIWebProgressListener,
-          Ci.nsISupportsWeakReference,
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
         ]),
-        onLocationChange(aWebProgress, aRequest, aLocation, aFlags) {
+        onLocationChange() {
           // When URL changes, update the URL in the URL bar and update
           // whether the back/forward buttons are enabled.
           urlInput.value = browser.currentURI.spec;
@@ -107,7 +106,7 @@ function setupBrowser() {
           backButton.disabled = !browser.canGoBack;
           forwardButton.disabled = !browser.canGoForward;
         },
-        onStateChange(aWebProgress, aRequest, aStateFlags, aStatus) {
+        onStateChange(aWebProgress, aRequest, aStateFlags) {
           if (aStateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
             // Network requests are complete. Disable (hide) the stop button
             // and enable (show) the refresh button
@@ -141,13 +140,6 @@ function setupBrowser() {
     // WebExtensions, since this FxR UI doesn't participate in typical
     // startup activities
     Services.obs.notifyObservers(window, "extensions-late-startup");
-
-    // Load this script in the content process to start and allow scripts for
-    // WebExtensions that run in the content process
-    browser.messageManager.loadFrameScript(
-      "chrome://fxr/content/fxr-content.js",
-      true // allowDelayedLoad
-    );
   }
 }
 
@@ -161,7 +153,7 @@ function setupNavButtons() {
     "ePrefs",
   ];
 
-  function navButtonHandler(e) {
+  function navButtonHandler() {
     if (!this.disabled) {
       switch (this.id) {
         case "eBack":
@@ -199,7 +191,7 @@ function setupNavButtons() {
 
 function setupUrlBar() {
   // Navigate to new value when the user presses "Enter"
-  urlInput.addEventListener("keypress", async function(e) {
+  urlInput.addEventListener("keypress", async function (e) {
     if (e.key == "Enter") {
       // Use the URL Fixup Service in case the user wants to search instead
       // of directly navigating to a location.
@@ -212,16 +204,18 @@ function setupUrlBar() {
       if (PrivateBrowsingUtils.isWindowPrivate(window)) {
         flags |= Services.uriFixup.FIXUP_FLAG_PRIVATE_CONTEXT;
       }
+      let { preferredURI } = Services.uriFixup.getFixupURIInfo(
+        valueToFixUp,
+        flags
+      );
 
-      let uriToLoad = Services.uriFixup.createFixupURI(valueToFixUp, flags);
-
-      browser.loadUrlWithSystemPrincipal(uriToLoad.spec);
+      browser.loadUrlWithSystemPrincipal(preferredURI.spec);
       browser.focus();
     }
   });
 
   // Upon focus, highlight the whole URL
-  urlInput.addEventListener("focus", function() {
+  urlInput.addEventListener("focus", function () {
     urlInput.select();
   });
 }

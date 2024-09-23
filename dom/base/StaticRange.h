@@ -7,17 +7,19 @@
 #ifndef mozilla_dom_StaticRange_h
 #define mozilla_dom_StaticRange_h
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/RangeBoundary.h"
+#include "mozilla/RangeUtils.h"
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/StaticRangeBinding.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
-class StaticRange final : public AbstractRange {
+class StaticRange : public AbstractRange {
  public:
   StaticRange() = delete;
   explicit StaticRange(const StaticRange& aOther) = delete;
@@ -50,18 +52,34 @@ class StaticRange final : public AbstractRange {
                                               nsINode* aEndContainer,
                                               uint32_t aEndOffset,
                                               ErrorResult& aRv) {
-    return StaticRange::Create(RawRangeBoundary(aStartContainer, aStartOffset),
-                               RawRangeBoundary(aEndContainer, aEndOffset),
-                               aRv);
+    return StaticRange::Create(
+        RawRangeBoundary(aStartContainer, aStartOffset,
+                         RangeBoundaryIsMutationObserved::No),
+        RawRangeBoundary(aEndContainer, aEndOffset,
+                         RangeBoundaryIsMutationObserved::No),
+        aRv);
   }
   template <typename SPT, typename SRT, typename EPT, typename ERT>
   static already_AddRefed<StaticRange> Create(
       const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
       const RangeBoundaryBase<EPT, ERT>& aEndBoundary, ErrorResult& aRv);
 
+  /**
+   * Returns true if the range is valid.
+   *
+   * @see https://dom.spec.whatwg.org/#staticrange-valid
+   */
+  bool IsValid() const;
+
+ private:
+  // Whether the start and end points are in the same tree.
+  // They could be in different trees, i.e, cross shadow boundaries.
+  bool mAreStartAndEndInSameTree = false;
+
  protected:
-  explicit StaticRange(nsINode* aNode) : AbstractRange(aNode) {}
-  virtual ~StaticRange() = default;
+  explicit StaticRange(nsINode* aNode)
+      : AbstractRange(aNode, /* aIsDynamicRange = */ false) {}
+  virtual ~StaticRange();
 
  public:
   NS_DECL_ISUPPORTS_INHERITED
@@ -110,6 +128,15 @@ class StaticRange final : public AbstractRange {
 
   friend class AbstractRange;
 };
+
+inline StaticRange* AbstractRange::AsStaticRange() {
+  MOZ_ASSERT(IsStaticRange());
+  return static_cast<StaticRange*>(this);
+}
+inline const StaticRange* AbstractRange::AsStaticRange() const {
+  MOZ_ASSERT(IsStaticRange());
+  return static_cast<const StaticRange*>(this);
+}
 
 }  // namespace dom
 }  // namespace mozilla

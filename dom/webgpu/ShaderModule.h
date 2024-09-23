@@ -6,12 +6,13 @@
 #ifndef GPU_ShaderModule_H_
 #define GPU_ShaderModule_H_
 
+#include "mozilla/webgpu/WebGPUTypes.h"
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
+class CompilationInfo;
 class Device;
 
 class ShaderModule final : public ObjectBase, public ChildOf<Device> {
@@ -19,16 +20,20 @@ class ShaderModule final : public ObjectBase, public ChildOf<Device> {
   GPU_DECL_CYCLE_COLLECTION(ShaderModule)
   GPU_DECL_JS_WRAP(ShaderModule)
 
-  ShaderModule(Device* const aParent, RawId aId);
+  ShaderModule(Device* const aParent, RawId aId,
+               const RefPtr<dom::Promise>& aCompilationInfo);
+  already_AddRefed<dom::Promise> CompilationInfo(ErrorResult& aRv);
+  already_AddRefed<dom::Promise> GetCompilationInfo(ErrorResult& aRv);
 
   const RawId mId;
 
  private:
   virtual ~ShaderModule();
   void Cleanup();
+
+  RefPtr<dom::Promise> mCompilationInfo;
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #endif  // GPU_ShaderModule_H_

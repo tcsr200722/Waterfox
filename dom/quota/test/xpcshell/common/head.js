@@ -37,13 +37,11 @@ function run_test() {
 }
 
 if (!this.runTest) {
-  this.runTest = function() {
+  this.runTest = function () {
     do_get_profile();
 
     enableStorageTesting();
     enableTesting();
-
-    Cu.importGlobalProperties(["indexedDB", "File", "Blob", "FileReader"]);
 
     // In order to support converting tests to using async functions from using
     // generator functions, we detect async functions by checking the name of
@@ -55,7 +53,7 @@ if (!this.runTest) {
     if (testSteps.constructor.name === "AsyncFunction") {
       // Do run our existing cleanup function that would normally be called by
       // the generator's call to finishTest().
-      registerCleanupFunction(function() {
+      registerCleanupFunction(function () {
         resetStorageTesting();
         resetTesting();
       });
@@ -83,7 +81,7 @@ function finishTest() {
   resetStorageTesting();
   resetTesting();
 
-  executeSoon(function() {
+  executeSoon(function () {
     do_test_finished();
   });
 }
@@ -93,7 +91,7 @@ function grabArgAndContinueHandler(arg) {
 }
 
 function continueToNextStep() {
-  executeSoon(function() {
+  executeSoon(function () {
     testGenerator.next();
   });
 }
@@ -103,11 +101,16 @@ function continueToNextStepSync() {
 }
 
 function enableTesting() {
-  SpecialPowers.setBoolPref("dom.storage.next_gen", true);
+  SpecialPowers.setBoolPref(
+    "dom.storage.enable_unsupported_legacy_implementation",
+    false
+  );
 }
 
 function resetTesting() {
-  SpecialPowers.clearUserPref("dom.storage.next_gen");
+  SpecialPowers.clearUserPref(
+    "dom.storage.enable_unsupported_legacy_implementation"
+  );
 }
 
 function setGlobalLimit(globalLimit) {
@@ -149,23 +152,49 @@ function initTemporaryStorage(callback) {
   return request;
 }
 
-function initStorageAndOrigin(principal, persistence, callback) {
-  let request = SpecialPowers._getQuotaManager().initStorageAndOrigin(
-    principal,
-    persistence
+function initPersistentOrigin(principal, callback) {
+  let request =
+    SpecialPowers._getQuotaManager().initializePersistentOrigin(principal);
+  request.callback = callback;
+
+  return request;
+}
+
+function initTemporaryOrigin(persistence, principal, callback) {
+  let request = SpecialPowers._getQuotaManager().initializeTemporaryOrigin(
+    persistence,
+    principal
   );
   request.callback = callback;
 
   return request;
 }
 
-function initStorageAndChromeOrigin(persistence, callback) {
-  let principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
-    Ci.nsIPrincipal
-  );
-  let request = SpecialPowers._getQuotaManager().initStorageAndOrigin(
+function initPersistentClient(principal, client, callback) {
+  let request = SpecialPowers._getQuotaManager().initializePersistentClient(
     principal,
-    persistence
+    client
+  );
+  request.callback = callback;
+
+  return request;
+}
+
+function initTemporaryClient(persistence, principal, client, callback) {
+  let request = SpecialPowers._getQuotaManager().initializeTemporaryClient(
+    persistence,
+    principal,
+    client
+  );
+  request.callback = callback;
+
+  return request;
+}
+
+function getFullOriginMetadata(persistence, principal, callback) {
+  const request = SpecialPowers._getQuotaManager().getFullOriginMetadata(
+    persistence,
+    principal
   );
   request.callback = callback;
 
@@ -193,14 +222,19 @@ function clearOrigin(principal, persistence, callback) {
   return request;
 }
 
-function clearChromeOrigin(callback) {
-  let principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
-    Ci.nsIPrincipal
-  );
-  let request = SpecialPowers._getQuotaManager().clearStoragesForPrincipal(
+function clearOriginsByPrefix(principal, persistence, callback) {
+  let request = SpecialPowers._getQuotaManager().clearStoragesForOriginPrefix(
     principal,
-    "persistent"
+    persistence
   );
+  request.callback = callback;
+
+  return request;
+}
+
+function clearPrivateBrowsing(callback) {
+  let request =
+    SpecialPowers._getQuotaManager().clearStoragesForPrivateBrowsing();
   request.callback = callback;
 
   return request;
@@ -225,6 +259,13 @@ function persist(principal, callback) {
 
 function persisted(principal, callback) {
   let request = SpecialPowers._getQuotaManager().persisted(principal);
+  request.callback = callback;
+
+  return request;
+}
+
+function estimateOrigin(principal, callback) {
+  let request = SpecialPowers._getQuotaManager().estimate(principal);
   request.callback = callback;
 
   return request;
@@ -262,7 +303,7 @@ function getUsage(usageHandler, getAll) {
 function getOriginUsage(principal, fromMemory = false) {
   let request = Services.qms.getUsageForPrincipal(
     principal,
-    function() {},
+    function () {},
     fromMemory
   );
 
@@ -337,7 +378,7 @@ function installPackages(packageRelativePaths) {
 // test package definition and a shared package definition. The shared package
 // definition should contain unknown stuff which needs to be properly handled
 // in all situations.
-function verifyStorage(packageDefinitionRelativePaths, key) {
+function verifyStorage(packageDefinitionRelativePaths, key, sharedKey) {
   if (packageDefinitionRelativePaths.length != 2) {
     throw new Error("Unsupported number of package definition relative paths");
   }
@@ -577,7 +618,7 @@ function verifyStorage(packageDefinitionRelativePaths, key) {
   );
   const sharedEntries = getEntriesFromPackageDefinition(
     packageDefinitionRelativePaths[1],
-    key
+    sharedKey ? sharedKey : key
   );
 
   addSharedEntries(expectedEntries, sharedEntries, key);

@@ -1,10 +1,10 @@
-import WebIDL
-
 def WebIDLTest(parser, harness):
-    parser.parse("""
+    parser.parse(
+        """
         callback TestVariadicCallback = any(any... arguments);
-    """)
+    """
+    )
 
-    results = parser.finish()
+    parser.finish()
 
     harness.ok(True, "TestVariadicCallback callback parsed without error.")

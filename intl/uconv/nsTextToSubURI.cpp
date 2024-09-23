@@ -28,10 +28,8 @@ nsTextToSubURI::ConvertAndEscape(const nsACString& aCharset,
     return NS_ERROR_UCONV_NOCONV;
   }
   nsresult rv;
-  const Encoding* actualEncoding;
   nsAutoCString intermediate;
-  Tie(rv, actualEncoding) = encoding->Encode(aText, intermediate);
-  Unused << actualEncoding;
+  std::tie(rv, std::ignore) = encoding->Encode(aText, intermediate);
   if (NS_FAILED(rv)) {
     aOut.Truncate();
     return rv;
@@ -73,6 +71,7 @@ static bool statefulCharset(const char* charset) {
   return false;
 }
 
+// static
 nsresult nsTextToSubURI::convertURItoUnicode(const nsCString& aCharset,
                                              const nsCString& aURI,
                                              nsAString& aOut) {
@@ -102,6 +101,7 @@ nsresult nsTextToSubURI::convertURItoUnicode(const nsCString& aCharset,
 }
 
 NS_IMETHODIMP nsTextToSubURI::UnEscapeURIForUI(const nsACString& aURIFragment,
+                                               bool aDontEscape,
                                                nsAString& _retval) {
   nsAutoCString unescapedSpec;
   // skip control octets (0x00 - 0x1f and 0x7f) when unescaping
@@ -111,10 +111,13 @@ NS_IMETHODIMP nsTextToSubURI::UnEscapeURIForUI(const nsACString& aURIFragment,
   // in case of failure, return escaped URI
   // Test for != NS_OK rather than NS_FAILED, because incomplete multi-byte
   // sequences are also considered failure in this context
-  if (convertURItoUnicode(NS_LITERAL_CSTRING("UTF-8"), unescapedSpec,
-                          _retval) != NS_OK) {
+  if (convertURItoUnicode("UTF-8"_ns, unescapedSpec, _retval) != NS_OK) {
     // assume UTF-8 instead of ASCII  because hostname (IDN) may be in UTF-8
     CopyUTF8toUTF16(aURIFragment, _retval);
+  }
+
+  if (aDontEscape) {
+    return NS_OK;
   }
 
   // If there are any characters that are unsafe for URIs, reescape those.
@@ -139,9 +142,16 @@ NS_IMETHODIMP nsTextToSubURI::UnEscapeURIForUI(const nsACString& aURIFragment,
 }
 
 NS_IMETHODIMP
-nsTextToSubURI::UnEscapeNonAsciiURI(const nsACString& aCharset,
-                                    const nsACString& aURIFragment,
-                                    nsAString& _retval) {
+nsTextToSubURI::UnEscapeNonAsciiURIJS(const nsACString& aCharset,
+                                      const nsACString& aURIFragment,
+                                      nsAString& _retval) {
+  return UnEscapeNonAsciiURI(aCharset, aURIFragment, _retval);
+}
+
+// static
+nsresult nsTextToSubURI::UnEscapeNonAsciiURI(const nsACString& aCharset,
+                                             const nsACString& aURIFragment,
+                                             nsAString& _retval) {
   nsAutoCString unescapedSpec;
   NS_UnescapeURL(PromiseFlatCString(aURIFragment),
                  esc_AlwaysCopy | esc_OnlyNonASCII, unescapedSpec);

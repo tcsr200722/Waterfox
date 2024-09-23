@@ -8,9 +8,10 @@
 #define mozilla_dom_Text_h
 
 #include "mozilla/dom/CharacterData.h"
-#include "mozilla/ErrorResult.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class Text : public CharacterData {
@@ -22,7 +23,7 @@ class Text : public CharacterData {
 
   // WebIDL API
   already_AddRefed<Text> SplitText(uint32_t aOffset, ErrorResult& rv);
-  void GetWholeText(nsAString& aWholeText, ErrorResult& rv);
+  void GetWholeText(nsAString& aWholeText);
 
   static already_AddRefed<Text> Constructor(const GlobalObject& aGlobal,
                                             const nsAString& aData,

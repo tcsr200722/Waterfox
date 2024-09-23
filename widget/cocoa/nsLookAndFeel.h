@@ -12,83 +12,34 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
   nsLookAndFeel();
   virtual ~nsLookAndFeel();
 
-  void NativeInit() final;
-  virtual void RefreshImpl() override;
-  virtual nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
-  virtual nsresult GetIntImpl(IntID aID, int32_t& aResult) override;
-  virtual nsresult GetFloatImpl(FloatID aID, float& aResult) override;
-  virtual bool GetFontImpl(FontID aID, nsString& aFontName,
-                           gfxFontStyle& aFontStyle) override;
+  void NativeInit() final { EnsureInit(); }
+  void RefreshImpl() final;
+  void EnsureInit();
 
-  virtual char16_t GetPasswordCharacterImpl() override {
+  nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aColor) override;
+  nsresult NativeGetInt(IntID, int32_t& aResult) override;
+  nsresult NativeGetFloat(FloatID, float& aResult) override;
+  bool NativeGetFont(FontID aID, nsString& aFontName,
+                     gfxFontStyle& aFontStyle) override;
+
+  char16_t GetPasswordCharacterImpl() override {
     // unicode value for the bullet character, used for password textfields.
     return 0x2022;
   }
 
-  static bool UseOverlayScrollbars();
+  void RecordLookAndFeelSpecificTelemetry() override {
+    RecordAccessibilityTelemetry();
+  }
 
-  virtual nsTArray<LookAndFeelInt> GetIntCacheImpl() override;
-  virtual void SetIntCacheImpl(
-      const nsTArray<LookAndFeelInt>& aLookAndFeelIntCache) override;
+  // Having a separate, static method allows us to rely on the same
+  // chunk of telemetry logging code at initialization and when we
+  // recieve an event that changes the value of our telemetry probe.
+  static void RecordAccessibilityTelemetry();
 
  protected:
-  static bool SystemWantsOverlayScrollbars();
-  static bool AllowOverlayScrollbarsOverlap();
-
-  static bool SystemWantsDarkTheme();
-  static nscolor ProcessSelectionBackground(nscolor aColor);
-
- private:
-  int32_t mUseOverlayScrollbars;
-  bool mUseOverlayScrollbarsCached;
-
-  int32_t mAllowOverlayScrollbarsOverlap;
-  bool mAllowOverlayScrollbarsOverlapCached;
-
-  int32_t mSystemUsesDarkTheme;
-  bool mSystemUsesDarkThemeCached;
-
-  int32_t mPrefersReducedMotion = -1;
-  bool mPrefersReducedMotionCached = false;
-
-  nscolor mColorTextSelectBackground;
-  nscolor mColorTextSelectBackgroundDisabled;
-  nscolor mColorHighlight;
-  nscolor mColorMenuHover;
-  nscolor mColorTextSelectForeground;
-  nscolor mColorMenuHoverText;
-  nscolor mColorButtonText;
-  bool mHasColorButtonText;
-  nscolor mColorButtonHoverText;
-  nscolor mColorText;
-  nscolor mColorWindowText;
-  nscolor mColorActiveCaption;
-  nscolor mColorActiveBorder;
-  nscolor mColorGrayText;
-  nscolor mColorInactiveBorder;
-  nscolor mColorInactiveCaption;
-  nscolor mColorScrollbar;
-  nscolor mColorThreeDHighlight;
-  nscolor mColorMenu;
-  nscolor mColorWindowFrame;
-  nscolor mColorFieldText;
-  nscolor mColorDialog;
-  nscolor mColorDialogText;
-  nscolor mColorDragTargetZone;
-  nscolor mColorChromeActive;
-  nscolor mColorChromeInactive;
-  nscolor mColorFocusRing;
-  nscolor mColorTextSelect;
-  nscolor mColorDisabledToolbarText;
-  nscolor mColorMenuSelect;
-  nscolor mColorCellHighlight;
-  nscolor mColorEvenTreeRow;
-  nscolor mColorOddTreeRow;
-  nscolor mColorActiveSourceListSelection;
-
-  bool mInitialized;
-
-  void EnsureInit();
+  bool mInitialized = false;
+  bool mRtl = false;
+  int32_t mTitlebarHeight = 0;
 };
 
 #endif  // nsLookAndFeel_h_

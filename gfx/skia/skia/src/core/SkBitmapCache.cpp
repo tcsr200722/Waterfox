@@ -5,13 +5,26 @@
  * found in the LICENSE file.
  */
 
-#include "include/core/SkImage.h"
-#include "include/core/SkPixelRef.h"
-#include "include/core/SkRect.h"
 #include "src/core/SkBitmapCache.h"
-#include "src/core/SkMipMap.h"
+
+#include "include/core/SkBitmap.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkPixelRef.h"
+#include "include/core/SkPixmap.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkTypes.h"
+#include "include/private/base/SkMalloc.h"
+#include "include/private/base/SkMutex.h"
+#include "include/private/chromium/SkDiscardableMemory.h"
+#include "src/core/SkMipmap.h"
+#include "src/core/SkNextID.h"
 #include "src/core/SkResourceCache.h"
 #include "src/image/SkImage_Base.h"
+
+#include <cstddef>
+#include <utility>
 
 /**
  *  Use this for bitmapcache and mipmapcache entries.
@@ -50,11 +63,9 @@ public:
 
     const SkBitmapCacheDesc fDesc;
 };
-}
+}  // namespace
 
 //////////////////////
-#include "src/core/SkDiscardableMemory.h"
-#include "src/core/SkNextID.h"
 
 void SkBitmapCache_setImmutableWithID(SkPixelRef* pr, uint32_t id) {
     pr->setImmutableWithID(id);
@@ -147,7 +158,7 @@ public:
     }
 
     static bool Finder(const SkResourceCache::Rec& baseRec, void* contextBitmap) {
-        Rec* rec = (Rec*)&baseRec;
+        Rec* rec = const_cast<Rec*>(static_cast<const Rec*>(&baseRec));
         SkBitmap* result = (SkBitmap*)contextBitmap;
         return rec->install(result);
     }
@@ -230,7 +241,7 @@ public:
 };
 
 struct MipMapRec : public SkResourceCache::Rec {
-    MipMapRec(const SkBitmapCacheDesc& desc, const SkMipMap* result)
+    MipMapRec(const SkBitmapCacheDesc& desc, const SkMipmap* result)
         : fKey(desc)
         , fMipMap(result)
     {
@@ -250,7 +261,7 @@ struct MipMapRec : public SkResourceCache::Rec {
 
     static bool Finder(const SkResourceCache::Rec& baseRec, void* contextMip) {
         const MipMapRec& rec = static_cast<const MipMapRec&>(baseRec);
-        const SkMipMap* mm = SkRef(rec.fMipMap);
+        const SkMipmap* mm = SkRef(rec.fMipMap);
         // the call to ref() above triggers a "lock" in the case of discardable memory,
         // which means we can now check for null (in case the lock failed).
         if (nullptr == mm->data()) {
@@ -258,20 +269,20 @@ struct MipMapRec : public SkResourceCache::Rec {
             return false;
         }
         // the call must call unref() when they are done.
-        *(const SkMipMap**)contextMip = mm;
+        *(const SkMipmap**)contextMip = mm;
         return true;
     }
 
 private:
     MipMapKey       fKey;
-    const SkMipMap* fMipMap;
+    const SkMipmap* fMipMap;
 };
-}
+}  // namespace
 
-const SkMipMap* SkMipMapCache::FindAndRef(const SkBitmapCacheDesc& desc,
+const SkMipmap* SkMipmapCache::FindAndRef(const SkBitmapCacheDesc& desc,
                                           SkResourceCache* localCache) {
     MipMapKey key(desc);
-    const SkMipMap* result;
+    const SkMipmap* result;
 
     if (!CHECK_LOCAL(localCache, find, Find, key, MipMapRec::Finder, &result)) {
         result = nullptr;
@@ -280,17 +291,17 @@ const SkMipMap* SkMipMapCache::FindAndRef(const SkBitmapCacheDesc& desc,
 }
 
 static SkResourceCache::DiscardableFactory get_fact(SkResourceCache* localCache) {
-    return localCache ? localCache->GetDiscardableFactory()
+    return localCache ? localCache->discardableFactory()
                       : SkResourceCache::GetDiscardableFactory();
 }
 
-const SkMipMap* SkMipMapCache::AddAndRef(const SkImage_Base* image, SkResourceCache* localCache) {
+const SkMipmap* SkMipmapCache::AddAndRef(const SkImage_Base* image, SkResourceCache* localCache) {
     SkBitmap src;
-    if (!image->getROPixels(&src)) {
+    if (!image->getROPixels(nullptr, &src)) {
         return nullptr;
     }
 
-    SkMipMap* mipmap = SkMipMap::Build(src, get_fact(localCache));
+    SkMipmap* mipmap = SkMipmap::Build(src, get_fact(localCache));
     if (mipmap) {
         MipMapRec* rec = new MipMapRec(SkBitmapCacheDesc::Make(image), mipmap);
         CHECK_LOCAL(localCache, add, Add, rec);

@@ -10,12 +10,21 @@
 #include "AccessibleValue_i.c"
 
 #include "AccessibleWrap.h"
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
 #include "IUnknownImpl.h"
+#include "MsaaAccessible.h"
 
 #include "mozilla/FloatingPoint.h"
 
 using namespace mozilla::a11y;
+
+AccessibleWrap* ia2AccessibleValue::LocalAcc() {
+  return static_cast<MsaaAccessible*>(this)->LocalAcc();
+}
+
+Accessible* ia2AccessibleValue::Acc() {
+  return static_cast<MsaaAccessible*>(this)->Acc();
+}
 
 // IUnknown
 
@@ -26,10 +35,10 @@ ia2AccessibleValue::QueryInterface(REFIID iid, void** ppv) {
   *ppv = nullptr;
 
   if (IID_IAccessibleValue == iid) {
-    AccessibleWrap* valueAcc = static_cast<AccessibleWrap*>(this);
-    if (valueAcc->HasNumericValue()) {
-      *ppv = static_cast<IAccessibleValue*>(this);
-      valueAcc->AddRef();
+    Accessible* valueAcc = Acc();
+    if (valueAcc && valueAcc->HasNumericValue()) {
+      RefPtr<IAccessibleValue> result = this;
+      result.forget(ppv);
       return S_OK;
     }
 
@@ -47,16 +56,15 @@ ia2AccessibleValue::get_currentValue(VARIANT* aCurrentValue) {
 
   VariantInit(aCurrentValue);
 
-  AccessibleWrap* valueAcc = static_cast<AccessibleWrap*>(this);
-  double currentValue;
-  MOZ_ASSERT(!valueAcc->IsProxy());
-  if (valueAcc->IsDefunct()) {
+  Accessible* valueAcc = Acc();
+  if (!valueAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
+  double currentValue;
 
   currentValue = valueAcc->CurValue();
 
-  if (IsNaN(currentValue)) return S_FALSE;
+  if (std::isnan(currentValue)) return S_FALSE;
 
   aCurrentValue->vt = VT_R8;
   aCurrentValue->dblVal = currentValue;
@@ -67,10 +75,10 @@ STDMETHODIMP
 ia2AccessibleValue::setCurrentValue(VARIANT aValue) {
   if (aValue.vt != VT_R8) return E_INVALIDARG;
 
-  AccessibleWrap* valueAcc = static_cast<AccessibleWrap*>(this);
-  MOZ_ASSERT(!valueAcc->IsProxy());
-
-  if (valueAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* valueAcc = Acc();
+  if (!valueAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   return valueAcc->SetCurValue(aValue.dblVal) ? S_OK : E_FAIL;
 }
@@ -81,16 +89,15 @@ ia2AccessibleValue::get_maximumValue(VARIANT* aMaximumValue) {
 
   VariantInit(aMaximumValue);
 
-  AccessibleWrap* valueAcc = static_cast<AccessibleWrap*>(this);
-  double maximumValue;
-  MOZ_ASSERT(!valueAcc->IsProxy());
-  if (valueAcc->IsDefunct()) {
+  Accessible* valueAcc = Acc();
+  if (!valueAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
+  double maximumValue;
 
   maximumValue = valueAcc->MaxValue();
 
-  if (IsNaN(maximumValue)) return S_FALSE;
+  if (std::isnan(maximumValue)) return S_FALSE;
 
   aMaximumValue->vt = VT_R8;
   aMaximumValue->dblVal = maximumValue;
@@ -103,16 +110,15 @@ ia2AccessibleValue::get_minimumValue(VARIANT* aMinimumValue) {
 
   VariantInit(aMinimumValue);
 
-  AccessibleWrap* valueAcc = static_cast<AccessibleWrap*>(this);
-  double minimumValue;
-  MOZ_ASSERT(!valueAcc->IsProxy());
-  if (valueAcc->IsDefunct()) {
+  Accessible* valueAcc = Acc();
+  if (!valueAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
+  double minimumValue;
 
   minimumValue = valueAcc->MinValue();
 
-  if (IsNaN(minimumValue)) return S_FALSE;
+  if (std::isnan(minimumValue)) return S_FALSE;
 
   aMinimumValue->vt = VT_R8;
   aMinimumValue->dblVal = minimumValue;

@@ -7,19 +7,24 @@
 #ifndef mozilla_dom_TestingDeprecatedInterface_h
 #define mozilla_dom_TestingDeprecatedInterface_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+class nsIGlobalObject;
+
+namespace mozilla::dom {
+class GlobalObject;
 
 class TestingDeprecatedInterface final : public nsISupports,
                                          public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(TestingDeprecatedInterface)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(TestingDeprecatedInterface)
 
   static already_AddRefed<TestingDeprecatedInterface> Constructor(
       const GlobalObject& aGlobal);
@@ -40,7 +45,6 @@ class TestingDeprecatedInterface final : public nsISupports,
   nsCOMPtr<nsIGlobalObject> mGlobal;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_TestingDeprecatedInterface_h

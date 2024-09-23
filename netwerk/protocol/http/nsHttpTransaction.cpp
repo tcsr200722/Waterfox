@@ -11,23 +11,34 @@
 #include <utility>
 
 #include "HttpLog.h"
+#include "HTTPSRecordResolver.h"
 #include "NSSErrorsService.h"
-#include "TCPFastOpenLayer.h"
-#include "TunnelUtils.h"
 #include "base/basictypes.h"
+#include "mozilla/Components.h"
+#include "mozilla/glean/GleanMetrics.h"
+#include "mozilla/net/SSLTokensCache.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Tokenizer.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "MockHttpAuth.h"
 #include "nsCRT.h"
 #include "nsComponentManagerUtils.h"  // do_CreateInstance
 #include "nsHttpBasicAuth.h"
+#include "nsHttpChannel.h"
 #include "nsHttpChunkedDecoder.h"
 #include "nsHttpDigestAuth.h"
 #include "nsHttpHandler.h"
 #include "nsHttpNTLMAuth.h"
-#include "nsHttpNegotiateAuth.h"
+#ifdef MOZ_AUTH_EXTENSION
+#  include "nsHttpNegotiateAuth.h"
+#endif
 #include "nsHttpRequestHead.h"
 #include "nsHttpResponseHead.h"
 #include "nsICancelable.h"
 #include "nsIClassOfService.h"
+#include "nsIDNSByTypeRecord.h"
+#include "nsIDNSRecord.h"
+#include "nsIDNSService.h"
 #include "nsIEventTarget.h"
 #include "nsIHttpActivityObserver.h"
 #include "nsIHttpAuthenticator.h"
@@ -38,7 +49,7 @@
 #include "nsIPipe.h"
 #include "nsIRequestContext.h"
 #include "nsISeekableStream.h"
-#include "nsISSLSocketControl.h"
+#include "nsITLSSocketControl.h"
 #include "nsIThrottledInputChannel.h"
 #include "nsITransport.h"
 #include "nsMultiplexInputStream.h"
@@ -49,10 +60,9 @@
 #include "nsStringStream.h"
 #include "nsTransportUtils.h"
 #include "sslerr.h"
+#include "SpeculativeTransaction.h"
 
 //-----------------------------------------------------------------------------
-
-static NS_DEFINE_CID(kMultiplexInputStream, NS_MULTIPLEXINPUTSTREAM_CID);
 
 // Place a limit on how much non-compliant HTTP can be skipped while
 // looking for a response header
@@ -60,82 +70,13 @@ static NS_DEFINE_CID(kMultiplexInputStream, NS_MULTIPLEXINPUTSTREAM_CID);
 
 using namespace mozilla::net;
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 //-----------------------------------------------------------------------------
 // nsHttpTransaction <public>
 //-----------------------------------------------------------------------------
 
-nsHttpTransaction::nsHttpTransaction()
-    : mLock("transaction lock"),
-      mChannelId(0),
-      mRequestSize(0),
-      mRequestHead(nullptr),
-      mResponseHead(nullptr),
-      mReader(nullptr),
-      mWriter(nullptr),
-      mContentLength(-1),
-      mContentRead(0),
-      mTransferSize(0),
-      mInvalidResponseBytesRead(0),
-      mPushedStream(nullptr),
-      mInitialRwin(0),
-      mChunkedDecoder(nullptr),
-      mStatus(NS_OK),
-      mPriority(0),
-      mRestartCount(0),
-      mCaps(0),
-      mHttpVersion(HttpVersion::UNKNOWN),
-      mHttpResponseCode(0),
-      mCurrentHttpResponseHeaderSize(0),
-      mThrottlingReadAllowance(THROTTLE_NO_LIMIT),
-      mCapsToClear(0),
-      mResponseIsComplete(false),
-      mReadingStopped(false),
-      mClosed(false),
-      mConnected(false),
-      mActivated(false),
-      mHaveStatusLine(false),
-      mHaveAllHeaders(false),
-      mTransactionDone(false),
-      mDidContentStart(false),
-      mNoContent(false),
-      mSentData(false),
-      mReceivedData(false),
-      mStatusEventPending(false),
-      mHasRequestBody(false),
-      mProxyConnectFailed(false),
-      mHttpResponseMatched(false),
-      mPreserveStream(false),
-      mDispatchedAsBlocking(false),
-      mResponseTimeoutEnabled(true),
-      mForceRestart(false),
-      mReuseOnRestart(false),
-      mContentDecoding(false),
-      mContentDecodingCheck(false),
-      mDeferredSendProgress(false),
-      mWaitingOnPipeOut(false),
-      mDoNotRemoveAltSvc(false),
-      mReportedStart(false),
-      mReportedResponseHeader(false),
-      mResponseHeadTaken(false),
-      mForTakeResponseTrailers(nullptr),
-      mResponseTrailersTaken(false),
-      mTopLevelOuterContentWindowId(0),
-      mSubmittedRatePacing(false),
-      mPassedRatePacing(false),
-      mSynchronousRatePaceRequest(false),
-      mClassOfService(0),
-      mResolvedByTRR(false),
-      m0RTTInProgress(false),
-      mDoNotTryEarlyData(false),
-      mEarlyDataDisposition(EARLY_NONE),
-      mFastOpenStatus(TFO_NOT_TRIED),
-      mTrafficCategory(HttpTrafficCategory::eInvalid),
-      mProxyConnectResponseCode(0) {
-  this->mSelfAddr.inet = {};
-  this->mPeerAddr.inet = {};
+nsHttpTransaction::nsHttpTransaction() {
   LOG(("Creating nsHttpTransaction @%p\n", this));
 
 #ifdef MOZ_VALGRIND
@@ -173,15 +114,20 @@ void nsHttpTransaction::ResumeReading() {
 }
 
 bool nsHttpTransaction::EligibleForThrottling() const {
-  return (mClassOfService &
+  return (mClassOfServiceFlags &
           (nsIClassOfService::Throttleable | nsIClassOfService::DontThrottle |
            nsIClassOfService::Leader | nsIClassOfService::Unblocked)) ==
          nsIClassOfService::Throttleable;
 }
 
-void nsHttpTransaction::SetClassOfService(uint32_t cos) {
+void nsHttpTransaction::SetClassOfService(ClassOfService cos) {
+  if (mClosed) {
+    return;
+  }
+
   bool wasThrottling = EligibleForThrottling();
-  mClassOfService = cos;
+  mClassOfServiceFlags = cos.Flags();
+  mClassOfServiceIncremental = cos.Incremental();
   bool isThrottling = EligibleForThrottling();
 
   if (mConnection && wasThrottling != isThrottling) {
@@ -196,13 +142,14 @@ void nsHttpTransaction::SetClassOfService(uint32_t cos) {
   }
 }
 
-class ReleaseH2WSTrans final : public Runnable {
+class ReleaseOnSocketThread final : public mozilla::Runnable {
  public:
-  explicit ReleaseH2WSTrans(RefPtr<SpdyConnectTransaction>&& trans)
-      : Runnable("ReleaseH2WSTrans"), mTrans(std::move(trans)) {}
+  explicit ReleaseOnSocketThread(nsTArray<nsCOMPtr<nsISupports>>&& aDoomed)
+      : Runnable("ReleaseOnSocketThread"), mDoomed(std::move(aDoomed)) {}
 
-  NS_IMETHOD Run() override {
-    mTrans = nullptr;
+  NS_IMETHOD
+  Run() override {
+    mDoomed.Clear();
     return NS_OK;
   }
 
@@ -213,7 +160,9 @@ class ReleaseH2WSTrans final : public Runnable {
   }
 
  private:
-  RefPtr<SpdyConnectTransaction> mTrans;
+  virtual ~ReleaseOnSocketThread() = default;
+
+  nsTArray<nsCOMPtr<nsISupports>> mDoomed;
 };
 
 nsHttpTransaction::~nsHttpTransaction() {
@@ -230,16 +179,25 @@ nsHttpTransaction::~nsHttpTransaction() {
   }
 
   // Force the callbacks and connection to be released right now
-  mCallbacks = nullptr;
-  mConnection = nullptr;
+  {
+    MutexAutoLock lock(mLock);
+    mCallbacks = nullptr;
+  }
+
+  mEarlyHintObserver = nullptr;
 
   delete mResponseHead;
   delete mChunkedDecoder;
   ReleaseBlockingTransaction();
 
-  if (mH2WSTransaction) {
-    RefPtr<ReleaseH2WSTrans> r =
-        new ReleaseH2WSTrans(std::move(mH2WSTransaction));
+  nsTArray<nsCOMPtr<nsISupports>> arrayToRelease;
+  if (mConnection) {
+    arrayToRelease.AppendElement(mConnection.forget());
+  }
+
+  if (!arrayToRelease.IsEmpty()) {
+    RefPtr<ReleaseOnSocketThread> r =
+        new ReleaseOnSocketThread(std::move(arrayToRelease));
     r->Dispatch();
   }
 }
@@ -249,8 +207,8 @@ nsresult nsHttpTransaction::Init(
     nsIInputStream* requestBody, uint64_t requestContentLength,
     bool requestBodyHasHeaders, nsIEventTarget* target,
     nsIInterfaceRequestor* callbacks, nsITransportEventSink* eventsink,
-    uint64_t topLevelOuterContentWindowId, HttpTrafficCategory trafficCategory,
-    nsIRequestContext* requestContext, uint32_t classOfService,
+    uint64_t browserId, HttpTrafficCategory trafficCategory,
+    nsIRequestContext* requestContext, ClassOfService classOfService,
     uint32_t initialRwin, bool responseTimeoutEnabled, uint64_t channelId,
     TransactionObserverFunc&& transactionObserver,
     OnPushCallback&& aOnPushCallback,
@@ -258,6 +216,13 @@ nsresult nsHttpTransaction::Init(
   nsresult rv;
 
   LOG1(("nsHttpTransaction::Init [this=%p caps=%x]\n", this, caps));
+
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
+    LOG(
+        ("nsHttpTransaction aborting init because of app"
+         "shutdown"));
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
+  }
 
   MOZ_ASSERT(cinfo);
   MOZ_ASSERT(requestHead);
@@ -267,31 +232,9 @@ nsresult nsHttpTransaction::Init(
   mChannelId = channelId;
   mTransactionObserver = std::move(transactionObserver);
   mOnPushCallback = std::move(aOnPushCallback);
-  mTopLevelOuterContentWindowId = topLevelOuterContentWindowId;
-  LOG(("  window-id = %" PRIx64, mTopLevelOuterContentWindowId));
+  mBrowserId = browserId;
 
   mTrafficCategory = trafficCategory;
-
-  mActivityDistributor = services::GetActivityDistributor();
-  if (!mActivityDistributor) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  bool activityDistributorActive;
-  rv = mActivityDistributor->GetIsActive(&activityDistributorActive);
-  if (NS_SUCCEEDED(rv) && activityDistributorActive) {
-    // there are some observers registered at activity distributor, gather
-    // nsISupports for the channel that called Init()
-    LOG(
-        ("nsHttpTransaction::Init() "
-         "mActivityDistributor is active "
-         "this=%p",
-         this));
-  } else {
-    // there is no observer, so don't use it
-    activityDistributorActive = false;
-    mActivityDistributor = nullptr;
-  }
 
   LOG1(("nsHttpTransaction %p SetRequestContext %p\n", this, requestContext));
   mRequestContext = requestContext;
@@ -311,39 +254,20 @@ nsresult nsHttpTransaction::Init(
   mCallbacks = callbacks;
   mConsumerTarget = target;
   mCaps = caps;
+  // eventsink is a nsHttpChannel when we expect "103 Early Hints" responses.
+  // We expect it in document requests and not e.g. in TRR requests.
+  mEarlyHintObserver = do_QueryInterface(eventsink);
 
   if (requestHead->IsHead()) {
     mNoContent = true;
   }
 
-  // Make sure that there is "Content-Length: 0" header in the requestHead
-  // in case of POST and PUT methods when there is no requestBody and
-  // requestHead doesn't contain "Transfer-Encoding" header.
-  //
-  // RFC1945 section 7.2.2:
-  //   HTTP/1.0 requests containing an entity body must include a valid
-  //   Content-Length header field.
-  //
-  // RFC2616 section 4.4:
-  //   For compatibility with HTTP/1.0 applications, HTTP/1.1 requests
-  //   containing a message-body MUST include a valid Content-Length header
-  //   field unless the server is known to be HTTP/1.1 compliant.
-  if ((requestHead->IsPost() || requestHead->IsPut()) && !requestBody &&
-      !requestHead->HasHeader(nsHttp::Transfer_Encoding)) {
-    rv =
-        requestHead->SetHeader(nsHttp::Content_Length, NS_LITERAL_CSTRING("0"));
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
-  }
-
   // grab a weak reference to the request head
   mRequestHead = requestHead;
 
-  // make sure we eliminate any proxy specific headers from
-  // the request if we are using CONNECT
-  bool pruneProxyHeaders = cinfo->UsingConnect();
-
-  mReqHeaderBuf.Truncate();
-  requestHead->Flatten(mReqHeaderBuf, pruneProxyHeaders);
+  mReqHeaderBuf = nsHttp::ConvertRequestHeadToString(
+      *requestHead, !!requestBody, requestBodyHasHeaders,
+      cinfo->UsingConnect());
 
   if (LOG1_ENABLED()) {
     LOG1(("http request [\n"));
@@ -351,19 +275,19 @@ nsresult nsHttpTransaction::Init(
     LOG1(("]\n"));
   }
 
-  // If the request body does not include headers or if there is no request
-  // body, then we must add the header/body separator manually.
-  if (!requestBodyHasHeaders || !requestBody)
-    mReqHeaderBuf.AppendLiteral("\r\n");
-
   // report the request header
-  if (mActivityDistributor) {
-    rv = mActivityDistributor->ObserveActivityWithArgs(
-        HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-        NS_HTTP_ACTIVITY_SUBTYPE_REQUEST_HEADER, PR_Now(), 0, mReqHeaderBuf);
-    if (NS_FAILED(rv)) {
-      LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-    }
+  if (gHttpHandler->HttpActivityDistributorActivated()) {
+    nsCString requestBuf(mReqHeaderBuf);
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "ObserveHttpActivityWithArgs", [channelId(mChannelId), requestBuf]() {
+          if (!gHttpHandler) {
+            return;
+          }
+          gHttpHandler->ObserveHttpActivityWithArgs(
+              HttpActivityArgs(channelId),
+              NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
+              NS_HTTP_ACTIVITY_SUBTYPE_REQUEST_HEADER, PR_Now(), 0, requestBuf);
+        }));
   }
 
   // Create a string stream for the request header buf (the stream holds
@@ -384,8 +308,8 @@ nsresult nsHttpTransaction::Init(
   if (mHasRequestBody) {
     // wrap the headers and request body in a multiplexed input stream.
     nsCOMPtr<nsIMultiplexInputStream> multi;
-    rv = nsMultiplexInputStreamConstructor(
-        nullptr, NS_GET_IID(nsIMultiplexInputStream), getter_AddRefs(multi));
+    rv = nsMultiplexInputStreamConstructor(NS_GET_IID(nsIMultiplexInputStream),
+                                           getter_AddRefs(multi));
     if (NS_FAILED(rv)) return rv;
 
     rv = multi->AppendStream(headers);
@@ -433,10 +357,9 @@ nsresult nsHttpTransaction::Init(
                      : -1;
 
   // create pipe for response stream
-  rv = NS_NewPipe2(getter_AddRefs(mPipeIn), getter_AddRefs(mPipeOut), true,
-                   true, nsIOService::gDefaultSegmentSize,
-                   nsIOService::gDefaultSegmentCount);
-  if (NS_FAILED(rv)) return rv;
+  NS_NewPipe2(getter_AddRefs(mPipeIn), getter_AddRefs(mPipeOut), true, true,
+              nsIOService::gDefaultSegmentSize,
+              nsIOService::gDefaultSegmentCount);
 
   if (transWithPushedStream && aPushedStreamId) {
     RefPtr<nsHttpTransaction> trans =
@@ -444,7 +367,83 @@ nsresult nsHttpTransaction::Init(
     MOZ_ASSERT(trans);
     mPushedStream = trans->TakePushedStreamById(aPushedStreamId);
   }
+
+  bool forceUseHTTPSRR = StaticPrefs::network_dns_force_use_https_rr();
+  if ((StaticPrefs::network_dns_use_https_rr_as_altsvc() &&
+       !(mCaps & NS_HTTP_DISALLOW_HTTPS_RR)) ||
+      forceUseHTTPSRR) {
+    nsCOMPtr<nsIEventTarget> target;
+    Unused << gHttpHandler->GetSocketThreadTarget(getter_AddRefs(target));
+    if (target) {
+      if (forceUseHTTPSRR) {
+        mCaps |= NS_HTTP_FORCE_WAIT_HTTP_RR;
+      }
+
+      mResolver = new HTTPSRecordResolver(this);
+      nsCOMPtr<nsICancelable> dnsRequest;
+      rv = mResolver->FetchHTTPSRRInternal(target, getter_AddRefs(dnsRequest));
+      if (NS_SUCCEEDED(rv)) {
+        mHTTPSSVCReceivedStage = HTTPSSVC_NOT_PRESENT;
+      }
+
+      {
+        MutexAutoLock lock(mLock);
+        mDNSRequest.swap(dnsRequest);
+        if (NS_FAILED(rv)) {
+          MakeDontWaitHTTPSRR();
+        }
+      }
+    }
+  }
+
+  RefPtr<nsHttpChannel> httpChannel = do_QueryObject(eventsink);
+  if (httpChannel) {
+    RefPtr<WebTransportSessionEventListener> listener =
+        httpChannel->GetWebTransportSessionEventListener();
+    if (listener) {
+      mWebTransportSessionEventListener = std::move(listener);
+    }
+    nsCOMPtr<nsIURI> uri;
+    if (NS_SUCCEEDED(httpChannel->GetURI(getter_AddRefs(uri)))) {
+      mUrl = uri->GetSpecOrDefault();
+    }
+  }
+
   return NS_OK;
+}
+
+static inline void CreateAndStartTimer(nsCOMPtr<nsITimer>& aTimer,
+                                       nsITimerCallback* aCallback,
+                                       uint32_t aTimeout) {
+  MOZ_DIAGNOSTIC_ASSERT(OnSocketThread(), "not on socket thread");
+  MOZ_ASSERT(!aTimer);
+
+  if (!aTimeout) {
+    return;
+  }
+
+  NS_NewTimerWithCallback(getter_AddRefs(aTimer), aCallback, aTimeout,
+                          nsITimer::TYPE_ONE_SHOT);
+}
+
+void nsHttpTransaction::OnPendingQueueInserted(
+    const nsACString& aConnectionHashKey) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+
+  {
+    MutexAutoLock lock(mLock);
+    mHashKeyOfConnectionEntry.Assign(aConnectionHashKey);
+  }
+
+  // Don't create mHttp3BackupTimer if HTTPS RR is in play.
+  if (mConnInfo->IsHttp3() && !mOrigConnInfo && !mConnInfo->GetWebTransport()) {
+    // Backup timer should only be created once.
+    if (!mHttp3BackupTimerCreated) {
+      CreateAndStartTimer(mHttp3BackupTimer, this,
+                          StaticPrefs::network_http_http3_backup_timer_delay());
+      mHttp3BackupTimerCreated = true;
+    }
+  }
 }
 
 nsresult nsHttpTransaction::AsyncRead(nsIStreamListener* listener,
@@ -454,7 +453,7 @@ nsresult nsHttpTransaction::AsyncRead(nsIStreamListener* listener,
       nsInputStreamPump::Create(getter_AddRefs(transactionPump), mPipeIn);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = transactionPump->AsyncRead(listener, nullptr);
+  rv = transactionPump->AsyncRead(listener);
   NS_ENSURE_SUCCESS(rv, rv);
 
   transactionPump.forget(pump);
@@ -475,21 +474,13 @@ void nsHttpTransaction::SetH2WSConnRefTaken() {
     gSocketTransportService->Dispatch(event, NS_DISPATCH_NORMAL);
     return;
   }
-
-  if (mH2WSTransaction) {
-    // Need to let the websocket transaction/connection know we've reached
-    // this point so it can stop forwarding information through us and
-    // instead communicate directly with the websocket channel.
-    mH2WSTransaction->SetConnRefTaken();
-    mH2WSTransaction = nullptr;
-  }
 }
 
 UniquePtr<nsHttpResponseHead> nsHttpTransaction::TakeResponseHead() {
   MOZ_ASSERT(!mResponseHeadTaken, "TakeResponseHead called 2x");
 
   // Lock TakeResponseHead() against main thread
-  MutexAutoLock lock(*nsHttp::GetLock());
+  MutexAutoLock lock(mLock);
 
   mResponseHeadTaken = true;
 
@@ -507,7 +498,7 @@ UniquePtr<nsHttpHeaderArray> nsHttpTransaction::TakeResponseTrailers() {
   MOZ_ASSERT(!mResponseTrailersTaken, "TakeResponseTrailers called 2x");
 
   // Lock TakeResponseTrailers() against main thread
-  MutexAutoLock lock(*nsHttp::GetLock());
+  MutexAutoLock lock(mLock);
 
   mResponseTrailersTaken = true;
   return std::move(mForTakeResponseTrailers);
@@ -520,7 +511,7 @@ nsHttpRequestHead* nsHttpTransaction::RequestHead() { return mRequestHead; }
 uint32_t nsHttpTransaction::Http1xTransactionCount() { return 1; }
 
 nsresult nsHttpTransaction::TakeSubTransactions(
-    nsTArray<RefPtr<nsAHttpTransaction> >& outTransactions) {
+    nsTArray<RefPtr<nsAHttpTransaction>>& outTransactions) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -532,6 +523,9 @@ void nsHttpTransaction::SetConnection(nsAHttpConnection* conn) {
   {
     MutexAutoLock lock(mLock);
     mConnection = conn;
+    if (mConnection) {
+      mIsHttp3Used = mConnection->Version() == HttpVersion::v3_0;
+    }
   }
 }
 
@@ -554,7 +548,7 @@ void nsHttpTransaction::OnActivated() {
 
   if (mConnection && mRequestHead &&
       mConnection->Version() >= HttpVersion::v2_0) {
-    // So this is fun. On http/2, we want to send TE: Trailers, to be
+    // So this is fun. On http/2, we want to send TE: trailers, to be
     // spec-compliant. So we add it to the request head here. The fun part
     // is that adding a header to the request head at this point has no
     // effect on what we send on the wire, as the headers are already
@@ -562,8 +556,7 @@ void nsHttpTransaction::OnActivated() {
     // of the header happens in the h2 compression code. We still have to
     // add the header to the request head here, though, so that devtools can
     // show that we sent the header. FUN!
-    Unused << mRequestHead->SetHeader(nsHttp::TE,
-                                      NS_LITERAL_CSTRING("Trailers"));
+    Unused << mRequestHead->SetHeader(nsHttp::TE, "trailers"_ns);
   }
 
   mActivated = true;
@@ -598,13 +591,14 @@ void nsHttpTransaction::OnTransportStatus(nsITransport* transport,
 
   if (status == NS_NET_STATUS_CONNECTED_TO ||
       status == NS_NET_STATUS_WAITING_FOR) {
-    nsISocketTransport* socketTransport =
-        mConnection ? mConnection->Transport() : nullptr;
-    if (socketTransport) {
+    if (mConnection) {
       MutexAutoLock lock(mLock);
-      socketTransport->GetSelfAddr(&mSelfAddr);
-      socketTransport->GetPeerAddr(&mPeerAddr);
-      socketTransport->ResolvedByTRR(&mResolvedByTRR);
+      mConnection->GetSelfAddr(&mSelfAddr);
+      mConnection->GetPeerAddr(&mPeerAddr);
+      mResolvedByTRR = mConnection->ResolvedByTRR();
+      mEffectiveTRRMode = mConnection->EffectiveTRRMode();
+      mTRRSkipReason = mConnection->TRRSkipReason();
+      mEchConfigUsed = mConnection->GetEchConfigUsed();
     }
   }
 
@@ -626,13 +620,6 @@ void nsHttpTransaction::OnTransportStatus(nsITransport* transport,
       {
         MutexAutoLock lock(mLock);
         mTimings.tcpConnectEnd = tnow;
-        // After a socket is connected we know for sure whether data
-        // has been sent on SYN packet and if not we should update TLS
-        // start timing.
-        if ((mFastOpenStatus != TFO_DATA_SENT) &&
-            !mTimings.secureConnectionStart.IsNull()) {
-          mTimings.secureConnectionStart = tnow;
-        }
       }
     } else if (status == NS_NET_STATUS_TLS_HANDSHAKE_STARTING) {
       {
@@ -653,26 +640,18 @@ void nsHttpTransaction::OnTransportStatus(nsITransport* transport,
 
   // Need to do this before the STATUS_RECEIVING_FROM check below, to make
   // sure that the activity distributor gets told about all status events.
-  if (mActivityDistributor) {
-    // upon STATUS_WAITING_FOR; report request body sent
-    if ((mHasRequestBody) && (status == NS_NET_STATUS_WAITING_FOR)) {
-      nsresult rv = mActivityDistributor->ObserveActivityWithArgs(
-          HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-          NS_HTTP_ACTIVITY_SUBTYPE_REQUEST_BODY_SENT, PR_Now(), 0,
-          EmptyCString());
-      if (NS_FAILED(rv)) {
-        LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-      }
-    }
 
-    // report the status and progress
-    nsresult rv = mActivityDistributor->ObserveActivityWithArgs(
-        HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_SOCKET_TRANSPORT,
-        static_cast<uint32_t>(status), PR_Now(), progress, EmptyCString());
-    if (NS_FAILED(rv)) {
-      LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-    }
+  // upon STATUS_WAITING_FOR; report request body sent
+  if ((mHasRequestBody) && (status == NS_NET_STATUS_WAITING_FOR)) {
+    gHttpHandler->ObserveHttpActivityWithArgs(
+        HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
+        NS_HTTP_ACTIVITY_SUBTYPE_REQUEST_BODY_SENT, PR_Now(), 0, ""_ns);
   }
+
+  // report the status and progress
+  gHttpHandler->ObserveHttpActivityWithArgs(
+      HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_SOCKET_TRANSPORT,
+      static_cast<uint32_t>(status), PR_Now(), progress, ""_ns);
 
   // nsHttpChannel synthesizes progress events in OnDataAvailable
   if (status == NS_NET_STATUS_RECEIVING_FROM) return;
@@ -700,16 +679,21 @@ void nsHttpTransaction::OnTransportStatus(nsITransport* transport,
       return;
     }
 
-    nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
-    if (!seekable) {
+    nsCOMPtr<nsITellableStream> tellable = do_QueryInterface(mRequestStream);
+    if (!tellable) {
       LOG1(
           ("nsHttpTransaction::OnTransportStatus %p "
-           "SENDING_TO without seekable request stream\n",
+           "SENDING_TO without tellable request stream\n",
            this));
+      MOZ_ASSERT(
+          !mRequestStream,
+          "mRequestStream should be tellable as it was wrapped in "
+          "nsBufferedInputStream, which provides the tellable interface even "
+          "when wrapping non-tellable streams.");
       progress = 0;
     } else {
       int64_t prog = 0;
-      seekable->Tell(&prog);
+      tellable->Tell(&prog);
       progress = prog;
     }
 
@@ -745,7 +729,10 @@ nsresult nsHttpTransaction::ReadRequestSegment(nsIInputStream* stream,
 
   nsHttpTransaction* trans = (nsHttpTransaction*)closure;
   nsresult rv = trans->mReader->OnReadSegment(buf, count, countRead);
-  if (NS_FAILED(rv)) return rv;
+  if (NS_FAILED(rv)) {
+    trans->MaybeRefreshSecurityInfo();
+    return rv;
+  }
 
   LOG(("nsHttpTransaction::ReadRequestSegment %p read=%u", trans, *countRead));
 
@@ -764,9 +751,13 @@ nsresult nsHttpTransaction::ReadSegments(nsAHttpSegmentReader* reader,
     return mStatus;
   }
 
+  if (!m0RTTInProgress) {
+    MaybeCancelFallbackTimer();
+  }
+
   if (!mConnected && !m0RTTInProgress) {
     mConnected = true;
-    mConnection->GetSecurityInfo(getter_AddRefs(mSecurityInfo));
+    MaybeRefreshSecurityInfo();
   }
 
   mDeferredSendProgress = false;
@@ -777,10 +768,11 @@ nsresult nsHttpTransaction::ReadSegments(nsAHttpSegmentReader* reader,
 
   if (m0RTTInProgress && (mEarlyDataDisposition == EARLY_NONE) &&
       NS_SUCCEEDED(rv) && (*countRead > 0)) {
+    LOG(("mEarlyDataDisposition = EARLY_SENT"));
     mEarlyDataDisposition = EARLY_SENT;
   }
 
-  if (mDeferredSendProgress && mConnection && mConnection->Transport()) {
+  if (mDeferredSendProgress && mConnection) {
     // to avoid using mRequestStream concurrently, OnTransportStatus()
     // did not report upload status off the ReadSegments() stack from
     // nsSocketTransport do it now.
@@ -806,9 +798,9 @@ nsresult nsHttpTransaction::ReadSegments(nsAHttpSegmentReader* reader,
     if (asyncIn) {
       nsCOMPtr<nsIEventTarget> target;
       Unused << gHttpHandler->GetSocketThreadTarget(getter_AddRefs(target));
-      if (target)
+      if (target) {
         asyncIn->AsyncWait(this, 0, 0, target);
-      else {
+      } else {
         NS_ERROR("no socket thread event target");
         rv = NS_ERROR_UNEXPECTED;
       }
@@ -842,7 +834,10 @@ nsresult nsHttpTransaction::WritePipeSegment(nsIOutputStream* stream,
   // OK, now let the caller fill this segment with data.
   //
   rv = trans->mWriter->OnWriteSegment(buf, count, countWritten);
-  if (NS_FAILED(rv)) return rv;  // caller didn't want to write anything
+  if (NS_FAILED(rv)) {
+    trans->MaybeRefreshSecurityInfo();
+    return rv;  // caller didn't want to write anything
+  }
 
   LOG(("nsHttpTransaction::WritePipeSegment %p written=%u", trans,
        *countWritten));
@@ -864,7 +859,7 @@ nsresult nsHttpTransaction::WritePipeSegment(nsIOutputStream* stream,
 }
 
 bool nsHttpTransaction::ShouldThrottle() {
-  if (mClassOfService & nsIClassOfService::DontThrottle) {
+  if (mClassOfServiceFlags & nsIClassOfService::DontThrottle) {
     // We deliberately don't touch the throttling window here since
     // DontThrottle requests are expected to be long-standing media
     // streams and would just unnecessarily block running downloads.
@@ -887,7 +882,7 @@ bool nsHttpTransaction::ShouldThrottle() {
     return false;
   }
 
-  if (!(mClassOfService & nsIClassOfService::Throttleable) &&
+  if (!(mClassOfServiceFlags & nsIClassOfService::Throttleable) &&
       gHttpHandler->ConnMgr()->IsConnEntryUnderPressure(mConnInfo)) {
     LOG(("nsHttpTransaction::ShouldThrottle entry pressure this=%p", this));
     // This is expensive to check (two hashtable lookups) but may help
@@ -938,8 +933,7 @@ nsresult nsHttpTransaction::WriteSegments(nsAHttpSegmentWriter* writer,
   }
 
   if (mThrottlingReadAllowance == 0) {  // depleted
-    if (gHttpHandler->ConnMgr()->CurrentTopLevelOuterContentWindowId() !=
-        mTopLevelOuterContentWindowId) {
+    if (gHttpHandler->ConnMgr()->CurrentBrowserId() != mBrowserId) {
       nsHttp::NotifyActiveTabLoadOptimization();
     }
 
@@ -1003,9 +997,12 @@ nsresult nsHttpTransaction::WriteSegments(nsAHttpSegmentWriter* writer,
 
 bool nsHttpTransaction::ProxyConnectFailed() { return mProxyConnectFailed; }
 
-bool nsHttpTransaction::DataAlreadySent() { return false; }
+bool nsHttpTransaction::DataSentToChildProcess() { return false; }
 
-nsISupports* nsHttpTransaction::SecurityInfo() { return mSecurityInfo; }
+already_AddRefed<nsITransportSecurityInfo> nsHttpTransaction::SecurityInfo() {
+  MutexAutoLock lock(mLock);
+  return do_AddRef(mSecurityInfo);
+}
 
 bool nsHttpTransaction::HasStickyConnection() const {
   return mCaps & NS_HTTP_STICKY_CONNECTION;
@@ -1016,6 +1013,21 @@ bool nsHttpTransaction::ResponseIsComplete() { return mResponseIsComplete; }
 int64_t nsHttpTransaction::GetTransferSize() { return mTransferSize; }
 
 int64_t nsHttpTransaction::GetRequestSize() { return mRequestSize; }
+
+bool nsHttpTransaction::IsHttp3Used() { return mIsHttp3Used; }
+
+bool nsHttpTransaction::Http2Disabled() const {
+  return mCaps & NS_HTTP_DISALLOW_SPDY;
+}
+
+bool nsHttpTransaction::Http3Disabled() const {
+  return mCaps & NS_HTTP_DISALLOW_HTTP3;
+}
+
+already_AddRefed<nsHttpConnectionInfo> nsHttpTransaction::GetConnInfo() const {
+  RefPtr<nsHttpConnectionInfo> connInfo = mConnInfo->Clone();
+  return connInfo.forget();
+}
 
 already_AddRefed<Http2PushedStreamWrapper>
 nsHttpTransaction::TakePushedStreamById(uint32_t aStreamId) {
@@ -1050,11 +1062,10 @@ void nsHttpTransaction::OnPush(Http2PushedStreamWrapper* aStream) {
     return;
   }
 
-  auto entry = mIDToStreamMap.LookupForAdd(stream->StreamID());
-  MOZ_ASSERT(!entry);
-  if (!entry) {
-    entry.OrInsert([&stream]() { return stream; });
-  }
+  mIDToStreamMap.WithEntryHandle(stream->StreamID(), [&](auto&& entry) {
+    MOZ_ASSERT(!entry);
+    entry.OrInsert(stream);
+  });
 
   if (NS_FAILED(mOnPushCallback(stream->StreamID(), stream->GetResourceUrl(),
                                 stream->GetRequestString(), this))) {
@@ -1069,14 +1080,310 @@ HttpTransactionParent* nsHttpTransaction::AsHttpTransactionParent() {
   return nullptr;
 }
 
+nsHttpTransaction::HTTPSSVC_CONNECTION_FAILED_REASON
+nsHttpTransaction::ErrorCodeToFailedReason(nsresult aErrorCode) {
+  HTTPSSVC_CONNECTION_FAILED_REASON reason = HTTPSSVC_CONNECTION_OTHERS;
+  switch (aErrorCode) {
+    case NS_ERROR_UNKNOWN_HOST:
+      reason = HTTPSSVC_CONNECTION_UNKNOWN_HOST;
+      break;
+    case NS_ERROR_CONNECTION_REFUSED:
+      reason = HTTPSSVC_CONNECTION_UNREACHABLE;
+      break;
+    default:
+      if (m421Received) {
+        reason = HTTPSSVC_CONNECTION_421_RECEIVED;
+      } else if (NS_ERROR_GET_MODULE(aErrorCode) == NS_ERROR_MODULE_SECURITY) {
+        reason = HTTPSSVC_CONNECTION_SECURITY_ERROR;
+      }
+      break;
+  }
+  return reason;
+}
+
+bool nsHttpTransaction::PrepareSVCBRecordsForRetry(
+    const nsACString& aFailedDomainName, const nsACString& aFailedAlpn,
+    bool& aAllRecordsHaveEchConfig) {
+  MOZ_ASSERT(mRecordsForRetry.IsEmpty());
+  if (!mHTTPSSVCRecord) {
+    return false;
+  }
+
+  // If we already failed to connect with h3, don't select records that supports
+  // h3.
+  bool noHttp3 = mCaps & NS_HTTP_DISALLOW_HTTP3;
+
+  bool unused;
+  nsTArray<RefPtr<nsISVCBRecord>> records;
+  Unused << mHTTPSSVCRecord->GetAllRecordsWithEchConfig(
+      mCaps & NS_HTTP_DISALLOW_SPDY, noHttp3, &aAllRecordsHaveEchConfig,
+      &unused, records);
+
+  // Note that it's possible that we can't get any usable record here. For
+  // example, when http3 connection is failed, we won't select records with
+  // http3 alpn.
+
+  // If not all records have echConfig, we'll directly fallback to the origin
+  // server.
+  if (!aAllRecordsHaveEchConfig) {
+    return false;
+  }
+
+  // Take the records behind the failed one and put them into mRecordsForRetry.
+  for (const auto& record : records) {
+    nsAutoCString name;
+    record->GetName(name);
+    nsAutoCString alpn;
+    nsresult rv = record->GetSelectedAlpn(alpn);
+
+    if (name == aFailedDomainName) {
+      // If the record has no alpn or the alpn is already tried, we skip this
+      // record.
+      if (NS_FAILED(rv) || alpn == aFailedAlpn) {
+        continue;
+      }
+    }
+
+    mRecordsForRetry.InsertElementAt(0, record);
+  }
+
+  // Set mHTTPSSVCRecord to null to avoid this function being executed twice.
+  mHTTPSSVCRecord = nullptr;
+  return !mRecordsForRetry.IsEmpty();
+}
+
+already_AddRefed<nsHttpConnectionInfo>
+nsHttpTransaction::PrepareFastFallbackConnInfo(bool aEchConfigUsed) {
+  MOZ_ASSERT(mHTTPSSVCRecord && mOrigConnInfo);
+
+  RefPtr<nsHttpConnectionInfo> fallbackConnInfo;
+  nsCOMPtr<nsISVCBRecord> fastFallbackRecord;
+  Unused << mHTTPSSVCRecord->GetServiceModeRecord(
+      mCaps & NS_HTTP_DISALLOW_SPDY, true, getter_AddRefs(fastFallbackRecord));
+
+  if (fastFallbackRecord && aEchConfigUsed) {
+    nsAutoCString echConfig;
+    Unused << fastFallbackRecord->GetEchConfig(echConfig);
+    if (echConfig.IsEmpty()) {
+      fastFallbackRecord = nullptr;
+    }
+  }
+
+  if (!fastFallbackRecord) {
+    if (aEchConfigUsed) {
+      LOG(
+          ("nsHttpTransaction::PrepareFastFallbackConnInfo [this=%p] no record "
+           "can be used",
+           this));
+      return nullptr;
+    }
+
+    if (mOrigConnInfo->IsHttp3()) {
+      mOrigConnInfo->CloneAsDirectRoute(getter_AddRefs(fallbackConnInfo));
+    } else {
+      fallbackConnInfo = mOrigConnInfo;
+    }
+    return fallbackConnInfo.forget();
+  }
+
+  fallbackConnInfo =
+      mOrigConnInfo->CloneAndAdoptHTTPSSVCRecord(fastFallbackRecord);
+  return fallbackConnInfo.forget();
+}
+
+void nsHttpTransaction::PrepareConnInfoForRetry(nsresult aReason) {
+  LOG(("nsHttpTransaction::PrepareConnInfoForRetry [this=%p reason=%" PRIx32
+       "]",
+       this, static_cast<uint32_t>(aReason)));
+  RefPtr<nsHttpConnectionInfo> failedConnInfo = mConnInfo->Clone();
+  mConnInfo = nullptr;
+  bool echConfigUsed =
+      gHttpHandler->EchConfigEnabled(failedConnInfo->IsHttp3()) &&
+      !failedConnInfo->GetEchConfig().IsEmpty();
+
+  if (mFastFallbackTriggered) {
+    mFastFallbackTriggered = false;
+    MOZ_ASSERT(mBackupConnInfo);
+    mConnInfo.swap(mBackupConnInfo);
+    return;
+  }
+
+  auto useOrigConnInfoToRetry = [&]() {
+    mOrigConnInfo.swap(mConnInfo);
+    if (mConnInfo->IsHttp3() &&
+        ((mCaps & NS_HTTP_DISALLOW_HTTP3) ||
+         gHttpHandler->IsHttp3Excluded(mConnInfo->GetRoutedHost().IsEmpty()
+                                           ? mConnInfo->GetOrigin()
+                                           : mConnInfo->GetRoutedHost()))) {
+      RefPtr<nsHttpConnectionInfo> ci;
+      mConnInfo->CloneAsDirectRoute(getter_AddRefs(ci));
+      mConnInfo = ci;
+    }
+  };
+
+  if (!echConfigUsed) {
+    LOG((" echConfig is not used, fallback to origin conn info"));
+    useOrigConnInfoToRetry();
+    return;
+  }
+
+  Telemetry::HistogramID id = Telemetry::TRANSACTION_ECH_RETRY_OTHERS_COUNT;
+  auto updateCount = MakeScopeExit([&] {
+    auto entry = mEchRetryCounterMap.Lookup(id);
+    MOZ_ASSERT(entry, "table not initialized");
+    if (entry) {
+      *entry += 1;
+    }
+  });
+
+  if (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_RETRY_WITHOUT_ECH)) {
+    LOG((" Got SSL_ERROR_ECH_RETRY_WITHOUT_ECH, use empty echConfig to retry"));
+    failedConnInfo->SetEchConfig(EmptyCString());
+    failedConnInfo.swap(mConnInfo);
+    id = Telemetry::TRANSACTION_ECH_RETRY_WITHOUT_ECH_COUNT;
+    return;
+  }
+
+  if (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_RETRY_WITH_ECH)) {
+    LOG((" Got SSL_ERROR_ECH_RETRY_WITH_ECH, use retry echConfig"));
+    MOZ_ASSERT(mConnection);
+
+    nsCOMPtr<nsITLSSocketControl> socketControl;
+    if (mConnection) {
+      mConnection->GetTLSSocketControl(getter_AddRefs(socketControl));
+    }
+    MOZ_ASSERT(socketControl);
+
+    nsAutoCString retryEchConfig;
+    if (socketControl &&
+        NS_SUCCEEDED(socketControl->GetRetryEchConfig(retryEchConfig))) {
+      MOZ_ASSERT(!retryEchConfig.IsEmpty());
+
+      failedConnInfo->SetEchConfig(retryEchConfig);
+      failedConnInfo.swap(mConnInfo);
+    }
+    id = Telemetry::TRANSACTION_ECH_RETRY_WITH_ECH_COUNT;
+    return;
+  }
+
+  // Note that we retry the connection not only for SSL_ERROR_ECH_FAILED, but
+  // also for all failure cases.
+  if (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_FAILED) ||
+      NS_FAILED(aReason)) {
+    LOG((" Got SSL_ERROR_ECH_FAILED, try other records"));
+    if (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_FAILED)) {
+      id = Telemetry::TRANSACTION_ECH_RETRY_ECH_FAILED_COUNT;
+    }
+    if (mRecordsForRetry.IsEmpty()) {
+      if (mHTTPSSVCRecord) {
+        bool allRecordsHaveEchConfig = true;
+        if (!PrepareSVCBRecordsForRetry(failedConnInfo->GetRoutedHost(),
+                                        failedConnInfo->GetNPNToken(),
+                                        allRecordsHaveEchConfig)) {
+          LOG(
+              (" Can't find other records with echConfig, "
+               "allRecordsHaveEchConfig=%d",
+               allRecordsHaveEchConfig));
+          if (gHttpHandler->FallbackToOriginIfConfigsAreECHAndAllFailed() ||
+              !allRecordsHaveEchConfig) {
+            useOrigConnInfoToRetry();
+          }
+          return;
+        }
+      } else {
+        LOG((" No available records to retry"));
+        if (gHttpHandler->FallbackToOriginIfConfigsAreECHAndAllFailed()) {
+          useOrigConnInfoToRetry();
+        }
+        return;
+      }
+    }
+
+    if (LOG5_ENABLED()) {
+      LOG(("SvcDomainName to retry: ["));
+      for (const auto& r : mRecordsForRetry) {
+        nsAutoCString name;
+        r->GetName(name);
+        nsAutoCString alpn;
+        r->GetSelectedAlpn(alpn);
+        LOG((" name=%s alpn=%s", name.get(), alpn.get()));
+      }
+      LOG(("]"));
+    }
+
+    RefPtr<nsISVCBRecord> recordsForRetry =
+        mRecordsForRetry.PopLastElement().forget();
+    mConnInfo = mOrigConnInfo->CloneAndAdoptHTTPSSVCRecord(recordsForRetry);
+  }
+}
+
+void nsHttpTransaction::MaybeReportFailedSVCDomain(
+    nsresult aReason, nsHttpConnectionInfo* aFailedConnInfo) {
+  if (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_RETRY_WITHOUT_ECH) ||
+      aReason != psm::GetXPCOMFromNSSError(SSL_ERROR_ECH_RETRY_WITH_ECH)) {
+    return;
+  }
+
+  Telemetry::Accumulate(Telemetry::DNS_HTTPSSVC_CONNECTION_FAILED_REASON,
+                        ErrorCodeToFailedReason(aReason));
+
+  nsCOMPtr<nsIDNSService> dns = do_GetService(NS_DNSSERVICE_CONTRACTID);
+  if (dns) {
+    const nsCString& failedHost = aFailedConnInfo->GetRoutedHost().IsEmpty()
+                                      ? aFailedConnInfo->GetOrigin()
+                                      : aFailedConnInfo->GetRoutedHost();
+    LOG(("add failed domain name [%s] -> [%s] to exclusion list",
+         aFailedConnInfo->GetOrigin().get(), failedHost.get()));
+    Unused << dns->ReportFailedSVCDomainName(aFailedConnInfo->GetOrigin(),
+                                             failedHost);
+  }
+}
+
+bool nsHttpTransaction::ShouldRestartOn0RttError(nsresult reason) {
+  LOG(
+      ("nsHttpTransaction::ShouldRestartOn0RttError [this=%p, "
+       "mEarlyDataWasAvailable=%d error=%" PRIx32 "]\n",
+       this, mEarlyDataWasAvailable, static_cast<uint32_t>(reason)));
+  return StaticPrefs::network_http_early_data_disable_on_error() &&
+         mEarlyDataWasAvailable && PossibleZeroRTTRetryError(reason);
+}
+
+static void MaybeRemoveSSLToken(nsITransportSecurityInfo* aSecurityInfo) {
+  if (!StaticPrefs::
+          network_http_remove_resumption_token_when_early_data_failed()) {
+    return;
+  }
+  if (!aSecurityInfo) {
+    return;
+  }
+  nsAutoCString key;
+  aSecurityInfo->GetPeerId(key);
+  nsresult rv = SSLTokensCache::RemoveAll(key);
+  LOG(("RemoveSSLToken [key=%s, rv=%" PRIx32 "]", key.get(),
+       static_cast<uint32_t>(rv)));
+}
+
 void nsHttpTransaction::Close(nsresult reason) {
   LOG(("nsHttpTransaction::Close [this=%p reason=%" PRIx32 "]\n", this,
        static_cast<uint32_t>(reason)));
+
+  {
+    MutexAutoLock lock(mLock);
+    mEarlyHintObserver = nullptr;
+    mWebTransportSessionEventListener = nullptr;
+  }
 
   if (!mClosed) {
     gHttpHandler->ConnMgr()->RemoveActiveTransaction(this);
     mActivated = false;
   }
+
+  if (mDNSRequest) {
+    mDNSRequest->Cancel(NS_ERROR_ABORT);
+    mDNSRequest = nullptr;
+  }
+
+  MaybeCancelFallbackTimer();
 
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   if (reason == NS_BINDING_RETARGETED) {
@@ -1089,27 +1396,6 @@ void nsHttpTransaction::Close(nsresult reason) {
     return;
   }
 
-  // When we capture 407 from H2 proxy via CONNECT, prepare the response headers
-  // for authentication in http channel.
-  if (mTunnelProvider && reason == NS_ERROR_PROXY_AUTHENTICATION_FAILED) {
-    MOZ_ASSERT(mProxyConnectResponseCode == 407, "non-407 proxy auth failed");
-    MOZ_ASSERT(!mFlat407Headers.IsEmpty(), "Contain status line at least");
-    uint32_t unused = 0;
-
-    // Reset the reason to avoid nsHttpChannel::ProcessFallback
-    reason = ProcessData(mFlat407Headers.BeginWriting(),
-                         mFlat407Headers.Length(), &unused);
-
-    if (NS_SUCCEEDED(reason)) {
-      // prevent restarting the transaction
-      mReceivedData = true;
-    }
-
-    LOG(("nsHttpTransaction::Close [this=%p] overwrite reason to %" PRIx32
-         " for 407 proxy via CONNECT\n",
-         this, static_cast<uint32_t>(reason)));
-  }
-
   NotifyTransactionObserver(reason);
 
   if (mTokenBucketCancel) {
@@ -1117,38 +1403,39 @@ void nsHttpTransaction::Close(nsresult reason) {
     mTokenBucketCancel = nullptr;
   }
 
-  if (mActivityDistributor) {
-    // report the reponse is complete if not already reported
-    if (!mResponseIsComplete) {
-      nsresult rv = mActivityDistributor->ObserveActivityWithArgs(
-          HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-          NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_COMPLETE, PR_Now(),
-          static_cast<uint64_t>(mContentRead), EmptyCString());
-      if (NS_FAILED(rv)) {
-        LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-      }
-    }
-
-    // report that this transaction is closing
-    nsresult rv = mActivityDistributor->ObserveActivityWithArgs(
+  // report the reponse is complete if not already reported
+  if (!mResponseIsComplete) {
+    gHttpHandler->ObserveHttpActivityWithArgs(
         HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-        NS_HTTP_ACTIVITY_SUBTYPE_TRANSACTION_CLOSE, PR_Now(), 0,
-        EmptyCString());
-    if (NS_FAILED(rv)) {
-      LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-    }
+        NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_COMPLETE, PR_Now(),
+        static_cast<uint64_t>(mContentRead), ""_ns);
   }
+
+  // report that this transaction is closing
+  gHttpHandler->ObserveHttpActivityWithArgs(
+      HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
+      NS_HTTP_ACTIVITY_SUBTYPE_TRANSACTION_CLOSE, PR_Now(), 0, ""_ns);
 
   // we must no longer reference the connection!  find out if the
   // connection was being reused before letting it go.
   bool connReused = false;
-  bool isHttp2 = false;
+  bool isHttp2or3 = false;
   if (mConnection) {
     connReused = mConnection->IsReused();
-    isHttp2 = mConnection->Version() >= HttpVersion::v2_0;
+    isHttp2or3 = mConnection->Version() >= HttpVersion::v2_0;
+    if (!mConnected) {
+      MaybeRefreshSecurityInfo();
+    }
   }
   mConnected = false;
-  mTunnelProvider = nullptr;
+
+  // When mDoNotRemoveAltSvc is true, this means we want to keep the AltSvc in
+  // in the conncetion info. In this case, let's not apply HTTPS RR retry logic
+  // to make sure this transaction can be restarted with the same conncetion
+  // info.
+  bool shouldRestartTransactionForHTTPSRR =
+      mOrigConnInfo && AllowedErrorForHTTPSRRFallback(reason) &&
+      !mDoNotRemoveAltSvc;
 
   //
   // if the connection was reset or closed before we wrote any part of the
@@ -1180,29 +1467,37 @@ void nsHttpTransaction::Close(nsresult reason) {
   // the password mistakenly again from the user.
   if ((reason == NS_ERROR_NET_RESET || reason == NS_OK ||
        reason ==
-           psm::GetXPCOMFromNSSError(SSL_ERROR_DOWNGRADE_WITH_EARLY_DATA)) &&
+           psm::GetXPCOMFromNSSError(SSL_ERROR_DOWNGRADE_WITH_EARLY_DATA) ||
+       ShouldRestartOn0RttError(reason) ||
+       shouldRestartTransactionForHTTPSRR) &&
       (!(mCaps & NS_HTTP_STICKY_CONNECTION) ||
        (mCaps & NS_HTTP_CONNECTION_RESTARTABLE) ||
        (mEarlyDataDisposition == EARLY_425))) {
-    if (mForceRestart && NS_SUCCEEDED(Restart())) {
-      if (mResponseHead) {
-        mResponseHead->Reset();
+    if (mForceRestart) {
+      SetRestartReason(TRANSACTION_RESTART_FORCED);
+      if (NS_SUCCEEDED(Restart())) {
+        if (mResponseHead) {
+          mResponseHead->Reset();
+        }
+        mContentRead = 0;
+        mContentLength = -1;
+        delete mChunkedDecoder;
+        mChunkedDecoder = nullptr;
+        mHaveStatusLine = false;
+        mHaveAllHeaders = false;
+        mHttpResponseMatched = false;
+        mResponseIsComplete = false;
+        mDidContentStart = false;
+        mNoContent = false;
+        mSentData = false;
+        mReceivedData = false;
+        mSupportsHTTP3 = false;
+        LOG(("transaction force restarted\n"));
+        return;
       }
-      mContentRead = 0;
-      mContentLength = -1;
-      delete mChunkedDecoder;
-      mChunkedDecoder = nullptr;
-      mHaveStatusLine = false;
-      mHaveAllHeaders = false;
-      mHttpResponseMatched = false;
-      mResponseIsComplete = false;
-      mDidContentStart = false;
-      mNoContent = false;
-      mSentData = false;
-      mReceivedData = false;
-      LOG(("transaction force restarted\n"));
-      return;
     }
+
+    mDoNotTryEarlyData = true;
 
     // reallySentData is meant to separate the instances where data has
     // been sent by this transaction but buffered at a higher level while
@@ -1210,20 +1505,82 @@ void nsHttpTransaction::Close(nsresult reason) {
     bool reallySentData =
         mSentData && (!mConnection || mConnection->BytesWritten());
 
+    // If this is true, it means we failed to use the HTTPSSVC connection info
+    // to connect to the server. We need to retry with the original connection
+    // info.
+    shouldRestartTransactionForHTTPSRR &= !reallySentData;
+
     if (reason ==
             psm::GetXPCOMFromNSSError(SSL_ERROR_DOWNGRADE_WITH_EARLY_DATA) ||
+        PossibleZeroRTTRetryError(reason) ||
         (!mReceivedData && ((mRequestHead && mRequestHead->IsSafeMethod()) ||
-                            !reallySentData || connReused))) {
+                            !reallySentData || connReused)) ||
+        shouldRestartTransactionForHTTPSRR) {
+      if (shouldRestartTransactionForHTTPSRR) {
+        MaybeReportFailedSVCDomain(reason, mConnInfo);
+        PrepareConnInfoForRetry(reason);
+        mDontRetryWithDirectRoute = true;
+        LOG(
+            ("transaction will be restarted with the fallback connection info "
+             "key=%s",
+             mConnInfo ? mConnInfo->HashKey().get() : "None"));
+      }
+
+      if (shouldRestartTransactionForHTTPSRR) {
+        auto toRestartReason =
+            [](nsresult aStatus) -> TRANSACTION_RESTART_REASON {
+          if (aStatus == NS_ERROR_NET_RESET) {
+            return TRANSACTION_RESTART_HTTPS_RR_NET_RESET;
+          }
+          if (aStatus == NS_ERROR_CONNECTION_REFUSED) {
+            return TRANSACTION_RESTART_HTTPS_RR_CONNECTION_REFUSED;
+          }
+          if (aStatus == NS_ERROR_UNKNOWN_HOST) {
+            return TRANSACTION_RESTART_HTTPS_RR_UNKNOWN_HOST;
+          }
+          if (aStatus == NS_ERROR_NET_TIMEOUT) {
+            return TRANSACTION_RESTART_HTTPS_RR_NET_TIMEOUT;
+          }
+          if (psm::IsNSSErrorCode(-1 * NS_ERROR_GET_CODE(aStatus))) {
+            return TRANSACTION_RESTART_HTTPS_RR_SEC_ERROR;
+          }
+          MOZ_ASSERT_UNREACHABLE("Unexpected reason");
+          return TRANSACTION_RESTART_OTHERS;
+        };
+        SetRestartReason(toRestartReason(reason));
+      } else if (!reallySentData) {
+        SetRestartReason(TRANSACTION_RESTART_NO_DATA_SENT);
+      } else if (reason == psm::GetXPCOMFromNSSError(
+                               SSL_ERROR_DOWNGRADE_WITH_EARLY_DATA)) {
+        SetRestartReason(TRANSACTION_RESTART_DOWNGRADE_WITH_EARLY_DATA);
+      } else if (PossibleZeroRTTRetryError(reason)) {
+        SetRestartReason(TRANSACTION_RESTART_POSSIBLE_0RTT_ERROR);
+      }
       // if restarting fails, then we must proceed to close the pipe,
       // which will notify the channel that the transaction failed.
-
-      if (NS_SUCCEEDED(Restart())) return;
+      // Note that when echConfig is enabled, it's possible that we don't have a
+      // usable connection info to retry.
+      if (mConnInfo && NS_SUCCEEDED(Restart())) {
+        return;
+      }
+      // mConnInfo could be set to null in PrepareConnInfoForRetry() when we
+      // can't find an available https rr to retry. We have to set mConnInfo
+      // back to mOrigConnInfo to make sure no crash when mConnInfo being
+      // accessed again.
+      if (!mConnInfo) {
+        mConnInfo.swap(mOrigConnInfo);
+        MOZ_ASSERT(mConnInfo);
+      }
     }
   }
 
-  if (!mResponseIsComplete && NS_SUCCEEDED(reason) && isHttp2) {
+  Telemetry::Accumulate(Telemetry::HTTP_TRANSACTION_RESTART_REASON,
+                        mRestartReason);
+
+  if (!mResponseIsComplete && NS_SUCCEEDED(reason) && isHttp2or3) {
     // Responses without content-length header field are still complete if
-    // they are transfered over http2 and the stream is properly closed.
+    // they are transfered over http2 or http3 and the stream is properly
+    // closed.
     mResponseIsComplete = true;
   }
 
@@ -1272,9 +1629,11 @@ void nsHttpTransaction::Close(nsresult reason) {
     // sure we parse the remaining header line, and then hopefully, the
     // response will be usable (see bug 88792).
     if (!mHaveAllHeaders) {
-      char data = '\n';
+      char data[] = "\n\n";
       uint32_t unused = 0;
-      Unused << ParseHead(&data, 1, &unused);
+      // If we have a partial line already, we actually need two \ns to finish
+      // the headers section.
+      Unused << ParseHead(data, mLineBuf.IsEmpty() ? 1 : 2, &unused);
 
       if (mResponseHead->Version() == HttpVersion::v0_9) {
         // Reject 0 byte HTTP/0.9 Responses - bug 423506
@@ -1299,6 +1658,13 @@ void nsHttpTransaction::Close(nsresult reason) {
       LOG(("  keeping the connection because of mProxyConnectFailed"));
       relConn = false;
     }
+
+    // Use mOrigConnInfo as an indicator that this transaction is completed
+    // successfully with an HTTPSSVC record.
+    if (mOrigConnInfo) {
+      Telemetry::Accumulate(Telemetry::DNS_HTTPSSVC_CONNECTION_FAILED_REASON,
+                            HTTPSSVC_CONNECTION_OK);
+    }
   }
 
   // mTimings.responseEnd is normally recorded based on the end of a
@@ -1308,6 +1674,34 @@ void nsHttpTransaction::Close(nsresult reason) {
     const TimingStruct timings = Timings();
     if (timings.responseEnd.IsNull() && !timings.responseStart.IsNull()) {
       SetResponseEnd(TimeStamp::Now());
+    }
+
+    // Accumulate download throughput telemetry
+    const int64_t TELEMETRY_DOWNLOAD_SIZE_GREATER_THAN_10MB =
+        (int64_t)10 * (int64_t)(1 << 20);
+    if ((mContentRead > TELEMETRY_DOWNLOAD_SIZE_GREATER_THAN_10MB) &&
+        !timings.requestStart.IsNull() && !timings.responseEnd.IsNull()) {
+      TimeDuration elapsed = timings.responseEnd - timings.requestStart;
+      double megabits = static_cast<double>(mContentRead) * 8.0 / 1000000.0;
+      uint32_t mpbs = static_cast<uint32_t>(megabits / elapsed.ToSeconds());
+
+      switch (mHttpVersion) {
+        case HttpVersion::v1_0:
+        case HttpVersion::v1_1:
+          glean::networking::http_1_download_throughput.AccumulateSingleSample(
+              mpbs);
+          break;
+        case HttpVersion::v2_0:
+          glean::networking::http_2_download_throughput.AccumulateSingleSample(
+              mpbs);
+          break;
+        case HttpVersion::v3_0:
+          glean::networking::http_3_download_throughput.AccumulateSingleSample(
+              mpbs);
+          break;
+        default:
+          break;
+      }
     }
   }
 
@@ -1329,9 +1723,20 @@ void nsHttpTransaction::Close(nsresult reason) {
     mConnection = nullptr;
   }
 
+  if (isHttp2or3 &&
+      reason == psm::GetXPCOMFromNSSError(SSL_ERROR_PROTOCOL_VERSION_ALERT)) {
+    // Change reason to NS_ERROR_ABORT, so we avoid showing a missleading
+    // error page tthat TLS1.0 is disabled. H2 or H3 is used here so the
+    // TLS version is not a problem.
+    reason = NS_ERROR_ABORT;
+  }
   mStatus = reason;
   mTransactionDone = true;  // forcibly flag the transaction as complete
   mClosed = true;
+  if (mResolver) {
+    mResolver->Close();
+    mResolver = nullptr;
+  }
   ReleaseBlockingTransaction();
 
   // release some resources that we no longer need
@@ -1341,6 +1746,11 @@ void nsHttpTransaction::Close(nsresult reason) {
   if (mChunkedDecoder) {
     delete mChunkedDecoder;
     mChunkedDecoder = nullptr;
+  }
+
+  for (const auto& entry : mEchRetryCounterMap) {
+    Telemetry::Accumulate(static_cast<Telemetry::HistogramID>(entry.GetKey()),
+                          entry.GetData());
   }
 
   // closing this pipe triggers the channel's OnStopRequest method.
@@ -1369,6 +1779,21 @@ bool nsHttpTransaction::ResponseTimeoutEnabled() const {
 // nsHttpTransaction <private>
 //-----------------------------------------------------------------------------
 
+static inline void RemoveAlternateServiceUsedHeader(
+    nsHttpRequestHead* aRequestHead) {
+  if (aRequestHead) {
+    DebugOnly<nsresult> rv =
+        aRequestHead->SetHeader(nsHttp::Alternate_Service_Used, "0"_ns);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+  }
+}
+
+void nsHttpTransaction::SetRestartReason(TRANSACTION_RESTART_REASON aReason) {
+  if (mRestartReason == TRANSACTION_RESTART_NONE) {
+    mRestartReason = aReason;
+  }
+}
+
 nsresult nsHttpTransaction::Restart() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
 
@@ -1379,14 +1804,33 @@ nsresult nsHttpTransaction::Restart() {
   }
 
   LOG(("restarting transaction @%p\n", this));
-  mTunnelProvider = nullptr;
+
+  if (mRequestHead) {
+    // Dispatching on a new connection better w/o an ambient connection proxy
+    // auth request header to not confuse the proxy authenticator.
+    nsAutoCString proxyAuth;
+    if (NS_SUCCEEDED(
+            mRequestHead->GetHeader(nsHttp::Proxy_Authorization, proxyAuth)) &&
+        IsStickyAuthSchemeAt(proxyAuth)) {
+      Unused << mRequestHead->ClearHeader(nsHttp::Proxy_Authorization);
+    }
+  }
 
   // rewind streams in case we already wrote out the request
   nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
   if (seekable) seekable->Seek(nsISeekableStream::NS_SEEK_SET, 0);
 
+  if (mDoNotTryEarlyData) {
+    MutexAutoLock lock(mLock);
+    MaybeRemoveSSLToken(mSecurityInfo);
+  }
+
   // clear old connection state...
-  mSecurityInfo = nullptr;
+  {
+    MutexAutoLock lock(mLock);
+    mSecurityInfo = nullptr;
+  }
+
   if (mConnection) {
     if (!mReuseOnRestart) {
       mConnection->DontReuse();
@@ -1399,22 +1843,45 @@ nsresult nsHttpTransaction::Restart() {
   // to the next
   mReuseOnRestart = false;
 
-  if (!mDoNotRemoveAltSvc && !mConnInfo->GetRoutedHost().IsEmpty()) {
-    MutexAutoLock lock(*nsHttp::GetLock());
+  if (!mDoNotRemoveAltSvc &&
+      (!mConnInfo->GetRoutedHost().IsEmpty() || mConnInfo->IsHttp3()) &&
+      !mDontRetryWithDirectRoute) {
     RefPtr<nsHttpConnectionInfo> ci;
     mConnInfo->CloneAsDirectRoute(getter_AddRefs(ci));
     mConnInfo = ci;
-    if (mRequestHead) {
-      DebugOnly<nsresult> rv = mRequestHead->SetHeader(
-          nsHttp::Alternate_Service_Used, NS_LITERAL_CSTRING("0"));
-      MOZ_ASSERT(NS_SUCCEEDED(rv));
-    }
+    RemoveAlternateServiceUsedHeader(mRequestHead);
   }
 
   // Reset mDoNotRemoveAltSvc for the next try.
   mDoNotRemoveAltSvc = false;
+  mEarlyDataWasAvailable = false;
+  mRestarted = true;
+
+  // If we weren't trying to do 'proper' ECH, disable ECH GREASE when retrying.
+  if (mConnInfo->GetEchConfig().IsEmpty() &&
+      StaticPrefs::security_tls_ech_disable_grease_on_fallback()) {
+    mCaps |= NS_HTTP_DISALLOW_ECH;
+  }
+
+  mCaps |= NS_HTTP_IS_RETRY;
+
+  // Use TRANSACTION_RESTART_OTHERS as a catch-all.
+  SetRestartReason(TRANSACTION_RESTART_OTHERS);
+
+  if (!mDoNotResetIPFamilyPreference) {
+    // Reset the IP family preferences, so the new connection can try to use
+    // another IPv4 or IPv6 address.
+    gHttpHandler->ConnMgr()->ResetIPFamilyPreference(mConnInfo);
+  }
 
   return gHttpHandler->InitiateTransaction(this, mPriority);
+}
+
+bool nsHttpTransaction::TakeRestartedState() {
+  // This return true if the transaction has been restarted internally.  Used to
+  // let the consuming nsHttpChannel reset proxy authentication.  The flag is
+  // reset to false by this method.
+  return mRestarted.exchange(false);
 }
 
 char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
@@ -1431,14 +1898,17 @@ char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
   static const char ICYHeader[] = "ICY ";
   static const uint32_t ICYHeaderLen = sizeof(ICYHeader) - 1;
 
-  if (aAllowPartialMatch && (len < HTTPHeaderLen))
-    return (PL_strncasecmp(buf, HTTPHeader, len) == 0) ? buf : nullptr;
+  if (aAllowPartialMatch && (len < HTTPHeaderLen)) {
+    return (nsCRT::strncasecmp(buf, HTTPHeader, len) == 0) ? buf : nullptr;
+  }
 
   // mLineBuf can contain partial match from previous search
   if (!mLineBuf.IsEmpty()) {
     MOZ_ASSERT(mLineBuf.Length() < HTTPHeaderLen);
-    int32_t checkChars = std::min(len, HTTPHeaderLen - mLineBuf.Length());
-    if (PL_strncasecmp(buf, HTTPHeader + mLineBuf.Length(), checkChars) == 0) {
+    int32_t checkChars =
+        std::min<uint32_t>(len, HTTPHeaderLen - mLineBuf.Length());
+    if (nsCRT::strncasecmp(buf, HTTPHeader + mLineBuf.Length(), checkChars) ==
+        0) {
       mLineBuf.Append(buf, checkChars);
       if (mLineBuf.Length() == HTTPHeaderLen) {
         // We've found whole HTTPHeader sequence. Return pointer at the
@@ -1455,8 +1925,8 @@ char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
 
   bool firstByte = true;
   while (len > 0) {
-    if (PL_strncasecmp(buf, HTTPHeader,
-                       std::min<uint32_t>(len, HTTPHeaderLen)) == 0) {
+    if (nsCRT::strncasecmp(buf, HTTPHeader,
+                           std::min<uint32_t>(len, HTTPHeaderLen)) == 0) {
       if (len < HTTPHeaderLen) {
         // partial HTTPHeader sequence found
         // save partial match to mLineBuf
@@ -1474,7 +1944,7 @@ char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
     // other browsers
 
     if (firstByte && !mInvalidResponseBytesRead && len >= HTTP2HeaderLen &&
-        (PL_strncasecmp(buf, HTTP2Header, HTTP2HeaderLen) == 0)) {
+        (nsCRT::strncasecmp(buf, HTTP2Header, HTTP2HeaderLen) == 0)) {
       LOG(("nsHttpTransaction:: Identified HTTP/2.0 treating as 1.x\n"));
       return buf;
     }
@@ -1484,7 +1954,7 @@ char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
     // other browsers
 
     if (firstByte && !mInvalidResponseBytesRead && len >= HTTP3HeaderLen &&
-        (PL_strncasecmp(buf, HTTP3Header, HTTP3HeaderLen) == 0)) {
+        (nsCRT::strncasecmp(buf, HTTP3Header, HTTP3HeaderLen) == 0)) {
       LOG(("nsHttpTransaction:: Identified HTTP/3.0 treating as 1.x\n"));
       return buf;
     }
@@ -1494,7 +1964,7 @@ char* nsHttpTransaction::LocateHttpStart(char* buf, uint32_t len,
     // as HTTP/1.0 in nsHttpResponseHead::ParseVersion
 
     if (firstByte && !mInvalidResponseBytesRead && len >= ICYHeaderLen &&
-        (PL_strncasecmp(buf, ICYHeader, ICYHeaderLen) == 0)) {
+        (nsCRT::strncasecmp(buf, ICYHeader, ICYHeaderLen) == 0)) {
       LOG(("nsHttpTransaction:: Identified ICY treating as HTTP/1.0\n"));
       return buf;
     }
@@ -1511,8 +1981,10 @@ nsresult nsHttpTransaction::ParseLine(nsACString& line) {
   nsresult rv = NS_OK;
 
   if (!mHaveStatusLine) {
-    mResponseHead->ParseStatusLine(line);
-    mHaveStatusLine = true;
+    rv = mResponseHead->ParseStatusLine(line);
+    if (NS_SUCCEEDED(rv)) {
+      mHaveStatusLine = true;
+    }
     // XXX this should probably never happen
     if (mResponseHead->Version() == HttpVersion::v0_9) mHaveAllHeaders = true;
   } else {
@@ -1547,13 +2019,49 @@ nsresult nsHttpTransaction::ParseLineSegment(char* segment, uint32_t len) {
     mLineBuf.Truncate();
     // discard this response if it is a 100 continue or other 1xx status.
     uint16_t status = mResponseHead->Status();
+    if (status == 103) {
+      nsCString linkHeader;
+      nsresult rv = mResponseHead->GetHeader(nsHttp::Link, linkHeader);
+
+      nsCString referrerPolicy;
+      Unused << mResponseHead->GetHeader(nsHttp::Referrer_Policy,
+                                         referrerPolicy);
+
+      if (NS_SUCCEEDED(rv) && !linkHeader.IsEmpty()) {
+        nsCString cspHeader;
+        Unused << mResponseHead->GetHeader(nsHttp::Content_Security_Policy,
+                                           cspHeader);
+
+        nsCOMPtr<nsIEarlyHintObserver> earlyHint;
+        {
+          MutexAutoLock lock(mLock);
+          earlyHint = mEarlyHintObserver;
+        }
+        if (earlyHint) {
+          DebugOnly<nsresult> rv = NS_DispatchToMainThread(
+              NS_NewRunnableFunction(
+                  "nsIEarlyHintObserver->EarlyHint",
+                  [obs{std::move(earlyHint)}, header{std::move(linkHeader)},
+                   referrerPolicy{std::move(referrerPolicy)},
+                   cspHeader{std::move(cspHeader)}]() {
+                    obs->EarlyHint(header, referrerPolicy, cspHeader);
+                  }),
+              NS_DISPATCH_NORMAL);
+          MOZ_ASSERT(NS_SUCCEEDED(rv));
+        }
+      }
+    }
     if ((status != 101) && (status / 100 == 1)) {
-      LOG(("ignoring 1xx response\n"));
+      LOG(("ignoring 1xx response except 101 and 103\n"));
       mHaveStatusLine = false;
       mHttpResponseMatched = false;
       mConnection->SetLastTransactionExpectedNoContent(true);
       mResponseHead->Reset();
       return NS_OK;
+    }
+    if (!mConnection->IsProxyConnectInProgress()) {
+      MutexAutoLock lock(mLock);
+      mEarlyHintObserver = nullptr;
     }
     mHaveAllHeaders = true;
   }
@@ -1578,14 +2086,11 @@ nsresult nsHttpTransaction::ParseHead(char* buf, uint32_t count,
     if (!mResponseHead) return NS_ERROR_OUT_OF_MEMORY;
 
     // report that we have a least some of the response
-    if (mActivityDistributor && !mReportedStart) {
+    if (!mReportedStart) {
       mReportedStart = true;
-      rv = mActivityDistributor->ObserveActivityWithArgs(
+      gHttpHandler->ObserveHttpActivityWithArgs(
           HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-          NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_START, PR_Now(), 0, EmptyCString());
-      if (NS_FAILED(rv)) {
-        LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-      }
+          NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_START, PR_Now(), 0, ""_ns);
     }
   }
 
@@ -1603,7 +2108,9 @@ nsresult nsHttpTransaction::ParseHead(char* buf, uint32_t count,
         // Treat any 0.9 style response of a put as a failure.
         if (mRequestHead->IsPut()) return NS_ERROR_ABORT;
 
-        mResponseHead->ParseStatusLine(EmptyCString());
+        if (NS_FAILED(mResponseHead->ParseStatusLine(""_ns))) {
+          return NS_ERROR_FAILURE;
+        }
         mHaveStatusLine = true;
         mHaveAllHeaders = true;
         return NS_OK;
@@ -1677,6 +2184,33 @@ nsresult nsHttpTransaction::ParseHead(char* buf, uint32_t count,
   return NS_OK;
 }
 
+bool nsHttpTransaction::HandleWebTransportResponse(uint16_t aStatus) {
+  MOZ_ASSERT(mIsForWebTransport);
+  if (!(aStatus >= 200 && aStatus < 300)) {
+    return false;
+  }
+
+  RefPtr<Http3WebTransportSession> wtSession =
+      mConnection->GetWebTransportSession(this);
+  if (!wtSession) {
+    return false;
+  }
+
+  nsCOMPtr<WebTransportSessionEventListener> webTransportListener;
+  {
+    MutexAutoLock lock(mLock);
+    webTransportListener = mWebTransportSessionEventListener;
+    mWebTransportSessionEventListener = nullptr;
+  }
+  if (nsCOMPtr<WebTransportSessionEventListenerInternal> listener =
+          do_QueryInterface(webTransportListener)) {
+    listener->OnSessionReadyInternal(wtSession);
+    wtSession->SetWebTransportSessionEventListener(webTransportListener);
+  }
+
+  return true;
+}
+
 nsresult nsHttpTransaction::HandleContentStart() {
   LOG(("nsHttpTransaction::HandleContentStart [this=%p]\n", this));
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
@@ -1688,28 +2222,16 @@ nsresult nsHttpTransaction::HandleContentStart() {
         mEarlyDataDisposition = EARLY_425;
       } else {
         Unused << mResponseHead->SetHeader(nsHttp::X_Firefox_Early_Data,
-                                           NS_LITERAL_CSTRING("accepted"));
+                                           "accepted"_ns);
       }
     } else if (mEarlyDataDisposition == EARLY_SENT) {
       Unused << mResponseHead->SetHeader(nsHttp::X_Firefox_Early_Data,
-                                         NS_LITERAL_CSTRING("sent"));
+                                         "sent"_ns);
     } else if (mEarlyDataDisposition == EARLY_425) {
       Unused << mResponseHead->SetHeader(nsHttp::X_Firefox_Early_Data,
-                                         NS_LITERAL_CSTRING("received 425"));
+                                         "received 425"_ns);
       mEarlyDataDisposition = EARLY_NONE;
     }  // no header on NONE case
-
-    if (mFastOpenStatus == TFO_DATA_SENT) {
-      Unused << mResponseHead->SetHeader(nsHttp::X_Firefox_TCP_Fast_Open,
-                                         NS_LITERAL_CSTRING("data sent"));
-    } else if (mFastOpenStatus == TFO_TRIED) {
-      Unused << mResponseHead->SetHeader(
-          nsHttp::X_Firefox_TCP_Fast_Open,
-          NS_LITERAL_CSTRING("tried negotiating"));
-    } else if (mFastOpenStatus == TFO_FAILED) {
-      Unused << mResponseHead->SetHeader(nsHttp::X_Firefox_TCP_Fast_Open,
-                                         NS_LITERAL_CSTRING("failed"));
-    }  // no header on TFO_NOT_TRIED case
 
     if (LOG3_ENABLED()) {
       LOG3(("http response [\n"));
@@ -1748,40 +2270,90 @@ nsresult nsHttpTransaction::HandleContentStart() {
       return NS_OK;
     }
 
-    // check if this is a no-content response
-    switch (mResponseHead->Status()) {
-      case 101:
-        mPreserveStream = true;
-        [[fallthrough]];  // to other no content cases:
-      case 204:
-      case 205:
-      case 304:
+    bool responseChecked = false;
+    if (mIsForWebTransport) {
+      responseChecked = HandleWebTransportResponse(mResponseHead->Status());
+      LOG(("HandleWebTransportResponse res=%d", responseChecked));
+      if (responseChecked) {
         mNoContent = true;
-        LOG(("this response should not contain a body.\n"));
-        break;
-      case 421:
-        LOG(("Misdirected Request.\n"));
-        gHttpHandler->ClearHostMapping(mConnInfo);
-        mCaps |= NS_HTTP_REFRESH_DNS;
+        mPreserveStream = true;
+      }
+    }
 
-        // retry on a new connection - just in case
-        if (!mRestartCount) {
-          mCaps &= ~NS_HTTP_ALLOW_KEEPALIVE;
-          mForceRestart = true;  // force restart has built in loop protection
-          return NS_ERROR_NET_RESET;
-        }
-        break;
-      case 425:
-        LOG(("Too Early."));
-        if ((mEarlyDataDisposition == EARLY_425) && !mDoNotTryEarlyData) {
-          mDoNotTryEarlyData = true;
-          mForceRestart = true;  // force restart has built in loop protection
+    if (!responseChecked) {
+      // check if this is a no-content response
+      switch (mResponseHead->Status()) {
+        case 101:
+          mPreserveStream = true;
+          [[fallthrough]];  // to other no content cases:
+        case 204:
+        case 205:
+        case 304:
+          mNoContent = true;
+          LOG(("this response should not contain a body.\n"));
+          break;
+        case 408:
+          LOG(("408 Server Timeouts"));
+
           if (mConnection->Version() >= HttpVersion::v2_0) {
-            mReuseOnRestart = true;
+            mForceRestart = true;
+            return NS_ERROR_NET_RESET;
           }
-          return NS_ERROR_NET_RESET;
-        }
-        break;
+
+          // If this error could be due to a persistent connection
+          // reuse then we pass an error code of NS_ERROR_NET_RESET
+          // to trigger the transaction 'restart' mechanism.  We
+          // tell it to reset its response headers so that it will
+          // be ready to receive the new response.
+          LOG(("408 Server Timeouts now=%d lastWrite=%d", PR_IntervalNow(),
+               mConnection->LastWriteTime()));
+          if ((PR_IntervalNow() - mConnection->LastWriteTime()) >=
+              PR_MillisecondsToInterval(1000)) {
+            mForceRestart = true;
+            return NS_ERROR_NET_RESET;
+          }
+          break;
+        case 421:
+          LOG(("Misdirected Request.\n"));
+          gHttpHandler->ClearHostMapping(mConnInfo);
+
+          m421Received = true;
+          mCaps |= NS_HTTP_REFRESH_DNS;
+
+          // retry on a new connection - just in case
+          // See bug 1609410, we can't restart the transaction when
+          // NS_HTTP_STICKY_CONNECTION is set. In the case that a connection
+          // already passed NTLM authentication, restarting the transaction will
+          // cause the connection to be closed.
+          if (!mRestartCount && !(mCaps & NS_HTTP_STICKY_CONNECTION)) {
+            mCaps &= ~NS_HTTP_ALLOW_KEEPALIVE;
+            mForceRestart = true;  // force restart has built in loop protection
+            return NS_ERROR_NET_RESET;
+          }
+          break;
+        case 425:
+          LOG(("Too Early."));
+          if ((mEarlyDataDisposition == EARLY_425) && !mDoNotTryEarlyData) {
+            mDoNotTryEarlyData = true;
+            mForceRestart = true;  // force restart has built in loop protection
+            if (mConnection->Version() >= HttpVersion::v2_0) {
+              mReuseOnRestart = true;
+            }
+            return NS_ERROR_NET_RESET;
+          }
+          break;
+      }
+    }
+
+    // Remember whether HTTP3 is supported
+    mSupportsHTTP3 = nsHttpHandler::IsHttp3SupportedByServer(mResponseHead);
+
+    CollectTelemetryForUploads();
+
+    // Report telemetry
+    if (mSupportsHTTP3) {
+      Accumulate(Telemetry::TRANSACTION_WAIT_TIME_HTTP2_SUP_HTTP3,
+                 mPendingDurationTime.ToMilliseconds());
     }
 
     // If we're only connecting then we're going to be upgrading this
@@ -1799,8 +2371,9 @@ nsresult nsHttpTransaction::HandleContentStart() {
       mNoContent = true;
     }
 
-    if (mResponseHead->Status() == 200 && mH2WSTransaction) {
-      // http/2 websockets do not have response bodies
+    // preserve connection for tunnel setup - h2 websocket upgrade only
+    if (mIsHttp2Websocket && mResponseHead->Status() == 200) {
+      LOG(("nsHttpTransaction::HandleContentStart websocket upgrade resp 200"));
       mNoContent = true;
     }
 
@@ -1834,8 +2407,9 @@ nsresult nsHttpTransaction::HandleContentStart() {
             mConnection->DontReuse();
           }
         }
-      } else if (mContentLength == int64_t(-1))
+      } else if (mContentLength == int64_t(-1)) {
         LOG(("waiting for the server to close the connection.\n"));
+      }
     }
   }
 
@@ -1907,14 +2481,16 @@ nsresult nsHttpTransaction::HandleContent(char* buf, uint32_t count,
   // check for end-of-file
   if ((mContentRead == mContentLength) ||
       (mChunkedDecoder && mChunkedDecoder->ReachedEOF())) {
-    MutexAutoLock lock(*nsHttp::GetLock());
-    if (mChunkedDecoder) {
-      mForTakeResponseTrailers = mChunkedDecoder->TakeTrailers();
-    }
+    {
+      MutexAutoLock lock(mLock);
+      if (mChunkedDecoder) {
+        mForTakeResponseTrailers = mChunkedDecoder->TakeTrailers();
+      }
 
-    // the transaction is done with a complete response.
-    mTransactionDone = true;
-    mResponseIsComplete = true;
+      // the transaction is done with a complete response.
+      mTransactionDone = true;
+      mResponseIsComplete = true;
+    }
     ReleaseBlockingTransaction();
 
     if (TimingEnabled()) {
@@ -1922,25 +2498,12 @@ nsresult nsHttpTransaction::HandleContent(char* buf, uint32_t count,
     }
 
     // report the entire response has arrived
-    if (mActivityDistributor) {
-      rv = mActivityDistributor->ObserveActivityWithArgs(
-          HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-          NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_COMPLETE, PR_Now(),
-          static_cast<uint64_t>(mContentRead), EmptyCString());
-      if (NS_FAILED(rv)) {
-        LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
-      }
-    }
+    gHttpHandler->ObserveHttpActivityWithArgs(
+        HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
+        NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_COMPLETE, PR_Now(),
+        static_cast<uint64_t>(mContentRead), ""_ns);
   }
 
-  if (mConnInfo->GetIsTrrServiceChannel()) {
-    // For the TRR channel we want to increase priority so a DoH response
-    // isn't blocked by other main thread events.
-    nsCOMPtr<nsIInputStreamPriority> pri = do_QueryInterface(mPipeIn);
-    if (pri) {
-      pri->SetPriority(nsIRunnablePriority::PRIORITY_MEDIUMHIGH);
-    }
-  }
   return NS_OK;
 }
 
@@ -1968,7 +2531,7 @@ nsresult nsHttpTransaction::ProcessData(char* buf, uint32_t count,
 
     mCurrentHttpResponseHeaderSize += bytesConsumed;
     if (mCurrentHttpResponseHeaderSize >
-        gHttpHandler->MaxHttpResponseHeaderSize()) {
+        StaticPrefs::network_http_max_response_header_size()) {
       LOG(("nsHttpTransaction %p The response header exceeds the limit.\n",
            this));
       return NS_ERROR_FILE_TOO_BIG;
@@ -1978,19 +2541,22 @@ nsresult nsHttpTransaction::ProcessData(char* buf, uint32_t count,
     // if buf has some content in it, shift bytes to top of buf.
     if (count && bytesConsumed) memmove(buf, buf + bytesConsumed, count);
 
-    // report the completed response header
-    if (mActivityDistributor && mResponseHead && mHaveAllHeaders &&
-        !mReportedResponseHeader) {
-      mReportedResponseHeader = true;
-      nsAutoCString completeResponseHeaders;
-      mResponseHead->Flatten(completeResponseHeaders, false);
-      completeResponseHeaders.AppendLiteral("\r\n");
-      rv = mActivityDistributor->ObserveActivityWithArgs(
-          HttpActivityArgs(mChannelId), NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION,
-          NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_HEADER, PR_Now(), 0,
-          completeResponseHeaders);
-      if (NS_FAILED(rv)) {
-        LOG3(("ObserveActivity failed (%08x)", static_cast<uint32_t>(rv)));
+    if (mResponseHead && mHaveAllHeaders) {
+      auto reportResponseHeader = [&](uint32_t aSubType) {
+        nsAutoCString completeResponseHeaders;
+        mResponseHead->Flatten(completeResponseHeaders, false);
+        completeResponseHeaders.AppendLiteral("\r\n");
+        gHttpHandler->ObserveHttpActivityWithArgs(
+            HttpActivityArgs(mChannelId),
+            NS_HTTP_ACTIVITY_TYPE_HTTP_TRANSACTION, aSubType, PR_Now(), 0,
+            completeResponseHeaders);
+      };
+
+      if (mConnection->IsProxyConnectInProgress()) {
+        reportResponseHeader(NS_HTTP_ACTIVITY_SUBTYPE_PROXY_RESPONSE_HEADER);
+      } else if (!mReportedResponseHeader) {
+        mReportedResponseHeader = true;
+        reportResponseHeader(NS_HTTP_ACTIVITY_SUBTYPE_RESPONSE_HEADER);
       }
     }
   }
@@ -2017,7 +2583,8 @@ nsresult nsHttpTransaction::ProcessData(char* buf, uint32_t count,
     if (NS_FAILED(rv)) return rv;
     // we may have read more than our share, in which case we must give
     // the excess bytes back to the connection
-    if (mResponseIsComplete && countRemaining) {
+    if (mResponseIsComplete && countRemaining &&
+        (mConnection->Version() != HttpVersion::v3_0)) {
       MOZ_ASSERT(mConnection);
       rv = mConnection->PushBack(buf + *countRead, countRemaining);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -2100,6 +2667,41 @@ void nsHttpTransaction::DisableSpdy() {
   }
 }
 
+void nsHttpTransaction::DisableHttp2ForProxy() {
+  mCaps |= NS_HTTP_DISALLOW_HTTP2_PROXY;
+}
+
+void nsHttpTransaction::DisableHttp3(bool aAllowRetryHTTPSRR) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+
+  // mOrigConnInfo is an indicator that HTTPS RR is used, so don't mess up the
+  // connection info.
+  // When HTTPS RR is used, PrepareConnInfoForRetry() could select other h3
+  // record to connect.
+  if (mOrigConnInfo) {
+    LOG(
+        ("nsHttpTransaction::DisableHttp3 this=%p mOrigConnInfo=%s "
+         "aAllowRetryHTTPSRR=%d",
+         this, mOrigConnInfo->HashKey().get(), aAllowRetryHTTPSRR));
+    if (!aAllowRetryHTTPSRR) {
+      mCaps |= NS_HTTP_DISALLOW_HTTP3;
+    }
+    return;
+  }
+
+  mCaps |= NS_HTTP_DISALLOW_HTTP3;
+
+  MOZ_ASSERT(mConnInfo);
+  if (mConnInfo) {
+    // After CloneAsDirectRoute(), http3 will be disabled.
+    RefPtr<nsHttpConnectionInfo> connInfo;
+    mConnInfo->CloneAsDirectRoute(getter_AddRefs(connInfo));
+    RemoveAlternateServiceUsedHeader(mRequestHead);
+    MOZ_ASSERT(!connInfo->IsHttp3());
+    mConnInfo.swap(connInfo);
+  }
+}
+
 void nsHttpTransaction::CheckForStickyAuthScheme() {
   LOG(("nsHttpTransaction::CheckForStickyAuthScheme this=%p", this));
 
@@ -2122,6 +2724,15 @@ void nsHttpTransaction::CheckForStickyAuthSchemeAt(nsHttpAtom const& header) {
     return;
   }
 
+  if (IsStickyAuthSchemeAt(auth)) {
+    LOG(("  connection made sticky"));
+    // This is enough to make this transaction keep it's current connection,
+    // prevents the connection from being released back to the pool.
+    mCaps |= NS_HTTP_STICKY_CONNECTION;
+  }
+}
+
+bool nsHttpTransaction::IsStickyAuthSchemeAt(nsACString const& auth) {
   Tokenizer p(auth);
   nsAutoCString schema;
   while (p.ReadWord(schema)) {
@@ -2130,24 +2741,25 @@ void nsHttpTransaction::CheckForStickyAuthSchemeAt(nsHttpAtom const& header) {
     // using a new instance because of thread safety of auth modules refcnt
     nsCOMPtr<nsIHttpAuthenticator> authenticator;
     if (schema.EqualsLiteral("negotiate")) {
+#ifdef MOZ_AUTH_EXTENSION
       authenticator = new nsHttpNegotiateAuth();
+#endif
     } else if (schema.EqualsLiteral("basic")) {
       authenticator = new nsHttpBasicAuth();
     } else if (schema.EqualsLiteral("digest")) {
       authenticator = new nsHttpDigestAuth();
     } else if (schema.EqualsLiteral("ntlm")) {
       authenticator = new nsHttpNTLMAuth();
+    } else if (schema.EqualsLiteral("mock_auth") &&
+               PR_GetEnv("XPCSHELL_TEST_PROFILE_DIR")) {
+      authenticator = new MockHttpAuth();
     }
     if (authenticator) {
       uint32_t flags;
       nsresult rv = authenticator->GetAuthFlags(&flags);
       if (NS_SUCCEEDED(rv) &&
           (flags & nsIHttpAuthenticator::CONNECTION_BASED)) {
-        LOG(("  connection made sticky, found %s auth shema", schema.get()));
-        // This is enough to make this transaction keep it's current connection,
-        // prevents the connection from being released back to the pool.
-        mCaps |= NS_HTTP_STICKY_CONNECTION;
-        break;
+        return true;
       }
     }
 
@@ -2155,9 +2767,11 @@ void nsHttpTransaction::CheckForStickyAuthSchemeAt(nsHttpAtom const& header) {
     p.SkipUntil(Tokenizer::Token::NewLine());
     p.SkipWhites(Tokenizer::INCLUDE_NEW_LINE);
   }
+
+  return false;
 }
 
-const TimingStruct nsHttpTransaction::Timings() {
+TimingStruct nsHttpTransaction::Timings() {
   mozilla::MutexAutoLock lock(mLock);
   TimingStruct timings = mTimings;
   return timings;
@@ -2304,8 +2918,9 @@ void nsHttpTransaction::DeleteSelfOnConsumerThread() {
   } else {
     LOG(("proxying delete to consumer thread...\n"));
     nsCOMPtr<nsIRunnable> event = new DeleteHttpTransaction(this);
-    if (NS_FAILED(mConsumerTarget->Dispatch(event, NS_DISPATCH_NORMAL)))
+    if (NS_FAILED(mConsumerTarget->Dispatch(event, NS_DISPATCH_NORMAL))) {
       NS_WARNING("failed to dispatch nsHttpDeleteTransaction event");
+    }
   }
 }
 
@@ -2364,7 +2979,7 @@ nsHttpTransaction::Release() {
 }
 
 NS_IMPL_QUERY_INTERFACE(nsHttpTransaction, nsIInputStreamCallback,
-                        nsIOutputStreamCallback)
+                        nsIOutputStreamCallback, nsITimerCallback, nsINamed)
 
 //-----------------------------------------------------------------------------
 // nsHttpTransaction::nsIInputStreamCallback
@@ -2394,28 +3009,29 @@ nsHttpTransaction::OnOutputStreamReady(nsIAsyncOutputStream* out) {
   if (mConnection) {
     mConnection->TransactionHasDataToRecv(this);
     nsresult rv = mConnection->ResumeRecv();
-    if (NS_FAILED(rv)) NS_ERROR("ResumeRecv failed");
+    if (NS_FAILED(rv) && rv != NS_BASE_STREAM_WOULD_BLOCK) {
+      NS_ERROR("ResumeRecv failed");
+    }
   }
   return NS_OK;
 }
 
-void nsHttpTransaction::GetNetworkAddresses(NetAddr& self, NetAddr& peer,
-                                            bool& aResolvedByTRR) {
+void nsHttpTransaction::GetNetworkAddresses(
+    NetAddr& self, NetAddr& peer, bool& aResolvedByTRR,
+    nsIRequest::TRRMode& aEffectiveTRRMode, TRRSkippedReason& aSkipReason,
+    bool& aEchConfigUsed) {
   MutexAutoLock lock(mLock);
   self = mSelfAddr;
   peer = mPeerAddr;
   aResolvedByTRR = mResolvedByTRR;
-}
-
-bool nsHttpTransaction::CanDo0RTT() {
-  if (mRequestHead->IsSafeMethod() && !mDoNotTryEarlyData &&
-      (!mConnection || !mConnection->IsProxyConnectInProgress())) {
-    return true;
-  }
-  return false;
+  aEffectiveTRRMode = mEffectiveTRRMode;
+  aSkipReason = mTRRSkipReason;
+  aEchConfigUsed = mEchConfigUsed;
 }
 
 bool nsHttpTransaction::Do0RTT() {
+  LOG(("nsHttpTransaction::Do0RTT"));
+  mEarlyDataWasAvailable = true;
   if (mRequestHead->IsSafeMethod() && !mDoNotTryEarlyData &&
       (!mConnection || !mConnection->IsProxyConnectInProgress())) {
     m0RTTInProgress = true;
@@ -2429,12 +3045,18 @@ nsresult nsHttpTransaction::Finish0RTT(bool aRestart,
        aAlpnChanged));
   MOZ_ASSERT(m0RTTInProgress);
   m0RTTInProgress = false;
+
+  MaybeCancelFallbackTimer();
+
   if (!aRestart && (mEarlyDataDisposition == EARLY_SENT)) {
     // note that if this is invoked by a 3 param version of finish0rtt this
     // disposition might be reverted
     mEarlyDataDisposition = EARLY_ACCEPTED;
   }
   if (aRestart) {
+    // Not to use 0RTT when this transaction is restarted next time.
+    mDoNotTryEarlyData = true;
+
     // Reset request headers to be sent again.
     nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
     if (seekable) {
@@ -2445,45 +3067,9 @@ nsresult nsHttpTransaction::Finish0RTT(bool aRestart,
   } else if (!mConnected) {
     // this is code that was skipped in ::ReadSegments while in 0RTT
     mConnected = true;
-    mConnection->GetSecurityInfo(getter_AddRefs(mSecurityInfo));
+    MaybeRefreshSecurityInfo();
   }
   return NS_OK;
-}
-
-nsresult nsHttpTransaction::RestartOnFastOpenError() {
-  // This will happen on connection error during Fast Open or if connect
-  // during Fast Open takes too long. So we should not have received any
-  // data!
-  MOZ_ASSERT(!mReceivedData);
-  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-
-  LOG(
-      ("nsHttpTransaction::RestartOnFastOpenError - restarting transaction "
-       "%p\n",
-       this));
-
-  // rewind streams in case we already wrote out the request
-  nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
-  if (seekable) seekable->Seek(nsISeekableStream::NS_SEEK_SET, 0);
-  // clear old connection state...
-  mSecurityInfo = nullptr;
-
-  if (!mConnInfo->GetRoutedHost().IsEmpty()) {
-    MutexAutoLock lock(*nsHttp::GetLock());
-    RefPtr<nsHttpConnectionInfo> ci;
-    mConnInfo->CloneAsDirectRoute(getter_AddRefs(ci));
-    mConnInfo = ci;
-  }
-  mEarlyDataDisposition = EARLY_NONE;
-  m0RTTInProgress = false;
-  mFastOpenStatus = TFO_FAILED;
-  mTimings = TimingStruct();
-  return NS_OK;
-}
-
-void nsHttpTransaction::SetFastOpenStatus(uint8_t aStatus) {
-  LOG(("nsHttpTransaction::SetFastOpenStatus %d [this=%p]\n", aStatus, this));
-  mFastOpenStatus = aStatus;
 }
 
 void nsHttpTransaction::Refused0RTT() {
@@ -2501,7 +3087,7 @@ void nsHttpTransaction::SetHttpTrailers(nsCString& aTrailers) {
   UniquePtr<nsHttpHeaderArray> httpTrailers(new nsHttpHeaderArray());
   // Given it's usually null, use double-check locking for performance.
   if (mForTakeResponseTrailers) {
-    MutexAutoLock lock(*nsHttp::GetLock());
+    MutexAutoLock lock(mLock);
     if (mForTakeResponseTrailers) {
       // Copy the trailer. |TakeResponseTrailers| gets the original trailer
       // until the final swap.
@@ -2539,7 +3125,7 @@ void nsHttpTransaction::SetHttpTrailers(nsCString& aTrailers) {
     httpTrailers = nullptr;
   }
 
-  MutexAutoLock lock(*nsHttp::GetLock());
+  MutexAutoLock lock(mLock);
   std::swap(mForTakeResponseTrailers, httpTrailers);
 }
 
@@ -2554,13 +3140,6 @@ bool nsHttpTransaction::IsWebsocketUpgrade() {
   return false;
 }
 
-void nsHttpTransaction::SetH2WSTransaction(
-    SpdyConnectTransaction* aH2WSTransaction) {
-  MOZ_ASSERT(OnSocketThread());
-
-  mH2WSTransaction = aH2WSTransaction;
-}
-
 void nsHttpTransaction::OnProxyConnectComplete(int32_t aResponseCode) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(mConnInfo->UsingConnect());
@@ -2568,12 +3147,10 @@ void nsHttpTransaction::OnProxyConnectComplete(int32_t aResponseCode) {
   LOG(("nsHttpTransaction::OnProxyConnectComplete %p aResponseCode=%d", this,
        aResponseCode));
 
-  MutexAutoLock lock(mLock);
   mProxyConnectResponseCode = aResponseCode;
 }
 
 int32_t nsHttpTransaction::GetProxyConnectResponseCode() {
-  MutexAutoLock lock(mLock);
   return mProxyConnectResponseCode;
 }
 
@@ -2605,9 +3182,8 @@ void nsHttpTransaction::NotifyTransactionObserver(nsresult reason) {
                  ((mConnection->Version() == HttpVersion::v2_0) ||
                   (mConnection->Version() == HttpVersion::v3_0)));
 
-    nsCOMPtr<nsISupports> secInfo;
-    mConnection->GetSecurityInfo(getter_AddRefs(secInfo));
-    nsCOMPtr<nsISSLSocketControl> socketControl = do_QueryInterface(secInfo);
+    nsCOMPtr<nsITLSSocketControl> socketControl;
+    mConnection->GetTLSSocketControl(getter_AddRefs(socketControl));
     LOG(
         ("nsHttpTransaction::NotifyTransactionObserver"
          " version %u socketControl %p\n",
@@ -2627,5 +3203,439 @@ void nsHttpTransaction::NotifyTransactionObserver(nsresult reason) {
   obs(std::move(result));
 }
 
-}  // namespace net
-}  // namespace mozilla
+void nsHttpTransaction::UpdateConnectionInfo(nsHttpConnectionInfo* aConnInfo) {
+  MOZ_ASSERT(aConnInfo);
+
+  if (mActivated) {
+    MOZ_ASSERT(false, "Should not update conn info after activated");
+    return;
+  }
+
+  mOrigConnInfo = mConnInfo->Clone();
+  mConnInfo = aConnInfo;
+}
+
+nsresult nsHttpTransaction::OnHTTPSRRAvailable(
+    nsIDNSHTTPSSVCRecord* aHTTPSSVCRecord,
+    nsISVCBRecord* aHighestPriorityRecord) {
+  LOG(("nsHttpTransaction::OnHTTPSRRAvailable [this=%p] mActivated=%d", this,
+       mActivated));
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+
+  {
+    MutexAutoLock lock(mLock);
+    MakeDontWaitHTTPSRR();
+    mDNSRequest = nullptr;
+  }
+
+  if (!mResolver) {
+    LOG(("The transaction is not interested in HTTPS record anymore."));
+    return NS_OK;
+  }
+
+  RefPtr<nsHttpTransaction> deleteProtector(this);
+
+  uint32_t receivedStage = HTTPSSVC_NO_USABLE_RECORD;
+  // Make sure we set the correct value to |mHTTPSSVCReceivedStage|, since we
+  // also use this value to indicate whether HTTPS RR is used or not.
+  auto updateHTTPSSVCReceivedStage = MakeScopeExit([&] {
+    mHTTPSSVCReceivedStage = receivedStage;
+
+    // In the case that an HTTPS RR is unavailable, we should call
+    // ProcessPendingQ to make sure this transition to be processed soon.
+    if (!mHTTPSSVCRecord) {
+      gHttpHandler->ConnMgr()->ProcessPendingQ(mConnInfo);
+    }
+  });
+
+  nsCOMPtr<nsIDNSHTTPSSVCRecord> record = aHTTPSSVCRecord;
+  if (!record) {
+    return NS_ERROR_FAILURE;
+  }
+
+  bool hasIPAddress = false;
+  Unused << record->GetHasIPAddresses(&hasIPAddress);
+
+  if (mActivated) {
+    receivedStage = hasIPAddress ? HTTPSSVC_WITH_IPHINT_RECEIVED_STAGE_2
+                                 : HTTPSSVC_WITHOUT_IPHINT_RECEIVED_STAGE_2;
+    return NS_OK;
+  }
+
+  receivedStage = hasIPAddress ? HTTPSSVC_WITH_IPHINT_RECEIVED_STAGE_1
+                               : HTTPSSVC_WITHOUT_IPHINT_RECEIVED_STAGE_1;
+
+  nsCOMPtr<nsISVCBRecord> svcbRecord = aHighestPriorityRecord;
+  if (!svcbRecord) {
+    LOG(("  no usable record!"));
+    nsCOMPtr<nsIDNSService> dns = do_GetService(NS_DNSSERVICE_CONTRACTID);
+    bool allRecordsExcluded = false;
+    Unused << record->GetAllRecordsExcluded(&allRecordsExcluded);
+    Telemetry::Accumulate(Telemetry::DNS_HTTPSSVC_CONNECTION_FAILED_REASON,
+                          allRecordsExcluded
+                              ? HTTPSSVC_CONNECTION_ALL_RECORDS_EXCLUDED
+                              : HTTPSSVC_CONNECTION_NO_USABLE_RECORD);
+    if (allRecordsExcluded &&
+        StaticPrefs::network_dns_httpssvc_reset_exclustion_list() && dns) {
+      Unused << dns->ResetExcludedSVCDomainName(mConnInfo->GetOrigin());
+      if (NS_FAILED(record->GetServiceModeRecord(mCaps & NS_HTTP_DISALLOW_SPDY,
+                                                 mCaps & NS_HTTP_DISALLOW_HTTP3,
+                                                 getter_AddRefs(svcbRecord)))) {
+        return NS_ERROR_FAILURE;
+      }
+    } else {
+      return NS_ERROR_FAILURE;
+    }
+  }
+
+  // Remember this RR set. In the case that the connection establishment failed,
+  // we will use other records to retry.
+  mHTTPSSVCRecord = record;
+
+  RefPtr<nsHttpConnectionInfo> newInfo =
+      mConnInfo->CloneAndAdoptHTTPSSVCRecord(svcbRecord);
+  // Don't fallback until we support WebTransport over HTTP/2.
+  // TODO: implement fallback in bug 1874102.
+  bool needFastFallback = newInfo->IsHttp3() && !newInfo->GetWebTransport();
+  bool foundInPendingQ = gHttpHandler->ConnMgr()->RemoveTransFromConnEntry(
+      this, mHashKeyOfConnectionEntry);
+
+  // Adopt the new connection info, so this transaction will be added into the
+  // new connection entry.
+  UpdateConnectionInfo(newInfo);
+
+  // If this transaction is sucessfully removed from a connection entry, we call
+  // ProcessNewTransaction to process it immediately.
+  // If not, this means that nsHttpTransaction::OnHTTPSRRAvailable happens
+  // before ProcessNewTransaction and this transaction will be processed later.
+  if (foundInPendingQ) {
+    if (NS_FAILED(gHttpHandler->ConnMgr()->ProcessNewTransaction(this))) {
+      LOG(("Failed to process this transaction."));
+      return NS_ERROR_FAILURE;
+    }
+  }
+
+  // In case we already have mHttp3BackupTimer, cancel it.
+  MaybeCancelFallbackTimer();
+
+  if (needFastFallback) {
+    CreateAndStartTimer(
+        mFastFallbackTimer, this,
+        StaticPrefs::network_dns_httpssvc_http3_fast_fallback_timeout());
+  }
+
+  // Prefetch the A/AAAA records of the target name.
+  nsAutoCString targetName;
+  Unused << svcbRecord->GetName(targetName);
+  if (mResolver) {
+    mResolver->PrefetchAddrRecord(targetName, mCaps & NS_HTTP_REFRESH_DNS);
+  }
+
+  // echConfig is used, so initialize the retry counters to 0.
+  if (!mConnInfo->GetEchConfig().IsEmpty()) {
+    mEchRetryCounterMap.InsertOrUpdate(
+        Telemetry::TRANSACTION_ECH_RETRY_WITH_ECH_COUNT, 0);
+    mEchRetryCounterMap.InsertOrUpdate(
+        Telemetry::TRANSACTION_ECH_RETRY_WITHOUT_ECH_COUNT, 0);
+    mEchRetryCounterMap.InsertOrUpdate(
+        Telemetry::TRANSACTION_ECH_RETRY_ECH_FAILED_COUNT, 0);
+    mEchRetryCounterMap.InsertOrUpdate(
+        Telemetry::TRANSACTION_ECH_RETRY_OTHERS_COUNT, 0);
+  }
+
+  return NS_OK;
+}
+
+uint32_t nsHttpTransaction::HTTPSSVCReceivedStage() {
+  return mHTTPSSVCReceivedStage;
+}
+
+void nsHttpTransaction::MaybeCancelFallbackTimer() {
+  MOZ_DIAGNOSTIC_ASSERT(OnSocketThread(), "not on socket thread");
+
+  if (mFastFallbackTimer) {
+    mFastFallbackTimer->Cancel();
+    mFastFallbackTimer = nullptr;
+  }
+
+  if (mHttp3BackupTimer) {
+    mHttp3BackupTimer->Cancel();
+    mHttp3BackupTimer = nullptr;
+  }
+}
+
+void nsHttpTransaction::OnBackupConnectionReady(bool aTriggeredByHTTPSRR) {
+  LOG(
+      ("nsHttpTransaction::OnBackupConnectionReady [%p] mConnected=%d "
+       "aTriggeredByHTTPSRR=%d",
+       this, mConnected, aTriggeredByHTTPSRR));
+  if (mConnected || mClosed || mRestarted) {
+    return;
+  }
+
+  // If HTTPS RR is in play, don't mess up the fallback mechansim of HTTPS RR.
+  if (!aTriggeredByHTTPSRR && mOrigConnInfo) {
+    return;
+  }
+
+  if (mConnection) {
+    // The transaction will only be restarted when we already have a connection.
+    // When there is no connection, this transaction will be moved to another
+    // connection entry.
+    SetRestartReason(aTriggeredByHTTPSRR
+                         ? TRANSACTION_RESTART_HTTPS_RR_FAST_FALLBACK
+                         : TRANSACTION_RESTART_HTTP3_FAST_FALLBACK);
+  }
+
+  mCaps |= NS_HTTP_DISALLOW_HTTP3;
+
+  // Need to backup the origin conn info, since UpdateConnectionInfo() will be
+  // called in HandleFallback() and mOrigConnInfo will be
+  // replaced.
+  RefPtr<nsHttpConnectionInfo> backup = mOrigConnInfo;
+  HandleFallback(mBackupConnInfo);
+  mOrigConnInfo.swap(backup);
+
+  RemoveAlternateServiceUsedHeader(mRequestHead);
+
+  if (mResolver) {
+    if (mBackupConnInfo) {
+      const nsCString& host = mBackupConnInfo->GetRoutedHost().IsEmpty()
+                                  ? mBackupConnInfo->GetOrigin()
+                                  : mBackupConnInfo->GetRoutedHost();
+      mResolver->PrefetchAddrRecord(host, Caps() & NS_HTTP_REFRESH_DNS);
+    }
+
+    if (!aTriggeredByHTTPSRR) {
+      // We are about to use this backup connection. We shoud not try to use
+      // HTTPS RR at this point.
+      mResolver->Close();
+      mResolver = nullptr;
+    }
+  }
+}
+
+static void CreateBackupConnection(
+    nsHttpConnectionInfo* aBackupConnInfo, nsIInterfaceRequestor* aCallbacks,
+    uint32_t aCaps, std::function<void(bool)>&& aResultCallback) {
+  aBackupConnInfo->SetFallbackConnection(true);
+  RefPtr<SpeculativeTransaction> trans = new SpeculativeTransaction(
+      aBackupConnInfo, aCallbacks, aCaps | NS_HTTP_DISALLOW_HTTP3,
+      std::move(aResultCallback));
+  uint32_t limit =
+      StaticPrefs::network_http_http3_parallel_fallback_conn_limit();
+  if (limit) {
+    trans->SetParallelSpeculativeConnectLimit(limit);
+    trans->SetIgnoreIdle(true);
+  }
+  gHttpHandler->ConnMgr()->DoFallbackConnection(trans, false);
+}
+
+void nsHttpTransaction::OnHttp3BackupTimer() {
+  LOG(("nsHttpTransaction::OnHttp3BackupTimer [%p]", this));
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  MOZ_ASSERT(mConnInfo->IsHttp3());
+
+  mHttp3BackupTimer = nullptr;
+
+  mConnInfo->CloneAsDirectRoute(getter_AddRefs(mBackupConnInfo));
+  MOZ_ASSERT(!mBackupConnInfo->IsHttp3());
+
+  RefPtr<nsHttpTransaction> self = this;
+  auto callback = [self](bool aSucceded) {
+    if (aSucceded) {
+      self->OnBackupConnectionReady(false);
+    }
+  };
+
+  nsCOMPtr<nsIInterfaceRequestor> callbacks;
+  {
+    MutexAutoLock lock(mLock);
+    callbacks = mCallbacks;
+  }
+  CreateBackupConnection(mBackupConnInfo, callbacks, mCaps,
+                         std::move(callback));
+}
+
+void nsHttpTransaction::OnFastFallbackTimer() {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  LOG(("nsHttpTransaction::OnFastFallbackTimer [%p] mConnected=%d", this,
+       mConnected));
+
+  mFastFallbackTimer = nullptr;
+
+  MOZ_ASSERT(mHTTPSSVCRecord && mOrigConnInfo);
+  if (!mHTTPSSVCRecord || !mOrigConnInfo) {
+    return;
+  }
+
+  bool echConfigUsed = gHttpHandler->EchConfigEnabled(mConnInfo->IsHttp3()) &&
+                       !mConnInfo->GetEchConfig().IsEmpty();
+  mBackupConnInfo = PrepareFastFallbackConnInfo(echConfigUsed);
+  if (!mBackupConnInfo) {
+    return;
+  }
+
+  MOZ_ASSERT(!mBackupConnInfo->IsHttp3());
+
+  RefPtr<nsHttpTransaction> self = this;
+  auto callback = [self](bool aSucceded) {
+    if (!aSucceded) {
+      return;
+    }
+
+    self->mFastFallbackTriggered = true;
+    self->OnBackupConnectionReady(true);
+  };
+
+  nsCOMPtr<nsIInterfaceRequestor> callbacks;
+  {
+    MutexAutoLock lock(mLock);
+    callbacks = mCallbacks;
+  }
+  CreateBackupConnection(mBackupConnInfo, callbacks, mCaps,
+                         std::move(callback));
+}
+
+void nsHttpTransaction::HandleFallback(
+    nsHttpConnectionInfo* aFallbackConnInfo) {
+  if (mConnection) {
+    MOZ_ASSERT(mActivated);
+    // Close the transaction with NS_ERROR_NET_RESET, since we know doing this
+    // will make transaction to be restarted.
+    mConnection->CloseTransaction(this, NS_ERROR_NET_RESET);
+    return;
+  }
+
+  if (!aFallbackConnInfo) {
+    // Nothing to do here.
+    return;
+  }
+
+  LOG(("nsHttpTransaction %p HandleFallback to connInfo[%s]", this,
+       aFallbackConnInfo->HashKey().get()));
+
+  bool foundInPendingQ = gHttpHandler->ConnMgr()->RemoveTransFromConnEntry(
+      this, mHashKeyOfConnectionEntry);
+  if (!foundInPendingQ) {
+    MOZ_ASSERT(false, "transaction not in entry");
+    return;
+  }
+
+  // rewind streams in case we already wrote out the request
+  nsCOMPtr<nsISeekableStream> seekable = do_QueryInterface(mRequestStream);
+  if (seekable) {
+    seekable->Seek(nsISeekableStream::NS_SEEK_SET, 0);
+  }
+
+  UpdateConnectionInfo(aFallbackConnInfo);
+  Unused << gHttpHandler->ConnMgr()->ProcessNewTransaction(this);
+}
+
+NS_IMETHODIMP
+nsHttpTransaction::Notify(nsITimer* aTimer) {
+  MOZ_DIAGNOSTIC_ASSERT(OnSocketThread(), "not on socket thread");
+
+  if (!gHttpHandler || !gHttpHandler->ConnMgr()) {
+    return NS_OK;
+  }
+
+  if (aTimer == mFastFallbackTimer) {
+    OnFastFallbackTimer();
+  } else if (aTimer == mHttp3BackupTimer) {
+    OnHttp3BackupTimer();
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsHttpTransaction::GetName(nsACString& aName) {
+  aName.AssignLiteral("nsHttpTransaction");
+  return NS_OK;
+}
+
+bool nsHttpTransaction::GetSupportsHTTP3() { return mSupportsHTTP3; }
+
+const int64_t TELEMETRY_REQUEST_SIZE_10M = (int64_t)10 * (int64_t)(1 << 20);
+const int64_t TELEMETRY_REQUEST_SIZE_50M = (int64_t)50 * (int64_t)(1 << 20);
+const int64_t TELEMETRY_REQUEST_SIZE_100M = (int64_t)100 * (int64_t)(1 << 20);
+
+void nsHttpTransaction::CollectTelemetryForUploads() {
+  if ((mRequestSize < TELEMETRY_REQUEST_SIZE_10M) ||
+      mTimings.requestStart.IsNull() || mTimings.responseStart.IsNull()) {
+    return;
+  }
+
+  // We will briefly continue to collect HTTP_UPLOAD_BANDWIDTH_MBPS
+  // (a keyed histogram) while live experiments depend on it.
+  // Once complete, we can remove and use the glean probes,
+  // http_1/2/3_upload_throughput.
+  nsAutoCString protocolVersion(nsHttp::GetProtocolVersion(mHttpVersion));
+  TimeDuration sendTime = mTimings.responseStart - mTimings.requestStart;
+  double megabits = static_cast<double>(mRequestSize) * 8.0 / 1000000.0;
+  uint32_t mpbs = static_cast<uint32_t>(megabits / sendTime.ToSeconds());
+  Telemetry::Accumulate(Telemetry::HTTP_UPLOAD_BANDWIDTH_MBPS, protocolVersion,
+                        mpbs);
+
+  switch (mHttpVersion) {
+    case HttpVersion::v1_0:
+    case HttpVersion::v1_1:
+      glean::networking::http_1_upload_throughput.AccumulateSingleSample(mpbs);
+      if (mRequestSize <= TELEMETRY_REQUEST_SIZE_50M) {
+        glean::networking::http_1_upload_throughput_10_50
+            .AccumulateSingleSample(mpbs);
+      } else if (mRequestSize <= TELEMETRY_REQUEST_SIZE_100M) {
+        glean::networking::http_1_upload_throughput_50_100
+            .AccumulateSingleSample(mpbs);
+      } else {
+        glean::networking::http_1_upload_throughput_100.AccumulateSingleSample(
+            mpbs);
+      }
+      break;
+    case HttpVersion::v2_0:
+      glean::networking::http_2_upload_throughput.AccumulateSingleSample(mpbs);
+      if (mRequestSize <= TELEMETRY_REQUEST_SIZE_50M) {
+        glean::networking::http_2_upload_throughput_10_50
+            .AccumulateSingleSample(mpbs);
+      } else if (mRequestSize <= TELEMETRY_REQUEST_SIZE_100M) {
+        glean::networking::http_2_upload_throughput_50_100
+            .AccumulateSingleSample(mpbs);
+      } else {
+        glean::networking::http_2_upload_throughput_100.AccumulateSingleSample(
+            mpbs);
+      }
+      break;
+    case HttpVersion::v3_0:
+      glean::networking::http_3_upload_throughput.AccumulateSingleSample(mpbs);
+      if (mRequestSize <= TELEMETRY_REQUEST_SIZE_50M) {
+        glean::networking::http_3_upload_throughput_10_50
+            .AccumulateSingleSample(mpbs);
+      } else if (mRequestSize <= TELEMETRY_REQUEST_SIZE_100M) {
+        glean::networking::http_3_upload_throughput_50_100
+            .AccumulateSingleSample(mpbs);
+      } else {
+        glean::networking::http_3_upload_throughput_100.AccumulateSingleSample(
+            mpbs);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+void nsHttpTransaction::GetHashKeyOfConnectionEntry(nsACString& aResult) {
+  MutexAutoLock lock(mLock);
+  aResult.Assign(mHashKeyOfConnectionEntry);
+}
+
+void nsHttpTransaction::SetIsForWebTransport(bool aIsForWebTransport) {
+  mIsForWebTransport = aIsForWebTransport;
+}
+
+void nsHttpTransaction::RemoveConnection() {
+  MutexAutoLock lock(mLock);
+  mConnection = nullptr;
+}
+
+}  // namespace mozilla::net

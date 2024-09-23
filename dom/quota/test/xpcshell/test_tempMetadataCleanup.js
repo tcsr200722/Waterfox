@@ -18,15 +18,17 @@ function* testSteps() {
 
   installPackage("tempMetadataCleanup_profile");
 
-  info("Initializing origin");
+  info("Initializing");
 
-  let request = initStorageAndChromeOrigin(
-    "persistent",
-    continueToNextStepSync
-  );
+  let request = init(continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode == NS_OK, "Initialization succeeded");
+  info("Initializing origin");
+
+  request = initPersistentOrigin(getCurrentPrincipal(), continueToNextStepSync);
+  yield undefined;
+
+  Assert.equal(request.resultCode, NS_OK, "Initialization succeeded");
 
   ok(!request.result, "Origin directory wasn't created");
 

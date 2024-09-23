@@ -7,70 +7,141 @@
 with Files("**"):
     BUG_COMPONENT = ("Core", "Storage: Quota Manager")
 
-DIRS += ['test']
+DIRS += ["test"]
 
 XPIDL_SOURCES += [
-    'nsIQuotaCallbacks.idl',
-    'nsIQuotaManagerService.idl',
-    'nsIQuotaRequests.idl',
-    'nsIQuotaResults.idl',
+    "nsIQuotaCallbacks.idl",
+    "nsIQuotaManagerService.idl",
+    "nsIQuotaRequests.idl",
+    "nsIQuotaResults.idl",
 ]
 
-XPIDL_MODULE = 'dom_quota'
+XPIDL_MODULE = "dom_quota"
+
+EXPORTS.mozilla += [
+    "StorageOriginAttributes.h",
+]
 
 EXPORTS.mozilla.dom += [
-  'StorageManager.h',
+    "QMResult.h",
+    "StorageManager.h",
 ]
 
 EXPORTS.mozilla.dom.quota += [
-    'ActorsParent.h',
-    'CheckedUnsafePtr.h',
-    'Client.h',
-    'FileStreams.h',
-    'InitializationTypes.h',
-    'MemoryOutputStream.h',
-    'OriginScope.h',
-    'PersistenceType.h',
-    'QuotaCommon.h',
-    'QuotaManager.h',
-    'QuotaManagerService.h',
-    'QuotaObject.h',
-    'SerializationHelpers.h',
-    'UsageInfo.h',
+    "ActorsParent.h",
+    "Assertions.h",
+    "AssertionsImpl.h",
+    "CachingDatabaseConnection.h",
+    "CheckedUnsafePtr.h",
+    "CipherKeyManager.h",
+    "CipherStrategy.h",
+    "Client.h",
+    "ClientImpl.h",
+    "CommonMetadata.h",
+    "Config.h",
+    "Constants.h",
+    "DebugOnlyMacro.h",
+    "DecryptingInputStream.h",
+    "DecryptingInputStream_impl.h",
+    "DirectoryLock.h",
+    "DirectoryLockCategory.h",
+    "DummyCipherStrategy.h",
+    "EncryptedBlock.h",
+    "EncryptingOutputStream.h",
+    "EncryptingOutputStream_impl.h",
+    "FileStreams.h",
+    "FileUtils.h",
+    "FirstInitializationAttempts.h",
+    "FirstInitializationAttemptsImpl.h",
+    "ForwardDecls.h",
+    "InitializationTypes.h",
+    "IPCStreamCipherStrategy.h",
+    "NSSCipherStrategy.h",
+    "OriginScope.h",
+    "PersistenceType.h",
+    "QuotaCommon.h",
+    "QuotaManager.h",
+    "QuotaManagerImpl.h",
+    "QuotaManagerService.h",
+    "QuotaObject.h",
+    "QuotaParent.h",
+    "RemoteQuotaObjectChild.h",
+    "RemoteQuotaObjectParent.h",
+    "RemoteQuotaObjectParentTracker.h",
+    "RemoveParen.h",
+    "ResultExtensions.h",
+    "ScopedLogExtraInfo.h",
+    "SerializationHelpers.h",
+    "StorageHelpers.h",
+    "StreamUtils.h",
+    "StringifyUtils.h",
+    "ThreadUtils.h",
+    "UsageInfo.h",
 ]
 
 XPCOM_MANIFESTS += [
-    'components.conf',
+    "components.conf",
 ]
 
 UNIFIED_SOURCES += [
-    'ActorsChild.cpp',
-    'ActorsParent.cpp',
-    'Client.cpp',
-    'FileStreams.cpp',
-    'MemoryOutputStream.cpp',
-    'nsIndexedDBProtocolHandler.cpp',
-    'PersistenceType.cpp',
-    'QuotaCommon.cpp',
-    'QuotaManagerService.cpp',
-    'QuotaRequests.cpp',
-    'QuotaResults.cpp',
-    'StorageManager.cpp',
+    "ActorsChild.cpp",
+    "ActorsParent.cpp",
+    "Assertions.cpp",
+    "CachingDatabaseConnection.cpp",
+    "CanonicalQuotaObject.cpp",
+    "Client.cpp",
+    "ClientUsageArray.cpp",
+    "DecryptingInputStream.cpp",
+    "DirectoryLockImpl.cpp",
+    "EncryptingOutputStream.cpp",
+    "FileStreams.cpp",
+    "FileUtils.cpp",
+    "GroupInfo.cpp",
+    "GroupInfoPair.cpp",
+    "InitializationTypes.cpp",
+    "NormalOriginOperationBase.cpp",
+    "nsIndexedDBProtocolHandler.cpp",
+    "NSSCipherStrategy.cpp",
+    "OriginInfo.cpp",
+    "OriginOperationBase.cpp",
+    "OriginOperations.cpp",
+    "OriginParser.cpp",
+    "PersistenceType.cpp",
+    "QMResult.cpp",
+    "QuotaCommon.cpp",
+    "QuotaManagerService.cpp",
+    "QuotaObject.cpp",
+    "QuotaParent.cpp",
+    "QuotaRequestBase.cpp",
+    "QuotaRequests.cpp",
+    "QuotaResults.cpp",
+    "QuotaUsageRequestBase.cpp",
+    "RemoteQuotaObject.cpp",
+    "RemoteQuotaObjectChild.cpp",
+    "RemoteQuotaObjectParent.cpp",
+    "SanitizationUtils.cpp",
+    "ScopedLogExtraInfo.cpp",
+    "StorageHelpers.cpp",
+    "StorageManager.cpp",
+    "StorageOriginAttributes.cpp",
+    "StreamUtils.cpp",
+    "StringifyUtils.cpp",
+    "ThreadUtils.cpp",
 ]
 
 IPDL_SOURCES += [
-    'PQuota.ipdl',
-    'PQuotaRequest.ipdl',
-    'PQuotaUsageRequest.ipdl',
+    "IPCQuotaObject.ipdlh",
+    "PQuota.ipdl",
+    "PQuotaRequest.ipdl",
+    "PQuotaUsageRequest.ipdl",
+    "PRemoteQuotaObject.ipdl",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+include("/ipc/chromium/chromium-config.mozbuild")
 
-FINAL_LIBRARY = 'xul'
+FINAL_LIBRARY = "xul"
 
 LOCAL_INCLUDES += [
-    '/caps',
+    "/caps",
+    "/dom/fs/include",
 ]
-
-if CONFIG['CC_TYPE'] in ('clang', 'gcc'):
-    CXXFLAGS += ['-Wno-error=shadow']

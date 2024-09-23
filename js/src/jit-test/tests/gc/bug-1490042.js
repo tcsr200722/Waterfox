@@ -1,4 +1,4 @@
-// |jit-test| --no-ion; --no-baseline; --no-blinterp; skip-if: !('gcstate' in this && 'oomAfterAllocations' in this)
+// |jit-test| --no-ion; --no-baseline; --no-blinterp; skip-if: !('gcstate' in this && hasFunction.oomAfterAllocations)
 
 gczeal(0);
 
@@ -11,9 +11,9 @@ for (let i = 0; i < count; i++) {
     a[i] = new c[i];
 }
 
-// Start an incremental GC and run until we're about to sweep type information.
+// Start an incremental GC and run until we're about to sweep objects.
 assertEq(gcstate(), "NotActive");
-gczeal(20);
+gczeal(21);
 startgc(1);
 
 // Run incremental slices with simulated OOM set up to provoke OOM when sweeping

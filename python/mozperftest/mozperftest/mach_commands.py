@@ -1,17 +1,24 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+import json
 import os
 import sys
 from functools import partial
-import subprocess
 
-from mach.decorators import CommandProvider, Command, CommandArgument
-from mozbuild.base import MachCommandBase, MachCommandConditions as conditions
+from mach.decorators import Command, CommandArgument, SubCommand
+from mozbuild.base import MachCommandConditions as conditions
+
+_TRY_PLATFORMS = {
+    "linux-xpcshell": "perftest-linux-try-xpcshell",
+    "mac-xpcshell": "perftest-macosx-try-xpcshell",
+    "linux-browsertime": "perftest-linux-try-browsertime",
+    "mac-browsertime": "perftest-macosx-try-browsertime",
+    "win-browsertimee": "perftest-windows-try-browsertime",
+}
 
 
-_TRY_PLATFORMS = {"g5": "perftest-android-hw-g5", "p2": "perftest-android-hw-p2"}
-ON_TRY = "MOZ_AUTOMATION" in os.environ
+HERE = os.path.dirname(__file__)
 
 
 def get_perftest_parser():
@@ -20,174 +27,295 @@ def get_perftest_parser():
     return PerftestArgumentParser
 
 
-@CommandProvider
-class Perftest(MachCommandBase):
-    @Command(
-        "perftest",
-        category="testing",
-        conditions=[partial(conditions.is_buildapp_in, apps=["firefox", "android"])],
-        description="Run any flavor of perftest",
-        parser=get_perftest_parser,
-    )
-    def run_perftest(self, **kwargs):
-        push_to_try = kwargs.pop("push_to_try", False)
-        if push_to_try:
-            from pathlib import Path
+def get_perftest_tools_parser(tool):
+    def tools_parser_func():
+        from mozperftest import PerftestToolsArgumentParser
 
-            sys.path.append(str(Path(self.topsrcdir, "tools", "tryselect")))
+        PerftestToolsArgumentParser.tool = tool
+        return PerftestToolsArgumentParser
 
-            from tryselect.push import push_to_try
+    return tools_parser_func
 
-            platform = kwargs.pop("try_platform")
-            if platform not in _TRY_PLATFORMS:
-                # we can extend platform support here: linux, win, macOs, pixel2
-                # by adding more jobs in taskcluster/ci/perftest/kind.yml
-                # then picking up the right one here
-                raise NotImplementedError("%r not supported yet" % platform)
 
-            perftest_parameters = {}
-            parser = get_perftest_parser()()
-            for name, value in kwargs.items():
-                # ignore values that are set to default
-                if parser.get_default(name) == value:
-                    continue
-                perftest_parameters[name] = value
+def get_parser():
+    return run_perftest._mach_command._parser
 
-            parameters = {"try_options": {"perftest": perftest_parameters}}
-            try_config = {"tasks": [_TRY_PLATFORMS[platform]]}
-            parameters["try_task_config"] = try_config
-            parameters["try_mode"] = "try_task_config"
 
-            task_config = {"parameters": parameters, "version": 2}
-            push_to_try("perftest", "perftest", try_task_config=task_config)
+@Command(
+    "perftest",
+    category="testing",
+    conditions=[partial(conditions.is_buildapp_in, apps=["firefox", "android"])],
+    description="Run any flavor of perftest",
+    parser=get_perftest_parser,
+)
+def run_perftest(command_context, **kwargs):
+    # original parser that brought us there
+    original_parser = get_parser()
+
+    from pathlib import Path
+
+    from mozperftest.script import ParseError, ScriptInfo, ScriptType
+
+    # user selection with fuzzy UI
+    from mozperftest.utils import ON_TRY
+
+    if not ON_TRY and kwargs.get("tests", []) == []:
+        from moztest.resolve import TestResolver
+
+        from mozperftest.fzf.fzf import select
+
+        resolver = command_context._spawn(TestResolver)
+        test_objects = list(resolver.resolve_tests(paths=None, flavor="perftest"))
+        selected = select(test_objects)
+
+        def full_path(selection):
+            __, script_name, __, location = selection.split(" ")
+            return str(
+                Path(
+                    command_context.topsrcdir.rstrip(os.sep),
+                    location.strip(os.sep),
+                    script_name,
+                )
+            )
+
+        kwargs["tests"] = [full_path(s) for s in selected]
+
+        if kwargs["tests"] == []:
+            print("\nNo selection. Bye!")
             return
 
-        # run locally
-        MachCommandBase._activate_virtualenv(self)
+    if len(kwargs["tests"]) > 1:
+        print("\nSorry no support yet for multiple local perftest")
+        return
 
-        from mozperftest.runner import run_tests
-
-        run_tests(mach_cmd=self, **kwargs)
-
-
-@CommandProvider
-class PerftestTests(MachCommandBase):
-    def _run_python_script(self, module, *args, **kw):
-        """Used to run the scripts in isolation.
-
-        Coverage needs to run in isolation so it's not
-        reimporting modules and produce wrong coverage info.
-        """
-        display = kw.pop("display", False)
-        args = [self.virtualenv_manager.python_path, "-m", module] + list(args)
-        sys.stdout.write("=> %s " % kw.pop("label", module))
-        sys.stdout.flush()
-        try:
-            output = subprocess.check_output(args, stderr=subprocess.STDOUT)
-            if display:
-                print()
-                for line in output.split(b"\n"):
-                    print(line.decode("utf8"))
-            sys.stdout.write("[OK]\n")
-            sys.stdout.flush()
-            return True
-        except subprocess.CalledProcessError as e:
-            for line in e.output.split(b"\n"):
-                print(line.decode("utf8"))
-            sys.stdout.write("[FAILED]\n")
-            sys.stdout.flush()
-            return False
-
-    @Command(
-        "perftest-test", category="testing", description="Run perftest tests",
-    )
-    @CommandArgument(
-        "tests", default=None, nargs="*", help="Tests to run. By default will run all"
-    )
-    @CommandArgument(
-        "-s",
-        "--skip-linters",
-        action="store_true",
-        default=False,
-        help="Skip flake8 and black",
-    )
-    def run_tests(self, **kwargs):
-        MachCommandBase._activate_virtualenv(self)
-
-        from pathlib import Path
-        from mozperftest.runner import _setup_path
-        from mozperftest.utils import install_package, temporary_env
-
-        skip_linters = kwargs.get("skip_linters", False)
-
-        # include in sys.path all deps
-        _setup_path()
-        try:
-            import coverage  # noqa
-        except ImportError:
-            pydeps = Path(self.topsrcdir, "third_party", "python")
-            vendors = ["coverage"]
-            if skip_linters:
-                pypis = []
-            else:
-                pypis = ["flake8"]
-
-            # if we're not on try we want to install black
-            if not ON_TRY and not skip_linters:
-                pypis.append("black")
-
-            # these are the deps we are getting from pypi
-            for dep in pypis:
-                install_package(self.virtualenv_manager, dep)
-
-            # pip-installing dependencies that require compilation or special setup
-            for dep in vendors:
-                install_package(self.virtualenv_manager, str(Path(pydeps, dep)))
-
-        here = Path(__file__).parent.resolve()
-        if not ON_TRY and not skip_linters:
-            # formatting the code with black
-            assert self._run_python_script("black", str(here))
-
-        # checking flake8 correctness
-        if not (ON_TRY and sys.platform == "darwin") and not skip_linters:
-            assert self._run_python_script("flake8", str(here))
-
-        # running pytest with coverage
-        # coverage is done in three steps:
-        # 1/ coverage erase => erase any previous coverage data
-        # 2/ coverage run pytest ... => run the tests and collect info
-        # 3/ coverage report => generate the report
-        tests_dir = Path(here, "tests").resolve()
-        tests = kwargs.get("tests", [])
-        if tests == []:
-            tests = str(tests_dir)
-            run_coverage_check = not skip_linters
+    sel = "\n".join(kwargs["tests"])
+    print("\nGood job! Best selection.\n%s" % sel)
+    # if the script is xpcshell, we can force the flavor here
+    # XXX on multi-selection,  what happens if we have seeveral flavors?
+    try:
+        script_info = ScriptInfo(kwargs["tests"][0])
+    except ParseError as e:
+        if e.exception is IsADirectoryError:
+            script_info = None
         else:
-            run_coverage_check = False
+            raise
+    else:
+        if script_info.script_type == ScriptType.xpcshell:
+            kwargs["flavor"] = script_info.script_type.name
+        else:
+            # we set the value only if not provided (so "mobile-browser"
+            # can be picked)
+            if "flavor" not in kwargs:
+                kwargs["flavor"] = "desktop-browser"
 
-            def _get_test(test):
-                if Path(test).exists():
-                    return str(test)
-                return str(tests_dir / test)
+    push_to_try = kwargs.pop("push_to_try", False)
+    if push_to_try:
+        sys.path.append(str(Path(command_context.topsrcdir, "tools", "tryselect")))
 
-            tests = " ".join([_get_test(test) for test in tests])
+        from tryselect.push import push_to_try
 
-        import pytest
+        perftest_parameters = {}
+        args = script_info.update_args(**original_parser.get_user_args(kwargs))
+        platform = args.pop("try_platform", "linux")
+        if isinstance(platform, str):
+            platform = [platform]
 
-        with temporary_env(COVERAGE_RCFILE=str(here / ".coveragerc")):
-            if run_coverage_check:
-                assert self._run_python_script(
-                    "coverage", "erase", label="remove old coverage data"
+        platform = ["%s-%s" % (plat, script_info.script_type.name) for plat in platform]
+
+        for plat in platform:
+            if plat not in _TRY_PLATFORMS:
+                # we can extend platform support here: linux, win, macOs
+                # by adding more jobs in taskcluster/kinds/perftest/kind.yml
+                # then picking up the right one here
+                raise NotImplementedError(
+                    "%r doesn't exist or is not yet supported" % plat
                 )
-            args = [
-                "run",
-                pytest.__file__,
-                "-xs",
-                tests,
-            ]
-            assert self._run_python_script("coverage", *args, label="running tests")
-            if run_coverage_check and not self._run_python_script(
-                "coverage", "report", display=True
-            ):
-                raise ValueError("Coverage is too low!")
+
+        def relative(path):
+            if path.startswith(command_context.topsrcdir):
+                return path[len(command_context.topsrcdir) :].lstrip(os.sep)
+            return path
+
+        for name, value in args.items():
+            # ignore values that are set to default
+            if original_parser.get_default(name) == value:
+                continue
+            if name == "tests":
+                value = [relative(path) for path in value]
+            perftest_parameters[name] = value
+
+        parameters = {
+            "try_task_config": {
+                "tasks": [_TRY_PLATFORMS[plat] for plat in platform],
+                "perftest-options": perftest_parameters,
+            },
+            "try_mode": "try_task_config",
+        }
+
+        task_config = {"parameters": parameters, "version": 2}
+        if args.get("verbose"):
+            print("Pushing run to try...")
+            print(json.dumps(task_config, indent=4, sort_keys=True))
+
+        push_to_try("perftest", "perftest", try_task_config=task_config)
+        return
+
+    from mozperftest.runner import run_tests
+
+    run_tests(command_context, kwargs, original_parser.get_user_args(kwargs))
+
+    print("\nFirefox. Fast For Good.\n")
+
+
+@Command(
+    "perftest-test",
+    category="testing",
+    description="Run perftest tests",
+    virtualenv_name="perftest-test",
+)
+@CommandArgument(
+    "tests", default=None, nargs="*", help="Tests to run. By default will run all"
+)
+@CommandArgument(
+    "-s",
+    "--skip-linters",
+    action="store_true",
+    default=False,
+    help="Skip flake8 and black",
+)
+@CommandArgument(
+    "-v", "--verbose", action="store_true", default=False, help="Verbose mode"
+)
+@CommandArgument(
+    "-r",
+    "--raptor",
+    action="store_true",
+    default=False,
+    help="Run raptor tests",
+)
+def run_tests(command_context, **kwargs):
+    from pathlib import Path
+
+    from mozperftest.utils import temporary_env
+
+    if "raptor" in kwargs:
+        print("Running raptor unit tests through mozperftest")
+
+    with temporary_env(
+        COVERAGE_RCFILE=str(Path(HERE, ".coveragerc")), RUNNING_TESTS="YES"
+    ):
+        _run_tests(command_context, **kwargs)
+
+
+def _run_tests(command_context, **kwargs):
+    from pathlib import Path
+
+    from mozperftest.utils import ON_TRY, checkout_python_script, checkout_script
+
+    venv = command_context.virtualenv_manager
+    skip_linters = kwargs.get("skip_linters", False)
+    verbose = kwargs.get("verbose", False)
+
+    if not ON_TRY and not skip_linters and not kwargs.get("raptor"):
+        cmd = "./mach lint "
+        if verbose:
+            cmd += " -v"
+        cmd += " " + str(HERE)
+        if not checkout_script(cmd, label="linters", display=verbose, verbose=verbose):
+            raise AssertionError("Please fix your code.")
+
+    # running pytest with coverage
+    # coverage is done in three steps:
+    # 1/ coverage erase => erase any previous coverage data
+    # 2/ coverage run pytest ... => run the tests and collect info
+    # 3/ coverage report => generate the report
+    tests_dir = Path(HERE, "tests").resolve()
+
+    tests = kwargs.get("tests", [])
+    if tests == []:
+        tests = str(tests_dir)
+        run_coverage_check = not skip_linters
+    else:
+        run_coverage_check = False
+
+        def _get_test(test):
+            if Path(test).exists():
+                return str(test)
+            return str(tests_dir / test)
+
+        tests = " ".join([_get_test(test) for test in tests])
+
+    # on macOS + try we skip the coverage
+    # because macOS workers prevent us from installing
+    # packages from PyPI
+    if sys.platform == "darwin" and ON_TRY:
+        run_coverage_check = False
+
+    options = "-xs"
+    if kwargs.get("verbose"):
+        options += "v"
+
+    # If we run mozperftest with the --raptor argument,
+    # then only run the raptor unit tests
+    if kwargs.get("raptor"):
+        run_coverage_check = True
+        tests = str(Path(command_context.topsrcdir, "testing", "raptor", "test"))
+
+    if run_coverage_check:
+        assert checkout_python_script(
+            venv, "coverage", ["erase"], label="remove old coverage data"
+        )
+
+    args = ["run", "-m", "pytest", options, "--durations", "10", tests]
+
+    assert checkout_python_script(
+        venv, "coverage", args, label="running tests", verbose=verbose
+    )
+    if run_coverage_check and not checkout_python_script(
+        venv, "coverage", ["report"], display=True
+    ):
+        raise ValueError("Coverage is too low!")
+
+
+@Command(
+    "perftest-tools",
+    category="testing",
+    description="Run perftest tools",
+)
+def run_tools(command_context, **kwargs):
+    """
+    Runs various perftest tools such as the side-by-side generator.
+    """
+    print("Runs various perftest tools such as the side-by-side generator.")
+
+
+@SubCommand(
+    "perftest-tools",
+    "side-by-side",
+    description="This tool can be used to generate a side-by-side visualization of two videos. "
+    "When using this tool, make sure that the `--test-name` is an exact match, i.e. if you are "
+    "comparing  the task `test-linux64-shippable-qr/opt-browsertime-tp6-firefox-linkedin-e10s` "
+    "between two revisions, then use `browsertime-tp6-firefox-linkedin-e10s` as the suite name "
+    "and `test-linux64-shippable-qr/opt` as the platform.",
+    parser=get_perftest_tools_parser("side-by-side"),
+)
+def run_side_by_side(command_context, **kwargs):
+    from mozperftest.runner import run_tools
+
+    kwargs["tool"] = "side-by-side"
+    run_tools(command_context, kwargs)
+
+
+@SubCommand(
+    "perftest-tools",
+    "change-detector",
+    description="This tool can be used to determine if there are differences between two "
+    "revisions. It can do either direct comparisons, or searching for regressions in between "
+    "two revisions (with a maximum or autocomputed depth).",
+    parser=get_perftest_tools_parser("change-detector"),
+)
+def run_change_detector(command_context, **kwargs):
+    from mozperftest.runner import run_tools
+
+    kwargs["tool"] = "change-detector"
+    run_tools(command_context, kwargs)

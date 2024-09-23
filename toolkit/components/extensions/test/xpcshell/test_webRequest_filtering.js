@@ -1,11 +1,11 @@
 "use strict";
 
-var { WebRequest } = ChromeUtils.import(
-  "resource://gre/modules/WebRequest.jsm"
+var { WebRequest } = ChromeUtils.importESModule(
+  "resource://gre/modules/WebRequest.sys.mjs"
 );
 
-var { ExtensionParent } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionParent.jsm"
+var { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
 );
 
 const server = createHttpServer({ hosts: ["example.com"] });
@@ -73,11 +73,23 @@ function compareLists(list1, list2, kind) {
   equal(String(list1), String(list2), `${kind} URLs correct`);
 }
 
+async function openAndCloseContentPage() {
+  let contentPage = await ExtensionTestUtils.loadContentPage(URL);
+  // Clear the sheet cache so that it doesn't interact with following tests: A
+  // stylesheet with the same URI loaded from the same origin doesn't otherwise
+  // guarantee that onBeforeRequest and so on happen, because it may not need
+  // to go through necko at all.
+  await contentPage.spawn([], () =>
+    content.windowUtils.clearSharedStyleSheetCache()
+  );
+  await contentPage.close();
+}
+
 add_task(async function setup() {
   // Disable rcwn to make cache behavior deterministic.
   Services.prefs.setBoolPref("network.http.rcwn.enabled", false);
 
-  // When WebRequest.jsm is used directly instead of through ext-webRequest.js,
+  // When WebRequest.sys.mjs is used directly instead of through ext-webRequest.js,
   // ExtensionParent.apiManager is not automatically initialized. Do it here.
   await ExtensionParent.apiManager.lazyInit();
 });
@@ -91,8 +103,7 @@ add_task(async function filter_urls() {
   ]);
   WebRequest.onResponseStarted.addListener(onResponseStarted, filter);
 
-  let contentPage = await ExtensionTestUtils.loadContentPage(URL);
-  await contentPage.close();
+  await openAndCloseContentPage(URL);
 
   compareLists(requested, expected_urls, "requested");
   compareLists(sendHeaders, expected_urls, "sendHeaders");
@@ -113,8 +124,7 @@ add_task(async function filter_types() {
   ]);
   WebRequest.onResponseStarted.addListener(onResponseStarted, filter);
 
-  let contentPage = await ExtensionTestUtils.loadContentPage(URL);
-  await contentPage.close();
+  await openAndCloseContentPage(URL);
 
   compareLists(requested, expected_urls, "requested");
   compareLists(sendHeaders, expected_urls, "sendHeaders");
@@ -137,8 +147,7 @@ add_task(async function filter_windowId() {
   ]);
   WebRequest.onResponseStarted.addListener(onResponseStarted, filter);
 
-  let contentPage = await ExtensionTestUtils.loadContentPage(URL);
-  await contentPage.close();
+  await openAndCloseContentPage(URL);
 
   compareLists(requested, [], "requested");
   compareLists(sendHeaders, [], "sendHeaders");
@@ -161,8 +170,7 @@ add_task(async function filter_tabId() {
   ]);
   WebRequest.onResponseStarted.addListener(onResponseStarted, filter);
 
-  let contentPage = await ExtensionTestUtils.loadContentPage(URL);
-  await contentPage.close();
+  await openAndCloseContentPage(URL);
 
   compareLists(requested, [], "requested");
   compareLists(sendHeaders, [], "sendHeaders");

@@ -4,10 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef NS_SVGATTRTEAROFFTABLE_H_
-#define NS_SVGATTRTEAROFFTABLE_H_
+#ifndef DOM_SVG_SVGATTRTEAROFFTABLE_H_
+#define DOM_SVG_SVGATTRTEAROFFTABLE_H_
 
-#include "nsDataHashtable.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/StaticPtr.h"
+#include "nsTHashMap.h"
 #include "nsDebug.h"
 #include "nsHashKeys.h"
 
@@ -26,7 +28,7 @@ class SVGAttrTearoffTable {
  public:
 #ifdef DEBUG
   ~SVGAttrTearoffTable() {
-    MOZ_ASSERT(!mTable, "Tear-off objects remain in hashtable at shutdown.");
+    NS_ASSERTION(!mTable, "Tear-off objects remain in hashtable at shutdown.");
   }
 #endif
 
@@ -37,23 +39,22 @@ class SVGAttrTearoffTable {
   void RemoveTearoff(SimpleType* aSimple);
 
  private:
-  typedef nsPtrHashKey<SimpleType> SimpleTypePtrKey;
-  typedef nsDataHashtable<SimpleTypePtrKey, TearoffType*> TearoffTable;
+  using SimpleTypePtrKey = nsPtrHashKey<SimpleType>;
+  using TearoffTable = nsTHashMap<SimpleTypePtrKey, TearoffType*>;
 
-  TearoffTable* mTable;
+  StaticAutoPtr<TearoffTable> mTable;
 };
 
 template <class SimpleType, class TearoffType>
 TearoffType* SVGAttrTearoffTable<SimpleType, TearoffType>::GetTearoff(
     SimpleType* aSimple) {
-  if (!mTable) return nullptr;
+  if (!mTable) {
+    return nullptr;
+  }
 
   TearoffType* tearoff = nullptr;
 
-#ifdef DEBUG
-  bool found =
-#endif
-      mTable->Get(aSimple, &tearoff);
+  DebugOnly<bool> found = mTable->Get(aSimple, &tearoff);
   MOZ_ASSERT(!found || tearoff,
              "null pointer stored in attribute tear-off map");
 
@@ -64,7 +65,7 @@ template <class SimpleType, class TearoffType>
 void SVGAttrTearoffTable<SimpleType, TearoffType>::AddTearoff(
     SimpleType* aSimple, TearoffType* aTearoff) {
   if (!mTable) {
-    mTable = new TearoffTable;
+    mTable = new TearoffTable();
   }
 
   // We shouldn't be adding a tear-off if there already is one. If that happens,
@@ -74,7 +75,7 @@ void SVGAttrTearoffTable<SimpleType, TearoffType>::AddTearoff(
     return;
   }
 
-  mTable->Put(aSimple, aTearoff);
+  mTable->InsertOrUpdate(aSimple, aTearoff);
 }
 
 template <class SimpleType, class TearoffType>
@@ -88,11 +89,10 @@ void SVGAttrTearoffTable<SimpleType, TearoffType>::RemoveTearoff(
 
   mTable->Remove(aSimple);
   if (mTable->Count() == 0) {
-    delete mTable;
     mTable = nullptr;
   }
 }
 
 }  // namespace mozilla
 
-#endif  // NS_SVGATTRTEAROFFTABLE_H_
+#endif  // DOM_SVG_SVGATTRTEAROFFTABLE_H_

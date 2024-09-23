@@ -18,11 +18,12 @@ class TaskQueue;
 
 DDLoggedTypeDeclNameAndBase(AppleATDecoder, MediaDataDecoder);
 
-class AppleATDecoder : public MediaDataDecoder,
-                       public DecoderDoctorLifeLogger<AppleATDecoder> {
+class AppleATDecoder final : public MediaDataDecoder,
+                             public DecoderDoctorLifeLogger<AppleATDecoder> {
  public:
-  AppleATDecoder(const AudioInfo& aConfig, TaskQueue* aTaskQueue);
-  ~AppleATDecoder();
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AppleATDecoder, final);
+
+  explicit AppleATDecoder(const AudioInfo& aConfig);
 
   RefPtr<InitPromise> Init() override;
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override;
@@ -31,11 +32,13 @@ class AppleATDecoder : public MediaDataDecoder,
   RefPtr<ShutdownPromise> Shutdown() override;
 
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("apple coremedia decoder");
+    return "apple coremedia decoder"_ns;
   }
 
+  nsCString GetCodecName() const override;
+
   // Callbacks also need access to the config.
-  const AudioInfo& mConfig;
+  AudioInfo mConfig;
 
   // Use to extract magic cookie for HE-AAC detection.
   nsTArray<uint8_t> mMagicCookie;
@@ -43,9 +46,11 @@ class AppleATDecoder : public MediaDataDecoder,
   // the magic cookie property.
   bool mFileStreamError;
 
-  const RefPtr<TaskQueue> mTaskQueue;
+  nsCOMPtr<nsISerialEventTarget> mThread;
 
  private:
+  ~AppleATDecoder();
+
   AudioConverterRef mConverter;
   AudioStreamBasicDescription mOutputFormat;
   UInt32 mFormatID;
@@ -55,8 +60,6 @@ class AppleATDecoder : public MediaDataDecoder,
   UniquePtr<AudioConverter> mAudioConverter;
   DecodedData mDecodedSamples;
 
-  RefPtr<DecodePromise> ProcessDecode(MediaRawData* aSample);
-  RefPtr<FlushPromise> ProcessFlush();
   void ProcessShutdown();
   MediaResult DecodeSample(MediaRawData* aSample);
   MediaResult GetInputAudioDescription(AudioStreamBasicDescription& aDesc,
@@ -64,9 +67,12 @@ class AppleATDecoder : public MediaDataDecoder,
   // Setup AudioConverter once all information required has been gathered.
   // Will return NS_ERROR_NOT_INITIALIZED if more data is required.
   MediaResult SetupDecoder(MediaRawData* aSample);
-  nsresult GetImplicitAACMagicCookie(const MediaRawData* aSample);
+  nsresult GetImplicitAACMagicCookie(MediaRawData* aSample);
   nsresult SetupChannelLayout();
   uint32_t mParsedFramesForAACMagicCookie;
+  uint32_t mEncoderDelay = 0;
+  uint64_t mTotalMediaFrames = 0;
+  bool mIsADTS = false;
   bool mErrored;
 };
 

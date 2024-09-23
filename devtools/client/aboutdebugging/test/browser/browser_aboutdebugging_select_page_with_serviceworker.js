@@ -12,7 +12,7 @@ const WORKER_NAME = "testserviceworker";
 // to:
 // - this firefox
 // does not crash. See Bug 1519088.
-add_task(async function() {
+add_task(async function () {
   const mocks = new Mocks();
 
   const { document, tab, window } = await openAboutDebugging({
@@ -35,7 +35,7 @@ add_task(async function() {
     serviceWorkers: [
       {
         name: WORKER_NAME,
-        workerTargetFront: { actorID: WORKER_NAME },
+        workerDescriptorFront: { actorID: WORKER_NAME },
       },
     ],
     sharedWorkers: [],
@@ -52,9 +52,8 @@ add_task(async function() {
     thisFirefoxString,
     document
   );
-  const thisFirefoxLink = thisFirefoxSidebarItem.querySelector(
-    ".qa-sidebar-link"
-  );
+  const thisFirefoxLink =
+    thisFirefoxSidebarItem.querySelector(".qa-sidebar-link");
   info("Click on the ThisFirefox item in the sidebar");
   const requestsSuccess = waitForRequestsSuccess(window.AboutDebugging.store);
   thisFirefoxLink.click();

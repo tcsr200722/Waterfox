@@ -69,8 +69,9 @@ interface nsIFile : nsISupports
      *
      *   @param node
      *       A string which is intended to be a child node of the nsIFile.
-     *       For the |appendNative| method, the node must be in the native
-     *       filesystem charset.
+     *       For security reasons, this cannot contain .. and cannot start with
+     *       a directory separator. For the |appendNative| method, the node must
+     *       be in the native filesystem charset.
      */
     void append(in AString node);
     [noscript] void appendNative(in ACString node);
@@ -99,8 +100,13 @@ interface nsIFile : nsISupports
      *       The unix style octal permissions.  This may
      *       be ignored on systems that do not need to do
      *       permissions.
+     *
+     *   @param skipAncestors
+     *       Optional; if set to true, we'll skip creating
+     *       ancestor directories (and return an error instead).
      */
-    [must_use] void create(in unsigned long type, in unsigned long permissions);
+    [must_use] void create(in unsigned long type, in unsigned long permissions,
+                           [optional,default(false)] in boolean skipAncestors);
 
     /**
      *  Accessor to the leaf name of the file itself.
@@ -111,12 +117,24 @@ interface nsIFile : nsISupports
     [noscript] attribute ACString nativeLeafName;
 
     /**
+     * The leaf name as displayed in OS-provided file pickers and similar UI.
+     * On Windows and macOS, 'real' leaf names of some directories can be
+     * in English, but the OS will show a different, translated name to users
+     * using a different locale. So folders like "Downloads", "Desktop" and
+     * "Documents" might not normally appear to users with that (English) name,
+     * but with an OS-localized translation. This API will return such a
+     * translation if it exists, or the leafName if it doesn't.
+     * On Linux, this will always be the same as `leafName`.
+     */
+    readonly attribute AString displayName;
+
+    /**
      *  copyTo[Native]
      *
      *  This will copy this file to the specified newParentDir.
      *  If a newName is specified, the file will be renamed.
      *  If 'this' is not created we will return an error
-     *  (NS_ERROR_FILE_TARGET_DOES_NOT_EXIST).
+     *  (NS_ERROR_FILE_NOT_FOUND).
      *
      *  copyTo may fail if the file already exists in the destination
      *  directory.
@@ -158,7 +176,7 @@ interface nsIFile : nsISupports
      *  A method to move this file or directory to newParentDir.
      *  If a newName is specified, the file or directory will be renamed.
      *  If 'this' is not created we will return an error
-     *  (NS_ERROR_FILE_TARGET_DOES_NOT_EXIST).
+     *  (NS_ERROR_FILE_NOT_FOUND).
      *  If 'this' is a file, and the destination file already exists, moveTo
      *  will replace the old file.
      *  This object is updated to refer to the new file.
@@ -188,6 +206,18 @@ interface nsIFile : nsISupports
     [noscript] void moveToNative(in nsIFile newParentDir, in ACString newName);
 
     /**
+     *  moveToFollowingLinks[Native]
+     *
+     *  This function is identical to moveTo with the exception that,
+     *  as the name implies, it follows symbolic links.  The XP_UNIX
+     *  implementation always follows symbolic links when moving.  For
+     *  the |MoveToFollowingLinks| method, the newName ust be in the native
+     *  filesystem charset.
+     */
+    void moveToFollowingLinks(in nsIFile newParentDir, in AString newName);
+    [noscript] void moveToFollowingLinksNative(in nsIFile newParentDir, in ACString newName);
+
+    /**
      *  renameTo
      *
      *  This method is identical to moveTo except that if this file or directory
@@ -202,9 +232,13 @@ interface nsIFile : nsISupports
      *  This will try to delete this file.  The 'recursive' flag
      *  must be PR_TRUE to delete directories which are not empty.
      *
+     *  If passed, 'removeCount' will be incremented by the total number of files
+     *  and/or directories removed. Will be 1 unless the 'recursive' flag is
+     *  set. The parameter must be initialized beforehand.
+     *
      *  This will not resolve any symlinks.
      */
-    void remove(in boolean recursive);
+    void remove(in boolean recursive, [optional] inout uint32_t removeCount);
 
     /**
      *  Attributes of nsIFile.
@@ -214,12 +248,29 @@ interface nsIFile : nsISupports
     attribute unsigned long permissionsOfLink;
 
     /**
+     * The last accesss time of the file in milliseconds from midnight, January
+     * 1, 1970 GMT, if available.
+     */
+    attribute PRTime lastAccessedTime;
+    attribute PRTime lastAccessedTimeOfLink;
+
+    /**
      *  File Times are to be in milliseconds from
      *  midnight (00:00:00), January 1, 1970 Greenwich Mean
      *  Time (GMT).
      */
     attribute PRTime lastModifiedTime;
     attribute PRTime lastModifiedTimeOfLink;
+
+    /**
+     * The creation time of file in milliseconds from midnight, January 1, 1970
+     * GMT, if available.
+     *
+     * This attribute is only implemented on Windows and macOS. Accessing this
+     * on another platform will this will throw NS_ERROR_NOT_IMPLEMENTED.
+     */
+    readonly attribute PRTime creationTime;
+    readonly attribute PRTime creationTimeOfLink;
 
     /**
      *  WARNING!  On the Mac, getting/setting the file size with nsIFile
@@ -426,6 +477,9 @@ interface nsIFile : nsISupports
     // number of bytes available on disk to non-superuser
     [must_use] readonly attribute int64_t diskSpaceAvailable;
 
+    // disk capacity in bytes
+    [must_use] readonly attribute int64_t diskCapacity;
+
     /**
      *  appendRelative[Native]Path
      *
@@ -433,7 +487,7 @@ interface nsIFile : nsISupports
      *
      *   @param relativeFilePath
      *       relativeFilePath is a native relative path. For security reasons,
-     *       this cannot contain .. or cannot start with a directory separator.
+     *       this cannot contain .. and cannot start with a directory separator.
      *       For the |appendRelativeNativePath| method, the relativeFilePath
      *       must be in the native filesystem charset.
      */

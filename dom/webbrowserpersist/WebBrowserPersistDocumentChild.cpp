@@ -14,6 +14,7 @@
 #include "WebBrowserPersistResourcesChild.h"
 #include "WebBrowserPersistSerializeChild.h"
 #include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/net/CookieJarSettings.h"
 
 namespace mozilla {
 
@@ -39,6 +40,7 @@ void WebBrowserPersistDocumentChild::Start(
 
   nsCOMPtr<nsIPrincipal> principal;
   nsCOMPtr<nsIReferrerInfo> referrerInfo;
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
   WebBrowserPersistDocumentAttrs attrs;
   nsCOMPtr<nsIInputStream> postDataStream;
 #define ENSURE(e)          \
@@ -57,9 +59,7 @@ void WebBrowserPersistDocumentChild::Start(
   ENSURE(aDocument->GetTitle(attrs.title()));
   ENSURE(aDocument->GetContentDisposition(attrs.contentDisposition()));
 
-  if (!StaticPrefs::fission_sessionHistoryInParent()) {
-    attrs.sessionHistoryEntryOrCacheKey() = aDocument->GetCacheKey();
-  }
+  attrs.sessionHistoryCacheKey() = aDocument->GetCacheKey();
 
   ENSURE(aDocument->GetPersistFlags(&(attrs.persistFlags())));
 
@@ -69,15 +69,19 @@ void WebBrowserPersistDocumentChild::Start(
   ENSURE(aDocument->GetReferrerInfo(getter_AddRefs(referrerInfo)));
   attrs.referrerInfo() = referrerInfo;
 
+  ENSURE(aDocument->GetCookieJarSettings(getter_AddRefs(cookieJarSettings)));
+  net::CookieJarSettings::Cast(cookieJarSettings)
+      ->Serialize(attrs.cookieJarSettings());
+
   ENSURE(aDocument->GetPostData(getter_AddRefs(postDataStream)));
 #undef ENSURE
 
-  mozilla::ipc::AutoIPCStream autoStream;
-  autoStream.Serialize(postDataStream,
-                       static_cast<mozilla::dom::ContentChild*>(Manager()));
+  Maybe<mozilla::ipc::IPCStream> stream;
+  mozilla::ipc::SerializeIPCStream(postDataStream.forget(), stream,
+                                   /* aAllowLazy */ false);
 
   mDocument = aDocument;
-  SendAttributes(attrs, autoStream.TakeOptionalValue());
+  SendAttributes(attrs, stream);
 }
 
 mozilla::ipc::IPCResult WebBrowserPersistDocumentChild::RecvSetPersistFlags(
@@ -118,8 +122,9 @@ bool WebBrowserPersistDocumentChild::DeallocPWebBrowserPersistResourcesChild(
 
 PWebBrowserPersistSerializeChild*
 WebBrowserPersistDocumentChild::AllocPWebBrowserPersistSerializeChild(
-    const WebBrowserPersistURIMap& aMap, const nsCString& aRequestedContentType,
-    const uint32_t& aEncoderFlags, const uint32_t& aWrapColumn) {
+    const WebBrowserPersistURIMap& aMap,
+    const nsACString& aRequestedContentType, const uint32_t& aEncoderFlags,
+    const uint32_t& aWrapColumn) {
   auto* actor = new WebBrowserPersistSerializeChild(aMap);
   NS_ADDREF(actor);
   return actor;
@@ -128,8 +133,9 @@ WebBrowserPersistDocumentChild::AllocPWebBrowserPersistSerializeChild(
 mozilla::ipc::IPCResult
 WebBrowserPersistDocumentChild::RecvPWebBrowserPersistSerializeConstructor(
     PWebBrowserPersistSerializeChild* aActor,
-    const WebBrowserPersistURIMap& aMap, const nsCString& aRequestedContentType,
-    const uint32_t& aEncoderFlags, const uint32_t& aWrapColumn) {
+    const WebBrowserPersistURIMap& aMap,
+    const nsACString& aRequestedContentType, const uint32_t& aEncoderFlags,
+    const uint32_t& aWrapColumn) {
   auto* castActor = static_cast<WebBrowserPersistSerializeChild*>(aActor);
   // This actor performs the roles of: completion, URI map, and output stream.
   nsresult rv =

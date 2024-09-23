@@ -1,17 +1,14 @@
-use com::WeakPtr;
-use std::mem;
-use std::ops::Range;
-use winapi::shared::dxgiformat;
-use winapi::um::d3d12;
-use {Blob, D3DResult, Error, TextureAddressMode};
+use crate::{com::ComPtr, Blob, D3DResult, Error, TextureAddressMode};
+use std::{fmt, mem, ops::Range};
+use winapi::{shared::dxgiformat, um::d3d12};
 
 pub type CpuDescriptor = d3d12::D3D12_CPU_DESCRIPTOR_HANDLE;
 pub type GpuDescriptor = d3d12::D3D12_GPU_DESCRIPTOR_HANDLE;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
-    pub register: u32,
     pub space: u32,
+    pub register: u32,
 }
 
 #[repr(u32)]
@@ -23,13 +20,14 @@ pub enum DescriptorHeapType {
     Dsv = d3d12::D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
 }
 
-bitflags! {
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct DescriptorHeapFlags: u32 {
         const SHADER_VISIBLE = d3d12::D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     }
 }
 
-pub type DescriptorHeap = WeakPtr<d3d12::ID3D12DescriptorHeap>;
+pub type DescriptorHeap = ComPtr<d3d12::ID3D12DescriptorHeap>;
 
 impl DescriptorHeap {
     pub fn start_cpu_descriptor(&self) -> CpuDescriptor {
@@ -75,6 +73,19 @@ impl DescriptorRange {
     }
 }
 
+impl fmt::Debug for DescriptorRange {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("DescriptorRange")
+            .field("range_type", &self.0.RangeType)
+            .field("num", &self.0.NumDescriptors)
+            .field("register_space", &self.0.RegisterSpace)
+            .field("base_register", &self.0.BaseShaderRegister)
+            .field("table_offset", &self.0.OffsetInDescriptorsFromTableStart)
+            .finish()
+    }
+}
+
 #[repr(transparent)]
 pub struct RootParameter(d3d12::D3D12_ROOT_PARAMETER);
 impl RootParameter {
@@ -110,7 +121,8 @@ impl RootParameter {
         RootParameter(param)
     }
 
-    fn descriptor(
+    //TODO: should this be unsafe?
+    pub fn descriptor(
         ty: d3d12::D3D12_ROOT_PARAMETER_TYPE,
         visibility: ShaderVisibility,
         binding: Binding,
@@ -139,6 +151,58 @@ impl RootParameter {
 
     pub fn uav_descriptor(visibility: ShaderVisibility, binding: Binding) -> Self {
         Self::descriptor(d3d12::D3D12_ROOT_PARAMETER_TYPE_UAV, visibility, binding)
+    }
+}
+
+impl fmt::Debug for RootParameter {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        #[derive(Debug)]
+        #[allow(dead_code)] // False-positive
+        enum Inner<'a> {
+            Table(&'a [DescriptorRange]),
+            Constants { binding: Binding, num: u32 },
+            SingleCbv(Binding),
+            SingleSrv(Binding),
+            SingleUav(Binding),
+        }
+        let kind = match self.0.ParameterType {
+            d3d12::D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE => unsafe {
+                let raw = self.0.u.DescriptorTable();
+                Inner::Table(std::slice::from_raw_parts(
+                    raw.pDescriptorRanges as *const _,
+                    raw.NumDescriptorRanges as usize,
+                ))
+            },
+            d3d12::D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS => unsafe {
+                let raw = self.0.u.Constants();
+                Inner::Constants {
+                    binding: Binding {
+                        space: raw.RegisterSpace,
+                        register: raw.ShaderRegister,
+                    },
+                    num: raw.Num32BitValues,
+                }
+            },
+            _ => unsafe {
+                let raw = self.0.u.Descriptor();
+                let binding = Binding {
+                    space: raw.RegisterSpace,
+                    register: raw.ShaderRegister,
+                };
+                match self.0.ParameterType {
+                    d3d12::D3D12_ROOT_PARAMETER_TYPE_CBV => Inner::SingleCbv(binding),
+                    d3d12::D3D12_ROOT_PARAMETER_TYPE_SRV => Inner::SingleSrv(binding),
+                    d3d12::D3D12_ROOT_PARAMETER_TYPE_UAV => Inner::SingleUav(binding),
+                    other => panic!("Unexpected type {:?}", other),
+                }
+            },
+        };
+
+        formatter
+            .debug_struct("RootParameter")
+            .field("visibility", &self.0.ShaderVisibility)
+            .field("kind", &kind)
+            .finish()
     }
 }
 
@@ -189,7 +253,8 @@ pub enum RootSignatureVersion {
     V1_1 = d3d12::D3D_ROOT_SIGNATURE_VERSION_1_1,
 }
 
-bitflags! {
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct RootSignatureFlags: u32 {
         const ALLOW_IA_INPUT_LAYOUT = d3d12::D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
         const DENY_VS_ROOT_ACCESS = d3d12::D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS;
@@ -200,7 +265,7 @@ bitflags! {
     }
 }
 
-pub type RootSignature = WeakPtr<d3d12::ID3D12RootSignature>;
+pub type RootSignature = ComPtr<d3d12::ID3D12RootSignature>;
 pub type BlobResult = D3DResult<(Blob, Error)>;
 
 #[cfg(feature = "libloading")]
@@ -211,7 +276,7 @@ impl crate::D3D12Lib {
         parameters: &[RootParameter],
         static_samplers: &[StaticSampler],
         flags: RootSignatureFlags,
-    ) -> libloading::Result<BlobResult> {
+    ) -> Result<BlobResult, libloading::Error> {
         use winapi::um::d3dcommon::ID3DBlob;
         type Fun = extern "system" fn(
             *const d3d12::D3D12_ROOT_SIGNATURE_DESC,

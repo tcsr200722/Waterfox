@@ -1,4 +1,4 @@
-// |jit-test| test-also=--wasm-compiler=ion; skip-if: !wasmDebuggingIsSupported()
+// |jit-test| test-also=--wasm-compiler=optimizing; skip-if: !wasmDebuggingEnabled()
 
 // Test single-stepping where the TLS register can be evicted by a non-trivial
 // function body.
@@ -30,4 +30,4 @@ g.eval(`
 `);
 
 i.exports.f2();
-assertEq(g.calledOnStep >= 5, true);
+assertEq(g.calledOnStep, 2);

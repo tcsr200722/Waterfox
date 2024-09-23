@@ -4,18 +4,22 @@
 
 "use strict";
 
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
-loader.lazyRequireGetter(this, "StorageUI", "devtools/client/storage/ui", true);
+loader.lazyRequireGetter(
+  this,
+  "StorageUI",
+  "resource://devtools/client/storage/ui.js",
+  true
+);
 
 class StoragePanel {
-  constructor(panelWin, toolbox) {
+  constructor(panelWin, toolbox, commands) {
     EventEmitter.decorate(this);
 
     this._toolbox = toolbox;
+    this._commands = commands;
     this._panelWin = panelWin;
-
-    this.destroy = this.destroy.bind(this);
   }
 
   get panelWindow() {
@@ -26,12 +30,9 @@ class StoragePanel {
    * open is effectively an asynchronous constructor
    */
   async open() {
-    this.UI = new StorageUI(this._panelWin, this._toolbox);
+    this.UI = new StorageUI(this._panelWin, this._toolbox, this._commands);
 
     await this.UI.init();
-
-    this.isReady = true;
-    this.emit("ready");
 
     return this;
   }

@@ -6,9 +6,9 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html,<meta charset=utf8>Test uncaught exception`;
+const TEST_URI = `data:text/html,<!DOCTYPE html><meta charset=utf8>Test uncaught exception`;
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
 
   await checkThrowingWithStack(hud, `"tomato"`, "Uncaught tomato");
@@ -37,8 +37,36 @@ add_task(async function() {
     `Uncaught Object { fav: "eggplant" }`
   );
 
+  info("Check custom error with name and message getters");
+  // register the class
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
+    const script = content.document.createElement("script");
+    script.append(
+      content.document.createTextNode(
+        `
+      class CustomError extends Error {
+        get name() {
+          return "CustomErrorName";
+        }
+
+        get message() {
+          return "custom-error-message";
+        }
+      }`.trim()
+      )
+    );
+    content.document.body.append(script);
+  });
+
+  await checkThrowingWithStack(
+    hud,
+    `new CustomError()`,
+    "Uncaught CustomErrorName: custom-error-message",
+    // Additional frames: the stacktrace contains the CustomError call
+    [1]
+  );
   info("Check that object in errors can be expanded");
-  const rejectedObjectMessage = findMessage(hud, "eggplant", ".error");
+  const rejectedObjectMessage = findErrorMessage(hud, "eggplant");
   const oi = rejectedObjectMessage.querySelector(".tree");
   ok(true, "The object was rendered in an ObjectInspector");
 
@@ -55,34 +83,48 @@ add_task(async function() {
   );
 
   // The object inspector now looks like:
-  // {...}
+  // Object { fav: "eggplant" }
   // |  fav: "eggplant"
   // |  <prototype>: Object { ... }
 
   const oiNodes = oi.querySelectorAll(".node");
   is(oiNodes.length, 3, "There is the expected number of nodes in the tree");
 
-  ok(oiNodes[0].textContent.includes(`{\u2026}`));
+  ok(oiNodes[0].textContent.includes(`Object { fav: "eggplant" }`));
   ok(oiNodes[1].textContent.includes(`fav: "eggplant"`));
   ok(oiNodes[2].textContent.includes(`<prototype>: Object { \u2026 }`));
 });
 
-async function checkThrowingWithStack(hud, expression, expectedMessage) {
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [expression], function(
-    expr
-  ) {
-    const script = content.document.createElement("script");
-    script.append(
-      content.document.createTextNode(`
+async function checkThrowingWithStack(
+  hud,
+  expression,
+  expectedMessage,
+  additionalFrameLines = []
+) {
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [expression],
+    function (expr) {
+      const script = content.document.createElement("script");
+      script.append(
+        content.document.createTextNode(`
     a = () => {throw ${expr}};
     b =  () => a();
     c =  () => b();
     d =  () => c();
     d();
     `)
-    );
-    content.document.body.append(script);
-    script.remove();
-  });
-  return checkMessageStack(hud, expectedMessage, [2, 3, 4, 5, 6]);
+      );
+      content.document.body.append(script);
+      script.remove();
+    }
+  );
+  return checkMessageStack(hud, expectedMessage, [
+    ...additionalFrameLines,
+    2,
+    3,
+    4,
+    5,
+    6,
+  ]);
 }

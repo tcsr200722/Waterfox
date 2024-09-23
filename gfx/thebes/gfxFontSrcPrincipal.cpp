@@ -5,27 +5,32 @@
 
 #include "gfxFontSrcPrincipal.h"
 
-#include "nsProxyRelease.h"
 #include "nsURIHashKey.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/HashFunctions.h"
 
 using mozilla::BasePrincipal;
 
-gfxFontSrcPrincipal::gfxFontSrcPrincipal(nsIPrincipal* aPrincipal) {
+gfxFontSrcPrincipal::gfxFontSrcPrincipal(nsIPrincipal* aNodePrincipal,
+                                         nsIPrincipal* aStoragePrincipal)
+    : mNodePrincipal(aNodePrincipal),
+      mStoragePrincipal(mozilla::StaticPrefs::privacy_partition_network_state()
+                            ? aStoragePrincipal
+                            : aNodePrincipal) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aPrincipal);
+  MOZ_ASSERT(aNodePrincipal);
+  MOZ_ASSERT(aStoragePrincipal);
 
-  mPrincipal = aPrincipal;
+  nsAutoCString suffix;
+  mStoragePrincipal->GetOriginSuffix(suffix);
 
-  mHash = mPrincipal->GetHashValue();
+  mHash = mozilla::AddToHash(mStoragePrincipal->GetHashValue(),
+                             mozilla::HashString(suffix));
 }
 
-gfxFontSrcPrincipal::~gfxFontSrcPrincipal() {
-  NS_ReleaseOnMainThread("gfxFontSrcPrincipal::mPrincipal",
-                         mPrincipal.forget());
-}
+gfxFontSrcPrincipal::~gfxFontSrcPrincipal() = default;
 
 bool gfxFontSrcPrincipal::Equals(gfxFontSrcPrincipal* aOther) {
-  return BasePrincipal::Cast(mPrincipal)
-      ->FastEquals(BasePrincipal::Cast(aOther->mPrincipal));
+  return BasePrincipal::Cast(mStoragePrincipal)
+      ->FastEquals(BasePrincipal::Cast(aOther->mStoragePrincipal));
 }

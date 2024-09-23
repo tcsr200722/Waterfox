@@ -4,17 +4,30 @@
 
 // Test that markup view handles page navigation correctly.
 
-const URL_1 = URL_ROOT + "doc_markup_update-on-navigtion_1.html";
-const URL_2 = URL_ROOT + "doc_markup_update-on-navigtion_2.html";
+const URL_1 = URL_ROOT_SSL + "doc_markup_update-on-navigtion_1.html";
+const URL_2 = URL_ROOT_SSL + "doc_markup_update-on-navigtion_2.html";
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(URL_1);
+add_task(async function () {
+  const { inspector, toolbox } = await openInspectorForURL(URL_1);
 
   assertMarkupViewIsLoaded();
   await selectNode("#one", inspector);
 
-  const willNavigate = inspector.currentTarget.once("will-navigate");
-  await testActor.eval(`window.location = "${URL_2}"`);
+  const { resourceCommand } = toolbox.commands;
+  const { onResource: willNavigate } =
+    await resourceCommand.waitForNextResource(
+      resourceCommand.TYPES.DOCUMENT_EVENT,
+      {
+        ignoreExistingResources: true,
+        predicate(resource) {
+          return resource.name == "will-navigate";
+        },
+      }
+    );
+
+  // We should not await on navigateTo here, because the test will assert the
+  // various phases of the inspector during the navigation.
+  const onNavigated = navigateTo(URL_2);
 
   info("Waiting for will-navigate");
   await willNavigate;
@@ -28,6 +41,7 @@ add_task(async function() {
   info("Navigation to page 2 was done, the inspector should be back up");
   assertMarkupViewIsLoaded();
 
+  await onNavigated;
   await selectNode("#two", inspector);
 
   function assertMarkupViewIsLoaded() {
@@ -36,9 +50,8 @@ add_task(async function() {
   }
 
   function assertMarkupViewIsEmpty() {
-    const markupViewFrame = inspector._markupFrame.contentDocument.getElementById(
-      "root"
-    );
+    const markupViewFrame =
+      inspector._markupFrame.contentDocument.getElementById("root");
     is(markupViewFrame.childNodes.length, 0, "The markup-view is unloaded");
   }
 });

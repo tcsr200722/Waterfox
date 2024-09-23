@@ -10,38 +10,35 @@ add_task(async function testPrintPreview() {
       permissions: ["tabs"],
     },
 
-    background: async function() {
+    background: async function () {
       await browser.tabs.printPreview();
       browser.test.assertTrue(true, "print preview entered");
       browser.test.notifyPass("tabs.printPreview");
     },
   });
 
-  await extension.startup();
-  await extension.awaitFinish("tabs.printPreview");
-  await extension.unload();
-
-  let ppTab = PrintUtils.shouldSimplify
-    ? PrintPreviewListener._simplifiedPrintPreviewTab
-    : PrintPreviewListener._printPreviewTab;
-
-  let ppToolbar = document.getElementById("print-preview-toolbar");
-
-  is(window.gInPrintPreviewMode, true, "window in print preview mode");
-
-  isnot(ppTab, null, "print preview tab created");
-  isnot(ppTab.linkedBrowser, null, "print preview browser created");
-  isnot(ppToolbar, null, "print preview toolbar created");
-
-  is(ppTab, gBrowser.selectedTab, "print preview tab selected");
   is(
-    ppTab.linkedBrowser.currentURI.spec,
-    "about:printpreview",
-    "print preview browser url correct"
+    document.querySelector(".printPreviewBrowser"),
+    null,
+    "There shouldn't be any print preview browser"
   );
 
-  PrintUtils.exitPrintPreview();
-  await BrowserTestUtils.waitForCondition(() => !window.gInPrintPreviewMode);
+  await extension.startup();
 
+  // Ensure we're showing the preview...
+  await BrowserTestUtils.waitForCondition(() => {
+    let preview = document.querySelector(".printPreviewBrowser");
+    return preview && BrowserTestUtils.isVisible(preview);
+  });
+
+  gBrowser.getTabDialogBox(gBrowser.selectedBrowser).abortAllDialogs();
+  // Wait for the preview to go away
+  await BrowserTestUtils.waitForCondition(
+    () => !document.querySelector(".printPreviewBrowser")
+  );
+
+  await extension.awaitFinish("tabs.printPreview");
+
+  await extension.unload();
   BrowserTestUtils.removeTab(gBrowser.tabs[1]);
 });

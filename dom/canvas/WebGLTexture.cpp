@@ -10,8 +10,9 @@
 #include "mozilla/Casting.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/IntegerRange.h"
 #include "mozilla/MathAlgorithms.h"
-#include "mozilla/Scoped.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Unused.h"
 #include "ScopedGLHelpers.h"
 #include "WebGLContext.h"
@@ -184,7 +185,8 @@ Maybe<const WebGLTexture::CompletenessInfo> WebGLTexture::CalcCompletenessInfo(
 
   // -
 
-  if (mBaseMipmapLevel > kMaxLevelCount - 1) {
+  const auto level_base = Es3_level_base();
+  if (level_base > kMaxLevelCount - 1) {
     ret->incompleteReason = "`level_base` too high.";
     return ret;
   }
@@ -193,7 +195,7 @@ Maybe<const WebGLTexture::CompletenessInfo> WebGLTexture::CalcCompletenessInfo(
   // "[A] texture is complete unless any of the following conditions hold true:"
 
   // "* Any dimension of the `level_base` array is not positive."
-  const auto& baseImageInfo = ImageInfoAtFace(0, mBaseMipmapLevel);
+  const auto& baseImageInfo = ImageInfoAtFace(0, level_base);
   if (!baseImageInfo.IsDefined()) {
     // In case of undefined texture image, we don't print any message because
     // this is a very common and often legitimate case (asynchronous texture
@@ -211,7 +213,7 @@ Maybe<const WebGLTexture::CompletenessInfo> WebGLTexture::CalcCompletenessInfo(
 
   // "* The texture is a cube map texture, and is not cube complete."
   bool initFailed = false;
-  if (!IsMipAndCubeComplete(mBaseMipmapLevel, ensureInit, &initFailed)) {
+  if (!IsMipAndCubeComplete(level_base, ensureInit, &initFailed)) {
     if (initFailed) return {};
 
     // Can only fail if not cube-complete.
@@ -238,21 +240,22 @@ Maybe<const WebGLTexture::CompletenessInfo> WebGLTexture::CalcCompletenessInfo(
 
   // "* `level_base <= level_max`"
 
-  const auto maxLevel = EffectiveMaxLevel();
-  if (mBaseMipmapLevel > maxLevel) {
+  const auto level_max = Es3_level_max();
+  const auto maxLevel_aka_q = Es3_q();
+  if (level_base > level_max) {  // `level_max` not `q`!
     ret->incompleteReason = "`level_base > level_max`.";
     return ret;
   }
 
   if (skipMips) return ret;
 
-  if (!IsMipAndCubeComplete(maxLevel, ensureInit, &initFailed)) {
+  if (!IsMipAndCubeComplete(maxLevel_aka_q, ensureInit, &initFailed)) {
     if (initFailed) return {};
 
     ret->incompleteReason = "Bad mipmap dimension or format.";
     return ret;
   }
-  ret->levels = AutoAssertCast(maxLevel - mBaseMipmapLevel + 1);
+  ret->levels = AutoAssertCast(maxLevel_aka_q - level_base + 1);
   ret->mipmapComplete = true;
 
   // -
@@ -312,6 +315,14 @@ Maybe<const webgl::SampleableInfo> WebGLTexture::CalcSampleableInfo(
     // In short, depth formats are not filterable, but shadow-samplers are.
     if (ret->isDepthTexCompare) {
       isFilterable = true;
+
+      if (mContext->mWarnOnce_DepthTexCompareFilterable) {
+        mContext->mWarnOnce_DepthTexCompareFilterable = false;
+        mContext->GenerateWarning(
+            "Depth texture comparison requests (e.g. `LINEAR`) Filtering, but"
+            " behavior is implementation-defined, and so on some systems will"
+            " sometimes behave as `NEAREST`. (warns once)");
+      }
     }
 
     // "* The effective internal format specified for the texture arrays is a
@@ -377,6 +388,9 @@ Maybe<const webgl::SampleableInfo> WebGLTexture::CalcSampleableInfo(
   ret->incompleteReason =
       nullptr;  // NB: incompleteReason is also null for undefined
   ret->levels = completeness->levels;  //   textures.
+  if (!needsMips && ret->levels) {
+    ret->levels = 1;
+  }
   ret->usage = completeness->usage;
   return ret;
 }
@@ -400,7 +414,7 @@ const webgl::SampleableInfo* WebGLTexture::GetSampleableInfo(
 
 // ---------------------------
 
-uint32_t WebGLTexture::EffectiveMaxLevel() const {
+uint32_t WebGLTexture::Es3_q() const {
   const auto& imageInfo = BaseImageInfo();
   if (!imageInfo.IsDefined()) return mBaseMipmapLevel;
 
@@ -583,12 +597,15 @@ static bool ZeroTextureData(const WebGLContext* webgl, GLuint tex,
 
     const size_t sliceByteCount = checkedByteCount.value();
 
-    UniqueBuffer zeros = calloc(1u, sliceByteCount);
+    const auto zeros = UniqueBuffer::Take(calloc(1u, sliceByteCount));
     if (!zeros) return false;
 
-    ScopedUnpackReset scopedReset(webgl);
-    gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);  // Don't bother with
-                                                     // striding it well.
+    // Don't bother with striding it well.
+    // TODO: We shouldn't need to do this for CompressedTexSubImage.
+    webgl::PixelPackingState{}.AssertCurrentUnpack(*gl, webgl->IsWebGL2());
+    gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
+    const auto revert = MakeScopeExit(
+        [&]() { gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 4); });
 
     GLenum error = 0;
     for (const auto z : IntegerRange(depth)) {
@@ -625,12 +642,14 @@ static bool ZeroTextureData(const WebGLContext* webgl, GLuint tex,
 
   const size_t sliceByteCount = checkedByteCount.value();
 
-  UniqueBuffer zeros = calloc(1u, sliceByteCount);
+  const auto zeros = UniqueBuffer::Take(calloc(1u, sliceByteCount));
   if (!zeros) return false;
 
-  ScopedUnpackReset scopedReset(webgl);
-  gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT,
-                   1);  // Don't bother with striding it well.
+  // Don't bother with striding it well.
+  webgl::PixelPackingState{}.AssertCurrentUnpack(*gl, webgl->IsWebGL2());
+  gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
+  const auto revert =
+      MakeScopeExit([&]() { gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 4); });
 
   GLenum error = 0;
   for (const auto z : IntegerRange(depth)) {
@@ -644,19 +663,10 @@ static bool ZeroTextureData(const WebGLContext* webgl, GLuint tex,
 }
 
 template <typename T, typename R>
-static R Clamp(const T val, const R min, const R max) {
+static constexpr R Clamp(const T val, const R min, const R max) {
   if (val < min) return min;
   if (val > max) return max;
   return static_cast<R>(val);
-}
-
-template <typename T, typename A, typename B>
-static void ClampSelf(T* const out, const A min, const B max) {
-  if (*out < min) {
-    *out = T{min};
-  } else if (*out > max) {
-    *out = T{max};
-  }
 }
 
 void WebGLTexture::ClampLevelBaseAndMax() {
@@ -667,8 +677,20 @@ void WebGLTexture::ClampLevelBaseAndMax() {
   //  `[0, levels-1]`, `level_max` is then clamped to the range `
   //  `[level_base, levels-1]`, where `levels` is the parameter passed to
   //   TexStorage* for the texture object."
-  ClampSelf(&mBaseMipmapLevel, 0u, mImmutableLevelCount - 1u);
-  ClampSelf(&mMaxMipmapLevel, mBaseMipmapLevel, mImmutableLevelCount - 1u);
+  MOZ_ASSERT(mImmutableLevelCount > 0);
+  const auto oldBase = mBaseMipmapLevel;
+  const auto oldMax = mMaxMipmapLevel;
+  mBaseMipmapLevel = Clamp(mBaseMipmapLevel, 0u, mImmutableLevelCount - 1u);
+  mMaxMipmapLevel =
+      Clamp(mMaxMipmapLevel, mBaseMipmapLevel, mImmutableLevelCount - 1u);
+  if (oldBase != mBaseMipmapLevel &&
+      mBaseMipmapLevelState != MIPMAP_LEVEL_DEFAULT) {
+    mBaseMipmapLevelState = MIPMAP_LEVEL_DIRTY;
+  }
+  if (oldMax != mMaxMipmapLevel &&
+      mMaxMipmapLevelState != MIPMAP_LEVEL_DEFAULT) {
+    mMaxMipmapLevelState = MIPMAP_LEVEL_DIRTY;
+  }
 
   // Note: This means that immutable textures are *always* texture-complete!
 }
@@ -707,6 +729,10 @@ bool WebGLTexture::BindTexture(TexTarget texTarget) {
   }
 
   return true;
+}
+
+static constexpr GLint ClampMipmapLevelForDriver(uint32_t level) {
+  return Clamp(level, uint8_t{0}, WebGLTexture::kMaxLevelCount);
 }
 
 void WebGLTexture::GenerateMipmap() {
@@ -786,6 +812,21 @@ void WebGLTexture::GenerateMipmap() {
   gl::GLContext* gl = mContext->gl;
 
   if (gl->WorkAroundDriverBugs()) {
+    // If we first set GL_TEXTURE_BASE_LEVEL to a number such as 20, then set
+    // MGL_TEXTURE_MAX_LEVEL to a smaller number like 8, our copy of the
+    // base level will be lowered, but we havn't yet updated the driver, we
+    // should do so now, before calling glGenerateMipmap().
+    if (mBaseMipmapLevelState == MIPMAP_LEVEL_DIRTY) {
+      gl->fTexParameteri(mTarget.get(), LOCAL_GL_TEXTURE_BASE_LEVEL,
+                         ClampMipmapLevelForDriver(mBaseMipmapLevel));
+      mBaseMipmapLevelState = MIPMAP_LEVEL_CLEAN;
+    }
+    if (mMaxMipmapLevelState == MIPMAP_LEVEL_DIRTY) {
+      gl->fTexParameteri(mTarget.get(), LOCAL_GL_TEXTURE_MAX_LEVEL,
+                         ClampMipmapLevelForDriver(mMaxMipmapLevel));
+      mMaxMipmapLevelState = MIPMAP_LEVEL_CLEAN;
+    }
+
     // bug 696495 - to work around failures in the texture-mips.html test on
     // various drivers, we set the minification filter before calling
     // glGenerateMipmap. This should not carry a significant performance
@@ -804,7 +845,7 @@ void WebGLTexture::GenerateMipmap() {
 
   // Record the results.
 
-  const auto maxLevel = EffectiveMaxLevel();
+  const auto maxLevel = Es3_q();
   PopulateMipChain(maxLevel);
 }
 
@@ -1008,18 +1049,17 @@ void WebGLTexture::TexParameter(TexTarget texTarget, GLenum pname,
   switch (pname) {
     case LOCAL_GL_TEXTURE_BASE_LEVEL: {
       mBaseMipmapLevel = clamped.i;
+      mBaseMipmapLevelState = MIPMAP_LEVEL_CLEAN;
       ClampLevelBaseAndMax();
-      const auto forDriver =
-          Clamp(mBaseMipmapLevel, uint8_t{0}, kMaxLevelCount);
-      clamped = FloatOrInt(forDriver);
+      clamped = FloatOrInt(ClampMipmapLevelForDriver(mBaseMipmapLevel));
       break;
     }
 
     case LOCAL_GL_TEXTURE_MAX_LEVEL: {
       mMaxMipmapLevel = clamped.i;
+      mMaxMipmapLevelState = MIPMAP_LEVEL_CLEAN;
       ClampLevelBaseAndMax();
-      const auto forDriver = Clamp(mMaxMipmapLevel, uint8_t{0}, kMaxLevelCount);
-      clamped = FloatOrInt(forDriver);
+      clamped = FloatOrInt(ClampMipmapLevelForDriver(mMaxMipmapLevel));
       break;
     }
 
@@ -1054,10 +1094,11 @@ void WebGLTexture::TexParameter(TexTarget texTarget, GLenum pname,
 
   ////////////////
 
-  if (!clamped.isFloat)
+  if (!clamped.isFloat) {
     mContext->gl->fTexParameteri(texTarget.get(), pname, clamped.i);
-  else
+  } else {
     mContext->gl->fTexParameterf(texTarget.get(), pname, clamped.f);
+  }
 }
 
 void WebGLTexture::Truncate() {

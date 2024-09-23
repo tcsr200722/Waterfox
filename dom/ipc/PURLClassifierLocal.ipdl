@@ -9,18 +9,23 @@ include protocol PContent;
 
 include PURLClassifierInfo;
 
-using refcounted class nsIURI from "mozilla/ipc/URIUtils.h";
+include "mozilla/ipc/URIUtils.h";
+include "mozilla/dom/URLClassifierParent.h";
+include "mozilla/dom/URLClassifierChild.h";
+
+[RefCounted] using class nsIURI from "nsIURI.h";
 
 namespace mozilla {
 namespace dom {
 
 struct URLClassifierLocalResult
 {
-  nsIURI uri;
+  nullable nsIURI uri;
   nsCString featureName;
   nsCString matchingList;
 };
 
+[ManualDealloc, ChildImpl="URLClassifierLocalChild", ParentImpl="URLClassifierLocalParent"]
 protocol PURLClassifierLocal
 {
   manager PContent;

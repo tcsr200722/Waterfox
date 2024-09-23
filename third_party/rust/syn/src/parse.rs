@@ -6,9 +6,8 @@
 //! [`Cursor`] type. `Cursor` is a cheaply copyable cursor over a range of
 //! tokens in a token stream.
 //!
-//! [`ParseStream`]: type.ParseStream.html
-//! [`Result<T>`]: type.Result.html
-//! [`Cursor`]: ../buffer/index.html
+//! [`Result<T>`]: Result
+//! [`Cursor`]: crate::buffer::Cursor
 //!
 //! # Example
 //!
@@ -23,11 +22,11 @@
 //! procedural macro, they will receive a helpful compiler error message
 //! pointing out the exact token that triggered the failure to parse.
 //!
-//! [`parse_macro_input!`]: ../macro.parse_macro_input.html
+//! [`parse_macro_input!`]: crate::parse_macro_input!
 //!
 //! ```
-//! extern crate proc_macro;
-//!
+//! # extern crate proc_macro;
+//! #
 //! use proc_macro::TokenStream;
 //! use syn::{braced, parse_macro_input, token, Field, Ident, Result, Token};
 //! use syn::parse::{Parse, ParseStream};
@@ -67,7 +66,7 @@
 //!             struct_token: input.parse()?,
 //!             ident: input.parse()?,
 //!             brace_token: braced!(content in input),
-//!             fields: content.parse_terminated(Field::parse_named)?,
+//!             fields: content.parse_terminated(Field::parse_named, Token![,])?,
 //!         })
 //!     }
 //! }
@@ -85,7 +84,7 @@
 //!     let input = parse_macro_input!(tokens as Item);
 //!
 //!     /* ... */
-//! #   "".parse().unwrap()
+//! #   TokenStream::new()
 //! }
 //! ```
 //!
@@ -96,10 +95,9 @@
 //! obvious default way. These functions can return any syntax tree node that
 //! implements the [`Parse`] trait, which includes most types in Syn.
 //!
-//! [`syn::parse`]: ../fn.parse.html
-//! [`syn::parse2`]: ../fn.parse2.html
-//! [`syn::parse_str`]: ../fn.parse_str.html
-//! [`Parse`]: trait.Parse.html
+//! [`syn::parse`]: crate::parse()
+//! [`syn::parse2`]: crate::parse2()
+//! [`syn::parse_str`]: crate::parse_str()
 //!
 //! ```
 //! use syn::Type;
@@ -109,14 +107,12 @@
 //! #     Ok(())
 //! # }
 //! #
-//! # fn main() {
-//! #     run_parser().unwrap();
-//! # }
+//! # run_parser().unwrap();
 //! ```
 //!
 //! The [`parse_quote!`] macro also uses this approach.
 //!
-//! [`parse_quote!`]: ../macro.parse_quote.html
+//! [`parse_quote!`]: crate::parse_quote!
 //!
 //! # The `Parser` trait
 //!
@@ -126,8 +122,8 @@
 //! may or may not allow trailing punctuation, and parsing it the wrong way
 //! would either reject valid input or accept invalid input.
 //!
-//! [`Attribute`]: ../struct.Attribute.html
-//! [`Punctuated`]: ../punctuated/index.html
+//! [`Attribute`]: crate::Attribute
+//! [`Punctuated`]: crate::punctuated
 //!
 //! The `Parse` trait is not implemented in these cases because there is no good
 //! behavior to consider the default.
@@ -152,11 +148,10 @@
 //! single `Parse` implementation, and those parser functions can be invoked
 //! through the [`Parser`] trait.
 //!
-//! [`Parser`]: trait.Parser.html
 //!
 //! ```
-//! extern crate proc_macro;
-//!
+//! # extern crate proc_macro;
+//! #
 //! use proc_macro::TokenStream;
 //! use syn::parse::Parser;
 //! use syn::punctuated::Punctuated;
@@ -183,40 +178,38 @@
 //!     Ok(())
 //! }
 //! ```
-//!
-//! ---
-//!
-//! *This module is available if Syn is built with the `"parsing"` feature.*
 
 #[path = "discouraged.rs"]
 pub mod discouraged;
 
+use crate::buffer::{Cursor, TokenBuffer};
+use crate::error;
+use crate::lookahead;
+#[cfg(feature = "proc-macro")]
+use crate::proc_macro;
+use crate::punctuated::Punctuated;
+use crate::token::Token;
+use proc_macro2::{self, Delimiter, Group, Literal, Punct, Span, TokenStream, TokenTree};
 use std::cell::Cell;
 use std::fmt::{self, Debug, Display};
+#[cfg(feature = "extra-traits")]
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::str::FromStr;
 
-#[cfg(all(
-    not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "wasi"))),
-    feature = "proc-macro"
-))]
-use crate::proc_macro;
-use proc_macro2::{self, Delimiter, Group, Literal, Punct, Span, TokenStream, TokenTree};
-
-use crate::buffer::{Cursor, TokenBuffer};
-use crate::error;
-use crate::lookahead;
-use crate::punctuated::Punctuated;
-use crate::token::Token;
-
 pub use crate::error::{Error, Result};
 pub use crate::lookahead::{Lookahead1, Peek};
 
 /// Parsing interface implemented by all types that can be parsed in a default
 /// way from a token stream.
+///
+/// Refer to the [module documentation] for details about implementing and using
+/// the `Parse` trait.
+///
+/// [module documentation]: self
 pub trait Parse: Sized {
     fn parse(input: ParseStream) -> Result<Self>;
 }
@@ -247,7 +240,8 @@ pub type ParseStream<'a> = &'a ParseBuffer<'a>;
 /// - One of [the `syn::parse*` functions][syn-parse]; or
 /// - A method of the [`Parser`] trait.
 ///
-/// [syn-parse]: index.html#the-synparse-functions
+/// [`parse_macro_input!`]: crate::parse_macro_input!
+/// [syn-parse]: self#the-synparse-functions
 pub struct ParseBuffer<'a> {
     scope: Span,
     // Instead of Cell<Cursor<'a>> so that ParseBuffer<'a> is covariant in 'a.
@@ -263,13 +257,16 @@ pub struct ParseBuffer<'a> {
     // the cell.
     cell: Cell<Cursor<'static>>,
     marker: PhantomData<Cursor<'a>>,
-    unexpected: Rc<Cell<Option<Span>>>,
+    unexpected: Cell<Option<Rc<Cell<Unexpected>>>>,
 }
 
 impl<'a> Drop for ParseBuffer<'a> {
     fn drop(&mut self) {
-        if !self.is_empty() && self.unexpected.get().is_none() {
-            self.unexpected.set(Some(self.cursor().span()));
+        if let Some(unexpected_span) = span_of_unexpected_ignoring_nones(self.cursor()) {
+            let (inner, old_span) = inner_unexpected(self);
+            if old_span.is_none() {
+                inner.set(Unexpected::Some(unexpected_span));
+            }
         }
     }
 }
@@ -324,15 +321,12 @@ impl<'a> Debug for ParseBuffer<'a> {
 /// #     input.parse()
 /// # }
 /// #
-/// # fn main() {
-/// #     use syn::parse::Parser;
-/// #     let remainder = remainder_after_skipping_past_next_at
-/// #         .parse_str("a @ b c")
-/// #         .unwrap();
-/// #     assert_eq!(remainder.to_string(), "b c");
-/// # }
+/// # use syn::parse::Parser;
+/// # let remainder = remainder_after_skipping_past_next_at
+/// #     .parse_str("a @ b c")
+/// #     .unwrap();
+/// # assert_eq!(remainder.to_string(), "b c");
 /// ```
-#[derive(Copy, Clone)]
 pub struct StepCursor<'c, 'a> {
     scope: Span,
     // This field is covariant in 'c.
@@ -356,6 +350,14 @@ impl<'c, 'a> Deref for StepCursor<'c, 'a> {
     }
 }
 
+impl<'c, 'a> Copy for StepCursor<'c, 'a> {}
+
+impl<'c, 'a> Clone for StepCursor<'c, 'a> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 impl<'c, 'a> StepCursor<'c, 'a> {
     /// Triggers an error at the current position of the parse stream.
     ///
@@ -375,36 +377,81 @@ pub(crate) fn advance_step_cursor<'c, 'a>(proof: StepCursor<'c, 'a>, to: Cursor<
     unsafe { mem::transmute::<Cursor<'c>, Cursor<'a>>(to) }
 }
 
-fn skip(input: ParseStream) -> bool {
-    input
-        .step(|cursor| {
-            if let Some((_lifetime, rest)) = cursor.lifetime() {
-                Ok((true, rest))
-            } else if let Some((_token, rest)) = cursor.token_tree() {
-                Ok((true, rest))
-            } else {
-                Ok((false, *cursor))
-            }
-        })
-        .unwrap()
-}
-
 pub(crate) fn new_parse_buffer(
     scope: Span,
     cursor: Cursor,
-    unexpected: Rc<Cell<Option<Span>>>,
+    unexpected: Rc<Cell<Unexpected>>,
 ) -> ParseBuffer {
     ParseBuffer {
         scope,
         // See comment on `cell` in the struct definition.
         cell: Cell::new(unsafe { mem::transmute::<Cursor, Cursor<'static>>(cursor) }),
         marker: PhantomData,
-        unexpected,
+        unexpected: Cell::new(Some(unexpected)),
     }
 }
 
-pub(crate) fn get_unexpected(buffer: &ParseBuffer) -> Rc<Cell<Option<Span>>> {
-    buffer.unexpected.clone()
+pub(crate) enum Unexpected {
+    None,
+    Some(Span),
+    Chain(Rc<Cell<Unexpected>>),
+}
+
+impl Default for Unexpected {
+    fn default() -> Self {
+        Unexpected::None
+    }
+}
+
+impl Clone for Unexpected {
+    fn clone(&self) -> Self {
+        match self {
+            Unexpected::None => Unexpected::None,
+            Unexpected::Some(span) => Unexpected::Some(*span),
+            Unexpected::Chain(next) => Unexpected::Chain(next.clone()),
+        }
+    }
+}
+
+// We call this on Cell<Unexpected> and Cell<Option<T>> where temporarily
+// swapping in a None is cheap.
+fn cell_clone<T: Default + Clone>(cell: &Cell<T>) -> T {
+    let prev = cell.take();
+    let ret = prev.clone();
+    cell.set(prev);
+    ret
+}
+
+fn inner_unexpected(buffer: &ParseBuffer) -> (Rc<Cell<Unexpected>>, Option<Span>) {
+    let mut unexpected = get_unexpected(buffer);
+    loop {
+        match cell_clone(&unexpected) {
+            Unexpected::None => return (unexpected, None),
+            Unexpected::Some(span) => return (unexpected, Some(span)),
+            Unexpected::Chain(next) => unexpected = next,
+        }
+    }
+}
+
+pub(crate) fn get_unexpected(buffer: &ParseBuffer) -> Rc<Cell<Unexpected>> {
+    cell_clone(&buffer.unexpected).unwrap()
+}
+
+fn span_of_unexpected_ignoring_nones(mut cursor: Cursor) -> Option<Span> {
+    if cursor.eof() {
+        return None;
+    }
+    while let Some((inner, _span, rest)) = cursor.group(Delimiter::None) {
+        if let Some(unexpected) = span_of_unexpected_ignoring_nones(inner) {
+            return Some(unexpected);
+        }
+        cursor = rest;
+    }
+    if cursor.eof() {
+        None
+    } else {
+        Some(cursor.span())
+    }
 }
 
 impl<'a> ParseBuffer<'a> {
@@ -466,8 +513,8 @@ impl<'a> ParseBuffer<'a> {
     ///
     /// - `input.peek(Token![struct])`
     /// - `input.peek(Token![==])`
-    /// - `input.peek(Ident)`&emsp;*(does not accept keywords)*
-    /// - `input.peek(Ident::peek_any)`
+    /// - `input.peek(syn::Ident)`&emsp;*(does not accept keywords)*
+    /// - `input.peek(syn::Ident::peek_any)`
     /// - `input.peek(Lifetime)`
     /// - `input.peek(token::Brace)`
     ///
@@ -566,14 +613,36 @@ impl<'a> ParseBuffer<'a> {
     /// }
     /// ```
     pub fn peek2<T: Peek>(&self, token: T) -> bool {
-        let ahead = self.fork();
-        skip(&ahead) && ahead.peek(token)
+        fn peek2(buffer: &ParseBuffer, peek: fn(Cursor) -> bool) -> bool {
+            if let Some(group) = buffer.cursor().group(Delimiter::None) {
+                if group.0.skip().map_or(false, peek) {
+                    return true;
+                }
+            }
+            buffer.cursor().skip().map_or(false, peek)
+        }
+
+        let _ = token;
+        peek2(self, T::Token::peek)
     }
 
     /// Looks at the third-next token in the parse stream.
     pub fn peek3<T: Peek>(&self, token: T) -> bool {
-        let ahead = self.fork();
-        skip(&ahead) && skip(&ahead) && ahead.peek(token)
+        fn peek3(buffer: &ParseBuffer, peek: fn(Cursor) -> bool) -> bool {
+            if let Some(group) = buffer.cursor().group(Delimiter::None) {
+                if group.0.skip().and_then(Cursor::skip).map_or(false, peek) {
+                    return true;
+                }
+            }
+            buffer
+                .cursor()
+                .skip()
+                .and_then(Cursor::skip)
+                .map_or(false, peek)
+        }
+
+        let _ = token;
+        peek3(self, T::Token::peek)
     }
 
     /// Parses zero or more occurrences of `T` separated by punctuation of type
@@ -609,23 +678,74 @@ impl<'a> ParseBuffer<'a> {
     ///             struct_token: input.parse()?,
     ///             ident: input.parse()?,
     ///             paren_token: parenthesized!(content in input),
-    ///             fields: content.parse_terminated(Type::parse)?,
+    ///             fields: content.parse_terminated(Type::parse, Token![,])?,
     ///             semi_token: input.parse()?,
     ///         })
     ///     }
     /// }
     /// #
-    /// # fn main() {
-    /// #     let input = quote! {
-    /// #         struct S(A, B);
-    /// #     };
-    /// #     syn::parse2::<TupleStruct>(input).unwrap();
-    /// # }
+    /// # let input = quote! {
+    /// #     struct S(A, B);
+    /// # };
+    /// # syn::parse2::<TupleStruct>(input).unwrap();
     /// ```
-    pub fn parse_terminated<T, P: Parse>(
+    ///
+    /// # See also
+    ///
+    /// If your separator is anything more complicated than an invocation of the
+    /// `Token!` macro, this method won't be applicable and you can instead
+    /// directly use `Punctuated`'s parser functions: [`parse_terminated`],
+    /// [`parse_separated_nonempty`] etc.
+    ///
+    /// [`parse_terminated`]: Punctuated::parse_terminated
+    /// [`parse_separated_nonempty`]: Punctuated::parse_separated_nonempty
+    ///
+    /// ```
+    /// use syn::{custom_keyword, Expr, Result, Token};
+    /// use syn::parse::{Parse, ParseStream};
+    /// use syn::punctuated::Punctuated;
+    ///
+    /// mod kw {
+    ///     syn::custom_keyword!(fin);
+    /// }
+    ///
+    /// struct Fin(kw::fin, Token![;]);
+    ///
+    /// impl Parse for Fin {
+    ///     fn parse(input: ParseStream) -> Result<Self> {
+    ///         Ok(Self(input.parse()?, input.parse()?))
+    ///     }
+    /// }
+    ///
+    /// struct Thing {
+    ///     steps: Punctuated<Expr, Fin>,
+    /// }
+    ///
+    /// impl Parse for Thing {
+    ///     fn parse(input: ParseStream) -> Result<Self> {
+    /// # if true {
+    ///         Ok(Thing {
+    ///             steps: Punctuated::parse_terminated(input)?,
+    ///         })
+    /// # } else {
+    ///         // or equivalently, this means the same thing:
+    /// #       Ok(Thing {
+    ///             steps: input.call(Punctuated::parse_terminated)?,
+    /// #       })
+    /// # }
+    ///     }
+    /// }
+    /// ```
+    pub fn parse_terminated<T, P>(
         &self,
         parser: fn(ParseStream) -> Result<T>,
-    ) -> Result<Punctuated<T, P>> {
+        separator: P,
+    ) -> Result<Punctuated<T, P::Token>>
+    where
+        P: Peek,
+        P::Token: Parse,
+    {
+        let _ = separator;
         Punctuated::parse_terminated_with(self, parser)
     }
 
@@ -676,7 +796,7 @@ impl<'a> ParseBuffer<'a> {
     /// # Example
     ///
     /// ```
-    /// use syn::{ConstParam, Ident, Lifetime, LifetimeDef, Result, Token, TypeParam};
+    /// use syn::{ConstParam, Ident, Lifetime, LifetimeParam, Result, Token, TypeParam};
     /// use syn::parse::{Parse, ParseStream};
     ///
     /// // A generic parameter, a single one of the comma-separated elements inside
@@ -692,7 +812,7 @@ impl<'a> ParseBuffer<'a> {
     /// //       |          ^
     /// enum GenericParam {
     ///     Type(TypeParam),
-    ///     Lifetime(LifetimeDef),
+    ///     Lifetime(LifetimeParam),
     ///     Const(ConstParam),
     /// }
     ///
@@ -847,8 +967,8 @@ impl<'a> ParseBuffer<'a> {
             cell: self.cell.clone(),
             marker: PhantomData,
             // Not the parent's unexpected. Nothing cares whether the clone
-            // parses all the way.
-            unexpected: Rc::new(Cell::new(None)),
+            // parses all the way unless we `advance_to`.
+            unexpected: Cell::new(Some(Rc::new(Cell::new(Unexpected::None)))),
         }
     }
 
@@ -923,13 +1043,11 @@ impl<'a> ParseBuffer<'a> {
     /// #     input.parse()
     /// # }
     /// #
-    /// # fn main() {
-    /// #     use syn::parse::Parser;
-    /// #     let remainder = remainder_after_skipping_past_next_at
-    /// #         .parse_str("a @ b c")
-    /// #         .unwrap();
-    /// #     assert_eq!(remainder.to_string(), "b c");
-    /// # }
+    /// # use syn::parse::Parser;
+    /// # let remainder = remainder_after_skipping_past_next_at
+    /// #     .parse_str("a @ b c")
+    /// #     .unwrap();
+    /// # assert_eq!(remainder.to_string(), "b c");
     /// ```
     pub fn step<F, R>(&self, function: F) -> Result<R>
     where
@@ -961,29 +1079,95 @@ impl<'a> ParseBuffer<'a> {
         Ok(node)
     }
 
+    /// Returns the `Span` of the next token in the parse stream, or
+    /// `Span::call_site()` if this parse stream has completely exhausted its
+    /// input `TokenStream`.
+    pub fn span(&self) -> Span {
+        let cursor = self.cursor();
+        if cursor.eof() {
+            self.scope
+        } else {
+            crate::buffer::open_span_of_group(cursor)
+        }
+    }
+
     /// Provides low-level access to the token representation underlying this
     /// parse stream.
     ///
     /// Cursors are immutable so no operations you perform against the cursor
     /// will affect the state of this parse stream.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use proc_macro2::TokenStream;
+    /// use syn::buffer::Cursor;
+    /// use syn::parse::{ParseStream, Result};
+    ///
+    /// // Run a parser that returns T, but get its output as TokenStream instead of T.
+    /// // This works without T needing to implement ToTokens.
+    /// fn recognize_token_stream<T>(
+    ///     recognizer: fn(ParseStream) -> Result<T>,
+    /// ) -> impl Fn(ParseStream) -> Result<TokenStream> {
+    ///     move |input| {
+    ///         let begin = input.cursor();
+    ///         recognizer(input)?;
+    ///         let end = input.cursor();
+    ///         Ok(tokens_between(begin, end))
+    ///     }
+    /// }
+    ///
+    /// // Collect tokens between two cursors as a TokenStream.
+    /// fn tokens_between(begin: Cursor, end: Cursor) -> TokenStream {
+    ///     assert!(begin <= end);
+    ///
+    ///     let mut cursor = begin;
+    ///     let mut tokens = TokenStream::new();
+    ///     while cursor < end {
+    ///         let (token, next) = cursor.token_tree().unwrap();
+    ///         tokens.extend(std::iter::once(token));
+    ///         cursor = next;
+    ///     }
+    ///     tokens
+    /// }
+    ///
+    /// fn main() {
+    ///     use quote::quote;
+    ///     use syn::parse::{Parse, Parser};
+    ///     use syn::Token;
+    ///
+    ///     // Parse syn::Type as a TokenStream, surrounded by angle brackets.
+    ///     fn example(input: ParseStream) -> Result<TokenStream> {
+    ///         let _langle: Token![<] = input.parse()?;
+    ///         let ty = recognize_token_stream(syn::Type::parse)(input)?;
+    ///         let _rangle: Token![>] = input.parse()?;
+    ///         Ok(ty)
+    ///     }
+    ///
+    ///     let tokens = quote! { <fn() -> u8> };
+    ///     println!("{}", example.parse2(tokens).unwrap());
+    /// }
+    /// ```
     pub fn cursor(&self) -> Cursor<'a> {
         self.cell.get()
     }
 
     fn check_unexpected(&self) -> Result<()> {
-        match self.unexpected.get() {
+        match inner_unexpected(self).1 {
             Some(span) => Err(Error::new(span, "unexpected token")),
             None => Ok(()),
         }
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl<T: Parse> Parse for Box<T> {
     fn parse(input: ParseStream) -> Result<Self> {
         input.parse().map(Box::new)
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl<T: Parse + Token> Parse for Option<T> {
     fn parse(input: ParseStream) -> Result<Self> {
         if T::peek(input.cursor()) {
@@ -994,12 +1178,14 @@ impl<T: Parse + Token> Parse for Option<T> {
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl Parse for TokenStream {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| Ok((cursor.token_stream(), Cursor::empty())))
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl Parse for TokenTree {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| match cursor.token_tree() {
@@ -1009,13 +1195,12 @@ impl Parse for TokenTree {
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl Parse for Group {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| {
-            for delim in &[Delimiter::Parenthesis, Delimiter::Brace, Delimiter::Bracket] {
-                if let Some((inside, span, rest)) = cursor.group(*delim) {
-                    let mut group = Group::new(*delim, inside.token_stream());
-                    group.set_span(span);
+            if let Some((group, rest)) = cursor.any_group_token() {
+                if group.delimiter() != Delimiter::None {
                     return Ok((group, rest));
                 }
             }
@@ -1024,6 +1209,7 @@ impl Parse for Group {
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl Parse for Punct {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| match cursor.punct() {
@@ -1033,6 +1219,7 @@ impl Parse for Punct {
     }
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
 impl Parse for Literal {
     fn parse(input: ParseStream) -> Result<Self> {
         input.step(|cursor| match cursor.literal() {
@@ -1047,8 +1234,6 @@ impl Parse for Literal {
 /// Refer to the [module documentation] for details about parsing in Syn.
 ///
 /// [module documentation]: self
-///
-/// *This trait is available if Syn is built with the `"parsing"` feature.*
 pub trait Parser: Sized {
     type Output;
 
@@ -1062,13 +1247,8 @@ pub trait Parser: Sized {
     ///
     /// This function will check that the input is fully parsed. If there are
     /// any unparsed tokens at the end of the stream, an error is returned.
-    ///
-    /// *This method is available if Syn is built with both the `"parsing"` and
-    /// `"proc-macro"` features.*
-    #[cfg(all(
-        not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "wasi"))),
-        feature = "proc-macro"
-    ))]
+    #[cfg(feature = "proc-macro")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "proc-macro")))]
     fn parse(self, tokens: proc_macro::TokenStream) -> Result<Self::Output> {
         self.parse2(proc_macro2::TokenStream::from(tokens))
     }
@@ -1088,22 +1268,17 @@ pub trait Parser: Sized {
 
     // Not public API.
     #[doc(hidden)]
+    #[cfg(any(feature = "full", feature = "derive"))]
     fn __parse_scoped(self, scope: Span, tokens: TokenStream) -> Result<Self::Output> {
         let _ = scope;
         self.parse2(tokens)
-    }
-
-    // Not public API.
-    #[doc(hidden)]
-    fn __parse_stream(self, input: ParseStream) -> Result<Self::Output> {
-        input.parse().and_then(|tokens| self.parse2(tokens))
     }
 }
 
 fn tokens_to_parse_buffer(tokens: &TokenBuffer) -> ParseBuffer {
     let scope = Span::call_site();
     let cursor = tokens.begin();
-    let unexpected = Rc::new(Cell::new(None));
+    let unexpected = Rc::new(Cell::new(Unexpected::None));
     new_parse_buffer(scope, cursor, unexpected)
 }
 
@@ -1118,40 +1293,32 @@ where
         let state = tokens_to_parse_buffer(&buf);
         let node = self(&state)?;
         state.check_unexpected()?;
-        if state.is_empty() {
-            Ok(node)
+        if let Some(unexpected_span) = span_of_unexpected_ignoring_nones(state.cursor()) {
+            Err(Error::new(unexpected_span, "unexpected token"))
         } else {
-            Err(state.error("unexpected token"))
+            Ok(node)
         }
     }
 
-    #[doc(hidden)]
+    #[cfg(any(feature = "full", feature = "derive"))]
     fn __parse_scoped(self, scope: Span, tokens: TokenStream) -> Result<Self::Output> {
         let buf = TokenBuffer::new2(tokens);
         let cursor = buf.begin();
-        let unexpected = Rc::new(Cell::new(None));
+        let unexpected = Rc::new(Cell::new(Unexpected::None));
         let state = new_parse_buffer(scope, cursor, unexpected);
         let node = self(&state)?;
         state.check_unexpected()?;
-        if state.is_empty() {
-            Ok(node)
+        if let Some(unexpected_span) = span_of_unexpected_ignoring_nones(state.cursor()) {
+            Err(Error::new(unexpected_span, "unexpected token"))
         } else {
-            Err(state.error("unexpected token"))
+            Ok(node)
         }
     }
-
-    #[doc(hidden)]
-    fn __parse_stream(self, input: ParseStream) -> Result<Self::Output> {
-        self(input)
-    }
 }
 
+#[cfg(any(feature = "full", feature = "derive"))]
 pub(crate) fn parse_scoped<F: Parser>(f: F, scope: Span, tokens: TokenStream) -> Result<F::Output> {
     f.__parse_scoped(scope, tokens)
-}
-
-pub(crate) fn parse_stream<F: Parser>(f: F, input: ParseStream) -> Result<F::Output> {
-    f.__parse_stream(input)
 }
 
 /// An empty syntax tree node that consumes no tokens when parsed.
@@ -1160,8 +1327,8 @@ pub(crate) fn parse_stream<F: Parser>(f: F, input: ParseStream) -> Result<F::Out
 /// provided any attribute args.
 ///
 /// ```
-/// extern crate proc_macro;
-///
+/// # extern crate proc_macro;
+/// #
 /// use proc_macro::TokenStream;
 /// use syn::parse_macro_input;
 /// use syn::parse::Nothing;
@@ -1173,7 +1340,7 @@ pub(crate) fn parse_stream<F: Parser>(f: F, input: ParseStream) -> Result<F::Out
 ///     parse_macro_input!(args as Nothing);
 ///
 ///     /* ... */
-/// #   "".parse().unwrap()
+/// #   TokenStream::new()
 /// }
 /// ```
 ///
@@ -1190,4 +1357,30 @@ impl Parse for Nothing {
     fn parse(_input: ParseStream) -> Result<Self> {
         Ok(Nothing)
     }
+}
+
+#[cfg(feature = "extra-traits")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "extra-traits")))]
+impl Debug for Nothing {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("Nothing")
+    }
+}
+
+#[cfg(feature = "extra-traits")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "extra-traits")))]
+impl Eq for Nothing {}
+
+#[cfg(feature = "extra-traits")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "extra-traits")))]
+impl PartialEq for Nothing {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "extra-traits")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "extra-traits")))]
+impl Hash for Nothing {
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
 }

@@ -6,12 +6,20 @@
 
 #include "StorageActivityService.h"
 
+#include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIMutableArray.h"
+#include "nsIObserverService.h"
 #include "nsIPrincipal.h"
+#include "nsIUserIdleService.h"
 #include "nsSupportsPrimitives.h"
 #include "nsXPCOM.h"
 
@@ -19,8 +27,7 @@
 // too old. This value should be in sync with what the UI needs.
 #define TIME_MAX_SECS 86400 /* 24 hours */
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static StaticRefPtr<StorageActivityService> gStorageActivityService;
 static bool gStorageActivityShutdown = false;
@@ -69,7 +76,7 @@ void StorageActivityService::SendActivity(
         }
       });
 
-  SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+  SchedulerGroup::Dispatch(r.forget());
 }
 
 /* static */
@@ -94,7 +101,7 @@ void StorageActivityService::SendActivity(const nsACString& aOrigin) {
   if (NS_IsMainThread()) {
     Unused << r->Run();
   } else {
-    SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+    NS_DispatchToMainThread(r.forget());
   }
 }
 
@@ -129,7 +136,6 @@ StorageActivityService::StorageActivityService() {
 
 StorageActivityService::~StorageActivityService() {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!mTimer);
 }
 
 void StorageActivityService::SendActivityInternal(nsIPrincipal* aPrincipal) {
@@ -155,15 +161,25 @@ void StorageActivityService::SendActivityInternal(nsIPrincipal* aPrincipal) {
 void StorageActivityService::SendActivityInternal(const nsACString& aOrigin) {
   MOZ_ASSERT(XRE_IsParentProcess());
 
-  mActivities.Put(aOrigin, PR_Now());
-  MaybeStartTimer();
+  bool shouldAddObserver = mActivities.Count() == 0;
+  mActivities.InsertOrUpdate(aOrigin, PR_Now());
+
+  if (shouldAddObserver) {
+    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+    if (NS_WARN_IF(!obs)) {
+      return;
+    }
+
+    obs->AddObserver(this, OBSERVER_TOPIC_IDLE_DAILY, true);
+  }
 }
 
 void StorageActivityService::SendActivityToParent(nsIPrincipal* aPrincipal) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!XRE_IsParentProcess());
 
-  PBackgroundChild* actor = BackgroundChild::GetOrCreateForCurrentThread();
+  ::mozilla::ipc::PBackgroundChild* actor =
+      ::mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!actor)) {
     return;
   }
@@ -182,43 +198,21 @@ NS_IMETHODIMP
 StorageActivityService::Observe(nsISupports* aSubject, const char* aTopic,
                                 const char16_t* aData) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID));
 
-  MaybeStopTimer();
-
-  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-  if (obs) {
-    obs->RemoveObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID);
+  if (!strcmp(aTopic, OBSERVER_TOPIC_IDLE_DAILY)) {
+    CleanUp();
+    return NS_OK;
   }
+
+  MOZ_ASSERT(!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID));
 
   gStorageActivityShutdown = true;
   gStorageActivityService = nullptr;
   return NS_OK;
 }
 
-void StorageActivityService::MaybeStartTimer() {
+void StorageActivityService::CleanUp() {
   MOZ_ASSERT(NS_IsMainThread());
-
-  if (!mTimer) {
-    mTimer = do_CreateInstance(NS_TIMER_CONTRACTID);
-    mTimer->InitWithCallback(this, 1000 * 5 * 60 /* any 5 minutes */,
-                             nsITimer::TYPE_REPEATING_SLACK);
-  }
-}
-
-void StorageActivityService::MaybeStopTimer() {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  if (mTimer) {
-    mTimer->Cancel();
-    mTimer = nullptr;
-  }
-}
-
-NS_IMETHODIMP
-StorageActivityService::Notify(nsITimer* aTimer) {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mTimer == aTimer);
 
   uint64_t now = PR_Now();
 
@@ -228,12 +222,13 @@ StorageActivityService::Notify(nsITimer* aTimer) {
     }
   }
 
-  // If no activities, let's stop the timer.
+  // If no activities, remove the observer.
   if (mActivities.Count() == 0) {
-    MaybeStopTimer();
+    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+    if (obs) {
+      obs->RemoveObserver(this, OBSERVER_TOPIC_IDLE_DAILY);
+    }
   }
-
-  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -244,6 +239,9 @@ StorageActivityService::GetActiveOrigins(PRTime aFrom, PRTime aTo,
     return NS_ERROR_INVALID_ARG;
   }
 
+  // Remove expired entries first.
+  CleanUp();
+
   nsresult rv = NS_OK;
   nsCOMPtr<nsIMutableArray> devices =
       do_CreateInstance(NS_ARRAY_CONTRACTID, &rv);
@@ -251,10 +249,10 @@ StorageActivityService::GetActiveOrigins(PRTime aFrom, PRTime aTo,
     return rv;
   }
 
-  for (auto iter = mActivities.Iter(); !iter.Done(); iter.Next()) {
-    if (iter.UserData() >= aFrom && iter.UserData() <= aTo) {
+  for (const auto& activityEntry : mActivities) {
+    if (activityEntry.GetData() >= aFrom && activityEntry.GetData() <= aTo) {
       RefPtr<BasePrincipal> principal =
-          BasePrincipal::CreateContentPrincipal(iter.Key());
+          BasePrincipal::CreateContentPrincipal(activityEntry.GetKey());
       MOZ_ASSERT(principal);
 
       rv = devices->AppendElement(principal);
@@ -281,7 +279,7 @@ StorageActivityService::MoveOriginInTime(nsIPrincipal* aPrincipal,
     return rv;
   }
 
-  mActivities.Put(origin, aWhen / PR_USEC_PER_SEC);
+  mActivities.InsertOrUpdate(origin, aWhen / PR_USEC_PER_SEC);
   return NS_OK;
 }
 
@@ -295,12 +293,10 @@ NS_INTERFACE_MAP_BEGIN(StorageActivityService)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIStorageActivityService)
   NS_INTERFACE_MAP_ENTRY(nsIStorageActivityService)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
-  NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
 NS_INTERFACE_MAP_END
 
 NS_IMPL_ADDREF(StorageActivityService)
 NS_IMPL_RELEASE(StorageActivityService)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

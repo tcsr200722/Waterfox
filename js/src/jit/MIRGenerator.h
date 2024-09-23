@@ -10,24 +10,28 @@
 // This file declares the data structures used to build a control-flow graph
 // containing MIR.
 
+#include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/Result.h"
 
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "jit/CompileInfo.h"
+#include "jit/CompileWrappers.h"
 #include "jit/JitAllocPolicy.h"
-#include "jit/JitRealm.h"
-#include "jit/MIR.h"
-#ifdef JS_ION_PERF
-#  include "jit/PerfSpewer.h"
-#endif
-#include "jit/RegisterSets.h"
-#include "vm/JSContext.h"
-#include "vm/Realm.h"
+#include "jit/JitContext.h"
+#include "jit/JitSpewer.h"
+#include "jit/PerfSpewer.h"
+#include "js/Utility.h"
+#include "vm/GeckoProfiler.h"
 
 namespace js {
 namespace jit {
 
+class JitRuntime;
 class MIRGraph;
 class OptimizationInfo;
 
@@ -38,11 +42,11 @@ class MIRGenerator final {
                const CompileInfo* outerInfo,
                const OptimizationInfo* optimizationInfo);
 
-  void initMinWasmHeapLength(uint32_t init) { minWasmHeapLength_ = init; }
+  void initMinWasmMemory0Length(uint64_t init) { minWasmMemory0Length_ = init; }
 
   TempAllocator& alloc() { return *alloc_; }
   MIRGraph& graph() { return *graph_; }
-  MOZ_MUST_USE bool ensureBallast() { return alloc().ensureBallast(); }
+  [[nodiscard]] bool ensureBallast() { return alloc().ensureBallast(); }
   const JitRuntime* jitRuntime() const { return runtime->jitRuntime(); }
   const CompileInfo& outerInfo() const { return *outerInfo_; }
   const OptimizationInfo& optimizationInfo() const {
@@ -73,15 +77,17 @@ class MIRGenerator final {
                                                     va_list ap)
       MOZ_FORMAT_PRINTF(3, 0);
 
-  // Collect the evaluation result of phases after IonBuilder, such that
+  // Collect the evaluation result of phases after WarpOracle, such that
   // off-thread compilation can report what error got encountered.
-  void setOffThreadStatus(AbortReasonOr<Ok> result) {
+  void setOffThreadStatus(AbortReasonOr<Ok>&& result) {
     MOZ_ASSERT(offThreadStatus_.isOk());
-    offThreadStatus_ = result;
+    offThreadStatus_ = std::move(result);
   }
-  AbortReasonOr<Ok> getOffThreadStatus() const { return offThreadStatus_; }
+  const AbortReasonOr<Ok>& getOffThreadStatus() const {
+    return offThreadStatus_;
+  }
 
-  MOZ_MUST_USE bool instrumentedProfiling() {
+  [[nodiscard]] bool instrumentedProfiling() {
     if (!instrumentedProfilingIsCached_) {
       instrumentedProfiling_ = runtime->geckoProfiler().enabled();
       instrumentedProfilingIsCached_ = true;
@@ -93,12 +99,13 @@ class MIRGenerator final {
     return !compilingWasm() && instrumentedProfiling();
   }
 
-  bool stringsCanBeInNursery() const { return stringsCanBeInNursery_; }
+  gc::Heap initialStringHeap() const {
+    return stringsCanBeInNursery_ ? gc::Heap::Default : gc::Heap::Tenured;
+  }
 
-  bool bigIntsCanBeInNursery() const { return bigIntsCanBeInNursery_; }
-
-  bool safeForMinorGC() const { return safeForMinorGC_; }
-  void setNotSafeForMinorGC() { safeForMinorGC_ = false; }
+  gc::Heap initialBigIntHeap() const {
+    return bigIntsCanBeInNursery_ ? gc::Heap::Default : gc::Heap::Tenured;
+  }
 
   // Whether the main thread is trying to cancel this build.
   bool shouldCancel(const char* why) { return cancelBuild_; }
@@ -115,7 +122,7 @@ class MIRGenerator final {
     MOZ_ASSERT(wasmMaxStackArgBytes_ == 0);
     wasmMaxStackArgBytes_ = n;
   }
-  uint32_t minWasmHeapLength() const { return minWasmHeapLength_; }
+  uint64_t minWasmMemory0Length() const { return minWasmMemory0Length_; }
 
   void setNeedsOverrecursedCheck() { needsOverrecursedCheck_ = true; }
   bool needsOverrecursedCheck() const { return needsOverrecursedCheck_; }
@@ -143,18 +150,23 @@ class MIRGenerator final {
 
   bool instrumentedProfiling_;
   bool instrumentedProfilingIsCached_;
-  bool safeForMinorGC_;
   bool stringsCanBeInNursery_;
   bool bigIntsCanBeInNursery_;
 
-  uint32_t minWasmHeapLength_;
-
-#if defined(JS_ION_PERF)
-  WasmPerfSpewer wasmPerfSpewer_;
+  bool disableLICM_ = false;
 
  public:
-  WasmPerfSpewer& perfSpewer() { return wasmPerfSpewer_; }
-#endif
+  void disableLICM() { disableLICM_ = true; }
+  bool licmEnabled() const;
+  bool branchHintingEnabled() const;
+
+ private:
+  uint64_t minWasmMemory0Length_;
+
+  IonPerfSpewer wasmPerfSpewer_;
+
+ public:
+  IonPerfSpewer& perfSpewer() { return wasmPerfSpewer_; }
 
  public:
   const JitCompileOptions options;

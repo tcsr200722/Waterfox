@@ -8,7 +8,7 @@ loadTestSubscript("head_devtools.js");
  * Helper that returns the id of the last additional/extension tool for a provided
  * toolbox.
  *
- * @param {Object} toolbox
+ * @param {object} toolbox
  *        The DevTools toolbox object.
  * @param {string} label
  *        The expected label for the additional tool.
@@ -16,12 +16,28 @@ loadTestSubscript("head_devtools.js");
  */
 function getAdditionalPanelId(toolbox, label) {
   // Copy the tools array and pop the last element from it.
-  const panelDef = toolbox
-    .getAdditionalTools()
-    .slice()
-    .pop();
+  const panelDef = toolbox.getAdditionalTools().slice().pop();
   is(panelDef.label, label, "Additional panel label is the expected label");
   return panelDef.id;
+}
+
+/**
+ * Helper that returns the number of existing target actors for the content browserId
+ *
+ * @param {Tab} tab
+ * @returns {Integer} the number of targets
+ */
+function getTargetActorsCount(tab) {
+  return SpecialPowers.spawn(tab.linkedBrowser, [], () => {
+    const { TargetActorRegistry } = ChromeUtils.importESModule(
+      "resource://devtools/server/actors/targets/target-actor-registry.sys.mjs"
+    );
+
+    // Retrieve the target actor instances
+    return TargetActorRegistry.getTargetActorsCountForBrowserElement(
+      content.browsingContext.browserId
+    );
+  });
 }
 
 /**
@@ -171,10 +187,8 @@ add_task(async function test_devtools_inspectedWindow_eval() {
       }
 
       try {
-        const [
-          evalResult,
-          errorResult,
-        ] = await browser.devtools.inspectedWindow.eval(...args);
+        const [evalResult, errorResult] =
+          await browser.devtools.inspectedWindow.eval(...args);
         browser.test.sendMessage("inspectedWindow-eval-result", {
           evalResult,
           errorResult,
@@ -184,6 +198,7 @@ add_task(async function test_devtools_inspectedWindow_eval() {
         browser.test.fail(`Error: ${err} :: ${err.stack}`);
       }
     });
+    browser.test.sendMessage("devtools-page-loaded");
   }
 
   let extension = ExtensionTestUtils.loadExtension({
@@ -207,6 +222,9 @@ add_task(async function test_devtools_inspectedWindow_eval() {
   await extension.startup();
 
   await openToolboxForTab(tab);
+
+  info("Wait the devtools page load");
+  await extension.awaitMessage("devtools-page-loaded");
 
   const evalTestCases = [
     // Successful evaluation results.
@@ -308,10 +326,8 @@ add_task(async function test_devtools_inspectedWindow_eval_in_page_and_panel() {
     browser.test.onMessage.addListener(async (msg, ...args) => {
       switch (msg) {
         case "inspectedWindow-page-eval-request": {
-          const [
-            evalResult,
-            errorResult,
-          ] = await browser.devtools.inspectedWindow.eval(...args);
+          const [evalResult, errorResult] =
+            await browser.devtools.inspectedWindow.eval(...args);
           browser.test.sendMessage("inspectedWindow-page-eval-result", {
             evalResult,
             errorResult,
@@ -333,10 +349,8 @@ add_task(async function test_devtools_inspectedWindow_eval_in_page_and_panel() {
     browser.test.onMessage.addListener(async (msg, ...args) => {
       switch (msg) {
         case "inspectedWindow-panel-eval-request": {
-          const [
-            evalResult,
-            errorResult,
-          ] = await browser.devtools.inspectedWindow.eval(...args);
+          const [evalResult, errorResult] =
+            await browser.devtools.inspectedWindow.eval(...args);
           browser.test.sendMessage("inspectedWindow-panel-eval-result", {
             evalResult,
             errorResult,
@@ -384,7 +398,7 @@ add_task(async function test_devtools_inspectedWindow_eval_in_page_and_panel() {
 
   await extension.startup();
 
-  const { toolbox } = await openToolboxForTab(tab);
+  const toolbox = await openToolboxForTab(tab);
 
   info("Wait for devtools_panel_created event");
   await extension.awaitMessage("devtools_panel_created");
@@ -433,6 +447,94 @@ add_task(async function test_devtools_inspectedWindow_eval_in_page_and_panel() {
 
   // Cleanup
   await closeToolboxForTab(tab);
+  await extension.unload();
+  BrowserTestUtils.removeTab(tab);
+});
+
+/**
+ * This test asserts that there's only one target created by the extension, and that
+ * closing the DevTools toolbox destroys it.
+ * See Bug 1652016
+ */
+add_task(async function test_devtools_inspectedWindow_eval_target_lifecycle() {
+  const TEST_TARGET_URL = "http://mochi.test:8888/";
+  let tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    TEST_TARGET_URL
+  );
+
+  function devtools_page() {
+    browser.test.onMessage.addListener(async msg => {
+      if (msg !== "inspectedWindow-eval-requests") {
+        browser.test.fail(`Unexpected test message received: ${msg}`);
+        return;
+      }
+
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        promises.push(browser.devtools.inspectedWindow.eval(`${i * 2}`));
+      }
+
+      await Promise.all(promises);
+      browser.test.sendMessage("inspectedWindow-eval-requests-done");
+    });
+    browser.test.sendMessage("devtools-page-loaded");
+  }
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      devtools_page: "devtools_page.html",
+    },
+    files: {
+      "devtools_page.html": `<!DOCTYPE html>
+      <html>
+       <head>
+         <meta charset="utf-8">
+         <script text="text/javascript" src="devtools_page.js"></script>
+       </head>
+       <body>
+       </body>
+      </html>`,
+      "devtools_page.js": devtools_page,
+    },
+  });
+
+  await extension.startup();
+
+  await openToolboxForTab(tab);
+  await extension.awaitMessage("devtools-page-loaded");
+
+  let targetsCount = await getTargetActorsCount(tab);
+  is(
+    targetsCount,
+    1,
+    "There's only one target for the content page, the one for DevTools Toolbox"
+  );
+
+  info("Check that evaluating multiple times doesn't create multiple targets");
+  const onEvalRequestsDone = extension.awaitMessage(
+    `inspectedWindow-eval-requests-done`
+  );
+  extension.sendMessage(`inspectedWindow-eval-requests`);
+
+  info("Wait for response from the panel");
+  await onEvalRequestsDone;
+
+  targetsCount = await getTargetActorsCount(tab);
+  is(
+    targetsCount,
+    2,
+    "Only 1 additional target was created when calling inspectedWindow.eval"
+  );
+
+  info(
+    "Close the toolbox and make sure the extension gets unloaded, and the target destroyed"
+  );
+  await closeToolboxForTab(tab);
+
+  targetsCount = await getTargetActorsCount(tab);
+  is(targetsCount, 0, "All targets were removed as toolbox was closed");
+
   await extension.unload();
   BrowserTestUtils.removeTab(tab);
 });

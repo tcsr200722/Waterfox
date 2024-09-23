@@ -14,7 +14,6 @@
 #include "nsISerializable.h"
 #include "nsCycleCollectionParticipant.h"
 #include <functional>
-#include "mozilla/dom/Element.h"
 
 class nsAtom;
 class nsIPrincipal;
@@ -22,6 +21,10 @@ class nsIURI;
 class nsNodeInfoManager;
 class nsXULPrototypeElement;
 class nsXULPrototypePI;
+
+namespace mozilla::dom {
+class Element;
+}
 
 /**
  * A "prototype" document that stores shared document information
@@ -32,9 +35,7 @@ class nsXULPrototypePI;
  */
 class nsXULPrototypeDocument final : public nsISerializable {
  public:
-  static nsresult Create(nsIURI* aURI, nsXULPrototypeDocument** aResult);
-
-  typedef std::function<void()> Callback;
+  using Callback = std::function<void()>;
 
   // nsISupports interface
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -93,8 +94,6 @@ class nsXULPrototypeDocument final : public nsISerializable {
 
   NS_DECL_CYCLE_COLLECTION_CLASS(nsXULPrototypeDocument)
 
-  void TraceProtos(JSTracer* aTrc);
-
   bool WasL10nCached() { return mWasL10nCached; };
 
   void SetIsL10nCached(bool aIsCached);
@@ -113,7 +112,6 @@ class nsXULPrototypeDocument final : public nsISerializable {
   RefPtr<nsNodeInfoManager> mNodeInfoManager;
 
   uint32_t mCCGeneration;
-  uint32_t mGCNumber;
 
   nsXULPrototypeDocument();
   virtual ~nsXULPrototypeDocument();

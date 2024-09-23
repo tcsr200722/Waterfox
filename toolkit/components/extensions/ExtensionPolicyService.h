@@ -8,19 +8,20 @@
 
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/extensions/WebExtensionPolicy.h"
+#include "mozIExtensionProcessScript.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsHashKeys.h"
 #include "nsIAddonPolicyService.h"
 #include "nsAtom.h"
-#include "nsIDOMEventListener.h"
 #include "nsIMemoryReporter.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 #include "nsISupports.h"
 #include "nsPointerHashKeys.h"
 #include "nsRefPtrHashtable.h"
-#include "nsTHashtable.h"
+#include "nsTHashSet.h"
+#include "nsAtomHashKeys.h"
 
 class nsIChannel;
 class nsIObserverService;
@@ -30,7 +31,6 @@ class nsIPIDOMWindowOuter;
 
 namespace mozilla {
 namespace dom {
-class ContentFrameMessageManager;
 class Promise;
 }  // namespace dom
 namespace extensions {
@@ -44,7 +44,6 @@ using extensions::WebExtensionPolicy;
 
 class ExtensionPolicyService final : public nsIAddonPolicyService,
                                      public nsIObserver,
-                                     public nsIDOMEventListener,
                                      public nsIMemoryReporter {
  public:
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(ExtensionPolicyService,
@@ -52,16 +51,31 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_NSIADDONPOLICYSERVICE
   NS_DECL_NSIOBSERVER
-  NS_DECL_NSIDOMEVENTLISTENER
   NS_DECL_NSIMEMORYREPORTER
 
+  static mozIExtensionProcessScript& ProcessScript();
+
   static ExtensionPolicyService& GetSingleton();
+
+  // Helper for fetching an AtomSet of restricted domains as configured by the
+  // extensions.webextensions.restrictedDomains pref. Safe to call from any
+  // thread.
+  static RefPtr<extensions::AtomSet> RestrictedDomains();
+
+  // Thread-safe AtomSet from extensions.quarantinedDomains.list.
+  static RefPtr<extensions::AtomSet> QuarantinedDomains();
 
   static already_AddRefed<ExtensionPolicyService> GetInstance() {
     return do_AddRef(&GetSingleton());
   }
 
-  WebExtensionPolicy* GetByID(const nsAtom* aAddonId) {
+  // Unlike the other methods on the ExtensionPolicyService, this method is
+  // threadsafe, and can look up a WebExtensionPolicyCore by hostname on any
+  // thread.
+  static RefPtr<extensions::WebExtensionPolicyCore> GetCoreByHost(
+      const nsACString& aHost);
+
+  WebExtensionPolicy* GetByID(nsAtom* aAddonId) {
     return mExtensions.GetWeak(aAddonId);
   }
 
@@ -72,9 +86,7 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
 
   WebExtensionPolicy* GetByURL(const extensions::URLInfo& aURL);
 
-  WebExtensionPolicy* GetByHost(const nsACString& aHost) const {
-    return mExtensionHosts.GetWeak(aHost);
-  }
+  WebExtensionPolicy* GetByHost(const nsACString& aHost) const;
 
   void GetAll(nsTArray<RefPtr<WebExtensionPolicy>>& aResult);
 
@@ -86,6 +98,7 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
 
   bool UseRemoteExtensions() const;
   bool IsExtensionProcess() const;
+  bool GetQuarantinedDomainsEnabled() const;
 
   nsresult InjectContentScripts(WebExtensionPolicy* aExtension);
 
@@ -111,11 +124,11 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
       JSContext* aCx, nsPIDOMWindowInner* aWindow,
       const nsTArray<RefPtr<extensions::WebExtensionContentScript>>& aScripts);
 
-  nsRefPtrHashtable<nsPtrHashKey<const nsAtom>, WebExtensionPolicy> mExtensions;
-  nsRefPtrHashtable<nsCStringHashKey, WebExtensionPolicy> mExtensionHosts;
+  void UpdateRestrictedDomains();
+  void UpdateQuarantinedDomains();
 
-  nsTHashtable<nsRefPtrHashKey<dom::ContentFrameMessageManager>>
-      mMessageManagers;
+  // The WebExtensionPolicy object keeps the key alive.
+  nsRefPtrHashtable<nsWeakAtomHashKey, WebExtensionPolicy> mExtensions;
 
   nsRefPtrHashtable<nsPtrHashKey<const extensions::DocumentObserver>,
                     extensions::DocumentObserver>
@@ -123,8 +136,8 @@ class ExtensionPolicyService final : public nsIAddonPolicyService,
 
   nsCOMPtr<nsIObserverService> mObs;
 
-  nsString mBaseCSP;
   nsString mDefaultCSP;
+  nsString mDefaultCSPV3;
 };
 
 }  // namespace mozilla

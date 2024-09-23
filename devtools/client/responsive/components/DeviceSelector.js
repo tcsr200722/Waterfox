@@ -4,25 +4,28 @@
 
 "use strict";
 
-const Services = require("Services");
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const { hr } = dom;
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const { getStr } = require("devtools/client/responsive/utils/l10n");
-const { parseUserAgent } = require("devtools/client/responsive/utils/ua");
-const Types = require("devtools/client/responsive/types");
+const {
+  getStr,
+} = require("resource://devtools/client/responsive/utils/l10n.js");
+const {
+  parseUserAgent,
+} = require("resource://devtools/client/responsive/utils/ua.js");
+const Types = require("resource://devtools/client/responsive/types.js");
 
 const MenuButton = createFactory(
-  require("devtools/client/shared/components/menu/MenuButton")
+  require("resource://devtools/client/shared/components/menu/MenuButton.js")
 );
 
 loader.lazyGetter(this, "MenuItem", () => {
-  const menuItemClass = require("devtools/client/shared/components/menu/MenuItem");
+  const menuItemClass = require("resource://devtools/client/shared/components/menu/MenuItem.js");
   const menuItem = createFactory(menuItemClass);
   menuItem.DUMMY_ICON = menuItemClass.DUMMY_ICON;
   return menuItem;
@@ -30,7 +33,7 @@ loader.lazyGetter(this, "MenuItem", () => {
 
 loader.lazyGetter(this, "MenuList", () => {
   return createFactory(
-    require("devtools/client/shared/components/menu/MenuList")
+    require("resource://devtools/client/shared/components/menu/MenuList.js")
   );
 });
 
@@ -118,11 +121,11 @@ class DeviceSelector extends PureComponent {
       }
     }
 
-    menuItems.sort(function(a, b) {
+    menuItems.sort(function (a, b) {
       return a.props.label.localeCompare(b.props.label);
     });
 
-    if (menuItems.length > 0) {
+    if (menuItems.length) {
       menuItems.push(hr({ key: "separator" }));
     }
 
@@ -149,20 +152,7 @@ class DeviceSelector extends PureComponent {
     // MenuButton is expected to be used in the toolbox document usually,
     // but since RDM's frame also loads theme-switching.js, we can create
     // MenuButtons (& HTMLTooltips) in the RDM frame document.
-    let toolboxDoc = null;
-    if (Services.prefs.getBoolPref("devtools.responsive.browserUI.enabled")) {
-      toolboxDoc = window.document;
-    } else if (window.parent) {
-      toolboxDoc = window.parent.document;
-    } else {
-      // Main process content in old RDM.
-      // However, actually, this case is a possibility to run through only
-      // from browser_tab_remoteness_change.js test.
-      console.error(
-        "Unable to find a proper document to create the device-selector MenuButton for RDM"
-      );
-      return null;
-    }
+    const toolboxDoc = window.document;
 
     return MenuButton(
       {

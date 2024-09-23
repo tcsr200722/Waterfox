@@ -4,18 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILParserUtils_h
-#define mozilla_SMILParserUtils_h
+#ifndef DOM_SMIL_SMILPARSERUTILS_H_
+#define DOM_SMIL_SMILPARSERUTILS_H_
 
 #include "nsTArray.h"
 #include "nsStringFwd.h"
+#include "SMILTimeValue.h"
 
 namespace mozilla {
 
 class SMILAttr;
 class SMILKeySpline;
 class SMILRepeatCount;
-class SMILTimeValue;
 class SMILTimeValueSpecParams;
 class SMILValue;
 
@@ -72,7 +72,9 @@ class SMILParserUtils {
    * @param aResult  The parsed result. [OUT]
    * @return true if parsing succeeded, otherwise false.
    */
-  static bool ParseClockValue(const nsAString& aSpec, SMILTimeValue* aResult);
+  static bool ParseClockValue(const nsAString& aSpec,
+                              SMILTimeValue::Rounding aRounding,
+                              SMILTimeValue* aResult);
 
   /*
    * This method checks whether the given string looks like a negative number.
@@ -86,4 +88,4 @@ class SMILParserUtils {
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILParserUtils_h
+#endif  // DOM_SMIL_SMILPARSERUTILS_H_

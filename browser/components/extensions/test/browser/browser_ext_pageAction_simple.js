@@ -2,10 +2,6 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { PageActions } = ChromeUtils.import(
-  "resource:///modules/PageActions.jsm"
-);
-
 const BASE =
   "http://example.com/browser/browser/components/extensions/test/browser/";
 
@@ -26,12 +22,12 @@ add_task(async function test_pageAction_basic() {
       </body></html>
       `,
 
-      "popup.js": function() {
+      "popup.js": function () {
         browser.runtime.sendMessage("from-popup");
       },
     },
 
-    background: function() {
+    background: function () {
       browser.runtime.onMessage.addListener(msg => {
         browser.test.assertEq(msg, "from-popup", "correct message received");
         browser.test.sendMessage("popup");
@@ -50,7 +46,8 @@ add_task(async function test_pageAction_basic() {
   let waitForConsole = new Promise(resolve => {
     SimpleTest.monitorConsole(resolve, [
       {
-        message: /Reading manifest: Warning processing page_action.unrecognized_property: An unexpected property was found/,
+        message:
+          /Reading manifest: Warning processing page_action.unrecognized_property: An unexpected property was found/,
       },
     ]);
   });
@@ -95,7 +92,7 @@ add_task(async function test_pageAction_pinned() {
       `,
     },
 
-    background: function() {
+    background: function () {
       browser.tabs.query({ active: true, currentWindow: true }, tabs => {
         let tabId = tabs[0].id;
 
@@ -109,13 +106,13 @@ add_task(async function test_pageAction_pinned() {
   await extension.startup();
   await extension.awaitMessage("page-action-shown");
 
-  let elem = await getPageActionButton(extension);
-  is(elem && elem.parentNode, null, "pageAction is not pinned to urlbar");
-
   // There are plenty of tests for the main action button, we just verify
-  // that we've properly set the pinned value to false.
+  // that we've properly set the pinned value.
+  // This test used to check that the button was not pinned, but that is no
+  // longer supported.
+  // TODO bug 1703537: consider removal of the pinned property.
   let action = PageActions.actionForID(makeWidgetId(extension.id));
-  ok(action && !action.pinnedToUrlbar, "pageAction is in main pageaction menu");
+  ok(action && action.pinnedToUrlbar, "Check pageAction pinning");
 
   await extension.unload();
 });
@@ -136,7 +133,7 @@ add_task(async function test_pageAction_icon_on_subframe_navigation() {
       `,
     },
 
-    background: function() {
+    background: function () {
       browser.tabs.query({ active: true, currentWindow: true }, tabs => {
         let tabId = tabs[0].id;
 

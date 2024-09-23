@@ -6,6 +6,8 @@
 
 #include "mozilla/dom/InputType.h"
 
+#include "mozilla/Assertions.h"
+#include "mozilla/Likely.h"
 #include "nsIFormControl.h"
 #include "mozilla/dom/ButtonInputTypes.h"
 #include "mozilla/dom/CheckableInputTypes.h"
@@ -22,82 +24,82 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-const Decimal InputType::kStepAny = Decimal(0);
+constexpr Decimal InputType::kStepAny;
 
 /* static */ UniquePtr<InputType, InputType::DoNotDelete> InputType::Create(
-    HTMLInputElement* aInputElement, uint8_t aType, void* aMemory) {
+    HTMLInputElement* aInputElement, FormControlType aType, void* aMemory) {
   UniquePtr<InputType, InputType::DoNotDelete> inputType;
   switch (aType) {
     // Single line text
-    case NS_FORM_INPUT_TEXT:
+    case FormControlType::InputText:
       inputType.reset(TextInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_TEL:
+    case FormControlType::InputTel:
       inputType.reset(TelInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_EMAIL:
+    case FormControlType::InputEmail:
       inputType.reset(EmailInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_SEARCH:
+    case FormControlType::InputSearch:
       inputType.reset(SearchInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_PASSWORD:
+    case FormControlType::InputPassword:
       inputType.reset(PasswordInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_URL:
+    case FormControlType::InputUrl:
       inputType.reset(URLInputType::Create(aInputElement, aMemory));
       break;
     // Button
-    case NS_FORM_INPUT_BUTTON:
+    case FormControlType::InputButton:
       inputType.reset(ButtonInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_SUBMIT:
+    case FormControlType::InputSubmit:
       inputType.reset(SubmitInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_IMAGE:
+    case FormControlType::InputImage:
       inputType.reset(ImageInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_RESET:
+    case FormControlType::InputReset:
       inputType.reset(ResetInputType::Create(aInputElement, aMemory));
       break;
     // Checkable
-    case NS_FORM_INPUT_CHECKBOX:
+    case FormControlType::InputCheckbox:
       inputType.reset(CheckboxInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_RADIO:
+    case FormControlType::InputRadio:
       inputType.reset(RadioInputType::Create(aInputElement, aMemory));
       break;
     // Numeric
-    case NS_FORM_INPUT_NUMBER:
+    case FormControlType::InputNumber:
       inputType.reset(NumberInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_RANGE:
+    case FormControlType::InputRange:
       inputType.reset(RangeInputType::Create(aInputElement, aMemory));
       break;
     // DateTime
-    case NS_FORM_INPUT_DATE:
+    case FormControlType::InputDate:
       inputType.reset(DateInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_TIME:
+    case FormControlType::InputTime:
       inputType.reset(TimeInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_MONTH:
+    case FormControlType::InputMonth:
       inputType.reset(MonthInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_WEEK:
+    case FormControlType::InputWeek:
       inputType.reset(WeekInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_DATETIME_LOCAL:
+    case FormControlType::InputDatetimeLocal:
       inputType.reset(DateTimeLocalInputType::Create(aInputElement, aMemory));
       break;
     // Others
-    case NS_FORM_INPUT_COLOR:
+    case FormControlType::InputColor:
       inputType.reset(ColorInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_FILE:
+    case FormControlType::InputFile:
       inputType.reset(FileInputType::Create(aInputElement, aMemory));
       break;
-    case NS_FORM_INPUT_HIDDEN:
+    case FormControlType::InputHidden:
       inputType.reset(HiddenInputType::Create(aInputElement, aMemory));
       break;
     default:
@@ -115,12 +117,11 @@ void InputType::GetNonFileValueInternal(nsAString& aValue) const {
   return mInputElement->GetNonFileValueInternal(aValue);
 }
 
-nsresult InputType::SetValueInternal(const nsAString& aValue, uint32_t aFlags) {
+nsresult InputType::SetValueInternal(const nsAString& aValue,
+                                     const ValueSetterOptions& aOptions) {
   RefPtr<HTMLInputElement> inputElement(mInputElement);
-  return inputElement->SetValueInternal(aValue, aFlags);
+  return inputElement->SetValueInternal(aValue, aOptions);
 }
-
-Decimal InputType::GetStepBase() const { return mInputElement->GetStepBase(); }
 
 nsIFrame* InputType::GetPrimaryFrame() const {
   return mInputElement->GetPrimaryFrame();
@@ -145,18 +146,17 @@ bool InputType::IsRangeOverflow() const { return false; }
 
 bool InputType::IsRangeUnderflow() const { return false; }
 
-bool InputType::HasStepMismatch(bool aUseZeroIfValueNaN) const { return false; }
+bool InputType::HasStepMismatch() const { return false; }
 
 bool InputType::HasBadInput() const { return false; }
 
 nsresult InputType::GetValidationMessage(
     nsAString& aValidationMessage,
     nsIConstraintValidation::ValidityStateType aType) {
-  nsresult rv = NS_OK;
+  aValidationMessage.Truncate();
 
   switch (aType) {
     case nsIConstraintValidation::VALIDITY_STATE_TOO_LONG: {
-      nsAutoString message;
       int32_t maxLength = mInputElement->MaxLength();
       int32_t textLength = mInputElement->InputTextLength(CallerType::System);
       nsAutoString strMaxLength;
@@ -165,14 +165,12 @@ nsresult InputType::GetValidationMessage(
       strMaxLength.AppendInt(maxLength);
       strTextLength.AppendInt(textLength);
 
-      rv = nsContentUtils::FormatMaybeLocalizedString(
-          message, nsContentUtils::eDOM_PROPERTIES, "FormValidationTextTooLong",
-          mInputElement->OwnerDoc(), strMaxLength, strTextLength);
-      aValidationMessage = message;
-      break;
+      return nsContentUtils::FormatMaybeLocalizedString(
+          aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
+          "FormValidationTextTooLong", mInputElement->OwnerDoc(), strMaxLength,
+          strTextLength);
     }
     case nsIConstraintValidation::VALIDITY_STATE_TOO_SHORT: {
-      nsAutoString message;
       int32_t minLength = mInputElement->MinLength();
       int32_t textLength = mInputElement->InputTextLength(CallerType::System);
       nsAutoString strMinLength;
@@ -181,81 +179,47 @@ nsresult InputType::GetValidationMessage(
       strMinLength.AppendInt(minLength);
       strTextLength.AppendInt(textLength);
 
-      rv = nsContentUtils::FormatMaybeLocalizedString(
-          message, nsContentUtils::eDOM_PROPERTIES,
+      return nsContentUtils::FormatMaybeLocalizedString(
+          aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
           "FormValidationTextTooShort", mInputElement->OwnerDoc(), strMinLength,
           strTextLength);
-
-      aValidationMessage = message;
-      break;
     }
-    case nsIConstraintValidation::VALIDITY_STATE_VALUE_MISSING: {
-      nsAutoString message;
-      rv = GetValueMissingMessage(message);
-      if (NS_FAILED(rv)) {
-        return rv;
-      }
-
-      aValidationMessage = message;
-      break;
-    }
+    case nsIConstraintValidation::VALIDITY_STATE_VALUE_MISSING:
+      return GetValueMissingMessage(aValidationMessage);
     case nsIConstraintValidation::VALIDITY_STATE_TYPE_MISMATCH: {
-      nsAutoString message;
-      rv = GetTypeMismatchMessage(message);
-      if (NS_FAILED(rv)) {
-        return rv;
-      }
-
-      aValidationMessage = message;
-      break;
+      return GetTypeMismatchMessage(aValidationMessage);
     }
     case nsIConstraintValidation::VALIDITY_STATE_PATTERN_MISMATCH: {
-      nsAutoString message;
       nsAutoString title;
-      mInputElement->GetAttr(kNameSpaceID_None, nsGkAtoms::title, title);
+      mInputElement->GetAttr(nsGkAtoms::title, title);
+
       if (title.IsEmpty()) {
-        rv = nsContentUtils::GetMaybeLocalizedString(
+        return nsContentUtils::GetMaybeLocalizedString(
             nsContentUtils::eDOM_PROPERTIES, "FormValidationPatternMismatch",
-            mInputElement->OwnerDoc(), message);
-      } else {
-        if (title.Length() >
-            nsIConstraintValidation::sContentSpecifiedMaxLengthMessage) {
-          title.Truncate(
-              nsIConstraintValidation::sContentSpecifiedMaxLengthMessage);
-        }
-        rv = nsContentUtils::FormatMaybeLocalizedString(
-            message, nsContentUtils::eDOM_PROPERTIES,
-            "FormValidationPatternMismatchWithTitle", mInputElement->OwnerDoc(),
-            title);
-      }
-      aValidationMessage = message;
-      break;
-    }
-    case nsIConstraintValidation::VALIDITY_STATE_RANGE_OVERFLOW: {
-      nsAutoString message;
-      rv = GetRangeOverflowMessage(message);
-      if (NS_FAILED(rv)) {
-        return rv;
+            mInputElement->OwnerDoc(), aValidationMessage);
       }
 
-      aValidationMessage = message;
-      break;
-    }
-    case nsIConstraintValidation::VALIDITY_STATE_RANGE_UNDERFLOW: {
-      nsAutoString message;
-      rv = GetRangeUnderflowMessage(message);
-      if (NS_FAILED(rv)) {
-        return rv;
+      if (title.Length() >
+          nsIConstraintValidation::sContentSpecifiedMaxLengthMessage) {
+        title.Truncate(
+            nsIConstraintValidation::sContentSpecifiedMaxLengthMessage);
       }
-
-      aValidationMessage = message;
-      break;
+      return nsContentUtils::FormatMaybeLocalizedString(
+          aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
+          "FormValidationPatternMismatchWithTitle", mInputElement->OwnerDoc(),
+          title);
     }
+    case nsIConstraintValidation::VALIDITY_STATE_RANGE_OVERFLOW:
+      return GetRangeOverflowMessage(aValidationMessage);
+    case nsIConstraintValidation::VALIDITY_STATE_RANGE_UNDERFLOW:
+      return GetRangeUnderflowMessage(aValidationMessage);
     case nsIConstraintValidation::VALIDITY_STATE_STEP_MISMATCH: {
-      nsAutoString message;
-
       Decimal value = mInputElement->GetValueAsDecimal();
-      MOZ_ASSERT(!value.isNaN());
+      if (MOZ_UNLIKELY(NS_WARN_IF(value.isNaN()))) {
+        // TODO(bug 1651070): This should ideally never happen, but we don't
+        // deal with lang changes correctly, so it could.
+        return GetBadInputMessage(aValidationMessage);
+      }
 
       Decimal step = mInputElement->GetStep();
       MOZ_ASSERT(step != kStepAny && step > Decimal(0));
@@ -273,44 +237,31 @@ nsresult InputType::GetValidationMessage(
         ConvertNumberToString(valueHigh, valueHighStr);
 
         if (valueLowStr.Equals(valueHighStr)) {
-          rv = nsContentUtils::FormatMaybeLocalizedString(
-              message, nsContentUtils::eDOM_PROPERTIES,
+          return nsContentUtils::FormatMaybeLocalizedString(
+              aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
               "FormValidationStepMismatchOneValue", mInputElement->OwnerDoc(),
               valueLowStr);
-        } else {
-          rv = nsContentUtils::FormatMaybeLocalizedString(
-              message, nsContentUtils::eDOM_PROPERTIES,
-              "FormValidationStepMismatch", mInputElement->OwnerDoc(),
-              valueLowStr, valueHighStr);
         }
-      } else {
-        nsAutoString valueLowStr;
-        ConvertNumberToString(valueLow, valueLowStr);
-
-        rv = nsContentUtils::FormatMaybeLocalizedString(
-            message, nsContentUtils::eDOM_PROPERTIES,
-            "FormValidationStepMismatchOneValue", mInputElement->OwnerDoc(),
-            valueLowStr);
+        return nsContentUtils::FormatMaybeLocalizedString(
+            aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
+            "FormValidationStepMismatch", mInputElement->OwnerDoc(),
+            valueLowStr, valueHighStr);
       }
 
-      aValidationMessage = message;
-      break;
-    }
-    case nsIConstraintValidation::VALIDITY_STATE_BAD_INPUT: {
-      nsAutoString message;
-      rv = GetBadInputMessage(message);
-      if (NS_FAILED(rv)) {
-        return rv;
-      }
+      nsAutoString valueLowStr;
+      ConvertNumberToString(valueLow, valueLowStr);
 
-      aValidationMessage = message;
-      break;
+      return nsContentUtils::FormatMaybeLocalizedString(
+          aValidationMessage, nsContentUtils::eDOM_PROPERTIES,
+          "FormValidationStepMismatchOneValue", mInputElement->OwnerDoc(),
+          valueLowStr);
     }
+    case nsIConstraintValidation::VALIDITY_STATE_BAD_INPUT:
+      return GetBadInputMessage(aValidationMessage);
     default:
+      MOZ_ASSERT_UNREACHABLE("Unknown validity state");
       return NS_ERROR_UNEXPECTED;
   }
-
-  return rv;
 }
 
 nsresult InputType::GetValueMissingMessage(nsAString& aMessage) {
@@ -335,13 +286,10 @@ nsresult InputType::GetBadInputMessage(nsAString& aMessage) {
   return NS_ERROR_UNEXPECTED;
 }
 
-nsresult InputType::MinMaxStepAttrChanged() { return NS_OK; }
-
-bool InputType::ConvertStringToNumber(nsAString& aValue,
-                                      Decimal& aResultValue) const {
+auto InputType::ConvertStringToNumber(const nsAString& aValue) const
+    -> StringToNumberResult {
   NS_WARNING("InputType::ConvertStringToNumber called");
-
-  return false;
+  return {};
 }
 
 bool InputType::ConvertNumberToString(Decimal aValue,

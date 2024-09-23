@@ -4,17 +4,15 @@
 
 "use strict";
 
-const { AddonManager } = require("resource://gre/modules/AddonManager.jsm");
-const Services = require("Services");
-const EventEmitter = require("devtools/shared/event-emitter");
+const { AddonManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs",
+  // AddonManager is a singleton, never create two instances of it.
+  { global: "shared" }
+);
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 const PREF_ADB_EXTENSION_URL = "devtools.remote.adb.extensionURL";
 const PREF_ADB_EXTENSION_ID = "devtools.remote.adb.extensionID";
-
-// Extension ID for adb helper extension that might be installed on Firefox 63 or older.
-const ADB_HELPER_ADDON_ID = "adbhelper@mozilla.org";
-// Extension ID for Valence extension that is no longer supported.
-const VALENCE_ADDON_ID = "fxdevtools-adapters@mozilla.org";
 
 const ADB_ADDON_STATES = {
   DOWNLOADING: "downloading",
@@ -42,8 +40,11 @@ class ADBAddon extends EventEmitter {
     this._status = ADB_ADDON_STATES.UNKNOWN;
 
     const addonsListener = {};
-    addonsListener.onEnabled = addonsListener.onDisabled = addonsListener.onInstalled = addonsListener.onUninstalled = () =>
-      this.updateInstallStatus();
+    addonsListener.onEnabled =
+      addonsListener.onDisabled =
+      addonsListener.onInstalled =
+      addonsListener.onUninstalled =
+        () => this.updateInstallStatus();
     AddonManager.addAddonListener(addonsListener);
 
     this.updateInstallStatus();
@@ -130,25 +131,6 @@ class ADBAddon extends EventEmitter {
   async uninstall() {
     const addon = await this._getAddon();
     addon.uninstall();
-  }
-
-  /**
-   * Cleanup old remote debugging extensions from profiles that might still have them
-   * installed. Should be called from remote debugging entry points.
-   */
-  async uninstallUnsupportedExtensions() {
-    const [adbHelperAddon, valenceAddon] = await Promise.all([
-      AddonManager.getAddonByID(ADB_HELPER_ADDON_ID),
-      AddonManager.getAddonByID(VALENCE_ADDON_ID),
-    ]);
-
-    if (adbHelperAddon) {
-      adbHelperAddon.uninstall();
-    }
-
-    if (valenceAddon) {
-      valenceAddon.uninstall();
-    }
   }
 
   installFailureHandler(install, message) {

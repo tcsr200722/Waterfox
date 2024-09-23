@@ -7,132 +7,188 @@
 #ifndef builtin_ModuleObject_h
 #define builtin_ModuleObject_h
 
-#include "mozilla/Maybe.h"
+#include "mozilla/HashTable.h"  // mozilla::{HashMap, DefaultHasher}
+#include "mozilla/Maybe.h"      // mozilla::Maybe
+#include "mozilla/Span.h"
 
-#include "jsapi.h"
+#include <stddef.h>  // size_t
+#include <stdint.h>  // int32_t, uint32_t
 
-#include "builtin/SelfHostingDefines.h"
-#include "gc/ZoneAllocator.h"
+#include "gc/Barrier.h"        // HeapPtr
+#include "gc/ZoneAllocator.h"  // CellAllocPolicy
+#include "js/Class.h"          // JSClass, ObjectOpResult
+#include "js/ColumnNumber.h"   // JS::ColumnNumberOneOrigin
 #include "js/GCVector.h"
-#include "js/Id.h"
-#include "js/UniquePtr.h"
-#include "vm/JSAtom.h"
-#include "vm/NativeObject.h"
-#include "vm/ProxyObject.h"
+#include "js/Id.h"  // jsid
+#include "js/Modules.h"
+#include "js/Proxy.h"       // BaseProxyHandler
+#include "js/RootingAPI.h"  // Rooted, Handle, MutableHandle
+#include "js/TypeDecls.h"  // HandleValue, HandleId, HandleObject, HandleScript, MutableHandleValue, MutableHandleIdVector, MutableHandleObject
+#include "js/UniquePtr.h"  // UniquePtr
+#include "vm/JSObject.h"   // JSObject
+#include "vm/NativeObject.h"   // NativeObject
+#include "vm/ProxyObject.h"    // ProxyObject
+#include "vm/SharedStencil.h"  // FunctionDeclarationVector
+
+class JSAtom;
+class JSScript;
+class JSTracer;
+
+namespace JS {
+class PropertyDescriptor;
+class Value;
+}  // namespace JS
 
 namespace js {
 
+class ArrayObject;
+class CyclicModuleFields;
+class SyntheticModuleFields;
+class ListObject;
 class ModuleEnvironmentObject;
 class ModuleObject;
+class PromiseObject;
+class ScriptSourceObject;
 
-using RootedModuleObject = Rooted<ModuleObject*>;
-using HandleModuleObject = Handle<ModuleObject*>;
-using RootedModuleEnvironmentObject = Rooted<ModuleEnvironmentObject*>;
-using HandleModuleEnvironmentObject = Handle<ModuleEnvironmentObject*>;
+class ImportAttribute {
+  const HeapPtr<JSAtom*> key_;
+  const HeapPtr<JSString*> value_;
 
-class ImportEntryObject : public NativeObject {
  public:
-  enum {
-    ModuleRequestSlot = 0,
-    ImportNameSlot,
-    LocalNameSlot,
-    LineNumberSlot,
-    ColumnNumberSlot,
-    SlotCount
-  };
+  ImportAttribute(Handle<JSAtom*> key, Handle<JSString*> value);
+
+  JSAtom* key() const { return key_; }
+  JSString* value() const { return value_; }
+
+  void trace(JSTracer* trc);
+};
+
+using ImportAttributeVector = GCVector<ImportAttribute, 0, SystemAllocPolicy>;
+
+class ModuleRequestObject : public NativeObject {
+ public:
+  enum { SpecifierSlot = 0, AttributesSlot, SlotCount };
 
   static const JSClass class_;
   static bool isInstance(HandleValue value);
-  static ImportEntryObject* create(JSContext* cx, HandleAtom moduleRequest,
-                                   HandleAtom importName, HandleAtom localName,
-                                   uint32_t lineNumber, uint32_t columnNumber);
-  JSAtom* moduleRequest() const;
-  JSAtom* importName() const;
-  JSAtom* localName() const;
-  uint32_t lineNumber() const;
-  uint32_t columnNumber() const;
+  [[nodiscard]] static ModuleRequestObject* create(
+      JSContext* cx, Handle<JSAtom*> specifier,
+      MutableHandle<UniquePtr<ImportAttributeVector>> maybeAttributes);
+
+  JSAtom* specifier() const;
+  mozilla::Span<const ImportAttribute> attributes() const;
+  bool hasAttributes() const;
+  static bool getModuleType(JSContext* cx,
+                            const Handle<ModuleRequestObject*> moduleRequest,
+                            JS::ModuleType& moduleType);
 };
 
-using RootedImportEntryObject = Rooted<ImportEntryObject*>;
-using HandleImportEntryObject = Handle<ImportEntryObject*>;
-using RootedImportEntryVector = Rooted<GCVector<ImportEntryObject*> >;
-using MutableHandleImportEntryObject = MutableHandle<ImportEntryObject*>;
+using ModuleRequestVector =
+    GCVector<HeapPtr<ModuleRequestObject*>, 0, SystemAllocPolicy>;
 
-template <XDRMode mode>
-XDRResult XDRImportEntryObject(XDRState<mode>* xdr,
-                               MutableHandleImportEntryObject impObj);
+class ImportEntry {
+  const HeapPtr<ModuleRequestObject*> moduleRequest_;
+  const HeapPtr<JSAtom*> importName_;
+  const HeapPtr<JSAtom*> localName_;
 
-class ExportEntryObject : public NativeObject {
+  // Line number (1-origin).
+  const uint32_t lineNumber_;
+
+  // Column number in UTF-16 code units.
+  const JS::ColumnNumberOneOrigin columnNumber_;
+
  public:
-  enum {
-    ExportNameSlot = 0,
-    ModuleRequestSlot,
-    ImportNameSlot,
-    LocalNameSlot,
-    LineNumberSlot,
-    ColumnNumberSlot,
-    SlotCount
-  };
+  ImportEntry(Handle<ModuleRequestObject*> moduleRequest,
+              Handle<JSAtom*> maybeImportName, Handle<JSAtom*> localName,
+              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber);
+
+  ModuleRequestObject* moduleRequest() const { return moduleRequest_; }
+  JSAtom* importName() const { return importName_; }
+  JSAtom* localName() const { return localName_; }
+  uint32_t lineNumber() const { return lineNumber_; }
+  JS::ColumnNumberOneOrigin columnNumber() const { return columnNumber_; }
+
+  void trace(JSTracer* trc);
+};
+
+using ImportEntryVector = GCVector<ImportEntry, 0, SystemAllocPolicy>;
+
+class ExportEntry {
+  const HeapPtr<JSAtom*> exportName_;
+  const HeapPtr<ModuleRequestObject*> moduleRequest_;
+  const HeapPtr<JSAtom*> importName_;
+  const HeapPtr<JSAtom*> localName_;
+
+  // Line number (1-origin).
+  const uint32_t lineNumber_;
+
+  // Column number in UTF-16 code units.
+  const JS::ColumnNumberOneOrigin columnNumber_;
+
+ public:
+  ExportEntry(Handle<JSAtom*> maybeExportName,
+              Handle<ModuleRequestObject*> maybeModuleRequest,
+              Handle<JSAtom*> maybeImportName, Handle<JSAtom*> maybeLocalName,
+              uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber);
+  JSAtom* exportName() const { return exportName_; }
+  ModuleRequestObject* moduleRequest() const { return moduleRequest_; }
+  JSAtom* importName() const { return importName_; }
+  JSAtom* localName() const { return localName_; }
+  uint32_t lineNumber() const { return lineNumber_; }
+  JS::ColumnNumberOneOrigin columnNumber() const { return columnNumber_; }
+
+  void trace(JSTracer* trc);
+};
+
+using ExportEntryVector = GCVector<ExportEntry, 0, SystemAllocPolicy>;
+
+class RequestedModule {
+  const HeapPtr<ModuleRequestObject*> moduleRequest_;
+
+  // Line number (1-origin).
+  const uint32_t lineNumber_;
+
+  // Column number in UTF-16 code units.
+  const JS::ColumnNumberOneOrigin columnNumber_;
+
+ public:
+  RequestedModule(Handle<ModuleRequestObject*> moduleRequest,
+                  uint32_t lineNumber, JS::ColumnNumberOneOrigin columnNumber);
+  ModuleRequestObject* moduleRequest() const { return moduleRequest_; }
+  uint32_t lineNumber() const { return lineNumber_; }
+  JS::ColumnNumberOneOrigin columnNumber() const { return columnNumber_; }
+
+  void trace(JSTracer* trc);
+};
+
+using RequestedModuleVector = GCVector<RequestedModule, 0, SystemAllocPolicy>;
+
+class ResolvedBindingObject : public NativeObject {
+ public:
+  enum { ModuleSlot = 0, BindingNameSlot, SlotCount };
 
   static const JSClass class_;
   static bool isInstance(HandleValue value);
-  static ExportEntryObject* create(JSContext* cx, HandleAtom maybeExportName,
-                                   HandleAtom maybeModuleRequest,
-                                   HandleAtom maybeImportName,
-                                   HandleAtom maybeLocalName,
-                                   uint32_t lineNumber, uint32_t columnNumber);
-  JSAtom* exportName() const;
-  JSAtom* moduleRequest() const;
-  JSAtom* importName() const;
-  JSAtom* localName() const;
-  uint32_t lineNumber() const;
-  uint32_t columnNumber() const;
+  static ResolvedBindingObject* create(JSContext* cx,
+                                       Handle<ModuleObject*> module,
+                                       Handle<JSAtom*> bindingName);
+  ModuleObject* module() const;
+  JSAtom* bindingName() const;
 };
-
-template <XDRMode mode>
-XDRResult XDRExportEntries(XDRState<mode>* xdr, MutableHandleArrayObject vec);
-
-using RootedExportEntryObject = Rooted<ExportEntryObject*>;
-using HandleExportEntryObject = Handle<ExportEntryObject*>;
-
-class RequestedModuleObject : public NativeObject {
- public:
-  enum { ModuleSpecifierSlot = 0, LineNumberSlot, ColumnNumberSlot, SlotCount };
-
-  static const JSClass class_;
-  static bool isInstance(HandleValue value);
-  static RequestedModuleObject* create(JSContext* cx,
-                                       HandleAtom moduleSpecifier,
-                                       uint32_t lineNumber,
-                                       uint32_t columnNumber);
-  JSAtom* moduleSpecifier() const;
-  uint32_t lineNumber() const;
-  uint32_t columnNumber() const;
-};
-
-using RootedRequestedModuleObject = Rooted<RequestedModuleObject*>;
-using HandleRequestedModuleObject = Handle<RequestedModuleObject*>;
-using RootedRequestedModuleVector = Rooted<GCVector<RequestedModuleObject*> >;
-using MutableHandleRequestedModuleObject =
-    MutableHandle<RequestedModuleObject*>;
-
-template <XDRMode mode>
-XDRResult XDRRequestedModuleObject(XDRState<mode>* xdr,
-                                   MutableHandleRequestedModuleObject reqObj);
 
 class IndirectBindingMap {
  public:
   void trace(JSTracer* trc);
 
   bool put(JSContext* cx, HandleId name,
-           HandleModuleEnvironmentObject environment, HandleId localName);
+           Handle<ModuleEnvironmentObject*> environment, HandleId targetName);
 
   size_t count() const { return map_ ? map_->count() : 0; }
 
   bool has(jsid name) const { return map_ ? map_->has(name) : false; }
 
   bool lookup(jsid name, ModuleEnvironmentObject** envOut,
-              Shape** shapeOut) const;
+              mozilla::Maybe<PropertyInfo>* propOut) const;
 
   template <typename Func>
   void forEachExportedName(Func func) const {
@@ -147,32 +203,44 @@ class IndirectBindingMap {
 
  private:
   struct Binding {
-    Binding(ModuleEnvironmentObject* environment, Shape* shape);
+    Binding(ModuleEnvironmentObject* environment, jsid targetName,
+            PropertyInfo prop);
     HeapPtr<ModuleEnvironmentObject*> environment;
-    HeapPtr<Shape*> shape;
+#ifdef DEBUG
+    HeapPtr<jsid> targetName;
+#endif
+    PropertyInfo prop;
   };
 
-  using Map = HashMap<PreBarrieredId, Binding, DefaultHasher<PreBarrieredId>,
-                      ZoneAllocPolicy>;
+  using Map = mozilla::HashMap<PreBarriered<jsid>, Binding,
+                               mozilla::DefaultHasher<PreBarriered<jsid>>,
+                               CellAllocPolicy>;
 
   mozilla::Maybe<Map> map_;
 };
+
+// Vector of atoms representing the names exported from a module namespace.
+//
+// This is used both on the stack and in the heap.
+using ExportNameVector = GCVector<HeapPtr<JSAtom*>, 0, SystemAllocPolicy>;
 
 class ModuleNamespaceObject : public ProxyObject {
  public:
   enum ModuleNamespaceSlot { ExportsSlot = 0, BindingsSlot };
 
   static bool isInstance(HandleValue value);
-  static ModuleNamespaceObject* create(JSContext* cx, HandleModuleObject module,
-                                       HandleObject exports,
-                                       UniquePtr<IndirectBindingMap> bindings);
+  static ModuleNamespaceObject* create(
+      JSContext* cx, Handle<ModuleObject*> module,
+      MutableHandle<UniquePtr<ExportNameVector>> exports,
+      MutableHandle<UniquePtr<IndirectBindingMap>> bindings);
 
   ModuleObject& module();
-  JSObject& exports();
+  const ExportNameVector& exports() const;
   IndirectBindingMap& bindings();
 
-  bool addBinding(JSContext* cx, HandleAtom exportedName,
-                  HandleModuleObject targetModule, HandleAtom localName);
+  bool addBinding(JSContext* cx, Handle<JSAtom*> exportedName,
+                  Handle<ModuleObject*> targetModule,
+                  Handle<JSAtom*> targetName);
 
  private:
   struct ProxyHandler : public BaseProxyHandler {
@@ -180,7 +248,7 @@ class ModuleNamespaceObject : public ProxyObject {
 
     bool getOwnPropertyDescriptor(
         JSContext* cx, HandleObject proxy, HandleId id,
-        MutableHandle<PropertyDescriptor> desc) const override;
+        MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc) const override;
     bool defineProperty(JSContext* cx, HandleObject proxy, HandleId id,
                         Handle<PropertyDescriptor> desc,
                         ObjectOpResult& result) const override;
@@ -210,68 +278,74 @@ class ModuleNamespaceObject : public ProxyObject {
              HandleValue receiver, ObjectOpResult& result) const override;
 
     void trace(JSTracer* trc, JSObject* proxy) const override;
-    void finalize(JSFreeOp* fop, JSObject* proxy) const override;
+    void finalize(JS::GCContext* gcx, JSObject* proxy) const override;
 
     static const char family;
   };
 
   bool hasBindings() const;
+  bool hasExports() const;
+
+  ExportNameVector& mutableExports();
 
  public:
   static const ProxyHandler proxyHandler;
 };
 
-using RootedModuleNamespaceObject = Rooted<ModuleNamespaceObject*>;
-using HandleModuleNamespaceObject = Handle<ModuleNamespaceObject*>;
+// Value types of [[Status]] in a Cyclic Module Record
+// https://tc39.es/ecma262/#table-cyclic-module-fields
+enum class ModuleStatus : int8_t {
+  Unlinked,
+  Linking,
+  Linked,
+  Evaluating,
+  EvaluatingAsync,
+  Evaluated,
 
-struct FunctionDeclaration {
-  FunctionDeclaration(HandleAtom name, uint32_t funIndex);
-  void trace(JSTracer* trc);
-
-  const HeapPtr<JSAtom*> name;
-  const uint32_t funIndex;
+  // Sub-state of Evaluated with error value set.
+  //
+  // This is not returned from ModuleObject::status(); use hadEvaluationError()
+  // to check this.
+  Evaluated_Error
 };
 
-// A vector of function bindings to be instantiated. This can be created in a
-// helper thread zone and so can't use ZoneAllocPolicy.
-using FunctionDeclarationVector =
-    GCVector<FunctionDeclaration, 0, SystemAllocPolicy>;
+// Special values for CyclicModuleFields' asyncEvaluatingPostOrderSlot field,
+// which is used as part of the implementation of the AsyncEvaluation field of
+// cyclic module records.
+//
+// The spec requires us to be able to tell the order in which the field was set
+// to true for async evaluating modules.
+//
+// This is arranged by using an integer to record the order. After evaluation is
+// complete the value is set to ASYNC_EVALUATING_POST_ORDER_CLEARED.
+//
+// See https://tc39.es/ecma262/#sec-cyclic-module-records for field defintion.
+// See https://tc39.es/ecma262/#sec-async-module-execution-fulfilled for sort
+// requirement.
 
-// Possible values for ModuleStatus are defined in SelfHostingDefines.h.
-using ModuleStatus = int32_t;
+// Initial value for the runtime's counter used to generate these values.
+constexpr uint32_t ASYNC_EVALUATING_POST_ORDER_INIT = 1;
 
+// Value that the field is set to after being cleared.
+constexpr uint32_t ASYNC_EVALUATING_POST_ORDER_CLEARED = 0;
+
+// Currently, the ModuleObject class is used to represent both the Source Text
+// Module Record and the Synthetic Module Record. Ideally, this is something
+// that should be refactored to follow the same hierarchy as in the spec.
+// TODO: See Bug 1880519.
 class ModuleObject : public NativeObject {
  public:
+  // Module fields including those for AbstractModuleRecords described by:
+  // https://tc39.es/ecma262/#sec-abstract-module-records
   enum ModuleSlot {
     ScriptSlot = 0,
     EnvironmentSlot,
     NamespaceSlot,
-    StatusSlot,
-    EvaluationErrorSlot,
-    MetaObjectSlot,
-    ScriptSourceObjectSlot,
-    RequestedModulesSlot,
-    ImportEntriesSlot,
-    LocalExportEntriesSlot,
-    IndirectExportEntriesSlot,
-    StarExportEntriesSlot,
-    ImportBindingsSlot,
-    FunctionDeclarationsSlot,
-    DFSIndexSlot,
-    DFSAncestorIndexSlot,
+    CyclicModuleFieldsSlot,
+    // `SyntheticModuleFields` if a synthetic module. Otherwise `undefined`.
+    SyntheticModuleFieldsSlot,
     SlotCount
   };
-
-  static_assert(EnvironmentSlot == MODULE_OBJECT_ENVIRONMENT_SLOT,
-                "EnvironmentSlot must match self-hosting define");
-  static_assert(StatusSlot == MODULE_OBJECT_STATUS_SLOT,
-                "StatusSlot must match self-hosting define");
-  static_assert(EvaluationErrorSlot == MODULE_OBJECT_EVALUATION_ERROR_SLOT,
-                "EvaluationErrorSlot must match self-hosting define");
-  static_assert(DFSIndexSlot == MODULE_OBJECT_DFS_INDEX_SLOT,
-                "DFSIndexSlot must match self-hosting define");
-  static_assert(DFSAncestorIndexSlot == MODULE_OBJECT_DFS_ANCESTOR_INDEX_SLOT,
-                "DFSAncestorIndexSlot must match self-hosting define");
 
   static const JSClass class_;
 
@@ -279,93 +353,136 @@ class ModuleObject : public NativeObject {
 
   static ModuleObject* create(JSContext* cx);
 
+  static ModuleObject* createSynthetic(
+      JSContext* cx, MutableHandle<ExportNameVector> exportNames);
+
   // Initialize the slots on this object that are dependent on the script.
   void initScriptSlots(HandleScript script);
 
   void setInitialEnvironment(
       Handle<ModuleEnvironmentObject*> initialEnvironment);
 
-  void initStatusSlot();
-  void initImportExportData(HandleArrayObject requestedModules,
-                            HandleArrayObject importEntries,
-                            HandleArrayObject localExportEntries,
-                            HandleArrayObject indiretExportEntries,
-                            HandleArrayObject starExportEntries);
-  static bool Freeze(JSContext* cx, HandleModuleObject self);
+  void initFunctionDeclarations(UniquePtr<FunctionDeclarationVector> decls);
+  void initImportExportData(
+      MutableHandle<RequestedModuleVector> requestedModules,
+      MutableHandle<ImportEntryVector> importEntries,
+      MutableHandle<ExportEntryVector> exportEntries, uint32_t localExportCount,
+      uint32_t indirectExportCount, uint32_t starExportCount);
+  static bool Freeze(JSContext* cx, Handle<ModuleObject*> self);
 #ifdef DEBUG
-  static bool AssertFrozen(JSContext* cx, HandleModuleObject self);
+  static bool AssertFrozen(JSContext* cx, Handle<ModuleObject*> self);
 #endif
-  void fixEnvironmentsAfterRealmMerge();
 
   JSScript* maybeScript() const;
   JSScript* script() const;
-  Scope* enclosingScope() const;
+  const char* filename() const;
   ModuleEnvironmentObject& initialEnvironment() const;
   ModuleEnvironmentObject* environment() const;
   ModuleNamespaceObject* namespace_();
   ModuleStatus status() const;
+  mozilla::Maybe<uint32_t> maybeDfsIndex() const;
+  uint32_t dfsIndex() const;
+  mozilla::Maybe<uint32_t> maybeDfsAncestorIndex() const;
+  uint32_t dfsAncestorIndex() const;
   bool hadEvaluationError() const;
+  Value maybeEvaluationError() const;
   Value evaluationError() const;
   JSObject* metaObject() const;
   ScriptSourceObject* scriptSourceObject() const;
-  ArrayObject& requestedModules() const;
-  ArrayObject& importEntries() const;
-  ArrayObject& localExportEntries() const;
-  ArrayObject& indirectExportEntries() const;
-  ArrayObject& starExportEntries() const;
+  mozilla::Span<const RequestedModule> requestedModules() const;
+  mozilla::Span<const ImportEntry> importEntries() const;
+  mozilla::Span<const ExportEntry> localExportEntries() const;
+  mozilla::Span<const ExportEntry> indirectExportEntries() const;
+  mozilla::Span<const ExportEntry> starExportEntries() const;
+  const ExportNameVector& syntheticExportNames() const;
+
   IndirectBindingMap& importBindings();
 
-  static bool Instantiate(JSContext* cx, HandleModuleObject self);
-  static bool Evaluate(JSContext* cx, HandleModuleObject self);
+  void setStatus(ModuleStatus newStatus);
+  void setDfsIndex(uint32_t index);
+  void setDfsAncestorIndex(uint32_t index);
+  void clearDfsIndexes();
 
-  static ModuleNamespaceObject* GetOrCreateModuleNamespace(
-      JSContext* cx, HandleModuleObject self);
+  static PromiseObject* createTopLevelCapability(JSContext* cx,
+                                                 Handle<ModuleObject*> module);
+  bool hasTopLevelAwait() const;
+  bool isAsyncEvaluating() const;
+  void setAsyncEvaluating();
+  void setEvaluationError(HandleValue newValue);
+  void setPendingAsyncDependencies(uint32_t newValue);
+  void setInitialTopLevelCapability(Handle<PromiseObject*> capability);
+  bool hasTopLevelCapability() const;
+  PromiseObject* maybeTopLevelCapability() const;
+  PromiseObject* topLevelCapability() const;
+  ListObject* asyncParentModules() const;
+  mozilla::Maybe<uint32_t> maybePendingAsyncDependencies() const;
+  uint32_t pendingAsyncDependencies() const;
+  mozilla::Maybe<uint32_t> maybeAsyncEvaluatingPostOrder() const;
+  uint32_t getAsyncEvaluatingPostOrder() const;
+  void clearAsyncEvaluatingPostOrder();
+  void setCycleRoot(ModuleObject* cycleRoot);
+  ModuleObject* getCycleRoot() const;
+  bool hasCyclicModuleFields() const;
+  bool hasSyntheticModuleFields() const;
+
+  static void onTopLevelEvaluationFinished(ModuleObject* module);
+
+  static bool appendAsyncParentModule(JSContext* cx, Handle<ModuleObject*> self,
+                                      Handle<ModuleObject*> parent);
+
+  [[nodiscard]] static bool topLevelCapabilityResolve(
+      JSContext* cx, Handle<ModuleObject*> module);
+  [[nodiscard]] static bool topLevelCapabilityReject(
+      JSContext* cx, Handle<ModuleObject*> module, HandleValue error);
 
   void setMetaObject(JSObject* obj);
 
-  // For BytecodeEmitter.
-  bool noteFunctionDeclaration(JSContext* cx, HandleAtom name,
-                               uint32_t funIndex);
-
-  // For intrinsic_InstantiateModuleFunctionDeclarations.
   static bool instantiateFunctionDeclarations(JSContext* cx,
-                                              HandleModuleObject self);
+                                              Handle<ModuleObject*> self);
 
-  // For intrinsic_ExecuteModule.
-  static bool execute(JSContext* cx, HandleModuleObject self,
-                      MutableHandleValue rval);
+  static bool execute(JSContext* cx, Handle<ModuleObject*> self);
 
-  // For intrinsic_NewModuleNamespace.
-  static ModuleNamespaceObject* createNamespace(JSContext* cx,
-                                                HandleModuleObject self,
-                                                HandleObject exports);
+  static ModuleNamespaceObject* createNamespace(
+      JSContext* cx, Handle<ModuleObject*> self,
+      MutableHandle<UniquePtr<ExportNameVector>> exports);
 
-  static bool createEnvironment(JSContext* cx, HandleModuleObject self);
+  static bool createEnvironment(JSContext* cx, Handle<ModuleObject*> self);
+  static bool createSyntheticEnvironment(JSContext* cx,
+                                         Handle<ModuleObject*> self,
+                                         Handle<GCVector<Value>> values);
 
-  FunctionDeclarationVector* functionDeclarations();
+  void initAsyncSlots(JSContext* cx, bool hasTopLevelAwait,
+                      Handle<ListObject*> asyncParentModules);
 
  private:
   static const JSClassOps classOps_;
 
   static void trace(JSTracer* trc, JSObject* obj);
-  static void finalize(JSFreeOp* fop, JSObject* obj);
+  static void finalize(JS::GCContext* gcx, JSObject* obj);
 
-  bool hasImportBindings() const;
+  CyclicModuleFields* cyclicModuleFields();
+  const CyclicModuleFields* cyclicModuleFields() const;
+
+  SyntheticModuleFields* syntheticModuleFields();
+  const SyntheticModuleFields* syntheticModuleFields() const;
 };
 
 JSObject* GetOrCreateModuleMetaObject(JSContext* cx, HandleObject module);
 
-JSObject* CallModuleResolveHook(JSContext* cx, HandleValue referencingPrivate,
-                                HandleString specifier);
+ModuleObject* CallModuleResolveHook(JSContext* cx,
+                                    HandleValue referencingPrivate,
+                                    HandleObject moduleRequest);
 
 JSObject* StartDynamicModuleImport(JSContext* cx, HandleScript script,
-                                   HandleValue specifier);
+                                   HandleValue specifier, HandleValue options);
 
-bool FinishDynamicModuleImport(JSContext* cx, HandleValue referencingPrivate,
-                               HandleString specifier, HandleObject promise);
+bool OnModuleEvaluationFailure(JSContext* cx, HandleObject evaluationPromise,
+                               JS::ModuleErrorBehaviour errorBehaviour);
 
-template <XDRMode mode>
-XDRResult XDRModuleObject(XDRState<mode>* xdr, MutableHandleModuleObject modp);
+bool FinishDynamicModuleImport(JSContext* cx, HandleObject evaluationPromise,
+                               HandleValue referencingPrivate,
+                               HandleObject moduleRequest,
+                               HandleObject promise);
 
 }  // namespace js
 

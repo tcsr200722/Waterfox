@@ -2,11 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import type { Frame } from "../../../types";
-import { getFrameUrl } from "./getFrameUrl";
-
 const libraryMap = [
   {
     label: "Backbone",
@@ -26,7 +21,8 @@ const libraryMap = [
   },
   {
     label: "React",
-    pattern: /(node_modules\/(?:react(-dom)?(-dev)?\/))|(react(-dom)?(-dev)?(\.[a-z]+)*\.js$)/,
+    pattern:
+      /(node_modules\/(?:react(-dom)?(-dev)?\/))|(react(-dom)?(-dev)?(\.[a-z]+)*\.js$)/,
   },
   {
     label: "Immutable",
@@ -107,13 +103,8 @@ const libraryMap = [
   },
 ];
 
-export function getLibraryFromUrl(
-  frame: Frame,
-  callStack: Array<Frame> = []
-): ?string | void {
-  // @TODO each of these fns calls getFrameUrl, just call it once
-  // (assuming there's not more complex logic to identify a lib)
-  const frameUrl = getFrameUrl(frame);
+export function getLibraryFromUrl(frame, callStack = []) {
+  const frameUrl = frame.location.source.url;
 
   // Let's first check if the frame match a defined pattern.
   let match = libraryMap.find(o => o.pattern.test(frameUrl));
@@ -132,7 +123,7 @@ export function getLibraryFromUrl(
   );
   if (match) {
     const contextMatch = callStack.some(f => {
-      const url = getFrameUrl(f);
+      const url = f.location.source.url;
       if (!url) {
         return false;
       }

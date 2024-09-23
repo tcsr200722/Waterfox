@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -24,18 +23,14 @@ add_task(
     const response = await objectFront.getPrototype();
     Assert.ok(response.prototype != undefined);
 
-    const protoFront = response.prototype;
-    const { ownPropertyNames } = await protoFront.getOwnPropertyNames();
-    Assert.equal(ownPropertyNames.length, 2);
-    Assert.equal(ownPropertyNames[0], "b");
-    Assert.equal(ownPropertyNames[1], "c");
-
     await threadFront.resume();
   })
 );
 
 function evalCode(debuggee) {
   debuggee.eval(
+    // These arguments are tested.
+    // eslint-disable-next-line no-unused-vars
     function stopMe(arg1) {
       debugger;
     }.toString()

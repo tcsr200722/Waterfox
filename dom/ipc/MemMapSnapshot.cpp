@@ -8,10 +8,10 @@
 
 #include "mozilla/AutoMemMap.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/Try.h"
+#include "mozilla/ipc/FileDescriptor.h"
 
-namespace mozilla {
-
-namespace ipc {
+namespace mozilla::ipc {
 
 Result<Ok, nsresult> MemMapSnapshot::Init(size_t aSize) {
   MOZ_ASSERT(!mInitialized);
@@ -42,5 +42,4 @@ Result<Ok, nsresult> MemMapSnapshot::Finalize(loader::AutoMemMap& aMem) {
   return Ok();
 }
 
-}  // namespace ipc
-}  // namespace mozilla
+}  // namespace mozilla::ipc

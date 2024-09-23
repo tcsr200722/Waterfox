@@ -13,21 +13,19 @@ add_task(async function test_normal() {
       SMALLPNG_DATA_URI,
       true,
       PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-      function() {
-        PlacesUtils.favicons.getFaviconURLForPage(pageURI, function(
-          aURI,
-          aDataLen,
-          aData,
-          aMimeType
-        ) {
-          Assert.ok(aURI.equals(SMALLPNG_DATA_URI));
+      function () {
+        PlacesUtils.favicons.getFaviconURLForPage(
+          pageURI,
+          function (aURI, aDataLen, aData, aMimeType) {
+            Assert.ok(aURI.equals(SMALLPNG_DATA_URI));
 
-          // Check also the expected data types.
-          Assert.ok(aDataLen === 0);
-          Assert.ok(aData.length === 0);
-          Assert.ok(aMimeType === "");
-          resolve();
-        });
+            // Check also the expected data types.
+            Assert.ok(aDataLen === 0);
+            Assert.ok(aData.length === 0);
+            Assert.ok(aMimeType === "");
+            resolve();
+          }
+        );
       },
       Services.scriptSecurityManager.getSystemPrincipal()
     );
@@ -38,19 +36,17 @@ add_task(async function test_missing() {
   let pageURI = NetUtil.newURI("http://example.com/missing");
 
   await new Promise(resolve => {
-    PlacesUtils.favicons.getFaviconURLForPage(pageURI, function(
-      aURI,
-      aDataLen,
-      aData,
-      aMimeType
-    ) {
-      // Check also the expected data types.
-      Assert.ok(aURI === null);
-      Assert.ok(aDataLen === 0);
-      Assert.ok(aData.length === 0);
-      Assert.ok(aMimeType === "");
-      resolve();
-    });
+    PlacesUtils.favicons.getFaviconURLForPage(
+      pageURI,
+      function (aURI, aDataLen, aData, aMimeType) {
+        // Check also the expected data types.
+        Assert.ok(aURI === null);
+        Assert.ok(aDataLen === 0);
+        Assert.ok(aData.length === 0);
+        Assert.ok(aMimeType === "");
+        resolve();
+      }
+    );
   });
 });
 
@@ -61,13 +57,11 @@ add_task(async function test_fallback() {
 
   info("Set icon for the root");
   await PlacesTestUtils.addVisits(ROOT_URL);
-  let data = readFileData(do_get_file("favicon-normal16.png"));
-  PlacesUtils.favicons.replaceFaviconData(
-    NetUtil.newURI(ROOT_ICON_URL),
-    data,
+  let dataURL = await readFileDataAsDataURL(
+    do_get_file("favicon-normal16.png"),
     "image/png"
   );
-  await setFaviconForPage(ROOT_URL, ROOT_ICON_URL);
+  await PlacesTestUtils.setFaviconForPage(ROOT_URL, ROOT_ICON_URL, dataURL);
 
   info("check fallback icons");
   Assert.equal(
@@ -83,13 +77,11 @@ add_task(async function test_fallback() {
 
   info("Now add a proper icon for the page");
   await PlacesTestUtils.addVisits(SUBPAGE_URL);
-  let data32 = readFileData(do_get_file("favicon-normal32.png"));
-  PlacesUtils.favicons.replaceFaviconData(
-    NetUtil.newURI(ICON32_URL),
-    data32,
+  let dataURL32 = await readFileDataAsDataURL(
+    do_get_file("favicon-normal32.png"),
     "image/png"
   );
-  await setFaviconForPage(SUBPAGE_URL, ICON32_URL);
+  await PlacesTestUtils.setFaviconForPage(SUBPAGE_URL, ICON32_URL, dataURL32);
 
   info("check no fallback icons");
   Assert.equal(

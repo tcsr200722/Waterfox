@@ -15,18 +15,11 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=977003
       function prepareTest() {
         SimpleTest.waitForExplicitFinish();
         iframe = document.getElementById("testFrame");
-        turnOnPointerEvents(finishTest);
-      }
-      function turnOnPointerEvents(callback) {
-        SpecialPowers.pushPrefEnv({
-          "set": [
-            ["dom.w3c_pointer_events.enabled", true]
-          ]
-        }, callback);
+        SimpleTest.executeSoon(finishTest);
       }
       function finishTest() {
         // Try to run several tests named as bug977003_inner_<number>.html
-        if(++number < 7)
+        if(++number < 5)
           iframe.src = "bug977003_inner_" + number + ".html";
         else
           SimpleTest.finish();

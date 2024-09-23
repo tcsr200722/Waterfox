@@ -6,11 +6,14 @@
 
 const {
   createContextMenu,
-} = require("devtools/client/webconsole/utils/context-menu");
+} = require("resource://devtools/client/webconsole/utils/context-menu.js");
 
 const {
   createEditContextMenu,
-} = require("devtools/client/framework/toolbox-context-menu");
+} = require("resource://devtools/client/framework/toolbox-context-menu.js");
+const {
+  getLongStringFullText,
+} = require("resource://devtools/client/shared/string-utils.js");
 
 function setupServiceContainer({
   webConsoleUI,
@@ -37,15 +40,16 @@ function setupServiceContainer({
     openLink: (url, e) => hud.openLink(url, e),
     openNodeInInspector: grip => hud.openNodeInInspector(grip),
     getInputSelection: () => hud.getInputSelection(),
-    onViewSource: frame => hud.viewSource(frame.url, frame.line),
+    onViewSource: location => hud.viewSource(location.url, location.line),
     resendNetworkRequest: requestId => hud.resendNetworkRequest(requestId),
     focusInput: () => hud.focusInput(),
     setInputValue: value => hud.setInputValue(value),
-    getLongString: grip => webConsoleUI.getLongString(grip),
+    getLongString: grip => getLongStringFullText(hud.commands.client, grip),
     getJsTermTooltipAnchor: () => webConsoleUI.getJsTermTooltipAnchor(),
     emitForTests: (event, value) => webConsoleUI.emitForTests(event, value),
     attachRefToWebConsoleUI: (id, node) => webConsoleUI.attachRef(id, node),
-    requestData: (id, type) => webConsoleWrapper.requestData(id, type),
+    requestData: (id, type) =>
+      webConsoleUI.networkDataProvider.requestData(id, type),
     createElement: nodename => webConsoleWrapper.createElement(nodename),
   };
 
@@ -53,11 +57,12 @@ function setupServiceContainer({
     const { highlight, unhighlight } = toolbox.getHighlighter();
 
     Object.assign(serviceContainer, {
-      sourceMapService: toolbox.sourceMapURLService,
+      sourceMapURLService: toolbox.sourceMapURLService,
       highlightDomElement: highlight,
       unHighlightDomElement: unhighlight,
-      onViewSourceInDebugger: frame => hud.onViewSourceInDebugger(frame),
-      onViewSourceInStyleEditor: frame => hud.onViewSourceInStyleEditor(frame),
+      onViewSourceInDebugger: location => hud.onViewSourceInDebugger(location),
+      onViewSourceInStyleEditor: location =>
+        hud.onViewSourceInStyleEditor(location),
     });
   }
 

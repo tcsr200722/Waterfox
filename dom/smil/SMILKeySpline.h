@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILKeySpline_h
-#define mozilla_SMILKeySpline_h
+#ifndef DOM_SMIL_SMILKEYSPLINE_H_
+#define DOM_SMIL_SMILKEYSPLINE_H_
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/PodOperations.h"
@@ -17,7 +17,7 @@ namespace mozilla {
  */
 class SMILKeySpline {
  public:
-  SMILKeySpline() : mX1(0), mY1(0), mX2(0), mY2(0) {
+  constexpr SMILKeySpline() : mX1(0), mY1(0), mX2(0), mY2(0) {
     /* caller must call Init later */\
   }
 
@@ -97,11 +97,11 @@ class SMILKeySpline {
     double mY2;
 
     enum { kSplineTableSize = 11 };
-    double mSampleValues[kSplineTableSize];
+    double mSampleValues[kSplineTableSize] = {};
 
     static const double kSampleStepSize;
 };
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILKeySpline_h
+#endif  // DOM_SMIL_SMILKEYSPLINE_H_

@@ -3,122 +3,20 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Arg, RetVal, generateActorSpec } = require("devtools/shared/protocol");
+const {
+  Arg,
+  RetVal,
+  generateActorSpec,
+} = require("resource://devtools/shared/protocol.js");
 
 const responsiveSpec = generateActorSpec({
   typeName: "responsive",
 
   methods: {
-    setDPPXOverride: {
-      request: {
-        dppx: Arg(0, "number"),
-      },
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    getDPPXOverride: {
-      request: {},
-      response: {
-        dppx: RetVal("number"),
-      },
-    },
-
-    clearDPPXOverride: {
-      request: {},
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    setNetworkThrottling: {
+    toggleTouchSimulator: {
       request: {
         options: Arg(0, "json"),
       },
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    getNetworkThrottling: {
-      request: {},
-      response: {
-        state: RetVal("json"),
-      },
-    },
-
-    clearNetworkThrottling: {
-      request: {},
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    setTouchEventsOverride: {
-      request: {
-        flag: Arg(0, "number"),
-      },
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    getTouchEventsOverride: {
-      request: {},
-      response: {
-        flag: RetVal("number"),
-      },
-    },
-
-    clearTouchEventsOverride: {
-      request: {},
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    setMetaViewportOverride: {
-      request: {
-        flag: Arg(0, "number"),
-      },
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    getMetaViewportOverride: {
-      request: {},
-      response: {
-        flag: RetVal("number"),
-      },
-    },
-
-    clearMetaViewportOverride: {
-      request: {},
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    setUserAgentOverride: {
-      request: {
-        flag: Arg(0, "string"),
-      },
-      response: {
-        valueChanged: RetVal("boolean"),
-      },
-    },
-
-    getUserAgentOverride: {
-      request: {},
-      response: {
-        userAgent: RetVal("string"),
-      },
-    },
-
-    clearUserAgentOverride: {
-      request: {},
       response: {
         valueChanged: RetVal("boolean"),
       },
@@ -132,33 +30,8 @@ const responsiveSpec = generateActorSpec({
       response: {},
     },
 
-    simulateScreenOrientationChange: {
-      request: {
-        orientation: Arg(0, "string"),
-        angle: Arg(1, "number"),
-        deviceChange: Arg(2, "boolean"),
-      },
-      response: {},
-    },
-
-    captureScreenshot: {
+    dispatchOrientationChangeEvent: {
       request: {},
-      response: {
-        value: RetVal("json"),
-      },
-    },
-
-    setFloatingScrollbars: {
-      request: {
-        state: Arg(0, "boolean"),
-      },
-      response: {},
-    },
-
-    setMaxTouchPoints: {
-      request: {
-        flag: Arg(0, "boolean"),
-      },
       response: {},
     },
   },

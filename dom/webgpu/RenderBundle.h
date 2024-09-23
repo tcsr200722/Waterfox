@@ -9,8 +9,7 @@
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 class Device;
 
@@ -19,13 +18,15 @@ class RenderBundle final : public ObjectBase, public ChildOf<Device> {
   GPU_DECL_CYCLE_COLLECTION(RenderBundle)
   GPU_DECL_JS_WRAP(RenderBundle)
 
+  RenderBundle(Device* const aParent, RawId aId);
+
+  const RawId mId;
+
  private:
-  RenderBundle() = delete;
   virtual ~RenderBundle();
-  void Cleanup() {}
+  void Cleanup();
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #endif  // GPU_RenderBundle_H_

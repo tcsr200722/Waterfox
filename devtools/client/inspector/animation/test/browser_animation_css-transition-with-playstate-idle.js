@@ -27,14 +27,12 @@ const PAGE_URL = `data:text/html;charset=utf-8,
 </body>
 </html>`;
 
-add_task(async function() {
+add_task(async function () {
   const tab = await addTab(PAGE_URL);
   const { animationInspector, panel } = await openAnimationInspector();
 
   info("Toggle the visible class to start the animation");
   await toggleVisibleClass(tab);
-  info("Wait for all renderings");
-  await waitForRendering(animationInspector);
 
   info("Wait until the scrubber is displayed");
   await waitUntil(() => panel.querySelector(".current-time-scrubber"));
@@ -48,10 +46,6 @@ add_task(async function() {
 
   info("Toggle the visible class to start the animation");
   await toggleVisibleClass(tab);
-  info("Wait for all renderings");
-  await waitForRendering(animationInspector);
-
-  info("scrubberX after: " + scrubberEl.getBoundingClientRect().x);
 
   info("Wait until the scrubber starts moving");
   await waitUntil(() => scrubberEl.getBoundingClientRect().x != scrubberX);
@@ -70,7 +64,7 @@ add_task(async function() {
  * Local helper to toggle the "visible" class on the element with a transition defined.
  */
 async function toggleVisibleClass(tab) {
-  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
     const win = content.wrappedJSObject;
     win.document.querySelector("div").classList.toggle("visible");
   });

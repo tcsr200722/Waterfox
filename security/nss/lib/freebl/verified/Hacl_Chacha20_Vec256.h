@@ -1,6 +1,7 @@
 /* MIT License
  *
- * Copyright (c) 2016-2020 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2016-2022 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2022-2023 HACL* Contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,17 +22,17 @@
  * SOFTWARE.
  */
 
-#include "libintvector.h"
-#include "kremlin/internal/types.h"
-#include "kremlin/lowstar_endianness.h"
-#include <string.h>
-#include <stdbool.h>
-
 #ifndef __Hacl_Chacha20_Vec256_H
 #define __Hacl_Chacha20_Vec256_H
 
-#include "Hacl_Chacha20.h"
-#include "Hacl_Kremlib.h"
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+#include <string.h>
+#include "krml/internal/types.h"
+#include "krml/lowstar_endianness.h"
+#include "krml/internal/target.h"
 
 void
 Hacl_Chacha20_Vec256_chacha20_encrypt_256(
@@ -50,6 +51,10 @@ Hacl_Chacha20_Vec256_chacha20_decrypt_256(
     uint8_t *key,
     uint8_t *n,
     uint32_t ctr);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #define __Hacl_Chacha20_Vec256_H_DEFINED
 #endif

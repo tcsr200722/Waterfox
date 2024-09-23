@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGPATHSEG_H__
-#define MOZILLA_DOMSVGPATHSEG_H__
+#ifndef DOM_SVG_DOMSVGPATHSEG_H_
+#define DOM_SVG_DOMSVGPATHSEG_H_
 
 #include "DOMSVGPathSegList.h"
 #include "nsCycleCollectionParticipant.h"
@@ -15,8 +15,7 @@
 
 #define MOZ_SVG_LIST_INDEX_BIT_COUNT 31
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SVGElement;
 
@@ -40,16 +39,16 @@ class SVGElement;
     CHECK_ARG_COUNT_IN_SYNC(segType);                                         \
   }                                                                           \
   /* From DOMSVGPathSeg: */                                                   \
-  virtual uint32_t Type() const override { return segType; }                  \
-  virtual DOMSVGPathSeg* Clone() override {                                   \
+  uint32_t Type() const override { return segType; }                          \
+  DOMSVGPathSeg* Clone() override {                                           \
     /* InternalItem() + 1, because we're skipping the encoded seg type */     \
     float* args = IsInList() ? InternalItem() + 1 : mArgs;                    \
     return new DOMSVGPathSeg##segName(args);                                  \
   }                                                                           \
-  virtual float* PtrToMemberArgs() override { return mArgs; }                 \
+  float* PtrToMemberArgs() override { return mArgs; }                         \
                                                                               \
-  virtual JSObject* WrapObject(JSContext* aCx,                                \
-                               JS::Handle<JSObject*> aGivenProto) override {  \
+  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)     \
+      override {                                                              \
     return dom::SVGPathSeg##segName##_Binding::Wrap(aCx, this, aGivenProto);  \
   }
 
@@ -72,7 +71,8 @@ class SVGElement;
  * DOM wrapper for is a list of floats, not an instance of an internal class.
  */
 class DOMSVGPathSeg : public nsWrapperCache {
-  friend class AutoChangePathSegNotifier;
+  template <class T>
+  friend class AutoChangePathSegListNotifier;
 
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMSVGPathSeg)
@@ -93,6 +93,12 @@ class DOMSVGPathSeg : public nsWrapperCache {
   virtual DOMSVGPathSeg* Clone() = 0;
 
   bool IsInList() const { return !!mList; }
+
+  /**
+   * Returns true if our attribute is animating (in which case our animVal is
+   * not simply a mirror of our baseVal).
+   */
+  bool AttrIsAnimating() const { return mList && mList->AttrIsAnimating(); }
 
   /**
    * In future, if this class is used for non-list segments, this will be
@@ -202,7 +208,7 @@ class DOMSVGPathSeg : public nsWrapperCache {
 
 class DOMSVGPathSegClosePath : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegClosePath() : DOMSVGPathSeg() {}
+  DOMSVGPathSegClosePath() {}
 
   IMPL_SVGPATHSEG_SUBCLASS_COMMON(ClosePath,
                                   dom::SVGPathSeg_Binding::PATHSEG_CLOSEPATH)
@@ -216,7 +222,7 @@ class DOMSVGPathSegClosePath : public DOMSVGPathSeg {
 
 class DOMSVGPathSegMovetoAbs : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegMovetoAbs(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegMovetoAbs(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -235,7 +241,7 @@ class DOMSVGPathSegMovetoAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegMovetoRel : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegMovetoRel(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegMovetoRel(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -254,7 +260,7 @@ class DOMSVGPathSegMovetoRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoAbs : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegLinetoAbs(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegLinetoAbs(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -273,7 +279,7 @@ class DOMSVGPathSegLinetoAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoRel : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegLinetoRel(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegLinetoRel(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -293,8 +299,7 @@ class DOMSVGPathSegLinetoRel : public DOMSVGPathSeg {
 class DOMSVGPathSegCurvetoCubicAbs : public DOMSVGPathSeg {
  public:
   DOMSVGPathSegCurvetoCubicAbs(float x1, float y1, float x2, float y2, float x,
-                               float y)
-      : DOMSVGPathSeg() {
+                               float y) {
     mArgs[0] = x1;
     mArgs[1] = y1;
     mArgs[2] = x2;
@@ -326,8 +331,7 @@ class DOMSVGPathSegCurvetoCubicAbs : public DOMSVGPathSeg {
 class DOMSVGPathSegCurvetoCubicRel : public DOMSVGPathSeg {
  public:
   DOMSVGPathSegCurvetoCubicRel(float x1, float y1, float x2, float y2, float x,
-                               float y)
-      : DOMSVGPathSeg() {
+                               float y) {
     mArgs[0] = x1;
     mArgs[1] = y1;
     mArgs[2] = x2;
@@ -358,8 +362,7 @@ class DOMSVGPathSegCurvetoCubicRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoQuadraticAbs : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoQuadraticAbs(float x1, float y1, float x, float y)
-      : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoQuadraticAbs(float x1, float y1, float x, float y) {
     mArgs[0] = x1;
     mArgs[1] = y1;
     mArgs[2] = x;
@@ -385,8 +388,7 @@ class DOMSVGPathSegCurvetoQuadraticAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoQuadraticRel : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoQuadraticRel(float x1, float y1, float x, float y)
-      : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoQuadraticRel(float x1, float y1, float x, float y) {
     mArgs[0] = x1;
     mArgs[1] = y1;
     mArgs[2] = x;
@@ -413,8 +415,7 @@ class DOMSVGPathSegCurvetoQuadraticRel : public DOMSVGPathSeg {
 class DOMSVGPathSegArcAbs : public DOMSVGPathSeg {
  public:
   DOMSVGPathSegArcAbs(float r1, float r2, float angle, bool largeArcFlag,
-                      bool sweepFlag, float x, float y)
-      : DOMSVGPathSeg() {
+                      bool sweepFlag, float x, float y) {
     mArgs[0] = r1;
     mArgs[1] = r2;
     mArgs[2] = angle;
@@ -449,8 +450,7 @@ class DOMSVGPathSegArcAbs : public DOMSVGPathSeg {
 class DOMSVGPathSegArcRel : public DOMSVGPathSeg {
  public:
   DOMSVGPathSegArcRel(float r1, float r2, float angle, bool largeArcFlag,
-                      bool sweepFlag, float x, float y)
-      : DOMSVGPathSeg() {
+                      bool sweepFlag, float x, float y) {
     mArgs[0] = r1;
     mArgs[1] = r2;
     mArgs[2] = angle;
@@ -484,9 +484,7 @@ class DOMSVGPathSegArcRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoHorizontalAbs : public DOMSVGPathSeg {
  public:
-  explicit DOMSVGPathSegLinetoHorizontalAbs(float x) : DOMSVGPathSeg() {
-    mArgs[0] = x;
-  }
+  explicit DOMSVGPathSegLinetoHorizontalAbs(float x) { mArgs[0] = x; }
 
   IMPL_SVGPATHSEG_SUBCLASS_COMMON(
       LinetoHorizontalAbs,
@@ -501,9 +499,7 @@ class DOMSVGPathSegLinetoHorizontalAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoHorizontalRel : public DOMSVGPathSeg {
  public:
-  explicit DOMSVGPathSegLinetoHorizontalRel(float x) : DOMSVGPathSeg() {
-    mArgs[0] = x;
-  }
+  explicit DOMSVGPathSegLinetoHorizontalRel(float x) { mArgs[0] = x; }
 
   IMPL_SVGPATHSEG_SUBCLASS_COMMON(
       LinetoHorizontalRel,
@@ -518,9 +514,7 @@ class DOMSVGPathSegLinetoHorizontalRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoVerticalAbs : public DOMSVGPathSeg {
  public:
-  explicit DOMSVGPathSegLinetoVerticalAbs(float y) : DOMSVGPathSeg() {
-    mArgs[0] = y;
-  }
+  explicit DOMSVGPathSegLinetoVerticalAbs(float y) { mArgs[0] = y; }
 
   IMPL_SVGPATHSEG_SUBCLASS_COMMON(
       LinetoVerticalAbs, dom::SVGPathSeg_Binding::PATHSEG_LINETO_VERTICAL_ABS)
@@ -534,9 +528,7 @@ class DOMSVGPathSegLinetoVerticalAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegLinetoVerticalRel : public DOMSVGPathSeg {
  public:
-  explicit DOMSVGPathSegLinetoVerticalRel(float y) : DOMSVGPathSeg() {
-    mArgs[0] = y;
-  }
+  explicit DOMSVGPathSegLinetoVerticalRel(float y) { mArgs[0] = y; }
 
   IMPL_SVGPATHSEG_SUBCLASS_COMMON(
       LinetoVerticalRel, dom::SVGPathSeg_Binding::PATHSEG_LINETO_VERTICAL_REL)
@@ -550,8 +542,7 @@ class DOMSVGPathSegLinetoVerticalRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoCubicSmoothAbs : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoCubicSmoothAbs(float x2, float y2, float x, float y)
-      : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoCubicSmoothAbs(float x2, float y2, float x, float y) {
     mArgs[0] = x2;
     mArgs[1] = y2;
     mArgs[2] = x;
@@ -577,8 +568,7 @@ class DOMSVGPathSegCurvetoCubicSmoothAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoCubicSmoothRel : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoCubicSmoothRel(float x2, float y2, float x, float y)
-      : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoCubicSmoothRel(float x2, float y2, float x, float y) {
     mArgs[0] = x2;
     mArgs[1] = y2;
     mArgs[2] = x;
@@ -604,7 +594,7 @@ class DOMSVGPathSegCurvetoCubicSmoothRel : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoQuadraticSmoothAbs : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoQuadraticSmoothAbs(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoQuadraticSmoothAbs(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -624,7 +614,7 @@ class DOMSVGPathSegCurvetoQuadraticSmoothAbs : public DOMSVGPathSeg {
 
 class DOMSVGPathSegCurvetoQuadraticSmoothRel : public DOMSVGPathSeg {
  public:
-  DOMSVGPathSegCurvetoQuadraticSmoothRel(float x, float y) : DOMSVGPathSeg() {
+  DOMSVGPathSegCurvetoQuadraticSmoothRel(float x, float y) {
     mArgs[0] = x;
     mArgs[1] = y;
   }
@@ -642,9 +632,8 @@ class DOMSVGPathSegCurvetoQuadraticSmoothRel : public DOMSVGPathSeg {
   float mArgs[2];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #undef MOZ_SVG_LIST_INDEX_BIT_COUNT
 
-#endif  // MOZILLA_DOMSVGPATHSEG_H__
+#endif  // DOM_SVG_DOMSVGPATHSEG_H_

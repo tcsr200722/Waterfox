@@ -1,30 +1,9 @@
-ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm", this);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "AboutNewTab",
-  "resource:///modules/AboutNewTab.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "BrowserTestUtils",
-  "resource://testing-common/BrowserTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TabCrashHandler",
-  "resource:///modules/ContentCrashHandlers.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  TabCrashHandler: "resource:///modules/ContentCrashHandlers.sys.mjs",
+});
 
 /**
  * Wait for a <notification> to be closed then call the specified callback.
@@ -52,7 +31,7 @@ function closeAllNotifications() {
 
   return new Promise(resolve => {
     for (let notification of gNotificationBox.allNotifications) {
-      waitForNotificationClose(notification, function() {
+      waitForNotificationClose(notification, function () {
         if (gNotificationBox.allNotifications.length === 0) {
           resolve();
         }
@@ -80,8 +59,8 @@ function openToolbarCustomizationUI(aCallback, aBrowserWin) {
 
   aBrowserWin.gNavToolbox.addEventListener(
     "customizationready",
-    function() {
-      executeSoon(function() {
+    function () {
+      executeSoon(function () {
         aCallback(aBrowserWin);
       });
     },
@@ -92,7 +71,7 @@ function openToolbarCustomizationUI(aCallback, aBrowserWin) {
 function closeToolbarCustomizationUI(aCallback, aBrowserWin) {
   aBrowserWin.gNavToolbox.addEventListener(
     "aftercustomization",
-    function() {
+    function () {
       executeSoon(aCallback);
     },
     { once: true }
@@ -104,7 +83,7 @@ function closeToolbarCustomizationUI(aCallback, aBrowserWin) {
 function waitForCondition(condition, nextTest, errorMsg, retryTimes) {
   retryTimes = typeof retryTimes !== "undefined" ? retryTimes : 30;
   var tries = 0;
-  var interval = setInterval(function() {
+  var interval = setInterval(function () {
     if (tries >= retryTimes) {
       ok(false, errorMsg);
       moveOn();
@@ -121,7 +100,7 @@ function waitForCondition(condition, nextTest, errorMsg, retryTimes) {
     }
     tries++;
   }, 100);
-  var moveOn = function() {
+  var moveOn = function () {
     clearInterval(interval);
     nextTest();
   };
@@ -168,33 +147,6 @@ function promiseWaitForFocus(aWindow) {
   });
 }
 
-function getTestPlugin(aName) {
-  var pluginName = aName || "Test Plug-in";
-  var ph = Cc["@mozilla.org/plugin/host;1"].getService(Ci.nsIPluginHost);
-  var tags = ph.getPluginTags();
-
-  // Find the test plugin
-  for (var i = 0; i < tags.length; i++) {
-    if (tags[i].name == pluginName) {
-      return tags[i];
-    }
-  }
-  ok(false, "Unable to find plugin");
-  return null;
-}
-
-// call this to set the test plugin(s) initially expected enabled state.
-// it will automatically be reset to it's previous value after the test
-// ends
-function setTestPluginEnabledState(newEnabledState, pluginName) {
-  var plugin = getTestPlugin(pluginName);
-  var oldEnabledState = plugin.enabledState;
-  plugin.enabledState = newEnabledState;
-  SimpleTest.registerCleanupFunction(function() {
-    getTestPlugin(pluginName).enabledState = oldEnabledState;
-  });
-}
-
 function pushPrefs(...aPrefs) {
   return SpecialPowers.pushPrefEnv({ set: aPrefs });
 }
@@ -213,7 +165,7 @@ function promiseOpenAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
   return new Promise(resolve => {
     let win = OpenBrowserWindow(aOptions);
     if (aWaitForDelayedStartup) {
-      Services.obs.addObserver(function onDS(aSubject, aTopic, aData) {
+      Services.obs.addObserver(function onDS(aSubject) {
         if (aSubject != win) {
           return;
         }
@@ -223,7 +175,7 @@ function promiseOpenAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
     } else {
       win.addEventListener(
         "load",
-        function() {
+        function () {
           resolve(win);
         },
         { once: true }
@@ -233,7 +185,7 @@ function promiseOpenAndLoadWindow(aOptions, aWaitForDelayedStartup = false) {
 }
 
 async function whenNewTabLoaded(aWindow, aCallback) {
-  aWindow.BrowserOpenTab();
+  aWindow.BrowserCommands.openTab();
 
   let expectedURL = AboutNewTab.newTabURL;
   let browser = aWindow.gBrowser.selectedBrowser;
@@ -257,124 +209,6 @@ function promiseTabLoaded(aTab) {
     whenTabLoaded(aTab, resolve);
   });
 }
-
-var FullZoomHelper = {
-  selectTabAndWaitForLocationChange: function selectTabAndWaitForLocationChange(
-    tab
-  ) {
-    if (!tab) {
-      throw new Error("tab must be given.");
-    }
-    if (gBrowser.selectedTab == tab) {
-      return Promise.resolve();
-    }
-
-    return Promise.all([
-      BrowserTestUtils.switchTab(gBrowser, tab),
-      this.waitForLocationChange(),
-    ]);
-  },
-
-  removeTabAndWaitForLocationChange: function removeTabAndWaitForLocationChange(
-    tab
-  ) {
-    tab = tab || gBrowser.selectedTab;
-    let selected = gBrowser.selectedTab == tab;
-    gBrowser.removeTab(tab);
-    if (selected) {
-      return this.waitForLocationChange();
-    }
-    return Promise.resolve();
-  },
-
-  waitForLocationChange: function waitForLocationChange() {
-    return new Promise(resolve => {
-      Services.obs.addObserver(function obs(subj, topic, data) {
-        Services.obs.removeObserver(obs, topic);
-        resolve();
-      }, "browser-fullZoom:location-change");
-    });
-  },
-
-  load: function load(tab, url) {
-    return new Promise(resolve => {
-      let didLoad = false;
-      let didZoom = false;
-
-      promiseTabLoadEvent(tab).then(event => {
-        didLoad = true;
-        if (didZoom) {
-          resolve();
-        }
-      }, true);
-
-      this.waitForLocationChange().then(function() {
-        didZoom = true;
-        if (didLoad) {
-          resolve();
-        }
-      });
-
-      BrowserTestUtils.loadURI(tab.linkedBrowser, url);
-    });
-  },
-
-  zoomTest: function zoomTest(tab, val, msg) {
-    is(ZoomManager.getZoomForBrowser(tab.linkedBrowser), val, msg);
-  },
-
-  enlarge: function enlarge() {
-    return new Promise(resolve => FullZoom.enlarge(resolve));
-  },
-
-  reduce: function reduce() {
-    return new Promise(resolve => FullZoom.reduce(resolve));
-  },
-
-  reset: function reset() {
-    return FullZoom.reset();
-  },
-
-  BACK: 0,
-  FORWARD: 1,
-  navigate: function navigate(direction) {
-    return new Promise(resolve => {
-      let didPs = false;
-      let didZoom = false;
-
-      BrowserTestUtils.waitForContentEvent(
-        gBrowser.selectedBrowser,
-        "pageshow",
-        true
-      ).then(() => {
-        didPs = true;
-        if (didZoom) {
-          resolve();
-        }
-      });
-
-      if (direction == this.BACK) {
-        gBrowser.goBack();
-      } else if (direction == this.FORWARD) {
-        gBrowser.goForward();
-      }
-
-      this.waitForLocationChange().then(function() {
-        didZoom = true;
-        if (didPs) {
-          resolve();
-        }
-      });
-    });
-  },
-
-  failAndContinue: function failAndContinue(func) {
-    return function(err) {
-      ok(false, err);
-      func();
-    };
-  },
-};
 
 /**
  * Waits for a load (or custom) event to finish in a given tab. If provided
@@ -404,7 +238,7 @@ function promiseTabLoadEvent(tab, url) {
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
 
   if (url) {
-    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;
@@ -433,7 +267,7 @@ function is_hidden(element) {
   if (style.visibility != "visible") {
     return true;
   }
-  if (style.display == "-moz-popup") {
+  if (XULPopupElement.isInstance(element)) {
     return ["hiding", "closed"].includes(element.state);
   }
 
@@ -447,7 +281,7 @@ function is_hidden(element) {
 
 function is_element_visible(element, msg) {
   isnot(element, null, "Element should not be null, when checking visibility");
-  ok(BrowserTestUtils.is_visible(element), msg || "Element should be visible");
+  ok(BrowserTestUtils.isVisible(element), msg || "Element should be visible");
 }
 
 function is_element_hidden(element, msg) {
@@ -495,30 +329,11 @@ function promiseOnBookmarkItemAdded(aExpectedURI) {
 
 async function loadBadCertPage(url) {
   let loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, url);
   await loaded;
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     content.document.getElementById("exceptionDialogButton").click();
   });
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-}
-
-/**
- * Waits for the stylesheets to be loaded into the browser menu.
- *
- * @param tab
- *        The tab that contains the webpage we're testing.
- * @param styleSheetCount
- *        How many stylesheets we expect to be loaded.
- * @return Promise
- */
-async function promiseStylesheetsLoaded(tab, styleSheetCount) {
-  let styleMenu = tab.ownerGlobal.gPageStyleMenu;
-  let permanentKey = tab.permanentKey;
-
-  await TestUtils.waitForCondition(() => {
-    let menu = styleMenu._pageStyleSheets.get(permanentKey);
-    return menu && menu.filteredStyleSheets.length >= styleSheetCount;
-  }, "waiting for style sheets to load");
 }

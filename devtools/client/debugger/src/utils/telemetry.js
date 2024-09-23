@@ -19,7 +19,7 @@
  * // If the properties are in multiple code paths and you can't send them all
  * // in one go you will need to use the full telemetry API.
  *
- * import { Telemetry } from "devtools-modules";
+ * const Telemetry = require("devtools/client/shared/telemetry");
  *
  * const telemetry = new Telemetry();
  *
@@ -42,36 +42,27 @@
  * );
  */
 
-// @flow
+import { isNode } from "./environment";
 
-import { Telemetry } from "devtools-modules";
-import { isFirefoxPanel } from "devtools-environment";
+let telemetry;
 
-const telemetry = new Telemetry();
+if (isNode()) {
+  const Telemetry = require("resource://devtools/client/shared/telemetry.js");
+  telemetry = new Telemetry();
+}
+
+export function setToolboxTelemetry(toolboxTelemetry) {
+  telemetry = toolboxTelemetry;
+}
 
 /**
  * @memberof utils/telemetry
  * @static
  */
-export function recordEvent(eventName: string, fields: {} = {}): void {
-  let sessionId = -1;
+export function recordEvent(eventName, fields = {}) {
+  telemetry.recordEvent(eventName, "debugger", null, fields);
 
-  if (typeof window !== "object") {
-    return;
-  }
-
-  if (window.parent.frameElement) {
-    sessionId = window.parent.frameElement.getAttribute("session_id");
-  }
-
-  /* eslint-disable camelcase */
-  telemetry.recordEvent(eventName, "debugger", null, {
-    session_id: sessionId,
-    ...fields,
-  });
-  /* eslint-enable camelcase */
-
-  if (!isFirefoxPanel() && window.dbg) {
+  if (isNode()) {
     const { events } = window.dbg._telemetry;
     if (!events[eventName]) {
       events[eventName] = [];

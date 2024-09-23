@@ -1,4 +1,6 @@
-intr protocol PmessageCompress {
+[ChildProc=any]
+sync protocol PmessageCompress {
 child:
-    async foo() compress;
+    [Compress] async foo();
+    [Compress=all] async bar();
 };

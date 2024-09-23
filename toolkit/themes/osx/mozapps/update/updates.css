@@ -18,12 +18,7 @@
 }
 
 .update-header {
-  -moz-appearance: dialog;
   margin: 12px 12px 0 12px;
-}
-
-.update-header-box-1 {
-  color: #000;
 }
 
 .update-header-box-text {
@@ -47,12 +42,14 @@
 
 #update-button-box {
   padding: 10px 12px 12px 12px;
-  -moz-appearance: statusbar;
+  appearance: auto;
+  -moz-default-appearance: statusbar;
   -moz-window-dragging: drag;
 }
 
 #update-button-box button {
-  -moz-appearance: toolbarbutton;
+  appearance: auto;
+  -moz-default-appearance: toolbarbutton;
   color: ButtonText;
   min-height: 22px;
 }
@@ -72,7 +69,7 @@ update {
 }
 
 .update-label-column {
-  -moz-box-align: end;
+  align-items: flex-end;
 }
 
 .update-type {
@@ -87,15 +84,16 @@ update {
 
 #historyItems {
   height: 200px;
+  flex: 1 auto;
   margin: 1px 5px 5px 5px;
 }
 
 #historyItems .update {
   padding: 5px;
-  display: -moz-box;
-  -moz-box-orient: vertical;
+  display: flex;
+  flex-direction: column;
 }
 
 .update-name {
-  -moz-box-flex: 1;
+  flex: 1;
 }

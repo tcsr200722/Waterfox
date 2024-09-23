@@ -10,6 +10,7 @@ use crate::values::specified::color::Color;
 use crate::values::specified::url::SpecifiedUrl;
 use crate::values::specified::AllowQuirks;
 use crate::values::specified::LengthPercentage;
+use crate::values::specified::SVGPathData;
 use crate::values::specified::{NonNegativeLengthPercentage, Opacity};
 use crate::values::CustomIdent;
 use cssparser::{Parser, Token};
@@ -48,7 +49,8 @@ macro_rules! parse_svg_length {
                 context: &ParserContext,
                 input: &mut Parser<'i, 't>,
             ) -> Result<Self, ParseError<'i>> {
-                if let Ok(lp) = input.try(|i| <$lp>::parse_quirky(context, i, AllowQuirks::Always))
+                if let Ok(lp) =
+                    input.try_parse(|i| <$lp>::parse_quirky(context, i, AllowQuirks::Always))
                 {
                     return Ok(generic::SVGLength::LengthPercentage(lp));
                 }
@@ -71,7 +73,7 @@ impl Parse for SVGStrokeDashArray {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(values) = input.try(|i| {
+        if let Ok(values) = input.try_parse(|i| {
             CommaWithSpace::parse(i, |i| {
                 NonNegativeLengthPercentage::parse_quirky(context, i, AllowQuirks::Always)
             })
@@ -161,7 +163,7 @@ impl Parse for SVGPaintOrder {
         _context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<SVGPaintOrder, ParseError<'i>> {
-        if let Ok(()) = input.try(|i| i.expect_ident_matching("normal")) {
+        if let Ok(()) = input.try_parse(|i| i.expect_ident_matching("normal")) {
             return Ok(SVGPaintOrder::normal());
         }
 
@@ -172,7 +174,7 @@ impl Parse for SVGPaintOrder {
         let mut pos = 0;
 
         loop {
-            let result: Result<_, ParseError> = input.try(|input| {
+            let result: Result<_, ParseError> = input.try_parse(|input| {
                 try_match_ident_ignore_ascii_case! { input,
                     "fill" => Ok(PaintOrder::Fill),
                     "stroke" => Ok(PaintOrder::Stroke),
@@ -237,7 +239,7 @@ impl ToCss for SVGPaintOrder {
 
         for pos in 0..last_pos_to_serialize + 1 {
             if pos != 0 {
-                dest.write_str(" ")?
+                dest.write_char(' ')?
             }
             self.order_at(pos).to_css(dest)?;
         }
@@ -245,11 +247,24 @@ impl ToCss for SVGPaintOrder {
     }
 }
 
+/// The context properties we understand.
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    Debug,
+    Default,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C)]
+pub struct ContextPropertyBits(u8);
 bitflags! {
-    /// The context properties we understand.
-    #[derive(Default, MallocSizeOf, SpecifiedValueInfo, ToComputedValue, ToResolvedValue, ToShmem)]
-    #[repr(C)]
-    pub struct ContextPropertyBits: u8 {
+    impl ContextPropertyBits: u8 {
         /// `fill`
         const FILL = 1 << 0;
         /// `stroke`
@@ -331,5 +346,59 @@ impl Parse for MozContextProperties {
             idents: crate::ArcSlice::from_iter(values.into_iter()),
             bits,
         })
+    }
+}
+
+/// The svg d property type.
+///
+/// https://svgwg.org/svg2-draft/paths.html#TheDProperty
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Debug,
+    Deserialize,
+    MallocSizeOf,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToAnimatedZero,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C, u8)]
+pub enum DProperty {
+    /// Path value for path(<string>) or just a <string>.
+    #[css(function)]
+    Path(SVGPathData),
+    /// None value.
+    #[animation(error)]
+    None,
+}
+
+impl DProperty {
+    /// return none.
+    #[inline]
+    pub fn none() -> Self {
+        DProperty::None
+    }
+}
+
+impl Parse for DProperty {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        // Parse none.
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(DProperty::none());
+        }
+
+        // Parse possible functions.
+        input.expect_function_matching("path")?;
+        let path_data = input.parse_nested_block(|i| Parse::parse(context, i))?;
+        Ok(DProperty::Path(path_data))
     }
 }

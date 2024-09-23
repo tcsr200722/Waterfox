@@ -23,8 +23,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=815847
 <script class="testbody" type="application/javascript">
 <![CDATA[
 
-const {Services} = ChromeUtils.import('resource://gre/modules/Services.jsm');
-
 function testWindowlessBrowser(chromePrivileged) {
   var webNav = Services.appShell.createWindowlessBrowser(chromePrivileged);
 
@@ -33,17 +31,17 @@ function testWindowlessBrowser(chromePrivileged) {
   let docShell = webNav.docShell;
 
   ok(docShell, "docShell should be defined");
-  ok(docShell.contentViewer.DOMDocument.defaultView, "docShell defaultView should be defined");
+  ok(docShell.docViewer.DOMDocument.defaultView, "docShell defaultView should be defined");
 
-  var win = docShell.contentViewer.DOMDocument.defaultView;
+  var win = docShell.docViewer.DOMDocument.defaultView;
 
   ok(win.screenX == 0, "window.screenX should be 0 in a windowless browser");
   ok(win.screenY == 0, "window.screenY should be 0 in a windowless browser");
   ok(win.outerWidth == 0, "window.outerWidth should be 0 in a windowless browser");
   ok(win.outerHeight == 0, "window.outerHeight should be 0 in a windowless browser");
-  
+
   ok(win.external, "window.external should be defined");
-  
+
   var exception;
 
   try {
@@ -51,7 +49,7 @@ function testWindowlessBrowser(chromePrivileged) {
   } catch(e) {
     exception = e;
   }
-  
+
   ok(!exception, "window.external.AddSearchProvider should be ignore withour raising an exception");
 
   webNav.close();

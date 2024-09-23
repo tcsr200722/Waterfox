@@ -8,7 +8,9 @@
 //
 // And tests `workerify` by doing so.
 
-const { workerify } = require("devtools/shared/worker/worker");
+const { workerify } = ChromeUtils.importESModule(
+  "resource://devtools/shared/worker/worker.sys.mjs"
+);
 function square(x) {
   return x * x;
 }
@@ -17,19 +19,19 @@ function squarePromise(x) {
   return new Promise(resolve => resolve(x * x));
 }
 
-function squareError(x) {
+function squareError() {
   return new Error("Nope");
 }
 
-function squarePromiseReject(x) {
+function squarePromiseReject() {
   return new Promise((_, reject) => reject("Nope"));
 }
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   Services.prefs.clearUserPref("security.allow_parent_unrestricted_js_loads");
 });
 
-add_task(async function() {
+add_task(async function () {
   // Needed for blob:null
   Services.prefs.setBoolPref(
     "security.allow_parent_unrestricted_js_loads",

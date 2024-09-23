@@ -8,31 +8,55 @@
 #ifndef SKSL_EXTENSION
 #define SKSL_EXTENSION
 
+#include "src/sksl/SkSLPosition.h"
+#include "src/sksl/ir/SkSLIRNode.h"
 #include "src/sksl/ir/SkSLProgramElement.h"
+
+#include <memory>
+#include <string>
+#include <string_view>
 
 namespace SkSL {
 
+class Context;
+
 /**
- * An extension declaration.
+ * #extension <name> : enable
  */
-struct Extension : public ProgramElement {
-    Extension(int offset, String name)
-    : INHERITED(offset, kExtension_Kind)
-    , fName(std::move(name)) {}
+class Extension final : public ProgramElement {
+public:
+    inline static constexpr Kind kIRNodeKind = Kind::kExtension;
 
-    std::unique_ptr<ProgramElement> clone() const override {
-        return std::unique_ptr<ProgramElement>(new Extension(fOffset, fName));
+    Extension(Position pos, std::string_view name)
+            : INHERITED(pos, kIRNodeKind)
+            , fName(name) {}
+
+    std::string_view name() const {
+        return fName;
     }
 
-    String description() const override {
-        return "#extension " + fName + " : enable";
+    // Reports errors via ErrorReporter. This may return null even if no error occurred;
+    // in particular, if the behavior text is `disabled`, no ProgramElement is necessary.
+    static std::unique_ptr<Extension> Convert(const Context& context,
+                                              Position pos,
+                                              std::string_view name,
+                                              std::string_view behaviorText);
+
+    // Asserts if an error is detected.
+    static std::unique_ptr<Extension> Make(const Context& context,
+                                           Position pos,
+                                           std::string_view name);
+
+    std::string description() const override {
+        return "#extension " + std::string(this->name()) + " : enable";
     }
 
-    const String fName;
+private:
+    std::string_view fName;
 
-    typedef ProgramElement INHERITED;
+    using INHERITED = ProgramElement;
 };
 
-} // namespace
+}  // namespace SkSL
 
 #endif

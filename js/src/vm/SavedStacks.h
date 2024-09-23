@@ -11,17 +11,18 @@
 #include "mozilla/FastBernoulliTrial.h"
 #include "mozilla/Maybe.h"
 
+#include "js/ColumnNumber.h"  // JS::TaggedColumnNumberOneOrigin
 #include "js/HashTable.h"
-#include "js/Wrapper.h"
-#include "vm/JSContext.h"
+#include "js/Stack.h"
 #include "vm/SavedFrame.h"
-#include "vm/Stack.h"
 
 namespace JS {
 enum class SavedFrameSelfHosted;
 }
 
 namespace js {
+
+class FrameIter;
 
 // # Saved Stacks
 //
@@ -160,18 +161,17 @@ class SavedStacks {
 
  public:
   SavedStacks()
-      : frames(),
-        bernoulliSeeded(false),
+      : bernoulliSeeded(false),
         bernoulli(1.0, 0x59fdad7f6b4cc573, 0x91adf38db96a9354),
         creatingSavedFrame(false) {}
 
-  MOZ_MUST_USE bool saveCurrentStack(
-      JSContext* cx, MutableHandleSavedFrame frame,
+  [[nodiscard]] bool saveCurrentStack(
+      JSContext* cx, MutableHandle<SavedFrame*> frame,
       JS::StackCapture&& capture = JS::StackCapture(JS::AllFrames()));
-  MOZ_MUST_USE bool copyAsyncStack(JSContext* cx, HandleObject asyncStack,
-                                   HandleString asyncCause,
-                                   MutableHandleSavedFrame adoptedStack,
-                                   const mozilla::Maybe<size_t>& maxFrameCount);
+  [[nodiscard]] bool copyAsyncStack(
+      JSContext* cx, HandleObject asyncStack, HandleString asyncCause,
+      MutableHandle<SavedFrame*> adoptedStack,
+      const mozilla::Maybe<size_t>& maxFrameCount);
   void traceWeak(JSTracer* trc);
   void trace(JSTracer* trc);
   uint32_t count();
@@ -190,7 +190,7 @@ class SavedStacks {
   // An alloction metadata builder that marks cells with the JavaScript stack
   // at which they were allocated.
   struct MetadataBuilder : public AllocationMetadataBuilder {
-    MetadataBuilder() : AllocationMetadataBuilder() {}
+    MetadataBuilder() = default;
     virtual JSObject* build(JSContext* cx, HandleObject obj,
                             AutoEnterOOMUnsafeRegion& oomUnsafe) const override;
   };
@@ -207,25 +207,22 @@ class SavedStacks {
   // reentrancy, just change the behavior of SavedStacks::saveCurrentStack to
   // return a nullptr SavedFrame.
   struct MOZ_RAII AutoReentrancyGuard {
-    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER;
     SavedStacks& stacks;
 
-    explicit AutoReentrancyGuard(
-        SavedStacks& stacks MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-        : stacks(stacks) {
-      MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    explicit AutoReentrancyGuard(SavedStacks& stacks) : stacks(stacks) {
       stacks.creatingSavedFrame = true;
     }
 
     ~AutoReentrancyGuard() { stacks.creatingSavedFrame = false; }
   };
 
-  MOZ_MUST_USE bool insertFrames(JSContext* cx, MutableHandleSavedFrame frame,
-                                 JS::StackCapture&& capture);
-  MOZ_MUST_USE bool adoptAsyncStack(
-      JSContext* cx, MutableHandleSavedFrame asyncStack, HandleAtom asyncCause,
-      const mozilla::Maybe<size_t>& maxFrameCount);
-  MOZ_MUST_USE bool checkForEvalInFramePrev(
+  [[nodiscard]] bool insertFrames(JSContext* cx,
+                                  MutableHandle<SavedFrame*> frame,
+                                  JS::StackCapture&& capture);
+  [[nodiscard]] bool adoptAsyncStack(
+      JSContext* cx, MutableHandle<SavedFrame*> asyncStack,
+      Handle<JSAtom*> asyncCause, const mozilla::Maybe<size_t>& maxFrameCount);
+  [[nodiscard]] bool checkForEvalInFramePrev(
       JSContext* cx, MutableHandle<SavedFrame::Lookup> lookup);
   SavedFrame* getOrCreateSavedFrame(JSContext* cx,
                                     Handle<SavedFrame::Lookup> lookup);
@@ -238,7 +235,7 @@ class SavedStacks {
   struct PCKey {
     PCKey(JSScript* script, jsbytecode* pc) : script(script), pc(pc) {}
 
-    HeapPtr<JSScript*> script;
+    WeakHeapPtr<JSScript*> script;
     jsbytecode* pc;
 
     void trace(JSTracer* trc) { /* PCKey is weak. */
@@ -250,9 +247,9 @@ class SavedStacks {
 
  public:
   struct LocationValue {
-    LocationValue() : source(nullptr), sourceId(0), line(0), column(0) {}
+    LocationValue() : source(nullptr), sourceId(0), line(0) {}
     LocationValue(JSAtom* source, uint32_t sourceId, size_t line,
-                  uint32_t column)
+                  JS::TaggedColumnNumberOneOrigin column)
         : source(source), sourceId(sourceId), line(line), column(column) {}
 
     void trace(JSTracer* trc) {
@@ -266,10 +263,14 @@ class SavedStacks {
       return TraceWeakEdge(trc, &source, "traceWeak");
     }
 
-    HeapPtr<JSAtom*> source;
+    WeakHeapPtr<JSAtom*> source;
     uint32_t sourceId;
+
+    // Line number (1-origin).
     size_t line;
-    uint32_t column;
+
+    // Column number in UTF-16 code units.
+    JS::TaggedColumnNumberOneOrigin column;
   };
 
  private:
@@ -299,8 +300,8 @@ class SavedStacks {
       GCHashMap<PCKey, LocationValue, PCLocationHasher, SystemAllocPolicy>;
   PCLocationMap pcLocationMap;
 
-  MOZ_MUST_USE bool getLocation(JSContext* cx, const FrameIter& iter,
-                                MutableHandle<LocationValue> locationp);
+  [[nodiscard]] bool getLocation(JSContext* cx, const FrameIter& iter,
+                                 MutableHandle<LocationValue> locationp);
 };
 
 template <typename Wrapper>
@@ -308,7 +309,7 @@ struct WrappedPtrOperations<SavedStacks::LocationValue, Wrapper> {
   JSAtom* source() const { return loc().source; }
   uint32_t sourceId() const { return loc().sourceId; }
   size_t line() const { return loc().line; }
-  uint32_t column() const { return loc().column; }
+  JS::TaggedColumnNumberOneOrigin column() const { return loc().column; }
 
  private:
   const SavedStacks::LocationValue& loc() const {
@@ -322,7 +323,7 @@ struct MutableWrappedPtrOperations<SavedStacks::LocationValue, Wrapper>
   void setSource(JSAtom* v) { loc().source = v; }
   void setSourceId(uint32_t v) { loc().sourceId = v; }
   void setLine(size_t v) { loc().line = v; }
-  void setColumn(uint32_t v) { loc().column = v; }
+  void setColumn(JS::TaggedColumnNumberOneOrigin v) { loc().column = v; }
 
  private:
   SavedStacks::LocationValue& loc() {
@@ -332,8 +333,6 @@ struct MutableWrappedPtrOperations<SavedStacks::LocationValue, Wrapper>
 
 JS::UniqueChars BuildUTF8StackString(JSContext* cx, JSPrincipals* principals,
                                      HandleObject stack);
-
-uint32_t FixupColumnForDisplay(uint32_t column);
 
 js::SavedFrame* UnwrapSavedFrame(JSContext* cx, JSPrincipals* principals,
                                  HandleObject obj,

@@ -22,7 +22,6 @@ async function run_test() {
   }
 
   gfxInfo.QueryInterface(Ci.nsIGfxInfoDebug);
-  gfxInfo.fireTestProcess();
 
   // Set the vendor/device ID, etc, to match the test file.
   switch (Services.appinfo.OS) {
@@ -54,7 +53,7 @@ async function run_test() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "3", "8");
   await promiseStartupManager();
 
-  function blacklistAdded(aSubject, aTopic, aData) {
+  function blacklistAdded() {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
     executeSoon(ensureBlacklistSet);
@@ -96,7 +95,7 @@ async function run_test() {
     ]);
   }
 
-  function blacklistRemoved(aSubject, aTopic, aData) {
+  function blacklistRemoved() {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
     executeSoon(ensureBlacklistUnset);

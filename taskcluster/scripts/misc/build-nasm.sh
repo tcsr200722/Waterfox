@@ -1,16 +1,12 @@
 #!/bin/bash
 set -x -e -v
 
-COMPRESS_EXT=bz2
+COMPRESS_EXT=zst
 
 cd $MOZ_FETCHES_DIR/nasm-*
-case "$1" in
-    win64)
-        export PATH="$MOZ_FETCHES_DIR/clang/bin:$PATH"
-        ./configure CC=x86_64-w64-mingw32-clang AR=llvm-ar RANLIB=llvm-ranlib --host=x86_64-w64-mingw32
-        EXE=.exe
-        ;;
-    *)
+
+case $(cat version) in
+2.14.02)
         # Fix for .debug_loc section containing garbage on elf32
         # https://bugzilla.nasm.us/show_bug.cgi?id=3392631
         patch -p1 <<'EOF'
@@ -28,10 +24,35 @@ index de99d076..47031e12 100644
      if (is_elf32()) {
          WRITELONG(pbuf,0);  /* null  beginning offset */
 EOF
-        ./configure
+	;;
+esac
+
+export PATH="$MOZ_FETCHES_DIR/clang/bin:$PATH"
+
+case "$1" in
+    win64)
+        TARGET=x86_64-w64-mingw32
+        CC=x86_64-w64-mingw32-clang
+        EXE=.exe
+        ;;
+    macosx64)
+        export MACOSX_DEPLOYMENT_TARGET=10.12
+        TARGET=x86_64-apple-darwin
+        CC="clang -fuse-ld=lld --target=$TARGET -isysroot $MOZ_FETCHES_DIR/MacOSX14.4.sdk"
+        EXE=
+	;;
+    macosx64-aarch64)
+        export MACOSX_DEPLOYMENT_TARGET=11.0
+        TARGET=aarch64-apple-darwin
+        CC="clang -fuse-ld=lld --target=$TARGET -isysroot $MOZ_FETCHES_DIR/MacOSX14.4.sdk"
+        EXE=
+	;;
+    *)
+        CC="clang --sysroot=$MOZ_FETCHES_DIR/sysroot-x86_64-linux-gnu"
         EXE=
         ;;
 esac
+./configure CC="$CC" AR=llvm-ar RANLIB=llvm-ranlib LDFLAGS=-fuse-ld=lld ${TARGET:+--host=$TARGET}
 make -j$(nproc)
 
 mv nasm$EXE nasm-tmp

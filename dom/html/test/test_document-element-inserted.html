@@ -28,13 +28,13 @@ var observe = function(doc){
 
 var media = document.getElementById('media');
 var tests = [
-    "../../../media/test/short-video.ogv",
+    "../../../media/test/vp9.webm",
     "../../../media/test/sound.ogg",
     "../../content/test/image.png"
 ]
 
 function next() {
-    if (tests.length > 0) {
+    if (tests.length) {
         var t = tests.shift();
         loc = t.substring(t.indexOf("test"));
         media.setAttribute("src",t);

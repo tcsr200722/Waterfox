@@ -8,13 +8,28 @@
 #ifndef SkPictureShader_DEFINED
 #define SkPictureShader_DEFINED
 
-#include "include/core/SkTileMode.h"
+#include "include/core/SkFlattenable.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPicture.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkSize.h"
+#include "include/core/SkSurfaceProps.h"
+#include "include/core/SkTypes.h"
 #include "src/shaders/SkShaderBase.h"
-#include <atomic>
 
 class SkArenaAlloc;
-class SkBitmap;
-class SkPicture;
+class SkColorSpace;
+class SkImage;
+class SkReadBuffer;
+class SkShader;
+class SkSurface;
+class SkWriteBuffer;
+enum SkColorType : int;
+enum class SkFilterMode;
+enum class SkTileMode;
+struct SkStageRec;
 
 /*
  * An SkPictureShader can be used to draw SkPicture-based patterns.
@@ -24,21 +39,40 @@ class SkPicture;
  */
 class SkPictureShader : public SkShaderBase {
 public:
-    ~SkPictureShader() override;
+    static sk_sp<SkShader> Make(sk_sp<SkPicture>, SkTileMode, SkTileMode, SkFilterMode,
+                                const SkMatrix*, const SkRect*);
 
-    static sk_sp<SkShader> Make(sk_sp<SkPicture>, SkTileMode, SkTileMode, const SkMatrix*,
-                                const SkRect*);
+    SkPictureShader(sk_sp<SkPicture>, SkTileMode, SkTileMode, SkFilterMode, const SkRect*);
 
-#if SK_SUPPORT_GPU
-    std::unique_ptr<GrFragmentProcessor> asFragmentProcessor(const GrFPArgs&) const override;
-#endif
+    ShaderType type() const override { return ShaderType::kPicture; }
 
-    SkPicture* isAPicture(SkMatrix*, SkTileMode[2], SkRect* tile) const override;
+    sk_sp<SkPicture> picture() const { return fPicture; }
+    SkRect tile() const { return fTile; }
+    SkTileMode tileModeX() const { return fTmx; }
+    SkTileMode tileModeY() const { return fTmy; }
+    SkFilterMode filter() const { return fFilter; }
+
+    struct CachedImageInfo {
+        bool success;
+        SkSize tileScale;        // Additional scale factors to apply when sampling image.
+        SkMatrix matrixForDraw;  // Matrix used to produce an image from the picture
+        SkImageInfo imageInfo;
+        SkSurfaceProps props;
+
+        static CachedImageInfo Make(const SkRect& bounds,
+                                    const SkMatrix& totalM,
+                                    SkColorType dstColorType,
+                                    SkColorSpace* dstColorSpace,
+                                    const int maxTextureSize,
+                                    const SkSurfaceProps& propsIn);
+
+        sk_sp<SkImage> makeImage(sk_sp<SkSurface> surf, const SkPicture* pict) const;
+    };
 
 protected:
     SkPictureShader(SkReadBuffer&);
     void flatten(SkWriteBuffer&) const override;
-    bool onAppendStages(const SkStageRec&) const override;
+    bool appendStages(const SkStageRec&, const SkShaders::MatrixRec&) const override;
 #ifdef SK_ENABLE_LEGACY_SHADERCONTEXT
     Context* onMakeContext(const ContextRec&, SkArenaAlloc*) const override;
 #endif
@@ -46,36 +80,15 @@ protected:
 private:
     SK_FLATTENABLE_HOOKS(SkPictureShader)
 
-    SkPictureShader(sk_sp<SkPicture>, SkTileMode, SkTileMode, const SkMatrix*, const SkRect*);
-
-    sk_sp<SkShader> refBitmapShader(const SkMatrix&, SkTCopyOnFirstWrite<SkMatrix>* localMatrix,
-                                    SkColorType dstColorType, SkColorSpace* dstColorSpace,
-                                    const int maxTextureSize = 0) const;
-
-    class PictureShaderContext : public Context {
-    public:
-        PictureShaderContext(
-            const SkPictureShader&, const ContextRec&, sk_sp<SkShader> bitmapShader, SkArenaAlloc*);
-
-        uint32_t getFlags() const override;
-
-        void shadeSpan(int x, int y, SkPMColor dstC[], int count) override;
-
-        sk_sp<SkShader>         fBitmapShader;
-        SkShaderBase::Context*  fBitmapShaderContext;
-        void*                   fBitmapShaderContextStorage;
-
-        typedef Context INHERITED;
-    };
+    sk_sp<SkShader> rasterShader(const SkMatrix&,
+                                 SkColorType dstColorType,
+                                 SkColorSpace* dstColorSpace,
+                                 const SkSurfaceProps& props) const;
 
     sk_sp<SkPicture>    fPicture;
     SkRect              fTile;
     SkTileMode          fTmx, fTmy;
-
-    const uint32_t            fUniqueID;
-    mutable std::atomic<bool> fAddedToCache;
-
-    typedef SkShaderBase INHERITED;
+    SkFilterMode fFilter;
 };
 
 #endif // SkPictureShader_DEFINED

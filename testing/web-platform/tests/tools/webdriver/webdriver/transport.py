@@ -1,16 +1,65 @@
+# mypy: allow-untyped-defs
+
 import json
 import select
 
-from six import text_type, PY3
-from six.moves.http_client import HTTPConnection
-from six.moves.urllib import parse as urlparse
+from http.client import HTTPConnection
+from typing import Dict, List, Mapping, Sequence, Tuple
+from urllib import parse as urlparse
 
 from . import error
 
 """Implements HTTP transport for the WebDriver wire protocol."""
 
 
-class Response(object):
+missing = object()
+
+
+class ResponseHeaders(Mapping[str, str]):
+    """Read-only dictionary-like API for accessing response headers.
+
+    This class:
+      * Normalizes the header keys it is built with to lowercase (such that
+        iterating the items will return lowercase header keys).
+      * Has case-insensitive header lookup.
+      * Always returns all header values that have the same name, separated by
+        commas.
+    """
+    def __init__(self, items: Sequence[Tuple[str, str]]):
+        self.headers_dict: Dict[str, List[str]] = {}
+        for key, value in items:
+            key = key.lower()
+            if key not in self.headers_dict:
+                self.headers_dict[key] = []
+            self.headers_dict[key].append(value)
+
+    def __getitem__(self, key):
+        """Get all headers of a certain (case-insensitive) name. If there is
+        more than one, the values are returned comma separated"""
+        values = self.headers_dict[key.lower()]
+        if len(values) == 1:
+            return values[0]
+        else:
+            return ", ".join(values)
+
+    def get_list(self, key, default=missing):
+        """Get all the header values for a particular field name as a list"""
+        try:
+            return self.headers_dict[key.lower()]
+        except KeyError:
+            if default is not missing:
+                return default
+            else:
+                raise
+
+    def __iter__(self):
+        yield from self.headers_dict
+
+    def __len__(self):
+        return len(self.headers_dict)
+
+
+class Response:
     """
     Describes an HTTP response received from a remote end whose
     body has been read and parsed as appropriate.
@@ -24,8 +73,8 @@ class Response(object):
     def __repr__(self):
         cls_name = self.__class__.__name__
         if self.error:
-            return "<%s status=%s error=%s>" % (cls_name, self.status, repr(self.error))
-        return "<% status=%s body=%s>" % (cls_name, self.status, json.dumps(self.body))
+            return f"<{cls_name} status={self.status} error={repr(self.error)}>"
+        return f"<{cls_name}: status={self.status} body={json.dumps(self.body)}>"
 
     def __str__(self):
         return json.dumps(self.body, indent=2)
@@ -40,22 +89,22 @@ class Response(object):
     def from_http(cls, http_response, decoder=json.JSONDecoder, **kwargs):
         try:
             body = json.load(http_response, cls=decoder, **kwargs)
-            headers = dict(http_response.getheaders())
+            headers = ResponseHeaders(http_response.getheaders())
         except ValueError:
             raise ValueError("Failed to decode response body as JSON:\n" +
-                http_response.read())
+                             http_response.read())
 
         return cls(http_response.status, body, headers)
 
 
-class HTTPWireProtocol(object):
+class HTTPWireProtocol:
     """
     Transports messages (commands and responses) over the WebDriver
     wire protocol.
 
-    Complex objects, such as ``webdriver.Element``, ``webdriver.Frame``,
-    and ``webdriver.Window`` are by default not marshaled to enable
-    use of `session.transport.send` in WPT tests::
+    Complex objects, such as ``webdriver.ShadowRoot``, ``webdriver.WebElement``,
+    ``webdriver.WebFrame``, and ``webdriver.WebWindow`` are by default not
+    marshaled to enable use of `session.transport.send` in WPT tests::
 
         session = webdriver.Session("127.0.0.1", 4444)
         response = transport.send("GET", "element/active", None)
@@ -94,15 +143,18 @@ class HTTPWireProtocol(object):
     def close(self):
         """Closes the current HTTP connection, if there is one."""
         if self._conn:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except OSError:
+                # The remote closed the connection
+                pass
+        self._conn = None
 
     @property
     def connection(self):
         """Gets the current HTTP connection, or lazily creates one."""
         if not self._conn:
             conn_kwargs = {}
-            if not PY3:
-                conn_kwargs["strict"] = True
             # We are not setting an HTTP timeout other than the default when the
             # connection its created. The send method has a timeout value if needed.
             self._conn = HTTPConnection(self.host, self.port, **conn_kwargs)
@@ -128,17 +180,17 @@ class HTTPWireProtocol(object):
         """
         Send a command to the remote.
 
-        The request `body` must be JSON serialisable unless a
+        The request `body` must be JSON serializable unless a
         custom `encoder` has been provided.  This means complex
-        objects such as ``webdriver.Element``, ``webdriver.Frame``,
-        and `webdriver.Window`` are not automatically made
-        into JSON.  This behaviour is, however, provided by
+        objects such as ``webdriver.ShadowRoot``, ``webdriver.WebElement``,
+        ``webdriver.WebFrame``, and `webdriver.Window`` are not automatically
+        made into JSON.  This behavior is, however, provided by
         ``webdriver.protocol.Encoder``, should you want it.
 
         Similarly, the response body is returned au natural
         as plain JSON unless a `decoder` that converts web
         element references to ``webdriver.Element`` is provided.
-        Use ``webdriver.protocol.Decoder`` to achieve this behaviour.
+        Use ``webdriver.protocol.Decoder`` to achieve this behavior.
 
         The client will attempt to use persistent HTTP connections.
 
@@ -159,7 +211,7 @@ class HTTPWireProtocol(object):
             describing the HTTP response received from the remote end.
 
         :raises ValueError: If `body` or the response body are not
-            JSON serialisable.
+            JSON serializable.
         """
         if body is None and method == "POST":
             body = {}
@@ -170,7 +222,7 @@ class HTTPWireProtocol(object):
                 payload = json.dumps(body, cls=encoder, **codec_kwargs)
             except ValueError:
                 raise ValueError("Failed to encode request body as JSON:\n"
-                    "%s" % json.dumps(body, indent=2))
+                                 "%s" % json.dumps(body, indent=2))
 
         # When the timeout triggers, the TestRunnerManager thread will reuse
         # this connection to check if the WebDriver its alive and we may end
@@ -184,7 +236,7 @@ class HTTPWireProtocol(object):
         return Response.from_http(response, decoder=decoder, **codec_kwargs)
 
     def _request(self, method, uri, payload, headers=None, timeout=None):
-        if isinstance(payload, text_type):
+        if isinstance(payload, str):
             payload = payload.encode("utf-8")
 
         if headers is None:

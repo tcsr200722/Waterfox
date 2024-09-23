@@ -7,8 +7,8 @@
 #ifndef jit_x86_SharedICHelpers_x86_h
 #define jit_x86_SharedICHelpers_x86_h
 
-#include "jit/BaselineFrame.h"
 #include "jit/BaselineIC.h"
+#include "jit/JitFrames.h"
 #include "jit/MacroAssembler.h"
 #include "jit/SharedICRegisters.h"
 
@@ -27,53 +27,27 @@ inline void EmitRepushTailCallReg(MacroAssembler& masm) {
   masm.Push(ICTailCallReg);
 }
 
-inline void EmitCallIC(MacroAssembler& masm, const ICEntry* entry,
-                       CodeOffset* callOffset) {
-  // Load stub pointer into ICStubReg.
-  masm.loadPtr(AbsoluteAddress(entry).offset(ICEntry::offsetOfFirstStub()),
-               ICStubReg);
-
+inline void EmitCallIC(MacroAssembler& masm, CodeOffset* callOffset) {
+  // The stub pointer must already be in ICStubReg.
   // Call the stubcode.
   masm.call(Address(ICStubReg, ICStub::offsetOfStubCode()));
   *callOffset = CodeOffset(masm.currentOffset());
 }
 
-inline void EmitEnterTypeMonitorIC(
-    MacroAssembler& masm,
-    size_t monitorStubOffset = ICMonitoredStub::offsetOfFirstMonitorStub()) {
-  // This is expected to be called from within an IC, when ICStubReg
-  // is properly initialized to point to the stub.
-  masm.loadPtr(Address(ICStubReg, (int32_t)monitorStubOffset), ICStubReg);
-
-  // Jump to the stubcode.
-  masm.jmp(Operand(ICStubReg, (int32_t)ICStub::offsetOfStubCode()));
-}
-
 inline void EmitReturnFromIC(MacroAssembler& masm) { masm.ret(); }
 
-inline void EmitBaselineLeaveStubFrame(MacroAssembler& masm,
-                                       bool calledIntoIon = false) {
-  // Ion frames do not save and restore the frame pointer. If we called
-  // into Ion, we have to restore the stack pointer from the frame descriptor.
-  // If we performed a VM call, the descriptor has been popped already so
-  // in that case we use the frame pointer.
-  if (calledIntoIon) {
-    Register scratch = ICStubReg;
-    masm.Pop(scratch);
-    masm.shrl(Imm32(FRAMESIZE_SHIFT), scratch);
-    masm.addl(scratch, BaselineStackReg);
-  } else {
-    masm.mov(BaselineFrameReg, BaselineStackReg);
-  }
+inline void EmitBaselineLeaveStubFrame(MacroAssembler& masm) {
+  Address stubAddr(FramePointer, BaselineStubFrameLayout::ICStubOffsetFromFP);
+  masm.loadPtr(stubAddr, ICStubReg);
 
-  masm.Pop(BaselineFrameReg);
-  masm.Pop(ICStubReg);
+  masm.mov(FramePointer, StackPointer);
+  masm.Pop(FramePointer);
 
   // The return address is on top of the stack, followed by the frame
   // descriptor. Use a pop instruction to overwrite the frame descriptor
   // with the return address. Note that pop increments the stack pointer
   // before computing the address.
-  masm.Pop(Operand(BaselineStackReg, 0));
+  masm.Pop(Operand(StackPointer, 0));
 }
 
 template <typename AddrType>
@@ -84,7 +58,7 @@ inline void EmitPreBarrier(MacroAssembler& masm, const AddrType& addr,
 
 inline void EmitStubGuardFailure(MacroAssembler& masm) {
   // Load next stub into ICStubReg
-  masm.loadPtr(Address(ICStubReg, ICStub::offsetOfNext()), ICStubReg);
+  masm.loadPtr(Address(ICStubReg, ICCacheIRStub::offsetOfNext()), ICStubReg);
 
   // Return address is already loaded, just jump to the next stubcode.
   masm.jmp(Operand(ICStubReg, ICStub::offsetOfStubCode()));

@@ -5,17 +5,19 @@
 
 #include "CompositionTransaction.h"
 
-#include "mozilla/EditorBase.h"       // mEditorBase
+#include "mozilla/EditorBase.h"  // mEditorBase
+#include "mozilla/Logging.h"
 #include "mozilla/SelectionState.h"   // RangeUpdater
 #include "mozilla/TextComposition.h"  // TextComposition
-#include "mozilla/dom/Selection.h"    // local var
-#include "mozilla/dom/Text.h"         // mTextNode
-#include "nsAString.h"                // params
-#include "nsDebug.h"                  // for NS_ASSERTION, etc
-#include "nsError.h"                  // for NS_SUCCEEDED, NS_FAILED, etc
-#include "nsRange.h"                  // local var
-#include "nsISelectionController.h"   // for nsISelectionController constants
-#include "nsQueryObject.h"            // for do_QueryObject
+#include "mozilla/ToString.h"
+#include "mozilla/dom/Selection.h"   // local var
+#include "mozilla/dom/Text.h"        // mTextNode
+#include "nsAString.h"               // params
+#include "nsDebug.h"                 // for NS_ASSERTION, etc
+#include "nsError.h"                 // for NS_SUCCEEDED, NS_FAILED, etc
+#include "nsRange.h"                 // local var
+#include "nsISelectionController.h"  // for nsISelectionController constants
+#include "nsQueryObject.h"           // for do_QueryObject
 
 namespace mozilla {
 
@@ -36,7 +38,7 @@ already_AddRefed<CompositionTransaction> CompositionTransaction::Create(
   if (Text* textNode = composition->GetContainerTextNode()) {
     pointToInsert.Set(textNode, composition->XPOffsetInTextNode());
     NS_WARNING_ASSERTION(
-        pointToInsert.GetContainerAsText() ==
+        pointToInsert.GetContainerAs<Text>() ==
             composition->GetContainerTextNode(),
         "The editor tries to insert composition string into different node");
     NS_WARNING_ASSERTION(
@@ -47,18 +49,13 @@ already_AddRefed<CompositionTransaction> CompositionTransaction::Create(
   }
   RefPtr<CompositionTransaction> transaction =
       new CompositionTransaction(aEditorBase, aStringToInsert, pointToInsert);
-  // XXX Now, it might be better to modify the text node information of
-  //     the TextComposition instance in DoTransaction() because updating
-  //     the information before changing actual DOM tree is pretty odd.
-  composition->OnCreateCompositionTransaction(
-      aStringToInsert, pointToInsert.ContainerAsText(), pointToInsert.Offset());
   return transaction.forget();
 }
 
 CompositionTransaction::CompositionTransaction(
     EditorBase& aEditorBase, const nsAString& aStringToInsert,
     const EditorDOMPointInText& aPointToInsert)
-    : mTextNode(aPointToInsert.ContainerAsText()),
+    : mTextNode(aPointToInsert.ContainerAs<Text>()),
       mOffset(aPointToInsert.Offset()),
       mReplaceLength(aEditorBase.GetComposition()->XPLengthInTextNode()),
       mRanges(aEditorBase.GetComposition()->GetRanges()),
@@ -66,6 +63,21 @@ CompositionTransaction::CompositionTransaction(
       mEditorBase(&aEditorBase),
       mFixed(false) {
   MOZ_ASSERT(mTextNode->TextLength() >= mOffset);
+}
+
+std::ostream& operator<<(std::ostream& aStream,
+                         const CompositionTransaction& aTransaction) {
+  aStream << "{ mTextNode=" << aTransaction.mTextNode.get();
+  if (aTransaction.mTextNode) {
+    aStream << " (" << *aTransaction.mTextNode << ")";
+  }
+  aStream << ", mOffset=" << aTransaction.mOffset
+          << ", mReplaceLength=" << aTransaction.mReplaceLength
+          << ", mRanges={ Length()=" << aTransaction.mRanges->Length() << " }"
+          << ", mStringToInsert=\""
+          << NS_ConvertUTF16toUTF8(aTransaction.mStringToInsert).get() << "\""
+          << ", mEditorBase=" << aTransaction.mEditorBase.get() << " }";
+  return aStream;
 }
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(CompositionTransaction, EditTransactionBase,
@@ -78,6 +90,10 @@ NS_IMPL_ADDREF_INHERITED(CompositionTransaction, EditTransactionBase)
 NS_IMPL_RELEASE_INHERITED(CompositionTransaction, EditTransactionBase)
 
 NS_IMETHODIMP CompositionTransaction::DoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p CompositionTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
@@ -104,6 +120,13 @@ NS_IMETHODIMP CompositionTransaction::DoTransaction() {
     // If composition string is split to multiple text nodes, we should put
     // whole new composition string to the first text node and remove the
     // compostion string in other nodes.
+    // TODO: This should be handled by `TextComposition` because this assumes
+    //       that composition string has never touched by JS.  However, it
+    //       would occur if the web app is a corrabolation software which
+    //       multiple users can modify anyware in an editor.
+    // TODO: And if composition starts from a following text node, the offset
+    //       here is outdated and it will cause inserting composition string
+    //       **before** the proper point from point of view of the users.
     uint32_t replaceableLength = textNode->TextLength() - mOffset;
     ErrorResult error;
     editorBase->DoReplaceText(textNode, mOffset, mReplaceLength,
@@ -129,7 +152,7 @@ NS_IMETHODIMP CompositionTransaction::DoTransaction() {
       //     string length which we know is wrong because there may be
       //     non-empty text nodes which are inserted by JS.  Instead, we
       //     should remove all text in the ranges of IME selections.
-      int32_t remainLength = mReplaceLength - replaceableLength;
+      uint32_t remainLength = mReplaceLength - replaceableLength;
       IgnoredErrorResult ignoredError;
       for (nsIContent* nextSibling = textNode->GetNextSibling();
            nextSibling && nextSibling->IsText() && remainLength;
@@ -154,38 +177,52 @@ NS_IMETHODIMP CompositionTransaction::DoTransaction() {
   NS_WARNING_ASSERTION(
       NS_SUCCEEDED(rv),
       "CompositionTransaction::SetSelectionForRanges() failed");
+
+  if (TextComposition* composition = editorBase->GetComposition()) {
+    composition->OnUpdateCompositionInEditor(mStringToInsert, textNode,
+                                             mOffset);
+  }
+
   return rv;
 }
 
 NS_IMETHODIMP CompositionTransaction::UndoTransaction() {
-  if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode)) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p CompositionTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
 
-  // Get the selection first so we'll fail before making any changes if we
-  // can't get it
-  RefPtr<Selection> selection = mEditorBase->GetSelection();
-  if (NS_WARN_IF(!selection)) {
+  if (MOZ_UNLIKELY(NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode))) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
   OwningNonNull<EditorBase> editorBase = *mEditorBase;
   OwningNonNull<Text> textNode = *mTextNode;
-  ErrorResult error;
+  IgnoredErrorResult error;
   editorBase->DoDeleteText(textNode, mOffset, mStringToInsert.Length(), error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("EditorBase::DoDeleteText() failed");
     return error.StealNSResult();
   }
 
   // set the selection to the insertion point where the string was removed
-  nsresult rv = selection->Collapse(textNode, mOffset);
-  NS_ASSERTION(NS_SUCCEEDED(rv), "Selection::Collapse() failed");
-  return rv;
+  editorBase->CollapseSelectionTo(EditorRawDOMPoint(textNode, mOffset), error);
+  NS_ASSERTION(!error.Failed(), "EditorBase::CollapseSelectionTo() failed");
+  return error.StealNSResult();
+}
+
+NS_IMETHODIMP CompositionTransaction::RedoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p CompositionTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+  return DoTransaction();
 }
 
 NS_IMETHODIMP CompositionTransaction::Merge(nsITransaction* aOtherTransaction,
                                             bool* aDidMerge) {
+  MOZ_LOG(GetLogModule(), LogLevel::Debug,
+          ("%p CompositionTransaction::%s(aOtherTransaction=%p) this=%s", this,
+           __FUNCTION__, aOtherTransaction, ToString(*this).c_str()));
+
   if (NS_WARN_IF(!aOtherTransaction) || NS_WARN_IF(!aDidMerge)) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -193,12 +230,19 @@ NS_IMETHODIMP CompositionTransaction::Merge(nsITransaction* aOtherTransaction,
 
   // Check to make sure we aren't fixed, if we are then nothing gets merged.
   if (mFixed) {
+    MOZ_LOG(GetLogModule(), LogLevel::Debug,
+            ("%p CompositionTransaction::%s returned false due to fixed", this,
+             __FUNCTION__));
     return NS_OK;
   }
 
   RefPtr<EditTransactionBase> otherTransactionBase =
       aOtherTransaction->GetAsEditTransactionBase();
   if (!otherTransactionBase) {
+    MOZ_LOG(GetLogModule(), LogLevel::Debug,
+            ("%p CompositionTransaction::%s returned false due to not edit "
+             "transaction",
+             this, __FUNCTION__));
     return NS_OK;
   }
 
@@ -213,6 +257,8 @@ NS_IMETHODIMP CompositionTransaction::Merge(nsITransaction* aOtherTransaction,
   mStringToInsert = otherCompositionTransaction->mStringToInsert;
   mRanges = otherCompositionTransaction->mRanges;
   *aDidMerge = true;
+  MOZ_LOG(GetLogModule(), LogLevel::Debug,
+          ("%p CompositionTransaction::%s returned true", this, __FUNCTION__));
   return NS_OK;
 }
 
@@ -243,7 +289,7 @@ nsresult CompositionTransaction::SetIMESelection(
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  SelectionBatcher selectionBatcher(selection);
+  SelectionBatcher selectionBatcher(selection, __FUNCTION__);
 
   // First, remove all selections of IME composition.
   static const RawSelectionType kIMESelections[] = {
@@ -294,15 +340,15 @@ nsresult CompositionTransaction::SetIMESelection(
       NS_ASSERTION(!setCaret, "The ranges already has caret position");
       NS_ASSERTION(!textRange.Length(),
                    "EditorBase doesn't support wide caret");
-      int32_t caretOffset = static_cast<int32_t>(
-          aOffsetInNode +
-          std::min(textRange.mStartOffset, aLengthOfCompositionString));
-      MOZ_ASSERT(caretOffset >= 0 &&
-                 static_cast<uint32_t>(caretOffset) <= maxOffset);
-      rv = selection->Collapse(aTextNode, caretOffset);
+      CheckedUint32 caretOffset(aOffsetInNode);
+      caretOffset +=
+          std::min(textRange.mStartOffset, aLengthOfCompositionString);
+      MOZ_ASSERT(caretOffset.isValid());
+      MOZ_ASSERT(caretOffset.value() <= maxOffset);
+      rv = selection->CollapseInLimiter(aTextNode, caretOffset.value());
       NS_WARNING_ASSERTION(
           NS_SUCCEEDED(rv),
-          "Selection::Collapse() failed, but might be ignored");
+          "Selection::CollapseInLimiter() failed, but might be ignored");
       setCaret = setCaret || NS_SUCCEEDED(rv);
       if (!setCaret) {
         continue;
@@ -320,18 +366,17 @@ nsresult CompositionTransaction::SetIMESelection(
     }
 
     RefPtr<nsRange> clauseRange;
-    int32_t startOffset = static_cast<int32_t>(
-        aOffsetInNode +
-        std::min(textRange.mStartOffset, aLengthOfCompositionString));
-    MOZ_ASSERT(startOffset >= 0 &&
-               static_cast<uint32_t>(startOffset) <= maxOffset);
-    int32_t endOffset = static_cast<int32_t>(
-        aOffsetInNode +
-        std::min(textRange.mEndOffset, aLengthOfCompositionString));
-    MOZ_ASSERT(endOffset >= startOffset &&
-               static_cast<uint32_t>(endOffset) <= maxOffset);
-    clauseRange = nsRange::Create(aTextNode, startOffset, aTextNode, endOffset,
-                                  IgnoreErrors());
+    CheckedUint32 startOffset = aOffsetInNode;
+    startOffset += std::min(textRange.mStartOffset, aLengthOfCompositionString);
+    MOZ_ASSERT(startOffset.isValid());
+    MOZ_ASSERT(startOffset.value() <= maxOffset);
+    CheckedUint32 endOffset = aOffsetInNode;
+    endOffset += std::min(textRange.mEndOffset, aLengthOfCompositionString);
+    MOZ_ASSERT(endOffset.isValid());
+    MOZ_ASSERT(endOffset.value() >= startOffset.value());
+    MOZ_ASSERT(endOffset.value() <= maxOffset);
+    clauseRange = nsRange::Create(aTextNode, startOffset.value(), aTextNode,
+                                  endOffset.value(), IgnoreErrors());
     if (!clauseRange) {
       NS_WARNING("nsRange::Create() failed, but might be ignored");
       break;
@@ -368,12 +413,13 @@ nsresult CompositionTransaction::SetIMESelection(
   // If the ranges doesn't include explicit caret position, let's set the
   // caret to the end of composition string.
   if (!setCaret) {
-    int32_t caretOffset =
-        static_cast<int32_t>(aOffsetInNode + aLengthOfCompositionString);
-    MOZ_ASSERT(caretOffset >= 0 &&
-               static_cast<uint32_t>(caretOffset) <= maxOffset);
-    rv = selection->Collapse(aTextNode, caretOffset);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Selection::Collapse() failed");
+    CheckedUint32 caretOffset = aOffsetInNode;
+    caretOffset += aLengthOfCompositionString;
+    MOZ_ASSERT(caretOffset.isValid());
+    MOZ_ASSERT(caretOffset.value() <= maxOffset);
+    rv = selection->CollapseInLimiter(aTextNode, caretOffset.value());
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "Selection::CollapseInLimiter() failed");
 
     // If caret range isn't specified explicitly, we should hide the caret.
     // Hiding the caret benefits a Windows build (see bug 555642 comment #6).

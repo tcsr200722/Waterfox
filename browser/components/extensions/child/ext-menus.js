@@ -6,12 +6,6 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-
 var { withHandlingUserInput } = ExtensionCommon;
 
 var { ExtensionError } = ExtensionUtils;
@@ -123,16 +117,24 @@ class ContextMenusClickPropHandler {
 
 this.menusInternal = class extends ExtensionAPI {
   getAPI(context) {
+    let { extension } = context;
     let onClickedProp = new ContextMenusClickPropHandler(context);
     let pendingMenuEvent;
 
     let api = {
       menus: {
         create(createProperties, callback) {
-          if (createProperties.id === null) {
+          let caller = context.getCaller();
+
+          if (extension.persistentBackground && createProperties.id === null) {
             createProperties.id = ++gNextMenuItemID;
           }
           let { onclick } = createProperties;
+          if (onclick && !context.extension.persistentBackground) {
+            throw new ExtensionError(
+              `Property "onclick" cannot be used in menus.create, replace with an "onClicked" event listener.`
+            );
+          }
           delete createProperties.onclick;
           context.childManager
             .callParentAsyncFunction("menusInternal.create", [createProperties])
@@ -145,7 +147,7 @@ this.menusInternal = class extends ExtensionAPI {
               }
             })
             .catch(error => {
-              context.withLastError(error, null, () => {
+              context.withLastError(error, caller, () => {
                 if (callback) {
                   context.runSafeWithoutClone(callback);
                 }
@@ -156,6 +158,11 @@ this.menusInternal = class extends ExtensionAPI {
 
         update(id, updateProperties) {
           let { onclick } = updateProperties;
+          if (onclick && !context.extension.persistentBackground) {
+            throw new ExtensionError(
+              `Property "onclick" cannot be used in menus.update, replace with an "onClicked" event listener.`
+            );
+          }
           delete updateProperties.onclick;
           return context.childManager
             .callParentAsyncFunction("menusInternal.update", [
@@ -241,12 +248,12 @@ this.menusInternal = class extends ExtensionAPI {
           }
           pendingMenuEvent = {
             webExtContextData,
-            observe(subject, topic, data) {
+            observe(subject) {
               pendingMenuEvent = null;
               Services.obs.removeObserver(this, "on-prepare-contextmenu");
               subject = subject.wrappedJSObject;
-              if (context.principal.subsumes(subject.context.principal)) {
-                subject.webExtContextData = this.webExtContextData;
+              if (context.principal.subsumes(subject.principal)) {
+                subject.setWebExtContextData(this.webExtContextData);
               }
             },
             run() {
@@ -267,6 +274,8 @@ this.menusInternal = class extends ExtensionAPI {
         onClicked: new EventManager({
           context,
           name: "menus.onClicked",
+          // Parent event already resets idle if needed, no need to do it here.
+          resetIdleOnEvent: false,
           register: fire => {
             let listener = (info, tab) => {
               withHandlingUserInput(context.contentWindow, () =>

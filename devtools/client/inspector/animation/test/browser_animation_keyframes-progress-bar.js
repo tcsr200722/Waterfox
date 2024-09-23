@@ -54,14 +54,11 @@ const TEST_DATA = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_multi_timings.html");
   await removeAnimatedElementsExcept(TEST_DATA.map(t => `.${t.targetClass}`));
-  const {
-    animationInspector,
-    inspector,
-    panel,
-  } = await openAnimationInspector();
+  const { animationInspector, inspector, panel } =
+    await openAnimationInspector();
 
   info("Checking progress bar position in multi effect timings");
 
@@ -69,7 +66,11 @@ add_task(async function() {
     const { targetClass, scrubberPositions, expectedPositions } = testdata;
 
     info(`Checking progress bar position for ${targetClass}`);
-    await selectNodeAndWaitForAnimations(`.${targetClass}`, inspector);
+    const onDetailRendered = animationInspector.once(
+      "animation-keyframes-rendered"
+    );
+    await selectNode(`.${targetClass}`, inspector);
+    await onDetailRendered;
 
     info("Checking progress bar existence");
     const areaEl = panel.querySelector(".keyframes-progress-bar-area");
@@ -79,17 +80,18 @@ add_task(async function() {
 
     for (let i = 0; i < scrubberPositions.length; i++) {
       info(`Scrubber position is ${scrubberPositions[i]}`);
-      await clickOnCurrentTimeScrubberController(
+      clickOnCurrentTimeScrubberController(
         animationInspector,
         panel,
         scrubberPositions[i]
       );
+      await waitUntilAnimationsPlayState(animationInspector, "paused");
       assertPosition(barEl, areaEl, expectedPositions[i], animationInspector);
     }
   }
 });
 
-function assertPosition(barEl, areaEl, expectedRate, animationInspector) {
+function assertPosition(barEl, areaEl, expectedRate) {
   const controllerBounds = areaEl.getBoundingClientRect();
   const barBounds = barEl.getBoundingClientRect();
   const barX = barBounds.x + barBounds.width / 2 - controllerBounds.x;

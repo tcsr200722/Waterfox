@@ -11,6 +11,7 @@
 #include "mozilla/Attributes.h"             // for MOZ_STACK_CLASS
 #include "mozilla/RefPtr.h"                 // for already_AddRefed
 #include "mozilla/gfx/Point.h"              // for IntSize
+#include "mozilla/gfx/Rect.h"               // for IntRect
 #include "mozilla/gfx/Types.h"              // for SurfaceFormat
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 
@@ -57,6 +58,11 @@ gfx::SurfaceFormat FormatFromBufferDescriptor(
 
 gfx::IntSize SizeFromBufferDescriptor(const BufferDescriptor& aDescriptor);
 
+gfx::IntRect RectFromBufferDescriptor(const BufferDescriptor& aDescriptor);
+
+Maybe<gfx::IntSize> YSizeFromBufferDescriptor(
+    const BufferDescriptor& aDescriptor);
+
 Maybe<gfx::IntSize> CbCrSizeFromBufferDescriptor(
     const BufferDescriptor& aDescriptor);
 
@@ -77,6 +83,9 @@ Maybe<gfx::ColorRange> ColorRangeFromBufferDescriptor(
 Maybe<StereoMode> StereoModeFromBufferDescriptor(
     const BufferDescriptor& aDescriptor);
 
+Maybe<gfx::ChromaSubsampling> ChromaSubsamplingFromBufferDescriptor(
+    const BufferDescriptor& aDescriptor);
+
 uint8_t* GetYChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
 
 uint8_t* GetCbChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
@@ -93,6 +102,8 @@ void ConvertAndScaleFromYCbCrDescriptor(uint8_t* aBuffer,
                                         const gfx::IntSize& aDestSize,
                                         unsigned char* aDestBuffer,
                                         int32_t aStride);
+
+gfx::IntSize GetCroppedCbCrSize(const YCbCrDescriptor& aDescriptor);
 
 }  // namespace ImageDataSerializer
 

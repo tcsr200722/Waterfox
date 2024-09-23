@@ -8,21 +8,28 @@
 const expect = require("expect");
 const {
   stubPackets,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
 const {
   clonePacket,
   getMessageAt,
   getPrivatePacket,
   getWebConsoleUiMock,
-} = require("devtools/client/webconsole/test/node/helpers");
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
 
-const WebConsoleWrapper = require("devtools/client/webconsole/webconsole-wrapper");
-const { messagesAdd } = require("devtools/client/webconsole/actions/messages");
+const WebConsoleWrapper = require("resource://devtools/client/webconsole/webconsole-wrapper.js");
+const {
+  messagesAdd,
+} = require("resource://devtools/client/webconsole/actions/messages.js");
 
 async function getWebConsoleWrapper() {
   const hud = {
     currentTarget: { client: {}, getFront: () => {} },
     getMappedExpression: () => {},
+    commands: {
+      objectCommand: {
+        releaseObjects: async () => {},
+      },
+    },
   };
   const webConsoleUi = getWebConsoleUiMock(hud);
 
@@ -34,9 +41,9 @@ async function getWebConsoleWrapper() {
 describe("WebConsoleWrapper", () => {
   it("clears queues when dispatchMessagesClear is called", async () => {
     const ncow = await getWebConsoleWrapper();
-    ncow.queuedMessageAdds.push({ fakePacket: "message" });
-    ncow.queuedMessageUpdates.push({ fakePacket: "message-update" });
-    ncow.queuedRequestUpdates.push({ fakePacket: "request-update" });
+    ncow.queuedMessageAdds.push({ fakePacket: "message", data: {} });
+    ncow.queuedMessageUpdates.push({ fakePacket: "message-update", data: {} });
+    ncow.queuedRequestUpdates.push({ fakePacket: "request-update", data: {} });
 
     ncow.dispatchMessagesClear();
 
@@ -68,8 +75,8 @@ describe("WebConsoleWrapper", () => {
       getPrivatePacket("XHR POST request")
     );
 
-    const postId = Symbol();
-    const getId = Symbol();
+    const postId = "pid1";
+    const getId = "gid1";
 
     // Add messages in the store to make sure that update to private requests are
     // removed from the queue.
@@ -94,11 +101,11 @@ describe("WebConsoleWrapper", () => {
       publicNetworkUpdate,
       {
         ...getPrivatePacket("XHR GET request update"),
-        networkInfo: { actor: getId },
+        actor: getId,
       },
       {
         ...getPrivatePacket("XHR POST request update"),
-        networkInfo: { actor: postId },
+        actor: postId,
       }
     );
 

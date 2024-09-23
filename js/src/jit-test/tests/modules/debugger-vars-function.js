@@ -15,13 +15,6 @@ dbg.onDebuggerStatement = function (frame) {
 
 g.eval(
 `
-    let moduleRepo = {};
-    setModuleResolveHook(function(module, specifier) {
-        if (specifier in moduleRepo)
-            return moduleRepo[specifier];
-        throw "Module '" + specifier + "' not found";
-    });
-
     let m = parseModule(
     \`
         var a = 1;
@@ -31,7 +24,7 @@ g.eval(
         let e = 5;
         function f() { debugger; return e; }
     \`);
-    m.declarationInstantiation();
-    m.evaluation();
+    moduleLink(m);
+    moduleEvaluate(m);
 `);
 

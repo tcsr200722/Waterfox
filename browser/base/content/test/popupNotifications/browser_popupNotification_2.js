@@ -24,7 +24,7 @@ var tests = [
       checkPopup(popup, this.notifyObj);
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.notifyObj.dismissalCallbackTriggered,
         "dismissal callback triggered"
@@ -52,7 +52,7 @@ var tests = [
       );
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       let icon = document.getElementById("geo-notification-icon");
       isnot(
         icon.getBoundingClientRect().width,
@@ -75,6 +75,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       this.notifyObj = new BasicNotification(this.id);
@@ -83,15 +84,18 @@ var tests = [
       });
       this.notification = showNotification(this.notifyObj);
     },
-    async onShown(popup) {
+    async onShown() {
       this.complete = false;
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
       // Next load will remove the notification
       this.complete = true;
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.complete,
         "Should only have hidden the notification after 3 page loads"
@@ -108,6 +112,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       this.notifyObj = new BasicNotification(this.id);
@@ -117,16 +122,19 @@ var tests = [
       });
       this.notification = showNotification(this.notifyObj);
     },
-    async onShown(popup) {
+    async onShown() {
       this.complete = false;
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
       // Next load will hide the notification
       this.notification.options.timeout = Date.now() - 1;
       this.complete = true;
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.complete,
         "Should only have hidden the notification after the timeout was passed"
@@ -144,6 +152,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       this.notifyObj = new BasicNotification(this.id);
@@ -155,13 +164,15 @@ var tests = [
     async onShown(popup) {
       this.complete = false;
 
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
       // Notification should persist across location changes
       this.complete = true;
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.complete,
         "Should only have hidden the notification after it was dismissed"
@@ -201,7 +212,7 @@ var tests = [
       checkPopup(popup, this.notifyObj);
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       this.notification.remove();
       this.box.remove();
     },
@@ -261,7 +272,7 @@ var tests = [
       let notification = popup.children[0];
       EventUtils.synthesizeMouseAtCenter(notification.closebutton, {});
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.notifyObj.dismissalCallbackTriggered,
         "dismissal callback triggered"
@@ -291,7 +302,7 @@ var tests = [
       );
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.notifyObj.dismissalCallbackTriggered,
         "dismissal callback triggered"

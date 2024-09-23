@@ -16,8 +16,9 @@ var fs = require("fs");
 var url = require("url");
 var crypto = require("crypto");
 const dnsPacket = require(`${node_http2_root}/../dns-packet`);
-const ip = require(`${node_http2_root}/../node-ip`);
+const ip = require(`${node_http2_root}/../node_ip`);
 const { fork } = require("child_process");
+const { spawn } = require("child_process");
 const path = require("path");
 const zlib = require("zlib");
 
@@ -28,7 +29,7 @@ var HeaderSetDecompressor = http2_compression.HeaderSetDecompressor;
 var originalRead = HeaderSetDecompressor.prototype.read;
 var lastDecompressor;
 var decompressedPairs;
-HeaderSetDecompressor.prototype.read = function() {
+HeaderSetDecompressor.prototype.read = function () {
   if (this != lastDecompressor) {
     lastDecompressor = this;
     decompressedPairs = [];
@@ -44,7 +45,7 @@ var connection_module = node_http2_root + "/lib/protocol/connection";
 var http2_connection = require(connection_module);
 var Connection = http2_connection.Connection;
 var originalClose = Connection.prototype.close;
-Connection.prototype.close = function(error, lastId) {
+Connection.prototype.close = function (error, lastId) {
   if (lastId !== undefined) {
     this._lastIncomingStream = lastId;
   }
@@ -56,7 +57,7 @@ var framer_module = node_http2_root + "/lib/protocol/framer";
 var http2_framer = require(framer_module);
 var Serializer = http2_framer.Serializer;
 var originalTransform = Serializer.prototype._transform;
-var newTransform = function(frame, encoding, done) {
+var newTransform = function (frame) {
   if (frame.type == "DATA") {
     // Insert our empty DATA frame
     const emptyFrame = {};
@@ -123,23 +124,49 @@ var m = {
     if (end < this.buf.length) {
       setTimeout(this.send.bind(this, res, end), 10);
     } else {
+      // Clear these variables so we can run the test again with --verify
+      if (res == this.mp1res) {
+        this.mp1res = null;
+      } else {
+        this.mp2res = null;
+      }
       res.end();
     }
   },
 };
 
-var runlater = function() {};
+var runlater = function () {};
 runlater.prototype = {
   req: null,
   resp: null,
+  fin: true,
 
   onTimeout: function onTimeout() {
     this.resp.writeHead(200);
-    this.resp.end("It's all good 750ms.");
+    if (this.fin) {
+      this.resp.end("It's all good 750ms.");
+    }
   },
 };
 
-var moreData = function() {};
+var runConnectLater = function () {};
+runConnectLater.prototype = {
+  req: null,
+  resp: null,
+  connect: false,
+
+  onTimeout: function onTimeout() {
+    if (this.connect) {
+      this.resp.writeHead(200);
+      this.connect = true;
+      setTimeout(executeRunLaterCatchError, 50, this);
+    } else {
+      this.resp.end("HTTP/1.1 200\n\r\n\r");
+    }
+  },
+};
+
+var moreData = function () {};
 moreData.prototype = {
   req: null,
   resp: null,
@@ -162,63 +189,8 @@ function executeRunLater(arg) {
   arg.onTimeout();
 }
 
-var Compressor = http2_compression.Compressor;
-var HeaderSetCompressor = http2_compression.HeaderSetCompressor;
-var originalCompressHeaders = Compressor.prototype.compress;
-
-function insertSoftIllegalHpack(headers) {
-  var originalCompressed = originalCompressHeaders.apply(this, headers);
-  var illegalLiteral = Buffer.from([
-    0x00, // Literal, no index
-    0x08, // Name: not huffman encoded, 8 bytes long
-    0x3a,
-    0x69,
-    0x6c,
-    0x6c,
-    0x65,
-    0x67,
-    0x61,
-    0x6c, // :illegal
-    0x10, // Value: not huffman encoded, 16 bytes long
-    // REALLY NOT LEGAL
-    0x52,
-    0x45,
-    0x41,
-    0x4c,
-    0x4c,
-    0x59,
-    0x20,
-    0x4e,
-    0x4f,
-    0x54,
-    0x20,
-    0x4c,
-    0x45,
-    0x47,
-    0x41,
-    0x4c,
-  ]);
-  var newBufferLength = originalCompressed.length + illegalLiteral.length;
-  var concatenated = Buffer.alloc(newBufferLength);
-  originalCompressed.copy(concatenated, 0);
-  illegalLiteral.copy(concatenated, originalCompressed.length);
-  return concatenated;
-}
-
-function insertHardIllegalHpack(headers) {
-  var originalCompressed = originalCompressHeaders.apply(this, headers);
-  // Now we have to add an invalid header
-  var illegalIndexed = HeaderSetCompressor.integer(5000, 7);
-  // The above returns an array of buffers, but there's only one buffer, so
-  // get rid of the array.
-  illegalIndexed = illegalIndexed[0];
-  // Set the first bit to 1 to signal this is an indexed representation
-  illegalIndexed[0] |= 0x80;
-  var newBufferLength = originalCompressed.length + illegalIndexed.length;
-  var concatenated = Buffer.alloc(newBufferLength);
-  originalCompressed.copy(concatenated, 0);
-  illegalIndexed.copy(concatenated, originalCompressed.length);
-  return concatenated;
+function executeRunLaterCatchError(arg) {
+  arg.onTimeout();
 }
 
 var h11required_conn = null;
@@ -227,20 +199,329 @@ var didRst = false;
 var rstConnection = null;
 var illegalheader_conn = null;
 
-var cname_confirm = 0;
+var gDoHPortsLog = [];
+var gDoHNewConnLog = {};
+var gDoHRequestCount = 0;
 
 // eslint-disable-next-line complexity
 function handleRequest(req, res) {
-  // We do this first to ensure nothing goes wonky in our tests that don't want
-  // the headers to have something illegal in them
-  Compressor.prototype.compress = originalCompressHeaders;
-
-  var u = url.parse(req.url, true);
+  var u = "";
+  if (req.url != undefined) {
+    u = url.parse(req.url, true);
+  }
   var content = getHttpContent(u.pathname);
   var push, push1, push1a, push2, push3;
 
   // PushService tests.
   var pushPushServer1, pushPushServer2, pushPushServer3, pushPushServer4;
+
+  function createCNameContent(payload) {
+    let packet = dnsPacket.decode(payload);
+    if (
+      packet.questions[0].name == "cname.example.com" &&
+      packet.questions[0].type == "A"
+    ) {
+      return dnsPacket.encode({
+        id: 0,
+        type: "response",
+        flags: dnsPacket.RECURSION_DESIRED,
+        questions: [{ name: packet.questions[0].name, type: "A", class: "IN" }],
+        answers: [
+          {
+            name: packet.questions[0].name,
+            ttl: 55,
+            type: "CNAME",
+            flush: false,
+            data: "pointing-elsewhere.example.com",
+          },
+        ],
+      });
+    }
+    if (
+      packet.questions[0].name == "pointing-elsewhere.example.com" &&
+      packet.questions[0].type == "A"
+    ) {
+      return dnsPacket.encode({
+        id: 0,
+        type: "response",
+        flags: dnsPacket.RECURSION_DESIRED,
+        questions: [{ name: packet.questions[0].name, type: "A", class: "IN" }],
+        answers: [
+          {
+            name: packet.questions[0].name,
+            ttl: 55,
+            type: "A",
+            flush: false,
+            data: "99.88.77.66",
+          },
+        ],
+      });
+    }
+
+    return dnsPacket.encode({
+      id: 0,
+      type: "response",
+      flags: dnsPacket.RECURSION_DESIRED | dnsPacket.rcodes.toRcode("NXDOMAIN"),
+      questions: [
+        {
+          name: packet.questions[0].name,
+          type: packet.questions[0].type,
+          class: "IN",
+        },
+      ],
+      answers: [],
+    });
+  }
+
+  function createCNameARecord() {
+    // test23 asks for cname-a.example.com
+    // this responds with a CNAME to here.example.com *and* an A record
+    // for here.example.com
+    let rContent;
+
+    rContent = Buffer.from(
+      "0000" +
+        "0100" +
+        "0001" + // QDCOUNT
+        "0002" + // ANCOUNT
+        "00000000" + // NSCOUNT + ARCOUNT
+        "07636E616D652d61" + // cname-a
+        "076578616D706C6503636F6D00" + // .example.com
+        "00010001" + // question type (A) + question class (IN)
+        // answer record 1
+        "C00C" + // name pointer to cname-a.example.com
+        "0005" + // type (CNAME)
+        "0001" + // class
+        "00000037" + // TTL
+        "0012" + // RDLENGTH
+        "0468657265" + // here
+        "076578616D706C6503636F6D00" + // .example.com
+        // answer record 2, the A entry for the CNAME above
+        "0468657265" + // here
+        "076578616D706C6503636F6D00" + // .example.com
+        "0001" + // type (A)
+        "0001" + // class
+        "00000037" + // TTL
+        "0004" + // RDLENGTH
+        "09080706", // IPv4 address
+      "hex"
+    );
+
+    return rContent;
+  }
+
+  function responseType(packet, responseIP) {
+    if (
+      !!packet.questions.length &&
+      packet.questions[0].name == "confirm.example.com" &&
+      packet.questions[0].type == "NS"
+    ) {
+      return "NS";
+    }
+
+    return ip.isV4Format(responseIP) ? "A" : "AAAA";
+  }
+
+  function handleAuth() {
+    // There's a Set-Cookie: header in the response for "/dns" , which this
+    // request subsequently would include if the http channel wasn't
+    // anonymous. Thus, if there's a cookie in this request, we know Firefox
+    // mishaved. If there's not, we're fine.
+    if (req.headers.cookie) {
+      res.writeHead(403);
+      res.end("cookie for me, not for you");
+      return false;
+    }
+    if (req.headers.authorization != "user:password") {
+      res.writeHead(401);
+      res.end("bad boy!");
+      return false;
+    }
+
+    return true;
+  }
+
+  function createDNSAnswer(response, packet, responseIP, requestPayload) {
+    // This shuts down the connection so we can test if the client reconnects
+    if (packet.questions.length && packet.questions[0].name == "closeme.com") {
+      response.stream.connection.close("INTERNAL_ERROR", response.stream.id);
+      return null;
+    }
+
+    let answers = [];
+    if (packet.questions.length && packet.questions[0].name.endsWith(".pd")) {
+      // Bug 1543811: test edns padding extension. Return whether padding was
+      // included via the first half of the ip address (1.1 vs 2.2) and the
+      // size of the request in the second half of the ip address allowing to
+      // verify that the correct amount of padding was added.
+      if (
+        !!packet.additionals.length &&
+        packet.additionals[0].type == "OPT" &&
+        packet.additionals[0].options.some(o => o.type === "PADDING")
+      ) {
+        // add padding to the response, because the client must be able ignore it
+        answers.push({
+          name: ".",
+          type: "PADDING",
+          data: Buffer.from(
+            // PADDING_PADDING_PADDING
+            "50414444494e475f50414444494e475f50414444494e47",
+            "hex"
+          ),
+        });
+        responseIP =
+          "1.1." +
+          ((requestPayload.length >> 8) & 0xff) +
+          "." +
+          (requestPayload.length & 0xff);
+      } else {
+        responseIP =
+          "2.2." +
+          ((requestPayload.length >> 8) & 0xff) +
+          "." +
+          (requestPayload.length & 0xff);
+      }
+    }
+
+    if (u.query.corruptedAnswer) {
+      // DNS response header is 12 bytes, we check for this minimum length
+      // at the start of decoding so this is the simplest way to force
+      // a decode error.
+      return "\xFF\xFF\xFF\xFF";
+    }
+
+    // Because we send two TRR requests (A and AAAA), skip the first two
+    // requests when testing retry.
+    if (u.query.retryOnDecodeFailure && gDoHRequestCount < 2) {
+      gDoHRequestCount++;
+      return "\xFF\xFF\xFF\xFF";
+    }
+
+    function responseData() {
+      if (
+        !!packet.questions.length &&
+        packet.questions[0].name == "confirm.example.com" &&
+        packet.questions[0].type == "NS"
+      ) {
+        return "ns.example.com";
+      }
+
+      return responseIP;
+    }
+
+    if (
+      responseIP != "none" &&
+      responseType(packet, responseIP) == packet.questions[0].type
+    ) {
+      answers.push({
+        name: u.query.hostname ? u.query.hostname : packet.questions[0].name,
+        ttl: 55,
+        type: responseType(packet, responseIP),
+        flush: false,
+        data: responseData(),
+      });
+    }
+
+    // for use with test_dns_by_type_resolve.js
+    if (packet.questions[0].type == "TXT") {
+      answers.push({
+        name: packet.questions[0].name,
+        type: packet.questions[0].type,
+        ttl: 55,
+        class: "IN",
+        flush: false,
+        data: Buffer.from(
+          "62586B67646D39705932556761584D6762586B676347467A63336476636D513D",
+          "hex"
+        ),
+      });
+    }
+
+    if (u.query.cnameloop) {
+      answers.push({
+        name: "cname.example.com",
+        type: "CNAME",
+        ttl: 55,
+        class: "IN",
+        flush: false,
+        data: "pointing-elsewhere.example.com",
+      });
+    }
+
+    if (req.headers["accept-language"] || req.headers["user-agent"]) {
+      // If we get this header, don't send back any response. This should
+      // cause the tests to fail. This is easier then actually sending back
+      // the header value into test_trr.js
+      answers = [];
+    }
+
+    let buf = dnsPacket.encode({
+      type: "response",
+      id: packet.id,
+      flags: dnsPacket.RECURSION_DESIRED,
+      questions: packet.questions,
+      answers,
+    });
+
+    return buf;
+  }
+
+  function getDelayFromPacket(packet, type) {
+    let delay = 0;
+    if (packet.questions[0].type == "A") {
+      delay = parseInt(u.query.delayIPv4);
+    } else if (packet.questions[0].type == "AAAA") {
+      delay = parseInt(u.query.delayIPv6);
+    }
+
+    if (u.query.slowConfirm && type == "NS") {
+      delay += 1000;
+    }
+
+    return delay;
+  }
+
+  function writeDNSResponse(response, buf, delay, contentType) {
+    function writeResponse(resp, buffer) {
+      resp.setHeader("Set-Cookie", "trackyou=yes; path=/; max-age=100000;");
+      resp.setHeader("Content-Type", contentType);
+      if (req.headers["accept-encoding"].includes("gzip")) {
+        zlib.gzip(buffer, function (err, result) {
+          resp.setHeader("Content-Encoding", "gzip");
+          resp.setHeader("Content-Length", result.length);
+          try {
+            resp.writeHead(200);
+            resp.end(result);
+          } catch (e) {
+            // connection was closed by the time we started writing.
+          }
+        });
+      } else {
+        const output = Buffer.from(buffer, "utf-8");
+        resp.setHeader("Content-Length", output.length);
+        try {
+          resp.writeHead(200);
+          resp.write(output);
+          resp.end("");
+        } catch (e) {
+          // connection was closed by the time we started writing.
+        }
+      }
+    }
+
+    if (delay) {
+      setTimeout(
+        arg => {
+          writeResponse(arg[0], arg[1]);
+        },
+        delay,
+        [response, buf]
+      );
+      return;
+    }
+
+    writeResponse(response, buf);
+  }
 
   if (req.httpVersionMajor === 2) {
     res.setHeader("X-Connection-Http2", "yes");
@@ -257,10 +538,46 @@ function handleRequest(req, res) {
     process.exit();
   }
 
-  if (u.pathname === "/750ms") {
+  if (req.method == "CONNECT") {
+    if (req.headers.host == "illegalhpacksoft.example.com:80") {
+      illegalheader_conn = req.stream.connection;
+      res.setHeader("Content-Type", "text/html");
+      res.setHeader("x-softillegalhpack", "true");
+      res.writeHead(200);
+      res.end(content);
+      return;
+    } else if (req.headers.host == "illegalhpackhard.example.com:80") {
+      res.setHeader("Content-Type", "text/html");
+      res.setHeader("x-hardillegalhpack", "true");
+      res.writeHead(200);
+      res.end(content);
+      return;
+    } else if (req.headers.host == "750.example.com:80") {
+      // This response will mock a response through a proxy to a HTTP server.
+      // After 750ms , a 200 response for the proxy will be sent then
+      // after additional 50ms a 200 response for the HTTP GET request.
+      let rl = new runConnectLater();
+      rl.req = req;
+      rl.resp = res;
+      setTimeout(executeRunLaterCatchError, 750, rl);
+      return;
+    } else if (req.headers.host == "h11required.com:80") {
+      if (req.httpVersionMajor === 2) {
+        res.stream.reset("HTTP_1_1_REQUIRED");
+      }
+      return;
+    }
+  } else if (u.pathname === "/750ms") {
     let rl = new runlater();
     rl.req = req;
     rl.resp = res;
+    setTimeout(executeRunLater, 750, rl);
+    return;
+  } else if (u.pathname === "/750msNoData") {
+    let rl = new runlater();
+    rl.req = req;
+    rl.resp = res;
+    rl.fin = false;
     setTimeout(executeRunLater, 750, rl);
     return;
   } else if (u.pathname === "/multiplex1" && req.httpVersionMajor === 2) {
@@ -411,11 +728,13 @@ function handleRequest(req, res) {
     }
 
     var post_hash = crypto.createHash("md5");
+    var received_data = false;
     req.on("data", function receivePostData(chunk) {
+      received_data = true;
       post_hash.update(chunk.toString());
     });
     req.on("end", function finishPost() {
-      let md5 = post_hash.digest("hex");
+      let md5 = received_data ? post_hash.digest("hex") : "0";
       res.setHeader("X-Calculated-MD5", md5);
       res.writeHead(200);
       res.end(content);
@@ -475,11 +794,17 @@ function handleRequest(req, res) {
     }
 
     if (rstConnection === null || rstConnection !== req.stream.connection) {
-      res.setHeader("Connection", "close");
+      if (req.httpVersionMajor != 2) {
+        res.setHeader("Connection", "close");
+      }
       res.writeHead(400);
       res.end("WRONG CONNECTION, HOMIE!");
       return;
     }
+
+    // Clear these variables so we can run the test again with --verify
+    didRst = false;
+    rstConnection = null;
 
     if (req.httpVersionMajor != 2) {
       res.setHeader("Connection", "close");
@@ -496,10 +821,7 @@ function handleRequest(req, res) {
     };
     var pushHdrTxt =
       "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    var pullHdrTxt = pushHdrTxt
-      .split("")
-      .reverse()
-      .join("");
+    var pullHdrTxt = pushHdrTxt.split("").reverse().join("");
     for (let i = 0; i < 265; i++) {
       pushRequestHeaders["X-Push-Test-Header-" + i] = pushHdrTxt;
       res.setHeader("X-Pull-Test-Header-" + i, pullHdrTxt);
@@ -513,6 +835,16 @@ function handleRequest(req, res) {
     });
     push.writeHead(200, pushResponseHeaders);
     push.end("ok");
+  } else if (u.pathname === "/hugecontinuedheaders") {
+    for (let i = 0; i < u.query.size; i++) {
+      res.setHeader(
+        "X-Test-Header-" + i,
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(1024)
+      );
+    }
+    res.writeHead(200);
+    res.end(content);
+    return;
   } else if (u.pathname === "/altsvc1") {
     if (
       req.httpVersionMajor != 2 ||
@@ -551,35 +883,59 @@ function handleRequest(req, res) {
   // for use with test_http3.js
   else if (u.pathname === "/http3-test") {
     res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Alt-Svc", "h3-27=" + req.headers["x-altsvc"]);
+    res.setHeader("Alt-Svc", "h3-29=" + req.headers["x-altsvc"]);
+  }
+  // for use with test_http3.js
+  else if (u.pathname === "/http3-test2") {
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader(
+      "Alt-Svc",
+      "h2=foo2.example.com:8000,h3-29=" + req.headers["x-altsvc"]
+    );
+  } else if (u.pathname === "/http3-test3") {
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader(
+      "Alt-Svc",
+      "h3-29=" + req.headers["x-altsvc"] + ",h3=" + req.headers["x-altsvc"]
+    );
   }
   // for use with test_trr.js
   else if (u.pathname === "/dns-cname") {
     // asking for cname.example.com
-    let rContent;
-    if (0 == cname_confirm) {
-      // ... this sends a CNAME back to pointing-elsewhere.example.com
-      rContent = Buffer.from(
-        "00000100000100010000000005636E616D65076578616D706C6503636F6D0000050001C00C0005000100000037002012706F696E74696E672D656C73657768657265076578616D706C6503636F6D00",
-        "hex"
-      );
-      cname_confirm++;
-    } else {
-      // ... this sends an A 99.88.77.66 entry back for pointing-elsewhere.example.com
-      rContent = Buffer.from(
-        "00000100000100010000000012706F696E74696E672D656C73657768657265076578616D706C6503636F6D0000010001C00C0001000100000037000463584D42",
-        "hex"
-      );
+
+    function emitResponse(response, payload) {
+      let pcontent = createCNameContent(payload);
+      response.setHeader("Content-Type", "application/dns-message");
+      response.setHeader("Content-Length", pcontent.length);
+      response.writeHead(200);
+      response.write(pcontent);
+      response.end("");
     }
-    res.setHeader("Content-Type", "application/dns-message");
+
+    let payload = Buffer.from("");
+    req.on("data", function receiveData(chunk) {
+      payload = Buffer.concat([payload, chunk]);
+    });
+    req.on("end", function finishedData() {
+      emitResponse(res, payload);
+    });
+    return;
+  } else if (u.pathname == "/get-doh-req-port-log") {
+    let rContent = JSON.stringify(gDoHPortsLog);
+    res.setHeader("Content-Type", "text/plain");
     res.setHeader("Content-Length", rContent.length);
+    res.writeHead(400);
+    res.end(rContent);
+    return;
+  } else if (u.pathname == "/reset-doh-request-count") {
+    gDoHRequestCount = 0;
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Content-Length", "ok".length);
     res.writeHead(200);
-    res.write(rContent);
+    res.write("ok");
     res.end("");
     return;
   } else if (u.pathname == "/doh") {
-    cname_confirm = 0; // back to first reply for dns-cname
-
     let responseIP = u.query.responseIP;
     if (!responseIP) {
       responseIP = "5.5.5.5";
@@ -610,20 +966,13 @@ function handleRequest(req, res) {
     }
 
     if (u.query.auth) {
-      // There's a Set-Cookie: header in the response for "/dns" , which this
-      // request subsequently would include if the http channel wasn't
-      // anonymous. Thus, if there's a cookie in this request, we know Firefox
-      // mishaved. If there's not, we're fine.
-      if (req.headers.cookie) {
-        res.writeHead(403);
-        res.end("cookie for me, not for you");
+      if (!handleAuth()) {
         return;
       }
-      if (req.headers.authorization != "user:password") {
-        res.writeHead(401);
-        res.end("bad boy!");
-        return;
-      }
+    }
+
+    if (u.query.noResponse) {
+      return;
     }
 
     if (u.query.push) {
@@ -647,8 +996,7 @@ function handleRequest(req, res) {
       push = res.push({
         hostname: "foo.example.com:" + serverPort,
         port: serverPort,
-        path:
-          "/dns-pushed-response?dns=AAAAAAABAAAAAAAABHB1c2gHZXhhbXBsZQNvcmcAABwAAQ",
+        path: "/dns-pushed-response?dns=AAAAAAABAAAAAAAABHB1c2gHZXhhbXBsZQNvcmcAABwAAQ",
         method: "GET",
         headers: {
           accept: "application/dns-message",
@@ -665,144 +1013,23 @@ function handleRequest(req, res) {
 
     let payload = Buffer.from("");
 
-    function emitResponse(response, requestPayload) {
-      let packet = dnsPacket.decode(requestPayload);
-
-      // This shuts down the connection so we can test if the client reconnects
-      if (
-        packet.questions.length > 0 &&
-        packet.questions[0].name == "closeme.com"
-      ) {
-        response.stream.connection.close("INTERNAL_ERROR", response.stream.id);
+    function emitResponse(response, requestPayload, decodedPacket, delay) {
+      let packet = decodedPacket || dnsPacket.decode(requestPayload);
+      let answer = createDNSAnswer(
+        response,
+        packet,
+        responseIP,
+        requestPayload
+      );
+      if (!answer) {
         return;
       }
-
-      function responseType() {
-        if (
-          packet.questions.length > 0 &&
-          packet.questions[0].name == "confirm.example.com" &&
-          packet.questions[0].type == "NS"
-        ) {
-          return "NS";
-        }
-
-        return ip.isV4Format(responseIP) ? "A" : "AAAA";
-      }
-
-      function responseData() {
-        if (
-          packet.questions.length > 0 &&
-          packet.questions[0].name == "confirm.example.com" &&
-          packet.questions[0].type == "NS"
-        ) {
-          return "ns.example.com";
-        }
-
-        return responseIP;
-      }
-
-      let answers = [];
-      if (responseIP != "none" && responseType() == packet.questions[0].type) {
-        answers.push({
-          name: u.query.hostname ? u.query.hostname : packet.questions[0].name,
-          ttl: 55,
-          type: responseType(),
-          flush: false,
-          data: responseData(),
-        });
-      }
-
-      // for use with test_esni_dns_fetch.js
-      if (packet.questions[0].type == "TXT") {
-        answers.push({
-          name: packet.questions[0].name,
-          type: packet.questions[0].type,
-          ttl: 55,
-          class: "IN",
-          flush: false,
-          data: Buffer.from(
-            "62586B67646D39705932556761584D6762586B676347467A63336476636D513D",
-            "hex"
-          ),
-        });
-      } else if (packet.questions[0].type == "HTTPSSVC") {
-        answers.push({
-          name: packet.questions[0].name,
-          type: packet.questions[0].type,
-          ttl: 55,
-          class: "IN",
-          flush: false,
-          data: {
-            priority: 1,
-            name: "some.domain.stuff.",
-            values: [{ key: "esniconfig", value: "testytestystringstring" }],
-          },
-        });
-      }
-
-      if (u.query.cnameloop) {
-        answers.push({
-          name: "cname.example.com",
-          type: "CNAME",
-          ttl: 55,
-          class: "IN",
-          flush: false,
-          data: "pointing-elsewhere.example.com",
-        });
-      }
-
-      if (req.headers["accept-language"] || req.headers["user-agent"]) {
-        // If we get this header, don't send back any response. This should
-        // cause the tests to fail. This is easier then actually sending back
-        // the header value into test_trr.js
-        answers = [];
-      }
-
-      let buf = dnsPacket.encode({
-        type: "response",
-        id: packet.id,
-        flags: dnsPacket.RECURSION_DESIRED,
-        questions: packet.questions,
-        answers,
-      });
-
-      function writeResponse(resp, buffer) {
-        resp.setHeader("Set-Cookie", "trackyou=yes; path=/; max-age=100000;");
-        resp.setHeader("Content-Type", "application/dns-message");
-        if (req.headers["accept-encoding"].includes("gzip")) {
-          zlib.gzip(buffer, function(err, result) {
-            resp.setHeader("Content-Encoding", "gzip");
-            resp.setHeader("Content-Length", result.length);
-            resp.writeHead(200);
-            res.end(result);
-          });
-        } else {
-          resp.setHeader("Content-Length", buffer.length);
-          resp.writeHead(200);
-          resp.write(buffer);
-          resp.end("");
-        }
-      }
-
-      let delay = undefined;
-      if (packet.questions[0].type == "A") {
-        delay = u.query.delayIPv4;
-      } else if (packet.questions[0].type == "AAAA") {
-        delay = u.query.delayIPv6;
-      }
-
-      if (delay) {
-        setTimeout(
-          arg => {
-            writeResponse(arg[0], arg[1]);
-          },
-          parseInt(delay),
-          [response, buf]
-        );
-        return;
-      }
-
-      writeResponse(response, buf);
+      writeDNSResponse(
+        response,
+        answer,
+        delay || getDelayFromPacket(packet, responseType(packet, responseIP)),
+        "application/dns-message"
+      );
     }
 
     if (u.query.dns) {
@@ -817,7 +1044,30 @@ function handleRequest(req, res) {
     req.on("end", function finishedData() {
       // parload is empty when we send redirect response.
       if (payload.length) {
-        emitResponse(res, payload);
+        let packet = dnsPacket.decode(payload);
+        let delay;
+        if (u.query.conncycle) {
+          let name = packet.questions[0].name;
+          if (name.startsWith("newconn")) {
+            // If we haven't seen a req for this newconn name before,
+            // or if we've seen one for the same name on the same port,
+            // synthesize a timeout.
+            if (
+              !gDoHNewConnLog[name] ||
+              gDoHNewConnLog[name] == req.remotePort
+            ) {
+              delay = 1000;
+            }
+            if (!gDoHNewConnLog[name]) {
+              gDoHNewConnLog[name] = req.remotePort;
+            }
+          }
+          gDoHPortsLog.push([packet.questions[0].name, req.remotePort]);
+        } else {
+          gDoHPortsLog = [];
+          gDoHNewConnLog = {};
+        }
+        emitResponse(res, payload, packet, delay);
       }
     });
     return;
@@ -839,13 +1089,14 @@ function handleRequest(req, res) {
           priority: 1,
           name: "h3pool",
           values: [
-            { key: "alpn", value: "h2,h3" },
+            { key: "alpn", value: ["h2", "h3"] },
             { key: "no-default-alpn" },
             { key: "port", value: 8888 },
             { key: "ipv4hint", value: "1.2.3.4" },
-            { key: "esniconfig", value: "123..." },
+            { key: "echconfig", value: "123..." },
             { key: "ipv6hint", value: "::1" },
             { key: 30, value: "somelargestring" },
+            { key: "odoh", value: "456..." },
           ],
         },
       });
@@ -861,8 +1112,9 @@ function handleRequest(req, res) {
           values: [
             { key: "alpn", value: "h2" },
             { key: "ipv4hint", value: ["1.2.3.4", "5.6.7.8"] },
-            { key: "esniconfig", value: "abc..." },
+            { key: "echconfig", value: "abc..." },
             { key: "ipv6hint", value: ["::1", "fe80::794f:6d2c:3d5e:7836"] },
+            { key: "odoh", value: "def..." },
           ],
         },
       });
@@ -893,51 +1145,124 @@ function handleRequest(req, res) {
       res.end("");
     });
     return;
-  } else if (u.pathname === "/dns-cname-a") {
-    // test23 asks for cname-a.example.com
-    // this responds with a CNAME to here.example.com *and* an A record
-    // for here.example.com
-    let rContent;
+  } else if (u.pathname === "/httpssvc_as_altsvc") {
+    let payload = Buffer.from("");
+    req.on("data", function receiveData(chunk) {
+      payload = Buffer.concat([payload, chunk]);
+    });
+    req.on("end", function finishedData() {
+      let packet = dnsPacket.decode(payload);
+      let answers = [];
+      if (packet.questions[0].type == "HTTPS") {
+        let priority = 1;
+        // Set an invalid priority to test the case when receiving a corrupted
+        // response.
+        if (packet.questions[0].name === "foo.notexisted.com") {
+          priority = 0;
+        }
+        answers.push({
+          name: packet.questions[0].name,
+          type: packet.questions[0].type,
+          ttl: 55,
+          class: "IN",
+          flush: false,
+          data: {
+            priority,
+            name: "foo.example.com",
+            values: [
+              { key: "alpn", value: "h2" },
+              { key: "port", value: serverPort },
+              { key: 30, value: "somelargestring" },
+            ],
+          },
+        });
+      } else {
+        answers.push({
+          name: packet.questions[0].name,
+          type: "A",
+          ttl: 55,
+          flush: false,
+          data: "127.0.0.1",
+        });
+      }
 
-    rContent = Buffer.from(
-      "0000" +
-      "0100" +
-      "0001" + // QDCOUNT
-      "0002" + // ANCOUNT
-      "00000000" + // NSCOUNT + ARCOUNT
-      "07636E616D652d61" + // cname-a
-      "076578616D706C6503636F6D00" + // .example.com
-      "00010001" + // question type (A) + question class (IN)
-      // answer record 1
-      "C00C" + // name pointer to cname-a.example.com
-      "0005" + // type (CNAME)
-      "0001" + // class
-      "00000037" + // TTL
-      "0012" + // RDLENGTH
-      "0468657265" + // here
-      "076578616D706C6503636F6D00" + // .example.com
-      // answer record 2, the A entry for the CNAME above
-      "0468657265" + // here
-      "076578616D706C6503636F6D00" + // .example.com
-      "0001" + // type (A)
-      "0001" + // class
-      "00000037" + // TTL
-      "0004" + // RDLENGTH
-        "09080706", // IPv4 address
-      "hex"
-    );
+      let buf = dnsPacket.encode({
+        type: "response",
+        id: packet.id,
+        flags: dnsPacket.RECURSION_DESIRED,
+        questions: packet.questions,
+        answers,
+      });
+
+      res.setHeader("Content-Type", "application/dns-message");
+      res.setHeader("Content-Length", buf.length);
+      res.writeHead(200);
+      res.write(buf);
+      res.end("");
+    });
+    return;
+  } else if (u.pathname === "/httpssvc_use_iphint") {
+    let payload = Buffer.from("");
+    req.on("data", function receiveData(chunk) {
+      payload = Buffer.concat([payload, chunk]);
+    });
+    req.on("end", function finishedData() {
+      let packet = dnsPacket.decode(payload);
+      let answers = [];
+      answers.push({
+        name: packet.questions[0].name,
+        type: "HTTPS",
+        ttl: 55,
+        class: "IN",
+        flush: false,
+        data: {
+          priority: 1,
+          name: ".",
+          values: [
+            { key: "alpn", value: "h2" },
+            { key: "port", value: serverPort },
+            { key: "ipv4hint", value: "127.0.0.1" },
+          ],
+        },
+      });
+
+      let buf = dnsPacket.encode({
+        type: "response",
+        id: packet.id,
+        flags: dnsPacket.RECURSION_DESIRED,
+        questions: packet.questions,
+        answers,
+      });
+
+      res.setHeader("Content-Type", "application/dns-message");
+      res.setHeader("Content-Length", buf.length);
+      res.writeHead(200);
+      res.write(buf);
+      res.end("");
+    });
+    return;
+  } else if (u.pathname === "/dns-cname-a") {
+    let rContent = createCNameARecord();
     res.setHeader("Content-Type", "application/dns-message");
     res.setHeader("Content-Length", rContent.length);
     res.writeHead(200);
     res.write(rContent);
     res.end("");
     return;
-  } else if (u.pathname === "/dns-750ms") {
-    // it's just meant to be this slow - the test doesn't care about the actual response
+  } else if (u.pathname === "/websocket") {
+    res.setHeader("Upgrade", "websocket");
+    res.setHeader("Connection", "Upgrade");
+    var wshash = crypto.createHash("sha1");
+    wshash.update(req.headers["sec-websocket-key"]);
+    wshash.update("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let key = wshash.digest("base64");
+    res.setHeader("Sec-WebSocket-Accept", key);
+    res.writeHead(101);
+    res.end("something....");
     return;
   }
-  // for use with test_esni_dns_fetch.js
-  else if (u.pathname === "/esni-dns-push") {
+  // for use with test_dns_by_type_resolve.js
+  else if (u.pathname === "/txt-dns-push") {
     // _esni_push.example.com has A entry 127.0.0.1
     let rContent = Buffer.from(
       "0000010000010001000000000A5F65736E695F70757368076578616D706C6503636F6D0000010001C00C000100010000003700047F000001",
@@ -953,8 +1278,7 @@ function handleRequest(req, res) {
     push = res.push({
       hostname: "foo.example.com:" + serverPort,
       port: serverPort,
-      path:
-        "/dns-pushed-response?dns=AAABAAABAAAAAAABCl9lc25pX3B1c2gHZXhhbXBsZQNjb20AABAAAQAAKRAAAAAAAAAIAAgABAABAAA",
+      path: "/dns-pushed-response?dns=AAABAAABAAAAAAABCl9lc25pX3B1c2gHZXhhbXBsZQNjb20AABAAAQAAKRAAAAAAAAAIAAgABAABAAA",
       method: "GET",
       headers: {
         accept: "application/dns-message",
@@ -1177,13 +1501,19 @@ function handleRequest(req, res) {
     // This will cause the compressor to compress a header that is not legal,
     // but only affects the stream, not the session.
     illegalheader_conn = req.stream.connection;
-    Compressor.prototype.compress = insertSoftIllegalHpack;
-    // Fall through to the default response behavior
+    res.setHeader("Content-Type", "text/html");
+    res.setHeader("x-softillegalhpack", "true");
+    res.writeHead(200);
+    res.end(content);
+    return;
   } else if (u.pathname === "/illegalhpackhard") {
     // This will cause the compressor to insert an HPACK instruction that will
     // cause a session failure.
-    Compressor.prototype.compress = insertHardIllegalHpack;
-    // Fall through to default response behavior
+    res.setHeader("Content-Type", "text/html");
+    res.setHeader("x-hardillegalhpack", "true");
+    res.writeHead(200);
+    res.end(content);
+    return;
   } else if (u.pathname === "/illegalhpack_validate") {
     if (req.stream.connection === illegalheader_conn) {
       res.setHeader("X-Did-Goaway", "no");
@@ -1216,6 +1546,25 @@ function handleRequest(req, res) {
       res.setHeader("x-conditional", "true");
     }
     // default response from here
+  } else if (u.pathname === "/immutable-test-expired-with-Expires-header") {
+    res.setHeader("Cache-Control", "immutable");
+    res.setHeader("Expires", "Mon, 01 Jan 1990 00:00:00 GMT");
+    res.setHeader("Etag", "3");
+
+    if (req.headers["if-none-match"]) {
+      res.setHeader("x-conditional", "true");
+    }
+  } else if (
+    u.pathname === "/immutable-test-expired-with-last-modified-header"
+  ) {
+    res.setHeader("Cache-Control", "public, max-age=3600, immutable");
+    res.setHeader("Date", "Mon, 01 Jan 1990 00:00:00 GMT");
+    res.setHeader("Last-modified", "Mon, 01 Jan 1990 00:00:00 GMT");
+    res.setHeader("Etag", "4");
+
+    if (req.headers["if-none-match"]) {
+      res.setHeader("x-conditional", "true");
+    }
   } else if (u.pathname === "/origin-4") {
     let originList = [];
     req.stream.connection.originFrame(originList);
@@ -1341,6 +1690,52 @@ function handleRequest(req, res) {
     });
     res.end();
     return;
+  } else if (u.pathname === "/redirect_to_http") {
+    res.setHeader(
+      "Location",
+      `http://test.httpsrr.redirect.com:${u.query.port}/redirect_to_http?port=${u.query.port}`
+    );
+    res.writeHead(307);
+    res.end("");
+    return;
+  } else if (u.pathname === "/103_response") {
+    let link_val = req.headers["link-to-set"];
+    if (link_val) {
+      res.setHeader("link", link_val);
+    }
+    res.setHeader("something", "something");
+    res.writeHead(103);
+
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Content-Length", "12");
+    res.writeHead(200);
+    res.write("data reached");
+    res.end();
+    return;
+  } else if (u.pathname.startsWith("/invalid_response_header/")) {
+    // response headers with invalid characters in the name / value (RFC7540 Sec 10.3)
+    let kind = u.pathname.slice("/invalid_response_header/".length);
+    if (kind === "name_spaces") {
+      res.setHeader("With Spaces", "Hello");
+    } else if (kind === "value_line_feed") {
+      res.setHeader("invalid-header", "line\nfeed");
+    } else if (kind === "value_carriage_return") {
+      res.setHeader("invalid-header", "carriage\rreturn");
+    } else if (kind === "value_null") {
+      res.setHeader("invalid-header", "null\0");
+    }
+
+    res.writeHead(200);
+    res.end("");
+    return;
+  } else if (u.pathname === "/origin_header") {
+    let originHeader = req.headers.origin;
+    res.setHeader("Content-Length", originHeader.length);
+    res.setHeader("Content-Type", "text/plain");
+    res.writeHead(200);
+    res.write(originHeader);
+    res.end();
+    return;
   }
 
   res.setHeader("Content-Type", "text/html");
@@ -1365,12 +1760,19 @@ if (process.env.HTTP2_LOG !== undefined) {
 
 var server = http2.createServer(options, handleRequest);
 
-server.on("connection", function(socket) {
-  socket.on("error", function() {
+server.on("connection", function (socket) {
+  socket.on("error", function () {
     // Ignoring SSL socket errors, since they usually represent a connection that was tore down
     // by the browser because of an untrusted certificate. And this happens at least once, when
     // the first test case if done.
   });
+});
+
+server.on("connect", function (req, clientSocket) {
+  clientSocket.write(
+    "HTTP/1.1 404 Not Found\r\nProxy-agent: Node.js-Proxy\r\n\r\n"
+  );
+  clientSocket.destroy();
 });
 
 function makeid(length) {
@@ -1431,6 +1833,17 @@ let httpServer = http.createServer((req, res) => {
     if (u.pathname == "/fork") {
       let id = forkProcess();
       computeAndSendBackResponse(id);
+      return;
+    }
+
+    if (u.pathname == "/forkH3Server") {
+      forkH3Server(u.query.path, u.query.dbPath)
+        .then(result => {
+          computeAndSendBackResponse(result);
+        })
+        .catch(error => {
+          computeAndSendBackResponse(error);
+        });
       return;
     }
 
@@ -1501,10 +1914,27 @@ let httpServer = http.createServer((req, res) => {
   });
 });
 
+function forkH3Server(serverPath, dbPath) {
+  const args = [dbPath];
+  let process = spawn(serverPath, args);
+  let id = forkProcessInternal(process);
+  // Return a promise that resolves when we receive data from stdout
+  return new Promise((resolve, _) => {
+    process.stdout.on("data", data => {
+      console.log(data.toString());
+      resolve({ id, output: data.toString().trim() });
+    });
+  });
+}
+
 function forkProcess() {
   let scriptPath = path.resolve(__dirname, "moz-http2-child.js");
-  let id = makeid(6);
   let forked = fork(scriptPath);
+  return forkProcessInternal(forked);
+}
+
+function forkProcessInternal(forked) {
+  let id = makeid(6);
   forked.errors = "";
   globalObjects[id] = forked;
   forked.on("message", msg => {
@@ -1512,7 +1942,9 @@ function forkProcess() {
       forked.resolve(msg);
       forked.resolve = null;
     } else {
-      console.log(`forked process without handler sent: ${msg}`);
+      console.log(
+        `forked process without handler sent: ${JSON.stringify(msg)}`
+      );
       forked.errors += `forked process without handler sent: ${JSON.stringify(
         msg
       )}\n`;

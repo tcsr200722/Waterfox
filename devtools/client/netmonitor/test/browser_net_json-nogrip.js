@@ -7,7 +7,7 @@
  * Tests if JSON responses with property 'type' are correctly rendered.
  * (Reps rendering JSON responses should use `noGrip=true`).
  */
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(
     JSON_BASIC_URL + "?name=nogrip",
     { requestCount: 1 }
@@ -23,8 +23,7 @@ add_task(async function() {
 
   const onResponsePanelReady = waitForDOM(
     document,
-    "#response-panel .accordion-item",
-    2
+    "#response-panel .data-header"
   );
 
   const onPropsViewReady = waitForDOM(
@@ -34,10 +33,7 @@ add_task(async function() {
   );
 
   store.dispatch(Actions.toggleNetworkDetails());
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#response-tab")
-  );
+  clickOnSidebarTab(document, "response");
   await Promise.all([onResponsePanelReady, onPropsViewReady]);
 
   const tabpanel = document.querySelector("#response-panel");

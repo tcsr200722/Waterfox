@@ -6,21 +6,7 @@
  * Test for restrictions set through UrlbarQueryContext.sources.
  */
 
-add_task(async function setup() {
-  let engine = await addTestSuggestionsEngine();
-  let oldDefaultEngine = await Services.search.getDefault();
-  Services.search.setDefault(engine);
-  registerCleanupFunction(async () =>
-    Services.search.setDefault(oldDefaultEngine)
-  );
-});
-
-XPCOMUtils.defineLazyServiceGetter(
-  this,
-  "unifiedComplete",
-  "@mozilla.org/autocomplete/search;1?name=unifiedcomplete",
-  "nsIAutoCompleteSearch"
-);
+testEngine_setup();
 
 add_task(async function test_restrictions() {
   await PlacesTestUtils.addVisits([
@@ -31,7 +17,11 @@ add_task(async function test_restrictions() {
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
     title: "match",
   });
-  await UrlbarProviderOpenTabs.registerOpenTab("http://openpagematch.com/");
+  await UrlbarProviderOpenTabs.registerOpenTab(
+    "http://openpagematch.com/",
+    0,
+    false
+  );
 
   info("Bookmark restrict");
   let results = await get_results({
@@ -72,7 +62,7 @@ add_task(async function test_restrictions() {
     searchString: "match",
   });
   Assert.ok(
-    !results.some(r => r.payload.engine != "engine-suggestions.xml"),
+    !results.some(r => r.payload.engine != SUGGESTIONS_ENGINE_NAME),
     "All the results should be search results"
   );
 
@@ -82,34 +72,12 @@ add_task(async function test_restrictions() {
     searchString: `${UrlbarTokenizer.RESTRICT.BOOKMARKS} match`,
   });
   Assert.ok(
-    !results.some(r => r.payload.engine != "engine-suggestions.xml"),
+    !results.some(r => r.payload.engine != SUGGESTIONS_ENGINE_NAME),
     "All the results should be search results"
   );
   Assert.equal(
     results[0].payload.query,
     `${UrlbarTokenizer.RESTRICT.BOOKMARKS} match`,
-    "The restriction token should be ignored and not stripped"
-  );
-
-  info("search restrict with alias");
-  let aliasEngine = await Services.search.addEngineWithDetails("Test", {
-    alias: "match",
-    template: "http://example.com/?search={searchTerms}",
-  });
-  registerCleanupFunction(async function() {
-    await Services.search.removeEngine(aliasEngine);
-  });
-  results = await get_results({
-    sources: [UrlbarUtils.RESULT_SOURCE.SEARCH],
-    searchString: "match this",
-  });
-  Assert.ok(
-    !results.some(r => r.payload.engine != "engine-suggestions.xml"),
-    "All the results should be search results and the alias should be ignored"
-  );
-  Assert.equal(
-    results[0].payload.query,
-    `match this`,
     "The restriction token should be ignored and not stripped"
   );
 
@@ -134,7 +102,10 @@ async function get_results(test) {
     sources: test.sources,
   };
   if (test.engineName) {
-    options.engineName = test.engineName;
+    options.searchMode = {
+      source: UrlbarUtils.RESULT_SOURCE.SEARCH,
+      engineName: test.engineName,
+    };
   }
   let queryContext = createContext(test.searchString, options);
   await controller.startQuery(queryContext);

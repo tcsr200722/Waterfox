@@ -8,7 +8,6 @@
 
 #include "AccessibleCaretLogger.h"
 #include "AccessibleCaretManager.h"
-#include "Layers.h"
 
 #include "mozilla/AutoRestore.h"
 #include "mozilla/PresShell.h"
@@ -24,6 +23,7 @@
 #include "nsFocusManager.h"
 #include "nsFrameSelection.h"
 #include "nsITimer.h"
+#include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 
 using namespace mozilla;
@@ -332,11 +332,7 @@ AccessibleCaretEventHub::AccessibleCaretEventHub(PresShell* aPresShell)
     : mPresShell(aPresShell) {}
 
 void AccessibleCaretEventHub::Init() {
-  if (mInitialized && mManager) {
-    mManager->OnFrameReconstruction();
-  }
-
-  if (mInitialized || !mPresShell || !mPresShell->GetCanvasFrame()) {
+  if (mInitialized || !mPresShell) {
     return;
   }
 
@@ -352,20 +348,13 @@ void AccessibleCaretEventHub::Init() {
   nsPresContext* presContext = mPresShell->GetPresContext();
   MOZ_ASSERT(presContext, "PresContext should be given in PresShell::Init()");
 
-  nsIDocShell* docShell = presContext->GetDocShell();
+  nsDocShell* docShell = presContext->GetDocShell();
   if (!docShell) {
     return;
   }
 
-  nsCOMPtr<nsIDocShell> curDocShell = docShell;
-  do {
-    curDocShell->AddWeakReflowObserver(this);
-    curDocShell->AddWeakScrollObserver(this);
-
-    nsCOMPtr<nsIDocShellTreeItem> tmp;
-    curDocShell->GetInProcessSameTypeParent(getter_AddRefs(tmp));
-    curDocShell = do_QueryInterface(tmp);
-  } while (curDocShell);
+  docShell->AddWeakReflowObserver(this);
+  docShell->AddWeakScrollObserver(this);
 
   mDocShell = static_cast<nsDocShell*>(docShell);
 
@@ -383,14 +372,9 @@ void AccessibleCaretEventHub::Terminate() {
     return;
   }
 
-  nsCOMPtr<nsIDocShell> curDocShell = mDocShell.get();
-  while (curDocShell) {
-    curDocShell->RemoveWeakReflowObserver(this);
-    curDocShell->RemoveWeakScrollObserver(this);
-
-    nsCOMPtr<nsIDocShellTreeItem> tmp;
-    curDocShell->GetInProcessSameTypeParent(getter_AddRefs(tmp));
-    curDocShell = do_QueryInterface(tmp);
+  if (mDocShell) {
+    mDocShell->RemoveWeakReflowObserver(this);
+    mDocShell->RemoveWeakScrollObserver(this);
   }
 
   if (mLongTapInjectorTimer) {
@@ -437,7 +421,7 @@ nsEventStatus AccessibleCaretEventHub::HandleMouseEvent(
     WidgetMouseEvent* aEvent) {
   nsEventStatus rv = nsEventStatus_eIgnore;
 
-  if (aEvent->mButton != MouseButton::eLeft) {
+  if (aEvent->mButton != MouseButton::ePrimary) {
     return rv;
   }
 

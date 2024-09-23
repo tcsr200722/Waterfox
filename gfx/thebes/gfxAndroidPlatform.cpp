@@ -8,11 +8,17 @@
 
 #include "gfxAndroidPlatform.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/CountingAllocatorBase.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/intl/OSPreferences.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
+#include "mozilla/jni/Utils.h"
+#include "mozilla/layers/AndroidHardwareBuffer.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/widget/AndroidVsync.h"
 
 #include "gfx2DGlue.h"
 #include "gfxFT2FontList.h"
@@ -28,8 +34,6 @@
 #include "ft2build.h"
 #include FT_FREETYPE_H
 #include FT_MODULE_H
-
-#include "mozilla/java/VsyncSourceNatives.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -67,10 +71,6 @@ class FreetypeReporter final : public nsIMemoryReporter,
 
 NS_IMPL_ISUPPORTS(FreetypeReporter, nsIMemoryReporter)
 
-template <>
-CountingAllocatorBase<FreetypeReporter>::AmountType
-    CountingAllocatorBase<FreetypeReporter>::sAmount(0);
-
 static FT_MemoryRec_ sFreetypeMemoryRecord;
 
 gfxAndroidPlatform::gfxAndroidPlatform() {
@@ -89,8 +89,12 @@ gfxAndroidPlatform::gfxAndroidPlatform() {
 
   RegisterStrongMemoryReporter(new FreetypeReporter());
 
-  mOffscreenFormat = GetScreenDepth() == 16 ? SurfaceFormat::R5G6B5_UINT16
-                                            : SurfaceFormat::X8R8G8B8_UINT32;
+  // Bug 1886573: At this point, we don't yet have primary screen depth.
+  // This setting of screen depth to 0 is preserving existing behavior,
+  // and should be fixed.
+  int32_t screenDepth = 0;
+  mOffscreenFormat = screenDepth == 16 ? SurfaceFormat::R5G6B5_UINT16
+                                       : SurfaceFormat::X8R8G8B8_UINT32;
 
   if (StaticPrefs::gfx_android_rgb16_force_AtStartup()) {
     mOffscreenFormat = SurfaceFormat::R5G6B5_UINT16;
@@ -100,7 +104,11 @@ gfxAndroidPlatform::gfxAndroidPlatform() {
 gfxAndroidPlatform::~gfxAndroidPlatform() {
   FT_Done_Library(gPlatformFTLibrary);
   gPlatformFTLibrary = nullptr;
+  layers::AndroidHardwareBufferManager::Shutdown();
+  layers::AndroidHardwareBufferApi::Shutdown();
 }
+
+void gfxAndroidPlatform::InitAcceleration() { gfxPlatform::InitAcceleration(); }
 
 already_AddRefed<gfxASurface> gfxAndroidPlatform::CreateOffscreenSurface(
     const IntSize& aSize, gfxImageFormat aFormat) {
@@ -141,21 +149,15 @@ static bool IsJapaneseLocale() {
 }
 
 void gfxAndroidPlatform::GetCommonFallbackFonts(
-    uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+    uint32_t aCh, Script aRunScript, eFontPresentation aPresentation,
     nsTArray<const char*>& aFontList) {
   static const char kDroidSansJapanese[] = "Droid Sans Japanese";
   static const char kMotoyaLMaru[] = "MotoyaLMaru";
   static const char kNotoSansCJKJP[] = "Noto Sans CJK JP";
   static const char kNotoColorEmoji[] = "Noto Color Emoji";
 
-  EmojiPresentation emoji = GetEmojiPresentation(aCh);
-  if (emoji != EmojiPresentation::TextOnly) {
-    if (aNextCh == kVariationSelector16 ||
-        (aNextCh != kVariationSelector15 &&
-         emoji == EmojiPresentation::EmojiDefault)) {
-      // if char is followed by VS16, try for a color emoji glyph
-      aFontList.AppendElement(kNotoColorEmoji);
-    }
+  if (PrefersColor(aPresentation)) {
+    aFontList.AppendElement(kNotoColorEmoji);
   }
 
   if (IS_IN_BMP(aCh)) {
@@ -175,15 +177,33 @@ void gfxAndroidPlatform::GetCommonFallbackFonts(
         break;
       case 0x09:
         aFontList.AppendElement("Noto Sans Devanagari");
+        aFontList.AppendElement("Noto Sans Bengali");
         aFontList.AppendElement("Droid Sans Devanagari");
+        break;
+      case 0x0a:
+        aFontList.AppendElement("Noto Sans Gurmukhi");
+        aFontList.AppendElement("Noto Sans Gujarati");
         break;
       case 0x0b:
         aFontList.AppendElement("Noto Sans Tamil");
+        aFontList.AppendElement("Noto Sans Oriya");
         aFontList.AppendElement("Droid Sans Tamil");
+        break;
+      case 0x0c:
+        aFontList.AppendElement("Noto Sans Telugu");
+        aFontList.AppendElement("Noto Sans Kannada");
+        break;
+      case 0x0d:
+        aFontList.AppendElement("Noto Sans Malayalam");
+        aFontList.AppendElement("Noto Sans Sinhala");
         break;
       case 0x0e:
         aFontList.AppendElement("Noto Sans Thai");
+        aFontList.AppendElement("Noto Sans Lao");
         aFontList.AppendElement("Droid Sans Thai");
+        break;
+      case 0x0f:
+        aFontList.AppendElement("Noto Sans Tibetan");
         break;
       case 0x10:
       case 0x2d:
@@ -224,17 +244,12 @@ void gfxAndroidPlatform::GetCommonFallbackFonts(
   aFontList.AppendElement("Droid Sans Fallback");
 }
 
-gfxPlatformFontList* gfxAndroidPlatform::CreatePlatformFontList() {
-  gfxPlatformFontList* list = new gfxFT2FontList();
-  if (NS_SUCCEEDED(list->InitFontList())) {
-    return list;
-  }
-  gfxPlatformFontList::Shutdown();
-  return nullptr;
+bool gfxAndroidPlatform::CreatePlatformFontList() {
+  return gfxPlatformFontList::Initialize(new gfxFT2FontList);
 }
 
 void gfxAndroidPlatform::ReadSystemFontList(
-    nsTArray<SystemFontListEntry>* aFontList) {
+    mozilla::dom::SystemFontList* aFontList) {
   gfxFT2FontList::PlatformFontList()->ReadSystemFontList(aFontList);
 }
 
@@ -249,6 +264,9 @@ bool gfxAndroidPlatform::FontHintingEnabled() {
   //
   // XXX when gecko-android-java is used as an "app runtime", we may
   // want to re-enable hinting for non-browser processes there.
+  //
+  // If this value is changed, we must ensure that the argument passed
+  // to SkInitCairoFT() in GPUParent::RecvInit() is also updated.
   return false;
 #endif  //  MOZ_WIDGET_ANDROID
 
@@ -273,96 +291,83 @@ bool gfxAndroidPlatform::RequiresLinearZoom() {
   return gfxPlatform::RequiresLinearZoom();
 }
 
-class AndroidVsyncSource final : public VsyncSource {
+bool gfxAndroidPlatform::CheckVariationFontSupport() {
+  // Don't attempt to use variations on Android API versions up to Marshmallow,
+  // because the system freetype version is too old and the parent process may
+  // access it during printing (bug 1845174).
+  return jni::GetAPIVersion() > 23;
+}
+
+class AndroidVsyncSource final : public VsyncSource,
+                                 public widget::AndroidVsync::Observer {
  public:
-  class JavaVsyncSupport final
-      : public java::VsyncSource::Natives<JavaVsyncSupport> {
-   public:
-    using Base = java::VsyncSource::Natives<JavaVsyncSupport>;
-    using Base::DisposeNative;
+  AndroidVsyncSource() : mAndroidVsync(widget::AndroidVsync::GetInstance()) {}
 
-    static void NotifyVsync() {
-      GetDisplayInstance().NotifyVsync(TimeStamp::Now());
-    }
-  };
+  bool IsVsyncEnabled() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    return mObservingVsync;
+  }
 
-  class Display final : public VsyncSource::Display {
-   public:
-    Display()
-        : mJavaVsync(java::VsyncSource::INSTANCE()), mObservingVsync(false) {
-      JavaVsyncSupport::Init();  // To register native methods.
+  void EnableVsync() override {
+    MOZ_ASSERT(NS_IsMainThread());
+
+    if (mObservingVsync) {
+      return;
     }
 
-    ~Display() { DisableVsync(); }
+    float fps = java::GeckoAppShell::GetScreenRefreshRate();
+    MOZ_ASSERT(fps > 0.0f);
+    mVsyncRate = TimeDuration::FromMilliseconds(1000.0 / fps);
+    mAndroidVsync->RegisterObserver(this, widget::AndroidVsync::RENDER);
+    mObservingVsync = true;
+  }
 
-    bool IsVsyncEnabled() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MOZ_ASSERT(mJavaVsync);
+  void DisableVsync() override {
+    MOZ_ASSERT(NS_IsMainThread());
 
-      return mObservingVsync;
+    if (!mObservingVsync) {
+      return;
     }
+    mAndroidVsync->UnregisterObserver(this, widget::AndroidVsync::RENDER);
+    mObservingVsync = false;
+  }
 
-    void EnableVsync() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MOZ_ASSERT(mJavaVsync);
+  TimeDuration GetVsyncRate() override { return mVsyncRate; }
 
-      if (mObservingVsync) {
-        return;
-      }
-      bool ok = mJavaVsync->ObserveVsync(true);
-      if (ok && !mVsyncDuration) {
-        float fps = mJavaVsync->GetRefreshRate();
-        mVsyncDuration = TimeDuration::FromMilliseconds(1000.0 / fps);
-      }
-      mObservingVsync = ok;
-      MOZ_ASSERT(mObservingVsync);
-    }
+  void Shutdown() override { DisableVsync(); }
 
-    void DisableVsync() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MOZ_ASSERT(mJavaVsync);
+  // Override for the widget::AndroidVsync::Observer method
+  void OnVsync(const TimeStamp& aTimeStamp) override {
+    // Use the timebase from the frame callback as the vsync time, unless it
+    // is in the future.
+    TimeStamp now = TimeStamp::Now();
+    TimeStamp vsyncTime = aTimeStamp < now ? aTimeStamp : now;
+    TimeStamp outputTime = vsyncTime + GetVsyncRate();
 
-      if (!mObservingVsync) {
-        return;
-      }
-      mObservingVsync = mJavaVsync->ObserveVsync(false);
-      MOZ_ASSERT(!mObservingVsync);
-    }
+    NotifyVsync(vsyncTime, outputTime);
+  }
 
-    TimeDuration GetVsyncRate() override { return mVsyncDuration; }
-
-    void Shutdown() override {
-      DisableVsync();
-      mJavaVsync = nullptr;
-    }
-
-   private:
-    java::VsyncSource::GlobalRef mJavaVsync;
-    bool mObservingVsync;
-    TimeDuration mVsyncDuration;
-  };
-
-  Display& GetGlobalDisplay() final { return GetDisplayInstance(); }
+  void OnMaybeUpdateRefreshRate() override {
+    NS_DispatchToMainThread(
+        NS_NewRunnableFunction(__func__, [self = RefPtr{this}]() {
+          if (!self->mObservingVsync) {
+            return;
+          }
+          self->DisableVsync();
+          self->EnableVsync();
+        }));
+  }
 
  private:
-  virtual ~AndroidVsyncSource() = default;
+  virtual ~AndroidVsyncSource() { DisableVsync(); }
 
-  static Display& GetDisplayInstance() {
-    static RefPtr<Display> globalDisplay = new Display();
-    return *globalDisplay;
-  }
+  RefPtr<widget::AndroidVsync> mAndroidVsync;
+  TimeDuration mVsyncRate;
+  bool mObservingVsync = false;
 };
 
 already_AddRefed<mozilla::gfx::VsyncSource>
-gfxAndroidPlatform::CreateHardwareVsyncSource() {
-  // Vsync was introduced since JB (API 16~18) but inaccurate. Enable only for
-  // KK (API 19) and later.
-  if (AndroidBridge::Bridge() &&
-      AndroidBridge::Bridge()->GetAPIVersion() >= 19) {
-    RefPtr<AndroidVsyncSource> vsyncSource = new AndroidVsyncSource();
-    return vsyncSource.forget();
-  }
-
-  NS_WARNING("Vsync not supported. Falling back to software vsync");
-  return gfxPlatform::CreateHardwareVsyncSource();
+gfxAndroidPlatform::CreateGlobalHardwareVsyncSource() {
+  RefPtr<AndroidVsyncSource> vsyncSource = new AndroidVsyncSource();
+  return vsyncSource.forget();
 }

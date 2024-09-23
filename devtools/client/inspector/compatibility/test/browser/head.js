@@ -3,27 +3,23 @@
 
 "use strict";
 
-/* import-globals-from ../../../test/head.js */
-
-// Import the inspector's head.js first (which itself imports shared-head.js).
+// Import the rule view's head.js first (which itself imports inspector's head.js and shared-head.js).
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/inspector/test/head.js",
+  "chrome://mochitests/content/browser/devtools/client/inspector/rules/test/head.js",
   this
 );
 
 const {
   COMPATIBILITY_UPDATE_SELECTED_NODE_COMPLETE,
   COMPATIBILITY_UPDATE_TOP_LEVEL_TARGET_COMPLETE,
-} = require("devtools/client/inspector/compatibility/actions/index");
+} = require("resource://devtools/client/inspector/compatibility/actions/index.js");
 
 const {
   toCamelCase,
-} = require("devtools/client/inspector/compatibility/utils/cases");
+} = require("resource://devtools/client/inspector/compatibility/utils/cases.js");
 
 async function openCompatibilityView() {
   info("Open the compatibility view");
-  await pushPref("devtools.inspector.compatibility.enabled", true);
-
   const { inspector } = await openInspectorSidebarTab("compatibilityview");
   await Promise.all([
     waitForUpdateSelectedNodeAction(inspector.store),
@@ -66,11 +62,75 @@ async function assertIssueList(panel, expectedIssues) {
     return;
   }
 
+  const getFluentString = await getFluentStringHelper([
+    "devtools/client/compatibility.ftl",
+  ]);
+
   for (const expectedIssue of expectedIssues) {
     const property = expectedIssue.property;
     info(`Check an element for ${property}`);
     const issueEl = getIssueItem(property, panel);
     ok(issueEl, `Issue element for the ${property} is in the panel`);
+
+    if (expectedIssue.unsupportedBrowsers) {
+      // We only display a single icon per unsupported browser, so we need to
+      // group the expected unsupported browsers (versions) by their browser id.
+      const expectedUnsupportedBrowsersById = new Map();
+      for (const unsupportedBrowser of expectedIssue.unsupportedBrowsers) {
+        if (!expectedUnsupportedBrowsersById.has(unsupportedBrowser.id)) {
+          expectedUnsupportedBrowsersById.set(unsupportedBrowser.id, []);
+        }
+        expectedUnsupportedBrowsersById
+          .get(unsupportedBrowser.id)
+          .push(unsupportedBrowser);
+      }
+
+      const unsupportedBrowserListEl = issueEl.querySelector(
+        ".compatibility-unsupported-browser-list"
+      );
+      const unsupportedBrowsersEl =
+        unsupportedBrowserListEl.querySelectorAll("li");
+
+      is(
+        unsupportedBrowsersEl.length,
+        expectedUnsupportedBrowsersById.size,
+        "The expected number of browser icons are displayed"
+      );
+
+      for (const unsupportedBrowserEl of unsupportedBrowsersEl) {
+        const expectedUnsupportedBrowsers = expectedUnsupportedBrowsersById.get(
+          unsupportedBrowserEl.getAttribute("data-browser-id")
+        );
+
+        ok(expectedUnsupportedBrowsers, "The expected browser is displayed");
+        // debugger;
+        is(
+          unsupportedBrowserEl.querySelector(".compatibility-browser-version")
+            .innerText,
+          // If esr is not supported, but a newest version isn't as well, we don't display
+          // the esr version number
+          (
+            expectedUnsupportedBrowsers.find(
+              ({ status }) => status !== "esr"
+            ) || expectedUnsupportedBrowsers[0]
+          ).version,
+          "The expected browser version is displayed"
+        );
+
+        is(
+          unsupportedBrowserEl.getAttribute("title"),
+          getFluentString("compatibility-issue-browsers-list", "title", {
+            browsers: expectedUnsupportedBrowsers
+              .map(
+                ({ name, status, version }) =>
+                  `${name} ${version}${status ? ` (${status})` : ""}`
+              )
+              .join("\n"),
+          }),
+          "The brower item has the expected title attribute"
+        );
+      }
+    }
 
     for (const [key, value] of Object.entries(expectedIssue)) {
       const datasetKey = toCamelCase(`qa-${key}`);
@@ -79,6 +139,61 @@ async function assertIssueList(panel, expectedIssues) {
         JSON.stringify(value),
         `The value of ${datasetKey} is correct`
       );
+    }
+
+    const propertyEl = issueEl.querySelector(
+      ".compatibility-issue-item__property"
+    );
+    const MDN_CLASSNAME = "compatibility-issue-item__mdn-link";
+    const SPEC_CLASSNAME = "compatibility-issue-item__spec-link";
+
+    is(
+      propertyEl.textContent,
+      property,
+      "property name is displayed as expected"
+    );
+
+    is(
+      propertyEl.classList.contains(MDN_CLASSNAME),
+      !!expectedIssue.url,
+      `${property} element ${
+        expectedIssue.url ? "has" : "does not have"
+      } mdn link class`
+    );
+    is(
+      propertyEl.classList.contains(SPEC_CLASSNAME),
+      !!expectedIssue.specUrl,
+      `${property} element ${
+        expectedIssue.specUrl ? "has" : "does not have"
+      } spec link class`
+    );
+
+    if (expectedIssue.url || expectedIssue.specUrl) {
+      is(
+        propertyEl.nodeName.toLowerCase(),
+        "a",
+        `Link rendered for ${property}`
+      );
+
+      const expectedUrl = expectedIssue.url
+        ? expectedIssue.url +
+          "?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+        : expectedIssue.specUrl;
+      const { link } = await simulateLinkClick(propertyEl);
+      is(
+        link,
+        expectedUrl,
+        `Click on ${property} link navigates user to expected url`
+      );
+    } else {
+      is(
+        propertyEl.nodeName.toLowerCase(),
+        "span",
+        `No link rendered for ${property}`
+      );
+
+      const { link } = await simulateLinkClick(propertyEl);
+      is(link, null, `Click on ${property} does not navigate`);
     }
   }
 }
@@ -132,10 +247,17 @@ function getIssueItem(property, element) {
 async function togglePropStatusOnRuleView(inspector, ruleIndex, propIndex) {
   const ruleView = inspector.getPanel("ruleview").view;
   const rule = getRuleViewRuleEditor(ruleView, ruleIndex).rule;
+  // In case of inline style changes, we track the mutations via the
+  // inspector's markupmutation event to react to dynamic style changes
+  // which Resource Watcher doesn't cover yet.
+  // If an inline style is applied to the element, we need to wait on the
+  // markupmutation event
+  const onMutation =
+    ruleIndex === 0 ? inspector.once("markupmutation") : Promise.resolve();
   const textProp = rule.textProps[propIndex];
   const onRuleviewChanged = ruleView.once("ruleview-changed");
   textProp.editor.enable.click();
-  await onRuleviewChanged;
+  await Promise.all([onRuleviewChanged, onMutation]);
 }
 
 /**
@@ -156,23 +278,4 @@ function waitForUpdateSelectedNodeAction(store) {
  */
 function waitForUpdateTopLevelTargetAction(store) {
   return waitForDispatch(store, COMPATIBILITY_UPDATE_TOP_LEVEL_TARGET_COMPLETE);
-}
-
-/**
- * Return a promise which waits for given action type.
- *
- * @param {Object} store
- * @param {Object} type
- * @return {Promise}
- */
-function waitForDispatch(store, type) {
-  return new Promise(resolve => {
-    store.dispatch({
-      type: "@@service/waitUntil",
-      predicate: action => action.type === type,
-      run: (dispatch, getState, action) => {
-        resolve(action);
-      },
-    });
-  });
 }

@@ -4,38 +4,49 @@
 "use strict";
 
 // State
-const { FilterState } = require("devtools/client/webconsole/reducers/filters");
-const { PrefState } = require("devtools/client/webconsole/reducers/prefs");
-const { UiState } = require("devtools/client/webconsole/reducers/ui");
+const {
+  FilterState,
+} = require("resource://devtools/client/webconsole/reducers/filters.js");
+const {
+  PrefState,
+} = require("resource://devtools/client/webconsole/reducers/prefs.js");
+const {
+  UiState,
+} = require("resource://devtools/client/webconsole/reducers/ui.js");
 
 // Redux
 const {
   applyMiddleware,
   compose,
   createStore,
-} = require("devtools/client/shared/vendor/redux");
+} = require("resource://devtools/client/shared/vendor/redux.js");
 
 // Prefs
-const { PREFS } = require("devtools/client/webconsole/constants");
-const { getPrefsService } = require("devtools/client/webconsole/utils/prefs");
+const { PREFS } = require("resource://devtools/client/webconsole/constants.js");
+const {
+  getPrefsService,
+} = require("resource://devtools/client/webconsole/utils/prefs.js");
 
 // Reducers
-const { reducers } = require("devtools/client/webconsole/reducers/index");
+const {
+  reducers,
+} = require("resource://devtools/client/webconsole/reducers/index.js");
 
 // Middlewares
-const { ignore } = require("devtools/client/shared/redux/middleware/ignore");
-const eventTelemetry = require("devtools/client/webconsole/middleware/event-telemetry");
-const historyPersistence = require("devtools/client/webconsole/middleware/history-persistence");
 const {
-  thunkWithOptions,
-} = require("devtools/client/shared/redux/middleware/thunk-with-options");
+  ignore,
+} = require("resource://devtools/client/shared/redux/middleware/ignore.js");
+const eventTelemetry = require("resource://devtools/client/webconsole/middleware/event-telemetry.js");
+const historyPersistence = require("resource://devtools/client/webconsole/middleware/history-persistence.js");
+const performanceMarker = require("resource://devtools/client/webconsole/middleware/performance-marker.js");
+const {
+  thunk,
+} = require("resource://devtools/client/shared/redux/middleware/thunk.js");
 
 // Enhancers
-const enableBatching = require("devtools/client/webconsole/enhancers/batching");
-const enableActorReleaser = require("devtools/client/webconsole/enhancers/actor-releaser");
-const ensureCSSErrorReportingEnabled = require("devtools/client/webconsole/enhancers/css-error-reporting");
-const enableNetProvider = require("devtools/client/webconsole/enhancers/net-provider");
-const enableMessagesCacheClearing = require("devtools/client/webconsole/enhancers/message-cache-clearing");
+const enableBatching = require("resource://devtools/client/webconsole/enhancers/batching.js");
+const enableActorReleaser = require("resource://devtools/client/webconsole/enhancers/actor-releaser.js");
+const enableMessagesCacheClearing = require("resource://devtools/client/webconsole/enhancers/message-cache-clearing.js");
 
 /**
  * Create and configure store for the Console panel. This is the place
@@ -75,32 +86,29 @@ function configureStore(webConsoleUI, options = {}) {
     ui: UiState({
       networkMessageActiveTabId: "headers",
       persistLogs: getBoolPref(PREFS.UI.PERSIST),
-      showContentMessages:
-        webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole
-          ? getBoolPref(PREFS.UI.CONTENT_MESSAGES)
-          : true,
       editor: getBoolPref(PREFS.UI.EDITOR),
       editorWidth: getIntPref(PREFS.UI.EDITOR_WIDTH),
       showEditorOnboarding: getBoolPref(PREFS.UI.EDITOR_ONBOARDING),
       timestampsVisible: getBoolPref(PREFS.UI.MESSAGE_TIMESTAMP),
-      showEvaluationContextSelector: getBoolPref(
-        webConsoleUI.isBrowserToolboxConsole
-          ? PREFS.UI.CONTEXT_SELECTOR_BROWSER_TOOLBOX
-          : PREFS.UI.CONTEXT_SELECTOR_CONTENT_TOOLBOX
-      ),
+      showEvaluationContextSelector: getBoolPref(PREFS.UI.CONTEXT_SELECTOR),
+      enableNetworkMonitoring:
+        webConsoleUI.isBrowserConsole || webConsoleUI.isBrowserToolboxConsole
+          ? getBoolPref(PREFS.UI.ENABLE_NETWORK_MONITORING)
+          : true,
     }),
   };
 
   const { toolbox } = options.thunkArgs;
   const sessionId = (toolbox && toolbox.sessionId) || -1;
   const middleware = applyMiddleware(
+    performanceMarker(sessionId),
     ignore,
-    thunkWithOptions.bind(null, {
+    thunk({
       prefsService,
       ...options.thunkArgs,
     }),
-    historyPersistence,
-    eventTelemetry.bind(null, options.telemetry, sessionId)
+    historyPersistence.bind(null, webConsoleUI),
+    eventTelemetry.bind(null, options.telemetry)
   );
 
   return createStore(
@@ -109,10 +117,10 @@ function configureStore(webConsoleUI, options = {}) {
     compose(
       middleware,
       enableActorReleaser(webConsoleUI),
-      enableBatching(),
-      enableNetProvider(webConsoleUI),
       enableMessagesCacheClearing(webConsoleUI),
-      ensureCSSErrorReportingEnabled(webConsoleUI)
+      // ⚠️ Keep this one last so it will be executed before all the other ones. This is
+      // needed so batched actions can be "unbatched" and handled in the other enhancers.
+      enableBatching()
     )
   );
 }

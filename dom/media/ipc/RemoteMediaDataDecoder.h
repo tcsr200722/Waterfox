@@ -11,9 +11,8 @@
 
 namespace mozilla {
 
-class GpuDecoderModule;
-class IRemoteDecoderChild;
-class RemoteDecoderModule;
+class RemoteDecoderChild;
+class RemoteDecoderManagerChild;
 class RemoteMediaDataDecoder;
 
 DDLoggedTypeCustomNameAndBase(RemoteMediaDataDecoder, RemoteMediaDataDecoder,
@@ -23,17 +22,18 @@ DDLoggedTypeCustomNameAndBase(RemoteMediaDataDecoder, RemoteMediaDataDecoder,
 // to a 'real' decoder in the GPU or RDD process.
 // All requests get forwarded to a *DecoderChild instance that
 // operates solely on the provided manager and abstract manager threads.
-class RemoteMediaDataDecoder
+class RemoteMediaDataDecoder final
     : public MediaDataDecoder,
       public DecoderDoctorLifeLogger<RemoteMediaDataDecoder> {
  public:
-  friend class GpuDecoderModule;
-  friend class RemoteDecoderModule;
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteMediaDataDecoder, final);
+
+  explicit RemoteMediaDataDecoder(RemoteDecoderChild* aChild);
 
   // MediaDataDecoder
   RefPtr<InitPromise> Init() override;
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override;
-  bool CanDecodeBatch() override { return true; }
+  bool CanDecodeBatch() const override { return true; }
   RefPtr<DecodePromise> DecodeBatch(
       nsTArray<RefPtr<MediaRawData>>&& aSamples) override;
   RefPtr<DecodePromise> Drain() override;
@@ -42,22 +42,27 @@ class RemoteMediaDataDecoder
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
   void SetSeekThreshold(const media::TimeUnit& aTime) override;
   nsCString GetDescriptionName() const override;
+  nsCString GetProcessName() const override;
+  nsCString GetCodecName() const override;
   ConversionRequired NeedsConversion() const override;
 
  private:
-  explicit RemoteMediaDataDecoder(IRemoteDecoderChild* aChild);
   ~RemoteMediaDataDecoder();
 
   // Only ever written to from the reader task queue (during the constructor and
   // destructor when we can guarantee no other threads are accessing it). Only
   // read from the manager thread.
-  RefPtr<IRemoteDecoderChild> mChild;
+  RefPtr<RemoteDecoderChild> mChild;
+
+  mutable Mutex mMutex{"RemoteMediaDataDecoder"};
+
   // Only ever written/modified during decoder initialisation.
-  // As such can be accessed from any threads after that.
-  nsCString mDescription = NS_LITERAL_CSTRING("RemoteMediaDataDecoder");
-  bool mIsHardwareAccelerated = false;
-  nsCString mHardwareAcceleratedReason;
-  ConversionRequired mConversion = ConversionRequired::kNeedNone;
+  nsCString mDescription MOZ_GUARDED_BY(mMutex);
+  nsCString mProcessName MOZ_GUARDED_BY(mMutex);
+  nsCString mCodecName MOZ_GUARDED_BY(mMutex);
+  bool mIsHardwareAccelerated MOZ_GUARDED_BY(mMutex);
+  nsCString mHardwareAcceleratedReason MOZ_GUARDED_BY(mMutex);
+  ConversionRequired mConversion MOZ_GUARDED_BY(mMutex);
 };
 
 }  // namespace mozilla

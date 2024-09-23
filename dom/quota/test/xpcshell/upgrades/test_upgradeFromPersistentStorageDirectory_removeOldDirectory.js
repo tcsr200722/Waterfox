@@ -72,16 +72,21 @@ async function testSteps() {
   exists = defaultStorageDir.exists();
   ok(exists, "Default storage directory does exist");
 
+  info("Initializing temporary storage");
+
+  request = initTemporaryStorage();
+  await requestFinished(request);
+
   info("Initializing origin");
 
-  request = initStorageAndOrigin(getPrincipal(url), persistence);
+  request = initTemporaryOrigin(persistence, getPrincipal(url));
   await requestFinished(request);
 
   ok(!request.result, "Origin directory wasn't created");
 
   info("Getting usage");
 
-  request = getUsage(function() {}, /* getAll */ true);
+  request = getUsage(function () {}, /* getAll */ true);
   await requestFinished(request);
 
   info("Verifying result");
@@ -92,6 +97,6 @@ async function testSteps() {
   info("Verifying usage result");
 
   const usageResult = result[0];
-  ok(usageResult.origin == url, "Origin equals");
-  ok(usageResult.lastAccessed == lastAccessed, "LastAccessed equals");
+  Assert.equal(usageResult.origin, url, "Origin equals");
+  Assert.equal(usageResult.lastAccessed, lastAccessed, "LastAccessed equals");
 }

@@ -2,48 +2,57 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-using struct gfxPoint from "gfxPoint.h";
+include "gfxipc/ShadowLayerUtils.h";
+include "mozilla/GfxMessageUtils.h";
+include "mozilla/layers/LayersMessageUtils.h";
+include "mozilla/layers/WebRenderMessageUtils.h";
+
+using gfxPoint from "gfxPoint.h";
 using nsIntRegion from "nsRegion.h";
-using struct mozilla::layers::SurfaceDescriptorX11 from "gfxipc/ShadowLayerUtils.h";
 using mozilla::StereoMode from "ImageTypes.h";
-using struct mozilla::null_t from "ipc/IPCMessageUtils.h";
-using mozilla::WindowsHandle from "ipc/IPCMessageUtils.h";
+using struct mozilla::null_t from "mozilla/ipc/IPCCore.h";
+using mozilla::WindowsHandle from "mozilla/ipc/IPCTypes.h";
 using mozilla::gfx::YUVColorSpace from "mozilla/gfx/Types.h";
+using mozilla::gfx::ChromaSubsampling from "mozilla/gfx/Types.h";
 using mozilla::gfx::ColorDepth from "mozilla/gfx/Types.h";
 using mozilla::gfx::ColorRange from "mozilla/gfx/Types.h";
+using mozilla::gfx::ColorSpace2 from "mozilla/gfx/Types.h";
 using mozilla::gfx::SurfaceFormat from "mozilla/gfx/Types.h";
 using mozilla::gfx::IntRect from "mozilla/gfx/Rect.h";
 using mozilla::gfx::IntSize from "mozilla/gfx/Point.h";
-using mozilla::ipc::SharedMemoryBasic::Handle from "mozilla/ipc/SharedMemoryBasic.h";
+using mozilla::gfx::Matrix4x4 from "mozilla/gfx/Matrix.h";
+using mozilla::gfx::FenceInfo from "mozilla/gfx/FileHandleWrapper.h";
+[RefCounted] using mozilla::gfx::FileHandleWrapper from "mozilla/gfx/FileHandleWrapper.h";
+[MoveOnly] using mozilla::ipc::SharedMemoryBasic::Handle from "mozilla/ipc/SharedMemoryBasic.h";
 using gfxImageFormat from "gfxTypes.h";
 using mozilla::layers::MaybeVideoBridgeSource from "mozilla/layers/VideoBridgeUtils.h";
+using mozilla::layers::RemoteTextureId from "mozilla/layers/LayersTypes.h";
+using mozilla::layers::RemoteTextureOwnerId from "mozilla/layers/LayersTypes.h";
+using mozilla::layers::GpuProcessTextureId from "mozilla/layers/LayersTypes.h";
+using mozilla::layers::GpuProcessQueryId from "mozilla/layers/LayersTypes.h";
+using mozilla::wr::ExternalImageSource from "mozilla/webrender/WebRenderTypes.h";
+using mozilla::wr::ExternalImageId from "mozilla/webrender/WebRenderTypes.h";
 
 namespace mozilla {
 namespace layers {
 
-struct SurfaceDescriptorFileMapping {
-  WindowsHandle handle;
+[Comparable] struct SurfaceDescriptorD3D10 {
+  nullable FileHandleWrapper handle;
+  GpuProcessTextureId? gpuProcessTextureId;
+  uint32_t arrayIndex;
   SurfaceFormat format;
   IntSize size;
-};
-
-struct SurfaceDescriptorDIB {
-  // gfxWindowsSurface*
-  uintptr_t surface;
-};
-
-struct SurfaceDescriptorD3D10 {
-  WindowsHandle handle;
-  SurfaceFormat format;
-  IntSize size;
-  YUVColorSpace yUVColorSpace;
+  ColorSpace2 colorSpace;
   ColorRange colorRange;
+  bool hasKeyedMutex;
+  FenceInfo? fenceInfo;
+  GpuProcessQueryId? gpuProcessQueryId;
 };
 
-struct SurfaceDescriptorDXGIYCbCr {
-  WindowsHandle handleY;
-  WindowsHandle handleCb;
-  WindowsHandle handleCr;
+[Comparable] struct SurfaceDescriptorDXGIYCbCr {
+  nullable FileHandleWrapper handleY;
+  nullable FileHandleWrapper handleCb;
+  nullable FileHandleWrapper handleCr;
   IntSize size;
   IntSize sizeY;
   IntSize sizeCbCr;
@@ -52,45 +61,54 @@ struct SurfaceDescriptorDXGIYCbCr {
   ColorRange colorRange;
 };
 
-struct SurfaceDescriptorMacIOSurface {
+[Comparable] struct SurfaceDescriptorMacIOSurface {
   uint32_t surfaceId;
-  double scaleFactor;
   bool isOpaque;
   YUVColorSpace yUVColorSpace;
 };
 
-struct SurfaceDescriptorDMABuf {
+[Comparable] struct SurfaceDescriptorDMABuf {
   uint32_t bufferType;
-  uint64_t modifier;
+  uint64_t[] modifier;
   uint32_t flags;
   FileDescriptor[] fds;
   uint32_t[] width;
   uint32_t[] height;
+  uint32_t[] widthAligned;
+  uint32_t[] heightAligned;
   uint32_t[] format;
   uint32_t[] strides;
   uint32_t[] offsets;
   YUVColorSpace yUVColorSpace;
+  ColorRange colorRange;
   FileDescriptor[] fence;
   uint32_t uid;
   FileDescriptor[] refCount;
 };
 
-struct SurfaceTextureDescriptor {
+[Comparable] struct SurfaceTextureDescriptor {
   uint64_t handle;
   IntSize size;
   SurfaceFormat format;
   bool continuous;
-  bool ignoreTransform;
+  bool forceBT709ColorSpace;
+  Matrix4x4? transformOverride;
 };
 
-struct EGLImageDescriptor {
+[Comparable] struct SurfaceDescriptorAndroidHardwareBuffer {
+  uint64_t bufferId;
+  IntSize size;
+  SurfaceFormat format;
+};
+
+[Comparable] struct EGLImageDescriptor {
   uintptr_t image; // `EGLImage` is a `void*`.
   uintptr_t fence;
   IntSize size;
   bool hasAlpha;
 };
 
-struct SurfaceDescriptorSharedGLTexture {
+[Comparable] struct SurfaceDescriptorSharedGLTexture {
   uint32_t texture;
   uint32_t target;
   uintptr_t fence;
@@ -98,38 +116,38 @@ struct SurfaceDescriptorSharedGLTexture {
   bool hasAlpha;
 };
 
+[Comparable] struct SurfaceDescriptorDcompSurface {
+  FileDescriptor handle;
+  IntSize size;
+  SurfaceFormat format;
+};
 
-union RemoteDecoderVideoSubDescriptor {
+[Comparable] union RemoteDecoderVideoSubDescriptor {
   SurfaceDescriptorD3D10;
   SurfaceDescriptorDXGIYCbCr;
   SurfaceDescriptorDMABuf;
+  SurfaceDescriptorMacIOSurface;
+  SurfaceDescriptorDcompSurface;
   null_t;
 };
 
-struct SurfaceDescriptorRemoteDecoder {
+[Comparable] struct SurfaceDescriptorRemoteDecoder {
   uint64_t handle;
   RemoteDecoderVideoSubDescriptor subdesc;
   MaybeVideoBridgeSource source;
 };
 
-struct SurfaceDescriptorPlugin {
-  uint64_t id;
-  SurfaceDescriptorD3D10 pluginSurf;
-  SurfaceDescriptorD3D10 displaySurf;
-};
-
-union SurfaceDescriptorGPUVideo {
+[Comparable] union SurfaceDescriptorGPUVideo {
   SurfaceDescriptorRemoteDecoder;
-  SurfaceDescriptorPlugin;
 };
 
-struct RGBDescriptor {
+[Comparable] struct RGBDescriptor {
   IntSize size;
   SurfaceFormat format;
-  bool hasIntermediateBuffer;
 };
 
-struct YCbCrDescriptor {
+[Comparable] struct YCbCrDescriptor {
+  IntRect display;
   IntSize ySize;
   uint32_t yStride;
   IntSize cbCrSize;
@@ -141,25 +159,25 @@ struct YCbCrDescriptor {
   ColorDepth colorDepth;
   YUVColorSpace yUVColorSpace;
   ColorRange colorRange;
-  bool hasIntermediateBuffer;
+  ChromaSubsampling chromaSubsampling;
 };
 
-union BufferDescriptor {
+[Comparable] union BufferDescriptor {
   RGBDescriptor;
   YCbCrDescriptor;
 };
 
-union MemoryOrShmem {
+[Comparable] union MemoryOrShmem {
   uintptr_t;
   Shmem;
 };
 
-struct SurfaceDescriptorBuffer {
+[Comparable] struct SurfaceDescriptorBuffer {
   BufferDescriptor desc;
   MemoryOrShmem data;
 };
 
-struct SurfaceDescriptorShared
+[Comparable] struct SurfaceDescriptorShared
 {
   IntSize size;
   int32_t stride;
@@ -167,24 +185,31 @@ struct SurfaceDescriptorShared
   Handle handle;
 };
 
-struct SurfaceDescriptorRecorded {
-  uintptr_t drawTarget;
+[Comparable] struct SurfaceDescriptorExternalImage
+{
+  ExternalImageSource source;
+  ExternalImageId id;
 };
 
-union SurfaceDescriptor {
+[Comparable] struct SurfaceDescriptorRemoteTexture {
+  RemoteTextureId textureId;
+  RemoteTextureOwnerId ownerId;
+};
+
+[Comparable] union SurfaceDescriptor {
   SurfaceDescriptorBuffer;
-  SurfaceDescriptorDIB;
   SurfaceDescriptorD3D10;
-  SurfaceDescriptorFileMapping;
   SurfaceDescriptorDXGIYCbCr;
-  SurfaceDescriptorX11;
   SurfaceDescriptorDMABuf;
   SurfaceTextureDescriptor;
+  SurfaceDescriptorAndroidHardwareBuffer;
   EGLImageDescriptor;
   SurfaceDescriptorMacIOSurface;
   SurfaceDescriptorSharedGLTexture;
   SurfaceDescriptorGPUVideo;
-  SurfaceDescriptorRecorded;
+  SurfaceDescriptorRemoteTexture;
+  SurfaceDescriptorDcompSurface;
+  SurfaceDescriptorExternalImage;
   null_t;
 };
 

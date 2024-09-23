@@ -6,18 +6,19 @@
 // How to run this file:
 // 1. [obtain firefox source code]
 // 2. [build/obtain firefox binaries]
-// 3. run `[path to]/run-mozilla.sh [path to]/xpcshell genRootCAHashes.js \
-//                                  [absolute path to]/RootHashes.inc'
+// 3. run `[path to]/firefox -xpcshell genRootCAHashes.js [absolute path to]/RootHashes.inc'
 
 const nsX509CertDB = "@mozilla.org/security/x509certdb;1";
 const CertDb = Cc[nsX509CertDB].getService(Ci.nsIX509CertDB);
 
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { CommonUtils } = ChromeUtils.import(
-  "resource://services-common/utils.js"
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+const { CommonUtils } = ChromeUtils.importESModule(
+  "resource://services-common/utils.sys.mjs"
 );
 
 const FILENAME_OUTPUT = "RootHashes.inc";
@@ -140,7 +141,7 @@ function writeRootHashes(fos) {
 
     // Output the sorted gTrustAnchors
     writeString(fos, FP_PREAMBLE);
-    gTrustAnchors.roots.forEach(function(fp) {
+    gTrustAnchors.roots.forEach(function (fp) {
       let fpBytes = atob(fp.sha256Fingerprint);
 
       writeString(fos, "  {\n");
@@ -232,7 +233,12 @@ if (arguments.length != 1) {
   );
 }
 
-var trustAnchorsFile = FileUtils.getFile("CurWorkD", [FILENAME_TRUST_ANCHORS]);
+var trustAnchorsFile = new FileUtils.File(
+  PathUtils.join(
+    Services.dirsvc.get("CurWorkD", Ci.nsIFile).path,
+    FILENAME_TRUST_ANCHORS
+  )
+);
 var rootHashesFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
 rootHashesFile.initWithPath(arguments[0]);
 
@@ -247,7 +253,7 @@ writeTrustAnchors(trustAnchorsFile);
 
 // Sort all trust anchors before writing, as AccumulateRootCA.cpp
 // will perform binary searches
-gTrustAnchors.roots.sort(function(a, b) {
+gTrustAnchors.roots.sort(function (a, b) {
   // We need to work from the binary values, not the base64 values.
   let aBin = atob(a.sha256Fingerprint);
   let bBin = atob(b.sha256Fingerprint);
@@ -262,8 +268,7 @@ gTrustAnchors.roots.sort(function(a, b) {
 });
 
 // Write the output file.
-var rootHashesFileOutputStream = FileUtils.openSafeFileOutputStream(
-  rootHashesFile
-);
+var rootHashesFileOutputStream =
+  FileUtils.openSafeFileOutputStream(rootHashesFile);
 writeRootHashes(rootHashesFileOutputStream);
 FileUtils.closeSafeFileOutputStream(rootHashesFileOutputStream);

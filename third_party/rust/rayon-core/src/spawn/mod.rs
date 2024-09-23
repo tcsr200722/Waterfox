@@ -1,8 +1,8 @@
-use job::*;
-use registry::Registry;
+use crate::job::*;
+use crate::registry::Registry;
+use crate::unwind;
 use std::mem;
 use std::sync::Arc;
-use unwind;
 
 /// Fires off a task into the Rayon threadpool in the "static" or
 /// "global" scope.  Just like a standard thread, this task is not
@@ -21,8 +21,7 @@ use unwind;
 ///
 /// This API assumes that the closure is executed purely for its
 /// side-effects (i.e., it might send messages, modify data protected
-/// by a mutex, or some such thing). If you want to compute a result,
-/// consider `spawn_future()`.
+/// by a mutex, or some such thing).
 ///
 /// There is no guaranteed order of execution for spawns, given that
 /// other threads may steal tasks at any time. However, they are
@@ -66,7 +65,7 @@ where
     unsafe { spawn_in(func, &Registry::current()) }
 }
 
-/// Spawn an asynchronous job in `registry.`
+/// Spawns an asynchronous job in `registry.`
 ///
 /// Unsafe because `registry` must not yet have terminated.
 pub(super) unsafe fn spawn_in<F>(func: F, registry: &Arc<Registry>)
@@ -74,7 +73,7 @@ where
     F: FnOnce() + Send + 'static,
 {
     // We assert that this does not hold any references (we know
-    // this because of the `'static` bound in the inferface);
+    // this because of the `'static` bound in the interface);
     // moreover, we assert that the code below is not supposed to
     // be able to panic, and hence the data won't leak but will be
     // enqueued into some deque for later execution.
@@ -92,19 +91,14 @@ where
     // executed. This ref is decremented at the (*) below.
     registry.increment_terminate_count();
 
-    Box::new(HeapJob::new({
-        let registry = registry.clone();
+    HeapJob::new({
+        let registry = Arc::clone(registry);
         move || {
-            match unwind::halt_unwinding(func) {
-                Ok(()) => {}
-                Err(err) => {
-                    registry.handle_panic(err);
-                }
-            }
+            registry.catch_unwind(func);
             registry.terminate(); // (*) permit registry to terminate now
         }
-    }))
-    .as_job_ref()
+    })
+    .into_static_job_ref()
 }
 
 /// Fires off a task into the Rayon threadpool in the "static" or
@@ -141,7 +135,7 @@ where
     unsafe { spawn_fifo_in(func, &Registry::current()) }
 }
 
-/// Spawn an asynchronous FIFO job in `registry.`
+/// Spawns an asynchronous FIFO job in `registry.`
 ///
 /// Unsafe because `registry` must not yet have terminated.
 pub(super) unsafe fn spawn_fifo_in<F>(func: F, registry: &Arc<Registry>)
@@ -149,7 +143,7 @@ where
     F: FnOnce() + Send + 'static,
 {
     // We assert that this does not hold any references (we know
-    // this because of the `'static` bound in the inferface);
+    // this because of the `'static` bound in the interface);
     // moreover, we assert that the code below is not supposed to
     // be able to panic, and hence the data won't leak but will be
     // enqueued into some deque for later execution.
@@ -160,7 +154,7 @@ where
     // in a locally-FIFO order.  Otherwise, just use the pool's global injector.
     match registry.current_thread() {
         Some(worker) => worker.push_fifo(job_ref),
-        None => registry.inject(&[job_ref]),
+        None => registry.inject(job_ref),
     }
     mem::forget(abort_guard);
 }

@@ -7,6 +7,12 @@
 use crate::parser::{Parse, ParserContext};
 use crate::values::computed::effects::BoxShadow as ComputedBoxShadow;
 use crate::values::computed::effects::SimpleShadow as ComputedSimpleShadow;
+#[cfg(feature = "gecko")]
+use crate::values::computed::url::ComputedUrl;
+use crate::values::computed::Angle as ComputedAngle;
+use crate::values::computed::CSSPixelLength as ComputedCSSPixelLength;
+use crate::values::computed::Filter as ComputedFilter;
+use crate::values::computed::NonNegativeLength as ComputedNonNegativeLength;
 use crate::values::computed::NonNegativeNumber as ComputedNonNegativeNumber;
 use crate::values::computed::ZeroToOneNumber as ComputedZeroToOneNumber;
 use crate::values::computed::{Context, ToComputedValue};
@@ -22,7 +28,7 @@ use crate::values::specified::{Angle, Number, NumberOrPercentage};
 #[cfg(feature = "servo")]
 use crate::values::Impossible;
 use crate::Zero;
-use cssparser::{self, BasicParseErrorKind, Parser, Token};
+use cssparser::{BasicParseErrorKind, Parser, Token};
 use style_traits::{ParseError, StyleParseErrorKind, ValueParseErrorKind};
 
 /// A specified value for a single shadow of the `box-shadow` property.
@@ -75,6 +81,7 @@ fn clamp_to_one(number: NumberOrPercentage) -> NumberOrPercentage {
 macro_rules! factor_impl_common {
     ($ty:ty, $computed_ty:ty) => {
         impl $ty {
+            #[inline]
             fn one() -> Self {
                 Self(NumberOrPercentage::Number(Number::new(1.)))
             }
@@ -141,7 +148,7 @@ impl Parse for BoxShadow {
         loop {
             if !inset {
                 if input
-                    .try(|input| input.expect_ident_matching("inset"))
+                    .try_parse(|input| input.expect_ident_matching("inset"))
                     .is_ok()
                 {
                     inset = true;
@@ -149,18 +156,17 @@ impl Parse for BoxShadow {
                 }
             }
             if lengths.is_none() {
-                let value = input.try::<_, _, ParseError>(|i| {
+                let value = input.try_parse::<_, _, ParseError>(|i| {
                     let horizontal = Length::parse(context, i)?;
                     let vertical = Length::parse(context, i)?;
-                    let (blur, spread) = match i
-                        .try::<_, _, ParseError>(|i| Length::parse_non_negative(context, i))
-                    {
-                        Ok(blur) => {
-                            let spread = i.try(|i| Length::parse(context, i)).ok();
-                            (Some(blur.into()), spread)
-                        },
-                        Err(_) => (None, None),
-                    };
+                    let (blur, spread) =
+                        match i.try_parse(|i| Length::parse_non_negative(context, i)) {
+                            Ok(blur) => {
+                                let spread = i.try_parse(|i| Length::parse(context, i)).ok();
+                                (Some(blur.into()), spread)
+                            },
+                            Err(_) => (None, None),
+                        };
                     Ok((horizontal, vertical, blur, spread))
                 });
                 if let Ok(value) = value {
@@ -169,7 +175,7 @@ impl Parse for BoxShadow {
                 }
             }
             if color.is_none() {
-                if let Ok(value) = input.try(|i| Color::parse(context, i)) {
+                if let Ok(value) = input.try_parse(|i| Color::parse(context, i)) {
                     color = Some(value);
                     continue;
                 }
@@ -218,6 +224,90 @@ impl ToComputedValue for BoxShadow {
     }
 }
 
+// We need this for converting the specified Filter into computed Filter without Context (for
+// some FFIs in glue.rs). This can fail because in some circumstances, we still need Context to
+// determine the computed value.
+impl Filter {
+    /// Generate the ComputedFilter without Context.
+    pub fn to_computed_value_without_context(&self) -> Result<ComputedFilter, ()> {
+        match *self {
+            Filter::Blur(ref length) => Ok(ComputedFilter::Blur(ComputedNonNegativeLength::new(
+                length.0.to_computed_pixel_length_without_context()?,
+            ))),
+            Filter::Brightness(ref factor) => Ok(ComputedFilter::Brightness(
+                ComputedNonNegativeNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::Contrast(ref factor) => Ok(ComputedFilter::Contrast(
+                ComputedNonNegativeNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::Grayscale(ref factor) => Ok(ComputedFilter::Grayscale(
+                ComputedZeroToOneNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::HueRotate(ref angle) => Ok(ComputedFilter::HueRotate(
+                ComputedAngle::from_degrees(angle.degrees()),
+            )),
+            Filter::Invert(ref factor) => Ok(ComputedFilter::Invert(
+                ComputedZeroToOneNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::Opacity(ref factor) => Ok(ComputedFilter::Opacity(
+                ComputedZeroToOneNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::Saturate(ref factor) => Ok(ComputedFilter::Saturate(
+                ComputedNonNegativeNumber::from(factor.0.to_number().get()),
+            )),
+            Filter::Sepia(ref factor) => Ok(ComputedFilter::Sepia(ComputedZeroToOneNumber::from(
+                factor.0.to_number().get(),
+            ))),
+            Filter::DropShadow(ref shadow) => {
+                if cfg!(feature = "gecko") {
+                    let color = match shadow
+                        .color
+                        .as_ref()
+                        .unwrap_or(&Color::currentcolor())
+                        .to_computed_color(None)
+                    {
+                        Some(c) => c,
+                        None => return Err(()),
+                    };
+
+                    let horizontal = ComputedCSSPixelLength::new(
+                        shadow
+                            .horizontal
+                            .to_computed_pixel_length_without_context()?,
+                    );
+                    let vertical = ComputedCSSPixelLength::new(
+                        shadow.vertical.to_computed_pixel_length_without_context()?,
+                    );
+                    let blur = ComputedNonNegativeLength::new(
+                        shadow
+                            .blur
+                            .as_ref()
+                            .unwrap_or(&NonNegativeLength::zero())
+                            .0
+                            .to_computed_pixel_length_without_context()?,
+                    );
+
+                    Ok(ComputedFilter::DropShadow(ComputedSimpleShadow {
+                        color,
+                        horizontal,
+                        vertical,
+                        blur,
+                    }))
+                } else {
+                    Err(())
+                }
+            },
+            Filter::Url(ref url) => {
+                if cfg!(feature = "gecko") {
+                    Ok(ComputedFilter::Url(ComputedUrl(url.clone())))
+                } else {
+                    Err(())
+                }
+            },
+        }
+    }
+}
+
 impl Parse for Filter {
     #[inline]
     fn parse<'i, 't>(
@@ -226,7 +316,7 @@ impl Parse for Filter {
     ) -> Result<Self, ParseError<'i>> {
         #[cfg(feature = "gecko")]
         {
-            if let Ok(url) = input.try(|i| SpecifiedUrl::parse(context, i)) {
+            if let Ok(url) = input.try_parse(|i| SpecifiedUrl::parse(context, i)) {
                 return Ok(GenericFilter::Url(url));
             }
         }
@@ -242,22 +332,22 @@ impl Parse for Filter {
         input.parse_nested_block(|i| {
             match_ignore_ascii_case! { &*function,
                 "blur" => Ok(GenericFilter::Blur(
-                    i.try(|i| NonNegativeLength::parse(context, i))
+                    i.try_parse(|i| NonNegativeLength::parse(context, i))
                      .unwrap_or(Zero::zero()),
                 )),
                 "brightness" => Ok(GenericFilter::Brightness(
-                    i.try(|i| NonNegativeFactor::parse(context, i))
+                    i.try_parse(|i| NonNegativeFactor::parse(context, i))
                      .unwrap_or(NonNegativeFactor::one()),
                 )),
                 "contrast" => Ok(GenericFilter::Contrast(
-                    i.try(|i| NonNegativeFactor::parse(context, i))
+                    i.try_parse(|i| NonNegativeFactor::parse(context, i))
                      .unwrap_or(NonNegativeFactor::one()),
                 )),
                 "grayscale" => {
                     // Values of amount over 100% are allowed but UAs must clamp the values to 1.
                     // https://drafts.fxtf.org/filter-effects/#funcdef-filter-grayscale
                     Ok(GenericFilter::Grayscale(
-                        i.try(|i| ZeroToOneFactor::parse(context, i))
+                        i.try_parse(|i| ZeroToOneFactor::parse(context, i))
                          .unwrap_or(ZeroToOneFactor::one()),
                     ))
                 },
@@ -265,7 +355,7 @@ impl Parse for Filter {
                     // We allow unitless zero here, see:
                     // https://github.com/w3c/fxtf-drafts/issues/228
                     Ok(GenericFilter::HueRotate(
-                        i.try(|i| Angle::parse_with_unitless(context, i))
+                        i.try_parse(|i| Angle::parse_with_unitless(context, i))
                          .unwrap_or(Zero::zero()),
                     ))
                 },
@@ -273,7 +363,7 @@ impl Parse for Filter {
                     // Values of amount over 100% are allowed but UAs must clamp the values to 1.
                     // https://drafts.fxtf.org/filter-effects/#funcdef-filter-invert
                     Ok(GenericFilter::Invert(
-                        i.try(|i| ZeroToOneFactor::parse(context, i))
+                        i.try_parse(|i| ZeroToOneFactor::parse(context, i))
                          .unwrap_or(ZeroToOneFactor::one()),
                     ))
                 },
@@ -281,19 +371,19 @@ impl Parse for Filter {
                     // Values of amount over 100% are allowed but UAs must clamp the values to 1.
                     // https://drafts.fxtf.org/filter-effects/#funcdef-filter-opacity
                     Ok(GenericFilter::Opacity(
-                        i.try(|i| ZeroToOneFactor::parse(context, i))
+                        i.try_parse(|i| ZeroToOneFactor::parse(context, i))
                          .unwrap_or(ZeroToOneFactor::one()),
                     ))
                 },
                 "saturate" => Ok(GenericFilter::Saturate(
-                    i.try(|i| NonNegativeFactor::parse(context, i))
+                    i.try_parse(|i| NonNegativeFactor::parse(context, i))
                      .unwrap_or(NonNegativeFactor::one()),
                 )),
                 "sepia" => {
                     // Values of amount over 100% are allowed but UAs must clamp the values to 1.
                     // https://drafts.fxtf.org/filter-effects/#funcdef-filter-sepia
                     Ok(GenericFilter::Sepia(
-                        i.try(|i| ZeroToOneFactor::parse(context, i))
+                        i.try_parse(|i| ZeroToOneFactor::parse(context, i))
                          .unwrap_or(ZeroToOneFactor::one()),
                     ))
                 },
@@ -312,12 +402,14 @@ impl Parse for SimpleShadow {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let color = input.try(|i| Color::parse(context, i)).ok();
+        let color = input.try_parse(|i| Color::parse(context, i)).ok();
         let horizontal = Length::parse(context, input)?;
         let vertical = Length::parse(context, input)?;
-        let blur = input.try(|i| Length::parse_non_negative(context, i)).ok();
+        let blur = input
+            .try_parse(|i| Length::parse_non_negative(context, i))
+            .ok();
         let blur = blur.map(NonNegative::<Length>);
-        let color = color.or_else(|| input.try(|i| Color::parse(context, i)).ok());
+        let color = color.or_else(|| input.try_parse(|i| Color::parse(context, i)).ok());
 
         Ok(SimpleShadow {
             color,

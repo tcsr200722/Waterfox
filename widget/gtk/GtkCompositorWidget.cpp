@@ -5,62 +5,60 @@
 
 #include "GtkCompositorWidget.h"
 
-#include "gfxPlatformGtk.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/CompositorThread.h"
+#include "mozilla/WidgetUtilsGtk.h"
 #include "mozilla/widget/InProcessCompositorWidget.h"
 #include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsWindow.h"
+
+#ifdef MOZ_X11
+#  include "mozilla/X11Util.h"
+#endif
+
+#ifdef MOZ_WAYLAND
+#  include "mozilla/layers/NativeLayerWayland.h"
+#endif
+
+#ifdef MOZ_LOGGING
+#  undef LOG
+#  define LOG(str, ...)                               \
+    MOZ_LOG(IsPopup() ? gWidgetPopupLog : gWidgetLog, \
+            mozilla::LogLevel::Debug,                 \
+            ("[%p]: " str, mWidget.get(), ##__VA_ARGS__))
+#endif /* MOZ_LOGGING */
 
 namespace mozilla {
 namespace widget {
 
 GtkCompositorWidget::GtkCompositorWidget(
     const GtkCompositorWidgetInitData& aInitData,
-    const layers::CompositorOptions& aOptions, nsWindow* aWindow)
-    : CompositorWidget(aOptions), mWidget(aWindow) {
-  // If we have a nsWindow, then grab the already existing display connection
-  // If we don't, then use the init data to connect to the display
-  if (aWindow) {
-    mXDisplay = aWindow->XDisplay();
-  } else {
-    mXDisplay = XOpenDisplay(aInitData.XDisplayString().get());
+    const layers::CompositorOptions& aOptions, RefPtr<nsWindow> aWindow)
+    : CompositorWidget(aOptions),
+      mWidget(std::move(aWindow)),
+      mClientSize(LayoutDeviceIntSize(aInitData.InitialClientSize()),
+                  "GtkCompositorWidget::mClientSize") {
+#if defined(MOZ_X11)
+  if (GdkIsX11Display()) {
+    ConfigureX11Backend((Window)aInitData.XWindow(), aInitData.Shaped());
+    LOG("GtkCompositorWidget::GtkCompositorWidget() [%p] mXWindow %p\n",
+        (void*)mWidget.get(), (void*)aInitData.XWindow());
   }
-
-#ifdef MOZ_WAYLAND
-  if (!aInitData.IsX11Display()) {
-    if (!aWindow) {
-      NS_WARNING("GtkCompositorWidget: We're missing nsWindow!");
-    }
-    mProvider.Initialize(aWindow);
-  } else
 #endif
-  {
-    mXWindow = (Window)aInitData.XWindow();
-
-    // Grab the window's visual and depth
-    XWindowAttributes windowAttrs;
-    if (!XGetWindowAttributes(mXDisplay, mXWindow, &windowAttrs)) {
-      NS_WARNING("GtkCompositorWidget(): XGetWindowAttributes() failed!");
-    }
-
-    Visual* visual = windowAttrs.visual;
-    int depth = windowAttrs.depth;
-
-    // Initialize the window surface provider
-    mProvider.Initialize(mXDisplay, mXWindow, visual, depth,
-                         aInitData.Shaped());
+#if defined(MOZ_WAYLAND)
+  if (GdkIsWaylandDisplay()) {
+    ConfigureWaylandBackend();
+    LOG("GtkCompositorWidget::GtkCompositorWidget() [%p] mWidget %p\n",
+        (void*)mWidget.get(), (void*)mWidget);
   }
-  mClientSize = aInitData.InitialClientSize();
+#endif
 }
 
 GtkCompositorWidget::~GtkCompositorWidget() {
-  mProvider.CleanupResources();
-
-  // If we created our own display connection, we need to destroy it
-  if (!mWidget && mXDisplay) {
-    XCloseDisplay(mXDisplay);
-    mXDisplay = nullptr;
-  }
+  LOG("GtkCompositorWidget::~GtkCompositorWidget [%p]\n", (void*)mWidget.get());
+  CleanupResources();
+  RefPtr<nsIWidget> widget = mWidget.forget();
+  NS_ReleaseOnMainThread("GtkCompositorWidget::mWidget", widget.forget());
 }
 
 already_AddRefed<gfx::DrawTarget> GtkCompositorWidget::StartRemoteDrawing() {
@@ -70,7 +68,8 @@ void GtkCompositorWidget::EndRemoteDrawing() {}
 
 already_AddRefed<gfx::DrawTarget>
 GtkCompositorWidget::StartRemoteDrawingInRegion(
-    LayoutDeviceIntRegion& aInvalidRegion, layers::BufferMode* aBufferMode) {
+    const LayoutDeviceIntRegion& aInvalidRegion,
+    layers::BufferMode* aBufferMode) {
   return mProvider.StartRemoteDrawingInRegion(aInvalidRegion, aBufferMode);
 }
 
@@ -83,29 +82,138 @@ nsIWidget* GtkCompositorWidget::RealWidget() { return mWidget; }
 
 void GtkCompositorWidget::NotifyClientSizeChanged(
     const LayoutDeviceIntSize& aClientSize) {
-  mClientSize = aClientSize;
+  LOG("GtkCompositorWidget::NotifyClientSizeChanged() to %d x %d",
+      aClientSize.width, aClientSize.height);
+
+  auto size = mClientSize.Lock();
+  *size = aClientSize;
 }
 
-LayoutDeviceIntSize GtkCompositorWidget::GetClientSize() { return mClientSize; }
+LayoutDeviceIntSize GtkCompositorWidget::GetClientSize() {
+  auto size = mClientSize.Lock();
+  return *size;
+}
 
-uintptr_t GtkCompositorWidget::GetWidgetKey() {
-  return reinterpret_cast<uintptr_t>(mWidget);
+void GtkCompositorWidget::RemoteLayoutSizeUpdated(
+    const LayoutDeviceRect& aSize) {
+  if (!mWidget || !mWidget->IsWaitingForCompositorResume()) {
+    return;
+  }
+
+  LOG("GtkCompositorWidget::RemoteLayoutSizeUpdated() %d x %d",
+      (int)aSize.width, (int)aSize.height);
+
+  // We're waiting for layout to match widget size.
+  auto clientSize = mClientSize.Lock();
+  if (clientSize->width != (int)aSize.width ||
+      clientSize->height != (int)aSize.height) {
+    LOG("quit, client size doesn't match (%d x %d)", clientSize->width,
+        clientSize->height);
+    return;
+  }
+
+  mWidget->ResumeCompositorFromCompositorThread();
 }
 
 EGLNativeWindowType GtkCompositorWidget::GetEGLNativeWindow() {
-  return mWidget
-             ? (EGLNativeWindowType)mWidget->GetNativeData(NS_NATIVE_EGL_WINDOW)
-             : nullptr;
+  EGLNativeWindowType window = nullptr;
+  if (mWidget) {
+    window = (EGLNativeWindowType)mWidget->GetNativeData(NS_NATIVE_EGL_WINDOW);
+  }
+#if defined(MOZ_X11)
+  else {
+    window = (EGLNativeWindowType)mProvider.GetXWindow();
+  }
+#endif
+  LOG("GtkCompositorWidget::GetEGLNativeWindow [%p] window %p\n", mWidget.get(),
+      window);
+  return window;
+}
+
+bool GtkCompositorWidget::SetEGLNativeWindowSize(
+    const LayoutDeviceIntSize& aEGLWindowSize) {
+#if defined(MOZ_WAYLAND)
+  if (mWidget) {
+    return mWidget->SetEGLNativeWindowSize(aEGLWindowSize);
+  }
+#endif
+  return true;
+}
+
+LayoutDeviceIntRegion GtkCompositorWidget::GetTransparentRegion() {
+  LayoutDeviceIntRegion fullRegion(
+      LayoutDeviceIntRect(LayoutDeviceIntPoint(), GetClientSize()));
+  if (mWidget) {
+    fullRegion.SubOut(mWidget->GetOpaqueRegion());
+  }
+  return fullRegion;
 }
 
 #ifdef MOZ_WAYLAND
-void GtkCompositorWidget::SetEGLNativeWindowSize(
-    const LayoutDeviceIntSize& aEGLWindowSize) {
-  if (mWidget) {
-    mWidget->SetEGLNativeWindowSize(aEGLWindowSize);
+RefPtr<mozilla::layers::NativeLayerRoot>
+GtkCompositorWidget::GetNativeLayerRoot() {
+  if (gfx::gfxVars::UseWebRenderCompositor()) {
+    if (!mNativeLayerRoot) {
+      MOZ_ASSERT(mWidget && mWidget->GetMozContainer());
+      mNativeLayerRoot = NativeLayerRootWayland::CreateForMozContainer(
+          mWidget->GetMozContainer());
+    }
+    return mNativeLayerRoot;
   }
+  return nullptr;
 }
 #endif
+
+void GtkCompositorWidget::CleanupResources() {
+  LOG("GtkCompositorWidget::CleanupResources [%p]\n", (void*)mWidget.get());
+  mProvider.CleanupResources();
+}
+
+#if defined(MOZ_WAYLAND)
+void GtkCompositorWidget::ConfigureWaylandBackend() {
+  mProvider.Initialize(this);
+}
+#endif
+
+#if defined(MOZ_X11)
+void GtkCompositorWidget::ConfigureX11Backend(Window aXWindow, bool aShaped) {
+  // We don't have X window yet.
+  if (!aXWindow) {
+    mProvider.CleanupResources();
+    return;
+  }
+  // Initialize the window surface provider
+  mProvider.Initialize(aXWindow, aShaped);
+}
+#endif
+
+void GtkCompositorWidget::SetRenderingSurface(const uintptr_t aXWindow,
+                                              const bool aShaped) {
+  LOG("GtkCompositorWidget::SetRenderingSurface() [%p]\n", mWidget.get());
+
+#if defined(MOZ_WAYLAND)
+  if (GdkIsWaylandDisplay()) {
+    LOG("  configure widget %p\n", mWidget.get());
+    ConfigureWaylandBackend();
+  }
+#endif
+#if defined(MOZ_X11)
+  if (GdkIsX11Display()) {
+    LOG("  configure XWindow %p shaped %d\n", (void*)aXWindow, aShaped);
+    ConfigureX11Backend((Window)aXWindow, aShaped);
+  }
+#endif
+}
+
+#ifdef MOZ_LOGGING
+bool GtkCompositorWidget::IsPopup() {
+  return mWidget ? mWidget->IsPopup() : false;
+}
+#endif
+
+UniquePtr<MozContainerSurfaceLock> GtkCompositorWidget::LockSurface() {
+  return mWidget ? mWidget->LockSurface() : nullptr;
+}
 
 }  // namespace widget
 }  // namespace mozilla

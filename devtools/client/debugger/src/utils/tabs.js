@@ -2,12 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import type { PersistedTab, VisibleTab } from "../reducers/tabs";
-import type { TabList, Tab, TabsSources } from "../reducers/types";
-import type { URL } from "../types";
-
 /*
  * Finds the hidden tabs by comparing the tabs' top offset.
  * hidden tabs will have a great top offset.
@@ -18,35 +12,27 @@ import type { URL } from "../types";
  * @returns Array
  */
 
-export function getHiddenTabs(
-  sourceTabs: TabsSources,
-  sourceTabEls: Array<any>
-): TabsSources {
+export function getHiddenTabs(sourceTabs, sourceTabEls) {
   sourceTabEls = [].slice.call(sourceTabEls);
-  function getTopOffset(): number {
+  function getTopOffset() {
     const topOffsets = sourceTabEls.map(t => t.getBoundingClientRect().top);
     return Math.min(...topOffsets);
   }
 
-  function hasTopOffset(el): boolean {
+  function hasTopOffset(el) {
     // adding 10px helps account for cases where the tab might be offset by
     // styling such as selected tabs which don't have a border.
     const tabTopOffset = getTopOffset();
     return el.getBoundingClientRect().top > tabTopOffset + 10;
   }
 
-  return sourceTabs.filter((tab, index: number) => {
+  return sourceTabs.filter((tab, index) => {
     const element = sourceTabEls[index];
     return element && hasTopOffset(element);
   });
 }
 
-export function getFramework(tabs: TabList, url: URL): string {
-  const tab = tabs.find(t => t.url === url);
-  return tab?.framework ?? "";
-}
-
-export function getTabMenuItems(): Object {
+export function getTabMenuItems() {
   return {
     closeTab: {
       id: "node-menu-close-tab",
@@ -78,10 +64,10 @@ export function getTabMenuItems(): Object {
       accesskey: L10N.getStr("sourceTabs.revealInTree.accesskey"),
       disabled: false,
     },
-    copyToClipboard: {
-      id: "node-menu-copy-to-clipboard",
-      label: L10N.getStr("copyToClipboard.label"),
-      accesskey: L10N.getStr("copyToClipboard.accesskey"),
+    copySource: {
+      id: "node-menu-copy-source",
+      label: L10N.getStr("copySource.label"),
+      accesskey: L10N.getStr("copySource.accesskey"),
       disabled: false,
     },
     copySourceUri2: {
@@ -92,8 +78,8 @@ export function getTabMenuItems(): Object {
     },
     toggleBlackBox: {
       id: "node-menu-blackbox",
-      label: L10N.getStr("blackboxContextItem.blackbox"),
-      accesskey: L10N.getStr("blackboxContextItem.blackbox.accesskey"),
+      label: L10N.getStr("ignoreContextItem.ignore"),
+      accesskey: L10N.getStr("ignoreContextItem.ignore.accesskey"),
       disabled: false,
     },
     prettyPrint: {
@@ -105,12 +91,31 @@ export function getTabMenuItems(): Object {
   };
 }
 
-export function isSimilarTab(tab: Tab, url: URL, isOriginal: boolean): boolean {
+/**
+ * Determines if a tab exists with the following properties
+ *
+ * @param {Object} tab
+ * @param {String} url
+ * @param {Boolean} isOriginal
+ */
+export function isSimilarTab(tab, url, isOriginal) {
   return tab.url === url && tab.isOriginal === isOriginal;
 }
 
-export function persistTabs(tabs: VisibleTab[]): PersistedTab[] {
+/**
+ * This cleans up some tab info (source id and thread info),
+ * mostly for persiting to pref and for navigation or reload.
+ * This is neccesary because the source and thread are destroyed
+ * and re-created across navigations / reloads.
+ *
+ * @param {Array} tabs
+ */
+export function persistTabs(tabs) {
   return [...tabs]
     .filter(tab => tab.url)
-    .map(tab => ({ ...tab, sourceId: null }));
+    .map(tab => ({
+      ...tab,
+      source: null,
+      sourceActor: null,
+    }));
 }

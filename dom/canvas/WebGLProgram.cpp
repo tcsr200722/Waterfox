@@ -9,6 +9,7 @@
 #include "mozilla/CheckedInt.h"
 #include "mozilla/dom/WebGL2RenderingContextBinding.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/RefPtr.h"
 #include "nsPrintfCString.h"
 #include "WebGLBuffer.h"
@@ -331,7 +332,7 @@ webgl::ActiveUniformValidationInfo webgl::ActiveUniformValidationInfo::Make(
 
 // -------------------------
 
-//#define DUMP_SHADERVAR_MAPPINGS
+// #define DUMP_SHADERVAR_MAPPINGS
 
 RefPtr<const webgl::LinkedProgramInfo> QueryProgramInfo(WebGLProgram* prog,
                                                         gl::GLContext* gl) {
@@ -347,6 +348,7 @@ RefPtr<const webgl::LinkedProgramInfo> QueryProgramInfo(WebGLProgram* prog,
     const auto version = compileResults->mShaderVersion;
 
     const auto fnAddInfo = [&](const webgl::FragOutputInfo& x) {
+      info->hasOutput[x.loc] = true;
       info->fragOutputs.insert({x.loc, x});
     };
 
@@ -444,6 +446,9 @@ RefPtr<const webgl::LinkedProgramInfo> QueryProgramInfo(WebGLProgram* prog,
     }
   }
 
+  info->webgl_gl_VertexID_Offset =
+      gl->fGetUniformLocation(prog->mGLName, "webgl_gl_VertexID_Offset");
+
   // -
 
   for (const auto& uniform : info->active.activeUniforms) {
@@ -485,7 +490,7 @@ RefPtr<const webgl::LinkedProgramInfo> QueryProgramInfo(WebGLProgram* prog,
 
       auto curInfo = std::unique_ptr<webgl::SamplerUniformInfo>(
           new webgl::SamplerUniformInfo{*texList, *baseType, isShadowSampler});
-      curInfo->texUnits.resize(uniform.elemCount);
+      MOZ_RELEASE_ASSERT(curInfo->texUnits.resize(uniform.elemCount));
       samplerInfo = curInfo.get();
       info->samplerUniforms.push_back(std::move(curInfo));
     }
@@ -681,7 +686,7 @@ webgl::LinkedProgramInfo::GetDrawFetchLimits() const {
     }
   }
 
-  if (hasActiveAttrib && !hasActiveDivisor0) {
+  if (!webgl->IsWebGL2() && hasActiveAttrib && !hasActiveDivisor0) {
     webgl->ErrorInvalidOperation(
         "One active vertex attrib (if any are active)"
         " must have a divisor of 0.");
@@ -814,14 +819,25 @@ void WebGLProgram::UniformBlockBinding(GLuint uniformBlockIndex,
 }
 
 bool WebGLProgram::ValidateForLink() {
+  const auto AppendCompileLog = [&](const WebGLShader* const shader) {
+    if (!shader) {
+      mLinkLog += " Missing shader.";
+      return;
+    }
+    mLinkLog += "\nSHADER_INFO_LOG:\n";
+    mLinkLog += shader->CompileLog();
+  };
+
   if (!mVertShader || !mVertShader->IsCompiled()) {
-    mLinkLog = "Must have a compiled vertex shader attached.";
+    mLinkLog = "Must have a compiled vertex shader attached:";
+    AppendCompileLog(mVertShader);
     return false;
   }
   const auto& vertInfo = *mVertShader->CompileResults();
 
   if (!mFragShader || !mFragShader->IsCompiled()) {
-    mLinkLog = "Must have an compiled fragment shader attached.";
+    mLinkLog = "Must have a compiled fragment shader attached:";
+    AppendCompileLog(mFragShader);
     return false;
   }
   const auto& fragInfo = *mFragShader->CompileResults();
@@ -1015,28 +1031,7 @@ bool WebGLProgram::ValidateAfterTentativeLink(
   const auto& linkInfo = mMostRecentLinkInfo;
   const auto& gl = mContext->gl;
 
-  // Check if the attrib name conflicting to uniform name
-  {
-    std::unordered_set<std::string> attribNames;
-    for (const auto& attrib : linkInfo->active.activeAttribs) {
-      attribNames.insert(attrib.name);
-    }
-    for (const auto& uniform : linkInfo->active.activeUniforms) {
-      auto name = uniform.name;
-      const auto maybe = webgl::ParseIndexed(name);
-      if (maybe) {
-        name = maybe->name;
-      }
-      if (attribNames.count(name)) {
-        *out_linkLog = nsPrintfCString(
-                           "Attrib name conflicts with uniform name:"
-                           " %s",
-                           name.c_str())
-                           .BeginReading();
-        return false;
-      }
-    }
-  }
+  // Check for overlapping attrib locations.
   {
     std::unordered_map<uint32_t, const std::string&> nameByLoc;
     for (const auto& attrib : linkInfo->active.activeAttribs) {

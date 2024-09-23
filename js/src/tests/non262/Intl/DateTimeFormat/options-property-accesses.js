@@ -1,11 +1,5 @@
 // |reftest| skip-if(!this.hasOwnProperty("Intl"))
 
-if (typeof getBuildConfiguration === "undefined") {
-  var getBuildConfiguration = SpecialPowers.Cu.getJSTestingFunctions().getBuildConfiguration;
-}
-
-var isNightly = !getBuildConfiguration().release_or_beta;
-
 var log;
 var proxy = new Proxy({
     year: "numeric",
@@ -22,23 +16,17 @@ var proxy = new Proxy({
     }
 }));
 
-var fractionalSecondDigits = isNightly ? ["fractionalSecondDigits"] : [];
-var dayPeriod = isNightly ? ["dayPeriod"] : [];
-
 var constructorAccesses = [
-    // ToDateTimeOptions(options, "any", "date").
-    "weekday", "year", "month", "day",
-    ...dayPeriod, "hour", "minute", "second", ...fractionalSecondDigits,
-
     // InitializeDateTimeFormat
     "localeMatcher", "calendar", "numberingSystem", "hour12", "hourCycle", "timeZone",
 
     // Table 5: Components of date and time formats
-    "weekday", "era", "year", "month", "day", ...dayPeriod, "hour", "minute", "second", "timeZoneName",
+    "weekday", "era", "year", "month", "day", "dayPeriod", "hour", "minute", "second",
+    "fractionalSecondDigits", "timeZoneName",
 
     // InitializeDateTimeFormat
-    ...fractionalSecondDigits,
     "formatMatcher",
+    "dateStyle", "timeStyle",
 ];
 
 log = [];
@@ -49,33 +37,17 @@ assertEqArray(log, constructorAccesses);
 log = [];
 new Date().toLocaleString(undefined, proxy);
 
-assertEqArray(log, [
-    // ToDateTimeOptions(options, "any", "all").
-    "weekday", "year", "month", "day",
-    ...dayPeriod, "hour", "minute", "second", ...fractionalSecondDigits,
-
-    ...constructorAccesses
-]);
+assertEqArray(log, constructorAccesses);
 
 log = [];
 new Date().toLocaleDateString(undefined, proxy);
 
-assertEqArray(log, [
-    // ToDateTimeOptions(options, "date", "date").
-    "weekday", "year", "month", "day",
-
-    ...constructorAccesses
-]);
+assertEqArray(log, constructorAccesses);
 
 log = [];
 new Date().toLocaleTimeString(undefined, proxy);
 
-assertEqArray(log, [
-    // ToDateTimeOptions(options, "time", "time").
-    ...dayPeriod, "hour", "minute", "second", ...fractionalSecondDigits,
-
-    ...constructorAccesses
-]);
+assertEqArray(log, constructorAccesses);
 
 if (typeof reportCompare === "function")
     reportCompare(0, 0);

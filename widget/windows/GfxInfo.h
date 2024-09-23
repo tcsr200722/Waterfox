@@ -5,29 +5,32 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __mozilla_widget_GfxInfo_h__
-#define __mozilla_widget_GfxInfo_h__
+#ifndef WIDGET_WINDOWS_GFXINFO_H_
+#define WIDGET_WINDOWS_GFXINFO_H_
 
 #include "GfxInfoBase.h"
 
-namespace mozilla {
-namespace widget {
+namespace mozilla::widget {
 
 class GfxInfo : public GfxInfoBase {
-  ~GfxInfo() {}
-
  public:
-  GfxInfo();
+  using GfxInfoBase::GetFeatureStatus;
+  using GfxInfoBase::GetFeatureSuggestedDriverVersion;
+
+  GfxInfo() = default;
+  nsresult Init() override;
 
   // We only declare the subset of nsIGfxInfo that we actually implement. The
   // rest is brought forward from GfxInfoBase.
   NS_IMETHOD GetD2DEnabled(bool* aD2DEnabled) override;
   NS_IMETHOD GetDWriteEnabled(bool* aDWriteEnabled) override;
   NS_IMETHOD GetDWriteVersion(nsAString& aDwriteVersion) override;
+  NS_IMETHOD GetEmbeddedInFirefoxReality(
+      bool* aEmbeddedInFirefoxReality) override;
   NS_IMETHOD GetHasBattery(bool* aHasBattery) override;
   NS_IMETHOD GetCleartypeParameters(nsAString& aCleartypeParams) override;
   NS_IMETHOD GetWindowProtocol(nsAString& aWindowProtocol) override;
-  NS_IMETHOD GetDesktopEnvironment(nsAString& aDesktopEnvironment) override;
+  NS_IMETHOD GetTestType(nsAString& aTestType) override;
   NS_IMETHOD GetAdapterDescription(nsAString& aAdapterDescription) override;
   NS_IMETHOD GetAdapterDriver(nsAString& aAdapterDriver) override;
   NS_IMETHOD GetAdapterVendorID(nsAString& aAdapterVendorID) override;
@@ -48,43 +51,36 @@ class GfxInfo : public GfxInfoBase {
       nsAString& aAdapterDriverVersion) override;
   NS_IMETHOD GetAdapterDriverDate2(nsAString& aAdapterDriverDate) override;
   NS_IMETHOD GetIsGPU2Active(bool* aIsGPU2Active) override;
-  NS_IMETHOD GetDisplayInfo(nsTArray<nsString>& aDisplayInfo) override;
-  NS_IMETHOD GetDisplayWidth(nsTArray<uint32_t>& aDisplayWidth) override;
-  NS_IMETHOD GetDisplayHeight(nsTArray<uint32_t>& aDisplayHeight) override;
-  using GfxInfoBase::GetFeatureStatus;
-  using GfxInfoBase::GetFeatureSuggestedDriverVersion;
-
-  nsresult Init() override;
-  NS_IMETHOD_(int32_t) GetMaxRefreshRate() override;
+  NS_IMETHOD GetDrmRenderDevice(nsACString& aDrmRenderDevice) override;
 
   uint32_t OperatingSystemVersion() override { return mWindowsVersion; }
   uint32_t OperatingSystemBuild() override { return mWindowsBuildNumber; }
-
-  nsresult FindMonitors(JSContext* cx, JS::HandleObject array) override;
 
 #ifdef DEBUG
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIGFXINFODEBUG
 #endif
 
- protected:
-  virtual nsresult GetFeatureStatusImpl(
-      int32_t aFeature, int32_t* aStatus, nsAString& aSuggestedDriverVersion,
-      const nsTArray<GfxDriverInfo>& aDriverInfo, nsACString& aFailureId,
-      OperatingSystem* aOS = nullptr) override;
-  virtual const nsTArray<GfxDriverInfo>& GetGfxDriverInfo() override;
+ private:
+  ~GfxInfo() = default;
+
+  // Disallow copy/move
+  GfxInfo(const GfxInfo&) = delete;
+  GfxInfo& operator=(const GfxInfo&) = delete;
+  GfxInfo(GfxInfo&&) = delete;
+  GfxInfo& operator=(GfxInfo&&) = delete;
+
+  OperatingSystem GetOperatingSystem() override;
+
+  nsresult GetFeatureStatusImpl(int32_t aFeature, int32_t* aStatus,
+                                nsAString& aSuggestedDriverVersion,
+                                const nsTArray<GfxDriverInfo>& aDriverInfo,
+                                nsACString& aFailureId,
+                                OperatingSystem* aOS = nullptr) override;
+  const nsTArray<GfxDriverInfo>& GetGfxDriverInfo() override;
 
   void DescribeFeatures(JSContext* cx, JS::Handle<JSObject*> aOut) override;
 
- private:
-  struct DisplayInfo {
-    uint32_t mScreenWidth;
-    uint32_t mScreenHeight;
-    uint32_t mRefreshRate;
-    bool mIsPseudoDisplay;
-  };
-
- private:
   void AddCrashReportAnnotations();
 
   nsString mDeviceString[2];
@@ -96,16 +92,14 @@ class GfxInfo : public GfxInfoBase {
   nsString mAdapterVendorID[2];
   nsString mAdapterDeviceID[2];
   nsString mAdapterSubsysID[2];
-  uint32_t mWindowsVersion;
-  uint32_t mWindowsBuildNumber;
-  uint32_t mActiveGPUIndex;  // This must be 0 or 1
-  nsTArray<DisplayInfo> mDisplayInfo;
-  bool mHasDualGPU;
-  bool mHasDriverVersionMismatch;
-  bool mHasBattery;
+  uint32_t mWindowsVersion = 0;
+  uint32_t mWindowsBuildNumber = 0;
+  uint32_t mActiveGPUIndex = 0;  // This must be 0 or 1
+  bool mHasDualGPU = false;
+  bool mHasDriverVersionMismatch = false;
+  bool mHasBattery = false;
 };
 
-}  // namespace widget
-}  // namespace mozilla
+}  // namespace mozilla::widget
 
-#endif /* __mozilla_widget_GfxInfo_h__ */
+#endif  // WIDGET_WINDOWS_GFXINFO_H_

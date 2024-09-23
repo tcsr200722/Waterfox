@@ -9,8 +9,10 @@
 #include "nsIEventTarget.h"
 #include "nsIObserver.h"
 #include "nsCOMPtr.h"
+#include "nsTArray.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/Mutex.h"
 
 class nsIThreadPool;
@@ -29,17 +31,15 @@ class nsStreamTransportService final : public nsIStreamTransportService,
 
   nsresult Init();
 
-  nsStreamTransportService()
-      : mShutdownLock("nsStreamTransportService.mShutdownLock"),
-        mIsShutdown(false) {}
+  nsStreamTransportService();
 
  private:
   ~nsStreamTransportService();
 
-  nsCOMPtr<nsIThreadPool> mPool;
+  nsCOMPtr<nsIThreadPool> mPool MOZ_GUARDED_BY(mShutdownLock);
 
-  mozilla::Mutex mShutdownLock;
-  bool mIsShutdown;
+  mozilla::Mutex mShutdownLock{"nsStreamTransportService.mShutdownLock"};
+  bool mIsShutdown MOZ_GUARDED_BY(mShutdownLock){false};
 };
 
 }  // namespace net

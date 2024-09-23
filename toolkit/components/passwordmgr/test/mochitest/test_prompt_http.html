@@ -19,61 +19,28 @@
 <script class="testbody" type="text/javascript">
 var iframe = document.getElementById("iframe");
 
-// Force parent to not look for tab-modal prompts, as they're not used for auth prompts.
-isTabModal = false;
+// Let prompt_common know what kind of modal type is used for auth prompts.
+modalType = Ci.nsIPrompt.MODAL_TYPE_TAB;
 
 const AUTHENTICATE_PATH = new URL("authenticate.sjs", window.location.href).pathname;
 
-runInParent(() => {
-  const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-  let login3A, login3B, login4;
-  login3A = Cc["@mozilla.org/login-manager/loginInfo;1"].
-            createInstance(Ci.nsILoginInfo);
-  login3B = Cc["@mozilla.org/login-manager/loginInfo;1"].
-            createInstance(Ci.nsILoginInfo);
-  login4  = Cc["@mozilla.org/login-manager/loginInfo;1"].
-            createInstance(Ci.nsILoginInfo);
-  let httpUpgradeLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].
-                         createInstance(Ci.nsILoginInfo);
-  let httpsDowngradeLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].
-                            createInstance(Ci.nsILoginInfo);
-  let dedupeHttpUpgradeLogin  = Cc["@mozilla.org/login-manager/loginInfo;1"].
-                                createInstance(Ci.nsILoginInfo);
-  let dedupeHttpsUpgradeLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].
-                                createInstance(Ci.nsILoginInfo);
-
-
-  login3A.init("http://mochi.test:8888", null, "mochitest",
-               "mochiuser1", "mochipass1", "", "");
-  login3B.init("http://mochi.test:8888", null, "mochitest2",
-               "mochiuser2", "mochipass2", "", "");
-  login4.init("http://mochi.test:8888", null, "mochitest3",
-              "mochiuser3", "mochipass3-old", "", "");
-  // Logins to test scheme upgrades (allowed) and downgrades (disallowed)
-  httpUpgradeLogin.init("http://example.com", null, "schemeUpgrade",
-                        "httpUser", "httpPass", "", "");
-  httpsDowngradeLogin.init("https://example.com", null, "schemeDowngrade",
-                           "httpsUser", "httpsPass", "", "");
-  // HTTP and HTTPS version of the same domain and realm but with different passwords.
-  dedupeHttpUpgradeLogin.init("http://example.org", null, "schemeUpgradeDedupe",
-                              "dedupeUser", "httpPass", "", "");
-  dedupeHttpsUpgradeLogin.init("https://example.org", null, "schemeUpgradeDedupe",
-                               "dedupeUser", "httpsPass", "", "");
-
-
-  Services.logins.addLogin(login3A);
-  Services.logins.addLogin(login3B);
-  Services.logins.addLogin(login4);
-  Services.logins.addLogin(httpUpgradeLogin);
-  Services.logins.addLogin(httpsDowngradeLogin);
-  Services.logins.addLogin(dedupeHttpUpgradeLogin);
-  Services.logins.addLogin(dedupeHttpsUpgradeLogin);
+add_setup(async () => {
+  await setStoredLoginsAsync(
+    ["http://mochi.test:8888", null, "mochitest", "mochiuser1", "mochipass1", "", ""],
+    ["http://mochi.test:8888", null, "mochitest2", "mochiuser2", "mochipass2", "", ""],
+    ["http://mochi.test:8888", null, "mochitest3", "mochiuser3", "mochipass3-old", "", ""],
+    // Logins to test scheme upgrades (allowed) and downgrades (disallowed)
+    ["http://example.com", null, "schemeUpgrade", "httpUser", "httpPass", "", ""],
+    ["https://example.com", null, "schemeDowngrade", "httpsUser", "httpsPass", "", ""],
+    // HTTP and HTTPS version of the same domain and realm but with different passwords.
+    ["http://example.org", null, "schemeUpgradeDedupe", "dedupeUser", "httpPass", "", ""],
+    ["https://example.org", null, "schemeUpgradeDedupe", "dedupeUser", "httpsPass", "", ""]
+  );
 });
 
 add_task(async function test_iframe() {
   let state = {
-    msg: "http://mochi.test:8888 is requesting your username and password. The site says: “mochitest”",
+    msg: "This site is asking you to sign in.",
     title: "Authentication Required",
     textValue: "mochiuser1",
     passValue: "mochipass1",
@@ -102,7 +69,7 @@ add_task(async function test_iframe() {
                             iframe);
 
   state = {
-    msg: "http://mochi.test:8888 is requesting your username and password. The site says: “mochitest2”",
+    msg: "This site is asking you to sign in.",
     title: "Authentication Required",
     textValue: "mochiuser2",
     passValue: "mochipass2",
@@ -143,7 +110,7 @@ add_task(async function test_iframe() {
   // expected password (to trigger an auth prompt, and change-password
   // popup notification).
   state = {
-    msg: "http://mochi.test:8888 is requesting your username and password. The site says: “mochitest”",
+    msg: "This site is asking you to sign in.",
     title: "Authentication Required",
     textValue: "mochiuser1",
     passValue: "mochipass1",
@@ -175,7 +142,7 @@ add_task(async function test_iframe() {
   // to (but have an existing saved login for, so that we'll trigger
   // a change-password popup notification.
   state = {
-    msg: "http://mochi.test:8888 is requesting your username and password. The site says: “mochitest3”",
+    msg: "This site is asking you to sign in.",
     title: "Authentication Required",
     textValue: "mochiuser3",
     passValue: "mochipass3-old",
@@ -205,8 +172,6 @@ add_task(async function test_iframe() {
 
   // Housekeeping: Delete login4 to test the save prompt in the next test.
   runInParent(() => {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
     var tmpLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].
                    createInstance(Ci.nsILoginInfo);
     tmpLogin.init("http://mochi.test:8888", null, "mochitest3",
@@ -220,7 +185,7 @@ add_task(async function test_iframe() {
   });
 
   state = {
-    msg: "http://mochi.test:8888 is requesting your username and password. The site says: “mochitest3”",
+    msg: "This site is asking you to sign in.",
     title: "Authentication Required",
     textValue: "",
     passValue: "",
@@ -254,8 +219,8 @@ add_task(async function test_iframe() {
 
 add_task(async function test_schemeUpgrade() {
   let state = {
-    msg: "https://example.com is requesting your username and password. " +
-                  "WARNING: Your password will not be sent to the website you are currently visiting!",
+    msg: "This site is asking you to sign in. Warning: Your login information " +
+      "will be shared with example.com, not the website you are currently visiting.",
     title: "Authentication Required",
     textValue: "httpUser",
     passValue: "httpPass",
@@ -286,9 +251,9 @@ add_task(async function test_schemeUpgrade() {
 });
 
 add_task(async function test_schemeDowngrade() {
-  let state = {
-    msg: "http://example.com is requesting your username and password. " +
-                  "WARNING: Your password will not be sent to the website you are currently visiting!",
+  const state = {
+    msg: "This site is asking you to sign in. Warning: Your login information " +
+      "will be shared with example.com, not the website you are currently visiting.",
     title: "Authentication Required",
     textValue: "", // empty because we shouldn't downgrade
     passValue: "",
@@ -302,14 +267,14 @@ add_task(async function test_schemeDowngrade() {
     focused: "textField",
     defButton: "button0",
   };
-  let action = {
+  const action = {
     buttonClick: "cancel",
   };
-  let promptDone = handlePrompt(state, action);
+  const promptDone = handlePrompt(state, action);
 
   // The following tests are driven by iframe loads
 
-  let iframeLoaded = onloadPromiseFor("iframe");
+  const iframeLoaded = onloadPromiseFor("iframe");
   iframe.src = "http://example.com" + AUTHENTICATE_PATH +
                "?user=unused&pass=unused&realm=schemeDowngrade";
   await promptDone;
@@ -317,9 +282,9 @@ add_task(async function test_schemeDowngrade() {
 });
 
 add_task(async function test_schemeUpgrade_dedupe() {
-  let state = {
-    msg: "https://example.org is requesting your username and password. " +
-                  "WARNING: Your password will not be sent to the website you are currently visiting!",
+  const state = {
+    msg: "This site is asking you to sign in. Warning: Your login information " +
+      "will be shared with example.org, not the website you are currently visiting.",
     title: "Authentication Required",
     textValue: "dedupeUser",
     passValue: "httpsPass",
@@ -333,14 +298,14 @@ add_task(async function test_schemeUpgrade_dedupe() {
     focused: "textField",
     defButton: "button0",
   };
-  let action = {
+  const action = {
     buttonClick: "ok",
   };
-  let promptDone = handlePrompt(state, action);
+  const promptDone = handlePrompt(state, action);
 
   // The following tests are driven by iframe loads
 
-  let iframeLoaded = onloadPromiseFor("iframe");
+  const iframeLoaded = onloadPromiseFor("iframe");
   iframe.src = "https://example.org" + AUTHENTICATE_PATH +
                "?user=dedupeUser&pass=httpsPass&realm=schemeUpgradeDedupe";
   await promptDone;

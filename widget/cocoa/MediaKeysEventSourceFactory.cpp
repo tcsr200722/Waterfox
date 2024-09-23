@@ -6,17 +6,12 @@
 
 #include "MediaHardwareKeysEventSourceMac.h"
 #include "MediaHardwareKeysEventSourceMacMediaCenter.h"
-#include "nsCocoaFeatures.h"
 
 namespace mozilla {
 namespace widget {
 
-mozilla::dom::MediaControlKeysEventSource* CreateMediaControlKeysEventSource() {
-  if (nsCocoaFeatures::IsAtLeastVersion(10, 12, 2)) {
-    return new MediaHardwareKeysEventSourceMacMediaCenter();
-  } else {
-    return new MediaHardwareKeysEventSourceMac();
-  }
+mozilla::dom::MediaControlKeySource* CreateMediaControlKeySource() {
+  return new MediaHardwareKeysEventSourceMacMediaCenter();
 }
 
 }  // namespace widget

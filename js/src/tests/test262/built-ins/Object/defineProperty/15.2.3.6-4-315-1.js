@@ -37,16 +37,17 @@ includes: [propertyHelper.js]
     configurable: false
   });
   if (c !== 3) {
-    $ERROR('Expected c === 3, actually ' + c);
+    throw new Test262Error('Expected c === 3, actually ' + c);
   }
 
   verifyEqualTo(arguments, "genericProperty", getFunc());
 
   verifyWritable(arguments, "genericProperty", "testgetFunction");
 
-  verifyNotEnumerable(arguments, "genericProperty");
-
-  verifyNotConfigurable(arguments, "genericProperty");
+  verifyProperty(arguments, "genericProperty", {
+    enumerable: false,
+    configurable: false,
+  });
 }(1, 2, 3));
 
 reportCompare(0, 0);

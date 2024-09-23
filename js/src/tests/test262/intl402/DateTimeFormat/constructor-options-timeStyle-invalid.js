@@ -1,16 +1,15 @@
-// |reftest| skip -- Intl.DateTimeFormat-datetimestyle is not supported
 // Copyright 2019 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: >
     Checks error cases for the options argument to the DateTimeFormat constructor.
 info: |
-    InitializeDateTimeFormat ( dateTimeFormat, locales, options )
+    CreateDateTimeFormat ( dateTimeFormat, locales, options, required, defaults )
 
     ...
-    30. Let timeStyle be ? GetOption(options, "timeStyle", "string", « "full", "long", "medium", "short" », undefined).
+    41. Let timeStyle be ? GetOption(options, "timeStyle", "string", « "full", "long", "medium", "short" », undefined).
 features: [Intl.DateTimeFormat-datetimestyle]
 ---*/
 

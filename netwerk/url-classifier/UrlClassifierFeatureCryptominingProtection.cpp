@@ -6,11 +6,15 @@
 
 #include "UrlClassifierFeatureCryptominingProtection.h"
 
+#include "mozilla/AntiTrackingUtils.h"
 #include "mozilla/net/UrlClassifierCommon.h"
 #include "ChannelClassifierService.h"
 #include "mozilla/StaticPrefs_privacy.h"
-#include "nsContentUtils.h"
 #include "nsNetUtil.h"
+#include "mozilla/StaticPtr.h"
+#include "nsIWebProgressListener.h"
+#include "nsIHttpChannelInternal.h"
+#include "nsIChannel.h"
 
 namespace mozilla {
 namespace net {
@@ -19,18 +23,18 @@ namespace {
 
 #define CRYPTOMINING_FEATURE_NAME "cryptomining-protection"
 
-#define URLCLASSIFIER_CRYPTOMINING_BLACKLIST \
+#define URLCLASSIFIER_CRYPTOMINING_BLOCKLIST \
   "urlclassifier.features.cryptomining.blacklistTables"
-#define URLCLASSIFIER_CRYPTOMINING_BLACKLIST_TEST_ENTRIES \
+#define URLCLASSIFIER_CRYPTOMINING_BLOCKLIST_TEST_ENTRIES \
   "urlclassifier.features.cryptomining.blacklistHosts"
-#define URLCLASSIFIER_CRYPTOMINING_WHITELIST \
+#define URLCLASSIFIER_CRYPTOMINING_ENTITYLIST \
   "urlclassifier.features.cryptomining.whitelistTables"
-#define URLCLASSIFIER_CRYPTOMINING_WHITELIST_TEST_ENTRIES \
+#define URLCLASSIFIER_CRYPTOMINING_ENTITYLIST_TEST_ENTRIES \
   "urlclassifier.features.cryptomining.whitelistHosts"
-#define URLCLASSIFIER_CRYPTOMINING_SKIP_URLS \
+#define URLCLASSIFIER_CRYPTOMINING_EXCEPTION_URLS \
   "urlclassifier.features.cryptomining.skipURLs"
-#define TABLE_CRYPTOMINING_BLACKLIST_PREF "cryptomining-blacklist-pref"
-#define TABLE_CRYPTOMINING_WHITELIST_PREF "cryptomining-whitelist-pref"
+#define TABLE_CRYPTOMINING_BLOCKLIST_PREF "cryptomining-blacklist-pref"
+#define TABLE_CRYPTOMINING_ENTITYLIST_PREF "cryptomining-whitelist-pref"
 
 StaticRefPtr<UrlClassifierFeatureCryptominingProtection>
     gFeatureCryptominingProtection;
@@ -39,15 +43,15 @@ StaticRefPtr<UrlClassifierFeatureCryptominingProtection>
 
 UrlClassifierFeatureCryptominingProtection::
     UrlClassifierFeatureCryptominingProtection()
-    : UrlClassifierFeatureBase(
-          NS_LITERAL_CSTRING(CRYPTOMINING_FEATURE_NAME),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_CRYPTOMINING_BLACKLIST),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_CRYPTOMINING_WHITELIST),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_CRYPTOMINING_BLACKLIST_TEST_ENTRIES),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_CRYPTOMINING_WHITELIST_TEST_ENTRIES),
-          NS_LITERAL_CSTRING(TABLE_CRYPTOMINING_BLACKLIST_PREF),
-          NS_LITERAL_CSTRING(TABLE_CRYPTOMINING_WHITELIST_PREF),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_CRYPTOMINING_SKIP_URLS)) {}
+    : UrlClassifierFeatureAntiTrackingBase(
+          nsLiteralCString(CRYPTOMINING_FEATURE_NAME),
+          nsLiteralCString(URLCLASSIFIER_CRYPTOMINING_BLOCKLIST),
+          nsLiteralCString(URLCLASSIFIER_CRYPTOMINING_ENTITYLIST),
+          nsLiteralCString(URLCLASSIFIER_CRYPTOMINING_BLOCKLIST_TEST_ENTRIES),
+          nsLiteralCString(URLCLASSIFIER_CRYPTOMINING_ENTITYLIST_TEST_ENTRIES),
+          nsLiteralCString(TABLE_CRYPTOMINING_BLOCKLIST_PREF),
+          nsLiteralCString(TABLE_CRYPTOMINING_ENTITYLIST_PREF),
+          nsLiteralCString(URLCLASSIFIER_CRYPTOMINING_EXCEPTION_URLS)) {}
 
 /* static */ const char* UrlClassifierFeatureCryptominingProtection::Name() {
   return CRYPTOMINING_FEATURE_NAME;
@@ -55,7 +59,7 @@ UrlClassifierFeatureCryptominingProtection::
 
 /* static */
 void UrlClassifierFeatureCryptominingProtection::MaybeInitialize() {
-  UC_LOG(("UrlClassifierFeatureCryptominingProtection: MaybeInitialize"));
+  UC_LOG_LEAK(("UrlClassifierFeatureCryptominingProtection::MaybeInitialize"));
 
   if (!gFeatureCryptominingProtection) {
     gFeatureCryptominingProtection =
@@ -66,7 +70,7 @@ void UrlClassifierFeatureCryptominingProtection::MaybeInitialize() {
 
 /* static */
 void UrlClassifierFeatureCryptominingProtection::MaybeShutdown() {
-  UC_LOG(("UrlClassifierFeatureCryptominingProtection: MaybeShutdown"));
+  UC_LOG_LEAK(("UrlClassifierFeatureCryptominingProtection::MaybeShutdown"));
 
   if (gFeatureCryptominingProtection) {
     gFeatureCryptominingProtection->ShutdownPreferences();
@@ -79,39 +83,24 @@ already_AddRefed<UrlClassifierFeatureCryptominingProtection>
 UrlClassifierFeatureCryptominingProtection::MaybeCreate(nsIChannel* aChannel) {
   MOZ_ASSERT(aChannel);
 
-  UC_LOG(
-      ("UrlClassifierFeatureCryptominingProtection: MaybeCreate for channel %p",
+  UC_LOG_LEAK(
+      ("UrlClassifierFeatureCryptominingProtection::MaybeCreate - channel %p",
        aChannel));
 
   if (!StaticPrefs::privacy_trackingprotection_cryptomining_enabled()) {
     return nullptr;
   }
 
-  nsCOMPtr<nsIURI> chanURI;
-  nsresult rv = aChannel->GetURI(getter_AddRefs(chanURI));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return nullptr;
-  }
-
-  bool isThirdParty =
-      nsContentUtils::IsThirdPartyWindowOrChannel(nullptr, aChannel, chanURI);
+  bool isThirdParty = AntiTrackingUtils::IsThirdPartyChannel(aChannel);
   if (!isThirdParty) {
-    if (UC_LOG_ENABLED()) {
-      nsCString spec = chanURI->GetSpecOrDefault();
-      spec.Truncate(
-          std::min(spec.Length(), UrlClassifierCommon::sMaxSpecLength));
-      UC_LOG(
-          ("UrlClassifierFeatureCryptominingProtection: Skipping cryptomining "
-           "checks "
-           "for first party or top-level load channel[%p] "
-           "with uri %s",
-           aChannel, spec.get()));
-    }
-
+    UC_LOG(
+        ("UrlClassifierFeatureCryptominingProtection::MaybeCreate - "
+         "skipping first party or top-level load for channel %p",
+         aChannel));
     return nullptr;
   }
 
-  if (!UrlClassifierCommon::ShouldEnableClassifier(aChannel)) {
+  if (!UrlClassifierCommon::ShouldEnableProtectionForChannel(aChannel)) {
     return nullptr;
   }
 
@@ -158,20 +147,36 @@ UrlClassifierFeatureCryptominingProtection::ProcessChannel(
   nsAutoCString list;
   UrlClassifierCommon::TablesToString(aList, list);
 
-  if (ChannelClassifierService::OnBeforeBlockChannel(aChannel, mName, list) ==
-      ChannelBlockDecision::Unblocked) {
+  ChannelBlockDecision decision =
+      ChannelClassifierService::OnBeforeBlockChannel(aChannel, mName, list);
+  if (decision != ChannelBlockDecision::Blocked) {
+    uint32_t event =
+        decision == ChannelBlockDecision::Replaced
+            ? nsIWebProgressListener::STATE_REPLACED_TRACKING_CONTENT
+            : nsIWebProgressListener::STATE_ALLOWED_TRACKING_CONTENT;
+
+    // Need to set aBlocked to True if we replace the Cryptominer with a shim,
+    //  since the shim is treated as a blocked event
+    // Note: If we need to account for which kind of tracker was replaced,
+    //  we need to create a new event type in nsIWebProgressListener
+    if (event == nsIWebProgressListener::STATE_REPLACED_TRACKING_CONTENT) {
+      ContentBlockingNotifier::OnEvent(aChannel, event, true);
+    } else {
+      ContentBlockingNotifier::OnEvent(aChannel, event, false);
+    }
+
     *aShouldContinue = true;
     return NS_OK;
   }
 
   UrlClassifierCommon::SetBlockedContent(aChannel, NS_ERROR_CRYPTOMINING_URI,
-                                         list, EmptyCString(), EmptyCString());
+                                         list, ""_ns, ""_ns);
 
   UC_LOG(
-      ("UrlClassifierFeatureCryptominingProtection::ProcessChannel, "
-       "cancelling "
-       "channel[%p]",
+      ("UrlClassifierFeatureCryptominingProtection::ProcessChannel - "
+       "cancelling channel %p",
        aChannel));
+
   nsCOMPtr<nsIHttpChannelInternal> httpChannel = do_QueryInterface(aChannel);
 
   if (httpChannel) {
@@ -191,15 +196,15 @@ UrlClassifierFeatureCryptominingProtection::GetURIByListType(
   NS_ENSURE_ARG_POINTER(aURIType);
   NS_ENSURE_ARG_POINTER(aURI);
 
-  if (aListType == nsIUrlClassifierFeature::blacklist) {
-    *aURIType = nsIUrlClassifierFeature::blacklistURI;
+  if (aListType == nsIUrlClassifierFeature::blocklist) {
+    *aURIType = nsIUrlClassifierFeature::blocklistURI;
     return aChannel->GetURI(aURI);
   }
 
-  MOZ_ASSERT(aListType == nsIUrlClassifierFeature::whitelist);
+  MOZ_ASSERT(aListType == nsIUrlClassifierFeature::entitylist);
 
-  *aURIType = nsIUrlClassifierFeature::pairwiseWhitelistURI;
-  return UrlClassifierCommon::CreatePairwiseWhiteListURI(aChannel, aURI);
+  *aURIType = nsIUrlClassifierFeature::pairwiseEntitylistURI;
+  return UrlClassifierCommon::CreatePairwiseEntityListURI(aChannel, aURI);
 }
 
 }  // namespace net

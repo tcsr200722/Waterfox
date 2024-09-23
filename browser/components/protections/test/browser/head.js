@@ -12,6 +12,14 @@ const nsLoginInfo = new Components.Constructor(
   "init"
 );
 
+ChromeUtils.defineESModuleGetters(this, {
+  Region: "resource://gre/modules/Region.sys.mjs",
+});
+
+const { SearchTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/SearchTestUtils.sys.mjs"
+);
+
 const TEST_LOGIN1 = new nsLoginInfo(
   "https://example.com/",
   "https://example.com/",
@@ -32,18 +40,16 @@ const TEST_LOGIN2 = new nsLoginInfo(
   "password"
 );
 
-async function reloadTab(tab) {
-  const tabReloaded = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-  gBrowser.reloadTab(tab);
-  await tabReloaded;
-}
-
 // Used to replace AboutProtectionsHandler.getLoginData in front-end tests.
-const mockGetLoginDataWithSyncedDevices = (mobileDeviceConnected = false) => {
+const mockGetLoginDataWithSyncedDevices = (
+  mobileDeviceConnected = false,
+  potentiallyBreachedLogins = 0
+) => {
   return {
     getLoginData: () => {
       return {
         numLogins: Services.logins.countLogins("", "", ""),
+        potentiallyBreachedLogins,
         mobileDeviceConnected,
       };
     },
@@ -62,10 +68,29 @@ const mockGetMonitorData = data => {
         monitoredEmails: 1,
         numBreaches: data.numBreaches,
         passwords: 8,
-        potentiallyBreachedLogins: data.potentiallyBreachedLogins,
         numBreachesResolved: data.numBreachesResolved,
+        passwordsResolved: 1,
         error: false,
       };
     },
   };
+};
+
+registerCleanupFunction(function head_cleanup() {
+  Services.logins.removeAllUserFacingLogins();
+});
+
+// Used to replace AboutProtectionsParent.VPNSubStatus
+const getVPNOverrides = (hasSubscription = false) => {
+  return {
+    vpnOverrides: () => {
+      return hasSubscription;
+    },
+  };
+};
+
+const promiseSetHomeRegion = async region => {
+  let promise = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Region._setHomeRegion(region);
+  await promise;
 };

@@ -3,6 +3,14 @@
 
 "use strict";
 
+// This test uses add-on versions that follow the toolkit version but we
+// started to encourage the use of a simpler format in Bug 1793925. We disable
+// the pref below to avoid install errors.
+Services.prefs.setBoolPref(
+  "extensions.webextensions.warnings-as-errors",
+  false
+);
+
 // IDs for scopes that should sideload when sideloading
 // is not disabled.
 let legacyIDs = [
@@ -39,7 +47,10 @@ add_task(async function test_sideloads_after_rebuild() {
   // the same addons available
   await promiseShutdownManager();
   // Reset our scope pref so the scope limitation works.
-  Services.prefs.clearUserPref("extensions.sideloadScopes");
+  Services.prefs.setIntPref(
+    "extensions.sideloadScopes",
+    AddonManager.SCOPE_PROFILE
+  );
 
   // Try to sideload from a non-profile directory.
   await createWebExtension(
@@ -80,7 +91,9 @@ add_task(async function test_sideloads_after_rebuild() {
   // On AOM startup, addons are restored with help from XPIState.  Existing
   // sideloads should all remain.  One new sideloaded addon should be added from
   // the profile.
-  await saveJSON({ not: "what we expect to find" }, gExtensionsJSON.path);
+  await IOUtils.writeJSON(gExtensionsJSON.path, {
+    not: "what we expect to find",
+  });
   info(`**** restart AOM and rebuild XPI database`);
   await promiseStartupManager();
 
@@ -104,7 +117,9 @@ add_task(async function test_sideloads_after_rebuild() {
   );
 
   // Replace the extensions.json with something bogus so we lose our xpidatabase.
-  await saveJSON({ not: "what we expect to find" }, gExtensionsJSON.path);
+  await IOUtils.writeJSON(gExtensionsJSON.path, {
+    not: "what we expect to find",
+  });
   // Delete our appStartup/XPIState data.  Now we should only be able to
   // restore extensions in the profile.
   gAddonStartup.remove(true);

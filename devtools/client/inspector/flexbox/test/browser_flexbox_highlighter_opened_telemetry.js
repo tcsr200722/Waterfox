@@ -8,13 +8,11 @@
 
 const TEST_URI = URL_ROOT + "doc_flexbox_specific_cases.html";
 
-add_task(async function() {
+add_task(async function () {
   await addTab(TEST_URI);
   startTelemetry();
   const { inspector, flexboxInspector } = await openLayoutView();
   const { document: doc } = flexboxInspector;
-  const { highlighters, store } = inspector;
-
   const onFlexHighlighterToggleRendered = waitForDOM(
     doc,
     "#flexbox-checkbox-toggle"
@@ -22,8 +20,8 @@ add_task(async function() {
   await selectNode("#container", inspector);
   const [flexHighlighterToggle] = await onFlexHighlighterToggleRendered;
 
-  await toggleHighlighterON(flexHighlighterToggle, highlighters, store);
-  await toggleHighlighterOFF(flexHighlighterToggle, highlighters, store);
+  await toggleHighlighterON(flexHighlighterToggle, inspector);
+  await toggleHighlighterOFF(flexHighlighterToggle, inspector);
 
   checkResults();
 });

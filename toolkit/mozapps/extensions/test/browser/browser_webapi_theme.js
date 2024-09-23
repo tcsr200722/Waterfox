@@ -8,13 +8,12 @@ add_task(async function test_theme_install() {
     set: [
       ["extensions.webapi.testing", true],
       ["extensions.install.requireBuiltInCerts", false],
-      ["extensions.allowPrivateBrowsingByDefault", false],
     ],
   });
 
   await BrowserTestUtils.withNewTab(TESTPAGE, async browser => {
     let updates = [];
-    function observer(subject, topic, data) {
+    function observer(subject) {
       updates.push(JSON.stringify(subject.wrappedJSObject));
     }
     Services.obs.addObserver(observer, "lightweight-theme-styling-update");

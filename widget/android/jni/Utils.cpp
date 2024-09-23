@@ -9,6 +9,7 @@
 
 #include <android/log.h>
 #include <pthread.h>
+#include <sys/prctl.h>
 
 #include "mozilla/Assertions.h"
 #include "mozilla/java/GeckoAppShellWrappers.h"
@@ -164,10 +165,20 @@ JNIEnv* GetEnvForThread() {
     return env;
   }
 
+  // By default the VM has a nasty habit of overwriting our lovely
+  // thread names with "Thread-<n>" making them hard to identify in a debugger,
+  // so we pass the name in AttachArgs below to prevent that from happening.
+  // PR_GET_NAME requires a 16 byte buffer: https://linux.die.net/man/2/prctl.
+  // JNI_VERSION_1_4 is required for NewDirectByteBuffer.
+  char threadName[16] = {'\0'};
+  prctl(PR_GET_NAME, threadName);
+  JavaVMAttachArgs attachArgs{
+      .version = JNI_VERSION_1_4, .name = threadName, .group = nullptr};
+
   // We don't have a saved JNIEnv, so try to get one.
   // AttachCurrentThread() does the same thing as GetEnv() when a thread is
   // already attached, so we don't have to call GetEnv() at all.
-  if (!sJavaVM->AttachCurrentThread(&env, nullptr)) {
+  if (!sJavaVM->AttachCurrentThread(&env, &attachArgs)) {
     MOZ_ASSERT(env);
     MOZ_ALWAYS_TRUE(!pthread_setspecific(sThreadEnvKey, env));
     return env;
@@ -221,7 +232,7 @@ bool HandleUncaughtException(JNIEnv* aEnv) {
 bool ReportException(JNIEnv* aEnv, jthrowable aExc, jstring aStack) {
   bool result = true;
 
-  result &= NS_SUCCEEDED(CrashReporter::AnnotateCrashReport(
+  result &= NS_SUCCEEDED(CrashReporter::RecordAnnotationNSCString(
       CrashReporter::Annotation::JavaStackTrace,
       String::Ref::From(aStack)->ToCString()));
 
@@ -230,8 +241,7 @@ bool ReportException(JNIEnv* aEnv, jthrowable aExc, jstring aStack) {
     aEnv->ExceptionDescribe();
     aEnv->ExceptionClear();
   } else if (appNotes) {
-    CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("\n") +
-                                               appNotes->ToCString());
+    CrashReporter::AppendAppNotesToCrashReport("\n"_ns + appNotes->ToCString());
   }
 
   if (sOOMErrorClass && aEnv->IsInstanceOf(aExc, sOOMErrorClass)) {
@@ -325,7 +335,7 @@ void DispatchToGeckoPriorityQueue(already_AddRefed<nsIRunnable> aCall) {
 int GetAPIVersion() {
   static int32_t apiVersion = 0;
   if (!apiVersion && IsAvailable()) {
-    apiVersion = java::sdk::VERSION::SDK_INT();
+    apiVersion = java::sdk::Build::VERSION::SDK_INT();
   }
   return apiVersion;
 }
@@ -336,6 +346,13 @@ pid_t GetUIThreadId() {
     uiThreadId = pid_t(java::GeckoThread::UiThreadId());
   }
   return uiThreadId;
+}
+
+bool IsOOMException(JNIEnv* aEnv) {
+  MOZ_ASSERT(aEnv->ExceptionCheck());
+  Throwable::LocalRef e =
+      Throwable::LocalRef::Adopt(aEnv, aEnv->ExceptionOccurred());
+  return sOOMErrorClass && aEnv->IsInstanceOf(e.Get(), sOOMErrorClass);
 }
 
 }  // namespace jni

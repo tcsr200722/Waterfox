@@ -13,31 +13,34 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 // imports root certificates by default, so we just visit example.com
 // and verify that the custom root certificates UI is visible.
 add_task(async function test_https() {
-  await BrowserTestUtils.withNewTab("https://example.com", async function() {
+  await BrowserTestUtils.withNewTab("https://example.com", async function () {
     let promisePanelOpen = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      window,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
-    gIdentityHandler._identityBox.click();
+
+    gIdentityHandler._identityIconBox.click();
     await promisePanelOpen;
     let customRootWarning = document.getElementById(
       "identity-popup-security-decription-custom-root"
     );
     ok(
-      BrowserTestUtils.is_visible(customRootWarning),
+      BrowserTestUtils.isVisible(customRootWarning),
       "custom root warning is visible"
     );
 
     let securityView = document.getElementById("identity-popup-securityView");
     let shown = BrowserTestUtils.waitForEvent(securityView, "ViewShown");
-    document.getElementById("identity-popup-security-expander").click();
+    document.getElementById("identity-popup-security-button").click();
     await shown;
 
     let subPanelInfo = document.getElementById(
       "identity-popup-content-verifier-unknown"
     );
     ok(
-      BrowserTestUtils.is_visible(subPanelInfo),
+      BrowserTestUtils.isVisible(subPanelInfo),
       "custom root warning in sub panel is visible"
     );
   });
@@ -45,31 +48,34 @@ add_task(async function test_https() {
 
 // Also check that there are conditions where this isn't shown.
 add_task(async function test_http() {
-  await BrowserTestUtils.withNewTab("http://example.com", async function() {
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  await BrowserTestUtils.withNewTab("http://example.com", async function () {
     let promisePanelOpen = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      window,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
-    gIdentityHandler._identityBox.click();
+    gIdentityHandler._identityIconBox.click();
     await promisePanelOpen;
     let customRootWarning = document.getElementById(
       "identity-popup-security-decription-custom-root"
     );
     ok(
-      BrowserTestUtils.is_hidden(customRootWarning),
+      BrowserTestUtils.isHidden(customRootWarning),
       "custom root warning is hidden"
     );
 
     let securityView = document.getElementById("identity-popup-securityView");
     let shown = BrowserTestUtils.waitForEvent(securityView, "ViewShown");
-    document.getElementById("identity-popup-security-expander").click();
+    document.getElementById("identity-popup-security-button").click();
     await shown;
 
     let subPanelInfo = document.getElementById(
       "identity-popup-content-verifier-unknown"
     );
     ok(
-      BrowserTestUtils.is_hidden(subPanelInfo),
+      BrowserTestUtils.isHidden(subPanelInfo),
       "custom root warning in sub panel is hidden"
     );
   });

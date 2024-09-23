@@ -7,6 +7,8 @@
 #include "jit/IonOptimizationLevels.h"
 
 #include "jit/Ion.h"
+#include "jit/JitHints.h"
+#include "jit/JitRuntime.h"
 #include "vm/JSScript.h"
 
 #include "vm/JSScript-inl.h"
@@ -26,6 +28,8 @@ void OptimizationInfo::initNormalOptimizationInfo() {
   eaa_ = true;
   edgeCaseAnalysis_ = true;
   eliminateRedundantChecks_ = true;
+  eliminateRedundantShapeGuards_ = true;
+  eliminateRedundantGCBarriers_ = true;
   inlineInterpreted_ = true;
   inlineNative_ = true;
   licm_ = true;
@@ -36,28 +40,6 @@ void OptimizationInfo::initNormalOptimizationInfo() {
   sink_ = true;
 
   registerAllocator_ = RegisterAllocator_Backtracking;
-
-  inlineMaxBytecodePerCallSiteMainThread_ = 200;
-  inlineMaxBytecodePerCallSiteHelperThread_ = 400;
-  inlineMaxCalleeInlinedBytecodeLength_ = 3550;
-  inlineMaxTotalBytecodeLength_ = 85000;
-  inliningMaxCallerBytecodeLength_ = 1600;
-  maxInlineDepth_ = 0;
-  smallFunctionMaxInlineDepth_ = 1;
-  inliningWarmUpThresholdFactor_ = 0.5;
-  inliningRecompileThresholdFactor_ = 4;
-}
-
-void OptimizationInfo::initFullOptimizationInfo() {
-  initNormalOptimizationInfo();
-
-  level_ = OptimizationLevel::Full;
-
-  inlineMaxBytecodePerCallSiteMainThread_ = 550;
-  inlineMaxBytecodePerCallSiteHelperThread_ = 1100;
-  maxInlineDepth_ = 3;
-  smallFunctionMaxInlineDepth_ = 10;
-  inliningWarmUpThresholdFactor_ = 0.125;
 }
 
 void OptimizationInfo::initWasmOptimizationInfo() {
@@ -73,11 +55,14 @@ void OptimizationInfo::initWasmOptimizationInfo() {
   autoTruncate_ = false;
   edgeCaseAnalysis_ = false;
   eliminateRedundantChecks_ = false;
+  eliminateRedundantShapeGuards_ = false;
+  eliminateRedundantGCBarriers_ = false;
   scalarReplacement_ = false;  // wasm has no objects.
   sink_ = false;
 }
 
-uint32_t OptimizationInfo::compilerWarmUpThreshold(JSScript* script,
+uint32_t OptimizationInfo::compilerWarmUpThreshold(JSContext* cx,
+                                                   JSScript* script,
                                                    jsbytecode* pc) const {
   MOZ_ASSERT(pc == nullptr || pc == script->code() ||
              JSOp(*pc) == JSOp::LoopHead);
@@ -86,11 +71,20 @@ uint32_t OptimizationInfo::compilerWarmUpThreshold(JSScript* script,
   // wrong. See bug 1602681.
   MOZ_ASSERT_IF(pc && JSOp(*pc) == JSOp::LoopHead, pc > script->code());
 
+  uint32_t warmUpThreshold = baseCompilerWarmUpThreshold();
+
+  // If an Ion counter hint is present, override the threshold.
+  if (cx->runtime()->jitRuntime()->hasJitHintsMap()) {
+    JitHintsMap* jitHints = cx->runtime()->jitRuntime()->getJitHintsMap();
+    uint32_t hintThreshold;
+    if (jitHints->getIonThresholdHint(script, hintThreshold)) {
+      warmUpThreshold = hintThreshold;
+    }
+  }
+
   if (pc == script->code()) {
     pc = nullptr;
   }
-
-  uint32_t warmUpThreshold = baseCompilerWarmUpThreshold();
 
   // If the script is too large to compile on the main thread, we can still
   // compile it off thread. In these cases, increase the warm-up counter
@@ -120,11 +114,12 @@ uint32_t OptimizationInfo::compilerWarmUpThreshold(JSScript* script,
   return warmUpThreshold + loopDepth * (baseCompilerWarmUpThreshold() / 10);
 }
 
-uint32_t OptimizationInfo::recompileWarmUpThreshold(JSScript* script,
+uint32_t OptimizationInfo::recompileWarmUpThreshold(JSContext* cx,
+                                                    JSScript* script,
                                                     jsbytecode* pc) const {
   MOZ_ASSERT(pc == script->code() || JSOp(*pc) == JSOp::LoopHead);
 
-  uint32_t threshold = compilerWarmUpThreshold(script, pc);
+  uint32_t threshold = compilerWarmUpThreshold(cx, script, pc);
   if (JSOp(*pc) != JSOp::LoopHead || JitOptions.eagerIonCompilation()) {
     return threshold;
   }
@@ -142,58 +137,19 @@ uint32_t OptimizationInfo::recompileWarmUpThreshold(JSScript* script,
 
 OptimizationLevelInfo::OptimizationLevelInfo() {
   infos_[OptimizationLevel::Normal].initNormalOptimizationInfo();
-  infos_[OptimizationLevel::Full].initFullOptimizationInfo();
   infos_[OptimizationLevel::Wasm].initWasmOptimizationInfo();
-
-#ifdef DEBUG
-  OptimizationLevel level = firstLevel();
-  while (!isLastLevel(level)) {
-    OptimizationLevel next = nextLevel(level);
-    MOZ_ASSERT_IF(level != OptimizationLevel::DontCompile, level < next);
-    level = next;
-  }
-#endif
 }
 
-OptimizationLevel OptimizationLevelInfo::nextLevel(
-    OptimizationLevel level) const {
-  MOZ_ASSERT(!isLastLevel(level));
-  switch (level) {
-    case OptimizationLevel::DontCompile:
-      return OptimizationLevel::Normal;
-    case OptimizationLevel::Normal:
-      return OptimizationLevel::Full;
-    case OptimizationLevel::Full:
-    case OptimizationLevel::Wasm:
-    case OptimizationLevel::Count:
-      break;
-  }
-  MOZ_CRASH("Unknown optimization level.");
-}
-
-OptimizationLevel OptimizationLevelInfo::firstLevel() const {
-  return nextLevel(OptimizationLevel::DontCompile);
-}
-
-bool OptimizationLevelInfo::isLastLevel(OptimizationLevel level) const {
-  return level == OptimizationLevel::Full;
-}
-
-OptimizationLevel OptimizationLevelInfo::levelForScript(JSScript* script,
+OptimizationLevel OptimizationLevelInfo::levelForScript(JSContext* cx,
+                                                        JSScript* script,
                                                         jsbytecode* pc) const {
-  OptimizationLevel prev = OptimizationLevel::DontCompile;
-
-  while (!isLastLevel(prev)) {
-    OptimizationLevel level = nextLevel(prev);
-    const OptimizationInfo* info = get(level);
-    if (script->getWarmUpCount() < info->compilerWarmUpThreshold(script, pc)) {
-      return prev;
-    }
-
-    prev = level;
+  const OptimizationInfo* info = get(OptimizationLevel::Normal);
+  if (script->getWarmUpCount() <
+      info->compilerWarmUpThreshold(cx, script, pc)) {
+    return OptimizationLevel::DontCompile;
   }
 
-  return prev;
+  return OptimizationLevel::Normal;
 }
 
 }  // namespace jit

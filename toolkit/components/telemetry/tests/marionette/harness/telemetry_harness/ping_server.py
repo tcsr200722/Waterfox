@@ -6,7 +6,7 @@ import json
 import zlib
 
 import mozlog
-
+import wptserve.logger
 from marionette_harness.runner import httpd
 
 
@@ -15,6 +15,13 @@ class PingServer(object):
 
     def __init__(self, server_root, url):
         self._logger = mozlog.get_default_logger(component="pingserver")
+
+        # Ensure we see logs from wptserve
+        try:
+            wptserve.logger.set_logger(self._logger)
+        except Exception:
+            # Raises if already been set
+            pass
         self.pings = []
 
         @httpd.handlers.handler
@@ -22,12 +29,15 @@ class PingServer(object):
             """Handler for HTTP requests to the ping server."""
             request_data = request.body
 
-            if request.headers.get("Content-Encoding") == "gzip":
-                request_data = zlib.decompress(
-                    request_data, zlib.MAX_WBITS | 16
-                )
+            if request.headers.get("Content-Encoding") == b"gzip":
+                request_data = zlib.decompress(request_data, zlib.MAX_WBITS | 16)
 
             ping_data = json.loads(request_data)
+
+            # We don't have another channel to hand, so stuff this in the ping payload.
+            ping_data["X-PingSender-Version"] = request.headers.get(
+                "X-PingSender-Version", b""
+            )
 
             # Store JSON data to self.pings to be used by wait_for_pings()
             self.pings.append(ping_data)
@@ -38,9 +48,7 @@ class PingServer(object):
 
             if ping_type == "main":
                 ping_reason = ping_data["payload"]["info"]["reason"]
-                log_message = "{} with reason '{}'".format(
-                    log_message, ping_reason
-                )
+                log_message = "{} with reason '{}'".format(log_message, ping_reason)
 
             self._logger.info(log_message)
 

@@ -15,7 +15,6 @@
 #ifdef MOZ_LOGGING
 #  include "mozilla/Logging.h"
 #endif
-#include "mozilla/Tuple.h"
 
 #if defined(MOZ_WIDGET_ANDROID)
 #  include "nsDebug.h"
@@ -127,8 +126,6 @@ enum class LogReason : int {
   UnscaledFontNotFound,
   ScaledFontNotFound,
   InvalidLayerType,  // 40
-  PlayEventFailed,
-  InvalidConstrainedValueRead,
   // End
   MustBeLessThanThis = 101,
 };
@@ -198,7 +195,7 @@ struct CriticalLogger {
 // preset capacity we may not get all of them, so the indices help figure out
 // which ones we did save.  The double is expected to be the "TimeDuration",
 // time in seconds since the process creation.
-typedef mozilla::Tuple<int32_t, std::string, double> LoggingRecordEntry;
+typedef std::tuple<int32_t, std::string, double> LoggingRecordEntry;
 
 // Implement this interface and init the Factory with an instance to
 // forward critical logs.
@@ -382,8 +379,8 @@ class Log final {
     }
     return *this;
   }
-  template <typename T, typename Sub>
-  Log& operator<<(const BaseSize<T, Sub>& aSize) {
+  template <typename T, typename Sub, typename Coord>
+  Log& operator<<(const BaseSize<T, Sub, Coord>& aSize) {
     if (MOZ_UNLIKELY(LogIt())) {
       mMessage << "Size(" << aSize.width << "," << aSize.height << ")";
     }
@@ -525,6 +522,9 @@ class Log final {
   Log& operator<<(CompositionOp aOp) {
     if (MOZ_UNLIKELY(LogIt())) {
       switch (aOp) {
+        case CompositionOp::OP_CLEAR:
+          mMessage << "CompositionOp::OP_CLEAR";
+          break;
         case CompositionOp::OP_OVER:
           mMessage << "CompositionOp::OP_OVER";
           break;
@@ -675,20 +675,11 @@ class Log final {
         case SurfaceType::SKIA:
           mMessage << "SurfaceType::SKIA";
           break;
-        case SurfaceType::DUAL_DT:
-          mMessage << "SurfaceType::DUAL_DT";
-          break;
         case SurfaceType::D2D1_1_IMAGE:
           mMessage << "SurfaceType::D2D1_1_IMAGE";
           break;
         case SurfaceType::RECORDING:
           mMessage << "SurfaceType::RECORDING";
-          break;
-        case SurfaceType::WRAP_AND_RECORD:
-          mMessage << "SurfaceType::WRAP_AND_RECORD";
-          break;
-        case SurfaceType::TILED:
-          mMessage << "SurfaceType::TILED";
           break;
         case SurfaceType::DATA_SHARED:
           mMessage << "SurfaceType::DATA_SHARED";
@@ -699,8 +690,93 @@ class Log final {
         case SurfaceType::DATA_ALIGNED:
           mMessage << "SurfaceType::DATA_ALIGNED";
           break;
+        case SurfaceType::DATA_SHARED_WRAPPER:
+          mMessage << "SurfaceType::DATA_SHARED_WRAPPER";
+          break;
+        case SurfaceType::DATA_MAPPED:
+          mMessage << "SurfaceType::DATA_MAPPED";
+          break;
+        case SurfaceType::WEBGL:
+          mMessage << "SurfaceType::WEBGL";
+          break;
         default:
           mMessage << "Invalid SurfaceType (" << (int)aType << ")";
+          break;
+      }
+    }
+    return *this;
+  }
+
+  Log& operator<<(DeviceResetReason aReason) {
+    if (MOZ_UNLIKELY(LogIt())) {
+      switch (aReason) {
+        case DeviceResetReason::OK:
+          mMessage << "DeviceResetReason::OK";
+          break;
+        case DeviceResetReason::HUNG:
+          mMessage << "DeviceResetReason::HUNG";
+          break;
+        case DeviceResetReason::REMOVED:
+          mMessage << "DeviceResetReason::REMOVED";
+          break;
+        case DeviceResetReason::RESET:
+          mMessage << "DeviceResetReason::RESET";
+          break;
+        case DeviceResetReason::DRIVER_ERROR:
+          mMessage << "DeviceResetReason::DRIVER_ERROR";
+          break;
+        case DeviceResetReason::INVALID_CALL:
+          mMessage << "DeviceResetReason::INVALID_CALL";
+          break;
+        case DeviceResetReason::OUT_OF_MEMORY:
+          mMessage << "DeviceResetReason::OUT_OF_MEMORY";
+          break;
+        case DeviceResetReason::FORCED_RESET:
+          mMessage << "DeviceResetReason::FORCED_RESET";
+          break;
+        case DeviceResetReason::OTHER:
+          mMessage << "DeviceResetReason::OTHER";
+          break;
+        case DeviceResetReason::NVIDIA_VIDEO:
+          mMessage << "DeviceResetReason::NVIDIA_VIDEO";
+          break;
+        case DeviceResetReason::UNKNOWN:
+          mMessage << "DeviceResetReason::UNKNOWN";
+          break;
+        default:
+          mMessage << "DeviceResetReason::UNKNOWN_REASON";
+          break;
+      }
+    }
+    return *this;
+  }
+
+  Log& operator<<(DeviceResetDetectPlace aPlace) {
+    if (MOZ_UNLIKELY(LogIt())) {
+      switch (aPlace) {
+        case DeviceResetDetectPlace::WR_BEGIN_FRAME:
+          mMessage << "DeviceResetDetectPlace::WR_BEGIN_FRAME";
+          break;
+        case DeviceResetDetectPlace::WR_WAIT_FOR_GPU:
+          mMessage << "DeviceResetDetectPlace::WR_WAIT_FOR_GPU";
+          break;
+        case DeviceResetDetectPlace::WR_POST_UPDATE:
+          mMessage << "DeviceResetDetectPlace::WR_POST_UPDATE";
+          break;
+        case DeviceResetDetectPlace::WR_SYNC_OBJRCT:
+          mMessage << "DeviceResetDetectPlace::WR_SYNC_OBJRCT";
+          break;
+        case DeviceResetDetectPlace::WR_SIMULATE:
+          mMessage << "DeviceResetDetectPlace::WR_SIMULATE";
+          break;
+        case DeviceResetDetectPlace::WIDGET:
+          mMessage << "DeviceResetDetectPlace::WIDGET";
+          break;
+        case DeviceResetDetectPlace::CANVAS_TRANSLATOR:
+          mMessage << "DeviceResetDetectPlace::CANVAS_TRANSLATOR";
+          break;
+        default:
+          mMessage << "DeviceResetDetectPlace::UNKNOWN_REASON";
           break;
       }
     }

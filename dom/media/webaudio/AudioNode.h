@@ -14,6 +14,7 @@
 #include "AudioContext.h"
 #include "MediaTrackGraph.h"
 #include "WebAudioUtils.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/MemoryReporting.h"
 #include "nsPrintfCString.h"
 #include "nsWeakReference.h"
@@ -143,6 +144,10 @@ class AudioNode : public DOMEventTargetHelper, public nsSupportsWeakReference {
   }
 
   struct InputNode final {
+    InputNode() = default;
+    InputNode(const InputNode&) = delete;
+    InputNode(InputNode&&) = default;
+
     ~InputNode() {
       if (mTrackPort) {
         mTrackPort->Destroy();
@@ -202,10 +207,6 @@ class AudioNode : public DOMEventTargetHelper, public nsSupportsWeakReference {
   // type.
   virtual const char* NodeType() const = 0;
 
-  // This can return nullptr, but only when the AudioNode has been created
-  // during document shutdown.
-  AbstractThread* GetAbstractMainThread() const { return mAbstractMainThread; }
-
   const nsTArray<RefPtr<AudioParam>>& GetAudioParams() const { return mParams; }
 
  private:
@@ -252,12 +253,12 @@ class AudioNode : public DOMEventTargetHelper, public nsSupportsWeakReference {
 
   // The reference pointing out all audio params which belong to this node.
   nsTArray<RefPtr<AudioParam>> mParams;
-  // Use this function to create a AudioParam, which will automatically add the
-  // new AudioParam to `mParams`.
-  void CreateAudioParam(RefPtr<AudioParam>& aParam, uint32_t aIndex,
-                        const char16_t* aName, float aDefaultValue,
-                        float aMinValue = std::numeric_limits<float>::lowest(),
-                        float aMaxValue = std::numeric_limits<float>::max());
+  // Use this function to create an AudioParam, so as to automatically add
+  // the new AudioParam to `mParams`.
+  AudioParam* CreateAudioParam(
+      uint32_t aIndex, const nsAString& aName, float aDefaultValue,
+      float aMinValue = std::numeric_limits<float>::lowest(),
+      float aMaxValue = std::numeric_limits<float>::max());
 
  private:
   // For every InputNode, there is a corresponding entry in mOutputNodes of the
@@ -281,9 +282,6 @@ class AudioNode : public DOMEventTargetHelper, public nsSupportsWeakReference {
   // Whether the node just passes through its input.  This is a devtools API
   // that only works for some node types.
   bool mPassThrough;
-  // DocGroup-specifc AbstractThread::MainThread() for MediaTrackGraph
-  // operations.
-  const RefPtr<AbstractThread> mAbstractMainThread;
 };
 
 }  // namespace dom

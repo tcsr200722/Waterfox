@@ -12,7 +12,7 @@ var TalosPowers;
 var TalosPowersContent;
 var TalosPowersParent;
 
-(function() {
+(function () {
   // The talos powers chrome event/message listeners are set up
   // asynchronously during startup so attempts to use this code too early
   // may race against the extension initialization.  Code that has might
@@ -96,10 +96,17 @@ var TalosPowersParent;
       document.dispatchEvent(event);
     },
 
-    goQuitApplication(waitForSafeBrowsing) {
+    goQuitApplication(waitForStartupFinished) {
       var event = new CustomEvent("TalosPowersGoQuitApplication", {
         bubbles: true,
-        detail: waitForSafeBrowsing,
+        detail: { waitForStartupFinished },
+      });
+      document.dispatchEvent(event);
+    },
+
+    wrCapture() {
+      var event = new CustomEvent("TalosPowersWebRenderCapture", {
+        bubbles: true,
       });
       document.dispatchEvent(event);
     },
@@ -120,7 +127,7 @@ var TalosPowersParent;
       if (callback) {
         win.addEventListener(
           replyEvent,
-          function(e) {
+          function (e) {
             callback(e.detail);
           },
           { once: true }

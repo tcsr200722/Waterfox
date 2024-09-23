@@ -7,7 +7,7 @@
 #ifndef mozilla_dom_CSSPageRule_h
 #define mozilla_dom_CSSPageRule_h
 
-#include "mozilla/css/Rule.h"
+#include "mozilla/css/GroupRule.h"
 #include "mozilla/ServoBindingTypes.h"
 
 #include "nsDOMCSSDeclaration.h"
@@ -25,14 +25,14 @@ class CSSPageRuleDeclaration final : public nsDOMCSSDeclaration {
   NS_DECL_ISUPPORTS_INHERITED
 
   css::Rule* GetParentRule() final;
-  nsINode* GetParentObject() final;
+  nsINode* GetAssociatedNode() const final;
+  nsISupports* GetParentObject() const final;
 
  protected:
   DeclarationBlock* GetOrCreateCSSDeclaration(
       Operation aOperation, DeclarationBlock** aCreated) final;
   nsresult SetCSSDeclaration(DeclarationBlock* aDecl,
                              MutationClosureData* aClosureData) final;
-  Document* DocToUpdate() final { return nullptr; }
   nsDOMCSSDeclaration::ParsingEnvironment GetParsingEnvironment(
       nsIPrincipal* aSubjectPrincipal) const final;
 
@@ -41,7 +41,9 @@ class CSSPageRuleDeclaration final : public nsDOMCSSDeclaration {
   friend class CSSPageRule;
 
   explicit CSSPageRuleDeclaration(
-      already_AddRefed<RawServoDeclarationBlock> aDecls);
+      already_AddRefed<StyleLockedDeclarationBlock> aDecls);
+  void SetRawAfterClone(RefPtr<StyleLockedDeclarationBlock>);
+
   ~CSSPageRuleDeclaration();
 
   inline CSSPageRule* Rule();
@@ -50,24 +52,31 @@ class CSSPageRuleDeclaration final : public nsDOMCSSDeclaration {
   RefPtr<DeclarationBlock> mDecls;
 };
 
-class CSSPageRule final : public css::Rule {
+class CSSPageRule final : public css::GroupRule {
  public:
-  CSSPageRule(RefPtr<RawServoPageRule> aRawRule, StyleSheet* aSheet,
+  CSSPageRule(RefPtr<StyleLockedPageRule> aRawRule, StyleSheet* aSheet,
               css::Rule* aParentRule, uint32_t aLine, uint32_t aColumn);
 
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(CSSPageRule, css::Rule)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(CSSPageRule,
+                                                         css::GroupRule)
 
   bool IsCCLeaf() const final;
 
-  RawServoPageRule* Raw() const { return mRawRule; }
+  StyleLockedPageRule* Raw() const { return mRawRule; }
+  void SetRawAfterClone(RefPtr<StyleLockedPageRule>);
 
   // WebIDL interfaces
-  uint16_t Type() const final { return CSSRule_Binding::PAGE_RULE; }
-  void GetCssText(nsAString& aCssText) const final;
+  StyleCssRuleType Type() const final;
+  void GetCssText(nsACString& aCssText) const final;
   nsICSSDeclaration* Style();
 
+  void GetSelectorText(nsACString& aSelectorText) const;
+  void SetSelectorText(const nsACString& aSelectorText);
+
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const final;
+
+  already_AddRefed<StyleLockedCssRules> GetOrCreateRawRules() final;
 
 #ifdef DEBUG
   void List(FILE* out = stdout, int32_t aIndent = 0) const final;
@@ -81,7 +90,7 @@ class CSSPageRule final : public css::Rule {
   // For computing the offset of mDecls.
   friend class CSSPageRuleDeclaration;
 
-  RefPtr<RawServoPageRule> mRawRule;
+  RefPtr<StyleLockedPageRule> mRawRule;
   CSSPageRuleDeclaration mDecls;
 };
 

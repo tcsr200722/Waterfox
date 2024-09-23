@@ -17,7 +17,6 @@
 #include "jsfriendapi.h"
 
 #include "nsCOMPtr.h"
-#include "nsHTMLStyleSheet.h"
 #include "nsIContentSink.h"
 #include "mozilla/dom/Document.h"
 #include "nsIFormControl.h"
@@ -28,7 +27,6 @@
 #include "nsParserBase.h"
 #include "nsViewManager.h"
 #include "nsIScriptSecurityManager.h"
-#include "nsLayoutCID.h"
 #include "nsNetUtil.h"
 #include "nsString.h"
 #include "nsReadableUtils.h"
@@ -49,6 +47,8 @@
 
 static mozilla::LazyLogModule gContentSinkLog("nsXULContentSink");
 
+using namespace mozilla;
+using namespace mozilla::dom;
 //----------------------------------------------------------------------
 
 XULContentSinkImpl::ContextStack::ContextStack() : mTop(nullptr), mDepth(0) {}
@@ -168,21 +168,8 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(XULContentSinkImpl)
 // nsIContentSink interface
 
 NS_IMETHODIMP
-XULContentSinkImpl::WillBuildModel(nsDTDMode aDTDMode) {
-#if FIXME
-  if (!mParentContentSink) {
-    // If we're _not_ an overlay, then notify the document that
-    // the load is beginning.
-    mDocument->BeginLoad();
-  }
-#endif
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 XULContentSinkImpl::DidBuildModel(bool aTerminated) {
-  nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
+  nsCOMPtr<Document> doc(mDocument);
   if (doc) {
     mPrototype->NotifyLoadDone();
     mDocument = nullptr;
@@ -200,10 +187,8 @@ XULContentSinkImpl::WillInterrupt(void) {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-XULContentSinkImpl::WillResume(void) {
+void XULContentSinkImpl::WillResume() {
   // XXX Notify the docshell, if necessary
-  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -214,16 +199,13 @@ XULContentSinkImpl::SetParser(nsParserBase* aParser) {
 
 void XULContentSinkImpl::SetDocumentCharset(
     NotNull<const Encoding*> aEncoding) {
-  nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
+  nsCOMPtr<Document> doc(mDocument);
   if (doc) {
     doc->SetDocumentCharacterSet(aEncoding);
   }
 }
 
-nsISupports* XULContentSinkImpl::GetTarget() {
-  nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
-  return ToSupports(doc);
-}
+nsISupports* XULContentSinkImpl::GetTarget() { return ToSupports(mDocument); }
 
 //----------------------------------------------------------------------
 
@@ -232,7 +214,7 @@ nsresult XULContentSinkImpl::Init(Document* aDocument,
   MOZ_ASSERT(aDocument != nullptr, "null ptr");
   if (!aDocument) return NS_ERROR_NULL_POINTER;
 
-  mDocument = do_GetWeakReference(aDocument);
+  mDocument = aDocument;
   mPrototype = aPrototype;
 
   mDocumentURL = mPrototype->GetURI();
@@ -425,13 +407,13 @@ XULContentSinkImpl::HandleEndElement(const char16_t* aName) {
           static_cast<nsXULPrototypeScript*>(node.get());
 
       // If given a src= attribute, we must ignore script tag content.
-      if (!script->mSrcURI && !script->HasScriptObject()) {
-        nsCOMPtr<Document> doc = do_QueryReferent(mDocument);
+      if (!script->mSrcURI && !script->HasStencil()) {
+        nsCOMPtr<Document> doc(mDocument);
 
         script->mOutOfLine = false;
         if (doc) {
-          script->Compile(mText, mTextLength, JS::SourceOwnership::Borrowed,
-                          mDocumentURL, script->mLineNo, doc);
+          script->Compile(mText, mTextLength, mDocumentURL, script->mLineNo,
+                          doc);
         }
       }
 
@@ -562,15 +544,15 @@ XULContentSinkImpl::ReportError(const char16_t* aErrorText,
 
   // return leaving the document empty if we're asked to not add a <parsererror>
   // root node
-  nsCOMPtr<Document> idoc = do_QueryReferent(mDocument);
+  nsCOMPtr<Document> idoc(mDocument);
   if (idoc && idoc->SuppressParserErrorElement()) {
     return NS_OK;
   };
 
   const char16_t* noAtts[] = {0, 0};
 
-  NS_NAMED_LITERAL_STRING(
-      errorNs, "http://www.mozilla.org/newlayout/xml/parsererror.xml");
+  constexpr auto errorNs =
+      u"http://www.mozilla.org/newlayout/xml/parsererror.xml"_ns;
 
   nsAutoString parsererror(errorNs);
   parsererror.Append((char16_t)0xFFFF);
@@ -699,6 +681,9 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
         NS_ENSURE_SUCCESS(rv, rv);
       }
 
+      // NOTE(emilio): Module scripts don't pass this test, aren't cached yet.
+      // If they become cached, then we need to tweak
+      // PrototypeDocumentContentSink and remove the special cases there.
       if (nsContentUtils::IsJavascriptMIMEType(mimeType)) {
         isJavaScript = true;
 
@@ -708,11 +693,10 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
 
         if (NS_SUCCEEDED(rv)) {
           nsContentUtils::ReportToConsoleNonLocalized(
-              NS_LITERAL_STRING(
-                  "Versioned JavaScripts are no longer supported. "
-                  "Please remove the version parameter."),
-              nsIScriptError::errorFlag, NS_LITERAL_CSTRING("XUL Document"),
-              nullptr, mDocumentURL, EmptyString(), aLineNumber);
+              u"Versioned JavaScripts are no longer supported. "
+              "Please remove the version parameter."_ns,
+              nsIScriptError::errorFlag, "XUL Document"_ns, nullptr,
+              mDocumentURL, u""_ns, aLineNumber);
           isJavaScript = false;
         } else if (rv != NS_ERROR_INVALID_ARG) {
           return rv;
@@ -737,7 +721,7 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
     return NS_OK;
   }
 
-  nsCOMPtr<Document> doc(do_QueryReferent(mDocument));
+  nsCOMPtr<Document> doc(mDocument);
   nsCOMPtr<nsIScriptGlobalObject> globalObject;
   if (doc) globalObject = do_QueryInterface(doc->GetWindow());
   RefPtr<nsXULPrototypeScript> script = new nsXULPrototypeScript(aLineNumber);
@@ -753,14 +737,10 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
     if (NS_SUCCEEDED(rv)) {
       if (!mSecMan)
         mSecMan = do_GetService(NS_SCRIPTSECURITYMANAGER_CONTRACTID, &rv);
-      if (NS_SUCCEEDED(rv)) {
-        nsCOMPtr<Document> doc = do_QueryReferent(mDocument, &rv);
-
-        if (NS_SUCCEEDED(rv)) {
-          rv = mSecMan->CheckLoadURIWithPrincipal(
-              doc->NodePrincipal(), script->mSrcURI,
-              nsIScriptSecurityManager::ALLOW_CHROME, doc->InnerWindowID());
-        }
+      if (NS_SUCCEEDED(rv) && doc) {
+        rv = mSecMan->CheckLoadURIWithPrincipal(
+            doc->NodePrincipal(), script->mSrcURI,
+            nsIScriptSecurityManager::ALLOW_CHROME, doc->InnerWindowID());
       }
     }
 

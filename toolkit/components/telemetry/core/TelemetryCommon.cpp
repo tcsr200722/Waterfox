@@ -7,6 +7,7 @@
 #include "TelemetryCommon.h"
 
 #include <cstring>
+#include "js/String.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/StaticPrefs_toolkit.h"
 #include "nsComponentManagerUtils.h"
@@ -17,6 +18,7 @@
 #include "nsVersionComparator.h"
 #include "TelemetryProcessData.h"
 #include "Telemetry.h"
+#include "mozilla/Uptime.h"
 
 namespace mozilla::Telemetry::Common {
 
@@ -84,17 +86,27 @@ bool CanRecordProduct(SupportedProduct aProducts) {
 }
 
 nsresult MsSinceProcessStart(double* aResult) {
-  bool isInconsistent = false;
   *aResult =
-      (TimeStamp::NowLoRes() - TimeStamp::ProcessCreation(&isInconsistent))
-          .ToMilliseconds();
-
-  if (isInconsistent) {
-    Telemetry::ScalarAdd(
-        Telemetry::ScalarID::TELEMETRY_PROCESS_CREATION_TIMESTAMP_INCONSISTENT,
-        1);
-  }
+      (TimeStamp::NowLoRes() - TimeStamp::ProcessCreation()).ToMilliseconds();
   return NS_OK;
+}
+
+nsresult MsSinceProcessStartIncludingSuspend(double* aResult) {
+  auto rv = mozilla::ProcessUptimeMs();
+  if (rv) {
+    *aResult = rv.value();
+    return NS_OK;
+  }
+  return NS_ERROR_NOT_AVAILABLE;
+}
+
+nsresult MsSinceProcessStartExcludingSuspend(double* aResult) {
+  auto rv = mozilla::ProcessUptimeExcludingSuspendMs();
+  if (rv) {
+    *aResult = rv.value();
+    return NS_OK;
+  }
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 void LogToBrowserConsole(uint32_t aLogLevel, const nsAString& aMsg) {
@@ -115,9 +127,8 @@ void LogToBrowserConsole(uint32_t aLogLevel, const nsAString& aMsg) {
   }
 
   nsCOMPtr<nsIScriptError> error(do_CreateInstance(NS_SCRIPTERROR_CONTRACTID));
-  error->Init(aMsg, EmptyString(), EmptyString(), 0, 0, aLogLevel,
-              "chrome javascript", false /* from private window */,
-              true /* from chrome context */);
+  error->Init(aMsg, u""_ns, u""_ns, 0, 0, aLogLevel, "chrome javascript"_ns,
+              false /* from private window */, true /* from chrome context */);
   console->LogMessage(error);
 }
 
@@ -183,13 +194,7 @@ JSString* ToJSString(JSContext* cx, const nsAString& aStr) {
 
 SupportedProduct GetCurrentProduct() {
 #if defined(MOZ_WIDGET_ANDROID)
-  if (mozilla::StaticPrefs::toolkit_telemetry_geckoview_streaming()) {
-    return SupportedProduct::GeckoviewStreaming;
-  } else if (mozilla::StaticPrefs::toolkit_telemetry_isGeckoViewMode()) {
-    return SupportedProduct::Geckoview;
-  } else {
-    return SupportedProduct::Fennec;
-  }
+  return SupportedProduct::Fennec;
 #elif defined(MOZ_THUNDERBIRD)
   return SupportedProduct::Thunderbird;
 #else

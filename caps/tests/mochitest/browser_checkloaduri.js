@@ -240,8 +240,8 @@ function testURL(
   flags
 ) {
   function getPrincipalDesc(principal) {
-    if (principal.URI) {
-      return principal.URI.spec;
+    if (principal.spec != "") {
+      return principal.spec;
     }
     if (principal.isSystemPrincipal) {
       return "system principal";
@@ -254,7 +254,7 @@ function testURL(
   let threw = false;
   let targetURI;
   try {
-    targetURI = makeURI(target);
+    targetURI = Services.io.newURI(target);
   } catch (ex) {
     ok(
       !canCreate,
@@ -279,8 +279,9 @@ function testURL(
   }
   let inheritDisallowed = flags & ssm.DISALLOW_INHERIT_PRINCIPAL;
   let shouldThrow = inheritDisallowed ? !canLoadWithoutInherit : !canLoad;
-  ok(
-    threw == shouldThrow,
+  Assert.equal(
+    threw,
+    shouldThrow,
     "Should " +
       (shouldThrow ? "" : "not ") +
       "throw an error when loading " +
@@ -292,7 +293,14 @@ function testURL(
   );
 }
 
-add_task(async function() {
+add_task(async function () {
+  // In this test we want to verify both http and https load
+  // restrictions, hence we explicitly switch off the https-first
+  // upgrading mechanism.
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.security.https_first", false]],
+  });
+
   await kAboutPagesRegistered;
   let baseFlags = ssm.STANDARD | ssm.DONT_REPORT_ERRORS;
   for (let [sourceString, targetsAndExpectations] of URLs) {
@@ -300,7 +308,7 @@ add_task(async function() {
     if (sourceString.startsWith("about:test-chrome-privs")) {
       source = ssm.getSystemPrincipal();
     } else {
-      source = ssm.createContentPrincipal(makeURI(sourceString), {});
+      source = ssm.createContentPrincipal(Services.io.newURI(sourceString), {});
     }
     for (let [
       target,
@@ -328,53 +336,59 @@ add_task(async function() {
   }
 
   // Now test blob URIs, which we need to do in-content.
-  await BrowserTestUtils.withNewTab("http://www.example.com/", async function(
-    browser
-  ) {
-    await SpecialPowers.spawn(browser, [testURL.toString()], async function(
-      testURLFn
-    ) {
-      // eslint-disable-next-line no-shadow , no-eval
-      let testURL = eval("(" + testURLFn + ")");
-      // eslint-disable-next-line no-shadow
-      let ssm = Services.scriptSecurityManager;
-      // eslint-disable-next-line no-shadow
-      let baseFlags = ssm.STANDARD | ssm.DONT_REPORT_ERRORS;
-      // eslint-disable-next-line no-unused-vars
-      let makeURI = ChromeUtils.import(
-        "resource://gre/modules/BrowserUtils.jsm",
-        {}
-      ).BrowserUtils.makeURI;
-      let b = new content.Blob(["I am a blob"]);
-      let contentBlobURI = content.URL.createObjectURL(b);
-      let contentPrincipal = content.document.nodePrincipal;
-      // Loading this blob URI from the content page should work:
-      testURL(contentPrincipal, contentBlobURI, true, true, true, baseFlags);
-      testURL(
-        contentPrincipal,
-        contentBlobURI,
-        true,
-        true,
-        true,
-        baseFlags | ssm.DISALLOW_INHERIT_PRINCIPAL
-      );
+  await BrowserTestUtils.withNewTab(
+    "http://www.example.com/",
+    async function (browser) {
+      await SpecialPowers.spawn(
+        browser,
+        [testURL.toString()],
+        async function (testURLFn) {
+          // eslint-disable-next-line no-shadow , no-eval
+          let testURL = eval("(" + testURLFn + ")");
+          // eslint-disable-next-line no-shadow
+          let ssm = Services.scriptSecurityManager;
+          // eslint-disable-next-line no-shadow
+          let baseFlags = ssm.STANDARD | ssm.DONT_REPORT_ERRORS;
+          // eslint-disable-next-line no-unused-vars
+          let b = new content.Blob(["I am a blob"]);
+          let contentBlobURI = content.URL.createObjectURL(b);
+          let contentPrincipal = content.document.nodePrincipal;
+          // Loading this blob URI from the content page should work:
+          testURL(
+            contentPrincipal,
+            contentBlobURI,
+            true,
+            true,
+            true,
+            baseFlags
+          );
+          testURL(
+            contentPrincipal,
+            contentBlobURI,
+            true,
+            true,
+            true,
+            baseFlags | ssm.DISALLOW_INHERIT_PRINCIPAL
+          );
 
-      testURL(
-        contentPrincipal,
-        "view-source:" + contentBlobURI,
-        false,
-        false,
-        true,
-        baseFlags
+          testURL(
+            contentPrincipal,
+            "view-source:" + contentBlobURI,
+            false,
+            false,
+            true,
+            baseFlags
+          );
+          testURL(
+            contentPrincipal,
+            "view-source:" + contentBlobURI,
+            false,
+            false,
+            true,
+            baseFlags | ssm.DISALLOW_INHERIT_PRINCIPAL
+          );
+        }
       );
-      testURL(
-        contentPrincipal,
-        "view-source:" + contentBlobURI,
-        false,
-        false,
-        true,
-        baseFlags | ssm.DISALLOW_INHERIT_PRINCIPAL
-      );
-    });
-  });
+    }
+  );
 });

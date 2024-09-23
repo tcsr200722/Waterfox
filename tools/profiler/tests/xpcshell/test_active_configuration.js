@@ -2,10 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-function run_test() {
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
+add_task(async () => {
   info(
     "Checking that the profiler can fetch the information about the active " +
       "configuration that is being used to power the profiler."
@@ -22,14 +19,14 @@ function run_test() {
     const entries = 10000;
     const interval = 1;
     const threads = ["GeckoMain"];
-    const features = ["js", "leaf", "threads"];
-    const activeBrowsingContextID = 123;
-    Services.profiler.StartProfiler(
+    const features = ["js"];
+    const activeTabID = 123;
+    await Services.profiler.StartProfiler(
       entries,
       interval,
       features,
       threads,
-      activeBrowsingContextID
+      activeTabID
     );
 
     info("Generate the activeConfiguration.");
@@ -38,7 +35,7 @@ function run_test() {
       interval,
       threads,
       features,
-      activeBrowsingContextID,
+      activeTabID,
       // The buffer is created as a power of two that can fit all of the entires
       // into it. If the ratio of entries to buffer size ever changes, this setting
       // will need to be updated.
@@ -64,17 +61,17 @@ function run_test() {
     const entries = 20000;
     const interval = 0.5;
     const threads = ["GeckoMain", "DOM Worker"];
-    const features = ["threads"];
-    const activeBrowsingContextID = 111;
+    const features = [];
+    const activeTabID = 111;
     const duration = 20;
 
     info("Restart the profiler with a new configuration.");
-    Services.profiler.StartProfiler(
+    await Services.profiler.StartProfiler(
       entries,
       interval,
       features,
       threads,
-      activeBrowsingContextID,
+      activeTabID,
       // Also start it with duration, this property is optional.
       duration
     );
@@ -85,7 +82,7 @@ function run_test() {
       interval,
       threads,
       features,
-      activeBrowsingContextID,
+      activeTabID,
       duration,
       // The buffer is created as a power of two that can fit all of the entires
       // into it. If the ratio of entries to buffer size ever changes, this setting
@@ -108,11 +105,11 @@ function run_test() {
     );
   }
 
-  Services.profiler.StopProfiler();
+  await Services.profiler.StopProfiler();
 
   equal(
     Services.profiler.activeConfiguration,
     null,
     "When the profile is off, there is no active configuration."
   );
-}
+});

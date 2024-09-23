@@ -13,22 +13,18 @@
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 //----------------------------------------------------------------------
 // nsISupports methods:
 
 NS_SVG_VAL_IMPL_CYCLE_COLLECTION_WRAPPERCACHED(SVGRect, mParent)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(SVGRect, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(SVGRect, Release)
-
 //----------------------------------------------------------------------
 // implementation:
 
 SVGRect::SVGRect(SVGSVGElement* aSVGElement)
-    : mVal(nullptr), mParent(aSVGElement), mType(CreatedValue) {
+    : mVal(nullptr), mParent(aSVGElement), mType(RectType::CreatedValue) {
   MOZ_ASSERT(mParent);
   mRect = gfx::Rect(0, 0, 0, 0);
 }
@@ -41,10 +37,10 @@ JSObject* SVGRect::WrapObject(JSContext* aCx,
 
 float SVGRect::X() {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       static_cast<SVGElement*>(mParent->AsElement())->FlushAnimations();
       return mVal->GetAnimValue().x;
-    case BaseValue:
+    case RectType::BaseValue:
       return mVal->GetBaseValue().x;
     default:
       return mRect.x;
@@ -53,10 +49,10 @@ float SVGRect::X() {
 
 float SVGRect::Y() {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       static_cast<SVGElement*>(mParent->AsElement())->FlushAnimations();
       return mVal->GetAnimValue().y;
-    case BaseValue:
+    case RectType::BaseValue:
       return mVal->GetBaseValue().y;
     default:
       return mRect.y;
@@ -65,10 +61,10 @@ float SVGRect::Y() {
 
 float SVGRect::Width() {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       static_cast<SVGElement*>(mParent->AsElement())->FlushAnimations();
       return mVal->GetAnimValue().width;
-    case BaseValue:
+    case RectType::BaseValue:
       return mVal->GetBaseValue().width;
     default:
       return mRect.width;
@@ -77,10 +73,10 @@ float SVGRect::Width() {
 
 float SVGRect::Height() {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       static_cast<SVGElement*>(mParent->AsElement())->FlushAnimations();
       return mVal->GetAnimValue().height;
-    case BaseValue:
+    case RectType::BaseValue:
       return mVal->GetBaseValue().height;
     default:
       return mRect.height;
@@ -89,10 +85,10 @@ float SVGRect::Height() {
 
 void SVGRect::SetX(float aX, ErrorResult& aRv) {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       aRv.Throw(NS_ERROR_DOM_NO_MODIFICATION_ALLOWED_ERR);
       return;
-    case BaseValue: {
+    case RectType::BaseValue: {
       SVGViewBox rect = mVal->GetBaseValue();
       rect.x = aX;
       mVal->SetBaseValue(rect, static_cast<SVGElement*>(mParent->AsElement()));
@@ -105,10 +101,10 @@ void SVGRect::SetX(float aX, ErrorResult& aRv) {
 
 void SVGRect::SetY(float aY, ErrorResult& aRv) {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       aRv.Throw(NS_ERROR_DOM_NO_MODIFICATION_ALLOWED_ERR);
       return;
-    case BaseValue: {
+    case RectType::BaseValue: {
       SVGViewBox rect = mVal->GetBaseValue();
       rect.y = aY;
       mVal->SetBaseValue(rect, static_cast<SVGElement*>(mParent->AsElement()));
@@ -121,10 +117,10 @@ void SVGRect::SetY(float aY, ErrorResult& aRv) {
 
 void SVGRect::SetWidth(float aWidth, ErrorResult& aRv) {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       aRv.Throw(NS_ERROR_DOM_NO_MODIFICATION_ALLOWED_ERR);
       return;
-    case BaseValue: {
+    case RectType::BaseValue: {
       SVGViewBox rect = mVal->GetBaseValue();
       rect.width = aWidth;
       mVal->SetBaseValue(rect, static_cast<SVGElement*>(mParent->AsElement()));
@@ -137,10 +133,10 @@ void SVGRect::SetWidth(float aWidth, ErrorResult& aRv) {
 
 void SVGRect::SetHeight(float aHeight, ErrorResult& aRv) {
   switch (mType) {
-    case AnimValue:
+    case RectType::AnimValue:
       aRv.Throw(NS_ERROR_DOM_NO_MODIFICATION_ALLOWED_ERR);
       return;
-    case BaseValue: {
+    case RectType::BaseValue: {
       SVGViewBox rect = mVal->GetBaseValue();
       rect.height = aHeight;
       mVal->SetBaseValue(rect, static_cast<SVGElement*>(mParent->AsElement()));
@@ -151,5 +147,4 @@ void SVGRect::SetHeight(float aHeight, ErrorResult& aRv) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

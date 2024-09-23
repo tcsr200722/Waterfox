@@ -6,7 +6,7 @@
 
 /**
  * This module defines the sorted list of menuitems inserted into the
- * "Web Developer" menu.
+ * "Browser Tools" menu.
  * It also defines the key shortcuts that relates to them.
  *
  * Various fields are necessary for historical compatiblity with XUL/addons:
@@ -25,56 +25,52 @@
  *   toggle it.
  */
 
-const { Cu } = require("chrome");
+const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserToolboxLauncher:
+    "resource://devtools/client/framework/browser-toolbox/Launcher.sys.mjs",
+});
+
+loader.lazyRequireGetter(this, "flags", "resource://devtools/shared/flags.js");
 
 loader.lazyRequireGetter(
   this,
   "gDevToolsBrowser",
-  "devtools/client/framework/devtools-browser",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "TargetFactory",
-  "devtools/client/framework/target",
+  "resource://devtools/client/framework/devtools-browser.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
-  "devtools/client/responsive/manager"
+  "resource://devtools/client/responsive/manager.js"
 );
 loader.lazyRequireGetter(
   this,
   "openDocLink",
-  "devtools/client/shared/link",
+  "resource://devtools/client/shared/link.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "CommandsFactory",
+  "resource://devtools/shared/commands/commands-factory.js",
   true
 );
 
-loader.lazyImporter(
-  this,
-  "BrowserToolboxLauncher",
-  "resource://devtools/client/framework/browser-toolbox/Launcher.jsm"
-);
-loader.lazyRequireGetter(
-  this,
-  "ResponsiveUIManager",
-  "devtools/client/responsive/manager"
-);
 loader.lazyRequireGetter(
   this,
   "PICKER_TYPES",
-  "devtools/shared/picker-constants"
+  "resource://devtools/shared/picker-constants.js"
 );
 
 exports.menuitems = [
   {
     id: "menu_devToolbox",
-    l10nKey: "devToolboxMenuItem",
-    async oncommand(event) {
+    l10nKey: "webDeveloperToolsMenu",
+    oncommand(event) {
       try {
         const window = event.target.ownerDocument.defaultView;
-        await gDevToolsBrowser.toggleToolboxCommand(window.gBrowser, Cu.now());
+        gDevToolsBrowser.toggleToolboxCommand(window.gBrowser, Cu.now());
       } catch (e) {
         console.error(`Exception while opening the toolbox: ${e}\n${e.stack}`);
       }
@@ -82,7 +78,6 @@ exports.menuitems = [
     keyId: "toggleToolbox",
     checkbox: true,
   },
-  { id: "menu_devtools_separator", separator: true },
   {
     id: "menu_devtools_remotedebugging",
     l10nKey: "devtoolsRemoteDebugging",
@@ -95,17 +90,9 @@ exports.menuitems = [
     id: "menu_browserToolbox",
     l10nKey: "browserToolboxMenu",
     oncommand() {
-      BrowserToolboxLauncher.init();
+      lazy.BrowserToolboxLauncher.init();
     },
     keyId: "browserToolbox",
-  },
-  {
-    id: "menu_browserContentToolbox",
-    l10nKey: "browserContentToolboxMenu",
-    oncommand(event) {
-      const window = event.target.ownerDocument.defaultView;
-      gDevToolsBrowser.openContentProcessToolbox(window.gBrowser);
-    },
   },
   {
     id: "menu_browserConsole",
@@ -113,7 +100,7 @@ exports.menuitems = [
     oncommand() {
       const {
         BrowserConsoleManager,
-      } = require("devtools/client/webconsole/browser-console-manager");
+      } = require("resource://devtools/client/webconsole/browser-console-manager.js");
       BrowserConsoleManager.openBrowserConsoleOrFocus();
     },
     keyId: "browserConsole",
@@ -135,16 +122,21 @@ exports.menuitems = [
     l10nKey: "eyedropper",
     async oncommand(event) {
       const window = event.target.ownerDocument.defaultView;
-      const target = await TargetFactory.forTab(window.gBrowser.selectedTab);
-      await target.attach();
+
+      // The eyedropper might be used without a toolbox, so it should use a
+      // dedicated commands instance.
+      // See Bug 1701004.
+      const commands = await CommandsFactory.forTab(
+        window.gBrowser.selectedTab
+      );
+      await commands.targetCommand.startListening();
+
+      const target = commands.targetCommand.targetFront;
       const inspectorFront = await target.getFront("inspector");
 
       // If RDM is active, disable touch simulation events if they're enabled.
       // Similarly, enable them when the color picker is done picking.
-      if (
-        ResponsiveUIManager.isActiveForTab(target.localTab) &&
-        target.actorHasMethod("responsive", "setElementPickerState")
-      ) {
+      if (ResponsiveUIManager.isActiveForTab(target.localTab)) {
         const ui = ResponsiveUIManager.getResponsiveUIForTab(target.localTab);
         await ui.responsiveFront.setElementPickerState(
           true,
@@ -166,15 +158,28 @@ exports.menuitems = [
         });
       }
 
+      // Destroy the dedicated commands instance when the color picking is
+      // finished.
+      inspectorFront.once("color-picked", () => commands.destroy());
+      inspectorFront.once("color-pick-canceled", () => commands.destroy());
+
       inspectorFront.pickColorFromPage({ copyOnSelect: true, fromMenu: true });
+
+      if (flags.testing) {
+        // Used in devtools/client/inspector/test/browser_inspector_eyedropper_ruleview.js
+        Services.obs.notifyObservers(
+          { wrappedJSObject: target },
+          "color-picker-command-handled"
+        );
+      }
     },
     checkbox: true,
   },
-  { separator: true, id: "devToolsEndSeparator" },
   {
-    id: "getMoreDevtools",
-    l10nKey: "getMoreDevtoolsCmd",
-    oncommand(event) {
+    id: "extensionsForDevelopers",
+    l10nKey: "extensionsForDevelopersCmd",
+    appMenuL10nId: "appmenu-developer-tools-extensions",
+    oncommand() {
       openDocLink(
         "https://addons.mozilla.org/firefox/collections/mozilla/webdeveloper/"
       );

@@ -3,15 +3,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "TextEventDispatcher.h"
+
+#include "IMEData.h"
+#include "PuppetWidget.h"
+#include "TextEvents.h"
+
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/TextEvents.h"
-#include "mozilla/TextEventDispatcher.h"
+#include "nsCharTraits.h"
 #include "nsIFrame.h"
 #include "nsIWidget.h"
 #include "nsPIDOMWindow.h"
 #include "nsView.h"
-#include "PuppetWidget.h"
 
 namespace mozilla {
 namespace widget {
@@ -187,6 +191,7 @@ void TextEventDispatcher::OnDestroyWidget() {
   mPendingComposition.Clear();
   nsCOMPtr<TextEventDispatcherListener> listener = do_QueryReferent(mListener);
   mListener = nullptr;
+  mWritingMode.reset();
   mInputTransactionType = eNoInputTransaction;
   if (listener) {
     listener->OnRemovedFrom(this);
@@ -205,7 +210,6 @@ nsresult TextEventDispatcher::GetState() const {
 }
 
 void TextEventDispatcher::InitEvent(WidgetGUIEvent& aEvent) const {
-  aEvent.mTime = PR_IntervalNow();
   aEvent.mRefPoint = LayoutDeviceIntPoint(0, 0);
   aEvent.mFlags.mIsSynthesizedForTests = IsForTests();
   if (aEvent.mClass != eCompositionEventClass) {
@@ -224,6 +228,38 @@ void TextEventDispatcher::InitEvent(WidgetGUIEvent& aEvent) const {
                "Native IME context shouldn't be invalid");
   }
 #endif  // #ifdef DEBUG
+}
+
+Maybe<WritingMode> TextEventDispatcher::MaybeQueryWritingModeAtSelection()
+    const {
+  if (mHasFocus || mWritingMode.isSome()) {
+    return mWritingMode;
+  }
+
+  if (NS_WARN_IF(!mWidget)) {
+    return Nothing();
+  }
+
+  // If a remote content has focus and IME does not have focus, it's going to
+  // fail eQuerySelectedText in ContentCacheParent.  For avoiding to waste
+  // unnecessary runtime cost and to prevent unnecessary warnings, we should
+  // not dispatch the event in the case.
+  const InputContext inputContext = mWidget->GetInputContext();
+  if (XRE_IsE10sParentProcess() && inputContext.IsOriginContentProcess() &&
+      !inputContext.mIMEState.IsEditable()) {
+    return Nothing();
+  }
+
+  WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                 mWidget);
+  nsEventStatus status = nsEventStatus_eIgnore;
+  const_cast<TextEventDispatcher*>(this)->DispatchEvent(
+      mWidget, querySelectedTextEvent, status);
+  if (!querySelectedTextEvent.FoundSelection()) {
+    return Nothing();
+  }
+
+  return Some(querySelectedTextEvent.mReply->mWritingMode);
 }
 
 nsresult TextEventDispatcher::DispatchEvent(nsIWidget* aWidget,
@@ -252,7 +288,7 @@ nsresult TextEventDispatcher::DispatchInputEvent(nsIWidget* aWidget,
   // expecting synchronous dispatch) don't want this to do that.
   nsresult rv = NS_OK;
   if (ShouldSendInputEventToAPZ()) {
-    aStatus = widget->DispatchInputEvent(&aEvent);
+    aStatus = widget->DispatchInputEvent(&aEvent).mContentStatus;
   } else {
     rv = widget->DispatchEvent(&aEvent, aStatus);
   }
@@ -370,10 +406,8 @@ nsresult TextEventDispatcher::CommitComposition(
     // editor requires non-void string even when it's empty.
     compositionCommitEvent.mData.SetIsVoid(false);
     // Don't send CRLF nor CR, replace it with LF here.
-    compositionCommitEvent.mData.ReplaceSubstring(NS_LITERAL_STRING("\r\n"),
-                                                  NS_LITERAL_STRING("\n"));
-    compositionCommitEvent.mData.ReplaceSubstring(NS_LITERAL_STRING("\r"),
-                                                  NS_LITERAL_STRING("\n"));
+    compositionCommitEvent.mData.ReplaceSubstring(u"\r\n"_ns, u"\n"_ns);
+    compositionCommitEvent.mData.ReplaceSubstring(u"\r"_ns, u"\n"_ns);
   }
   rv = DispatchEvent(widget, compositionCommitEvent, aStatus);
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -388,8 +422,13 @@ nsresult TextEventDispatcher::NotifyIME(
   nsresult rv = NS_ERROR_NOT_IMPLEMENTED;
 
   switch (aIMENotification.mMessage) {
+    case NOTIFY_IME_OF_FOCUS: {
+      mWritingMode = MaybeQueryWritingModeAtSelection();
+      break;
+    }
     case NOTIFY_IME_OF_BLUR:
       mHasFocus = false;
+      mWritingMode.reset();
       ClearNotificationRequests();
       break;
     case NOTIFY_IME_OF_COMPOSITION_EVENT_HANDLED:
@@ -400,6 +439,12 @@ nsresult TextEventDispatcher::NotifyIME(
       // have been handled in the remote process.
       if (!IsComposing()) {
         mIsHandlingComposition = false;
+      }
+      break;
+    case NOTIFY_IME_OF_SELECTION_CHANGE:
+      if (mHasFocus && aIMENotification.mSelectionChangeData.HasRange()) {
+        mWritingMode =
+            Some(aIMENotification.mSelectionChangeData.GetWritingMode());
       }
       break;
     default:
@@ -503,10 +548,9 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
   // events.  Then, only some handlers which need to intercept key events
   // before the focused plugin (e.g., reserved shortcut key handlers) can
   // consume the events.
-  MOZ_ASSERT(WidgetKeyboardEvent::IsKeyDownOrKeyDownOnPlugin(aMessage) ||
-                 WidgetKeyboardEvent::IsKeyUpOrKeyUpOnPlugin(aMessage) ||
-                 aMessage == eKeyPress,
-             "Invalid aMessage value");
+  MOZ_ASSERT(
+      aMessage == eKeyDown || aMessage == eKeyUp || aMessage == eKeyPress,
+      "Invalid aMessage value");
   nsresult rv = GetState();
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return false;
@@ -521,7 +565,7 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
   // Note that plugin process has different IME context.  Therefore, we don't
   // need to check our composition state when the key event is fired on a
   // plugin.
-  if (IsComposing() && !WidgetKeyboardEvent::IsKeyEventOnPlugin(aMessage)) {
+  if (IsComposing()) {
     // However, if we need to behave like other browsers, we need the keydown
     // and keyup events.  Note that this behavior is also allowed by D3E spec.
     // FYI: keypress events must not be fired during composition.
@@ -539,10 +583,28 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
   keyEvent.AssignKeyEventData(aKeyboardEvent, false);
   // Command arrays are not duplicated by AssignKeyEventData() due to
   // both performance and footprint reasons.  So, when TextInputProcessor
-  // emulates real text input, the arrays may be initialized all commands
-  // already.  If so, we need to duplicate the arrays here.
-  if (keyEvent.mIsSynthesizedByTIP) {
-    keyEvent.AssignCommands(aKeyboardEvent);
+  // emulates real text input or synthesizing keyboard events for tests,
+  // the arrays may be initialized all commands already.  If so, we need to
+  // duplicate the arrays here, but we should do this only when we're
+  // dispatching eKeyPress events because BrowserParent::SendRealKeyEvent()
+  // does this only for eKeyPress event.  Note that this is not required if
+  // we're in the main process because in the parent process, the edit commands
+  // will be initialized by `ExecuteEditCommands()` (when the event is handled
+  // by editor event listener) or `InitAllEditCommands()` (when the event is
+  // set to a content process).  We should test whether these pathes work or
+  // not too.
+  if (XRE_IsContentProcess() && keyEvent.mIsSynthesizedByTIP) {
+    if (aMessage == eKeyPress) {
+      keyEvent.AssignCommands(aKeyboardEvent);
+    } else {
+      // Prevent retriving native edit commands if we're in a content process
+      // because only `eKeyPress` events coming from the main process have
+      // edit commands (See `BrowserParent::SendRealKeyEvent`).  And also
+      // retriving edit commands from a content process requires synchonous
+      // IPC and that makes running tests slower.  Therefore, we should mark
+      // the `eKeyPress` event does not need to retrieve edit commands anymore.
+      keyEvent.PreventNativeKeyBindings();
+    }
   }
 
   if (aStatus == nsEventStatus_eConsumeNoDefault) {
@@ -562,16 +624,11 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
     // be 0.
     keyEvent.SetCharCode(0);
   } else {
-    if (WidgetKeyboardEvent::IsKeyDownOrKeyDownOnPlugin(aMessage) ||
-        WidgetKeyboardEvent::IsKeyUpOrKeyUpOnPlugin(aMessage)) {
-      MOZ_RELEASE_ASSERT(
-          !aIndexOfKeypress,
-          "aIndexOfKeypress must be 0 for either eKeyDown or eKeyUp");
-    } else {
-      MOZ_RELEASE_ASSERT(
-          !aIndexOfKeypress || aIndexOfKeypress < keyEvent.mKeyValue.Length(),
-          "aIndexOfKeypress must be 0 - mKeyValue.Length() - 1");
-    }
+    MOZ_DIAGNOSTIC_ASSERT_IF(aMessage == eKeyDown || aMessage == eKeyUp,
+                             !aIndexOfKeypress);
+    MOZ_DIAGNOSTIC_ASSERT_IF(
+        aMessage == eKeyPress,
+        aIndexOfKeypress < std::max<size_t>(keyEvent.mKeyValue.Length(), 1));
     char16_t ch =
         keyEvent.mKeyValue.IsEmpty() ? 0 : keyEvent.mKeyValue[aIndexOfKeypress];
     keyEvent.SetCharCode(static_cast<uint32_t>(ch));
@@ -581,13 +638,66 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
       // eKeyPress events are dispatched for every character.
       // So, each key value of eKeyPress events should be a character.
       if (ch) {
-        keyEvent.mKeyValue.Assign(ch);
+        if (!IS_SURROGATE(ch)) {
+          keyEvent.mKeyValue.Assign(ch);
+        } else {
+          const bool isHighSurrogateFollowedByLowSurrogate =
+              aIndexOfKeypress + 1 < keyEvent.mKeyValue.Length() &&
+              NS_IS_HIGH_SURROGATE(ch) &&
+              NS_IS_LOW_SURROGATE(keyEvent.mKeyValue[aIndexOfKeypress + 1]);
+          const bool isLowSurrogateFollowingHighSurrogate =
+              !isHighSurrogateFollowedByLowSurrogate && aIndexOfKeypress > 0 &&
+              NS_IS_LOW_SURROGATE(ch) &&
+              NS_IS_HIGH_SURROGATE(keyEvent.mKeyValue[aIndexOfKeypress - 1]);
+          NS_WARNING_ASSERTION(isHighSurrogateFollowedByLowSurrogate ||
+                                   isLowSurrogateFollowingHighSurrogate,
+                               "Lone surrogate input should not happen");
+          if (StaticPrefs::
+                  dom_event_keypress_dispatch_once_per_surrogate_pair()) {
+            if (isHighSurrogateFollowedByLowSurrogate) {
+              keyEvent.mKeyValue.Assign(
+                  keyEvent.mKeyValue.BeginReading() + aIndexOfKeypress, 2);
+              keyEvent.SetCharCode(
+                  SURROGATE_TO_UCS4(ch, keyEvent.mKeyValue[1]));
+            } else if (isLowSurrogateFollowingHighSurrogate) {
+              // Although not dispatching eKeyPress event (because it's already
+              // dispatched for the low surrogate above), the caller should
+              // treat that this dispatched eKeyPress event normally so that
+              // return true here.
+              return true;
+            }
+            // Do not expose ill-formed UTF-16 string because it's a
+            // problematic for Rust-running-as-wasm for example.
+            else {
+              keyEvent.mKeyValue.Truncate();
+            }
+          } else if (!StaticPrefs::
+                         dom_event_keypress_key_allow_lone_surrogate()) {
+            // If it's a high surrogate followed by a low surrogate, we should
+            // expose the surrogate pair with .key value.
+            if (isHighSurrogateFollowedByLowSurrogate) {
+              keyEvent.mKeyValue.Assign(
+                  keyEvent.mKeyValue.BeginReading() + aIndexOfKeypress, 2);
+            }
+            // Do not expose low surrogate which should be handled by the
+            // preceding keypress event.  And also do not expose ill-formed
+            // UTF-16 because it's a problematic for Rust-running-as-wasm for
+            // example.
+            else {
+              keyEvent.mKeyValue.Truncate();
+            }
+          } else {
+            // Here is a path for traditional behavior. We set `.key` to
+            // high-surrogate and low-surrogate separately.
+            keyEvent.mKeyValue.Assign(ch);
+          }
+        }
       } else {
         keyEvent.mKeyValue.Truncate();
       }
     }
   }
-  if (WidgetKeyboardEvent::IsKeyUpOrKeyUpOnPlugin(aMessage)) {
+  if (aMessage == eKeyUp) {
     // mIsRepeat of keyup event must be false.
     keyEvent.mIsRepeat = false;
   }
@@ -599,9 +709,8 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
     keyEvent.mNativeKeyEvent = aKeyboardEvent.mNativeKeyEvent;
   } else {
     // If it's not a keyboard event for native key event, we should ensure that
-    // mNativeKeyEvent and mPluginEvent are null/empty.
+    // mNativeKeyEvent is null.
     keyEvent.mNativeKeyEvent = nullptr;
-    keyEvent.mPluginEvent.Clear();
   }
   // TODO: Manage mUniqueId here.
 
@@ -610,10 +719,9 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
   // needs to check if a following keypress event is reserved by chrome for
   // stopping propagation of its preceding keydown event.
   keyEvent.mAlternativeCharCodes.Clear();
-  if ((WidgetKeyboardEvent::IsKeyDownOrKeyDownOnPlugin(aMessage) ||
-       aMessage == eKeyPress) &&
+  if ((aMessage == eKeyDown || aMessage == eKeyPress) &&
       (aNeedsCallback || keyEvent.IsControl() || keyEvent.IsAlt() ||
-       keyEvent.IsMeta() || keyEvent.IsOS())) {
+       keyEvent.IsMeta())) {
     nsCOMPtr<TextEventDispatcherListener> listener =
         do_QueryReferent(mListener);
     if (listener) {
@@ -648,6 +756,14 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
     // Note that even if we set it to true, this may be overwritten by
     // PresShell::DispatchEventToDOM().
     keyEvent.mFlags.mOnlySystemGroupDispatchInContent = true;
+  }
+
+  // If an editable element has focus and we're in the parent process, we should
+  // retrieve native key bindings right now because even if it matches with a
+  // reserved shortcut key, it should be handled by the editor.
+  if (XRE_IsParentProcess() && mHasFocus &&
+      (aMessage == eKeyDown || aMessage == eKeyPress)) {
+    keyEvent.InitAllEditCommands(mWritingMode);
   }
 
   DispatchInputEvent(mWidget, keyEvent, aStatus);
@@ -808,8 +924,8 @@ void TextEventDispatcher::PendingComposition::ReplaceNativeLineBreakers() {
 
   nsAutoString nativeString(mString);
   // Don't expose CRLF nor CR to web contents, instead, use LF.
-  mString.ReplaceSubstring(NS_LITERAL_STRING("\r\n"), NS_LITERAL_STRING("\n"));
-  mString.ReplaceSubstring(NS_LITERAL_STRING("\r"), NS_LITERAL_STRING("\n"));
+  mString.ReplaceSubstring(u"\r\n"_ns, u"\n"_ns);
+  mString.ReplaceSubstring(u"\r"_ns, u"\n"_ns);
 
   // If the length isn't changed, we don't need to adjust any offset and length
   // of mClauses nor mCaret.
@@ -838,8 +954,7 @@ void TextEventDispatcher::PendingComposition::AdjustRange(
   //     composition string is usually short and separated as a few clauses.
   if (nativeRange.mStartOffset > 0) {
     nsAutoString preText(Substring(aNativeString, 0, nativeRange.mStartOffset));
-    preText.ReplaceSubstring(NS_LITERAL_STRING("\r\n"),
-                             NS_LITERAL_STRING("\n"));
+    preText.ReplaceSubstring(u"\r\n"_ns, u"\n"_ns);
     aRange.mStartOffset = preText.Length();
   }
   if (nativeRange.Length() == 0) {
@@ -847,7 +962,7 @@ void TextEventDispatcher::PendingComposition::AdjustRange(
   } else {
     nsAutoString clause(Substring(aNativeString, nativeRange.mStartOffset,
                                   nativeRange.Length()));
-    clause.ReplaceSubstring(NS_LITERAL_STRING("\r\n"), NS_LITERAL_STRING("\n"));
+    clause.ReplaceSubstring(u"\r\n"_ns, u"\n"_ns);
     aRange.mEndOffset = aRange.mStartOffset + clause.Length();
   }
 }

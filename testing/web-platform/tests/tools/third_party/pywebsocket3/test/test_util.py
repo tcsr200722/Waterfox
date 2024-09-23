@@ -32,20 +32,18 @@
 
 from __future__ import absolute_import
 from __future__ import print_function
+
 import os
 import random
-import sys
 import unittest
-import struct
 
-import set_sys_path  # Update sys.path to locate mod_pywebsocket module.
-
-from mod_pywebsocket import util
+from six import int2byte, PY3
 from six.moves import range
-from six import PY3
-from six import int2byte
 
-_TEST_DATA_DIR = os.path.join(os.path.split(__file__)[0], 'testdata')
+import set_sys_path  # Update sys.path to locate pywebsocket3 module.
+from pywebsocket3 import util
+
+_TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), 'testdata')
 
 
 class UtilTest(unittest.TestCase):
@@ -167,7 +165,6 @@ class InflaterDeflaterTest(unittest.TestCase):
             [int2byte(random.randint(0, 255)) for i in range(100 * 1024)])
 
         chunked_input = get_random_section(source, 10)
-        print("Input chunk sizes: %r" % [len(c) for c in chunked_input])
 
         deflater = util._Deflater(15)
         compressed = []
@@ -176,8 +173,6 @@ class InflaterDeflaterTest(unittest.TestCase):
         compressed.append(deflater.compress_and_finish(b''))
 
         chunked_expectation = get_random_section(source, 10)
-        print("Expectation chunk sizes: %r" %
-              [len(c) for c in chunked_expectation])
 
         inflater = util._Inflater(15)
         inflater.append(b''.join(compressed))

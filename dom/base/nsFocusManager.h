@@ -12,13 +12,10 @@
 #include "mozilla/dom/Document.h"
 #include "nsIFocusManager.h"
 #include "nsIObserver.h"
-#include "nsIWidget.h"
 #include "nsWeakReference.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
-
-#define FOCUSMETHOD_MASK 0xF000
-#define FOCUSMETHODANDRING_MASK 0xF0F000
+#include "mozilla/StaticPtr.h"
 
 #define FOCUSMANAGER_CONTRACTID "@mozilla.org/focus-manager;1"
 
@@ -29,6 +26,7 @@ namespace mozilla {
 class PresShell;
 namespace dom {
 class Element;
+class HTMLAreaElement;
 struct FocusOptions;
 class BrowserParent;
 class ContentChild;
@@ -46,8 +44,8 @@ struct nsDelayedBlurOrFocusEvent;
 class nsFocusManager final : public nsIFocusManager,
                              public nsIObserver,
                              public nsSupportsWeakReference {
-  typedef mozilla::widget::InputContextAction InputContextAction;
-  typedef mozilla::dom::Document Document;
+  using InputContextAction = mozilla::widget::InputContextAction;
+  using Document = mozilla::dom::Document;
   friend class mozilla::dom::ContentChild;
   friend class mozilla::dom::ContentParent;
 
@@ -64,11 +62,12 @@ class nsFocusManager final : public nsIFocusManager,
   // Simple helper to call SetFocusedWindow on the instance.
   //
   // This raises the window and switches to the tab as needed.
-  static void FocusWindow(nsPIDOMWindowOuter* aWindow,
-                          mozilla::dom::CallerType aCallerType);
+  MOZ_CAN_RUN_SCRIPT static void FocusWindow(
+      nsPIDOMWindowOuter* aWindow, mozilla::dom::CallerType aCallerType);
 
-  static void PrefChanged(const char* aPref, void* aSelf);
-  void PrefChanged(const char* aPref);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY static void PrefChanged(const char* aPref,
+                                                      void* aSelf);
+  MOZ_CAN_RUN_SCRIPT void PrefChanged(const char* aPref);
 
   /**
    * Retrieve the single focus manager.
@@ -81,6 +80,9 @@ class nsFocusManager final : public nsIFocusManager,
    * pointer filled in to an out-parameter).
    */
   mozilla::dom::Element* GetFocusedElement() { return mFocusedElement; }
+  static mozilla::dom::Element* GetFocusedElementStatic() {
+    return sInstance ? sInstance->GetFocusedElement() : nullptr;
+  }
 
   /**
    * Returns true if aContent currently has focus.
@@ -113,6 +115,11 @@ class nsFocusManager final : public nsIFocusManager,
   }
 
   /**
+   * Returns whether the given browsing context is in the active window.
+   */
+  bool IsInActiveWindow(mozilla::dom::BrowsingContext*) const;
+
+  /**
    * Return an active window. Version of nsIFocusManager::GetActiveWindow.
    */
   nsPIDOMWindowOuter* GetActiveWindow() const { return mActiveWindow; }
@@ -136,7 +143,8 @@ class nsFocusManager final : public nsIFocusManager,
   /**
    * Called when content has been removed.
    */
-  nsresult ContentRemoved(Document* aDocument, nsIContent* aContent);
+  MOZ_CAN_RUN_SCRIPT nsresult ContentRemoved(Document* aDocument,
+                                             nsIContent* aContent);
 
   void NeedsFlushBeforeEventHandling(mozilla::dom::Element* aElement) {
     if (mFocusedElement == aElement) {
@@ -146,7 +154,8 @@ class nsFocusManager final : public nsIFocusManager,
 
   bool CanSkipFocus(nsIContent* aContent);
 
-  void FlushBeforeEventHandlingIfNeeded(nsIContent* aContent) {
+  MOZ_CAN_RUN_SCRIPT void FlushBeforeEventHandlingIfNeeded(
+      nsIContent* aContent) {
     if (mEventHandlingNeedsFlush) {
       nsCOMPtr<Document> doc = aContent->GetComposedDoc();
       if (doc) {
@@ -159,7 +168,10 @@ class nsFocusManager final : public nsIFocusManager,
   /**
    * Update the caret with current mode (whether in caret browsing mode or not).
    */
-  void UpdateCaretForCaretBrowsingMode();
+  MOZ_CAN_RUN_SCRIPT void UpdateCaretForCaretBrowsingMode();
+
+  /** @see nsIFocusManager.getLastFocusMethod() */
+  uint32_t GetLastFocusMethod(nsPIDOMWindowOuter*) const;
 
   /**
    * Returns the content node that would be focused if aWindow was in an
@@ -169,7 +181,7 @@ class nsFocusManager final : public nsIFocusManager,
    * aFocusedWindow may be still be set -- this means that the document is
    * focused but no element within it is focused.
    *
-   * aWindow and aFocusedWindow must both be non-null.
+   * aWindow, aFocusIsOutOfProcess, aFocusedWindow must all be non-null.
    */
   enum SearchRange {
     // Return focused content in aWindow.  So, aFocusedWindow is always aWindow.
@@ -198,47 +210,88 @@ class nsFocusManager final : public nsIFocusManager,
    * aNavigateByKey to move focus by keyboard as a side effect of computing the
    * next target.
    */
-  nsresult DetermineElementToMoveFocus(nsPIDOMWindowOuter* aWindow,
-                                       nsIContent* aStart, int32_t aType,
-                                       bool aNoParentTraversal,
-                                       bool aNavigateByKey,
-                                       nsIContent** aNextContent);
+  MOZ_CAN_RUN_SCRIPT nsresult DetermineElementToMoveFocus(
+      nsPIDOMWindowOuter* aWindow, nsIContent* aStart, int32_t aType,
+      bool aNoParentTraversal, bool aNavigateByKey, nsIContent** aNextContent);
+
+  /**
+   * Setter for focusedWindow with CallerType
+   */
+  MOZ_CAN_RUN_SCRIPT nsresult SetFocusedWindowWithCallerType(
+      mozIDOMWindowProxy* aWindowToFocus, mozilla::dom::CallerType aCallerType);
 
   /**
    * Given an element, which must be the focused element, activate the remote
    * frame it embeds, if any.
    */
-  void ActivateRemoteFrameIfNeeded(mozilla::dom::Element&);
+  void ActivateRemoteFrameIfNeeded(mozilla::dom::Element&, uint64_t aActionId);
 
   /**
    * Raises the top-level window aWindow at the widget level.
    */
-  void RaiseWindow(nsPIDOMWindowOuter* aWindow,
-                   mozilla::dom::CallerType aCallerType);
-
-  static uint32_t FocusOptionsToFocusManagerFlags(
-      const mozilla::dom::FocusOptions& aOptions);
+  MOZ_CAN_RUN_SCRIPT void RaiseWindow(nsPIDOMWindowOuter* aWindow,
+                                      mozilla::dom::CallerType aCallerType,
+                                      uint64_t aActionId);
 
   /**
-   * Returns the content node that focus will be redirected to if aContent was
-   * focused. This is used for the special case of certain XUL elements such
-   * as textboxes or input number which redirect focus to an anonymous child.
-   *
-   * aContent must be non-null.
-   *
-   * XXXndeakin this should be removed eventually but I want to do that as
-   * followup work.
+   * Called when a window has been raised.
    */
-  static mozilla::dom::Element* GetRedirectedFocus(nsIContent* aContent);
+  MOZ_CAN_RUN_SCRIPT void WindowRaised(mozIDOMWindowProxy* aWindow,
+                                       uint64_t aActionId);
+
+  /**
+   * Called when a window has been lowered.
+   */
+  MOZ_CAN_RUN_SCRIPT void WindowLowered(mozIDOMWindowProxy* aWindow,
+                                        uint64_t aActionId);
+
+  /**
+   * Called when a new document in a window is shown.
+   *
+   * If aNeedsFocus is true, then focus events are expected to be fired on the
+   * window if this window is in the focused window chain.
+   */
+  MOZ_CAN_RUN_SCRIPT void WindowShown(mozIDOMWindowProxy* aWindow,
+                                      bool aNeedsFocus);
+
+  /**
+   * Called when a document in a window has been hidden or otherwise can no
+   * longer accept focus.
+   */
+  MOZ_CAN_RUN_SCRIPT void WindowHidden(mozIDOMWindowProxy* aWindow,
+                                       uint64_t aActionId,
+                                       bool aIsEnteringBFCache);
+
+  /**
+   * Fire any events that have been delayed due to synchronized actions.
+   */
+  MOZ_CAN_RUN_SCRIPT void FireDelayedEvents(Document* aDocument);
+
+  void WasNuked(nsPIDOMWindowOuter* aWindow);
+
+  static uint32_t ProgrammaticFocusFlags(
+      const mozilla::dom::FocusOptions& aOptions);
 
   /**
    * Returns an InputContextAction cause for aFlags.
    */
   static InputContextAction::Cause GetFocusMoveActionCause(uint32_t aFlags);
 
-  static bool sMouseFocusesFormControl;
+  /**
+   * Notify of re-focus to same element.
+   *
+   * aElement is focused element.
+   */
+  MOZ_CAN_RUN_SCRIPT void NotifyOfReFocus(mozilla::dom::Element& aElement);
 
   static void MarkUncollectableForCCGeneration(uint32_t aGeneration);
+
+  struct BlurredElementInfo {
+    const mozilla::OwningNonNull<mozilla::dom::Element> mElement;
+
+    explicit BlurredElementInfo(mozilla::dom::Element&);
+    ~BlurredElementInfo();
+  };
 
  protected:
   nsFocusManager();
@@ -265,24 +318,30 @@ class nsFocusManager final : public nsIFocusManager,
    *
    * All actual focus changes must use this method to do so. (as opposed
    * to those that update the focus in an inactive window for instance).
+   *
+   * Returns Nothing() if we end up not trying to focus the element,
+   * otherwise returns the generated action id.
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  void SetFocusInner(mozilla::dom::Element* aNewContent, int32_t aFlags,
-                     bool aFocusChanged, bool aAdjustWidget);
+  MOZ_CAN_RUN_SCRIPT mozilla::Maybe<uint64_t> SetFocusInner(
+      mozilla::dom::Element* aNewContent, int32_t aFlags, bool aFocusChanged,
+      bool aAdjustWidget);
 
   /**
    * Returns true if aPossibleAncestor is the same as aWindow or an
    * ancestor of aWindow.
    */
   bool IsSameOrAncestor(nsPIDOMWindowOuter* aPossibleAncestor,
-                        nsPIDOMWindowOuter* aWindow);
+                        nsPIDOMWindowOuter* aWindow) const;
   bool IsSameOrAncestor(nsPIDOMWindowOuter* aPossibleAncestor,
-                        mozilla::dom::BrowsingContext* aContext);
+                        mozilla::dom::BrowsingContext* aContext) const;
   bool IsSameOrAncestor(mozilla::dom::BrowsingContext* aPossibleAncestor,
-                        nsPIDOMWindowOuter* aWindow);
-  bool IsSameOrAncestor(mozilla::dom::BrowsingContext* aPossibleAncestor,
-                        mozilla::dom::BrowsingContext* aContext);
+                        nsPIDOMWindowOuter* aWindow) const;
 
+ public:
+  bool IsSameOrAncestor(mozilla::dom::BrowsingContext* aPossibleAncestor,
+                        mozilla::dom::BrowsingContext* aContext) const;
+
+ protected:
   /**
    * Returns the window that is the lowest common ancestor of both aWindow
    * and aContext, or null if they share no common ancestor.
@@ -291,13 +350,21 @@ class nsFocusManager final : public nsIFocusManager,
       nsPIDOMWindowOuter* aWindow, mozilla::dom::BrowsingContext* aContext);
 
   /**
-   * When aBrowsingContext is focused, adjust the ancestors of aBrowsingContext
-   * so that they also have their corresponding frames focused. Thus, one can
-   * start at the active top-level window and navigate down the currently
-   * focused elements for each frame in the tree to get to aBrowsingContext.
+   * When aBrowsingContext is focused or blurred, adjust the ancestors of
+   * aBrowsingContext so that they also have their corresponding frames focused
+   * or blurred. Thus, one can start at the active top-level window and navigate
+   * down the currently focused elements for each frame in the tree to get to
+   * aBrowsingContext.
    */
-  void AdjustWindowFocus(mozilla::dom::BrowsingContext* aBrowsingContext,
-                         bool aCheckPermission, bool aIsVisible);
+  MOZ_CAN_RUN_SCRIPT bool AdjustInProcessWindowFocus(
+      mozilla::dom::BrowsingContext* aBrowsingContext, bool aCheckPermission,
+      bool aIsVisible, uint64_t aActionId, bool aShouldClearAncestorFocus,
+      mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus);
+
+  MOZ_CAN_RUN_SCRIPT void AdjustWindowFocus(
+      mozilla::dom::BrowsingContext* aBrowsingContext, bool aCheckPermission,
+      bool aIsVisible, uint64_t aActionId, bool aShouldClearAncestorFocus,
+      mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus);
 
   /**
    * Returns true if aWindow is visible.
@@ -327,7 +394,7 @@ class nsFocusManager final : public nsIFocusManager,
    * frame, so only the IsFocusable method on the content node must be
    * true.
    */
-  mozilla::dom::Element* FlushAndCheckIfFocusable(
+  MOZ_CAN_RUN_SCRIPT mozilla::dom::Element* FlushAndCheckIfFocusable(
       mozilla::dom::Element* aElement, uint32_t aFlags);
 
   /**
@@ -351,23 +418,21 @@ class nsFocusManager final : public nsIFocusManager,
    *
    * If aAdjustWidget is false, don't change the widget focus state.
    */
-  // MOZ_CAN_RUN_SCRIPT_BOUNDARY for now, until we annotate callers.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  bool Blur(mozilla::dom::BrowsingContext* aBrowsingContextToClear,
-            mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus,
-            bool aIsLeavingDocument, bool aAdjustWidget,
-            nsIContent* aContentToFocus = nullptr);
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  void BlurFromOtherProcess(
+  MOZ_CAN_RUN_SCRIPT bool Blur(
+      mozilla::dom::BrowsingContext* aBrowsingContextToClear,
+      mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus,
+      bool aIsLeavingDocument, bool aAdjustWidget, bool aRemainActive,
+      uint64_t aActionId, mozilla::dom::Element* aElementToFocus = nullptr);
+  MOZ_CAN_RUN_SCRIPT void BlurFromOtherProcess(
       mozilla::dom::BrowsingContext* aFocusedBrowsingContext,
       mozilla::dom::BrowsingContext* aBrowsingContextToClear,
       mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus,
-      bool aIsLeavingDocument, bool aAdjustWidget);
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  bool BlurImpl(mozilla::dom::BrowsingContext* aBrowsingContextToClear,
-                mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus,
-                bool aIsLeavingDocument, bool aAdjustWidget,
-                nsIContent* aContentToFocus);
+      bool aIsLeavingDocument, bool aAdjustWidget, uint64_t aActionId);
+  MOZ_CAN_RUN_SCRIPT bool BlurImpl(
+      mozilla::dom::BrowsingContext* aBrowsingContextToClear,
+      mozilla::dom::BrowsingContext* aAncestorBrowsingContextToFocus,
+      bool aIsLeavingDocument, bool aAdjustWidget, bool aRemainActive,
+      mozilla::dom::Element* aElementToFocus, uint64_t aActionId);
 
   /**
    * Focus an element in the active window and child frame.
@@ -395,24 +460,23 @@ class nsFocusManager final : public nsIFocusManager,
    *
    * If aAdjustWidget is false, don't change the widget focus state.
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  void Focus(nsPIDOMWindowOuter* aWindow, mozilla::dom::Element* aContent,
-             uint32_t aFlags, bool aIsNewDocument, bool aFocusChanged,
-             bool aWindowRaised, bool aAdjustWidget,
-             nsIContent* aContentLostFocus = nullptr);
+  MOZ_CAN_RUN_SCRIPT void Focus(
+      nsPIDOMWindowOuter* aWindow, mozilla::dom::Element* aContent,
+      uint32_t aFlags, bool aIsNewDocument, bool aFocusChanged,
+      bool aWindowRaised, bool aAdjustWidget, uint64_t aActionId,
+      const mozilla::Maybe<BlurredElementInfo>& = mozilla::Nothing());
 
   /**
    * Send a focus or blur event at aTarget. It may be added to the delayed
    * event queue if the document is suppressing events.
    *
    * aEventMessage should be either eFocus or eBlur.
-   * For blur events, aFocusMethod should normally be non-zero.
    *
    * aWindowRaised should only be true if called from WindowRaised.
    */
-  void SendFocusOrBlurEvent(
+  MOZ_CAN_RUN_SCRIPT void SendFocusOrBlurEvent(
       mozilla::EventMessage aEventMessage, mozilla::PresShell* aPresShell,
-      Document* aDocument, nsISupports* aTarget, uint32_t aFocusMethod,
+      Document* aDocument, mozilla::dom::EventTarget* aTarget,
       bool aWindowRaised, bool aIsRefocus = false,
       mozilla::dom::EventTarget* aRelatedTarget = nullptr);
   /**
@@ -423,9 +487,10 @@ class nsFocusManager final : public nsIFocusManager,
    *
    * aWindowRaised should only be true if called from WindowRaised.
    */
-  void FireFocusOrBlurEvent(
+  MOZ_CAN_RUN_SCRIPT void FireFocusOrBlurEvent(
       mozilla::EventMessage aEventMessage, mozilla::PresShell* aPresShell,
-      nsISupports* aTarget, bool aWindowRaised, bool aIsRefocus = false,
+      mozilla::dom::EventTarget* aTarget, bool aWindowRaised,
+      bool aIsRefocus = false,
       mozilla::dom::EventTarget* aRelatedTarget = nullptr);
 
   /**
@@ -445,9 +510,10 @@ class nsFocusManager final : public nsIFocusManager,
    *  aRelatedTarget is the content related to the event (the object
    *  losing focus for focusin, the object getting focus for focusout).
    */
-  void FireFocusInOrOutEvent(
+  MOZ_CAN_RUN_SCRIPT void FireFocusInOrOutEvent(
       mozilla::EventMessage aEventMessage, mozilla::PresShell* aPresShell,
-      nsISupports* aTarget, nsPIDOMWindowOuter* aCurrentFocusedWindow,
+      mozilla::dom::EventTarget* aTarget,
+      nsPIDOMWindowOuter* aCurrentFocusedWindow,
       nsIContent* aCurrentFocusedContent,
       mozilla::dom::EventTarget* aRelatedTarget = nullptr);
 
@@ -466,14 +532,15 @@ class nsFocusManager final : public nsIFocusManager,
    * aUpdateVisibility should be true to update whether the caret is
    * visible or not.
    */
-  void UpdateCaret(bool aMoveCaretToFocus, bool aUpdateVisibility,
-                   nsIContent* aContent);
+  MOZ_CAN_RUN_SCRIPT void UpdateCaret(bool aMoveCaretToFocus,
+                                      bool aUpdateVisibility,
+                                      nsIContent* aContent);
 
   /**
    * Helper method to move the caret to the focused element aContent.
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY void MoveCaretToFocus(
-      mozilla::PresShell* aPresShell, nsIContent* aContent);
+  MOZ_CAN_RUN_SCRIPT void MoveCaretToFocus(mozilla::PresShell* aPresShell,
+                                           nsIContent* aContent);
 
   /**
    * Makes the caret visible or not, depending on aVisible.
@@ -487,10 +554,9 @@ class nsFocusManager final : public nsIFocusManager,
    * Retrieves the start and end points of the current selection for
    * aDocument and stores them in aStartContent and aEndContent.
    */
-  nsresult GetSelectionLocation(Document* aDocument,
-                                mozilla::PresShell* aPresShell,
-                                nsIContent** aStartContent,
-                                nsIContent** aEndContent);
+  void GetSelectionLocation(Document* aDocument, mozilla::PresShell* aPresShell,
+                            nsIContent** aStartContent,
+                            nsIContent** aEndContent);
 
   /**
    * Retrieve the next tabbable element in scope owned by aOwner, using
@@ -517,15 +583,20 @@ class nsFocusManager final : public nsIFocusManager,
    * aSkipOwner to skip owner while searching. The flag is set when caller is
    * |GetNextTabbableContent| in order to let caller handle owner.
    *
+   * aReachedToEndForDocumentNavigation is true when this is a document
+   * navigation and the focus algorithm has reached to the end of the top-level
+   * document.
+   *
    * NOTE:
    *   Consider the method searches downwards in flattened subtree
    *   rooted at aOwner.
    */
-  nsIContent* GetNextTabbableContentInScope(
+  MOZ_CAN_RUN_SCRIPT nsIContent* GetNextTabbableContentInScope(
       nsIContent* aOwner, nsIContent* aStartContent,
       nsIContent* aOriginalStartContent, bool aForward,
       int32_t aCurrentTabIndex, bool aIgnoreTabIndex,
-      bool aForDocumentNavigation, bool aNavigateByKey, bool aSkipOwner);
+      bool aForDocumentNavigation, bool aNavigateByKey, bool aSkipOwner,
+      bool aReachedToEndForDocumentNavigation);
 
   /**
    * Retrieve the next tabbable element in scope including aStartContent
@@ -558,16 +629,21 @@ class nsFocusManager final : public nsIFocusManager,
    * aNavigateByKey to move focus by keyboard as a side effect of computing the
    * next target.
    *
+   * aReachedToEndForDocumentNavigation is true when this is a document
+   * navigation and the focus algorithm has reached to the end of the top-level
+   * document.
+   *
    * NOTE:
    *   Consider the method searches upwards in all shadow host- or slot-rooted
    *   flattened subtrees that contains aStartContent as non-root, except
    *   the flattened subtree rooted at shadow host in light DOM.
    */
-  nsIContent* GetNextTabbableContentInAncestorScopes(
-      nsIContent* aStartOwner, nsIContent** aStartContent,
+  MOZ_CAN_RUN_SCRIPT nsIContent* GetNextTabbableContentInAncestorScopes(
+      nsIContent* aStartOwner, nsCOMPtr<nsIContent>& aStartContent /* inout */,
       nsIContent* aOriginalStartContent, bool aForward,
-      int32_t* aCurrentTabIndex, bool aIgnoreTabIndex,
-      bool aForDocumentNavigation, bool aNavigateByKey);
+      int32_t* aCurrentTabIndex, bool* aIgnoreTabIndex,
+      bool aForDocumentNavigation, bool aNavigateByKey,
+      bool aReachedToEndForDocumentNavigation);
 
   /**
    * Retrieve the next tabbable element within a document, using focusability
@@ -597,15 +673,22 @@ class nsFocusManager final : public nsIFocusManager,
    * from where the selection is. Similarly, if the starting element isn't
    * focusable, since it doesn't really have a defined tab index.
    *
+   * aSkipPopover should be true to avoid an invoker triggering to step into
+   * the popover that was already been visited again.
+   *
    * aNavigateByKey to move focus by keyboard as a side effect of computing the
    * next target.
+   *
+   * aReachedToEndForDocumentNavigation is true when this is a document
+   * navigation and the focus algorithm has reached to the end of the top-level
+   * document.
    */
-  nsresult GetNextTabbableContent(
+  MOZ_CAN_RUN_SCRIPT nsresult GetNextTabbableContent(
       mozilla::PresShell* aPresShell, nsIContent* aRootContent,
       nsIContent* aOriginalStartContent, nsIContent* aStartContent,
       bool aForward, int32_t aCurrentTabIndex, bool aIgnoreTabIndex,
-      bool aForDocumentNavigation, bool aNavigateByKey,
-      nsIContent** aResultContent);
+      bool aForDocumentNavigation, bool aNavigateByKey, bool aSkipPopover,
+      bool aReachedToEndForDocumentNavigation, nsIContent** aResultContent);
 
   /**
    * Get the next tabbable image map area and returns it.
@@ -635,9 +718,13 @@ class nsFocusManager final : public nsIFocusManager,
    * Focus the first focusable content within the document with a root node of
    * aRootContent. For content documents, this will be aRootContent itself, but
    * for chrome documents, this will locate the next focusable content.
+   *
+   * aReachedToEndForDocumentNavigation is true when the focus algorithm has
+   * reached to the end of the top-level document.
    */
-  nsresult FocusFirst(mozilla::dom::Element* aRootContent,
-                      nsIContent** aNextContent);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  FocusFirst(mozilla::dom::Element* aRootContent, nsIContent** aNextContent,
+             bool aReachedToEndForDocumentNavigation);
 
   /**
    * Retrieves and returns the root node from aDocument to be focused. Will
@@ -673,46 +760,56 @@ class nsFocusManager final : public nsIFocusManager,
                            nsIContent** aFocusedContent);
 
  private:
-  // Notify that the focus state of aContent has changed.  Note that
-  // we need to pass in whether the window should show a focus ring
-  // before the SetFocusedNode call on it happened when losing focus
-  // and after the SetFocusedNode call when gaining focus, which is
-  // why that information needs to be an explicit argument instead of
-  // just passing in the window and asking it whether it should show
-  // focus rings: in the losing focus case that information could be
-  // wrong..
-  static void NotifyFocusStateChange(nsIContent* aContent,
-                                     nsIContent* aContentToFocus,
-                                     bool aWindowShouldShowFocusRing,
-                                     int32_t aFlags, bool aGettingFocus);
+  // Notify that the focus state of aElement has changed.  Note that we need to
+  // pass in whether the window should show a focus ring before the
+  // SetFocusedNode call on it happened when losing focus and after the
+  // SetFocusedNode call when gaining focus, which is why that information needs
+  // to be an explicit argument instead of just passing in the window and asking
+  // it whether it should show focus rings: in the losing focus case that
+  // information could be wrong.
+  //
+  // aShouldShowFocusRing is only relevant if aGettingFocus is true.
+  static void NotifyFocusStateChange(mozilla::dom::Element* aElement,
+                                     mozilla::dom::Element* aElementToFocus,
+                                     int32_t aFlags, bool aGettingFocus,
+                                     bool aShouldShowFocusRing);
 
-  void SetFocusedWindowInternal(nsPIDOMWindowOuter* aWindow);
+  void SetFocusedWindowInternal(nsPIDOMWindowOuter* aWindow, uint64_t aActionId,
+                                bool aSyncBrowsingContext = true);
 
-  bool TryDocumentNavigation(nsIContent* aCurrentContent,
-                             bool* aCheckSubDocument,
-                             nsIContent** aResultContent);
+  MOZ_CAN_RUN_SCRIPT bool TryDocumentNavigation(nsIContent* aCurrentContent,
+                                                bool* aCheckSubDocument,
+                                                nsIContent** aResultContent);
 
-  bool TryToMoveFocusToSubDocument(nsIContent* aCurrentContent,
-                                   nsIContent* aOriginalStartContent,
-                                   bool aForward, bool aForDocumentNavigation,
-                                   bool aNavigateByKey,
-                                   nsIContent** aResultContent);
+  MOZ_CAN_RUN_SCRIPT bool TryToMoveFocusToSubDocument(
+      nsIContent* aCurrentContent, nsIContent* aOriginalStartContent,
+      bool aForward, bool aForDocumentNavigation, bool aNavigateByKey,
+      bool aReachedToEndForDocumentNavigation, nsIContent** aResultContent);
 
   // Sets the focused BrowsingContext and, if appropriate, syncs it to
   // other processes.
-  void SetFocusedBrowsingContext(mozilla::dom::BrowsingContext* aContext);
+  void SetFocusedBrowsingContext(mozilla::dom::BrowsingContext* aContext,
+                                 uint64_t aActionId);
 
   // Content-only
   // Called when receiving an IPC message about another process setting
   // the focused BrowsingContext.
   void SetFocusedBrowsingContextFromOtherProcess(
-      mozilla::dom::BrowsingContext* aContext);
+      mozilla::dom::BrowsingContext* aContext, uint64_t aActionId);
 
   // Chrome-only
-  // Sets the chrome process notion of what BrowsingContext is focused
-  // in content.
-  void SetFocusedBrowsingContextInChrome(
-      mozilla::dom::BrowsingContext* aContext);
+  // When returning true, sets the chrome process notion of what
+  // BrowsingContext is focused in content. When returning false,
+  // ignores the attempt to set as out-of-sequence.
+  bool SetFocusedBrowsingContextInChrome(
+      mozilla::dom::BrowsingContext* aContext, uint64_t aActionId);
+
+  void InsertNewFocusActionId(uint64_t aActionId);
+
+  bool ProcessPendingActiveBrowsingContextActionId(uint64_t aActionId,
+                                                   bool aSettingToNonNull);
+
+  bool ProcessPendingFocusedBrowsingContextActionId(uint64_t aActionId);
 
  public:
   // Chrome-only
@@ -730,27 +827,52 @@ class nsFocusManager final : public nsIFocusManager,
   // Sets the BrowsingContext corresponding to top-level Web content
   // in the frontmost tab if focus is in Web content.
   void SetActiveBrowsingContextInContent(
-      mozilla::dom::BrowsingContext* aContext);
+      mozilla::dom::BrowsingContext* aContext, uint64_t aActionId,
+      bool aIsEnteringBFCache);
 
   // Content-only
   // Receives notification of another process setting the top-level Web
   // content as being in the frontmost tab with focus in Web content.
   void SetActiveBrowsingContextFromOtherProcess(
-      mozilla::dom::BrowsingContext* aContext);
+      mozilla::dom::BrowsingContext* aContext, uint64_t aActionId);
 
   // Content-only
   // Receives notification that another process determined that focus
   // moved to chrome so a particular BrowsingContext is no longer the
   // "active" one.
   void UnsetActiveBrowsingContextFromOtherProcess(
-      mozilla::dom::BrowsingContext* aContext);
+      mozilla::dom::BrowsingContext* aContext, uint64_t aActionId);
+
+  // Content-only
+  // Receives a notification from parent that this content process's
+  // attempt to set the active browsing context was late and the
+  // prevailing browsing context is instead the second argument of
+  // this method call. This should be ignored if the first argument
+  // doesn't match the latest action id associated with setting the
+  // active browsing context in this process, because in that case,
+  // this revision is late.
+  void ReviseActiveBrowsingContext(uint64_t aOldActionId,
+                                   mozilla::dom::BrowsingContext* aContext,
+                                   uint64_t aNewActionId);
+
+  // Receives a notification from parent that this content process's
+  // attempt to set the focused browsing context was late and the
+  // prevailing browsing context is instead the second argument of
+  // this method call. This should be ignored if the first argument
+  // doesn't match the latest action id associated with setting the
+  // active browsing context in this process, because in that case,
+  // this revision is late.
+  void ReviseFocusedBrowsingContext(uint64_t aOldActionId,
+                                    mozilla::dom::BrowsingContext* aContext,
+                                    uint64_t aNewActionId);
 
   // Chrome-only
   // Sets the chrome process notion of what content believes to be
   // the top-level BrowsingContext in the frontmost tab when focus
   // is in Web content.
-  void SetActiveBrowsingContextInChrome(
-      mozilla::dom::BrowsingContext* aContext);
+  // Returns true if set and false if ignored.
+  bool SetActiveBrowsingContextInChrome(mozilla::dom::BrowsingContext* aContext,
+                                        uint64_t aActionId);
 
  public:
   // Chrome-only
@@ -759,18 +881,61 @@ class nsFocusManager final : public nsIFocusManager,
   // is in Web content.
   mozilla::dom::BrowsingContext* GetActiveBrowsingContextInChrome();
 
+  uint64_t GetActionIdForActiveBrowsingContextInChrome() const;
+
+  uint64_t GetActionIdForFocusedBrowsingContextInChrome() const;
+
+  static uint64_t GenerateFocusActionId();
+
+  // This function works very similar to
+  // https://html.spec.whatwg.org/#get-the-focusable-area
+  static mozilla::dom::Element* GetTheFocusableArea(
+      mozilla::dom::Element* aTarget, uint32_t aFlags);
+
+  // Returns true if it's an area element with one or more shapes that are
+  // focusable areas.
+  static bool IsAreaElementFocusable(mozilla::dom::HTMLAreaElement& aArea);
+
  private:
   // In the chrome process, the currently active and front-most top-most
   // window. Not supposed to be used in a meaningful way in content
-  // processes.
+  // processes. For legacy reasons, this exists as a separate field
+  // instead of being derived from mFocusedWindow when needed, because
+  // the defined relation that mActiveWindow is supposed to be the same
+  // as or ancestor of mFocusedWindow is temporarily broken when a
+  // window is being raised or lowered.
   nsCOMPtr<nsPIDOMWindowOuter> mActiveWindow;
 
   // In a content process, the BrowsingContext corresponding to top-level
   // Web content in the active tab or nullptr if focus is not in a
   // BrowsingContextGroup that this process participates in. Synced
-  // across processes in a BrowsingContextGroup.
+  // across processes in a BrowsingContextGroup. This field exists
+  // separately from mFocusedBrowsingContextInContent instead of being being
+  // derived from it, because for legacy reasons the relation
+  // mFocusedBrowsingContextInContent->Top() == mActiveBrowsingContextInContent
+  // is temporarily broken when a window is being raised or lowered.
   // Not supposed to be used in a meaningful way in the chrome process.
   RefPtr<mozilla::dom::BrowsingContext> mActiveBrowsingContextInContent;
+
+  // If this content process set mActiveBrowsingContextInContent, this
+  // field holds the corresponding actionId so that
+  // mActiveBrowsingContextInContent can be revised of the parent rejects
+  // the update. This field is used for accepting revisions only if nothing
+  // else has updated mActiveBrowsingContextInContent before the revision
+  // arrives.
+  uint64_t mActionIdForActiveBrowsingContextInContent;
+
+  uint64_t mActionIdForActiveBrowsingContextInChrome;
+
+  // If this content process set mFocusedBrowsingContextInContent, this
+  // field holds the corresponding actionId so that
+  // mFocusedBrowsingContextInContent can be revised of the parent rejects
+  // the update. This field is used for accepting revisions only if nothing
+  // else has updated mFocusedBrowsingContextInContent before the revision
+  // arrives.
+  uint64_t mActionIdForFocusedBrowsingContextInContent;
+
+  uint64_t mActionIdForFocusedBrowsingContextInChrome;
 
   // Whether or not mActiveBrowsingContextInContent was set from another process
   // or from this process.
@@ -810,8 +975,8 @@ class nsFocusManager final : public nsIFocusManager,
   // these fields store a content node temporarily while it is being focused
   // or blurred to ensure that a recursive call doesn't refire the same event.
   // They will always be cleared afterwards.
-  nsCOMPtr<nsIContent> mFirstBlurEvent;
-  nsCOMPtr<nsIContent> mFirstFocusEvent;
+  RefPtr<mozilla::dom::Element> mFirstBlurEvent;
+  RefPtr<mozilla::dom::Element> mFirstFocusEvent;
 
   // keep track of a window while it is being lowered
   nsCOMPtr<nsPIDOMWindowOuter> mWindowBeingLowered;
@@ -820,14 +985,74 @@ class nsFocusManager final : public nsIFocusManager,
   // and fire them later.
   nsTArray<nsDelayedBlurOrFocusEvent> mDelayedBlurFocusEvents;
 
+  // Array of focus action ids for which we haven't seen an active browsing
+  // context set yet. As set is allowed to overwrite an unset. Therefore,
+  // an unset removes earlier ids but not the matching id. A set removes
+  // earlier ids and the matching id.
+  //
+  // Conceptually, active browsing context shouldn't have to exist as a
+  // field, because it should be possible to always derive it from the
+  // focused browsing context. Unfortunately, for legacy reasons, this
+  // is not the case while a window is being raised or lowered.
+  //
+  // Conceptually, it should be possible for the parent to manage the
+  // active browsing context. Unfortunately, for legacy reasons, the
+  // code for setting the active browsing context needs to reside in
+  // the content process to retain the existing and test-passing code
+  // flow.
+  //
+  // This, obviously, raises the issue of content processes racing to
+  // set the active browsing context. In particular, there is a pattern
+  // that the parent initiates actions that cause multiple content
+  // processes to mutate the active browsing context at almost the
+  // same time. When two native browser windows change order, the
+  // lowering isn't distinguished from the case of lowering the
+  // entire app. For this reason, the owner of the previous active
+  // browsing context tries to unset it and at almost the same time
+  // the another content process sets a new active browsing context.
+  // If the IPC messages for these unset and set actions were to
+  // arrive in the wrong order, this could get in the wrong state.
+  //
+  // To address this issue, the parent manages an authortative order
+  // of attempts to (un)set the active browsing context using the
+  // array mPendingActiveBrowsingContextActions.
+  //
+  // A process reserves a slot in the order by calling
+  // GenerateFocusActionId(). Per one call to GenerateFocusActionId(),
+  // there may be at most one action to set the active browsing context
+  // to a new value. There may be logically prior attempts to unset it
+  // (i.e. set it to nullptr). That is, if there are both attempts to
+  // unset and set the active browsing context with the same action id,
+  // the attempt to set to a non-null value wins.
+  //
+  // The completion of an action from reserting the slot in the order
+  // and actually performing the setting of the active browsing context
+  // may span multiple processes and IPC messages.
+  //
+  // The at-most-once property is not asserted, because the process
+  // claiming the position in the order and the process setting the
+  // active browsing context with that actionId may be different, and
+  // the act of using an actionId to set the active browsing context
+  // is used to delete stale items from the array to avoid excessive
+  // growth of the array.
+  nsTArray<uint64_t> mPendingActiveBrowsingContextActions;
+
+  // Like mPendingActiveBrowsingContextActions but for the focused
+  // browsing context.
+  nsTArray<uint64_t> mPendingFocusedBrowsingContextActions;
+
   // If set to true, layout of the document of the event target should be
   // flushed before handling focus depending events.
   bool mEventHandlingNeedsFlush;
 
   static bool sTestMode;
 
+  // Process-specific counter for maintaining the prosess-specific
+  // uniqueness of actionIds.
+  static uint64_t sFocusActionCounter;
+
   // the single focus manager
-  static nsFocusManager* sInstance;
+  static mozilla::StaticRefPtr<nsFocusManager> sInstance;
 };
 
 nsresult NS_NewFocusManager(nsIFocusManager** aResult);

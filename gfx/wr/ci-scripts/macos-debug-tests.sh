@@ -22,6 +22,8 @@ set -o xtrace
 CARGOFLAGS=${CARGOFLAGS:-"--verbose"}  # default to --verbose if not set
 CARGOTESTFLAGS=${CARGOTESTFLAGS:-""}
 
+python3 -m pip install -r $(dirname ${0})/requirements.txt
+
 pushd webrender
 cargo check ${CARGOFLAGS} --no-default-features
 cargo check ${CARGOFLAGS} --no-default-features --features capture
@@ -38,5 +40,5 @@ cargo check ${CARGOFLAGS}
 popd
 
 cargo test ${CARGOFLAGS} ${CARGOTESTFLAGS} \
-    --all --exclude compositor-windows --exclude compositor \
-    --exclude glsl-to-cxx --exclude swgl
+    --all --exclude compositor --exclude compositor-wayland \
+    --exclude compositor-windows --exclude glsl-to-cxx --exclude swgl

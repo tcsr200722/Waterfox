@@ -10,11 +10,12 @@
 #include "nsDOMNavigationTiming.h"
 #include "nsString.h"
 #include "nsWrapperCache.h"
+#include "nsAtom.h"
+#include "mozilla/dom/PerformanceObserverBinding.h"
 
 class nsISupports;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class PerformanceResourceTiming;
 
 // http://www.w3.org/TR/performance-timeline/#performanceentry
@@ -27,29 +28,49 @@ class PerformanceEntry : public nsISupports, public nsWrapperCache {
                    const nsAString& aEntryType);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(PerformanceEntry)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PerformanceEntry)
 
   nsISupports* GetParentObject() const { return mParent; }
 
-  void GetName(nsAString& aName) const { aName = mName; }
+  void GetName(nsAString& aName) const {
+    if (mName) {
+      mName->ToString(aName);
+    }
+  }
 
-  const nsAString& GetName() const { return mName; }
+  const nsAtom* GetName() const { return mName; }
 
-  void SetName(const nsAString& aName) { mName = aName; }
+  void GetEntryType(nsAString& aEntryType) const {
+    if (mEntryType) {
+      mEntryType->ToString(aEntryType);
+    }
+  }
 
-  void GetEntryType(nsAString& aEntryType) const { aEntryType = mEntryType; }
+  const nsAtom* GetEntryType() const { return mEntryType; }
 
-  const nsAString& GetEntryType() { return mEntryType; }
-
-  void SetEntryType(const nsAString& aEntryType) { mEntryType = aEntryType; }
+  void SetEntryType(const nsAString& aEntryType) {
+    mEntryType = NS_Atomize(aEntryType);
+  }
 
   virtual DOMHighResTimeStamp StartTime() const { return 0; }
+
+  // This is used by the Gecko Profiler only for adding precise markers.
+  // It's not exposed to JS.
+  virtual DOMHighResTimeStamp UnclampedStartTime() const {
+    MOZ_ASSERT(false, "UnclampedStartTime should not be called on this class.");
+    return 0;
+  }
 
   virtual DOMHighResTimeStamp Duration() const { return 0; }
 
   virtual const PerformanceResourceTiming* ToResourceTiming() const {
     return nullptr;
   }
+
+  virtual bool ShouldAddEntryToObserverBuffer(
+      PerformanceObserverInit& aOption) const;
+
+  virtual void BufferEntryIfNeeded() {}
 
   virtual size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
@@ -58,8 +79,8 @@ class PerformanceEntry : public nsISupports, public nsWrapperCache {
 
  private:
   nsCOMPtr<nsISupports> mParent;
-  nsString mName;
-  nsString mEntryType;
+  RefPtr<nsAtom> mName;
+  RefPtr<nsAtom> mEntryType;
 };
 
 // Helper classes
@@ -78,7 +99,6 @@ class MOZ_STACK_CLASS PerformanceEntryComparator final {
   }
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_PerformanceEntry_h___ */

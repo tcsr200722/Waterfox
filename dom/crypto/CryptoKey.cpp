@@ -4,17 +4,46 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CryptoKey.h"
+#include "mozilla/dom/CryptoKey.h"
 
-#include "cryptohi.h"
+#include <cstddef>
+#include <cstring>
+#include <memory>
+#include <new>
+#include <utility>
+#include "blapit.h"
+#include "certt.h"
+#include "js/StructuredClone.h"
+#include "js/TypeDecls.h"
+#include "keyhi.h"
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/dom/KeyAlgorithmBinding.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/SubtleCryptoBinding.h"
 #include "mozilla/dom/ToJSValue.h"
+#include "mozilla/dom/WebCryptoCommon.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsLiteralString.h"
 #include "nsNSSComponent.h"
+#include "nsStringFlags.h"
+#include "nsTArray.h"
 #include "pk11pub.h"
+#include "pkcs11t.h"
+#include "plarena.h"
+#include "prtypes.h"
+#include "secasn1.h"
+#include "secasn1t.h"
+#include "seccomon.h"
+#include "secdert.h"
+#include "secitem.h"
+#include "secmodt.h"
+#include "secoid.h"
+#include "secoidt.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(CryptoKey, mGlobal)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(CryptoKey)
@@ -161,17 +190,20 @@ void CryptoKey::GetAlgorithm(JSContext* cx,
                              JS::MutableHandle<JSObject*> aRetVal,
                              ErrorResult& aRv) const {
   bool converted = false;
-  JS::RootedValue val(cx);
+  JS::Rooted<JS::Value> val(cx);
   switch (mAlgorithm.mType) {
     case KeyAlgorithmProxy::AES:
       converted = ToJSValue(cx, mAlgorithm.mAes, &val);
+      break;
+    case KeyAlgorithmProxy::KDF:
+      converted = ToJSValue(cx, mAlgorithm.mKDF, &val);
       break;
     case KeyAlgorithmProxy::HMAC:
       converted = ToJSValue(cx, mAlgorithm.mHmac, &val);
       break;
     case KeyAlgorithmProxy::RSA: {
       RootedDictionary<RsaHashedKeyAlgorithm> rsa(cx);
-      converted = mAlgorithm.mRsa.ToKeyAlgorithm(cx, rsa);
+      converted = mAlgorithm.mRsa.ToKeyAlgorithm(cx, rsa, aRv);
       if (converted) {
         converted = ToJSValue(cx, rsa, &val);
       }
@@ -191,28 +223,36 @@ void CryptoKey::GetAlgorithm(JSContext* cx,
 
 void CryptoKey::GetUsages(nsTArray<nsString>& aRetVal) const {
   if (mAttributes & ENCRYPT) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_ENCRYPT));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_ENCRYPT));
   }
   if (mAttributes & DECRYPT) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_DECRYPT));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_DECRYPT));
   }
   if (mAttributes & SIGN) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_SIGN));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_SIGN));
   }
   if (mAttributes & VERIFY) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_VERIFY));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_VERIFY));
   }
   if (mAttributes & DERIVEKEY) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_DERIVEKEY));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_DERIVEKEY));
   }
   if (mAttributes & DERIVEBITS) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_DERIVEBITS));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_DERIVEBITS));
   }
   if (mAttributes & WRAPKEY) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_WRAPKEY));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_WRAPKEY));
   }
   if (mAttributes & UNWRAPKEY) {
-    aRetVal.AppendElement(NS_LITERAL_STRING(WEBCRYPTO_KEY_USAGE_UNWRAPKEY));
+    aRetVal.AppendElement(
+        NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_KEY_USAGE_UNWRAPKEY));
   }
 }
 
@@ -308,16 +348,39 @@ nsresult CryptoKey::AddPublicKeyData(SECKEYPublicKey* aPublicKey) {
 void CryptoKey::ClearUsages() { mAttributes &= CLEAR_USAGES; }
 
 nsresult CryptoKey::AddUsage(const nsString& aUsage) {
-  return AddUsageIntersecting(aUsage, USAGES_MASK);
-}
-
-nsresult CryptoKey::AddUsageIntersecting(const nsString& aUsage,
-                                         uint32_t aUsageMask) {
   KeyUsage usage;
   if (NS_FAILED(StringToUsage(aUsage, usage))) {
     return NS_ERROR_DOM_SYNTAX_ERR;
   }
 
+  MOZ_ASSERT(usage & USAGES_MASK, "Usages should be valid");
+
+  // This is harmless if usage is 0, so we don't repeat the assertion check
+  AddUsage(usage);
+  return NS_OK;
+}
+
+nsresult CryptoKey::AddAllowedUsage(const nsString& aUsage,
+                                    const nsString& aAlgorithm) {
+  return AddAllowedUsageIntersecting(aUsage, aAlgorithm, USAGES_MASK);
+}
+
+nsresult CryptoKey::AddAllowedUsageIntersecting(const nsString& aUsage,
+                                                const nsString& aAlgorithm,
+                                                uint32_t aUsageMask) {
+  uint32_t allowedUsages = GetAllowedUsagesForAlgorithm(aAlgorithm);
+  KeyUsage usage;
+  if (NS_FAILED(StringToUsage(aUsage, usage))) {
+    return NS_ERROR_DOM_SYNTAX_ERR;
+  }
+
+  if ((usage & allowedUsages) != usage) {
+    return NS_ERROR_DOM_SYNTAX_ERR;
+  }
+
+  MOZ_ASSERT(usage & USAGES_MASK, "Usages should be valid");
+
+  // This is harmless if usage is 0, so we don't repeat the assertion check
   if (usage & aUsageMask) {
     AddUsage(usage);
     return NS_OK;
@@ -351,6 +414,28 @@ bool CryptoKey::AllUsagesRecognized(const Sequence<nsString>& aUsages) {
     }
   }
   return true;
+}
+
+uint32_t CryptoKey::GetAllowedUsagesForAlgorithm(const nsString& aAlgorithm) {
+  uint32_t allowedUsages = 0;
+  if (aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_AES_CTR) ||
+      aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_AES_CBC) ||
+      aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_AES_GCM) ||
+      aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_RSA_OAEP)) {
+    allowedUsages = ENCRYPT | DECRYPT | WRAPKEY | UNWRAPKEY;
+  } else if (aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_AES_KW)) {
+    allowedUsages = WRAPKEY | UNWRAPKEY;
+  } else if (aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_HMAC) ||
+             aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_RSASSA_PKCS1) ||
+             aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_RSA_PSS) ||
+             aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_ECDSA)) {
+    allowedUsages = SIGN | VERIFY;
+  } else if (aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_ECDH) ||
+             aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_HKDF) ||
+             aAlgorithm.EqualsASCII(WEBCRYPTO_ALG_PBKDF2)) {
+    allowedUsages = DERIVEBITS | DERIVEKEY;
+  }
+  return allowedUsages;
 }
 
 nsresult CryptoKey::SetSymKey(const CryptoBuffer& aSymKey) {
@@ -668,15 +753,18 @@ bool ECKeyToJwk(const PK11ObjectType aKeyType, void* aKey,
   switch (SECOID_FindOIDTag(&oid)) {
     case SEC_OID_SECG_EC_SECP256R1:
       flen = 32;  // bytes
-      aRetVal.mCrv.Construct(NS_LITERAL_STRING(WEBCRYPTO_NAMED_CURVE_P256));
+      aRetVal.mCrv.Construct(
+          NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_NAMED_CURVE_P256));
       break;
     case SEC_OID_SECG_EC_SECP384R1:
       flen = 48;  // bytes
-      aRetVal.mCrv.Construct(NS_LITERAL_STRING(WEBCRYPTO_NAMED_CURVE_P384));
+      aRetVal.mCrv.Construct(
+          NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_NAMED_CURVE_P384));
       break;
     case SEC_OID_SECG_EC_SECP521R1:
       flen = 66;  // bytes
-      aRetVal.mCrv.Construct(NS_LITERAL_STRING(WEBCRYPTO_NAMED_CURVE_P521));
+      aRetVal.mCrv.Construct(
+          NS_LITERAL_STRING_FROM_CSTRING(WEBCRYPTO_NAMED_CURVE_P521));
       break;
     default:
       return false;
@@ -710,7 +798,7 @@ bool ECKeyToJwk(const PK11ObjectType aKeyType, void* aKey,
     return false;
   }
 
-  aRetVal.mKty = NS_LITERAL_STRING(JWK_TYPE_EC);
+  aRetVal.mKty = NS_LITERAL_STRING_FROM_CSTRING(JWK_TYPE_EC);
   return true;
 }
 
@@ -738,7 +826,7 @@ nsresult CryptoKey::PrivateKeyToJwk(SECKEYPrivateKey* aPrivKey,
         return NS_ERROR_DOM_OPERATION_ERR;
       }
 
-      aRetVal.mKty = NS_LITERAL_STRING(JWK_TYPE_RSA);
+      aRetVal.mKty = NS_LITERAL_STRING_FROM_CSTRING(JWK_TYPE_RSA);
       return NS_OK;
     }
     case ecKey: {
@@ -777,7 +865,11 @@ nsresult CryptoKey::PrivateKeyToJwk(SECKEYPrivateKey* aPrivKey,
 }
 
 UniqueSECKEYPublicKey CreateECPublicKey(const SECItem* aKeyData,
-                                        const nsString& aNamedCurve) {
+                                        const nsAString& aNamedCurve) {
+  if (!EnsureNSSInitializedChromeOrContent()) {
+    return nullptr;
+  }
+
   UniquePLArenaPool arena(PORT_NewArena(DER_DEFAULT_CHUNKSIZE));
   if (!arena) {
     return nullptr;
@@ -792,27 +884,32 @@ UniqueSECKEYPublicKey CreateECPublicKey(const SECItem* aKeyData,
     return nullptr;
   }
 
-  key->arena = nullptr;  // key doesn't own the arena; it won't get double-freed
+  // Transfer arena ownership to the key.
+  key->arena = arena.release();
   key->keyType = ecKey;
   key->pkcs11Slot = nullptr;
   key->pkcs11ID = CK_INVALID_HANDLE;
 
   // Create curve parameters.
-  SECItem* params = CreateECParamsForCurve(aNamedCurve, arena.get());
+  SECItem* params = CreateECParamsForCurve(aNamedCurve, key->arena);
   if (!params) {
     return nullptr;
   }
   key->u.ec.DEREncodedParams = *params;
 
   // Set public point.
-  key->u.ec.publicValue = *aKeyData;
+  SECStatus ret =
+      SECITEM_CopyItem(key->arena, &key->u.ec.publicValue, aKeyData);
+  if (NS_WARN_IF(ret != SECSuccess)) {
+    return nullptr;
+  }
 
   // Ensure the given point is on the curve.
   if (!CryptoKey::PublicKeyValid(key.get())) {
     return nullptr;
   }
 
-  return UniqueSECKEYPublicKey(SECKEY_CopyPublicKey(key.get()));
+  return key;
 }
 
 UniqueSECKEYPublicKey CryptoKey::PublicKeyFromJwk(const JsonWebKey& aJwk) {
@@ -902,7 +999,7 @@ nsresult CryptoKey::PublicKeyToJwk(SECKEYPublicKey* aPubKey,
         return NS_ERROR_DOM_OPERATION_ERR;
       }
 
-      aRetVal.mKty = NS_LITERAL_STRING(JWK_TYPE_RSA);
+      aRetVal.mKty = NS_LITERAL_STRING_FROM_CSTRING(JWK_TYPE_RSA);
       return NS_OK;
     }
     case ecKey:
@@ -971,12 +1068,7 @@ bool CryptoKey::PublicKeyValid(SECKEYPublicKey* aPubKey) {
   // it is imported into a PKCS#11 module, and returns CK_INVALID_HANDLE
   // if it is invalid.
   CK_OBJECT_HANDLE id = PK11_ImportPublicKey(slot.get(), aPubKey, PR_FALSE);
-  if (id == CK_INVALID_HANDLE) {
-    return false;
-  }
-
-  SECStatus rv = PK11_DestroyObject(slot.get(), id);
-  return (rv == SECSuccess);
+  return id != CK_INVALID_HANDLE;
 }
 
 bool CryptoKey::WriteStructuredClone(JSContext* aCX,
@@ -1049,5 +1141,4 @@ already_AddRefed<CryptoKey> CryptoKey::ReadStructuredClone(
   return key.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

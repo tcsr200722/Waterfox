@@ -70,6 +70,21 @@
 #  define MOZ_HAVE_NORETURN_PTR __attribute__((noreturn))
 #endif
 
+#if defined(__clang__)
+#  if __has_attribute(no_stack_protector)
+#    define MOZ_HAVE_NO_STACK_PROTECTOR __attribute__((no_stack_protector))
+#  endif
+#elif defined(__GNUC__)
+#  define MOZ_HAVE_NO_STACK_PROTECTOR __attribute__((no_stack_protector))
+#endif
+
+/* if defined(__clang__) && __has_attribute (attr) may not be portable */
+#if defined(__clang__)
+#  define MOZ_HAS_CLANG_ATTRIBUTE(attr) __has_attribute(attr)
+#else
+#  define MOZ_HAS_CLANG_ATTRIBUTE(attr) 0
+#endif
+
 /*
  * When built with clang analyzer (a.k.a scan-build), define MOZ_HAVE_NORETURN
  * to mark some false positives
@@ -78,6 +93,43 @@
 #  if __has_extension(attribute_analyzer_noreturn)
 #    define MOZ_HAVE_ANALYZER_NORETURN __attribute__((analyzer_noreturn))
 #  endif
+#endif
+
+#if defined(__GNUC__) || MOZ_HAS_CLANG_ATTRIBUTE(no_profile_instrument_function)
+#  define MOZ_NOPROFILE __attribute__((no_profile_instrument_function))
+#else
+#  define MOZ_NOPROFILE
+#endif
+
+#if defined(__GNUC__) || (MOZ_HAS_CLANG_ATTRIBUTE(no_instrument_function))
+#  define MOZ_NOINSTRUMENT __attribute__((no_instrument_function))
+#else
+#  define MOZ_NOINSTRUMENT
+#endif
+
+/*
+ * MOZ_NAKED tells the compiler that the function only contains assembly and
+ * that it should not try to inject code that may mess with the assembly in it.
+ *
+ * See https://github.com/llvm/llvm-project/issues/74573 for the interaction
+ * between naked and no_profile_instrument_function.
+ */
+#define MOZ_NAKED __attribute__((naked)) MOZ_NOPROFILE MOZ_NOINSTRUMENT
+
+/**
+ * Per clang's documentation:
+ *
+ * If a statement is marked nomerge and contains call expressions, those call
+ * expressions inside the statement will not be merged during optimization. This
+ * attribute can be used to prevent the optimizer from obscuring the source
+ * location of certain calls.
+ *
+ * This is useful to have clearer information on assertion failures.
+ */
+#if MOZ_HAS_CLANG_ATTRIBUTE(nomerge)
+#  define MOZ_NOMERGE __attribute__((nomerge))
+#else
+#  define MOZ_NOMERGE
 #endif
 
 /*
@@ -204,44 +256,42 @@
 #endif
 
 /*
- * MOZ_ASAN_BLACKLIST is a macro to tell AddressSanitizer (a compile-time
+ * MOZ_ASAN_IGNORE is a macro to tell AddressSanitizer (a compile-time
  * instrumentation shipped with Clang and GCC) to not instrument the annotated
  * function. Furthermore, it will prevent the compiler from inlining the
- * function because inlining currently breaks the blacklisting mechanism of
+ * function because inlining currently breaks the blocklisting mechanism of
  * AddressSanitizer.
  */
 #if defined(__has_feature)
 #  if __has_feature(address_sanitizer)
-#    define MOZ_HAVE_ASAN_BLACKLIST
+#    define MOZ_HAVE_ASAN_IGNORE
 #  endif
 #elif defined(__GNUC__)
 #  if defined(__SANITIZE_ADDRESS__)
-#    define MOZ_HAVE_ASAN_BLACKLIST
+#    define MOZ_HAVE_ASAN_IGNORE
 #  endif
 #endif
 
-#if defined(MOZ_HAVE_ASAN_BLACKLIST)
-#  define MOZ_ASAN_BLACKLIST \
-    MOZ_NEVER_INLINE __attribute__((no_sanitize_address))
+#if defined(MOZ_HAVE_ASAN_IGNORE)
+#  define MOZ_ASAN_IGNORE MOZ_NEVER_INLINE __attribute__((no_sanitize_address))
 #else
-#  define MOZ_ASAN_BLACKLIST /* nothing */
+#  define MOZ_ASAN_IGNORE /* nothing */
 #endif
 
 /*
- * MOZ_TSAN_BLACKLIST is a macro to tell ThreadSanitizer (a compile-time
+ * MOZ_TSAN_IGNORE is a macro to tell ThreadSanitizer (a compile-time
  * instrumentation shipped with Clang) to not instrument the annotated function.
  * Furthermore, it will prevent the compiler from inlining the function because
- * inlining currently breaks the blacklisting mechanism of ThreadSanitizer.
+ * inlining currently breaks the blocklisting mechanism of ThreadSanitizer.
  */
 #if defined(__has_feature)
 #  if __has_feature(thread_sanitizer)
-#    define MOZ_TSAN_BLACKLIST \
-      MOZ_NEVER_INLINE __attribute__((no_sanitize_thread))
+#    define MOZ_TSAN_IGNORE MOZ_NEVER_INLINE __attribute__((no_sanitize_thread))
 #  else
-#    define MOZ_TSAN_BLACKLIST /* nothing */
+#    define MOZ_TSAN_IGNORE /* nothing */
 #  endif
 #else
-#  define MOZ_TSAN_BLACKLIST /* nothing */
+#  define MOZ_TSAN_IGNORE /* nothing */
 #endif
 
 #if defined(__has_attribute)
@@ -361,43 +411,6 @@
 #endif
 
 /**
- * MOZ_MUST_USE tells the compiler to emit a warning if a function's
- * return value is not used by the caller.
- *
- * Place this attribute at the very beginning of a function declaration. For
- * example, write
- *
- *   MOZ_MUST_USE int foo();
- * or
- *   MOZ_MUST_USE int foo() { return 42; }
- *
- * MOZ_MUST_USE is most appropriate for functions where the return value is
- * some kind of success/failure indicator -- often |nsresult|, |bool| or |int|
- * -- because these functions are most commonly the ones that have missing
- * checks. There are three cases of note.
- *
- * - Fallible functions whose return values should always be checked. For
- *   example, a function that opens a file should always be checked because any
- *   subsequent operations on the file will fail if opening it fails. Such
- *   functions should be given a MOZ_MUST_USE annotation.
- *
- * - Fallible functions whose return value need not always be checked. For
- *   example, a function that closes a file might not be checked because it's
- *   common that no further operations would be performed on the file. Such
- *   functions do not need a MOZ_MUST_USE annotation.
- *
- * - Infallible functions, i.e. ones that always return a value indicating
- *   success. These do not need a MOZ_MUST_USE annotation. Ideally, they would
- *   be converted to not return a success/failure indicator, though sometimes
- *   interface constraints prevent this.
- */
-#if defined(__GNUC__) || defined(__clang__)
-#  define MOZ_MUST_USE __attribute__((warn_unused_result))
-#else
-#  define MOZ_MUST_USE
-#endif
-
-/**
  * MOZ_MAYBE_UNUSED suppresses compiler warnings about functions that are
  * never called (in this build configuration, at least).
  *
@@ -416,6 +429,43 @@
 #  define MOZ_MAYBE_UNUSED __pragma(warning(suppress : 4505))
 #else
 #  define MOZ_MAYBE_UNUSED
+#endif
+
+/*
+ * MOZ_NO_STACK_PROTECTOR, specified at the start of a function declaration,
+ * indicates that the given function should *NOT* be instrumented to detect
+ * stack buffer overflows at runtime. (The function definition does not need to
+ * be annotated.)
+ *
+ *   MOZ_NO_STACK_PROTECTOR int foo();
+ *
+ * Detecting stack buffer overflows at runtime is a security feature. This
+ * modifier should thus only be used on functions which are provably exempt of
+ * stack buffer overflows, for example because they do not use stack buffers.
+ *
+ * This modifier does not affect the corresponding function's linking behavior.
+ */
+#if defined(MOZ_HAVE_NO_STACK_PROTECTOR)
+#  define MOZ_NO_STACK_PROTECTOR MOZ_HAVE_NO_STACK_PROTECTOR
+#else
+#  define MOZ_NO_STACK_PROTECTOR /* no support */
+#endif
+
+/**
+ * MOZ_LIFETIME_BOUND indicates that objects that are referred to by that
+ * parameter may also be referred to by the return value of the annotated
+ * function (or, for a parameter of a constructor, by the value of the
+ * constructed object).
+ * See: https://clang.llvm.org/docs/AttributeReference.html#lifetimebound
+ */
+#if defined(__clang__) && defined(__has_cpp_attribute)
+#  if __has_cpp_attribute(clang::lifetimebound)
+#    define MOZ_LIFETIME_BOUND [[clang::lifetimebound]]
+#  else
+#    define MOZ_LIFETIME_BOUND /* nothing */
+#  endif
+#else
+#  define MOZ_LIFETIME_BOUND /* nothing */
 #endif
 
 #ifdef __cplusplus
@@ -584,8 +634,8 @@
  *   need not be provided in such cases.
  * MOZ_TEMPORARY_CLASS: Applies to all classes. Any class with this annotation
  *   is expected to only live in a temporary. If another class inherits from
- *   this class, then it is considered to be a non-temporary class as well,
- *   although this attribute need not be provided in such cases.
+ *   this class, then it is considered to be a temporary class as well, although
+ *   this attribute need not be provided in such cases.
  * MOZ_RAII: Applies to all classes. Any class with this annotation is assumed
  *   to be a RAII guard, which is expected to live on the stack in an automatic
  *   allocation. It is prohibited from being allocated in a temporary, static
@@ -660,9 +710,6 @@
  *   function.  This is intended to be used with operator->() of our smart
  *   pointer classes to ensure that the refcount of an object wrapped in a
  *   smart pointer is not manipulated directly.
- * MOZ_MUST_USE_TYPE: Applies to type declarations.  Makes it a compile time
- *   error to not use the return value of a function which has this type.  This
- *   is intended to be used with types which it is an error to not use.
  * MOZ_NEEDS_NO_VTABLE_TYPE: Applies to template class declarations.  Makes it
  *   a compile time error to instantiate this template with a type parameter
  *   which has a VTable.
@@ -686,7 +733,7 @@
  * MOZ_INHERIT_TYPE_ANNOTATIONS_FROM_TEMPLATE_ARGS: Applies to template class
  *   declarations where an instance of the template should be considered, for
  *   static analysis purposes, to inherit any type annotations (such as
- *   MOZ_MUST_USE_TYPE and MOZ_STACK_CLASS) from its template arguments.
+ *   MOZ_STACK_CLASS) from its template arguments.
  * MOZ_INIT_OUTSIDE_CTOR: Applies to class member declarations. Occasionally
  *   there are class members that are not initialized in the constructor,
  *   but logic elsewhere in the class ensures they are initialized prior to use.
@@ -713,13 +760,20 @@
  * MOZ_MUST_RETURN_FROM_CALLER_IF_THIS_IS_ARG: Applies to method declarations.
  *   Callers of the annotated method must return from that function within the
  *   calling block using an explicit `return` statement if the "this" value for
- * the call is a parameter of the caller.  Only calls to Constructors,
- * references to local and member variables, and calls to functions or methods
- * marked as MOZ_MAY_CALL_AFTER_MUST_RETURN may be made after the
+ *   the call is a parameter of the caller.  Only calls to Constructors,
+ *   references to local and member variables, and calls to functions or
+ *   methods marked as MOZ_MAY_CALL_AFTER_MUST_RETURN may be made after the
  *   MOZ_MUST_RETURN_FROM_CALLER_IF_THIS_IS_ARG call.
  * MOZ_MAY_CALL_AFTER_MUST_RETURN: Applies to function or method declarations.
  *   Calls to these methods may be made in functions after calls a
  *   MOZ_MUST_RETURN_FROM_CALLER_IF_THIS_IS_ARG method.
+ * MOZ_UNANNOTATED/MOZ_ANNOTATED: Applies to Mutexes/Monitors and variations on
+ *   them. MOZ_UNANNOTATED indicates that the Mutex/Monitor/etc hasn't been
+ *   examined and annotated using macros from mfbt/ThreadSafety --
+ *   MOZ_GUARDED_BY()/REQUIRES()/etc. MOZ_ANNOTATED is used in rare cases to
+ *   indicate that is has been looked at, but it did not need any
+ *   MOZ_GUARDED_BY()/REQUIRES()/etc (and thus static analysis knows it can
+ * ignore this Mutex/Monitor/etc)
  */
 
 // gcc emits a nuisance warning -Wignored-attributes because attributes do not
@@ -743,15 +797,16 @@
 
 #  if defined(MOZ_CLANG_PLUGIN) || defined(XGILL_PLUGIN)
 #    define MOZ_CAN_RUN_SCRIPT __attribute__((annotate("moz_can_run_script")))
-#    define MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION \
-      __attribute__((annotate("moz_can_run_script")))
+#    define MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION         \
+      __attribute__((annotate("moz_can_run_script"))) \
+      __attribute__((annotate("moz_can_run_script_for_definition")))
 #    define MOZ_CAN_RUN_SCRIPT_BOUNDARY \
       __attribute__((annotate("moz_can_run_script_boundary")))
 #    define MOZ_MUST_OVERRIDE __attribute__((annotate("moz_must_override")))
 #    define MOZ_STATIC_CLASS __attribute__((annotate("moz_global_class")))
 #    define MOZ_STATIC_LOCAL_CLASS                        \
       __attribute__((annotate("moz_static_local_class"))) \
-          __attribute__((annotate("moz_trivial_dtor")))
+      __attribute__((annotate("moz_trivial_dtor")))
 #    define MOZ_STACK_CLASS __attribute__((annotate("moz_stack_class")))
 #    define MOZ_NONHEAP_CLASS __attribute__((annotate("moz_nonheap_class")))
 #    define MOZ_HEAP_CLASS __attribute__((annotate("moz_heap_class")))
@@ -775,12 +830,11 @@
 #    define MOZ_IS_REFPTR MOZ_IS_SMARTPTR_TO_REFCOUNTED
 #    define MOZ_NO_ARITHMETIC_EXPR_IN_ARGUMENT \
       __attribute__((annotate("moz_no_arith_expr_in_arg")))
-#    define MOZ_OWNING_REF
-#    define MOZ_NON_OWNING_REF
-#    define MOZ_UNSAFE_REF(reason)
+#    define MOZ_OWNING_REF __attribute__((annotate("moz_owning_ref")))
+#    define MOZ_NON_OWNING_REF __attribute__((annotate("moz_non_owning_ref")))
+#    define MOZ_UNSAFE_REF(reason) __attribute__((annotate("moz_unsafe_ref")))
 #    define MOZ_NO_ADDREF_RELEASE_ON_RETURN \
       __attribute__((annotate("moz_no_addref_release_on_return")))
-#    define MOZ_MUST_USE_TYPE __attribute__((annotate("moz_must_use_type")))
 #    define MOZ_NEEDS_NO_VTABLE_TYPE \
       __attribute__((annotate("moz_needs_no_vtable_type")))
 #    define MOZ_NON_MEMMOVABLE __attribute__((annotate("moz_non_memmovable")))
@@ -791,8 +845,8 @@
 #    define MOZ_NO_DANGLING_ON_TEMPORARIES \
       __attribute__((annotate("moz_no_dangling_on_temporaries")))
 #    define MOZ_INHERIT_TYPE_ANNOTATIONS_FROM_TEMPLATE_ARGS \
-      __attribute__(                                        \
-          (annotate("moz_inherit_type_annotations_from_template_args")))
+      __attribute__((                                       \
+          annotate("moz_inherit_type_annotations_from_template_args")))
 #    define MOZ_NON_AUTOABLE __attribute__((annotate("moz_non_autoable")))
 #    define MOZ_INIT_OUTSIDE_CTOR
 #    define MOZ_IS_CLASS_INIT
@@ -803,6 +857,15 @@
       __attribute__((annotate("moz_must_return_from_caller_if_this_is_arg")))
 #    define MOZ_MAY_CALL_AFTER_MUST_RETURN \
       __attribute__((annotate("moz_may_call_after_must_return")))
+#    define MOZ_KNOWN_LIVE __attribute__((annotate("moz_known_live")))
+#    ifndef XGILL_PLUGIN
+#      define MOZ_UNANNOTATED __attribute__((annotate("moz_unannotated")))
+#      define MOZ_ANNOTATED __attribute__((annotate("moz_annotated")))
+#    else
+#      define MOZ_UNANNOTATED /* nothing */
+#      define MOZ_ANNOTATED   /* nothing */
+#    endif
+
 /*
  * It turns out that clang doesn't like void func() __attribute__ {} without a
  * warning, so use pragmas to disable the warning.
@@ -812,7 +875,7 @@
         _Pragma("clang diagnostic push")                         \
             _Pragma("clang diagnostic ignored \"-Wgcc-compat\"") \
                 __attribute__((annotate("moz_heap_allocator")))  \
-                    _Pragma("clang diagnostic pop")
+                _Pragma("clang diagnostic pop")
 #    else
 #      define MOZ_HEAP_ALLOCATOR __attribute__((annotate("moz_heap_allocator")))
 #    endif
@@ -840,7 +903,6 @@
 #    define MOZ_NON_OWNING_REF                              /* nothing */
 #    define MOZ_UNSAFE_REF(reason)                          /* nothing */
 #    define MOZ_NO_ADDREF_RELEASE_ON_RETURN                 /* nothing */
-#    define MOZ_MUST_USE_TYPE                               /* nothing */
 #    define MOZ_NEEDS_NO_VTABLE_TYPE                        /* nothing */
 #    define MOZ_NON_MEMMOVABLE                              /* nothing */
 #    define MOZ_NEEDS_MEMMOVABLE_TYPE                       /* nothing */
@@ -854,27 +916,43 @@
 #    define MOZ_REQUIRED_BASE_METHOD                        /* nothing */
 #    define MOZ_MUST_RETURN_FROM_CALLER_IF_THIS_IS_ARG      /* nothing */
 #    define MOZ_MAY_CALL_AFTER_MUST_RETURN                  /* nothing */
+#    define MOZ_KNOWN_LIVE                                  /* nothing */
+#    define MOZ_UNANNOTATED                                 /* nothing */
+#    define MOZ_ANNOTATED                                   /* nothing */
 #  endif /* defined(MOZ_CLANG_PLUGIN) || defined(XGILL_PLUGIN) */
 
 #  define MOZ_RAII MOZ_NON_TEMPORARY_CLASS MOZ_STACK_CLASS
 
-// gcc has different rules governing attribute placement. Since none of these
-// attributes are actually used by the gcc-based static analysis, just
-// eliminate them rather than updating all of the code.
+// XGILL_PLUGIN is used for the GC rooting hazard analysis, which compiles with
+// gcc. gcc has different rules governing __attribute__((...)) placement, so
+// some attributes will error out when used in the source code where clang
+// expects them to be. Remove the problematic annotations when needed.
+//
+// The placement of c++11 [[...]] attributes is more flexible and defined by a
+// spec, so it would be nice to switch to those for the problematic
+// cases. Unfortunately, the official spec provides *no* way to annotate a
+// lambda function, which is one source of the difficulty here. It appears that
+// this will be fixed in c++23: https://github.com/cplusplus/papers/issues/882
 
 #  ifdef XGILL_PLUGIN
+
 #    undef MOZ_MUST_OVERRIDE
-#    define MOZ_MUST_OVERRIDE /* nothing */
 #    undef MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION
+#    undef MOZ_CAN_RUN_SCRIPT
+#    undef MOZ_CAN_RUN_SCRIPT_BOUNDARY
+#    define MOZ_MUST_OVERRIDE                 /* nothing */
 #    define MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION /* nothing */
+#    define MOZ_CAN_RUN_SCRIPT                /* nothing */
+#    define MOZ_CAN_RUN_SCRIPT_BOUNDARY       /* nothing */
+
 #  endif
 
 #endif /* __cplusplus */
 
 /**
- * Printf style formats.  MOZ_FORMAT_PRINTF can be used to annotate a
- * function or method that is "printf-like"; this will let (some)
- * compilers check that the arguments match the template string.
+ * Printf style formats.  MOZ_FORMAT_PRINTF and MOZ_FORMAT_WPRINTF can be used
+ * to annotate a function or method that is "printf/wprintf-like"; this will let
+ * (some) compilers check that the arguments match the template string.
  *
  * This macro takes two arguments.  The first argument is the argument
  * number of the template string.  The second argument is the argument
@@ -903,15 +981,33 @@
  * on different platforms. The macro __MINGW_PRINTF_FORMAT maps to
  * either gnu_printf or ms_printf depending on where we are compiling
  * to avoid warnings on format specifiers that are legal.
+ *
+ * At time of writing MinGW has no wide equivalent to __MINGW_PRINTF_FORMAT;
+ * therefore __MINGW_WPRINTF_FORMAT has been implemented following the same
+ * pattern seen in MinGW's source.
  */
 #ifdef __MINGW32__
 #  define MOZ_FORMAT_PRINTF(stringIndex, firstToCheck) \
     __attribute__((format(__MINGW_PRINTF_FORMAT, stringIndex, firstToCheck)))
-#elif __GNUC__
+#  ifndef __MINGW_WPRINTF_FORMAT
+#    if defined(__clang__)
+#      define __MINGW_WPRINTF_FORMAT wprintf
+#    elif defined(_UCRT) || __USE_MINGW_ANSI_STDIO
+#      define __MINGW_WPRINTF_FORMAT gnu_wprintf
+#    else
+#      define __MINGW_WPRINTF_FORMAT ms_wprintf
+#    endif
+#  endif
+#  define MOZ_FORMAT_WPRINTF(stringIndex, firstToCheck) \
+    __attribute__((format(__MINGW_WPRINTF_FORMAT, stringIndex, firstToCheck)))
+#elif __GNUC__ || __clang__
 #  define MOZ_FORMAT_PRINTF(stringIndex, firstToCheck) \
     __attribute__((format(printf, stringIndex, firstToCheck)))
+#  define MOZ_FORMAT_WPRINTF(stringIndex, firstToCheck) \
+    __attribute__((format(wprintf, stringIndex, firstToCheck)))
 #else
 #  define MOZ_FORMAT_PRINTF(stringIndex, firstToCheck)
+#  define MOZ_FORMAT_WPRINTF(stringIndex, firstToCheck)
 #endif
 
 /**
@@ -925,6 +1021,27 @@
 #  define MOZ_XPCOM_ABI __stdcall
 #else
 #  define MOZ_XPCOM_ABI
+#endif
+
+/**
+ * MSVC / clang-cl don't optimize empty bases correctly unless we explicitly
+ * tell it to, see:
+ *
+ * https://stackoverflow.com/questions/12701469/why-is-the-empty-base-class-optimization-ebo-is-not-working-in-msvc
+ * https://devblogs.microsoft.com/cppblog/optimizing-the-layout-of-empty-base-classes-in-vs2015-update-2-3/
+ */
+#if defined(_MSC_VER)
+#  define MOZ_EMPTY_BASES __declspec(empty_bases)
+#else
+#  define MOZ_EMPTY_BASES
+#endif
+
+// XXX: GCC somehow does not allow attributes before lambda return types, while
+// clang requires so. See also bug 1627007.
+#ifdef __clang__
+#  define MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA MOZ_CAN_RUN_SCRIPT_BOUNDARY
+#else
+#  define MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA
 #endif
 
 #endif /* mozilla_Attributes_h */

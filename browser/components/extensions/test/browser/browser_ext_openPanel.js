@@ -3,13 +3,8 @@
 "use strict";
 
 add_task(async function test_openPopup_requires_user_interaction() {
-  const { GlobalManager } = ChromeUtils.import(
-    "resource://gre/modules/Extension.jsm",
-    null
-  );
-
   async function backgroundScript() {
-    browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tabInfo) => {
+    browser.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
       if (changeInfo.status != "complete") {
         return;
       }
@@ -18,11 +13,6 @@ add_task(async function test_openPopup_requires_user_interaction() {
       await browser.test.assertRejects(
         browser.pageAction.openPopup(),
         "pageAction.openPopup may only be called from a user input handler",
-        "The error is informative."
-      );
-      await browser.test.assertRejects(
-        browser.browserAction.openPopup(),
-        "browserAction.openPopup may only be called from a user input handler",
         "The error is informative."
       );
       await browser.test.assertRejects(
@@ -64,12 +54,13 @@ add_task(async function test_openPopup_requires_user_interaction() {
         default_panel: "panel.html",
       },
     },
+    // We don't want the panel open automatically, so need a non-default reason.
+    startupReason: "APP_STARTUP",
 
     files: {
       "tab.html": `
       <!DOCTYPE html>
       <html><head><meta charset="utf-8"></head><body>
-      <button id="openBrowserAction">openBrowserAction</button>
       <button id="openPageAction">openPageAction</button>
       <button id="openSidebarAction">openSidebarAction</button>
       <button id="closeSidebarAction">closeSidebarAction</button>
@@ -83,14 +74,7 @@ add_task(async function test_openPopup_requires_user_interaction() {
       <script src="panel.js"></script>
       </body></html>
       `,
-      "tab.js": function() {
-        document.getElementById("openBrowserAction").addEventListener(
-          "click",
-          () => {
-            browser.browserAction.openPopup();
-          },
-          { once: true }
-        );
+      "tab.js": function () {
         document.getElementById("openPageAction").addEventListener(
           "click",
           () => {
@@ -120,7 +104,7 @@ add_task(async function test_openPopup_requires_user_interaction() {
           });
         /* eslint-enable mozilla/balanced-listeners */
       },
-      "panel.js": function() {
+      "panel.js": function () {
         browser.runtime.sendMessage("from-panel");
       },
     },
@@ -138,22 +122,8 @@ add_task(async function test_openPopup_requires_user_interaction() {
     return open;
   }
 
-  function testActiveTab(extension, expected) {
-    let ext = GlobalManager.extensionMap.get(extension.id);
-    is(
-      ext.tabManager.hasActiveTabPermission(gBrowser.selectedTab),
-      expected,
-      "activeTab permission is correct"
-    );
-  }
-
   await extension.startup();
   await extension.awaitMessage("ready");
-
-  await click("#openBrowserAction");
-  testActiveTab(extension, false);
-  closeBrowserAction(extension);
-  await new Promise(resolve => setTimeout(resolve, 0));
 
   await click("#openPageAction");
   closePageAction(extension);
@@ -166,29 +136,16 @@ add_task(async function test_openPopup_requires_user_interaction() {
     {},
     gBrowser.selectedBrowser
   );
-  await BrowserTestUtils.waitForCondition(() => !SidebarUI.isOpen);
+  await TestUtils.waitForCondition(() => !SidebarController.isOpen);
 
   await click("#toggleSidebarAction");
-  await BrowserTestUtils.waitForCondition(() => SidebarUI.isOpen);
+  await TestUtils.waitForCondition(() => SidebarController.isOpen);
   await BrowserTestUtils.synthesizeMouseAtCenter(
     "#toggleSidebarAction",
     {},
     gBrowser.selectedBrowser
   );
-  await BrowserTestUtils.waitForCondition(() => !SidebarUI.isOpen);
-
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  await extension.unload();
-
-  extensionData.manifest.permissions = ["activeTab"];
-  extension = ExtensionTestUtils.loadExtension(extensionData);
-  await extension.startup();
-  await extension.awaitMessage("ready");
-
-  await click("#openBrowserAction");
-  testActiveTab(extension, true);
-  closeBrowserAction(extension);
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await TestUtils.waitForCondition(() => !SidebarController.isOpen);
 
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
   await extension.unload();

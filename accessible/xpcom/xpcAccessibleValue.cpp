@@ -5,7 +5,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "xpcAccessibleGeneric.h"
-#include "Accessible.h"
+#include "LocalAccessible.h"
+#include "LocalAccessible-inl.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -15,19 +16,15 @@ xpcAccessibleValue::GetMaximumValue(double* aValue) {
   NS_ENSURE_ARG_POINTER(aValue);
   *aValue = 0;
 
-  if (Intl().IsNull()) return NS_ERROR_FAILURE;
+  if (!Intl()) return NS_ERROR_FAILURE;
 
-  if (Intl().IsAccessible() && Intl().AsAccessible()->IsDefunct())
+  if (Intl()->IsLocal() && Intl()->AsLocal()->IsDefunct()) {
     return NS_ERROR_FAILURE;
-
-  double value;
-  if (Intl().IsAccessible()) {
-    value = Intl().AsAccessible()->MaxValue();
-  } else {
-    value = Intl().AsProxy()->MaxValue();
   }
 
-  if (!IsNaN(value)) *aValue = value;
+  double value = Intl()->MaxValue();
+
+  if (!std::isnan(value)) *aValue = value;
 
   return NS_OK;
 }
@@ -37,19 +34,15 @@ xpcAccessibleValue::GetMinimumValue(double* aValue) {
   NS_ENSURE_ARG_POINTER(aValue);
   *aValue = 0;
 
-  if (Intl().IsNull()) return NS_ERROR_FAILURE;
+  if (!Intl()) return NS_ERROR_FAILURE;
 
-  if (Intl().IsAccessible() && Intl().AsAccessible()->IsDefunct())
+  if (Intl()->IsLocal() && Intl()->AsLocal()->IsDefunct()) {
     return NS_ERROR_FAILURE;
-
-  double value;
-  if (Intl().IsAccessible()) {
-    value = Intl().AsAccessible()->MinValue();
-  } else {
-    value = Intl().AsProxy()->MinValue();
   }
 
-  if (!IsNaN(value)) *aValue = value;
+  double value = Intl()->MinValue();
+
+  if (!std::isnan(value)) *aValue = value;
 
   return NS_OK;
 }
@@ -59,34 +52,29 @@ xpcAccessibleValue::GetCurrentValue(double* aValue) {
   NS_ENSURE_ARG_POINTER(aValue);
   *aValue = 0;
 
-  if (Intl().IsNull()) return NS_ERROR_FAILURE;
+  if (!Intl()) return NS_ERROR_FAILURE;
 
-  if (Intl().IsAccessible() && Intl().AsAccessible()->IsDefunct())
+  if (Intl()->IsLocal() && Intl()->AsLocal()->IsDefunct()) {
     return NS_ERROR_FAILURE;
-
-  double value;
-  if (Intl().IsAccessible()) {
-    value = Intl().AsAccessible()->CurValue();
-  } else {
-    value = Intl().AsProxy()->CurValue();
   }
 
-  if (!IsNaN(value)) *aValue = value;
+  double value = Intl()->CurValue();
+
+  if (!std::isnan(value)) *aValue = value;
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
 xpcAccessibleValue::SetCurrentValue(double aValue) {
-  if (Intl().IsNull()) return NS_ERROR_FAILURE;
+  if (!Intl()) return NS_ERROR_FAILURE;
 
-  if (Intl().IsAccessible() && Intl().AsAccessible()->IsDefunct())
+  if (Intl()->IsLocal() && Intl()->AsLocal()->IsDefunct()) {
     return NS_ERROR_FAILURE;
+  }
 
-  if (Intl().IsAccessible()) {
-    Intl().AsAccessible()->SetCurValue(aValue);
-  } else {
-    Intl().AsProxy()->SetCurValue(aValue);
+  if (!Intl()->SetCurValue(aValue)) {
+    return NS_ERROR_FAILURE;
   }
 
   return NS_OK;
@@ -97,19 +85,15 @@ xpcAccessibleValue::GetMinimumIncrement(double* aValue) {
   NS_ENSURE_ARG_POINTER(aValue);
   *aValue = 0;
 
-  if (Intl().IsNull()) return NS_ERROR_FAILURE;
+  if (!Intl()) return NS_ERROR_FAILURE;
 
-  if (Intl().IsAccessible() && Intl().AsAccessible()->IsDefunct())
+  if (Intl()->IsLocal() && Intl()->AsLocal()->IsDefunct()) {
     return NS_ERROR_FAILURE;
-
-  double value;
-  if (Intl().IsAccessible()) {
-    value = Intl().AsAccessible()->Step();
-  } else {
-    value = Intl().AsProxy()->Step();
   }
 
-  if (!IsNaN(value)) *aValue = value;
+  double value = Intl()->Step();
+
+  if (!std::isnan(value)) *aValue = value;
 
   return NS_OK;
 }

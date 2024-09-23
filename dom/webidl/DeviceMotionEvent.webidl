@@ -6,7 +6,7 @@
  * https://w3c.github.io/deviceorientation/
  */
 
-[NoInterfaceObject,
+[LegacyNoInterfaceObject,
   Exposed=Window]
 interface DeviceAcceleration {
   readonly attribute double? x;
@@ -14,7 +14,7 @@ interface DeviceAcceleration {
   readonly attribute double? z;
 };
 
-[NoInterfaceObject,
+[LegacyNoInterfaceObject,
  Exposed=Window]
 interface DeviceRotationRate {
   readonly attribute double? alpha;
@@ -58,11 +58,11 @@ dictionary DeviceMotionEventInit : EventInit {
 
 // Mozilla extensions.
 partial interface DeviceMotionEvent {
-  void initDeviceMotionEvent(DOMString type,
-                             optional boolean canBubble = false,
-                             optional boolean cancelable = false,
-                             optional DeviceAccelerationInit acceleration = {},
-                             optional DeviceAccelerationInit accelerationIncludingGravity = {},
-                             optional DeviceRotationRateInit rotationRate = {},
-                             optional double? interval = null);
+  undefined initDeviceMotionEvent(DOMString type,
+                                  optional boolean canBubble = false,
+                                  optional boolean cancelable = false,
+                                  optional DeviceAccelerationInit acceleration = {},
+                                  optional DeviceAccelerationInit accelerationIncludingGravity = {},
+                                  optional DeviceRotationRateInit rotationRate = {},
+                                  optional double? interval = null);
 };

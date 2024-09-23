@@ -4,24 +4,28 @@
 
 "use strict";
 
-const { Cu, Cr } = require("chrome");
 const {
   getCurrentZoom,
   getWindowDimensions,
   getViewportDimensions,
-  loadSheet,
-} = require("devtools/shared/layout/utils");
-const EventEmitter = require("devtools/shared/event-emitter");
-const InspectorUtils = require("InspectorUtils");
+} = require("resource://devtools/shared/layout/utils.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 const lazyContainer = {};
 
 loader.lazyRequireGetter(
   lazyContainer,
   "CssLogic",
-  "devtools/server/actors/inspector/css-logic",
+  "resource://devtools/server/actors/inspector/css-logic.js",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "isDocumentReady",
+  "resource://devtools/server/actors/inspector/utils.js",
+  true
+);
+
 exports.getComputedStyle = node =>
   lazyContainer.CssLogic.getComputedStyle(node);
 
@@ -41,7 +45,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 const STYLESHEET_URI =
-  "resource://devtools/server/actors/" + "highlighters.css";
+  "resource://devtools-highlighter-styles/highlighters.css";
 
 const _tokens = Symbol("classList/tokens");
 
@@ -94,7 +98,7 @@ ClassList.prototype = {
   get length() {
     return this[_tokens].length;
   },
-  [Symbol.iterator]: function*() {
+  *[Symbol.iterator]() {
     for (let i = 0; i < this.tokens.length; i++) {
       yield this[_tokens][i];
     }
@@ -110,14 +114,7 @@ ClassList.prototype = {
  * @return {Boolean}
  */
 function isXUL(window) {
-  // XXX: We temporarily return true for HTML documents if the document disables
-  // scroll frames since the regular highlighter is broken in this case. This
-  // should be removed when bug 1594587 is fixed.
-  return (
-    window.document.documentElement.namespaceURI === XUL_NS ||
-    (window.isChromeWindow &&
-      window.document.documentElement.getAttribute("scrolling") === "false")
-  );
+  return window.document.documentElement.namespaceURI === XUL_NS;
 }
 exports.isXUL = isXUL;
 
@@ -155,66 +152,6 @@ function isNodeValid(node, nodeType = Node.ELEMENT_NODE) {
 exports.isNodeValid = isNodeValid;
 
 /**
- * Helper function that creates SVG DOM nodes.
- * @param {Window} This window's document will be used to create the element
- * @param {Object} Options for the node include:
- * - nodeType: the type of node, defaults to "box".
- * - attributes: a {name:value} object to be used as attributes for the node.
- * - prefix: a string that will be used to prefix the values of the id and class
- *   attributes.
- * - parent: if provided, the newly created element will be appended to this
- *   node.
- */
-function createSVGNode(win, options) {
-  if (!options.nodeType) {
-    options.nodeType = "box";
-  }
-  options.namespace = SVG_NS;
-  return createNode(win, options);
-}
-exports.createSVGNode = createSVGNode;
-
-/**
- * Helper function that creates DOM nodes.
- * @param {Window} This window's document will be used to create the element
- * @param {Object} Options for the node include:
- * - nodeType: the type of node, defaults to "div".
- * - namespace: the namespace to use to create the node, defaults to XHTML namespace.
- * - attributes: a {name:value} object to be used as attributes for the node.
- * - prefix: a string that will be used to prefix the values of the id and class
- *   attributes.
- * - parent: if provided, the newly created element will be appended to this
- *   node.
- * - text: if provided, set the text content of the element.
- */
-function createNode(win, options) {
-  const type = options.nodeType || "div";
-  const namespace = options.namespace || XHTML_NS;
-  const doc = win.document;
-
-  const node = doc.createElementNS(namespace, type);
-
-  for (const name in options.attributes || {}) {
-    let value = options.attributes[name];
-    if (options.prefix && (name === "class" || name === "id")) {
-      value = options.prefix + value;
-    }
-    node.setAttribute(name, value);
-  }
-
-  if (options.parent) {
-    options.parent.appendChild(node);
-  }
-
-  if (options.text) {
-    node.appendChild(doc.createTextNode(options.text));
-  }
-
-  return node;
-}
-exports.createNode = createNode;
-
-/**
  * Every highlighters should insert their markup content into the document's
  * canvasFrame anonymous content container (see dom/webidl/Document.webidl).
  *
@@ -232,22 +169,19 @@ exports.createNode = createNode;
  * @param {Function} nodeBuilder
  *        A function that, when executed, returns a DOM node to be inserted into
  *        the canvasFrame.
+ * @param {Object} options
+ * @param {Boolean} options.waitForDocumentToLoad
+ *        Set to false to try to insert the anonymous content even if the document
+ *        isn't loaded yet. Defaults to true.
  */
-function CanvasFrameAnonymousContentHelper(highlighterEnv, nodeBuilder) {
+function CanvasFrameAnonymousContentHelper(
+  highlighterEnv,
+  nodeBuilder,
+  { waitForDocumentToLoad = true } = {}
+) {
   this.highlighterEnv = highlighterEnv;
   this.nodeBuilder = nodeBuilder;
-  this.anonymousContentDocument = this.highlighterEnv.document;
-  // XXX the next line is a wallpaper for bug 1123362.
-  this.anonymousContentGlobal = Cu.getGlobalForObject(
-    this.anonymousContentDocument
-  );
-
-  // Only try to create the highlighter when the document is loaded,
-  // otherwise, wait for the window-ready event to fire.
-  const doc = this.highlighterEnv.document;
-  if (doc.documentElement && doc.readyState != "uninitialized") {
-    this._insert();
-  }
+  this.waitForDocumentToLoad = !!waitForDocumentToLoad;
 
   this._onWindowReady = this._onWindowReady.bind(this);
   this.highlighterEnv.on("window-ready", this._onWindowReady);
@@ -257,39 +191,53 @@ function CanvasFrameAnonymousContentHelper(highlighterEnv, nodeBuilder) {
 }
 
 CanvasFrameAnonymousContentHelper.prototype = {
+  initialize() {
+    // _insert will resolve this promise once the markup is displayed
+    const onInitialized = new Promise(resolve => {
+      this._initialized = resolve;
+    });
+    // Only try to create the highlighter when the document is loaded,
+    // otherwise, wait for the window-ready event to fire.
+    const doc = this.highlighterEnv.document;
+    if (
+      doc.documentElement &&
+      (!this.waitForDocumentToLoad ||
+        isDocumentReady(doc) ||
+        doc.readyState !== "uninitialized")
+    ) {
+      this._insert();
+    }
+
+    return onInitialized;
+  },
+
   destroy() {
     this._remove();
+
     this.highlighterEnv.off("window-ready", this._onWindowReady);
     this.highlighterEnv = this.nodeBuilder = this._content = null;
     this.anonymousContentDocument = null;
-    this.anonymousContentGlobal = null;
+    this.anonymousContentWindow = null;
+    this.pageListenerTarget = null;
 
     this._removeAllListeners();
     this.elements.clear();
   },
 
-  _insert() {
-    const doc = this.highlighterEnv.document;
-    // Wait for DOMContentLoaded before injecting the anonymous content.
-    if (doc.readyState != "interactive" && doc.readyState != "complete") {
-      doc.addEventListener("DOMContentLoaded", this._insert.bind(this), {
-        once: true,
-      });
-      return;
+  async _insert() {
+    if (this.waitForDocumentToLoad) {
+      await waitForContentLoaded(this.highlighterEnv.window);
     }
-    // Reject XUL documents. Check that after DOMContentLoaded as we query
-    // documentElement which is only available after this event.
-    if (isXUL(this.highlighterEnv.window)) {
+    if (!this.highlighterEnv) {
+      // CanvasFrameAnonymousContentHelper was already destroyed.
       return;
     }
 
-    // For now highlighters.css is injected in content as a ua sheet because
-    // we no longer support scoped style sheets (see bug 1345702).
-    // If it did, highlighters.css would be injected as an anonymous content
-    // node using CanvasFrameAnonymousContentHelper instead.
-    loadSheet(this.highlighterEnv.window, STYLESHEET_URI);
-
-    const node = this.nodeBuilder();
+    // Highlighters are drawn inside the anonymous content of the
+    // highlighter environment document.
+    this.anonymousContentDocument = this.highlighterEnv.document;
+    this.anonymousContentWindow = this.highlighterEnv.window;
+    this.pageListenerTarget = this.highlighterEnv.pageListenerTarget;
 
     // It was stated that hidden documents don't accept
     // `insertAnonymousContent` calls yet. That doesn't seems the case anymore,
@@ -297,7 +245,12 @@ CanvasFrameAnonymousContentHelper.prototype = {
     // that scenario, fixes when we're adding anonymous content in a tab that
     // is not the active one (see bug 1260043 and bug 1260044)
     try {
-      this._content = doc.insertAnonymousContent(node);
+      // If we didn't wait for the document to load, we want to force a layout update
+      // to ensure the anonymous content will be rendered (see Bug 1580394).
+      const forceSynchronousLayoutUpdate = !this.waitForDocumentToLoad;
+      this._content = this.anonymousContentDocument.insertAnonymousContent(
+        forceSynchronousLayoutUpdate
+      );
     } catch (e) {
       // If the `insertAnonymousContent` fails throwing a `NS_ERROR_UNEXPECTED`, it means
       // we don't have access to a `CustomContentContainer` yet (see bug 1365075).
@@ -306,26 +259,40 @@ CanvasFrameAnonymousContentHelper.prototype = {
       // again.
       if (
         e.result === Cr.NS_ERROR_UNEXPECTED &&
-        doc.readyState === "interactive"
+        this.anonymousContentDocument.readyState === "interactive"
       ) {
         // The next state change will be "complete" since the current is "interactive"
-        doc.addEventListener(
-          "readystatechange",
-          () => {
-            this._content = doc.insertAnonymousContent(node);
-          },
-          { once: true }
-        );
+        await new Promise(resolve => {
+          this.anonymousContentDocument.addEventListener(
+            "readystatechange",
+            resolve,
+            { once: true }
+          );
+        });
+        this._content = this.anonymousContentDocument.insertAnonymousContent();
       } else {
         throw e;
       }
     }
+
+    // Use createElementNS to make sure this is an HTML element.
+    // Document.createElement's behavior is different between SVG and HTML
+    // documents, see bug 1850007.
+    const link = this.anonymousContentDocument.createElementNS(
+      XHTML_NS,
+      "link"
+    );
+    link.href = STYLESHEET_URI;
+    link.rel = "stylesheet";
+    this._content.root.appendChild(link);
+    this._content.root.appendChild(this.nodeBuilder());
+
+    this._initialized();
   },
 
   _remove() {
     try {
-      const doc = this.anonymousContentDocument;
-      doc.removeAnonymousContent(this._content);
+      this.anonymousContentDocument.removeAnonymousContent(this._content);
     } catch (e) {
       // If the current window isn't the one the content was inserted into, this
       // will fail, but that's fine.
@@ -344,40 +311,53 @@ CanvasFrameAnonymousContentHelper.prototype = {
       this._removeAllListeners();
       this.elements.clear();
       this._insert();
-      this.anonymousContentDocument = this.highlighterEnv.document;
     }
+  },
+
+  _getNodeById(id) {
+    return this.content?.root.getElementById(id);
+  },
+
+  getBoundingClientRect(id) {
+    const node = this._getNodeById(id);
+    if (!node) {
+      return null;
+    }
+    return node.getBoundingClientRect();
   },
 
   getComputedStylePropertyValue(id, property) {
-    return (
-      this.content && this.content.getComputedStylePropertyValue(id, property)
-    );
+    const node = this._getNodeById(id);
+    if (!node) {
+      return null;
+    }
+    return this.anonymousContentWindow
+      .getComputedStyle(node)
+      .getPropertyValue(property);
   },
 
   getTextContentForElement(id) {
-    return this.content && this.content.getTextContentForElement(id);
+    return this._getNodeById(id)?.textContent;
   },
 
   setTextContentForElement(id, text) {
-    if (this.content) {
-      this.content.setTextContentForElement(id, text);
+    const node = this._getNodeById(id);
+    if (!node) {
+      return;
     }
+    node.textContent = text;
   },
 
   setAttributeForElement(id, name, value) {
-    if (this.content) {
-      this.content.setAttributeForElement(id, name, value);
-    }
+    this._getNodeById(id)?.setAttribute(name, value);
   },
 
   getAttributeForElement(id, name) {
-    return this.content && this.content.getAttributeForElement(id, name);
+    return this._getNodeById(id)?.getAttribute(name);
   },
 
   removeAttributeForElement(id, name) {
-    if (this.content) {
-      this.content.removeAttributeForElement(id, name);
-    }
+    this._getNodeById(id)?.removeAttribute(name);
   },
 
   hasAttributeForElement(id, name) {
@@ -385,7 +365,7 @@ CanvasFrameAnonymousContentHelper.prototype = {
   },
 
   getCanvasContext(id, type = "2d") {
-    return this.content && this.content.getCanvasContext(id, type);
+    return this._getNodeById(id)?.getContext(type);
   },
 
   /**
@@ -433,7 +413,7 @@ CanvasFrameAnonymousContentHelper.prototype = {
 
     // If no one is listening for this type of event yet, add one listener.
     if (!this.listeners.has(type)) {
-      const target = this.highlighterEnv.pageListenerTarget;
+      const target = this.pageListenerTarget;
       target.addEventListener(type, this, true);
       // Each type entry in the map is a map of ids:handlers.
       this.listeners.set(type, new Map());
@@ -458,7 +438,7 @@ CanvasFrameAnonymousContentHelper.prototype = {
 
     // If no one is listening for event type anymore, remove the listener.
     if (!this.listeners.has(type)) {
-      const target = this.highlighterEnv.pageListenerTarget;
+      const target = this.pageListenerTarget;
       target.removeEventListener(type, this, true);
     }
   },
@@ -501,8 +481,8 @@ CanvasFrameAnonymousContentHelper.prototype = {
   },
 
   _removeAllListeners() {
-    if (this.highlighterEnv && this.highlighterEnv.pageListenerTarget) {
-      const target = this.highlighterEnv.pageListenerTarget;
+    if (this.pageListenerTarget) {
+      const target = this.pageListenerTarget;
       for (const [type] of this.listeners) {
         target.removeEventListener(type, this, true);
       }
@@ -580,7 +560,8 @@ CanvasFrameAnonymousContentHelper.prototype = {
     const zoom = getCurrentZoom(node);
     // Hide the root element and force the reflow in order to get the proper window's
     // dimensions without increasing them.
-    this.setAttributeForElement(id, "style", "display: none");
+    const root = this._getNodeById(id);
+    root.style.display = "none";
     node.offsetWidth;
 
     let { width, height } = getWindowDimensions(boundaryWindow);
@@ -592,12 +573,96 @@ CanvasFrameAnonymousContentHelper.prototype = {
       height *= zoom;
     }
 
-    value += `position:absolute; width:${width}px;height:${height}px; overflow:hidden`;
+    value += `position:absolute; width:${width}px;height:${height}px; overflow:hidden;`;
+    root.style = value;
+  },
 
-    this.setAttributeForElement(id, "style", value);
+  /**
+   * Helper function that creates SVG DOM nodes.
+   * @param {Object} Options for the node include:
+   * - nodeType: the type of node, defaults to "box".
+   * - attributes: a {name:value} object to be used as attributes for the node.
+   * - prefix: a string that will be used to prefix the values of the id and class
+   *   attributes.
+   * - parent: if provided, the newly created element will be appended to this
+   *   node.
+   */
+  createSVGNode(options) {
+    if (!options.nodeType) {
+      options.nodeType = "box";
+    }
+
+    options.namespace = SVG_NS;
+
+    return this.createNode(options);
+  },
+
+  /**
+   * Helper function that creates DOM nodes.
+   * @param {Object} Options for the node include:
+   * - nodeType: the type of node, defaults to "div".
+   * - namespace: the namespace to use to create the node, defaults to XHTML namespace.
+   * - attributes: a {name:value} object to be used as attributes for the node.
+   * - prefix: a string that will be used to prefix the values of the id and class
+   *   attributes.
+   * - parent: if provided, the newly created element will be appended to this
+   *   node.
+   * - text: if provided, set the text content of the element.
+   */
+  createNode(options) {
+    const type = options.nodeType || "div";
+    const namespace = options.namespace || XHTML_NS;
+    const doc = this.anonymousContentDocument;
+
+    const node = doc.createElementNS(namespace, type);
+
+    for (const name in options.attributes || {}) {
+      let value = options.attributes[name];
+      if (options.prefix && (name === "class" || name === "id")) {
+        value = options.prefix + value;
+      }
+      node.setAttribute(name, value);
+    }
+
+    if (options.parent) {
+      options.parent.appendChild(node);
+    }
+
+    if (options.text) {
+      node.appendChild(doc.createTextNode(options.text));
+    }
+
+    return node;
   },
 };
 exports.CanvasFrameAnonymousContentHelper = CanvasFrameAnonymousContentHelper;
+
+/**
+ * Wait for document readyness.
+ * @param {Object} iframeOrWindow
+ *        IFrame or Window for which the content should be loaded.
+ */
+function waitForContentLoaded(iframeOrWindow) {
+  let loadEvent = "DOMContentLoaded";
+  // If we are waiting for an iframe to load and it is for a XUL window
+  // highlighter that is not browser toolbox, we must wait for IFRAME's "load".
+  if (
+    iframeOrWindow.contentWindow &&
+    iframeOrWindow.ownerGlobal !==
+      iframeOrWindow.contentWindow.browsingContext.topChromeWindow
+  ) {
+    loadEvent = "load";
+  }
+
+  const doc = iframeOrWindow.contentDocument || iframeOrWindow.document;
+  if (isDocumentReady(doc)) {
+    return Promise.resolve();
+  }
+
+  return new Promise(resolve => {
+    iframeOrWindow.addEventListener(loadEvent, resolve, { once: true });
+  });
+}
 
 /**
  * Move the infobar to the right place in the highlighter. This helper method is utilized
@@ -620,9 +685,6 @@ exports.CanvasFrameAnonymousContentHelper = CanvasFrameAnonymousContentHelper;
  * @param  {String} options.position
  *         Force the infobar to be displayed either on "top" or "bottom". Any other value
  *         will be ingnored.
- * @param  {Boolean} options.hideIfOffscreen
- *         If set to `true`, hides the infobar if it's offscreen, instead of automatically
- *         reposition it.
  */
 function moveInfobar(container, bounds, win, options = {}) {
   const zoom = getCurrentZoom(win);
@@ -695,10 +757,7 @@ function moveInfobar(container, bounds, win, options = {}) {
     top -= pageYOffset;
   }
 
-  if (isOverlapTheNode && options.hideIfOffscreen) {
-    container.setAttribute("hidden", "true");
-    return;
-  } else if (isOverlapTheNode) {
+  if (isOverlapTheNode) {
     left = Math.min(Math.max(leftBoundary, left - pageXOffset), rightBoundary);
 
     position = "fixed";

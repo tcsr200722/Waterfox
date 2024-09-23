@@ -8,9 +8,7 @@
  * This helper contains the public API that can be used by DAMP tests.
  */
 
-const Services = require("Services");
 const { gDevTools } = require("devtools/client/framework/devtools");
-const { TargetFactory } = require("devtools/client/framework/target");
 
 // With Bug 1588203, the talos server supports a dynamic proxy that will
 // redirect any http:// call to the talos server. This means we can use
@@ -31,13 +29,7 @@ exports.SIMPLE_URL = PAGES_BASE_URL + "simple.html";
 exports.COMPLICATED_URL =
   "http://www.bild.de-talos/fis/tp5n/bild.de/www.bild.de/index.html";
 
-let damp = null;
-/*
- * This method should be called by js before starting the tests.
- */
-exports.initialize = function(_damp) {
-  damp = _damp;
-};
+const { damp } = require("damp-test/damp");
 
 function garbageCollect() {
   return damp.garbageCollect();
@@ -49,7 +41,7 @@ function runTest(label, record) {
 }
 exports.runTest = runTest;
 
-exports.testSetup = function(url, { disableCache } = {}) {
+exports.testSetup = function (url, { disableCache } = {}) {
   if (disableCache) {
     // Tests relying on iframes should disable the cache.
     // `browser.reload()` skips the cache for resources loaded by the main page,
@@ -62,14 +54,14 @@ exports.testSetup = function(url, { disableCache } = {}) {
   return damp.testSetup(url);
 };
 
-exports.testTeardown = function() {
+exports.testTeardown = function () {
   // Reset the "devtools.cache.disabled" preference in case it was turned on in
   // testSetup().
   Services.prefs.setBoolPref("devtools.cache.disabled", false);
   return damp.testTeardown();
 };
 
-exports.logTestResult = function(name, value) {
+exports.logTestResult = function (name, value) {
   damp._results.push({ name, value });
 };
 
@@ -83,10 +75,9 @@ function getActiveTab() {
 }
 exports.getActiveTab = getActiveTab;
 
-exports.getToolbox = async function() {
+exports.getToolbox = function () {
   let tab = getActiveTab();
-  let target = await TargetFactory.forTab(tab);
-  return gDevTools.getToolbox(target);
+  return gDevTools.getToolboxForTab(tab);
 };
 
 /**
@@ -102,28 +93,63 @@ async function waitForPendingPaints(toolbox) {
 }
 exports.waitForPendingPaints = waitForPendingPaints;
 
-const openToolbox = async function(tool = "webconsole", onLoad) {
+/*
+ * Waits until the element targeted by the provided selector
+ * becomes available
+ */
+exports.waitForDOMElement = async function (target, selector) {
+  return waitForDOMPredicate(target, () => target.querySelector(selector));
+};
+
+/*
+ * Wait for the predicate condition to be a truthy
+ */
+function waitForDOMPredicate(
+  target,
+  predicate,
+  options = { attributes: true, childList: true, subtree: true }
+) {
+  let rv = predicate();
+  if (rv) {
+    return Promise.resolve(rv);
+  }
+  return new Promise(resolve => {
+    const observer = new target.ownerGlobal.MutationObserver(() => {
+      rv = predicate();
+      if (rv) {
+        resolve(rv);
+        observer.disconnect();
+      }
+    });
+
+    observer.observe(target, options);
+  });
+}
+
+exports.waitForDOMPredicate = waitForDOMPredicate;
+
+const openToolbox = async function (tool = "webconsole", onLoad) {
+  dump(`Open toolbox on '${tool}'\n`);
   let tab = getActiveTab();
-  let target = await TargetFactory.forTab(tab);
-  let onToolboxCreated = gDevTools.once("toolbox-created");
-  let showPromise = gDevTools.showToolbox(target, tool);
-  let toolbox = await onToolboxCreated;
+
+  dump(`Open toolbox - Call showToolboxForTab\n`);
+  const toolbox = await gDevTools.showToolboxForTab(tab, { toolId: tool });
 
   if (typeof onLoad == "function") {
+    dump(`Open toolbox - Wait for custom onLoad callback\n`);
     let panel = await toolbox.getPanelWhenReady(tool);
     await onLoad(toolbox, panel);
   }
-  await showPromise;
 
   return toolbox;
 };
 exports.openToolbox = openToolbox;
 
-exports.closeToolbox = async function() {
+exports.closeToolbox = async function () {
   let tab = getActiveTab();
-  let target = await TargetFactory.forTab(tab);
-  await target.client.waitForRequestsToSettle();
-  await gDevTools.closeToolbox(target);
+  let toolbox = gDevTools.getToolboxForTab(tab);
+  await toolbox.target.client.waitForRequestsToSettle();
+  await gDevTools.closeToolboxForTab(tab);
 };
 
 // Settle test isn't recorded, it only prints the pending duration
@@ -135,8 +161,9 @@ async function recordPendingPaints(name, toolbox) {
 }
 exports.recordPendingPaints = recordPendingPaints;
 
-exports.openToolboxAndLog = async function(name, tool, onLoad) {
+exports.openToolboxAndLog = async function (name, tool, onLoad) {
   const test = runTest(`${name}.open.DAMP`);
+
   let toolbox = await openToolbox(tool, onLoad);
   test.done();
 
@@ -149,17 +176,17 @@ exports.openToolboxAndLog = async function(name, tool, onLoad) {
   return toolbox;
 };
 
-exports.closeToolboxAndLog = async function(name, toolbox) {
+exports.closeToolboxAndLog = async function (name, toolbox) {
   let { target } = toolbox;
   dump(`Close toolbox on '${name}'\n`);
   await target.client.waitForRequestsToSettle();
 
   let test = runTest(`${name}.close.DAMP`);
-  await gDevTools.closeToolbox(target);
+  await toolbox.destroy();
   test.done();
 };
 
-exports.reloadPageAndLog = async function(name, toolbox, onReload) {
+exports.reloadPageAndLog = async function (name, toolbox, onReload) {
   dump(`Reload page on '${name}'\n`);
   let test = runTest(`${name}.reload.DAMP`);
   await damp.reloadPage(onReload);
@@ -168,6 +195,8 @@ exports.reloadPageAndLog = async function(name, toolbox, onReload) {
   await recordPendingPaints(`${name}.reload`, toolbox);
 };
 
-exports.isFissionEnabled = function() {
-  return Services.prefs.getBoolPref("fission.autostart", false);
+exports.isFissionEnabled = function () {
+  return Services.appinfo.fissionAutostart;
 };
+
+exports.waitForTick = () => new Promise(res => setTimeout(res, 0));

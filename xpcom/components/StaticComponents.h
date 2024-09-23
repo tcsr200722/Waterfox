@@ -9,6 +9,7 @@
 
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Module.h"
+#include "mozilla/Span.h"
 #include "nsID.h"
 #include "nsStringFwd.h"
 #include "nscore.h"
@@ -19,6 +20,8 @@
 class nsIFactory;
 class nsIUTF8StringEnumerator;
 class nsISupports;
+template <typename T, size_t N>
+class AutoTArray;
 
 namespace mozilla {
 namespace xpcom {
@@ -29,6 +32,8 @@ struct StaticModule;
 struct StaticCategoryEntry;
 struct StaticCategory;
 
+struct StaticProtocolHandler;
+
 extern const StaticModule gStaticModules[kStaticModuleCount];
 
 extern const ContractEntry gContractEntries[kContractCount];
@@ -36,6 +41,9 @@ extern uint8_t gInvalidContracts[kContractCount / 8 + 1];
 
 extern const StaticCategory gStaticCategories[kStaticCategoryCount];
 extern const StaticCategoryEntry gStaticCategoryEntries[];
+
+extern const StaticProtocolHandler
+    gStaticProtocolHandlers[kStaticProtocolHandlerCount];
 
 template <size_t N>
 static inline bool GetBit(const uint8_t (&aBits)[N], size_t aBit) {
@@ -70,6 +78,13 @@ static inline void SetBit(uint8_t (&aBits)[N], size_t aBit,
  */
 struct StringOffset final {
   uint32_t mOffset;
+};
+
+/**
+ * Represents an offset into the interfaces table.
+ */
+struct InterfaceOffset final {
+  uint16_t mOffset;
 };
 
 /**
@@ -115,8 +130,10 @@ struct StaticModule {
 
   already_AddRefed<nsIFactory> GetFactory() const;
 
-  nsresult CreateInstance(nsISupports* aOuter, const nsIID& aIID,
-                          void** aResult) const;
+  nsresult CreateInstance(const nsIID& aIID, void** aResult) const;
+
+  GetServiceHelper GetService() const;
+  GetServiceHelper GetService(nsresult*) const;
 
   nsISupports* ServiceInstance() const;
   void SetServiceInstance(already_AddRefed<nsISupports> aInst) const;
@@ -174,6 +191,7 @@ struct ContractEntry final {
 struct StaticCategoryEntry final {
   StringOffset mEntry;
   StringOffset mValue;
+  Module::BackgroundTasksSelector mBackgroundTasksSelector;
   Module::ProcessSelector mProcessSelector;
 
   nsCString Entry() const;
@@ -196,6 +214,46 @@ struct StaticCategory final {
   }
 };
 
+struct JSServiceEntry final {
+  using InterfaceList = AutoTArray<const nsIID*, 4>;
+
+  static const JSServiceEntry* Lookup(const nsACString& aName);
+
+  StringOffset mName;
+  ModuleID mModuleID;
+
+  InterfaceOffset mInterfaceOffset;
+
+  uint8_t mInterfaceCount;
+
+  nsCString Name() const;
+
+  const StaticModule& Module() const {
+    return gStaticModules[size_t(mModuleID)];
+  }
+
+  InterfaceList Interfaces() const;
+};
+
+struct StaticProtocolHandler final {
+  static const StaticProtocolHandler* Lookup(const nsACString& aScheme);
+  static const StaticProtocolHandler& Default() {
+    return gStaticProtocolHandlers[kDefaultProtocolHandlerIndex];
+  }
+
+  StringOffset mScheme;
+  uint32_t mProtocolFlags;
+  int32_t mDefaultPort;
+  ModuleID mModuleID;
+  bool mHasDynamicFlags;
+
+  nsCString Scheme() const;
+
+  const StaticModule& Module() const {
+    return gStaticModules[size_t(mModuleID)];
+  }
+};
+
 class StaticComponents final {
  public:
   static const StaticModule* LookupByCID(const nsID& aCID);
@@ -210,6 +268,9 @@ class StaticComponents final {
                                    bool aInvalid = true);
 
   static already_AddRefed<nsIUTF8StringEnumerator> GetComponentJSMs();
+  static already_AddRefed<nsIUTF8StringEnumerator> GetComponentESModules();
+
+  static Span<const JSServiceEntry> GetJSServices();
 
   /**
    * Calls any module unload from manifests whose components have been loaded.

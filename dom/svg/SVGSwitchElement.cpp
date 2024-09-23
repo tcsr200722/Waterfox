@@ -7,16 +7,14 @@
 #include "mozilla/dom/SVGSwitchElement.h"
 
 #include "nsLayoutUtils.h"
-#include "nsSVGUtils.h"
-#include "mozilla/Preferences.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/dom/SVGSwitchElementBinding.h"
 
 class nsIFrame;
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(Switch)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGSwitchElement::WrapNode(JSContext* aCx,
                                      JS::Handle<JSObject*> aGivenProto) {
@@ -47,17 +45,16 @@ void SVGSwitchElement::MaybeInvalidate() {
   // InvalidateAndScheduleBoundsUpdate has been called, otherwise
   // it will not correctly invalidate the old mActiveChild area.
 
-  nsIContent* newActiveChild = FindActiveChild();
+  auto* newActiveChild = SVGTests::FindActiveSwitchChild(this);
 
   if (newActiveChild == mActiveChild) {
     return;
   }
 
-  nsIFrame* frame = GetPrimaryFrame();
-  if (frame) {
+  if (auto* frame = GetPrimaryFrame()) {
     nsLayoutUtils::PostRestyleEvent(this, RestyleHint{0},
                                     nsChangeHint_InvalidateRenderingObservers);
-    nsSVGUtils::ScheduleReflowSVG(frame);
+    SVGUtils::ScheduleReflowSVG(frame);
   }
 
   mActiveChild = newActiveChild;
@@ -71,15 +68,15 @@ NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGSwitchElement)
 //----------------------------------------------------------------------
 // nsINode methods
 
-nsresult SVGSwitchElement::InsertChildBefore(nsIContent* aKid,
-                                             nsIContent* aBeforeThis,
-                                             bool aNotify) {
-  nsresult rv =
-      SVGSwitchElementBase::InsertChildBefore(aKid, aBeforeThis, aNotify);
-  if (NS_SUCCEEDED(rv)) {
-    MaybeInvalidate();
+void SVGSwitchElement::InsertChildBefore(nsIContent* aKid,
+                                         nsIContent* aBeforeThis, bool aNotify,
+                                         ErrorResult& aRv) {
+  SVGSwitchElementBase::InsertChildBefore(aKid, aBeforeThis, aNotify, aRv);
+  if (aRv.Failed()) {
+    return;
   }
-  return rv;
+
+  MaybeInvalidate();
 }
 
 void SVGSwitchElement::RemoveChildNode(nsIContent* aKid, bool aNotify) {
@@ -87,88 +84,4 @@ void SVGSwitchElement::RemoveChildNode(nsIContent* aKid, bool aNotify) {
   MaybeInvalidate();
 }
 
-//----------------------------------------------------------------------
-// nsIContent methods
-
-NS_IMETHODIMP_(bool)
-SVGSwitchElement::IsAttributeMapped(const nsAtom* name) const {
-  static const MappedAttributeEntry* const map[] = {sFEFloodMap,
-                                                    sFiltersMap,
-                                                    sFontSpecificationMap,
-                                                    sGradientStopMap,
-                                                    sLightingEffectsMap,
-                                                    sMarkersMap,
-                                                    sTextContentElementsMap,
-                                                    sViewportsMap};
-
-  return FindAttributeDependence(name, map) ||
-         SVGSwitchElementBase::IsAttributeMapped(name);
-}
-
-//----------------------------------------------------------------------
-// Implementation Helpers:
-
-nsIContent* SVGSwitchElement::FindActiveChild() const {
-  nsAutoString acceptLangs;
-  Preferences::GetLocalizedString("intl.accept_languages", acceptLangs);
-
-  if (!acceptLangs.IsEmpty()) {
-    int32_t bestLanguagePreferenceRank = -1;
-    nsIContent* bestChild = nullptr;
-    nsIContent* defaultChild = nullptr;
-    for (nsIContent* child = nsINode::GetFirstChild(); child;
-         child = child->GetNextSibling()) {
-      if (!child->IsElement()) {
-        continue;
-      }
-      nsCOMPtr<SVGTests> tests(do_QueryInterface(child));
-      if (tests) {
-        if (tests->PassesConditionalProcessingTests(
-                SVGTests::kIgnoreSystemLanguage)) {
-          int32_t languagePreferenceRank =
-              tests->GetBestLanguagePreferenceRank(acceptLangs);
-          switch (languagePreferenceRank) {
-            case 0:
-              // best possible match
-              return child;
-            case -1:
-              // no match
-              break;
-            case -2:
-              // no systemLanguage attribute. If there's nothing better
-              // we'll use the first such child.
-              if (!defaultChild) {
-                defaultChild = child;
-              }
-              break;
-            default:
-              if (bestLanguagePreferenceRank == -1 ||
-                  languagePreferenceRank < bestLanguagePreferenceRank) {
-                bestLanguagePreferenceRank = languagePreferenceRank;
-                bestChild = child;
-              }
-              break;
-          }
-        }
-      } else if (!bestChild) {
-        bestChild = child;
-      }
-    }
-    return bestChild ? bestChild : defaultChild;
-  }
-
-  for (nsIContent* child = nsINode::GetFirstChild(); child;
-       child = child->GetNextSibling()) {
-    if (!child->IsElement()) {
-      continue;
-    }
-    nsCOMPtr<SVGTests> tests(do_QueryInterface(child));
-    if (!tests || tests->PassesConditionalProcessingTests(&acceptLangs)) {
-      return child;
-    }
-  }
-  return nullptr;
-}
-
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

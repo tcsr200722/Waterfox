@@ -13,6 +13,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/OriginAttributes.h"
 #include "mozilla/storage/StatementCache.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
@@ -21,17 +22,18 @@
 #include "nsClassHashtable.h"
 #include "nsIFile.h"
 #include "nsIThreadInternal.h"
+#include "nsThreadUtils.h"
+#include "nsTHashSet.h"
 
 class mozIStorageConnection;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class LocalStorageCacheBridge;
 class StorageUsageBridge;
 class StorageUsage;
 
-typedef mozilla::storage::StatementCache<mozIStorageStatement> StatementCache;
+using StatementCache = mozilla::storage::StatementCache<mozIStorageStatement>;
 
 // XXX Fix me!
 //     1. Move comments to StorageDBThread/StorageDBChild.
@@ -126,7 +128,7 @@ class StorageDBThread final {
   // (pre)loading the whole origin data, cleaning.
   class DBOperation {
    public:
-    typedef enum {
+    enum OperationType {
       // Only operation that reads data from the database
       opPreload,
       // The same as opPreload, just executed with highest priority
@@ -152,12 +154,12 @@ class StorageDBThread final {
       opClearMatchingOrigin,
       // Clear all data matching an OriginAttributesPattern regardless a domain
       opClearMatchingOriginAttributes,
-    } OperationType;
+    };
 
     explicit DBOperation(const OperationType aType,
                          LocalStorageCacheBridge* aCache = nullptr,
-                         const nsAString& aKey = EmptyString(),
-                         const nsAString& aValue = EmptyString());
+                         const nsAString& aKey = u""_ns,
+                         const nsAString& aValue = u""_ns);
     DBOperation(const OperationType aType, StorageUsageBridge* aUsage);
     DBOperation(const OperationType aType, const nsACString& aOriginNoSuffix);
     DBOperation(const OperationType aType,
@@ -214,7 +216,7 @@ class StorageDBThread final {
 
     // Method responsible for coalescing redundant update operations with the
     // same |Target()| or clear operations with the same or matching |Origin()|
-    void Add(DBOperation* aOperation);
+    void Add(UniquePtr<DBOperation> aOperation);
 
     // True when there are some scheduled operations to flush on disk
     bool HasTasks() const;
@@ -283,7 +285,7 @@ class StorageDBThread final {
     virtual ~ThreadObserver() = default;
     bool mHasPendingEvents;
     // The monitor we drive the thread with
-    Monitor mMonitor;
+    Monitor mMonitor MOZ_UNANNOTATED;
   };
 
   class InitHelper;
@@ -291,12 +293,16 @@ class StorageDBThread final {
   class NoteBackgroundThreadRunnable;
 
   class ShutdownRunnable : public Runnable {
+    // Expected to be only 0 or 1.
+    const uint32_t mPrivateBrowsingId;
     // Only touched on the main thread.
     bool& mDone;
 
    public:
-    explicit ShutdownRunnable(bool& aDone)
-        : Runnable("dom::StorageDBThread::ShutdownRunnable"), mDone(aDone) {
+    explicit ShutdownRunnable(const uint32_t aPrivateBrowsingId, bool& aDone)
+        : Runnable("dom::StorageDBThread::ShutdownRunnable"),
+          mPrivateBrowsingId(aPrivateBrowsingId),
+          mDone(aDone) {
       MOZ_ASSERT(NS_IsMainThread());
     }
 
@@ -307,12 +313,13 @@ class StorageDBThread final {
   };
 
  public:
-  StorageDBThread();
+  explicit StorageDBThread(uint32_t aPrivateBrowsingId);
   virtual ~StorageDBThread() = default;
 
-  static StorageDBThread* Get();
+  static StorageDBThread* Get(uint32_t aPrivateBrowsingId);
 
-  static StorageDBThread* GetOrCreate(const nsString& aProfilePath);
+  static StorageDBThread* GetOrCreate(const nsString& aProfilePath,
+                                      uint32_t aPrivateBrowsingId);
 
   static nsresult GetProfilePath(nsString& aProfilePath);
 
@@ -323,7 +330,7 @@ class StorageDBThread final {
 
   virtual void AsyncPreload(LocalStorageCacheBridge* aCache,
                             bool aPriority = false) {
-    InsertDBOp(new DBOperation(
+    InsertDBOp(MakeUnique<DBOperation>(
         aPriority ? DBOperation::opPreloadUrgent : DBOperation::opPreload,
         aCache));
   }
@@ -332,45 +339,46 @@ class StorageDBThread final {
                            bool aForce = false);
 
   virtual void AsyncGetUsage(StorageUsageBridge* aUsage) {
-    InsertDBOp(new DBOperation(DBOperation::opGetUsage, aUsage));
+    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opGetUsage, aUsage));
   }
 
   virtual nsresult AsyncAddItem(LocalStorageCacheBridge* aCache,
                                 const nsAString& aKey,
                                 const nsAString& aValue) {
     return InsertDBOp(
-        new DBOperation(DBOperation::opAddItem, aCache, aKey, aValue));
+        MakeUnique<DBOperation>(DBOperation::opAddItem, aCache, aKey, aValue));
   }
 
   virtual nsresult AsyncUpdateItem(LocalStorageCacheBridge* aCache,
                                    const nsAString& aKey,
                                    const nsAString& aValue) {
-    return InsertDBOp(
-        new DBOperation(DBOperation::opUpdateItem, aCache, aKey, aValue));
+    return InsertDBOp(MakeUnique<DBOperation>(DBOperation::opUpdateItem, aCache,
+                                              aKey, aValue));
   }
 
   virtual nsresult AsyncRemoveItem(LocalStorageCacheBridge* aCache,
                                    const nsAString& aKey) {
-    return InsertDBOp(new DBOperation(DBOperation::opRemoveItem, aCache, aKey));
+    return InsertDBOp(
+        MakeUnique<DBOperation>(DBOperation::opRemoveItem, aCache, aKey));
   }
 
   virtual nsresult AsyncClear(LocalStorageCacheBridge* aCache) {
-    return InsertDBOp(new DBOperation(DBOperation::opClear, aCache));
+    return InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClear, aCache));
   }
 
   virtual void AsyncClearAll() {
-    InsertDBOp(new DBOperation(DBOperation::opClearAll));
+    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClearAll));
   }
 
   virtual void AsyncClearMatchingOrigin(const nsACString& aOriginNoSuffix) {
-    InsertDBOp(
-        new DBOperation(DBOperation::opClearMatchingOrigin, aOriginNoSuffix));
+    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClearMatchingOrigin,
+                                       aOriginNoSuffix));
   }
 
   virtual void AsyncClearMatchingOriginAttributes(
       const OriginAttributesPattern& aPattern) {
-    InsertDBOp(new DBOperation(DBOperation::opClearMatchingOriginAttributes,
-                               aPattern));
+    InsertDBOp(MakeUnique<DBOperation>(
+        DBOperation::opClearMatchingOriginAttributes, aPattern));
   }
 
   virtual void AsyncFlush();
@@ -403,7 +411,7 @@ class StorageDBThread final {
 
   // List of origins (including origin attributes suffix) having data, for
   // optimization purposes only
-  nsTHashtable<nsCStringHashKey> mOriginsHavingData;
+  nsTHashSet<nsCString> mOriginsHavingData;
 
   // Connection used by the worker thread for all read and write ops
   nsCOMPtr<mozIStorageConnection> mWorkerConnection;
@@ -428,12 +436,15 @@ class StorageDBThread final {
   // Collector of pending update operations
   PendingOperations mPendingTasks;
 
+  // Expected to be only 0 or 1.
+  const uint32_t mPrivateBrowsingId;
+
   // Counter of calls for thread priority rising.
   int32_t mPriorityCounter;
 
   // Helper to direct an operation to one of the arrays above;
   // also checks IsOriginClearPending for preloads
-  nsresult InsertDBOp(DBOperation* aOperation);
+  nsresult InsertDBOp(UniquePtr<DBOperation> aOperation);
 
   // Opens the database, first thing we do after start of the thread.
   nsresult OpenDatabaseConnection();
@@ -477,7 +488,6 @@ class StorageDBThread final {
   void ThreadFunc();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_StorageDBThread_h

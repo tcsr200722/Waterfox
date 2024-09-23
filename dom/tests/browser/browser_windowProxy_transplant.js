@@ -11,16 +11,7 @@ const URL2 = `http://example.com/${PATH}`;
 const URL3 = `http://example.org/${PATH}`;
 
 // A bunch of boilerplate which needs to be dealt with.
-add_task(async function() {
-  // Turn on BC preservation and frameloader rebuilding to ensure that the
-  // BrowsingContext is preserved.
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["fission.preserve_browsing_contexts", true],
-      ["browser.tabs.documentchannel", true],
-    ],
-  });
-
+add_task(async function () {
   // Open a window with fission force-enabled in it.
   let win = await BrowserTestUtils.openNewBrowserWindow({
     fission: true,
@@ -32,7 +23,7 @@ add_task(async function() {
     let browser = tab.linkedBrowser;
 
     // Start loading the original URI, then wait until it is loaded.
-    BrowserTestUtils.loadURI(browser, URL1);
+    BrowserTestUtils.startLoadingURIString(browser, URL1);
     await BrowserTestUtils.browserLoaded(browser, false, URL1);
 
     info("Chrome script has loaded initial URI.");
@@ -62,7 +53,7 @@ add_task(async function() {
           return new Promise(resolve => {
             iframe.addEventListener(
               "load",
-              event => {
+              () => {
                 info("Got an iframe load event!");
                 resolve();
               },
@@ -92,7 +83,11 @@ add_task(async function() {
         let chromeWin1x = Cu.waiveXrays(iframe.contentWindow);
         content.win1x = Cu.waiveXrays(iframe.contentWindow);
 
-        ok(chromeWin1 != chromeWin1x, "waiving xrays creates a new thing?");
+        Assert.notEqual(
+          chromeWin1,
+          chromeWin1x,
+          "waiving xrays creates a new thing?"
+        );
 
         content.bc1 = iframe.browsingContext;
 

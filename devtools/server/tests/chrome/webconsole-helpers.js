@@ -1,22 +1,26 @@
-/* exported attachURL, evaluateJS */
+/* exported addTabAndCreateCommands */
 "use strict";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
-const { DevToolsServer } = require("devtools/server/devtools-server");
-const { TargetFactory } = require("devtools/client/framework/target");
-
-const Services = require("Services");
+const { require } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/Loader.sys.mjs"
+);
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
+const {
+  CommandsFactory,
+} = require("resource://devtools/shared/commands/commands-factory.js");
 
 // Always log packets when running tests.
 Services.prefs.setBoolPref("devtools.debugger.log", true);
-SimpleTest.registerCleanupFunction(function() {
+SimpleTest.registerCleanupFunction(function () {
   Services.prefs.clearUserPref("devtools.debugger.log");
 });
 
 if (!DevToolsServer.initialized) {
   DevToolsServer.init();
   DevToolsServer.registerAllActors();
-  SimpleTest.registerCleanupFunction(function() {
+  SimpleTest.registerCleanupFunction(function () {
     DevToolsServer.destroy();
   });
 }
@@ -26,22 +30,14 @@ if (!DevToolsServer.initialized) {
  * and attach the console to it.
  *
  * @param {string} url : url to navigate to
- * @return {Promise} Promise resolving when the console is attached.
- *         The Promise resolves with an object containing :
- *           - tab: the attached tab
- *           - targetFront: the target front
- *           - webConsoleFront: the console front
- *           - cleanup: a generator function which can be called to close
- *             the opened tab and disconnect its devtools client.
+ * @return {Promise} Promise resolving when commands are initialized
+ *         The Promise resolves with the commands.
  */
-async function attachURL(url) {
+async function addTabAndCreateCommands(url) {
   const tab = await addTab(url);
-  const target = await TargetFactory.forTab(tab);
-  await target.attach();
-  const webConsoleFront = await target.getFront("console");
-  return {
-    webConsoleFront,
-  };
+  const commands = await CommandsFactory.forTab(tab);
+  await commands.targetCommand.startListening();
+  return commands;
 }
 
 /**
@@ -49,9 +45,9 @@ async function attachURL(url) {
  */
 async function addTab(url) {
   const { gBrowser } = Services.wm.getMostRecentWindow("navigator:browser");
-  const {
-    BrowserTestUtils,
-  } = require("resource://testing-common/BrowserTestUtils.jsm");
+  const { BrowserTestUtils } = ChromeUtils.importESModule(
+    "resource://testing-common/BrowserTestUtils.sys.mjs"
+  );
   const tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, url));
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
   return tab;

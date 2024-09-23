@@ -18,7 +18,7 @@ const TEST_URI = `
 
 var TYPE = "CssTransformHighlighter";
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   let hs = view.highlighters;
@@ -32,7 +32,7 @@ add_task(async function() {
 
   info("Faking a mousemove on a transform property");
   ({ valueSpan } = getRuleViewProperty(view, "body", "transform"));
-  let onHighlighterShown = hs.once("highlighter-shown");
+  let onHighlighterShown = hs.once("css-transform-highlighter-shown");
   hs.onMouseMove({ target: valueSpan });
   await onHighlighterShown;
 
@@ -52,7 +52,7 @@ add_task(async function() {
 
   info("Faking a mousemove on a transform property");
   ({ valueSpan } = getComputedViewProperty(cView, "transform"));
-  onHighlighterShown = hs.once("highlighter-shown");
+  onHighlighterShown = hs.once("css-transform-highlighter-shown");
   hs.onMouseMove({ target: valueSpan });
   await onHighlighterShown;
 

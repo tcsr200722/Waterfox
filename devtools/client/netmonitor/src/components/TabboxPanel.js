@@ -4,55 +4,55 @@
 
 "use strict";
 
-const Services = require("Services");
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
-const { PANELS } = require("devtools/client/netmonitor/src/constants");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  L10N,
+} = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
+const {
+  PANELS,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 // Components
 const Tabbar = createFactory(
-  require("devtools/client/shared/components/tabs/TabBar")
+  require("resource://devtools/client/shared/components/tabs/TabBar.js")
 );
 const TabPanel = createFactory(
-  require("devtools/client/shared/components/tabs/Tabs").TabPanel
+  require("resource://devtools/client/shared/components/tabs/Tabs.js").TabPanel
 );
 const CookiesPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/CookiesPanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/CookiesPanel.js")
 );
 const HeadersPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/HeadersPanel")
-);
-const WebSocketsPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/websockets/WebSocketsPanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/HeadersPanel.js")
 );
 const RequestPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/RequestPanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/RequestPanel.js")
 );
 const CachePanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/CachePanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/CachePanel.js")
 );
 const ResponsePanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/ResponsePanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/ResponsePanel.js")
 );
 const SecurityPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/SecurityPanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/SecurityPanel.js")
 );
 const StackTracePanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/StackTracePanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/StackTracePanel.js")
 );
 const TimingsPanel = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/TimingsPanel")
+  require("resource://devtools/client/netmonitor/src/components/request-details/TimingsPanel.js")
 );
 
 const COLLAPSE_DETAILS_PANE = L10N.getStr("collapseDetailsPane");
+const ALL_TABS_MENU_BUTTON_TOOLTIP = L10N.getStr("allTabsMenuButton.tooltip");
 const CACHE_TITLE = L10N.getStr("netmonitor.tab.cache");
 const COOKIES_TITLE = L10N.getStr("netmonitor.tab.cookies");
 const HEADERS_TITLE = L10N.getStr("netmonitor.tab.headers");
-const MESSAGES_TITLE = L10N.getStr("netmonitor.tab.messages");
 const REQUEST_TITLE = L10N.getStr("netmonitor.tab.request");
 const RESPONSE_TITLE = L10N.getStr("netmonitor.tab.response");
 const SECURITY_TITLE = L10N.getStr("netmonitor.tab.security");
@@ -72,15 +72,19 @@ class TabboxPanel extends Component {
       openLink: PropTypes.func,
       request: PropTypes.object,
       selectTab: PropTypes.func.isRequired,
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       hideToggleButton: PropTypes.bool,
       toggleNetworkDetails: PropTypes.func,
       openNetworkDetails: PropTypes.func.isRequired,
-      showWebSocketsTab: PropTypes.bool,
+      showMessagesView: PropTypes.bool,
       targetSearchResult: PropTypes.object,
     };
   }
-
+  static get defaultProps() {
+    return {
+      showMessagesView: true,
+    };
+  }
   componentDidMount() {
     this.closeOnEscRef = this.closeOnEsc.bind(this);
     window.addEventListener("keydown", this.closeOnEscRef);
@@ -106,9 +110,8 @@ class TabboxPanel extends Component {
       openLink,
       request,
       selectTab,
-      sourceMapService,
+      sourceMapURLService,
       toggleNetworkDetails,
-      showWebSocketsTab,
       targetSearchResult,
     } = this.props;
 
@@ -116,12 +119,10 @@ class TabboxPanel extends Component {
       return null;
     }
 
-    const showWebSocketsPanel =
-      request.cause.type === "websocket" &&
-      Services.prefs.getBoolPref("devtools.netmonitor.features.webSockets") &&
-      showWebSocketsTab === undefined
-        ? true
-        : showWebSocketsTab;
+    const isWs = request.cause.type === "websocket";
+    const isSse = request.isEventStream;
+
+    const showMessagesView = (isWs || isSse) && this.props.showMessagesView;
 
     return Tabbar(
       {
@@ -130,6 +131,7 @@ class TabboxPanel extends Component {
         onSelect: selectTab,
         renderOnlySelected: true,
         showAllTabsMenu: true,
+        allTabsMenuButtonTooltip: ALL_TABS_MENU_BUTTON_TOOLTIP,
         sidebarToggleButton: hideToggleButton
           ? null
           : {
@@ -153,17 +155,6 @@ class TabboxPanel extends Component {
           targetSearchResult,
         })
       ),
-      showWebSocketsPanel &&
-        TabPanel(
-          {
-            id: PANELS.MESSAGES,
-            title: MESSAGES_TITLE,
-            className: "panel-with-code",
-          },
-          WebSocketsPanel({
-            connector,
-          })
-        ),
       TabPanel(
         {
           id: PANELS.COOKIES,
@@ -200,6 +191,7 @@ class TabboxPanel extends Component {
           request,
           openLink,
           connector,
+          showMessagesView,
           targetSearchResult,
         })
       ),
@@ -228,7 +220,7 @@ class TabboxPanel extends Component {
             title: STACK_TRACE_TITLE,
             className: "panel-with-code",
           },
-          StackTracePanel({ connector, openLink, request, sourceMapService })
+          StackTracePanel({ connector, openLink, request, sourceMapURLService })
         ),
       request.securityState &&
         request.securityState !== "insecure" &&

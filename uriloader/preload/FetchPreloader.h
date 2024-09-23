@@ -7,9 +7,11 @@
 #define FetchPreloader_h_
 
 #include "mozilla/PreloaderBase.h"
+#include "mozilla/Variant.h"
 #include "nsCOMPtr.h"
 #include "nsIAsyncOutputStream.h"
 #include "nsIAsyncInputStream.h"
+#include "nsIContentPolicy.h"
 #include "nsIStreamListener.h"
 
 class nsIChannel;
@@ -18,36 +20,49 @@ class nsIInterfaceRequestor;
 
 namespace mozilla {
 
+namespace dom {
+enum class ReferrerPolicy : uint8_t;
+}
+
 class FetchPreloader : public PreloaderBase, public nsIStreamListener {
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSISTREAMLISTENER
 
   FetchPreloader();
-  nsresult OpenChannel(PreloadHashKey* aKey, nsIURI* aURI,
+
+  // @param aSupportsPriorityValue see <nsISupportsPriority.idl>.
+  nsresult OpenChannel(const PreloadHashKey& aKey, nsIURI* aURI,
                        const CORSMode aCORSMode,
                        const dom::ReferrerPolicy& aReferrerPolicy,
-                       dom::Document* aDocument);
+                       dom::Document* aDocument, uint64_t aEarlyHintPreloaderId,
+                       int32_t aSupportsPriorityValue);
 
   // PreloaderBase
   nsresult AsyncConsume(nsIStreamListener* aListener) override;
+
   static void PrioritizeAsPreload(nsIChannel* aChannel);
-  void PrioritizeAsPreload() override;
 
  protected:
   explicit FetchPreloader(nsContentPolicyType aContentPolicyType);
   virtual ~FetchPreloader() = default;
 
-  // Create and setup the channel with necessary security properties.  This is
-  // overridable by subclasses to allow different initial conditions.
-  virtual nsresult CreateChannel(nsIChannel** aChannel, nsIURI* aURI,
-                                 const CORSMode aCORSMode,
-                                 const dom::ReferrerPolicy& aReferrerPolicy,
-                                 dom::Document* aDocument,
-                                 nsILoadGroup* aLoadGroup,
-                                 nsIInterfaceRequestor* aCallbacks);
+  // Create and setup the channel with necessary security properties and
+  // the nsISupportsPriority value. This is overridable by
+  // subclasses to allow different initial conditions.
+  //
+  // @param aSupportsPriorityValue see <nsISupportsPriority.idl>.
+  virtual nsresult CreateChannel(
+      nsIChannel** aChannel, nsIURI* aURI, const CORSMode aCORSMode,
+      const dom::ReferrerPolicy& aReferrerPolicy, dom::Document* aDocument,
+      nsILoadGroup* aLoadGroup, nsIInterfaceRequestor* aCallbacks,
+      uint64_t aEarlyHintPreloaderId, int32_t aSupportsPriorityValue);
 
  private:
+  // @param aSupportsPriorityValue see <nsISupportsPriority.idl>.
+  static void AdjustPriority(nsIChannel* aChannel,
+                             int32_t aSupportsPriorityValue);
+
   nsresult CheckContentPolicy(nsIURI* aURI, dom::Document* aDocument);
 
   class Cache final : public nsIStreamListener {

@@ -7,10 +7,11 @@
 #include "mozilla/dom/SVGTitleElement.h"
 #include "mozilla/dom/SVGTitleElementBinding.h"
 
+#include "mozilla/dom/Document.h"
+
 NS_IMPL_NS_NEW_SVG_ELEMENT(Title)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGTitleElement::WrapNode(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {
@@ -30,6 +31,8 @@ SVGTitleElement::SVGTitleElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGTitleElementBase(std::move(aNodeInfo)) {
   AddMutationObserver(this);
+  SetEnabledCallbacks(kCharacterDataChanged | kContentAppended |
+                      kContentInserted | kContentRemoved);
 }
 
 void SVGTitleElement::CharacterDataChanged(nsIContent* aContent,
@@ -60,11 +63,11 @@ nsresult SVGTitleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void SVGTitleElement::UnbindFromTree(bool aNullParent) {
+void SVGTitleElement::UnbindFromTree(UnbindContext& aContext) {
   SendTitleChangeEvent(false);
 
   // Let this fall through.
-  SVGTitleElementBase::UnbindFromTree(aNullParent);
+  SVGTitleElementBase::UnbindFromTree(aContext);
 }
 
 void SVGTitleElement::DoneAddingChildren(bool aHaveNotified) {
@@ -85,5 +88,4 @@ void SVGTitleElement::SendTitleChangeEvent(bool aBound) {
 
 NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGTitleElement)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

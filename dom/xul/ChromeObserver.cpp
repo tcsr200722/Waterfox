@@ -19,8 +19,7 @@
 #include "mozilla/dom/MutationEventBinding.h"
 #include "nsXULElement.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS(ChromeObserver, nsIMutationObserver)
 
@@ -65,53 +64,12 @@ nsIWidget* ChromeObserver::GetWindowWidget() {
   return nullptr;
 }
 
-class SetDrawInTitleBarEvent : public Runnable {
- public:
-  SetDrawInTitleBarEvent(nsIWidget* aWidget, bool aState)
-      : mozilla::Runnable("SetDrawInTitleBarEvent"),
-        mWidget(aWidget),
-        mState(aState) {}
-
-  NS_IMETHOD Run() override {
-    NS_ASSERTION(mWidget,
-                 "You shouldn't call this runnable with a null widget!");
-
-    mWidget->SetDrawsInTitlebar(mState);
-    return NS_OK;
-  }
-
- private:
-  nsCOMPtr<nsIWidget> mWidget;
-  bool mState;
-};
-
-void ChromeObserver::SetDrawsInTitlebar(bool aState) {
-  nsIWidget* mainWidget = GetWindowWidget();
-  if (mainWidget) {
-    nsContentUtils::AddScriptRunner(
-        new SetDrawInTitleBarEvent(mainWidget, aState));
-  }
-}
-
 void ChromeObserver::SetDrawsTitle(bool aState) {
   nsIWidget* mainWidget = GetWindowWidget();
   if (mainWidget) {
     // We can do this synchronously because SetDrawsTitle doesn't have any
     // synchronous effects apart from a harmless invalidation.
     mainWidget->SetDrawsTitle(aState);
-  }
-}
-
-void ChromeObserver::UpdateBrightTitlebarForeground() {
-  nsIWidget* mainWidget = GetWindowWidget();
-  if (mainWidget) {
-    // We can do this synchronously because SetBrightTitlebarForeground doesn't
-    // have any synchronous effects apart from a harmless invalidation.
-    mainWidget->SetUseBrightTitlebarForeground(
-        mDocument->GetDocumentLWTheme() == Document::Doc_Theme_Bright ||
-        mDocument->GetRootElement()->AttrValueIs(
-            kNameSpaceID_None, nsGkAtoms::brighttitlebarforeground,
-            NS_LITERAL_STRING("true"), eCaseMatters));
   }
 }
 
@@ -143,17 +101,10 @@ void ChromeObserver::SetChromeMargins(const nsAttrValue* aValue) {
   if (!mainWidget) return;
 
   // top, right, bottom, left - see nsAttrValue
+  nsAutoString tmp;
+  aValue->ToString(tmp);
   nsIntMargin margins;
-  bool gotMargins = false;
-
-  if (aValue->Type() == nsAttrValue::eIntMarginValue) {
-    gotMargins = aValue->GetIntMarginValue(margins);
-  } else {
-    nsAutoString tmp;
-    aValue->ToString(tmp);
-    gotMargins = nsContentUtils::ParseIntMarginValue(tmp, margins);
-  }
-  if (gotMargins) {
+  if (nsContentUtils::ParseIntMarginValue(tmp, margins)) {
     nsContentUtils::AddScriptRunner(new MarginSetter(
         mainWidget, LayoutDeviceIntMargin::FromUnknownMargin(margins)));
   }
@@ -172,34 +123,20 @@ void ChromeObserver::AttributeChanged(dom::Element* aElement,
   if (value) {
     // Hide chrome if needed
     if (aName == nsGkAtoms::hidechrome) {
-      HideWindowChrome(value->Equals(NS_LITERAL_STRING("true"), eCaseMatters));
+      HideWindowChrome(value->Equals(u"true"_ns, eCaseMatters));
     } else if (aName == nsGkAtoms::chromemargin) {
       SetChromeMargins(value);
-    } else if (aName == nsGkAtoms::windowtype && aElement->IsXULElement()) {
-      RefPtr<nsXULElement> xulElement = nsXULElement::FromNodeOrNull(aElement);
-      xulElement->MaybeUpdatePrivateLifetime();
     }
     // title and drawintitlebar are settable on
     // any root node (windows, dialogs, etc)
     else if (aName == nsGkAtoms::title) {
       mDocument->NotifyPossibleTitleChange(false);
-    } else if (aName == nsGkAtoms::drawintitlebar) {
-      SetDrawsInTitlebar(
-          value->Equals(NS_LITERAL_STRING("true"), eCaseMatters));
     } else if (aName == nsGkAtoms::drawtitle) {
-      SetDrawsTitle(value->Equals(NS_LITERAL_STRING("true"), eCaseMatters));
+      SetDrawsTitle(value->Equals(u"true"_ns, eCaseMatters));
     } else if (aName == nsGkAtoms::localedir) {
       // if the localedir changed on the root element, reset the document
       // direction
       mDocument->ResetDocumentDirection();
-    } else if (aName == nsGkAtoms::lwtheme ||
-               aName == nsGkAtoms::lwthemetextcolor) {
-      // if the lwtheme changed, make sure to reset the document lwtheme
-      // cache
-      mDocument->ResetDocumentLWTheme();
-      UpdateBrightTitlebarForeground();
-    } else if (aName == nsGkAtoms::brighttitlebarforeground) {
-      UpdateBrightTitlebarForeground();
     }
   } else {
     if (aName == nsGkAtoms::hidechrome) {
@@ -210,22 +147,13 @@ void ChromeObserver::AttributeChanged(dom::Element* aElement,
       // if the localedir changed on the root element, reset the document
       // direction
       mDocument->ResetDocumentDirection();
-    } else if ((aName == nsGkAtoms::lwtheme ||
-                aName == nsGkAtoms::lwthemetextcolor)) {
-      // if the lwtheme changed, make sure to restyle appropriately
-      mDocument->ResetDocumentLWTheme();
-      UpdateBrightTitlebarForeground();
-    } else if (aName == nsGkAtoms::brighttitlebarforeground) {
-      UpdateBrightTitlebarForeground();
-    } else if (aName == nsGkAtoms::drawintitlebar) {
-      SetDrawsInTitlebar(false);
     } else if (aName == nsGkAtoms::drawtitle) {
       SetDrawsTitle(false);
     }
   }
 }
 
-void ChromeObserver::NodeWillBeDestroyed(const nsINode* aNode) {
+void ChromeObserver::NodeWillBeDestroyed(nsINode* aNode) {
   mDocument = nullptr;
 }
 
@@ -259,5 +187,4 @@ nsresult ChromeObserver::HideWindowChrome(bool aShouldHide) {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

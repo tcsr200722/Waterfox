@@ -5,7 +5,7 @@ function checkValues() {
   const d = null;
   const e = [];
   const f = {};
-
+  const reg = /^\p{RGI_Emoji}$/v;
   const obj = {
     foo: 1,
   };
@@ -23,6 +23,30 @@ function columnWise() {
   let c = "c";
   console.log(c, a, b);
   debugger;
+}
+
+function objectProperties() {
+  const obj = { hello: "world", a: { b: "c" } };
+  console.log(obj.hello);
+  console.log(obj.a.b);
+  debugger;
+}
+
+function classProperties() {
+  class Foo {
+    x = 1;
+    #privateVar = 2;
+    #privateMethod() {
+      return this.#privateVar;
+    }
+    breakFn() {
+      let i = this.x * this.#privateVar;
+      const self = this;
+      debugger;
+    }
+  }
+  const foo = new Foo();
+  foo.breakFn();
 }
 
 function btnClick() {

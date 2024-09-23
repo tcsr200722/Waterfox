@@ -7,9 +7,9 @@
 
 use super::*;
 
-use cocoa::foundation::{NSRange, NSUInteger};
 use objc::runtime::{NO, YES};
 
+/// See <https://developer.apple.com/documentation/metal/mtltexturetype>
 #[repr(u64)]
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -22,9 +22,20 @@ pub enum MTLTextureType {
     Cube = 5,
     CubeArray = 6,
     D3 = 7,
+    D2MultisampleArray = 8,
+}
+
+/// See <https://developer.apple.com/documentation/metal/mtltexturecompressiontype>
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub enum MTLTextureCompressionType {
+    Lossless = 0,
+    Lossy = 1,
 }
 
 bitflags! {
+    /// See <https://developer.apple.com/documentation/metal/mtltextureusage>
+    #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
     pub struct MTLTextureUsage: NSUInteger {
         const Unknown         = 0x0000;
         const ShaderRead      = 0x0001;
@@ -34,12 +45,12 @@ bitflags! {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtltexturedescriptor>
 pub enum MTLTextureDescriptor {}
 
 foreign_obj_type! {
     type CType = MTLTextureDescriptor;
     pub struct TextureDescriptor;
-    pub struct TextureDescriptorRef;
 }
 
 impl TextureDescriptor {
@@ -100,6 +111,16 @@ impl TextureDescriptorRef {
         unsafe { msg_send![self, setMipmapLevelCount: count] }
     }
 
+    pub fn set_mipmap_level_count_for_size(&self, size: MTLSize) {
+        let MTLSize {
+            width,
+            height,
+            depth,
+        } = size;
+        let count = (width.max(height).max(depth) as f64).log2().ceil() as u64;
+        self.set_mipmap_level_count(count);
+    }
+
     pub fn sample_count(&self) -> NSUInteger {
         unsafe { msg_send![self, sampleCount] }
     }
@@ -147,15 +168,23 @@ impl TextureDescriptorRef {
     pub fn set_usage(&self, usage: MTLTextureUsage) {
         unsafe { msg_send![self, setUsage: usage] }
     }
+
+    pub fn compression_type(&self) -> MTLTextureCompressionType {
+        unsafe { msg_send![self, compressionType] }
+    }
+
+    pub fn set_compression_type(&self, compression_type: MTLTextureCompressionType) {
+        unsafe { msg_send![self, setCompressionType: compression_type] }
+    }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtltexture>
 pub enum MTLTexture {}
 
 foreign_obj_type! {
     type CType = MTLTexture;
     pub struct Texture;
-    pub struct TextureRef;
-    type ParentType = ResourceRef;
+    type ParentType = Resource;
 }
 
 impl TextureRef {
@@ -224,22 +253,17 @@ impl TextureRef {
         unsafe { msg_send![self, usage] }
     }
 
+    /// [framebufferOnly Apple Docs](https://developer.apple.com/documentation/metal/mtltexture/1515749-framebufferonly?language=objc)
     pub fn framebuffer_only(&self) -> bool {
-        unsafe {
-            match msg_send![self, framebufferOnly] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isFramebufferOnly] }
     }
 
     pub fn get_bytes(
         &self,
         bytes: *mut std::ffi::c_void,
+        stride: NSUInteger,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, getBytes:bytes
@@ -252,10 +276,10 @@ impl TextureRef {
     pub fn get_bytes_in_slice(
         &self,
         bytes: *mut std::ffi::c_void,
-        region: MTLRegion,
-        mipmap_level: NSUInteger,
         stride: NSUInteger,
         image_stride: NSUInteger,
+        region: MTLRegion,
+        mipmap_level: NSUInteger,
         slice: NSUInteger,
     ) {
         unsafe {
@@ -272,8 +296,8 @@ impl TextureRef {
         &self,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        stride: NSUInteger,
         bytes: *const std::ffi::c_void,
+        stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, replaceRegion:region
@@ -287,10 +311,10 @@ impl TextureRef {
         &self,
         region: MTLRegion,
         mipmap_level: NSUInteger,
-        image_stride: NSUInteger,
-        stride: NSUInteger,
         slice: NSUInteger,
         bytes: *const std::ffi::c_void,
+        stride: NSUInteger,
+        image_stride: NSUInteger,
     ) {
         unsafe {
             msg_send![self, replaceRegion:region
@@ -310,8 +334,8 @@ impl TextureRef {
         &self,
         pixel_format: MTLPixelFormat,
         texture_type: MTLTextureType,
-        mipmap_levels: NSRange,
-        slices: NSRange,
+        mipmap_levels: crate::NSRange,
+        slices: crate::NSRange,
     ) -> Texture {
         unsafe {
             msg_send![self, newTextureViewWithPixelFormat:pixel_format
@@ -319,5 +343,9 @@ impl TextureRef {
                                                      levels:mipmap_levels
                                                      slices:slices]
         }
+    }
+
+    pub fn gpu_resource_id(&self) -> MTLResourceID {
+        unsafe { msg_send![self, gpuResourceID] }
     }
 }

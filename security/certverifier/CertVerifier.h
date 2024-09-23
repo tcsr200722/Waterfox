@@ -7,13 +7,13 @@
 #ifndef CertVerifier_h
 #define CertVerifier_h
 
-#include "BRNameMatchingPolicy.h"
 #include "CTPolicyEnforcer.h"
 #include "CTVerifyResult.h"
 #include "EnterpriseRoots.h"
 #include "OCSPCache.h"
 #include "RootCertificateTelemetryUtils.h"
 #include "ScopedNSSTypes.h"
+#include "mozilla/EnumSet.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
@@ -49,6 +49,11 @@ namespace psm {
 
 typedef mozilla::pkix::Result Result;
 
+enum class EVStatus : uint8_t {
+  NotEV = 0,
+  EV = 1,
+};
+
 // These values correspond to the CERT_CHAIN_KEY_SIZE_STATUS telemetry.
 enum class KeySizeStatus {
   NeverChecked = 0,
@@ -57,35 +62,25 @@ enum class KeySizeStatus {
   AlreadyBad = 3,
 };
 
-// These values correspond to the CERT_CHAIN_SHA1_POLICY_STATUS telemetry.
-enum class SHA1ModeResult {
-  NeverChecked = 0,
-  SucceededWithoutSHA1 = 1,
-  SucceededWithImportedRoot = 2,
-  SucceededWithImportedRootOrSHA1Before2016 = 3,
-  SucceededWithSHA1 = 4,
-  Failed = 5,
-};
-
-// Whether or not we are enforcing one of our CA distrust policies. For context,
-// see Bug 1437754 and Bug 1409257.
-enum DistrustedCAPolicy : uint32_t {
-  Permit = 0b0000,
-  DistrustSymantecRoots = 0b0001,
-  DistrustSymantecRootsRegardlessOfDate = 0b0010,
-};
-
-// Bitmask by nsNSSComponent to check for wholly-invalid values; be sure to
-// update this to account for new entries in DistrustedCAPolicy.
-const uint32_t DistrustedCAPolicyMaxAllowedValueMask = 0b0011;
-
 enum class CRLiteMode {
   Disabled = 0,
   TelemetryOnly = 1,
   Enforce = 2,
+  ConfirmRevocations = 3,
 };
 
 enum class NetscapeStepUpPolicy : uint32_t;
+
+// Describes the source of the associated issuer.
+enum class IssuerSource {
+  TLSHandshake,            // included by the peer in the TLS handshake
+  PreloadedIntermediates,  // a preloaded intermediate (via remote settings)
+  ThirdPartyCertificates,  // a third-party certificate gleaned from the OS
+  NSSCertDB,  // a certificate found in the profile's NSS certificate DB
+  BuiltInRootsModule,  // a root from the built-in roots module
+};
+
+using IssuerSources = EnumSet<IssuerSource>;
 
 class PinningTelemetryInfo {
  public:
@@ -140,29 +135,29 @@ class DelegatedCredentialInfo {
   uint32_t authKeyBits;
 };
 
-enum class CRLiteLookupResult {
-  NeverChecked = 0,
-  FilterNotAvailable = 1,
-  IssuerNotEnrolled = 2,
-  CertificateTooNew = 3,
-  CertificateValid = 4,
-  CertificateRevoked = 5,
-  LibraryFailure = 6,
-};
-
-class CRLiteTelemetryInfo {
+class SkipInvalidSANsForNonBuiltInRootsPolicy
+    : public pkix::NameMatchingPolicy {
  public:
-  CRLiteTelemetryInfo() : mLookupResult(CRLiteLookupResult::NeverChecked) {}
+  explicit SkipInvalidSANsForNonBuiltInRootsPolicy(bool rootIsBuiltIn)
+      : mRootIsBuiltIn(rootIsBuiltIn) {}
 
-  void Reset() {
-    mLookupResult = CRLiteLookupResult::NeverChecked;
-    mCRLiteFasterThanOCSPMillis.reset();
-    mOCSPFasterThanCRLiteMillis.reset();
+  virtual pkix::Result FallBackToCommonName(
+      pkix::Time,
+      /*out*/ pkix::FallBackToSearchWithinSubject& fallBackToCommonName)
+      override {
+    fallBackToCommonName = pkix::FallBackToSearchWithinSubject::No;
+    return pkix::Success;
   }
 
-  CRLiteLookupResult mLookupResult;
-  Maybe<double> mCRLiteFasterThanOCSPMillis;
-  Maybe<double> mOCSPFasterThanCRLiteMillis;
+  virtual pkix::HandleInvalidSubjectAlternativeNamesBy
+  HandleInvalidSubjectAlternativeNames() override {
+    return mRootIsBuiltIn
+               ? pkix::HandleInvalidSubjectAlternativeNamesBy::Halting
+               : pkix::HandleInvalidSubjectAlternativeNamesBy::Skipping;
+  }
+
+ private:
+  bool mRootIsBuiltIn;
 };
 
 class NSSCertDBTrustDomain;
@@ -189,9 +184,9 @@ class CertVerifier {
   // *evOidPolicy == SEC_OID_UNKNOWN means the cert is NOT EV
   // Only one usage per verification is supported.
   mozilla::pkix::Result VerifyCert(
-      CERTCertificate* cert, SECCertificateUsage usage,
+      const nsTArray<uint8_t>& certBytes, SECCertificateUsage usage,
       mozilla::pkix::Time time, void* pinArg, const char* hostname,
-      /*out*/ UniqueCERTCertList& builtChain, Flags flags = 0,
+      /*out*/ nsTArray<nsTArray<uint8_t>>& builtChain, Flags flags = 0,
       /*optional in*/
       const Maybe<nsTArray<nsTArray<uint8_t>>>& extraCertificates = Nothing(),
       /*optional in*/ const Maybe<nsTArray<uint8_t>>& stapledOCSPResponseArg =
@@ -199,18 +194,19 @@ class CertVerifier {
       /*optional in*/ const Maybe<nsTArray<uint8_t>>& sctsFromTLS = Nothing(),
       /*optional in*/ const OriginAttributes& originAttributes =
           OriginAttributes(),
-      /*optional out*/ SECOidTag* evOidPolicy = nullptr,
+      /*optional out*/ EVStatus* evStatus = nullptr,
       /*optional out*/ OCSPStaplingStatus* ocspStaplingStatus = nullptr,
       /*optional out*/ KeySizeStatus* keySizeStatus = nullptr,
-      /*optional out*/ SHA1ModeResult* sha1ModeResult = nullptr,
       /*optional out*/ PinningTelemetryInfo* pinningTelemetryInfo = nullptr,
       /*optional out*/ CertificateTransparencyInfo* ctInfo = nullptr,
-      /*optional out*/ CRLiteTelemetryInfo* crliteInfo = nullptr);
+      /*optional out*/ bool* isBuiltChainRootBuiltInRoot = nullptr,
+      /*optional out*/ bool* madeOCSPRequests = nullptr,
+      /*optional out*/ IssuerSources* = nullptr);
 
   mozilla::pkix::Result VerifySSLServerCert(
-      const UniqueCERTCertificate& peerCert, mozilla::pkix::Time time,
-      void* pinarg, const nsACString& hostname,
-      /*out*/ UniqueCERTCertList& builtChain,
+      const nsTArray<uint8_t>& peerCert, mozilla::pkix::Time time, void* pinarg,
+      const nsACString& hostname,
+      /*out*/ nsTArray<nsTArray<uint8_t>>& builtChain,
       /*optional*/ Flags flags = 0,
       /*optional*/ const Maybe<nsTArray<nsTArray<uint8_t>>>& extraCertificates =
           Nothing(),
@@ -220,33 +216,14 @@ class CertVerifier {
       /*optional*/ const Maybe<DelegatedCredentialInfo>& dcInfo = Nothing(),
       /*optional*/ const OriginAttributes& originAttributes =
           OriginAttributes(),
-      /*optional*/ bool saveIntermediatesInPermanentDatabase = false,
-      /*optional out*/ SECOidTag* evOidPolicy = nullptr,
+      /*optional out*/ EVStatus* evStatus = nullptr,
       /*optional out*/ OCSPStaplingStatus* ocspStaplingStatus = nullptr,
       /*optional out*/ KeySizeStatus* keySizeStatus = nullptr,
-      /*optional out*/ SHA1ModeResult* sha1ModeResult = nullptr,
       /*optional out*/ PinningTelemetryInfo* pinningTelemetryInfo = nullptr,
       /*optional out*/ CertificateTransparencyInfo* ctInfo = nullptr,
-      /*optional out*/ CRLiteTelemetryInfo* crliteInfo = nullptr,
-      /*optional out*/ bool* isBuiltCertChainRootBuiltInRoot = nullptr);
-
-  enum PinningMode {
-    pinningDisabled = 0,
-    pinningAllowUserCAMITM = 1,
-    pinningStrict = 2,
-    pinningEnforceTestMode = 3
-  };
-
-  enum class SHA1Mode {
-    Allowed = 0,
-    Forbidden = 1,
-    // There used to be a policy that only allowed SHA1 for certificates issued
-    // before 2016. This is no longer available. If a user has selected this
-    // policy in about:config, it now maps to Forbidden.
-    UsedToBeBefore2016ButNowIsForbidden = 2,
-    ImportedRoot = 3,
-    ImportedRootOrBefore2016 = 4,
-  };
+      /*optional out*/ bool* isBuiltChainRootBuiltInRoot = nullptr,
+      /*optional out*/ bool* madeOCSPRequests = nullptr,
+      /*optional out*/ IssuerSources* = nullptr);
 
   enum OcspDownloadConfig { ocspOff = 0, ocspOn = 1, ocspEVOnly = 2 };
   enum OcspStrictConfig { ocspRelaxed = 0, ocspStrict };
@@ -259,12 +236,10 @@ class CertVerifier {
   CertVerifier(OcspDownloadConfig odc, OcspStrictConfig osc,
                mozilla::TimeDuration ocspTimeoutSoft,
                mozilla::TimeDuration ocspTimeoutHard,
-               uint32_t certShortLifetimeInDays, PinningMode pinningMode,
-               SHA1Mode sha1Mode, BRNameMatchingPolicy::Mode nameMatchingMode,
+               uint32_t certShortLifetimeInDays,
                NetscapeStepUpPolicy netscapeStepUpPolicy,
-               CertificateTransparencyMode ctMode,
-               DistrustedCAPolicy distrustedCAPolicy, CRLiteMode crliteMode,
-               const Vector<EnterpriseCert>& thirdPartyCerts);
+               CertificateTransparencyMode ctMode, CRLiteMode crliteMode,
+               const nsTArray<EnterpriseCert>& thirdPartyCerts);
   ~CertVerifier();
 
   void ClearOCSPCache() { mOCSPCache.Clear(); }
@@ -274,23 +249,19 @@ class CertVerifier {
   const mozilla::TimeDuration mOCSPTimeoutSoft;
   const mozilla::TimeDuration mOCSPTimeoutHard;
   const uint32_t mCertShortLifetimeInDays;
-  const PinningMode mPinningMode;
-  const SHA1Mode mSHA1Mode;
-  const BRNameMatchingPolicy::Mode mNameMatchingMode;
   const NetscapeStepUpPolicy mNetscapeStepUpPolicy;
   const CertificateTransparencyMode mCTMode;
-  const DistrustedCAPolicy mDistrustedCAPolicy;
   const CRLiteMode mCRLiteMode;
 
  private:
   OCSPCache mOCSPCache;
   // We keep a copy of the bytes of each third party root to own.
-  Vector<EnterpriseCert> mThirdPartyCerts;
+  nsTArray<EnterpriseCert> mThirdPartyCerts;
   // This is a reusable, precomputed list of Inputs corresponding to each root
   // in mThirdPartyCerts that wasn't too long to make an Input out of.
-  Vector<mozilla::pkix::Input> mThirdPartyRootInputs;
+  nsTArray<mozilla::pkix::Input> mThirdPartyRootInputs;
   // Similarly, but with intermediates.
-  Vector<mozilla::pkix::Input> mThirdPartyIntermediateInputs;
+  nsTArray<mozilla::pkix::Input> mThirdPartyIntermediateInputs;
 
   // We only have a forward declarations of these classes (see above)
   // so we must allocate dynamically.
@@ -299,21 +270,16 @@ class CertVerifier {
 
   void LoadKnownCTLogs();
   mozilla::pkix::Result VerifyCertificateTransparencyPolicy(
-      NSSCertDBTrustDomain& trustDomain, const UniqueCERTCertList& builtChain,
+      NSSCertDBTrustDomain& trustDomain,
+      const nsTArray<nsTArray<uint8_t>>& builtChain,
       mozilla::pkix::Input sctsFromTLS, mozilla::pkix::Time time,
       /*optional out*/ CertificateTransparencyInfo* ctInfo);
-
-  // Returns true if the configured SHA1 mode is more restrictive than the given
-  // mode. SHA1Mode::Forbidden is more restrictive than any other mode except
-  // Forbidden. Next is ImportedRoot, then ImportedRootOrBefore2016, then
-  // Allowed. (A mode is never more restrictive than itself.)
-  bool SHA1ModeMoreRestrictiveThanGivenMode(SHA1Mode mode);
 };
 
-mozilla::pkix::Result IsCertBuiltInRoot(CERTCertificate* cert, bool& result);
-mozilla::pkix::Result CertListContainsExpectedKeys(
-    const CERTCertList* certList, const char* hostname,
-    mozilla::pkix::Time time, CertVerifier::PinningMode pinningMode);
+mozilla::pkix::Result IsCertBuiltInRoot(pkix::Input certInput, bool& result);
+mozilla::pkix::Result CertListContainsExpectedKeys(const CERTCertList* certList,
+                                                   const char* hostname,
+                                                   mozilla::pkix::Time time);
 
 }  // namespace psm
 }  // namespace mozilla

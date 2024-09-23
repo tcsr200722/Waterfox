@@ -10,15 +10,15 @@
  * Opera Software ASA. You are granted a license to use, reproduce
  * and create derivative works of this document.
  */
-[TreatNonObjectAsNull]
+[LegacyTreatNonObjectAsNull]
 callback EventHandlerNonNull = any (Event event);
 typedef EventHandlerNonNull? EventHandler;
 
-[TreatNonObjectAsNull]
+[LegacyTreatNonObjectAsNull]
 callback OnBeforeUnloadEventHandlerNonNull = DOMString? (Event event);
 typedef OnBeforeUnloadEventHandlerNonNull? OnBeforeUnloadEventHandler;
 
-[TreatNonObjectAsNull]
+[LegacyTreatNonObjectAsNull]
 callback OnErrorEventHandlerNonNull = any ((Event or DOMString) event, optional DOMString source, optional unsigned long lineno, optional unsigned long column, optional any error);
 typedef OnErrorEventHandlerNonNull? OnErrorEventHandler;
 
@@ -29,21 +29,27 @@ interface mixin GlobalEventHandlers {
 // below.
 //         attribute OnErrorEventHandler onerror;
            attribute EventHandler onfocus;
-           //(Not implemented)attribute EventHandler oncancel;
+           attribute EventHandler oncancel;
            attribute EventHandler onauxclick;
-           [Pref="dom.input_events.beforeinput.enabled"]
            attribute EventHandler onbeforeinput;
+           [Pref="dom.element.popover.enabled"]
+           attribute EventHandler onbeforetoggle;
            attribute EventHandler oncanplay;
            attribute EventHandler oncanplaythrough;
            attribute EventHandler onchange;
            attribute EventHandler onclick;
            attribute EventHandler onclose;
+           attribute EventHandler oncontextlost;
            attribute EventHandler oncontextmenu;
+           attribute EventHandler oncontextrestored;
+           attribute EventHandler oncopy;
            attribute EventHandler oncuechange;
+           attribute EventHandler oncut;
            attribute EventHandler ondblclick;
            attribute EventHandler ondrag;
            attribute EventHandler ondragend;
            attribute EventHandler ondragenter;
+           [Func="Event::IsDragExitEnabled"]
            attribute EventHandler ondragexit;
            attribute EventHandler ondragleave;
            attribute EventHandler ondragover;
@@ -52,7 +58,6 @@ interface mixin GlobalEventHandlers {
            attribute EventHandler ondurationchange;
            attribute EventHandler onemptied;
            attribute EventHandler onended;
-           [Pref="dom.formdata.event.enabled"]
            attribute EventHandler onformdata;
            attribute EventHandler oninput;
            attribute EventHandler oninvalid;
@@ -62,16 +67,16 @@ interface mixin GlobalEventHandlers {
            attribute EventHandler onload;
            attribute EventHandler onloadeddata;
            attribute EventHandler onloadedmetadata;
-           attribute EventHandler onloadend;
            attribute EventHandler onloadstart;
            attribute EventHandler onmousedown;
-  [LenientThis] attribute EventHandler onmouseenter;
-  [LenientThis] attribute EventHandler onmouseleave;
+  [LegacyLenientThis] attribute EventHandler onmouseenter;
+  [LegacyLenientThis] attribute EventHandler onmouseleave;
            attribute EventHandler onmousemove;
            attribute EventHandler onmouseout;
            attribute EventHandler onmouseover;
            attribute EventHandler onmouseup;
            attribute EventHandler onwheel;
+           attribute EventHandler onpaste;
            attribute EventHandler onpause;
            attribute EventHandler onplay;
            attribute EventHandler onplaying;
@@ -80,10 +85,12 @@ interface mixin GlobalEventHandlers {
            attribute EventHandler onreset;
            attribute EventHandler onresize;
            attribute EventHandler onscroll;
+           attribute EventHandler onscrollend;
+           attribute EventHandler onsecuritypolicyviolation;
            attribute EventHandler onseeked;
            attribute EventHandler onseeking;
            attribute EventHandler onselect;
-           attribute EventHandler onshow;
+           attribute EventHandler onslotchange;
            //(Not implemented)attribute EventHandler onsort;
            attribute EventHandler onstalled;
            attribute EventHandler onsubmit;
@@ -92,31 +99,21 @@ interface mixin GlobalEventHandlers {
            attribute EventHandler onvolumechange;
            attribute EventHandler onwaiting;
 
-           [Pref="dom.select_events.enabled"]
            attribute EventHandler onselectstart;
+           attribute EventHandler onselectionchange;
 
            attribute EventHandler ontoggle;
 
            // Pointer events handlers
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointercancel;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerdown;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerup;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointermove;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerout;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerover;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerenter;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerleave;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler ongotpointercapture;
-           [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onlostpointercapture;
 
            // Mozilla-specific handlers. Unprefixed handlers live in
@@ -167,10 +164,10 @@ interface mixin WindowEventHandlers {
            attribute EventHandler onunload;
 };
 
-interface mixin DocumentAndElementEventHandlers {
-  attribute EventHandler oncopy;
-  attribute EventHandler oncut;
-  attribute EventHandler onpaste;
+// https://w3c.github.io/gamepad/#extensions-to-the-windoweventhandlers-interface-mixin
+partial interface mixin WindowEventHandlers {
+  attribute EventHandler ongamepadconnected;
+  attribute EventHandler ongamepaddisconnected;
 };
 
 // The spec has |attribute OnErrorEventHandler onerror;| on

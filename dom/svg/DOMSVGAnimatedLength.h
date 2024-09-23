@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_DOMSVGAnimatedLength_h
-#define mozilla_dom_DOMSVGAnimatedLength_h
+#ifndef DOM_SVG_DOMSVGANIMATEDLENGTH_H_
+#define DOM_SVG_DOMSVGANIMATEDLENGTH_H_
 
 #include "mozilla/Attributes.h"
 #include "SVGElement.h"
@@ -28,8 +28,8 @@ class DOMSVGAnimatedLength final : public nsWrapperCache {
 
   // WebIDL
   SVGElement* GetParentObject() { return mSVGElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   already_AddRefed<DOMSVGLength> BaseVal();
   already_AddRefed<DOMSVGLength> AnimVal();
 
@@ -43,4 +43,4 @@ class DOMSVGAnimatedLength final : public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_DOMSVGAnimatedLength_h
+#endif  // DOM_SVG_DOMSVGANIMATEDLENGTH_H_

@@ -7,9 +7,7 @@
 #ifndef mozilla_dom_BlobImpl_h
 #define mozilla_dom_BlobImpl_h
 
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
-#include "nsISupportsImpl.h"
+#include "nsISupports.h"
 #include "nsString.h"
 
 #define BLOBIMPL_IID                                 \
@@ -22,7 +20,13 @@
 class nsIInputStream;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
+
+class SystemCallerGuarantee;
+template <typename T>
+class Optional;
 
 // This is the abstract class for any File backend. It must be nsISupports
 // because this class must be ref-counted and it has to work with IPC.
@@ -74,14 +78,14 @@ class BlobImpl : public nsISupports {
   virtual already_AddRefed<BlobImpl> CreateSlice(uint64_t aStart,
                                                  uint64_t aLength,
                                                  const nsAString& aContentType,
-                                                 ErrorResult& aRv) = 0;
+                                                 ErrorResult& aRv) const = 0;
 
   virtual const nsTArray<RefPtr<BlobImpl>>* GetSubBlobImpls() const = 0;
 
   virtual void CreateInputStream(nsIInputStream** aStream,
-                                 ErrorResult& aRv) = 0;
+                                 ErrorResult& aRv) const = 0;
 
-  virtual int64_t GetFileId() = 0;
+  virtual int64_t GetFileId() const = 0;
 
   nsresult GetSendInfo(nsIInputStream** aBody, uint64_t* aContentLength,
                        nsACString& aContentType, nsACString& aCharset);

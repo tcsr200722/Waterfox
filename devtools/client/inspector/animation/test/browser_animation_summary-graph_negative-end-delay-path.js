@@ -23,13 +23,13 @@ const TEST_DATA = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_multi_timings.html");
   await removeAnimatedElementsExcept(TEST_DATA.map(t => `.${t.targetClass}`));
   const { panel } = await openAnimationInspector();
 
   for (const { targetClass, expectedPath } of TEST_DATA) {
-    const animationItemEl = findAnimationItemElementsByTargetSelector(
+    const animationItemEl = await findAnimationItemByTargetSelector(
       panel,
       `.${targetClass}`
     );

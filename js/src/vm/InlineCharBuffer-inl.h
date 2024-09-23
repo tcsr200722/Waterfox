@@ -7,6 +7,8 @@
 #ifndef vm_InlineCharBuffer_inl_h
 #define vm_InlineCharBuffer_inl_h
 
+#include "vm/JSAtomUtils.h"
+
 #include "vm/StringType-inl.h"
 
 namespace js {
@@ -110,7 +112,8 @@ class MOZ_NON_PARAM InlineCharBuffer {
     return true;
   }
 
-  JSString* toStringDontDeflate(JSContext* cx, size_t length) {
+  JSString* toStringDontDeflate(JSContext* cx, size_t length,
+                                js::gc::Heap heap = js::gc::Heap::Default) {
     MOZ_ASSERT(length == lastRequestedLength);
 
     if (JSInlineString::lengthFits<CharT>(length)) {
@@ -123,16 +126,18 @@ class MOZ_NON_PARAM InlineCharBuffer {
       }
 
       mozilla::Range<const CharT> range(inlineStorage, length);
-      return NewInlineString<CanGC>(cx, range);
+      return NewInlineString<CanGC>(cx, range, heap);
     }
 
     MOZ_ASSERT(heapStorage,
                "heap storage was not allocated for non-inline string");
 
-    return NewStringDontDeflate<CanGC>(cx, std::move(heapStorage), length);
+    return NewStringDontDeflate<CanGC>(cx, std::move(heapStorage), length,
+                                       heap);
   }
 
-  JSString* toString(JSContext* cx, size_t length) {
+  JSString* toString(JSContext* cx, size_t length,
+                     js::gc::Heap heap = js::gc::Heap::Default) {
     MOZ_ASSERT(length == lastRequestedLength);
 
     if (JSInlineString::lengthFits<CharT>(length)) {
@@ -140,13 +145,18 @@ class MOZ_NON_PARAM InlineCharBuffer {
           !heapStorage,
           "expected only inline storage when length fits in inline string");
 
-      return NewStringCopyN<CanGC>(cx, inlineStorage, length);
+      return NewStringCopyN<CanGC>(cx, inlineStorage, length, heap);
     }
 
     MOZ_ASSERT(heapStorage,
                "heap storage was not allocated for non-inline string");
 
-    return NewString<CanGC>(cx, std::move(heapStorage), length);
+    return NewString<CanGC>(cx, std::move(heapStorage), length, heap);
+  }
+
+  JSAtom* toAtom(JSContext* cx, size_t length) {
+    MOZ_ASSERT(length == lastRequestedLength);
+    return AtomizeChars(cx, get(), length);
   }
 };
 

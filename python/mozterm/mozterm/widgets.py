@@ -2,9 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
-
 from .terminal import Terminal
+
+DEFAULT = "\x1b(B\x1b[m"
 
 
 class BaseWidget(object):
@@ -39,14 +39,23 @@ class Footer(BaseWidget):
         for part in parts:
             try:
                 func, part = part
-                encoded = getattr(self.term, func)(part)
+                attribute = getattr(self.term, func)
+                # In Blessed, these attributes aren't always callable
+                if callable(attribute):
+                    encoded = attribute(part)
+                else:
+                    # If it's not callable, assume it's just the raw
+                    # ANSI Escape Sequence and prepend it ourselves.
+                    # Append DEFAULT to stop text that comes afterwards
+                    # from inheriting the formatting we prepended.
+                    encoded = attribute + part + DEFAULT
             except ValueError:
                 encoded = part
 
             len_part = len(part)
             len_spaces = len(write_pieces)
             if written + len_part + len_spaces > max_width:
-                write_pieces.append(part[0:max_width - written - len_spaces])
+                write_pieces.append(part[0 : max_width - written - len_spaces])
                 written += len_part
                 break
 
@@ -54,5 +63,5 @@ class Footer(BaseWidget):
             written += len_part
 
         with self.term.location():
-            self.term.move(self.term.height-1, 0)
-            self.stream.write(' '.join(write_pieces))
+            self.term.move(self.term.height - 1, 0)
+            self.stream.write(" ".join(write_pieces))

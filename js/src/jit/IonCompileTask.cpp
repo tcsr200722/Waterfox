@@ -7,23 +7,48 @@
 #include "jit/IonCompileTask.h"
 
 #include "jit/CodeGenerator.h"
+#include "jit/Ion.h"
+#include "jit/JitRuntime.h"
 #include "jit/JitScript.h"
 #include "jit/WarpSnapshot.h"
+#include "vm/HelperThreadState.h"
 #include "vm/JSScript.h"
 
 #include "vm/JSScript-inl.h"
+#include "vm/Realm-inl.h"
 
 using namespace js;
 using namespace js::jit;
 
+void IonCompileTask::runHelperThreadTask(AutoLockHelperThreadState& locked) {
+  // The build is taken by this thread. Unfreeze the LifoAlloc to allow
+  // mutations.
+  alloc().lifoAlloc()->setReadWrite();
+
+  {
+    AutoUnlockHelperThreadState unlock(locked);
+    runTask();
+  }
+
+  FinishOffThreadIonCompile(this, locked);
+
+  JSRuntime* rt = script()->runtimeFromAnyThread();
+
+  // Ping the main thread so that the compiled code can be incorporated at the
+  // next interrupt callback.
+  //
+  // This must happen before the current task is reset. DestroyContext
+  // cancels in progress Ion compilations before destroying its target
+  // context, and after we reset the current task we are no longer considered
+  // to be Ion compiling.
+  rt->mainContextFromAnyThread()->requestInterrupt(
+      InterruptReason::AttachIonCompilations);
+}
+
 void IonCompileTask::runTask() {
   // This is the entry point when ion compiles are run offthread.
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread();
-  TraceLoggerEvent event(TraceLogger_AnnotateScripts, script());
-  AutoTraceLog logScript(logger, event);
-  AutoTraceLog logCompile(logger, TraceLogger_IonCompilation);
 
-  jit::JitContext jctx(mirGen_.realm->runtime(), mirGen_.realm, &alloc());
+  jit::JitContext jctx(mirGen_.realm->runtime());
   setBackgroundCodegen(jit::CompileBackEnd(&mirGen_, snapshot_));
 }
 
@@ -32,24 +57,14 @@ void IonCompileTask::trace(JSTracer* trc) {
     return;
   }
 
-  if (JitOptions.warpBuilder) {
-    MOZ_ASSERT(snapshot_);
-    MOZ_ASSERT(!rootList_);
-    snapshot_->trace(trc);
-  } else {
-    MOZ_ASSERT(!snapshot_);
-    MOZ_ASSERT(rootList_);
-    rootList_->trace(trc);
-  }
+  snapshot_->trace(trc);
 }
 
-IonCompileTask::IonCompileTask(MIRGenerator& mirGen, bool scriptHasIonScript,
-                               CompilerConstraintList* constraints,
+IonCompileTask::IonCompileTask(JSContext* cx, MIRGenerator& mirGen,
                                WarpSnapshot* snapshot)
     : mirGen_(mirGen),
-      constraints_(constraints),
       snapshot_(snapshot),
-      scriptHasIonScript_(scriptHasIonScript) {}
+      isExecuting_(cx->isExecutingRef()) {}
 
 size_t IonCompileTask::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
   // See js::jit::FreeIonCompileTask.
@@ -136,7 +151,7 @@ void jit::AttachFinishedCompilations(JSContext* cx) {
   MOZ_ASSERT(!rt->jitRuntime()->numFinishedOffThreadTasks());
 }
 
-void jit::FreeIonCompileTask(IonCompileTask* task) {
+static void FreeIonCompileTask(IonCompileTask* task) {
   // The task is allocated into its LifoAlloc, so destroying that will
   // destroy the task and all other data accumulated during compilation,
   // except any final codegen (which includes an assembler and needs to be
@@ -145,9 +160,27 @@ void jit::FreeIonCompileTask(IonCompileTask* task) {
   js_delete(task->alloc().lifoAlloc());
 }
 
-void jit::FinishOffThreadTask(JSRuntime* runtime, IonCompileTask* task,
-                              const AutoLockHelperThreadState& locked) {
+void jit::FreeIonCompileTasks(const IonFreeCompileTasks& tasks) {
+  MOZ_ASSERT(!tasks.empty());
+  for (auto* task : tasks) {
+    FreeIonCompileTask(task);
+  }
+}
+
+void IonFreeTask::runHelperThreadTask(AutoLockHelperThreadState& locked) {
+  {
+    AutoUnlockHelperThreadState unlock(locked);
+    jit::FreeIonCompileTasks(compileTasks());
+  }
+
+  js_delete(this);
+}
+
+void jit::FinishOffThreadTask(JSRuntime* runtime,
+                              AutoStartIonFreeTask& freeTask,
+                              IonCompileTask* task) {
   MOZ_ASSERT(runtime);
+  MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime));
 
   JSScript* script = task->script();
 
@@ -162,59 +195,19 @@ void jit::FinishOffThreadTask(JSRuntime* runtime, IonCompileTask* task,
     runtime->jitRuntime()->ionLazyLinkListRemove(runtime, task);
   }
 
-  // Clear the recompiling flag of the old ionScript, since we continue to
-  // use the old ionScript if recompiling fails.
-  if (script->hasIonScript()) {
-    script->ionScript()->clearRecompiling();
-  }
-
   // Clean up if compilation did not succeed.
   if (script->isIonCompilingOffThread()) {
     script->jitScript()->clearIsIonCompilingOffThread(script);
 
-    AbortReasonOr<Ok> status = task->mirGen().getOffThreadStatus();
-    if (status.isErr() && status.unwrapErr() == AbortReason::Disable) {
+    const AbortReasonOr<Ok>& status = task->mirGen().getOffThreadStatus();
+    if (status.isErr() && status.inspectErr() == AbortReason::Disable) {
       script->disableIon();
     }
   }
 
-  // Free Ion LifoAlloc off-thread. Free on the main thread if this OOMs.
-  if (!StartOffThreadIonFree(task, locked)) {
+  // Try to free the Ion LifoAlloc off-thread. Free on the main thread if this
+  // OOMs.
+  if (!freeTask.addIonCompileToFreeTaskBatch(task)) {
     FreeIonCompileTask(task);
   }
-}
-
-MOZ_MUST_USE bool jit::CreateMIRRootList(IonCompileTask& task) {
-  MOZ_ASSERT(!task.mirGen().outerInfo().isAnalysis());
-
-  TempAllocator& alloc = task.alloc();
-  MIRGraph& graph = task.mirGen().graph();
-
-  MRootList* roots = new (alloc.fallible()) MRootList(alloc);
-  if (!roots) {
-    return false;
-  }
-
-  JSScript* prevScript = nullptr;
-
-  for (ReversePostorderIterator block(graph.rpoBegin());
-       block != graph.rpoEnd(); block++) {
-    JSScript* script = block->info().script();
-    if (script != prevScript) {
-      if (!roots->append(script)) {
-        return false;
-      }
-      prevScript = script;
-    }
-
-    for (MInstructionIterator iter(block->begin()), end(block->end());
-         iter != end; iter++) {
-      if (!iter->appendRoots(*roots)) {
-        return false;
-      }
-    }
-  }
-
-  task.setRootList(*roots);
-  return true;
 }

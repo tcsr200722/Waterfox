@@ -7,8 +7,8 @@
 #ifndef mozilla_net_DocumentChannelParent_h
 #define mozilla_net_DocumentChannelParent_h
 
-#include "mozilla/net/PDocumentChannelParent.h"
 #include "mozilla/net/DocumentLoadListener.h"
+#include "mozilla/net/PDocumentChannelParent.h"
 
 namespace mozilla {
 namespace dom {
@@ -16,13 +16,15 @@ class CanonicalBrowsingContext;
 }
 namespace net {
 
+class EarlyHintConnectArgs;
+
 /**
- * An implementation of ADocumentChannelBridge that forwards all changes across
- * to DocumentChannelChild, the nsIChannel implementation owned by a content
- * process docshell.
+ * An actor that forwards all changes across to DocumentChannelChild, the
+ * nsIChannel implementation owned by a content process docshell.
  */
-class DocumentChannelParent final : public ADocumentChannelBridge,
-                                    public PDocumentChannelParent {
+class DocumentChannelParent final
+    : public PDocumentChannelParent,
+      public DocumentLoadListener::ObjectUpgradeHandler {
  public:
   NS_INLINE_DECL_REFCOUNTING(DocumentChannelParent, override);
 
@@ -32,46 +34,32 @@ class DocumentChannelParent final : public ADocumentChannelBridge,
             const DocumentChannelCreationArgs& aArgs);
 
   // PDocumentChannelParent
-  bool RecvCancel(const nsresult& aStatus) {
-    if (mParent) {
-      mParent->Cancel(aStatus);
+  ipc::IPCResult RecvCancel(const nsresult& aStatus, const nsCString& aReason) {
+    if (mDocumentLoadListener) {
+      mDocumentLoadListener->Cancel(aStatus, aReason);
     }
-    return true;
+    return IPC_OK();
   }
   void ActorDestroy(ActorDestroyReason aWhy) override {
-    if (mParent) {
-      mParent->DocumentChannelBridgeDisconnected();
-      mParent = nullptr;
+    if (mDocumentLoadListener) {
+      mDocumentLoadListener->Cancel(NS_BINDING_ABORTED,
+                                    "DocumentChannelParent::ActorDestroy"_ns);
     }
   }
 
  private:
-  // DocumentChannelListener
-  void DisconnectChildListeners(nsresult aStatus,
-                                nsresult aLoadGroupStatus) override {
-    if (CanSend()) {
-      Unused << SendDisconnectChildListeners(aStatus, aLoadGroupStatus);
-    }
-    mParent = nullptr;
-  }
-
-  void Delete() override {
-    if (CanSend()) {
-      Unused << SendDeleteSelf();
-    }
-  }
-
-  ProcessId OtherPid() const override { return IProtocol::OtherPid(); }
+  RefPtr<ObjectUpgradePromise> UpgradeObjectLoad() override;
 
   RefPtr<PDocumentChannelParent::RedirectToRealChannelPromise>
   RedirectToRealChannel(
       nsTArray<ipc::Endpoint<extensions::PStreamFilterParent>>&&
           aStreamFilterEndpoints,
-      uint32_t aRedirectFlags, uint32_t aLoadFlags) override;
+      uint32_t aRedirectFlags, uint32_t aLoadFlags,
+      uint32_t aEarlyHintLinkType);
 
   virtual ~DocumentChannelParent();
 
-  RefPtr<DocumentLoadListener> mParent;
+  RefPtr<DocumentLoadListener> mDocumentLoadListener;
 };
 
 }  // namespace net

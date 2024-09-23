@@ -91,6 +91,8 @@ bool CrashGenerationServer::Stop() {
 
 // static
 void *CrashGenerationServer::WaitForMessages(void *server) {
+  pthread_setname_np("Breakpad CrashGenerationServer");
+
   CrashGenerationServer *self =
       reinterpret_cast<CrashGenerationServer*>(server);
   while (self->WaitForOneMessage()) {}
@@ -110,7 +112,7 @@ bool CrashGenerationServer::WaitForOneMessage() {
         mach_port_t crashing_thread = message.GetTranslatedPort(1);
         mach_port_t handler_thread = message.GetTranslatedPort(2);
         mach_port_t ack_port = message.GetTranslatedPort(3);
-        ClientInfo client(info.child_pid);
+        ClientInfo client(info.child_pid, remote_task);
 
         bool result;
         std::string dump_path;
@@ -142,12 +144,10 @@ bool CrashGenerationServer::WaitForOneMessage() {
         if (ack_port != MACH_PORT_DEAD && ack_port != MACH_PORT_NULL) {
           MachPortSender sender(ack_port);
           MachSendMessage ack_message(kAcknowledgementMessage);
-          const mach_msg_timeout_t kSendTimeoutMs = 2 * 1000;
-
-          sender.SendMessage(ack_message, kSendTimeoutMs);
+          sender.SendMessage(ack_message, MACH_MSG_TIMEOUT_NONE);
         }
 
-        if (exit_callback_) {
+        if (result && exit_callback_) {
           exit_callback_(exit_context_, client);
         }
         break;

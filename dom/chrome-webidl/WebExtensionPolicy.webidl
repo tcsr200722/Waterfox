@@ -15,7 +15,7 @@ callback WebExtensionLocalizeCallback = DOMString (DOMString unlocalizedText);
 interface WebExtensionPolicy {
   [Throws]
   constructor(WebExtensionInit options);
-  
+
   /**
    * The add-on's internal ID, as specified in its manifest.json file or its
    * XPI signature.
@@ -44,10 +44,37 @@ interface WebExtensionPolicy {
   readonly attribute DOMString name;
 
   /**
+   * The add-on's internal type as determined by parsing the manifest.json file.
+   */
+  [Constant]
+  readonly attribute DOMString type;
+
+  /**
    * Whether the extension has access to privileged features
    */
   [Constant]
   readonly attribute boolean isPrivileged;
+
+  /**
+   * Whether the extension is installed temporarily
+   */
+  [Constant]
+  readonly attribute boolean temporarilyInstalled;
+
+  /**
+   * The manifest version in use by the extension.
+   */
+  [Constant]
+  readonly attribute unsigned long manifestVersion;
+
+  /**
+   * The base content security policy string to apply on extension
+   * pages for this extension.  The baseCSP is specific to the
+   * manifest version.  If the manifest version is 3 or higher it
+   * is also applied to content scripts.
+   */
+  [Constant]
+  readonly attribute DOMString baseCSP;
 
   /**
    * The content security policy string to apply to all pages loaded from the
@@ -57,18 +84,6 @@ interface WebExtensionPolicy {
    */
   [Constant]
   readonly attribute DOMString extensionPageCSP;
-
-  /**
-   * The content security policy string to apply to all the content scripts
-   * belonging to the extension.  If one is not provided by the
-   * extension the default value from preferences is used.
-   * See extensions.webextensions.default-content-security-policy.
-   *
-   * This is currently disabled, see bug 1578284.  Developers may enable it
-   * for testing using extensions.content_script_csp.enabled.
-   */
-  [Constant]
-  readonly attribute DOMString contentScriptCSP;
 
   /**
    * The list of currently-active permissions for the extension, as specified
@@ -105,6 +120,12 @@ interface WebExtensionPolicy {
   attribute boolean active;
 
   /**
+   * True if this extension is exempt from quarantine.
+   */
+  [Cached, Pure]
+  attribute boolean ignoreQuarantine;
+
+  /**
    * True if both e10s and webextensions.remote are enabled.  This must be
    * used instead of checking the remote pref directly since remote extensions
    * require both to be enabled.
@@ -115,6 +136,26 @@ interface WebExtensionPolicy {
    * True if the calling process is an extension process.
    */
   static readonly attribute boolean isExtensionProcess;
+
+  /**
+   * Whether the background.service_worker in the extension manifest.json file
+   * is enabled.
+   *
+   * NOTE: **do not use Services.prefs to retrieve the value of the undelying pref**
+   *
+   * It is defined in StaticPrefList.yaml as `mirror: once` and so checking
+   * its current value using Services.prefs doesn't guarantee that it does
+   * match the value as accessible from the C++ layers, and unexpected issue
+   * may be possible if different code has a different idea of its value.
+   */
+  static readonly attribute boolean backgroundServiceWorkerEnabled;
+
+  /**
+   * Whether the Quarantined Domains feature is enabled.  Use this as a single
+   * source of truth instead of checking extensions.QuarantinedDomains.enabled
+   * pref directly because the logic might change.
+   */
+  static readonly attribute boolean quarantinedDomainsEnabled;
 
   /**
    * Set based on the manifest.incognito value:
@@ -144,10 +185,28 @@ interface WebExtensionPolicy {
   boolean hasPermission(DOMString permission);
 
   /**
-   * Returns true if the given path relative to the extension's moz-extension:
-   * URL root may be accessed by web content.
+   * Returns true if the domain is on the Quarantined Domains list.
    */
-  boolean isPathWebAccessible(DOMString pathname);
+  static boolean isQuarantinedURI(URI uri);
+
+  /**
+   * Returns true if this extension is quarantined from the URI.
+   */
+  boolean quarantinedFromURI(URI uri);
+
+  /**
+   * Returns true if the given path relative to the extension's moz-extension:
+   * URL root is listed as a web accessible path. Access checks on a path, such
+   * as performed in nsScriptSecurityManager, use sourceMayAccessPath below.
+   */
+  boolean isWebAccessiblePath(UTF8String pathname);
+
+  /**
+   * Returns true if the given path relative to the extension's moz-extension:
+   * URL root may be accessed by web content at sourceURI.  For Manifest V2,
+   * sourceURI is ignored and the path must merely be listed as web accessible.
+   */
+  boolean sourceMayAccessPath(URI sourceURI, UTF8String pathname);
 
   /**
    * Replaces localization placeholders in the given string with localized
@@ -165,19 +224,19 @@ interface WebExtensionPolicy {
    * Register a new content script programmatically.
    */
   [Throws]
-  void registerContentScript(WebExtensionContentScript script);
+  undefined registerContentScript(WebExtensionContentScript script);
 
   /**
    * Unregister a content script.
    */
   [Throws]
-  void unregisterContentScript(WebExtensionContentScript script);
+  undefined unregisterContentScript(WebExtensionContentScript script);
 
   /**
    * Injects the extension's content script into all existing matching windows.
    */
   [Throws]
-  void injectContentScripts();
+  undefined injectContentScripts();
 
   /**
    * Returns the list of currently active extension policies.
@@ -217,11 +276,35 @@ interface WebExtensionPolicy {
    * This may be used to delay operations, such as loading extension pages,
    * which depend on extensions being fully initialized.
    *
-   * Note: This will always be either a Promise<WebExtensionPolicy> or null,
+   * Note: This will always be either a Promise<WebExtensionPolicy?> or null,
    * but the WebIDL grammar does not allow us to specify a nullable Promise
    * type.
+   *
+   * Note: This could resolve to null when the startup was interrupted.
    */
   readonly attribute object? readyPromise;
+
+  /**
+   * Returns true if the given worker script URL matches the background
+   * service worker url declared in the extension manifest.json file.
+   */
+  boolean isManifestBackgroundWorker(DOMString workerURL);
+
+  /**
+   * Get the unique BrowsingContextGroup ID which will be used for toplevel
+   * page loads from this extension.
+   *
+   * This method will raise an exception if called from outside of the parent
+   * process, or if the extension is inactive.
+   */
+  [Throws]
+  readonly attribute unsigned long long browsingContextGroupId;
+};
+
+dictionary WebAccessibleResourceInit {
+  required sequence<MatchGlobOrString> resources;
+  MatchPatternSetOrStringSequence? matches = null;
+  sequence<DOMString>? extension_ids = null;
 };
 
 dictionary WebExtensionInit {
@@ -233,7 +316,13 @@ dictionary WebExtensionInit {
 
   DOMString name = "";
 
+  DOMString type = "";
+
   boolean isPrivileged = false;
+
+  boolean ignoreQuarantine = false;
+
+  boolean temporarilyInstalled = false;
 
   required WebExtensionLocalizeCallback localizeCallback;
 
@@ -241,14 +330,19 @@ dictionary WebExtensionInit {
 
   sequence<DOMString> permissions = [];
 
-  sequence<MatchGlobOrString> webAccessibleResources = [];
+  sequence<WebAccessibleResourceInit> webAccessibleResources = [];
 
   sequence<WebExtensionContentScriptInit> contentScripts = [];
 
+  // The use of a content script csp is determined by the manifest version.
+  unsigned long manifestVersion = 2;
   DOMString? extensionPageCSP = null;
-  DOMString? contentScriptCSP = null;
 
   sequence<DOMString>? backgroundScripts = null;
+  DOMString? backgroundWorkerScript = null;
 
-  Promise<WebExtensionPolicy> readyPromise;
+  // Whether the background scripts should be loaded as ES modules.
+  boolean backgroundTypeModule = false;
+
+  Promise<WebExtensionPolicy?> readyPromise;
 };

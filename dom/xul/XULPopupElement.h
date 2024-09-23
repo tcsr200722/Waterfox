@@ -7,33 +7,38 @@
 #ifndef XULPopupElement_h__
 #define XULPopupElement_h__
 
+#include "XULMenuParentElement.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsINode.h"
 #include "nsWrapperCache.h"
 #include "nsString.h"
 #include "nsXULElement.h"
 
+class nsMenuPopupFrame;
 struct JSContext;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class DOMRect;
 class Element;
 class Event;
 class StringOrOpenPopupOptions;
+struct ActivateMenuItemOptions;
 
 nsXULElement* NS_NewXULPopupElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-class XULPopupElement : public nsXULElement {
+class XULPopupElement : public XULMenuParentElement {
  private:
-  nsIFrame* GetFrame(bool aFlushLayout);
+  nsMenuPopupFrame* GetFrame(FlushType);
 
  public:
   explicit XULPopupElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-      : nsXULElement(std::move(aNodeInfo)) {}
+      : XULMenuParentElement(std::move(aNodeInfo)) {}
 
   void GetLabel(DOMString& aValue) const {
     GetXULAttr(nsGkAtoms::label, aValue);
@@ -42,16 +47,14 @@ class XULPopupElement : public nsXULElement {
     SetXULAttr(nsGkAtoms::label, aValue, rv);
   }
 
+  bool IsMenu() const { return IsXULElement(nsGkAtoms::menupopup); }
+
   void GetPosition(DOMString& aValue) const {
     GetXULAttr(nsGkAtoms::position, aValue);
   }
   void SetPosition(const nsAString& aValue, ErrorResult& rv) {
     SetXULAttr(nsGkAtoms::position, aValue, rv);
   }
-
-  bool AutoPosition();
-
-  void SetAutoPosition(bool aShouldAutoPosition);
 
   void OpenPopup(Element* aAnchorElement,
                  const StringOrOpenPopupOptions& aOptions, int32_t aXPos,
@@ -68,7 +71,14 @@ class XULPopupElement : public nsXULElement {
 
   void HidePopup(bool aCancel);
 
+  MOZ_CAN_RUN_SCRIPT void ActivateItem(Element& aItemElement,
+                                       const ActivateMenuItemOptions& aOptions,
+                                       ErrorResult& aRv);
+
   void GetState(nsString& aState);
+
+  MOZ_CAN_RUN_SCRIPT void PopupOpened(bool aSelectFirstItem);
+  MOZ_CAN_RUN_SCRIPT void PopupClosed(bool aDeselectMenu);
 
   nsINode* GetTriggerNode() const;
 
@@ -83,11 +93,15 @@ class XULPopupElement : public nsXULElement {
 
   void SizeTo(int32_t aWidth, int32_t aHeight);
 
-  void GetAlignmentPosition(nsString& positionStr);
-
-  int32_t AlignmentOffset();
-
   void SetConstraintRect(DOMRectReadOnly& aRect);
+
+  bool IsWaylandDragSource() const;
+  bool IsWaylandPopup() const;
+
+  NS_IMPL_FROMNODE_HELPER(XULPopupElement,
+                          IsAnyOfXULElements(nsGkAtoms::menupopup,
+                                             nsGkAtoms::panel,
+                                             nsGkAtoms::tooltip));
 
  protected:
   virtual ~XULPopupElement() = default;

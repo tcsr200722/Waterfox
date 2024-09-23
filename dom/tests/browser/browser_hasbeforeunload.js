@@ -226,94 +226,98 @@ function removeSubframeFrom(browser, frameDepth = 0) {
  * @return {Promise}
  */
 function controlFrameAt(browser, frameDepth, command) {
-  return SpecialPowers.spawn(browser, [{ frameDepth, command }], async function(
-    args
-  ) {
-    ChromeUtils.import("resource://testing-common/TestUtils.jsm", this);
+  return SpecialPowers.spawn(
+    browser,
+    [{ frameDepth, command }],
+    async function (args) {
+      const { TestUtils } = ChromeUtils.importESModule(
+        "resource://testing-common/TestUtils.sys.mjs"
+      );
 
-    let { command: contentCommand, frameDepth: contentFrameDepth } = args;
+      let { command: contentCommand, frameDepth: contentFrameDepth } = args;
 
-    let targetContent = content;
-    let targetSubframe = content.document.getElementById("subframe");
+      let targetContent = content;
+      let targetSubframe = content.document.getElementById("subframe");
 
-    // We want to not only find the frame that maps to the
-    // target frame depth that we've been given, but we also want
-    // to count the total depth so that if a middle frame is removed
-    // or navigated, then we know how many outer-window-destroyed
-    // observer notifications to expect.
-    let currentContent = targetContent;
-    let currentSubframe = targetSubframe;
+      // We want to not only find the frame that maps to the
+      // target frame depth that we've been given, but we also want
+      // to count the total depth so that if a middle frame is removed
+      // or navigated, then we know how many outer-window-destroyed
+      // observer notifications to expect.
+      let currentContent = targetContent;
+      let currentSubframe = targetSubframe;
 
-    let depth = 0;
+      let depth = 0;
 
-    do {
-      currentContent = currentSubframe.contentWindow;
-      currentSubframe = currentContent.document.getElementById("subframe");
-      depth++;
-      if (depth == contentFrameDepth) {
-        targetContent = currentContent;
-        targetSubframe = currentSubframe;
-      }
-    } while (currentSubframe);
-
-    switch (contentCommand.name) {
-      case "AddBeforeUnload": {
-        let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
-        Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
-        BeforeUnloader.pushInner(contentCommand.howMany);
-        break;
-      }
-      case "AddOuterBeforeUnload": {
-        let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
-        Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
-        BeforeUnloader.pushOuter(contentCommand.howMany);
-        break;
-      }
-      case "RemoveBeforeUnload": {
-        let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
-        Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
-        BeforeUnloader.popInner(contentCommand.howMany);
-        break;
-      }
-      case "RemoveOuterBeforeUnload": {
-        let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
-        Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
-        BeforeUnloader.popOuter(contentCommand.howMany);
-        break;
-      }
-      case "Navigate": {
-        // How many frames are going to be destroyed when we do this? We
-        // need to wait for that many window destroyed notifications.
-        targetContent.location = contentCommand.url;
-
-        let destroyedOuterWindows = depth - contentFrameDepth;
-        if (destroyedOuterWindows) {
-          await TestUtils.topicObserved("outer-window-destroyed", () => {
-            destroyedOuterWindows--;
-            return !destroyedOuterWindows;
-          });
+      do {
+        currentContent = currentSubframe.contentWindow;
+        currentSubframe = currentContent.document.getElementById("subframe");
+        depth++;
+        if (depth == contentFrameDepth) {
+          targetContent = currentContent;
+          targetSubframe = currentSubframe;
         }
-        break;
-      }
-      case "RemoveSubframe": {
-        let subframe = targetContent.document.getElementById("subframe");
-        Assert.ok(
-          subframe,
-          "Found subframe at frame depth of " + contentFrameDepth
-        );
-        subframe.remove();
+      } while (currentSubframe);
 
-        let destroyedOuterWindows = depth - contentFrameDepth;
-        if (destroyedOuterWindows) {
-          await TestUtils.topicObserved("outer-window-destroyed", () => {
-            destroyedOuterWindows--;
-            return !destroyedOuterWindows;
-          });
+      switch (contentCommand.name) {
+        case "AddBeforeUnload": {
+          let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
+          Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
+          BeforeUnloader.pushInner(contentCommand.howMany);
+          break;
         }
-        break;
+        case "AddOuterBeforeUnload": {
+          let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
+          Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
+          BeforeUnloader.pushOuter(contentCommand.howMany);
+          break;
+        }
+        case "RemoveBeforeUnload": {
+          let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
+          Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
+          BeforeUnloader.popInner(contentCommand.howMany);
+          break;
+        }
+        case "RemoveOuterBeforeUnload": {
+          let BeforeUnloader = targetContent.wrappedJSObject.BeforeUnloader;
+          Assert.ok(BeforeUnloader, "Found BeforeUnloader in the test page.");
+          BeforeUnloader.popOuter(contentCommand.howMany);
+          break;
+        }
+        case "Navigate": {
+          // How many frames are going to be destroyed when we do this? We
+          // need to wait for that many window destroyed notifications.
+          targetContent.location = contentCommand.url;
+
+          let destroyedOuterWindows = depth - contentFrameDepth;
+          if (destroyedOuterWindows) {
+            await TestUtils.topicObserved("outer-window-destroyed", () => {
+              destroyedOuterWindows--;
+              return !destroyedOuterWindows;
+            });
+          }
+          break;
+        }
+        case "RemoveSubframe": {
+          let subframe = targetContent.document.getElementById("subframe");
+          Assert.ok(
+            subframe,
+            "Found subframe at frame depth of " + contentFrameDepth
+          );
+          subframe.remove();
+
+          let destroyedOuterWindows = depth - contentFrameDepth;
+          if (destroyedOuterWindows) {
+            await TestUtils.topicObserved("outer-window-destroyed", () => {
+              destroyedOuterWindows--;
+              return !destroyedOuterWindows;
+            });
+          }
+          break;
+        }
       }
     }
-  }).catch(Cu.reportError);
+  ).catch(console.error);
 }
 
 /**
@@ -359,30 +363,32 @@ async function prepareSubframes(browser, options) {
   browser.reload();
   await BrowserTestUtils.browserLoaded(browser);
 
-  await SpecialPowers.spawn(browser, [{ options, PAGE_URL }], async function(
-    args
-  ) {
-    let { options: allSubframeOptions, PAGE_URL: contentPageURL } = args;
-    function loadBeforeUnloadHelper(doc, subframeOptions) {
-      let subframe = doc.getElementById("subframe");
-      subframe.remove();
-      if (subframeOptions.sandboxAttributes === null) {
-        subframe.removeAttribute("sandbox");
-      } else {
-        subframe.setAttribute("sandbox", subframeOptions.sandboxAttributes);
+  await SpecialPowers.spawn(
+    browser,
+    [{ options, PAGE_URL }],
+    async function (args) {
+      let { options: allSubframeOptions, PAGE_URL: contentPageURL } = args;
+      function loadBeforeUnloadHelper(doc, subframeOptions) {
+        let subframe = doc.getElementById("subframe");
+        subframe.remove();
+        if (subframeOptions.sandboxAttributes === null) {
+          subframe.removeAttribute("sandbox");
+        } else {
+          subframe.setAttribute("sandbox", subframeOptions.sandboxAttributes);
+        }
+        doc.body.appendChild(subframe);
+        subframe.contentWindow.location = contentPageURL;
+        return ContentTaskUtils.waitForEvent(subframe, "load").then(() => {
+          return subframe.contentDocument;
+        });
       }
-      doc.body.appendChild(subframe);
-      subframe.contentWindow.location = contentPageURL;
-      return ContentTaskUtils.waitForEvent(subframe, "load").then(() => {
-        return subframe.contentDocument;
-      });
-    }
 
-    let currentDoc = content.document;
-    for (let subframeOptions of allSubframeOptions) {
-      currentDoc = await loadBeforeUnloadHelper(currentDoc, subframeOptions);
+      let currentDoc = content.document;
+      for (let subframeOptions of allSubframeOptions) {
+        currentDoc = await loadBeforeUnloadHelper(currentDoc, subframeOptions);
+      }
     }
-  });
+  );
 }
 
 /**
@@ -395,23 +401,29 @@ async function prepareSubframes(browser, options) {
  *        True if hasBeforeUnload is expected to be true.
  */
 function assertHasBeforeUnload(browser, expected) {
-  Assert.equal(browser.frameLoader.remoteTab.hasBeforeUnload, expected);
+  Assert.equal(browser.hasBeforeUnload, expected);
 }
 
 /**
- * Tests that the nsIRemoteTab hasBeforeUnload attribute works under
+ * Tests that the MozBrowser hasBeforeUnload property works under
  * a number of different scenarios on inner windows. At a high-level,
  * we test that hasBeforeUnload works properly during page / iframe
  * navigation, or when an <iframe> with a beforeunload listener on its
  * inner window is removed from the DOM.
  */
 add_task(async function test_inner_window_scenarios() {
+  // Turn this off because the test expects the page to be not bfcached.
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["docshell.shistory.bfcache.ship_allow_beforeunload_listeners", false],
+    ],
+  });
   await BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: PAGE_URL,
     },
-    async function(browser) {
+    async function (browser) {
       Assert.ok(
         browser.isRemoteBrowser,
         "This test only makes sense with out of process browsers."
@@ -448,7 +460,7 @@ add_task(async function test_inner_window_scenarios() {
 
       // Now send the page back to the test page for
       // the next few tests.
-      BrowserTestUtils.loadURI(browser, PAGE_URL);
+      BrowserTestUtils.startLoadingURIString(browser, PAGE_URL);
       await BrowserTestUtils.browserLoaded(browser);
 
       // We want to test hasBeforeUnload works properly with
@@ -590,12 +602,18 @@ add_task(async function test_inner_window_scenarios() {
  * to the iframe DOM nodes instead of the inner windows.
  */
 add_task(async function test_outer_window_scenarios() {
+  // Turn this off because the test expects the page to be not bfcached.
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["docshell.shistory.bfcache.ship_allow_beforeunload_listeners", false],
+    ],
+  });
   await BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: PAGE_URL,
     },
-    async function(browser) {
+    async function (browser) {
       Assert.ok(
         browser.isRemoteBrowser,
         "This test only makes sense with out of process browsers."
@@ -657,7 +675,7 @@ add_task(async function test_outer_window_scenarios() {
 
       // Now send the page back to the test page for
       // the next few tests.
-      BrowserTestUtils.loadURI(browser, PAGE_URL);
+      BrowserTestUtils.startLoadingURIString(browser, PAGE_URL);
       await BrowserTestUtils.browserLoaded(browser);
 
       // We should initially start with hasBeforeUnload set to false.
@@ -785,12 +803,18 @@ add_task(async function test_outer_window_scenarios() {
  * are added on both inner and outer windows.
  */
 add_task(async function test_mixed_inner_and_outer_window_scenarios() {
+  // Turn this off because the test expects the page to be not bfcached.
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["docshell.shistory.bfcache.ship_allow_beforeunload_listeners", false],
+    ],
+  });
   await BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: PAGE_URL,
     },
-    async function(browser) {
+    async function (browser) {
       Assert.ok(
         browser.isRemoteBrowser,
         "This test only makes sense with out of process browsers."

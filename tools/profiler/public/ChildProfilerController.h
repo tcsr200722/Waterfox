@@ -9,9 +9,11 @@
 #include "base/process.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/RefPtr.h"
 #include "nsISupportsImpl.h"
 #include "nsStringFwd.h"
+#include "ProfileAdditionalInformation.h"
 
 namespace mozilla {
 
@@ -26,24 +28,42 @@ class ChildProfilerController final {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ChildProfilerController)
 
+#ifdef MOZ_GECKO_PROFILER
   static already_AddRefed<ChildProfilerController> Create(
       mozilla::ipc::Endpoint<PProfilerChild>&& aEndpoint);
 
-  [[nodiscard]] nsCString GrabShutdownProfileAndShutdown();
+  [[nodiscard]] ProfileAndAdditionalInformation
+  GrabShutdownProfileAndShutdown();
   void Shutdown();
 
  private:
   ChildProfilerController();
   ~ChildProfilerController();
   void Init(mozilla::ipc::Endpoint<PProfilerChild>&& aEndpoint);
-  void ShutdownAndMaybeGrabShutdownProfileFirst(nsCString* aOutShutdownProfile);
+  void ShutdownAndMaybeGrabShutdownProfileFirst(
+      ProfileAndAdditionalInformation* aOutShutdownProfileInformation);
 
   // Called on mThread:
   void SetupProfilerChild(mozilla::ipc::Endpoint<PProfilerChild>&& aEndpoint);
-  void ShutdownProfilerChild(nsCString* aOutShutdownProfile);
+  void ShutdownProfilerChild(
+      ProfileAndAdditionalInformation* aOutShutdownProfileInformation);
 
   RefPtr<ProfilerChild> mProfilerChild;  // only accessed on mThread
-  RefPtr<nsIThread> mThread;
+  DataMutex<RefPtr<nsIThread>> mThread;
+#else
+  static already_AddRefed<ChildProfilerController> Create(
+      mozilla::ipc::Endpoint<PProfilerChild>&& aEndpoint) {
+    return nullptr;
+  }
+  [[nodiscard]] ProfileAndAdditionalInformation
+  GrabShutdownProfileAndShutdown() {
+    return ProfileAndAdditionalInformation(std::move(EmptyCString()));
+  }
+  void Shutdown() {}
+
+ private:
+  ~ChildProfilerController() {}
+#endif  // MOZ_GECKO_PROFILER
 };
 
 }  // namespace mozilla

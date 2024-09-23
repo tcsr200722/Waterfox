@@ -133,13 +133,11 @@ void VideoFrameContainer::SetCurrentFramesLocked(
     const nsTArray<ImageContainer::NonOwningImage>& aImages) {
   mMutex.AssertCurrentThreadOwns();
 
-  if (aIntrinsicSize != mIntrinsicSize) {
-    mIntrinsicSize = aIntrinsicSize;
-    RefPtr<VideoFrameContainer> self = this;
+  if (auto size = Some(aIntrinsicSize); size != mIntrinsicSize) {
+    mIntrinsicSize = size;
     mMainThread->Dispatch(NS_NewRunnableFunction(
-        "IntrinsicSizeChanged", [this, self, aIntrinsicSize]() {
-          mMainThreadState.mIntrinsicSize = aIntrinsicSize;
-          mMainThreadState.mIntrinsicSizeChanged = true;
+        "IntrinsicSizeChanged", [this, self = RefPtr(this), size]() {
+          mMainThreadState.mNewIntrinsicSize = size;
         }));
   }
 
@@ -195,18 +193,6 @@ void VideoFrameContainer::SetCurrentFramesLocked(
   }
 }
 
-void VideoFrameContainer::ClearCurrentFrame() {
-  MutexAutoLock lock(mMutex);
-
-  // See comment in SetCurrentFrame for the reasoning behind
-  // using a kungFuDeathGrip here.
-  nsTArray<ImageContainer::OwningImage> kungFuDeathGrip;
-  mImageContainer->GetCurrentImages(&kungFuDeathGrip);
-
-  mImageContainer->ClearAllImages();
-  mImageContainer->ClearCachedResources();
-}
-
 void VideoFrameContainer::ClearFutureFrames(TimeStamp aNow) {
   MutexAutoLock lock(mMutex);
 
@@ -232,14 +218,18 @@ void VideoFrameContainer::ClearFutureFrames(TimeStamp aNow) {
 }
 
 void VideoFrameContainer::ClearCachedResources() {
+  MutexAutoLock lock(mMutex);
   mImageContainer->ClearCachedResources();
 }
 
 ImageContainer* VideoFrameContainer::GetImageContainer() {
+  // Note - you'll need the lock to manipulate this.  The pointer is not
+  // modified from multiple threads, just the data pointed to by it.
   return mImageContainer;
 }
 
 double VideoFrameContainer::GetFrameDelay() {
+  MutexAutoLock lock(mMutex);
   return mImageContainer->GetPaintDelay().ToSeconds();
 }
 
@@ -251,17 +241,15 @@ void VideoFrameContainer::InvalidateWithFlags(uint32_t aFlags) {
     return;
   }
 
-  bool imageSizeChanged = mMainThreadState.mImageSizeChanged;
+  MediaDecoderOwner::ImageSizeChanged imageSizeChanged{
+      mMainThreadState.mImageSizeChanged};
   mMainThreadState.mImageSizeChanged = false;
 
-  Maybe<nsIntSize> intrinsicSize;
-  if (mMainThreadState.mIntrinsicSizeChanged) {
-    intrinsicSize = Some(mMainThreadState.mIntrinsicSize);
-    mMainThreadState.mIntrinsicSizeChanged = false;
-  }
+  auto newIntrinsicSize = std::move(mMainThreadState.mNewIntrinsicSize);
 
-  bool forceInvalidate = aFlags & INVALIDATE_FORCE;
-  mOwner->Invalidate(imageSizeChanged, intrinsicSize, forceInvalidate);
+  MediaDecoderOwner::ForceInvalidate forceInvalidate{
+      (aFlags & INVALIDATE_FORCE) != 0};
+  mOwner->Invalidate(imageSizeChanged, newIntrinsicSize, forceInvalidate);
 }
 
 }  // namespace mozilla

@@ -1,13 +1,16 @@
 //! When serializing or deserializing JSON goes wrong.
 
+use crate::io;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use core::fmt::{self, Debug, Display};
+use core::result;
+use core::str::FromStr;
+use serde::{de, ser};
+#[cfg(feature = "std")]
 use std::error;
-use std::fmt::{self, Debug, Display};
-use std::io;
-use std::result;
-use std::str::FromStr;
-
-use serde::de;
-use serde::ser;
+#[cfg(feature = "std")]
+use std::io::ErrorKind;
 
 /// This type represents all possible errors that can occur when serializing or
 /// deserializing JSON data.
@@ -35,15 +38,16 @@ impl Error {
     /// The first character in the input and any characters immediately
     /// following a newline character are in column 1.
     ///
-    /// Note that errors may occur in column 0, for example if a read from an IO
-    /// stream fails immediately following a previously read newline character.
+    /// Note that errors may occur in column 0, for example if a read from an
+    /// I/O stream fails immediately following a previously read newline
+    /// character.
     pub fn column(&self) -> usize {
         self.err.column
     }
 
     /// Categorizes the cause of this error.
     ///
-    /// - `Category::Io` - failure to read or write bytes on an IO stream
+    /// - `Category::Io` - failure to read or write bytes on an I/O stream
     /// - `Category::Syntax` - input that is not syntactically valid JSON
     /// - `Category::Data` - input data that is semantically incorrect
     /// - `Category::Eof` - unexpected end of the input data
@@ -58,16 +62,17 @@ impl Error {
             ErrorCode::ExpectedColon
             | ErrorCode::ExpectedListCommaOrEnd
             | ErrorCode::ExpectedObjectCommaOrEnd
-            | ErrorCode::ExpectedObjectOrArray
             | ErrorCode::ExpectedSomeIdent
             | ErrorCode::ExpectedSomeValue
-            | ErrorCode::ExpectedSomeString
+            | ErrorCode::ExpectedDoubleQuote
             | ErrorCode::InvalidEscape
             | ErrorCode::InvalidNumber
             | ErrorCode::NumberOutOfRange
             | ErrorCode::InvalidUnicodeCodePoint
             | ErrorCode::ControlCharacterWhileParsingString
             | ErrorCode::KeyMustBeAString
+            | ErrorCode::ExpectedNumericKey
+            | ErrorCode::FloatKeyMustBeFinite
             | ErrorCode::LoneLeadingSurrogateInHexEscape
             | ErrorCode::TrailingComma
             | ErrorCode::TrailingCharacters
@@ -77,7 +82,7 @@ impl Error {
     }
 
     /// Returns true if this error was caused by a failure to read or write
-    /// bytes on an IO stream.
+    /// bytes on an I/O stream.
     pub fn is_io(&self) -> bool {
         self.classify() == Category::Io
     }
@@ -105,12 +110,61 @@ impl Error {
     pub fn is_eof(&self) -> bool {
         self.classify() == Category::Eof
     }
+
+    /// The kind reported by the underlying standard library I/O error, if this
+    /// error was caused by a failure to read or write bytes on an I/O stream.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use serde_json::Value;
+    /// use std::io::{self, ErrorKind, Read};
+    /// use std::process;
+    ///
+    /// struct ReaderThatWillTimeOut<'a>(&'a [u8]);
+    ///
+    /// impl<'a> Read for ReaderThatWillTimeOut<'a> {
+    ///     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    ///         if self.0.is_empty() {
+    ///             Err(io::Error::new(ErrorKind::TimedOut, "timed out"))
+    ///         } else {
+    ///             self.0.read(buf)
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let reader = ReaderThatWillTimeOut(br#" {"k": "#);
+    ///
+    ///     let _: Value = match serde_json::from_reader(reader) {
+    ///         Ok(value) => value,
+    ///         Err(error) => {
+    ///             if error.io_error_kind() == Some(ErrorKind::TimedOut) {
+    ///                 // Maybe this application needs to retry certain kinds of errors.
+    ///
+    ///                 # return;
+    ///             } else {
+    ///                 eprintln!("error: {}", error);
+    ///                 process::exit(1);
+    ///             }
+    ///         }
+    ///     };
+    /// }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn io_error_kind(&self) -> Option<ErrorKind> {
+        if let ErrorCode::Io(io_error) = &self.err.code {
+            Some(io_error.kind())
+        } else {
+            None
+        }
+    }
 }
 
 /// Categorizes the cause of a `serde_json::Error`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Category {
-    /// The error was caused by a failure to read or write bytes on an IO
+    /// The error was caused by a failure to read or write bytes on an I/O
     /// stream.
     Io,
 
@@ -130,14 +184,15 @@ pub enum Category {
     Eof,
 }
 
-#[cfg_attr(feature = "cargo-clippy", allow(fallible_impl_from))]
+#[cfg(feature = "std")]
+#[allow(clippy::fallible_impl_from)]
 impl From<Error> for io::Error {
     /// Convert a `serde_json::Error` into an `io::Error`.
     ///
-    /// JSON syntax and data errors are turned into `InvalidData` IO errors.
-    /// EOF errors are turned into `UnexpectedEof` IO errors.
+    /// JSON syntax and data errors are turned into `InvalidData` I/O errors.
+    /// EOF errors are turned into `UnexpectedEof` I/O errors.
     ///
-    /// ```edition2018
+    /// ```
     /// use std::io;
     ///
     /// enum MyError {
@@ -165,8 +220,8 @@ impl From<Error> for io::Error {
         } else {
             match j.classify() {
                 Category::Io => unreachable!(),
-                Category::Syntax | Category::Data => io::Error::new(io::ErrorKind::InvalidData, j),
-                Category::Eof => io::Error::new(io::ErrorKind::UnexpectedEof, j),
+                Category::Syntax | Category::Data => io::Error::new(ErrorKind::InvalidData, j),
+                Category::Eof => io::Error::new(ErrorKind::UnexpectedEof, j),
             }
         }
     }
@@ -178,13 +233,11 @@ struct ErrorImpl {
     column: usize,
 }
 
-// Not public API. Should be pub(crate).
-#[doc(hidden)]
-pub enum ErrorCode {
+pub(crate) enum ErrorCode {
     /// Catchall for syntax error messages
     Message(Box<str>),
 
-    /// Some IO error occurred while serializing or deserializing.
+    /// Some I/O error occurred while serializing or deserializing.
     Io(io::Error),
 
     /// EOF while parsing a list.
@@ -208,17 +261,14 @@ pub enum ErrorCode {
     /// Expected this character to be either a `','` or a `'}'`.
     ExpectedObjectCommaOrEnd,
 
-    /// Expected this character to be either a `'{'` or a `'['`.
-    ExpectedObjectOrArray,
-
     /// Expected to parse either a `true`, `false`, or a `null`.
     ExpectedSomeIdent,
 
     /// Expected this character to start a JSON value.
     ExpectedSomeValue,
 
-    /// Expected this character to start a JSON string.
-    ExpectedSomeString,
+    /// Expected this character to be a `"`.
+    ExpectedDoubleQuote,
 
     /// Invalid hex escape code.
     InvalidEscape,
@@ -238,6 +288,12 @@ pub enum ErrorCode {
     /// Object key is not a string.
     KeyMustBeAString,
 
+    /// Contents of key were supposed to be a number.
+    ExpectedNumericKey,
+
+    /// Object key is a non-finite float value.
+    FloatKeyMustBeFinite,
+
     /// Lone leading surrogate in hex escape.
     LoneLeadingSurrogateInHexEscape,
 
@@ -247,7 +303,7 @@ pub enum ErrorCode {
     /// JSON has non-whitespace trailing characters after the value.
     TrailingCharacters,
 
-    /// Unexpected end of hex excape.
+    /// Unexpected end of hex escape.
     UnexpectedEndOfHexEscape,
 
     /// Encountered nesting of JSON maps and arrays more than 128 layers deep.
@@ -255,16 +311,10 @@ pub enum ErrorCode {
 }
 
 impl Error {
-    // Not public API. Should be pub(crate).
-    #[doc(hidden)]
     #[cold]
-    pub fn syntax(code: ErrorCode, line: usize, column: usize) -> Self {
+    pub(crate) fn syntax(code: ErrorCode, line: usize, column: usize) -> Self {
         Error {
-            err: Box::new(ErrorImpl {
-                code: code,
-                line: line,
-                column: column,
-            }),
+            err: Box::new(ErrorImpl { code, line, column }),
         }
     }
 
@@ -283,10 +333,8 @@ impl Error {
         }
     }
 
-    // Not public API. Should be pub(crate).
-    #[doc(hidden)]
     #[cold]
-    pub fn fix_position<F>(self, f: F) -> Self
+    pub(crate) fn fix_position<F>(self, f: F) -> Self
     where
         F: FnOnce(ErrorCode) -> Error,
     {
@@ -300,9 +348,9 @@ impl Error {
 
 impl Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ErrorCode::Message(ref msg) => f.write_str(msg),
-            ErrorCode::Io(ref err) => Display::fmt(err, f),
+        match self {
+            ErrorCode::Message(msg) => f.write_str(msg),
+            ErrorCode::Io(err) => Display::fmt(err, f),
             ErrorCode::EofWhileParsingList => f.write_str("EOF while parsing a list"),
             ErrorCode::EofWhileParsingObject => f.write_str("EOF while parsing an object"),
             ErrorCode::EofWhileParsingString => f.write_str("EOF while parsing a string"),
@@ -310,10 +358,9 @@ impl Display for ErrorCode {
             ErrorCode::ExpectedColon => f.write_str("expected `:`"),
             ErrorCode::ExpectedListCommaOrEnd => f.write_str("expected `,` or `]`"),
             ErrorCode::ExpectedObjectCommaOrEnd => f.write_str("expected `,` or `}`"),
-            ErrorCode::ExpectedObjectOrArray => f.write_str("expected `{` or `[`"),
             ErrorCode::ExpectedSomeIdent => f.write_str("expected ident"),
             ErrorCode::ExpectedSomeValue => f.write_str("expected value"),
-            ErrorCode::ExpectedSomeString => f.write_str("expected string"),
+            ErrorCode::ExpectedDoubleQuote => f.write_str("expected `\"`"),
             ErrorCode::InvalidEscape => f.write_str("invalid escape"),
             ErrorCode::InvalidNumber => f.write_str("invalid number"),
             ErrorCode::NumberOutOfRange => f.write_str("number out of range"),
@@ -322,6 +369,12 @@ impl Display for ErrorCode {
                 f.write_str("control character (\\u0000-\\u001F) found while parsing a string")
             }
             ErrorCode::KeyMustBeAString => f.write_str("key must be a string"),
+            ErrorCode::ExpectedNumericKey => {
+                f.write_str("invalid value: expected key to be a number in quotes")
+            }
+            ErrorCode::FloatKeyMustBeFinite => {
+                f.write_str("float key must be finite (got NaN or +/-inf)")
+            }
             ErrorCode::LoneLeadingSurrogateInHexEscape => {
                 f.write_str("lone leading surrogate in hex escape")
             }
@@ -333,20 +386,11 @@ impl Display for ErrorCode {
     }
 }
 
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        match self.err.code {
-            ErrorCode::Io(ref err) => error::Error::description(err),
-            _ => {
-                // If you want a better message, use Display::fmt or to_string().
-                "JSON error"
-            }
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
-        match self.err.code {
-            ErrorCode::Io(ref err) => Some(err),
+impl serde::de::StdError for Error {
+    #[cfg(feature = "std")]
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match &self.err.code {
+            ErrorCode::Io(err) => err.source(),
             _ => None,
         }
     }
@@ -393,12 +437,21 @@ impl de::Error for Error {
     }
 
     #[cold]
-    fn invalid_type(unexp: de::Unexpected, exp: &de::Expected) -> Self {
-        if let de::Unexpected::Unit = unexp {
-            Error::custom(format_args!("invalid type: null, expected {}", exp))
-        } else {
-            Error::custom(format_args!("invalid type: {}, expected {}", unexp, exp))
-        }
+    fn invalid_type(unexp: de::Unexpected, exp: &dyn de::Expected) -> Self {
+        Error::custom(format_args!(
+            "invalid type: {}, expected {}",
+            JsonUnexpected(unexp),
+            exp,
+        ))
+    }
+
+    #[cold]
+    fn invalid_value(unexp: de::Unexpected, exp: &dyn de::Expected) -> Self {
+        Error::custom(format_args!(
+            "invalid value: {}, expected {}",
+            JsonUnexpected(unexp),
+            exp,
+        ))
     }
 }
 
@@ -409,6 +462,22 @@ impl ser::Error for Error {
     }
 }
 
+struct JsonUnexpected<'a>(de::Unexpected<'a>);
+
+impl<'a> Display for JsonUnexpected<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            de::Unexpected::Unit => formatter.write_str("null"),
+            de::Unexpected::Float(value) => write!(
+                formatter,
+                "floating point `{}`",
+                ryu::Buffer::new().format(value),
+            ),
+            unexp => Display::fmt(&unexp, formatter),
+        }
+    }
+}
+
 // Parse our own error message that looks like "{} at line {} column {}" to work
 // around erased-serde round-tripping the error through de::Error::custom.
 fn make_error(mut msg: String) -> Error {
@@ -416,8 +485,8 @@ fn make_error(mut msg: String) -> Error {
     Error {
         err: Box::new(ErrorImpl {
             code: ErrorCode::Message(msg.into_boxed_str()),
-            line: line,
-            column: column,
+            line,
+            column,
         }),
     }
 }
@@ -465,7 +534,7 @@ fn parse_line_col(msg: &mut String) -> Option<(usize, usize)> {
 }
 
 fn starts_with_digit(slice: &str) -> bool {
-    match slice.as_bytes().get(0) {
+    match slice.as_bytes().first() {
         None => false,
         Some(&byte) => byte >= b'0' && byte <= b'9',
     }

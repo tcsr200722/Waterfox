@@ -4,8 +4,6 @@
 
 "use strict";
 
-const { gDevTools } = require("devtools/client/framework/devtools");
-
 const {
   TOGGLE_REQUEST_FILTER_TYPE,
   ENABLE_REQUEST_FILTER_TYPE_ONLY,
@@ -13,12 +11,12 @@ const {
   SELECT_DETAILS_PANEL_TAB,
   SEND_CUSTOM_REQUEST,
   ENABLE_PERSISTENT_LOGS,
-  WS_SELECT_FRAME,
-} = require("devtools/client/netmonitor/src/constants");
+  MSG_SELECT,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 const {
   CHANGE_NETWORK_THROTTLING,
-} = require("devtools/client/shared/components/throttling/actions");
+} = require("resource://devtools/client/shared/components/throttling/actions.js");
 
 /**
  * Event telemetry middleware is responsible for logging
@@ -29,7 +27,7 @@ function eventTelemetryMiddleware(connector, telemetry) {
   return store => next => action => {
     const oldState = store.getState();
     const res = next(action);
-    const toolbox = gDevTools.getToolbox(connector.getTabTarget());
+    const toolbox = connector.getToolbox();
     if (!toolbox) {
       return res;
     }
@@ -39,7 +37,6 @@ function eventTelemetryMiddleware(connector, telemetry) {
     }
 
     const state = store.getState();
-    const { sessionId } = toolbox;
 
     const filterChangeActions = [
       TOGGLE_REQUEST_FILTER_TYPE,
@@ -54,7 +51,6 @@ function eventTelemetryMiddleware(connector, telemetry) {
         state,
         oldState,
         telemetry,
-        sessionId,
       });
     }
 
@@ -64,7 +60,6 @@ function eventTelemetryMiddleware(connector, telemetry) {
         state,
         oldState,
         telemetry,
-        sessionId,
       });
     }
 
@@ -72,7 +67,6 @@ function eventTelemetryMiddleware(connector, telemetry) {
     if (action.type == SEND_CUSTOM_REQUEST) {
       sendCustomRequest({
         telemetry,
-        sessionId,
       });
     }
 
@@ -81,7 +75,6 @@ function eventTelemetryMiddleware(connector, telemetry) {
       throttlingChange({
         action,
         telemetry,
-        sessionId,
       });
     }
 
@@ -90,15 +83,13 @@ function eventTelemetryMiddleware(connector, telemetry) {
       persistenceChange({
         telemetry,
         state,
-        sessionId,
       });
     }
 
-    // Record telemetry event when WS frame is selected.
-    if (action.type == WS_SELECT_FRAME) {
-      selectWSFrame({
+    // Record telemetry event when message is selected.
+    if (action.type == MSG_SELECT) {
+      selectMessage({
         telemetry,
-        sessionId,
       });
     }
 
@@ -110,7 +101,7 @@ function eventTelemetryMiddleware(connector, telemetry) {
  * This helper function is executed when filter related action is fired.
  * It's responsible for recording "filters_changed" telemetry event.
  */
-function filterChange({ action, state, oldState, telemetry, sessionId }) {
+function filterChange({ action, state, oldState, telemetry }) {
   const oldFilterState = oldState.filters;
   const filterState = state.filters;
   const activeFilters = [];
@@ -142,10 +133,9 @@ function filterChange({ action, state, oldState, telemetry, sessionId }) {
   }
 
   telemetry.recordEvent("filters_changed", "netmonitor", null, {
-    trigger: trigger,
+    trigger,
     active: activeFilters.join(","),
     inactive: inactiveFilters.join(","),
-    session_id: sessionId,
   });
 }
 
@@ -154,11 +144,10 @@ function filterChange({ action, state, oldState, telemetry, sessionId }) {
  * It's responsible for recording "sidepanel_tool_changed"
  * telemetry event.
  */
-function sidePanelChange({ state, oldState, telemetry, sessionId }) {
+function sidePanelChange({ state, oldState, telemetry }) {
   telemetry.recordEvent("sidepanel_changed", "netmonitor", null, {
     oldpanel: oldState.ui.detailsPanelSelectedTab,
     newpanel: state.ui.detailsPanelSelectedTab,
-    session_id: sessionId,
   });
 }
 
@@ -166,20 +155,17 @@ function sidePanelChange({ state, oldState, telemetry, sessionId }) {
  * This helper function is executed when a request is resent.
  * It's responsible for recording "edit_resend" telemetry event.
  */
-function sendCustomRequest({ telemetry, sessionId }) {
-  telemetry.recordEvent("edit_resend", "netmonitor", null, {
-    session_id: sessionId,
-  });
+function sendCustomRequest({ telemetry }) {
+  telemetry.recordEvent("edit_resend", "netmonitor");
 }
 
 /**
  * This helper function is executed when network throttling is changed.
  * It's responsible for recording "throttle_changed" telemetry event.
  */
-function throttlingChange({ action, telemetry, sessionId }) {
+function throttlingChange({ action, telemetry }) {
   telemetry.recordEvent("throttle_changed", "netmonitor", null, {
     mode: action.profile,
-    session_id: sessionId,
   });
 }
 
@@ -187,14 +173,11 @@ function throttlingChange({ action, telemetry, sessionId }) {
  * This helper function is executed when log persistence is changed.
  * It's responsible for recording "persist_changed" telemetry event.
  */
-function persistenceChange({ telemetry, state, sessionId }) {
+function persistenceChange({ telemetry, state }) {
   telemetry.recordEvent(
     "persist_changed",
     "netmonitor",
-    String(state.ui.persistentLogsEnabled),
-    {
-      session_id: sessionId,
-    }
+    String(state.ui.persistentLogsEnabled)
   );
 }
 
@@ -202,10 +185,8 @@ function persistenceChange({ telemetry, state, sessionId }) {
  * This helper function is executed when a WS frame is selected.
  * It's responsible for recording "select_ws_frame" telemetry event.
  */
-function selectWSFrame({ telemetry, sessionId }) {
-  telemetry.recordEvent("select_ws_frame", "netmonitor", null, {
-    session_id: sessionId,
-  });
+function selectMessage({ telemetry }) {
+  telemetry.recordEvent("select_ws_frame", "netmonitor");
 }
 
 module.exports = eventTelemetryMiddleware;

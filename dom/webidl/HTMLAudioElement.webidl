@@ -11,9 +11,8 @@
  * and create derivative works of this document.
  */
 
-[NamedConstructor=Audio(optional DOMString src),
+[LegacyFactoryFunction=Audio(optional DOMString src),
  Exposed=Window]
 interface HTMLAudioElement : HTMLMediaElement {
   [HTMLConstructor] constructor();
 };
-

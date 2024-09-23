@@ -4,16 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Shared Places Import - change other consumers if you change this: */
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  PlacesUIUtils: "resource:///modules/PlacesUIUtils.jsm",
-  PlacesTransactions: "resource://gre/modules/PlacesTransactions.jsm",
-  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
+
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTransactions: "resource://gre/modules/PlacesTransactions.sys.mjs",
+  PlacesUIUtils: "resource:///modules/PlacesUIUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
+
 XPCOMUtils.defineLazyScriptGetter(
   this,
   "PlacesTreeView",
@@ -29,7 +30,8 @@ XPCOMUtils.defineLazyScriptGetter(
 var gHistoryTree;
 var gSearchBox;
 var gHistoryGrouping = "";
-var gSearching = false;
+var gCumulativeSearches = 0;
+var gCumulativeFilterCount = 0;
 
 function HistorySidebarInit() {
   let uidensity = window.top.document.documentElement.getAttribute("uidensity");
@@ -44,6 +46,11 @@ function HistorySidebarInit() {
     .getElementById("viewButton")
     .getAttribute("selectedsort");
 
+  this.groupHistogram = Services.telemetry.getHistogramById(
+    "PLACES_SEARCHBAR_FILTER_TYPE"
+  );
+  this.groupHistogram.add(gHistoryGrouping);
+
   if (gHistoryGrouping == "site") {
     document.getElementById("bysite").setAttribute("checked", "true");
   } else if (gHistoryGrouping == "visited") {
@@ -57,21 +64,33 @@ function HistorySidebarInit() {
   }
 
   searchHistory("");
-
-  // Needed due to Bug 1596852.
-  // Should be removed once this bug is resolved.
-  window.addEventListener(
-    "pageshow",
-    e => {
-      window.windowGlobalChild.getActor("LightweightTheme").handleEvent(e);
-    },
-    { once: true }
-  );
 }
 
 function GroupBy(groupingType) {
+  if (groupingType != gHistoryGrouping) {
+    this.groupHistogram.add(groupingType);
+  }
   gHistoryGrouping = groupingType;
+  gCumulativeFilterCount++;
   searchHistory(gSearchBox.value);
+}
+
+function updateTelemetry(urlsOpened = []) {
+  let searchesHistogram = Services.telemetry.getHistogramById(
+    "PLACES_SEARCHBAR_CUMULATIVE_SEARCHES"
+  );
+  searchesHistogram.add(gCumulativeSearches);
+  let filterCountHistogram = Services.telemetry.getHistogramById(
+    "PLACES_SEARCHBAR_CUMULATIVE_FILTER_COUNT"
+  );
+  filterCountHistogram.add(gCumulativeFilterCount);
+  clearCumulativeCounters();
+
+  Services.telemetry.keyedScalarAdd(
+    "sidebar.link",
+    "history",
+    urlsOpened.length
+  );
 }
 
 function searchHistory(aInput) {
@@ -125,9 +144,28 @@ function searchHistory(aInput) {
   // otherwise, we will end up calling load() twice
   gHistoryTree.load(query, options);
 
+  // Sometimes search is activated without an input string. For example, when
+  // the history sidbar is first opened or when a search filter is selected.
+  // Since we're trying to measure how often the searchbar was used, we should first
+  // check if there's an input string before collecting telemetry.
+  if (aInput) {
+    Services.telemetry.keyedScalarAdd("sidebar.search", "history", 1);
+    gCumulativeSearches++;
+  }
+
   if (gHistoryGrouping == "lastvisited") {
     TelemetryStopwatch.finish("HISTORY_LASTVISITED_TREE_QUERY_TIME_MS");
   }
+}
+
+function clearCumulativeCounters() {
+  gCumulativeSearches = 0;
+  gCumulativeFilterCount = 0;
+}
+
+function unloadHistorySidebar() {
+  clearCumulativeCounters();
+  PlacesUIUtils.setMouseoverURL("", window);
 }
 
 window.addEventListener("SidebarFocused", () => gSearchBox.focus());

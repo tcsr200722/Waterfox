@@ -3,10 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 add_task(async () => {
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
-
   if (!Services.profiler.GetFeatures().includes("nativeallocations")) {
     Assert.ok(
       true,
@@ -27,10 +23,10 @@ add_task(async () => {
   );
   {
     info("Start the profiler.");
-    startProfiler({
+    await startProfiler({
       // Only instrument the main thread.
       threads: ["GeckoMain"],
-      features: ["threads", "leaf", "nativeallocations"],
+      features: ["js", "nativeallocations"],
     });
 
     info(
@@ -40,7 +36,7 @@ add_task(async () => {
     doWork();
 
     info("Get the profile data and analyze it.");
-    const profile = await stopAndGetProfile();
+    const profile = await waitSamplingAndStopAndGetProfile();
 
     const {
       allocationPayloads,
@@ -75,13 +71,11 @@ add_task(async () => {
 
   info("Restart the profiler, to ensure that we get no more allocations.");
   {
-    startProfiler({ features: ["threads", "leaf"] });
+    await startProfiler({ features: ["js"] });
     info("Do some work again.");
     doWork();
     info("Wait for the periodic sampling.");
-    await Services.profiler.waitOnePeriodicSampling();
-
-    const profile = await stopAndGetProfile();
+    const profile = await waitSamplingAndStopAndGetProfile();
     const allocationPayloads = getPayloadsOfType(
       profile.threads[0],
       "Native allocation"

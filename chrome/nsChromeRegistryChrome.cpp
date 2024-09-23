@@ -27,15 +27,16 @@
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/Unused.h"
 
-#include "nsIAppStartup.h"
 #include "nsIObserverService.h"
+#include "mozilla/AppShutdown.h"
+#include "mozilla/Components.h"
 #include "mozilla/Preferences.h"
 #include "nsIResProtocolHandler.h"
 #include "nsIScriptError.h"
 #include "nsIXULRuntime.h"
 
 #define PACKAGE_OVERRIDE_BRANCH "chrome.override_package."
-#define SKIN NS_LITERAL_CSTRING("classic/1.0")
+#define SKIN "classic/1.0"_ns
 
 using namespace mozilla;
 using mozilla::dom::ContentParent;
@@ -170,8 +171,7 @@ nsresult nsChromeRegistryChrome::GetSelectedLocale(const nsACString& aPackage,
 
 nsresult nsChromeRegistryChrome::OverrideLocalePackage(
     const nsACString& aPackage, nsACString& aOverride) {
-  const nsACString& pref =
-      NS_LITERAL_CSTRING(PACKAGE_OVERRIDE_BRANCH) + aPackage;
+  const nsACString& pref = nsLiteralCString(PACKAGE_OVERRIDE_BRANCH) + aPackage;
   nsAutoCString override;
   nsresult rv = mozilla::Preferences::GetCString(PromiseFlatCString(pref).get(),
                                                  override);
@@ -203,8 +203,7 @@ nsChromeRegistryChrome::Observe(nsISupports* aSubject, const char* aTopic,
 
 NS_IMETHODIMP
 nsChromeRegistryChrome::CheckForNewChrome() {
-  nsCOMPtr<nsIAppStartup> appStartup = components::AppStartup::Service();
-  if (appStartup->GetShuttingDown()) {
+  if (AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
     MOZ_ASSERT(false, "checking for new chrome during shutdown");
     return NS_ERROR_UNEXPECTED;
   }
@@ -234,10 +233,10 @@ void nsChromeRegistryChrome::SendRegisteredChrome(
   nsTArray<SubstitutionMapping> resources;
   nsTArray<OverrideMapping> overrides;
 
-  for (auto iter = mPackagesHash.Iter(); !iter.Done(); iter.Next()) {
+  for (const auto& entry : mPackagesHash) {
     ChromePackage chromePackage;
-    ChromePackageFromPackageEntry(iter.Key(), iter.UserData(), &chromePackage,
-                                  SKIN);
+    ChromePackageFromPackageEntry(entry.GetKey(), entry.GetWeak(),
+                                  &chromePackage, SKIN);
     packages.AppendElement(chromePackage);
   }
 
@@ -258,14 +257,14 @@ void nsChromeRegistryChrome::SendRegisteredChrome(
     NS_ENSURE_SUCCESS_VOID(rv);
   }
 
-  for (auto iter = mOverrideTable.Iter(); !iter.Done(); iter.Next()) {
+  for (const auto& entry : mOverrideTable) {
     SerializedURI chromeURI, overrideURI;
 
-    SerializeURI(iter.Key(), chromeURI);
-    SerializeURI(iter.UserData(), overrideURI);
+    SerializeURI(entry.GetKey(), chromeURI);
+    SerializeURI(entry.GetWeak(), overrideURI);
 
-    OverrideMapping override = {chromeURI, overrideURI};
-    overrides.AppendElement(override);
+    overrides.AppendElement(
+        OverrideMapping{std::move(chromeURI), std::move(overrideURI)});
   }
 
   nsAutoCString appLocale;
@@ -330,9 +329,13 @@ nsIURI* nsChromeRegistryChrome::GetBaseURIFromPackage(
     nsAutoCString appLocale;
     LocaleService::GetInstance()->GetAppLocaleAsLangTag(appLocale);
     return entry->locales.GetBase(appLocale, nsProviderArray::LOCALE);
-  } else if (aProvider.EqualsLiteral("skin")) {
+  }
+
+  if (aProvider.EqualsLiteral("skin")) {
     return entry->skins.GetBase(SKIN, nsProviderArray::ANY);
-  } else if (aProvider.EqualsLiteral("content")) {
+  }
+
+  if (aProvider.EqualsLiteral("content")) {
     return entry->baseURI;
   }
   return nullptr;
@@ -477,7 +480,7 @@ void nsChromeRegistryChrome::ManifestContent(ManifestProcessingContext& cx,
   }
 
   nsDependentCString packageName(package);
-  PackageEntry* entry = mPackagesHash.LookupOrAdd(packageName);
+  PackageEntry* entry = mPackagesHash.GetOrInsertNew(packageName);
   entry->baseURI = resolved;
   entry->flags = flags;
 
@@ -514,7 +517,7 @@ void nsChromeRegistryChrome::ManifestLocale(ManifestProcessingContext& cx,
   }
 
   nsDependentCString packageName(package);
-  PackageEntry* entry = mPackagesHash.LookupOrAdd(packageName);
+  PackageEntry* entry = mPackagesHash.GetOrInsertNew(packageName);
   entry->locales.SetBase(nsDependentCString(provider), resolved);
 
   if (mDynamicRegistration) {
@@ -527,8 +530,7 @@ void nsChromeRegistryChrome::ManifestLocale(ManifestProcessingContext& cx,
   // registered. For most cases it will be "global", but for Fennec it will be
   // "browser".
   nsAutoCString mainPackage;
-  nsresult rv =
-      OverrideLocalePackage(NS_LITERAL_CSTRING("global"), mainPackage);
+  nsresult rv = OverrideLocalePackage("global"_ns, mainPackage);
   if (NS_FAILED(rv)) {
     return;
   }
@@ -560,7 +562,7 @@ void nsChromeRegistryChrome::ManifestSkin(ManifestProcessingContext& cx,
   }
 
   nsDependentCString packageName(package);
-  PackageEntry* entry = mPackagesHash.LookupOrAdd(packageName);
+  PackageEntry* entry = mPackagesHash.GetOrInsertNew(packageName);
   entry->skins.SetBase(nsDependentCString(provider), resolved);
 
   if (mDynamicRegistration) {
@@ -592,9 +594,8 @@ void nsChromeRegistryChrome::ManifestOverride(ManifestProcessingContext& cx,
       nsAutoCString chromePath, resolvedPath;
       chromeuri->GetPathQueryRef(chromePath);
       resolveduri->GetPathQueryRef(resolvedPath);
-      chromeSkinOnly =
-          StringBeginsWith(chromePath, NS_LITERAL_CSTRING("/skin/")) &&
-          StringBeginsWith(resolvedPath, NS_LITERAL_CSTRING("/skin/"));
+      chromeSkinOnly = StringBeginsWith(chromePath, "/skin/"_ns) &&
+                       StringBeginsWith(resolvedPath, "/skin/"_ns);
     }
     if (!chromeSkinOnly) {
       LogMessageWithContext(
@@ -612,7 +613,7 @@ void nsChromeRegistryChrome::ManifestOverride(ManifestProcessingContext& cx,
         "Cannot register non-local URI '%s' for an override.", resolved);
     return;
   }
-  mOverrideTable.Put(chromeuri, resolveduri);
+  mOverrideTable.InsertOrUpdate(chromeuri, resolveduri);
 
   if (mDynamicRegistration) {
     SerializedURI serializedChrome;
@@ -635,7 +636,7 @@ void nsChromeRegistryChrome::ManifestResource(ManifestProcessingContext& cx,
   EnsureLowerCase(package);
   nsDependentCString host(package);
 
-  nsCOMPtr<nsIIOService> io = mozilla::services::GetIOService();
+  nsCOMPtr<nsIIOService> io = mozilla::components::IO::Service();
   if (!io) {
     NS_WARNING("No IO service trying to process chrome manifests");
     return;

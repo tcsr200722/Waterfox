@@ -16,18 +16,26 @@
 #include "nsWrapperCache.h"
 #include "Performance.h"
 #include "nsITimedChannel.h"
+#include "mozilla/dom/PerformanceTimingTypes.h"
+#include "mozilla/ipc/IPDLParamTraits.h"
+#include "ipc/IPCMessageUtils.h"
+#include "ipc/IPCMessageUtilsSpecializations.h"
+#include "mozilla/net/nsServerTiming.h"
 
 class nsIHttpChannel;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PerformanceTiming;
+enum class RenderBlockingStatusType : uint8_t;
 
 class PerformanceTimingData final {
   friend class PerformanceTiming;
+  friend struct mozilla::ipc::IPDLParamTraits<
+      mozilla::dom::PerformanceTimingData>;
 
  public:
+  PerformanceTimingData() = default;  // For deserialization
   // This can return null.
   static PerformanceTimingData* Create(nsITimedChannel* aChannel,
                                        nsIHttpChannel* aHttpChannel,
@@ -37,6 +45,10 @@ class PerformanceTimingData final {
 
   PerformanceTimingData(nsITimedChannel* aChannel, nsIHttpChannel* aHttpChannel,
                         DOMHighResTimeStamp aZeroTime);
+
+  explicit PerformanceTimingData(const IPCPerformanceTimingData& aIPCData);
+
+  IPCPerformanceTimingData ToIPC();
 
   void SetPropertiesFromHttpChannel(nsIHttpChannel* aHttpChannel,
                                     nsITimedChannel* aChannel);
@@ -73,7 +85,7 @@ class PerformanceTimingData final {
 
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         rawTimestamp, aPerformance->GetRandomTimelineSeed(),
-        aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+        aPerformance->GetRTPCallerType());
   }
 
   /**
@@ -140,13 +152,22 @@ class PerformanceTimingData final {
   // If this is false the values of redirectStart/End will be 0 This is false if
   // no redirects occured, or if any of the responses failed the
   // timing-allow-origin check in HttpBaseChannel::TimingAllowCheck
-  bool ShouldReportCrossOriginRedirect() const;
+  //
+  // If aEnsureSameOriginAndIgnoreTAO is false, it checks if all redirects pass
+  // TAO. When it is true, it checks if all redirects are same-origin and
+  // ignores the result of TAO.
+  bool ShouldReportCrossOriginRedirect(
+      bool aEnsureSameOriginAndIgnoreTAO) const;
 
   // Cached result of CheckAllowedOrigin. If false, security sensitive
   // attributes of the resourceTiming object will be set to 0
   bool TimingAllowed() const { return mTimingAllowed; }
 
   nsTArray<nsCOMPtr<nsIServerTiming>> GetServerTiming();
+
+  RenderBlockingStatusType RenderBlockingStatus() const {
+    return mRenderBlockingStatus;
+  }
 
  private:
   // Checks if the resource is either same origin as the page that started
@@ -181,28 +202,27 @@ class PerformanceTimingData final {
   // There are only 2 possible values: (1) logicaly equal to navigationStart
   // TimeStamp (results are absolute timstamps - wallclock); (2) "0" (results
   // are relative to the navigation start).
-  DOMHighResTimeStamp mZeroTime;
+  DOMHighResTimeStamp mZeroTime = 0;
 
-  DOMHighResTimeStamp mFetchStart;
+  DOMHighResTimeStamp mFetchStart = 0;
 
-  uint64_t mEncodedBodySize;
-  uint64_t mTransferSize;
-  uint64_t mDecodedBodySize;
+  uint64_t mEncodedBodySize = 0;
+  uint64_t mTransferSize = 0;
+  uint64_t mDecodedBodySize = 0;
 
-  uint8_t mRedirectCount;
+  uint8_t mRedirectCount = 0;
 
-  bool mAllRedirectsSameOrigin;
+  RenderBlockingStatusType mRenderBlockingStatus;
 
-  // If the resourceTiming object should have non-zero redirectStart and
-  // redirectEnd attributes. It is false if there were no redirects, or if any
-  // of the responses didn't pass the timing-allow-check
-  bool mReportCrossOriginRedirect;
+  bool mAllRedirectsSameOrigin = false;
 
-  bool mSecureConnection;
+  bool mAllRedirectsPassTAO = false;
 
-  bool mTimingAllowed;
+  bool mSecureConnection = false;
 
-  bool mInitialized;
+  bool mTimingAllowed = false;
+
+  bool mInitialized = false;
 };
 
 // Script "performance.timing" object
@@ -231,7 +251,7 @@ class PerformanceTiming final : public nsWrapperCache {
                     nsIHttpChannel* aHttpChannel,
                     DOMHighResTimeStamp aZeroTime);
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(PerformanceTiming)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(PerformanceTiming)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(PerformanceTiming)
 
   nsDOMNavigationTiming* GetDOMTiming() const {
     return mPerformance->GetDOMTiming();
@@ -244,36 +264,33 @@ class PerformanceTiming final : public nsWrapperCache {
 
   // PerformanceNavigation WebIDL methods
   DOMTimeMilliSec NavigationStart() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetNavigationStart(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec UnloadEventStart() {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetUnloadEventStart(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec UnloadEventEnd() {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetUnloadEventEnd(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   // Low resolution (used by navigation timing)
@@ -290,121 +307,110 @@ class PerformanceTiming final : public nsWrapperCache {
   DOMTimeMilliSec ResponseEnd();
 
   DOMTimeMilliSec DomLoading() {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetDomLoading(), mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec DomInteractive() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetDomInteractive(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec DomContentLoadedEventStart() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetDomContentLoadedEventStart(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec DomContentLoadedEventEnd() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetDomContentLoadedEventEnd(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec DomComplete() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetDomComplete(), mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec LoadEventStart() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetLoadEventStart(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec LoadEventEnd() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetLoadEventEnd(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec TimeToNonBlankPaint() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetTimeToNonBlankPaint(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec TimeToContentfulPaint() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
-        GetDOMTiming()->GetTimeToContentfulPaint(),
+        GetDOMTiming()->GetTimeToContentfulComposite(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec TimeToDOMContentFlushed() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetTimeToDOMContentFlushed(),
         mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   DOMTimeMilliSec TimeToFirstInteractive() const {
-    if (!StaticPrefs::dom_enable_performance() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance()) {
       return 0;
     }
     return nsRFPService::ReduceTimePrecisionAsMSecs(
         GetDOMTiming()->GetTimeToTTFI(), mPerformance->GetRandomTimelineSeed(),
-        mPerformance->IsSystemPrincipal(), mPerformance->CrossOriginIsolated());
+        mPerformance->GetRTPCallerType());
   }
 
   PerformanceTimingData* Data() const { return mTimingData.get(); }
@@ -419,7 +425,178 @@ class PerformanceTiming final : public nsWrapperCache {
   UniquePtr<PerformanceTimingData> mTimingData;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
+
+namespace mozilla::ipc {
+
+template <>
+struct IPDLParamTraits<mozilla::dom::PerformanceTimingData> {
+  using paramType = mozilla::dom::PerformanceTimingData;
+  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
+                    const paramType& aParam) {
+    WriteIPDLParam(aWriter, aActor, aParam.mServerTiming);
+    WriteIPDLParam(aWriter, aActor, aParam.mNextHopProtocol);
+    WriteIPDLParam(aWriter, aActor, aParam.mAsyncOpen);
+    WriteIPDLParam(aWriter, aActor, aParam.mRedirectStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mRedirectEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mDomainLookupStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mDomainLookupEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mConnectStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mSecureConnectionStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mConnectEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mRequestStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mResponseStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mCacheReadStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mResponseEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mCacheReadEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mWorkerStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mWorkerRequestStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mWorkerResponseEnd);
+    WriteIPDLParam(aWriter, aActor, aParam.mZeroTime);
+    WriteIPDLParam(aWriter, aActor, aParam.mFetchStart);
+    WriteIPDLParam(aWriter, aActor, aParam.mEncodedBodySize);
+    WriteIPDLParam(aWriter, aActor, aParam.mTransferSize);
+    WriteIPDLParam(aWriter, aActor, aParam.mDecodedBodySize);
+    WriteIPDLParam(aWriter, aActor, aParam.mRedirectCount);
+    WriteIPDLParam(aWriter, aActor, aParam.mAllRedirectsSameOrigin);
+    WriteIPDLParam(aWriter, aActor, aParam.mAllRedirectsPassTAO);
+    WriteIPDLParam(aWriter, aActor, aParam.mSecureConnection);
+    WriteIPDLParam(aWriter, aActor, aParam.mTimingAllowed);
+    WriteIPDLParam(aWriter, aActor, aParam.mInitialized);
+  }
+
+  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
+                   paramType* aResult) {
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mServerTiming)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mNextHopProtocol)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mAsyncOpen)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mRedirectStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mRedirectEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mDomainLookupStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mDomainLookupEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mConnectStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mSecureConnectionStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mConnectEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mRequestStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mResponseStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mCacheReadStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mResponseEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mCacheReadEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mWorkerStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mWorkerRequestStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mWorkerResponseEnd)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mZeroTime)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mFetchStart)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mEncodedBodySize)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mTransferSize)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mDecodedBodySize)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mRedirectCount)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mAllRedirectsSameOrigin)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mAllRedirectsPassTAO)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mSecureConnection)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mTimingAllowed)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &aResult->mInitialized)) {
+      return false;
+    }
+    return true;
+  }
+};
+
+template <>
+struct IPDLParamTraits<nsIServerTiming*> {
+  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
+                    nsIServerTiming* aParam) {
+    nsAutoCString name;
+    Unused << aParam->GetName(name);
+    double duration = 0;
+    Unused << aParam->GetDuration(&duration);
+    nsAutoCString description;
+    Unused << aParam->GetDescription(description);
+    WriteIPDLParam(aWriter, aActor, name);
+    WriteIPDLParam(aWriter, aActor, duration);
+    WriteIPDLParam(aWriter, aActor, description);
+  }
+
+  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
+                   RefPtr<nsIServerTiming>* aResult) {
+    nsAutoCString name;
+    double duration;
+    nsAutoCString description;
+    if (!ReadIPDLParam(aReader, aActor, &name)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &duration)) {
+      return false;
+    }
+    if (!ReadIPDLParam(aReader, aActor, &description)) {
+      return false;
+    }
+
+    RefPtr<nsServerTiming> timing = new nsServerTiming();
+    timing->SetName(name);
+    timing->SetDuration(duration);
+    timing->SetDescription(description);
+    *aResult = timing.forget();
+    return true;
+  }
+};
+
+}  // namespace mozilla::ipc
 
 #endif  // mozilla_dom_PerformanceTiming_h

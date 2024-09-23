@@ -24,19 +24,19 @@ includes: [propertyHelper.js]
     Object.defineProperty(arguments, "genericProperty", {
       enumerable: false
     });
-    $ERROR("Expected an exception.");
+    throw new Test262Error("Expected an exception.");
   } catch (e) {
     verifyWritable(arguments, "genericProperty", "genericPropertyString");
 
-    verifyEnumerable(arguments, "genericProperty");
-
-    verifyNotConfigurable(arguments, "genericProperty");
-
     if (!(e instanceof TypeError)) {
-      $ERROR("Expected TypeError, got " + e);
+      throw new Test262Error("Expected TypeError, got " + e);
     }
-
   }
+
+  verifyProperty(arguments, "genericProperty", {
+    enumerable: true,
+    configurable: false,
+  });
 }(1, 2, 3));
 
 reportCompare(0, 0);

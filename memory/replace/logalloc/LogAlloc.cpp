@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <cstdlib>
-#include <cstdio>
 #include <fcntl.h>
 
 #ifdef _WIN32
@@ -22,15 +21,15 @@
 #include "Mutex.h"
 
 static malloc_table_t sFuncs;
-static intptr_t sFd = 0;
+static platform_handle_t sFd = 0;
 static bool sStdoutOrStderr = false;
 
-static Mutex sMutex;
+static Mutex sMutex MOZ_UNANNOTATED;
 
 #ifndef _WIN32
-static void prefork() { sMutex.Lock(); }
-
-static void postfork() { sMutex.Unlock(); }
+static void prefork() MOZ_NO_THREAD_SAFETY_ANALYSIS { sMutex.Lock(); }
+static void postfork_parent() MOZ_NO_THREAD_SAFETY_ANALYSIS { sMutex.Unlock(); }
+static void postfork_child() { sMutex.Init(); }
 #endif
 
 static size_t GetPid() { return size_t(getpid()); }
@@ -123,9 +122,10 @@ static void* replace_valloc(size_t aSize) {
   return ptr;
 }
 
-static void replace_jemalloc_stats(jemalloc_stats_t* aStats) {
+static void replace_jemalloc_stats(jemalloc_stats_t* aStats,
+                                   jemalloc_bin_stats_t* aBinStats) {
   MutexAutoLock lock(sMutex);
-  sFuncs.jemalloc_stats(aStats);
+  sFuncs.jemalloc_stats_internal(aStats, aBinStats);
   FdPrintf(sFd, "%zu %zu jemalloc_stats()\n", GetPid(), GetTid());
 }
 
@@ -169,7 +169,7 @@ void replace_init(malloc_table_t* aTable, ReplaceMallocBridge** aBridge) {
                       nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     }
     if (handle != INVALID_HANDLE_VALUE) {
-      sFd = reinterpret_cast<intptr_t>(handle);
+      sFd = handle;
     }
 #else
     if (fd == -1) {
@@ -192,7 +192,7 @@ void replace_init(malloc_table_t* aTable, ReplaceMallocBridge** aBridge) {
 #define MALLOC_FUNCS MALLOC_FUNCS_MALLOC_BASE
 #define MALLOC_DECL(name, ...) aTable->name = replace_##name;
 #include "malloc_decls.h"
-  aTable->jemalloc_stats = replace_jemalloc_stats;
+  aTable->jemalloc_stats_internal = replace_jemalloc_stats;
   if (!getenv("MALLOC_LOG_MINIMAL")) {
     aTable->posix_memalign = replace_posix_memalign;
     aTable->aligned_alloc = replace_aligned_alloc;
@@ -206,8 +206,11 @@ void replace_init(malloc_table_t* aTable, ReplaceMallocBridge** aBridge) {
    * in the child process, will never release it, leading to a dead-lock
    * whenever the child process gets the lock. We thus need to ensure no
    * other thread is holding the lock before forking, by acquiring it
-   * ourselves, and releasing it after forking, both in the parent and child
-   * processes.
+   * ourselves, and releasing it after forking in the parent process and
+   * resetting it to its initial state in the child process. The latter is
+   * important because some implementations (notably macOS) prevent a lock from
+   * being unlocked by a different thread than the one which locked it in the
+   * first place.
    * Windows doesn't have this problem since there is no fork().
    * The real allocator, however, might be doing the same thing (jemalloc
    * does). But pthread_atfork `prepare` handlers (first argument) are
@@ -230,6 +233,6 @@ void replace_init(malloc_table_t* aTable, ReplaceMallocBridge** aBridge) {
    * So trick the real allocator into initializing itself without more side
    * effects by calling malloc with a size it can't possibly allocate. */
   sFuncs.malloc(-1);
-  pthread_atfork(prefork, postfork, postfork);
+  pthread_atfork(prefork, postfork_parent, postfork_child);
 #endif
 }

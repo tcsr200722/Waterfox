@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { cardContextTypes } from "./types";
 import { connect } from "react-redux";
 import { ContextMenuButton } from "content-src/components/ContextMenu/ContextMenuButton";
@@ -64,7 +64,12 @@ export class _Card extends React.PureComponent {
       }
 
       // Wait for the image whether just started loading or reused promise
-      await gImageLoading.get(imageUrl);
+      try {
+        await gImageLoading.get(imageUrl);
+      } catch (ex) {
+        // Ignore the failed image without changing state
+        return;
+      }
 
       // Only update state if we're still waiting to load the original image
       if (

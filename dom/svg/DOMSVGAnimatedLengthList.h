@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGANIMATEDLENGTHLIST_H__
-#define MOZILLA_DOMSVGANIMATEDLENGTHLIST_H__
+#ifndef DOM_SVG_DOMSVGANIMATEDLENGTHLIST_H_
+#define DOM_SVG_DOMSVGANIMATEDLENGTHLIST_H_
 
 #include "nsCycleCollectionParticipant.h"
 #include "SVGElement.h"
@@ -159,8 +159,8 @@ class DOMSVGAnimatedLengthList final : public nsWrapperCache {
 
   // WebIDL
   dom::SVGElement* GetParentObject() const { return mElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   // These aren't weak refs because mBaseVal and mAnimVal are weak
   already_AddRefed<DOMSVGLengthList> BaseVal();
   already_AddRefed<DOMSVGLengthList> AnimVal();
@@ -201,4 +201,4 @@ class DOMSVGAnimatedLengthList final : public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGANIMATEDLENGTHLIST_H__
+#endif  // DOM_SVG_DOMSVGANIMATEDLENGTHLIST_H_

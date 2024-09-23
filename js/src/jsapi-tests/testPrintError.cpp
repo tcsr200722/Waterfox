@@ -7,8 +7,6 @@
 
 #include <cstdio>  // fclose, fflush, open_memstream
 
-#include "jsapi.h"           // JS_{Clear,Get}PendingException
-#include "jsfriendapi.h"     // js::ErrorReport
 #include "js/ErrorReport.h"  // JS::PrintError
 #include "js/Warnings.h"     // JS::SetWarningReporter, JS::WarnUTF8
 
@@ -52,7 +50,7 @@ BEGIN_TEST(testPrintError_Works) {
 
   JS::ErrorReportBuilder builder(cx);
   CHECK(builder.init(cx, exnStack, JS::ErrorReportBuilder::NoSideEffects));
-  JS::PrintError(cx, buf.stream(), builder, false);
+  JS::PrintError(buf.stream(), builder, false);
 
   CHECK(buf.contains("testPrintError_Works.js:3:1 uncaught exception: null\n"));
 
@@ -71,7 +69,7 @@ static bool warningSuccess;
 
 static void warningReporter(JSContext* cx, JSErrorReport* report) {
   AutoStreamBuffer buf;
-  JS::PrintError(cx, buf.stream(), report, false);
+  JS::PrintError(buf.stream(), report, false);
   warningSuccess = buf.contains("");
 }
 END_TEST(testPrintError_SkipWarning)
@@ -89,7 +87,7 @@ static bool warningSuccess;
 
 static void warningReporter(JSContext* cx, JSErrorReport* report) {
   AutoStreamBuffer buf;
-  JS::PrintError(cx, buf.stream(), report, true);
+  JS::PrintError(buf.stream(), report, true);
   warningSuccess = buf.contains("warning: warning message\n");
 }
 END_TEST(testPrintError_PrintWarning)
@@ -98,29 +96,30 @@ bool cls_testPrintError_PrintWarning::warningSuccess = false;
 
 #define BURRITO "\xF0\x9F\x8C\xAF"
 
-BEGIN_TEST(testPrintError_UTF16CodePoints) {
+BEGIN_TEST(testPrintError_UTF16CodeUnits) {
   AutoStreamBuffer buf;
 
   static const char utf8code[] =
       "function f() {\n  var x = `\n" BURRITO "`; " BURRITO "; } f();";
 
-  CHECK(!execDontReport(utf8code, "testPrintError_UTF16CodePoints.js", 1));
+  CHECK(!execDontReport(utf8code, "testPrintError_UTF16CodeUnits.js", 1));
 
   JS::ExceptionStack exnStack(cx);
   CHECK(JS::StealPendingExceptionStack(cx, &exnStack));
 
   JS::ErrorReportBuilder builder(cx);
   CHECK(builder.init(cx, exnStack, JS::ErrorReportBuilder::NoSideEffects));
-  JS::PrintError(cx, buf.stream(), builder, false);
+  JS::PrintError(buf.stream(), builder, false);
 
-  CHECK(buf.contains(
-      "testPrintError_UTF16CodePoints.js:3:4 SyntaxError: illegal character:\n"
-      "testPrintError_UTF16CodePoints.js:3:4 " BURRITO "`; " BURRITO
-      "; } f();\n"
-      "testPrintError_UTF16CodePoints.js:3:4 .....^\n"));
+  CHECK(
+      buf.contains("testPrintError_UTF16CodeUnits.js:3:6 SyntaxError: illegal "
+                   "character U+1F32F:\n"
+                   "testPrintError_UTF16CodeUnits.js:3:6 " BURRITO "`; " BURRITO
+                   "; } f();\n"
+                   "testPrintError_UTF16CodeUnits.js:3:6 .....^\n"));
 
   return true;
 }
-END_TEST(testPrintError_UTF16CodePoints)
+END_TEST(testPrintError_UTF16CodeUnits)
 
 #undef BURRITO

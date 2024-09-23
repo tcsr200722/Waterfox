@@ -6,18 +6,20 @@
 //! change in order to properly calculate restyle hints.
 
 use crate::dom::TElement;
-use crate::element_state::ElementState;
 use crate::gecko::snapshot_helpers;
-use crate::gecko::wrapper::{GeckoElement, NamespaceConstraintHelpers};
+use crate::gecko::wrapper::GeckoElement;
 use crate::gecko_bindings::bindings;
 use crate::gecko_bindings::structs::ServoElementSnapshot;
 use crate::gecko_bindings::structs::ServoElementSnapshotFlags as Flags;
 use crate::gecko_bindings::structs::ServoElementSnapshotTable;
 use crate::invalidation::element::element_wrapper::ElementSnapshot;
+use crate::selector_parser::AttrValue;
 use crate::string_cache::{Atom, Namespace};
+use crate::values::{AtomIdent, AtomString};
+use crate::LocalName;
 use crate::WeakAtom;
-use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator};
-use selectors::attr::{CaseSensitivity, NamespaceConstraint};
+use dom::ElementState;
+use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 
 /// A snapshot of a Gecko element.
 pub type GeckoElementSnapshot = ServoElementSnapshot;
@@ -74,10 +76,10 @@ impl GeckoElementSnapshot {
     #[inline]
     pub fn each_attr_changed<F>(&self, mut callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         for attr in self.mChangedAttrNames.iter() {
-            unsafe { Atom::with(attr.mRawPtr, &mut callback) }
+            unsafe { AtomIdent::with(attr.mRawPtr, &mut callback) }
         }
     }
 
@@ -85,73 +87,10 @@ impl GeckoElementSnapshot {
     pub fn attr_matches(
         &self,
         ns: &NamespaceConstraint<&Namespace>,
-        local_name: &Atom,
-        operation: &AttrSelectorOperation<&Atom>,
+        local_name: &LocalName,
+        operation: &AttrSelectorOperation<&AttrValue>,
     ) -> bool {
-        unsafe {
-            match *operation {
-                AttrSelectorOperation::Exists => {
-                    bindings::Gecko_SnapshotHasAttr(self, ns.atom_or_null(), local_name.as_ptr())
-                },
-                AttrSelectorOperation::WithValue {
-                    operator,
-                    case_sensitivity,
-                    expected_value,
-                } => {
-                    let ignore_case = match case_sensitivity {
-                        CaseSensitivity::CaseSensitive => false,
-                        CaseSensitivity::AsciiCaseInsensitive => true,
-                    };
-                    // FIXME: case sensitivity for operators other than Equal
-                    match operator {
-                        AttrSelectorOperator::Equal => bindings::Gecko_SnapshotAttrEquals(
-                            self,
-                            ns.atom_or_null(),
-                            local_name.as_ptr(),
-                            expected_value.as_ptr(),
-                            ignore_case,
-                        ),
-                        AttrSelectorOperator::Includes => bindings::Gecko_SnapshotAttrIncludes(
-                            self,
-                            ns.atom_or_null(),
-                            local_name.as_ptr(),
-                            expected_value.as_ptr(),
-                            ignore_case,
-                        ),
-                        AttrSelectorOperator::DashMatch => bindings::Gecko_SnapshotAttrDashEquals(
-                            self,
-                            ns.atom_or_null(),
-                            local_name.as_ptr(),
-                            expected_value.as_ptr(),
-                            ignore_case,
-                        ),
-                        AttrSelectorOperator::Prefix => bindings::Gecko_SnapshotAttrHasPrefix(
-                            self,
-                            ns.atom_or_null(),
-                            local_name.as_ptr(),
-                            expected_value.as_ptr(),
-                            ignore_case,
-                        ),
-                        AttrSelectorOperator::Suffix => bindings::Gecko_SnapshotAttrHasSuffix(
-                            self,
-                            ns.atom_or_null(),
-                            local_name.as_ptr(),
-                            expected_value.as_ptr(),
-                            ignore_case,
-                        ),
-                        AttrSelectorOperator::Substring => {
-                            bindings::Gecko_SnapshotAttrHasSubstring(
-                                self,
-                                ns.atom_or_null(),
-                                local_name.as_ptr(),
-                                expected_value.as_ptr(),
-                                ignore_case,
-                            )
-                        },
-                    }
-                },
-            }
-        }
+        snapshot_helpers::attr_matches(&self.mAttrs, ns, local_name, operation)
     }
 }
 
@@ -167,7 +106,7 @@ impl ElementSnapshot for GeckoElementSnapshot {
 
     fn state(&self) -> Option<ElementState> {
         if self.has_any(Flags::State) {
-            Some(ElementState::from_bits_truncate(self.mState))
+            Some(ElementState::from_bits_retain(self.mState))
         } else {
             None
         }
@@ -188,7 +127,7 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn is_part(&self, name: &Atom) -> bool {
+    fn is_part(&self, name: &AtomIdent) -> bool {
         let attr = match snapshot_helpers::find_attr(&*self.mAttrs, &atom!("part")) {
             Some(attr) => attr,
             None => return false,
@@ -198,12 +137,12 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn imported_part(&self, name: &Atom) -> Option<Atom> {
+    fn imported_part(&self, name: &AtomIdent) -> Option<AtomIdent> {
         snapshot_helpers::imported_part(&*self.mAttrs, name)
     }
 
     #[inline]
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         if !self.has_any(Flags::MaybeClass) {
             return false;
         }
@@ -214,7 +153,7 @@ impl ElementSnapshot for GeckoElementSnapshot {
     #[inline]
     fn each_class<F>(&self, callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         if !self.has_any(Flags::MaybeClass) {
             return;
@@ -224,12 +163,40 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn lang_attr(&self) -> Option<Atom> {
+    fn lang_attr(&self) -> Option<AtomString> {
         let ptr = unsafe { bindings::Gecko_SnapshotLangValue(self) };
         if ptr.is_null() {
             None
         } else {
-            Some(unsafe { Atom::from_addrefed(ptr) })
+            Some(AtomString(unsafe { Atom::from_addrefed(ptr) }))
+        }
+    }
+
+    /// Returns true if the snapshot has stored state for custom states
+    #[inline]
+    fn has_custom_states(&self) -> bool {
+        self.has_any(Flags::CustomState)
+    }
+
+    /// Returns true if the snapshot has a given CustomState
+    #[inline]
+    fn has_custom_state(&self, state: &AtomIdent) -> bool {
+        unsafe {
+            self.mCustomStates
+                .iter()
+                .any(|setstate| AtomIdent::with(setstate.mRawPtr, |setstate| state == setstate))
+        }
+    }
+
+    #[inline]
+    fn each_custom_state<F>(&self, mut callback: F)
+    where
+        F: FnMut(&AtomIdent),
+    {
+        unsafe {
+            for atom in self.mCustomStates.iter() {
+                AtomIdent::with(atom.mRawPtr, &mut callback)
+            }
         }
     }
 }

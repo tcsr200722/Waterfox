@@ -23,48 +23,12 @@ certmgr-tab-ca =
 certmgr-mine = You have certificates from these organizations that identify you
 certmgr-remembered = These certificates are used to identify you to websites
 certmgr-people = You have certificates on file that identify these people
-certmgr-servers = You have certificates on file that identify these servers
+certmgr-server = These entries identify server certificate error exceptions
 certmgr-ca = You have certificates on file that identify these certificate authorities
 
-certmgr-detail-general-tab-title =
-    .label = General
-    .accesskey = G
-
-certmgr-detail-pretty-print-tab-title =
-    .label = Details
-    .accesskey = D
-
-certmgr-pending-label =
-    .value = Currently verifying certificate…
-
-certmgr-subject-label = Issued To
-
-certmgr-issuer-label = Issued By
-
-certmgr-period-of-validity = Period of Validity
-
-certmgr-fingerprints = Fingerprints
-
-certmgr-cert-detail =
-    .title = Certificate Detail
-    .buttonlabelaccept = Close
-    .buttonaccesskeyaccept = C
-
-certmgr-cert-detail-commonname = Common Name (CN)
-
-certmgr-cert-detail-org = Organization (O)
-
-certmgr-cert-detail-orgunit = Organizational Unit (OU)
-
-certmgr-cert-detail-serial-number = Serial Number
-
-certmgr-cert-detail-sha-256-fingerprint = SHA-256 Fingerprint
-
-certmgr-cert-detail-sha-1-fingerprint = SHA1 Fingerprint
-
-certmgr-edit-ca-cert =
+certmgr-edit-ca-cert2 =
     .title = Edit CA certificate trust settings
-    .style = width: 48em;
+    .style = min-width: 48em;
 
 certmgr-edit-cert-edit-trust = Edit trust settings:
 
@@ -74,9 +38,9 @@ certmgr-edit-cert-trust-ssl =
 certmgr-edit-cert-trust-email =
     .label = This certificate can identify mail users.
 
-certmgr-delete-cert =
+certmgr-delete-cert2 =
     .title = Delete Certificate
-    .style = width: 48em; height: 24em;
+    .style = min-width: 48em; min-height: 24em;
 
 certmgr-cert-host =
     .label = Host
@@ -87,18 +51,11 @@ certmgr-cert-name =
 certmgr-cert-server =
     .label = Server
 
-certmgr-override-lifetime =
-    .label = Lifetime
-
 certmgr-token-name =
     .label = Security Device
 
-certmgr-begins-on = Begins On
-
 certmgr-begins-label =
     .label = Begins On
-
-certmgr-expires-on = Expires On
 
 certmgr-expires-label =
     .label = Expires On
@@ -108,6 +65,9 @@ certmgr-email =
 
 certmgr-serial =
     .label = Serial Number
+
+certmgr-fingerprint-sha-256 =
+    .label = SHA-256 Fingerprint
 
 certmgr-view =
     .label = View…
@@ -140,18 +100,6 @@ certmgr-backup-all =
 certmgr-restore =
     .label = Import…
     .accesskey = m
-
-certmgr-details =
-    .value = Certificate Fields
-    .accesskey = F
-
-certmgr-fields =
-    .value = Field Value
-    .accesskey = V
-
-certmgr-hierarchy =
-    .value = Certificate Hierarchy
-    .accesskey = H
 
 certmgr-add-exception =
     .label = Add Exception…
@@ -190,11 +138,13 @@ pkcs12-info-no-smartcard-backup = It is not possible to back up certificates fro
 pkcs12-dup-data = The certificate and private key already exist on the security device.
 
 ## PKCS#12 file dialogs
+
 choose-p12-backup-file-dialog = File Name to Backup
 file-browse-pkcs12-spec = PKCS12 Files
 choose-p12-restore-file-dialog = Certificate File to Import
 
 ## Import certificate(s) file dialog
+
 file-browse-certificate-spec = Certificate Files
 import-ca-certs-prompt = Select File containing CA certificate(s) to import
 import-email-cert-prompt = Select File containing somebody’s Email certificate to import
@@ -213,10 +163,10 @@ delete-user-cert-confirm = Are you sure you want to delete these certificates?
 delete-user-cert-impact = If you delete one of your own certificates, you can no longer use it to identify yourself.
 
 
-delete-ssl-cert-title =
-    .title = Delete Server Certificate Exceptions
-delete-ssl-cert-confirm = Are you sure you want to delete these server exceptions?
-delete-ssl-cert-impact = If you delete a server exception, you restore the usual security checks for that server and require it uses a valid certificate.
+delete-ssl-override-title =
+    .title = Delete Server Certificate Exception
+delete-ssl-override-confirm = Are you sure you want to delete this server exception?
+delete-ssl-override-impact = If you delete a server exception, you restore the usual security checks for that server and require it uses a valid certificate.
 
 delete-ca-cert-title =
     .title = Delete or Distrust CA Certificates
@@ -236,48 +186,22 @@ delete-email-cert-impact = If you delete a person’s e-mail certificate, you wi
 cert-with-serial =
     .value = Certificate with serial number: { $serialNumber }
 
-## Cert Viewer
+# Used to indicate that the user chose not to send a client authentication certificate to a server that requested one in a TLS handshake.
+send-no-client-certificate = Send no client certificate
 
-# Title used for the Certificate Viewer.
-#
-# Variables:
-#   $certificate : a string representative of the certificate being viewed.
-cert-viewer-title =
-    .title = Certificate Viewer: “{ $certName }”
+# Used when no cert is stored for an override
+no-cert-stored-for-override = (Not Stored)
 
-not-present =
-    .value = <Not Part Of Certificate>
+# When a certificate is unavailable (for example, it has been deleted or the token it exists on has been removed).
+certificate-not-available = (Unavailable)
 
-# Cert verification
-cert-verified = This certificate has been verified for the following uses:
+## Used to show whether an override is temporary or permanent
 
-# Add usage
-verify-ssl-client =
-    .value = SSL Client Certificate
-
-verify-ssl-server =
-    .value = SSL Server Certificate
-
-verify-ssl-ca =
-    .value = SSL Certificate Authority
-
-verify-email-signer =
-    .value = Email Signer Certificate
-
-verify-email-recip =
-    .value = Email Recipient Certificate
-
-# Cert verification
-cert-not-verified-cert-revoked = Could not verify this certificate because it has been revoked.
-cert-not-verified-cert-expired = Could not verify this certificate because it has expired.
-cert-not-verified-cert-not-trusted = Could not verify this certificate because it is not trusted.
-cert-not-verified-issuer-not-trusted = Could not verify this certificate because the issuer is not trusted.
-cert-not-verified-issuer-unknown = Could not verify this certificate because the issuer is unknown.
-cert-not-verified-ca-invalid = Could not verify this certificate because the CA certificate is invalid.
-cert-not-verified_algorithm-disabled = Could not verify this certificate because it was signed using a signature algorithm that was disabled because that algorithm is not secure.
-cert-not-verified-unknown = Could not verify this certificate for unknown reasons.
+permanent-override = Permanent
+temporary-override = Temporary
 
 ## Add Security Exception dialog
+
 add-exception-branded-warning = You are about to override how { -brand-short-name } identifies this site.
 add-exception-invalid-header = This site attempts to identify itself with invalid information.
 add-exception-domain-mismatch-short = Wrong Site
@@ -294,6 +218,7 @@ add-exception-no-cert-short = No Information Available
 add-exception-no-cert-long = Unable to obtain identification status for this site.
 
 ## Certificate export "Save as" and error dialogs
+
 save-cert-as = Save Certificate To File
 cert-format-base64 = X.509 Certificate (PEM)
 cert-format-base64-chain = X.509 Certificate with chain (PEM)

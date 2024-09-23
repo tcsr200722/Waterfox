@@ -8,6 +8,7 @@
 #include "ContentBlockingUserInteraction.h"
 #include "AntiTrackingUtils.h"
 
+#include "mozilla/BounceTrackingProtection.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/PermissionManager.h"
 #include "nsIPrincipal.h"
@@ -18,13 +19,19 @@ namespace mozilla {
 
 /* static */
 void ContentBlockingUserInteraction::Observe(nsIPrincipal* aPrincipal) {
-  if (!aPrincipal) {
+  if (!aPrincipal || aPrincipal->IsSystemPrincipal()) {
     // The content process may have sent us garbage data.
     return;
   }
 
   if (XRE_IsParentProcess()) {
     LOG_PRIN(("Saving the userInteraction for %s", _spec), aPrincipal);
+
+    // The bounce tracking protection has its own interaction store.
+    nsresult rv = BounceTrackingProtection::RecordUserActivation(aPrincipal);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      LOG(("BounceTrackingProtection::RecordUserActivation failed."));
+    }
 
     PermissionManager* permManager = PermissionManager::GetInstance();
     if (NS_WARN_IF(!permManager)) {
@@ -39,7 +46,7 @@ void ContentBlockingUserInteraction::Observe(nsIPrincipal* aPrincipal) {
     int64_t when = (PR_Now() / PR_USEC_PER_MSEC) + expirationTime;
 
     uint32_t privateBrowsingId = 0;
-    nsresult rv = aPrincipal->GetPrivateBrowsingId(&privateBrowsingId);
+    rv = aPrincipal->GetPrivateBrowsingId(&privateBrowsingId);
     if (!NS_WARN_IF(NS_FAILED(rv)) && privateBrowsingId > 0) {
       // If we are coming from a private window, make sure to store a
       // session-only permission which won't get persisted to disk.
@@ -51,6 +58,12 @@ void ContentBlockingUserInteraction::Observe(nsIPrincipal* aPrincipal) {
                                        nsIPermissionManager::ALLOW_ACTION,
                                        expirationType, when);
     Unused << NS_WARN_IF(NS_FAILED(rv));
+
+    if (StaticPrefs::privacy_antitracking_testing()) {
+      nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+      obs->NotifyObservers(
+          nullptr, "antitracking-test-user-interaction-perm-added", nullptr);
+    }
     return;
   }
 
@@ -60,7 +73,7 @@ void ContentBlockingUserInteraction::Observe(nsIPrincipal* aPrincipal) {
   LOG_PRIN(("Asking the parent process to save the user-interaction for us: %s",
             _spec),
            aPrincipal);
-  cc->SendStoreUserInteractionAsPermission(IPC::Principal(aPrincipal));
+  cc->SendStoreUserInteractionAsPermission(aPrincipal);
 }
 
 /* static */

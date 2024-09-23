@@ -24,11 +24,11 @@ function test() {
       let tab2 = gBrowser.duplicateTab(tab);
       tab2.linkedBrowser.addEventListener(
         "461743",
-        function listener(eventTab2) {
+        function listener() {
           tab2.linkedBrowser.removeEventListener("461743", listener, true);
           is(aEvent.data, "done", "XSS injection was attempted");
 
-          executeSoon(function() {
+          executeSoon(function () {
             let iframes = tab2.linkedBrowser.contentWindow.frames;
             let innerHTML = iframes[1].document.body.innerHTML;
             isnot(

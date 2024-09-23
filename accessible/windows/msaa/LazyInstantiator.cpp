@@ -7,21 +7,22 @@
 #include "LazyInstantiator.h"
 
 #include "MainThreadUtils.h"
-#include "mozilla/a11y/Accessible.h"
+#include "mozilla/a11y/LocalAccessible.h"
 #include "mozilla/a11y/Compatibility.h"
 #include "mozilla/a11y/Platform.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/mscom/ProcessRuntime.h"
-#include "mozilla/mscom/Registration.h"
+#include "mozilla/StaticPrefs_accessibility.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
+#include "MsaaRootAccessible.h"
 #include "nsAccessibilityService.h"
 #include "nsWindowsHelpers.h"
 #include "nsCOMPtr.h"
 #include "nsIFile.h"
 #include "nsXPCOM.h"
-#include "RootAccessibleWrap.h"
 #include "WinUtils.h"
+#include "prenv.h"
 
 #include <oaidl.h>
 
@@ -39,27 +40,30 @@ namespace a11y {
 static const wchar_t kLazyInstantiatorProp[] =
     L"mozilla::a11y::LazyInstantiator";
 
-/* static */
-already_AddRefed<IAccessible> LazyInstantiator::GetRootAccessible(HWND aHwnd) {
-  // There must only be one LazyInstantiator per HWND.
-  // To track this, we set the kLazyInstantiatorProp on the HWND with a pointer
-  // to an existing instance. We only create a new LazyInstatiator if that prop
-  // has not already been set.
-  LazyInstantiator* existingInstantiator = reinterpret_cast<LazyInstantiator*>(
-      ::GetProp(aHwnd, kLazyInstantiatorProp));
+Maybe<bool> LazyInstantiator::sShouldBlockUia;
 
-  RefPtr<IAccessible> result;
-  if (existingInstantiator) {
-    // Temporarily disable blind aggregation until we know that we have been
-    // marshaled. See EnableBlindAggregation for more information.
-    existingInstantiator->mAllowBlindAggregation = false;
-    result = existingInstantiator;
-    return result.forget();
-  }
-
-  // At this time we only want to check whether the acc service is running; We
+template <class T>
+already_AddRefed<T> LazyInstantiator::GetRoot(HWND aHwnd) {
+  RefPtr<T> result;
+  // At this time we only want to check whether the acc service is running. We
   // don't actually want to create the acc service yet.
   if (!GetAccService()) {
+    // There must only be one LazyInstantiator per HWND.
+    // To track this, we set the kLazyInstantiatorProp on the HWND with a
+    // pointer to an existing instance. We only create a new LazyInstatiator if
+    // that prop has not already been set.
+    LazyInstantiator* existingInstantiator =
+        reinterpret_cast<LazyInstantiator*>(
+            ::GetProp(aHwnd, kLazyInstantiatorProp));
+
+    if (existingInstantiator) {
+      // Temporarily disable blind aggregation until we know that we have been
+      // marshaled. See EnableBlindAggregation for more information.
+      existingInstantiator->mAllowBlindAggregation = false;
+      result = existingInstantiator;
+      return result.forget();
+    }
+
     // a11y is not running yet, there are no existing LazyInstantiators for this
     // HWND, so create a new one and return it as a surrogate for the root
     // accessible.
@@ -68,34 +72,49 @@ already_AddRefed<IAccessible> LazyInstantiator::GetRootAccessible(HWND aHwnd) {
   }
 
   // a11y is running, so we just resolve the real root accessible.
-  a11y::Accessible* rootAcc = widget::WinUtils::GetRootAccessibleForHWND(aHwnd);
+  a11y::LocalAccessible* rootAcc =
+      widget::WinUtils::GetRootAccessibleForHWND(aHwnd);
   if (!rootAcc) {
     return nullptr;
   }
 
   if (!rootAcc->IsRoot()) {
     // rootAcc might represent a popup as opposed to a true root accessible.
-    // In that case we just use the regular Accessible::GetNativeInterface.
-    rootAcc->GetNativeInterface(getter_AddRefs(result));
+    // In that case we just use the regular LocalAccessible::GetNativeInterface.
+    result = MsaaAccessible::GetFrom(rootAcc);
     return result.forget();
   }
 
-  // Subtle: rootAcc might still be wrapped by a LazyInstantiator, but we
+  auto msaaRoot =
+      static_cast<MsaaRootAccessible*>(MsaaAccessible::GetFrom(rootAcc));
+  // Subtle: msaaRoot might still be wrapped by a LazyInstantiator, but we
   // don't need LazyInstantiator's capabilities anymore (since a11y is already
   // running). We can bypass LazyInstantiator by retrieving the internal
   // unknown (which is not wrapped by the LazyInstantiator) and then querying
-  // that for IID_IAccessible.
-  a11y::RootAccessibleWrap* rootWrap =
-      static_cast<a11y::RootAccessibleWrap*>(rootAcc);
-  RefPtr<IUnknown> punk(rootWrap->GetInternalUnknown());
+  // that for the interface we want.
+  RefPtr<IUnknown> punk(msaaRoot->GetInternalUnknown());
 
   MOZ_ASSERT(punk);
   if (!punk) {
     return nullptr;
   }
 
-  punk->QueryInterface(IID_IAccessible, getter_AddRefs(result));
+  punk->QueryInterface(__uuidof(T), getter_AddRefs(result));
   return result.forget();
+}
+
+/* static */
+already_AddRefed<IAccessible> LazyInstantiator::GetRootAccessible(HWND aHwnd) {
+  return GetRoot<IAccessible>(aHwnd);
+}
+
+/* static */
+already_AddRefed<IRawElementProviderSimple> LazyInstantiator::GetRootUia(
+    HWND aHwnd) {
+  if (!StaticPrefs::accessibility_uia_enable()) {
+    return nullptr;
+  }
+  return GetRoot<IRawElementProviderSimple>(aHwnd);
 }
 
 /**
@@ -108,6 +127,14 @@ already_AddRefed<IAccessible> LazyInstantiator::GetRootAccessible(HWND aHwnd) {
  */
 /* static */
 void LazyInstantiator::EnableBlindAggregation(HWND aHwnd) {
+  if (GetAccService()) {
+    // The accessibility service is already running. That means that
+    // LazyInstantiator::GetRootAccessible returned the real MsaaRootAccessible,
+    // rather than returning a LazyInstantiator with blind aggregation disabled.
+    // Thus, we have nothing to do here.
+    return;
+  }
+
   LazyInstantiator* existingInstantiator = reinterpret_cast<LazyInstantiator*>(
       ::GetProp(aHwnd, kLazyInstantiatorProp));
 
@@ -121,9 +148,10 @@ void LazyInstantiator::EnableBlindAggregation(HWND aHwnd) {
 LazyInstantiator::LazyInstantiator(HWND aHwnd)
     : mHwnd(aHwnd),
       mAllowBlindAggregation(false),
-      mWeakRootAccWrap(nullptr),
+      mWeakMsaaRoot(nullptr),
       mWeakAccessible(nullptr),
-      mWeakDispatch(nullptr) {
+      mWeakDispatch(nullptr),
+      mWeakUia(nullptr) {
   MOZ_ASSERT(aHwnd);
   // Assign ourselves as the designated LazyInstantiator for aHwnd
   DebugOnly<BOOL> setPropOk =
@@ -134,7 +162,7 @@ LazyInstantiator::LazyInstantiator(HWND aHwnd)
 LazyInstantiator::~LazyInstantiator() {
   if (mRealRootUnk) {
     // Disconnect ourselves from the root accessible.
-    RefPtr<IUnknown> dummy(mWeakRootAccWrap->Aggregate(nullptr));
+    RefPtr<IUnknown> dummy(mWeakMsaaRoot->Aggregate(nullptr));
   }
 
   ClearProp();
@@ -148,16 +176,15 @@ void LazyInstantiator::ClearProp() {
 }
 
 /**
- * Given the remote client's thread ID, resolve its process ID.
+ * Get the process id of a remote (out-of-process) MSAA/IA2 client.
  */
-DWORD
-LazyInstantiator::GetClientPid(const DWORD aClientTid) {
+DWORD LazyInstantiator::GetRemoteMsaaClientPid() {
   nsAutoHandle callingThread(
-      ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, aClientTid));
+      ::OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE,
+                   mscom::ProcessRuntime::GetClientThreadId()));
   if (!callingThread) {
     return 0;
   }
-
   return ::GetProcessIdOfThread(callingThread);
 }
 
@@ -166,7 +193,9 @@ LazyInstantiator::GetClientPid(const DWORD aClientTid) {
  */
 static const char* gBlockedRemoteClients[] = {
     "tbnotifier.exe",  // Ask.com Toolbar, bug 1453876
-    "flow.exe"         // Conexant Flow causes performance issues, bug 1569712
+    "flow.exe",        // Conexant Flow causes performance issues, bug 1569712
+    "rtop_bg.exe",     // ByteFence Anti-Malware, bug 1713383
+    "osk.exe",         // Windows On-Screen Keyboard, bug 1424505
 };
 
 /**
@@ -178,11 +207,6 @@ static const char* gBlockedRemoteClients[] = {
 bool LazyInstantiator::IsBlockedInjection() {
   // Check debugging options see if we should disable the blocklist.
   if (PR_GetEnv("MOZ_DISABLE_ACCESSIBLE_BLOCKLIST")) {
-    return false;
-  }
-
-  if (Compatibility::HasKnownNonUiaConsumer()) {
-    // If we already see a known AT, don't block a11y instantiation
     return false;
   }
 
@@ -203,22 +227,14 @@ bool LazyInstantiator::IsBlockedInjection() {
 }
 
 /**
- * Given a remote client's thread ID, determine whether we should proceed with
+ * Given a remote client's process ID, determine whether we should proceed with
  * a11y instantiation. This is where telemetry should be gathered and any
  * potential blocking of unwanted a11y clients should occur.
  *
  * @return true if we should instantiate a11y
  */
-bool LazyInstantiator::ShouldInstantiate(const DWORD aClientTid) {
-  if (!aClientTid) {
-    // aClientTid == 0 implies that this is either an in-process call, or else
-    // we failed to retrieve information about the remote caller.
-    // We should always default to instantiating a11y in this case, provided
-    // that we don't see any known bad injected DLLs.
-    return !IsBlockedInjection();
-  }
-
-  a11y::SetInstantiator(GetClientPid(aClientTid));
+bool LazyInstantiator::ShouldInstantiate(const DWORD aClientPid) {
+  a11y::SetInstantiator(aClientPid);
 
   nsCOMPtr<nsIFile> clientExe;
   if (!a11y::GetInstantiator(getter_AddRefs(clientExe))) {
@@ -244,13 +260,63 @@ bool LazyInstantiator::ShouldInstantiate(const DWORD aClientTid) {
   return true;
 }
 
-RootAccessibleWrap* LazyInstantiator::ResolveRootAccWrap() {
-  Accessible* acc = widget::WinUtils::GetRootAccessibleForHWND(mHwnd);
+/**
+ * Determine whether we should proceed with a11y instantiation, considering the
+ * various different types of clients.
+ */
+bool LazyInstantiator::ShouldInstantiate() {
+  if (Compatibility::IsA11ySuppressed()) {
+    return false;
+  }
+  if (DWORD pid = GetRemoteMsaaClientPid()) {
+    return ShouldInstantiate(pid);
+  }
+  if (Compatibility::HasKnownNonUiaConsumer()) {
+    // We detected a known in-process client.
+    return true;
+  }
+  // UIA client detection can be expensive, so we cache the result. See the
+  // header comment for ResetUiaDetectionCache() for details.
+  if (sShouldBlockUia.isNothing()) {
+    // Unlike MSAA, we can't tell which specific UIA client is querying us right
+    // now. We can only determine which clients have tried querying us.
+    // Therefore, we must check all of them.
+    AutoTArray<DWORD, 1> uiaPids;
+    Compatibility::GetUiaClientPids(uiaPids);
+    if (uiaPids.IsEmpty()) {
+      // No UIA clients, so don't block UIA. However, we might block for
+      // non-UIA clients below.
+      sShouldBlockUia = Some(false);
+    } else {
+      for (const DWORD pid : uiaPids) {
+        if (ShouldInstantiate(pid)) {
+          sShouldBlockUia = Some(false);
+          return true;
+        }
+      }
+      // We didn't return in the loop above, so there are only blocked UIA
+      // clients.
+      sShouldBlockUia = Some(true);
+    }
+  }
+  if (*sShouldBlockUia) {
+    return false;
+  }
+  if (IsBlockedInjection()) {
+    return false;
+  }
+  return true;
+}
+
+MsaaRootAccessible* LazyInstantiator::ResolveMsaaRoot() {
+  LocalAccessible* acc = widget::WinUtils::GetRootAccessibleForHWND(mHwnd);
   if (!acc || !acc->IsRoot()) {
     return nullptr;
   }
 
-  return static_cast<RootAccessibleWrap*>(acc);
+  RefPtr<IAccessible> ia;
+  acc->GetNativeInterface(getter_AddRefs(ia));
+  return static_cast<MsaaRootAccessible*>(ia.get());
 }
 
 /**
@@ -286,20 +352,29 @@ void LazyInstantiator::TransplantRefCnt() {
 
 HRESULT
 LazyInstantiator::MaybeResolveRoot() {
-  MOZ_ASSERT(NS_IsMainThread());
+  if (!NS_IsMainThread()) {
+    MOZ_ASSERT_UNREACHABLE("Called on a background thread!");
+    // Bug 1814780: This should never happen, since a caller should only be able
+    // to get this via AccessibleObjectFromWindow/AccessibleObjectFromEvent or
+    // WM_GETOBJECT/ObjectFromLresult, which should marshal any calls on
+    // a background thread to the main thread. Nevertheless, Windows sometimes
+    // calls QueryInterface from a background thread! To avoid crashes, fail
+    // gracefully here.
+    return RPC_E_WRONG_THREAD;
+  }
+
   if (mWeakAccessible) {
     return S_OK;
   }
 
-  if (GetAccService() ||
-      ShouldInstantiate(mscom::ProcessRuntime::GetClientThreadId())) {
-    mWeakRootAccWrap = ResolveRootAccWrap();
-    if (!mWeakRootAccWrap) {
+  if (GetAccService() || ShouldInstantiate()) {
+    mWeakMsaaRoot = ResolveMsaaRoot();
+    if (!mWeakMsaaRoot) {
       return E_POINTER;
     }
 
     // Wrap ourselves around the root accessible wrap
-    mRealRootUnk = mWeakRootAccWrap->Aggregate(static_cast<IAccessible*>(this));
+    mRealRootUnk = mWeakMsaaRoot->Aggregate(static_cast<IAccessible*>(this));
     if (!mRealRootUnk) {
       return E_FAIL;
     }
@@ -315,9 +390,16 @@ LazyInstantiator::MaybeResolveRoot() {
     if (FAILED(hr)) {
       return hr;
     }
-
     // mWeakAccessible is weak, so don't hold a strong ref
     mWeakAccessible->Release();
+    if (StaticPrefs::accessibility_uia_enable()) {
+      hr = mRealRootUnk->QueryInterface(IID_IRawElementProviderSimple,
+                                        (void**)&mWeakUia);
+      if (FAILED(hr)) {
+        return hr;
+      }
+      mWeakUia->Release();
+    }
 
     // Now that a11y is running, we don't need to remain registered with our
     // HWND anymore.
@@ -326,33 +408,7 @@ LazyInstantiator::MaybeResolveRoot() {
     return S_OK;
   }
 
-  // If we don't want a real root, let's resolve a fake one.
-
-  const WPARAM flags = 0xFFFFFFFFUL;
-  // Synthesize a WM_GETOBJECT request to obtain a system-implemented
-  // IAccessible object from DefWindowProc
-  LRESULT lresult = ::DefWindowProc(mHwnd, WM_GETOBJECT, flags,
-                                    static_cast<LPARAM>(OBJID_CLIENT));
-
-  HRESULT hr = ObjectFromLresult(lresult, IID_IAccessible, flags,
-                                 getter_AddRefs(mRealRootUnk));
-  if (FAILED(hr)) {
-    return hr;
-  }
-
-  if (!mRealRootUnk) {
-    return E_NOTIMPL;
-  }
-
-  hr = mRealRootUnk->QueryInterface(IID_IAccessible, (void**)&mWeakAccessible);
-  if (FAILED(hr)) {
-    return hr;
-  }
-
-  // mWeakAccessible is weak, so don't hold a strong ref
-  mWeakAccessible->Release();
-
-  return S_OK;
+  return E_FAIL;
 }
 
 #define RESOLVE_ROOT                 \
@@ -368,8 +424,15 @@ IMPL_IUNKNOWN_QUERY_IFACE_AMBIGIOUS(IUnknown, IAccessible)
 IMPL_IUNKNOWN_QUERY_IFACE(IAccessible)
 IMPL_IUNKNOWN_QUERY_IFACE(IDispatch)
 IMPL_IUNKNOWN_QUERY_IFACE(IServiceProvider)
+if (StaticPrefs::accessibility_uia_enable()) {
+  IMPL_IUNKNOWN_QUERY_IFACE(IRawElementProviderSimple)
+}
 // See EnableBlindAggregation for comments.
 if (!mAllowBlindAggregation) {
+  return E_NOINTERFACE;
+}
+
+if (aIID == IID_IAccIdentity) {
   return E_NOINTERFACE;
 }
 // If the client queries for an interface that LazyInstantiator does not
@@ -422,25 +485,16 @@ LazyInstantiator::ResolveDispatch() {
     return S_OK;
   }
 
-  // The IAccessible typelib is embedded in oleacc.dll's resources.
-  auto typelib = mscom::RegisterTypelib(
-      L"oleacc.dll", mscom::RegistrationFlags::eUseSystemDirectory);
-  if (!typelib) {
+  // Extract IAccessible's type info
+  RefPtr<ITypeInfo> accTypeInfo = MsaaAccessible::GetTI(LOCALE_USER_DEFAULT);
+  if (!accTypeInfo) {
     return E_UNEXPECTED;
   }
 
-  // Extract IAccessible's type info
-  RefPtr<ITypeInfo> accTypeInfo;
-  HRESULT hr =
-      typelib->GetTypeInfoForGuid(IID_IAccessible, getter_AddRefs(accTypeInfo));
-  if (FAILED(hr)) {
-    return hr;
-  }
-
   // Now create the standard IDispatch for IAccessible
-  hr = ::CreateStdDispatch(static_cast<IAccessible*>(this),
-                           static_cast<IAccessible*>(this), accTypeInfo,
-                           getter_AddRefs(mStdDispatch));
+  HRESULT hr = ::CreateStdDispatch(static_cast<IAccessible*>(this),
+                                   static_cast<IAccessible*>(this), accTypeInfo,
+                                   getter_AddRefs(mStdDispatch));
   if (FAILED(hr)) {
     return hr;
   }
@@ -499,6 +553,12 @@ LazyInstantiator::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid,
 
 HRESULT
 LazyInstantiator::get_accParent(IDispatch** ppdispParent) {
+  if (!mWeakAccessible) {
+    // If we'd resolve the root right now this would be the codepath we'd end
+    // up in anyway. So we might as well return it here.
+    return ::CreateStdAccessibleObject(mHwnd, OBJID_WINDOW, IID_IAccessible,
+                                       (void**)ppdispParent);
+  }
   RESOLVE_ROOT;
   return mWeakAccessible->get_accParent(ppdispParent);
 }
@@ -517,6 +577,12 @@ HRESULT
 LazyInstantiator::get_accChild(VARIANT varChild, IDispatch** ppdispChild) {
   if (!ppdispChild) {
     return E_INVALIDARG;
+  }
+
+  if (V_VT(&varChild) == VT_I4 && V_I4(&varChild) == CHILDID_SELF) {
+    RefPtr<IDispatch> disp(this);
+    disp.forget(ppdispChild);
+    return S_OK;
   }
 
   RESOLVE_ROOT;
@@ -557,6 +623,12 @@ HRESULT
 LazyInstantiator::get_accRole(VARIANT varChild, VARIANT* pvarRole) {
   if (!pvarRole) {
     return E_INVALIDARG;
+  }
+
+  if (V_VT(&varChild) == VT_I4 && V_I4(&varChild) == CHILDID_SELF) {
+    V_VT(pvarRole) = VT_I4;
+    V_I4(pvarRole) = ROLE_SYSTEM_APPLICATION;
+    return S_OK;
   }
 
   RESOLVE_ROOT;
@@ -678,11 +750,37 @@ LazyInstantiator::put_accValue(VARIANT varChild, BSTR szValue) {
   return E_NOTIMPL;
 }
 
+static const GUID kUnsupportedServices[] = {
+    // clang-format off
+  // Unknown, queried by Windows on devices with touch screens or similar devices
+  // connected.
+  {0x33f139ee, 0xe509, 0x47f7, {0xbf, 0x39, 0x83, 0x76, 0x44, 0xf7, 0x45, 0x76}},
+  // Unknown, queried by Windows
+  {0xFDA075CF, 0x7C8B, 0x498C, { 0xB5, 0x14, 0xA9, 0xCB, 0x52, 0x1B, 0xBF, 0xB4 }},
+  // Unknown, queried by Windows
+  {0x8EDAA462, 0x21F4, 0x4C87, { 0xA0, 0x12, 0xB3, 0xCD, 0xA3, 0xAB, 0x01, 0xFC }},
+  // Unknown, queried by Windows
+  {0xacd46652, 0x829d, 0x41cb, { 0xa5, 0xfc, 0x17, 0xac, 0xf4, 0x36, 0x61, 0xac }},
+  // SID_IsUIAutomationObject (undocumented), queried by Windows
+  {0xb96fdb85, 0x7204, 0x4724, { 0x84, 0x2b, 0xc7, 0x05, 0x9d, 0xed, 0xb9, 0xd0 }},
+  // IIS_IsOleaccProxy (undocumented), queried by Windows
+  {0x902697FA, 0x80E4, 0x4560, {0x80, 0x2A, 0xA1, 0x3F, 0x22, 0xA6, 0x47, 0x09}},
+  // IID_IHTMLElement, queried by JAWS
+  {0x3050F1FF, 0x98B5, 0x11CF, {0xBB, 0x82, 0x00, 0xAA, 0x00, 0xBD, 0xCE, 0x0B}}
+    // clang-format on
+};
+
 HRESULT
 LazyInstantiator::QueryService(REFGUID aServiceId, REFIID aServiceIid,
                                void** aOutInterface) {
   if (!aOutInterface) {
     return E_INVALIDARG;
+  }
+
+  for (const GUID& unsupportedService : kUnsupportedServices) {
+    if (aServiceId == unsupportedService) {
+      return E_NOINTERFACE;
+    }
   }
 
   *aOutInterface = nullptr;
@@ -697,6 +795,46 @@ LazyInstantiator::QueryService(REFGUID aServiceId, REFIID aServiceIid,
   }
 
   return servProv->QueryService(aServiceId, aServiceIid, aOutInterface);
+}
+
+STDMETHODIMP
+LazyInstantiator::get_ProviderOptions(
+    __RPC__out enum ProviderOptions* aOptions) {
+  // This method is called before a UIA connection is fully established and thus
+  // before we can detect the client. We must not call RESOLVE_ROOT here because
+  // this might turn out to be a client we want to block.
+  if (!aOptions) {
+    return E_INVALIDARG;
+  }
+  *aOptions = uiaRawElmProvider::kProviderOptions;
+  return S_OK;
+}
+
+STDMETHODIMP
+LazyInstantiator::GetPatternProvider(
+    PATTERNID aPatternId, __RPC__deref_out_opt IUnknown** aPatternProvider) {
+  RESOLVE_ROOT;
+  return mWeakUia->GetPatternProvider(aPatternId, aPatternProvider);
+}
+
+STDMETHODIMP
+LazyInstantiator::GetPropertyValue(PROPERTYID aPropertyId,
+                                   __RPC__out VARIANT* aPropertyValue) {
+  RESOLVE_ROOT;
+  return mWeakUia->GetPropertyValue(aPropertyId, aPropertyValue);
+}
+
+STDMETHODIMP
+LazyInstantiator::get_HostRawElementProvider(
+    __RPC__deref_out_opt IRawElementProviderSimple** aRawElmProvider) {
+  // This method is called before a UIA connection is fully established and thus
+  // before we can detect the client. We must not call RESOLVE_ROOT here because
+  // this might turn out to be a client we want to block.
+  if (!aRawElmProvider) {
+    return E_INVALIDARG;
+  }
+  *aRawElmProvider = nullptr;
+  return UiaHostProviderFromHwnd(mHwnd, aRawElmProvider);
 }
 
 }  // namespace a11y

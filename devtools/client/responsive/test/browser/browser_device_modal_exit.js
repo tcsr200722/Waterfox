@@ -9,7 +9,7 @@ const TEST_URL = "data:text/html;charset=utf-8,";
 
 addRDMTask(
   TEST_URL,
-  async function({ ui }) {
+  async function ({ ui }) {
     const { document, store } = ui.toolWindow;
 
     await openDeviceModal(ui);
@@ -47,5 +47,5 @@ addRDMTask(
       value + " was not added to removed device list."
     );
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );

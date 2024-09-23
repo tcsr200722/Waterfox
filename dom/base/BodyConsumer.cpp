@@ -7,6 +7,7 @@
 #include "BodyConsumer.h"
 
 #include "mozilla/dom/BlobBinding.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/BodyUtil.h"
 #include "mozilla/dom/File.h"
@@ -21,9 +22,15 @@
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/TaskQueue.h"
+#include "nsComponentManagerUtils.h"
+#include "nsIFile.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsIStreamLoader.h"
+#include "nsNetUtil.h"
 #include "nsProxyRelease.h"
+#include "nsIInputStream.h"
 
 // Undefine the macro of CreateFile to avoid FileCreatorHelper#CreateFile being
 // replaced by FileCreatorHelper#CreateFileW.
@@ -31,8 +38,7 @@
 #  undef CreateFile
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -68,7 +74,7 @@ class ContinueConsumeBodyRunnable final : public MainThreadWorkerRunnable {
   ContinueConsumeBodyRunnable(BodyConsumer* aBodyConsumer,
                               WorkerPrivate* aWorkerPrivate, nsresult aStatus,
                               uint32_t aLength, uint8_t* aResult)
-      : MainThreadWorkerRunnable(aWorkerPrivate),
+      : MainThreadWorkerRunnable("ContinueConsumeBodyRunnable"),
         mBodyConsumer(aBodyConsumer),
         mStatus(aStatus),
         mLength(aLength),
@@ -91,7 +97,7 @@ class AbortConsumeBodyControlRunnable final
  public:
   AbortConsumeBodyControlRunnable(BodyConsumer* aBodyConsumer,
                                   WorkerPrivate* aWorkerPrivate)
-      : MainThreadWorkerControlRunnable(aWorkerPrivate),
+      : MainThreadWorkerControlRunnable("AbortConsumeBodyControlRunnable"),
         mBodyConsumer(aBodyConsumer) {
     MOZ_ASSERT(NS_IsMainThread());
   }
@@ -125,7 +131,7 @@ class MOZ_STACK_CLASS AutoFailConsumeBody final {
       RefPtr<AbortConsumeBodyControlRunnable> r =
           new AbortConsumeBodyControlRunnable(mBodyConsumer,
                                               mWorkerRef->Private());
-      if (!r->Dispatch()) {
+      if (!r->Dispatch(mWorkerRef->Private())) {
         MOZ_CRASH("We are going to leak");
       }
       return;
@@ -153,7 +159,7 @@ class ContinueConsumeBlobBodyRunnable final : public MainThreadWorkerRunnable {
   ContinueConsumeBlobBodyRunnable(BodyConsumer* aBodyConsumer,
                                   WorkerPrivate* aWorkerPrivate,
                                   BlobImpl* aBlobImpl)
-      : MainThreadWorkerRunnable(aWorkerPrivate),
+      : MainThreadWorkerRunnable("ContinueConsumeBlobBodyRunnable"),
         mBodyConsumer(aBodyConsumer),
         mBlobImpl(aBlobImpl) {
     MOZ_ASSERT(NS_IsMainThread());
@@ -175,7 +181,7 @@ class AbortConsumeBlobBodyControlRunnable final
  public:
   AbortConsumeBlobBodyControlRunnable(BodyConsumer* aBodyConsumer,
                                       WorkerPrivate* aWorkerPrivate)
-      : MainThreadWorkerControlRunnable(aWorkerPrivate),
+      : MainThreadWorkerControlRunnable("AbortConsumeBlobBodyControlRunnable"),
         mBodyConsumer(aBodyConsumer) {
     MOZ_ASSERT(NS_IsMainThread());
   }
@@ -220,7 +226,7 @@ class ConsumeBodyDoneObserver final : public nsIStreamLoaderObserver,
       RefPtr<ContinueConsumeBodyRunnable> r = new ContinueConsumeBodyRunnable(
           mBodyConsumer, mWorkerRef->Private(), aStatus, aResultLength,
           nonconstResult);
-      if (r->Dispatch()) {
+      if (r->Dispatch(mWorkerRef->Private())) {
         // The caller is responsible for data.
         return NS_SUCCESS_ADOPTED_DATA;
       }
@@ -232,7 +238,7 @@ class ConsumeBodyDoneObserver final : public nsIStreamLoaderObserver,
     RefPtr<AbortConsumeBodyControlRunnable> r =
         new AbortConsumeBodyControlRunnable(mBodyConsumer,
                                             mWorkerRef->Private());
-    if (NS_WARN_IF(!r->Dispatch())) {
+    if (NS_WARN_IF(!r->Dispatch(mWorkerRef->Private()))) {
       return NS_ERROR_FAILURE;
     }
 
@@ -267,10 +273,11 @@ NS_IMPL_ISUPPORTS(ConsumeBodyDoneObserver, nsIStreamLoaderObserver)
 }  // namespace
 
 /* static */ already_AddRefed<Promise> BodyConsumer::Create(
-    nsIGlobalObject* aGlobal, nsIEventTarget* aMainThreadEventTarget,
+    nsIGlobalObject* aGlobal, nsISerialEventTarget* aMainThreadEventTarget,
     nsIInputStream* aBodyStream, AbortSignalImpl* aSignalImpl,
     ConsumeType aType, const nsACString& aBodyBlobURISpec,
     const nsAString& aBodyLocalPath, const nsACString& aBodyMimeType,
+    const nsACString& aMixedCaseMimeType,
     MutableBlobStorage::MutableBlobStorageType aBlobStorageType,
     ErrorResult& aRv) {
   MOZ_ASSERT(aBodyStream);
@@ -281,9 +288,10 @@ NS_IMPL_ISUPPORTS(ConsumeBodyDoneObserver, nsIStreamLoaderObserver)
     return nullptr;
   }
 
-  RefPtr<BodyConsumer> consumer = new BodyConsumer(
-      aMainThreadEventTarget, aGlobal, aBodyStream, promise, aType,
-      aBodyBlobURISpec, aBodyLocalPath, aBodyMimeType, aBlobStorageType);
+  RefPtr<BodyConsumer> consumer =
+      new BodyConsumer(aMainThreadEventTarget, aGlobal, aBodyStream, promise,
+                       aType, aBodyBlobURISpec, aBodyLocalPath, aBodyMimeType,
+                       aMixedCaseMimeType, aBlobStorageType);
 
   RefPtr<ThreadSafeWorkerRef> workerRef;
 
@@ -291,9 +299,13 @@ NS_IMPL_ISUPPORTS(ConsumeBodyDoneObserver, nsIStreamLoaderObserver)
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
     MOZ_ASSERT(workerPrivate);
 
-    RefPtr<StrongWorkerRef> strongWorkerRef = StrongWorkerRef::Create(
-        workerPrivate, "BodyConsumer",
-        [consumer]() { consumer->ShutDownMainThreadConsuming(); });
+    RefPtr<StrongWorkerRef> strongWorkerRef =
+        StrongWorkerRef::Create(workerPrivate, "BodyConsumer", [consumer]() {
+          consumer->mConsumePromise = nullptr;
+          consumer->mBodyConsumed = true;
+          consumer->ReleaseObject();
+          consumer->ShutDownMainThreadConsuming();
+        });
     if (NS_WARN_IF(!strongWorkerRef)) {
       aRv.Throw(NS_ERROR_FAILURE);
       return nullptr;
@@ -348,16 +360,18 @@ void BodyConsumer::ReleaseObject() {
 }
 
 BodyConsumer::BodyConsumer(
-    nsIEventTarget* aMainThreadEventTarget, nsIGlobalObject* aGlobalObject,
-    nsIInputStream* aBodyStream, Promise* aPromise, ConsumeType aType,
-    const nsACString& aBodyBlobURISpec, const nsAString& aBodyLocalPath,
-    const nsACString& aBodyMimeType,
+    nsISerialEventTarget* aMainThreadEventTarget,
+    nsIGlobalObject* aGlobalObject, nsIInputStream* aBodyStream,
+    Promise* aPromise, ConsumeType aType, const nsACString& aBodyBlobURISpec,
+    const nsAString& aBodyLocalPath, const nsACString& aBodyMimeType,
+    const nsACString& aMixedCaseMimeType,
     MutableBlobStorage::MutableBlobStorageType aBlobStorageType)
     : mTargetThread(NS_GetCurrentThread()),
       mMainThreadEventTarget(aMainThreadEventTarget),
       mBodyStream(aBodyStream),
       mBlobStorageType(aBlobStorageType),
       mBodyMimeType(aBodyMimeType),
+      mMixedCaseMimeType(aMixedCaseMimeType),
       mBodyBlobURISpec(aBodyBlobURISpec),
       mBodyLocalPath(aBodyLocalPath),
       mGlobal(aGlobalObject),
@@ -392,7 +406,8 @@ class FileCreationHandler final : public PromiseNativeHandler {
     aPromise->AppendNativeHandler(handler);
   }
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     AssertIsOnMainThread();
 
     if (NS_WARN_IF(!aValue.isObject())) {
@@ -409,7 +424,8 @@ class FileCreationHandler final : public PromiseNativeHandler {
     mConsumer->OnBlobResult(blob->Impl(), mWorkerRef);
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     AssertIsOnMainThread();
 
     mConsumer->OnBlobResult(nullptr, mWorkerRef);
@@ -482,7 +498,7 @@ void BodyConsumer::BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef) {
     return;
   }
 
-  if (mConsumeType == CONSUME_BLOB) {
+  if (mConsumeType == ConsumeType::Blob) {
     nsresult rv;
 
     // If we're trying to consume a blob, and the request was for a blob URI,
@@ -502,9 +518,9 @@ void BodyConsumer::BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef) {
     // file, then generate and return a File blob.
     nsCOMPtr<nsIFile> file;
     rv = GetBodyLocalFile(getter_AddRefs(file));
-    if (!NS_WARN_IF(NS_FAILED(rv)) && file) {
+    if (!NS_WARN_IF(NS_FAILED(rv)) && file && !aWorkerRef) {
       ChromeFilePropertyBag bag;
-      bag.mType = NS_ConvertUTF8toUTF16(mBodyMimeType);
+      CopyUTF8toUTF16(mBodyMimeType, bag.mType);
 
       ErrorResult error;
       RefPtr<Promise> promise =
@@ -531,7 +547,7 @@ void BodyConsumer::BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef) {
       new ConsumeBodyDoneObserver(this, aWorkerRef);
 
   nsCOMPtr<nsIStreamListener> listener;
-  if (mConsumeType == CONSUME_BLOB) {
+  if (mConsumeType == ConsumeType::Blob) {
     listener = new MutableBlobStreamListener(mBlobStorageType, mBodyMimeType, p,
                                              mMainThreadEventTarget);
   } else {
@@ -544,7 +560,7 @@ void BodyConsumer::BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef) {
     listener = loader;
   }
 
-  rv = pump->AsyncRead(listener, nullptr);
+  rv = pump->AsyncRead(listener);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
@@ -561,7 +577,9 @@ void BodyConsumer::BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef) {
   if (rr) {
     nsCOMPtr<nsIEventTarget> sts =
         do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
-    rv = rr->RetargetDeliveryTo(sts);
+    RefPtr<TaskQueue> queue =
+        TaskQueue::Create(sts.forget(), "BodyConsumer STS Delivery Queue");
+    rv = rr->RetargetDeliveryTo(queue);
     if (NS_FAILED(rv)) {
       NS_WARNING("Retargeting failed");
     }
@@ -601,14 +619,14 @@ void BodyConsumer::DispatchContinueConsumeBlobBody(
         new ContinueConsumeBlobBodyRunnable(this, aWorkerRef->Private(),
                                             aBlobImpl);
 
-    if (r->Dispatch()) {
+    if (r->Dispatch(aWorkerRef->Private())) {
       return;
     }
   } else {
     RefPtr<ContinueConsumeBodyRunnable> r = new ContinueConsumeBodyRunnable(
         this, aWorkerRef->Private(), NS_ERROR_DOM_ABORT_ERR, 0, nullptr);
 
-    if (r->Dispatch()) {
+    if (r->Dispatch(aWorkerRef->Private())) {
       return;
     }
   }
@@ -619,7 +637,7 @@ void BodyConsumer::DispatchContinueConsumeBlobBody(
   RefPtr<AbortConsumeBlobBodyControlRunnable> r =
       new AbortConsumeBlobBodyControlRunnable(this, aWorkerRef->Private());
 
-  Unused << NS_WARN_IF(!r->Dispatch());
+  Unused << NS_WARN_IF(!r->Dispatch(aWorkerRef->Private()));
 }
 
 /*
@@ -633,7 +651,7 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
   AssertIsOnTargetThread();
 
   // This makes sure that we free the data correctly.
-  auto autoFree = mozilla::MakeScopeExit([&] { free(aResult); });
+  UniquePtr<uint8_t[], JS::FreePolicy> resultPtr{aResult};
 
   if (mBodyConsumed) {
     return;
@@ -654,10 +672,14 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
 
   if (NS_WARN_IF(NS_FAILED(aStatus))) {
     // Per
-    // https://fetch.spec.whatwg.org/#concept-read-all-bytes-from-readablestream
+    // https://streams.spec.whatwg.org/#readablestreamdefaultreader-read-all-bytes
     // Decoding errors should reject with a TypeError
     if (aStatus == NS_ERROR_INVALID_CONTENT_ENCODING) {
       localPromise->MaybeRejectWithTypeError<MSG_DOM_DECODING_FAILED>();
+    } else if (aStatus == NS_ERROR_DOM_WRONG_TYPE_ERR) {
+      localPromise->MaybeRejectWithTypeError<MSG_FETCH_BODY_WRONG_TYPE>();
+    } else if (aStatus == NS_ERROR_NET_PARTIAL_TRANSFER) {
+      localPromise->MaybeRejectWithTypeError<MSG_FETCH_PARTIAL>();
     } else {
       localPromise->MaybeReject(NS_ERROR_DOM_ABORT_ERR);
     }
@@ -669,7 +691,7 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
   }
 
   // Finish successfully consuming body according to type.
-  MOZ_ASSERT(aResult);
+  MOZ_ASSERT(resultPtr);
 
   AutoJSAPI jsapi;
   if (!jsapi.Init(mGlobal)) {
@@ -681,44 +703,48 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
   ErrorResult error;
 
   switch (mConsumeType) {
-    case CONSUME_ARRAYBUFFER: {
+    case ConsumeType::ArrayBuffer: {
       JS::Rooted<JSObject*> arrayBuffer(cx);
-      BodyUtil::ConsumeArrayBuffer(cx, &arrayBuffer, aResultLength, aResult,
-                                   error);
-
+      BodyUtil::ConsumeArrayBuffer(cx, &arrayBuffer, aResultLength,
+                                   std::move(resultPtr), error);
       if (!error.Failed()) {
-        JS::Rooted<JS::Value> val(cx);
-        val.setObjectOrNull(arrayBuffer);
-
+        JS::Rooted<JS::Value> val(cx, JS::ObjectValue(*arrayBuffer));
         localPromise->MaybeResolve(val);
-        // ArrayBuffer takes over ownership.
-        aResult = nullptr;
       }
       break;
     }
-    case CONSUME_BLOB: {
+    case ConsumeType::Blob: {
       MOZ_CRASH("This should not happen.");
       break;
     }
-    case CONSUME_FORMDATA: {
+    case ConsumeType::Bytes: {
+      JS::Rooted<JSObject*> bytes(cx);
+      BodyUtil::ConsumeBytes(cx, &bytes, aResultLength, std::move(resultPtr),
+                             error);
+      if (!error.Failed()) {
+        JS::Rooted<JS::Value> val(cx, JS::ObjectValue(*bytes));
+        localPromise->MaybeResolve(val);
+      }
+      break;
+    }
+    case ConsumeType::FormData: {
       nsCString data;
-      data.Adopt(reinterpret_cast<char*>(aResult), aResultLength);
-      aResult = nullptr;
+      data.Adopt(reinterpret_cast<char*>(resultPtr.release()), aResultLength);
 
-      RefPtr<dom::FormData> fd =
-          BodyUtil::ConsumeFormData(mGlobal, mBodyMimeType, data, error);
+      RefPtr<dom::FormData> fd = BodyUtil::ConsumeFormData(
+          mGlobal, mBodyMimeType, mMixedCaseMimeType, data, error);
       if (!error.Failed()) {
         localPromise->MaybeResolve(fd);
       }
       break;
     }
-    case CONSUME_TEXT:
+    case ConsumeType::Text:
       // fall through handles early exit.
-    case CONSUME_JSON: {
+    case ConsumeType::JSON: {
       nsString decoded;
       if (NS_SUCCEEDED(
-              BodyUtil::ConsumeText(aResultLength, aResult, decoded))) {
-        if (mConsumeType == CONSUME_TEXT) {
+              BodyUtil::ConsumeText(aResultLength, resultPtr.get(), decoded))) {
+        if (mConsumeType == ConsumeType::Text) {
           localPromise->MaybeResolve(decoded);
         } else {
           JS::Rooted<JS::Value> json(cx);
@@ -743,7 +769,7 @@ void BodyConsumer::ContinueConsumeBody(nsresult aStatus, uint32_t aResultLength,
 void BodyConsumer::ContinueConsumeBlobBody(BlobImpl* aBlobImpl,
                                            bool aShuttingDown) {
   AssertIsOnTargetThread();
-  MOZ_ASSERT(mConsumeType == CONSUME_BLOB);
+  MOZ_ASSERT(mConsumeType == ConsumeType::Blob);
 
   if (mBodyConsumed) {
     return;
@@ -783,7 +809,8 @@ void BodyConsumer::ShutDownMainThreadConsuming() {
   mShuttingDown = true;
 
   if (mConsumeBodyPump) {
-    mConsumeBodyPump->Cancel(NS_BINDING_ABORTED);
+    mConsumeBodyPump->CancelWithReason(
+        NS_BINDING_ABORTED, "BodyConsumer::ShutDownMainThreadConsuming"_ns);
     mConsumeBodyPump = nullptr;
   }
 }
@@ -803,7 +830,7 @@ NS_IMETHODIMP BodyConsumer::Observe(nsISupports* aSubject, const char* aTopic,
   return NS_OK;
 }
 
-void BodyConsumer::Abort() {
+void BodyConsumer::RunAbortAlgorithm() {
   AssertIsOnTargetThread();
   ShutDownMainThreadConsuming();
   ContinueConsumeBody(NS_ERROR_DOM_ABORT_ERR, 0, nullptr);
@@ -811,5 +838,4 @@ void BodyConsumer::Abort() {
 
 NS_IMPL_ISUPPORTS(BodyConsumer, nsIObserver, nsISupportsWeakReference)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

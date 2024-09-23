@@ -9,6 +9,7 @@ function simulateItemDragAndEnd(aToDrag, aTarget) {
   );
 
   ds.startDragSessionForTests(
+    window,
     Ci.nsIDragService.DRAGDROP_ACTION_MOVE |
       Ci.nsIDragService.DRAGDROP_ACTION_COPY |
       Ci.nsIDragService.DRAGDROP_ACTION_LINK
@@ -25,7 +26,7 @@ function simulateItemDragAndEnd(aToDrag, aTarget) {
       aToDrag.parentNode
     );
   } finally {
-    ds.endDragSession(true);
+    ds.getCurrentSession().endDragSession(true);
   }
 }
 
@@ -90,9 +91,8 @@ add_task(async function checkDragging() {
 
   await startCustomizing();
   let existingSpecial = null;
-  existingSpecial = gCustomizeMode.visiblePalette.querySelector(
-    "toolbarspring"
-  );
+  existingSpecial =
+    gCustomizeMode.visiblePalette.querySelector("toolbarspring");
   ok(
     existingSpecial,
     "Should have a flexible space in the palette by default in photon"

@@ -19,7 +19,15 @@ namespace layers {
 class MacIOSurfaceImage : public Image {
  public:
   explicit MacIOSurfaceImage(MacIOSurface* aSurface)
-      : Image(nullptr, ImageFormat::MAC_IOSURFACE), mSurface(aSurface) {}
+      : Image(nullptr, ImageFormat::MAC_IOSURFACE), mSurface(aSurface) {
+    if (aSurface) {
+      mPictureRect = gfx::IntRect(
+          gfx::IntPoint{}, gfx::IntSize(aSurface->GetDevicePixelWidth(0),
+                                        aSurface->GetDevicePixelHeight(0)));
+    }
+  }
+
+  bool SetData(ImageContainer* aContainer, const PlanarYCbCrData& aData);
 
   MacIOSurface* GetSurface() { return mSurface; }
 
@@ -30,13 +38,48 @@ class MacIOSurfaceImage : public Image {
 
   already_AddRefed<gfx::SourceSurface> GetAsSourceSurface() override;
 
+  nsresult BuildSurfaceDescriptorBuffer(
+      SurfaceDescriptorBuffer& aSdBuffer, BuildSdbFlags aFlags,
+      const std::function<MemoryOrShmem(uint32_t)>& aAllocate) override;
+
   TextureClient* GetTextureClient(KnowsCompositor* aKnowsCompositor) override;
 
   MacIOSurfaceImage* AsMacIOSurfaceImage() override { return this; }
 
+  gfx::IntRect GetPictureRect() const override { return mPictureRect; }
+
+  gfx::ColorDepth GetColorDepth() const override;
+
  private:
   RefPtr<MacIOSurface> mSurface;
   RefPtr<TextureClient> mTextureClient;
+  gfx::IntRect mPictureRect;
+};
+
+class MacIOSurfaceRecycleAllocator {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MacIOSurfaceRecycleAllocator)
+
+  already_AddRefed<MacIOSurface> Allocate(
+      const gfx::IntSize aYSize, const gfx::IntSize& aCbCrSize,
+      gfx::ChromaSubsampling aChromaSubsampling,
+      gfx::YUVColorSpace aYUVColorSpace,
+      gfx::TransferFunction aTransferFunction, gfx::ColorRange aColorRange,
+      gfx::ColorDepth aColorDepth);
+
+ private:
+  ~MacIOSurfaceRecycleAllocator() = default;
+
+  nsTArray<CFTypeRefPtr<IOSurfaceRef>> mSurfaces;
+
+  // Cached parameters used for allocations stored in mSurfaces.
+  gfx::IntSize mYSize;
+  gfx::IntSize mCbCrSize;
+  gfx::ChromaSubsampling mChromaSubsampling = gfx::ChromaSubsampling::FULL;
+  gfx::YUVColorSpace mYUVColorSpace = gfx::YUVColorSpace::BT709;
+  gfx::TransferFunction mTransferFunction = gfx::TransferFunction::BT709;
+  gfx::ColorRange mColorRange = gfx::ColorRange::FULL;
+  gfx::ColorDepth mColorDepth = gfx::ColorDepth::COLOR_8;
 };
 
 }  // namespace layers

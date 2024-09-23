@@ -2,13 +2,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from marionette_harness import MarionetteTestCase, WindowManagerMixin
 
 
 class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
-
     def setUp(self):
         super(TestCloseWindow, self).setUp()
 
@@ -31,7 +28,7 @@ class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
         self.assertNotIn(new_window, self.marionette.window_handles)
 
     def test_close_chrome_window_for_non_browser_window(self):
-        win = self.open_chrome_window("chrome://marionette/content/test.xhtml")
+        win = self.open_chrome_window("chrome://remote/content/marionette/test.xhtml")
         self.marionette.switch_to_window(win)
 
         self.assertIn(win, self.marionette.chrome_window_handles)

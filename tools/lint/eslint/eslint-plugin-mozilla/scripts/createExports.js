@@ -4,6 +4,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+
+// This is a non-production script.
+/* eslint-disable no-console */
+
 "use strict";
 
 var fs = require("fs");
@@ -27,17 +31,24 @@ const rulesFile = path.join(
   "saved-rules-data.json"
 );
 
-console.log("Copying modules.json");
+console.log("Copying services.json");
 
-const modulesFile = path.join(eslintDir, "modules.json");
-const shipModulesFile = path.join(
+const env = helpers.getBuildEnvironment();
+
+const servicesFile = path.join(
+  env.topobjdir,
+  "xpcom",
+  "components",
+  "services.json"
+);
+const shipServicesFile = path.join(
   eslintDir,
   "eslint-plugin-mozilla",
   "lib",
-  "modules.json"
+  "services.json"
 );
 
-fs.writeFileSync(shipModulesFile, fs.readFileSync(modulesFile));
+fs.writeFileSync(shipServicesFile, fs.readFileSync(servicesFile));
 
 console.log("Generating globals file");
 
@@ -56,10 +67,7 @@ return fs.writeFile(
     console.log("Globals file generation complete");
 
     console.log("Creating rules data file");
-    // Also export data for the use-services.js rule
-    let rulesData = {
-      "use-services.js": require("../lib/rules/use-services.js")().getServicesInterfaceMap(),
-    };
+    let rulesData = {};
 
     return fs.writeFile(rulesFile, JSON.stringify({ rulesData }), err1 => {
       if (err1) {

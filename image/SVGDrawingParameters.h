@@ -12,8 +12,8 @@
 #include "mozilla/gfx/Point.h"
 #include "mozilla/gfx/Types.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/SVGImageContext.h"
 #include "nsSize.h"
-#include "SVGImageContext.h"
 
 namespace mozilla {
 namespace image {
@@ -25,8 +25,8 @@ struct SVGDrawingParameters {
   SVGDrawingParameters(gfxContext* aContext, const nsIntSize& aRasterSize,
                        const nsIntSize& aDrawSize, const ImageRegion& aRegion,
                        SamplingFilter aSamplingFilter,
-                       const Maybe<SVGImageContext>& aSVGContext,
-                       float aAnimationTime, uint32_t aFlags, float aOpacity)
+                       const SVGImageContext& aSVGContext, float aAnimationTime,
+                       uint32_t aFlags, float aOpacity)
       : context(aContext),
         size(aRasterSize),
         drawSize(aDrawSize),
@@ -37,11 +37,8 @@ struct SVGDrawingParameters {
         animationTime(aAnimationTime),
         flags(aFlags),
         opacity(aOpacity) {
-    if (aSVGContext) {
-      auto sz = aSVGContext->GetViewportSize();
-      if (sz) {
-        viewportSize = nsIntSize(sz->width, sz->height);  // XXX losing unit
-      }
+    if (auto sz = aSVGContext.GetViewportSize()) {
+      viewportSize = nsIntSize(sz->width, sz->height);  // XXX losing unit
     }
   }
 
@@ -50,7 +47,7 @@ struct SVGDrawingParameters {
   IntSize drawSize;  // Size to draw the given surface at.
   ImageRegion region;
   SamplingFilter samplingFilter;
-  const Maybe<SVGImageContext>& svgContext;
+  const SVGImageContext& svgContext;
   nsIntSize viewportSize;
   float animationTime;
   uint32_t flags;

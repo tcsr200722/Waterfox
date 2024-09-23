@@ -28,7 +28,7 @@ TestArray.addTest(
   function() {
     var that = this;
     var alg = "PBKDF2";
-    var key = new TextEncoder("utf-8").encode("password");
+    var key = new TextEncoder().encode("password");
 
     crypto.subtle.importKey("raw", key, alg, false, ["deriveKey"]).then(
       complete(that, hasKeyFields),
@@ -42,7 +42,7 @@ TestArray.addTest(
   "Unwrapping a PBKDF2 key in PKCS8 format should fail",
   function() {
     var that = this;
-    var pbkdf2Key = new TextEncoder("utf-8").encode("password");
+    var pbkdf2Key = new TextEncoder().encode("password");
     var alg = {name: "AES-GCM", length: 256, iv: new Uint8Array(16)};
     var wrappingKey;
 
@@ -288,6 +288,105 @@ TestArray.addTest(
     crypto.subtle.importKey("raw", key, importAlg, false, ["deriveBits"])
       .then( doDerive, fail )
       .then( memcmp_complete(that, tv.pbkdf2_sha256_no_salt.derived), fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail while deriving key with bad hash name",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha256.password;
+
+    function doDerive(x) {
+      if (!hasKeyFields(x)) {
+        throw new Error("Invalid key; missing field(s)");
+      }
+
+      var algo = {
+        name: "PBKDF2",
+        hash: "SHA256",
+        salt: tv.pbkdf2_sha256.salt,
+        iterations: tv.pbkdf2_sha256.iterations,
+      };
+      return crypto.subtle.deriveBits(algo, x, 32).then(
+        error(that),
+        complete(that, function(e) {
+          return e.name == "NotSupportedError";
+        })
+      );
+    }
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey", "deriveBits"])
+      .then( doDerive, fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail while deriving bits given null length",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha256.password;
+
+    function doDerive(x) {
+      if (!hasKeyFields(x)) {
+        throw new Error("Invalid key; missing field(s)");
+      }
+
+      var algo = {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: tv.pbkdf2_sha256.salt,
+        iterations: tv.pbkdf2_sha256.iterations,
+      };
+      return crypto.subtle.deriveBits(algo, x, null).then(
+        error(that),
+        complete(that, function(e) {
+          return e.name == "OperationError";
+        })
+      );
+    }
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveBits"])
+      .then( doDerive, fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail while deriving key of null length",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha256.password;
+
+    function doDerive(x) {
+      if (!hasKeyFields(x)) {
+        throw new Error("Invalid key; missing field(s)");
+      }
+
+      var algo = {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: tv.pbkdf2_sha256.salt,
+        iterations: tv.pbkdf2_sha256.iterations,
+      };
+      return crypto.subtle.deriveKey(algo, x, {name: "AES-GCM", length: null}, true, ["encrypt"]).then(
+        error(that),
+        complete(that, function(e) {
+          return e.name == "OperationError";
+        })
+      );
+    }
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey", "deriveBits"])
+      .then( doDerive, fail );
   }
 );
 /* ]]>*/</script>

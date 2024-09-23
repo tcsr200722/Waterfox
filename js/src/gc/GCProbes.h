@@ -14,20 +14,25 @@
  * from JIT code.
  */
 
-#include "gc/Heap.h"
+#include <stddef.h>
+
+#include "gc/AllocKind.h"
+#include "js/TraceKind.h"
+
+class JSObject;
 
 namespace js {
-
-class ObjectGroup;
-
 namespace gc {
+
+class GCRuntime;
+struct Cell;
+
 namespace gcprobes {
 
 inline void Init(gc::GCRuntime* gc) {}
 inline void Finish(gc::GCRuntime* gc) {}
-inline void NurseryAlloc(gc::Cell* thing, size_t size) {}
-inline void NurseryAlloc(gc::Cell* thing, JS::TraceKind kind) {}
-inline void TenuredAlloc(gc::Cell* thing, gc::AllocKind kind) {}
+inline void NurseryAlloc(void* ptr, JS::TraceKind kind) {}
+inline void TenuredAlloc(void* ptr, gc::AllocKind kind) {}
 inline void CreateObject(JSObject* object) {}
 inline void MinorGCStart() {}
 inline void PromoteToTenured(gc::Cell* src, gc::Cell* dst) {}
@@ -36,7 +41,6 @@ inline void MajorGCStart() {}
 inline void TenuredFinalize(gc::Cell* thing) {
 }  // May be called off main thread.
 inline void MajorGCEnd() {}
-inline void TypeNewScript(ObjectGroup* group) {}
 
 }  // namespace gcprobes
 }  // namespace gc

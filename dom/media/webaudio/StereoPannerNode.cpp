@@ -14,9 +14,9 @@
 #include "PanningUtils.h"
 #include "AudioParamTimeline.h"
 #include "AudioParam.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(StereoPannerNode, AudioNode, mPan)
 
@@ -37,9 +37,9 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
         mPan(0.f) {}
 
   enum Parameters { PAN };
-  void RecvTimelineEvent(uint32_t aIndex, AudioTimelineEvent& aEvent) override {
+  void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
     MOZ_ASSERT(mDestination);
-    WebAudioUtils::ConvertAudioTimelineEventToTicks(aEvent, mDestination);
+    aEvent.ConvertToTicks(mDestination);
 
     switch (aIndex) {
       case PAN:
@@ -62,8 +62,8 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
       aPanning += 1;
     }
 
-    aLeftGain = cos(0.5 * M_PI * aPanning);
-    aRightGain = sin(0.5 * M_PI * aPanning);
+    aLeftGain = fdlibm_cos(0.5 * M_PI * aPanning);
+    aRightGain = fdlibm_sin(0.5 * M_PI * aPanning);
   }
 
   void SetToSilentStereoBlock(AudioBlock* aChunk) {
@@ -97,6 +97,8 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
                             bool* aFinished) override {
     // The output of this node is always stereo, no matter what the inputs are.
     MOZ_ASSERT(aInput.ChannelCount() <= 2);
+    TRACE("StereoPannerNodeEngine::ProcessBlock");
+
     bool monoToStereo = aInput.ChannelCount() == 1;
 
     if (aInput.IsNull()) {
@@ -154,7 +156,8 @@ class StereoPannerNodeEngine final : public AudioNodeEngine {
 StereoPannerNode::StereoPannerNode(AudioContext* aContext)
     : AudioNode(aContext, 2, ChannelCountMode::Clamped_max,
                 ChannelInterpretation::Speakers) {
-  CreateAudioParam(mPan, StereoPannerNodeEngine::PAN, u"pan", 0.f, -1.f, 1.f);
+  mPan =
+      CreateAudioParam(StereoPannerNodeEngine::PAN, u"pan"_ns, 0.f, -1.f, 1.f);
   StereoPannerNodeEngine* engine =
       new StereoPannerNodeEngine(this, aContext->Destination());
   mTrack = AudioNodeTrack::Create(
@@ -172,7 +175,7 @@ already_AddRefed<StereoPannerNode> StereoPannerNode::Create(
     return nullptr;
   }
 
-  audioNode->Pan()->SetValue(aOptions.mPan);
+  audioNode->Pan()->SetInitialValue(aOptions.mPan);
   return audioNode.forget();
 }
 
@@ -191,5 +194,4 @@ JSObject* StereoPannerNode::WrapObject(JSContext* aCx,
   return StereoPannerNode_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

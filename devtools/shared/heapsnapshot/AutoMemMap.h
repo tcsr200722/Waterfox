@@ -8,7 +8,10 @@
 #define mozilla_devtools_AutoMemMap_h
 
 #include <prio.h>
-#include "mozilla/GuardObjects.h"
+#include "nsIFile.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
+#include "ErrorList.h"
 
 namespace mozilla {
 namespace devtools {
@@ -16,7 +19,7 @@ namespace devtools {
 // # AutoMemMap
 //
 // AutoMemMap is an RAII class to manage mapping a file to memory. It is a
-// wrapper aorund managing opening and closing a file and calling PR_MemMap and
+// wrapper around managing opening and closing a file and calling PR_MemMap and
 // PR_MemUnmap.
 //
 // Example usage:
@@ -32,9 +35,9 @@ namespace devtools {
 //     }
 //     // The memory is automatically unmapped when the AutoMemMap leaves scope.
 class MOZ_RAII AutoMemMap {
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER;
-
-  PRFileInfo64 fileInfo;
+  // At the time of this writing, this class supports file imports up to
+  // UINT32_MAX bytes due to limitations in the underlying function PR_MemMap.
+  uint32_t fileSize;
   PRFileDesc* fd;
   PRFileMap* fileMap;
   void* addr;
@@ -43,21 +46,18 @@ class MOZ_RAII AutoMemMap {
   void operator=(const AutoMemMap& aOther) = delete;
 
  public:
-  explicit AutoMemMap(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM)
-      : fileInfo(), fd(nullptr), fileMap(nullptr), addr(nullptr) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  };
+  explicit AutoMemMap()
+      : fileSize(0), fd(nullptr), fileMap(nullptr), addr(nullptr){};
   ~AutoMemMap();
 
   // Initialize this AutoMemMap.
-  nsresult init(const char* filePath, int flags = PR_RDONLY, int mode = 0,
+  nsresult init(nsIFile* file, int flags = PR_RDONLY, int mode = 0,
                 PRFileMapProtect prot = PR_PROT_READONLY);
 
   // Get the size of the memory mapped file.
   uint32_t size() const {
-    MOZ_ASSERT(fileInfo.size <= UINT32_MAX,
-               "Should only call size() if init() succeeded.");
-    return uint32_t(fileInfo.size);
+    MOZ_ASSERT(fd, "Should only call size() if init() succeeded.");
+    return fileSize;
   }
 
   // Get the mapped memory.

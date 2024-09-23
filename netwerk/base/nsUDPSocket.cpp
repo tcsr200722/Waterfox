@@ -3,12 +3,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "Predictor.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Components.h"
 #include "mozilla/EndianUtils.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Telemetry.h"
 
+#include "nsQueryObject.h"
 #include "nsSocketTransport2.h"
 #include "nsUDPSocket.h"
 #include "nsProxyRelease.h"
@@ -20,7 +23,6 @@
 #include "prio.h"
 #include "nsNetAddr.h"
 #include "nsNetSegmentUtils.h"
-#include "IOActivityMonitor.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStreamUtils.h"
 #include "prerror.h"
@@ -28,7 +30,16 @@
 #include "nsIDNSRecord.h"
 #include "nsIDNSService.h"
 #include "nsICancelable.h"
+#include "nsIPipe.h"
 #include "nsWrapperCacheInlines.h"
+#include "HttpConnectionUDP.h"
+#include "mozilla/ProfilerBandwidthCounter.h"
+#include "mozilla/StaticPrefs_network.h"
+
+#if defined(FUZZING)
+#  include "FuzzyLayer.h"
+#  include "mozilla/StaticPrefs_fuzzing.h"
+#endif
 
 namespace mozilla {
 namespace net {
@@ -37,7 +48,7 @@ static const uint32_t UDP_PACKET_CHUNK_SIZE = 1400;
 
 //-----------------------------------------------------------------------------
 
-typedef void (nsUDPSocket::*nsUDPSocketFunc)(void);
+using nsUDPSocketFunc = void (nsUDPSocket::*)();
 
 static nsresult PostEvent(nsUDPSocket* s, nsUDPSocketFunc func) {
   if (!gSocketTransportService) return NS_ERROR_FAILURE;
@@ -51,14 +62,16 @@ static nsresult ResolveHost(const nsACString& host,
                             nsIDNSListener* listener) {
   nsresult rv;
 
-  nsCOMPtr<nsIDNSService> dns =
-      do_GetService("@mozilla.org/network/dns-service;1", &rv);
+  nsCOMPtr<nsIDNSService> dns;
+  dns = mozilla::components::DNS::Service(&rv);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
   nsCOMPtr<nsICancelable> tmpOutstanding;
-  return dns->AsyncResolveNative(host, 0, listener, nullptr, aOriginAttributes,
+  return dns->AsyncResolveNative(host, nsIDNSService::RESOLVE_TYPE_DEFAULT,
+                                 nsIDNSService::RESOLVE_DEFAULT_FLAGS, nullptr,
+                                 listener, nullptr, aOriginAttributes,
                                  getter_AddRefs(tmpOutstanding));
 }
 
@@ -69,7 +82,9 @@ static nsresult CheckIOStatus(const NetAddr* aAddr) {
     return NS_ERROR_FAILURE;
   }
 
-  if (gIOService->IsOffline() && !IsLoopBackAddress(aAddr)) {
+  if (gIOService->IsOffline() &&
+      (StaticPrefs::network_disable_localhost_when_offline() ||
+       !aAddr->IsLoopbackAddr())) {
     return NS_ERROR_OFFLINE;
   }
 
@@ -112,6 +127,10 @@ NS_IMETHODIMP nsUDPOutputStream::Close() {
 }
 
 NS_IMETHODIMP nsUDPOutputStream::Flush() { return NS_OK; }
+
+NS_IMETHODIMP nsUDPOutputStream::StreamStatus() {
+  return mIsClosed ? NS_BASE_STREAM_CLOSED : NS_OK;
+}
 
 NS_IMETHODIMP nsUDPOutputStream::Write(const char* aBuf, uint32_t aCount,
                                        uint32_t* _retval) {
@@ -173,10 +192,9 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsUDPMessage)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 nsUDPMessage::nsUDPMessage(NetAddr* aAddr, nsIOutputStream* aOutputStream,
-                           FallibleTArray<uint8_t>& aData)
-    : mOutputStream(aOutputStream) {
+                           FallibleTArray<uint8_t>&& aData)
+    : mOutputStream(aOutputStream), mData(std::move(aData)) {
   memcpy(&mAddr, aAddr, sizeof(NetAddr));
-  aData.SwapElements(mData);
 }
 
 nsUDPMessage::~nsUDPMessage() { DropJSObjects(this); }
@@ -200,15 +218,18 @@ nsUDPMessage::GetData(nsACString& aData) {
 NS_IMETHODIMP
 nsUDPMessage::GetOutputStream(nsIOutputStream** aOutputStream) {
   NS_ENSURE_ARG_POINTER(aOutputStream);
-  NS_IF_ADDREF(*aOutputStream = mOutputStream);
+  *aOutputStream = do_AddRef(mOutputStream).take();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsUDPMessage::GetRawData(JSContext* cx, JS::MutableHandleValue aRawData) {
+nsUDPMessage::GetRawData(JSContext* cx, JS::MutableHandle<JS::Value> aRawData) {
   if (!mJsobj) {
-    mJsobj =
-        dom::Uint8Array::Create(cx, nullptr, mData.Length(), mData.Elements());
+    ErrorResult error;
+    mJsobj = dom::Uint8Array::Create(cx, nullptr, mData, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
     HoldJSObjects(this);
   }
   aRawData.setObject(*mJsobj);
@@ -221,21 +242,12 @@ FallibleTArray<uint8_t>& nsUDPMessage::GetDataAsTArray() { return mData; }
 // nsUDPSocket
 //-----------------------------------------------------------------------------
 
-nsUDPSocket::nsUDPSocket()
-    : mLock("nsUDPSocket.mLock"),
-      mFD(nullptr),
-      mOriginAttributes(),
-      mAttached(false),
-      mByteReadCount(0),
-      mByteWriteCount(0) {
-  this->mAddr.inet = {};
-  mAddr.raw.family = PR_AF_UNSPEC;
+nsUDPSocket::nsUDPSocket() {
   // we want to be able to access the STS directly, and it may not have been
   // constructed yet.  the STS constructor sets gSocketTransportService.
   if (!gSocketTransportService) {
     // This call can fail if we're offline, for example.
-    nsCOMPtr<nsISocketTransportService> sts =
-        do_GetService(NS_SOCKETTRANSPORTSERVICE_CONTRACTID);
+    mozilla::components::SocketTransport::Service();
   }
 
   mSts = gSocketTransportService;
@@ -243,7 +255,10 @@ nsUDPSocket::nsUDPSocket()
 
 nsUDPSocket::~nsUDPSocket() { CloseSocket(); }
 
-void nsUDPSocket::AddOutputBytes(uint64_t aBytes) { mByteWriteCount += aBytes; }
+void nsUDPSocket::AddOutputBytes(int32_t aBytes) {
+  mByteWriteCount += aBytes;
+  profiler_count_bandwidth_written_bytes(aBytes);
+}
 
 void nsUDPSocket::OnMsgClose() {
   UDPSOCKET_LOG(("nsUDPSocket::OnMsgClose [this=%p]\n", this));
@@ -328,10 +343,9 @@ namespace {
 class UDPMessageProxy final : public nsIUDPMessage {
  public:
   UDPMessageProxy(NetAddr* aAddr, nsIOutputStream* aOutputStream,
-                  FallibleTArray<uint8_t>& aData)
-      : mOutputStream(aOutputStream) {
+                  FallibleTArray<uint8_t>&& aData)
+      : mOutputStream(aOutputStream), mData(std::move(aData)) {
     memcpy(&mAddr, aAddr, sizeof(mAddr));
-    aData.SwapElements(mData);
   }
 
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -366,14 +380,15 @@ UDPMessageProxy::GetData(nsACString& aData) {
 FallibleTArray<uint8_t>& UDPMessageProxy::GetDataAsTArray() { return mData; }
 
 NS_IMETHODIMP
-UDPMessageProxy::GetRawData(JSContext* cx, JS::MutableHandleValue aRawData) {
+UDPMessageProxy::GetRawData(JSContext* cx,
+                            JS::MutableHandle<JS::Value> aRawData) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
 UDPMessageProxy::GetOutputStream(nsIOutputStream** aOutputStream) {
   NS_ENSURE_ARG_POINTER(aOutputStream);
-  NS_IF_ADDREF(*aOutputStream = mOutputStream);
+  *aOutputStream = do_AddRef(mOutputStream).take();
   return NS_OK;
 }
 
@@ -396,6 +411,11 @@ void nsUDPSocket::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
     return;
   }
 
+  if (mSyncListener) {
+    mSyncListener->OnPacketReceived(this);
+    return;
+  }
+
   PRNetAddr prClientAddr;
   int32_t count;
   // Bug 1252755 - use 9216 bytes to allign with nICEr and transportlayer to
@@ -409,6 +429,7 @@ void nsUDPSocket::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
     return;
   }
   mByteReadCount += count;
+  profiler_count_bandwidth_read_bytes(count);
 
   FallibleTArray<uint8_t> data;
   if (!data.AppendElements(buff, count, fallible)) {
@@ -424,25 +445,20 @@ void nsUDPSocket::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
   uint32_t segsize = UDP_PACKET_CHUNK_SIZE;
   uint32_t segcount = 0;
   net_ResolveSegmentParams(segsize, segcount);
-  nsresult rv = NS_NewPipe2(getter_AddRefs(pipeIn), getter_AddRefs(pipeOut),
-                            true, true, segsize, segcount);
-
-  if (NS_FAILED(rv)) {
-    return;
-  }
+  NS_NewPipe2(getter_AddRefs(pipeIn), getter_AddRefs(pipeOut), true, true,
+              segsize, segcount);
 
   RefPtr<nsUDPOutputStream> os = new nsUDPOutputStream(this, mFD, prClientAddr);
-  rv = NS_AsyncCopy(pipeIn, os, mSts, NS_ASYNCCOPY_VIA_READSEGMENTS,
-                    UDP_PACKET_CHUNK_SIZE);
+  nsresult rv = NS_AsyncCopy(pipeIn, os, mSts, NS_ASYNCCOPY_VIA_READSEGMENTS,
+                             UDP_PACKET_CHUNK_SIZE);
 
   if (NS_FAILED(rv)) {
     return;
   }
 
-  NetAddr netAddr;
-  PRNetAddrToNetAddr(&prClientAddr, &netAddr);
+  NetAddr netAddr(&prClientAddr);
   nsCOMPtr<nsIUDPMessage> message =
-      new UDPMessageProxy(&netAddr, pipeOut, data);
+      new UDPMessageProxy(&netAddr, pipeOut, std::move(data));
   mListener->OnPacketReceived(this, message);
 }
 
@@ -456,7 +472,10 @@ void nsUDPSocket::OnSocketDetached(PRFileDesc* fd) {
     CloseSocket();
   }
 
-  if (mListener) {
+  if (mSyncListener) {
+    mSyncListener->OnStopListening(this, mCondition);
+    mSyncListener = nullptr;
+  } else if (mListener) {
     // need to atomically clear mListener.  see our Close() method.
     RefPtr<nsIUDPSocketListener> listener = nullptr;
     {
@@ -474,7 +493,18 @@ void nsUDPSocket::OnSocketDetached(PRFileDesc* fd) {
 
 void nsUDPSocket::IsLocal(bool* aIsLocal) {
   // If bound to loopback, this UDP socket only accepts local connections.
-  *aIsLocal = IsLoopBackAddress(&mAddr);
+  *aIsLocal = mAddr.IsLoopbackAddr();
+}
+
+nsresult nsUDPSocket::GetRemoteAddr(NetAddr* addr) {
+  if (!mSyncListener) {
+    return NS_ERROR_FAILURE;
+  }
+  RefPtr<HttpConnectionUDP> connUDP = do_QueryObject(mSyncListener);
+  if (!connUDP) {
+    return NS_ERROR_FAILURE;
+  }
+  return connUDP->GetPeerAddr(addr);
 }
 
 //-----------------------------------------------------------------------------
@@ -497,10 +527,11 @@ nsUDPSocket::Init(int32_t aPort, bool aLoopbackOnly, nsIPrincipal* aPrincipal,
   addr.raw.family = AF_INET;
   addr.inet.port = htons(aPort);
 
-  if (aLoopbackOnly)
+  if (aLoopbackOnly) {
     addr.inet.ip = htonl(INADDR_LOOPBACK);
-  else
+  } else {
     addr.inet.ip = htonl(INADDR_ANY);
+  }
 
   return InitWithAddress(&addr, aPrincipal, aAddressReuse, aOptionalArgc);
 }
@@ -513,30 +544,19 @@ nsUDPSocket::Init2(const nsACString& aAddr, int32_t aPort,
     return NS_ERROR_INVALID_ARG;
   }
 
-  PRNetAddr prAddr;
-  memset(&prAddr, 0, sizeof(prAddr));
-  if (PR_StringToNetAddr(aAddr.BeginReading(), &prAddr) != PR_SUCCESS) {
-    return NS_ERROR_FAILURE;
-  }
-
   if (aPort < 0) {
     aPort = 0;
   }
 
-  switch (prAddr.raw.family) {
-    case PR_AF_INET:
-      prAddr.inet.port = PR_htons(aPort);
-      break;
-    case PR_AF_INET6:
-      prAddr.ipv6.port = PR_htons(aPort);
-      break;
-    default:
-      MOZ_ASSERT_UNREACHABLE("Dont accept address other than IPv4 and IPv6");
-      return NS_ERROR_ILLEGAL_VALUE;
+  NetAddr addr;
+  if (NS_FAILED(addr.InitFromString(aAddr, uint16_t(aPort)))) {
+    return NS_ERROR_FAILURE;
   }
 
-  NetAddr addr;
-  PRNetAddrToNetAddr(&prAddr, &addr);
+  if (addr.raw.family != PR_AF_INET && addr.raw.family != PR_AF_INET6) {
+    MOZ_ASSERT_UNREACHABLE("Dont accept address other than IPv4 and IPv6");
+    return NS_ERROR_ILLEGAL_VALUE;
+  }
 
   return InitWithAddress(&addr, aPrincipal, aAddressReuse, aOptionalArgc);
 }
@@ -568,8 +588,20 @@ nsUDPSocket::InitWithAddress(const NetAddr* aAddr, nsIPrincipal* aPrincipal,
     return NS_ERROR_FAILURE;
   }
 
+#ifdef FUZZING
+  if (StaticPrefs::fuzzing_necko_enabled()) {
+    rv = AttachFuzzyIOLayer(mFD);
+    if (NS_FAILED(rv)) {
+      UDPSOCKET_LOG(("Failed to attach fuzzing IOLayer [rv=%" PRIx32 "].\n",
+                     static_cast<uint32_t>(rv)));
+      return rv;
+    }
+    UDPSOCKET_LOG(("Successfully attached fuzzing IOLayer.\n"));
+  }
+#endif
+
   uint16_t port;
-  if (NS_FAILED(net::GetPort(aAddr, &port))) {
+  if (NS_FAILED(aAddr->GetPort(&port))) {
     NS_WARNING("invalid bind address");
     goto fail;
   }
@@ -606,9 +638,6 @@ nsUDPSocket::InitWithAddress(const NetAddr* aAddr, nsIPrincipal* aPrincipal,
   }
 
   PRNetAddrToNetAddr(&addr, &mAddr);
-
-  // create proxy via IOActivityMonitor
-  IOActivityMonitor::MonitorSocket(mFD);
 
   // wait until AsyncListen is called before polling the socket for
   // client connections.
@@ -671,7 +700,7 @@ nsUDPSocket::Close() {
     MutexAutoLock lock(mLock);
     // we want to proxy the close operation to the socket thread if a listener
     // has been set.  otherwise, we should just close the socket here...
-    if (!mListener) {
+    if (!mListener && !mSyncListener) {
       // Here we want to go directly with closing the socket since some tests
       // expects this happen synchronously.
       CloseSocket();
@@ -686,7 +715,7 @@ NS_IMETHODIMP
 nsUDPSocket::GetPort(int32_t* aResult) {
   // no need to enter the lock here
   uint16_t result;
-  nsresult rv = net::GetPort(&mAddr, &result);
+  nsresult rv = mAddr.GetPort(&result);
   *aResult = static_cast<int32_t>(result);
   return rv;
 }
@@ -767,7 +796,7 @@ class SocketListenerProxy final : public nsIUDPSocketListener {
   explicit SocketListenerProxy(nsIUDPSocketListener* aListener)
       : mListener(new nsMainThreadPtrHolder<nsIUDPSocketListener>(
             "SocketListenerProxy::mListener", aListener)),
-        mTarget(GetCurrentThreadEventTarget()) {}
+        mTarget(GetCurrentSerialEventTarget()) {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIUDPSOCKETLISTENER
@@ -843,7 +872,7 @@ SocketListenerProxy::OnPacketReceivedRunnable::Run() {
   FallibleTArray<uint8_t>& data = mMessage->GetDataAsTArray();
 
   nsCOMPtr<nsIUDPMessage> message =
-      new nsUDPMessage(&netAddr, outputStream, data);
+      new nsUDPMessage(&netAddr, outputStream, std::move(data));
   mListener->OnPacketReceived(mSocket, message);
   return NS_OK;
 }
@@ -859,7 +888,7 @@ class SocketListenerProxyBackground final : public nsIUDPSocketListener {
 
  public:
   explicit SocketListenerProxyBackground(nsIUDPSocketListener* aListener)
-      : mListener(aListener), mTarget(GetCurrentThreadEventTarget()) {}
+      : mListener(aListener), mTarget(GetCurrentSerialEventTarget()) {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIUDPSOCKETLISTENER
@@ -937,7 +966,7 @@ SocketListenerProxyBackground::OnPacketReceivedRunnable::Run() {
 
   UDPSOCKET_LOG(("%s [this=%p], len %zu", __FUNCTION__, this, data.Length()));
   nsCOMPtr<nsIUDPMessage> message =
-      new UDPMessageProxy(&netAddr, outputStream, data);
+      new UDPMessageProxy(&netAddr, outputStream, std::move(data));
   mListener->OnPacketReceived(mSocket, message);
   return NS_OK;
 }
@@ -954,10 +983,8 @@ class PendingSend : public nsIDNSListener {
   NS_DECL_NSIDNSLISTENER
 
   PendingSend(nsUDPSocket* aSocket, uint16_t aPort,
-              FallibleTArray<uint8_t>& aData)
-      : mSocket(aSocket), mPort(aPort) {
-    mData.SwapElements(aData);
-  }
+              FallibleTArray<uint8_t>&& aData)
+      : mSocket(aSocket), mPort(aPort), mData(std::move(aData)) {}
 
  private:
   virtual ~PendingSend() = default;
@@ -970,17 +997,20 @@ class PendingSend : public nsIDNSListener {
 NS_IMPL_ISUPPORTS(PendingSend, nsIDNSListener)
 
 NS_IMETHODIMP
-PendingSend::OnLookupComplete(nsICancelable* request, nsIDNSRecord* rec,
+PendingSend::OnLookupComplete(nsICancelable* request, nsIDNSRecord* aRecord,
                               nsresult status) {
   if (NS_FAILED(status)) {
     NS_WARNING("Failed to send UDP packet due to DNS lookup failure");
     return NS_OK;
   }
 
+  nsCOMPtr<nsIDNSAddrRecord> rec = do_QueryInterface(aRecord);
+  MOZ_ASSERT(rec);
   NetAddr addr;
   if (NS_SUCCEEDED(rec->GetNextAddr(mPort, &addr))) {
     uint32_t count;
-    nsresult rv = mSocket->SendWithAddress(&addr, mData, &count);
+    nsresult rv = mSocket->SendWithAddress(&addr, mData.Elements(),
+                                           mData.Length(), &count);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -1007,13 +1037,15 @@ class PendingSendStream : public nsIDNSListener {
 NS_IMPL_ISUPPORTS(PendingSendStream, nsIDNSListener)
 
 NS_IMETHODIMP
-PendingSendStream::OnLookupComplete(nsICancelable* request, nsIDNSRecord* rec,
-                                    nsresult status) {
+PendingSendStream::OnLookupComplete(nsICancelable* request,
+                                    nsIDNSRecord* aRecord, nsresult status) {
   if (NS_FAILED(status)) {
     NS_WARNING("Failed to send UDP packet due to DNS lookup failure");
     return NS_OK;
   }
 
+  nsCOMPtr<nsIDNSAddrRecord> rec = do_QueryInterface(aRecord);
+  MOZ_ASSERT(rec);
   NetAddr addr;
   if (NS_SUCCEEDED(rec->GetNextAddr(mPort, &addr))) {
     nsresult rv = mSocket->SendBinaryStreamWithAddress(&addr, mStream);
@@ -1043,7 +1075,7 @@ class SendRequestRunnable : public Runnable {
 NS_IMETHODIMP
 SendRequestRunnable::Run() {
   uint32_t count;
-  mSocket->SendWithAddress(&mAddr, mData, &count);
+  mSocket->SendWithAddress(&mAddr, mData.Elements(), mData.Length(), &count);
   return NS_OK;
 }
 
@@ -1054,17 +1086,30 @@ nsUDPSocket::AsyncListen(nsIUDPSocketListener* aListener) {
   // ensuring mFD implies ensuring mLock
   NS_ENSURE_TRUE(mFD, NS_ERROR_NOT_INITIALIZED);
   NS_ENSURE_TRUE(mListener == nullptr, NS_ERROR_IN_PROGRESS);
+  NS_ENSURE_TRUE(mSyncListener == nullptr, NS_ERROR_IN_PROGRESS);
   {
     MutexAutoLock lock(mLock);
-    mListenerTarget = GetCurrentThreadEventTarget();
+    mListenerTarget = GetCurrentSerialEventTarget();
     if (NS_IsMainThread()) {
       // PNecko usage
       mListener = new SocketListenerProxy(aListener);
     } else {
-      // PBackground usage from media/mtransport
+      // PBackground usage from dom/media/webrtc/transport
       mListener = new SocketListenerProxyBackground(aListener);
     }
   }
+  return PostEvent(this, &nsUDPSocket::OnMsgAttach);
+}
+
+NS_IMETHODIMP
+nsUDPSocket::SyncListen(nsIUDPSocketSyncListener* aListener) {
+  // ensuring mFD implies ensuring mLock
+  NS_ENSURE_TRUE(mFD, NS_ERROR_NOT_INITIALIZED);
+  NS_ENSURE_TRUE(mListener == nullptr, NS_ERROR_IN_PROGRESS);
+  NS_ENSURE_TRUE(mSyncListener == nullptr, NS_ERROR_IN_PROGRESS);
+
+  mSyncListener = aListener;
+
   return PostEvent(this, &nsUDPSocket::OnMsgAttach);
 }
 
@@ -1081,7 +1126,7 @@ nsUDPSocket::Send(const nsACString& aHost, uint16_t aPort,
   }
 
   nsCOMPtr<nsIDNSListener> listener =
-      new PendingSend(this, aPort, fallibleArray);
+      new PendingSend(this, aPort, std::move(fallibleArray));
 
   nsresult rv = ResolveHost(aHost, mOriginAttributes, listener);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1098,15 +1143,19 @@ nsUDPSocket::SendWithAddr(nsINetAddr* aAddr, const nsTArray<uint8_t>& aData,
 
   NetAddr netAddr;
   aAddr->GetNetAddr(&netAddr);
-  return SendWithAddress(&netAddr, aData, _retval);
+  return SendWithAddress(&netAddr, aData.Elements(), aData.Length(), _retval);
 }
 
 NS_IMETHODIMP
-nsUDPSocket::SendWithAddress(const NetAddr* aAddr,
-                             const nsTArray<uint8_t>& aData,
-                             uint32_t* _retval) {
+nsUDPSocket::SendWithAddress(const NetAddr* aAddr, const uint8_t* aData,
+                             uint32_t aLength, uint32_t* _retval) {
   NS_ENSURE_ARG(aAddr);
   NS_ENSURE_ARG_POINTER(_retval);
+
+  if (StaticPrefs::network_http_http3_block_loopback_ipv6_addr() &&
+      aAddr->raw.family == AF_INET6 && aAddr->IsLoopbackAddr()) {
+    return NS_ERROR_CONNECTION_REFUSED;
+  }
 
   *_retval = 0;
 
@@ -1123,8 +1172,7 @@ nsUDPSocket::SendWithAddress(const NetAddr* aAddr,
       return NS_ERROR_FAILURE;
     }
     int32_t count =
-        PR_SendTo(mFD, aData.Elements(), sizeof(uint8_t) * aData.Length(), 0,
-                  &prAddr, PR_INTERVAL_NO_WAIT);
+        PR_SendTo(mFD, aData, aLength, 0, &prAddr, PR_INTERVAL_NO_WAIT);
     if (count < 0) {
       PRErrorCode code = PR_GetError();
       return ErrorAccordingToNSPR(code);
@@ -1133,7 +1181,7 @@ nsUDPSocket::SendWithAddress(const NetAddr* aAddr,
     *_retval = count;
   } else {
     FallibleTArray<uint8_t> fallibleArray;
-    if (!fallibleArray.InsertElementsAt(0, aData, fallible)) {
+    if (!fallibleArray.AppendElements(aData, aLength, fallible)) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -1141,7 +1189,7 @@ nsUDPSocket::SendWithAddress(const NetAddr* aAddr,
         new SendRequestRunnable(this, *aAddr, std::move(fallibleArray)),
         NS_DISPATCH_NORMAL);
     NS_ENSURE_SUCCESS(rv, rv);
-    *_retval = aData.Length();
+    *_retval = aLength;
   }
   return NS_OK;
 }
@@ -1170,6 +1218,30 @@ nsUDPSocket::SendBinaryStreamWithAddress(const NetAddr* aAddr,
   RefPtr<nsUDPOutputStream> os = new nsUDPOutputStream(this, mFD, prAddr);
   return NS_AsyncCopy(aStream, os, mSts, NS_ASYNCCOPY_VIA_READSEGMENTS,
                       UDP_PACKET_CHUNK_SIZE);
+}
+
+NS_IMETHODIMP
+nsUDPSocket::RecvWithAddr(NetAddr* addr, nsTArray<uint8_t>& aData) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  PRNetAddr prAddr;
+  int32_t count;
+  char buff[9216];
+  count = PR_RecvFrom(mFD, buff, sizeof(buff), 0, &prAddr, PR_INTERVAL_NO_WAIT);
+  if (count < 0) {
+    UDPSOCKET_LOG(
+        ("nsUDPSocket::RecvWithAddr: PR_RecvFrom failed [this=%p]\n", this));
+    return NS_OK;
+  }
+  mByteReadCount += count;
+  profiler_count_bandwidth_read_bytes(count);
+  PRNetAddrToNetAddr(&prAddr, addr);
+
+  if (!aData.AppendElements(buff, count, fallible)) {
+    UDPSOCKET_LOG((
+        "nsUDPSocket::OnSocketReady: AppendElements FAILED [this=%p]\n", this));
+    mCondition = NS_ERROR_UNEXPECTED;
+  }
+  return NS_OK;
 }
 
 nsresult nsUDPSocket::SetSocketOption(const PRSocketOptionData& aOpt) {
@@ -1369,6 +1441,29 @@ nsUDPSocket::SetRecvBufferSize(int size) {
     return NS_ERROR_FAILURE;
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::GetDontFragment(bool* dontFragment) {
+  // Bug 1252759 - missing support for GetSocketOption
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::SetDontFragment(bool dontFragment) {
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRSocketOptionData opt;
+  opt.option = PR_SockOpt_DontFrag;
+  opt.value.dont_fragment = dontFragment;
+
+  nsresult rv = SetSocketOption(opt);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_FAILURE;
+  }
   return NS_OK;
 }
 

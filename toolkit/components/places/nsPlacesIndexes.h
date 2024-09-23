@@ -7,9 +7,9 @@
 #ifndef nsPlacesIndexes_h__
 #define nsPlacesIndexes_h__
 
-#define CREATE_PLACES_IDX(__name, __table, __columns, __type)         \
-  NS_LITERAL_CSTRING("CREATE " __type " INDEX IF NOT EXISTS " __table \
-                     "_" __name " ON " __table " (" __columns ")")
+#define CREATE_PLACES_IDX(__name, __table, __columns, __type)                  \
+  nsLiteralCString("CREATE " __type " INDEX IF NOT EXISTS " __table "_" __name \
+                   " ON " __table " (" __columns ")")
 
 /**
  * moz_places
@@ -34,6 +34,9 @@
 
 #define CREATE_IDX_MOZ_PLACES_ORIGIN_ID \
   CREATE_PLACES_IDX("originidindex", "moz_places", "origin_id", "")
+
+#define CREATE_IDX_MOZ_PLACES_ALT_FRECENCY \
+  CREATE_PLACES_IDX("altfrecencyindex", "moz_places", "alt_frecency", "")
 
 /**
  * moz_historyvisits
@@ -102,5 +105,14 @@
 
 #define CREATE_IDX_MOZ_ICONS_ICONURLHASH \
   CREATE_PLACES_IDX("iconurlhashindex", "moz_icons", "fixed_icon_url_hash", "")
+
+// moz_places_metadata
+#define CREATE_IDX_MOZ_PLACES_METADATA_PLACECREATED                    \
+  CREATE_PLACES_IDX("placecreated_uniqueindex", "moz_places_metadata", \
+                    "place_id, created_at", "UNIQUE")
+
+#define CREATE_IDX_MOZ_PLACES_METADATA_REFERRER             \
+  CREATE_PLACES_IDX("referrerindex", "moz_places_metadata", \
+                    "referrer_place_id", "")
 
 #endif  // nsPlacesIndexes_h__

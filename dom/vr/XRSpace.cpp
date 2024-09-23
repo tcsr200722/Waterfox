@@ -6,9 +6,9 @@
 
 #include "mozilla/dom/XRSpace.h"
 #include "mozilla/dom/XRRigidTransform.h"
+#include "VRDisplayClient.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XRSpace)
 
@@ -78,5 +78,4 @@ bool XRSpace::IsPositionEmulated() const {
           gfx::VRDisplayCapabilityFlags::Cap_None);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

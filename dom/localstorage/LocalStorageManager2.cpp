@@ -6,12 +6,44 @@
 
 #include "LocalStorageManager2.h"
 
+// Local includes
+#include "ActorsChild.h"
 #include "LSObject.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/UniquePtr.h"
 
-namespace mozilla {
-namespace dom {
+// Global includes
+#include <utility>
+#include "MainThreadUtils.h"
+#include "jsapi.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/OriginAttributes.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/RemoteLazyInputStreamThread.h"
+#include "mozilla/dom/LocalStorageCommon.h"
+#include "mozilla/dom/PBackgroundLSRequest.h"
+#include "mozilla/dom/PBackgroundLSSharedTypes.h"
+#include "mozilla/dom/PBackgroundLSSimpleRequest.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/ipc/BackgroundChild.h"
+#include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "nsCOMPtr.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsIEventTarget.h"
+#include "nsILocalStorageManager.h"
+#include "nsIPrincipal.h"
+#include "nsIRunnable.h"
+#include "nsPIDOMWindow.h"
+#include "nsStringFwd.h"
+#include "nsThreadUtils.h"
+#include "nscore.h"
+#include "xpcpublic.h"
+
+namespace mozilla::dom {
 
 namespace {
 
@@ -19,12 +51,12 @@ class AsyncRequestHelper final : public Runnable,
                                  public LSRequestChildCallback {
   enum class State {
     /**
-     * The AsyncRequestHelper has been created and dispatched to the DOM File
-     * Thread.
+     * The AsyncRequestHelper has been created and dispatched to the
+     * RemoteLazyInputStream Thread.
      */
     Initial,
     /**
-     * Start() has been invoked on the DOM File Thread and
+     * Start() has been invoked on the RemoteLazyInputStream Thread and
      * LocalStorageManager2::StartRequest has been invoked from there, sending
      * an IPC message to PBackground to service the request.  We stay in this
      * state until a response is received.
@@ -64,7 +96,7 @@ class AsyncRequestHelper final : public Runnable,
                      const LSRequestParams& aParams)
       : Runnable("dom::LocalStorageManager2::AsyncRequestHelper"),
         mManager(aManager),
-        mOwningEventTarget(GetCurrentThreadEventTarget()),
+        mOwningEventTarget(GetCurrentSerialEventTarget()),
         mActor(nullptr),
         mPromise(aPromise),
         mParams(aParams),
@@ -116,6 +148,8 @@ class SimpleRequestResolver final : public LSSimpleRequestChildCallback {
 
   void HandleResponse(bool aResponse);
 
+  void HandleResponse(const nsTArray<LSItemInfo>& aResponse);
+
   // LSRequestChildCallback
   void OnResponse(const LSSimpleRequestResponse& aResponse) override;
 };
@@ -140,8 +174,8 @@ nsresult CreatePromise(JSContext* aContext, Promise** aPromise) {
   return NS_OK;
 }
 
-nsresult CheckedPrincipalToPrincipalInfo(nsIPrincipal* aPrincipal,
-                                         PrincipalInfo& aPrincipalInfo) {
+nsresult CheckedPrincipalToPrincipalInfo(
+    nsIPrincipal* aPrincipal, mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPrincipal);
 
@@ -150,12 +184,14 @@ nsresult CheckedPrincipalToPrincipalInfo(nsIPrincipal* aPrincipal,
     return rv;
   }
 
-  if (NS_WARN_IF(!QuotaManager::IsPrincipalInfoValid(aPrincipalInfo))) {
+  if (NS_WARN_IF(!quota::QuotaManager::IsPrincipalInfoValid(aPrincipalInfo))) {
     return NS_ERROR_FAILURE;
   }
 
-  if (aPrincipalInfo.type() != PrincipalInfo::TContentPrincipalInfo &&
-      aPrincipalInfo.type() != PrincipalInfo::TSystemPrincipalInfo) {
+  if (aPrincipalInfo.type() !=
+          mozilla::ipc::PrincipalInfo::TContentPrincipalInfo &&
+      aPrincipalInfo.type() !=
+          mozilla::ipc::PrincipalInfo::TSystemPrincipalInfo) {
     return NS_ERROR_UNEXPECTED;
   }
 
@@ -187,7 +223,7 @@ LocalStorageManager2::PrecacheStorage(nsIPrincipal* aPrincipal,
   // implementation to perform a preload in the content/current process.  That's
   // not how things work in LSNG.  Instead everything happens in the parent
   // process, triggered by the official preloading spot,
-  // ContentParent::AboutToLoadHttpFtpDocumentForChild.
+  // ContentParent::AboutToLoadHttpDocumentForChild.
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -262,7 +298,7 @@ LocalStorageManager2::GetNextGenLocalStorageEnabled(bool* aResult) {
 
 NS_IMETHODIMP
 LocalStorageManager2::Preload(nsIPrincipal* aPrincipal, JSContext* aContext,
-                              nsISupports** _retval) {
+                              Promise** _retval) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPrincipal);
   MOZ_ASSERT(_retval);
@@ -275,7 +311,7 @@ LocalStorageManager2::Preload(nsIPrincipal* aPrincipal, JSContext* aContext,
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  PrincipalInfo principalInfo;
+  mozilla::ipc::PrincipalInfo principalInfo;
   rv = CheckedPrincipalToPrincipalInfo(aPrincipal, principalInfo);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -300,9 +336,10 @@ LocalStorageManager2::Preload(nsIPrincipal* aPrincipal, JSContext* aContext,
   RefPtr<AsyncRequestHelper> helper =
       new AsyncRequestHelper(this, promise, params);
 
-  // This will start and finish the async request on the DOM File thread.
-  // This must be done on DOM File Thread because it's very likely that a
-  // content process will issue a prepare datastore request for the same
+  // This will start and finish the async request on the RemoteLazyInputStream
+  // thread.
+  // This must be done on RemoteLazyInputStream Thread because it's very likely
+  // that a content process will issue a prepare datastore request for the same
   // principal while blocking the content process on the main thread.
   // There would be a potential for deadlock if the preloading was initialized
   // from the main thread of the parent process and a11y issued a synchronous
@@ -321,7 +358,7 @@ LocalStorageManager2::Preload(nsIPrincipal* aPrincipal, JSContext* aContext,
 
 NS_IMETHODIMP
 LocalStorageManager2::IsPreloaded(nsIPrincipal* aPrincipal, JSContext* aContext,
-                                  nsISupports** _retval) {
+                                  Promise** _retval) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPrincipal);
   MOZ_ASSERT(_retval);
@@ -350,12 +387,43 @@ LocalStorageManager2::IsPreloaded(nsIPrincipal* aPrincipal, JSContext* aContext,
   return NS_OK;
 }
 
+NS_IMETHODIMP
+LocalStorageManager2::GetState(nsIPrincipal* aPrincipal, JSContext* aContext,
+                               Promise** _retval) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aPrincipal);
+  MOZ_ASSERT(_retval);
+
+  RefPtr<Promise> promise;
+  nsresult rv = CreatePromise(aContext, getter_AddRefs(promise));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  LSSimpleRequestGetStateParams params;
+
+  rv = CheckedPrincipalToPrincipalInfo(aPrincipal, params.principalInfo());
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  params.storagePrincipalInfo() = params.principalInfo();
+
+  rv = StartSimpleRequest(promise, params);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  promise.forget(_retval);
+  return NS_OK;
+}
+
 LSRequestChild* LocalStorageManager2::StartRequest(
     const LSRequestParams& aParams, LSRequestChildCallback* aCallback) {
   AssertIsOnDOMFileThread();
 
-  PBackgroundChild* backgroundActor =
-      BackgroundChild::GetOrCreateForCurrentThread();
+  mozilla::ipc::PBackgroundChild* backgroundActor =
+      mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!backgroundActor)) {
     return nullptr;
   }
@@ -379,8 +447,8 @@ nsresult LocalStorageManager2::StartSimpleRequest(
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aPromise);
 
-  PBackgroundChild* backgroundActor =
-      BackgroundChild::GetOrCreateForCurrentThread();
+  mozilla::ipc::PBackgroundChild* backgroundActor =
+      mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!backgroundActor)) {
     return NS_ERROR_FAILURE;
   }
@@ -406,9 +474,9 @@ nsresult AsyncRequestHelper::Dispatch() {
   AssertIsOnOwningThread();
 
   nsCOMPtr<nsIEventTarget> domFileThread =
-      IPCBlobInputStreamThread::GetOrCreate();
+      RemoteLazyInputStreamThread::GetOrCreate();
   if (NS_WARN_IF(!domFileThread)) {
-    return NS_ERROR_FAILURE;
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
   }
 
   nsresult rv = domFileThread->Dispatch(this, NS_DISPATCH_NORMAL);
@@ -530,6 +598,42 @@ void SimpleRequestResolver::HandleResponse(bool aResponse) {
   mPromise->MaybeResolve(aResponse);
 }
 
+[[nodiscard]] static bool ToJSValue(JSContext* aCx,
+                                    const nsTArray<LSItemInfo>& aArgument,
+                                    JS::MutableHandle<JS::Value> aValue) {
+  JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
+  if (!obj) {
+    return false;
+  }
+
+  for (size_t i = 0; i < aArgument.Length(); ++i) {
+    const LSItemInfo& itemInfo = aArgument[i];
+
+    const nsString& key = itemInfo.key();
+
+    JS::Rooted<JS::Value> value(aCx);
+    if (!ToJSValue(aCx, itemInfo.value().AsString(), &value)) {
+      return false;
+    }
+
+    if (!JS_DefineUCProperty(aCx, obj, key.BeginReading(), key.Length(), value,
+                             JSPROP_ENUMERATE)) {
+      return false;
+    }
+  }
+
+  aValue.setObject(*obj);
+  return true;
+}
+
+void SimpleRequestResolver::HandleResponse(
+    const nsTArray<LSItemInfo>& aResponse) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mPromise);
+
+  mPromise->MaybeResolve(aResponse);
+}
+
 void SimpleRequestResolver::OnResponse(
     const LSSimpleRequestResponse& aResponse) {
   MOZ_ASSERT(NS_IsMainThread());
@@ -544,10 +648,14 @@ void SimpleRequestResolver::OnResponse(
           aResponse.get_LSSimpleRequestPreloadedResponse().preloaded());
       break;
 
+    case LSSimpleRequestResponse::TLSSimpleRequestGetStateResponse:
+      HandleResponse(
+          aResponse.get_LSSimpleRequestGetStateResponse().itemInfos());
+      break;
+
     default:
       MOZ_CRASH("Unknown response type!");
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

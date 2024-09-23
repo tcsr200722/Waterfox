@@ -2,30 +2,21 @@
 
 var h2Port;
 var prefs;
-var spdypref;
 var http2pref;
-var extpref;
 var loadGroup;
 
 function run_test() {
-  var env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  h2Port = env.get("MOZHTTP2_PORT");
+  h2Port = Services.env.get("MOZHTTP2_PORT");
   Assert.notEqual(h2Port, null);
   Assert.notEqual(h2Port, "");
 
   // Set to allow the cert presented by our H2 server
   do_get_profile();
-  prefs = Cc["@mozilla.org/preferences-service;1"].getService(Ci.nsIPrefBranch);
+  prefs = Services.prefs;
 
-  spdypref = prefs.getBoolPref("network.http.spdy.enabled");
-  http2pref = prefs.getBoolPref("network.http.spdy.enabled.http2");
-  extpref = prefs.getBoolPref("network.http.originextension");
+  http2pref = prefs.getBoolPref("network.http.http2.enabled");
 
-  prefs.setBoolPref("network.http.spdy.enabled", true);
-  prefs.setBoolPref("network.http.spdy.enabled.http2", true);
-  prefs.setBoolPref("network.http.originextension", true);
+  prefs.setBoolPref("network.http.http2.enabled", true);
   prefs.setCharPref(
     "network.dns.localDomains",
     "foo.example.com, alt1.example.com"
@@ -42,9 +33,7 @@ function run_test() {
 }
 
 function resetPrefs() {
-  prefs.setBoolPref("network.http.spdy.enabled", spdypref);
-  prefs.setBoolPref("network.http.spdy.enabled.http2", http2pref);
-  prefs.setBoolPref("network.http.originextension", extpref);
+  prefs.setBoolPref("network.http.http2.enabled", http2pref);
   prefs.clearUserPref("network.dns.localDomains");
 }
 
@@ -62,7 +51,7 @@ var currentPort = 0;
 var forceReload = false;
 var forceFailListener = false;
 
-var Listener = function() {};
+var Listener = function () {};
 Listener.prototype.clientPort = 0;
 Listener.prototype = {
   onStartRequest: function testOnStartRequest(request) {
@@ -92,7 +81,7 @@ Listener.prototype = {
   },
 };
 
-var FailListener = function() {};
+var FailListener = function () {};
 FailListener.prototype = {
   onStartRequest: function testOnStartRequest(request) {
     Assert.ok(request instanceof Ci.nsIHttpChannel);
@@ -101,7 +90,7 @@ FailListener.prototype = {
   onDataAvailable: function testOnDataAvailable(request, stream, off, cnt) {
     read_stream(stream, cnt);
   },
-  onStopRequest: function testOnStopRequest(request, status) {
+  onStopRequest: function testOnStopRequest(request) {
     Assert.ok(!Components.isSuccessCode(request.status));
     nextTest();
     do_test_finished();
@@ -238,7 +227,7 @@ function doTest10() {
   doTest();
 }
 
-var Http2PushApiListener = function() {};
+var Http2PushApiListener = function () {};
 
 Http2PushApiListener.prototype = {
   fooOK: false,
@@ -297,10 +286,10 @@ Http2PushApiListener.prototype = {
     offset,
     cnt
   ) {
-    var data = read_stream(stream, cnt);
+    read_stream(stream, cnt);
   },
 
-  onStopRequest: function test_onStopR(request, status) {
+  onStopRequest: function test_onStopR(request) {
     dump("push api onstop " + request.originalURI.spec + "\n");
     Assert.ok(this.fooOK);
     Assert.ok(this.alt1OK);

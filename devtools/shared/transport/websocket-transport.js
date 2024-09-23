@@ -4,7 +4,7 @@
 
 "use strict";
 
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 function WebSocketDebuggerTransport(socket) {
   EventEmitter.decorate(this);
@@ -38,6 +38,9 @@ WebSocketDebuggerTransport.prototype = {
   },
 
   close() {
+    if (!this.socket) {
+      return;
+    }
     this.emit("close");
     this.active = false;
 
@@ -47,7 +50,9 @@ WebSocketDebuggerTransport.prototype = {
     this.socket = null;
 
     if (this.hooks) {
-      this.hooks.onClosed();
+      if (this.hooks.onTransportClosed) {
+        this.hooks.onTransportClosed();
+      }
       this.hooks = null;
     }
   },

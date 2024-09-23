@@ -4,8 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 const nsPK11TokenDB = "@mozilla.org/security/pk11tokendb;1";
 const nsIPK11TokenDB = Ci.nsIPK11TokenDB;
 const nsIDialogParamBlock = Ci.nsIDialogParamBlock;
@@ -36,8 +34,8 @@ function process() {
     let oldpwbox = document.getElementById("oldpw");
     let msgBox = document.getElementById("message");
     if ((token.needsLogin() && token.needsUserInit) || !token.needsLogin()) {
-      oldpwbox.setAttribute("hidden", "true");
-      msgBox.removeAttribute("hidden");
+      oldpwbox.hidden = true;
+      msgBox.hidden = false;
 
       if (!token.needsLogin()) {
         oldpwbox.setAttribute("inited", "empty");
@@ -49,11 +47,18 @@ function process() {
       document.getElementById("pw1").focus();
     } else {
       // Select old password field
-      oldpwbox.removeAttribute("hidden");
-      msgBox.setAttribute("hidden", "true");
+      oldpwbox.hidden = false;
+      msgBox.hidden = true;
       oldpwbox.setAttribute("inited", "false");
       oldpwbox.focus();
     }
+  }
+
+  if (
+    !token.hasPassword &&
+    !Services.policies.isAllowed("removeMasterPassword")
+  ) {
+    document.getElementById("admin").hidden = false;
   }
 
   if (params) {
@@ -102,7 +107,7 @@ function setPassword() {
               // empty passwords are not allowed in FIPS mode
               createAlert(
                 "pw-change-failed-title",
-                "pw-change2empty-in-fips-mode"
+                "pp-change2empty-in-fips-mode"
               );
               passok = 0;
             }
@@ -110,25 +115,25 @@ function setPassword() {
           if (passok) {
             token.changePassword(oldpw, pw1.value);
             if (pw1.value == "") {
-              createAlert("pw-change-success-title", "pw-erased-ok");
+              createAlert("pw-change-success-title", "settings-pp-erased-ok");
             } else {
-              createAlert("pw-change-success-title", "pw-change-ok");
+              createAlert("pw-change-success-title", "pp-change-ok");
             }
           }
         }
       } else {
         oldpwbox.focus();
         oldpwbox.setAttribute("value", "");
-        createAlert("pw-change-failed-title", "incorrect-pw");
+        createAlert("pw-change-failed-title", "incorrect-pp");
       }
     } catch (e) {
-      Cu.reportError(e);
-      createAlert("pw-change-failed-title", "failed-pw-change");
+      console.error(e);
+      createAlert("pw-change-failed-title", "failed-pp-change");
     }
   } else {
     token.initPassword(pw1.value);
     if (pw1.value == "") {
-      createAlert("pw-change-success-title", "pw-not-wanted");
+      createAlert("pw-change-success-title", "settings-pp-not-wanted");
     }
   }
 }
@@ -204,7 +209,10 @@ function checkPasswords() {
     }
   }
 
-  if (pw1 == pw2) {
+  if (
+    pw1 == pw2 &&
+    (pw1 != "" || Services.policies.isAllowed("removeMasterPassword"))
+  ) {
     ok.setAttribute("disabled", "false");
   } else {
     ok.setAttribute("disabled", "true");

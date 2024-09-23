@@ -6,60 +6,14 @@
 
 #include "StyleInfo.h"
 
-#include "mozilla/dom/Element.h"
-#include "nsComputedDOMStyle.h"
-#include "nsCSSProps.h"
-#include "nsIFrame.h"
+#include "nsStyleConsts.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
 
-StyleInfo::StyleInfo(dom::Element* aElement) : mElement(aElement) {
-  mComputedStyle =
-      nsComputedDOMStyle::GetComputedStyleNoFlush(aElement, nullptr);
-}
-
-void StyleInfo::Display(nsAString& aValue) {
-  aValue.Truncate();
-  mComputedStyle->GetComputedPropertyValue(eCSSProperty_display, aValue);
-}
-
-void StyleInfo::TextAlign(nsAString& aValue) {
-  aValue.Truncate();
-  mComputedStyle->GetComputedPropertyValue(eCSSProperty_text_align, aValue);
-}
-
-void StyleInfo::TextIndent(nsAString& aValue) {
-  aValue.Truncate();
-
-  const auto& textIndent = mComputedStyle->StyleText()->mTextIndent;
-  if (textIndent.ConvertsToLength()) {
-    aValue.AppendFloat(textIndent.ToLengthInCSSPixels());
-    aValue.AppendLiteral("px");
-    return;
-  }
-  if (textIndent.ConvertsToPercentage()) {
-    aValue.AppendFloat(textIndent.ToPercentage() * 100);
-    aValue.AppendLiteral("%");
-    return;
-  }
-  // FIXME: This doesn't handle calc in any meaningful way? Probably should just
-  // use the Servo serialization code...
-  aValue.AppendLiteral("0px");
-}
-
-void StyleInfo::Margin(Side aSide, nsAString& aValue) {
-  MOZ_ASSERT(mElement->GetPrimaryFrame(),
-             " mElement->GetPrimaryFrame() needs to be valid pointer");
-  aValue.Truncate();
-
-  nscoord coordVal = mElement->GetPrimaryFrame()->GetUsedMargin().Side(aSide);
-  aValue.AppendFloat(nsPresContext::AppUnitsToFloatCSSPixels(coordVal));
-  aValue.AppendLiteral("px");
-}
-
-void StyleInfo::FormatColor(const nscolor& aValue, nsString& aFormattedValue) {
+void StyleInfo::FormatColor(const nscolor& aValue, nsAString& aFormattedValue) {
   // Combine the string like rgb(R, G, B) from nscolor.
+  // FIXME: What about the alpha channel?
   aFormattedValue.AppendLiteral("rgb(");
   aFormattedValue.AppendInt(NS_GET_R(aValue));
   aFormattedValue.AppendLiteral(", ");
@@ -69,25 +23,28 @@ void StyleInfo::FormatColor(const nscolor& aValue, nsString& aFormattedValue) {
   aFormattedValue.Append(')');
 }
 
-void StyleInfo::FormatTextDecorationStyle(uint8_t aValue,
-                                          nsAString& aFormattedValue) {
+already_AddRefed<nsAtom> StyleInfo::TextDecorationStyleToAtom(
+    StyleTextDecorationStyle aValue) {
   // TODO: When these are enum classes that rust also understands we should just
   // make an FFI call here.
+  // TODO: These should probably be static atoms.
   switch (aValue) {
-    case NS_STYLE_TEXT_DECORATION_STYLE_NONE:
-      return aFormattedValue.AssignASCII("-moz-none");
-    case NS_STYLE_TEXT_DECORATION_STYLE_SOLID:
-      return aFormattedValue.AssignASCII("solid");
-    case NS_STYLE_TEXT_DECORATION_STYLE_DOUBLE:
-      return aFormattedValue.AssignASCII("double");
-    case NS_STYLE_TEXT_DECORATION_STYLE_DOTTED:
-      return aFormattedValue.AssignASCII("dotted");
-    case NS_STYLE_TEXT_DECORATION_STYLE_DASHED:
-      return aFormattedValue.AssignASCII("dashed");
-    case NS_STYLE_TEXT_DECORATION_STYLE_WAVY:
-      return aFormattedValue.AssignASCII("wavy");
+    case StyleTextDecorationStyle::None:
+      return NS_Atomize("-moz-none");
+    case StyleTextDecorationStyle::Solid:
+      return NS_Atomize("solid");
+    case StyleTextDecorationStyle::Double:
+      return NS_Atomize("double");
+    case StyleTextDecorationStyle::Dotted:
+      return NS_Atomize("dotted");
+    case StyleTextDecorationStyle::Dashed:
+      return NS_Atomize("dashed");
+    case StyleTextDecorationStyle::Wavy:
+      return NS_Atomize("wavy");
     default:
       MOZ_ASSERT_UNREACHABLE("Unknown decoration style");
       break;
   }
+
+  return nullptr;
 }

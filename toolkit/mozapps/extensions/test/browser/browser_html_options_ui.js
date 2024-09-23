@@ -1,17 +1,13 @@
 /* eslint max-len: ["error", 80] */
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
-const { ExtensionParent } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionParent.jsm"
+const { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
 );
 
 AddonTestUtils.initMochitest(this);
-
-function getAddonCard(doc, id) {
-  return doc.querySelector(`addon-card[addon-id="${id}"]`);
-}
 
 // This test function helps to detect when an addon options browser have been
 // inserted in the about:addons page.
@@ -42,7 +38,7 @@ add_task(async function testInlineOptions() {
   let id = "inline@mochi.test";
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
       options_ui: {
         page: "options.html",
       },
@@ -82,7 +78,7 @@ add_task(async function testInlineOptions() {
   let doc = win.document;
 
   // Make sure we found the right card.
-  let card = getAddonCard(doc, id);
+  let card = getAddonCard(win, id);
   ok(card, "Found the card");
 
   // The preferences option should be visible.
@@ -119,13 +115,7 @@ add_task(async function testInlineOptions() {
     "The browser has the expected options URL"
   );
   is(url, card.addon.optionsURL, "Browser has the expected options URL loaded");
-  let stack = browser.closest("stack");
-  is(
-    browser.clientWidth,
-    stack.clientWidth,
-    "Browser should be the same width as its direct parent"
-  );
-  ok(stack.clientWidth > 0, "The stack has a width");
+  Assert.greater(browser.clientWidth, 0, "The browser has a width");
   ok(
     card.querySelector('[action="preferences"]').hidden,
     "The preferences option is hidden now"
@@ -167,8 +157,7 @@ add_task(async function testInlineOptions() {
   info("Switch back, check browser is shown");
   prefsBtn.click();
 
-  is(browser.clientWidth, stack.clientWidth, "The browser width is set again");
-  ok(stack.clientWidth > 0, "The stack has a width");
+  Assert.greater(browser.clientWidth, 0, "The browser has a width");
 
   await closeView(win);
   await extension.unload();
@@ -179,7 +168,7 @@ add_task(async function testCardRerender() {
   let id = "rerender@mochi.test";
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
       options_ui: {
         page: "options.html",
       },
@@ -200,7 +189,7 @@ add_task(async function testCardRerender() {
   let win = await loadInitialView("extension");
   let doc = win.document;
 
-  let card = getAddonCard(doc, id);
+  let card = getAddonCard(win, id);
   let loaded = waitForViewLoad(win);
   card.querySelector('[action="expand"]').click();
   await loaded;
@@ -286,7 +275,7 @@ add_task(async function testRemovedOnDisable() {
   let id = "disable@mochi.test";
   const xpiFile = AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
       options_ui: {
         page: "options.html",
       },
@@ -302,16 +291,14 @@ add_task(async function testRemovedOnDisable() {
 
   // Opens the prefs page.
   let loaded = waitForViewLoad(win);
-  getAddonCard(doc, id)
-    .querySelector("[action=preferences]")
-    .click();
+  getAddonCard(win, id).querySelector("[action=preferences]").click();
   await loaded;
 
   let inlineOptions = doc.querySelector("inline-options-browser");
   ok(inlineOptions, "There's an inline-options-browser element");
   ok(inlineOptions.querySelector("browser"), "The browser exists");
 
-  let card = getAddonCard(doc, id);
+  let card = getAddonCard(win, id);
   let { deck } = card.details;
   is(deck.selectedViewName, "preferences", "Preferences are the active tab");
 
@@ -353,7 +340,7 @@ add_task(async function testUpgradeTemporary() {
   async function loadExtension(version) {
     let extension = ExtensionTestUtils.loadExtension({
       manifest: {
-        applications: { gecko: { id } },
+        browser_specific_settings: { gecko: { id } },
         version,
         options_ui: {
           page: "options.html",
@@ -390,7 +377,7 @@ add_task(async function testUpgradeTemporary() {
   let win = await loadInitialView("extension");
   let doc = win.document;
 
-  let card = getAddonCard(doc, id);
+  let card = getAddonCard(win, id);
   let loaded = waitForViewLoad(win);
   card.querySelector('[action="expand"]').click();
   await loaded;
@@ -427,7 +414,7 @@ add_task(async function testReloadExtension() {
   let id = "reload@mochi.test";
   let xpiFile = AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
       options_ui: {
         page: "options.html",
       },
@@ -449,7 +436,7 @@ add_task(async function testReloadExtension() {
   let win = await loadInitialView("extension");
   let doc = win.document;
 
-  let card = getAddonCard(doc, id);
+  let card = getAddonCard(win, id);
   let loaded = waitForViewLoad(win);
   card.querySelector('[action="expand"]').click();
   await loaded;
@@ -475,4 +462,183 @@ add_task(async function testReloadExtension() {
 
   await closeView(win);
   await addon.uninstall();
+});
+
+async function testSelectPosition(optionsBrowser, zoom) {
+  let popupShownPromise = BrowserTestUtils.waitForSelectPopupShown(window);
+  await BrowserTestUtils.synthesizeMouseAtCenter("select", {}, optionsBrowser);
+  let popup = await popupShownPromise;
+  let popupLeft = popup.shadowRoot.querySelector(
+    ".menupopup-arrowscrollbox"
+  ).screenX;
+  let browserLeft = optionsBrowser.screenX * zoom;
+  Assert.lessOrEqual(
+    Math.abs(popupLeft - browserLeft),
+    1,
+    `Popup should be correctly positioned: ${popupLeft} vs. ${browserLeft}`
+  );
+  popup.hidePopup();
+}
+
+async function testOptionsZoom(type = "full") {
+  let id = `${type}-zoom@mochi.test`;
+  let zoomProp = `${type}Zoom`;
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      browser_specific_settings: { gecko: { id } },
+      options_ui: {
+        page: "options.html",
+      },
+    },
+    files: {
+      "options.html": `
+        <!doctype html>
+        <script src="options.js"></script>
+        <body style="height: 500px">
+          <p>Some text</p>
+          <p>
+            <select>
+              <option>A</option>
+              <option>B</option>
+            </select>
+          </p>
+        </body>
+      `,
+      "options.js": () => {
+        window.addEventListener("load", function () {
+          browser.test.sendMessage("options-loaded");
+        });
+      },
+    },
+    useAddonManager: "permanent",
+  });
+  await extension.startup();
+
+  let win = await loadInitialView("extension");
+  let doc = win.document;
+
+  gBrowser.selectedBrowser[zoomProp] = 2;
+
+  let card = getAddonCard(win, id);
+  let loaded = waitForViewLoad(win);
+  card.querySelector('[action="expand"]').click();
+  await loaded;
+
+  card = doc.querySelector("addon-card");
+
+  let browserAdded = waitOptionsBrowserInserted();
+  card.querySelector('.tab-button[name="preferences"]').click();
+  let optionsBrowser = await browserAdded;
+  // Wait for the browser to load.
+  await extension.awaitMessage("options-loaded");
+
+  is(optionsBrowser[zoomProp], 2, `Options browser inherited ${zoomProp}`);
+
+  await testSelectPosition(optionsBrowser, type == "full" ? 2 : 1);
+
+  gBrowser.selectedBrowser[zoomProp] = 0.5;
+
+  is(
+    optionsBrowser[zoomProp],
+    0.5,
+    `Options browser reacts to ${zoomProp} change`
+  );
+
+  await closeView(win);
+  await extension.unload();
+}
+
+add_task(function testOptionsFullZoom() {
+  return testOptionsZoom("full");
+});
+
+add_task(function testOptionsTextZoom() {
+  return testOptionsZoom("text");
+});
+
+add_task(async function testInputAndQuickFind() {
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      options_ui: {
+        page: "options.html",
+      },
+    },
+    files: {
+      "options.html": `
+        <html>
+          <body>
+            <input name="some-input" type="text">
+            <script src="options.js"></script>
+          </body>
+        </html>
+      `,
+      "options.js": () => {
+        let input = document.querySelector("input");
+        browser.test.assertEq(
+          "some-input",
+          input.getAttribute("name"),
+          "Expected options page input"
+        );
+        input.addEventListener("input", event => {
+          browser.test.sendMessage("input-changed", event.target.value);
+        });
+
+        browser.test.sendMessage("options-loaded", window.location.href);
+      },
+    },
+    useAddonManager: "temporary",
+  });
+  await extension.startup();
+
+  let win = await loadInitialView("extension");
+  let doc = win.document;
+
+  // Make sure we found the right card.
+  let card = getAddonCard(win, extension.id);
+  ok(card, "Found the card");
+
+  // The preferences option should be visible.
+  let preferences = card.querySelector('[action="preferences"]');
+  ok(!preferences.hidden, "The preferences option is visible");
+
+  // Open the preferences page.
+  let loaded = waitForViewLoad(win);
+  preferences.click();
+  await loaded;
+
+  // Verify we're on the preferences tab.
+  card = doc.querySelector("addon-card");
+  is(card.addon.id, extension.id, "The right page was loaded");
+
+  // Wait for the browser to load.
+  let url = await extension.awaitMessage("options-loaded");
+
+  // Check the attributes of the options browser.
+  let browser = card.querySelector("inline-options-browser browser");
+  ok(browser, "The visible view has a browser");
+  ok(card.addon.optionsURL.length, "Options URL is not empty");
+  is(
+    browser.currentURI.spec,
+    card.addon.optionsURL,
+    "The browser has the expected options URL"
+  );
+  is(url, card.addon.optionsURL, "Browser has the expected options URL loaded");
+
+  // Focus the options browser.
+  browser.focus();
+
+  // Focus the input in the options page.
+  await SpecialPowers.spawn(browser, [], () => {
+    content.document.querySelector("input").focus();
+  });
+
+  info("input in options page should be focused, typing...");
+  // Type '/'.
+  EventUtils.synthesizeKey("/");
+
+  let inputValue = await extension.awaitMessage("input-changed");
+  is(inputValue, "/", "Expected input to contain a slash");
+
+  await closeView(win);
+  await extension.unload();
 });

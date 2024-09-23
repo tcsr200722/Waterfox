@@ -10,7 +10,6 @@ add_test(async _ => {
     "Force the cookie service to be initialized to avoid issues later. " +
       "See https://bugzilla.mozilla.org/show_bug.cgi?id=1621759#c3"
   );
-  Services.prefs.setBoolPref("browser.safebrowsing.passwords.enabled", true);
 
   let classifier = Cc["@mozilla.org/url-classifier/dbservice;1"].getService(
     Ci.nsIURIClassifier
@@ -21,7 +20,6 @@ add_test(async _ => {
     { name: "a", expectedResult: false },
     { name: "tracking-annotation", expectedResult: true },
     { name: "tracking-protection", expectedResult: true },
-    { name: "login-reputation", expectedResult: true },
   ];
 
   tests.forEach(test => {
@@ -48,7 +46,7 @@ add_test(async _ => {
     classifier.asyncClassifyLocalWithFeatures(
       uri,
       [feature],
-      Ci.nsIUrlClassifierFeature.blacklist,
+      Ci.nsIUrlClassifierFeature.blocklist,
       r => {
         resolve(r);
       }
@@ -67,7 +65,7 @@ add_test(async _ => {
     classifier.asyncClassifyLocalWithFeatures(
       uri,
       [feature],
-      Ci.nsIUrlClassifierFeature.blacklist,
+      Ci.nsIUrlClassifierFeature.blocklist,
       r => {
         resolve(r);
       }
@@ -76,7 +74,7 @@ add_test(async _ => {
   equal(results.length, 1, "Tracker");
   let result = results[0];
   equal(result.feature.name, "tracking-protection", "Correct feature");
-  equal(result.list, "tracking-blacklist-pref", "Correct list");
+  equal(result.list, "tracking-blocklist-pref", "Correct list");
 
   Services.prefs.clearUserPref("browser.safebrowsing.password.enabled");
   run_next_test();

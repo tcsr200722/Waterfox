@@ -13,6 +13,7 @@ mod boilerplate;
 use crate::boilerplate::Example;
 use gleam::gl;
 use webrender::api::*;
+use webrender::render_api::*;
 use webrender::api::units::*;
 
 
@@ -66,7 +67,6 @@ impl ExternalImageHandler for YuvImageProvider {
         &mut self,
         key: ExternalImageId,
         _channel_index: u8,
-        _rendering: ImageRendering
     ) -> ExternalImage {
         let id = self.texture_ids[key.0 as usize];
         ExternalImage {
@@ -93,11 +93,11 @@ impl Example for App {
         pipeline_id: PipelineId,
         _document_id: DocumentId,
     ) {
-        let bounds = LayoutRect::new(LayoutPoint::zero(), builder.content_size());
+        let bounds = LayoutRect::from_size(LayoutSize::new(500.0, 500.0));
         let space_and_clip = SpaceAndClipInfo::root_scroll(pipeline_id);
 
         builder.push_simple_stacking_context(
-            bounds.origin,
+            bounds.min,
             space_and_clip.spatial_id,
             PrimitiveFlags::IS_BACKFACE_VISIBLE,
         );
@@ -113,7 +113,7 @@ impl Example for App {
                 id: ExternalImageId(0),
                 channel_index: 0,
                 image_type: ExternalImageType::TextureHandle(
-                    TextureTarget::Default,
+                    ImageBufferKind::Texture2D,
                 ),
             }),
             None,
@@ -125,7 +125,7 @@ impl Example for App {
                 id: ExternalImageId(1),
                 channel_index: 0,
                 image_type: ExternalImageType::TextureHandle(
-                    TextureTarget::Default,
+                    ImageBufferKind::Texture2D,
                 ),
             }),
             None,
@@ -137,7 +137,7 @@ impl Example for App {
                 id: ExternalImageId(2),
                 channel_index: 0,
                 image_type: ExternalImageType::TextureHandle(
-                    TextureTarget::Default,
+                    ImageBufferKind::Texture2D,
                 ),
             }),
             None,
@@ -149,14 +149,14 @@ impl Example for App {
                 id: ExternalImageId(3),
                 channel_index: 0,
                 image_type: ExternalImageType::TextureHandle(
-                    TextureTarget::Default,
+                    ImageBufferKind::Texture2D,
                 ),
             }),
             None,
         );
 
         let info = CommonItemProperties::new(
-            LayoutRect::new(LayoutPoint::new(100.0, 0.0), LayoutSize::new(100.0, 100.0)),
+            LayoutRect::from_origin_and_size(LayoutPoint::new(100.0, 0.0), LayoutSize::new(100.0, 100.0)),
             space_and_clip,
         );
         builder.push_yuv_image(
@@ -170,7 +170,7 @@ impl Example for App {
         );
 
         let info = CommonItemProperties::new(
-            LayoutRect::new(LayoutPoint::new(300.0, 0.0), LayoutSize::new(100.0, 100.0)),
+            LayoutRect::from_origin_and_size(LayoutPoint::new(300.0, 0.0), LayoutSize::new(100.0, 100.0)),
             space_and_clip,
         );
         builder.push_yuv_image(
@@ -188,21 +188,21 @@ impl Example for App {
 
     fn on_event(
         &mut self,
-        _event: winit::WindowEvent,
+        _event: winit::event::WindowEvent,
+        _window: &winit::window::Window,
         _api: &mut RenderApi,
         _document_id: DocumentId,
     ) -> bool {
         false
     }
 
-    fn get_image_handlers(
+    fn get_image_handler(
         &mut self,
         gl: &dyn gl::Gl,
-    ) -> (Option<Box<dyn ExternalImageHandler>>,
-          Option<Box<dyn OutputImageHandler>>) {
+    ) -> Option<Box<dyn ExternalImageHandler>> {
         let provider = YuvImageProvider::new(gl);
         self.texture_id = provider.texture_ids[0];
-        (Some(Box::new(provider)), None)
+        Some(Box::new(provider))
     }
 
     fn draw_custom(&mut self, gl: &dyn gl::Gl) {
@@ -217,8 +217,7 @@ fn main() {
         current_value: 0,
     };
 
-    let opts = webrender::RendererOptions {
-        debug_flags: webrender::DebugFlags::NEW_FRAME_INDICATOR | webrender::DebugFlags::NEW_SCENE_INDICATOR,
+    let opts = webrender::WebRenderOptions {
         ..Default::default()
     };
 

@@ -6,8 +6,8 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
   );
 
   /**
@@ -109,14 +109,14 @@
         for (var i = 0; i < rowCount; i++) {
           var k = (start + i) % rowCount;
           var listitem = this.getItemAtIndex(k);
-          if (!this._canUserSelect(listitem)) {
+          if (!this.canUserSelect(listitem)) {
             continue;
           }
           // allow richlistitems to specify the string being searched for
           var searchText =
             "searchLabel" in listitem
               ? listitem.searchLabel
-              : listitem.getAttribute("label"); // (see also bug 250123)
+              : listitem.getAttribute("label") || ""; // (see also bug 250123)
           searchText = searchText.substring(0, length).toLowerCase();
           if (searchText == incrementalString) {
             this.ensureIndexIsVisible(k);
@@ -126,7 +126,7 @@
         }
       });
 
-      this.addEventListener("focus", event => {
+      this.addEventListener("focus", () => {
         if (this.getRowCount() > 0) {
           if (this.currentIndex == -1) {
             this.currentIndex = this.getIndexOfFirstVisibleRow();
@@ -209,7 +209,6 @@
       if (kids && kids.item(0)) {
         this.selectItem(kids[0]);
       }
-      return val;
     }
     get value() {
       if (this.selectedItems.length) {
@@ -226,16 +225,15 @@
     // nsIDOMXULSelectControlElement
     set selType(val) {
       this.setAttribute("seltype", val);
-      return val;
     }
     get selType() {
-      return this.getAttribute("seltype");
+      return this.getAttribute("seltype") || "";
     }
 
     // nsIDOMXULSelectControlElement
     set currentItem(val) {
       if (this._currentItem == val) {
-        return val;
+        return;
       }
 
       if (this._currentItem) {
@@ -255,8 +253,6 @@
           this._fireEvent(val, "DOMMenuItemActive");
         }
       }
-
-      return val;
     }
     get currentItem() {
       return this._currentItem;
@@ -314,11 +310,7 @@
           return aItem.id;
         };
         state +=
-          " " +
-          [...this.selectedItems]
-            .filter(getId)
-            .map(getId)
-            .join(" ");
+          " " + [...this.selectedItems].filter(getId).map(getId).join(" ");
       }
       if (state) {
         this.setAttribute("last-selected", state);
@@ -345,7 +337,7 @@
         if (
           aStartItem &&
           aStartItem.localName == "richlistitem" &&
-          (!this._userSelecting || this._canUserSelect(aStartItem))
+          (!this._userSelecting || this.canUserSelect(aStartItem))
         ) {
           --aDelta;
           if (aDelta == 0) {
@@ -362,7 +354,7 @@
         if (
           aStartItem &&
           aStartItem.localName == "richlistitem" &&
-          (!this._userSelecting || this._canUserSelect(aStartItem))
+          (!this._userSelecting || this.canUserSelect(aStartItem))
         ) {
           --aDelta;
           if (aDelta == 0) {
@@ -762,7 +754,7 @@
       );
     }
 
-    moveByOffset(aOffset, aIsSelecting, aIsSelectingRange) {
+    moveByOffset(aOffset, aIsSelecting, aIsSelectingRange, aEvent) {
       if ((aIsSelectingRange || !aIsSelecting) && this.selType != "multiple") {
         return;
       }
@@ -779,18 +771,31 @@
 
       var newItem = this.getItemAtIndex(newIndex);
       // make sure that the item is actually visible/selectable
-      if (this._userSelecting && newItem && !this._canUserSelect(newItem)) {
+      if (this._userSelecting && newItem && !this.canUserSelect(newItem)) {
         newItem =
           aOffset > 0
             ? this.getNextItem(newItem, 1) || this.getPreviousItem(newItem, 1)
             : this.getPreviousItem(newItem, 1) || this.getNextItem(newItem, 1);
       }
       if (newItem) {
+        let hadFocus = this.currentItem.contains(document.activeElement);
         this.ensureIndexIsVisible(this.getIndexOfItem(newItem));
         if (aIsSelectingRange) {
           this.selectItemRange(null, newItem);
         } else if (aIsSelecting) {
           this.selectItem(newItem);
+        }
+        if (hadFocus) {
+          let flags =
+            Services.focus[
+              aEvent.type.startsWith("key") ? "FLAG_BYKEY" : "FLAG_BYJS"
+            ];
+          Services.focus.moveFocus(
+            window,
+            newItem,
+            Services.focus.MOVEFOCUS_FIRST,
+            flags
+          );
         }
 
         this.currentItem = newItem;
@@ -800,13 +805,17 @@
     _moveByOffsetFromUserEvent(aOffset, aEvent) {
       if (!aEvent.defaultPrevented) {
         this._userSelecting = true;
-        this.moveByOffset(aOffset, !aEvent.ctrlKey, aEvent.shiftKey);
+        this.moveByOffset(aOffset, !aEvent.ctrlKey, aEvent.shiftKey, aEvent);
         this._userSelecting = false;
         aEvent.preventDefault();
       }
     }
 
-    _canUserSelect(aItem) {
+    canUserSelect(aItem) {
+      if (aItem.disabled) {
+        return false;
+      }
+
       var style = document.defaultView.getComputedStyle(aItem);
       return (
         style.display != "none" &&
@@ -867,7 +876,9 @@
   /**
    * XUL:richlistitem element.
    */
-  MozElements.MozRichlistitem = class MozRichlistitem extends MozElements.BaseText {
+  MozElements.MozRichlistitem = class MozRichlistitem extends (
+    MozElements.BaseText
+  ) {
     constructor() {
       super();
 
@@ -879,7 +890,7 @@
        */
       this.addEventListener("mousedown", event => {
         var control = this.control;
-        if (!control || control.disabled) {
+        if (!control || this.disabled || control.disabled) {
           return;
         }
         if (
@@ -905,7 +916,7 @@
         }
 
         var control = this.control;
-        if (!control || control.disabled) {
+        if (!control || this.disabled || control.disabled) {
           return;
         }
         control._userSelecting = true;
@@ -931,6 +942,10 @@
       });
     }
 
+    connectedCallback() {
+      this._updateInnerControlsForSelection(this.selected);
+    }
+
     /**
      * nsIDOMXULSelectControlItemElement
      */
@@ -951,7 +966,6 @@
       else {
         this.removeAttribute("searchlabel");
       }
-      return val;
     }
 
     get searchLabel() {
@@ -964,11 +978,10 @@
      */
     set value(val) {
       this.setAttribute("value", val);
-      return val;
     }
 
     get value() {
-      return this.getAttribute("value");
+      return this.getAttribute("value") || "";
     }
 
     /**
@@ -980,8 +993,7 @@
       } else {
         this.removeAttribute("selected");
       }
-
-      return val;
+      this._updateInnerControlsForSelection(val);
     }
 
     get selected() {
@@ -1007,11 +1019,20 @@
       } else {
         this.removeAttribute("current");
       }
-      return val;
     }
 
     get current() {
       return this.getAttribute("current") == "true";
+    }
+
+    _updateInnerControlsForSelection(selected) {
+      for (let control of this.querySelectorAll("button,menulist")) {
+        if (!selected && control.tabIndex == 0) {
+          control.tabIndex = -1;
+        } else if (selected && control.tabIndex == -1) {
+          control.tabIndex = 0;
+        }
+      }
     }
   };
 

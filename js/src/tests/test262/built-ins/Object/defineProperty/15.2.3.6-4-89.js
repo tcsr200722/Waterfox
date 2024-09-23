@@ -23,20 +23,18 @@ try {
   Object.defineProperty(obj, "foo", {
     value: 20
   });
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
-  verifyEqualTo(obj, "foo", 10);
-
-  verifyNotWritable(obj, "foo");
-
-  verifyNotEnumerable(obj, "foo");
-
-  verifyNotConfigurable(obj, "foo");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(obj, "foo", {
+  value: 10,
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

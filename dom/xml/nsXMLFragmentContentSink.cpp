@@ -17,6 +17,7 @@
 #include "mozilla/dom/NodeInfo.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsError.h"
+#include "nsIDocShell.h"
 #include "nsIScriptError.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
@@ -36,8 +37,8 @@ class nsXMLFragmentContentSink : public nsXMLContentSink,
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED_NO_UNLINK(nsXMLFragmentContentSink,
-                                                     nsXMLContentSink)
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(nsXMLFragmentContentSink,
+                                           nsXMLContentSink)
 
   // nsIExpatSink
   NS_IMETHOD HandleDoctypeDecl(const nsAString& aSubset, const nsAString& aName,
@@ -88,7 +89,8 @@ class nsXMLFragmentContentSink : public nsXMLContentSink,
   virtual nsresult ProcessStyleLinkFromHeader(
       const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
       const nsAString& aIntegrity, const nsAString& aType,
-      const nsAString& aMedia, const nsAString& aReferrerPolicy) override;
+      const nsAString& aMedia, const nsAString& aReferrerPolicy,
+      const nsAString& aFetchPriority) override;
 
   // nsXMLContentSink overrides
   virtual nsresult MaybeProcessXSLTLink(
@@ -129,13 +131,8 @@ NS_INTERFACE_MAP_END_INHERITING(nsXMLContentSink)
 NS_IMPL_ADDREF_INHERITED(nsXMLFragmentContentSink, nsXMLContentSink)
 NS_IMPL_RELEASE_INHERITED(nsXMLFragmentContentSink, nsXMLContentSink)
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXMLFragmentContentSink)
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsXMLFragmentContentSink,
-                                                  nsXMLContentSink)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTargetDocument)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRoot)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+NS_IMPL_CYCLE_COLLECTION_INHERITED(nsXMLFragmentContentSink, nsXMLContentSink,
+                                   mTargetDocument, mRoot)
 
 NS_IMETHODIMP
 nsXMLFragmentContentSink::WillBuildModel(nsDTDMode aDTDMode) {
@@ -291,7 +288,8 @@ nsXMLFragmentContentSink::ReportError(const char16_t* aErrorText,
 nsresult nsXMLFragmentContentSink::ProcessStyleLinkFromHeader(
     const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
     const nsAString& aIntegrity, const nsAString& aType,
-    const nsAString& aMedia, const nsAString& aReferrerPolicy)
+    const nsAString& aMedia, const nsAString& aReferrerPolicy,
+    const nsAString& aFetchPriority)
 
 {
   MOZ_ASSERT_UNREACHABLE("Shouldn't have headers for a fragment sink");

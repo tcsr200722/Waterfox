@@ -34,6 +34,7 @@
 #include "nsIURL.h"
 #include "nsIURIMutator.h"
 #include "mozilla/dom/Document.h"
+#include "nsICookieJarSettings.h"
 #include "nsIPrincipal.h"
 #include "nsIWebBrowserPersist.h"
 #include "nsEscape.h"
@@ -64,9 +65,11 @@ class MOZ_STACK_CLASS DragDataProducer {
                    nsIContent* aSelectionTargetNode, bool aIsAltKeyPressed);
   nsresult Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
                    Selection** aSelection, nsIContent** aDragNode,
-                   nsIPrincipal** aPrincipal, nsIContentSecurityPolicy** aCsp);
+                   nsIContentSecurityPolicy** aCsp,
+                   nsICookieJarSettings** aCookieJarSettings);
 
  private:
+  // @param aHidden true, iff the data should be hidden from non-chrome code.
   void AddString(DataTransfer* aDataTransfer, const nsAString& aFlavor,
                  const nsAString& aData, nsIPrincipal* aPrincipal,
                  bool aHidden = false);
@@ -77,10 +80,8 @@ class MOZ_STACK_CLASS DragDataProducer {
                                             nsIContent* inRealTargetNode,
                                             nsIContent** outImageOrLinkNode,
                                             bool* outDragSelectedText);
-  static already_AddRefed<nsIContent> FindParentLinkNode(nsIContent* inNode);
-  static MOZ_MUST_USE nsresult GetAnchorURL(nsIContent* inNode,
-                                            nsAString& outURL);
-  static void GetNodeString(nsIContent* inNode, nsAString& outNodeString);
+  [[nodiscard]] static nsresult GetAnchorURL(nsIContent* inNode,
+                                             nsAString& outURL);
   static void CreateLinkText(const nsAString& inURL, const nsAString& inText,
                              nsAString& outLinkText);
 
@@ -109,16 +110,16 @@ nsresult nsContentAreaDragDrop::GetDragData(
     nsPIDOMWindowOuter* aWindow, nsIContent* aTarget,
     nsIContent* aSelectionTargetNode, bool aIsAltKeyPressed,
     DataTransfer* aDataTransfer, bool* aCanDrag, Selection** aSelection,
-    nsIContent** aDragNode, nsIPrincipal** aPrincipal,
-    nsIContentSecurityPolicy** aCsp) {
+    nsIContent** aDragNode, nsIContentSecurityPolicy** aCsp,
+    nsICookieJarSettings** aCookieJarSettings) {
   NS_ENSURE_TRUE(aSelectionTargetNode, NS_ERROR_INVALID_ARG);
 
   *aCanDrag = true;
 
   DragDataProducer provider(aWindow, aTarget, aSelectionTargetNode,
                             aIsAltKeyPressed);
-  return provider.Produce(aDataTransfer, aCanDrag, aSelection, aDragNode,
-                          aPrincipal, aCsp);
+  return provider.Produce(aDataTransfer, aCanDrag, aSelection, aDragNode, aCsp,
+                          aCookieJarSettings);
 }
 
 NS_IMPL_ISUPPORTS(nsContentAreaDragDropDataProvider, nsIFlavorDataProvider)
@@ -128,8 +129,8 @@ NS_IMPL_ISUPPORTS(nsContentAreaDragDropDataProvider, nsIFlavorDataProvider)
 // into the file system
 nsresult nsContentAreaDragDropDataProvider::SaveURIToFile(
     nsIURI* inSourceURI, nsIPrincipal* inTriggeringPrincipal,
-    nsIFile* inDestFile, nsContentPolicyType inContentPolicyType,
-    bool isPrivate) {
+    nsICookieJarSettings* inCookieJarSettings, nsIFile* inDestFile,
+    nsContentPolicyType inContentPolicyType, bool isPrivate) {
   nsCOMPtr<nsIURL> sourceURL = do_QueryInterface(inSourceURI);
   if (!sourceURL) {
     return NS_ERROR_NO_INTERFACE;
@@ -148,9 +149,9 @@ nsresult nsContentAreaDragDropDataProvider::SaveURIToFile(
       nsIWebBrowserPersist::PERSIST_FLAGS_AUTODETECT_APPLY_CONVERSION);
 
   // referrer policy can be anything since the referrer is nullptr
-  return persist->SavePrivacyAwareURI(inSourceURI, inTriggeringPrincipal, 0,
-                                      nullptr, nullptr, nullptr, inDestFile,
-                                      inContentPolicyType, isPrivate);
+  return persist->SaveURI(inSourceURI, inTriggeringPrincipal, 0, nullptr,
+                          inCookieJarSettings, nullptr, nullptr, inDestFile,
+                          inContentPolicyType, isPrivate);
 }
 
 /*
@@ -177,7 +178,7 @@ nsresult CheckAndGetExtensionForMime(const nsCString& aExtension,
   }
 
   nsCOMPtr<nsIMIMEInfo> mimeInfo;
-  rv = mimeService->GetFromTypeAndExtension(aMimeType, EmptyCString(),
+  rv = mimeService->GetFromTypeAndExtension(aMimeType, ""_ns,
                                             getter_AddRefs(mimeInfo));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -258,42 +259,23 @@ nsContentAreaDragDropDataProvider::GetFlavorData(nsITransferable* aTransferable,
       supportsString = do_QueryInterface(tmp);
       if (!supportsString) return NS_ERROR_FAILURE;
 
-      nsAutoString imageRequestMime;
-      supportsString->GetData(imageRequestMime);
+      nsAutoString contentType;
+      supportsString->GetData(contentType);
 
-      // If we have a MIME type, check the extension is compatible
-      if (!imageRequestMime.IsEmpty()) {
-        // Build a URL to get the filename extension
-        nsCOMPtr<nsIURL> imageURL = do_QueryInterface(sourceURI, &rv);
-        NS_ENSURE_SUCCESS(rv, rv);
-
-        nsAutoCString extension;
-        rv = imageURL->GetFileExtension(extension);
-        NS_ENSURE_SUCCESS(rv, rv);
-
-        NS_ConvertUTF16toUTF8 mimeCString(imageRequestMime);
-        bool isValidExtension;
-        nsAutoCString primaryExtension;
-        rv = CheckAndGetExtensionForMime(extension, mimeCString,
-                                         &isValidExtension, &primaryExtension);
-        NS_ENSURE_SUCCESS(rv, rv);
-
-        if (!isValidExtension && !primaryExtension.IsEmpty()) {
-          // The filename extension is missing or incompatible
-          // with the MIME type, replace it with the primary
-          // extension.
-          nsAutoCString newFileName;
-          rv = imageURL->GetFileBaseName(newFileName);
-          NS_ENSURE_SUCCESS(rv, rv);
-          newFileName.Append(".");
-          newFileName.Append(primaryExtension);
-          targetFilename = NS_ConvertUTF8toUTF16(newFileName);
-        }
+      nsCOMPtr<nsIMIMEService> mimeService =
+          do_GetService("@mozilla.org/mime;1");
+      if (NS_WARN_IF(!mimeService)) {
+        return NS_ERROR_FAILURE;
       }
+
+      mimeService->ValidateFileNameForSaving(
+          targetFilename, NS_ConvertUTF16toUTF8(contentType),
+          nsIMIMEService::VALIDATE_DEFAULT, targetFilename);
+    } else {
+      // make the filename safe for the filesystem
+      targetFilename.ReplaceChar(
+          u"" FILE_PATH_SEPARATOR FILE_ILLEGAL_CHARACTERS, u'-');
     }
-    // make the filename safe for the filesystem
-    targetFilename.ReplaceChar(FILE_PATH_SEPARATOR FILE_ILLEGAL_CHARACTERS,
-                               '-');
 #endif /* defined(XP_MACOSX) */
 
     // get the target directory from the kFilePromiseDirectoryMime
@@ -313,11 +295,13 @@ nsContentAreaDragDropDataProvider::GetFlavorData(nsITransferable* aTransferable,
 
     bool isPrivate = aTransferable->GetIsPrivateData();
 
-    nsCOMPtr<nsIPrincipal> principal = aTransferable->GetRequestingPrincipal();
+    nsCOMPtr<nsIPrincipal> principal = aTransferable->GetDataPrincipal();
     nsContentPolicyType contentPolicyType =
         aTransferable->GetContentPolicyType();
-    rv =
-        SaveURIToFile(sourceURI, principal, file, contentPolicyType, isPrivate);
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+        aTransferable->GetCookieJarSettings();
+    rv = SaveURIToFile(sourceURI, principal, cookieJarSettings, file,
+                       contentPolicyType, isPrivate);
     // send back an nsIFile
     if (NS_SUCCEEDED(rv)) {
       CallQueryInterface(file, aData);
@@ -337,46 +321,38 @@ DragDataProducer::DragDataProducer(nsPIDOMWindowOuter* aWindow,
       mIsAltKeyPressed(aIsAltKeyPressed),
       mIsAnchor(false) {}
 
-//
-// FindParentLinkNode
-//
-// Finds the parent with the given link tag starting at |inNode|. If
-// it gets up to the root without finding it, we stop looking and
-// return null.
-//
-already_AddRefed<nsIContent> DragDataProducer::FindParentLinkNode(
-    nsIContent* inNode) {
-  nsIContent* content = inNode;
-  if (!content) {
-    // That must have been the document node; nothing else to do here;
-    return nullptr;
-  }
-
-  for (; content; content = content->GetParent()) {
-    if (nsContentUtils::IsDraggableLink(content)) {
-      nsCOMPtr<nsIContent> ret = content;
-      return ret.forget();
+static nsIContent* FindDragTarget(nsIContent* aContent) {
+  for (nsIContent* content = aContent; content;
+       content = content->GetFlattenedTreeParent()) {
+    if (nsContentUtils::ContentIsDraggable(content)) {
+      return content;
     }
   }
-
   return nullptr;
 }
 
 //
 // GetAnchorURL
 //
-nsresult DragDataProducer::GetAnchorURL(nsIContent* inNode, nsAString& outURL) {
-  nsCOMPtr<nsIURI> linkURI;
-  if (!inNode || !inNode->IsLink(getter_AddRefs(linkURI))) {
-    // Not a link
-    outURL.Truncate();
+nsresult DragDataProducer::GetAnchorURL(nsIContent* aContent, nsAString& aURL) {
+  aURL.Truncate();
+  auto* element = Element::FromNodeOrNull(aContent);
+  if (!element || !element->IsLink()) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIURI> linkURI = element->GetHrefURI();
+  if (!linkURI) {
     return NS_OK;
   }
 
   nsAutoCString spec;
   nsresult rv = linkURI->GetSpec(spec);
   NS_ENSURE_SUCCESS(rv, rv);
-  CopyUTF8toUTF16(spec, outURL);
+  nsIScriptSecurityManager* secMan = nsContentUtils::GetSecurityManager();
+  rv = secMan->CheckLoadURIStrWithPrincipal(aContent->NodePrincipal(), spec, 0);
+  NS_ENSURE_SUCCESS(rv, rv);
+  CopyUTF8toUTF16(spec, aURL);
   return NS_OK;
 }
 
@@ -392,37 +368,15 @@ void DragDataProducer::CreateLinkText(const nsAString& inURL,
   // use a temp var in case |inText| is the same string as
   // |outLinkText| to avoid overwriting it while building up the
   // string in pieces.
-  nsAutoString linkText(NS_LITERAL_STRING("<a href=\"") + inURL +
-                        NS_LITERAL_STRING("\">") + inText +
-                        NS_LITERAL_STRING("</a>"));
+  nsAutoString linkText(u"<a href=\""_ns + inURL + u"\">"_ns + inText +
+                        u"</a>"_ns);
 
   outLinkText = linkText;
 }
 
-//
-// GetNodeString
-//
-// Gets the text associated with a node
-//
-void DragDataProducer::GetNodeString(nsIContent* inNode,
-                                     nsAString& outNodeString) {
-  nsCOMPtr<nsINode> node = inNode;
-
-  outNodeString.Truncate();
-
-  // use a range to get the text-equivalent of the node
-  nsCOMPtr<Document> doc = node->OwnerDoc();
-  RefPtr<nsRange> range = doc->CreateRange(IgnoreErrors());
-  if (range) {
-    range->SelectNode(*node, IgnoreErrors());
-    range->ToString(outNodeString, IgnoreErrors());
-  }
-}
-
 nsresult DragDataProducer::GetImageData(imgIContainer* aImage,
                                         imgIRequest* aRequest) {
-  nsCOMPtr<nsIURI> imgUri;
-  aRequest->GetURI(getter_AddRefs(imgUri));
+  nsCOMPtr<nsIURI> imgUri = aRequest->GetURI();
 
   nsCOMPtr<nsIURL> imgUrl(do_QueryInterface(imgUri));
   if (imgUrl) {
@@ -436,54 +390,27 @@ nsresult DragDataProducer::GetImageData(imgIContainer* aImage,
     nsCString mimeType;
     aRequest->GetMimeType(getter_Copies(mimeType));
 
+    nsAutoCString fileName;
+    aRequest->GetFileName(fileName);
+
 #if defined(XP_MACOSX)
     // Save the MIME type so we can make sure the extension
     // is compatible (and replace it if it isn't) when the
     // image is dropped. On Mac, we need to get the OS MIME
     // handler information in the parent due to sandboxing.
     CopyUTF8toUTF16(mimeType, mImageRequestMime);
+    CopyUTF8toUTF16(fileName, mImageDestFileName);
 #else
     nsCOMPtr<nsIMIMEService> mimeService = do_GetService("@mozilla.org/mime;1");
     if (NS_WARN_IF(!mimeService)) {
       return NS_ERROR_FAILURE;
     }
 
-    nsCOMPtr<nsIMIMEInfo> mimeInfo;
-    mimeService->GetFromTypeAndExtension(mimeType, EmptyCString(),
-                                         getter_AddRefs(mimeInfo));
-    if (mimeInfo) {
-      nsAutoCString extension;
-      imgUrl->GetFileExtension(extension);
-
-      bool validExtension;
-      if (extension.IsEmpty() ||
-          NS_FAILED(mimeInfo->ExtensionExists(extension, &validExtension)) ||
-          !validExtension) {
-        // Fix the file extension in the URL
-        nsAutoCString primaryExtension;
-        mimeInfo->GetPrimaryExtension(primaryExtension);
-        if (!primaryExtension.IsEmpty()) {
-          rv = NS_MutateURI(imgUrl)
-                   .Apply(NS_MutatorMethod(&nsIURLMutator::SetFileExtension,
-                                           primaryExtension, nullptr))
-                   .Finalize(imgUrl);
-          NS_ENSURE_SUCCESS(rv, rv);
-        }
-      }
-    }
-#endif /* defined(XP_MACOSX) */
-
-    nsAutoCString fileName;
-    imgUrl->GetFileName(fileName);
-
-    NS_UnescapeURL(fileName);
-
-#if !defined(XP_MACOSX)
-    // make the filename safe for the filesystem
-    fileName.ReplaceChar(FILE_PATH_SEPARATOR FILE_ILLEGAL_CHARACTERS, '-');
-#endif
-
     CopyUTF8toUTF16(fileName, mImageDestFileName);
+    mimeService->ValidateFileNameForSaving(mImageDestFileName, mimeType,
+                                           nsIMIMEService::VALIDATE_DEFAULT,
+                                           mImageDestFileName);
+#endif
 
     // and the image object
     mImage = aImage;
@@ -495,8 +422,8 @@ nsresult DragDataProducer::GetImageData(imgIContainer* aImage,
 nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
                                    Selection** aSelection,
                                    nsIContent** aDragNode,
-                                   nsIPrincipal** aPrincipal,
-                                   nsIContentSecurityPolicy** aCsp) {
+                                   nsIContentSecurityPolicy** aCsp,
+                                   nsICookieJarSettings** aCookieJarSettings) {
   MOZ_ASSERT(aCanDrag && aSelection && aDataTransfer && aDragNode,
              "null pointer passed to Produce");
   NS_ASSERTION(mWindow, "window not set");
@@ -583,12 +510,13 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
       // Note that while <object> elements implement nsIFormControl, we should
       // really allow dragging them if they happen to be images.
       nsCOMPtr<nsIFormControl> form(do_QueryInterface(mTarget));
-      if (form && !mIsAltKeyPressed && form->ControlType() != NS_FORM_OBJECT) {
+      if (form && !mIsAltKeyPressed &&
+          form->ControlType() != FormControlType::Object) {
         *aCanDrag = false;
         return NS_OK;
       }
 
-      draggedNode = mTarget;
+      draggedNode = FindDragTarget(mTarget);
     }
 
     nsCOMPtr<nsIImageLoadingContent> image;
@@ -611,7 +539,7 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
       //
       // if the alt key is down, don't start a drag if we're in an
       // anchor because we want to do selection.
-      parentLink = FindParentLinkNode(draggedNode);
+      parentLink = nsContentUtils::GetClosestLinkInFlatTree(draggedNode);
       if (parentLink && mIsAltKeyPressed) {
         *aCanDrag = false;
         return NS_OK;
@@ -622,10 +550,7 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
     {
       // set for linked images, and links
       nsCOMPtr<nsIContent> linkNode;
-
-      RefPtr<HTMLAreaElement> areaElem =
-          HTMLAreaElement::FromNodeOrNull(draggedNode);
-      if (areaElem) {
+      if (const auto* areaElem = HTMLAreaElement::FromNodeOrNull(draggedNode)) {
         // use the alt text (or, if missing, the href) as the title
         areaElem->GetAttr(nsGkAtoms::alt, mTitleString);
         if (mTitleString.IsEmpty()) {
@@ -633,12 +558,12 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
           areaElem->GetAttr(nsGkAtoms::href, mTitleString);
         }
 
-        // we'll generate HTML like <a href="absurl">alt text</a>
-        mIsAnchor = true;
-
         // gives an absolute link
         nsresult rv = GetAnchorURL(draggedNode, mUrlString);
         NS_ENSURE_SUCCESS(rv, rv);
+
+        // we'll generate HTML like <a href="absurl">alt text</a>
+        mIsAnchor = true;
 
         mHtmlString.AssignLiteral("<a href=\"");
         mHtmlString.Append(mUrlString);
@@ -648,20 +573,25 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
 
         dragNode = draggedNode;
       } else if (image) {
-        mIsAnchor = true;
         // grab the href as the url, use alt text as the title of the
         // area if it's there.  the drag data is the image tag and src
         // attribute.
         nsCOMPtr<nsIURI> imageURI;
         image->GetCurrentURI(getter_AddRefs(imageURI));
+        nsCOMPtr<Element> imageElement(do_QueryInterface(image));
         if (imageURI) {
           nsAutoCString spec;
           rv = imageURI->GetSpec(spec);
           NS_ENSURE_SUCCESS(rv, rv);
+          nsIScriptSecurityManager* secMan =
+              nsContentUtils::GetSecurityManager();
+          rv = secMan->CheckLoadURIStrWithPrincipal(
+              imageElement->NodePrincipal(), spec, 0);
+          NS_ENSURE_SUCCESS(rv, rv);
+          mIsAnchor = true;
           CopyUTF8toUTF16(spec, mUrlString);
         }
 
-        nsCOMPtr<Element> imageElement(do_QueryInterface(image));
         // XXXbz Shouldn't we use the "title" attr for title?  Using
         // "alt" seems very wrong....
         // XXXbz Also, what if this is an nsIImageLoadingContent
@@ -693,10 +623,6 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
           nodeToSerialize = draggedNode;
         }
         dragNode = nodeToSerialize;
-      } else if (draggedNode && draggedNode->IsHTMLElement(nsGkAtoms::a)) {
-        // set linkNode. The code below will handle this
-        linkNode = draggedNode;  // XXX test this
-        GetNodeString(draggedNode, mTitleString);
       } else if (parentLink) {
         // parentLink will always be null if there's selected content
         linkNode = parentLink;
@@ -707,9 +633,9 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
       }
 
       if (linkNode) {
-        mIsAnchor = true;
         rv = GetAnchorURL(linkNode, mUrlString);
         NS_ENSURE_SUCCESS(rv, rv);
+        mIsAnchor = true;
         dragNode = linkNode;
       }
     }
@@ -727,6 +653,11 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
     nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp();
     if (csp) {
       NS_IF_ADDREF(*aCsp = csp);
+    }
+
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings = doc->CookieJarSettings();
+    if (cookieJarSettings) {
+      NS_IF_ADDREF(*aCookieJarSettings = cookieJarSettings);
     }
 
     // if we have selected text, use it in preference to the node
@@ -757,7 +688,7 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
     if (NS_SUCCEEDED(rv)) {
       data->GetData(mInfoString);
     }
-    rv = transferable->GetTransferData(kUnicodeMime, getter_AddRefs(supports));
+    rv = transferable->GetTransferData(kTextMime, getter_AddRefs(supports));
     data = do_QueryInterface(supports);
     NS_ENSURE_SUCCESS(rv, rv);  // require plain text at a minimum
     data->GetData(mTitleString);
@@ -809,37 +740,38 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
     // that expects url\ntitle formatted data for x-moz-url.
     nsAutoString title(mTitleString);
     title.Trim("\r\n");
-    title.ReplaceChar("\r\n", ' ');
+    title.ReplaceChar(u"\r\n", ' ');
     dragData += title;
 
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLMime), dragData, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLDataMime), mUrlString,
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLMime), dragData,
               principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLDescriptionMime),
-              mTitleString, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING("text/uri-list"), mUrlString,
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLDataMime),
+              mUrlString, principal);
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kURLDescriptionMime), mTitleString,
               principal);
+    AddString(aDataTransfer, u"text/uri-list"_ns, mUrlString, principal);
   }
 
   // add a special flavor for the html context data
   if (!mContextString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLContext), mContextString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLContext),
+              mContextString, principal);
 
   // add a special flavor if we have html info data
   if (!mInfoString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLInfo), mInfoString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLInfo),
+              mInfoString, principal);
 
   // add the full html
   if (!mHtmlString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLMime), mHtmlString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLMime),
+              mHtmlString, principal);
 
   // add the plain text. we use the url for text/plain data if an anchor is
   // being dragged, rather than the title text of the link or the alt text for
   // an anchor image.
-  AddString(aDataTransfer, NS_LITERAL_STRING(kTextMime),
+  AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kTextMime),
             mIsAnchor ? mUrlString : mTitleString, principal);
 
   // add image data, if present. For now, all we're going to do with
@@ -849,8 +781,9 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
   if (mImage) {
     RefPtr<nsVariantCC> variant = new nsVariantCC();
     variant->SetAsISupports(mImage);
-    aDataTransfer->SetDataWithPrincipal(NS_LITERAL_STRING(kNativeImageMime),
-                                        variant, 0, principal);
+    aDataTransfer->SetDataWithPrincipal(
+        NS_LITERAL_STRING_FROM_CSTRING(kNativeImageMime), variant, 0,
+        principal);
 
     // assume the image comes from a file, and add a file promise. We
     // register ourselves as a nsIFlavorDataProvider, and will use the
@@ -861,25 +794,27 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
     if (dataProvider) {
       RefPtr<nsVariantCC> variant = new nsVariantCC();
       variant->SetAsISupports(dataProvider);
-      aDataTransfer->SetDataWithPrincipal(NS_LITERAL_STRING(kFilePromiseMime),
-                                          variant, 0, principal);
+      aDataTransfer->SetDataWithPrincipal(
+          NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseMime), variant, 0,
+          principal);
     }
 
-    AddString(aDataTransfer, NS_LITERAL_STRING(kFilePromiseURLMime),
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseURLMime),
               mImageSourceString, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kFilePromiseDestFilename),
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseDestFilename),
               mImageDestFileName, principal);
 #if defined(XP_MACOSX)
-    AddString(aDataTransfer, NS_LITERAL_STRING(kImageRequestMime),
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kImageRequestMime),
               mImageRequestMime, principal, /* aHidden= */ true);
 #endif
 
     // if not an anchor, add the image url
     if (!mIsAnchor) {
-      AddString(aDataTransfer, NS_LITERAL_STRING(kURLDataMime), mUrlString,
-                principal);
-      AddString(aDataTransfer, NS_LITERAL_STRING("text/uri-list"), mUrlString,
-                principal);
+      AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLDataMime),
+                mUrlString, principal);
+      AddString(aDataTransfer, u"text/uri-list"_ns, mUrlString, principal);
     }
   }
 

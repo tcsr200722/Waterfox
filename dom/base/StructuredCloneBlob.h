@@ -7,18 +7,24 @@
 #ifndef mozilla_dom_StructuredCloneBlob_h
 #define mozilla_dom_StructuredCloneBlob_h
 
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/StructuredCloneHolder.h"
-#include "mozilla/dom/StructuredCloneHolderBinding.h"
-
-#include "jsapi.h"
-
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/StructuredCloneHolder.h"
 #include "nsIMemoryReporter.h"
 #include "nsISupports.h"
 
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
+
 namespace mozilla {
+
+class ErrorResult;
+
 namespace dom {
+
+class GlobalObject;
 
 class StructuredCloneBlob final : public nsIMemoryReporter {
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
@@ -34,18 +40,19 @@ class StructuredCloneBlob final : public nsIMemoryReporter {
                             StructuredCloneHolder* aHolder);
 
   static already_AddRefed<StructuredCloneBlob> Constructor(
-      GlobalObject& aGlobal, JS::HandleValue aValue,
-      JS::HandleObject aTargetGlobal, ErrorResult& aRv);
+      GlobalObject& aGlobal, const nsACString& aName,
+      const nsACString& aAnonymizedName, JS::Handle<JS::Value> aValue,
+      JS::Handle<JSObject*> aTargetGlobal, ErrorResult& aRv);
 
-  void Deserialize(JSContext* aCx, JS::HandleObject aTargetScope,
-                   bool aKeepData, JS::MutableHandleValue aResult,
+  void Deserialize(JSContext* aCx, JS::Handle<JSObject*> aTargetScope,
+                   bool aKeepData, JS::MutableHandle<JS::Value> aResult,
                    ErrorResult& aRv);
 
   nsISupports* GetParentObject() const { return nullptr; }
   JSObject* GetWrapper() const { return nullptr; }
 
   bool WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto,
-                  JS::MutableHandleObject aResult);
+                  JS::MutableHandle<JSObject*> aResult);
 
  protected:
   virtual ~StructuredCloneBlob();
@@ -65,6 +72,8 @@ class StructuredCloneBlob final : public nsIMemoryReporter {
                               StructuredCloneHolder* aHolder);
   };
 
+  nsCString mName;
+  nsCString mAnonymizedName;
   Maybe<Holder> mHolder;
 
   static already_AddRefed<StructuredCloneBlob> Create() {

@@ -17,6 +17,7 @@
 #include "txStylesheet.h"
 #include "txXPathTreeWalker.h"
 #include "nsTArray.h"
+#include "mozilla/Result.h"
 
 class txAOutputHandlerFactory;
 class txAXMLEventHandler;
@@ -52,7 +53,7 @@ class txLoadedDocumentsHash : public nsTHashtable<txLoadedDocumentEntry> {
  public:
   txLoadedDocumentsHash() : nsTHashtable<txLoadedDocumentEntry>(4) {}
   ~txLoadedDocumentsHash();
-  MOZ_MUST_USE nsresult init(const txXPathNode& aSource);
+  [[nodiscard]] nsresult init(const txXPathNode& aSource);
 
  private:
   friend class txExecutionState;
@@ -81,7 +82,7 @@ class txExecutionState : public txIMatchContext {
   };
 
   // Stack functions
-  nsresult pushEvalContext(txIEvalContext* aContext);
+  void pushEvalContext(txIEvalContext* aContext);
   txIEvalContext* popEvalContext();
 
   /**
@@ -91,9 +92,9 @@ class txExecutionState : public txIMatchContext {
    */
   void popAndDeleteEvalContextUntil(txIEvalContext* aContext);
 
-  nsresult pushBool(bool aBool);
+  void pushBool(bool aBool);
   bool popBool();
-  nsresult pushResultHandler(txAXMLEventHandler* aHandler);
+  void pushResultHandler(txAXMLEventHandler* aHandler);
   txAXMLEventHandler* popResultHandler();
   void pushTemplateRule(txStylesheet::ImportFrame* aFrame,
                         const txExpandedName& aMode, txParameterMap* aParams);
@@ -115,13 +116,14 @@ class txExecutionState : public txIMatchContext {
   }
 
   // state-modification functions
-  txInstruction* getNextInstruction();
+  mozilla::Result<txInstruction*, nsresult> getNextInstruction();
   nsresult runTemplate(txInstruction* aInstruction);
   nsresult runTemplate(txInstruction* aInstruction, txInstruction* aReturnTo);
   void gotoInstruction(txInstruction* aNext);
   void returnFromTemplate();
   nsresult bindVariable(const txExpandedName& aName, txAExprResult* aValue);
   void removeVariable(const txExpandedName& aName);
+  void stopProcessing() { mStopProcessing = true; }
 
   txAXMLEventHandler* mOutputHandler;
   txAXMLEventHandler* mResultHandler;
@@ -156,6 +158,7 @@ class txExecutionState : public txIMatchContext {
   txKeyHash mKeyHash;
   RefPtr<txResultRecycler> mRecycler;
   bool mDisableLoads;
+  bool mStopProcessing = false;
 
   static const int32_t kMaxRecursionDepth;
 };

@@ -7,10 +7,17 @@
 #ifndef mozilla_dom_FeaturePolicyUtils_h
 #define mozilla_dom_FeaturePolicyUtils_h
 
-#include "nsString.h"
 #include <functional>
 
 #include "mozilla/dom/FeaturePolicy.h"
+
+class PickleIterator;
+
+namespace IPC {
+class Message;
+class MessageReader;
+class MessageWriter;
+}  // namespace IPC
 
 namespace mozilla {
 namespace dom {
@@ -71,13 +78,13 @@ template <typename T>
 struct IPDLParamTraits;
 
 template <>
-struct IPDLParamTraits<mozilla::dom::FeaturePolicy*> {
-  static void Write(IPC::Message* aMsg, IProtocol* aActor,
-                    mozilla::dom::FeaturePolicy* aParam);
-  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
-                   IProtocol* aActor,
-                   RefPtr<mozilla::dom::FeaturePolicy>* aResult);
+struct IPDLParamTraits<dom::FeaturePolicyInfo> {
+  static void Write(IPC::MessageWriter* aWriter, IProtocol* aActor,
+                    const mozilla::dom::FeaturePolicyInfo& aParam);
+  static bool Read(IPC::MessageReader* aReader, IProtocol* aActor,
+                   dom::FeaturePolicyInfo* aResult);
 };
+
 }  // namespace ipc
 }  // namespace mozilla
 

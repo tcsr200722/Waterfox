@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.2.2
+esid: sec-set-constructor
 description: >
     Properties of the Set Constructor
 
@@ -10,10 +10,11 @@ description: >
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Set.length, 0, "The value of `Set.length` is `0`");
-
-verifyNotEnumerable(Set, "length");
-verifyNotWritable(Set, "length");
-verifyConfigurable(Set, "length");
+verifyProperty(Set, "length", {
+  value: 0,
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

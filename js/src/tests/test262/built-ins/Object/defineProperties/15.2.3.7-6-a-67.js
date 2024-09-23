@@ -28,14 +28,16 @@ try {
     }
   });
 
-  $ERROR("Expected TypeError");
+  throw new Test262Error("Expected TypeError");
 } catch (e) {
   assert(e instanceof TypeError);
-  verifyNotEnumerable(obj, "foo");
 
   assert.sameValue(obj.foo, 10);
 
-  verifyNotConfigurable(obj, "foo");
+  verifyProperty(obj, "foo", {
+    enumerable: false,
+    configurable: false,
+  });
 
   var desc = Object.getOwnPropertyDescriptor(obj, "foo");
 

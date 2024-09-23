@@ -9,10 +9,14 @@
 #include "mozilla/MemoryReporting.h"
 #include "gfxFT2FontBase.h"
 #include "gfxPlatformFontList.h"
+#include "nsTHashSet.h"
 
 namespace mozilla {
 namespace dom {
 class SystemFontListEntry;
+};
+namespace gfx {
+class FTUserFontData;
 };
 };  // namespace mozilla
 
@@ -20,10 +24,12 @@ class FontNameCache;
 typedef struct FT_FaceRec_* FT_Face;
 class nsZipArchive;
 class WillShutdownObserver;
-class FTUserFontData;
 
 class FT2FontEntry final : public gfxFT2FontEntryBase {
+  friend class gfxFT2FontList;
+
   using FontListEntry = mozilla::dom::SystemFontListEntry;
+  using FTUserFontData = mozilla::gfx::FTUserFontData;
 
  public:
   explicit FT2FontEntry(const nsACString& aFaceName)
@@ -59,8 +65,8 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
 
   hb_blob_t* GetFontTable(uint32_t aTableTag) override;
 
-  nsresult CopyFontTable(uint32_t aTableTag,
-                         nsTArray<uint8_t>& aBuffer) override;
+  bool HasFontTable(uint32_t aTableTag) override;
+  nsresult CopyFontTable(uint32_t aTableTag, nsTArray<uint8_t>&) override;
 
   bool HasVariations() override;
   void GetVariationAxes(
@@ -78,6 +84,12 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
 
   FT_MM_Var* GetMMVar() override;
 
+  // Get a harfbuzz face for this font, if possible. The caller is responsible
+  // to destroy the face when no longer needed.
+  // This may be a bit expensive, so avoid calling multiple times if the same
+  // face can be re-used for several purposes instead.
+  hb_face_t* CreateHBFace() const;
+
   /**
    * Append this face's metadata to aFaceList for storage in the FontNameCache
    * (for faster startup).
@@ -94,7 +106,9 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
   void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
                               FontListSizes* aSizes) const override;
 
-  RefPtr<mozilla::gfx::SharedFTFace> mFTFace;
+  // Strong reference (addref'd), but held in an atomic ptr rather than a
+  // normal RefPtr.
+  mozilla::Atomic<mozilla::gfx::SharedFTFace*> mFTFace;
 
   FT_MM_Var* mMMVar = nullptr;
 
@@ -103,8 +117,16 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
 
   mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontFreeType> mUnscaledFont;
 
-  bool mHasVariations = false;
-  bool mHasVariationsInitialized = false;
+  nsTHashSet<uint32_t> mAvailableTables;
+
+  enum class HasVariationsState : int8_t {
+    Uninitialized = -1,
+    No = 0,
+    Yes = 1,
+  };
+  std::atomic<HasVariationsState> mHasVariations =
+      HasVariationsState::Uninitialized;
+
   bool mMMVarInitialized = false;
 };
 
@@ -117,6 +139,8 @@ class FT2FontFamily final : public gfxFontFamily {
 
   // Append this family's faces to the IPC fontlist
   void AddFacesToFontList(nsTArray<FontListEntry>* aFontList);
+
+  void FinalizeMemberList(bool aSortFaces);
 };
 
 class gfxFT2FontList final : public gfxPlatformFontList {
@@ -130,7 +154,8 @@ class gfxFT2FontList final : public gfxPlatformFontList {
       mozilla::fontlist::Face* aFace,
       const mozilla::fontlist::Family* aFamily) override;
 
-  gfxFontEntry* LookupLocalFont(const nsACString& aFontName,
+  gfxFontEntry* LookupLocalFont(nsPresContext* aPresContext,
+                                const nsACString& aFontName,
                                 WeightRange aWeightForEntry,
                                 StretchRange aStretchForEntry,
                                 SlantStyleRange aStyleForEntry) override;
@@ -144,7 +169,7 @@ class gfxFT2FontList final : public gfxPlatformFontList {
 
   void WriteCache();
 
-  void ReadSystemFontList(nsTArray<FontListEntry>* aList);
+  void ReadSystemFontList(mozilla::dom::SystemFontList*);
 
   static gfxFT2FontList* PlatformFontList() {
     return static_cast<gfxFT2FontList*>(
@@ -160,25 +185,33 @@ class gfxFT2FontList final : public gfxPlatformFontList {
   typedef enum { kUnknown, kStandard } StandardFile;
 
   // initialize font lists
-  nsresult InitFontListForPlatform() override;
+  nsresult InitFontListForPlatform() MOZ_REQUIRES(mLock) override;
+
+  FontVisibility GetVisibilityForFamily(const nsACString& aName) const;
 
   void AppendFaceFromFontListEntry(const FontListEntry& aFLE,
-                                   StandardFile aStdFile);
+                                   StandardFile aStdFile) MOZ_REQUIRES(mLock);
 
   void AppendFacesFromBlob(const nsCString& aFileName, StandardFile aStdFile,
                            hb_blob_t* aBlob, FontNameCache* aCache,
-                           uint32_t aTimestamp, uint32_t aFilesize);
+                           uint32_t aTimestamp, uint32_t aFilesize)
+      MOZ_REQUIRES(mLock);
 
   void AppendFacesFromFontFile(const nsCString& aFileName,
-                               FontNameCache* aCache, StandardFile aStdFile);
+                               FontNameCache* aCache, StandardFile aStdFile)
+      MOZ_REQUIRES(mLock);
 
   void AppendFacesFromOmnijarEntry(nsZipArchive* aReader,
                                    const nsCString& aEntryName,
-                                   FontNameCache* aCache, bool aJarChanged);
+                                   FontNameCache* aCache, bool aJarChanged)
+      MOZ_REQUIRES(mLock);
 
-  void InitSharedFontListForPlatform() override;
+  void InitSharedFontListForPlatform() MOZ_REQUIRES(mLock) override;
   void CollectInitData(const FontListEntry& aFLE, const nsCString& aPSName,
                        const nsCString& aFullName, StandardFile aStdFile);
+
+  nsTArray<std::pair<const char**, uint32_t>> GetFilteredPlatformFontLists()
+      override;
 
   /**
    * Callback passed to AppendFacesFromCachedFaceList to collect family/face
@@ -200,21 +233,25 @@ class gfxFT2FontList final : public gfxPlatformFontList {
   bool AppendFacesFromCachedFaceList(CollectFunc aCollectFace,
                                      const nsCString& aFileName,
                                      const nsCString& aFaceList,
-                                     StandardFile aStdFile);
+                                     StandardFile aStdFile) MOZ_REQUIRES(mLock);
 
   void AddFaceToList(const nsCString& aEntryName, uint32_t aIndex,
                      StandardFile aStdFile, hb_face_t* aFace,
-                     nsCString& aFaceList);
+                     nsCString& aFaceList) MOZ_REQUIRES(mLock);
 
-  void FindFonts();
+  void FindFonts() MOZ_REQUIRES(mLock);
 
-  void FindFontsInOmnijar(FontNameCache* aCache);
+  void FindFontsInOmnijar(FontNameCache* aCache) MOZ_REQUIRES(mLock);
 
-  void FindFontsInDir(const nsCString& aDir, FontNameCache* aFNC);
+  void FindFontsInDir(const nsCString& aDir, FontNameCache* aFNC)
+      MOZ_REQUIRES(mLock);
 
-  FontFamily GetDefaultFontForPlatform(const gfxFontStyle* aStyle) override;
+  FontFamily GetDefaultFontForPlatform(nsPresContext* aPresContext,
+                                       const gfxFontStyle* aStyle,
+                                       nsAtom* aLanguage = nullptr)
+      MOZ_REQUIRES(mLock) override;
 
-  nsTHashtable<nsCStringHashKey> mSkipSpaceLookupCheckFamilies;
+  nsTHashSet<nsCString> mSkipSpaceLookupCheckFamilies;
 
  private:
   mozilla::UniquePtr<FontNameCache> mFontNameCache;

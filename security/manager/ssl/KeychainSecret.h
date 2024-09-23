@@ -17,7 +17,13 @@ class ScopedCFType {
  public:
   explicit ScopedCFType(T value) : mValue(value) {}
 
-  ~ScopedCFType() { CFRelease((CFTypeRef)mValue); }
+  MOZ_IMPLICIT ScopedCFType(decltype(nullptr)) : mValue(nullptr) {}
+
+  ~ScopedCFType() {
+    if (mValue) {
+      CFRelease((CFTypeRef)mValue);
+    }
+  }
 
   T get() { return mValue; }
 
@@ -36,8 +42,6 @@ class KeychainSecret final : public AbstractOSKeyStore {
   virtual nsresult StoreSecret(const nsACString& secret,
                                const nsACString& label) override;
   virtual nsresult DeleteSecret(const nsACString& label) override;
-  virtual nsresult Lock() override;
-  virtual nsresult Unlock() override;
 
   virtual ~KeychainSecret();
 };

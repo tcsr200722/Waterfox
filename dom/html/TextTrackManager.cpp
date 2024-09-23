@@ -7,7 +7,9 @@
 #include "mozilla/dom/TextTrackManager.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/dom/HTMLTrackElement.h"
@@ -15,7 +17,7 @@
 #include "mozilla/dom/TextTrack.h"
 #include "mozilla/dom/TextTrackCue.h"
 #include "nsComponentManagerUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIFrame.h"
 #include "nsIWebVTTParserWrapper.h"
 #include "nsVariant.h"
@@ -30,8 +32,7 @@ mozilla::LazyLogModule gTextTrackLog("WebVTT");
   MOZ_LOG(gTextTrackLog, LogLevel::Verbose, \
           ("TextTrackManager=%p, " msg, this, ##__VA_ARGS__))
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS(TextTrackManager::ShutdownObserverProxy, nsIObserver);
 
@@ -44,11 +45,12 @@ CompareTextTracks::CompareTextTracks(HTMLMediaElement* aMediaElement) {
   mMediaElement = aMediaElement;
 }
 
-int32_t CompareTextTracks::TrackChildPosition(TextTrack* aTextTrack) const {
+Maybe<uint32_t> CompareTextTracks::TrackChildPosition(
+    TextTrack* aTextTrack) const {
   MOZ_DIAGNOSTIC_ASSERT(aTextTrack);
   HTMLTrackElement* trackElement = aTextTrack->GetTrackElement();
   if (!trackElement) {
-    return -1;
+    return Nothing();
   }
   return mMediaElement->ComputeIndexOf(trackElement);
 }
@@ -79,12 +81,13 @@ bool CompareTextTracks::LessThan(TextTrack* aOne, TextTrack* aTwo) const {
   }
   switch (sourceOne) {
     case TextTrackSource::Track: {
-      int32_t positionOne = TrackChildPosition(aOne);
-      int32_t positionTwo = TrackChildPosition(aTwo);
-      // If either position one or positiontwo are -1 then something has gone
-      // wrong. In this case we should just put them at the back of the list.
-      return positionOne != -1 && positionTwo != -1 &&
-             positionOne < positionTwo;
+      Maybe<uint32_t> positionOne = TrackChildPosition(aOne);
+      Maybe<uint32_t> positionTwo = TrackChildPosition(aTwo);
+      // If either position one or positiontwo are Nothing then something has
+      // gone wrong. In this case we should just put them at the back of the
+      // list.
+      return positionOne.isSome() && positionTwo.isSome() &&
+             *positionOne < *positionTwo;
     }
     case TextTrackSource::AddTextTrack:
       // For AddTextTrack sources the tracks will already be in the correct
@@ -160,7 +163,6 @@ already_AddRefed<TextTrack> TextTrackManager::AddTextTrack(
              NS_ConvertUTF16toUTF8(aLabel).get(),
              NS_ConvertUTF16toUTF8(aLanguage).get());
   AddCues(track);
-  ReportTelemetryForTrack(track);
 
   if (aTextTrackSource == TextTrackSource::Track) {
     RefPtr<nsIRunnable> task = NewRunnableMethod(
@@ -179,7 +181,6 @@ void TextTrackManager::AddTextTrack(TextTrack* aTextTrack) {
   WEBVTT_LOG("AddTextTrack TextTrack %p", aTextTrack);
   mTextTracks->AddTextTrack(aTextTrack, CompareTextTracks(mMediaElement));
   AddCues(aTextTrack);
-  ReportTelemetryForTrack(aTextTrack);
 
   if (aTextTrack->GetTextTrackSource() == TextTrackSource::Track) {
     RefPtr<nsIRunnable> task = NewRunnableMethod(
@@ -257,7 +258,8 @@ void TextTrackManager::UpdateCueDisplay() {
     return;
   }
 
-  nsPIDOMWindowInner* window = mMediaElement->OwnerDoc()->GetInnerWindow();
+  RefPtr<nsPIDOMWindowInner> window =
+      mMediaElement->OwnerDoc()->GetInnerWindow();
   if (!window) {
     WEBVTT_LOG("Abort UpdateCueDisplay, because of no window.");
   }
@@ -272,7 +274,14 @@ void TextTrackManager::UpdateCueDisplay() {
                      showingCues.Length(),
                      static_cast<void*>(showingCues.Elements()));
   nsCOMPtr<nsIContent> controls = videoFrame->GetVideoControls();
-  sParserWrapper->ProcessCues(window, jsCues, overlay, controls);
+
+  nsContentUtils::AddScriptRunner(NS_NewRunnableFunction(
+      "TextTrackManager::UpdateCueDisplay",
+      [window, jsCues, overlay, controls]() {
+        if (sParserWrapper) {
+          sParserWrapper->ProcessCues(window, jsCues, overlay, controls);
+        }
+      }));
 }
 
 void TextTrackManager::NotifyCueAdded(TextTrackCue& aCue) {
@@ -310,14 +319,11 @@ void TextTrackManager::PopulatePendingList() {
 
 void TextTrackManager::AddListeners() {
   if (mMediaElement) {
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("resizecaption"), this,
-                                    false, false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("resizevideocontrols"),
-                                    this, false, false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("seeked"), this, false,
+    mMediaElement->AddEventListener(u"resizecaption"_ns, this, false, false);
+    mMediaElement->AddEventListener(u"resizevideocontrols"_ns, this, false,
                                     false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("controlbarchange"), this,
-                                    false, true);
+    mMediaElement->AddEventListener(u"seeked"_ns, this, false, false);
+    mMediaElement->AddEventListener(u"controlbarchange"_ns, this, false, true);
   }
 }
 
@@ -457,7 +463,7 @@ class SimpleTextTrackEvent : public Runnable {
 
   void Dispatch() {
     if (nsCOMPtr<nsIGlobalObject> global = mCue->GetOwnerGlobal()) {
-      global->Dispatch(TaskCategory::Other, do_AddRef(this));
+      global->Dispatch(do_AddRef(this));
     } else {
       NS_DispatchToMainThread(do_AddRef(this));
     }
@@ -472,14 +478,14 @@ class SimpleTextTrackEvent : public Runnable {
 
 class CompareSimpleTextTrackEvents {
  private:
-  int32_t TrackChildPosition(SimpleTextTrackEvent* aEvent) const {
+  Maybe<uint32_t> TrackChildPosition(SimpleTextTrackEvent* aEvent) const {
     if (aEvent->mTrack) {
       HTMLTrackElement* trackElement = aEvent->mTrack->GetTrackElement();
       if (trackElement) {
         return mMediaElement->ComputeIndexOf(trackElement);
       }
     }
-    return -1;
+    return Nothing();
   }
   HTMLMediaElement* mMediaElement;
 
@@ -581,10 +587,8 @@ class TextTrackListInternal {
 void TextTrackManager::DispatchUpdateCueDisplay() {
   if (!mUpdateCueDisplayDispatched && !IsShutdown()) {
     WEBVTT_LOG("DispatchUpdateCueDisplay");
-    nsPIDOMWindowInner* win = mMediaElement->OwnerDoc()->GetInnerWindow();
-    if (win) {
+    if (nsPIDOMWindowInner* win = mMediaElement->OwnerDoc()->GetInnerWindow()) {
       nsGlobalWindowInner::Cast(win)->Dispatch(
-          TaskCategory::Other,
           NewRunnableMethod("dom::TextTrackManager::UpdateCueDisplay", this,
                             &TextTrackManager::UpdateCueDisplay));
       mUpdateCueDisplayDispatched = true;
@@ -599,10 +603,8 @@ void TextTrackManager::DispatchTimeMarchesOn() {
   // executing call upon completion will check queue for further 'work'.
   if (!mTimeMarchesOnDispatched && !IsShutdown()) {
     WEBVTT_LOG("DispatchTimeMarchesOn");
-    nsPIDOMWindowInner* win = mMediaElement->OwnerDoc()->GetInnerWindow();
-    if (win) {
+    if (nsPIDOMWindowInner* win = mMediaElement->OwnerDoc()->GetInnerWindow()) {
       nsGlobalWindowInner::Cast(win)->Dispatch(
-          TaskCategory::Other,
           NewRunnableMethod("dom::TextTrackManager::TimeMarchesOn", this,
                             &TextTrackManager::TimeMarchesOn));
       mTimeMarchesOnDispatched = true;
@@ -762,7 +764,7 @@ void TextTrackManager::TimeMarchesOn() {
       WEBVTT_LOG("Prepare 'enter' event for cue %p [%f, %f] in missing cues",
                  cue, cue->StartTime(), cue->EndTime());
       SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("enter"), cue->StartTime(), cue->GetTrack(), cue);
+          u"enter"_ns, cue->StartTime(), cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -778,8 +780,8 @@ void TextTrackManager::TimeMarchesOn() {
           cue->StartTime() > cue->EndTime() ? cue->StartTime() : cue->EndTime();
       WEBVTT_LOG("Prepare 'exit' event for cue %p [%f, %f] in other cues", cue,
                  cue->StartTime(), cue->EndTime());
-      SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("exit"), time, cue->GetTrack(), cue);
+      SimpleTextTrackEvent* event =
+          new SimpleTextTrackEvent(u"exit"_ns, time, cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -795,7 +797,7 @@ void TextTrackManager::TimeMarchesOn() {
       WEBVTT_LOG("Prepare 'enter' event for cue %p [%f, %f] in current cues",
                  cue, cue->StartTime(), cue->EndTime());
       SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("enter"), cue->StartTime(), cue->GetTrack(), cue);
+          u"enter"_ns, cue->StartTime(), cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -813,10 +815,10 @@ void TextTrackManager::TimeMarchesOn() {
   for (uint32_t i = 0; i < affectedTracks.Length(); ++i) {
     TextTrack* ttrack = affectedTracks[i];
     if (ttrack) {
-      ttrack->DispatchAsyncTrustedEvent(NS_LITERAL_STRING("cuechange"));
+      ttrack->DispatchAsyncTrustedEvent(u"cuechange"_ns);
       HTMLTrackElement* trackElement = ttrack->GetTrackElement();
       if (trackElement) {
-        trackElement->DispatchTrackRunnable(NS_LITERAL_STRING("cuechange"));
+        trackElement->DispatchTrackRunnable(u"cuechange"_ns);
       }
     }
   }
@@ -848,15 +850,6 @@ void TextTrackManager::NotifyReset() {
   UpdateCueDisplay();
 }
 
-void TextTrackManager::ReportTelemetryForTrack(TextTrack* aTextTrack) const {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aTextTrack);
-  MOZ_ASSERT(mTextTracks->Length() > 0);
-
-  TextTrackKind kind = aTextTrack->Kind();
-  Telemetry::Accumulate(Telemetry::WEBVTT_TRACK_KINDS, uint32_t(kind));
-}
-
 bool TextTrackManager::IsLoaded() {
   return mTextTracks ? mTextTracks->AreTextTracksLoaded() : true;
 }
@@ -878,5 +871,4 @@ void TextTrackManager::MaybeRunTimeMarchesOn() {
   TimeMarchesOn();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

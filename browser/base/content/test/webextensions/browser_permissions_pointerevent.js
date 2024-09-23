@@ -9,15 +9,15 @@ add_task(async function test_pointerevent() {
       e.preventDefault();
     });
 
-    document.addEventListener("mousedown", e => {
+    document.addEventListener("mousedown", () => {
       browser.test.assertTrue(true, "Should receive mousedown");
     });
 
-    document.addEventListener("mouseup", e => {
+    document.addEventListener("mouseup", () => {
       browser.test.assertTrue(true, "Should receive mouseup");
     });
 
-    document.addEventListener("pointerup", e => {
+    document.addEventListener("pointerup", () => {
       browser.test.assertTrue(true, "Should receive pointerup");
       browser.test.sendMessage("done");
     });
@@ -34,12 +34,6 @@ add_task(async function test_pointerevent() {
     },
   });
   await extension.startup();
-  await new Promise(resolve => {
-    SpecialPowers.pushPrefEnv(
-      { set: [["dom.w3c_pointer_events.enabled", true]] },
-      resolve
-    );
-  });
   let url = await extension.awaitMessage("ready");
   await BrowserTestUtils.withNewTab({ gBrowser, url }, async browser => {
     await extension.awaitMessage("pageReady");

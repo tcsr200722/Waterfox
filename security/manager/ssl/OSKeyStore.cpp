@@ -28,7 +28,7 @@ NS_IMPL_ISUPPORTS(OSKeyStore, nsIOSKeyStore)
 using namespace mozilla;
 using dom::Promise;
 
-OSKeyStore::OSKeyStore() : mKs(nullptr), mKsIsNSSKeyStore(false) {
+OSKeyStore::OSKeyStore() : mKs(nullptr) {
   MOZ_ASSERT(NS_IsMainThread());
   if (NS_WARN_IF(!NS_IsMainThread())) {
     return;
@@ -43,11 +43,9 @@ OSKeyStore::OSKeyStore() : mKs(nullptr), mKsIsNSSKeyStore(false) {
     mKs.reset(new LibSecret());
   } else {
     mKs.reset(new NSSKeyStore());
-    mKsIsNSSKeyStore = true;
   }
 #else
   mKs.reset(new NSSKeyStore());
-  mKsIsNSSKeyStore = true;
 #endif
 }
 
@@ -72,8 +70,7 @@ static nsresult GenerateRandom(std::vector<uint8_t>& r) {
 nsresult OSKeyStore::SecretAvailable(const nsACString& aLabel,
                                      /* out */ bool* aAvailable) {
   NS_ENSURE_STATE(mKs);
-  nsAutoCString label = mLabelPrefix + aLabel;
-  *aAvailable = mKs->SecretAvailable(label);
+  *aAvailable = mKs->SecretAvailable(aLabel);
   return NS_OK;
 }
 
@@ -90,19 +87,18 @@ nsresult OSKeyStore::GenerateSecret(const nsACString& aLabel,
   secretString.Assign(BitwiseCast<char*, uint8_t*>(secret.data()),
                       secret.size());
 
-  nsAutoCString base64;
+  nsCString base64;
   rv = Base64Encode(secretString, base64);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  nsAutoCString label = mLabelPrefix + aLabel;
-  rv = mKs->StoreSecret(secretString, label);
+  rv = mKs->StoreSecret(secretString, aLabel);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  aRecoveryPhrase = base64;
+  aRecoveryPhrase = std::move(base64);
   return NS_OK;
 }
 
@@ -117,8 +113,7 @@ nsresult OSKeyStore::RecoverSecret(const nsACString& aLabel,
   if (secret.Length() != mKs->GetKeyByteLength()) {
     return NS_ERROR_INVALID_ARG;
   }
-  nsAutoCString label = mLabelPrefix + aLabel;
-  rv = mKs->StoreSecret(secret, label);
+  rv = mKs->StoreSecret(secret, aLabel);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -128,8 +123,27 @@ nsresult OSKeyStore::RecoverSecret(const nsACString& aLabel,
 
 nsresult OSKeyStore::DeleteSecret(const nsACString& aLabel) {
   NS_ENSURE_STATE(mKs);
-  nsAutoCString label = mLabelPrefix + aLabel;
-  return mKs->DeleteSecret(label);
+  return mKs->DeleteSecret(aLabel);
+}
+
+nsresult OSKeyStore::RetrieveRecoveryPhrase(
+    const nsACString& aLabel,
+    /* out */ nsACString& aRecoveryPhrase) {
+  NS_ENSURE_STATE(mKs);
+  nsAutoCString secretString;
+  nsresult rv = mKs->RetrieveSecret(aLabel, secretString);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  nsCString recoveryPhrase;
+  rv = Base64Encode(secretString, recoveryPhrase);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  aRecoveryPhrase = std::move(recoveryPhrase);
+  return NS_OK;
 }
 
 enum Cipher { Encrypt = true, Decrypt = false };
@@ -139,10 +153,10 @@ nsresult OSKeyStore::EncryptBytes(const nsACString& aLabel,
                                   /*out*/ nsACString& aEncryptedBase64Text) {
   NS_ENSURE_STATE(mKs);
 
-  nsAutoCString label = mLabelPrefix + aLabel;
   aEncryptedBase64Text.Truncate();
   std::vector<uint8_t> outBytes;
-  nsresult rv = mKs->EncryptDecrypt(label, aInBytes, outBytes, Cipher::Encrypt);
+  nsresult rv =
+      mKs->EncryptDecrypt(aLabel, aInBytes, outBytes, Cipher::Encrypt);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -150,12 +164,12 @@ nsresult OSKeyStore::EncryptBytes(const nsACString& aLabel,
   ciphertext.Assign(BitwiseCast<char*, uint8_t*>(outBytes.data()),
                     outBytes.size());
 
-  nsAutoCString base64ciphertext;
+  nsCString base64ciphertext;
   rv = Base64Encode(ciphertext, base64ciphertext);
   if (NS_FAILED(rv)) {
     return rv;
   }
-  aEncryptedBase64Text.Assign(base64ciphertext);
+  aEncryptedBase64Text = std::move(base64ciphertext);
   return NS_OK;
 }
 
@@ -174,11 +188,10 @@ nsresult OSKeyStore::DecryptBytes(const nsACString& aLabel,
   if (NS_FAILED(rv)) {
     return rv;
   }
-  nsAutoCString label = mLabelPrefix + aLabel;
   uint8_t* tmp = BitwiseCast<uint8_t*, const char*>(ciphertext.BeginReading());
   const std::vector<uint8_t> ciphertextBytes(tmp, tmp + ciphertext.Length());
   std::vector<uint8_t> plaintextBytes;
-  rv = mKs->EncryptDecrypt(label, ciphertextBytes, plaintextBytes,
+  rv = mKs->EncryptDecrypt(aLabel, ciphertextBytes, plaintextBytes,
                            Cipher::Decrypt);
   if (NS_FAILED(rv)) {
     return rv;
@@ -187,23 +200,6 @@ nsresult OSKeyStore::DecryptBytes(const nsACString& aLabel,
   *outBytes = (uint8_t*)moz_xmalloc(plaintextBytes.size());
   memcpy(*outBytes, plaintextBytes.data(), plaintextBytes.size());
   *outLen = plaintextBytes.size();
-  return NS_OK;
-}
-
-nsresult OSKeyStore::Lock() {
-  NS_ENSURE_STATE(mKs);
-  return mKs->Lock();
-}
-
-nsresult OSKeyStore::Unlock() {
-  NS_ENSURE_STATE(mKs);
-  return mKs->Unlock();
-}
-
-NS_IMETHODIMP
-OSKeyStore::GetIsNSSKeyStore(bool* aNSSKeyStore) {
-  NS_ENSURE_ARG_POINTER(aNSSKeyStore);
-  *aNSSKeyStore = mKsIsNSSKeyStore;
   return NS_OK;
 }
 
@@ -221,85 +217,6 @@ nsresult GetPromise(JSContext* aCx, /* out */ RefPtr<Promise>& aPromise) {
     return result.StealNSResult();
   }
   return NS_OK;
-}
-
-void BackgroundUnlock(RefPtr<Promise>& aPromise, RefPtr<OSKeyStore> self) {
-  nsAutoCString recovery;
-  nsresult rv = self->Unlock();
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundUnlockOSKSResolve", [rv, aPromise = std::move(aPromise)]() {
-        if (NS_FAILED(rv)) {
-          aPromise->MaybeReject(rv);
-        } else {
-          aPromise->MaybeResolveWithUndefined();
-        }
-      }));
-  NS_DispatchToMainThread(runnable.forget());
-}
-
-NS_IMETHODIMP
-OSKeyStore::AsyncUnlock(JSContext* aCx, Promise** promiseOut) {
-  MOZ_ASSERT(NS_IsMainThread());
-  if (!NS_IsMainThread()) {
-    return NS_ERROR_NOT_SAME_THREAD;
-  }
-
-  NS_ENSURE_ARG_POINTER(aCx);
-
-  RefPtr<Promise> promiseHandle;
-  nsresult rv = GetPromise(aCx, promiseHandle);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  RefPtr<OSKeyStore> self = this;
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundUnlock", [self, promiseHandle]() mutable {
-        BackgroundUnlock(promiseHandle, self);
-      }));
-
-  promiseHandle.forget(promiseOut);
-  return NS_DispatchBackgroundTask(runnable.forget(),
-                                   NS_DISPATCH_EVENT_MAY_BLOCK);
-}
-
-void BackgroundLock(RefPtr<Promise>& aPromise, RefPtr<OSKeyStore> self) {
-  nsresult rv = self->Lock();
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundLockOSKSResolve", [rv, aPromise = std::move(aPromise)]() {
-        if (NS_FAILED(rv)) {
-          aPromise->MaybeReject(rv);
-        } else {
-          aPromise->MaybeResolveWithUndefined();
-        }
-      }));
-  NS_DispatchToMainThread(runnable.forget());
-}
-
-NS_IMETHODIMP
-OSKeyStore::AsyncLock(JSContext* aCx, Promise** promiseOut) {
-  MOZ_ASSERT(NS_IsMainThread());
-  if (!NS_IsMainThread()) {
-    return NS_ERROR_NOT_SAME_THREAD;
-  }
-
-  NS_ENSURE_ARG_POINTER(aCx);
-
-  RefPtr<Promise> promiseHandle;
-  nsresult rv = GetPromise(aCx, promiseHandle);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  RefPtr<OSKeyStore> self = this;
-  nsCOMPtr<nsIRunnable> runnable(
-      NS_NewRunnableFunction("BackgroundLock", [self, promiseHandle]() mutable {
-        BackgroundLock(promiseHandle, self);
-      }));
-
-  promiseHandle.forget(promiseOut);
-  return NS_DispatchBackgroundTask(runnable.forget(),
-                                   NS_DISPATCH_EVENT_MAY_BLOCK);
 }
 
 void BackgroundGenerateSecret(const nsACString& aLabel,
@@ -598,6 +515,55 @@ OSKeyStore::AsyncDecryptBytes(const nsACString& aLabel,
                                    NS_DISPATCH_EVENT_MAY_BLOCK);
 }
 
+void BackgroundGetRecoveryPhrase(const nsACString& aLabel,
+                                 RefPtr<Promise>& aPromise,
+                                 const RefPtr<OSKeyStore>& self) {
+  nsAutoCString recoveryPhrase;
+  nsresult rv = self->RetrieveRecoveryPhrase(aLabel, recoveryPhrase);
+  nsAutoString exportedRecoveryPhrase;
+  if (NS_SUCCEEDED(rv)) {
+    CopyUTF8toUTF16(recoveryPhrase, exportedRecoveryPhrase);
+  }
+  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
+      "BackgroundRetrieveRecoveryPhraseResolve",
+      [rv, aPromise = std::move(aPromise), exportedRecoveryPhrase]() {
+        if (NS_FAILED(rv)) {
+          aPromise->MaybeReject(rv);
+        } else {
+          aPromise->MaybeResolve(exportedRecoveryPhrase);
+        }
+      }));
+  NS_DispatchToMainThread(runnable.forget());
+}
+
+NS_IMETHODIMP
+OSKeyStore::AsyncGetRecoveryPhrase(const nsACString& aLabel, JSContext* aCx,
+                                   Promise** promiseOut) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!NS_IsMainThread()) {
+    return NS_ERROR_NOT_SAME_THREAD;
+  }
+
+  NS_ENSURE_ARG_POINTER(aCx);
+
+  RefPtr<Promise> promiseHandle;
+  nsresult rv = GetPromise(aCx, promiseHandle);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  RefPtr<OSKeyStore> self = this;
+  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
+      "BackgroundGetRecoveryPhrase",
+      [promiseHandle, self, aLabel = nsAutoCString(aLabel)]() mutable {
+        BackgroundGetRecoveryPhrase(aLabel, promiseHandle, self);
+      }));
+
+  promiseHandle.forget(promiseOut);
+  return NS_DispatchBackgroundTask(runnable.forget(),
+                                   NS_DISPATCH_EVENT_MAY_BLOCK);
+}
+
 // Generic AES-GCM cipher wrapper for NSS functions.
 
 nsresult AbstractOSKeyStore::BuildAesGcmKey(std::vector<uint8_t> aKeyBytes,
@@ -641,7 +607,7 @@ nsresult AbstractOSKeyStore::DoCipher(const UniquePK11SymKey& aSymKey,
 
   // Build params.
   // We need to get the IV from inBytes if we decrypt.
-  if (!encrypt && (inBytes.size() < mIVLength || inBytes.size() == 0)) {
+  if (!encrypt && (inBytes.size() < mIVLength || inBytes.empty())) {
     return NS_ERROR_INVALID_ARG;
   }
 

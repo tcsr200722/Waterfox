@@ -10,11 +10,15 @@
 #include "frontend/SyntaxParseHandler.h"
 
 namespace js {
+
+class FrontendContext;
+
 namespace frontend {
 
 class FullParseHandler;
 template <class ParseHandler>
 class PerHandlerParser;
+class ParserAtomsTable;
 
 // Perform constant folding on the given AST. For example, the program
 // `print(2 + 2)` would become `print(4)`.
@@ -24,19 +28,19 @@ class PerHandlerParser;
 // the same node (unchanged or modified in place) or a new node.
 //
 // Usage:
-//    pn = parser->statement();
-//    if (!pn) {
-//        return false;
+//    MOZ_TRY_VAR(pn, parser->statement());
+//    if (!FoldConstants(fc, parserAtoms, &pn, parser)) {
+//        return errorResult();
 //    }
-//    if (!FoldConstants(cx, &pn, parser)) {
-//        return false;
-//    }
-extern MOZ_MUST_USE bool FoldConstants(JSContext* cx, ParseNode** pnp,
-                                       FullParseHandler* parser);
+[[nodiscard]] extern bool FoldConstants(FrontendContext* fc,
+                                        ParserAtomsTable& parserAtoms,
+                                        ParseNode** pnp,
+                                        FullParseHandler* handler);
 
-inline MOZ_MUST_USE bool FoldConstants(JSContext* cx,
-                                       typename SyntaxParseHandler::Node* pnp,
-                                       SyntaxParseHandler* parser) {
+[[nodiscard]] inline bool FoldConstants(FrontendContext* fc,
+                                        ParserAtomsTable& parserAtoms,
+                                        typename SyntaxParseHandler::Node* pnp,
+                                        SyntaxParseHandler* handler) {
   return true;
 }
 

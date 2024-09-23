@@ -1,6 +1,9 @@
+#![allow(dead_code)]
+
+use std::{collections::HashMap, fs::File};
+
 use ron::de::from_reader;
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File};
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -9,6 +12,7 @@ struct Config {
     map: HashMap<u8, char>,
     nested: Nested,
     tuple: (u32, u32),
+    vec: Vec<Nested>,
 }
 
 #[derive(Debug, Deserialize)]

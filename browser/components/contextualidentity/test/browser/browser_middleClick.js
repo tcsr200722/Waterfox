@@ -5,7 +5,7 @@ const URI =
   BASE_ORIGIN +
   "/browser/browser/components/contextualidentity/test/browser/empty_file.html";
 
-add_task(async function() {
+add_task(async function () {
   info("Opening a new container tab...");
 
   let tab = BrowserTestUtils.addTab(gBrowser, URI, { userContextId: 1 });
@@ -15,7 +15,7 @@ add_task(async function() {
   await BrowserTestUtils.browserLoaded(browser);
 
   info("Create a HTMLAnchorElement...");
-  await SpecialPowers.spawn(browser, [URI], function(uri) {
+  await SpecialPowers.spawn(browser, [URI], function (uri) {
     let anchor = content.document.createElement("a");
     anchor.setAttribute("id", "clickMe");
     anchor.setAttribute("href", uri);
@@ -24,10 +24,10 @@ add_task(async function() {
   });
 
   info("Synthesize a mouse click and wait for a new tab...");
-  let newTab = await new Promise((resolve, reject) => {
+  let newTab = await new Promise(resolve => {
     gBrowser.tabContainer.addEventListener(
       "TabOpen",
-      function(openEvent) {
+      function (openEvent) {
         resolve(openEvent.target);
       },
       { once: true }
@@ -40,7 +40,7 @@ add_task(async function() {
     );
   });
 
-  is(newTab.getAttribute("usercontextid"), 1, "Correct UserContextId?");
+  is(newTab.getAttribute("usercontextid"), "1", "Correct UserContextId?");
 
   // newTab shouldn't be closed in the same event tick as TabOpen.
   await TestUtils.waitForTick();

@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-static-methods-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-static-async-method-privatename-identifier-alt.case
 // - src/class-elements/productions/cls-expr-multiple-definitions.template
@@ -107,7 +107,10 @@ var C = class {
 var c = new C();
 
 assert.sameValue(c.m(), 42);
-assert.sameValue(Object.hasOwnProperty.call(c, "m"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m"),
+  "m doesn't appear as an own property on the C instance"
+);
 assert.sameValue(c.m, C.prototype.m);
 
 verifyProperty(C.prototype, "m", {
@@ -117,7 +120,10 @@ verifyProperty(C.prototype, "m", {
 });
 
 assert.sameValue(c.m2(), 39);
-assert.sameValue(Object.hasOwnProperty.call(c, "m2"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m2"),
+  "m2 doesn't appear as an own property on the C instance"
+);
 assert.sameValue(c.m2, C.prototype.m2);
 
 verifyProperty(C.prototype, "m2", {
@@ -127,8 +133,14 @@ verifyProperty(C.prototype, "m2", {
 });
 
 assert.sameValue(c.foo, "foobar");
-assert.sameValue(Object.hasOwnProperty.call(C, "foo"), false);
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "foo"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "foo"),
+  "foo doesn't appear as an own property on the C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "foo"),
+  "foo doesn't appear as an own property on the C prototype"
+);
 
 verifyProperty(c, "foo", {
   value: "foobar",
@@ -138,8 +150,14 @@ verifyProperty(c, "foo", {
 });
 
 assert.sameValue(c.bar, "barbaz");
-assert.sameValue(Object.hasOwnProperty.call(C, "bar"), false);
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "bar"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "bar"),
+  "bar doesn't appear as an own property on the C constructor"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "bar"),
+  "bar doesn't appear as an own property on the C prototype"
+);
 
 verifyProperty(c, "bar", {
   value: "barbaz",
@@ -164,4 +182,4 @@ Promise.all([
   assert.sameValue(results[4], 1);
   assert.sameValue(results[5], 1);
 
-}, $DONE).then($DONE, $DONE);
+}).then($DONE, $DONE);

@@ -8,8 +8,7 @@
 #include "GMPVideoHost.h"
 #include "GMPSharedMemManager.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
 
 GMPPlaneImpl::GMPPlaneImpl(GMPVideoHostImpl* aHost)
     : mSize(0), mStride(0), mHost(aHost) {
@@ -73,9 +72,8 @@ GMPErr GMPPlaneImpl::MaybeResize(int32_t aNewSize) {
   }
 
   ipc::Shmem new_mem;
-  if (!mHost->SharedMemMgr()->MgrAllocShmem(
-          GMPSharedMem::kGMPFrameData, aNewSize, ipc::SharedMemory::TYPE_BASIC,
-          &new_mem) ||
+  if (!mHost->SharedMemMgr()->MgrAllocShmem(GMPSharedMem::kGMPFrameData,
+                                            aNewSize, &new_mem) ||
       !new_mem.get<uint8_t>()) {
     return GMPAllocErr;
   }
@@ -178,5 +176,4 @@ uint8_t* GMPPlaneImpl::Buffer() { return mBuffer.get<uint8_t>(); }
 
 void GMPPlaneImpl::Destroy() { delete this; }
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp

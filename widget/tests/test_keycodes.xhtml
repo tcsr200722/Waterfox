@@ -22,7 +22,8 @@
   <key id="question" key='?' modifiers="accel" command="unexpectedCommand"/>
   <key id="unshiftedX" key="x" modifiers="accel" command="unexpectedCommand"/>
   <key id="shiftedX" key="X" modifiers="accel,shift" command="unexpectedCommand"/>
-  <key id="ctrlAltA" key="A" modifiers="accel,alt" command="unexpectedCommand"/>
+  <key id="ctrlAltA" key="a" modifiers="accel,alt" command="unexpectedCommand"/>
+  <key id="ctrlAltShiftA" key="A" modifiers="accel,alt,shift" command="unexpectedCommand"/>
   <key id="unshiftedPlus" key="+" modifiers="accel" command="unexpectedCommand"/>
   <key id="reservedUnshiftedKey" key="'" modifiers="accel" command="unexpectedCommand"/>
   <key id="reservedShiftedKey" key='"' modifiers="accel" command="unexpectedCommand"/>
@@ -46,15 +47,11 @@
 
 <script class="testbody" type="application/javascript">
 <![CDATA[
-
 const IS_MAC = navigator.platform.indexOf("Mac") == 0;
 const IS_WIN = navigator.platform.indexOf("Win") == 0;
 const OS_VERSION =
-  IS_WIN  ? parseFloat(Cc["@mozilla.org/system-info;1"]
-                         .getService(Ci.nsIPropertyBag2)
-                         .getProperty("version")) : 0;
-const WIN7 = 6.1;
-const WIN8 = 6.2;
+  IS_WIN  ? parseFloat(Services.sysinfo.getProperty("version")) : 0;
+const WIN8 = 6.2; // Can remove once bug 1594270 is closed
 
 function isModifierKeyEvent(aEvent)
 {
@@ -126,10 +123,10 @@ function eventToString(aEvent)
     name += " [Right Alt]";
   }
   if (aEvent.modifiers.metaKey) {
-    name += " [Command]";
+    name += ` [${IS_MAC ? "Command" : "Win"}]`;
   }
   if (aEvent.modifiers.metaRightKey) {
-    name += " [Right Command]";
+    name += ` [Right ${IS_MAC ? "Command" : "Win"}]`;
   }
 
   return name;  
@@ -201,18 +198,18 @@ function* runKeyEventTests()
     function removeFlag(e, aFlag)
     {
       if (e.type == "keydown") {
-        var oldValue = keyDownFlags;
+        let oldValue = keyDownFlags;
         keyDownFlags &= ~aFlag;
         return oldValue != keyDownFlags;
       } else if (e.type == "keyup") {
-        var oldValue = keyUpFlags;
+        let oldValue = keyUpFlags;
         keyUpFlags &= ~aFlag;
         return oldValue != keyUpFlags;
       }
       return false;
     }
 
-    /* eslint-disable-next-line no-shadow */
+    /* eslint-disable-next-line no-shadow, complexity */
     function isStateChangingModifierKeyEvent(e)
     {
       var flags = 0;
@@ -343,7 +340,6 @@ function* runKeyEventTests()
     aEvent.preventDefault();
   }
 
-  const SHOULD_DELIVER_NONE             = 0x0;
   const SHOULD_DELIVER_KEYDOWN          = 0x1;
   const SHOULD_DELIVER_KEYPRESS         = 0x2;
   const SHOULD_DELIVER_KEYUP            = 0x4;
@@ -406,6 +402,7 @@ function* runKeyEventTests()
     currentTestName = eventToString(aEvent);
     ok(true, "Starting: " + currentTestName);
 
+    // eslint-disable-next-line complexity
     return synthesizeKey(aEvent, "button", function() {
 
       var expectEventTypeList = [];
@@ -413,7 +410,7 @@ function* runKeyEventTests()
         expectEventTypeList.push("keydown");
       if (aShouldDelivedEvent & SHOULD_DELIVER_KEYPRESS) {
         expectEventTypeList.push("keypress");
-        for (var i = 1; i < aExpectGeckoChar.length; i++) {
+        for (let i = 1; i < aExpectGeckoChar.length; i++) {
           expectEventTypeList.push("keypress");
         }
       }
@@ -424,7 +421,7 @@ function* runKeyEventTests()
 
       var longerLength = Math.max(eventList.length, expectEventTypeList.length);
       var keypressCount = 0;
-      for (var i = 0; i < longerLength; i++) {
+      for (let i = 0; i < longerLength; i++) {
         var firedEventType = i < eventList.length ? eventList[i].type : "";
         var expectEventType = i < expectEventTypeList.length ? expectEventTypeList[i] : "";
         if (firedEventType != "") {
@@ -437,6 +434,7 @@ function* runKeyEventTests()
 
         if (firedEventType != "") {
           var expectedKeyValue =
+            // eslint-disable-next-line no-nested-ternary
             typeof aExpectedKeyValues === "string" ? aExpectedKeyValues :
                      i < aExpectedKeyValues.length ? aExpectedKeyValues[i] :
                                                      undefined;
@@ -460,7 +458,7 @@ function* runKeyEventTests()
               is(e.shiftKey, !!(aEvent.modifiers.shiftKey || aEvent.modifiers.shiftRightKey),
                  currentTestName + ", Shift of " + e.type + " of " + e.code + " mismatch");
               is(e.metaKey, !!(aEvent.modifiers.metaKey || aEvent.modifiers.metaRightKey),
-                 currentTestName + ", Command of " + e.type + " of " + e.code + " mismatch");
+                 currentTestName + ", Meta of " + e.type + " of " + e.code + " mismatch");
               var isControlPressed = !!(aEvent.modifiers.ctrlKey || aEvent.modifiers.ctrlRightKey);
               var isAltPressed = !!(aEvent.modifiers.altKey || aEvent.modifiers.altRightKey);
               var isAltGraphExpected =
@@ -487,7 +485,7 @@ function* runKeyEventTests()
           is(e.key, expectedKeyValue, currentTestName + ", wrong key value");
           is(e.code, aExpectedCodeValue, currentTestName + ", wrong code value");
 
-          if (aExpectGeckoChar.length > 0 && e.type == "keypress") {
+          if (aExpectGeckoChar.length && e.type == "keypress") {
             is(e.charCode, aExpectGeckoChar.charCodeAt(keypressCount++),
                currentTestName + ", charcode");
             if (aExpectedGeckoKeyCode >= 0) {
@@ -517,18 +515,18 @@ function* runKeyEventTests()
   }
 
   // These tests have to be per-plaform.
-  document.addEventListener("keydown",  onKeyEvent, false);
-  document.addEventListener("keypress", onKeyEvent, false);
-  document.addEventListener("keyup",    onKeyEvent, false);
+  document.addEventListener("keydown",  onKeyEvent);
+  document.addEventListener("keypress", onKeyEvent);
+  document.addEventListener("keyup",    onKeyEvent);
   // Prevent almost all shortcut key handlers.
-  SpecialPowers.addSystemEventListener(document, "keypress", consumer, true);
+  SpecialPowers.wrap(document).addEventListener("keypress", consumer, { capture: true, mozSystemGroup: true });
 
   function cleanup()
   {
-    document.removeEventListener("keydown",  onKeyEvent, false);
-    document.removeEventListener("keypress", onKeyEvent, false);
-    document.removeEventListener("keyup",    onKeyEvent, false);
-    SpecialPowers.removeSystemEventListener(document, "keypress", consumer, true);
+    document.removeEventListener("keydown",  onKeyEvent);
+    document.removeEventListener("keypress", onKeyEvent);
+    document.removeEventListener("keyup",    onKeyEvent);
+    SpecialPowers.wrap(document).removeEventListener("keypress", consumer, { capture: true, mozSystemGroup: true });
   }
 
   function* testKeysOnMac()
@@ -670,16 +668,16 @@ function* runKeyEventTests()
     // Command/RightCommand key event
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:MAC_VK_Command,
                    modifiers:{metaKey:1}, chars:"", unmodifiedChars:""},
-                  "Meta", "OSLeft", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYDOWN, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
+                  "Meta", "MetaLeft", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYDOWN, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:MAC_VK_Command,
                    modifiers:{metaKey:0}, chars:"", unmodifiedChars:""},
-                  "Meta", "OSLeft", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
+                  "Meta", "MetaLeft", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:MAC_VK_RightCommand,
                    modifiers:{metaRightKey:1}, chars:"", unmodifiedChars:""},
-                  "Meta", "OSRight", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYDOWN, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+                  "Meta", "MetaRight", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYDOWN, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:MAC_VK_RightCommand,
                    modifiers:{metaRightKey:0}, chars:"", unmodifiedChars:""},
-                  "Meta", "OSRight", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+                  "Meta", "MetaRight", KeyboardEvent.DOM_VK_META, "", SHOULD_DELIVER_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
 
     // all keys on keyboard (keyCode test)
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:MAC_VK_Tab,
@@ -2997,11 +2995,11 @@ function* runKeyEventTests()
 
     // Win keys
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:WIN_VK_LWIN,
-                   modifiers:{}, chars:""},
-                  "OS" /* bug 1232918 */, "OSLeft", KeyboardEvent.DOM_VK_WIN, "", SHOULD_DELIVER_KEYDOWN_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
+                   modifiers:{metaKey:1}, chars:""},
+                  "Meta", "MetaLeft", KeyboardEvent.DOM_VK_WIN, "", SHOULD_DELIVER_KEYDOWN_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_LEFT);
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:WIN_VK_RWIN,
-                   modifiers:{}, chars:""},
-                  "OS" /* bug 1232918 */, "OSRight", KeyboardEvent.DOM_VK_WIN, "", SHOULD_DELIVER_KEYDOWN_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+                   modifiers:{metaRightKey:1}, chars:""},
+                  "Meta", "MetaRight", KeyboardEvent.DOM_VK_WIN, "", SHOULD_DELIVER_KEYDOWN_KEYUP, KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
 
     // all keys on keyboard (keyCode test)
     yield testKey({layout:KEYBOARD_LAYOUT_EN_US, keyCode:WIN_VK_BACK,
@@ -4452,32 +4450,30 @@ function* runKeyEventTests()
                   "'", "Backslash", KeyboardEvent.DOM_VK_HASH, "'", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
 
     // Khmer
-    if (OS_VERSION >= WIN7) {
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{}, chars:"\u17E2"},
-                    "\u17E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u17E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{shiftKey:1}, chars:"\u17D7"},
-                    "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2, // Ctrl+2 should cause inputting Euro sign.
-                     modifiers:{ctrlKey:1}, chars:"\u20AC", isInputtingCharacters:true},
-                    "\u20AC", "Digit2", KeyboardEvent.DOM_VK_2, "\u20AC", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2, // Ctrl+Shift+2 shouldn't cause any input.
-                     modifiers:{ctrlKey:1, shiftKey:1}, chars:""},
-                    "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{altKey:1}, chars:"\u17E2"},
-                    "\u17E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u17E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{altKey:1, shiftKey:1}, chars:"\u17D7"},
-                    "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{altGrKey:1}, chars:"2"},
-                    "2", "Digit2", KeyboardEvent.DOM_VK_2, "2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-      yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
-                     modifiers:{altGrKey:1, shiftKey:1}, chars:"\u19E2"},
-                    "\u19E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u19E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
-    }
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{}, chars:"\u17E2"},
+                  "\u17E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u17E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{shiftKey:1}, chars:"\u17D7"},
+                  "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2, // Ctrl+2 should cause inputting Euro sign.
+                    modifiers:{ctrlKey:1}, chars:"\u20AC", isInputtingCharacters:true},
+                  "\u20AC", "Digit2", KeyboardEvent.DOM_VK_2, "\u20AC", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2, // Ctrl+Shift+2 shouldn't cause any input.
+                    modifiers:{ctrlKey:1, shiftKey:1}, chars:""},
+                  "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{altKey:1}, chars:"\u17E2"},
+                  "\u17E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u17E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{altKey:1, shiftKey:1}, chars:"\u17D7"},
+                  "\u17D7", "Digit2", KeyboardEvent.DOM_VK_2, "\u17D7", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{altGrKey:1}, chars:"2"},
+                  "2", "Digit2", KeyboardEvent.DOM_VK_2, "2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_KHMER, keyCode:WIN_VK_2,
+                    modifiers:{altGrKey:1, shiftKey:1}, chars:"\u19E2"},
+                  "\u19E2", "Digit2", KeyboardEvent.DOM_VK_2, "\u19E2", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
 
     // Norwegian
     yield testKey({layout:KEYBOARD_LAYOUT_NORWEGIAN, keyCode:WIN_VK_OEM_5,
@@ -4717,6 +4713,19 @@ function* runKeyEventTests()
                     ["\u0449", "\u0449", "\u0446"], "KeyC", KeyboardEvent.DOM_VK_C, "\u0449", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
     }
 
+    yield testKey({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_A,
+                   modifiers:{altKey:1,ctrlKey:1}, chars:""},
+                   "\u0444", "KeyA", KeyboardEvent.DOM_VK_A, "a", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_A,
+                   modifiers:{altKey:1,ctrlKey:1,shiftKey:1}, chars:""},
+                   "\u0424", "KeyA", KeyboardEvent.DOM_VK_A, "A", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_T,
+                   modifiers:{altKey:1,ctrlKey:1}, chars:""},
+                   "\u0435", "KeyT", KeyboardEvent.DOM_VK_T, "t", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+    yield testKey({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_T,
+                   modifiers:{altKey:1,ctrlKey:1,shiftKey:1}, chars:""},
+                   "\u0415", "KeyT", KeyboardEvent.DOM_VK_T, "T", SHOULD_DELIVER_ALL, KeyboardEvent.DOM_KEY_LOCATION_STANDARD);
+
     // When Alt key is pressed, dead key sequence is generated with WM_SYSKEYDOWN, WM_SYSDEADCHAR, WM_SYSCHAR and WM_SYSKEYUP.
     yield testKey({layout:KEYBOARD_LAYOUT_SPANISH, keyCode:WIN_VK_OEM_1,
                    modifiers:{altKey:1}, chars:""},
@@ -4793,7 +4802,7 @@ function* runAccessKeyTests()
   var button = document.getElementById("button");
   var activationCount;
 
-  function onClick(e)
+  function onClick()
   {
     ++activationCount;
   }
@@ -4816,7 +4825,7 @@ function* runAccessKeyTests()
     });
   }
 
-  button.addEventListener("click", onClick, false);
+  button.addEventListener("click", onClick);
   
   // These tests have to be per-plaform.
   if (IS_MAC) {
@@ -4921,7 +4930,7 @@ function* runAccessKeyTests()
                   ".", true);
   }
   
-  button.removeEventListener("click", onClick, false);
+  button.removeEventListener("click", onClick);
 }
 
 function* runXULKeyTests()
@@ -4957,23 +4966,23 @@ function* runXULKeyTests()
   var buttonParent = document.getElementById("button").parentNode;
   buttonParent.addEventListener("keydown", onKeyInDefaultEventGroup, true);
   buttonParent.addEventListener("keypress", onKeyInDefaultEventGroup, true);
-  buttonParent.addEventListener("keydown", onKeyInDefaultEventGroup, false);
-  buttonParent.addEventListener("keypress", onKeyInDefaultEventGroup, false);
-  SpecialPowers.addSystemEventListener(buttonParent, "keydown", onKeyInSystemEventGroup, true);
-  SpecialPowers.addSystemEventListener(buttonParent, "keypress", onKeyInSystemEventGroup, true);
-  SpecialPowers.addSystemEventListener(buttonParent, "keydown", onKeyInSystemEventGroup, false);
-  SpecialPowers.addSystemEventListener(buttonParent, "keypress", onKeyInSystemEventGroup, false);
+  buttonParent.addEventListener("keydown", onKeyInDefaultEventGroup);
+  buttonParent.addEventListener("keypress", onKeyInDefaultEventGroup);
+  SpecialPowers.wrap(buttonParent).addEventListener("keydown", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+  SpecialPowers.wrap(buttonParent).addEventListener("keypress", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+  SpecialPowers.wrap(buttonParent).addEventListener("keydown", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
+  SpecialPowers.wrap(buttonParent).addEventListener("keypress", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
 
   function finializeKeyElementTest()
   {
     buttonParent.removeEventListener("keydown", onKeyInDefaultEventGroup, true);
     buttonParent.removeEventListener("keypress", onKeyInDefaultEventGroup, true);
-    buttonParent.removeEventListener("keydown", onKeyInDefaultEventGroup, false);
-    buttonParent.removeEventListener("keypress", onKeyInDefaultEventGroup, false);
-    SpecialPowers.removeSystemEventListener(buttonParent, "keydown", onKeyInSystemEventGroup, true);
-    SpecialPowers.removeSystemEventListener(buttonParent, "keypress", onKeyInSystemEventGroup, true);
-    SpecialPowers.removeSystemEventListener(buttonParent, "keydown", onKeyInSystemEventGroup, false);
-    SpecialPowers.removeSystemEventListener(buttonParent, "keypress", onKeyInSystemEventGroup, false);
+    buttonParent.removeEventListener("keydown", onKeyInDefaultEventGroup);
+    buttonParent.removeEventListener("keypress", onKeyInDefaultEventGroup);
+    SpecialPowers.wrap(buttonParent).removeEventListener("keydown", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+    SpecialPowers.wrap(buttonParent).removeEventListener("keypress", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+    SpecialPowers.wrap(buttonParent).removeEventListener("keydown", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
+    SpecialPowers.wrap(buttonParent).removeEventListener("keypress", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
   }
 
   // If aKeyElement is empty string, this function tests if the event kicks
@@ -4994,12 +5003,12 @@ function* runXULKeyTests()
     keyEvents = [];
     return synthesizeKey(aEvent, "button", function() {
       if (keyElement) {
-        is(commandElements["expectedCommand"].activeCount, 1, testName + "the command element (id='expectedCommand') should be preformed");
+        is(commandElements.expectedCommand.activeCount, 1, testName + "the command element (id='expectedCommand') should be preformed");
       } else {
-        is(commandElements["expectedCommand"].activeCount, 0, testName + "the command element (id='expectedCommand') shouldn't be preformed");
+        is(commandElements.expectedCommand.activeCount, 0, testName + "the command element (id='expectedCommand') shouldn't be preformed");
       }
-      is(commandElements["unexpectedCommand"].activeCount, 0, testName + "the command element (id='unexpectedCommand') shouldn't be preformed");
-      is(commandElements["expectedReservedCommand"].activeCount, 0, testName + "the command element (id='expectedReservedCommand') shouldn't be preformed");
+      is(commandElements.unexpectedCommand.activeCount, 0, testName + "the command element (id='unexpectedCommand') shouldn't be preformed");
+      is(commandElements.expectedReservedCommand.activeCount, 0, testName + "the command element (id='expectedReservedCommand') shouldn't be preformed");
 
       function checkFiredEvents()
       {
@@ -5033,9 +5042,9 @@ function* runXULKeyTests()
         }
         keyEvents = [];
         synthesizeKey(aEvent, "button", function() {
-          is(commandElements["expectedCommand"].activeCount, 0, testName + "the command element (id='expectedCommand') shouldn't be preformed");
-          is(commandElements["unexpectedCommand"].activeCount, 0, testName + "the command element (id='unexpectedCommand') shouldn't be preformed");
-          is(commandElements["expectedReservedCommand"].activeCount, 1, testName + "the command element (id='expectedReservedCommand') should be preformed");
+          is(commandElements.expectedCommand.activeCount, 0, testName + "the command element (id='expectedCommand') shouldn't be preformed");
+          is(commandElements.unexpectedCommand.activeCount, 0, testName + "the command element (id='unexpectedCommand') shouldn't be preformed");
+          is(commandElements.expectedReservedCommand.activeCount, 1, testName + "the command element (id='expectedReservedCommand') should be preformed");
 
           checkFiredEvents();
 
@@ -5177,6 +5186,16 @@ function* runXULKeyTests()
                          "");
   }
 
+  // bug 1874727
+  if (IS_WIN) {
+    yield testKeyElement({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_A,
+                          modifiers:{altKey:1, ctrlKey:1}, chars:""},
+                         "ctrlAltA");
+    yield testKeyElement({layout:KEYBOARD_LAYOUT_RUSSIAN, keyCode:WIN_VK_A,
+                          modifiers:{altKey:1, ctrlKey:1, shiftKey:1}, chars:""},
+                         "ctrlAltShiftA");
+  }
+
   for (id in commandElements) {
     commandElements[id].setAttribute("disabled", "true");
   }
@@ -5197,12 +5216,12 @@ function* runReservedKeyTests()
   for (var i = 0; i < contents.length; i++) {
     contents[i].addEventListener("keydown", onKeyInDefaultEventGroup, true);
     contents[i].addEventListener("keypress", onKeyInDefaultEventGroup, true);
-    contents[i].addEventListener("keydown", onKeyInDefaultEventGroup, false);
-    contents[i].addEventListener("keypress", onKeyInDefaultEventGroup, false);
-    SpecialPowers.addSystemEventListener(contents[i], "keydown", onKeyInSystemEventGroup, true);
-    SpecialPowers.addSystemEventListener(contents[i], "keypress", onKeyInSystemEventGroup, true);
-    SpecialPowers.addSystemEventListener(contents[i], "keydown", onKeyInSystemEventGroup, false);
-    SpecialPowers.addSystemEventListener(contents[i], "keypress", onKeyInSystemEventGroup, false);
+    contents[i].addEventListener("keydown", onKeyInDefaultEventGroup);
+    contents[i].addEventListener("keypress", onKeyInDefaultEventGroup);
+    SpecialPowers.wrap(contents[i]).addEventListener("keydown", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+    SpecialPowers.wrap(contents[i]).addEventListener("keypress", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+    SpecialPowers.wrap(contents[i]).addEventListener("keydown", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
+    SpecialPowers.wrap(contents[i]).addEventListener("keypress", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
   }
 
   var keyEvents = [];
@@ -5235,12 +5254,12 @@ function* runReservedKeyTests()
     for (var i = 0; i < contents.length; i++) {
       contents[i].removeEventListener("keydown", onKeyInDefaultEventGroup, true);
       contents[i].removeEventListener("keypress", onKeyInDefaultEventGroup, true);
-      contents[i].removeEventListener("keydown", onKeyInDefaultEventGroup, false);
-      contents[i].removeEventListener("keypress", onKeyInDefaultEventGroup, false);
-      SpecialPowers.removeSystemEventListener(contents[i], "keydown", onKeyInSystemEventGroup, true);
-      SpecialPowers.removeSystemEventListener(contents[i], "keypress", onKeyInSystemEventGroup, true);
-      SpecialPowers.removeSystemEventListener(contents[i], "keydown", onKeyInSystemEventGroup, false);
-      SpecialPowers.removeSystemEventListener(contents[i], "keypress", onKeyInSystemEventGroup, false);
+      contents[i].removeEventListener("keydown", onKeyInDefaultEventGroup);
+      contents[i].removeEventListener("keypress", onKeyInDefaultEventGroup);
+      SpecialPowers.wrap(contents[i]).removeEventListener("keydown", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+      SpecialPowers.wrap(contents[i]).removeEventListener("keypress", onKeyInSystemEventGroup, { capture: true, mozSystemGroup: true });
+      SpecialPowers.wrap(contents[i]).removeEventListener("keydown", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
+      SpecialPowers.wrap(contents[i]).removeEventListener("keypress", onKeyInSystemEventGroup, { capture: false, mozSystemGroup: true });
     }
   }
 
@@ -5248,7 +5267,7 @@ function* runReservedKeyTests()
   {
     keyEvents = [];
     return synthesizeKey(aEvent, "content_button", function() {
-      testName = "testReservedKey: " + eventToString(aEvent) + " ";
+      let testName = "testReservedKey: " + eventToString(aEvent) + " ";
       is(keyEvents.length, 20, testName + "wrong number events fired");
       is(JSON.stringify(keyEvents[0]), JSON.stringify({ type: "keydown", group: "system", phase: "capture", currentTarget: eventTargetToString(contents[0]) }), testName + "keydown event should be fired on content only in the system event group #0");
       is(JSON.stringify(keyEvents[1]), JSON.stringify({ type: "keydown", group: "system", phase: "capture", currentTarget: eventTargetToString(contents[1]) }), testName + "keydown event should be fired on content only in the system event group #1");
@@ -5435,7 +5454,7 @@ function* runAltRightKeyOnWindows()
     { layout: KEYBOARD_LAYOUT_LITHUANIAN },
     { layout: KEYBOARD_LAYOUT_NORWEGIAN },
     { layout: KEYBOARD_LAYOUT_RUSSIAN_MNEMONIC,
-      canTestIt: function() { return OS_VERSION >= WIN8; } },
+      canTestIt () { return OS_VERSION >= WIN8; } },
     { layout: KEYBOARD_LAYOUT_SPANISH },
     { layout: KEYBOARD_LAYOUT_SWEDISH },
     { layout: KEYBOARD_LAYOUT_THAI },

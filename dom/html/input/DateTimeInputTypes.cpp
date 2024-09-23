@@ -10,10 +10,10 @@
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/HTMLInputElement.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "nsDOMTokenList.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 const double DateTimeInputTypeBase::kMinimumYear = 1;
 const double DateTimeInputTypeBase::kMaximumYear = 275760;
@@ -22,8 +22,7 @@ const double DateTimeInputTypeBase::kMaximumWeekInMaximumYear = 37;
 const double DateTimeInputTypeBase::kMsPerDay = 24 * 60 * 60 * 1000;
 
 bool DateTimeInputTypeBase::IsMutable() const {
-  return !mInputElement->IsDisabled() &&
-         !mInputElement->HasAttr(kNameSpaceID_None, nsGkAtoms::readonly);
+  return !mInputElement->IsDisabledOrReadOnly();
 }
 
 bool DateTimeInputTypeBase::IsValueMissing() const {
@@ -66,63 +65,45 @@ bool DateTimeInputTypeBase::IsRangeUnderflow() const {
   return value < minimum;
 }
 
-bool DateTimeInputTypeBase::HasStepMismatch(bool aUseZeroIfValueNaN) const {
+bool DateTimeInputTypeBase::HasStepMismatch() const {
   Decimal value = mInputElement->GetValueAsDecimal();
-  if (value.isNaN()) {
-    if (aUseZeroIfValueNaN) {
-      value = Decimal(0);
-    } else {
-      // The element can't suffer from step mismatch if it's value isn't a
-      // number.
-      return false;
-    }
-  }
-
-  Decimal step = mInputElement->GetStep();
-  if (step == kStepAny) {
-    return false;
-  }
-
-  // Value has to be an integral multiple of step.
-  return NS_floorModulo(value - GetStepBase(), step) != Decimal(0);
+  return mInputElement->ValueIsStepMismatch(value);
 }
 
 bool DateTimeInputTypeBase::HasBadInput() const {
-  if (!mInputElement->GetShadowRoot()) {
+  ShadowRoot* shadow = mInputElement->GetShadowRoot();
+  if (!shadow) {
     return false;
   }
 
-  Element* editWrapperElement = mInputElement->GetShadowRoot()->GetElementById(
-      NS_LITERAL_STRING("edit-wrapper"));
-
+  Element* editWrapperElement = shadow->GetElementById(u"edit-wrapper"_ns);
   if (!editWrapperElement) {
     return false;
   }
 
-  // Incomplete field does not imply bad input.
+  bool allEmpty = true;
+  // Empty field does not imply bad input, but incomplete field does.
   for (Element* child = editWrapperElement->GetFirstElementChild(); child;
        child = child->GetNextElementSibling()) {
-    if (child->ClassList()->Contains(
-            NS_LITERAL_STRING("datetime-edit-field"))) {
-      nsAutoString value;
-      child->GetAttr(kNameSpaceID_None, nsGkAtoms::value, value);
-      if (value.IsEmpty()) {
-        return false;
-      }
+    if (!child->ClassList()->Contains(u"datetime-edit-field"_ns)) {
+      continue;
+    }
+    nsAutoString value;
+    child->GetAttr(nsGkAtoms::value, value);
+    if (!value.IsEmpty()) {
+      allEmpty = false;
+      break;
     }
   }
 
-  // All fields are available but input element's value is empty implies
-  // it has been sanitized.
-  nsAutoString value;
-  mInputElement->GetValue(value, CallerType::System);
-
-  return value.IsEmpty();
+  // If some fields are available but input element's value is empty implies it
+  // has been sanitized.
+  return !allEmpty && IsValueEmpty();
 }
 
 nsresult DateTimeInputTypeBase::GetRangeOverflowMessage(nsAString& aMessage) {
   nsAutoString maxStr;
-  mInputElement->GetAttr(kNameSpaceID_None, nsGkAtoms::max, maxStr);
+  mInputElement->GetAttr(nsGkAtoms::max, maxStr);
 
   return nsContentUtils::FormatMaybeLocalizedString(
       aMessage, nsContentUtils::eDOM_PROPERTIES,
@@ -131,7 +112,7 @@ nsresult DateTimeInputTypeBase::GetRangeOverflowMessage(nsAString& aMessage) {
 
 nsresult DateTimeInputTypeBase::GetRangeUnderflowMessage(nsAString& aMessage) {
   nsAutoString minStr;
-  mInputElement->GetAttr(kNameSpaceID_None, nsGkAtoms::min, minStr);
+  mInputElement->GetAttr(nsGkAtoms::min, minStr);
 
   return nsContentUtils::FormatMaybeLocalizedString(
       aMessage, nsContentUtils::eDOM_PROPERTIES,
@@ -139,15 +120,12 @@ nsresult DateTimeInputTypeBase::GetRangeUnderflowMessage(nsAString& aMessage) {
       minStr);
 }
 
-nsresult DateTimeInputTypeBase::MinMaxStepAttrChanged() {
+void DateTimeInputTypeBase::MinMaxStepAttrChanged() {
   if (Element* dateTimeBoxElement = mInputElement->GetDateTimeBoxElement()) {
-    AsyncEventDispatcher* dispatcher = new AsyncEventDispatcher(
-        dateTimeBoxElement, NS_LITERAL_STRING("MozNotifyMinMaxStepAttrChanged"),
+    AsyncEventDispatcher::RunDOMEventWhenSafe(
+        *dateTimeBoxElement, u"MozNotifyMinMaxStepAttrChanged"_ns,
         CanBubble::eNo, ChromeOnlyDispatch::eNo);
-    dispatcher->RunDOMEventWhenSafe();
   }
-
-  return NS_OK;
 }
 
 bool DateTimeInputTypeBase::GetTimeFromMs(double aValue, uint16_t* aHours,
@@ -176,29 +154,22 @@ bool DateTimeInputTypeBase::GetTimeFromMs(double aValue, uint16_t* aHours,
 // input type=date
 
 nsresult DateInputType::GetBadInputMessage(nsAString& aMessage) {
-  if (!StaticPrefs::dom_forms_datetime()) {
-    return NS_ERROR_UNEXPECTED;
-  }
-
   return nsContentUtils::GetMaybeLocalizedString(
       nsContentUtils::eDOM_PROPERTIES, "FormValidationInvalidDate",
       mInputElement->OwnerDoc(), aMessage);
 }
 
-bool DateInputType::ConvertStringToNumber(nsAString& aValue,
-                                          Decimal& aResultValue) const {
+auto DateInputType::ConvertStringToNumber(const nsAString& aValue) const
+    -> StringToNumberResult {
   uint32_t year, month, day;
   if (!ParseDate(aValue, &year, &month, &day)) {
-    return false;
+    return {};
   }
-
   JS::ClippedTime time = JS::TimeClip(JS::MakeDate(year, month - 1, day));
   if (!time.isValid()) {
-    return false;
+    return {};
   }
-
-  aResultValue = Decimal::fromDouble(time.toDouble());
-  return true;
+  return {Decimal::fromDouble(time.toDouble())};
 }
 
 bool DateInputType::ConvertNumberToString(Decimal aValue,
@@ -214,7 +185,7 @@ bool DateInputType::ConvertNumberToString(Decimal aValue,
   double month = JS::MonthFromTime(aValue.toDouble());
   double day = JS::DayFromTime(aValue.toDouble());
 
-  if (IsNaN(year) || IsNaN(month) || IsNaN(day)) {
+  if (std::isnan(year) || std::isnan(month) || std::isnan(day)) {
     return false;
   }
 
@@ -224,15 +195,19 @@ bool DateInputType::ConvertNumberToString(Decimal aValue,
 
 // input type=time
 
-bool TimeInputType::ConvertStringToNumber(nsAString& aValue,
-                                          Decimal& aResultValue) const {
+nsresult TimeInputType::GetBadInputMessage(nsAString& aMessage) {
+  return nsContentUtils::GetMaybeLocalizedString(
+      nsContentUtils::eDOM_PROPERTIES, "FormValidationInvalidTime",
+      mInputElement->OwnerDoc(), aMessage);
+}
+
+auto TimeInputType::ConvertStringToNumber(const nsAString& aValue) const
+    -> StringToNumberResult {
   uint32_t milliseconds;
   if (!ParseTime(aValue, &milliseconds)) {
-    return false;
+    return {};
   }
-
-  aResultValue = Decimal(int32_t(milliseconds));
-  return true;
+  return {Decimal(int32_t(milliseconds))};
 }
 
 bool TimeInputType::ConvertNumberToString(Decimal aValue,
@@ -309,10 +284,10 @@ bool TimeInputType::IsRangeUnderflow() const {
 nsresult TimeInputType::GetReversedRangeUnderflowAndOverflowMessage(
     nsAString& aMessage) {
   nsAutoString maxStr;
-  mInputElement->GetAttr(kNameSpaceID_None, nsGkAtoms::max, maxStr);
+  mInputElement->GetAttr(nsGkAtoms::max, maxStr);
 
   nsAutoString minStr;
-  mInputElement->GetAttr(kNameSpaceID_None, nsGkAtoms::min, minStr);
+  mInputElement->GetAttr(nsGkAtoms::min, minStr);
 
   return nsContentUtils::FormatMaybeLocalizedString(
       aMessage, nsContentUtils::eDOM_PROPERTIES,
@@ -334,25 +309,27 @@ nsresult TimeInputType::GetRangeUnderflowMessage(nsAString& aMessage) {
 
 // input type=week
 
-bool WeekInputType::ConvertStringToNumber(nsAString& aValue,
-                                          Decimal& aResultValue) const {
+nsresult WeekInputType::GetBadInputMessage(nsAString& aMessage) {
+  return nsContentUtils::GetMaybeLocalizedString(
+      nsContentUtils::eDOM_PROPERTIES, "FormValidationInvalidWeek",
+      mInputElement->OwnerDoc(), aMessage);
+}
+
+auto WeekInputType::ConvertStringToNumber(const nsAString& aValue) const
+    -> StringToNumberResult {
   uint32_t year, week;
   if (!ParseWeek(aValue, &year, &week)) {
-    return false;
+    return {};
   }
-
   if (year < kMinimumYear || year > kMaximumYear) {
-    return false;
+    return {};
   }
-
   // Maximum week is 275760-W37, the week of 275760-09-13.
   if (year == kMaximumYear && week > kMaximumWeekInMaximumYear) {
-    return false;
+    return {};
   }
-
   double days = DaysSinceEpochFromWeek(year, week);
-  aResultValue = Decimal::fromDouble(days * kMsPerDay);
-  return true;
+  return {Decimal::fromDouble(days * kMsPerDay)};
 }
 
 bool WeekInputType::ConvertNumberToString(Decimal aValue,
@@ -369,6 +346,17 @@ bool WeekInputType::ConvertNumberToString(Decimal aValue,
   double day = JS::DayFromTime(aValue.toDouble());
   // Adding 1 since day starts from 0.
   double dayInYear = JS::DayWithinYear(aValue.toDouble(), year) + 1;
+
+  // Return if aValue is outside the valid JS date-time range.
+  if (std::isnan(year) || std::isnan(month) || std::isnan(day) ||
+      std::isnan(dayInYear)) {
+    return false;
+  }
+
+  // DayOfWeek requires the year to be non-negative.
+  if (year < 0) {
+    return false;
+  }
 
   // Adding 1 since month starts from 0.
   uint32_t isoWeekday = DayOfWeek(year, month + 1, day, true);
@@ -397,25 +385,30 @@ bool WeekInputType::ConvertNumberToString(Decimal aValue,
 
 // input type=month
 
-bool MonthInputType::ConvertStringToNumber(nsAString& aValue,
-                                           Decimal& aResultValue) const {
+nsresult MonthInputType::GetBadInputMessage(nsAString& aMessage) {
+  return nsContentUtils::GetMaybeLocalizedString(
+      nsContentUtils::eDOM_PROPERTIES, "FormValidationInvalidMonth",
+      mInputElement->OwnerDoc(), aMessage);
+}
+
+auto MonthInputType::ConvertStringToNumber(const nsAString& aValue) const
+    -> StringToNumberResult {
   uint32_t year, month;
   if (!ParseMonth(aValue, &year, &month)) {
-    return false;
+    return {};
   }
 
   if (year < kMinimumYear || year > kMaximumYear) {
-    return false;
+    return {};
   }
 
   // Maximum valid month is 275760-09.
   if (year == kMaximumYear && month > kMaximumMonthInMaximumYear) {
-    return false;
+    return {};
   }
 
   int32_t months = MonthsSinceJan1970(year, month);
-  aResultValue = Decimal(int32_t(months));
-  return true;
+  return {Decimal(int32_t(months))};
 }
 
 bool MonthInputType::ConvertNumberToString(Decimal aValue,
@@ -446,21 +439,24 @@ bool MonthInputType::ConvertNumberToString(Decimal aValue,
 
 // input type=datetime-local
 
-bool DateTimeLocalInputType::ConvertStringToNumber(
-    nsAString& aValue, Decimal& aResultValue) const {
+nsresult DateTimeLocalInputType::GetBadInputMessage(nsAString& aMessage) {
+  return nsContentUtils::GetMaybeLocalizedString(
+      nsContentUtils::eDOM_PROPERTIES, "FormValidationInvalidDateTime",
+      mInputElement->OwnerDoc(), aMessage);
+}
+
+auto DateTimeLocalInputType::ConvertStringToNumber(
+    const nsAString& aValue) const -> StringToNumberResult {
   uint32_t year, month, day, timeInMs;
   if (!ParseDateTimeLocal(aValue, &year, &month, &day, &timeInMs)) {
-    return false;
+    return {};
   }
-
   JS::ClippedTime time =
       JS::TimeClip(JS::MakeDate(year, month - 1, day, timeInMs));
   if (!time.isValid()) {
-    return false;
+    return {};
   }
-
-  aResultValue = Decimal::fromDouble(time.toDouble());
-  return true;
+  return {Decimal::fromDouble(time.toDouble())};
 }
 
 bool DateTimeLocalInputType::ConvertNumberToString(
@@ -483,7 +479,7 @@ bool DateTimeLocalInputType::ConvertNumberToString(
   double month = JS::MonthFromTime(aValue.toDouble());
   double day = JS::DayFromTime(aValue.toDouble());
 
-  if (IsNaN(year) || IsNaN(month) || IsNaN(day)) {
+  if (std::isnan(year) || std::isnan(month) || std::isnan(day)) {
     return false;
   }
 
@@ -502,5 +498,4 @@ bool DateTimeLocalInputType::ConvertNumberToString(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

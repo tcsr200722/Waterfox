@@ -5,18 +5,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BasicCardPayment.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/PaymentMethodChangeEvent.h"
 #include "mozilla/dom/PaymentRequestUpdateEvent.h"
 #include "PaymentRequestUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(PaymentMethodChangeEvent)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(PaymentMethodChangeEvent,
                                                 PaymentRequestUpdateEvent)
-  tmp->mMethodDetails = nullptr;
-  mozilla::DropJSObjects(this);
+  mozilla::DropJSObjects(tmp);
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(PaymentMethodChangeEvent,
@@ -136,7 +135,7 @@ void PaymentMethodChangeEvent::GetMethodDetails(
         }
       }
       MOZ_ASSERT(aCx);
-      JS::RootedValue value(aCx);
+      JS::Rooted<JS::Value> value(aCx);
       if (NS_WARN_IF(!basicCardDetails.ToObjectInternal(aCx, &value))) {
         return;
       }
@@ -163,5 +162,4 @@ JSObject* PaymentMethodChangeEvent::WrapObjectInternal(
   return PaymentMethodChangeEvent_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

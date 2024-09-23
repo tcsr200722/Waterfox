@@ -53,7 +53,7 @@ add_task(async function test_selectRemove() {
   // Test the "Cancel" button
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  cancelBtn = frameDoc.getElementById("cancel");
+  cancelBtn = frameDoc.querySelector("dialog").getButton("cancel");
   removeAllSitesOneByOne();
   assertAllSitesNotListed(win);
   cancelBtn.doCommand();
@@ -65,8 +65,8 @@ add_task(async function test_selectRemove() {
   let cancelPromise = BrowserTestUtils.promiseAlertDialogOpen("cancel");
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  saveBtn = frameDoc.getElementById("save");
-  cancelBtn = frameDoc.getElementById("cancel");
+  saveBtn = frameDoc.querySelector("dialog").getButton("accept");
+  cancelBtn = frameDoc.querySelector("dialog").getButton("cancel");
   removeAllSitesOneByOne();
   assertAllSitesNotListed(win);
   saveBtn.doCommand();
@@ -81,7 +81,7 @@ add_task(async function test_selectRemove() {
   settingsDialogClosePromise = promiseSettingsDialogClose();
   updatePromise = promiseSiteDataManagerSitesUpdated();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  saveBtn = frameDoc.getElementById("save");
+  saveBtn = frameDoc.querySelector("dialog").getButton("accept");
   removeAllSitesOneByOne();
   assertAllSitesNotListed(win);
   saveBtn.doCommand();
@@ -161,7 +161,7 @@ add_task(async function test_removePartialSites() {
   // Test the "Cancel" button
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  cancelBtn = frameDoc.getElementById("cancel");
+  cancelBtn = frameDoc.querySelector("dialog").getButton("cancel");
   await removeSelectedSite(hosts.slice(0, 2));
   assertSitesListed(doc, hosts.slice(2));
   cancelBtn.doCommand();
@@ -176,8 +176,8 @@ add_task(async function test_removePartialSites() {
   );
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  saveBtn = frameDoc.getElementById("save");
-  cancelBtn = frameDoc.getElementById("cancel");
+  saveBtn = frameDoc.querySelector("dialog").getButton("accept");
+  cancelBtn = frameDoc.querySelector("dialog").getButton("cancel");
   await removeSelectedSite(hosts.slice(0, 2));
   assertSitesListed(doc, hosts.slice(2));
   saveBtn.doCommand();
@@ -194,7 +194,7 @@ add_task(async function test_removePartialSites() {
   );
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
-  saveBtn = frameDoc.getElementById("save");
+  saveBtn = frameDoc.querySelector("dialog").getButton("accept");
   await removeSelectedSite(hosts.slice(0, 2));
   assertSitesListed(doc, hosts.slice(2));
   saveBtn.doCommand();
@@ -240,7 +240,7 @@ add_task(async function test_removePartialSites() {
 });
 
 // Test searching and then removing only visible sites
-add_task(async function() {
+add_task(async function () {
   let hosts = await addTestData([
     {
       usage: 1024,
@@ -290,7 +290,7 @@ add_task(async function() {
   );
   let settingsDialogClosePromise = promiseSettingsDialogClose();
   let removeAllBtn = frameDoc.getElementById("removeAll");
-  let saveBtn = frameDoc.getElementById("save");
+  let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
   removeAllBtn.doCommand();
   saveBtn.doCommand();
   await acceptRemovePromise;
@@ -307,7 +307,7 @@ add_task(async function() {
 });
 
 // Test dynamically clearing all site data
-add_task(async function() {
+add_task(async function () {
   let hosts = await addTestData([
     {
       usage: 1024,
@@ -350,7 +350,7 @@ add_task(async function() {
   let acceptRemovePromise = BrowserTestUtils.promiseAlertDialogOpen("accept");
   let settingsDialogClosePromise = promiseSettingsDialogClose();
   let removeAllBtn = frameDoc.getElementById("removeAll");
-  let saveBtn = frameDoc.getElementById("save");
+  let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
   removeAllBtn.doCommand();
   saveBtn.doCommand();
   await acceptRemovePromise;
@@ -358,6 +358,117 @@ add_task(async function() {
   await updatePromise;
   await openSiteDataSettingsDialog();
   assertAllSitesNotListed(win);
+
+  await SiteDataTestUtils.clear();
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+});
+
+// Tests clearing search box content via backspace does not delete site data
+add_task(async function () {
+  let hosts = await addTestData([
+    {
+      usage: 1024,
+      origin: "https://account.xyz.com",
+      persisted: true,
+    },
+    {
+      usage: 1024,
+      origin: "https://shopping.xyz.com",
+      persisted: false,
+    },
+    {
+      usage: 1024,
+      origin: "http://cinema.bar.com",
+      persisted: true,
+    },
+    {
+      usage: 1024,
+      origin: "http://email.bar.com",
+      persisted: false,
+    },
+  ]);
+
+  await openPreferencesViaOpenPreferencesAPI("privacy", { leaveOpen: true });
+  await openSiteDataSettingsDialog();
+
+  let win = gBrowser.selectedBrowser.contentWindow;
+  let doc = gBrowser.selectedBrowser.contentDocument;
+  let frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
+  let searchBox = frameDoc.getElementById("searchBox");
+  searchBox.value = "xyz";
+  searchBox.doCommand();
+  assertSitesListed(
+    doc,
+    hosts.filter(host => host.includes("xyz"))
+  );
+
+  // Make sure the focus is on the search box
+  searchBox.focus();
+  if (AppConstants.platform == "macosx") {
+    EventUtils.synthesizeKey("VK_BACK_SPACE", {}, win);
+  } else {
+    EventUtils.synthesizeKey("VK_DELETE", {}, win);
+  }
+  assertSitesListed(
+    doc,
+    hosts.filter(host => host.includes("xyz"))
+  );
+
+  await SiteDataTestUtils.clear();
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+});
+
+// Tests remove site data via backspace
+add_task(async function () {
+  let hosts = await addTestData([
+    {
+      usage: 1024,
+      origin: "https://account.xyz.com",
+      persisted: true,
+    },
+    {
+      usage: 1024,
+      origin: "https://shopping.xyz.com",
+      persisted: false,
+    },
+    {
+      usage: 1024,
+      origin: "http://cinema.bar.com",
+      persisted: true,
+    },
+    {
+      usage: 1024,
+      origin: "http://email.bar.com",
+      persisted: false,
+    },
+  ]);
+
+  await openPreferencesViaOpenPreferencesAPI("privacy", { leaveOpen: true });
+  await openSiteDataSettingsDialog();
+
+  let win = gBrowser.selectedBrowser.contentWindow;
+  let doc = gBrowser.selectedBrowser.contentDocument;
+  let frameDoc = win.gSubDialog._topDialog._frame.contentDocument;
+  // Test initial state
+  assertSitesListed(doc, hosts);
+
+  let sitesList = frameDoc.getElementById("sitesList");
+  let site = sitesList.querySelector(`richlistitem[host="xyz.com"]`);
+  if (site) {
+    // Move the focus from the search box to the list and select an item
+    sitesList.focus();
+    site.click();
+    if (AppConstants.platform == "macosx") {
+      EventUtils.synthesizeKey("VK_BACK_SPACE", {}, win);
+    } else {
+      EventUtils.synthesizeKey("VK_DELETE", {}, win);
+    }
+  }
+
+  assertSitesListed(
+    doc,
+    hosts.filter(host => !host.includes("xyz"))
+  );
 
   await SiteDataTestUtils.clear();
   BrowserTestUtils.removeTab(gBrowser.selectedTab);

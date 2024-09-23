@@ -15,12 +15,17 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetrySession.jsm", this);
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
+);
+const { TelemetrySession } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetrySession.sys.mjs"
+);
 
 // Set up our dummy AppInfo object so we can control the appBuildID.
-ChromeUtils.import("resource://testing-common/AppInfo.jsm", this);
+const { getAppInfo, updateAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
+);
 updateAppInfo();
 
 // Check that when run with no previous build ID stored, we update the pref but do not

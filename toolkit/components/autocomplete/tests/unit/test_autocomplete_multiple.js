@@ -40,7 +40,7 @@ AutoCompleteInput.prototype = {
   popupOpen: false,
 
   popup: {
-    setSelectedIndex(aIndex) {},
+    setSelectedIndex() {},
     invalidate() {},
 
     // nsISupports implementation
@@ -92,7 +92,7 @@ AutoCompleteResult.prototype = {
     return this._styles[aIndex];
   },
 
-  getImageAt(aIndex) {
+  getImageAt() {
     return "";
   },
 
@@ -100,7 +100,11 @@ AutoCompleteResult.prototype = {
     return this.getValueAt(aIndex);
   },
 
-  removeValueAt(aRowIndex) {},
+  isRemovableAt() {
+    return true;
+  },
+
+  removeValueAt() {},
 
   // nsISupports implementation
   QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteResult"]),
@@ -128,18 +132,14 @@ AutoCompleteSearch.prototype = {
    */
   startSearch(aSearchString, aSearchParam, aPreviousResult, aListener) {
     var result = this._result;
-    if (result._values.length) {
-      result.searchResult = Ci.nsIAutoCompleteResult.RESULT_SUCCESS_ONGOING;
-    } else {
-      result.searchResult = Ci.nsIAutoCompleteResult.RESULT_NOMATCH_ONGOING;
-    }
+    result.searchResult = result._values.length
+      ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS_ONGOING
+      : Ci.nsIAutoCompleteResult.RESULT_NOMATCH_ONGOING;
     aListener.onSearchResult(this, result);
 
-    if (result._values.length) {
-      result.searchResult = Ci.nsIAutoCompleteResult.RESULT_SUCCESS;
-    } else {
-      result.searchResult = Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
-    }
+    result.searchResult = result._values.length
+      ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS
+      : Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
     aListener.onSearchResult(this, result);
   },
 
@@ -152,7 +152,7 @@ AutoCompleteSearch.prototype = {
   ]),
 
   // nsIFactory implementation
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };
@@ -164,9 +164,7 @@ AutoCompleteSearch.prototype = {
 function registerAutoCompleteSearch(aSearch) {
   var name = "@mozilla.org/autocomplete/search;1?name=" + aSearch.name;
 
-  var uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(
-    Ci.nsIUUIDGenerator
-  );
+  var uuidGenerator = Services.uuid;
   var cid = uuidGenerator.generateUUID();
 
   var desc = "Test AutoCompleteSearch";
@@ -218,12 +216,12 @@ function run_test() {
   var input = new AutoCompleteInput([search1.name, search2.name]);
   var numSearchesStarted = 0;
 
-  input.onSearchBegin = function() {
+  input.onSearchBegin = function () {
     numSearchesStarted++;
     Assert.equal(numSearchesStarted, 1);
   };
 
-  input.onSearchComplete = function() {
+  input.onSearchComplete = function () {
     Assert.equal(numSearchesStarted, 1);
 
     Assert.equal(

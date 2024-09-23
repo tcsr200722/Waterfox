@@ -1,23 +1,23 @@
-// |reftest| skip-if(release_or_beta) -- Intl.DateTimeFormat-fractionalSecondDigits is not released yet
 // Copyright 2019 Google Inc. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: >
     Checks handling of the options argument to the DateTimeFormat constructor.
 info: |
-    InitializeDateTimeFormat ( dateTimeFormat, locales, options )
-    23. Let _opt_.[[FractionalSecondDigits]] be ? GetNumberOption(_options_, `"fractionalSecondDigits"`, 0, 3, 0).
+    CreateDateTimeFormat ( dateTimeFormat, locales, options, required, defaults )
+    ...
+    37. For each row of Table 7, except the header row, in table order, do
+      a. Let prop be the name given in the Property column of the row.
+      b. If prop is "fractionalSecondDigits", then
+        i. Let value be ? GetNumberOption(options, "fractionalSecondDigits", 1, 3, undefined).
 features: [Intl.DateTimeFormat-fractionalSecondDigits]
 ---*/
 
 
 const validOptions = [
-  [undefined, 0],
-  [-0, 0],
-  [0, 0],
-  ["0", 0],
+  [undefined, undefined],
   [1, 1],
   ["1", 1],
   [2, 2],
@@ -26,9 +26,8 @@ const validOptions = [
   ["3", 3],
   [2.9, 2],
   ["2.9", 2],
-  [0.00001, 0],
+  [1.00001, 1],
   [{ toString() { return "3"; } }, 3],
-  [{ valueOf() { return -0; }, toString: undefined }, 0],
 ];
 for (const [fractionalSecondDigits, expected] of validOptions) {
   const dtf = new Intl.DateTimeFormat("en", { fractionalSecondDigits });

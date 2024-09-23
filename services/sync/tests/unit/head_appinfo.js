@@ -3,9 +3,8 @@
 
 /* import-globals-from ../../../common/tests/unit/head_helpers.js */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 // Required to avoid failures.
@@ -18,7 +17,7 @@ var fhs = Cc["@mozilla.org/satchel/form-history-startup;1"].getService(
 fhs.observe(null, "profile-after-change", null);
 
 // An app is going to have some prefs set which xpcshell tests don't.
-Services.prefs.setCharPref(
+Services.prefs.setStringPref(
   "identity.sync.tokenserver.uri",
   "http://token-server"
 );
@@ -35,7 +34,9 @@ function getOS() {
   }
 }
 
-ChromeUtils.import("resource://testing-common/AppInfo.jsm", this);
+const { updateAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
+);
 updateAppInfo({
   name: "XPCShell",
   ID: "xpcshell@tests.mozilla.org",

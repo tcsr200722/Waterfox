@@ -12,19 +12,16 @@
 
 #include "vm/ArrayBufferObject.h"
 
-#include "js/Value.h"
-
 #include "vm/SharedArrayObject.h"
 #include "vm/SharedMem.h"
 
 namespace js {
 
 inline SharedMem<uint8_t*> ArrayBufferObjectMaybeShared::dataPointerEither() {
-  ArrayBufferObjectMaybeShared* buf = this;
-  if (buf->is<ArrayBufferObject>()) {
-    return buf->as<ArrayBufferObject>().dataPointerShared();
+  if (this->is<ArrayBufferObject>()) {
+    return this->as<ArrayBufferObject>().dataPointerShared();
   }
-  return buf->as<SharedArrayBufferObject>().dataPointerShared();
+  return this->as<SharedArrayBufferObject>().dataPointerShared();
 }
 
 inline bool ArrayBufferObjectMaybeShared::isDetached() const {
@@ -34,46 +31,39 @@ inline bool ArrayBufferObjectMaybeShared::isDetached() const {
   return false;
 }
 
-inline uint32_t AnyArrayBufferByteLength(
-    const ArrayBufferObjectMaybeShared* buf) {
-  if (buf->is<ArrayBufferObject>()) {
-    return buf->as<ArrayBufferObject>().byteLength();
+inline bool ArrayBufferObjectMaybeShared::isResizable() const {
+  if (this->is<ArrayBufferObject>()) {
+    return this->as<ArrayBufferObject>().isResizable();
   }
-  return buf->as<SharedArrayBufferObject>().byteLength();
+  return this->as<SharedArrayBufferObject>().isGrowable();
 }
 
-inline uint32_t ArrayBufferObjectMaybeShared::byteLength() const {
-  return AnyArrayBufferByteLength(this);
-}
-
-inline bool AnyArrayBufferIsPreparedForAsmJS(
-    const ArrayBufferObjectMaybeShared* buf) {
-  if (buf->is<ArrayBufferObject>()) {
-    return buf->as<ArrayBufferObject>().isPreparedForAsmJS();
+inline size_t ArrayBufferObjectMaybeShared::byteLength() const {
+  if (this->is<ArrayBufferObject>()) {
+    return this->as<ArrayBufferObject>().byteLength();
   }
-  return buf->as<SharedArrayBufferObject>().isPreparedForAsmJS();
+  return this->as<SharedArrayBufferObject>().byteLength();
 }
 
 inline bool ArrayBufferObjectMaybeShared::isPreparedForAsmJS() const {
-  return AnyArrayBufferIsPreparedForAsmJS(this);
-}
-
-inline bool AnyArrayBufferIsWasm(const ArrayBufferObjectMaybeShared* buf) {
-  if (buf->is<ArrayBufferObject>()) {
-    return buf->as<ArrayBufferObject>().isWasm();
+  if (this->is<ArrayBufferObject>()) {
+    return this->as<ArrayBufferObject>().isPreparedForAsmJS();
   }
-  return buf->as<SharedArrayBufferObject>().isWasm();
+  return false;
 }
 
 inline bool ArrayBufferObjectMaybeShared::isWasm() const {
-  return AnyArrayBufferIsWasm(this);
+  if (this->is<ArrayBufferObject>()) {
+    return this->as<ArrayBufferObject>().isWasm();
+  }
+  return this->as<SharedArrayBufferObject>().isWasm();
 }
 
-inline ArrayBufferObjectMaybeShared& AsAnyArrayBuffer(HandleValue val) {
-  if (val.toObject().is<ArrayBufferObject>()) {
-    return val.toObject().as<ArrayBufferObject>();
+inline bool ArrayBufferObjectMaybeShared::pinLength(bool pin) {
+  if (is<ArrayBufferObject>()) {
+    return as<ArrayBufferObject>().pinLength(pin);
   }
-  return val.toObject().as<SharedArrayBufferObject>();
+  return false;  // Cannot pin or unpin shared array buffers.
 }
 
 }  // namespace js

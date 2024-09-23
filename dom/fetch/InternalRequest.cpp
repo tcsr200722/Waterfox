@@ -6,20 +6,20 @@
 
 #include "InternalRequest.h"
 
+#include "InternalResponse.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/FetchTypes.h"
-#include "mozilla/dom/IPCBlobInputStreamChild.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/RemoteLazyInputStreamChild.h"
 #include "nsIContentPolicy.h"
 #include "nsStreamUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 // The global is used to extract the principal.
 SafeRefPtr<InternalRequest> InternalRequest::GetRequestConstructorCopy(
     nsIGlobalObject* aGlobal, ErrorResult& aRv) const {
@@ -49,9 +49,12 @@ SafeRefPtr<InternalRequest> InternalRequest::GetRequestConstructorCopy(
   copy->mCredentialsMode = mCredentialsMode;
   copy->mCacheMode = mCacheMode;
   copy->mRedirectMode = mRedirectMode;
+  copy->mPriorityMode = mPriorityMode;
   copy->mContentPolicyTypeOverridden = mContentPolicyTypeOverridden;
 
   copy->mPreferredAlternativeDataType = mPreferredAlternativeDataType;
+  copy->mSkipWasmCaching = mSkipWasmCaching;
+  copy->mEmbedderPolicy = mEmbedderPolicy;
   return copy;
 }
 
@@ -83,13 +86,14 @@ InternalRequest::InternalRequest(const nsACString& aURL,
       mHeaders(new InternalHeaders(HeadersGuardEnum::None)),
       mBodyLength(InternalResponse::UNKNOWN_BODY_SIZE),
       mContentPolicyType(nsIContentPolicy::TYPE_FETCH),
-      mReferrer(NS_LITERAL_STRING(kFETCH_CLIENT_REFERRER_STR)),
+      mReferrer(nsLiteralCString(kFETCH_CLIENT_REFERRER_STR)),
       mReferrerPolicy(ReferrerPolicy::_empty),
       mEnvironmentReferrerPolicy(ReferrerPolicy::_empty),
       mMode(RequestMode::No_cors),
       mCredentialsMode(RequestCredentials::Omit),
       mCacheMode(RequestCache::Default),
-      mRedirectMode(RequestRedirect::Follow) {
+      mRedirectMode(RequestRedirect::Follow),
+      mPriorityMode(RequestPriority::Auto) {
   MOZ_ASSERT(!aURL.IsEmpty());
   AddURL(aURL, aFragment);
 }
@@ -98,8 +102,9 @@ InternalRequest::InternalRequest(
     const nsACString& aMethod, already_AddRefed<InternalHeaders> aHeaders,
     RequestCache aCacheMode, RequestMode aMode,
     RequestRedirect aRequestRedirect, RequestCredentials aRequestCredentials,
-    const nsAString& aReferrer, ReferrerPolicy aReferrerPolicy,
-    nsContentPolicyType aContentPolicyType, const nsAString& aIntegrity)
+    const nsACString& aReferrer, ReferrerPolicy aReferrerPolicy,
+    RequestPriority aPriority, nsContentPolicyType aContentPolicyType,
+    const nsAString& aIntegrity)
     : mMethod(aMethod),
       mHeaders(aHeaders),
       mBodyLength(InternalResponse::UNKNOWN_BODY_SIZE),
@@ -111,6 +116,7 @@ InternalRequest::InternalRequest(
       mCredentialsMode(aRequestCredentials),
       mCacheMode(aCacheMode),
       mRedirectMode(aRequestRedirect),
+      mPriorityMode(aPriority),
       mIntegrity(aIntegrity) {
   MOZ_ASSERT(!aURL.IsEmpty());
   AddURL(aURL, aFragment);
@@ -130,15 +136,27 @@ InternalRequest::InternalRequest(const InternalRequest& aOther,
       mResponseTainting(aOther.mResponseTainting),
       mCacheMode(aOther.mCacheMode),
       mRedirectMode(aOther.mRedirectMode),
+      mPriorityMode(aOther.mPriorityMode),
       mIntegrity(aOther.mIntegrity),
       mMozErrors(aOther.mMozErrors),
       mFragment(aOther.mFragment),
       mSkipServiceWorker(aOther.mSkipServiceWorker),
+      mSkipWasmCaching(aOther.mSkipWasmCaching),
       mSynchronous(aOther.mSynchronous),
       mUnsafeRequest(aOther.mUnsafeRequest),
       mUseURLCredentials(aOther.mUseURLCredentials),
-      mContentPolicyTypeOverridden(aOther.mContentPolicyTypeOverridden) {
+      mContentPolicyTypeOverridden(aOther.mContentPolicyTypeOverridden),
+      mEmbedderPolicy(aOther.mEmbedderPolicy),
+      mInterceptionContentPolicyType(aOther.mInterceptionContentPolicyType),
+      mInterceptionRedirectChain(aOther.mInterceptionRedirectChain),
+      mInterceptionFromThirdParty(aOther.mInterceptionFromThirdParty) {
   // NOTE: does not copy body stream... use the fallible Clone() for that
+
+  if (aOther.GetInterceptionTriggeringPrincipalInfo()) {
+    mInterceptionTriggeringPrincipalInfo =
+        MakeUnique<mozilla::ipc::PrincipalInfo>(
+            *(aOther.GetInterceptionTriggeringPrincipalInfo().get()));
+  }
 }
 
 InternalRequest::InternalRequest(const IPCInternalRequest& aIPCRequest)
@@ -152,26 +170,74 @@ InternalRequest::InternalRequest(const IPCInternalRequest& aIPCRequest)
           static_cast<nsContentPolicyType>(aIPCRequest.contentPolicyType())),
       mReferrer(aIPCRequest.referrer()),
       mReferrerPolicy(aIPCRequest.referrerPolicy()),
+      mEnvironmentReferrerPolicy(aIPCRequest.environmentReferrerPolicy()),
       mMode(aIPCRequest.requestMode()),
       mCredentialsMode(aIPCRequest.requestCredentials()),
       mCacheMode(aIPCRequest.cacheMode()),
       mRedirectMode(aIPCRequest.requestRedirect()),
       mIntegrity(aIPCRequest.integrity()),
-      mFragment(aIPCRequest.fragment()) {
+      mFragment(aIPCRequest.fragment()),
+      mEmbedderPolicy(aIPCRequest.embedderPolicy()),
+      mInterceptionContentPolicyType(static_cast<nsContentPolicyType>(
+          aIPCRequest.interceptionContentPolicyType())),
+      mInterceptionRedirectChain(aIPCRequest.interceptionRedirectChain()),
+      mInterceptionFromThirdParty(aIPCRequest.interceptionFromThirdParty()) {
   if (aIPCRequest.principalInfo()) {
     mPrincipalInfo = MakeUnique<mozilla::ipc::PrincipalInfo>(
         aIPCRequest.principalInfo().ref());
   }
 
+  if (aIPCRequest.interceptionTriggeringPrincipalInfo()) {
+    mInterceptionTriggeringPrincipalInfo =
+        MakeUnique<mozilla::ipc::PrincipalInfo>(
+            aIPCRequest.interceptionTriggeringPrincipalInfo().ref());
+  }
+
   const Maybe<BodyStreamVariant>& body = aIPCRequest.body();
 
-  // This constructor is (currently) only used for parent -> child communication
-  // (constructed on the child side).
   if (body) {
-    MOZ_ASSERT(body->type() == BodyStreamVariant::TParentToChildStream);
-    mBodyStream = static_cast<IPCBlobInputStreamChild*>(
-                      body->get_ParentToChildStream().actorChild())
-                      ->CreateStream();
+    if (body->type() == BodyStreamVariant::TParentToChildStream) {
+      mBodyStream = body->get_ParentToChildStream().get_RemoteLazyInputStream();
+    }
+    if (body->type() == BodyStreamVariant::TChildToParentStream) {
+      mBodyStream =
+          DeserializeIPCStream(body->get_ChildToParentStream().stream());
+    }
+  }
+}
+
+void InternalRequest::ToIPCInternalRequest(
+    IPCInternalRequest* aIPCRequest, mozilla::ipc::PBackgroundChild* aManager) {
+  aIPCRequest->method() = mMethod;
+  for (const auto& url : mURLList) {
+    aIPCRequest->urlList().AppendElement(url);
+  }
+  mHeaders->ToIPC(aIPCRequest->headers(), aIPCRequest->headersGuard());
+  aIPCRequest->bodySize() = mBodyLength;
+  aIPCRequest->preferredAlternativeDataType() = mPreferredAlternativeDataType;
+  aIPCRequest->contentPolicyType() = mContentPolicyType;
+  aIPCRequest->referrer() = mReferrer;
+  aIPCRequest->referrerPolicy() = mReferrerPolicy;
+  aIPCRequest->environmentReferrerPolicy() = mEnvironmentReferrerPolicy;
+  aIPCRequest->requestMode() = mMode;
+  aIPCRequest->requestCredentials() = mCredentialsMode;
+  aIPCRequest->cacheMode() = mCacheMode;
+  aIPCRequest->requestRedirect() = mRedirectMode;
+  aIPCRequest->integrity() = mIntegrity;
+  aIPCRequest->fragment() = mFragment;
+  aIPCRequest->embedderPolicy() = mEmbedderPolicy;
+
+  if (mPrincipalInfo) {
+    aIPCRequest->principalInfo() = Some(*mPrincipalInfo);
+  }
+
+  if (mBodyStream) {
+    nsCOMPtr<nsIInputStream> body = mBodyStream;
+    aIPCRequest->body().emplace(ChildToParentStream());
+    DebugOnly<bool> ok = mozilla::ipc::SerializeIPCStream(
+        body.forget(), aIPCRequest->body()->get_ChildToParentStream().stream(),
+        /* aAllowLazy */ false);
+    MOZ_ASSERT(ok);
   }
 }
 
@@ -188,129 +254,114 @@ void InternalRequest::OverrideContentPolicyType(
   mContentPolicyTypeOverridden = true;
 }
 
+void InternalRequest::SetInterceptionContentPolicyType(
+    nsContentPolicyType aContentPolicyType) {
+  mInterceptionContentPolicyType = aContentPolicyType;
+}
+
 /* static */
 RequestDestination InternalRequest::MapContentPolicyTypeToRequestDestination(
     nsContentPolicyType aContentPolicyType) {
-  RequestDestination destination = RequestDestination::_empty;
   switch (aContentPolicyType) {
     case nsIContentPolicy::TYPE_OTHER:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_INTERNAL_SCRIPT:
     case nsIContentPolicy::TYPE_INTERNAL_SCRIPT_PRELOAD:
     case nsIContentPolicy::TYPE_INTERNAL_MODULE:
     case nsIContentPolicy::TYPE_INTERNAL_MODULE_PRELOAD:
     case nsIContentPolicy::TYPE_INTERNAL_SERVICE_WORKER:
     case nsIContentPolicy::TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS:
+    case nsIContentPolicy::TYPE_INTERNAL_CHROMEUTILS_COMPILED_SCRIPT:
+    case nsIContentPolicy::TYPE_INTERNAL_FRAME_MESSAGEMANAGER_SCRIPT:
     case nsIContentPolicy::TYPE_SCRIPT:
-      destination = RequestDestination::Script;
-      break;
+      return RequestDestination::Script;
     case nsIContentPolicy::TYPE_INTERNAL_WORKER:
-      destination = RequestDestination::Worker;
-      break;
+    case nsIContentPolicy::TYPE_INTERNAL_WORKER_STATIC_MODULE:
+      return RequestDestination::Worker;
     case nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER:
-      destination = RequestDestination::Sharedworker;
-      break;
+      return RequestDestination::Sharedworker;
     case nsIContentPolicy::TYPE_IMAGESET:
     case nsIContentPolicy::TYPE_INTERNAL_IMAGE:
     case nsIContentPolicy::TYPE_INTERNAL_IMAGE_PRELOAD:
     case nsIContentPolicy::TYPE_INTERNAL_IMAGE_FAVICON:
     case nsIContentPolicy::TYPE_IMAGE:
-      destination = RequestDestination::Image;
-      break;
+      return RequestDestination::Image;
     case nsIContentPolicy::TYPE_STYLESHEET:
     case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET:
     case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET_PRELOAD:
-      destination = RequestDestination::Style;
-      break;
+      return RequestDestination::Style;
     case nsIContentPolicy::TYPE_OBJECT:
     case nsIContentPolicy::TYPE_INTERNAL_OBJECT:
-      destination = RequestDestination::Object;
-      break;
+      return RequestDestination::Object;
     case nsIContentPolicy::TYPE_INTERNAL_EMBED:
-      destination = RequestDestination::Embed;
-      break;
+      return RequestDestination::Embed;
     case nsIContentPolicy::TYPE_DOCUMENT:
+      return RequestDestination::Document;
     case nsIContentPolicy::TYPE_SUBDOCUMENT:
     case nsIContentPolicy::TYPE_INTERNAL_IFRAME:
-      destination = RequestDestination::Document;
-      break;
+      return RequestDestination::Iframe;
     case nsIContentPolicy::TYPE_INTERNAL_FRAME:
-      destination = RequestDestination::_empty;
-      break;
-    case nsIContentPolicy::TYPE_REFRESH:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::Frame;
     case nsIContentPolicy::TYPE_PING:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_XMLHTTPREQUEST:
     case nsIContentPolicy::TYPE_INTERNAL_XMLHTTPREQUEST:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_INTERNAL_EVENTSOURCE:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_OBJECT_SUBREQUEST:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_DTD:
     case nsIContentPolicy::TYPE_INTERNAL_DTD:
     case nsIContentPolicy::TYPE_INTERNAL_FORCE_ALLOWED_DTD:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_FONT:
     case nsIContentPolicy::TYPE_INTERNAL_FONT_PRELOAD:
-      destination = RequestDestination::Font;
-      break;
+    case nsIContentPolicy::TYPE_UA_FONT:
+      return RequestDestination::Font;
     case nsIContentPolicy::TYPE_MEDIA:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_INTERNAL_AUDIO:
-      destination = RequestDestination::Audio;
-      break;
+      return RequestDestination::Audio;
     case nsIContentPolicy::TYPE_INTERNAL_VIDEO:
-      destination = RequestDestination::Video;
-      break;
+      return RequestDestination::Video;
     case nsIContentPolicy::TYPE_INTERNAL_TRACK:
-      destination = RequestDestination::Track;
-      break;
+      return RequestDestination::Track;
     case nsIContentPolicy::TYPE_WEBSOCKET:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_CSP_REPORT:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::Report;
     case nsIContentPolicy::TYPE_XSLT:
-      destination = RequestDestination::Xslt;
-      break;
+      return RequestDestination::Xslt;
     case nsIContentPolicy::TYPE_BEACON:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_FETCH:
-      destination = RequestDestination::_empty;
-      break;
+    case nsIContentPolicy::TYPE_INTERNAL_FETCH_PRELOAD:
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_WEB_MANIFEST:
-      destination = RequestDestination::Manifest;
-      break;
+      return RequestDestination::Manifest;
     case nsIContentPolicy::TYPE_SAVEAS_DOWNLOAD:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_SPECULATIVE:
-      destination = RequestDestination::_empty;
-      break;
+      return RequestDestination::_empty;
     case nsIContentPolicy::TYPE_INTERNAL_AUDIOWORKLET:
-      destination = RequestDestination::Audioworklet;
-      break;
+      return RequestDestination::Audioworklet;
     case nsIContentPolicy::TYPE_INTERNAL_PAINTWORKLET:
-      destination = RequestDestination::Paintworklet;
+      return RequestDestination::Paintworklet;
+    case nsIContentPolicy::TYPE_PROXIED_WEBRTC_MEDIA:
+      return RequestDestination::_empty;
+    case nsIContentPolicy::TYPE_WEB_IDENTITY:
+      return RequestDestination::_empty;
+    case nsIContentPolicy::TYPE_WEB_TRANSPORT:
+      return RequestDestination::_empty;
+    case nsIContentPolicy::TYPE_INVALID:
+    case nsIContentPolicy::TYPE_END:
       break;
-    default:
-      MOZ_ASSERT(false, "Unhandled nsContentPolicyType value");
-      break;
+      // Do not add default: so that compilers can catch the missing case.
   }
 
-  return destination;
+  MOZ_ASSERT(false, "Unhandled nsContentPolicyType value");
+  return RequestDestination::_empty;
 }
 
 // static
@@ -323,16 +374,10 @@ bool InternalRequest::IsNavigationContentPolicy(
   // "location", "metarefresh", and "prerender".
   //
   // Note, all of these request types are effectively initiated by nsDocShell.
-  //
-  // The TYPE_REFRESH is used in some code paths for metarefresh, but will not
-  // be seen during the actual load.  Instead the new load gets a normal
-  // nsDocShell policy type.  We include it here in case this utility method
-  // is called before the load starts.
   return aContentPolicyType == nsIContentPolicy::TYPE_DOCUMENT ||
          aContentPolicyType == nsIContentPolicy::TYPE_SUBDOCUMENT ||
          aContentPolicyType == nsIContentPolicy::TYPE_INTERNAL_FRAME ||
-         aContentPolicyType == nsIContentPolicy::TYPE_INTERNAL_IFRAME ||
-         aContentPolicyType == nsIContentPolicy::TYPE_REFRESH;
+         aContentPolicyType == nsIContentPolicy::TYPE_INTERNAL_IFRAME;
 }
 
 // static
@@ -382,13 +427,13 @@ RequestMode InternalRequest::MapChannelToRequestMode(nsIChannel* aChannel) {
   uint32_t securityMode = loadInfo->GetSecurityMode();
 
   switch (securityMode) {
-    case nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS:
+    case nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT:
     case nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_IS_BLOCKED:
       return RequestMode::Same_origin;
-    case nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS:
-    case nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL:
+    case nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT:
+    case nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL:
       return RequestMode::No_cors;
-    case nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS:
+    case nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT:
       // TODO: Check additional flag force-preflight after bug 1199693 (bug
       // 1189945)
       return RequestMode::Cors;
@@ -431,5 +476,8 @@ void InternalRequest::SetPrincipalInfo(
   mPrincipalInfo = std::move(aPrincipalInfo);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+void InternalRequest::SetInterceptionTriggeringPrincipalInfo(
+    UniquePtr<mozilla::ipc::PrincipalInfo> aPrincipalInfo) {
+  mInterceptionTriggeringPrincipalInfo = std::move(aPrincipalInfo);
+}
+}  // namespace mozilla::dom

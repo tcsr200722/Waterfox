@@ -5,12 +5,17 @@
 
 #include "SocketProcessHost.h"
 
-#include "nsAppRunner.h"
-#include "nsIObserverService.h"
-#include "nsIOService.h"
 #include "SocketProcessParent.h"
-#include "ProcessUtils.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/ipc/FileDescriptor.h"
+#include "mozilla/ipc/ProcessUtils.h"
+#include "nsAppRunner.h"
+#include "nsIOService.h"
+#include "nsIObserverService.h"
+#include "ProfilerParent.h"
+#include "nsNetUtil.h"
+#include "mozilla/ipc/Endpoint.h"
+#include "mozilla/ipc/ProcessChild.h"
 
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxBroker.h"
@@ -18,77 +23,18 @@
 #  include "mozilla/SandboxSettings.h"
 #endif
 
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerParent.h"
-#endif
-
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
 #  include "mozilla/Sandbox.h"
+#endif
+
+#if defined(XP_WIN)
+#  include "mozilla/WinDllServices.h"
 #endif
 
 using namespace mozilla::ipc;
 
 namespace mozilla {
 namespace net {
-
-#define NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC "ipc:network:set-offline"
-
-class OfflineObserver final : public nsIObserver {
- public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-  explicit OfflineObserver(SocketProcessHost* aProcessHost)
-      : mProcessHost(aProcessHost) {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-    if (obs) {
-      obs->AddObserver(this, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC, false);
-      obs->AddObserver(this, NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID, false);
-    }
-  }
-
-  void Destroy() {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-    if (obs) {
-      obs->RemoveObserver(this, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC);
-    }
-    mProcessHost = nullptr;
-  }
-
- private:
-  // nsIObserver implementation.
-  NS_IMETHOD
-  Observe(nsISupports* aSubject, const char* aTopic,
-          const char16_t* aData) override {
-    if (!mProcessHost) {
-      return NS_OK;
-    }
-
-    if (!strcmp(aTopic, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC)) {
-      NS_ConvertUTF16toUTF8 dataStr(aData);
-      const char* offline = dataStr.get();
-      if (!mProcessHost->IsConnected() ||
-          mProcessHost->GetActor()->SendSetOffline(
-              !strcmp(offline, "true") ? true : false)) {
-        return NS_ERROR_NOT_AVAILABLE;
-      }
-    } else if (!strcmp(aTopic, NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID)) {
-      nsCOMPtr<nsIObserverService> obs =
-          mozilla::services::GetObserverService();
-      obs->RemoveObserver(this, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC);
-      obs->RemoveObserver(this, NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID);
-    }
-
-    return NS_OK;
-  }
-  virtual ~OfflineObserver() = default;
-
-  SocketProcessHost* mProcessHost;
-};
-
-NS_IMPL_ISUPPORTS(OfflineObserver, nsIObserver)
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
 bool SocketProcessHost::sLaunchWithMacSandbox = false;
@@ -97,7 +43,7 @@ bool SocketProcessHost::sLaunchWithMacSandbox = false;
 SocketProcessHost::SocketProcessHost(Listener* aListener)
     : GeckoChildProcessHost(GeckoProcessType_Socket),
       mListener(aListener),
-      mTaskFactory(this),
+      mTaskFactory(Some(this)),
       mLaunchPhase(LaunchPhase::Unlaunched),
       mShutdownRequested(false),
       mChannelClosed(false) {
@@ -112,15 +58,7 @@ SocketProcessHost::SocketProcessHost(Listener* aListener)
 #endif
 }
 
-SocketProcessHost::~SocketProcessHost() {
-  MOZ_COUNT_DTOR(SocketProcessHost);
-  if (mOfflineObserver) {
-    RefPtr<OfflineObserver> observer = mOfflineObserver;
-    NS_DispatchToMainThread(
-        NS_NewRunnableFunction("SocketProcessHost::DestroyOfflineObserver",
-                               [observer]() { observer->Destroy(); }));
-  }
-}
+SocketProcessHost::~SocketProcessHost() { MOZ_COUNT_DTOR(SocketProcessHost); }
 
 bool SocketProcessHost::Launch() {
   MOZ_ASSERT(mLaunchPhase == LaunchPhase::Unlaunched);
@@ -128,13 +66,11 @@ bool SocketProcessHost::Launch() {
   MOZ_ASSERT(NS_IsMainThread());
 
   std::vector<std::string> extraArgs;
-
-  nsAutoCString parentBuildID(mozilla::PlatformBuildID());
-  extraArgs.push_back("-parentBuildID");
-  extraArgs.push_back(parentBuildID.get());
+  ProcessChild::AddPlatformBuildID(extraArgs);
 
   SharedPreferenceSerializer prefSerializer;
-  if (!prefSerializer.SerializeToSharedMemory()) {
+  if (!prefSerializer.SerializeToSharedMemory(GeckoProcessType_VR,
+                                              /* remoteType */ ""_ns)) {
     return false;
   }
   prefSerializer.AddSharedPrefCmdLineArgs(*this, extraArgs);
@@ -148,7 +84,19 @@ bool SocketProcessHost::Launch() {
   return true;
 }
 
-void SocketProcessHost::OnChannelConnected(int32_t peer_pid) {
+static void HandleErrorAfterDestroy(
+    RefPtr<SocketProcessHost::Listener>&& aListener) {
+  if (!aListener) {
+    return;
+  }
+
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "HandleErrorAfterDestroy", [listener = std::move(aListener)]() {
+        listener->OnProcessLaunchComplete(nullptr, false);
+      }));
+}
+
+void SocketProcessHost::OnChannelConnected(base::ProcessId peer_pid) {
   MOZ_ASSERT(!NS_IsMainThread());
 
   GeckoChildProcessHost::OnChannelConnected(peer_pid);
@@ -158,23 +106,13 @@ void SocketProcessHost::OnChannelConnected(int32_t peer_pid) {
   RefPtr<Runnable> runnable;
   {
     MonitorAutoLock lock(mMonitor);
-    runnable = mTaskFactory.NewRunnableMethod(
-        &SocketProcessHost::OnChannelConnectedTask);
-  }
-  NS_DispatchToMainThread(runnable);
-}
-
-void SocketProcessHost::OnChannelError() {
-  MOZ_ASSERT(!NS_IsMainThread());
-  GeckoChildProcessHost::OnChannelError();
-
-  // Post a task to the main thread. Take the lock because mTaskFactory is not
-  // thread-safe.
-  RefPtr<Runnable> runnable;
-  {
-    MonitorAutoLock lock(mMonitor);
+    if (!mTaskFactory) {
+      HandleErrorAfterDestroy(std::move(mListener));
+      return;
+    }
     runnable =
-        mTaskFactory.NewRunnableMethod(&SocketProcessHost::OnChannelErrorTask);
+        (*mTaskFactory)
+            .NewRunnableMethod(&SocketProcessHost::OnChannelConnectedTask);
   }
   NS_DispatchToMainThread(runnable);
 }
@@ -187,64 +125,64 @@ void SocketProcessHost::OnChannelConnectedTask() {
   }
 }
 
-void SocketProcessHost::OnChannelErrorTask() {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  if (mLaunchPhase == LaunchPhase::Waiting) {
-    InitAfterConnect(false);
-  }
-}
-
 void SocketProcessHost::InitAfterConnect(bool aSucceeded) {
   MOZ_ASSERT(mLaunchPhase == LaunchPhase::Waiting);
   MOZ_ASSERT(!mSocketProcessParent);
   MOZ_ASSERT(NS_IsMainThread());
 
   mLaunchPhase = LaunchPhase::Complete;
-
-  if (aSucceeded) {
-    mSocketProcessParent = MakeUnique<SocketProcessParent>(this);
-    DebugOnly<bool> rv = mSocketProcessParent->Open(
-        TakeChannel(), base::GetProcId(GetChildProcessHandle()));
-    MOZ_ASSERT(rv);
-
-    nsCOMPtr<nsIIOService> ioService(do_GetIOService());
-    MOZ_ASSERT(ioService, "No IO service?");
-    bool offline = false;
-    DebugOnly<nsresult> result = ioService->GetOffline(&offline);
-    MOZ_ASSERT(NS_SUCCEEDED(result), "Failed getting offline?");
-
-    Maybe<FileDescriptor> brokerFd;
-
-#if defined(XP_LINUX) && defined(MOZ_SANDBOX)
-    if (GetEffectiveSocketProcessSandboxLevel() > 0) {
-      auto policy = SandboxBrokerPolicyFactory::GetSocketProcessPolicy(
-          GetActor()->OtherPid());
-      if (policy != nullptr) {
-        brokerFd = Some(FileDescriptor());
-        mSandboxBroker = SandboxBroker::Create(
-            std::move(policy), GetActor()->OtherPid(), brokerFd.ref());
-        // This is unlikely to fail and probably indicates OS resource
-        // exhaustion.
-        Unused << NS_WARN_IF(mSandboxBroker == nullptr);
-        MOZ_ASSERT(brokerFd.ref().IsValid());
-      }
-      Unused << GetActor()->SendInitLinuxSandbox(brokerFd);
+  if (!aSucceeded) {
+    if (mListener) {
+      mListener->OnProcessLaunchComplete(this, false);
     }
-#endif  // XP_LINUX && MOZ_SANDBOX
-
-#ifdef MOZ_GECKO_PROFILER
-    Unused << GetActor()->SendInitProfiler(
-        ProfilerParent::CreateForProcess(GetActor()->OtherPid()));
-#endif
-
-    Unused << GetActor()->SendSetOffline(offline);
-
-    mOfflineObserver = new OfflineObserver(this);
+    return;
   }
 
+  mSocketProcessParent = MakeRefPtr<SocketProcessParent>(this);
+  DebugOnly<bool> rv = TakeInitialEndpoint().Bind(mSocketProcessParent.get());
+  MOZ_ASSERT(rv);
+
+  SocketPorcessInitAttributes attributes;
+  nsCOMPtr<nsIIOService> ioService(do_GetIOService());
+  MOZ_ASSERT(ioService, "No IO service?");
+  DebugOnly<nsresult> result = ioService->GetOffline(&attributes.mOffline());
+  MOZ_ASSERT(NS_SUCCEEDED(result), "Failed getting offline?");
+  result = ioService->GetConnectivity(&attributes.mConnectivity());
+  MOZ_ASSERT(NS_SUCCEEDED(result), "Failed getting connectivity?");
+
+  attributes.mInitSandbox() = false;
+
+#if defined(XP_WIN)
+  RefPtr<DllServices> dllSvc(DllServices::Get());
+  attributes.mIsReadyForBackgroundProcessing() =
+      dllSvc->IsReadyForBackgroundProcessing();
+#endif
+
+#if defined(XP_LINUX) && defined(MOZ_SANDBOX)
+  if (GetEffectiveSocketProcessSandboxLevel() > 0) {
+    auto policy = SandboxBrokerPolicyFactory::GetSocketProcessPolicy(
+        GetActor()->OtherPid());
+    if (policy != nullptr) {
+      attributes.mSandboxBroker() = Some(FileDescriptor());
+      mSandboxBroker =
+          SandboxBroker::Create(std::move(policy), GetActor()->OtherPid(),
+                                attributes.mSandboxBroker().ref());
+      // This is unlikely to fail and probably indicates OS resource
+      // exhaustion.
+      Unused << NS_WARN_IF(mSandboxBroker == nullptr);
+      MOZ_ASSERT(attributes.mSandboxBroker().ref().IsValid());
+    }
+    attributes.mInitSandbox() = true;
+  }
+#endif  // XP_LINUX && MOZ_SANDBOX
+
+  Unused << GetActor()->SendInit(attributes);
+
+  Unused << GetActor()->SendInitProfiler(
+      ProfilerParent::CreateForProcess(GetActor()->OtherPid()));
+
   if (mListener) {
-    mListener->OnProcessLaunchComplete(this, aSucceeded);
+    mListener->OnProcessLaunchComplete(this, true);
   }
 }
 
@@ -253,10 +191,6 @@ void SocketProcessHost::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
 
   mListener = nullptr;
-  if (mOfflineObserver) {
-    mOfflineObserver->Destroy();
-    mOfflineObserver = nullptr;
-  }
 
   if (mSocketProcessParent) {
     // OnChannelClosed uses this to check if the shutdown was expected or
@@ -294,10 +228,10 @@ void SocketProcessHost::OnChannelClosed() {
 void SocketProcessHost::DestroyProcess() {
   {
     MonitorAutoLock lock(mMonitor);
-    mTaskFactory.RevokeAll();
+    mTaskFactory.reset();
   }
 
-  MessageLoop::current()->PostTask(NS_NewRunnableFunction(
+  GetCurrentSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
       "DestroySocketProcessRunnable", [this] { Destroy(); }));
 }
 

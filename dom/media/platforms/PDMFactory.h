@@ -7,17 +7,31 @@
 #if !defined(PDMFactory_h_)
 #  define PDMFactory_h_
 
+#  include "DecoderDoctorDiagnostics.h"
+#  include "MediaCodecsSupport.h"
 #  include "PlatformDecoderModule.h"
-#  include "mozilla/StaticMutex.h"
-
-class CDMProxy;
+#  include "mozilla/AlreadyAddRefed.h"
+#  include "mozilla/EnumSet.h"
+#  include "mozilla/MozPromise.h"
+#  include "mozilla/RefPtr.h"
+#  include "mozilla/ipc/UtilityProcessSandboxing.h"
+#  include "nsISupports.h"
+#  include "nsStringFwd.h"
+#  include "nsTArray.h"
+#  include <utility>
 
 namespace mozilla {
 
-class DecoderDoctorDiagnostics;
-class PDMFactoryImpl;
-template <class T>
-class StaticAutoPtr;
+class CDMProxy;
+class MediaDataDecoder;
+class MediaResult;
+class StaticMutex;
+struct CreateDecoderParams;
+struct CreateDecoderParamsForAsync;
+struct SupportDecoderParams;
+enum class RemoteDecodeIn;
+
+using PDMCreateDecoderPromise = PlatformDecoderModule::CreateDecoderPromise;
 
 class PDMFactory final {
  public:
@@ -26,17 +40,14 @@ class PDMFactory final {
   PDMFactory();
 
   // Factory method that creates the appropriate PlatformDecoderModule for
-  // the platform we're running on. Caller is responsible for deleting this
-  // instance. It's expected that there will be multiple
-  // PlatformDecoderModules alive at the same time.
-  // This is called on the decode task queue.
-  already_AddRefed<MediaDataDecoder> CreateDecoder(
+  // the platform we're running on.
+  RefPtr<PDMCreateDecoderPromise> CreateDecoder(
       const CreateDecoderParams& aParams);
 
-  bool SupportsMimeType(const nsACString& aMimeType,
-                        DecoderDoctorDiagnostics* aDiagnostics) const;
-  bool Supports(const TrackInfo& aTrackInfo,
-                DecoderDoctorDiagnostics* aDiagnostics) const;
+  media::DecodeSupportSet SupportsMimeType(const nsACString& aMimeType) const;
+  media::DecodeSupportSet Supports(
+      const SupportDecoderParams& aParams,
+      DecoderDoctorDiagnostics* aDiagnostics) const;
 
   // Creates a PlatformDecoderModule that uses a CDMProxy to decrypt or
   // decrypt-and-decode EME encrypted content. If the CDM only decrypts and
@@ -50,34 +61,46 @@ class PDMFactory final {
   static constexpr int kYUV422 = 2;
   static constexpr int kYUV444 = 3;
 
+  static media::MediaCodecsSupported Supported(bool aForceRefresh = false);
+  static media::DecodeSupportSet SupportsMimeType(
+      const nsACString& aMimeType,
+      const media::MediaCodecsSupported& aSupported, RemoteDecodeIn aLocation);
+
+  static bool AllDecodersAreRemote();
+
  private:
   virtual ~PDMFactory();
+
   void CreatePDMs();
   void CreateNullPDM();
+  void CreateGpuPDMs();
+  void CreateRddPDMs();
+  void CreateUtilityPDMs();
+  void CreateContentPDMs();
+  void CreateDefaultPDMs();
+
   // Startup the provided PDM and add it to our list if successful.
-  bool StartupPDM(PlatformDecoderModule* aPDM, bool aInsertAtBeginning = false);
+  bool StartupPDM(already_AddRefed<PlatformDecoderModule> aPDM,
+                  bool aInsertAtBeginning = false);
   // Returns the first PDM in our list supporting the mimetype.
-  already_AddRefed<PlatformDecoderModule> GetDecoder(
-      const TrackInfo& aTrackInfo,
+  already_AddRefed<PlatformDecoderModule> GetDecoderModule(
+      const SupportDecoderParams& aParams,
       DecoderDoctorDiagnostics* aDiagnostics) const;
 
-  already_AddRefed<MediaDataDecoder> CreateDecoderWithPDM(
+  RefPtr<PDMCreateDecoderPromise> CreateDecoderWithPDM(
       PlatformDecoderModule* aPDM, const CreateDecoderParams& aParams);
+  RefPtr<PDMCreateDecoderPromise> CheckAndMaybeCreateDecoder(
+      CreateDecoderParamsForAsync&& aParams, uint32_t aIndex,
+      Maybe<MediaResult> aEarlierError = Nothing());
 
   nsTArray<RefPtr<PlatformDecoderModule>> mCurrentPDMs;
   RefPtr<PlatformDecoderModule> mEMEPDM;
   RefPtr<PlatformDecoderModule> mNullPDM;
 
-  bool mWMFFailedToLoad = false;
-  bool mFFmpegFailedToLoad = false;
-  bool mGMPPDMFailedToStartup = false;
+  DecoderDoctorDiagnostics::FlagsSet mFailureFlags;
 
   friend class RemoteVideoDecoderParent;
   static void EnsureInit();
-  template <class T>
-  friend class StaticAutoPtr;
-  static StaticAutoPtr<PDMFactoryImpl> sInstance;
-  static StaticMutex sMonitor;
 };
 
 }  // namespace mozilla

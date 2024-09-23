@@ -4,19 +4,22 @@
 
 "use strict";
 
-const { generateUUID } = require("devtools/shared/generate-uuid");
+const { generateUUID } = require("resource://devtools/shared/generate-uuid.js");
+const {
+  COMPATIBILITY_TOOLTIP_MESSAGE,
+} = require("resource://devtools/client/inspector/rules/constants.js");
 
 loader.lazyRequireGetter(
   this,
   "escapeCSSComment",
-  "devtools/shared/css/parsing-utils",
+  "resource://devtools/shared/css/parsing-utils.js",
   true
 );
 
 loader.lazyRequireGetter(
   this,
   "getCSSVariables",
-  "devtools/client/inspector/rules/utils/utils",
+  "resource://devtools/client/inspector/rules/utils/utils.js",
   true
 );
 
@@ -104,6 +107,10 @@ class TextProperty {
    * if any.
    */
   updateEditor() {
+    // When the editor updates, reset the saved
+    // compatibility issues list as any updates
+    // may alter the compatibility status of declarations
+    this.rule.compatibilityIssues = null;
     if (this.editor) {
       this.editor.update();
     }
@@ -241,40 +248,126 @@ class TextProperty {
   }
 
   /**
+   * Returns the associated StyleRule declaration if it exists
+   *
+   * @returns {Object|undefined}
+   */
+  #getDomRuleDeclaration() {
+    const selfIndex = this.rule.textProps.indexOf(this);
+    return this.rule.domRule.declarations?.[selfIndex];
+  }
+
+  /**
    * Validate this property. Does it make sense for this value to be assigned
    * to this property name?
    *
    * @return {Boolean} true if the whole CSS declaration is valid, false otherwise.
    */
   isValid() {
-    const selfIndex = this.rule.textProps.indexOf(this);
+    const declaration = this.#getDomRuleDeclaration();
 
     // When adding a new property in the rule-view, the TextProperty object is
     // created right away before the rule gets updated on the server, so we're
     // not going to find the corresponding declaration object yet. Default to
     // true.
-    if (!this.rule.domRule.declarations[selfIndex]) {
+    if (!declaration) {
       return true;
     }
 
-    return this.rule.domRule.declarations[selfIndex].isValid;
+    return declaration.isValid;
   }
 
   isUsed() {
-    const selfIndex = this.rule.textProps.indexOf(this);
-    const declarations = this.rule.domRule.declarations;
+    const declaration = this.#getDomRuleDeclaration();
 
     // StyleRuleActor's declarations may have a isUsed flag (if the server is the right
     // version). Just return true if the information is missing.
-    if (
-      !declarations ||
-      !declarations[selfIndex] ||
-      !declarations[selfIndex].isUsed
-    ) {
+    if (!declaration?.isUsed) {
       return { used: true };
     }
 
-    return declarations[selfIndex].isUsed;
+    return declaration.isUsed;
+  }
+
+  /**
+   * Get compatibility issue linked with the textProp.
+   *
+   * @returns  A JSON objects with compatibility information in following form:
+   *    {
+   *      // A boolean to denote the compatibility status
+   *      isCompatible: <boolean>,
+   *      // The CSS declaration that has compatibility issues
+   *      property: <string>,
+   *      // The un-aliased root CSS declaration for the given property
+   *      rootProperty: <string>,
+   *      // The l10n message id for the tooltip message
+   *      msgId: <string>,
+   *      // Link to MDN documentation for the rootProperty
+   *      url: <string>,
+   *      // An array of all the browsers that don't support the given CSS rule
+   *      unsupportedBrowsers: <Array>,
+   *    }
+   */
+  async isCompatible() {
+    // This is a workaround for Bug 1648339
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1648339
+    // that makes the tooltip icon inconsistent with the
+    // position of the rule it is associated with. Once solved,
+    // the compatibility data can be directly accessed from the
+    // declaration and this logic can be used to set isCompatible
+    // property directly to domRule in StyleRuleActor's form() method.
+    if (!this.enabled) {
+      return { isCompatible: true };
+    }
+
+    const compatibilityIssues = await this.rule.getCompatibilityIssues();
+    if (!compatibilityIssues.length) {
+      return { isCompatible: true };
+    }
+
+    const property = this.name;
+    const indexOfProperty = compatibilityIssues.findIndex(
+      issue => issue.property === property || issue.aliases?.includes(property)
+    );
+
+    if (indexOfProperty < 0) {
+      return { isCompatible: true };
+    }
+
+    const {
+      property: rootProperty,
+      deprecated,
+      experimental,
+      specUrl,
+      url,
+      unsupportedBrowsers,
+    } = compatibilityIssues[indexOfProperty];
+
+    let msgId = COMPATIBILITY_TOOLTIP_MESSAGE.default;
+    if (deprecated && experimental && !unsupportedBrowsers.length) {
+      msgId =
+        COMPATIBILITY_TOOLTIP_MESSAGE["deprecated-experimental-supported"];
+    } else if (deprecated && experimental) {
+      msgId = COMPATIBILITY_TOOLTIP_MESSAGE["deprecated-experimental"];
+    } else if (deprecated && !unsupportedBrowsers.length) {
+      msgId = COMPATIBILITY_TOOLTIP_MESSAGE["deprecated-supported"];
+    } else if (deprecated) {
+      msgId = COMPATIBILITY_TOOLTIP_MESSAGE.deprecated;
+    } else if (experimental && !unsupportedBrowsers.length) {
+      msgId = COMPATIBILITY_TOOLTIP_MESSAGE["experimental-supported"];
+    } else if (experimental) {
+      msgId = COMPATIBILITY_TOOLTIP_MESSAGE.experimental;
+    }
+
+    return {
+      isCompatible: false,
+      property,
+      rootProperty,
+      msgId,
+      specUrl,
+      url,
+      unsupportedBrowsers,
+    };
   }
 
   /**
@@ -283,17 +376,56 @@ class TextProperty {
    * @return {Boolean} true if the property name is valid, false otherwise.
    */
   isNameValid() {
-    const selfIndex = this.rule.textProps.indexOf(this);
+    const declaration = this.#getDomRuleDeclaration();
 
     // When adding a new property in the rule-view, the TextProperty object is
     // created right away before the rule gets updated on the server, so we're
     // not going to find the corresponding declaration object yet. Default to
     // true.
-    if (!this.rule.domRule.declarations[selfIndex]) {
+    if (!declaration) {
       return true;
     }
 
-    return this.rule.domRule.declarations[selfIndex].isNameValid;
+    return declaration.isNameValid;
+  }
+
+  /**
+   * Returns whether the property is invalid at computed-value time.
+   * For now, it's only computed on the server for declarations of
+   * registered properties.
+   *
+   * @return {Boolean}
+   */
+  isInvalidAtComputedValueTime() {
+    const declaration = this.#getDomRuleDeclaration();
+    // When adding a new property in the rule-view, the TextProperty object is
+    // created right away before the rule gets updated on the server, so we're
+    // not going to find the corresponding declaration object yet. Default to
+    // false.
+    if (!declaration) {
+      return false;
+    }
+
+    return declaration.invalidAtComputedValueTime;
+  }
+
+  /**
+   * Returns the expected syntax for this property.
+   * For now, it's only sent from the server for invalid at computed-value time declarations.
+   *
+   * @return {String|null} The expected syntax, or null.
+   */
+  getExpectedSyntax() {
+    const declaration = this.#getDomRuleDeclaration();
+    // When adding a new property in the rule-view, the TextProperty object is
+    // created right away before the rule gets updated on the server, so we're
+    // not going to find the corresponding declaration object yet. Default to
+    // null.
+    if (!declaration) {
+      return null;
+    }
+
+    return declaration.syntax;
   }
 
   /**

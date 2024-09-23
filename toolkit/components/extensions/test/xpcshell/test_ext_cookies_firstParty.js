@@ -43,7 +43,32 @@ function promiseLoadedCookies() {
     server.registerPathHandler("/fetch", (request, response) => {
       response.setStatusLine(request.httpVersion, 200, "OK");
       response.setHeader("Content-Type", "text/html; charset=utf-8", false);
-      response.write("<html><script>fetch('/checkCookies');</script></html>");
+      // /checkCookies ultimately redirects to /ready, which resolves the
+      // promise returned by promiseLoadedCookies(). At that point, the test
+      // can choose to close the ContentPage that hosts us, and abort the
+      // pending fetch(). When extensions.webextensions.remote is false, the
+      // PromiseTestUtils.assertNoUncaughtRejections() check may detect this
+      // and cause the test to fail unexpectedly. To avoid this issue, we catch
+      // the error unconditionally.
+      response.write(`<html><script>
+        fetch("/checkCookies").catch(e => console.log("fetch() error: " + e));
+      </script></html>`);
+    });
+
+    server.registerPathHandler("/nestedfetch", (request, response) => {
+      response.setStatusLine(request.httpVersion, 200, "OK");
+      response.setHeader("Content-Type", "text/html; charset=utf-8", false);
+      response.write(
+        "<html><iframe src='http://example.net/nestedfetch2'></iframe></html>"
+      );
+    });
+
+    server.registerPathHandler("/nestedfetch2", (request, response) => {
+      response.setStatusLine(request.httpVersion, 200, "OK");
+      response.setHeader("Content-Type", "text/html; charset=utf-8", false);
+      response.write(
+        "<html><iframe src='http://example.org/fetch'></iframe></html>"
+      );
     });
 
     server.registerPathHandler("/ready", (request, response) => {
@@ -77,6 +102,9 @@ add_task(async function setup() {
 });
 
 add_task(async function test_cookies_firstParty() {
+  // Loads a http:-URL in moz-extension://[uuid]/page.html
+  allow_unsafe_parent_loads_when_extensions_not_remote();
+
   async function pageScript() {
     const ifr = document.createElement("iframe");
     ifr.src = "http://example.org/" + location.search.slice(1);
@@ -123,10 +151,36 @@ add_task(async function test_cookies_firstParty() {
   });
 
   // Let's check the cookies received during the last loading.
+  Assert.equal(await cookiesPromise, "none=a; lax=b; strict=c");
+  await contentPage.close();
+
+  // Let's run a fetch() from a nested iframe (extension -> example.net ->
+  // example.org -> fetch)
+  cookiesPromise = promiseLoadedCookies();
+  contentPage = await ExtensionTestUtils.loadContentPage(url + "?nestedfetch", {
+    extension,
+  });
+
+  // Let's check the cookies received during the last loading.
   Assert.equal(await cookiesPromise, "none=a");
   await contentPage.close();
 
+  // Let's run a fetch() from a nested iframe (extension -> example.org -> fetch)
+  cookiesPromise = promiseLoadedCookies();
+  contentPage = await ExtensionTestUtils.loadContentPage(
+    url + "?nestedfetch2",
+    {
+      extension,
+    }
+  );
+
+  // Let's check the cookies received during the last loading.
+  Assert.equal(await cookiesPromise, "none=a; lax=b; strict=c");
+  await contentPage.close();
+
   await extension.unload();
+
+  revert_allow_unsafe_parent_loads_when_extensions_not_remote();
 });
 
 add_task(async function test_cookies_iframes() {

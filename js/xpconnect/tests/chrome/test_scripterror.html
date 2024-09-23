@@ -4,8 +4,6 @@
 <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"></script>
 <div id="log"></div>
 <script>
-const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function awaitScriptError(fun) {
   // Use setTimeout in order to prevent throwing from test frame
   // and to have a clean stack frame.
@@ -13,7 +11,7 @@ function awaitScriptError(fun) {
 
   return new Promise(resolve => {
     const observer = {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+      QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
       observe(message) {
         if (!(message instanceof Ci.nsIScriptError)) {
           return;
@@ -38,13 +36,14 @@ function hasExpectedProperties(message, exception) {
   is(message.sourceName, location.href, "has correct sourceName/filename");
   ok(message.lineNumber > 0, "has lineNumber");
 
-  is(message.innerWindowID, window.windowUtils.currentInnerWindowID,
+  is(message.innerWindowID, window.windowGlobalChild.innerWindowId,
      "correct innerWindowID");
 }
 
 add_task(async () => {
-  await SpecialPowers.pushPrefEnv({"set": [["javascript.options.asyncstack",
-                                            true]]});
+  await SpecialPowers.pushPrefEnv({"set": [
+    ["javascript.options.asyncstack_capture_debuggee_only", false],
+  ]});
 
   const TESTS = [
     "abc",

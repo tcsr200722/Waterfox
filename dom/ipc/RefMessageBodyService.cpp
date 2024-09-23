@@ -5,11 +5,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RefMessageBodyService.h"
-#include "nsContentUtils.h"
 
-namespace mozilla {
-namespace dom {
+#include <cstdint>
+#include <cstdlib>
+#include "mozilla/ErrorResult.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/ipc/StructuredCloneData.h"
+#include "nsBaseHashtable.h"
+#include "nsDebug.h"
 
+namespace mozilla::dom {
+
+// Guards sService and its members.
 StaticMutex sRefMessageBodyServiceMutex;
 
 // Raw pointer because the service is kept alive by other objects.
@@ -28,16 +35,18 @@ already_AddRefed<RefMessageBodyService> RefMessageBodyService::GetOrCreate() {
 RefMessageBodyService* RefMessageBodyService::GetOrCreateInternal(
     const StaticMutexAutoLock& aProofOfLock) {
   if (!sService) {
-    sService = new RefMessageBodyService();
+    sService = new RefMessageBodyService(aProofOfLock);
   }
   return sService;
 }
 
-RefMessageBodyService::RefMessageBodyService() {
+RefMessageBodyService::RefMessageBodyService(
+    const StaticMutexAutoLock& aProofOfLock) {
   MOZ_DIAGNOSTIC_ASSERT(sService == nullptr);
 }
 
 RefMessageBodyService::~RefMessageBodyService() {
+  StaticMutexAutoLock lock(sRefMessageBodyServiceMutex);
   MOZ_DIAGNOSTIC_ASSERT(sService == this);
   sService = nullptr;
 }
@@ -48,13 +57,13 @@ const nsID RefMessageBodyService::Register(
   MOZ_ASSERT(body);
 
   nsID uuid = {};
-  aRv = nsContentUtils::GenerateUUIDInPlace(uuid);
+  aRv = nsID::GenerateUUIDInPlace(uuid);
   if (NS_WARN_IF(aRv.Failed())) {
     return nsID();
   }
 
   StaticMutexAutoLock lock(sRefMessageBodyServiceMutex);
-  GetOrCreateInternal(lock)->mMessages.Put(uuid, std::move(body));
+  GetOrCreateInternal(lock)->mMessages.InsertOrUpdate(uuid, std::move(body));
   return uuid;
 }
 
@@ -119,12 +128,34 @@ void RefMessageBodyService::ForgetPort(const nsID& aPortID) {
     return;
   }
 
-  for (auto iter = sService->mMessages.ConstIter(); !iter.Done(); iter.Next()) {
+  for (auto iter = sService->mMessages.Iter(); !iter.Done(); iter.Next()) {
     if (iter.UserData()->PortID() == aPortID) {
       iter.Remove();
     }
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+RefMessageBody::RefMessageBody(const nsID& aPortID,
+                               UniquePtr<ipc::StructuredCloneData>&& aCloneData)
+    : mPortID(aPortID),
+      mMutex("RefMessageBody::mMutex"),
+      mCloneData(std::move(aCloneData)),
+      mMaxCount(Nothing()),
+      mCount(0) {}
+
+RefMessageBody::~RefMessageBody() = default;
+
+void RefMessageBody::Read(JSContext* aCx, JS::MutableHandle<JS::Value> aValue,
+                          const JS::CloneDataPolicy& aCloneDataPolicy,
+                          ErrorResult& aRv) {
+  MutexAutoLock lock(mMutex);
+  mCloneData->Read(aCx, aValue, aCloneDataPolicy, aRv);
+}
+
+bool RefMessageBody::TakeTransferredPortsAsSequence(
+    Sequence<OwningNonNull<mozilla::dom::MessagePort>>& aPorts) {
+  MOZ_ASSERT(mMaxCount.isNothing());
+  return mCloneData->TakeTransferredPortsAsSequence(aPorts);
+}
+
+}  // namespace mozilla::dom

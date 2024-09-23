@@ -1,8 +1,7 @@
-import { INITIAL_STATE, insertPinned, reducers } from "common/Reducers.jsm";
+import { INITIAL_STATE, insertPinned, reducers } from "common/Reducers.sys.mjs";
 const {
   TopSites,
   App,
-  Snippets,
   Prefs,
   Dialog,
   Sections,
@@ -12,7 +11,7 @@ const {
   Search,
   ASRouter,
 } = reducers;
-import { actionTypes as at } from "common/Actions.jsm";
+import { actionTypes as at } from "common/Actions.mjs";
 
 describe("Reducers", () => {
   describe("App", () => {
@@ -168,7 +167,7 @@ describe("Reducers", () => {
       const nextState = TopSites(undefined, { type: at.PLACES_BOOKMARK_ADDED });
       assert.equal(nextState, INITIAL_STATE.TopSites);
     });
-    it("should remove a bookmark on PLACES_BOOKMARK_REMOVED", () => {
+    it("should remove a bookmark on PLACES_BOOKMARKS_REMOVED", () => {
       const oldState = {
         rows: [
           { url: "foo.com" },
@@ -181,8 +180,8 @@ describe("Reducers", () => {
         ],
       };
       const action = {
-        type: at.PLACES_BOOKMARK_REMOVED,
-        data: { url: "bar.com" },
+        type: at.PLACES_BOOKMARKS_REMOVED,
+        data: { urls: ["bar.com"] },
       };
       const nextState = TopSites(oldState, action);
       const [, newRow] = nextState.rows;
@@ -195,9 +194,9 @@ describe("Reducers", () => {
       // old row is unchanged
       assert.deepEqual(nextState.rows[0], oldState.rows[0]);
     });
-    it("should not update state for empty action.data on PLACES_BOOKMARK_REMOVED", () => {
+    it("should not update state for empty action.data on PLACES_BOOKMARKS_REMOVED", () => {
       const nextState = TopSites(undefined, {
-        type: at.PLACES_BOOKMARK_REMOVED,
+        type: at.PLACES_BOOKMARKS_REMOVED,
       });
       assert.equal(nextState, INITIAL_STATE.TopSites);
     });
@@ -209,15 +208,15 @@ describe("Reducers", () => {
 
       assert.equal(state.pref, "foo");
     });
-    it("should not update state for empty action.data on PLACES_LINK_DELETED", () => {
-      const nextState = TopSites(undefined, { type: at.PLACES_LINK_DELETED });
+    it("should not update state for empty action.data on PLACES_LINKS_DELETED", () => {
+      const nextState = TopSites(undefined, { type: at.PLACES_LINKS_DELETED });
       assert.equal(nextState, INITIAL_STATE.TopSites);
     });
-    it("should remove the site on PLACES_LINK_DELETED", () => {
+    it("should remove the site on PLACES_LINKS_DELETED", () => {
       const oldState = { rows: [{ url: "foo.com" }, { url: "bar.com" }] };
       const deleteAction = {
-        type: at.PLACES_LINK_DELETED,
-        data: { url: "foo.com" },
+        type: at.PLACES_LINKS_DELETED,
+        data: { urls: ["foo.com"] },
       };
       const nextState = TopSites(oldState, deleteAction);
       assert.deepEqual(nextState.rows, [{ url: "bar.com" }]);
@@ -257,10 +256,17 @@ describe("Reducers", () => {
       });
       assert.deepEqual(shortcuts, nextState.searchShortcuts);
     });
-    it("should remove all content on SNIPPETS_PREVIEW_MODE", () => {
-      const oldState = { rows: [{ url: "foo.com" }, { url: "bar.com" }] };
-      const nextState = TopSites(oldState, { type: at.SNIPPETS_PREVIEW_MODE });
-      assert.lengthOf(nextState.rows, 0);
+    it("should set sov positions and state", () => {
+      const positions = [
+        { position: 0, assignedPartner: "amp" },
+        { position: 1, assignedPartner: "moz-sales" },
+      ];
+      const nextState = TopSites(undefined, {
+        type: at.SOV_UPDATED,
+        data: { ready: true, positions },
+      });
+      assert.equal(nextState.sov.ready, true);
+      assert.equal(nextState.sov.positions, positions);
     });
   });
   describe("Prefs", () => {
@@ -601,8 +607,8 @@ describe("Reducers", () => {
         data: { url: "www.foo.bar" },
       };
       const deleteAction = {
-        type: at.PLACES_LINK_DELETED,
-        data: { url: "www.foo.bar" },
+        type: at.PLACES_LINKS_DELETED,
+        data: { urls: ["www.foo.bar"] },
       };
       const newBlockState = Sections(oldState, blockAction);
       const newDeleteState = Sections(oldState, deleteAction);
@@ -610,8 +616,12 @@ describe("Reducers", () => {
         assert.deepEqual(section.rows, [{ url: "www.other.url" }]);
       });
     });
-    it("should not update state for empty action.data on PLACES_LINK_DELETED", () => {
-      const nextState = Sections(undefined, { type: at.PLACES_LINK_DELETED });
+    it("should not update state for empty action.data on PLACES_LINK_BLOCKED", () => {
+      const nextState = Sections(undefined, { type: at.PLACES_LINK_BLOCKED });
+      assert.equal(nextState, INITIAL_STATE.Sections);
+    });
+    it("should not update state for empty action.data on PLACES_LINKS_DELETED", () => {
+      const nextState = Sections(undefined, { type: at.PLACES_LINKS_DELETED });
       assert.equal(nextState, INITIAL_STATE.Sections);
     });
     it("should remove all removed pocket urls", () => {
@@ -662,17 +672,17 @@ describe("Reducers", () => {
       // old row is unchanged
       assert.equal(oldRow, oldState[0].rows[1]);
     });
-    it("should not update state for empty action.data on PLACES_BOOKMARK_REMOVED", () => {
+    it("should not update state for empty action.data on PLACES_BOOKMARKS_REMOVED", () => {
       const nextState = Sections(undefined, {
-        type: at.PLACES_BOOKMARK_REMOVED,
+        type: at.PLACES_BOOKMARKS_REMOVED,
       });
       assert.equal(nextState, INITIAL_STATE.Sections);
     });
-    it("should remove the bookmark when PLACES_BOOKMARK_REMOVED is received", () => {
+    it("should remove the bookmark when PLACES_BOOKMARKS_REMOVED is received", () => {
       const action = {
-        type: at.PLACES_BOOKMARK_REMOVED,
+        type: at.PLACES_BOOKMARKS_REMOVED,
         data: {
-          url: "www.foo.bar",
+          urls: ["www.foo.bar"],
           bookmarkGuid: "bookmark123",
         },
       };
@@ -688,7 +698,7 @@ describe("Reducers", () => {
       const [newRow, oldRow] = nextState[0].rows;
 
       // new row isn't a bookmark
-      assert.equal(newRow.url, action.data.url);
+      assert.equal(newRow.url, action.data.urls[0]);
       assert.equal(newRow.type, "history");
       assert.isUndefined(newRow.bookmarkGuid);
       assert.isUndefined(newRow.bookmarkTitle);
@@ -724,13 +734,6 @@ describe("Reducers", () => {
 
       // old row is unchanged
       assert.equal(oldRow, oldState[0].rows[1]);
-    });
-    it("should remove all content on SNIPPETS_PREVIEW_MODE", () => {
-      const previewMode = { type: at.SNIPPETS_PREVIEW_MODE };
-      const newState = Sections(oldState, previewMode);
-      newState.forEach(section => {
-        assert.lengthOf(section.rows, 0);
-      });
     });
   });
   describe("#insertPinned", () => {
@@ -803,45 +806,6 @@ describe("Reducers", () => {
       assert.equal(typeof pinned[0].isPinned, "undefined");
     });
   });
-  describe("Snippets", () => {
-    it("should return INITIAL_STATE by default", () => {
-      assert.equal(
-        Snippets(undefined, { type: "some_action" }),
-        INITIAL_STATE.Snippets
-      );
-    });
-    it("should set initialized to true on a SNIPPETS_DATA action", () => {
-      const state = Snippets(undefined, { type: at.SNIPPETS_DATA, data: {} });
-      assert.isTrue(state.initialized);
-    });
-    it("should set the snippet data on a SNIPPETS_DATA action", () => {
-      const data = { snippetsURL: "foo.com", version: 4 };
-      const state = Snippets(undefined, { type: at.SNIPPETS_DATA, data });
-      assert.propertyVal(state, "snippetsURL", data.snippetsURL);
-      assert.propertyVal(state, "version", data.version);
-    });
-    it("should reset to the initial state on a SNIPPETS_RESET action", () => {
-      const state = Snippets(
-        { initialized: true, foo: "bar" },
-        { type: at.SNIPPETS_RESET }
-      );
-      assert.equal(state, INITIAL_STATE.Snippets);
-    });
-    it("should set the new blocklist on SNIPPET_BLOCKED", () => {
-      const state = Snippets(
-        { blockList: [] },
-        { type: at.SNIPPET_BLOCKED, data: 1 }
-      );
-      assert.deepEqual(state.blockList, [1]);
-    });
-    it("should clear the blocklist on SNIPPETS_BLOCKLIST_CLEARED", () => {
-      const state = Snippets(
-        { blockList: [1, 2] },
-        { type: at.SNIPPETS_BLOCKLIST_CLEARED }
-      );
-      assert.deepEqual(state.blockList, []);
-    });
-  });
   describe("Pocket", () => {
     it("should return INITIAL_STATE by default", () => {
       assert.equal(
@@ -901,25 +865,6 @@ describe("Reducers", () => {
         INITIAL_STATE.Personalization
       );
     });
-    it("should set version to 2 with DISCOVERY_STREAM_PERSONALIZATION_VERSION", () => {
-      const state = Personalization(undefined, {
-        type: at.DISCOVERY_STREAM_PERSONALIZATION_VERSION,
-        data: {
-          version: 2,
-        },
-      });
-      assert.equal(state.version, 2);
-    });
-    it("should set version to 2 with PREF_CHANGED", () => {
-      const state = Personalization(undefined, {
-        type: at.PREF_CHANGED,
-        data: {
-          name: "discoverystream.personalization.version",
-          value: 2,
-        },
-      });
-      assert.equal(state.version, 2);
-    });
     it("should set lastUpdated with DISCOVERY_STREAM_PERSONALIZATION_LAST_UPDATED", () => {
       const state = Personalization(undefined, {
         type: at.DISCOVERY_STREAM_PERSONALIZATION_LAST_UPDATED,
@@ -958,10 +903,9 @@ describe("Reducers", () => {
     it("should set layout data with DISCOVERY_STREAM_LAYOUT_UPDATE", () => {
       const state = DiscoveryStream(undefined, {
         type: at.DISCOVERY_STREAM_LAYOUT_UPDATE,
-        data: { layout: ["test"], lastUpdated: 123 },
+        data: { layout: ["test"] },
       });
       assert.equal(state.layout[0], "test");
-      assert.equal(state.lastUpdated, 123);
     });
     it("should reset layout data with DISCOVERY_STREAM_LAYOUT_RESET", () => {
       const layoutData = { layout: ["test"], lastUpdated: 123 };
@@ -997,19 +941,39 @@ describe("Reducers", () => {
       });
       assert.deepEqual(state.config, { enabled: true });
     });
+    it("should set recentSavesEnabled with DISCOVERY_STREAM_PREFS_SETUP", () => {
+      const state = DiscoveryStream(undefined, {
+        type: at.DISCOVERY_STREAM_PREFS_SETUP,
+        data: { recentSavesEnabled: true },
+      });
+      assert.isTrue(state.recentSavesEnabled);
+    });
+    it("should set recentSavesData with DISCOVERY_STREAM_RECENT_SAVES", () => {
+      const state = DiscoveryStream(undefined, {
+        type: at.DISCOVERY_STREAM_RECENT_SAVES,
+        data: { recentSaves: [1, 2, 3] },
+      });
+      assert.deepEqual(state.recentSavesData, [1, 2, 3]);
+    });
+    it("should set isUserLoggedIn with DISCOVERY_STREAM_POCKET_STATE_SET", () => {
+      const state = DiscoveryStream(undefined, {
+        type: at.DISCOVERY_STREAM_POCKET_STATE_SET,
+        data: { isUserLoggedIn: true },
+      });
+      assert.isTrue(state.isUserLoggedIn);
+    });
     it("should set feeds as loaded with DISCOVERY_STREAM_FEEDS_UPDATE", () => {
       const state = DiscoveryStream(undefined, {
         type: at.DISCOVERY_STREAM_FEEDS_UPDATE,
       });
       assert.isTrue(state.feeds.loaded);
     });
-    it("should set spoc_endpoint and spocs_per_domain with DISCOVERY_STREAM_SPOCS_ENDPOINT", () => {
+    it("should set spoc_endpoint with DISCOVERY_STREAM_SPOCS_ENDPOINT", () => {
       const state = DiscoveryStream(undefined, {
         type: at.DISCOVERY_STREAM_SPOCS_ENDPOINT,
-        data: { url: "foo.com", spocs_per_domain: 2 },
+        data: { url: "foo.com" },
       });
       assert.equal(state.spocs.spocs_endpoint, "foo.com");
-      assert.equal(state.spocs.spocs_per_domain, 2);
     });
     it("should use initial state with DISCOVERY_STREAM_SPOCS_PLACEMENTS", () => {
       const state = DiscoveryStream(undefined, {
@@ -1038,7 +1002,6 @@ describe("Reducers", () => {
       });
       assert.deepEqual(state.spocs, {
         spocs_endpoint: "",
-        spocs_per_domain: 1,
         data: [1, 2, 3],
         lastUpdated: 123,
         loaded: true,
@@ -1459,7 +1422,7 @@ describe("Reducers", () => {
       );
     });
 
-    it("should remove boookmark details on PLACES_BOOKMARK_REMOVED in both feeds and spocs", () => {
+    it("should remove boookmark details on PLACES_BOOKMARKS_REMOVED in both feeds and spocs", () => {
       const oldState = {
         feeds: {
           data: {
@@ -1496,9 +1459,9 @@ describe("Reducers", () => {
         },
       };
       const action = {
-        type: at.PLACES_BOOKMARK_REMOVED,
+        type: at.PLACES_BOOKMARKS_REMOVED,
         data: {
-          url: "https://foo.com",
+          urls: ["https://foo.com"],
         },
       };
 
@@ -1541,18 +1504,18 @@ describe("Reducers", () => {
         INITIAL_STATE.Search
       );
     });
-    it("should set hide to true on HIDE_SEARCH", () => {
-      const nextState = Search(undefined, { type: "HIDE_SEARCH" });
-      assert.propertyVal(nextState, "hide", true);
+    it("should set disable to true on DISABLE_SEARCH", () => {
+      const nextState = Search(undefined, { type: "DISABLE_SEARCH" });
+      assert.propertyVal(nextState, "disable", true);
     });
     it("should set focus to true on FAKE_FOCUS_SEARCH", () => {
       const nextState = Search(undefined, { type: "FAKE_FOCUS_SEARCH" });
       assert.propertyVal(nextState, "fakeFocus", true);
     });
-    it("should set focus and hide to false on SHOW_SEARCH", () => {
+    it("should set focus and disable to false on SHOW_SEARCH", () => {
       const nextState = Search(undefined, { type: "SHOW_SEARCH" });
       assert.propertyVal(nextState, "fakeFocus", false);
-      assert.propertyVal(nextState, "hide", false);
+      assert.propertyVal(nextState, "disable", false);
     });
   });
   it("should set initialized to true on AS_ROUTER_INITIALIZED", () => {

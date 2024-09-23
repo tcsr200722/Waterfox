@@ -22,7 +22,7 @@ static double CubicRoot(double aValue) {
 struct PointD : public BasePoint<double, PointD> {
   typedef BasePoint<double, PointD> Super;
 
-  PointD() : Super() {}
+  PointD() = default;
   PointD(double aX, double aY) : Super(aX, aY) {}
   MOZ_IMPLICIT PointD(const Point& aPoint) : Super(aPoint.x, aPoint.y) {}
 
@@ -138,46 +138,52 @@ Float FlattenedPath::ComputeLength() {
 }
 
 Point FlattenedPath::ComputePointAtLength(Float aLength, Point* aTangent) {
-  // We track the last point that -wasn't- in the same place as the current
-  // point so if we pass the edge of the path with a bunch of zero length
-  // paths we still get the correct tangent vector.
-  Point lastPointSinceMove;
-  Point currentPoint;
-  for (uint32_t i = 0; i < mPathOps.size(); i++) {
-    if (mPathOps[i].mType == FlatPathOp::OP_MOVETO) {
-      if (Distance(currentPoint, mPathOps[i].mPoint)) {
-        lastPointSinceMove = currentPoint;
+  if (aLength < mCursor.mLength) {
+    // If cursor is beyond the target length, reset to the beginning.
+    mCursor.Reset();
+  } else {
+    // Adjust aLength to account for the position where we'll start searching.
+    aLength -= mCursor.mLength;
+  }
+
+  while (mCursor.mIndex < mPathOps.size()) {
+    const auto& op = mPathOps[mCursor.mIndex];
+    if (op.mType == FlatPathOp::OP_MOVETO) {
+      if (Distance(mCursor.mCurrentPoint, op.mPoint) > 0.0f) {
+        mCursor.mLastPointSinceMove = mCursor.mCurrentPoint;
       }
-      currentPoint = mPathOps[i].mPoint;
+      mCursor.mCurrentPoint = op.mPoint;
     } else {
-      Float segmentLength = Distance(currentPoint, mPathOps[i].mPoint);
+      Float segmentLength = Distance(mCursor.mCurrentPoint, op.mPoint);
 
       if (segmentLength) {
-        lastPointSinceMove = currentPoint;
+        mCursor.mLastPointSinceMove = mCursor.mCurrentPoint;
         if (segmentLength > aLength) {
-          Point currentVector = mPathOps[i].mPoint - currentPoint;
+          Point currentVector = op.mPoint - mCursor.mCurrentPoint;
           Point tangent = currentVector / segmentLength;
           if (aTangent) {
             *aTangent = tangent;
           }
-          return currentPoint + tangent * aLength;
+          return mCursor.mCurrentPoint + tangent * aLength;
         }
       }
 
       aLength -= segmentLength;
-      currentPoint = mPathOps[i].mPoint;
+      mCursor.mLength += segmentLength;
+      mCursor.mCurrentPoint = op.mPoint;
     }
+    mCursor.mIndex++;
   }
 
-  Point currentVector = currentPoint - lastPointSinceMove;
   if (aTangent) {
-    if (hypotf(currentVector.x, currentVector.y)) {
-      *aTangent = currentVector / hypotf(currentVector.x, currentVector.y);
+    Point currentVector = mCursor.mCurrentPoint - mCursor.mLastPointSinceMove;
+    if (auto h = hypotf(currentVector.x, currentVector.y)) {
+      *aTangent = currentVector / h;
     } else {
       *aTangent = Point();
     }
   }
-  return currentPoint;
+  return mCursor.mCurrentPoint;
 }
 
 // This function explicitly permits aControlPoints to refer to the same object
@@ -401,37 +407,37 @@ static inline void FindInflectionPoints(
     *aT1 = -c / b;
     *aCount = 1;
     return;
+  }
+
+  double discriminant = b * b - 4 * a * c;
+
+  if (discriminant < 0) {
+    // No inflection points.
+    *aCount = 0;
+  } else if (discriminant == 0) {
+    *aCount = 1;
+    *aT1 = -b / (2 * a);
   } else {
-    double discriminant = b * b - 4 * a * c;
-
-    if (discriminant < 0) {
-      // No inflection points.
-      *aCount = 0;
-    } else if (discriminant == 0) {
-      *aCount = 1;
-      *aT1 = -b / (2 * a);
+    /* Use the following formula for computing the roots:
+     *
+     * q = -1/2 * (b + sign(b) * sqrt(b^2 - 4ac))
+     * t1 = q / a
+     * t2 = c / q
+     */
+    double q = sqrt(discriminant);
+    if (b < 0) {
+      q = b - q;
     } else {
-      /* Use the following formula for computing the roots:
-       *
-       * q = -1/2 * (b + sign(b) * sqrt(b^2 - 4ac))
-       * t1 = q / a
-       * t2 = c / q
-       */
-      double q = sqrt(discriminant);
-      if (b < 0) {
-        q = b - q;
-      } else {
-        q = b + q;
-      }
-      q *= -1. / 2;
-
-      *aT1 = q / a;
-      *aT2 = c / q;
-      if (*aT1 > *aT2) {
-        std::swap(*aT1, *aT2);
-      }
-      *aCount = 2;
+      q = b + q;
     }
+    q *= -1. / 2;
+
+    *aT1 = q / a;
+    *aT2 = c / q;
+    if (*aT1 > *aT2) {
+      std::swap(*aT1, *aT2);
+    }
+    *aCount = 2;
   }
 }
 
@@ -534,6 +540,12 @@ void FlattenBezier(const BezierControlPoints& aControlPoints, PathSink* aSink,
       return;
     }
   }
+}
+
+Rect Path::GetFastBounds(const Matrix& aTransform,
+                         const StrokeOptions* aStrokeOptions) const {
+  return aStrokeOptions ? GetStrokedBounds(*aStrokeOptions, aTransform)
+                        : GetBounds(aTransform);
 }
 
 }  // namespace gfx

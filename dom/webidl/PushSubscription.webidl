@@ -28,18 +28,20 @@ dictionary PushSubscriptionJSON
   // PushSubscriptionKeys thing is not even in the spec; "keys" is a record
   // there.
   PushSubscriptionKeys keys = {};
+  EpochTimeStamp? expirationTime;
 };
 
 dictionary PushSubscriptionInit
 {
   required USVString endpoint;
   required USVString scope;
-  ArrayBuffer? p256dhKey;
-  ArrayBuffer? authSecret;
-  BufferSource? appServerKey;
+  ArrayBuffer? p256dhKey = null;
+  ArrayBuffer? authSecret = null;
+  BufferSource? appServerKey = null;
+  EpochTimeStamp? expirationTime = null;
 };
 
-[Exposed=(Window,Worker), Pref="dom.push.enabled"]
+[Exposed=(Window,Worker), Func="ServiceWorkerVisible"]
 interface PushSubscription
 {
   [Throws, ChromeOnly]
@@ -47,9 +49,10 @@ interface PushSubscription
 
   readonly attribute USVString endpoint;
   readonly attribute PushSubscriptionOptions options;
+  readonly attribute EpochTimeStamp? expirationTime;
   [Throws]
   ArrayBuffer? getKey(PushEncryptionKeyName name);
-  [Throws, UseCounter]
+  [NewObject, UseCounter]
   Promise<boolean> unsubscribe();
 
   // Implements the custom serializer specified in Push API, section 9.

@@ -8,9 +8,9 @@
 #define mozilla_dom_XRInputSpace_h_
 
 #include "XRInputSpace.h"
+#include "mozilla/dom/XRSpace.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class XRInputSpace : public XRSpace {
  public:
@@ -27,7 +27,6 @@ class XRInputSpace : public XRSpace {
   int32_t mIndex;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_XRInputSpace_h_

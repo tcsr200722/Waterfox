@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import mozunit
+
 from mozperftest.metrics.notebook.transformer import Transformer
 from mozperftest.metrics.notebook.transforms.single_json import SingleJsonRetriever
 
@@ -48,7 +49,7 @@ def test_merge(data):
 
 
 def test_process(files):
-    files, _, _ = files
+    files = files["resources"]
     file_1 = files["file_1"]
     file_2 = files["file_2"]
 

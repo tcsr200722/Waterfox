@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const BASE_LIST_ID = "base";
 const CONTENT_LIST_ID = "content";
 const TRACK_SUFFIX = "-track-digest256";
@@ -27,28 +26,28 @@ var gBlocklistManager = {
       return "";
     },
 
-    isSeparator(index) {
+    isSeparator() {
       return false;
     },
     isSorted() {
       return false;
     },
-    isContainer(index) {
+    isContainer() {
       return false;
     },
-    setTree(tree) {},
-    getImageSrc(row, column) {},
+    setTree() {},
+    getImageSrc() {},
     getCellValue(row, column) {
       if (column.id == "selectionCol") {
         return gBlocklistManager._blockLists[row].selected;
       }
       return undefined;
     },
-    cycleHeader(column) {},
-    getRowProperties(row) {
+    cycleHeader() {},
+    getRowProperties() {
       return "";
     },
-    getColumnProperties(column) {
+    getColumnProperties() {
       return "";
     },
     getCellProperties(row, column) {
@@ -60,20 +59,12 @@ var gBlocklistManager = {
     },
   },
 
-  onWindowKeyPress(event) {
-    if (event.keyCode == KeyEvent.DOM_VK_ESCAPE) {
-      window.close();
-    } else if (event.keyCode == KeyEvent.DOM_VK_RETURN) {
-      gBlocklistManager.onApplyChanges();
-    }
-  },
-
   onLoad() {
-    let params = window.arguments[0];
-    this.init(params);
+    this.init();
+    document.addEventListener("dialogaccept", () => this.onApplyChanges());
   },
 
-  init(params) {
+  init() {
     if (this._type) {
       // reusing an open dialog, clear the old observer
       this.uninit();
@@ -125,8 +116,6 @@ var gBlocklistManager = {
         listmanager.forceUpdates(trackingTable);
       }
     }
-
-    window.close();
   },
 
   async _loadBlockLists() {
@@ -151,10 +140,14 @@ var gBlocklistManager = {
   async _createBlockList(id) {
     let branch = Services.prefs.getBranch(LISTS_PREF_BRANCH);
     let l10nKey = branch.getCharPref(id);
+
+    // eslint-disable-next-line mozilla/prefer-formatValues
     let [listName, description] = await document.l10n.formatValues([
       { id: `blocklist-item-${l10nKey}-listName` },
       { id: `blocklist-item-${l10nKey}-description` },
     ]);
+
+    // eslint-disable-next-line mozilla/prefer-formatValues
     let name = await document.l10n.formatValue("blocklist-item-list-template", {
       listName,
       description,

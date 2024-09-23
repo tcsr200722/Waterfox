@@ -1,6 +1,6 @@
-use crate::alloc::vec::Vec;
 use crate::error;
 use crate::strtab;
+use alloc::vec::Vec;
 use core::fmt::{self, Debug};
 use scroll::{ctx, IOread, IOwrite, Pread, Pwrite, SizeWith};
 
@@ -218,11 +218,8 @@ impl Symbol {
     /// a strtab entry.
     pub fn name<'a>(&'a self, strtab: &'a strtab::Strtab) -> error::Result<&'a str> {
         if let Some(offset) = self.name_offset() {
-            strtab.get(offset as usize).unwrap_or_else(|| {
-                Err(error::Error::Malformed(format!(
-                    "Invalid Symbol name offset {:#x}",
-                    offset
-                )))
+            strtab.get_at(offset as usize).ok_or_else(|| {
+                error::Error::Malformed(format!("Invalid Symbol name offset {:#x}", offset))
             })
         } else {
             Ok(self.name.pread(0)?)
@@ -233,8 +230,14 @@ impl Symbol {
     ///
     /// Returns `None` if the name is inline.
     pub fn name_offset(&self) -> Option<u32> {
+        // Symbol offset starts at the strtable's length, so let's adjust it
+        let length_field_size = core::mem::size_of::<u32>() as u32;
+
         if self.name[0] == 0 {
-            self.name.pread_with(4, scroll::LE).ok()
+            self.name
+                .pread_with(4, scroll::LE)
+                .ok()
+                .map(|offset: u32| offset - length_field_size)
         } else {
             None
         }
@@ -409,6 +412,7 @@ pub struct AuxSectionDefinition {
 }
 
 /// A COFF symbol table.
+// TODO: #[derive(Pwrite)] produce unparseable tokens
 pub struct SymbolTable<'a> {
     symbols: &'a [u8],
 }
@@ -477,6 +481,14 @@ impl<'a> SymbolTable<'a> {
             index: 0,
             symbols: self.symbols,
         }
+    }
+}
+
+impl<'a> ctx::TryIntoCtx<scroll::Endian> for SymbolTable<'a> {
+    type Error = error::Error;
+
+    fn try_into_ctx(self, bytes: &mut [u8], _ctx: scroll::Endian) -> Result<usize, Self::Error> {
+        bytes.pwrite(self.symbols, 0).map_err(|err| err.into())
     }
 }
 

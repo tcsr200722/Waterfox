@@ -8,7 +8,7 @@
 #define __NS_ACCESSIBLE_WRAP_H__
 
 #include "nsCOMPtr.h"
-#include "Accessible.h"
+#include "LocalAccessible.h"
 
 struct _AtkObject;
 typedef struct _AtkObject AtkObject;
@@ -42,10 +42,13 @@ namespace a11y {
 class MaiHyperlink;
 
 /**
+ * Atk specific functionality for an accessibility tree node that originated in
+ * mDoc's content process.
+ *
  * AccessibleWrap, and its descendents in atk directory provide the
  * implementation of AtkObject.
  */
-class AccessibleWrap : public Accessible {
+class AccessibleWrap : public LocalAccessible {
  public:
   AccessibleWrap(nsIContent* aContent, DocAccessible* aDoc);
   virtual ~AccessibleWrap();
@@ -55,16 +58,15 @@ class AccessibleWrap : public Accessible {
 
   // return the atk object for this AccessibleWrap
   virtual void GetNativeInterface(void** aOutAccessible) override;
-  virtual nsresult HandleAccEvent(AccEvent* aEvent) override;
 
   AtkObject* GetAtkObject(void);
-  static AtkObject* GetAtkObject(Accessible* aAccessible);
+  static AtkObject* GetAtkObject(LocalAccessible* aAccessible);
 
   bool IsValidObject();
 
   static const char* ReturnString(nsAString& aString) {
     static nsCString returnedString;
-    returnedString = NS_ConvertUTF16toUTF8(aString);
+    CopyUTF16toUTF8(aString, returnedString);
     return returnedString.get();
   }
 

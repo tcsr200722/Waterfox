@@ -7,23 +7,20 @@
 /**
  * Test simple requests using the protocol helpers.
  */
-var protocol = require("devtools/shared/protocol");
+var protocol = require("resource://devtools/shared/protocol.js");
 var { RetVal, Arg } = protocol;
-var EventEmitter = require("devtools/shared/event-emitter");
-var { LongStringActor } = require("devtools/server/actors/string");
+var EventEmitter = require("resource://devtools/shared/event-emitter.js");
+var {
+  LongStringActor,
+} = require("resource://devtools/server/actors/string.js");
 
 // The test implicitly relies on this.
-require("devtools/client/fronts/string");
+require("resource://devtools/client/fronts/string.js");
 
-function simpleHello() {
-  return {
-    from: "root",
-    applicationType: "xpcshell-tests",
-    traits: [],
-  };
-}
-
-DevToolsServer.LONG_STRING_LENGTH = DevToolsServer.LONG_STRING_INITIAL_LENGTH = DevToolsServer.LONG_STRING_READ_LENGTH = 5;
+DevToolsServer.LONG_STRING_LENGTH =
+  DevToolsServer.LONG_STRING_INITIAL_LENGTH =
+  DevToolsServer.LONG_STRING_READ_LENGTH =
+    5;
 
 var SHORT_STR = "abc";
 var LONG_STR = "abcdefghijklmnop";
@@ -55,41 +52,48 @@ const rootSpec = protocol.generateActorSpec({
   },
 });
 
-var RootActor = protocol.ActorClassWithSpec(rootSpec, {
-  initialize: function(conn) {
+class RootActor extends protocol.Actor {
+  constructor(conn) {
+    super(conn, rootSpec);
+
     rootActor = this;
-    protocol.Actor.prototype.initialize.call(this, conn);
     // Root actor owns itself.
     this.manage(this);
     this.actorID = "root";
-  },
+  }
 
-  sayHello: simpleHello,
+  sayHello() {
+    return {
+      from: "root",
+      applicationType: "xpcshell-tests",
+      traits: [],
+    };
+  }
 
-  shortString: function() {
+  shortString() {
     return new LongStringActor(this.conn, SHORT_STR);
-  },
+  }
 
-  longString: function() {
+  longString() {
     return new LongStringActor(this.conn, LONG_STR);
-  },
+  }
 
-  emitShortString: function() {
+  emitShortString() {
     EventEmitter.emit(
       this,
       "string-event",
       new LongStringActor(this.conn, SHORT_STR)
     );
-  },
+  }
 
-  emitLongString: function() {
+  emitLongString() {
     EventEmitter.emit(
       this,
       "string-event",
       new LongStringActor(this.conn, LONG_STR)
     );
-  },
-});
+  }
+}
 
 class RootFront extends protocol.FrontClassWithSpec(rootSpec) {
   constructor(client) {
@@ -104,7 +108,7 @@ protocol.registerFront(RootFront);
 
 function run_test() {
   DevToolsServer.createRootActor = conn => {
-    return RootActor(conn);
+    return new RootActor(conn);
   };
 
   DevToolsServer.init();
@@ -115,12 +119,12 @@ function run_test() {
 
   let strfront = null;
 
-  const expectRootChildren = function(size) {
+  const expectRootChildren = function (size) {
     Assert.equal(rootActor.__poolMap.size, size + 1);
     Assert.equal(rootFront.__poolMap.size, size + 1);
   };
 
-  client.connect().then(([applicationType, traits]) => {
+  client.connect().then(([applicationType]) => {
     rootFront = client.mainRoot;
 
     // Root actor has no children yet.
@@ -206,26 +210,26 @@ function run_test() {
         expectRootChildren(0);
       })
       .then(() => {
-        const deferred = defer();
-        rootFront.once("string-event", str => {
-          trace.expectSend({ type: "emitShortString", to: "<actorid>" });
-          trace.expectReceive({
-            type: "string-event",
-            str: "abc",
-            from: "<actorid>",
-          });
+        return new Promise(resolve => {
+          rootFront.once("string-event", str => {
+            trace.expectSend({ type: "emitShortString", to: "<actorid>" });
+            trace.expectReceive({
+              type: "string-event",
+              str: "abc",
+              from: "<actorid>",
+            });
 
-          Assert.ok(!!str);
-          strfront = str;
-          // Shouldn't generate any new references
-          expectRootChildren(0);
-          // will generate no packets.
-          strfront.string().then(value => {
-            deferred.resolve(value);
+            Assert.ok(!!str);
+            strfront = str;
+            // Shouldn't generate any new references
+            expectRootChildren(0);
+            // will generate no packets.
+            strfront.string().then(value => {
+              resolve(value);
+            });
           });
+          rootFront.emitShortString();
         });
-        rootFront.emitShortString();
-        return deferred.promise;
       })
       .then(value => {
         Assert.equal(value, SHORT_STR);
@@ -235,52 +239,52 @@ function run_test() {
         return strfront.release();
       })
       .then(() => {
-        const deferred = defer();
-        rootFront.once("string-event", str => {
-          trace.expectSend({ type: "emitLongString", to: "<actorid>" });
-          trace.expectReceive({
-            type: "string-event",
-            str: {
-              type: "longString",
-              actor: "<actorid>",
-              length: 16,
-              initial: "abcde",
-            },
-            from: "<actorid>",
-          });
+        return new Promise(resolve => {
+          rootFront.once("string-event", str => {
+            trace.expectSend({ type: "emitLongString", to: "<actorid>" });
+            trace.expectReceive({
+              type: "string-event",
+              str: {
+                type: "longString",
+                actor: "<actorid>",
+                length: 16,
+                initial: "abcde",
+              },
+              from: "<actorid>",
+            });
 
-          Assert.ok(!!str);
-          // Should generate one new reference
-          expectRootChildren(1);
-          strfront = str;
-          strfront.string().then(value => {
-            trace.expectSend({
-              type: "substring",
-              start: 5,
-              end: 10,
-              to: "<actorid>",
-            });
-            trace.expectReceive({ substring: "fghij", from: "<actorid>" });
-            trace.expectSend({
-              type: "substring",
-              start: 10,
-              end: 15,
-              to: "<actorid>",
-            });
-            trace.expectReceive({ substring: "klmno", from: "<actorid>" });
-            trace.expectSend({
-              type: "substring",
-              start: 15,
-              end: 20,
-              to: "<actorid>",
-            });
-            trace.expectReceive({ substring: "p", from: "<actorid>" });
+            Assert.ok(!!str);
+            // Should generate one new reference
+            expectRootChildren(1);
+            strfront = str;
+            strfront.string().then(value => {
+              trace.expectSend({
+                type: "substring",
+                start: 5,
+                end: 10,
+                to: "<actorid>",
+              });
+              trace.expectReceive({ substring: "fghij", from: "<actorid>" });
+              trace.expectSend({
+                type: "substring",
+                start: 10,
+                end: 15,
+                to: "<actorid>",
+              });
+              trace.expectReceive({ substring: "klmno", from: "<actorid>" });
+              trace.expectSend({
+                type: "substring",
+                start: 15,
+                end: 20,
+                to: "<actorid>",
+              });
+              trace.expectReceive({ substring: "p", from: "<actorid>" });
 
-            deferred.resolve(value);
+              resolve(value);
+            });
           });
+          rootFront.emitLongString();
         });
-        rootFront.emitLongString();
-        return deferred.promise;
       })
       .then(value => {
         Assert.equal(value, LONG_STR);

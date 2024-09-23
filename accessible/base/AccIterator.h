@@ -7,8 +7,9 @@
 #ifndef mozilla_a11y_AccIterator_h__
 #define mozilla_a11y_AccIterator_h__
 
-#include "DocAccessible.h"
 #include "Filters.h"
+#include "mozilla/a11y/DocAccessible.h"
+#include "nsTArray.h"
 
 #include <memory>
 
@@ -16,6 +17,7 @@ class nsITreeView;
 
 namespace mozilla {
 namespace a11y {
+class DocAccessibleParent;
 
 /**
  * AccIterable is a basic interface for iterators over accessibles.
@@ -36,14 +38,14 @@ class AccIterable {
  */
 class AccIterator : public AccIterable {
  public:
-  AccIterator(const Accessible* aRoot, filters::FilterFuncPtr aFilterFunc);
+  AccIterator(const LocalAccessible* aRoot, filters::FilterFuncPtr aFilterFunc);
   virtual ~AccIterator();
 
   /**
    * Return next accessible complying with filter function. Return the first
    * accessible for the first time.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   AccIterator();
@@ -51,10 +53,10 @@ class AccIterator : public AccIterable {
   AccIterator& operator=(const AccIterator&);
 
   struct IteratorState {
-    explicit IteratorState(const Accessible* aParent,
+    explicit IteratorState(const LocalAccessible* aParent,
                            IteratorState* mParentState = nullptr);
 
-    const Accessible* mParent;
+    const LocalAccessible* mParent;
     int32_t mIndex;
     IteratorState* mParentState;
   };
@@ -65,7 +67,9 @@ class AccIterator : public AccIterable {
 
 /**
  * Allows to traverse through related accessibles that are pointing to the given
- * dependent accessible by relation attribute.
+ * dependent accessible by relation attribute. This is typically used to query
+ * implicit reverse relations; e.g. calculating the LABEL_FOR relation for a
+ * label where that label was referenced using aria-labelledby.
  */
 class RelatedAccIterator : public AccIterable {
  public:
@@ -77,7 +81,7 @@ class RelatedAccIterator : public AccIterable {
    * @param aDependentContent [in] the content of dependent accessible that
    *                           relations were requested for
    * @param aRelAttr          [in] relation attribute that relations are
-   *                           pointed by
+   *                           pointed by, null for all relations
    */
   RelatedAccIterator(DocAccessible* aDocument, nsIContent* aDependentContent,
                      nsAtom* aRelAttr);
@@ -87,7 +91,7 @@ class RelatedAccIterator : public AccIterable {
   /**
    * Return next related accessible for the given dependent accessible.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   RelatedAccIterator();
@@ -95,9 +99,11 @@ class RelatedAccIterator : public AccIterable {
   RelatedAccIterator& operator=(const RelatedAccIterator&);
 
   DocAccessible* mDocument;
+  nsIContent* mDependentContent;
   nsAtom* mRelAttr;
   DocAccessible::AttrRelProviders* mProviders;
   uint32_t mIndex;
+  bool mIsWalkingDependentElements;
 };
 
 /**
@@ -107,7 +113,8 @@ class HTMLLabelIterator : public AccIterable {
  public:
   enum LabelFilter { eAllLabels, eSkipAncestorLabel };
 
-  HTMLLabelIterator(DocAccessible* aDocument, const Accessible* aAccessible,
+  HTMLLabelIterator(DocAccessible* aDocument,
+                    const LocalAccessible* aAccessible,
                     LabelFilter aFilter = eAllLabels);
 
   virtual ~HTMLLabelIterator() {}
@@ -115,19 +122,19 @@ class HTMLLabelIterator : public AccIterable {
   /**
    * Return next label accessible associated with the given element.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   HTMLLabelIterator();
   HTMLLabelIterator(const HTMLLabelIterator&);
   HTMLLabelIterator& operator=(const HTMLLabelIterator&);
 
-  bool IsLabel(Accessible* aLabel);
+  bool IsLabel(LocalAccessible* aLabel);
 
   RelatedAccIterator mRelIter;
   // XXX: replace it on weak reference (bug 678429), it's safe to use raw
   // pointer now because iterators life cycle is short.
-  const Accessible* mAcc;
+  const LocalAccessible* mAcc;
   LabelFilter mLabelFilter;
 };
 
@@ -142,7 +149,7 @@ class HTMLOutputIterator : public AccIterable {
   /**
    * Return next output accessible associated with the given element.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   HTMLOutputIterator();
@@ -163,7 +170,7 @@ class XULLabelIterator : public AccIterable {
   /**
    * Return next label accessible associated with the given element.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   XULLabelIterator();
@@ -184,7 +191,7 @@ class XULDescriptionIterator : public AccIterable {
   /**
    * Return next description accessible associated with the given element.
    */
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   XULDescriptionIterator();
@@ -222,7 +229,7 @@ class IDRefsIterator : public AccIterable {
   dom::Element* GetElem(const nsDependentSubstring& aID);
 
   // AccIterable
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   IDRefsIterator();
@@ -251,7 +258,7 @@ class SingleAccIterator : public AccIterable {
   SingleAccIterator(const SingleAccIterator&);
   SingleAccIterator& operator=(const SingleAccIterator&);
 
-  RefPtr<Accessible> mAcc;
+  Accessible* mAcc;
 };
 
 /**
@@ -261,7 +268,6 @@ class ItemIterator : public AccIterable {
  public:
   explicit ItemIterator(const Accessible* aItemContainer)
       : mContainer(aItemContainer), mAnchor(nullptr) {}
-  virtual ~ItemIterator() {}
 
   virtual Accessible* Next() override;
 
@@ -283,7 +289,7 @@ class XULTreeItemIterator : public AccIterable {
                       int32_t aRowIdx);
   virtual ~XULTreeItemIterator() {}
 
-  virtual Accessible* Next() override;
+  virtual LocalAccessible* Next() override;
 
  private:
   XULTreeItemIterator() = delete;
@@ -295,6 +301,29 @@ class XULTreeItemIterator : public AccIterable {
   int32_t mRowCount;
   int32_t mContainerLevel;
   int32_t mCurrRowIdx;
+};
+
+/**
+ * Used to iterate through a sequence of RemoteAccessibles supplied as an array
+ * of ids. Such id arrays are included in the RemoteAccessible cache.
+ */
+class RemoteAccIterator : public AccIterable {
+ public:
+  /**
+   * Construct with a reference to an array owned somewhere else; e.g. a
+   * RemoteAccessible cache.
+   */
+  RemoteAccIterator(const nsTArray<uint64_t>& aIds, DocAccessibleParent* aDoc)
+      : mIds(aIds), mDoc(aDoc), mIndex(0) {}
+
+  virtual ~RemoteAccIterator() = default;
+
+  virtual Accessible* Next() override;
+
+ private:
+  const nsTArray<uint64_t>& mIds;
+  DocAccessibleParent* mDoc;
+  uint32_t mIndex;
 };
 
 }  // namespace a11y

@@ -18,6 +18,7 @@
 #include "imgICache.h"
 #include "imgIContainer.h"
 #include "imgIEncoder.h"
+#include "nsComponentManagerUtils.h"
 #include "nsNetUtil.h"  // for NS_NewBufferedInputStream
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
@@ -33,6 +34,7 @@
 #include "js/ArrayBuffer.h"
 #include "js/RootingAPI.h"  // JS::{Handle,Rooted}
 #include "js/Value.h"       // JS::Value
+#include "Orientation.h"
 
 using namespace mozilla::gfx;
 
@@ -101,8 +103,8 @@ class ImageDecoderListener final : public nsIStreamListener,
       }
     }
 
-    return mImage->OnImageDataAvailable(aRequest, nullptr, aInputStream,
-                                        aOffset, aCount);
+    return mImage->OnImageDataAvailable(aRequest, aInputStream, aOffset,
+                                        aCount);
   }
 
   NS_IMETHOD
@@ -110,17 +112,14 @@ class ImageDecoderListener final : public nsIStreamListener,
 
   NS_IMETHOD
   OnStopRequest(nsIRequest* aRequest, nsresult aStatus) override {
-    // Depending on the error, we might not have received any data yet, in which
-    // case we would not have an |mImage|
-    if (mImage) {
-      mImage->OnImageDataComplete(aRequest, nullptr, aStatus, true);
+    // Encouter a fetch error, or no data could be fetched.
+    if (!mImage || NS_FAILED(aStatus)) {
+      mCallback->OnImageReady(nullptr, mImage ? aStatus : NS_ERROR_FAILURE);
+      return NS_OK;
     }
 
-    nsCOMPtr<imgIContainer> container;
-    if (NS_SUCCEEDED(aStatus)) {
-      container = this;
-    }
-
+    mImage->OnImageDataComplete(aRequest, aStatus, true);
+    nsCOMPtr<imgIContainer> container = this;
     mCallback->OnImageReady(container, aStatus);
     return NS_OK;
   }
@@ -142,14 +141,6 @@ class ImageDecoderListener final : public nsIStreamListener,
 
   // imgIContainer
   NS_FORWARD_IMGICONTAINER(mImage->)
-
-  nsresult GetNativeSizes(nsTArray<nsIntSize>& aNativeSizes) const override {
-    return mImage->GetNativeSizes(aNativeSizes);
-  }
-
-  size_t GetNativeSizesLength() const override {
-    return mImage->GetNativeSizesLength();
-  }
 
  private:
   virtual ~ImageDecoderListener() = default;
@@ -189,7 +180,7 @@ class ImageDecoderHelper final : public Runnable,
     // operation.
     if (NS_IsMainThread()) {
       // Let the Image know we've sent all the data.
-      mImage->OnImageDataComplete(nullptr, nullptr, mStatus, true);
+      mImage->OnImageDataComplete(nullptr, mStatus, true);
 
       RefPtr<ProgressTracker> tracker = mImage->GetProgressTracker();
       tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
@@ -232,7 +223,7 @@ class ImageDecoderHelper final : public Runnable,
     }
 
     // Send the source data to the Image.
-    rv = mImage->OnImageDataAvailable(nullptr, nullptr, mInputStream, 0,
+    rv = mImage->OnImageDataAvailable(nullptr, mInputStream, 0,
                                       uint32_t(length));
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return OperationCompleted(rv);
@@ -262,7 +253,7 @@ class ImageDecoderHelper final : public Runnable,
 
  private:
   ~ImageDecoderHelper() {
-    NS_ReleaseOnMainThread("ImageDecoderHelper::mImage", mImage.forget());
+    SurfaceCache::ReleaseImageOnMainThread(mImage.forget());
     NS_ReleaseOnMainThread("ImageDecoderHelper::mCallback", mCallback.forget());
   }
 
@@ -307,11 +298,17 @@ imgTools::DecodeImageFromArrayBuffer(JS::Handle<JS::Value> aArrayBuffer,
   }
 
   uint8_t* bufferData = nullptr;
-  uint32_t bufferLength = 0;
+  size_t bufferLength = 0;
   bool isSharedMemory = false;
 
   JS::GetArrayBufferLengthAndData(obj, &bufferLength, &isSharedMemory,
                                   &bufferData);
+
+  // Throw for large ArrayBuffers to prevent truncation.
+  if (bufferLength > INT32_MAX) {
+    return NS_ERROR_ILLEGAL_VALUE;
+  }
+
   return DecodeImageFromBuffer((char*)bufferData, bufferLength, aMimeType,
                                aContainer);
 }
@@ -337,16 +334,16 @@ imgTools::DecodeImageFromBuffer(const char* aBuffer, uint32_t aSize,
   // Let's create a temporary inputStream.
   nsCOMPtr<nsIInputStream> stream;
   nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(stream), MakeSpan(aBuffer, aSize), NS_ASSIGNMENT_DEPEND);
+      getter_AddRefs(stream), Span(aBuffer, aSize), NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
   MOZ_ASSERT(stream);
   MOZ_ASSERT(NS_InputStreamIsBuffered(stream));
 
-  rv = image->OnImageDataAvailable(nullptr, nullptr, stream, 0, aSize);
+  rv = image->OnImageDataAvailable(nullptr, stream, 0, aSize);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Let the Image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
+  rv = image->OnImageDataComplete(nullptr, NS_OK, true);
   tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -433,8 +430,7 @@ static nsresult EncodeImageData(DataSourceSurface* aDataSurface,
              "We're assuming B8G8R8A8/X8");
 
   // Get an image encoder for the media type
-  nsAutoCString encoderCID(
-      NS_LITERAL_CSTRING("@mozilla.org/image/encoder;2?type=") + aMimeType);
+  nsAutoCString encoderCID("@mozilla.org/image/encoder;2?type="_ns + aMimeType);
 
   nsCOMPtr<imgIEncoder> encoder = do_CreateInstance(encoderCID.get());
   if (!encoder) {
@@ -535,8 +531,9 @@ imgTools::EncodeScaledImage(imgIContainer* aContainer,
   }
 
   // Otherwise we need to scale it using a draw target.
-  RefPtr<DataSourceSurface> dataSurface =
-      Factory::CreateDataSourceSurface(scaledSize, SurfaceFormat::B8G8R8A8);
+  // Ensure the surface is initialized to clear in case we need to blend to it.
+  RefPtr<DataSourceSurface> dataSurface = Factory::CreateDataSourceSurface(
+      scaledSize, SurfaceFormat::B8G8R8A8, true);
   if (NS_WARN_IF(!dataSurface)) {
     return NS_ERROR_FAILURE;
   }
@@ -554,11 +551,14 @@ imgTools::EncodeScaledImage(imgIContainer* aContainer,
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
+  // Prefer using OP_OVER to scale the surface instead of OP_SOURCE, as both
+  // D2D and Skia have specific fast-paths for these, and may give divergent
+  // and slower results when using OP_SOURCE.
   IntSize frameSize = frame->GetSize();
   dt->DrawSurface(frame, Rect(0, 0, scaledSize.width, scaledSize.height),
                   Rect(0, 0, frameSize.width, frameSize.height),
                   DrawSurfaceOptions(),
-                  DrawOptions(1.0f, CompositionOp::OP_SOURCE));
+                  DrawOptions(1.0f, CompositionOp::OP_OVER));
 
   return EncodeImageData(dataSurface, map, aMimeType, aOutputOptions, aStream);
 }

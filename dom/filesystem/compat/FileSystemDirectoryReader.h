@@ -8,13 +8,14 @@
 #define mozilla_dom_FileSystemDirectoryReader_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/FileSystemDirectoryEntry.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class Directory;
@@ -24,7 +25,7 @@ class FileSystemEntriesCallback;
 class FileSystemDirectoryReader : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(FileSystemDirectoryReader)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(FileSystemDirectoryReader)
 
   explicit FileSystemDirectoryReader(FileSystemDirectoryEntry* aDirectoryEntry,
                                      FileSystem* aFileSystem,

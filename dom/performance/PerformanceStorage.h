@@ -12,8 +12,7 @@
 class nsIHttpChannel;
 class nsITimedChannel;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PerformanceTimingData;
 
@@ -23,12 +22,14 @@ class PerformanceStorage {
 
   virtual void AddEntry(nsIHttpChannel* aChannel,
                         nsITimedChannel* aTimedChannel) = 0;
+  virtual void AddEntry(const nsString& entryName,
+                        const nsString& initiatorType,
+                        UniquePtr<PerformanceTimingData>&& aData) = 0;
 
  protected:
   virtual ~PerformanceStorage() = default;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PerformanceStorage_h

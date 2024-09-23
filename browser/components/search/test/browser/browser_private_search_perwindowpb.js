@@ -2,14 +2,19 @@
 // search in a private window, and then checks in the public window
 // whether there is an autocomplete entry for the private search.
 
-add_task(async function test_setup() {
+add_setup(async function () {
   await gCUITestUtils.addSearchBar();
-  registerCleanupFunction(() => {
+  await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + "426329.xml",
+    setAsDefault: true,
+  });
+
+  registerCleanupFunction(async () => {
     gCUITestUtils.removeSearchBar();
   });
 });
 
-add_task(async function() {
+add_task(async function () {
   let windowsToClose = [];
 
   function performSearch(aWin, aIsPrivate) {
@@ -35,8 +40,6 @@ add_task(async function() {
     windowsToClose.push(win);
     return win;
   }
-
-  await promiseNewEngine("426329.xml", { iconURL: "data:image/x-icon,%00" });
 
   let newWindow = await testOnWindow(false);
   await performSearch(newWindow, false);
@@ -67,7 +70,7 @@ add_task(async function() {
   searchBar.textbox.toggleHistoryPopup();
   searchBar.value = "";
 
-  windowsToClose.forEach(function(win) {
+  windowsToClose.forEach(function (win) {
     win.close();
   });
 });

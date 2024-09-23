@@ -7,14 +7,13 @@
 #ifndef mozilla_H264Converter_h
 #define mozilla_H264Converter_h
 
+#include "PDMFactory.h"
 #include "PlatformDecoderModule.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
 
 namespace mozilla {
-
-class DecoderDoctorDiagnostics;
 
 DDLoggedTypeDeclNameAndBase(MediaChangeMonitor, MediaDataDecoder);
 
@@ -26,12 +25,14 @@ DDLoggedTypeDeclNameAndBase(MediaChangeMonitor, MediaDataDecoder);
 // input data, and will delay creation of the MediaDataDecoder until such out
 // of band have been extracted should the underlying decoder required it.
 
-class MediaChangeMonitor : public MediaDataDecoder,
-                           public DecoderDoctorLifeLogger<MediaChangeMonitor> {
+class MediaChangeMonitor final
+    : public MediaDataDecoder,
+      public DecoderDoctorLifeLogger<MediaChangeMonitor> {
  public:
-  MediaChangeMonitor(PlatformDecoderModule* aPDM,
-                     const CreateDecoderParams& aParams);
-  virtual ~MediaChangeMonitor();
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaChangeMonitor, final);
+
+  static RefPtr<PlatformDecoderModule::CreateDecoderPromise> Create(
+      PDMFactory* aPDMFactory, const CreateDecoderParams& aParams);
 
   RefPtr<InitPromise> Init() override;
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override;
@@ -40,27 +41,38 @@ class MediaChangeMonitor : public MediaDataDecoder,
   RefPtr<ShutdownPromise> Shutdown() override;
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
   nsCString GetDescriptionName() const override {
-    if (mDecoder) {
-      return mDecoder->GetDescriptionName();
+    if (RefPtr<MediaDataDecoder> decoder = GetDecoderOnNonOwnerThread()) {
+      return decoder->GetDescriptionName();
     }
-    return NS_LITERAL_CSTRING("MediaChangeMonitor decoder (pending)");
+    return "MediaChangeMonitor decoder (pending)"_ns;
+  }
+  nsCString GetProcessName() const override {
+    if (RefPtr<MediaDataDecoder> decoder = GetDecoderOnNonOwnerThread()) {
+      return decoder->GetProcessName();
+    }
+    return "MediaChangeMonitor"_ns;
+  }
+  nsCString GetCodecName() const override {
+    if (RefPtr<MediaDataDecoder> decoder = GetDecoderOnNonOwnerThread()) {
+      return decoder->GetCodecName();
+    }
+    return "MediaChangeMonitor"_ns;
   }
   void SetSeekThreshold(const media::TimeUnit& aTime) override;
   bool SupportDecoderRecycling() const override {
-    if (mDecoder) {
-      return mDecoder->SupportDecoderRecycling();
+    if (RefPtr<MediaDataDecoder> decoder = GetDecoderOnNonOwnerThread()) {
+      return decoder->SupportDecoderRecycling();
     }
     return false;
   }
 
   ConversionRequired NeedsConversion() const override {
-    if (mDecoder) {
-      return mDecoder->NeedsConversion();
+    if (RefPtr<MediaDataDecoder> decoder = GetDecoderOnNonOwnerThread()) {
+      return decoder->NeedsConversion();
     }
     // Default so no conversion is performed.
     return ConversionRequired::kNeedNone;
   }
-  MediaResult GetLastError() const { return mLastError; }
 
   class CodecChangeMonitor {
    public:
@@ -70,22 +82,35 @@ class MediaChangeMonitor : public MediaDataDecoder,
     virtual MediaResult PrepareSample(
         MediaDataDecoder::ConversionRequired aConversion, MediaRawData* aSample,
         bool aNeedKeyFrame) = 0;
+    virtual bool IsHardwareAccelerated(nsACString& aFailureReason) const {
+      return false;
+    }
     virtual ~CodecChangeMonitor() = default;
   };
 
  private:
-  UniquePtr<CodecChangeMonitor> mChangeMonitor;
+  MediaChangeMonitor(PDMFactory* aPDMFactory,
+                     UniquePtr<CodecChangeMonitor>&& aCodecChangeMonitor,
+                     MediaDataDecoder* aDecoder,
+                     const CreateDecoderParams& aParams);
+  virtual ~MediaChangeMonitor();
 
-  void AssertOnTaskQueue() const {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  void AssertOnThread() const {
+    // mThread may not be set if Init hasn't been called first.
+    MOZ_ASSERT(!mThread || mThread->IsOnCurrentThread());
   }
+
+  // This is used for getting decoder debug info on other threads. Thread-safe.
+  MediaDataDecoder* GetDecoderOnNonOwnerThread() const;
 
   bool CanRecycleDecoder() const;
 
+  typedef MozPromise<bool, MediaResult, true /* exclusive */>
+      CreateDecoderPromise;
   // Will create the required MediaDataDecoder if need AVCC and we have a SPS
   // NAL. Returns NS_ERROR_FAILURE if error is permanent and can't be recovered
   // and will set mError accordingly.
-  MediaResult CreateDecoder(DecoderDoctorDiagnostics* aDiagnostics);
+  RefPtr<CreateDecoderPromise> CreateDecoder();
   MediaResult CreateDecoderAndInit(MediaRawData* aSample);
   MediaResult CheckForChange(MediaRawData* aSample);
 
@@ -94,12 +119,12 @@ class MediaChangeMonitor : public MediaDataDecoder,
   void FlushThenShutdownDecoder(MediaRawData* aPendingSample);
   RefPtr<ShutdownPromise> ShutdownDecoder();
 
-  RefPtr<PlatformDecoderModule> mPDM;
+  UniquePtr<CodecChangeMonitor> mChangeMonitor;
+  RefPtr<PDMFactory> mPDMFactory;
   VideoInfo mCurrentConfig;
-  RefPtr<layers::KnowsCompositor> mKnowsCompositor;
-  RefPtr<layers::ImageContainer> mImageContainer;
-  const RefPtr<TaskQueue> mTaskQueue;
+  nsCOMPtr<nsISerialEventTarget> mThread;
   RefPtr<MediaDataDecoder> mDecoder;
+  MozPromiseRequestHolder<CreateDecoderPromise> mDecoderRequest;
   MozPromiseRequestHolder<InitPromise> mInitPromiseRequest;
   MozPromiseHolder<InitPromise> mInitPromise;
   MozPromiseRequestHolder<DecodePromise> mDecodePromiseRequest;
@@ -111,18 +136,20 @@ class MediaChangeMonitor : public MediaDataDecoder,
   RefPtr<ShutdownPromise> mShutdownPromise;
   MozPromiseHolder<FlushPromise> mFlushPromise;
 
-  RefPtr<GMPCrashHelper> mGMPCrashHelper;
-  MediaResult mLastError;
   bool mNeedKeyframe = true;
-  const bool mErrorIfNoInitializationData;
-  const TrackInfo::TrackType mType;
-  MediaEventProducer<TrackInfo::TrackType>* const mOnWaitingForKeyEvent;
-  const CreateDecoderParams::OptionSet mDecoderOptions;
-  const CreateDecoderParams::VideoFrameRate mRate;
   Maybe<bool> mCanRecycleDecoder;
   Maybe<MediaDataDecoder::ConversionRequired> mConversionRequired;
-  // Used for debugging purposes only
-  Atomic<bool> mInConstructor;
+  bool mDecoderInitialized = false;
+  const CreateDecoderParamsForAsync mParams;
+  // Keep any seek threshold set for after decoder creation and initialization.
+  Maybe<media::TimeUnit> mPendingSeekThreshold;
+
+  // This lock is used for mDecoder specifically, but it doens't need to be used
+  // for every places accessing mDecoder which is mostly on the owner thread.
+  // However, when requesting decoder debug info, it can happen on other
+  // threads, so we need this mutex to avoid the data race of
+  // creating/destroying decoder and accessing decoder's debug info.
+  mutable Mutex MOZ_ANNOTATED mMutex{"MediaChangeMonitor"};
 };
 
 }  // namespace mozilla

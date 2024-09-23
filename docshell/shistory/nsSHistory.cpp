@@ -12,8 +12,10 @@
 #include "nsCOMArray.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDocShell.h"
-#include "nsIContentViewer.h"
+#include "nsFrameLoaderOwner.h"
+#include "nsHashKeys.h"
 #include "nsIDocShell.h"
+#include "nsIDocumentViewer.h"
 #include "nsDocShellLoadState.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsILayoutHistoryState.h"
@@ -21,17 +23,25 @@
 #include "nsISHEntry.h"
 #include "nsISHistoryListener.h"
 #include "nsIURI.h"
+#include "nsIXULRuntime.h"
 #include "nsNetUtil.h"
+#include "nsTHashMap.h"
 #include "nsSHEntry.h"
+#include "SessionHistoryEntry.h"
 #include "nsTArray.h"
 #include "prsystem.h"
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/BrowsingContextGroup.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/RemoteWebProgressRequest.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ProcessPriorityManager.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_fission.h"
 #include "mozilla/StaticPtr.h"
@@ -48,16 +58,31 @@ using namespace mozilla::dom;
   "browser.sessionhistory.max_total_viewers"
 #define CONTENT_VIEWER_TIMEOUT_SECONDS \
   "browser.sessionhistory.contentViewerTimeout"
+// Observe fission.bfcacheInParent so that BFCache can be enabled/disabled when
+// the pref is changed.
+#define PREF_FISSION_BFCACHEINPARENT "fission.bfcacheInParent"
 
 // Default this to time out unused content viewers after 30 minutes
 #define CONTENT_VIEWER_TIMEOUT_SECONDS_DEFAULT (30 * 60)
 
-static const char* kObservedPrefs[] = {
-    PREF_SHISTORY_SIZE, PREF_SHISTORY_MAX_TOTAL_VIEWERS, nullptr};
+static constexpr const char* kObservedPrefs[] = {
+    PREF_SHISTORY_SIZE, PREF_SHISTORY_MAX_TOTAL_VIEWERS,
+    PREF_FISSION_BFCACHEINPARENT, nullptr};
 
 static int32_t gHistoryMaxSize = 50;
-// List of all SHistory objects, used for content viewer cache eviction
-static LinkedList<nsSHistory> gSHistoryList;
+
+// List of all SHistory objects, used for content viewer cache eviction.
+// When being destroyed, this helper removes everything from the list to avoid
+// assertions when we leak.
+struct ListHelper {
+#ifdef DEBUG
+  ~ListHelper() { mList.clear(); }
+#endif  // DEBUG
+
+  LinkedList<nsSHistory> mList;
+};
+
+static ListHelper gSHistoryList;
 // Max viewers allowed total, across all SHistory objects - negative default
 // means we will calculate how many viewers to cache based on total memory
 int32_t nsSHistory::sHistoryMaxTotalViewers = -1;
@@ -66,11 +91,14 @@ int32_t nsSHistory::sHistoryMaxTotalViewers = -1;
 // entries were touched, so that we can evict older entries first.
 static uint32_t gTouchCounter = 0;
 
+extern mozilla::LazyLogModule gSHLog;
+
 LazyLogModule gSHistoryLog("nsSHistory");
 
 #define LOG(format) MOZ_LOG(gSHistoryLog, mozilla::LogLevel::Debug, format)
 
 extern mozilla::LazyLogModule gPageCacheLog;
+extern mozilla::LazyLogModule gSHIPBFCacheLog;
 
 // This macro makes it easier to print a log message which includes a URI's
 // spec.  Example use:
@@ -78,16 +106,16 @@ extern mozilla::LazyLogModule gPageCacheLog;
 //  nsIURI *uri = [...];
 //  LOG_SPEC(("The URI is %s.", _spec), uri);
 //
-#define LOG_SPEC(format, uri)                             \
-  PR_BEGIN_MACRO                                          \
-  if (MOZ_LOG_TEST(gSHistoryLog, LogLevel::Debug)) {      \
-    nsAutoCString _specStr(NS_LITERAL_CSTRING("(null)")); \
-    if (uri) {                                            \
-      _specStr = uri->GetSpecOrDefault();                 \
-    }                                                     \
-    const char* _spec = _specStr.get();                   \
-    LOG(format);                                          \
-  }                                                       \
+#define LOG_SPEC(format, uri)                        \
+  PR_BEGIN_MACRO                                     \
+  if (MOZ_LOG_TEST(gSHistoryLog, LogLevel::Debug)) { \
+    nsAutoCString _specStr("(null)"_ns);             \
+    if (uri) {                                       \
+      _specStr = uri->GetSpecOrDefault();            \
+    }                                                \
+    const char* _spec = _specStr.get();              \
+    LOG(format);                                     \
+  }                                                  \
   PR_END_MACRO
 
 // This macro makes it easy to log a message including an SHEntry's URI.
@@ -104,38 +132,43 @@ extern mozilla::LazyLogModule gPageCacheLog;
   }                                                  \
   PR_END_MACRO
 
-// Iterates over all registered session history listeners.
-#define ITERATE_LISTENERS(body)                                              \
-  PR_BEGIN_MACRO {                                                           \
-    nsAutoTObserverArray<nsWeakPtr, 2>::EndLimitedIterator iter(mListeners); \
-    while (iter.HasMore()) {                                                 \
-      nsCOMPtr<nsISHistoryListener> listener =                               \
-          do_QueryReferent(iter.GetNext());                                  \
-      if (listener) {                                                        \
-        body                                                                 \
-      }                                                                      \
-    }                                                                        \
-  }                                                                          \
-  PR_END_MACRO
+// Calls a F on all registered session history listeners.
+template <typename F>
+static void NotifyListeners(nsAutoTObserverArray<nsWeakPtr, 2>& aListeners,
+                            F&& f) {
+  for (const nsWeakPtr& weakPtr : aListeners.EndLimitedRange()) {
+    nsCOMPtr<nsISHistoryListener> listener = do_QueryReferent(weakPtr);
+    if (listener) {
+      f(listener);
+    }
+  }
+}
 
-// Calls a given method on all registered session history listeners.
-#define NOTIFY_LISTENERS(method, args) \
-  ITERATE_LISTENERS(listener->method args;);
+class MOZ_STACK_CLASS SHistoryChangeNotifier {
+ public:
+  explicit SHistoryChangeNotifier(nsSHistory* aHistory) {
+    // If we're already in an update, the outermost change notifier will
+    // update browsing context in the destructor.
+    if (!aHistory->HasOngoingUpdate()) {
+      aHistory->SetHasOngoingUpdate(true);
+      mSHistory = aHistory;
+    }
+  }
 
-// Calls a given method on all registered session history listeners.
-// Listeners may return 'false' to cancel an action so make sure that we
-// set the return value to 'false' if one of the listeners wants to cancel.
-#define NOTIFY_LISTENERS_CANCELABLE(method, retval, args) \
-  PR_BEGIN_MACRO {                                        \
-    bool canceled = false;                                \
-    retval = true;                                        \
-    ITERATE_LISTENERS(listener->method args;              \
-                      if (!retval) { canceled = true; }); \
-    if (canceled) {                                       \
-      retval = false;                                     \
-    }                                                     \
-  }                                                       \
-  PR_END_MACRO
+  ~SHistoryChangeNotifier() {
+    if (mSHistory) {
+      MOZ_ASSERT(mSHistory->HasOngoingUpdate());
+      mSHistory->SetHasOngoingUpdate(false);
+
+      RefPtr<BrowsingContext> rootBC = mSHistory->GetBrowsingContext();
+      if (mozilla::SessionHistoryInParent() && rootBC) {
+        rootBC->Canonical()->HistoryCommitIndexAndLength();
+      }
+    }
+  }
+
+  RefPtr<nsSHistory> mSHistory;
+};
 
 enum HistCmd { HIST_CMD_GOTOINDEX, HIST_CMD_RELOAD };
 
@@ -164,7 +197,7 @@ void nsSHistoryObserver::PrefChanged(const char* aPref, void* aSelf) {
 
 void nsSHistoryObserver::PrefChanged(const char* aPref) {
   nsSHistory::UpdatePrefs();
-  nsSHistory::GloballyEvictContentViewers();
+  nsSHistory::GloballyEvictDocumentViewers();
 }
 
 NS_IMETHODIMP
@@ -172,14 +205,14 @@ nsSHistoryObserver::Observe(nsISupports* aSubject, const char* aTopic,
                             const char16_t* aData) {
   if (!strcmp(aTopic, "cacheservice:empty-cache") ||
       !strcmp(aTopic, "memory-pressure")) {
-    nsSHistory::GloballyEvictAllContentViewers();
+    nsSHistory::GloballyEvictAllDocumentViewers();
   }
 
   return NS_OK;
 }
 
-void nsSHistory::EvictContentViewerForEntry(nsISHEntry* aEntry) {
-  nsCOMPtr<nsIContentViewer> viewer = aEntry->GetContentViewer();
+void nsSHistory::EvictDocumentViewerForEntry(nsISHEntry* aEntry) {
+  nsCOMPtr<nsIDocumentViewer> viewer = aEntry->GetDocumentViewer();
   if (viewer) {
     LOG_SHENTRY_SPEC(("Evicting content viewer 0x%p for "
                       "owning SHEntry 0x%p at %s.",
@@ -188,10 +221,29 @@ void nsSHistory::EvictContentViewerForEntry(nsISHEntry* aEntry) {
 
     // Drop the presentation state before destroying the viewer, so that
     // document teardown is able to correctly persist the state.
-    NotifyListenersContentViewerEvicted(1);
-    aEntry->SetContentViewer(nullptr);
+    NotifyListenersDocumentViewerEvicted(1);
+    aEntry->SetDocumentViewer(nullptr);
     aEntry->SyncPresentationState();
     viewer->Destroy();
+  } else if (nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(aEntry)) {
+    if (RefPtr<nsFrameLoader> frameLoader = she->GetFrameLoader()) {
+      nsCOMPtr<nsFrameLoaderOwner> owner =
+          do_QueryInterface(frameLoader->GetOwnerContent());
+      RefPtr<nsFrameLoader> currentFrameLoader;
+      if (owner) {
+        currentFrameLoader = owner->GetFrameLoader();
+      }
+
+      // Only destroy non-current frameloader when evicting from the bfcache.
+      if (currentFrameLoader != frameLoader) {
+        MOZ_LOG(gSHIPBFCacheLog, LogLevel::Debug,
+                ("nsSHistory::EvictDocumentViewerForEntry "
+                 "destroying an nsFrameLoader."));
+        NotifyListenersDocumentViewerEvicted(1);
+        she->SetFrameLoader(nullptr);
+        frameLoader->Destroy();
+      }
+    }
   }
 
   // When dropping bfcache, we have to remove associated dynamic entries as
@@ -203,28 +255,34 @@ void nsSHistory::EvictContentViewerForEntry(nsISHEntry* aEntry) {
 }
 
 nsSHistory::nsSHistory(BrowsingContext* aRootBC)
-    : mRootBC(aRootBC),
-      mIsRemote(false),
+    : mRootBC(aRootBC->Id()),
+      mHasOngoingUpdate(false),
       mIndex(-1),
       mRequestedIndex(-1),
       mRootDocShellID(aRootBC->GetHistoryID()) {
+  static bool sCalledStartup = false;
+  if (!sCalledStartup) {
+    Startup();
+    sCalledStartup = true;
+  }
+
   // Add this new SHistory object to the list
-  gSHistoryList.insertBack(this);
+  gSHistoryList.mList.insertBack(this);
 
   // Init mHistoryTracker on setting mRootBC so we can bind its event
   // target to the tabGroup.
-  nsPIDOMWindowOuter* win;
-  if (mRootBC && (win = mRootBC->GetDOMWindow())) {
-    nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(win);
-    mHistoryTracker = mozilla::MakeUnique<HistoryTracker>(
-        this,
-        mozilla::Preferences::GetUint(CONTENT_VIEWER_TIMEOUT_SECONDS,
-                                      CONTENT_VIEWER_TIMEOUT_SECONDS_DEFAULT),
-        global->EventTargetFor(mozilla::TaskCategory::Other));
-  }
+  mHistoryTracker = mozilla::MakeUnique<HistoryTracker>(
+      this,
+      mozilla::Preferences::GetUint(CONTENT_VIEWER_TIMEOUT_SECONDS,
+                                    CONTENT_VIEWER_TIMEOUT_SECONDS_DEFAULT),
+      GetCurrentSerialEventTarget());
 }
 
-nsSHistory::~nsSHistory() {}
+nsSHistory::~nsSHistory() {
+  // Clear mEntries explicitly here so that the destructor of the entries
+  // can still access nsSHistory in a reasonable way.
+  mEntries.Clear();
+}
 
 NS_IMPL_ADDREF(nsSHistory)
 NS_IMPL_RELEASE(nsSHistory)
@@ -299,6 +357,11 @@ uint32_t nsSHistory::CalcMaxTotalViewers() {
 // static
 void nsSHistory::UpdatePrefs() {
   Preferences::GetInt(PREF_SHISTORY_SIZE, &gHistoryMaxSize);
+  if (mozilla::SessionHistoryInParent() && !mozilla::BFCacheInParent()) {
+    sHistoryMaxTotalViewers = 0;
+    return;
+  }
+
   Preferences::GetInt(PREF_SHISTORY_MAX_TOTAL_VIEWERS,
                       &sHistoryMaxTotalViewers);
   // If the pref is negative, that means we calculate how many viewers
@@ -392,11 +455,25 @@ nsresult nsSHistory::WalkHistoryEntries(nsISHEntry* aRootEntry,
     BrowsingContext* childBC = nullptr;
     if (aBC) {
       for (BrowsingContext* child : aBC->Children()) {
-        // If the SH pref is on, or we are in the parent process, update
+        // If the SH pref is on and we are in the parent process, update
         // canonical BC directly
+        bool foundChild = false;
+        if (mozilla::SessionHistoryInParent() && XRE_IsParentProcess()) {
+          if (child->Canonical()->HasHistoryEntry(childEntry)) {
+            childBC = child;
+            foundChild = true;
+          }
+        }
+
         nsDocShell* docshell = static_cast<nsDocShell*>(child->GetDocShell());
         if (docshell && docshell->HasHistoryEntry(childEntry)) {
           childBC = docshell->GetBrowsingContext();
+          foundChild = true;
+        }
+
+        // XXX Simplify this once the old and new session history
+        // implementations don't run at the same time.
+        if (foundChild) {
           break;
         }
       }
@@ -486,23 +563,64 @@ nsresult nsSHistory::CloneAndReplace(
   return rv;
 }
 
-NS_IMETHODIMP
-nsSHistory::AddChildSHEntryHelper(nsISHEntry* aCloneRef, nsISHEntry* aNewEntry,
-                                  BrowsingContext* aBC, bool aCloneChildren) {
-  nsCOMPtr<nsISHEntry> child;
-  nsresult rv = AddChildSHEntryHelper(aCloneRef, aNewEntry, aBC, aCloneChildren,
-                                      getter_AddRefs(child));
-  if (NS_SUCCEEDED(rv)) {
-    child->SetDocshellID(aBC->GetHistoryID());
+// static
+void nsSHistory::WalkContiguousEntries(
+    nsISHEntry* aEntry, const std::function<void(nsISHEntry*)>& aCallback) {
+  MOZ_ASSERT(aEntry);
+
+  nsCOMPtr<nsISHistory> shistory = aEntry->GetShistory();
+  if (!shistory) {
+    // If there is no session history in the entry, it means this is not a root
+    // entry. So, we can return from here.
+    return;
   }
-  return rv;
+
+  int32_t index = shistory->GetIndexOfEntry(aEntry);
+  int32_t count = shistory->GetCount();
+
+  nsCOMPtr<nsIURI> targetURI = aEntry->GetURI();
+
+  // First, call the callback on the input entry.
+  aCallback(aEntry);
+
+  // Walk backward to find the entries that have the same origin as the
+  // input entry.
+  for (int32_t i = index - 1; i >= 0; i--) {
+    RefPtr<nsISHEntry> entry;
+    shistory->GetEntryAtIndex(i, getter_AddRefs(entry));
+    if (entry) {
+      nsCOMPtr<nsIURI> uri = entry->GetURI();
+      if (NS_FAILED(nsContentUtils::GetSecurityManager()->CheckSameOriginURI(
+              targetURI, uri, false, false))) {
+        break;
+      }
+
+      aCallback(entry);
+    }
+  }
+
+  // Then, Walk forward.
+  for (int32_t i = index + 1; i < count; i++) {
+    RefPtr<nsISHEntry> entry;
+    shistory->GetEntryAtIndex(i, getter_AddRefs(entry));
+    if (entry) {
+      nsCOMPtr<nsIURI> uri = entry->GetURI();
+      if (NS_FAILED(nsContentUtils::GetSecurityManager()->CheckSameOriginURI(
+              targetURI, uri, false, false))) {
+        break;
+      }
+
+      aCallback(entry);
+    }
+  }
 }
 
-nsresult nsSHistory::AddChildSHEntryHelper(nsISHEntry* aCloneRef,
-                                           nsISHEntry* aNewEntry,
-                                           BrowsingContext* aBC,
-                                           bool aCloneChildren,
-                                           nsISHEntry** aNextEntry) {
+NS_IMETHODIMP
+nsSHistory::AddChildSHEntryHelper(nsISHEntry* aCloneRef, nsISHEntry* aNewEntry,
+                                  BrowsingContext* aRootBC,
+                                  bool aCloneChildren) {
+  MOZ_ASSERT(aRootBC->IsTop());
+
   /* You are currently in the rootDocShell.
    * You will get here when a subframe has a new url
    * to load and you have walked up the tree all the
@@ -510,6 +628,7 @@ nsresult nsSHistory::AddChildSHEntryHelper(nsISHEntry* aCloneRef,
    * and replace the subframe where a new url was loaded with
    * a new entry.
    */
+  nsCOMPtr<nsISHEntry> child;
   nsCOMPtr<nsISHEntry> currentHE;
   int32_t index = mIndex;
   if (index < 0) {
@@ -521,11 +640,16 @@ nsresult nsSHistory::AddChildSHEntryHelper(nsISHEntry* aCloneRef,
 
   nsresult rv = NS_OK;
   uint32_t cloneID = aCloneRef->GetID();
-  rv = nsSHistory::CloneAndReplace(currentHE, aBC, cloneID, aNewEntry,
-                                   aCloneChildren, aNextEntry);
+  rv = nsSHistory::CloneAndReplace(currentHE, aRootBC, cloneID, aNewEntry,
+                                   aCloneChildren, getter_AddRefs(child));
+
   if (NS_SUCCEEDED(rv)) {
-    rv = AddEntry(*aNextEntry, true);
+    rv = AddEntry(child, true);
+    if (NS_SUCCEEDED(rv)) {
+      child->SetDocshellID(aRootBC->GetHistoryID());
+    }
   }
+
   return rv;
 }
 
@@ -584,7 +708,7 @@ nsresult nsSHistory::SetChildHistoryEntry(nsISHEntry* aEntry,
 void nsSHistory::HandleEntriesToSwapInDocShell(
     mozilla::dom::BrowsingContext* aBC, nsISHEntry* aOldEntry,
     nsISHEntry* aNewEntry) {
-  bool shPref = StaticPrefs::fission_sessionHistoryInParent();
+  bool shPref = mozilla::SessionHistoryInParent();
   if (aBC->IsInProcess() || !shPref) {
     nsDocShell* docshell = static_cast<nsDocShell*>(aBC->GetDocShell());
     if (docshell) {
@@ -593,14 +717,34 @@ void nsSHistory::HandleEntriesToSwapInDocShell(
   } else {
     // FIXME Bug 1633988: Need to update entries?
   }
+
+  // XXX Simplify this once the old and new session history implementations
+  // don't run at the same time.
+  if (shPref && XRE_IsParentProcess()) {
+    aBC->Canonical()->SwapHistoryEntries(aOldEntry, aNewEntry);
+  }
+}
+
+void nsSHistory::UpdateRootBrowsingContextState(BrowsingContext* aRootBC) {
+  if (aRootBC && aRootBC->EverAttached()) {
+    bool sameDocument = IsEmptyOrHasEntriesForSingleTopLevelPage();
+    if (sameDocument != aRootBC->GetIsSingleToplevelInHistory()) {
+      // If the browsing context is discarded then its session history is
+      // invalid and will go away.
+      Unused << aRootBC->SetIsSingleToplevelInHistory(sameDocument);
+    }
+  }
 }
 
 NS_IMETHODIMP
 nsSHistory::AddToRootSessionHistory(bool aCloneChildren, nsISHEntry* aOSHE,
-                                    BrowsingContext* aBC, nsISHEntry* aEntry,
-                                    uint32_t aLoadType, bool aShouldPersist,
+                                    BrowsingContext* aRootBC,
+                                    nsISHEntry* aEntry, uint32_t aLoadType,
+                                    bool aShouldPersist,
                                     Maybe<int32_t>* aPreviousEntryIndex,
                                     Maybe<int32_t>* aLoadedEntryIndex) {
+  MOZ_ASSERT(aRootBC->IsTop());
+
   nsresult rv = NS_OK;
 
   // If we need to clone our children onto the new session
@@ -608,7 +752,7 @@ nsSHistory::AddToRootSessionHistory(bool aCloneChildren, nsISHEntry* aOSHE,
   if (aCloneChildren && aOSHE) {
     uint32_t cloneID = aOSHE->GetID();
     nsCOMPtr<nsISHEntry> newEntry;
-    nsSHistory::CloneAndReplace(aOSHE, aBC, cloneID, aEntry, true,
+    nsSHistory::CloneAndReplace(aOSHE, aRootBC, cloneID, aEntry, true,
                                 getter_AddRefs(newEntry));
     NS_ASSERTION(aEntry == newEntry,
                  "The new session history should be in the new entry");
@@ -620,10 +764,7 @@ nsSHistory::AddToRootSessionHistory(bool aCloneChildren, nsISHEntry* aOSHE,
     // Replace current entry in session history; If the requested index is
     // valid, it indicates the loading was triggered by a history load, and
     // we should replace the entry at requested index instead.
-    int32_t index = mRequestedIndex;
-    if (index == -1) {
-      index = mIndex;
-    }
+    int32_t index = GetIndexForReplace();
 
     // Replace the current entry with the new entry
     if (index >= 0) {
@@ -643,7 +784,7 @@ nsSHistory::AddToRootSessionHistory(bool aCloneChildren, nsISHEntry* aOSHE,
              aPreviousEntryIndex->value(), aLoadedEntryIndex->value()));
   }
   if (NS_SUCCEEDED(rv)) {
-    aEntry->SetDocshellID(aBC->GetHistoryID());
+    aEntry->SetDocshellID(aRootBC->GetHistoryID());
   }
   return rv;
 }
@@ -656,7 +797,7 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry, bool aPersist) {
   NS_ENSURE_ARG(aSHEntry);
 
   nsCOMPtr<nsISHistory> shistoryOfEntry = aSHEntry->GetShistory();
-  if (shistoryOfEntry != this) {
+  if (shistoryOfEntry && shistoryOfEntry != this) {
     NS_WARNING(
         "The entry has been associated to another nsISHistory instance. "
         "Try nsISHEntry.clone() and nsISHEntry.abandonBFCacheEntry() "
@@ -664,9 +805,12 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry, bool aPersist) {
     return NS_ERROR_FAILURE;
   }
 
+  aSHEntry->SetShistory(this);
+
   // If we have a root docshell, update the docshell id of the root shentry to
   // match the id of that docshell
-  if (mRootBC) {
+  RefPtr<BrowsingContext> rootBC = GetBrowsingContext();
+  if (rootBC) {
     aSHEntry->SetDocshellID(mRootDocShellID);
   }
 
@@ -677,30 +821,48 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry, bool aPersist) {
     }
 
     if (mEntries[mIndex] && !mEntries[mIndex]->GetPersist()) {
-      NOTIFY_LISTENERS(OnHistoryReplaceEntry, ());
+      NotifyListeners(mListeners, [](auto l) { l->OnHistoryReplaceEntry(); });
       aSHEntry->SetPersist(aPersist);
       mEntries[mIndex] = aSHEntry;
+      UpdateRootBrowsingContextState();
       return NS_OK;
     }
   }
+  SHistoryChangeNotifier change(this);
+
+  int32_t truncating = Length() - 1 - mIndex;
+  if (truncating > 0) {
+    NotifyListeners(mListeners,
+                    [truncating](auto l) { l->OnHistoryTruncate(truncating); });
+  }
 
   nsCOMPtr<nsIURI> uri = aSHEntry->GetURI();
-  NOTIFY_LISTENERS(OnHistoryNewEntry, (uri, mIndex));
+  NotifyListeners(mListeners,
+                  [&uri, this](auto l) { l->OnHistoryNewEntry(uri, mIndex); });
 
-  // Remove all entries after the current one, add the new one, and set the new
-  // one as the current one.
+  // Remove all entries after the current one, add the new one, and set the
+  // new one as the current one.
   MOZ_ASSERT(mIndex >= -1);
   aSHEntry->SetPersist(aPersist);
   mEntries.TruncateLength(mIndex + 1);
   mEntries.AppendElement(aSHEntry);
   mIndex++;
+  if (mIndex > 0) {
+    UpdateEntryLength(mEntries[mIndex - 1], mEntries[mIndex], false);
+  }
 
   // Purge History list if it is too long
   if (gHistoryMaxSize >= 0 && Length() > gHistoryMaxSize) {
     PurgeHistory(Length() - gHistoryMaxSize);
   }
 
+  UpdateRootBrowsingContextState();
+
   return NS_OK;
+}
+
+void nsSHistory::NotifyOnHistoryReplaceEntry() {
+  NotifyListeners(mListeners, [](auto l) { l->OnHistoryReplaceEntry(); });
 }
 
 /* Get size of the history list */
@@ -766,38 +928,105 @@ nsSHistory::GetIndexOfEntry(nsISHEntry* aSHEntry) {
   return -1;
 }
 
-#ifdef DEBUG
-nsresult nsSHistory::PrintHistory() {
-  for (int32_t i = 0; i < Length(); i++) {
-    nsCOMPtr<nsISHEntry> entry = mEntries[i];
-    nsCOMPtr<nsILayoutHistoryState> layoutHistoryState =
-        entry->GetLayoutHistoryState();
-    nsCOMPtr<nsIURI> uri = entry->GetURI();
-    nsString title;
-    entry->GetTitle(title);
-
-#  if 0
-    nsAutoCString url;
-    if (uri) {
-      uri->GetSpec(url);
-    }
-
-    printf("**** SH Entry #%d: %x\n", i, entry.get());
-    printf("\t\t URL = %s\n", url.get());
-
-    printf("\t\t Title = %s\n", NS_LossyConvertUTF16toASCII(title).get());
-    printf("\t\t layout History Data = %x\n", layoutHistoryState.get());
-#  endif
+static void LogEntry(nsISHEntry* aEntry, int32_t aIndex, int32_t aTotal,
+                     const nsCString& aPrefix, bool aIsCurrent) {
+  if (!aEntry) {
+    MOZ_LOG(gSHLog, LogLevel::Debug,
+            (" %s+- %i SH Entry null\n", aPrefix.get(), aIndex));
+    return;
   }
 
-  return NS_OK;
+  nsCOMPtr<nsIURI> uri = aEntry->GetURI();
+  nsAutoString title, name;
+  aEntry->GetTitle(title);
+  aEntry->GetName(name);
+
+  SHEntrySharedParentState* shared;
+  if (mozilla::SessionHistoryInParent()) {
+    shared = static_cast<SessionHistoryEntry*>(aEntry)->SharedInfo();
+  } else {
+    shared = static_cast<nsSHEntry*>(aEntry)->GetState();
+  }
+
+  nsID docShellId;
+  aEntry->GetDocshellID(docShellId);
+
+  int32_t childCount = aEntry->GetChildCount();
+
+  MOZ_LOG(gSHLog, LogLevel::Debug,
+          ("%s%s+- %i SH Entry %p %" PRIu64 " %s\n", aIsCurrent ? ">" : " ",
+           aPrefix.get(), aIndex, aEntry, shared->GetId(),
+           nsIDToCString(docShellId).get()));
+
+  nsCString prefix(aPrefix);
+  if (aIndex < aTotal - 1) {
+    prefix.AppendLiteral("|   ");
+  } else {
+    prefix.AppendLiteral("    ");
+  }
+
+  MOZ_LOG(gSHLog, LogLevel::Debug,
+          (" %s%s  URL = %s\n", prefix.get(), childCount > 0 ? "|" : " ",
+           uri->GetSpecOrDefault().get()));
+  MOZ_LOG(gSHLog, LogLevel::Debug,
+          (" %s%s  Title = %s\n", prefix.get(), childCount > 0 ? "|" : " ",
+           NS_LossyConvertUTF16toASCII(title).get()));
+  MOZ_LOG(gSHLog, LogLevel::Debug,
+          (" %s%s  Name = %s\n", prefix.get(), childCount > 0 ? "|" : " ",
+           NS_LossyConvertUTF16toASCII(name).get()));
+  MOZ_LOG(
+      gSHLog, LogLevel::Debug,
+      (" %s%s  Is in BFCache = %s\n", prefix.get(), childCount > 0 ? "|" : " ",
+       aEntry->GetIsInBFCache() ? "true" : "false"));
+
+  nsCOMPtr<nsISHEntry> prevChild;
+  for (int32_t i = 0; i < childCount; ++i) {
+    nsCOMPtr<nsISHEntry> child;
+    aEntry->GetChildAt(i, getter_AddRefs(child));
+    LogEntry(child, i, childCount, prefix, false);
+    child.swap(prevChild);
+  }
 }
-#endif
+
+void nsSHistory::LogHistory() {
+  if (!MOZ_LOG_TEST(gSHLog, LogLevel::Debug)) {
+    return;
+  }
+
+  MOZ_LOG(gSHLog, LogLevel::Debug, ("nsSHistory %p\n", this));
+  int32_t length = Length();
+  for (int32_t i = 0; i < length; i++) {
+    LogEntry(mEntries[i], i, length, EmptyCString(), i == mIndex);
+  }
+}
 
 void nsSHistory::WindowIndices(int32_t aIndex, int32_t* aOutStartIndex,
                                int32_t* aOutEndIndex) {
   *aOutStartIndex = std::max(0, aIndex - nsSHistory::VIEWER_WINDOW);
   *aOutEndIndex = std::min(Length() - 1, aIndex + nsSHistory::VIEWER_WINDOW);
+}
+
+static void MarkAsInitialEntry(
+    SessionHistoryEntry* aEntry,
+    nsTHashMap<nsIDHashKey, SessionHistoryEntry*>& aHashtable) {
+  if (!aEntry->BCHistoryLength().Modified()) {
+    ++(aEntry->BCHistoryLength());
+  }
+  aHashtable.InsertOrUpdate(aEntry->DocshellID(), aEntry);
+  for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
+    if (entry) {
+      MarkAsInitialEntry(entry, aHashtable);
+    }
+  }
+}
+
+static void ClearEntries(SessionHistoryEntry* aEntry) {
+  aEntry->ClearBCHistoryLength();
+  for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
+    if (entry) {
+      ClearEntries(entry);
+    }
+  }
 }
 
 NS_IMETHODIMP
@@ -806,9 +1035,44 @@ nsSHistory::PurgeHistory(int32_t aNumEntries) {
     return NS_ERROR_FAILURE;
   }
 
+  SHistoryChangeNotifier change(this);
+
   aNumEntries = std::min(aNumEntries, Length());
 
-  NOTIFY_LISTENERS(OnHistoryPurge, ());
+  NotifyListeners(mListeners,
+                  [aNumEntries](auto l) { l->OnHistoryPurge(aNumEntries); });
+
+  // Set all the entries hanging of the first entry that we keep
+  // (mEntries[aNumEntries]) as being created as the result of a load
+  // (so contributing one to their BCHistoryLength).
+  nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
+  if (aNumEntries != Length()) {
+    nsCOMPtr<SessionHistoryEntry> she =
+        do_QueryInterface(mEntries[aNumEntries]);
+    if (she) {
+      MarkAsInitialEntry(she, docshellIDToEntry);
+    }
+  }
+
+  // Reset the BCHistoryLength of all the entries that we're removing to a new
+  // counter with value 0 while decreasing their contribution to a shared
+  // BCHistoryLength. The end result is that they don't contribute to the
+  // BCHistoryLength of any other entry anymore.
+  for (int32_t i = 0; i < aNumEntries; ++i) {
+    nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(mEntries[i]);
+    if (she) {
+      ClearEntries(she);
+    }
+  }
+
+  RefPtr<BrowsingContext> rootBC = GetBrowsingContext();
+  if (rootBC) {
+    rootBC->PreOrderWalk([&docshellIDToEntry](BrowsingContext* aBC) {
+      SessionHistoryEntry* entry = docshellIDToEntry.Get(aBC->GetHistoryID());
+      Unused << aBC->SetHistoryEntryCount(
+          entry ? uint32_t(entry->BCHistoryLength()) : 0);
+    });
+  }
 
   // Remove the first `aNumEntries` entries.
   mEntries.RemoveElementsAt(0, aNumEntries);
@@ -819,9 +1083,11 @@ nsSHistory::PurgeHistory(int32_t aNumEntries) {
   mRequestedIndex -= aNumEntries;
   mRequestedIndex = std::max(mRequestedIndex, -1);
 
-  if (mRootBC && mRootBC->GetDocShell()) {
-    mRootBC->GetDocShell()->HistoryPurged(aNumEntries);
+  if (rootBC && rootBC->GetDocShell()) {
+    rootBC->GetDocShell()->HistoryPurged(aNumEntries);
   }
+
+  UpdateRootBrowsingContextState(rootBC);
 
   return NS_OK;
 }
@@ -842,8 +1108,10 @@ nsSHistory::AddSHistoryListener(nsISHistoryListener* aListener) {
   return NS_OK;
 }
 
-void nsSHistory::NotifyListenersContentViewerEvicted(uint32_t aNumEvicted) {
-  NOTIFY_LISTENERS(OnContentViewerEvicted, (aNumEvicted));
+void nsSHistory::NotifyListenersDocumentViewerEvicted(uint32_t aNumEvicted) {
+  NotifyListeners(mListeners, [aNumEvicted](auto l) {
+    l->OnDocumentViewerEvicted(aNumEvicted);
+  });
 }
 
 NS_IMETHODIMP
@@ -867,7 +1135,7 @@ nsSHistory::ReplaceEntry(int32_t aIndex, nsISHEntry* aReplaceEntry) {
   }
 
   nsCOMPtr<nsISHistory> shistoryOfEntry = aReplaceEntry->GetShistory();
-  if (shistoryOfEntry != this) {
+  if (shistoryOfEntry && shistoryOfEntry != this) {
     NS_WARNING(
         "The entry has been associated to another nsISHistory instance. "
         "Try nsISHEntry.clone() and nsISHEntry.abandonBFCacheEntry() "
@@ -875,37 +1143,59 @@ nsSHistory::ReplaceEntry(int32_t aIndex, nsISHEntry* aReplaceEntry) {
     return NS_ERROR_FAILURE;
   }
 
-  NOTIFY_LISTENERS(OnHistoryReplaceEntry, ());
+  aReplaceEntry->SetShistory(this);
+
+  NotifyListeners(mListeners, [](auto l) { l->OnHistoryReplaceEntry(); });
 
   aReplaceEntry->SetPersist(true);
   mEntries[aIndex] = aReplaceEntry;
 
+  UpdateRootBrowsingContextState();
+
   return NS_OK;
 }
 
+// Calls OnHistoryReload on all registered session history listeners.
+// Listeners may return 'false' to cancel an action so make sure that we
+// set the return value to 'false' if one of the listeners wants to cancel.
 NS_IMETHODIMP
 nsSHistory::NotifyOnHistoryReload(bool* aCanReload) {
-  NOTIFY_LISTENERS_CANCELABLE(OnHistoryReload, *aCanReload, (aCanReload));
+  *aCanReload = true;
+
+  for (const nsWeakPtr& weakPtr : mListeners.EndLimitedRange()) {
+    nsCOMPtr<nsISHistoryListener> listener = do_QueryReferent(weakPtr);
+    if (listener) {
+      bool retval = true;
+
+      if (NS_SUCCEEDED(listener->OnHistoryReload(&retval)) && !retval) {
+        *aCanReload = false;
+      }
+    }
+  }
+
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsSHistory::EvictOutOfRangeContentViewers(int32_t aIndex) {
+nsSHistory::EvictOutOfRangeDocumentViewers(int32_t aIndex) {
+  MOZ_LOG(gSHIPBFCacheLog, LogLevel::Debug,
+          ("nsSHistory::EvictOutOfRangeDocumentViewers %i", aIndex));
+
   // Check our per SHistory object limit in the currently navigated SHistory
-  EvictOutOfRangeWindowContentViewers(aIndex);
+  EvictOutOfRangeWindowDocumentViewers(aIndex);
   // Check our total limit across all SHistory objects
-  GloballyEvictContentViewers();
+  GloballyEvictDocumentViewers();
   return NS_OK;
 }
 
 NS_IMETHODIMP_(void)
-nsSHistory::EvictContentViewersOrReplaceEntry(nsISHEntry* aNewSHEntry,
-                                              bool aReplace) {
+nsSHistory::EvictDocumentViewersOrReplaceEntry(nsISHEntry* aNewSHEntry,
+                                               bool aReplace) {
   if (!aReplace) {
     int32_t curIndex;
     GetIndex(&curIndex);
     if (curIndex > -1) {
-      EvictOutOfRangeContentViewers(curIndex);
+      EvictOutOfRangeDocumentViewers(curIndex);
     }
   } else {
     nsCOMPtr<nsISHEntry> rootSHEntry = nsSHistory::GetRootSHEntry(aNewSHEntry);
@@ -918,20 +1208,205 @@ nsSHistory::EvictContentViewersOrReplaceEntry(nsISHEntry* aNewSHEntry,
 }
 
 NS_IMETHODIMP
-nsSHistory::EvictAllContentViewers() {
+nsSHistory::EvictAllDocumentViewers() {
   // XXXbz we don't actually do a good job of evicting things as we should, so
   // we might have viewers quite far from mIndex.  So just evict everything.
   for (int32_t i = 0; i < Length(); i++) {
-    EvictContentViewerForEntry(mEntries[i]);
+    EvictDocumentViewerForEntry(mEntries[i]);
   }
 
   return NS_OK;
 }
 
+static void FinishRestore(CanonicalBrowsingContext* aBrowsingContext,
+                          nsDocShellLoadState* aLoadState,
+                          SessionHistoryEntry* aEntry,
+                          nsFrameLoader* aFrameLoader, bool aCanSave) {
+  MOZ_ASSERT(aEntry);
+  MOZ_ASSERT(aFrameLoader);
+
+  aEntry->SetFrameLoader(nullptr);
+
+  nsCOMPtr<nsISHistory> shistory = aEntry->GetShistory();
+  int32_t indexOfHistoryLoad =
+      shistory ? shistory->GetIndexOfEntry(aEntry) : -1;
+
+  nsCOMPtr<nsFrameLoaderOwner> frameLoaderOwner =
+      do_QueryInterface(aBrowsingContext->GetEmbedderElement());
+  if (frameLoaderOwner && aFrameLoader->GetMaybePendingBrowsingContext() &&
+      indexOfHistoryLoad >= 0) {
+    RefPtr<BrowsingContextWebProgress> webProgress =
+        aBrowsingContext->GetWebProgress();
+    if (webProgress) {
+      // Synthesize a STATE_START WebProgress state change event from here
+      // in order to ensure emitting it on the BrowsingContext we navigate
+      // *from* instead of the BrowsingContext we navigate *to*. This will fire
+      // before and the next one will be ignored by BrowsingContextWebProgress:
+      // https://searchfox.org/mozilla-central/rev/77f0b36028b2368e342c982ea47609040b399d89/docshell/base/BrowsingContextWebProgress.cpp#196-203
+      nsCOMPtr<nsIURI> nextURI = aEntry->GetURI();
+      nsCOMPtr<nsIURI> nextOriginalURI = aEntry->GetOriginalURI();
+      nsCOMPtr<nsIRequest> request = MakeAndAddRef<RemoteWebProgressRequest>(
+          nextURI, nextOriginalURI ? nextOriginalURI : nextURI,
+          ""_ns /* aMatchedList */);
+      webProgress->OnStateChange(webProgress, request,
+                                 nsIWebProgressListener::STATE_START |
+                                     nsIWebProgressListener::STATE_IS_DOCUMENT |
+                                     nsIWebProgressListener::STATE_IS_REQUEST |
+                                     nsIWebProgressListener::STATE_IS_WINDOW |
+                                     nsIWebProgressListener::STATE_IS_NETWORK,
+                                 NS_OK);
+    }
+
+    RefPtr<CanonicalBrowsingContext> loadingBC =
+        aFrameLoader->GetMaybePendingBrowsingContext()->Canonical();
+    RefPtr<nsFrameLoader> currentFrameLoader =
+        frameLoaderOwner->GetFrameLoader();
+    // The current page can be bfcached, store the
+    // nsFrameLoader in the current SessionHistoryEntry.
+    RefPtr<SessionHistoryEntry> currentSHEntry =
+        aBrowsingContext->GetActiveSessionHistoryEntry();
+    if (currentSHEntry) {
+      // Update layout history state now, before we change the IsInBFCache flag
+      // and the active session history entry.
+      aBrowsingContext->SynchronizeLayoutHistoryState();
+
+      if (aCanSave) {
+        currentSHEntry->SetFrameLoader(currentFrameLoader);
+        Unused << aBrowsingContext->SetIsInBFCache(true);
+      }
+    }
+
+    if (aBrowsingContext->IsActive()) {
+      loadingBC->PreOrderWalk([&](BrowsingContext* aContext) {
+        if (BrowserParent* bp = aContext->Canonical()->GetBrowserParent()) {
+          ProcessPriorityManager::BrowserPriorityChanged(bp, true);
+        }
+      });
+    }
+
+    if (aEntry) {
+      aEntry->SetWireframe(Nothing());
+    }
+
+    // ReplacedBy will swap the entry back.
+    aBrowsingContext->SetActiveSessionHistoryEntry(aEntry);
+    loadingBC->SetActiveSessionHistoryEntry(nullptr);
+    NavigationIsolationOptions options;
+    aBrowsingContext->ReplacedBy(loadingBC, options);
+
+    // Assuming we still have the session history, update the index.
+    if (loadingBC->GetSessionHistory()) {
+      shistory->InternalSetRequestedIndex(indexOfHistoryLoad);
+      shistory->UpdateIndex();
+    }
+    loadingBC->HistoryCommitIndexAndLength();
+
+    // ResetSHEntryHasUserInteractionCache(); ?
+    // browser.navigation.requireUserInteraction is still
+    // disabled everywhere.
+
+    frameLoaderOwner->RestoreFrameLoaderFromBFCache(aFrameLoader);
+    // EvictOutOfRangeDocumentViewers is called here explicitly to
+    // possibly evict the now in the bfcache document.
+    // HistoryCommitIndexAndLength might not have evicted that before the
+    // FrameLoader swap.
+    shistory->EvictOutOfRangeDocumentViewers(indexOfHistoryLoad);
+
+    // The old page can't be stored in the bfcache,
+    // destroy the nsFrameLoader.
+    if (!aCanSave && currentFrameLoader) {
+      currentFrameLoader->Destroy();
+    }
+
+    Unused << loadingBC->SetIsInBFCache(false);
+
+    // We need to call this after we've restored the page from BFCache (see
+    // SetIsInBFCache(false) above), so that the page is not frozen anymore and
+    // the right focus events are fired.
+    frameLoaderOwner->UpdateFocusAndMouseEnterStateAfterFrameLoaderChange();
+
+    return;
+  }
+
+  aFrameLoader->Destroy();
+
+  // Fall back to do a normal load.
+  aBrowsingContext->LoadURI(aLoadState, false);
+}
+
+/* static */
+void nsSHistory::LoadURIOrBFCache(LoadEntryResult& aLoadEntry) {
+  if (mozilla::BFCacheInParent() && aLoadEntry.mBrowsingContext->IsTop()) {
+    MOZ_ASSERT(XRE_IsParentProcess());
+    RefPtr<nsDocShellLoadState> loadState = aLoadEntry.mLoadState;
+    RefPtr<CanonicalBrowsingContext> canonicalBC =
+        aLoadEntry.mBrowsingContext->Canonical();
+    nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(loadState->SHEntry());
+    nsCOMPtr<SessionHistoryEntry> currentShe =
+        canonicalBC->GetActiveSessionHistoryEntry();
+    MOZ_ASSERT(she);
+    RefPtr<nsFrameLoader> frameLoader = she->GetFrameLoader();
+    if (frameLoader &&
+        (!currentShe || (she->SharedInfo() != currentShe->SharedInfo() &&
+                         !currentShe->GetFrameLoader()))) {
+      bool canSave = (!currentShe || currentShe->GetSaveLayoutStateFlag()) &&
+                     canonicalBC->AllowedInBFCache(Nothing(), nullptr);
+
+      MOZ_LOG(gSHIPBFCacheLog, LogLevel::Debug,
+              ("nsSHistory::LoadURIOrBFCache "
+               "saving presentation=%i",
+               canSave));
+
+      nsCOMPtr<nsFrameLoaderOwner> frameLoaderOwner =
+          do_QueryInterface(canonicalBC->GetEmbedderElement());
+      if (frameLoaderOwner) {
+        RefPtr<nsFrameLoader> currentFrameLoader =
+            frameLoaderOwner->GetFrameLoader();
+        if (currentFrameLoader &&
+            currentFrameLoader->GetMaybePendingBrowsingContext()) {
+          if (WindowGlobalParent* wgp =
+                  currentFrameLoader->GetMaybePendingBrowsingContext()
+                      ->Canonical()
+                      ->GetCurrentWindowGlobal()) {
+            wgp->PermitUnload([canonicalBC, loadState, she, frameLoader,
+                               currentFrameLoader, canSave](bool aAllow) {
+              if (aAllow && !canonicalBC->IsReplaced()) {
+                FinishRestore(canonicalBC, loadState, she, frameLoader,
+                              canSave && canonicalBC->AllowedInBFCache(
+                                             Nothing(), nullptr));
+              } else if (currentFrameLoader->GetMaybePendingBrowsingContext()) {
+                nsISHistory* shistory =
+                    currentFrameLoader->GetMaybePendingBrowsingContext()
+                        ->Canonical()
+                        ->GetSessionHistory();
+                if (shistory) {
+                  shistory->InternalSetRequestedIndex(-1);
+                }
+              }
+            });
+            return;
+          }
+        }
+      }
+
+      FinishRestore(canonicalBC, loadState, she, frameLoader, canSave);
+      return;
+    }
+    if (frameLoader) {
+      she->SetFrameLoader(nullptr);
+      frameLoader->Destroy();
+    }
+  }
+
+  RefPtr<BrowsingContext> bc = aLoadEntry.mBrowsingContext;
+  RefPtr<nsDocShellLoadState> loadState = aLoadEntry.mLoadState;
+  bc->LoadURI(loadState, false);
+}
+
 /* static */
 void nsSHistory::LoadURIs(nsTArray<LoadEntryResult>& aLoadResults) {
   for (LoadEntryResult& loadEntry : aLoadResults) {
-    loadEntry.mBrowsingContext->LoadURI(loadEntry.mLoadState, false);
+    LoadURIOrBFCache(loadEntry);
   }
 }
 
@@ -963,8 +1438,6 @@ nsresult nsSHistory::Reload(uint32_t aReloadFlags,
     loadType = LOAD_RELOAD_BYPASS_CACHE;
   } else if (aReloadFlags & nsIWebNavigation::LOAD_FLAGS_CHARSET_CHANGE) {
     loadType = LOAD_RELOAD_CHARSET_CHANGE;
-  } else if (aReloadFlags & nsIWebNavigation::LOAD_FLAGS_ALLOW_MIXED_CONTENT) {
-    loadType = LOAD_RELOAD_ALLOW_MIXED_CONTENT;
   } else {
     loadType = LOAD_RELOAD_NORMAL;
   }
@@ -974,12 +1447,15 @@ nsresult nsSHistory::Reload(uint32_t aReloadFlags,
   // is public. So send the reload notifications with the
   // nsIWebNavigation flags.
   bool canNavigate = true;
-  NOTIFY_LISTENERS_CANCELABLE(OnHistoryReload, canNavigate, (&canNavigate));
+  MOZ_ALWAYS_SUCCEEDS(NotifyOnHistoryReload(&canNavigate));
   if (!canNavigate) {
     return NS_OK;
   }
 
-  nsresult rv = LoadEntry(mIndex, loadType, HIST_CMD_RELOAD, aLoadResults);
+  nsresult rv = LoadEntry(
+      mIndex, loadType, HIST_CMD_RELOAD, aLoadResults, /* aSameEpoch */ false,
+      /* aLoadCurrentEntry */ true,
+      aReloadFlags & nsIWebNavigation::LOAD_FLAGS_USER_ACTIVATION);
   if (NS_FAILED(rv)) {
     aLoadResults.Clear();
     return rv;
@@ -1001,13 +1477,15 @@ nsSHistory::ReloadCurrentEntry() {
 nsresult nsSHistory::ReloadCurrentEntry(
     nsTArray<LoadEntryResult>& aLoadResults) {
   // Notify listeners
-  NOTIFY_LISTENERS(OnHistoryGotoIndex, ());
+  NotifyListeners(mListeners, [](auto l) { l->OnHistoryGotoIndex(); });
 
-  return LoadEntry(mIndex, LOAD_HISTORY, HIST_CMD_RELOAD, aLoadResults);
+  return LoadEntry(mIndex, LOAD_HISTORY, HIST_CMD_RELOAD, aLoadResults,
+                   /* aSameEpoch */ false, /* aLoadCurrentEntry */ true,
+                   /* aUserActivation */ false);
 }
 
-void nsSHistory::EvictOutOfRangeWindowContentViewers(int32_t aIndex) {
-  // XXX rename method to EvictContentViewersExceptAroundIndex, or something.
+void nsSHistory::EvictOutOfRangeWindowDocumentViewers(int32_t aIndex) {
+  // XXX rename method to EvictDocumentViewersExceptAroundIndex, or something.
 
   // We need to release all content viewers that are no longer in the range
   //
@@ -1052,17 +1530,26 @@ void nsSHistory::EvictOutOfRangeWindowContentViewers(int32_t aIndex) {
   WindowIndices(aIndex, &startSafeIndex, &endSafeIndex);
 
   LOG(
-      ("EvictOutOfRangeWindowContentViewers(index=%d), "
+      ("EvictOutOfRangeWindowDocumentViewers(index=%d), "
        "Length()=%d. Safe range [%d, %d]",
        aIndex, Length(), startSafeIndex, endSafeIndex));
 
   // The content viewers in range aIndex -/+ VIEWER_WINDOW will not be
   // evicted.  Collect a set of them so we don't accidentally evict one of them
   // if it appears outside this range.
-  nsCOMArray<nsIContentViewer> safeViewers;
+  nsCOMArray<nsIDocumentViewer> safeViewers;
+  nsTArray<RefPtr<nsFrameLoader>> safeFrameLoaders;
   for (int32_t i = startSafeIndex; i <= endSafeIndex; i++) {
-    nsCOMPtr<nsIContentViewer> viewer = mEntries[i]->GetContentViewer();
-    safeViewers.AppendObject(viewer);
+    nsCOMPtr<nsIDocumentViewer> viewer = mEntries[i]->GetDocumentViewer();
+    if (viewer) {
+      safeViewers.AppendObject(viewer);
+    } else if (nsCOMPtr<SessionHistoryEntry> she =
+                   do_QueryInterface(mEntries[i])) {
+      nsFrameLoader* frameLoader = she->GetFrameLoader();
+      if (frameLoader) {
+        safeFrameLoaders.AppendElement(frameLoader);
+      }
+    }
   }
 
   // Walk the SHistory list and evict any content viewers that aren't safe.
@@ -1070,9 +1557,19 @@ void nsSHistory::EvictOutOfRangeWindowContentViewers(int32_t aIndex) {
   // copy of Length(), because the length might change between iterations.)
   for (int32_t i = 0; i < Length(); i++) {
     nsCOMPtr<nsISHEntry> entry = mEntries[i];
-    nsCOMPtr<nsIContentViewer> viewer = entry->GetContentViewer();
-    if (safeViewers.IndexOf(viewer) == -1) {
-      EvictContentViewerForEntry(entry);
+    nsCOMPtr<nsIDocumentViewer> viewer = entry->GetDocumentViewer();
+    if (viewer) {
+      if (safeViewers.IndexOf(viewer) == -1) {
+        EvictDocumentViewerForEntry(entry);
+      }
+    } else if (nsCOMPtr<SessionHistoryEntry> she =
+                   do_QueryInterface(mEntries[i])) {
+      nsFrameLoader* frameLoader = she->GetFrameLoader();
+      if (frameLoader) {
+        if (!safeFrameLoaders.Contains(frameLoader)) {
+          EvictDocumentViewerForEntry(entry);
+        }
+      }
     }
   }
 }
@@ -1084,10 +1581,15 @@ class EntryAndDistance {
   EntryAndDistance(nsSHistory* aSHistory, nsISHEntry* aEntry, uint32_t aDist)
       : mSHistory(aSHistory),
         mEntry(aEntry),
-        mViewer(aEntry->GetContentViewer()),
+        mViewer(aEntry->GetDocumentViewer()),
         mLastTouched(mEntry->GetLastTouched()),
         mDistance(aDist) {
-    NS_ASSERTION(mViewer, "Entry should have a content viewer");
+    nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(aEntry);
+    if (she) {
+      mFrameLoader = she->GetFrameLoader();
+    }
+    NS_ASSERTION(mViewer || mFrameLoader,
+                 "Entry should have a content viewer or frame loader.");
   }
 
   bool operator<(const EntryAndDistance& aOther) const {
@@ -1109,7 +1611,8 @@ class EntryAndDistance {
 
   RefPtr<nsSHistory> mSHistory;
   nsCOMPtr<nsISHEntry> mEntry;
-  nsCOMPtr<nsIContentViewer> mViewer;
+  nsCOMPtr<nsIDocumentViewer> mViewer;
+  RefPtr<nsFrameLoader> mFrameLoader;
   uint32_t mLastTouched;
   int32_t mDistance;
 };
@@ -1117,20 +1620,14 @@ class EntryAndDistance {
 }  // namespace
 
 // static
-void nsSHistory::GloballyEvictContentViewers() {
+void nsSHistory::GloballyEvictDocumentViewers() {
   // First, collect from each SHistory object the entries which have a cached
   // content viewer. Associate with each entry its distance from its SHistory's
   // current index.
 
   nsTArray<EntryAndDistance> entries;
 
-  for (auto shist : gSHistoryList) {
-    // FIXME Bug 1546348: Make global eviction work for session history in the
-    //       parent and remove mIsRemote.
-    if (shist->mIsRemote) {
-      continue;
-    }
-
+  for (auto shist : gSHistoryList.mList) {
     // Maintain a list of the entries which have viewers and belong to
     // this particular shist object.  We'll add this list to the global list,
     // |entries|, eventually.
@@ -1144,8 +1641,8 @@ void nsSHistory::GloballyEvictContentViewers() {
     //   * history.pushState or hash navigations, in which case a copy of the
     //     content viewer should exist within the range, or
     //
-    //   * bugs which cause us not to call nsSHistory::EvictContentViewers()
-    //     often enough.  Once we do call EvictContentViewers() for the
+    //   * bugs which cause us not to call nsSHistory::EvictDocumentViewers()
+    //     often enough.  Once we do call EvictDocumentViewers() for the
     //     SHistory object in question, we'll do a full search of its history
     //     and evict the out-of-range content viewers, so we don't bother here.
     //
@@ -1153,31 +1650,47 @@ void nsSHistory::GloballyEvictContentViewers() {
     shist->WindowIndices(shist->mIndex, &startIndex, &endIndex);
     for (int32_t i = startIndex; i <= endIndex; i++) {
       nsCOMPtr<nsISHEntry> entry = shist->mEntries[i];
-      nsCOMPtr<nsIContentViewer> contentViewer = entry->GetContentViewer();
+      nsCOMPtr<nsIDocumentViewer> viewer = entry->GetDocumentViewer();
 
-      if (contentViewer) {
+      bool found = false;
+      bool hasDocumentViewerOrFrameLoader = false;
+      if (viewer) {
+        hasDocumentViewerOrFrameLoader = true;
         // Because one content viewer might belong to multiple SHEntries, we
         // have to search through shEntries to see if we already know
         // about this content viewer.  If we find the viewer, update its
         // distance from the SHistory's index and continue.
-        bool found = false;
         for (uint32_t j = 0; j < shEntries.Length(); j++) {
           EntryAndDistance& container = shEntries[j];
-          if (container.mViewer == contentViewer) {
+          if (container.mViewer == viewer) {
             container.mDistance =
                 std::min(container.mDistance, DeprecatedAbs(i - shist->mIndex));
             found = true;
             break;
           }
         }
-
-        // If we didn't find a EntryAndDistance for this content viewer, make a
-        // new one.
-        if (!found) {
-          EntryAndDistance container(shist, entry,
-                                     DeprecatedAbs(i - shist->mIndex));
-          shEntries.AppendElement(container);
+      } else if (nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(entry)) {
+        if (RefPtr<nsFrameLoader> frameLoader = she->GetFrameLoader()) {
+          hasDocumentViewerOrFrameLoader = true;
+          // Similar search as above but using frameloader.
+          for (uint32_t j = 0; j < shEntries.Length(); j++) {
+            EntryAndDistance& container = shEntries[j];
+            if (container.mFrameLoader == frameLoader) {
+              container.mDistance = std::min(container.mDistance,
+                                             DeprecatedAbs(i - shist->mIndex));
+              found = true;
+              break;
+            }
+          }
         }
+      }
+
+      // If we didn't find a EntryAndDistance for this content viewer /
+      // frameloader, make a new one.
+      if (hasDocumentViewerOrFrameLoader && !found) {
+        EntryAndDistance container(shist, entry,
+                                   DeprecatedAbs(i - shist->mIndex));
+        shEntries.AppendElement(container);
       }
     }
 
@@ -1199,11 +1712,11 @@ void nsSHistory::GloballyEvictContentViewers() {
   entries.Sort();
 
   for (int32_t i = entries.Length() - 1; i >= sHistoryMaxTotalViewers; --i) {
-    (entries[i].mSHistory)->EvictContentViewerForEntry(entries[i].mEntry);
+    (entries[i].mSHistory)->EvictDocumentViewerForEntry(entries[i].mEntry);
   }
 }
 
-nsresult nsSHistory::FindEntryForBFCache(nsIBFCacheEntry* aBFEntry,
+nsresult nsSHistory::FindEntryForBFCache(SHEntrySharedParentState* aEntry,
                                          nsISHEntry** aResult,
                                          int32_t* aResultIndex) {
   *aResult = nullptr;
@@ -1216,7 +1729,7 @@ nsresult nsSHistory::FindEntryForBFCache(nsIBFCacheEntry* aBFEntry,
     nsCOMPtr<nsISHEntry> shEntry = mEntries[i];
 
     // Does shEntry have the same BFCacheEntry as the argument to this method?
-    if (shEntry->HasBFCacheEntry(aBFEntry)) {
+    if (shEntry->HasBFCacheEntry(aEntry)) {
       shEntry.forget(aResult);
       *aResultIndex = i;
       return NS_OK;
@@ -1225,27 +1738,25 @@ nsresult nsSHistory::FindEntryForBFCache(nsIBFCacheEntry* aBFEntry,
   return NS_ERROR_FAILURE;
 }
 
-nsresult nsSHistory::EvictExpiredContentViewerForEntry(
-    nsIBFCacheEntry* aBFEntry) {
+NS_IMETHODIMP_(void)
+nsSHistory::EvictExpiredDocumentViewerForEntry(
+    SHEntrySharedParentState* aEntry) {
   int32_t index;
   nsCOMPtr<nsISHEntry> shEntry;
-  FindEntryForBFCache(aBFEntry, getter_AddRefs(shEntry), &index);
+  FindEntryForBFCache(aEntry, getter_AddRefs(shEntry), &index);
 
   if (index == mIndex) {
     NS_WARNING("How did the current SHEntry expire?");
-    return NS_OK;
   }
 
   if (shEntry) {
-    EvictContentViewerForEntry(shEntry);
+    EvictDocumentViewerForEntry(shEntry);
   }
-
-  return NS_OK;
 }
 
 NS_IMETHODIMP_(void)
-nsSHistory::AddToExpirationTracker(nsIBFCacheEntry* aBFEntry) {
-  RefPtr<nsSHEntryShared> entry = static_cast<nsSHEntryShared*>(aBFEntry);
+nsSHistory::AddToExpirationTracker(SHEntrySharedParentState* aEntry) {
+  RefPtr<SHEntrySharedParentState> entry = aEntry;
   if (!mHistoryTracker || !entry) {
     return;
   }
@@ -1255,8 +1766,8 @@ nsSHistory::AddToExpirationTracker(nsIBFCacheEntry* aBFEntry) {
 }
 
 NS_IMETHODIMP_(void)
-nsSHistory::RemoveFromExpirationTracker(nsIBFCacheEntry* aBFEntry) {
-  RefPtr<nsSHEntryShared> entry = static_cast<nsSHEntryShared*>(aBFEntry);
+nsSHistory::RemoveFromExpirationTracker(SHEntrySharedParentState* aEntry) {
+  RefPtr<SHEntrySharedParentState> entry = aEntry;
   MOZ_ASSERT(mHistoryTracker && !mHistoryTracker->IsEmpty());
   if (!mHistoryTracker || !entry) {
     return;
@@ -1271,10 +1782,10 @@ nsSHistory::RemoveFromExpirationTracker(nsIBFCacheEntry* aBFEntry) {
 // infrequently -- only when the disk or memory cache is cleared.
 
 // static
-void nsSHistory::GloballyEvictAllContentViewers() {
+void nsSHistory::GloballyEvictAllDocumentViewers() {
   int32_t maxViewers = sHistoryMaxTotalViewers;
   sHistoryMaxTotalViewers = 0;
-  GloballyEvictContentViewers();
+  GloballyEvictDocumentViewers();
   sHistoryMaxTotalViewers = maxViewers;
 }
 
@@ -1369,7 +1880,20 @@ bool nsSHistory::RemoveDuplicate(int32_t aIndex, bool aKeepNext) {
     return false;
   }
 
+  SHistoryChangeNotifier change(this);
+
   if (IsSameTree(root1, root2)) {
+    if (aIndex < compareIndex) {
+      // If we're removing the entry with the lower index we need to move its
+      // BCHistoryLength to the entry we're keeping. If we're removing the entry
+      // with the higher index then it shouldn't have a modified
+      // BCHistoryLength.
+      UpdateEntryLength(root1, root2, true);
+    }
+    nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(root1);
+    if (she) {
+      ClearEntries(she);
+    }
     mEntries.RemoveElementAt(aIndex);
 
     // FIXME Bug 1546350: Reimplement history listeners.
@@ -1398,6 +1922,7 @@ bool nsSHistory::RemoveDuplicate(int32_t aIndex, bool aKeepNext) {
     if (mRequestedIndex > aIndex || (mRequestedIndex == aIndex && !aKeepNext)) {
       mRequestedIndex = mRequestedIndex - 1;
     }
+
     return true;
   }
   return false;
@@ -1407,13 +1932,18 @@ NS_IMETHODIMP_(void)
 nsSHistory::RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex) {
   bool didRemove;
   RemoveEntries(aIDs, aStartIndex, &didRemove);
-  if (didRemove && mRootBC && mRootBC->GetDocShell()) {
-    mRootBC->GetDocShell()->DispatchLocationChangeEvent();
+  if (didRemove) {
+    RefPtr<BrowsingContext> rootBC = GetBrowsingContext();
+    if (rootBC && rootBC->GetDocShell()) {
+      rootBC->GetDocShell()->DispatchLocationChangeEvent();
+    }
   }
 }
 
 void nsSHistory::RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex,
                                bool* aDidRemove) {
+  SHistoryChangeNotifier change(this);
+
   int32_t index = aStartIndex;
   while (index >= 0 && RemoveChildEntries(this, --index, aIDs)) {
   }
@@ -1430,6 +1960,8 @@ void nsSHistory::RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex,
     }
     --index;
   }
+
+  UpdateRootBrowsingContextState();
 }
 
 void nsSHistory::RemoveFrameEntries(nsISHEntry* aEntry) {
@@ -1464,7 +1996,8 @@ void nsSHistory::RemoveDynEntries(int32_t aIndex, nsISHEntry* aEntry) {
 void nsSHistory::RemoveDynEntriesForBFCacheEntry(nsIBFCacheEntry* aBFEntry) {
   int32_t index;
   nsCOMPtr<nsISHEntry> shEntry;
-  FindEntryForBFCache(aBFEntry, getter_AddRefs(shEntry), &index);
+  FindEntryForBFCache(static_cast<nsSHEntryShared*>(aBFEntry),
+                      getter_AddRefs(shEntry), &index);
   if (shEntry) {
     RemoveDynEntries(index, shEntry);
   }
@@ -1472,6 +2005,8 @@ void nsSHistory::RemoveDynEntriesForBFCacheEntry(nsIBFCacheEntry* aBFEntry) {
 
 NS_IMETHODIMP
 nsSHistory::UpdateIndex() {
+  SHistoryChangeNotifier change(this);
+
   // Update the actual index with the right value.
   if (mIndex != mRequestedIndex && mRequestedIndex != -1) {
     mIndex = mRequestedIndex;
@@ -1482,9 +2017,10 @@ nsSHistory::UpdateIndex() {
 }
 
 NS_IMETHODIMP
-nsSHistory::GotoIndex(int32_t aIndex) {
+nsSHistory::GotoIndex(int32_t aIndex, bool aUserActivation) {
   nsTArray<LoadEntryResult> loadResults;
-  nsresult rv = GotoIndex(aIndex, loadResults);
+  nsresult rv = GotoIndex(aIndex, loadResults, /*aSameEpoch*/ false,
+                          aIndex == mIndex, aUserActivation);
   NS_ENSURE_SUCCESS(rv, rv);
 
   LoadURIs(loadResults);
@@ -1500,47 +2036,104 @@ nsSHistory::EnsureCorrectEntryAtCurrIndex(nsISHEntry* aEntry) {
 }
 
 nsresult nsSHistory::GotoIndex(int32_t aIndex,
-                               nsTArray<LoadEntryResult>& aLoadResults) {
-  return LoadEntry(aIndex, LOAD_HISTORY, HIST_CMD_GOTOINDEX, aLoadResults);
+                               nsTArray<LoadEntryResult>& aLoadResults,
+                               bool aSameEpoch, bool aLoadCurrentEntry,
+                               bool aUserActivation) {
+  return LoadEntry(aIndex, LOAD_HISTORY, HIST_CMD_GOTOINDEX, aLoadResults,
+                   aSameEpoch, aLoadCurrentEntry, aUserActivation);
+}
+
+NS_IMETHODIMP_(bool)
+nsSHistory::HasUserInteractionAtIndex(int32_t aIndex) {
+  nsCOMPtr<nsISHEntry> entry;
+  GetEntryAtIndex(aIndex, getter_AddRefs(entry));
+  if (!entry) {
+    return false;
+  }
+  return entry->GetHasUserInteraction();
 }
 
 nsresult nsSHistory::LoadNextPossibleEntry(
     int32_t aNewIndex, long aLoadType, uint32_t aHistCmd,
-    nsTArray<LoadEntryResult>& aLoadResults) {
+    nsTArray<LoadEntryResult>& aLoadResults, bool aLoadCurrentEntry,
+    bool aUserActivation) {
   mRequestedIndex = -1;
   if (aNewIndex < mIndex) {
-    return LoadEntry(aNewIndex - 1, aLoadType, aHistCmd, aLoadResults);
+    return LoadEntry(aNewIndex - 1, aLoadType, aHistCmd, aLoadResults,
+                     /*aSameEpoch*/ false, aLoadCurrentEntry, aUserActivation);
   }
   if (aNewIndex > mIndex) {
-    return LoadEntry(aNewIndex + 1, aLoadType, aHistCmd, aLoadResults);
+    return LoadEntry(aNewIndex + 1, aLoadType, aHistCmd, aLoadResults,
+                     /*aSameEpoch*/ false, aLoadCurrentEntry, aUserActivation);
   }
   return NS_ERROR_FAILURE;
 }
 
 nsresult nsSHistory::LoadEntry(int32_t aIndex, long aLoadType,
                                uint32_t aHistCmd,
-                               nsTArray<LoadEntryResult>& aLoadResults) {
-  if (!mRootBC) {
+                               nsTArray<LoadEntryResult>& aLoadResults,
+                               bool aSameEpoch, bool aLoadCurrentEntry,
+                               bool aUserActivation) {
+  MOZ_LOG(gSHistoryLog, LogLevel::Debug,
+          ("LoadEntry(%d, 0x%lx, %u)", aIndex, aLoadType, aHistCmd));
+  RefPtr<BrowsingContext> rootBC = GetBrowsingContext();
+  if (!rootBC) {
     return NS_ERROR_FAILURE;
   }
 
   if (aIndex < 0 || aIndex >= Length()) {
-    // The index is out of range
+    MOZ_LOG(gSHistoryLog, LogLevel::Debug, ("Index out of range"));
+    // The index is out of range.
+    // Clear the requested index in case it had bogus value. This way the next
+    // load succeeds if the offset is reasonable.
+    mRequestedIndex = -1;
+
     return NS_ERROR_FAILURE;
   }
 
+  int32_t originalRequestedIndex = mRequestedIndex;
+  int32_t previousRequest = mRequestedIndex > -1 ? mRequestedIndex : mIndex;
+  int32_t requestedOffset = aIndex - previousRequest;
+
   // This is a normal local history navigation.
-  // Keep note of requested history index in mRequestedIndex.
-  mRequestedIndex = aIndex;
 
   nsCOMPtr<nsISHEntry> prevEntry;
   nsCOMPtr<nsISHEntry> nextEntry;
   GetEntryAtIndex(mIndex, getter_AddRefs(prevEntry));
-  GetEntryAtIndex(mRequestedIndex, getter_AddRefs(nextEntry));
+  GetEntryAtIndex(aIndex, getter_AddRefs(nextEntry));
   if (!nextEntry || !prevEntry) {
     mRequestedIndex = -1;
     return NS_ERROR_FAILURE;
   }
+
+  if (mozilla::SessionHistoryInParent()) {
+    if (aHistCmd == HIST_CMD_GOTOINDEX) {
+      // https://html.spec.whatwg.org/#history-traversal:
+      // To traverse the history
+      // "If entry has a different Document object than the current entry, then
+      // run the following substeps: Remove any tasks queued by the history
+      // traversal task source..."
+      //
+      // aSameEpoch is true only if the navigations would have been
+      // generated in the same spin of the event loop (i.e. history.go(-2);
+      // history.go(-1)) and from the same content process.
+      if (aSameEpoch) {
+        bool same_doc = false;
+        prevEntry->SharesDocumentWith(nextEntry, &same_doc);
+        if (!same_doc) {
+          MOZ_LOG(
+              gSHistoryLog, LogLevel::Debug,
+              ("Aborting GotoIndex %d - same epoch and not same doc", aIndex));
+          // Ignore this load. Before SessionHistoryInParent, this would
+          // have been dropped in InternalLoad after we filter out SameDoc
+          // loads.
+          return NS_ERROR_FAILURE;
+        }
+      }
+    }
+  }
+  // Keep note of requested history index in mRequestedIndex; after all bailouts
+  mRequestedIndex = aIndex;
 
   // Remember that this entry is getting loaded at this point in the sequence
 
@@ -1549,51 +2142,56 @@ nsresult nsSHistory::LoadEntry(int32_t aIndex, long aLoadType,
   // Get the uri for the entry we are about to visit
   nsCOMPtr<nsIURI> nextURI = nextEntry->GetURI();
 
-  MOZ_ASSERT((prevEntry && nextEntry && nextURI),
-             "prevEntry, nextEntry and nextURI can't be null");
+  MOZ_ASSERT(nextURI, "nextURI can't be null");
 
   // Send appropriate listener notifications.
   if (aHistCmd == HIST_CMD_GOTOINDEX) {
     // We are going somewhere else. This is not reload either
-    NOTIFY_LISTENERS(OnHistoryGotoIndex, ());
+    NotifyListeners(mListeners, [](auto l) { l->OnHistoryGotoIndex(); });
   }
 
   if (mRequestedIndex == mIndex) {
     // Possibly a reload case
-    return InitiateLoad(nextEntry, mRootBC, aLoadType, aLoadResults);
+    InitiateLoad(nextEntry, rootBC, aLoadType, aLoadResults, aLoadCurrentEntry,
+                 aUserActivation, requestedOffset);
+    return NS_OK;
   }
 
   // Going back or forward.
-  bool differenceFound = false;
-  nsresult rv = LoadDifferingEntries(prevEntry, nextEntry, mRootBC, aLoadType,
-                                     differenceFound, aLoadResults);
+  bool differenceFound = LoadDifferingEntries(
+      prevEntry, nextEntry, rootBC, aLoadType, aLoadResults, aLoadCurrentEntry,
+      aUserActivation, requestedOffset);
   if (!differenceFound) {
+    // LoadNextPossibleEntry will change the offset by one, and in order
+    // to keep track of the requestedOffset, need to reset mRequestedIndex to
+    // the value it had initially.
+    mRequestedIndex = originalRequestedIndex;
     // We did not find any differences. Go further in the history.
-    return LoadNextPossibleEntry(aIndex, aLoadType, aHistCmd, aLoadResults);
+    return LoadNextPossibleEntry(aIndex, aLoadType, aHistCmd, aLoadResults,
+                                 aLoadCurrentEntry, aUserActivation);
   }
 
-  return rv;
+  return NS_OK;
 }
 
-nsresult nsSHistory::LoadDifferingEntries(
-    nsISHEntry* aPrevEntry, nsISHEntry* aNextEntry, BrowsingContext* aParent,
-    long aLoadType, bool& aDifferenceFound,
-    nsTArray<LoadEntryResult>& aLoadResults) {
-  if (!aPrevEntry || !aNextEntry || !aParent) {
-    return NS_ERROR_FAILURE;
-  }
+bool nsSHistory::LoadDifferingEntries(nsISHEntry* aPrevEntry,
+                                      nsISHEntry* aNextEntry,
+                                      BrowsingContext* aParent, long aLoadType,
+                                      nsTArray<LoadEntryResult>& aLoadResults,
+                                      bool aLoadCurrentEntry,
+                                      bool aUserActivation, int32_t aOffset) {
+  MOZ_ASSERT(aPrevEntry && aNextEntry && aParent);
 
-  nsresult result = NS_OK;
   uint32_t prevID = aPrevEntry->GetID();
   uint32_t nextID = aNextEntry->GetID();
 
   // Check the IDs to verify if the pages are different.
   if (prevID != nextID) {
-    aDifferenceFound = true;
-
     // Set the Subframe flag if not navigating the root docshell.
-    aNextEntry->SetIsSubFrame(aParent != mRootBC);
-    return InitiateLoad(aNextEntry, aParent, aLoadType, aLoadResults);
+    aNextEntry->SetIsSubFrame(aParent->Id() != mRootBC);
+    InitiateLoad(aNextEntry, aParent, aLoadType, aLoadResults,
+                 aLoadCurrentEntry, aUserActivation, aOffset);
+    return true;
   }
 
   // The entries are the same, so compare any child frames
@@ -1605,6 +2203,7 @@ nsresult nsSHistory::LoadDifferingEntries(
   aParent->GetChildren(browsingContexts);
 
   // Search for something to load next.
+  bool differenceFound = false;
   for (int32_t i = 0; i < ncnt; ++i) {
     // First get an entry which may cause a new page to be loaded.
     nsCOMPtr<nsISHEntry> nChild;
@@ -1642,26 +2241,40 @@ nsresult nsSHistory::LoadDifferingEntries(
         }
       }
     }
+    if (!pChild) {
+      continue;
+    }
 
     // Finally recursively call this method.
     // This will either load a new page to shell or some subshell or
     // do nothing.
-    LoadDifferingEntries(pChild, nChild, bcChild, aLoadType, aDifferenceFound,
-                         aLoadResults);
+    if (LoadDifferingEntries(pChild, nChild, bcChild, aLoadType, aLoadResults,
+                             aLoadCurrentEntry, aUserActivation, aOffset)) {
+      differenceFound = true;
+    }
   }
-  return result;
+  return differenceFound;
 }
 
-nsresult nsSHistory::InitiateLoad(nsISHEntry* aFrameEntry,
-                                  BrowsingContext* aFrameBC, long aLoadType,
-                                  nsTArray<LoadEntryResult>& aLoadResults) {
-  NS_ENSURE_STATE(aFrameBC && aFrameEntry);
+void nsSHistory::InitiateLoad(nsISHEntry* aFrameEntry,
+                              BrowsingContext* aFrameBC, long aLoadType,
+                              nsTArray<LoadEntryResult>& aLoadResults,
+                              bool aLoadCurrentEntry, bool aUserActivation,
+                              int32_t aOffset) {
+  MOZ_ASSERT(aFrameBC && aFrameEntry);
 
   LoadEntryResult* loadResult = aLoadResults.AppendElement();
   loadResult->mBrowsingContext = aFrameBC;
 
   nsCOMPtr<nsIURI> newURI = aFrameEntry->GetURI();
   RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(newURI);
+
+  loadState->SetHasValidUserGestureActivation(aUserActivation);
+
+  // At the time we initiate a history entry load we already know if https-first
+  // was able to upgrade the request from http to https. There is no point in
+  // re-retrying to upgrade.
+  loadState->SetIsExemptFromHTTPSFirstMode(true);
 
   /* Set the loadType in the SHEntry too to  what was passed on.
    * This will be passed on to child subframes later in nsDocShell,
@@ -1670,7 +2283,27 @@ nsresult nsSHistory::InitiateLoad(nsISHEntry* aFrameEntry,
   aFrameEntry->SetLoadType(aLoadType);
 
   loadState->SetLoadType(aLoadType);
+
   loadState->SetSHEntry(aFrameEntry);
+
+  // If we're loading the current entry we want to treat it as not a
+  // same-document navigation (see nsDocShell::IsSameDocumentNavigation), so
+  // record that here in the LoadingSessionHistoryEntry.
+  bool loadingCurrentEntry;
+  if (mozilla::SessionHistoryInParent()) {
+    loadingCurrentEntry = aLoadCurrentEntry;
+  } else {
+    loadingCurrentEntry =
+        aFrameBC->GetDocShell() &&
+        nsDocShell::Cast(aFrameBC->GetDocShell())->IsOSHE(aFrameEntry);
+  }
+  loadState->SetLoadIsFromSessionHistory(aOffset, loadingCurrentEntry);
+
+  if (mozilla::SessionHistoryInParent()) {
+    nsCOMPtr<SessionHistoryEntry> she = do_QueryInterface(aFrameEntry);
+    aFrameBC->Canonical()->AddLoadingSessionHistoryEntry(
+        loadState->GetLoadingSessionHistoryInfo()->mLoadId, she);
+  }
 
   nsCOMPtr<nsIURI> originalURI = aFrameEntry->GetOriginalURI();
   loadState->SetOriginalURI(originalURI);
@@ -1686,13 +2319,92 @@ nsresult nsSHistory::InitiateLoad(nsISHEntry* aFrameEntry,
   loadState->SetCsp(csp);
 
   loadResult->mLoadState = std::move(loadState);
-
-  return NS_OK;
 }
 
 NS_IMETHODIMP
 nsSHistory::CreateEntry(nsISHEntry** aEntry) {
-  nsCOMPtr<nsISHEntry> entry = new nsSHEntry(this);
+  nsCOMPtr<nsISHEntry> entry;
+  if (XRE_IsParentProcess() && mozilla::SessionHistoryInParent()) {
+    entry = new SessionHistoryEntry();
+  } else {
+    entry = new nsSHEntry();
+  }
   entry.forget(aEntry);
   return NS_OK;
+}
+
+NS_IMETHODIMP_(bool)
+nsSHistory::IsEmptyOrHasEntriesForSingleTopLevelPage() {
+  if (mEntries.IsEmpty()) {
+    return true;
+  }
+
+  nsISHEntry* entry = mEntries[0];
+  size_t length = mEntries.Length();
+  for (size_t i = 1; i < length; ++i) {
+    bool sharesDocument = false;
+    mEntries[i]->SharesDocumentWith(entry, &sharesDocument);
+    if (!sharesDocument) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static void CollectEntries(
+    nsTHashMap<nsIDHashKey, SessionHistoryEntry*>& aHashtable,
+    SessionHistoryEntry* aEntry) {
+  aHashtable.InsertOrUpdate(aEntry->DocshellID(), aEntry);
+  for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
+    if (entry) {
+      CollectEntries(aHashtable, entry);
+    }
+  }
+}
+
+static void UpdateEntryLength(
+    nsTHashMap<nsIDHashKey, SessionHistoryEntry*>& aHashtable,
+    SessionHistoryEntry* aNewEntry, bool aMove) {
+  SessionHistoryEntry* oldEntry = aHashtable.Get(aNewEntry->DocshellID());
+  if (oldEntry) {
+    MOZ_ASSERT(oldEntry->GetID() != aNewEntry->GetID() || !aMove ||
+               !aNewEntry->BCHistoryLength().Modified());
+    aNewEntry->SetBCHistoryLength(oldEntry->BCHistoryLength());
+    if (oldEntry->GetID() != aNewEntry->GetID()) {
+      MOZ_ASSERT(!aMove);
+      // If we have a new id then aNewEntry was created for a new load, so
+      // record that in BCHistoryLength.
+      ++aNewEntry->BCHistoryLength();
+    } else if (aMove) {
+      // We're moving the BCHistoryLength from the old entry to the new entry,
+      // so we need to let the old entry know that it's not contributing to its
+      // BCHistoryLength, and the new one that it does if the old one was
+      // before.
+      aNewEntry->BCHistoryLength().SetModified(
+          oldEntry->BCHistoryLength().Modified());
+      oldEntry->BCHistoryLength().SetModified(false);
+    }
+  }
+
+  for (const RefPtr<SessionHistoryEntry>& entry : aNewEntry->Children()) {
+    if (entry) {
+      UpdateEntryLength(aHashtable, entry, aMove);
+    }
+  }
+}
+
+void nsSHistory::UpdateEntryLength(nsISHEntry* aOldEntry, nsISHEntry* aNewEntry,
+                                   bool aMove) {
+  nsCOMPtr<SessionHistoryEntry> oldSHE = do_QueryInterface(aOldEntry);
+  nsCOMPtr<SessionHistoryEntry> newSHE = do_QueryInterface(aNewEntry);
+
+  if (!oldSHE || !newSHE) {
+    return;
+  }
+
+  nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
+  CollectEntries(docshellIDToEntry, oldSHE);
+
+  ::UpdateEntryLength(docshellIDToEntry, newSHE, aMove);
 }

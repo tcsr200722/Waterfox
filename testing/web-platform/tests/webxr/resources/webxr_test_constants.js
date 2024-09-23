@@ -94,6 +94,11 @@ const RIGHT_OFFSET = {
     orientation: [0, 0, 0, 1]
 };
 
+const FIRST_PERSON_OFFSET = {
+  position: [0, 0.1, 0],
+  orientation: [0, 0, 0, 1]
+};
+
 const VALID_VIEWS = [{
         eye:"left",
         projectionMatrix: VALID_PROJECTION_MATRIX,
@@ -105,6 +110,15 @@ const VALID_VIEWS = [{
         viewOffset: RIGHT_OFFSET,
         resolution: VALID_RESOLUTION
     },
+];
+
+const VALID_SECONDARY_VIEWS = [{
+        eye: "none",
+        projectionMatrix: VALID_PROJECTION_MATRIX,
+        viewOffset: FIRST_PERSON_OFFSET,
+        resolution: VALID_RESOLUTION,
+        isFirstPersonObserver: true
+    }
 ];
 
 const NON_IMMERSIVE_VIEWS = [{
@@ -124,14 +138,22 @@ const ALL_FEATURES = [
   'hit-test',
   'dom-overlay',
   'light-estimation',
+  'anchors',
+  'depth-sensing',
+  'secondary-views',
+  'camera-access',
+  'layers'
 ];
 
 const TRACKED_IMMERSIVE_DEVICE = {
     supportsImmersive: true,
     supportedModes: [ "inline", "immersive-vr"],
     views: VALID_VIEWS,
+    secondaryViews: VALID_SECONDARY_VIEWS,
     viewerOrigin: IDENTITY_TRANSFORM,
-    supportedFeatures: ALL_FEATURES
+    supportedFeatures: ALL_FEATURES,
+    environmentBlendMode: "opaque",
+    interactionMode: "world-space"
 };
 
 const IMMERSIVE_AR_DEVICE = {
@@ -139,7 +161,9 @@ const IMMERSIVE_AR_DEVICE = {
   supportedModes: [ "inline", "immersive-ar"],
   views: VALID_VIEWS,
   viewerOrigin: IDENTITY_TRANSFORM,
-  supportedFeatures: ALL_FEATURES
+  supportedFeatures: ALL_FEATURES,
+  environmentBlendMode: "additive",
+  interactionMode: "screen-space"
 };
 
 const VALID_NON_IMMERSIVE_DEVICE = {
@@ -147,7 +171,9 @@ const VALID_NON_IMMERSIVE_DEVICE = {
     supportedModes: ["inline"],
     views: NON_IMMERSIVE_VIEWS,
     viewerOrigin: IDENTITY_TRANSFORM,
-    supportedFeatures: ALL_FEATURES
+    supportedFeatures: ALL_FEATURES,
+    environmentBlendMode: "opaque",
+    interactionMode: "screen-space"
 };
 
 const VALID_CONTROLLER = {
@@ -169,4 +195,11 @@ const SCREEN_CONTROLLER = {
     targetRayMode: "screen",
     pointerOrigin: VALID_POINTER_TRANSFORM,
     profiles: []
+};
+
+// From: https://immersive-web.github.io/webxr/#default-features
+const DEFAULT_FEATURES = {
+  "inline": ["viewer"],
+  "immersive-vr": ["viewer", "local"],
+  "immersive-ar": ["viewer", "local"],
 };

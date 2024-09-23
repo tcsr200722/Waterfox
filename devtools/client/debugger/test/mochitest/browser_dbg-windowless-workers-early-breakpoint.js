@@ -3,8 +3,14 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Test that breakpoints at worker startup are hit when using windowless workers.
-add_task(async function() {
-  const dbg = await initDebugger("doc-windowless-workers-early-breakpoint.html", "simple-worker.js");
+
+"use strict";
+
+add_task(async function () {
+  const dbg = await initDebugger(
+    "doc-windowless-workers-early-breakpoint.html",
+    "simple-worker.js"
+  );
 
   const workerSource = findSource(dbg, "simple-worker.js");
 
@@ -16,7 +22,10 @@ add_task(async function() {
 
   // We should be paused at the first line of simple-worker.js
   assertPausedAtSourceAndLine(dbg, workerSource.id, 1);
-  await removeBreakpoint(dbg, workerSource.id, 1, 12);
+  // We have to remove the first breakpoint, set on the first worker.
+  // All the workers use the same source.
+  // The first worker is loaded on the html page load.
+  await removeBreakpoint(dbg, workerSource.id, 1, 13);
   await resume(dbg);
 
   // Make sure that suspending activity in the worker when attaching does not
@@ -27,5 +36,5 @@ add_task(async function() {
 
   // We should be paused in the message listener in simple-worker.js
   assertPausedAtSourceAndLine(dbg, workerSource.id, 10);
-  await removeBreakpoint(dbg, workerSource.id, 10, 2);
+  await removeBreakpoint(dbg, workerSource.id, 10, 3);
 });

@@ -8,14 +8,11 @@ const {
   FrontClassWithSpec,
   types,
   registerFront,
-} = require("devtools/shared/protocol.js");
-const { walkerSpec } = require("devtools/shared/specs/walker");
-
-loader.lazyRequireGetter(
-  this,
-  "nodeConstants",
-  "devtools/shared/dom-node-constants"
-);
+} = require("resource://devtools/shared/protocol.js");
+const { walkerSpec } = require("resource://devtools/shared/specs/walker.js");
+const {
+  safeAsyncMethod,
+} = require("resource://devtools/shared/async-utils.js");
 
 /**
  * Client side of the DOM walker.
@@ -23,20 +20,34 @@ loader.lazyRequireGetter(
 class WalkerFront extends FrontClassWithSpec(walkerSpec) {
   constructor(client, targetFront, parentFront) {
     super(client, targetFront, parentFront);
+    this._isPicking = false;
     this._orphaned = new Set();
     this._retainedOrphans = new Set();
 
     // Set to true if cleanup should be requested after every mutation list.
     this.autoCleanup = true;
 
-    this._rootNodeWatchers = 0;
+    this._rootNodePromise = new Promise(
+      r => (this._rootNodePromiseResolve = r)
+    );
+
     this._onRootNodeAvailable = this._onRootNodeAvailable.bind(this);
     this._onRootNodeDestroyed = this._onRootNodeDestroyed.bind(this);
 
+    // pick/cancelPick requests can be triggered while the Walker is being destroyed.
+    this.pick = safeAsyncMethod(this.pick.bind(this), () => this.isDestroyed());
+    this.cancelPick = safeAsyncMethod(this.cancelPick.bind(this), () =>
+      this.isDestroyed()
+    );
+
     this.before("new-mutations", this.onMutations.bind(this));
 
-    // Those events will only be emitted if we are watching root nodes on the
-    // actor. See `watchRootNode`.
+    // Those events will be emitted if watchRootNode was called on the
+    // corresponding WalkerActor, which should be handled by the ResourceCommand
+    // as long as a consumer is watching for root-node resources.
+    // This should be fixed by using watchResources directly from the walker
+    // front, either with the ROOT_NODE resource, or with the DOCUMENT_EVENT
+    // resource. See Bug 1663973.
     this.on("root-available", this._onRootNodeAvailable);
     this.on("root-destroyed", this._onRootNodeDestroyed);
   }
@@ -50,8 +61,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     // calling watchRootNode, so we keep this assignment as a fallback.
     this.rootNode = types.getType("domnode").read(json.root, this);
 
-    // FF42+ the actor starts exposing traits
-    this.traits = json.traits || {};
+    this.traits = json.traits;
   }
 
   /**
@@ -61,23 +71,9 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
    * set.
    */
   async getRootNode() {
-    // We automatically start and stop watching when getRootNode is called so
-    // that consumers using getRootNode without watchRootNode can still get a
-    // correct rootNode. Otherwise they might receive an outdated node.
-    // See https://bugzilla.mozilla.org/show_bug.cgi?id=1633348.
-    this._rootNodeWatchers++;
-    if (this.traits.watchRootNode && this._rootNodeWatchers === 1) {
-      await super.watchRootNode();
-    }
-
     let rootNode = this.rootNode;
     if (!rootNode) {
-      rootNode = await this.once("root-available");
-    }
-
-    this._rootNodeWatchers--;
-    if (this.traits.watchRootNode && this._rootNodeWatchers === 0) {
-      super.unwatchRootNode();
+      rootNode = await this._rootNodePromise;
     }
 
     return rootNode;
@@ -92,7 +88,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
    * with a real form by the end of the deserialization.
    */
   ensureDOMNodeFront(id) {
-    const front = this.get(id);
+    const front = this.getActorByID(id);
     if (front) {
       return front;
     }
@@ -139,7 +135,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     // mimicking what the server will do here.
     const actorID = node.actorID;
     this._releaseFront(node, !!options.force);
-    return super.releaseNode({ actorID: actorID });
+    return super.releaseNode({ actorID });
   }
 
   async findInspectingNode() {
@@ -152,15 +148,9 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     return response.node;
   }
 
-  async gripToNodeFront(grip) {
-    const response = await this.getNodeActorFromObjectActor(grip.actor);
-    const nodeFront = response ? response.node : null;
-    if (!nodeFront) {
-      throw new Error(
-        "The ValueGrip passed could not be translated to a NodeFront"
-      );
-    }
-    return nodeFront;
+  async getIdrefNode(queryNode, id) {
+    const response = await super.getIdrefNode(queryNode, id);
+    return response.node;
   }
 
   async getNodeActorFromWindowID(windowID) {
@@ -183,53 +173,6 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
   async getNodeFromActor(actorID, path) {
     const response = await super.getNodeFromActor(actorID, path);
     return response ? response.node : null;
-  }
-
-  /*
-   * Incrementally search the document for a given string.
-   * For modern servers, results will be searched with using the WalkerActor
-   * `search` function (includes tag names, attributes, and text contents).
-   * Only 1 result is sent back, and calling the method again with the same
-   * query will send the next result. When there are no more results to be sent
-   * back, null is sent.
-   * @param {String} query
-   * @param {Object} options
-   *    - "reverse": search backwards
-   */
-  async search(query, options = {}) {
-    const searchData = (this.searchData = this.searchData || {});
-    const result = await super.search(query, options);
-    const nodeList = result.list;
-
-    // If this is a new search, start at the beginning.
-    if (searchData.query !== query) {
-      searchData.query = query;
-      searchData.index = -1;
-    }
-
-    if (!nodeList.length) {
-      return null;
-    }
-
-    // Move search result cursor and cycle if necessary.
-    searchData.index = options.reverse
-      ? searchData.index - 1
-      : searchData.index + 1;
-    if (searchData.index >= nodeList.length) {
-      searchData.index = 0;
-    }
-    if (searchData.index < 0) {
-      searchData.index = nodeList.length - 1;
-    }
-
-    // Send back the single node, along with any relevant search data
-    const node = await nodeList.item(searchData.index);
-    return {
-      type: "search",
-      node: node,
-      resultsLength: nodeList.length,
-      resultsIndex: searchData.index,
-    };
   }
 
   _releaseFront(node, force) {
@@ -262,18 +205,9 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     const mutations = await super.getMutations(options);
     const emitMutations = [];
     for (const change of mutations) {
-      // Backward compatibility. FF77 or older will send "new root" information
-      // via mutations. Newer servers use the new-root-available event.
-      if (change.type === "newRoot") {
-        const rootNode = types.getType("domnode").read(change.target, this);
-        this.emit("root-available", rootNode);
-        // Don't process this as a regular mutation.
-        continue;
-      }
-
       // The target is only an actorID, get the associated front.
       const targetID = change.target;
-      const targetFront = this.get(targetID);
+      const targetFront = this.getActorByID(targetID);
 
       if (!targetFront) {
         console.warn(
@@ -287,15 +221,12 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
 
       const emittedMutation = Object.assign(change, { target: targetFront });
 
-      if (
-        change.type === "childList" ||
-        change.type === "nativeAnonymousChildList"
-      ) {
+      if (change.type === "childList") {
         // Update the ownership tree according to the mutation record.
         const addedFronts = [];
         const removedFronts = [];
         for (const removed of change.removed) {
-          const removedFront = this.get(removed);
+          const removedFront = this.getActorByID(removed);
           if (!removedFront) {
             console.error(
               "Got a removal of an actor we didn't know about: " + removed
@@ -311,7 +242,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
           removedFronts.push(removedFront);
         }
         for (const added of change.added) {
-          const addedFront = this.get(added);
+          const addedFront = this.getActorByID(added);
           if (!addedFront) {
             console.error(
               "Got an addition of an actor we didn't know " + "about: " + added
@@ -337,31 +268,6 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
         if ("numChildren" in change) {
           targetFront._form.numChildren = change.numChildren;
         }
-      } else if (change.type === "frameLoad") {
-        // Nothing we need to do here, except verify that we don't have any
-        // document children, because we should have gotten a documentUnload
-        // first.
-        for (const child of targetFront.treeChildren()) {
-          if (child.nodeType === nodeConstants.DOCUMENT_NODE) {
-            console.warn(
-              "Got an unexpected frameLoad in the inspector, " +
-                "please file a bug on bugzilla.mozilla.org!"
-            );
-            console.trace();
-          }
-        }
-      } else if (change.type === "documentUnload") {
-        if (!this.traits.watchRootNode && targetFront === this.rootNode) {
-          this.emit("root-destroyed");
-        }
-
-        // We try to give fronts instead of actorIDs, but these fronts need
-        // to be destroyed now.
-        emittedMutation.target = targetFront.actorID;
-        emittedMutation.targetParent = targetFront.parentNode();
-
-        // Release the document node and all of its children, even retained.
-        this._releaseFront(targetFront, true);
       } else if (change.type === "shadowRootAttached") {
         targetFront._form.isShadowHost = true;
       } else if (change.type === "customElementDefined") {
@@ -370,7 +276,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
         // Retained orphans were force-released without the intervention of
         // client (probably a navigated frame).
         for (const released of change.nodes) {
-          const releasedFront = this.get(released);
+          const releasedFront = this.getActorByID(released);
           this._retainedOrphans.delete(released);
           this._releaseFront(releasedFront, true);
         }
@@ -383,8 +289,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
       if (
         change.type === "inlineTextChild" ||
         change.type === "childList" ||
-        change.type === "shadowRootAttached" ||
-        change.type === "nativeAnonymousChildList"
+        change.type === "shadowRootAttached"
       ) {
         if (change.inlineTextChild) {
           targetFront.inlineTextChild = types
@@ -426,17 +331,38 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     const previousSibling = await this.previousSibling(node);
     const nextSibling = await super.removeNode(node);
     return {
-      previousSibling: previousSibling,
-      nextSibling: nextSibling,
+      previousSibling,
+      nextSibling,
     };
   }
 
   async children(node, options) {
-    if (!node.remoteFrame) {
+    if (!node.useChildTargetToFetchChildren) {
       return super.children(node, options);
     }
-    const remoteTarget = await node.connectToRemoteFrame();
-    const walker = (await remoteTarget.getFront("inspector")).walker;
+    const target = await node.connectToFrame();
+
+    // We had several issues in the past where `connectToFrame` was returning the same
+    // target as the owner document one, which led to the inspector being broken.
+    // Ultimately, we shouldn't get to this point (fix should happen in connectToFrame or
+    // on the server, e.g. for Bug 1752342), but at least this will serve as a safe guard
+    // so we don't freeze/crash the inspector.
+    if (
+      target == this.targetFront &&
+      Services.prefs.getBoolPref(
+        "devtools.testing.bypass-walker-children-iframe-guard",
+        false
+      ) !== true
+    ) {
+      console.warn("connectToFrame returned an unexpected target");
+      return {
+        nodes: [],
+        hasFirst: true,
+        hasLast: true,
+      };
+    }
+
+    const walker = (await target.getFront("inspector")).walker;
 
     // Finally retrieve the NodeFront of the remote frame's document
     const documentNode = await walker.getRootNode();
@@ -489,112 +415,50 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     documentNode.reparent(parentNode);
   }
 
-  /**
-   * Evaluate the cross iframes query selectors for the current walker front.
-   *
-   * @param {Array} selectors
-   *        An array of CSS selectors to find the target accessible object.
-   *        Several selectors can be needed if the element is nested in frames
-   *        and not directly in the root document.
-   * @return {Promise} a promise that resolves when the node front is found for
-   *                   selection using inspector tools.
-   */
-  async findNodeFront(nodeSelectors) {
-    const querySelectors = async nodeFront => {
-      const selector = nodeSelectors.shift();
-      if (!selector) {
-        return nodeFront;
-      }
-      nodeFront = await this.querySelector(nodeFront, selector);
-
-      // It's possible the containing iframe isn't available by the time
-      // this.querySelector is called, which causes the re-selected node to be
-      // unavailable. There also isn't a way for us to know when all iframes on the page
-      // have been created after a reload. Because of this, we should should bail here.
-      if (!nodeFront) {
-        return null;
-      }
-
-      if (nodeSelectors.length > 0) {
-        if (nodeFront.traits.supportsWaitForFrameLoad) {
-          // Backward compatibility: only FF72 or newer are able to wait for
-          // iframes to load. After FF72 reaches release we can unconditionally
-          // call waitForFrameLoad.
-          await nodeFront.waitForFrameLoad();
-        }
-
-        const { nodes } = await this.children(nodeFront);
-
-        // If there are remaining selectors to process, they will target a document or a
-        // document-fragment under the current node. Whether the element is a frame or
-        // a web component, it can only contain one document/document-fragment, so just
-        // select the first one available.
-        nodeFront = nodes.find(node => {
-          const { nodeType } = node;
-          return (
-            nodeType === Node.DOCUMENT_FRAGMENT_NODE ||
-            nodeType === Node.DOCUMENT_NODE
-          );
-        });
-      }
-      return querySelectors(nodeFront) || nodeFront;
-    };
-    const nodeFront = await this.getRootNode();
-
-    // If rootSelectors are [frameSelector1, ..., frameSelectorN, rootSelector]
-    // we expect that [frameSelector1, ..., frameSelectorN] will also be in
-    // nodeSelectors.
-    // Otherwise it means the nodeSelectors target a node outside of this walker
-    // and we should return null.
-    const rootFrontSelectors = await nodeFront.getAllSelectors();
-    for (let i = 0; i < rootFrontSelectors.length - 1; i++) {
-      if (rootFrontSelectors[i] !== nodeSelectors[i]) {
-        return null;
-      }
-    }
-
-    // The query will start from the walker's rootNode, remove all the
-    // "frameSelectors".
-    nodeSelectors.splice(0, rootFrontSelectors.length - 1);
-
-    return querySelectors(nodeFront);
-  }
-
   _onRootNodeAvailable(rootNode) {
-    this.rootNode = rootNode;
-  }
-
-  _onRootNodeDestroyed() {
-    this.rootNode = null;
-  }
-
-  async watchRootNode(onRootNodeAvailable) {
-    this.on("root-available", onRootNodeAvailable);
-
-    this._rootNodeWatchers++;
-    if (this.traits.watchRootNode && this._rootNodeWatchers === 1) {
-      await super.watchRootNode();
-    } else if (this.rootNode) {
-      // This else branch is here for 2 reasons:
-      // - subsequent calls to `watchRootNode`:
-      //   When debugging recent servers if we skip `super.watchRootNode`,
-      //   we should call `onRootNodeAvailable`` immediately, because the actor
-      //   will not emit "root-available". And we should not emit it from the
-      //   Front, because it would notify other consumers unnecessarily.
-      // - backward compatibility for FF77 or older:
-      //   we assume that a node will already be available when calling
-      //   `watchRootNode`, so we call `onRootNodeAvailable` immediately.
-      await onRootNodeAvailable(this.rootNode);
+    if (rootNode.isTopLevelDocument) {
+      this.rootNode = rootNode;
+      this._rootNodePromiseResolve(this.rootNode);
     }
   }
 
-  unwatchRootNode(onRootNodeAvailable) {
-    this.off("root-available", onRootNodeAvailable);
-
-    this._rootNodeWatchers--;
-    if (this.traits.watchRootNode && this._rootNodeWatchers === 0) {
-      super.unwatchRootNode();
+  _onRootNodeDestroyed(rootNode) {
+    if (rootNode.isTopLevelDocument) {
+      this._rootNodePromise = new Promise(
+        r => (this._rootNodePromiseResolve = r)
+      );
+      this.rootNode = null;
     }
+  }
+
+  /**
+   * Start the element picker on the debuggee target.
+   * @param {Boolean} doFocus - Optionally focus the content area once the picker is
+   *                            activated.
+   */
+  pick(doFocus) {
+    if (this._isPicking) {
+      return Promise.resolve();
+    }
+
+    this._isPicking = true;
+
+    return super.pick(
+      doFocus,
+      this.targetFront.commands.descriptorFront.isLocalTab
+    );
+  }
+
+  /**
+   * Stop the element picker.
+   */
+  cancelPick() {
+    if (!this._isPicking) {
+      return Promise.resolve();
+    }
+
+    this._isPicking = false;
+    return super.cancelPick();
   }
 }
 

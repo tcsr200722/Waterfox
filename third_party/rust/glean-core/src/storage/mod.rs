@@ -10,9 +10,13 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value as JsonValue};
 
+use crate::coverage::record_coverage;
 use crate::database::Database;
 use crate::metrics::Metric;
 use crate::Lifetime;
+
+// An internal ping name, not to be touched by anything else
+pub(crate) const INTERNAL_STORAGE: &str = "glean_internal_info";
 
 /// Snapshot metrics from the underlying database.
 pub struct StorageManager;
@@ -28,11 +32,10 @@ fn snapshot_labeled_metrics(
     metric: &Metric,
 ) {
     let ping_section = format!("labeled_{}", metric.ping_section());
-    let map = snapshot.entry(ping_section).or_insert_with(HashMap::new);
+    let map = snapshot.entry(ping_section).or_default();
 
-    let mut s = metric_id.splitn(2, '/');
-    let metric_id = s.next().unwrap(); // Safe unwrap, the function is only called when the id does contain a '/'
-    let label = s.next().unwrap(); // Safe unwrap, the function is only called when the name does contain a '/'
+    // Safe unwrap, the function is only called when the id does contain a '/'
+    let (metric_id, label) = metric_id.split_once('/').unwrap();
 
     let obj = map.entry(metric_id.into()).or_insert_with(|| json!({}));
     let obj = obj.as_object_mut().unwrap(); // safe unwrap, we constructed the object above
@@ -40,18 +43,18 @@ fn snapshot_labeled_metrics(
 }
 
 impl StorageManager {
-    /// Snapshot the given store and optionally clear it.
+    /// Snapshots the given store and optionally clear it.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `storage` - the database to read from.
     /// * `store_name` - the store to snapshot.
     /// * `clear_store` - whether to clear the data after snapshotting.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns the stored data in a string encoded as JSON.
-    /// Returns `None` if no data for the store exists.
+    /// The stored data in a string encoded as JSON.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot(
         &self,
         storage: &Database,
@@ -62,18 +65,18 @@ impl StorageManager {
             .map(|data| ::serde_json::to_string_pretty(&data).unwrap())
     }
 
-    /// Snapshot the given store and optionally clear it.
+    /// Snapshots the given store and optionally clear it.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `storage` - the database to read from.
     /// * `store_name` - the store to snapshot.
     /// * `clear_store` - whether to clear the data after snapshotting.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns a JSON representation of the stored data.
-    /// Returns `None` if no data for the store exists.
+    /// A JSON representation of the stored data.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot_as_json(
         &self,
         storage: &Database,
@@ -85,22 +88,25 @@ impl StorageManager {
         let mut snapshotter = |metric_id: &[u8], metric: &Metric| {
             let metric_id = String::from_utf8_lossy(metric_id).into_owned();
             if metric_id.contains('/') {
-                snapshot_labeled_metrics(&mut snapshot, &metric_id, &metric);
+                snapshot_labeled_metrics(&mut snapshot, &metric_id, metric);
             } else {
-                let map = snapshot
-                    .entry(metric.ping_section().into())
-                    .or_insert_with(HashMap::new);
+                let map = snapshot.entry(metric.ping_section().into()).or_default();
                 map.insert(metric_id, metric.as_json());
             }
         };
 
-        storage.iter_store_from(Lifetime::Ping, &store_name, None, &mut snapshotter);
-        storage.iter_store_from(Lifetime::Application, &store_name, None, &mut snapshotter);
-        storage.iter_store_from(Lifetime::User, &store_name, None, &mut snapshotter);
+        storage.iter_store_from(Lifetime::Ping, store_name, None, &mut snapshotter);
+        storage.iter_store_from(Lifetime::Application, store_name, None, &mut snapshotter);
+        storage.iter_store_from(Lifetime::User, store_name, None, &mut snapshotter);
+
+        // Add send in all pings client.annotations
+        if store_name != "glean_client_info" {
+            storage.iter_store_from(Lifetime::Application, "all-pings", None, snapshotter);
+        }
 
         if clear_store {
             if let Err(e) = storage.clear_ping_lifetime_storage(store_name) {
-                log::error!("Failed to clear lifetime storage: {:?}", e);
+                log::warn!("Failed to clear lifetime storage: {:?}", e);
             }
         }
 
@@ -111,24 +117,23 @@ impl StorageManager {
         }
     }
 
-    /// Get the current value of a single metric identified by name.
+    /// Gets the current value of a single metric identified by name.
     ///
-    /// This look for a value in stores for all lifetimes.
-    ///
-    /// ## Arguments:
+    /// # Arguments
     ///
     /// * `storage` - The database to get data from.
     /// * `store_name` - The store name to look into.
     /// * `metric_id` - The full metric identifier.
     ///
-    /// ## Return value:
+    /// # Returns
     ///
-    /// Returns the decoded metric or `None` if no data is found.
+    /// The decoded metric or `None` if no data is found.
     pub fn snapshot_metric(
         &self,
         storage: &Database,
         store_name: &str,
         metric_id: &str,
+        metric_lifetime: Lifetime,
     ) -> Option<Metric> {
         let mut snapshot: Option<Metric> = None;
 
@@ -139,23 +144,46 @@ impl StorageManager {
             }
         };
 
-        storage.iter_store_from(Lifetime::Ping, &store_name, None, &mut snapshotter);
-        storage.iter_store_from(Lifetime::Application, &store_name, None, &mut snapshotter);
-        storage.iter_store_from(Lifetime::User, &store_name, None, &mut snapshotter);
+        storage.iter_store_from(metric_lifetime, store_name, None, &mut snapshotter);
 
         snapshot
     }
 
-    ///  Snapshot the experiments.
+    /// Gets the current value of a single metric identified by name.
     ///
-    /// ## Arguments:
+    /// Use this API, rather than `snapshot_metric` within the testing API, so
+    /// that the usage will be reported in coverage, if enabled.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The database to get data from.
+    /// * `store_name` - The store name to look into.
+    /// * `metric_id` - The full metric identifier.
+    ///
+    /// # Returns
+    ///
+    /// The decoded metric or `None` if no data is found.
+    pub fn snapshot_metric_for_test(
+        &self,
+        storage: &Database,
+        store_name: &str,
+        metric_id: &str,
+        metric_lifetime: Lifetime,
+    ) -> Option<Metric> {
+        record_coverage(metric_id);
+        self.snapshot_metric(storage, store_name, metric_id, metric_lifetime)
+    }
+
+    ///  Snapshots the experiments.
+    ///
+    /// # Arguments
     ///
     /// * `storage` - The database to get data from.
     /// * `store_name` - The store name to look into.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns a JSON representation of the experiment data, in the following format:
+    /// A JSON representation of the experiment data, in the following format:
     ///
     /// ```json
     /// {
@@ -169,7 +197,7 @@ impl StorageManager {
     /// }
     /// ```
     ///
-    /// Returns `None` if no data for experiments exists.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot_experiments_as_json(
         &self,
         storage: &Database,
@@ -180,7 +208,7 @@ impl StorageManager {
         let mut snapshotter = |metric_id: &[u8], metric: &Metric| {
             let metric_id = String::from_utf8_lossy(metric_id).into_owned();
             if metric_id.ends_with("#experiment") {
-                let name = metric_id.splitn(2, '#').next().unwrap(); // safe unwrap, first field of a split always valid
+                let (name, _) = metric_id.split_once('#').unwrap(); // safe unwrap, we ensured there's a `#` in the string
                 snapshot.insert(name.to_string(), metric.as_json());
             }
         };
@@ -207,7 +235,7 @@ mod test {
     fn test_experiments_json_serialization() {
         let t = tempfile::tempdir().unwrap();
         let name = t.path().display().to_string();
-        let glean = Glean::with_options(&name, "org.mozilla.glean", true).unwrap();
+        let glean = Glean::with_options(&name, "org.mozilla.glean", true, true);
 
         let extra: HashMap<String, String> = [("test-key".into(), "test-value".into())]
             .iter()
@@ -216,7 +244,7 @@ mod test {
 
         let metric = ExperimentMetric::new(&glean, "some-experiment".to_string());
 
-        metric.set_active(&glean, "test-branch".to_string(), Some(extra));
+        metric.set_active_sync(&glean, "test-branch".to_string(), extra);
         let snapshot = StorageManager
             .snapshot_experiments_as_json(glean.storage(), "glean_internal_info")
             .unwrap();
@@ -225,7 +253,7 @@ mod test {
             snapshot
         );
 
-        metric.set_inactive(&glean);
+        metric.set_inactive_sync(&glean);
 
         let empty_snapshot =
             StorageManager.snapshot_experiments_as_json(glean.storage(), "glean_internal_info");
@@ -236,11 +264,11 @@ mod test {
     fn test_experiments_json_serialization_empty() {
         let t = tempfile::tempdir().unwrap();
         let name = t.path().display().to_string();
-        let glean = Glean::with_options(&name, "org.mozilla.glean", true).unwrap();
+        let glean = Glean::with_options(&name, "org.mozilla.glean", true, true);
 
         let metric = ExperimentMetric::new(&glean, "some-experiment".to_string());
 
-        metric.set_active(&glean, "test-branch".to_string(), None);
+        metric.set_active_sync(&glean, "test-branch".to_string(), HashMap::new());
         let snapshot = StorageManager
             .snapshot_experiments_as_json(glean.storage(), "glean_internal_info")
             .unwrap();
@@ -249,7 +277,7 @@ mod test {
             snapshot
         );
 
-        metric.set_inactive(&glean);
+        metric.set_inactive_sync(&glean);
 
         let empty_snapshot =
             StorageManager.snapshot_experiments_as_json(glean.storage(), "glean_internal_info");

@@ -4,7 +4,7 @@
 
 "use strict";
 
-add_task(async function() {
+add_task(async function () {
   info("Check new window button existence and functionality");
   CustomizableUI.addWidgetToArea(
     "new-window-button",
@@ -21,12 +21,12 @@ add_task(async function() {
   let newWindow = null;
 
   let observerWindowOpened = {
-    observe(aSubject, aTopic, aData) {
+    observe(aSubject, aTopic) {
       if (aTopic == "domwindowopened") {
         newWindow = aSubject;
         newWindow.addEventListener(
           "load",
-          function() {
+          function () {
             is(
               newWindow.location.href,
               AppConstants.BROWSER_CHROME_URL,
@@ -51,7 +51,7 @@ add_task(async function() {
   newWindowButton.click();
 
   try {
-    await waitForCondition(() => windowWasHandled);
+    await TestUtils.waitForCondition(() => windowWasHandled);
     await promiseWindowClosed(newWindow);
     info("The new window was closed");
   } catch (e) {

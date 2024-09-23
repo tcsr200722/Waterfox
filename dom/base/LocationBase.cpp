@@ -13,12 +13,13 @@
 #include "nsCOMPtr.h"
 #include "nsError.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/ReferrerInfo.h"
+#include "mozilla/dom/WindowContext.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 already_AddRefed<nsDocShellLoadState> LocationBase::CheckURL(
     nsIURI* aURI, nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
@@ -99,12 +100,16 @@ already_AddRefed<nsDocShellLoadState> LocationBase::CheckURL(
     principal->CreateReferrerInfo(referrerPolicy, getter_AddRefs(referrerInfo));
   }
   loadState->SetTriggeringPrincipal(triggeringPrincipal);
+  loadState->SetTriggeringSandboxFlags(doc->GetSandboxFlags());
   loadState->SetCsp(doc->GetCsp());
   if (referrerInfo) {
     loadState->SetReferrerInfo(referrerInfo);
   }
   loadState->SetHasValidUserGestureActivation(
       doc->HasValidTransientUserGestureActivation());
+
+  loadState->SetTriggeringWindowId(doc->InnerWindowID());
+  loadState->SetTriggeringStorageAccess(doc->UsingStorageAccess());
 
   return loadState.forget();
 }
@@ -113,6 +118,16 @@ void LocationBase::SetURI(nsIURI* aURI, nsIPrincipal& aSubjectPrincipal,
                           ErrorResult& aRv, bool aReplace) {
   RefPtr<BrowsingContext> bc = GetBrowsingContext();
   if (!bc || bc->IsDiscarded()) {
+    return;
+  }
+
+  CallerType callerType = aSubjectPrincipal.IsSystemPrincipal()
+                              ? CallerType::System
+                              : CallerType::NonSystem;
+
+  nsresult rv = bc->CheckLocationChangeRateLimit(callerType);
+  if (NS_FAILED(rv)) {
+    aRv.Throw(rv);
     return;
   }
 
@@ -130,20 +145,44 @@ void LocationBase::SetURI(nsIURI* aURI, nsIPrincipal& aSubjectPrincipal,
 
   // Get the incumbent script's browsing context to set as source.
   nsCOMPtr<nsPIDOMWindowInner> sourceWindow =
-      nsContentUtils::CallerInnerWindow();
+      nsContentUtils::IncumbentInnerWindow();
   if (sourceWindow) {
-    RefPtr<BrowsingContext> sourceBC = sourceWindow->GetBrowsingContext();
-    loadState->SetSourceBrowsingContext(sourceBC);
+    WindowContext* context = sourceWindow->GetWindowContext();
+    loadState->SetSourceBrowsingContext(sourceWindow->GetBrowsingContext());
     loadState->SetHasValidUserGestureActivation(
-        sourceBC && sourceBC->HasValidTransientUserGestureActivation());
+        context && context->HasValidTransientUserGestureActivation());
   }
 
   loadState->SetLoadFlags(nsIWebNavigation::LOAD_FLAGS_NONE);
   loadState->SetFirstParty(true);
 
-  nsresult rv = bc->LoadURI(loadState);
+  rv = bc->LoadURI(loadState);
   if (NS_WARN_IF(NS_FAILED(rv))) {
+    if (rv == NS_ERROR_DOM_BAD_CROSS_ORIGIN_URI &&
+        net::SchemeIsJavascript(loadState->URI())) {
+      // Per spec[1], attempting to load a javascript: URI into a cross-origin
+      // BrowsingContext is a no-op, and should not raise an exception.
+      // Technically, Location setters run with exceptions enabled should only
+      // throw an exception[2] when the caller is not allowed to navigate[3] the
+      // target browsing context due to sandboxing flags or not being
+      // closely-related enough, though in practice we currently throw for other
+      // reasons as well.
+      //
+      // [1]:
+      // https://html.spec.whatwg.org/multipage/browsing-the-web.html#javascript-protocol
+      // [2]:
+      // https://html.spec.whatwg.org/multipage/browsing-the-web.html#navigate
+      // [3]:
+      // https://html.spec.whatwg.org/multipage/browsers.html#allowed-to-navigate
+      return;
+    }
     aRv.Throw(rv);
+    return;
+  }
+
+  Document* doc = bc->GetDocument();
+  if (doc && nsContentUtils::IsExternalProtocol(aURI)) {
+    doc->EnsureNotEnteringAndExitFullscreen();
   }
 }
 
@@ -173,40 +212,41 @@ void LocationBase::SetHrefWithBase(const nsAString& aHref, nsIURI* aBase,
     result = NS_NewURI(getter_AddRefs(newUri), aHref, nullptr, aBase);
   }
 
-  if (newUri) {
-    /* Check with the scriptContext if it is currently processing a script tag.
-     * If so, this must be a <script> tag with a location.href in it.
-     * we want to do a replace load, in such a situation.
-     * In other cases, for example if a event handler or a JS timer
-     * had a location.href in it, we want to do a normal load,
-     * so that the new url will be appended to Session History.
-     * This solution is tricky. Hopefully it isn't going to bite
-     * anywhere else. This is part of solution for bug # 39938, 72197
-     */
-    bool inScriptTag = false;
-    nsIScriptContext* scriptContext = nullptr;
-    nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(GetEntryGlobal());
-    if (win) {
-      scriptContext = nsGlobalWindowInner::Cast(win)->GetContextInternal();
-    }
-
-    if (scriptContext) {
-      if (scriptContext->GetProcessingScriptTag()) {
-        // Now check to make sure that the script is running in our window,
-        // since we only want to replace if the location is set by a
-        // <script> tag in the same window.  See bug 178729.
-        nsCOMPtr<nsIDocShell> docShell(GetDocShell());
-        nsCOMPtr<nsIScriptGlobalObject> ourGlobal =
-            docShell ? docShell->GetScriptGlobalObject() : nullptr;
-        inScriptTag = (ourGlobal == scriptContext->GetGlobalObject());
-      }
-    }
-
-    SetURI(newUri, aSubjectPrincipal, aRv, aReplace || inScriptTag);
+  if (NS_FAILED(result) || !newUri) {
+    aRv.ThrowSyntaxError("'"_ns + NS_ConvertUTF16toUTF8(aHref) +
+                         "' is not a valid URL."_ns);
     return;
   }
 
-  aRv.Throw(result);
+  /* Check with the scriptContext if it is currently processing a script tag.
+   * If so, this must be a <script> tag with a location.href in it.
+   * we want to do a replace load, in such a situation.
+   * In other cases, for example if a event handler or a JS timer
+   * had a location.href in it, we want to do a normal load,
+   * so that the new url will be appended to Session History.
+   * This solution is tricky. Hopefully it isn't going to bite
+   * anywhere else. This is part of solution for bug # 39938, 72197
+   */
+  bool inScriptTag = false;
+  nsIScriptContext* scriptContext = nullptr;
+  nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(GetEntryGlobal());
+  if (win) {
+    scriptContext = nsGlobalWindowInner::Cast(win)->GetContextInternal();
+  }
+
+  if (scriptContext) {
+    if (scriptContext->GetProcessingScriptTag()) {
+      // Now check to make sure that the script is running in our window,
+      // since we only want to replace if the location is set by a
+      // <script> tag in the same window.  See bug 178729.
+      nsCOMPtr<nsIDocShell> docShell(GetDocShell());
+      nsCOMPtr<nsIScriptGlobalObject> ourGlobal =
+          docShell ? docShell->GetScriptGlobalObject() : nullptr;
+      inScriptTag = (ourGlobal == scriptContext->GetGlobalObject());
+    }
+  }
+
+  SetURI(newUri, aSubjectPrincipal, aRv, aReplace || inScriptTag);
 }
 
 void LocationBase::Replace(const nsAString& aUrl,
@@ -235,5 +275,4 @@ nsIURI* LocationBase::GetSourceBaseURL() {
   return doc ? doc->GetBaseURI() : nullptr;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

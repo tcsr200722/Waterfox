@@ -10,9 +10,19 @@
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/SyncedContextInlines.h"
 #include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/UserActivationIPCUtils.h"
+#include "mozilla/PermissionDelegateIPCUtils.h"
+#include "mozilla/RFPTargetIPCUtils.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "nsGlobalWindowInner.h"
+#include "nsIScriptError.h"
+#include "nsIWebProgressListener.h"
+#include "nsIXULRuntime.h"
 #include "nsRefPtrHashtable.h"
+#include "nsContentUtils.h"
 
 namespace mozilla {
 namespace dom {
@@ -22,12 +32,21 @@ namespace dom {
 template class syncedcontext::Transaction<WindowContext>;
 
 static LazyLogModule gWindowContextLog("WindowContext");
+static LazyLogModule gWindowContextSyncLog("WindowContextSync");
 
-using WindowContextByIdMap = nsDataHashtable<nsUint64HashKey, WindowContext*>;
+extern mozilla::LazyLogModule gUserInteractionPRLog;
+
+#define USER_ACTIVATION_LOG(msg, ...) \
+  MOZ_LOG(gUserInteractionPRLog, LogLevel::Debug, (msg, ##__VA_ARGS__))
+
+using WindowContextByIdMap = nsTHashMap<nsUint64HashKey, WindowContext*>;
 static StaticAutoPtr<WindowContextByIdMap> gWindowContexts;
 
 /* static */
 LogModule* WindowContext::GetLog() { return gWindowContextLog; }
+
+/* static */
+LogModule* WindowContext::GetSyncLog() { return gWindowContextSyncLog; }
 
 /* static */
 already_AddRefed<WindowContext> WindowContext::GetById(
@@ -47,8 +66,33 @@ WindowGlobalParent* WindowContext::Canonical() {
   return static_cast<WindowGlobalParent*>(this);
 }
 
-bool WindowContext::IsCached() const {
-  return mBrowsingContext->mCurrentWindowContext != this;
+bool WindowContext::IsCurrent() const {
+  return mBrowsingContext->mCurrentWindowContext == this;
+}
+
+bool WindowContext::IsInBFCache() {
+  if (mozilla::SessionHistoryInParent()) {
+    return mBrowsingContext->IsInBFCache();
+  }
+  return TopWindowContext()->GetWindowStateSaved();
+}
+
+nsGlobalWindowInner* WindowContext::GetInnerWindow() const {
+  return mWindowGlobalChild ? mWindowGlobalChild->GetWindowGlobal() : nullptr;
+}
+
+Document* WindowContext::GetDocument() const {
+  nsGlobalWindowInner* innerWindow = GetInnerWindow();
+  return innerWindow ? innerWindow->GetDocument() : nullptr;
+}
+
+Document* WindowContext::GetExtantDoc() const {
+  nsGlobalWindowInner* innerWindow = GetInnerWindow();
+  return innerWindow ? innerWindow->GetExtantDoc() : nullptr;
+}
+
+WindowGlobalChild* WindowContext::GetWindowGlobalChild() const {
+  return mWindowGlobalChild;
 }
 
 WindowContext* WindowContext::GetParentWindowContext() {
@@ -63,6 +107,12 @@ WindowContext* WindowContext::TopWindowContext() {
   return current;
 }
 
+bool WindowContext::IsTop() const { return mBrowsingContext->IsTop(); }
+
+bool WindowContext::SameOriginWithTop() const {
+  return mBrowsingContext->SameOriginWithTop();
+}
+
 nsIGlobalObject* WindowContext::GetParentObject() const {
   return xpc::NativeGlobal(xpc::PrivilegedJunkScope());
 }
@@ -74,10 +124,13 @@ void WindowContext::AppendChildBrowsingContext(
   MOZ_DIAGNOSTIC_ASSERT(!mChildren.Contains(aBrowsingContext));
 
   mChildren.AppendElement(aBrowsingContext);
+  if (!aBrowsingContext->IsEmbedderTypeObjectOrEmbed()) {
+    mNonSyntheticChildren.AppendElement(aBrowsingContext);
+  }
 
   // If we're the current WindowContext in our BrowsingContext, make sure to
   // clear any cached `children` value.
-  if (!IsCached()) {
+  if (IsCurrent()) {
     BrowsingContext_Binding::ClearCachedChildrenValue(mBrowsingContext);
   }
 }
@@ -88,11 +141,25 @@ void WindowContext::RemoveChildBrowsingContext(
                         "Mismatched groups?");
 
   mChildren.RemoveElement(aBrowsingContext);
+  mNonSyntheticChildren.RemoveElement(aBrowsingContext);
 
   // If we're the current WindowContext in our BrowsingContext, make sure to
   // clear any cached `children` value.
-  if (!IsCached()) {
+  if (IsCurrent()) {
     BrowsingContext_Binding::ClearCachedChildrenValue(mBrowsingContext);
+  }
+}
+
+void WindowContext::UpdateChildSynthetic(BrowsingContext* aBrowsingContext,
+                                         bool aIsSynthetic) {
+  if (aIsSynthetic) {
+    mNonSyntheticChildren.RemoveElement(aBrowsingContext);
+  } else {
+    // The same BrowsingContext will be reused for error pages, so it can be in
+    // the list already.
+    if (!mNonSyntheticChildren.Contains(aBrowsingContext)) {
+      mNonSyntheticChildren.AppendElement(aBrowsingContext);
+    }
   }
 }
 
@@ -109,7 +176,7 @@ void WindowContext::SendCommitTransaction(ContentChild* aChild,
 }
 
 bool WindowContext::CheckOnlyOwningProcessCanSet(ContentParent* aSource) {
-  if (mInProcess) {
+  if (IsInProcess()) {
     return true;
   }
 
@@ -127,6 +194,12 @@ bool WindowContext::CanSet(FieldIndex<IDX_IsSecure>, const bool& aIsSecure,
 
 bool WindowContext::CanSet(FieldIndex<IDX_AllowMixedContent>,
                            const bool& aAllowMixedContent,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_HasBeforeUnload>,
+                           const bool& aHasBeforeUnload,
                            ContentParent* aSource) {
   return CheckOnlyOwningProcessCanSet(aSource);
 }
@@ -154,15 +227,183 @@ bool WindowContext::CanSet(FieldIndex<IDX_IsThirdPartyTrackingResourceWindow>,
   return CheckOnlyOwningProcessCanSet(aSource);
 }
 
+bool WindowContext::CanSet(FieldIndex<IDX_UsingStorageAccess>,
+                           const bool& aUsingStorageAccess,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_ShouldResistFingerprinting>,
+                           const bool& aShouldResistFingerprinting,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_OverriddenFingerprintingSettings>,
+                           const Maybe<RFPTarget>& aValue,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
 bool WindowContext::CanSet(FieldIndex<IDX_IsSecureContext>,
                            const bool& aIsSecureContext,
                            ContentParent* aSource) {
   return CheckOnlyOwningProcessCanSet(aSource);
 }
 
+bool WindowContext::CanSet(FieldIndex<IDX_IsOriginalFrameSource>,
+                           const bool& aIsOriginalFrameSource,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_DocTreeHadMedia>, const bool& aValue,
+                           ContentParent* aSource) {
+  return IsTop();
+}
+
 bool WindowContext::CanSet(FieldIndex<IDX_AutoplayPermission>,
                            const uint32_t& aValue, ContentParent* aSource) {
   return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_ShortcutsPermission>,
+                           const uint32_t& aValue, ContentParent* aSource) {
+  return IsTop() && CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_ActiveMediaSessionContextId>,
+                           const Maybe<uint64_t>& aValue,
+                           ContentParent* aSource) {
+  return IsTop();
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_PopupPermission>, const uint32_t&,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(
+    FieldIndex<IDX_DelegatedPermissions>,
+    const PermissionDelegateHandler::DelegatedPermissionList& aValue,
+    ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(
+    FieldIndex<IDX_DelegatedExactHostMatchPermissions>,
+    const PermissionDelegateHandler::DelegatedPermissionList& aValue,
+    ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_IsLocalIP>, const bool& aValue,
+                           ContentParent* aSource) {
+  return CheckOnlyOwningProcessCanSet(aSource);
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_AllowJavascript>, bool aValue,
+                           ContentParent* aSource) {
+  return (XRE_IsParentProcess() && !aSource) ||
+         CheckOnlyOwningProcessCanSet(aSource);
+}
+
+void WindowContext::DidSet(FieldIndex<IDX_AllowJavascript>, bool aOldValue) {
+  RecomputeCanExecuteScripts();
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_HasActivePeerConnections>, bool,
+                           ContentParent*) {
+  return XRE_IsParentProcess() && IsTop();
+}
+
+void WindowContext::RecomputeCanExecuteScripts(bool aApplyChanges) {
+  const bool old = mCanExecuteScripts;
+  if (!AllowJavascript()) {
+    // Scripting has been explicitly disabled on our WindowContext.
+    mCanExecuteScripts = false;
+  } else {
+    // Otherwise, inherit.
+    mCanExecuteScripts = mBrowsingContext->CanExecuteScripts();
+  }
+
+  if (aApplyChanges && old != mCanExecuteScripts) {
+    // Inform our active DOM window.
+    if (nsGlobalWindowInner* window = GetInnerWindow()) {
+      // Only update scriptability if the window is current. Windows will have
+      // scriptability disabled when entering the bfcache and updated when
+      // coming out.
+      if (window->IsCurrentInnerWindow()) {
+        auto& scriptability =
+            xpc::Scriptability::Get(window->GetGlobalJSObject());
+        scriptability.SetWindowAllowsScript(mCanExecuteScripts);
+      }
+    }
+
+    for (const RefPtr<BrowsingContext>& child : Children()) {
+      child->RecomputeCanExecuteScripts();
+    }
+  }
+}
+
+void WindowContext::DidSet(FieldIndex<IDX_SHEntryHasUserInteraction>,
+                           bool aOldValue) {
+  MOZ_ASSERT(
+      TopWindowContext() == this,
+      "SHEntryHasUserInteraction can only be set on the top window context");
+  // This field is set when the child notifies us of new user interaction, so we
+  // also set the currently active shentry in the parent as having interaction.
+  if (XRE_IsParentProcess() && mBrowsingContext) {
+    SessionHistoryEntry* activeEntry =
+        mBrowsingContext->Canonical()->GetActiveSessionHistoryEntry();
+    if (activeEntry && GetSHEntryHasUserInteraction()) {
+      activeEntry->SetHasUserInteraction(true);
+    }
+  }
+}
+
+void WindowContext::DidSet(FieldIndex<IDX_UserActivationStateAndModifiers>) {
+  MOZ_ASSERT_IF(!IsInProcess(), mUserGestureStart.IsNull());
+  USER_ACTIVATION_LOG("Set user gesture activation 0x%02" PRIu8
+                      " for %s browsing context 0x%08" PRIx64,
+                      GetUserActivationStateAndModifiers(),
+                      XRE_IsParentProcess() ? "Parent" : "Child", Id());
+  if (IsInProcess()) {
+    USER_ACTIVATION_LOG(
+        "Set user gesture start time for %s browsing context 0x%08" PRIx64,
+        XRE_IsParentProcess() ? "Parent" : "Child", Id());
+    if (GetUserActivationState() == UserActivation::State::FullActivated) {
+      mUserGestureStart = TimeStamp::Now();
+    } else if (GetUserActivationState() == UserActivation::State::None) {
+      mUserGestureStart = TimeStamp();
+    }
+  }
+}
+
+void WindowContext::DidSet(FieldIndex<IDX_HasReportedShadowDOMUsage>,
+                           bool aOldValue) {
+  if (!aOldValue && GetHasReportedShadowDOMUsage() && IsInProcess()) {
+    MOZ_ASSERT(TopWindowContext() == this);
+    if (mBrowsingContext) {
+      Document* topLevelDoc = mBrowsingContext->GetDocument();
+      if (topLevelDoc) {
+        nsAutoString uri;
+        Unused << topLevelDoc->GetDocumentURI(uri);
+        if (!uri.IsEmpty()) {
+          nsAutoString msg = u"Shadow DOM used in ["_ns + uri +
+                             u"] or in some of its subdocuments."_ns;
+          nsContentUtils::ReportToConsoleNonLocalized(
+              msg, nsIScriptError::infoFlag, "DOM"_ns, topLevelDoc);
+        }
+      }
+    }
+  }
+}
+
+bool WindowContext::CanSet(FieldIndex<IDX_WindowStateSaved>, bool aValue,
+                           ContentParent* aSource) {
+  return !mozilla::SessionHistoryInParent() && IsTop() &&
+         CheckOnlyOwningProcessCanSet(aSource);
 }
 
 void WindowContext::CreateFromIPC(IPCInitializer&& aInit) {
@@ -179,9 +420,8 @@ void WindowContext::CreateFromIPC(IPCInitializer&& aInit) {
     return;
   }
 
-  RefPtr<WindowContext> context =
-      new WindowContext(bc, aInit.mInnerWindowId, aInit.mOuterWindowId,
-                        /* aInProcess */ false, std::move(aInit.mFields));
+  RefPtr<WindowContext> context = new WindowContext(
+      bc, aInit.mInnerWindowId, aInit.mOuterWindowId, std::move(aInit.mFields));
   context->Init();
 }
 
@@ -195,7 +435,7 @@ void WindowContext::Init() {
     gWindowContexts = new WindowContextByIdMap();
     ClearOnShutdown(&gWindowContexts);
   }
-  auto& entry = gWindowContexts->GetOrInsert(mInnerWindowId);
+  auto& entry = gWindowContexts->LookupOrInsert(mInnerWindowId);
   MOZ_RELEASE_ASSERT(!entry, "Duplicate WindowContext for ID!");
   entry = this;
 
@@ -213,27 +453,133 @@ void WindowContext::Discard() {
   }
 
   mIsDiscarded = true;
-  gWindowContexts->Remove(InnerWindowId());
+  if (gWindowContexts) {
+    gWindowContexts->Remove(InnerWindowId());
+  }
   mBrowsingContext->UnregisterWindowContext(this);
   Group()->Unregister(this);
 }
 
-void WindowContext::AddMixedContentSecurityState(uint32_t aStateFlags) {
+void WindowContext::AddSecurityState(uint32_t aStateFlags) {
   MOZ_ASSERT(TopWindowContext() == this);
   MOZ_ASSERT((aStateFlags &
               (nsIWebProgressListener::STATE_LOADED_MIXED_DISPLAY_CONTENT |
                nsIWebProgressListener::STATE_LOADED_MIXED_ACTIVE_CONTENT |
                nsIWebProgressListener::STATE_BLOCKED_MIXED_DISPLAY_CONTENT |
-               nsIWebProgressListener::STATE_BLOCKED_MIXED_ACTIVE_CONTENT)) ==
+               nsIWebProgressListener::STATE_BLOCKED_MIXED_ACTIVE_CONTENT |
+               nsIWebProgressListener::STATE_HTTPS_ONLY_MODE_UPGRADED |
+               nsIWebProgressListener::STATE_HTTPS_ONLY_MODE_UPGRADE_FAILED |
+               nsIWebProgressListener::STATE_HTTPS_ONLY_MODE_UPGRADED_FIRST)) ==
                  aStateFlags,
              "Invalid flags specified!");
 
   if (XRE_IsParentProcess()) {
-    Canonical()->AddMixedContentSecurityState(aStateFlags);
+    Canonical()->AddSecurityState(aStateFlags);
   } else {
     ContentChild* child = ContentChild::GetSingleton();
-    child->SendAddMixedContentSecurityState(this, aStateFlags);
+    child->SendAddSecurityState(this, aStateFlags);
   }
+}
+
+void WindowContext::NotifyUserGestureActivation(
+    UserActivation::Modifiers
+        aModifiers /* = UserActivation::Modifiers::None() */) {
+  UserActivation::StateAndModifiers stateAndModifiers;
+  stateAndModifiers.SetState(UserActivation::State::FullActivated);
+  stateAndModifiers.SetModifiers(aModifiers);
+  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
+}
+
+void WindowContext::NotifyResetUserGestureActivation() {
+  UserActivation::StateAndModifiers stateAndModifiers;
+  stateAndModifiers.SetState(UserActivation::State::None);
+  Unused << SetUserActivationStateAndModifiers(stateAndModifiers.GetRawData());
+}
+
+bool WindowContext::HasBeenUserGestureActivated() {
+  return GetUserActivationState() != UserActivation::State::None;
+}
+
+const TimeStamp& WindowContext::GetUserGestureStart() const {
+  MOZ_ASSERT(IsInProcess());
+  return mUserGestureStart;
+}
+
+bool WindowContext::HasValidTransientUserGestureActivation() {
+  MOZ_ASSERT(IsInProcess());
+
+  if (GetUserActivationState() != UserActivation::State::FullActivated) {
+    // mUserGestureStart should be null if the document hasn't ever been
+    // activated by user gesture
+    MOZ_ASSERT_IF(GetUserActivationState() == UserActivation::State::None,
+                  mUserGestureStart.IsNull());
+    return false;
+  }
+
+  MOZ_ASSERT(!mUserGestureStart.IsNull(),
+             "mUserGestureStart shouldn't be null if the document has ever "
+             "been activated by user gesture");
+  TimeDuration timeout = TimeDuration::FromMilliseconds(
+      StaticPrefs::dom_user_activation_transient_timeout());
+
+  return timeout <= TimeDuration() ||
+         (TimeStamp::Now() - mUserGestureStart) <= timeout;
+}
+
+bool WindowContext::ConsumeTransientUserGestureActivation() {
+  MOZ_ASSERT(IsInProcess());
+  MOZ_ASSERT(IsCurrent());
+
+  if (!HasValidTransientUserGestureActivation()) {
+    return false;
+  }
+
+  BrowsingContext* top = mBrowsingContext->Top();
+  top->PreOrderWalk([&](BrowsingContext* aBrowsingContext) {
+    WindowContext* windowContext = aBrowsingContext->GetCurrentWindowContext();
+    if (windowContext && windowContext->GetUserActivationState() ==
+                             UserActivation::State::FullActivated) {
+      auto stateAndModifiers = UserActivation::StateAndModifiers(
+          GetUserActivationStateAndModifiers());
+      stateAndModifiers.SetState(UserActivation::State::HasBeenActivated);
+      Unused << windowContext->SetUserActivationStateAndModifiers(
+          stateAndModifiers.GetRawData());
+    }
+  });
+
+  return true;
+}
+
+bool WindowContext::GetTransientUserGestureActivationModifiers(
+    UserActivation::Modifiers* aModifiers) {
+  if (!HasValidTransientUserGestureActivation()) {
+    return false;
+  }
+
+  auto stateAndModifiers =
+      UserActivation::StateAndModifiers(GetUserActivationStateAndModifiers());
+  *aModifiers = stateAndModifiers.GetModifiers();
+  return true;
+}
+
+bool WindowContext::CanShowPopup() {
+  uint32_t permit = GetPopupPermission();
+  if (permit == nsIPermissionManager::ALLOW_ACTION) {
+    return true;
+  }
+  if (permit == nsIPermissionManager::DENY_ACTION) {
+    return false;
+  }
+
+  return !StaticPrefs::dom_disable_open_during_load();
+}
+
+void WindowContext::TransientSetHasActivePeerConnections() {
+  if (!IsTop()) {
+    return;
+  }
+
+  mFields.SetWithoutSyncing<IDX_HasActivePeerConnections>(true);
 }
 
 WindowContext::IPCInitializer WindowContext::GetIPCInitializer() {
@@ -241,21 +587,21 @@ WindowContext::IPCInitializer WindowContext::GetIPCInitializer() {
   init.mInnerWindowId = mInnerWindowId;
   init.mOuterWindowId = mOuterWindowId;
   init.mBrowsingContextId = mBrowsingContext->Id();
-  init.mFields = mFields.Fields();
+  init.mFields = mFields.RawValues();
   return init;
 }
 
 WindowContext::WindowContext(BrowsingContext* aBrowsingContext,
                              uint64_t aInnerWindowId, uint64_t aOuterWindowId,
-                             bool aInProcess, FieldTuple&& aFields)
-    : mFields(std::move(aFields)),
+                             FieldValues&& aInit)
+    : mFields(std::move(aInit)),
       mInnerWindowId(aInnerWindowId),
       mOuterWindowId(aOuterWindowId),
-      mBrowsingContext(aBrowsingContext),
-      mInProcess(aInProcess) {
+      mBrowsingContext(aBrowsingContext) {
   MOZ_ASSERT(mBrowsingContext);
   MOZ_ASSERT(mInnerWindowId);
   MOZ_ASSERT(mOuterWindowId);
+  RecomputeCanExecuteScripts(/* aApplyChanges */ false);
 }
 
 WindowContext::~WindowContext() {
@@ -277,7 +623,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(WindowContext)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(WindowContext)
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(WindowContext)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(WindowContext)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WindowContext)
   if (gWindowContexts) {
@@ -286,32 +632,32 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WindowContext)
 
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mBrowsingContext)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mChildren)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mNonSyntheticChildren)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(WindowContext)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mBrowsingContext)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mChildren)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mNonSyntheticChildren)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(WindowContext)
 
 }  // namespace dom
 
 namespace ipc {
 
 void IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Write(
-    IPC::Message* aMsg, IProtocol* aActor,
+    IPC::MessageWriter* aWriter, IProtocol* aActor,
     const dom::MaybeDiscarded<dom::WindowContext>& aParam) {
   uint64_t id = aParam.ContextId();
-  WriteIPDLParam(aMsg, aActor, id);
+  WriteIPDLParam(aWriter, aActor, id);
 }
 
 bool IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Read(
-    const IPC::Message* aMsg, PickleIterator* aIter, IProtocol* aActor,
+    IPC::MessageReader* aReader, IProtocol* aActor,
     dom::MaybeDiscarded<dom::WindowContext>* aResult) {
   uint64_t id = 0;
-  if (!ReadIPDLParam(aMsg, aIter, aActor, &id)) {
+  if (!ReadIPDLParam(aReader, aActor, &id)) {
     return false;
   }
 
@@ -326,24 +672,23 @@ bool IPDLParamTraits<dom::MaybeDiscarded<dom::WindowContext>>::Read(
 }
 
 void IPDLParamTraits<dom::WindowContext::IPCInitializer>::Write(
-    IPC::Message* aMessage, IProtocol* aActor,
+    IPC::MessageWriter* aWriter, IProtocol* aActor,
     const dom::WindowContext::IPCInitializer& aInit) {
   // Write actor ID parameters.
-  WriteIPDLParam(aMessage, aActor, aInit.mInnerWindowId);
-  WriteIPDLParam(aMessage, aActor, aInit.mOuterWindowId);
-  WriteIPDLParam(aMessage, aActor, aInit.mBrowsingContextId);
-  WriteIPDLParam(aMessage, aActor, aInit.mFields);
+  WriteIPDLParam(aWriter, aActor, aInit.mInnerWindowId);
+  WriteIPDLParam(aWriter, aActor, aInit.mOuterWindowId);
+  WriteIPDLParam(aWriter, aActor, aInit.mBrowsingContextId);
+  WriteIPDLParam(aWriter, aActor, aInit.mFields);
 }
 
 bool IPDLParamTraits<dom::WindowContext::IPCInitializer>::Read(
-    const IPC::Message* aMessage, PickleIterator* aIterator, IProtocol* aActor,
+    IPC::MessageReader* aReader, IProtocol* aActor,
     dom::WindowContext::IPCInitializer* aInit) {
   // Read actor ID parameters.
-  return ReadIPDLParam(aMessage, aIterator, aActor, &aInit->mInnerWindowId) &&
-         ReadIPDLParam(aMessage, aIterator, aActor, &aInit->mOuterWindowId) &&
-         ReadIPDLParam(aMessage, aIterator, aActor,
-                       &aInit->mBrowsingContextId) &&
-         ReadIPDLParam(aMessage, aIterator, aActor, &aInit->mFields);
+  return ReadIPDLParam(aReader, aActor, &aInit->mInnerWindowId) &&
+         ReadIPDLParam(aReader, aActor, &aInit->mOuterWindowId) &&
+         ReadIPDLParam(aReader, aActor, &aInit->mBrowsingContextId) &&
+         ReadIPDLParam(aReader, aActor, &aInit->mFields);
 }
 
 template struct IPDLParamTraits<dom::WindowContext::BaseTransaction>;

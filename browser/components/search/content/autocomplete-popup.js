@@ -6,6 +6,11 @@
 
 // Wrap in a block to prevent leaking to window scope.
 {
+  ChromeUtils.defineESModuleGetters(this, {
+    BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
+    SearchOneOffs: "resource:///modules/SearchOneOffs.sys.mjs",
+  });
+
   /**
    * A richlistbox popup custom element for for a browser search autocomplete
    * widget.
@@ -14,13 +19,12 @@
     constructor() {
       super();
 
-      this.addEventListener("popupshowing", event => {
+      this.addEventListener("popupshowing", () => {
         // First handle deciding if we are showing the reduced version of the
         // popup containing only the preferences button. We do this if the
         // glass icon has been clicked if the text field is empty.
-        let searchbar = document.getElementById("searchbar");
-        if (searchbar.hasAttribute("showonlysettings")) {
-          searchbar.removeAttribute("showonlysettings");
+        if (this.searchbar.hasAttribute("showonlysettings")) {
+          this.searchbar.removeAttribute("showonlysettings");
           this.setAttribute("showonlysettings", "true");
 
           // Setting this with an xbl-inherited attribute gets overridden the
@@ -36,7 +40,7 @@
         }
 
         // Show the current default engine in the top header of the panel.
-        this.updateHeader().catch(Cu.reportError);
+        this.updateHeader().catch(console.error);
 
         this._oneOffButtons.addEventListener(
           "SelectedOneOffButtonChanged",
@@ -44,7 +48,7 @@
         );
       });
 
-      this.addEventListener("popuphiding", event => {
+      this.addEventListener("popuphiding", () => {
         this._oneOffButtons.removeEventListener(
           "SelectedOneOffButtonChanged",
           this
@@ -78,6 +82,12 @@
       };
     }
 
+    // We override this because even though we have a shadow root, we want our
+    // inheritance to be done on the light tree.
+    getElementForAttrInheritance(selector) {
+      return this.querySelector(selector);
+    }
+
     initialize() {
       super.initialize();
       this.initializeAttributeInheritance();
@@ -86,6 +96,7 @@
       this._searchbarEngine = this.querySelector(".search-panel-header");
       this._searchbarEngineName = this.querySelector(".searchbar-engine-name");
       this._oneOffButtons = new SearchOneOffs(this._searchOneOffsContainer);
+      this._searchbar = document.getElementById("searchbar");
     }
 
     get oneOffButtons() {
@@ -98,11 +109,13 @@
     static get markup() {
       return `
       <hbox class="search-panel-header search-panel-current-engine">
-        <image class="searchbar-engine-image"></image>
-        <label class="searchbar-engine-name" flex="1" crop="end" role="presentation"></label>
+        <image class="searchbar-engine-image"/>
+        <label class="searchbar-engine-name" flex="1" crop="end" role="presentation"/>
       </hbox>
-      <richlistbox class="autocomplete-richlistbox search-panel-tree" flex="1"></richlistbox>
-      <hbox class="search-one-offs"></hbox>
+      <menuseparator class="searchbar-separator"/>
+      <richlistbox class="autocomplete-richlistbox search-panel-tree"/>
+      <menuseparator class="searchbar-separator"/>
+      <hbox class="search-one-offs" is_searchbar="true"/>
     `;
     }
 
@@ -125,6 +138,13 @@
         this.initialize();
       }
       return this._searchbarEngineName;
+    }
+
+    get searchbar() {
+      if (!this._searchbar) {
+        this.initialize();
+      }
+      return this._searchbar;
     }
 
     get bundle() {
@@ -150,14 +170,7 @@
         return;
       }
 
-      let searchBar = BrowserSearch.searchBar;
-      let popupForSearchBar = searchBar && searchBar.textbox == this.mInput;
-      if (popupForSearchBar) {
-        searchBar.telemetrySearchDetails = {
-          index: this.selectedIndex,
-          kind: "mouse",
-        };
-      }
+      this.searchbar.telemetrySelectedIndex = this.selectedIndex;
 
       // Check for unmodified left-click, and use default behavior
       if (
@@ -172,43 +185,42 @@
       }
 
       // Check for middle-click or modified clicks on the search bar
-      if (popupForSearchBar) {
-        BrowserUsageTelemetry.recordSearchbarSelectedResultMethod(
-          aEvent,
-          this.selectedIndex
-        );
+      BrowserSearchTelemetry.recordSearchSuggestionSelectionMethod(
+        aEvent,
+        "searchbar",
+        this.selectedIndex
+      );
 
-        // Handle search bar popup clicks
-        let search = this.input.controller.getValueAt(this.selectedIndex);
+      // Handle search bar popup clicks
+      let search = this.input.controller.getValueAt(this.selectedIndex);
 
-        // open the search results according to the clicking subtlety
-        let where = whereToOpenLink(aEvent, false, true);
-        let params = {};
+      // open the search results according to the clicking subtlety
+      let where = BrowserUtils.whereToOpenLink(aEvent, false, true);
+      let params = {};
 
-        // But open ctrl/cmd clicks on autocomplete items in a new background tab.
-        let modifier =
-          AppConstants.platform == "macosx" ? aEvent.metaKey : aEvent.ctrlKey;
-        if (
-          where == "tab" &&
-          aEvent instanceof MouseEvent &&
-          (aEvent.button == 1 || modifier)
-        ) {
-          params.inBackground = true;
-        }
+      // But open ctrl/cmd clicks on autocomplete items in a new background tab.
+      let modifier =
+        AppConstants.platform == "macosx" ? aEvent.metaKey : aEvent.ctrlKey;
+      if (
+        where == "tab" &&
+        MouseEvent.isInstance(aEvent) &&
+        (aEvent.button == 1 || modifier)
+      ) {
+        params.inBackground = true;
+      }
 
-        // leave the popup open for background tab loads
-        if (!(where == "tab" && params.inBackground)) {
-          // close the autocomplete popup and revert the entered search term
-          this.closePopup();
-          this.input.controller.handleEscape();
-        }
+      // leave the popup open for background tab loads
+      if (!(where == "tab" && params.inBackground)) {
+        // close the autocomplete popup and revert the entered search term
+        this.closePopup();
+        this.input.controller.handleEscape();
+      }
 
-        searchBar.doSearch(search, where, null, params);
-        if (where == "tab" && params.inBackground) {
-          searchBar.focus();
-        } else {
-          searchBar.value = search;
-        }
+      this.searchbar.doSearch(search, where, null, params);
+      if (where == "tab" && params.inBackground) {
+        this.searchbar.focus();
+      } else {
+        this.searchbar.value = search;
       }
     }
 
@@ -221,9 +233,9 @@
         }
       }
 
-      let uri = engine.iconURI;
+      let uri = await engine.getIconURL();
       if (uri) {
-        this.setAttribute("src", uri.spec);
+        this.setAttribute("src", uri);
       } else {
         // If the default has just been changed to a provider without icon,
         // avoid showing the icon of the previous default provider.
@@ -243,12 +255,12 @@
      */
     /* eslint-disable-next-line valid-jsdoc */
     handleOneOffSearch(event, engine, where, params) {
-      let searchbar = document.getElementById("searchbar");
-      searchbar.handleSearchCommandWhere(event, engine, where, params);
+      this.searchbar.handleSearchCommandWhere(event, engine, where, params);
     }
 
     /**
      * Passes DOM events for the popup to the _on_<event type> methods.
+     *
      * @param {Event} event
      *   DOM event from the <popup>.
      */
@@ -264,7 +276,7 @@
       let engine =
         this.oneOffButtons.selectedButton &&
         this.oneOffButtons.selectedButton.engine;
-      this.updateHeader(engine).catch(Cu.reportError);
+      this.updateHeader(engine).catch(console.error);
     }
   }
 

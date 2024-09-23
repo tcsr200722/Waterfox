@@ -9,13 +9,12 @@
 
 #include "mozilla/Attributes.h"  // MOZ_STACK_CLASS
 
-#include "jstypes.h"               // JS_PUBLIC_API
-#include "builtin/ModuleObject.h"  // js::{{Im,Ex}portEntry,Requested{Module,}}Object
+#include "jstypes.h"                // JS_PUBLIC_API
 #include "frontend/EitherParser.h"  // js::frontend::EitherParser
-#include "js/GCHashTable.h"         // JS::GCHash{Map,Set}
-#include "js/GCVector.h"            // JS::GCVector
-#include "js/RootingAPI.h"          // JS::{Handle,Rooted}
-#include "vm/AtomsTable.h"          // js::AtomSet
+#include "frontend/ParserAtom.h"    // js::frontend::TaggedParserAtomIndex
+#include "frontend/Stencil.h"       // js::frontend::StencilModuleEntry
+#include "frontend/TaggedParserAtomIndexHasher.h"  // frontend::TaggedParserAtomIndexHasher
+#include "js/GCVector.h"                           // JS::GCVector
 
 struct JS_PUBLIC_API JSContext;
 class JS_PUBLIC_API JSAtom;
@@ -33,73 +32,79 @@ class ParseNode;
 // Process a module's parse tree to collate the import and export data used when
 // creating a ModuleObject.
 class MOZ_STACK_CLASS ModuleBuilder {
-  explicit ModuleBuilder(JSContext* cx,
+  explicit ModuleBuilder(FrontendContext* fc,
                          const frontend::EitherParser& eitherParser);
 
  public:
   template <class Parser>
-  explicit ModuleBuilder(JSContext* cx, Parser* parser)
-      : ModuleBuilder(cx, frontend::EitherParser(parser)) {}
+  explicit ModuleBuilder(FrontendContext* fc, Parser* parser)
+      : ModuleBuilder(fc, frontend::EitherParser(parser)) {}
 
   bool processImport(frontend::BinaryNode* importNode);
   bool processExport(frontend::ParseNode* exportNode);
   bool processExportFrom(frontend::BinaryNode* exportNode);
 
-  bool hasExportedName(JSAtom* name) const;
+  bool hasExportedName(frontend::TaggedParserAtomIndex name) const;
 
-  using ExportEntryVector = GCVector<ExportEntryObject*>;
-  const ExportEntryVector& localExportEntries() const {
-    return localExportEntries_;
-  }
+  bool buildTables(frontend::StencilModuleMetadata& metadata);
 
-  bool buildTables();
-  bool initModule(JS::Handle<ModuleObject*> module);
+  // During BytecodeEmitter we note top-level functions, and afterwards we must
+  // call finishFunctionDecls on the list.
+  bool noteFunctionDeclaration(FrontendContext* fc, uint32_t funIndex);
+  void finishFunctionDecls(frontend::StencilModuleMetadata& metadata);
+
+  void noteAsync(frontend::StencilModuleMetadata& metadata);
 
  private:
-  using RequestedModuleVector = JS::GCVector<RequestedModuleObject*>;
-  using AtomSet = JS::GCHashSet<JSAtom*>;
-  using ImportEntryMap = JS::GCHashMap<JSAtom*, ImportEntryObject*>;
-  using RootedExportEntryVector = JS::Rooted<ExportEntryVector>;
-  using RootedRequestedModuleVector = JS::Rooted<RequestedModuleVector>;
-  using RootedAtomSet = JS::Rooted<AtomSet>;
-  using RootedImportEntryMap = JS::Rooted<ImportEntryMap>;
+  using MaybeModuleRequestIndex = frontend::MaybeModuleRequestIndex;
+  using ModuleRequestVector = frontend::StencilModuleMetadata::RequestVector;
+  using RequestedModuleVector = frontend::StencilModuleMetadata::EntryVector;
 
-  JSContext* cx_;
+  using AtomSet = HashSet<frontend::TaggedParserAtomIndex,
+                          frontend::TaggedParserAtomIndexHasher>;
+  using ExportEntryVector = Vector<frontend::StencilModuleEntry>;
+  using ImportEntryMap =
+      HashMap<frontend::TaggedParserAtomIndex, frontend::StencilModuleEntry,
+              frontend::TaggedParserAtomIndexHasher>;
+
+  FrontendContext* fc_;
   frontend::EitherParser eitherParser_;
-  RootedAtomSet requestedModuleSpecifiers_;
-  RootedRequestedModuleVector requestedModules_;
-  RootedImportEntryMap importEntries_;
-  RootedExportEntryVector exportEntries_;
-  RootedAtomSet exportNames_;
-  RootedExportEntryVector localExportEntries_;
-  RootedExportEntryVector indirectExportEntries_;
-  RootedExportEntryVector starExportEntries_;
 
-  ImportEntryObject* importEntryFor(JSAtom* localName) const;
+  // These are populated while parsing.
+  ModuleRequestVector moduleRequests_;
+  AtomSet requestedModuleSpecifiers_;
+  RequestedModuleVector requestedModules_;
+  ImportEntryMap importEntries_;
+  ExportEntryVector exportEntries_;
+  AtomSet exportNames_;
 
-  bool processExportBinding(frontend::ParseNode* pn);
+  // These are populated while emitting bytecode.
+  FunctionDeclarationVector functionDecls_;
+
+  frontend::StencilModuleEntry* importEntryFor(
+      frontend::TaggedParserAtomIndex localName) const;
+
+  bool processExportBinding(frontend::ParseNode* binding);
   bool processExportArrayBinding(frontend::ListNode* array);
   bool processExportObjectBinding(frontend::ListNode* obj);
 
-  bool appendImportEntryObject(JS::Handle<ImportEntryObject*> importEntry);
+  MaybeModuleRequestIndex appendModuleRequest(
+      frontend::TaggedParserAtomIndex specifier,
+      frontend::ListNode* attributeList);
 
-  bool appendExportEntry(JS::Handle<JSAtom*> exportName,
-                         JS::Handle<JSAtom*> localName,
+  bool appendExportEntry(frontend::TaggedParserAtomIndex exportName,
+                         frontend::TaggedParserAtomIndex localName,
                          frontend::ParseNode* node = nullptr);
 
-  bool appendExportFromEntry(JS::Handle<JSAtom*> exportName,
-                             JS::Handle<JSAtom*> moduleRequest,
-                             JS::Handle<JSAtom*> importName,
-                             frontend::ParseNode* node);
-
-  bool appendExportEntryObject(JS::Handle<ExportEntryObject*> exportEntry);
-
-  bool maybeAppendRequestedModule(JS::Handle<JSAtom*> specifier,
+  bool maybeAppendRequestedModule(MaybeModuleRequestIndex moduleRequest,
                                   frontend::ParseNode* node);
 
-  template <typename K, typename V>
-  ArrayObject* createArrayFromHashMap(
-      const JS::Rooted<JS::GCHashMap<K, V>>& map);
+  void markUsedByStencil(frontend::TaggedParserAtomIndex name);
+
+  [[nodiscard]] bool processAttributes(frontend::StencilModuleRequest& request,
+                                       frontend::ListNode* attributeList);
+
+  [[nodiscard]] bool isAttributeSupported(frontend::TaggedParserAtomIndex key);
 };
 
 template <typename T>

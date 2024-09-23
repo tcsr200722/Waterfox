@@ -1,6 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* import-globals-from ../../../shared/test/shared-head.js */
+
 /* exported promiseWaitForFocus, setup, ch, teardown, loadHelperScript,
             limit, ch, read, codemirrorSetStatus */
 
@@ -12,10 +12,7 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-const Editor = require("devtools/client/shared/sourceeditor/editor");
-const {
-  getClientCssProperties,
-} = require("devtools/client/fronts/css-properties");
+const Editor = require("resource://devtools/client/shared/sourceeditor/editor.js");
 
 function promiseWaitForFocus(el) {
   return new Promise(resolve => waitForFocus(resolve, el));
@@ -53,7 +50,7 @@ async function setup(additionalOpts = {}) {
 
     return {
       ed: editor,
-      win: win,
+      win,
       edWin: editor.container.contentWindow.wrappedJSObject,
     };
   } catch (o_O) {
@@ -153,4 +150,46 @@ function codemirrorSetStatus(statusMsg, type, customMsg) {
   if (customMsg && typeof customMsg == "string" && customMsg != statusMsg) {
     info(customMsg);
   }
+}
+
+async function runCodeMirrorTest(uri) {
+  const actorURI =
+    "chrome://mochitests/content/browser/devtools/client/shared/sourceeditor/test/CodeMirrorTestActors.sys.mjs";
+
+  const { CodeMirrorTestParent } = ChromeUtils.importESModule(actorURI);
+
+  ChromeUtils.registerWindowActor("CodeMirrorTest", {
+    parent: {
+      esModuleURI: actorURI,
+    },
+    child: {
+      esModuleURI: actorURI,
+      events: {
+        DOMWindowCreated: {},
+      },
+    },
+  });
+
+  const donePromise = new Promise(resolve => {
+    CodeMirrorTestParent.setCallback((name, data) => {
+      switch (name) {
+        case "setStatus":
+          const { statusMsg, type, customMsg } = data;
+          codemirrorSetStatus(statusMsg, type, customMsg);
+          break;
+        case "done":
+          resolve(!data.failed);
+          break;
+      }
+    });
+  });
+
+  await addTab(uri);
+  const result = await donePromise;
+  ok(result, "CodeMirror tests all passed");
+  while (gBrowser.tabs.length > 1) {
+    gBrowser.removeCurrentTab();
+  }
+
+  ChromeUtils.unregisterWindowActor("CodeMirrorTest");
 }

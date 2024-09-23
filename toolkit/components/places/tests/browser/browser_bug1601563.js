@@ -3,22 +3,18 @@ const PREFIX =
 
 function titleUpdate(pageUrl) {
   let lastTitle = null;
-  return PlacesTestUtils.waitForNotification(
-    "onTitleChanged",
-    (uri, title) => {
-      if (pageUrl != uri.spec) {
-        return false;
-      }
-      lastTitle = title;
-      return true;
-    },
-    "history"
-  ).then(() => {
+  return PlacesTestUtils.waitForNotification("page-title-changed", events => {
+    if (pageUrl != events[0].url) {
+      return false;
+    }
+    lastTitle = events[0].title;
+    return true;
+  }).then(() => {
     return lastTitle;
   });
 }
 
-add_task(async function() {
+add_task(async function () {
   registerCleanupFunction(PlacesUtils.history.clear);
   const FIRST_URL = PREFIX + "-1.html";
   const SECOND_URL = PREFIX + "-2.html";

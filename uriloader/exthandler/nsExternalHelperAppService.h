@@ -14,11 +14,13 @@
 #include "nsIWebProgressListener2.h"
 #include "nsIHelperAppLauncherDialog.h"
 
+#include "nsILoadInfo.h"
 #include "nsIMIMEInfo.h"
 #include "nsIMIMEService.h"
 #include "nsINamed.h"
 #include "nsIStreamListener.h"
 #include "nsIFile.h"
+#include "nsIPermission.h"
 #include "nsString.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -34,7 +36,15 @@
 class nsExternalAppHandler;
 class nsIMIMEInfo;
 class nsITransfer;
+class nsIPrincipal;
 class MaybeCloseWindowHelper;
+
+#define EXTERNAL_APP_HANDLER_IID                     \
+  {                                                  \
+    0x50eb7479, 0x71ff, 0x4ef8, {                    \
+      0xb3, 0x1e, 0x3b, 0x59, 0xc8, 0xab, 0xb9, 0x24 \
+    }                                                \
+  }
 
 /**
  * The helper app service. Responsible for handling content that Mozilla
@@ -73,8 +83,13 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
                                bool* aResult) override;
   NS_IMETHOD GetProtocolHandlerInfo(const nsACString& aScheme,
                                     nsIHandlerInfo** aHandlerInfo) override;
-  NS_IMETHOD LoadURI(nsIURI* aURI,
-                     mozilla::dom::BrowsingContext* aBrowsingContext) override;
+
+  NS_IMETHOD LoadURI(nsIURI* aURI, nsIPrincipal* aTriggeringPrincipal,
+                     nsIPrincipal* aRedirectPrincipal,
+                     mozilla::dom::BrowsingContext* aBrowsingContext,
+                     bool aWasTriggeredExternally,
+                     bool aHasValidUserGestureActivation,
+                     bool aNewWindowTarget) override;
   NS_IMETHOD SetProtocolHandlerDefaults(nsIHandlerInfo* aHandlerInfo,
                                         bool aOSHandlerExists) override;
 
@@ -98,6 +113,14 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
   NS_IMETHOD OSProtocolHandlerExists(const char* aScheme, bool* aExists) = 0;
 
   /**
+   * Given an extension, get a MIME type string from the builtin list of
+   * mime types.
+   * @return true if we successfully found a mimetype.
+   */
+  virtual bool GetMIMETypeFromDefaultForExtension(const nsACString& aExtension,
+                                                  nsACString& aMIMEType);
+
+  /**
    * Given an extension, get a MIME type string. If not overridden by
    * the OS-specific nsOSHelperAppService, will call into GetMIMEInfoFromOS
    * with an empty mimetype.
@@ -107,6 +130,16 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
                                              nsACString& aMIMEType);
 
   static already_AddRefed<nsExternalHelperAppService> GetSingleton();
+
+  // Internal method. Only called directly from tests.
+  static nsresult EscapeURI(nsIURI* aURI, nsIURI** aResult);
+
+  /**
+   * Logging Module. Usage: set MOZ_LOG=HelperAppService:level, where level
+   * should be 2 for errors, 3 for debug messages from the cross- platform
+   * nsExternalHelperAppService, and 4 for os-specific debug messages.
+   */
+  static mozilla::LazyLogModule sLog;
 
  protected:
   virtual ~nsExternalHelperAppService();
@@ -135,19 +168,20 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
                                               nsIMIMEInfo* aMIMEInfo);
 
   /**
+   * Replace the primary extension of the mimeinfo object if it's in our
+   * list of forbidden extensions. This fixes up broken information
+   * provided to us by the OS.
+   */
+  bool MaybeReplacePrimaryExtension(const nsACString& aPrimaryExtension,
+                                    nsIMIMEInfo* aMIMEInfo);
+
+  /**
    * Searches the "extra" array for a MIME type, and gets its extension.
    * @param aExtension The extension to search for
    * @param aMIMEType [out] The found MIME type.
    * @return true if the extension was found, false otherwise.
    */
   bool GetTypeFromExtras(const nsACString& aExtension, nsACString& aMIMEType);
-
-  /**
-   * Logging Module. Usage: set MOZ_LOG=HelperAppService:level, where level
-   * should be 2 for errors, 3 for debug messages from the cross- platform
-   * nsExternalHelperAppService, and 4 for os-specific debug messages.
-   */
-  static mozilla::LazyLogModule mLog;
 
   // friend, so that it can access the nspr log module.
   friend class nsExternalAppHandler;
@@ -174,6 +208,40 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
    */
   void ExpungeTemporaryPrivateFiles();
 
+  bool GetFileNameFromChannel(nsIChannel* aChannel, nsAString& aFileName,
+                              nsIURI** aURI);
+
+  // Internal version of the method from nsIMIMEService.
+  already_AddRefed<nsIMIMEInfo> ValidateFileNameForSaving(
+      nsAString& aFileName, const nsACString& aMimeType, nsIURI* aURI,
+      nsIURI* aOriginalURI, uint32_t aFlags, bool aAllowURLExtension);
+
+  // If aFileName is blank or just an extension, set aFileName to the
+  // default filename.
+  void CheckDefaultFileName(nsAString& aFileName, uint32_t aFlags);
+
+  // Ensure that the filename is safe for the file system. This will remove or
+  // replace any invalid characters and trim extra whitespace as needed. If the
+  // filename is too long, it will be truncated but the existing period and
+  // extension, if any, will be preserved.
+  void SanitizeFileName(nsAString& aFileName, uint32_t aFlags);
+
+  /**
+   * Helper routine that checks how we should modify an extension
+   * for this file.
+   */
+  enum ModifyExtensionType {
+    // Replace an invalid extension with the preferred one.
+    ModifyExtension_Replace = 0,
+    // Append the preferred extension after any existing one.
+    ModifyExtension_Append = 1,
+    // Don't modify the extension.
+    ModifyExtension_Ignore = 2
+  };
+  ModifyExtensionType ShouldModifyExtension(nsIMIMEInfo* aMimeInfo,
+                                            bool aForceAppend,
+                                            const nsCString& aFileExt);
+
   /**
    * Array for the files that should be deleted
    */
@@ -186,7 +254,7 @@ class nsExternalHelperAppService : public nsIExternalHelperAppService,
 
  private:
   nsresult DoContentContentProcessHelper(
-      const nsACString& aMimeContentType, nsIRequest* aRequest,
+      const nsACString& aMimeContentType, nsIChannel* aChannel,
       mozilla::dom::BrowsingContext* aContentContext, bool aForceSave,
       nsIInterfaceRequestor* aWindowContext,
       nsIStreamListener** aStreamListener);
@@ -213,6 +281,8 @@ class nsExternalAppHandler final : public nsIStreamListener,
   NS_DECL_NSIBACKGROUNDFILESAVEROBSERVER
   NS_DECL_NSINAMED
 
+  NS_DECLARE_STATIC_IID_ACCESSOR(EXTERNAL_APP_HANDLER_IID)
+
   /**
    * @param aMIMEInfo       MIMEInfo object, representing the type of the
    *                        content that should be handled
@@ -224,15 +294,15 @@ class nsExternalAppHandler final : public nsIStreamListener,
    *                        in which case dialogs will be parented to
    *                        aContentContext.
    * @param mExtProtSvc     nsExternalHelperAppService on creation
-   * @param aFileName       The filename to use
+   * @param aSuggestedFileName The filename to use
    * @param aReason         A constant from nsIHelperAppLauncherDialog
    * indicating why the request is handled by a helper app.
    */
-  nsExternalAppHandler(nsIMIMEInfo* aMIMEInfo, const nsACString& aFileExtension,
+  nsExternalAppHandler(nsIMIMEInfo* aMIMEInfo, const nsAString& aFileExtension,
                        mozilla::dom::BrowsingContext* aBrowsingContext,
                        nsIInterfaceRequestor* aWindowContext,
                        nsExternalHelperAppService* aExtProtSvc,
-                       const nsAString& aFilename, uint32_t aReason,
+                       const nsAString& aSuggestedFileName, uint32_t aReason,
                        bool aForceSave);
 
   /**
@@ -245,14 +315,14 @@ class nsExternalAppHandler final : public nsIStreamListener,
    */
   void MaybeApplyDecodingForExtension(nsIRequest* request);
 
-  void SetShouldCloseWindow() { mShouldCloseWindow = true; }
-
  protected:
+  bool IsDownloadSpam(nsIChannel* aChannel);
+
   ~nsExternalAppHandler();
 
   nsCOMPtr<nsIFile> mTempFile;
   nsCOMPtr<nsIURI> mSourceUrl;
-  nsString mTempFileExtension;
+  nsString mFileExtension;
   nsString mTempLeafName;
 
   /**
@@ -292,6 +362,12 @@ class nsExternalAppHandler final : public nsIStreamListener,
   bool mForceSave;
 
   /**
+   * If set, any internally handled type that has a disposition of
+     nsIChannel::DISPOSITION_ATTACHMENT will be saved to disk.
+   */
+  bool mForceSaveInternallyHandled;
+
+  /**
    * The canceled flag is set if the user canceled the launching of this
    * application before we finished saving the data to a temp file.
    */
@@ -305,15 +381,15 @@ class nsExternalAppHandler final : public nsIStreamListener,
   bool mIsFileChannel;
 
   /**
-   * True if the ExternalHelperAppChild told us that we should close the window
-   * if we handle the content as a download.
-   */
-  bool mShouldCloseWindow;
-
-  /**
    * True if the file should be handled internally.
    */
   bool mHandleInternally;
+
+  /**
+   * True if any dialog (e.g. unknown content type or file picker) is shown —
+   * can stop downloads panel from opening, to avoid redundant interruptions.
+   */
+  bool mDialogShowing;
 
   /**
    * One of the REASON_ constants from nsIHelperAppLauncherDialog. Indicates the
@@ -321,6 +397,13 @@ class nsExternalAppHandler final : public nsIStreamListener,
    * etc).
    */
   uint32_t mReason;
+
+  /**
+   * Indicates if the nsContentSecurityUtils rate this download as
+   * acceptable, potentialy unwanted or illigal request.
+   *
+   */
+  int32_t mDownloadClassification;
 
   /**
    * Track the executable-ness of the temporary file.
@@ -435,10 +518,16 @@ class nsExternalAppHandler final : public nsIStreamListener,
   bool GetNeverAskFlagFromPref(const char* prefName, const char* aContentType);
 
   /**
-   * Helper routine to ensure that mTempFileExtension only contains an extension
+   * Helper routine to ensure that mSuggestedFileName ends in the correct
+   * extension, in case the original extension contains invalid characters
+   * or if this download is for a mimetype where we enforce using a specific
+   * extension (image/, video/, and audio/ based mimetypes, and a few specific
+   * document types).
+   *
+   * It also ensure that mFileExtension only contains an extension
    * when it is different from mSuggestedFileName's extension.
    */
-  void EnsureTempFileExtension(const nsString& aFileExt);
+  void EnsureCorrectExtension(const nsString& aFileExt);
 
   typedef enum { kReadError, kWriteError, kLaunchError } ErrorType;
   /**
@@ -448,8 +537,8 @@ class nsExternalAppHandler final : public nsIStreamListener,
                         const nsString& path);
 
   /**
-   * Set in nsHelperDlgApp.js. This is always null after the user has chosen an
-   * action.
+   * Set in HelperAppDlg.sys.mjs. This is always null after the user has chosen
+   * an action.
    */
   nsCOMPtr<nsIWebProgressListener2> mDialogProgressListener;
   /**
@@ -470,5 +559,6 @@ class nsExternalAppHandler final : public nsIStreamListener,
 
   RefPtr<nsExternalHelperAppService> mExtProtSvc;
 };
+NS_DEFINE_STATIC_IID_ACCESSOR(nsExternalAppHandler, EXTERNAL_APP_HANDLER_IID)
 
 #endif  // nsExternalHelperAppService_h__

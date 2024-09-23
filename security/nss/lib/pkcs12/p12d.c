@@ -241,6 +241,7 @@ sec_pkcs12_decoder_decryption_allowed(SECAlgorithmID *algid,
     PRBool decryptionAllowed = SEC_PKCS12DecryptionAllowed(algid);
 
     if (!decryptionAllowed) {
+        PORT_SetError(SEC_ERROR_BAD_EXPORT_ALGORITHM);
         return PR_FALSE;
     }
 
@@ -337,31 +338,38 @@ sec_pkcs12_decoder_safe_bag_update(void *arg, const char *data,
     SEC_PKCS12DecoderContext *p12dcx;
     SECStatus rv;
 
-    /* make sure that we are not skipping the current safeBag,
-     * and that there are no errors.  If so, just return rather
-     * than continuing to process.
-     */
-    if (!safeContentsCtx || !safeContentsCtx->p12dcx ||
-        safeContentsCtx->p12dcx->error || safeContentsCtx->skipCurrentSafeBag) {
+    if (!safeContentsCtx || !safeContentsCtx->p12dcx || !safeContentsCtx->currentSafeBagA1Dcx) {
         return;
     }
     p12dcx = safeContentsCtx->p12dcx;
 
+    /* make sure that there are no errors and we are not skipping the current safeBag */
+    if (p12dcx->error || safeContentsCtx->skipCurrentSafeBag) {
+        goto loser;
+    }
+
     rv = SEC_ASN1DecoderUpdate(safeContentsCtx->currentSafeBagA1Dcx, data, len);
     if (rv != SECSuccess) {
         p12dcx->errorValue = PORT_GetError();
+        p12dcx->error = PR_TRUE;
+        goto loser;
+    }
+
+    /* The update may have set safeContentsCtx->skipCurrentSafeBag, and we
+     * may not get another opportunity to clean up the decoder context.
+     */
+    if (safeContentsCtx->skipCurrentSafeBag) {
         goto loser;
     }
 
     return;
 
 loser:
-    /* set the error, and finish the decoder context.  because there
+    /* Finish the decoder context. Because there
      * is not a way of returning an error message, it may be worth
      * while to do a check higher up and finish any decoding contexts
      * that are still open.
      */
-    p12dcx->error = PR_TRUE;
     SEC_ASN1DecoderFinish(safeContentsCtx->currentSafeBagA1Dcx);
     safeContentsCtx->currentSafeBagA1Dcx = NULL;
     return;
@@ -1318,17 +1326,14 @@ sec_pkcs12_decoder_verify_mac(SEC_PKCS12DecoderContext *p12dcx)
 {
     PK11Context *pk11cx = NULL;
     PK11SymKey *symKey = NULL;
-    SECItem *params = NULL;
     unsigned char *buf;
     SECStatus rv = SECFailure;
     SECStatus lrv;
     unsigned int bufLen;
-    int iteration;
     int bytesRead;
-    SECOidTag algtag;
     SECItem hmacRes;
     SECItem ignore = { 0 };
-    CK_MECHANISM_TYPE integrityMech;
+    CK_MECHANISM_TYPE hmacMech;
 
     if (!p12dcx || p12dcx->error) {
         PORT_SetError(SEC_ERROR_INVALID_ARGS);
@@ -1343,50 +1348,15 @@ sec_pkcs12_decoder_verify_mac(SEC_PKCS12DecoderContext *p12dcx)
 #endif
 
     /* generate hmac key */
-    if (p12dcx->macData.iter.data) {
-        iteration = (int)DER_GetInteger(&p12dcx->macData.iter);
-    } else {
-        iteration = 1;
-    }
-
-    params = PK11_CreatePBEParams(&p12dcx->macData.macSalt, p12dcx->pwitem,
-                                  iteration);
-
-    algtag = SECOID_GetAlgorithmTag(&p12dcx->macData.safeMac.digestAlgorithm);
-    switch (algtag) {
-        case SEC_OID_SHA1:
-            integrityMech = CKM_NSS_PBE_SHA1_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_MD5:
-            integrityMech = CKM_NSS_PBE_MD5_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_MD2:
-            integrityMech = CKM_NSS_PBE_MD2_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_SHA224:
-            integrityMech = CKM_NSS_PKCS12_PBE_SHA224_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_SHA256:
-            integrityMech = CKM_NSS_PKCS12_PBE_SHA256_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_SHA384:
-            integrityMech = CKM_NSS_PKCS12_PBE_SHA384_HMAC_KEY_GEN;
-            break;
-        case SEC_OID_SHA512:
-            integrityMech = CKM_NSS_PKCS12_PBE_SHA512_HMAC_KEY_GEN;
-            break;
-        default:
-            goto loser;
-    }
-
-    symKey = PK11_KeyGen(NULL, integrityMech, params, 0, NULL);
-    PK11_DestroyPBEParams(params);
-    params = NULL;
-    if (!symKey)
+    symKey = sec_pkcs12_integrity_key(p12dcx->slot, &p12dcx->macData,
+                                      p12dcx->pwitem, &hmacMech, PR_TRUE,
+                                      p12dcx->wincx);
+    if (symKey == NULL) {
         goto loser;
+    }
+
     /* init hmac */
-    pk11cx = PK11_CreateContextBySymKey(sec_pkcs12_algtag_to_mech(algtag),
-                                        CKA_SIGN, symKey, &ignore);
+    pk11cx = PK11_CreateContextBySymKey(hmacMech, CKA_SIGN, symKey, &ignore);
     if (!pk11cx) {
         goto loser;
     }
@@ -1454,9 +1424,6 @@ loser:
 
     if (pk11cx) {
         PK11_DestroyContext(pk11cx, PR_TRUE);
-    }
-    if (params) {
-        PK11_DestroyPBEParams(params);
     }
     if (symKey) {
         PK11_FreeSymKey(symKey);
@@ -2486,6 +2453,12 @@ sec_pkcs12_add_key(sec_PKCS12SafeBag *key, SECKEYPublicKey *pubKey,
                 &key->safeBagContent.pkcs8ShroudedKeyBag->algorithm;
             SECOidTag algorithm = SECOID_GetAlgorithmTag(algid);
 
+            if (!SEC_PKCS12DecryptionAllowed(algid)) {
+                key->error = SEC_ERROR_BAD_EXPORT_ALGORITHM;
+                key->problem = PR_TRUE;
+                return SECFailure;
+            }
+
             if (forceUnicode) {
                 if (SECITEM_CopyItem(NULL, &pwitem, key->pwitem) != SECSuccess) {
                     key->error = SEC_ERROR_PKCS12_UNABLE_TO_IMPORT_KEY;
@@ -2792,7 +2765,7 @@ SEC_PKCS12DecoderValidateBags(SEC_PKCS12DecoderContext *p12dcx,
                               SEC_PKCS12NicknameCollisionCallback nicknameCb)
 {
     SECStatus rv;
-    int i, noInstallCnt, probCnt, bagCnt, errorVal = 0;
+    int i, probCnt, errorVal = 0;
     if (!p12dcx || p12dcx->error || !p12dcx->safeBags) {
         PORT_SetError(SEC_ERROR_INVALID_ARGS);
         return SECFailure;
@@ -2803,27 +2776,15 @@ SEC_PKCS12DecoderValidateBags(SEC_PKCS12DecoderContext *p12dcx,
         p12dcx->bagsVerified = PR_TRUE;
     }
 
-    noInstallCnt = probCnt = bagCnt = 0;
+    probCnt = 0;
     i = 0;
     while (p12dcx->safeBags[i]) {
-        bagCnt++;
-        if (p12dcx->safeBags[i]->noInstall)
-            noInstallCnt++;
         if (p12dcx->safeBags[i]->problem) {
             probCnt++;
             errorVal = p12dcx->safeBags[i]->error;
         }
         i++;
     }
-
-    /* formerly was erroneous code here that assumed that if all bags
-     * failed to import, then the problem was duplicated data;
-     * that is, it assume that the problem must be that the file had
-     * previously been successfully imported.  But importing a
-     * previously imported file causes NO ERRORS at all, and this
-     * false assumption caused real errors to be hidden behind false
-     * errors about duplicated data.
-     */
 
     if (probCnt) {
         PORT_SetError(errorVal);
@@ -3404,8 +3365,7 @@ sec_pkcs12_decoder_create_cert(SEC_PKCS12DecoderContext *p12dcx,
 
     oid = SECOID_FindOIDByTag(SEC_OID_PKCS12_V1_CERT_BAG_ID);
     certBag = PORT_ArenaZNew(p12dcx->arena, sec_PKCS12SafeBag);
-    if (!certBag || !oid || (SECITEM_CopyItem(p12dcx->arena,
-                                              &certBag->safeBagType, &oid->oid) != SECSuccess)) {
+    if (!certBag || !oid || (SECITEM_CopyItem(p12dcx->arena, &certBag->safeBagType, &oid->oid) != SECSuccess)) {
         return NULL;
     }
 

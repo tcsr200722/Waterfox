@@ -2,16 +2,20 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import json
-import jsonschema
 import os
 import pathlib
 import statistics
+import sys
+
+import jsonschema
 
 from mozperftest.layers import Layer
+from mozperftest.metrics.common import COMMON_ARGS, filtered_metrics
 from mozperftest.metrics.exceptions import PerfherderValidDataError
-from mozperftest.metrics.common import filtered_metrics
-from mozperftest.metrics.utils import write_json
-
+from mozperftest.metrics.notebook.constant import Constant
+from mozperftest.metrics.notebook.transformer import get_transformer
+from mozperftest.metrics.utils import has_callable_method, is_number, write_json
+from mozperftest.utils import strtobool
 
 PERFHERDER_SCHEMA = pathlib.Path(
     "testing", "mozharness", "external_tools", "performance-artifact-schema.json"
@@ -19,49 +23,31 @@ PERFHERDER_SCHEMA = pathlib.Path(
 
 
 class Perfherder(Layer):
-    """Output data in the perfherder format.
-    """
+    """Output data in the perfherder format."""
 
     name = "perfherder"
     activated = False
 
-    arguments = {
-        "prefix": {
-            "type": str,
-            "default": "",
-            "help": "Prefix the output files with this string.",
-        },
-        "app": {
-            "type": str,
-            "default": "firefox",
-            "choices": [
-                "firefox",
-                "chrome-m",
-                "chrome",
-                "chromium",
-                "fennec",
-                "geckoview",
-                "fenix",
-                "refbrow",
-            ],
-            "help": (
-                "Shorthand name of application that is "
-                "being tested (used in perfherder data)."
-            ),
-        },
-        "metrics": {
-            "nargs": "*",
-            "default": [],
-            "help": "The metrics that should be retrieved from the data.",
-        },
-        "stats": {
-            "action": "store_true",
-            "default": False,
-            "help": "If set, browsertime statistics will be reported.",
-        },
-    }
+    arguments = COMMON_ARGS
+    arguments.update(
+        {
+            "stats": {
+                "action": "store_true",
+                "default": False,
+                "help": "If set, browsertime statistics will be reported.",
+            },
+            "timestamp": {
+                "type": float,
+                "default": None,
+                "help": (
+                    "Timestamp to use for the perfherder data. Can be the "
+                    "current date or a past date if needed."
+                ),
+            },
+        }
+    )
 
-    def __call__(self, metadata):
+    def run(self, metadata):
         """Processes the given results into a perfherder-formatted data blob.
 
         If the `--perfherder` flag isn't provided, then the
@@ -86,55 +72,82 @@ class Perfherder(Layer):
             exclusions = ["statistics."]
 
         # Get filtered metrics
+        metrics = self.get_arg("metrics")
         results, fullsettings = filtered_metrics(
             metadata,
             output,
             prefix,
-            metrics=self.get_arg("metrics"),
+            metrics=metrics,
+            transformer=self.get_arg("transformer"),
             settings=True,
             exclude=exclusions,
+            split_by=self.get_arg("split-by"),
+            simplify_names=self.get_arg("simplify-names"),
+            simplify_exclude=self.get_arg("simplify-exclude"),
         )
 
         if not any([results[name] for name in results]):
             self.warning("No results left after filtering")
             return metadata
 
-        # XXX Add version info into this data
         app_info = {"name": self.get_arg("app", default="firefox")}
+        if metadata.binary_version:
+            app_info["version"] = metadata.binary_version
+
+        # converting the metrics list into a mapping where
+        # keys are the metrics nane
+        if metrics is not None:
+            metrics = dict([(m["name"], m) for m in metrics])
+        else:
+            metrics = {}
 
         all_perfherder_data = None
         for name, res in results.items():
-            settings = fullsettings[name]
+            settings = dict(fullsettings[name])
+            # updating the settings with values provided in metrics, if any
+            if name in metrics:
+                settings.update(metrics[name])
 
             # XXX Instead of just passing replicates here, we should build
             # up a partial perfherder data blob (with options) and subtest
             # overall values.
-            subtests = {}
+            subtests = []
             for r in res:
-                vals = [
-                    v["value"]
-                    for v in r["data"]
-                    if isinstance(v["value"], (int, float))
-                ]
+                subtest = {}
+                vals = [v["value"] for v in r["data"] if is_number(v["value"])]
                 if vals:
-                    subtests[r["subtest"]] = vals
+                    subtest["name"] = r["subtest"]
+                    subtest["replicates"] = vals
+                    subtest["result"] = r
+                    subtests.append(subtest)
 
             perfherder_data = self._build_blob(
                 subtests,
                 name=name,
                 extra_options=settings.get("extraOptions"),
-                should_alert=settings.get("shouldAlert", False),
+                should_alert=strtobool(settings.get("shouldAlert", False)),
                 application=app_info,
-                alert_threshold=settings.get("alertThreshold", 2.0),
-                lower_is_better=settings.get("lowerIsBetter", True),
+                alert_threshold=float(settings.get("alertThreshold", 2.0)),
+                lower_is_better=strtobool(settings.get("lowerIsBetter", True)),
                 unit=settings.get("unit", "ms"),
                 summary=settings.get("value"),
+                framework=settings.get("framework"),
+                metrics_info=metrics,
+                transformer=res[0].get("transformer", None),
             )
 
             if all_perfherder_data is None:
                 all_perfherder_data = perfherder_data
             else:
                 all_perfherder_data["suites"].extend(perfherder_data["suites"])
+
+        if prefix:
+            # If a prefix was given, store it in the perfherder data as well
+            all_perfherder_data["prefix"] = prefix
+
+        timestamp = self.get_arg("timestamp")
+        if timestamp is not None:
+            all_perfherder_data["pushTimestamp"] = timestamp
 
         # Validate the final perfherder data blob
         with pathlib.Path(metadata._mach_cmd.topsrcdir, PERFHERDER_SCHEMA).open() as f:
@@ -148,7 +161,14 @@ class Perfherder(Layer):
 
         # XXX "suites" key error occurs when using self.info so a print
         # is being done for now.
-        print("PERFHERDER_DATA: " + json.dumps(all_perfherder_data))
+
+        # print() will produce a BlockingIOError on large outputs, so we use
+        # sys.stdout
+        sys.stdout.write("PERFHERDER_DATA: ")
+        json.dump(all_perfherder_data, sys.stdout)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
         metadata.set_output(write_json(all_perfherder_data, output, file))
         return metadata
 
@@ -167,6 +187,8 @@ class Perfherder(Layer):
         lower_is_better=True,
         unit="ms",
         summary=None,
+        metrics_info=None,
+        transformer=None,
     ):
         """Build a PerfHerder data blob from the given subtests.
 
@@ -213,6 +235,10 @@ class Perfherder(Layer):
         :param summary float: The summary value to use in the perfherder
             data blob. By default, the mean of all the subtests will be
             used.
+        :param metrics_info dict: Contains a mapping of metric names to the
+            options that are used on the metric.
+        :param transformer str: The name of a predefined tranformer, a module
+            path to a transform, or a path to the file containing the transformer.
 
         :return dict: The PerfHerder data blob.
         """
@@ -221,15 +247,32 @@ class Perfherder(Layer):
         if subtest_should_alert is None:
             subtest_should_alert = []
         if framework is None:
-            framework = {"name": "browsertime"}
+            framework = {"name": "mozperftest"}
         if application is None:
             application = {"name": "firefox", "version": "9000"}
+        if metrics_info is None:
+            metrics_info = {}
+
+        # Use the transform to produce a suite value
+        const = Constant()
+        tfm_cls = None
+        transformer_obj = None
+        if transformer and transformer in const.predefined_transformers:
+            # A pre-built transformer name was given
+            tfm_cls = const.predefined_transformers[transformer]
+            transformer_obj = tfm_cls()
+        elif transformer is not None:
+            tfm_cls = get_transformer(transformer)
+            transformer_obj = tfm_cls()
+        else:
+            self.warning(
+                "No transformer found for this suite. Cannot produce a summary value."
+            )
 
         perf_subtests = []
         suite = {
             "name": name,
             "type": test_type,
-            "value": None,
             "unit": unit,
             "extraOptions": extra_options,
             "lowerIsBetter": lower_is_better,
@@ -246,24 +289,58 @@ class Perfherder(Layer):
         }
 
         allvals = []
-        for measurement in subtests:
-            reps = subtests[measurement]
+        alert_thresholds = []
+        for subtest_res in subtests:
+            measurement = subtest_res["name"]
+            reps = subtest_res["replicates"]
+            extra_info = subtest_res["result"]
             allvals.extend(reps)
 
             if len(reps) == 0:
                 self.warning("No replicates found for {}, skipping".format(measurement))
                 continue
 
-            perf_subtests.append(
-                {
-                    "name": measurement,
-                    "replicates": reps,
-                    "lowerIsBetter": lower_is_better,
-                    "value": statistics.mean(reps),
-                    "unit": unit,
-                    "shouldAlert": should_alert or measurement in subtest_should_alert,
-                }
-            )
+            # Gather extra settings specified from within a metric specification
+            subtest_lower_is_better = lower_is_better
+            subtest_unit = unit
+            for met in metrics_info:
+                if met not in measurement:
+                    continue
+
+                extra_options.extend(metrics_info[met].get("extraOptions", []))
+                alert_thresholds.append(
+                    metrics_info[met].get("alertThreshold", alert_threshold)
+                )
+
+                subtest_unit = metrics_info[met].get("unit", unit)
+                subtest_lower_is_better = metrics_info[met].get(
+                    "lowerIsBetter", lower_is_better
+                )
+
+                if metrics_info[met].get("shouldAlert", should_alert):
+                    subtest_should_alert.append(measurement)
+
+                break
+
+            subtest = {
+                "name": measurement,
+                "replicates": reps,
+                "lowerIsBetter": extra_info.get(
+                    "lowerIsBetter", subtest_lower_is_better
+                ),
+                "value": None,
+                "unit": extra_info.get("unit", subtest_unit),
+                "shouldAlert": extra_info.get(
+                    "shouldAlert", should_alert or measurement in subtest_should_alert
+                ),
+            }
+
+            if has_callable_method(transformer_obj, "subtest_summary"):
+                subtest["value"] = transformer_obj.subtest_summary(subtest)
+            if subtest["value"] is None:
+                subtest["value"] = statistics.mean(reps)
+
+            perf_subtests.append(subtest)
 
         if len(allvals) == 0:
             raise PerfherderValidDataError(
@@ -271,5 +348,20 @@ class Perfherder(Layer):
                 + "only int/float data is accepted."
             )
 
-        suite["value"] = statistics.mean(allvals)
+        alert_thresholds = list(set(alert_thresholds))
+        if len(alert_thresholds) > 1:
+            raise PerfherderValidDataError(
+                "Too many alertThreshold's were specified, expecting 1 but found "
+                + f"{len(alert_thresholds)}"
+            )
+        elif len(alert_thresholds) == 1:
+            suite["alertThreshold"] = alert_thresholds[0]
+
+        suite["extraOptions"] = list(set(suite["extraOptions"]))
+
+        if has_callable_method(transformer_obj, "summary"):
+            val = transformer_obj.summary(suite)
+            if val is not None:
+                suite["value"] = val
+
         return perfherder

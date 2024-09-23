@@ -48,39 +48,24 @@ struct ItemVisitData {
   PRTime time;
 };
 
-struct ItemChangeData {
-  BookmarkData bookmark;
-  bool isAnnotation = false;
-  bool updateLastModified = false;
-  uint16_t source = nsINavBookmarksService::SOURCE_DEFAULT;
-  nsCString property;
-  nsCString newValue;
-  nsCString oldValue;
-};
-
 struct TombstoneData {
   nsCString guid;
   PRTime dateRemoved;
 };
 
 typedef void (nsNavBookmarks::*ItemVisitMethod)(const ItemVisitData&);
-typedef void (nsNavBookmarks::*ItemChangeMethod)(const ItemChangeData&);
 
 enum BookmarkDate { LAST_MODIFIED };
 
 }  // namespace places
 }  // namespace mozilla
 
-class nsNavBookmarks final
-    : public nsINavBookmarksService,
-      public nsINavHistoryObserver,
-      public nsIObserver,
-      public nsSupportsWeakReference,
-      public mozilla::places::INativePlacesEventCallback {
+class nsNavBookmarks final : public nsINavBookmarksService,
+                             public nsIObserver,
+                             public nsSupportsWeakReference {
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSINAVBOOKMARKSSERVICE
-  NS_DECL_NSINAVHISTORYOBSERVER
   NS_DECL_NSIOBSERVER
 
   nsNavBookmarks();
@@ -108,7 +93,6 @@ class nsNavBookmarks final
 
   typedef mozilla::places::BookmarkData BookmarkData;
   typedef mozilla::places::ItemVisitData ItemVisitData;
-  typedef mozilla::places::ItemChangeData ItemChangeData;
   typedef mozilla::places::BookmarkStatementId BookmarkStatementId;
 
   nsresult OnVisit(nsIURI* aURI, int64_t aVisitId, PRTime aTime,
@@ -116,12 +100,6 @@ class nsNavBookmarks final
                    uint32_t aTransitionType, const nsACString& aGUID,
                    bool aHidden, uint32_t aVisitCount, uint32_t aTyped,
                    const nsAString& aLastKnownTitle);
-
-  nsresult GetBookmarkURI(int64_t aItemId, nsIURI** _URI);
-
-  nsresult ResultNodeForContainer(const nsCString& aGUID,
-                                  nsNavHistoryQueryOptions* aOptions,
-                                  nsNavHistoryResultNode** aNode);
 
   // Find all the children of a folder, using the given query and options.
   // For each child, a ResultNode is created and added to |children|.
@@ -193,25 +171,6 @@ class nsNavBookmarks final
    */
   void NotifyItemVisited(const ItemVisitData& aData);
 
-  /**
-   * Notifies that a bookmark has changed.
-   *
-   * @param aItemId
-   *        The changed item id.
-   * @param aData
-   *        Details about the change.
-   */
-  void NotifyItemChanged(const ItemChangeData& aData);
-
-  /**
-   * Part of INativePlacesEventCallback - handles events from the places
-   * observer system.
-   * @param aCx
-   *        A JSContext for extracting the values from aEvents.
-   * @param aEvents
-   *        An array of weakly typed events detailing what changed.
-   */
-  void HandlePlacesEvent(const PlacesEventSequence& aEvents) override;
   static const int32_t kGetChildrenIndex_Guid;
   static const int32_t kGetChildrenIndex_Position;
   static const int32_t kGetChildrenIndex_Type;
@@ -284,19 +243,6 @@ class nsNavBookmarks final
    * This is an handle to the Places database.
    */
   RefPtr<mozilla::places::Database> mDB;
-
-  nsMaybeWeakPtrArray<nsINavBookmarkObserver> mObservers;
-
-  int64_t TagsRootId() { return mDB->GetTagsFolderId(); }
-
-  inline bool IsRoot(int64_t aFolderId) {
-    return aFolderId == mDB->GetRootFolderId() ||
-           aFolderId == mDB->GetMenuFolderId() ||
-           aFolderId == mDB->GetTagsFolderId() ||
-           aFolderId == mDB->GetUnfiledFolderId() ||
-           aFolderId == mDB->GetToolbarFolderId() ||
-           aFolderId == mDB->GetMobileFolderId();
-  }
 
   nsresult SetItemDateInternal(enum mozilla::places::BookmarkDate aDateType,
                                int64_t aSyncChangeDelta, int64_t aItemId,

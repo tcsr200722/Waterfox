@@ -9,7 +9,7 @@
 
 const TEST_URI = URL_ROOT + "doc_browser_fontinspector_iframe.html";
 
-add_task(async function() {
+add_task(async function () {
   const { inspector, view } = await openFontInspectorForURL(TEST_URI);
   const viewDoc = view.document;
   const property = "font-size";
@@ -30,8 +30,7 @@ add_task(async function() {
     in: 0.521,
   };
 
-  const node = await getNodeFrontInFrame(selector, "#frame", inspector);
-  await selectNode(node, inspector);
+  await selectNodeInFrames(["#frame", selector], inspector);
 
   info("Check that font editor shows font-size value in original units");
   const fontSize = getPropertyValue(viewDoc, property);
@@ -53,8 +52,8 @@ add_task(async function() {
       unit
     );
     is(
-      convertedValue,
-      value,
+      parseFloat(convertedValue),
+      parseFloat(value),
       `Converting to ${unit} returns transformed value.`
     );
 

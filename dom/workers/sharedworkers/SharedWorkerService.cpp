@@ -5,8 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SharedWorkerService.h"
+#include "mozilla/dom/MessagePort.h"
 #include "mozilla/dom/RemoteWorkerTypes.h"
+#include "mozilla/dom/SharedWorkerManager.h"
 #include "mozilla/ipc/BackgroundParent.h"
+#include "mozilla/ipc/URIUtils.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticMutex.h"
@@ -33,7 +37,7 @@ class GetOrCreateWorkerManagerRunnable final : public Runnable {
                                    uint64_t aWindowID,
                                    const MessagePortIdentifier& aPortIdentifier)
       : Runnable("GetOrCreateWorkerManagerRunnable"),
-        mBackgroundEventTarget(GetCurrentThreadEventTarget()),
+        mBackgroundEventTarget(GetCurrentSerialEventTarget()),
         mService(aService),
         mActor(aActor),
         mData(aData),
@@ -74,8 +78,11 @@ class WorkerManagerCreatedRunnable final : public Runnable {
   Run() {
     AssertIsOnBackgroundThread();
 
-    if (NS_WARN_IF(!mManagerWrapper->Manager()->MaybeCreateRemoteWorker(
-            mData, mWindowID, mPortIdentifier, mActor->OtherPid()))) {
+    if (NS_WARN_IF(
+            !mActor->CanSend() ||
+            !mManagerWrapper->Manager()->MaybeCreateRemoteWorker(
+                mData, mWindowID, mPortIdentifier, mActor->OtherPid()))) {
+      // If we cannot send, the error won't arrive, but we may log something.
       mActor->ErrorPropagation(NS_ERROR_FAILURE);
       return NS_OK;
     }
@@ -121,14 +128,12 @@ already_AddRefed<SharedWorkerService> SharedWorkerService::GetOrCreate() {
   if (!sSharedWorkerService) {
     sSharedWorkerService = new SharedWorkerService();
     // ClearOnShutdown can only be called on main thread
-    nsresult rv = SchedulerGroup::Dispatch(
-        TaskCategory::Other,
-        NS_NewRunnableFunction("RegisterSharedWorkerServiceClearOnShutdown",
-                               []() {
-                                 StaticMutexAutoLock lock(sSharedWorkerMutex);
-                                 MOZ_ASSERT(sSharedWorkerService);
-                                 ClearOnShutdown(&sSharedWorkerService);
-                               }));
+    nsresult rv = SchedulerGroup::Dispatch(NS_NewRunnableFunction(
+        "RegisterSharedWorkerServiceClearOnShutdown", []() {
+          StaticMutexAutoLock lock(sSharedWorkerMutex);
+          MOZ_ASSERT(sSharedWorkerService);
+          ClearOnShutdown(&sSharedWorkerService);
+        }));
     Unused << NS_WARN_IF(NS_FAILED(rv));
   }
 
@@ -154,7 +159,7 @@ void SharedWorkerService::GetOrCreateWorkerManager(
       new GetOrCreateWorkerManagerRunnable(this, aActor, aData, aWindowID,
                                            aPortIdentifier);
 
-  nsresult rv = SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+  nsresult rv = SchedulerGroup::Dispatch(r.forget());
   Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 
@@ -166,11 +171,11 @@ void SharedWorkerService::GetOrCreateWorkerManagerOnMainThread(
   MOZ_ASSERT(aBackgroundEventTarget);
   MOZ_ASSERT(aActor);
 
-  auto storagePrincipalOrErr =
-      PrincipalInfoToPrincipal(aData.storagePrincipalInfo());
-  if (NS_WARN_IF(storagePrincipalOrErr.isErr())) {
+  auto partitionedPrincipalOrErr =
+      PrincipalInfoToPrincipal(aData.partitionedPrincipalInfo());
+  if (NS_WARN_IF(partitionedPrincipalOrErr.isErr())) {
     ErrorPropagationOnMainThread(aBackgroundEventTarget, aActor,
-                                 storagePrincipalOrErr.unwrapErr());
+                                 partitionedPrincipalOrErr.unwrapErr());
     return;
   }
 
@@ -185,7 +190,13 @@ void SharedWorkerService::GetOrCreateWorkerManagerOnMainThread(
   RefPtr<SharedWorkerManagerHolder> managerHolder;
 
   nsCOMPtr<nsIPrincipal> loadingPrincipal = loadingPrincipalOrErr.unwrap();
-  nsCOMPtr<nsIPrincipal> storagePrincipal = storagePrincipalOrErr.unwrap();
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal =
+      partitionedPrincipalOrErr.unwrap();
+
+  nsCOMPtr<nsIPrincipal> effectiveStoragePrincipal = partitionedPrincipal;
+  if (aData.useRegularPrincipal()) {
+    effectiveStoragePrincipal = loadingPrincipal;
+  }
 
   // Let's see if there is already a SharedWorker to share.
   nsCOMPtr<nsIURI> resolvedScriptURL =
@@ -193,7 +204,7 @@ void SharedWorkerService::GetOrCreateWorkerManagerOnMainThread(
   for (SharedWorkerManager* workerManager : mWorkerManagers) {
     managerHolder = workerManager->MatchOnMainThread(
         this, aData.domain(), resolvedScriptURL, aData.name(), loadingPrincipal,
-        BasePrincipal::Cast(storagePrincipal)->OriginAttributesRef());
+        BasePrincipal::Cast(effectiveStoragePrincipal)->OriginAttributesRef());
     if (managerHolder) {
       break;
     }
@@ -203,7 +214,7 @@ void SharedWorkerService::GetOrCreateWorkerManagerOnMainThread(
   if (!managerHolder) {
     managerHolder = SharedWorkerManager::Create(
         this, aBackgroundEventTarget, aData, loadingPrincipal,
-        BasePrincipal::Cast(storagePrincipal)->OriginAttributesRef());
+        BasePrincipal::Cast(effectiveStoragePrincipal)->OriginAttributesRef());
 
     mWorkerManagers.AppendElement(managerHolder->Manager());
   } else {

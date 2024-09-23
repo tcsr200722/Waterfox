@@ -7,7 +7,9 @@
 #include "IDTracker.h"
 
 #include "mozilla/Encoding.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentOrShadowRoot.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "nsAtom.h"
 #include "nsContentUtils.h"
 #include "nsIURI.h"
@@ -16,8 +18,7 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsStringFwd.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static Element* LookupElement(DocumentOrShadowRoot& aDocOrShadow,
                               const nsAString& aRef, bool aReferenceImage) {
@@ -49,6 +50,10 @@ static DocumentOrShadowRoot* FindTreeToWatch(nsIContent& aContent,
 
   return aContent.OwnerDoc();
 }
+
+IDTracker::IDTracker() = default;
+
+IDTracker::~IDTracker() { Unlink(); }
 
 void IDTracker::ResetToURIFragmentID(nsIContent* aFromContent, nsIURI* aURI,
                                      nsIReferrerInfo* aReferrerInfo,
@@ -123,8 +128,45 @@ void IDTracker::ResetToURIFragmentID(nsIContent* aFromContent, nsIURI* aURI,
   HaveNewDocumentOrShadowRoot(docOrShadow, aWatch, ref);
 }
 
+void IDTracker::ResetWithLocalRef(Element& aFrom, const nsAString& aLocalRef,
+                                  bool aWatch) {
+  MOZ_ASSERT(nsContentUtils::IsLocalRefURL(aLocalRef));
+
+  auto ref = Substring(aLocalRef, 1);
+  if (ref.IsEmpty()) {
+    Unlink();
+    return;
+  }
+
+  nsAutoCString utf8Ref;
+  if (!AppendUTF16toUTF8(ref, utf8Ref, mozilla::fallible)) {
+    Unlink();
+    return;
+  }
+
+  // Only unescape ASCII characters; if we were to unescape arbitrary bytes,
+  // we'd potentially end up with invalid UTF-8.
+  nsAutoCString unescaped;
+  bool appended;
+  if (NS_FAILED(NS_UnescapeURL(utf8Ref.BeginReading(), utf8Ref.Length(),
+                               esc_OnlyASCII | esc_AlwaysCopy, unescaped,
+                               appended, mozilla::fallible))) {
+    Unlink();
+    return;
+  }
+
+  RefPtr<nsAtom> idAtom = NS_Atomize(unescaped);
+  ResetWithID(aFrom, idAtom, aWatch);
+}
+
 void IDTracker::ResetWithID(Element& aFrom, nsAtom* aID, bool aWatch) {
   MOZ_ASSERT(aID);
+
+  Unlink();
+
+  if (aID->IsEmpty()) {
+    return;
+  }
 
   if (aWatch) {
     mWatchID = aID;
@@ -183,6 +225,8 @@ void IDTracker::Unlink() {
   mReferencingImage = false;
 }
 
+void IDTracker::ElementChanged(Element* aFrom, Element* aTo) { mElement = aTo; }
+
 bool IDTracker::Observe(Element* aOldElement, Element* aNewElement,
                         void* aData) {
   IDTracker* p = static_cast<IDTracker*>(aData);
@@ -201,6 +245,23 @@ bool IDTracker::Observe(Element* aOldElement, Element* aNewElement,
     p->mWatchID = nullptr;
   }
   return keepTracking;
+}
+
+IDTracker::ChangeNotification::ChangeNotification(IDTracker* aTarget,
+                                                  Element* aFrom, Element* aTo)
+    : mozilla::Runnable("IDTracker::ChangeNotification"),
+      Notification(aTarget),
+      mFrom(aFrom),
+      mTo(aTo) {}
+
+IDTracker::ChangeNotification::~ChangeNotification() = default;
+
+void IDTracker::ChangeNotification::SetTo(Element* aTo) { mTo = aTo; }
+
+void IDTracker::ChangeNotification::Clear() {
+  Notification::Clear();
+  mFrom = nullptr;
+  mTo = nullptr;
 }
 
 NS_IMPL_ISUPPORTS_INHERITED0(IDTracker::ChangeNotification, mozilla::Runnable)
@@ -224,5 +285,16 @@ IDTracker::DocumentLoadNotification::Observe(nsISupports* aSubject,
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+DocumentOrShadowRoot* IDTracker::GetWatchDocOrShadowRoot() const {
+  if (!mWatchDocumentOrShadowRoot) {
+    return nullptr;
+  }
+  MOZ_ASSERT(mWatchDocumentOrShadowRoot->IsDocument() ||
+             mWatchDocumentOrShadowRoot->IsShadowRoot());
+  if (ShadowRoot* shadow = ShadowRoot::FromNode(*mWatchDocumentOrShadowRoot)) {
+    return shadow;
+  }
+  return mWatchDocumentOrShadowRoot->AsDocument();
+}
+
+}  // namespace mozilla::dom

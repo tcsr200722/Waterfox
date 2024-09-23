@@ -6,20 +6,33 @@
 
 "use strict";
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
-var { sinon } = ChromeUtils.import("resource://testing-common/Sinon.jsm");
+const { sinon } = ChromeUtils.importESModule(
+  "resource://testing-common/Sinon.sys.mjs"
+);
+const { SCOPE_APP_SYNC, SCOPE_OLD_SYNC } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsCommon.sys.mjs"
+);
+
+// Some mock key data, in both scoped-key and legacy field formats.
+const MOCK_ACCOUNT_KEYS = {
+  scopedKeys: {
+    [SCOPE_APP_SYNC]: {
+      kid: "1234567890123-u7u7u7u7u7u7u7u7u7u7uw",
+      k: "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqg",
+      kty: "oct",
+    },
+  },
+};
 
 (function initFxAccountsTestingInfrastructure() {
   do_get_profile();
 
-  let ns = {};
-  ChromeUtils.import(
-    "resource://testing-common/services/common/logging.js",
-    ns
+  let { initTestLogging } = ChromeUtils.importESModule(
+    "resource://testing-common/services/common/logging.sys.mjs"
   );
 
-  ns.initTestLogging("Trace");
-}.call(this));
+  initTestLogging("Trace");
+}).call(this);

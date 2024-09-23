@@ -7,6 +7,7 @@
 #define WEBGL_TRANSFORM_FEEDBACK_H_
 
 #include "WebGLObjectModel.h"
+#include "WebGLTypes.h"
 
 namespace mozilla {
 namespace webgl {

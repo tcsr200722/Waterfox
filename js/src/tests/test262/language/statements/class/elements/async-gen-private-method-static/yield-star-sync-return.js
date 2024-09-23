@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-static-methods-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/async-generators/yield-star-sync-return.case
 // - src/async-generators/default/async-class-decl-static-private-method.template
@@ -146,8 +146,14 @@ class C {
 }
 
 // Test the private fields do not appear as properties before set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);
 
 var iter = C.gen();
 
@@ -183,14 +189,14 @@ iter.next().then(v => {
 
     assert.sameValue(log.length, 6, "log.length");
 
-    iter.return("return-arg-2").then(v => {
+    iter.return().then(v => {
       assert.sameValue(log[6].name, "get return");
       assert.sameValue(log[6].thisValue.name, "syncIterator", "get return thisValue");
 
       assert.sameValue(log[7].name, "call return");
       assert.sameValue(log[7].thisValue.name, "syncIterator", "get return thisValue");
       assert.sameValue(log[7].args.length, 1, "return args.length");
-      assert.sameValue(log[7].args[0], "return-arg-2", "return args[0]");
+      assert.sameValue(log[7].args[0], undefined, "return args[0]");
 
       assert.sameValue(log[8].name, "get return done (2)");
       assert.sameValue(log[8].thisValue.name, "return-result-2", "get return done thisValue");
@@ -209,5 +215,11 @@ iter.next().then(v => {
 assert.sameValue(callCount, 1);
 
 // Test the private fields do not appear as properties after set to value
-assert.sameValue(Object.hasOwnProperty.call(C.prototype, "#gen"), false, 'Object.hasOwnProperty.call(C.prototype, "#gen")');
-assert.sameValue(Object.hasOwnProperty.call(C, "#gen"), false, 'Object.hasOwnProperty.call(C, "#gen")');
+assert(
+  !Object.prototype.hasOwnProperty.call(C.prototype, "#gen"),
+  "#gen does not appear as an own property on C prototype"
+);
+assert(
+  !Object.prototype.hasOwnProperty.call(C, "#gen"),
+  "#gen does not appear as an own property on C constructor"
+);

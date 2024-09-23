@@ -7,12 +7,14 @@
 
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::dom::TElement;
+use crate::properties::longhands::contain::computed_value::T as Contain;
+use crate::properties::longhands::container_type::computed_value::T as ContainerType;
+use crate::properties::longhands::content_visibility::computed_value::T as ContentVisibility;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::longhands::float::computed_value::T as Float;
 use crate::properties::longhands::overflow_x::computed_value::T as Overflow;
 use crate::properties::longhands::position::computed_value::T as Position;
 use crate::properties::{self, ComputedValues, StyleBuilder};
-use app_units::Au;
 
 /// A struct that implements all the adjustment methods.
 ///
@@ -138,9 +140,46 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     ///    computed to 'absolute' if the element is in a top layer.
     ///
     fn adjust_for_top_layer(&mut self) {
-        if !self.style.is_absolutely_positioned() && self.style.in_top_layer() {
+        if !self.style.in_top_layer() {
+            return;
+        }
+        if !self.style.is_absolutely_positioned() {
             self.style.mutate_box().set_position(Position::Absolute);
         }
+        if self.style.get_box().clone_display().is_contents() {
+            self.style.mutate_box().set_display(Display::Block);
+        }
+    }
+
+    /// -webkit-box with line-clamp and vertical orientation gets turned into
+    /// flow-root at computed-value time.
+    ///
+    /// This makes the element not be a flex container, with all that it
+    /// implies, but it should be safe. It matches blink, see
+    /// https://bugzilla.mozilla.org/show_bug.cgi?id=1786147#c10
+    fn adjust_for_webkit_line_clamp(&mut self) {
+        use crate::properties::longhands::_moz_box_orient::computed_value::T as BoxOrient;
+        use crate::values::specified::box_::{DisplayInside, DisplayOutside};
+        let box_style = self.style.get_box();
+        if box_style.clone__webkit_line_clamp().is_none() {
+            return;
+        }
+        let disp = box_style.clone_display();
+        if disp.inside() != DisplayInside::WebkitBox {
+            return;
+        }
+        if self.style.get_xul().clone__moz_box_orient() != BoxOrient::Vertical {
+            return;
+        }
+        let new_display = if disp.outside() == DisplayOutside::Block {
+            Display::FlowRoot
+        } else {
+            debug_assert_eq!(disp.outside(), DisplayOutside::Inline);
+            Display::InlineBlock
+        };
+        self.style
+            .mutate_box()
+            .set_adjusted_display(new_display, false);
     }
 
     /// CSS 2.1 section 9.7:
@@ -177,9 +216,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     where
         E: TElement,
     {
-        #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
-        use crate::computed_values::list_style_position::T as ListStylePosition;
-
         let mut blockify = false;
         macro_rules! blockify_if {
             ($if_what:expr) => {
@@ -199,16 +235,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
         blockify_if!(self.style.is_floating());
         blockify_if!(self.style.is_absolutely_positioned());
-        #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
-        blockify_if!(
-            self.style.pseudo.map_or(false, |p| p.is_marker()) &&
-                self.style.get_parent_list().clone_list_style_position() ==
-                    ListStylePosition::Outside &&
-                !layout_parent_style
-                    .get_box()
-                    .clone_display()
-                    .is_inline_flow()
-        );
 
         if !blockify {
             return;
@@ -225,7 +251,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
 
     /// Compute a few common flags for both text and element's style.
     fn set_bits(&mut self) {
-        let display = self.style.get_box().clone_display();
+        let box_style = self.style.get_box();
+        let display = box_style.clone_display();
 
         if !display.is_contents() {
             if !self
@@ -254,11 +281,22 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
                 .add_flags(ComputedValueFlags::IS_ROOT_ELEMENT_STYLE);
         }
 
-        #[cfg(feature = "servo-layout-2013")]
+        if box_style
+            .clone_effective_containment()
+            .contains(Contain::STYLE)
         {
-            if self.style.get_parent_column().is_multicol() {
-                self.style.add_flags(ComputedValueFlags::CAN_BE_FRAGMENTED);
-            }
+            self.style
+                .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_CONTAIN_STYLE);
+        }
+
+        if box_style.clone_container_type().is_size_container_type() {
+            self.style
+                .add_flags(ComputedValueFlags::SELF_OR_ANCESTOR_HAS_SIZE_CONTAINER_TYPE);
+        }
+
+        #[cfg(feature = "servo")]
+        if self.style.get_parent_column().is_multicol() {
+            self.style.add_flags(ComputedValueFlags::CAN_BE_FRAGMENTED);
         }
     }
 
@@ -360,20 +398,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
     }
 
-    /// When mathvariant is not "none", font-weight and font-style are
-    /// both forced to "normal".
-    #[cfg(feature = "gecko")]
-    fn adjust_for_mathvariant(&mut self) {
-        use crate::properties::longhands::_moz_math_variant::computed_value::T as MozMathVariant;
-        use crate::properties::longhands::font_weight::computed_value::T as FontWeight;
-        use crate::values::generics::font::FontStyle;
-        if self.style.get_font().clone__moz_math_variant() != MozMathVariant::None {
-            let font_style = self.style.mutate_font();
-            font_style.set_font_weight(FontWeight::normal());
-            font_style.set_font_style(FontStyle::Normal);
-        }
-    }
-
     /// This implements an out-of-date spec. The new spec moves the handling of
     /// this to layout, which Gecko implements but Servo doesn't.
     ///
@@ -405,61 +429,131 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         properties::adjust_border_width(self.style);
     }
 
-    /// The initial value of outline-width may be changed at computed value time.
-    fn adjust_for_outline(&mut self) {
-        if self
-            .style
-            .get_outline()
-            .clone_outline_style()
-            .none_or_hidden() &&
-            self.style.get_outline().outline_has_nonzero_width()
-        {
-            self.style.mutate_outline().set_outline_width(Au(0).into());
+    /// column-rule-style: none causes a computed column-rule-width of zero
+    /// at computed value time.
+    fn adjust_for_column_rule_width(&mut self) {
+        let column_style = self.style.get_column();
+        if !column_style.clone_column_rule_style().none_or_hidden() {
+            return;
+        }
+        if !column_style.column_rule_has_nonzero_width() {
+            return;
+        }
+        self.style
+            .mutate_column()
+            .set_column_rule_width(crate::Zero::zero());
+    }
+
+    /// outline-style: none causes a computed outline-width of zero at computed
+    /// value time.
+    fn adjust_for_outline_width(&mut self) {
+        let outline = self.style.get_outline();
+        if !outline.clone_outline_style().none_or_hidden() {
+            return;
+        }
+        if !outline.outline_has_nonzero_width() {
+            return;
+        }
+        self.style
+            .mutate_outline()
+            .set_outline_width(crate::Zero::zero());
+    }
+
+    /// CSS overflow-x and overflow-y require some fixup as well in some cases.
+    /// https://drafts.csswg.org/css-overflow-3/#overflow-properties
+    /// "Computed value: as specified, except with `visible`/`clip` computing to
+    /// `auto`/`hidden` (respectively) if one of `overflow-x` or `overflow-y` is
+    /// neither `visible` nor `clip`."
+    fn adjust_for_overflow(&mut self) {
+        let overflow_x = self.style.get_box().clone_overflow_x();
+        let overflow_y = self.style.get_box().clone_overflow_y();
+        if overflow_x == overflow_y {
+            return; // optimization for the common case
+        }
+
+        if overflow_x.is_scrollable() != overflow_y.is_scrollable() {
+            let box_style = self.style.mutate_box();
+            box_style.set_overflow_x(overflow_x.to_scrollable());
+            box_style.set_overflow_y(overflow_y.to_scrollable());
         }
     }
 
-    /// CSS3 overflow-x and overflow-y require some fixup as well in some
-    /// cases.
+    fn adjust_for_contain(&mut self) {
+        let box_style = self.style.get_box();
+        let container_type = box_style.clone_container_type();
+        let content_visibility = box_style.clone_content_visibility();
+        if container_type == ContainerType::Normal &&
+            content_visibility == ContentVisibility::Visible
+        {
+            debug_assert_eq!(
+                box_style.clone_contain(),
+                box_style.clone_effective_containment()
+            );
+            return;
+        }
+        let old_contain = box_style.clone_contain();
+        let mut new_contain = old_contain;
+        match content_visibility {
+            ContentVisibility::Visible => {},
+            // `content-visibility:auto` also applies size containment when content
+            // is not relevant (and therefore skipped). This is checked in
+            // nsIFrame::GetContainSizeAxes.
+            ContentVisibility::Auto => {
+                new_contain.insert(Contain::LAYOUT | Contain::PAINT | Contain::STYLE)
+            },
+            ContentVisibility::Hidden => new_contain
+                .insert(Contain::LAYOUT | Contain::PAINT | Contain::SIZE | Contain::STYLE),
+        }
+        match container_type {
+            ContainerType::Normal => {},
+            // https://drafts.csswg.org/css-contain-3/#valdef-container-type-inline-size:
+            //     Applies layout containment, style containment, and inline-size
+            //     containment to the principal box.
+            ContainerType::InlineSize => {
+                new_contain.insert(Contain::LAYOUT | Contain::STYLE | Contain::INLINE_SIZE)
+            },
+            // https://drafts.csswg.org/css-contain-3/#valdef-container-type-size:
+            //     Applies layout containment, style containment, and size
+            //     containment to the principal box.
+            ContainerType::Size => {
+                new_contain.insert(Contain::LAYOUT | Contain::STYLE | Contain::SIZE)
+            },
+        }
+        if new_contain == old_contain {
+            debug_assert_eq!(
+                box_style.clone_contain(),
+                box_style.clone_effective_containment()
+            );
+            return;
+        }
+        self.style
+            .mutate_box()
+            .set_effective_containment(new_contain);
+    }
+
+    /// content-visibility: auto should force contain-intrinsic-size to gain
+    /// an auto value
     ///
-    /// overflow: clip and overflow: visible are meaningful only when used in
-    /// both dimensions.
-    fn adjust_for_overflow(&mut self) {
-        let original_overflow_x = self.style.get_box().clone_overflow_x();
-        let original_overflow_y = self.style.get_box().clone_overflow_y();
-
-        let mut overflow_x = original_overflow_x;
-        let mut overflow_y = original_overflow_y;
-
-        if overflow_x == overflow_y {
+    /// <https://github.com/w3c/csswg-drafts/issues/8407>
+    fn adjust_for_contain_intrinsic_size(&mut self) {
+        let content_visibility = self.style.get_box().clone_content_visibility();
+        if content_visibility != ContentVisibility::Auto {
             return;
         }
 
-        // If 'visible' is specified but doesn't match the other dimension,
-        // it turns into 'auto'.
-        if overflow_x == Overflow::Visible {
-            overflow_x = Overflow::Auto;
+        let pos = self.style.get_position();
+        let new_width = pos.clone_contain_intrinsic_width().add_auto_if_needed();
+        let new_height = pos.clone_contain_intrinsic_height().add_auto_if_needed();
+        if new_width.is_none() && new_height.is_none() {
+            return;
         }
 
-        if overflow_y == Overflow::Visible {
-            overflow_y = Overflow::Auto;
+        let pos = self.style.mutate_position();
+        if let Some(width) = new_width {
+            pos.set_contain_intrinsic_width(width);
         }
-
-        #[cfg(feature = "gecko")]
-        {
-            // overflow: clip is deprecated, so convert to hidden if it's
-            // specified in only one dimension.
-            if overflow_x == Overflow::MozHiddenUnscrollable {
-                overflow_x = Overflow::Hidden;
-            }
-            if overflow_y == Overflow::MozHiddenUnscrollable {
-                overflow_y = Overflow::Hidden;
-            }
-        }
-
-        if overflow_x != original_overflow_x || overflow_y != original_overflow_y {
-            let box_style = self.style.mutate_box();
-            box_style.set_overflow_x(overflow_x);
-            box_style.set_overflow_y(overflow_y);
+        if let Some(height) = new_height {
+            pos.set_contain_intrinsic_height(height);
         }
     }
 
@@ -508,13 +602,9 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         let overflow_x = box_style.clone_overflow_x();
         let overflow_y = box_style.clone_overflow_y();
 
-        fn scrollable(v: Overflow) -> bool {
-            v != Overflow::MozHiddenUnscrollable && v != Overflow::Visible
-        }
-
         // If at least one is scrollable we'll adjust the other one in
         // adjust_for_overflow if needed.
-        if scrollable(overflow_x) || scrollable(overflow_y) {
+        if overflow_x.is_scrollable() || overflow_y.is_scrollable() {
             return;
         }
 
@@ -537,7 +627,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             return;
         }
 
-        debug_assert_eq!(self.style.get_box().clone_display(), Display::Block);
         // TODO We actually want style from parent rather than layout
         // parent, so that this fixup doesn't happen incorrectly when
         // when <fieldset> has "display: contents".
@@ -762,25 +851,85 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     where
         E: TElement,
     {
-        use crate::properties::longhands::_moz_appearance::computed_value::T as Appearance;
+        use crate::properties::longhands::appearance::computed_value::T as Appearance;
         use crate::properties::longhands::line_height::computed_value::T as LineHeight;
 
-        if self.style.get_box().clone__moz_appearance() == Appearance::Menulist {
-            if self.style.get_inherited_text().clone_line_height() == LineHeight::normal() {
+        let box_ = self.style.get_box();
+        let appearance = match box_.clone_appearance() {
+            Appearance::Auto => box_.clone__moz_default_appearance(),
+            a => a,
+        };
+
+        if appearance == Appearance::Menulist {
+            if self.style.get_font().clone_line_height() == LineHeight::normal() {
                 return;
             }
             if self.style.pseudo.is_some() {
                 return;
             }
             let is_html_select_element = element.map_or(false, |e| {
-                e.is_html_element() && e.local_name() == &*local_name!("select")
+                e.is_html_element() && e.local_name() == &*atom!("select")
             });
             if !is_html_select_element {
                 return;
             }
             self.style
-                .mutate_inherited_text()
+                .mutate_font()
                 .set_line_height(LineHeight::normal());
+        }
+    }
+
+    /// A legacy ::marker (i.e. no 'content') without an author-specified 'font-family'
+    /// and 'list-style-type:disc|circle|square|disclosure-closed|disclosure-open'
+    /// is assigned 'font-family:-moz-bullet-font'. (This is for <ul><li> etc.)
+    /// We don't want synthesized italic/bold for this font, so turn that off too.
+    /// Likewise for 'letter/word-spacing' -- unless the author specified it then reset
+    /// them to their initial value because traditionally we never added such spacing
+    /// between a legacy bullet and the list item's content, so we keep that behavior
+    /// for web-compat reasons.
+    /// We intentionally don't check 'list-style-image' below since we want it to use
+    /// the same font as its fallback ('list-style-type') in case it fails to load.
+    #[cfg(feature = "gecko")]
+    fn adjust_for_marker_pseudo(&mut self) {
+        use crate::values::computed::counters::Content;
+        use crate::values::computed::font::{FontFamily, FontSynthesis};
+        use crate::values::computed::text::{LetterSpacing, WordSpacing};
+
+        let is_legacy_marker = self.style.pseudo.map_or(false, |p| p.is_marker()) &&
+            self.style.get_list().clone_list_style_type().is_bullet() &&
+            self.style.get_counters().clone_content() == Content::Normal;
+        if !is_legacy_marker {
+            return;
+        }
+        let flags = self.style.flags.get();
+        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_FAMILY) {
+            self.style
+                .mutate_font()
+                .set_font_family(FontFamily::moz_bullet().clone());
+
+            // FIXME(mats): We can remove this if support for font-synthesis is added to @font-face rules.
+            // Then we can add it to the @font-face rule in html.css instead.
+            // https://github.com/w3c/csswg-drafts/issues/6081
+            if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_SYNTHESIS_WEIGHT) {
+                self.style
+                    .mutate_font()
+                    .set_font_synthesis_weight(FontSynthesis::None);
+            }
+            if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_FONT_SYNTHESIS_STYLE) {
+                self.style
+                    .mutate_font()
+                    .set_font_synthesis_style(FontSynthesis::None);
+            }
+        }
+        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_LETTER_SPACING) {
+            self.style
+                .mutate_inherited_text()
+                .set_letter_spacing(LetterSpacing::normal());
+        }
+        if !flags.contains(ComputedValueFlags::HAS_AUTHOR_SPECIFIED_WORD_SPACING) {
+            self.style
+                .mutate_inherited_text()
+                .set_word_spacing(WordSpacing::normal());
         }
     }
 
@@ -822,12 +971,14 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         }
         self.adjust_for_top_layer();
         self.blockify_if_necessary(layout_parent_style, element);
+        self.adjust_for_webkit_line_clamp();
         self.adjust_for_position();
         self.adjust_for_overflow();
+        self.adjust_for_contain();
+        self.adjust_for_contain_intrinsic_size();
         #[cfg(feature = "gecko")]
         {
             self.adjust_for_table_text_align();
-            self.adjust_for_mathvariant();
             self.adjust_for_justify_items();
         }
         #[cfg(feature = "servo")]
@@ -835,7 +986,8 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
             self.adjust_for_alignment(layout_parent_style);
         }
         self.adjust_for_border_width();
-        self.adjust_for_outline();
+        self.adjust_for_column_rule_width();
+        self.adjust_for_outline_width();
         self.adjust_for_writing_mode(layout_parent_style);
         #[cfg(feature = "gecko")]
         {
@@ -848,6 +1000,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         #[cfg(feature = "gecko")]
         {
             self.adjust_for_appearance(element);
+            self.adjust_for_marker_pseudo();
         }
         self.set_bits();
     }

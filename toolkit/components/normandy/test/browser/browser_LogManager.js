@@ -1,9 +1,13 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Log.jsm", this);
-ChromeUtils.import("resource://normandy/lib/LogManager.jsm", this);
+const { LogManager } = ChromeUtils.importESModule(
+  "resource://normandy/lib/LogManager.sys.mjs"
+);
+const { Log } = ChromeUtils.importESModule(
+  "resource://gre/modules/Log.sys.mjs"
+);
 
-add_task(async function() {
+add_task(async function () {
   // Ensure that configuring the logger affects all generated loggers.
   const firstLogger = LogManager.getLogger("first");
   LogManager.configure(5);

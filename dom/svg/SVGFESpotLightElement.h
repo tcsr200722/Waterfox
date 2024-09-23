@@ -4,21 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFESpotLightElement_h
-#define mozilla_dom_SVGFESpotLightElement_h
+#ifndef DOM_SVG_SVGFESPOTLIGHTELEMENT_H_
+#define DOM_SVG_SVGFESPOTLIGHTELEMENT_H_
 
 #include "SVGAnimatedNumber.h"
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFESpotLightElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGFELightElement SVGFESpotLightElementBase;
+using SVGFESpotLightElementBase = SVGFELightElement;
 
-class SVGFESpotLightElement : public SVGFESpotLightElementBase {
+class SVGFESpotLightElement final : public SVGFESpotLightElementBase {
   friend nsresult(::NS_NewSVGFESpotLightElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -28,17 +27,16 @@ class SVGFESpotLightElement : public SVGFESpotLightElementBase {
   explicit SVGFESpotLightElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFESpotLightElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual mozilla::gfx::LightType ComputeLightAttributes(
-      nsSVGFilterInstance* aInstance,
-      nsTArray<float>& aFloatAttributes) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
+  mozilla::gfx::LightType ComputeLightAttributes(
+      SVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) override;
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedNumber> X();
@@ -51,7 +49,7 @@ class SVGFESpotLightElement : public SVGFESpotLightElementBase {
   already_AddRefed<DOMSVGAnimatedNumber> LimitingConeAngle();
 
  protected:
-  virtual NumberAttributesInfo GetNumberInfo() override;
+  NumberAttributesInfo GetNumberInfo() override;
 
   enum {
     ATTR_X,
@@ -67,7 +65,6 @@ class SVGFESpotLightElement : public SVGFESpotLightElementBase {
   static NumberInfo sNumberInfo[8];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFESpotLightElement_h
+#endif  // DOM_SVG_SVGFESPOTLIGHTELEMENT_H_

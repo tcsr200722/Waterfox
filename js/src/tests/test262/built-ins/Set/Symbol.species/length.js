@@ -2,7 +2,7 @@
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-es6id: 23.2.2.2
+esid: sec-get-set-@@species
 description: >
   get Set [ @@species ].length is 0.
 info: |
@@ -25,10 +25,11 @@ features: [Symbol.species]
 
 var desc = Object.getOwnPropertyDescriptor(Set, Symbol.species);
 
-assert.sameValue(desc.get.length, 0);
-
-verifyNotEnumerable(desc.get, "length");
-verifyNotWritable(desc.get, "length");
-verifyConfigurable(desc.get, "length");
+verifyProperty(desc.get, "length", {
+  value: 0,
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

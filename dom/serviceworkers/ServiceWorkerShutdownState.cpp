@@ -23,8 +23,7 @@
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using Progress = ServiceWorkerShutdownState::Progress;
 
@@ -113,8 +112,7 @@ void ReportServiceWorkerShutdownProgress(uint32_t aShutdownStateId,
   if (NS_IsMainThread()) {
     MOZ_ALWAYS_SUCCEEDS(r->Run());
   } else {
-    MOZ_ALWAYS_SUCCEEDS(
-        SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(r.forget()));
   }
 }
 
@@ -141,8 +139,7 @@ void ReportServiceWorkerShutdownProgress(uint32_t aShutdownStateId) {
 
 void MaybeReportServiceWorkerShutdownProgress(const ServiceWorkerOpArgs& aArgs,
                                               bool aShutdownCompleted) {
-  if (!ServiceWorkerParentInterceptEnabled() ||
-      (XRE_IsParentProcess() && !XRE_IsE10sParentProcess())) {
+  if (XRE_IsParentProcess() && !XRE_IsE10sParentProcess()) {
     return;
   }
 
@@ -164,5 +161,4 @@ void MaybeReportServiceWorkerShutdownProgress(const ServiceWorkerOpArgs& aArgs,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

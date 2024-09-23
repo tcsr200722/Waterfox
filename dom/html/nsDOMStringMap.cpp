@@ -16,7 +16,7 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsDOMStringMap)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsDOMStringMap)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsDOMStringMap)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mElement)
@@ -33,8 +33,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsDOMStringMap)
   }
   tmp->mExpandoAndGeneration.OwnerUnlinked();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(nsDOMStringMap)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsDOMStringMap)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -120,7 +118,7 @@ void nsDOMStringMap::NamedDeleter(const nsAString& aProp, bool& found) {
   RefPtr<nsAtom> attrAtom = NS_Atomize(attr);
   MOZ_ASSERT(attrAtom, "Should be infallible");
 
-  found = mElement->HasAttr(kNameSpaceID_None, attrAtom);
+  found = mElement->HasAttr(attrAtom);
 
   if (found) {
     mRemovingProp = true;
@@ -200,7 +198,7 @@ bool nsDOMStringMap::AttrToDataProp(const nsAString& aAttr,
                                     nsAutoString& aResult) {
   // If the attribute name does not begin with "data-" then it can not be
   // a data attribute.
-  if (!StringBeginsWith(aAttr, NS_LITERAL_STRING("data-"))) {
+  if (!StringBeginsWith(aAttr, u"data-"_ns)) {
     return false;
   }
 
@@ -238,8 +236,7 @@ void nsDOMStringMap::AttributeChanged(Element* aElement, int32_t aNameSpaceID,
   if ((aModType == MutationEvent_Binding::ADDITION ||
        aModType == MutationEvent_Binding::REMOVAL) &&
       aNameSpaceID == kNameSpaceID_None &&
-      StringBeginsWith(nsDependentAtomString(aAttribute),
-                       NS_LITERAL_STRING("data-"))) {
+      StringBeginsWith(nsDependentAtomString(aAttribute), u"data-"_ns)) {
     ++mExpandoAndGeneration.generation;
   }
 }

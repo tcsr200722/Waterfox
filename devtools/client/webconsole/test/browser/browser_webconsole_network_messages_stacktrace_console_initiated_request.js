@@ -10,19 +10,28 @@ const TEST_URI = TEST_PATH + TEST_FILE;
 
 pushPref("devtools.webconsole.filter.netxhr", true);
 
+registerCleanupFunction(async function () {
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
+      resolve()
+    );
+  });
+});
+
 add_task(async function task() {
   const hud = await openNewTabAndConsole(TEST_URI);
 
   const xhrUrl = TEST_PATH + "sjs_slow-response-test-server.sjs";
 
   info("Fire an XHR POST request from the console.");
-  const { node: messageNode } = await executeAndWaitForMessage(
+  const { node: messageNode } = await executeAndWaitForMessageByType(
     hud,
     `
     xhrConsole = () => testXhrPostSlowResponse();
     xhrConsole();
   `,
-    xhrUrl
+    xhrUrl,
+    ".network"
   );
 
   ok(messageNode, "Network message found.");

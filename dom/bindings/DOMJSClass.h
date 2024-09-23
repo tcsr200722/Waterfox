@@ -9,18 +9,20 @@
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
-#include "js/PropertySpec.h"
+#include "js/Object.h"  // JS::GetClass, JS::GetReservedSlot
 #include "js/Wrapper.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/OriginTrials.h"
 #include "mozilla/Likely.h"
 
 #include "mozilla/dom/PrototypeList.h"  // auto-generated
 #include "mozilla/dom/WebIDLPrefs.h"    // auto-generated
 
-#include "mozilla/dom/JSSlots.h"
-
 class nsCycleCollectionParticipant;
+class nsWrapperCache;
+struct JSFunctionSpec;
+struct JSPropertySpec;
 struct JSStructuredCloneReader;
 struct JSStructuredCloneWriter;
 class nsIGlobalObject;
@@ -35,8 +37,7 @@ class nsIGlobalObject;
 #define JSCLASS_DOM_GLOBAL JSCLASS_USERBIT1
 #define JSCLASS_IS_DOMIFACEANDPROTOJSCLASS JSCLASS_USERBIT2
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * Returns true if code running in the given JSContext is allowed to access
@@ -73,7 +74,8 @@ inline bool IsSecureContextOrObjectIsFromSecureContext(JSContext* aCx,
 
 typedef bool (*ResolveOwnProperty)(
     JSContext* cx, JS::Handle<JSObject*> wrapper, JS::Handle<JSObject*> obj,
-    JS::Handle<jsid> id, JS::MutableHandle<JS::PropertyDescriptor> desc);
+    JS::Handle<jsid> id,
+    JS::MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc);
 
 typedef bool (*EnumerateOwnProperties)(JSContext* cx,
                                        JS::Handle<JSObject*> wrapper,
@@ -87,9 +89,9 @@ typedef bool (*DeleteNamedProperty)(JSContext* cx,
                                     JS::ObjectOpResult& opresult);
 
 // Returns true if the given global is of a type whose bit is set in
-// aNonExposedGlobals.
-bool IsNonExposedGlobal(JSContext* aCx, JSObject* aGlobal,
-                        uint32_t aNonExposedGlobals);
+// aGlobalSet.
+bool IsGlobalInExposureSet(JSContext* aCx, JSObject* aGlobal,
+                           uint32_t aGlobalSet);
 
 struct ConstantSpec {
   const char* name;
@@ -103,20 +105,22 @@ namespace GlobalNames {
 // interfaces, not of the global names used to refer to them in IDL [Exposed]
 // annotations.
 static const uint32_t Window = 1u << 0;
-static const uint32_t BackstagePass = 1u << 1;
-static const uint32_t DedicatedWorkerGlobalScope = 1u << 2;
-static const uint32_t SharedWorkerGlobalScope = 1u << 3;
-static const uint32_t ServiceWorkerGlobalScope = 1u << 4;
-static const uint32_t WorkerDebuggerGlobalScope = 1u << 5;
-static const uint32_t WorkletGlobalScope = 1u << 6;
-static const uint32_t AudioWorkletGlobalScope = 1u << 7;
+static const uint32_t DedicatedWorkerGlobalScope = 1u << 1;
+static const uint32_t SharedWorkerGlobalScope = 1u << 2;
+static const uint32_t ServiceWorkerGlobalScope = 1u << 3;
+static const uint32_t WorkerDebuggerGlobalScope = 1u << 4;
+static const uint32_t AudioWorkletGlobalScope = 1u << 5;
+static const uint32_t PaintWorkletGlobalScope = 1u << 6;
+static const uint32_t ShadowRealmGlobalScope = 1u << 7;
+
+static constexpr uint32_t kCount = 8;
 }  // namespace GlobalNames
 
 struct PrefableDisablers {
   inline bool isEnabled(JSContext* cx, JS::Handle<JSObject*> obj) const {
     if (nonExposedGlobals &&
-        IsNonExposedGlobal(cx, JS::GetNonCCWObjectGlobal(obj),
-                           nonExposedGlobals)) {
+        IsGlobalInExposureSet(cx, JS::GetNonCCWObjectGlobal(obj),
+                              nonExposedGlobals)) {
       return false;
     }
     if (prefIndex != WebIDLPrefIndex::NoPref &&
@@ -124,6 +128,15 @@ struct PrefableDisablers {
       return false;
     }
     if (secureContext && !IsSecureContextOrObjectIsFromSecureContext(cx, obj)) {
+      return false;
+    }
+    if (trial != OriginTrial(0) &&
+        !OriginTrials::IsEnabled(cx, JS::GetNonCCWObjectGlobal(obj), trial)) {
+      // TODO(emilio): Perhaps reconsider the interaction between [Trial=""] and
+      // [Pref=""].
+      //
+      // In particular, it might be desirable to only check the trial if there
+      // is no pref or the pref is disabled.
       return false;
     }
     if (enabledFunc && !enabledFunc(cx, JS::GetNonCCWObjectGlobal(obj))) {
@@ -135,11 +148,15 @@ struct PrefableDisablers {
   // Index into the array of StaticPrefs
   const WebIDLPrefIndex prefIndex;
 
-  // A boolean indicating whether a Secure Context is required.
-  const bool secureContext;
-
   // Bitmask of global names that we should not be exposed in.
-  const uint16_t nonExposedGlobals;
+  const uint16_t nonExposedGlobals : GlobalNames::kCount;
+
+  // A boolean indicating whether a Secure Context is required.
+  const uint16_t secureContext : 1;
+
+  // An origin trial controlling the feature. This can be made a bitfield too if
+  // needed.
+  const OriginTrial trial;
 
   // A function pointer to a function that can say the property is disabled
   // even if "enabled" is set to true.  If the pointer is null the value of
@@ -200,9 +217,28 @@ struct PropertyInfo {
   void SetId(jsid aId) {
     static_assert(sizeof(jsid) == sizeof(mIdBits),
                   "jsid should fit in mIdBits");
-    mIdBits = JSID_BITS(aId);
+    mIdBits = aId.asRawBits();
   }
   MOZ_ALWAYS_INLINE jsid Id() const { return jsid::fromRawBits(mIdBits); }
+
+  bool IsStaticMethod() const { return type == eStaticMethod; }
+
+  static int Compare(const PropertyInfo& aInfo1, const PropertyInfo& aInfo2) {
+    // IdToIndexComparator needs to be updated if the order here is changed!
+    if (MOZ_UNLIKELY(aInfo1.mIdBits == aInfo2.mIdBits)) {
+      MOZ_ASSERT((aInfo1.type == eMethod || aInfo1.type == eStaticMethod) &&
+                 (aInfo2.type == eMethod || aInfo2.type == eStaticMethod));
+
+      bool isStatic1 = aInfo1.IsStaticMethod();
+
+      MOZ_ASSERT(isStatic1 != aInfo2.IsStaticMethod(),
+                 "We shouldn't have 2 static methods with the same name!");
+
+      return isStatic1 ? -1 : 1;
+    }
+
+    return aInfo1.mIdBits < aInfo2.mIdBits ? -1 : 1;
+  }
 };
 
 static_assert(
@@ -243,6 +279,67 @@ static_assert(
 // aforementioned assertions in the getters. Upcast() is used to convert
 // specific instances to this "base" type.
 //
+// An example
+// ----------
+// NativeProperties points to various things, and it can be hard to keep track.
+// The following example shows the layout.
+//
+// Imagine an example interface, with:
+// - 10 properties
+//   - 6 methods, 3 with no disablers struct, 2 sharing the same disablers
+//     struct, 1 using a different disablers struct
+//   - 4 attributes, all with no disablers
+// - The property order is such that those using the same disablers structs are
+//   together. (This is not guaranteed, but it makes the example simpler.)
+//
+// Each PropertyInfo also contain indices into sMethods/sMethods_specs (for
+// method infos) and sAttributes/sAttributes_specs (for attributes), which let
+// them find their spec, but these are not shown.
+//
+//   sNativeProperties             sNativeProperties_        sNativeProperties_
+//   ----                          sortedPropertyIndices[10] propertyInfos[10]
+//   - <several scalar fields>     ----                      ----
+//   - sortedPropertyIndices ----> <10 indices>         +--> 0 info (method)
+//   - duos[2]                     ----                 |    1 info (method)
+//     ----(methods)                                    |    2 info (method)
+//     0 - mPrefables -------> points to sMethods below |    3 info (method)
+//       - mPropertyInfos ------------------------------+    4 info (method)
+//     1 - mPrefables -------> points to sAttributes below   5 info (method)
+//       - mPropertyInfos ---------------------------------> 6 info (attr)
+//     ----                                                  7 info (attr)
+//   ----                                                    8 info (attr)
+//                                                           9 info (attr)
+//                                                           ----
+//
+// sMethods has three entries (excluding the terminator) because there are
+// three disablers structs. The {nullptr,nullptr} serves as the terminator.
+// There are also END terminators within sMethod_specs; the need for these
+// terminators (as opposed to a length) is deeply embedded in SpiderMonkey.
+// Disablers structs are suffixed with the index of the first spec they cover.
+//
+//   sMethods                               sMethods_specs
+//   ----                                   ----
+//   0 - nullptr                     +----> 0 spec
+//     - specs ----------------------+      1 spec
+//   1 - disablers ---> disablers4          2 spec
+//     - specs ------------------------+    3 END
+//   2 - disablers ---> disablers7     +--> 4 spec
+//     - specs ----------------------+      5 spec
+//   3 - nullptr                     |      6 END
+//     - nullptr                     +----> 7 spec
+//   ----                                   8 END
+//
+// sAttributes has a single entry (excluding the terminator) because all of the
+// specs lack disablers.
+//
+//   sAttributes                            sAttributes_specs
+//   ----                                   ----
+//   0 - nullptr                     +----> 0 spec
+//     - specs ----------------------+      1 spec
+//   1 - nullptr                            2 spec
+//     - nullptr                            3 spec
+//   ----                                   4 END
+//                                          ----
 template <int N>
 struct NativePropertiesN {
   // Duo structs are stored in the duos[] array, and each element in the array
@@ -321,17 +418,17 @@ typedef NativePropertiesN<7> NativeProperties;
 struct NativePropertiesHolder {
   const NativeProperties* regular;
   const NativeProperties* chromeOnly;
+  // Points to a static bool that's set to true once the regular and chromeOnly
+  // NativeProperties have been inited. This is a pointer to a bool instead of
+  // a bool value because NativePropertiesHolder is stored by value in
+  // a static const NativePropertyHooks.
+  bool* inited;
 };
 
-// Helper structure for Xrays for DOM binding objects. The same instance is used
-// for instances, interface objects and interface prototype objects of a
-// specific interface.
-struct NativePropertyHooks {
-  // The hook to call for resolving indexed or named properties. May be null if
-  // there can't be any.
+struct NativeNamedOrIndexedPropertyHooks {
+  // The hook to call for resolving indexed or named properties.
   ResolveOwnProperty mResolveOwnProperty;
-  // The hook to call for enumerating indexed or named properties. May be null
-  // if there can't be any.
+  // The hook to call for enumerating indexed or named properties.
   EnumerateOwnProperties mEnumerateOwnProperties;
   // The hook to call to delete a named property.  May be null if there are no
   // named properties or no named property deleter.  On success (true return)
@@ -342,6 +439,13 @@ struct NativePropertyHooks {
   // to true, it will indicate via opresult whether the delete actually
   // succeeded.
   DeleteNamedProperty mDeleteNamedProperty;
+};
+
+// Helper structure for Xrays for DOM binding objects. The same instance is used
+// for instances, interface objects and interface prototype objects of a
+// specific interface.
+struct NativePropertyHooks {
+  const NativeNamedOrIndexedPropertyHooks* mIndexedOrNamedNativeProperties;
 
   // The property arrays for this interface.
   NativePropertiesHolder mNativeProperties;
@@ -356,10 +460,6 @@ struct NativePropertyHooks {
   // constructors::id::_ID_Count.
   constructors::ID mConstructorID;
 
-  // The NativePropertyHooks instance for the parent interface (for
-  // ShimInterfaceInfo).
-  const NativePropertyHooks* mProtoHooks;
-
   // The JSClass to use for expandos on our Xrays.  Can be null, in which case
   // Xrays will use a default class of their choice.
   const JSClass* mXrayExpandoClass;
@@ -371,6 +471,7 @@ enum DOMObjectType : uint8_t {
   eInterface,
   eInterfacePrototype,
   eGlobalInterfacePrototype,
+  eNamespace,
   eNamedPropertiesObject
 };
 
@@ -413,6 +514,8 @@ typedef JSObject* (*WebIDLDeserializer)(JSContext* aCx,
                                         nsIGlobalObject* aGlobal,
                                         JSStructuredCloneReader* aReader);
 
+typedef nsWrapperCache* (*WrapperCacheGetter)(JS::Handle<JSObject*> aObj);
+
 // Special JSClass for reflected DOM objects.
 struct DOMJSClass {
   // It would be nice to just inherit from JSClass, but that precludes pure
@@ -447,6 +550,10 @@ struct DOMJSClass {
   // Null otherwise.
   WebIDLSerializer mSerializer;
 
+  // A callback to get the wrapper cache for C++ objects that don't inherit from
+  // nsISupports, or null.
+  WrapperCacheGetter mWrapperCacheGetter;
+
   static const DOMJSClass* FromJSClass(const JSClass* base) {
     MOZ_ASSERT(base->flags & JSCLASS_IS_DOMJSCLASS);
     return reinterpret_cast<const DOMJSClass*>(base);
@@ -463,23 +570,14 @@ struct DOMIfaceAndProtoJSClass {
   // initialization for aggregate/POD types.
   const JSClass mBase;
 
-  // Either eInterface, eInterfacePrototype, eGlobalInterfacePrototype or
-  // eNamedPropertiesObject.
+  // Either eNamespace, eInterfacePrototype,
+  // eGlobalInterfacePrototype or eNamedPropertiesObject.
   DOMObjectType mType;  // uint8_t
-
-  // Boolean indicating whether this object wants a @@hasInstance property
-  // pointing to InterfaceHasInstance defined on it.  Only ever true for the
-  // eInterface case.
-  bool wantsInterfaceHasInstance;
 
   const prototypes::ID mPrototypeID;  // uint16_t
   const uint32_t mDepth;
 
   const NativePropertyHooks* mNativeHooks;
-
-  // The value to return for Function.prototype.toString on this interface
-  // object.
-  const char* mFunToString;
 
   ProtoGetter mGetParentProto;
 
@@ -494,25 +592,24 @@ struct DOMIfaceAndProtoJSClass {
 class ProtoAndIfaceCache;
 
 inline bool DOMGlobalHasProtoAndIFaceCache(JSObject* global) {
-  MOZ_ASSERT(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_DIAGNOSTIC_ASSERT(JS::GetClass(global)->flags & JSCLASS_DOM_GLOBAL);
   // This can be undefined if we GC while creating the global
-  return !js::GetReservedSlot(global, DOM_PROTOTYPE_SLOT).isUndefined();
+  return !JS::GetReservedSlot(global, DOM_PROTOTYPE_SLOT).isUndefined();
 }
 
 inline bool HasProtoAndIfaceCache(JSObject* global) {
-  if (!(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL)) {
+  if (!(JS::GetClass(global)->flags & JSCLASS_DOM_GLOBAL)) {
     return false;
   }
   return DOMGlobalHasProtoAndIFaceCache(global);
 }
 
 inline ProtoAndIfaceCache* GetProtoAndIfaceCache(JSObject* global) {
-  MOZ_ASSERT(js::GetObjectClass(global)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_DIAGNOSTIC_ASSERT(JS::GetClass(global)->flags & JSCLASS_DOM_GLOBAL);
   return static_cast<ProtoAndIfaceCache*>(
-      js::GetReservedSlot(global, DOM_PROTOTYPE_SLOT).toPrivate());
+      JS::GetReservedSlot(global, DOM_PROTOTYPE_SLOT).toPrivate());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_DOMJSClass_h */

@@ -12,12 +12,7 @@
 #include "mozilla/dom/cache/StreamControl.h"
 #include "nsTObserverArray.h"
 
-namespace mozilla {
-namespace ipc {
-class AutoIPCStream;
-}  // namespace ipc
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 class ReadStream;
 
@@ -28,7 +23,6 @@ class CacheStreamControlChild final : public PCacheStreamControlChild,
 
  public:
   CacheStreamControlChild();
-  ~CacheStreamControlChild();
 
   // ActorChild methods
   virtual void StartDestroy() override;
@@ -37,14 +31,15 @@ class CacheStreamControlChild final : public PCacheStreamControlChild,
   virtual void SerializeControl(CacheReadStream* aReadStreamOut) override;
 
   virtual void SerializeStream(CacheReadStream* aReadStreamOut,
-                               nsIInputStream* aStream,
-                               nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>&
-                                   aStreamCleanupList) override;
+                               nsIInputStream* aStream) override;
 
   virtual void OpenStream(const nsID& aId,
                           InputStreamResolver&& aResolver) override;
 
+  NS_DECL_OWNINGTHREAD
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CacheStreamControlChild, override)
  private:
+  ~CacheStreamControlChild();
   virtual void NoteClosedAfterForget(const nsID& aId) override;
 
 #ifdef DEBUG
@@ -58,12 +53,8 @@ class CacheStreamControlChild final : public PCacheStreamControlChild,
 
   bool mDestroyStarted;
   bool mDestroyDelayed;
-
-  NS_DECL_OWNINGTHREAD
 };
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_CacheStreamControlChild_h

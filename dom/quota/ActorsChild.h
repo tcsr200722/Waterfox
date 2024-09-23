@@ -7,9 +7,18 @@
 #ifndef mozilla_dom_quota_ActorsChild_h
 #define mozilla_dom_quota_ActorsChild_h
 
+#include <cstdint>
+#include "ErrorList.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/quota/PQuotaChild.h"
 #include "mozilla/dom/quota/PQuotaRequestChild.h"
 #include "mozilla/dom/quota/PQuotaUsageRequestChild.h"
+#include "mozilla/ipc/ProtocolUtils.h"
+#include "nsCOMPtr.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+
+class nsIEventTarget;
 
 namespace mozilla {
 namespace ipc {
@@ -18,8 +27,7 @@ class BackgroundChildImpl;
 
 }  // namespace ipc
 
-namespace dom {
-namespace quota {
+namespace dom::quota {
 
 class QuotaManagerService;
 class Request;
@@ -36,6 +44,8 @@ class QuotaChild final : public PQuotaChild {
 #endif
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(QuotaChild, override)
+
   void AssertIsOnOwningThread() const
 #ifdef DEBUG
       ;
@@ -48,7 +58,6 @@ class QuotaChild final : public PQuotaChild {
   // Only created by QuotaManagerService.
   explicit QuotaChild(QuotaManagerService* aService);
 
-  // Only destroyed by mozilla::ipc::BackgroundChildImpl.
   ~QuotaChild();
 
   // IPDL methods are only called by IPDL.
@@ -135,6 +144,8 @@ class QuotaRequestChild final : public PQuotaRequestChild {
 
   void HandleResponse(const nsTArray<nsCString>& aResponse);
 
+  void HandleResponse(const GetFullOriginMetadataResponse& aResponse);
+
   // IPDL methods are only called by IPDL.
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
 
@@ -142,8 +153,7 @@ class QuotaRequestChild final : public PQuotaRequestChild {
       const RequestResponse& aResponse) override;
 };
 
-}  // namespace quota
-}  // namespace dom
+}  // namespace dom::quota
 }  // namespace mozilla
 
 #endif  // mozilla_dom_quota_ActorsChild_h

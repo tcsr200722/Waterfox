@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from six.moves.urllib.parse import quote
 
 from marionette_driver.by import By
@@ -18,24 +16,38 @@ def inline(doc):
 class SelectTestCase(MarionetteTestCase):
     def assertSelected(self, option_element):
         self.assertTrue(option_element.is_selected(), "<option> element not selected")
-        self.assertTrue(self.marionette.execute_script(
-            "return arguments[0].selected", script_args=[option_element], sandbox=None),
-            "<option> selected attribute not updated")
+        self.assertTrue(
+            self.marionette.execute_script(
+                "return arguments[0].selected",
+                script_args=[option_element],
+                sandbox=None,
+            ),
+            "<option> selected attribute not updated",
+        )
 
     def assertNotSelected(self, option_element):
         self.assertFalse(option_element.is_selected(), "<option> is selected")
-        self.assertFalse(self.marionette.execute_script(
-            "return arguments[0].selected", script_args=[option_element], sandbox=None),
-            "<option> selected attribute not updated")
+        self.assertFalse(
+            self.marionette.execute_script(
+                "return arguments[0].selected",
+                script_args=[option_element],
+                sandbox=None,
+            ),
+            "<option> selected attribute not updated",
+        )
 
 
 class TestSelect(SelectTestCase):
     def test_single(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
             <select>
               <option>first
               <option>second
-            </select>"""))
+            </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = self.marionette.find_elements(By.TAG_NAME, "option")
 
@@ -44,12 +56,16 @@ class TestSelect(SelectTestCase):
         self.assertSelected(options[1])
 
     def test_deselect_others(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select>
             <option>first
             <option>second
             <option>third
-          </select>"""))
+          </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = self.marionette.find_elements(By.TAG_NAME, "option")
 
@@ -63,11 +79,15 @@ class TestSelect(SelectTestCase):
         self.assertSelected(options[0])
 
     def test_select_self(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select>
             <option>first
             <option>second
-          </select>"""))
+          </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = self.marionette.find_elements(By.TAG_NAME, "option")
         self.assertSelected(options[0])
@@ -79,7 +99,9 @@ class TestSelect(SelectTestCase):
         self.assertSelected(options[1])
 
     def test_out_of_view(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select>
             <option>1
             <option>2
@@ -101,7 +123,9 @@ class TestSelect(SelectTestCase):
             <option>18
             <option>19
             <option>20
-          </select>"""))
+          </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = self.marionette.find_elements(By.TAG_NAME, "option")
 
@@ -117,12 +141,16 @@ class TestSelectMultiple(SelectTestCase):
         self.assertSelected(option)
 
     def test_multiple(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select multiple>
             <option>first
             <option>second
             <option>third
-          </select>"""))
+          </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = select.find_elements(By.TAG_NAME, "option")
 
@@ -142,17 +170,23 @@ class TestSelectMultiple(SelectTestCase):
         self.assertNotSelected(option)
 
     def test_deselect_preselected(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select multiple>
             <option selected>first
-          </select>"""))
+          </select>"""
+            )
+        )
         option = self.marionette.find_element(By.TAG_NAME, "option")
         self.assertSelected(option)
         option.click()
         self.assertNotSelected(option)
 
     def test_out_of_view(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <select multiple>
             <option>1
             <option>2
@@ -174,7 +208,9 @@ class TestSelectMultiple(SelectTestCase):
             <option>18
             <option>19
             <option>20
-          </select>"""))
+          </select>"""
+            )
+        )
         select = self.marionette.find_element(By.TAG_NAME, "select")
         options = self.marionette.find_elements(By.TAG_NAME, "option")
 

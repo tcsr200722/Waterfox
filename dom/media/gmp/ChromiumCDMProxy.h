@@ -8,12 +8,12 @@
 #define ChromiumCDMProxy_h_
 
 #include "mozilla/AbstractThread.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/CDMProxy.h"
 #include "ChromiumCDMParent.h"
 
 namespace mozilla {
 
+class ErrorResult;
 class MediaRawData;
 class DecryptJob;
 class ChromiumCDMCallbackProxy;
@@ -23,8 +23,8 @@ class ChromiumCDMProxy : public CDMProxy {
 
   ChromiumCDMProxy(dom::MediaKeys* aKeys, const nsAString& aKeySystem,
                    GMPCrashHelper* aCrashHelper,
-                   bool aAllowDistinctiveIdentifier, bool aAllowPersistentState,
-                   nsISerialEventTarget* aMainThread);
+                   bool aAllowDistinctiveIdentifier,
+                   bool aAllowPersistentState);
 
   void Init(PromiseId aPromiseId, const nsAString& aOrigin,
             const nsAString& aTopLevelOrigin,
@@ -49,11 +49,15 @@ class ChromiumCDMProxy : public CDMProxy {
   void RemoveSession(const nsAString& aSessionId,
                      PromiseId aPromiseId) override;
 
+  void QueryOutputProtectionStatus() override;
+
+  void NotifyOutputProtectionStatus(
+      OutputProtectionCheckStatus aCheckStatus,
+      OutputProtectionCaptureStatus aCaptureStatus) override;
+
   void Shutdown() override;
 
   void Terminated() override;
-
-  const nsCString& GetNodeId() const override;
 
   void OnSetSessionId(uint32_t aCreateSessionToken,
                       const nsAString& aSessionId) override;
@@ -91,14 +95,10 @@ class ChromiumCDMProxy : public CDMProxy {
 
   void ResolvePromise(PromiseId aId) override;
 
-  const nsString& KeySystem() const override;
-
-  DataMutex<CDMCaps>& Capabilites() override;
-
   void OnKeyStatusesChange(const nsAString& aSessionId) override;
 
   void GetStatusForPolicy(PromiseId aPromiseId,
-                          const nsAString& aMinHdcpVersion) override;
+                          const dom::HDCPVersion& aMinHdcpVersion) override;
 
 #ifdef DEBUG
   bool IsOnOwnerThread() override;
@@ -125,9 +125,9 @@ class ChromiumCDMProxy : public CDMProxy {
 
   RefPtr<GMPCrashHelper> mCrashHelper;
 
-  Mutex mCDMMutex;
+  Mutex mCDMMutex MOZ_UNANNOTATED;
   RefPtr<gmp::ChromiumCDMParent> mCDM;
-  RefPtr<AbstractThread> mGMPThread;
+  nsCOMPtr<nsISerialEventTarget> mGMPThread;
   UniquePtr<ChromiumCDMCallbackProxy> mCallback;
 };
 

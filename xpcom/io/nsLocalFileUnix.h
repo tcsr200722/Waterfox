@@ -12,69 +12,26 @@
 #define _nsLocalFileUNIX_H_
 
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include "nscore.h"
 #include "nsString.h"
-#include "nsReadableUtils.h"
-#include "nsIClassInfoImpl.h"
-#include "mozilla/Attributes.h"
 #ifdef MOZ_WIDGET_COCOA
 #  include "nsILocalFileMac.h"
-#endif
-
-/**
- *  we need these for statfs()
- */
-#ifdef HAVE_SYS_STATVFS_H
-#  if defined(__osf__) && defined(__DECCXX)
-extern "C" int statvfs(const char*, struct statvfs*);
-#  endif
-#  include <sys/statvfs.h>
-#endif
-
-#ifdef HAVE_SYS_STATFS_H
-#  include <sys/statfs.h>
-#endif
-
-#ifdef HAVE_SYS_VFS_H
-#  include <sys/vfs.h>
-#endif
-
-#ifdef HAVE_SYS_MOUNT_H
-#  include <sys/param.h>
-#  include <sys/mount.h>
-#endif
-
-#if defined(HAVE_STATVFS64) && (!defined(LINUX) && !defined(__osf__))
-#  define STATFS statvfs64
-#  define F_BSIZE f_frsize
-#elif defined(HAVE_STATVFS) && (!defined(LINUX) && !defined(__osf__))
-#  define STATFS statvfs
-#  define F_BSIZE f_frsize
-#elif defined(HAVE_STATFS64)
-#  define STATFS statfs64
-#  define F_BSIZE f_bsize
-#elif defined(HAVE_STATFS)
-#  define STATFS statfs
-#  define F_BSIZE f_bsize
 #endif
 
 // stat64 and lstat64 are deprecated on OS X. Normal stat and lstat are
 // 64-bit by default on OS X 10.6+.
 #if defined(HAVE_STAT64) && defined(HAVE_LSTAT64) && !defined(XP_DARWIN)
-#  if defined(AIX)
-#    if defined STAT
-#      undef STAT
-#    endif
-#  endif
 #  define STAT stat64
 #  define LSTAT lstat64
 #  define HAVE_STATS64 1
 #else
 #  define STAT stat
 #  define LSTAT lstat
+#endif
+
+#if defined(HAVE_SYS_QUOTA_H) && defined(HAVE_LINUX_QUOTA_H)
+#  define USE_LINUX_QUOTACTL
 #endif
 
 class nsLocalFile final
@@ -90,7 +47,7 @@ class nsLocalFile final
   nsLocalFile();
   explicit nsLocalFile(const nsACString& aFilePath);
 
-  static nsresult nsLocalFileConstructor(nsISupports* aOuter, const nsIID& aIID,
+  static nsresult nsLocalFileConstructor(const nsIID& aIID,
                                          void** aInstancePtr);
 
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -121,7 +78,22 @@ class nsLocalFile final
   bool FillStatCache();
 
   nsresult CreateAndKeepOpen(uint32_t aType, int aFlags, uint32_t aPermissions,
-                             PRFileDesc** aResult);
+                             bool aSkipAncestors, PRFileDesc** aResult);
+
+  enum class TimeField { AccessedTime, ModifiedTime };
+  nsresult SetTimeImpl(PRTime aTime, TimeField aTimeField, bool aFollowLinks);
+  nsresult GetTimeImpl(PRTime* aTime, TimeField aTimeField, bool aFollowLinks);
+
+  nsresult GetCreationTimeImpl(PRTime* aCreationTime, bool aFollowLinks);
+
+#if defined(USE_LINUX_QUOTACTL)
+  template <typename StatInfoFunc, typename QuotaInfoFunc>
+  nsresult GetDiskInfo(StatInfoFunc&& aStatInfoFunc,
+                       QuotaInfoFunc&& aQuotaInfoFunc, int64_t* aResult);
+#else
+  template <typename StatInfoFunc>
+  nsresult GetDiskInfo(StatInfoFunc&& aStatInfoFunc, int64_t* aResult);
+#endif
 };
 
 #endif /* _nsLocalFileUNIX_H_ */

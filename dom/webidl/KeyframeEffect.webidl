@@ -16,18 +16,14 @@ enum IterationCompositeOperation {
 };
 
 dictionary KeyframeEffectOptions : EffectTiming {
-  [Pref="dom.animations-api.compositing.enabled"]
   IterationCompositeOperation iterationComposite = "replace";
-  [Pref="dom.animations-api.compositing.enabled"]
   CompositeOperation          composite = "replace";
   DOMString?                  pseudoElement = null;
 };
 
 // KeyframeEffect should run in the caller's compartment to do custom
 // processing on the `keyframes` object.
-[Func="Document::IsWebAnimationsEnabled",
- RunConstructorInCallerCompartment,
- Exposed=Window]
+[RunConstructorInCallerCompartment, Exposed=Window]
 interface KeyframeEffect : AnimationEffect {
   [Throws]
   constructor(Element? target,
@@ -38,19 +34,17 @@ interface KeyframeEffect : AnimationEffect {
 
   attribute Element?                  target;
   [SetterThrows] attribute DOMString? pseudoElement;
-  [Pref="dom.animations-api.compositing.enabled"]
   attribute IterationCompositeOperation     iterationComposite;
-  [Pref="dom.animations-api.compositing.enabled"]
   attribute CompositeOperation              composite;
   [Throws] sequence<object> getKeyframes();
-  [Throws] void             setKeyframes(object? keyframes);
+  [Throws] undefined        setKeyframes(object? keyframes);
 };
 
 // Non-standard extensions
 dictionary AnimationPropertyValueDetails {
   required double             offset;
-           DOMString          value;
-           DOMString          easing;
+           UTF8String         value;
+           UTF8String         easing;
   required CompositeOperation composite;
 };
 

@@ -6,24 +6,22 @@
 //! https://drafts.csswg.org/css-easing/#timing-functions
 
 use crate::parser::ParserContext;
-use crate::values::CSSFloat;
 
 /// A generic easing function.
 #[derive(
     Clone,
-    Copy,
     Debug,
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
-    ToComputedValue,
     ToCss,
-    ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[value_info(ty = "TIMING_FUNCTION")]
 #[repr(u8, C)]
-pub enum TimingFunction<Integer, Number> {
+pub enum TimingFunction<Integer, Number, LinearStops> {
     /// `linear | ease | ease-in | ease-out | ease-in-out`
     Keyword(TimingKeyword),
     /// `cubic-bezier(<number>, <number>, <number>, <number>)`
@@ -40,6 +38,11 @@ pub enum TimingFunction<Integer, Number> {
     #[css(comma, function)]
     #[value_info(other_values = "step-start,step-end")]
     Steps(Integer, #[css(skip_if = "is_end")] StepPosition),
+    /// linear([<linear-stop>]#)
+    /// <linear-stop> = <output> && <linear-stop-length>?
+    /// <linear-stop-length> = <percentage>{1, 2}
+    #[css(function = "linear")]
+    LinearFunction(LinearStops),
 }
 
 #[allow(missing_docs)]
@@ -57,6 +60,8 @@ pub enum TimingFunction<Integer, Number> {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[repr(u8)]
 pub enum TimingKeyword {
@@ -67,9 +72,19 @@ pub enum TimingKeyword {
     EaseInOut,
 }
 
+/// Before flag, defined as per https://drafts.csswg.org/css-easing/#before-flag
+/// This flag is never user-specified.
+#[allow(missing_docs)]
+#[derive(PartialEq)]
+#[repr(u8)]
+pub enum BeforeFlag {
+    Unset,
+    Set,
+}
+
 #[cfg(feature = "gecko")]
 fn step_position_jump_enabled(_context: &ParserContext) -> bool {
-    static_prefs::pref!("layout.css.step-position-jump.enabled")
+    true
 }
 
 #[cfg(feature = "servo")]
@@ -91,6 +106,8 @@ fn step_position_jump_enabled(_context: &ParserContext) -> bool {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    Serialize,
+    Deserialize,
 )]
 #[repr(u8)]
 pub enum StepPosition {
@@ -111,25 +128,16 @@ fn is_end(position: &StepPosition) -> bool {
     *position == StepPosition::JumpEnd || *position == StepPosition::End
 }
 
-impl<Integer, Number> TimingFunction<Integer, Number> {
+impl<Integer, Number, LinearStops> TimingFunction<Integer, Number, LinearStops> {
     /// `ease`
     #[inline]
     pub fn ease() -> Self {
         TimingFunction::Keyword(TimingKeyword::Ease)
     }
-}
 
-impl TimingKeyword {
-    /// Returns the keyword as a quadruplet of Bezier point coordinates
-    /// `(x1, y1, x2, y2)`.
+    /// Returns true if it is `ease`.
     #[inline]
-    pub fn to_bezier(self) -> (CSSFloat, CSSFloat, CSSFloat, CSSFloat) {
-        match self {
-            TimingKeyword::Linear => (0., 0., 1., 1.),
-            TimingKeyword::Ease => (0.25, 0.1, 0.25, 1.),
-            TimingKeyword::EaseIn => (0.42, 0., 1., 1.),
-            TimingKeyword::EaseOut => (0., 0., 0.58, 1.),
-            TimingKeyword::EaseInOut => (0.42, 0., 0.58, 1.),
-        }
+    pub fn is_ease(&self) -> bool {
+        matches!(*self, TimingFunction::Keyword(TimingKeyword::Ease))
     }
 }

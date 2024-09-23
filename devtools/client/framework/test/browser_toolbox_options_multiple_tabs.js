@@ -9,7 +9,7 @@ const URL =
 
 let tab1, tab2, modifiedPref;
 
-add_task(async function() {
+add_task(async function () {
   tab1 = await openToolboxOptionsInNewTab();
   tab2 = await openToolboxOptionsInNewTab();
 
@@ -19,12 +19,11 @@ add_task(async function() {
 
 async function openToolboxOptionsInNewTab() {
   const tab = await addTab(URL);
-  const target = await TargetFactory.forTab(tab);
-  const toolbox = await gDevTools.showToolbox(target);
+  const toolbox = await gDevTools.showToolboxForTab(tab);
   const doc = toolbox.doc;
   const panel = await toolbox.selectTool("options");
   const { id } = panel.panelDoc.querySelector(
-    "#default-tools-box input[type=checkbox]:not([data-unsupported]):not([checked])"
+    "#default-tools-box input[type=checkbox]:not([data-unsupported], [checked])"
   );
 
   return {
@@ -67,7 +66,7 @@ async function testToggleTools() {
   await toggleTool(tab2, toolId);
 }
 
-async function toggleTool({ doc, panelWin, checkbox, tab }, toolId) {
+async function toggleTool({ panelWin, checkbox }, toolId) {
   const prevChecked = checkbox.checked;
 
   (prevChecked ? checkRegistered : checkUnregistered)(toolId);

@@ -1,10 +1,25 @@
-// $ cargo bench --features full --bench rust
+// $ cargo bench --features full,test --bench rust
 //
 // Syn only, useful for profiling:
-// $ RUSTFLAGS='--cfg syn_only' cargo build --release --features full --bench rust
+// $ RUSTFLAGS='--cfg syn_only' cargo build --release --features full,test --bench rust
 
 #![cfg_attr(not(syn_only), feature(rustc_private))]
+#![recursion_limit = "1024"]
+#![allow(
+    clippy::arc_with_non_send_sync,
+    clippy::cast_lossless,
+    clippy::let_underscore_untyped,
+    clippy::manual_let_else,
+    clippy::match_like_matches_macro,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_wraps
+)]
 
+#[macro_use]
+#[path = "../tests/macros/mod.rs"]
+mod macros;
+
+#[allow(dead_code)]
 #[path = "../tests/repo/mod.rs"]
 mod repo;
 
@@ -28,31 +43,47 @@ mod syn_parse {
 }
 
 #[cfg(not(syn_only))]
-mod libsyntax_parse {
+mod librustc_parse {
     extern crate rustc_data_structures;
-    extern crate syntax;
-    extern crate syntax_pos;
+    extern crate rustc_driver;
+    extern crate rustc_error_messages;
+    extern crate rustc_errors;
+    extern crate rustc_parse;
+    extern crate rustc_session;
+    extern crate rustc_span;
 
     use rustc_data_structures::sync::Lrc;
-    use syntax::edition::Edition;
-    use syntax::errors::{emitter::Emitter, DiagnosticBuilder, Handler};
-    use syntax::parse::ParseSess;
-    use syntax::source_map::{FilePathMapping, SourceMap};
-    use syntax_pos::FileName;
+    use rustc_error_messages::FluentBundle;
+    use rustc_errors::{emitter::Emitter, translation::Translate, DiagCtxt, Diagnostic};
+    use rustc_session::parse::ParseSess;
+    use rustc_span::source_map::{FilePathMapping, SourceMap};
+    use rustc_span::{edition::Edition, FileName};
 
     pub fn bench(content: &str) -> Result<(), ()> {
         struct SilentEmitter;
 
         impl Emitter for SilentEmitter {
-            fn emit_diagnostic(&mut self, _db: &DiagnosticBuilder) {}
+            fn emit_diagnostic(&mut self, _diag: &Diagnostic) {}
+            fn source_map(&self) -> Option<&Lrc<SourceMap>> {
+                None
+            }
         }
 
-        syntax::with_globals(Edition::Edition2018, || {
-            let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
+        impl Translate for SilentEmitter {
+            fn fluent_bundle(&self) -> Option<&Lrc<FluentBundle>> {
+                None
+            }
+            fn fallback_fluent_bundle(&self) -> &FluentBundle {
+                panic!("silent emitter attempted to translate a diagnostic");
+            }
+        }
+
+        rustc_span::create_session_if_not_set_then(Edition::Edition2018, |_| {
+            let source_map = Lrc::new(SourceMap::new(FilePathMapping::empty()));
             let emitter = Box::new(SilentEmitter);
-            let handler = Handler::with_emitter(false, None, emitter);
-            let sess = ParseSess::with_span_handler(handler, cm);
-            if let Err(mut diagnostic) = syntax::parse::parse_crate_from_source_str(
+            let handler = DiagCtxt::with_emitter(emitter);
+            let sess = ParseSess::with_dcx(handler, source_map);
+            if let Err(diagnostic) = rustc_parse::parse_crate_from_source_str(
                 FileName::Custom("bench".to_owned()),
                 content.to_owned(),
                 &sess,
@@ -78,9 +109,13 @@ fn exec(mut codepath: impl FnMut(&str) -> Result<(), ()>) -> Duration {
     let mut success = 0;
     let mut total = 0;
 
-    walkdir::WalkDir::new("tests/rust/src")
-        .into_iter()
-        .filter_entry(repo::base_dir_filter)
+    ["tests/rust/compiler", "tests/rust/library"]
+        .iter()
+        .flat_map(|dir| {
+            walkdir::WalkDir::new(dir)
+                .into_iter()
+                .filter_entry(repo::base_dir_filter)
+        })
         .for_each(|entry| {
             let entry = entry.unwrap();
             let path = entry.path();
@@ -104,11 +139,11 @@ fn main() {
     repo::clone_rust();
 
     macro_rules! testcases {
-        ($($(#[$cfg:meta])* $name:path,)*) => {
-            vec![
+        ($($(#[$cfg:meta])* $name:ident,)*) => {
+            [
                 $(
                     $(#[$cfg])*
-                    (stringify!($name), $name as fn(&str) -> Result<(), ()>),
+                    (stringify!($name), $name::bench as fn(&str) -> Result<(), ()>),
                 )*
             ]
         };
@@ -128,12 +163,12 @@ fn main() {
 
     for (name, f) in testcases!(
         #[cfg(not(syn_only))]
-        read_from_disk::bench,
+        read_from_disk,
         #[cfg(not(syn_only))]
-        tokenstream_parse::bench,
-        syn_parse::bench,
+        tokenstream_parse,
+        syn_parse,
         #[cfg(not(syn_only))]
-        libsyntax_parse::bench,
+        librustc_parse,
     ) {
         eprint!("{:20}", format!("{}:", name));
         let elapsed = exec(f);

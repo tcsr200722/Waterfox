@@ -20,13 +20,14 @@ async function painted() {
 
   await TalosPowers.loadPromise;
 
-  await TalosContentProfiler.pause();
   await TalosContentProfiler.initFromURLQueryParams(location.search);
   await TalosContentProfiler.finishStartupProfiling();
 
   let startupInfo = await TalosPowersContent.getStartupInfo();
 
-  let startupTime = startupInfo.firstPaint - startupInfo.process;
+  // firstPaint2 is a more accurate measurement that checks that pixels are actually visible,
+  // not merely that the calls to paint them have been completed.
+  let startupTime = startupInfo.firstPaint2 - startupInfo.process;
 
   document.body.textContent = "Startup time = " + startupTime + " ms";
   if (window.dump) {
@@ -48,8 +49,7 @@ function dumpConsoleAndQuit() {
   // Close window asynchronously, there might still be startup operations that still need to run
   window.setTimeout(function() {
     if (window.dump) {
-      // eslint-disable-next-line mozilla/avoid-Date-timing
-      dump("__startTimestamp" + Date.now() + "__endTimestamp\n");
+      dump("__startTimestamp" + window.performance.now() + "__endTimestamp\n");
     }
     TalosPowersContent.goQuitApplication();
   }, 0);

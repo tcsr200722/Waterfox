@@ -3,8 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, division, print_function
-
 import argparse
 import asyncio
 import configparser
@@ -14,13 +12,13 @@ import os
 import shutil
 import tempfile
 import time
-from distutils.util import strtobool
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 import aiohttp
 from mardor.reader import MarReader
 from mardor.signing import get_keysize
-from scriptworker.utils import retry_async, get_hash
+from scriptworker.utils import get_hash, retry_async
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +30,6 @@ QUEUE_PREFIX = f"{ROOT_URL}/api/queue/"
 ALLOWED_URL_PREFIXES = (
     "http://download.cdn.mozilla.net/pub/mozilla.org/firefox/nightly/",
     "http://download.cdn.mozilla.net/pub/firefox/nightly/",
-    "https://mozilla-nightly-updates.s3.amazonaws.com",
     "http://ftp.mozilla.org/",
     "http://download.mozilla.org/",
     "https://archive.mozilla.org/",
@@ -48,7 +45,25 @@ BCJ_OPTIONS = {
     "x86": ["--x86"],
     "x86_64": ["--x86"],
     "aarch64": [],
+    # macOS Universal Builds
+    "macos-x86_64-aarch64": [],
 }
+
+
+def strtobool(value: str):
+    # Copied from `mach.util` since this script runs outside of a mach environment
+    # Reimplementation of distutils.util.strtobool
+    # https://docs.python.org/3.9/distutils/apiref.html#distutils.util.strtobool
+    true_vals = ("y", "yes", "t", "true", "on", "1")
+    false_vals = ("n", "no", "f", "false", "off", "0")
+
+    value = value.lower()
+    if value in true_vals:
+        return 1
+    if value in false_vals:
+        return 0
+
+    raise ValueError(f'Expected one of: {", ".join(true_vals + false_vals)}')
 
 
 def verify_signature(mar, cert):
@@ -64,9 +79,7 @@ def verify_signature(mar, cert):
 def process_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts-dir", required=True)
-    parser.add_argument(
-        "--signing-cert", type=argparse.FileType("rb"), required=True
-    )
+    parser.add_argument("--signing-cert", type=argparse.FileType("rb"), required=True)
     parser.add_argument("--task-definition", required=True, type=argparse.FileType("r"))
     parser.add_argument(
         "--allow-staging-prefixes",
@@ -113,14 +126,17 @@ def validate_mar_channel_id(mar, channel_ids):
     log.info("%s channel %s in %s", mar, product_info[1], channel_ids)
 
 
-async def retry_download(*args, **kwargs):  # noqa: E999
+async def retry_download(*args, semaphore=None, **kwargs):  # noqa: E999
     """Retry download() calls."""
-    await retry_async(
-        download,
-        retry_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
-        args=args,
-        kwargs=kwargs,
-    )
+    async with AsyncExitStack() as stack:
+        if semaphore:
+            await stack.enter_async_context(semaphore)
+        await retry_async(
+            download,
+            retry_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
+            args=args,
+            kwargs=kwargs,
+        )
 
 
 def verify_allowed_url(mar, allowed_url_prefixes):
@@ -143,6 +159,7 @@ async def download(url, dest, mode=None):  # noqa: E999
             log.debug("Fetching from url %s", resp.url)
             for history in resp.history:
                 log.debug("Redirection history: %s", history.url)
+            log.debug("Headers for %s: %s", resp.url, resp.headers)
             if "Content-Length" in resp.headers:
                 log.debug(
                     "Content-Length expected for %s: %s",
@@ -163,10 +180,11 @@ async def download(url, dest, mode=None):  # noqa: E999
                         log_interval = chunk_size * 1024
             end = time.time()
             log.info(
-                "Downloaded %s, %s bytes in %s seconds",
+                "Downloaded %s, %s bytes in %s seconds: sha256:%s",
                 url,
                 bytes_downloaded,
                 int(end - start),
+                get_hash(dest, hash_alg="sha256"),
             )
             if mode:
                 log.info("chmod %o %s", mode, dest)
@@ -230,21 +248,23 @@ def extract_download_urls(partials_config, mar_type):
     return {definition[f"{mar_type}_mar"] for definition in partials_config}
 
 
-async def download_and_verify_mars(
-    partials_config, allowed_url_prefixes, signing_cert
-):
+async def download_and_verify_mars(partials_config, allowed_url_prefixes, signing_cert):
     """Download, check signature, channel ID and unpack MAR files."""
     # Separate these categories so we can opt to perform checks on only 'to' downloads.
     from_urls = extract_download_urls(partials_config, mar_type="from")
     to_urls = extract_download_urls(partials_config, mar_type="to")
     tasks = list()
     downloads = dict()
+
+    semaphore = asyncio.Semaphore(2)  # Magic 2 to reduce network timeout errors.
     for url in from_urls.union(to_urls):
         verify_allowed_url(url, allowed_url_prefixes)
         downloads[url] = {
             "download_path": Path(tempfile.mkdtemp()) / Path(url).name,
         }
-        tasks.append(retry_download(url, downloads[url]["download_path"]))
+        tasks.append(
+            retry_download(url, downloads[url]["download_path"], semaphore=semaphore)
+        )
 
     await asyncio.gather(*tasks)
 
@@ -303,7 +323,7 @@ async def run_command(cmd, cwd="/", env=None, label=None, silent=False):
     else:
         await asyncio.gather(
             read_output(process.stdout, label, log.info),
-            read_output(process.stderr, label, log.warn),
+            read_output(process.stderr, label, log.warning),
         )
         await process.wait()
 
@@ -319,8 +339,6 @@ async def generate_partial(from_dir, to_dir, dest_mar, mar_data, tools_dir, arch
     env["MOZ_PRODUCT_VERSION"] = mar_data["version"]
     env["MAR_CHANNEL_ID"] = mar_data["MAR_CHANNEL_ID"]
     env["BRANCH"] = mar_data["branch"]
-    if "MAR_OLD_FORMAT" in env:
-        del env["MAR_OLD_FORMAT"]
 
     make_incremental_update = tools_dir / "make_incremental_update.sh"
     cmd = f"{make_incremental_update} {dest_mar} {from_dir} {to_dir}"

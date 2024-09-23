@@ -26,7 +26,7 @@ function xhr_handler(metadata, response) {
 }
 
 function fakeUIResponse() {
-  Services.obs.addObserver(function observe(subject, topic, data) {
+  Services.obs.addObserver(function observe(subject, topic) {
     if (topic === "captive-portal-login") {
       let xhr = new XMLHttpRequest();
       xhr.open("GET", gServerURL + kCanonicalSitePath, true);
@@ -36,10 +36,10 @@ function fakeUIResponse() {
     }
   }, "captive-portal-login");
 
-  Services.obs.addObserver(function observe(subject, topic, data) {
+  Services.obs.addObserver(function observe(subject, topic) {
     if (topic === "captive-portal-login-success") {
       Assert.equal(++step, 4);
-      gServer.stop(function() {
+      gServer.stop(function () {
         gRedirectServer.stop(do_test_finished);
       });
     }
@@ -50,7 +50,7 @@ function test_portal_found() {
   do_test_pending();
 
   let callback = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalCallback"]),
     prepare: function prepare() {
       Assert.equal(++step, 1);
       gCaptivePortalDetector.finishPreparation(kInterfaceName);

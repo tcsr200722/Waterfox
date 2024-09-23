@@ -2,16 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React from "react";
+import React from "devtools/client/shared/vendor/react";
 import { shallow } from "enzyme";
 import { CommandBarButton, debugBtn } from "../";
 
 describe("CommandBarButton", () => {
   it("renders", () => {
     const wrapper = shallow(
-      <CommandBarButton children={([]: any)} className={""} />
+      React.createElement(CommandBarButton, {
+        children: [],
+        className: "",
+      })
     );
     expect(wrapper).toMatchSnapshot();
   });
@@ -19,7 +20,10 @@ describe("CommandBarButton", () => {
   it("renders children", () => {
     const children = [1, 2, 3, 4];
     const wrapper = shallow(
-      <CommandBarButton children={(children: any)} className={""} />
+      React.createElement(CommandBarButton, {
+        children,
+        className: "",
+      })
     );
     expect(wrapper.find("button").children()).toHaveLength(4);
   });
@@ -27,13 +31,13 @@ describe("CommandBarButton", () => {
 
 describe("debugBtn", () => {
   it("renders", () => {
-    const wrapper = shallow(<debugBtn />);
+    const wrapper = shallow(debugBtn());
     expect(wrapper).toMatchSnapshot();
   });
 
   it("handles onClick", () => {
     const onClickSpy = jest.fn();
-    const wrapper = shallow(<debugBtn onClick={onClickSpy} />);
+    const wrapper = shallow(debugBtn(onClickSpy));
     wrapper.simulate("click");
     expect(onClickSpy).toHaveBeenCalled();
   });

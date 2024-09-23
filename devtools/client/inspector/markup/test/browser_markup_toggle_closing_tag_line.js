@@ -11,12 +11,12 @@ const TEST_URL = `data:text/html;charset=utf8,
 <div class="outer-div"><span>test</span></div>
 <iframe src="data:text/html;charset=utf8,<div>test</div>"></iframe>`;
 
-add_task(async function() {
+add_task(async function () {
   const { inspector } = await openInspectorForURL(TEST_URL);
 
   info("Getting the container for .outer-div parent element");
   let container = await getContainerForSelector(".outer-div", inspector);
-  await expandContainerByClick(inspector, container);
+  await toggleContainerByClick(inspector, container);
 
   let closeTagLine = container.closeTagLine;
   ok(
@@ -26,7 +26,7 @@ add_task(async function() {
 
   info("Expand the iframe element");
   container = await getContainerForSelector("iframe", inspector);
-  await expandContainerByClick(inspector, container);
+  await toggleContainerByClick(inspector, container);
   ok(container.expanded, "iframe is expanded");
   closeTagLine = container.closeTagLine;
   ok(
@@ -38,14 +38,15 @@ add_task(async function() {
   const iframe = await getNodeFront("iframe", inspector);
   const { nodes } = await inspector.walker.children(iframe);
   const documentFront = nodes[0];
-  ok(
-    documentFront.displayName === "#document",
+  Assert.strictEqual(
+    documentFront.displayName,
+    "#document",
     "First child of IFRAME is #document"
   );
 
   info("Expand the iframe's #document node element");
   container = getContainerForNodeFront(documentFront, inspector);
-  await expandContainerByClick(inspector, container);
+  await toggleContainerByClick(inspector, container);
   ok(container.expanded, "#document is expanded");
   ok(
     !container.closeTagLine,

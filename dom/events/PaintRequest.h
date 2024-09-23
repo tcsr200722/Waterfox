@@ -13,8 +13,7 @@
 #include "mozilla/dom/Event.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class DOMRect;
 
@@ -23,7 +22,7 @@ class PaintRequest final : public nsISupports, public nsWrapperCache {
   explicit PaintRequest(Event* aParent) : mParent(aParent) {}
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(PaintRequest)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PaintRequest)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -47,13 +46,15 @@ class PaintRequestList final : public nsISupports, public nsWrapperCache {
   explicit PaintRequestList(Event* aParent) : mParent(aParent) {}
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(PaintRequestList)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PaintRequestList)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
   nsISupports* GetParentObject() { return mParent; }
 
-  void Append(PaintRequest* aElement) { mArray.AppendElement(aElement); }
+  void Append(RefPtr<PaintRequest>&& aElement) {
+    mArray.AppendElement(std::move(aElement));
+  }
 
   uint32_t Length() { return mArray.Length(); }
 
@@ -73,7 +74,6 @@ class PaintRequestList final : public nsISupports, public nsWrapperCache {
   RefPtr<Event> mParent;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PaintRequest_h_

@@ -13,18 +13,19 @@
 #define nsSplittableFrame_h___
 
 #include "mozilla/Attributes.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 
 // Derived class that allows splitting
-class nsSplittableFrame : public nsFrame {
+class nsSplittableFrame : public nsIFrame {
  public:
   NS_DECL_ABSTRACT_FRAME(nsSplittableFrame)
+  NS_DECL_QUERYFRAME_TARGET(nsSplittableFrame)
+  NS_DECL_QUERYFRAME
 
   void Init(nsIContent* aContent, nsContainerFrame* aParent,
             nsIFrame* aPrevInFlow) override;
 
-  void DestroyFrom(nsIFrame* aDestructRoot,
-                   PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
   /*
    * Frame continuations can be either fluid or non-fluid.
@@ -37,7 +38,8 @@ class nsSplittableFrame : public nsFrame {
    *
    * A "flow" is a chain of fluid continuations.
    *
-   * For more information, see https://wiki.mozilla.org/Gecko:Continuation_Model
+   * For more information, see
+   * https://firefox-source-docs.mozilla.org/layout/LayoutOverview.html#fragmentation
    */
 
   // Get the previous/next continuation, regardless of its type (fluid or
@@ -45,8 +47,13 @@ class nsSplittableFrame : public nsFrame {
   nsIFrame* GetPrevContinuation() const final;
   nsIFrame* GetNextContinuation() const final;
 
-  // Set a previous/next non-fluid continuation.
+  // Set a previous non-fluid continuation.
   void SetPrevContinuation(nsIFrame*) final;
+
+  // Set a next non-fluid continuation.
+  //
+  // WARNING: this method updates caches for next-continuations, so it has O(n)
+  // time complexity over the length of next-continuations in the chain.
   void SetNextContinuation(nsIFrame*) final;
 
   // Get the first/last continuation for this frame.
@@ -63,8 +70,13 @@ class nsSplittableFrame : public nsFrame {
   nsIFrame* GetPrevInFlow() const final;
   nsIFrame* GetNextInFlow() const final;
 
-  // Set a previous/next fluid continuation.
+  // Set a previous fluid continuation.
   void SetPrevInFlow(nsIFrame*) final;
+
+  // Set a next fluid continuation.
+  //
+  // WARNING: this method updates caches for next-continuations, so it has O(n)
+  // time complexity over the length of next-continuations in the chain.
   void SetNextInFlow(nsIFrame*) final;
 
   // Get the first/last frame in the current flow.
@@ -79,51 +91,76 @@ class nsSplittableFrame : public nsFrame {
  protected:
   nsSplittableFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                     ClassID aID)
-      : nsFrame(aStyle, aPresContext, aID),
-        mPrevContinuation(nullptr),
-        mNextContinuation(nullptr) {}
+      : nsIFrame(aStyle, aPresContext, aID) {}
+
+  // Update the first-continuation and first-in-flow cache for this frame and
+  // the next-continuations in the chain.
+  //
+  // Note: this function assumes that the first-continuation and first-in-flow
+  // caches are already up-to-date on this frame's
+  // prev-continuation/prev-in-flow frame (if there is such a frame).
+  void UpdateFirstContinuationAndFirstInFlowCache();
 
   /**
    * Return the sum of the block-axis content size of our previous
    * continuations.
    *
-   * @param aWM a writing-mode to determine the block-axis
+   * Classes that call this are _required_ to call this at least once for each
+   * reflow (unless you're the first continuation, in which case you can skip
+   * it, because as an optimization we don't cache it there).
    *
-   * @note (bz) This makes laying out a splittable frame with N continuations
-   *       O(N^2)! So, use this function with caution and minimize the number
-   *       of calls to this method.
+   * This guarantees that the internal cache works, by refreshing it. Calling it
+   * multiple times in the same reflow is wasteful, but not an error.
    */
-  nscoord ConsumedBSize(mozilla::WritingMode aWM) const;
+  nscoord CalcAndCacheConsumedBSize();
+
+  /**
+   * This static wrapper over CalcAndCacheConsumedBSize() is intended for a
+   * specific scenario where an nsSplittableFrame's subclass needs to access
+   * another subclass' consumed block-size. For ordinary use cases,
+   * CalcAndCacheConsumedBSize() should be called.
+   *
+   * This has the same requirements as CalcAndCacheConsumedBSize(). In
+   * particular, classes that call this are _required_ to call this at least
+   * once for each reflow.
+   */
+  static nscoord ConsumedBSize(nsSplittableFrame* aFrame) {
+    return aFrame->CalcAndCacheConsumedBSize();
+  }
 
   /**
    * Retrieve the effective computed block size of this frame, which is the
    * computed block size, minus the block size consumed by any previous
    * continuations.
    */
-  nscoord GetEffectiveComputedBSize(
-      const ReflowInput& aReflowInput,
-      nscoord aConsumed = NS_UNCONSTRAINEDSIZE) const;
+  nscoord GetEffectiveComputedBSize(const ReflowInput& aReflowInput,
+                                    nscoord aConsumed) const;
 
   /**
    * @see nsIFrame::GetLogicalSkipSides()
    */
-  LogicalSides GetLogicalSkipSides(
-      const ReflowInput* aReflowInput = nullptr) const override;
+  LogicalSides GetLogicalSkipSides() const override {
+    return GetBlockLevelLogicalSkipSides(true);
+  }
+
+  LogicalSides GetBlockLevelLogicalSkipSides(bool aAfterReflow) const;
 
   /**
-   * A faster version of GetLogicalSkipSides() that is intended to be used
-   * inside Reflow before it's known if |this| frame will be COMPLETE or not.
+   * A version of GetLogicalSkipSides() that is intended to be used inside
+   * Reflow before it's known if |this| frame will be COMPLETE or not.
    * It returns a result that assumes this fragment is the last and thus
    * should apply the block-end border/padding etc (except for "true" overflow
    * containers which always skip block sides).  You're then expected to
    * recalculate the block-end side (as needed) when you know |this| frame's
    * reflow status is INCOMPLETE.
-   * This method is intended for frames that breaks in the block axis.
+   * This method is intended for frames that break in the block axis.
    */
-  LogicalSides PreReflowBlockLevelLogicalSkipSides() const;
+  LogicalSides PreReflowBlockLevelLogicalSkipSides() const {
+    return GetBlockLevelLogicalSkipSides(false);
+  };
 
-  nsIFrame* mPrevContinuation;
-  nsIFrame* mNextContinuation;
+  nsIFrame* mPrevContinuation = nullptr;
+  nsIFrame* mNextContinuation = nullptr;
 };
 
 #endif /* nsSplittableFrame_h___ */

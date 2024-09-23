@@ -12,11 +12,13 @@
 #include "mozilla/dom/FragmentOrElement.h"
 #include "nsStringFwd.h"
 
+// XXX Avoid including this here by moving function bodies to the cpp file.
+#include "mozilla/dom/Element.h"
+
 class nsAtom;
 class nsIContent;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Document;
 class Element;
@@ -54,30 +56,35 @@ class DocumentFragment : public FragmentOrElement {
     Init();
   }
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  NS_IMPL_FROMNODE_HELPER(DocumentFragment, IsDocumentFragment());
 
-  virtual bool IsNodeOfType(uint32_t aFlags) const override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
   nsresult BindToTree(BindContext&, nsINode& aParent) override {
     NS_ASSERTION(false, "Trying to bind a fragment to a tree");
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
-  virtual void UnbindFromTree(bool aNullParent) override {
+  virtual void UnbindFromTree(UnbindContext&) override {
     NS_ASSERTION(false, "Trying to unbind a fragment from a tree");
   }
 
-  virtual Element* GetNameSpaceElement() override { return nullptr; }
+  Element* GetNameSpaceElement() override { return nullptr; }
 
   Element* GetHost() const { return mHost; }
 
   void SetHost(Element* aHost) { mHost = aHost; }
 
+  void GetInnerHTML(nsAString& aInnerHTML) { GetMarkup(false, aInnerHTML); }
+  void SetInnerHTML(const nsAString& aInnerHTML, ErrorResult& aError) {
+    SetInnerHTMLInternal(aInnerHTML, aError);
+  }
+
   static already_AddRefed<DocumentFragment> Constructor(
       const GlobalObject& aGlobal, ErrorResult& aRv);
 
-#ifdef DEBUG
+#ifdef MOZ_DOM_LIST
   virtual void List(FILE* out, int32_t aIndent) const override;
   virtual void DumpContent(FILE* out, int32_t aIndent,
                            bool aDumpAll) const override;
@@ -90,8 +97,7 @@ class DocumentFragment : public FragmentOrElement {
   RefPtr<Element> mHost;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 inline mozilla::dom::DocumentFragment* nsINode::AsDocumentFragment() {
   MOZ_ASSERT(IsDocumentFragment());

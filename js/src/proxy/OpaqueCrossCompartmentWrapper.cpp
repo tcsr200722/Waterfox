@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/Wrapper.h"
 
 #include "vm/JSObject-inl.h"
@@ -12,8 +13,8 @@ using namespace js;
 
 bool OpaqueCrossCompartmentWrapper::getOwnPropertyDescriptor(
     JSContext* cx, HandleObject wrapper, HandleId id,
-    MutableHandle<PropertyDescriptor> desc) const {
-  desc.object().set(nullptr);
+    MutableHandle<mozilla::Maybe<PropertyDescriptor>> desc) const {
+  desc.reset();
   return true;
 }
 
@@ -133,14 +134,6 @@ bool OpaqueCrossCompartmentWrapper::isArray(JSContext* cx, HandleObject obj,
   return true;
 }
 
-bool OpaqueCrossCompartmentWrapper::hasInstance(JSContext* cx,
-                                                HandleObject wrapper,
-                                                MutableHandleValue v,
-                                                bool* bp) const {
-  *bp = false;
-  return true;
-}
-
 const char* OpaqueCrossCompartmentWrapper::className(JSContext* cx,
                                                      HandleObject proxy) const {
   return "Opaque";
@@ -150,8 +143,8 @@ JSString* OpaqueCrossCompartmentWrapper::fun_toString(JSContext* cx,
                                                       HandleObject proxy,
                                                       bool isToSource) const {
   JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                            JSMSG_INCOMPATIBLE_PROTO, js_Function_str,
-                            js_toString_str, "object");
+                            JSMSG_INCOMPATIBLE_PROTO, "Function", "toString",
+                            "object");
   return nullptr;
 }
 

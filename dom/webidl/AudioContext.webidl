@@ -11,7 +11,7 @@
  */
 
 dictionary AudioContextOptions {
-             float        sampleRate = 0;
+             float        sampleRate;
 };
 
 dictionary AudioTimestamp {
@@ -29,10 +29,10 @@ interface AudioContext : BaseAudioContext {
     readonly        attribute double               outputLatency;
     AudioTimestamp                  getOutputTimestamp();
 
-    [Throws]
-    Promise<void> suspend();
-    [Throws]
-    Promise<void> close();
+    [NewObject]
+    Promise<undefined> suspend();
+    [NewObject]
+    Promise<undefined> close();
 
     [NewObject, Throws]
     MediaElementAudioSourceNode createMediaElementSource(HTMLMediaElement mediaElement);

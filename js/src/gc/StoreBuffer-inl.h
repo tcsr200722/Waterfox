@@ -49,14 +49,24 @@ inline void ArenaCellSet::check() const {
   MOZ_ASSERT(isEmpty() == !arena);
   if (!isEmpty()) {
     MOZ_ASSERT(IsCellPointerValid(arena));
-    MOZ_ASSERT(arena->bufferedCells() == this);
     JSRuntime* runtime = arena->zone->runtimeFromMainThread();
-    MOZ_ASSERT(runtime->gc.minorGCCount() == minorGCNumberAtCreation);
+    uint64_t minorGCCount = runtime->gc.minorGCCount();
+    MOZ_ASSERT(minorGCCount == minorGCNumberAtCreation ||
+               minorGCCount == minorGCNumberAtCreation + 1);
   }
 #endif
 }
 
 inline void StoreBuffer::WholeCellBuffer::put(const Cell* cell) {
+  if (cell != last_) {
+    putDontCheckLast(cell);
+  }
+}
+
+inline void StoreBuffer::WholeCellBuffer::putDontCheckLast(const Cell* cell) {
+  // This can still be called when |cell == last_| if the caller didn't check
+  // and that's OK.
+
   MOZ_ASSERT(cell->isTenured());
 
   // BigInts don't have any children, so shouldn't show up here.
@@ -73,9 +83,14 @@ inline void StoreBuffer::WholeCellBuffer::put(const Cell* cell) {
 
   cells->putCell(&cell->asTenured());
   cells->check();
+
+  last_ = cell;
 }
 
 inline void StoreBuffer::putWholeCell(Cell* cell) { bufferWholeCell.put(cell); }
+inline void StoreBuffer::putWholeCellDontCheckLast(Cell* cell) {
+  bufferWholeCell.putDontCheckLast(cell);
+}
 
 }  // namespace gc
 }  // namespace js

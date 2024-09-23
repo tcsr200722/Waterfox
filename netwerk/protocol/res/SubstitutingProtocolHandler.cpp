@@ -8,6 +8,7 @@
 #include "mozilla/Unused.h"
 #include "mozilla/chrome/RegistryMessageUtils.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/ipc/URIUtils.h"
 
 #include "SubstitutingProtocolHandler.h"
 #include "SubstitutingURL.h"
@@ -33,7 +34,6 @@ namespace net {
 // name of "nsResProtocol" to avoid disruption.
 static LazyLogModule gResLog("nsResProtocol");
 
-static NS_DEFINE_CID(kSubstitutingURLCID, NS_SUBSTITUTINGURL_CID);
 static NS_DEFINE_CID(kSubstitutingJARURIImplCID,
                      NS_SUBSTITUTINGJARURI_IMPL_CID);
 
@@ -49,6 +49,15 @@ NS_IMPL_NSIURIMUTATOR_ISUPPORTS(SubstitutingURL::Mutator, nsIURISetters,
                                 nsIURLMutator, nsIFileURLMutator,
                                 nsISerializable)
 
+NS_IMPL_CLASSINFO(SubstitutingURL, nullptr, nsIClassInfo::THREADSAFE,
+                  NS_SUBSTITUTINGURL_CID)
+// Empty CI getter. We only need nsIClassInfo for Serialization
+NS_IMPL_CI_INTERFACE_GETTER0(SubstitutingURL)
+
+NS_IMPL_ADDREF_INHERITED(SubstitutingURL, nsStandardURL)
+NS_IMPL_RELEASE_INHERITED(SubstitutingURL, nsStandardURL)
+NS_IMPL_QUERY_INTERFACE_CI_INHERITED0(SubstitutingURL, nsStandardURL)
+
 nsresult SubstitutingURL::EnsureFile() {
   nsAutoCString ourScheme;
   nsresult rv = GetScheme(ourScheme);
@@ -63,7 +72,9 @@ nsresult SubstitutingURL::EnsureFile() {
   NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsISubstitutingProtocolHandler> substHandler =
       do_QueryInterface(handler);
-  MOZ_ASSERT(substHandler);
+  if (!substHandler) {
+    return NS_ERROR_NO_INTERFACE;
+  }
 
   nsAutoCString spec;
   rv = substHandler->ResolveURI(this, spec);
@@ -86,12 +97,6 @@ nsresult SubstitutingURL::EnsureFile() {
 nsStandardURL* SubstitutingURL::StartClone() {
   SubstitutingURL* clone = new SubstitutingURL();
   return clone;
-}
-
-NS_IMETHODIMP
-SubstitutingURL::GetClassIDNoAlloc(nsCID* aClassIDNoAlloc) {
-  *aClassIDNoAlloc = kSubstitutingURLCID;
-  return NS_OK;
 }
 
 void SubstitutingURL::Serialize(ipc::URIParams& aParams) {
@@ -139,6 +144,32 @@ nsresult SubstitutingJARURI::EqualsInternal(nsIURI* aOther,
              : mSource->EqualsExceptRef(other->mSource, aResult);
 }
 
+NS_IMETHODIMP
+SubstitutingJARURI::Mutate(nsIURIMutator** aMutator) {
+  RefPtr<SubstitutingJARURI::Mutator> mutator =
+      new SubstitutingJARURI::Mutator();
+  nsresult rv = mutator->InitFromURI(this);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  mutator.forget(aMutator);
+  return NS_OK;
+}
+
+void SubstitutingJARURI::Serialize(mozilla::ipc::URIParams& aParams) {
+  using namespace mozilla::ipc;
+
+  SubstitutingJARURIParams params;
+  URIParams source;
+  URIParams resolved;
+
+  mSource->Serialize(source);
+  mResolved->Serialize(resolved);
+  params.source() = source;
+  params.resolved() = resolved;
+  aParams = params;
+}
+
 // SubstitutingJARURI::nsISerializable
 
 NS_IMETHODIMP
@@ -179,8 +210,77 @@ SubstitutingJARURI::Write(nsIObjectOutputStream* aStream) {
   return NS_OK;
 }
 
-NS_IMPL_CLASSINFO(SubstitutingJARURI, nullptr, nsIClassInfo::MAIN_THREAD_ONLY,
-                  NS_SUBSTITUTINGJARURI_CID)
+nsresult SubstitutingJARURI::Clone(nsIURI** aURI) {
+  RefPtr<SubstitutingJARURI> uri = new SubstitutingJARURI();
+  // SubstitutingJARURI's mSource/mResolved isn't mutable.
+  uri->mSource = mSource;
+  uri->mResolved = mResolved;
+  uri.forget(aURI);
+
+  return NS_OK;
+}
+
+nsresult SubstitutingJARURI::SetUserPass(const nsACString& aInput) {
+  // If setting same value in mSource, return NS_OK;
+  if (!mSource) {
+    return NS_ERROR_NULL_POINTER;
+  }
+
+  nsAutoCString sourceUserPass;
+  nsresult rv = mSource->GetUserPass(sourceUserPass);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  if (aInput.Equals(sourceUserPass)) {
+    return NS_OK;
+  }
+  return NS_ERROR_FAILURE;
+}
+
+nsresult SubstitutingJARURI::SetPort(int32_t aPort) {
+  // If setting same value in mSource, return NS_OK;
+  if (!mSource) {
+    return NS_ERROR_NULL_POINTER;
+  }
+
+  int32_t sourcePort = -1;
+  nsresult rv = mSource->GetPort(&sourcePort);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  if (aPort == sourcePort) {
+    return NS_OK;
+  }
+  return NS_ERROR_FAILURE;
+}
+
+bool SubstitutingJARURI::Deserialize(const mozilla::ipc::URIParams& aParams) {
+  using namespace mozilla::ipc;
+
+  if (aParams.type() != URIParams::TSubstitutingJARURIParams) {
+    NS_ERROR("Received unknown parameters from the other process!");
+    return false;
+  }
+
+  const SubstitutingJARURIParams& jarUriParams =
+      aParams.get_SubstitutingJARURIParams();
+
+  nsCOMPtr<nsIURI> source = DeserializeURI(jarUriParams.source());
+  nsresult rv;
+  mSource = do_QueryInterface(source, &rv);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+  nsCOMPtr<nsIURI> jarUri = DeserializeURI(jarUriParams.resolved());
+  mResolved = do_QueryInterface(jarUri, &rv);
+  return NS_SUCCEEDED(rv);
+}
+
+nsresult SubstitutingJARURI::ReadPrivate(nsIObjectInputStream* aStream) {
+  return Read(aStream);
+}
+
+NS_IMPL_CLASSINFO(SubstitutingJARURI, nullptr, 0, NS_SUBSTITUTINGJARURI_CID)
 
 NS_IMPL_ADDREF(SubstitutingJARURI)
 NS_IMPL_RELEASE(SubstitutingJARURI)
@@ -201,22 +301,15 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CI_INTERFACE_GETTER(SubstitutingJARURI, nsIURI, nsIJARURI, nsIURL,
                             nsIStandardURL, nsISerializable)
 
+NS_IMPL_NSIURIMUTATOR_ISUPPORTS(SubstitutingJARURI::Mutator, nsIURISetters,
+                                nsIURIMutator, nsISerializable)
+
 SubstitutingProtocolHandler::SubstitutingProtocolHandler(const char* aScheme,
-                                                         uint32_t aFlags,
                                                          bool aEnforceFileOrJar)
     : mScheme(aScheme),
       mSubstitutionsLock("SubstitutingProtocolHandler::mSubstitutions"),
       mSubstitutions(16),
       mEnforceFileOrJar(aEnforceFileOrJar) {
-  mFlags.emplace(aFlags);
-  ConstructInternal();
-}
-
-SubstitutingProtocolHandler::SubstitutingProtocolHandler(const char* aScheme)
-    : mScheme(aScheme),
-      mSubstitutionsLock("SubstitutingProtocolHandler::mSubstitutions"),
-      mSubstitutions(16),
-      mEnforceFileOrJar(true) {
   ConstructInternal();
 }
 
@@ -233,15 +326,16 @@ void SubstitutingProtocolHandler::ConstructInternal() {
 nsresult SubstitutingProtocolHandler::CollectSubstitutions(
     nsTArray<SubstitutionMapping>& aMappings) {
   AutoReadLock lock(mSubstitutionsLock);
-  for (auto iter = mSubstitutions.ConstIter(); !iter.Done(); iter.Next()) {
-    SubstitutionEntry& entry = iter.Data();
+  for (const auto& substitutionEntry : mSubstitutions) {
+    const SubstitutionEntry& entry = substitutionEntry.GetData();
     nsCOMPtr<nsIURI> uri = entry.baseURI;
     SerializedURI serialized;
     if (uri) {
       nsresult rv = uri->GetSpec(serialized.spec);
       NS_ENSURE_SUCCESS(rv, rv);
     }
-    SubstitutionMapping substitution = {mScheme, nsCString(iter.Key()),
+    SubstitutionMapping substitution = {mScheme,
+                                        nsCString(substitutionEntry.GetKey()),
                                         serialized, entry.flags};
     aMappings.AppendElement(substitution);
   }
@@ -284,23 +378,6 @@ nsresult SubstitutingProtocolHandler::SendSubstitution(const nsACString& aRoot,
 
 nsresult SubstitutingProtocolHandler::GetScheme(nsACString& result) {
   result = mScheme;
-  return NS_OK;
-}
-
-nsresult SubstitutingProtocolHandler::GetDefaultPort(int32_t* result) {
-  *result = -1;
-  return NS_OK;
-}
-
-nsresult SubstitutingProtocolHandler::GetProtocolFlags(uint32_t* result) {
-  if (mFlags.isNothing()) {
-    NS_WARNING(
-        "Trying to get protocol flags the wrong way - use "
-        "nsIProtocolHandlerWithDynamicFlags instead");
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  *result = mFlags.ref();
   return NS_OK;
 }
 
@@ -347,11 +424,11 @@ nsresult SubstitutingProtocolHandler::NewURI(const nsACString& aSpec,
 
   nsCOMPtr<nsIURI> base(aBaseURI);
   nsCOMPtr<nsIURL> uri;
-  rv = NS_MutateURI(new SubstitutingURL::Mutator())
-           .Apply(NS_MutatorMethod(&nsIStandardURLMutator::Init,
-                                   nsIStandardURL::URLTYPE_STANDARD, -1, spec,
-                                   aCharset, base, nullptr))
-           .Finalize(uri);
+  rv =
+      NS_MutateURI(new SubstitutingURL::Mutator())
+          .Apply(&nsIStandardURLMutator::Init, nsIStandardURL::URLTYPE_STANDARD,
+                 -1, spec, aCharset, base, nullptr)
+          .Finalize(uri);
   if (NS_FAILED(rv)) return rv;
 
   nsAutoCString host;
@@ -360,7 +437,7 @@ nsresult SubstitutingProtocolHandler::NewURI(const nsACString& aSpec,
 
   // "android" is the only root that would return the RESOLVE_JAR_URI flag
   // see nsResProtocolHandler::GetSubstitutionInternal
-  if (MustResolveJAR(host)) {
+  if (GetJARFlags(host) & nsISubstitutingProtocolHandler::RESOLVE_JAR_URI) {
     return ResolveJARURI(uri, aResult);
   }
 
@@ -481,9 +558,7 @@ nsresult SubstitutingProtocolHandler::SetSubstitutionWithFlags(
 
     {
       AutoWriteLock lock(mSubstitutionsLock);
-      SubstitutionEntry& entry = mSubstitutions.GetOrInsert(root);
-      entry.baseURI = baseURI;
-      entry.flags = flags;
+      mSubstitutions.InsertOrUpdate(root, SubstitutionEntry{baseURI, flags});
     }
 
     return SendSubstitution(root, baseURI, flags);
@@ -501,9 +576,7 @@ nsresult SubstitutingProtocolHandler::SetSubstitutionWithFlags(
 
   {
     AutoWriteLock lock(mSubstitutionsLock);
-    SubstitutionEntry& entry = mSubstitutions.GetOrInsert(root);
-    entry.baseURI = newBaseURI;
-    entry.flags = flags;
+    mSubstitutions.InsertOrUpdate(root, SubstitutionEntry{newBaseURI, flags});
   }
 
   return SendSubstitution(root, newBaseURI, flags);
@@ -526,8 +599,7 @@ nsresult SubstitutingProtocolHandler::GetSubstitution(
     }
   }
 
-  uint32_t flags;
-  return GetSubstitutionInternal(root, result, &flags);
+  return GetSubstitutionInternal(root, result);
 }
 
 nsresult SubstitutingProtocolHandler::GetSubstitutionFlags(
@@ -552,7 +624,8 @@ nsresult SubstitutingProtocolHandler::GetSubstitutionFlags(
   }
 
   nsCOMPtr<nsIURI> baseURI;
-  return GetSubstitutionInternal(root, getter_AddRefs(baseURI), flags);
+  *flags = GetJARFlags(root);
+  return GetSubstitutionInternal(root, getter_AddRefs(baseURI));
 }
 
 nsresult SubstitutingProtocolHandler::HasSubstitution(
@@ -617,8 +690,7 @@ nsresult SubstitutingProtocolHandler::ResolveURI(nsIURI* uri,
     if (baseDir) {
       nsAutoCString basePath;
       rv = baseURI->GetFilePath(basePath);
-      if (NS_SUCCEEDED(rv) &&
-          !StringEndsWith(basePath, NS_LITERAL_CSTRING("/"))) {
+      if (NS_SUCCEEDED(rv) && !StringEndsWith(basePath, "/"_ns)) {
         // Cf. the assertion above, path already starts with a /, so prefixing
         // with a string that doesn't end with one will leave us wit the right
         // amount of /.

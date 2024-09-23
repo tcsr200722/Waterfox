@@ -9,19 +9,17 @@
 <body>
 <script class="testbody" type="text/javascript">
 
-/* eslint-env mozilla/frame-script */
-
 var tests = [
   // All disabled.
   { config: [ false, false ], loadExpected: true },
 
-  // Just whitelisted.
+  // Just entitylisted.
   { config: [ false, true ], loadExpected: true },
 
-  // Just blacklisted.
+  // Just blocklisted.
   { config: [ true, false ], loadExpected: false },
 
-  // whitelist + blacklist: whitelist wins
+  // entitylist + blocklist: entitylist wins
   { config: [ true, true ], loadExpected: true },
 ];
 
@@ -32,12 +30,13 @@ function prefValue(value, what) {
 async function runTest(test) {
   await SpecialPowers.pushPrefEnv({set: [
     [ "urlclassifier.features.cryptomining.blacklistHosts", prefValue(test.config[0], "example.com") ],
-    [ "urlclassifier.features.cryptomining.whitelistHosts", prefValue(test.config[1], "mochi.test") ],
+    [ "urlclassifier.features.cryptomining.whitelistHosts", prefValue(test.config[1], "mochi.test,mochi.xorigin-test") ],
     [ "urlclassifier.features.cryptomining.blacklistTables", prefValue(test.config[0], "mochitest1-track-simple") ],
     [ "urlclassifier.features.cryptomining.whitelistTables", "" ],
     [ "privacy.trackingprotection.enabled", false ],
     [ "privacy.trackingprotection.annotate_channels", false ],
     [ "privacy.trackingprotection.cryptomining.enabled", true ],
+    [ "privacy.trackingprotection.emailtracking.enabled", false ],
     [ "privacy.trackingprotection.fingerprinting.enabled", false ],
     [ "privacy.trackingprotection.socialtracking.enabled", false ],
   ]});
@@ -67,7 +66,10 @@ async function runTest(test) {
 
 async function runTests() {
   let chromeScript = SpecialPowers.loadChromeScript(_ => {
-    const {UrlClassifierTestUtils} = ChromeUtils.import("resource://testing-common/UrlClassifierTestUtils.jsm");
+    /* eslint-env mozilla/chrome-script */
+    const {UrlClassifierTestUtils} = ChromeUtils.importESModule(
+      "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
+    );
 
     addMessageListener("loadTrackers", __ => {
       return UrlClassifierTestUtils.addTestTrackers();

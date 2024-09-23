@@ -1,8 +1,4 @@
-// |jit-test| skip-if: !('oomTest' in this)
-
 // OOM tests for xdr module parsing.
-
-load(libdir + "dummyModuleResolveHook.js");
 
 const sa =
 `export default 20;
@@ -18,11 +14,11 @@ const sb =
 `;
 
 oomTest(() => {
-    let og = parseModule(sa);
-    let bc = codeModule(og);
-    let a = moduleRepo['a'] = decodeModule(bc);
+    let stencil = compileToStencilXDR(sa, {module: true});
+    let m = instantiateModuleStencilXDR(stencil);
+    let a = registerModule('a', m);
 
-    og = parseModule(sb);
-    bc = codeModule(og);
-    let b = moduleRepo['b'] = decodeModule(bc);
+    stencil = compileToStencilXDR(sb, {module: true});
+    m = instantiateModuleStencilXDR(stencil);
+    let b = registerModule('b', m);
 });

@@ -1,19 +1,18 @@
-#![doc(html_root_url = "https://docs.rs/prost-derive/0.6.1")]
+#![doc(html_root_url = "https://docs.rs/prost-derive/0.12.1")]
 // The `quote!` macro requires deep recursion.
 #![recursion_limit = "4096"]
 
+extern crate alloc;
 extern crate proc_macro;
 
-use anyhow::bail;
-use quote::quote;
-
-use anyhow::Error;
+use anyhow::{bail, Error};
 use itertools::Itertools;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
+use quote::quote;
 use syn::{
     punctuated::Punctuated, Data, DataEnum, DataStruct, DeriveInput, Expr, Fields, FieldsNamed,
-    FieldsUnnamed, Ident, Variant,
+    FieldsUnnamed, Ident, Index, Variant,
 };
 
 mod field;
@@ -24,42 +23,51 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
 
     let ident = input.ident;
 
+    syn::custom_keyword!(skip_debug);
+    let skip_debug = input
+        .attrs
+        .into_iter()
+        .any(|a| a.path().is_ident("prost") && a.parse_args::<skip_debug>().is_ok());
+
     let variant_data = match input.data {
         Data::Struct(variant_data) => variant_data,
         Data::Enum(..) => bail!("Message can not be derived for an enum"),
         Data::Union(..) => bail!("Message can not be derived for a union"),
     };
 
-    if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
-        bail!("Message may not be derived for generic type");
-    }
+    let generics = &input.generics;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let fields = match variant_data {
+    let (is_struct, fields) = match variant_data {
         DataStruct {
             fields: Fields::Named(FieldsNamed { named: fields, .. }),
             ..
-        }
-        | DataStruct {
+        } => (true, fields.into_iter().collect()),
+        DataStruct {
             fields:
                 Fields::Unnamed(FieldsUnnamed {
                     unnamed: fields, ..
                 }),
             ..
-        } => fields.into_iter().collect(),
+        } => (false, fields.into_iter().collect()),
         DataStruct {
             fields: Fields::Unit,
             ..
-        } => Vec::new(),
+        } => (false, Vec::new()),
     };
 
     let mut next_tag: u32 = 1;
     let mut fields = fields
         .into_iter()
         .enumerate()
-        .flat_map(|(idx, field)| {
-            let field_ident = field
-                .ident
-                .unwrap_or_else(|| Ident::new(&idx.to_string(), Span::call_site()));
+        .flat_map(|(i, field)| {
+            let field_ident = field.ident.map(|x| quote!(#x)).unwrap_or_else(|| {
+                let index = Index {
+                    index: i as u32,
+                    span: Span::call_site(),
+                };
+                quote!(#index)
+            });
             match Field::new(field.attrs, Some(next_tag)) {
                 Ok(Some(field)) => {
                     next_tag = field.tags().iter().max().map(|t| t + 1).unwrap_or(next_tag);
@@ -88,7 +96,7 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
         .flat_map(|&(_, ref field)| field.tags())
         .collect::<Vec<_>>();
     let num_tags = tags.len();
-    tags.sort();
+    tags.sort_unstable();
     tags.dedup();
     if tags.len() != num_tags {
         bail!("message {} has fields with duplicate tags", ident);
@@ -104,11 +112,9 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
 
     let merge = fields.iter().map(|&(ref field_ident, ref field)| {
         let merge = field.merge(quote!(value));
-        let tags = field
-            .tags()
-            .into_iter()
-            .map(|tag| quote!(#tag))
-            .intersperse(quote!(|));
+        let tags = field.tags().into_iter().map(|tag| quote!(#tag));
+        let tags = Itertools::intersperse(tags, quote!(|));
+
         quote! {
             #(#tags)* => {
                 let mut value = &mut self.#field_ident;
@@ -128,17 +134,27 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
         )
     };
 
-    // TODO
-    let is_struct = true;
-
     let clear = fields
         .iter()
         .map(|&(ref field_ident, ref field)| field.clear(quote!(self.#field_ident)));
 
-    let default = fields.iter().map(|&(ref field_ident, ref field)| {
-        let value = field.default();
-        quote!(#field_ident: #value,)
-    });
+    let default = if is_struct {
+        let default = fields.iter().map(|(field_ident, field)| {
+            let value = field.default();
+            quote!(#field_ident: #value,)
+        });
+        quote! {#ident {
+            #(#default)*
+        }}
+    } else {
+        let default = fields.iter().map(|(_, field)| {
+            let value = field.default();
+            quote!(#value,)
+        });
+        quote! {#ident (
+            #(#default)*
+        )}
+    };
 
     let methods = fields
         .iter()
@@ -149,34 +165,14 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
     } else {
         quote! {
             #[allow(dead_code)]
-            impl #ident {
+            impl #impl_generics #ident #ty_generics #where_clause {
                 #(#methods)*
             }
         }
     };
 
-    let debugs = unsorted_fields.iter().map(|&(ref field_ident, ref field)| {
-        let wrapper = field.debug(quote!(self.#field_ident));
-        let call = if is_struct {
-            quote!(builder.field(stringify!(#field_ident), &wrapper))
-        } else {
-            quote!(builder.field(&wrapper))
-        };
-        quote! {
-             let builder = {
-                 let wrapper = #wrapper;
-                 #call
-             };
-        }
-    });
-    let debug_builder = if is_struct {
-        quote!(f.debug_struct(stringify!(#ident)))
-    } else {
-        quote!(f.debug_tuple(stringify!(#ident)))
-    };
-
     let expanded = quote! {
-        impl ::prost::Message for #ident {
+        impl #impl_generics ::prost::Message for #ident #ty_generics #where_clause {
             #[allow(unused_variables)]
             fn encode_raw<B>(&self, buf: &mut B) where B: ::prost::bytes::BufMut {
                 #(#encode)*
@@ -189,7 +185,7 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
                 wire_type: ::prost::encoding::WireType,
                 buf: &mut B,
                 ctx: ::prost::encoding::DecodeContext,
-            ) -> ::std::result::Result<(), ::prost::DecodeError>
+            ) -> ::core::result::Result<(), ::prost::DecodeError>
             where B: ::prost::bytes::Buf {
                 #struct_name
                 match tag {
@@ -208,21 +204,49 @@ fn try_message(input: TokenStream) -> Result<TokenStream, Error> {
             }
         }
 
-        impl Default for #ident {
-            fn default() -> #ident {
-                #ident {
-                    #(#default)*
+        impl #impl_generics ::core::default::Default for #ident #ty_generics #where_clause {
+            fn default() -> Self {
+                #default
+            }
+        }
+    };
+    let expanded = if skip_debug {
+        expanded
+    } else {
+        let debugs = unsorted_fields.iter().map(|&(ref field_ident, ref field)| {
+            let wrapper = field.debug(quote!(self.#field_ident));
+            let call = if is_struct {
+                quote!(builder.field(stringify!(#field_ident), &wrapper))
+            } else {
+                quote!(builder.field(&wrapper))
+            };
+            quote! {
+                 let builder = {
+                     let wrapper = #wrapper;
+                     #call
+                 };
+            }
+        });
+        let debug_builder = if is_struct {
+            quote!(f.debug_struct(stringify!(#ident)))
+        } else {
+            quote!(f.debug_tuple(stringify!(#ident)))
+        };
+        quote! {
+            #expanded
+
+            impl #impl_generics ::core::fmt::Debug for #ident #ty_generics #where_clause {
+                fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                    let mut builder = #debug_builder;
+                    #(#debugs;)*
+                    builder.finish()
                 }
             }
         }
+    };
 
-        impl ::std::fmt::Debug for #ident {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                let mut builder = #debug_builder;
-                #(#debugs;)*
-                builder.finish()
-            }
-        }
+    let expanded = quote! {
+        #expanded
 
         #methods
     };
@@ -239,9 +263,8 @@ fn try_enumeration(input: TokenStream) -> Result<TokenStream, Error> {
     let input: DeriveInput = syn::parse(input)?;
     let ident = input.ident;
 
-    if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
-        bail!("Message may not be derived for generic type");
-    }
+    let generics = &input.generics;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let punctuated_variants = match input.data {
         Data::Enum(DataEnum { variants, .. }) => variants,
@@ -267,7 +290,7 @@ fn try_enumeration(input: TokenStream) -> Result<TokenStream, Error> {
 
         match discriminant {
             Some((_, expr)) => variants.push((ident, expr)),
-            None => bail!("Enumeration variants must have a disriminant"),
+            None => bail!("Enumeration variants must have a discriminant"),
         }
     }
 
@@ -281,7 +304,11 @@ fn try_enumeration(input: TokenStream) -> Result<TokenStream, Error> {
         .iter()
         .map(|&(_, ref value)| quote!(#value => true));
     let from = variants.iter().map(
-        |&(ref variant, ref value)| quote!(#value => ::std::option::Option::Some(#ident::#variant)),
+        |&(ref variant, ref value)| quote!(#value => ::core::option::Option::Some(#ident::#variant)),
+    );
+
+    let try_from = variants.iter().map(
+        |&(ref variant, ref value)| quote!(#value => ::core::result::Result::Ok(#ident::#variant)),
     );
 
     let is_valid_doc = format!("Returns `true` if `value` is a variant of `{}`.", ident);
@@ -291,7 +318,7 @@ fn try_enumeration(input: TokenStream) -> Result<TokenStream, Error> {
     );
 
     let expanded = quote! {
-        impl #ident {
+        impl #impl_generics #ident #ty_generics #where_clause {
             #[doc=#is_valid_doc]
             pub fn is_valid(value: i32) -> bool {
                 match value {
@@ -300,24 +327,36 @@ fn try_enumeration(input: TokenStream) -> Result<TokenStream, Error> {
                 }
             }
 
+            #[deprecated = "Use the TryFrom<i32> implementation instead"]
             #[doc=#from_i32_doc]
-            pub fn from_i32(value: i32) -> ::std::option::Option<#ident> {
+            pub fn from_i32(value: i32) -> ::core::option::Option<#ident> {
                 match value {
                     #(#from,)*
-                    _ => ::std::option::Option::None,
+                    _ => ::core::option::Option::None,
                 }
             }
         }
 
-        impl ::std::default::Default for #ident {
+        impl #impl_generics ::core::default::Default for #ident #ty_generics #where_clause {
             fn default() -> #ident {
                 #ident::#default
             }
         }
 
-        impl ::std::convert::From<#ident> for i32 {
+        impl #impl_generics ::core::convert::From::<#ident> for i32 #ty_generics #where_clause {
             fn from(value: #ident) -> i32 {
                 value as i32
+            }
+        }
+
+        impl #impl_generics ::core::convert::TryFrom::<i32> for #ident #ty_generics #where_clause {
+            type Error = ::prost::DecodeError;
+
+            fn try_from(value: i32) -> ::core::result::Result<#ident, ::prost::DecodeError> {
+                match value {
+                    #(#try_from,)*
+                    _ => ::core::result::Result::Err(::prost::DecodeError::new("invalid enumeration value")),
+                }
             }
         }
     };
@@ -335,15 +374,20 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
 
     let ident = input.ident;
 
+    syn::custom_keyword!(skip_debug);
+    let skip_debug = input
+        .attrs
+        .into_iter()
+        .any(|a| a.path().is_ident("prost") && a.parse_args::<skip_debug>().is_ok());
+
     let variants = match input.data {
         Data::Enum(DataEnum { variants, .. }) => variants,
         Data::Struct(..) => bail!("Oneof can not be derived for a struct"),
         Data::Union(..) => bail!("Oneof can not be derived for a union"),
     };
 
-    if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
-        bail!("Message may not be derived for generic type");
-    }
+    let generics = &input.generics;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Map the variants into 'fields'.
     let mut fields: Vec<(Ident, Field)> = Vec::new();
@@ -383,7 +427,7 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
             Ok(field.tags()[0])
         })
         .collect::<Vec<_>>();
-    tags.sort();
+    tags.sort_unstable();
     tags.dedup();
     if tags.len() != fields.len() {
         panic!("invalid oneof {}: variants have duplicate tags", ident);
@@ -400,13 +444,13 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
         quote! {
             #tag => {
                 match field {
-                    ::std::option::Option::Some(#ident::#variant_ident(ref mut value)) => {
+                    ::core::option::Option::Some(#ident::#variant_ident(ref mut value)) => {
                         #merge
                     },
                     _ => {
-                        let mut owned_value = ::std::default::Default::default();
+                        let mut owned_value = ::core::default::Default::default();
                         let value = &mut owned_value;
-                        #merge.map(|_| *field = ::std::option::Option::Some(#ident::#variant_ident(owned_value)))
+                        #merge.map(|_| *field = ::core::option::Option::Some(#ident::#variant_ident(owned_value)))
                     },
                 }
             }
@@ -418,31 +462,23 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
         quote!(#ident::#variant_ident(ref value) => #encoded_len)
     });
 
-    let debug = fields.iter().map(|&(ref variant_ident, ref field)| {
-        let wrapper = field.debug(quote!(*value));
-        quote!(#ident::#variant_ident(ref value) => {
-            let wrapper = #wrapper;
-            f.debug_tuple(stringify!(#variant_ident))
-                .field(&wrapper)
-                .finish()
-        })
-    });
-
     let expanded = quote! {
-        impl #ident {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Encodes the message to a buffer.
             pub fn encode<B>(&self, buf: &mut B) where B: ::prost::bytes::BufMut {
                 match *self {
                     #(#encode,)*
                 }
             }
 
+            /// Decodes an instance of the message from a buffer, and merges it into self.
             pub fn merge<B>(
-                field: &mut ::std::option::Option<#ident>,
+                field: &mut ::core::option::Option<#ident #ty_generics>,
                 tag: u32,
                 wire_type: ::prost::encoding::WireType,
                 buf: &mut B,
                 ctx: ::prost::encoding::DecodeContext,
-            ) -> ::std::result::Result<(), ::prost::DecodeError>
+            ) -> ::core::result::Result<(), ::prost::DecodeError>
             where B: ::prost::bytes::Buf {
                 match tag {
                     #(#merge,)*
@@ -450,6 +486,7 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
                 }
             }
 
+            /// Returns the encoded length of the message without a length delimiter.
             #[inline]
             pub fn encoded_len(&self) -> usize {
                 match *self {
@@ -458,10 +495,27 @@ fn try_oneof(input: TokenStream) -> Result<TokenStream, Error> {
             }
         }
 
-        impl ::std::fmt::Debug for #ident {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                match *self {
-                    #(#debug,)*
+    };
+    let expanded = if skip_debug {
+        expanded
+    } else {
+        let debug = fields.iter().map(|&(ref variant_ident, ref field)| {
+            let wrapper = field.debug(quote!(*value));
+            quote!(#ident::#variant_ident(ref value) => {
+                let wrapper = #wrapper;
+                f.debug_tuple(stringify!(#variant_ident))
+                    .field(&wrapper)
+                    .finish()
+            })
+        });
+        quote! {
+            #expanded
+
+            impl #impl_generics ::core::fmt::Debug for #ident #ty_generics #where_clause {
+                fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+                    match *self {
+                        #(#debug,)*
+                    }
                 }
             }
         }

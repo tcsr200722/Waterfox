@@ -2,25 +2,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-disable mozilla/reject-some-requires */
-
 "use strict";
 
-const { Ci } = require("chrome");
-const Services = require("Services");
 const {
   HarCollector,
-} = require("devtools/client/netmonitor/src/har/har-collector");
+} = require("resource://devtools/client/netmonitor/src/har/har-collector.js");
 const {
   HarExporter,
-} = require("devtools/client/netmonitor/src/har/har-exporter");
-const { HarUtils } = require("devtools/client/netmonitor/src/har/har-utils");
+} = require("resource://devtools/client/netmonitor/src/har/har-exporter.js");
+const {
+  HarUtils,
+} = require("resource://devtools/client/netmonitor/src/har/har-utils.js");
+const {
+  getLongStringFullText,
+} = require("resource://devtools/client/shared/string-utils.js");
 
 const prefDomain = "devtools.netmonitor.har.";
 
 // Helper tracer. Should be generic sharable by other modules (bug 1171927)
 const trace = {
-  log: function(...args) {},
+  log() {},
 };
 
 /**
@@ -37,21 +38,19 @@ const trace = {
  * If the default log directory preference isn't set the following
  * directory is used by default: <profile>/har/logs
  */
-function HarAutomation(toolbox) {
-  this.initialize(toolbox);
-}
+function HarAutomation() {}
 
 HarAutomation.prototype = {
   // Initialization
 
-  initialize: function(toolbox) {
+  async initialize(toolbox) {
     this.toolbox = toolbox;
+    this.commands = toolbox.commands;
 
-    const { target } = toolbox;
-    this.startMonitoring(target.client);
+    await this.startMonitoring();
   },
 
-  destroy: function() {
+  destroy() {
     if (this.collector) {
       this.collector.stop();
     }
@@ -63,23 +62,37 @@ HarAutomation.prototype = {
 
   // Automation
 
-  startMonitoring: async function(client, callback) {
-    if (!client) {
-      return;
-    }
-
-    this.devToolsClient = client;
-    this.webConsoleFront = await this.toolbox.target.getFront("console");
-
-    this.tabWatcher = new TabWatcher(this.toolbox, this);
-    this.tabWatcher.connect();
+  async startMonitoring() {
+    await this.toolbox.resourceCommand.watchResources(
+      [this.toolbox.resourceCommand.TYPES.DOCUMENT_EVENT],
+      {
+        onAvailable: resources => {
+          // Only consider top level document, and ignore remote iframes top document
+          if (
+            resources.find(
+              r => r.name == "will-navigate" && r.targetFront.isTopLevel
+            )
+          ) {
+            this.pageLoadBegin();
+          }
+          if (
+            resources.find(
+              r => r.name == "dom-complete" && r.targetFront.isTopLevel
+            )
+          ) {
+            this.pageLoadDone();
+          }
+        },
+        ignoreExistingResources: true,
+      }
+    );
   },
 
-  pageLoadBegin: function(response) {
+  pageLoadBegin() {
     this.resetCollector();
   },
 
-  resetCollector: function() {
+  resetCollector() {
     if (this.collector) {
       this.collector.stop();
     }
@@ -87,8 +100,7 @@ HarAutomation.prototype = {
     // A page is about to be loaded, start collecting HTTP
     // data from events sent from the backend.
     this.collector = new HarCollector({
-      webConsoleFront: this.webConsoleFront,
-      devToolsClient: this.devToolsClient,
+      commands: this.commands,
     });
 
     this.collector.start();
@@ -104,17 +116,17 @@ HarAutomation.prototype = {
    * The additional traffic can be exported by executing
    * triggerExport on this object.
    */
-  pageLoadDone: function(response) {
+  pageLoadDone(response) {
     trace.log("HarAutomation.pageLoadDone; ", response);
 
     if (this.collector) {
-      this.collector.waitForHarLoad().then(collector => {
+      this.collector.waitForHarLoad().then(() => {
         return this.autoExport();
       });
     }
   },
 
-  autoExport: function() {
+  autoExport() {
     const autoExport = Services.prefs.getBoolPref(
       prefDomain + "enableAutoExportToFile"
     );
@@ -137,7 +149,7 @@ HarAutomation.prototype = {
   /**
    * Export all what is currently collected.
    */
-  triggerExport: function(data) {
+  triggerExport(data) {
     if (!data.fileName) {
       data.fileName = Services.prefs.getCharPref(
         prefDomain + "defaultFileName"
@@ -150,7 +162,7 @@ HarAutomation.prototype = {
   /**
    * Clear currently collected data.
    */
-  clear: function() {
+  clear() {
     this.resetCollector();
   },
 
@@ -160,9 +172,9 @@ HarAutomation.prototype = {
    * Execute HAR export. This method fetches all data from the
    * Network panel (asynchronously) and saves it into a file.
    */
-  executeExport: async function(data) {
+  async executeExport(data) {
     const items = this.collector.getItems();
-    const { title } = this.toolbox.target;
+    const { title } = this.commands.targetCommand.targetFront;
 
     const netMonitor = await this.toolbox.getNetMonitorAPI();
     const connector = await netMonitor.getHarExportConnector();
@@ -173,7 +185,7 @@ HarAutomation.prototype = {
       getTimingMarker: null,
       getString: this.getString.bind(this),
       view: this,
-      items: items,
+      items,
     };
 
     options.defaultFileName = data.fileName;
@@ -203,46 +215,12 @@ HarAutomation.prototype = {
   /**
    * Fetches the full text of a string.
    */
-  getString: function(stringGrip) {
-    return this.webConsoleFront.getString(stringGrip);
-  },
-};
-
-// Helpers
-
-function TabWatcher(toolbox, listener) {
-  this.target = toolbox.target;
-  this.listener = listener;
-
-  this.onNavigate = this.onNavigate.bind(this);
-  this.onWillNavigate = this.onWillNavigate.bind(this);
-}
-
-TabWatcher.prototype = {
-  // Connection
-
-  connect: function() {
-    this.target.on("navigate", this.onNavigate);
-    this.target.on("will-navigate", this.onWillNavigate);
-  },
-
-  disconnect: function() {
-    if (!this.target) {
-      return;
-    }
-
-    this.target.off("navigate", this.onNavigate);
-    this.target.off("will-navigate", this.onWillNavigate);
-  },
-
-  // Event Handlers
-
-  onNavigate: function(packet) {
-    this.listener.pageLoadDone(packet);
-  },
-
-  onWillNavigate: function(packet) {
-    this.listener.pageLoadBegin(packet);
+  async getString(stringGrip) {
+    const fullText = await getLongStringFullText(
+      this.commands.client,
+      stringGrip
+    );
+    return fullText;
   },
 };
 
@@ -257,8 +235,7 @@ function getDefaultTargetFile(options) {
     Services.prefs.getCharPref("devtools.netmonitor.har.defaultLogDir");
   const folder = HarUtils.getLocalDirectory(path);
 
-  const tabTarget = options.connector.getTabTarget();
-  const host = new URL(tabTarget.url);
+  const host = new URL(options.connector.currentTarget.url);
   const fileName = HarUtils.getHarFileName(
     options.defaultFileName,
     options.jsonp,

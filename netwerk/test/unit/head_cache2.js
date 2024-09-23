@@ -69,37 +69,34 @@ function pumpReadStream(inputStream, goon) {
       Ci.nsIInputStreamPump
     );
     pump.init(inputStream, 0, 0, true);
-    var data = "";
-    pump.asyncRead(
-      {
-        onStartRequest(aRequest) {},
-        onDataAvailable(aRequest, aInputStream, aOffset, aCount) {
-          var wrapper = Cc[
-            "@mozilla.org/scriptableinputstream;1"
-          ].createInstance(Ci.nsIScriptableInputStream);
-          wrapper.init(aInputStream);
-          var str = wrapper.read(wrapper.available());
-          LOG_C2("reading data '" + str.substring(0, 5) + "'");
-          data += str;
-        },
-        onStopRequest(aRequest, aStatusCode) {
-          LOG_C2("done reading data: " + aStatusCode);
-          Assert.equal(aStatusCode, Cr.NS_OK);
-          goon(data);
-        },
+    let data = "";
+    pump.asyncRead({
+      onStartRequest() {},
+      onDataAvailable(aRequest, aInputStream) {
+        var wrapper = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
+          Ci.nsIScriptableInputStream
+        );
+        wrapper.init(aInputStream);
+        var str = wrapper.read(wrapper.available());
+        LOG_C2("reading data '" + str.substring(0, 5) + "'");
+        data += str;
       },
-      null
-    );
+      onStopRequest(aRequest, aStatusCode) {
+        LOG_C2("done reading data: " + aStatusCode);
+        Assert.equal(aStatusCode, Cr.NS_OK);
+        goon(data);
+      },
+    });
   } else {
     // blocking stream
-    var data = read_stream(inputStream, inputStream.available());
+    let data = read_stream(inputStream, inputStream.available());
     goon(data);
   }
 }
 
 OpenCallback.prototype = {
   QueryInterface: ChromeUtils.generateQI(["nsICacheEntryOpenCallback"]),
-  onCacheEntryCheck(entry, appCache) {
+  onCacheEntryCheck(entry) {
     LOG_C2(this, "onCacheEntryCheck");
     Assert.ok(!this.onCheckPassed);
     this.onCheckPassed = true;
@@ -144,7 +141,7 @@ OpenCallback.prototype = {
     LOG_C2(this, "onCacheEntryCheck DONE, return ENTRY_WANTED");
     return Ci.nsICacheEntryOpenCallback.ENTRY_WANTED;
   },
-  onCacheEntryAvailable(entry, isnew, appCache, status) {
+  onCacheEntryAvailable(entry, isnew, status) {
     if (this.behavior & MAYBE_NEW && isnew) {
       this.behavior |= NEW;
     }
@@ -190,8 +187,8 @@ OpenCallback.prototype = {
         return;
       }
 
-      var self = this;
-      executeSoon(function() {
+      let self = this;
+      executeSoon(function () {
         // emulate network latency
         entry.setMetaDataElement("meto", self.workingMetadata);
         entry.metaDataReady();
@@ -201,19 +198,18 @@ OpenCallback.prototype = {
             entry.setValid();
           }
 
-          entry.close();
           if (self.behavior & WAITFORWRITE) {
             self.goon(entry);
           }
 
           return;
         }
-        executeSoon(function() {
+        executeSoon(function () {
           // emulate more network latency
           if (self.behavior & DOOMED) {
             LOG_C2(self, "checking doom state");
             try {
-              var os = entry.openOutputStream(0, -1);
+              let os = entry.openOutputStream(0, -1);
               // Unfortunately, in the undetermined state we cannot even check whether the entry
               // is actually doomed or not.
               os.close();
@@ -229,7 +225,7 @@ OpenCallback.prototype = {
 
           var offset = self.behavior & PARTIAL ? entry.dataSize : 0;
           LOG_C2(self, "openOutputStream @ " + offset);
-          var os = entry.openOutputStream(offset, -1);
+          let os = entry.openOutputStream(offset, -1);
           LOG_C2(self, "writing data");
           var wrt = os.write(self.workingData, self.workingData.length);
           Assert.equal(wrt, self.workingData.length);
@@ -237,8 +233,6 @@ OpenCallback.prototype = {
           if (self.behavior & WAITFORWRITE) {
             self.goon(entry);
           }
-
-          entry.close();
         });
       });
     } else {
@@ -252,16 +246,12 @@ OpenCallback.prototype = {
         this.goon(entry, true);
       }
 
-      var wrapper = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
-        Ci.nsIScriptableInputStream
-      );
-      var self = this;
-      pumpReadStream(entry.openInputStream(0), function(data) {
+      let self = this;
+      pumpReadStream(entry.openInputStream(0), function (data) {
         Assert.equal(data, self.workingData);
         self.onDataCheckPassed = true;
         LOG_C2(self, "entry read done");
         self.goon(entry);
-        entry.close();
       });
     }
   },
@@ -275,7 +265,7 @@ OpenCallback.prototype = {
   throwAndNotify(entry) {
     LOG_C2(this, "Throwing");
     var self = this;
-    executeSoon(function() {
+    executeSoon(function () {
       LOG_C2(self, "Notifying");
       self.goon(entry);
     });
@@ -312,6 +302,7 @@ VisitCallback.prototype = {
     aURI,
     aIdEnhance,
     aDataSize,
+    aAltDataSize,
     aFetchCount,
     aLastModifiedTime,
     aExpirationTime,
@@ -393,7 +384,7 @@ MultipleCallbacks.prototype = {
     if (--this.pending == 0) {
       var self = this;
       if (this.delayed) {
-        executeSoon(function() {
+        executeSoon(function () {
           self.goon();
         });
       } else {
@@ -415,7 +406,7 @@ function MultipleCallbacks(number, goon, delayed) {
 function wait_for_cache_index(continue_func) {
   // This callback will not fire before the index is in the ready state.  nsICacheStorage.exists() will
   // no longer throw after this point.
-  get_cache_service().asyncGetDiskConsumption({
+  Services.cache2.asyncGetDiskConsumption({
     onNetworkCacheDiskConsumption() {
       continue_func();
     },
@@ -427,7 +418,7 @@ function wait_for_cache_index(continue_func) {
 }
 
 function finish_cache2_test() {
-  callbacks.forEach(function(callback, index) {
+  callbacks.forEach(function (callback) {
     callback.selfCheck();
   });
   do_test_finished();

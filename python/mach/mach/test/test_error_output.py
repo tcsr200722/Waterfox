@@ -2,39 +2,28 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-from __future__ import unicode_literals
-
-from mach.main import (
-    COMMAND_ERROR,
-    MODULE_ERROR
-)
-from mach.test.common import TestBase
+from pathlib import Path
 
 from mozunit import main
 
-
-class TestErrorOutput(TestBase):
-
-    def _run_mach(self, args):
-        return TestBase._run_mach(self, args, 'throw.py')
-
-    def test_command_error(self):
-        result, stdout, stderr = self._run_mach(['throw', '--message',
-                                                'Command Error'])
-
-        self.assertEqual(result, 1)
-
-        self.assertIn(COMMAND_ERROR, stdout)
-
-    def test_invoked_error(self):
-        result, stdout, stderr = self._run_mach(['throw_deep', '--message',
-                                                'Deep stack'])
-
-        self.assertEqual(result, 1)
-
-        self.assertIn(MODULE_ERROR, stdout)
+from mach.main import COMMAND_ERROR_TEMPLATE, MODULE_ERROR_TEMPLATE
 
 
-if __name__ == '__main__':
+def test_command_error(run_mach):
+    result, stdout, stderr = run_mach(
+        ["throw", "--message", "Command Error"], provider_files=Path("throw.py")
+    )
+    assert result == 1
+    assert COMMAND_ERROR_TEMPLATE % "throw" in stdout
+
+
+def test_invoked_error(run_mach):
+    result, stdout, stderr = run_mach(
+        ["throw_deep", "--message", "Deep stack"], provider_files=Path("throw.py")
+    )
+    assert result == 1
+    assert MODULE_ERROR_TEMPLATE % "throw_deep" in stdout
+
+
+if __name__ == "__main__":
     main()

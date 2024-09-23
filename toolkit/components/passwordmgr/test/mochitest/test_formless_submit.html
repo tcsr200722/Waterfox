@@ -9,9 +9,12 @@
 </head>
 <body>
 <script type="application/javascript">
-const {LoginFormFactory} = SpecialPowers.Cu.import("resource://gre/modules/LoginFormFactory.jsm");
-const LMCBackstagePass = SpecialPowers.Cu.import("resource://gre/modules/LoginManagerChild.jsm");
-const { LoginManagerChild } = LMCBackstagePass;
+const { LoginFormFactory } = SpecialPowers.ChromeUtils.importESModule(
+  "resource://gre/modules/LoginFormFactory.sys.mjs"
+);
+const { LoginManagerChild } = SpecialPowers.ChromeUtils.importESModule(
+  "resource://gre/modules/LoginManagerChild.sys.mjs"
+);
 
 function loadFrame() {
   return new Promise(resolve => {
@@ -29,7 +32,7 @@ let loadPromise = new Promise(resolve => {
   });
 });
 
-add_task(async function setup() {
+add_setup(async () => {
   info("Waiting for page and frame loads");
   await loadPromise;
 
@@ -178,8 +181,7 @@ async function testFormlessSubmit(tc) {
   let frameDoc = SpecialPowers.wrap(loginFrame.contentWindow).document;
   info("Starting testcase: " + JSON.stringify(tc));
 
-  let formsProcessed = promiseFormsProcessed(tc.expectedFormsCount);
-  // eslint-disable-next-line no-unsanitized/property
+  let formsProcessed = promiseFormsProcessedInSameProcess(tc.expectedFormsCount);
   frameDoc.documentElement.innerHTML = tc.document;
   await formsProcessed;
   // We eliminate no user input as a reason for not capturing by modifying the value
@@ -193,24 +195,24 @@ async function testFormlessSubmit(tc) {
   let submitProcessed = getSubmitMessage();
   LoginManagerChild.forWindow(frameDoc.defaultView)._onFormSubmit(formLike);
 
-  let submittedResult = await submitProcessed;
+  let { origin, data } = await submitProcessed;
 
   // Check data sent via PasswordManager:onFormSubmit
-  is(submittedResult.origin, tc.origin, "Check origin");
-  is(submittedResult.formActionOrigin, tc.formActionOrigin, "Check formActionOrigin");
+  is(origin, tc.origin, "Check origin");
+  is(data.formActionOrigin, tc.formActionOrigin, "Check formActionOrigin");
 
   if (tc.usernameFieldValue === null) {
-    is(submittedResult.usernameField, tc.usernameFieldValue, "Check usernameField");
+    is(data.usernameField, tc.usernameFieldValue, "Check usernameField");
   } else {
-    is(submittedResult.usernameField.value, tc.usernameFieldValue, "Check usernameField");
+    is(data.usernameField.value, tc.usernameFieldValue, "Check usernameField");
   }
 
-  is(submittedResult.newPasswordField.value, tc.newPasswordFieldValue, "Check newPasswordFieldValue");
+  is(data.newPasswordField.value, tc.newPasswordFieldValue, "Check newPasswordFieldValue");
 
   if (tc.oldPasswordFieldValue === null) {
-    is(submittedResult.oldPasswordField, tc.oldPasswordFieldValue, "Check oldPasswordFieldValue");
+    is(data.oldPasswordField, tc.oldPasswordFieldValue, "Check oldPasswordFieldValue");
   } else {
-    is(submittedResult.oldPasswordField.value, tc.oldPasswordFieldValue, "Check oldPasswordFieldValue");
+    is(data.oldPasswordField.value, tc.oldPasswordFieldValue, "Check oldPasswordFieldValue");
   }
 
   loadPromise = loadFrame();

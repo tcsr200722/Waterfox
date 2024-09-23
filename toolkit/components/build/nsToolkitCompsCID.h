@@ -31,17 +31,12 @@
 #define NS_NAVHISTORYSERVICE_CONTRACTID \
   "@mozilla.org/browser/nav-history-service;1"
 
-#define NS_ANNOTATIONSERVICE_CONTRACTID \
-  "@mozilla.org/browser/annotation-service;1"
-
 #define NS_NAVBOOKMARKSSERVICE_CONTRACTID \
   "@mozilla.org/browser/nav-bookmarks-service;1"
 
 #define NS_TAGGINGSERVICE_CONTRACTID "@mozilla.org/browser/tagging-service;1"
 
 #define NS_FAVICONSERVICE_CONTRACTID "@mozilla.org/browser/favicon-service;1"
-
-#define NS_KEY_VALUE_SERVICE_CONTRACTID "@mozilla.org/key-value-service;1"
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -91,13 +86,6 @@
     }                                                \
   }
 
-#define NS_ANNOTATIONSERVICE_CID                     \
-  {                                                  \
-    0x5e8d4751, 0x1852, 0x434b, {                    \
-      0xa9, 0x92, 0x2c, 0x6d, 0x2a, 0x25, 0xfa, 0x46 \
-    }                                                \
-  }
-
 #define NS_NAVBOOKMARKSSERVICE_CID                   \
   {                                                  \
     0x9de95a0c, 0x39a4, 0x4d64, {                    \
@@ -109,13 +97,5 @@
   {                                                  \
     0x984e3259, 0x9266, 0x49cf, {                    \
       0xb6, 0x05, 0x60, 0xb0, 0x22, 0xa0, 0x07, 0x56 \
-    }                                                \
-  }
-
-// 6cc1a0a8-af97-4d41-9b4a-58dcec46ebce
-#define NS_KEY_VALUE_SERVICE_CID                     \
-  {                                                  \
-    0x6cc1a0a8, 0xaf97, 0x4d41, {                    \
-      0x9b, 0x4a, 0x58, 0xdc, 0xec, 0x46, 0xeb, 0xce \
     }                                                \
   }

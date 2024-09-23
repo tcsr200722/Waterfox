@@ -25,7 +25,7 @@ const REQUESTS_WITH_MEDIA_AND_FLASH_AND_WS = [
   { url: "sjs_content-type-test-server.sjs?fmt=ws" },
 ];
 
-add_task(async function() {
+add_task(async function () {
   const { monitor } = await initNetMonitor(FILTERING_URL, { requestCount: 1 });
   const { document, store, windowRequire } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
@@ -42,7 +42,6 @@ add_task(async function() {
   info("Starting test... ");
 
   const wait = waitForNetworkEvents(monitor, 9);
-  loadFrameScriptUtils();
   await performRequestsInContent(REQUESTS_WITH_MEDIA_AND_FLASH_AND_WS);
   await wait;
 
@@ -87,7 +86,7 @@ add_task(async function() {
     );
   }
 
-  async function testDetailsPanel(shouldPanelOpen, selectedItemIndex = 0) {
+  function testDetailsPanel(shouldPanelOpen, selectedItemIndex = 0) {
     // Expected default state should be panel closed
     ok(
       !document.querySelector(".sidebar-toggle"),
@@ -100,7 +99,7 @@ add_task(async function() {
     );
     is(
       getSelectedRequest(store.getState()),
-      null,
+      undefined,
       "There should still be no selected item in the requests menu."
     );
 
@@ -123,7 +122,7 @@ add_task(async function() {
       );
       isnot(
         getSelectedRequest(store.getState()),
-        null,
+        undefined,
         "There should be a selected item in the requests menu."
       );
       is(
@@ -142,7 +141,7 @@ add_task(async function() {
       );
       is(
         getSelectedRequest(store.getState()),
-        null,
+        undefined,
         "There should still be no selected item in the requests menu."
       );
     }

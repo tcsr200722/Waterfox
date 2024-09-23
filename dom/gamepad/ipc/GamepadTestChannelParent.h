@@ -5,28 +5,45 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/PGamepadTestChannelParent.h"
+#include "mozilla/WeakPtr.h"
 
 #ifndef mozilla_dom_GamepadTestChannelParent_h_
 #  define mozilla_dom_GamepadTestChannelParent_h_
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-class GamepadTestChannelParent final : public PGamepadTestChannelParent {
+class GamepadTestChannelParent final : public PGamepadTestChannelParent,
+                                       public SupportsWeakPtr {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(GamepadTestChannelParent)
-  GamepadTestChannelParent() : mShuttingdown(false) {}
-  virtual void ActorDestroy(ActorDestroyReason aWhy) override {}
+
+  static already_AddRefed<GamepadTestChannelParent> Create();
+
   mozilla::ipc::IPCResult RecvGamepadTestEvent(
       const uint32_t& aID, const GamepadChangeEvent& aGamepadEvent);
-  mozilla::ipc::IPCResult RecvShutdownChannel();
+
+  void OnMonitoringStateChanged(bool aNewState);
+
+  GamepadTestChannelParent(const GamepadTestChannelParent&) = delete;
+  GamepadTestChannelParent(GamepadTestChannelParent&&) = delete;
+  GamepadTestChannelParent& operator=(const GamepadTestChannelParent&) = delete;
+  GamepadTestChannelParent& operator=(GamepadTestChannelParent&&) = delete;
 
  private:
-  ~GamepadTestChannelParent() = default;
-  bool mShuttingdown;
+  struct DeferredGamepadAdded {
+    uint32_t promiseId;
+    GamepadAdded gamepadAdded;
+  };
+
+  GamepadTestChannelParent();
+  ~GamepadTestChannelParent();
+
+  void AddGamepadToPlatformService(uint32_t aPromiseId,
+                                   const GamepadAdded& aGamepadAdded);
+
+  nsTArray<DeferredGamepadAdded> mDeferredGamepadAdded;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

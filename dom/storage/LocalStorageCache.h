@@ -10,14 +10,13 @@
 #include "nsIPrincipal.h"
 
 #include "nsString.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Atomics.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class LocalStorage;
 class LocalStorageCacheChild;
@@ -51,7 +50,7 @@ class LocalStorageCacheBridge {
   virtual uint32_t LoadedCount() = 0;
 
   // Called by the database to load a key and its value to the cache
-  virtual bool LoadItem(const nsAString& aKey, const nsString& aValue) = 0;
+  virtual bool LoadItem(const nsAString& aKey, const nsAString& aValue) = 0;
 
   // Called by the database after all keys and values has been loaded
   // to this cache
@@ -131,7 +130,7 @@ class LocalStorageCache : public LocalStorageCacheBridge {
   nsresult GetItem(const LocalStorage* aStorage, const nsAString& aKey,
                    nsAString& aRetval);
   nsresult SetItem(const LocalStorage* aStorage, const nsAString& aKey,
-                   const nsString& aValue, nsString& aOld,
+                   const nsAString& aValue, nsString& aOld,
                    const MutationSource aSource = ContentMutation);
   nsresult RemoveItem(const LocalStorage* aStorage, const nsAString& aKey,
                       nsString& aOld,
@@ -148,7 +147,7 @@ class LocalStorageCache : public LocalStorageCacheBridge {
   const nsCString& OriginSuffix() const override { return mOriginSuffix; }
   bool Loaded() override { return mLoaded; }
   uint32_t LoadedCount() override;
-  bool LoadItem(const nsAString& aKey, const nsString& aValue) override;
+  bool LoadItem(const nsAString& aKey, const nsAString& aValue) override;
   void LoadDone(nsresult aRv) override;
   void LoadWait() override;
 
@@ -159,12 +158,12 @@ class LocalStorageCache : public LocalStorageCacheBridge {
    public:
     Data() : mOriginQuotaUsage(0) {}
     int64_t mOriginQuotaUsage;
-    nsDataHashtable<nsStringHashKey, nsString> mKeys;
+    nsTHashMap<nsStringHashKey, nsString> mKeys;
   };
 
  public:
-  // Number of data sets we keep: default, private, session
-  static const uint32_t kDataSetCount = 3;
+  // Number of data sets we keep: default, session
+  static const uint32_t kDataSetCount = 2;
 
  private:
   // API to clear the cache data, this is invoked by chrome operations
@@ -172,10 +171,8 @@ class LocalStorageCache : public LocalStorageCacheBridge {
   friend class LocalStorageManager;
 
   static const uint32_t kUnloadDefault = 1 << 0;
-  static const uint32_t kUnloadPrivate = 1 << 1;
-  static const uint32_t kUnloadSession = 1 << 2;
-  static const uint32_t kUnloadComplete =
-      kUnloadDefault | kUnloadPrivate | kUnloadSession;
+  static const uint32_t kUnloadSession = 1 << 1;
+  static const uint32_t kUnloadComplete = kUnloadDefault | kUnloadSession;
 
 #ifdef DOM_STORAGE_TESTS
   static const uint32_t kTestReload = 1 << 15;
@@ -192,8 +189,8 @@ class LocalStorageCache : public LocalStorageCacheBridge {
 
   // Used for firing storage events and synchronization of caches in other
   // content processes.
-  void NotifyObservers(const LocalStorage* aStorage, const nsString& aKey,
-                       const nsString& aOldValue, const nsString& aNewValue);
+  void NotifyObservers(const LocalStorage* aStorage, const nsAString& aKey,
+                       const nsAString& aOldValue, const nsAString& aNewValue);
 
   // Whether the storage change is about to persist
   bool Persist(const LocalStorage* aStorage) const;
@@ -246,7 +243,7 @@ class LocalStorageCache : public LocalStorageCacheBridge {
   Data mData[kDataSetCount];
 
   // This monitor is used to wait for full load of data.
-  mozilla::Monitor mMonitor;
+  mozilla::Monitor mMonitor MOZ_UNANNOTATED;
 
   // Flag that is initially false.  When the cache is about to work with
   // the database (i.e. it is persistent) this flags is set to true after
@@ -257,6 +254,9 @@ class LocalStorageCache : public LocalStorageCacheBridge {
 
   // Result of load from the database.  Valid after mLoaded flag has been set.
   nsresult mLoadResult;
+
+  // Expected to be only 0 or 1.
+  uint32_t mPrivateBrowsingId;
 
   // Init() method has been called
   bool mInitialized : 1;
@@ -301,7 +301,6 @@ class StorageUsage : public StorageUsageBridge {
   int64_t mUsage[LocalStorageCache::kDataSetCount];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_LocalStorageCache_h

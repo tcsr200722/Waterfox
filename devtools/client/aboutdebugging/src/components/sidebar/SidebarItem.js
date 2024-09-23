@@ -7,11 +7,11 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 const Link = createFactory(
-  require("devtools/client/shared/vendor/react-router-dom").Link
+  require("resource://devtools/client/shared/vendor/react-router-dom.js").Link
 );
 
 /**
@@ -42,7 +42,7 @@ class SidebarItem extends PureComponent {
       return isExternalUrl
         ? dom.a(
             {
-              className: "sidebar-item__link",
+              className: "sidebar-item__link undecorated-link",
               href: to,
               target: "_blank",
             },
@@ -50,7 +50,7 @@ class SidebarItem extends PureComponent {
           )
         : Link(
             {
-              className: "sidebar-item__link qa-sidebar-link",
+              className: "sidebar-item__link qa-sidebar-link undecorated-link",
               to,
             },
             children

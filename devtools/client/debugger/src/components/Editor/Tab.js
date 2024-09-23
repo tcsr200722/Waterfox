@@ -2,185 +2,51 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React, { PureComponent } from "react";
-import { connect } from "../../utils/connect";
-
-import { showMenu, buildMenu } from "devtools-contextmenu";
+import React, { PureComponent } from "devtools/client/shared/vendor/react";
+import { div, span } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
 import SourceIcon from "../shared/SourceIcon";
-import { CloseButton } from "../shared/Button";
-import { copyToTheClipboard } from "../../utils/clipboard";
+import { CloseButton } from "../shared/Button/index";
 
-import type { Source, Context } from "../../types";
-import type { TabsSources } from "../../reducers/types";
-
-import actions from "../../actions";
+import actions from "../../actions/index";
 
 import {
   getDisplayPath,
   getFileURL,
-  getRawSourceURL,
-  getSourceQueryString,
   getTruncatedFileName,
   isPretty,
-  shouldBlackbox,
 } from "../../utils/source";
-import { getTabMenuItems } from "../../utils/tabs";
+import { createLocation } from "../../utils/location";
 
 import {
-  getSelectedSource,
-  getActiveSearch,
+  getSelectedLocation,
   getSourcesForTabs,
-  getHasSiblingOfSameName,
-  getContext,
-} from "../../selectors";
-import type { ActiveSearchType } from "../../selectors";
+  isSourceBlackBoxed,
+} from "../../selectors/index";
 
-import classnames from "classnames";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
-type OwnProps = {|
-  source: Source,
-  onDragOver: Function,
-  onDragStart: Function,
-  onDragEnd: Function,
-|};
-type Props = {
-  cx: Context,
-  tabSources: TabsSources,
-  selectedSource: ?Source,
-  source: Source,
-  onDragOver: Function,
-  onDragStart: Function,
-  onDragEnd: Function,
-  activeSearch: ?ActiveSearchType,
-  hasSiblingOfSameName: boolean,
-  selectSource: typeof actions.selectSource,
-  closeTab: typeof actions.closeTab,
-  closeTabs: typeof actions.closeTabs,
-  copyToClipboard: typeof actions.copyToClipboard,
-  togglePrettyPrint: typeof actions.togglePrettyPrint,
-  showSource: typeof actions.showSource,
-  toggleBlackBox: typeof actions.toggleBlackBox,
-};
+class Tab extends PureComponent {
+  static get propTypes() {
+    return {
+      closeTab: PropTypes.func.isRequired,
+      onDragEnd: PropTypes.func.isRequired,
+      onDragOver: PropTypes.func.isRequired,
+      onDragStart: PropTypes.func.isRequired,
+      selectSource: PropTypes.func.isRequired,
+      source: PropTypes.object.isRequired,
+      sourceActor: PropTypes.object.isRequired,
+      tabSources: PropTypes.array.isRequired,
+      isBlackBoxed: PropTypes.bool.isRequired,
+    };
+  }
 
-class Tab extends PureComponent<Props> {
-  onTabContextMenu = (
-    event: SyntheticClipboardEvent<HTMLDivElement>,
-    tab: string
-  ) => {
+  onContextMenu = event => {
     event.preventDefault();
-    this.showContextMenu(event, tab);
+    this.props.showTabContextMenu(event, this.props.source);
   };
-
-  showContextMenu(e: SyntheticClipboardEvent<HTMLDivElement>, tab: string) {
-    const {
-      cx,
-      closeTab,
-      closeTabs,
-      copyToClipboard,
-      tabSources,
-      showSource,
-      toggleBlackBox,
-      togglePrettyPrint,
-      selectedSource,
-      source,
-    } = this.props;
-
-    const tabCount = tabSources.length;
-    const otherTabs = tabSources.filter(t => t.id !== tab);
-    const sourceTab = tabSources.find(t => t.id == tab);
-    const tabURLs = tabSources.map(t => t.url);
-    const otherTabURLs = otherTabs.map(t => t.url);
-
-    if (!sourceTab || !selectedSource) {
-      return;
-    }
-
-    const tabMenuItems = getTabMenuItems();
-    const items = [
-      {
-        item: {
-          ...tabMenuItems.closeTab,
-          click: () => closeTab(cx, sourceTab),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.closeOtherTabs,
-          click: () => closeTabs(cx, otherTabURLs),
-          disabled: otherTabURLs.length === 0,
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.closeTabsToEnd,
-          click: () => {
-            const tabIndex = tabSources.findIndex(t => t.id == tab);
-            closeTabs(
-              cx,
-              tabURLs.filter((t, i) => i > tabIndex)
-            );
-          },
-          disabled:
-            tabCount === 1 ||
-            tabSources.some((t, i) => t === tab && tabCount - 1 === i),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.closeAllTabs,
-          click: () => closeTabs(cx, tabURLs),
-        },
-      },
-      { item: { type: "separator" } },
-      {
-        item: {
-          ...tabMenuItems.copyToClipboard,
-          disabled: selectedSource.id !== tab,
-          click: () => copyToClipboard(sourceTab),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.copySourceUri2,
-          disabled: !selectedSource.url,
-          click: () => copyToTheClipboard(getRawSourceURL(sourceTab.url)),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.showSource,
-          disabled: !selectedSource.url,
-          click: () => showSource(cx, tab),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.toggleBlackBox,
-          label: source.isBlackBoxed
-            ? L10N.getStr("blackboxContextItem.unblackbox")
-            : L10N.getStr("blackboxContextItem.blackbox"),
-          disabled: !shouldBlackbox(source),
-          click: () => toggleBlackBox(cx, source),
-        },
-      },
-      {
-        item: {
-          ...tabMenuItems.prettyPrint,
-          click: () => togglePrettyPrint(cx, tab),
-          disabled: isPretty(sourceTab),
-        },
-      },
-    ];
-
-    showMenu(e, buildMenu(items));
-  }
-
-  isProjectSearchEnabled() {
-    return this.props.activeSearch === "project";
-  }
 
   isSourceSearchEnabled() {
     return this.props.activeSearch === "source";
@@ -188,99 +54,90 @@ class Tab extends PureComponent<Props> {
 
   render() {
     const {
-      cx,
-      selectedSource,
       selectSource,
       closeTab,
       source,
+      sourceActor,
       tabSources,
-      hasSiblingOfSameName,
       onDragOver,
       onDragStart,
       onDragEnd,
+      index,
+      isActive,
     } = this.props;
     const sourceId = source.id;
-    const active =
-      selectedSource &&
-      sourceId == selectedSource.id &&
-      !this.isProjectSearchEnabled() &&
-      !this.isSourceSearchEnabled();
     const isPrettyCode = isPretty(source);
 
     function onClickClose(e) {
       e.stopPropagation();
-      closeTab(cx, source);
+      closeTab(source);
     }
 
     function handleTabClick(e) {
       e.preventDefault();
       e.stopPropagation();
-      return selectSource(cx, sourceId);
+      return selectSource(source, sourceActor);
     }
 
     const className = classnames("source-tab", {
-      active,
+      active: isActive,
       pretty: isPrettyCode,
+      blackboxed: this.props.isBlackBoxed,
     });
 
     const path = getDisplayPath(source, tabSources);
-    const query = hasSiblingOfSameName ? getSourceQueryString(source) : "";
-
-    return (
-      <div
-        draggable
-        onDragOver={onDragOver}
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        className={className}
-        key={sourceId}
-        onClick={handleTabClick}
+    return div(
+      {
+        draggable: true,
+        onDragOver,
+        onDragStart,
+        onDragEnd,
+        className,
+        "data-index": index,
+        "data-source-id": sourceId,
+        onClick: handleTabClick,
         // Accommodate middle click to close tab
-        onMouseUp={e => e.button === 1 && closeTab(cx, source)}
-        onContextMenu={e => this.onTabContextMenu(e, sourceId)}
-        title={getFileURL(source, false)}
-      >
-        <SourceIcon
-          source={source}
-          modifier={icon =>
-            ["file", "javascript"].includes(icon) ? null : icon
-          }
-        />
-        <div className="filename">
-          {getTruncatedFileName(source, query)}
-          {path && <span>{`../${path}/..`}</span>}
-        </div>
-        <CloseButton
-          handleClick={onClickClose}
-          tooltip={L10N.getStr("sourceTabs.closeTabButtonTooltip")}
-        />
-      </div>
+        onMouseUp: e => e.button === 1 && closeTab(source),
+        onContextMenu: this.onContextMenu,
+        title: getFileURL(source, false),
+      },
+      React.createElement(SourceIcon, {
+        location: createLocation({
+          source,
+          sourceActor,
+        }),
+        forTab: true,
+        modifier: icon => (["file", "javascript"].includes(icon) ? null : icon),
+      }),
+      div(
+        {
+          className: "filename",
+        },
+        getTruncatedFileName(source),
+        path && span(null, `../${path}/..`)
+      ),
+      React.createElement(CloseButton, {
+        handleClick: onClickClose,
+        tooltip: L10N.getStr("sourceTabs.closeTabButtonTooltip"),
+      })
     );
   }
 }
 
 const mapStateToProps = (state, { source }) => {
-  const selectedSource = getSelectedSource(state);
-
   return {
-    cx: getContext(state),
     tabSources: getSourcesForTabs(state),
-    selectedSource,
-    activeSearch: getActiveSearch(state),
-    hasSiblingOfSameName: getHasSiblingOfSameName(state, source),
+    isBlackBoxed: isSourceBlackBoxed(state, source),
+    isActive: source.id === getSelectedLocation(state)?.source.id,
   };
 };
 
-export default connect<Props, OwnProps, _, _, _, _>(
+export default connect(
   mapStateToProps,
   {
     selectSource: actions.selectSource,
-    copyToClipboard: actions.copyToClipboard,
     closeTab: actions.closeTab,
-    closeTabs: actions.closeTabs,
-    togglePrettyPrint: actions.togglePrettyPrint,
-    showSource: actions.showSource,
-    toggleBlackBox: actions.toggleBlackBox,
+    showTabContextMenu: actions.showTabContextMenu,
   },
   null,
   {

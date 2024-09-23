@@ -11,6 +11,8 @@
 # of the generic macros.
 #
 
+varize = $(subst -,_,$(subst a,A,$(subst b,B,$(subst c,C,$(subst d,D,$(subst e,E,$(subst f,F,$(subst g,G,$(subst h,H,$(subst i,I,$(subst j,J,$(subst k,K,$(subst l,L,$(subst m,M,$(subst n,N,$(subst o,O,$(subst p,P,$(subst q,Q,$(subst r,R,$(subst s,S,$(subst t,T,$(subst u,U,$(subst v,V,$(subst w,W,$(subst x,X,$(subst y,Y,$(subst z,Z,$1)))))))))))))))))))))))))))
+
 # Define an include-at-most-once flag
 ifdef INCLUDED_CONFIG_MK
 $(error Do not include config.mk twice!)
@@ -39,6 +41,10 @@ ifndef EXTERNALLY_MANAGED_MAKE_FILE
 ifndef STANDALONE_MAKEFILE
 GLOBAL_DEPS += backend.mk
 include backend.mk
+
+# Add e.g. `export:: $(EXPORT_TARGETS)` rules. The *_TARGETS variables are defined
+# in backend.mk.
+$(foreach tier,$(RUNNABLE_TIERS),$(eval $(if $(filter .,$(DEPTH)),recurse_$(tier):,$(tier)::) $($(call varize,$(tier))_TARGETS)))
 endif
 
 endif
@@ -66,7 +72,6 @@ CHECK_VARS := \
  MODULE \
  DEPTH \
  XPI_PKGNAME \
- INSTALL_EXTENSION_ID \
  SHARED_LIBRARY_NAME \
  SONAME \
  STATIC_LIBRARY_NAME \
@@ -100,12 +105,6 @@ ifdef XPI_NAME
 ACDEFINES += -DXPI_NAME=$(XPI_NAME)
 endif
 
-# The VERSION_NUMBER is suffixed onto the end of the DLLs we ship.
-VERSION_NUMBER		= 50
-
-CONFIG_TOOLS	= $(MOZ_BUILD_ROOT)/config
-AUTOCONF_TOOLS	= $(MOZILLA_DIR)/build/autoconf
-
 CC := $(CC_WRAPPER) $(CC)
 CXX := $(CXX_WRAPPER) $(CXX)
 MKDIR ?= mkdir
@@ -129,18 +128,20 @@ NO_PROFILE_GUIDED_OPTIMIZE = 1
 endif
 
 # Enable profile-based feedback
-ifneq (1,$(NO_PROFILE_GUIDED_OPTIMIZE))
 ifdef MOZ_PROFILE_GENERATE
+ifneq (1,$(NO_PROFILE_GUIDED_OPTIMIZE))
 PGO_CFLAGS += -DNS_FREE_PERMANENT_DATA=1
 PGO_CFLAGS += $(if $(filter $(notdir $<),$(notdir $(NO_PROFILE_GUIDED_OPTIMIZE))),,$(PROFILE_GEN_CFLAGS))
+endif # NO_PROFILE_GUIDED_OPTIMIZE
 PGO_LDFLAGS += $(PROFILE_GEN_LDFLAGS)
 endif # MOZ_PROFILE_GENERATE
 
 ifdef MOZ_PROFILE_USE
+ifneq (1,$(NO_PROFILE_GUIDED_OPTIMIZE))
 PGO_CFLAGS += $(if $(filter $(notdir $<),$(notdir $(NO_PROFILE_GUIDED_OPTIMIZE))),,$(PROFILE_USE_CFLAGS))
+endif # NO_PROFILE_GUIDED_OPTIMIZE
 PGO_LDFLAGS += $(PROFILE_USE_LDFLAGS)
 endif # MOZ_PROFILE_USE
-endif # NO_PROFILE_GUIDED_OPTIMIZE
 
 # Overloaded by comm builds to refer to $(commtopsrcdir), so that
 # `mail` resolves in en-US builds and in repacks.
@@ -175,7 +176,7 @@ MOZ_LTO_CFLAGS :=
 MOZ_LTO_LDFLAGS :=
 endif
 
-LDFLAGS		= $(MOZ_LTO_LDFLAGS) $(COMPUTED_LDFLAGS) $(PGO_LDFLAGS) $(MK_LDFLAGS)
+LDFLAGS		= $(MOZ_LTO_LDFLAGS) $(COMPUTED_LDFLAGS) $(PGO_LDFLAGS)
 
 COMPILE_CFLAGS	= $(MOZ_LTO_CFLAGS) $(COMPUTED_CFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
 COMPILE_CXXFLAGS = $(MOZ_LTO_CFLAGS) $(COMPUTED_CXXFLAGS) $(PGO_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
@@ -191,7 +192,6 @@ HOST_CXX_LDFLAGS = $(COMPUTED_HOST_CXX_LDFLAGS)
 
 WASM_CFLAGS = $(COMPUTED_WASM_CFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
 WASM_CXXFLAGS = $(COMPUTED_WASM_CXXFLAGS) $(_DEPEND_CFLAGS) $(MK_COMPILE_DEFINES)
-WASM_LDFLAGS = $(COMPUTED_WASM_LDFLAGS)
 
 ifdef MOZ_LTO
 ifeq (Darwin,$(OS_TARGET))
@@ -227,8 +227,6 @@ color_flags_vars := \
   COMPILE_CXXFLAGS \
   COMPILE_CMFLAGS \
   COMPILE_CMMFLAGS \
-  LDFLAGS \
-  WASM_LDFLAGS \
   WASM_CFLAGS \
   WASM_CXXFLAGS \
   $(NULL)
@@ -251,10 +249,6 @@ endif
 
 DEPENDENCIES	= .md
 
-ifdef MACOSX_DEPLOYMENT_TARGET
-export MACOSX_DEPLOYMENT_TARGET
-endif # MACOSX_DEPLOYMENT_TARGET
-
 # Export to propagate to cl and submake for third-party code.
 # Eventually, we'll want to just use -I.
 ifdef INCLUDE
@@ -268,7 +262,7 @@ export LIB
 endif
 
 ifdef MOZ_USING_CCACHE
-ifdef CLANG_CXX
+ifeq ($(CC_TYPE),clang)
 export CCACHE_CPP2=1
 endif
 endif
@@ -293,7 +287,7 @@ endif # WINNT
 
 ifeq ($(OS_ARCH),WINNT)
 ifneq (,$(filter msvc clang-cl,$(CC_TYPE)))
-ifneq ($(CPU_ARCH),x86)
+ifneq ($(TARGET_CPU),x86)
 # Normal operation on 64-bit Windows needs 2 MB of stack. (Bug 582910)
 # ASAN requires 6 MB of stack.
 # Setting the stack to 8 MB to match the capability of other systems
@@ -309,10 +303,16 @@ else
 # reasonable styling applied to DOM trees whose depth is near what
 # Blink's HTML parser can output, esp.
 # layout/base/crashtests/507119.html (Bug 256180)
+ifndef MOZ_DEBUG
 WIN32_EXE_LDFLAGS      += -STACK:1572864
+else
+# In debug builds, layout code has extra logging helpers on the stack,
+# which can go over the 1.5MB limit on some deeply-nested crashtests.
+WIN32_EXE_LDFLAGS      += -STACK:2097152
+endif
 endif
 else
-ifneq ($(CPU_ARCH),x86)
+ifneq ($(TARGET_CPU),x86)
 MOZ_PROGRAM_LDFLAGS += -Wl,-Xlink=-STACK:8388608
 else
 MOZ_PROGRAM_LDFLAGS += -Wl,-Xlink=-STACK:1572864
@@ -323,8 +323,6 @@ endif
 -include $(topsrcdir)/$(MOZ_BUILD_APP)/app-config.mk
 
 ######################################################################
-
-GARBAGE		+= $(DEPENDENCIES) core $(wildcard core.[0-9]*) $(wildcard *.err) $(wildcard *.pure) $(wildcard *_pure_*.o) Templates.DB
 
 ifeq ($(OS_ARCH),Darwin)
 ifndef NSDISTMODE
@@ -348,7 +346,7 @@ else
 
 # This isn't laid out as conditional directives so that NSDISTMODE can be
 # target-specific.
-INSTALL         = $(if $(filter absolute_symlink, $(NSDISTMODE)), $(NSINSTALL) -L $(PWD), $(NSINSTALL) -R)
+INSTALL         = $(if $(filter copy, $(NSDISTMODE)), $(NSINSTALL) -t, $(if $(filter absolute_symlink, $(NSDISTMODE)), $(NSINSTALL) -L $(PWD), $(NSINSTALL) -R))
 
 endif # WINNT
 
@@ -400,15 +398,7 @@ endif # ! relativesrcdir
 MERGE_FILE = $(LOCALE_SRCDIR)/$(1)
 MERGE_RELATIVE_FILE = $(call EXPAND_LOCALE_SRCDIR,$(2))/$(1)
 
-ifneq (WINNT,$(OS_ARCH))
-RUN_TEST_PROGRAM = $(DIST)/bin/run-mozilla.sh
-endif # ! WINNT
-
-# autoconf.mk sets OBJ_SUFFIX to an error to avoid use before including
-# this file
-OBJ_SUFFIX := $(_OBJ_SUFFIX)
-
 # Enable verbose logs when not using `make -s`
 ifeq (,$(findstring s, $(filter-out --%, $(MAKEFLAGS))))
-BUILD_VERBOSE_LOG = 1
+export BUILD_VERBOSE_LOG = 1
 endif

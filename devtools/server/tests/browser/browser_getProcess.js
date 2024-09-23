@@ -48,7 +48,7 @@ add_task(async () => {
     ok(descriptor, "Got the new process descriptor");
 
     // Connect to the first content process available
-    const content = processes.filter(p => !p.isParent)[0];
+    const content = processes.filter(p => !p.isParentProcessDescriptor)[0];
 
     const processDescriptor = await client.mainRoot.getProcess(content.id);
     const front = await processDescriptor.getTarget();
@@ -56,10 +56,10 @@ add_task(async () => {
     ok(targetForm.consoleActor, "Got the console actor");
     ok(targetForm.threadActor, "Got the thread actor");
 
-    // Ensure sending at least one request to an actor...
-    const consoleFront = await front.getFront("console");
-    const { result } = await consoleFront.evaluateJSAsync("var a = 42; a");
-    is(result, 42, "console.eval worked");
+    // Process target are no longer really used/supported beyond listing their workers
+    // from RootFront.
+    const { workers } = await front.listWorkers();
+    is(workers.length, 0, "listWorkers worked and reported no workers");
 
     return [front, content.id];
   }
@@ -77,12 +77,8 @@ add_task(async () => {
   }
 
   function processScript() {
-    // eslint-disable-next-line no-shadow
-    const { Services } = ChromeUtils.import(
-      "resource://gre/modules/Services.jsm"
-    );
-    const listener = function() {
-      /* global sendAsyncMessage */
+    /* eslint-env mozilla/process-script */
+    const listener = function () {
       Services.obs.removeObserver(listener, "devtools:loader:destroy");
       sendAsyncMessage("test:getProcess-destroy", null);
     };
@@ -91,7 +87,7 @@ add_task(async () => {
 
   async function closeClient() {
     const onLoaderDestroyed = new Promise(done => {
-      const processListener = function() {
+      const processListener = function () {
         Services.ppmm.removeMessageListener(
           "test:getProcess-destroy",
           processListener

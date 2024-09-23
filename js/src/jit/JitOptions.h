@@ -21,6 +21,17 @@ enum IonRegisterAllocator {
   RegisterAllocator_Testbed,
 };
 
+// Which register to use as base register to access stack slots: frame pointer,
+// stack pointer, or whichever is the default for this platform. See comment
+// for baseRegForLocals in JitOptions.cpp for more information.
+enum class BaseRegForAddress { Default, FP, SP };
+
+enum class UseMonomorphicInlining : uint8_t {
+  Default,
+  Always,
+  Never,
+};
+
 static inline mozilla::Maybe<IonRegisterAllocator> LookupRegisterAllocator(
     const char* name) {
   if (!strcmp(name, "backtracking")) {
@@ -39,45 +50,44 @@ struct DefaultJitOptions {
 #endif
   bool checkRangeAnalysis;
   bool runExtraChecks;
-  bool disableInlineBacktracking;
+  bool disableJitBackend;
+  bool disableJitHints;
   bool disableAma;
   bool disableEaa;
   bool disableEdgeCaseAnalysis;
   bool disableGvn;
   bool disableInlining;
   bool disableLicm;
-  bool disablePgo;
+  bool disablePruning;
   bool disableInstructionReordering;
+  bool disableIteratorIndices;
+  bool disableMarkLoadsUsedAsPropertyKeys;
   bool disableRangeAnalysis;
   bool disableRecoverIns;
   bool disableScalarReplacement;
   bool disableCacheIR;
   bool disableSink;
-  bool disableOptimizationLevels;
+  bool disableRedundantShapeGuards;
+  bool disableRedundantGCBarriers;
+  bool disableBailoutLoopCheck;
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+  bool portableBaselineInterpreter;
+#endif
   bool baselineInterpreter;
   bool baselineJit;
   bool ion;
-#ifdef NIGHTLY_BUILD
-  bool typeInference;
-#endif
-  bool warpBuilder;
   bool jitForTrustedPrincipals;
   bool nativeRegExp;
   bool forceInlineCaches;
+  bool forceMegamorphicICs;
   bool fullDebugChecks;
   bool limitScriptSize;
   bool osr;
   bool wasmFoldOffsets;
   bool wasmDelayTier2;
-#ifdef JS_TRACE_LOGGING
-  bool enableTraceLogger;
-#endif
-#ifdef ENABLE_NEW_REGEXP
-  bool traceRegExpParser;
-  bool traceRegExpAssembler;
-  bool traceRegExpInterpreter;
-  bool traceRegExpPeephole;
-#endif
+  bool lessDebugCode;
+  bool onlyInlineSelfHosted;
+  bool enableICFramePointers;
   bool enableWasmJitExit;
   bool enableWasmJitEntry;
   bool enableWasmIonFastCalls;
@@ -85,18 +95,23 @@ struct DefaultJitOptions {
   bool enableWasmImportCallSpew;
   bool enableWasmFuncCallSpew;
 #endif
+  bool emitInterpreterEntryTrampoline;
   uint32_t baselineInterpreterWarmUpThreshold;
   uint32_t baselineJitWarmUpThreshold;
+  uint32_t trialInliningWarmUpThreshold;
+  uint32_t trialInliningInitialWarmUpCount;
+  UseMonomorphicInlining monomorphicInlining = UseMonomorphicInlining::Default;
   uint32_t normalIonWarmUpThreshold;
-  uint32_t fullIonWarmUpThreshold;
-#ifdef ENABLE_NEW_REGEXP
   uint32_t regexpWarmUpThreshold;
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+  uint32_t portableBaselineInterpreterWarmUpThreshold;
 #endif
   uint32_t exceptionBailoutThreshold;
   uint32_t frequentBailoutThreshold;
   uint32_t maxStackArgs;
   uint32_t osrPcMismatchesBeforeRecompile;
-  uint32_t smallFunctionMaxBytecodeLength_;
+  uint32_t smallFunctionMaxBytecodeLength;
+  uint32_t inliningEntryThreshold;
   uint32_t jumpThreshold;
   uint32_t branchPruningHitCountFactor;
   uint32_t branchPruningInstFactor;
@@ -109,53 +124,88 @@ struct DefaultJitOptions {
   uint32_t ionMaxLocalsAndArgsMainThread;
   uint32_t wasmBatchBaselineThreshold;
   uint32_t wasmBatchIonThreshold;
-  uint32_t wasmBatchCraneliftThreshold;
   mozilla::Maybe<IonRegisterAllocator> forcedRegisterAllocator;
 
   // Spectre mitigation flags. Each mitigation has its own flag in order to
   // measure the effectiveness of each mitigation with various proof of
   // concept.
   bool spectreIndexMasking;
-  bool spectreObjectMitigationsBarriers;
-  bool spectreObjectMitigationsMisc;
+  bool spectreObjectMitigations;
   bool spectreStringMitigations;
   bool spectreValueMasking;
   bool spectreJitToCxxCalls;
 
-  bool supportsFloatingPoint;
+  bool writeProtectCode;
+
   bool supportsUnalignedAccesses;
+  BaseRegForAddress baseRegForLocals;
+
+  // Irregexp shim flags
+  bool correctness_fuzzer_suppressions;
+  bool enable_regexp_unaligned_accesses;
+  bool js_regexp_modifiers;
+  bool js_regexp_duplicate_named_groups;
+  bool regexp_possessive_quantifier;
+  bool regexp_optimization;
+  bool regexp_peephole_optimization;
+  bool regexp_tier_up;
+  bool trace_regexp_assembler;
+  bool trace_regexp_bytecodes;
+  bool trace_regexp_parser;
+  bool trace_regexp_peephole_optimization;
 
   DefaultJitOptions();
   bool isSmallFunction(JSScript* script) const;
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+  void setEagerPortableBaselineInterpreter();
+#endif
   void setEagerBaselineCompilation();
   void setEagerIonCompilation();
   void setNormalIonWarmUpThreshold(uint32_t warmUpThreshold);
-  void setFullIonWarmUpThreshold(uint32_t warmUpThreshold);
   void resetNormalIonWarmUpThreshold();
-  void resetFullIonWarmUpThreshold();
   void enableGvn(bool val);
+  void setFastWarmUp();
+
+  void maybeSetWriteProtectCode(bool val);
 
   bool eagerIonCompilation() const { return normalIonWarmUpThreshold == 0; }
 };
 
 extern DefaultJitOptions JitOptions;
 
-inline bool IsBaselineInterpreterEnabled() {
-#ifdef JS_CODEGEN_NONE
+inline bool HasJitBackend() {
+#if defined(JS_CODEGEN_NONE)
   return false;
 #else
-  return JitOptions.baselineInterpreter && JitOptions.supportsFloatingPoint;
+  return !JitOptions.disableJitBackend;
 #endif
+}
+
+inline bool IsBaselineInterpreterEnabled() {
+  return HasJitBackend() && JitOptions.baselineInterpreter;
+}
+
+#ifdef ENABLE_PORTABLE_BASELINE_INTERP
+inline bool IsPortableBaselineInterpreterEnabled() {
+  return JitOptions.portableBaselineInterpreter;
+}
+#else
+inline bool IsPortableBaselineInterpreterEnabled() { return false; }
+#endif
+
+inline bool TooManyActualArguments(size_t nargs) {
+  return nargs > JitOptions.maxStackArgs;
 }
 
 }  // namespace jit
 
-inline bool IsTypeInferenceEnabled() {
-#ifdef NIGHTLY_BUILD
-  return jit::JitOptions.typeInference;
-#else
-  // Always enable TI on non-Nightly for now to avoid performance overhead.
+extern mozilla::Atomic<bool> fuzzingSafe;
+
+static inline bool IsFuzzing() {
+#ifdef FUZZING
   return true;
+#else
+  return fuzzingSafe;
 #endif
 }
 

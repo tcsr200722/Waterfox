@@ -9,11 +9,11 @@
 
 #include "AudioNode.h"
 #include "AudioNodeEngine.h"
+#include "mozilla/dom/MediaStreamTrack.h"
 #include "mozilla/WeakPtr.h"
+#include "PrincipalChangeObserver.h"
 
-namespace mozilla {
-
-namespace dom {
+namespace mozilla::dom {
 
 class AudioContext;
 struct MediaStreamTrackAudioSourceOptions;
@@ -42,14 +42,13 @@ class MediaStreamTrackAudioSourceNodeEngine final : public AudioNodeEngine {
 class MediaStreamTrackAudioSourceNode
     : public AudioNode,
       public PrincipalChangeObserver<MediaStreamTrack>,
-      public SupportsWeakPtr<MediaStreamTrackAudioSourceNode> {
+      public SupportsWeakPtr {
  public:
   static already_AddRefed<MediaStreamTrackAudioSourceNode> Create(
       AudioContext& aContext,
       const MediaStreamTrackAudioSourceOptions& aOptions, ErrorResult& aRv);
 
   NS_DECL_ISUPPORTS_INHERITED
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackAudioSourceNode)
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrackAudioSourceNode,
                                            AudioNode)
 
@@ -109,7 +108,6 @@ class MediaStreamTrackAudioSourceNode
   TrackListener mTrackListener;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

@@ -11,8 +11,7 @@
 
 class nsIPrincipal;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SessionStorageCache;
 class SessionStorageManager;
@@ -26,6 +25,10 @@ class SessionStorage final : public Storage {
                  nsIPrincipal* aStoragePrincipal, SessionStorageCache* aCache,
                  SessionStorageManager* aManager, const nsAString& aDocumentURI,
                  bool aIsPrivate);
+
+  void AssertIsOnOwningThread() const {
+    NS_ASSERT_OWNINGTHREAD(SessionStorage);
+  }
 
   StorageType Type() const override { return eSessionStorage; }
 
@@ -64,14 +67,20 @@ class SessionStorage final : public Storage {
                                    const nsAString& aOldValue,
                                    const nsAString& aNewValue);
 
+  void MaybeScheduleStableStateCallback();
+
+  void StableStateCallback();
+
+  nsresult EnsureCacheLoadedOrCloned() const;
+
   RefPtr<SessionStorageCache> mCache;
   RefPtr<SessionStorageManager> mManager;
 
   nsString mDocumentURI;
   bool mIsPrivate;
+  bool mHasPendingStableStateCallback;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_SessionStorage_h

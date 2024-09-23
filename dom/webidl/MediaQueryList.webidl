@@ -13,14 +13,14 @@
 [ProbablyShortLivingWrapper,
  Exposed=Window]
 interface MediaQueryList : EventTarget {
-  readonly attribute DOMString media;
+  readonly attribute UTF8String media;
   readonly attribute boolean matches;
 
   [Throws]
-  void addListener(EventListener? listener);
+  undefined addListener(EventListener? listener);
 
   [Throws]
-  void removeListener(EventListener? listener);
+  undefined removeListener(EventListener? listener);
 
            attribute EventHandler onchange;
 };

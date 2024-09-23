@@ -13,6 +13,7 @@
 #include "mozilla/AspectRatio.h"
 #include "mozilla/EndianUtils.h"
 #include "mozilla/URLExtraData.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "nsGkAtoms.h"
 #include "MainThreadUtils.h"
 #include "nsNetUtil.h"
@@ -25,34 +26,36 @@
 namespace mozilla {
 
 // We need to explicitly instantiate these so that the clang plugin can see that
-// they're trivially copiable...
+// they're trivially copyable...
 //
 // https://github.com/eqrion/cbindgen/issues/402 tracks doing something like
 // this automatically from cbindgen.
-template struct StyleOwned<RawServoAnimationValueMap>;
-template struct StyleOwned<RawServoAuthorStyles>;
-template struct StyleOwned<RawServoSourceSizeList>;
-template struct StyleOwned<StyleUseCounters>;
-template struct StyleOwnedOrNull<StyleUseCounters>;
-template struct StyleOwnedOrNull<RawServoSelectorList>;
 template struct StyleStrong<ComputedStyle>;
-template struct StyleStrong<ServoCssRules>;
-template struct StyleStrong<RawServoAnimationValue>;
-template struct StyleStrong<RawServoDeclarationBlock>;
-template struct StyleStrong<RawServoStyleSheetContents>;
-template struct StyleStrong<RawServoKeyframe>;
-template struct StyleStrong<RawServoMediaList>;
-template struct StyleStrong<RawServoStyleRule>;
-template struct StyleStrong<RawServoImportRule>;
-template struct StyleStrong<RawServoKeyframesRule>;
-template struct StyleStrong<RawServoMediaRule>;
-template struct StyleStrong<RawServoMozDocumentRule>;
-template struct StyleStrong<RawServoNamespaceRule>;
-template struct StyleStrong<RawServoPageRule>;
-template struct StyleStrong<RawServoSupportsRule>;
-template struct StyleStrong<RawServoFontFeatureValuesRule>;
-template struct StyleStrong<RawServoFontFaceRule>;
-template struct StyleStrong<RawServoCounterStyleRule>;
+template struct StyleStrong<StyleLockedCssRules>;
+template struct StyleStrong<StyleAnimationValue>;
+template struct StyleStrong<StyleLockedDeclarationBlock>;
+template struct StyleStrong<StyleStylesheetContents>;
+template struct StyleStrong<StyleLockedKeyframe>;
+template struct StyleStrong<StyleLayerBlockRule>;
+template struct StyleStrong<StyleLayerStatementRule>;
+template struct StyleStrong<StyleLockedMediaList>;
+template struct StyleStrong<StyleLockedStyleRule>;
+template struct StyleStrong<StyleLockedImportRule>;
+template struct StyleStrong<StyleLockedKeyframesRule>;
+template struct StyleStrong<StyleMediaRule>;
+template struct StyleStrong<StyleDocumentRule>;
+template struct StyleStrong<StyleNamespaceRule>;
+template struct StyleStrong<StyleMarginRule>;
+template struct StyleStrong<StyleLockedPageRule>;
+template struct StyleStrong<StylePropertyRule>;
+template struct StyleStrong<StyleSupportsRule>;
+template struct StyleStrong<StyleFontFeatureValuesRule>;
+template struct StyleStrong<StyleFontPaletteValuesRule>;
+template struct StyleStrong<StyleLockedFontFaceRule>;
+template struct StyleStrong<StyleLockedCounterStyleRule>;
+template struct StyleStrong<StyleContainerRule>;
+template struct StyleStrong<StyleScopeRule>;
+template struct StyleStrong<StyleStartingStyleRule>;
 
 template <typename T>
 inline void StyleOwnedSlice<T>::Clear() {
@@ -175,22 +178,40 @@ inline bool StyleArcInner<T>::DecrementRef() {
   return true;
 }
 
+template <typename H, typename T>
+inline bool StyleHeaderSlice<H, T>::operator==(
+    const StyleHeaderSlice& aOther) const {
+  return header == aOther.header && AsSpan() == aOther.AsSpan();
+}
+
+template <typename H, typename T>
+inline bool StyleHeaderSlice<H, T>::operator!=(
+    const StyleHeaderSlice& aOther) const {
+  return !(*this == aOther);
+}
+
+template <typename H, typename T>
+inline StyleHeaderSlice<H, T>::~StyleHeaderSlice() {
+  for (T& elem : Span(data, len)) {
+    elem.~T();
+  }
+}
+
+template <typename H, typename T>
+inline Span<const T> StyleHeaderSlice<H, T>::AsSpan() const {
+  // Explicitly specify template argument here to avoid instantiating Span<T>
+  // first and then implicitly converting to Span<const T>
+  return Span<const T>{data, len};
+}
+
 static constexpr const uint64_t kArcSliceCanary = 0xf3f3f3f3f3f3f3f3;
 
 #define ASSERT_CANARY \
-  MOZ_DIAGNOSTIC_ASSERT(_0.ptr->data.header.header == kArcSliceCanary, "Uh?");
+  MOZ_DIAGNOSTIC_ASSERT(_0.p->data.header == kArcSliceCanary, "Uh?");
 
 template <typename T>
-inline StyleArcSlice<T>::StyleArcSlice() {
-  _0.ptr = reinterpret_cast<decltype(_0.ptr)>(Servo_StyleArcSlice_EmptyPtr());
-  ASSERT_CANARY
-}
-
-template <typename T>
-inline StyleArcSlice<T>::StyleArcSlice(const StyleArcSlice& aOther) {
-  MOZ_DIAGNOSTIC_ASSERT(aOther._0.ptr);
-  _0.ptr = aOther._0.ptr;
-  _0.ptr->IncrementRef();
+inline StyleArcSlice<T>::StyleArcSlice()
+    : _0(reinterpret_cast<decltype(_0.p)>(Servo_StyleArcSlice_EmptyPtr())) {
   ASSERT_CANARY
 }
 
@@ -198,49 +219,26 @@ template <typename T>
 inline StyleArcSlice<T>::StyleArcSlice(
     const StyleForgottenArcSlicePtr<T>& aPtr) {
   // See the forget() implementation to see why reinterpret_cast() is ok.
-  _0.ptr = reinterpret_cast<decltype(_0.ptr)>(aPtr._0);
+  _0.p = reinterpret_cast<decltype(_0.p)>(aPtr._0);
   ASSERT_CANARY
 }
 
 template <typename T>
 inline size_t StyleArcSlice<T>::Length() const {
   ASSERT_CANARY
-  return _0.ptr->data.header.length;
+  return _0->Length();
 }
 
 template <typename T>
 inline bool StyleArcSlice<T>::IsEmpty() const {
   ASSERT_CANARY
-  return Length() == 0;
+  return _0->IsEmpty();
 }
 
 template <typename T>
 inline Span<const T> StyleArcSlice<T>::AsSpan() const {
   ASSERT_CANARY
-  return MakeSpan(_0.ptr->data.slice, Length());
-}
-
-template <typename T>
-inline bool StyleArcSlice<T>::operator==(const StyleArcSlice& aOther) const {
-  ASSERT_CANARY
-  return AsSpan() == aOther.AsSpan();
-}
-
-template <typename T>
-inline bool StyleArcSlice<T>::operator!=(const StyleArcSlice& aOther) const {
-  return !(*this == aOther);
-}
-
-template <typename T>
-inline StyleArcSlice<T>::~StyleArcSlice() {
-  ASSERT_CANARY
-  if (MOZ_LIKELY(!_0.ptr->DecrementRef())) {
-    return;
-  }
-  for (T& elem : MakeSpan(_0.ptr->data.slice, Length())) {
-    elem.~T();
-  }
-  free(_0.ptr);  // Drop the allocation now.
+  return _0->AsSpan();
 }
 
 #undef ASSERT_CANARY
@@ -284,10 +282,7 @@ inline bool StyleAtom::IsStatic() const { return !!(_0 & 1); }
 
 inline nsAtom* StyleAtom::AsAtom() const {
   if (IsStatic()) {
-    auto* atom = reinterpret_cast<const nsStaticAtom*>(
-        reinterpret_cast<const uint8_t*>(&detail::gGkAtoms) + (_0 >> 1));
-    MOZ_ASSERT(atom->IsStatic());
-    return const_cast<nsStaticAtom*>(atom);
+    return const_cast<nsStaticAtom*>(&detail::gGkAtoms.mAtoms[_0 >> 1]);
   }
   return reinterpret_cast<nsAtom*>(_0);
 }
@@ -307,15 +302,17 @@ inline void StyleAtom::Release() {
 inline StyleAtom::StyleAtom(already_AddRefed<nsAtom> aAtom) {
   nsAtom* atom = aAtom.take();
   if (atom->IsStatic()) {
-    ptrdiff_t offset = reinterpret_cast<const uint8_t*>(atom->AsStatic()) -
-                       reinterpret_cast<const uint8_t*>(&detail::gGkAtoms);
-    _0 = (offset << 1) | 1;
+    size_t index = atom->AsStatic() - &detail::gGkAtoms.mAtoms[0];
+    _0 = (index << 1) | 1;
   } else {
     _0 = reinterpret_cast<uintptr_t>(atom);
   }
   MOZ_ASSERT(IsStatic() == atom->IsStatic());
   MOZ_ASSERT(AsAtom() == atom);
 }
+
+inline StyleAtom::StyleAtom(nsStaticAtom* aAtom)
+    : StyleAtom(do_AddRef(static_cast<nsAtom*>(aAtom))) {}
 
 inline StyleAtom::StyleAtom(const StyleAtom& aOther) : _0(aOther._0) {
   AddRef();
@@ -368,7 +365,7 @@ inline StyleUrlExtraData::~StyleUrlExtraData() {
 
 inline const URLExtraData& StyleUrlExtraData::get() const {
   if (IsShared()) {
-    return *URLExtraData::sShared[_0 >> 1].get();
+    return *URLExtraData::sShared[_0 >> 1];
   }
   return *reinterpret_cast<const URLExtraData*>(_0);
 }
@@ -382,22 +379,34 @@ inline const URLExtraData& StyleCssUrl::ExtraData() const {
 }
 
 inline StyleLoadData& StyleCssUrl::LoadData() const {
-  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
   if (MOZ_LIKELY(_0->load_data.tag == StyleLoadDataSource::Tag::Owned)) {
+    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread() ||
+                          dom::IsCurrentThreadRunningWorker());
     return const_cast<StyleLoadData&>(_0->load_data.owned._0);
   }
+  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread(),
+                        "Lazy load datas should come from user-agent sheets, "
+                        "which don't make sense on workers");
   return const_cast<StyleLoadData&>(*Servo_LoadData_GetLazy(&_0->load_data));
 }
 
 inline nsIURI* StyleCssUrl::GetURI() const {
-  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
   auto& loadData = LoadData();
   if (!(loadData.flags & StyleLoadDataFlags::TRIED_TO_RESOLVE_URI)) {
     loadData.flags |= StyleLoadDataFlags::TRIED_TO_RESOLVE_URI;
-    RefPtr<nsIURI> resolved;
-    NS_NewURI(getter_AddRefs(resolved), SpecifiedSerialization(), nullptr,
-              ExtraData().BaseURI());
-    loadData.resolved_uri = resolved.forget().take();
+    nsDependentCSubstring serialization = SpecifiedSerialization();
+    // https://drafts.csswg.org/css-values-4/#url-empty:
+    //
+    //     If the value of the url() is the empty string (like url("") or
+    //     url()), the url must resolve to an invalid resource (similar to what
+    //     the url about:invalid does).
+    //
+    if (!serialization.IsEmpty()) {
+      RefPtr<nsIURI> resolved;
+      NS_NewURI(getter_AddRefs(resolved), serialization, nullptr,
+                ExtraData().BaseURI());
+      loadData.resolved_uri = resolved.forget().take();
+    }
   }
   return loadData.resolved_uri;
 }
@@ -443,22 +452,32 @@ inline imgRequestProxy* StyleComputedImageUrl::GetImage() const {
 template <>
 inline bool StyleGradient::Repeating() const {
   if (IsLinear()) {
-    return AsLinear().repeating;
+    return bool(AsLinear().flags & StyleGradientFlags::REPEATING);
   }
   if (IsRadial()) {
-    return AsRadial().repeating;
+    return bool(AsRadial().flags & StyleGradientFlags::REPEATING);
   }
-  return AsConic().repeating;
+  return bool(AsConic().flags & StyleGradientFlags::REPEATING);
 }
 
 template <>
 bool StyleGradient::IsOpaque() const;
 
+template <>
+inline const StyleColorInterpolationMethod&
+StyleGradient::ColorInterpolationMethod() const {
+  if (IsLinear()) {
+    return AsLinear().color_interpolation_method;
+  }
+  if (IsRadial()) {
+    return AsRadial().color_interpolation_method;
+  }
+  return AsConic().color_interpolation_method;
+}
+
 template <typename Integer>
 inline StyleGenericGridLine<Integer>::StyleGenericGridLine()
-    : ident(do_AddRef(static_cast<nsAtom*>(nsGkAtoms::_empty))),
-      line_num(0),
-      is_span(false) {}
+    : ident{StyleAtom(nsGkAtoms::_empty)}, line_num(0), is_span(false) {}
 
 template <>
 inline nsAtom* StyleGridLine::LineName() const {
@@ -487,20 +506,19 @@ bool StyleCSSPixelLength::IsZero() const { return _0 == 0.0f; }
 
 void StyleCSSPixelLength::ScaleBy(float aScale) { _0 *= aScale; }
 
-nscoord StyleCSSPixelLength::ToAppUnits() const {
-  // We want to resolve the length part of the calc() expression rounding 0.5
-  // away from zero, instead of the default behavior of
-  // NSToCoordRound{,WithClamp} which do floor(x + 0.5).
-  //
-  // This is what the rust code in the app_units crate does, and not doing this
-  // would regress bug 1323735, for example.
-  //
-  // FIXME(emilio, bug 1528114): Probably we should do something smarter.
-  if (IsZero()) {
-    // Avoid the expensive FP math below.
-    return 0;
-  }
-  float length = _0 * float(mozilla::AppUnitsPerCSSPixel());
+StyleCSSPixelLength StyleCSSPixelLength::ScaledBy(float aScale) const {
+  return FromPixels(ToCSSPixels() * aScale);
+}
+
+namespace detail {
+static inline nscoord DefaultPercentLengthToAppUnits(float aPixelLength) {
+  return NSToCoordTruncClamped(aPixelLength);
+}
+
+static inline nscoord DefaultLengthToAppUnits(float aPixelLength) {
+  // We want to round lengths rounding 0.5 away from zero, instead of the
+  // default behavior of NSToCoordRound{,WithClamp} which do floor(x + 0.5).
+  float length = aPixelLength * float(mozilla::AppUnitsPerCSSPixel());
   if (length >= float(nscoord_MAX)) {
     return nscoord_MAX;
   }
@@ -508,6 +526,15 @@ nscoord StyleCSSPixelLength::ToAppUnits() const {
     return nscoord_MIN;
   }
   return NSToIntRound(length);
+}
+}  // namespace detail
+
+nscoord StyleCSSPixelLength::ToAppUnits() const {
+  if (IsZero()) {
+    // Avoid the expensive FP math below.
+    return 0;
+  }
+  return detail::DefaultLengthToAppUnits(_0);
 }
 
 bool LengthPercentage::IsLength() const { return Tag() == TAG_LENGTH; }
@@ -669,8 +696,17 @@ bool LengthPercentage::IsDefinitelyZero() const {
   return false;
 }
 
-template <>
-CSSCoord StyleCalcNode::ResolveToCSSPixels(CSSCoord aPercentageBasis) const;
+CSSCoord StyleCalcLengthPercentage::ResolveToCSSPixels(CSSCoord aBasis) const {
+  return Servo_ResolveCalcLengthPercentage(this, aBasis);
+}
+
+template <typename Rounder>
+nscoord StyleCalcLengthPercentage::Resolve(nscoord aBasis,
+                                           Rounder aRounder) const {
+  static_assert(std::is_same_v<decltype(aRounder(1.0f)), nscoord>);
+  CSSCoord result = ResolveToCSSPixels(CSSPixel::FromAppUnits(aBasis));
+  return aRounder(result * AppUnitsPerCSSPixel());
+}
 
 template <>
 void StyleCalcNode::ScaleLengthsBy(float);
@@ -682,52 +718,49 @@ CSSCoord LengthPercentage::ResolveToCSSPixels(CSSCoord aPercentageBasis) const {
   if (IsPercentage()) {
     return AsPercentage()._0 * aPercentageBasis;
   }
-  return AsCalc().node.ResolveToCSSPixels(aPercentageBasis);
+  return AsCalc().ResolveToCSSPixels(aPercentageBasis);
 }
 
 template <typename T>
 CSSCoord LengthPercentage::ResolveToCSSPixelsWith(T aPercentageGetter) const {
-  static_assert(std::is_same<decltype(aPercentageGetter()), CSSCoord>::value,
-                "Should return CSS pixels");
+  static_assert(std::is_same_v<decltype(aPercentageGetter()), CSSCoord>);
   if (ConvertsToLength()) {
     return ToLengthInCSSPixels();
   }
   return ResolveToCSSPixels(aPercentageGetter());
 }
 
-template <typename T, typename U>
-nscoord LengthPercentage::Resolve(T aPercentageGetter, U aRounder) const {
-  static_assert(std::is_same<decltype(aPercentageGetter()), nscoord>::value,
-                "Should return app units");
-  static_assert(std::is_same<decltype(aRounder(1.0f)), nscoord>::value,
-                "Should return app units");
+template <typename T, typename Rounder>
+nscoord LengthPercentage::Resolve(T aPercentageGetter, Rounder aRounder) const {
+  static_assert(std::is_same_v<decltype(aPercentageGetter()), nscoord>);
+  static_assert(std::is_same_v<decltype(aRounder(1.0f)), nscoord>);
   if (ConvertsToLength()) {
     return ToLength();
   }
   if (IsPercentage() && AsPercentage()._0 == 0.0f) {
-    return 0.0f;
+    return 0;
   }
   nscoord basis = aPercentageGetter();
   if (IsPercentage()) {
     return aRounder(basis * AsPercentage()._0);
   }
-  return AsCalc().node.Resolve(basis, aRounder);
+  return AsCalc().Resolve(basis, aRounder);
 }
 
 nscoord LengthPercentage::Resolve(nscoord aPercentageBasis) const {
-  return Resolve([=] { return aPercentageBasis; }, NSToCoordFloorClamped);
+  return Resolve([=] { return aPercentageBasis; },
+                 detail::DefaultPercentLengthToAppUnits);
 }
 
 template <typename T>
 nscoord LengthPercentage::Resolve(T aPercentageGetter) const {
-  return Resolve(aPercentageGetter, NSToCoordFloorClamped);
+  return Resolve(aPercentageGetter, detail::DefaultPercentLengthToAppUnits);
 }
 
-template <typename T>
+template <typename Rounder>
 nscoord LengthPercentage::Resolve(nscoord aPercentageBasis,
-                                  T aPercentageRounder) const {
-  return Resolve([aPercentageBasis] { return aPercentageBasis; },
-                 aPercentageRounder);
+                                  Rounder aRounder) const {
+  return Resolve([aPercentageBasis] { return aPercentageBasis; }, aRounder);
 }
 
 void LengthPercentage::ScaleLengthsBy(float aScale) {
@@ -795,12 +828,12 @@ inline bool StyleFlexBasis::IsAuto() const {
 
 template <>
 inline bool StyleSize::BehavesLikeInitialValueOnBlockAxis() const {
-  return IsAuto() || IsExtremumLength();
+  return IsAuto() || !IsLengthPercentage();
 }
 
 template <>
 inline bool StyleMaxSize::BehavesLikeInitialValueOnBlockAxis() const {
-  return IsNone() || IsExtremumLength();
+  return IsNone() || !IsLengthPercentage();
 }
 
 template <>
@@ -837,7 +870,7 @@ template <>
 inline const LengthPercentage& BorderRadius::Get(HalfCorner aCorner) const {
   static_assert(sizeof(BorderRadius) == sizeof(LengthPercentage) * 8, "");
   static_assert(alignof(BorderRadius) == alignof(LengthPercentage), "");
-  auto* self = reinterpret_cast<const LengthPercentage*>(this);
+  const auto* self = reinterpret_cast<const LengthPercentage*>(this);
   return self[aCorner];
 }
 
@@ -862,7 +895,7 @@ inline Maybe<size_t> StyleGridTemplateComponent::RepeatAutoIndex() const {
   if (!IsTrackList()) {
     return Nothing();
   }
-  auto& list = *AsTrackList();
+  const auto& list = *AsTrackList();
   return list.auto_repeat_index < list.values.Length()
              ? Some(list.auto_repeat_index)
              : Nothing();
@@ -927,31 +960,47 @@ inline bool RestyleHint::DefinitelyRecascadesAllSubtree() const {
 }
 
 template <>
+ImageResolution StyleImage::GetResolution(const ComputedStyle&) const;
+
+template <>
+inline const StyleImage& StyleImage::FinalImage() const {
+  if (!IsImageSet()) {
+    return *this;
+  }
+  const auto& set = *AsImageSet();
+  auto items = set.items.AsSpan();
+  if (MOZ_LIKELY(set.selected_index < items.Length())) {
+    return items[set.selected_index].image.FinalImage();
+  }
+  static auto sNone = StyleImage::None();
+  return sNone;
+}
+
+template <>
 inline bool StyleImage::IsImageRequestType() const {
-  return IsUrl() || IsRect();
+  const auto& finalImage = FinalImage();
+  return finalImage.IsUrl();
 }
 
 template <>
 inline const StyleComputedImageUrl* StyleImage::GetImageRequestURLValue()
     const {
-  if (IsUrl()) {
-    return &AsUrl();
-  }
-  if (IsRect()) {
-    return &AsRect()->url;
+  const auto& finalImage = FinalImage();
+  if (finalImage.IsUrl()) {
+    return &finalImage.AsUrl();
   }
   return nullptr;
 }
 
 template <>
 inline imgRequestProxy* StyleImage::GetImageRequest() const {
-  auto* url = GetImageRequestURLValue();
+  const auto* url = GetImageRequestURLValue();
   return url ? url->GetImage() : nullptr;
 }
 
 template <>
 inline bool StyleImage::IsResolved() const {
-  auto* url = GetImageRequestURLValue();
+  const auto* url = GetImageRequestURLValue();
   return !url || url->IsImageResolved();
 }
 
@@ -962,21 +1011,212 @@ bool StyleImage::IsSizeAvailable() const;
 template <>
 bool StyleImage::IsComplete() const;
 template <>
-bool StyleImage::StartDecoding() const;
-template <>
-Maybe<StyleImage::ActualCropRect> StyleImage::ComputeActualCropRect() const;
-template <>
 void StyleImage::ResolveImage(dom::Document&, const StyleImage*);
 
 template <>
-inline AspectRatio StyleRatio<StyleNonNegativeNumber>::ToLayoutRatio() const {
-  // The Ratio may be 0/1 (zero) or 1/0 (infinity). There is a spec issue
-  // related to these special cases:
-  // https://github.com/w3c/csswg-drafts/issues/4572.
-  //
-  // For now, we accept these values, but layout AspectRatio makes these values
-  // 0.0.
-  return AspectRatio::FromSize(_0, _1);
+inline AspectRatio StyleRatio<StyleNonNegativeNumber>::ToLayoutRatio(
+    UseBoxSizing aUseBoxSizing) const {
+  // 0/1, 1/0, and 0/0 are all degenerate ratios (which behave as auto), and we
+  // always return 0.0f.
+  // https://drafts.csswg.org/css-values-4/#degenerate-ratio
+  return AspectRatio::FromSize(_0, _1, aUseBoxSizing);
+}
+
+template <>
+inline AspectRatio StyleAspectRatio::ToLayoutRatio() const {
+  return HasRatio() ? ratio.AsRatio().ToLayoutRatio(auto_ ? UseBoxSizing::No
+                                                          : UseBoxSizing::Yes)
+                    : AspectRatio();
+}
+
+inline void StyleFontWeight::ToString(nsACString& aString) const {
+  Servo_FontWeight_ToCss(this, &aString);
+}
+
+inline void StyleFontStretch::ToString(nsACString& aString) const {
+  Servo_FontStretch_ToCss(this, &aString);
+}
+
+inline void StyleFontStyle::ToString(nsACString& aString) const {
+  Servo_FontStyle_ToCss(this, &aString);
+}
+
+inline bool StyleFontWeight::IsBold() const { return *this >= BOLD_THRESHOLD; }
+
+inline bool StyleFontStyle::IsItalic() const { return *this == ITALIC; }
+
+inline bool StyleFontStyle::IsOblique() const {
+  return !IsItalic() && !IsNormal();
+}
+
+inline float StyleFontStyle::ObliqueAngle() const {
+  MOZ_ASSERT(IsOblique());
+  return ToFloat();
+}
+
+inline float StyleFontStyle::SlantAngle() const {
+  return IsNormal() ? 0 : IsItalic() ? DEFAULT_OBLIQUE_DEGREES : ObliqueAngle();
+}
+
+using FontStretch = StyleFontStretch;
+using FontSlantStyle = StyleFontStyle;
+using FontWeight = StyleFontWeight;
+
+template <>
+inline double StyleComputedTimingFunction::At(double aPortion,
+                                              bool aBeforeFlag) const {
+  return Servo_EasingFunctionAt(
+      this, aPortion,
+      aBeforeFlag ? StyleEasingBeforeFlag::Set : StyleEasingBeforeFlag::Unset);
+}
+
+template <>
+inline void StyleComputedTimingFunction::AppendToString(
+    nsACString& aOut) const {
+  return Servo_SerializeEasing(this, &aOut);
+}
+
+template <>
+inline double StyleComputedTimingFunction::GetPortion(
+    const Maybe<StyleComputedTimingFunction>& aFn, double aPortion,
+    bool aBeforeFlag) {
+  return aFn ? aFn->At(aPortion, aBeforeFlag) : aPortion;
+}
+
+/* static */
+template <>
+inline LengthPercentageOrAuto LengthPercentageOrAuto::Zero() {
+  return LengthPercentage(LengthPercentage::Zero());
+}
+
+template <>
+inline StyleViewTimelineInset::StyleGenericViewTimelineInset()
+    : start(LengthPercentageOrAuto::Auto()),
+      end(LengthPercentageOrAuto::Auto()) {}
+
+inline StyleDisplayOutside StyleDisplay::Outside() const {
+  return StyleDisplayOutside((_0 & OUTSIDE_MASK) >> OUTSIDE_SHIFT);
+}
+
+inline StyleDisplayInside StyleDisplay::Inside() const {
+  return StyleDisplayInside(_0 & INSIDE_MASK);
+}
+
+inline bool StyleDisplay::IsListItem() const { return _0 & LIST_ITEM_MASK; }
+
+inline bool StyleDisplay::IsInternalTable() const {
+  return Outside() == StyleDisplayOutside::InternalTable;
+}
+
+inline bool StyleDisplay::IsInternalTableExceptCell() const {
+  return IsInternalTable() && *this != TableCell;
+}
+
+inline bool StyleDisplay::IsInternalRuby() const {
+  return Outside() == StyleDisplayOutside::InternalRuby;
+}
+
+inline bool StyleDisplay::IsRuby() const {
+  return Inside() == StyleDisplayInside::Ruby || IsInternalRuby();
+}
+
+inline bool StyleDisplay::IsInlineFlow() const {
+  return Outside() == StyleDisplayOutside::Inline &&
+         Inside() == StyleDisplayInside::Flow;
+}
+
+inline bool StyleDisplay::IsInlineInside() const {
+  return IsInlineFlow() || IsRuby();
+}
+
+inline bool StyleDisplay::IsInlineOutside() const {
+  return Outside() == StyleDisplayOutside::Inline || IsInternalRuby();
+}
+
+inline float StyleZoom::Zoom(float aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return ToFloat() * aValue;
+}
+
+inline float StyleZoom::Unzoom(float aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return aValue / ToFloat();
+}
+
+inline nscoord StyleZoom::ZoomCoord(nscoord aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return NSToCoordRoundWithClamp(Zoom(float(aValue)));
+}
+
+inline nscoord StyleZoom::UnzoomCoord(nscoord aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return NSToCoordRoundWithClamp(Unzoom(float(aValue)));
+}
+
+inline nsSize StyleZoom::Zoom(const nsSize& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsSize(ZoomCoord(aValue.Width()), ZoomCoord(aValue.Height()));
+}
+
+inline nsSize StyleZoom::Unzoom(const nsSize& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsSize(UnzoomCoord(aValue.Width()), UnzoomCoord(aValue.Height()));
+}
+
+inline nsPoint StyleZoom::Zoom(const nsPoint& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsPoint(ZoomCoord(aValue.X()), ZoomCoord(aValue.Y()));
+}
+
+inline nsPoint StyleZoom::Unzoom(const nsPoint& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsPoint(UnzoomCoord(aValue.X()), UnzoomCoord(aValue.Y()));
+}
+
+inline nsRect StyleZoom::Zoom(const nsRect& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsRect(ZoomCoord(aValue.X()), ZoomCoord(aValue.Y()),
+                ZoomCoord(aValue.Width()), ZoomCoord(aValue.Height()));
+}
+
+inline nsRect StyleZoom::Unzoom(const nsRect& aValue) const {
+  if (*this == ONE) {
+    return aValue;
+  }
+  return nsRect(UnzoomCoord(aValue.X()), UnzoomCoord(aValue.Y()),
+                UnzoomCoord(aValue.Width()), UnzoomCoord(aValue.Height()));
+}
+
+template <>
+inline gfx::Point StyleCoordinatePair<StyleCSSFloat>::ToGfxPoint(
+    const CSSSize* aBasis) const {
+  return gfx::Point(x, y);
+}
+
+template <>
+inline gfx::Point StyleCoordinatePair<LengthPercentage>::ToGfxPoint(
+    const CSSSize* aBasis) const {
+  MOZ_ASSERT(aBasis);
+  return gfx::Point(x.ResolveToCSSPixels(aBasis->Width()),
+                    y.ResolveToCSSPixels(aBasis->Height()));
 }
 
 }  // namespace mozilla

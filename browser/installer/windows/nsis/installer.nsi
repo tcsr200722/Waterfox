@@ -3,13 +3,22 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 # Required Plugins:
-# AppAssocReg    http://nsis.sourceforge.net/Application_Association_Registration_plug-in
-# ApplicationID  http://nsis.sourceforge.net/ApplicationID_plug-in
-# CityHash       http://dxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
-# nsJSON         http://nsis.sourceforge.net/NsJSON_plug-in
-# ShellLink      http://nsis.sourceforge.net/ShellLink_plug-in
-# UAC            http://nsis.sourceforge.net/UAC_plug-in
-# ServicesHelper Mozilla specific plugin that is located in /other-licenses/nsis
+# AccessControl
+#   https://nsis.sourceforge.io/AccessControl_plug-in
+# AppAssocReg
+#   http://nsis.sourceforge.net/Application_Association_Registration_plug-in
+# ApplicationID
+#   http://nsis.sourceforge.net/ApplicationID_plug-in
+# CityHash
+#   http://searchfox.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
+# nsJSON
+#   http://nsis.sourceforge.net/NsJSON_plug-in
+# ShellLink
+#   http://nsis.sourceforge.net/ShellLink_plug-in
+# UAC
+#   http://nsis.sourceforge.net/UAC_plug-in
+# ServicesHelper
+#   Mozilla specific plugin that is located in /other-licenses/nsis
 
 ; Set verbosity to 3 (e.g. no script) to lessen the noise in the build logs
 !verbose 3
@@ -32,8 +41,8 @@ Var TmpVal
 Var InstallType
 Var AddStartMenuSC
 Var AddTaskbarSC
-Var AddQuickLaunchSC
 Var AddDesktopSC
+Var AddPrivateBrowsingSC
 Var InstallMaintenanceService
 Var InstallOptionalExtensions
 Var ExtensionRecommender
@@ -44,6 +53,7 @@ Var RegisterDefaultAgent
 ; Telemetry ping fields
 Var SetAsDefault
 Var HadOldInstall
+Var InstallExisted
 Var DefaultInstDir
 Var IntroPhaseStart
 Var OptionsPhaseStart
@@ -63,7 +73,7 @@ Var PostSigningData
 ; are a member of the Administrators group.
 !define NONADMIN_ELEVATE
 
-!define AbortSurveyURL "http://www.kampyle.com/feedback_form/ff-feedback-form.php?site_code=8166124&form_id=12116&url="
+!define AbortSurveyURL "https://survey.waterfox.net/Desktop-Abort?channel=${UpdateChannel}&version=${AppVersion}&step="
 
 ; Other included files may depend upon these includes!
 ; The following includes are provided by NSIS.
@@ -97,7 +107,7 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 !insertmacro ChangeMUIHeaderImage
 !insertmacro ChangeMUISidebarImage
 !insertmacro CheckForFilesInUse
-!insertmacro CleanUpdateDirectories
+!insertmacro CleanMaintenanceServiceLogs
 !insertmacro CopyFilesFromDir
 !insertmacro CopyPostSigningData
 !insertmacro CreateRegKey
@@ -281,6 +291,8 @@ Section "-InstallStartCleanup"
     RmDir /r "$INSTDIR\distribution"
   ${EndIf}
 
+  Call CheckIfInstallExisted
+
   ; Delete the app exe if present to prevent launching the app while we are
   ; installing.
   ClearErrors
@@ -295,10 +307,10 @@ Section "-InstallStartCleanup"
   ${EndIf}
 
   ; setup the application model id registration value
-  ${InitHashAppModelId} "$INSTDIR" "Software\Mozilla\${AppName}\TaskBarIDs"
+  ${InitHashAppModelId} "$INSTDIR" "Software\BrowserWorks\${AppName}\TaskBarIDs"
 
-  ; Remove the updates directory
-  ${CleanUpdateDirectories} "Mozilla\Firefox" "Mozilla\updates"
+  ; Clean up old maintenance service logs
+  ${CleanMaintenanceServiceLogs} "BrowserWorks\Waterfox"
 
   ${RemoveDeprecatedFiles}
   ${RemovePrecompleteEntries} "false"
@@ -318,6 +330,9 @@ Section "-InstallStartCleanup"
   ${EndIf}
   ${If} ${FileExists} "$INSTDIR\update-settings.ini"
     Delete "$INSTDIR\update-settings.ini"
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\installation_telemetry.json"
+    Delete "$INSTDIR\installation_telemetry.json"
   ${EndIf}
 
   ; Explictly remove empty webapprt dir in case it exists (bug 757978).
@@ -356,12 +371,27 @@ Section "-Application" APP_IDX
 
   ClearErrors
 
-  ${RegisterDLL} "$INSTDIR\AccessibleHandler.dll"
+  ; Record the Windows Error Reporting module
+  WriteRegDWORD HKLM "SOFTWARE\Microsoft\Windows\Windows Error Reporting\RuntimeExceptionHelperModules" "$INSTDIR\mozwer.dll" 0
   ${If} ${Errors}
-    ${LogMsg} "** ERROR Registering: $INSTDIR\AccessibleHandler.dll **"
+    ${LogMsg} "** ERROR Recording: $INSTDIR\mozwer.dll **"
   ${Else}
-    ${LogUninstall} "DLLReg: \AccessibleHandler.dll"
-    ${LogMsg} "Registered: $INSTDIR\AccessibleHandler.dll"
+    ${LogMsg} "Recorded: $INSTDIR\mozwer.dll"
+  ${EndIf}
+
+  ClearErrors
+
+  ; Apply LPAC permissions to install directory.
+  ${LogHeader} "File access permissions"
+  Push "Marker"
+  AccessControl::GrantOnFile \
+    "$INSTDIR" "(${LpacFirefoxInstallFilesSid})" "GenericRead + GenericExecute"
+  Pop $TmpVal ; get "Marker" or error msg
+  ${If} $TmpVal == "Marker"
+    ${LogMsg} "Granted access for LPAC to $INSTDIR"
+  ${Else}
+    ${LogMsg} "** Error granting access for LPAC to $INSTDIR : $TmpVal **"
+    Pop $TmpVal ; get "Marker"
   ${EndIf}
 
   ClearErrors
@@ -372,14 +402,8 @@ Section "-Application" APP_IDX
     StrCpy $AddStartMenuSC "1"
   ${EndIf}
 
-  ; Default for creating Quick Launch shortcut (1 = create, 0 = don't create)
-  ${If} $AddQuickLaunchSC == ""
-    ; Don't install the quick launch shortcut on Windows 7
-    ${If} ${AtLeastWin7}
-      StrCpy $AddQuickLaunchSC "0"
-    ${Else}
-      StrCpy $AddQuickLaunchSC "1"
-    ${EndIf}
+  ${If} $AddPrivateBrowsingSC == ""
+    StrCpy $AddPrivateBrowsingSC "1"
   ${EndIf}
 
   ; Default for creating Desktop shortcut (1 = create, 0 = don't create)
@@ -387,33 +411,32 @@ Section "-Application" APP_IDX
     StrCpy $AddDesktopSC "1"
   ${EndIf}
 
-  ${CreateUpdateDir} "Mozilla"
-  ${If} ${Errors}
-    Pop $0
-    ${LogMsg} "** ERROR Failed to create update directory: $0"
+  ; Default for adding a Taskbar pin (1 = pin, 0 = don't pin)
+  ${If} $AddTaskbarSC == ""
+    ${GetPinningSupportedByWindowsVersionWithoutSystemPopup} $AddTaskbarSC
   ${EndIf}
 
   ${LogHeader} "Adding Registry Entries"
   SetShellVarContext current  ; Set SHCTX to HKCU
-  ${RegCleanMain} "Software\Mozilla"
+  ${RegCleanMain} "Software\BrowserWorks"
   ${RegCleanUninstall}
   ${UpdateProtocolHandlers}
 
   ClearErrors
-  WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
+  WriteRegStr HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest" "Write Test"
   ${If} ${Errors}
     StrCpy $TmpVal "HKCU" ; used primarily for logging
   ${Else}
     SetShellVarContext all  ; Set SHCTX to HKLM
-    DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
+    DeleteRegValue HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest"
     StrCpy $TmpVal "HKLM" ; used primarily for logging
-    ${RegCleanMain} "Software\Mozilla"
+    ${RegCleanMain} "Software\BrowserWorks"
     ${RegCleanUninstall}
     ${UpdateProtocolHandlers}
 
-    ReadRegStr $0 HKLM "Software\mozilla.org\Mozilla" "CurrentVersion"
+    ReadRegStr $0 HKLM "Software\waterfox.net\Waterfox" "CurrentVersion"
     ${If} "$0" != "${GREVersion}"
-      WriteRegStr HKLM "Software\mozilla.org\Mozilla" "CurrentVersion" "${GREVersion}"
+      WriteRegStr HKLM "Software\waterfox.net\Waterfox" "CurrentVersion" "${GREVersion}"
     ${EndIf}
   ${EndIf}
 
@@ -436,26 +459,27 @@ Section "-Application" APP_IDX
   ; it doesn't cause problems always add them.
   ${SetUninstallKeys}
 
-  ; On install always add the FirefoxHTML and FirefoxURL keys.
-  ; An empty string is used for the 5th param because FirefoxHTML is not a
+  ; On install always add the FirefoxHTML-, FirefoxPDF-, and FirefoxURL- keys.
+  ; An empty string is used for the 5th param because FirefoxHTML- is not a
   ; protocol handler.
   ${GetLongPath} "$INSTDIR\${FileMainEXE}" $8
   StrCpy $2 "$\"$8$\" -osint -url $\"%1$\""
 
-  ; In Win8, the delegate execute handler picks up the value in FirefoxURL and
-  ; FirefoxHTML to launch the desktop browser when it needs to.
-  ${AddDisabledDDEHandlerValues} "FirefoxHTML-$AppUserModelID" "$2" "$8,1" \
-                                 "${AppRegName} Document" ""
-  ${AddDisabledDDEHandlerValues} "FirefoxURL-$AppUserModelID" "$2" "$8,1" \
+  ; In Win8, the delegate execute handler picks up the value in FirefoxURL- and
+  ; FirefoxHTML- to launch the desktop browser when it needs to.
+  ${AddDisabledDDEHandlerValues} "WaterfoxHTML-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_ZERO_BASED}" \
+                                 "${AppRegName} HTML Document" ""
+  ${AddDisabledDDEHandlerValues} "WaterfoxPDF-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_PDF_ZERO_BASED}" \
+                                 "${AppRegName} PDF Document" ""
+  ${AddDisabledDDEHandlerValues} "WaterfoxURL-$AppUserModelID" "$2" "$8,${IDI_DOCUMENT_ZERO_BASED}" \
                                  "${AppRegName} URL" "true"
 
-  ; For pre win8, the following keys should only be set if we can write to HKLM.
-  ; For post win8, the keys below can be set in HKCU if needed.
+  ; The keys below can be set in HKCU if needed.
   ${If} $TmpVal == "HKLM"
     ; Set the Start Menu Internet and Registered App HKLM registry keys.
     ${SetStartMenuInternet} "HKLM"
     ${FixShellIconHandler} "HKLM"
-  ${ElseIf} ${AtLeastWin8}
+  ${Else}
     ; Set the Start Menu Internet and Registered App HKCU registry keys.
     ${SetStartMenuInternet} "HKCU"
     ${FixShellIconHandler} "HKCU"
@@ -490,17 +514,6 @@ Section "-Application" APP_IDX
   ${EndIf}
 !endif
 
-!ifdef MOZ_UPDATE_AGENT
-  ${PushRegisterUpdateAgentTaskCommand} "register"
-  Pop $0
-  ${If} "$0" != ""
-    ${LogMsg} "Registering update agent task: $0"
-    nsExec::Exec $0
-    Pop $0
-    ${LogMsg} "nsExec::Exec returned $0"
-  ${EndIf}
-!endif
-
   ; These need special handling on uninstall since they may be overwritten by
   ; an install into a different location.
   StrCpy $0 "Software\Microsoft\Windows\CurrentVersion\App Paths\${FileMainEXE}"
@@ -526,6 +539,8 @@ Section "-Application" APP_IDX
   ; majority of cases.
   WriteRegDWORD HKCU ${MOZ_LAUNCHER_SUBKEY} "$INSTDIR\${FileMainEXE}|Telemetry" 1
 !endif
+
+  ${WriteToastNotificationRegistration} $TmpVal
 
   ; Create shortcuts
   ${LogHeader} "Adding Shortcuts"
@@ -603,19 +618,25 @@ Section "-Application" APP_IDX
     ${EndIf}
   ${EndIf}
 
+  ; This is always added if it doesn't already exist to ensure that Windows'
+  ; native "Pin to Taskbar" functionality can find an appropriate shortcut.
+  ; See https://bugzilla.mozilla.org/show_bug.cgi?id=1762994 for additional
+  ; background.
+  ${If} $AddPrivateBrowsingSC == 1
+    ${AddPrivateBrowsingShortcut}
+  ${EndIf}
+
   ; Update lastwritetime of the Start Menu shortcut to clear the tile cache.
   ; Do this for both shell contexts in case the user has shortcuts in multiple
   ; locations, then restore the previous context at the end.
-  ${If} ${AtLeastWin8}
+  SetShellVarContext all
+  ${TouchStartMenuShortcut}
+  SetShellVarContext current
+  ${TouchStartMenuShortcut}
+  ${If} $TmpVal == "HKLM"
     SetShellVarContext all
-    ${TouchStartMenuShortcut}
+  ${ElseIf} $TmpVal == "HKCU"
     SetShellVarContext current
-    ${TouchStartMenuShortcut}
-    ${If} $TmpVal == "HKLM"
-      SetShellVarContext all
-    ${ElseIf} $TmpVal == "HKCU"
-      SetShellVarContext current
-    ${EndIf}
   ${EndIf}
 
   ${If} $AddDesktopSC == 1
@@ -642,27 +663,6 @@ Section "-Application" APP_IDX
         ${LogMsg} "** ERROR Adding Shortcut: $DESKTOP\${BrandShortName}.lnk"
       ${EndIf}
     ${EndIf}
-  ${EndIf}
-
-  ; If elevated the Quick Launch shortcut must be added from the unelevated
-  ; original process.
-  ${If} $AddQuickLaunchSC == 1
-    ${Unless} ${AtLeastWin7}
-      ClearErrors
-      ${GetParameters} $0
-      ${GetOptions} "$0" "/UAC:" $0
-      ${If} ${Errors}
-        Call AddQuickLaunchShortcut
-        ${LogMsg} "Added Shortcut: $QUICKLAUNCH\${BrandShortName}.lnk"
-      ${Else}
-        ; It is not possible to add a log entry from the unelevated process so
-        ; add the log entry without the path since there is no simple way to
-        ; know the correct full path.
-        ${LogMsg} "Added Quick Launch Shortcut: ${BrandShortName}.lnk"
-        GetFunctionAddress $0 AddQuickLaunchShortcut
-        UAC::ExecCodeSegment $0
-      ${EndIf}
-    ${EndUnless}
   ${EndIf}
 
 !ifdef MOZ_OPTIONAL_EXTENSIONS
@@ -733,9 +733,14 @@ Section "-Application" APP_IDX
   ${EndIf}
   ; Remember whether we were told to skip registering the agent, so that updates
   ; won't try to create a registration when they don't find an existing one.
-  WriteRegDWORD HKCU "Software\Mozilla\${AppName}\Installer\$AppUserModelID" \
+  WriteRegDWORD HKCU "Software\BrowserWorks\${AppName}\Installer\$AppUserModelID" \
                      "DidRegisterDefaultBrowserAgent" $RegisterDefaultAgent
 !endif
+
+; Return value is saved to an unused variable to prevent the the error flag
+; from being set.
+Var /GLOBAL UnusedExecCatchReturn
+ExecWait '"$INSTDIR\${FileMainEXE}" --backgroundtask install' $UnusedExecCatchReturn
 SectionEnd
 
 ; Cleanup operations to perform at the end of the installation.
@@ -761,63 +766,23 @@ Section "-InstallEndCleanup"
     ${EndIf}
   ${EndIf}
 
-  ${Unless} ${Silent}
-    ClearErrors
-    ${MUI_INSTALLOPTIONS_READ} $0 "summary.ini" "Field 4" "State"
-    ${If} "$0" == "1"
-      StrCpy $SetAsDefault true
-      ; For data migration in the app, we want to know what the default browser
-      ; value was before we changed it. To do so, we read it here and store it
-      ; in our own registry key.
-      StrCpy $0 ""
-      AppAssocReg::QueryCurrentDefault "http" "protocol" "effective"
-      Pop $1
-      ; If the method hasn't failed, $1 will contain the progid. Check:
-      ${If} "$1" != "method failed"
-      ${AndIf} "$1" != "method not available"
-        ; Read the actual command from the progid
-        ReadRegStr $0 HKCR "$1\shell\open\command" ""
-      ${EndIf}
-      ; If using the App Association Registry didn't happen or failed, fall back
-      ; to the effective http default:
-      ${If} "$0" == ""
-        ReadRegStr $0 HKCR "http\shell\open\command" ""
-      ${EndIf}
-      ; If we have something other than empty string now, write the value.
-      ${If} "$0" != ""
-        ClearErrors
-        WriteRegStr HKCU "Software\Mozilla\Firefox" "OldDefaultBrowserCommand" "$0"
-      ${EndIf}
-
-      ${LogHeader} "Setting as the default browser"
-      ClearErrors
-      ${GetParameters} $0
-      ${GetOptions} "$0" "/UAC:" $0
-      ${If} ${Errors}
-        Call SetAsDefaultAppUserHKCU
-      ${Else}
-        GetFunctionAddress $0 SetAsDefaultAppUserHKCU
-        UAC::ExecCodeSegment $0
-      ${EndIf}
-    ${ElseIfNot} ${Errors}
-      StrCpy $SetAsDefault false
-      ${LogHeader} "Writing default-browser opt-out"
-      ClearErrors
-      WriteRegStr HKCU "Software\Mozilla\Firefox" "DefaultBrowserOptOut" "True"
-      ${If} ${Errors}
-        ${LogMsg} "Error writing default-browser opt-out"
-      ${EndIf}
-    ${EndIf}
-  ${EndUnless}
-
   ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
-  ${MigrateTaskBarShortcut}
+  ${MigrateTaskBarShortcut} "$AddTaskbarSC"
 
   ; Add the Firewall entries during install
   Call AddFirewallEntries
 
   ; Refresh desktop icons
   ${RefreshShellIcons}
+
+  ; Remove old unsupported firefox and firefox-private extension protocol
+  ; handlers which were added in FX122 for the dual browser extension, since
+  ; renamed to FirefoxBridge
+  Push $1
+  ${GetLongPath} "$INSTDIR\${FileMainEXE}" $1
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox"
+  ${DeleteProtocolRegistryIfSetToInstallation} "$1" "firefox-private"
+  Pop $1
 
   ${InstallEndCleanupCommon}
 
@@ -860,12 +825,14 @@ Section "-InstallEndCleanup"
     ${EndIf}
   ${EndIf}
 
+  Call WriteInstallationTelemetryData
+
   StrCpy $InstallResult "success"
 
   ; When we're using the GUI, .onGUIEnd sends the ping, but of course that isn't
   ; invoked when we're running silently.
   ${If} ${Silent}
-    Call SendPing
+    ; Call SendPing
   ${EndIf}
 SectionEnd
 
@@ -938,14 +905,6 @@ FunctionEnd
 
 ################################################################################
 # Helper Functions
-
-Function AddQuickLaunchShortcut
-  CreateShortCut "$QUICKLAUNCH\${BrandShortName}.lnk" "$INSTDIR\${FileMainEXE}"
-  ${If} ${FileExists} "$QUICKLAUNCH\${BrandShortName}.lnk"
-    ShellLink::SetShortCutWorkingDirectory "$QUICKLAUNCH\${BrandShortName}.lnk" \
-                                           "$INSTDIR"
-  ${EndIf}
-FunctionEnd
 
 Function CheckExistingInstall
   ; If there is a pending file copy from a previous upgrade don't allow
@@ -1060,6 +1019,15 @@ Function SendPing
   ReadINIStr $0 "$INSTDIR\application.ini" "App" "BuildID"
   nsJSON::Set /tree ping "Data" "build_id" /value '"$0"'
 
+  ; Capture the distribution ID and version if they exist.
+  StrCpy $1 "$INSTDIR\distribution\distribution.ini"
+  ${If} ${FileExists} "$1"
+    ReadINIStr $0 "$1" "Global" "id"
+    nsJSON::Set /tree ping "Data" "distribution_id" /value '"$0"'
+    ReadINIStr $0 "$1" "Global" "version"
+    nsJSON::Set /tree ping "Data" "distribution_version" /value '"$0"'
+  ${EndIf}
+
   ${GetParameters} $0
   ${GetOptions} $0 "/LaunchedFromMSI" $0
   ${IfNot} ${Errors}
@@ -1091,12 +1059,12 @@ Function SendPing
   ${EndIf}
 
   ClearErrors
-  WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" \
+  WriteRegStr HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest" \
                    "Write Test"
   ${If} ${Errors}
     nsJSON::Set /tree ping "Data" "admin_user" /value false
   ${Else}
-    DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
+    DeleteRegValue HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest"
     nsJSON::Set /tree ping "Data" "admin_user" /value true
   ${EndIf}
 
@@ -1121,7 +1089,7 @@ Function SendPing
     ${If} $1 == $INSTDIR
       nsJSON::Set /tree ping "Data" "new_default" /value true
     ${Else}
-      StrCpy $0 "$0" "" -11 # 11 == length of "firefox.exe"
+      StrCpy $0 "$0" "" -12 # 11 == length of "waterfox.exe"
       ${If} "$0" == "${FileMainEXE}"
         nsJSON::Set /tree ping "Data" "old_default" /value true
       ${EndIf}
@@ -1204,6 +1172,112 @@ Function SendPing
   ; Send the ping request. This call will block until a response is received,
   ; but we shouldn't have any windows still open, so we won't jank anything.
   nsJSON::Set /http ping
+FunctionEnd
+
+; Record data about this installation for use in in-app Telemetry pings.
+;
+; This should be run only after a successful installation, as it will
+; pull data from $INSTDIR\application.ini.
+;
+; Unlike the install ping or post-signing data, which is only sent/written by
+; the full installer when it is not run by the stub (since the stub has more
+; information), this will always be recorded by the full installer, to reduce
+; duplication and ensure consistency.
+;
+; Note: Should be assumed to clobber all $0, $1, etc registers.
+!define JSONSet `nsJSON::Set /tree installation_data`
+Function WriteInstallationTelemetryData
+  ${JSONSet} /value "{}"
+
+  ReadINIStr $0 "$INSTDIR\application.ini" "App" "Version"
+  ${JSONSet} "version" /value '"$0"'
+  ReadINIStr $0 "$INSTDIR\application.ini" "App" "BuildID"
+  ${JSONSet} "build_id" /value '"$0"'
+
+  ; Check for write access to HKLM, if successful then report this user
+  ; as an (elevated) admin.
+  ClearErrors
+  WriteRegStr HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest" \
+                   "Write Test"
+  ${If} ${Errors}
+    StrCpy $1 "false"
+  ${Else}
+    DeleteRegValue HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest"
+    StrCpy $1 "true"
+  ${EndIf}
+  ${JSONSet} "admin_user" /value $1
+
+  ; Note: This is not the same as $HadOldInstall, which looks for any install
+  ; in the registry. $InstallExisted is true only if this run of the installer
+  ; is replacing an existing main EXE.
+  ${If} $InstallExisted != ""
+    ${JSONSet} "install_existed" /value $InstallExisted
+  ${EndIf}
+
+  ; Check for top-level profile directory
+  ; Note: This is the same check used to set $ExistingProfile in stub.nsi
+  ${GetLocalAppDataFolder} $0
+  ${If} ${FileExists} "$0\BrowserWorks\Waterfox"
+    StrCpy $1 "true"
+  ${Else}
+    StrCpy $1 "false"
+  ${EndIf}
+  ${JSONSet} "profdir_existed" /value $1
+
+  ${GetParameters} $0
+  ${GetOptions} $0 "/LaunchedFromStub" $1
+  ${IfNot} ${Errors}
+    ${JSONSet} "installer_type" /value '"stub"'
+  ${Else}
+    ; Not launched from stub
+    ${JSONSet} "installer_type" /value '"full"'
+
+    ; Include additional info relevant when the full installer is run directly
+
+    ${If} ${Silent}
+      StrCpy $1 "true"
+    ${Else}
+      StrCpy $1 "false"
+    ${EndIf}
+    ${JSONSet} "silent" /value $1
+
+    ${GetOptions} $0 "/LaunchedFromMSI" $1
+    ${IfNot} ${Errors}
+      StrCpy $1 "true"
+    ${Else}
+      StrCpy $1 "false"
+    ${EndIf}
+    ${JSONSet} "from_msi" /value $1
+
+    ; NOTE: for non-admin basic installs, or reinstalls, $DefaultInstDir may not
+    ; reflect the actual default path.
+    ${If} $DefaultInstDir == $INSTDIR
+      StrCpy $1 "true"
+    ${Else}
+      StrCpy $1 "false"
+    ${EndIf}
+    ${JSONSet} "default_path" /value $1
+  ${EndIf}
+
+  ; Timestamp, to allow app to detect a new install.
+  ; As a 64-bit integer isn't valid JSON, quote as a string.
+  System::Call "kernel32::GetSystemTimeAsFileTime(*l.r0)"
+  ${JSONSet} "install_timestamp" /value '"$0"'
+
+  nsJSON::Serialize /tree installation_data /file /unicode "$INSTDIR\installation_telemetry.json"
+FunctionEnd
+!undef JSONSet
+
+; Set $InstallExisted (if not yet set) by checking for the EXE.
+; Should be called before trying to delete the EXE when install begins.
+Function CheckIfInstallExisted
+  ${If} $InstallExisted == ""
+    ${If} ${FileExists} "$INSTDIR\${FileMainEXE}"
+      StrCpy $InstallExisted true
+    ${Else}
+      StrCpy $InstallExisted false
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 ################################################################################
@@ -1331,10 +1405,10 @@ Function leaveShortcuts
   ${MUI_INSTALLOPTIONS_READ} $AddDesktopSC "shortcuts.ini" "Field 2" "State"
   ${MUI_INSTALLOPTIONS_READ} $AddStartMenuSC "shortcuts.ini" "Field 3" "State"
 
-  ; Don't install the quick launch shortcut on Windows 7
-  ${Unless} ${AtLeastWin7}
-    ${MUI_INSTALLOPTIONS_READ} $AddQuickLaunchSC "shortcuts.ini" "Field 4" "State"
-  ${EndUnless}
+
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
+    ${MUI_INSTALLOPTIONS_READ} $AddTaskbarSC "shortcuts.ini" "Field 4" "State"
+  ${EndIf}
 
   ${If} $InstallType == ${INSTALLTYPE_CUSTOM}
     Call CheckExistingInstall
@@ -1344,7 +1418,7 @@ FunctionEnd
 !ifdef MOZ_MAINTENANCE_SERVICE
 Function preComponents
   ; If the service already exists, don't show this page
-  ServicesHelper::IsInstalled "MozillaMaintenance"
+  ServicesHelper::IsInstalled "WaterfoxMaintenance"
   Pop $R9
   ${If} $R9 == 1
     ; The service already exists so don't show this page.
@@ -1361,13 +1435,13 @@ Function preComponents
 
   ; Only show the maintenance service page if we have write access to HKLM
   ClearErrors
-  WriteRegStr HKLM "Software\Mozilla" \
+  WriteRegStr HKLM "Software\BrowserWorks" \
               "${BrandShortName}InstallerTest" "Write Test"
   ${If} ${Errors}
     ClearErrors
     Abort
   ${Else}
-    DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
+    DeleteRegValue HKLM "Software\BrowserWorks" "${BrandShortName}InstallerTest"
   ${EndIf}
 
   StrCpy $PageName "Components"
@@ -1538,55 +1612,15 @@ Function preSummary
     DeleteINIStr "$PLUGINSDIR\summary.ini" "Settings" NextButtonText
   ${EndIf}
 
-
-  ; Remove the "Field 4" ini section in case the user hits back and changes the
-  ; installation directory which could change whether the make default checkbox
-  ; should be displayed.
-  DeleteINISec "$PLUGINSDIR\summary.ini" "Field 4"
-
-  ; Check if it is possible to write to HKLM
-  ClearErrors
-  WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
-  ${Unless} ${Errors}
-    DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
-    ; Check if Firefox is the http handler for this user.
-    SetShellVarContext current ; Set SHCTX to the current user
-    ${IsHandlerForInstallDir} "http" $R9
-    ; If Firefox isn't the http handler for this user show the option to set
-    ; Firefox as the default browser.
-    ${If} "$R9" != "true"
-    ${AndIf} ${AtMostWin2008R2}
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Settings" NumFields "4"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Type   "checkbox"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Text   "$(SUMMARY_TAKE_DEFAULTS)"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Left   "0"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Right  "-1"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" State  "1"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Top    "32"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Bottom "53"
-    ${EndIf}
-  ${EndUnless}
-
   ${If} "$TmpVal" == "true"
-    ; If there is already a Type entry in the "Field 4" section with a value of
-    ; checkbox then the set as the default browser checkbox is displayed and
-    ; this text must be moved below it.
-    ReadINIStr $0 "$PLUGINSDIR\summary.ini" "Field 4" "Type"
-    ${If} "$0" == "checkbox"
-      StrCpy $0 "5"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Top    "53"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Bottom "68"
-    ${Else}
-      StrCpy $0 "4"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Top    "35"
-      WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Bottom "50"
-    ${EndIf}
-    WriteINIStr "$PLUGINSDIR\summary.ini" "Settings" NumFields "$0"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Settings" NumFields "4"
 
-    WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Type   "label"
-    WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Text   "$(SUMMARY_REBOOT_REQUIRED_INSTALL)"
-    WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Left   "0"
-    WriteINIStr "$PLUGINSDIR\summary.ini" "Field $0" Right  "-1"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Type   "label"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Text   "$(SUMMARY_REBOOT_REQUIRED_INSTALL)"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Left   "0"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Right  "-1"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Top    "35"
+    WriteINIStr "$PLUGINSDIR\summary.ini" "Field 4" Bottom "50"
   ${EndIf}
 
   !insertmacro MUI_HEADER_TEXT "$(SUMMARY_PAGE_TITLE)" "$(SUMMARY_PAGE_SUBTITLE)"
@@ -1602,6 +1636,8 @@ Function preSummary
 FunctionEnd
 
 Function leaveSummary
+  Call CheckIfInstallExisted
+
   ; Try to delete the app executable and if we can't delete it try to find the
   ; app's message window and prompt the user to close the app. This allows
   ; running an instance that is located in another directory. If for whatever
@@ -1664,6 +1700,7 @@ Function .onInit
   ; Initialize the variables used for telemetry
   StrCpy $SetAsDefault true
   StrCpy $HadOldInstall false
+  StrCpy $InstallExisted ""
   StrCpy $DefaultInstDir $INSTDIR
   StrCpy $IntroPhaseStart 0
   StrCpy $OptionsPhaseStart 0
@@ -1682,8 +1719,8 @@ Function .onInit
   ; SSE2 instruction set is available. Result returned in $R7.
   System::Call "kernel32::IsProcessorFeaturePresent(i 10)i .R7"
 
-  ; Windows NT 6.0 (Vista/Server 2008) and lower are not supported.
-  ${Unless} ${AtLeastWin7}
+  ; Windows 8.1/Server 2012 R2 and lower are not supported.
+  ${Unless} ${AtLeastWin10}
     ${If} "$R7" == "0"
       strCpy $R7 "$(WARN_MIN_SUPPORTED_OSVER_CPU_MSG)"
     ${Else}
@@ -1704,7 +1741,6 @@ Function .onInit
 !ifdef HAVE_64BIT_BUILD
   ${If} "${ARCH}" == "AArch64"
     ${IfNot} ${IsNativeARM64}
-    ${OrIfNot} ${AtLeastWin10}
       MessageBox MB_OKCANCEL|MB_ICONSTOP "$(WARN_MIN_SUPPORTED_OSVER_MSG)" IDCANCEL +2
       ExecShell "open" "${URLSystemRequirements}"
       Quit
@@ -1718,10 +1754,10 @@ Function .onInit
 !endif
 
   SetShellVarContext all
-  ${GetFirstInstallPath} "Software\Mozilla\${BrandFullNameInternal}" $0
+  ${GetFirstInstallPath} "Software\BrowserWorks\${BrandFullNameInternal}" $0
   ${If} "$0" == "false"
     SetShellVarContext current
-    ${GetFirstInstallPath} "Software\Mozilla\${BrandFullNameInternal}" $0
+    ${GetFirstInstallPath} "Software\BrowserWorks\${BrandFullNameInternal}" $0
     ${If} "$0" == "false"
       StrCpy $HadOldInstall false
     ${Else}
@@ -1779,12 +1815,10 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Top    "67"
   WriteINIStr "$PLUGINSDIR\options.ini" "Field 5" Bottom "87"
 
-  ; Setup the shortcuts.ini file for the Custom Shortcuts Page
-  ; Don't offer to install the quick launch shortcut on Windows 7
-  ${If} ${AtLeastWin7}
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "3"
-  ${Else}
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "4"
+  ${Else}
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Settings" NumFields "3"
   ${EndIf}
 
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 1" Type   "label"
@@ -1811,16 +1845,15 @@ Function .onInit
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" Bottom "50"
   WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 3" State  "1"
 
-  ; Don't offer to install the quick launch shortcut on Windows 7
-  ${Unless} ${AtLeastWin7}
+  ${If} ${IsPinningSupportedByWindowsVersionWithoutSystemPopup}
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Type   "checkbox"
-    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_QUICKLAUNCH)"
+    WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Text   "$(ICONS_TASKBAR)"
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Left   "0"
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Right  "-1"
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Top    "60"
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" Bottom "70"
     WriteINIStr "$PLUGINSDIR\shortcuts.ini" "Field 4" State  "1"
-  ${EndUnless}
+  ${EndIf}
 
   ; Setup the components.ini file for the Components Page
   WriteINIStr "$PLUGINSDIR\components.ini" "Settings" NumFields "2"
@@ -1920,5 +1953,5 @@ FunctionEnd
 
 Function .onGUIEnd
   ${OnEndCommon}
-  Call SendPing
+  ; Call SendPing
 FunctionEnd

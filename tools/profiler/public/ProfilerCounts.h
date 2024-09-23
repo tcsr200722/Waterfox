@@ -18,7 +18,9 @@
 
 #else
 
+#  include "mozilla/Assertions.h"
 #  include "mozilla/Atomics.h"
+#  include "mozilla/DataMutex.h"
 
 class BaseProfilerCount;
 void profiler_add_sampled_counter(BaseProfilerCount* aCounter);
@@ -99,15 +101,37 @@ class BaseProfilerCount {
 #  endif
   }
 
-  virtual void Sample(int64_t& aCounter, uint64_t& aNumber) {
+  struct CountSample {
+    int64_t count;
+    uint64_t number;
+    // This field indicates if the sample has already been consummed by a call
+    // to the Sample() method. This allows the profiler to discard duplicate
+    // samples if the counter sampling rate is lower than the profiler sampling
+    // rate. This can happen for example with some power meters that sample up
+    // to every 10ms.
+    // It should always be true when calling Sample() for the first time.
+    bool isSampleNew;
+  };
+  virtual CountSample Sample() {
     MOZ_ASSERT(mCanary == COUNTER_CANARY);
 
-    aCounter = *mCounter;
-    aNumber = mNumber ? *mNumber : 0;
+    CountSample result;
+    result.count = *mCounter;
+    result.number = mNumber ? *mNumber : 0;
 #  ifdef DEBUG
-    MOZ_ASSERT(aNumber >= mPrevNumber);
-    mPrevNumber = aNumber;
+    MOZ_ASSERT(result.number >= mPrevNumber);
+    mPrevNumber = result.number;
 #  endif
+    result.isSampleNew = true;
+    return result;
+  }
+
+  void Clear() {
+    *mCounter = 0;
+    // We don't reset *mNumber or mPrevNumber.  We encode numbers as
+    // positive deltas, and currently we only care about the deltas (for
+    // e.g. heatmaps).  If we ever need to clear mNumber as well, we can an
+    // alternative method (Reset()) to do so.
   }
 
   // We don't define ++ and Add() here, since the static defines directly
@@ -165,13 +189,33 @@ class ProfilerCounterTotal final : public BaseProfilerCount {
  public:
   ProfilerCounterTotal(const char* aLabel, const char* aCategory,
                        const char* aDescription)
-      : BaseProfilerCount(aLabel, &mCounter, &mNumber, aCategory,
-                          aDescription) {
+      : BaseProfilerCount(aLabel, &mCounter, &mNumber, aCategory, aDescription),
+        mRegistered(false, "ProfilerCounterTotal::mRegistered") {
     // Assume we're in libxul
+    Register();
+  }
+
+  virtual ~ProfilerCounterTotal() { Unregister(); }
+
+  void Register() {
+    auto registered = mRegistered.Lock();
+    if (*registered) {
+      return;
+    }
+
+    *registered = true;
     profiler_add_sampled_counter(this);
   }
 
-  virtual ~ProfilerCounterTotal() { profiler_remove_sampled_counter(this); }
+  void Unregister() {
+    auto registered = mRegistered.Lock();
+    if (!*registered) {
+      return;
+    }
+
+    *registered = false;
+    profiler_remove_sampled_counter(this);
+  }
 
   BaseProfilerCount& operator++() {
     Add(1);
@@ -185,6 +229,9 @@ class ProfilerCounterTotal final : public BaseProfilerCount {
 
   ProfilerAtomicSigned mCounter;
   ProfilerAtomicUnsigned mNumber;
+  // Using OffTheBooksMutex here because we intentionally leak memory counters
+  // if they are initialized.
+  mozilla::DataMutexBase<bool, mozilla::OffTheBooksMutex> mRegistered;
 };
 
 // Defines a counter that is sampled on each profiler tick, with a running

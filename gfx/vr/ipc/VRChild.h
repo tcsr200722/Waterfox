@@ -29,10 +29,11 @@ class VRChild final : public PVRChild,
   friend class PVRChild;
 
  public:
-  explicit VRChild(VRProcessParent* aHost);
-  ~VRChild() = default;
+  NS_INLINE_DECL_REFCOUNTING(VRChild, final)
 
-  static void Destroy(UniquePtr<VRChild>&& aChild);
+  explicit VRChild(VRProcessParent* aHost);
+
+  static void Destroy(RefPtr<VRChild>&& aChild);
   void Init();
   bool EnsureVRReady();
   virtual void OnVarChanged(const GfxVarUpdate& aVar) override;
@@ -50,9 +51,10 @@ class VRChild final : public PVRChild,
   mozilla::ipc::IPCResult RecvInitComplete();
 
   mozilla::ipc::IPCResult RecvAddMemoryReport(const MemoryReport& aReport);
-  mozilla::ipc::IPCResult RecvFinishMemoryReport(const uint32_t& aGeneration);
 
  private:
+  ~VRChild();
+
   VRProcessParent* mHost;
   UniquePtr<MemoryReportRequestHost> mMemoryReportRequest;
   bool mVRReady;

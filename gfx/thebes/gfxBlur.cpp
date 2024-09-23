@@ -23,27 +23,26 @@ using namespace mozilla::gfx;
 
 gfxAlphaBoxBlur::~gfxAlphaBoxBlur() = default;
 
-already_AddRefed<gfxContext> gfxAlphaBoxBlur::Init(gfxContext* aDestinationCtx,
-                                                   const gfxRect& aRect,
-                                                   const IntSize& aSpreadRadius,
-                                                   const IntSize& aBlurRadius,
-                                                   const gfxRect* aDirtyRect,
-                                                   const gfxRect* aSkipRect,
-                                                   bool aUseHardwareAccel) {
+UniquePtr<gfxContext> gfxAlphaBoxBlur::Init(gfxContext* aDestinationCtx,
+                                            const gfxRect& aRect,
+                                            const IntSize& aSpreadRadius,
+                                            const IntSize& aBlurRadius,
+                                            const gfxRect* aDirtyRect,
+                                            const gfxRect* aSkipRect,
+                                            bool aUseHardwareAccel) {
   DrawTarget* refDT = aDestinationCtx->GetDrawTarget();
   Maybe<Rect> dirtyRect = aDirtyRect ? Some(ToRect(*aDirtyRect)) : Nothing();
   Maybe<Rect> skipRect = aSkipRect ? Some(ToRect(*aSkipRect)) : Nothing();
   RefPtr<DrawTarget> dt = InitDrawTarget(
       refDT, ToRect(aRect), aSpreadRadius, aBlurRadius,
       dirtyRect.ptrOr(nullptr), skipRect.ptrOr(nullptr), aUseHardwareAccel);
-  if (!dt) {
+  if (!dt || !dt->IsValid()) {
     return nullptr;
   }
 
-  RefPtr<gfxContext> context = gfxContext::CreateOrNull(dt);
-  MOZ_ASSERT(context);  // already checked for target above
+  auto context = MakeUnique<gfxContext>(dt);
   context->SetMatrix(Matrix::Translation(-mBlur.GetRect().TopLeft()));
-  return context.forget();
+  return context;
 }
 
 already_AddRefed<DrawTarget> gfxAlphaBoxBlur::InitDrawTarget(
@@ -70,18 +69,8 @@ already_AddRefed<DrawTarget> gfxAlphaBoxBlur::InitDrawTarget(
     mAccelerated = true;
   }
 
-  if (aReferenceDT->IsCaptureDT()) {
-    if (mAccelerated) {
-      mDrawTarget = Factory::CreateCaptureDrawTarget(backend, mBlur.GetSize(),
-                                                     SurfaceFormat::A8);
-    } else {
-      mDrawTarget = Factory::CreateCaptureDrawTargetForData(
-          backend, mBlur.GetSize(), SurfaceFormat::A8, mBlur.GetStride(),
-          blurDataSize);
-    }
-  } else if (mAccelerated) {
-    // Note: CreateShadowDrawTarget is only implemented for Cairo, so we don't
-    // care about mimicking this in the DrawTargetCapture case.
+  if (mAccelerated) {
+    // Note: CreateShadowDrawTarget is only implemented for Cairo.
     mDrawTarget = aReferenceDT->CreateShadowDrawTarget(
         mBlur.GetSize(), SurfaceFormat::A8,
         AlphaBoxBlur::CalculateBlurSigma(aBlurRadius.width));
@@ -141,13 +130,12 @@ already_AddRefed<SourceSurface> gfxAlphaBoxBlur::DoBlur(
       return nullptr;
     }
     blurDT->DrawSurfaceWithShadow(
-        blurMask, Point(0, 0), DeviceColor::MaskOpaqueWhite(), Point(0, 0),
-        AlphaBoxBlur::CalculateBlurSigma(mBlur.GetBlurRadius().width),
+        blurMask, Point(0, 0),
+        ShadowOptions(
+            DeviceColor::MaskOpaqueWhite(), Point(0, 0),
+            AlphaBoxBlur::CalculateBlurSigma(mBlur.GetBlurRadius().width)),
         CompositionOp::OP_OVER);
     blurMask = blurDT->Snapshot();
-  } else if (mDrawTarget->IsCaptureDT()) {
-    mDrawTarget->Blur(mBlur);
-    blurMask = mDrawTarget->Snapshot();
   }
 
   if (!aShadowColor) {
@@ -166,7 +154,7 @@ already_AddRefed<SourceSurface> gfxAlphaBoxBlur::DoBlur(
 }
 
 void gfxAlphaBoxBlur::Paint(gfxContext* aDestinationCtx) {
-  if ((mDrawTarget && !mDrawTarget->IsCaptureDT()) && !mAccelerated && !mData) {
+  if (mDrawTarget && !mAccelerated && !mData) {
     return;
   }
 
@@ -373,20 +361,17 @@ class BlurCache final : public nsExpirationTracker<BlurCacheData, 4> {
     return blur;
   }
 
-  // Returns true if we successfully register the blur in the cache, false
-  // otherwise.
-  bool RegisterEntry(BlurCacheData* aValue) {
-    nsresult rv = AddObject(aValue);
+  void RegisterEntry(UniquePtr<BlurCacheData> aValue) {
+    nsresult rv = AddObject(aValue.get());
     if (NS_FAILED(rv)) {
       // We are OOM, and we cannot track this object. We don't want stall
       // entries in the hash table (since the expiration tracker is responsible
       // for removing the cache entries), so we avoid putting that entry in the
-      // table, which is a good things considering we are short on memory
+      // table, which is a good thing considering we are short on memory
       // anyway, we probably don't want to retain things.
-      return false;
+      return;
     }
-    mHashEntries.Put(aValue->mKey, aValue);
-    return true;
+    mHashEntries.InsertOrUpdate(aValue->mKey, std::move(aValue));
   }
 
  protected:
@@ -446,13 +431,10 @@ static void CacheBlur(DrawTarget* aDT, const IntSize& aMinSize,
                       const RectCornerRadii* aCornerRadii,
                       const sRGBColor& aShadowColor,
                       const IntMargin& aBlurMargin, SourceSurface* aBoxShadow) {
-  BlurCacheKey key(aMinSize, aBlurRadius, aCornerRadii, aShadowColor,
-                   aDT->GetBackendType());
-  BlurCacheData* data =
-      new BlurCacheData(aBoxShadow, aBlurMargin, std::move(key));
-  if (!gBlurCache->RegisterEntry(data)) {
-    delete data;
-  }
+  gBlurCache->RegisterEntry(MakeUnique<BlurCacheData>(
+      aBoxShadow, aBlurMargin,
+      BlurCacheKey(aMinSize, aBlurRadius, aCornerRadii, aShadowColor,
+                   aDT->GetBackendType())));
 }
 
 // Blurs a small surface and creates the colored box shadow.
@@ -1001,11 +983,9 @@ static void CacheInsetBlur(const IntSize& aMinOuterSize,
   BlurCacheKey key(aMinOuterSize, aMinInnerSize, aBlurRadius, aCornerRadii,
                    aShadowColor, isInsetBlur, aBackendType);
   IntMargin blurMargin(0, 0, 0, 0);
-  BlurCacheData* data =
-      new BlurCacheData(aBoxShadow, blurMargin, std::move(key));
-  if (!gBlurCache->RegisterEntry(data)) {
-    delete data;
-  }
+
+  gBlurCache->RegisterEntry(
+      MakeUnique<BlurCacheData>(aBoxShadow, blurMargin, std::move(key)));
 }
 
 already_AddRefed<SourceSurface> gfxAlphaBoxBlur::GetInsetBlur(

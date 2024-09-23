@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2012 The ANGLE Project Authors. All rights reserved.
+// Copyright 2012 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -179,9 +179,9 @@ angle::Result Image11::copyToStorage(const gl::Context *context,
     return angle::Result::Continue;
 }
 
-void Image11::verifyAssociatedStorageValid(TextureStorage11 *textureStorage) const
+void Image11::verifyAssociatedStorageValid(TextureStorage11 *textureStorageEXT) const
 {
-    ASSERT(mAssociatedStorage == textureStorage);
+    ASSERT(mAssociatedStorage == textureStorageEXT);
 }
 
 angle::Result Image11::recoverFromAssociatedStorage(const gl::Context *context)
@@ -200,6 +200,8 @@ angle::Result Image11::recoverFromAssociatedStorage(const gl::Context *context)
 
         // Reset all the recovery parameters, even if the texture storage association is broken.
         disassociateStorage();
+
+        markDirty();
     }
 
     return angle::Result::Continue;
@@ -223,8 +225,8 @@ bool Image11::redefine(gl::TextureType type,
                        const gl::Extents &size,
                        bool forceRelease)
 {
-    if (mWidth != size.width || mHeight != size.height || mInternalFormat != internalformat ||
-        forceRelease)
+    if (mWidth != size.width || mHeight != size.height || mDepth != size.depth ||
+        mInternalFormat != internalformat || forceRelease)
     {
         // End the association with the TextureStorage, since that data will be out of date.
         // Also reset mRecoveredFromStorageCount since this Image is getting completely redefined.
@@ -383,7 +385,7 @@ angle::Result Image11::copyFromFramebuffer(const gl::Context *context,
     if (d3d11Format.texFormat == mDXGIFormat && sourceInternalFormat == mInternalFormat)
     {
         RenderTarget11 *rt11 = nullptr;
-        ANGLE_TRY(srcAttachment->getRenderTarget(context, &rt11));
+        ANGLE_TRY(srcAttachment->getRenderTarget(context, 0, &rt11));
         ASSERT(rt11->getTexture().get());
 
         TextureHelper11 textureHelper  = rt11->getTexture();
@@ -576,7 +578,7 @@ angle::Result Image11::createStagingTexture(const gl::Context *context)
                     mRenderer->allocateTexture(context11, desc, formatInfo, &mStagingTexture));
             }
 
-            mStagingTexture.setDebugName("Image11::StagingTexture3D");
+            mStagingTexture.setInternalName("Image11::StagingTexture3D");
             mStagingSubresource = D3D11CalcSubresource(lodOffset, 0, lodOffset + 1);
             mStagingTextureSubresourceVerifier.setDesc(desc);
         }
@@ -615,7 +617,7 @@ angle::Result Image11::createStagingTexture(const gl::Context *context)
                     mRenderer->allocateTexture(context11, desc, formatInfo, &mStagingTexture));
             }
 
-            mStagingTexture.setDebugName("Image11::StagingTexture2D");
+            mStagingTexture.setInternalName("Image11::StagingTexture2D");
             mStagingSubresource = D3D11CalcSubresource(lodOffset, 0, lodOffset + 1);
             mStagingTextureSubresourceVerifier.setDesc(desc);
         }

@@ -94,7 +94,7 @@
 
 EXTERN_C_BEGIN
 
-#if defined(XP_MACOSX)
+#if defined(XP_MACOSX) && !defined(__aarch64__)
 #  pragma pack(push, 2)
 #endif
 
@@ -175,7 +175,7 @@ typedef struct gss_channel_bindings_struct {
   OM_uint32 acceptor_addrtype;
   gss_buffer_desc acceptor_address;
   gss_buffer_desc application_data;
-} * gss_channel_bindings_t;
+}* gss_channel_bindings_t;
 
 /*
  * Flag bits for context-level services.
@@ -783,7 +783,7 @@ OM_uint32 GSS_CALLCONV GSS_FUNC(gss_unseal)(
     int*          /* qop_state */
 );
 
-#if defined(XP_MACOSX)
+#if defined(XP_MACOSX) && !defined(__aarch64__)
 #  pragma pack(pop)
 #endif
 

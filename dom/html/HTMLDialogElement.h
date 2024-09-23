@@ -12,20 +12,18 @@
 #include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class HTMLDialogElement final : public nsGenericHTMLElement {
  public:
   explicit HTMLDialogElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-      : nsGenericHTMLElement(std::move(aNodeInfo)) {}
+      : nsGenericHTMLElement(std::move(aNodeInfo)),
+        mPreviouslyFocusedElement(nullptr) {}
 
   NS_IMPL_FROMNODE_HTML_WITH_TAG(HTMLDialogElement, dialog)
 
   nsresult Clone(dom::NodeInfo* aNodeInfo, nsINode** aResult) const override;
-
-  static bool IsDialogEnabled();
 
   bool Open() const { return GetBoolAttr(nsGkAtoms::open); }
   void SetOpen(bool aOpen, ErrorResult& aError) {
@@ -37,29 +35,40 @@ class HTMLDialogElement final : public nsGenericHTMLElement {
     mReturnValue = aReturnValue;
   }
 
-  void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
   void Close(const mozilla::dom::Optional<nsAString>& aReturnValue);
-  void Show();
-  void ShowModal(ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT void Show(ErrorResult& aError);
+  MOZ_CAN_RUN_SCRIPT void ShowModal(ErrorResult& aError);
 
   bool IsInTopLayer() const;
   void QueueCancelDialog();
   void RunCancelDialogSteps();
 
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void FocusDialog();
+
+  int32_t TabIndexDefault() override;
+
+  bool IsValidInvokeAction(InvokeAction aAction) const override;
+  MOZ_CAN_RUN_SCRIPT bool HandleInvokeInternal(Element* invoker,
+                                               InvokeAction aAction,
+                                               ErrorResult& aRv) override;
+
   nsString mReturnValue;
 
  protected:
   virtual ~HTMLDialogElement();
-  void FocusDialog();
   JSObject* WrapNode(JSContext* aCx,
                      JS::Handle<JSObject*> aGivenProto) override;
 
  private:
+  void AddToTopLayerIfNeeded();
   void RemoveFromTopLayerIfNeeded();
+  void StorePreviouslyFocusedElement();
+
+  nsWeakPtr mPreviouslyFocusedElement;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

@@ -1,10 +1,10 @@
-// |jit-test| skip-if: !('oomTest' in this) || helperThreadCount() === 0
+// |jit-test| skip-if: helperThreadCount() === 0
 
 try {
     oomTest(function() {
       eval(`
         function eval(source) {
-          offThreadCompileModule(source);
+          offThreadCompileModuleToStencil(source);
           minorgc();
         }
         eval("");

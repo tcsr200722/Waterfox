@@ -6,6 +6,9 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=741666
 <head>
   <title>Test for Bug 741666</title>
   <script src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="/tests/SimpleTest/EventUtils.js"></script>
+  <script src="/tests/SimpleTest/paint_listener.js"></script>
+  <script src="/tests/gfx/layers/apz/test/mochitest/apz_test_utils.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
 </head>
 <body>
@@ -70,7 +73,7 @@ function checkTouch(aFakeTouch, aTouch) {
 
 function sendTouchEvent(windowUtils, aType, aEvent, aModifiers) {
   var ids = [], xs=[], ys=[], rxs = [], rys = [],
-      rotations = [], forces = [];
+      rotations = [], forces = [], tiltXs = [], tiltYs = [], twists = [];
 
   for (var touchType of ["touches", "changedTouches", "targetTouches"]) {
     for (var i = 0; i < aEvent[touchType].length; i++) {
@@ -82,12 +85,15 @@ function sendTouchEvent(windowUtils, aType, aEvent, aModifiers) {
         rys.push(aEvent[touchType][i].radius.y);
         rotations.push(aEvent[touchType][i].rotationAngle);
         forces.push(aEvent[touchType][i].force);
+        tiltXs.push(0);
+        tiltYs.push(0);
+        twists.push(0);
       }
     }
   }
   return windowUtils.sendTouchEvent(aType,
                                     ids, xs, ys, rxs, rys,
-                                    rotations, forces,
+                                    rotations, forces, tiltXs, tiltYs, twists,
                                     aModifiers, 0);
 }
 
@@ -154,7 +160,10 @@ function testPreventDefault(name) {
   sendTouchEvent(cwu, "touchstart", event, 0);
 }
 
-function doTest() {
+async function doTest() {
+  await promiseApzFlushedRepaints();
+  await waitUntilApzStable();
+
   tests.push(testPreventDefault);
 
   tests.push(function() {

@@ -4,7 +4,9 @@
 
 "use strict";
 
-const { L10N } = require("devtools/client/accessibility/utils/l10n");
+const {
+  L10N,
+} = require("resource://devtools/client/accessibility/utils/l10n.js");
 
 class Picker {
   constructor(panel) {
@@ -14,12 +16,10 @@ class Picker {
 
     this.onPickerAccessibleHovered = this.onPickerAccessibleHovered.bind(this);
     this.onPickerAccessiblePicked = this.onPickerAccessiblePicked.bind(this);
-    this.onPickerAccessiblePreviewed = this.onPickerAccessiblePreviewed.bind(
-      this
-    );
-    this.onPickerAccessibleCanceled = this.onPickerAccessibleCanceled.bind(
-      this
-    );
+    this.onPickerAccessiblePreviewed =
+      this.onPickerAccessiblePreviewed.bind(this);
+    this.onPickerAccessibleCanceled =
+      this.onPickerAccessibleCanceled.bind(this);
   }
 
   get toolbox() {
@@ -142,18 +142,8 @@ class Picker {
     this.isPicking = false;
     this.pickerButton.isChecked = false;
 
-    await this.accessibilityProxy.cancelPick(
-      this.onPickerAccessibleHovered,
-      this.onPickerAccessiblePicked,
-      this.onPickerAccessiblePreviewed,
-      this.onPickerAccessibleCanceled
-    );
-
-    this._telemetry.toolClosed(
-      "accessibility_picker",
-      this.toolbox.sessionId,
-      this
-    );
+    await this.accessibilityProxy.cancelPick();
+    this._telemetry.toolClosed("accessibility_picker", this);
     this.emit("picker-stopped");
   }
 
@@ -178,11 +168,7 @@ class Picker {
       this.onPickerAccessibleCanceled
     );
 
-    this._telemetry.toolOpened(
-      "accessibility_picker",
-      this.toolbox.sessionId,
-      this
-    );
+    this._telemetry.toolOpened("accessibility_picker", this);
     this.emit("picker-started");
   }
 

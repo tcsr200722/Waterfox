@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILAnimationFunction_h
-#define mozilla_SMILAnimationFunction_h
+#ifndef DOM_SMIL_SMILANIMATIONFUNCTION_H_
+#define DOM_SMIL_SMILANIMATIONFUNCTION_H_
 
 #include "mozilla/SMILAttr.h"
 #include "mozilla/SMILKeySpline.h"
@@ -257,8 +257,8 @@ class SMILAnimationFunction {
   };
 
  protected:
-  // Typedefs
-  typedef FallibleTArray<SMILValue> SMILValueArray;
+  // alias declarations
+  using SMILValueArray = FallibleTArray<SMILValue>;
 
   // Types
   enum SMILCalcMode : uint8_t {
@@ -291,6 +291,9 @@ class SMILAnimationFunction {
   void UnsetKeySplines();
 
   // Helpers
+  virtual bool IsDisallowedAttribute(const nsAtom* aAttribute) const {
+    return false;
+  }
   virtual nsresult InterpolateResult(const SMILValueArray& aValues,
                                      SMILValue& aResult, SMILValue& aBaseValue);
   nsresult AccumulateResult(const SMILValueArray& aValues, SMILValue& aResult);
@@ -312,11 +315,10 @@ class SMILAnimationFunction {
    */
   double ScaleIntervalProgress(double aProgress, uint32_t aIntervalIndex);
 
-  // Convenience attribute getters -- use these instead of querying
-  // mAnimationElement as these may need to be overridden by subclasses
-  virtual bool HasAttr(nsAtom* aAttName) const;
-  virtual const nsAttrValue* GetAttr(nsAtom* aAttName) const;
-  virtual bool GetAttr(nsAtom* aAttName, nsAString& aResult) const;
+  // Convenience attribute getters
+  bool HasAttr(nsAtom* aAttName) const;
+  const nsAttrValue* GetAttr(nsAtom* aAttName) const;
+  bool GetAttr(nsAtom* aAttName, nsAString& aResult) const;
 
   bool ParseAttr(nsAtom* aAttName, const SMILAttr& aSMILAttr,
                  SMILValue& aResult, bool& aPreventCachingOfSandwich) const;
@@ -439,4 +441,4 @@ class SMILAnimationFunction {
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILAnimationFunction_h
+#endif  // DOM_SMIL_SMILANIMATIONFUNCTION_H_

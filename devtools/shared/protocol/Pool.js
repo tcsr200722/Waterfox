@@ -4,7 +4,7 @@
 
 "use strict";
 
-var EventEmitter = require("devtools/shared/event-emitter");
+var EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 /**
  * Actor and Front implementations
@@ -30,14 +30,30 @@ class Pool extends EventEmitter {
       this.conn = conn;
     }
     this.label = label;
-    this.__poolMap = null;
+
+    // Will be individually flipped to true by Actor/Front classes.
+    // Will also only be exposed via Actor/Front::isDestroyed().
+    this._isDestroyed = false;
   }
+
+  __poolMap = null;
+  parentPool = null;
 
   /**
    * Return the parent pool for this client.
    */
   getParent() {
-    return this.conn.poolFor(this.actorID);
+    return this.parentPool;
+  }
+
+  /**
+   * A pool is at the top of its pool hierarchy if it has:
+   * - no parent
+   * - or it is its own parent
+   */
+  isTopPool() {
+    const parent = this.getParent();
+    return !parent || parent === this;
   }
 
   poolFor(actorID) {
@@ -78,11 +94,13 @@ class Pool extends EventEmitter {
       // look at devtools/server/tests/xpcshell/test_addon_reload.js
 
       const parent = actor.getParent();
-      if (parent) {
+      if (parent && parent !== this) {
         parent.unmanage(actor);
       }
     }
+
     this._poolMap.set(actor.actorID, actor);
+    actor.parentPool = this;
   }
 
   unmanageChildren(FrontType) {
@@ -97,7 +115,10 @@ class Pool extends EventEmitter {
    * Remove an actor as a child of this pool.
    */
   unmanage(actor) {
-    this.__poolMap && this.__poolMap.delete(actor.actorID);
+    if (this.__poolMap) {
+      this.__poolMap.delete(actor.actorID);
+    }
+    actor.parentPool = null;
   }
 
   // true if the given actor ID exists in the pool.
@@ -105,26 +126,16 @@ class Pool extends EventEmitter {
     return this.__poolMap && this._poolMap.has(actorID);
   }
 
-  // The actor for a given actor id stored in this pool
-  actor(actorID) {
+  /**
+   * Search for an actor in this pool, given an actorID
+   * @param {String} actorID
+   * @returns {Actor/null} Returns null if the actor wasn't found
+   */
+  getActorByID(actorID) {
     if (this.__poolMap) {
       return this._poolMap.get(actorID);
     }
     return null;
-  }
-
-  // Same as actor, should update debugger connection to use 'actor'
-  // and then remove this.
-  get(actorID) {
-    if (this.__poolMap) {
-      return this._poolMap.get(actorID);
-    }
-    return null;
-  }
-
-  // True if this pool has no children.
-  isEmpty() {
-    return !this.__poolMap || this._poolMap.size == 0;
   }
 
   // Generator that yields each non-self child of the pool.
@@ -139,6 +150,13 @@ class Pool extends EventEmitter {
       }
       yield actor;
     }
+  }
+
+  isDestroyed() {
+    // Note: _isDestroyed is only flipped from Actor and Front subclasses for
+    // now, so this method should not be called on pure Pool instances.
+    // See Bug 1717811.
+    return this._isDestroyed;
   }
 
   /**
@@ -169,7 +187,11 @@ class Pool extends EventEmitter {
     if (!this.__poolMap) {
       return;
     }
-    for (const actor of this.__poolMap.values()) {
+    // Immediately clear the poolmap so that we bail out early if the code is reentrant.
+    const poolMap = this.__poolMap;
+    this.__poolMap = null;
+
+    for (const actor of poolMap.values()) {
       // Self-owned actors are ok, but don't need destroying twice.
       if (actor === this) {
         continue;
@@ -190,17 +212,12 @@ class Pool extends EventEmitter {
         actor.destroy = destroy;
       }
     }
-    this.conn.removeActorPool(this, true);
-    this.__poolMap.clear();
-    this.__poolMap = null;
-  }
 
-  /**
-   * For getting along with the devtools server pools, should be removable
-   * eventually.
-   */
-  cleanup() {
-    this.destroy();
+    // `conn` might be null for LazyPool in an unexplained way.
+    if (this.conn) {
+      this.conn.removeActorPool(this);
+      this.conn = null;
+    }
   }
 }
 

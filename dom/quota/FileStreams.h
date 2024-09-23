@@ -7,14 +7,29 @@
 #ifndef mozilla_dom_quota_filestreams_h__
 #define mozilla_dom_quota_filestreams_h__
 
-#include "QuotaCommon.h"
+// Local includes
+#include "Client.h"
 
+// Global includes
+#include <cstdint>
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/quota/CommonMetadata.h"
+#include "mozilla/dom/quota/PersistenceType.h"
+#include "mozilla/dom/quota/QuotaObject.h"
 #include "nsFileStreams.h"
+#include "nsISupports.h"
+#include "nscore.h"
 
-#include "PersistenceType.h"
-#include "QuotaObject.h"
+class nsIFile;
 
-BEGIN_QUOTA_NAMESPACE
+namespace mozilla {
+class Runnable;
+}
+
+namespace mozilla::dom::quota {
+
+class QuotaObject;
 
 template <class FileStreamBase>
 class FileQuotaStream : public FileStreamBase {
@@ -27,21 +42,29 @@ class FileQuotaStream : public FileStreamBase {
   Close() override;
 
  protected:
-  FileQuotaStream(PersistenceType aPersistenceType, const nsACString& aGroup,
-                  const nsACString& aOrigin, Client::Type aClientType)
+  FileQuotaStream(PersistenceType aPersistenceType,
+                  const OriginMetadata& aOriginMetadata,
+                  Client::Type aClientType)
       : mPersistenceType(aPersistenceType),
-        mGroup(aGroup),
-        mOrigin(aOrigin),
-        mClientType(aClientType) {}
+        mOriginMetadata(aOriginMetadata),
+        mClientType(aClientType),
+        mDeserialized(false) {}
+
+  FileQuotaStream()
+      : mPersistenceType(PERSISTENCE_TYPE_INVALID),
+        mClientType(Client::TYPE_MAX),
+        mDeserialized(true) {}
+
+  ~FileQuotaStream() { Close(); }
 
   // nsFileStreamBase override
   virtual nsresult DoOpen() override;
 
   PersistenceType mPersistenceType;
-  nsCString mGroup;
-  nsCString mOrigin;
+  OriginMetadata mOriginMetadata;
   Client::Type mClientType;
   RefPtr<QuotaObject> mQuotaObject;
+  const bool mDeserialized;
 };
 
 template <class FileStreamBase>
@@ -53,10 +76,12 @@ class FileQuotaStreamWithWrite : public FileQuotaStream<FileStreamBase> {
 
  protected:
   FileQuotaStreamWithWrite(PersistenceType aPersistenceType,
-                           const nsACString& aGroup, const nsACString& aOrigin,
+                           const OriginMetadata& aOriginMetadata,
                            Client::Type aClientType)
-      : FileQuotaStream<FileStreamBase>(aPersistenceType, aGroup, aOrigin,
+      : FileQuotaStream<FileStreamBase>(aPersistenceType, aOriginMetadata,
                                         aClientType) {}
+
+  FileQuotaStreamWithWrite() = default;
 };
 
 class FileInputStream : public FileQuotaStream<nsFileInputStream> {
@@ -64,9 +89,10 @@ class FileInputStream : public FileQuotaStream<nsFileInputStream> {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(FileInputStream,
                                        FileQuotaStream<nsFileInputStream>)
 
-  FileInputStream(PersistenceType aPersistenceType, const nsACString& aGroup,
-                  const nsACString& aOrigin, Client::Type aClientType)
-      : FileQuotaStream<nsFileInputStream>(aPersistenceType, aGroup, aOrigin,
+  FileInputStream(PersistenceType aPersistenceType,
+                  const OriginMetadata& aOriginMetadata,
+                  Client::Type aClientType)
+      : FileQuotaStream<nsFileInputStream>(aPersistenceType, aOriginMetadata,
                                            aClientType) {}
 
  private:
@@ -78,44 +104,73 @@ class FileOutputStream : public FileQuotaStreamWithWrite<nsFileOutputStream> {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(
       FileOutputStream, FileQuotaStreamWithWrite<nsFileOutputStream>);
 
-  FileOutputStream(PersistenceType aPersistenceType, const nsACString& aGroup,
-                   const nsACString& aOrigin, Client::Type aClientType)
-      : FileQuotaStreamWithWrite<nsFileOutputStream>(aPersistenceType, aGroup,
-                                                     aOrigin, aClientType) {}
+  FileOutputStream(PersistenceType aPersistenceType,
+                   const OriginMetadata& aOriginMetadata,
+                   Client::Type aClientType)
+      : FileQuotaStreamWithWrite<nsFileOutputStream>(
+            aPersistenceType, aOriginMetadata, aClientType) {}
 
  private:
   virtual ~FileOutputStream() { Close(); }
 };
 
-class FileStream : public FileQuotaStreamWithWrite<nsFileStream> {
+// FileRandomAccessStream type is serializable, but only in a restricted
+// manner. The type is only safe to serialize in the parent process and only
+// when the type hasn't been previously deserialized. So the type can be
+// serialized in the parent process and desrialized in a child process or it
+// can be serialized in the parent process and deserialized in the parent
+// process as well (non-e10s mode). The same type can never be
+// serialized/deserialized more than once.
+class FileRandomAccessStream
+    : public FileQuotaStreamWithWrite<nsFileRandomAccessStream> {
  public:
-  NS_INLINE_DECL_REFCOUNTING_INHERITED(FileStream,
-                                       FileQuotaStreamWithWrite<nsFileStream>)
+  NS_INLINE_DECL_REFCOUNTING_INHERITED(
+      FileRandomAccessStream,
+      FileQuotaStreamWithWrite<nsFileRandomAccessStream>)
 
-  FileStream(PersistenceType aPersistenceType, const nsACString& aGroup,
-             const nsACString& aOrigin, Client::Type aClientType)
-      : FileQuotaStreamWithWrite<nsFileStream>(aPersistenceType, aGroup,
-                                               aOrigin, aClientType) {}
+  FileRandomAccessStream(PersistenceType aPersistenceType,
+                         const OriginMetadata& aOriginMetadata,
+                         Client::Type aClientType)
+      : FileQuotaStreamWithWrite<nsFileRandomAccessStream>(
+            aPersistenceType, aOriginMetadata, aClientType) {}
+
+  FileRandomAccessStream() = default;
+
+  // nsFileRandomAccessStream override
+
+  // Serialize this FileRandomAccessStream. This method works only in the
+  // parent process and only with streams which haven't been previously
+  // deserialized.
+  mozilla::ipc::RandomAccessStreamParams Serialize(
+      nsIInterfaceRequestor* aCallbacks) override;
+
+  // Deserialize this FileRandomAccessStream. This method works in both the
+  // child and parent.
+  bool Deserialize(mozilla::ipc::RandomAccessStreamParams& aParams) override;
 
  private:
-  virtual ~FileStream() { Close(); }
+  virtual ~FileRandomAccessStream() { Close(); }
 };
 
-already_AddRefed<FileInputStream> CreateFileInputStream(
-    PersistenceType aPersistenceType, const nsACString& aGroup,
-    const nsACString& aOrigin, Client::Type aClientType, nsIFile* aFile,
-    int32_t aIOFlags = -1, int32_t aPerm = -1, int32_t aBehaviorFlags = 0);
+Result<MovingNotNull<nsCOMPtr<nsIInputStream>>, nsresult> CreateFileInputStream(
+    PersistenceType aPersistenceType, const OriginMetadata& aOriginMetadata,
+    Client::Type aClientType, nsIFile* aFile, int32_t aIOFlags = -1,
+    int32_t aPerm = -1, int32_t aBehaviorFlags = 0);
 
-already_AddRefed<FileOutputStream> CreateFileOutputStream(
-    PersistenceType aPersistenceType, const nsACString& aGroup,
-    const nsACString& aOrigin, Client::Type aClientType, nsIFile* aFile,
-    int32_t aIOFlags = -1, int32_t aPerm = -1, int32_t aBehaviorFlags = 0);
+Result<MovingNotNull<nsCOMPtr<nsIOutputStream>>, nsresult>
+CreateFileOutputStream(PersistenceType aPersistenceType,
+                       const OriginMetadata& aOriginMetadata,
+                       Client::Type aClientType, nsIFile* aFile,
+                       int32_t aIOFlags = -1, int32_t aPerm = -1,
+                       int32_t aBehaviorFlags = 0);
 
-already_AddRefed<FileStream> CreateFileStream(
-    PersistenceType aPersistenceType, const nsACString& aGroup,
-    const nsACString& aOrigin, Client::Type aClientType, nsIFile* aFile,
-    int32_t aIOFlags = -1, int32_t aPerm = -1, int32_t aBehaviorFlags = 0);
+Result<MovingNotNull<nsCOMPtr<nsIRandomAccessStream>>, nsresult>
+CreateFileRandomAccessStream(PersistenceType aPersistenceType,
+                             const OriginMetadata& aOriginMetadata,
+                             Client::Type aClientType, nsIFile* aFile,
+                             int32_t aIOFlags = -1, int32_t aPerm = -1,
+                             int32_t aBehaviorFlags = 0);
 
-END_QUOTA_NAMESPACE
+}  // namespace mozilla::dom::quota
 
 #endif /* mozilla_dom_quota_filestreams_h__ */

@@ -5,14 +5,16 @@
 #ifndef mozilla_dom_MediaDeviceInfo_h
 #define mozilla_dom_MediaDeviceInfo_h
 
-#include "mozilla/ErrorResult.h"
-#include "nsISupportsImpl.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "MediaDeviceInfoBinding.h"
-#include "nsPIDOMWindow.h"
+#include "js/RootingAPI.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/dom/MediaDeviceInfoBinding.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsID.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 #define MOZILLA_DOM_MEDIADEVICEINFO_IMPLEMENTATION_IID \
   {                                                    \
@@ -27,7 +29,7 @@ class MediaDeviceInfo final : public nsISupports, public nsWrapperCache {
                            const nsAString& aLabel, const nsAString& aGroupId);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaDeviceInfo)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MediaDeviceInfo)
   NS_DECLARE_STATIC_IID_ACCESSOR(MOZILLA_DOM_MEDIADEVICEINFO_IMPLEMENTATION_IID)
 
   JSObject* WrapObject(JSContext* cx,
@@ -52,7 +54,6 @@ class MediaDeviceInfo final : public nsISupports, public nsWrapperCache {
 NS_DEFINE_STATIC_IID_ACCESSOR(MediaDeviceInfo,
                               MOZILLA_DOM_MEDIADEVICEINFO_IMPLEMENTATION_IID)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_MediaDeviceInfo_h

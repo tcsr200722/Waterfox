@@ -6,26 +6,24 @@
 
 const {
   CanvasFrameAnonymousContentHelper,
-  createSVGNode,
-  createNode,
   getComputedStyle,
-} = require("devtools/server/actors/highlighters/utils/markup");
+} = require("resource://devtools/server/actors/highlighters/utils/markup.js");
 const {
   setIgnoreLayoutChanges,
   getCurrentZoom,
   getAdjustedQuads,
   getFrameOffsets,
-} = require("devtools/shared/layout/utils");
+} = require("resource://devtools/shared/layout/utils.js");
 const {
   AutoRefreshHighlighter,
-} = require("devtools/server/actors/highlighters/auto-refresh");
+} = require("resource://devtools/server/actors/highlighters/auto-refresh.js");
 const {
   getDistance,
   clickedOnEllipseEdge,
   distanceToLine,
   projection,
   clickedOnPoint,
-} = require("devtools/server/actors/utils/shapes-utils");
+} = require("resource://devtools/server/actors/utils/shapes-utils.js");
 const {
   identity,
   apply,
@@ -35,9 +33,11 @@ const {
   rotate,
   changeMatrixBase,
   getBasis,
-} = require("devtools/shared/layout/dom-matrix-2d");
-const EventEmitter = require("devtools/shared/event-emitter");
-const { getCSSStyleRules } = require("devtools/shared/inspector/css-logic");
+} = require("resource://devtools/shared/layout/dom-matrix-2d.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
+const {
+  getCSSStyleRules,
+} = require("resource://devtools/shared/inspector/css-logic.js");
 
 const BASE_MARKER_SIZE = 5;
 // the width of the area around highlighter lines that can be clicked, in px
@@ -103,6 +103,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       this.highlighterEnv,
       this._buildMarkup.bind(this)
     );
+    this.isReady = this.markup.initialize();
     this.onPageHide = this.onPageHide.bind(this);
 
     const { pageListenerTarget } = this.highlighterEnv;
@@ -113,14 +114,14 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
   }
 
   _buildMarkup() {
-    const container = createNode(this.win, {
+    const container = this.markup.createNode({
       attributes: {
         class: "highlighter-container",
       },
     });
 
     // The root wrapper is used to unzoom the highlighter when needed.
-    const rootWrapper = createNode(this.win, {
+    const rootWrapper = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
@@ -129,7 +130,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const mainSvg = createSVGNode(this.win, {
+    const mainSvg = this.markup.createSVGNode({
       nodeType: "svg",
       parent: rootWrapper,
       attributes: {
@@ -143,7 +144,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
     // This clipPath and its children make sure the element quad outline
     // is only shown when the shape extends past the element quads.
-    const clipSvg = createSVGNode(this.win, {
+    const clipSvg = this.markup.createSVGNode({
       nodeType: "clipPath",
       parent: mainSvg,
       attributes: {
@@ -153,7 +154,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "polygon",
       parent: clipSvg,
       attributes: {
@@ -164,7 +165,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "ellipse",
       parent: clipSvg,
       attributes: {
@@ -175,7 +176,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "rect",
       parent: clipSvg,
       attributes: {
@@ -188,7 +189,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
     // Rectangle that displays the element quads. Only shown for shape-outside.
     // Only the parts of the rectangle's outline that overlap with the shape is shown.
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "rect",
       parent: mainSvg,
       attributes: {
@@ -207,7 +208,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     // clipPath that corresponds to the element's quads. Only applied for shape-outside.
     // This ensures only the parts of the shape that are within the element's quads are
     // outlined by a solid line.
-    const shapeClipSvg = createSVGNode(this.win, {
+    const shapeClipSvg = this.markup.createSVGNode({
       nodeType: "clipPath",
       parent: mainSvg,
       attributes: {
@@ -217,7 +218,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "rect",
       parent: shapeClipSvg,
       attributes: {
@@ -231,7 +232,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const mainGroup = createSVGNode(this.win, {
+    const mainGroup = this.markup.createSVGNode({
       nodeType: "g",
       parent: mainSvg,
       attributes: {
@@ -241,7 +242,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     });
 
     // Append a polygon for polygon shapes.
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "polygon",
       parent: mainGroup,
       attributes: {
@@ -253,7 +254,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     });
 
     // Append an ellipse for circle/ellipse shapes.
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "ellipse",
       parent: mainGroup,
       attributes: {
@@ -265,7 +266,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     });
 
     // Append a rect for inset().
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "rect",
       parent: mainGroup,
       attributes: {
@@ -278,7 +279,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
     // Dashed versions of each shape. Only shown for the parts of the shape
     // that extends past the element's quads.
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "polygon",
       parent: mainGroup,
       attributes: {
@@ -290,7 +291,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "ellipse",
       parent: mainGroup,
       attributes: {
@@ -302,7 +303,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "rect",
       parent: mainGroup,
       attributes: {
@@ -314,7 +315,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: mainGroup,
       attributes: {
@@ -326,7 +327,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: mainGroup,
       attributes: {
@@ -337,7 +338,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     });
 
     // Append a path to display the markers for the shape.
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: mainGroup,
       attributes: {
@@ -347,7 +348,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: mainGroup,
       attributes: {
@@ -357,7 +358,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: mainGroup,
       attributes: {
@@ -381,8 +382,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     // and "stroke-box" is not specified. stroke only applies to SVG elements, so use
     // getBBox, which only exists for SVG, to check if currentNode is an SVG element.
     if (
-      this.currentNode.getBBox &&
-      getComputedStyle(this.currentNode).stroke !== "none" &&
+      this.drawingNode.getBBox &&
+      getComputedStyle(this.drawingNode).stroke !== "none" &&
       !this.useStrokeBox
     ) {
       dims = getObjectBoundingBox(
@@ -390,7 +391,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
         dims.left,
         dims.width,
         dims.height,
-        this.currentNode
+        this.drawingNode
       );
     }
 
@@ -406,11 +407,11 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     // In an iframe, we get the node's quads relative to the frame, instead of the parent
     // document.
     let dims =
-      this.highlighterEnv.window.document === this.currentNode.ownerDocument
+      this.highlighterEnv.window.document === this.drawingNode.ownerDocument
         ? this.currentQuads[this.referenceBox][0].bounds
         : getAdjustedQuads(
-            this.currentNode.ownerGlobal,
-            this.currentNode,
+            this.drawingNode.ownerGlobal,
+            this.drawingNode,
             this.referenceBox
           )[0].bounds;
     const zoom = getCurrentZoom(this.win);
@@ -421,8 +422,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     // and "stroke-box" is not specified. stroke only applies to SVG elements, so use
     // getBBox, which only exists for SVG, to check if currentNode is an SVG element.
     if (
-      this.currentNode.getBBox &&
-      getComputedStyle(this.currentNode).stroke !== "none" &&
+      this.drawingNode.getBBox &&
+      getComputedStyle(this.drawingNode).stroke !== "none" &&
       !this.useStrokeBox
     ) {
       dims = getObjectBoundingBox(
@@ -430,7 +431,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
         dims.left,
         dims.width,
         dims.height,
-        this.currentNode
+        this.drawingNode
       );
     }
 
@@ -518,7 +519,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
   }
 
   // eslint-disable-next-line complexity
-  handleEvent(event, id) {
+  handleEvent(event) {
     // No event handling if the highlighter is hidden
     if (this.areShapesHidden()) {
       return;
@@ -1015,16 +1016,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
    *                 before scaling
    */
   _transformCircle(transX = null) {
-    const {
-      unitX,
-      unitY,
-      unitRad,
-      valueX,
-      valueY,
-      ratioX,
-      ratioY,
-      ratioRad,
-    } = this[_dragging];
+    const { unitX, unitY, unitRad, valueX, valueY, ratioX, ratioY, ratioRad } =
+      this[_dragging];
     let { radius } = this.coordUnits;
 
     let [newCx, newCy] = apply(this.transformMatrix, [
@@ -1087,7 +1080,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     newCy = round(newCy * ratioY, unitY);
 
     const centerStr = `${newCx}${unitX} ${newCy}${unitY}`;
-    const ellipseDef = `ellipse(${rx} ${ry} at ${centerStr}) ${this.geometryBox}`.trim();
+    const ellipseDef =
+      `ellipse(${rx} ${ry} at ${centerStr}) ${this.geometryBox}`.trim();
     this.emit("highlighter-event", { type: "shape-change", value: ellipseDef });
   }
 
@@ -1174,9 +1168,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
    * @param {Number} pageY the new y coordinate of the point
    */
   _handlePolygonMove(pageX, pageY) {
-    const { point, unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } = this[
-      _dragging
-    ];
+    const { point, unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } =
+      this[_dragging];
     const deltaX = (pageX - x) * ratioX;
     const deltaY = (pageY - y) * ratioY;
     const newX = round(valueX + deltaX, unitX);
@@ -1229,7 +1222,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     coordinates.splice(point, 1);
     let polygonDef = this.fillRule ? `${this.fillRule}, ` : "";
     polygonDef += coordinates
-      .map((coords, i) => {
+      .map(coords => {
         return `${coords[0]} ${coords[1]}`;
       })
       .join(", ");
@@ -1305,15 +1298,15 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     const { radius, cx, cy } = this.coordUnits;
 
     if (point === "center") {
-      const { unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } = this[
-        _dragging
-      ];
+      const { unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } =
+        this[_dragging];
       const deltaX = (pageX - x) * ratioX;
       const deltaY = (pageY - y) * ratioY;
       const newCx = `${round(valueX + deltaX, unitX)}${unitX}`;
       const newCy = `${round(valueY + deltaY, unitY)}${unitY}`;
       // if not defined by the user, geometryBox will be an empty string; trim() cleans up
-      const circleDef = `circle(${radius} at ${newCx} ${newCy}) ${this.geometryBox}`.trim();
+      const circleDef =
+        `circle(${radius} at ${newCx} ${newCy}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1331,7 +1324,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const delta = (newRadiusPx - origRadius) * ratio;
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
-      const circleDef = `circle(${newRadius} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+      const position = cx !== "" ? ` at ${cx} ${cy}` : "";
+      const circleDef =
+        `circle(${newRadius}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1416,16 +1411,17 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       pageY
     );
     const { rx, ry, cx, cy } = this.coordUnits;
+    const position = cx !== "" ? ` at ${cx} ${cy}` : "";
 
     if (point === "center") {
-      const { unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } = this[
-        _dragging
-      ];
+      const { unitX, unitY, valueX, valueY, ratioX, ratioY, x, y } =
+        this[_dragging];
       const deltaX = (pageX - x) * ratioX;
       const deltaY = (pageY - y) * ratioY;
       const newCx = `${round(valueX + deltaX, unitX)}${unitX}`;
       const newCy = `${round(valueY + deltaY, unitY)}${unitY}`;
-      const ellipseDef = `ellipse(${rx} ${ry} at ${newCx} ${newCy}) ${this.geometryBox}`.trim();
+      const ellipseDef =
+        `ellipse(${rx} ${ry} at ${newCx} ${newCy}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1438,7 +1434,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const delta = ((newRadiusPercent / 100) * width - origRadius) * ratio;
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
-      const ellipseDef = `ellipse(${newRadius} ${ry} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+      const ellipseDef =
+        `ellipse(${newRadius} ${ry}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1451,7 +1448,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       const delta = ((newRadiusPercent / 100) * height - origRadius) * ratio;
       const newRadius = `${round(value + delta, unit)}${unit}`;
 
-      const ellipseDef = `ellipse(${rx} ${newRadius} at ${cx} ${cy}) ${this.geometryBox}`.trim();
+      const ellipseDef =
+        `ellipse(${rx} ${newRadius}${position}) ${this.geometryBox}`.trim();
 
       this.emit("highlighter-event", {
         type: "shape-change",
@@ -1590,18 +1588,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
         this.setCursor("auto");
         return;
       }
-      const {
-        nw,
-        ne,
-        sw,
-        se,
-        n,
-        w,
-        s,
-        e,
-        rotatePoint,
-        center,
-      } = this.transformedBoundingBox;
+      const { nw, ne, sw, se, n, w, s, e, rotatePoint, center } =
+        this.transformedBoundingBox;
 
       const points = [
         {
@@ -1768,18 +1756,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
    *          to the shape.
    */
   getTransformPointAt(pageX, pageY) {
-    const {
-      nw,
-      ne,
-      sw,
-      se,
-      n,
-      w,
-      s,
-      e,
-      rotatePoint,
-      center,
-    } = this.transformedBoundingBox;
+    const { nw, ne, sw, se, n, w, s, e, rotatePoint, center } =
+      this.transformedBoundingBox;
     const { width, height } = this.currentDimensions;
     const zoom = getCurrentZoom(this.win);
     const clickRadiusX = ((BASE_MARKER_SIZE / zoom) * 100) / width;
@@ -2070,9 +2048,14 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       },
     ];
     const geometryTypes = ["margin", "border", "padding", "content"];
+    // default to border for clip-path and offset-path, and margin for shape-outside
+    const defaultGeometryTypesByProperty = new Map([
+      ["clip-path", "border"],
+      ["offset-path", "border"],
+      ["shape-outside", "margin"],
+    ]);
 
-    // default to border for clip-path, and margin for shape-outside
-    let referenceBox = this.property === "clip-path" ? "border" : "margin";
+    let referenceBox = defaultGeometryTypesByProperty.get(this.property);
     for (const geometry of geometryTypes) {
       if (definition.includes(geometry)) {
         referenceBox = geometry;
@@ -2190,7 +2173,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     const values = definition.split("at");
     let radius = values[0] ? values[0].trim() : "closest-side";
     const { width, height } = this.currentDimensions;
-    const center = splitCoords(values[1]).map(
+    // This defaults to center if omitted.
+    const position = values[1] || "50% 50%";
+    const center = splitCoords(position).map(
       this.convertCoordsToPercent.bind(this)
     );
 
@@ -2277,7 +2262,9 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     }
 
     const values = definition.split("at");
-    const center = splitCoords(values[1]).map(
+    // This defaults to center if omitted.
+    const position = values[1] || "50% 50%";
+    const center = splitCoords(position).map(
       this.convertCoordsToPercent.bind(this)
     );
 
@@ -2351,9 +2338,7 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       this.origCoordUnits = this.coordUnits;
     }
     const values = definition.split(" round ");
-    const offsets = splitCoords(values[0]).map(
-      this.convertCoordsToPercent.bind(this)
-    );
+    const offsets = splitCoords(values[0]);
 
     let top, left, right, bottom;
     // The offsets, like margin/padding/border, are in order: top, right, bottom, left.
@@ -2372,6 +2357,11 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
       bottom = offsets[2];
       left = offsets[3];
     }
+
+    top = this.convertCoordsToPercentFromCurrentDimension(top, "height");
+    bottom = this.convertCoordsToPercentFromCurrentDimension(bottom, "height");
+    left = this.convertCoordsToPercentFromCurrentDimension(left, "width");
+    right = this.convertCoordsToPercentFromCurrentDimension(right, "width");
 
     // maxX/maxY are found by subtracting the right/bottom edges from 100
     // (the width/height of the element in %)
@@ -2431,9 +2421,32 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
     return { top, left, right, bottom };
   }
 
+  /**
+   * This uses the index to decide whether to use width or height for the
+   * computation. See `convertCoordsToPercentFromCurrentDimension()` if you
+   * need to specify width or height.
+   * @param {Number} coord a single coordinate
+   * @param {Number} i the index of its position in the function
+   * @returns {Number} the coordinate as a percentage value
+   */
   convertCoordsToPercent(coord, i) {
     const { width, height } = this.currentDimensions;
     const size = i % 2 === 0 ? width : height;
+    if (coord.includes("calc(")) {
+      return evalCalcExpression(coord.substring(5, coord.length - 1), size);
+    }
+    return coordToPercent(coord, size);
+  }
+
+  /**
+   * Converts a value to percent based on the specified dimension.
+   * @param {Number} coord a single coordinate
+   * @param {Number} currentDimensionProperty the dimension ("width" or
+   *        "height") to base the calculation off of
+   * @returns {Number} the coordinate as a percentage value
+   */
+  convertCoordsToPercentFromCurrentDimension(coord, currentDimensionProperty) {
+    const size = this.currentDimensions[currentDimensionProperty];
     if (coord.includes("calc(")) {
       return evalCalcExpression(coord.substring(5, coord.length - 1), size);
     }
@@ -2691,18 +2704,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
    * @param {Number} zoom the zoom level of the window
    */
   _updateTransformMode(width, height, zoom) {
-    const {
-      nw,
-      ne,
-      sw,
-      se,
-      n,
-      w,
-      s,
-      e,
-      rotatePoint,
-      center,
-    } = this.transformedBoundingBox;
+    const { nw, ne, sw, se, n, w, s, e, rotatePoint, center } =
+      this.transformedBoundingBox;
     const boundingBox = this.getElement("bounding-box");
     const path = `M${nw.join(" ")} L${ne.join(" ")} L${se.join(" ")} L${sw.join(
       " "
@@ -2732,11 +2735,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG polygon to fit the CSS polygon.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updatePolygonShape(width, height, zoom) {
+  _updatePolygonShape() {
     // Draw and show the polygon.
     const points = this.coordinates.map(point => point.join(",")).join(" ");
 
@@ -2755,11 +2755,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG ellipse to fit the CSS circle or ellipse.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updateEllipseShape(width, height, zoom) {
+  _updateEllipseShape() {
     const { rx, ry, cx, cy } = this.coordinates;
     const ellipseEl = this.getElement("ellipse");
     ellipseEl.setAttribute("rx", rx);
@@ -2785,11 +2782,8 @@ class ShapesHighlighter extends AutoRefreshHighlighter {
 
   /**
    * Update the SVG rect to fit the CSS inset.
-   * @param {Number} width the width of the element quads
-   * @param {Number} height the height of the element quads
-   * @param {Number} zoom the zoom level of the window
    */
-  _updateInsetShape(width, height, zoom) {
+  _updateInsetShape() {
     const { top, left, right, bottom } = this.coordinates;
     const rectEl = this.getElement("rect");
     rectEl.setAttribute("x", left);

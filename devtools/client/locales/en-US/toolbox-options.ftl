@@ -39,6 +39,23 @@ options-collapse-attrs-label = Truncate DOM attributes
 options-collapse-attrs-tooltip =
     .title = Truncate long attributes in the inspector
 
+# The label for the checkbox option to enable the "drag to update" feature
+options-inspector-draggable-properties-label = Click and drag to edit size values
+options-inspector-draggable-properties-tooltip =
+    .title = Click and drag to edit size values in the inspector rules view.
+
+# The label for the checkbox option to enable simplified highlighting on page elements
+# within the inspector for users who enabled prefers-reduced-motion = reduce
+options-inspector-simplified-highlighters-label = Use simpler highlighters with prefers-reduced-motion
+options-inspector-simplified-highlighters-tooltip =
+    .title = Enables simplified highlighters when prefers-reduced-motion is enabled. Draws lines instead of filled rectangles around highlighted elements to avoid flashing effects.
+
+# The label for the checkbox option to make the Enter key move the focus to the next input
+# when editing a property name or value in the Inspector rules view
+options-inspector-rules-focus-next-on-enter-label = Focus next input on <kbd>Enter</kbd>
+options-inspector-rules-focus-next-on-enter-tooltip =
+    .title = When enabled, hitting the Enter key when editing a selector, a property name or value will move the focus to the next input.
+
 ## "Default Color Unit" options for the Inspector
 
 options-default-color-unit-label = Default color unit
@@ -46,7 +63,18 @@ options-default-color-unit-authored = As Authored
 options-default-color-unit-hex = Hex
 options-default-color-unit-hsl = HSL(A)
 options-default-color-unit-rgb = RGB(A)
+options-default-color-unit-hwb = HWB
 options-default-color-unit-name = Color Names
+
+## Web Console section
+
+# The heading
+options-webconsole-label = Web Console
+
+# The label for the checkbox that toggle whether the Split console is enabled
+options-webconsole-split-console-label = Enable Split Console
+options-webconsole-split-console-tooltip =
+    .title = Open Split Console with the Escape Key
 
 ## Style Editor section
 
@@ -64,9 +92,9 @@ options-stylesheet-autocompletion-tooltip =
 options-screenshot-label = Screenshot Behavior
 
 # Label for the checkbox that toggles screenshot to clipboard feature
-options-screenshot-clipboard-label = Screenshot to clipboard
-options-screenshot-clipboard-tooltip =
-    .title = Saves to the screenshot directly to the clipboard
+options-screenshot-clipboard-only-label = Screenshot to clipboard only
+options-screenshot-clipboard-tooltip2 =
+    .title = Saves the screenshot directly to the clipboard
 
 # Label for the checkbox that toggles the camera shutter audio for screenshot tool
 options-screenshot-audio-label = Play camera shutter sound
@@ -93,7 +121,7 @@ options-sourceeditor-keybinding-default-label = Default
 
 ## Advanced section
 
-# The heading
+# The heading (this item is also used in perftools.ftl)
 options-context-advanced-settings = Advanced settings
 
 # The label for the checkbox that toggles the HTTP cache on or off
@@ -116,6 +144,16 @@ options-enable-remote-label = Enable remote debugging
 options-enable-remote-tooltip2 =
     .title = Turning this option on will allow to debug this browser instance remotely
 
+# The label for checkbox that enables F12 as a shortcut to open DevTools
+options-enable-f12-label = Use the F12 key to open or close DevTools
+options-enable-f12-tooltip =
+    .title = Turning this option on will bind the F12 key to open or close the DevTools toolbox
+
+# The label for checkbox that toggles custom formatters for objects
+options-enable-custom-formatters-label = Enable custom formatters
+options-enable-custom-formatters-tooltip =
+    .title = Turning this option on will allow sites to define custom formatters for DOM objects
+
 # The label for checkbox that toggles the service workers testing over HTTP on or off.
 options-enable-service-workers-http-label = Enable Service Workers over HTTP (when toolbox is open)
 options-enable-service-workers-http-tooltip =
@@ -128,9 +166,3 @@ options-source-maps-tooltip =
 
 # The message shown for settings that trigger page reload
 options-context-triggers-page-refresh = * Current session only, reloads the page
-
-# The label for the checkbox that toggles the display of the platform data in the
-# Profiler i.e. devtools.profiler.ui.show-platform-data a boolean preference in about:config
-options-show-platform-data-label = Show Gecko platform data
-options-show-platform-data-tooltip =
-    .title = If you enable this option the JavaScript Profiler reports will include Gecko platform symbols

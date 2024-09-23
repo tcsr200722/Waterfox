@@ -21,18 +21,21 @@
 !endif
 
 # These defines should match application.ini settings
-!define AppName               "Firefox"
+!define AppName               "Waterfox"
 !define AppVersion            "@APP_VERSION@"
+!define AppVersionDisplay     "@APP_VERSION_DISPLAY@"
 !define GREVersion            @MOZILLA_VERSION@
 !define AB_CD                 "@AB_CD@"
 
 !define FileMainEXE           "@MOZ_APP_NAME@.exe"
-!define MainWindowClass       "MozillaWindowClass"
-!define DialogWindowClass     "MozillaDialogClass"
-!define DDEApplication        "Firefox"
-!define AppRegName            "Firefox"
+!define PrivateBrowsingEXE    "private_browsing.exe"
+!define MainWindowClass       "WaterfoxWindowClass"
+!define DialogWindowClass     "WaterfoxDialogClass"
+!define DDEApplication        "Waterfox"
+!define AppRegName            "Waterfox"
+!define ToastAumidPrefix      "@MOZ_TOAST_APP_NAME@Toast-"
 
-!define BrandProductName      "Firefox"
+!define BrandProductName      "Waterfox"
 !ifndef DEV_EDITION
 !define BrandShortName        "@MOZ_APP_DISPLAYNAME@"
 !endif
@@ -40,12 +43,23 @@
 !define BrandFullName         "${BrandFullNameInternal}"
 !endif
 
-!define CERTIFICATE_NAME            "Mozilla Corporation"
-!define CERTIFICATE_ISSUER          "DigiCert SHA2 Assured ID Code Signing CA"
+; The C++ defines in `nsNativeAppSupportWin.h` are 1-based.  The Windows
+; resource IDs in the registry are 0-based.
+!define IDI_APPICON_ZERO_BASED       "0"
+!define IDI_DOCUMENT_ZERO_BASED      "1"
+!define IDI_PBICON_ZERO_BASED        "4"
+!define IDI_DOCUMENT_PDF_ZERO_BASED  "5"
+
+; This one is the location of the Private Browsing icon in
+; private_browsing.exe (as opposed to @MOZ_APP_NAME@.exe)
+!define IDI_PBICON_PB_EXE_ZERO_BASED "0"
+
+!define CERTIFICATE_NAME            "WATERFOX LIMITED"
+!define CERTIFICATE_ISSUER          "GlobalSign GCC R45 EV CodeSigning CA 2020"
 ; Changing the name or issuer requires us to have both the old and the new
 ;  in the registry at the same time, temporarily.
-!define CERTIFICATE_NAME_PREVIOUS   "Mozilla Corporation"
-!define CERTIFICATE_ISSUER_PREVIOUS "DigiCert Assured ID Code Signing CA-1"
+!define CERTIFICATE_NAME_PREVIOUS   "WATERFOX LIMITED"
+!define CERTIFICATE_ISSUER_PREVIOUS "GlobalSign GCC R45 EV CodeSigning CA 2020"
 
 # LSP_CATEGORIES is the permitted LSP categories for the application. Each LSP
 # category value is ANDed together to set multiple permitted categories.
@@ -59,29 +73,9 @@
 !define UpdateChannel "@MOZ_UPDATE_CHANNEL@"
 !endif
 
-# AccessibleHandler.dll uses a different CLSID depending on release channel.
-# These defines must match HANDLER_CLSID defined in
-# accessible/ipc/win/handler/HandlerData.idl
-
-!if "@MOZ_UPDATE_CHANNEL@" == "default"
-#ifdef DEBUG
-!define AccessibleHandlerCLSID "{398FFD8D-5382-48F7-9E3B-19012762D39A}"
-#else
-!define AccessibleHandlerCLSID "{CE573FAF-7815-4FC2-A031-B092268ACE9E}"
-#endif
-!else if "@MOZ_UPDATE_CHANNEL@" == "nightly"
-!define AccessibleHandlerCLSID "{4629216B-8753-41BF-9527-5BFF51401671}"
-!else if "@MOZ_UPDATE_CHANNEL@" == "beta"
-!define AccessibleHandlerCLSID "{21E9F98D-A6C9-4CB5-B288-AE2FD2A96C58}"
-!else if "@MOZ_UPDATE_CHANNEL@" == "release"
-!define AccessibleHandlerCLSID "{1BAA303D-B4B9-45E5-9CCB-E3FCA3E274B6}"
-!else
-!define AccessibleHandlerCLSID "{4A195748-DCA2-45FB-9295-0A139E76A9E7}"
-!endif
-
 #ifdef MOZ_LAUNCHER_PROCESS
 !define MOZ_LAUNCHER_PROCESS
-!define MOZ_LAUNCHER_SUBKEY "Software\Mozilla\${AppName}\Launcher"
+!define MOZ_LAUNCHER_SUBKEY "Software\BrowserWorks\${AppName}\Launcher"
 #endif
 
 #ifdef RELEASE_OR_BETA
@@ -94,7 +88,7 @@
 !define BETA_UPDATE_CHANNEL
 !endif
 
-!define BaseURLStubPing "http://download-stats.mozilla.org/stub"
+!define BaseURLStubPing ""
 
 # ARCH is used when it is necessary to differentiate the x64 registry keys from
 # the x86 registry keys (e.g. the uninstall registry key).
@@ -105,10 +99,10 @@
 !define MinSupportedVer "Microsoft Windows 10 for ARM"
 #else
 !define ARCH "x64"
-!define MinSupportedVer "Microsoft Windows 7 x64"
+!define MinSupportedVer "Microsoft Windows 10 x64"
 #endif
 #else
-!define MinSupportedVer "Microsoft Windows 7"
+!define MinSupportedVer "Microsoft Windows 10"
 !define ARCH "x86"
 #endif
 
@@ -116,11 +110,6 @@
 
 #ifdef MOZ_MAINTENANCE_SERVICE
 !define MOZ_MAINTENANCE_SERVICE
-#endif
-
-#ifdef MOZ_UPDATE_AGENT
-!define MOZ_UPDATE_AGENT
-!define UpdateAgentFullName "Mozilla Update Agent"
 #endif
 
 #ifdef MOZ_BITS_DOWNLOAD
@@ -131,23 +120,19 @@
 !define MOZ_DEFAULT_BROWSER_AGENT
 #endif
 
-#ifdef NIGHTLY_BUILD
-!define NIGHTLY_BUILD
-#endif
-
 !if "@AB_CD@" == "en-US"
 !define MOZ_OPTIONAL_EXTENSIONS
 !else if "@AB_CD@" == "zh-CN"
 !define MOZ_OPTIONAL_EXTENSIONS
 !endif
 
+# To add Private Browsing shortcut argument to setup.exe
+!define MOZ_PRIVATE_BROWSING
+
 # File details shared by both the installer and uninstaller
 VIProductVersion "1.0.0.0"
 VIAddVersionKey "ProductName"     "${BrandShortName}"
 VIAddVersionKey "CompanyName"     "${CompanyName}"
-#ifdef MOZ_OFFICIAL_BRANDING
-VIAddVersionKey "LegalTrademarks" "${BrandShortName} is a Trademark of The Mozilla Foundation."
-#endif
 VIAddVersionKey "LegalCopyright"  "${CompanyName}"
 VIAddVersionKey "FileVersion"     "${AppVersion}"
 VIAddVersionKey "ProductVersion"  "${AppVersion}"
@@ -161,7 +146,10 @@ VIAddVersionKey "ProductVersion"  "${AppVersion}"
 !define APPROXIMATE_REQUIRED_SPACE_MB "145"
 
 # Constants for parts of the telemetry submission URL
-!define TELEMETRY_BASE_URL https://incoming.telemetry.mozilla.org/submit
+!define TELEMETRY_BASE_URL
 !define TELEMETRY_NAMESPACE firefox-installer
 !define TELEMETRY_INSTALL_PING_VERSION 1
 !define TELEMETRY_INSTALL_PING_DOCTYPE install
+
+!define TELEMETRY_UNINSTALL_PING_NAMESPACE telemetry
+!define TELEMETRY_UNINSTALL_PING_DOCTYPE uninstall

@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -21,18 +22,15 @@ testWithTypedArrayConstructors(function(TA) {
   var loops = 0;
   var sample = new TA(2);
 
-  assert.throws(TypeError, function() {
-    sample.map(function() {
-      if (loops === 1) {
-        throw new Test262Error("callbackfn called twice");
-      }
+  sample.map(function() {
+    if (loops === 0) {
       $DETACHBUFFER(sample.buffer);
-      loops++;
-      return 0;
-    });
+    }
+    loops++;
+    return true;
   });
 
-  assert.sameValue(loops, 1, "callbackfn called only once");
+  assert.sameValue(loops, 2);
 });
 
 reportCompare(0, 0);

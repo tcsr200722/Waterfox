@@ -20,7 +20,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=466599
   <script class="testbody" type="application/javascript">
   <![CDATA[
 
-  /** Test for Bug 466599 **/
+  /** Test for Bug 466599 */
 
 function getLoadContext() {
   return window.docShell.QueryInterface(Ci.nsILoadContext);
@@ -43,7 +43,7 @@ function copyToClipboard(txt)
     Cc['@mozilla.org/supports-string;1'].createInstance(Ci.nsISupportsString);
   var copytext = txt;
   str.data = copytext;
-  trans.setTransferData("text/html",str,copytext.length*2);
+  trans.setTransferData("text/html",str);
   if (!clip)
     return false;
   clip.setData(trans,null,clipid.kGlobalClipboard);
@@ -56,21 +56,19 @@ function readFromClipboard()
   var clip =
     Cc['@mozilla.org/widget/clipboard;1'].createInstance(clipid);
   if (!clip)
-    return;
+    return "";
   var trans =
     Cc['@mozilla.org/widget/transferable;1'].createInstance(Ci.nsITransferable);
   if (!trans)
-    return;
+    return "";
   trans.init(getLoadContext());
   trans.addDataFlavor('text/html');
-  clip.getData(trans,clipid.kGlobalClipboard);
-  var str = new Object();
+  clip.getData(trans, clipid.kGlobalClipboard, SpecialPowers.wrap(window).browsingContext.currentWindowContext);
+  var str = {};
   trans.getTransferData("text/html",str);
   if (str)
     str = str.value.QueryInterface(Ci.nsISupportsString);
-  if (str)
-    pastetext = str.data;
-  return pastetext;
+  return str?.data;
 }
 
 function encodeHtmlEntities(s)
@@ -94,7 +92,7 @@ function initAndRunTests()
   result = readFromClipboard();
   ok(expect.test(result), "data on system pasteboard is wrapped with charset metadata");
 
-  $("display").innerHTML = 
+  $("display").innerHTML =
     '<em>source:</em> <pre>' + encodeHtmlEntities(source) + '</pre><br/>' +
     '<em>result:</em> <pre>' + encodeHtmlEntities(result) + '</pre>';
 }

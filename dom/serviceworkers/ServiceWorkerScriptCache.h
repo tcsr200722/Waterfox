@@ -7,13 +7,14 @@
 #ifndef mozilla_dom_ServiceWorkerScriptCache_h
 #define mozilla_dom_ServiceWorkerScriptCache_h
 
+#include "nsIRequest.h"
+#include "nsISupportsImpl.h"
 #include "nsString.h"
 
 class nsILoadGroup;
 class nsIPrincipal;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ServiceWorkerRegistrationInfo;
 
@@ -44,11 +45,10 @@ class CompareCallback {
 
 nsresult Compare(ServiceWorkerRegistrationInfo* aRegistration,
                  nsIPrincipal* aPrincipal, const nsAString& aCacheName,
-                 const nsAString& aURL, CompareCallback* aCallback);
+                 const nsACString& aURL, CompareCallback* aCallback);
 
 }  // namespace serviceWorkerScriptCache
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ServiceWorkerScriptCache_h

@@ -2,22 +2,17 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { GlobalManager } = ChromeUtils.import(
-  "resource://gre/modules/Extension.jsm",
-  null
-);
-
 function getBrowserAction(extension) {
   const {
     global: { browserActionFor },
   } = Management;
 
-  let ext = GlobalManager.extensionMap.get(extension.id);
+  let ext = WebExtensionPolicy.getByID(extension.id)?.extension;
   return browserActionFor(ext);
 }
 
 async function assertViewCount(extension, count, waitForPromise) {
-  let ext = GlobalManager.extensionMap.get(extension.id);
+  let ext = WebExtensionPolicy.getByID(extension.id).extension;
 
   if (waitForPromise) {
     await waitForPromise;
@@ -93,7 +88,7 @@ async function testInArea(area) {
 
     files: {
       "popup-a.html": scriptPage("popup-a.js"),
-      "popup-a.js": function() {
+      "popup-a.js": function () {
         browser.test.onMessage.addListener(msg => {
           if (msg == "close-popup-using-window.close") {
             window.close();
@@ -108,14 +103,14 @@ async function testInArea(area) {
       },
 
       "data/popup-b.html": scriptPage("popup-b.js"),
-      "data/popup-b.js": function() {
+      "data/popup-b.js": function () {
         window.onload = () => {
           browser.test.sendMessage("from-popup", "popup-b");
         };
       },
 
       "data/popup-c.html": scriptPage("popup-c.js"),
-      "data/popup-c.js": function() {
+      "data/popup-c.js": function () {
         // Close the popup before the document is fully-loaded to make sure that
         // we handle this case sanely.
         browser.test.sendMessage("from-popup", "popup-c");

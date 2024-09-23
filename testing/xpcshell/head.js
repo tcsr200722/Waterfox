@@ -6,17 +6,17 @@
 
 /*
  * This file contains common code that is loaded before each test file(s).
- * See http://developer.mozilla.org/en/docs/Writing_xpcshell-based_unit_tests
+ * See https://developer.mozilla.org/en-US/docs/Mozilla/QA/Writing_xpcshell-based_unit_tests
  * for more information.
  */
 
 /* defined by the harness */
 /* globals _HEAD_FILES, _HEAD_JS_PATH, _JSDEBUGGER_PORT, _JSCOV_DIR,
-    _MOZINFO_JS_PATH, _TEST_FILE, _TEST_NAME, _TESTING_MODULES_DIR:true,
+    _MOZINFO_JS_PATH, _TEST_FILE, _TEST_NAME, _TEST_CWD, _TESTING_MODULES_DIR:true,
     _PREFS_FILE */
 
 /* defined by XPCShellImpl.cpp */
-/* globals load, sendCommand */
+/* globals load, sendCommand, changeTestShellDir */
 
 /* must be defined by tests using do_await_remote_message/do_send_remote_message */
 /* globals Cc, Ci */
@@ -34,41 +34,38 @@ var _tests_pending = 0;
 var _cleanupFunctions = [];
 var _pendingTimers = [];
 var _profileInitialized = false;
-var _fastShutdownDisabled = false;
 
 // Assigned in do_load_child_test_harness.
 var _XPCSHELL_PROCESS;
 
 // Register the testing-common resource protocol early, to have access to its
 // modules.
-var _Services = ChromeUtils.import("resource://gre/modules/Services.jsm", null)
-  .Services;
+let _Services = Services;
 _register_modules_protocol_handler();
 
-var _AppConstants = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm",
-  null
-).AppConstants;
+let { AppConstants: _AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
 
-var _PromiseTestUtils = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm",
-  null
-).PromiseTestUtils;
-var _Task = ChromeUtils.import("resource://testing-common/Task.jsm", null).Task;
+let { PromiseTestUtils: _PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
+);
 
-let _NetUtil = ChromeUtils.import("resource://gre/modules/NetUtil.jsm", null)
-  .NetUtil;
+let { NetUtil: _NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
 
-let _XPCOMUtils = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm",
-  null
-).XPCOMUtils;
+let { XPCOMUtils: _XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
 
-// Support a common assertion library, Assert.jsm.
-var AssertCls = ChromeUtils.import("resource://testing-common/Assert.jsm", null)
-  .Assert;
+// Support a common assertion library, Assert.sys.mjs.
+var { Assert: AssertCls } = ChromeUtils.importESModule(
+  "resource://testing-common/Assert.sys.mjs"
+);
+
 // Pass a custom report function for xpcshell-test style reporting.
-var Assert = new AssertCls(function(err, message, stack) {
+var Assert = new AssertCls(function (err, message, stack) {
   if (err) {
     do_report_result(false, err.message, err.stack);
   } else {
@@ -76,26 +73,25 @@ var Assert = new AssertCls(function(err, message, stack) {
   }
 }, true);
 
-// Bug 1506134 for followup.  Some xpcshell tests use ContentTask.jsm, which
+// Bug 1506134 for followup.  Some xpcshell tests use ContentTask.sys.mjs, which
 // expects browser-test.js to have set a testScope that includes record.
 function record(condition, name, diag, stack) {
   do_report_result(condition, name, stack);
 }
 
-var _add_params = function(params) {
+var _add_params = function (params) {
   if (typeof _XPCSHELL_PROCESS != "undefined") {
     params.xpcshell_process = _XPCSHELL_PROCESS;
   }
 };
 
-var _dumpLog = function(raw_msg) {
+var _dumpLog = function (raw_msg) {
   dump("\n" + JSON.stringify(raw_msg) + "\n");
 };
 
-var _LoggerClass = ChromeUtils.import(
-  "resource://testing-common/StructuredLog.jsm",
-  null
-).StructuredLogger;
+var { StructuredLogger: _LoggerClass } = ChromeUtils.importESModule(
+  "resource://testing-common/StructuredLog.sys.mjs"
+);
 var _testLogger = new _LoggerClass("xpcshell/head.js", _dumpLog, [_add_params]);
 
 // Disable automatic network detection, so tests work correctly when
@@ -121,15 +117,6 @@ if (runningInParent && "mozIAsyncHistory" in Ci) {
   _Services.prefs.setBoolPref("places.history.enabled", true);
 }
 
-try {
-  if (runningInParent) {
-    // Disable IPv6 lookups for 'localhost' on windows.
-    if ("@mozilla.org/windows-registry-key;1" in Cc) {
-      _Services.prefs.setCharPref("network.dns.ipv4OnlyDomains", "localhost");
-    }
-  }
-} catch (e) {}
-
 // Configure crash reporting, if possible
 // We rely on the Python harness to set MOZ_CRASHREPORTER,
 // MOZ_CRASHREPORTER_NO_REPORT, and handle checking for minidumps.
@@ -137,11 +124,21 @@ try {
 // crashreporter component.
 try {
   if (runningInParent && "@mozilla.org/toolkit/crash-reporter;1" in Cc) {
+    // Intentially access the crash reporter service directly for this.
+    // eslint-disable-next-line mozilla/use-services
     let crashReporter = Cc["@mozilla.org/toolkit/crash-reporter;1"].getService(
       Ci.nsICrashReporter
     );
     crashReporter.UpdateCrashEventsDir();
     crashReporter.minidumpPath = do_get_minidumpdir();
+
+    // Tell the test harness that the crash reporter is set up, and any crash
+    // after this point is supposed to be caught by the crash reporter.
+    //
+    // Due to the limitation on the remote xpcshell test, the process return
+    // code does not represent the process crash. Any crash before this point
+    // can be caught by the absence of this log.
+    _testLogger.logData("crash_reporter_init");
   }
 } catch (e) {}
 
@@ -245,7 +242,7 @@ function _do_main() {
 
   var tm = Cc["@mozilla.org/thread-manager;1"].getService();
 
-  tm.spinEventLoopUntil(() => _quit);
+  tm.spinEventLoopUntil("Test(xpcshell/head.js:_do_main)", () => _quit);
 
   tm.spinEventLoopUntilEmpty();
 }
@@ -277,7 +274,7 @@ var _fakeIdleService = {
       Ci.nsIComponentRegistrar
     ));
   },
-  contractID: "@mozilla.org/widget/idleservice;1",
+  contractID: "@mozilla.org/widget/useridleservice;1",
   CID: Components.ID("{9163a4ae-70c2-446c-9ac1-bbe4ab93004e}"),
 
   activate: function FIS_activate() {
@@ -310,19 +307,13 @@ var _fakeIdleService = {
 
   factory: {
     // nsIFactory
-    createInstance(aOuter, aIID) {
-      if (aOuter) {
-        throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-      }
+    createInstance(aIID) {
       return _fakeIdleService.QueryInterface(aIID);
-    },
-    lockFactory(aLock) {
-      throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     },
     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
   },
 
-  // nsIIdleService
+  // nsIUserIdleService
   get idleTime() {
     return 0;
   },
@@ -335,7 +326,7 @@ var _fakeIdleService = {
     if (aIID.equals(Ci.nsIFactory)) {
       return this.factory;
     }
-    if (aIID.equals(Ci.nsIIdleService) || aIID.equals(Ci.nsISupports)) {
+    if (aIID.equals(Ci.nsIUserIdleService) || aIID.equals(Ci.nsISupports)) {
       return this;
     }
     throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
@@ -348,7 +339,7 @@ var _fakeIdleService = {
  */
 function do_get_idle() {
   _fakeIdleService.deactivate();
-  return Cc[_fakeIdleService.contractID].getService(Ci.nsIIdleService);
+  return Cc[_fakeIdleService.contractID].getService(Ci.nsIUserIdleService);
 }
 
 // Map resource://test/ to current working directory and
@@ -404,26 +395,25 @@ function _setupDevToolsServer(breakpointFiles, callback) {
   _Services.prefs.setBoolPref("devtools.debugger.remote-enabled", true);
 
   // for debugging-the-debugging, let an env var cause log spew.
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  if (env.get("DEVTOOLS_DEBUGGER_LOG")) {
+  if (_Services.env.get("DEVTOOLS_DEBUGGER_LOG")) {
     _Services.prefs.setBoolPref("devtools.debugger.log", true);
   }
-  if (env.get("DEVTOOLS_DEBUGGER_LOG_VERBOSE")) {
+  if (_Services.env.get("DEVTOOLS_DEBUGGER_LOG_VERBOSE")) {
     _Services.prefs.setBoolPref("devtools.debugger.log.verbose", true);
   }
 
   let require;
   try {
-    ({ require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm"));
+    ({ require } = ChromeUtils.importESModule(
+      "resource://devtools/shared/loader/Loader.sys.mjs"
+    ));
   } catch (e) {
     throw new Error(
       "resource://devtools appears to be inaccessible from the " +
         "xpcshell environment.\n" +
         "This can usually be resolved by adding:\n" +
         "  firefox-appdir = browser\n" +
-        "to the xpcshell.ini manifest.\n" +
+        "to the xpcshell.toml manifest.\n" +
         "It is possible for this to alter test behevior by " +
         "triggering additional browser code to run, so check " +
         "test behavior after making this change.\n" +
@@ -437,18 +427,17 @@ function _setupDevToolsServer(breakpointFiles, callback) {
   DevToolsServer.setRootActor(createRootActor);
   DevToolsServer.allowChromeProcess = true;
 
-  // An observer notification that tells us when we can "resume" script
-  // execution.
   const TOPICS = [
-    "devtools-thread-instantiated",
-    "devtools-thread-resumed",
+    // An observer notification that tells us when the thread actor is ready
+    // and can accept breakpoints.
+    "devtools-thread-ready",
+    // Or when devtools are destroyed and we should stop observing.
     "xpcshell-test-devtools-shutdown",
   ];
-  let observe = function(subject, topic, data) {
-    if (topic === "devtools-thread-instantiated") {
+  let observe = function (subject, topic) {
+    if (topic === "devtools-thread-ready") {
       const threadActor = subject.wrappedJSObject;
       threadActor.setBreakpointOnLoad(breakpointFiles);
-      return;
     }
 
     for (let topicToRemove of TOPICS) {
@@ -499,11 +488,15 @@ function _initDebugging(port) {
 
   // spin an event loop until the debugger connects.
   const tm = Cc["@mozilla.org/thread-manager;1"].getService();
-  tm.spinEventLoopUntil(() => {
+  let lastUpdate = Date.now();
+  tm.spinEventLoopUntil("Test(xpcshell/head.js:_initDebugging)", () => {
     if (initialized) {
       return true;
     }
-    info("Still waiting for debugger to connect...");
+    if (Date.now() - lastUpdate > 5000) {
+      info("Still waiting for debugger to connect...");
+      lastUpdate = Date.now();
+    }
     return false;
   });
   // NOTE: if you want to debug the harness itself, you can now add a 'debugger'
@@ -513,6 +506,33 @@ function _initDebugging(port) {
 }
 
 function _execute_test() {
+  if (typeof _TEST_CWD != "undefined") {
+    try {
+      changeTestShellDir(_TEST_CWD);
+    } catch (e) {
+      _testLogger.error(_exception_message(e));
+    }
+  }
+  if (runningInParent && _AppConstants.platform == "android") {
+    try {
+      // GeckoView initialization needs the profile
+      do_get_profile(true);
+      // Wake up GeckoViewStartup
+      let geckoViewStartup = Cc["@mozilla.org/geckoview/startup;1"].getService(
+        Ci.nsIObserver
+      );
+      geckoViewStartup.observe(null, "profile-after-change", null);
+      geckoViewStartup.observe(null, "app-startup", null);
+
+      // Glean needs to be initialized for metric recording & tests to work.
+      // Usually this happens through Glean Kotlin,
+      // but for xpcshell tests we initialize it from here.
+      _Services.fog.initializeFOG();
+    } catch (ex) {
+      do_throw(`Failed to initialize GeckoView: ${ex}`, ex.stack);
+    }
+  }
+
   // _JSDEBUGGER_PORT is dynamically defined by <runxpcshelltests.py>.
   if (_JSDEBUGGER_PORT) {
     try {
@@ -534,9 +554,8 @@ function _execute_test() {
 
   let coverageCollector = null;
   if (typeof _JSCOV_DIR === "string") {
-    let _CoverageCollector = ChromeUtils.import(
-      "resource://testing-common/CoverageUtils.jsm",
-      {}
+    let _CoverageCollector = ChromeUtils.importESModule(
+      "resource://testing-common/CoverageUtils.sys.mjs"
     ).CoverageCollector;
     coverageCollector = new _CoverageCollector(_JSCOV_DIR);
   }
@@ -548,14 +567,14 @@ function _execute_test() {
   // _TEST_FILE is dynamically defined by <runxpcshelltests.py>.
   _load_files(_TEST_FILE);
 
-  // Tack Assert.jsm methods to the current scope.
+  // Tack Assert.sys.mjs methods to the current scope.
   this.Assert = Assert;
   for (let func in Assert) {
     this[func] = Assert[func].bind(Assert);
   }
 
-  const { PerTestCoverageUtils } = ChromeUtils.import(
-    "resource://testing-common/PerTestCoverageUtils.jsm"
+  const { PerTestCoverageUtils } = ChromeUtils.importESModule(
+    "resource://testing-common/PerTestCoverageUtils.sys.mjs"
   );
 
   if (runningInParent) {
@@ -615,7 +634,7 @@ function _execute_test() {
   }
 
   // Execute all of our cleanup functions.
-  let reportCleanupError = function(ex) {
+  let reportCleanupError = function (ex) {
     let stack, filename;
     if (ex && typeof ex == "object" && "stack" in ex) {
       stack = ex.stack;
@@ -633,7 +652,7 @@ function _execute_test() {
     });
   };
 
-  let complete = _cleanupFunctions.length == 0;
+  let complete = !_cleanupFunctions.length;
   let cleanupStartTime = complete ? 0 : Cu.now();
   (async () => {
     for (let func of _cleanupFunctions.reverse()) {
@@ -650,28 +669,50 @@ function _execute_test() {
   })()
     .catch(reportCleanupError)
     .then(() => (complete = true));
-  _Services.tm.spinEventLoopUntil(() => complete);
+  _Services.tm.spinEventLoopUntil(
+    "Test(xpcshell/head.js:_execute_test)",
+    () => complete
+  );
   if (cleanupStartTime) {
     ChromeUtils.addProfilerMarker(
       "xpcshell-test",
-      cleanupStartTime,
+      { category: "Test", startTime: cleanupStartTime },
       "Cleanup functions"
     );
   }
 
-  ChromeUtils.addProfilerMarker("xpcshell-test", startTime, _TEST_NAME);
+  ChromeUtils.addProfilerMarker(
+    "xpcshell-test",
+    { category: "Test", startTime },
+    _TEST_NAME
+  );
   _Services.obs.notifyObservers(null, "test-complete");
 
   // Restore idle service to avoid leaks.
   _fakeIdleService.deactivate();
 
+  if (
+    globalThis.hasOwnProperty("storage") &&
+    StorageManager.isInstance(globalThis.storage)
+  ) {
+    globalThis.storage.shutdown();
+  }
+
   if (_profileInitialized) {
     // Since we have a profile, we will notify profile shutdown topics at
     // the end of the current test, to ensure correct cleanup on shutdown.
-    _Services.obs.notifyObservers(null, "profile-change-net-teardown");
-    _Services.obs.notifyObservers(null, "profile-change-teardown");
-    _Services.obs.notifyObservers(null, "profile-before-change");
-    _Services.obs.notifyObservers(null, "profile-before-change-qm");
+    _Services.startup.advanceShutdownPhase(
+      _Services.startup.SHUTDOWN_PHASE_APPSHUTDOWNNETTEARDOWN
+    );
+    _Services.startup.advanceShutdownPhase(
+      _Services.startup.SHUTDOWN_PHASE_APPSHUTDOWNTEARDOWN
+    );
+    _Services.startup.advanceShutdownPhase(
+      _Services.startup.SHUTDOWN_PHASE_APPSHUTDOWN
+    );
+    _Services.startup.advanceShutdownPhase(
+      _Services.startup.SHUTDOWN_PHASE_APPSHUTDOWNQM
+    );
 
     _profileInitialized = false;
   }
@@ -694,16 +735,6 @@ function _execute_test() {
     !_AppConstants.ASAN &&
     !_AppConstants.TSAN
   ) {
-    if (_fastShutdownDisabled) {
-      _testLogger.info("fast shutdown disabled by the test.");
-      return;
-    }
-
-    // Setting this pref is required for Cu.isInAutomation to return true.
-    _Services.prefs.setBoolPref(
-      "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
-      true
-    );
     Cu.exitIfInAutomation();
   }
 }
@@ -714,14 +745,14 @@ function _execute_test() {
  * @param aFiles Array of files to load.
  */
 function _load_files(aFiles) {
-  function load_file(element, index, array) {
+  function load_file(element) {
     try {
       let startTime = Cu.now();
       load(element);
       ChromeUtils.addProfilerMarker(
-        "xpcshell-test",
-        startTime,
-        "load " + element.replace(/.*\/_?tests\/xpcshell\//, "")
+        "load_file",
+        { category: "Test", startTime },
+        element.replace(/.*\/_?tests\/xpcshell\//, "")
       );
     } catch (e) {
       let extra = {
@@ -747,7 +778,7 @@ function _wrap_with_quotes_if_necessary(val) {
  * Prints a message to the output log.
  */
 function info(msg, data) {
-  ChromeUtils.addProfilerMarker("xpcshell-test", undefined, "INFO " + msg);
+  ChromeUtils.addProfilerMarker("INFO", { category: "Test" }, msg);
   msg = _wrap_with_quotes_if_necessary(msg);
   data = data ? data : null;
   _testLogger.info(msg, data);
@@ -823,6 +854,11 @@ function do_throw(error, stack) {
     source_file: filename,
     stack: _format_stack(stack),
   });
+  ChromeUtils.addProfilerMarker(
+    "ERROR",
+    { category: "Test", captureStack: true },
+    _exception_message(error)
+  );
   _abort_failed_test();
 }
 
@@ -844,12 +880,15 @@ function _format_stack(stack) {
   } else {
     normalized = "" + stack;
   }
-  return _Task.Debugging.generateReadableStack(normalized, "    ");
+  return normalized;
 }
 
 // Make a nice display string from an object that behaves
 // like Error
 function _exception_message(ex) {
+  if (ex === undefined) {
+    return "`undefined` exception, maybe from an empty reject()?";
+  }
   let message = "";
   if (ex.name) {
     message = ex.name + ": ";
@@ -877,7 +916,7 @@ function do_report_unexpected_exception(ex, text) {
   _passed = false;
   _testLogger.error(text + "Unexpected exception " + _exception_message(ex), {
     source_file: filename,
-    stack: _format_stack(ex.stack),
+    stack: _format_stack(ex?.stack),
   });
   _do_quit();
   throw Components.Exception("", Cr.NS_ERROR_ABORT);
@@ -887,7 +926,7 @@ function do_note_exception(ex, text) {
   let filename = Components.stack.caller.filename;
   _testLogger.info(text + "Swallowed exception " + _exception_message(ex), {
     source_file: filename,
-    stack: _format_stack(ex.stack),
+    stack: _format_stack(ex?.stack),
   });
 }
 
@@ -916,12 +955,19 @@ function do_report_result(passed, text, stack, todo) {
         message,
         _format_stack(stack)
       );
+      ChromeUtils.addProfilerMarker(
+        "UNEXPECTED-PASS",
+        { category: "Test" },
+        message
+      );
       _abort_failed_test();
     } else {
       _testLogger.testStatus(_TEST_NAME, name, "PASS", "PASS", message);
+      ChromeUtils.addProfilerMarker("PASS", { category: "Test" }, message);
     }
   } else if (todo) {
     _testLogger.testStatus(_TEST_NAME, name, "FAIL", "FAIL", message);
+    ChromeUtils.addProfilerMarker("TODO", { category: "Test" }, message);
   } else {
     _testLogger.testStatus(
       _TEST_NAME,
@@ -931,6 +977,7 @@ function do_report_result(passed, text, stack, todo) {
       message,
       _format_stack(stack)
     );
+    ChromeUtils.addProfilerMarker("FAIL", { category: "Test" }, message);
     _abort_failed_test();
   }
 }
@@ -1192,25 +1239,14 @@ function registerCleanupFunction(aFunction) {
 }
 
 /**
- * Ensure the test finishes with a normal shutdown even when it could have
- * otherwise used the fast Cu.exitIfInAutomation shutdown.
- */
-function do_disable_fast_shutdown() {
-  _fastShutdownDisabled = true;
-}
-
-/**
  * Returns the directory for a temp dir, which is created by the
  * test harness. Every test gets its own temp dir.
  *
  * @return nsIFile of the temporary directory
  */
 function do_get_tempdir() {
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
   // the python harness sets this in the environment for us
-  let path = env.get("XPCSHELL_TEST_TEMP_DIR");
+  let path = _Services.env.get("XPCSHELL_TEST_TEMP_DIR");
   let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
   file.initWithPath(path);
   return file;
@@ -1222,11 +1258,8 @@ function do_get_tempdir() {
  * @return nsIFile of the minidump directory
  */
 function do_get_minidumpdir() {
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
   // the python harness may set this in the environment for us
-  let path = env.get("XPCSHELL_MINIDUMP_DIR");
+  let path = _Services.env.get("XPCSHELL_MINIDUMP_DIR");
   if (path) {
     let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
     file.initWithPath(path);
@@ -1248,11 +1281,8 @@ function do_get_profile(notifyProfileAfterChange = false) {
     return null;
   }
 
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
   // the python harness sets this in the environment for us
-  let profd = env.get("XPCSHELL_TEST_PROFILE_DIR");
+  let profd = Services.env.get("XPCSHELL_TEST_PROFILE_DIR");
   let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
   file.initWithPath(profd);
 
@@ -1288,6 +1318,8 @@ function do_get_profile(notifyProfileAfterChange = false) {
 
   // We need to update the crash events directory when the profile changes.
   if (runningInParent && "@mozilla.org/toolkit/crash-reporter;1" in Cc) {
+    // Intentially access the crash reporter service directly for this.
+    // eslint-disable-next-line mozilla/use-services
     let crashReporter = Cc["@mozilla.org/toolkit/crash-reporter;1"].getService(
       Ci.nsICrashReporter
     );
@@ -1312,7 +1344,6 @@ function do_get_profile(notifyProfileAfterChange = false) {
 
   // The methods of 'provider' will retain this scope so null out everything
   // to avoid spurious leak reports.
-  env = null;
   profd = null;
   provider = null;
   return file.clone();
@@ -1359,6 +1390,10 @@ function do_load_child_test_harness() {
 
   if (typeof _JSCOV_DIR === "string") {
     command += " const _JSCOV_DIR=" + uneval(_JSCOV_DIR) + ";";
+  }
+
+  if (typeof _TEST_CWD != "undefined") {
+    command += " const _TEST_CWD=" + uneval(_TEST_CWD) + ";";
   }
 
   if (_TESTING_MODULES_DIR) {
@@ -1464,6 +1499,18 @@ function do_send_remote_message(name, data) {
 }
 
 /**
+ * Schedules and awaits a precise GC, and forces CC, `maxCount` number of times.
+ * @param maxCount
+ *        How many times GC and CC should be scheduled.
+ */
+async function schedulePreciseGCAndForceCC(maxCount) {
+  for (let count = 0; count < maxCount; count++) {
+    await new Promise(resolve => Cu.schedulePreciseGC(resolve));
+    Cu.forceCC();
+  }
+}
+
+/**
  * Add a test function to the list of tests that are to be run asynchronously.
  *
  * @param funcOrProperties
@@ -1471,10 +1518,14 @@ function do_send_remote_message(name, data) {
  *        Supported properties:
  *          skip_if : An arrow function which has an expression to be
  *                    evaluated whether the test is skipped or not.
+ *          pref_set: An array of preferences to set for the test, reset at end of test.
  * @param func
  *        A function to be run only if the funcOrProperies is not a function.
  * @param isTask
  *        Optional flag that indicates whether `func` is a task. Defaults to `false`.
+ * @param isSetup
+ *        Optional flag that indicates whether `func` is a setup task. Defaults to `false`.
+ *        Implies isTask.
  *
  * Each test function must call run_next_test() when it's done. Test files
  * should call run_next_test() in their run_test function to execute all
@@ -1482,14 +1533,30 @@ function do_send_remote_message(name, data) {
  *
  * @return the test function that was passed in.
  */
+var _gSupportedProperties = ["skip_if", "pref_set"];
 var _gTests = [];
 var _gRunOnlyThisTest = null;
-function add_test(properties, func = properties, isTask = false) {
+function add_test(
+  properties,
+  func = properties,
+  isTask = false,
+  isSetup = false
+) {
+  if (isSetup) {
+    isTask = true;
+  }
   if (typeof properties == "function") {
-    properties = { isTask };
+    properties = { isTask, isSetup };
     _gTests.push([properties, func]);
   } else if (typeof properties == "object") {
+    // Ensure only documented properties are in the object.
+    for (let prop of Object.keys(properties)) {
+      if (!_gSupportedProperties.includes(prop)) {
+        do_throw(`Task property is not supported: ${prop}`);
+      }
+    }
     properties.isTask = isTask;
+    properties.isSetup = isSetup;
     _gTests.push([properties, func]);
   } else {
     do_throw("add_test() should take a function or an object and a function");
@@ -1500,18 +1567,16 @@ function add_test(properties, func = properties, isTask = false) {
 }
 
 /**
- * Add a test function which is a Task function.
+ * Add a test function which is an asynchronous function.
  *
  * @param funcOrProperties
  *        An async function to be run or an object represents test properties.
  *        Supported properties:
  *          skip_if : An arrow function which has an expression to be
  *                    evaluated whether the test is skipped or not.
+ *          pref_set: An array of preferences to set for the test, reset at end of test.
  * @param func
  *        An async function to be run only if the funcOrProperies is not a function.
- *
- * Task functions are functions fed into Task.jsm's Task.spawn(). They are async
- * functions that emit promises.
  *
  * If an exception is thrown, a do_check_* comparison fails, or if a rejected
  * promise is yielded, the test function aborts immediately and the test is
@@ -1519,8 +1584,7 @@ function add_test(properties, func = properties, isTask = false) {
  *
  * Unlike add_test(), there is no need to call run_next_test(). The next test
  * will run automatically as soon the task function is exhausted. To trigger
- * premature (but successful) termination of the function, simply return or
- * throw a Task.Result instance.
+ * premature (but successful) termination of the function or simply return.
  *
  * Example usage:
  *
@@ -1546,6 +1610,7 @@ function add_test(properties, func = properties, isTask = false) {
  *
  * add_task({
  *   skip_if: () => !("@mozilla.org/telephony/volume-service;1" in Components.classes),
+ *   pref_set: [["some.pref", "value"], ["another.pref", true]],
  * }, async function test_volume_service() {
  *   let volumeService = Cc["@mozilla.org/telephony/volume-service;1"]
  *     .getService(Ci.nsIVolumeService);
@@ -1556,7 +1621,58 @@ function add_task(properties, func = properties) {
   return add_test(properties, func, true);
 }
 
-_Task.Debugging.maintainStack = true;
+/**
+ * add_setup is like add_task, but creates setup tasks.
+ */
+function add_setup(properties, func = properties) {
+  return add_test(properties, func, true, true);
+}
+
+const _setTaskPrefs = prefs => {
+  for (let [pref, value] of prefs) {
+    if (value === undefined) {
+      // Clear any pref that didn't have a user value.
+      info(`Clearing pref "${pref}"`);
+      _Services.prefs.clearUserPref(pref);
+      continue;
+    }
+
+    info(`Setting pref "${pref}": ${value}`);
+    switch (typeof value) {
+      case "boolean":
+        _Services.prefs.setBoolPref(pref, value);
+        break;
+      case "number":
+        _Services.prefs.setIntPref(pref, value);
+        break;
+      case "string":
+        _Services.prefs.setStringPref(pref, value);
+        break;
+      default:
+        throw new Error("runWithPrefs doesn't support this pref type yet");
+    }
+  }
+};
+
+const _getTaskPrefs = prefs => {
+  return prefs.map(([pref, value]) => {
+    info(`Getting initial pref value for "${pref}"`);
+    if (!_Services.prefs.prefHasUserValue(pref)) {
+      // Check if the pref doesn't have a user value.
+      return [pref, undefined];
+    }
+    switch (typeof value) {
+      case "boolean":
+        return [pref, _Services.prefs.getBoolPref(pref)];
+      case "number":
+        return [pref, _Services.prefs.getIntPref(pref)];
+      case "string":
+        return [pref, _Services.prefs.getStringPref(pref)];
+      default:
+        throw new Error("runWithPrefs doesn't support this pref type yet");
+    }
+  });
+};
 
 /**
  * Runs the next test function from the list of async tests.
@@ -1564,11 +1680,20 @@ _Task.Debugging.maintainStack = true;
 var _gRunningTest = null;
 var _gTestIndex = 0; // The index of the currently running test.
 var _gTaskRunning = false;
+var _gSetupRunning = false;
 function run_next_test() {
   if (_gTaskRunning) {
     throw new Error(
       "run_next_test() called from an add_task() test function. " +
-        "run_next_test() should not be called from inside add_task() " +
+        "run_next_test() should not be called from inside add_setup() or add_task() " +
+        "under any circumstances!"
+    );
+  }
+
+  if (_gSetupRunning) {
+    throw new Error(
+      "run_next_test() called from an add_setup() test function. " +
+        "run_next_test() should not be called from inside add_setup() or add_task() " +
         "under any circumstances!"
     );
   }
@@ -1582,12 +1707,18 @@ function run_next_test() {
 
       // Must set to pending before we check for skip, so that we keep the
       // running counts correct.
-      _testLogger.info(_TEST_NAME + " | Starting " + _gRunningTest.name);
+      _testLogger.info(
+        `${_TEST_NAME} | Starting ${_properties.isSetup ? "setup " : ""}${
+          _gRunningTest.name
+        }`
+      );
       do_test_pending(_gRunningTest.name);
 
       if (
         (typeof _properties.skip_if == "function" && _properties.skip_if()) ||
-        (_gRunOnlyThisTest && _gRunningTest != _gRunOnlyThisTest)
+        (_gRunOnlyThisTest &&
+          _gRunningTest != _gRunOnlyThisTest &&
+          !_properties.isSetup)
       ) {
         let _condition = _gRunOnlyThisTest
           ? "only one task may run."
@@ -1612,34 +1743,66 @@ function run_next_test() {
         return;
       }
 
+      let initialPrefsValues = [];
+      if (_properties.pref_set) {
+        initialPrefsValues = _getTaskPrefs(_properties.pref_set);
+        _setTaskPrefs(_properties.pref_set);
+      }
+
       if (_properties.isTask) {
-        _gTaskRunning = true;
+        if (_properties.isSetup) {
+          _gSetupRunning = true;
+        } else {
+          _gTaskRunning = true;
+        }
         let startTime = Cu.now();
         (async () => _gRunningTest())().then(
           result => {
-            _gTaskRunning = false;
+            _gTaskRunning = _gSetupRunning = false;
             ChromeUtils.addProfilerMarker(
-              "xpcshell-test",
-              startTime,
-              _gRunningTest.name || "task"
+              "task",
+              { category: "Test", startTime },
+              _gRunningTest.name || undefined
             );
             if (_isGenerator(result)) {
               Assert.ok(false, "Task returned a generator");
             }
+            _setTaskPrefs(initialPrefsValues);
             run_next_test();
           },
           ex => {
-            _gTaskRunning = false;
+            _gTaskRunning = _gSetupRunning = false;
             ChromeUtils.addProfilerMarker(
-              "xpcshell-test",
-              startTime,
-              _gRunningTest.name || "task"
+              "task",
+              { category: "Test", startTime },
+              _gRunningTest.name || undefined
             );
+            _setTaskPrefs(initialPrefsValues);
             try {
+              // Note `ex` at this point could be undefined, for example as
+              // result of a bare call to reject().
               do_report_unexpected_exception(ex);
             } catch (error) {
-              // The above throws NS_ERROR_ABORT and we don't want this to show up
-              // as an unhandled rejection later.
+              // The above throws NS_ERROR_ABORT and we don't want this to show
+              // up as an unhandled rejection later. If any other exception
+              // happened, something went wrong, so we abort.
+              if (error.result != Cr.NS_ERROR_ABORT) {
+                let extra = {};
+                if (error.fileName) {
+                  extra.source_file = error.fileName;
+                  if (error.lineNumber) {
+                    extra.line_number = error.lineNumber;
+                  }
+                } else {
+                  extra.source_file = "xpcshell/head.js";
+                }
+                if (error.stack) {
+                  extra.stack = _format_stack(error.stack);
+                }
+                _testLogger.error(_exception_message(error), extra);
+                _do_quit();
+                throw Components.Exception("", Cr.NS_ERROR_ABORT);
+              }
             }
           }
         );
@@ -1653,12 +1816,26 @@ function run_next_test() {
         } finally {
           ChromeUtils.addProfilerMarker(
             "xpcshell-test",
-            startTime,
+            { category: "Test", startTime },
             _gRunningTest.name || undefined
           );
+          _setTaskPrefs(initialPrefsValues);
         }
       }
     }
+  }
+
+  function frontLoadSetups() {
+    _gTests.sort(([propsA], [propsB]) => {
+      if (propsB.isSetup === propsA.isSetup) {
+        return 0;
+      }
+      return propsB.isSetup ? 1 : -1;
+    });
+  }
+
+  if (!_gTestIndex) {
+    frontLoadSetups();
   }
 
   // For sane stacks during failures, we execute this code soon, but not now.
@@ -1696,21 +1873,24 @@ try {
   // We only want to run this for local developer builds (which should have a "default" update channel).
   if (runningInParent && _AppConstants.MOZ_UPDATE_CHANNEL == "default") {
     let startTime = Cu.now();
-    let _TelemetryController = ChromeUtils.import(
-      "resource://gre/modules/TelemetryController.jsm",
-      null
-    ).TelemetryController;
+    let { TelemetryController: _TelemetryController } =
+      ChromeUtils.importESModule(
+        "resource://gre/modules/TelemetryController.sys.mjs"
+      );
 
     let complete = false;
     _TelemetryController.testRegisterJsProbes().finally(() => {
       ChromeUtils.addProfilerMarker(
         "xpcshell-test",
-        startTime,
+        { category: "Test", startTime },
         "TelemetryController.testRegisterJsProbes"
       );
       complete = true;
     });
-    _Services.tm.spinEventLoopUntil(() => complete);
+    _Services.tm.spinEventLoopUntil(
+      "Test(xpcshell/head.js:run_next-Test)",
+      () => complete
+    );
   }
 } catch (e) {
   do_throw(e);

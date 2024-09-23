@@ -22,9 +22,10 @@ impl Parse for BackgroundSize {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(width) = input.try(|i| NonNegativeLengthPercentageOrAuto::parse(context, i)) {
+        if let Ok(width) = input.try_parse(|i| NonNegativeLengthPercentageOrAuto::parse(context, i))
+        {
             let height = input
-                .try(|i| NonNegativeLengthPercentageOrAuto::parse(context, i))
+                .try_parse(|i| NonNegativeLengthPercentageOrAuto::parse(context, i))
                 .unwrap_or(NonNegativeLengthPercentageOrAuto::auto());
             return Ok(GenericBackgroundSize::ExplicitSize { width, height });
         }
@@ -101,7 +102,7 @@ impl ToCss for BackgroundRepeat {
             (horizontal, vertical) => {
                 horizontal.to_css(dest)?;
                 if horizontal != vertical {
-                    dest.write_str(" ")?;
+                    dest.write_char(' ')?;
                     vertical.to_css(dest)?;
                 }
                 Ok(())
@@ -136,7 +137,7 @@ impl Parse for BackgroundRepeat {
             },
         };
 
-        let vertical = input.try(BackgroundRepeatKeyword::parse).ok();
+        let vertical = input.try_parse(BackgroundRepeatKeyword::parse).ok();
         Ok(BackgroundRepeat(horizontal, vertical.unwrap_or(horizontal)))
     }
 }

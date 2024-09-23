@@ -30,6 +30,8 @@
 #ifndef CLIENT_LINUX_CRASH_GENERATION_CLIENT_INFO_H_
 #define CLIENT_LINUX_CRASH_GENERATION_CLIENT_INFO_H_
 
+#include <sys/types.h>
+
 namespace google_breakpad {
 
 class CrashGenerationServer;
@@ -42,10 +44,25 @@ class ClientInfo {
 
   CrashGenerationServer* crash_server() const { return crash_server_; }
   pid_t pid() const { return pid_; }
+  void set_error_msg(char *error_msg) {
+      had_error_ = true;
+      error_msg_ = error_msg;
+  }
+
+  const char* error_msg() const {
+      return error_msg_;
+  }
+
+  bool had_error() const {
+      return had_error_;
+  }
 
  private:
   CrashGenerationServer* crash_server_;
   pid_t pid_;
+  bool had_error_ = false;
+  char* error_msg_ = nullptr; // Possible error message of the minidumper in
+                              // case there was an error during dumping
 };
 
 }

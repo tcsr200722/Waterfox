@@ -10,8 +10,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/Telemetry.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Decorates a DOM Promise to report telemetry as to whether it was resolved
 // or rejected and why.
@@ -19,6 +18,11 @@ class PlayPromise : public Promise {
  public:
   static already_AddRefed<PlayPromise> Create(nsIGlobalObject* aGlobal,
                                               ErrorResult& aRv);
+
+  using PlayPromiseArr = nsTArray<RefPtr<PlayPromise>>;
+  static void ResolvePromisesWithUndefined(const PlayPromiseArr& aPromises);
+  static void RejectPromises(const PlayPromiseArr& aPromises, nsresult aError);
+
   ~PlayPromise();
   void MaybeResolveWithUndefined();
   void MaybeReject(nsresult aReason);
@@ -28,7 +32,6 @@ class PlayPromise : public Promise {
   bool mFulfilled = false;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // __PlayPromise_h__

@@ -21,6 +21,7 @@
 
 #include "jstypes.h"
 #include "mozmemory.h"
+#include "js/TypeDecls.h"
 
 /* The public JS engine namespace. */
 namespace JS {}
@@ -53,29 +54,20 @@ namespace js {
  * adding new thread types.
  */
 enum ThreadType {
-  THREAD_TYPE_NONE = 0,      // 0
-  THREAD_TYPE_MAIN,          // 1
-  THREAD_TYPE_WASM,          // 2
-  THREAD_TYPE_ION,           // 3
-  THREAD_TYPE_PARSE,         // 4
-  THREAD_TYPE_COMPRESS,      // 5
-  THREAD_TYPE_GCPARALLEL,    // 6
-  THREAD_TYPE_PROMISE_TASK,  // 7
-  THREAD_TYPE_ION_FREE,      // 8
-  THREAD_TYPE_WASM_TIER2,    // 9
-  THREAD_TYPE_WORKER,        // 10
-  THREAD_TYPE_MAX            // Used to check shell function arguments
-};
-
-/*
- * Threads need a universal way to dispatch from xpcom thread pools,
- * so having objects inherit from this struct enables
- * mozilla::HelperThreadPool's runnable handler to call runTask() on each type.
- */
-struct RunnableTask {
-  virtual ThreadType threadType() = 0;
-  virtual void runTask() = 0;
-  virtual ~RunnableTask() = default;
+  THREAD_TYPE_NONE = 0,              // 0
+  THREAD_TYPE_MAIN,                  // 1
+  THREAD_TYPE_WASM_COMPILE_TIER1,    // 2
+  THREAD_TYPE_WASM_COMPILE_TIER2,    // 3
+  THREAD_TYPE_ION,                   // 4
+  THREAD_TYPE_COMPRESS,              // 5
+  THREAD_TYPE_GCPARALLEL,            // 6
+  THREAD_TYPE_PROMISE_TASK,          // 7
+  THREAD_TYPE_ION_FREE,              // 8
+  THREAD_TYPE_WASM_GENERATOR_TIER2,  // 9
+  THREAD_TYPE_WORKER,                // 10
+  THREAD_TYPE_DELAZIFY,              // 11
+  THREAD_TYPE_DELAZIFY_FREE,         // 12
+  THREAD_TYPE_MAX                    // Used to check shell function arguments
 };
 
 namespace oom {
@@ -94,11 +86,11 @@ namespace oom {
 // Define the range of threads tested by simulated OOM testing and the
 // like. Testing worker threads is not supported.
 const ThreadType FirstThreadTypeToTest = THREAD_TYPE_MAIN;
-const ThreadType LastThreadTypeToTest = THREAD_TYPE_WASM_TIER2;
+const ThreadType LastThreadTypeToTest = THREAD_TYPE_WASM_GENERATOR_TIER2;
 
 extern bool InitThreadType(void);
 extern void SetThreadType(ThreadType);
-extern JS_FRIEND_API uint32_t GetThreadType(void);
+extern JS_PUBLIC_API uint32_t GetThreadType(void);
 
 #  else
 
@@ -255,14 +247,6 @@ inline bool HadSimulatedInterrupt() {
         if (js::oom::ShouldFailWithStackOOM()) return false; \
       } while (0)
 
-#    define JS_STACK_OOM_POSSIBLY_FAIL_REPORT()  \
-      do {                                       \
-        if (js::oom::ShouldFailWithStackOOM()) { \
-          ReportOverRecursed(cx);                \
-          return false;                          \
-        }                                        \
-      } while (0)
-
 #    define JS_INTERRUPT_POSSIBLY_FAIL()                             \
       do {                                                           \
         if (MOZ_UNLIKELY(js::oom::ShouldFailWithInterrupt())) {      \
@@ -281,9 +265,6 @@ inline bool HadSimulatedInterrupt() {
       } while (0)
 #    define JS_STACK_OOM_POSSIBLY_FAIL() \
       do {                               \
-      } while (0)
-#    define JS_STACK_OOM_POSSIBLY_FAIL_REPORT() \
-      do {                                      \
       } while (0)
 #    define JS_INTERRUPT_POSSIBLY_FAIL() \
       do {                               \
@@ -325,8 +306,10 @@ namespace js {
 
 /* Disable OOM testing in sections which are not OOM safe. */
 struct MOZ_RAII JS_PUBLIC_DATA AutoEnterOOMUnsafeRegion {
-  MOZ_NORETURN MOZ_COLD void crash(const char* reason);
-  MOZ_NORETURN MOZ_COLD void crash(size_t size, const char* reason);
+  MOZ_NORETURN MOZ_COLD void crash(const char* reason) { crash_impl(reason); }
+  MOZ_NORETURN MOZ_COLD void crash(size_t size, const char* reason) {
+    crash_impl(reason);
+  }
 
   using AnnotateOOMAllocationSizeCallback = void (*)(size_t);
   static mozilla::Atomic<AnnotateOOMAllocationSizeCallback, mozilla::Relaxed>
@@ -358,6 +341,9 @@ struct MOZ_RAII JS_PUBLIC_DATA AutoEnterOOMUnsafeRegion {
 
   bool oomEnabled_;
 #  endif
+ private:
+  static MOZ_NORETURN MOZ_COLD void crash_impl(const char* reason);
+  static MOZ_NORETURN MOZ_COLD void crash_impl(size_t size, const char* reason);
 };
 
 } /* namespace js */
@@ -425,9 +411,10 @@ static inline void* js_realloc(void* p, size_t bytes) {
 }
 
 static inline void js_free(void* p) {
-  // TODO: This should call |moz_arena_free(js::MallocArena, p)| but we
+  // Bug 1784164: This should call |moz_arena_free(js::MallocArena, p)| but we
   // currently can't enforce that all memory freed here was allocated by
-  // js_malloc().
+  // js_malloc(). All other memory should go through a different allocator and
+  // deallocator.
   free(p);
 }
 #endif /* JS_USE_CUSTOM_ALLOCATOR */
@@ -480,9 +467,9 @@ static inline void js_free(void* p) {
  * - Ordinarily, use js_free/js_delete.
  *
  * - For deallocations during GC finalization, use one of the following
- *   operations on the JSFreeOp provided to the finalizer:
+ *   operations on the JS::GCContext provided to the finalizer:
  *
- *     JSFreeOp::{free_,delete_}
+ *     JS::GCContext::{free_,delete_}
  */
 
 /*
@@ -495,6 +482,9 @@ static inline void js_free(void* p) {
 #define JS_DECLARE_NEW_METHODS(NEWNAME, ALLOCATOR, QUALIFIERS)              \
   template <class T, typename... Args>                                      \
   QUALIFIERS T* MOZ_HEAP_ALLOCATOR NEWNAME(Args&&... args) {                \
+    static_assert(                                                          \
+        alignof(T) <= alignof(max_align_t),                                 \
+        "over-aligned type is not supported by JS_DECLARE_NEW_METHODS");    \
     void* memory = ALLOCATOR(sizeof(T));                                    \
     return MOZ_LIKELY(memory) ? new (memory) T(std::forward<Args>(args)...) \
                               : nullptr;                                    \
@@ -511,6 +501,9 @@ static inline void js_free(void* p) {
 #define JS_DECLARE_NEW_ARENA_METHODS(NEWNAME, ALLOCATOR, QUALIFIERS)           \
   template <class T, typename... Args>                                         \
   QUALIFIERS T* MOZ_HEAP_ALLOCATOR NEWNAME(arena_id_t arena, Args&&... args) { \
+    static_assert(                                                             \
+        alignof(T) <= alignof(max_align_t),                                    \
+        "over-aligned type is not supported by JS_DECLARE_NEW_ARENA_METHODS"); \
     void* memory = ALLOCATOR(arena, sizeof(T));                                \
     return MOZ_LIKELY(memory) ? new (memory) T(std::forward<Args>(args)...)    \
                               : nullptr;                                       \
@@ -545,7 +538,8 @@ namespace js {
  * instances of type |T|.  Return false if the calculation overflowed.
  */
 template <typename T>
-MOZ_MUST_USE inline bool CalculateAllocSize(size_t numElems, size_t* bytesOut) {
+[[nodiscard]] inline bool CalculateAllocSize(size_t numElems,
+                                             size_t* bytesOut) {
   *bytesOut = numElems * sizeof(T);
   return (numElems & mozilla::tl::MulOverflowMask<sizeof(T)>::value) == 0;
 }
@@ -556,8 +550,8 @@ MOZ_MUST_USE inline bool CalculateAllocSize(size_t numElems, size_t* bytesOut) {
  * false if the calculation overflowed.
  */
 template <typename T, typename Extra>
-MOZ_MUST_USE inline bool CalculateAllocSizeWithExtra(size_t numExtra,
-                                                     size_t* bytesOut) {
+[[nodiscard]] inline bool CalculateAllocSizeWithExtra(size_t numExtra,
+                                                      size_t* bytesOut) {
   *bytesOut = sizeof(T) + numExtra * sizeof(Extra);
   return (numExtra & mozilla::tl::MulOverflowMask<sizeof(Extra)>::value) == 0 &&
          *bytesOut >= sizeof(T);
@@ -648,8 +642,10 @@ struct FreePolicy {
   void operator()(const void* ptr) { js_free(const_cast<void*>(ptr)); }
 };
 
-typedef mozilla::UniquePtr<char[], JS::FreePolicy> UniqueChars;
-typedef mozilla::UniquePtr<char16_t[], JS::FreePolicy> UniqueTwoByteChars;
+using UniqueChars = mozilla::UniquePtr<char[], JS::FreePolicy>;
+using UniqueTwoByteChars = mozilla::UniquePtr<char16_t[], JS::FreePolicy>;
+using UniqueLatin1Chars = mozilla::UniquePtr<JS::Latin1Char[], JS::FreePolicy>;
+using UniqueWideChars = mozilla::UniquePtr<wchar_t[], JS::FreePolicy>;
 
 }  // namespace JS
 
@@ -657,13 +653,13 @@ typedef mozilla::UniquePtr<char16_t[], JS::FreePolicy> UniqueTwoByteChars;
 #ifndef HAVE_STATIC_ANNOTATIONS
 #  define HAVE_STATIC_ANNOTATIONS
 #  ifdef XGILL_PLUGIN
-#    define STATIC_PRECONDITION(COND) __attribute__((precondition(#    COND)))
+#    define STATIC_PRECONDITION(COND) __attribute__((precondition(#COND)))
 #    define STATIC_PRECONDITION_ASSUME(COND) \
       __attribute__((precondition_assume(#COND)))
-#    define STATIC_POSTCONDITION(COND) __attribute__((postcondition(#    COND)))
+#    define STATIC_POSTCONDITION(COND) __attribute__((postcondition(#COND)))
 #    define STATIC_POSTCONDITION_ASSUME(COND) \
       __attribute__((postcondition_assume(#COND)))
-#    define STATIC_INVARIANT(COND) __attribute__((invariant(#    COND)))
+#    define STATIC_INVARIANT(COND) __attribute__((invariant(#COND)))
 #    define STATIC_INVARIANT_ASSUME(COND) \
       __attribute__((invariant_assume(#COND)))
 #    define STATIC_ASSUME(COND)                                          \

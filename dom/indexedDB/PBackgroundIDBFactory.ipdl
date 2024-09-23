@@ -10,9 +10,9 @@ include PBackgroundIDBSharedTypes;
 include PBackgroundSharedTypes;
 
 include "mozilla/dom/quota/SerializationHelpers.h";
+include "mozilla/dom/indexedDB/ActorsChild.h";
 
-using struct mozilla::void_t
-  from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
 
 namespace mozilla {
 namespace dom {
@@ -40,7 +40,14 @@ union FactoryRequestParams
   DeleteDatabaseRequestParams;
 };
 
-sync refcounted protocol PBackgroundIDBFactory
+union GetDatabasesResponse
+{
+  nsresult;
+  DatabaseMetadata[];
+};
+
+[ChildImpl="indexedDB::BackgroundFactoryChild", ParentImpl=virtual]
+sync protocol PBackgroundIDBFactory
 {
   manager PBackground;
 
@@ -51,6 +58,10 @@ parent:
   async DeleteMe();
 
   async PBackgroundIDBFactoryRequest(FactoryRequestParams params);
+
+  async GetDatabases(PersistenceType persistenceType,
+                     PrincipalInfo principalInfo)
+      returns(GetDatabasesResponse response);
 
 child:
   async __delete__();

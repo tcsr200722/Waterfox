@@ -6,27 +6,32 @@
 
 const {
   createFactory,
+  createRef,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const { connect } = require("devtools/client/shared/vendor/react-redux");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const ReactDOM = require("devtools/client/shared/vendor/react-dom");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const AnimationList = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationList")
+  require("resource://devtools/client/inspector/animation/components/AnimationList.js")
 );
 const CurrentTimeScrubber = createFactory(
-  require("devtools/client/inspector/animation/components/CurrentTimeScrubber")
+  require("resource://devtools/client/inspector/animation/components/CurrentTimeScrubber.js")
 );
 const ProgressInspectionPanel = createFactory(
-  require("devtools/client/inspector/animation/components/ProgressInspectionPanel")
+  require("resource://devtools/client/inspector/animation/components/ProgressInspectionPanel.js")
 );
 
 const {
   findOptimalTimeInterval,
-} = require("devtools/client/inspector/animation/utils/utils");
-const { getStr } = require("devtools/client/inspector/animation/utils/l10n");
+} = require("resource://devtools/client/inspector/animation/utils/utils.js");
+const {
+  getStr,
+} = require("resource://devtools/client/inspector/animation/utils/l10n.js");
+const { throttle } = require("resource://devtools/shared/throttle.js");
 
 // The minimum spacing between 2 time graduation headers in the timeline (px).
 const TIME_GRADUATION_MIN_SPACING = 40;
@@ -37,11 +42,9 @@ class AnimationListContainer extends PureComponent {
       addAnimationsCurrentTimeListener: PropTypes.func.isRequired,
       animations: PropTypes.arrayOf(PropTypes.object).isRequired,
       direction: PropTypes.string.isRequired,
-      emitEventForTest: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
       getAnimatedPropertyMap: PropTypes.func.isRequired,
       getNodeFromActor: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
       removeAnimationsCurrentTimeListener: PropTypes.func.isRequired,
       selectAnimation: PropTypes.func.isRequired,
       setAnimationsCurrentTime: PropTypes.func.isRequired,
@@ -56,14 +59,43 @@ class AnimationListContainer extends PureComponent {
   constructor(props) {
     super(props);
 
+    this._ref = createRef();
+
+    this.updateDisplayableRange = throttle(
+      this.updateDisplayableRange,
+      100,
+      this
+    );
+
     this.state = {
       // tick labels and lines on the progress inspection panel
       ticks: [],
+      // Displayable range.
+      displayableRange: { startIndex: 0, endIndex: 0 },
     };
   }
 
   componentDidMount() {
-    this.updateState(this.props);
+    this.updateTicks(this.props);
+
+    const current = this._ref.current;
+    this._inspectionPanelEl = current.querySelector(
+      ".progress-inspection-panel"
+    );
+    this._inspectionPanelEl.addEventListener("scroll", () => {
+      this.updateDisplayableRange();
+    });
+
+    this._animationListEl = current.querySelector(".animation-list");
+    const resizeObserver = new current.ownerGlobal.ResizeObserver(() => {
+      this.updateDisplayableRange();
+    });
+    resizeObserver.observe(this._animationListEl);
+
+    const animationItemEl = current.querySelector(".animation-item");
+    this._itemHeight = animationItemEl.offsetHeight;
+
+    this.updateDisplayableRange();
   }
 
   componentDidUpdate(prevProps) {
@@ -74,13 +106,29 @@ class AnimationListContainer extends PureComponent {
       timeScale.zeroPositionTime !== prevProps.timeScale.zeroPositionTime ||
       sidebarWidth !== prevProps.sidebarWidth
     ) {
-      this.updateState(this.props);
+      this.updateTicks(this.props);
     }
   }
 
-  updateState(props) {
+  /**
+   * Since it takes too much time if we render all of animation graphs,
+   * we restrict to render the items that are not in displaying area.
+   * This function calculates the displayable item range.
+   */
+  updateDisplayableRange() {
+    const count =
+      Math.floor(this._animationListEl.offsetHeight / this._itemHeight) + 1;
+    const index = Math.floor(
+      this._inspectionPanelEl.scrollTop / this._itemHeight
+    );
+    this.setState({
+      displayableRange: { startIndex: index, endIndex: index + count },
+    });
+  }
+
+  updateTicks(props) {
     const { animations, timeScale } = props;
-    const tickLinesEl = ReactDOM.findDOMNode(this).querySelector(".tick-lines");
+    const tickLinesEl = this._ref.current.querySelector(".tick-lines");
     const width = tickLinesEl.offsetWidth;
     const animationDuration = timeScale.getDuration();
     const minTimeInterval =
@@ -121,11 +169,9 @@ class AnimationListContainer extends PureComponent {
       addAnimationsCurrentTimeListener,
       animations,
       direction,
-      emitEventForTest,
+      dispatch,
       getAnimatedPropertyMap,
       getNodeFromActor,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
       removeAnimationsCurrentTimeListener,
       selectAnimation,
       setAnimationsCurrentTime,
@@ -134,11 +180,12 @@ class AnimationListContainer extends PureComponent {
       simulateAnimation,
       timeScale,
     } = this.props;
-    const { ticks } = this.state;
+    const { displayableRange, ticks } = this.state;
 
     return dom.div(
       {
         className: "animation-list-container",
+        ref: this._ref,
       },
       ProgressInspectionPanel({
         indicator: CurrentTimeScrubber({
@@ -150,11 +197,10 @@ class AnimationListContainer extends PureComponent {
         }),
         list: AnimationList({
           animations,
-          emitEventForTest,
+          dispatch,
+          displayableRange,
           getAnimatedPropertyMap,
           getNodeFromActor,
-          onHideBoxModelHighlighter,
-          onShowBoxModelHighlighterForNode,
           selectAnimation,
           setHighlightedNode,
           setSelectedNode,

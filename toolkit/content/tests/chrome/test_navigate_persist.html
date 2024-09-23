@@ -10,7 +10,6 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1460639
   <link rel="stylesheet" type="text/css" href="chrome://global/skin"/>
   <link rel="stylesheet" type="text/css" href="chrome://mochikit/content/tests/SimpleTest/test.css"/>
   <script type="application/javascript">
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
     SimpleTest.waitForExplicitFinish();
 
     function navigateWindowTo(win, url) {
@@ -25,15 +24,22 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1460639
       });
     }
 
-    function resize(win, size) {
-      let resizePromise = new Promise(resolve => {
-        if (win.outerWidth === size && win.outerHeight === size) {
+    function promiseMaybeResizeEvent(win, expectedSize) {
+      return new Promise(resolve => {
+        // If the size is already as expected, then there may be no resize
+        // event.
+        if (win.outerWidth === expectedSize
+            && win.outerHeight === expectedSize) {
           resolve();
         }
         win.addEventListener("resize", () => {
           resolve();
         }, {once: true});
       });
+    }
+
+    function resize(win, size) {
+      const resizePromise = promiseMaybeResizeEvent(win, size);
       win.resizeTo(size, size);
       return resizePromise;
     }
@@ -44,7 +50,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1460639
       // first loading about:blank and then navigating to window_navigate_persist.html.
       const PERSIST_SIZE = 200;
       // First, load the document and resize it so the size is persisted.
-      let win = window.docShell.rootTreeItem.domWindow
+      let win = window.browsingContext.topChromeWindow
                       .openDialog("window_navigate_persist.html", "_blank", `chrome,all,dialog=no`);
       await SimpleTest.promiseFocus(win);
       await resize(win, PERSIST_SIZE);
@@ -53,13 +59,14 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1460639
       win.close();
 
       // Now mimic early first paint.
-      win = window.docShell.rootTreeItem.domWindow
+      win = window.browsingContext.topChromeWindow
                   .openDialog("about:blank", "_blank", `chrome,all,dialog=no`);
       await SimpleTest.promiseFocus(win, true);
       isnot(win.outerWidth, PERSIST_SIZE, "Initial window width is not the persisted size");
       isnot(win.outerHeight, PERSIST_SIZE, "Initial window height is not the persisted size");
 
       await navigateWindowTo(win, "window_navigate_persist.html");
+      await promiseMaybeResizeEvent(win, PERSIST_SIZE);
       is(win.outerWidth, PERSIST_SIZE, "Window width is persisted");
       is(win.outerHeight, PERSIST_SIZE, "Window height is persisted");
       win.close();

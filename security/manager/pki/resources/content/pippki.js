@@ -10,10 +10,6 @@
  * pippki UI js files.
  */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
-
 function setText(id, value) {
   let element = document.getElementById(id);
   if (!element) {
@@ -30,31 +26,19 @@ async function viewCertHelper(parent, cert, openingOption = "tab") {
     return;
   }
 
-  if (Services.prefs.getBoolPref("security.aboutcertificate.enabled")) {
-    let win = Services.wm.getMostRecentBrowserWindow();
-    let results = await asyncDetermineUsages(cert);
-    let chain = getBestChain(results);
-    if (!chain) {
-      chain = [cert];
-    }
-    let certs = chain.map(elem =>
-      encodeURIComponent(elem.getBase64DERString())
-    );
-    let certsStringURL = certs.map(elem => `cert=${elem}`);
-    certsStringURL = certsStringURL.join("&");
-    let url = `about:certificate?${certsStringURL}`;
-    let opened = win.switchToTabHavingURI(url, false, {});
-    if (!opened) {
-      win.openTrustedLinkIn(url, openingOption);
-    }
-  } else {
-    Services.ww.openWindow(
-      parent && parent.docShell.rootTreeItem.domWindow,
-      "chrome://pippki/content/certViewer.xhtml",
-      "_blank",
-      "centerscreen,chrome",
-      cert
-    );
+  let win = Services.wm.getMostRecentBrowserWindow();
+  let results = await asyncDetermineUsages(cert);
+  let chain = getBestChain(results);
+  if (!chain) {
+    chain = [cert];
+  }
+  let certs = chain.map(elem => encodeURIComponent(elem.getBase64DERString()));
+  let certsStringURL = certs.map(elem => `cert=${elem}`);
+  certsStringURL = certsStringURL.join("&");
+  let url = `about:certificate?${certsStringURL}`;
+  let opened = win.switchToTabHavingURI(url, false, {});
+  if (!opened) {
+    win.openTrustedLinkIn(url, openingOption);
   }
 }
 
@@ -86,9 +70,7 @@ function alertPromptService(title, message) {
   // XXX Bug 1425832 - Using Services.prompt here causes tests to report memory
   // leaks.
   // eslint-disable-next-line mozilla/use-services
-  var ps = Cc["@mozilla.org/embedcomp/prompt-service;1"].getService(
-    Ci.nsIPromptService
-  );
+  var ps = Cc["@mozilla.org/prompter;1"].getService(Ci.nsIPromptService);
   ps.alert(window, title, message);
 }
 
@@ -100,7 +82,7 @@ const DEFAULT_CERT_EXTENSION = "crt";
  *
  * @param {nsIX509Cert} cert
  *        The cert to generate a filename for.
- * @returns {String}
+ * @returns {string}
  *          Generated filename.
  */
 function certToFilename(cert) {
@@ -139,14 +121,13 @@ async function exportToFile(parent, cert) {
     "pkcs7-chain": "*.p7c",
   };
   let [saveCertAs, ...formatLabels] = await document.l10n.formatValues(
-    [
-      "save-cert-as",
-      ...Object.keys(formats).map(f => "cert-format-" + f),
-    ].map(id => ({ id }))
+    ["save-cert-as", ...Object.keys(formats).map(f => "cert-format-" + f)].map(
+      id => ({ id })
+    )
   );
 
   var fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-  fp.init(parent, saveCertAs, Ci.nsIFilePicker.modeSave);
+  fp.init(parent.browsingContext, saveCertAs, Ci.nsIFilePicker.modeSave);
   fp.defaultString = certToFilename(cert);
   fp.defaultExtension = DEFAULT_CERT_EXTENSION;
   for (let format of Object.values(formats)) {
@@ -173,7 +154,7 @@ async function exportToFile(parent, cert) {
       }
       break;
     case 2:
-      // OS.File.writeAtomic requires a utf-8 string or a typed array.
+      // IOUtils.write requires a typed array.
       // nsIX509Cert.getRawDER() returns an array (not a typed array), so we
       // convert it here.
       content = Uint8Array.from(cert.getRawDER());
@@ -191,8 +172,13 @@ async function exportToFile(parent, cert) {
       content = getPEMString(cert);
       break;
   }
+
+  if (typeof content === "string") {
+    content = new TextEncoder().encode(content);
+  }
+
   try {
-    await OS.File.writeAtomic(fp.file.path, content);
+    await IOUtils.write(fp.file.path, content);
   } catch (ex) {
     let title = await document.l10n.formatValue("write-file-failure");
     alertPromptService(title, ex.toString());
@@ -223,13 +209,12 @@ const certificateUsages = {
 };
 
 /**
- * Returns a promise that will resolve with a results array (see
- * `displayUsages` in certViewer.js) consisting of what usages the given
- * certificate successfully verified for.
+ * Returns a promise that will resolve with a results array consisting of what
+ * usages the given certificate successfully verified for.
  *
  * @param {nsIX509Cert} cert
  *        The certificate to determine valid usages for.
- * @return {Promise}
+ * @returns {Promise}
  *        A promise that will resolve with the results of the verifications.
  */
 function asyncDetermineUsages(cert) {
@@ -240,7 +225,7 @@ function asyncDetermineUsages(cert) {
   );
   Object.keys(certificateUsages).forEach(usageString => {
     promises.push(
-      new Promise((resolve, reject) => {
+      new Promise(resolve => {
         let usage = certificateUsages[usageString];
         certdb.asyncVerifyCertAtTime(
           cert,
@@ -248,7 +233,7 @@ function asyncDetermineUsages(cert) {
           0,
           null,
           now,
-          (aPRErrorCode, aVerifiedChain, aHasEVPolicy) => {
+          (aPRErrorCode, aVerifiedChain) => {
             resolve({
               usageString,
               errorCode: aPRErrorCode,
@@ -263,16 +248,14 @@ function asyncDetermineUsages(cert) {
 }
 
 /**
- * Given a results array (see `displayUsages` in certViewer.js), returns the
- * "best" verified certificate chain. Since the primary use case is for TLS
- * server certificates in Firefox, such a verified chain will be returned if
- * present. Otherwise, the priority is: TLS client certificate, email signer,
- * email recipient, CA. Returns null if no usage verified successfully.
+ * Given a results array, returns the "best" verified certificate chain. Since
+ * the primary use case is for TLS server certificates in Firefox, such a
+ * verified chain will be returned if present. Otherwise, the priority is: TLS
+ * client certificate, email signer, email recipient, CA. Returns null if no
+ * usage verified successfully.
  *
  * @param {Array} results
  *        An array of results from `asyncDetermineUsages`. See `displayUsages`.
- * @param {Number} usage
- *        A numerical value corresponding to a usage. See `certificateUsages`.
  * @returns {Array} An array of `nsIX509Cert` representing the verified
  *          certificate chain for the given usage, or null if there is none.
  */
@@ -294,13 +277,12 @@ function getBestChain(results) {
 }
 
 /**
- * Given a results array (see `displayUsages` in certViewer.js), returns the
- * chain corresponding to the desired usage, if verifying for that usage
- * succeeded. Returns null otherwise.
+ * Given a results array, returns the chain corresponding to the desired usage,
+ * if verifying for that usage succeeded. Returns null otherwise.
  *
  * @param {Array} results
  *        An array of results from `asyncDetermineUsages`. See `displayUsages`.
- * @param {Number} usage
+ * @param {number} usage
  *        A numerical value corresponding to a usage. See `certificateUsages`.
  * @returns {Array} An array of `nsIX509Cert` representing the verified
  *          certificate chain for the given usage, or null if there is none.

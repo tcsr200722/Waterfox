@@ -9,6 +9,7 @@
 #include "js/ArrayBuffer.h"  // JS::{GetArrayBuffer{ByteLength,Data},IsArrayBufferObject}
 #include "js/RootingAPI.h"  // JS::{Handle,Rooted}
 #include "js/Value.h"       // JS::Value
+#include "mozilla/Span.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/dom/ScriptSettings.h"
 
@@ -17,12 +18,9 @@ using mozilla::dom::RootingCx;
 NS_IMPL_ISUPPORTS(ArrayBufferInputStream, nsIArrayBufferInputStream,
                   nsIInputStream);
 
-ArrayBufferInputStream::ArrayBufferInputStream()
-    : mBufferLength(0), mPos(0), mClosed(false) {}
-
 NS_IMETHODIMP
-ArrayBufferInputStream::SetData(JS::Handle<JS::Value> aBuffer,
-                                uint32_t aByteOffset, uint32_t aLength) {
+ArrayBufferInputStream::SetDataFromJS(JS::Handle<JS::Value> aBuffer,
+                                      uint64_t aByteOffset, uint64_t aLength) {
   NS_ASSERT_OWNINGTHREAD(ArrayBufferInputStream);
 
   if (!aBuffer.isObject()) {
@@ -33,11 +31,16 @@ ArrayBufferInputStream::SetData(JS::Handle<JS::Value> aBuffer,
     return NS_ERROR_FAILURE;
   }
 
-  uint32_t buflen = JS::GetArrayBufferByteLength(arrayBuffer);
-  uint32_t offset = std::min(buflen, aByteOffset);
-  uint32_t bufferLength = std::min(buflen - offset, aLength);
+  uint64_t buflen = JS::GetArrayBufferByteLength(arrayBuffer);
+  uint64_t offset = std::min(buflen, aByteOffset);
+  uint64_t bufferLength = std::min(buflen - offset, aLength);
 
-  mArrayBuffer = mozilla::MakeUniqueFallible<char[]>(bufferLength);
+  // Prevent truncation.
+  if (bufferLength > UINT32_MAX) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  mArrayBuffer = mozilla::MakeUniqueFallible<uint8_t[]>(bufferLength);
   if (!mArrayBuffer) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -46,9 +49,15 @@ ArrayBufferInputStream::SetData(JS::Handle<JS::Value> aBuffer,
 
   JS::AutoCheckCannotGC nogc;
   bool isShared;
-  char* src =
-      (char*)JS::GetArrayBufferData(arrayBuffer, &isShared, nogc) + offset;
+  uint8_t* src = JS::GetArrayBufferData(arrayBuffer, &isShared, nogc) + offset;
   memcpy(&mArrayBuffer[0], src, mBufferLength);
+  return NS_OK;
+}
+
+nsresult ArrayBufferInputStream::SetData(mozilla::UniquePtr<uint8_t[]> aBytes,
+                                         uint64_t aByteLen) {
+  mArrayBuffer = std::move(aBytes);
+  mBufferLength = aByteLen;
   return NS_OK;
 }
 
@@ -69,6 +78,11 @@ ArrayBufferInputStream::Available(uint64_t* aCount) {
     *aCount = 0;
   }
   return NS_OK;
+}
+
+NS_IMETHODIMP
+ArrayBufferInputStream::StreamStatus() {
+  return mClosed ? NS_BASE_STREAM_CLOSED : NS_OK;
 }
 
 NS_IMETHODIMP
@@ -101,8 +115,8 @@ ArrayBufferInputStream::ReadSegments(nsWriteSegmentFun writer, void* closure,
     }
 
     uint32_t written;
-    nsresult rv = writer(this, closure, &mArrayBuffer[0] + mPos, *result, count,
-                         &written);
+    nsresult rv = writer(this, closure, (char*)&mArrayBuffer[0] + mPos, *result,
+                         count, &written);
     if (NS_FAILED(rv)) {
       // InputStreams do not propagate errors to caller.
       return NS_OK;

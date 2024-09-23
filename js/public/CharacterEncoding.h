@@ -9,12 +9,15 @@
 
 #include "mozilla/Range.h"
 #include "mozilla/Span.h"
-#include "mozilla/Utf8.h"
 
 #include "js/TypeDecls.h"
 #include "js/Utility.h"
 
 class JSLinearString;
+
+namespace mozilla {
+union Utf8Unit;
+}
 
 namespace JS {
 
@@ -38,6 +41,20 @@ class Latin1Chars : public mozilla::Range<Latin1Char> {
   Latin1Chars(const char* aBytes, size_t aLength)
       : Base(reinterpret_cast<Latin1Char*>(const_cast<char*>(aBytes)),
              aLength) {}
+};
+
+/*
+ * Like Latin1Chars, but the chars are const.
+ */
+class ConstLatin1Chars : public mozilla::Range<const Latin1Char> {
+  typedef mozilla::Range<const Latin1Char> Base;
+
+ public:
+  using CharT = Latin1Char;
+
+  ConstLatin1Chars() = default;
+  ConstLatin1Chars(const Latin1Char* aChars, size_t aLength)
+      : Base(aChars, aLength) {}
 };
 
 /*
@@ -84,24 +101,6 @@ class UTF8Chars : public mozilla::Range<unsigned char> {
 };
 
 /*
- * Similar to UTF8Chars, but contains WTF-8.
- * https://simonsapin.github.io/wtf-8/
- */
-class WTF8Chars : public mozilla::Range<unsigned char> {
-  typedef mozilla::Range<unsigned char> Base;
-
- public:
-  using CharT = unsigned char;
-
-  WTF8Chars() = default;
-  WTF8Chars(char* aBytes, size_t aLength)
-      : Base(reinterpret_cast<unsigned char*>(aBytes), aLength) {}
-  WTF8Chars(const char* aBytes, size_t aLength)
-      : Base(reinterpret_cast<unsigned char*>(const_cast<char*>(aBytes)),
-             aLength) {}
-};
-
-/*
  * SpiderMonkey also deals directly with UTF-8 encoded text in some places.
  */
 class UTF8CharsZ : public mozilla::RangedPtr<unsigned char> {
@@ -143,6 +142,14 @@ class JS_PUBLIC_API ConstUTF8CharsZ {
 
   ConstUTF8CharsZ() : data_(nullptr) {}
 
+  explicit ConstUTF8CharsZ(const char* aBytes) : data_(aBytes) {
+#ifdef DEBUG
+    if (aBytes) {
+      validateWithoutLength();
+    }
+#endif
+  }
+
   ConstUTF8CharsZ(const char* aBytes, size_t aLength) : data_(aBytes) {
     MOZ_ASSERT(aBytes[aLength] == '\0');
 #ifdef DEBUG
@@ -159,6 +166,7 @@ class JS_PUBLIC_API ConstUTF8CharsZ {
  private:
 #ifdef DEBUG
   void validate(size_t aLength);
+  void validateWithoutLength();
 #endif
 };
 
@@ -227,7 +235,7 @@ class ConstTwoByteChars : public mozilla::Range<const char16_t> {
  * This method cannot trigger GC.
  */
 extern Latin1CharsZ LossyTwoByteCharsToNewLatin1CharsZ(
-    JSContext* cx, const mozilla::Range<const char16_t> tbchars);
+    JSContext* cx, const mozilla::Range<const char16_t>& tbchars);
 
 inline Latin1CharsZ LossyTwoByteCharsToNewLatin1CharsZ(JSContext* cx,
                                                        const char16_t* begin,
@@ -236,11 +244,11 @@ inline Latin1CharsZ LossyTwoByteCharsToNewLatin1CharsZ(JSContext* cx,
   return JS::LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars);
 }
 
-template <typename CharT>
-extern UTF8CharsZ CharsToNewUTF8CharsZ(JSContext* maybeCx,
-                                       const mozilla::Range<CharT> chars);
+template <typename CharT, typename Allocator>
+extern UTF8CharsZ CharsToNewUTF8CharsZ(Allocator* alloc,
+                                       const mozilla::Range<CharT>& chars);
 
-JS_PUBLIC_API uint32_t Utf8ToOneUcs4Char(const uint8_t* utf8Buffer,
+JS_PUBLIC_API char32_t Utf8ToOneUcs4Char(const uint8_t* utf8Buffer,
                                          int utf8Length);
 
 /*
@@ -250,15 +258,8 @@ JS_PUBLIC_API uint32_t Utf8ToOneUcs4Char(const uint8_t* utf8Buffer,
  *   its length;  the length value excludes the trailing null.
  */
 extern JS_PUBLIC_API TwoByteCharsZ
-UTF8CharsToNewTwoByteCharsZ(JSContext* cx, const UTF8Chars utf8, size_t* outlen,
-                            arena_id_t destArenaId);
-
-/*
- * Like UTF8CharsToNewTwoByteCharsZ, but for WTF8Chars.
- */
-extern JS_PUBLIC_API TwoByteCharsZ
-WTF8CharsToNewTwoByteCharsZ(JSContext* cx, const WTF8Chars wtf8, size_t* outlen,
-                            arena_id_t destArenaId);
+UTF8CharsToNewTwoByteCharsZ(JSContext* cx, const UTF8Chars& utf8,
+                            size_t* outlen, arena_id_t destArenaId);
 
 /*
  * Like UTF8CharsToNewTwoByteCharsZ, but for ConstUTF8CharsZ.
@@ -273,7 +274,7 @@ UTF8CharsToNewTwoByteCharsZ(JSContext* cx, const ConstUTF8CharsZ& utf8,
  * malformed UTF-8 input.
  */
 extern JS_PUBLIC_API TwoByteCharsZ
-LossyUTF8CharsToNewTwoByteCharsZ(JSContext* cx, const UTF8Chars utf8,
+LossyUTF8CharsToNewTwoByteCharsZ(JSContext* cx, const UTF8Chars& utf8,
                                  size_t* outlen, arena_id_t destArenaId);
 
 extern JS_PUBLIC_API TwoByteCharsZ
@@ -296,7 +297,7 @@ JS_PUBLIC_API size_t GetDeflatedUTF8StringLength(JSLinearString* s);
  * linear.
  *
  * Given |JSString* str = JS_FORGET_STRING_LINEARNESS(src)|,
- * if |JS_StringHasLatin1Chars(str)|, then |src| is always fully converted
+ * if |JS::StringHasLatin1Chars(str)|, then |src| is always fully converted
  * if |dst.Length() >= JS_GetStringLength(str) * 2|. Otherwise |src| is
  * always fully converted if |dst.Length() >= JS_GetStringLength(str) * 3|.
  *
@@ -316,7 +317,7 @@ enum class SmallestEncoding { ASCII, Latin1, UTF16 };
  * codepoints are <128 then ASCII, otherwise if all codepoints are <256
  * Latin-1, else UTF16.
  */
-JS_PUBLIC_API SmallestEncoding FindSmallestEncoding(UTF8Chars utf8);
+JS_PUBLIC_API SmallestEncoding FindSmallestEncoding(const UTF8Chars& utf8);
 
 /*
  * Return a null-terminated Latin-1 string copied from the input string,
@@ -325,7 +326,7 @@ JS_PUBLIC_API SmallestEncoding FindSmallestEncoding(UTF8Chars utf8);
  * Latin1CharsZ() on failure.
  */
 extern JS_PUBLIC_API Latin1CharsZ
-UTF8CharsToNewLatin1CharsZ(JSContext* cx, const UTF8Chars utf8, size_t* outlen,
+UTF8CharsToNewLatin1CharsZ(JSContext* cx, const UTF8Chars& utf8, size_t* outlen,
                            arena_id_t destArenaId);
 
 /*
@@ -334,7 +335,7 @@ UTF8CharsToNewLatin1CharsZ(JSContext* cx, const UTF8Chars utf8, size_t* outlen,
  * codepoints are replaced by '?'.  Returns Latin1CharsZ() on failure.
  */
 extern JS_PUBLIC_API Latin1CharsZ
-LossyUTF8CharsToNewLatin1CharsZ(JSContext* cx, const UTF8Chars utf8,
+LossyUTF8CharsToNewLatin1CharsZ(JSContext* cx, const UTF8Chars& utf8,
                                 size_t* outlen, arena_id_t destArenaId);
 
 /*
@@ -348,6 +349,40 @@ extern JS_PUBLIC_API bool StringIsASCII(const char* s);
  * i.e. < 0x80, false otherwise.
  */
 extern JS_PUBLIC_API bool StringIsASCII(mozilla::Span<const char> s);
+
+/**
+ * Encode a narrow multibyte character string to a UTF-8 string.
+ *
+ * NOTE: Should only be used when interacting with POSIX/OS functions and not
+ *       for encoding ASCII/Latin-1/etc. strings to UTF-8.
+ */
+extern JS_PUBLIC_API JS::UniqueChars EncodeNarrowToUtf8(JSContext* cx,
+                                                        const char* chars);
+
+/**
+ * Encode a wide string to a UTF-8 string.
+ *
+ * NOTE: Should only be used when interacting with Windows API functions.
+ */
+extern JS_PUBLIC_API JS::UniqueChars EncodeWideToUtf8(JSContext* cx,
+                                                      const wchar_t* chars);
+
+/**
+ * Encode a UTF-8 string to a narrow multibyte character string.
+ *
+ * NOTE: Should only be used when interacting with POSIX/OS functions and not
+ *       for encoding UTF-8 to ASCII/Latin-1/etc. strings.
+ */
+extern JS_PUBLIC_API JS::UniqueChars EncodeUtf8ToNarrow(JSContext* cx,
+                                                        const char* chars);
+
+/**
+ * Encode a UTF-8 string to a wide string.
+ *
+ * NOTE: Should only be used when interacting with Windows API functions.
+ */
+extern JS_PUBLIC_API JS::UniqueWideChars EncodeUtf8ToWide(JSContext* cx,
+                                                          const char* chars);
 
 }  // namespace JS
 

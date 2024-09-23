@@ -1,15 +1,10 @@
-ChromeUtils.defineModuleGetter(
-  this,
-  "SiteDataTestUtils",
-  "resource://testing-common/SiteDataTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "DownloadUtils",
-  "resource://gre/modules/DownloadUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  DownloadUtils: "resource://gre/modules/DownloadUtils.sys.mjs",
+  SiteDataTestUtils: "resource://testing-common/SiteDataTestUtils.sys.mjs",
+});
 
 const TEST_ORIGIN = "https://example.com";
+// eslint-disable-next-line @microsoft/sdl/no-insecure-url
 const TEST_HTTP_ORIGIN = "http://example.com";
 const TEST_SUB_ORIGIN = "https://test1.example.com";
 const REMOVE_DIALOG_URL =
@@ -23,34 +18,18 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 
 // Test opening the correct certificate information when clicking "Show certificate".
 add_task(async function test_ShowCertificate() {
-  SpecialPowers.pushPrefEnv({
-    set: [["security.aboutcertificate.enabled", true]],
-  });
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_ORIGIN);
-  let tab2;
-  let pageLoaded;
-  await BrowserTestUtils.openNewForegroundTab(
+  let tab2 = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
-    () => {
-      gBrowser.selectedTab = BrowserTestUtils.addTab(
-        gBrowser,
-        TEST_ORIGIN_CERT_ERROR
-      );
-      let browser = gBrowser.selectedBrowser;
-      tab2 = gBrowser.selectedTab;
-      pageLoaded = BrowserTestUtils.waitForErrorPage(browser);
-    },
-    false
+    TEST_SUB_ORIGIN
   );
 
-  await pageLoaded;
-
-  let pageInfo = BrowserPageInfo(TEST_ORIGIN_CERT_ERROR, "securityTab");
+  let pageInfo = BrowserCommands.pageInfo(TEST_SUB_ORIGIN, "securityTab");
   await BrowserTestUtils.waitForEvent(pageInfo, "load");
   let pageInfoDoc = pageInfo.document;
   let securityTab = pageInfoDoc.getElementById("securityTab");
   await TestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(securityTab),
+    () => BrowserTestUtils.isVisible(securityTab),
     "Security tab should be visible."
   );
 
@@ -58,13 +37,13 @@ add_task(async function test_ShowCertificate() {
     let loaded = BrowserTestUtils.waitForNewTab(gBrowser, null, true);
     let viewCertButton = pageInfoDoc.getElementById("security-view-cert");
     await TestUtils.waitForCondition(
-      () => BrowserTestUtils.is_visible(viewCertButton),
+      () => BrowserTestUtils.isVisible(viewCertButton),
       "view cert button should be visible."
     );
     viewCertButton.click();
     await loaded;
 
-    await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+    await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
       let certificateSection = await ContentTaskUtils.waitForCondition(() => {
         return content.document.querySelector("certificate-section");
       }, "Certificate section found");
@@ -73,11 +52,7 @@ add_task(async function test_ShowCertificate() {
         .querySelector(".subject-name")
         .shadowRoot.querySelector(".common-name")
         .shadowRoot.querySelector(".info").textContent;
-      is(
-        commonName,
-        "expired.example.com",
-        "Should have the same common name."
-      );
+      is(commonName, "example.com", "Should have the same common name.");
     });
 
     gBrowser.removeCurrentTab(); // closes about:certificate
@@ -99,13 +74,13 @@ add_task(async function test_image() {
   let url = TEST_PATH + "moz.png";
   await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  let pageInfo = BrowserPageInfo(url, "securityTab");
+  let pageInfo = BrowserCommands.pageInfo(url, "securityTab");
   await BrowserTestUtils.waitForEvent(pageInfo, "load");
   let pageInfoDoc = pageInfo.document;
   let securityTab = pageInfoDoc.getElementById("securityTab");
 
   await TestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(securityTab),
+    () => BrowserTestUtils.isVisible(securityTab),
     "Security tab should be visible."
   );
 
@@ -153,13 +128,16 @@ add_task(async function test_CertificateError() {
 
   await pageLoaded;
 
-  let pageInfo = BrowserPageInfo(TEST_ORIGIN_CERT_ERROR, "securityTab");
+  let pageInfo = BrowserCommands.pageInfo(
+    TEST_ORIGIN_CERT_ERROR,
+    "securityTab"
+  );
   await BrowserTestUtils.waitForEvent(pageInfo, "load");
   let pageInfoDoc = pageInfo.document;
   let securityTab = pageInfoDoc.getElementById("securityTab");
 
   await TestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(securityTab),
+    () => BrowserTestUtils.isVisible(securityTab),
     "Security tab should be visible."
   );
 
@@ -173,8 +151,8 @@ add_task(async function test_CertificateError() {
   );
 
   await TestUtils.waitForCondition(
-    () => verifier.value === "Mozilla Testing",
-    `Value of verifier should be "Mozilla Testing", instead got "${verifier.value}".`
+    () => verifier.value === "Not specified",
+    `Value of verifier should be "Not specified", instead got "${verifier.value}".`
   );
 
   await TestUtils.waitForCondition(
@@ -190,12 +168,12 @@ add_task(async function test_CertificateError() {
 add_task(async function test_SecurityHTTP() {
   await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_HTTP_ORIGIN);
 
-  let pageInfo = BrowserPageInfo(TEST_HTTP_ORIGIN, "securityTab");
+  let pageInfo = BrowserCommands.pageInfo(TEST_HTTP_ORIGIN, "securityTab");
   await BrowserTestUtils.waitForEvent(pageInfo, "load");
   let pageInfoDoc = pageInfo.document;
   let securityTab = pageInfoDoc.getElementById("securityTab");
   await TestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(securityTab),
+    () => BrowserTestUtils.isVisible(securityTab),
     "Security tab should be visible."
   );
 
@@ -226,12 +204,12 @@ add_task(async function test_SecurityHTTP() {
 add_task(async function test_ValidCert() {
   await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_ORIGIN);
 
-  let pageInfo = BrowserPageInfo(TEST_ORIGIN, "securityTab");
+  let pageInfo = BrowserCommands.pageInfo(TEST_ORIGIN, "securityTab");
   await BrowserTestUtils.waitForEvent(pageInfo, "load");
   let pageInfoDoc = pageInfo.document;
   let securityTab = pageInfoDoc.getElementById("securityTab");
   await TestUtils.waitForCondition(
-    () => BrowserTestUtils.is_visible(securityTab),
+    () => BrowserTestUtils.isVisible(securityTab),
     "Security tab should be visible."
   );
 
@@ -262,11 +240,11 @@ add_task(async function test_ValidCert() {
 add_task(async function test_SiteData() {
   await SiteDataTestUtils.addToIndexedDB(TEST_ORIGIN);
 
-  await BrowserTestUtils.withNewTab(TEST_ORIGIN, async function(browser) {
+  await BrowserTestUtils.withNewTab(TEST_ORIGIN, async function () {
     let totalUsage = await SiteDataTestUtils.getQuotaUsage(TEST_ORIGIN);
     Assert.greater(totalUsage, 0, "The total usage should not be 0");
 
-    let pageInfo = BrowserPageInfo(TEST_ORIGIN, "securityTab");
+    let pageInfo = BrowserCommands.pageInfo(TEST_ORIGIN, "securityTab");
     await BrowserTestUtils.waitForEvent(pageInfo, "load");
     let pageInfoDoc = pageInfo.document;
 
@@ -311,12 +289,24 @@ add_task(async function test_SiteData() {
 // Test displaying and removing cookies.
 add_task(async function test_Cookies() {
   // Add some test cookies.
-  SiteDataTestUtils.addToCookies(TEST_ORIGIN, "test1", "1");
-  SiteDataTestUtils.addToCookies(TEST_ORIGIN, "test2", "2");
-  SiteDataTestUtils.addToCookies(TEST_SUB_ORIGIN, "test1", "1");
+  SiteDataTestUtils.addToCookies({
+    origin: TEST_ORIGIN,
+    name: "test1",
+    value: "1",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: TEST_ORIGIN,
+    name: "test2",
+    value: "2",
+  });
+  SiteDataTestUtils.addToCookies({
+    origin: TEST_SUB_ORIGIN,
+    name: "test1",
+    value: "1",
+  });
 
-  await BrowserTestUtils.withNewTab(TEST_ORIGIN, async function(browser) {
-    let pageInfo = BrowserPageInfo(TEST_ORIGIN, "securityTab");
+  await BrowserTestUtils.withNewTab(TEST_ORIGIN, async function () {
+    let pageInfo = BrowserCommands.pageInfo(TEST_ORIGIN, "securityTab");
     await BrowserTestUtils.waitForEvent(pageInfo, "load");
 
     let pageInfoDoc = pageInfo.document;
@@ -333,7 +323,9 @@ add_task(async function test_Cookies() {
 
     let cookiesCleared = TestUtils.topicObserved(
       "cookie-changed",
-      (subj, data) => data == "deleted"
+      subj =>
+        subj.QueryInterface(Ci.nsICookieNotification).action ==
+        Ci.nsICookieNotification.COOKIE_DELETED
     );
 
     let removeDialogPromise = BrowserTestUtils.promiseAlertDialogOpen(

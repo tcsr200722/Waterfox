@@ -4,11 +4,11 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "WebRequest",
-  "resource://gre/modules/WebRequest.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  WebRequest: "resource://gre/modules/WebRequest.sys.mjs",
+});
+
+var { parseMatchPatterns } = ExtensionUtils;
 
 // The guts of a WebRequest event handler.  Takes care of converting
 // |details| parameter when invoking listeners.
@@ -21,7 +21,7 @@ function registerEvent(
   remoteTab = null
 ) {
   let listener = async data => {
-    let event = data.serialize(eventName, extension);
+    let event = data.serialize(eventName);
     if (data.registerTraceableChannel) {
       // If this is a primed listener, no tabParent was passed in here,
       // but the convert() callback later in this function will be called
@@ -39,11 +39,11 @@ function registerEvent(
   let filter2 = {};
   if (filter.urls) {
     let perms = new MatchPatternSet([
-      ...extension.whiteListedHosts.patterns,
+      ...extension.allowedOrigins.patterns,
       ...extension.optionalOrigins.patterns,
     ]);
 
-    filter2.urls = new MatchPatternSet(filter.urls);
+    filter2.urls = parseMatchPatterns(filter.urls);
 
     if (!perms.overlapsAll(filter2.urls)) {
       Cu.reportError(
@@ -64,12 +64,16 @@ function registerEvent(
     filter2.incognito = filter.incognito;
   }
 
-  let blockingAllowed = extension.hasPermission("webRequestBlocking");
+  let blockingAllowed =
+    eventName == "onAuthRequired"
+      ? extension.hasPermission("webRequestBlocking") ||
+        extension.hasPermission("webRequestAuthProvider")
+      : extension.hasPermission("webRequestBlocking");
 
   let info2 = [];
   if (info) {
     for (let desc of info) {
-      if (desc == "blocking" && !blockingAllowed) {
+      if ((desc == "blocking" || desc == "asyncBlocking") && !blockingAllowed) {
         // This is usually checked in the child process (based on the API schemas, where these options
         // should be checked with the "webRequestBlockingPermissionRequired" postprocess property),
         // but it is worth to also check it here just in case a new webRequest has been added and
@@ -102,48 +106,97 @@ function registerEvent(
   };
 }
 
-function makeWebRequestEvent(context, name) {
+function makeWebRequestEventAPI(context, event, extensionApi) {
   return new EventManager({
     context,
-    name: `webRequest.${name}`,
-    persistent: {
-      module: "webRequest",
-      event: name,
-    },
-    register: (fire, filter, info) => {
-      return registerEvent(
-        context.extension,
-        name,
-        fire,
-        filter,
-        info,
-        context.xulBrowser.frameLoader.remoteTab
-      ).unregister;
-    },
+    module: "webRequest",
+    event,
+    extensionApi,
   }).api();
 }
 
-this.webRequest = class extends ExtensionAPI {
-  primeListener(extension, event, fire, params) {
-    return registerEvent(extension, event, fire, ...params);
+function makeWebRequestEventRegistrar(event) {
+  return function ({ fire, context }, params) {
+    // ExtensionAPIPersistent makes sure this function will be bound
+    // to the ExtensionAPIPersistent instance.
+    const { extension } = this;
+
+    const [filter, info] = params;
+
+    // When we are registering the real listener coming from the extension context,
+    // we should get the additional remoteTab parameter value from the extension context
+    // (which is then used by the registerTraceableChannel helper to register stream
+    // filters to the channel and associate them to the extension context that has
+    // created it and will be handling the filter onstart/ondata/onend events).
+    let remoteTab;
+    if (context) {
+      remoteTab = context.xulBrowser.frameLoader.remoteTab;
+    }
+
+    return registerEvent(extension, event, fire, filter, info, remoteTab);
+  };
+}
+
+this.webRequest = class extends ExtensionAPIPersistent {
+  primeListener(event, fire, params, isInStartup) {
+    // During early startup if the listener does not use blocking we do not prime it.
+    if (
+      !isInStartup ||
+      params[1]?.some(v => v === "blocking" || v === "asyncBlocking")
+    ) {
+      return super.primeListener(event, fire, params, isInStartup);
+    }
   }
+
+  PERSISTENT_EVENTS = {
+    onBeforeRequest: makeWebRequestEventRegistrar("onBeforeRequest"),
+    onBeforeSendHeaders: makeWebRequestEventRegistrar("onBeforeSendHeaders"),
+    onSendHeaders: makeWebRequestEventRegistrar("onSendHeaders"),
+    onHeadersReceived: makeWebRequestEventRegistrar("onHeadersReceived"),
+    onAuthRequired: makeWebRequestEventRegistrar("onAuthRequired"),
+    onBeforeRedirect: makeWebRequestEventRegistrar("onBeforeRedirect"),
+    onResponseStarted: makeWebRequestEventRegistrar("onResponseStarted"),
+    onErrorOccurred: makeWebRequestEventRegistrar("onErrorOccurred"),
+    onCompleted: makeWebRequestEventRegistrar("onCompleted"),
+  };
 
   getAPI(context) {
     return {
       webRequest: {
-        onBeforeRequest: makeWebRequestEvent(context, "onBeforeRequest"),
-        onBeforeSendHeaders: makeWebRequestEvent(
+        onBeforeRequest: makeWebRequestEventAPI(
           context,
-          "onBeforeSendHeaders"
+          "onBeforeRequest",
+          this
         ),
-        onSendHeaders: makeWebRequestEvent(context, "onSendHeaders"),
-        onHeadersReceived: makeWebRequestEvent(context, "onHeadersReceived"),
-        onAuthRequired: makeWebRequestEvent(context, "onAuthRequired"),
-        onBeforeRedirect: makeWebRequestEvent(context, "onBeforeRedirect"),
-        onResponseStarted: makeWebRequestEvent(context, "onResponseStarted"),
-        onErrorOccurred: makeWebRequestEvent(context, "onErrorOccurred"),
-        onCompleted: makeWebRequestEvent(context, "onCompleted"),
-        getSecurityInfo: function(requestId, options = {}) {
+        onBeforeSendHeaders: makeWebRequestEventAPI(
+          context,
+          "onBeforeSendHeaders",
+          this
+        ),
+        onSendHeaders: makeWebRequestEventAPI(context, "onSendHeaders", this),
+        onHeadersReceived: makeWebRequestEventAPI(
+          context,
+          "onHeadersReceived",
+          this
+        ),
+        onAuthRequired: makeWebRequestEventAPI(context, "onAuthRequired", this),
+        onBeforeRedirect: makeWebRequestEventAPI(
+          context,
+          "onBeforeRedirect",
+          this
+        ),
+        onResponseStarted: makeWebRequestEventAPI(
+          context,
+          "onResponseStarted",
+          this
+        ),
+        onErrorOccurred: makeWebRequestEventAPI(
+          context,
+          "onErrorOccurred",
+          this
+        ),
+        onCompleted: makeWebRequestEventAPI(context, "onCompleted", this),
+        getSecurityInfo: function (requestId, options = {}) {
           return WebRequest.getSecurityInfo({
             id: requestId,
             policy: context.extension.policy,
@@ -151,7 +204,7 @@ this.webRequest = class extends ExtensionAPI {
             options,
           });
         },
-        handlerBehaviorChanged: function() {
+        handlerBehaviorChanged: function () {
           // TODO: Flush all caches.
         },
       },

@@ -10,8 +10,6 @@
 #include "nsISupports.h"
 #include "nsRect.h"
 
-class nsIEventTarget;
-
 namespace mozilla {
 namespace image {
 
@@ -27,10 +25,8 @@ namespace image {
  * possible.  In the long term, it would be ideal to get to a place where we can
  * just use the imgINotificationObserver interface internally as well.
  */
-class IProgressObserver : public SupportsWeakPtr<IProgressObserver> {
+class IProgressObserver : public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(IProgressObserver)
-
   // Subclasses may or may not be XPCOM classes, so we just require that they
   // implement AddRef and Release.
   NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
@@ -44,10 +40,6 @@ class IProgressObserver : public SupportsWeakPtr<IProgressObserver> {
   virtual bool NotificationsDeferred() const = 0;
   virtual void MarkPendingNotify() = 0;
   virtual void ClearPendingNotify() = 0;
-
-  virtual already_AddRefed<nsIEventTarget> GetEventTarget() const {
-    return nullptr;
-  }
 
  protected:
   virtual ~IProgressObserver() = default;

@@ -4,42 +4,35 @@
 
 ignoreAllUncaughtExceptions();
 
-add_task(async function() {
+add_task(async function () {
   info("Clicking suggestion list while composing");
+
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      [
+        "browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar",
+        false,
+      ],
+    ],
+  });
 
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:home" },
-    async function(browser) {
+    async function (browser) {
       // Add a test engine that provides suggestions and switch to it.
-      let currEngine = await Services.search.getDefault();
-
       let engine;
       await promiseContentSearchChange(browser, async () => {
-        engine = await promiseNewEngine("searchSuggestionEngine.xml");
-        await Services.search.setDefault(engine);
+        engine = await SearchTestUtils.installOpenSearchEngine({
+          url: getRootDirectory(gTestPath) + "searchSuggestionEngine.xml",
+          setAsDefault: true,
+        });
         return engine.name;
       });
 
       // Clear any search history results
-      await new Promise((resolve, reject) => {
-        FormHistory.update(
-          { op: "remove" },
-          {
-            handleError(error) {
-              reject(error);
-            },
-            handleCompletion(reason) {
-              if (!reason) {
-                resolve();
-              } else {
-                reject();
-              }
-            },
-          }
-        );
-      });
+      await FormHistory.update({ op: "remove" });
 
-      await SpecialPowers.spawn(browser, [], async function() {
+      await SpecialPowers.spawn(browser, [], async function () {
         // Start composition and type "x"
         let input = content.document.querySelector([
           "#searchText",
@@ -49,7 +42,7 @@ add_task(async function() {
       });
 
       info("Setting up the mutation observer before synthesizing composition");
-      let mutationPromise = SpecialPowers.spawn(browser, [], async function() {
+      let mutationPromise = SpecialPowers.spawn(browser, [], async function () {
         let searchController = content.wrappedJSObject.gContentSearchController;
 
         // Wait for the search suggestions to become visible.
@@ -59,19 +52,12 @@ add_task(async function() {
           "#newtab-search-text",
         ]);
 
-        await new Promise(resolve => {
-          let observer = new content.MutationObserver(() => {
-            if (input.getAttribute("aria-expanded") == "true") {
-              observer.disconnect();
-              ok(!table.hidden, "Search suggestion table unhidden");
-              resolve();
-            }
-          });
-          observer.observe(input, {
-            attributes: true,
-            attributeFilter: ["aria-expanded"],
-          });
-        });
+        await ContentTaskUtils.waitForMutationCondition(
+          input,
+          { attributeFilter: ["aria-expanded"] },
+          () => input.getAttribute("aria-expanded") == "true"
+        );
+        ok(!table.hidden, "Search suggestion table unhidden");
 
         let row = table.children[1];
         row.setAttribute("id", "TEMPID");
@@ -118,11 +104,7 @@ add_task(async function() {
         browser
       );
       await loadPromise;
-
-      Services.search.setDefault(currEngine);
-      try {
-        await Services.search.removeEngine(engine);
-      } catch (ex) {}
     }
   );
+  await SpecialPowers.popPrefEnv();
 });

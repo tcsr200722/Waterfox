@@ -5,7 +5,7 @@
 
 add_task(async function doorhanger_bc_downloadOptIn_bgWin() {
   function getBackgroundWindowHandler() {
-    return async function() {
+    return async function () {
       await TestUtils.waitForCondition(
         () => PanelUI.menuButton.hasAttribute("badge-status"),
         "Background window has a badge.",
@@ -37,11 +37,6 @@ add_task(async function doorhanger_bc_downloadOptIn_bgWin() {
       await SimpleTest.promiseFocus(window);
       await popupShownPromise;
 
-      checkWhatsNewLink(
-        window,
-        "update-available-whats-new",
-        gDefaultWhatsNewURL
-      );
       let buttonEl = getNotificationButton(
         window,
         "update-available",

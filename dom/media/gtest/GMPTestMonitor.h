@@ -8,29 +8,29 @@
 
 #include "nsThreadUtils.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/SpinEventLoopUntil.h"
 
 class GMPTestMonitor {
  public:
   GMPTestMonitor() : mFinished(false) {}
 
   void AwaitFinished() {
-    MOZ_ASSERT(NS_IsMainThread());
-    mozilla::SpinEventLoopUntil([&]() { return mFinished; });
+    MOZ_RELEASE_ASSERT(NS_IsMainThread());
+    mozilla::SpinEventLoopUntil("GMPTestMonitor::AwaitFinished"_ns,
+                                [&]() { return mFinished; });
     mFinished = false;
   }
 
  private:
   void MarkFinished() {
-    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_RELEASE_ASSERT(NS_IsMainThread());
     mFinished = true;
   }
 
  public:
   void SetFinished() {
-    mozilla::SchedulerGroup::Dispatch(mozilla::TaskCategory::Other,
-                                      mozilla::NewNonOwningRunnableMethod(
-                                          "GMPTestMonitor::MarkFinished", this,
-                                          &GMPTestMonitor::MarkFinished));
+    mozilla::SchedulerGroup::Dispatch(mozilla::NewNonOwningRunnableMethod(
+        "GMPTestMonitor::MarkFinished", this, &GMPTestMonitor::MarkFinished));
   }
 
  private:

@@ -5,34 +5,25 @@
 
 "use strict";
 
-/* exported attachUpdateHandler, gBrowser, getBrowserElement,
- *          installAddonsFromFilePicker, isCorrectlySigned, isDisabledUnsigned,
- *          isDiscoverEnabled, isPending, loadReleaseNotes, openOptionsInTab,
- *          promiseEvent, shouldShowPermissionsPrompt, showPermissionsPrompt,
+/* exported attachUpdateHandler, detachUpdateHandler,
+ *          getBrowserElement, installAddonsFromFilePicker,
+ *          isCorrectlySigned, isDisabledUnsigned, isDiscoverEnabled,
+ *          isPending, loadReleaseNotes, openOptionsInTab, promiseEvent,
+ *          shouldShowPermissionsPrompt, showPermissionsPrompt,
  *          PREF_UI_LASTCATEGORY */
 
-const { AddonSettings } = ChromeUtils.import(
-  "resource://gre/modules/addons/AddonSettings.jsm"
+const { AddonSettings } = ChromeUtils.importESModule(
+  "resource://gre/modules/addons/AddonSettings.sys.mjs"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "WEBEXT_PERMISSION_PROMPTS",
-  "extensions.webextPermissionPrompts",
-  false
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "Extension",
-  "resource://gre/modules/Extension.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  Extension: "resource://gre/modules/Extension.sys.mjs",
+});
 
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
@@ -68,48 +59,54 @@ function promiseEvent(event, target, capture = false) {
   });
 }
 
-function attachUpdateHandler(install) {
-  if (!WEBEXT_PERMISSION_PROMPTS) {
-    return;
+function installPromptHandler(info) {
+  const install = this;
+
+  let oldPerms = info.existingAddon.userPermissions;
+  if (!oldPerms) {
+    // Updating from a legacy add-on, let it proceed
+    return Promise.resolve();
   }
 
-  install.promptHandler = info => {
-    let oldPerms = info.existingAddon.userPermissions;
-    if (!oldPerms) {
-      // Updating from a legacy add-on, let it proceed
-      return Promise.resolve();
-    }
+  let newPerms = info.addon.userPermissions;
 
-    let newPerms = info.addon.userPermissions;
+  let difference = Extension.comparePermissions(oldPerms, newPerms);
 
-    let difference = Extension.comparePermissions(oldPerms, newPerms);
+  // If there are no new permissions, just proceed
+  if (!difference.origins.length && !difference.permissions.length) {
+    return Promise.resolve();
+  }
 
-    // If there are no new permissions, just proceed
-    if (!difference.origins.length && !difference.permissions.length) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve, reject) => {
-      let subject = {
-        wrappedJSObject: {
-          target: getBrowserElement(),
-          info: {
-            type: "update",
-            addon: info.addon,
-            icon: info.addon.iconURL,
-            // Reference to the related AddonInstall object (used in
-            // AMTelemetry to link the recorded event to the other events from
-            // the same install flow).
-            install,
-            permissions: difference,
-            resolve,
-            reject,
-          },
+  return new Promise((resolve, reject) => {
+    let subject = {
+      wrappedJSObject: {
+        target: getBrowserElement(),
+        info: {
+          type: "update",
+          addon: info.addon,
+          icon: info.addon.iconURL,
+          // Reference to the related AddonInstall object (used in
+          // AMTelemetry to link the recorded event to the other events from
+          // the same install flow).
+          install,
+          permissions: difference,
+          resolve,
+          reject,
         },
-      };
-      Services.obs.notifyObservers(subject, "webextension-permission-prompt");
-    });
-  };
+      },
+    };
+    Services.obs.notifyObservers(subject, "webextension-permission-prompt");
+  });
+}
+
+function attachUpdateHandler(install) {
+  install.promptHandler = installPromptHandler;
+}
+
+function detachUpdateHandler(install) {
+  if (install?.promptHandler === installPromptHandler) {
+    install.promptHandler = null;
+  }
 }
 
 async function loadReleaseNotes(uri) {
@@ -149,17 +146,17 @@ function openOptionsInTab(optionsURL) {
 }
 
 function shouldShowPermissionsPrompt(addon) {
-  if (!WEBEXT_PERMISSION_PROMPTS || !addon.isWebExtension || addon.seen) {
+  if (!addon.isWebExtension || addon.seen) {
     return false;
   }
 
-  const { origins, permissions } = addon.userPermissions;
-  return !!origins.length || !!permissions.length;
+  let perms = addon.installPermissions;
+  return perms?.origins.length || perms?.permissions.length;
 }
 
 function showPermissionsPrompt(addon) {
   return new Promise(resolve => {
-    const permissions = addon.userPermissions;
+    const permissions = addon.installPermissions;
     const target = getBrowserElement();
 
     const onAddonEnabled = () => {
@@ -199,21 +196,6 @@ function showPermissionsPrompt(addon) {
   });
 }
 
-// Stub tabbrowser implementation for use by the tab-modal alert code
-// when an alert/prompt/confirm method is called in a WebExtensions options_ui
-// page (See Bug 1385548 for rationale).
-var gBrowser = {
-  getTabModalPromptBox(browser) {
-    const parentWindow = window.docShell.chromeEventHandler.ownerGlobal;
-
-    if (parentWindow.gBrowser) {
-      return parentWindow.gBrowser.getTabModalPromptBox(browser);
-    }
-
-    return null;
-  },
-};
-
 function isCorrectlySigned(addon) {
   // Add-ons without an "isCorrectlySigned" property are correctly signed as
   // they aren't the correct type for signing.
@@ -240,7 +222,11 @@ async function installAddonsFromFilePicker() {
   ]);
   const nsIFilePicker = Ci.nsIFilePicker;
   var fp = Cc["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
-  fp.init(window, dialogTitle.value, nsIFilePicker.modeOpenMultiple);
+  fp.init(
+    window.browsingContext,
+    dialogTitle.value,
+    nsIFilePicker.modeOpenMultiple
+  );
   try {
     fp.appendFilter(filterName.value, "*.xpi;*.jar;*.zip");
     fp.appendFilters(nsIFilePicker.filterAll);

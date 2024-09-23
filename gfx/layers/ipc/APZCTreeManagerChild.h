@@ -11,6 +11,8 @@
 #include "mozilla/layers/IAPZCTreeManager.h"
 #include "mozilla/layers/PAPZCTreeManagerChild.h"
 
+#include <unordered_map>
+
 namespace mozilla {
 namespace layers {
 
@@ -31,7 +33,8 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
 
   void SetKeyboardMap(const KeyboardMap& aKeyboardMap) override;
 
-  void ZoomToRect(const ScrollableLayerGuid& aGuid, const CSSRect& aRect,
+  void ZoomToRect(const ScrollableLayerGuid& aGuid,
+                  const ZoomTarget& aZoomTarget,
                   const uint32_t aFlags = DEFAULT_BEHAVIOR) override;
 
   void ContentReceivedInputBlock(uint64_t aInputBlockId,
@@ -50,6 +53,9 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
       uint64_t aInputBlockId,
       const nsTArray<TouchBehaviorFlags>& aValues) override;
 
+  void SetBrowserGestureResponse(uint64_t aInputBlockId,
+                                 BrowserGestureResponse aResponse) override;
+
   void StartScrollbarDrag(const ScrollableLayerGuid& aGuid,
                           const AsyncDragMetrics& aDragMetrics) override;
 
@@ -67,19 +73,16 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
  protected:
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  mozilla::ipc::IPCResult RecvHandleTap(const TapType& aType,
-                                        const LayoutDevicePoint& aPoint,
-                                        const Modifiers& aModifiers,
-                                        const ScrollableLayerGuid& aGuid,
-                                        const uint64_t& aInputBlockId);
-
   mozilla::ipc::IPCResult RecvNotifyPinchGesture(
       const PinchGestureType& aType, const ScrollableLayerGuid& aGuid,
+      const LayoutDevicePoint& aFocusPoint,
       const LayoutDeviceCoord& aSpanChange, const Modifiers& aModifiers);
 
   mozilla::ipc::IPCResult RecvCancelAutoscroll(
       const ScrollableLayerGuid::ViewID& aScrollId);
+
+  mozilla::ipc::IPCResult RecvNotifyScaleGestureComplete(
+      const ScrollableLayerGuid::ViewID& aScrollId, float aScale);
 
   virtual ~APZCTreeManagerChild();
 

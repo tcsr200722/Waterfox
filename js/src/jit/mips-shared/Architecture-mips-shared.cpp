@@ -39,8 +39,7 @@ static uint32_t get_mips_flags() {
     return flags;
   }
 
-  char buf[1024];
-  memset(buf, 0, sizeof(buf));
+  char buf[1024] = {};
   (void)fread(buf, sizeof(char), sizeof(buf) - 1, fp);
   fclose(fp);
   if (strstr(buf, "FPU")) {
@@ -72,6 +71,11 @@ bool isLoongson = check_loongson();
 bool hasR2 = check_r2();
 }  // namespace mips_private
 
+bool CPUFlagsHaveBeenComputed() {
+  // Flags were computed above.
+  return true;
+}
+
 Registers::Code Registers::FromName(const char* name) {
   for (size_t i = 0; i < Total; i++) {
     if (strcmp(GetName(i), name) == 0) {
@@ -100,7 +104,7 @@ void FlushICache(void* code, size_t size) {
       "jr.hb  $ra \n"
       "move   $ra, %[tmp] \n"
       ".set   pop\n"
-      : [ tmp ] "=&r"(tmp));
+      : [tmp] "=&r"(tmp));
 
 #elif defined(__GNUC__)
   intptr_t end = reinterpret_cast<intptr_t>(code) + size;

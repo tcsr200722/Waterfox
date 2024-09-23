@@ -9,14 +9,27 @@
 <body>
   <script type="application/javascript">
 
-  const WORKER_URL = "worker_suspended.js";
-  const SUB_WORKERS = 3
 
+
+  /**
+   * - main page opens testUrl1
+   * - testUrl1 ---"onpageshow"---> to main page
+   * - main page ---"startWorker"---> testUrl1
+   * - testUrl1 starts workers, also ---"verifyCacheData"---> main page
+   * - main page ---"changeLocation"---> testUrl1
+   * - testUrl1 navigated to testUrl2
+   * - testUrl2 ---"onpageshow"---> to main page
+   * - main page ---"startWorker"---> testUrl2
+   * - testUrl2 starts workers, also ---"verifyCacheData"---> main page
+   * - main page ---"goBack"---> testUrl2
+   * - testUrl2 navigates back to testUrl1
+   * - testUrl1 ---"onpageshow"---> to main page
+   * - main page checks cache data and ---"finish"---> testUrl2
+   * - testUrl1 ---"finished"---> to main page
+   */
   var testUrl1 = "window_suspended.html?page1Shown";
-  var testUrl2 = "window_suspended.html?page2Shown";
-
-  var testWin;
   var counter = 0;
+  const SUB_WORKERS = 3;
 
   function cacheData() {
     return caches.open("test")
@@ -28,103 +41,100 @@
            });
   }
 
-  function page1Shown(e) {
-    info("Page1Shown: " + testWin.location.href);
+  function runTest() {
+    var bc1 = new BroadcastChannel("page1Shown");
+    bc1.onmessage = async (msgEvent) => {
+      var msg = msgEvent.data;
+      var command = msg.command;
+      info(`Main page, received command=${command}`);
+      if (command == "onpageshow") {
+        info("Page1Shown: " + msg.location);
+        // First time this page is shown.
+        if (counter == 0) {
+          ok(!msg.persisted, "test page should have been persisted initially");
+          var workerMessage = { type: "page1", count: SUB_WORKERS };
+          bc1.postMessage({command: "startWorker", workerMessage});
+        } else {
+          is(msg.persisted, true, "test page should have been persisted in pageshow");
+          var promise = new Promise((resolve, reject) => {
+            info("Waiting a few seconds...");
+            setTimeout(resolve, 10000);
+          });
 
-    // First time this page is shown.
-    if (counter == 0) {
-      ok(!e.persisted, "test page should have been persisted initially");
+          promise.then(function() {
+            info("Retrieving data from cache...");
+            return cacheData();
+          })
 
-      info("Create a worker and subworkers...");
-      let worker = new e.target.defaultView.Worker(WORKER_URL);
-
-      var promise = new Promise((resolve, reject) => {
-        info("Waiting until workers are ready...");
-        worker.addEventListener("message", function onmessage(msg) {
-          is(msg.data, "ready", "We want to receive: -ready-");
-          worker.removeEventListener("message", onmessage);
-          resolve();
-        });
-        worker.postMessage({ type: "page1", count: SUB_WORKERS });
-      });
-
-      promise.then(function() {
-        info("Retrieving data from cache...");
-        return cacheData();
-      })
-
-      .then(function(content) {
+          .then(function(content) {
+            is(content.indexOf("page1-"), 0, "We have data from the worker");
+          })
+          .then(function() {
+            bc1.postMessage({command: "finish"});
+          });
+        }
+        counter++;
+      } else if (command == "workerMessage") {
+        is(msg.workerMessage, "ready", "We want to receive: -ready-");
+      } else if (command == "verifyCacheData") {
+        var content = await cacheData();
         is(content.indexOf("page1-"), 0, "We have data from the worker");
-      })
-
-      .then(function() {
-        info("New location: " + testUrl2);
-        testWin.location.href = testUrl2;
-      });
-    } else {
-      is(e.persisted, true, "test page should have been persisted in pageshow");
-
-      var promise = new Promise((resolve, reject) => {
-        info("Waiting a few seconds...");
-        setTimeout(resolve, 10000);
-      });
-
-      promise.then(function() {
-        info("Retrieving data from cache...");
-        return cacheData();
-      })
-
-      .then(function(content) {
-        is(content.indexOf("page1-"), 0, "We have data from the worker");
-      })
-
-      .then(function() {
-        testWin.close();
+        bc1.postMessage({command: "changeLocation"});
+      } else if (command == "finished") {
+        bc1.close();
+        bc2.close();
         SimpleTest.finish();
-      });
+      }
+    }
+    var bc2 = new BroadcastChannel("page2Shown");
+    bc2.onmessage = async (msgEvent) => {
+      var msg = msgEvent.data;
+      var command = msg.command;
+      if (command == "onpageshow") {
+        info("Page1Shown: " + msg.location);
+        var workerMessage = { type: "page2" };
+        bc2.postMessage({command: "startWorker", workerMessage});
+      } else if (command == "workerMessage") {
+        is(msg.workerMessage, "ready", "We want to receive: -ready-");
+      } else if (command == "verifyCacheData") {
+        var content = await cacheData();
+        is(content, "page2-0", "We have data from the second worker");
+        bc2.postMessage({command: "goBack"});
+      }
     }
 
-    counter++;
+    SpecialPowers.pushPrefEnv({ set: [
+      ["dom.caches.testing.enabled", true],
+      // If Fission is disabled, the pref is no-op.
+      ["fission.bfcacheInParent", true],
+    ] },
+    function() {
+      window.open(testUrl1, "", "noopener");
+    });
+
   }
 
-  function page2Shown(e) {
-    info("Page2Shown: " + testWin.location.href);
-
-    info("Create a worker...");
-    let worker = new e.target.defaultView.Worker(WORKER_URL);
-
-    var promise = new Promise((resolve, reject) => {
-      info("Waiting until workers are ready...");
-      worker.addEventListener("message", function onmessage(msg) {
-        is(msg.data, "ready", "We want to receive: -ready-");
-        worker.removeEventListener("message", onmessage);
-        resolve();
+  if (isXOrigin) {
+    // Bug 1746646: Make mochitests work with TCP enabled (cookieBehavior = 5)
+    // Acquire storage access permission here so that the BroadcastChannel used to
+    // communicate with the opened windows works in xorigin tests. Otherwise,
+    // the iframe containing this page is isolated from first-party storage access,
+    // which isolates BroadcastChannel communication.
+    SpecialPowers.wrap(document).notifyUserGestureActivation();
+    SpecialPowers.pushPrefEnv({
+      set: [["privacy.partition.always_partition_third_party_non_cookie_storage", false]],
+    }).then(() => {
+      SpecialPowers.pushPermissions([{'type': 'storageAccessAPI', 'allow': 1, 'context': document}], () =>{
+        SpecialPowers.wrap(document).requestStorageAccess().then(() => {
+          runTest();
+        }).then(() => {
+          SpecialPowers.removePermission("3rdPartyStorage^http://mochi.test:8888", "http://mochi.xorigin-test:8888");
+        });
       });
-      worker.postMessage({ type: "page2" });
     });
-
-    promise.then(function() {
-      info("Retrieving data from cache...");
-      return cacheData();
-    })
-
-    .then(function(content) {
-      is(content, "page2-0", "We have data from the second worker");
-    })
-
-    .then(function() {
-      info("Going back");
-      testWin.history.back();
-    });
+  } else {
+    runTest();
   }
-
-  SpecialPowers.pushPrefEnv({ set: [
-    ["dom.caches.enabled", true],
-    ["dom.caches.testing.enabled", true],
-  ] },
-  function() {
-    testWin = window.open(testUrl1);
-  });
 
   SimpleTest.waitForExplicitFinish();
   SimpleTest.requestFlakyTimeout("untriaged");

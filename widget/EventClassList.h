@@ -26,6 +26,7 @@ NS_EVENT_CLASS(Widget, CompositionEvent)
 NS_EVENT_CLASS(Widget, QueryContentEvent)
 NS_EVENT_CLASS(Widget, SelectionEvent)
 NS_EVENT_CLASS(Internal, EditorInputEvent)
+NS_EVENT_CLASS(Internal, LegacyTextEvent)
 
 // MouseEvents.h
 NS_EVENT_CLASS(Widget, MouseEventBase)
@@ -53,7 +54,6 @@ NS_EVENT_CLASS(Internal, SMILTimeEvent)
 // MiscEvents.h
 NS_EVENT_CLASS(Widget, CommandEvent)
 NS_EVENT_CLASS(Widget, ContentCommandEvent)
-NS_EVENT_CLASS(Widget, PluginEvent)
 
 // InternalMutationEvent.h (dom/events)
 NS_EVENT_CLASS(Internal, MutationEvent)

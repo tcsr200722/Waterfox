@@ -10,6 +10,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/IntentionalCrash.h"
 #include "mozilla/Printf.h"
+#include "mozilla/ProfilerMarkers.h"
 
 #include "MainThreadUtils.h"
 #include "nsDebugImpl.h"
@@ -17,8 +18,6 @@
 #include "nsExceptionHandler.h"
 #include "nsString.h"
 #include "nsXULAppAPI.h"
-#include "prprf.h"
-#include "nsError.h"
 #include "prerror.h"
 #include "prerr.h"
 #include "prenv.h"
@@ -32,7 +31,7 @@
 #  include <stdlib.h>
 #endif
 
-#include "nsTraceRefcnt.h"
+#include "mozilla/StackWalk.h"
 
 #if defined(XP_UNIX)
 #  include <signal.h>
@@ -80,8 +79,6 @@
 #  define KP_FLAGS p_flag
 #endif
 
-#include "mozilla/mozalloc_abort.h"
-
 static void Abort(const char* aMsg);
 
 static void RealBreak();
@@ -92,8 +89,6 @@ static void Break(const char* aMsg);
 #  include <windows.h>
 #  include <signal.h>
 #  include <malloc.h>  // for _alloca
-#elif defined(XP_UNIX)
-#  include <stdlib.h>
 #endif
 
 using namespace mozilla;
@@ -147,6 +142,15 @@ extern "C" void intentional_panic(const char* message);
 NS_IMETHODIMP
 nsDebugImpl::RustPanic(const char* aMessage) {
   intentional_panic(aMessage);
+  return NS_OK;
+}
+
+// From toolkit/library/rust/lib.rs
+extern "C" void debug_log(const char* target, const char* message);
+
+NS_IMETHODIMP
+nsDebugImpl::RustLog(const char* aTarget, const char* aMessage) {
+  debug_log(aTarget, aMessage);
   return NS_OK;
 }
 
@@ -271,7 +275,7 @@ static nsAssertBehavior GetAssertBehavior() {
 struct FixedBuffer final : public mozilla::PrintfTarget {
   FixedBuffer() : curlen(0) { buffer[0] = '\0'; }
 
-  char buffer[500];
+  char buffer[764];
   uint32_t curlen;
 
   bool append(const char* sp, size_t len) override;
@@ -294,6 +298,66 @@ bool FixedBuffer::append(const char* aBuf, size_t aLen) {
 
   return true;
 }
+
+namespace geckoprofiler::markers {
+
+struct DebugBreakMarker {
+  static constexpr Span<const char> MarkerTypeName() {
+    return MakeStringSpan("DebugBreak");
+  }
+  static void StreamJSONMarkerData(baseprofiler::SpliceableJSONWriter& aWriter,
+                                   uint32_t aSeverity,
+                                   const ProfilerString8View& aStr,
+                                   const ProfilerString8View& aExpr,
+                                   const ProfilerString8View& aFile,
+                                   int32_t aLine) {
+    nsAutoCString sevString("WARNING");
+    switch (aSeverity) {
+      case NS_DEBUG_ASSERTION:
+        sevString = "ASSERTION";
+        break;
+
+      case NS_DEBUG_BREAK:
+        sevString = "BREAK";
+        break;
+
+      case NS_DEBUG_ABORT:
+        sevString = "ABORT";
+        break;
+    }
+    aWriter.StringProperty("Severity", sevString);
+    // The 'name' property is searchable on the front-end.
+    if (aStr.Length() != 0) {
+      aWriter.StringProperty("Message", aStr);
+      aWriter.StringProperty("name", aStr);
+    } else if (aExpr.Length() != 0) {
+      aWriter.StringProperty("name", aExpr);
+    }
+    if (aExpr.Length() != 0) {
+      aWriter.StringProperty("Expression", aExpr);
+    }
+    if (aFile.Length() != 0) {
+      aWriter.StringProperty("File", aFile);
+    }
+    if (aLine != 0) {
+      aWriter.IntProperty("Line", aLine);
+    }
+  }
+  static MarkerSchema MarkerTypeDisplay() {
+    using MS = MarkerSchema;
+    MS schema{MS::Location::TimelineOverview, MS::Location::MarkerChart,
+              MS::Location::MarkerTable};
+    schema.SetAllLabels("{marker.data.Severity}: {marker.data.name}");
+    schema.AddKeyFormat("Message", MS::Format::String);
+    schema.AddKeyFormat("Severity", MS::Format::String);
+    schema.AddKeyFormat("Expression", MS::Format::String);
+    schema.AddKeyFormat("File", MS::Format::String);
+    schema.AddKeyFormat("Line", MS::Format::Integer);
+    return schema;
+  }
+};
+
+}  // namespace geckoprofiler::markers
 
 EXPORT_XPCOM_API(void)
 NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
@@ -326,11 +390,9 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
   if (aExpr) {
     nonPIDBuf.print("'%s', ", aExpr);
   }
-  if (aFile) {
-    nonPIDBuf.print("file %s, ", aFile);
-  }
-  if (aLine != -1) {
-    nonPIDBuf.print("line %d", aLine);
+  if (aFile || aLine != -1) {
+    nonPIDBuf.print("file %s:%d", aFile ? aFile : "<unknown>",
+                    aLine != -1 ? aLine : 0);
   }
 
   // Print "[PID]" or "[Desc PID]" at the beginning of the message.
@@ -344,10 +406,10 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
   const char* currentThreadName =
       isMainthread ? "Main Thread" : PR_GetThreadName(currentThread);
   if (currentThreadName) {
-    buf.print("%d, %s] %s", base::GetCurrentProcId(), currentThreadName,
-              nonPIDBuf.buffer);
+    buf.print("%" PRIPID ", %s] %s", base::GetCurrentProcId(),
+              currentThreadName, nonPIDBuf.buffer);
   } else {
-    buf.print("%d, Unnamed thread %p] %s", base::GetCurrentProcId(),
+    buf.print("%" PRIPID ", Unnamed thread %p] %s", base::GetCurrentProcId(),
               currentThread, nonPIDBuf.buffer);
   }
 
@@ -361,6 +423,12 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
 #ifdef ANDROID
   __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", buf.buffer);
 #endif
+
+  PROFILER_MARKER("NS_DebugBreak", OTHER, MarkerStack::Capture(),
+                  DebugBreakMarker, aSeverity,
+                  ProfilerString8View::WrapNullTerminatedString(aStr),
+                  ProfilerString8View::WrapNullTerminatedString(aExpr),
+                  ProfilerString8View::WrapNullTerminatedString(aFile), aLine);
 
   // Write the message to stderr unless it's a warning and MOZ_IGNORE_WARNINGS
   // is set.
@@ -384,20 +452,19 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
       if (XRE_IsParentProcess()) {
         // Don't include the PID in the crash report annotation to
         // allow faceting on crash-stats.mozilla.org.
-        nsCString note("xpcom_runtime_abort(");
+        nsAutoCString note("xpcom_runtime_abort(");
         note += nonPIDBuf.buffer;
         note += ")";
         CrashReporter::AppendAppNotesToCrashReport(note);
-        CrashReporter::AnnotateCrashReport(
-            CrashReporter::Annotation::AbortMessage,
-            nsDependentCString(nonPIDBuf.buffer));
+        CrashReporter::RecordAnnotationNSCString(
+            CrashReporter::Annotation::AbortMessage, note);
       }
 
 #if defined(DEBUG) && defined(_WIN32)
       RealBreak();
 #endif
 #if defined(DEBUG)
-      nsTraceRefcnt::WalkTheStack(stderr);
+      MozWalkTheStack(stderr);
 #endif
       Abort(buf.buffer);
       return;
@@ -421,11 +488,11 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
       return;
 
     case NS_ASSERT_STACK:
-      nsTraceRefcnt::WalkTheStack(stderr);
+      MozWalkTheStack(stderr);
       return;
 
     case NS_ASSERT_STACK_AND_ABORT:
-      nsTraceRefcnt::WalkTheStack(stderr);
+      MozWalkTheStack(stderr);
       // Fall through to abort
       [[fallthrough]];
 
@@ -442,7 +509,7 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
 
 static void Abort(const char* aMsg) {
   NoteIntentionalCrash(XRE_GetProcessTypeString());
-  mozalloc_abort(aMsg);
+  MOZ_CRASH_UNSAFE(aMsg);
 }
 
 static void RealBreak() {
@@ -553,13 +620,8 @@ static void Break(const char* aMsg) {
 #endif
 }
 
-nsresult nsDebugImpl::Create(nsISupports* aOuter, const nsIID& aIID,
-                             void** aInstancePtr) {
+nsresult nsDebugImpl::Create(const nsIID& aIID, void** aInstancePtr) {
   static const nsDebugImpl* sImpl;
-
-  if (NS_WARN_IF(aOuter)) {
-    return NS_ERROR_NO_AGGREGATION;
-  }
 
   if (!sImpl) {
     sImpl = new nsDebugImpl();

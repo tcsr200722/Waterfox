@@ -7,22 +7,23 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
   );
-  const { XPCOMUtils } = ChromeUtils.import(
-    "resource://gre/modules/XPCOMUtils.jsm"
+  const { XPCOMUtils } = ChromeUtils.importESModule(
+    "resource://gre/modules/XPCOMUtils.sys.mjs"
   );
 
   class AutocompleteInput extends HTMLInputElement {
     constructor() {
       super();
 
-      ChromeUtils.defineModuleGetter(
-        this,
-        "PrivateBrowsingUtils",
-        "resource://gre/modules/PrivateBrowsingUtils.jsm"
-      );
+      this.popupSelectedIndex = -1;
+
+      ChromeUtils.defineESModuleGetters(this, {
+        PrivateBrowsingUtils:
+          "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+      });
 
       XPCOMUtils.defineLazyPreferenceGetter(
         this,
@@ -39,7 +40,7 @@
 
       this.addEventListener(
         "compositionstart",
-        event => {
+        () => {
           if (
             this.mController.input.wrappedJSObject == this.nsIAutocompleteInput
           ) {
@@ -51,7 +52,7 @@
 
       this.addEventListener(
         "compositionend",
-        event => {
+        () => {
           if (
             this.mController.input.wrappedJSObject == this.nsIAutocompleteInput
           ) {
@@ -63,7 +64,7 @@
 
       this.addEventListener(
         "focus",
-        event => {
+        () => {
           this.attachController();
           if (
             window.gBrowser &&
@@ -81,7 +82,7 @@
 
       this.addEventListener(
         "blur",
-        event => {
+        () => {
           if (!this._dontBlur) {
             if (this.forceComplete && this.mController.matchCount >= 1) {
               // If forceComplete is requested, we need to call the enter processing
@@ -113,19 +114,11 @@
 
       this._popup = null;
 
-      /**
-       * This is the maximum number of drop-down rows we get when we
-       * hit the drop marker beside fields that have it (like the URLbar).
-       */
-      this.maxDropMarkerRows = 14;
-
       this.nsIAutocompleteInput = this.getCustomInterfaceCallback(
         Ci.nsIAutoCompleteInput
       );
 
       this.valueIsTyped = false;
-
-      this._selectionDetails = null;
     }
 
     get popup() {
@@ -184,7 +177,6 @@
 
     set disableAutoComplete(val) {
       this.setAttribute("disableautocomplete", val);
-      return val;
     }
 
     get disableAutoComplete() {
@@ -193,7 +185,6 @@
 
     set completeDefaultIndex(val) {
       this.setAttribute("completedefaultindex", val);
-      return val;
     }
 
     get completeDefaultIndex() {
@@ -202,7 +193,6 @@
 
     set completeSelectedIndex(val) {
       this.setAttribute("completeselectedindex", val);
-      return val;
     }
 
     get completeSelectedIndex() {
@@ -211,7 +201,6 @@
 
     set forceComplete(val) {
       this.setAttribute("forcecomplete", val);
-      return val;
     }
 
     get forceComplete() {
@@ -220,7 +209,6 @@
 
     set minResultsForPopup(val) {
       this.setAttribute("minresultsforpopup", val);
-      return val;
     }
 
     get minResultsForPopup() {
@@ -230,7 +218,6 @@
 
     set timeout(val) {
       this.setAttribute("timeout", val);
-      return val;
     }
 
     get timeout() {
@@ -240,7 +227,6 @@
 
     set searchParam(val) {
       this.setAttribute("autocompletesearchparam", val);
-      return val;
     }
 
     get searchParam() {
@@ -264,8 +250,6 @@
       // "input" event is automatically dispatched by the editor if
       // necessary.
       this._setValueInternal(val, true);
-
-      return this.value;
     }
 
     get textValue() {
@@ -276,14 +260,6 @@
      */
     get editable() {
       return true;
-    }
-
-    set crop(val) {
-      return false;
-    }
-
-    get crop() {
-      return false;
     }
 
     set open(val) {
@@ -299,7 +275,7 @@
     }
 
     set value(val) {
-      return this._setValueInternal(val, false);
+      this._setValueInternal(val, false);
     }
 
     get value() {
@@ -310,15 +286,26 @@
       return this === document.activeElement;
     }
     /**
-     * maximum number of rows to display at a time
+     * maximum number of rows to display at a time when opening the popup normally
+     * (e.g., focus element and press the down arrow)
      */
     set maxRows(val) {
       this.setAttribute("maxrows", val);
-      return val;
     }
 
     get maxRows() {
       return parseInt(this.getAttribute("maxrows")) || 0;
+    }
+    /**
+     * maximum number of rows to display at a time when opening the popup by
+     * clicking the dropmarker (for inputs that have one)
+     */
+    set maxdropmarkerrows(val) {
+      this.setAttribute("maxdropmarkerrows", val);
+    }
+
+    get maxdropmarkerrows() {
+      return parseInt(this.getAttribute("maxdropmarkerrows"), 10) || 14;
     }
     /**
      * option to allow scrolling through the list via the tab key, rather than
@@ -326,7 +313,6 @@
      */
     set tabScrolling(val) {
       this.setAttribute("tabscrolling", val);
-      return val;
     }
 
     get tabScrolling() {
@@ -338,7 +324,6 @@
      */
     set ignoreBlurWhileSearching(val) {
       this.setAttribute("ignoreblurwhilesearching", val);
-      return val;
     }
 
     get ignoreBlurWhileSearching() {
@@ -349,7 +334,6 @@
      */
     set highlightNonMatches(val) {
       this.setAttribute("highlightnonmatches", val);
-      return val;
     }
 
     get highlightNonMatches() {
@@ -359,10 +343,6 @@
     getSearchAt(aIndex) {
       this.initSearchNames();
       return this.mSearchNames[aIndex];
-    }
-
-    setTextValueWithReason(aValue, aReason) {
-      this.textValue = aValue;
     }
 
     selectTextRange(aStartIndex, aEndIndex) {
@@ -455,10 +435,10 @@
       // value when the popup is hidden.
       this.popup._normalMaxRows = this.maxRows;
 
-      // Increase our maxRows temporarily, since we want the dropdown to
-      // be bigger in this case. The popup's popupshowing/popuphiding
+      // Temporarily change our maxRows, since we want the dropdown to be a
+      // different size in this case. The popup's popupshowing/popuphiding
       // handlers will take care of resetting this.
-      this.maxRows = this.maxDropMarkerRows;
+      this.maxRows = this.maxdropmarkerrows;
 
       // Ensure that we have focus.
       if (!this.focused) {
@@ -553,10 +533,7 @@
             }
           }
           if (this.popup.selectedIndex >= 0) {
-            this._selectionDetails = {
-              index: this.popup.selectedIndex,
-              kind: "key",
-            };
+            this.popupSelectedIndex = this.popup.selectedIndex;
           }
           cancel = this.handleEnter(aEvent);
           break;
@@ -648,7 +625,7 @@
       return value;
     }
 
-    onInput(aEvent) {
+    onInput() {
       if (
         !this.mIgnoreInput &&
         this.mController.input.wrappedJSObject == this.nsIAutocompleteInput

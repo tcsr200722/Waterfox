@@ -4,18 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "IndexedDatabase.h"
+#include "mozilla/dom/IndexedDatabase.h"
 #include "IndexedDatabaseInlines.h"
 
 #include "IDBDatabase.h"
-#include "IDBMutableFile.h"
 
 #include "mozilla/dom/FileBlobImpl.h"
 #include "mozilla/dom/StructuredCloneTags.h"
-#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/URLSearchParams.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "MainThreadUtils.h"
 #include "jsapi.h"
+#include "nsIFile.h"
 #include "nsIGlobalObject.h"
 #include "nsQueryObject.h"
 #include "nsString.h"
@@ -303,7 +303,7 @@ class ValueDeserializationHelper<StructuredCloneFileParent>
 
     MOZ_ASSERT(global);
 
-    // We do not have an mBlob but do have an FileInfo.
+    // We do not have an mBlob but do have a DatabaseFileInfo.
     //
     // If we are creating an index, we do need a real-looking Blob/File instance
     // because the index's key path can reference their properties.  Rather than
@@ -333,16 +333,7 @@ class ValueDeserializationHelper<StructuredCloneFileChild>
     MOZ_ASSERT(aCx);
     MOZ_ASSERT(aFile.Type() == StructuredCloneFileBase::eMutableFile);
 
-    // If either MutableFile is disabled (via a pref) and we don't have a
-    // mutable file here, or we are on a DOM worker and MutableFile is not
-    // supported on workers, return false to indicate that.
-    if (!aFile.HasMutableFile() || !NS_IsMainThread()) {
-      return false;
-    }
-
-    aFile.MutableMutableFile().SetLazyData(aData.name, aData.type);
-
-    return WrapAsJSObject(aCx, aFile.MutableMutableFile(), aResult);
+    return false;
   }
 
   static RefPtr<Blob> GetBlob(JSContext* aCx, IDBDatabase* aDatabase,
@@ -368,9 +359,49 @@ JSObject* CommonStructuredCloneReadCallback(
                     SCTAG_DOM_FILE_WITHOUT_LASTMODIFIEDDATE == 0xffff8002 &&
                     SCTAG_DOM_MUTABLEFILE == 0xffff8004 &&
                     SCTAG_DOM_FILE == 0xffff8005 &&
-                    SCTAG_DOM_WASM_MODULE == 0xffff8006,
+                    SCTAG_DOM_WASM_MODULE == 0xffff8006 &&
+                    SCTAG_DOM_URLSEARCHPARAMS == 0xffff8014,
                 "You changed our structured clone tag values and just ate "
                 "everyone's IndexedDB data.  I hope you are happy.");
+
+  if (aTag == SCTAG_DOM_URLSEARCHPARAMS) {
+    // Protect the result from a moving GC in ~RefPtr.
+    JS::Rooted<JSObject*> result(aCx);
+
+    {
+      // Scope for the RefPtr below.
+
+      nsIGlobalObject* global = xpc::CurrentNativeGlobal(aCx);
+      if (!global) {
+        return nullptr;
+      }
+
+      RefPtr<URLSearchParams> params = new URLSearchParams(global);
+
+      uint32_t paramCount;
+      uint32_t zero;
+      if (!JS_ReadUint32Pair(aReader, &paramCount, &zero)) {
+        return nullptr;
+      }
+
+      nsAutoString key;
+      nsAutoString value;
+      for (uint32_t index = 0; index < paramCount; index++) {
+        if (!StructuredCloneHolder::ReadString(aReader, key) ||
+            !StructuredCloneHolder::ReadString(aReader, value)) {
+          return nullptr;
+        }
+        params->Append(NS_ConvertUTF16toUTF8(key),
+                       NS_ConvertUTF16toUTF8(value));
+      }
+
+      if (!WrapAsJSObject(aCx, params, &result)) {
+        return nullptr;
+      }
+    }
+
+    return result;
+  }
 
   using StructuredCloneFile =
       typename StructuredCloneReadInfo::StructuredCloneFile;
@@ -442,8 +473,8 @@ JSObject* CommonStructuredCloneReadCallback(
     return result;
   }
 
-  return StructuredCloneHolder::ReadFullySerializableObjects(aCx, aReader,
-                                                             aTag);
+  return StructuredCloneHolder::ReadFullySerializableObjects(aCx, aReader, aTag,
+                                                             true);
 }
 
 template JSObject* CommonStructuredCloneReadCallback(

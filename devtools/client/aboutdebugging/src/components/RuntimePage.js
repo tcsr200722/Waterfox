@@ -4,82 +4,86 @@
 
 "use strict";
 
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const Localized = createFactory(FluentReact.Localized);
 
 const CompatibilityWarning = createFactory(
-  require("devtools/client/aboutdebugging/src/components/CompatibilityWarning")
+  require("resource://devtools/client/aboutdebugging/src/components/CompatibilityWarning.js")
 );
 const DebugTargetPane = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/DebugTargetPane")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/DebugTargetPane.js")
 );
 const ExtensionDetail = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/ExtensionDetail")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/ExtensionDetail.js")
 );
 const InspectAction = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/InspectAction")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/InspectAction.js")
 );
 const ProfilerDialog = createFactory(
-  require("devtools/client/aboutdebugging/src/components/ProfilerDialog")
+  require("resource://devtools/client/aboutdebugging/src/components/ProfilerDialog.js")
 );
 const RuntimeActions = createFactory(
-  require("devtools/client/aboutdebugging/src/components/RuntimeActions")
+  require("resource://devtools/client/aboutdebugging/src/components/RuntimeActions.js")
 );
 const RuntimeInfo = createFactory(
-  require("devtools/client/aboutdebugging/src/components/RuntimeInfo")
+  require("resource://devtools/client/aboutdebugging/src/components/RuntimeInfo.js")
 );
 const ServiceWorkerAction = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/ServiceWorkerAction")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/ServiceWorkerAction.js")
 );
 const ServiceWorkerAdditionalActions = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/ServiceWorkerAdditionalActions")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/ServiceWorkerAdditionalActions.js")
 );
 const ServiceWorkersWarning = createFactory(
-  require("devtools/client/aboutdebugging/src/components/ServiceWorkersWarning")
+  require("resource://devtools/client/aboutdebugging/src/components/ServiceWorkersWarning.js")
 );
 const ProcessDetail = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/ProcessDetail")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/ProcessDetail.js")
+);
+const TabAction = createFactory(
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/TabAction.js")
 );
 const TabDetail = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/TabDetail")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/TabDetail.js")
 );
 const TemporaryExtensionAdditionalActions = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionAdditionalActions")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionAdditionalActions.js")
 );
 const TemporaryExtensionDetail = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionDetail")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionDetail.js")
 );
 const TemporaryExtensionInstallSection = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionInstallSection")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/TemporaryExtensionInstallSection.js")
 );
 const WorkerDetail = createFactory(
-  require("devtools/client/aboutdebugging/src/components/debugtarget/WorkerDetail")
+  require("resource://devtools/client/aboutdebugging/src/components/debugtarget/WorkerDetail.js")
 );
 
-const Actions = require("devtools/client/aboutdebugging/src/actions/index");
+const Actions = require("resource://devtools/client/aboutdebugging/src/actions/index.js");
 const {
   DEBUG_TARGETS,
   DEBUG_TARGET_PANE,
   PAGE_TYPES,
-} = require("devtools/client/aboutdebugging/src/constants");
-const Types = require("devtools/client/aboutdebugging/src/types/index");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
+const Types = require("resource://devtools/client/aboutdebugging/src/types/index.js");
 
 const {
   getCurrentRuntimeDetails,
-} = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
+} = require("resource://devtools/client/aboutdebugging/src/modules/runtimes-state-helper.js");
 const {
   isSupportedDebugTargetPane,
   supportsTemporaryExtensionInstaller,
-  supportsTemporaryExtensionAdditionalActions,
-} = require("devtools/client/aboutdebugging/src/modules/debug-target-support");
+} = require("resource://devtools/client/aboutdebugging/src/modules/debug-target-support.js");
 
 class RuntimePage extends PureComponent {
   static get propTypes() {
@@ -101,8 +105,8 @@ class RuntimePage extends PureComponent {
   }
 
   // TODO: avoid the use of this method
-  // https://bugzilla.mozilla.org/show_bug.cgi?id=1508688
-  componentWillMount() {
+  // https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     const { dispatch, runtimeId } = this.props;
     dispatch(Actions.selectPage(PAGE_TYPES.RUNTIME, runtimeId));
   }
@@ -122,17 +126,17 @@ class RuntimePage extends PureComponent {
     throw new Error(`Unsupported type [${type}]`);
   }
 
-  renderDebugTargetPane(
-    name,
-    icon,
-    targets,
-    children,
+  renderDebugTargetPane({
     actionComponent,
     additionalActionsComponent,
+    children,
     detailComponent,
+    icon,
+    localizationId,
+    name,
     paneKey,
-    localizationId
-  ) {
+    targets,
+  }) {
     const { collapsibilities, dispatch, runtimeDetails } = this.props;
 
     if (!isSupportedDebugTargetPane(runtimeDetails.info.type, paneKey)) {
@@ -211,85 +215,72 @@ class RuntimePage extends PureComponent {
       RuntimeActions({ dispatch, runtimeId, runtimeDetails }),
       runtimeDetails.serviceWorkersAvailable ? null : ServiceWorkersWarning(),
       CompatibilityWarning({ compatibilityReport }),
-      this.renderDebugTargetPane(
-        "Tabs",
-        this.getIconByType(DEBUG_TARGETS.TAB),
-        tabs,
-        null,
-        InspectAction,
-        null,
-        TabDetail,
-        DEBUG_TARGET_PANE.TAB,
-        "about-debugging-runtime-tabs"
-      ),
-      this.renderDebugTargetPane(
-        "Temporary Extensions",
-        this.getIconByType(DEBUG_TARGETS.EXTENSION),
-        temporaryExtensions,
-        this.renderTemporaryExtensionInstallSection(),
-        InspectAction,
-        supportsTemporaryExtensionAdditionalActions(runtimeDetails.info.type)
-          ? TemporaryExtensionAdditionalActions
-          : null,
-        TemporaryExtensionDetail,
-        DEBUG_TARGET_PANE.TEMPORARY_EXTENSION,
-        "about-debugging-runtime-temporary-extensions"
-      ),
-      this.renderDebugTargetPane(
-        "Extensions",
-        this.getIconByType(DEBUG_TARGETS.EXTENSION),
-        installedExtensions,
-        null,
-        InspectAction,
-        null,
-        ExtensionDetail,
-        DEBUG_TARGET_PANE.INSTALLED_EXTENSION,
-        "about-debugging-runtime-extensions"
-      ),
-      this.renderDebugTargetPane(
-        "Service Workers",
-        this.getIconByType(DEBUG_TARGETS.WORKER),
-        serviceWorkers,
-        null,
-        ServiceWorkerAction,
-        ServiceWorkerAdditionalActions,
-        WorkerDetail,
-        DEBUG_TARGET_PANE.SERVICE_WORKER,
-        "about-debugging-runtime-service-workers"
-      ),
-      this.renderDebugTargetPane(
-        "Shared Workers",
-        this.getIconByType(DEBUG_TARGETS.WORKER),
-        sharedWorkers,
-        null,
-        InspectAction,
-        null,
-        WorkerDetail,
-        DEBUG_TARGET_PANE.SHARED_WORKER,
-        "about-debugging-runtime-shared-workers"
-      ),
-      this.renderDebugTargetPane(
-        "Other Workers",
-        this.getIconByType(DEBUG_TARGETS.WORKER),
-        otherWorkers,
-        null,
-        InspectAction,
-        null,
-        WorkerDetail,
-        DEBUG_TARGET_PANE.OTHER_WORKER,
-        "about-debugging-runtime-other-workers"
-      ),
-      this.renderDebugTargetPane(
-        "Processes",
-        this.getIconByType(DEBUG_TARGETS.PROCESS),
-        processes,
-        null,
-        InspectAction,
-        null,
-        ProcessDetail,
-        DEBUG_TARGET_PANE.PROCESSES,
-        "about-debugging-runtime-processes"
-      ),
+      this.renderDebugTargetPane({
+        actionComponent: TabAction,
+        detailComponent: TabDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.TAB),
+        localizationId: "about-debugging-runtime-tabs",
+        name: "Tabs",
+        paneKey: DEBUG_TARGET_PANE.TAB,
+        targets: tabs,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: InspectAction,
+        additionalActionsComponent: TemporaryExtensionAdditionalActions,
+        children: this.renderTemporaryExtensionInstallSection(),
+        detailComponent: TemporaryExtensionDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.EXTENSION),
+        localizationId: "about-debugging-runtime-temporary-extensions",
+        name: "Temporary Extensions",
+        paneKey: DEBUG_TARGET_PANE.TEMPORARY_EXTENSION,
+        targets: temporaryExtensions,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: InspectAction,
+        detailComponent: ExtensionDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.EXTENSION),
+        localizationId: "about-debugging-runtime-extensions",
+        name: "Extensions",
+        paneKey: DEBUG_TARGET_PANE.INSTALLED_EXTENSION,
+        targets: installedExtensions,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: ServiceWorkerAction,
+        additionalActionsComponent: ServiceWorkerAdditionalActions,
+        detailComponent: WorkerDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.WORKER),
+        localizationId: "about-debugging-runtime-service-workers",
+        name: "Service Workers",
+        paneKey: DEBUG_TARGET_PANE.SERVICE_WORKER,
+        targets: serviceWorkers,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: InspectAction,
+        detailComponent: WorkerDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.WORKER),
+        localizationId: "about-debugging-runtime-shared-workers",
+        name: "Shared Workers",
+        paneKey: DEBUG_TARGET_PANE.SHARED_WORKER,
+        targets: sharedWorkers,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: InspectAction,
+        detailComponent: WorkerDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.WORKER),
+        localizationId: "about-debugging-runtime-other-workers",
+        name: "Other Workers",
+        paneKey: DEBUG_TARGET_PANE.OTHER_WORKER,
+        targets: otherWorkers,
+      }),
+      this.renderDebugTargetPane({
+        actionComponent: InspectAction,
+        detailComponent: ProcessDetail,
+        icon: this.getIconByType(DEBUG_TARGETS.PROCESS),
+        localizationId: "about-debugging-runtime-processes",
+        name: "Processes",
+        paneKey: DEBUG_TARGET_PANE.PROCESSES,
+        targets: processes,
+      }),
 
       showProfilerDialog ? ProfilerDialog({ dispatch, runtimeDetails }) : null
     );

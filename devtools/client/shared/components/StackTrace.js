@@ -7,11 +7,13 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const { LocalizationHelper } = require("devtools/shared/l10n");
-const Frame = createFactory(require("devtools/client/shared/components/Frame"));
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
+const Frame = createFactory(
+  require("resource://devtools/client/shared/components/Frame.js")
+);
 
 const l10n = new LocalizationHelper(
   "devtools/client/locales/webconsole.properties"
@@ -40,12 +42,13 @@ class StackTrace extends Component {
       stacktrace: PropTypes.array.isRequired,
       onViewSourceInDebugger: PropTypes.func.isRequired,
       // Service to enable the source map feature.
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
     };
   }
 
   render() {
-    const { stacktrace, onViewSourceInDebugger, sourceMapService } = this.props;
+    const { stacktrace, onViewSourceInDebugger, sourceMapURLService } =
+      this.props;
 
     if (!stacktrace || !stacktrace.length) {
       return null;
@@ -64,14 +67,13 @@ class StackTrace extends Component {
         );
       }
 
-      const source = s.filename;
       frames.push(
         "\t",
         Frame({
           key: `${i}-frame`,
           frame: {
             functionDisplayName: s.functionName,
-            source,
+            source: s.filename,
             line: s.lineNumber,
             column: s.columnNumber,
           },
@@ -79,7 +81,7 @@ class StackTrace extends Component {
           showAnonymousFunctionName: true,
           showFullSourceUrl: true,
           onClick: onViewSourceInDebugger,
-          sourceMapService,
+          sourceMapURLService,
         }),
         "\n"
       );

@@ -9,8 +9,7 @@
 
 #include "mozilla/DOMEventTargetHelper.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class XMLHttpRequestEventTarget : public DOMEventTargetHelper {
  protected:
@@ -28,9 +27,7 @@ class XMLHttpRequestEventTarget : public DOMEventTargetHelper {
                                            DOMEventTargetHelper)
 
   mozilla::Maybe<EventCallbackDebuggerNotificationType>
-  GetDebuggerNotificationType() const override {
-    return mozilla::Some(EventCallbackDebuggerNotificationType::Xhr);
-  }
+  GetDebuggerNotificationType() const override;
 
   IMPL_EVENT_HANDLER(loadstart)
   IMPL_EVENT_HANDLER(progress)
@@ -45,7 +42,6 @@ class XMLHttpRequestEventTarget : public DOMEventTargetHelper {
   virtual void DisconnectFromOwner() override;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_XMLHttpRequestEventTarget_h

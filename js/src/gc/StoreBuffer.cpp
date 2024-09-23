@@ -9,13 +9,26 @@
 #include "mozilla/Assertions.h"
 
 #include "gc/Statistics.h"
-#include "vm/ArgumentsObject.h"
+#include "vm/MutexIDs.h"
 #include "vm/Runtime.h"
-
-#include "gc/GC-inl.h"
 
 using namespace js;
 using namespace js::gc;
+
+#ifdef DEBUG
+void StoreBuffer::checkAccess() const {
+  // The GC runs tasks that may access the storebuffer in parallel and so must
+  // take a lock. The mutator may only access the storebuffer from the main
+  // thread.
+  if (runtime_->heapState() != JS::HeapState::Idle &&
+      runtime_->heapState() != JS::HeapState::MinorCollecting) {
+    MOZ_ASSERT(!CurrentThreadIsGCMarking());
+    runtime_->gc.assertCurrentThreadHasLockedStoreBuffer();
+  } else {
+    MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
+  }
+}
+#endif
 
 bool StoreBuffer::WholeCellBuffer::init() {
   MOZ_ASSERT(!head_);
@@ -40,9 +53,9 @@ bool StoreBuffer::GenericBuffer::init() {
   return bool(storage_);
 }
 
-void StoreBuffer::GenericBuffer::trace(JSTracer* trc) {
-  mozilla::ReentrancyGuard g(*owner_);
-  MOZ_ASSERT(owner_->isEnabled());
+void StoreBuffer::GenericBuffer::trace(JSTracer* trc, StoreBuffer* owner) {
+  mozilla::ReentrancyGuard g(*owner);
+  MOZ_ASSERT(owner->isEnabled());
   if (!storage_) {
     return;
   }
@@ -54,19 +67,12 @@ void StoreBuffer::GenericBuffer::trace(JSTracer* trc) {
   }
 }
 
-StoreBuffer::StoreBuffer(JSRuntime* rt, const Nursery& nursery)
-    : bufferVal(this, JS::GCReason::FULL_VALUE_BUFFER),
-      bufStrCell(this, JS::GCReason::FULL_CELL_PTR_STR_BUFFER),
-      bufBigIntCell(this, JS::GCReason::FULL_CELL_PTR_BIGINT_BUFFER),
-      bufObjCell(this, JS::GCReason::FULL_CELL_PTR_OBJ_BUFFER),
-      bufferSlot(this, JS::GCReason::FULL_SLOT_BUFFER),
-      bufferWholeCell(this),
-      bufferGeneric(this),
-      cancelIonCompilations_(false),
-      runtime_(rt),
-      nursery_(nursery),
+StoreBuffer::StoreBuffer(JSRuntime* rt)
+    : runtime_(rt),
+      nursery_(rt->gc.nursery()),
       aboutToOverflow_(false),
-      enabled_(false)
+      enabled_(false),
+      mayHavePointersToDeadCells_(false)
 #ifdef DEBUG
       ,
       mEntered(false)
@@ -74,14 +80,45 @@ StoreBuffer::StoreBuffer(JSRuntime* rt, const Nursery& nursery)
 {
 }
 
-void StoreBuffer::checkEmpty() const {
-  MOZ_ASSERT(bufferVal.isEmpty());
-  MOZ_ASSERT(bufStrCell.isEmpty());
-  MOZ_ASSERT(bufBigIntCell.isEmpty());
-  MOZ_ASSERT(bufObjCell.isEmpty());
-  MOZ_ASSERT(bufferSlot.isEmpty());
-  MOZ_ASSERT(bufferWholeCell.isEmpty());
-  MOZ_ASSERT(bufferGeneric.isEmpty());
+StoreBuffer::StoreBuffer(StoreBuffer&& other)
+    : bufferVal(std::move(other.bufferVal)),
+      bufStrCell(std::move(other.bufStrCell)),
+      bufBigIntCell(std::move(other.bufBigIntCell)),
+      bufObjCell(std::move(other.bufObjCell)),
+      bufferSlot(std::move(other.bufferSlot)),
+      bufferWasmAnyRef(std::move(other.bufferWasmAnyRef)),
+      bufferWholeCell(std::move(other.bufferWholeCell)),
+      bufferGeneric(std::move(other.bufferGeneric)),
+      runtime_(other.runtime_),
+      nursery_(other.nursery_),
+      aboutToOverflow_(other.aboutToOverflow_),
+      enabled_(other.enabled_),
+      mayHavePointersToDeadCells_(other.mayHavePointersToDeadCells_)
+#ifdef DEBUG
+      ,
+      mEntered(other.mEntered)
+#endif
+{
+  MOZ_ASSERT(enabled_);
+  MOZ_ASSERT(!mEntered);
+  other.disable();
+}
+
+StoreBuffer& StoreBuffer::operator=(StoreBuffer&& other) {
+  if (&other != this) {
+    this->~StoreBuffer();
+    new (this) StoreBuffer(std::move(other));
+  }
+  return *this;
+}
+
+void StoreBuffer::checkEmpty() const { MOZ_ASSERT(isEmpty()); }
+
+bool StoreBuffer::isEmpty() const {
+  return bufferVal.isEmpty() && bufStrCell.isEmpty() &&
+         bufBigIntCell.isEmpty() && bufObjCell.isEmpty() &&
+         bufferSlot.isEmpty() && bufferWasmAnyRef.isEmpty() &&
+         bufferWholeCell.isEmpty() && bufferGeneric.isEmpty();
 }
 
 bool StoreBuffer::enable() {
@@ -117,13 +154,14 @@ void StoreBuffer::clear() {
   }
 
   aboutToOverflow_ = false;
-  cancelIonCompilations_ = false;
+  mayHavePointersToDeadCells_ = false;
 
   bufferVal.clear();
   bufStrCell.clear();
   bufBigIntCell.clear();
   bufObjCell.clear();
   bufferSlot.clear();
+  bufferWasmAnyRef.clear();
   bufferWholeCell.clear();
   bufferGeneric.clear();
 }
@@ -143,6 +181,8 @@ void StoreBuffer::addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf,
                              bufBigIntCell.sizeOfExcludingThis(mallocSizeOf) +
                              bufObjCell.sizeOfExcludingThis(mallocSizeOf);
   sizes->storeBufferSlots += bufferSlot.sizeOfExcludingThis(mallocSizeOf);
+  sizes->storeBufferWasmAnyRefs +=
+      bufferWasmAnyRef.sizeOfExcludingThis(mallocSizeOf);
   sizes->storeBufferWholeCells +=
       bufferWholeCell.sizeOfExcludingThis(mallocSizeOf);
   sizes->storeBufferGenerics += bufferGeneric.sizeOfExcludingThis(mallocSizeOf);
@@ -171,7 +211,7 @@ ArenaCellSet* StoreBuffer::WholeCellBuffer::allocateCellSet(Arena* arena) {
   }
 
   AutoEnterOOMUnsafeRegion oomUnsafe;
-  auto cells = storage_->new_<ArenaCellSet>(arena, head_);
+  auto* cells = storage_->new_<ArenaCellSet>(arena, head_);
   if (!cells) {
     oomUnsafe.crash("Failed to allocate ArenaCellSet");
   }
@@ -187,8 +227,13 @@ ArenaCellSet* StoreBuffer::WholeCellBuffer::allocateCellSet(Arena* arena) {
   return cells;
 }
 
+void gc::CellHeaderPostWriteBarrier(JSObject** ptr, JSObject* prev,
+                                    JSObject* next) {
+  InternalBarrierMethods<JSObject*>::postBarrier(ptr, prev, next);
+}
+
 void StoreBuffer::WholeCellBuffer::clear() {
-  for (ArenaCellSet* set = head_; set; set = set->next) {
+  for (auto* set = head_; set; set = set->next) {
     set->arena->bufferedCells() = &ArenaCellSet::Empty;
   }
   head_ = nullptr;
@@ -196,7 +241,23 @@ void StoreBuffer::WholeCellBuffer::clear() {
   if (storage_) {
     storage_->used() ? storage_->releaseAll() : storage_->freeAll();
   }
+
+  last_ = nullptr;
 }
 
 template struct StoreBuffer::MonoTypeBuffer<StoreBuffer::ValueEdge>;
 template struct StoreBuffer::MonoTypeBuffer<StoreBuffer::SlotsEdge>;
+template struct StoreBuffer::MonoTypeBuffer<StoreBuffer::WasmAnyRefEdge>;
+
+void js::gc::PostWriteBarrierCell(Cell* cell, Cell* prev, Cell* next) {
+  if (!next || !cell->isTenured()) {
+    return;
+  }
+
+  StoreBuffer* buffer = next->storeBuffer();
+  if (!buffer || (prev && prev->storeBuffer())) {
+    return;
+  }
+
+  buffer->putWholeCell(cell);
+}

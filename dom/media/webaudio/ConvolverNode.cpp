@@ -11,9 +11,9 @@
 #include "AudioNodeTrack.h"
 #include "blink/Reverb.h"
 #include "PlayingRefChangeHandler.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(ConvolverNode, AudioNode, mBuffer)
 
@@ -172,6 +172,7 @@ static void AddScaledLeftToRight(AudioBlock* aBlock, float aScale) {
 void ConvolverNodeEngine::ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                                        const AudioBlock& aInput,
                                        AudioBlock* aOutput, bool* aFinished) {
+  TRACE("ConvolverNodeEngine::ProcessBlock");
   if (!mReverb) {
     aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
     return;
@@ -475,5 +476,4 @@ void ConvolverNode::SetBuffer(JSContext* aCx, AudioBuffer* aBuffer,
 
 void ConvolverNode::SetNormalize(bool aNormalize) { mNormalize = aNormalize; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

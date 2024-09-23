@@ -5,12 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * This file tests the methods on XPCOMUtils.jsm.
+ * This file tests the methods on XPCOMUtils.sys.mjs.
+ * Also on ComponentUtils.jsm. Which is deprecated.
  */
 
-const {Preferences} = ChromeUtils.import("resource://gre/modules/Preferences.jsm");
-const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const {XPCOMUtils} = ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
+const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
+const {ComponentUtils} = ChromeUtils.importESModule("resource://gre/modules/ComponentUtils.sys.mjs");
+const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Preferences.sys.mjs");
+const {XPCOMUtils} = ChromeUtils.importESModule("resource://gre/modules/XPCOMUtils.sys.mjs");
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Tests
@@ -19,7 +21,7 @@ add_test(function test_generateQI_string_names()
 {
     var x = {
         QueryInterface: ChromeUtils.generateQI([
-            Ci.nsIClassInfo,
+            "nsIClassInfo",
             "nsIObserver"
         ])
     };
@@ -40,33 +42,6 @@ add_test(function test_generateQI_string_names()
     } catch(e) {}
     run_next_test();
 });
-
-add_test(function test_defineLazyGetter()
-{
-    let accessCount = 0;
-    let obj = {
-      inScope: false
-    };
-    const TEST_VALUE = "test value";
-    XPCOMUtils.defineLazyGetter(obj, "foo", function() {
-        accessCount++;
-        this.inScope = true;
-        return TEST_VALUE;
-    });
-    Assert.equal(accessCount, 0);
-
-    // Get the property, making sure the access count has increased.
-    Assert.equal(obj.foo, TEST_VALUE);
-    Assert.equal(accessCount, 1);
-    Assert.ok(obj.inScope);
-
-    // Get the property once more, making sure the access count has not
-    // increased.
-    Assert.equal(obj.foo, TEST_VALUE);
-    Assert.equal(accessCount, 1);
-    run_next_test();
-});
-
 
 add_test(function test_defineLazyServiceGetter()
 {
@@ -133,6 +108,16 @@ add_test(function test_defineLazyPreferenceGetter()
     Preferences.reset(PREF);
     deepEqual(obj.pref, ["a", "b"], "transform is applied to reset default");
 
+    if (AppConstants.DEBUG) {
+      // Need to use a 'real' pref so it will have a valid prefType
+      obj = {};
+      Assert.throws(
+        () => XPCOMUtils.defineLazyPreferenceGetter(obj, "pref", "javascript.enabled", 1),
+        /Default value does not match preference type/,
+        "Providing a default value of a different type than the preference throws an exception"
+      );
+    }
+
     run_next_test();
 });
 
@@ -144,18 +129,15 @@ add_test(function test_categoryRegistration()
   const XULAPPINFO_CID = Components.ID("{fc937916-656b-4fb3-a395-8c63569e27a8}");
 
   // Create a fake app entry for our category registration apps filter.
-  let tmp = {};
-  ChromeUtils.import("resource://testing-common/AppInfo.jsm", tmp);
-  let XULAppInfo = tmp.newAppInfo({
+  let { newAppInfo } = ChromeUtils.importESModule("resource://testing-common/AppInfo.sys.mjs");
+  let XULAppInfo = newAppInfo({
     name: "catRegTest",
     ID: "{adb42a9a-0d19-4849-bf4d-627614ca19be}",
     version: "1",
     platformVersion: "",
   });
   let XULAppInfoFactory = {
-    createInstance: function (outer, iid) {
-      if (outer != null)
-        throw Cr.NS_ERROR_NO_AGGREGATION;
+    createInstance: function (iid) {
       return XULAppInfo.QueryInterface(iid);
     }
   };
@@ -170,20 +152,60 @@ add_test(function test_categoryRegistration()
   // Load test components.
   do_load_manifest("CatRegistrationComponents.manifest");
 
-  const EXPECTED_ENTRIES = new Map([
+  const expectedEntries = new Map([
     ["CatRegisteredComponent", "@unit.test.com/cat-registered-component;1"],
     ["CatAppRegisteredComponent", "@unit.test.com/cat-app-registered-component;1"],
   ]);
 
   // Verify the correct entries are registered in the "test-cat" category.
   for (let {entry, value} of Services.catMan.enumerateCategory(CATEGORY_NAME)) {
-    print("Verify that the name/value pair exists in the expected entries.");
-    ok(EXPECTED_ENTRIES.has(entry));
-    Assert.equal(EXPECTED_ENTRIES.get(entry), value);
-    EXPECTED_ENTRIES.delete(entry);
+    ok(expectedEntries.has(entry), `${entry} is expected`);
+    Assert.equal(value, expectedEntries.get(entry), "${entry} has correct value.");
+    expectedEntries.delete(entry);
   }
-  print("Check that all of the expected entries have been deleted.");
-  Assert.equal(EXPECTED_ENTRIES.size, 0);
+  Assert.deepEqual(
+    Array.from(expectedEntries.keys()),
+    [],
+    "All expected entries have been deleted."
+  );
+  run_next_test();
+});
+
+add_test(function test_categoryBackgroundTaskRegistration()
+{
+  const CATEGORY_NAME = "test-cat1";
+
+  // Note that this test should succeed whether or not MOZ_BACKGROUNDTASKS is
+  // defined.  If it's defined, there's no active task so the `backgroundtask`
+  // directive is processed, dropped, and always succeeds.  If it's not defined,
+  // then the `backgroundtask` directive is processed and ignored.
+
+  // Load test components.
+  do_load_manifest("CatBackgroundTaskRegistrationComponents.manifest");
+
+  let expectedEntriesList = [
+    ["Cat1RegisteredComponent", "@unit.test.com/cat1-registered-component;1"],
+    ["Cat1BackgroundTaskNotRegisteredComponent", "@unit.test.com/cat1-backgroundtask-notregistered-component;1"],
+  ];
+  if (!AppConstants.MOZ_BACKGROUNDTASKS) {
+    expectedEntriesList.push(...[
+      ["Cat1BackgroundTaskRegisteredComponent", "@unit.test.com/cat1-backgroundtask-registered-component;1"],
+      ["Cat1BackgroundTaskAlwaysRegisteredComponent", "@unit.test.com/cat1-backgroundtask-alwaysregistered-component;1"],
+    ]);
+  }
+  const expectedEntries = new Map(expectedEntriesList);
+
+  // Verify the correct entries are registered in the "test-cat" category.
+  for (let {entry, value} of Services.catMan.enumerateCategory(CATEGORY_NAME)) {
+    ok(expectedEntries.has(entry), `${entry} is expected`);
+    Assert.equal(value, expectedEntries.get(entry), "Verify that the value is correct in the expected entries.");
+    expectedEntries.delete(entry);
+  }
+  Assert.deepEqual(
+    Array.from(expectedEntries.keys()),
+    [],
+    "All expected entries have been deleted."
+  );
   run_next_test();
 });
 
@@ -195,16 +217,14 @@ add_test(function test_generateSingletonFactory()
   function XPCComponent() {}
   XPCComponent.prototype = {
     classID: XPCCOMPONENT_CID,
-    _xpcom_factory: XPCOMUtils.generateSingletonFactory(XPCComponent),
     QueryInterface: ChromeUtils.generateQI([])
   };
-  let NSGetFactory = XPCOMUtils.generateNSGetFactory([XPCComponent]);
   let registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
   registrar.registerFactory(
     XPCCOMPONENT_CID,
     "XPCComponent",
     XPCCOMPONENT_CONTRACTID,
-    NSGetFactory(XPCCOMPONENT_CID)
+    ComponentUtils.generateSingletonFactory(XPCComponent)
   );
 
   // First, try to instance the component.

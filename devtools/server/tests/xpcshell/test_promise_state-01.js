@@ -17,16 +17,21 @@ add_task(
     );
 
     const environment = await packet.frame.getEnvironment();
-    const grip = environment.bindings.variables.p;
+    const grip = environment.bindings.variables.p.value;
 
-    ok(grip.value.preview);
-    equal(grip.value.class, "Promise");
-    equal(grip.value.promiseState.state, "pending");
+    ok(grip.preview);
+    equal(grip.class, "Promise");
+    equal(grip.preview.ownProperties["<state>"].value, "pending");
+
+    const objClient = threadFront.pauseGrip(grip);
+    const { promiseState } = await objClient.getPromiseState();
+    equal(promiseState.state, "pending");
   })
 );
 
 function evalCode(debuggee) {
-  /* eslint-disable */
+  /* eslint-disable mozilla/var-only-at-top-level, no-unused-vars */
+  // prettier-ignore
   Cu.evalInSandbox(
     "doTest();\n" +
     function doTest() {
@@ -35,5 +40,5 @@ function evalCode(debuggee) {
     },
     debuggee
   );
-  /* eslint-enable */
+  /* eslint-enable mozilla/var-only-at-top-level, no-unused-vars */
 }

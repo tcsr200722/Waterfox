@@ -11,6 +11,7 @@
   --markup-outline: var(--theme-splitter-color);
   --markup-drag-line: var(--grey-40);
   --markup-drop-line: var(--blue-55);
+  --markup-overflow-causing-background-color: rgba(128, 0, 215, 0.15);
 }
 
 .theme-dark:root {
@@ -21,6 +22,7 @@
   --markup-outline: var(--theme-selection-background);
   --markup-drag-line: var(--grey-55);
   --markup-drop-line: var(--blue-50);
+  --markup-overflow-causing-background-color: rgba(148, 0, 255, 0.38);
 }
 
 * {
@@ -42,10 +44,14 @@ body {
 #root {
   float: left; /* The markup view should always be LTR */
   min-width: 100%;
-  /* Reserve extra space (in addition to the indent size) for DOM mutation
-   * breakpoint and pseudo icons. */
-  padding-left: 6px;
   box-sizing: border-box;
+
+  & > ul[role="tree"] {
+    /* Reserve extra space (in addition to the indent size) for DOM mutation
+    * breakpoint and pseudo icons. */
+    padding-inline-start: 6px;
+    outline-offset: -2px;
+  }
 }
 
 /* Reset the global rotation of the icon done for RTL layout.
@@ -197,19 +203,29 @@ ul.children + .tag-line::before {
   margin-left: -8px;
   height: 12px;
   width: 12px;
-  background-image: url(resource://devtools/client/debugger/images/markup-breakpoint.svg);
+  background-image: url(chrome://devtools/content/debugger/images/markup-breakpoint.svg);
   background-repeat: no-repeat;
   background-size: 12px 12px;
   background-position: right center;
   -moz-context-properties: fill, stroke;
   fill: var(--blue-50);
   fill-opacity: 1;
+  opacity: 1;
   stroke: none;
   z-index: 2;
 }
 
 .markup-tag-mutation-marker.has-mutations {
   display: block;
+}
+
+.markup-tag-mutation-marker.has-mutations.mutation-breakpoint-disabled {
+  opacity: 0.6;
+}
+
+.tag-line[selected] .markup-tag-mutation-marker.mutation-breakpoint-disabled {
+  fill: #fff;
+  stroke: none;
 }
 
 .tag-line[selected] .markup-tag-mutation-marker {
@@ -309,6 +325,10 @@ ul.children + .tag-line::before {
   display: none;
 }
 
+.tag-line .tag-state.overflow-causing-highlighted:not(.theme-selected) {
+  background-color: var(--markup-overflow-causing-background-color);
+}
+
 .closing-bracket {
   pointer-events: none;
 }
@@ -323,6 +343,32 @@ ul.children + .tag-line::before {
 
 .attr-value .link {
   text-decoration: underline;
+}
+
+.attr-value button.select-node {
+  display: inline-block;
+  vertical-align: middle;
+  height: 15px;
+  width: 15px;
+  /* small spacing between attribute name and the icon */
+  margin-inline-start: 2px;
+  /* prevent the icon from impacting node height */
+  margin-block-start: -2px;
+  padding: 0;
+  border: none;
+  background: url("chrome://devtools/content/shared/components/reps/images/open-inspector.svg") no-repeat;
+  fill: var(--theme-icon-color);
+  -moz-context-properties: fill;
+  /* consistenty with the other buttons in the markup view */
+  cursor: pointer;
+
+  &:is(:hover, :focus) {
+    fill: var(--theme-icon-checked-color);
+  }
+
+  [role="treeitem"][aria-selected="true"] & {
+    fill: var(--theme-selection-color);
+  }
 }
 
 .newattr:focus {
@@ -412,6 +458,7 @@ ul.children + .tag-line::before {
    sibling of the class, not a child. */
 .theme-selected ~ .editor,
 .theme-selected ~ .editor.comment,
+.theme-selected ~ .editor .tag,
 .theme-selected ~ .editor .theme-fg-color1,
 .theme-selected ~ .editor .theme-fg-color2,
 .theme-selected ~ .editor .theme-fg-color3 {

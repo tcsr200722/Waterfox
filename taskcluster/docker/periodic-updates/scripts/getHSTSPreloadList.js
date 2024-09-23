@@ -4,31 +4,23 @@
 // How to run this file:
 // 1. [obtain firefox source code]
 // 2. [build/obtain firefox binaries]
-// 3. run `[path to]/run-mozilla.sh [path to]/xpcshell [path to]/getHSTSPreloadlist.js [absolute path to]/nsSTSPreloadlist.inc'
+// 3. run `[path to]/firefox -xpcshell [path to]/getHSTSPreloadlist.js [absolute path to]/nsSTSPreloadlist.inc'
 // Note: Running this file outputs a new nsSTSPreloadlist.inc in the current
 //       working directory.
 
-/*
-var Cc = Components.classes;
-var Ci = Components.interfaces;
-var Cu = Components.utils;
-var Cr = Components.results;
-*/
 var gSSService = Cc["@mozilla.org/ssservice;1"].getService(
   Ci.nsISiteSecurityService
 );
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
 
 const SOURCE =
-  "https://chromium.googlesource.com/chromium/src/net/+/master/http/transport_security_state_static.json?format=TEXT";
+  "https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/transport_security_state_static.json?format=TEXT";
 const TOOL_SOURCE =
-  "https://hg.mozilla.org/mozilla-central/file/tip/taskcluster/docker/periodic-updates/scripts/getHSTSPreloadList.js";
+  "https://hg.mozilla.org/mozilla-central/file/default/taskcluster/docker/periodic-updates/scripts/getHSTSPreloadList.js";
 const OUTPUT = "nsSTSPreloadList.inc";
-const ERROR_OUTPUT = "nsSTSPreloadList.errors";
 const MINIMUM_REQUIRED_MAX_AGE = 60 * 60 * 24 * 7 * 18;
 const MAX_CONCURRENT_REQUESTS = 500;
 const MAX_RETRIES = 1;
@@ -122,21 +114,15 @@ function processStsHeader(host, header, status, securityInfo) {
     value: false,
   };
   let error = ERROR_NONE;
-  if (header != null && securityInfo != null) {
+  if (
+    header != null &&
+    securityInfo != null &&
+    securityInfo.overridableErrorCategory ==
+      Ci.nsITransportSecurityInfo.ERROR_UNSET
+  ) {
     try {
       let uri = Services.io.newURI("https://" + host.name);
-      let secInfo = securityInfo.QueryInterface(Ci.nsITransportSecurityInfo);
-      gSSService.processHeader(
-        Ci.nsISiteSecurityService.HEADER_HSTS,
-        uri,
-        header,
-        secInfo,
-        0,
-        Ci.nsISiteSecurityService.SOURCE_PRELOAD_LIST,
-        {},
-        maxAge,
-        includeSubdomains
-      );
+      gSSService.processHeader(uri, header, {}, maxAge, includeSubdomains);
     } catch (e) {
       dump(
         "ERROR: could not process header '" +
@@ -174,16 +160,16 @@ function RedirectAndAuthStopper() {}
 
 RedirectAndAuthStopper.prototype = {
   // nsIChannelEventSink
-  asyncOnChannelRedirect(oldChannel, newChannel, flags, callback) {
+  asyncOnChannelRedirect() {
     throw Components.Exception("", Cr.NS_ERROR_ENTITY_CHANGED);
   },
 
   // nsIAuthPrompt2
-  promptAuth(channel, level, authInfo) {
+  promptAuth() {
     return false;
   },
 
-  asyncPromptAuth(channel, callback, context, level, authInfo) {
+  asyncPromptAuth() {
     throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   },
 
@@ -192,13 +178,13 @@ RedirectAndAuthStopper.prototype = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIChannelEventSink,
-    Ci.nsIAuthPrompt2,
+    "nsIChannelEventSink",
+    "nsIAuthPrompt2",
   ]),
 };
 
 function fetchstatus(host) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     let xhr = new XMLHttpRequest();
     let uri = "https://" + host.name + "/";
 
@@ -280,7 +266,7 @@ function shouldRetry(response) {
   );
 }
 
-// Copied from browser/components/migration/MigrationUtils.jsm
+// Copied from browser/components/migration/MigrationUtils.sys.mjs
 function spinResolve(promise) {
   if (!(promise instanceof Promise)) {
     return promise;
@@ -297,7 +283,10 @@ function spinResolve(promise) {
       done = true;
     });
 
-  Services.tm.spinEventLoopUntil(() => done);
+  Services.tm.spinEventLoopUntil(
+    "getHSTSPreloadList.js:spinResolve",
+    () => done
+  );
   if (error) {
     throw error;
   } else {
@@ -309,15 +298,13 @@ async function probeHSTSStatuses(inHosts) {
   let totalLength = inHosts.length;
   dump("Examining " + totalLength + " hosts.\n");
 
-  // Debug/testing on a small number of hosts
-  // while (inHosts.length > 40000) {
-
-  // Make requests in batches of 250. Otherwise, we have too many in-flight
-  // requests and the time it takes to process them causes them all to time out.
+  // Make requests in batches of MAX_CONCURRENT_REQUESTS. Otherwise, we have
+  // too many in-flight requests and the time it takes to process them causes
+  // them all to time out.
   let allResults = [];
-  while (inHosts.length > 0) {
+  while (inHosts.length) {
     let promises = [];
-    for (let i = 0; i < 250 && inHosts.length > 0; i++) {
+    for (let i = 0; i < MAX_CONCURRENT_REQUESTS && inHosts.length; i++) {
       let host = inHosts.shift();
       promises.push(getHSTSStatus(host));
     }
@@ -446,11 +433,9 @@ function filterForcedInclusions(inHosts, outNotForced, outForced) {
 function output(statuses) {
   dump("INFO: Writing output to " + OUTPUT + "\n");
   try {
-    var { FileUtils } = ChromeUtils.import(
-      "resource://gre/modules/FileUtils.jsm"
+    let file = new FileUtils.File(
+      PathUtils.join(Services.dirsvc.get("CurWorkD", Ci.nsIFile).path, OUTPUT)
     );
-
-    let file = FileUtils.getFile("CurWorkD", [OUTPUT]);
     let fos = FileUtils.openSafeFileOutputStream(file);
     writeTo(HEADER, fos);
     writeTo(getExpirationTimeString(), fos);
@@ -467,6 +452,7 @@ function output(statuses) {
     dump("finished writing output file\n");
   } catch (e) {
     dump("ERROR: problem writing output to '" + OUTPUT + "': " + e + "\n");
+    throw e;
   }
 }
 
@@ -514,13 +500,13 @@ async function main(args) {
   insertHosts(hstsStatuses, forcedHosts);
 
   let total = await probeHSTSStatuses(hostsToContact)
-    .then(function(probedStatuses) {
+    .then(function (probedStatuses) {
       return hstsStatuses.concat(probedStatuses);
     })
-    .then(function(statuses) {
+    .then(function (statuses) {
       return statuses.sort(compareHSTSStatus);
     })
-    .then(function(statuses) {
+    .then(function (statuses) {
       for (let status of statuses) {
         // If we've encountered an error for this entry (other than the site not
         // sending an HSTS header), be safe and don't remove it from the list
@@ -539,9 +525,9 @@ async function main(args) {
       }
       return statuses;
     })
-    .then(function(statuses) {
+    .then(function (statuses) {
       // Filter out entries we aren't including.
-      var includedStatuses = statuses.filter(function(status) {
+      var includedStatuses = statuses.filter(function (status) {
         if (status.maxAge < MINIMUM_REQUIRED_MAX_AGE && !status.forceInclude) {
           // dump("INFO: " + status.name + " NOT ON the preload list\n");
           return false;

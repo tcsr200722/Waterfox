@@ -4,20 +4,20 @@
 
 "use strict";
 
-const protocol = require("devtools/shared/protocol");
+const { Actor } = require("devtools/shared/protocol");
+const { dampTestSpec } = require("damp-test/tests/server/spec");
 
-const { dampTestSpec } = require("./spec");
+class DampTestActor extends Actor {
+  constructor(conn) {
+    super(conn, dampTestSpec);
+  }
 
-exports.DampTestActor = protocol.ActorClassWithSpec(dampTestSpec, {
-  initialize(conn) {
-    protocol.Actor.prototype.initialize.call(this, conn);
-  },
-
-  testMethod(arg, { option }, arraySize) {
+  testMethod(arg, { option }) {
     // Emit an event with second argument's option.
     this.emit("testEvent", option);
 
     // Returns back an array of repetition of first argument.
     return arg;
-  },
-});
+  }
+}
+exports.DampTestActor = DampTestActor;

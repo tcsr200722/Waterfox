@@ -1,11 +1,11 @@
-import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import {
   _Card as Card,
   PlaceholderCard,
 } from "content-src/components/Card/Card";
 import { combineReducers, createStore } from "redux";
 import { GlobalOverrider } from "test/unit/utils";
-import { INITIAL_STATE, reducers } from "common/Reducers.jsm";
+import { INITIAL_STATE, reducers } from "common/Reducers.sys.mjs";
 import { cardContextTypes } from "content-src/components/Card/types";
 import { ContextMenuButton } from "content-src/components/ContextMenu/ContextMenuButton";
 import { LinkMenu } from "content-src/components/LinkMenu/LinkMenu";

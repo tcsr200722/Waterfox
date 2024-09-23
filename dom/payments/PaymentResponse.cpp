@@ -10,11 +10,12 @@
 #include "mozilla/dom/PaymentRequestUpdateEvent.h"
 #include "BasicCardPayment.h"
 #include "PaymentAddress.h"
+#include "PaymentRequest.h"
+#include "PaymentRequestManager.h"
 #include "PaymentRequestUtils.h"
 #include "mozilla/EventStateManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(PaymentResponse)
 
@@ -67,7 +68,7 @@ PaymentResponse::PaymentResponse(
   NS_NewTimerWithCallback(getter_AddRefs(mTimer), this,
                           StaticPrefs::dom_payments_response_timeout(),
                           nsITimer::TYPE_ONE_SHOT,
-                          aWindow->EventTargetFor(TaskCategory::Other));
+                          GetMainThreadSerialEventTarget());
 }
 
 PaymentResponse::~PaymentResponse() = default;
@@ -131,7 +132,7 @@ void PaymentResponse::GetDetails(JSContext* aCx,
             rawData.billingAddress.recipient, rawData.billingAddress.phone);
       }
       MOZ_ASSERT(aCx);
-      JS::RootedValue value(aCx);
+      JS::Rooted<JS::Value> value(aCx);
       if (NS_WARN_IF(!basicCardResponse.ToObjectInternal(aCx, &value))) {
         return;
       }
@@ -279,6 +280,10 @@ void PaymentResponse::RespondRetry(const nsAString& aMethodName,
                                    const nsAString& aPayerName,
                                    const nsAString& aPayerEmail,
                                    const nsAString& aPayerPhone) {
+  // mRetryPromise could be nulled when document activity is changed.
+  if (!mRetryPromise) {
+    return;
+  }
   mMethodName = aMethodName;
   mShippingOption = aShippingOption;
   mShippingAddress = aShippingAddress;
@@ -294,7 +299,7 @@ void PaymentResponse::RespondRetry(const nsAString& aMethodName,
   NS_NewTimerWithCallback(getter_AddRefs(mTimer), this,
                           StaticPrefs::dom_payments_response_timeout(),
                           nsITimer::TYPE_ONE_SHOT,
-                          GetOwner()->EventTargetFor(TaskCategory::Other));
+                          GetMainThreadSerialEventTarget());
   MOZ_ASSERT(mRetryPromise);
   mRetryPromise->MaybeResolve(JS::UndefinedHandleValue);
   mRetryPromise = nullptr;
@@ -435,7 +440,7 @@ nsresult PaymentResponse::UpdatePayerDetail(const nsAString& aPayerName,
   if (options.mRequestPayerPhone) {
     mPayerPhone = aPayerPhone;
   }
-  return DispatchUpdateEvent(NS_LITERAL_STRING("payerdetailchange"));
+  return DispatchUpdateEvent(u"payerdetailchange"_ns);
 }
 
 nsresult PaymentResponse::DispatchUpdateEvent(const nsAString& aType) {
@@ -450,5 +455,4 @@ nsresult PaymentResponse::DispatchUpdateEvent(const nsAString& aType) {
   return rv.StealNSResult();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

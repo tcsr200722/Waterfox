@@ -2,13 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import { isTesting } from "devtools-environment";
-import type { ThunkArgs } from "../../types";
+import flags from "devtools/shared/flags";
 import { prefs } from "../../../utils/prefs";
 
-const blacklist = [
+const ignoreList = [
   "ADD_BREAKPOINT_POSITIONS",
   "SET_SYMBOLS",
   "OUT_OF_SCOPE_LOCATIONS",
@@ -24,7 +21,7 @@ const blacklist = [
   "SET_PREVIEW",
 ];
 
-function cloneAction(action: any) {
+function cloneAction(action) {
   action = action || {};
   action = { ...action };
 
@@ -67,7 +64,7 @@ function formatPause(pause) {
 function serializeAction(action) {
   try {
     action = cloneAction(action);
-    if (blacklist.includes(action.type)) {
+    if (ignoreList.includes(action.type)) {
       action = {};
     }
 
@@ -75,7 +72,7 @@ function serializeAction(action) {
       action = formatPause(action);
     }
 
-    const serializer = function(key, value) {
+    const serializer = function (key, value) {
       // Serialize Object/LongString fronts
       if (value?.getGrip) {
         return value.getGrip();
@@ -95,13 +92,12 @@ function serializeAction(action) {
  * A middleware that logs all actions coming through the system
  * to the console.
  */
-export function log({ dispatch, getState }: ThunkArgs) {
-  return (next: any) => (action: any) => {
+export function log() {
+  return next => action => {
     const asyncMsg = !action.status ? "" : `[${action.status}]`;
 
     if (prefs.logActions) {
-      if (isTesting()) {
-        // $FlowIgnore
+      if (flags.testing) {
         dump(
           `[ACTION] ${action.type} ${asyncMsg} - ${serializeAction(action)}\n`
         );

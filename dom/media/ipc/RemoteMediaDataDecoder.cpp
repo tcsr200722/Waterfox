@@ -5,19 +5,45 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "RemoteMediaDataDecoder.h"
 
-#include "base/thread.h"
-
-#include "IRemoteDecoderChild.h"
+#include "RemoteDecoderChild.h"
 #include "RemoteDecoderManagerChild.h"
 
 namespace mozilla {
 
-RemoteMediaDataDecoder::RemoteMediaDataDecoder(IRemoteDecoderChild* aChild)
-    : mChild(aChild) {}
+#ifdef LOG
+#  undef LOG
+#endif  // LOG
+#define LOG(arg, ...)                                                  \
+  DDMOZ_LOG(sPDMLog, mozilla::LogLevel::Debug, "::%s: " arg, __func__, \
+            ##__VA_ARGS__)
+
+RemoteMediaDataDecoder::RemoteMediaDataDecoder(RemoteDecoderChild* aChild)
+    : mChild(aChild),
+      mDescription("RemoteMediaDataDecoder"_ns),
+      mProcessName("unknown"_ns),
+      mCodecName("unknown"_ns),
+      mIsHardwareAccelerated(false),
+      mConversion(ConversionRequired::kNeedNone) {
+  LOG("%p is created", this);
+}
 
 RemoteMediaDataDecoder::~RemoteMediaDataDecoder() {
-  /* Shutdown method should have been called. */
-  MOZ_ASSERT(!mChild);
+  if (mChild) {
+    // Shutdown didn't get called. This can happen if the creation of the
+    // decoder got interrupted while pending.
+    nsCOMPtr<nsISerialEventTarget> thread =
+        RemoteDecoderManagerChild::GetManagerThread();
+    MOZ_ASSERT(thread);
+    thread->Dispatch(NS_NewRunnableFunction(
+        "RemoteMediaDataDecoderShutdown", [child = std::move(mChild), thread] {
+          child->Shutdown()->Then(
+              thread, __func__,
+              [child](const ShutdownPromise::ResolveOrRejectValue& aValue) {
+                child->DestroyIPDL();
+              });
+        }));
+  }
+  LOG("%p is released", this);
 }
 
 RefPtr<MediaDataDecoder::InitPromise> RemoteMediaDataDecoder::Init() {
@@ -27,6 +53,7 @@ RefPtr<MediaDataDecoder::InitPromise> RemoteMediaDataDecoder::Init() {
       ->Then(
           RemoteDecoderManagerChild::GetManagerThread(), __func__,
           [self, this](TrackType aTrack) {
+            MutexAutoLock lock(mMutex);
             // If shutdown has started in the meantime shutdown promise may
             // be resloved before this task. In this case mChild will be null
             // and the init promise has to be canceled.
@@ -34,11 +61,15 @@ RefPtr<MediaDataDecoder::InitPromise> RemoteMediaDataDecoder::Init() {
               return InitPromise::CreateAndReject(NS_ERROR_DOM_MEDIA_CANCELED,
                                                   __func__);
             }
-            mDescription =
-                mChild->GetDescriptionName() + NS_LITERAL_CSTRING(" (remote)");
+            mDescription = mChild->GetDescriptionName();
+            mProcessName = mChild->GetProcessName();
+            mCodecName = mChild->GetCodecName();
             mIsHardwareAccelerated =
                 mChild->IsHardwareAccelerated(mHardwareAcceleratedReason);
             mConversion = mChild->NeedsConversion();
+            LOG("%p RemoteDecoderChild has been initialized - description: %s, "
+                "process: %s, codec: %s",
+                this, mDescription.get(), mProcessName.get(), mCodecName.get());
             return InitPromise::CreateAndResolve(aTrack, __func__);
           },
           [self](const MediaResult& aError) {
@@ -102,6 +133,7 @@ RefPtr<ShutdownPromise> RemoteMediaDataDecoder::Shutdown() {
 
 bool RemoteMediaDataDecoder::IsHardwareAccelerated(
     nsACString& aFailureReason) const {
+  MutexAutoLock lock(mMutex);
   aFailureReason = mHardwareAcceleratedReason;
   return mIsHardwareAccelerated;
 }
@@ -120,11 +152,25 @@ void RemoteMediaDataDecoder::SetSeekThreshold(const media::TimeUnit& aTime) {
 
 MediaDataDecoder::ConversionRequired RemoteMediaDataDecoder::NeedsConversion()
     const {
+  MutexAutoLock lock(mMutex);
   return mConversion;
 }
 
 nsCString RemoteMediaDataDecoder::GetDescriptionName() const {
+  MutexAutoLock lock(mMutex);
   return mDescription;
 }
+
+nsCString RemoteMediaDataDecoder::GetProcessName() const {
+  MutexAutoLock lock(mMutex);
+  return mProcessName;
+}
+
+nsCString RemoteMediaDataDecoder::GetCodecName() const {
+  MutexAutoLock lock(mMutex);
+  return mCodecName;
+}
+
+#undef LOG
 
 }  // namespace mozilla

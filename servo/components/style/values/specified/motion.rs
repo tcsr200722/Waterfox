@@ -7,66 +7,161 @@
 use crate::parser::{Parse, ParserContext};
 use crate::values::computed::motion::OffsetRotate as ComputedOffsetRotate;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::generics::motion::{GenericOffsetPath, RayFunction, RaySize};
-use crate::values::specified::{Angle, SVGPathData};
+use crate::values::generics::motion as generics;
+use crate::values::specified::basic_shape::BasicShape;
+use crate::values::specified::position::{HorizontalPosition, VerticalPosition};
+use crate::values::specified::url::SpecifiedUrl;
+use crate::values::specified::{Angle, Position};
 use crate::Zero;
 use cssparser::Parser;
 use style_traits::{ParseError, StyleParseErrorKind};
 
+/// The specified value of ray() function.
+pub type RayFunction = generics::GenericRayFunction<Angle, Position>;
+
+/// The specified value of <offset-path>.
+pub type OffsetPathFunction =
+    generics::GenericOffsetPathFunction<BasicShape, RayFunction, SpecifiedUrl>;
+
 /// The specified value of `offset-path`.
-pub type OffsetPath = GenericOffsetPath<Angle>;
+pub type OffsetPath = generics::GenericOffsetPath<OffsetPathFunction>;
 
-#[cfg(feature = "gecko")]
-fn is_ray_enabled() -> bool {
-    static_prefs::pref!("layout.css.motion-path-ray.enabled")
-}
-#[cfg(feature = "servo")]
-fn is_ray_enabled() -> bool {
-    false
+/// The specified value of `offset-position`.
+pub type OffsetPosition = generics::GenericOffsetPosition<HorizontalPosition, VerticalPosition>;
+
+/// The <coord-box> value, which defines the box that the <offset-path> sizes into.
+/// https://drafts.fxtf.org/motion-1/#valdef-offset-path-coord-box
+///
+/// <coord-box> = content-box | padding-box | border-box | fill-box | stroke-box | view-box
+/// https://drafts.csswg.org/css-box-4/#typedef-coord-box
+#[allow(missing_docs)]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Copy,
+    Debug,
+    Deserialize,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+pub enum CoordBox {
+    ContentBox,
+    PaddingBox,
+    BorderBox,
+    FillBox,
+    StrokeBox,
+    ViewBox,
 }
 
-impl Parse for RayFunction<Angle> {
+impl CoordBox {
+    /// Returns true if it is default value, border-box.
+    #[inline]
+    pub fn is_default(&self) -> bool {
+        matches!(*self, Self::BorderBox)
+    }
+}
+
+impl Parse for RayFunction {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if !is_ray_enabled() {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-        }
+        input.expect_function_matching("ray")?;
+        input.parse_nested_block(|i| Self::parse_function_arguments(context, i))
+    }
+}
+
+impl RayFunction {
+    /// Parse the inner arguments of a `ray` function.
+    fn parse_function_arguments<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        use crate::values::specified::PositionOrAuto;
 
         let mut angle = None;
         let mut size = None;
         let mut contain = false;
+        let mut position = None;
         loop {
             if angle.is_none() {
-                angle = input.try(|i| Angle::parse(context, i)).ok();
+                angle = input.try_parse(|i| Angle::parse(context, i)).ok();
             }
 
             if size.is_none() {
-                size = input.try(RaySize::parse).ok();
+                size = input.try_parse(generics::RaySize::parse).ok();
                 if size.is_some() {
                     continue;
                 }
             }
 
             if !contain {
-                contain = input.try(|i| i.expect_ident_matching("contain")).is_ok();
+                contain = input
+                    .try_parse(|i| i.expect_ident_matching("contain"))
+                    .is_ok();
                 if contain {
+                    continue;
+                }
+            }
+
+            if position.is_none() {
+                if input.try_parse(|i| i.expect_ident_matching("at")).is_ok() {
+                    let pos = Position::parse(context, input)?;
+                    position = Some(PositionOrAuto::Position(pos));
+                }
+
+                if position.is_some() {
                     continue;
                 }
             }
             break;
         }
 
-        if angle.is_none() || size.is_none() {
+        if angle.is_none() {
             return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
 
         Ok(RayFunction {
             angle: angle.unwrap(),
-            size: size.unwrap(),
+            // If no <ray-size> is specified it defaults to closest-side.
+            size: size.unwrap_or(generics::RaySize::ClosestSide),
             contain,
+            position: position.unwrap_or(PositionOrAuto::auto()),
         })
+    }
+}
+
+impl Parse for OffsetPathFunction {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        use crate::values::specified::basic_shape::{AllowedBasicShapes, ShapeType};
+
+        // <offset-path> = <ray()> | <url> | <basic-shape>
+        // https://drafts.fxtf.org/motion-1/#typedef-offset-path
+        if let Ok(ray) = input.try_parse(|i| RayFunction::parse(context, i)) {
+            return Ok(OffsetPathFunction::Ray(ray));
+        }
+
+        if static_prefs::pref!("layout.css.motion-path-url.enabled") {
+            if let Ok(url) = input.try_parse(|i| SpecifiedUrl::parse(context, i)) {
+                return Ok(OffsetPathFunction::Url(url));
+            }
+        }
+
+        BasicShape::parse(context, input, AllowedBasicShapes::ALL, ShapeType::Outline)
+            .map(OffsetPathFunction::Shape)
     }
 }
 
@@ -76,31 +171,46 @@ impl Parse for OffsetPath {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         // Parse none.
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(OffsetPath::none());
         }
 
-        // Parse possible functions.
-        let location = input.current_source_location();
-        let function = input.expect_function()?.clone();
-        input.parse_nested_block(move |i| {
-            match_ignore_ascii_case! { &function,
-                // Bug 1186329: Implement the parser for <basic-shape>, <geometry-box>,
-                // and <url>.
-                "path" => SVGPathData::parse(context, i).map(GenericOffsetPath::Path),
-                "ray" => RayFunction::parse(context, i).map(GenericOffsetPath::Ray),
-                _ => {
-                    Err(location.new_custom_error(
-                        StyleParseErrorKind::UnexpectedFunction(function.clone())
-                    ))
-                },
+        let mut path = None;
+        let mut coord_box = None;
+        loop {
+            if path.is_none() {
+                path = input
+                    .try_parse(|i| OffsetPathFunction::parse(context, i))
+                    .ok();
             }
-        })
+
+            if coord_box.is_none() {
+                coord_box = input.try_parse(CoordBox::parse).ok();
+                if coord_box.is_some() {
+                    continue;
+                }
+            }
+            break;
+        }
+
+        if let Some(p) = path {
+            return Ok(OffsetPath::OffsetPath {
+                path: Box::new(p),
+                coord_box: coord_box.unwrap_or(CoordBox::BorderBox),
+            });
+        }
+
+        match coord_box {
+            Some(c) => Ok(OffsetPath::CoordBox(c)),
+            None => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+        }
     }
 }
 
 /// The direction of offset-rotate.
-#[derive(Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
+#[derive(
+    Clone, Copy, Debug, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+)]
 #[repr(u8)]
 pub enum OffsetRotateDirection {
     /// Unspecified direction keyword.
@@ -166,12 +276,12 @@ impl Parse for OffsetRotate {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         let location = input.current_source_location();
-        let mut direction = input.try(OffsetRotateDirection::parse);
-        let angle = input.try(|i| Angle::parse(context, i));
+        let mut direction = input.try_parse(OffsetRotateDirection::parse);
+        let angle = input.try_parse(|i| Angle::parse(context, i));
         if direction.is_err() {
             // The direction and angle could be any order, so give it a change to parse
             // direction again.
-            direction = input.try(OffsetRotateDirection::parse);
+            direction = input.try_parse(OffsetRotateDirection::parse);
         }
 
         if direction.is_err() && angle.is_err() {

@@ -23,10 +23,12 @@ endif
 ifneq ($(NSS_BUILD_SOFTOKEN_ONLY),1)
 ifneq ($(NSS_BUILD_UTIL_ONLY),1)
 NSS_SRCDIRS = \
+	base_gtest \
 	certdb_gtest \
 	certhigh_gtest \
 	cryptohi_gtest \
 	der_gtest \
+	freebl_gtest \
 	pk11_gtest \
 	smime_gtest \
 	softoken_gtest \
@@ -36,10 +38,12 @@ NSS_SRCDIRS = \
 	pkcs11testmodule \
 	$(NULL)
 
+base_gtest: common
 certdb_gtest: common
 certhigh_gtest: common
 cryptohi_gtest: common
 der_gtest: common
+freebl_gtest: common
 pk11_gtest: common pkcs11testmodule
 smime_gtest: common
 softoken_gtest: common

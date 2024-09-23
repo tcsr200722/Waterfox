@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 /* strict mode code may not contain 'with' statements */
 /* eslint-disable strict */
@@ -57,7 +56,7 @@ function evalCode(debuggee) {
   /* eslint-disable */
   debuggee.eval(
     "(" +
-      function() {
+      function () {
         function stopMe(number) {
           var a,
             obj = { one: 1, two: 2 };

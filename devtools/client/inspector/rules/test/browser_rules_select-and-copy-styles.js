@@ -18,6 +18,18 @@ const TEST_URI = `
     .nomatches {
       color: #ff0000;
     }
+
+    html {
+      body {
+        container-type: inline-size;
+        @container (1px < width) {
+          #nested {
+            background: tomato;
+            color: gold;
+          }
+        }
+      }
+    }
   </style>
   <div id="first" style="margin: 10em;
     font-size: 14pt; font-family: helvetica, sans-serif; color: #AAA">
@@ -33,15 +45,19 @@ const TEST_URI = `
     <p id="closing">more text</p>
     <p>even more text</p>
   </div>
+  <section id=nested>Nested</section>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   await selectNode("div", inspector);
   await checkCopySelection(view);
   await checkSelectAll(view);
   await checkCopyEditorValue(view);
+
+  await selectNode("#nested", inspector);
+  await checkCopyNestedRule(view);
 });
 
 async function checkCopySelection(view) {
@@ -54,20 +70,20 @@ async function checkCopySelection(view) {
     ".ruleview-propertyvaluecontainer"
   );
 
-  const range = contentDoc.createRange();
+  let range = contentDoc.createRange();
   range.setStart(prop, 0);
   range.setEnd(values[4], 2);
   win.getSelection().addRange(range);
   info("Checking that _Copy() returns the correct clipboard value");
 
   const expectedPattern =
-    "    margin: 10em;[\\r\\n]+" +
-    "    font-size: 14pt;[\\r\\n]+" +
-    "    font-family: helvetica, sans-serif;[\\r\\n]+" +
-    "    color: #AAA;[\\r\\n]+" +
+    "  margin: 10em;[\\r\\n]+" +
+    "  font-size: 14pt;[\\r\\n]+" +
+    "  font-family: helvetica, sans-serif;[\\r\\n]+" +
+    "  color: #AAA;[\\r\\n]+" +
     "}[\\r\\n]+" +
     "html {[\\r\\n]+" +
-    "    color: #000000;[\\r\\n]*";
+    "  color: #000000;[\\r\\n]*";
 
   const allMenuItems = openStyleContextMenuAndGetAllItems(view, prop);
   const menuitemCopy = allMenuItems.find(
@@ -86,6 +102,25 @@ async function checkCopySelection(view) {
   } catch (e) {
     failedClipboard(expectedPattern);
   }
+
+  info("Check copying from keyboard");
+  win.getSelection().removeRange(range);
+  // Selecting the declaration `margin: 10em;`
+  range = contentDoc.createRange();
+  range.setStart(prop, 0);
+  range.setEnd(prop, 1);
+  win.getSelection().addRange(range);
+
+  // Dispatching the copy event from the checkbox to make sure we cover Bug 1680893.
+  const declarationCheckbox = contentDoc.querySelector(
+    "input[type=checkbox].ruleview-enableproperty"
+  );
+  const copyEvent = new win.Event("copy", { bubbles: true });
+  await waitForClipboardPromise(
+    () => declarationCheckbox.dispatchEvent(copyEvent),
+    () => checkClipboardData("^  margin: 10em;$")
+  );
+  win.getSelection().removeRange(range);
 }
 
 async function checkSelectAll(view) {
@@ -101,13 +136,13 @@ async function checkSelectAll(view) {
   view.contextMenu._onSelectAll();
   const expectedPattern =
     "element {[\\r\\n]+" +
-    "    margin: 10em;[\\r\\n]+" +
-    "    font-size: 14pt;[\\r\\n]+" +
-    "    font-family: helvetica, sans-serif;[\\r\\n]+" +
-    "    color: #AAA;[\\r\\n]+" +
+    "  margin: 10em;[\\r\\n]+" +
+    "  font-size: 14pt;[\\r\\n]+" +
+    "  font-family: helvetica, sans-serif;[\\r\\n]+" +
+    "  color: #AAA;[\\r\\n]+" +
     "}[\\r\\n]+" +
     "html {[\\r\\n]+" +
-    "    color: #000000;[\\r\\n]+" +
+    "  color: #000000;[\\r\\n]+" +
     "}[\\r\\n]*";
 
   const allMenuItems = openStyleContextMenuAndGetAllItems(view, prop);
@@ -163,8 +198,36 @@ async function checkCopyEditorValue(view) {
   }
 }
 
+async function checkCopyNestedRule(view) {
+  info("Select nested rule");
+  const doc = view.styleDocument;
+  const range = doc.createRange();
+  const nestedRule = doc.querySelector(".ruleview-rule:nth-of-type(2)");
+  range.selectNode(nestedRule);
+  const win = view.styleWindow;
+  win.getSelection().addRange(range);
+
+  const copyEvent = new win.Event("copy", { bubbles: true });
+  const expectedNested = `html {
+  & body {
+    @container (1px < width) {
+      & #nested {
+        background: tomato;
+        color: gold;
+      }
+    }
+  }
+}
+`;
+
+  await waitForClipboardPromise(
+    () => nestedRule.dispatchEvent(copyEvent),
+    expectedNested
+  );
+}
+
 function checkClipboardData(expectedPattern) {
-  const actual = SpecialPowers.getClipboardData("text/unicode");
+  const actual = SpecialPowers.getClipboardData("text/plain");
   const expectedRegExp = new RegExp(expectedPattern, "g");
   return expectedRegExp.test(actual);
 }
@@ -176,7 +239,7 @@ function failedClipboard(expectedPattern) {
   expectedPattern = expectedPattern.replace(/\\\(/g, "(");
   expectedPattern = expectedPattern.replace(/\\\)/g, ")");
 
-  let actual = SpecialPowers.getClipboardData("text/unicode");
+  let actual = SpecialPowers.getClipboardData("text/plain");
 
   // Trim the right hand side of our strings. This is because expectedPattern
   // accounts for windows sometimes adding a newline to our copied data.

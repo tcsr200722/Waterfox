@@ -17,8 +17,7 @@
 
 class nsPresContext;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class EventTarget;
 
@@ -37,10 +36,13 @@ class Touch final : public nsISupports,
         float aRotationAngle, float aForce);
   Touch(int32_t aIdentifier, LayoutDeviceIntPoint aPoint,
         LayoutDeviceIntPoint aRadius, float aRotationAngle, float aForce);
+  Touch(int32_t aIdentifier, LayoutDeviceIntPoint aPoint,
+        LayoutDeviceIntPoint aRadius, float aRotationAngle, float aForce,
+        int32_t aTiltX, int32_t aTiltY, int32_t aTwist);
   Touch(const Touch& aOther);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Touch)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Touch)
 
   void InitializePoints(nsPresContext* aPresContext, WidgetEvent* aEvent);
 
@@ -49,10 +51,13 @@ class Touch final : public nsISupports,
 
   bool Equals(Touch* aTouch) const;
 
+  // Update this touch's touch area to be the same as aTouch
+  void SetSameAs(const Touch* aTouch);
+
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  nsIGlobalObject* GetParentObject();
+  nsIGlobalObject* GetParentObject() const;
 
   // WebIDL
   int32_t Identifier() const { return mIdentifier; }
@@ -67,6 +72,8 @@ class Touch final : public nsISupports,
   int32_t RadiusY(CallerType aCallerType) const;
   float RotationAngle(CallerType aCallerType) const;
   float Force(CallerType aCallerType) const;
+
+  EventTarget* GetOriginalTarget() const;
 
   nsCOMPtr<EventTarget> mOriginalTarget;
   nsCOMPtr<EventTarget> mTarget;
@@ -93,7 +100,6 @@ class Touch final : public nsISupports,
   bool mPointsInitialized;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_Touch_h_

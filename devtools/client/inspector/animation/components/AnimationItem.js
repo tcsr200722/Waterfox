@@ -4,30 +4,31 @@
 
 "use strict";
 
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const AnimationTarget = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationTarget")
+  require("resource://devtools/client/inspector/animation/components/AnimationTarget.js")
 );
 const SummaryGraph = createFactory(
-  require("devtools/client/inspector/animation/components/graph/SummaryGraph")
+  require("resource://devtools/client/inspector/animation/components/graph/SummaryGraph.js")
 );
 
 class AnimationItem extends Component {
   static get propTypes() {
     return {
       animation: PropTypes.object.isRequired,
-      emitEventForTest: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
       getAnimatedPropertyMap: PropTypes.func.isRequired,
       getNodeFromActor: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
+      isDisplayable: PropTypes.bool.isRequired,
       selectAnimation: PropTypes.func.isRequired,
       selectedAnimation: PropTypes.object.isRequired,
       setHighlightedNode: PropTypes.func.isRequired,
@@ -45,7 +46,8 @@ class AnimationItem extends Component {
     };
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     this.setState({
       isSelected: this.isSelected(nextProps),
     });
@@ -53,6 +55,7 @@ class AnimationItem extends Component {
 
   shouldComponentUpdate(nextProps, nextState) {
     return (
+      this.props.isDisplayable !== nextProps.isDisplayable ||
       this.state.isSelected !== nextState.isSelected ||
       this.props.animation !== nextProps.animation ||
       this.props.timeScale !== nextProps.timeScale
@@ -69,11 +72,10 @@ class AnimationItem extends Component {
   render() {
     const {
       animation,
-      emitEventForTest,
+      dispatch,
       getAnimatedPropertyMap,
       getNodeFromActor,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
+      isDisplayable,
       selectAnimation,
       setHighlightedNode,
       setSelectedNode,
@@ -88,23 +90,24 @@ class AnimationItem extends Component {
           `animation-item ${animation.state.type} ` +
           (isSelected ? "selected" : ""),
       },
-      AnimationTarget({
-        animation,
-        emitEventForTest,
-        getNodeFromActor,
-        onHideBoxModelHighlighter,
-        onShowBoxModelHighlighterForNode,
-        setHighlightedNode,
-        setSelectedNode,
-      }),
-      SummaryGraph({
-        animation,
-        emitEventForTest,
-        getAnimatedPropertyMap,
-        selectAnimation,
-        simulateAnimation,
-        timeScale,
-      })
+      isDisplayable
+        ? [
+            AnimationTarget({
+              animation,
+              dispatch,
+              getNodeFromActor,
+              setHighlightedNode,
+              setSelectedNode,
+            }),
+            SummaryGraph({
+              animation,
+              getAnimatedPropertyMap,
+              selectAnimation,
+              simulateAnimation,
+              timeScale,
+            }),
+          ]
+        : null
     );
   }
 }

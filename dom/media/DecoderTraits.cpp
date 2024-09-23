@@ -6,7 +6,7 @@
 
 #include "DecoderTraits.h"
 #include "MediaContainerType.h"
-#include "nsMimeTypes.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Preferences.h"
 
 #include "OggDecoder.h"
@@ -18,10 +18,8 @@
 #ifdef MOZ_ANDROID_HLS_SUPPORT
 #  include "HLSDecoder.h"
 #endif
-#ifdef MOZ_FMP4
-#  include "MP4Decoder.h"
-#  include "MP4Demuxer.h"
-#endif
+#include "MP4Decoder.h"
+#include "MP4Demuxer.h"
 #include "MediaFormatReader.h"
 
 #include "MP3Decoder.h"
@@ -35,8 +33,6 @@
 
 #include "FlacDecoder.h"
 #include "FlacDemuxer.h"
-
-#include "nsPluginHost.h"
 
 namespace mozilla {
 
@@ -58,16 +54,6 @@ bool DecoderTraits::IsMatroskaType(const MediaContainerType& aType) {
   // https://matroska.org/technical/specs/notes.html
   return mimeType == MEDIAMIMETYPE("audio/x-matroska") ||
          mimeType == MEDIAMIMETYPE("video/x-matroska");
-}
-
-/* static */
-bool DecoderTraits::IsMP4SupportedType(const MediaContainerType& aType,
-                                       DecoderDoctorDiagnostics* aDiagnostics) {
-#ifdef MOZ_FMP4
-  return MP4Decoder::IsSupportedType(aType, aDiagnostics);
-#else
-  return false;
-#endif
 }
 
 static CanPlayStatus CanHandleCodecsType(
@@ -102,7 +88,6 @@ static CanPlayStatus CanHandleCodecsType(
     // webm is supported and working: the codec must be invalid.
     return CANPLAY_NO;
   }
-#ifdef MOZ_FMP4
   if (MP4Decoder::IsSupportedType(mimeType,
                                   /* DecoderDoctorDiagnostics* */ nullptr)) {
     if (MP4Decoder::IsSupportedType(aType, aDiagnostics)) {
@@ -112,7 +97,6 @@ static CanPlayStatus CanHandleCodecsType(
     // fmp4 is supported and working: the codec must be invalid.
     return CANPLAY_NO;
   }
-#endif
   if (MP3Decoder::IsSupportedType(mimeType)) {
     if (MP3Decoder::IsSupportedType(aType)) {
       return CANPLAY_YES;
@@ -144,11 +128,11 @@ static CanPlayStatus CanHandleCodecsType(
 static CanPlayStatus CanHandleMediaType(
     const MediaContainerType& aType, DecoderDoctorDiagnostics* aDiagnostics) {
   if (DecoderTraits::IsHttpLiveStreamingType(aType)) {
-    Telemetry::Accumulate(Telemetry::MEDIA_HLS_CANPLAY_REQUESTED, true);
+    glean::hls::canplay_requested.Add();
   }
 #ifdef MOZ_ANDROID_HLS_SUPPORT
   if (HLSDecoder::IsSupportedType(aType)) {
-    Telemetry::Accumulate(Telemetry::MEDIA_HLS_CANPLAY_SUPPORTED, true);
+    glean::hls::canplay_supported.Add();
     return CANPLAY_MAYBE;
   }
 #endif
@@ -173,11 +157,9 @@ static CanPlayStatus CanHandleMediaType(
   if (WaveDecoder::IsSupportedType(mimeType)) {
     return CANPLAY_MAYBE;
   }
-#ifdef MOZ_FMP4
   if (MP4Decoder::IsSupportedType(mimeType, aDiagnostics)) {
     return CANPLAY_MAYBE;
   }
-#endif
   if (WebMDecoder::IsSupportedType(mimeType)) {
     return CANPLAY_MAYBE;
   }
@@ -217,17 +199,6 @@ bool DecoderTraits::ShouldHandleMediaType(
     return false;
   }
 
-  // If an external plugin which can handle quicktime video is available
-  // (and not disabled), prefer it over native playback as there several
-  // codecs found in the wild that we do not handle.
-  if (containerType->Type() == MEDIAMIMETYPE("video/quicktime")) {
-    RefPtr<nsPluginHost> pluginHost = nsPluginHost::GetInst();
-    if (pluginHost &&
-        pluginHost->HavePluginForType(containerType->Type().AsString())) {
-      return false;
-    }
-  }
-
   return CanHandleMediaType(*containerType, aDiagnostics) != CANPLAY_NO;
 }
 
@@ -237,13 +208,10 @@ already_AddRefed<MediaDataDemuxer> DecoderTraits::CreateDemuxer(
   MOZ_ASSERT(NS_IsMainThread());
   RefPtr<MediaDataDemuxer> demuxer;
 
-#ifdef MOZ_FMP4
   if (MP4Decoder::IsSupportedType(aType,
                                   /* DecoderDoctorDiagnostics* */ nullptr)) {
     demuxer = new MP4Demuxer(aResource);
-  } else
-#endif
-      if (MP3Decoder::IsSupportedType(aType)) {
+  } else if (MP3Decoder::IsSupportedType(aType)) {
     demuxer = new MP3Demuxer(aResource);
   } else if (ADTSDecoder::IsSupportedType(aType)) {
     demuxer = new ADTSDemuxer(aResource);
@@ -282,28 +250,6 @@ MediaFormatReader* DecoderTraits::CreateReader(const MediaContainerType& aType,
 }
 
 /* static */
-bool DecoderTraits::IsSupportedType(const MediaContainerType& aType) {
-  typedef bool (*IsSupportedFunction)(const MediaContainerType& aType);
-  static const IsSupportedFunction funcs[] = {
-      &ADTSDecoder::IsSupportedType,
-      &FlacDecoder::IsSupportedType,
-      &MP3Decoder::IsSupportedType,
-#ifdef MOZ_FMP4
-      &MP4Decoder::IsSupportedTypeWithoutDiagnostics,
-#endif
-      &OggDecoder::IsSupportedType,
-      &WaveDecoder::IsSupportedType,
-      &WebMDecoder::IsSupportedType,
-  };
-  for (IsSupportedFunction func : funcs) {
-    if (func(aType)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/* static */
 bool DecoderTraits::IsSupportedInVideoDocument(const nsACString& aType) {
   // Forbid playing media in video documents if the user has opted
   // not to, using either the legacy WMF specific pref, or the newer
@@ -320,10 +266,8 @@ bool DecoderTraits::IsSupportedInVideoDocument(const nsACString& aType) {
 
   return OggDecoder::IsSupportedType(*type) ||
          WebMDecoder::IsSupportedType(*type) ||
-#ifdef MOZ_FMP4
          MP4Decoder::IsSupportedType(*type,
                                      /* DecoderDoctorDiagnostics* */ nullptr) ||
-#endif
          MP3Decoder::IsSupportedType(*type) ||
          ADTSDecoder::IsSupportedType(*type) ||
          FlacDecoder::IsSupportedType(*type) ||
@@ -345,11 +289,9 @@ nsTArray<UniquePtr<TrackInfo>> DecoderTraits::GetTracksInfo(
   if (WaveDecoder::IsSupportedType(mimeType)) {
     return WaveDecoder::GetTracksInfo(aType);
   }
-#ifdef MOZ_FMP4
   if (MP4Decoder::IsSupportedType(mimeType, nullptr)) {
     return MP4Decoder::GetTracksInfo(aType);
   }
-#endif
   if (WebMDecoder::IsSupportedType(mimeType)) {
     return WebMDecoder::GetTracksInfo(aType);
   }

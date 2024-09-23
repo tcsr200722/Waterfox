@@ -5,9 +5,7 @@
 // This test makes sure that the window title changes correctly while switching
 // from and to private browsing mode.
 
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
+"use strict";
 
 add_task(async function test() {
   const testPageURL =
@@ -23,19 +21,19 @@ add_task(async function test() {
   //                    to compare with the actual values.
   const isMacOS = AppConstants.platform == "macosx";
 
-  let pb_postfix = isMacOS ? ` - (Private Browsing)` : ` (Private Browsing)`;
-  let page_with_title = isMacOS ? test_title : `${test_title} - ${app_name}`;
+  let pb_postfix = isMacOS ? ` — Private Browsing` : ` Private Browsing`;
+  let page_with_title = isMacOS ? test_title : `${test_title} — ${app_name}`;
   let page_without_title = app_name;
   let about_pb_title = app_name;
   let pb_page_with_title = isMacOS
     ? `${test_title}${pb_postfix}`
-    : `${test_title} - ${app_name}${pb_postfix}`;
+    : `${test_title} — ${app_name}${pb_postfix}`;
   let pb_page_without_title = `${app_name}${pb_postfix}`;
   let pb_about_pb_title = `${app_name}${pb_postfix}`;
 
   async function testTabTitle(aWindow, url, insidePB, expected_title) {
     let tab = await BrowserTestUtils.openNewForegroundTab(aWindow.gBrowser);
-    await BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
     await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
 
     await BrowserTestUtils.waitForCondition(() => {
@@ -75,8 +73,8 @@ add_task(async function test() {
     ]);
   }
 
-  function openWin(private) {
-    return BrowserTestUtils.openNewBrowserWindow({ private });
+  function openWin(isPrivate) {
+    return BrowserTestUtils.openNewBrowserWindow({ private: isPrivate });
   }
   await testTabTitle(
     await openWin(false),
@@ -108,5 +106,35 @@ add_task(async function test() {
     "about:privatebrowsing",
     true,
     pb_about_pb_title
+  );
+
+  await SpecialPowers.pushPrefEnv({
+    set: [["privacy.exposeContentTitleInWindow.pbm", false]],
+  });
+  await testTabTitle(await openWin(false), testPageURL, false, page_with_title);
+  await testTabTitle(
+    await openWin(true),
+    testPageURL,
+    true,
+    pb_page_without_title
+  );
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["privacy.exposeContentTitleInWindow", false],
+      ["privacy.exposeContentTitleInWindow.pbm", true],
+    ],
+  });
+  await testTabTitle(
+    await openWin(false),
+    testPageURL,
+    false,
+    page_without_title
+  );
+  // The generic preference set to false is intended to override the PBM one
+  await testTabTitle(
+    await openWin(true),
+    testPageURL,
+    true,
+    pb_page_without_title
   );
 });

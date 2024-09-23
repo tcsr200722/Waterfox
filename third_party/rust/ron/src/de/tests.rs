@@ -1,7 +1,11 @@
-use serde::Deserialize;
 use serde_bytes;
+use serde_derive::Deserialize;
 
-use super::*;
+use crate::{
+    de::from_str,
+    error::{Error, Position, SpannedError, SpannedResult},
+    parse::{AnyNum, Bytes},
+};
 
 #[derive(Debug, PartialEq, Deserialize)]
 struct EmptyStruct1;
@@ -149,25 +153,41 @@ y: 2.0 // 2!
     );
 }
 
-fn err<T>(kind: ParseError, line: usize, col: usize) -> Result<T> {
-    use crate::parse::Position;
-
-    Err(Error::Parser(kind, Position { line, col }))
+fn err<T>(kind: Error, line: usize, col: usize) -> SpannedResult<T> {
+    Err(SpannedError {
+        code: kind,
+        position: Position { line, col },
+    })
 }
 
 #[test]
 fn test_err_wrong_value() {
-    use self::ParseError::*;
     use std::collections::HashMap;
+
+    use self::Error::*;
 
     assert_eq!(from_str::<f32>("'c'"), err(ExpectedFloat, 1, 1));
     assert_eq!(from_str::<String>("'c'"), err(ExpectedString, 1, 1));
     assert_eq!(from_str::<HashMap<u32, u32>>("'c'"), err(ExpectedMap, 1, 1));
-    assert_eq!(from_str::<[u8; 5]>("'c'"), err(ExpectedArray, 1, 1));
+    assert_eq!(from_str::<[u8; 5]>("'c'"), err(ExpectedStructLike, 1, 1));
     assert_eq!(from_str::<Vec<u32>>("'c'"), err(ExpectedArray, 1, 1));
     assert_eq!(from_str::<MyEnum>("'c'"), err(ExpectedIdentifier, 1, 1));
-    assert_eq!(from_str::<MyStruct>("'c'"), err(ExpectedStruct, 1, 1));
-    assert_eq!(from_str::<(u8, bool)>("'c'"), err(ExpectedArray, 1, 1));
+    assert_eq!(
+        from_str::<MyStruct>("'c'"),
+        err(ExpectedNamedStructLike("MyStruct"), 1, 1)
+    );
+    assert_eq!(
+        from_str::<MyStruct>("NotMyStruct(x: 4, y: 2)"),
+        err(
+            ExpectedDifferentStructName {
+                expected: "MyStruct",
+                found: String::from("NotMyStruct")
+            },
+            1,
+            12
+        )
+    );
+    assert_eq!(from_str::<(u8, bool)>("'c'"), err(ExpectedStructLike, 1, 1));
     assert_eq!(from_str::<bool>("notabool"), err(ExpectedBoolean, 1, 1));
 
     assert_eq!(
@@ -202,36 +222,55 @@ fn untagged() {
 }
 
 #[test]
-fn forgot_apostrophes() {
-    let de: Result<(i32, String)> = from_str("(4, \"Hello)");
+fn rename() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    enum Foo {
+        #[serde(rename = "2d")]
+        D2,
+        #[serde(rename = "triangle-list")]
+        TriangleList,
+    }
+    assert_eq!(from_str::<Foo>("r#2d").unwrap(), Foo::D2);
+    assert_eq!(
+        from_str::<Foo>("r#triangle-list").unwrap(),
+        Foo::TriangleList
+    );
+}
 
-    assert!(match de {
-        Err(Error::Parser(ParseError::ExpectedStringEnd, _)) => true,
-        _ => false,
-    });
+#[test]
+fn forgot_apostrophes() {
+    let de: SpannedResult<(i32, String)> = from_str("(4, \"Hello)");
+
+    assert!(matches!(
+        de,
+        Err(SpannedError {
+            code: Error::ExpectedStringEnd,
+            position: _,
+        })
+    ));
 }
 
 #[test]
 fn expected_attribute() {
-    let de: Result<String> = from_str("#\"Hello\"");
+    let de: SpannedResult<String> = from_str("#\"Hello\"");
 
-    assert_eq!(de, err(ParseError::ExpectedAttribute, 1, 2));
+    assert_eq!(de, err(Error::ExpectedAttribute, 1, 2));
 }
 
 #[test]
 fn expected_attribute_end() {
-    let de: Result<String> = from_str("#![enable(unwrap_newtypes) \"Hello\"");
+    let de: SpannedResult<String> = from_str("#![enable(unwrap_newtypes) \"Hello\"");
 
-    assert_eq!(de, err(ParseError::ExpectedAttributeEnd, 1, 28));
+    assert_eq!(de, err(Error::ExpectedAttributeEnd, 1, 28));
 }
 
 #[test]
 fn invalid_attribute() {
-    let de: Result<String> = from_str("#![enable(invalid)] \"Hello\"");
+    let de: SpannedResult<String> = from_str("#![enable(invalid)] \"Hello\"");
 
     assert_eq!(
         de,
-        err(ParseError::NoSuchExtension("invalid".to_string()), 1, 18)
+        err(Error::NoSuchExtension("invalid".to_string()), 1, 18)
     );
 }
 
@@ -239,7 +278,7 @@ fn invalid_attribute() {
 fn multiple_attributes() {
     #[derive(Debug, Deserialize, PartialEq)]
     struct New(String);
-    let de: Result<New> =
+    let de: SpannedResult<New> =
         from_str("#![enable(unwrap_newtypes)] #![enable(unwrap_newtypes)] \"Hello\"");
 
     assert_eq!(de, Ok(New("Hello".to_owned())));
@@ -247,7 +286,7 @@ fn multiple_attributes() {
 
 #[test]
 fn uglified_attribute() {
-    let de: Result<()> = from_str(
+    let de: SpannedResult<()> = from_str(
         "#   !\
     // We definitely want to add a comment here
     [\t\tenable( // best style ever
@@ -304,4 +343,21 @@ fn test_numbers() {
         Ok(vec![1234, 12345, 123456, 1234567, 555_555]),
         from_str("[1_234, 12_345, 1_2_3_4_5_6, 1_234_567, 5_55_55_5]"),
     );
+}
+
+fn de_any_number(s: &str) -> AnyNum {
+    let mut bytes = Bytes::new(s.as_bytes()).unwrap();
+
+    bytes.any_num().unwrap()
+}
+
+#[test]
+fn test_any_number_precision() {
+    assert_eq!(de_any_number("1"), AnyNum::U8(1));
+    assert_eq!(de_any_number("+1"), AnyNum::I8(1));
+    assert_eq!(de_any_number("-1"), AnyNum::I8(-1));
+    assert_eq!(de_any_number("-1.0"), AnyNum::F32(-1.0));
+    assert_eq!(de_any_number("1."), AnyNum::F32(1.));
+    assert_eq!(de_any_number("-1."), AnyNum::F32(-1.));
+    assert_eq!(de_any_number("0.3"), AnyNum::F64(0.3));
 }

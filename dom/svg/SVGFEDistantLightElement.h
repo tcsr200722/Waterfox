@@ -4,21 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFEDistantLightElement_h
-#define mozilla_dom_SVGFEDistantLightElement_h
+#ifndef DOM_SVG_SVGFEDISTANTLIGHTELEMENT_H_
+#define DOM_SVG_SVGFEDISTANTLIGHTELEMENT_H_
 
 #include "SVGAnimatedNumber.h"
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFEDistantLightElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGFELightElement SVGFEDistantLightElementBase;
+using SVGFEDistantLightElementBase = SVGFELightElement;
 
-class SVGFEDistantLightElement : public SVGFEDistantLightElementBase {
+class SVGFEDistantLightElement final : public SVGFEDistantLightElementBase {
   friend nsresult(::NS_NewSVGFEDistantLightElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -27,31 +26,29 @@ class SVGFEDistantLightElement : public SVGFEDistantLightElementBase {
   explicit SVGFEDistantLightElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFEDistantLightElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual mozilla::gfx::LightType ComputeLightAttributes(
-      nsSVGFilterInstance* aInstance,
-      nsTArray<float>& aFloatAttributes) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
+  mozilla::gfx::LightType ComputeLightAttributes(
+      SVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) override;
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedNumber> Azimuth();
   already_AddRefed<DOMSVGAnimatedNumber> Elevation();
 
  protected:
-  virtual NumberAttributesInfo GetNumberInfo() override;
+  NumberAttributesInfo GetNumberInfo() override;
 
   enum { AZIMUTH, ELEVATION };
   SVGAnimatedNumber mNumberAttributes[2];
   static NumberInfo sNumberInfo[2];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFEDistantLightElement_h
+#endif  // DOM_SVG_SVGFEDISTANTLIGHTELEMENT_H_

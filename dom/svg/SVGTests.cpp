@@ -5,16 +5,16 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/SVGTests.h"
+
 #include "DOMSVGStringList.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsIContent.h"
 #include "nsIContentInlines.h"
 #include "mozilla/dom/SVGSwitchElement.h"
-#include "nsCharSeparatedTokenizer.h"
-#include "nsStyleUtil.h"
+#include "mozilla/intl/oxilangtag_ffi_generated.h"
 #include "mozilla/Preferences.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 nsStaticAtom* const SVGTests::sStringListNames[2] = {
     nsGkAtoms::requiredExtensions,
@@ -59,46 +59,84 @@ bool SVGTests::IsConditionalProcessingAttribute(
   return false;
 }
 
-int32_t SVGTests::GetBestLanguagePreferenceRank(
-    const nsAString& aAcceptLangs) const {
-  auto caseInsensitiveComparator = nsCaseInsensitiveStringComparator;
-
-  if (!mStringListAttributes[LANGUAGE].IsExplicitlySet()) {
-    return -2;
+// Find the best match from aAvailLangs for the users accept-languages,
+// returning the index in the aAvailLangs list, or -1 if no match.
+int32_t FindBestLanguage(const nsTArray<nsCString>& aAvailLangs) {
+  AutoTArray<nsCString, 16> reqLangs;
+  nsCString acceptLangs;
+  Preferences::GetLocalizedCString("intl.accept_languages", acceptLangs);
+  nsCCharSeparatedTokenizer languageTokenizer(acceptLangs, ',');
+  while (languageTokenizer.hasMoreTokens()) {
+    reqLangs.AppendElement(languageTokenizer.nextToken());
   }
 
-  int32_t lowestRank = -1;
-
-  for (uint32_t i = 0; i < mStringListAttributes[LANGUAGE].Length(); i++) {
-    nsCharSeparatedTokenizer languageTokenizer(aAcceptLangs, ',');
-    int32_t index = 0;
-    while (languageTokenizer.hasMoreTokens()) {
-      const nsAString& languageToken = languageTokenizer.nextToken();
-      bool exactMatch = languageToken.Equals(mStringListAttributes[LANGUAGE][i],
-                                             caseInsensitiveComparator);
-      bool prefixOnlyMatch =
-          !exactMatch &&
-          nsStyleUtil::DashMatchCompare(mStringListAttributes[LANGUAGE][i],
-                                        languageTokenizer.nextToken(),
-                                        caseInsensitiveComparator);
-      if (index == 0 && exactMatch) {
-        // best possible match
-        return 0;
+  for (const auto& req : reqLangs) {
+    for (const auto& avail : aAvailLangs) {
+      if (avail.Length() > req.Length()) {
+        // Ensure that en does not match en-us, i.e. you need to have en in
+        // intl.accept_languages to match en in markup.
+        continue;
       }
-      if ((exactMatch || prefixOnlyMatch) &&
-          (lowestRank == -1 || 2 * index + prefixOnlyMatch < lowestRank)) {
-        lowestRank = 2 * index + prefixOnlyMatch;
+      using namespace intl::ffi;
+      struct LangTagDelete {
+        void operator()(LangTag* aLangTag) const { lang_tag_destroy(aLangTag); }
+      };
+      UniquePtr<LangTag, LangTagDelete> langTag(lang_tag_new(&avail));
+      if (langTag && lang_tag_matches(langTag.get(), &req)) {
+        return &avail - &aAvailLangs[0];
       }
-      ++index;
     }
   }
-  return lowestRank;
+  return -1;
 }
 
-const nsString* const SVGTests::kIgnoreSystemLanguage = (nsString*)0x01;
+nsIContent* SVGTests::FindActiveSwitchChild(
+    const dom::SVGSwitchElement* aSwitch) {
+  AutoTArray<nsCString, 16> availLocales;
+  AutoTArray<nsIContent*, 16> children;
+  nsIContent* defaultChild = nullptr;
+  for (auto* child = aSwitch->GetFirstChild(); child;
+       child = child->GetNextSibling()) {
+    if (!child->IsElement()) {
+      continue;
+    }
+    nsCOMPtr<SVGTests> tests(do_QueryInterface(child));
+    if (tests) {
+      if (!tests->mPassesConditionalProcessingTests.valueOr(true) ||
+          !tests->PassesRequiredExtensionsTests()) {
+        continue;
+      }
+      const auto& languages = tests->mStringListAttributes[LANGUAGE];
+      if (!languages.IsExplicitlySet()) {
+        if (!defaultChild) {
+          defaultChild = child;
+        }
+        continue;
+      }
+      for (uint32_t i = 0; i < languages.Length(); i++) {
+        children.AppendElement(child);
+        availLocales.AppendElement(NS_ConvertUTF16toUTF8(languages[i]));
+      }
+    }
+  }
 
-bool SVGTests::PassesConditionalProcessingTests(
-    const nsString* aAcceptLangs) const {
+  // For each entry in availLocales, we expect to have a corresponding entry
+  // in children that provides the child node associated with that locale.
+  MOZ_ASSERT(children.Length() == availLocales.Length());
+
+  if (availLocales.IsEmpty()) {
+    return defaultChild;
+  }
+
+  int32_t index = FindBestLanguage(availLocales);
+  if (index >= 0) {
+    return children[index];
+  }
+
+  return defaultChild;
+}
+
+bool SVGTests::PassesRequiredExtensionsTests() const {
   // Required Extensions
   //
   // The requiredExtensions  attribute defines a list of required language
@@ -106,60 +144,53 @@ bool SVGTests::PassesConditionalProcessingTests(
   // go beyond the feature set defined in the SVG specification.
   // Each extension is identified by a URI reference.
   // For now, claim that mozilla's SVG implementation supports XHTML and MathML.
-  if (mStringListAttributes[EXTENSIONS].IsExplicitlySet()) {
-    if (mStringListAttributes[EXTENSIONS].IsEmpty()) {
+  const auto& extensions = mStringListAttributes[EXTENSIONS];
+  if (extensions.IsExplicitlySet()) {
+    if (extensions.IsEmpty()) {
+      mPassesConditionalProcessingTests = Some(false);
       return false;
     }
-    for (uint32_t i = 0; i < mStringListAttributes[EXTENSIONS].Length(); i++) {
-      if (!HasExtension(mStringListAttributes[EXTENSIONS][i])) {
+    for (uint32_t i = 0; i < extensions.Length(); i++) {
+      if (!HasExtension(extensions[i])) {
+        mPassesConditionalProcessingTests = Some(false);
         return false;
       }
     }
   }
+  return true;
+}
 
-  if (aAcceptLangs == kIgnoreSystemLanguage) {
-    return true;
+bool SVGTests::PassesConditionalProcessingTests() const {
+  if (mPassesConditionalProcessingTests) {
+    return mPassesConditionalProcessingTests.value();
+  }
+  if (!PassesRequiredExtensionsTests()) {
+    return false;
   }
 
   // systemLanguage
   //
-  // Evaluates to "true" if one of the languages indicated by user preferences
-  // exactly equals one of the languages given in the value of this parameter,
-  // or if one of the languages indicated by user preferences exactly equals a
-  // prefix of one of the languages given in the value of this parameter such
-  // that the first tag character following the prefix is "-".
-  if (mStringListAttributes[LANGUAGE].IsExplicitlySet()) {
-    if (mStringListAttributes[LANGUAGE].IsEmpty()) {
+  // Evaluates to true if there's a BCP 47 match for the one of the user
+  // preference languages with one of the languages given in the value of
+  // this parameter.
+  const auto& languages = mStringListAttributes[LANGUAGE];
+  if (languages.IsExplicitlySet()) {
+    if (languages.IsEmpty()) {
+      mPassesConditionalProcessingTests = Some(false);
       return false;
     }
 
-    // Get our language preferences
-    nsAutoString acceptLangs;
-    if (aAcceptLangs) {
-      acceptLangs.Assign(*aAcceptLangs);
-    } else {
-      Preferences::GetLocalizedString("intl.accept_languages", acceptLangs);
+    AutoTArray<nsCString, 4> availLocales;
+    for (uint32_t i = 0; i < languages.Length(); i++) {
+      availLocales.AppendElement(NS_ConvertUTF16toUTF8(languages[i]));
     }
 
-    if (acceptLangs.IsEmpty()) {
-      NS_WARNING(
-          "no default language specified for systemLanguage conditional test");
-      return false;
-    }
-
-    for (uint32_t i = 0; i < mStringListAttributes[LANGUAGE].Length(); i++) {
-      nsCharSeparatedTokenizer languageTokenizer(acceptLangs, ',');
-      while (languageTokenizer.hasMoreTokens()) {
-        if (nsStyleUtil::DashMatchCompare(mStringListAttributes[LANGUAGE][i],
-                                          languageTokenizer.nextToken(),
-                                          nsCaseInsensitiveStringComparator)) {
-          return true;
-        }
-      }
-    }
-    return false;
+    mPassesConditionalProcessingTests =
+        Some(FindBestLanguage(availLocales) >= 0);
+    return mPassesConditionalProcessingTests.value();
   }
 
+  mPassesConditionalProcessingTests = Some(true);
   return true;
 }
 
@@ -172,6 +203,7 @@ bool SVGTests::ParseConditionalProcessingAttribute(nsAtom* aAttribute,
       if (NS_FAILED(rv)) {
         mStringListAttributes[i].Clear();
       }
+      mPassesConditionalProcessingTests = Nothing();
       MaybeInvalidate();
       return true;
     }
@@ -183,6 +215,7 @@ void SVGTests::UnsetAttr(const nsAtom* aAttribute) {
   for (uint32_t i = 0; i < ArrayLength(sStringListNames); i++) {
     if (aAttribute == sStringListNames[i]) {
       mStringListAttributes[i].Clear();
+      mPassesConditionalProcessingTests = Nothing();
       MaybeInvalidate();
       return;
     }
@@ -202,11 +235,9 @@ void SVGTests::GetAttrValue(uint8_t aAttrEnum, nsAttrValue& aValue) const {
 void SVGTests::MaybeInvalidate() {
   nsIContent* parent = AsSVGElement()->GetFlattenedTreeParent();
 
-  if (parent &&
-      parent->NodeInfo()->Equals(nsGkAtoms::svgSwitch, kNameSpaceID_SVG)) {
-    static_cast<dom::SVGSwitchElement*>(parent)->MaybeInvalidate();
+  if (auto* svgSwitch = SVGSwitchElement::FromNodeOrNull(parent)) {
+    svgSwitch->MaybeInvalidate();
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

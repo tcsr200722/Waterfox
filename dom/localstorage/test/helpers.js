@@ -22,7 +22,7 @@ function clearAllDatabases() {
 }
 
 if (!window.runTest) {
-  window.runTest = async function() {
+  window.runTest = async function () {
     SimpleTest.waitForExplicitFinish();
 
     info("Pushing preferences");
@@ -38,22 +38,14 @@ if (!window.runTest) {
 
     await requestFinished(clearAllDatabases());
 
-    ok(typeof testSteps === "function", "There should be a testSteps function");
-    ok(
-      testSteps.constructor.name === "AsyncFunction",
-      "testSteps should be an async function"
-    );
-
-    SimpleTest.registerCleanupFunction(async function() {
+    SimpleTest.registerCleanupFunction(async function () {
       await requestFinished(clearAllDatabases());
     });
-
-    add_task(testSteps);
   };
 }
 
 function returnToEventLoop() {
-  return new Promise(function(resolve) {
+  return new Promise(function (resolve) {
     executeSoon(resolve);
   });
 }
@@ -62,14 +54,25 @@ function getLocalStorage() {
   return localStorage;
 }
 
-function requestFinished(request) {
-  return new Promise(function(resolve, reject) {
-    request.callback = SpecialPowers.wrapCallback(function(requestInner) {
-      if (requestInner.resultCode === SpecialPowers.Cr.NS_OK) {
-        resolve(requestInner.result);
-      } else {
-        reject(requestInner.resultCode);
-      }
+class RequestError extends Error {
+  constructor(resultCode, resultName) {
+    super(`Request failed (code: ${resultCode}, name: ${resultName})`);
+    this.name = "RequestError";
+    this.resultCode = resultCode;
+    this.resultName = resultName;
+  }
+}
+
+async function requestFinished(request) {
+  await new Promise(function (resolve) {
+    request.callback = SpecialPowers.wrapCallback(function () {
+      resolve();
     });
   });
+
+  if (request.resultCode !== SpecialPowers.Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
 }

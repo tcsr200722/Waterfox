@@ -10,7 +10,7 @@ requestLongerTimeout(2);
 // * make animations to rewind to zero
 // * the state should be always paused after rewinding
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_multi_timings.html");
   await removeAnimatedElementsExcept([".delay-negative", ".delay-positive"]);
   const { animationInspector, panel } = await openAnimationInspector();
@@ -19,13 +19,15 @@ add_task(async function() {
   ok(panel.querySelector(".rewind-button"), "Rewind button should exist");
 
   info("Checking rewind button makes animations to rewind to zero");
-  await clickOnRewindButton(animationInspector, panel);
-  assertAnimationsCurrentTime(animationInspector, 0);
-  assertAnimationsPausing(animationInspector);
+  clickOnRewindButton(animationInspector, panel);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+  await waitUntilCurrentTimeChangedAt(animationInspector, 0);
+  ok(true, "Rewind button make current time 0");
 
   info("Checking rewind button makes animations after clicking scrubber");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
-  await clickOnRewindButton(animationInspector, panel);
-  assertAnimationsCurrentTime(animationInspector, 0);
-  assertAnimationsPausing(animationInspector);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
+  clickOnRewindButton(animationInspector, panel);
+  await waitUntilCurrentTimeChangedAt(animationInspector, 0);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+  ok(true, "Rewind button make current time 0 even after clicking scrubber");
 });

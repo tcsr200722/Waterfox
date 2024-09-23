@@ -7,34 +7,108 @@
 #include "jit/BytecodeAnalysis.h"
 
 #include "jit/JitSpewer.h"
+#include "jit/WarpBuilder.h"
 #include "vm/BytecodeIterator.h"
 #include "vm/BytecodeLocation.h"
 #include "vm/BytecodeUtil.h"
+#include "vm/Opcodes.h"
 
 #include "vm/BytecodeIterator-inl.h"
 #include "vm/BytecodeLocation-inl.h"
-#include "vm/BytecodeUtil-inl.h"
 #include "vm/JSScript-inl.h"
 
 using namespace js;
 using namespace js::jit;
 
-BytecodeAnalysis::BytecodeAnalysis(TempAllocator& alloc, JSScript* script)
-    : script_(script), infos_(alloc), hasTryFinally_(false) {}
+// While Warp can compile generators and async functions, it may not aways be
+// profitable to due to the incomplete support that we have (See bug 1681338 for
+// details)
+//
+// As an example, in Bug 1839078 the overhead of constantly OSR'ing back into a
+// Warp body eats any benefit that might have been obtained via warp.
+//
+// This class implements the heuristic that yield can only be allowed in a Warp
+// body under two circumstances:
+//
+// - There is an inner loop, which is presumed to do work that will provide
+//   enough  work to avoid pathological cases
+// - There is sufficient bytecode around the yield that we expect Warp
+//   compilation to drive enough benefit that we will still let yield occur.
+//
+// This is of course a heuristic, and can of course be defeated.
+class YieldAnalyzer {
+  struct LoopInfo {
+    bool hasInnerLoop = false;
+    bool sawYield = false;
+    size_t bytecodeOps = 0;
+  };
 
-// Bytecode range containing only catch or finally code.
-struct CatchFinallyRange {
-  uint32_t start;  // Inclusive.
-  uint32_t end;    // Exclusive.
+  // The minimum amount of bytecode to allow in a yielding loop.
+  //
+  // This number is extremely arbitrary, and may be too low by an order of
+  // magnitude or more.
+  static const size_t BYTECODE_MINIUM = 40;
 
-  CatchFinallyRange(uint32_t start, uint32_t end) : start(start), end(end) {
-    MOZ_ASSERT(end > start);
+  Vector<LoopInfo, 0, JitAllocPolicy> loopInfos;
+  bool allowIon = true;
+
+ public:
+  explicit YieldAnalyzer(TempAllocator& alloc) : loopInfos(alloc) {}
+
+  [[nodiscard]] bool init() {
+    // a pretend outer loop for the function body.
+    return loopInfos.emplaceBack();
   }
 
-  bool contains(uint32_t offset) const {
-    return start <= offset && offset < end;
+  void analyzeBackedgeForIon() {
+    const LoopInfo& loopInfo = loopInfos.back();
+    if (loopInfo.sawYield) {
+      if (!loopInfo.hasInnerLoop && loopInfo.bytecodeOps < BYTECODE_MINIUM) {
+        allowIon = false;
+      }
+    }
+
+    loopInfos.popBack();
+  }
+
+  bool canIon() {
+    // Analyze the host function as if it were  a loop;
+    //
+    // This should help us avoid ion compiling a tiny function which just
+    // yields.
+    analyzeBackedgeForIon();
+
+    MOZ_ASSERT(loopInfos.empty());
+
+    return allowIon;
+  }
+
+  [[nodiscard]] bool handleBytecode(BytecodeLocation loc) {
+    LoopInfo& loopInfo = loopInfos.back();
+
+    loopInfo.bytecodeOps++;
+
+    if (loc.is(JSOp::LoopHead)) {
+      loopInfo.hasInnerLoop = true;
+
+      // Bail out here because the below two cases won't be hit.
+      return loopInfos.emplaceBack();
+    }
+
+    if (loc.is(JSOp::Yield) || loc.is(JSOp::FinalYieldRval)) {
+      loopInfo.sawYield = true;
+    }
+
+    if (loc.isBackedge()) {
+      analyzeBackedgeForIon();
+    }
+
+    return true;
   }
 };
+
+BytecodeAnalysis::BytecodeAnalysis(TempAllocator& alloc, JSScript* script)
+    : script_(script), infos_(alloc) {}
 
 bool BytecodeAnalysis::init(TempAllocator& alloc) {
   if (!infos_.growByUninitialized(script_->length())) {
@@ -45,14 +119,61 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
   mozilla::PodZero(infos_.begin(), infos_.length());
   infos_[0].init(/*stackDepth=*/0);
 
-  Vector<CatchFinallyRange, 0, JitAllocPolicy> catchFinallyRanges(alloc);
+  // WarpBuilder can compile try blocks, but doesn't support handling
+  // exceptions. If exception unwinding would resume in a catch or finally
+  // block, we instead bail out to the baseline interpreter. Finally blocks can
+  // still be reached by normal means, but the catch block is unreachable and is
+  // not compiled. We therefore need some special machinery to prevent OSR into
+  // Warp code in the following cases:
+  //
+  // (1) Loops in catch blocks:
+  //
+  //       try {
+  //         ..
+  //       } catch (e) {
+  //         while (..) {} // Can't OSR here.
+  //       }
+  //
+  // (2) Loops only reachable via a catch block:
+  //
+  //       for (;;) {
+  //         try {
+  //           throw 3;
+  //         } catch (e) {
+  //           break;
+  //         }
+  //       }
+  //       while (..) {} // Loop is only reachable via the catch-block.
+  //
+  // To deal with both of these cases, we track whether the current op is
+  // 'normally reachable' (reachable without exception handling).
+  // Forward jumps propagate this flag to their jump targets (see
+  // BytecodeInfo::jumpTargetNormallyReachable) and when the analysis reaches a
+  // jump target it updates its normallyReachable flag based on the target's
+  // flag.
+  //
+  // Inlining a function without a normally reachable return can cause similar
+  // problems. To avoid this, we mark such functions as uninlineable.
+  bool normallyReachable = true;
+  bool normallyReachableReturn = false;
+
+  YieldAnalyzer analyzer(alloc);
+  if (!analyzer.init()) {
+    return false;
+  }
 
   for (const BytecodeLocation& it : AllBytecodesIterable(script_)) {
     JSOp op = it.getOp();
+    if (!analyzer.handleBytecode(it)) {
+      return false;
+    }
+
     uint32_t offset = it.bytecodeToOffset(script_);
 
     JitSpew(JitSpew_BaselineOp, "Analyzing op @ %u (end=%u): %s",
             unsigned(offset), unsigned(script_->length()), CodeName(op));
+
+    checkWarpSupport(op);
 
     // If this bytecode info has not yet been initialized, it's not reachable.
     if (!infos_[offset].initialized) {
@@ -60,6 +181,10 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
     }
 
     uint32_t stackDepth = infos_[offset].stackDepth;
+
+    if (infos_[offset].jumpTarget) {
+      normallyReachable = infos_[offset].jumpTargetNormallyReachable;
+    }
 
 #ifdef DEBUG
     size_t endOffset = offset + it.length();
@@ -85,7 +210,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
         int32_t high = it.getTableSwitchHigh();
 
         infos_[defaultOffset].init(stackDepth);
-        infos_[defaultOffset].jumpTarget = true;
+        infos_[defaultOffset].setJumpTarget(normallyReachable);
 
         uint32_t ncases = high - low + 1;
 
@@ -93,7 +218,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
           uint32_t targetOffset = it.tableSwitchCaseOffset(script_, i);
           if (targetOffset != defaultOffset) {
             infos_[targetOffset].init(stackDepth);
-            infos_[targetOffset].jumpTarget = true;
+            infos_[targetOffset].setJumpTarget(normallyReachable);
           }
         }
         break;
@@ -105,46 +230,33 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
               (tn.kind() == TryNoteKind::Catch ||
                tn.kind() == TryNoteKind::Finally)) {
             uint32_t catchOrFinallyOffset = tn.start + tn.length;
-            infos_[catchOrFinallyOffset].init(stackDepth);
-            infos_[catchOrFinallyOffset].jumpTarget = true;
+            uint32_t targetDepth =
+                tn.kind() == TryNoteKind::Finally ? stackDepth + 3 : stackDepth;
+            BytecodeInfo& targetInfo = infos_[catchOrFinallyOffset];
+            targetInfo.init(targetDepth);
+            targetInfo.setJumpTarget(/* normallyReachable = */ false);
           }
-        }
-
-        // Get the pc of the last instruction in the try block. It's a
-        // JSOp::Goto to jump over the catch/finally blocks.
-        BytecodeLocation endOfTryLoc(script_,
-                                     it.toRawBytecode() + it.codeOffset());
-        MOZ_ASSERT(endOfTryLoc.is(JSOp::Goto));
-
-        BytecodeLocation afterTryLoc(
-            script_, endOfTryLoc.toRawBytecode() + endOfTryLoc.jumpOffset());
-        MOZ_ASSERT(afterTryLoc > endOfTryLoc);
-
-        // Ensure the code following the try-block is always marked as
-        // reachable, to simplify Ion's ControlFlowGenerator.
-        uint32_t afterTryOffset = afterTryLoc.bytecodeToOffset(script_);
-        infos_[afterTryOffset].init(stackDepth);
-        infos_[afterTryOffset].jumpTarget = true;
-
-        // Pop CatchFinallyRanges that are no longer needed.
-        while (!catchFinallyRanges.empty() &&
-               catchFinallyRanges.back().end <= offset) {
-          catchFinallyRanges.popBack();
-        }
-
-        CatchFinallyRange range(endOfTryLoc.bytecodeToOffset(script_),
-                                afterTryLoc.bytecodeToOffset(script_));
-        if (!catchFinallyRanges.append(range)) {
-          return false;
         }
         break;
       }
 
       case JSOp::LoopHead:
-        for (size_t i = 0; i < catchFinallyRanges.length(); i++) {
-          if (catchFinallyRanges[i].contains(offset)) {
-            infos_[offset].loopHeadInCatchOrFinally = true;
-          }
+        infos_[offset].loopHeadCanOsr = normallyReachable;
+        break;
+
+#ifdef DEBUG
+      case JSOp::Exception:
+      case JSOp::ExceptionAndStack:
+        // Sanity check: ops only emitted in catch blocks are never
+        // normally reachable.
+        MOZ_ASSERT(!normallyReachable);
+        break;
+#endif
+
+      case JSOp::Return:
+      case JSOp::RetRval:
+        if (normallyReachable) {
+          normallyReachableReturn = true;
         }
         break;
 
@@ -162,13 +274,21 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
 
       uint32_t targetOffset = it.getJumpTargetOffset(script_);
 
+#ifdef DEBUG
       // If this is a backedge, the target JSOp::LoopHead must have been
-      // analyzed already.
-      MOZ_ASSERT_IF(targetOffset < offset, infos_[targetOffset].initialized);
+      // analyzed already. Furthermore, if the backedge is normally reachable,
+      // the loop head must be normally reachable too (loopHeadCanOsr can be
+      // used to check this since it's equivalent).
+      if (targetOffset < offset) {
+        MOZ_ASSERT(infos_[targetOffset].initialized);
+        MOZ_ASSERT_IF(normallyReachable, infos_[targetOffset].loopHeadCanOsr);
+      }
+#endif
 
       infos_[targetOffset].init(newStackDepth);
-      infos_[targetOffset].jumpTarget = true;
+      infos_[targetOffset].setJumpTarget(normallyReachable);
     }
+
     // Handle any fallthrough from this opcode.
     if (it.fallsThrough()) {
       BytecodeLocation fallthroughLoc = it.next();
@@ -179,7 +299,7 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
 
       // Treat the fallthrough of a branch instruction as a jump target.
       if (jump) {
-        infos_[fallthroughOffset].jumpTarget = true;
+        infos_[fallthroughOffset].setJumpTarget(normallyReachable);
       }
     }
   }
@@ -192,65 +312,55 @@ bool BytecodeAnalysis::init(TempAllocator& alloc) {
     }
   }
 
-  return true;
-}
-
-IonBytecodeInfo js::jit::AnalyzeBytecodeForIon(JSContext* cx,
-                                               JSScript* script) {
-  IonBytecodeInfo result;
-
-  if (script->isModule() || script->initialEnvironmentShape() ||
-      (script->function() &&
-       script->function()->needsSomeEnvironmentObject())) {
-    result.usesEnvironmentChain = true;
+  if (!normallyReachableReturn) {
+    script_->setUninlineable();
   }
 
-  jsbytecode const* pcEnd = script->codeEnd();
-  for (jsbytecode* pc = script->code(); pc < pcEnd; pc = GetNextPc(pc)) {
-    JSOp op = JSOp(*pc);
-    switch (op) {
-      case JSOp::SetArg:
-        result.modifiesArguments = true;
-        break;
-
-      case JSOp::GetName:
-      case JSOp::BindName:
-      case JSOp::BindVar:
-      case JSOp::SetName:
-      case JSOp::StrictSetName:
-      case JSOp::DelName:
-      case JSOp::GetAliasedVar:
-      case JSOp::SetAliasedVar:
-      case JSOp::Lambda:
-      case JSOp::LambdaArrow:
-      case JSOp::DefFun:
-      case JSOp::DefVar:
-      case JSOp::DefLet:
-      case JSOp::DefConst:
-      case JSOp::PushLexicalEnv:
-      case JSOp::PopLexicalEnv:
-      case JSOp::ImplicitThis:
-      case JSOp::FunWithProto:
-        result.usesEnvironmentChain = true;
-        break;
-
-      case JSOp::GetGName:
-      case JSOp::SetGName:
-      case JSOp::StrictSetGName:
-      case JSOp::GImplicitThis:
-        if (script->hasNonSyntacticScope()) {
-          result.usesEnvironmentChain = true;
-        }
-        break;
-
-      case JSOp::Finally:
-        result.hasTryFinally = true;
-        break;
-
-      default:
-        break;
+  if (!analyzer.canIon()) {
+    if (script_->canIonCompile()) {
+      JitSpew(
+          JitSpew_IonAbort,
+          "Disabling Warp support for %s:%d:%d due to Yield being in a loop",
+          script_->filename(), script_->lineno(),
+          script_->column().oneOriginValue());
+      script_->disableIon();
     }
   }
 
-  return result;
+  return true;
+}
+
+void BytecodeAnalysis::checkWarpSupport(JSOp op) {
+  switch (op) {
+#define DEF_CASE(OP) case JSOp::OP:
+    WARP_UNSUPPORTED_OPCODE_LIST(DEF_CASE)
+#undef DEF_CASE
+    if (script_->canIonCompile()) {
+      JitSpew(JitSpew_IonAbort, "Disabling Warp support for %s:%d:%d due to %s",
+              script_->filename(), script_->lineno(),
+              script_->column().oneOriginValue(), CodeName(op));
+      script_->disableIon();
+    }
+    break;
+    default:
+      break;
+  }
+}
+
+bool js::jit::ScriptUsesEnvironmentChain(JSScript* script) {
+  if (script->isModule() || script->initialEnvironmentShape() ||
+      (script->function() &&
+       script->function()->needsSomeEnvironmentObject())) {
+    return true;
+  }
+
+  AllBytecodesIterable iterator(script);
+
+  for (const BytecodeLocation& location : iterator) {
+    if (OpUsesEnvironmentChain(location.getOp())) {
+      return true;
+    }
+  }
+
+  return false;
 }

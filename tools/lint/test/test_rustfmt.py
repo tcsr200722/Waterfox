@@ -1,7 +1,7 @@
 import mozunit
 
-
-LINTER = 'rustfmt'
+LINTER = "rustfmt"
+fixed = 0
 
 
 def test_good(lint, config, paths):
@@ -40,5 +40,30 @@ def test_dir(lint, config, paths):
     assert "Print text to the console" in results[1].diff
 
 
-if __name__ == '__main__':
+def test_fix(lint, create_temp_file):
+    contents = """fn main() {
+    // Statements here are executed when the compiled binary is called
+
+    // Print text to the console
+    println!("Hello World!");
+    let mut a;
+    let mut b=1;
+    let mut vec = Vec::new();
+    vec.push(1);
+    vec.push(2);
+
+
+    for x in 5..10 - 5 {
+        a = x;
+    }
+
+    }
+"""
+
+    path = create_temp_file(contents, "bad.rs")
+    lint([path], fix=True)
+    assert fixed == 3
+
+
+if __name__ == "__main__":
     mozunit.main()

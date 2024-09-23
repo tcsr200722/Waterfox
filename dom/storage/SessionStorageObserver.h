@@ -7,8 +7,9 @@
 #ifndef mozilla_dom_SessionStorageObserver_h
 #define mozilla_dom_SessionStorageObserver_h
 
-namespace mozilla {
-namespace dom {
+#include "nsISupportsImpl.h"
+
+namespace mozilla::dom {
 
 class SessionStorageObserverChild;
 
@@ -57,7 +58,6 @@ class SessionStorageObserver final {
   ~SessionStorageObserver();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_SessionStorageObserver_h

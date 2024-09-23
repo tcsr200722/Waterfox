@@ -10,14 +10,13 @@
 #include "mozilla/css/Rule.h"
 #include "mozilla/ServoBindingTypes.h"
 
-struct RawServoCounterStyleRule;
+struct StyleLockedCounterStyleRule;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class CSSCounterStyleRule final : public css::Rule {
  public:
-  CSSCounterStyleRule(already_AddRefed<RawServoCounterStyleRule> aRawRule,
+  CSSCounterStyleRule(already_AddRefed<StyleLockedCounterStyleRule> aRawRule,
                       StyleSheet* aSheet, css::Rule* aParentRule,
                       uint32_t aLine, uint32_t aColumn)
       : css::Rule(aSheet, aParentRule, aLine, aColumn),
@@ -27,21 +26,27 @@ class CSSCounterStyleRule final : public css::Rule {
   CSSCounterStyleRule(const CSSCounterStyleRule& aCopy) = delete;
   ~CSSCounterStyleRule() = default;
 
+  template <typename Func>
+  void ModifyRule(Func);
+
  public:
   bool IsCCLeaf() const final;
+
+  const StyleLockedCounterStyleRule* Raw() const { return mRawRule.get(); }
+  void SetRawAfterClone(RefPtr<StyleLockedCounterStyleRule>);
 
 #ifdef DEBUG
   void List(FILE* out = stdout, int32_t aIndent = 0) const final;
 #endif
 
   // WebIDL interface
-  uint16_t Type() const override;
-  void GetCssText(nsAString& aCssText) const override;
+  StyleCssRuleType Type() const override;
+  void GetCssText(nsACString& aCssText) const override;
   void GetName(nsAString& aName);
   void SetName(const nsAString& aName);
 #define CSS_COUNTER_DESC(name_, method_) \
-  void Get##method_(nsAString& aValue);  \
-  void Set##method_(const nsAString& aValue);
+  void Get##method_(nsACString& aValue); \
+  void Set##method_(const nsACString& aValue);
 #include "nsCSSCounterDescList.h"
 #undef CSS_COUNTER_DESC
 
@@ -50,10 +55,9 @@ class CSSCounterStyleRule final : public css::Rule {
   JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
 
  private:
-  RefPtr<RawServoCounterStyleRule> mRawRule;
+  RefPtr<StyleLockedCounterStyleRule> mRawRule;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_CSSCounterStyleRule_h

@@ -2,16 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "TouchBarHelper",
   "@mozilla.org/widget/touchbarhelper;1",
   "nsITouchBarHelper"
 );
+
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "TouchBarInput",
@@ -26,12 +23,12 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 
 function is_element_visible(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null when checking visibility");
-  ok(!BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(!BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 function is_element_hidden(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null when checking visibility");
-  ok(BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 /**
@@ -80,7 +77,7 @@ add_task(async function updateReaderView() {
   );
 
   let url = TEST_PATH + "readerModeArticle.html";
-  await BrowserTestUtils.withNewTab(url, async function() {
+  await BrowserTestUtils.withNewTab(url, async function () {
     await BrowserTestUtils.waitForCondition(() => !readerButton.hidden);
 
     Assert.equal(
@@ -94,10 +91,10 @@ add_task(async function updateReaderView() {
 add_task(async function updateMainButtonInFullscreen() {
   Assert.equal(
     TouchBarHelper.getTouchBarInput("OpenLocation").image.spec,
-    "chrome://browser/skin/search-glass.svg",
+    "chrome://global/skin/icons/search-glass.svg",
     "OpenLocation should be displaying the search glass icon."
   );
-  await BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser.selectedBrowser,
     TEST_PATH + "video_test.html"
   );
@@ -118,9 +115,23 @@ add_task(async function updateMainButtonInFullscreen() {
   await exited;
   Assert.equal(
     TouchBarHelper.getTouchBarInput("OpenLocation").image.spec,
-    "chrome://browser/skin/search-glass.svg",
+    "chrome://global/skin/icons/search-glass.svg",
     "OpenLocation should be displaying the search glass icon."
   );
+});
+
+add_task(async function toggleUrlbarFocusOnOpenLocation() {
+  Assert.equal(TouchBarHelper.isUrlbarFocused, false, "Urlbar is unfocused.");
+  TouchBarHelper.toggleFocusUrlbar();
+  Assert.equal(TouchBarHelper.isUrlbarFocused, true, "Urlbar is unfocused.");
+  TouchBarHelper.toggleFocusUrlbar();
+});
+
+add_task(async function unfocusUrlbar() {
+  window.gURLBar.focus();
+  Assert.equal(TouchBarHelper.isUrlbarFocused, true, "Urlbar is unfocused.");
+  TouchBarHelper.unfocusUrlbar();
+  Assert.equal(TouchBarHelper.isUrlbarFocused, false, "Urlbar is unfocused.");
 });
 
 function waitForFullScreenState(browser, state) {
@@ -128,7 +139,7 @@ function waitForFullScreenState(browser, state) {
   return new Promise(resolve => {
     let eventReceived = false;
 
-    let observe = (subject, topic, data) => {
+    let observe = () => {
       if (!eventReceived) {
         return;
       }

@@ -14,10 +14,9 @@
 #include "mozilla/HoldDropJSObjects.h"
 #include "jsapi.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_MULTI_ZONE_JSHOLDER_CLASS(MessageEvent)
+NS_IMPL_CYCLE_COLLECTION_CLASS(MessageEvent)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MessageEvent, Event)
   tmp->mData.setUndefined();
@@ -48,10 +47,7 @@ MessageEvent::MessageEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                            WidgetEvent* aEvent)
     : Event(aOwner, aPresContext, aEvent), mData(JS::UndefinedValue()) {}
 
-MessageEvent::~MessageEvent() {
-  mData.setUndefined();
-  DropJSObjects(this);
-}
+MessageEvent::~MessageEvent() { DropJSObjects(this); }
 
 JSObject* MessageEvent::WrapObjectInternal(JSContext* aCx,
                                            JS::Handle<JSObject*> aGivenProto) {
@@ -163,5 +159,4 @@ void MessageEvent::GetPorts(nsTArray<RefPtr<MessagePort>>& aPorts) {
   aPorts = mPorts.Clone();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

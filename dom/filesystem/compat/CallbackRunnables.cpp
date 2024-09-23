@@ -10,6 +10,7 @@
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/FileBinding.h"
+#include "mozilla/dom/FileSystem.h"
 #include "mozilla/dom/FileSystemDirectoryReaderBinding.h"
 #include "mozilla/dom/FileSystemFileEntry.h"
 #include "mozilla/dom/FileSystemUtils.h"
@@ -21,8 +22,7 @@
 
 #include "../GetFileOrDirectoryTask.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 EntryCallbackRunnable::EntryCallbackRunnable(FileSystemEntryCallback* aCallback,
                                              FileSystemEntry* aEntry)
@@ -160,7 +160,8 @@ void GetEntryHelper::Run() {
 }
 
 void GetEntryHelper::ResolvedCallback(JSContext* aCx,
-                                      JS::Handle<JS::Value> aValue) {
+                                      JS::Handle<JS::Value> aValue,
+                                      ErrorResult& aRv) {
   if (NS_WARN_IF(!aValue.isObject())) {
     return;
   }
@@ -225,7 +226,8 @@ void GetEntryHelper::ContinueRunning(JSObject* aObj) {
 }
 
 void GetEntryHelper::RejectedCallback(JSContext* aCx,
-                                      JS::Handle<JS::Value> aValue) {
+                                      JS::Handle<JS::Value> aValue,
+                                      ErrorResult& aRv) {
   Error(NS_ERROR_DOM_NOT_FOUND_ERR);
 }
 
@@ -275,5 +277,4 @@ void ErrorCallbackHelper::Call(
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

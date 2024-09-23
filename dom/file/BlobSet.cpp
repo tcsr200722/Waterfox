@@ -9,9 +9,9 @@
 #include "mozilla/dom/File.h"
 #include "MemoryBlobImpl.h"
 #include "MultipartBlobImpl.h"
+#include "StringBlobImpl.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 nsresult BlobSet::AppendVoidPtr(const void* aData, uint32_t aLength) {
   NS_ENSURE_ARG_POINTER(aData);
@@ -26,28 +26,41 @@ nsresult BlobSet::AppendVoidPtr(const void* aData, uint32_t aLength) {
 
   memcpy((char*)data, aData, aLength);
 
-  RefPtr<BlobImpl> blobImpl = new MemoryBlobImpl(data, aLength, EmptyString());
+  RefPtr<BlobImpl> blobImpl = new MemoryBlobImpl(data, aLength, u""_ns);
   return AppendBlobImpl(blobImpl);
 }
 
-nsresult BlobSet::AppendString(const nsAString& aString, bool nativeEOL) {
+nsresult BlobSet::AppendVector(Vector<uint8_t>&& aData) {
+  size_t length = aData.length();
+  RefPtr<BlobImpl> blobImpl =
+      new MemoryBlobImpl(aData.extractOrCopyRawBuffer(), length, u""_ns);
+  return AppendBlobImpl(blobImpl);
+}
+
+nsresult BlobSet::AppendUTF8String(const nsACString& aUTF8String,
+                                   bool nativeEOL) {
   nsCString utf8Str;
-  if (NS_WARN_IF(!AppendUTF16toUTF8(aString, utf8Str, mozilla::fallible))) {
+  if (NS_WARN_IF(!utf8Str.Assign(aUTF8String, mozilla::fallible))) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
   if (nativeEOL) {
     if (utf8Str.Contains('\r')) {
-      utf8Str.ReplaceSubstring("\r\n", "\n");
-      utf8Str.ReplaceSubstring("\r", "\n");
+      if (NS_WARN_IF(
+              !utf8Str.ReplaceSubstring("\r\n", "\n", mozilla::fallible) ||
+              !utf8Str.ReplaceSubstring("\r", "\n", mozilla::fallible))) {
+        return NS_ERROR_OUT_OF_MEMORY;
+      }
     }
 #ifdef XP_WIN
-    utf8Str.ReplaceSubstring("\n", "\r\n");
+    if (NS_WARN_IF(
+            !utf8Str.ReplaceSubstring("\n", "\r\n", mozilla::fallible))) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
 #endif
   }
 
-  RefPtr<StringBlobImpl> blobImpl =
-      StringBlobImpl::Create(utf8Str, EmptyString());
+  RefPtr<StringBlobImpl> blobImpl = StringBlobImpl::Create(utf8Str, u""_ns);
   return AppendBlobImpl(blobImpl);
 }
 
@@ -74,5 +87,4 @@ nsresult BlobSet::AppendBlobImpl(BlobImpl* aBlobImpl) {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

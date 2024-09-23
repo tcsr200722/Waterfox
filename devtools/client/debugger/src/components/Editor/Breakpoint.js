@@ -2,44 +2,32 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import { PureComponent } from "devtools/client/shared/vendor/react";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
-import { PureComponent } from "react";
-import classnames from "classnames";
-
-import { getDocument, toEditorLine } from "../../utils/editor";
+import { getDocument, toEditorLine } from "../../utils/editor/index";
 import { getSelectedLocation } from "../../utils/selected-location";
 import { features } from "../../utils/prefs";
-import { showMenu } from "devtools-contextmenu";
-import { breakpointItems } from "./menus/breakpoints";
-import type { BreakpointItemActions } from "./menus/breakpoints";
-import type { EditorItemActions } from "./menus/editor";
-
-import type {
-  Source,
-  Breakpoint as BreakpointType,
-  ThreadContext,
-} from "../../types";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
 const breakpointSvg = document.createElement("div");
 breakpointSvg.innerHTML =
   '<svg viewBox="0 0 60 15" width="60" height="15"><path d="M53.07.5H1.5c-.54 0-1 .46-1 1v12c0 .54.46 1 1 1h51.57c.58 0 1.15-.26 1.53-.7l4.7-6.3-4.7-6.3c-.38-.44-.95-.7-1.53-.7z"/></svg>';
 
-type Props = {
-  cx: ThreadContext,
-  breakpoint: BreakpointType,
-  selectedSource: Source,
-  editor: Object,
-  breakpointActions: BreakpointItemActions,
-  editorActions: EditorItemActions,
-};
+class Breakpoint extends PureComponent {
+  static get propTypes() {
+    return {
+      breakpoint: PropTypes.object.isRequired,
+      editor: PropTypes.object.isRequired,
+      selectedSource: PropTypes.object,
+    };
+  }
 
-class Breakpoint extends PureComponent<Props> {
   componentDidMount() {
     this.addBreakpoint(this.props);
   }
 
-  componentDidUpdate(prevProps: Props) {
+  componentDidUpdate(prevProps) {
     this.removeBreakpoint(prevProps);
     this.addBreakpoint(this.props);
   }
@@ -62,16 +50,16 @@ class Breakpoint extends PureComponent<Props> {
     return bp;
   }
 
-  onClick = (event: MouseEvent) => {
+  onClick = event => {
     const {
-      cx,
-      breakpointActions,
-      editorActions,
+      continueToHere,
+      toggleBreakpointsAtLine,
+      removeBreakpointsAtLine,
       breakpoint,
       selectedSource,
     } = this.props;
 
-    // ignore right clicks
+    // ignore ctrl + click and right clicks when clicking on the breakpoint
     if ((event.ctrlKey && event.button === 0) || event.button === 2) {
       return;
     }
@@ -81,44 +69,30 @@ class Breakpoint extends PureComponent<Props> {
 
     const selectedLocation = getSelectedLocation(breakpoint, selectedSource);
     if (event.metaKey) {
-      return editorActions.continueToHere(cx, selectedLocation.line);
+      continueToHere(selectedLocation);
+      return;
     }
 
     if (event.shiftKey) {
-      if (features.columnBreakpoints) {
-        return breakpointActions.toggleBreakpointsAtLine(
-          cx,
-          !breakpoint.disabled,
-          selectedLocation.line
-        );
-      }
-
-      return breakpointActions.toggleDisabledBreakpoint(cx, breakpoint);
+      toggleBreakpointsAtLine(!breakpoint.disabled, selectedLocation.line);
+      return;
     }
 
-    return breakpointActions.removeBreakpointsAtLine(
-      cx,
-      selectedLocation.sourceId,
-      selectedLocation.line
-    );
+    removeBreakpointsAtLine(selectedLocation.source, selectedLocation.line);
   };
 
-  onContextMenu = (event: MouseEvent) => {
-    const { cx, breakpoint, selectedSource, breakpointActions } = this.props;
+  onContextMenu = event => {
     event.stopPropagation();
     event.preventDefault();
-    const selectedLocation = getSelectedLocation(breakpoint, selectedSource);
 
-    showMenu(
+    this.props.showEditorEditBreakpointContextMenu(
       event,
-      breakpointItems(cx, breakpoint, selectedLocation, breakpointActions)
+      this.props.breakpoint
     );
   };
 
-  addBreakpoint(props: Props) {
+  addBreakpoint(props) {
     const { breakpoint, editor, selectedSource } = props;
-    const selectedLocation = getSelectedLocation(breakpoint, selectedSource);
-
     // Hidden Breakpoints are never rendered on the client
     if (breakpoint.options.hidden) {
       return;
@@ -128,49 +102,51 @@ class Breakpoint extends PureComponent<Props> {
       return;
     }
 
-    const sourceId = selectedSource.id;
-    const line = toEditorLine(sourceId, selectedLocation.line);
-    const doc = getDocument(sourceId);
-
-    doc.setGutterMarker(line, "breakpoints", this.makeMarker());
-
-    editor.codeMirror.addLineClass(line, "wrapClass", "new-breakpoint");
-    editor.codeMirror.removeLineClass(line, "wrapClass", "breakpoint-disabled");
-    editor.codeMirror.removeLineClass(line, "wrapClass", "has-condition");
-    editor.codeMirror.removeLineClass(line, "wrapClass", "has-log");
-
-    if (breakpoint.disabled) {
-      editor.codeMirror.addLineClass(line, "wrapClass", "breakpoint-disabled");
-    }
-
-    if (breakpoint.options.logValue) {
-      editor.codeMirror.addLineClass(line, "wrapClass", "has-log");
-    } else if (breakpoint.options.condition) {
-      editor.codeMirror.addLineClass(line, "wrapClass", "has-condition");
-    }
-  }
-
-  removeBreakpoint(props: Props) {
-    const { selectedSource, breakpoint } = props;
-    if (!selectedSource) {
-      return;
-    }
-
-    const sourceId = selectedSource.id;
-    const doc = getDocument(sourceId);
-
+    const doc = getDocument(selectedSource.id);
     if (!doc) {
       return;
     }
 
     const selectedLocation = getSelectedLocation(breakpoint, selectedSource);
-    const line = toEditorLine(sourceId, selectedLocation.line);
+    const line = toEditorLine(selectedSource.id, selectedLocation.line);
+
+    doc.setGutterMarker(line, "breakpoints", this.makeMarker());
+
+    editor.codeMirror.addLineClass(line, "wrap", "new-breakpoint");
+    editor.codeMirror.removeLineClass(line, "wrap", "breakpoint-disabled");
+    editor.codeMirror.removeLineClass(line, "wrap", "has-condition");
+    editor.codeMirror.removeLineClass(line, "wrap", "has-log");
+
+    if (breakpoint.disabled) {
+      editor.codeMirror.addLineClass(line, "wrap", "breakpoint-disabled");
+    }
+
+    if (breakpoint.options.logValue) {
+      editor.codeMirror.addLineClass(line, "wrap", "has-log");
+    } else if (breakpoint.options.condition) {
+      editor.codeMirror.addLineClass(line, "wrap", "has-condition");
+    }
+  }
+
+  removeBreakpoint(props) {
+    const { selectedSource, breakpoint } = props;
+    if (!selectedSource) {
+      return;
+    }
+
+    const doc = getDocument(selectedSource.id);
+    if (!doc) {
+      return;
+    }
+
+    const selectedLocation = getSelectedLocation(breakpoint, selectedSource);
+    const line = toEditorLine(selectedSource.id, selectedLocation.line);
 
     doc.setGutterMarker(line, "breakpoints", null);
-    doc.removeLineClass(line, "wrapClass", "new-breakpoint");
-    doc.removeLineClass(line, "wrapClass", "breakpoint-disabled");
-    doc.removeLineClass(line, "wrapClass", "has-condition");
-    doc.removeLineClass(line, "wrapClass", "has-log");
+    doc.removeLineClass(line, "wrap", "new-breakpoint");
+    doc.removeLineClass(line, "wrap", "breakpoint-disabled");
+    doc.removeLineClass(line, "wrap", "has-condition");
+    doc.removeLineClass(line, "wrap", "has-log");
   }
 
   render() {

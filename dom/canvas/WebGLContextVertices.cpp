@@ -17,7 +17,7 @@
 #include "WebGLTypes.h"
 #include "WebGLVertexArray.h"
 
-#include "mozilla/Casting.h"
+#include "mozilla/ResultVariant.h"
 
 namespace mozilla {
 
@@ -57,15 +57,16 @@ void WebGLContext::VertexAttrib4T(GLuint index, const webgl::TypedQuad& src) {
     switch (src.type) {
       case webgl::AttribBaseType::Boolean:
       case webgl::AttribBaseType::Float:
-        gl->fVertexAttrib4fv(index, reinterpret_cast<const float*>(src.data));
+        gl->fVertexAttrib4fv(index,
+                             reinterpret_cast<const float*>(src.data.data()));
         break;
       case webgl::AttribBaseType::Int:
-        gl->fVertexAttribI4iv(index,
-                              reinterpret_cast<const int32_t*>(src.data));
+        gl->fVertexAttribI4iv(
+            index, reinterpret_cast<const int32_t*>(src.data.data()));
         break;
       case webgl::AttribBaseType::Uint:
-        gl->fVertexAttribI4uiv(index,
-                               reinterpret_cast<const uint32_t*>(src.data));
+        gl->fVertexAttribI4uiv(
+            index, reinterpret_cast<const uint32_t*>(src.data.data()));
         break;
     }
   }
@@ -76,7 +77,7 @@ void WebGLContext::VertexAttrib4T(GLuint index, const webgl::TypedQuad& src) {
   mGenericVertexAttribTypeInvalidator.InvalidateCaches();
 
   if (!index) {
-    memcpy(mGenericVertexAttrib0Data, src.data,
+    memcpy(mGenericVertexAttrib0Data, src.data.data(),
            sizeof(mGenericVertexAttrib0Data));
   }
 }
@@ -199,12 +200,6 @@ CheckVertexAttribPointer(const bool isWebgl2,
       calc.baseType = webgl::AttribBaseType::Float;
       break;
 
-    case LOCAL_GL_FIXED:
-      isTypeValid = isWebgl2;
-      bytesPerType = 4;
-      calc.baseType = webgl::AttribBaseType::Float;
-      break;
-
     case LOCAL_GL_INT_2_10_10_10_REV:
     case LOCAL_GL_UNSIGNED_INT_2_10_10_10_REV:
       if (desc.channels != 4) {
@@ -258,7 +253,7 @@ CheckVertexAttribPointer(const bool isWebgl2,
   return calc;
 }
 
-void DoVertexAttribPointer(GLContext& gl, const uint32_t index,
+void DoVertexAttribPointer(gl::GLContext& gl, const uint32_t index,
                            const webgl::VertAttribPointerDesc& desc) {
   if (desc.intFunc) {
     gl.fVertexAttribIPointer(index, desc.channels, desc.type,

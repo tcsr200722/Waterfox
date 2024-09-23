@@ -1,16 +1,23 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function() {
+add_task(async function setupHomeButton() {
+  // Put the home button in the pre-proton placement to test focus states.
+  CustomizableUI.addWidgetToArea(
+    "home-button",
+    "nav-bar",
+    CustomizableUI.getPlacementOfWidget("stop-reload-button").position + 1
+  );
+  CustomizableUI.addWidgetToArea("sidebar-button", "nav-bar");
+  registerCleanupFunction(async function resetToolbar() {
+    await CustomizableUI.reset();
+  });
+});
+
+add_task(async function () {
   let HOMEPAGE_PREF = "browser.startup.homepage";
 
   await pushPrefs([HOMEPAGE_PREF, "about:mozilla"]);
-
-  let EventUtils = {};
-  Services.scriptloader.loadSubScript(
-    "chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
-    EventUtils
-  );
 
   // Since synthesizeDrop triggers the srcElement, need to use another button
   // that should be visible.
@@ -20,7 +27,12 @@ add_task(async function() {
   ok(homeButton, "home button present");
 
   async function drop(dragData, homepage) {
-    let setHomepageDialogPromise = BrowserTestUtils.domWindowOpenedAndLoaded();
+    let setHomepageDialogPromise =
+      BrowserTestUtils.promiseAlertDialogOpen("accept");
+    let setHomepagePromise = TestUtils.waitForPrefChange(
+      HOMEPAGE_PREF,
+      newVal => newVal == homepage
+    );
 
     EventUtils.synthesizeDrop(
       dragSrcElement,
@@ -29,33 +41,18 @@ add_task(async function() {
       "copy",
       window
     );
+
     // Ensure dnd suppression is cleared.
     EventUtils.synthesizeMouseAtCenter(homeButton, { type: "mouseup" }, window);
 
-    let setHomepageDialog = await setHomepageDialogPromise;
+    await setHomepageDialogPromise;
     ok(true, "dialog appeared in response to home button drop");
 
-    let setHomepagePromise = new Promise(function(resolve) {
-      let observer = {
-        QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
-        observe(subject, topic, data) {
-          is(topic, "nsPref:changed", "observed correct topic");
-          is(data, HOMEPAGE_PREF, "observed correct data");
-          let modified = Services.prefs.getStringPref(HOMEPAGE_PREF);
-          is(modified, homepage, "homepage is set correctly");
-          Services.prefs.removeObserver(HOMEPAGE_PREF, observer);
-
-          Services.prefs.setStringPref(HOMEPAGE_PREF, "about:mozilla;");
-
-          resolve();
-        },
-      };
-      Services.prefs.addObserver(HOMEPAGE_PREF, observer);
-    });
-
-    setHomepageDialog.document.getElementById("commonDialog").acceptDialog();
-
     await setHomepagePromise;
+
+    let modified = Services.prefs.getStringPref(HOMEPAGE_PREF);
+    is(modified, homepage, "homepage is set correctly");
+    Services.prefs.setStringPref(HOMEPAGE_PREF, "about:mozilla;");
   }
 
   function dropInvalidURI() {
@@ -69,11 +66,11 @@ add_task(async function() {
         },
       };
       Services.console.registerListener(consoleListener);
-      registerCleanupFunction(function() {
+      registerCleanupFunction(function () {
         Services.console.unregisterListener(consoleListener);
       });
 
-      executeSoon(function() {
+      executeSoon(function () {
         info("Attempting second drop, of a javascript: URI");
         // The drop handler throws an exception when dragging URIs that inherit
         // principal, e.g. javascript:
@@ -104,8 +101,7 @@ add_task(async function() {
       [
         {
           type: "text/plain",
-          data:
-            "http://mochi.test:8888/\nhttp://mochi.test:8888/b\nhttp://mochi.test:8888/c",
+          data: "http://mochi.test:8888/\nhttp://mochi.test:8888/b\nhttp://mochi.test:8888/c",
         },
       ],
     ],

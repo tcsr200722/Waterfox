@@ -14,9 +14,7 @@
 
 class nsIInputStream;
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 class CacheStreamControlParent;
 class Manager;
@@ -39,7 +37,6 @@ class StreamList final : public Context::Activity,
 
   void NoteClosed(const nsID& aId);
   void NoteClosedAll();
-  void Close(const nsID& aId);
   void CloseAll();
 
   // Context::Activity methods
@@ -47,6 +44,8 @@ class StreamList final : public Context::Activity,
   virtual bool MatchesCacheId(CacheId aCacheId) const override;
 
  private:
+  void DoStringify(nsACString& aData) override;
+
   struct Entry {
     explicit Entry(const nsID& aId, nsCOMPtr<nsIInputStream>&& aStream)
         : mId(aId), mStream(std::move(aStream)) {}
@@ -68,8 +67,6 @@ class StreamList final : public Context::Activity,
   MOZ_DECLARE_REFCOUNTED_TYPENAME(cache::StreamList)
 };
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_StreamList_h

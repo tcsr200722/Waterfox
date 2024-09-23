@@ -7,11 +7,28 @@
 
 #include "HTMLEditUtils.h"
 
+#include "mozilla/Logging.h"
 #include "mozilla/OwningNonNull.h"
+#include "mozilla/ToString.h"
 
 namespace mozilla {
 
 using namespace dom;
+
+std::ostream& operator<<(std::ostream& aStream,
+                         const ReplaceTextTransaction& aTransaction) {
+  aStream << "{ mTextNode=" << aTransaction.mTextNode.get();
+  if (aTransaction.mTextNode) {
+    aStream << " (" << *aTransaction.mTextNode << ")";
+  }
+  aStream << ", mStringToInsert=\""
+          << NS_ConvertUTF16toUTF8(aTransaction.mStringToInsert).get() << "\""
+          << ", mStringToBeReplaced=\""
+          << NS_ConvertUTF16toUTF8(aTransaction.mStringToBeReplaced).get()
+          << "\", mOffset=" << aTransaction.mOffset
+          << ", mEditorBase=" << aTransaction.mEditorBase.get() << " }";
+  return aStream;
+}
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(ReplaceTextTransaction, EditTransactionBase,
                                    mEditorBase, mTextNode)
@@ -22,18 +39,23 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ReplaceTextTransaction)
 NS_INTERFACE_MAP_END_INHERITING(EditTransactionBase)
 
 NS_IMETHODIMP ReplaceTextTransaction::DoTransaction() {
-  if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
-      NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode))) {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ReplaceTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
+  if (MOZ_UNLIKELY(
+          NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
+          NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode)))) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
   OwningNonNull<EditorBase> editorBase = *mEditorBase;
   OwningNonNull<Text> textNode = *mTextNode;
 
-  ErrorResult error;
+  IgnoredErrorResult error;
   editorBase->DoReplaceText(textNode, mOffset, mStringToBeReplaced.Length(),
                             mStringToInsert, error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("EditorBase::DoReplaceText() failed");
     return error.StealNSResult();
   }
@@ -41,42 +63,29 @@ NS_IMETHODIMP ReplaceTextTransaction::DoTransaction() {
   editorBase->RangeUpdaterRef().SelAdjReplaceText(textNode, mOffset,
                                                   mStringToBeReplaced.Length(),
                                                   mStringToInsert.Length());
-
-  if (!editorBase->AllowsTransactionsToChangeSelection()) {
-    return NS_OK;
-  }
-
-  // XXX Should we stop setting selection when mutation event listener
-  //     modifies the text node?
-  RefPtr<Selection> selection = editorBase->GetSelection();
-  if (NS_WARN_IF(!selection)) {
-    return NS_ERROR_FAILURE;
-  }
-  DebugOnly<nsresult> rvIgnored =
-      selection->Collapse(textNode, mOffset + mStringToInsert.Length());
-  if (NS_WARN_IF(editorBase->Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
-  }
-  NS_ASSERTION(NS_SUCCEEDED(rvIgnored),
-               "Selection::Collapse() failed, but ignored");
   return NS_OK;
 }
 
 NS_IMETHODIMP ReplaceTextTransaction::UndoTransaction() {
-  if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
-      NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode))) {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ReplaceTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
+  if (MOZ_UNLIKELY(
+          NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
+          NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode)))) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  ErrorResult error;
+  IgnoredErrorResult error;
   nsAutoString insertedString;
   mTextNode->SubstringData(mOffset, mStringToInsert.Length(), insertedString,
                            error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("CharacterData::SubstringData() failed");
     return error.StealNSResult();
   }
-  if (insertedString != mStringToInsert) {
+  if (MOZ_UNLIKELY(insertedString != mStringToInsert)) {
     NS_WARNING(
         "ReplaceTextTransaction::UndoTransaction() did nothing due to "
         "unexpected text");
@@ -88,7 +97,7 @@ NS_IMETHODIMP ReplaceTextTransaction::UndoTransaction() {
 
   editorBase->DoReplaceText(textNode, mOffset, mStringToInsert.Length(),
                             mStringToBeReplaced, error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("EditorBase::DoReplaceText() failed");
     return error.StealNSResult();
   }
@@ -103,35 +112,39 @@ NS_IMETHODIMP ReplaceTextTransaction::UndoTransaction() {
 
   // XXX Should we stop setting selection when mutation event listener
   //     modifies the text node?
-  RefPtr<Selection> selection = editorBase->GetSelection();
-  if (NS_WARN_IF(!selection)) {
-    return NS_ERROR_FAILURE;
-  }
-  DebugOnly<nsresult> rvIgnored =
-      selection->Collapse(textNode, mOffset + mStringToBeReplaced.Length());
-  if (NS_WARN_IF(editorBase->Destroyed())) {
+  editorBase->CollapseSelectionTo(
+      EditorRawDOMPoint(textNode, mOffset + mStringToBeReplaced.Length()),
+      error);
+  if (MOZ_UNLIKELY(error.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+    NS_WARNING(
+        "EditorBase::CollapseSelectionTo() caused destroying the editor");
     return NS_ERROR_EDITOR_DESTROYED;
   }
-  NS_ASSERTION(NS_SUCCEEDED(rvIgnored),
-               "Selection::Collapse() failed, but ignored");
+  NS_ASSERTION(!error.Failed(),
+               "EditorBase::CollapseSelectionTo() failed, but ignored");
   return NS_OK;
 }
 
 NS_IMETHODIMP ReplaceTextTransaction::RedoTransaction() {
-  if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
-      NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode))) {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ReplaceTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
+  if (MOZ_UNLIKELY(
+          NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode) ||
+          NS_WARN_IF(!HTMLEditUtils::IsSimplyEditableNode(*mTextNode)))) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  ErrorResult error;
+  IgnoredErrorResult error;
   nsAutoString undoneString;
   mTextNode->SubstringData(mOffset, mStringToBeReplaced.Length(), undoneString,
                            error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("CharacterData::SubstringData() failed");
     return error.StealNSResult();
   }
-  if (undoneString != mStringToBeReplaced) {
+  if (MOZ_UNLIKELY(undoneString != mStringToBeReplaced)) {
     NS_WARNING(
         "ReplaceTextTransaction::RedoTransaction() did nothing due to "
         "unexpected text");
@@ -143,7 +156,7 @@ NS_IMETHODIMP ReplaceTextTransaction::RedoTransaction() {
 
   editorBase->DoReplaceText(textNode, mOffset, mStringToBeReplaced.Length(),
                             mStringToInsert, error);
-  if (error.Failed()) {
+  if (MOZ_UNLIKELY(error.Failed())) {
     NS_WARNING("EditorBase::DoReplaceText() failed");
     return error.StealNSResult();
   }
@@ -158,17 +171,15 @@ NS_IMETHODIMP ReplaceTextTransaction::RedoTransaction() {
 
   // XXX Should we stop setting selection when mutation event listener
   //     modifies the text node?
-  RefPtr<Selection> selection = editorBase->GetSelection();
-  if (NS_WARN_IF(!selection)) {
-    return NS_ERROR_FAILURE;
-  }
-  DebugOnly<nsresult> rvIgnored =
-      selection->Collapse(textNode, mOffset + mStringToInsert.Length());
-  if (NS_WARN_IF(editorBase->Destroyed())) {
+  editorBase->CollapseSelectionTo(SuggestPointToPutCaret<EditorRawDOMPoint>(),
+                                  error);
+  if (MOZ_UNLIKELY(error.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+    NS_WARNING(
+        "EditorBase::CollapseSelectionTo() caused destroying the editor");
     return NS_ERROR_EDITOR_DESTROYED;
   }
-  NS_ASSERTION(NS_SUCCEEDED(rvIgnored),
-               "Selection::Collapse() failed, but ignored");
+  NS_ASSERTION(!error.Failed(),
+               "EditorBase::CollapseSelectionTo() failed, but ignored");
   return NS_OK;
 }
 

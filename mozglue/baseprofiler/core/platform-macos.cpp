@@ -36,12 +36,6 @@
 namespace mozilla {
 namespace baseprofiler {
 
-int profiler_current_process_id() { return getpid(); }
-
-int profiler_current_thread_id() {
-  return static_cast<int>(static_cast<pid_t>(syscall(SYS_thread_selfid)));
-}
-
 static int64_t MicrosecondsSince1970() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
@@ -55,7 +49,8 @@ void* GetStackTop(void* aGuess) {
 
 class PlatformData {
  public:
-  explicit PlatformData(int aThreadId) : mProfiledThread(mach_thread_self()) {}
+  explicit PlatformData(BaseProfilerThreadId aThreadId)
+      : mProfiledThread(mach_thread_self()) {}
 
   ~PlatformData() {
     // Deallocate Mach port for thread.
@@ -106,23 +101,47 @@ void Sampler::SuspendAndSampleAndResumeThread(
   // what we do here, or risk deadlock.  See the corresponding comment in
   // platform-linux-android.cpp for details.
 
+#if defined(__x86_64__)
   thread_state_flavor_t flavor = x86_THREAD_STATE64;
   x86_thread_state64_t state;
   mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
-#if __DARWIN_UNIX03
-#  define REGISTER_FIELD(name) __r##name
+#  if __DARWIN_UNIX03
+#    define REGISTER_FIELD(name) __r##name
+#  else
+#    define REGISTER_FIELD(name) r##name
+#  endif  // __DARWIN_UNIX03
+#elif defined(__aarch64__)
+  thread_state_flavor_t flavor = ARM_THREAD_STATE64;
+  arm_thread_state64_t state;
+  mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+#  if __DARWIN_UNIX03
+#    define REGISTER_FIELD(name) __##name
+#  else
+#    define REGISTER_FIELD(name) name
+#  endif  // __DARWIN_UNIX03
 #else
-#  define REGISTER_FIELD(name) r##name
-#endif  // __DARWIN_UNIX03
+#  error "unknown architecture"
+#endif
 
   if (thread_get_state(samplee_thread, flavor,
                        reinterpret_cast<natural_t*>(&state),
                        &count) == KERN_SUCCESS) {
     Registers regs;
+#if defined(__x86_64__)
     regs.mPC = reinterpret_cast<Address>(state.REGISTER_FIELD(ip));
     regs.mSP = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
     regs.mFP = reinterpret_cast<Address>(state.REGISTER_FIELD(bp));
-    regs.mLR = 0;
+    regs.mR10 = reinterpret_cast<Address>(state.REGISTER_FIELD(10));
+    regs.mR12 = reinterpret_cast<Address>(state.REGISTER_FIELD(12));
+#elif defined(__aarch64__)
+    regs.mPC = reinterpret_cast<Address>(state.REGISTER_FIELD(pc));
+    regs.mSP = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
+    regs.mFP = reinterpret_cast<Address>(state.REGISTER_FIELD(fp));
+    regs.mLR = reinterpret_cast<Address>(state.REGISTER_FIELD(lr));
+    regs.mR11 = reinterpret_cast<Address>(state.REGISTER_FIELD(x[11]));
+#else
+#  error "unknown architecture"
+#endif
 
     aProcessRegs(regs, aNow);
   }
@@ -152,7 +171,7 @@ static void* ThreadEntry(void* aArg) {
 }
 
 SamplerThread::SamplerThread(PSLockRef aLock, uint32_t aActivityGeneration,
-                             double aIntervalMilliseconds)
+                             double aIntervalMilliseconds, uint32_t aFeatures)
     : mSampler(aLock),
       mActivityGeneration(aActivityGeneration),
       mIntervalMicroseconds(
@@ -181,20 +200,22 @@ void SamplerThread::Stop(PSLockRef aLock) { mSampler.Disable(aLock); }
 
 static void PlatformInit(PSLockRef aLock) {}
 
+// clang-format off
 #if defined(HAVE_NATIVE_UNWIND)
-void Registers::SyncPopulate() {
-  asm(
-      // Compute caller's %rsp by adding to %rbp:
-      // 8 bytes for previous %rbp, 8 bytes for return address
-      "leaq 0x10(%%rbp), %0\n\t"
-      // Dereference %rbp to get previous %rbp
-      "movq (%%rbp), %1\n\t"
-      : "=r"(mSP), "=r"(mFP));
-  mPC = reinterpret_cast<Address>(
-      __builtin_extract_return_addr(__builtin_return_address(0)));
-  mLR = 0;
-}
+// Derive the stack pointer from the frame pointer. The 0x10 offset is
+// 8 bytes for the previous frame pointer and 8 bytes for the return
+// address both stored on the stack after at the beginning of the current
+// frame.
+#  define REGISTERS_SYNC_POPULATE(regs)                                       \
+    regs.mSP = reinterpret_cast<Address>(__builtin_frame_address(0)) + 0x10;  \
+    _Pragma("GCC diagnostic push")                                            \
+    _Pragma("GCC diagnostic ignored \"-Wframe-address\"")                     \
+    regs.mFP = reinterpret_cast<Address>(__builtin_frame_address(1));         \
+    _Pragma("GCC diagnostic pop")                                             \
+    regs.mPC = reinterpret_cast<Address>(                                     \
+        __builtin_extract_return_addr(__builtin_return_address(0)));
 #endif
+// clang-format on
 
 }  // namespace baseprofiler
 }  // namespace mozilla

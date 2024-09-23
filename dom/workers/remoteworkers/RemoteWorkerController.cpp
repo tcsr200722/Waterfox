@@ -12,7 +12,10 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/ScopeExit.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/RemoteLazyInputStreamStorage.h"
+#include "mozilla/dom/FetchEventOpParent.h"
+#include "mozilla/dom/FetchEventOpProxyParent.h"
 #include "mozilla/dom/MessagePortParent.h"
 #include "mozilla/dom/RemoteWorkerTypes.h"
 #include "mozilla/dom/ServiceWorkerCloneData.h"
@@ -42,6 +45,7 @@ already_AddRefed<RemoteWorkerController> RemoteWorkerController::Create(
   RefPtr<RemoteWorkerManager> manager = RemoteWorkerManager::GetOrCreate();
   MOZ_ASSERT(manager);
 
+  // XXX: We do not check for failure here, should we?
   manager->Launch(controller, aData, aProcessId);
 
   return controller.forget();
@@ -130,6 +134,18 @@ void RemoteWorkerController::ErrorPropagation(const ErrorValue& aValue) {
   AssertIsOnBackgroundThread();
 
   mObserver->ErrorReceived(aValue);
+}
+
+void RemoteWorkerController::NotifyLock(bool aCreated) {
+  AssertIsOnBackgroundThread();
+
+  mObserver->LockNotified(aCreated);
+}
+
+void RemoteWorkerController::NotifyWebTransport(bool aCreated) {
+  AssertIsOnBackgroundThread();
+
+  mObserver->WebTransportNotified(aCreated);
 }
 
 void RemoteWorkerController::WorkerTerminated() {
@@ -271,6 +287,26 @@ RefPtr<ServiceWorkerOpPromise> RemoteWorkerController::ExecServiceWorkerOp(
 
   UniquePtr<PendingServiceWorkerOp> op =
       MakeUnique<PendingServiceWorkerOp>(std::move(aArgs), promise);
+
+  if (!op->MaybeStart(this)) {
+    mPendingOps.AppendElement(std::move(op));
+  }
+
+  return promise;
+}
+
+RefPtr<ServiceWorkerFetchEventOpPromise>
+RemoteWorkerController::ExecServiceWorkerFetchEventOp(
+    const ParentToParentServiceWorkerFetchEventOpArgs& aArgs,
+    RefPtr<FetchEventOpParent> aReal) {
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mIsServiceWorker);
+
+  RefPtr<ServiceWorkerFetchEventOpPromise::Private> promise =
+      new ServiceWorkerFetchEventOpPromise::Private(__func__);
+
+  UniquePtr<PendingSWFetchEventOp> op =
+      MakeUnique<PendingSWFetchEventOp>(aArgs, promise, std::move(aReal));
 
   if (!op->MaybeStart(this)) {
     mPendingOps.AppendElement(std::move(op));
@@ -435,45 +471,20 @@ bool RemoteWorkerController::PendingServiceWorkerOp::MaybeStart(
     return false;
   }
 
-  const auto send = [this, &aOwner](const ServiceWorkerOpArgs& args) {
-    MaybeReportServiceWorkerShutdownProgress(args);
+  MaybeReportServiceWorkerShutdownProgress(mArgs);
 
-    aOwner->mActor->SendExecServiceWorkerOp(args)->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
-        [promise = std::move(mPromise)](
-            PRemoteWorkerParent::ExecServiceWorkerOpPromise::
-                ResolveOrRejectValue&& aResult) {
-          if (NS_WARN_IF(aResult.IsReject())) {
-            promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
-            return;
-          }
+  aOwner->mActor->SendExecServiceWorkerOp(mArgs)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [promise = std::move(mPromise)](
+          PRemoteWorkerParent::ExecServiceWorkerOpPromise::
+              ResolveOrRejectValue&& aResult) {
+        if (NS_WARN_IF(aResult.IsReject())) {
+          promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
+          return;
+        }
 
-          promise->Resolve(std::move(aResult.ResolveValue()), __func__);
-        });
-  };
-
-  if (mArgs.type() == ServiceWorkerOpArgs::TServiceWorkerMessageEventOpArgs) {
-    auto& args = mArgs.get_ServiceWorkerMessageEventOpArgs();
-
-    ServiceWorkerMessageEventOpArgs copyArgs;
-    copyArgs.clientInfoAndState() = std::move(args.clientInfoAndState());
-
-    RefPtr<ServiceWorkerCloneData> copyData = new ServiceWorkerCloneData();
-    copyData->StealFromClonedMessageDataForBackgroundParent(args.clonedData());
-
-    if (!copyData->BuildClonedMessageDataForBackgroundParent(
-            aOwner->mActor->Manager(), copyArgs.clonedData())) {
-      mPromise->Reject(NS_ERROR_DOM_DATA_CLONE_ERR, __func__);
-      mPromise = nullptr;
-      return true;
-    }
-
-    // copyArgs depends on mArgs due to
-    // BuildClonedMessageDataForBackgroundParent.
-    send(std::move(copyArgs));
-  } else {
-    send(mArgs);
-  }
+        promise->Resolve(std::move(aResult.ResolveValue()), __func__);
+      });
 
   return true;
 }
@@ -484,6 +495,78 @@ void RemoteWorkerController::PendingServiceWorkerOp::Cancel() {
 
   mPromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
   mPromise = nullptr;
+}
+
+RemoteWorkerController::PendingSWFetchEventOp::PendingSWFetchEventOp(
+    const ParentToParentServiceWorkerFetchEventOpArgs& aArgs,
+    RefPtr<ServiceWorkerFetchEventOpPromise::Private> aPromise,
+    RefPtr<FetchEventOpParent>&& aReal)
+    : mArgs(aArgs), mPromise(std::move(aPromise)), mReal(aReal) {
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mPromise);
+
+  // If there is a TParentToParentStream in the request body, we need to
+  // save it to our stream.
+  IPCInternalRequest& req = mArgs.common().internalRequest();
+  if (req.body().isSome() &&
+      req.body().ref().type() == BodyStreamVariant::TParentToParentStream) {
+    nsCOMPtr<nsIInputStream> stream;
+    auto streamLength = req.bodySize();
+    const auto& uuid = req.body().ref().get_ParentToParentStream().uuid();
+
+    auto storage = RemoteLazyInputStreamStorage::Get().unwrapOr(nullptr);
+    MOZ_DIAGNOSTIC_ASSERT(storage);
+    storage->GetStream(uuid, 0, streamLength, getter_AddRefs(mBodyStream));
+    storage->ForgetStream(uuid);
+
+    MOZ_DIAGNOSTIC_ASSERT(mBodyStream);
+
+    req.body() = Nothing();
+  }
+}
+
+RemoteWorkerController::PendingSWFetchEventOp::~PendingSWFetchEventOp() {
+  AssertIsOnBackgroundThread();
+  MOZ_DIAGNOSTIC_ASSERT(!mPromise);
+}
+
+bool RemoteWorkerController::PendingSWFetchEventOp::MaybeStart(
+    RemoteWorkerController* const aOwner) {
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mPromise);
+  MOZ_ASSERT(aOwner);
+
+  if (NS_WARN_IF(aOwner->mState == RemoteWorkerController::eTerminated)) {
+    mPromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
+    mPromise = nullptr;
+    // Because the worker has transitioned to terminated, this operation is moot
+    // and so we should return true because there's no need to queue it.
+    return true;
+  }
+
+  // The target content process must still be starting up.
+  if (!aOwner->mActor) {
+    MOZ_ASSERT(aOwner->mState == RemoteWorkerController::ePending);
+    return false;
+  }
+
+  // At this point we are handing off responsibility for the promise to the
+  // actor.
+  FetchEventOpProxyParent::Create(aOwner->mActor.get(), std::move(mPromise),
+                                  mArgs, std::move(mReal),
+                                  std::move(mBodyStream));
+
+  return true;
+}
+
+void RemoteWorkerController::PendingSWFetchEventOp::Cancel() {
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mPromise);
+
+  if (mPromise) {
+    mPromise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
+    mPromise = nullptr;
+  }
 }
 
 }  // namespace dom

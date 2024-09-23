@@ -5,15 +5,6 @@
 const ID = "addon@tests.mozilla.org";
 
 createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "42");
-// Force sync plugin loading to avoid spurious install events from plugins.
-Services.prefs.setBoolPref("plugin.load_flash_only", false);
-// plugin.load_flash_only is only respected if xpc::IsInAutomation is true.
-// This is not the case by default in xpcshell tests, unless the following
-// pref is also set. Fixing this generically is bug 1598804
-Services.prefs.setBoolPref(
-  "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
-  true
-);
 
 function waitForBootstrapEvent(expectedEvent, addonId) {
   return new Promise(resolve => {
@@ -56,7 +47,7 @@ add_task(async function setup() {
       manifest: {
         name: "Test",
         version: `${n}.0`,
-        applications: { gecko: { id: ID } },
+        browser_specific_settings: { gecko: { id: ID } },
       },
     });
   }
@@ -89,7 +80,7 @@ add_task(async function test_new_temporary() {
       Assert.equal(aInstall.version, "1.0");
       installedCalled = true;
     },
-    onInstallStarted: aInstall => {
+    onInstallStarted: () => {
       do_throw("onInstallStarted called unexpectedly");
     },
   });
@@ -170,19 +161,11 @@ add_task(async function test_replace_temporary() {
         continue;
       }
 
-      // Unpacked extensions don't support signing, which means that
-      // our mock signing service is not able to give them a
-      // privileged signed state, and we can't install them on release
-      // builds.
-      if (!packed && !AppConstants.MOZ_ALLOW_LEGACY_EXTENSIONS) {
-        continue;
-      }
-
       let files = ExtensionTestCommon.generateFiles({
         manifest: {
           name: "Test",
           version: newversion,
-          applications: { gecko: { id: ID } },
+          browser_specific_settings: { gecko: { id: ID } },
         },
       });
 
@@ -327,7 +310,7 @@ add_task(async function test_samefile() {
     manifest: {
       version: "1.0",
       name: "Test WebExtension 1 (temporary)",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID,
         },
@@ -355,7 +338,7 @@ add_task(async function test_samefile() {
     manifest: {
       version: "2.0",
       name: "Test WebExtension 1 (temporary)",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID,
         },
@@ -386,7 +369,7 @@ add_task(async function test_samefile() {
 add_task(async function test_replace_permanent() {
   await promiseInstallWebExtension({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "1.0",
       name: "Test Bootstrap 1",
     },
@@ -400,7 +383,7 @@ add_task(async function test_replace_permanent() {
 
   let files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "2.0",
       name: "Test Bootstrap 1 (temporary)",
     },
@@ -433,7 +416,7 @@ add_task(async function test_replace_permanent() {
       }
       installedCalled = true;
     },
-    onInstallStarted: aInstall => {
+    onInstallStarted: () => {
       do_throw("onInstallStarted called unexpectedly");
     },
   });
@@ -495,7 +478,7 @@ add_task(async function test_replace_temporary() {
 
   let files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "1.0",
     },
   });
@@ -507,7 +490,7 @@ add_task(async function test_replace_temporary() {
   // gets marked as an upgrade.
   files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "2.0",
     },
   });
@@ -556,7 +539,7 @@ add_task(async function test_replace_temporary_downgrade() {
 
   let files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "1.0",
     },
   });
@@ -568,7 +551,7 @@ add_task(async function test_replace_temporary_downgrade() {
   // it gets marked as a downgrade.
   files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "0.8",
     },
   });
@@ -616,7 +599,7 @@ add_task(async function test_replace_same_version() {
 
   let files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       version: "1.0",
     },
   });
@@ -697,7 +680,7 @@ add_task(async function test_replace_permanent_disabled() {
 
   let files = ExtensionTestCommon.generateFiles({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       name: "Test",
       version: "2.0",
     },

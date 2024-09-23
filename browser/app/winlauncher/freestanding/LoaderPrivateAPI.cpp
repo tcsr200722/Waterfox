@@ -10,6 +10,8 @@
 #include "mozilla/Types.h"
 #include "mozilla/Unused.h"
 #include "../DllBlocklistInit.h"
+#include "../ErrorHandler.h"
+#include "SharedSection.h"
 
 using GlobalInitializerFn = void(__cdecl*)(void);
 
@@ -86,6 +88,8 @@ class MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS LoaderPrivateAPIImp final
                         ModuleLoadInfo&& aModuleLoadInfo) final;
   nt::AllocatedUnicodeString GetSectionName(void* aSectionAddr) final;
   nt::LoaderAPI::InitDllBlocklistOOPFnPtr GetDllBlocklistInitFn() final;
+  nt::LoaderAPI::HandleLauncherErrorFnPtr GetHandleLauncherErrorFn() final;
+  nt::SharedSection* GetSharedSection() final;
 
   // LoaderPrivateAPI
   void NotifyBeginDllLoad(void** aContext,
@@ -111,6 +115,9 @@ static mozilla::freestanding::LoaderPrivateAPIImp gPrivateAPI;
 
 static mozilla::nt::SRWLock gLoaderObserverLock;
 static mozilla::nt::LoaderObserver* gLoaderObserver = &gDefaultObserver;
+static CONDITION_VARIABLE gLoaderObserverNoOngoingLoadsCV =
+    CONDITION_VARIABLE_INIT;
+static mozilla::Atomic<uint32_t> gLoaderObserverOngoingLoadsCount(0);
 
 namespace mozilla {
 namespace freestanding {
@@ -173,7 +180,11 @@ ModuleLoadInfo LoaderPrivateAPIImp::ConstructAndNotifyBeginDllLoad(
 
 bool LoaderPrivateAPIImp::SubstituteForLSP(PCUNICODE_STRING aLSPLeafName,
                                            PHANDLE aOutHandle) {
-  nt::AutoSharedLock lock(gLoaderObserverLock);
+  // This method should only be called between NotifyBeginDllLoad and
+  // NotifyEndDllLoad, so it is already protected against gLoaderObserver
+  // change, through gLoaderObserverOngoingLoadsCount.
+  MOZ_RELEASE_ASSERT(gLoaderObserverOngoingLoadsCount);
+
   return gLoaderObserver->SubstituteForLSP(aLSPLeafName, aOutHandle);
 }
 
@@ -186,13 +197,21 @@ void LoaderPrivateAPIImp::NotifyEndDllLoad(void* aContext,
     aModuleLoadInfo.CaptureBacktrace();
   }
 
-  nt::AutoSharedLock lock(gLoaderObserverLock);
+  // This method should only be called after a matching call to
+  // NotifyBeginDllLoad, so it is already protected against gLoaderObserver
+  // change, through gLoaderObserverOngoingLoadsCount.
 
   // We need to notify the observer that the DLL load has ended even when
   // |aLoadNtStatus| indicates a failure. This is to ensure that any resources
   // acquired by the observer during OnBeginDllLoad are cleaned up.
   gLoaderObserver->OnEndDllLoad(aContext, aLoadNtStatus,
                                 std::move(aModuleLoadInfo));
+
+  auto previousValue = gLoaderObserverOngoingLoadsCount--;
+  MOZ_RELEASE_ASSERT(previousValue);
+  if (previousValue == 1) {
+    ::RtlWakeAllConditionVariable(&gLoaderObserverNoOngoingLoadsCV);
+  }
 }
 
 nt::AllocatedUnicodeString LoaderPrivateAPIImp::GetSectionName(
@@ -215,6 +234,15 @@ LoaderPrivateAPIImp::GetDllBlocklistInitFn() {
   return &InitializeDllBlocklistOOP;
 }
 
+nt::LoaderAPI::HandleLauncherErrorFnPtr
+LoaderPrivateAPIImp::GetHandleLauncherErrorFn() {
+  return &HandleLauncherError;
+}
+
+nt::SharedSection* LoaderPrivateAPIImp::GetSharedSection() {
+  return &gSharedSection;
+}
+
 nt::MemorySectionNameBuf LoaderPrivateAPIImp::GetSectionNameBuffer(
     void* aSectionAddr) {
   const HANDLE kCurrentProcess = reinterpret_cast<HANDLE>(-1);
@@ -233,6 +261,7 @@ nt::MemorySectionNameBuf LoaderPrivateAPIImp::GetSectionNameBuffer(
 void LoaderPrivateAPIImp::NotifyBeginDllLoad(
     void** aContext, PCUNICODE_STRING aRequestedDllName) {
   nt::AutoSharedLock lock(gLoaderObserverLock);
+  ++gLoaderObserverOngoingLoadsCount;
   gLoaderObserver->OnBeginDllLoad(aContext, aRequestedDllName);
 }
 
@@ -247,6 +276,11 @@ void LoaderPrivateAPIImp::SetObserver(nt::LoaderObserver* aNewObserver) {
   nt::LoaderObserver* prevLoaderObserver = nullptr;
 
   nt::AutoExclusiveLock lock(gLoaderObserverLock);
+  while (gLoaderObserverOngoingLoadsCount) {
+    NTSTATUS status = ::RtlSleepConditionVariableSRW(
+        &gLoaderObserverNoOngoingLoadsCV, &gLoaderObserverLock, nullptr, 0);
+    MOZ_RELEASE_ASSERT(NT_SUCCESS(status) && status != STATUS_TIMEOUT);
+  }
 
   MOZ_ASSERT(aNewObserver);
   if (!aNewObserver) {

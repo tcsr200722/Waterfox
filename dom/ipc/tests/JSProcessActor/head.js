@@ -2,25 +2,33 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /**
- * Provide infrastructure for JSWindowActor tests.
+ * Provide infrastructure for JSProcessActor tests.
  */
 
 const URL = "about:blank";
 const TEST_URL = "http://test2.example.org/";
 let processActorOptions = {
-  parent: {
-    moduleURI: "resource://testing-common/TestProcessActorParent.jsm",
+  jsm: {
+    parent: {
+      moduleURI: "resource://testing-common/TestProcessActorParent.jsm",
+    },
+    child: {
+      moduleURI: "resource://testing-common/TestProcessActorChild.jsm",
+      observers: ["test-js-content-actor-child-observer"],
+    },
   },
-  child: {
-    moduleURI: "resource://testing-common/TestProcessActorChild.jsm",
-    observers: ["test-js-content-actor-child-observer"],
+  "sys.mjs": {
+    parent: {
+      esModuleURI: "resource://testing-common/TestProcessActorParent.sys.mjs",
+    },
+    child: {
+      esModuleURI: "resource://testing-common/TestProcessActorChild.sys.mjs",
+      observers: ["test-js-content-actor-child-observer"],
+    },
   },
 };
 
 function promiseNotification(aNotification) {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
   let notificationResolve;
   let notificationObserver = function observer() {
     notificationResolve();
@@ -33,41 +41,47 @@ function promiseNotification(aNotification) {
 }
 
 function declTest(name, cfg) {
-  let { url = "about:blank", remoteTypes, fission, test } = cfg;
+  declTestWithOptions(name, cfg, "jsm");
+  declTestWithOptions(name, cfg, "sys.mjs");
+}
 
-  // Build the actor options object which will be used to register & unregister our window actor.
+function declTestWithOptions(name, cfg, fileExt) {
+  let {
+    url = "about:blank",
+    includeParent = false,
+    remoteTypes,
+    loadInDevToolsLoader = false,
+    test,
+  } = cfg;
+
+  // Build the actor options object which will be used to register & unregister
+  // our process actor.
   let actorOptions = {
-    parent: Object.assign({}, processActorOptions.parent),
-    child: Object.assign({}, processActorOptions.child),
+    parent: Object.assign({}, processActorOptions[fileExt].parent),
+    child: Object.assign({}, processActorOptions[fileExt].child),
   };
+  actorOptions.includeParent = includeParent;
   if (remoteTypes !== undefined) {
     actorOptions.remoteTypes = remoteTypes;
   }
+  if (loadInDevToolsLoader) {
+    actorOptions.loadInDevToolsLoader = true;
+  }
 
   // Add a new task for the actor test declared here.
-  add_task(async function() {
+  add_task(async function () {
     info("Entering test: " + name);
 
-    // Create a fresh window with the correct settings, and register our actor.
-    let win = await BrowserTestUtils.openNewBrowserWindow({
-      remote: true,
-      fission,
-    });
+    // Register our actor, and load a new tab with the provided URL
     ChromeUtils.registerProcessActor("TestProcessActor", actorOptions);
-
-    // Wait for the provided URL to load in our browser
-    let browser = win.gBrowser.selectedBrowser;
-    BrowserTestUtils.loadURI(browser, url);
-    await BrowserTestUtils.browserLoaded(browser, false, url);
-
-    // Run the provided test
-    info("browser ready");
     try {
-      await Promise.resolve(test(browser, win));
+      await BrowserTestUtils.withNewTab(url, async browser => {
+        info("browser ready");
+        await Promise.resolve(test(browser, window, fileExt));
+      });
     } finally {
-      // Clean up after we're done.
+      // Unregister the actor after the test is complete.
       ChromeUtils.unregisterProcessActor("TestProcessActor");
-      await BrowserTestUtils.closeWindow(win);
       info("Exiting test: " + name);
     }
   });

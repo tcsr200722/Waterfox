@@ -1,6 +1,7 @@
 /* MIT License
  *
- * Copyright (c) 2016-2020 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2016-2022 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2022-2023 HACL* Contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,17 +22,19 @@
  * SOFTWARE.
  */
 
-#include "kremlin/internal/types.h"
-#include "kremlin/lowstar_endianness.h"
-#include <string.h>
-#include <stdbool.h>
-
 #ifndef __Hacl_Poly1305_32_H
 #define __Hacl_Poly1305_32_H
 
-#include "Hacl_Kremlib.h"
+#if defined(__cplusplus)
+extern "C" {
+#endif
 
-extern uint32_t Hacl_Poly1305_32_blocklen;
+#include <string.h>
+#include "krml/internal/types.h"
+#include "krml/lowstar_endianness.h"
+#include "krml/internal/target.h"
+
+#include "Hacl_Krmllib.h"
 
 typedef uint64_t *Hacl_Poly1305_32_poly1305_ctx;
 
@@ -44,6 +47,10 @@ void Hacl_Poly1305_32_poly1305_update(uint64_t *ctx, uint32_t len, uint8_t *text
 void Hacl_Poly1305_32_poly1305_finish(uint8_t *tag, uint8_t *key, uint64_t *ctx);
 
 void Hacl_Poly1305_32_poly1305_mac(uint8_t *tag, uint32_t len, uint8_t *text, uint8_t *key);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #define __Hacl_Poly1305_32_H_DEFINED
 #endif

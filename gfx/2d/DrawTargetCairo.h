@@ -48,7 +48,6 @@ class GradientStopsCairo : public GradientStops {
 class DrawTargetCairo final : public DrawTarget {
  public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DrawTargetCairo, override)
-  friend class BorrowedCairoContext;
   friend class BorrowedXlibDrawable;
 
   DrawTargetCairo();
@@ -59,6 +58,12 @@ class DrawTargetCairo final : public DrawTarget {
   virtual BackendType GetBackendType() const override {
     return BackendType::CAIRO;
   }
+
+  virtual void Link(const char* aDest, const char* aURI,
+                    const Rect& aRect) override;
+  virtual void Destination(const char* aDestination,
+                           const Point& aPoint) override;
+
   virtual already_AddRefed<SourceSurface> Snapshot() override;
   virtual IntSize GetSize() const override;
 
@@ -81,8 +86,7 @@ class DrawTargetCairo final : public DrawTarget {
                           const DrawOptions& aOptions = DrawOptions()) override;
   virtual void DrawSurfaceWithShadow(SourceSurface* aSurface,
                                      const Point& aDest,
-                                     const DeviceColor& aColor,
-                                     const Point& aOffset, Float aSigma,
+                                     const ShadowOptions& aShadow,
                                      CompositionOp aOperator) override;
 
   virtual void ClearRect(const Rect& aRect) override;
@@ -128,10 +132,17 @@ class DrawTargetCairo final : public DrawTarget {
                          const Matrix& aMaskTransform,
                          const IntRect& aBounds = IntRect(),
                          bool aCopyBackground = false) override;
+  virtual void PushLayerWithBlend(
+      bool aOpaque, Float aOpacity, SourceSurface* aMask,
+      const Matrix& aMaskTransform, const IntRect& aBounds = IntRect(),
+      bool aCopyBackground = false,
+      CompositionOp = CompositionOp::OP_OVER) override;
   virtual void PopLayer() override;
 
   virtual already_AddRefed<PathBuilder> CreatePathBuilder(
-      FillRule aFillRule = FillRule::FILL_WINDING) const override;
+      FillRule aFillRule = FillRule::FILL_WINDING) const override {
+    return PathBuilderCairo::Create(aFillRule);
+  }
 
   virtual already_AddRefed<SourceSurface> CreateSourceSurfaceFromData(
       unsigned char* aData, const IntSize& aSize, int32_t aStride,
@@ -217,11 +228,14 @@ class DrawTargetCairo final : public DrawTarget {
   cairo_font_options_t* mFontOptions;
 
   struct PushedLayer {
-    PushedLayer(Float aOpacity, bool aWasPermittingSubpixelAA)
+    PushedLayer(Float aOpacity, CompositionOp aCompositionOp,
+                bool aWasPermittingSubpixelAA)
         : mOpacity(aOpacity),
+          mCompositionOp(aCompositionOp),
           mMaskPattern(nullptr),
           mWasPermittingSubpixelAA(aWasPermittingSubpixelAA) {}
     Float mOpacity;
+    CompositionOp mCompositionOp;
     cairo_pattern_t* mMaskPattern;
     bool mWasPermittingSubpixelAA;
   };

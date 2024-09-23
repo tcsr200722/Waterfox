@@ -31,7 +31,7 @@
         this.DOMNode.view = new nsTreeTreeView();
       }
 
-      this.check = function treeTester_check(aEvent)
+      this.check = function treeTester_check()
       {
         var tree = {
           role: ROLE_OUTLINE,
@@ -89,7 +89,7 @@
         this.DOMNode.view = new nsTableTreeView(2);
       }
 
-      this.check = function tableTester_check(aEvent)
+      this.check = function tableTester_check()
       {
         var tree = {
           role: aIsTable ? ROLE_TABLE : ROLE_TREE_TABLE,
@@ -143,7 +143,7 @@
     var gQueue = null;
     function doTest()
     {
-      var gQueue = new eventQueue(EVENT_REORDER);
+      gQueue = new eventQueue(EVENT_REORDER);
 
       gQueue.push(new treeTester("tree"));
       gQueue.push(new tableTester("table", true, "t_col1", "t_col2"));

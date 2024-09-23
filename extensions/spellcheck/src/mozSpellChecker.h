@@ -22,6 +22,8 @@ namespace mozilla {
 class RemoteSpellcheckEngineChild;
 class TextServicesDocument;
 typedef MozPromise<CopyableTArray<bool>, nsresult, false> CheckWordPromise;
+typedef MozPromise<CopyableTArray<nsString>, nsresult, false>
+    SuggestionsPromise;
 }  // namespace mozilla
 
 class mozSpellChecker final {
@@ -74,6 +76,12 @@ class mozSpellChecker final {
   RefPtr<mozilla::CheckWordPromise> CheckWords(
       const nsTArray<nsString>& aWords);
 
+  /*
+   * Checks if a word is misspelled, then get suggestion words if existed.
+   */
+  RefPtr<mozilla::SuggestionsPromise> Suggest(const nsAString& aWord,
+                                              uint32_t aMaxCount);
+
   /**
    * Replaces the old word with the specified new word.
    * @param aOldWord is the word to be replaced.
@@ -120,30 +128,39 @@ class mozSpellChecker final {
    * @param aDictionaryList is an array of nsStrings that represent the
    * dictionaries supported by the spellchecker.
    */
-  nsresult GetDictionaryList(nsTArray<nsString>* aDictionaryList);
+  nsresult GetDictionaryList(nsTArray<nsCString>* aDictionaryList);
 
   /**
-   * Returns a string representing the current dictionary.
-   * @param aDictionary will contain the name of the dictionary.
+   * Returns a string representing the current dictionaries.
+   * @param aDictionaries will contain the names of the dictionaries.
    * This name is the same string that is in the list returned
    * by GetDictionaryList().
    */
-  nsresult GetCurrentDictionary(nsAString& aDictionary);
+  nsresult GetCurrentDictionaries(nsTArray<nsCString>& aDictionaries);
 
   /**
-   * Tells the spellchecker to use a specific dictionary.
+   * Tells the spellchecker to use the specified dictionary.
    * @param aDictionary a string that is in the list returned
-   * by GetDictionaryList() or an empty string. If aDictionary is
-   * empty string, spellchecker will be disabled.
+   * by GetDictionaryList() or an empty string . If aDictionary is
+   * an empty array, the spellchecker will be disabled.
    */
-  nsresult SetCurrentDictionary(const nsAString& aDictionary);
+  nsresult SetCurrentDictionary(const nsACString& aDictionary);
+
+  /**
+   * Tells the spellchecker to use the specified dictionaries.
+   * @param aDictionaries an array of strings that is in the list returned
+   * by GetDictionaryList() or an empty array. If aDictionaries is
+   * an empty array, the spellchecker will be disabled.
+   */
+  RefPtr<mozilla::GenericPromise> SetCurrentDictionaries(
+      const nsTArray<nsCString>& aDictionaries);
 
   /**
    * Tells the spellchecker to use a specific dictionary from list.
    * @param aList  a preferred dictionary list
    */
   RefPtr<mozilla::GenericPromise> SetCurrentDictionaryFromList(
-      const nsTArray<nsString>& aList);
+      const nsTArray<nsCString>& aList);
 
   void DeleteRemoteEngine() { mEngine = nullptr; }
 
@@ -162,7 +179,7 @@ class mozSpellChecker final {
   nsCOMPtr<mozISpellCheckingEngine> mSpellCheckingEngine;
   bool mFromStart;
 
-  nsString mCurrentDictionary;
+  nsTArray<nsCString> mCurrentDictionaries;
 
   MOZ_CAN_RUN_SCRIPT
   nsresult SetupDoc(int32_t* outBlockOffset);

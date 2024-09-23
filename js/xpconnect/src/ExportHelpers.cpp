@@ -8,18 +8,21 @@
 #include "WrapperFactory.h"
 #include "AccessCheck.h"
 #include "jsfriendapi.h"
+#include "js/CallAndConstruct.h"  // JS::Call, JS::Construct, JS::IsCallable
 #include "js/Exception.h"
+#include "js/PropertyAndElement.h"  // JS_DefineProperty, JS_DefinePropertyById
 #include "js/Proxy.h"
 #include "js/Wrapper.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/BlobBinding.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindow.h"
 #include "nsJSUtils.h"
+#include "js/Object.h"  // JS::GetCompartment
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -32,10 +35,10 @@ bool IsReflector(JSObject* obj, JSContext* cx) {
   if (!obj) {
     return false;
   }
-  return IS_WN_REFLECTOR(obj) || dom::IsDOMObject(obj);
+  return IsWrappedNativeReflector(obj) || dom::IsDOMObject(obj);
 }
 
-enum StackScopedCloneTags {
+enum StackScopedCloneTags : uint32_t {
   SCTAG_BASE = JS_SCTAG_USER_MIN,
   SCTAG_REFLECTOR,
   SCTAG_BLOB,
@@ -83,7 +86,7 @@ class MOZ_STACK_CLASS StackScopedCloneData : public StructuredCloneHolderBase {
       }
 
       FunctionForwarderOptions forwarderOptions;
-      if (!xpc::NewFunctionForwarder(aCx, JSID_VOIDHANDLE, obj,
+      if (!xpc::NewFunctionForwarder(aCx, JS::VoidHandlePropertyKey, obj,
                                      forwarderOptions, &functionValue)) {
         return nullptr;
       }
@@ -239,7 +242,7 @@ static bool CheckSameOriginArg(JSContext* cx, FunctionForwarderOptions& options,
     return true;
   }
   RootedObject obj(cx, &v.toObject());
-  MOZ_ASSERT(js::GetObjectCompartment(obj) != js::GetContextCompartment(cx),
+  MOZ_ASSERT(JS::GetCompartment(obj) != js::GetContextCompartment(cx),
              "This should be invoked after entering the compartment but before "
              "wrapping the values");
 
@@ -249,7 +252,7 @@ static bool CheckSameOriginArg(JSContext* cx, FunctionForwarderOptions& options,
   }
 
   // Wrappers leading back to the scope of the exported function are fine.
-  if (js::GetObjectCompartment(js::UncheckedUnwrap(obj)) ==
+  if (JS::GetCompartment(js::UncheckedUnwrap(obj)) ==
       js::GetContextCompartment(cx)) {
     return true;
   }
@@ -274,17 +277,22 @@ static void MaybeSanitizeException(JSContext* cx,
   // to less-privileged code.
   nsIPrincipal* callerPrincipal = nsContentUtils::SubjectPrincipal(cx);
 
+  // No need to sanitize uncatchable exceptions, just return.
+  if (!JS_IsExceptionPending(cx)) {
+    return;
+  }
+
   // Re-enter the unwrappedFun Realm to do get the current exception, so we
   // don't end up unnecessarily wrapping exceptions.
   {  // Scope for JSAutoRealm
     JSAutoRealm ar(cx, unwrappedFun);
 
     JS::ExceptionStack exnStack(cx);
-    // If JS::GetPendingExceptionStack returns false, this was an uncatchable
-    // exception, or we somehow failed to wrap the exception into our
-    // compartment.  In either case, treating this as uncatchable exception,
-    // by returning without setting any exception on the JSContext,
-    // seems fine.
+
+    // If JS::GetPendingExceptionStack returns false, we somehow failed to wrap
+    // the exception into our compartment. It seems fine to treat this as an
+    // uncatchable exception by returning without setting any exception on the
+    // JS context.
     if (!JS::GetPendingExceptionStack(cx, &exnStack)) {
       JS_ClearPendingException(cx);
       return;
@@ -351,8 +359,8 @@ static bool FunctionForwarder(JSContext* cx, unsigned argc, Value* vp) {
     // here, because certain function wrappers (notably content->nsEP) are
     // not callable.
     JSAutoRealm ar(cx, unwrappedFun);
-    bool crossCompartment = js::GetObjectCompartment(unwrappedFun) !=
-                            js::GetObjectCompartment(&args.callee());
+    bool crossCompartment =
+        JS::GetCompartment(unwrappedFun) != JS::GetCompartment(&args.callee());
     if (crossCompartment) {
       if (!CheckSameOriginArg(cx, options, thisVal) ||
           !JS_WrapValue(cx, &thisVal)) {
@@ -394,7 +402,7 @@ bool NewFunctionForwarder(JSContext* cx, HandleId idArg, HandleObject callable,
                           FunctionForwarderOptions& options,
                           MutableHandleValue vp) {
   RootedId id(cx, idArg);
-  if (id == JSID_VOIDHANDLE) {
+  if (id.isVoid()) {
     id = GetJSIDByIndex(cx, XPCJSContext::IDX_EMPTYSTRING);
   }
 
@@ -481,14 +489,16 @@ bool ExportFunction(JSContext* cx, HandleValue vfunction, HandleValue vscope,
     }
 
     RootedId id(cx, options.defineAs);
-    if (JSID_IS_VOID(id)) {
+    if (id.isVoid()) {
       // If there wasn't any function name specified, copy the name from the
       // function being imported.  But be careful in case the callable we have
       // is not actually a JSFunction.
       RootedString funName(cx);
-      JSFunction* fun = JS_GetObjectFunction(funObj);
+      JS::Rooted<JSFunction*> fun(cx, JS_GetObjectFunction(funObj));
       if (fun) {
-        funName = JS_GetFunctionId(fun);
+        if (!JS_GetFunctionId(cx, fun, &funName)) {
+          return false;
+        }
       }
       if (!funName) {
         funName = JS_AtomizeAndPinString(cx, "");
@@ -501,7 +511,7 @@ bool ExportFunction(JSContext* cx, HandleValue vfunction, HandleValue vscope,
     } else {
       JS_MarkCrossZoneId(cx, id);
     }
-    MOZ_ASSERT(JSID_IS_STRING(id));
+    MOZ_ASSERT(id.isString());
 
     // The function forwarder will live in the target compartment. Since
     // this function will be referenced from its private slot, to avoid a
@@ -523,7 +533,7 @@ bool ExportFunction(JSContext* cx, HandleValue vfunction, HandleValue vscope,
     // We have the forwarder function in the target compartment. If
     // defineAs was set, we also need to define it as a property on
     // the target.
-    if (!JSID_IS_VOID(options.defineAs)) {
+    if (!options.defineAs.isVoid()) {
       if (!JS_DefinePropertyById(cx, targetScope, id, rval, JSPROP_ENUMERATE)) {
         return false;
       }
@@ -554,7 +564,7 @@ bool CreateObjectIn(JSContext* cx, HandleValue vobj,
     return false;
   }
 
-  bool define = !JSID_IS_VOID(options.defineAs);
+  bool define = !options.defineAs.isVoid();
 
   if (define && js::IsScriptedProxy(scope)) {
     JS_ReportErrorASCII(cx, "Defining property on proxy object is not allowed");

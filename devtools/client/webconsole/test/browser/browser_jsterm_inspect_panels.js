@@ -9,7 +9,7 @@ const TEST_URI =
   "https://example.com/browser/devtools/client/webconsole/test/browser/" +
   "test-simple-function.html";
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
 
   await testInspectingElement(hud);
@@ -42,26 +42,19 @@ async function testInspectingFunction(hud) {
 
   info("Test `inspect(test_mangled)`");
   execute(hud, "inspect(test_mangled)");
-  await waitFor(
-    expectedSourceSelected("test-mangled-function.js/originalSource-", 3)
-  );
+  await waitFor(expectedSourceSelected("test-mangled-function.js", 3, true));
   ok(true, "inspected source-mapped function is now selected in the debugger");
-
-  info("Test `inspect(test_mangled)` with sourcemaps disabled");
-  SpecialPowers.pushPrefEnv({
-    set: [["devtools.source-map.client-service.enabled", false]],
-  });
-  execute(hud, "inspect(test_mangled)");
-  await waitFor(expectedSourceSelected("test-mangled-function.js", 1));
-  ok(true, "non source-mapped function is now selected in the debugger");
-  SpecialPowers.popPrefEnv();
 
   info("Test `inspect(test_bound)`");
   execute(hud, "inspect(test_bound)");
   await waitFor(expectedSourceSelected("test-simple-function.js", 7));
   ok(true, "inspected bound target function is now selected in the debugger");
 
-  function expectedSourceSelected(sourceFilename, sourceLine) {
+  function expectedSourceSelected(
+    sourceFilename,
+    sourceLine,
+    isOriginalSource
+  ) {
     return () => {
       const dbg = hud.toolbox.getPanel("jsdebugger");
       if (!dbg) {
@@ -76,8 +69,15 @@ async function testInspectingFunction(hud) {
         return false;
       }
 
+      if (
+        isOriginalSource &&
+        !selectedLocation.source.id.includes("/originalSource-")
+      ) {
+        return false;
+      }
+
       return (
-        selectedLocation.sourceId.includes(sourceFilename) &&
+        selectedLocation.source.id.includes(sourceFilename) &&
         selectedLocation.line == sourceLine
       );
     };

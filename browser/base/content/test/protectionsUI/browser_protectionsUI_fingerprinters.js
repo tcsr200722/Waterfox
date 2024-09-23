@@ -4,11 +4,12 @@
 "use strict";
 
 const TRACKING_PAGE =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.org/browser/browser/base/content/test/protectionsUI/trackingPage.html";
 const FP_PROTECTION_PREF = "privacy.trackingprotection.fingerprinting.enabled";
 let fpHistogram;
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       [
@@ -52,18 +53,20 @@ async function testIdentityState(hasException) {
     await loaded;
   }
 
+  await openProtectionsPanel();
+
   ok(
     !gProtectionsHandler._protectionsPopup.hasAttribute("detected"),
     "fingerprinters are not detected"
   );
   ok(
-    !BrowserTestUtils.is_hidden(gProtectionsHandler.iconBox),
+    !BrowserTestUtils.isHidden(gProtectionsHandler.iconBox),
     "icon box is visible regardless the exception"
   );
 
   promise = waitForContentBlockingEvent();
 
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], function () {
     content.postMessage("fingerprinting", "*");
   });
 
@@ -74,7 +77,7 @@ async function testIdentityState(hasException) {
     "trackers are detected"
   );
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is visible"
   );
   is(
@@ -107,6 +110,7 @@ async function testCategoryItem() {
   });
   let [tab] = await Promise.all([promise, waitForContentBlockingEvent()]);
 
+  await openProtectionsPanel();
   let categoryItem = document.getElementById(
     "protections-popup-category-fingerprinters"
   );
@@ -134,15 +138,17 @@ async function testCategoryItem() {
     categoryItem.classList.contains("notFound"),
     "Category marked as not found"
   );
+  await closeProtectionsPanel();
 
   promise = waitForContentBlockingEvent();
 
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], function () {
     content.postMessage("fingerprinting", "*");
   });
 
   await promise;
 
+  await openProtectionsPanel();
   ok(
     !categoryItem.classList.contains("blocked"),
     "Category not marked as blocked"
@@ -166,6 +172,7 @@ async function testCategoryItem() {
     !categoryItem.classList.contains("notFound"),
     "Category not marked as not found"
   );
+  await closeProtectionsPanel();
 
   BrowserTestUtils.removeTab(tab);
 }
@@ -189,7 +196,7 @@ async function testSubview(hasException) {
   }
 
   promise = waitForContentBlockingEvent();
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], function () {
     content.postMessage("fingerprinting", "*");
   });
   await promise;
@@ -202,10 +209,10 @@ async function testSubview(hasException) {
 
   // Explicitly waiting for the category item becoming visible.
   await TestUtils.waitForCondition(() => {
-    return BrowserTestUtils.is_visible(categoryItem);
+    return BrowserTestUtils.isVisible(categoryItem);
   });
 
-  ok(BrowserTestUtils.is_visible(categoryItem), "TP category item is visible");
+  ok(BrowserTestUtils.isVisible(categoryItem), "TP category item is visible");
 
   /* eslint-disable mozilla/no-arbitrary-setTimeout */
   // We have to wait until the ContentBlockingLog gets updated in the content.
@@ -222,10 +229,15 @@ async function testSubview(hasException) {
   categoryItem.click();
   await viewShown;
 
+  let trackersViewShimHint = document.getElementById(
+    "protections-popup-fingerprintersView-shim-allow-hint"
+  );
+  ok(trackersViewShimHint.hidden, "Shim hint is hidden");
+
   let listItems = subview.querySelectorAll(".protections-popup-list-item");
   is(listItems.length, 1, "We have 1 item in the list");
   let listItem = listItems[0];
-  ok(BrowserTestUtils.is_visible(listItem), "List item is visible");
+  ok(BrowserTestUtils.isVisible(listItem), "List item is visible");
   is(
     listItem.querySelector("label").value,
     "https://fingerprinting.example.com",

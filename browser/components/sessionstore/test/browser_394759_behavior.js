@@ -20,10 +20,12 @@
  * @returns Promise
  */
 function testWindows(windowsToOpen, expectedResults) {
-  return (async function() {
+  return (async function () {
+    let num = 0;
     for (let winData of windowsToOpen) {
       let features = "chrome,dialog=no," + (winData.isPopup ? "all=no" : "all");
-      let url = "http://example.com/?window=" + windowsToOpen.length;
+      let url = "http://example.com/?window=" + num;
+      num = num + 1;
 
       let openWindowPromise = BrowserTestUtils.waitForNewWindow({ url });
       openDialog(AppConstants.BROWSER_CHROME_URL, "", features, url);
@@ -31,8 +33,8 @@ function testWindows(windowsToOpen, expectedResults) {
       await BrowserTestUtils.closeWindow(win);
     }
 
-    let closedWindowData = JSON.parse(ss.getClosedWindowData());
-    let numPopups = closedWindowData.filter(function(el, i, arr) {
+    let closedWindowData = ss.getClosedWindowData();
+    let numPopups = closedWindowData.filter(function (el) {
       return el.isPopup;
     }).length;
     let numNormal = ss.getClosedWindowCount() - numPopups;
@@ -48,7 +50,7 @@ function testWindows(windowsToOpen, expectedResults) {
     is(
       numNormal,
       oResults.normal,
-      "There were " + oResults.normal + " normal windows to repoen"
+      "There were " + oResults.normal + " normal windows to reopen"
     );
   })();
 }
@@ -61,14 +63,15 @@ add_task(async function test_closed_window_states() {
 
   let windowsToOpen = [
     { isPopup: false },
-    { isPopup: false },
+    { isPopup: true },
+    { isPopup: true },
     { isPopup: true },
     { isPopup: true },
     { isPopup: true },
   ];
   let expectedResults = {
-    mac: { popup: 3, normal: 0 },
-    other: { popup: 3, normal: 1 },
+    mac: { popup: 5, normal: 0 },
+    other: { popup: 5, normal: 1 },
   };
 
   await testWindows(windowsToOpen, expectedResults);
@@ -79,10 +82,11 @@ add_task(async function test_closed_window_states() {
     { isPopup: false },
     { isPopup: false },
     { isPopup: false },
+    { isPopup: false },
   ];
   let expectedResults2 = {
-    mac: { popup: 0, normal: 3 },
-    other: { popup: 0, normal: 3 },
+    mac: { popup: 0, normal: 5 },
+    other: { popup: 0, normal: 5 },
   };
 
   await testWindows(windowsToOpen2, expectedResults2);

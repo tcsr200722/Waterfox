@@ -22,8 +22,8 @@ const nsIAccessibleStateChangeEvent = Ci.nsIAccessibleStateChangeEvent;
 const nsIAccessibleCaretMoveEvent = Ci.nsIAccessibleCaretMoveEvent;
 const nsIAccessibleScrollingEvent = Ci.nsIAccessibleScrollingEvent;
 const nsIAccessibleTextChangeEvent = Ci.nsIAccessibleTextChangeEvent;
-const nsIAccessibleVirtualCursorChangeEvent =
-  Ci.nsIAccessibleVirtualCursorChangeEvent;
+const nsIAccessibleTextSelectionChangeEvent =
+  Ci.nsIAccessibleTextSelectionChangeEvent;
 const nsIAccessibleObjectAttributeChangedEvent =
   Ci.nsIAccessibleObjectAttributeChangedEvent;
 const nsIAccessibleAnnouncementEvent = Ci.nsIAccessibleAnnouncementEvent;
@@ -80,6 +80,7 @@ const SEAMONKEY = navigator.userAgent.match(/ SeaMonkey\//);
 
 const STATE_BUSY = nsIAccessibleStates.STATE_BUSY;
 
+const SCROLL_TYPE_TOP_EDGE = nsIAccessibleScrollType.SCROLL_TYPE_TOP_EDGE;
 const SCROLL_TYPE_ANYWHERE = nsIAccessibleScrollType.SCROLL_TYPE_ANYWHERE;
 
 const COORDTYPE_SCREEN_RELATIVE =
@@ -94,14 +95,13 @@ const kEmbedChar = String.fromCharCode(0xfffc);
 const kDiscBulletChar = String.fromCharCode(0x2022);
 const kDiscBulletText = kDiscBulletChar + " ";
 const kCircleBulletText = String.fromCharCode(0x25e6) + " ";
-const kSquareBulletText = String.fromCharCode(0x25fe) + " ";
+const kSquareBulletText = String.fromCharCode(0x25aa) + " ";
 
 const MAX_TRIM_LENGTH = 100;
 
 /**
  * Services to determine if e10s is enabled.
  */
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 /**
  * nsIAccessibilityService service.
@@ -164,7 +164,7 @@ function dumpTree(aId, aMsg) {
  */
 function addA11yLoadEvent(aFunc, aWindow) {
   function waitForDocLoad() {
-    window.setTimeout(function() {
+    window.setTimeout(function () {
       var targetDocument = aWindow ? aWindow.document : document;
       var accDoc = getAccessible(targetDocument);
       var state = {};
@@ -522,8 +522,9 @@ function testAccessibleTree(aAccOrElmOrID, aAccTree, aFlags) {
         }
 
         if (prevOffset != -1) {
-          var charCount = getAccessible(acc, [nsIAccessibleText])
-            .characterCount;
+          var charCount = getAccessible(acc, [
+            nsIAccessibleText,
+          ]).characterCount;
           let attrs = accTree[prop][prevOffset];
           testTextAttrs(
             acc,
@@ -809,7 +810,7 @@ function statesToString(aStates, aExtraStates) {
     str += list.item(index) + ", ";
   }
 
-  if (list.length != 0) {
+  if (list.length) {
     str += list.item(index);
   }
 
@@ -846,11 +847,15 @@ function getTextFromClipboard() {
     return "";
   }
 
-  trans.addDataFlavor("text/unicode");
-  Services.clipboard.getData(trans, Services.clipboard.kGlobalClipboard);
+  trans.addDataFlavor("text/plain");
+  Services.clipboard.getData(
+    trans,
+    Services.clipboard.kGlobalClipboard,
+    SpecialPowers.wrap(window).browsingContext.currentWindowContext
+  );
 
   var str = {};
-  trans.getTransferData("text/unicode", str);
+  trans.getTransferData("text/plain", str);
 
   if (str) {
     str = str.value.QueryInterface(Ci.nsISupportsString);
@@ -971,7 +976,7 @@ function prettyName(aIdentifier) {
  * @param aString the string to shorten.
  * @returns the shortened string.
  */
-function shortenString(aString, aMaxLength) {
+function shortenString(aString) {
   if (aString.length <= MAX_TRIM_LENGTH) {
     return aString;
   }
@@ -992,22 +997,7 @@ function shortenString(aString, aMaxLength) {
  * Return main chrome window (crosses chrome boundary)
  */
 function getMainChromeWindow(aWindow) {
-  return aWindow.docShell.rootTreeItem.domWindow;
-}
-
-/** Sets the test plugin(s) initially expected enabled state.
- * It will automatically be reset to it's previous value after the test
- * ends.
- * @param aNewEnabledState [in] the enabled state, e.g. SpecialPowers.Ci.nsIPluginTag.STATE_ENABLED
- * @param aPluginName [in, optional] The name of the plugin, defaults to "Test Plug-in"
- */
-function setTestPluginEnabledState(aNewEnabledState, aPluginName) {
-  var plugin = getTestPluginTag(aPluginName);
-  var oldEnabledState = plugin.enabledState;
-  plugin.enabledState = aNewEnabledState;
-  SimpleTest.registerCleanupFunction(function() {
-    getTestPluginTag(aPluginName).enabledState = oldEnabledState;
-  });
+  return aWindow.browsingContext.topChromeWindow;
 }
 
 // //////////////////////////////////////////////////////////////////////////////
@@ -1043,22 +1033,6 @@ function getObjAddress(aObj) {
   }
 
   return aObj.toString();
-}
-
-function getTestPluginTag(aPluginName) {
-  var ph = SpecialPowers.Cc["@mozilla.org/plugin/host;1"].getService(
-    SpecialPowers.Ci.nsIPluginHost
-  );
-  var tags = ph.getPluginTags();
-  var name = aPluginName || "Test Plug-in";
-  for (var tag of tags) {
-    if (tag.name == name) {
-      return tag;
-    }
-  }
-
-  ok(false, "Could not find plugin tag with plugin name '" + name + "'");
-  return null;
 }
 
 function normalizeAccTreeObj(aObj) {

@@ -7,125 +7,239 @@
 #include "WindowSurfaceProvider.h"
 
 #include "gfxPlatformGtk.h"
+#include "GtkCompositorWidget.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "nsWindow.h"
-#include "WindowSurfaceX11Image.h"
-#include "WindowSurfaceX11SHM.h"
-#include "WindowSurfaceXRender.h"
+#include "mozilla/ScopeExit.h"
+#include "WidgetUtilsGtk.h"
+
 #ifdef MOZ_WAYLAND
-#  include "WindowSurfaceWayland.h"
+#  include "mozilla/StaticPrefs_widget.h"
+#  include "WindowSurfaceWaylandMultiBuffer.h"
 #endif
+#ifdef MOZ_X11
+#  include "mozilla/X11Util.h"
+#  include "WindowSurfaceX11Image.h"
+#  include "WindowSurfaceX11SHM.h"
+#endif
+
+#undef LOG
+#ifdef MOZ_LOGGING
+#  include "mozilla/Logging.h"
+#  include "nsTArray.h"
+#  include "Units.h"
+extern mozilla::LazyLogModule gWidgetLog;
+#  define LOG(args) MOZ_LOG(gWidgetLog, mozilla::LogLevel::Debug, args)
+#else
+#  define LOG(args)
+#endif /* MOZ_LOGGING */
 
 namespace mozilla {
 namespace widget {
 
-using namespace mozilla::gfx;
 using namespace mozilla::layers;
 
 WindowSurfaceProvider::WindowSurfaceProvider()
-    : mIsX11Display(false),
-      mXDisplay(nullptr),
-      mXWindow(0),
-      mXVisual(nullptr),
+    : mWindowSurface(nullptr),
+      mMutex("WindowSurfaceProvider"),
+      mWindowSurfaceValid(false)
+#ifdef MOZ_X11
+      ,
+      mIsShaped(false),
       mXDepth(0),
-      mWindowSurface(nullptr)
-#ifdef MOZ_WAYLAND
-      ,
-      mWidget(nullptr)
+      mXWindow(0),
+      mXVisual(nullptr)
 #endif
-      ,
-      mIsShaped(false) {
+{
 }
 
-void WindowSurfaceProvider::Initialize(Display* aDisplay, Window aWindow,
-                                       Visual* aVisual, int aDepth,
-                                       bool aIsShaped) {
-  // We should not be initialized
-  MOZ_ASSERT(!mXDisplay);
+WindowSurfaceProvider::~WindowSurfaceProvider() {
+#ifdef MOZ_WAYLAND
+  MOZ_DIAGNOSTIC_ASSERT(!mWidget,
+                        "nsWindow reference is still live, we're leaking it!");
+#endif
+#ifdef MOZ_X11
+  MOZ_DIAGNOSTIC_ASSERT(!mXWindow, "mXWindow should be released on quit!");
+#endif
+}
 
-  // This should also be a valid initialization
-  MOZ_ASSERT(aDisplay && aWindow != X11None && aVisual);
+#ifdef MOZ_WAYLAND
+bool WindowSurfaceProvider::Initialize(RefPtr<nsWindow> aWidget) {
+  mWindowSurfaceValid = false;
+  mWidget = std::move(aWidget);
+  return true;
+}
+bool WindowSurfaceProvider::Initialize(GtkCompositorWidget* aCompositorWidget) {
+  mWindowSurfaceValid = false;
+  mCompositorWidget = aCompositorWidget;
+  mWidget = static_cast<nsWindow*>(aCompositorWidget->RealWidget());
+  return true;
+}
+#endif
+#ifdef MOZ_X11
+bool WindowSurfaceProvider::Initialize(Window aWindow, bool aIsShaped) {
+  mWindowSurfaceValid = false;
 
-  mXDisplay = aDisplay;
+  // Grab the window's visual and depth
+  XWindowAttributes windowAttrs;
+  if (!XGetWindowAttributes(DefaultXDisplay(), aWindow, &windowAttrs)) {
+    NS_WARNING("GtkCompositorWidget(): XGetWindowAttributes() failed!");
+    return false;
+  }
+
   mXWindow = aWindow;
-  mXVisual = aVisual;
-  mXDepth = aDepth;
+  mXVisual = windowAttrs.visual;
+  mXDepth = windowAttrs.depth;
   mIsShaped = aIsShaped;
-  mIsX11Display = true;
-}
-
-#ifdef MOZ_WAYLAND
-void WindowSurfaceProvider::Initialize(nsWindow* aWidget) {
-  mWidget = aWidget;
-  mIsX11Display = false;
+  return true;
 }
 #endif
 
-void WindowSurfaceProvider::CleanupResources() { mWindowSurface = nullptr; }
-
-UniquePtr<WindowSurface> WindowSurfaceProvider::CreateWindowSurface() {
+void WindowSurfaceProvider::CleanupResources() {
+  MutexAutoLock lock(mMutex);
+  mWindowSurfaceValid = false;
 #ifdef MOZ_WAYLAND
-  if (!mIsX11Display) {
-    LOGDRAW(("Drawing to nsWindow %p will use wl_surface\n", mWidget));
-    return MakeUnique<WindowSurfaceWayland>(mWidget);
+  mWidget = nullptr;
+#endif
+#ifdef MOZ_X11
+  mXWindow = 0;
+  mXVisual = 0;
+  mXDepth = 0;
+  mIsShaped = false;
+#endif
+}
+
+RefPtr<WindowSurface> WindowSurfaceProvider::CreateWindowSurface() {
+#ifdef MOZ_WAYLAND
+  if (GdkIsWaylandDisplay()) {
+    // We're called too early or we're unmapped.
+    if (!mWidget) {
+      return nullptr;
+    }
+    return MakeRefPtr<WindowSurfaceWaylandMB>(mWidget, mCompositorWidget);
   }
 #endif
+#ifdef MOZ_X11
+  if (GdkIsX11Display()) {
+    // We're called too early or we're unmapped.
+    if (!mXWindow) {
+      return nullptr;
+    }
+    // Blit to the window with the following priority:
+    // 1. MIT-SHM
+    // 2. XPutImage
+#  ifdef MOZ_HAVE_SHMIMAGE
+    if (!mIsShaped && nsShmImage::UseShm()) {
+      LOG(("Drawing to Window 0x%lx will use MIT-SHM\n", (Window)mXWindow));
+      return MakeRefPtr<WindowSurfaceX11SHM>(DefaultXDisplay(), mXWindow,
+                                             mXVisual, mXDepth);
+    }
+#  endif  // MOZ_HAVE_SHMIMAGE
 
-  // We should be initialized
-  MOZ_ASSERT(mXDisplay);
-
-  // Blit to the window with the following priority:
-  // 1. XRender (iff XRender is enabled && we are in-process)
-  // 2. MIT-SHM
-  // 3. XPutImage
-  if (!mIsShaped && gfxVars::UseXRender()) {
-    LOGDRAW(("Drawing to Window 0x%lx will use XRender\n", mXWindow));
-    return MakeUnique<WindowSurfaceXRender>(mXDisplay, mXWindow, mXVisual,
-                                            mXDepth);
+    LOG(("Drawing to Window 0x%lx will use XPutImage\n", (Window)mXWindow));
+    return MakeRefPtr<WindowSurfaceX11Image>(DefaultXDisplay(), mXWindow,
+                                             mXVisual, mXDepth, mIsShaped);
   }
-
-#ifdef MOZ_HAVE_SHMIMAGE
-  if (!mIsShaped && nsShmImage::UseShm()) {
-    LOGDRAW(("Drawing to Window 0x%lx will use MIT-SHM\n", mXWindow));
-    return MakeUnique<WindowSurfaceX11SHM>(mXDisplay, mXWindow, mXVisual,
-                                           mXDepth);
-  }
-#endif  // MOZ_HAVE_SHMIMAGE
-
-  LOGDRAW(("Drawing to Window 0x%lx will use XPutImage\n", mXWindow));
-  return MakeUnique<WindowSurfaceX11Image>(mXDisplay, mXWindow, mXVisual,
-                                           mXDepth, mIsShaped);
+#endif
+  MOZ_RELEASE_ASSERT(false);
 }
+
+// We need to ignore thread safety checks here. We need to hold mMutex
+// between StartRemoteDrawingInRegion()/EndRemoteDrawingInRegion() calls
+// which confuses it.
+MOZ_PUSH_IGNORE_THREAD_SAFETY
 
 already_AddRefed<gfx::DrawTarget>
 WindowSurfaceProvider::StartRemoteDrawingInRegion(
-    LayoutDeviceIntRegion& aInvalidRegion, layers::BufferMode* aBufferMode) {
-  if (aInvalidRegion.IsEmpty()) return nullptr;
+    const LayoutDeviceIntRegion& aInvalidRegion,
+    layers::BufferMode* aBufferMode) {
+  if (aInvalidRegion.IsEmpty()) {
+    return nullptr;
+  }
+
+  // We return a reference to mWindowSurface inside draw target so we need to
+  // hold the mutex untill EndRemoteDrawingInRegion() call where draw target
+  // is returned.
+  // If we return null dt, EndRemoteDrawingInRegion() won't be called to
+  // release mutex.
+  mMutex.Lock();
+  auto unlockMutex = MakeScopeExit([&] { mMutex.Unlock(); });
+
+  if (!mWindowSurfaceValid) {
+    mWindowSurface = nullptr;
+    mWindowSurfaceValid = true;
+  }
 
   if (!mWindowSurface) {
     mWindowSurface = CreateWindowSurface();
-    if (!mWindowSurface) return nullptr;
+    if (!mWindowSurface) {
+      return nullptr;
+    }
   }
 
   *aBufferMode = BufferMode::BUFFER_NONE;
-  RefPtr<DrawTarget> dt = nullptr;
-  if (!(dt = mWindowSurface->Lock(aInvalidRegion)) && mIsX11Display &&
-      !mWindowSurface->IsFallback()) {
+  RefPtr<gfx::DrawTarget> dt = mWindowSurface->Lock(aInvalidRegion);
+#ifdef MOZ_X11
+  if (!dt && GdkIsX11Display() && !mWindowSurface->IsFallback()) {
     // We can't use WindowSurfaceX11Image fallback on Wayland but
     // Lock() call on WindowSurfaceWayland should never fail.
     gfxWarningOnce()
         << "Failed to lock WindowSurface, falling back to XPutImage backend.";
-    mWindowSurface = MakeUnique<WindowSurfaceX11Image>(
-        mXDisplay, mXWindow, mXVisual, mXDepth, mIsShaped);
+    mWindowSurface = MakeRefPtr<WindowSurfaceX11Image>(
+        DefaultXDisplay(), mXWindow, mXVisual, mXDepth, mIsShaped);
     dt = mWindowSurface->Lock(aInvalidRegion);
   }
+#endif
+  if (dt) {
+    // We have valid dt, mutex will be released in EndRemoteDrawingInRegion().
+    unlockMutex.release();
+  }
+
   return dt.forget();
 }
 
 void WindowSurfaceProvider::EndRemoteDrawingInRegion(
     gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
-  if (mWindowSurface) mWindowSurface->Commit(aInvalidRegion);
+  // Unlock mutex from StartRemoteDrawingInRegion().
+  mMutex.AssertCurrentThreadOwns();
+  auto unlockMutex = MakeScopeExit([&] { mMutex.Unlock(); });
+
+  // Commit to mWindowSurface only if we have a valid one.
+  if (!mWindowSurface || !mWindowSurfaceValid) {
+    return;
+  }
+#if defined(MOZ_WAYLAND)
+  if (GdkIsWaylandDisplay()) {
+    // We're called too early or we're unmapped.
+    // Don't draw anything.
+    if (!mWidget || !mWidget->IsMapped()) {
+      return;
+    }
+    if (moz_container_wayland_is_commiting_to_parent(
+            mWidget->GetMozContainer())) {
+      // If we're drawing directly to wl_surface owned by Gtk we need to use it
+      // in main thread to sync with Gtk access to it.
+      NS_DispatchToMainThread(NS_NewRunnableFunction(
+          "WindowSurfaceProvider::EndRemoteDrawingInRegion",
+          [widget = RefPtr{mWidget}, this, aInvalidRegion]() {
+            if (!widget->IsMapped()) {
+              return;
+            }
+            MutexAutoLock lock(mMutex);
+            // Commit to mWindowSurface only when we have a valid one.
+            if (mWindowSurface && mWindowSurfaceValid) {
+              mWindowSurface->Commit(aInvalidRegion);
+            }
+          }));
+      return;
+    }
+  }
+#endif
+  mWindowSurface->Commit(aInvalidRegion);
 }
+
+MOZ_POP_THREAD_SAFETY
 
 }  // namespace widget
 }  // namespace mozilla

@@ -2,17 +2,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-include protocol PChildToParentStream;
-include protocol PParentToChildStream;
-include protocol PIPCBlobInputStream;
-
 include IPCStream;
 include ProtocolTypes;
 
-using struct mozilla::void_t
-  from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
+[RefCounted] using class mozilla::RemoteLazyInputStream from "mozilla/RemoteLazyInputStream.h";
 
 namespace mozilla {
+
+union RemoteLazyStream
+{
+  // Parent to Child: The child will receive a RemoteLazyInputStream. Nothing
+  // can be done with it except retrieving the size.
+  nullable RemoteLazyInputStream;
+
+  // Child to Parent: Normal serialization.
+  IPCStream;
+};
+
 namespace dom {
 
 // This contains any extra bit for making a File out of a Blob.
@@ -30,23 +37,13 @@ struct IPCFile
   bool isDirectory;
 };
 
-union IPCBlobStream
-{
-  // Parent to Child: The child will receive a IPCBlobInputStream. Nothing
-  // can be done with it except retrieving the size.
-  PIPCBlobInputStream;
-
-  // Child to Parent: Normal serialization.
-  IPCStream;
-};
-
 struct IPCBlob
 {
   nsString type;
   uint64_t size;
   nsString blobImplType;
 
-  IPCBlobStream inputStream;
+  RemoteLazyStream inputStream;
 
   // Nothing is for Blob
   IPCFile? file;

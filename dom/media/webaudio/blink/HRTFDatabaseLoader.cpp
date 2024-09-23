@@ -72,7 +72,8 @@ HRTFDatabaseLoader::HRTFDatabaseLoader(float sampleRate)
     : m_refCnt(0),
       m_threadLock("HRTFDatabaseLoader"),
       m_databaseLoaderThread(nullptr),
-      m_databaseSampleRate(sampleRate) {
+      m_databaseSampleRate(sampleRate),
+      m_databaseLoaded(false) {
   MOZ_ASSERT(NS_IsMainThread());
 }
 
@@ -122,7 +123,7 @@ class HRTFDatabaseLoader::ProxyReleaseEvent final : public Runnable {
 };
 
 void HRTFDatabaseLoader::ProxyRelease() {
-  nsCOMPtr<nsIEventTarget> mainTarget = GetMainThreadEventTarget();
+  nsCOMPtr<nsIEventTarget> mainTarget = GetMainThreadSerialEventTarget();
   if (MOZ_LIKELY(mainTarget)) {
     RefPtr<ProxyReleaseEvent> event = new ProxyReleaseEvent(this);
     DebugOnly<nsresult> rv = mainTarget->Dispatch(event, NS_DISPATCH_NORMAL);
@@ -162,6 +163,7 @@ void HRTFDatabaseLoader::load() {
   MOZ_ASSERT(!m_hrtfDatabase.get(), "Called twice");
   // Load the default HRTF database.
   m_hrtfDatabase = HRTFDatabase::create(m_databaseSampleRate);
+  m_databaseLoaded = true;
   // Notifies the main thread of completion.  See loadAsynchronously().
   Release();
 }

@@ -132,12 +132,6 @@ SourceBuffer::~SourceBuffer() {
 nsresult SourceBuffer::AppendChunk(Maybe<Chunk>&& aChunk) {
   mMutex.AssertCurrentThreadOwns();
 
-#ifdef DEBUG
-  if (mChunks.Length() > 0) {
-    NS_WARNING("Appending an extra chunk for SourceBuffer");
-  }
-#endif
-
   if (MOZ_UNLIKELY(!aChunk)) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -250,7 +244,7 @@ nsresult SourceBuffer::Compact() {
              "Compacted chunk has slack space");
 
   // Remove the redundant chunks.
-  mChunks.RemoveElementsAt(1, mChunks.Length() - 1);
+  mChunks.RemoveLastElements(mChunks.Length() - 1);
   mChunks.Compact();
 
   return NS_OK;

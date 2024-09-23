@@ -9,21 +9,29 @@
 #define SkWriter32_DEFINED
 
 #include "include/core/SkData.h"
-#include "include/core/SkMatrix.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkPoint3.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
 #include "include/core/SkRegion.h"
 #include "include/core/SkScalar.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkTypes.h"
-#include "include/private/SkNoncopyable.h"
-#include "include/private/SkTemplates.h"
-#include "include/private/SkTo.h"
+#include "include/private/base/SkAlign.h"
+#include "include/private/base/SkMalloc.h"
+#include "include/private/base/SkNoncopyable.h"
+#include "include/private/base/SkTemplates.h"
+#include "include/private/base/SkTo.h"
 
-class SK_API SkWriter32 : SkNoncopyable {
+#include <cstdint>
+#include <cstring>
+
+class SkMatrix;
+struct SkSamplingOptions;
+
+class SkWriter32 : SkNoncopyable {
 public:
     /**
      *  The caller can specify an initial block of storage, which the caller manages.
@@ -110,12 +118,6 @@ public:
         *(int32_t*)this->reserve(sizeof(value)) = value;
     }
 
-    void writePtr(void* value) {
-        // this->reserve() only returns 4-byte aligned pointers,
-        // so this may be an under-aligned write if we were to do this like the others.
-        memcpy(this->reserve(sizeof(value)), &value, sizeof(value));
-    }
-
     void writeScalar(SkScalar value) {
         *(SkScalar*)this->reserve(sizeof(value)) = value;
     }
@@ -154,6 +156,8 @@ public:
         rgn.writeToMemory(this->reserve(size));
     }
 
+    void writeSampling(const SkSamplingOptions& sampling);
+
     // write count bytes (must be a multiple of 4)
     void writeMul4(const void* values, size_t size) {
         this->write(values, size);
@@ -190,10 +194,9 @@ public:
     }
 
     /**
-     *  Writes a string to the writer, which can be retrieved with
-     *  SkReader32::readString().
-     *  The length can be specified, or if -1 is passed, it will be computed by
-     *  calling strlen(). The length must be < max size_t.
+     *  Writes a string to the writer, which can be retrieved with SkReadBuffer::readString().
+     *  The length can be specified, or if -1 is passed, it will be computed by calling strlen().
+     *  The length must be < max size_t.
      *
      *  If you write NULL, it will be read as "".
      */
@@ -254,7 +257,7 @@ private:
     size_t fCapacity;                  // Number of bytes we can write to fData.
     size_t fUsed;                      // Number of bytes written.
     void* fExternal;                   // Unmanaged memory block.
-    SkAutoTMalloc<uint8_t> fInternal;  // Managed memory block.
+    skia_private::AutoTMalloc<uint8_t> fInternal;  // Managed memory block.
 };
 
 /**
@@ -276,7 +279,7 @@ private:
         char    fStorage[SIZE];
     } fData;
 
-    typedef SkWriter32 INHERITED;
+    using INHERITED = SkWriter32;
 };
 
 #endif

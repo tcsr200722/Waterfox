@@ -20,6 +20,8 @@
 #include "nsProxyRelease.h"
 #include "nsIContentPolicy.h"
 #include "nsContentUtils.h"
+#include "mozilla/dom/ContentParent.h"
+#include "../protocol/http/nsHttpHandler.h"
 
 #include "nsIFileURL.h"
 #include "nsIURIMutator.h"
@@ -28,6 +30,7 @@
 #include "prio.h"
 #include <algorithm>
 
+#include "mozilla/Components.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/Unused.h"
 
@@ -101,7 +104,8 @@ void nsFileCopyEvent::DoCopy() {
     rv = mSource->ReadSegments(NS_CopySegmentToStream, mDest, num, &result);
     if (NS_FAILED(rv)) break;
     if (result != (uint32_t)num) {
-      rv = NS_ERROR_FILE_DISK_FULL;  // stopped prematurely (out of disk space)
+      // stopped prematurely (out of disk space)
+      rv = NS_ERROR_FILE_NO_DEVICE_SPACE;
       break;
     }
 
@@ -146,8 +150,8 @@ nsresult nsFileCopyEvent::Dispatch(nsIRunnable* callback,
   if (NS_FAILED(rv)) return rv;
 
   // Dispatch ourselves to I/O thread pool...
-  nsCOMPtr<nsIEventTarget> pool =
-      do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID, &rv);
+  nsCOMPtr<nsIEventTarget> pool;
+  pool = mozilla::components::StreamTransport::Service(&rv);
   if (NS_FAILED(rv)) return rv;
 
   return pool->Dispatch(this, NS_DISPATCH_NORMAL);
@@ -238,6 +242,9 @@ nsFileChannel::nsFileChannel(nsIURI* uri) : mUploadLength(0), mFileURI(uri) {}
 nsresult nsFileChannel::Init() {
   NS_ENSURE_STATE(mLoadInfo);
 
+  RefPtr<nsHttpHandler> handler = nsHttpHandler::GetInstance();
+  MOZ_ALWAYS_SUCCEEDS(handler->NewChannelId(mChannelId));
+
   // If we have a link file, we should resolve its target right away.
   // This is to protect against a same origin attack where the same link file
   // can point to different resources right after the first resource is loaded.
@@ -291,8 +298,9 @@ nsresult nsFileChannel::MakeFileInputStream(nsIFile* file,
   bool isDir;
   nsresult rv = file->IsDirectory(&isDir);
   if (NS_FAILED(rv)) {
-    // canonicalize error message
-    if (rv == NS_ERROR_FILE_TARGET_DOES_NOT_EXIST) rv = NS_ERROR_FILE_NOT_FOUND;
+    if (rv == NS_ERROR_FILE_NOT_FOUND) {
+      CheckForBrokenChromeURL(mLoadInfo, OriginalURI());
+    }
 
     if (async && (NS_ERROR_FILE_NOT_FOUND == rv)) {
       // We don't return "Not Found" errors here. Since we could not find
@@ -305,8 +313,9 @@ nsresult nsFileChannel::MakeFileInputStream(nsIFile* file,
 
   if (isDir) {
     rv = nsDirectoryIndexStream::Create(file, getter_AddRefs(stream));
-    if (NS_SUCCEEDED(rv) && !HasContentTypeHint())
+    if (NS_SUCCEEDED(rv) && !HasContentTypeHint()) {
       contentType.AssignLiteral(APPLICATION_HTTP_INDEX_FORMAT);
+    }
   } else {
     rv = NS_NewLocalFileInputStream(getter_AddRefs(stream), file, -1, -1,
                                     async ? nsIFileInputStream::DEFER_OPEN : 0);
@@ -334,12 +343,12 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
   if (NS_FAILED(rv)) return rv;
 
   nsCOMPtr<nsIURI> newURI;
-  rv = fileHandler->ReadURLFile(file, getter_AddRefs(newURI));
-  if (NS_SUCCEEDED(rv)) {
+  if (NS_SUCCEEDED(fileHandler->ReadURLFile(file, getter_AddRefs(newURI))) ||
+      NS_SUCCEEDED(fileHandler->ReadShellLink(file, getter_AddRefs(newURI)))) {
     nsCOMPtr<nsIChannel> newChannel;
     rv = NS_NewChannel(getter_AddRefs(newChannel), newURI,
                        nsContentUtils::GetSystemPrincipal(),
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER);
 
     if (NS_FAILED(rv)) return rv;
@@ -376,8 +385,9 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     // to something other than "unknown" to avoid triggering the content-type
     // sniffer code in nsBaseChannel.
     // However, don't override explicitly set types.
-    if (!HasContentTypeHint())
-      SetContentType(NS_LITERAL_CSTRING(APPLICATION_OCTET_STREAM));
+    if (!HasContentTypeHint()) {
+      SetContentType(nsLiteralCString(APPLICATION_OCTET_STREAM));
+    }
   } else {
     nsAutoCString contentType;
     rv = MakeFileInputStream(file, stream, contentType, async);
@@ -402,6 +412,9 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     }
   }
 
+  // notify "file-channel-opened" observers
+  MaybeSendFileOpenNotification();
+
   *result = nullptr;
   stream.swap(*result);
   return NS_OK;
@@ -415,13 +428,12 @@ nsresult nsFileChannel::ListenerBlockingPromise(BlockingPromise** aPromise) {
     return NS_OK;
   }
 
-  nsCOMPtr<nsIEventTarget> sts(
-      do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID));
+  nsCOMPtr<nsIEventTarget> sts(mozilla::components::StreamTransport::Service());
   if (!sts) {
     return FixupContentLength(true);
   }
 
-  RefPtr<TaskQueue> taskQueue = new TaskQueue(sts.forget());
+  RefPtr<TaskQueue> taskQueue = TaskQueue::Create(sts.forget(), "FileChannel");
   RefPtr<nsFileChannel> self = this;
   RefPtr<BlockingPromise> promise =
       mozilla::InvokeAsync(taskQueue, __func__, [self{std::move(self)}]() {
@@ -448,8 +460,7 @@ nsresult nsFileChannel::FixupContentLength(bool async) {
   int64_t size;
   rv = file->GetFileSize(&size);
   if (NS_FAILED(rv)) {
-    if (async && (NS_ERROR_FILE_NOT_FOUND == rv ||
-                  NS_ERROR_FILE_TARGET_DOES_NOT_EXIST == rv)) {
+    if (async && NS_ERROR_FILE_NOT_FOUND == rv) {
       size = 0;
     } else {
       return rv;
@@ -464,7 +475,7 @@ nsresult nsFileChannel::FixupContentLength(bool async) {
 // nsFileChannel::nsISupports
 
 NS_IMPL_ISUPPORTS_INHERITED(nsFileChannel, nsBaseChannel, nsIUploadChannel,
-                            nsIFileChannel)
+                            nsIFileChannel, nsIIdentChannel)
 
 //-----------------------------------------------------------------------------
 // nsFileChannel::nsIFileChannel
@@ -476,6 +487,38 @@ nsFileChannel::GetFile(nsIFile** file) {
 
   // This returns a cloned nsIFile
   return fileURL->GetFile(file);
+}
+
+nsresult nsFileChannel::MaybeSendFileOpenNotification() {
+  nsCOMPtr<nsIObserverService> obsService = services::GetObserverService();
+  if (!obsService) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsILoadInfo> loadInfo;
+  nsresult rv = GetLoadInfo(getter_AddRefs(loadInfo));
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  bool isTopLevel;
+  rv = loadInfo->GetIsTopLevelLoad(&isTopLevel);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  uint64_t browsingContextID;
+  rv = loadInfo->GetBrowsingContextID(&browsingContextID);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  if ((browsingContextID != 0 && isTopLevel) ||
+      !loadInfo->TriggeringPrincipal()->IsSystemPrincipal()) {
+    obsService->NotifyObservers(static_cast<nsIIdentChannel*>(this),
+                                "file-channel-opened", nullptr);
+  }
+  return NS_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -506,6 +549,21 @@ nsFileChannel::SetUploadStream(nsIInputStream* stream,
 
 NS_IMETHODIMP
 nsFileChannel::GetUploadStream(nsIInputStream** result) {
-  NS_IF_ADDREF(*result = mUploadStream);
+  *result = do_AddRef(mUploadStream).take();
+  return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// nsFileChannel::nsIIdentChannel
+
+NS_IMETHODIMP
+nsFileChannel::GetChannelId(uint64_t* aChannelId) {
+  *aChannelId = mChannelId;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsFileChannel::SetChannelId(uint64_t aChannelId) {
+  mChannelId = aChannelId;
   return NS_OK;
 }

@@ -7,12 +7,14 @@ import os
 import shutil
 import asyncio
 
+import mozversion
+
 from condprof.creator import ProfileCreator
 from condprof.desktop import DesktopEnv
 from condprof.android import AndroidEnv
 from condprof.changelog import Changelog
 from condprof.scenarii import scenarii
-from condprof.util import logger, get_version, get_current_platform, extract_from_dmg
+from condprof.util import logger, get_current_platform, extract_from_dmg
 from condprof.customization import get_customizations, find_customization
 from condprof.client import read_changelog, ProfileNotFoundError
 
@@ -28,6 +30,8 @@ class Runner:
         strict,
         force_new,
         visible,
+        skip_logs=False,
+        remote_test_root="/sdcard/test_root/",
     ):
         self.force_new = force_new
         self.profile = profile
@@ -36,6 +40,9 @@ class Runner:
         self.device_name = device_name
         self.strict = strict
         self.visible = visible
+        self.skip_logs = skip_logs
+        self.remote_test_root = remote_test_root
+        self.env = {}
         # unpacking a dmg
         # XXX do something similar if we get an apk (but later)
         # XXX we want to do
@@ -75,34 +82,36 @@ class Runner:
             if not os.path.exists(self.firefox):
                 raise IOError("Cannot find %s" % self.firefox)
 
-            version = get_version(self.firefox)
-            logger.info("Working with Firefox %s" % version)
+            mozversion.get_version(self.firefox)
 
         logger.info(os.environ)
-        self.archive = os.path.abspath(self.archive)
-        logger.info("Archives directory is %s" % self.archive)
-        if not os.path.exists(self.archive):
-            os.makedirs(self.archive, exist_ok=True)
+        if self.archive:
+            self.archive = os.path.abspath(self.archive)
+            logger.info("Archives directory is %s" % self.archive)
+            if not os.path.exists(self.archive):
+                os.makedirs(self.archive, exist_ok=True)
 
-        logger.info("Verifying Geckodriver binary presence")
         if shutil.which(self.geckodriver) is None and not os.path.exists(
             self.geckodriver
         ):
             raise IOError("Cannot find %s" % self.geckodriver)
 
-        try:
-            if self.android:
-                plat = "%s-%s" % (
-                    self.device_name,
-                    self.firefox.split("org.mozilla.")[-1],
-                )
-            else:
-                plat = get_current_platform()
-            self.changelog = read_changelog(plat)
-            logger.info("Got the changelog from TaskCluster")
-        except ProfileNotFoundError:
-            logger.info("changelog not found on TaskCluster, creating a local one.")
-            self.changelog = Changelog(self.archive)
+        if not self.skip_logs:
+            try:
+                if self.android:
+                    plat = "%s-%s" % (
+                        self.device_name,
+                        self.firefox.split("org.mozilla.")[-1],
+                    )
+                else:
+                    plat = get_current_platform()
+                self.changelog = read_changelog(plat)
+                logger.info("Got the changelog from TaskCluster")
+            except ProfileNotFoundError:
+                logger.info("changelog not found on TaskCluster, creating a local one.")
+                self.changelog = Changelog(self.archive)
+        else:
+            self.changelog = []
 
     def _create_env(self):
         if self.android:
@@ -116,22 +125,29 @@ class Runner:
 
     def display_error(self, scenario, customization):
         logger.error("%s x %s failed." % (scenario, customization), exc_info=True)
-        if self.strict:
-            raise
+        # TODO: this might avoid the exceptions that slip through in automation
+        # if self.strict:
+        #     raise
 
     async def one_run(self, scenario, customization):
         """Runs one single conditioned profile.
 
         Create an instance of the environment and run the ProfileCreator.
         """
-        env = self._create_env()
+        self.env = self._create_env()
         return await ProfileCreator(
-            scenario, customization, self.archive, self.changelog, self.force_new, env
+            scenario,
+            customization,
+            self.archive,
+            self.changelog,
+            self.force_new,
+            self.env,
+            skip_logs=self.skip_logs,
+            remote_test_root=self.remote_test_root,
         ).run(not self.visible)
 
     async def run_all(self):
-        """Runs the conditioned profile builders
-        """
+        """Runs the conditioned profile builders"""
         if self.scenario != "all":
             selected_scenario = [self.scenario]
         else:
@@ -189,5 +205,7 @@ def run(
         runner.save()
         if failures > 0:
             raise Exception("At least one scenario failed")
+    except Exception as e:
+        raise e
     finally:
         loop.close()

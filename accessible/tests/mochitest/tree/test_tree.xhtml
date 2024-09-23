@@ -73,12 +73,14 @@
       var view = aTree.view;
       var columnCount = aTree.columns.count;
 
-      for (var idx = 0; idx < columnCount; idx++)
+      for (let idx = 0; idx < columnCount; idx++)
         accTreeForColumns.children.push({ COLUMNHEADER: [ ] });
-      if (!aTree.hasAttribute("hidecolumnpicker"))
-        accTreeForColumns.children.push({ PUSHBUTTON: [ { MENUPOPUP: [] } ] });
+      if (!aTree.hasAttribute("hidecolumnpicker")) {
+        accTreeForColumns.children.push({ PUSHBUTTON: [ ] });
+        accTreeForColumns.children.push({ MENUPOPUP: [ ] });
+      }
 
-      for (var idx = 0; idx < view.rowCount; idx++)
+      for (let idx = 0; idx < view.rowCount; idx++)
         accTreeForTree.children.push(getTreeItemAccTree(aRole, columnCount));
 
       testAccessibleTree(aTree, accTreeForTree);
@@ -95,7 +97,7 @@
       {
         this.DOMNode.view = aView;
       }
-      this.check = function check(aEvent)
+      this.check = function check()
       {
         testAccessibleTreeFor(this.DOMNode, aRole);
       }
@@ -113,7 +115,7 @@
 
     function doTest()
     {
-      var gQueue = new eventQueue(EVENT_REORDER);
+      gQueue = new eventQueue(EVENT_REORDER);
 
       gQueue.push(new treeChecker("list", new nsTableTreeView(3), ROLE_LIST));
       gQueue.push(new treeChecker("tree", new nsTreeTreeView(), ROLE_OUTLINE));

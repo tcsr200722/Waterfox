@@ -34,6 +34,9 @@ enum MixedContentTypes {
 using mozilla::OriginAttributes;
 
 class nsILoadInfo;  // forward declaration
+namespace mozilla::net {
+class nsProtocolProxyService;  // forward declaration
+}  // namespace mozilla::net
 
 class nsMixedContentBlocker : public nsIContentPolicy,
                               public nsIChannelEventSink {
@@ -55,6 +58,17 @@ class nsMixedContentBlocker : public nsIContentPolicy,
   static bool IsPotentiallyTrustworthyOnion(nsIURI* aURL);
   static bool IsPotentiallyTrustworthyOrigin(nsIURI* aURI);
 
+  /**
+   * Returns true if the provided content policy type is subject to the
+   * mixed content level 2 upgrading mechanism (audio, video, image).
+   *
+   * @param aConsiderPrefs A boolean that indicates whether the result of this
+   * functions takes the `security.mixed_content.upgrade_display_content`
+   * preferences into account.
+   */
+  static bool IsUpgradableContentType(nsContentPolicyType aType,
+                                      bool aConsiderPrefs);
+
   /* Static version of ShouldLoad() that contains all the Mixed Content Blocker
    * logic.  Called from non-static ShouldLoad().
    * Called directly from imageLib when an insecure redirect exists in a cached
@@ -62,22 +76,25 @@ class nsMixedContentBlocker : public nsIContentPolicy,
    * @param aHadInsecureImageRedirect
    *        boolean flag indicating that an insecure redirect through http
    *        occured when this image was initially loaded and cached.
+   * @param aReportError
+   *        boolean flag indicating if a rejection should automaticly be
+   *        logged into the Console.
    * Remaining parameters are from nsIContentPolicy::ShouldLoad().
    */
   static nsresult ShouldLoad(bool aHadInsecureImageRedirect,
                              nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
-                             const nsACString& aMimeGuess, int16_t* aDecision);
+                             bool aReportError, int16_t* aDecision);
   static void AccumulateMixedContentHSTS(
       nsIURI* aURI, bool aActive, const OriginAttributes& aOriginAttributes);
 
   static bool URISafeToBeLoadedInSecureContext(nsIURI* aURI);
 
   static void OnPrefChange(const char* aPref, void* aClosure);
-  static void GetSecureContextWhiteList(nsACString& aList);
+  static void GetSecureContextAllowList(nsACString& aList);
   static void Shutdown();
 
-  static bool sSecurecontextWhitelistCached;
-  static nsCString* sSecurecontextWhitelist;
+  static bool sSecurecontextAllowlistCached;
+  static nsCString* sSecurecontextAllowlist;
 };
 
 #endif /* nsMixedContentBlocker_h___ */

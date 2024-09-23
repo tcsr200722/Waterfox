@@ -4,34 +4,34 @@
 
 "use strict";
 
-const { colorUtils } = require("devtools/shared/css/color");
-const Spectrum = require("devtools/client/shared/widgets/Spectrum");
-const SwatchBasedEditorTooltip = require("devtools/client/shared/widgets/tooltip/SwatchBasedEditorTooltip");
-const { LocalizationHelper } = require("devtools/shared/l10n");
+const { colorUtils } = require("resource://devtools/shared/css/color.js");
+const Spectrum = require("resource://devtools/client/shared/widgets/Spectrum.js");
+const SwatchBasedEditorTooltip = require("resource://devtools/client/shared/widgets/tooltip/SwatchBasedEditorTooltip.js");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/inspector.properties"
 );
-const { openDocLink } = require("devtools/client/shared/link");
+const { openDocLink } = require("resource://devtools/client/shared/link.js");
 const {
   A11Y_CONTRAST_LEARN_MORE_LINK,
-} = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/client/accessibility/constants.js");
+loader.lazyRequireGetter(
+  this,
+  "throttle",
+  "resource://devtools/shared/throttle.js",
+  true
+);
 
 loader.lazyRequireGetter(
   this,
-  "wrapMoveFocus",
-  "devtools/client/shared/focus",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getFocusableElements",
-  "devtools/client/shared/focus",
+  ["getFocusableElements", "wrapMoveFocus"],
+  "resource://devtools/client/shared/focus.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "PICKER_TYPES",
-  "devtools/shared/picker-constants"
+  "resource://devtools/shared/picker-constants.js"
 );
 
 const TELEMETRY_PICKER_EYEDROPPER_OPEN_COUNT =
@@ -80,12 +80,10 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
  *        inline editor.
  * @param {InspectorPanel} inspector
  *        The inspector panel, needed for the eyedropper.
- * @param {Function} supportsCssColor4ColorFunction
- *        A function for checking the supporting of css-color-4 color function.
  */
 
 class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
-  constructor(document, inspector, { supportsCssColor4ColorFunction }) {
+  constructor(document, inspector) {
     super(document);
     this.inspector = inspector;
 
@@ -96,7 +94,10 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
     this._openEyeDropper = this._openEyeDropper.bind(this);
     this._openDocLink = this._openDocLink.bind(this);
     this._onTooltipKeydown = this._onTooltipKeydown.bind(this);
-    this.cssColor4 = supportsCssColor4ColorFunction();
+
+    // Selecting color by hovering on the spectrum widget could create a lot
+    // of requests. Throttle by 50ms to avoid this. See Bug 1665547.
+    this._selectColor = throttle(this._selectColor.bind(this), 50);
 
     this.tooltip.container.addEventListener("keydown", this._onTooltipKeydown);
   }
@@ -139,19 +140,12 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
   async show() {
     // set contrast enabled for the spectrum
     const name = this.activeSwatch.dataset.propertyName;
+    const colorFunction = this.activeSwatch.dataset.colorFunction;
 
-    if (this.isContrastCompatible === undefined) {
-      const target = this.inspector.currentTarget;
-      this.isContrastCompatible = await target.actorHasMethod(
-        "domnode",
-        "getBackgroundColor"
-      );
-    }
-
-    // Only enable contrast and set text props and bg color if selected node is
-    // contrast compatible and if the type of property is color.
+    // Only enable contrast if the type of property is color
+    // and its value isn't inside a color-modifying function (e.g. color-mix()).
     this.spectrum.contrastEnabled =
-      name === "color" && this.isContrastCompatible;
+      name === "color" && colorFunction !== "color-mix";
     if (this.spectrum.contrastEnabled) {
       const { nodeFront } = this.inspector.selection;
       const { pageStyle } = nodeFront.inspectorFront;
@@ -175,9 +169,8 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
     // Call then parent class' show function
     await super.show();
 
-    const eyeButton = this.tooltip.container.querySelector(
-      "#eyedropper-button"
-    );
+    const eyeButton =
+      this.tooltip.container.querySelector("#eyedropper-button");
     const canShowEyeDropper = await this.inspector.supportsEyeDropper();
     if (canShowEyeDropper) {
       eyeButton.disabled = false;
@@ -188,9 +181,8 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
       eyeButton.title = L10N.getStr("eyedropper.disabled.title");
     }
 
-    const learnMoreButton = this.tooltip.container.querySelector(
-      "#learn-more-button"
-    );
+    const learnMoreButton =
+      this.tooltip.container.querySelector("#learn-more-button");
     if (learnMoreButton) {
       learnMoreButton.addEventListener("click", this._openDocLink);
       learnMoreButton.addEventListener("keydown", e => e.stopPropagation());
@@ -284,7 +276,7 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
       .add(true);
 
     // cancelling picker(if it is already selected) on opening eye-dropper
-    toolbox.nodePicker.cancel();
+    toolbox.nodePicker.stop({ canceled: true });
 
     // disable simulating touch events if RDM is active
     toolbox.tellRDMAboutPickerState(true, PICKER_TYPES.EYEDROPPER);
@@ -329,15 +321,21 @@ class SwatchColorPickerTooltip extends SwatchBasedEditorTooltip {
   }
 
   _colorToRgba(color) {
-    color = new colorUtils.CssColor(color, this.cssColor4);
+    color = new colorUtils.CssColor(color);
     const rgba = color.getRGBATuple();
     return [rgba.r, rgba.g, rgba.b, rgba.a];
   }
 
   _toDefaultType(color) {
+    let unit = this.inspector.defaultColorUnit;
+    let forceUppercase = false;
+    if (unit === colorUtils.CssColor.COLORUNIT.authored) {
+      unit = colorUtils.classifyColor(this._originalColor);
+      forceUppercase = colorUtils.colorIsUppercase(this._originalColor);
+    }
+
     const colorObj = new colorUtils.CssColor(color);
-    colorObj.setAuthoredUnitFromColor(this._originalColor, this.cssColor4);
-    return colorObj.toString();
+    return colorObj.toString(unit, forceUppercase);
   }
 
   /**

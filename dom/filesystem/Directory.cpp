@@ -9,18 +9,18 @@
 #include "GetDirectoryListingTask.h"
 #include "GetFilesTask.h"
 
-#include "nsCharSeparatedTokenizer.h"
+#include "nsIFile.h"
 #include "nsString.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/DirectoryBinding.h"
 #include "mozilla/dom/FileSystemBase.h"
 #include "mozilla/dom/FileSystemUtils.h"
 #include "mozilla/dom/OSFileSystem.h"
 #include "mozilla/dom/WorkerPrivate.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(Directory)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Directory)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(Directory)
   if (tmp->mFileSystem) {
@@ -37,8 +37,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Directory)
   }
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(Directory)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Directory)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Directory)
@@ -197,5 +195,4 @@ FileSystemBase* Directory::GetFileSystem(ErrorResult& aRv) {
   return mFileSystem;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

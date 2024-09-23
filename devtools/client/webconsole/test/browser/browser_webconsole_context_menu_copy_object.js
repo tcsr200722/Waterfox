@@ -6,7 +6,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf-8,<script>
+const TEST_URI = `data:text/html;charset=utf-8,<!DOCTYPE html><script>
   window.bar = { baz: 1 };
   console.log("foo");
   console.log("foo", window.bar);
@@ -19,14 +19,17 @@ const TEST_URI = `data:text/html;charset=utf-8,<script>
   console.log(false);
   console.log(undefined);
   console.log(null);
+  /* Verify that the conflicting binding on user code doesn't break the
+   * functionality. */
+  function copy() { alert("user-defined function is called"); }
 </script>`;
 const copyObjectMenuItemId = "#console-menu-copy-object";
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
 
   const [msgWithText, msgWithObj, msgNested] = await waitFor(() =>
-    findMessages(hud, "foo")
+    findConsoleAPIMessages(hud, "foo")
   );
   ok(
     msgWithText && msgWithObj && msgNested,
@@ -34,25 +37,53 @@ add_task(async function() {
   );
 
   const [groupMsgObj] = await waitFor(() =>
-    findMessages(hud, "group", ".message-body")
+    findMessagePartsByType(hud, {
+      text: "group",
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [collapsedGroupMsgObj] = await waitFor(() =>
-    findMessages(hud, "collapsed", ".message-body")
+    findMessagePartsByType(hud, {
+      text: "collapsed",
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [numberMsgObj] = await waitFor(() =>
-    findMessages(hud, `532`, ".message-body")
+    findMessagePartsByType(hud, {
+      text: `532`,
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [trueMsgObj] = await waitFor(() =>
-    findMessages(hud, `true`, ".message-body")
+    findMessagePartsByType(hud, {
+      text: `true`,
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [falseMsgObj] = await waitFor(() =>
-    findMessages(hud, `false`, ".message-body")
+    findMessagePartsByType(hud, {
+      text: `false`,
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [undefinedMsgObj] = await waitFor(() =>
-    findMessages(hud, `undefined`, ".message-body")
+    findMessagePartsByType(hud, {
+      text: `undefined`,
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   const [nullMsgObj] = await waitFor(() =>
-    findMessages(hud, `null`, ".message-body")
+    findMessagePartsByType(hud, {
+      text: `null`,
+      typeSelector: ".console-api",
+      partSelector: ".message-body",
+    })
   );
   ok(nullMsgObj, "One message with null value should have appeared");
 
@@ -66,7 +97,11 @@ add_task(async function() {
   const nestedObjInMsg = msgNested.querySelector(".objectBox-object");
 
   const consoleMessages = await waitFor(() =>
-    findMessages(hud, 'console.log("foo");', ".message-location")
+    findMessagePartsByType(hud, {
+      text: 'console.log("foo");',
+      typeSelector: ".console-api",
+      partSelector: ".message-location",
+    })
   );
   await testCopyObjectMenuItemDisabled(hud, consoleMessages[0]);
 
@@ -109,11 +144,16 @@ add_task(async function() {
 
 async function testCopyObject(hud, element, expectedMessage, objectInput) {
   info("Check `Copy object` is enabled");
-  let menuPopup = await openContextMenu(hud, element);
+  const menuPopup = await openContextMenu(hud, element);
   const copyObjectMenuItem = menuPopup.querySelector(copyObjectMenuItemId);
   ok(
     !copyObjectMenuItem.disabled,
     "`Copy object` is enabled for object in complex message"
+  );
+  is(
+    copyObjectMenuItem.getAttribute("accesskey"),
+    "o",
+    "`Copy object` has the right accesskey"
   );
 
   const validatorFn = data => {
@@ -121,12 +161,11 @@ async function testCopyObject(hud, element, expectedMessage, objectInput) {
     return data === prettifiedMessage;
   };
 
-  info("Click on `Copy object`");
-  await waitForClipboardPromise(() => copyObjectMenuItem.click(), validatorFn);
-
-  info("`Copy object` by using the access-key O");
-  menuPopup = await openContextMenu(hud, element);
-  await waitForClipboardPromise(() => synthesizeKeyShortcut("O"), validatorFn);
+  info("Activate item `Copy object`");
+  await waitForClipboardPromise(
+    () => menuPopup.activateItem(copyObjectMenuItem),
+    validatorFn
+  );
 }
 
 async function testCopyObjectMenuItemDisabled(hud, element) {

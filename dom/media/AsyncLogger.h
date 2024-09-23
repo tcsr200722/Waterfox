@@ -9,236 +9,297 @@
 
 #include <atomic>
 #include <thread>
-#include "mozilla/Logging.h"
+#include <cinttypes>
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/BaseProfilerMarkerTypes.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Sprintf.h"
+#include "mozilla/TimeStamp.h"
+#include "GeckoProfiler.h"
+#include "mozilla/dom/MPSCQueue.h"
+
+#if defined(_WIN32)
+#  include <process.h>
+#  define getpid() _getpid()
+#else
+#  include <unistd.h>
+#endif
 
 namespace mozilla {
 
-namespace detail {
-
-// This class implements a lock-free multiple producer single consumer queue of
-// fixed size log messages, with the following characteristics:
-// - Unbounded (uses a intrinsic linked list)
-// - Allocates on Push. Push can be called on any thread.
-// - Deallocates on Pop. Pop MUST always be called on the same thread for the
-// life-time of the queue.
-//
-// In our scenario, the producer threads are real-time, they can't block. The
-// consummer thread runs every now and then and empties the queue to a log
-// file, on disk.
-//
-// Having fixed size messages and jemalloc is probably not the fastest, but
-// allows having a simpler design, we count on the fact that jemalloc will get
-// the memory from a thread-local source most of the time.
-template <size_t MESSAGE_LENGTH>
-class MPSCQueue {
+// Allows writing 0-terminated C-strings in a buffer, and returns the start
+// index of the string that's been appended. Automatically truncates the strings
+// as needed if the storage is too small, returning true when that's the case.
+class MOZ_STACK_CLASS StringWriter {
  public:
-  struct Message {
-    Message() { mNext.store(nullptr, std::memory_order_relaxed); }
-    Message(const Message& aMessage) = delete;
-    void operator=(const Message& aMessage) = delete;
+  StringWriter(char* aMemory, size_t aLength)
+      : mMemory(aMemory), mWriteIndex(0), mLength(aLength) {}
 
-    char data[MESSAGE_LENGTH];
-    std::atomic<Message*> mNext;
-  };
-  // Creates a new MPSCQueue. Initially, the queue has a single sentinel node,
-  // pointed to by both mHead and mTail.
-  MPSCQueue()
-      // At construction, the initial message points to nullptr (it has no
-      // successor). It is a sentinel node, that does not contain meaningful
-      // data.
-      : mHead(new Message()), mTail(mHead.load(std::memory_order_relaxed)) {}
-
-  ~MPSCQueue() {
-    Message dummy;
-    while (this->Pop(dummy.data)) {
-    }
-    Message* front = mHead.load(std::memory_order_relaxed);
-    delete front;
-  }
-
-  void Push(MPSCQueue<MESSAGE_LENGTH>::Message* aMessage) {
-    // The next two non-commented line are called A and B in this paragraph.
-    // Producer threads i, i-1, etc. are numbered in the order they reached
-    // A in time, thread i being the thread that has reached A first.
-    // Atomically, on line A the new `mHead` is set to be the node that was
-    // just allocated, with strong memory order. From now one, any thread
-    // that reaches A will see that the node just allocated is
-    // effectively the head of the list, and will make itself the new head
-    // of the list.
-    // In a bad case (when thread i executes A and then
-    // is not scheduled for a long time), it is possible that thread i-1 and
-    // subsequent threads create a seemingly disconnected set of nodes, but
-    // they all have the correct value for the next node to set as their
-    // mNext member on their respective stacks (in `prev`), and this is
-    // always correct. When the scheduler resumes, and line B is executed,
-    // the correct linkage is resumed.
-    // Before line B, since mNext for the node the was the last element of
-    // the queue still has an mNext of nullptr, Pop will not see the node
-    // added.
-    // For line A, it's critical to have strong ordering both ways (since
-    // it's going to possibly be read and write repeatidly by multiple
-    // threads)
-    // Line B can have weaker guarantees, it's only going to be written by a
-    // single thread, and we just need to ensure it's read properly by a
-    // single other one.
-    Message* prev = mHead.exchange(aMessage, std::memory_order_acq_rel);
-    prev->mNext.store(aMessage, std::memory_order_release);
-  }
-
-  // Allocates a new node, copy aInput to the new memory location, and pushes
-  // it to the end of the list.
-  void Push(const char aInput[MESSAGE_LENGTH]) {
-    // Create a new message, and copy the messages passed on argument to the
-    // new memory location. We are not touching the queue right now. The
-    // successor for this new node is set to be nullptr.
-    Message* msg = new Message();
-    strncpy(msg->data, aInput, MESSAGE_LENGTH);
-
-    Push(msg);
-  }
-
-  // Copy the content of the first message of the queue to aOutput, and
-  // frees the message. Returns true if there was a message, in which case
-  // `aOutput` contains a valid value. If the queue was empty, returns false,
-  // in which case `aOutput` is left untouched.
-  bool Pop(char aOutput[MESSAGE_LENGTH]) {
-    // Similarly, in this paragraph, the two following lines are called A
-    // and B, and threads are called thread i, i-1, etc. in order of
-    // execution of line A.
-    // On line A, the first element of the queue is acquired. It is simply a
-    // sentinel node.
-    // On line B, we acquire the node that has the data we want. If B is
-    // null, then only the sentinel node was present in the queue, we can
-    // safely return false.
-    // mTail can be loaded with relaxed ordering, since it's not written nor
-    // read by any other thread (this queue is single consumer).
-    // mNext can be written to by one of the producer, so it's necessary to
-    // ensure those writes are seen, hence the stricter ordering.
-    Message* tail = mTail.load(std::memory_order_relaxed);
-    Message* next = tail->mNext.load(std::memory_order_acquire);
-
-    if (next == nullptr) {
+  bool AppendCString(const char* aString, size_t* aIndexStart) {
+    *aIndexStart = mWriteIndex;
+    if (!aString) {
       return false;
     }
+    size_t toCopy = strlen(aString);
+    bool truncated = false;
 
-    strncpy(aOutput, next->data, MESSAGE_LENGTH);
+    if (toCopy > Available()) {
+      truncated = true;
+      toCopy = Available() - 1;
+    }
 
-    // Simply shift the queue one node further, so that the sentinel node is
-    // now pointing to the correct most ancient node. It contains stale data,
-    // but this data will never be read again.
-    // It's only necessary to ensure the previous load on this thread is not
-    // reordered past this line, so release ordering is sufficient here.
-    mTail.store(next, std::memory_order_release);
+    memcpy(&(mMemory[mWriteIndex]), aString, toCopy);
+    mWriteIndex += toCopy;
+    mMemory[mWriteIndex] = 0;
+    mWriteIndex++;
 
-    // This thread is now the only thing that points to `tail`, it can be
-    // safely deleted.
-    delete tail;
-
-    return true;
+    return truncated;
   }
 
  private:
-  // An atomic pointer to the most recent message in the queue.
-  std::atomic<Message*> mHead;
-  // An atomic pointer to a sentinel node, that points to the oldest message
-  // in the queue.
-  std::atomic<Message*> mTail;
+  size_t Available() {
+    MOZ_ASSERT(mLength > mWriteIndex);
+    return mLength - mWriteIndex;
+  }
 
-  MPSCQueue(const MPSCQueue&) = delete;
-  void operator=(const MPSCQueue&) = delete;
-
- public:
-  // The goal here is to make it easy on the allocator. We pack a pointer in the
-  // message struct, and we still want to do power of two allocations to
-  // minimize allocator slop. The allocation size are going to be constant, so
-  // the allocation is probably going to hit the thread local cache in jemalloc,
-  // making it cheap and, more importantly, lock-free enough.
-  static const size_t MESSAGE_PADDING = sizeof(Message::mNext);
-
- private:
-  static_assert(IsPowerOfTwo(MESSAGE_LENGTH + MESSAGE_PADDING),
-                "MPSCQueue internal allocations must have a size that is a"
-                "power of two ");
+  char* mMemory;
+  size_t mWriteIndex;
+  size_t mLength;
 };
-}  // end namespace detail
 
-// This class implements a lock-free asynchronous logger, that outputs to
-// MOZ_LOG.
+const size_t PAYLOAD_TOTAL_SIZE = 2 << 9;
+
+// This class implements a lock-free asynchronous logger, that
+// adds profiler markers.
 // Any thread can use this logger without external synchronization and without
 // being blocked. This log is suitable for use in real-time audio threads.
-// Log formatting is best done externally, this class implements the output
-// mechanism only.
 // This class uses a thread internally, and must be started and stopped
 // manually.
-// If logging is disabled, all the calls are no-op.
+// If profiling is disabled, all the calls are no-op and cheap.
 class AsyncLogger {
  public:
-  static const uint32_t MAX_MESSAGE_LENGTH =
-      512 - detail::MPSCQueue<sizeof(void*)>::MESSAGE_PADDING;
+  enum class TracingPhase : uint8_t { BEGIN, END, COMPLETE };
 
-  // aLogModuleName is the name of the MOZ_LOG module.
-  explicit AsyncLogger(const char* aLogModuleName)
-      : mThread(nullptr), mLogModule(aLogModuleName), mRunning(false) {}
+  const char TRACING_PHASE_STRINGS[3] = {'B', 'E', 'X'};
+
+  struct TextPayload {
+    char mPayload[PAYLOAD_TOTAL_SIZE - MPSC_MSG_RESERVED];
+  };
+
+  // The order of the fields is important here to minimize padding.
+  struct TracePayload {
+#define MEMBERS_EXCEPT_NAME                                                  \
+  /* If this marker is of phase B or E (begin or end), this is the time at   \
+   * which it was captured. */                                               \
+  TimeStamp mTimestamp;                                                      \
+  /* The thread on which this tracepoint was gathered. */                    \
+  ProfilerThreadId mTID;                                                     \
+  /* If this marker is of phase X (COMPLETE), this holds the duration of the \
+   * event in microseconds. Else, the value is not used. */                  \
+  uint32_t mDurationUs;                                                      \
+  /* A trace payload can be either:                                          \
+   * - Begin - this marks the beginning of a temporal region                 \
+   * - End - this marks the end of a temporal region                         \
+   * - Complete - this is a timestamp and a length, forming complete a       \
+   * temporal region */                                                      \
+  TracingPhase mPhase;                                                       \
+  /* Offset at which the comment part of the string starts, in mName */      \
+  uint8_t mCommentStart;
+
+    MEMBERS_EXCEPT_NAME;
+
+   private:
+    // Mock structure, to know where the first character of the name will be.
+    struct MembersWithChar {
+      MEMBERS_EXCEPT_NAME;
+      char c;
+    };
+    static constexpr size_t scRemainingSpaceForName =
+        PAYLOAD_TOTAL_SIZE - offsetof(MembersWithChar, c) -
+        ((MPSC_MSG_RESERVED + alignof(MembersWithChar) - 1) &
+         ~(alignof(MembersWithChar) - 1));
+#undef MEMBERS_EXCEPT_NAME
+
+   public:
+    // An arbitrary string, usually containing a function signature or a
+    // recognizable tag of some sort, to be displayed when analyzing the
+    // profile.
+    char mName[scRemainingSpaceForName];
+  };
+
+  // The goal here is to make it easy on the allocator. We pack a pointer in the
+  // message struct, and we still want to do power of two allocations to
+  // minimize allocator slop.
+  static_assert(sizeof(MPSCQueue<TracePayload>::Message) == PAYLOAD_TOTAL_SIZE,
+                "MPSCQueue internal allocations has an unexpected size.");
+
+  explicit AsyncLogger() : mThread(nullptr), mRunning(false) {}
 
   void Start() {
     MOZ_ASSERT(!mRunning, "Double calls to AsyncLogger::Start");
-    if (Enabled()) {
-      mRunning = true;
-      Run();
-    }
+    mRunning = true;
+    Run();
   }
 
   void Stop() {
-    if (Enabled()) {
-      if (mRunning) {
-        mRunning = false;
-        mThread->join();
-      }
+    if (mRunning) {
+      mRunning = false;
+    }
+  }
+
+  // Log something that has a beginning and an end
+  void Log(const char* aName, const char* aCategory, const char* aComment,
+           TracingPhase aPhase) {
+    if (!Enabled()) {
+      return;
+    }
+
+    auto* msg = new MPSCQueue<TracePayload>::Message();
+
+    msg->data.mTID = profiler_current_thread_id();
+    msg->data.mPhase = aPhase;
+    msg->data.mTimestamp = TimeStamp::Now();
+    msg->data.mDurationUs = 0;  // unused, duration is end - begin
+
+    StringWriter writer(msg->data.mName, ArrayLength(msg->data.mName));
+
+    size_t commentIndex;
+    DebugOnly<bool> truncated = writer.AppendCString(aName, &commentIndex);
+    MOZ_ASSERT(!truncated, "Tracing payload truncated: name");
+
+    if (aComment) {
+      truncated = writer.AppendCString(aComment, &commentIndex);
+      MOZ_ASSERT(!truncated, "Tracing payload truncated: comment");
+      msg->data.mCommentStart = commentIndex;
     } else {
-      MOZ_ASSERT(!mRunning && !mThread);
+      msg->data.mCommentStart = 0;
     }
+    mMessageQueueProfiler.Push(msg);
   }
 
-  void Log(const char* format, ...) MOZ_FORMAT_PRINTF(2, 3) {
+  // Log something that has a beginning and a duration
+  void LogDuration(const char* aName, const char* aCategory, uint64_t aDuration,
+                   uint64_t aFrames, uint64_t aSampleRate) {
     if (Enabled()) {
-      auto* msg = new detail::MPSCQueue<MAX_MESSAGE_LENGTH>::Message();
-      va_list args;
-      va_start(args, format);
-      VsprintfLiteral(msg->data, format, args);
-      va_end(args);
-      mMessageQueue.Push(msg);
+      auto* msg = new MPSCQueue<TracePayload>::Message();
+      msg->data.mTID = profiler_current_thread_id();
+      msg->data.mPhase = TracingPhase::COMPLETE;
+      msg->data.mTimestamp = TimeStamp::Now();
+      msg->data.mDurationUs =
+          (static_cast<double>(aFrames) / aSampleRate) * 1e6;
+      size_t len = std::min(strlen(aName), ArrayLength(msg->data.mName));
+      memcpy(msg->data.mName, aName, len);
+      msg->data.mName[len] = 0;
+      mMessageQueueProfiler.Push(msg);
     }
   }
 
-  bool Enabled() {
-    return MOZ_LOG_TEST(mLogModule, mozilla::LogLevel::Verbose);
-  }
+  bool Enabled() { return mRunning; }
 
  private:
   void Run() {
-    MOZ_ASSERT(Enabled());
     mThread.reset(new std::thread([this]() {
+      AUTO_PROFILER_REGISTER_THREAD("AsyncLogger");
       while (mRunning) {
-        char message[MAX_MESSAGE_LENGTH];
-        while (mMessageQueue.Pop(message) && mRunning) {
-          MOZ_LOG(mLogModule, mozilla::LogLevel::Verbose, ("%s", message));
+        {
+          struct TracingMarkerWithComment {
+            static constexpr Span<const char> MarkerTypeName() {
+              return MakeStringSpan("Real-Time");
+            }
+            static void StreamJSONMarkerData(
+                baseprofiler::SpliceableJSONWriter& aWriter,
+                const ProfilerString8View& aText) {
+              aWriter.StringProperty("name", aText);
+            }
+            static MarkerSchema MarkerTypeDisplay() {
+              using MS = MarkerSchema;
+              MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
+              schema.SetChartLabel("{marker.data.name}");
+              schema.SetTableLabel("{marker.name} - {marker.data.name}");
+              schema.AddKeyLabelFormatSearchable("name", "Comment",
+                                                 MS::Format::String,
+                                                 MS::Searchable::Searchable);
+              return schema;
+            }
+          };
+
+          struct TracingMarker {
+            static constexpr Span<const char> MarkerTypeName() {
+              return MakeStringSpan("Real-time");
+            }
+            static void StreamJSONMarkerData(
+                baseprofiler::SpliceableJSONWriter& aWriter) {}
+            static MarkerSchema MarkerTypeDisplay() {
+              using MS = MarkerSchema;
+              MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
+              // Nothing outside the defaults.
+              return schema;
+            }
+          };
+
+          TracePayload message;
+          while (mMessageQueueProfiler.Pop(&message) && mRunning) {
+            if (message.mPhase != TracingPhase::COMPLETE) {
+              if (!message.mCommentStart) {
+                profiler_add_marker(
+                    ProfilerString8View::WrapNullTerminatedString(
+                        message.mName),
+                    geckoprofiler::category::MEDIA_RT,
+                    {MarkerThreadId(message.mTID),
+                     (message.mPhase == TracingPhase::BEGIN)
+                         ? MarkerTiming::IntervalStart(message.mTimestamp)
+                         : MarkerTiming::IntervalEnd(message.mTimestamp)},
+                    TracingMarker{});
+              } else {
+                profiler_add_marker(
+                    ProfilerString8View::WrapNullTerminatedString(
+                        message.mName),
+                    geckoprofiler::category::MEDIA_RT,
+                    {MarkerThreadId(message.mTID),
+                     (message.mPhase == TracingPhase::BEGIN)
+                         ? MarkerTiming::IntervalStart(message.mTimestamp)
+                         : MarkerTiming::IntervalEnd(message.mTimestamp)},
+                    TracingMarkerWithComment{},
+                    ProfilerString8View::WrapNullTerminatedString(
+                        &(message.mName[message.mCommentStart])));
+              }
+            } else {
+              profiler_add_marker(
+                  ProfilerString8View::WrapNullTerminatedString(message.mName),
+                  geckoprofiler::category::MEDIA_RT,
+                  {MarkerThreadId(message.mTID),
+                   MarkerTiming::Interval(
+                       message.mTimestamp,
+                       message.mTimestamp + TimeDuration::FromMicroseconds(
+                                                message.mDurationUs))},
+                  TracingMarker{});
+            }
+          }
         }
         Sleep();
       }
     }));
+    // cleanup is done via mRunning
+    mThread->detach();
+  }
+
+  uint64_t NowInUs() {
+    static TimeStamp base = TimeStamp::Now();
+    return (TimeStamp::Now() - base).ToMicroseconds();
   }
 
   void Sleep() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 
   std::unique_ptr<std::thread> mThread;
-  mozilla::LazyLogModule mLogModule;
-  detail::MPSCQueue<MAX_MESSAGE_LENGTH> mMessageQueue;
+  MPSCQueue<TracePayload> mMessageQueueProfiler;
   std::atomic<bool> mRunning;
 };
 
 }  // end namespace mozilla
+
+#if defined(_WIN32)
+#  undef getpid
+#endif
 
 #endif  // mozilla_dom_AsyncLogger_h

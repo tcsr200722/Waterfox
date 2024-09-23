@@ -9,28 +9,34 @@ const {
   createRef,
   Fragment,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  getFormatStr,
+} = require("resource://devtools/client/inspector/layout/utils/l10n.js");
 
 loader.lazyRequireGetter(
   this,
   "getNodeRep",
-  "devtools/client/inspector/shared/node-reps"
+  "resource://devtools/client/inspector/shared/node-reps.js"
 );
 
-const Types = require("devtools/client/inspector/flexbox/types");
+const Types = require("resource://devtools/client/inspector/flexbox/types.js");
+
+const {
+  highlightNode,
+  unhighlightNode,
+} = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
 
 class FlexContainer extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       color: PropTypes.string.isRequired,
       flexContainer: PropTypes.shape(Types.flexContainer).isRequired,
       getSwatchColorPickerTooltip: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
       onSetFlexboxOverlayColor: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
@@ -69,12 +75,7 @@ class FlexContainer extends PureComponent {
   }
 
   render() {
-    const {
-      color,
-      flexContainer,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
-    } = this.props;
+    const { color, flexContainer, dispatch } = this.props;
     const { nodeFront, properties } = flexContainer;
 
     return createElement(
@@ -85,17 +86,17 @@ class FlexContainer extends PureComponent {
           className: "flex-header-container-label",
         },
         getNodeRep(nodeFront, {
-          onDOMNodeMouseOut: () => onHideBoxModelHighlighter(),
-          onDOMNodeMouseOver: () => onShowBoxModelHighlighterForNode(nodeFront),
+          onDOMNodeMouseOut: () => dispatch(unhighlightNode()),
+          onDOMNodeMouseOver: () => dispatch(highlightNode(nodeFront)),
         }),
-        dom.div({
+        dom.button({
           className: "layout-color-swatch",
           "data-color": color,
           ref: this.swatchEl,
           style: {
             backgroundColor: color,
           },
-          title: color,
+          title: getFormatStr("layout.colorSwatch.tooltip", color),
         })
       ),
       dom.div(
@@ -103,6 +104,7 @@ class FlexContainer extends PureComponent {
         dom.div(
           {
             className: "inspector-badge",
+            role: "figure",
             title: `flex-direction: ${properties["flex-direction"]}`,
           },
           properties["flex-direction"]
@@ -110,6 +112,7 @@ class FlexContainer extends PureComponent {
         dom.div(
           {
             className: "inspector-badge",
+            role: "figure",
             title: `flex-wrap: ${properties["flex-wrap"]}`,
           },
           properties["flex-wrap"]
@@ -119,10 +122,4 @@ class FlexContainer extends PureComponent {
   }
 }
 
-const mapStateToProps = state => {
-  return {
-    color: state.flexbox.color,
-  };
-};
-
-module.exports = connect(mapStateToProps)(FlexContainer);
+module.exports = FlexContainer;

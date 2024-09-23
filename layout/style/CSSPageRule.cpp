@@ -10,14 +10,15 @@
 #include "mozilla/DeclarationBlock.h"
 #include "mozilla/ServoBindings.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // -- CSSPageRuleDeclaration ---------------------------------------
 
 CSSPageRuleDeclaration::CSSPageRuleDeclaration(
-    already_AddRefed<RawServoDeclarationBlock> aDecls)
-    : mDecls(new DeclarationBlock(std::move(aDecls))) {}
+    already_AddRefed<StyleLockedDeclarationBlock> aDecls)
+    : mDecls(new DeclarationBlock(std::move(aDecls))) {
+  mDecls->SetOwningRule(Rule());
+}
 
 CSSPageRuleDeclaration::~CSSPageRuleDeclaration() {
   mDecls->SetOwningRule(nullptr);
@@ -41,23 +42,35 @@ NS_IMPL_RELEASE_USING_AGGREGATOR(CSSPageRuleDeclaration, Rule())
 
 css::Rule* CSSPageRuleDeclaration::GetParentRule() { return Rule(); }
 
-nsINode* CSSPageRuleDeclaration::GetParentObject() {
+nsINode* CSSPageRuleDeclaration::GetAssociatedNode() const {
+  return Rule()->GetAssociatedDocumentOrShadowRoot();
+}
+
+nsISupports* CSSPageRuleDeclaration::GetParentObject() const {
   return Rule()->GetParentObject();
 }
 
 DeclarationBlock* CSSPageRuleDeclaration::GetOrCreateCSSDeclaration(
     Operation aOperation, DeclarationBlock** aCreated) {
+  if (aOperation != Operation::Read) {
+    if (StyleSheet* sheet = Rule()->GetStyleSheet()) {
+      sheet->WillDirty();
+    }
+  }
   return mDecls;
+}
+
+void CSSPageRuleDeclaration::SetRawAfterClone(
+    RefPtr<StyleLockedDeclarationBlock> aDeclarationBlock) {
+  mDecls->SetOwningRule(nullptr);
+  mDecls = new DeclarationBlock(aDeclarationBlock.forget());
+  mDecls->SetOwningRule(Rule());
 }
 
 nsresult CSSPageRuleDeclaration::SetCSSDeclaration(
     DeclarationBlock* aDecl, MutationClosureData* aClosureData) {
   MOZ_ASSERT(aDecl, "must be non-null");
   CSSPageRule* rule = Rule();
-
-  if (rule->IsReadOnly()) {
-    return NS_OK;
-  }
 
   if (aDecl != mDecls) {
     mDecls->SetOwningRule(nullptr);
@@ -73,28 +86,28 @@ nsresult CSSPageRuleDeclaration::SetCSSDeclaration(
 nsDOMCSSDeclaration::ParsingEnvironment
 CSSPageRuleDeclaration::GetParsingEnvironment(
     nsIPrincipal* aSubjectPrincipal) const {
-  return GetParsingEnvironmentForRule(Rule());
+  return GetParsingEnvironmentForRule(Rule(), StyleCssRuleType::Page);
 }
 
 // -- CSSPageRule --------------------------------------------------
 
-CSSPageRule::CSSPageRule(RefPtr<RawServoPageRule> aRawRule, StyleSheet* aSheet,
-                         css::Rule* aParentRule, uint32_t aLine,
-                         uint32_t aColumn)
-    : css::Rule(aSheet, aParentRule, aLine, aColumn),
+CSSPageRule::CSSPageRule(RefPtr<StyleLockedPageRule> aRawRule,
+                         StyleSheet* aSheet, css::Rule* aParentRule,
+                         uint32_t aLine, uint32_t aColumn)
+    : css::GroupRule(aSheet, aParentRule, aLine, aColumn),
       mRawRule(std::move(aRawRule)),
       mDecls(Servo_PageRule_GetStyle(mRawRule).Consume()) {}
 
-NS_IMPL_ADDREF_INHERITED(CSSPageRule, css::Rule)
-NS_IMPL_RELEASE_INHERITED(CSSPageRule, css::Rule)
+NS_IMPL_ADDREF_INHERITED(CSSPageRule, css::GroupRule)
+NS_IMPL_RELEASE_INHERITED(CSSPageRule, css::GroupRule)
 
 // QueryInterface implementation for PageRule
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CSSPageRule)
-NS_INTERFACE_MAP_END_INHERITING(css::Rule)
+NS_INTERFACE_MAP_END_INHERITING(css::GroupRule)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(CSSPageRule)
 
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(CSSPageRule, css::Rule)
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(CSSPageRule, css::GroupRule)
   // Keep this in sync with IsCCLeaf.
 
   // Trace the wrapper for our declaration.  This just expands out
@@ -111,23 +124,30 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CSSPageRule)
   // Note that this has to happen before unlinking css::Rule.
   tmp->UnlinkDeclarationWrapper(tmp->mDecls);
   tmp->mDecls.mDecls->SetOwningRule(nullptr);
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(css::Rule)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(css::GroupRule)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(CSSPageRule, css::Rule)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(CSSPageRule, css::GroupRule)
   // Keep this in sync with IsCCLeaf.
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 bool CSSPageRule::IsCCLeaf() const {
-  if (!Rule::IsCCLeaf()) {
+  if (!GroupRule::IsCCLeaf()) {
     return false;
   }
 
   return !mDecls.PreservingWrapper();
 }
 
+void CSSPageRule::SetRawAfterClone(RefPtr<StyleLockedPageRule> aRaw) {
+  mRawRule = std::move(aRaw);
+  mDecls.SetRawAfterClone(Servo_PageRule_GetStyle(mRawRule.get()).Consume());
+}
+
+StyleCssRuleType CSSPageRule::Type() const { return StyleCssRuleType::Page; }
+
 size_t CSSPageRule::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   // TODO Implement this!
-  return aMallocSizeOf(this);
+  return GroupRule::SizeOfExcludingThis(aMallocSizeOf) + aMallocSizeOf(this);
 }
 
 #ifdef DEBUG
@@ -143,11 +163,34 @@ void CSSPageRule::List(FILE* out, int32_t aIndent) const {
 
 /* CSSRule implementation */
 
-void CSSPageRule::GetCssText(nsAString& aCssText) const {
+void CSSPageRule::GetCssText(nsACString& aCssText) const {
   Servo_PageRule_GetCssText(mRawRule, &aCssText);
 }
 
 /* CSSPageRule implementation */
+
+void CSSPageRule::GetSelectorText(nsACString& aSelectorText) const {
+  Servo_PageRule_GetSelectorText(mRawRule.get(), &aSelectorText);
+}
+
+void CSSPageRule::SetSelectorText(const nsACString& aSelectorText) {
+  if (IsReadOnly()) {
+    return;
+  }
+
+  if (StyleSheet* const sheet = GetStyleSheet()) {
+    sheet->WillDirty();
+    const StyleStylesheetContents* const contents = sheet->RawContents();
+    if (Servo_PageRule_SetSelectorText(contents, mRawRule.get(),
+                                       &aSelectorText)) {
+      sheet->RuleChanged(this, StyleRuleChangeKind::Generic);
+    }
+  }
+}
+
+already_AddRefed<StyleLockedCssRules> CSSPageRule::GetOrCreateRawRules() {
+  return Servo_PageRule_GetRules(mRawRule).Consume();
+}
 
 nsICSSDeclaration* CSSPageRule::Style() { return &mDecls; }
 
@@ -156,5 +199,4 @@ JSObject* CSSPageRule::WrapObject(JSContext* aCx,
   return CSSPageRule_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

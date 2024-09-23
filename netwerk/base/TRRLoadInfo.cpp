@@ -6,6 +6,9 @@
 
 #include "TRRLoadInfo.h"
 #include "mozilla/dom/ClientSource.h"
+#include "mozilla/dom/FeaturePolicy.h"
+#include "mozilla/dom/DOMTypes.h"
+#include "nsContentUtils.h"
 #include "nsIRedirectHistoryEntry.h"
 
 using namespace mozilla::dom;
@@ -57,11 +60,23 @@ nsIPrincipal* TRRLoadInfo::FindPrincipalToInherit(nsIChannel* aChannel) {
   return nullptr;
 }
 
-nsIPrincipal* TRRLoadInfo::GetSandboxedLoadingPrincipal() { return nullptr; }
+const nsID& TRRLoadInfo::GetSandboxedNullPrincipalID() {
+  return mSandboxedNullPrincipalID;
+}
+
+void TRRLoadInfo::ResetSandboxedNullPrincipalID() {}
 
 nsIPrincipal* TRRLoadInfo::GetTopLevelPrincipal() { return nullptr; }
 
-nsIPrincipal* TRRLoadInfo::GetTopLevelStorageAreaPrincipal() { return nullptr; }
+NS_IMETHODIMP
+TRRLoadInfo::GetTriggeringRemoteType(nsACString& aTriggeringRemoteType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetTriggeringRemoteType(const nsACString& aTriggeringRemoteType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 NS_IMETHODIMP
 TRRLoadInfo::GetLoadingDocument(Document** aResult) {
@@ -92,6 +107,32 @@ NS_IMETHODIMP
 TRRLoadInfo::GetSandboxFlags(uint32_t* aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
+NS_IMETHODIMP
+TRRLoadInfo::GetTriggeringSandboxFlags(uint32_t* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+NS_IMETHODIMP
+TRRLoadInfo::SetTriggeringSandboxFlags(uint32_t aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetTriggeringWindowId(uint64_t* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+NS_IMETHODIMP
+TRRLoadInfo::SetTriggeringWindowId(uint64_t aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetTriggeringStorageAccess(bool* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+NS_IMETHODIMP
+TRRLoadInfo::SetTriggeringStorageAccess(bool aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 NS_IMETHODIMP
 TRRLoadInfo::GetSecurityMode(uint32_t* aFlags) {
@@ -100,6 +141,11 @@ TRRLoadInfo::GetSecurityMode(uint32_t* aFlags) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetIsInThirdPartyContext(bool* aIsInThirdPartyContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsInThirdPartyContext(bool aIsInThirdPartyContext) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -131,14 +177,30 @@ TRRLoadInfo::SetCookieJarSettings(nsICookieJarSettings* aCookieJarSettings) {
 }
 
 NS_IMETHODIMP
-TRRLoadInfo::GetHasStoragePermission(bool* aHasStoragePermission) {
+TRRLoadInfo::GetStoragePermission(
+    nsILoadInfo::StoragePermissionState* aHasStoragePermission) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
-TRRLoadInfo::SetHasStoragePermission(bool aHasStoragePermission) {
+TRRLoadInfo::SetStoragePermission(
+    nsILoadInfo::StoragePermissionState aHasStoragePermission) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
+
+const Maybe<RFPTarget>& TRRLoadInfo::GetOverriddenFingerprintingSettings() {
+  return mOverriddenFingerprintingSettings;
+}
+
+void TRRLoadInfo::SetOverriddenFingerprintingSettings(RFPTarget aTargets) {}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsMetaRefresh(bool* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsMetaRefresh(bool aResult) { return NS_ERROR_NOT_IMPLEMENTED; }
 
 NS_IMETHODIMP
 TRRLoadInfo::GetForceInheritPrincipal(bool* aInheritPrincipal) {
@@ -200,8 +262,11 @@ TRRLoadInfo::SetSendCSPViolationEvents(bool aValue) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetExternalContentPolicyType(nsContentPolicyType* aResult) {
-  *aResult = nsContentUtils::InternalContentPolicyTypeToExternal(
-      mInternalContentPolicyType);
+  // We have to use nsContentPolicyType because ExtContentPolicyType is not
+  // visible from xpidl.
+  *aResult = static_cast<nsContentPolicyType>(
+      nsContentUtils::InternalContentPolicyTypeToExternal(
+          mInternalContentPolicyType));
   return NS_OK;
 }
 
@@ -221,6 +286,17 @@ TRRLoadInfo::GetUpgradeInsecureRequests(bool* aResult) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetBrowserUpgradeInsecureRequests(bool* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetBrowserDidUpgradeInsecureRequests(bool* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetBrowserDidUpgradeInsecureRequests(
+    bool aBrowserDidUpgradeInsecureRequests) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -248,16 +324,6 @@ TRRLoadInfo::SetAllowInsecureRedirectToDataURI(
 NS_IMETHODIMP
 TRRLoadInfo::GetAllowInsecureRedirectToDataURI(
     bool* aAllowInsecureRedirectToDataURI) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::SetBypassCORSChecks(bool aBypassCORSChecks) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetBypassCORSChecks(bool* aBypassCORSChecks) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -292,27 +358,17 @@ TRRLoadInfo::GetInnerWindowID(uint64_t* aResult) {
 }
 
 NS_IMETHODIMP
-TRRLoadInfo::GetOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetParentOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetTopOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetFrameOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
 TRRLoadInfo::GetBrowsingContextID(uint64_t* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetWorkerAssociatedBrowsingContextID(uint64_t* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetWorkerAssociatedBrowsingContextID(uint64_t aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -328,6 +384,12 @@ TRRLoadInfo::GetTargetBrowsingContextID(uint64_t* aResult) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetBrowsingContext(dom::BrowsingContext** aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetWorkerAssociatedBrowsingContext(
+    dom::BrowsingContext** aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -381,7 +443,7 @@ TRRLoadInfo::GetInitialSecurityCheckDone(bool* aResult) {
 }
 
 NS_IMETHODIMP
-TRRLoadInfo::AppendRedirectHistoryEntry(nsIRedirectHistoryEntry* aEntry,
+TRRLoadInfo::AppendRedirectHistoryEntry(nsIChannel* aChannelToDeriveFrom,
                                         bool aIsInternalRedirect) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -412,8 +474,8 @@ const nsTArray<nsCOMPtr<nsIPrincipal>>& TRRLoadInfo::AncestorPrincipals() {
   return mEmptyPrincipals;
 }
 
-const nsTArray<uint64_t>& TRRLoadInfo::AncestorOuterWindowIDs() {
-  return mEmptyWindowIDs;
+const nsTArray<uint64_t>& TRRLoadInfo::AncestorBrowsingContextIDs() {
+  return mEmptyBrowsingContextIDs;
 }
 
 void TRRLoadInfo::SetCorsPreflightInfo(const nsTArray<nsCString>& aHeaders,
@@ -472,16 +534,6 @@ TRRLoadInfo::SetDocumentHasUserInteracted(bool aDocumentHasUserInteracted) {
 }
 
 NS_IMETHODIMP
-TRRLoadInfo::GetDocumentHasLoaded(bool* aDocumentHasLoaded) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::SetDocumentHasLoaded(bool aDocumentHasLoaded) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
 TRRLoadInfo::GetAllowListFutureDocumentsCreatedFromThisRedirectChain(
     bool* aValue) {
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -494,12 +546,32 @@ TRRLoadInfo::SetAllowListFutureDocumentsCreatedFromThisRedirectChain(
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetNeedForCheckingAntiTrackingHeuristic(bool* aValue) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetNeedForCheckingAntiTrackingHeuristic(bool aValue) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetCspNonce(nsAString& aCspNonce) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
 TRRLoadInfo::SetCspNonce(const nsAString& aCspNonce) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIntegrityMetadata(nsAString& aIntegrityMetadata) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIntegrityMetadata(const nsAString& aIntegrityMetadata) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -525,6 +597,42 @@ TRRLoadInfo::GetIsFromProcessingFrameAttributes(
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::SetIsMediaRequest(bool aIsMediaRequest) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsMediaRequest(bool* aIsMediaRequest) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsMediaInitialRequest(bool aIsMediaInitialRequest) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsMediaInitialRequest(bool* aIsMediaInitialRequest) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsFromObjectOrEmbed(bool aIsFromObjectOrEmbed) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsFromObjectOrEmbed(bool* aIsFromObjectOrEmbed) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetShouldSkipCheckForBrokenURLOrZeroSized(
+    bool* aShouldSkipCheckForBrokenURLOrZeroSized) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetResultPrincipalURI(nsIURI** aURI) {
   nsCOMPtr<nsIURI> uri = mResultPrincipalURI;
   uri.forget(aURI);
@@ -535,6 +643,16 @@ NS_IMETHODIMP
 TRRLoadInfo::SetResultPrincipalURI(nsIURI* aURI) {
   mResultPrincipalURI = aURI;
   return NS_OK;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetChannelCreationOriginalURI(nsIURI** aURI) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetChannelCreationOriginalURI(nsIURI* aURI) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -608,6 +726,13 @@ already_AddRefed<nsIContentSecurityPolicy> TRRLoadInfo::GetCspToInherit() {
   return nullptr;
 }
 
+Maybe<FeaturePolicyInfo> TRRLoadInfo::GetContainerFeaturePolicyInfo() {
+  return Nothing();
+}
+
+void TRRLoadInfo::SetContainerFeaturePolicyInfo(
+    const FeaturePolicyInfo& aContainerFeaturePolicyInfo) {}
+
 NS_IMETHODIMP
 TRRLoadInfo::GetHttpsOnlyStatus(uint32_t* aHttpsOnlyStatus) {
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -615,6 +740,16 @@ TRRLoadInfo::GetHttpsOnlyStatus(uint32_t* aHttpsOnlyStatus) {
 
 NS_IMETHODIMP
 TRRLoadInfo::SetHttpsOnlyStatus(uint32_t aHttpsOnlyStatus) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetHstsStatus(bool* aHstsStatus) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetHstsStatus(bool aHstsStatus) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -649,6 +784,26 @@ TRRLoadInfo::SetAllowDeprecatedSystemRequests(
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetIsUserTriggeredSave(bool* aIsUserTriggeredSave) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsUserTriggeredSave(bool aIsUserTriggeredSave) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsInDevToolsContext(bool* aIsInDevToolsContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsInDevToolsContext(bool aIsInDevToolsContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetParserCreatedScript(bool* aParserCreatedScript) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -667,6 +822,61 @@ TRRLoadInfo::GetLoadingEmbedderPolicy(
 NS_IMETHODIMP
 TRRLoadInfo::SetLoadingEmbedderPolicy(
     nsILoadInfo::CrossOriginEmbedderPolicy aPolicy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+    bool* aIsOriginTrialCoepCredentiallessEnabledForTopLevel) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsOriginTrialCoepCredentiallessEnabledForTopLevel(
+    bool aIsOriginTrialCoepCredentiallessEnabledForTopLevel) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetUnstrippedURI(nsIURI** aURI) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetUnstrippedURI(nsIURI* aURI) { return NS_ERROR_NOT_IMPLEMENTED; }
+
+nsIInterceptionInfo* TRRLoadInfo::InterceptionInfo() { return nullptr; }
+void TRRLoadInfo::SetInterceptionInfo(nsIInterceptionInfo* aPrincipla) {}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetHasInjectedCookieForCookieBannerHandling(
+    bool* aHasInjectedCookieForCookieBannerHandling) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetHasInjectedCookieForCookieBannerHandling(
+    bool aHasInjectedCookieForCookieBannerHandling) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetWasSchemelessInput(bool* aWasSchemelessInput) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetWasSchemelessInput(bool aWasSchemelessInput) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsNewWindowTarget(bool* aIsNewWindowTarget) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsNewWindowTarget(bool aIsNewWindowTarget) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

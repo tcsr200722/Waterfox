@@ -48,12 +48,12 @@ CompositorVsyncScheduler::Observer::Observer(CompositorVsyncScheduler* aOwner)
 
 CompositorVsyncScheduler::Observer::~Observer() { MOZ_ASSERT(!mOwner); }
 
-bool CompositorVsyncScheduler::Observer::NotifyVsync(const VsyncEvent& aVsync) {
+void CompositorVsyncScheduler::Observer::NotifyVsync(const VsyncEvent& aVsync) {
   MutexAutoLock lock(mMutex);
   if (!mOwner) {
-    return false;
+    return;
   }
-  return mOwner->NotifyVsync(aVsync);
+  mOwner->NotifyVsync(aVsync);
 }
 
 void CompositorVsyncScheduler::Observer::Destroy() {
@@ -65,13 +65,16 @@ CompositorVsyncScheduler::CompositorVsyncScheduler(
     CompositorVsyncSchedulerOwner* aVsyncSchedulerOwner,
     widget::CompositorWidget* aWidget)
     : mVsyncSchedulerOwner(aVsyncSchedulerOwner),
-      mLastCompose(TimeStamp::Now()),
-      mLastVsync(TimeStamp::Now()),
+      mLastComposeTime(SampleTime::FromNow()),
+      mLastVsyncTime(TimeStamp::Now()),
+      mLastVsyncOutputTime(TimeStamp::Now()),
       mIsObservingVsync(false),
+      mRendersDelayedByVsyncReasons(wr::RenderReasons::NONE),
       mVsyncNotificationsSkipped(0),
       mWidget(aWidget),
       mCurrentCompositeTaskMonitor("CurrentCompositeTaskMonitor"),
       mCurrentCompositeTask(nullptr),
+      mCurrentCompositeTaskReasons(wr::RenderReasons::NONE),
       mCurrentVRTaskMonitor("CurrentVRTaskMonitor"),
       mCurrentVRTask(nullptr) {
   mVsyncObserver = new Observer(this);
@@ -107,14 +110,15 @@ void CompositorVsyncScheduler::Destroy() {
   CancelCurrentVRTask();
 }
 
-void CompositorVsyncScheduler::PostCompositeTask(
-    VsyncId aId, TimeStamp aCompositeTimestamp) {
+void CompositorVsyncScheduler::PostCompositeTask(const VsyncEvent& aVsyncEvent,
+                                                 wr::RenderReasons aReasons) {
   MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
+  mCurrentCompositeTaskReasons = mCurrentCompositeTaskReasons | aReasons;
   if (mCurrentCompositeTask == nullptr && CompositorThread()) {
     RefPtr<CancelableRunnable> task =
-        NewCancelableRunnableMethod<VsyncId, TimeStamp>(
+        NewCancelableRunnableMethod<VsyncEvent, wr::RenderReasons>(
             "layers::CompositorVsyncScheduler::Composite", this,
-            &CompositorVsyncScheduler::Composite, aId, aCompositeTimestamp);
+            &CompositorVsyncScheduler::Composite, aVsyncEvent, aReasons);
     mCurrentCompositeTask = task;
     CompositorThread()->Dispatch(task.forget());
   }
@@ -131,29 +135,22 @@ void CompositorVsyncScheduler::PostVRTask(TimeStamp aTimestamp) {
   }
 }
 
-void CompositorVsyncScheduler::ScheduleComposition() {
+void CompositorVsyncScheduler::ScheduleComposition(wr::RenderReasons aReasons) {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   if (!mVsyncObserver) {
     // Destroy was already called on this object.
     return;
   }
 
+  // Make a synthetic vsync event for the calls to PostCompositeTask below.
+  TimeStamp vsyncTime = TimeStamp::Now();
+  TimeStamp outputTime = vsyncTime + mVsyncSchedulerOwner->GetVsyncInterval();
+  VsyncEvent vsyncEvent(VsyncId(), vsyncTime, outputTime);
+
   if (mAsapScheduling) {
     // Used only for performance testing purposes, and when recording/replaying
     // to ensure that graphics are up to date.
-    PostCompositeTask(VsyncId(), TimeStamp::Now());
-#ifdef MOZ_WIDGET_ANDROID
-  } else if (mIsObservingVsync && mCompositeRequestedAt &&
-             (TimeStamp::Now() - mCompositeRequestedAt) >=
-                 mVsyncSchedulerOwner->GetVsyncInterval() * 2) {
-    // uh-oh, we already requested a composite at least two vsyncs ago, and a
-    // composite hasn't happened yet. It is possible that the vsync observation
-    // is blocked on the main thread, so let's just composite ASAP and not
-    // wait for the vsync. Note that this should only ever happen on Fennec
-    // because there content runs in the same process as the compositor, and so
-    // content can actually block the main thread in this process.
-    PostCompositeTask(VsyncId(), TimeStamp::Now());
-#endif
+    PostCompositeTask(vsyncEvent, aReasons);
   } else {
     if (!mCompositeRequestedAt) {
       mCompositeRequestedAt = TimeStamp::Now();
@@ -164,31 +161,47 @@ void CompositorVsyncScheduler::ScheduleComposition() {
       // through the main thread of the UI process. It's possible that
       // we're blocking there waiting on a composite, so schedule an initial
       // one now to get things started.
-      PostCompositeTask(VsyncId(), TimeStamp::Now());
+      PostCompositeTask(vsyncEvent,
+                        aReasons | wr::RenderReasons::START_OBSERVING_VSYNC);
+    } else {
+      mRendersDelayedByVsyncReasons = aReasons;
     }
   }
 }
 
-bool CompositorVsyncScheduler::NotifyVsync(const VsyncEvent& aVsync) {
+void CompositorVsyncScheduler::NotifyVsync(const VsyncEvent& aVsync) {
   // Called from the vsync dispatch thread. When in the GPU Process, that's
   // the same as the compositor thread.
-  MOZ_ASSERT_IF(XRE_IsParentProcess(),
-                !CompositorThreadHolder::IsInCompositorThread());
+#ifdef DEBUG
+#  ifdef MOZ_WAYLAND
+  // On Wayland, we dispatch vsync from the main thread, without a GPU process.
+  // To allow this, we skip the following asserts if we're currently utilizing
+  // the Wayland backend. The IsParentProcess guard is needed to ensure that
+  // we don't accidentally attempt to initialize the gfxPlatform in the GPU
+  // process on X11.
+  if (!XRE_IsParentProcess() ||
+      !gfxPlatformGtk::GetPlatform()->IsWaylandDisplay())
+#  endif  // MOZ_WAYLAND
+  {
+    MOZ_ASSERT_IF(XRE_IsParentProcess(),
+                  !CompositorThreadHolder::IsInCompositorThread());
+    MOZ_ASSERT(!NS_IsMainThread());
+  }
+
   MOZ_ASSERT_IF(XRE_GetProcessType() == GeckoProcessType_GPU,
                 CompositorThreadHolder::IsInCompositorThread());
-  MOZ_ASSERT(!NS_IsMainThread());
+#endif  // DEBUG
 
 #if defined(MOZ_WIDGET_ANDROID)
   gfx::VRManager* vm = gfx::VRManager::Get();
   if (!vm->IsPresenting()) {
-    PostCompositeTask(aVsync.mId, aVsync.mTime);
+    PostCompositeTask(aVsync, wr::RenderReasons::VSYNC);
   }
 #else
-  PostCompositeTask(aVsync.mId, aVsync.mTime);
+  PostCompositeTask(aVsync, wr::RenderReasons::VSYNC);
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
   PostVRTask(aVsync.mTime);
-  return true;
 }
 
 void CompositorVsyncScheduler::CancelCurrentVRTask() {
@@ -201,32 +214,41 @@ void CompositorVsyncScheduler::CancelCurrentVRTask() {
   }
 }
 
-void CompositorVsyncScheduler::CancelCurrentCompositeTask() {
+wr::RenderReasons CompositorVsyncScheduler::CancelCurrentCompositeTask() {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
              NS_IsMainThread());
   MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
+  wr::RenderReasons canceledTaskRenderReasons = mCurrentCompositeTaskReasons;
+  mCurrentCompositeTaskReasons = wr::RenderReasons::NONE;
   if (mCurrentCompositeTask) {
     mCurrentCompositeTask->Cancel();
     mCurrentCompositeTask = nullptr;
   }
+
+  return canceledTaskRenderReasons;
 }
 
-void CompositorVsyncScheduler::Composite(VsyncId aId,
-                                         TimeStamp aVsyncTimestamp) {
+void CompositorVsyncScheduler::Composite(const VsyncEvent& aVsyncEvent,
+                                         wr::RenderReasons aReasons) {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   MOZ_ASSERT(mVsyncSchedulerOwner);
 
   {  // scope lock
     MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
+    aReasons =
+        aReasons | mCurrentCompositeTaskReasons | mRendersDelayedByVsyncReasons;
+    mCurrentCompositeTaskReasons = wr::RenderReasons::NONE;
+    mRendersDelayedByVsyncReasons = wr::RenderReasons::NONE;
     mCurrentCompositeTask = nullptr;
   }
 
-  mLastVsync = aVsyncTimestamp;
-  mLastVsyncId = aId;
+  mLastVsyncTime = aVsyncEvent.mTime;
+  mLastVsyncOutputTime = aVsyncEvent.mOutputTime;
+  mLastVsyncId = aVsyncEvent.mId;
 
   if (!mAsapScheduling) {
     // Some early exit conditions if we're not in ASAP mode
-    if (aVsyncTimestamp < mLastCompose) {
+    if (aVsyncEvent.mTime < mLastComposeTime.Time()) {
       // We can sometimes get vsync timestamps that are in the past
       // compared to the last compose with force composites.
       // In those cases, wait until the next vsync;
@@ -243,14 +265,15 @@ void CompositorVsyncScheduler::Composite(VsyncId aId,
 
   if (mCompositeRequestedAt || mAsapScheduling) {
     mCompositeRequestedAt = TimeStamp();
-    mLastCompose = aVsyncTimestamp;
+    mLastComposeTime = SampleTime::FromVsync(aVsyncEvent.mTime);
 
     // Tell the owner to do a composite
-    mVsyncSchedulerOwner->CompositeToTarget(aId, nullptr, nullptr);
+    mVsyncSchedulerOwner->CompositeToTarget(aVsyncEvent.mId, aReasons, nullptr,
+                                            nullptr);
 
     mVsyncNotificationsSkipped = 0;
 
-    TimeDuration compositeFrameTotal = TimeStamp::Now() - aVsyncTimestamp;
+    TimeDuration compositeFrameTotal = TimeStamp::Now() - aVsyncEvent.mTime;
     mozilla::Telemetry::Accumulate(
         mozilla::Telemetry::COMPOSITE_FRAME_ROUNDTRIP_TIME,
         compositeFrameTotal.ToMilliseconds());
@@ -260,7 +283,8 @@ void CompositorVsyncScheduler::Composite(VsyncId aId,
   }
 }
 
-void CompositorVsyncScheduler::ForceComposeToTarget(gfx::DrawTarget* aTarget,
+void CompositorVsyncScheduler::ForceComposeToTarget(wr::RenderReasons aReasons,
+                                                    gfx::DrawTarget* aTarget,
                                                     const IntRect* aRect) {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
 
@@ -280,9 +304,9 @@ void CompositorVsyncScheduler::ForceComposeToTarget(gfx::DrawTarget* aTarget,
    */
   mVsyncNotificationsSkipped = 0;
 
-  mLastCompose = TimeStamp::Now();
+  mLastComposeTime = SampleTime::FromNow();
   MOZ_ASSERT(mVsyncSchedulerOwner);
-  mVsyncSchedulerOwner->CompositeToTarget(VsyncId(), aTarget, aRect);
+  mVsyncSchedulerOwner->CompositeToTarget(VsyncId(), aReasons, aTarget, aRect);
 }
 
 bool CompositorVsyncScheduler::NeedsComposite() {
@@ -293,8 +317,8 @@ bool CompositorVsyncScheduler::NeedsComposite() {
 bool CompositorVsyncScheduler::FlushPendingComposite() {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   if (mCompositeRequestedAt) {
-    CancelCurrentCompositeTask();
-    ForceComposeToTarget(nullptr, nullptr);
+    wr::RenderReasons reasons = CancelCurrentCompositeTask();
+    ForceComposeToTarget(reasons, nullptr, nullptr);
     return true;
   }
   return false;
@@ -329,14 +353,19 @@ void CompositorVsyncScheduler::DispatchVREvents(TimeStamp aVsyncTimestamp) {
   vm->NotifyVsync(aVsyncTimestamp);
 }
 
-const TimeStamp& CompositorVsyncScheduler::GetLastComposeTime() const {
+const SampleTime& CompositorVsyncScheduler::GetLastComposeTime() const {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  return mLastCompose;
+  return mLastComposeTime;
 }
 
 const TimeStamp& CompositorVsyncScheduler::GetLastVsyncTime() const {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  return mLastVsync;
+  return mLastVsyncTime;
+}
+
+const TimeStamp& CompositorVsyncScheduler::GetLastVsyncOutputTime() const {
+  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  return mLastVsyncOutputTime;
 }
 
 const VsyncId& CompositorVsyncScheduler::GetLastVsyncId() const {
@@ -346,7 +375,7 @@ const VsyncId& CompositorVsyncScheduler::GetLastVsyncId() const {
 
 void CompositorVsyncScheduler::UpdateLastComposeTime() {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  mLastCompose = TimeStamp::Now();
+  mLastComposeTime = SampleTime::FromNow();
 }
 
 }  // namespace layers

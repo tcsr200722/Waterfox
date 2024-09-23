@@ -13,12 +13,17 @@
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
 #include "nsPresContext.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/RangeBoundary.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/Text.h"
+
+class nsRange;
+
+struct CharacterDataChangeInfo;
 
 namespace mozilla {
 
@@ -46,6 +51,8 @@ class TextComposition final {
   TextComposition(nsPresContext* aPresContext, nsINode* aNode,
                   BrowserParent* aBrowserParent,
                   WidgetCompositionEvent* aCompositionEvent);
+  TextComposition() = delete;
+  TextComposition(const TextComposition& aOther) = delete;
 
   bool Destroyed() const { return !mPresContext; }
   nsPresContext* GetPresContext() const { return mPresContext; }
@@ -55,6 +62,8 @@ class TextComposition final {
   // The latest CompositionEvent.data value except compositionstart event.
   // This value is modified at dispatching compositionupdate.
   const nsString& LastData() const { return mLastData; }
+  // Returns commit string if it'll be commited as-is.
+  nsString CommitStringIfCommittedAsIs() const;
   // The composition string which is already handled by the focused editor.
   // I.e., this value must be same as the composition string on the focused
   // editor.  This value is modified at a call of
@@ -73,14 +82,21 @@ class TextComposition final {
   //     error due to inaccessible Release() method.
   TextRangeArray* GetRanges() const { return mRanges; }
   // Returns the widget which is proper to call NotifyIME().
-  nsIWidget* GetWidget() const {
-    return mPresContext ? mPresContext->GetRootWidget() : nullptr;
+  already_AddRefed<nsIWidget> GetWidget() const {
+    if (!mPresContext) {
+      return nullptr;
+    }
+    return do_AddRef(mPresContext->GetRootWidget());
   }
   // Returns the tab parent which has this composition in its remote process.
   BrowserParent* GetBrowserParent() const { return mBrowserParent; }
   // Returns true if the composition is started with synthesized event which
   // came from nsDOMWindowUtils.
   bool IsSynthesizedForTests() const { return mIsSynthesizedForTests; }
+
+  // Returns the composition ID.  It must be 0 if the composition is synthesized
+  // in a content process.  Otherwise, returns 1 or larger value.
+  uint32_t Id() const { return mCompositionId; }
 
   const widget::NativeIMEContext& GetNativeIMEContext() const {
     return mNativeContext;
@@ -132,8 +148,8 @@ class TextComposition final {
    * app.  If there is no composition string the DOM tree, these return
    * unset range boundaries.
    */
-  RawRangeBoundary GetStartRef() const;
-  RawRangeBoundary GetEndRef() const;
+  RawRangeBoundary FirstIMESelectionStartRef() const;
+  RawRangeBoundary LastIMESelectionEndRef() const;
 
   /**
    * The offset of composition string in the text node.  If composition string
@@ -228,9 +244,8 @@ class TextComposition final {
   };
 
   /**
-   * OnCreateCompositionTransaction() is called by
-   * CompositionTransaction::Create() immediately after creating
-   * new CompositionTransaction instance.
+   * OnUpdateCompositionInEditor() is called when editor updates composition
+   * string in the DOM tree.
    *
    * @param aStringToInsert     The string to insert the text node actually.
    *                            This may be different from the data of
@@ -240,20 +255,12 @@ class TextComposition final {
    * @param aTextNode           The text node which includes composition string.
    * @param aOffset             The offset of composition string in aTextNode.
    */
-  void OnCreateCompositionTransaction(const nsAString& aStringToInsert,
-                                      Text* aTextNode, uint32_t aOffset) {
-    if (!mContainerTextNode) {
-      mContainerTextNode = aTextNode;
-      mCompositionStartOffsetInTextNode = aOffset;
-      NS_WARNING_ASSERTION(mCompositionStartOffsetInTextNode != UINT32_MAX,
-                           "The text node is really too long.");
-    }
-#ifdef DEBUG
-    else {
-      MOZ_ASSERT(aTextNode == mContainerTextNode);
-      MOZ_ASSERT(aOffset == mCompositionStartOffsetInTextNode);
-    }
-#endif  // #ifdef DEBUG
+  void OnUpdateCompositionInEditor(const nsAString& aStringToInsert,
+                                   Text& aTextNode, uint32_t aOffset) {
+    mContainerTextNode = &aTextNode;
+    mCompositionStartOffsetInTextNode = aOffset;
+    NS_WARNING_ASSERTION(mCompositionStartOffsetInTextNode != UINT32_MAX,
+                         "The text node is really too long.");
     mCompositionLengthInTextNode = aStringToInsert.Length();
     NS_WARNING_ASSERTION(mCompositionLengthInTextNode != UINT32_MAX,
                          "The string to insert is really too long.");
@@ -271,6 +278,13 @@ class TextComposition final {
     // composition in new text node.
   }
 
+  /**
+   * OnCharacterDataChanged() is called when IMEContentObserver receives
+   * character data change notifications.
+   */
+  void OnCharacterDataChanged(Text& aText,
+                              const CharacterDataChangeInfo& aInfo);
+
  private:
   // Private destructor, to discourage deletion outside of Release():
   ~TextComposition() {
@@ -286,7 +300,7 @@ class TextComposition final {
   // IMEStateManager::OnDestroyPresContext(), and then, it destroy
   // this instance.
   nsPresContext* mPresContext;
-  nsCOMPtr<nsINode> mNode;
+  RefPtr<nsINode> mNode;
   RefPtr<BrowserParent> mBrowserParent;
 
   // The text node which includes the composition string.
@@ -314,6 +328,11 @@ class TextComposition final {
   // mString stores the composition text which has been handled by the focused
   // editor.
   nsString mString;
+
+  // Composition ID of this composition.  If this is in a parent process,
+  // this is 1 or larger.  If the composition is created for managing a
+  // composition synthesized in a content process, this is 0.
+  const uint32_t mCompositionId = 0;
 
   // Offset of the composition string from start of the editor
   uint32_t mCompositionStartOffset;
@@ -379,26 +398,6 @@ class TextComposition final {
   // when DispatchCompositionEvent() is called.
   bool mWasCompositionStringEmpty;
 
-  // Hide the default constructor and copy constructor.
-  TextComposition()
-      : mPresContext(nullptr),
-        mNativeContext(nullptr),
-        mCompositionStartOffset(0),
-        mTargetClauseOffsetInComposition(0),
-        mCompositionStartOffsetInTextNode(UINT32_MAX),
-        mCompositionLengthInTextNode(UINT32_MAX),
-        mIsSynthesizedForTests(false),
-        mIsComposing(false),
-        mIsEditorHandlingEvent(false),
-        mIsRequestingCommit(false),
-        mIsRequestingCancel(false),
-        mRequestedToCommitOrCancel(false),
-        mHasReceivedCommitEvent(false),
-        mWasNativeCompositionEndEventDiscarded(false),
-        mAllowControlCharacters(false),
-        mWasCompositionStringEmpty(true) {}
-  TextComposition(const TextComposition& aOther);
-
   /**
    * If we're requesting IME to commit or cancel composition, or we've already
    * requested it, or we've already known this composition has been ended in
@@ -448,19 +447,18 @@ class TextComposition final {
    * DispatchCompositionEvent() dispatches the aCompositionEvent to the mContent
    * synchronously. The caller must ensure that it's safe to dispatch the event.
    */
-  void DispatchCompositionEvent(WidgetCompositionEvent* aCompositionEvent,
-                                nsEventStatus* aStatus,
-                                EventDispatchingCallback* aCallBack,
-                                bool aIsSynthesized);
+  MOZ_CAN_RUN_SCRIPT void DispatchCompositionEvent(
+      WidgetCompositionEvent* aCompositionEvent, nsEventStatus* aStatus,
+      EventDispatchingCallback* aCallBack, bool aIsSynthesized);
 
   /**
    * Simply calling EventDispatcher::Dispatch() with plugin event.
    * If dispatching event has no orginal clone, aOriginalEvent can be null.
    */
-  void DispatchEvent(WidgetCompositionEvent* aDispatchEvent,
-                     nsEventStatus* aStatus,
-                     EventDispatchingCallback* aCallback,
-                     const WidgetCompositionEvent* aOriginalEvent = nullptr);
+  MOZ_CAN_RUN_SCRIPT void DispatchEvent(
+      WidgetCompositionEvent* aDispatchEvent, nsEventStatus* aStatus,
+      EventDispatchingCallback* aCallback,
+      const WidgetCompositionEvent* aOriginalEvent = nullptr);
 
   /**
    * HandleSelectionEvent() sends the selection event to ContentEventHandler
@@ -483,7 +481,7 @@ class TextComposition final {
    * @return Returns false if dispatching the compositionupdate event caused
    *         destroying this composition.
    */
-  bool MaybeDispatchCompositionUpdate(
+  MOZ_CAN_RUN_SCRIPT bool MaybeDispatchCompositionUpdate(
       const WidgetCompositionEvent* aCompositionEvent);
 
   /**
@@ -492,10 +490,10 @@ class TextComposition final {
    *
    * @return Returns BaseEventFlags which is the result of dispatched event.
    */
-  BaseEventFlags CloneAndDispatchAs(
-      const WidgetCompositionEvent* aCompositionEvent, EventMessage aMessage,
-      nsEventStatus* aStatus = nullptr,
-      EventDispatchingCallback* aCallBack = nullptr);
+  MOZ_CAN_RUN_SCRIPT BaseEventFlags
+  CloneAndDispatchAs(const WidgetCompositionEvent* aCompositionEvent,
+                     EventMessage aMessage, nsEventStatus* aStatus = nullptr,
+                     EventDispatchingCallback* aCallBack = nullptr);
 
   /**
    * If IME has already dispatched compositionend event but it was discarded
@@ -516,7 +514,7 @@ class TextComposition final {
    * OnCompositionEventDispatched() is called after a composition event is
    * dispatched.
    */
-  void OnCompositionEventDispatched(
+  MOZ_CAN_RUN_SCRIPT void OnCompositionEventDispatched(
       const WidgetCompositionEvent* aDispatchEvent);
 
   /**
@@ -532,7 +530,7 @@ class TextComposition final {
    * editor which has this composition.
    * If it failed or lost focus, this would return 0.
    */
-  uint32_t GetSelectionStartOffset();
+  MOZ_CAN_RUN_SCRIPT uint32_t GetSelectionStartOffset();
 
   /**
    * OnStartOffsetUpdatedInChild() is called when composition start offset
@@ -554,7 +552,7 @@ class TextComposition final {
                                EventMessage aEventMessage,
                                const nsAString& aData,
                                bool aIsSynthesizedEvent = false);
-    NS_IMETHOD Run() override;
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override;
 
    private:
     RefPtr<TextComposition> mTextComposition;

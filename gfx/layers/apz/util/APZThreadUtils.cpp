@@ -4,17 +4,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/layers/APZThreadUtils.h"
+#include "APZThreadUtils.h"
 
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/ProfilerRunnable.h"
 #include "mozilla/StaticMutex.h"
+
+#include "nsISerialEventTarget.h"
+#include "nsThreadUtils.h"
+#include "nsXULAppAPI.h"
 
 namespace mozilla {
 namespace layers {
 
 static bool sThreadAssertionsEnabled = true;
 static StaticRefPtr<nsISerialEventTarget> sControllerThread;
-static StaticMutex sControllerThreadMutex;
+static StaticMutex sControllerThreadMutex MOZ_UNANNOTATED;
 
 /*static*/
 void APZThreadUtils::SetThreadAssertionsEnabled(bool aEnabled) {
@@ -53,7 +58,8 @@ void APZThreadUtils::AssertOnControllerThread() {
 }
 
 /*static*/
-void APZThreadUtils::RunOnControllerThread(RefPtr<Runnable>&& aTask) {
+void APZThreadUtils::RunOnControllerThread(RefPtr<Runnable>&& aTask,
+                                           uint32_t flags) {
   RefPtr<nsISerialEventTarget> thread;
   {
     StaticMutexAutoLock lock(sControllerThreadMutex);
@@ -68,9 +74,10 @@ void APZThreadUtils::RunOnControllerThread(RefPtr<Runnable>&& aTask) {
   }
 
   if (thread->IsOnCurrentThread()) {
+    AUTO_PROFILE_FOLLOWING_RUNNABLE(task);
     task->Run();
   } else {
-    thread->Dispatch(task.forget());
+    thread->Dispatch(task.forget(), flags);
   }
 }
 
@@ -78,6 +85,12 @@ void APZThreadUtils::RunOnControllerThread(RefPtr<Runnable>&& aTask) {
 bool APZThreadUtils::IsControllerThread() {
   StaticMutexAutoLock lock(sControllerThreadMutex);
   return sControllerThread && sControllerThread->IsOnCurrentThread();
+}
+
+/*static*/
+bool APZThreadUtils::IsControllerThreadAlive() {
+  StaticMutexAutoLock lock(sControllerThreadMutex);
+  return !!sControllerThread;
 }
 
 /*static*/
@@ -101,8 +114,6 @@ void APZThreadUtils::DelayedDispatch(already_AddRefed<Runnable> aRunnable,
     thread->Dispatch(std::move(aRunnable));
   }
 }
-
-NS_IMPL_ISUPPORTS(GenericNamedTimerCallbackBase, nsITimerCallback, nsINamed)
 
 }  // namespace layers
 }  // namespace mozilla

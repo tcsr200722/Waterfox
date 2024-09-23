@@ -8,7 +8,7 @@ import {
   MAIN_MESSAGE_TYPE,
   PRELOAD_MESSAGE_TYPE,
   UI_CODE,
-} from "common/Actions.jsm";
+} from "common/Actions.mjs";
 
 describe("Actions", () => {
   it("should set globalImportContext to UI_CODE", () => {
@@ -18,12 +18,7 @@ describe("Actions", () => {
 
 describe("ActionTypes", () => {
   it("should be in alpha order", () => {
-    assert.equal(
-      Object.keys(at).join(", "),
-      Object.keys(at)
-        .sort()
-        .join(", ")
-    );
+    assert.equal(Object.keys(at).join(", "), Object.keys(at).sort().join(", "));
   });
 });
 
@@ -189,38 +184,6 @@ describe("ActionCreators", () => {
     it("should wrap with AlsoToMain", () => {
       const action = ac.ASRouterUserEvent({ action: "foo" });
       assert.isTrue(au.isSendToMain(action), "isSendToMain");
-    });
-  });
-  describe("UndesiredEvent", () => {
-    it("should include the given data", () => {
-      const data = { action: "foo" };
-      assert.equal(ac.UndesiredEvent(data).data, data);
-    });
-    it("should wrap with AlsoToMain if in UI code", () => {
-      assert.isTrue(
-        au.isSendToMain(ac.UndesiredEvent({ action: "foo" })),
-        "isSendToMain"
-      );
-    });
-    it("should not wrap with AlsoToMain if not in UI code", () => {
-      const action = ac.UndesiredEvent({ action: "foo" }, BACKGROUND_PROCESS);
-      assert.isFalse(au.isSendToMain(action), "isSendToMain");
-    });
-  });
-  describe("PerfEvent", () => {
-    it("should include the right data", () => {
-      const data = { action: "foo" };
-      assert.equal(ac.UndesiredEvent(data).data, data);
-    });
-    it("should wrap with AlsoToMain if in UI code", () => {
-      assert.isTrue(
-        au.isSendToMain(ac.PerfEvent({ action: "foo" })),
-        "isSendToMain"
-      );
-    });
-    it("should not wrap with AlsoToMain if not in UI code", () => {
-      const action = ac.PerfEvent({ action: "foo" }, BACKGROUND_PROCESS);
-      assert.isFalse(au.isSendToMain(action), "isSendToMain");
     });
   });
   describe("ImpressionStats", () => {

@@ -4,20 +4,24 @@
 
 "use strict";
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
 
-const TESTPAGE = `${SECURE_TESTROOT}webapi_checkavailable.html`;
+const { EnterprisePolicyTesting } = ChromeUtils.importESModule(
+  "resource://testing-common/EnterprisePolicyTesting.sys.mjs"
+);
+
+const TESTPATH = "webapi_checkavailable.html";
+const TESTPAGE = `${SECURE_TESTROOT}${TESTPATH}`;
 const XPI_URL = `${SECURE_TESTROOT}../xpinstall/amosigned.xpi`;
 const XPI_ADDON_ID = "amosigned-xpi@tests.mozilla.org";
 
-const XPI_SHA =
-  "sha256:91121ed2c27f670f2307b9aebdd30979f147318c7fb9111c254c14ddbb84e4b0";
-
 const ID = "amosigned-xpi@tests.mozilla.org";
-// eh, would be good to just stat the real file instead of this...
-const XPI_LEN = 4287;
+// Actual XPI file size and hash are computed in the add_setup callback.
+let XPI_LEN = -1;
+let XPI_SHA =
+  "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 AddonTestUtils.initMochitest(this);
 
@@ -37,15 +41,25 @@ function waitForClear() {
   });
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["extensions.webapi.testing", true],
       ["extensions.install.requireBuiltInCerts", false],
-      ["extensions.allowPrivateBrowsingByDefault", false],
     ],
   });
   info("added preferences");
+
+  // Get the file size (used in this test file to assert the
+  // expected maxProgress value set in the addon download
+  // dialog).
+  const xpiFilePath = getTestFilePath("../xpinstall/amosigned.xpi");
+  const xpiStat = await IOUtils.stat(xpiFilePath);
+  XPI_LEN = xpiStat.size;
+
+  // Compute the file hash.
+  const xpiFileHash = await IOUtils.computeHexDigest(xpiFilePath, "sha256");
+  XPI_SHA = `sha256:${xpiFileHash}`;
 });
 
 // Wrapper around a common task to run in the content process to test
@@ -59,7 +73,7 @@ async function testInstall(browser, args, steps, description) {
   let success = await SpecialPowers.spawn(
     browser,
     [{ args, steps }],
-    async function(opts) {
+    async function (opts) {
       let { args, steps } = opts;
       let install = await content.navigator.mozAddonManager.createInstall(args);
       if (!install) {
@@ -91,7 +105,7 @@ async function testInstall(browser, args, steps, description) {
       let receivedEvents = [];
       let prevEvent = null;
       events.forEach(event => {
-        install.addEventListener(event, e => {
+        install.addEventListener(event, () => {
           receivedEvents.push({
             event,
             state: install.state,
@@ -161,7 +175,7 @@ async function testInstall(browser, args, steps, description) {
               }
             } catch (err) {
               if (!nextStep.expectError) {
-                throw new Error("Install failed unexpectedly");
+                throw new Error("Install failed unexpectedly: " + err);
               }
             }
           } else if (nextStep.action == "cancel") {
@@ -182,7 +196,7 @@ async function testInstall(browser, args, steps, description) {
 }
 
 function makeInstallTest(task) {
-  return async function() {
+  return async function () {
     // withNewTab() will close the test tab before returning, at which point
     // the cleanup event will come from the content process.  We need to see
     // that event but don't want to race to install a listener for it after
@@ -198,7 +212,7 @@ function makeInstallTest(task) {
 }
 
 function makeRegularTest(options, what) {
-  return makeInstallTest(async function(browser) {
+  return makeInstallTest(async function (browser) {
     let steps = [
       { action: "install" },
       {
@@ -246,8 +260,9 @@ function makeRegularTest(options, what) {
 
     // Sanity check to ensure that the test in makeInstallTest() that
     // installs.size == 0 means we actually did clean up.
-    ok(
-      AddonManager.webAPI.installs.size > 0,
+    Assert.greater(
+      AddonManager.webAPI.installs.size,
+      0,
       "webAPI is tracking the AddonInstall"
     );
 
@@ -282,15 +297,15 @@ add_task(
     "install with empty string for hash works"
   )
 );
-add_task(
-  makeRegularTest(
+add_task(async function test_install_successfully_with_filehash() {
+  await makeRegularTest(
     { url: XPI_URL, addonId, hash: XPI_SHA },
     "install with hash works"
-  )
-);
+  );
+});
 
 add_task(
-  makeInstallTest(async function(browser) {
+  makeInstallTest(async function (browser) {
     let steps = [
       { action: "cancel" },
       {
@@ -312,15 +327,16 @@ add_task(
     let addons = await promiseAddonsByIDs([ID]);
     is(addons[0], null, "The addon was not installed");
 
-    ok(
-      AddonManager.webAPI.installs.size > 0,
+    Assert.greater(
+      AddonManager.webAPI.installs.size,
+      0,
       "webAPI is tracking the AddonInstall"
     );
   })
 );
 
 add_task(
-  makeInstallTest(async function(browser) {
+  makeInstallTest(async function (browser) {
     let steps = [
       { action: "install", expectError: true },
       {
@@ -347,15 +363,16 @@ add_task(
     let addons = await promiseAddonsByIDs([ID]);
     is(addons[0], null, "The addon was not installed");
 
-    ok(
-      AddonManager.webAPI.installs.size > 0,
+    Assert.greater(
+      AddonManager.webAPI.installs.size,
+      0,
       "webAPI is tracking the AddonInstall"
     );
   })
 );
 
 add_task(
-  makeInstallTest(async function(browser) {
+  makeInstallTest(async function (browser) {
     let steps = [
       { action: "install", expectError: true },
       {
@@ -382,45 +399,47 @@ add_task(
     let addons = await promiseAddonsByIDs([ID]);
     is(addons[0], null, "The addon was not installed");
 
-    ok(
-      AddonManager.webAPI.installs.size > 0,
+    Assert.greater(
+      AddonManager.webAPI.installs.size,
+      0,
       "webAPI is tracking the AddonInstall"
     );
   })
 );
 
-add_task(async function test_permissions() {
-  function testBadUrl(url, pattern, successMessage) {
-    return BrowserTestUtils.withNewTab(TESTPAGE, async function(browser) {
-      let result = await SpecialPowers.spawn(
-        browser,
-        [{ url, pattern }],
-        function(opts) {
-          return new Promise(resolve => {
-            content.navigator.mozAddonManager
-              .createInstall({ url: opts.url })
-              .then(
-                () => {
-                  resolve({
-                    success: false,
-                    message: "createInstall should not have succeeded",
-                  });
-                },
-                err => {
-                  if (err.message.match(new RegExp(opts.pattern))) {
-                    resolve({ success: true });
-                  }
-                  resolve({
-                    success: false,
-                    message: `Wrong error message: ${err.message}`,
-                  });
+add_task(async function test_permissions_and_policy() {
+  async function testBadUrl(url, pattern, successMessage) {
+    gBrowser.selectedTab = await BrowserTestUtils.addTab(gBrowser, TESTPAGE);
+    let browser = gBrowser.getBrowserForTab(gBrowser.selectedTab);
+    await BrowserTestUtils.browserLoaded(browser);
+    let result = await SpecialPowers.spawn(
+      browser,
+      [{ url, pattern }],
+      function (opts) {
+        return new Promise(resolve => {
+          content.navigator.mozAddonManager
+            .createInstall({ url: opts.url })
+            .then(
+              () => {
+                resolve({
+                  success: false,
+                  message: "createInstall should not have succeeded",
+                });
+              },
+              err => {
+                if (err.message.match(new RegExp(opts.pattern))) {
+                  resolve({ success: true });
                 }
-              );
-          });
-        }
-      );
-      is(result.success, true, result.message || successMessage);
-    });
+                resolve({
+                  success: false,
+                  message: `Wrong error message: ${err.message}`,
+                });
+              }
+            );
+        });
+      }
+    );
+    is(result.success, true, result.message || successMessage);
   }
 
   await testBadUrl(
@@ -428,16 +447,71 @@ add_task(async function test_permissions() {
     "NS_ERROR_MALFORMED_URI",
     "Installing from an unparseable URL fails"
   );
+  gBrowser.removeTab(gBrowser.selectedTab);
+
+  let popupPromise = promisePopupNotificationShown(
+    "addon-install-webapi-blocked"
+  );
+  await Promise.all([
+    testBadUrl(
+      "https://addons.not-really-mozilla.org/impostor.xpi",
+      "not permitted",
+      "Installing from non-approved URL fails"
+    ),
+    popupPromise,
+  ]);
+
+  gBrowser.removeTab(gBrowser.selectedTab);
+
+  const blocked_install_message = "Custom Policy Block Message";
+
+  await EnterprisePolicyTesting.setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "*": {
+          install_sources: [],
+          blocked_install_message,
+        },
+      },
+    },
+  });
+
+  popupPromise = promisePopupNotificationShown("addon-install-policy-blocked");
 
   await testBadUrl(
-    "https://addons.not-really-mozilla.org/impostor.xpi",
-    "not permitted",
-    "Installing from non-approved URL fails"
+    XPI_URL,
+    "not permitted by policy",
+    "Installing from policy blocked origin fails"
   );
+
+  const panel = await popupPromise;
+  const description = panel.querySelector(
+    ".popup-notification-description"
+  ).textContent;
+  ok(
+    description.startsWith("Your organization"),
+    "Policy specific error is shown."
+  );
+  ok(
+    description.endsWith(` ${blocked_install_message}`),
+    `Found the expected custom blocked message in "${description}"`
+  );
+
+  gBrowser.removeTab(gBrowser.selectedTab);
+
+  await EnterprisePolicyTesting.setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "*": {
+          install_sources: ["<all_urls>"],
+        },
+      },
+    },
+  });
 });
 
 add_task(
-  makeInstallTest(async function(browser) {
+  makeInstallTest(async function (browser) {
     let xpiURL = `${SECURE_TESTROOT}../xpinstall/incompatible.xpi`;
     let id = "incompatible-xpi@tests.mozilla.org";
 
@@ -449,7 +523,7 @@ add_task(
       },
       { event: "onDownloadProgress" },
       { event: "onDownloadEnded" },
-      { event: "onDownloadCancelled" },
+      { event: "onDownloadCancelled", error: "ERROR_INCOMPATIBLE" },
     ];
 
     await testInstall(
@@ -461,5 +535,128 @@ add_task(
 
     let addons = await promiseAddonsByIDs([id]);
     is(addons[0], null, "The addon was not installed");
+  })
+);
+
+add_task(
+  makeInstallTest(async function (browser) {
+    let id = "amosigned-xpi@tests.mozilla.org";
+    let version = "2.2";
+
+    await AddonTestUtils.loadBlocklistRawData({
+      extensionsMLBF: [
+        {
+          stash: { blocked: [`${id}:${version}`], unblocked: [] },
+          stash_time: 0,
+        },
+      ],
+    });
+
+    let steps = [
+      { action: "install", expectError: true },
+      { event: "onDownloadStarted" },
+      { event: "onDownloadProgress" },
+      { event: "onDownloadEnded" },
+      {
+        event: "onDownloadCancelled",
+        props: { state: "STATE_CANCELLED", error: "ERROR_BLOCKLISTED" },
+      },
+    ];
+
+    await testInstall(
+      browser,
+      { url: XPI_URL },
+      steps,
+      "install of a blocked XPI fails"
+    );
+
+    let addons = await promiseAddonsByIDs([id]);
+    is(addons[0], null, "The addon was not installed");
+
+    // Clear the blocklist.
+    await AddonTestUtils.loadBlocklistRawData({
+      extensionsMLBF: [
+        {
+          stash: { blocked: [], unblocked: [] },
+          stash_time: 0,
+        },
+      ],
+    });
+  })
+);
+
+add_task(
+  makeInstallTest(async function (browser) {
+    const options = { url: XPI_URL, addonId };
+    let steps = [
+      { action: "install" },
+      {
+        event: "onDownloadStarted",
+        props: { state: "STATE_DOWNLOADING" },
+      },
+      {
+        event: "onDownloadProgress",
+        props: { maxProgress: XPI_LEN },
+      },
+      {
+        event: "onDownloadEnded",
+        props: {
+          state: "STATE_DOWNLOADED",
+          progress: XPI_LEN,
+          maxProgress: XPI_LEN,
+        },
+      },
+      {
+        event: "onInstallStarted",
+        props: { state: "STATE_INSTALLING" },
+      },
+      {
+        event: "onInstallEnded",
+        props: { state: "STATE_INSTALLED" },
+      },
+    ];
+
+    await SpecialPowers.spawn(browser, [TESTPATH], testPath => {
+      // `sourceURL` should match the exact location, even after a location
+      // update using the history API. In this case, we update the URL with
+      // query parameters and expect `sourceURL` to contain those parameters.
+      content.history.pushState(
+        {}, // state
+        "", // title
+        `/${testPath}?some=query&par=am`
+      );
+    });
+
+    let installPromptPromise = promisePopupNotificationShown(
+      "addon-webext-permissions"
+    ).then(panel => {
+      panel.button.click();
+    });
+
+    let promptPromise = acceptAppMenuNotificationWhenShown(
+      "addon-installed",
+      options.addonId
+    );
+
+    await Promise.all([
+      testInstall(browser, options, steps, "install to check source URL"),
+      installPromptPromise,
+      promptPromise,
+    ]);
+
+    let addon = await promiseAddonByID(ID);
+
+    registerCleanupFunction(async () => {
+      await addon.uninstall();
+    });
+
+    // Check that the expected installTelemetryInfo has been stored in the
+    // addon details.
+    AddonTestUtils.checkInstallInfo(addon, {
+      method: "amWebAPI",
+      source: "test-host",
+      sourceURL:
+        "https://example.com/webapi_checkavailable.html?some=query&par=am",
+    });
   })
 );

@@ -2,14 +2,11 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import collections
 import sys
 import time
 
 from . import errors
-
 
 DEFAULT_TIMEOUT = 5
 DEFAULT_INTERVAL = 0.1
@@ -33,9 +30,14 @@ class Wait(object):
 
     """
 
-    def __init__(self, marionette, timeout=None,
-                 interval=None, ignored_exceptions=None,
-                 clock=None):
+    def __init__(
+        self,
+        marionette,
+        timeout=None,
+        interval=None,
+        ignored_exceptions=None,
+        clock=None,
+    ):
         """Configure the Wait instance to have a custom timeout, interval, and
         list of ignored exceptions.  Optionally a different time
         implementation than the one provided by the standard library
@@ -82,7 +84,7 @@ class Wait(object):
 
         exceptions = []
         if ignored_exceptions is not None:
-            if isinstance(ignored_exceptions, collections.Iterable):
+            if isinstance(ignored_exceptions, collections.abc.Iterable):
                 exceptions.extend(iter(ignored_exceptions))
             else:
                 exceptions.append(ignored_exceptions)
@@ -149,9 +151,12 @@ class Wait(object):
             message = " with message: {}".format(message)
 
         raise errors.TimeoutException(
-            "Timed out after {0:.1f} seconds{1}".format(round((self.clock.now - start), 1),
-                                                        message if message else ""),
-            cause=last_exc)
+            # pylint: disable=W1633
+            "Timed out after {0:.1f} seconds{1}".format(
+                float(round((self.clock.now - start), 1)), message if message else ""
+            ),
+            cause=last_exc,
+        )
 
 
 def until_pred(clock, end):
@@ -159,7 +164,6 @@ def until_pred(clock, end):
 
 
 class SystemClock(object):
-
     def __init__(self):
         self._time = time
 

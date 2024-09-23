@@ -6,35 +6,17 @@
 
 "use strict";
 
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { CookieXPCShellUtils } = ChromeUtils.import(
-  "resource://testing-common/CookieXPCShellUtils.jsm"
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+const { CookieXPCShellUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/CookieXPCShellUtils.sys.mjs"
 );
 
 // Don't pick up default permissions from profile.
 Services.prefs.setCharPref("permissions.manager.defaultsUrl", "");
 
 CookieXPCShellUtils.init(this);
-
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookies",
-  "@mozilla.org/cookieService;1",
-  "nsICookieService"
-);
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookiemgr",
-  "@mozilla.org/cookiemanager;1",
-  "nsICookieManager"
-);
-
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "etld",
-  "@mozilla.org/network/effective-tld-service;1",
-  "nsIEffectiveTLDService"
-);
 
 function do_check_throws(f, result, stack) {
   if (!stack) {
@@ -63,7 +45,7 @@ function do_run_generator(generator) {
 
 // Helper to finish a generator function test.
 function do_finish_generator_test(generator) {
-  executeSoon(function() {
+  executeSoon(function () {
     generator.return();
     do_test_finished();
   });
@@ -77,7 +59,7 @@ function _observer(generator, topic) {
 }
 
 _observer.prototype = {
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     Assert.equal(this.topic, topic);
 
     Services.obs.removeObserver(this, this.topic);
@@ -96,11 +78,11 @@ _observer.prototype = {
 // once the close is complete.
 function do_close_profile(generator) {
   // Register an observer for db close.
-  let obs = new _observer(generator, "cookie-db-closed");
+  new _observer(generator, "cookie-db-closed");
 
   // Close the db.
   let service = Services.cookies.QueryInterface(Ci.nsIObserver);
-  service.observe(null, "profile-before-change", "shutdown-persist");
+  service.observe(null, "profile-before-change", null);
 }
 
 function _promise_observer(topic) {
@@ -111,7 +93,7 @@ function _promise_observer(topic) {
 }
 
 _promise_observer.prototype = {
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     Assert.equal(this.topic, topic);
 
     Services.obs.removeObserver(this, this.topic);
@@ -131,7 +113,7 @@ function promise_close_profile() {
 
   // Close the db.
   let service = Services.cookies.QueryInterface(Ci.nsIObserver);
-  service.observe(null, "profile-before-change", "shutdown-persist");
+  service.observe(null, "profile-before-change", null);
 
   return promise;
 }
@@ -152,7 +134,7 @@ function promise_load_profile() {
 // once the load is complete.
 function do_load_profile(generator) {
   // Register an observer for read completion.
-  let obs = new _observer(generator, "cookie-db-read");
+  new _observer(generator, "cookie-db-read");
 
   // Load the profile.
   let service = Services.cookies.QueryInterface(Ci.nsIObserver);
@@ -163,7 +145,7 @@ function do_load_profile(generator) {
 // against 'expected'
 function do_set_single_http_cookie(uri, channel, expected) {
   Services.cookies.setCookieStringFromHttp(uri, "foo=bar", channel);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected);
 }
 
 // Set two cookies; via document.channel and via http request.
@@ -174,36 +156,38 @@ async function do_set_cookies(uri, channel, session, expected) {
   const thirdPartyUrl = "http://third.com/";
   const contentPage = await CookieXPCShellUtils.loadContentPage(thirdPartyUrl);
   await contentPage.spawn(
-    {
-      cookie: "can=has" + suffix,
-      url: uri.spec,
-    },
-    async obj => {
-      // eslint-disable-next-line no-undef
-      await new content.Promise(resolve => {
-        // eslint-disable-next-line no-undef
-        const ifr = content.document.createElement("iframe");
-        // eslint-disable-next-line no-undef
-        content.document.body.appendChild(ifr);
+    [
+      {
+        cookie: "can=has" + suffix,
+        url: uri.spec,
+      },
+    ],
+    async function (obj) {
+      await new this.content.Promise(resolve => {
+        let doc = this.content.document;
+        let ifr = doc.createElement("iframe");
         ifr.src = obj.url;
-        ifr.onload = () => {
-          ifr.contentDocument.cookie = obj.cookie;
+        doc.body.appendChild(ifr);
+        ifr.addEventListener("load", async () => {
+          await this.SpecialPowers.spawn(ifr, [obj.cookie], cookie => {
+            this.content.document.cookie = cookie;
+          });
           resolve();
-        };
+        });
       });
     }
   );
   await contentPage.close();
 
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected[0]);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected[0]);
 
   // via http request
   Services.cookies.setCookieStringFromHttp(uri, "hot=dog" + suffix, channel);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri.host), expected[1]);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri.host), expected[1]);
 }
 
 function do_count_cookies() {
-  return Services.cookiemgr.cookies.length;
+  return Services.cookies.cookies.length;
 }
 
 // Helper object to store cookie data.
@@ -221,7 +205,9 @@ function Cookie(
   inBrowserElement = false,
   originAttributes = {},
   sameSite = Ci.nsICookie.SAMESITE_NONE,
-  rawSameSite = Ci.nsICookie.SAMESITE_NONE
+  rawSameSite = Ci.nsICookie.SAMESITE_NONE,
+  schemeMap = Ci.nsICookie.SCHEME_UNSET,
+  isPartitioned = false
 ) {
   this.name = name;
   this.value = value;
@@ -237,11 +223,13 @@ function Cookie(
   this.originAttributes = originAttributes;
   this.sameSite = sameSite;
   this.rawSameSite = rawSameSite;
+  this.schemeMap = schemeMap;
+  this.isPartitioned = isPartitioned;
 
   let strippedHost = host.charAt(0) == "." ? host.slice(1) : host;
 
   try {
-    this.baseDomain = Services.etld.getBaseDomainFromHost(strippedHost);
+    this.baseDomain = Services.eTLD.getBaseDomainFromHost(strippedHost);
   } catch (e) {
     if (
       e.result == Cr.NS_ERROR_HOST_IS_IP_ADDRESS ||
@@ -628,6 +616,157 @@ function CookieDatabaseConnection(file, schema) {
       break;
     }
 
+    case 12: {
+      if (!exists) {
+        this.db.executeSimpleSQL(
+          "CREATE TABLE moz_cookies (                  \
+            id INTEGER PRIMARY KEY,                    \
+            originAttributes TEXT NOT NULL DEFAULT '', \
+            name TEXT,                                 \
+            value TEXT,                                \
+            host TEXT,                                 \
+            path TEXT,                                 \
+            expiry INTEGER,                            \
+            lastAccessed INTEGER,                      \
+            creationTime INTEGER,                      \
+            isSecure INTEGER,                          \
+            isHttpOnly INTEGER,                        \
+            inBrowserElement INTEGER DEFAULT 0,        \
+            sameSite INTEGER DEFAULT 0,                \
+            rawSameSite INTEGER DEFAULT 0,             \
+            schemeMap INTEGER DEFAULT 0,               \
+            CONSTRAINT moz_uniqueid UNIQUE (name, host, path, originAttributes))"
+        );
+
+        this.db.executeSimpleSQL("PRAGMA journal_mode = WAL");
+        this.db.executeSimpleSQL("PRAGMA wal_autocheckpoint = 16");
+      }
+
+      this.stmtInsert = this.db.createStatement(
+        "INSERT INTO moz_cookies (        \
+           name,                          \
+           value,                         \
+           host,                          \
+           path,                          \
+           expiry,                        \
+           lastAccessed,                  \
+           creationTime,                  \
+           isSecure,                      \
+           isHttpOnly,                    \
+           inBrowserElement,              \
+           originAttributes,              \
+           sameSite,                      \
+           rawSameSite,                   \
+           schemeMap                      \
+         ) VALUES (                       \
+           :name,                         \
+           :value,                        \
+           :host,                         \
+           :path,                         \
+           :expiry,                       \
+           :lastAccessed,                 \
+           :creationTime,                 \
+           :isSecure,                     \
+           :isHttpOnly,                   \
+           :inBrowserElement,             \
+           :originAttributes,             \
+           :sameSite,                     \
+           :rawSameSite,                  \
+           :schemeMap)"
+      );
+
+      this.stmtDelete = this.db.createStatement(
+        "DELETE FROM moz_cookies          \
+           WHERE name = :name AND host = :host AND path = :path AND \
+                 originAttributes = :originAttributes"
+      );
+
+      this.stmtUpdate = this.db.createStatement(
+        "UPDATE moz_cookies SET lastAccessed = :lastAccessed \
+           WHERE name = :name AND host = :host AND path = :path AND \
+                 originAttributes = :originAttributes"
+      );
+
+      break;
+    }
+
+    case 13: {
+      if (!exists) {
+        this.db.executeSimpleSQL(
+          "CREATE TABLE moz_cookies (                     \
+            id INTEGER PRIMARY KEY,                       \
+            originAttributes TEXT NOT NULL DEFAULT '',    \
+            name TEXT,                                    \
+            value TEXT,                                   \
+            host TEXT,                                    \
+            path TEXT,                                    \
+            expiry INTEGER,                               \
+            lastAccessed INTEGER,                         \
+            creationTime INTEGER,                         \
+            isSecure INTEGER,                             \
+            isHttpOnly INTEGER,                           \
+            inBrowserElement INTEGER DEFAULT 0,           \
+            sameSite INTEGER DEFAULT 0,                   \
+            rawSameSite INTEGER DEFAULT 0,                \
+            schemeMap INTEGER DEFAULT 0,                  \
+            isPartitionedAttributeSet INTEGER DEFAULT 0,  \
+            CONSTRAINT moz_uniqueid UNIQUE (name, host, path, originAttributes))"
+        );
+
+        this.db.executeSimpleSQL("PRAGMA journal_mode = WAL");
+        this.db.executeSimpleSQL("PRAGMA wal_autocheckpoint = 16");
+      }
+
+      this.stmtInsert = this.db.createStatement(
+        "INSERT INTO moz_cookies (        \
+           name,                          \
+           value,                         \
+           host,                          \
+           path,                          \
+           expiry,                        \
+           lastAccessed,                  \
+           creationTime,                  \
+           isSecure,                      \
+           isHttpOnly,                    \
+           inBrowserElement,              \
+           originAttributes,              \
+           sameSite,                      \
+           rawSameSite,                   \
+           schemeMap,                     \
+           isPartitionedAttributeSet      \
+         ) VALUES (                       \
+           :name,                         \
+           :value,                        \
+           :host,                         \
+           :path,                         \
+           :expiry,                       \
+           :lastAccessed,                 \
+           :creationTime,                 \
+           :isSecure,                     \
+           :isHttpOnly,                   \
+           :inBrowserElement,             \
+           :originAttributes,             \
+           :sameSite,                     \
+           :rawSameSite,                  \
+           :schemeMap,                    \
+           :isPartitionedAttributeSet)"
+      );
+
+      this.stmtDelete = this.db.createStatement(
+        "DELETE FROM moz_cookies          \
+           WHERE name = :name AND host = :host AND path = :path AND \
+                 originAttributes = :originAttributes"
+      );
+
+      this.stmtUpdate = this.db.createStatement(
+        "UPDATE moz_cookies SET lastAccessed = :lastAccessed \
+           WHERE name = :name AND host = :host AND path = :path AND \
+                 originAttributes = :originAttributes"
+      );
+
+      break;
+    }
+
     default:
       do_throw("unrecognized schemaVersion!");
   }
@@ -728,6 +867,50 @@ CookieDatabaseConnection.prototype = {
         this.stmtInsert.bindByName("rawSameSite", cookie.rawSameSite);
         break;
 
+      case 12:
+        this.stmtInsert.bindByName("name", cookie.name);
+        this.stmtInsert.bindByName("value", cookie.value);
+        this.stmtInsert.bindByName("host", cookie.host);
+        this.stmtInsert.bindByName("path", cookie.path);
+        this.stmtInsert.bindByName("expiry", cookie.expiry);
+        this.stmtInsert.bindByName("lastAccessed", cookie.lastAccessed);
+        this.stmtInsert.bindByName("creationTime", cookie.creationTime);
+        this.stmtInsert.bindByName("isSecure", cookie.isSecure);
+        this.stmtInsert.bindByName("isHttpOnly", cookie.isHttpOnly);
+        this.stmtInsert.bindByName("inBrowserElement", cookie.inBrowserElement);
+        this.stmtInsert.bindByName(
+          "originAttributes",
+          ChromeUtils.originAttributesToSuffix(cookie.originAttributes)
+        );
+        this.stmtInsert.bindByName("sameSite", cookie.sameSite);
+        this.stmtInsert.bindByName("rawSameSite", cookie.rawSameSite);
+        this.stmtInsert.bindByName("schemeMap", cookie.schemeMap);
+        break;
+
+      case 13:
+        this.stmtInsert.bindByName("name", cookie.name);
+        this.stmtInsert.bindByName("value", cookie.value);
+        this.stmtInsert.bindByName("host", cookie.host);
+        this.stmtInsert.bindByName("path", cookie.path);
+        this.stmtInsert.bindByName("expiry", cookie.expiry);
+        this.stmtInsert.bindByName("lastAccessed", cookie.lastAccessed);
+        this.stmtInsert.bindByName("creationTime", cookie.creationTime);
+        this.stmtInsert.bindByName("isSecure", cookie.isSecure);
+        this.stmtInsert.bindByName("isHttpOnly", cookie.isHttpOnly);
+        this.stmtInsert.bindByName("inBrowserElement", cookie.inBrowserElement);
+        this.stmtInsert.bindByName(
+          "originAttributes",
+          ChromeUtils.originAttributesToSuffix(cookie.originAttributes)
+        );
+        this.stmtInsert.bindByName("sameSite", cookie.sameSite);
+        this.stmtInsert.bindByName("rawSameSite", cookie.rawSameSite);
+        this.stmtInsert.bindByName("schemeMap", cookie.schemeMap);
+        this.stmtInsert.bindByName(
+          "isPartitionedAttributeSet",
+          cookie.isPartitioned
+        );
+        break;
+
       default:
         do_throw("unrecognized schemaVersion!");
     }
@@ -755,6 +938,8 @@ CookieDatabaseConnection.prototype = {
 
       case 10:
       case 11:
+      case 12:
+      case 13:
         this.stmtDelete.bindByName("name", cookie.name);
         this.stmtDelete.bindByName("host", cookie.host);
         this.stmtDelete.bindByName("path", cookie.path);
@@ -798,6 +983,8 @@ CookieDatabaseConnection.prototype = {
 
       case 10:
       case 11:
+      case 12:
+      case 13:
         this.stmtDelete.bindByName("name", cookie.name);
         this.stmtDelete.bindByName("host", cookie.host);
         this.stmtDelete.bindByName("path", cookie.path);

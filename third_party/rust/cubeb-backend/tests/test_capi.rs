@@ -3,13 +3,15 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details
 
-#![cfg_attr(feature = "cargo-clippy", allow(float_cmp))]
+#![cfg_attr(feature = "cargo-clippy", allow(clippy::float_cmp))]
 
 #[macro_use]
 extern crate cubeb_backend;
 
-use cubeb_backend::{ffi, Context, ContextOps, DeviceCollectionRef, DeviceId, DeviceRef,
-                    DeviceType, Ops, Result, Stream, StreamOps, StreamParams, StreamParamsRef};
+use cubeb_backend::{
+    ffi, Context, ContextOps, DeviceCollectionRef, DeviceId, DeviceRef, DeviceType,
+    InputProcessingParams, Ops, Result, Stream, StreamOps, StreamParams, StreamParamsRef,
+};
 use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::ptr;
@@ -17,6 +19,7 @@ use std::ptr;
 pub const OPS: Ops = capi_new!(TestContext, TestStream);
 
 struct TestContext {
+    #[allow(dead_code)]
     pub ops: *const Ops,
 }
 
@@ -39,6 +42,9 @@ impl ContextOps for TestContext {
     }
     fn preferred_sample_rate(&mut self) -> Result<u32> {
         Ok(0u32)
+    }
+    fn supported_input_processing_params(&mut self) -> Result<InputProcessingParams> {
+        Ok(InputProcessingParams::NONE)
     }
     fn enumerate_devices(
         &mut self,
@@ -91,9 +97,6 @@ impl StreamOps for TestStream {
     fn stop(&mut self) -> Result<()> {
         Ok(())
     }
-    fn reset_default_device(&mut self) -> Result<()> {
-        Ok(())
-    }
     fn position(&mut self) -> Result<u64> {
         Ok(0u64)
     }
@@ -107,8 +110,20 @@ impl StreamOps for TestStream {
         assert_eq!(volume, 0.5);
         Ok(())
     }
+    fn set_name(&mut self, name: &CStr) -> Result<()> {
+        assert_eq!(name, CStr::from_bytes_with_nul(b"test\0").unwrap());
+        Ok(())
+    }
     fn current_device(&mut self) -> Result<&DeviceRef> {
         Ok(unsafe { DeviceRef::from_ptr(0xDEAD_BEEF as *mut _) })
+    }
+    fn set_input_mute(&mut self, mute: bool) -> Result<()> {
+        assert_eq!(mute, true);
+        Ok(())
+    }
+    fn set_input_processing_params(&mut self, params: InputProcessingParams) -> Result<()> {
+        assert_eq!(params, InputProcessingParams::ECHO_CANCELLATION);
+        Ok(())
     }
     fn device_destroy(&mut self, device: &DeviceRef) -> Result<()> {
         assert_eq!(device.as_ptr(), 0xDEAD_BEEF as *mut _);
@@ -167,6 +182,17 @@ fn test_ops_context_preferred_sample_rate() {
 }
 
 #[test]
+fn test_ops_context_supported_input_processing_params() {
+    let c: *mut ffi::cubeb = ptr::null_mut();
+    let mut params: ffi::cubeb_input_processing_params = InputProcessingParams::all().bits();
+    assert_eq!(
+        unsafe { OPS.get_supported_input_processing_params.unwrap()(c, &mut params) },
+        ffi::CUBEB_OK
+    );
+    assert_eq!(params, ffi::CUBEB_INPUT_PROCESSING_PARAM_NONE);
+}
+
+#[test]
 fn test_ops_context_enumerate_devices() {
     let c: *mut ffi::cubeb = ptr::null_mut();
     let mut coll = ffi::cubeb_device_collection {
@@ -222,6 +248,14 @@ fn test_ops_stream_set_volume() {
 }
 
 #[test]
+fn test_ops_stream_set_name() {
+    let s: *mut ffi::cubeb_stream = ptr::null_mut();
+    unsafe {
+        OPS.stream_set_name.unwrap()(s, CStr::from_bytes_with_nul(b"test\0").unwrap().as_ptr());
+    }
+}
+
+#[test]
 fn test_ops_stream_current_device() {
     let s: *mut ffi::cubeb_stream = ptr::null_mut();
     let mut device: *mut ffi::cubeb_device = ptr::null_mut();
@@ -230,6 +264,29 @@ fn test_ops_stream_current_device() {
         ffi::CUBEB_OK
     );
     assert_eq!(device, 0xDEAD_BEEF as *mut _);
+}
+
+#[test]
+fn test_ops_stream_set_input_mute() {
+    let s: *mut ffi::cubeb_stream = ptr::null_mut();
+    assert_eq!(
+        unsafe { OPS.stream_set_input_mute.unwrap()(s, 1) },
+        ffi::CUBEB_OK
+    );
+}
+
+#[test]
+fn test_ops_stream_set_input_processing_params() {
+    let s: *mut ffi::cubeb_stream = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            OPS.stream_set_input_processing_params.unwrap()(
+                s,
+                ffi::CUBEB_INPUT_PROCESSING_PARAM_ECHO_CANCELLATION,
+            )
+        },
+        ffi::CUBEB_OK
+    );
 }
 
 #[test]

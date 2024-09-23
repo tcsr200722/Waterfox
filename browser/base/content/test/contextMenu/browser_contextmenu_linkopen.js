@@ -73,17 +73,15 @@ async function activateContextAndWaitFor(selector, where) {
   );
   let domItem = contextMenu.querySelector("#context-" + contextMenuItem);
   info("Going to click item " + domItem.id);
-  let bounds = domItem.getBoundingClientRect();
   ok(
-    bounds.height && bounds.width,
+    BrowserTestUtils.isVisible(domItem),
     "DOM context menu item " + where + " should be visible"
   );
   ok(
     !domItem.disabled,
     "DOM context menu item " + where + " shouldn't be disabled"
   );
-  domItem.click();
-  contextMenu.hidePopup();
+  contextMenu.activateItem(domItem);
   await awaitPopupHidden;
 
   info("Waiting for the link to open");

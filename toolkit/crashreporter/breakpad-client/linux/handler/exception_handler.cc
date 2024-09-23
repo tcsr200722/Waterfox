@@ -96,10 +96,12 @@
 #include "linux/minidump_writer/minidump_writer.h"
 #include "common/linux/eintr_wrapper.h"
 #include "third_party/lss/linux_syscall_support.h"
-#include "prenv.h"
+#if defined(MOZ_OXIDIZED_BREAKPAD)
+#include "mozilla/toolkit/crashreporter/rust_minidump_writer_linux_ffi_generated.h"
+#endif
 
 #ifdef MOZ_PHC
-#include "replace_malloc_bridge.h"
+#include "PHC.h"
 #endif
 
 #if defined(__ANDROID__)
@@ -145,7 +147,7 @@ void InstallAlternateStackLocked() {
   // SIGSTKSZ may be too small to prevent the signal handlers from overrunning
   // the alternative stack. Ensure that the size of the alternative stack is
   // large enough.
-  static const unsigned kSigStackSize = std::max(16384, SIGSTKSZ);
+  static const size_t kSigStackSize = std::max(size_t(16384), size_t(SIGSTKSZ));
 
   // Only set an alternative stack if there isn't already one, or if the current
   // one is too small.
@@ -236,7 +238,7 @@ ExceptionHandler::ExceptionHandler(const MinidumpDescriptor& descriptor,
       minidump_descriptor_(descriptor),
       crash_handler_(NULL) {
 
-  g_skip_sigill_ = PR_GetEnv("MOZ_DISABLE_EXCEPTION_HANDLER_SIGILL") ? true : false;
+  g_skip_sigill_ = getenv("MOZ_DISABLE_EXCEPTION_HANDLER_SIGILL") ? true : false;
   if (server_fd >= 0)
     crash_generation_client_.reset(CrashGenerationClient::TryCreate(server_fd));
 
@@ -455,7 +457,7 @@ static void GetPHCAddrInfo(siginfo_t* siginfo,
                            mozilla::phc::AddrInfo* addr_info) {
   // Is this a crash involving a PHC allocation?
   if (siginfo->si_signo == SIGSEGV || siginfo->si_signo == SIGBUS) {
-    ReplaceMalloc::IsPHCAllocation(siginfo->si_addr, addr_info);
+    mozilla::phc::IsPHCAllocation(siginfo->si_addr, addr_info);
   }
 }
 #endif
@@ -463,12 +465,13 @@ static void GetPHCAddrInfo(siginfo_t* siginfo,
 // This function runs in a compromised context: see the top of the file.
 // Runs on the crashing thread.
 bool ExceptionHandler::HandleSignal(int /*sig*/, siginfo_t* info, void* uc) {
-  mozilla::phc::AddrInfo addr_info;
+  mozilla::phc::AddrInfo* addr_info = nullptr;
 #ifdef MOZ_PHC
-  GetPHCAddrInfo(info, &addr_info);
+  addr_info = &mozilla::phc::gAddrInfo;
+  GetPHCAddrInfo(info, addr_info);
 #endif
 
-  if (filter_ && !filter_(callback_context_, &addr_info))
+  if (filter_ && !filter_(callback_context_))
     return false;
 
   // Allow ourselves to be dumped if the signal is trusted.
@@ -509,7 +512,7 @@ bool ExceptionHandler::HandleSignal(int /*sig*/, siginfo_t* info, void* uc) {
     }
   }
 
-  return GenerateDump(&g_crash_context_, &addr_info);
+  return GenerateDump(&g_crash_context_, addr_info);
 }
 
 // This is a public interface to HandleSignal that allows the client to
@@ -528,8 +531,17 @@ bool ExceptionHandler::SimulateSignalDelivery(int sig) {
 // This function may run in a compromised context: see the top of the file.
 bool ExceptionHandler::GenerateDump(
     CrashContext *context, const mozilla::phc::AddrInfo* addr_info) {
-  if (IsOutOfProcess())
-    return crash_generation_client_->RequestDump(context, sizeof(*context));
+  if (IsOutOfProcess()) {
+    bool success =
+      crash_generation_client_->RequestDump(context, sizeof(*context));
+
+    if (callback_) {
+      success =
+        callback_(minidump_descriptor_, callback_context_, addr_info, success);
+    }
+
+    return success;
+  }
 
   // Allocating too much stack isn't a problem, and better to err on the side
   // of caution than smash it into random locations.
@@ -566,6 +578,13 @@ bool ExceptionHandler::GenerateDump(
     // Ensure fdes[0] and fdes[1] are invalid file descriptors.
     fdes[0] = fdes[1] = -1;
   }
+
+  static const char attempt_msg[] = "ExceptionHandler::GenerateDump attempting "
+                                    "to generate:";
+  logger::write(attempt_msg, sizeof(attempt_msg));
+  logger::write(minidump_descriptor_.path(),
+                my_strlen(minidump_descriptor_.path()));
+  logger::write("\n", 1);
 
   const pid_t child = sys_clone(
       ThreadEntry, stack, CLONE_FS | CLONE_UNTRACED, &thread_arg, NULL, NULL,
@@ -611,6 +630,19 @@ bool ExceptionHandler::GenerateDump(
   }
 
   bool success = r != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+
+  static const char generate_msg[] = "ExceptionHandler::GenerateDump minidump "
+                                     "generation ";
+  static const char success_msg[] = "succeeded\n";
+  static const char fail_msg[] = "succeeded\n";
+
+  logger::write(generate_msg, sizeof(generate_msg));
+  if (success) {
+    logger::write(success_msg, sizeof(success_msg));
+  } else {
+    logger::write(fail_msg, sizeof(fail_msg));
+  }
+
   if (callback_)
     success =
       callback_(minidump_descriptor_, callback_context_, addr_info, success);
@@ -840,10 +872,17 @@ bool ExceptionHandler::WriteMinidumpForChild(pid_t child,
   // This function is not run in a compromised context.
   MinidumpDescriptor descriptor(dump_path);
   descriptor.UpdatePath();
+#if defined(MOZ_OXIDIZED_BREAKPAD)
+  char* error_msg;
+  if (!write_minidump_linux(descriptor.path(), child, child_blamed_thread, &error_msg)) {
+      return false;
+  }
+#else
   if (!google_breakpad::WriteMinidump(descriptor.path(),
                                       child,
                                       child_blamed_thread))
       return false;
+#endif
 
   // nullptr here for phc::AddrInfo* is ok because this is not a crash.
   return callback ? callback(descriptor, callback_context, nullptr, true)

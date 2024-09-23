@@ -54,8 +54,8 @@ function testComparison64(opcode, lhs, rhs, expect) {
     wasmFullPass(`(module
                     (func $cmp (param i64) (param i64) (result i32)
                       (if (result i32) (i64.${opcode} (local.get 0) (local.get 1))
-                       (i32.const 1)
-                       (i32.const 0)))
+                       (then (i32.const 1))
+                       (else (i32.const 0))))
                     (func $assert (result i32)
                      i64.const ${lhs}
                      i64.const ${rhs}
@@ -137,6 +137,8 @@ testBinary32('rem_u', 41, 8, 1);
 testBinary32('and', 42, 6, 2);
 testBinary32('or', 42, 6, 46);
 testBinary32('xor', 42, 2, 40);
+testBinary32('xor', -1, 1739168047, -1739168048);
+testBinary32('xor', -1739168043, -1, 1739168042);
 testBinary32('shl', 40, 0, 40);
 testBinary32('shl', 40, 2, 160);
 testBinary32('shr_s', -40, 0, -40);
@@ -174,7 +176,7 @@ if (getJitCompilerOptions()["ion.warmup.trigger"] === 0)
     gc();
 
 // Test MTest's GVN branch inversion.
-var testTrunc = wasmEvalText(`(module (func (param f32) (result i32) (if (result i32) (i32.eqz (i32.trunc_s/f32 (local.get 0))) (i32.const 0) (i32.const 1))) (export "" (func 0)))`).exports[""];
+var testTrunc = wasmEvalText(`(module (func (param f32) (result i32) (if (result i32) (i32.eqz (i32.trunc_f32_s (local.get 0))) (then (i32.const 0)) (else (i32.const 1)))) (export "" (func 0)))`).exports[""];
 assertEq(testTrunc(0), 0);
 assertEq(testTrunc(13.37), 1);
 
@@ -232,6 +234,8 @@ testBinary64('or', "0x8765432112345678", "0xffff0000ffff0000", "0xffff4321ffff56
 
 testBinary64('xor', 42, 2, 40);
 testBinary64('xor', "0x8765432112345678", "0xffff0000ffff0000", "0x789a4321edcb5678");
+testBinary64('xor', "0xffffffffffffffff", "0x2c73173d985666d0", "0xd38ce8c267a9992f");
+testBinary64('xor', "0xe8f3437fe059746a", "0xffffffffffffffff", "0x170cbc801fa68b95");
 
 testBinary64('shl', 0xff00ff, 28, "0x0ff00ff0000000");
 testBinary64('shl', 0xff00ff, 30, "0x3fc03fc0000000");
@@ -372,7 +376,7 @@ wasmAssert(`(module (func $run (param i64) (result i64) (local i64) (local.set 1
            [{ type: 'i64', func: '$run', args: ['i64.const 2'], expected: 2048}]);
 
 // Test MTest's GVN branch inversion.
-var testTrunc = wasmEvalText(`(module (func (param f32) (result i32) (if (result i32) (i64.eqz (i64.trunc_s/f32 (local.get 0))) (i32.const 0) (i32.const 1))) (export "" (func 0)))`).exports[""];
+var testTrunc = wasmEvalText(`(module (func (param f32) (result i32) (if (result i32) (i64.eqz (i64.trunc_f32_s (local.get 0))) (then (i32.const 0)) (else (i32.const 1)))) (export "" (func 0)))`).exports[""];
 assertEq(testTrunc(0), 0);
 assertEq(testTrunc(13.37), 1);
 

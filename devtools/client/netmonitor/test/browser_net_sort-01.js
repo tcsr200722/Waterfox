@@ -7,8 +7,10 @@
  * Test if sorting columns in the network table works correctly with new requests.
  */
 
-add_task(async function() {
-  const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
+add_task(async function () {
+  const {
+    L10N,
+  } = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
 
   const { monitor } = await initNetMonitor(SORTING_URL, { requestCount: 1 });
   info("Starting test... ");
@@ -19,17 +21,13 @@ add_task(async function() {
 
   const { document, store, windowRequire } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
-  const {
-    getDisplayedRequests,
-    getSelectedRequest,
-    getSortedRequests,
-  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
+  const { getDisplayedRequests, getSelectedRequest, getSortedRequests } =
+    windowRequire("devtools/client/netmonitor/src/selectors/index");
 
   store.dispatch(Actions.batchEnable(false));
 
   // Loading the frame script and preparing the xhr request URLs so we can
   // generate some requests later.
-  loadFrameScriptUtils();
   const requests = [
     {
       url: "sjs_sorting-test-server.sjs?index=1&" + Math.random(),

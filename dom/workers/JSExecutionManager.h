@@ -7,24 +7,23 @@
 #ifndef mozilla_dom_workers_jsexecutionmanager_h__
 #define mozilla_dom_workers_jsexecutionmanager_h__
 
-#include "mozilla/dom/WorkerCommon.h"
-#include "mozilla/dom/WorkerRef.h"
-#include "mozilla/dom/WorkerStatus.h"
-#include "mozilla/StaticPtr.h"
-
-#include "nsICancelableRunnable.h"
-
-#include "mozilla/Atomics.h"
+#include <stdint.h>
+#include <deque>
+#include "MainThreadUtils.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/CondVar.h"
 #include "mozilla/Mutex.h"
-#include "nsISupportsImpl.h"
-#include "nsThreadUtils.h" /* nsRunnable */
+#include "mozilla/RefPtr.h"
+#include "nsISupports.h"
 
-#include <deque>
-
-struct JSContext;
-class nsIEventTarget;
 class nsIGlobalObject;
+namespace mozilla {
+
+class ErrorResult;
+
+namespace dom {
+class WorkerPrivate;
 
 // The code in this file is responsible for throttling JS execution. It does
 // this by introducing a JSExecutionManager class. An execution manager may be
@@ -55,12 +54,6 @@ class nsIGlobalObject;
 // only runs in a serialized manner. On the main thread we therefore may have
 // 1 execution manager per DocGroup, as this is the granularity at which
 // SharedArrayBuffers may be present.
-
-namespace mozilla {
-
-class ErrorResult;
-
-namespace dom {
 
 class AutoRequestJSThreadExecution;
 class AutoYieldJSThreadExecution;
@@ -111,16 +104,17 @@ class JSExecutionManager {
 
   // Workers waiting to be given permission for execution.
   // Guarded by mExecutionQueueMutex.
-  std::deque<WorkerPrivate*> mExecutionQueue;
+  std::deque<WorkerPrivate*> mExecutionQueue
+      MOZ_GUARDED_BY(mExecutionQueueMutex);
 
   // Number of threads currently executing concurrently for this manager.
   // Guarded by mExecutionQueueMutex.
-  int32_t mRunning = 0;
+  int32_t mRunning MOZ_GUARDED_BY(mExecutionQueueMutex) = 0;
 
   // Number of threads allowed to run concurrently for environments managed
   // by this manager.
   // Guarded by mExecutionQueueMutex.
-  int32_t mMaxRunning = 1;
+  int32_t mMaxRunning MOZ_GUARDED_BY(mExecutionQueueMutex) = 1;
 
   // Mutex that guards the execution queue and associated state.
   Mutex mExecutionQueueMutex =
@@ -137,7 +131,8 @@ class JSExecutionManager {
   // Whether the main thread is currently awaiting permission to execute. Main
   // thread execution is always prioritized.
   // Guarded by mExecutionQueueMutex.
-  bool mMainThreadAwaitingExecution = false;
+  bool mMainThreadAwaitingExecution MOZ_GUARDED_BY(mExecutionQueueMutex) =
+      false;
 };
 
 // Helper for managing execution requests and allowing re-entrant permission

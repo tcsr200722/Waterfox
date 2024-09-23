@@ -50,10 +50,20 @@ bool SparseBitmap::getBit(size_t bit) const {
   size_t word = bit / JS_BITS_PER_WORD;
   size_t blockWord = blockStartWord(word);
 
-  BitBlock* block = getBlock(blockWord / WordsInBlock);
+  const BitBlock* block = getBlock(blockWord / WordsInBlock);
   if (block) {
-    return (*block)[word - blockWord] &
-           (uintptr_t(1) << (bit % JS_BITS_PER_WORD));
+    return (*block)[word - blockWord] & bitMask(bit);
+  }
+  return false;
+}
+
+bool SparseBitmap::readonlyThreadsafeGetBit(size_t bit) const {
+  size_t word = bit / JS_BITS_PER_WORD;
+  size_t blockWord = blockStartWord(word);
+
+  const BitBlock* block = readonlyThreadsafeGetBlock(blockWord / WordsInBlock);
+  if (block) {
+    return (*block)[word - blockWord] & bitMask(bit);
   }
   return false;
 }
@@ -98,22 +108,6 @@ void SparseBitmap::bitwiseOrInto(DenseBitmap& other) const {
 #endif
     for (size_t i = 0; i < numWords; i++) {
       other.word(blockWord + i) |= block[i];
-    }
-  }
-}
-
-void SparseBitmap::bitwiseOrRangeInto(size_t wordStart, size_t numWords,
-                                      uintptr_t* target) const {
-  size_t blockWord = blockStartWord(wordStart);
-
-  // We only support using a single bit block in this API.
-  MOZ_ASSERT(numWords &&
-             (blockWord == blockStartWord(wordStart + numWords - 1)));
-
-  BitBlock* block = getBlock(blockWord / WordsInBlock);
-  if (block) {
-    for (size_t i = 0; i < numWords; i++) {
-      target[i] |= (*block)[wordStart - blockWord + i];
     }
   }
 }

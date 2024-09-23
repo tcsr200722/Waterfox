@@ -15,6 +15,11 @@ class nsTableCellFrame;
 namespace mozilla {
 class PresShell;
 struct TableCellReflowInput;
+
+// Yes if table-cells should use 'vertical-align:top' in
+// nsTableCellFrame::BlockDirAlignChild(). This is a hack to workaround our
+// current table row group fragmentation to avoid data loss.
+enum class ForceAlignTopForTableCell : uint8_t { No, Yes };
 }  // namespace mozilla
 
 /**
@@ -36,21 +41,18 @@ class nsTableRowFrame : public nsContainerFrame {
 
   virtual ~nsTableRowFrame();
 
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) override;
 
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
-  /** @see nsIFrame::DidSetComputedStyle */
-  virtual void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
+  void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
 
-  virtual void AppendFrames(ChildListID aListID,
-                            nsFrameList& aFrameList) override;
-  virtual void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
-                            const nsLineList::iterator* aPrevFrameLine,
-                            nsFrameList& aFrameList) override;
-  virtual void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) override;
+  void AppendFrames(ChildListID aListID, nsFrameList&& aFrameList) override;
+  void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
+                    const nsLineList::iterator* aPrevFrameLine,
+                    nsFrameList&& aFrameList) override;
+  void RemoveFrame(DestroyContext&, ChildListID, nsIFrame*) override;
 
   /** instantiate a new instance of nsTableRowFrame.
    * @param aPresShell the pres shell for this frame
@@ -70,12 +72,12 @@ class nsTableRowFrame : public nsContainerFrame {
     return GetTableRowGroupFrame()->GetTableFrame();
   }
 
-  virtual nsMargin GetUsedMargin() const override;
-  virtual nsMargin GetUsedBorder() const override;
-  virtual nsMargin GetUsedPadding() const override;
+  nsMargin GetUsedMargin() const override;
+  nsMargin GetUsedBorder() const override;
+  nsMargin GetUsedPadding() const override;
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
   void PaintCellBackgroundsForFrame(nsIFrame* aFrame,
                                     nsDisplayListBuilder* aBuilder,
@@ -103,21 +105,22 @@ class nsTableRowFrame : public nsContainerFrame {
    * @see nsTableFrame::BalanceColumnWidths
    * @see nsTableFrame::ShrinkWrapChildren
    */
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
-  void DidResize();
+  void DidResize(mozilla::ForceAlignTopForTableCell aForceAlignTop =
+                     mozilla::ForceAlignTopForTableCell::No);
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const override;
 #endif
 
   void UpdateBSize(nscoord aBSize, nscoord aAscent, nscoord aDescent,
                    nsTableFrame* aTableFrame = nullptr,
                    nsTableCellFrame* aCellFrame = nullptr);
 
-  void ResetBSize(nscoord aRowStyleBSize);
+  void ResetBSize();
 
   // calculate the bsize, considering content bsize of the
   // cells and the style bsize of the row and cells, excluding pct bsizes
@@ -134,7 +137,7 @@ class nsTableRowFrame : public nsContainerFrame {
 
   /* return the row ascent
    */
-  nscoord GetRowBaseline(mozilla::WritingMode aWritingMode);
+  Maybe<nscoord> GetRowBaseline(mozilla::WritingMode aWM);
 
   /** returns the ordinal position of this row in its table */
   virtual int32_t GetRowIndex() const;
@@ -148,7 +151,11 @@ class nsTableRowFrame : public nsContainerFrame {
   // See nsTableFrame.h
   void AddDeletedRowIndex();
 
-  /** used by row group frame code */
+  /**
+   * This function is called by the row group frame's SplitRowGroup() code when
+   * pushing a row frame that has cell frames that span into it. The cell frame
+   * should be reflowed with the specified available block-size.
+   */
   nscoord ReflowCellFrame(nsPresContext* aPresContext,
                           const ReflowInput& aReflowInput, bool aIsTopOfPage,
                           nsTableCellFrame* aCellFrame, nscoord aAvailableBSize,
@@ -175,9 +182,17 @@ class nsTableRowFrame : public nsContainerFrame {
    */
   void InsertCellFrame(nsTableCellFrame* aFrame, int32_t aColIndex);
 
-  nsresult CalculateCellActualBSize(nsTableCellFrame* aCellFrame,
-                                    nscoord& aDesiredBSize,
-                                    mozilla::WritingMode aWM);
+  /**
+   * Calculate the cell frame's actual block-size given its desired block-size
+   * (the border-box block-size in the last reflow). This method takes into
+   * account the specified bsize (in the style).
+   *
+   * @return the specified block-size if it is larger than the desired
+   *         block-size. Otherwise, the desired block-size.
+   */
+  nscoord CalcCellActualBSize(nsTableCellFrame* aCellFrame,
+                              const nscoord& aDesiredBSize,
+                              mozilla::WritingMode aWM);
 
   bool IsFirstInserted() const;
   void SetFirstInserted(bool aValue);
@@ -201,60 +216,30 @@ class nsTableRowFrame : public nsContainerFrame {
 
   nscoord GetInitialBSize(nscoord aBasis = 0) const;
 
+  nsTableRowFrame* GetPrevRow() const;
   nsTableRowFrame* GetNextRow() const;
 
-  bool HasUnpaginatedBSize();
-  void SetHasUnpaginatedBSize(bool aValue);
-  nscoord GetUnpaginatedBSize();
-  void SetUnpaginatedBSize(nsPresContext* aPresContext, nscoord aValue);
-
-  BCPixelSize GetBStartBCBorderWidth() const { return mBStartBorderWidth; }
-  BCPixelSize GetBEndBCBorderWidth() const { return mBEndBorderWidth; }
-  void SetBStartBCBorderWidth(BCPixelSize aWidth) {
-    mBStartBorderWidth = aWidth;
+  bool HasUnpaginatedBSize() const {
+    return HasAnyStateBits(NS_TABLE_ROW_HAS_UNPAGINATED_BSIZE);
   }
-  void SetBEndBCBorderWidth(BCPixelSize aWidth) { mBEndBorderWidth = aWidth; }
+  nscoord GetUnpaginatedBSize() const;
+  void SetUnpaginatedBSize(nscoord aValue);
+
+  nscoord GetBStartBCBorderWidth() const { return mBStartBorderWidth; }
+  nscoord GetBEndBCBorderWidth() const { return mBEndBorderWidth; }
+  void SetBStartBCBorderWidth(nscoord aWidth) { mBStartBorderWidth = aWidth; }
+  void SetBEndBCBorderWidth(nscoord aWidth) { mBEndBorderWidth = aWidth; }
   mozilla::LogicalMargin GetBCBorderWidth(mozilla::WritingMode aWM);
 
-  /**
-   * Gets inner border widths before collapsing with cell borders
-   * Caller must get block-end border from next row or from table
-   * GetContinuousBCBorderWidth will not overwrite that border
-   * see nsTablePainter about continuous borders
-   */
-  void GetContinuousBCBorderWidth(mozilla::WritingMode aWM,
-                                  mozilla::LogicalMargin& aBorder);
-
-  /**
-   * @returns outer block-start bc border == prev row's block-end inner
-   */
-  nscoord GetOuterBStartContBCBorderWidth();
-  /**
-   * Sets full border widths before collapsing with cell borders
-   * @param aForSide - side to set; only accepts iend, istart, and bstart
-   */
-  void SetContinuousBCBorderWidth(mozilla::LogicalSide aForSide,
-                                  BCPixelSize aPixelValue);
-
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    if (aFlags & eSupportsContainLayoutAndPaint) {
-      return false;
-    }
-
-    return nsContainerFrame::IsFrameOfType(aFlags & ~(nsIFrame::eTablePart));
-  }
-
-  virtual void InvalidateFrame(uint32_t aDisplayItemKey = 0,
+  void InvalidateFrame(uint32_t aDisplayItemKey = 0,
+                       bool aRebuildDisplayItems = true) override;
+  void InvalidateFrameWithRect(const nsRect& aRect,
+                               uint32_t aDisplayItemKey = 0,
                                bool aRebuildDisplayItems = true) override;
-  virtual void InvalidateFrameWithRect(
-      const nsRect& aRect, uint32_t aDisplayItemKey = 0,
-      bool aRebuildDisplayItems = true) override;
-  virtual void InvalidateFrameForRemoval() override {
-    InvalidateFrameSubtree();
-  }
+  void InvalidateFrameForRemoval() override { InvalidateFrameSubtree(); }
 
 #ifdef ACCESSIBILITY
-  virtual mozilla::a11y::AccType AccessibleType() override;
+  mozilla::a11y::AccType AccessibleType() override;
 #endif
 
  protected:
@@ -269,8 +254,7 @@ class nsTableRowFrame : public nsContainerFrame {
                             bool aBorderCollapse,
                             TableCellReflowInput& aReflowInput);
 
-  virtual LogicalSides GetLogicalSkipSides(
-      const ReflowInput* aReflowInput = nullptr) const override;
+  LogicalSides GetLogicalSkipSides() const override;
 
   // row-specific methods
 
@@ -296,26 +280,26 @@ class nsTableRowFrame : public nsContainerFrame {
   } mBits;
 
   // the desired bsize based on the content of the tallest cell in the row
-  nscoord mContentBSize;
+  nscoord mContentBSize = 0;
   // the bsize based on a style percentage bsize on either the row or any cell
   // if mHasPctBSize is set
-  nscoord mStylePctBSize;
+  nscoord mStylePctBSize = 0;
   // the bsize based on a style pixel bsize on the row or any
   // cell if mHasFixedBSize is set
-  nscoord mStyleFixedBSize;
+  nscoord mStyleFixedBSize = 0;
 
   // max-ascent and max-descent amongst all cells that have
   // 'vertical-align: baseline'
-  nscoord mMaxCellAscent;   // does include cells with rowspan > 1
-  nscoord mMaxCellDescent;  // does *not* include cells with rowspan > 1
+  nscoord mMaxCellAscent = 0;   // does include cells with rowspan > 1
+  nscoord mMaxCellDescent = 0;  // does *not* include cells with rowspan > 1
 
-  // border widths in pixels in the collapsing border model of the *inner*
+  // border widths in the collapsing border model of the *inner*
   // half of the border only
-  BCPixelSize mBStartBorderWidth;
-  BCPixelSize mBEndBorderWidth;
-  BCPixelSize mIEndContBorderWidth;
-  BCPixelSize mBStartContBorderWidth;
-  BCPixelSize mIStartContBorderWidth;
+  nscoord mBStartBorderWidth = 0;
+  nscoord mBEndBorderWidth = 0;
+  nscoord mIEndContBorderWidth = 0;
+  nscoord mBStartContBorderWidth = 0;
+  nscoord mIStartContBorderWidth = 0;
 
   /**
    * Sets the NS_ROW_HAS_CELL_WITH_STYLE_BSIZE bit to indicate whether
@@ -402,37 +386,10 @@ inline float nsTableRowFrame::GetPctBSize() const {
   return 0.0f;
 }
 
-inline bool nsTableRowFrame::HasUnpaginatedBSize() {
-  return HasAnyStateBits(NS_TABLE_ROW_HAS_UNPAGINATED_BSIZE);
-}
-
-inline void nsTableRowFrame::SetHasUnpaginatedBSize(bool aValue) {
-  if (aValue) {
-    AddStateBits(NS_TABLE_ROW_HAS_UNPAGINATED_BSIZE);
-  } else {
-    RemoveStateBits(NS_TABLE_ROW_HAS_UNPAGINATED_BSIZE);
-  }
-}
-
 inline mozilla::LogicalMargin nsTableRowFrame::GetBCBorderWidth(
     mozilla::WritingMode aWM) {
-  nsPresContext* presContext = PresContext();
-  return mozilla::LogicalMargin(
-      aWM, presContext->DevPixelsToAppUnits(mBStartBorderWidth), 0,
-      presContext->DevPixelsToAppUnits(mBEndBorderWidth), 0);
-}
-
-inline void nsTableRowFrame::GetContinuousBCBorderWidth(
-    mozilla::WritingMode aWM, mozilla::LogicalMargin& aBorder) {
-  int32_t d2a = PresContext()->AppUnitsPerDevPixel();
-  aBorder.IEnd(aWM) = BC_BORDER_START_HALF_COORD(d2a, mIStartContBorderWidth);
-  aBorder.BStart(aWM) = BC_BORDER_END_HALF_COORD(d2a, mBStartContBorderWidth);
-  aBorder.IStart(aWM) = BC_BORDER_END_HALF_COORD(d2a, mIEndContBorderWidth);
-}
-
-inline nscoord nsTableRowFrame::GetOuterBStartContBCBorderWidth() {
-  int32_t aPixelsToTwips = mozilla::AppUnitsPerCSSPixel();
-  return BC_BORDER_START_HALF_COORD(aPixelsToTwips, mBStartContBorderWidth);
+  return mozilla::LogicalMargin(aWM, mBStartBorderWidth, 0, mBEndBorderWidth,
+                                0);
 }
 
 #endif

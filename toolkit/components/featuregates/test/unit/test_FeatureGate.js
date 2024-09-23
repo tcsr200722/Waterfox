@@ -3,13 +3,15 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://featuregates/FeatureGate.jsm", this);
-ChromeUtils.import(
-  "resource://featuregates/FeatureGateImplementation.jsm",
-  this
+const { FeatureGate } = ChromeUtils.importESModule(
+  "resource://featuregates/FeatureGate.sys.mjs"
 );
-ChromeUtils.import("resource://testing-common/httpd.js", this);
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
 
 const kDefinitionDefaults = {
   id: "test-feature",
@@ -56,14 +58,33 @@ class DefinitionServer {
   addDefinition(overrides = {}) {
     const definition = definitionFactory(overrides);
     // convert targeted values, used by fromId
-    definition.isPublic = { default: definition.isPublic };
-    definition.defaultValue = { default: definition.defaultValue };
+    definition.isPublicJexl = definition.isPublic ? "!testFact" : "testFact";
+    definition.defaultValueJexl = definition.defaultValue
+      ? "!testFact"
+      : "testFact";
     this.definitions[definition.id] = definition;
     return definition;
   }
 }
 
 // ============================================================================
+add_task(async function testReadAll() {
+  const server = new DefinitionServer();
+  let ids = ["test-featureA", "test-featureB", "test-featureC"];
+  for (let id of ids) {
+    server.addDefinition({ id });
+  }
+  let sortedIds = ids.sort();
+  const features = await FeatureGate.all(server.definitionsUrl);
+  for (let feature of features) {
+    equal(
+      feature.id,
+      sortedIds.shift(),
+      "Features are returned in order of definition"
+    );
+  }
+  equal(sortedIds.length, 0, "All features are returned when calling all()");
+});
 
 // The getters and setters should read correctly from the definition
 add_task(async function testReadFromDefinition() {
@@ -101,13 +122,14 @@ add_task(async function testReadFromDefinition() {
   // targeted fields
   equal(
     feature.defaultValue,
-    definition.defaultValue.default,
-    "defaultValue should be processed as a targeted value"
+    false,
+    "defaultValue should be false because testFact was not provided."
   );
+
   equal(
     feature.isPublic,
-    definition.isPublic.default,
-    "isPublic should be processed as a targeted value"
+    false,
+    "isPublic should be false because testFact was not provided."
   );
 
   // cleanup
@@ -116,66 +138,50 @@ add_task(async function testReadFromDefinition() {
 
 // Targeted values should return the correct value
 add_task(async function testTargetedValues() {
-  const backstage = ChromeUtils.import(
-    "resource://featuregates/FeatureGate.jsm",
-    null
+  const targetingFacts = {
+    true1: true,
+    true2: true,
+    false1: false,
+    false2: false,
+  };
+
+  Assert.equal(
+    await FeatureGate.evaluateJexlValue("true1", targetingFacts),
+    true,
+    "A true value should be reflected"
   );
-  const targetingFacts = new Map(
-    Object.entries({ true1: true, true2: true, false1: false, false2: false })
+  Assert.equal(
+    await FeatureGate.evaluateJexlValue("false1", targetingFacts),
+    false,
+    "A false value should be reflected"
+  );
+  Assert.equal(
+    await FeatureGate.evaluateJexlValue("false"),
+    false,
+    "Boolean literal false should work"
   );
 
   Assert.equal(
-    backstage.evaluateTargetedValue({ default: "foo" }, targetingFacts),
-    "foo",
-    "A lone default value should be returned"
+    await FeatureGate.evaluateJexlValue("true"),
+    true,
+    "Boolean literal true should work"
+  );
+
+  Assert.equal(
+    await FeatureGate.evaluateJexlValue("false2 || true1", targetingFacts),
+    true,
+    "Compound expressions work."
+  );
+
+  Assert.equal(
+    await FeatureGate.evaluateJexlValue("testFact", {}),
+    false,
+    "Non-existing terms in the expression get coerced to bool false."
   );
   Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", true1: "bar" },
-      targetingFacts
-    ),
-    "bar",
-    "A true target should override the default"
-  );
-  Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", false1: "bar" },
-      targetingFacts
-    ),
-    "foo",
-    "A false target should not overrides the default"
-  );
-  Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", "true1,true2": "bar" },
-      targetingFacts
-    ),
-    "bar",
-    "A compound target of two true targets should override the default"
-  );
-  Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", "true1,false1": "bar" },
-      targetingFacts
-    ),
-    "foo",
-    "A compound target of a true target and a false target should not override the default"
-  );
-  Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", "false1,false2": "bar" },
-      targetingFacts
-    ),
-    "foo",
-    "A compound target of two false targets should not override the default"
-  );
-  Assert.equal(
-    backstage.evaluateTargetedValue(
-      { default: "foo", false1: "bar", true1: "baz" },
-      targetingFacts
-    ),
-    "baz",
-    "A true target should override the default when a false target is also present"
+    await FeatureGate.evaluateJexlValue("testFact", { testFact: true }),
+    true,
+    "Providing testFact=true, the expression returns true."
   );
 });
 
@@ -370,3 +376,37 @@ add_task(async function testGetValue() {
   // cleanup
   Services.prefs.getDefaultBranch("").deleteBranch(preference);
 });
+
+if (AppConstants.platform != "android") {
+  // All preferences should have default values.
+  add_task(async function testAllHaveDefault() {
+    const featuresList = await FeatureGate.all();
+    for (let feature of featuresList) {
+      notEqual(
+        typeof feature.defaultValue,
+        "undefined",
+        `Feature ${feature.id} should have a defined default value!`
+      );
+      notEqual(
+        feature.defaultValue,
+        null,
+        `Feature ${feature.id} should have a non-null default value!`
+      );
+    }
+  });
+
+  // All preference defaults should match service pref defaults
+  add_task(async function testAllDefaultsMatchSettings() {
+    const featuresList = await FeatureGate.all();
+    for (let feature of featuresList) {
+      let value = Services.prefs
+        .getDefaultBranch("")
+        .getBoolPref(feature.preference);
+      equal(
+        feature.defaultValue,
+        value,
+        `Feature ${feature.preference} should match runtime value.`
+      );
+    }
+  });
+}

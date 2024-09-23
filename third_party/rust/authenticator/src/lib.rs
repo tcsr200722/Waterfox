@@ -2,52 +2,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::bool_to_int_with_if)]
+
 #[macro_use]
 mod util;
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub mod hidproto;
-
-#[cfg(any(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 extern crate libudev;
 
-#[cfg(any(target_os = "linux"))]
-#[path = "linux/mod.rs"]
-pub mod platform;
-
-#[cfg(any(target_os = "freebsd"))]
+#[cfg(target_os = "freebsd")]
 extern crate devd_rs;
 
-#[cfg(any(target_os = "freebsd"))]
-#[path = "freebsd/mod.rs"]
-pub mod platform;
-
-#[cfg(any(target_os = "openbsd"))]
-#[path = "openbsd/mod.rs"]
-pub mod platform;
-
-#[cfg(any(target_os = "macos"))]
+#[cfg(target_os = "macos")]
 extern crate core_foundation;
 
-#[cfg(any(target_os = "macos"))]
-#[path = "macos/mod.rs"]
-pub mod platform;
-
-#[cfg(any(target_os = "windows"))]
-#[path = "windows/mod.rs"]
-pub mod platform;
-
-#[cfg(not(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "macos",
-    target_os = "windows"
-)))]
-#[path = "stub/mod.rs"]
-pub mod platform;
-
-extern crate boxfnonce;
 extern crate libc;
 #[macro_use]
 extern crate log;
@@ -58,15 +28,31 @@ extern crate runloop;
 extern crate bitflags;
 
 mod consts;
+mod manager;
 mod statemachine;
-mod u2fprotocol;
+mod status_update;
+mod transport;
 mod u2ftypes;
 
-mod manager;
-pub use manager::U2FManager;
-
-mod capi;
-pub use capi::*;
+pub mod authenticatorservice;
+pub mod crypto;
+pub mod ctap2;
+pub mod errors;
+pub mod statecallback;
+pub use ctap2::attestation::AttestationObject;
+pub use ctap2::commands::bio_enrollment::BioEnrollmentResult;
+pub use ctap2::commands::client_pin::{Pin, PinError};
+pub use ctap2::commands::credential_management::CredentialManagementResult;
+pub use ctap2::commands::get_assertion::{Assertion, GetAssertionResult};
+pub use ctap2::commands::get_info::AuthenticatorInfo;
+pub use ctap2::commands::make_credentials::MakeCredentialsResult;
+use serde::Serialize;
+pub use statemachine::StateMachine;
+pub use status_update::{
+    BioEnrollmentCmd, CredManagementCmd, InteractiveRequest, InteractiveUpdate, StatusPinUv,
+    StatusUpdate,
+};
+pub use transport::{FidoDevice, FidoDeviceIO, FidoProtocol, VirtualFidoDevice};
 
 // Keep this in sync with the constants in u2fhid-capi.h.
 bitflags! {
@@ -89,28 +75,39 @@ bitflags! {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct KeyHandle {
     pub credential: Vec<u8>,
     pub transports: AuthenticatorTransports,
 }
 
 pub type AppId = Vec<u8>;
-pub type RegisterResult = Vec<u8>;
-pub type SignResult = (AppId, Vec<u8>, Vec<u8>);
 
-#[derive(Debug, Clone, Copy)]
-pub enum Error {
-    Unknown = 1,
-    NotSupported = 2,
-    InvalidState = 3,
-    ConstraintError = 4,
-    NotAllowed = 5,
+pub type RegisterResult = MakeCredentialsResult;
+pub type SignResult = GetAssertionResult;
+
+#[derive(Debug, Serialize)]
+pub enum ManageResult {
+    Success,
+    CredManagement(CredentialManagementResult),
+    BioEnrollment(BioEnrollmentResult),
 }
+
+pub type ResetResult = ();
+
+impl From<ResetResult> for ManageResult {
+    fn from(_value: ResetResult) -> Self {
+        ManageResult::Success
+    }
+}
+
+pub type Result<T> = std::result::Result<T, errors::AuthenticatorError>;
+
+#[cfg(test)]
+#[macro_use]
+extern crate assert_matches;
 
 #[cfg(fuzzing)]
 pub use consts::*;
-#[cfg(fuzzing)]
-pub use u2fprotocol::*;
 #[cfg(fuzzing)]
 pub use u2ftypes::*;

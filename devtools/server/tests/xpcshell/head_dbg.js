@@ -8,7 +8,9 @@ var CC = Components.Constructor;
 
 // Populate AppInfo before anything (like the shared loader) accesses
 // System.appinfo, which is a lazy getter.
-const appInfo = ChromeUtils.import("resource://testing-common/AppInfo.jsm");
+const appInfo = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
+);
 appInfo.updateAppInfo({
   ID: "devtools@tests.mozilla.org",
   name: "devtools-tests",
@@ -17,45 +19,57 @@ appInfo.updateAppInfo({
   crashReporter: true,
 });
 
-const { require, loader } = ChromeUtils.import(
-  "resource://devtools/shared/Loader.jsm"
+const { require, loader } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/Loader.sys.mjs"
 );
-const { worker } = ChromeUtils.import(
-  "resource://devtools/shared/worker/loader.js"
+const { worker } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/worker-loader.sys.mjs"
 );
-const defer = require("devtools/shared/defer");
-const { NetUtil } = require("resource://gre/modules/NetUtil.jsm");
 
-const Services = require("Services");
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+
 // Always log packets when running tests. runxpcshelltests.py will throw
 // the output away anyway, unless you give it the --verbose flag.
 Services.prefs.setBoolPref("devtools.debugger.log", false);
 // Enable remote debugging for the relevant tests.
 Services.prefs.setBoolPref("devtools.debugger.remote-enabled", true);
 
-const makeDebugger = require("devtools/server/actors/utils/make-debugger");
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
+const makeDebugger = require("resource://devtools/server/actors/utils/make-debugger.js");
+const DevToolsUtils = require("resource://devtools/shared/DevToolsUtils.js");
 const {
   ActorRegistry,
-} = require("devtools/server/actors/utils/actor-registry");
-const { DevToolsServer } = require("devtools/server/devtools-server");
+} = require("resource://devtools/server/actors/utils/actor-registry.js");
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
 const { DevToolsServer: WorkerDevToolsServer } = worker.require(
-  "devtools/server/devtools-server"
+  "resource://devtools/server/devtools-server.js"
 );
-const { DevToolsClient } = require("devtools/client/devtools-client");
-const { ObjectFront } = require("devtools/client/fronts/object");
-const { LongStringFront } = require("devtools/client/fronts/string");
-const { TargetFactory } = require("devtools/client/framework/target");
+const {
+  DevToolsClient,
+} = require("resource://devtools/client/devtools-client.js");
+const { ObjectFront } = require("resource://devtools/client/fronts/object.js");
+const {
+  LongStringFront,
+} = require("resource://devtools/client/fronts/string.js");
+const {
+  createCommandsDictionary,
+} = require("resource://devtools/shared/commands/index.js");
+const {
+  CommandsFactory,
+} = require("resource://devtools/shared/commands/commands-factory.js");
 
-const { addDebuggerToGlobal } = ChromeUtils.import(
-  "resource://gre/modules/jsdebugger.jsm"
+const { addDebuggerToGlobal } = ChromeUtils.importESModule(
+  "resource://gre/modules/jsdebugger.sys.mjs"
 );
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
-const { getAppInfo } = ChromeUtils.import(
-  "resource://testing-common/AppInfo.jsm"
+const { getAppInfo } = ChromeUtils.importESModule(
+  "resource://testing-common/AppInfo.sys.mjs"
 );
 
 const systemPrincipal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
@@ -63,6 +77,32 @@ const systemPrincipal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
 );
 
 var { loadSubScript, loadSubScriptWithOptions } = Services.scriptloader;
+
+/**
+ * The logic here must resemble the logic of --start-debugger-server as closely
+ * as possible. DevToolsStartup.sys.mjs uses a distinct loader that results in
+ * the existence of two isolated module namespaces. In practice, this can cause
+ * bugs such as bug 1837185.
+ */
+function getDistinctDevToolsServer() {
+  const {
+    useDistinctSystemPrincipalLoader,
+    releaseDistinctSystemPrincipalLoader,
+  } = ChromeUtils.importESModule(
+    "resource://devtools/shared/loader/DistinctSystemPrincipalLoader.sys.mjs",
+    { global: "shared" }
+  );
+  const requester = {};
+  const distinctLoader = useDistinctSystemPrincipalLoader(requester);
+  registerCleanupFunction(() => {
+    releaseDistinctSystemPrincipalLoader(requester);
+  });
+
+  const { DevToolsServer: DistinctDevToolsServer } = distinctLoader.require(
+    "resource://devtools/server/devtools-server.js"
+  );
+  return DistinctDevToolsServer;
+}
 
 /**
  * Initializes any test that needs to work with add-ons.
@@ -75,8 +115,6 @@ async function startupAddonsManager() {
   const profileDir = do_get_profile().clone();
   profileDir.append("extensions");
 
-  /* global globalThis */
-  /* See Bug 1595810 to add globalThis to eslint */
   AddonTestUtils.init(globalThis);
   AddonTestUtils.overrideCertDB();
   AddonTestUtils.appInfo = getAppInfo();
@@ -89,19 +127,18 @@ async function createTargetForFakeTab(title) {
 
   const tabs = await listTabs(client);
   const tabDescriptor = findTab(tabs, title);
+
+  // These xpcshell tests use mocked actors (xpcshell-test/testactors)
+  // which still don't support watcher actor.
+  // Because of that we still can't enable server side targets and target swiching.
+  tabDescriptor.disableTargetSwitching();
+
   return tabDescriptor.getTarget();
 }
 
 async function createTargetForMainProcess() {
-  DevToolsServer.init();
-  DevToolsServer.registerAllActors();
-  DevToolsServer.allowChromeProcess = true;
-
-  const client = new DevToolsClient(DevToolsServer.connectPipe());
-  await client.connect();
-
-  const mainProcessDescriptor = await client.mainRoot.getMainProcess();
-  return mainProcessDescriptor.getTarget();
+  const commands = await CommandsFactory.forMainProcess();
+  return commands.descriptorFront.getTarget();
 }
 
 /**
@@ -162,11 +199,23 @@ function createLongStringFront(conn, form) {
   return front;
 }
 
-function createTestGlobal(name) {
-  const sandbox = Cu.Sandbox(
-    Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+function createTestGlobal(name, options) {
+  const principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
+    Ci.nsIPrincipal
   );
+  // NOTE: The Sandbox constructor behaves differently based on the argument
+  //       length.
+  const sandbox = options
+    ? Cu.Sandbox(principal, options)
+    : Cu.Sandbox(principal);
   sandbox.__name = name;
+  // Expose a few mocks to better represent a Window object.
+  // These attributes will be used by DOCUMENT_EVENT resource listener.
+  sandbox.performance = { timing: {} };
+  sandbox.document = {
+    readyState: "complete",
+    defaultView: sandbox,
+  };
   return sandbox;
 }
 
@@ -197,14 +246,9 @@ function findTab(tabs, title) {
 
 function waitForNewSource(threadFront, url) {
   dump("Waiting for new source with url '" + url + "'.\n");
-  return waitForEvent(threadFront, "newSource", function(packet) {
+  return waitForEvent(threadFront, "newSource", function (packet) {
     return packet.source.url === url;
   });
-}
-
-function attachThread(targetFront, options = {}) {
-  dump("Attaching to thread.\n");
-  return targetFront.attachThread(options);
 }
 
 function resume(threadFront) {
@@ -292,7 +336,7 @@ function scriptErrorLogLevel(message) {
 // into the ether.
 var errorCount = 0;
 var listener = {
-  observe: function(message) {
+  observe(message) {
     try {
       let string;
       errorCount++;
@@ -348,22 +392,14 @@ var listener = {
 
 Services.console.registerListener(listener);
 
-function testGlobal(name) {
-  const sandbox = Cu.Sandbox(
-    Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
-  );
-  sandbox.__name = name;
-  return sandbox;
-}
-
 function addTestGlobal(name, server = DevToolsServer) {
-  const global = testGlobal(name);
+  const global = createTestGlobal(name);
   server.addTestGlobal(global);
   return global;
 }
 
 // List the DevToolsClient |client|'s tabs, look for one whose title is
-// |title|, and apply |callback| to the packet's entry for that tab.
+// |title|.
 async function getTestTab(client, title) {
   const tabs = await client.mainRoot.listTabs();
   for (const tab of tabs) {
@@ -373,44 +409,48 @@ async function getTestTab(client, title) {
   }
   return null;
 }
-
-// Attach to |client|'s tab whose title is |title|; and return the targetFront instance
-// referring to that tab.
+/**
+ *  Attach to the client's tab whose title is specified
+ * @param {Object} client
+ * @param {Object} title
+ * @returns commands
+ */
 async function attachTestTab(client, title) {
   const descriptorFront = await getTestTab(client, title);
-  const targetFront = await descriptorFront.getTarget();
-  await targetFront.attach();
-  return targetFront;
+
+  // These xpcshell tests use mocked actors (xpcshell-test/testactors)
+  // which still don't support watcher actor.
+  // Because of that we still can't enable server side targets and target swiching.
+  descriptorFront.disableTargetSwitching();
+
+  const commands = await createCommandsDictionary(descriptorFront);
+  await commands.targetCommand.startListening();
+  return commands;
 }
 
-// Attach to |client|'s tab whose title is |title|, and then attach to
-// that tab's thread. Pass |callback| the thread attach response packet, a
-// TargetFront referring to the tab, and a ThreadFront referring to the
-// thread.
-async function attachTestThread(client, title, callback = () => {}) {
-  const targetFront = await attachTestTab(client, title);
-  const threadFront = await targetFront.getFront("thread");
-  const onPaused = threadFront.once("paused");
-  await targetFront.attachThread({
-    autoBlackBox: true,
+/**
+ * Attach to the client's tab whose title is specified, and then attach to
+ * that tab's thread.
+ * @param {Object} client
+ * @param {Object} title
+ * @returns {Object}
+ *         targetFront
+ *         threadFront
+ *         commands
+ */
+async function attachTestThread(client, title) {
+  const commands = await attachTestTab(client, title);
+  const targetFront = commands.targetCommand.targetFront;
+
+  // Pass any configuration, in order to ensure starting all the thread actors
+  // and have them to handle debugger statements.
+  await commands.threadConfigurationCommand.updateConfiguration({
+    skipBreakpoints: false,
   });
-  const response = await onPaused;
-  Assert.equal(threadFront.state, "paused", "Thread client is paused");
-  Assert.ok("why" in response);
-  Assert.equal(response.why.type, "attached");
-  callback(response, targetFront, threadFront);
-  return { targetFront, threadFront };
-}
 
-// Attach to |client|'s tab whose title is |title|, attach to the tab's
-// thread, and then resume it. Pass |callback| the thread's response to
-// the 'resume' packet, a TargetFront for the tab, and a ThreadFront for the
-// thread.
-async function attachTestTabAndResume(client, title, callback = () => {}) {
-  const { targetFront, threadFront } = await attachTestThread(client, title);
-  const response = await threadFront.resume();
-  callback(response, targetFront, threadFront);
-  return { targetFront, threadFront };
+  const threadFront = await targetFront.getFront("thread");
+  Assert.equal(threadFront.state, "attached", "Thread front is attached");
+  return { targetFront, threadFront, commands };
 }
 
 /**
@@ -426,7 +466,7 @@ function initTestDevToolsServer(server = DevToolsServer) {
   }
 
   // Allow incoming connections.
-  server.init(function() {
+  server.init(function () {
     return true;
   });
 }
@@ -511,16 +551,16 @@ function writeFile(fileName, content) {
     do {
       const numWritten = stream.write(content, content.length);
       content = content.slice(numWritten);
-    } while (content.length > 0);
+    } while (content.length);
   } finally {
     stream.close();
   }
 }
 
 function StubTransport() {}
-StubTransport.prototype.ready = function() {};
-StubTransport.prototype.send = function() {};
-StubTransport.prototype.close = function() {};
+StubTransport.prototype.ready = function () {};
+StubTransport.prototype.send = function () {};
+StubTransport.prototype.close = function () {};
 
 // Create async version of the object where calling each method
 // is equivalent of calling it with asyncall. Mainly useful for
@@ -556,7 +596,7 @@ function waitForEvent(front, type, predicate) {
     return front.once(type);
   }
 
-  return new Promise(function(resolve) {
+  return new Promise(function (resolve) {
     function listener(packet) {
       if (!predicate(packet)) {
         return;
@@ -613,9 +653,10 @@ function interrupt(threadFront) {
  * @param ThreadFront threadFront
  * @returns Promise
  */
-function resumeAndWaitForPause(threadFront) {
+async function resumeAndWaitForPause(threadFront) {
   const paused = waitForPause(threadFront);
-  return resume(threadFront).then(() => paused);
+  await resume(threadFront);
+  return paused;
 }
 
 /**
@@ -659,6 +700,20 @@ async function stepOut(threadFront, frameActor) {
 }
 
 /**
+ * Restart specific frame and wait for the pause after the restart
+ * has been taken.
+ *
+ * @param DevToolsClient client
+ * @param ThreadFront threadFront
+ * @returns Promise
+ */
+async function restartFrame(threadFront, frameActor) {
+  dumpn("Restarting frame.");
+  await threadFront.restart(frameActor);
+  return waitForPause(threadFront);
+}
+
+/**
  * Get the list of `count` frames currently on stack, starting at the index
  * `first` for the specified thread.
  *
@@ -698,18 +753,6 @@ async function unBlackBox(sourceFront, range = null) {
 }
 
 /**
- * Perform a "source" RDP request with the given SourceFront to get the source
- * content and content type.
- *
- * @param SourceFront sourceFront
- * @returns Promise
- */
-function getSourceContent(sourceFront) {
-  dumpn("Getting source content for " + sourceFront.actor);
-  return sourceFront.source();
-}
-
-/**
  * Get a source at the specified url.
  *
  * @param ThreadFront threadFront
@@ -738,6 +781,15 @@ async function getSourceForm(threadFront, url) {
 async function getSourceFormById(threadFront, id) {
   const { sources } = await threadFront.getSources();
   return sources.find(source => source.actor == id);
+}
+
+async function checkFramesLength(threadFront, expectedFrames) {
+  const frameResponse = await threadFront.getFrames(0, null);
+  Assert.equal(
+    frameResponse.frames.length,
+    expectedFrames,
+    "Thread front has the expected number of frames"
+  );
 }
 
 /**
@@ -796,11 +848,23 @@ async function setupTestFromUrl(url) {
 
   const tabs = await listTabs(devToolsClient);
   const descriptorFront = findTab(tabs, "test");
-  const targetFront = await descriptorFront.getTarget();
-  await targetFront.attach();
 
-  const threadFront = await attachThread(targetFront);
-  await resume(threadFront);
+  // These xpcshell tests use mocked actors (xpcshell-test/testactors)
+  // which still don't support watcher actor.
+  // Because of that we still can't enable server side targets and target swiching.
+  descriptorFront.disableTargetSwitching();
+
+  const targetFront = await descriptorFront.getTarget();
+
+  const commands = await createCommandsDictionary(descriptorFront);
+
+  // Pass any configuration, in order to ensure starting all the thread actor
+  // and have it to notify about all sources
+  await commands.threadConfigurationCommand.updateConfiguration({
+    skipBreakpoints: false,
+  });
+
+  const threadFront = await targetFront.getFront("thread");
 
   const sourceUrl = getFileUrl(url);
   const promise = waitForNewSource(threadFront, sourceUrl);
@@ -864,7 +928,7 @@ function threadFrontTest(test, options = {}) {
 
     // Attach to the fake tab target and retrieve the ThreadFront instance.
     // Automatically resume as the thread is paused by default after attach.
-    const { targetFront, threadFront } = await attachTestTabAndResume(
+    const { targetFront, threadFront, commands } = await attachTestThread(
       client,
       scriptName
     );
@@ -872,9 +936,8 @@ function threadFrontTest(test, options = {}) {
     // Cross the client/server boundary to retrieve the target actor & thread
     // actor instances, used by some tests.
     const rootActor = client.transport._serverConnection.rootActor;
-    const targetActor = rootActor._parameters.tabList.getTargetActorForTab(
-      "debuggee.js"
-    );
+    const targetActor =
+      rootActor._parameters.tabList.getTargetActorForTab("debuggee.js");
     const { threadActor } = targetActor;
 
     // Run the test function
@@ -885,6 +948,8 @@ function threadFrontTest(test, options = {}) {
       client,
       server,
       targetFront,
+      commands,
+      isWorkerServer: server === WorkerDevToolsServer,
     };
     if (waitForFinish) {
       // Use dispatchToMainThread so that the test function does not have to

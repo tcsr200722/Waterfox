@@ -1,5 +1,4 @@
-/* eslint-disable mozilla/use-chromeutils-generateqi */
-var MockServices = (function() {
+var MockServices = (function () {
   "use strict";
 
   const MOCK_ALERTS_CID = SpecialPowers.wrap(SpecialPowers.Components).ID(
@@ -21,7 +20,7 @@ var MockServices = (function() {
 
   var activeAppNotifications = Object.create(null);
 
-  window.addEventListener("mock-notification-close-event", function(e) {
+  window.addEventListener("mock-notification-close-event", function (e) {
     for (var alertName in activeAlertNotifications) {
       var notif = activeAlertNotifications[alertName];
       if (notif.title === e.detail.title) {
@@ -48,10 +47,10 @@ var MockServices = (function() {
 
       // fake async alert show event
       if (listener) {
-        setTimeout(function() {
+        setTimeout(function () {
           listener.observe(null, "alertshow", alert.cookie);
         }, 100);
-        setTimeout(function() {
+        setTimeout(function () {
           listener.observe(null, "alertclickcallback", alert.cookie);
         }, 100);
       }
@@ -105,10 +104,7 @@ var MockServices = (function() {
       throw SpecialPowers.Components.results.NS_ERROR_NO_INTERFACE;
     },
 
-    createInstance(aOuter, aIID) {
-      if (aOuter != null) {
-        throw SpecialPowers.Components.results.NS_ERROR_NO_AGGREGATION;
-      }
+    createInstance(aIID) {
       return this.QueryInterface(aIID);
     },
   };
@@ -117,6 +113,21 @@ var MockServices = (function() {
   // MockServices API
   return {
     register() {
+      try {
+        this.originalAlertsCID = registrar.contractIDToCID(
+          ALERTS_SERVICE_CONTRACT_ID
+        );
+      } catch (ex) {
+        this.originalAlertsCID = null;
+      }
+      try {
+        this.originalSystemAlertsCID = registrar.contractIDToCID(
+          SYSTEM_ALERTS_SERVICE_CONTRACT_ID
+        );
+      } catch (ex) {
+        this.originalSystemAlertsCID = null;
+      }
+
       registrar.registerFactory(
         MOCK_ALERTS_CID,
         "alerts service",
@@ -135,6 +146,27 @@ var MockServices = (function() {
     unregister() {
       registrar.unregisterFactory(MOCK_ALERTS_CID, mockAlertsService);
       registrar.unregisterFactory(MOCK_SYSTEM_ALERTS_CID, mockAlertsService);
+
+      // Passing `null` for the factory re-maps the contract ID to the
+      // entry for its original CID.
+
+      if (this.originalAlertsCID) {
+        registrar.registerFactory(
+          this.originalAlertsCID,
+          "alerts service",
+          ALERTS_SERVICE_CONTRACT_ID,
+          null
+        );
+      }
+
+      if (this.originalSystemAlertsCID) {
+        registrar.registerFactory(
+          this.originalSystemAlertsCID,
+          "system alerts service",
+          SYSTEM_ALERTS_SERVICE_CONTRACT_ID,
+          null
+        );
+      }
     },
 
     activeAlertNotifications,

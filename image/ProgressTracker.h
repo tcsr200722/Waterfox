@@ -12,7 +12,7 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/WeakPtr.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsCOMPtr.h"
 #include "nsTObserverArray.h"
 #include "nsThreadUtils.h"
@@ -68,21 +68,21 @@ inline Progress LoadCompleteProgress(bool aLastPart, bool aError,
  * values since WeakPtr's lose the knowledge of which object they used to point
  * to when that object is destroyed.
  *
- * ObserverTable subclasses nsDataHashtable to add reference counting support
- * and a copy constructor, both of which are needed for use with CopyOnWrite<T>.
+ * ObserverTable subclasses nsTHashMap to add reference counting
+ * support and a copy constructor, both of which are needed for use with
+ * CopyOnWrite<T>.
  */
-class ObserverTable : public nsDataHashtable<nsPtrHashKey<IProgressObserver>,
-                                             WeakPtr<IProgressObserver>> {
+class ObserverTable : public nsTHashMap<nsPtrHashKey<IProgressObserver>,
+                                        WeakPtr<IProgressObserver>> {
  public:
   NS_INLINE_DECL_REFCOUNTING(ObserverTable);
 
   ObserverTable() = default;
 
-  ObserverTable(const ObserverTable& aOther) {
+  ObserverTable(const ObserverTable& aOther)
+      : nsTHashMap<nsPtrHashKey<IProgressObserver>, WeakPtr<IProgressObserver>>(
+            aOther.Clone()) {
     NS_WARNING("Forced to copy ObserverTable due to nested notifications");
-    for (auto iter = aOther.ConstIter(); !iter.Done(); iter.Next()) {
-      this->Put(iter.Key(), iter.Data());
-    }
   }
 
  private:
@@ -99,11 +99,10 @@ class ObserverTable : public nsDataHashtable<nsPtrHashKey<IProgressObserver>,
  * argument, and the notifications will be replayed to the observer
  * asynchronously.
  */
-class ProgressTracker : public mozilla::SupportsWeakPtr<ProgressTracker> {
+class ProgressTracker : public mozilla::SupportsWeakPtr {
   virtual ~ProgressTracker() {}
 
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(ProgressTracker)
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ProgressTracker)
 
   ProgressTracker();
@@ -180,9 +179,6 @@ class ProgressTracker : public mozilla::SupportsWeakPtr<ProgressTracker> {
   bool RemoveObserver(IProgressObserver* aObserver);
   uint32_t ObserverCount() const;
 
-  // Get the event target we should currently dispatch events to.
-  already_AddRefed<nsIEventTarget> GetEventTarget() const;
-
   // Resets our weak reference to our image. Image subclasses should call this
   // in their destructor.
   void ResetImage();
@@ -210,43 +206,28 @@ class ProgressTracker : public mozilla::SupportsWeakPtr<ProgressTracker> {
 
   // Wrapper for AsyncNotifyRunnable to make it have medium high priority like
   // other imagelib runnables.
-  class MediumHighRunnable final : public PrioritizableRunnable {
-    explicit MediumHighRunnable(already_AddRefed<AsyncNotifyRunnable>&& aEvent);
-    virtual ~MediumHighRunnable() = default;
+  class RenderBlockingRunnable final : public PrioritizableRunnable {
+    explicit RenderBlockingRunnable(
+        already_AddRefed<AsyncNotifyRunnable>&& aEvent);
+    virtual ~RenderBlockingRunnable() = default;
 
    public:
     void AddObserver(IProgressObserver* aObserver);
     void RemoveObserver(IProgressObserver* aObserver);
 
-    static already_AddRefed<MediumHighRunnable> Create(
+    static already_AddRefed<RenderBlockingRunnable> Create(
         already_AddRefed<AsyncNotifyRunnable>&& aEvent);
   };
 
   // The runnable, if any, that we've scheduled to deliver async notifications.
-  RefPtr<MediumHighRunnable> mRunnable;
+  RefPtr<RenderBlockingRunnable> mRunnable;
 
   // mMutex protects access to mImage and mEventTarget.
-  mutable Mutex mMutex;
+  mutable Mutex mMutex MOZ_UNANNOTATED;
 
   // mImage is a weak ref; it should be set to null when the image goes out of
   // scope.
   Image* mImage;
-
-  // mEventTarget is the current, best effort event target to dispatch
-  // notifications to from the decoder threads. It will change as observers are
-  // added and removed (see mObserversWithTargets).
-  NotNull<nsCOMPtr<nsIEventTarget>> mEventTarget;
-
-  // How many observers have been added that have an explicit event target.
-  // When the first observer is added with an explicit event target, we will
-  // default to that as long as all observers use the same target. If a new
-  // observer is added which has a different event target, we will switch to
-  // using the unlabeled main thread event target which is safe for all
-  // observers. If all observers with explicit event targets are removed, we
-  // will revert back to the initial event target (for SystemGroup). An
-  // observer without an explicit event target does not care what context it
-  // is dispatched in, and thus does not impact the state.
-  uint32_t mObserversWithTargets;
 
   // Hashtable of observers attached to the image. Each observer represents a
   // consumer using the image. Main thread only.

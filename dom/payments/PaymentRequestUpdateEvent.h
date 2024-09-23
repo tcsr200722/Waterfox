@@ -8,12 +8,13 @@
 #define mozilla_dom_PaymentRequestUpdateEvent_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/PaymentRequestUpdateEventBinding.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class Promise;
@@ -29,10 +30,10 @@ class PaymentRequestUpdateEvent : public Event, public PromiseNativeHandler {
   virtual JSObject* WrapObjectInternal(
       JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
 
-  virtual void ResolvedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
-  virtual void RejectedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
+  virtual void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
+  virtual void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
 
   static already_AddRefed<PaymentRequestUpdateEvent> Constructor(
       EventTarget* aOwner, const nsAString& aType,

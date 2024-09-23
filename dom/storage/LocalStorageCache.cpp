@@ -18,23 +18,18 @@
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 #define DOM_STORAGE_CACHE_KEEP_ALIVE_TIME_MS 20000
 
 namespace {
 
 const uint32_t kDefaultSet = 0;
-const uint32_t kPrivateSet = 1;
-const uint32_t kSessionSet = 2;
+const uint32_t kSessionSet = 1;
 
-inline uint32_t GetDataSetIndex(bool aPrivate, bool aSessionOnly) {
-  if (aPrivate) {
-    return kPrivateSet;
-  }
-
-  if (aSessionOnly) {
+inline uint32_t GetDataSetIndex(bool aPrivateBrowsing,
+                                bool aSessionScopedOrLess) {
+  if (!aPrivateBrowsing && aSessionScopedOrLess) {
     return kSessionSet;
   }
 
@@ -42,7 +37,11 @@ inline uint32_t GetDataSetIndex(bool aPrivate, bool aSessionOnly) {
 }
 
 inline uint32_t GetDataSetIndex(const LocalStorage* aStorage) {
-  return GetDataSetIndex(aStorage->IsPrivate(), aStorage->IsSessionOnly());
+  // A session only mode doesn't exist anymore, so having a separate data set
+  // for it here is basically useless. This code is only kept until we remove
+  // the old / legacy LocalStorage implementation.
+  return GetDataSetIndex(aStorage->IsPrivateBrowsing(),
+                         aStorage->IsPrivateBrowsingOrLess());
 }
 
 }  // namespace
@@ -126,18 +125,17 @@ LocalStorageCache::Release(void) {
 void LocalStorageCache::Init(LocalStorageManager* aManager, bool aPersistent,
                              nsIPrincipal* aPrincipal,
                              const nsACString& aQuotaOriginScope) {
+  MOZ_ASSERT(!aQuotaOriginScope.IsEmpty());
+
   if (mInitialized) {
     return;
   }
 
   mInitialized = true;
   aPrincipal->OriginAttributesRef().CreateSuffix(mOriginSuffix);
+  mPrivateBrowsingId = aPrincipal->GetPrivateBrowsingId();
   mPersistent = aPersistent;
-  if (aQuotaOriginScope.IsEmpty()) {
-    mQuotaOriginScope = Origin();
-  } else {
-    mQuotaOriginScope = aQuotaOriginScope;
-  }
+  mQuotaOriginScope = aQuotaOriginScope;
 
   if (mPersistent) {
     mManager = aManager;
@@ -148,15 +146,15 @@ void LocalStorageCache::Init(LocalStorageManager* aManager, bool aPersistent,
   // this storage cache is bound to.
   MOZ_ASSERT(StringBeginsWith(mQuotaOriginScope, mOriginSuffix));
   MOZ_ASSERT(mOriginSuffix.IsEmpty() !=
-             StringBeginsWith(mQuotaOriginScope, NS_LITERAL_CSTRING("^")));
+             StringBeginsWith(mQuotaOriginScope, "^"_ns));
 
-  mUsage = aManager->GetOriginUsage(mQuotaOriginScope);
+  mUsage = aManager->GetOriginUsage(mQuotaOriginScope, mPrivateBrowsingId);
 }
 
 void LocalStorageCache::NotifyObservers(const LocalStorage* aStorage,
-                                        const nsString& aKey,
-                                        const nsString& aOldValue,
-                                        const nsString& aNewValue) {
+                                        const nsAString& aKey,
+                                        const nsAString& aOldValue,
+                                        const nsAString& aNewValue) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aStorage);
 
@@ -172,7 +170,8 @@ void LocalStorageCache::NotifyObservers(const LocalStorage* aStorage,
 }
 
 inline bool LocalStorageCache::Persist(const LocalStorage* aStorage) const {
-  return mPersistent && !aStorage->IsSessionOnly() && !aStorage->IsPrivate();
+  return mPersistent && (aStorage->IsPrivateBrowsing() ||
+                         !aStorage->IsPrivateBrowsingOrLess());
 }
 
 const nsCString LocalStorageCache::Origin() const {
@@ -197,7 +196,7 @@ bool LocalStorageCache::ProcessUsageDelta(uint32_t aGetDataSetIndex,
   Data& data = mData[aGetDataSetIndex];
   uint64_t newOriginUsage = data.mOriginQuotaUsage + aDelta;
   if (aSource == ContentMutation && aDelta > 0 &&
-      newOriginUsage > LocalStorageManager::GetQuota()) {
+      newOriginUsage > LocalStorageManager::GetOriginQuota()) {
     return false;
   }
 
@@ -217,7 +216,8 @@ void LocalStorageCache::Preload() {
     return;
   }
 
-  StorageDBChild* storageChild = StorageDBChild::GetOrCreate();
+  StorageDBChild* storageChild =
+      StorageDBChild::GetOrCreate(mPrivateBrowsingId);
   if (!storageChild) {
     mLoaded = true;
     mLoadResult = NS_ERROR_FAILURE;
@@ -257,7 +257,7 @@ void LocalStorageCache::WaitForPreload(Telemetry::HistogramID aTelemetryID) {
   // No need to check sDatabase for being non-null since preload is either
   // done before we've shut the DB down or when the DB could not start,
   // preload has not even be started.
-  StorageDBChild::Get()->SyncPreload(this);
+  StorageDBChild::Get(mPrivateBrowsingId)->SyncPreload(this);
 }
 
 nsresult LocalStorageCache::GetLength(const LocalStorage* aStorage,
@@ -308,9 +308,7 @@ void LocalStorageCache::GetKeys(const LocalStorage* aStorage,
     return;
   }
 
-  for (auto iter = DataSet(aStorage).mKeys.Iter(); !iter.Done(); iter.Next()) {
-    aKeys.AppendElement(iter.Key());
-  }
+  AppendToArray(aKeys, DataSet(aStorage).mKeys.Keys());
 }
 
 nsresult LocalStorageCache::GetItem(const LocalStorage* aStorage,
@@ -335,7 +333,7 @@ nsresult LocalStorageCache::GetItem(const LocalStorage* aStorage,
 
 nsresult LocalStorageCache::SetItem(const LocalStorage* aStorage,
                                     const nsAString& aKey,
-                                    const nsString& aValue, nsString& aOld,
+                                    const nsAString& aValue, nsString& aOld,
                                     const MutationSource aSource) {
   // Size of the cache that will change after this action.
   int64_t delta = 0;
@@ -366,18 +364,18 @@ nsresult LocalStorageCache::SetItem(const LocalStorage* aStorage,
     return NS_SUCCESS_DOM_NO_OPERATION;
   }
 
-  data.mKeys.Put(aKey, aValue);
+  data.mKeys.InsertOrUpdate(aKey, aValue);
 
   if (aSource != ContentMutation) {
     return NS_OK;
   }
 
 #if !defined(MOZ_WIDGET_ANDROID)
-  NotifyObservers(aStorage, nsString(aKey), aOld, aValue);
+  NotifyObservers(aStorage, aKey, aOld, aValue);
 #endif
 
   if (Persist(aStorage)) {
-    StorageDBChild* storageChild = StorageDBChild::Get();
+    StorageDBChild* storageChild = StorageDBChild::Get(mPrivateBrowsingId);
     if (!storageChild) {
       NS_ERROR(
           "Writing to localStorage after the database has been shut down"
@@ -422,11 +420,11 @@ nsresult LocalStorageCache::RemoveItem(const LocalStorage* aStorage,
   }
 
 #if !defined(MOZ_WIDGET_ANDROID)
-  NotifyObservers(aStorage, nsString(aKey), aOld, VoidString());
+  NotifyObservers(aStorage, aKey, aOld, VoidString());
 #endif
 
   if (Persist(aStorage)) {
-    StorageDBChild* storageChild = StorageDBChild::Get();
+    StorageDBChild* storageChild = StorageDBChild::Get(mPrivateBrowsingId);
     if (!storageChild) {
       NS_ERROR(
           "Writing to localStorage after the database has been shut down"
@@ -477,7 +475,7 @@ nsresult LocalStorageCache::Clear(const LocalStorage* aStorage,
 #endif
 
   if (Persist(aStorage) && (refresh || hadData)) {
-    StorageDBChild* storageChild = StorageDBChild::Get();
+    StorageDBChild* storageChild = StorageDBChild::Get(mPrivateBrowsingId);
     if (!storageChild) {
       NS_ERROR(
           "Writing to localStorage after the database has been shut down"
@@ -509,11 +507,6 @@ void LocalStorageCache::UnloadItems(uint32_t aUnloadFlags) {
     ProcessUsageDelta(kDefaultSet, -mData[kDefaultSet].mOriginQuotaUsage);
   }
 
-  if (aUnloadFlags & kUnloadPrivate) {
-    mData[kPrivateSet].mKeys.Clear();
-    ProcessUsageDelta(kPrivateSet, -mData[kPrivateSet].mOriginQuotaUsage);
-  }
-
   if (aUnloadFlags & kUnloadSession) {
     mData[kSessionSet].mKeys.Clear();
     ProcessUsageDelta(kSessionSet, -mData[kSessionSet].mOriginQuotaUsage);
@@ -539,19 +532,17 @@ uint32_t LocalStorageCache::LoadedCount() {
 }
 
 bool LocalStorageCache::LoadItem(const nsAString& aKey,
-                                 const nsString& aValue) {
+                                 const nsAString& aValue) {
   MonitorAutoLock monitor(mMonitor);
   if (mLoaded) {
     return false;
   }
 
   Data& data = mData[kDefaultSet];
-  if (data.mKeys.Get(aKey, nullptr)) {
-    return true;  // don't stop, just don't override
-  }
-
-  data.mKeys.Put(aKey, aValue);
-  data.mOriginQuotaUsage += aKey.Length() + aValue.Length();
+  data.mKeys.LookupOrInsertWith(aKey, [&] {
+    data.mOriginQuotaUsage += aKey.Length() + aValue.Length();
+    return nsString(aValue);
+  });
   return true;
 }
 
@@ -573,7 +564,7 @@ void LocalStorageCache::LoadWait() {
 
 StorageUsage::StorageUsage(const nsACString& aOriginScope)
     : mOriginScope(aOriginScope) {
-  mUsage[kDefaultSet] = mUsage[kPrivateSet] = mUsage[kSessionSet] = 0LL;
+  mUsage[kDefaultSet] = mUsage[kSessionSet] = 0LL;
 }
 
 namespace {
@@ -616,7 +607,7 @@ bool StorageUsage::CheckAndSetETLD1UsageDelta(
 
   int64_t newUsage = mUsage[aDataSetIndex] + aDelta;
   if (aSource == LocalStorageCache::ContentMutation && aDelta > 0 &&
-      newUsage > LocalStorageManager::GetQuota()) {
+      newUsage > LocalStorageManager::GetSiteQuota()) {
     return false;
   }
 
@@ -624,5 +615,4 @@ bool StorageUsage::CheckAndSetETLD1UsageDelta(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -10,6 +10,7 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/nsCSPUtils.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/LoadContext.h"
@@ -17,8 +18,10 @@
 #include "mozilla/StoragePrincipalHelper.h"
 #include "nsContentUtils.h"
 #include "nsIContentSecurityPolicy.h"
+#include "nsICookieJarSettings.h"
 #include "nsINetworkInterceptController.h"
 #include "nsIProtocolHandler.h"
+#include "nsIReferrerInfo.h"
 #include "nsIBrowserChild.h"
 #include "nsScriptSecurityManager.h"
 #include "nsNetUtil.h"
@@ -36,19 +39,19 @@ class MainThreadReleaseRunnable final : public Runnable {
   nsCOMPtr<nsILoadGroup> mLoadGroupToCancel;
 
  public:
-  MainThreadReleaseRunnable(nsTArray<nsCOMPtr<nsISupports>>& aDoomed,
-                            nsCOMPtr<nsILoadGroup>& aLoadGroupToCancel)
-      : mozilla::Runnable("MainThreadReleaseRunnable") {
-    mDoomed.SwapElements(aDoomed);
-    mLoadGroupToCancel.swap(aLoadGroupToCancel);
-  }
+  MainThreadReleaseRunnable(nsTArray<nsCOMPtr<nsISupports>>&& aDoomed,
+                            nsCOMPtr<nsILoadGroup>&& aLoadGroupToCancel)
+      : mozilla::Runnable("MainThreadReleaseRunnable"),
+        mDoomed(std::move(aDoomed)),
+        mLoadGroupToCancel(std::move(aLoadGroupToCancel)) {}
 
   NS_INLINE_DECL_REFCOUNTING_INHERITED(MainThreadReleaseRunnable, Runnable)
 
   NS_IMETHOD
   Run() override {
     if (mLoadGroupToCancel) {
-      mLoadGroupToCancel->Cancel(NS_BINDING_ABORTED);
+      mLoadGroupToCancel->CancelWithReason(
+          NS_BINDING_ABORTED, "WorkerLoadInfo::MainThreadReleaseRunnable"_ns);
       mLoadGroupToCancel = nullptr;
     }
 
@@ -63,7 +66,7 @@ class MainThreadReleaseRunnable final : public Runnable {
 // Specialize this if there's some class that has multiple nsISupports bases.
 template <class T>
 struct ISupportsBaseInfo {
-  typedef T ISupportsBase;
+  using ISupportsBase = T;
 };
 
 template <template <class> class SmartPtr, class T>
@@ -84,35 +87,37 @@ inline void SwapToISupportsArray(SmartPtr<T>& aSrc,
 WorkerLoadInfoData::WorkerLoadInfoData()
     : mLoadFlags(nsIRequest::LOAD_NORMAL),
       mWindowID(UINT64_MAX),
+      mAssociatedBrowsingContextID(0),
       mReferrerInfo(new ReferrerInfo(nullptr)),
       mFromWindow(false),
       mEvalAllowed(false),
-      mReportCSPViolations(false),
+      mReportEvalCSPViolations(false),
+      mWasmEvalAllowed(false),
+      mReportWasmEvalCSPViolations(false),
       mXHRParamsAllowed(false),
-      mPrincipalIsSystem(false),
-      mPrincipalIsAddonOrExpandedAddon(false),
       mWatchedByDevTools(false),
       mStorageAccess(StorageAccess::eDeny),
-      mFirstPartyStorageAccessGranted(false),
+      mUseRegularPrincipal(false),
+      mUsingStorageAccess(false),
       mServiceWorkersTestingInWindow(false),
+      mShouldResistFingerprinting(false),
+      mIsThirdPartyContext(true),
       mSecureContext(eNotSet) {}
 
 nsresult WorkerLoadInfo::SetPrincipalsAndCSPOnMainThread(
-    nsIPrincipal* aPrincipal, nsIPrincipal* aStoragePrincipal,
+    nsIPrincipal* aPrincipal, nsIPrincipal* aPartitionedPrincipal,
     nsILoadGroup* aLoadGroup, nsIContentSecurityPolicy* aCsp) {
   AssertIsOnMainThread();
   MOZ_ASSERT(NS_LoadGroupMatchesPrincipal(aLoadGroup, aPrincipal));
 
   mPrincipal = aPrincipal;
-  mStoragePrincipal = aStoragePrincipal;
-  mPrincipalIsSystem = aPrincipal->IsSystemPrincipal();
-  mPrincipalIsAddonOrExpandedAddon =
-      aPrincipal->GetIsAddonOrExpandedAddonPrincipal();
+  mPartitionedPrincipal = aPartitionedPrincipal;
 
   mCSP = aCsp;
 
   if (mCSP) {
-    mCSP->GetAllowsEval(&mReportCSPViolations, &mEvalAllowed);
+    mCSP->GetAllowsEval(&mReportEvalCSPViolations, &mEvalAllowed);
+    mCSP->GetAllowsWasmEval(&mReportWasmEvalCSPViolations, &mWasmEvalAllowed);
     mCSPInfo = MakeUnique<CSPInfo>();
     nsresult rv = CSPToCSPInfo(aCsp, mCSPInfo.get());
     if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -120,41 +125,39 @@ nsresult WorkerLoadInfo::SetPrincipalsAndCSPOnMainThread(
     }
   } else {
     mEvalAllowed = true;
-    mReportCSPViolations = false;
+    mReportEvalCSPViolations = false;
+    mWasmEvalAllowed = true;
+    mReportWasmEvalCSPViolations = false;
   }
 
   mLoadGroup = aLoadGroup;
 
   mPrincipalInfo = MakeUnique<PrincipalInfo>();
-  mStoragePrincipalInfo = MakeUnique<PrincipalInfo>();
+  mPartitionedPrincipalInfo = MakeUnique<PrincipalInfo>();
   StoragePrincipalHelper::GetRegularPrincipalOriginAttributes(
       aLoadGroup, mOriginAttributes);
 
   nsresult rv = PrincipalToPrincipalInfo(aPrincipal, mPrincipalInfo.get());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (aPrincipal->Equals(aStoragePrincipal)) {
-    *mStoragePrincipalInfo = *mPrincipalInfo;
+  if (aPrincipal->Equals(aPartitionedPrincipal)) {
+    *mPartitionedPrincipalInfo = *mPrincipalInfo;
   } else {
-    mStoragePrincipalInfo = MakeUnique<PrincipalInfo>();
-    rv = PrincipalToPrincipalInfo(aStoragePrincipal,
-                                  mStoragePrincipalInfo.get());
+    mPartitionedPrincipalInfo = MakeUnique<PrincipalInfo>();
+    rv = PrincipalToPrincipalInfo(aPartitionedPrincipal,
+                                  mPartitionedPrincipalInfo.get());
     NS_ENSURE_SUCCESS(rv, rv);
   }
-
-  rv = nsContentUtils::GetUTFOrigin(aPrincipal, mOrigin);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   return NS_OK;
 }
 
 nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
     nsIChannel* aChannel, nsIPrincipal** aPrincipalOut,
-    nsIPrincipal** aStoragePrincipalOut, nsILoadGroup** aLoadGroupOut) {
+    nsIPrincipal** aPartitionedPrincipalOut, nsILoadGroup** aLoadGroupOut) {
   AssertIsOnMainThread();
   MOZ_DIAGNOSTIC_ASSERT(aChannel);
   MOZ_DIAGNOSTIC_ASSERT(aPrincipalOut);
-  MOZ_DIAGNOSTIC_ASSERT(aStoragePrincipalOut);
+  MOZ_DIAGNOSTIC_ASSERT(aPartitionedPrincipalOut);
   MOZ_DIAGNOSTIC_ASSERT(aLoadGroupOut);
 
   // Initial triggering principal should be set
@@ -164,10 +167,10 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
   MOZ_DIAGNOSTIC_ASSERT(ssm);
 
   nsCOMPtr<nsIPrincipal> channelPrincipal;
-  nsCOMPtr<nsIPrincipal> channelStoragePrincipal;
+  nsCOMPtr<nsIPrincipal> channelPartitionedPrincipal;
   nsresult rv = ssm->GetChannelResultPrincipals(
       aChannel, getter_AddRefs(channelPrincipal),
-      getter_AddRefs(channelStoragePrincipal));
+      getter_AddRefs(channelPartitionedPrincipal));
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Every time we call GetChannelResultPrincipal() it will return a different
@@ -181,7 +184,7 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
   if (mPrincipal && mPrincipal->GetIsNullPrincipal() &&
       channelPrincipal->GetIsNullPrincipal()) {
     channelPrincipal = mPrincipal;
-    channelStoragePrincipal = mPrincipal;
+    channelPartitionedPrincipal = mPrincipal;
   }
 
   nsCOMPtr<nsILoadGroup> channelLoadGroup;
@@ -214,7 +217,7 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
         // Assign the system principal to the resource:// worker only if it
         // was loaded from code using the system principal.
         channelPrincipal = mLoadingPrincipal;
-        channelStoragePrincipal = mLoadingPrincipal;
+        channelPartitionedPrincipal = mLoadingPrincipal;
       } else {
         return NS_ERROR_DOM_BAD_URI;
       }
@@ -226,7 +229,7 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
   MOZ_ASSERT(NS_LoadGroupMatchesPrincipal(channelLoadGroup, channelPrincipal));
 
   channelPrincipal.forget(aPrincipalOut);
-  channelStoragePrincipal.forget(aStoragePrincipalOut);
+  channelPartitionedPrincipal.forget(aPartitionedPrincipalOut);
   channelLoadGroup.forget(aLoadGroupOut);
 
   return NS_OK;
@@ -236,10 +239,10 @@ nsresult WorkerLoadInfo::SetPrincipalsAndCSPFromChannel(nsIChannel* aChannel) {
   AssertIsOnMainThread();
 
   nsCOMPtr<nsIPrincipal> principal;
-  nsCOMPtr<nsIPrincipal> storagePrincipal;
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal;
   nsCOMPtr<nsILoadGroup> loadGroup;
   nsresult rv = GetPrincipalsAndLoadGroupFromChannel(
-      aChannel, getter_AddRefs(principal), getter_AddRefs(storagePrincipal),
+      aChannel, getter_AddRefs(principal), getter_AddRefs(partitionedPrincipal),
       getter_AddRefs(loadGroup));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -250,18 +253,18 @@ nsresult WorkerLoadInfo::SetPrincipalsAndCSPFromChannel(nsIChannel* aChannel) {
     nsCOMPtr<nsILoadInfo> loadinfo = aChannel->LoadInfo();
     csp = loadinfo->GetCsp();
   }
-  return SetPrincipalsAndCSPOnMainThread(principal, storagePrincipal, loadGroup,
-                                         csp);
+  return SetPrincipalsAndCSPOnMainThread(principal, partitionedPrincipal,
+                                         loadGroup, csp);
 }
 
 bool WorkerLoadInfo::FinalChannelPrincipalIsValid(nsIChannel* aChannel) {
   AssertIsOnMainThread();
 
   nsCOMPtr<nsIPrincipal> principal;
-  nsCOMPtr<nsIPrincipal> storagePrincipal;
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal;
   nsCOMPtr<nsILoadGroup> loadGroup;
   nsresult rv = GetPrincipalsAndLoadGroupFromChannel(
-      aChannel, getter_AddRefs(principal), getter_AddRefs(storagePrincipal),
+      aChannel, getter_AddRefs(principal), getter_AddRefs(partitionedPrincipal),
       getter_AddRefs(loadGroup));
   NS_ENSURE_SUCCESS(rv, false);
 
@@ -286,9 +289,9 @@ bool WorkerLoadInfo::PrincipalIsValid() const {
   return mPrincipal && mPrincipalInfo &&
          mPrincipalInfo->type() != PrincipalInfo::T__None &&
          mPrincipalInfo->type() <= PrincipalInfo::T__Last &&
-         mStoragePrincipal && mStoragePrincipalInfo &&
-         mStoragePrincipalInfo->type() != PrincipalInfo::T__None &&
-         mStoragePrincipalInfo->type() <= PrincipalInfo::T__Last;
+         mPartitionedPrincipal && mPartitionedPrincipalInfo &&
+         mPartitionedPrincipalInfo->type() != PrincipalInfo::T__None &&
+         mPartitionedPrincipalInfo->type() <= PrincipalInfo::T__Last;
 }
 
 bool WorkerLoadInfo::PrincipalURIMatchesScriptURL() {
@@ -300,7 +303,7 @@ bool WorkerLoadInfo::PrincipalURIMatchesScriptURL() {
 
   // A system principal must either be a blob URL or a resource JSM.
   if (mPrincipal->IsSystemPrincipal()) {
-    if (scheme == NS_LITERAL_CSTRING("blob")) {
+    if (scheme == "blob"_ns) {
       return true;
     }
 
@@ -315,22 +318,18 @@ bool WorkerLoadInfo::PrincipalURIMatchesScriptURL() {
   // A null principal can occur for a data URL worker script or a blob URL
   // worker script from a sandboxed iframe.
   if (mPrincipal->GetIsNullPrincipal()) {
-    return scheme == NS_LITERAL_CSTRING("data") ||
-           scheme == NS_LITERAL_CSTRING("blob");
+    return scheme == "data"_ns || scheme == "blob"_ns;
   }
 
   // The principal for a blob: URL worker script does not have a matching URL.
   // This is likely a bug in our referer setting logic, but exempt it for now.
   // This is another reason we should fix bug 1340694 so that referer does not
   // depend on the principal URI.
-  if (scheme == NS_LITERAL_CSTRING("blob")) {
+  if (scheme == "blob"_ns) {
     return true;
   }
 
-  bool isSameOrigin = false;
-  rv = mPrincipal->IsSameOrigin(mBaseURI, false, &isSameOrigin);
-
-  if (NS_SUCCEEDED(rv) && isSameOrigin) {
+  if (mPrincipal->IsSameOrigin(mBaseURI)) {
     return true;
   }
 
@@ -355,11 +354,13 @@ bool WorkerLoadInfo::PrincipalURIMatchesScriptURL() {
 bool WorkerLoadInfo::ProxyReleaseMainThreadObjects(
     WorkerPrivate* aWorkerPrivate) {
   nsCOMPtr<nsILoadGroup> nullLoadGroup;
-  return ProxyReleaseMainThreadObjects(aWorkerPrivate, nullLoadGroup);
+  return ProxyReleaseMainThreadObjects(aWorkerPrivate,
+                                       std::move(nullLoadGroup));
 }
 
 bool WorkerLoadInfo::ProxyReleaseMainThreadObjects(
-    WorkerPrivate* aWorkerPrivate, nsCOMPtr<nsILoadGroup>& aLoadGroupToCancel) {
+    WorkerPrivate* aWorkerPrivate,
+    nsCOMPtr<nsILoadGroup>&& aLoadGroupToCancel) {
   static const uint32_t kDoomedCount = 11;
   nsTArray<nsCOMPtr<nsISupports>> doomed(kDoomedCount);
 
@@ -368,7 +369,7 @@ bool WorkerLoadInfo::ProxyReleaseMainThreadObjects(
   SwapToISupportsArray(mBaseURI, doomed);
   SwapToISupportsArray(mResolvedScriptURI, doomed);
   SwapToISupportsArray(mPrincipal, doomed);
-  SwapToISupportsArray(mStoragePrincipal, doomed);
+  SwapToISupportsArray(mPartitionedPrincipal, doomed);
   SwapToISupportsArray(mLoadingPrincipal, doomed);
   SwapToISupportsArray(mChannel, doomed);
   SwapToISupportsArray(mCSP, doomed);
@@ -378,8 +379,8 @@ bool WorkerLoadInfo::ProxyReleaseMainThreadObjects(
 
   MOZ_ASSERT(doomed.Length() == kDoomedCount);
 
-  RefPtr<MainThreadReleaseRunnable> runnable =
-      new MainThreadReleaseRunnable(doomed, aLoadGroupToCancel);
+  RefPtr<MainThreadReleaseRunnable> runnable = new MainThreadReleaseRunnable(
+      std::move(doomed), std::move(aLoadGroupToCancel));
   return NS_SUCCEEDED(aWorkerPrivate->DispatchToMainThread(runnable.forget()));
 }
 

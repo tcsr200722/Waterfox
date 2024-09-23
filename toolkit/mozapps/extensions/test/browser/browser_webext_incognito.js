@@ -2,11 +2,14 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
-const { ExtensionPermissions } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionPermissions.jsm"
+const { ExtensionPermissions } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionPermissions.sys.mjs"
+);
+const { Management } = ChromeUtils.importESModule(
+  "resource://gre/modules/Extension.sys.mjs"
 );
 
 var gManagerWindow;
@@ -16,9 +19,7 @@ AddonTestUtils.initMochitest(this);
 function get_test_items() {
   var items = {};
 
-  for (let item of gManagerWindow
-    .getHtmlBrowser()
-    .contentDocument.querySelectorAll("addon-card")) {
+  for (let item of gManagerWindow.document.querySelectorAll("addon-card")) {
     items[item.getAttribute("addon-id")] = item;
   }
 
@@ -26,9 +27,7 @@ function get_test_items() {
 }
 
 function getHtmlElem(selector) {
-  return gManagerWindow
-    .getHtmlBrowser()
-    .contentDocument.querySelector(selector);
+  return gManagerWindow.document.querySelector(selector);
 }
 
 function getPrivateBrowsingBadge(card) {
@@ -53,19 +52,27 @@ function getPrivateBrowsingValue() {
     .value;
 }
 
-async function setPrivateBrowsingValue(value) {
+async function setPrivateBrowsingValue(value, id) {
+  let changePromise = new Promise(resolve => {
+    const listener = (type, { extensionId, added, removed }) => {
+      if (extensionId == id) {
+        // Let's make sure we received the right message
+        let { permissions } = value == "0" ? removed : added;
+        ok(permissions.includes("internal:privateBrowsingAllowed"));
+        Management.off("change-permissions", listener);
+        resolve();
+      }
+    };
+    Management.on("change-permissions", listener);
+  });
   let radio = getHtmlElem(
     `input[type="radio"][name="private-browsing"][value="${value}"]`
   );
-  EventUtils.synthesizeMouseAtCenter(
-    radio,
-    { clickCount: 1 },
-    radio.ownerGlobal
-  );
-  return TestUtils.waitForCondition(
-    () => radio.checked,
-    `Waiting for privateBrowsing=${value}`
-  );
+  // NOTE: not using EventUtils.synthesizeMouseAtCenter here because it
+  // does make this test to fail intermittently in some jobs (e.g. TV jobs)
+  radio.click();
+  // Let's make sure we wait until the change has peristed in the database
+  return changePromise;
 }
 
 // Check whether the private browsing inputs are visible in the details view.
@@ -128,29 +135,17 @@ function checkHelpRow(selector, expected) {
 
 async function hasPrivateAllowed(id) {
   let perms = await ExtensionPermissions.get(id);
-  return (
-    perms.permissions.length == 1 &&
-    perms.permissions[0] == "internal:privateBrowsingAllowed"
-  );
+  return perms.permissions.includes("internal:privateBrowsingAllowed");
 }
 
-add_task(function clearInitialTelemetry() {
-  // Clear out any telemetry data that existed before this file is run.
-  Services.telemetry.clearEvents();
-});
-
 add_task(async function test_badge_and_toggle_incognito() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let addons = new Map([
     [
       "@test-default",
       {
         useAddonManager: "temporary",
         manifest: {
-          applications: {
+          browser_specific_settings: {
             gecko: { id: "@test-default" },
           },
         },
@@ -161,7 +156,7 @@ add_task(async function test_badge_and_toggle_incognito() {
       {
         useAddonManager: "temporary",
         manifest: {
-          applications: {
+          browser_specific_settings: {
             gecko: { id: "@test-override" },
           },
         },
@@ -173,7 +168,7 @@ add_task(async function test_badge_and_toggle_incognito() {
       {
         useAddonManager: "permanent",
         manifest: {
-          applications: {
+          browser_specific_settings: {
             gecko: { id: "@test-override-permanent" },
           },
         },
@@ -185,7 +180,7 @@ add_task(async function test_badge_and_toggle_incognito() {
       {
         useAddonManager: "temporary",
         manifest: {
-          applications: {
+          browser_specific_settings: {
             gecko: { id: "@test-not-allowed" },
           },
           incognito: "not_allowed",
@@ -228,7 +223,7 @@ add_task(async function test_badge_and_toggle_incognito() {
       if (definition.incognitoOverride == "spanning") {
         is(getPrivateBrowsingValue(), "1", "Private browsing should be on");
         ok(await hasPrivateAllowed(id), "Private browsing permission set");
-        await setPrivateBrowsingValue("0");
+        await setPrivateBrowsingValue("0", id);
         is(getPrivateBrowsingValue(), "0", "Private browsing should be off");
         ok(
           !(await hasPrivateAllowed(id)),
@@ -240,7 +235,7 @@ add_task(async function test_badge_and_toggle_incognito() {
           !(await hasPrivateAllowed(id)),
           "Private browsing permission not set"
         );
-        await setPrivateBrowsingValue("1");
+        await setPrivateBrowsingValue("1", id);
         is(getPrivateBrowsingValue(), "1", "Private browsing should be on");
         ok(await hasPrivateAllowed(id), "Private browsing permission set");
       }
@@ -251,46 +246,9 @@ add_task(async function test_badge_and_toggle_incognito() {
   for (let extension of extensions) {
     await extension.unload();
   }
-
-  const expectedExtras = {
-    action: "privateBrowsingAllowed",
-    view: "detail",
-    type: "extension",
-  };
-
-  assertAboutAddonsTelemetryEvents(
-    [
-      [
-        "addonsManager",
-        "action",
-        "aboutAddons",
-        "on",
-        { ...expectedExtras, addonId: "@test-default" },
-      ],
-      [
-        "addonsManager",
-        "action",
-        "aboutAddons",
-        "off",
-        { ...expectedExtras, addonId: "@test-override" },
-      ],
-      [
-        "addonsManager",
-        "action",
-        "aboutAddons",
-        "off",
-        { ...expectedExtras, addonId: "@test-override-permanent" },
-      ],
-    ],
-    { methods: ["action"] }
-  );
 });
 
 add_task(async function test_addon_preferences_button() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let addons = new Map([
     [
       "test-inline-options@mozilla.com",
@@ -298,7 +256,9 @@ add_task(async function test_addon_preferences_button() {
         useAddonManager: "temporary",
         manifest: {
           name: "Extension with inline options",
-          applications: { gecko: { id: "test-inline-options@mozilla.com" } },
+          browser_specific_settings: {
+            gecko: { id: "test-inline-options@mozilla.com" },
+          },
           options_ui: { page: "options.html", open_in_tab: false },
         },
       },
@@ -309,7 +269,9 @@ add_task(async function test_addon_preferences_button() {
         useAddonManager: "temporary",
         manifest: {
           name: "Extension with options page in a new tab",
-          applications: { gecko: { id: "test-newtab-options@mozilla.com" } },
+          browser_specific_settings: {
+            gecko: { id: "test-newtab-options@mozilla.com" },
+          },
           options_ui: { page: "options.html", open_in_tab: true },
         },
       },
@@ -321,7 +283,9 @@ add_task(async function test_addon_preferences_button() {
         manifest: {
           name: "Extension not allowed in PB windows",
           incognito: "not_allowed",
-          applications: { gecko: { id: "test-not-allowed@mozilla.com" } },
+          browser_specific_settings: {
+            gecko: { id: "test-not-allowed@mozilla.com" },
+          },
           options_ui: { page: "options.html", open_in_tab: true },
         },
       },
@@ -373,7 +337,7 @@ add_task(async function test_addon_preferences_button() {
 
       // Get the DOM element we want to click on (to allow or disallow the
       // addon on private browsing windows).
-      await setPrivateBrowsingValue(allowPrivateBrowsing ? "1" : "0");
+      await setPrivateBrowsingValue(allowPrivateBrowsing ? "1" : "0", id);
 
       info(`Waiting for details view of ${id} to be reloaded`);
       await cardUpdatedPromise;
@@ -424,10 +388,7 @@ add_task(async function test_addon_preferences_button() {
       // details page.
       info(`Opening addon details for ${id}`);
       const hasInlinePrefs = !definition.manifest.options_ui.open_in_tab;
-      const onceViewChanged = BrowserTestUtils.waitForEvent(
-        gManagerWindow,
-        "ViewChanged"
-      );
+      const onceViewChanged = wait_for_view_load(gManagerWindow, null, true);
       gManagerWindow.loadView(`addons://detail/${encodeURIComponent(id)}`);
       await onceViewChanged;
 
@@ -459,17 +420,14 @@ add_task(async function test_addon_preferences_button() {
 
 add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["extensions.allowPrivateBrowsingByDefault", false],
-      ["extensions.langpacks.signatures.required", false],
-    ],
+    set: [["extensions.langpacks.signatures.required", false]],
   });
 
   const TEST_ADDONS = [
     {
       manifest: {
         name: "Extension incognito default opt-in",
-        applications: {
+        browser_specific_settings: {
           gecko: { id: "ext-incognito-default-opt-in@mozilla.com" },
         },
       },
@@ -477,7 +435,7 @@ add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
     {
       manifest: {
         name: "Extension incognito not_allowed",
-        applications: {
+        browser_specific_settings: {
           gecko: { id: "ext-incognito-not-allowed@mozilla.com" },
         },
         incognito: "not_allowed",
@@ -486,7 +444,9 @@ add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
     {
       manifest: {
         name: "Static Theme",
-        applications: { gecko: { id: "static-theme@mozilla.com" } },
+        browser_specific_settings: {
+          gecko: { id: "static-theme@mozilla.com" },
+        },
         theme: {
           colors: {
             frame: "#FFFFFF",
@@ -498,7 +458,7 @@ add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
     {
       manifest: {
         name: "Dictionary",
-        applications: { gecko: { id: "dictionary@mozilla.com" } },
+        browser_specific_settings: { gecko: { id: "dictionary@mozilla.com" } },
         dictionaries: {
           und: "dictionaries/und.dic",
         },
@@ -511,7 +471,7 @@ add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
     {
       manifest: {
         name: "Langpack",
-        applications: { gecko: { id: "langpack@mozilla.com" } },
+        browser_specific_settings: { gecko: { id: "langpack@mozilla.com" } },
         langpack_id: "und",
         languages: {
           und: {
@@ -526,7 +486,7 @@ add_task(async function test_addon_postinstall_incognito_hidden_checkbox() {
   ];
 
   for (let definition of TEST_ADDONS) {
-    let { id } = definition.manifest.applications.gecko;
+    let { id } = definition.manifest.browser_specific_settings.gecko;
     info(
       `Testing incognito checkbox visibility on ${id} post install notification`
     );

@@ -8,10 +8,11 @@
 #define gc_ParallelWork_h
 
 #include "mozilla/Maybe.h"
-#include "mozilla/Variant.h"
 
-#include "gc/GC.h"
+#include <algorithm>
+
 #include "gc/GCParallelTask.h"
+#include "gc/GCRuntime.h"
 #include "js/SliceBudget.h"
 #include "vm/HelperThreads.h"
 
@@ -35,9 +36,10 @@ class ParallelWorker : public GCParallelTask {
  public:
   using WorkFunc = ParallelWorkFunc<WorkItem>;
 
-  ParallelWorker(GCRuntime* gc, WorkFunc func, WorkItemIterator& work,
+  ParallelWorker(GCRuntime* gc, gcstats::PhaseKind phaseKind, GCUse use,
+                 WorkFunc func, WorkItemIterator& work,
                  const SliceBudget& budget, AutoLockHelperThreadState& lock)
-      : GCParallelTask(gc),
+      : GCParallelTask(gc, phaseKind, use),
         func_(func),
         work_(work),
         budget_(budget),
@@ -47,13 +49,12 @@ class ParallelWorker : public GCParallelTask {
     work.next();
   }
 
-  void run() {
-    // These checks assert when run in parallel.
-    AutoDisableProxyCheck noProxyCheck;
+  void run(AutoLockHelperThreadState& lock) {
+    AutoUnlockHelperThreadState unlock(lock);
 
     for (;;) {
       size_t steps = func_(gc, item_);
-      budget_.step(steps);
+      budget_.step(std::max(steps, size_t(1)));
       if (budget_.isOverBudget()) {
         break;
       }
@@ -86,8 +87,6 @@ class ParallelWorker : public GCParallelTask {
 
 static constexpr size_t MaxParallelWorkers = 8;
 
-extern size_t ParallelWorkerCount();
-
 // An RAII class that starts a number of ParallelWorkers and waits for them to
 // finish.
 template <typename WorkItem, typename WorkItemIterator>
@@ -97,26 +96,26 @@ class MOZ_RAII AutoRunParallelWork {
   using WorkFunc = ParallelWorkFunc<WorkItem>;
 
   AutoRunParallelWork(GCRuntime* gc, WorkFunc func,
-                      gcstats::PhaseKind phaseKind, WorkItemIterator& work,
-                      const SliceBudget& budget,
+                      gcstats::PhaseKind phaseKind, GCUse use,
+                      WorkItemIterator& work, const SliceBudget& budget,
                       AutoLockHelperThreadState& lock)
       : gc(gc), phaseKind(phaseKind), lock(lock), tasksStarted(0) {
-    size_t workerCount = ParallelWorkerCount();
+    size_t workerCount = gc->parallelWorkerCount();
     MOZ_ASSERT(workerCount <= MaxParallelWorkers);
     MOZ_ASSERT_IF(workerCount == 0, work.done());
 
     for (size_t i = 0; i < workerCount && !work.done(); i++) {
-      tasks[i].emplace(gc, func, work, budget, lock);
-      gc->startTask(*tasks[i], phaseKind, lock);
+      tasks[i].emplace(gc, phaseKind, use, func, work, budget, lock);
+      gc->startTask(*tasks[i], lock);
       tasksStarted++;
     }
   }
 
   ~AutoRunParallelWork() {
-    MOZ_ASSERT(HelperThreadState().isLockedByCurrentThread());
+    gHelperThreadLock.assertOwnedByCurrentThread();
 
     for (size_t i = 0; i < tasksStarted; i++) {
-      gc->joinTask(*tasks[i], phaseKind, lock);
+      gc->joinTask(*tasks[i], lock);
     }
     for (size_t i = tasksStarted; i < MaxParallelWorkers; i++) {
       MOZ_ASSERT(tasks[i].isNothing());

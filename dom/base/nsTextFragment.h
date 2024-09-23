@@ -18,7 +18,7 @@
 
 #include "nsCharTraits.h"
 #include "nsString.h"
-#include "nsStringBuffer.h"
+#include "mozilla/StringBuffer.h"
 #include "nsReadableUtils.h"
 #include "nsISupportsImpl.h"
 
@@ -90,6 +90,8 @@ class nsTextFragment final {
    */
   uint32_t GetLength() const { return mState.mLength; }
 
+#define NS_MAX_TEXT_FRAGMENT_LENGTH (static_cast<uint32_t>(0x1FFFFFFF))
+
   bool CanGrowBy(size_t n) const {
     return n < (1 << 29) && mState.mLength + n < (1 << 29);
   }
@@ -102,14 +104,16 @@ class nsTextFragment final {
    * you can access the value faster but may waste memory if all characters
    * are less than U+0100.
    */
-  bool SetTo(const char16_t* aBuffer, int32_t aLength, bool aUpdateBidi,
+  bool SetTo(const char16_t* aBuffer, uint32_t aLength, bool aUpdateBidi,
              bool aForce2b);
 
   bool SetTo(const nsString& aString, bool aUpdateBidi, bool aForce2b) {
+    if (MOZ_UNLIKELY(aString.Length() > NS_MAX_TEXT_FRAGMENT_LENGTH)) {
+      return false;
+    }
     ReleaseText();
     if (aForce2b && !aUpdateBidi) {
-      nsStringBuffer* buffer = nsStringBuffer::FromString(aString);
-      if (buffer) {
+      if (mozilla::StringBuffer* buffer = aString.GetStringBuffer()) {
         NS_ADDREF(m2b = buffer);
         mState.mInHeap = true;
         mState.mIs2b = true;
@@ -145,24 +149,17 @@ class nsTextFragment final {
    * Append the contents of this string fragment to aString
    * @return false if an out of memory condition is detected, true otherwise
    */
-  MOZ_MUST_USE
-  bool AppendTo(nsAString& aString,
-                const mozilla::fallible_t& aFallible) const {
+  [[nodiscard]] bool AppendTo(nsAString& aString,
+                              const mozilla::fallible_t& aFallible) const {
     if (mState.mIs2b) {
       if (aString.IsEmpty()) {
-        m2b->ToString(mState.mLength, aString);
+        aString.Assign(m2b, mState.mLength);
         return true;
       }
-      bool ok = aString.Append(Get2b(), mState.mLength, aFallible);
-      if (!ok) {
-        return false;
-      }
-
-      return true;
-    } else {
-      return AppendASCIItoUTF16(Substring(m1b, mState.mLength), aString,
-                                aFallible);
+      return aString.Append(Get2b(), mState.mLength, aFallible);
     }
+    return AppendASCIItoUTF16(Substring(m1b, mState.mLength), aString,
+                              aFallible);
   }
 
   /**
@@ -170,7 +167,7 @@ class nsTextFragment final {
    * @param aOffset where to start the substring in this text fragment
    * @param aLength the length of the substring
    */
-  void AppendTo(nsAString& aString, int32_t aOffset, int32_t aLength) const {
+  void AppendTo(nsAString& aString, uint32_t aOffset, uint32_t aLength) const {
     if (!AppendTo(aString, aOffset, aLength, mozilla::fallible)) {
       aString.AllocFailed(aString.Length() + aLength);
     }
@@ -183,9 +180,9 @@ class nsTextFragment final {
    * @param aLength the length of the substring
    * @return false if an out of memory condition is detected, true otherwise
    */
-  MOZ_MUST_USE
-  bool AppendTo(nsAString& aString, int32_t aOffset, int32_t aLength,
-                const mozilla::fallible_t& aFallible) const {
+  [[nodiscard]] bool AppendTo(nsAString& aString, uint32_t aOffset,
+                              uint32_t aLength,
+                              const mozilla::fallible_t& aFallible) const {
     if (mState.mIs2b) {
       bool ok = aString.Append(Get2b() + aOffset, aLength, aFallible);
       if (!ok) {
@@ -205,14 +202,14 @@ class nsTextFragment final {
    * lie within the fragments data. The fragments data is converted if
    * necessary.
    */
-  void CopyTo(char16_t* aDest, int32_t aOffset, int32_t aCount);
+  void CopyTo(char16_t* aDest, uint32_t aOffset, uint32_t aCount);
 
   /**
    * Return the character in the text-fragment at the given
    * index. This always returns a char16_t.
    */
-  char16_t CharAt(int32_t aIndex) const {
-    MOZ_ASSERT(uint32_t(aIndex) < mState.mLength, "bad index");
+  char16_t CharAt(uint32_t aIndex) const {
+    MOZ_ASSERT(aIndex < mState.mLength, "bad index");
     return mState.mIs2b ? Get2b()[aIndex]
                         : static_cast<unsigned char>(m1b[aIndex]);
   }
@@ -221,8 +218,7 @@ class nsTextFragment final {
    * IsHighSurrogateFollowedByLowSurrogateAt() returns true if character at
    * aIndex is high surrogate and it's followed by low surrogate.
    */
-  inline bool IsHighSurrogateFollowedByLowSurrogateAt(int32_t aIndex) const {
-    MOZ_ASSERT(aIndex >= 0);
+  inline bool IsHighSurrogateFollowedByLowSurrogateAt(uint32_t aIndex) const {
     MOZ_ASSERT(aIndex < mState.mLength);
     if (!mState.mIs2b || aIndex + 1 >= mState.mLength) {
       return false;
@@ -234,10 +230,9 @@ class nsTextFragment final {
    * IsLowSurrogateFollowingHighSurrogateAt() returns true if character at
    * aIndex is low surrogate and it follows high surrogate.
    */
-  inline bool IsLowSurrogateFollowingHighSurrogateAt(int32_t aIndex) const {
-    MOZ_ASSERT(aIndex >= 0);
+  inline bool IsLowSurrogateFollowingHighSurrogateAt(uint32_t aIndex) const {
     MOZ_ASSERT(aIndex < mState.mLength);
-    if (!mState.mIs2b || aIndex <= 0) {
+    if (!mState.mIs2b || !aIndex) {
       return false;
     }
     return NS_IS_SURROGATE_PAIR(Get2b()[aIndex - 1], Get2b()[aIndex]);
@@ -249,8 +244,7 @@ class nsTextFragment final {
    * code for the pair.  If the index is low surrogate, or a high surrogate but
    * not in a pair, returns 0.
    */
-  inline char32_t ScalarValueAt(int32_t aIndex) const {
-    MOZ_ASSERT(aIndex >= 0);
+  inline char32_t ScalarValueAt(uint32_t aIndex) const {
     MOZ_ASSERT(aIndex < mState.mLength);
     if (!mState.mIs2b) {
       return static_cast<unsigned char>(m1b[aIndex]);
@@ -284,15 +278,13 @@ class nsTextFragment final {
     uint32_t mLength : 29;
   };
 
-#define NS_MAX_TEXT_FRAGMENT_LENGTH (static_cast<uint32_t>(0x1FFFFFFF))
-
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
   /**
    * Check whether the text in this fragment is the same as the text in the
    * other fragment.
    */
-  MOZ_MUST_USE bool TextEquals(const nsTextFragment& aOther) const;
+  [[nodiscard]] bool TextEquals(const nsTextFragment& aOther) const;
 
  private:
   void ReleaseText();
@@ -304,7 +296,7 @@ class nsTextFragment final {
   void UpdateBidiFlag(const char16_t* aBuffer, uint32_t aLength);
 
   union {
-    nsStringBuffer* m2b;
+    mozilla::StringBuffer* m2b;
     const char* m1b;  // This is const since it can point to shared data
   };
 

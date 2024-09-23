@@ -6,7 +6,6 @@
 
 use crate::parser::{Parse, ParserContext};
 #[cfg(feature = "gecko")]
-use crate::values::computed::ExtremumLength;
 use crate::Zero;
 use cssparser::Parser;
 use style_traits::ParseError;
@@ -59,7 +58,7 @@ impl<LengthPercentage> LengthPercentageOrAuto<LengthPercentage> {
             &mut Parser<'i, 't>,
         ) -> Result<LengthPercentage, ParseError<'i>>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("auto")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
             return Ok(LengthPercentageOrAuto::Auto);
         }
 
@@ -75,7 +74,7 @@ where
 {
     /// Resolves `auto` values by calling `f`.
     #[inline]
-    pub fn auto_is(&self, f: impl Fn() -> LengthPercentage) -> LengthPercentage {
+    pub fn auto_is(&self, f: impl FnOnce() -> LengthPercentage) -> LengthPercentage {
         match self {
             LengthPercentageOrAuto::LengthPercentage(length) => length.clone(),
             LengthPercentageOrAuto::Auto => f(),
@@ -151,9 +150,17 @@ impl<LengthPercentage: Parse> Parse for LengthPercentageOrAuto<LengthPercentage>
 pub enum GenericSize<LengthPercent> {
     LengthPercentage(LengthPercent),
     Auto,
-    #[cfg(feature = "gecko")]
     #[animation(error)]
-    ExtremumLength(ExtremumLength),
+    MaxContent,
+    #[animation(error)]
+    MinContent,
+    #[animation(error)]
+    FitContent,
+    #[animation(error)]
+    MozAvailable,
+    #[animation(error)]
+    #[css(function = "fit-content")]
+    FitContentFunction(LengthPercent),
 }
 
 pub use self::GenericSize as Size;
@@ -174,13 +181,13 @@ impl<LengthPercentage> Size<LengthPercentage> {
 
 /// A generic value for the `max-width` or `max-height` property.
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
 #[derive(
     Animate,
     Clone,
     ComputeSquaredDistance,
     Copy,
     Debug,
+    MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
     ToAnimatedValue,
@@ -194,9 +201,17 @@ impl<LengthPercentage> Size<LengthPercentage> {
 pub enum GenericMaxSize<LengthPercent> {
     LengthPercentage(LengthPercent),
     None,
-    #[cfg(feature = "gecko")]
     #[animation(error)]
-    ExtremumLength(ExtremumLength),
+    MaxContent,
+    #[animation(error)]
+    MinContent,
+    #[animation(error)]
+    FitContent,
+    #[animation(error)]
+    MozAvailable,
+    #[animation(error)]
+    #[css(function = "fit-content")]
+    FitContentFunction(LengthPercent),
 }
 
 pub use self::GenericMaxSize as MaxSize;
@@ -209,7 +224,7 @@ impl<LengthPercentage> MaxSize<LengthPercentage> {
     }
 }
 
-/// A generic `<length>` | `<number>` value for the `-moz-tab-size` property.
+/// A generic `<length>` | `<number>` value for the `tab-size` property.
 #[derive(
     Animate,
     Clone,

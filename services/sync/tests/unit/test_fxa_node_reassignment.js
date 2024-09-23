@@ -7,16 +7,17 @@ _("Test that node reassignment happens correctly using the FxA identity mgr.");
 // reassignment - it comes from the token server - so we need to ensure the
 // Fxa cluster manager grabs a new token.
 
-const { RESTRequest } = ChromeUtils.import(
-  "resource://services-common/rest.js"
+const { RESTRequest } = ChromeUtils.importESModule(
+  "resource://services-common/rest.sys.mjs"
 );
-const { Service } = ChromeUtils.import("resource://services-sync/service.js");
-const { Status } = ChromeUtils.import("resource://services-sync/status.js");
-const { BrowserIDManager } = ChromeUtils.import(
-  "resource://services-sync/browserid_identity.js"
+const { Service } = ChromeUtils.importESModule(
+  "resource://services-sync/service.sys.mjs"
 );
-const { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm"
+const { Status } = ChromeUtils.importESModule(
+  "resource://services-sync/status.sys.mjs"
+);
+const { SyncAuthManager } = ChromeUtils.importESModule(
+  "resource://services-sync/sync_auth.sys.mjs"
 );
 
 add_task(async function setup() {
@@ -24,8 +25,8 @@ add_task(async function setup() {
   // add-ons engine.
   await Service.engineManager.clear();
 
-  // Setup the FxA identity manager and cluster manager.
-  Status.__authManager = Service.identity = new BrowserIDManager();
+  // Setup the sync auth manager.
+  Status.__authManager = Service.identity = new SyncAuthManager();
 });
 
 // API-compatible with SyncServer handler. Bind `handler` to something to use
@@ -45,8 +46,7 @@ function prepareServer(cbAfterTokenFetch) {
   // A server callback to ensure we don't accidentally hit the wrong endpoint
   // after a node reassignment.
   let callback = {
-    __proto__: SyncServerCallback,
-    onRequest(req, resp) {
+    onRequest(req) {
       let full = `${req.scheme}://${req.host}:${req.port}${req.path}`;
       let expected = config.fxaccount.token.endpoint;
       Assert.ok(
@@ -55,6 +55,7 @@ function prepareServer(cbAfterTokenFetch) {
       );
     },
   };
+  Object.setPrototypeOf(callback, SyncServerCallback);
   let server = new SyncServer(callback);
   server.registerUser("johndoe");
   server.start();
@@ -66,25 +67,7 @@ function prepareServer(cbAfterTokenFetch) {
   let numReassigns = 0;
   return configureIdentity(config).then(() => {
     Service.identity._tokenServerClient = {
-      getTokenFromBrowserIDAssertion(uri, assertion) {
-        return new Promise(res => {
-          // Build a new URL with trailing zeros for the SYNC_VERSION part - this
-          // will still be seen as equivalent by the test server, but different
-          // by sync itself.
-          numReassigns += 1;
-          let trailingZeros = new Array(numReassigns + 1).join("0");
-          let token = config.fxaccount.token;
-          token.endpoint = server.baseURI + "1.1" + trailingZeros + "/johndoe";
-          token.uid = config.username;
-          _(`test server saw token fetch - endpoint now ${token.endpoint}`);
-          numTokenRequests += 1;
-          res(token);
-          if (cbAfterTokenFetch) {
-            cbAfterTokenFetch();
-          }
-        });
-      },
-      getTokenFromOAuthToken() {
+      getTokenUsingOAuth() {
         return new Promise(res => {
           // Build a new URL with trailing zeros for the SYNC_VERSION part - this
           // will still be seen as equivalent by the test server, but different
@@ -134,7 +117,7 @@ async function syncAndExpectNodeReassignment(
   url
 ) {
   _("Starting syncAndExpectNodeReassignment\n");
-  let deferred = PromiseUtils.defer();
+  let deferred = Promise.withResolvers();
   async function onwards() {
     let numTokenRequestsBefore;
     function onFirstSync() {
@@ -157,7 +140,7 @@ async function syncAndExpectNodeReassignment(
 
       // Make absolutely sure that any event listeners are done with their work
       // before we proceed.
-      waitForZeroTimer(function() {
+      waitForZeroTimer(function () {
         _("Second sync nextTick.");
         Assert.equal(
           numTokenRequests,

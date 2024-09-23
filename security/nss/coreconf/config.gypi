@@ -12,7 +12,7 @@
         # chromium uses pymod_do_main, but gyp doesn't set a sensible
         # Python sys.path (gyp_chromium does).
         'python%': '<(python)',
-        'host_arch%': '<!(<(python) <(DEPTH)/coreconf/detect_host_arch.py)',
+        'host_arch%': '<!("<(python)" <(DEPTH)/coreconf/detect_host_arch.py)',
       },
       'python%': '<(python)',
       'host_arch%': '<(host_arch)',
@@ -37,7 +37,7 @@
         },{
           'use_system_sqlite%': 0,
         }],
-        ['OS=="mac" or OS=="ios" or OS=="win"', {
+        ['OS=="mac" or OS=="ios" or OS=="solaris" or OS=="win"', {
           'cc_use_gnu_ld%': 0,
         }, {
           'cc_use_gnu_ld%': 1,
@@ -66,14 +66,19 @@
           ],
         }],
         ['"<(GENERATOR)"=="ninja"', {
-          'cc_is_clang%': '<!(<(python) <(DEPTH)/coreconf/check_cc.py clang)',
+          'cc_is_clang%': '<!("<(python)" <(DEPTH)/coreconf/check_cc.py clang)',
         }, {
           'cc_is_clang%': '0',
         }],
         ['"<(GENERATOR)"=="ninja"', {
-          'cc_is_gcc%': '<!(<(python) <(DEPTH)/coreconf/check_cc.py gcc)',
+          'cc_is_gcc%': '<!("<(python)" <(DEPTH)/coreconf/check_cc.py gcc)',
         }, {
           'cc_is_gcc%': '0',
+        }],
+        ['"<(GENERATOR)"=="ninja"', {
+          'cc_is_cc%': '<!("<(python)" <(DEPTH)/coreconf/check_cc.py cc)',
+        }, {
+          'cc_is_cc%': '0',
         }],
       ],
     },
@@ -97,13 +102,18 @@
     'cc_use_gnu_ld%': '<(cc_use_gnu_ld)',
     # Some defaults
     'disable_arm_hw_aes%': 0,
+    'disable_arm_hw_sha1%': 0,
+    'disable_arm_hw_sha2%': 0,
+    'disable_intel_hw_sha%': 0,
     'disable_tests%': 0,
     'disable_chachapoly%': 0,
     'disable_deprecated_seed%': 0,
+    'disable_deprecated_rc2%': 0,
     'disable_dbm%': 1,
     'disable_libpkix%': 1,
     'disable_werror%': 0,
     'disable_altivec%': 0,
+    'disable_crypto_vsx%': 0,
     'disable_arm32_neon%': 0,
     'mozilla_client%': 0,
     'comm_client%': 0,
@@ -126,9 +136,15 @@
     'nss_include_dir%': '/usr/include/nss',
     'only_dev_random%': 1,
     'disable_fips%': 1,
+    'fips_module_id%': '',
     'mozpkix_only%': 0,
+    'mozilla_central%': 0,
     'coverage%': 0,
     'softfp_cflags%': '',
+    'enable_draft_hpke%': 0,
+    'force_integrated_as%': 0,
+    'disable_ckbi%': 0,
+    'ppc_abi%': 0,
   },
   'target_defaults': {
     # Settings specific to targets should go here.
@@ -150,10 +166,20 @@
           '<(nss_include_dir)',
         ],
       }],
+      [ 'disable_fips==0', {
+        'defines': [
+          'NSS_ENABLE_FIPS_INDICATORS',
+        ],
+      }],
       [ 'disable_fips==1', {
         'defines': [
           'NSS_FIPS_DISABLED',
           'NSS_NO_INIT_SUPPORT',
+        ],
+      }],
+      [ 'fips_module_id!=""', {
+        'defines': [
+          'NSS_FIPS_MODULE_ID="<(fips_module_id)"'
         ],
       }],
       [ 'OS!="android" and OS!="mac" and OS!="ios" and OS!="win"', {
@@ -203,7 +229,7 @@
           },
         },
       }],
-      [ 'target_arch=="arm64" or target_arch=="aarch64" or target_arch=="sparc64" or target_arch=="ppc64" or target_arch=="ppc64le" or target_arch=="s390x" or target_arch=="mips64"', {
+      [ 'target_arch=="arm64" or target_arch=="aarch64" or target_arch=="sparc64" or target_arch=="ppc64" or target_arch=="ppc64le" or target_arch=="s390x" or target_arch=="mips64" or target_arch=="e2k" or target_arch=="riscv64" or target_arch=="loongarch64"', {
         'defines': [
           'NSS_USE_64',
         ],
@@ -363,7 +389,7 @@
               '_DEFAULT_SOURCE', # for <endian.h> functions, strdup, realpath, and getentropy
               '_BSD_SOURCE', # for the above in glibc <= 2.19
               '_POSIX_SOURCE', # for <signal.h>
-              'SQL_MEASURE_USE_TEMP_DIR', # use tmpdir for the access calls
+              'SDB_MEASURE_USE_TEMP_DIR', # use tmpdir for the access calls
             ],
           }],
           [ 'OS=="dragonfly" or OS=="freebsd"', {
@@ -393,6 +419,11 @@
               '_REENTRANT',
             ],
           }],
+          [ 'OS!="mac" and OS!="ios" and OS!="solaris" and OS!="win"', {
+            'ldflags': [
+              '-z', 'noexecstack',
+            ],
+          }],
           [ 'OS!="mac" and OS!="ios" and OS!="win"', {
             'cflags': [
               '-fPIC',
@@ -405,9 +436,6 @@
             ],
             'cflags_cc': [
               '-std=c++11',
-            ],
-            'ldflags': [
-              '-z', 'noexecstack',
             ],
             'conditions': [
               [ 'target_arch=="ia32"', {
@@ -438,11 +466,11 @@
           }],
           [ 'disable_werror==0 and OS!="android" and OS!="win"', {
             'cflags': [
-              '<!@(<(python) <(DEPTH)/coreconf/werror.py)',
+              '<!@("<(python)" <(DEPTH)/coreconf/werror.py)',
             ],
             'xcode_settings': {
               'OTHER_CFLAGS': [
-                '<!@(<(python) <(DEPTH)/coreconf/werror.py)',
+                '<!@("<(python)" <(DEPTH)/coreconf/werror.py)',
               ],
             },
           }],
@@ -575,6 +603,11 @@
               'NSS_DISABLE_DEPRECATED_SEED',
             ],
           }],
+          [ 'disable_deprecated_rc2==1', {
+            'defines': [
+              'NSS_DISABLE_DEPRECATED_RC2',
+            ],
+          }],
         ],
       },
       # Common settings for debug should go here.
@@ -648,7 +681,7 @@
     },
   },
   'conditions': [
-    [ 'cc_use_gnu_ld==1', {
+    [ 'cc_use_gnu_ld==1 or OS=="solaris"', {
       'variables': {
         'process_map_file': ['/bin/sh', '-c', '/usr/bin/env grep -v ";-" >(mapfile) | sed -e "s,;+,," -e "s; DATA ;;" -e "s,;;,," -e "s,;.*,;," > >@(_outputs)'],
       },

@@ -6,15 +6,14 @@
 
 #include "mozilla/dom/SVGFEDropShadowElement.h"
 #include "mozilla/dom/SVGFEDropShadowElementBinding.h"
+#include "mozilla/SVGFilterInstance.h"
 #include "nsIFrame.h"
-#include "nsSVGFilterInstance.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEDropShadow)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEDropShadowElement::WrapNode(JSContext* aCx,
                                            JS::Handle<JSObject*> aGivenProto) {
@@ -22,7 +21,7 @@ JSObject* SVGFEDropShadowElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFEDropShadowElement::sNumberInfo[2] = {
-    {nsGkAtoms::dx, 2, false}, {nsGkAtoms::dy, 2, false}};
+    {nsGkAtoms::dx, 2}, {nsGkAtoms::dy, 2}};
 
 SVGElement::NumberPairInfo SVGFEDropShadowElement::sNumberPairInfo[1] = {
     {nsGkAtoms::stdDeviation, 2, 2}};
@@ -67,7 +66,7 @@ void SVGFEDropShadowElement::SetStdDeviation(float stdDeviationX,
 }
 
 FilterPrimitiveDescription SVGFEDropShadowElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   float stdX = aInstance->GetPrimitiveNumber(SVGContentUtils::X,
@@ -89,8 +88,7 @@ FilterPrimitiveDescription SVGFEDropShadowElement::GetPrimitiveDescription(
   atts.mStdDeviation = Size(stdX, stdY);
   atts.mOffset = offset;
 
-  nsIFrame* frame = GetPrimaryFrame();
-  if (frame) {
+  if (const auto* frame = GetPrimaryFrame()) {
     const nsStyleSVGReset* styleSVGReset = frame->Style()->StyleSVGReset();
     sRGBColor color(
         sRGBColor::FromABGR(styleSVGReset->mFloodColor.CalcColor(frame)));
@@ -100,6 +98,19 @@ FilterPrimitiveDescription SVGFEDropShadowElement::GetPrimitiveDescription(
     atts.mColor = sRGBColor();
   }
   return FilterPrimitiveDescription(AsVariant(std::move(atts)));
+}
+
+bool SVGFEDropShadowElement::OutputIsTainted(
+    const nsTArray<bool>& aInputsAreTainted,
+    nsIPrincipal* aReferencePrincipal) {
+  if (const auto* frame = GetPrimaryFrame()) {
+    if (frame->Style()->StyleSVGReset()->mFloodColor.IsCurrentColor()) {
+      return true;
+    }
+  }
+
+  return SVGFEDropShadowElementBase::OutputIsTainted(aInputsAreTainted,
+                                                     aReferencePrincipal);
 }
 
 bool SVGFEDropShadowElement::AttributeAffectsRendering(
@@ -115,17 +126,6 @@ bool SVGFEDropShadowElement::AttributeAffectsRendering(
 void SVGFEDropShadowElement::GetSourceImageNames(
     nsTArray<SVGStringInfo>& aSources) {
   aSources.AppendElement(SVGStringInfo(&mStringAttributes[IN1], this));
-}
-
-//----------------------------------------------------------------------
-// nsIContent methods
-
-NS_IMETHODIMP_(bool)
-SVGFEDropShadowElement::IsAttributeMapped(const nsAtom* name) const {
-  static const MappedAttributeEntry* const map[] = {sFEFloodMap};
-
-  return FindAttributeDependence(name, map) ||
-         SVGFEDropShadowElementBase::IsAttributeMapped(name);
 }
 
 //----------------------------------------------------------------------
@@ -147,5 +147,4 @@ SVGElement::StringAttributesInfo SVGFEDropShadowElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

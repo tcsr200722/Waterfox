@@ -2,16 +2,8 @@
 "use strict";
 
 let gDNSResolved = false;
-let gRealDNSService = gDNSService;
-add_task(async function setup() {
-  gDNSService = {
-    asyncResolve() {
-      gDNSResolved = true;
-      return gRealDNSService.asyncResolve(...arguments);
-    },
-  };
-  registerCleanupFunction(function() {
-    gDNSService = gRealDNSService;
+add_setup(async function () {
+  registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.fixup.domainwhitelist.localhost");
   });
 });
@@ -42,6 +34,7 @@ function promiseNotification(aBrowser, value, expected, input) {
 
 async function runURLBarSearchTest({
   valueToOpen,
+  enterSearchMode,
   expectSearch,
   expectNotification,
   expectDNSResolve,
@@ -53,11 +46,14 @@ async function runURLBarSearchTest({
   const setValueFns = [
     value => {
       aWindow.gURLBar.value = value;
+      if (enterSearchMode) {
+        // Ensure to open the panel.
+        UrlbarTestUtils.fireInputEvent(aWindow);
+      }
     },
     value => {
       return UrlbarTestUtils.promiseAutocompleteResultPopup({
         window: aWindow,
-        waitForFocus,
         value,
       });
     },
@@ -65,6 +61,21 @@ async function runURLBarSearchTest({
 
   for (let i = 0; i < setValueFns.length; ++i) {
     await setValueFns[i](valueToOpen);
+    let topic = "uri-fixup-check-dns";
+    let observer = (aSubject, aTopicInner) => {
+      if (aTopicInner == topic) {
+        gDNSResolved = true;
+      }
+    };
+    Services.obs.addObserver(observer, topic);
+
+    if (enterSearchMode) {
+      if (!expectSearch) {
+        throw new Error("Must execute a search in search mode");
+      }
+      await UrlbarTestUtils.enterSearchMode(aWindow);
+    }
+
     let expectedURI;
     if (!expectSearch) {
       expectedURI = "http://" + valueToOpen + "/";
@@ -82,35 +93,36 @@ async function runURLBarSearchTest({
     );
     EventUtils.synthesizeKey("VK_RETURN", {}, aWindow);
 
-    await Promise.all([
-      docLoadPromise,
-      promiseNotification(
+    if (!enterSearchMode) {
+      await promiseNotification(
         aWindow.gBrowser,
         "keyword-uri-fixup",
         expectNotification,
         valueToOpen
-      ),
-    ]);
+      );
+    }
+    await docLoadPromise;
 
     if (expectNotification) {
       let notificationBox = aWindow.gBrowser.getNotificationBox(
         aWindow.gBrowser.selectedBrowser
       );
-      let notification = notificationBox.getNotificationWithValue(
-        "keyword-uri-fixup"
-      );
+      let notification =
+        notificationBox.getNotificationWithValue("keyword-uri-fixup");
       // Confirm the notification only on the last loop.
       if (i == setValueFns.length - 1) {
         docLoadPromise = BrowserTestUtils.waitForDocLoadAndStopIt(
           "http://" + valueToOpen + "/",
           aWindow.gBrowser.selectedBrowser
         );
-        notification.querySelector("button").click();
+        notification.buttonContainer.querySelector("button").click();
         await docLoadPromise;
       } else {
         notificationBox.currentNotification.close();
       }
     }
+
+    Services.obs.removeObserver(observer, topic);
     Assert.equal(
       gDNSResolved,
       expectDNSResolve,
@@ -222,28 +234,41 @@ function get_test_function_for_localhost_with_hostname(
       win = OpenBrowserWindow({ private: true });
       await promiseWin;
       await SimpleTest.promiseFocus(win);
-      // We can do this since the window will be gone shortly.
-      delete win.gDNSService;
-      win.gDNSService = {
-        asyncResolve() {
-          gDNSResolved = true;
-          return gRealDNSService.asyncResolve(...arguments);
-        },
-      };
     } else {
       win = window;
     }
 
-    // Remove the domain from the whitelist, the notification sould appear,
-    // unless we are in private browsing mode.
+    // Remove the domain from the whitelist
     Services.prefs.setBoolPref(pref, false);
 
+    // The notification should not appear because the default value of
+    // browser.urlbar.dnsResolveSingleWordsAfterSearch is 0
     await BrowserTestUtils.withNewTab(
       {
         gBrowser: win.gBrowser,
         url: "about:blank",
       },
-      browser =>
+      () =>
+        runURLBarSearchTest({
+          valueToOpen: hostName,
+          expectSearch: true,
+          expectNotification: false,
+          expectDNSResolve: false,
+          aWindow: win,
+        })
+    );
+
+    await SpecialPowers.pushPrefEnv({
+      set: [["browser.urlbar.dnsResolveSingleWordsAfterSearch", 1]],
+    });
+
+    // The notification should appear, unless we are in private browsing mode.
+    await BrowserTestUtils.withNewTab(
+      {
+        gBrowser: win.gBrowser,
+        url: "about:blank",
+      },
+      () =>
         runURLBarSearchTest({
           valueToOpen: hostName,
           expectSearch: true,
@@ -264,7 +289,7 @@ function get_test_function_for_localhost_with_hostname(
         gBrowser: win.gBrowser,
         url: "about:blank",
       },
-      browser =>
+      () =>
         runURLBarSearchTest({
           valueToOpen: hostName,
           expectSearch: isPrivate,
@@ -279,6 +304,8 @@ function get_test_function_for_localhost_with_hostname(
       await BrowserTestUtils.closeWindow(win);
       await SimpleTest.promiseFocus(window);
     }
+
+    await SpecialPowers.popPrefEnv();
   };
 }
 
@@ -298,7 +325,7 @@ add_task(async function test_dnsResolveSingleWordsAfterSearch() {
       gBrowser,
       url: "about:blank",
     },
-    browser =>
+    () =>
       runURLBarSearchTest({
         valueToOpen: "localhost",
         expectSearch: true,
@@ -317,6 +344,26 @@ add_task(async function test_navigate_invalid_url() {
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
   await runURLBarSearchTest({
     valueToOpen: "mozilla is awesome",
+    expectSearch: true,
+    expectNotification: false,
+    expectDNSResolve: false,
+  });
+  gBrowser.removeTab(tab);
+});
+
+add_task(async function test_search_mode() {
+  info("When in search mode we should never query the DNS");
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.search.suggest.enabled", false]],
+  });
+  let tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(
+    gBrowser,
+    "about:blank"
+  ));
+  await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+  await runURLBarSearchTest({
+    enterSearchMode: true,
+    valueToOpen: "mozilla",
     expectSearch: true,
     expectNotification: false,
     expectDNSResolve: false,

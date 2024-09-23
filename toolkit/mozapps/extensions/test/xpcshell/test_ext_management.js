@@ -10,9 +10,21 @@ add_task(async function setup() {
 function backgroundGetSelf() {
   browser.management.getSelf().then(
     extInfo => {
-      let url = browser.extension.getURL("*");
+      let url = browser.runtime.getURL("*");
       extInfo.hostPermissions = extInfo.hostPermissions.filter(i => i != url);
-      extInfo.url = browser.extension.getURL("");
+
+      // Internal permissions are currently part of the permissions included
+      // in the management.getSelf results, and in non release channels
+      // any temporary installed extension is recognized as privileged
+      // and some internal permission would be added automatically.
+      //
+      // TODO(Bug 1713344): this may become unnecessary if we filter out
+      // the internal permissions from the management API results.
+      extInfo.permissions = extInfo.permissions.filter(
+        i => !i.startsWith("internal:")
+      );
+
+      extInfo.url = browser.runtime.getURL("");
       browser.test.sendMessage("management-getSelf", extInfo);
     },
     error => {
@@ -28,7 +40,7 @@ add_task(async function test_management_get_self_complete() {
   const hostPermissions = ["*://example.org/*", "https://foo.example.org/*"];
 
   let manifest = {
-    applications: {
+    browser_specific_settings: {
       gecko: {
         id,
         update_url: "https://updates.mozilla.com/",
@@ -43,8 +55,8 @@ add_task(async function test_management_get_self_complete() {
       page: "get_self_options.html",
     },
     icons: {
-      "16": "icons/icon-16.png",
-      "48": "icons/icon-48.png",
+      16: "icons/icon-16.png",
+      48: "icons/icon-48.png",
     },
     permissions: [...permissions, ...hostPermissions],
   };
@@ -92,16 +104,14 @@ add_task(async function test_management_get_self_complete() {
   );
   equal(
     extInfo.updateUrl,
-    manifest.applications.gecko.update_url,
+    manifest.browser_specific_settings.gecko.update_url,
     "getSelf returned the expected updateUrl"
   );
   ok(
     extInfo.optionsUrl.endsWith(manifest.options_ui.page),
     "getSelf returned the expected optionsUrl"
   );
-  for (let [index, size] of Object.keys(manifest.icons)
-    .sort()
-    .entries()) {
+  for (let [index, size] of Object.keys(manifest.icons).sort().entries()) {
     let iconUrl = `${extInfo.url}${manifest.icons[size]}`;
     equal(
       extInfo.icons[index].size,
@@ -136,7 +146,7 @@ add_task(async function test_management_get_self_minimal() {
   const id = "get_self_test_minimal@tests.mozilla.com";
 
   let manifest = {
-    applications: {
+    browser_specific_settings: {
       gecko: {
         id,
       },
@@ -186,7 +196,7 @@ add_task(async function test_management_get_self_permanent() {
   const id = "get_self_test_permanent@tests.mozilla.com";
 
   let manifest = {
-    applications: {
+    browser_specific_settings: {
       gecko: {
         id,
       },

@@ -7,17 +7,21 @@
 #ifndef mozilla_ServoElementSnapshot_h
 #define mozilla_ServoElementSnapshot_h
 
-#include "mozilla/EventStates.h"
+#include "AttrArray.h"
 #include "mozilla/TypedEnumBits.h"
 #include "mozilla/dom/BorrowedAttrInfo.h"
-#include "mozilla/dom/Element.h"
+#include "mozilla/dom/RustTypes.h"
 #include "nsAttrName.h"
 #include "nsAttrValue.h"
 #include "nsChangeHint.h"
 #include "nsGkAtoms.h"
 #include "nsAtom.h"
+#include "MainThreadUtils.h"
 
 namespace mozilla {
+namespace dom {
+class Element;
+}
 
 /**
  * A bitflags enum class used to determine what data does a ServoElementSnapshot
@@ -29,6 +33,7 @@ enum class ServoElementSnapshotFlags : uint8_t {
   Id = 1 << 2,
   MaybeClass = 1 << 3,
   OtherPseudoClassState = 1 << 4,
+  CustomState = 1 << 5,
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(ServoElementSnapshotFlags)
@@ -43,7 +48,10 @@ MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(ServoElementSnapshotFlags)
 class ServoElementSnapshot {
   typedef dom::BorrowedAttrInfo BorrowedAttrInfo;
   typedef dom::Element Element;
-  typedef EventStates::ServoType ServoStateType;
+
+  // TODO: Now that the element state shares a representation with rust we
+  // should be able to do better and not use the internal type.
+  typedef dom::ElementState::InternalType ServoStateType;
 
  public:
   typedef ServoElementSnapshotFlags Flags;
@@ -66,9 +74,9 @@ class ServoElementSnapshot {
   /**
    * Captures the given state (if not previously captured).
    */
-  void AddState(EventStates aState) {
+  void AddState(dom::ElementState aState) {
     if (!HasAny(Flags::State)) {
-      mState = aState.ServoValue();
+      mState = aState.GetInternalValue();
       mContains |= Flags::State;
     }
   }
@@ -79,12 +87,16 @@ class ServoElementSnapshot {
    * The attribute name and namespace are used to note which kind of attribute
    * has changed.
    */
-  inline void AddAttrs(const Element&, int32_t aNameSpaceID,
-                       nsAtom* aAttribute);
+  void AddAttrs(const Element&, int32_t aNameSpaceID, nsAtom* aAttribute);
+
+  /**
+   * Captures the given element custom states.
+   */
+  void AddCustomStates(Element&);
 
   /**
    * Captures some other pseudo-class matching state not included in
-   * EventStates.
+   * ElementState.
    */
   void AddOtherPseudoClassState(const Element&);
 
@@ -137,9 +149,9 @@ class ServoElementSnapshot {
     return mIsTableBorderNonzero;
   }
 
-  bool IsMozBrowserFrame() const {
+  bool IsSelectListBox() const {
     MOZ_ASSERT(HasOtherPseudoClassState());
-    return mIsMozBrowserFrame;
+    return mIsSelectListBox;
   }
 
  private:
@@ -149,63 +161,17 @@ class ServoElementSnapshot {
   // snapshots.
   nsTArray<AttrArray::InternalAttr> mAttrs;
   nsTArray<RefPtr<nsAtom>> mChangedAttrNames;
+  nsTArray<RefPtr<nsAtom>> mCustomStates;
   nsAttrValue mClass;
   ServoStateType mState;
   Flags mContains;
   bool mIsInChromeDocument : 1;
   bool mSupportsLangAttr : 1;
   bool mIsTableBorderNonzero : 1;
-  bool mIsMozBrowserFrame : 1;
+  bool mIsSelectListBox : 1;
   bool mClassAttributeChanged : 1;
   bool mIdAttributeChanged : 1;
 };
-
-inline void ServoElementSnapshot::AddAttrs(const Element& aElement,
-                                           int32_t aNameSpaceID,
-                                           nsAtom* aAttribute) {
-  if (aNameSpaceID == kNameSpaceID_None) {
-    if (aAttribute == nsGkAtoms::_class) {
-      if (mClassAttributeChanged) {
-        return;
-      }
-      mClassAttributeChanged = true;
-    } else if (aAttribute == nsGkAtoms::id) {
-      if (mIdAttributeChanged) {
-        return;
-      }
-      mIdAttributeChanged = true;
-    }
-  }
-
-  if (!mChangedAttrNames.Contains(aAttribute)) {
-    mChangedAttrNames.AppendElement(aAttribute);
-  }
-
-  if (HasAttrs()) {
-    return;
-  }
-
-  uint32_t attrCount = aElement.GetAttrCount();
-  mAttrs.SetCapacity(attrCount);
-  for (uint32_t i = 0; i < attrCount; ++i) {
-    const BorrowedAttrInfo info = aElement.GetAttrInfoAt(i);
-    MOZ_ASSERT(info);
-    mAttrs.AppendElement(AttrArray::InternalAttr{*info.mName, *info.mValue});
-  }
-
-  mContains |= Flags::Attributes;
-  if (aElement.HasID()) {
-    mContains |= Flags::Id;
-  }
-
-  if (const nsAttrValue* classValue = aElement.GetClasses()) {
-    // FIXME(emilio): It's pretty unfortunate that this is only relevant for
-    // SVG, yet it's a somewhat expensive copy. We should be able to do
-    // better!
-    mClass = *classValue;
-    mContains |= Flags::MaybeClass;
-  }
-}
 
 }  // namespace mozilla
 

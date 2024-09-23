@@ -4,39 +4,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-[OverrideBuiltins,
- Exposed=Window,
- InstrumentedProps=(adoptedStyleSheets,
-                    caretRangeFromPoint,
-                    clear,
-                    exitPictureInPicture,
-                    featurePolicy,
-                    onbeforecopy,
-                    onbeforecut,
-                    onbeforepaste,
-                    oncancel,
-                    onfreeze,
-                    onmousewheel,
-                    onresume,
-                    onsearch,
-                    onsecuritypolicyviolation,
-                    onwebkitfullscreenchange,
-                    onwebkitfullscreenerror,
-                    pictureInPictureElement,
-                    pictureInPictureEnabled,
-                    registerElement,
-                    wasDiscarded,
-                    webkitCancelFullScreen,
-                    webkitCurrentFullScreenElement,
-                    webkitExitFullscreen,
-                    webkitFullscreenElement,
-                    webkitFullscreenEnabled,
-                    webkitHidden,
-                    webkitIsFullScreen,
-                    webkitVisibilityState,
-                    xmlEncoding,
-                    xmlStandalone,
-                    xmlVersion)]
+[LegacyOverrideBuiltIns,
+ Exposed=Window]
 interface HTMLDocument : Document {
   // DOM tree accessors
   [Throws]

@@ -6,50 +6,76 @@
 
 #include "SDBConnection.h"
 
+// Local includes
 #include "ActorsChild.h"
-#include "jsfriendapi.h"     // JS_GetObjectAsArrayBufferView
-#include "js/ArrayBuffer.h"  // JS::{GetObjectAsArrayBuffer,IsArrayBufferObject}
-#include "js/RootingAPI.h"   // JS::{Handle,Rooted}
-#include "js/Value.h"        // JS::Value
-#include "mozilla/ipc/BackgroundChild.h"
-#include "mozilla/ipc/BackgroundParent.h"
-#include "mozilla/ipc/BackgroundUtils.h"
-#include "mozilla/ipc/PBackgroundChild.h"
-#include "nsISDBCallbacks.h"
 #include "SDBRequest.h"
 #include "SimpleDBCommon.h"
 
-namespace mozilla {
-namespace dom {
+// Global includes
+#include <stdint.h>
+#include <utility>
+#include "MainThreadUtils.h"
+#include "js/ArrayBuffer.h"
+#include "js/RootingAPI.h"
+#include "js/TypeDecls.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Variant.h"
+#include "mozilla/dom/PBackgroundSDBConnection.h"
+#include "mozilla/dom/TypedArray.h"
+#include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/fallible.h"
+#include "mozilla/ipc/BackgroundChild.h"
+#include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsISDBCallbacks.h"
+#include "nsISupportsUtils.h"
+#include "nsStringFwd.h"
+#include "nscore.h"
+
+namespace mozilla::dom {
 
 using namespace mozilla::ipc;
 
 namespace {
 
+template <typename BufferT>
+nsresult AppendDataToString(const BufferT& aBuffer, nsCString& aData) {
+  return aBuffer.ProcessData(
+      [&aData](const mozilla::Span<const uint8_t>& aSrcData,
+               JS::AutoCheckCannotGC&&) {
+        if (aSrcData.LengthBytes() > INT32_MAX) {
+          return NS_ERROR_ILLEGAL_VALUE;
+        }
+        if (NS_WARN_IF(!aData.Append(aSrcData, fallible))) {
+          return NS_ERROR_OUT_OF_MEMORY;
+        }
+        return NS_OK;
+      });
+}
+
 nsresult GetWriteData(JSContext* aCx, JS::Handle<JS::Value> aValue,
                       nsCString& aData) {
-  if (aValue.isObject()) {
-    JS::Rooted<JSObject*> obj(aCx, &aValue.toObject());
+  MOZ_ASSERT(aData.IsEmpty());
 
-    bool isView = false;
-    if (JS::IsArrayBufferObject(obj) ||
-        (isView = JS_IsArrayBufferViewObject(obj))) {
-      uint8_t* data;
-      uint32_t length;
-      bool unused;
-      if (isView) {
-        JS_GetObjectAsArrayBufferView(obj, &length, &unused, &data);
-      } else {
-        JS::GetObjectAsArrayBuffer(obj, &length, &data);
-      }
+  if (!aValue.isObject()) {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
 
-      if (NS_WARN_IF(!aData.Assign(reinterpret_cast<char*>(data), length,
-                                   fallible_t()))) {
-        return NS_ERROR_OUT_OF_MEMORY;
-      }
+  mozilla::dom::ArrayBufferView view;
+  if (view.Init(&aValue.toObject())) {
+    return AppendDataToString(view, aData);
+  }
 
-      return NS_OK;
-    }
+  mozilla::dom::ArrayBuffer arrayBuffer;
+  if (arrayBuffer.Init(&aValue.toObject())) {
+    return AppendDataToString(arrayBuffer, aData);
   }
 
   return NS_ERROR_NOT_IMPLEMENTED;
@@ -59,7 +85,7 @@ nsresult GetWriteData(JSContext* aCx, JS::Handle<JS::Value> aValue,
 
 SDBConnection::SDBConnection()
     : mBackgroundActor(nullptr),
-      mPersistenceType(PERSISTENCE_TYPE_INVALID),
+      mPersistenceType(quota::PERSISTENCE_TYPE_INVALID),
       mRunningRequest(false),
       mOpen(false),
       mAllowedToClose(false) {
@@ -76,16 +102,11 @@ SDBConnection::~SDBConnection() {
 }
 
 // static
-nsresult SDBConnection::Create(nsISupports* aOuter, REFNSIID aIID,
-                               void** aResult) {
+nsresult SDBConnection::Create(REFNSIID aIID, void** aResult) {
   MOZ_ASSERT(aResult);
 
   if (NS_WARN_IF(!Preferences::GetBool(kPrefSimpleDBEnabled, false))) {
     return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  if (aOuter) {
-    return NS_ERROR_NO_AGGREGATION;
   }
 
   RefPtr<SDBConnection> connection = new SDBConnection();
@@ -173,7 +194,7 @@ nsresult SDBConnection::EnsureBackgroundActor() {
     return NS_ERROR_FAILURE;
   }
 
-  SDBConnectionChild* actor = new SDBConnectionChild(this);
+  RefPtr<SDBConnectionChild> actor = new SDBConnectionChild(this);
 
   mBackgroundActor = static_cast<SDBConnectionChild*>(
       backgroundActor->SendPBackgroundSDBConnectionConstructor(
@@ -223,16 +244,16 @@ SDBConnection::Init(nsIPrincipal* aPrincipal,
     return NS_ERROR_INVALID_ARG;
   }
 
-  if (NS_WARN_IF(!QuotaManager::IsPrincipalInfoValid(*principalInfo))) {
+  if (NS_WARN_IF(!quota::QuotaManager::IsPrincipalInfoValid(*principalInfo))) {
     return NS_ERROR_INVALID_ARG;
   }
 
   PersistenceType persistenceType;
   if (aPersistenceType.IsVoid()) {
-    persistenceType = PERSISTENCE_TYPE_DEFAULT;
+    persistenceType = quota::PERSISTENCE_TYPE_DEFAULT;
   } else {
     const auto maybePersistenceType =
-        PersistenceTypeFromString(aPersistenceType, fallible);
+        quota::PersistenceTypeFromString(aPersistenceType, fallible);
     if (NS_WARN_IF(maybePersistenceType.isNothing())) {
       return NS_ERROR_INVALID_ARG;
     }
@@ -333,7 +354,7 @@ SDBConnection::Read(uint64_t aSize, nsISDBRequest** _retval) {
 }
 
 NS_IMETHODIMP
-SDBConnection::Write(JS::HandleValue aValue, JSContext* aCx,
+SDBConnection::Write(JS::Handle<JS::Value> aValue, JSContext* aCx,
                      nsISDBRequest** _retval) {
   AssertIsOnOwningThread();
 
@@ -411,5 +432,4 @@ SDBConnection::SetCloseCallback(nsISDBCloseCallback* aCloseCallback) {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

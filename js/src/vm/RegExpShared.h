@@ -17,22 +17,21 @@
 #include "mozilla/MemoryReporting.h"
 
 #include "gc/Barrier.h"
-#include "gc/Marking.h"
+#include "gc/Policy.h"
 #include "gc/ZoneAllocator.h"
+#include "irregexp/RegExpTypes.h"
+#include "jit/JitCode.h"
 #include "jit/JitOptions.h"
 #include "js/AllocPolicy.h"
 #include "js/RegExpFlags.h"  // JS::RegExpFlag, JS::RegExpFlags
 #include "js/UbiNode.h"
 #include "js/Vector.h"
-#ifdef ENABLE_NEW_REGEXP
-#  include "new-regexp/RegExpTypes.h"
-#endif
 #include "vm/ArrayObject.h"
-#include "vm/JSAtom.h"
 
 namespace js {
 
 class ArrayObject;
+class PlainObject;
 class RegExpRealm;
 class RegExpShared;
 class RegExpStatics;
@@ -42,31 +41,15 @@ using RootedRegExpShared = JS::Rooted<RegExpShared*>;
 using HandleRegExpShared = JS::Handle<RegExpShared*>;
 using MutableHandleRegExpShared = JS::MutableHandle<RegExpShared*>;
 
-enum RegExpRunStatus : int32_t {
-  RegExpRunStatus_Error = -1,
-  RegExpRunStatus_Success = 1,
-  RegExpRunStatus_Success_NotFound = 0,
+enum class RegExpRunStatus : int32_t {
+  Error = -1,
+  Success = 1,
+  Success_NotFound = 0,
 };
-
-#ifdef ENABLE_NEW_REGEXP
 
 inline bool IsNativeRegExpEnabled() {
-#  ifdef JS_CODEGEN_NONE
-  return false;
-#  else
-  return jit::JitOptions.nativeRegExp;
-#  endif
+  return jit::HasJitBackend() && jit::JitOptions.nativeRegExp;
 }
-
-#else
-/*
- * Layout of the reg exp bytecode header.
- */
-struct RegExpByteCodeHeader {
-  uint32_t length;        // Number of instructions.
-  uint32_t numRegisters;  // Number of registers used.
-};
-#endif  // ENABLE_NEW_REGEXP
 
 /*
  * A RegExpShared is the compiled representation of a regexp. A RegExpShared is
@@ -85,18 +68,16 @@ struct RegExpByteCodeHeader {
  * objects when we are preserving jitcode in their zone, to avoid the same
  * recompilation inefficiencies as normal Ion and baseline compilation.
  */
-class RegExpShared : public gc::TenuredCell {
+class RegExpShared
+    : public gc::CellWithTenuredGCPointer<gc::TenuredCell, JSAtom> {
+  friend class js::gc::CellAllocator;
+
  public:
-  enum class Kind { Unparsed, Atom, RegExp };
+  enum class Kind : uint32_t { Unparsed, Atom, RegExp };
   enum class CodeKind { Bytecode, Jitcode, Any };
 
-#ifdef ENABLE_NEW_REGEXP
   using ByteCode = js::irregexp::ByteArrayData;
   using JitCodeTable = js::irregexp::ByteArray;
-#else
-  using ByteCode = uint8_t;
-  using JitCodeTable = UniquePtr<uint8_t[], JS::FreePolicy>;
-#endif
   using JitCodeTables = Vector<JitCodeTable, 0, SystemAllocPolicy>;
 
  private:
@@ -104,7 +85,7 @@ class RegExpShared : public gc::TenuredCell {
   friend class RegExpZone;
 
   struct RegExpCompilation {
-    WeakHeapPtr<jit::JitCode*> jitCode;
+    HeapPtr<jit::JitCode*> jitCode;
     ByteCode* byteCode = nullptr;
 
     bool compiled(CodeKind kind = CodeKind::Any) const {
@@ -121,38 +102,42 @@ class RegExpShared : public gc::TenuredCell {
 
     size_t byteCodeLength() const {
       MOZ_ASSERT(byteCode);
-#ifdef ENABLE_NEW_REGEXP
-      return byteCode->length;
-#else
-      auto header = reinterpret_cast<RegExpByteCodeHeader*>(byteCode);
-      return header->length;
-#endif
+      return byteCode->length();
     }
   };
 
-  /* Source to the RegExp, for lazy compilation. */
-  using HeaderWithAtom = gc::CellHeaderWithTenuredGCPointer<JSAtom>;
-  HeaderWithAtom headerAndSource;
+ public:
+  /* Source to the RegExp, for lazy compilation. Stored in the cell header. */
+  JSAtom* getSource() const { return headerPtr(); }
 
+ private:
   RegExpCompilation compilationArray[2];
 
   uint32_t pairCount_;
   JS::RegExpFlags flags;
 
-#ifdef ENABLE_NEW_REGEXP
   RegExpShared::Kind kind_ = Kind::Unparsed;
-  GCPtrAtom patternAtom_;
+  GCPtr<JSAtom*> patternAtom_;
   uint32_t maxRegisters_ = 0;
   uint32_t ticks_ = 0;
-#else
-  bool canStringMatch = false;
-#endif
 
-#ifdef ENABLE_NEW_REGEXP
+  // With duplicate named capture groups, it's possible that the number of
+  // distinct named groups is less than the total number of named captures.
+  // If they are equal, we used the namedCaptureIndices_ array directly to
+  // return the capture index corresponding to a name. If they are not equal,
+  // we use the namedCapturedSliceIndices_ array to keep track of the offsets
+  // into the namedCaptureIndices_ array where indices corresponding to a new
+  // name start.
+  // E.g. if we have a regex like /((<?a>a)|(<?a>A))(<?b>b)/, the
+  // namedCapturedIndices_ array might look like [0, 1, 2], and the
+  // namedCaptureSliceIndices_ array like [0, 2]. Then we can construct the
+  // slice corresponding to `a` as offset 0, length 2, and the slice
+  // corresponding to `b` as offset 2, length 1.
   uint32_t numNamedCaptures_ = {};
+  uint32_t numDistinctNamedCaptures_ = {};
   uint32_t* namedCaptureIndices_ = {};
+  uint32_t* namedCaptureSliceIndices_ = {};
   GCPtr<PlainObject*> groupsTemplate_ = {};
-#endif
 
   static int CompilationIndex(bool latin1) { return latin1 ? 0 : 1; }
 
@@ -161,12 +146,6 @@ class RegExpShared : public gc::TenuredCell {
 
   /* Internal functions. */
   RegExpShared(JSAtom* source, JS::RegExpFlags flags);
-
-  static bool compile(JSContext* cx, MutableHandleRegExpShared res,
-                      HandleLinearString input, CodeKind code);
-  static bool compile(JSContext* cx, MutableHandleRegExpShared res,
-                      HandleAtom pattern, HandleLinearString input,
-                      CodeKind code);
 
   const RegExpCompilation& compilation(bool latin1) const {
     return compilationArray[CompilationIndex(latin1)];
@@ -180,17 +159,16 @@ class RegExpShared : public gc::TenuredCell {
   ~RegExpShared() = delete;
 
   static bool compileIfNecessary(JSContext* cx, MutableHandleRegExpShared res,
-                                 HandleLinearString input, CodeKind code);
+                                 Handle<JSLinearString*> input, CodeKind code);
 
-  static RegExpRunStatus executeAtom(JSContext* cx,
-                                     MutableHandleRegExpShared re,
-                                     HandleLinearString input, size_t start,
-                                     VectorMatchPairs* matches);
+  static RegExpRunStatus executeAtom(MutableHandleRegExpShared re,
+                                     Handle<JSLinearString*> input,
+                                     size_t start, VectorMatchPairs* matches);
 
   // Execute this RegExp on input starting from searchIndex, filling in matches.
   static RegExpRunStatus execute(JSContext* cx, MutableHandleRegExpShared res,
-                                 HandleLinearString input, size_t searchIndex,
-                                 VectorMatchPairs* matches);
+                                 Handle<JSLinearString*> input,
+                                 size_t searchIndex, VectorMatchPairs* matches);
 
   // Register a table with this RegExpShared, and take ownership.
   bool addTable(JitCodeTable table) { return tables.append(std::move(table)); }
@@ -198,25 +176,24 @@ class RegExpShared : public gc::TenuredCell {
   /* Accessors */
 
   size_t pairCount() const {
-#ifdef ENABLE_NEW_REGEXP
     MOZ_ASSERT(kind() != Kind::Unparsed);
-#else
-    MOZ_ASSERT(isCompiled());
-#endif
     return pairCount_;
   }
 
-#ifdef ENABLE_NEW_REGEXP
   RegExpShared::Kind kind() const { return kind_; }
 
   // Use simple string matching for this regexp.
-  void useAtomMatch(HandleAtom pattern);
+  void useAtomMatch(Handle<JSAtom*> pattern);
 
   // Use the regular expression engine for this regexp.
   void useRegExpMatch(size_t parenCount);
 
-  static bool initializeNamedCaptures(JSContext* cx, HandleRegExpShared re,
-                                      HandleNativeObject namedCaptures);
+  static void InitializeNamedCaptures(JSContext* cx, HandleRegExpShared re,
+                                      uint32_t numNamedCaptures,
+                                      uint32_t numDistinctNamedCaptures,
+                                      Handle<PlainObject*> templateObject,
+                                      uint32_t* captureIndices,
+                                      uint32_t* captureSliceIndices);
   PlainObject* getGroupsTemplate() { return groupsTemplate_; }
 
   void tierUpTick();
@@ -240,29 +217,46 @@ class RegExpShared : public gc::TenuredCell {
   }
 
   uint32_t numNamedCaptures() const { return numNamedCaptures_; }
+  uint32_t numDistinctNamedCaptures() const {
+    return numDistinctNamedCaptures_;
+  }
   int32_t getNamedCaptureIndex(uint32_t idx) const {
     MOZ_ASSERT(idx < numNamedCaptures());
     MOZ_ASSERT(namedCaptureIndices_);
+    MOZ_ASSERT(!namedCaptureSliceIndices_);
     return namedCaptureIndices_[idx];
   }
 
-#endif
+  mozilla::Span<uint32_t> getNamedCaptureIndices(uint32_t idx) const {
+    MOZ_ASSERT(idx < numDistinctNamedCaptures());
+    MOZ_ASSERT(namedCaptureIndices_);
+    MOZ_ASSERT(namedCaptureSliceIndices_);
+    // The start of our slice is the value stored in the slice indices.
+    uint32_t* start = &namedCaptureIndices_[namedCaptureSliceIndices_[idx]];
+    size_t length = 0;
+    if (idx + 1 < numDistinctNamedCaptures()) {
+      // If we're not the last slice index, the number of items is the
+      // difference between us and the next index.
+      length =
+          namedCaptureSliceIndices_[idx + 1] - namedCaptureSliceIndices_[idx];
+    } else {
+      // Otherwise, it's the number of remaining capture indices.
+      length = numNamedCaptures() - namedCaptureSliceIndices_[idx];
+    }
+    return mozilla::Span<uint32_t>(start, length);
+  }
 
-  JSAtom* getSource() const { return headerAndSource.ptr(); }
-
-#ifdef ENABLE_NEW_REGEXP
   JSAtom* patternAtom() const { return patternAtom_; }
-#else
-  JSAtom* patternAtom() const { return getSource(); }
-#endif
 
   JS::RegExpFlags getFlags() const { return flags; }
 
+  bool hasIndices() const { return flags.hasIndices(); }
   bool global() const { return flags.global(); }
   bool ignoreCase() const { return flags.ignoreCase(); }
   bool multiline() const { return flags.multiline(); }
   bool dotAll() const { return flags.dotAll(); }
   bool unicode() const { return flags.unicode(); }
+  bool unicodeSets() const { return flags.unicodeSets(); }
   bool sticky() const { return flags.sticky(); }
 
   bool isCompiled(bool latin1, CodeKind codeKind = CodeKind::Any) const {
@@ -272,11 +266,12 @@ class RegExpShared : public gc::TenuredCell {
 
   void traceChildren(JSTracer* trc);
   void discardJitCode();
-  void finalize(JSFreeOp* fop);
+  void finalize(JS::GCContext* gcx);
 
-  static size_t offsetOfSource() {
-    return offsetof(RegExpShared, headerAndSource) +
-           HeaderWithAtom::offsetOfPtr();
+  static size_t offsetOfSource() { return offsetOfHeaderPtr(); }
+
+  static size_t offsetOfPatternAtom() {
+    return offsetof(RegExpShared, patternAtom_);
   }
 
   static size_t offsetOfFlags() { return offsetof(RegExpShared, flags); }
@@ -285,27 +280,22 @@ class RegExpShared : public gc::TenuredCell {
     return offsetof(RegExpShared, pairCount_);
   }
 
+  static size_t offsetOfKind() { return offsetof(RegExpShared, kind_); }
+
   static size_t offsetOfJitCode(bool latin1) {
     return offsetof(RegExpShared, compilationArray) +
            (CompilationIndex(latin1) * sizeof(RegExpCompilation)) +
            offsetof(RegExpCompilation, jitCode);
   }
-#ifdef ENABLE_NEW_REGEXP
+
   static size_t offsetOfGroupsTemplate() {
     return offsetof(RegExpShared, groupsTemplate_);
   }
-#endif
 
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
 
-#ifdef DEBUG
-  static bool dumpBytecode(JSContext* cx, MutableHandleRegExpShared res,
-                           HandleLinearString input);
-#endif
-
  public:
   static const JS::TraceKind TraceKind = JS::TraceKind::RegExpShared;
-  const gc::CellHeader& cellHeader() const { return headerAndSource; }
 };
 
 class RegExpZone {
@@ -349,22 +339,41 @@ class RegExpZone {
     return p ? *p : nullptr;
   }
 
-  RegExpShared* get(JSContext* cx, HandleAtom source, JS::RegExpFlags flags);
+  RegExpShared* get(JSContext* cx, Handle<JSAtom*> source,
+                    JS::RegExpFlags flags);
 
 #ifdef DEBUG
   void clear() { set_.clear(); }
 #endif
 
-  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
+  size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
 };
 
 class RegExpRealm {
+ public:
+  enum ResultShapeKind { Normal, WithIndices, Indices, NumKinds };
+
+  // Information about the last regular expression match. This is used by the
+  // static RegExp properties such as RegExp.lastParen.
+  UniquePtr<RegExpStatics> regExpStatics;
+
+ private:
   /*
-   * This is the template object where the result of re.exec() is based on,
-   * if there is a result. This is used in CreateRegExpMatchResult to set
-   * the input/index properties faster.
+   * The shapes used for the result object of re.exec(), if there is a result.
+   * These are used in CreateRegExpMatchResult. There are three shapes, each of
+   * which is an ArrayObject shape with some additional properties. We decide
+   * which to use based on the |hasIndices| (/d) flag.
+   *
+   *  Normal: Has |index|, |input|, and |groups| properties.
+   *          Used for the result object if |hasIndices| is not set.
+   *
+   *  WithIndices: Has |index|, |input|, |groups|, and |indices| properties.
+   *               Used for the result object if |hasIndices| is set.
+   *
+   *  Indices: Has a |groups| property. If |hasIndices| is set, used
+   *           for the |.indices| property of the result object.
    */
-  WeakHeapPtr<ArrayObject*> matchResultTemplateObject_;
+  HeapPtr<SharedShape*> matchResultShapes_[ResultShapeKind::NumKinds];
 
   /*
    * The shape of RegExp.prototype object that satisfies following:
@@ -379,27 +388,33 @@ class RegExpRealm {
    *   * RegExp.prototype[@@match] is an own data property
    *   * RegExp.prototype[@@search] is an own data property
    */
-  WeakHeapPtr<Shape*> optimizableRegExpPrototypeShape_;
+  HeapPtr<Shape*> optimizableRegExpPrototypeShape_;
 
   /*
    * The shape of RegExp instance that satisfies following:
    *   * lastProperty is lastIndex
    *   * prototype is RegExp.prototype
    */
-  WeakHeapPtr<Shape*> optimizableRegExpInstanceShape_;
+  HeapPtr<Shape*> optimizableRegExpInstanceShape_;
 
-  ArrayObject* createMatchResultTemplateObject(JSContext* cx);
+  SharedShape* createMatchResultShape(JSContext* cx, ResultShapeKind kind);
 
  public:
   explicit RegExpRealm();
 
-  void traceWeak(JSTracer* trc);
+  void trace(JSTracer* trc);
 
   static const size_t MatchResultObjectIndexSlot = 0;
   static const size_t MatchResultObjectInputSlot = 1;
-#ifdef ENABLE_NEW_REGEXP
   static const size_t MatchResultObjectGroupsSlot = 2;
-#endif
+  static const size_t MatchResultObjectIndicesSlot = 3;
+
+  // Number of used and allocated dynamic slots for a Normal match result
+  // object. These values are checked in createMatchResultShape.
+  static const size_t MatchResultObjectSlotSpan = 3;
+  static const size_t MatchResultObjectNumDynamicSlots = 6;
+
+  static const size_t IndicesGroupsSlot = 0;
 
   static size_t offsetOfMatchResultObjectIndexSlot() {
     return sizeof(Value) * MatchResultObjectIndexSlot;
@@ -407,18 +422,20 @@ class RegExpRealm {
   static size_t offsetOfMatchResultObjectInputSlot() {
     return sizeof(Value) * MatchResultObjectInputSlot;
   }
-#ifdef ENABLE_NEW_REGEXP
   static size_t offsetOfMatchResultObjectGroupsSlot() {
     return sizeof(Value) * MatchResultObjectGroupsSlot;
   }
-#endif
+  static size_t offsetOfMatchResultObjectIndicesSlot() {
+    return sizeof(Value) * MatchResultObjectIndicesSlot;
+  }
 
-  /* Get or create template object used to base the result of .exec() on. */
-  ArrayObject* getOrCreateMatchResultTemplateObject(JSContext* cx) {
-    if (matchResultTemplateObject_) {
-      return matchResultTemplateObject_;
+  /* Get or create the shape used for the result of .exec(). */
+  SharedShape* getOrCreateMatchResultShape(
+      JSContext* cx, ResultShapeKind kind = ResultShapeKind::Normal) {
+    if (matchResultShapes_[kind]) {
+      return matchResultShapes_[kind];
     }
-    return createMatchResultTemplateObject(cx);
+    return createMatchResultShape(cx, kind);
   }
 
   Shape* getOptimizableRegExpPrototypeShape() {
@@ -434,13 +451,24 @@ class RegExpRealm {
     optimizableRegExpInstanceShape_ = shape;
   }
 
-  static size_t offsetOfOptimizableRegExpPrototypeShape() {
+  static constexpr size_t offsetOfOptimizableRegExpPrototypeShape() {
     return offsetof(RegExpRealm, optimizableRegExpPrototypeShape_);
   }
-  static size_t offsetOfOptimizableRegExpInstanceShape() {
+  static constexpr size_t offsetOfOptimizableRegExpInstanceShape() {
     return offsetof(RegExpRealm, optimizableRegExpInstanceShape_);
   }
+  static constexpr size_t offsetOfRegExpStatics() {
+    return offsetof(RegExpRealm, regExpStatics);
+  }
+  static constexpr size_t offsetOfNormalMatchResultShape() {
+    static_assert(sizeof(HeapPtr<SharedShape*>) == sizeof(uintptr_t));
+    return offsetof(RegExpRealm, matchResultShapes_) +
+           ResultShapeKind::Normal * sizeof(uintptr_t);
+  }
 };
+
+RegExpRunStatus ExecuteRegExpAtomRaw(RegExpShared* re, JSLinearString* input,
+                                     size_t start, MatchPairs* matchPairs);
 
 } /* namespace js */
 

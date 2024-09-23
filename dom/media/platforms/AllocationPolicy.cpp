@@ -75,17 +75,7 @@ void AllocPolicyImpl::RejectAll() {
   }
 }
 
-static int32_t MediaDecoderLimitDefault() {
-#ifdef MOZ_WIDGET_ANDROID
-  if (jni::GetAPIVersion() < 18) {
-    // Older Android versions have broken support for multiple simultaneous
-    // decoders, see bug 1278574.
-    return 1;
-  }
-#endif
-  // Otherwise, set no decoder limit.
-  return -1;
-}
+static int32_t MediaDecoderLimitDefault() { return -1; }
 
 StaticMutex GlobalAllocPolicy::sMutex;
 
@@ -93,23 +83,19 @@ NotNull<AllocPolicy*> GlobalAllocPolicy::Instance(TrackType aTrack) {
   StaticMutexAutoLock lock(sMutex);
   if (aTrack == TrackType::kAudioTrack) {
     static RefPtr<AllocPolicyImpl> sAudioPolicy = []() {
-      SchedulerGroup::Dispatch(
-          TaskCategory::Other,
-          NS_NewRunnableFunction(
-              "GlobalAllocPolicy::GlobalAllocPolicy:Audio", []() {
-                ClearOnShutdown(&sAudioPolicy, ShutdownPhase::ShutdownThreads);
-              }));
+      SchedulerGroup::Dispatch(NS_NewRunnableFunction(
+          "GlobalAllocPolicy::GlobalAllocPolicy:Audio", []() {
+            ClearOnShutdown(&sAudioPolicy, ShutdownPhase::XPCOMShutdownThreads);
+          }));
       return new AllocPolicyImpl(MediaDecoderLimitDefault());
     }();
     return WrapNotNull(sAudioPolicy.get());
   }
   static RefPtr<AllocPolicyImpl> sVideoPolicy = []() {
-    SchedulerGroup::Dispatch(
-        TaskCategory::Other,
-        NS_NewRunnableFunction(
-            "GlobalAllocPolicy::GlobalAllocPolicy:Audio", []() {
-              ClearOnShutdown(&sVideoPolicy, ShutdownPhase::ShutdownThreads);
-            }));
+    SchedulerGroup::Dispatch(NS_NewRunnableFunction(
+        "GlobalAllocPolicy::GlobalAllocPolicy:Audio", []() {
+          ClearOnShutdown(&sVideoPolicy, ShutdownPhase::XPCOMShutdownThreads);
+        }));
     return new AllocPolicyImpl(MediaDecoderLimitDefault());
   }();
   return WrapNotNull(sVideoPolicy.get());
@@ -189,34 +175,19 @@ RefPtr<ShutdownPromise> AllocationWrapper::Shutdown() {
   RefPtr<MediaDataDecoder> decoder = std::move(mDecoder);
   RefPtr<Token> token = std::move(mToken);
   return decoder->Shutdown()->Then(
-      AbstractThread::GetCurrent(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [token]() { return ShutdownPromise::CreateAndResolve(true, __func__); });
 }
 /* static */ RefPtr<AllocationWrapper::AllocateDecoderPromise>
 AllocationWrapper::CreateDecoder(const CreateDecoderParams& aParams,
                                  AllocPolicy* aPolicy) {
-  // aParams.mConfig is guaranteed to stay alive during the lifetime of the
-  // MediaDataDecoder, so keeping a pointer to the object is safe.
-  const TrackInfo* config = &aParams.mConfig;
-  RefPtr<TaskQueue> taskQueue = aParams.mTaskQueue;
-  DecoderDoctorDiagnostics* diagnostics = aParams.mDiagnostics;
-  RefPtr<layers::ImageContainer> imageContainer = aParams.mImageContainer;
-  RefPtr<layers::KnowsCompositor> knowsCompositor = aParams.mKnowsCompositor;
-  RefPtr<GMPCrashHelper> crashHelper = aParams.mCrashHelper;
-  CreateDecoderParams::UseNullDecoder useNullDecoder = aParams.mUseNullDecoder;
-  CreateDecoderParams::NoWrapper noWrapper = aParams.mNoWrapper;
-  TrackInfo::TrackType type = aParams.mType;
-  MediaEventProducer<TrackInfo::TrackType>* onWaitingForKeyEvent =
-      aParams.mOnWaitingForKeyEvent;
-  CreateDecoderParams::OptionSet options = aParams.mOptions;
-  CreateDecoderParams::VideoFrameRate rate = aParams.mRate;
-
   RefPtr<AllocateDecoderPromise> p =
       (aPolicy ? aPolicy : GlobalAllocPolicy::Instance(aParams.mType))
           ->Alloc()
           ->Then(
-              AbstractThread::GetCurrent(), __func__,
-              [=](RefPtr<Token> aToken) {
+              GetCurrentSerialEventTarget(), __func__,
+              [params =
+                   CreateDecoderParamsForAsync(aParams)](RefPtr<Token> aToken) {
                 // result may not always be updated by
                 // PDMFactory::CreateDecoder either when the creation
                 // succeeded or failed, as such it must be initialized to a
@@ -224,30 +195,23 @@ AllocationWrapper::CreateDecoder(const CreateDecoderParams& aParams,
                 MediaResult result =
                     MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
                                 nsPrintfCString("error creating %s decoder",
-                                                TrackTypeToStr(type)));
+                                                TrackTypeToStr(params.mType)));
                 RefPtr<PDMFactory> pdm = new PDMFactory();
-                CreateDecoderParams params{*config,
-                                           taskQueue,
-                                           diagnostics,
-                                           imageContainer,
-                                           &result,
-                                           knowsCompositor,
-                                           crashHelper,
-                                           useNullDecoder,
-                                           noWrapper,
-                                           type,
-                                           onWaitingForKeyEvent,
-                                           options,
-                                           rate};
-                RefPtr<MediaDataDecoder> decoder = pdm->CreateDecoder(params);
-                if (decoder) {
-                  RefPtr<AllocationWrapper> wrapper =
-                      new AllocationWrapper(decoder.forget(), aToken.forget());
-                  return AllocateDecoderPromise::CreateAndResolve(wrapper,
-                                                                  __func__);
-                }
-                return AllocateDecoderPromise::CreateAndReject(result,
-                                                               __func__);
+                RefPtr<PlatformDecoderModule::CreateDecoderPromise> p =
+                    pdm->CreateDecoder(params)->Then(
+                        GetCurrentSerialEventTarget(), __func__,
+                        [aToken](RefPtr<MediaDataDecoder>&& aDecoder) mutable {
+                          RefPtr<AllocationWrapper> wrapper =
+                              new AllocationWrapper(aDecoder.forget(),
+                                                    aToken.forget());
+                          return AllocateDecoderPromise::CreateAndResolve(
+                              wrapper, __func__);
+                        },
+                        [](const MediaResult& aError) {
+                          return AllocateDecoderPromise::CreateAndReject(
+                              aError, __func__);
+                        });
+                return p;
               },
               []() {
                 return AllocateDecoderPromise::CreateAndReject(

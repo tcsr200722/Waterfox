@@ -2,37 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-.horizontalContainer {
-  display: -moz-box;
-  overflow: hidden;
-  width: -moz-available;
-}
-.horizontalOuterDiv {
-  display: -moz-box;
+slot {
+  display: block;
+  will-change: translate;
 }
 
-.horizontalInnerDiv {
-  display: table;
-  border-spacing: 0;
+/* Disable the animation on contenteditable */
+:host(:read-write) > slot {
+  translate: none !important;
 }
 
-.verticalContainer {
-  overflow: hidden;
-  width: -moz-available;
-}
-
-/* disable scrolling in contenteditable */
-:host(:read-write) .horizontalOuterDiv,
-:host(:read-write) .verticalInnerDiv {
-  margin: 0 !important;
-  padding: 0 !important;
-}
-
-/* PRINT ONLY rules */
-@media print {
-  .horizontalOuterDiv,
-  .verticalInnerDiv {
-    margin: 0 !important;
-    padding: 0 !important;
+/* When printing or when the user doesn't want movement, we disable scrolling */
+@media print, (prefers-reduced-motion) {
+  slot {
+    translate: none !important;
   }
 }

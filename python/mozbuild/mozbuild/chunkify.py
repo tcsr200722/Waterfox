@@ -7,8 +7,6 @@
 # of version 1.2. Its license (MPL2) is contained in repo root LICENSE file.
 # Please make modifications there where possible.
 
-from __future__ import absolute_import, print_function
-
 from itertools import islice
 
 
@@ -49,8 +47,8 @@ def chunkify(things, this_chunk, chunks):
         raise ChunkingError("this_chunk is greater than total chunks")
 
     dist = split_evenly(len(things), chunks)
-    start = sum(dist[:this_chunk-1])
-    end = start + dist[this_chunk-1]
+    start = sum(dist[: this_chunk - 1])
+    end = start + dist[this_chunk - 1]
 
     try:
         return things[start:end]

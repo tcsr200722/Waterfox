@@ -13,14 +13,14 @@ AddonTestUtils.createAppInfo(
 BootstrapMonitor.init();
 
 // A test directory for default/builtin system addons.
-const systemDefaults = FileUtils.getDir(
-  "ProfD",
-  ["app-system-defaults", "features"],
-  true
-);
+const systemDefaults = FileUtils.getDir("ProfD", [
+  "app-system-defaults",
+  "features",
+]);
+systemDefaults.create(Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
 registerDirectory("XREAppFeat", systemDefaults);
 
-AddonTestUtils.usePrivilegedSignatures = id => "system";
+AddonTestUtils.usePrivilegedSignatures = () => "system";
 
 const ADDON_ID = "updates@test";
 
@@ -51,7 +51,7 @@ function createWebExtensionFile(id, version, update_url) {
   return AddonTestUtils.createTempWebExtensionFile({
     manifest: {
       version,
-      applications: {
+      browser_specific_settings: {
         gecko: { id, update_url },
       },
     },
@@ -72,7 +72,7 @@ async function promiseInstallProfileExtension(id, version, update_url) {
   return promiseInstallWebExtension({
     manifest: {
       version,
-      applications: {
+      browser_specific_settings: {
         gecko: { id, update_url },
       },
     },
@@ -225,8 +225,10 @@ async function _test_builtin_addon_override() {
   // Test that the update_url upgrades the user-install and becomes active
   /////
   let update = await promiseFindAddonUpdates(addon);
-  await promiseCompleteAllInstalls([update.updateAvailable]);
-  await AddonTestUtils.promiseWebExtensionStartup(ADDON_ID);
+  await Promise.all([
+    promiseCompleteAllInstalls([update.updateAvailable]),
+    AddonTestUtils.promiseWebExtensionStartup(ADDON_ID),
+  ]);
   addon = await checkAddon("4.0", BOOTSTRAP_REASONS.ADDON_UPGRADE);
 
   /////
@@ -314,7 +316,7 @@ add_task(async function test_builtin_addon_upgrades() {
     installBuiltinExtension({
       manifest: {
         version: "1.0",
-        applications: {
+        browser_specific_settings: {
           gecko: { id: ADDON_ID },
         },
       },
@@ -351,7 +353,7 @@ add_task(async function test_system_addon_precedence() {
   await AddonTestUtils.promiseShutdownManager();
   await AddonTestUtils.overrideBuiltIns(builtInOverride);
   await promiseInstallDefaultSystemAddon(ADDON_ID, "1.5");
-  await AddonTestUtils.promiseStartupManager(2);
+  await AddonTestUtils.promiseStartupManager("2");
   await checkAddon(
     "1.5",
     BOOTSTRAP_REASONS.ADDON_DOWNGRADE,
@@ -374,7 +376,7 @@ add_task(async function test_builtin_addon_version_precedence() {
     installBuiltinExtension({
       manifest: {
         version: "1.0",
-        applications: {
+        browser_specific_settings: {
           gecko: { id: ADDON_ID },
         },
       },
@@ -397,7 +399,7 @@ add_task(async function test_builtin_addon_version_precedence() {
       {
         manifest: {
           version: "1.5",
-          applications: {
+          browser_specific_settings: {
             gecko: { id: ADDON_ID },
           },
         },

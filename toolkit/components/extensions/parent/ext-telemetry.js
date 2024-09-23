@@ -4,26 +4,10 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryController",
-  "resource://gre/modules/TelemetryController.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryUtils",
-  "resource://gre/modules/TelemetryUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionUtils",
-  "resource://gre/modules/ExtensionUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  TelemetryController: "resource://gre/modules/TelemetryController.sys.mjs",
+  TelemetryUtils: "resource://gre/modules/TelemetryUtils.sys.mjs",
+});
 
 const SCALAR_TYPES = {
   count: Ci.nsITelemetry.SCALAR_TYPE_COUNT,

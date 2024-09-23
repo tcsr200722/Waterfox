@@ -8,40 +8,45 @@
  */
 
 // The order of these tests matters!
+const IS_UPGRADING_SCHEMELESS = SpecialPowers.getBoolPref(
+  "dom.security.https_first_schemeless"
+);
+// eslint-disable-next-line @microsoft/sdl/no-insecure-url
+const DEFAULT_URL_SCHEME = IS_UPGRADING_SCHEMELESS ? "https://" : "http://";
 
-add_task(async function setup() {
+add_setup(async function () {
   let bm = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
-    url: "http://example.com/?q=%s",
+    url: DEFAULT_URL_SCHEME + "/example.com/?q=%s",
     title: "test",
   });
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.remove(bm);
-  });
-  await PlacesUtils.keywords.insert({
-    keyword: "keyword",
-    url: "http://example.com/?q=%s",
+    await PlacesUtils.history.clear();
   });
   // Needs at least one success.
   ok(true, "Setup complete");
 });
 
 add_task(
-  taskWithNewTab(async function test_keyword() {
+  taskWithNewTab(async function test_loadSite() {
+    await SpecialPowers.pushPrefEnv({
+      set: [["browser.urlbar.autofill", false]],
+    });
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
-      value: "keyword bear",
+      value: "example.co",
     });
     gURLBar.focus();
-    EventUtils.sendString("d");
+    EventUtils.sendString("m");
     EventUtils.synthesizeKey("KEY_Enter");
     info("wait for the page to load");
     await BrowserTestUtils.browserLoaded(
       gBrowser.selectedTab.linkedBrowser,
       false,
-      "http://example.com/?q=beard"
+      DEFAULT_URL_SCHEME + "example.com/"
     );
+    await SpecialPowers.popPrefEnv();
   })
 );
 
@@ -49,7 +54,6 @@ add_task(
   taskWithNewTab(async function test_sametext() {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: "example.com",
       fireInputEvent: true,
     });
@@ -67,7 +71,7 @@ add_task(
     await BrowserTestUtils.browserLoaded(
       gBrowser.selectedTab.linkedBrowser,
       false,
-      "http://example.com/"
+      DEFAULT_URL_SCHEME + "example.com/"
     );
   })
 );
@@ -76,7 +80,6 @@ add_task(
   taskWithNewTab(async function test_after_empty_search() {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: "",
     });
     gURLBar.focus();
@@ -88,7 +91,7 @@ add_task(
     await BrowserTestUtils.browserLoaded(
       gBrowser.selectedTab.linkedBrowser,
       false,
-      "http://example.com/"
+      DEFAULT_URL_SCHEME + "example.com/"
     );
   })
 );
@@ -103,24 +106,24 @@ add_task(
     let suggestOpenPages = Preferences.get("browser.urlbar.suggest.openpage");
     Preferences.set("browser.urlbar.suggest.openpage", false);
 
-    await Services.search.addEngineWithDetails("MozSearch", {
-      method: "GET",
-      template: "http://example.com/?q={searchTerms}",
-    });
-    let engine = Services.search.getEngineByName("MozSearch");
+    await SearchTestUtils.installSearchExtension();
+
+    let engine = Services.search.getEngineByName("Example");
     let originalEngine = await Services.search.getDefault();
-    await Services.search.setDefault(engine);
+    await Services.search.setDefault(
+      engine,
+      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+    );
 
     async function cleanup() {
       Preferences.set("browser.urlbar.suggest.history", suggestHistory);
       Preferences.set("browser.urlbar.suggest.bookmark", suggestBookmarks);
       Preferences.set("browser.urlbar.suggest.openpage", suggestOpenPages);
 
-      await Services.search.setDefault(originalEngine);
-      let mozSearchEngine = Services.search.getEngineByName("MozSearch");
-      if (mozSearchEngine) {
-        await Services.search.removeEngine(mozSearchEngine);
-      }
+      await Services.search.setDefault(
+        originalEngine,
+        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+      );
     }
     registerCleanupFunction(cleanup);
 
@@ -133,42 +136,55 @@ add_task(
     await BrowserTestUtils.browserLoaded(
       gBrowser.selectedTab.linkedBrowser,
       false,
-      "http://example.com/?q=ex"
+      "https://example.com/?q=ex"
     );
     await cleanup();
   })
 );
 
+// Tests that setting a high value for browser.urlbar.delay does not delay the
+// fetching of heuristic results.
 add_task(
   taskWithNewTab(async function test_delay() {
     // This is needed to clear the current value, otherwise autocomplete may think
     // the user removed text from the end.
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: "",
     });
     await UrlbarTestUtils.promisePopupClose(window);
 
     // Set a large delay.
     const TIMEOUT = 3000;
-    let delay = Preferences.get("browser.urlbar.delay");
-    Preferences.set("browser.urlbar.delay", TIMEOUT);
-    registerCleanupFunction(function() {
-      Preferences.set("browser.urlbar.delay", delay);
+    let delay = UrlbarPrefs.get("delay");
+    UrlbarPrefs.set("delay", TIMEOUT);
+    registerCleanupFunction(function () {
+      UrlbarPrefs.set("delay", delay);
     });
 
-    let start = Cu.now();
     gURLBar.focus();
     gURLBar.value = "e";
+    let recievedResult = new Promise(resolve => {
+      gURLBar.controller.addQueryListener({
+        onQueryResults(queryContext) {
+          gURLBar.controller.removeQueryListener(this);
+          Assert.ok(
+            queryContext.heuristicResult,
+            "Recieved a heuristic result."
+          );
+          Assert.equal(
+            queryContext.searchString,
+            "ex",
+            "The heuristic result is based on the correct search string."
+          );
+          resolve();
+        },
+      });
+    });
+    let start = Cu.now();
     EventUtils.sendString("x");
     EventUtils.synthesizeKey("KEY_Enter");
-    info("wait for the page to load");
-    await BrowserTestUtils.browserLoaded(
-      gBrowser.selectedTab.linkedBrowser,
-      false,
-      "http://example.com/"
-    );
+    await recievedResult;
     Assert.ok(Cu.now() - start < TIMEOUT);
   })
 );
@@ -176,7 +192,7 @@ add_task(
 // The main reason for running each test task in a new tab that's closed when
 // the task finishes is to avoid switch-to-tab results.
 function taskWithNewTab(fn) {
-  return async function() {
+  return async function () {
     await BrowserTestUtils.withNewTab("about:blank", fn);
   };
 }

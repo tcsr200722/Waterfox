@@ -47,7 +47,7 @@ async function contentTaskOverride() {
   );
 
   newFrameWin.location.reload();
-  await ContentTaskUtils.waitForEvent(newFrameWin, "load");
+  await ContentTaskUtils.waitForEvent(newFrame, "load");
 
   is(
     newFrameWin.navigator.userAgent,
@@ -56,15 +56,16 @@ async function contentTaskOverride() {
   );
 }
 
-add_task(async function() {
-  await BrowserTestUtils.withNewTab({ gBrowser, url: URL }, async function(
-    browser
-  ) {
-    await SpecialPowers.spawn(browser, [], contentTaskNoOverride);
+add_task(async function () {
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: URL },
+    async function (browser) {
+      await SpecialPowers.spawn(browser, [], contentTaskNoOverride);
 
-    let browsingContext = BrowserTestUtils.getBrowsingContextFrom(browser);
-    browsingContext.customUserAgent = "foo";
+      let browsingContext = BrowserTestUtils.getBrowsingContextFrom(browser);
+      browsingContext.customUserAgent = "foo";
 
-    await SpecialPowers.spawn(browser, [], contentTaskOverride);
-  });
+      await SpecialPowers.spawn(browser, [], contentTaskOverride);
+    }
+  );
 });

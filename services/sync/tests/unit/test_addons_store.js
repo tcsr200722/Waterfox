@@ -3,33 +3,33 @@
 
 "use strict";
 
-const { Preferences } = ChromeUtils.import(
-  "resource://gre/modules/Preferences.jsm"
+const { AddonsEngine } = ChromeUtils.importESModule(
+  "resource://services-sync/engines/addons.sys.mjs"
 );
-const { AddonsEngine } = ChromeUtils.import(
-  "resource://services-sync/engines/addons.js"
+const { Service } = ChromeUtils.importESModule(
+  "resource://services-sync/service.sys.mjs"
 );
-const { Service } = ChromeUtils.import("resource://services-sync/service.js");
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
+);
+const { SyncedRecordsTelemetry } = ChromeUtils.importESModule(
+  "resource://services-sync/telemetry.sys.mjs"
 );
 
 const HTTP_PORT = 8888;
 
-const prefs = new Preferences();
-
-prefs.set(
+Services.prefs.setStringPref(
   "extensions.getAddons.get.url",
   "http://localhost:8888/search/guid:%IDS%"
 );
 // Note that all compat-override URLs currently 404, but that's OK - the main
 // thing is to avoid us hitting the real AMO.
-prefs.set(
+Services.prefs.setStringPref(
   "extensions.getAddons.compatOverides.url",
   "http://localhost:8888/compat-override/guid:%IDS%"
 );
-prefs.set("extensions.install.requireSecureOrigin", false);
-prefs.set("extensions.checkUpdateSecurity", false);
+Services.prefs.setBoolPref("extensions.install.requireSecureOrigin", false);
+Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
 
 AddonTestUtils.init(this);
 AddonTestUtils.createAppInfo(
@@ -40,18 +40,17 @@ AddonTestUtils.createAppInfo(
 );
 AddonTestUtils.overrideCertDB();
 
-Services.prefs.setCharPref("extensions.minCompatibleAppVersion", "0");
-Services.prefs.setCharPref("extensions.minCompatiblePlatformVersion", "0");
 Services.prefs.setBoolPref("extensions.experiments.enabled", true);
 
 const SYSTEM_ADDON_ID = "system1@tests.mozilla.org";
-add_task(async function setupSystemAddon() {
-  const distroDir = FileUtils.getDir("ProfD", ["sysfeatures", "app0"], true);
+add_setup(async function setupSystemAddon() {
+  const distroDir = FileUtils.getDir("ProfD", ["sysfeatures", "app0"]);
+  distroDir.create(Ci.nsIFile.DIRECTORY_TYPE, FileUtils.PERMS_DIRECTORY);
   AddonTestUtils.registerDirectory("XREAppFeat", distroDir);
 
   let xpi = await AddonTestUtils.createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id: SYSTEM_ADDON_ID } },
+      browser_specific_settings: { gecko: { id: SYSTEM_ADDON_ID } },
     },
   });
 
@@ -68,7 +67,7 @@ const ID3 = "addon3@tests.mozilla.org";
 const ADDONS = {
   test_addon1: {
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID1,
           update_url: "http://example.com/data/test_install.json",
@@ -79,13 +78,13 @@ const ADDONS = {
 
   test_addon2: {
     manifest: {
-      applications: { gecko: { id: ID2 } },
+      browser_specific_settings: { gecko: { id: ID2 } },
     },
   },
 
   test_addon3: {
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID3,
           strict_max_version: "0",
@@ -138,13 +137,34 @@ const MISSING_SEARCH_RESULT = {
   ],
 };
 
+const AMOSIGNED_SHA1_SEARCH_RESULT = {
+  next: null,
+  results: [
+    {
+      name: "Test Extension",
+      type: "extension",
+      guid: "amosigned-xpi@tests.mozilla.org",
+      current_version: {
+        version: "2.1",
+        files: [
+          {
+            platform: "all",
+            size: 4287,
+            url: "http://localhost:8888/amosigned-sha1only.xpi",
+          },
+        ],
+      },
+      last_updated: "2024-03-21T16:00:06.640Z",
+    },
+  ],
+};
+
 const XPIS = {};
 for (let [name, files] of Object.entries(ADDONS)) {
   XPIS[name] = AddonTestUtils.createTempWebExtensionFile(files);
 }
 
 let engine;
-let tracker;
 let store;
 let reconciler;
 
@@ -217,6 +237,18 @@ function createAndStartHTTPServer(port) {
     );
     server.registerFile("/addon1.xpi", XPIS.test_addon1);
 
+    server.registerPathHandler(
+      "/search/guid:amosigned-xpi%40tests.mozilla.org",
+      (req, resp) => {
+        resp.setHeader("Content-type", "application/json", true);
+        resp.write(JSON.stringify(AMOSIGNED_SHA1_SEARCH_RESULT));
+      }
+    );
+    server.registerFile(
+      "/amosigned-sha1only.xpi",
+      do_get_file("amosigned-sha1only.xpi")
+    );
+
     server.start(port);
 
     return server;
@@ -239,10 +271,9 @@ async function checkReconcilerUpToDate(addon) {
   deepEqual(stateBefore, stateAfter);
 }
 
-add_task(async function setup() {
+add_setup(async function setup() {
   await Service.engineManager.register(AddonsEngine);
   engine = Service.engineManager.get("addons");
-  tracker = engine._tracker;
   store = engine._store;
   reconciler = engine._reconciler;
 
@@ -258,15 +289,18 @@ add_task(async function test_remove() {
 
   let addon = await installAddon(XPIS.test_addon1, reconciler);
   let record = createRecordForThisApp(addon.syncGUID, ID1, true, true);
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
+  Assert.equal(null, countTelemetry.failedReasons);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
 
   let newAddon = await AddonManager.getAddonByID(ID1);
   Assert.equal(null, newAddon);
 });
 
 add_task(async function test_apply_enabled() {
+  let countTelemetry = new SyncedRecordsTelemetry();
   _("Ensures that changes to the userEnabled flag apply.");
 
   let addon = await installAddon(XPIS.test_addon1, reconciler);
@@ -276,11 +310,13 @@ add_task(async function test_apply_enabled() {
   _("Ensure application of a disable record works as expected.");
   let records = [];
   records.push(createRecordForThisApp(addon.syncGUID, ID1, false, false));
+
   let [failed] = await Promise.all([
-    store.applyIncomingBatch(records),
+    store.applyIncomingBatch(records, countTelemetry),
     AddonTestUtils.promiseAddonEvent("onDisabled"),
   ]);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
   addon = await AddonManager.getAddonByID(ID1);
   Assert.ok(addon.userDisabled);
   await checkReconcilerUpToDate(addon);
@@ -289,10 +325,11 @@ add_task(async function test_apply_enabled() {
   _("Ensure enable record works as expected.");
   records.push(createRecordForThisApp(addon.syncGUID, ID1, true, false));
   [failed] = await Promise.all([
-    store.applyIncomingBatch(records),
+    store.applyIncomingBatch(records, countTelemetry),
     AddonTestUtils.promiseWebExtensionStartup(ID1),
   ]);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
   addon = await AddonManager.getAddonByID(ID1);
   Assert.ok(!addon.userDisabled);
   await checkReconcilerUpToDate(addon);
@@ -300,15 +337,16 @@ add_task(async function test_apply_enabled() {
 
   _("Ensure enabled state updates don't apply if the ignore pref is set.");
   records.push(createRecordForThisApp(addon.syncGUID, ID1, false, false));
-  Svc.Prefs.set("addons.ignoreUserEnabledChanges", true);
-  failed = await store.applyIncomingBatch(records);
+  Svc.PrefBranch.setBoolPref("addons.ignoreUserEnabledChanges", true);
+  failed = await store.applyIncomingBatch(records, countTelemetry);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
   addon = await AddonManager.getAddonByID(ID1);
   Assert.ok(!addon.userDisabled);
   records = [];
 
   await uninstallAddon(addon, reconciler);
-  Svc.Prefs.reset("addons.ignoreUserEnabledChanges");
+  Svc.PrefBranch.clearUserPref("addons.ignoreUserEnabledChanges");
 });
 
 add_task(async function test_apply_enabled_appDisabled() {
@@ -326,9 +364,11 @@ add_task(async function test_apply_enabled_appDisabled() {
   store.reconciler.pruneChangesBeforeDate(Date.now() + 10);
   store.reconciler._changes = [];
   let records = [];
+  let countTelemetry = new SyncedRecordsTelemetry();
   records.push(createRecordForThisApp(addon.syncGUID, ID3, false, false));
-  let failed = await store.applyIncomingBatch(records);
+  let failed = await store.applyIncomingBatch(records, countTelemetry);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
   addon = await AddonManager.getAddonByID(ID3);
   Assert.ok(addon.userDisabled);
   await checkReconcilerUpToDate(addon);
@@ -336,8 +376,9 @@ add_task(async function test_apply_enabled_appDisabled() {
 
   _("Ensure enable record works as expected.");
   records.push(createRecordForThisApp(addon.syncGUID, ID3, true, false));
-  failed = await store.applyIncomingBatch(records);
+  failed = await store.applyIncomingBatch(records, countTelemetry);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
   addon = await AddonManager.getAddonByID(ID3);
   Assert.ok(!addon.userDisabled);
   await checkReconcilerUpToDate(addon);
@@ -357,8 +398,8 @@ add_task(async function test_ignore_different_appid() {
 
   let record = createRecordForThisApp(addon.syncGUID, ID1, false, false);
   record.applicationID = "FAKE_ID";
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
 
   let newAddon = await AddonManager.getAddonByID(ID1);
@@ -374,8 +415,8 @@ add_task(async function test_ignore_unknown_source() {
 
   let record = createRecordForThisApp(addon.syncGUID, ID1, false, false);
   record.source = "DUMMY_SOURCE";
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
 
   let newAddon = await AddonManager.getAddonByID(ID1);
@@ -390,9 +431,11 @@ add_task(async function test_apply_uninstall() {
   let addon = await installAddon(XPIS.test_addon1, reconciler);
 
   let records = [];
+  let countTelemetry = new SyncedRecordsTelemetry();
   records.push(createRecordForThisApp(addon.syncGUID, ID1, true, true));
-  let failed = await store.applyIncomingBatch(records);
+  let failed = await store.applyIncomingBatch(records, countTelemetry);
   Assert.equal(0, failed.length);
+  Assert.equal(0, countTelemetry.incomingCounts.failed);
 
   addon = await AddonManager.getAddonByID(ID1);
   Assert.equal(null, addon);
@@ -401,7 +444,7 @@ add_task(async function test_apply_uninstall() {
 add_task(async function test_addon_syncability() {
   _("Ensure isAddonSyncable functions properly.");
 
-  Svc.Prefs.set(
+  Svc.PrefBranch.setStringPref(
     "addons.trustedSourceHostnames",
     "addons.mozilla.org,other.example.com"
   );
@@ -465,19 +508,22 @@ add_task(async function test_addon_syncability() {
     Assert.ok(!store.isSourceURITrusted(Services.io.newURI(uri)));
   }
 
-  Svc.Prefs.set("addons.trustedSourceHostnames", "");
+  Svc.PrefBranch.setStringPref("addons.trustedSourceHostnames", "");
   for (let uri of trusted) {
     Assert.ok(!store.isSourceURITrusted(Services.io.newURI(uri)));
   }
 
-  Svc.Prefs.set("addons.trustedSourceHostnames", "addons.mozilla.org");
+  Svc.PrefBranch.setStringPref(
+    "addons.trustedSourceHostnames",
+    "addons.mozilla.org"
+  );
   Assert.ok(
     store.isSourceURITrusted(
       Services.io.newURI("https://addons.mozilla.org/foo")
     )
   );
 
-  Svc.Prefs.reset("addons.trustedSourceHostnames");
+  Svc.PrefBranch.clearUserPref("addons.trustedSourceHostnames");
 });
 
 add_task(async function test_get_all_ids() {
@@ -536,8 +582,8 @@ add_task(async function test_create() {
 
   let guid = Utils.makeGUID();
   let record = createRecordForThisApp(guid, ID1, true, false);
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
 
   let newAddon = await AddonManager.getAddonByID(ID1);
@@ -550,6 +596,57 @@ add_task(async function test_create() {
   await promiseStopServer(server);
 });
 
+add_task(async function test_weak_signature_restrictions() {
+  _("Ensure installing add-ons with a weak signature fails when restricted.");
+
+  // Ensure restrictions on weak signatures are enabled (this should be removed when
+  // the new behavior is riding the train).
+  const resetWeakSignaturePref =
+    AddonTestUtils.setWeakSignatureInstallAllowed(false);
+  const server = createAndStartHTTPServer(HTTP_PORT);
+  const ID_TEST_SHA1 = "amosigned-xpi@tests.mozilla.org";
+
+  const guidKO = Utils.makeGUID();
+  const guidOK = Utils.makeGUID();
+  const recordKO = createRecordForThisApp(guidKO, ID_TEST_SHA1, true, false);
+  const recordOK = createRecordForThisApp(guidOK, ID1, true, false);
+  const countTelemetry = new SyncedRecordsTelemetry();
+
+  let failed;
+
+  const { messages } = await AddonTestUtils.promiseConsoleOutput(async () => {
+    failed = await store.applyIncomingBatch(
+      [recordKO, recordOK],
+      countTelemetry
+    );
+  });
+
+  Assert.equal(
+    1,
+    failed.length,
+    "Expect only 1 on the two synced add-ons to fail"
+  );
+
+  resetWeakSignaturePref();
+
+  let addonKO = await AddonManager.getAddonByID(ID_TEST_SHA1);
+  Assert.equal(null, addonKO, `Expect ${ID_TEST_SHA1} to NOT be installed`);
+  let addonOK = await AddonManager.getAddonByID(ID1);
+  Assert.notEqual(null, addonOK, `Expect ${ID1} to be installed`);
+
+  await uninstallAddon(addonOK, reconciler);
+  await promiseStopServer(server);
+
+  AddonTestUtils.checkMessages(messages, {
+    expected: [
+      {
+        message:
+          /Download of .*\/amosigned-sha1only.xpi failed: install rejected due to the package not including a strong cryptographic signature/,
+      },
+    ],
+  });
+});
+
 add_task(async function test_create_missing_search() {
   _("Ensures that failed add-on searches are handled gracefully.");
 
@@ -559,10 +656,15 @@ add_task(async function test_create_missing_search() {
   const id = "missing@tests.mozilla.org";
   let guid = Utils.makeGUID();
   let record = createRecordForThisApp(guid, id, true, false);
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(1, failed.length);
   Assert.equal(guid, failed[0]);
+  Assert.equal(
+    countTelemetry.incomingCounts.failedReasons[0].name,
+    "GET <URL> failed (status 404)"
+  );
+  Assert.equal(countTelemetry.incomingCounts.failedReasons[0].count, 1);
 
   let addon = await AddonManager.getAddonByID(id);
   Assert.equal(null, addon);
@@ -579,8 +681,8 @@ add_task(async function test_create_bad_install() {
   const id = "missing-xpi@tests.mozilla.org";
   let guid = Utils.makeGUID();
   let record = createRecordForThisApp(guid, id, true, false);
-
-  /* let failed = */ await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  /* let failed = */ await store.applyIncomingBatch([record], countTelemetry);
   // This addon had no source URI so was skipped - but it's not treated as
   // failure.
   // XXX - this test isn't testing what we thought it was. Previously the addon
@@ -630,8 +732,8 @@ add_task(async function test_incoming_system() {
   // be ignored.
   let guid = Utils.makeGUID();
   let record = createRecordForThisApp(guid, SYSTEM_ADDON_ID, false, false);
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
 
   // The system addon should still not be userDisabled.
@@ -713,8 +815,8 @@ add_task(async function test_incoming_reconciled_but_not_cached() {
   let server = createAndStartHTTPServer(HTTP_PORT);
   let guid = Utils.makeGUID();
   let record = createRecordForThisApp(guid, ID1, true, false);
-
-  let failed = await store.applyIncomingBatch([record]);
+  let countTelemetry = new SyncedRecordsTelemetry();
+  let failed = await store.applyIncomingBatch([record], countTelemetry);
   Assert.equal(0, failed.length);
 
   Assert.notEqual(await AddonManager.getAddonByID(ID1), null);

@@ -18,8 +18,6 @@
 // For the public interface to Telemetry functionality, see Telemetry.h.
 
 namespace mozilla {
-// This is only used for the GeckoView persistence.
-class JSONWriter;
 namespace Telemetry {
 struct ScalarAction;
 struct KeyedScalarAction;
@@ -37,9 +35,11 @@ void SetCanRecordBase(bool b);
 void SetCanRecordExtended(bool b);
 
 // JS API Endpoints.
-nsresult Add(const nsACString& aName, JS::HandleValue aVal, JSContext* aCx);
-nsresult Set(const nsACString& aName, JS::HandleValue aVal, JSContext* aCx);
-nsresult SetMaximum(const nsACString& aName, JS::HandleValue aVal,
+nsresult Add(const nsACString& aName, JS::Handle<JS::Value> aVal,
+             JSContext* aCx);
+nsresult Set(const nsACString& aName, JS::Handle<JS::Value> aVal,
+             JSContext* aCx);
+nsresult SetMaximum(const nsACString& aName, JS::Handle<JS::Value> aVal,
                     JSContext* aCx);
 nsresult CreateSnapshots(unsigned int aDataset, bool aClearScalars,
                          JSContext* aCx, uint8_t optional_argc,
@@ -48,11 +48,11 @@ nsresult CreateSnapshots(unsigned int aDataset, bool aClearScalars,
 
 // Keyed JS API Endpoints.
 nsresult Add(const nsACString& aName, const nsAString& aKey,
-             JS::HandleValue aVal, JSContext* aCx);
+             JS::Handle<JS::Value> aVal, JSContext* aCx);
 nsresult Set(const nsACString& aName, const nsAString& aKey,
-             JS::HandleValue aVal, JSContext* aCx);
+             JS::Handle<JS::Value> aVal, JSContext* aCx);
 nsresult SetMaximum(const nsACString& aName, const nsAString& aKey,
-                    JS::HandleValue aVal, JSContext* aCx);
+                    JS::Handle<JS::Value> aVal, JSContext* aCx);
 nsresult CreateKeyedSnapshots(unsigned int aDataset, bool aClearScalars,
                               JSContext* aCx, uint8_t optional_argc,
                               JS::MutableHandle<JS::Value> aResult,
@@ -110,21 +110,6 @@ void AddDynamicScalarDefinitions(
  * This includes dynamic stores.
  */
 nsresult GetAllStores(mozilla::Telemetry::Common::StringHashSet& set);
-
-// They are responsible for updating in-memory probes with the data persisted
-// on the disk and vice-versa.
-nsresult SerializeScalars(mozilla::JSONWriter& aWriter);
-nsresult SerializeKeyedScalars(mozilla::JSONWriter& aWriter);
-nsresult DeserializePersistedScalars(JSContext* aCx, JS::HandleValue aData);
-nsresult DeserializePersistedKeyedScalars(JSContext* aCx,
-                                          JS::HandleValue aData);
-// Mark deserialization as in progress.
-// After this, all scalar operations are recorded into the pending operations
-// list.
-void DeserializationStarted();
-// Apply all operations from the pending operations list and mark
-// deserialization finished afterwards.
-void ApplyPendingOperations();
 }  // namespace TelemetryScalar
 
 #endif  // TelemetryScalar_h__

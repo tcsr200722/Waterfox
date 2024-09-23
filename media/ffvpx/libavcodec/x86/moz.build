@@ -7,7 +7,6 @@
 SOURCES += [
     'constants.c',
     'dct32.asm',
-    'dct_init.c',
     'fdct.c',
     'fdctdsp_init.c',
     'flacdsp.asm',
@@ -19,8 +18,6 @@ SOURCES += [
     'idctdsp_init.c',
     'imdct36.asm',
     'mpegaudiodsp.c',
-    'simple_idct.asm',
-    'simple_idct10.asm',
     'videodsp.asm',
     'videodsp_init.c',
     'vp8dsp.asm',
@@ -40,11 +37,13 @@ SOURCES += [
     'vp9mc_16bpp.asm',
 ]
 
-if CONFIG['MOZ_LIBAV_FFT']:
-    SOURCES += [
-        'fft.asm',
-        'fft_init.c',
-    ]
+LOCAL_INCLUDES += [ "../" ]
+
+if CONFIG['TARGET_CPU'] == 'x86':
+    SOURCES += [ 'simple_idct.asm' ]
+
+if CONFIG['TARGET_CPU'] == 'x86_64':
+    SOURCES += [ 'simple_idct10.asm' ]
 
 FINAL_LIBRARY = 'mozavcodec'
 

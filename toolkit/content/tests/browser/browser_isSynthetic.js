@@ -11,13 +11,13 @@ LocationChangeListener.prototype = {
     this.browser.removeProgressListener(this);
   },
 
-  onLocationChange(webProgress, request, location, flags) {
+  onLocationChange() {
     this.wasSynthetic = this.browser.isSyntheticDocument;
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIWebProgressListener,
-    Ci.nsISupportsWeakReference,
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
   ]),
 };
 
@@ -29,7 +29,7 @@ function waitForPageShow(browser) {
   return BrowserTestUtils.waitForContentEvent(browser, "pageshow", true);
 }
 
-add_task(async function() {
+add_task(async function () {
   let tab = BrowserTestUtils.addTab(gBrowser, "about:blank");
   let browser = tab.linkedBrowser;
   await BrowserTestUtils.browserLoaded(browser);
@@ -38,13 +38,16 @@ add_task(async function() {
   is(browser.isSyntheticDocument, false, "Should not be synthetic");
 
   let loadPromise = waitForPageShow(browser);
-  BrowserTestUtils.loadURI(browser, "data:text/html;charset=utf-8,<html/>");
+  BrowserTestUtils.startLoadingURIString(
+    browser,
+    "data:text/html;charset=utf-8,<html/>"
+  );
   await loadPromise;
   is(listener.wasSynthetic, false, "Should not be synthetic");
   is(browser.isSyntheticDocument, false, "Should not be synthetic");
 
   loadPromise = waitForPageShow(browser);
-  BrowserTestUtils.loadURI(browser, FILES + "empty.png");
+  BrowserTestUtils.startLoadingURIString(browser, FILES + "empty.png");
   await loadPromise;
   is(listener.wasSynthetic, true, "Should be synthetic");
   is(browser.isSyntheticDocument, true, "Should be synthetic");

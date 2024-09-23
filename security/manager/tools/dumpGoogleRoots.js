@@ -9,15 +9,11 @@
 // How to run this file:
 // 1. [obtain firefox source code]
 // 2. [build/obtain firefox binaries]
-// 3. run `[path to]/run-mozilla.sh [path to]/xpcshell dumpGoogleRoots.js'
+// 3. run `[path to]/firefox -xpcshell dumpGoogleRoots.js'
 // 4. [paste the output into the appropriate section in
 //     security/manager/tools/PreloadedHPKPins.json]
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["XMLHttpRequest"]);
+Services.prefs.setBoolPref("network.process.enabled", false);
 
 function downloadRoots() {
   let req = new XMLHttpRequest();
@@ -60,20 +56,32 @@ function downloadRoots() {
   return roots;
 }
 
-function makeFormattedNickname(cert) {
-  if (cert.isBuiltInRoot) {
+function makeFormattedNickname(cert, knownNicknames) {
+  if (cert.displayName in knownNicknames) {
     return `"${cert.displayName}"`;
   }
   // Otherwise, this isn't a built-in and we have to comment it out.
   return `// "${cert.displayName}"`;
 }
 
+function gatherKnownNicknames() {
+  let certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+    Ci.nsIX509CertDB
+  );
+  let nicknames = {};
+  for (let cert of certDB.getCerts()) {
+    nicknames[cert.displayName] = true;
+  }
+  return nicknames;
+}
+
+var knownNicknames = gatherKnownNicknames();
 var roots = downloadRoots();
 var rootNicknames = [];
 for (var root of roots) {
-  rootNicknames.push(makeFormattedNickname(root));
+  rootNicknames.push(makeFormattedNickname(root, knownNicknames));
 }
-rootNicknames.sort(function(rootA, rootB) {
+rootNicknames.sort(function (rootA, rootB) {
   let rootALowercase = rootA.toLowerCase().replace(/(^[^"]*")|"/g, "");
   let rootBLowercase = rootB.toLowerCase().replace(/(^[^"]*")|"/g, "");
   if (rootALowercase < rootBLowercase) {

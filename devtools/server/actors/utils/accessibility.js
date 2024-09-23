@@ -4,18 +4,10 @@
 
 "use strict";
 
-loader.lazyRequireGetter(this, "Ci", "chrome", true);
-loader.lazyRequireGetter(this, "Services");
 loader.lazyRequireGetter(
   this,
-  "loadSheet",
-  "devtools/shared/layout/utils",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "removeSheet",
-  "devtools/shared/layout/utils",
+  ["loadSheet", "removeSheet"],
+  "resource://devtools/shared/layout/utils.js",
   true
 );
 
@@ -23,7 +15,7 @@ loader.lazyRequireGetter(
 // when calculating colour contrast.
 const HIGHLIGHTER_STYLES_SHEET = `data:text/css;charset=utf-8,
 * {
-  transition: none !important;
+  transition: initial !important;
 }
 
 :-moz-devtools-highlighted {
@@ -84,26 +76,6 @@ function removeSheetForBackgroundCalculation(win) {
 }
 
 /**
- * Helper function that determines if web render is enabled.
- *
- * @param  {Window}  win
- *         Window to be tested.
- * @return {Boolean}
- *         True if web render is enabled, false otherwise.
- */
-function isWebRenderEnabled(win) {
-  try {
-    return win.windowUtils && win.windowUtils.layerManagerType === "WebRender";
-  } catch (e) {
-    // Sometimes nsIDOMWindowUtils::layerManagerType fails unexpectedly (see bug
-    // 1596428).
-    console.warn(e);
-  }
-
-  return false;
-}
-
-/**
  * Get role attribute for an accessible object if specified for its
  * corresponding DOMNode.
  *
@@ -126,6 +98,6 @@ function getAriaRoles(accessible) {
 
 exports.getAriaRoles = getAriaRoles;
 exports.isDefunct = isDefunct;
-exports.isWebRenderEnabled = isWebRenderEnabled;
 exports.loadSheetForBackgroundCalculation = loadSheetForBackgroundCalculation;
-exports.removeSheetForBackgroundCalculation = removeSheetForBackgroundCalculation;
+exports.removeSheetForBackgroundCalculation =
+  removeSheetForBackgroundCalculation;

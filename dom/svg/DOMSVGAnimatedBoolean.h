@@ -4,16 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_DOMSVGAnimatedBoolean_h
-#define mozilla_dom_DOMSVGAnimatedBoolean_h
+#ifndef DOM_SVG_DOMSVGANIMATEDBOOLEAN_H_
+#define DOM_SVG_DOMSVGANIMATEDBOOLEAN_H_
 
 #include "SVGAnimatedBoolean.h"
 #include "nsWrapperCache.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/SVGElement.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class DOMSVGAnimatedBoolean final : public nsWrapperCache {
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMSVGAnimatedBoolean)
@@ -24,8 +23,8 @@ class DOMSVGAnimatedBoolean final : public nsWrapperCache {
 
   // WebIDL
   SVGElement* GetParentObject() const { return mSVGElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   bool BaseVal() const { return mVal->GetBaseValue(); }
   void SetBaseVal(bool aValue) { mVal->SetBaseValue(aValue, mSVGElement); }
   bool AnimVal() const {
@@ -40,7 +39,6 @@ class DOMSVGAnimatedBoolean final : public nsWrapperCache {
   RefPtr<SVGElement> mSVGElement;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_DOMSVGAnimatedBoolean_h
+#endif  // DOM_SVG_DOMSVGANIMATEDBOOLEAN_H_

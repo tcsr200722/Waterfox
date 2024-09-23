@@ -4,11 +4,7 @@
  * Test keyboard navigation in the app menu panel.
  */
 
-const { PanelView } = ChromeUtils.import(
-  "resource:///modules/PanelMultiView.jsm",
-  null
-);
-const kHelpButtonId = "appMenu-help-button";
+const kHelpButtonId = "appMenu-help-button2";
 
 function getEnabledNavigableElementsForView(panelView) {
   return Array.from(
@@ -100,7 +96,6 @@ add_task(async function testEnterKeyBehaviors() {
     "The last button should be focused after navigating upward"
   );
 
-  let promise = BrowserTestUtils.waitForEvent(PanelUI.helpView, "ViewShown");
   // Make sure the Help button is in focus.
   while (
     !focusedElement ||
@@ -111,9 +106,11 @@ add_task(async function testEnterKeyBehaviors() {
     focusedElement = document.commandDispatcher.focusedElement;
   }
   EventUtils.synthesizeKey("KEY_Enter");
-  await promise;
 
-  let helpButtons = getEnabledNavigableElementsForView(PanelUI.helpView);
+  let helpView = document.getElementById("PanelUI-helpView");
+  await BrowserTestUtils.waitForEvent(helpView, "ViewShown");
+
+  let helpButtons = getEnabledNavigableElementsForView(helpView);
   Assert.ok(
     helpButtons[0].classList.contains("subviewbutton-back"),
     "First button in help view should be a back button"
@@ -150,13 +147,13 @@ add_task(async function testEnterKeyBehaviors() {
   }
 
   // The first button is the back button. Hittin Enter should navigate us back.
-  promise = BrowserTestUtils.waitForEvent(PanelUI.mainView, "ViewShown");
+  let promise = BrowserTestUtils.waitForEvent(PanelUI.mainView, "ViewShown");
   EventUtils.synthesizeKey("KEY_Enter");
   await promise;
 
   // Let's test a 'normal' command button.
   focusedElement = document.commandDispatcher.focusedElement;
-  const kFindButtonId = "appMenu-find-button";
+  const kFindButtonId = "appMenu-find-button2";
   while (
     !focusedElement ||
     !focusedElement.id ||
@@ -204,12 +201,12 @@ add_task(async function testLeftRightKeys() {
 
   // Hitting ArrowRight on a button that points to a subview should navigate us
   // there.
-  let promise = BrowserTestUtils.waitForEvent(PanelUI.helpView, "ViewShown");
   EventUtils.synthesizeKey("KEY_ArrowRight");
-  await promise;
+  let helpView = document.getElementById("PanelUI-helpView");
+  await BrowserTestUtils.waitForEvent(helpView, "ViewShown");
 
   // Hitting ArrowLeft should navigate us back.
-  promise = BrowserTestUtils.waitForEvent(PanelUI.mainView, "ViewShown");
+  let promise = BrowserTestUtils.waitForEvent(PanelUI.mainView, "ViewShown");
   EventUtils.synthesizeKey("KEY_ArrowLeft");
   await promise;
 
@@ -321,9 +318,9 @@ add_task(async function testSpaceDownAfterTabNavigation() {
 
   // Pressing down space on a button that points to a subview should navigate us
   // there, before keyup.
-  let promise = BrowserTestUtils.waitForEvent(PanelUI.helpView, "ViewShown");
   EventUtils.synthesizeKey(" ", { type: "keydown" });
-  await promise;
+  let helpView = document.getElementById("PanelUI-helpView");
+  await BrowserTestUtils.waitForEvent(helpView, "ViewShown");
 
   await gCUITestUtils.hideMainMenu();
 });

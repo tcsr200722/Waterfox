@@ -137,8 +137,7 @@ nsresult txExecutionState::init(
 
   // The actual value here doesn't really matter since noone should use this
   // value. But lets put something errorlike in just in case
-  mGlobalVarPlaceholderValue =
-      new StringResult(NS_LITERAL_STRING("Error"), nullptr);
+  mGlobalVarPlaceholderValue = new StringResult(u"Error"_ns, nullptr);
 
   // Initiate first instruction. This has to be done last since findTemplate
   // might use us.
@@ -243,15 +242,7 @@ nsresult txExecutionState::getVariable(int32_t aNamespace, nsAtom* aLName,
       return rv;
     }
   } else {
-    UniquePtr<txRtfHandler> rtfHandler(new txRtfHandler);
-
-    rv = pushResultHandler(rtfHandler.get());
-    if (NS_FAILED(rv)) {
-      popAndDeleteEvalContextUntil(mInitialEvalContext);
-      return rv;
-    }
-
-    Unused << rtfHandler.release();
+    pushResultHandler(new txRtfHandler);
 
     txInstruction* prevInstr = mNextInstruction;
     // set return to nullptr to stop execution
@@ -272,7 +263,8 @@ nsresult txExecutionState::getVariable(int32_t aNamespace, nsAtom* aLName,
     popTemplateRule();
 
     mNextInstruction = prevInstr;
-    rtfHandler = WrapUnique((txRtfHandler*)popResultHandler());
+    UniquePtr<txRtfHandler> rtfHandler(
+        static_cast<txRtfHandler*>(popResultHandler()));
     rv = rtfHandler->getAsRTF(&aResult);
     if (NS_FAILED(rv)) {
       popAndDeleteEvalContextUntil(mInitialEvalContext);
@@ -306,13 +298,9 @@ void txExecutionState::receiveError(const nsAString& aMsg, nsresult aRes) {
   // XXX implement me
 }
 
-nsresult txExecutionState::pushEvalContext(txIEvalContext* aContext) {
-  nsresult rv = mEvalContextStack.push(mEvalContext);
-  NS_ENSURE_SUCCESS(rv, rv);
-
+void txExecutionState::pushEvalContext(txIEvalContext* aContext) {
+  mEvalContextStack.push(mEvalContext);
   mEvalContext = aContext;
-
-  return NS_OK;
 }
 
 txIEvalContext* txExecutionState::popEvalContext() {
@@ -322,31 +310,17 @@ txIEvalContext* txExecutionState::popEvalContext() {
   return prev;
 }
 
-nsresult txExecutionState::pushBool(bool aBool) {
-  // XXX(Bug 1631371) Check if this should use a fallible operation as it
-  // pretended earlier, or change the return type to void.
-  mBoolStack.AppendElement(aBool);
-  return NS_OK;
-}
+void txExecutionState::pushBool(bool aBool) { mBoolStack.AppendElement(aBool); }
 
 bool txExecutionState::popBool() {
   NS_ASSERTION(mBoolStack.Length(), "popping from empty stack");
-  uint32_t last = mBoolStack.Length() - 1;
-  NS_ENSURE_TRUE(last != (uint32_t)-1, false);
 
-  bool res = mBoolStack.ElementAt(last);
-  mBoolStack.RemoveElementAt(last);
-
-  return res;
+  return mBoolStack.IsEmpty() ? false : mBoolStack.PopLastElement();
 }
 
-nsresult txExecutionState::pushResultHandler(txAXMLEventHandler* aHandler) {
-  nsresult rv = mResultHandlerStack.push(mResultHandler);
-  NS_ENSURE_SUCCESS(rv, rv);
-
+void txExecutionState::pushResultHandler(txAXMLEventHandler* aHandler) {
+  mResultHandlerStack.push(mResultHandler);
   mResultHandler = aHandler;
-
-  return NS_OK;
 }
 
 txAXMLEventHandler* txExecutionState::popResultHandler() {
@@ -399,8 +373,7 @@ const txXPathNode* txExecutionState::retrieveDocument(const nsAString& aUri) {
                                getter_Transfers(entry->mDocument));
 
     if (entry->LoadingFailed()) {
-      receiveError(NS_LITERAL_STRING("Couldn't load document '") + aUri +
-                       NS_LITERAL_STRING("': ") + errMsg,
+      receiveError(u"Couldn't load document '"_ns + aUri + u"': "_ns + errMsg,
                    entry->mLoadResult);
     }
   }
@@ -422,7 +395,12 @@ txExecutionState::TemplateRule* txExecutionState::getCurrentTemplateRule() {
   return &mTemplateRules[mTemplateRules.Length() - 1];
 }
 
-txInstruction* txExecutionState::getNextInstruction() {
+mozilla::Result<txInstruction*, nsresult>
+txExecutionState::getNextInstruction() {
+  if (mStopProcessing) {
+    return mozilla::Err(NS_ERROR_FAILURE);
+  }
+
   txInstruction* instr = mNextInstruction;
   if (instr) {
     mNextInstruction = instr->mNext.get();
@@ -435,11 +413,8 @@ nsresult txExecutionState::runTemplate(txInstruction* aTemplate) {
   NS_ENSURE_TRUE(++mRecursionDepth < kMaxRecursionDepth,
                  NS_ERROR_XSLT_BAD_RECURSION);
 
-  nsresult rv = mLocalVarsStack.push(mLocalVariables);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = mReturnStack.push(mNextInstruction);
-  NS_ENSURE_SUCCESS(rv, rv);
+  mLocalVarsStack.push(mLocalVariables);
+  mReturnStack.push(mNextInstruction);
 
   mLocalVariables = nullptr;
   mNextInstruction = aTemplate;

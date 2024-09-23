@@ -8,13 +8,16 @@
 #define mozilla_dom_MerchantValidationEvent_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Result.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/MerchantValidationEventBinding.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 
+class nsIURI;
+
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class Promise;
@@ -30,10 +33,10 @@ class MerchantValidationEvent : public Event, public PromiseNativeHandler {
   virtual JSObject* WrapObjectInternal(
       JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
 
-  virtual void ResolvedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
-  virtual void RejectedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
+  virtual void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
+  virtual void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
 
   static already_AddRefed<MerchantValidationEvent> Constructor(
       EventTarget* aOwner, const nsAString& aType,

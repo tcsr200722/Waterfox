@@ -6,7 +6,7 @@
 // Test that switching to the inspector panel and not waiting for it to be fully
 // loaded doesn't fail the test with unhandled rejected promises.
 
-add_task(async function() {
+add_task(async function () {
   // At least one assertion is needed to avoid failing the test, but really,
   // what we're interested in is just having the test pass when switching to the
   // inspector.
@@ -15,8 +15,9 @@ add_task(async function() {
   await addTab("data:text/html;charset=utf-8,test inspector destroy");
 
   info("Open the toolbox on the debugger panel");
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  const toolbox = await gDevTools.showToolbox(target, "jsdebugger");
+  const toolbox = await gDevTools.showToolboxForTab(gBrowser.selectedTab, {
+    toolId: "jsdebugger",
+  });
 
   info("Switch to the inspector panel and immediately end the test");
   const onInspectorSelected = toolbox.once("inspector-selected");

@@ -3,12 +3,7 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-<!DOCTYPE overlay [
-  <!ENTITY % prettyPrintDTD SYSTEM "chrome://global/locale/xml/prettyprint.dtd">
-  %prettyPrintDTD;
-  <!ENTITY % globalDTD SYSTEM "chrome://global/locale/global.dtd">
-  %globalDTD;
-]>
+<!DOCTYPE overlay>
 
 <xsl:stylesheet version="1.0"
                 xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
@@ -19,10 +14,8 @@
   <xsl:template match="/">
     <div id="top">
       <link rel="stylesheet" href="chrome://global/content/xml/XMLPrettyPrint.css"/>
-      <div id="header" dir="&locale.dir;">
-        <p>
-          &xml.nostylesheet;
-        </p>
+      <div id="header">
+        <p data-l10n-id="xml-nostylesheet"></p>
       </div>
       <main id="tree" class="highlight">
         <xsl:apply-templates/>
@@ -40,7 +33,7 @@
   </xsl:template>
 
   <xsl:template match="*[node()]">
-    <div>
+    <div><xsl:apply-templates mode="space" select="@xml:space"/>
       <xsl:text>&lt;</xsl:text>
       <span class="start-tag"><xsl:value-of select="name(.)"/></span>
       <xsl:apply-templates select="@*"/>
@@ -55,7 +48,7 @@
   </xsl:template>
 
   <xsl:template match="*[* or processing-instruction() or comment() or string-length(.) &gt; 50]">
-    <div>
+    <div><xsl:apply-templates mode="space" select="@xml:space"/>
       <details open="" class="expandable-body">
         <summary class="expandable-opening">
           <xsl:text>&lt;</xsl:text>
@@ -73,6 +66,13 @@
         <xsl:text>&gt;</xsl:text>
       </span>
     </div>
+  </xsl:template>
+
+  <xsl:template match="@xml:space[string() = 'default']" mode="space">
+    <xsl:attribute name="class">space-default</xsl:attribute>
+  </xsl:template>
+  <xsl:template match="@xml:space[string() = 'preserve']" mode="space">
+    <xsl:attribute name="class">space-preserve</xsl:attribute>
   </xsl:template>
 
   <xsl:template match="@*">

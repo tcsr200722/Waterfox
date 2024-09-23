@@ -6,6 +6,7 @@
 
 const CC = Components.Constructor;
 
+// eslint-disable-next-line @microsoft/sdl/no-insecure-url
 const TEST_SITE = "http://example.net";
 const TEST_THIRD_PARTY_SITE = "http://mochi.test:8888";
 
@@ -20,16 +21,9 @@ const THIRD_PARTY_FAVICON_URI =
   TEST_THIRD_PARTY_SITE +
   "/browser/browser/base/content/test/favicons/file_favicon.png";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PromiseUtils",
-  "resource://gre/modules/PromiseUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 
 let systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
 
@@ -56,7 +50,7 @@ function FaviconObserver(aPageURI, aFaviconURL, aTailingEnabled) {
 }
 
 FaviconObserver.prototype = {
-  observe(aSubject, aTopic, aData) {
+  observe(aSubject, aTopic) {
     // Make sure that the topic is 'http-on-modify-request'.
     if (aTopic === "http-on-modify-request") {
       let httpChannel = aSubject.QueryInterface(Ci.nsIHttpChannel);
@@ -89,7 +83,7 @@ FaviconObserver.prototype = {
 
   reset(aPageURI, aFaviconURL, aTailingEnabled) {
     this._faviconURL = aFaviconURL;
-    this._faviconLoaded = PromiseUtils.defer();
+    this._faviconLoaded = Promise.withResolvers();
     this._tailingEnabled = aTailingEnabled;
   },
 
@@ -99,12 +93,8 @@ FaviconObserver.prototype = {
 };
 
 function waitOnFaviconLoaded(aFaviconURL) {
-  return PlacesTestUtils.waitForNotification(
-    "onPageChanged",
-    (uri, attr, value, id) =>
-      attr === Ci.nsINavHistoryObserver.ATTRIBUTE_FAVICON &&
-      value === aFaviconURL,
-    "history"
+  return PlacesTestUtils.waitForNotification("favicon-changed", events =>
+    events.some(e => e.faviconUrl == aFaviconURL)
   );
 }
 

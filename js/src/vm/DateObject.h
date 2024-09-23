@@ -9,7 +9,8 @@
 
 #include "js/Date.h"
 #include "js/Value.h"
-#include "vm/JSObject.h"
+#include "vm/DateTime.h"
+#include "vm/NativeObject.h"
 
 namespace js {
 
@@ -56,6 +57,8 @@ class DateObject : public NativeObject {
   static const JSClass class_;
   static const JSClass protoClass_;
 
+  js::DateTimeInfo::ForceUTC forceUTC() const;
+
   JS::ClippedTime clippedTime() const {
     double t = getFixedSlot(UTC_TIME_SLOT).toDouble();
     JS::ClippedTime clipped = JS::TimeClip(t);
@@ -64,54 +67,33 @@ class DateObject : public NativeObject {
   }
 
   const js::Value& UTCTime() const { return getFixedSlot(UTC_TIME_SLOT); }
+  const js::Value& localTime() const {
+    return getReservedSlot(LOCAL_TIME_SLOT);
+  }
 
   // Set UTC time to a given time and invalidate cached local time.
   void setUTCTime(JS::ClippedTime t);
   void setUTCTime(JS::ClippedTime t, MutableHandleValue vp);
-
-  inline double cachedLocalTime();
 
   // Cache the local time, year, month, and so forth of the object.
   // If UTC time is not finite (e.g., NaN), the local time
   // slots will be set to the UTC time without conversion.
   void fillLocalTimeSlots();
 
-  static MOZ_ALWAYS_INLINE bool getTime_impl(JSContext* cx,
-                                             const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getYear_impl(JSContext* cx,
-                                             const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getFullYear_impl(JSContext* cx,
-                                                 const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCFullYear_impl(JSContext* cx,
-                                                    const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getMonth_impl(JSContext* cx,
-                                              const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCMonth_impl(JSContext* cx,
-                                                 const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getDate_impl(JSContext* cx,
-                                             const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCDate_impl(JSContext* cx,
-                                                const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getDay_impl(JSContext* cx,
-                                            const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCDay_impl(JSContext* cx,
-                                               const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getHours_impl(JSContext* cx,
-                                              const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCHours_impl(JSContext* cx,
-                                                 const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getMinutes_impl(JSContext* cx,
-                                                const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCMinutes_impl(JSContext* cx,
-                                                   const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getSeconds_impl(JSContext* cx,
-                                                const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCSeconds_impl(JSContext* cx,
-                                                   const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getUTCMilliseconds_impl(JSContext* cx,
-                                                        const CallArgs& args);
-  static MOZ_ALWAYS_INLINE bool getTimezoneOffset_impl(JSContext* cx,
-                                                       const CallArgs& args);
+  const js::Value& localYear() const {
+    return getReservedSlot(LOCAL_YEAR_SLOT);
+  }
+  const js::Value& localMonth() const {
+    return getReservedSlot(LOCAL_MONTH_SLOT);
+  }
+  const js::Value& localDate() const {
+    return getReservedSlot(LOCAL_DATE_SLOT);
+  }
+  const js::Value& localDay() const { return getReservedSlot(LOCAL_DAY_SLOT); }
+
+  const js::Value& localSecondsIntoYear() const {
+    return getReservedSlot(LOCAL_SECONDS_INTO_YEAR_SLOT);
+  }
 };
 
 }  // namespace js

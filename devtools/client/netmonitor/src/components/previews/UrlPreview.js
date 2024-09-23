@@ -6,25 +6,28 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const PropertiesView = createFactory(
-  require("devtools/client/netmonitor/src/components/request-details/PropertiesView")
+  require("resource://devtools/client/netmonitor/src/components/request-details/PropertiesView.js")
 );
-const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
+const {
+  L10N,
+} = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
 const {
   parseQueryString,
-} = require("devtools/client/netmonitor/src/utils/request-utils");
+} = require("resource://devtools/client/netmonitor/src/utils/request-utils.js");
 
 const TreeRow = createFactory(
-  require("devtools/client/shared/components/tree/TreeRow")
+  require("resource://devtools/client/shared/components/tree/TreeRow.js")
 );
 
-loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/shared/components/reps/reps").MODE;
+loader.lazyGetter(this, "MODE", function () {
+  return require("resource://devtools/client/shared/components/reps/index.js")
+    .MODE;
 });
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
 const { div, span, tr, td } = dom;
 
@@ -63,6 +66,9 @@ class UrlPreview extends Component {
       url: PropTypes.string,
       method: PropTypes.string,
       address: PropTypes.string,
+      proxyStatus: PropTypes.string,
+      shouldExpandPreview: PropTypes.bool,
+      onTogglePreview: PropTypes.func,
     };
   }
 
@@ -72,11 +78,19 @@ class UrlPreview extends Component {
     this.renderValue = this.renderValue.bind(this);
   }
 
+  shouldComponentUpdate(nextProps) {
+    return (
+      nextProps.url !== this.props.url ||
+      nextProps.method !== this.props.method ||
+      nextProps.address !== this.props.address
+    );
+  }
+
   renderRow(props) {
     const {
-      member: { name },
+      member: { name, level },
     } = props;
-    if (name == "query" || name == "remote") {
+    if ((name == "query" || name == "remote") && level == 1) {
       return tr(
         { key: name, className: "treeRow stringRow" },
         td(
@@ -110,7 +124,43 @@ class UrlPreview extends Component {
         span({ key: "url-filename", className: "url-filename" }, `${filename}`),
         !!queryParamNames.length &&
           span({ key: "url-ques", className: "url-chars" }, "?"),
+
         queryParamNames.map((name, index) => {
+          if (Array.isArray(query[name])) {
+            return query[name].map((item, queryIndex) => {
+              return span(
+                {
+                  key: `url-params-${name}${queryIndex}`,
+                  className: "url-params",
+                },
+                span(
+                  {
+                    key: `url-params${name}${queryIndex}-name`,
+                    className: "url-params-name",
+                  },
+                  `${name}`
+                ),
+                span(
+                  {
+                    key: `url-chars-${name}${queryIndex}-equals`,
+                    className: "url-chars",
+                  },
+                  "="
+                ),
+                span(
+                  {
+                    key: `url-params-${name}${queryIndex}-value`,
+                    className: "url-params-value",
+                  },
+                  `${item}`
+                ),
+                (query[name].length - 1 !== queryIndex ||
+                  queryParamNames.length - 1 !== index) &&
+                  span({ key: "url-amp", className: "url-chars" }, "&")
+              );
+            });
+          }
+
           return span(
             { key: `url-params-${name}`, className: "url-params" },
             span(
@@ -141,7 +191,7 @@ class UrlPreview extends Component {
   }
 
   parseUrl(url) {
-    const { method, address } = this.props;
+    const { method, address, proxyStatus } = this.props;
     const { host, protocol, pathname, search } = new URL(url);
 
     const urlObject = {
@@ -171,14 +221,18 @@ class UrlPreview extends Component {
           map[obj.name] = obj.value;
         }
         return map;
-      }, {});
+      }, Object.create(null));
     }
 
     if (address) {
-      // makes sure the remote adress section is expanded
+      // makes sure the remote address section is expanded
       expandedNodes.add(`/${method}/remote`);
       urlObject[method].remote = {
-        [L10N.getStr("netmonitor.headers.address")]: address,
+        [L10N.getStr(
+          proxyStatus
+            ? "netmonitor.headers.proxyAddress"
+            : "netmonitor.headers.address"
+        )]: address,
       };
     }
 
@@ -189,8 +243,18 @@ class UrlPreview extends Component {
   }
 
   render() {
-    const { url } = this.props;
+    const {
+      url,
+      method,
+      shouldExpandPreview = false,
+      onTogglePreview,
+    } = this.props;
+
     const { urlObject, expandedNodes } = this.parseUrl(url);
+
+    if (shouldExpandPreview) {
+      expandedNodes.add(`/${method}`);
+    }
 
     return div(
       { className: "url-preview" },
@@ -203,6 +267,26 @@ class UrlPreview extends Component {
         renderRow: this.renderRow,
         renderValue: this.renderValue,
         enableInput: false,
+        onClickRow: (path, evt, member) => {
+          // Only track when the root is toggled
+          // as all the others are always expanded by
+          // default.
+          if (path == `/${method}`) {
+            onTogglePreview(!member.open);
+          }
+        },
+        contextMenuFormatters: {
+          copyFormatter: (member, baseCopyFormatter) => {
+            const { value, level, hasChildren } = member;
+            if (hasChildren && level == 0) {
+              const { scheme, filename, host, query } = value;
+              return `${scheme}://${host}${filename}${
+                query ? "?" + new URLSearchParams(query).toString() : ""
+              }`;
+            }
+            return baseCopyFormatter(member);
+          },
+        },
       })
     );
   }

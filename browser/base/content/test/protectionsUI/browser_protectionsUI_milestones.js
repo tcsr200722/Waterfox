@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       // Hide protections cards so as not to trigger more async messaging
@@ -15,6 +15,15 @@ add_task(async function setup() {
 });
 
 add_task(async function doTest() {
+  requestLongerTimeout(3);
+
+  // The protections panel needs to be openend at least once,
+  // or the milestone-achieved pref observer is not triggered.
+  await BrowserTestUtils.withNewTab("https://example.com", async () => {
+    await openProtectionsPanel();
+    await closeProtectionsPanel();
+  });
+
   // This also ensures that the DB tables have been initialized.
   await TrackingDBService.clearAll();
 
@@ -36,11 +45,9 @@ add_task(async function doTest() {
       "browser.contentblocking.cfr-milestone.milestone-achieved",
       milestone
     );
-
     await TestUtils.waitForCondition(
       () => gProtectionsHandler._milestoneTextSet
     );
-
     // We set the shown-time pref to pretend that the CFR has been
     // shown, so that we can test the panel.
     // TODO: Full integration test for robustness.
@@ -48,11 +55,10 @@ add_task(async function doTest() {
       "browser.contentblocking.cfr-milestone.milestone-shown-time",
       Date.now().toString()
     );
-
     await openProtectionsPanel();
 
     ok(
-      BrowserTestUtils.is_visible(
+      BrowserTestUtils.isVisible(
         gProtectionsHandler._protectionsPopupMilestonesText
       ),
       "Milestones section should be visible in the panel."
@@ -62,7 +68,7 @@ add_task(async function doTest() {
     await openProtectionsPanel();
 
     ok(
-      BrowserTestUtils.is_visible(
+      BrowserTestUtils.isVisible(
         gProtectionsHandler._protectionsPopupMilestonesText
       ),
       "Milestones section should still be visible in the panel."
@@ -82,7 +88,7 @@ add_task(async function doTest() {
     await openProtectionsPanel();
 
     ok(
-      !BrowserTestUtils.is_visible(
+      !BrowserTestUtils.isVisible(
         gProtectionsHandler._protectionsPopupMilestonesText
       ),
       "Milestones section should no longer be visible in the panel."

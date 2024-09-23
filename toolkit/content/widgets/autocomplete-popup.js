@@ -8,13 +8,24 @@
 // leaking to window scope.
 {
   const MozPopupElement = MozElements.MozElementMixin(XULPopupElement);
-  MozElements.MozAutocompleteRichlistboxPopup = class MozAutocompleteRichlistboxPopup extends MozPopupElement {
+  MozElements.MozAutocompleteRichlistboxPopup = class MozAutocompleteRichlistboxPopup extends (
+    MozPopupElement
+  ) {
     constructor() {
       super();
+
+      this.attachShadow({ mode: "open" });
+
+      {
+        let slot = document.createElement("slot");
+        slot.part = "content";
+        this.shadowRoot.appendChild(slot);
+      }
 
       this.mInput = null;
       this.mPopupOpen = false;
       this._currentIndex = 0;
+      this._disabledItemClicked = false;
 
       this.setListeners();
     }
@@ -59,16 +70,22 @@
             }
 
             switch (event.type) {
+              case "mousedown":
+                this._disabledItemClicked =
+                  !!event.target.closest("richlistitem")?.disabled;
+                break;
               case "mouseup":
                 // Don't call onPopupClick for the scrollbar buttons, thumb,
                 // slider, etc. If we hit the richlistbox and not a
                 // richlistitem, we ignore the event.
                 if (
                   event.target.closest("richlistbox,richlistitem").localName ==
-                  "richlistitem"
+                    "richlistitem" &&
+                  !this._disabledItemClicked
                 ) {
                   this.onPopupClick(event);
                 }
+                this._disabledItemClicked = false;
                 break;
               case "mousemove":
                 if (Date.now() - this.mLastMoveTime <= 30) {
@@ -97,6 +114,7 @@
           },
         };
       }
+      this.richlistbox.addEventListener("mousedown", this.listEvents);
       this.richlistbox.addEventListener("mouseup", this.listEvents);
       this.richlistbox.addEventListener("mousemove", this.listEvents);
     }
@@ -110,7 +128,7 @@
 
     static get markup() {
       return `
-      <richlistbox class="autocomplete-richlistbox" flex="1"/>
+      <richlistbox class="autocomplete-richlistbox"/>
     `;
     }
 
@@ -150,7 +168,6 @@
           this.richlistbox.selectedItem || this.richlistbox.firstElementChild
         );
       }
-      return val;
     }
 
     get selectedIndex() {
@@ -176,9 +193,7 @@
       return Number(this.getAttribute("overflowpadding"));
     }
 
-    set view(val) {
-      return val;
-    }
+    set view(val) {}
 
     get view() {
       return this.mInput.controller;
@@ -187,7 +202,7 @@
     closePopup() {
       if (this.mPopupOpen) {
         this.hidePopup();
-        this.removeAttribute("width");
+        this.style.removeProperty("--panel-width");
       }
     }
 
@@ -196,24 +211,32 @@
         return -1;
       }
 
-      var newIdx = aIndex + (aReverse ? -1 : 1) * aAmount;
-      if (
-        (aReverse && aIndex == -1) ||
-        (newIdx > aMaxRow && aIndex != aMaxRow)
-      ) {
-        newIdx = aMaxRow;
-      } else if ((!aReverse && aIndex == -1) || (newIdx < 0 && aIndex != 0)) {
-        newIdx = 0;
-      }
+      do {
+        var newIdx = aIndex + (aReverse ? -1 : 1) * aAmount;
+        if (
+          (aReverse && aIndex == -1) ||
+          (newIdx > aMaxRow && aIndex != aMaxRow)
+        ) {
+          newIdx = aMaxRow;
+        } else if ((!aReverse && aIndex == -1) || (newIdx < 0 && aIndex != 0)) {
+          newIdx = 0;
+        }
 
-      if (
-        (newIdx < 0 && aIndex == 0) ||
-        (newIdx > aMaxRow && aIndex == aMaxRow)
-      ) {
-        aIndex = -1;
-      } else {
-        aIndex = newIdx;
-      }
+        if (
+          (newIdx < 0 && aIndex == 0) ||
+          (newIdx > aMaxRow && aIndex == aMaxRow)
+        ) {
+          aIndex = -1;
+        } else {
+          aIndex = newIdx;
+        }
+
+        if (aIndex == -1) {
+          return -1;
+        }
+      } while (
+        !this.richlistbox.canUserSelect(this.richlistbox.getItemAtIndex(aIndex))
+      );
 
       return aIndex;
     }
@@ -252,7 +275,7 @@
         this.selectedIndex = -1;
 
         var width = aElement.getBoundingClientRect().width;
-        this.setAttribute("width", width > 100 ? width : 100);
+        this.style.setProperty("--panel-width", Math.max(width, 100) + "px");
         // invalidate() depends on the width attribute
         this._invalidate();
 
@@ -280,7 +303,7 @@
       }
 
       if (this.mPopupOpen) {
-        delete this._adjustHeightOnPopupShown;
+        this._adjustHeightOnPopupShown = false;
         this._adjustHeightRAFToken = requestAnimationFrame(() =>
           this.adjustHeight()
         );
@@ -298,12 +321,7 @@
     _collapseUnusedItems() {
       let existingItemsCount = this.richlistbox.children.length;
       for (let i = this.matchCount; i < existingItemsCount; ++i) {
-        let item = this.richlistbox.children[i];
-
-        item.collapsed = true;
-        if (typeof item._onCollapse == "function") {
-          item._onCollapse();
-        }
+        this.richlistbox.children[i].collapsed = true;
       }
     }
 
@@ -337,16 +355,11 @@
         height = lastRowRect.bottom - firstRowRect.top + this._rlbPadding;
       }
 
-      let currentHeight = this.richlistbox.getBoundingClientRect().height;
-      if (height <= currentHeight) {
-        this._collapseUnusedItems();
-      }
-      this.richlistbox.style.removeProperty("height");
-      // We need to get the ceiling of the calculated value to ensure that the box fully contains
-      // all of its contents and doesn't cause a scrollbar since nsIBoxObject only expects a
-      // `long`. e.g. if `height` is 99.5 the richlistbox would render at height 99px with a
-      // scrollbar for the extra 0.5px.
-      this.richlistbox.height = Math.ceil(height);
+      this._collapseUnusedItems();
+
+      // We need to get the ceiling of the calculated value to ensure that the
+      // box fully contains all of its contents and doesn't cause a scrollbar.
+      this.richlistbox.style.height = Math.ceil(height) + "px";
     }
 
     _appendCurrentResult(invalidateReason) {
@@ -376,6 +389,15 @@
           .replace(/^\s+/, "")
           .replace(/\s+$/, "");
 
+        // Generic items can pack their details as JSON inside label
+        try {
+          const details = JSON.parse(label);
+          if (details.title) {
+            value = details.title;
+            label = details.subtitle ?? "";
+          }
+        } catch {}
+
         let reusable = false;
         if (itemExists) {
           item = this.richlistbox.children[this._currentIndex];
@@ -389,11 +411,12 @@
           // The styles on the list which have different <content> structure and overrided
           // _adjustAcItem() are unreusable.
           const UNREUSEABLE_STYLES = [
-            "autofill-profile",
-            "autofill-footer",
-            "autofill-clear-button",
-            "autofill-insecureWarning",
+            "autofill",
+            "action",
+            "status",
             "generatedPassword",
+            "generic",
+            "importableLearnMore",
             "importableLogins",
             "insecureWarning",
             "loginsFooter",
@@ -413,17 +436,22 @@
         if (!reusable) {
           let options = null;
           switch (style) {
-            case "autofill-profile":
-              options = { is: "autocomplete-profile-listitem" };
+            case "autofill":
+              options = { is: "autocomplete-autofill-richlistitem" };
               break;
-            case "autofill-footer":
-              options = { is: "autocomplete-profile-listitem-footer" };
+            case "action":
+              options = { is: "autocomplete-action-richlistitem" };
               break;
-            case "autofill-clear-button":
-              options = { is: "autocomplete-profile-listitem-clear-button" };
+            case "status":
+              options = { is: "autocomplete-status-richlistitem" };
               break;
-            case "autofill-insecureWarning":
-              options = { is: "autocomplete-creditcard-insecure-field" };
+            case "generic":
+              options = { is: "autocomplete-two-line-richlistitem" };
+              break;
+            case "importableLearnMore":
+              options = {
+                is: "autocomplete-importable-learn-more-richlistitem",
+              };
               break;
             case "importableLogins":
               options = { is: "autocomplete-importable-logins-richlistitem" };
@@ -535,6 +563,7 @@
 
     disconnectedCallback() {
       if (this.listEvents) {
+        this.richlistbox.removeEventListener("mousedown", this.listEvents);
         this.richlistbox.removeEventListener("mouseup", this.listEvents);
         this.richlistbox.removeEventListener("mousemove", this.listEvents);
         delete this.listEvents;
@@ -542,7 +571,7 @@
     }
 
     setListeners() {
-      this.addEventListener("popupshowing", event => {
+      this.addEventListener("popupshowing", () => {
         // If normalMaxRows wasn't already set by the input, then set it here
         // so that we restore the correct number when the popup is hidden.
 
@@ -554,14 +583,14 @@
         this.mPopupOpen = true;
       });
 
-      this.addEventListener("popupshown", event => {
+      this.addEventListener("popupshown", () => {
         if (this._adjustHeightOnPopupShown) {
-          delete this._adjustHeightOnPopupShown;
+          this._adjustHeightOnPopupShown = false;
           this.adjustHeight();
         }
       });
 
-      this.addEventListener("popuphiding", event => {
+      this.addEventListener("popuphiding", () => {
         var isListActive = true;
         if (this.selectedIndex == -1) {
           isListActive = false;

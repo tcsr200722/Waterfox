@@ -14,6 +14,7 @@
 #include "nsDeviceContext.h"
 #include "nsLayoutUtils.h"
 #include "TextDrawTarget.h"
+#include "LayerUserData.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -80,42 +81,53 @@ static const Float BOX_BORDER_OPACITY = 0.5;
 
 #ifndef MOZ_GFX_OPTIMIZE_MOBILE
 
-static RefPtr<DrawTarget> gGlyphDrawTarget;
-static RefPtr<SourceSurface> gGlyphMask;
-static RefPtr<SourceSurface> gGlyphAtlas;
-static DeviceColor gGlyphColor;
+class GlyphAtlas {
+ public:
+  GlyphAtlas(RefPtr<SourceSurface>&& aSurface, const DeviceColor& aColor)
+      : mSurface(std::move(aSurface)), mColor(aColor) {}
+  ~GlyphAtlas() = default;
+
+  already_AddRefed<SourceSurface> Surface() const {
+    RefPtr surface = mSurface;
+    return surface.forget();
+  }
+  DeviceColor Color() const { return mColor; }
+
+ private:
+  RefPtr<SourceSurface> mSurface;
+  DeviceColor mColor;
+};
+
+// This is an owning reference that we will manage via exchange() and
+// explicit new/delete operations.
+static std::atomic<GlyphAtlas*> gGlyphAtlas;
 
 /**
  * Generates a new colored mini-font atlas from the mini-font mask.
  */
-static bool MakeGlyphAtlas(const DeviceColor& aColor) {
-  gGlyphAtlas = nullptr;
-  if (!gGlyphDrawTarget) {
-    gGlyphDrawTarget =
-        gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
-            IntSize(MINIFONT_WIDTH * 16, MINIFONT_HEIGHT),
-            SurfaceFormat::B8G8R8A8);
-    if (!gGlyphDrawTarget) {
-      return false;
-    }
+static GlyphAtlas* MakeGlyphAtlas(const DeviceColor& aColor) {
+  RefPtr<DrawTarget> glyphDrawTarget =
+      gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
+          IntSize(MINIFONT_WIDTH * 16, MINIFONT_HEIGHT),
+          SurfaceFormat::B8G8R8A8);
+  if (!glyphDrawTarget) {
+    return nullptr;
   }
-  if (!gGlyphMask) {
-    gGlyphMask = gGlyphDrawTarget->CreateSourceSurfaceFromData(
-        const_cast<uint8_t*>(gMiniFontData),
-        IntSize(MINIFONT_WIDTH * 16, MINIFONT_HEIGHT), MINIFONT_WIDTH * 16,
-        SurfaceFormat::A8);
-    if (!gGlyphMask) {
-      return false;
-    }
+  RefPtr<SourceSurface> glyphMask =
+      glyphDrawTarget->CreateSourceSurfaceFromData(
+          const_cast<uint8_t*>(gMiniFontData),
+          IntSize(MINIFONT_WIDTH * 16, MINIFONT_HEIGHT), MINIFONT_WIDTH * 16,
+          SurfaceFormat::A8);
+  if (!glyphMask) {
+    return nullptr;
   }
-  gGlyphDrawTarget->MaskSurface(ColorPattern(aColor), gGlyphMask, Point(0, 0),
-                                DrawOptions(1.0f, CompositionOp::OP_SOURCE));
-  gGlyphAtlas = gGlyphDrawTarget->Snapshot();
-  if (!gGlyphAtlas) {
-    return false;
+  glyphDrawTarget->MaskSurface(ColorPattern(aColor), glyphMask, Point(0, 0),
+                               DrawOptions(1.0f, CompositionOp::OP_SOURCE));
+  RefPtr<SourceSurface> surface = glyphDrawTarget->Snapshot();
+  if (!surface) {
+    return nullptr;
   }
-  gGlyphColor = aColor;
-  return true;
+  return new GlyphAtlas(std::move(surface), aColor);
 }
 
 /**
@@ -127,20 +139,35 @@ static inline already_AddRefed<SourceSurface> GetGlyphAtlas(
   // Get the opaque color, ignoring any transparency which will be handled
   // later.
   DeviceColor color(aColor.r, aColor.g, aColor.b);
-  if ((gGlyphAtlas && gGlyphColor == color) || MakeGlyphAtlas(color)) {
-    return do_AddRef(gGlyphAtlas);
+
+  // Atomically grab the current GlyphAtlas pointer (if any). Because we
+  // exchange with nullptr here, no other thread will be able to touch the
+  // currAtlas record while we're using it; if they try, they'll just see
+  // the null that we stored.
+  GlyphAtlas* currAtlas = gGlyphAtlas.exchange(nullptr);
+
+  if (currAtlas && currAtlas->Color() == color) {
+    // If its color is right, grab a reference to its surface.
+    RefPtr<SourceSurface> surface = currAtlas->Surface();
+    // Now put the currAtlas record back in the global. If some other thread
+    // has stored an atlas there in the meantime, we just discard it.
+    delete gGlyphAtlas.exchange(currAtlas);
+    return surface.forget();
   }
-  return nullptr;
+
+  // Make a new atlas in the color we want.
+  GlyphAtlas* atlas = MakeGlyphAtlas(color);
+  RefPtr<SourceSurface> surface = atlas ? atlas->Surface() : nullptr;
+
+  // Store the newly-created atlas in the global; release any other.
+  delete gGlyphAtlas.exchange(atlas);
+  return surface.forget();
 }
 
 /**
  * Clear any cached glyph atlas resources.
  */
-static void PurgeGlyphAtlas() {
-  gGlyphAtlas = nullptr;
-  gGlyphDrawTarget = nullptr;
-  gGlyphMask = nullptr;
-}
+static void PurgeGlyphAtlas() { delete gGlyphAtlas.exchange(nullptr); }
 
 // WebRender layer manager user data that will get signaled when the layer
 // manager is destroyed.
@@ -163,6 +190,11 @@ class WRUserData : public layers::LayerUserData,
 
   static UserDataKey sWRUserDataKey;
 };
+
+static void DestroyImageKey(void* aClosure) {
+  auto* key = static_cast<wr::ImageKey*>(aClosure);
+  delete key;
+}
 
 static RefPtr<SourceSurface> gWRGlyphAtlas[8];
 static LinkedList<WRUserData> gWRUsers;
@@ -221,11 +253,10 @@ static void PurgeWRGlyphAtlas() {
     auto* manager = user->mManager;
     for (size_t i = 0; i < 8; i++) {
       if (gWRGlyphAtlas[i]) {
-        uint32_t handle = (uint32_t)(uintptr_t)gWRGlyphAtlas[i]->GetUserData(
-            reinterpret_cast<UserDataKey*>(manager));
-        if (handle) {
-          manager->GetRenderRootStateManager()->AddImageKeyForDiscard(
-              wr::ImageKey{manager->WrBridge()->GetNamespace(), handle});
+        auto* key = static_cast<wr::ImageKey*>(gWRGlyphAtlas[i]->GetUserData(
+            reinterpret_cast<UserDataKey*>(manager)));
+        if (key) {
+          manager->GetRenderRootStateManager()->AddImageKeyForDiscard(*key);
         }
       }
     }
@@ -279,10 +310,12 @@ static already_AddRefed<SourceSurface> GetWRGlyphAtlas(DrawTarget& aDrawTarget,
   }
 
   // The atlas may exist, but an image key may not be assigned for it to
-  // the given layer manager.
+  // the given layer manager, or it may no longer be valid.
   auto* tdt = static_cast<layout::TextDrawTarget*>(&aDrawTarget);
   auto* manager = tdt->WrLayerManager();
-  if (!atlas->GetUserData(reinterpret_cast<UserDataKey*>(manager))) {
+  auto* imageKey = static_cast<wr::ImageKey*>(
+      atlas->GetUserData(reinterpret_cast<UserDataKey*>(manager)));
+  if (!imageKey || !manager->WrBridge()->MatchesNamespace(*imageKey)) {
     // No image key, so we need to map the atlas' data for transfer to WR.
     RefPtr<DataSourceSurface> dataSurface = atlas->GetDataSurface();
     if (!dataSurface) {
@@ -300,7 +333,7 @@ static already_AddRefed<SourceSurface> GetWRGlyphAtlas(DrawTarget& aDrawTarget,
     }
     // Assign the image key to the atlas.
     atlas->AddUserData(reinterpret_cast<UserDataKey*>(manager),
-                       (void*)(uintptr_t)result.value().mHandle, nullptr);
+                       new wr::ImageKey(result.ref()), DestroyImageKey);
     // Create a user data notification for when the layer manager is
     // destroyed so we can clean up any assigned image keys.
     WRUserData::Assign(manager);
@@ -318,9 +351,9 @@ static void DrawHexChar(uint32_t aDigit, Float aLeft, Float aTop,
     // manager for referencing the image.
     auto* tdt = static_cast<layout::TextDrawTarget*>(&aDrawTarget);
     auto* manager = tdt->WrLayerManager();
-    wr::ImageKey key = {manager->WrBridge()->GetNamespace(),
-                        (uint32_t)(uintptr_t)aAtlas->GetUserData(
-                            reinterpret_cast<UserDataKey*>(manager))};
+    auto* key = static_cast<wr::ImageKey*>(
+        aAtlas->GetUserData(reinterpret_cast<UserDataKey*>(manager)));
+    MOZ_ASSERT(key);
     // Transform the bounds of the atlas into the given orientation, and then
     // also transform a small clip rect which will be used to select the given
     // digit from the atlas.
@@ -341,7 +374,7 @@ static void DrawHexChar(uint32_t aDigit, Float aLeft, Float aTop,
       dest.height = fabs(dest.height);
     }
     // Finally, push the colored image with point filtering.
-    tdt->PushImage(key, bounds, dest, wr::ImageRendering::Pixelated,
+    tdt->PushImage(*key, bounds, dest, wr::ImageRendering::Pixelated,
                    wr::ToColorF(aColor));
   } else {
     // For the normal case, just draw the given digit from the atlas. Point
@@ -371,7 +404,6 @@ void gfxFontMissingGlyphs::Shutdown() { Purge(); }
 void gfxFontMissingGlyphs::DrawMissingGlyph(uint32_t aChar, const Rect& aRect,
                                             DrawTarget& aDrawTarget,
                                             const Pattern& aPattern,
-                                            uint32_t aAppUnitsPerDevPixel,
                                             const Matrix* aMat) {
   Rect rect(aRect);
   // If there is an orientation transform, reorient the bounding rect.
@@ -419,10 +451,19 @@ void gfxFontMissingGlyphs::DrawMissingGlyph(uint32_t aChar, const Rect& aRect,
   Point center = rect.Center();
   Float halfGap = HEX_CHAR_GAP / 2.f;
   Float top = -(MINIFONT_HEIGHT + halfGap);
+
+  // Figure out a scaling factor that will fit the glyphs in the target rect
+  // both horizontally and vertically.
+  Float width = HEX_CHAR_GAP + MINIFONT_WIDTH + HEX_CHAR_GAP + MINIFONT_WIDTH +
+                ((aChar < 0x10000) ? 0 : HEX_CHAR_GAP + MINIFONT_WIDTH) +
+                HEX_CHAR_GAP;
+  Float height = HEX_CHAR_GAP + MINIFONT_HEIGHT + HEX_CHAR_GAP +
+                 MINIFONT_HEIGHT + HEX_CHAR_GAP;
+  Float scaling = std::min(rect.Height() / height, rect.Width() / width);
+
   // We always want integer scaling, otherwise the "bitmap" glyphs will look
-  // even uglier than usual when zoomed
-  int32_t devPixelsPerCSSPx =
-      std::max<int32_t>(1, AppUnitsPerCSSPixel() / aAppUnitsPerDevPixel);
+  // even uglier than usual when scaled to the target.
+  int32_t devPixelsPerCSSPx = std::max<int32_t>(1, std::floor(scaling));
 
   Matrix tempMat;
   if (aMat) {

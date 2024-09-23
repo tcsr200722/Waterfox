@@ -28,8 +28,6 @@ class nsResProtocolHandler final
   nsResProtocolHandler()
       : mozilla::net::SubstitutingProtocolHandler(
             "resource",
-            URI_STD | URI_IS_UI_RESOURCE | URI_IS_LOCAL_RESOURCE |
-                URI_IS_POTENTIALLY_TRUSTWORTHY,
             /* aEnforceFileOrJar = */ false) {}
 
   NS_IMETHOD SetSubstitution(const nsACString& aRoot,
@@ -50,19 +48,15 @@ class nsResProtocolHandler final
   }
 
  protected:
+  [[nodiscard]] uint32_t GetJARFlags(const nsACString& aRoot) override;
   [[nodiscard]] nsresult GetSubstitutionInternal(const nsACString& aRoot,
-                                                 nsIURI** aResult,
-                                                 uint32_t* aFlags) override;
+                                                 nsIURI** aResult) override;
   virtual ~nsResProtocolHandler() = default;
 
   [[nodiscard]] bool ResolveSpecialCases(const nsACString& aHost,
                                          const nsACString& aPath,
                                          const nsACString& aPathname,
                                          nsACString& aResult) override;
-
-  [[nodiscard]] virtual bool MustResolveJAR(const nsACString& aRoot) override {
-    return aRoot.EqualsLiteral("android");
-  }
 
  private:
   [[nodiscard]] nsresult Init();

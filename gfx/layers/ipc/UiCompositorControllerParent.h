@@ -7,6 +7,7 @@
 #define include_gfx_ipc_UiCompositorControllerParent_h
 
 #include "mozilla/layers/PUiCompositorControllerParent.h"
+#include "mozilla/layers/APZUtils.h"
 #include "mozilla/ipc/Shmem.h"
 #include "mozilla/RefPtr.h"
 
@@ -22,7 +23,7 @@ class UiCompositorControllerParent final
   friend class UiCompositorControllerChild;
 
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(UiCompositorControllerParent)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(UiCompositorControllerParent, final)
 
   static RefPtr<UiCompositorControllerParent> GetFromRootLayerTreeId(
       const LayersId& aRootLayerTreeId);
@@ -32,11 +33,12 @@ class UiCompositorControllerParent final
 
   // PUiCompositorControllerParent functions
   mozilla::ipc::IPCResult RecvPause();
-  mozilla::ipc::IPCResult RecvResume();
+  mozilla::ipc::IPCResult RecvResume(bool* aOutResumed);
   mozilla::ipc::IPCResult RecvResumeAndResize(const int32_t& aX,
                                               const int32_t& aY,
                                               const int32_t& aHeight,
-                                              const int32_t& aWidth);
+                                              const int32_t& aWidth,
+                                              bool* aOutResumed);
   mozilla::ipc::IPCResult RecvInvalidateAndRender();
   mozilla::ipc::IPCResult RecvMaxToolbarHeight(const int32_t& aHeight);
   mozilla::ipc::IPCResult RecvFixedBottomOffset(const int32_t& aOffset);
@@ -45,7 +47,6 @@ class UiCompositorControllerParent final
   mozilla::ipc::IPCResult RecvEnableLayerUpdateNotifications(
       const bool& aEnable);
   void ActorDestroy(ActorDestroyReason aWhy) override;
-  void ActorDealloc() override;
 
   // Class specific functions
   void ToolbarAnimatorMessageFromCompositor(int32_t aMessage);
@@ -55,7 +56,7 @@ class UiCompositorControllerParent final
   // necessary.
   void NotifyLayersUpdated();
   void NotifyFirstPaint();
-  void NotifyUpdateScreenMetrics(const FrameMetrics& aMetrics);
+  void NotifyUpdateScreenMetrics(const GeckoViewMetrics& aMetrics);
 
  private:
   explicit UiCompositorControllerParent(const LayersId& aRootLayerTreeId);

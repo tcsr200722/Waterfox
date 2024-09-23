@@ -7,47 +7,46 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const Types = require("devtools/client/inspector/compatibility/types");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
+const Localized = createFactory(FluentReact.Localized);
+
+const Types = require("resource://devtools/client/inspector/compatibility/types.js");
 
 const IssueList = createFactory(
-  require("devtools/client/inspector/compatibility/components/IssueList")
+  require("resource://devtools/client/inspector/compatibility/components/IssueList.js")
 );
 
 class IssuePane extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       issues: PropTypes.arrayOf(PropTypes.shape(Types.issue)).isRequired,
-      hideBoxModelHighlighter: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
-      showBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
   _renderNoIssues() {
-    return dom.p(
-      { className: "devtools-sidepanel-no-result" },
-      "No compatibility issues found."
+    return Localized(
+      { id: "compatibility-no-issues-found" },
+      dom.p(
+        { className: "devtools-sidepanel-no-result" },
+        "compatibility-no-issues-found"
+      )
     );
   }
 
   render() {
-    const {
-      issues,
-      hideBoxModelHighlighter,
-      setSelectedNode,
-      showBoxModelHighlighterForNode,
-    } = this.props;
+    const { dispatch, issues, setSelectedNode } = this.props;
 
     return issues.length
       ? IssueList({
+          dispatch,
           issues,
-          hideBoxModelHighlighter,
           setSelectedNode,
-          showBoxModelHighlighterForNode,
         })
       : this._renderNoIssues();
   }

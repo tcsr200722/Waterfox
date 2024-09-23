@@ -11,13 +11,14 @@
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Unused.h"
+#include "mozilla/dom/Document.h"
 
 #include "nsContentUtils.h"
+#include "nsIObserverService.h"
 #include "nsISupportsPrimitives.h"
 #include "nsThreadUtils.h"
 #include "nsHashPropertyBag.h"
 #include "nsComponentManagerUtils.h"
-#include "nsGlobalWindow.h"
 #include "nsPIDOMWindow.h"
 #include "nsServiceManagerUtils.h"
 
@@ -82,8 +83,7 @@ class AudioPlaybackRunnable final : public Runnable {
 
 }  // anonymous namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 const char* SuspendTypeToStr(const nsSuspendedTypes& aSuspend) {
   MOZ_ASSERT(aSuspend == nsISuspendedTypes::NONE_SUSPENDED ||
@@ -266,10 +266,9 @@ AudioPlaybackConfig AudioChannelService::GetMediaConfig(
       config.mCapturedAudio = winData->mIsAudioCaptured;
     }
 
-    config.mVolume *= window->GetAudioVolume();
     config.mMuted = config.mMuted || window->GetAudioMuted();
-    if (window->GetMediaSuspend() != nsISuspendedTypes::NONE_SUSPENDED) {
-      config.mSuspend = window->GetMediaSuspend();
+    if (window->ShouldDelayMediaFromStart()) {
+      config.mSuspend = nsISuspendedTypes::SUSPENDED_BLOCK;
     }
 
     nsCOMPtr<nsPIDOMWindowOuter> win =
@@ -321,20 +320,17 @@ AudioChannelService::Observe(nsISupports* aSubject, const char* aTopic,
       while (iter.HasMore()) {
         auto& next = iter.GetNext();
         if (next->mWindowID == outerID) {
-          uint32_t pos = mWindows.IndexOf(next);
           winData = std::move(next);
-          mWindows.RemoveElementAt(pos);
+          iter.Remove();
           break;
         }
       }
     }
 
     if (winData) {
-      nsTObserverArray<AudioChannelAgent*>::ForwardIterator iter(
-          winData->mAgents);
-      while (iter.HasMore()) {
-        iter.GetNext()->WindowVolumeChanged(winData->mConfig.mVolume,
-                                            winData->mConfig.mMuted);
+      for (AudioChannelAgent* agent : winData->mAgents.ForwardRange()) {
+        agent->WindowVolumeChanged(winData->mConfig.mVolume,
+                                   winData->mConfig.mMuted);
       }
     }
   }
@@ -357,9 +353,8 @@ void AudioChannelService::RefreshAgents(
     return;
   }
 
-  nsTObserverArray<AudioChannelAgent*>::ForwardIterator iter(winData->mAgents);
-  while (iter.HasMore()) {
-    aFunc(iter.GetNext());
+  for (AudioChannelAgent* agent : winData->mAgents.ForwardRange()) {
+    aFunc(agent);
   }
 }
 
@@ -406,10 +401,8 @@ void AudioChannelService::SetWindowAudioCaptured(nsPIDOMWindowOuter* aWindow,
 
   if (aCapture != winData->mIsAudioCaptured) {
     winData->mIsAudioCaptured = aCapture;
-    nsTObserverArray<AudioChannelAgent*>::ForwardIterator iter(
-        winData->mAgents);
-    while (iter.HasMore()) {
-      iter.GetNext()->WindowAudioCaptureChanged(aInnerWindowID, aCapture);
+    for (AudioChannelAgent* agent : winData->mAgents.ForwardRange()) {
+      agent->WindowAudioCaptureChanged(aInnerWindowID, aCapture);
     }
   }
 }
@@ -430,16 +423,11 @@ AudioChannelService::GetOrCreateWindowData(nsPIDOMWindowOuter* aWindow) {
 
 AudioChannelService::AudioChannelWindow* AudioChannelService::GetWindowData(
     uint64_t aWindowID) const {
-  nsTObserverArray<UniquePtr<AudioChannelWindow>>::ForwardIterator iter(
-      mWindows);
-  while (iter.HasMore()) {
-    AudioChannelWindow* next = iter.GetNext().get();
-    if (next->mWindowID == aWindowID) {
-      return next;
-    }
-  }
-
-  return nullptr;
+  const auto [begin, end] = mWindows.NonObservingRange();
+  const auto foundIt = std::find_if(begin, end, [aWindowID](const auto& next) {
+    return next->mWindowID == aWindowID;
+  });
+  return foundIt != end ? foundIt->get() : nullptr;
 }
 
 bool AudioChannelService::IsWindowActive(nsPIDOMWindowOuter* aWindow) {
@@ -458,7 +446,7 @@ bool AudioChannelService::IsWindowActive(nsPIDOMWindowOuter* aWindow) {
   return !winData->mAudibleAgents.IsEmpty();
 }
 
-void AudioChannelService::NotifyMediaResumedFromBlock(
+void AudioChannelService::NotifyResumingDelayedMedia(
     nsPIDOMWindowOuter* aWindow) {
   MOZ_ASSERT(aWindow);
 
@@ -473,6 +461,7 @@ void AudioChannelService::NotifyMediaResumedFromBlock(
   }
 
   winData->NotifyMediaBlockStop(aWindow);
+  RefreshAgentsSuspend(aWindow, nsISuspendedTypes::NONE_SUSPENDED);
 }
 
 void AudioChannelService::AudioChannelWindow::AppendAgent(
@@ -611,8 +600,7 @@ void AudioChannelService::AudioChannelWindow::MaybeNotifyMediaBlockStart(
     return;
   }
 
-  if (window->GetMediaSuspend() != nsISuspendedTypes::SUSPENDED_BLOCK ||
-      !doc->Hidden()) {
+  if (!window->ShouldDelayMediaFromStart() || !doc->Hidden()) {
     return;
   }
 
@@ -634,5 +622,4 @@ void AudioChannelService::AudioChannelWindow::MaybeNotifyMediaBlockStart(
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

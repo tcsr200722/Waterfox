@@ -4,7 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txMozillaTextOutput.h"
-#include "nsContentCID.h"
 #include "nsIContent.h"
 #include "mozilla/dom/Document.h"
 #include "nsIDocumentTransformer.h"
@@ -21,8 +20,11 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-txMozillaTextOutput::txMozillaTextOutput(nsITransformObserver* aObserver)
-    : mObserver(do_GetWeakReference(aObserver)), mCreatedDocument(false) {
+txMozillaTextOutput::txMozillaTextOutput(Document* aSourceDocument,
+                                         nsITransformObserver* aObserver)
+    : mSourceDocument(aSourceDocument),
+      mObserver(do_GetWeakReference(aObserver)),
+      mCreatedDocument(false) {
   MOZ_COUNT_CTOR(txMozillaTextOutput);
 }
 
@@ -65,9 +67,12 @@ nsresult txMozillaTextOutput::endDocument(nsresult aResult) {
   RefPtr<nsTextNode> text = new (mDocument->NodeInfoManager())
       nsTextNode(mDocument->NodeInfoManager());
 
+  ErrorResult rv;
   text->SetText(mText, false);
-  nsresult rv = mTextParent->AppendChildTo(text, true);
-  NS_ENSURE_SUCCESS(rv, rv);
+  mTextParent->AppendChildTo(text, true, rv);
+  if (rv.Failed()) {
+    return rv.StealNSResult();
+  }
 
   // This should really be handled by Document::EndLoad
   if (mCreatedDocument) {
@@ -83,7 +88,7 @@ nsresult txMozillaTextOutput::endDocument(nsresult aResult) {
   if (NS_SUCCEEDED(aResult)) {
     nsCOMPtr<nsITransformObserver> observer = do_QueryReferent(mObserver);
     if (observer) {
-      observer->OnTransformDone(aResult, mDocument);
+      observer->OnTransformDone(mSourceDocument, aResult, mDocument);
     }
   }
 
@@ -99,8 +104,7 @@ nsresult txMozillaTextOutput::processingInstruction(const nsString& aTarget,
 
 nsresult txMozillaTextOutput::startDocument() { return NS_OK; }
 
-nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
-                                                   bool aLoadedAsData) {
+nsresult txMozillaTextOutput::createResultDocument(bool aLoadedAsData) {
   /*
    * Create an XHTML document to hold the text.
    *
@@ -118,7 +122,8 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
    */
 
   // Create the document
-  nsresult rv = NS_NewXMLDocument(getter_AddRefs(mDocument), aLoadedAsData);
+  nsresult rv = NS_NewXMLDocument(getter_AddRefs(mDocument), nullptr, nullptr,
+                                  aLoadedAsData);
   NS_ENSURE_SUCCESS(rv, rv);
   mCreatedDocument = true;
   // This should really be handled by Document::BeginLoad
@@ -128,13 +133,13 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
   mDocument->SetReadyStateInternal(Document::READYSTATE_LOADING);
   bool hasHadScriptObject = false;
   nsIScriptGlobalObject* sgo =
-      aSourceDocument->GetScriptHandlingObject(hasHadScriptObject);
+      mSourceDocument->GetScriptHandlingObject(hasHadScriptObject);
   NS_ENSURE_STATE(sgo || !hasHadScriptObject);
 
   NS_ASSERTION(mDocument, "Need document");
 
   // Reset and set up document
-  URIUtils::ResetWithSource(mDocument, aSourceDocument);
+  URIUtils::ResetWithSource(mDocument, mSourceDocument);
   // Only do this after resetting the document to ensure we have the
   // correct principal.
   mDocument->SetScriptHandlingObject(sgo);
@@ -151,7 +156,7 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
   // Notify the contentsink that the document is created
   nsCOMPtr<nsITransformObserver> observer = do_QueryReferent(mObserver);
   if (observer) {
-    rv = observer->OnDocumentCreated(mDocument);
+    rv = observer->OnDocumentCreated(mSourceDocument, mDocument);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -161,16 +166,19 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
   // observer) we only create a transformiix:result root element.
   if (!observer) {
     int32_t namespaceID;
-    rv = nsContentUtils::NameSpaceManager()->RegisterNameSpace(
-        NS_LITERAL_STRING(kTXNameSpaceURI), namespaceID);
+    rv = nsNameSpaceManager::GetInstance()->RegisterNameSpace(
+        nsLiteralString(kTXNameSpaceURI), namespaceID);
     NS_ENSURE_SUCCESS(rv, rv);
 
     mTextParent =
         mDocument->CreateElem(nsDependentAtomString(nsGkAtoms::result),
                               nsGkAtoms::transformiix, namespaceID);
 
-    rv = mDocument->AppendChildTo(mTextParent, true);
-    NS_ENSURE_SUCCESS(rv, rv);
+    ErrorResult error;
+    mDocument->AppendChildTo(mTextParent, true, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
   } else {
     RefPtr<Element> html, head, body;
     rv = createXHTMLElement(nsGkAtoms::html, getter_AddRefs(html));
@@ -179,14 +187,19 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
     rv = createXHTMLElement(nsGkAtoms::head, getter_AddRefs(head));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = html->AppendChildTo(head, false);
-    NS_ENSURE_SUCCESS(rv, rv);
+    ErrorResult error;
+    html->AppendChildTo(head, false, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
 
     rv = createXHTMLElement(nsGkAtoms::body, getter_AddRefs(body));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = html->AppendChildTo(body, false);
-    NS_ENSURE_SUCCESS(rv, rv);
+    html->AppendChildTo(body, false, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
 
     {
       RefPtr<Element> textParent;
@@ -195,16 +208,19 @@ nsresult txMozillaTextOutput::createResultDocument(Document* aSourceDocument,
       mTextParent = std::move(textParent);
     }
 
-    rv = mTextParent->AsElement()->SetAttr(
-        kNameSpaceID_None, nsGkAtoms::id,
-        NS_LITERAL_STRING("transformiixResult"), false);
+    rv = mTextParent->AsElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::id,
+                                           u"transformiixResult"_ns, false);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = body->AppendChildTo(mTextParent, false);
-    NS_ENSURE_SUCCESS(rv, rv);
+    body->AppendChildTo(mTextParent, false, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
 
-    rv = mDocument->AppendChildTo(html, true);
-    NS_ENSURE_SUCCESS(rv, rv);
+    mDocument->AppendChildTo(html, true, error);
+    if (error.Failed()) {
+      return error.StealNSResult();
+    }
   }
 
   return NS_OK;

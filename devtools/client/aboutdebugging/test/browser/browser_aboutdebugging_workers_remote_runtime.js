@@ -34,7 +34,7 @@ const EMPTY_WORKERS_RESPONSE = {
 };
 
 // Test that workers are displayed and updated for remote runtimes when expected.
-add_task(async function() {
+add_task(async function () {
   const mocks = new Mocks();
 
   const { document, tab, window } = await openAboutDebugging({
@@ -106,7 +106,7 @@ async function testWorkerOnMockedRemoteClient(
     [propertyName]: [
       {
         name: workerName,
-        workerTargetFront: {
+        workerDescriptorFront: {
           actorID: workerName,
         },
       },
@@ -136,12 +136,9 @@ async function testWorkerOnMockedRemoteClient(
   // when the new tab was processed.
   info("Wait until the tab target for 'http://some.random/url.com' appears");
   const testTab = {
-    retrieveAsyncFormData: () => {},
+    retrieveFavicon: () => {},
     outerWindowID: 0,
-    traits: {
-      getFavicon: true,
-      hasTabInfo: true,
-    },
+    traits: {},
     url: "http://some.random/url.com",
   };
   remoteClient.listTabs = () => [testTab];

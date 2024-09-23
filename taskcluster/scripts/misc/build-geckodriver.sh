@@ -9,10 +9,6 @@ export TARGET="$1"
 
 cd $GECKO_PATH
 
-if [ -n "$TOOLTOOL_MANIFEST" ]; then
-  . taskcluster/scripts/misc/tooltool-download.sh
-fi
-
 EXE=
 COMPRESS_EXT=gz
 
@@ -20,34 +16,33 @@ case "$TARGET" in
 *windows-msvc)
   EXE=.exe
   COMPRESS_EXT=zip
-  if [[ $TARGET == "i686-pc-windows-msvc" ]]; then
-    . $GECKO_PATH/taskcluster/scripts/misc/vs-setup32.sh
-    export CARGO_TARGET_I686_PC_WINDOWS_MSVC_LINKER=$MOZ_FETCHES_DIR/clang/bin/lld-link
-  else
-    . $GECKO_PATH/taskcluster/scripts/misc/vs-setup.sh
-    export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$MOZ_FETCHES_DIR/clang/bin/lld-link
-  fi
-  ( IFS=\;
-    for d in $LIB; do
-      (cd "$d"; rename y/A-Z/a-z/ *)
-    done
-  )
+  . $GECKO_PATH/taskcluster/scripts/misc/vs-setup.sh
   # Bug 1584530: don't require the Microsoft MSVC runtime to be installed.
-  export RUSTFLAGS="-Ctarget-feature=+crt-static"
+  RUSTFLAGS="-Ctarget-feature=+crt-static -C linker=$MOZ_FETCHES_DIR/clang/bin/lld-link"
+  export TARGET_CFLAGS="-Xclang -ivfsoverlay -Xclang $MOZ_FETCHES_DIR/vs/overlay.yaml"
+  export TARGET_CXXFLAGS="-Xclang -ivfsoverlay -Xclang $MOZ_FETCHES_DIR/vs/overlay.yaml"
   ;;
 # OSX cross builds are a bit harder
-x86_64-apple-darwin)
-  export PATH="$MOZ_FETCHES_DIR/llvm-dsymutil/bin:$PATH"
-  export PATH="$MOZ_FETCHES_DIR/cctools/bin:$PATH"
-  export RUSTFLAGS="-C linker=$GECKO_PATH/taskcluster/scripts/misc/osx-cross-linker"
+*-apple-darwin)
+  export PATH="$MOZ_FETCHES_DIR/clang/bin:$PATH"
+  RUSTFLAGS="-C linker=$GECKO_PATH/taskcluster/scripts/misc/osx-cross-linker"
+  if test "$TARGET" = "aarch64-apple-darwin"; then
+      export MACOSX_DEPLOYMENT_TARGET=11.0
+  else
+      export MACOSX_DEPLOYMENT_TARGET=10.12
+  fi
+  ;;
+aarch64-unknown-linux-musl)
+  RUSTFLAGS="-C linker=$MOZ_FETCHES_DIR/clang/bin/clang -C link-arg=--target=$TARGET -C link-arg=-fuse-ld=lld"
   ;;
 esac
 
-export PATH="$(cd $MOZ_FETCHES_DIR && pwd)/rustc/bin:$PATH"
+export PATH="$MOZ_FETCHES_DIR/rustc/bin:$PATH"
+export RUSTFLAGS="-Dwarnings $RUSTFLAGS"
 
 cd $GECKO_PATH/testing/geckodriver
 
-cp $GECKO_PATH/.cargo/config.in $GECKO_PATH/.cargo/config
+cp $GECKO_PATH/.cargo/config.toml.in $GECKO_PATH/.cargo/config.toml
 
 cargo build --frozen --verbose --release --target "$TARGET"
 

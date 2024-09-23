@@ -4,21 +4,25 @@
 
 "use strict";
 
-const { Component } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  Component,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 const {
   getUnicodeUrl,
   getUnicodeUrlPath,
   getUnicodeHostname,
-} = require("devtools/client/shared/unicode-url");
+} = require("resource://devtools/client/shared/unicode-url.js");
 const {
   getSourceNames,
   parseURL,
   getSourceMappedFile,
-} = require("devtools/client/shared/source-utils");
-const { LocalizationHelper } = require("devtools/shared/l10n");
-const { MESSAGE_SOURCE } = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/shared/source-utils.js");
+const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
+const {
+  MESSAGE_SOURCE,
+} = require("resource://devtools/client/webconsole/constants.js");
 
 const l10n = new LocalizationHelper(
   "devtools/client/locales/components.properties"
@@ -27,12 +31,44 @@ const webl10n = new LocalizationHelper(
   "devtools/client/locales/webconsole.properties"
 );
 
+function savedFrameToLocation(frame) {
+  const { source: url, line, column, sourceId } = frame;
+  return {
+    url,
+    line,
+    column,
+    // The sourceId will be a string if it's a source actor ID, otherwise
+    // it is either a Spidermonkey-internal ID from a SavedFrame or missing,
+    // and in either case we can't use the ID for anything useful.
+    id: typeof sourceId === "string" ? sourceId : null,
+  };
+}
+
+/**
+ * Get the tooltip message.
+ * @param {string|undefined} messageSource
+ * @param {string} url
+ * @returns {string}
+ */
+function getTooltipMessage(messageSource, url) {
+  if (messageSource && messageSource === MESSAGE_SOURCE.CSS) {
+    return l10n.getFormatStr("frame.viewsourceinstyleeditor", url);
+  }
+  return l10n.getFormatStr("frame.viewsourceindebugger", url);
+}
+
 class Frame extends Component {
   static get propTypes() {
     return {
+      // Optional className that will be put into the element.
+      className: PropTypes.string,
       // SavedFrame, or an object containing all the required properties.
       frame: PropTypes.shape({
         functionDisplayName: PropTypes.string,
+        // This could be a SavedFrame with a numeric sourceId, or it could
+        // be a SavedFrame-like client-side object, in which case the
+        // "sourceId" will be a source actor ID.
+        sourceId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
         source: PropTypes.string.isRequired,
         line: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
         column: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
@@ -50,7 +86,7 @@ class Frame extends Component {
       // Option to display a full source instead of just the filename.
       showFullSourceUrl: PropTypes.bool,
       // Service to enable the source map feature for console.
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       // The source of the message
       messageSource: PropTypes.string,
     };
@@ -68,90 +104,84 @@ class Frame extends Component {
 
   constructor(props) {
     super(props);
+    this.state = {
+      originalLocation: null,
+    };
     this._locationChanged = this._locationChanged.bind(this);
-    this.getSourceForClick = this.getSourceForClick.bind(this);
   }
 
-  componentWillMount() {
-    if (this.props.sourceMapService) {
-      const { source, line, column } = this.props.frame;
-      this.unsubscribeSourceMapService = this.props.sourceMapService.subscribe(
-        source,
-        line,
-        column,
-        this._locationChanged
-      );
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
+    if (this.props.sourceMapURLService) {
+      const location = savedFrameToLocation(this.props.frame);
+      // Many things that make use of this component either:
+      // a) Pass in no sourceId because they have no way to know.
+      // b) Pass in no sourceId because the actor wasn't created when the
+      //    server sent its response.
+      //
+      // and due to that, we need to use subscribeByLocation in order to
+      // handle both cases with an without an ID.
+      this.unsubscribeSourceMapURLService =
+        this.props.sourceMapURLService.subscribeByLocation(
+          location,
+          this._locationChanged
+        );
     }
   }
 
   componentWillUnmount() {
-    if (typeof this.unsubscribeSourceMapService === "function") {
-      this.unsubscribeSourceMapService();
+    if (this.unsubscribeSourceMapURLService) {
+      this.unsubscribeSourceMapURLService();
     }
   }
 
-  _locationChanged(isSourceMapped, url, line, column) {
-    const newState = {
-      isSourceMapped,
-    };
-    if (isSourceMapped) {
-      newState.frame = {
-        source: url,
-        line,
-        column,
-        functionDisplayName: this.props.frame.functionDisplayName,
-      };
-    }
-
-    this.setState(newState);
+  _locationChanged(originalLocation) {
+    this.setState({ originalLocation });
   }
 
   /**
-   * Utility method to convert the Frame object model to the
-   * object model required by the onClick callback.
-   * @param Frame frame
-   * @returns {{url: *, line: *, column: *, functionDisplayName: *}}
+   * Get current location's source, line, and column.
+   * @returns {{source: string, line: number|null, column: number|null}}
    */
-  getSourceForClick(frame) {
-    const { source, line, column, sourceId } = frame;
+  #getCurrentLocationInfo = () => {
+    const { frame } = this.props;
+    const { originalLocation } = this.state;
+
+    const generatedLocation = savedFrameToLocation(frame);
+    const currentLocation = originalLocation || generatedLocation;
+
+    const source = currentLocation.url || "";
+    const line =
+      currentLocation.line != void 0 ? Number(currentLocation.line) : null;
+    const column =
+      currentLocation.column != void 0 ? Number(currentLocation.column) : null;
     return {
-      url: source,
+      source,
       line,
       column,
-      functionDisplayName: this.props.frame.functionDisplayName,
-      sourceId,
     };
-  }
+  };
 
-  // eslint-disable-next-line complexity
-  render() {
-    let frame, isSourceMapped;
-    const {
-      onClick,
-      showFunctionName,
-      showAnonymousFunctionName,
-      showHost,
-      showEmptyPathAsHost,
-      showFullSourceUrl,
-      messageSource,
-    } = this.props;
+  /**
+   * Get unicode hostname of the source link.
+   * @returns {string}
+   */
+  #getCurrentLocationUnicodeHostName = () => {
+    const { source } = this.#getCurrentLocationInfo();
 
-    if (this.state && this.state.isSourceMapped && this.state.frame) {
-      frame = this.state.frame;
-      isSourceMapped = this.state.isSourceMapped;
-    } else {
-      frame = this.props.frame;
-    }
+    const { host } = getSourceNames(source);
+    return host ? getUnicodeHostname(host) : "";
+  };
 
-    const source = frame.source || "";
-    const sourceId = frame.sourceId;
-    const line = frame.line != void 0 ? Number(frame.line) : null;
-    const column = frame.column != void 0 ? Number(frame.column) : null;
+  /**
+   * Check if the current location is linkable.
+   * @returns {boolean}
+   */
+  #isCurrentLocationLinkable = () => {
+    const { frame } = this.props;
+    const { originalLocation } = this.state;
 
-    const { short, long, host } = getSourceNames(source);
-    const unicodeShort = getUnicodeUrlPath(short);
-    const unicodeLong = getUnicodeUrl(long);
-    const unicodeHost = host ? getUnicodeHostname(host) : "";
+    const generatedLocation = savedFrameToLocation(frame);
 
     // Reparse the URL to determine if we should link this; `getSourceNames`
     // has already cached this indirectly. We don't want to attempt to
@@ -159,77 +189,104 @@ class Frame extends Component {
     // Source mapped sources might not necessary linkable, but they
     // are still valid in the debugger.
     // If we have a source ID then we can show the source in the debugger.
-    const isLinkable = !!parseURL(source) || isSourceMapped || sourceId;
-    const elements = [];
-    const sourceElements = [];
-    let sourceEl;
-    let tooltip = unicodeLong;
-
-    // Exclude all falsy values, including `0`, as line numbers start with 1.
-    if (line) {
-      tooltip += `:${line}`;
-      // Intentionally exclude 0
-      if (column) {
-        tooltip += `:${column}`;
-      }
-    }
-
-    const attributes = {
-      "data-url": long,
-      className: "frame-link",
-    };
-
-    if (showFunctionName) {
-      let functionDisplayName = frame.functionDisplayName;
-      if (!functionDisplayName && showAnonymousFunctionName) {
-        functionDisplayName = webl10n.getStr("stacktrace.anonymousFunction");
-      }
-
-      if (functionDisplayName) {
-        elements.push(
-          dom.span(
-            {
-              key: "function-display-name",
-              className: "frame-link-function-display-name",
-            },
-            functionDisplayName
-          ),
-          " "
-        );
-      }
-    }
-
-    let displaySource = showFullSourceUrl ? unicodeLong : unicodeShort;
-    if (isSourceMapped) {
-      displaySource = getSourceMappedFile(displaySource);
-    } else if (
-      showEmptyPathAsHost &&
-      (displaySource === "" || displaySource === "/")
-    ) {
-      displaySource = host;
-    }
-
-    sourceElements.push(
-      dom.span(
-        {
-          key: "filename",
-          className: "frame-link-filename",
-        },
-        displaySource
-      )
+    return !!(
+      originalLocation ||
+      generatedLocation.id ||
+      !!parseURL(generatedLocation.url)
     );
+  };
+
+  /**
+   * Get the props of the top element.
+   */
+  #getTopElementProps = () => {
+    const { className } = this.props;
+
+    const { source, line, column } = this.#getCurrentLocationInfo();
+    const { long } = getSourceNames(source);
+    const props = {
+      "data-url": long,
+      className: "frame-link" + (className ? ` ${className}` : ""),
+    };
 
     // If we have a line number > 0.
     if (line) {
-      let lineInfo = `:${line}`;
       // Add `data-line` attribute for testing
-      attributes["data-line"] = line;
+      props["data-line"] = line;
+
+      // Intentionally exclude 0
+      if (column) {
+        // Add `data-column` attribute for testing
+        props["data-column"] = column;
+      }
+    }
+    return props;
+  };
+
+  /**
+   * Get the props of the source element.
+   */
+  #getSourceElementsProps = () => {
+    const { frame, onClick, messageSource } = this.props;
+
+    const generatedLocation = savedFrameToLocation(frame);
+    const { source, line, column } = this.#getCurrentLocationInfo();
+    const { long } = getSourceNames(source);
+    let url = getUnicodeUrl(long);
+
+    // Exclude all falsy values, including `0`, as line numbers start with 1.
+    if (line) {
+      url += `:${line}`;
+      // Intentionally exclude 0
+      if (column) {
+        url += `:${column}`;
+      }
+    }
+
+    const isLinkable = this.#isCurrentLocationLinkable();
+
+    // Inner el is useful for achieving ellipsis on the left and correct LTR/RTL
+    // ordering. See CSS styles for frame-link-source-[inner] and bug 1290056.
+    const tooltipMessage = getTooltipMessage(messageSource, url);
+
+    const sourceElConfig = {
+      key: "source",
+      className: "frame-link-source",
+      title: isLinkable ? tooltipMessage : url,
+    };
+
+    if (isLinkable) {
+      return {
+        ...sourceElConfig,
+        onClick: e => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          onClick(generatedLocation);
+        },
+        href: source,
+        draggable: false,
+      };
+    }
+
+    return sourceElConfig;
+  };
+
+  /**
+   * Render the source elements.
+   * @returns {React.ReactNode}
+   */
+  #renderSourceElements = () => {
+    const { line, column } = this.#getCurrentLocationInfo();
+
+    const sourceElements = [this.#renderDisplaySource()];
+
+    if (line) {
+      let lineInfo = `:${line}`;
 
       // Intentionally exclude 0
       if (column) {
         lineInfo += `:${column}`;
-        // Add `data-column` attribute for testing
-        attributes["data-column"] = column;
       }
 
       sourceElements.push(
@@ -243,55 +300,88 @@ class Frame extends Component {
       );
     }
 
-    // Inner el is useful for achieving ellipsis on the left and correct LTR/RTL
-    // ordering. See CSS styles for frame-link-source-[inner] and bug 1290056.
-    let tooltipMessage;
-    if (messageSource && messageSource === MESSAGE_SOURCE.CSS) {
-      tooltipMessage = l10n.getFormatStr(
-        "frame.viewsourceinstyleeditor",
-        tooltip
-      );
-    } else {
-      tooltipMessage = l10n.getFormatStr("frame.viewsourceindebugger", tooltip);
+    if (this.#isCurrentLocationLinkable()) {
+      return dom.a(this.#getSourceElementsProps(), sourceElements);
     }
-
-    const sourceInnerEl = dom.span(
-      {
-        key: "source-inner",
-        className: "frame-link-source-inner",
-        title: isLinkable ? tooltipMessage : tooltip,
-      },
-      sourceElements
-    );
-
     // If source is not a URL (self-hosted, eval, etc.), don't make
     // it an anchor link, as we can't link to it.
-    if (isLinkable) {
-      sourceEl = dom.a(
-        {
-          onClick: e => {
-            e.preventDefault();
-            e.stopPropagation();
-            onClick(this.getSourceForClick({ ...frame, source, sourceId }));
-          },
-          href: source,
-          className: "frame-link-source",
-          draggable: false,
-        },
-        sourceInnerEl
-      );
-    } else {
-      sourceEl = dom.span(
-        {
-          key: "source",
-          className: "frame-link-source",
-        },
-        sourceInnerEl
-      );
-    }
-    elements.push(sourceEl);
+    return dom.span(this.#getSourceElementsProps(), sourceElements);
+  };
 
-    if (showHost && unicodeHost) {
+  /**
+   * Render the display source.
+   * @returns {React.ReactNode}
+   */
+  #renderDisplaySource = () => {
+    const { showEmptyPathAsHost, showFullSourceUrl } = this.props;
+    const { originalLocation } = this.state;
+
+    const { source } = this.#getCurrentLocationInfo();
+    const { short, long, host } = getSourceNames(source);
+    const unicodeShort = getUnicodeUrlPath(short);
+    const unicodeLong = getUnicodeUrl(long);
+    let displaySource = showFullSourceUrl ? unicodeLong : unicodeShort;
+    if (originalLocation) {
+      displaySource = getSourceMappedFile(displaySource);
+
+      // In case of pretty-printed HTML file, we would only get the formatted suffix; replace
+      // it with the full URL instead
+      if (showEmptyPathAsHost && displaySource == ":formatted") {
+        displaySource = host + displaySource;
+      }
+    } else if (
+      showEmptyPathAsHost &&
+      (displaySource === "" || displaySource === "/")
+    ) {
+      displaySource = host;
+    }
+
+    return dom.span(
+      {
+        key: "filename",
+        className: "frame-link-filename",
+      },
+      displaySource
+    );
+  };
+
+  /**
+   * Render the function display name.
+   * @returns {React.ReactNode}
+   */
+  #renderFunctionDisplayName = () => {
+    const { frame, showFunctionName, showAnonymousFunctionName } = this.props;
+    if (!showFunctionName) {
+      return null;
+    }
+    const functionDisplayName = frame.functionDisplayName;
+    if (functionDisplayName || showAnonymousFunctionName) {
+      return [
+        dom.span(
+          {
+            key: "function-display-name",
+            className: "frame-link-function-display-name",
+          },
+          functionDisplayName || webl10n.getStr("stacktrace.anonymousFunction")
+        ),
+        " ",
+      ];
+    }
+    return null;
+  };
+
+  render() {
+    const { showHost } = this.props;
+
+    const elements = [
+      this.#renderFunctionDisplayName(),
+      this.#renderSourceElements(),
+    ];
+
+    const unicodeHost = showHost
+      ? this.#getCurrentLocationUnicodeHostName()
+      : null;
+    if (unicodeHost) {
       elements.push(" ");
       elements.push(
         dom.span(
@@ -304,7 +394,7 @@ class Frame extends Component {
       );
     }
 
-    return dom.span(attributes, ...elements);
+    return dom.span(this.#getTopElementProps(), ...elements);
   }
 }
 

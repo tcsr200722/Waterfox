@@ -4,7 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <limits.h>
+#include <algorithm>
+#include <iterator>
 #include <string.h>
 #include <stdio.h>
 #include "readstrings.h"
@@ -13,9 +14,13 @@
 #ifdef XP_WIN
 #  define NS_tfopen _wfopen
 #  define OPEN_MODE L"rb"
+#  define NS_tstrlen wcslen
+#  define NS_tstrcpy wcscpy
 #else
 #  define NS_tfopen fopen
 #  define OPEN_MODE "r"
+#  define NS_tstrlen strlen
+#  define NS_tstrcpy strcpy
 #endif
 
 // stack based FILE wrapper to ensure that fclose is called.
@@ -31,16 +36,6 @@ class AutoFILE {
 
  private:
   FILE* fp_;
-};
-
-class AutoCharArray {
- public:
-  explicit AutoCharArray(size_t len) { ptr_ = new char[len]; }
-  ~AutoCharArray() { delete[] ptr_; }
-  operator char*() { return ptr_; }
-
- private:
-  char* ptr_;
 };
 
 static const char kNL[] = "\r\n";
@@ -123,12 +118,13 @@ static int find_key(const char* keyList, char* key) {
  * @param keyList    List of zero-delimited keys ending with two zero characters
  * @param numStrings Number of strings to read into results buffer - must be
  *                   equal to the number of keys
- * @param results    Two-dimensional array of strings to be filled in the same
- *                   order as the keys provided
+ * @param results    Array of strings. Array's length must be equal to
+ *                   numStrings. Each string will be populated with the value
+ *                   corresponding to the key with the same index in keyList.
  * @param section    Optional name of the section to read; defaults to "Strings"
  */
 int ReadStrings(const NS_tchar* path, const char* keyList,
-                unsigned int numStrings, char results[][MAX_TEXT_LEN],
+                unsigned int numStrings, mozilla::UniquePtr<char[]>* results,
                 const char* section) {
   AutoFILE fp(NS_tfopen(path, OPEN_MODE));
 
@@ -147,7 +143,8 @@ int ReadStrings(const NS_tchar* path, const char* keyList,
   }
 
   size_t flen = size_t(len);
-  AutoCharArray fileContents(flen + 1);
+
+  mozilla::UniquePtr<char[]> fileContents(new char[flen + 1]);
   if (!fileContents) {
     return READ_STRINGS_MEM_ERROR;
   }
@@ -157,19 +154,59 @@ int ReadStrings(const NS_tchar* path, const char* keyList,
     return READ_ERROR;
   }
 
-  size_t rd = fread(fileContents, sizeof(char), flen, fp);
+  size_t rd = fread(fileContents.get(), sizeof(char), flen, fp);
   if (rd != flen) {
     return READ_ERROR;
   }
 
   fileContents[flen] = '\0';
 
-  char* buffer = fileContents;
+  int result = ReadStringsFromBuffer(fileContents.get(), keyList, numStrings,
+                                     results, section);
+  return result;
+}
+
+// A wrapper function to read strings for the updater.
+// Added for compatibility with the original code.
+int ReadStrings(const NS_tchar* path, StringTable* results) {
+  const unsigned int kNumStrings = 2;
+  const char* kUpdaterKeys = "Title\0Info\0";
+  mozilla::UniquePtr<char[]> updater_strings[kNumStrings];
+
+  int result = ReadStrings(path, kUpdaterKeys, kNumStrings, updater_strings);
+
+  if (result == OK) {
+    results->title.swap(updater_strings[0]);
+    results->info.swap(updater_strings[1]);
+  }
+
+  return result;
+}
+
+/**
+ * A very basic parser for updater.ini taken mostly from nsINIParser.cpp
+ * that can be used by standalone apps.
+ *
+ * @param stringBuffer The string buffer to parse
+ * @param keyList      List of zero-delimited keys ending with two zero
+ * characters
+ * @param numStrings   Number of strings to read into results buffer - must be
+ *                     equal to the number of keys
+ * @param results      Array of strings. Array's length must be equal to
+ *                     numStrings. Each string will be populated with the value
+ *                     corresponding to the key with the same index in keyList.
+ * @param section      Optional name of the section to read; defaults to
+ * "Strings"
+ */
+int ReadStringsFromBuffer(char* stringBuffer, const char* keyList,
+                          unsigned int numStrings,
+                          mozilla::UniquePtr<char[]>* results,
+                          const char* section) {
   bool inStringsSection = false;
 
   unsigned int read = 0;
 
-  while (char* token = NS_strtok(kNL, &buffer)) {
+  while (char* token = NS_strtok(kNL, &stringBuffer)) {
     if (token[0] == '#' || token[0] == ';') {  // it's a comment
       continue;
     }
@@ -216,8 +253,10 @@ int ReadStrings(const NS_tchar* path, const char* keyList,
 
     int keyIndex = find_key(keyList, key);
     if (keyIndex >= 0 && (unsigned int)keyIndex < numStrings) {
-      strncpy(results[keyIndex], token, MAX_TEXT_LEN - 1);
-      results[keyIndex][MAX_TEXT_LEN - 1] = '\0';
+      size_t valueSize = strlen(token) + 1;
+      results[keyIndex] = mozilla::MakeUnique<char[]>(valueSize);
+
+      strcpy(results[keyIndex].get(), token);
       read++;
     }
   }
@@ -225,19 +264,147 @@ int ReadStrings(const NS_tchar* path, const char* keyList,
   return (read == numStrings) ? OK : PARSE_ERROR;
 }
 
-// A wrapper function to read strings for the updater.
-// Added for compatibility with the original code.
-int ReadStrings(const NS_tchar* path, StringTable* results) {
-  const unsigned int kNumStrings = 2;
-  const char* kUpdaterKeys = "Title\0Info\0";
-  char updater_strings[kNumStrings][MAX_TEXT_LEN];
+IniReader::IniReader(const NS_tchar* iniPath,
+                     const char* section /* = nullptr */) {
+  if (iniPath) {
+    mPath = mozilla::MakeUnique<NS_tchar[]>(NS_tstrlen(iniPath) + 1);
+    NS_tstrcpy(mPath.get(), iniPath);
+    mMaybeStatusCode = mozilla::Nothing();
+  } else {
+    mMaybeStatusCode = mozilla::Some(READ_STRINGS_MEM_ERROR);
+  }
+  if (section) {
+    mSection = mozilla::MakeUnique<char[]>(strlen(section) + 1);
+    strcpy(mSection.get(), section);
+  } else {
+    mSection.reset(nullptr);
+  }
+}
 
-  int result = ReadStrings(path, kUpdaterKeys, kNumStrings, updater_strings);
+bool IniReader::MaybeAddKey(const char* key, size_t& insertionIndex) {
+  if (!key || strlen(key) == 0 || mMaybeStatusCode.isSome()) {
+    return false;
+  }
+  auto existingKey = std::find_if(mKeys.begin(), mKeys.end(),
+                                  [=](mozilla::UniquePtr<char[]>& searchKey) {
+                                    return strcmp(key, searchKey.get()) == 0;
+                                  });
+  if (existingKey != mKeys.end()) {
+    // Key already in list
+    insertionIndex = std::distance(mKeys.begin(), existingKey);
+    return true;
+  }
 
-  strncpy(results->title, updater_strings[0], MAX_TEXT_LEN - 1);
-  results->title[MAX_TEXT_LEN - 1] = '\0';
-  strncpy(results->info, updater_strings[1], MAX_TEXT_LEN - 1);
-  results->info[MAX_TEXT_LEN - 1] = '\0';
+  // Key not already in list
+  insertionIndex = mKeys.size();
+  mKeys.emplace_back(mozilla::MakeUnique<char[]>(strlen(key) + 1));
+  strcpy(mKeys.back().get(), key);
+  return true;
+}
 
-  return result;
+void IniReader::AddKey(const char* key, mozilla::UniquePtr<char[]>* outputPtr) {
+  size_t insertionIndex;
+  if (!MaybeAddKey(key, insertionIndex)) {
+    return;
+  }
+
+  if (!outputPtr) {
+    return;
+  }
+
+  mNarrowOutputs.emplace_back();
+  mNarrowOutputs.back().keyIndex = insertionIndex;
+  mNarrowOutputs.back().outputPtr = outputPtr;
+}
+
+#ifdef XP_WIN
+void IniReader::AddKey(const char* key,
+                       mozilla::UniquePtr<wchar_t[]>* outputPtr) {
+  size_t insertionIndex;
+  if (!MaybeAddKey(key, insertionIndex)) {
+    return;
+  }
+
+  if (!outputPtr) {
+    return;
+  }
+
+  mWideOutputs.emplace_back();
+  mWideOutputs.back().keyIndex = insertionIndex;
+  mWideOutputs.back().outputPtr = outputPtr;
+}
+
+// Returns true on success, false on failure.
+static bool ConvertToWide(const char* toConvert,
+                          mozilla::UniquePtr<wchar_t[]>* result) {
+  int bufferSize = MultiByteToWideChar(CP_UTF8, 0, toConvert, -1, nullptr, 0);
+  *result = mozilla::MakeUnique<wchar_t[]>(bufferSize);
+  int charsWritten =
+      MultiByteToWideChar(CP_UTF8, 0, toConvert, -1, result->get(), bufferSize);
+  return charsWritten > 0;
+}
+#endif
+
+int IniReader::Read() {
+  if (mMaybeStatusCode.isSome()) {
+    return mMaybeStatusCode.value();
+  }
+
+  if (mKeys.empty()) {
+    // If there's nothing to read, just report success and return.
+    mMaybeStatusCode = mozilla::Some(OK);
+    return OK;
+  }
+
+  // First assemble the key list, which will be a character array of
+  // back-to-back null-terminated strings ending with a double null termination.
+  size_t keyListSize = 1;  // For the final null
+  for (const auto& key : mKeys) {
+    keyListSize += strlen(key.get());
+    keyListSize += 1;  // For the terminating null
+  }
+  mozilla::UniquePtr<char[]> keyList = mozilla::MakeUnique<char[]>(keyListSize);
+  char* keyListPtr = keyList.get();
+  for (const auto& key : mKeys) {
+    strcpy(keyListPtr, key.get());
+    // Point keyListPtr directly after the trailing null that strcpy wrote.
+    keyListPtr += strlen(key.get()) + 1;
+  }
+  *keyListPtr = '\0';
+
+  // Now make the array for the resulting data to be stored in
+  mozilla::UniquePtr<mozilla::UniquePtr<char[]>[]> results =
+      mozilla::MakeUnique<mozilla::UniquePtr<char[]>[]>(mKeys.size());
+
+  // Invoke ReadStrings to read the file and store the data for us
+  int statusCode = ReadStrings(mPath.get(), keyList.get(), mKeys.size(),
+                               results.get(), mSection.get());
+  mMaybeStatusCode = mozilla::Some(statusCode);
+
+  if (statusCode != OK) {
+    return statusCode;
+  }
+
+  // Now populate the requested locations with the requested data.
+  for (const auto output : mNarrowOutputs) {
+    char* valueBuffer = results[output.keyIndex].get();
+    if (valueBuffer) {
+      *(output.outputPtr) =
+          mozilla::MakeUnique<char[]>(strlen(valueBuffer) + 1);
+      strcpy(output.outputPtr->get(), valueBuffer);
+    }
+  }
+
+#ifdef XP_WIN
+  for (const auto output : mWideOutputs) {
+    char* valueBuffer = results[output.keyIndex].get();
+    if (valueBuffer) {
+      if (!ConvertToWide(valueBuffer, output.outputPtr)) {
+        statusCode = STRING_CONVERSION_ERROR;
+      }
+    }
+  }
+#endif
+
+  return statusCode;
 }

@@ -25,7 +25,6 @@ class imgCacheValidator;
 class imgLoader;
 class imgRequestProxy;
 class imgCacheEntry;
-class nsIApplicationCache;
 class nsIProperties;
 class nsIRequest;
 class nsITimedChannel;
@@ -33,6 +32,7 @@ class nsIURI;
 class nsIReferrerInfo;
 
 namespace mozilla {
+enum CORSMode : uint8_t;
 namespace image {
 class Image;
 class ProgressTracker;
@@ -41,8 +41,7 @@ class ProgressTracker;
 
 struct NewPartResult;
 
-class imgRequest final : public nsIStreamListener,
-                         public nsIThreadRetargetableStreamListener,
+class imgRequest final : public nsIThreadRetargetableStreamListener,
                          public nsIChannelEventSink,
                          public nsIInterfaceRequestor,
                          public nsIAsyncVerifyRedirectCallback {
@@ -62,17 +61,22 @@ class imgRequest final : public nsIStreamListener,
   NS_DECL_NSIINTERFACEREQUESTOR
   NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
 
-      [[nodiscard]] nsresult
-      Init(nsIURI* aURI, nsIURI* aFinalURI, bool aHadInsecureRedirect,
-           nsIRequest* aRequest, nsIChannel* aChannel,
-           imgCacheEntry* aCacheEntry, mozilla::dom::Document* aLoadingDocument,
-           nsIPrincipal* aTriggeringPrincipal, int32_t aCORSMode,
-           nsIReferrerInfo* aReferrerInfo);
+  [[nodiscard]] nsresult Init(nsIURI* aURI, nsIURI* aFinalURI,
+                              bool aHadInsecureRedirect, nsIRequest* aRequest,
+                              nsIChannel* aChannel, imgCacheEntry* aCacheEntry,
+                              mozilla::dom::Document* aLoadingDocument,
+                              nsIPrincipal* aTriggeringPrincipal,
+                              mozilla::CORSMode aCORSMode,
+                              nsIReferrerInfo* aReferrerInfo);
 
   void ClearLoader();
 
   // Callers must call imgRequestProxy::Notify later.
   void AddProxy(imgRequestProxy* proxy);
+
+  // Whether a given document is allowed to reuse this request without any
+  // revalidation.
+  bool CanReuseWithoutValidation(mozilla::dom::Document*) const;
 
   nsresult RemoveProxy(imgRequestProxy* proxy, nsresult aStatus);
 
@@ -90,22 +94,14 @@ class imgRequest final : public nsIStreamListener,
   // Request that we start decoding the image as soon as data becomes available.
   void StartDecoding();
 
-  inline uint64_t InnerWindowID() const { return mInnerWindowId; }
-  void SetInnerWindowID(uint64_t aInnerWindowId) {
-    mInnerWindowId = aInnerWindowId;
-  }
+  uint64_t InnerWindowID() const;
+  void SetInnerWindowID(uint64_t aInnerWindowId);
 
   // Set the cache validation information (expiry time, whether we must
   // validate, etc) on the cache entry based on the request information.
-  // If this function is called multiple times, the information set earliest
-  // wins.
-  static void SetCacheValidation(imgCacheEntry* aEntry, nsIRequest* aRequest);
-
-  // Check if application cache of the original load is different from
-  // application cache of the new load.  Also lack of application cache
-  // on one of the loads is considered a change of a loading cache since
-  // HTTP cache may contain a different data then app cache.
-  bool CacheChanged(nsIRequest* aNewRequest);
+  // If this function is called multiple times, the most strict value wins.
+  static void SetCacheValidation(imgCacheEntry* aEntry, nsIRequest* aRequest,
+                                 bool aForceTouch = false);
 
   bool GetMultipart() const;
 
@@ -114,17 +110,14 @@ class imgRequest final : public nsIStreamListener,
   bool HadInsecureRedirect() const;
 
   // The CORS mode for which we loaded this image.
-  int32_t GetCORSMode() const { return mCORSMode; }
+  mozilla::CORSMode GetCORSMode() const { return mCORSMode; }
 
   // The ReferrerInfo in effect when loading this image.
   nsIReferrerInfo* GetReferrerInfo() const { return mReferrerInfo; }
 
   // The principal for the document that loaded this image. Used when trying to
   // validate a CORS image load.
-  already_AddRefed<nsIPrincipal> GetTriggeringPrincipal() const {
-    nsCOMPtr<nsIPrincipal> principal = mTriggeringPrincipal;
-    return principal.forget();
-  }
+  already_AddRefed<nsIPrincipal> GetTriggeringPrincipal() const;
 
   // Return the ProgressTracker associated with this imgRequest. It may live
   // in |mProgressTracker| or in |mImage.mProgressTracker|, depending on whether
@@ -153,6 +146,8 @@ class imgRequest final : public nsIStreamListener,
 
   /// Returns a non-owning pointer to this imgRequest's MIME type.
   const char* GetMimeType() const { return mContentType.get(); }
+
+  void GetFileName(nsACString& aFileName);
 
   /// @return the priority of the underlying network request, or
   /// PRIORITY_NORMAL if it doesn't support nsISupportsPriority.
@@ -201,13 +196,15 @@ class imgRequest final : public nsIStreamListener,
 
   bool ImageAvailable() const;
 
-  void PrioritizeAsPreload();
-
   bool IsDeniedCrossSiteCORSRequest() const {
     return mIsDeniedCrossSiteCORSRequest;
   }
 
   bool IsCrossSiteNoCORSRequest() const { return mIsCrossSiteNoCORSRequest; }
+
+  bool ShouldReportRenderTimeForLCP() const {
+    return mShouldReportRenderTimeForLCP;
+  }
 
  private:
   friend class FinishPreparingForNewPartRunnable;
@@ -215,6 +212,8 @@ class imgRequest final : public nsIStreamListener,
   virtual ~imgRequest();
 
   void FinishPreparingForNewPart(const NewPartResult& aResult);
+
+  void UpdateShouldReportRenderTimeForLCP();
 
   void Cancel(nsresult aStatus);
 
@@ -245,7 +244,6 @@ class imgRequest final : public nsIStreamListener,
   nsCOMPtr<nsIProperties> mProperties;
   nsCOMPtr<nsIChannel> mChannel;
   nsCOMPtr<nsIInterfaceRequestor> mPrevChannelSink;
-  nsCOMPtr<nsIApplicationCache> mApplicationCache;
 
   nsCOMPtr<nsITimedChannel> mTimedChannel;
 
@@ -267,12 +265,9 @@ class imgRequest final : public nsIStreamListener,
   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;
   nsCOMPtr<nsIChannel> mNewRedirectChannel;
 
-  // The ID of the inner window origin, used for error reporting.
-  uint64_t mInnerWindowId;
-
   // The CORS mode (defined in imgIRequest) this image was loaded with. By
-  // default, imgIRequest::CORS_NONE.
-  int32_t mCORSMode;
+  // default, CORS_NONE.
+  mozilla::CORSMode mCORSMode;
 
   // The ReferrerInfo used for this image.
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
@@ -287,18 +282,24 @@ class imgRequest final : public nsIStreamListener,
   bool mIsDeniedCrossSiteCORSRequest;
   bool mIsCrossSiteNoCORSRequest;
 
+  bool mShouldReportRenderTimeForLCP;
+  // SVGs can't be OffMainThread for example
+  bool mOffMainThreadData = false;
+
   mutable mozilla::Mutex mMutex;
 
   // Member variables protected by mMutex. Note that *all* flags in our bitfield
   // are protected by mMutex; if you're adding a new flag that isn'protected, it
   // must not be a part of this bitfield.
-  RefPtr<ProgressTracker> mProgressTracker;
-  RefPtr<Image> mImage;
-  bool mIsMultiPartChannel : 1;
-  bool mIsInCache : 1;
-  bool mDecodeRequested : 1;
-  bool mNewPartPending : 1;
-  bool mHadInsecureRedirect : 1;
+  RefPtr<ProgressTracker> mProgressTracker MOZ_GUARDED_BY(mMutex);
+  RefPtr<Image> mImage MOZ_GUARDED_BY(mMutex);
+  bool mIsMultiPartChannel : 1 MOZ_GUARDED_BY(mMutex);
+  bool mIsInCache : 1 MOZ_GUARDED_BY(mMutex);
+  bool mDecodeRequested : 1 MOZ_GUARDED_BY(mMutex);
+  bool mNewPartPending : 1 MOZ_GUARDED_BY(mMutex);
+  bool mHadInsecureRedirect : 1 MOZ_GUARDED_BY(mMutex);
+  // The ID of the inner window origin, used for error reporting.
+  uint64_t mInnerWindowId MOZ_GUARDED_BY(mMutex);
 };
 
 #endif  // mozilla_image_imgRequest_h

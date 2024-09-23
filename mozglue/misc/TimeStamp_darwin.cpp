@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Uptime.h"
 
 // Estimate of the smallest duration of time we can measure.
 static uint64_t sResolution;
@@ -135,18 +136,16 @@ void TimeStamp::Startup() {
     ;
 
   gInitialized = true;
-
-  return;
 }
 
 void TimeStamp::Shutdown() {}
 
 TimeStamp TimeStamp::Now(bool aHighResolution) {
-  return TimeStamp::NowFuzzy(TimeStampValue(false, ClockTime()));
+  return TimeStamp(ClockTime());
 }
 
-TimeStamp TimeStamp::NowUnfuzzed(bool aHighResolution) {
-  return TimeStamp(TimeStampValue(false, ClockTime()));
+uint64_t TimeStamp::RawMachAbsoluteTimeNanoseconds() const {
+  return static_cast<uint64_t>(double(mValue) * sNsPerTick);
 }
 
 // Computes and returns the process uptime in microseconds.

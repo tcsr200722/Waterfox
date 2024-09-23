@@ -12,22 +12,18 @@ add_task(async function test() {
 
   // Visit url in a new tab, going through normal urlbar workflow.
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  let promise = PlacesTestUtils.waitForNotification(
-    "page-visited",
-    visits => {
-      Assert.equal(
-        visits.length,
-        1,
-        "Was notified for the right number of visits."
-      );
-      let { url, transitionType } = visits[0];
-      return (
-        url == encodeURI(TEST_URL) &&
-        transitionType == PlacesUtils.history.TRANSITIONS.TYPED
-      );
-    },
-    "places"
-  );
+  let promise = PlacesTestUtils.waitForNotification("page-visited", visits => {
+    Assert.equal(
+      visits.length,
+      1,
+      "Was notified for the right number of visits."
+    );
+    let { url, transitionType } = visits[0];
+    return (
+      url == encodeURI(TEST_URL) &&
+      transitionType == PlacesUtils.history.TRANSITIONS.TYPED
+    );
+  });
   gURLBar.focus();
   gURLBar.value = TEST_URL;
   info("Visiting url");
@@ -38,7 +34,6 @@ add_task(async function test() {
   info("Search for the decoded string.");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: decoded,
   });
   Assert.equal(
@@ -52,7 +47,6 @@ add_task(async function test() {
   info("Search for the encoded string.");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: encodeURIComponent(decoded),
   });
   Assert.equal(

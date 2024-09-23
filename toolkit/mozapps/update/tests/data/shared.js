@@ -6,25 +6,19 @@
 
 // Definitions needed to run eslint on this file.
 /* global AppConstants, DATA_URI_SPEC, LOG_FUNCTION */
-/* global Services, URL_HOST */
+/* global Services, URL_HOST, TestUtils */
 
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ctypes",
-  "resource://gre/modules/ctypes.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "UpdateUtils",
-  "resource://gre/modules/UpdateUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  UpdateUtils: "resource://gre/modules/UpdateUtils.sys.mjs",
+  ctypes: "resource://gre/modules/ctypes.sys.mjs",
+});
 
 const PREF_APP_UPDATE_AUTO = "app.update.auto";
 const PREF_APP_UPDATE_BACKGROUNDERRORS = "app.update.backgroundErrors";
@@ -40,6 +34,7 @@ const PREF_APP_UPDATE_INTERVAL = "app.update.interval";
 const PREF_APP_UPDATE_LASTUPDATETIME =
   "app.update.lastUpdateTime.background-update-timer";
 const PREF_APP_UPDATE_LOG = "app.update.log";
+const PREF_APP_UPDATE_NOTIFYDURINGDOWNLOAD = "app.update.notifyDuringDownload";
 const PREF_APP_UPDATE_PROMPTWAITTIME = "app.update.promptWaitTime";
 const PREF_APP_UPDATE_RETRYTIMEOUT = "app.update.socket.retryTimeout";
 const PREF_APP_UPDATE_SERVICE_ENABLED = "app.update.service.enabled";
@@ -48,6 +43,7 @@ const PREF_APP_UPDATE_STAGING_ENABLED = "app.update.staging.enabled";
 const PREF_APP_UPDATE_UNSUPPORTED_URL = "app.update.unsupported.url";
 const PREF_APP_UPDATE_URL_DETAILS = "app.update.url.details";
 const PREF_APP_UPDATE_URL_MANUAL = "app.update.url.manual";
+const PREF_APP_UPDATE_LANGPACK_ENABLED = "app.update.langpack.enabled";
 
 const PREFBRANCH_APP_PARTNER = "app.partner.";
 const PREF_DISTRIBUTION_ID = "distribution.id";
@@ -69,18 +65,26 @@ const DIR_TOBEDELETED = "tobedeleted";
 const DIR_UPDATES = "updates";
 const DIR_UPDATED =
   AppConstants.platform == "macosx" ? "Updated.app" : "updated";
+const DIR_DOWNLOADING = "downloading";
 
 const FILE_ACTIVE_UPDATE_XML = "active-update.xml";
 const FILE_ACTIVE_UPDATE_XML_TMP = "active-update.xml.tmp";
 const FILE_APPLICATION_INI = "application.ini";
+const FILE_BACKUP_UPDATE_CONFIG_JSON = "backup-update-config.json";
+const FILE_BACKUP_UPDATE_ELEVATED_LOG = "backup-update-elevated.log";
 const FILE_BACKUP_UPDATE_LOG = "backup-update.log";
 const FILE_BT_RESULT = "bt.result";
+const FILE_CHANNEL_PREFS =
+  AppConstants.platform == "macosx" ? "ChannelPrefs" : "channel-prefs.js";
+const FILE_LAST_UPDATE_ELEVATED_LOG = "last-update-elevated.log";
 const FILE_LAST_UPDATE_LOG = "last-update.log";
 const FILE_PRECOMPLETE = "precomplete";
 const FILE_PRECOMPLETE_BAK = "precomplete.bak";
 const FILE_UPDATE_CONFIG_JSON = "update-config.json";
+const FILE_UPDATE_ELEVATED_LOG = "update-elevated.log";
 const FILE_UPDATE_LOG = "update.log";
 const FILE_UPDATE_MAR = "update.mar";
+const FILE_UPDATE_SETTINGS_FRAMEWORK = "UpdateSettings";
 const FILE_UPDATE_SETTINGS_INI = "update-settings.ini";
 const FILE_UPDATE_SETTINGS_INI_BAK = "update-settings.ini.bak";
 const FILE_UPDATE_STATUS = "update.status";
@@ -116,12 +120,11 @@ const URI_UPDATES_PROPERTIES =
   "chrome://mozapps/locale/update/updates.properties";
 const gUpdateBundle = Services.strings.createBundle(URI_UPDATES_PROPERTIES);
 
-XPCOMUtils.defineLazyGetter(this, "gAUS", function test_gAUS() {
+ChromeUtils.defineLazyGetter(this, "gAUS", function test_gAUS() {
   return Cc["@mozilla.org/updates/update-service;1"]
     .getService(Ci.nsIApplicationUpdateService)
     .QueryInterface(Ci.nsITimerCallback)
-    .QueryInterface(Ci.nsIObserver)
-    .QueryInterface(Ci.nsIUpdateCheckListener);
+    .QueryInterface(Ci.nsIObserver);
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -131,32 +134,20 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsIUpdateManager"
 );
 
-XPCOMUtils.defineLazyGetter(this, "gUpdateChecker", function test_gUC() {
-  return Cc["@mozilla.org/updates/update-checker;1"].createInstance(
-    Ci.nsIUpdateChecker
-  );
-});
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "gUpdateChecker",
+  "@mozilla.org/updates/update-checker;1",
+  "nsIUpdateChecker"
+);
 
-XPCOMUtils.defineLazyGetter(this, "gUP", function test_gUP() {
-  return Cc["@mozilla.org/updates/update-prompt;1"].createInstance(
-    Ci.nsIUpdatePrompt
-  );
-});
-
-XPCOMUtils.defineLazyGetter(this, "gDefaultPrefBranch", function test_gDPB() {
+ChromeUtils.defineLazyGetter(this, "gDefaultPrefBranch", function test_gDPB() {
   return Services.prefs.getDefaultBranch(null);
 });
 
-XPCOMUtils.defineLazyGetter(this, "gPrefRoot", function test_gPR() {
+ChromeUtils.defineLazyGetter(this, "gPrefRoot", function test_gPR() {
   return Services.prefs.getBranch(null);
 });
-
-XPCOMUtils.defineLazyServiceGetter(
-  this,
-  "gEnv",
-  "@mozilla.org/process/environment;1",
-  "nsIEnvironment"
-);
 
 /**
  * Waits for the specified topic and (optionally) status.
@@ -185,15 +176,16 @@ function waitForEvent(topic, status = null) {
 }
 
 /* Triggers post-update processing */
-function testPostUpdateProcessing() {
-  gAUS.observe(null, "test-post-update-processing", "");
+async function testPostUpdateProcessing() {
+  await gAUS.internal.postUpdateProcessing();
 }
 
 /* Initializes the update service stub */
-function initUpdateServiceStub() {
-  Cc["@mozilla.org/updates/update-service-stub;1"].createInstance(
-    Ci.nsISupports
-  );
+async function initUpdateServiceStub() {
+  const updateServiceStub = Cc[
+    "@mozilla.org/updates/update-service-stub;1"
+  ].getService(Ci.nsIApplicationUpdateServiceStub);
+  await updateServiceStub.init();
 }
 
 /**
@@ -205,10 +197,7 @@ function initUpdateServiceStub() {
  *         to populate the update metadata.
  */
 function reloadUpdateManagerData(skipFiles = false) {
-  let observeData = skipFiles ? "skip-files" : "";
-  gUpdateManager
-    .QueryInterface(Ci.nsIObserver)
-    .observe(null, "um-reload-update-data", observeData);
+  gUpdateManager.internal.reload(skipFiles);
 }
 
 const observer = {
@@ -221,7 +210,7 @@ const observer = {
       }
     }
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 };
 
 /**
@@ -235,6 +224,7 @@ function setUpdateChannel(aChannel) {
   debugDump(
     "setting default pref " + PREF_APP_UPDATE_CHANNEL + " to " + gChannel
   );
+  gDefaultPrefBranch.unlockPref(PREF_APP_UPDATE_CHANNEL);
   gDefaultPrefBranch.setCharPref(PREF_APP_UPDATE_CHANNEL, gChannel);
   gPrefRoot.addObserver(PREF_APP_UPDATE_CHANNEL, observer);
 }
@@ -260,49 +250,16 @@ function setUpdateURL(aURL) {
     Services.appinfo = origAppInfo;
   });
 
-  let mockAppInfo = {
-    // nsIXULAppInfo
-    vendor: origAppInfo.vendor,
-    name: origAppInfo.name,
-    ID: origAppInfo.ID,
-    version: origAppInfo.version,
-    appBuildID: origAppInfo.appBuildID,
-    updateURL: url,
-
-    // nsIPlatformInfo
-    platformVersion: origAppInfo.platformVersion,
-    platformBuildID: origAppInfo.platformBuildID,
-
-    // nsIXULRuntime
-    inSafeMode: origAppInfo.inSafeMode,
-    logConsoleErrors: origAppInfo.logConsoleErrors,
-    OS: origAppInfo.OS,
-    XPCOMABI: origAppInfo.XPCOMABI,
-    invalidateCachesOnRestart() {},
-    shouldBlockIncompatJaws: origAppInfo.shouldBlockIncompatJaws,
-    processType: origAppInfo.processType,
-    processID: origAppInfo.processID,
-    uniqueProcessID: origAppInfo.uniqueProcessID,
-
-    // nsIWinAppHelper
-    get userCanElevate() {
-      return origAppInfo.userCanElevate;
+  // Override the appinfo object with an object that exposes all of the same
+  // properties overriding just the updateURL.
+  let mockAppInfo = Object.create(origAppInfo, {
+    updateURL: {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: url,
     },
-  };
-  let interfaces = [Ci.nsIXULAppInfo, Ci.nsIPlatformInfo, Ci.nsIXULRuntime];
-  if ("nsIWinAppHelper" in Ci) {
-    interfaces.push(Ci.nsIWinAppHelper);
-  }
-  if ("crashReporter" in origAppInfo && origAppInfo.crashReporter) {
-    // nsICrashReporter
-    mockAppInfo.crashReporter = {};
-    mockAppInfo.annotations = {};
-    mockAppInfo.annotateCrashReport = function(key, data) {
-      this.annotations[key] = data;
-    };
-    interfaces.push(Ci.nsICrashReporter);
-  }
-  mockAppInfo.QueryInterface = ChromeUtils.generateQI(interfaces);
+  });
 
   Services.appinfo = mockAppInfo;
 }
@@ -472,9 +429,17 @@ function getFileExtension(aFile) {
  *
  * @param   aLogLeafName
  *          The leafName of the file or directory to get.
+ * @param   aWhichDir
+ *          Since we started having a separate patch directory and downloading
+ *          directory, there are now files with the same name that can be in
+ *          either directory. This argument is optional and defaults to the
+ *          patch directory for historical reasons. But if it is specified as
+ *          DIR_DOWNLOADING, this function will provide the version of the file
+ *          in the downloading directory. For files that aren't in the patch
+ *          directory or the downloading directory, this value is ignored.
  * @return  nsIFile for the file or directory.
  */
-function getUpdateDirFile(aLeafName) {
+function getUpdateDirFile(aLeafName, aWhichDir = null) {
   let file = Services.dirsvc.get(XRE_UPDATE_ROOT_DIR, Ci.nsIFile);
   switch (aLeafName) {
     case undefined:
@@ -483,25 +448,34 @@ function getUpdateDirFile(aLeafName) {
     case FILE_ACTIVE_UPDATE_XML:
     case FILE_ACTIVE_UPDATE_XML_TMP:
     case FILE_UPDATE_CONFIG_JSON:
+    case FILE_BACKUP_UPDATE_CONFIG_JSON:
     case FILE_UPDATE_TEST:
     case FILE_UPDATES_XML:
     case FILE_UPDATES_XML_TMP:
       file.append(aLeafName);
       return file;
     case DIR_PATCH:
+    case DIR_DOWNLOADING:
     case FILE_BACKUP_UPDATE_LOG:
+    case FILE_BACKUP_UPDATE_ELEVATED_LOG:
     case FILE_LAST_UPDATE_LOG:
+    case FILE_LAST_UPDATE_ELEVATED_LOG:
       file.append(DIR_UPDATES);
       file.append(aLeafName);
       return file;
     case FILE_BT_RESULT:
     case FILE_UPDATE_LOG:
+    case FILE_UPDATE_ELEVATED_LOG:
     case FILE_UPDATE_MAR:
     case FILE_UPDATE_STATUS:
     case FILE_UPDATE_VERSION:
     case FILE_UPDATER_INI:
       file.append(DIR_UPDATES);
-      file.append(DIR_PATCH);
+      if (aWhichDir == DIR_DOWNLOADING) {
+        file.append(DIR_DOWNLOADING);
+      } else {
+        file.append(DIR_PATCH);
+      }
       file.append(aLeafName);
       return file;
   }
@@ -559,25 +533,29 @@ function getStageDirFile(aRelPath) {
  */
 function removeUpdateFiles(aRemoveLogFiles) {
   let files = [
-    FILE_ACTIVE_UPDATE_XML,
-    FILE_UPDATES_XML,
-    FILE_BT_RESULT,
-    FILE_UPDATE_STATUS,
-    FILE_UPDATE_VERSION,
-    FILE_UPDATE_MAR,
-    FILE_UPDATER_INI,
+    [FILE_ACTIVE_UPDATE_XML],
+    [FILE_UPDATES_XML],
+    [FILE_BT_RESULT],
+    [FILE_UPDATE_STATUS],
+    [FILE_UPDATE_VERSION],
+    [FILE_UPDATE_MAR],
+    [FILE_UPDATE_MAR, DIR_DOWNLOADING],
+    [FILE_UPDATER_INI],
   ];
 
   if (aRemoveLogFiles) {
     files = files.concat([
-      FILE_BACKUP_UPDATE_LOG,
-      FILE_LAST_UPDATE_LOG,
-      FILE_UPDATE_LOG,
+      [FILE_BACKUP_UPDATE_LOG],
+      [FILE_LAST_UPDATE_LOG],
+      [FILE_UPDATE_LOG],
+      [FILE_BACKUP_UPDATE_ELEVATED_LOG],
+      [FILE_LAST_UPDATE_ELEVATED_LOG],
+      [FILE_UPDATE_ELEVATED_LOG],
     ]);
   }
 
   for (let i = 0; i < files.length; i++) {
-    let file = getUpdateDirFile(files[i]);
+    let file = getUpdateDirFile.apply(null, files[i]);
     try {
       if (file.exists()) {
         file.remove(false);
@@ -709,11 +687,7 @@ function getPerInstallationMutexName() {
   hasher.init(hasher.SHA1);
 
   let exeFile = Services.dirsvc.get(XRE_EXECUTABLE_FILE, Ci.nsIFile);
-  let converter = Cc[
-    "@mozilla.org/intl/scriptableunicodeconverter"
-  ].createInstance(Ci.nsIScriptableUnicodeConverter);
-  converter.charset = "UTF-8";
-  let data = converter.convertToByteArray(exeFile.path.toLowerCase());
+  let data = new TextEncoder().encode(exeFile.path.toLowerCase());
 
   hasher.update(data, data.length);
   return "Global\\MozillaUpdateMutex-" + hasher.finish(true);
@@ -874,4 +848,88 @@ function debugDump(aText, aCaller) {
     let caller = aCaller ? aCaller : Components.stack.caller;
     logTestInfo(aText, caller);
   }
+}
+
+/**
+ * Creates the continue file used to signal that update staging or the mock http
+ * server should continue. The delay this creates allows the tests to verify the
+ * user interfaces before they auto advance to other phases of an update. The
+ * continue file for staging will be deleted by the test updater and the
+ * continue file for the update check and update download requests will be
+ * deleted by the test http server handler implemented in app_update.sjs. The
+ * test returns a promise so the test can wait on the deletion of the continue
+ * file when necessary. If the continue file still exists at the end of a test
+ * it will be removed to prevent it from affecting tests that run after the test
+ * that created it.
+ *
+ * @param  leafName
+ *         The leafName of the file to create. This should be one of the
+ *         folowing constants that are defined in testConstants.js:
+ *         CONTINUE_CHECK
+ *         CONTINUE_DOWNLOAD
+ *         CONTINUE_STAGING
+ * @return Promise
+ *         Resolves when the file is deleted or if the file is not deleted when
+ *         the check for the file's existence times out. If the file isn't
+ *         deleted before the check for the file's existence times out it will
+ *         be deleted when the test ends so it doesn't affect tests that run
+ *         after the test that created the continue file.
+ * @throws If the file already exists.
+ */
+async function continueFileHandler(leafName) {
+  // The total time to wait with 300 retries and the default interval of 100 is
+  // approximately 30 seconds.
+  let interval = 100;
+  let retries = 300;
+  let continueFile;
+  if (leafName == CONTINUE_STAGING) {
+    // The total time to wait with 600 retries and an interval of 200 is
+    // approximately 120 seconds.
+    interval = 200;
+    retries = 600;
+    continueFile = getGREBinDir();
+    if (AppConstants.platform == "macosx") {
+      continueFile = continueFile.parent.parent;
+    }
+    continueFile.append(leafName);
+  } else {
+    continueFile = Services.dirsvc.get("CurWorkD", Ci.nsIFile);
+    let continuePath = REL_PATH_DATA + leafName;
+    let continuePathParts = continuePath.split("/");
+    for (let i = 0; i < continuePathParts.length; ++i) {
+      continueFile.append(continuePathParts[i]);
+    }
+  }
+  if (continueFile.exists()) {
+    logTestInfo(
+      "The continue file should not exist, path: " + continueFile.path
+    );
+    continueFile.remove(false);
+  }
+  debugDump("Creating continue file, path: " + continueFile.path);
+  continueFile.create(Ci.nsIFile.NORMAL_FILE_TYPE, PERMS_FILE);
+  // If for whatever reason the continue file hasn't been removed when a test
+  // has finished remove it during cleanup so it doesn't affect tests that run
+  // after the test that created it.
+  registerCleanupFunction(() => {
+    if (continueFile.exists()) {
+      logTestInfo(
+        "Removing continue file during test cleanup, path: " + continueFile.path
+      );
+      continueFile.remove(false);
+    }
+  });
+  return TestUtils.waitForCondition(
+    () => !continueFile.exists(),
+    "Waiting for file to be deleted, path: " + continueFile.path,
+    interval,
+    retries
+  ).catch(_e => {
+    logTestInfo(
+      "Continue file was not removed after checking " +
+        retries +
+        " times, path: " +
+        continueFile.path
+    );
+  });
 }

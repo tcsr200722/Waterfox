@@ -6,16 +6,16 @@
 
 // ConditionVariable wraps pthreads condition variable synchronization or, on
 // Windows, simulates it.  This functionality is very helpful for having
-// several threads wait for an event, as is common with a thread pool managed
-// by a master.  The meaning of such an event in the (worker) thread pool
-// scenario is that additional tasks are now available for processing.  It is
-// used in Chrome in the DNS prefetching system to notify worker threads that
-// a queue now has items (tasks) which need to be tended to.  A related use
-// would have a pool manager waiting on a ConditionVariable, waiting for a
-// thread in the pool to announce (signal) that there is now more room in a
-// (bounded size) communications queue for the manager to deposit tasks, or,
-// as a second example, that the queue of tasks is completely empty and all
-// workers are waiting.
+// several threads wait for an event, as is common with a managed thread pool.
+// The meaning of such an event in the (worker) thread pool scenario is that
+// additional tasks are now available for processing. It is used in Chrome in
+// the DNS prefetching system to notify worker threads that a queue now has
+// items (tasks) which need to be tended to. A related use would have a pool
+// manager waiting on a ConditionVariable, waiting for a thread in the pool to
+// announce (signal) that there is now more room in a (bounded size)
+// communications queue for the manager to deposit tasks, or, as a second
+// example, that the queue of tasks is completely empty and all workers are
+// waiting.
 //
 // USAGE NOTE 1: spurious signal events are possible with this and
 // most implementations of condition variables.  As a result, be
@@ -69,13 +69,12 @@
 
 #include "base/basictypes.h"
 #include "base/lock.h"
-#include "build/build_config.h"
 
-#if defined(OS_POSIX)
+#if defined(XP_UNIX)
 #  include <pthread.h>
 #endif
 
-#if defined(OS_WIN)
+#if defined(XP_WIN)
 #  include <windows.h>
 #endif
 
@@ -103,10 +102,10 @@ class ConditionVariable {
   void Signal();
 
  private:
-#if defined(OS_WIN)
+#if defined(XP_WIN)
   CONDITION_VARIABLE cv_;
   SRWLOCK* const srwlock_;
-#elif defined(OS_POSIX)
+#else
   pthread_cond_t condition_;
   pthread_mutex_t* user_mutex_;
 #endif

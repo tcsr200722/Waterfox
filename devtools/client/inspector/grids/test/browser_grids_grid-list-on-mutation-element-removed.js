@@ -18,9 +18,9 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { inspector, gridInspector, testActor } = await openLayoutView();
+  const { inspector, gridInspector } = await openLayoutView();
   const { document: doc } = gridInspector;
   const { highlighters, store } = inspector;
 
@@ -47,10 +47,10 @@ add_task(async function() {
 
   info("Removing the #grid container in the content page.");
   const onHighlighterHidden = highlighters.once("grid-highlighter-hidden");
-  onCheckboxChange = waitUntilState(store, state => state.grids.length == 0);
-  testActor.eval(`
-    document.getElementById("grid").remove();
-  `);
+  onCheckboxChange = waitUntilState(store, state => !state.grids.length);
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () =>
+    content.document.getElementById("grid").remove()
+  );
   await onHighlighterHidden;
   await onCheckboxChange;
 

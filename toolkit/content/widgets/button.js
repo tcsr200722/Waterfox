@@ -38,7 +38,7 @@
           if (this.open) {
             return;
           }
-        } else {
+        } else if (!this.inRichListItem) {
           if (
             event.keyCode == KeyEvent.DOM_VK_UP ||
             (event.keyCode == KeyEvent.DOM_VK_LEFT &&
@@ -84,7 +84,7 @@
         ).toLowerCase();
 
         // If the accesskey of the current button is pressed, just activate it
-        if (this.accessKey.toLowerCase() == charPressedLower) {
+        if (this.accessKey?.toLowerCase() == charPressedLower) {
           this.click();
           return;
         }
@@ -106,7 +106,7 @@
         }
 
         // Test dialog buttons
-        let buttonBox = window.top.document.documentElement.buttonBox;
+        let buttonBox = window.top.document.querySelector("dialog")?.buttonBox;
         if (buttonBox) {
           this.fireAccessKeyButton(buttonBox, charPressedLower);
         }
@@ -115,7 +115,6 @@
 
     set type(val) {
       this.setAttribute("type", val);
-      return val;
     }
 
     get type() {
@@ -128,7 +127,6 @@
       } else {
         this.removeAttribute("disabled");
       }
-      return val;
     }
 
     get disabled() {
@@ -137,7 +135,6 @@
 
     set group(val) {
       this.setAttribute("group", val);
-      return val;
     }
 
     get group() {
@@ -153,7 +150,6 @@
       } else {
         this.removeAttribute("open");
       }
-      return val;
     }
 
     get open() {
@@ -173,8 +169,6 @@
       } else {
         this.removeAttribute("checked");
       }
-
-      return val;
     }
 
     get checked() {
@@ -188,7 +182,7 @@
         return NodeFilter.FILTER_REJECT;
       }
       // but it may be a popup element, in which case we look at "state"...
-      if (cs.display == "-moz-popup" && node.state != "open") {
+      if (XULPopupElement.isInstance(node) && node.state != "open") {
         return NodeFilter.FILTER_REJECT;
       }
       // OK - the node seems visible, so it is a candidate.
@@ -207,7 +201,7 @@
       while (iterator.nextNode()) {
         var test = iterator.currentNode;
         if (
-          test.accessKey.toLowerCase() == aAccessKeyLower &&
+          test.accessKey?.toLowerCase() == aAccessKeyLower &&
           !test.disabled &&
           !test.collapsed &&
           !test.hidden
@@ -310,6 +304,7 @@
 
       this.appendChild(fragment.cloneNode(true));
       this.initializeAttributeInheritance();
+      this.inRichListItem = !!this.closest("richlistitem");
     }
   }
 

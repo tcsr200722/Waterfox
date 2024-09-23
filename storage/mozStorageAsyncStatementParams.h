@@ -8,11 +8,12 @@
 #define mozilla_storage_mozStorageAsyncStatementParams_h_
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsPIDOMWindow.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace storage {
 
 class AsyncStatement;
@@ -20,7 +21,7 @@ class AsyncStatement;
 class AsyncStatementParams final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(AsyncStatementParams)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(AsyncStatementParams)
 
   explicit AsyncStatementParams(nsPIDOMWindowInner* aWindow,
                                 AsyncStatement* aStatement);

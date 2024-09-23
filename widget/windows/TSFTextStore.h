@@ -9,17 +9,20 @@
 #include "nsCOMPtr.h"
 #include "nsIWidget.h"
 #include "nsString.h"
-#include "nsWindowBase.h"
+#include "nsWindow.h"
 
 #include "WinUtils.h"
 #include "WritingModes.h"
 
 #include "mozilla/Attributes.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TextEventDispatcher.h"
+#include "mozilla/TextEvents.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/WindowsVersion.h"
+#include "mozilla/widget/IMEData.h"
 
 #include <msctf.h>
 #include <textstor.h>
@@ -42,6 +45,32 @@ struct ITfDocumentMgr;
 struct ITfDisplayAttributeMgr;
 struct ITfCategoryMgr;
 class nsWindow;
+
+inline std::ostream& operator<<(std::ostream& aStream,
+                                const TS_SELECTIONSTYLE& aSelectionStyle) {
+  const char* ase = "Unknown";
+  switch (aSelectionStyle.ase) {
+    case TS_AE_START:
+      ase = "TS_AE_START";
+      break;
+    case TS_AE_END:
+      ase = "TS_AE_END";
+      break;
+    case TS_AE_NONE:
+      ase = "TS_AE_NONE";
+      break;
+  }
+  aStream << "{ ase=" << ase << ", fInterimChar="
+          << (aSelectionStyle.fInterimChar ? "TRUE" : "FALSE") << " }";
+  return aStream;
+}
+
+inline std::ostream& operator<<(std::ostream& aStream,
+                                const TS_SELECTION_ACP& aACP) {
+  aStream << "{ acpStart=" << aACP.acpStart << ", acpEnd=" << aACP.acpEnd
+          << ", style=" << mozilla::ToString(aACP.style).c_str() << " }";
+  return aStream;
+}
 
 namespace mozilla {
 namespace widget {
@@ -116,9 +145,8 @@ class TSFTextStore final : public ITextStoreACP,
   static void Terminate(void);
 
   static bool ProcessRawKeyMessage(const MSG& aMsg);
-  static void ProcessMessage(nsWindowBase* aWindow, UINT aMessage,
-                             WPARAM& aWParam, LPARAM& aLParam,
-                             MSGResult& aResult);
+  static void ProcessMessage(nsWindow* aWindow, UINT aMessage, WPARAM& aWParam,
+                             LPARAM& aLParam, MSGResult& aResult);
 
   static void SetIMEOpenState(bool);
   static bool GetIMEOpenState(void);
@@ -132,11 +160,10 @@ class TSFTextStore final : public ITextStoreACP,
     textStore->CommitCompositionInternal(aDiscard);
   }
 
-  static void SetInputContext(nsWindowBase* aWidget,
-                              const InputContext& aContext,
+  static void SetInputContext(nsWindow* aWidget, const InputContext& aContext,
                               const InputContextAction& aAction);
 
-  static nsresult OnFocusChange(bool aGotFocus, nsWindowBase* aFocusedWidget,
+  static nsresult OnFocusChange(bool aGotFocus, nsWindow* aFocusedWidget,
                                 const InputContext& aContext);
   static nsresult OnTextChange(const IMENotification& aIMENotification) {
     NS_ASSERTION(IsInTSFMode(), "Not in TSF mode, shouldn't be called");
@@ -211,14 +238,14 @@ class TSFTextStore final : public ITextStoreACP,
   static bool IsInTSFMode() { return sThreadMgr != nullptr; }
 
   static bool IsComposing() {
-    return (sEnabledTextStore && sEnabledTextStore->mComposition.IsComposing());
+    return (sEnabledTextStore && sEnabledTextStore->mComposition.isSome());
   }
 
-  static bool IsComposingOn(nsWindowBase* aWidget) {
+  static bool IsComposingOn(nsWindow* aWidget) {
     return (IsComposing() && sEnabledTextStore->mWidget == aWidget);
   }
 
-  static nsWindowBase* GetEnabledWindowBase() {
+  static nsWindow* GetEnabledWindowBase() {
     return sEnabledTextStore ? sEnabledTextStore->mWidget.get() : nullptr;
   }
 
@@ -241,6 +268,11 @@ class TSFTextStore final : public ITextStoreACP,
   static bool IsGoogleJapaneseInputActive();
 
   /**
+   * Returns true if active TIP is ATOK.
+   */
+  static bool IsATOKActive();
+
+  /**
    * Returns true if active TIP or IME is a black listed one and we should
    * set input scope of URL bar to IS_DEFAULT rather than IS_URL.
    */
@@ -260,14 +292,14 @@ class TSFTextStore final : public ITextStoreACP,
   TSFTextStore();
   ~TSFTextStore();
 
-  static bool CreateAndSetFocus(nsWindowBase* aFocusedWidget,
+  static bool CreateAndSetFocus(nsWindow* aFocusedWidget,
                                 const InputContext& aContext);
   static void EnsureToDestroyAndReleaseEnabledTextStoreIf(
       RefPtr<TSFTextStore>& aTextStore);
   static void MarkContextAsKeyboardDisabled(ITfContext* aContext);
   static void MarkContextAsEmpty(ITfContext* aContext);
 
-  bool Init(nsWindowBase* aWidget, const InputContext& aContext);
+  bool Init(nsWindow* aWidget, const InputContext& aContext);
   void Destroy();
   void ReleaseTSFObjects();
 
@@ -298,7 +330,9 @@ class TSFTextStore final : public ITextStoreACP,
   HRESULT GetDisplayAttribute(ITfProperty* aProperty, ITfRange* aRange,
                               TF_DISPLAYATTRIBUTE* aResult);
   HRESULT RestartCompositionIfNecessary(ITfRange* pRangeNew = nullptr);
-  HRESULT RestartComposition(ITfCompositionView* aCompositionView,
+  class Composition;
+  HRESULT RestartComposition(Composition& aCurrentComposition,
+                             ITfCompositionView* aCompositionView,
                              ITfRange* aNewRange);
 
   // Following methods record composing action(s) to mPendingActions.
@@ -306,7 +340,7 @@ class TSFTextStore final : public ITextStoreACP,
   HRESULT RecordCompositionStartAction(ITfCompositionView* aCompositionView,
                                        ITfRange* aRange,
                                        bool aPreserveSelection);
-  HRESULT RecordCompositionStartAction(ITfCompositionView* aComposition,
+  HRESULT RecordCompositionStartAction(ITfCompositionView* aCompositionView,
                                        LONG aStart, LONG aLength,
                                        bool aPreserveSelection);
   HRESULT RecordCompositionUpdateAction();
@@ -333,7 +367,7 @@ class TSFTextStore final : public ITextStoreACP,
   // mPendingSelectionChangeData stores selection change data until notifying
   // TSF of selection change.  If two or more selection changes occur, this
   // stores the latest selection change data because only it is necessary.
-  SelectionChangeData mPendingSelectionChangeData;
+  Maybe<SelectionChangeData> mPendingSelectionChangeData;
 
   // mPendingTextChangeData stores one or more text change data until notifying
   // TSF of text change.  If two or more text changes occur, this merges
@@ -348,8 +382,7 @@ class TSFTextStore final : public ITextStoreACP,
   HRESULT HandleRequestAttrs(DWORD aFlags, ULONG aFilterCount,
                              const TS_ATTRID* aFilterAttrs);
   void SetInputScope(const nsString& aHTMLInputType,
-                     const nsString& aHTMLInputInputmode,
-                     bool aInPrivateBrowsing);
+                     const nsString& aHTMLInputMode);
 
   // Creates native caret over our caret.  This method only works on desktop
   // application.  Otherwise, this does nothing.
@@ -385,7 +418,7 @@ class TSFTextStore final : public ITextStoreACP,
   bool MaybeHackNoErrorLayoutBugs(LONG& aACPStart, LONG& aACPEnd);
 
   // Holds the pointer to our current win32 widget
-  RefPtr<nsWindowBase> mWidget;
+  RefPtr<nsWindow> mWidget;
   // mDispatcher is a helper class to dispatch composition events.
   RefPtr<TextEventDispatcher> mDispatcher;
   // Document manager for the currently focused editor
@@ -453,35 +486,32 @@ class TSFTextStore final : public ITextStoreACP,
    */
   void DispatchKeyboardEventAsProcessedByIME(const MSG& aMsg);
 
-  class Composition final {
+  // Composition class stores a copy of the active composition string.  Only
+  // the data is updated during an InsertTextAtSelection call if we have a
+  // composition.  The data acts as a buffer until OnUpdateComposition is
+  // called and the data is flushed to editor through eCompositionChange.
+  // This allows all changes to be updated in batches to avoid inconsistencies
+  // and artifacts.
+  class Composition final : public OffsetAndData<LONG> {
    public:
-    // nullptr if no composition is active, otherwise the current composition
-    RefPtr<ITfCompositionView> mView;
+    explicit Composition(ITfCompositionView* aCompositionView,
+                         LONG aCompositionStartOffset,
+                         const nsAString& aCompositionString)
+        : OffsetAndData<LONG>(aCompositionStartOffset, aCompositionString),
+          mView(aCompositionView) {}
 
-    // Current copy of the active composition string. Only mString is
-    // changed during a InsertTextAtSelection call if we have a composition.
-    // mString acts as a buffer until OnUpdateComposition is called
-    // and mString is flushed to editor through eCompositionChange.
-    // This way all changes are updated in batches to avoid
-    // inconsistencies/artifacts.
-    nsString mString;
+    ITfCompositionView* GetView() const { return mView; }
 
-    // The start of the current active composition, in ACP offsets
-    LONG mStart;
-
-    bool IsComposing() const { return (mView != nullptr); }
-
-    LONG EndOffset() const {
-      return mStart + static_cast<LONG>(mString.Length());
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Composition& aComposition) {
+      aStream << "{ mView=0x" << aComposition.mView.get()
+              << ", OffsetAndData<LONG>="
+              << static_cast<const OffsetAndData<LONG>&>(aComposition) << " }";
+      return aStream;
     }
 
-    // Start() and End() updates the members for emulating the latest state.
-    // Unless flush the pending actions, this data never matches the actual
-    // content.
-    void Start(ITfCompositionView* aCompositionView,
-               LONG aCompositionStartOffset,
-               const nsAString& aCompositionString);
-    void End();
+   private:
+    RefPtr<ITfCompositionView> const mView;
   };
   // While the document is locked, we cannot dispatch any events which cause
   // DOM events since the DOM events' handlers may modify the locked document.
@@ -489,177 +519,230 @@ class TSFTextStore final : public ITextStoreACP,
   // For that, TSFTextStore modifies mComposition even while the document is
   // locked.  With mComposition, query methods can returns the text content
   // information.
-  Composition mComposition;
+  Maybe<Composition> mComposition;
 
   /**
-   * IsHandlingComposition() returns true if there is a composition in the
-   * focused editor.
+   * IsHandlingCompositionInParent() returns true if eCompositionStart is
+   * dispatched, but eCompositionCommit(AsIs) is not dispatched.  This means
+   * that if composition is handled in a content process, this status indicates
+   * whether ContentCacheInParent has composition or not.  On the other hand,
+   * if it's handled in the chrome process, this is exactly same as
+   * IsHandlingCompositionInContent().
    */
-  bool IsHandlingComposition() const {
+  bool IsHandlingCompositionInParent() const {
+    return mDispatcher && mDispatcher->IsComposing();
+  }
+
+  /**
+   * IsHandlingCompositionInContent() returns true if there is a composition in
+   * the focused editor which may be in a content process.
+   */
+  bool IsHandlingCompositionInContent() const {
     return mDispatcher && mDispatcher->IsHandlingComposition();
   }
 
   class Selection {
    public:
-    Selection() : mDirty(true) {}
+    static TS_SELECTION_ACP EmptyACP() {
+      return TS_SELECTION_ACP{
+          .acpStart = 0,
+          .acpEnd = 0,
+          .style = {.ase = TS_AE_NONE, .fInterimChar = FALSE}};
+    }
 
-    bool IsDirty() const { return mDirty; };
-    void MarkDirty() { mDirty = true; }
+    bool HasRange() const { return mACP.isSome(); }
+    const TS_SELECTION_ACP& ACPRef() const { return mACP.ref(); }
 
-    TS_SELECTION_ACP& ACP() {
-      MOZ_ASSERT(!mDirty);
-      return mACP;
+    explicit Selection(const TS_SELECTION_ACP& aSelection) {
+      SetSelection(aSelection);
+    }
+
+    explicit Selection(uint32_t aOffsetToCollapse) {
+      Collapse(aOffsetToCollapse);
+    }
+
+    explicit Selection(const SelectionChangeDataBase& aSelectionChangeData) {
+      SetSelection(aSelectionChangeData);
+    }
+
+    explicit Selection(const WidgetQueryContentEvent& aQuerySelectionEvent) {
+      SetSelection(aQuerySelectionEvent);
+    }
+
+    Selection(uint32_t aStart, uint32_t aLength, bool aReversed,
+              const WritingMode& aWritingMode) {
+      SetSelection(aStart, aLength, aReversed, aWritingMode);
     }
 
     void SetSelection(const TS_SELECTION_ACP& aSelection) {
-      mDirty = false;
-      mACP = aSelection;
+      mACP = Some(aSelection);
       // Selection end must be active in our editor.
-      if (mACP.style.ase != TS_AE_START) {
-        mACP.style.ase = TS_AE_END;
+      if (mACP->style.ase != TS_AE_START) {
+        mACP->style.ase = TS_AE_END;
       }
       // We're not support interim char selection for now.
       // XXX Probably, this is necessary for supporting South Asian languages.
-      mACP.style.fInterimChar = FALSE;
+      mACP->style.fInterimChar = FALSE;
+    }
+
+    bool SetSelection(const SelectionChangeDataBase& aSelectionChangeData) {
+      MOZ_ASSERT(aSelectionChangeData.IsInitialized());
+      if (!aSelectionChangeData.HasRange()) {
+        if (mACP.isNothing()) {
+          return false;
+        }
+        mACP.reset();
+        // Let's keep the WritingMode because users don't want to change the UI
+        // of TIP temporarily since no selection case is created only by web
+        // apps, but they or TIP would restore selection at last point later.
+        return true;
+      }
+      return SetSelection(aSelectionChangeData.mOffset,
+                          aSelectionChangeData.Length(),
+                          aSelectionChangeData.mReversed,
+                          aSelectionChangeData.GetWritingMode());
+    }
+
+    bool SetSelection(const WidgetQueryContentEvent& aQuerySelectionEvent) {
+      MOZ_ASSERT(aQuerySelectionEvent.mMessage == eQuerySelectedText);
+      MOZ_ASSERT(aQuerySelectionEvent.Succeeded());
+      if (aQuerySelectionEvent.DidNotFindSelection()) {
+        if (mACP.isNothing()) {
+          return false;
+        }
+        mACP.reset();
+        // Let's keep the WritingMode because users don't want to change the UI
+        // of TIP temporarily since no selection case is created only by web
+        // apps, but they or TIP would restore selection at last point later.
+        return true;
+      }
+      return SetSelection(aQuerySelectionEvent.mReply->StartOffset(),
+                          aQuerySelectionEvent.mReply->DataLength(),
+                          aQuerySelectionEvent.mReply->mReversed,
+                          aQuerySelectionEvent.mReply->WritingModeRef());
     }
 
     bool SetSelection(uint32_t aStart, uint32_t aLength, bool aReversed,
-                      WritingMode aWritingMode) {
-      bool changed = mDirty || mACP.acpStart != static_cast<LONG>(aStart) ||
-                     mACP.acpEnd != static_cast<LONG>(aStart + aLength);
-
-      mDirty = false;
-      mACP.acpStart = static_cast<LONG>(aStart);
-      mACP.acpEnd = static_cast<LONG>(aStart + aLength);
-      mACP.style.ase = aReversed ? TS_AE_START : TS_AE_END;
-      mACP.style.fInterimChar = FALSE;
+                      const WritingMode& aWritingMode) {
+      const bool changed = mACP.isNothing() ||
+                           mACP->acpStart != static_cast<LONG>(aStart) ||
+                           mACP->acpEnd != static_cast<LONG>(aStart + aLength);
+      mACP = Some(
+          TS_SELECTION_ACP{.acpStart = static_cast<LONG>(aStart),
+                           .acpEnd = static_cast<LONG>(aStart + aLength),
+                           .style = {.ase = aReversed ? TS_AE_START : TS_AE_END,
+                                     .fInterimChar = FALSE}});
       mWritingMode = aWritingMode;
 
       return changed;
     }
 
-    bool IsCollapsed() const {
-      MOZ_ASSERT(!mDirty);
-      return (mACP.acpStart == mACP.acpEnd);
+    bool Collapsed() const {
+      return mACP.isNothing() || mACP->acpStart == mACP->acpEnd;
     }
 
-    void CollapseAt(uint32_t aOffset) {
+    void Collapse(uint32_t aOffset) {
       // XXX This does not update the selection's mWritingMode.
       // If it is ever used to "collapse" to an entirely new location,
       // we may need to fix that.
-      mDirty = false;
-      mACP.acpStart = mACP.acpEnd = static_cast<LONG>(aOffset);
-      mACP.style.ase = TS_AE_END;
-      mACP.style.fInterimChar = FALSE;
+      mACP = Some(
+          TS_SELECTION_ACP{.acpStart = static_cast<LONG>(aOffset),
+                           .acpEnd = static_cast<LONG>(aOffset),
+                           .style = {.ase = TS_AE_END, .fInterimChar = FALSE}});
     }
 
     LONG MinOffset() const {
-      MOZ_ASSERT(!mDirty);
-      LONG min = std::min(mACP.acpStart, mACP.acpEnd);
+      MOZ_ASSERT(mACP.isSome());
+      LONG min = std::min(mACP->acpStart, mACP->acpEnd);
       MOZ_ASSERT(min >= 0);
       return min;
     }
 
     LONG MaxOffset() const {
-      MOZ_ASSERT(!mDirty);
-      LONG max = std::max(mACP.acpStart, mACP.acpEnd);
+      MOZ_ASSERT(mACP.isSome());
+      LONG max = std::max(mACP->acpStart, mACP->acpEnd);
       MOZ_ASSERT(max >= 0);
       return max;
     }
 
     LONG StartOffset() const {
-      MOZ_ASSERT(!mDirty);
-      MOZ_ASSERT(mACP.acpStart >= 0);
-      return mACP.acpStart;
+      MOZ_ASSERT(mACP.isSome());
+      MOZ_ASSERT(mACP->acpStart >= 0);
+      return mACP->acpStart;
     }
 
     LONG EndOffset() const {
-      MOZ_ASSERT(!mDirty);
-      MOZ_ASSERT(mACP.acpEnd >= 0);
-      return mACP.acpEnd;
+      MOZ_ASSERT(mACP.isSome());
+      MOZ_ASSERT(mACP->acpEnd >= 0);
+      return mACP->acpEnd;
     }
 
     LONG Length() const {
-      MOZ_ASSERT(!mDirty);
-      MOZ_ASSERT(mACP.acpEnd >= mACP.acpStart);
-      return std::abs(mACP.acpEnd - mACP.acpStart);
+      MOZ_ASSERT_IF(mACP.isSome(), mACP->acpEnd >= mACP->acpStart);
+      return mACP.isSome() ? std::abs(mACP->acpEnd - mACP->acpStart) : 0;
     }
 
     bool IsReversed() const {
-      MOZ_ASSERT(!mDirty);
-      return (mACP.style.ase == TS_AE_START);
+      return mACP.isSome() && mACP->style.ase == TS_AE_START;
     }
 
     TsActiveSelEnd ActiveSelEnd() const {
-      MOZ_ASSERT(!mDirty);
-      return mACP.style.ase;
+      return mACP.isSome() ? mACP->style.ase : TS_AE_NONE;
     }
 
     bool IsInterimChar() const {
-      MOZ_ASSERT(!mDirty);
-      return (mACP.style.fInterimChar != FALSE);
+      return mACP.isSome() && mACP->style.fInterimChar != FALSE;
     }
 
-    WritingMode GetWritingMode() const {
-      MOZ_ASSERT(!mDirty);
-      return mWritingMode;
-    }
+    const WritingMode& WritingModeRef() const { return mWritingMode; }
 
     bool EqualsExceptDirection(const TS_SELECTION_ACP& aACP) const {
-      if (mACP.style.ase == aACP.style.ase) {
-        return mACP.acpStart == aACP.acpStart && mACP.acpEnd == aACP.acpEnd;
+      if (mACP.isNothing()) {
+        return false;
       }
-      return mACP.acpStart == aACP.acpEnd && mACP.acpEnd == aACP.acpStart;
+      if (mACP->style.ase == aACP.style.ase) {
+        return mACP->acpStart == aACP.acpStart && mACP->acpEnd == aACP.acpEnd;
+      }
+      return mACP->acpStart == aACP.acpEnd && mACP->acpEnd == aACP.acpStart;
     }
 
     bool EqualsExceptDirection(
         const SelectionChangeDataBase& aChangedSelection) const {
-      MOZ_ASSERT(!mDirty);
-      MOZ_ASSERT(aChangedSelection.IsValid());
+      MOZ_ASSERT(aChangedSelection.IsInitialized());
+      if (mACP.isNothing()) {
+        return aChangedSelection.HasRange();
+      }
       return aChangedSelection.Length() == static_cast<uint32_t>(Length()) &&
              aChangedSelection.mOffset == static_cast<uint32_t>(StartOffset());
     }
 
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Selection& aSelection) {
+      aStream << "{ mACP=" << ToString(aSelection.mACP).c_str()
+              << ", mWritingMode=" << ToString(aSelection.mWritingMode).c_str()
+              << ",  Collapsed()="
+              << (aSelection.Collapsed() ? "true" : "false")
+              << ", Length=" << aSelection.Length() << " }";
+      return aStream;
+    }
+
    private:
-    TS_SELECTION_ACP mACP;
+    Maybe<TS_SELECTION_ACP> mACP;  // If Nothing, there is no selection
     WritingMode mWritingMode;
-    bool mDirty;
   };
-  // Don't access mSelection directly except at calling MarkDirty().
-  // Use SelectionForTSFRef() instead.  This is modified immediately when
-  // TSF requests to set selection and not updated by selection change in
-  // content until mContentForTSF is cleared.
-  Selection mSelectionForTSF;
+  // Don't access mSelection directly.  Instead, Use SelectionForTSFRef().
+  // This is modified immediately when TSF requests to set selection and not
+  // updated by selection change in content until mContentForTSF is cleared.
+  Maybe<Selection> mSelectionForTSF;
 
   /**
    * Get the selection expected by TSF.  If mSelectionForTSF is already valid,
    * this just return the reference to it.  Otherwise, this initializes it
    * with eQuerySelectedText.  Please check if the result is valid before
    * actually using it.
-   * Note that this is also called by ContentForTSFRef().
+   * Note that this is also called by ContentForTSF().
    */
-  Selection& SelectionForTSFRef();
-
-  class MOZ_STACK_CLASS AutoSetTemporarySelection final {
-   public:
-    explicit AutoSetTemporarySelection(Selection& aSelection)
-        : mSelection(aSelection) {
-      mDirty = mSelection.IsDirty();
-      if (mDirty) {
-        mSelection.CollapseAt(0);
-      }
-    }
-
-    ~AutoSetTemporarySelection() {
-      if (mDirty) {
-        mSelection.MarkDirty();
-      }
-    }
-
-   private:
-    Selection& mSelection;
-    bool mDirty;
-  };
+  Maybe<Selection>& SelectionForTSF();
 
   struct PendingAction final {
     enum class Type : uint8_t {
@@ -785,52 +868,18 @@ class TSFTextStore final : public ITextStoreACP,
 
   class Content final {
    public:
-    Content(TSFTextStore::Composition& aComposition,
-            TSFTextStore::Selection& aSelection)
-        : mComposition(aComposition), mSelection(aSelection) {
-      Clear();
-    }
+    Content(TSFTextStore& aTSFTextStore, const nsAString& aText)
+        : mText(aText),
+          mLastComposition(aTSFTextStore.mComposition),
+          mComposition(aTSFTextStore.mComposition),
+          mSelection(aTSFTextStore.mSelectionForTSF) {}
 
-    void Clear() {
-      mText.Truncate();
-      mLastCompositionString.Truncate();
-      mLastCompositionStart = -1;
-      mInitialized = false;
-    }
-
-    bool IsInitialized() const { return mInitialized; }
-
-    void Init(const nsAString& aText) {
-      mText = aText;
-      if (mComposition.IsComposing()) {
-        mLastCompositionString = mComposition.mString;
-        mLastCompositionStart = mComposition.mStart;
-      } else {
-        mLastCompositionString.Truncate();
-        mLastCompositionStart = -1;
-      }
-      mMinTextModifiedOffset = NOT_MODIFIED;
-      mLatestCompositionStartOffset = mLatestCompositionEndOffset = LONG_MAX;
-      mInitialized = true;
-    }
-
-    void OnLayoutChanged() { mMinTextModifiedOffset = NOT_MODIFIED; }
+    void OnLayoutChanged() { mMinModifiedOffset.reset(); }
 
     // OnCompositionEventsHandled() is called when all pending composition
     // events are handled in the focused content which may be in a remote
     // process.
-    void OnCompositionEventsHandled() {
-      if (!mInitialized) {
-        return;
-      }
-      if (mComposition.IsComposing()) {
-        mLastCompositionString = mComposition.mString;
-        mLastCompositionStart = mComposition.mStart;
-      } else {
-        mLastCompositionString.Truncate();
-        mLastCompositionStart = -1;
-      }
-    }
+    void OnCompositionEventsHandled() { mLastComposition = mComposition; }
 
     const nsDependentSubstring GetSelectedText() const;
     const nsDependentSubstring GetSubstring(uint32_t aStart,
@@ -858,88 +907,66 @@ class TSFTextStore final : public ITextStoreACP,
         const PendingAction& aCanceledCompositionEnd);
     void EndComposition(const PendingAction& aCompEnd);
 
-    const nsString& Text() const {
-      MOZ_ASSERT(mInitialized);
-      return mText;
+    const nsString& TextRef() const { return mText; }
+    const Maybe<OffsetAndData<LONG>>& LastComposition() const {
+      return mLastComposition;
     }
-    const nsString& LastCompositionString() const {
-      MOZ_ASSERT(mInitialized);
-      return mLastCompositionString;
+    const Maybe<uint32_t>& MinModifiedOffset() const {
+      return mMinModifiedOffset;
     }
-    LONG LastCompositionStringEndOffset() const {
-      MOZ_ASSERT(mInitialized);
-      MOZ_ASSERT(WasLastComposition());
-      return mLastCompositionStart + mLastCompositionString.Length();
-    }
-    bool WasLastComposition() const {
-      MOZ_ASSERT(mInitialized);
-      return mLastCompositionStart >= 0;
-    }
-    uint32_t MinTextModifiedOffset() const {
-      MOZ_ASSERT(mInitialized);
-      return mMinTextModifiedOffset;
-    }
-    LONG LatestCompositionStartOffset() const {
-      MOZ_ASSERT(mInitialized);
-      MOZ_ASSERT(HasOrHadComposition());
-      return mLatestCompositionStartOffset;
-    }
-    LONG LatestCompositionEndOffset() const {
-      MOZ_ASSERT(mInitialized);
-      MOZ_ASSERT(HasOrHadComposition());
-      return mLatestCompositionEndOffset;
+    const Maybe<StartAndEndOffsets<LONG>>& LatestCompositionRange() const {
+      return mLatestCompositionRange;
     }
 
     // Returns true if layout of the character at the aOffset has not been
     // calculated.
     bool IsLayoutChangedAt(uint32_t aOffset) const {
-      return IsLayoutChanged() && (mMinTextModifiedOffset <= aOffset);
+      return IsLayoutChanged() && (mMinModifiedOffset.value() <= aOffset);
     }
     // Returns true if layout of the content has been changed, i.e., the new
     // layout has not been calculated.
-    bool IsLayoutChanged() const {
-      return mInitialized && (mMinTextModifiedOffset != NOT_MODIFIED);
-    }
-    // Returns minimum offset of modified text range.
-    uint32_t MinOffsetOfLayoutChanged() const {
-      return mInitialized ? mMinTextModifiedOffset : NOT_MODIFIED;
-    }
-
+    bool IsLayoutChanged() const { return mMinModifiedOffset.isSome(); }
     bool HasOrHadComposition() const {
-      return mInitialized && mLatestCompositionStartOffset != LONG_MAX &&
-             mLatestCompositionEndOffset != LONG_MAX;
+      return mLatestCompositionRange.isSome();
     }
 
-    TSFTextStore::Composition& Composition() { return mComposition; }
-    TSFTextStore::Selection& Selection() { return mSelection; }
+    Maybe<TSFTextStore::Composition>& Composition() { return mComposition; }
+    Maybe<TSFTextStore::Selection>& Selection() { return mSelection; }
+
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Content& aContent) {
+      aStream << "{ mText="
+              << PrintStringDetail(aContent.mText,
+                                   PrintStringDetail::kMaxLengthForEditor)
+                     .get()
+              << ", mLastComposition=" << aContent.mLastComposition
+              << ", mLatestCompositionRange="
+              << aContent.mLatestCompositionRange
+              << ", mMinModifiedOffset=" << aContent.mMinModifiedOffset << " }";
+      return aStream;
+    }
 
    private:
     nsString mText;
-    // mLastCompositionString stores the composition string when the document
-    // is locked. This is necessary to compute mMinTextModifiedOffset.
-    nsString mLastCompositionString;
-    TSFTextStore::Composition& mComposition;
-    TSFTextStore::Selection& mSelection;
 
-    // mLastCompositionStart stores the start offset of composition when
-    // mLastCompositionString is set.
-    LONG mLastCompositionStart;
+    // mLastComposition may store the composition string and its start offset
+    // when the document is locked. This is necessary to compute
+    // mMinTextModifiedOffset.
+    Maybe<OffsetAndData<LONG>> mLastComposition;
 
-    // The latest composition's start and end offset.  If composition hasn't
-    // been started since this instance is initialized, they are LONG_MAX.
-    LONG mLatestCompositionStartOffset;
-    LONG mLatestCompositionEndOffset;
+    Maybe<TSFTextStore::Composition>& mComposition;
+    Maybe<TSFTextStore::Selection>& mSelection;
+
+    // The latest composition's start and end offset.
+    Maybe<StartAndEndOffsets<LONG>> mLatestCompositionRange;
 
     // The minimum offset of modified part of the text.
-    enum : uint32_t { NOT_MODIFIED = UINT32_MAX };
-    uint32_t mMinTextModifiedOffset;
-
-    bool mInitialized;
+    Maybe<uint32_t> mMinModifiedOffset;
   };
   // mContentForTSF is cache of content.  The information is expected by TSF
   // and TIP.  Therefore, this is useful for answering the query from TSF or
   // TIP.
-  // This is initialized by ContentForTSFRef() automatically (therefore, don't
+  // This is initialized by ContentForTSF() automatically (therefore, don't
   // access this member directly except at calling Clear(), IsInitialized(),
   // IsLayoutChangeAfter() or IsLayoutChanged()).
   // This is cleared when:
@@ -948,9 +975,25 @@ class TSFTextStore final : public ITextStoreACP,
   //    the focused editor which may be in a remote process.
   // So, if two compositions are created very quickly, this cache may not be
   // cleared between eCompositionCommit(AsIs) and eCompositionStart.
-  Content mContentForTSF;
+  Maybe<Content> mContentForTSF;
 
-  Content& ContentForTSFRef();
+  Maybe<Content>& ContentForTSF();
+
+  class MOZ_STACK_CLASS AutoNotifyingTSFBatch final {
+   public:
+    explicit AutoNotifyingTSFBatch(TSFTextStore& aTextStore)
+        : mTextStore(aTextStore), mOldValue(aTextStore.mDeferNotifyingTSF) {
+      mTextStore.mDeferNotifyingTSF = true;
+    }
+    ~AutoNotifyingTSFBatch() {
+      mTextStore.mDeferNotifyingTSF = mOldValue;
+      mTextStore.MaybeFlushPendingNotifications();
+    }
+
+   private:
+    TSFTextStore& mTextStore;
+    bool mOldValue;
+  };
 
   // CanAccessActualContentDirectly() returns true when TSF/TIP can access
   // actual content directly.  In other words, mContentForTSF and/or
@@ -960,7 +1003,9 @@ class TSFTextStore final : public ITextStoreACP,
 
   // While mContentForTSF is valid, this returns the text stored by it.
   // Otherwise, return the current text content retrieved by eQueryTextContent.
-  bool GetCurrentText(nsAString& aTextContent);
+  enum class AllowToFlushLayoutIfNoCache { No, Yes };
+  bool GetCurrentText(nsAString& aTextContent,
+                      AllowToFlushLayoutIfNoCache aAllowToFlushLayoutIfNoCache);
 
   class MouseTracker final {
    public:
@@ -974,21 +1019,13 @@ class TSFTextStore final : public ITextStoreACP,
     void UnadviseSink();
 
     bool IsUsing() const { return mSink != nullptr; }
-    bool InRange(uint32_t aOffset) const {
-      if (NS_WARN_IF(mStart < 0) || NS_WARN_IF(mLength <= 0)) {
-        return false;
-      }
-      return aOffset >= static_cast<uint32_t>(mStart) &&
-             aOffset < static_cast<uint32_t>(mStart + mLength);
-    }
     DWORD Cookie() const { return mCookie; }
     bool OnMouseButtonEvent(ULONG aEdge, ULONG aQuadrant, DWORD aButtonStatus);
-    LONG RangeStart() const { return mStart; }
+    const Maybe<StartAndEndOffsets<LONG>> Range() const { return mRange; }
 
    private:
     RefPtr<ITfMouseSink> mSink;
-    LONG mStart;
-    LONG mLength;
+    Maybe<StartAndEndOffsets<LONG>> mRange;
     DWORD mCookie;
   };
   // mMouseTrackers is an array to store each information of installed
@@ -998,6 +1035,9 @@ class TSFTextStore final : public ITextStoreACP,
   // The input scopes for this context, defaults to IS_DEFAULT.
   nsTArray<InputScope> mInputScopes;
 
+  // The URL cache of the focused document.
+  nsString mDocumentURL;
+
   // Support retrieving attributes.
   // TODO: We should support RightToLeft, perhaps.
   enum {
@@ -1006,56 +1046,71 @@ class TSFTextStore final : public ITextStoreACP,
 
     // Supported attributes
     eInputScope = 0,
+    eDocumentURL,
     eTextVerticalWriting,
     eTextOrientation,
 
     // Count of the supported attributes
     NUM_OF_SUPPORTED_ATTRS
   };
-  bool mRequestedAttrs[NUM_OF_SUPPORTED_ATTRS];
+  bool mRequestedAttrs[NUM_OF_SUPPORTED_ATTRS] = {false};
 
   int32_t GetRequestedAttrIndex(const TS_ATTRID& aAttrID);
   TS_ATTRID GetAttrID(int32_t aIndex);
 
-  bool mRequestedAttrValues;
+  bool mRequestedAttrValues = false;
 
   // If edit actions are being recorded without document lock, this is true.
   // Otherwise, false.
-  bool mIsRecordingActionsWithoutLock;
+  bool mIsRecordingActionsWithoutLock = false;
   // If GetTextExt() or GetACPFromPoint() is called and the layout hasn't been
   // calculated yet, these methods return TS_E_NOLAYOUT.  At that time,
   // mHasReturnedNoLayoutError is set to true.
-  bool mHasReturnedNoLayoutError;
+  bool mHasReturnedNoLayoutError = false;
   // Before calling ITextStoreACPSink::OnLayoutChange() and
   // ITfContextOwnerServices::OnLayoutChange(), mWaitingQueryLayout is set to
   // true.  This is set to  false when GetTextExt() or GetACPFromPoint() is
   // called.
-  bool mWaitingQueryLayout;
-  // During the documet is locked, we shouldn't destroy the instance.
+  bool mWaitingQueryLayout = false;
+  // During the document is locked, we shouldn't destroy the instance.
   // If this is true, the instance will be destroyed after unlocked.
-  bool mPendingDestroy;
+  bool mPendingDestroy = false;
+  // When we need to create native caret with the latest selection, but we're
+  // initializing selection, this is set to true.
+  bool mPendingToCreateNativeCaret = false;
   // If this is false, MaybeFlushPendingNotifications() will clear the
   // mContentForTSF.
-  bool mDeferClearingContentForTSF;
+  bool mDeferClearingContentForTSF = false;
+  // While the instance is initializing content/selection cache, another
+  // initialization shouldn't run recursively.  Therefore, while the
+  // initialization is running, this is set to true.  Use AutoNotifyingTSFBatch
+  // to set this.
+  bool mDeferNotifyingTSF = false;
   // While the instance is dispatching events, the event may not be handled
-  // synchronously in e10s mode.  So, in such case, in strictly speaking,
-  // we shouldn't query layout information.  However, TS_E_NOLAYOUT bugs of
-  // ITextStoreAPC::GetTextExt() blocks us to behave ideally.
-  // For preventing it to be called, we should put off notifying TSF of
-  // anything until layout information becomes available.
-  bool mDeferNotifyingTSF;
+  // synchronously when remote content has focus.  In the case, we cannot
+  // return the latest layout/content information to TSF/TIP until we get next
+  // update notification from ContentCacheInParent.  For preventing TSF/TIP
+  // retrieves the latest content/layout information while it becomes available,
+  // we should put off notifying TSF of any updates.
+  bool mDeferNotifyingTSFUntilNextUpdate = false;
   // While the document is locked, committing composition always fails since
   // TSF needs another document lock for modifying the composition, selection
   // and etc.  So, committing composition should be performed after the
   // document is unlocked.
-  bool mDeferCommittingComposition;
-  bool mDeferCancellingComposition;
+  bool mDeferCommittingComposition = false;
+  bool mDeferCancellingComposition = false;
   // Immediately after a call of Destroy(), mDestroyed becomes true.  If this
   // is true, the instance shouldn't grant any requests from the TIP anymore.
-  bool mDestroyed;
+  bool mDestroyed = false;
   // While the instance is being destroyed, this is set to true for avoiding
   // recursive Destroy() calls.
-  bool mBeingDestroyed;
+  bool mBeingDestroyed = false;
+  // Whether we're in the private browsing mode.
+  bool mInPrivateBrowsing = true;
+  // Debug flag to check whether we're initializing mContentForTSF and
+  // mSelectionForTSF.
+  bool mIsInitializingContentForTSF = false;
+  bool mIsInitializingSelectionForTSF = false;
 
   // TSF thread manager object for the current application
   static StaticRefPtr<ITfThreadMgr> sThreadMgr;

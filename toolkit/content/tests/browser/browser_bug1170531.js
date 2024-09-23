@@ -2,32 +2,32 @@
 // Test for bug 1170531
 // https://bugzilla.mozilla.org/show_bug.cgi?id=1170531
 
-add_task(async function() {
+add_task(async function () {
   // Get a bunch of DOM nodes
   let editMenu = document.getElementById("edit-menu");
   let menuPopup = editMenu.menupopup;
 
-  let closeMenu = function(aCallback) {
-    if (OS.Constants.Sys.Name == "Darwin") {
+  let closeMenu = function (aCallback) {
+    if (Services.appinfo.OS == "Darwin") {
       executeSoon(aCallback);
       return;
     }
 
     menuPopup.addEventListener(
       "popuphidden",
-      function() {
+      function () {
         executeSoon(aCallback);
       },
       { once: true }
     );
 
-    executeSoon(function() {
+    executeSoon(function () {
       editMenu.open = false;
     });
   };
 
-  let openMenu = function(aCallback) {
-    if (OS.Constants.Sys.Name == "Darwin") {
+  let openMenu = function (aCallback) {
+    if (Services.appinfo.OS == "Darwin") {
       goUpdateGlobalEditMenuItems();
       // On OSX, we have a native menu, so it has to be updated. In single process browsers,
       // this happens synchronously, but in e10s, we have to wait for the main thread
@@ -38,29 +38,32 @@ add_task(async function() {
 
     menuPopup.addEventListener(
       "popupshown",
-      function() {
+      function () {
         executeSoon(aCallback);
       },
       { once: true }
     );
 
-    executeSoon(function() {
+    executeSoon(function () {
       editMenu.open = true;
     });
   };
 
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
+    async function (browser) {
       let menu_cut_disabled, menu_copy_disabled;
 
-      await BrowserTestUtils.loadURI(
+      BrowserTestUtils.startLoadingURIString(
         browser,
         "data:text/html,<div>hello!</div>"
       );
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";
@@ -71,13 +74,40 @@ add_task(async function() {
       is(menu_copy_disabled, false, "menu_copy should be enabled");
       await new Promise(closeMenu);
 
-      await BrowserTestUtils.loadURI(
+      // When there is no text selected in the contentEditable, we expect the Cut
+      // and Copy commands to be disabled.
+      BrowserTestUtils.startLoadingURIString(
         browser,
         "data:text/html,<div contentEditable='true'>hello!</div>"
       );
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
+      await new Promise(openMenu);
+      menu_cut_disabled =
+        menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";
+      is(menu_cut_disabled, true, "menu_cut should be disabled");
+      menu_copy_disabled =
+        menuPopup.querySelector("#menu_copy").getAttribute("disabled") ==
+        "true";
+      is(menu_copy_disabled, true, "menu_copy should be disabled");
+      await new Promise(closeMenu);
+
+      // When the text of the contentEditable is selected, the Cut and Copy commands
+      // should be enabled.
+      BrowserTestUtils.startLoadingURIString(
+        browser,
+        "data:text/html,<div contentEditable='true'>hello!</div><script>r=new Range;r.selectNodeContents(document.body.firstChild);document.getSelection().addRange(r);</script>"
+      );
+      await BrowserTestUtils.browserLoaded(browser);
+      browser.focus();
+      await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";
@@ -88,10 +118,13 @@ add_task(async function() {
       is(menu_copy_disabled, false, "menu_copy should be enabled");
       await new Promise(closeMenu);
 
-      await BrowserTestUtils.loadURI(browser, "about:preferences");
+      BrowserTestUtils.startLoadingURIString(browser, "about:preferences");
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";

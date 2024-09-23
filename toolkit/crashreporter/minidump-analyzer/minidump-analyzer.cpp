@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "minidump-analyzer.h"
-
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -88,6 +86,42 @@ struct ModuleCompare {
 
 typedef map<const CodeModule*, unsigned int, ModuleCompare> OrderedModulesMap;
 
+static void AddModulesFromCallStack(OrderedModulesMap& aOrderedModules,
+                                    const CallStack* aStack) {
+  int frameCount = aStack->frames()->size();
+
+  for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+    const StackFrame* frame = aStack->frames()->at(frameIndex);
+
+    if (frame->module) {
+      aOrderedModules.insert(
+          std::pair<const CodeModule*, unsigned int>(frame->module, 0));
+    }
+  }
+}
+
+static void PopulateModuleList(const ProcessState& aProcessState,
+                               OrderedModulesMap& aOrderedModules,
+                               bool aFullStacks) {
+  int threadCount = aProcessState.threads()->size();
+  int requestingThread = aProcessState.requesting_thread();
+
+  if (!aFullStacks && (requestingThread != -1)) {
+    AddModulesFromCallStack(aOrderedModules,
+                            aProcessState.threads()->at(requestingThread));
+  } else {
+    for (int threadIndex = 0; threadIndex < threadCount; ++threadIndex) {
+      AddModulesFromCallStack(aOrderedModules,
+                              aProcessState.threads()->at(threadIndex));
+    }
+  }
+
+  int moduleCount = 0;
+  for (auto& itr : aOrderedModules) {
+    itr.second = moduleCount++;
+  }
+}
+
 static const char kExtraDataExtension[] = ".extra";
 
 static string ToHex(uint64_t aValue) {
@@ -154,18 +188,16 @@ static void ConvertStackToJSON(const ProcessState& aProcessState,
                                const OrderedModulesMap& aOrderedModules,
                                const CallStack* aStack, Json::Value& aNode) {
   int frameCount = aStack->frames()->size();
-  unsigned int moduleIndex = 0;
 
   for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
     const StackFrame* frame = aStack->frames()->at(frameIndex);
     Json::Value frameNode;
 
     if (frame->module) {
-      auto itr = aOrderedModules.find(frame->module);
+      const auto& itr = aOrderedModules.find(frame->module);
 
       if (itr != aOrderedModules.end()) {
-        moduleIndex = (*itr).second;
-        frameNode["module_index"] = moduleIndex;
+        frameNode["module_index"] = (*itr).second;
       }
     }
 
@@ -177,24 +209,45 @@ static void ConvertStackToJSON(const ProcessState& aProcessState,
   }
 }
 
+// Extract the list of certifications subjects from the list of modules and
+// store it in the |aCertSubjects| parameter
+
+static void RetrieveCertSubjects(const CodeModules* modules,
+                                 Json::Value& aCertSubjects) {
+#if defined(XP_WIN)
+  if (modules) {
+    for (size_t i = 0; i < modules->module_count(); i++) {
+      const CodeModule* module = modules->GetModuleAtIndex(i);
+      auto certSubject = gDllServices.GetBinaryOrgName(
+          UTF8ToWide(module->code_file()).c_str());
+      if (certSubject) {
+        string strSubject(WideToUTF8(certSubject.get()));
+        // Json::Value::operator[] creates and returns a null member if the key
+        // does not exist.
+        Json::Value& subjectNode = aCertSubjects[strSubject];
+        if (!subjectNode) {
+          // If the member is null, we want to convert that to an array.
+          subjectNode = Json::Value(Json::arrayValue);
+        }
+
+        // Now we're guaranteed that subjectNode is an array. Add the new entry.
+        subjectNode.append(PathnameStripper::File(module->code_file()));
+      }
+    }
+  }
+#endif  // defined(XP_WIN)
+}
+
 // Convert the list of modules to JSON and append them to the array specified
 // in the |aNode| parameter.
 
 static int ConvertModulesToJSON(const ProcessState& aProcessState,
-                                OrderedModulesMap& aOrderedModules,
-                                Json::Value& aNode,
-                                Json::Value& aCertSubjects) {
+                                const OrderedModulesMap& aOrderedModules,
+                                Json::Value& aNode) {
   const CodeModules* modules = aProcessState.modules();
 
   if (!modules) {
     return -1;
-  }
-
-  // Create a sorted set of modules so that we'll be able to lookup the index
-  // of a particular module.
-  for (unsigned int i = 0; i < modules->module_count(); ++i) {
-    aOrderedModules.insert(std::pair<const CodeModule*, unsigned int>(
-        modules->GetModuleAtSequence(i), i));
   }
 
   uint64_t mainAddress = 0;
@@ -204,34 +257,14 @@ static int ConvertModulesToJSON(const ProcessState& aProcessState,
     mainAddress = mainModule->base_address();
   }
 
-  unsigned int moduleCount = modules->module_count();
   int mainModuleIndex = -1;
 
-  for (unsigned int moduleSequence = 0; moduleSequence < moduleCount;
-       ++moduleSequence) {
-    const CodeModule* module = modules->GetModuleAtSequence(moduleSequence);
+  for (const auto& itr : aOrderedModules) {
+    const CodeModule* module = itr.first;
 
-    if (module->base_address() == mainAddress) {
-      mainModuleIndex = moduleSequence;
+    if ((module->base_address() == mainAddress) && mainModule) {
+      mainModuleIndex = itr.second;
     }
-
-#if defined(XP_WIN)
-    auto certSubject =
-        gDllServices.GetBinaryOrgName(UTF8ToWide(module->code_file()).c_str());
-    if (certSubject) {
-      string strSubject(WideToUTF8(certSubject.get()));
-      // Json::Value::operator[] creates and returns a null member if the key
-      // does not exist.
-      Json::Value& subjectNode = aCertSubjects[strSubject];
-      if (!subjectNode) {
-        // If the member is null, we want to convert that to an array.
-        subjectNode = Json::Value(Json::arrayValue);
-      }
-
-      // Now we're guaranteed that subjectNode is an array. Add the new entry.
-      subjectNode.append(PathnameStripper::File(module->code_file()));
-    }
-#endif
 
     Json::Value moduleNode;
     moduleNode["filename"] = PathnameStripper::File(module->code_file());
@@ -248,6 +281,36 @@ static int ConvertModulesToJSON(const ProcessState& aProcessState,
   return mainModuleIndex;
 }
 
+// Convert the list of unloaded modules to JSON and append them to the array
+// specified in the |aNode| parameter. Return the number of unloaded modules
+// that were found.
+
+static size_t ConvertUnloadedModulesToJSON(const ProcessState& aProcessState,
+                                           Json::Value& aNode) {
+  const CodeModules* unloadedModules = aProcessState.unloaded_modules();
+  if (!unloadedModules) {
+    return 0;
+  }
+
+  const size_t unloadedModulesLen = unloadedModules->module_count();
+  for (size_t i = 0; i < unloadedModulesLen; i++) {
+    const CodeModule* unloadedModule = unloadedModules->GetModuleAtIndex(i);
+
+    Json::Value unloadedModuleNode;
+    unloadedModuleNode["filename"] =
+        PathnameStripper::File(unloadedModule->code_file());
+    unloadedModuleNode["code_id"] =
+        PathnameStripper::File(unloadedModule->code_identifier());
+    unloadedModuleNode["base_addr"] = ToHex(unloadedModule->base_address());
+    unloadedModuleNode["end_addr"] =
+        ToHex(unloadedModule->base_address() + unloadedModule->size());
+
+    aNode.append(unloadedModuleNode);
+  }
+
+  return unloadedModulesLen;
+}
+
 // Convert the process state to JSON, this includes information about the
 // crash, the module list and stack traces for every thread
 
@@ -255,9 +318,6 @@ static void ConvertProcessStateToJSON(const ProcessState& aProcessState,
                                       Json::Value& aStackTraces,
                                       const bool aFullStacks,
                                       Json::Value& aCertSubjects) {
-  // We use this map to get the index of a module when listed by address
-  OrderedModulesMap orderedModules;
-
   // Crash info
   Json::Value crashInfo;
   int requestingThread = aProcessState.requesting_thread();
@@ -285,15 +345,28 @@ static void ConvertProcessStateToJSON(const ProcessState& aProcessState,
   aStackTraces["crash_info"] = crashInfo;
 
   // Modules
+  OrderedModulesMap orderedModules;
+  PopulateModuleList(aProcessState, orderedModules, aFullStacks);
+
   Json::Value modules(Json::arrayValue);
-  int mainModule = ConvertModulesToJSON(aProcessState, orderedModules, modules,
-                                        aCertSubjects);
+  int mainModule = ConvertModulesToJSON(aProcessState, orderedModules, modules);
 
   if (mainModule != -1) {
     aStackTraces["main_module"] = mainModule;
   }
 
   aStackTraces["modules"] = modules;
+
+  Json::Value unloadedModules(Json::arrayValue);
+  size_t unloadedModulesLen =
+      ConvertUnloadedModulesToJSON(aProcessState, unloadedModules);
+
+  if (unloadedModulesLen > 0) {
+    aStackTraces["unloaded_modules"] = unloadedModules;
+  }
+
+  RetrieveCertSubjects(aProcessState.modules(), aCertSubjects);
+  RetrieveCertSubjects(aProcessState.unloaded_modules(), aCertSubjects);
 
   // Threads
   Json::Value threads(Json::arrayValue);
@@ -428,7 +501,7 @@ static bool UpdateExtraDataFile(const string& aDumpPath,
   return res;
 }
 
-bool GenerateStacks(const string& aDumpPath, const bool aFullStacks) {
+static bool GenerateStacks(const string& aDumpPath, const bool aFullStacks) {
   Json::Value stackTraces;
   Json::Value certSubjects;
 
@@ -482,8 +555,7 @@ struct CharTraits<wchar_t> {
 
 static void LowerPriority() {
 #if defined(XP_WIN)
-  Unused << SetPriorityClass(GetCurrentProcess(),
-                             PROCESS_MODE_BACKGROUND_BEGIN);
+  Unused << SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
 #else  // Linux, MacOS X, etc...
   Unused << nice(20);
 #endif

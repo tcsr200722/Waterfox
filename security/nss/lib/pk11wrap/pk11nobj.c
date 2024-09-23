@@ -6,6 +6,8 @@
  * etc).
  */
 
+#include <stddef.h>
+
 #include "secport.h"
 #include "seccomon.h"
 #include "secmod.h"
@@ -411,12 +413,17 @@ PK11_FindCrlByName(PK11SlotInfo **slot, CK_OBJECT_HANDLE *crlHandle,
         nssPKIObjectCollection *collection;
         nssTokenSearchType tokenOnly = nssTokenSearchType_TokenOnly;
         NSSToken *token = PK11Slot_GetNSSToken(*slot);
+        if (!token) {
+            goto loser;
+        }
         collection = nssCRLCollection_Create(td, NULL);
         if (!collection) {
+            (void)nssToken_Destroy(token);
             goto loser;
         }
         instances = nssToken_FindCRLsBySubject(token, NULL, &subject,
                                                tokenOnly, 0, NULL);
+        (void)nssToken_Destroy(token);
         nssPKIObjectCollection_AddInstances(collection, instances, 0);
         nss_ZFreeIf(instances);
         crls = nssPKIObjectCollection_GetCRLs(collection, NULL, 0, NULL);
@@ -480,16 +487,21 @@ PK11_PutCrl(PK11SlotInfo *slot, SECItem *crl, SECItem *name,
             char *url, int type)
 {
     NSSItem derCRL, derSubject;
-    NSSToken *token = PK11Slot_GetNSSToken(slot);
+    NSSToken *token;
     nssCryptokiObject *object;
     PRBool isKRL = (type == SEC_CRL_TYPE) ? PR_FALSE : PR_TRUE;
     CK_OBJECT_HANDLE rvH;
 
     NSSITEM_FROM_SECITEM(&derSubject, name);
     NSSITEM_FROM_SECITEM(&derCRL, crl);
-
+    token = PK11Slot_GetNSSToken(slot);
+    if (!token) {
+        PORT_SetError(SEC_ERROR_NO_TOKEN);
+        return CK_INVALID_HANDLE;
+    }
     object = nssToken_ImportCRL(token, NULL,
                                 &derSubject, &derCRL, isKRL, url, PR_TRUE);
+    (void)nssToken_Destroy(token);
 
     if (object) {
         rvH = object->handle;
@@ -508,8 +520,8 @@ SECStatus
 SEC_DeletePermCRL(CERTSignedCrl *crl)
 {
     PRStatus status;
-    NSSToken *token;
     nssCryptokiObject *object;
+    NSSToken *token;
     PK11SlotInfo *slot = crl->slot;
 
     if (slot == NULL) {
@@ -518,13 +530,17 @@ SEC_DeletePermCRL(CERTSignedCrl *crl)
         PORT_SetError(SEC_ERROR_CRL_INVALID);
         return SECFailure;
     }
-    token = PK11Slot_GetNSSToken(slot);
 
-    object = nss_ZNEW(NULL, nssCryptokiObject);
-    if (!object) {
+    token = PK11Slot_GetNSSToken(slot);
+    if (!token) {
         return SECFailure;
     }
-    object->token = nssToken_AddRef(token);
+    object = nss_ZNEW(NULL, nssCryptokiObject);
+    if (!object) {
+        (void)nssToken_Destroy(token);
+        return SECFailure;
+    }
+    object->token = token; /* object takes ownership */
     object->handle = crl->pkcs11ID;
     object->isTokenObject = PR_TRUE;
 
@@ -532,6 +548,34 @@ SEC_DeletePermCRL(CERTSignedCrl *crl)
 
     nssCryptokiObject_Destroy(object);
     return (status == PR_SUCCESS) ? SECSuccess : SECFailure;
+}
+
+/* search with email with and without NULL
+ * The sql database accepts the email with a NULL as it's written,
+ * the dbm database strips the NULL on write so won't match if
+ * it's there on find */
+static CK_OBJECT_HANDLE
+pk11_FindSMimeObjectByTemplate(PK11SlotInfo *slot,
+                               CK_ATTRIBUTE *theTemplate, size_t tsize)
+{
+    CK_OBJECT_HANDLE smimeh = CK_INVALID_HANDLE;
+    CK_ATTRIBUTE *last;
+
+    PORT_Assert(tsize != 0);
+
+    smimeh = pk11_FindObjectByTemplate(slot, theTemplate, (int)tsize);
+    if (smimeh != CK_INVALID_HANDLE) {
+        return smimeh;
+    }
+    last = &theTemplate[tsize - 1];
+    if ((last->type == CKA_NSS_EMAIL) && (last->ulValueLen != 0)) {
+        CK_ULONG save_len = last->ulValueLen;
+        last->ulValueLen--;
+        smimeh = pk11_FindObjectByTemplate(slot, theTemplate, (int)tsize);
+        last->ulValueLen = save_len; /* restore the original */
+        return smimeh;
+    }
+    return CK_INVALID_HANDLE;
 }
 
 /*
@@ -543,8 +587,8 @@ PK11_FindSMimeProfile(PK11SlotInfo **slot, char *emailAddr,
 {
     CK_OBJECT_CLASS smimeClass = CKO_NSS_SMIME;
     CK_ATTRIBUTE theTemplate[] = {
-        { CKA_SUBJECT, NULL, 0 },
         { CKA_CLASS, NULL, 0 },
+        { CKA_SUBJECT, NULL, 0 },
         { CKA_NSS_EMAIL, NULL, 0 },
     };
     CK_ATTRIBUTE smimeData[] = {
@@ -552,7 +596,7 @@ PK11_FindSMimeProfile(PK11SlotInfo **slot, char *emailAddr,
         { CKA_VALUE, NULL, 0 },
     };
     /* if you change the array, change the variable below as well */
-    int tsize = sizeof(theTemplate) / sizeof(theTemplate[0]);
+    const size_t tsize = sizeof(theTemplate) / sizeof(theTemplate[0]);
     CK_OBJECT_HANDLE smimeh = CK_INVALID_HANDLE;
     CK_ATTRIBUTE *attrs = theTemplate;
     CK_RV crv;
@@ -563,15 +607,15 @@ PK11_FindSMimeProfile(PK11SlotInfo **slot, char *emailAddr,
         return NULL;
     }
 
-    PK11_SETATTRS(attrs, CKA_SUBJECT, name->data, name->len);
-    attrs++;
     PK11_SETATTRS(attrs, CKA_CLASS, &smimeClass, sizeof(smimeClass));
     attrs++;
-    PK11_SETATTRS(attrs, CKA_NSS_EMAIL, emailAddr, strlen(emailAddr));
+    PK11_SETATTRS(attrs, CKA_SUBJECT, name->data, name->len);
+    attrs++;
+    PK11_SETATTRS(attrs, CKA_NSS_EMAIL, emailAddr, strlen(emailAddr) + 1);
     attrs++;
 
     if (*slot) {
-        smimeh = pk11_FindObjectByTemplate(*slot, theTemplate, tsize);
+        smimeh = pk11_FindSMimeObjectByTemplate(*slot, theTemplate, tsize);
     } else {
         PK11SlotList *list = PK11_GetAllTokens(CKM_INVALID_MECHANISM,
                                                PR_FALSE, PR_TRUE, NULL);
@@ -582,7 +626,7 @@ PK11_FindSMimeProfile(PK11SlotInfo **slot, char *emailAddr,
         }
         /* loop through all the slots */
         for (le = list->head; le; le = le->next) {
-            smimeh = pk11_FindObjectByTemplate(le->slot, theTemplate, tsize);
+            smimeh = pk11_FindSMimeObjectByTemplate(le->slot, theTemplate, tsize);
             if (smimeh != CK_INVALID_HANDLE) {
                 *slot = PK11_ReferenceSlot(le->slot);
                 break;

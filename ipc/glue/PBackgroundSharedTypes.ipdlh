@@ -3,19 +3,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 using mozilla::OriginAttributes from "mozilla/ipc/BackgroundUtils.h";
-using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
 
 namespace mozilla {
 namespace ipc {
 
-struct ContentSecurityPolicy
+[Comparable] struct ContentSecurityPolicy
 {
   nsString policy;
   bool reportOnlyFlag;
   bool deliveredViaMetaTagFlag;
 };
 
-struct ContentPrincipalInfo
+[Comparable] struct ContentPrincipalInfo
 {
   OriginAttributes attrs;
 
@@ -36,22 +36,22 @@ struct ContentPrincipalInfo
   nsCString baseDomain;
 };
 
-struct SystemPrincipalInfo
+[Comparable] struct SystemPrincipalInfo
 { };
 
-struct NullPrincipalInfo
+[Comparable] struct NullPrincipalInfo
 {
   OriginAttributes attrs;
   nsCString spec;
 };
 
-struct ExpandedPrincipalInfo
+[Comparable] struct ExpandedPrincipalInfo
 {
   OriginAttributes attrs;
   PrincipalInfo[] allowlist;
 };
 
-union PrincipalInfo
+[Comparable] union PrincipalInfo
 {
   ContentPrincipalInfo;
   SystemPrincipalInfo;
@@ -59,14 +59,19 @@ union PrincipalInfo
   ExpandedPrincipalInfo;
 };
 
-struct CSPInfo
+[Comparable] struct CSPInfo
 {
   ContentSecurityPolicy[] policyInfos;
   PrincipalInfo requestPrincipalInfo;
   nsCString selfURISpec;
-  nsString referrer;
+  nsCString referrer;
   uint64_t innerWindowID;
   bool skipAllowInlineStyleCheck;
+};
+
+[Comparable] struct WebTransportHash {
+  nsCString algorithm;
+  uint8_t[] value;
 };
 
 } // namespace ipc

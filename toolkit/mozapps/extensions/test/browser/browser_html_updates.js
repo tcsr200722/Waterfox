@@ -1,7 +1,7 @@
 /* eslint max-len: ["error", 80] */
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
 
 AddonTestUtils.initMochitest(this);
@@ -13,18 +13,14 @@ registerCleanupFunction(() => {
   AddonManager.autoUpdateDefault = initialAutoUpdate;
 });
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["extensions.checkUpdateSecurity", false]],
   });
 
   Services.telemetry.clearEvents();
   registerCleanupFunction(() => {
-    const { ExtensionsUI } = ChromeUtils.import(
-      "resource:///modules/ExtensionsUI.jsm"
-    );
-    info("Cleanup any pending notification before exiting the test");
-    ExtensionsUI.pendingNotifications.delete(window);
+    cleanupPendingNotifications();
   });
 });
 
@@ -32,7 +28,11 @@ function loadDetailView(win, id) {
   let doc = win.document;
   let card = doc.querySelector(`addon-card[addon-id="${id}"]`);
   let loaded = waitForViewLoad(win);
-  EventUtils.synthesizeMouseAtCenter(card, { clickCount: 1 }, win);
+  EventUtils.synthesizeMouseAtCenter(
+    card.querySelector(".addon-name-link"),
+    { clickCount: 1 },
+    win
+  );
   return loaded;
 }
 
@@ -41,7 +41,7 @@ add_task(async function testChangeAutoUpdates() {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       name: "Test",
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
     // Use permanent so the add-on can be updated.
     useAddonManager: "permanent",
@@ -53,7 +53,7 @@ add_task(async function testChangeAutoUpdates() {
   let win = await loadInitialView("extension");
   let doc = win.document;
 
-  let getInputs = updateRow => ({
+  let getInputs = () => ({
     default: updatesRow.querySelector('input[value="1"]'),
     on: updatesRow.querySelector('input[value="2"]'),
     off: updatesRow.querySelector('input[value="0"]'),
@@ -72,12 +72,12 @@ add_task(async function testChangeAutoUpdates() {
   ok(inputs.checkForUpdate.hidden, "Update check is hidden");
 
   inputs.on.click();
-  is(addon.applyBackgroundUpdates, 2, "Updates are now enabled");
+  is(addon.applyBackgroundUpdates, "2", "Updates are now enabled");
   ok(inputs.on.checked, "The on option is selected");
   ok(inputs.checkForUpdate.hidden, "Update check is hidden");
 
   inputs.off.click();
-  is(addon.applyBackgroundUpdates, 0, "Updates are now disabled");
+  is(addon.applyBackgroundUpdates, "0", "Updates are now disabled");
   ok(inputs.off.checked, "The off option is selected");
   ok(!inputs.checkForUpdate.hidden, "Update check is visible");
 
@@ -101,18 +101,18 @@ add_task(async function testChangeAutoUpdates() {
   await updated;
 
   // Updates are still the same.
-  is(addon.applyBackgroundUpdates, 0, "Updates are now disabled");
+  is(addon.applyBackgroundUpdates, "0", "Updates are now disabled");
   ok(inputs.off.checked, "The off option is selected");
   ok(!inputs.checkForUpdate.hidden, "Update check is visible");
 
   // Check default.
   inputs.default.click();
-  is(addon.applyBackgroundUpdates, 1, "Default is set");
+  is(addon.applyBackgroundUpdates, "1", "Default is set");
   ok(inputs.default.checked, "The default option is selected");
   ok(!inputs.checkForUpdate.hidden, "Update check is visible");
 
   inputs.on.click();
-  is(addon.applyBackgroundUpdates, 2, "Updates are now enabled");
+  is(addon.applyBackgroundUpdates, "2", "Updates are now enabled");
   ok(inputs.on.checked, "The on option is selected");
   ok(inputs.checkForUpdate.hidden, "Update check is hidden");
 
@@ -123,83 +123,7 @@ add_task(async function testChangeAutoUpdates() {
 
   await closeView(win);
   await extension.unload();
-
-  assertAboutAddonsTelemetryEvents([
-    ["addonsManager", "view", "aboutAddons", "list", { type: "extension" }],
-    [
-      "addonsManager",
-      "view",
-      "aboutAddons",
-      "detail",
-      { type: "extension", addonId: id },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      "enabled",
-      { type: "extension", addonId: id, action: "setAddonUpdate" },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      "",
-      { type: "extension", addonId: id, action: "setAddonUpdate" },
-    ],
-    ["addonsManager", "view", "aboutAddons", "list", { type: "extension" }],
-    [
-      "addonsManager",
-      "view",
-      "aboutAddons",
-      "detail",
-      { type: "extension", addonId: id },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      "default",
-      { type: "extension", addonId: id, action: "setAddonUpdate" },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      "enabled",
-      { type: "extension", addonId: id, action: "setAddonUpdate" },
-    ],
-  ]);
 });
-
-function promisePermissionPrompt(addonId) {
-  return BrowserUtils.promiseObserved(
-    "webextension-permission-prompt",
-    subject => {
-      const { info } = subject.wrappedJSObject || {};
-      return !addonId || (info.addon && info.addon.id === addonId);
-    }
-  ).then(({ subject }) => {
-    return subject.wrappedJSObject.info;
-  });
-}
-
-async function handlePermissionPrompt({ addonId, reject = false } = {}) {
-  const info = await promisePermissionPrompt(addonId);
-  // Assert that info.addon and info.icon are defined as expected.
-  is(
-    info.addon && info.addon.id,
-    addonId,
-    "Got the AddonWrapper in the permission prompt info"
-  );
-  ok(info.icon != null, "Got an addon icon in the permission prompt info");
-
-  if (reject) {
-    info.reject();
-  } else {
-    info.resolve();
-  }
-}
 
 async function setupExtensionWithUpdate(
   id,
@@ -210,8 +134,8 @@ async function setupExtensionWithUpdate(
 
   let baseManifest = {
     name: "Updates",
-    icons: { "48": "an-icon.png" },
-    applications: {
+    icons: { 48: "an-icon.png" },
+    browser_specific_settings: {
       gecko: {
         id,
         update_url: serverHost + updatesPath,
@@ -322,19 +246,22 @@ function assertUpdateState({
   releaseNotes = false,
 }) {
   let menuButton = card.querySelector(".more-options-button");
-  ok(
-    menuButton.classList.contains("more-options-button-badged") == shown,
+  Assert.equal(
+    menuButton.classList.contains("more-options-button-badged"),
+    shown,
     "The menu button is badged"
   );
   let installButton = card.querySelector('panel-item[action="install-update"]');
-  ok(
-    installButton.hidden != shown,
+  Assert.notEqual(
+    installButton.hidden,
+    shown,
     `The install button is ${shown ? "hidden" : "shown"}`
   );
   if (expanded) {
     let updateCheckButton = card.querySelector('button[action="update-check"]');
-    ok(
-      updateCheckButton.hidden == shown,
+    Assert.equal(
+      updateCheckButton.hidden,
+      shown,
       `The update check button is ${shown ? "hidden" : "shown"}`
     );
 
@@ -486,45 +413,6 @@ add_task(async function testReleaseNotesLoad() {
 
   await closeView(win);
   await extension.unload();
-
-  assertAboutAddonsTelemetryEvents([
-    ["addonsManager", "view", "aboutAddons", "list", { type: "extension" }],
-    [
-      "addonsManager",
-      "view",
-      "aboutAddons",
-      "detail",
-      { type: "extension", addonId: id },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      "",
-      { type: "extension", addonId: id, action: "setAddonUpdate" },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      null,
-      { type: "extension", addonId: id, action: "checkForUpdate" },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      null,
-      { type: "extension", addonId: id, action: "releaseNotes" },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      null,
-      { type: "extension", addonId: id, action: "releaseNotes" },
-    ],
-  ]);
 });
 
 add_task(async function testReleaseNotesError() {
@@ -639,7 +527,7 @@ add_task(async function testAvailableUpdates() {
   let win = await loadInitialView("extension");
   let doc = win.document;
   let updatesMessage = doc.getElementById("updates-message");
-  let categoryUtils = new CategoryUtilities(win.managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
 
   let availableCat = categoryUtils.get("available-updates");
 
@@ -760,7 +648,7 @@ add_task(async function testUpdatesShownOnLoad() {
   await findUpdatesForAddonId(id);
 
   let win = await loadInitialView("extension");
-  let categoryUtils = new CategoryUtilities(win.managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
   let updatesButton = categoryUtils.get("available-updates");
 
   ok(!updatesButton.hidden, "The updates button is shown");
@@ -785,7 +673,7 @@ add_task(async function testUpdatesShownOnLoad() {
   info("Check that the updates section is hidden when re-opened");
   await closeView(win);
   win = await loadInitialView("extension");
-  categoryUtils = new CategoryUtilities(win.managerWindow);
+  categoryUtils = new CategoryUtilities(win);
   updatesButton = categoryUtils.get("available-updates");
 
   ok(updatesButton.hidden, "Available updates is hidden");
@@ -820,4 +708,43 @@ add_task(async function testPromptOnBackgroundUpdateCheck() {
 
   await closeView(win);
   await extension.unload();
+});
+
+add_task(async function testNoUpdateAvailableOnUnrelatedAddonCards() {
+  let idNoUpdate = "no-update@mochi.test";
+
+  let extensionNoUpdate = ExtensionTestUtils.loadExtension({
+    useAddonManager: "temporary",
+    manifest: {
+      name: "TestAddonNoUpdate",
+      browser_specific_settings: { gecko: { id: idNoUpdate } },
+    },
+  });
+  await extensionNoUpdate.startup();
+
+  let win = await loadInitialView("extension");
+
+  let cardNoUpdate = getAddonCard(win, idNoUpdate);
+  ok(cardNoUpdate, `Got AddonCard for ${idNoUpdate}`);
+
+  // Assert that there is not an update badge
+  assertUpdateState({ card: cardNoUpdate, shown: false, expanded: false });
+
+  // Trigger a onNewInstall event by install another unrelated addon.
+  const XPI_URL = `${SECURE_TESTROOT}../xpinstall/amosigned.xpi`;
+  let install = await AddonManager.getInstallForURL(XPI_URL);
+  await AddonManager.installAddonFromAOM(
+    gBrowser.selectedBrowser,
+    win.document.documentURIObject,
+    install
+  );
+
+  // Cancel the install used to trigger the onNewInstall install event.
+  await install.cancel();
+  // Assert that the previously installed addon isn't marked with the
+  // update available badge after installing an unrelated addon.
+  assertUpdateState({ card: cardNoUpdate, shown: false, expanded: false });
+
+  await closeView(win);
+  await extensionNoUpdate.unload();
 });

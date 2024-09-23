@@ -7,6 +7,7 @@
 #include "BodyExtractor.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/FormData.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/URLSearchParams.h"
 #include "mozilla/dom/XMLHttpRequest.h"
@@ -19,21 +20,23 @@
 #include "nsIStorageStream.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-static nsresult GetBufferDataAsStream(
-    const uint8_t* aData, uint32_t aDataLength, nsIInputStream** aResult,
-    uint64_t* aContentLength, nsACString& aContentType, nsACString& aCharset) {
+static nsresult GetBufferDataAsStream(Vector<uint8_t>&& aData,
+                                      nsIInputStream** aResult,
+                                      uint64_t* aContentLength,
+                                      nsACString& aContentType,
+                                      nsACString& aCharset) {
   aContentType.SetIsVoid(true);
   aCharset.Truncate();
 
-  *aContentLength = aDataLength;
-  const char* data = reinterpret_cast<const char*>(aData);
+  *aContentLength = aData.length();
 
   nsCOMPtr<nsIInputStream> stream;
   nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(stream), MakeSpan(data, aDataLength), NS_ASSIGNMENT_COPY);
+      getter_AddRefs(stream),
+      AsChars(Span(aData.extractOrCopyRawBuffer(), *aContentLength)),
+      NS_ASSIGNMENT_ADOPT);
   NS_ENSURE_SUCCESS(rv, rv);
 
   stream.forget(aResult);
@@ -45,20 +48,24 @@ template <>
 nsresult BodyExtractor<const ArrayBuffer>::GetAsStream(
     nsIInputStream** aResult, uint64_t* aContentLength,
     nsACString& aContentTypeWithCharset, nsACString& aCharset) const {
-  mBody->ComputeState();
-  return GetBufferDataAsStream(mBody->Data(), mBody->Length(), aResult,
-                               aContentLength, aContentTypeWithCharset,
-                               aCharset);
+  Maybe<Vector<uint8_t>> body = mBody->CreateFromData<Vector<uint8_t>>();
+  if (body.isNothing()) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+  return GetBufferDataAsStream(body.extract(), aResult, aContentLength,
+                               aContentTypeWithCharset, aCharset);
 }
 
 template <>
 nsresult BodyExtractor<const ArrayBufferView>::GetAsStream(
     nsIInputStream** aResult, uint64_t* aContentLength,
     nsACString& aContentTypeWithCharset, nsACString& aCharset) const {
-  mBody->ComputeState();
-  return GetBufferDataAsStream(mBody->Data(), mBody->Length(), aResult,
-                               aContentLength, aContentTypeWithCharset,
-                               aCharset);
+  Maybe<Vector<uint8_t>> body = mBody->CreateFromData<Vector<uint8_t>>();
+  if (body.isNothing()) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+  return GetBufferDataAsStream(body.extract(), aResult, aContentLength,
+                               aContentTypeWithCharset, aCharset);
 }
 
 template <>
@@ -81,7 +88,8 @@ nsresult BodyExtractor<Document>::GetAsStream(
     aContentTypeWithCharset.AssignLiteral("text/html;charset=UTF-8");
 
     nsString serialized;
-    if (!nsContentUtils::SerializeNodeToMarkup(mBody, true, serialized)) {
+    if (!nsContentUtils::SerializeNodeToMarkup(mBody, true, serialized, false,
+                                               {})) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -102,8 +110,7 @@ nsresult BodyExtractor<Document>::GetAsStream(
 
     // Make sure to use the encoding we'll send
     ErrorResult res;
-    serializer->SerializeToStream(*mBody, output, NS_LITERAL_STRING("UTF-8"),
-                                  res);
+    serializer->SerializeToStream(*mBody, output, u"UTF-8"_ns, res);
     if (NS_WARN_IF(res.Failed())) {
       return res.StealNSResult();
     }
@@ -181,5 +188,4 @@ nsresult BodyExtractor<const URLSearchParams>::GetAsStream(
                             aCharset);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

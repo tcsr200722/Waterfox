@@ -8,10 +8,13 @@ and the underlying operating system and mock its behavior.
 
 Usage:
 
-1. Include `<script src="./support/otpcredential-helper.js"></script>` in your
-test
-2. Set expectations
+1. Include the following in your test:
+```html
+<script src="/resources/test-only-api.js"></script>
+<script src="support/otpcredential-helper.js"></script>
 ```
+2. Set expectations
+```javascript
 await expect(receive).andReturn(() => {
   // mock behavior
 })
@@ -28,3 +31,24 @@ per engine:
 - function receive(): the main/only function that can be mocked
 - function expect(): the main/only function that enables us to mock it
 - enum State {kSuccess, kTimeout}: allows you to mock success/failures
+
+## FedCM Testing
+
+`fedcm-mojojs-helper.js` exposes `fedcm_mojo_mock_test` which is a specialized
+`promise_test` which comes pre-setup with the appropriate mocking infrastructure
+to emulate platform federated auth backend. The mock is passed to the test
+function as the second parameter.
+
+Example usage:
+```
+<script type="module">
+  import {fedcm_mojo_mock_test} from './support/fedcm-mojojs-helper.js';
+
+  fedcm_mojo_mock_test(async (t, mock) => {
+    mock.returnToken("https://idp.test/fedcm.json", "a_token");
+    assert_equals("a_token", await navigator.credentials.get(options));
+  }, "Successfully obtaining a token using mock.");
+</script>
+```
+
+The chromium implementation uses the MojoJS shim.

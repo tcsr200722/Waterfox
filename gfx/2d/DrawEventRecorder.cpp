@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DrawEventRecorder.h"
+
+#include "mozilla/UniquePtrExtensions.h"
 #include "PathRecording.h"
 #include "RecordingTypes.h"
 #include "RecordedEventImpl.h"
@@ -14,17 +16,42 @@ namespace gfx {
 
 DrawEventRecorderPrivate::DrawEventRecorderPrivate() : mExternalFonts(false) {}
 
+DrawEventRecorderPrivate::~DrawEventRecorderPrivate() = default;
+
+void DrawEventRecorderPrivate::SetDrawTarget(ReferencePtr aDT) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
+  RecordEvent(RecordedSetCurrentDrawTarget(aDT));
+  mCurrentDT = aDT;
+}
+
 void DrawEventRecorderPrivate::StoreExternalSurfaceRecording(
     SourceSurface* aSurface, uint64_t aKey) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
   RecordEvent(RecordedExternalSurfaceCreation(aSurface, aKey));
-  mExternalSurfaces.push_back(aSurface);
+  mExternalSurfaces.push_back({aSurface});
+}
+
+void DrawEventRecorderPrivate::StoreExternalImageRecording(
+    const RefPtr<layers::Image>& aImageOfSurfaceDescriptor) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
+  mExternalImages.push_back({aImageOfSurfaceDescriptor});
 }
 
 void DrawEventRecorderPrivate::StoreSourceSurfaceRecording(
     SourceSurface* aSurface, const char* aReason) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
   RefPtr<DataSourceSurface> dataSurf = aSurface->GetDataSurface();
   IntSize surfaceSize = aSurface->GetSize();
-  if (!dataSurf || !Factory::AllowedSurfaceSize(surfaceSize)) {
+  Maybe<DataSourceSurface::ScopedMap> map;
+  if (dataSurf) {
+    map.emplace(dataSurf, DataSourceSurface::READ);
+  }
+  if (!dataSurf || !map->IsMapped() ||
+      !Factory::AllowedSurfaceSize(surfaceSize)) {
     gfxWarning() << "Recording failed to record SourceSurface for " << aReason;
 
     // If surface size is not allowed, replace with reasonable size.
@@ -35,20 +62,30 @@ void DrawEventRecorderPrivate::StoreSourceSurfaceRecording(
 
     // Insert a dummy source surface.
     int32_t stride = surfaceSize.width * BytesPerPixel(aSurface->GetFormat());
-    UniquePtr<uint8_t[]> sourceData(new uint8_t[stride * surfaceSize.height]());
+    UniquePtr<uint8_t[]> sourceData =
+        MakeUniqueFallible<uint8_t[]>(stride * surfaceSize.height);
+    if (!sourceData) {
+      // If the surface is too big just create a 1 x 1 dummy.
+      surfaceSize.width = 1;
+      surfaceSize.height = 1;
+      stride = surfaceSize.width * BytesPerPixel(aSurface->GetFormat());
+      sourceData = MakeUnique<uint8_t[]>(stride * surfaceSize.height);
+    }
+
     RecordEvent(RecordedSourceSurfaceCreation(aSurface, sourceData.get(),
                                               stride, surfaceSize,
                                               aSurface->GetFormat()));
     return;
   }
 
-  DataSourceSurface::ScopedMap map(dataSurf, DataSourceSurface::READ);
   RecordEvent(RecordedSourceSurfaceCreation(
-      aSurface, map.GetData(), map.GetStride(), dataSurf->GetSize(),
+      aSurface, map->GetData(), map->GetStride(), dataSurf->GetSize(),
       dataSurf->GetFormat()));
 }
 
 void DrawEventRecorderPrivate::RecordSourceSurfaceDestruction(void* aSurface) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
   RemoveSourceSurface(static_cast<SourceSurface*>(aSurface));
   RemoveStoredObject(aSurface);
   RecordEvent(RecordedSourceSurfaceDestruction(ReferencePtr(aSurface)));
@@ -56,57 +93,31 @@ void DrawEventRecorderPrivate::RecordSourceSurfaceDestruction(void* aSurface) {
 
 void DrawEventRecorderPrivate::DecrementUnscaledFontRefCount(
     const ReferencePtr aUnscaledFont) {
-  auto element = mUnscaledFontRefs.find(aUnscaledFont);
-  MOZ_DIAGNOSTIC_ASSERT(element != mUnscaledFontRefs.end(),
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderPrivate);
+
+  auto element = mUnscaledFontRefs.Lookup(aUnscaledFont);
+  MOZ_DIAGNOSTIC_ASSERT(element,
                         "DecrementUnscaledFontRefCount calls should balance "
                         "with IncrementUnscaledFontRefCount calls");
-  if (--(element->second) <= 0) {
+  if (--element.Data() <= 0) {
     RecordEvent(RecordedUnscaledFontDestruction(aUnscaledFont));
-    mUnscaledFontRefs.erase(aUnscaledFont);
+    element.Remove();
   }
 }
 
-void DrawEventRecorderFile::RecordEvent(const RecordedEvent& aEvent) {
-  aEvent.RecordToStream(mOutputStream);
-
-  Flush();
-}
-
 void DrawEventRecorderMemory::RecordEvent(const RecordedEvent& aEvent) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
   aEvent.RecordToStream(mOutputStream);
 }
 
 void DrawEventRecorderMemory::AddDependentSurface(uint64_t aDependencyId) {
-  mDependentSurfaces.PutEntry(aDependencyId);
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
+  mDependentSurfaces.Insert(aDependencyId);
 }
 
-nsTHashtable<nsUint64HashKey>&&
-DrawEventRecorderMemory::TakeDependentSurfaces() {
+nsTHashSet<uint64_t>&& DrawEventRecorderMemory::TakeDependentSurfaces() {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
   return std::move(mDependentSurfaces);
-}
-
-DrawEventRecorderFile::DrawEventRecorderFile(const char_type* aFilename)
-    : mOutputStream(aFilename, std::ofstream::binary) {
-  WriteHeader(mOutputStream);
-}
-
-DrawEventRecorderFile::~DrawEventRecorderFile() { mOutputStream.close(); }
-
-void DrawEventRecorderFile::Flush() { mOutputStream.flush(); }
-
-bool DrawEventRecorderFile::IsOpen() { return mOutputStream.is_open(); }
-
-void DrawEventRecorderFile::OpenNew(const char_type* aFilename) {
-  MOZ_ASSERT(!mOutputStream.is_open());
-
-  mOutputStream.open(aFilename, std::ofstream::binary);
-  WriteHeader(mOutputStream);
-}
-
-void DrawEventRecorderFile::Close() {
-  MOZ_ASSERT(mOutputStream.is_open());
-
-  mOutputStream.close();
 }
 
 DrawEventRecorderMemory::DrawEventRecorderMemory() {
@@ -120,9 +131,13 @@ DrawEventRecorderMemory::DrawEventRecorderMemory(
   WriteHeader(mOutputStream);
 }
 
-void DrawEventRecorderMemory::Flush() {}
+void DrawEventRecorderMemory::Flush() {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
+}
 
 void DrawEventRecorderMemory::FlushItem(IntRect aRect) {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
+
   MOZ_RELEASE_ASSERT(!aRect.IsEmpty());
   // Detaching our existing resources will add some
   // destruction events to our stream so we need to do that
@@ -147,13 +162,15 @@ void DrawEventRecorderMemory::FlushItem(IntRect aRect) {
 }
 
 bool DrawEventRecorderMemory::Finish() {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
+
   // this length might be 0, and things should still work.
   // for example if there are no items in a particular area
   size_t indexOffset = mOutputStream.mLength;
   // write out the index
   mOutputStream.write(mIndex.mData, mIndex.mLength);
   bool hasItems = mIndex.mLength != 0;
-  mIndex = MemStream();
+  mIndex.reset();
   // write out the offset of the Index to the end of the output stream
   WriteElement(mOutputStream, indexOffset);
   ClearResources();
@@ -161,12 +178,15 @@ bool DrawEventRecorderMemory::Finish() {
 }
 
 size_t DrawEventRecorderMemory::RecordingSize() {
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
   return mOutputStream.mLength;
 }
 
 void DrawEventRecorderMemory::WipeRecording() {
-  mOutputStream = MemStream();
-  mIndex = MemStream();
+  NS_ASSERT_OWNINGTHREAD(DrawEventRecorderMemory);
+
+  mOutputStream.reset();
+  mIndex.reset();
 
   WriteHeader(mOutputStream);
 }

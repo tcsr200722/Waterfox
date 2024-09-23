@@ -3,6 +3,8 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
+const PR_USEC_PER_SEC = 1000000;
+
 const NS_ERROR_STORAGE_BUSY = Cr.NS_ERROR_STORAGE_BUSY;
 
 loadScript("dom/quota/test/common/global.js");
@@ -28,7 +30,7 @@ function getRelativeFile(relativePath, baseFile) {
     winFile.useDOSDevicePathSyntax = true;
   }
 
-  relativePath.split("/").forEach(function(component) {
+  relativePath.split("/").forEach(function (component) {
     if (component == "..") {
       file = file.parent;
     } else {
@@ -57,14 +59,16 @@ function getSimpleDatabase(principal, persistence) {
   return connection;
 }
 
-function requestFinished(request) {
-  return new Promise(function(resolve, reject) {
-    request.callback = function(req) {
-      if (req.resultCode == Cr.NS_OK) {
-        resolve(req.result);
-      } else {
-        reject(req.resultCode);
-      }
+async function requestFinished(request) {
+  await new Promise(function (resolve) {
+    request.callback = function () {
+      resolve();
     };
   });
+
+  if (request.resultCode !== Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
 }

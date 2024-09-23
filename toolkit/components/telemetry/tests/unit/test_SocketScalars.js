@@ -2,12 +2,11 @@
    http://creativecommons.org/publicdomain/zero/1.0/
 */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { TelemetryController } = ChromeUtils.import(
-  "resource://gre/modules/TelemetryController.jsm"
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
 );
-const { ContentTaskUtils } = ChromeUtils.import(
-  "resource://testing-common/ContentTaskUtils.jsm"
+const { ContentTaskUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ContentTaskUtils.sys.mjs"
 );
 
 const SOCKET_ONLY_UINT_SCALAR = "telemetry.test.socket_only_uint";
@@ -20,28 +19,24 @@ async function waitForSocketScalars() {
   await ContentTaskUtils.waitForCondition(() => {
     const scalars = Telemetry.getSnapshotForScalars("main", false);
     return Object.keys(scalars).includes("socket");
-  });
+  }, "Waiting for socket scalars to have been set");
 }
 
-add_task(async function() {
-  if (!Services.prefs.getBoolPref("network.process.enabled")) {
-    Assert.ok(
-      true,
-      "Test finished: no point to test telemetry from socket process with lanuching the process"
-    );
-    return;
-  }
-
-  do_test_pending();
+add_task(async function test_scalars_in_socket_process() {
+  Assert.ok(
+    Services.prefs.getBoolPref("network.process.enabled"),
+    "Socket process should be enabled"
+  );
 
   do_get_profile(true);
   await TelemetryController.testSetup();
 
-  Services.netUtils.socketProcessTelemetryPing();
+  Services.io.socketProcessTelemetryPing();
 
   // Once scalars are set by the socket process, they don't immediately get
   // sent to the parent process. Wait for the Telemetry IPC Timer to trigger
   // and batch send the data back to the parent process.
+  // Note: this requires the socket process to be enabled (see bug 1716307).
   await waitForSocketScalars();
 
   Assert.equal(
@@ -51,5 +46,4 @@ add_task(async function() {
     42,
     `${SOCKET_ONLY_UINT_SCALAR} must have the correct value (socket process).`
   );
-  do_test_finished();
 });

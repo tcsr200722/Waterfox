@@ -7,11 +7,15 @@
 /* Wrapper object for reflecting native xpcom objects into JavaScript. */
 
 #include "xpcprivate.h"
+#include "XPCMaps.h"
 #include "nsWrapperCacheInlines.h"
 #include "XPCLog.h"
-#include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject
+#include "js/Array.h"                   // JS::GetArrayLength, JS::IsArrayObject
+#include "js/experimental/TypedData.h"  // JS_GetTypedArrayLength, JS_IsTypedArrayObject
 #include "js/MemoryFunctions.h"
+#include "js/Object.h"  // JS::GetPrivate, JS::SetPrivate, JS::SetReservedSlot
 #include "js/Printf.h"
+#include "js/PropertyAndElement.h"  // JS_GetProperty, JS_GetPropertyById, JS_SetProperty, JS_SetPropertyById
 #include "jsfriendapi.h"
 #include "AccessCheck.h"
 #include "WrapperFactory.h"
@@ -27,6 +31,7 @@
 #include "mozilla/Unused.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/ProfilerLabels.h"
 #include <algorithm>
 
 using namespace xpc;
@@ -149,7 +154,6 @@ static nsresult FinishCreate(JSContext* cx, XPCWrappedNativeScope* Scope,
 nsresult XPCWrappedNative::WrapNewGlobal(JSContext* cx,
                                          xpcObjectHelper& nativeHelper,
                                          nsIPrincipal* principal,
-                                         bool initStandardClasses,
                                          JS::RealmOptions& aOptions,
                                          XPCWrappedNative** wrappedGlobal) {
   nsCOMPtr<nsISupports> identity = do_QueryInterface(nativeHelper.Object());
@@ -189,11 +193,6 @@ nsresult XPCWrappedNative::WrapNewGlobal(JSContext* cx,
   // create ends up there.
   JSAutoRealm ar(cx, global);
 
-  // If requested, initialize the standard classes on the global.
-  if (initStandardClasses && !JS::InitRealmStandardClasses(cx)) {
-    return NS_ERROR_FAILURE;
-  }
-
   // Make a proto.
   XPCWrappedNativeProto* proto = XPCWrappedNativeProto::GetNewOrUsed(
       cx, scope, nativeHelper.GetClassInfo(), scrProto);
@@ -204,7 +203,7 @@ nsresult XPCWrappedNative::WrapNewGlobal(JSContext* cx,
   // Set up the prototype on the global.
   MOZ_ASSERT(proto->GetJSProtoObject());
   RootedObject protoObj(cx, proto->GetJSProtoObject());
-  bool success = JS_SplicePrototype(cx, global, protoObj);
+  bool success = JS_SetPrototype(cx, global, protoObj);
   if (!success) {
     return NS_ERROR_FAILURE;
   }
@@ -224,8 +223,10 @@ nsresult XPCWrappedNative::WrapNewGlobal(JSContext* cx,
   // Set the JS object to the global we already created.
   wrapper->SetFlatJSObject(global);
 
-  // Set the private to the XPCWrappedNative.
-  JS_SetPrivate(global, wrapper);
+  // Set the reserved slot to the XPCWrappedNative.
+  static_assert(JSCLASS_GLOBAL_APPLICATION_SLOTS > 0,
+                "Need at least one slot for JSCLASS_SLOT0_IS_NSISUPPORTS");
+  JS::SetObjectISupports(global, wrapper);
 
   // There are dire comments elsewhere in the code about how a GC can
   // happen somewhere after wrapper initialization but before the wrapper is
@@ -648,7 +649,7 @@ bool XPCWrappedNative::Init(JSContext* cx, nsIXPCScriptable* aScriptable) {
 
   SetFlatJSObject(object);
 
-  JS_SetPrivate(mFlatJSObject, this);
+  JS::SetObjectISupports(mFlatJSObject, this);
 
   return FinishInit(cx);
 }
@@ -743,7 +744,8 @@ void XPCWrappedNative::FlatJSObjectFinalized() {
        to = to->GetNextTearOff()) {
     JSObject* jso = to->GetJSObjectPreserveColor();
     if (jso) {
-      JS_SetPrivate(jso, nullptr);
+      JS::SetReservedSlot(jso, XPCWrappedNativeTearOff::TearOffSlot,
+                          JS::UndefinedValue());
       to->JSObjectFinalized();
     }
 
@@ -765,11 +767,6 @@ void XPCWrappedNative::FlatJSObjectFinalized() {
   UnsetFlatJSObject();
 
   MOZ_ASSERT(mIdentity, "bad pointer!");
-#ifdef XP_WIN
-  // Try to detect free'd pointer
-  MOZ_ASSERT(*(int*)mIdentity.get() != (int)0xdddddddd, "bad pointer!");
-  MOZ_ASSERT(*(int*)mIdentity.get() != (int)0, "bad pointer!");
-#endif
 
   if (IsWrapperExpired()) {
     Destroy();
@@ -806,7 +803,7 @@ void XPCWrappedNative::SystemIsBeingShutDown() {
   // We leak mIdentity (see above).
 
   // Short circuit future finalization.
-  JS_SetPrivate(mFlatJSObject, nullptr);
+  JS::SetObjectISupports(mFlatJSObject, nullptr);
   UnsetFlatJSObject();
 
   XPCWrappedNativeProto* proto = GetProto();
@@ -821,7 +818,8 @@ void XPCWrappedNative::SystemIsBeingShutDown() {
   for (XPCWrappedNativeTearOff* to = &mFirstTearOff; to;
        to = to->GetNextTearOff()) {
     if (JSObject* jso = to->GetJSObjectPreserveColor()) {
-      JS_SetPrivate(jso, nullptr);
+      JS::SetReservedSlot(jso, XPCWrappedNativeTearOff::TearOffSlot,
+                          JS::UndefinedValue());
       to->SetJSObject(nullptr);
     }
     // We leak the tearoff mNative
@@ -832,25 +830,6 @@ void XPCWrappedNative::SystemIsBeingShutDown() {
 }
 
 /***************************************************************************/
-
-// Dynamically ensure that two objects don't end up with the same private.
-class MOZ_STACK_CLASS AutoClonePrivateGuard {
- public:
-  AutoClonePrivateGuard(JSContext* cx, JSObject* aOld, JSObject* aNew)
-      : mOldReflector(cx, aOld), mNewReflector(cx, aNew) {
-    MOZ_ASSERT(JS_GetPrivate(aOld) == JS_GetPrivate(aNew));
-  }
-
-  ~AutoClonePrivateGuard() {
-    if (JS_GetPrivate(mOldReflector)) {
-      JS_SetPrivate(mNewReflector, nullptr);
-    }
-  }
-
- private:
-  RootedObject mOldReflector;
-  RootedObject mNewReflector;
-};
 
 bool XPCWrappedNative::ExtendSet(JSContext* aCx,
                                  XPCNativeInterface* aInterface) {
@@ -1032,10 +1011,11 @@ bool XPCWrappedNative::InitTearOffJSObject(JSContext* cx,
     return false;
   }
 
-  JS_SetPrivate(obj, to);
+  JS::SetReservedSlot(obj, XPCWrappedNativeTearOff::TearOffSlot,
+                      JS::PrivateValue(to));
   to->SetJSObject(obj);
 
-  js::SetReservedSlot(obj, XPC_WN_TEAROFF_FLAT_OBJECT_SLOT,
+  JS::SetReservedSlot(obj, XPCWrappedNativeTearOff::FlatObjectSlot,
                       JS::ObjectValue(*mFlatJSObject));
   return true;
 }
@@ -1145,7 +1125,13 @@ bool CallMethodHelper::Call() {
 
   mCallContext.GetContext()->SetPendingException(nullptr);
 
+  using Flags = js::ProfilingStackFrame::Flags;
   if (mVTableIndex == 0) {
+    AUTO_PROFILER_LABEL_DYNAMIC_FAST(mIFaceInfo->Name(), "QueryInterface", DOM,
+                                     mCallContext.GetJSContext(),
+                                     uint32_t(Flags::STRING_TEMPLATE_METHOD) |
+                                         uint32_t(Flags::RELEVANT_FOR_JS));
+
     return QueryInterfaceFastPath();
   }
 
@@ -1153,6 +1139,20 @@ bool CallMethodHelper::Call() {
     Throw(NS_ERROR_XPC_CANT_GET_METHOD_INFO, mCallContext);
     return false;
   }
+
+  // Add profiler labels matching the WebIDL profiler labels,
+  // which also use the DOM category.
+  Flags templateFlag = Flags::STRING_TEMPLATE_METHOD;
+  if (mMethodInfo->IsGetter()) {
+    templateFlag = Flags::STRING_TEMPLATE_GETTER;
+  }
+  if (mMethodInfo->IsSetter()) {
+    templateFlag = Flags::STRING_TEMPLATE_SETTER;
+  }
+  AUTO_PROFILER_LABEL_DYNAMIC_FAST(
+      mIFaceInfo->Name(), mMethodInfo->NameOrDescription(), DOM,
+      mCallContext.GetJSContext(),
+      uint32_t(templateFlag) | uint32_t(Flags::RELEVANT_FOR_JS));
 
   if (!InitializeDispatchParams()) {
     return false;
@@ -1225,8 +1225,11 @@ bool CallMethodHelper::GetArraySizeFromParam(const nsXPTType& type,
     if (JS::IsArrayObject(mCallContext, maybeArray, &isArray) && isArray) {
       ok = JS::GetArrayLength(mCallContext, arrayOrNull, lengthp);
     } else if (JS_IsTypedArrayObject(&maybeArray.toObject())) {
-      *lengthp = JS_GetTypedArrayLength(&maybeArray.toObject());
-      ok = true;
+      size_t len = JS_GetTypedArrayLength(&maybeArray.toObject());
+      if (len <= UINT32_MAX) {
+        *lengthp = len;
+        ok = true;
+      }
     }
 
     if (!ok) {
@@ -1273,7 +1276,7 @@ bool CallMethodHelper::GetInterfaceTypeFromParam(const nsXPTType& type,
 
 bool CallMethodHelper::GetOutParamSource(uint8_t paramIndex,
                                          MutableHandleValue srcp) const {
-  const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(paramIndex);
+  const nsXPTParamInfo& paramInfo = mMethodInfo->Param(paramIndex);
   bool isRetval = &paramInfo == mMethodInfo->GetRetval();
 
   if (paramInfo.IsOut() && !isRetval) {
@@ -1300,9 +1303,9 @@ bool CallMethodHelper::GetOutParamSource(uint8_t paramIndex,
 
 bool CallMethodHelper::GatherAndConvertResults() {
   // now we iterate through the native params to gather and convert results
-  uint8_t paramCount = mMethodInfo->GetParamCount();
+  uint8_t paramCount = mMethodInfo->ParamCount();
   for (uint8_t i = 0; i < paramCount; i++) {
-    const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(i);
+    const nsXPTParamInfo& paramInfo = mMethodInfo->Param(i);
     if (!paramInfo.IsOut()) {
       continue;
     }
@@ -1391,7 +1394,7 @@ bool CallMethodHelper::QueryInterfaceFastPath() {
 bool CallMethodHelper::InitializeDispatchParams() {
   const uint8_t wantsOptArgc = mMethodInfo->WantsOptArgc() ? 1 : 0;
   const uint8_t wantsJSContext = mMethodInfo->WantsContext() ? 1 : 0;
-  const uint8_t paramCount = mMethodInfo->GetParamCount();
+  const uint8_t paramCount = mMethodInfo->ParamCount();
   uint8_t requiredArgs = paramCount;
 
   // XXX ASSUMES that retval is last arg. The xpidl compiler ensures this.
@@ -1406,8 +1409,7 @@ bool CallMethodHelper::InitializeDispatchParams() {
     }
 
     // skip over any optional arguments
-    while (requiredArgs &&
-           mMethodInfo->GetParam(requiredArgs - 1).IsOptional()) {
+    while (requiredArgs && mMethodInfo->Param(requiredArgs - 1).IsOptional()) {
       requiredArgs--;
     }
 
@@ -1457,9 +1459,9 @@ bool CallMethodHelper::InitializeDispatchParams() {
 }
 
 bool CallMethodHelper::ConvertIndependentParams(bool* foundDependentParam) {
-  const uint8_t paramCount = mMethodInfo->GetParamCount();
+  const uint8_t paramCount = mMethodInfo->ParamCount();
   for (uint8_t i = 0; i < paramCount; i++) {
-    const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(i);
+    const nsXPTParamInfo& paramInfo = mMethodInfo->Param(i);
 
     if (paramInfo.GetType().IsDependent()) {
       *foundDependentParam = true;
@@ -1472,7 +1474,7 @@ bool CallMethodHelper::ConvertIndependentParams(bool* foundDependentParam) {
 }
 
 bool CallMethodHelper::ConvertIndependentParam(uint8_t i) {
-  const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(i);
+  const nsXPTParamInfo& paramInfo = mMethodInfo->Param(i);
   const nsXPTType& type = paramInfo.Type();
   nsXPTCVariant* dp = GetDispatchParam(i);
 
@@ -1547,9 +1549,9 @@ bool CallMethodHelper::ConvertIndependentParam(uint8_t i) {
 }
 
 bool CallMethodHelper::ConvertDependentParams() {
-  const uint8_t paramCount = mMethodInfo->GetParamCount();
+  const uint8_t paramCount = mMethodInfo->ParamCount();
   for (uint8_t i = 0; i < paramCount; i++) {
-    const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(i);
+    const nsXPTParamInfo& paramInfo = mMethodInfo->Param(i);
 
     if (!paramInfo.GetType().IsDependent()) {
       continue;
@@ -1563,7 +1565,7 @@ bool CallMethodHelper::ConvertDependentParams() {
 }
 
 bool CallMethodHelper::ConvertDependentParam(uint8_t i) {
-  const nsXPTParamInfo& paramInfo = mMethodInfo->GetParam(i);
+  const nsXPTParamInfo& paramInfo = mMethodInfo->Param(i);
   const nsXPTType& type = paramInfo.Type();
   nsXPTCVariant* dp = GetDispatchParam(i);
 
@@ -1621,8 +1623,7 @@ nsresult CallMethodHelper::Invoke() {
 static void TraceParam(JSTracer* aTrc, void* aVal, const nsXPTType& aType,
                        uint32_t aArrayLen = 0) {
   if (aType.Tag() == nsXPTType::T_JSVAL) {
-    JS::UnsafeTraceRoot(aTrc, (JS::Value*)aVal,
-                        "XPCWrappedNative::CallMethod param");
+    JS::TraceRoot(aTrc, (JS::Value*)aVal, "XPCWrappedNative::CallMethod param");
   } else if (aType.Tag() == nsXPTType::T_ARRAY) {
     auto* array = (xpt::detail::UntypedTArray*)aVal;
     const nsXPTType& elty = aType.ArrayElementType();
@@ -1661,7 +1662,15 @@ void CallMethodHelper::trace(JSTracer* aTrc) {
 
 JSObject* XPCWrappedNative::GetJSObject() { return GetFlatJSObject(); }
 
-NS_IMETHODIMP XPCWrappedNative::DebugDump(int16_t depth) {
+XPCWrappedNative* nsIXPConnectWrappedNative::AsXPCWrappedNative() {
+  return static_cast<XPCWrappedNative*>(this);
+}
+
+nsresult nsIXPConnectWrappedNative::DebugDump(int16_t depth) {
+  return AsXPCWrappedNative()->DebugDump(depth);
+}
+
+nsresult XPCWrappedNative::DebugDump(int16_t depth) {
 #ifdef DEBUG
   depth--;
   XPC_LOG_ALWAYS(
@@ -1702,7 +1711,7 @@ NS_IMETHODIMP XPCWrappedNative::DebugDump(int16_t depth) {
 /***************************************************************************/
 
 char* XPCWrappedNative::ToString(
-    JSContext* cx, XPCWrappedNativeTearOff* to /* = nullptr */) const {
+    XPCWrappedNativeTearOff* to /* = nullptr */) const {
 #ifdef DEBUG
 #  define FMT_ADDR " @ 0x%p"
 #  define FMT_STR(str) str
@@ -1727,19 +1736,23 @@ char* XPCWrappedNative::ToString(
   } else if (!name) {
     XPCNativeSet* set = GetSet();
     XPCNativeInterface** array = set->GetInterfaceArray();
-    RefPtr<XPCNativeInterface> isupp = XPCNativeInterface::GetISupports(cx);
     uint16_t count = set->GetInterfaceCount();
+    MOZ_RELEASE_ASSERT(count >= 1, "Expected at least one interface");
+    MOZ_ASSERT(*array[0]->GetIID() == NS_GET_IID(nsISupports),
+               "The first interface must be nsISupports");
 
+    // The first interface is always nsISupports, so don't print it, unless
+    // there are no others.
     if (count == 1) {
-      name =
-          JS_sprintf_append(std::move(name), "%s", array[0]->GetNameString());
-    } else if (count == 2 && array[0] == isupp) {
+      name = JS_sprintf_append(std::move(name), "nsISupports");
+    } else if (count == 2) {
       name =
           JS_sprintf_append(std::move(name), "%s", array[1]->GetNameString());
     } else {
-      for (uint16_t i = 0; i < count; i++) {
-        const char* fmt =
-            (i == 0) ? "(%s" : (i == count - 1) ? ", %s)" : ", %s";
+      for (uint16_t i = 1; i < count; i++) {
+        const char* fmt = (i == 1)           ? "(%s"
+                          : (i == count - 1) ? ", %s)"
+                                             : ", %s";
         name =
             JS_sprintf_append(std::move(name), fmt, array[i]->GetNameString());
       }

@@ -11,8 +11,7 @@
 
 class nsIGlobalObject;
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 class WebGPUChild;
 
 template <typename T>
@@ -27,29 +26,56 @@ class ChildOf {
   nsIGlobalObject* GetParentObject() const;
 };
 
+/// Most WebGPU DOM objects inherit from this class.
+///
+/// mValid should only be used in the destruction steps in Cleanup() to check
+/// whether they have already run. This is because the destruction steps can be
+/// triggered by either the object's destructor or the cycle collector
+/// attempting to break a cycle. As a result, all methods accessible from JS can
+/// assume that mValid is true.
+///
+/// Similarly, pointers to the device and the IPDL actor (bridge) can be assumed
+/// to be non-null whenever the object is accessible from JS but not during
+/// cleanup as they might have been snatched by cycle collection.
+///
+/// The general pattern is that all objects should implement Cleanup more or
+/// less the same way. Cleanup should be the only function sending the
+/// corresponding Drop message and cleanup should *never* be called by anything
+/// other than the object destructor or the cycle collector.
+///
+/// These rules guarantee that:
+/// - The Drop message is called only once and that no other IPC message
+/// referring
+///   to the same object is send after Drop.
+/// - Any method outside of the destruction sequence can assume the pointers are
+///   non-null. They only have to check that the IPDL actor can send messages
+///   using `WebGPUChild::CanSend()`.
 class ObjectBase : public nsWrapperCache {
- private:
-  nsString mLabel;
-
  protected:
   virtual ~ObjectBase() = default;
-  // Internal mutability model for WebGPU objects.
+
+  /// False during the destruction sequence of the object.
   bool mValid = true;
 
  public:
   void GetLabel(nsAString& aValue) const;
   void SetLabel(const nsAString& aLabel);
+
+  auto CLabel() const { return NS_ConvertUTF16toUTF8(mLabel); }
+
+ protected:
+  // Object label, initialized from GPUObjectDescriptorBase.label.
+  nsString mLabel;
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #define GPU_DECL_JS_WRAP(T)                                             \
   JSObject* WrapObject(JSContext* cx, JS::Handle<JSObject*> givenProto) \
       override;
 
-#define GPU_DECL_CYCLE_COLLECTION(T)                     \
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(T) \
+#define GPU_DECL_CYCLE_COLLECTION(T)                    \
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(T) \
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(T)
 
 #define GPU_IMPL_JS_WRAP(T)                                                  \
@@ -60,7 +86,7 @@ class ObjectBase : public nsWrapperCache {
 // Note: we don't use `NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE` directly
 // because there is a custom action we need to always do.
 #define GPU_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(T, ...) \
-  NS_IMPL_CYCLE_COLLECTION_CLASS(T)                    \
+  NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(T)       \
   NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(T)             \
     tmp->Cleanup();                                    \
     NS_IMPL_CYCLE_COLLECTION_UNLINK(__VA_ARGS__)       \
@@ -68,12 +94,33 @@ class ObjectBase : public nsWrapperCache {
   NS_IMPL_CYCLE_COLLECTION_UNLINK_END                  \
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(T)           \
     NS_IMPL_CYCLE_COLLECTION_TRAVERSE(__VA_ARGS__)     \
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END                \
-  NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(T)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-#define GPU_IMPL_CYCLE_COLLECTION(T, ...)            \
-  NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(T, AddRef)    \
-  NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(T, Release) \
+#define GPU_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(T, ...) \
+  NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(T)                \
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(T)                      \
+    tmp->Cleanup();                                             \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK(__VA_ARGS__)                \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER           \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR                    \
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_END                           \
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(T)                    \
+    NS_IMPL_CYCLE_COLLECTION_TRAVERSE(__VA_ARGS__)              \
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+#define GPU_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_INHERITED(T, P, ...) \
+  NS_IMPL_CYCLE_COLLECTION_CLASS(T)                                 \
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(T, P)             \
+    tmp->Cleanup();                                                 \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK(__VA_ARGS__)                    \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER               \
+    NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR                        \
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_END                               \
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(T, P)           \
+    NS_IMPL_CYCLE_COLLECTION_TRAVERSE(__VA_ARGS__)                  \
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+#define GPU_IMPL_CYCLE_COLLECTION(T, ...) \
   GPU_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(T, __VA_ARGS__)
 
 template <typename T>

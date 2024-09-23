@@ -6,13 +6,12 @@
 
 #ifndef AndroidNativeWindow_h__
 #define AndroidNativeWindow_h__
-#ifdef MOZ_WIDGET_ANDROID
 
-#  include <jni.h>
-#  include <android/native_window.h>
-#  include <android/native_window_jni.h>
-#  include "mozilla/java/GeckoSurfaceWrappers.h"
-#  include "SurfaceTexture.h"
+#include <jni.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+#include "mozilla/java/GeckoSurfaceWrappers.h"
+#include "SurfaceTexture.h"
 
 namespace mozilla {
 namespace gl {
@@ -27,8 +26,7 @@ class AndroidNativeWindow final {
   }
 
   explicit AndroidNativeWindow(java::GeckoSurface::Param aSurface) {
-    auto surf =
-        java::sdk::Surface::LocalRef(java::sdk::Surface::Ref::From(aSurface));
+    java::sdk::Surface::LocalRef surf = aSurface->GetSurface();
     mNativeWindow =
         ANativeWindow_fromSurface(jni::GetEnvForThread(), surf.Get());
   }
@@ -49,5 +47,4 @@ class AndroidNativeWindow final {
 }  // namespace gl
 }  // namespace mozilla
 
-#endif  // MOZ_WIDGET_ANDROID
 #endif  // AndroidNativeWindow_h__

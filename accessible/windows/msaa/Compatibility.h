@@ -7,12 +7,20 @@
 #ifndef COMPATIBILITY_MANAGER_H
 #define COMPATIBILITY_MANAGER_H
 
-#include "mozilla/Maybe.h"
+#include <windows.h>
+#include "nsTArray.h"
 #include "nsString.h"
+
 #include <stdint.h>
 
-namespace mozilla {
-namespace a11y {
+namespace mozilla::a11y {
+
+enum class SuppressionReasons : uint8_t {
+  None = 0,
+  Clipboard = 1 << 0,
+  SnapLayouts = 1 << 1,
+};
+MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(SuppressionReasons);
 
 /**
  * Used to get compatibility modes. Note, modes are computed at accessibility
@@ -41,10 +49,11 @@ class Compatibility {
   static bool IsDolphin() { return !!(sConsumers & DOLPHIN); }
 
   /**
-   * @return ID of a11y manifest resource to be passed to
-   * mscom::ActivationContext
+   * Return true if JAWS, ZoomText or ZoomText Fusion 2021 or later is being
+   * used. These products share common code for interacting with Firefox and
+   * all require window emulation to be enabled.
    */
-  static uint16_t GetActCtxResourceId();
+  static bool IsVisperoShared() { return !!(sConsumers & VISPEROSHARED); }
 
   /**
    * Return a string describing sConsumers suitable for about:support.
@@ -57,9 +66,7 @@ class Compatibility {
    */
   static void Init();
 
-  static Maybe<bool> OnUIAMessage(WPARAM aWParam, LPARAM aLParam);
-
-  static Maybe<DWORD> GetUiaRemotePid() { return sUiaRemotePid; }
+  static void GetUiaClientPids(nsTArray<DWORD>& aPids);
 
   /**
    * return true if a known, non-UIA a11y consumer is present
@@ -75,6 +82,13 @@ class Compatibility {
    */
   static bool IsModuleVersionLessThan(HMODULE aModuleHandle,
                                       unsigned long long aVersion);
+
+  static void SuppressA11yForClipboardCopy();
+  static void SuppressA11yForSnapLayouts();
+  static bool IsA11ySuppressed() {
+    return A11ySuppressionReasons() != SuppressionReasons::None;
+  }
+  static SuppressionReasons A11ySuppressionReasons();
 
  private:
   Compatibility();
@@ -99,17 +113,16 @@ class Compatibility {
     KAZAGURU = 1 << 8,
     YOUDAO = 1 << 9,
     UNKNOWN = 1 << 10,
-    UIAUTOMATION = 1 << 11
+    UIAUTOMATION = 1 << 11,
+    VISPEROSHARED = 1 << 12
   };
-#define CONSUMERS_ENUM_LEN 12
+#define CONSUMERS_ENUM_LEN 13
 
  private:
   static uint32_t sConsumers;
-  static Maybe<DWORD> sUiaRemotePid;
 };
 
-}  // namespace a11y
-}  // namespace mozilla
+}  // namespace mozilla::a11y
 
 // Convert the 4 (decimal) components of a DLL version number into a
 // single unsigned long long, as needed by

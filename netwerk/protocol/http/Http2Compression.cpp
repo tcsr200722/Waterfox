@@ -24,7 +24,7 @@
 namespace mozilla {
 namespace net {
 
-static nsDeque* gStaticHeaders = nullptr;
+static nsDeque<nvPair>* gStaticHeaders = nullptr;
 
 class HpackStaticTableReporter final : public nsIMemoryReporter {
  public:
@@ -61,6 +61,7 @@ class HpackDynamicTableReporter final : public nsIMemoryReporter {
   NS_IMETHOD
   CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
                  bool aAnonymize) override {
+    MutexAutoLock lock(mMutex);
     if (mCompressor) {
       MOZ_COLLECT_REPORT("explicit/network/hpack/dynamic-tables", KIND_HEAP,
                          UNITS_BYTES,
@@ -75,7 +76,8 @@ class HpackDynamicTableReporter final : public nsIMemoryReporter {
 
   ~HpackDynamicTableReporter() = default;
 
-  Http2BaseCompressor* mCompressor;
+  Mutex mMutex{"HpackDynamicTableReporter"};
+  Http2BaseCompressor* mCompressor MOZ_GUARDED_BY(mMutex);
 
   friend class Http2BaseCompressor;
 };
@@ -98,79 +100,76 @@ static void AddStaticElement(const nsCString& name, const nsCString& value) {
 }
 
 static void AddStaticElement(const nsCString& name) {
-  AddStaticElement(name, EmptyCString());
+  AddStaticElement(name, ""_ns);
 }
 
 static void InitializeStaticHeaders() {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   if (!gStaticHeaders) {
-    gStaticHeaders = new nsDeque();
+    gStaticHeaders = new nsDeque<nvPair>();
     gStaticReporter = new HpackStaticTableReporter();
     RegisterStrongMemoryReporter(gStaticReporter);
-    AddStaticElement(NS_LITERAL_CSTRING(":authority"));
-    AddStaticElement(NS_LITERAL_CSTRING(":method"), NS_LITERAL_CSTRING("GET"));
-    AddStaticElement(NS_LITERAL_CSTRING(":method"), NS_LITERAL_CSTRING("POST"));
-    AddStaticElement(NS_LITERAL_CSTRING(":path"), NS_LITERAL_CSTRING("/"));
-    AddStaticElement(NS_LITERAL_CSTRING(":path"),
-                     NS_LITERAL_CSTRING("/index.html"));
-    AddStaticElement(NS_LITERAL_CSTRING(":scheme"), NS_LITERAL_CSTRING("http"));
-    AddStaticElement(NS_LITERAL_CSTRING(":scheme"),
-                     NS_LITERAL_CSTRING("https"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("200"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("204"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("206"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("304"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("400"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("404"));
-    AddStaticElement(NS_LITERAL_CSTRING(":status"), NS_LITERAL_CSTRING("500"));
-    AddStaticElement(NS_LITERAL_CSTRING("accept-charset"));
-    AddStaticElement(NS_LITERAL_CSTRING("accept-encoding"),
-                     NS_LITERAL_CSTRING("gzip, deflate"));
-    AddStaticElement(NS_LITERAL_CSTRING("accept-language"));
-    AddStaticElement(NS_LITERAL_CSTRING("accept-ranges"));
-    AddStaticElement(NS_LITERAL_CSTRING("accept"));
-    AddStaticElement(NS_LITERAL_CSTRING("access-control-allow-origin"));
-    AddStaticElement(NS_LITERAL_CSTRING("age"));
-    AddStaticElement(NS_LITERAL_CSTRING("allow"));
-    AddStaticElement(NS_LITERAL_CSTRING("authorization"));
-    AddStaticElement(NS_LITERAL_CSTRING("cache-control"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-disposition"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-encoding"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-language"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-length"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-location"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-range"));
-    AddStaticElement(NS_LITERAL_CSTRING("content-type"));
-    AddStaticElement(NS_LITERAL_CSTRING("cookie"));
-    AddStaticElement(NS_LITERAL_CSTRING("date"));
-    AddStaticElement(NS_LITERAL_CSTRING("etag"));
-    AddStaticElement(NS_LITERAL_CSTRING("expect"));
-    AddStaticElement(NS_LITERAL_CSTRING("expires"));
-    AddStaticElement(NS_LITERAL_CSTRING("from"));
-    AddStaticElement(NS_LITERAL_CSTRING("host"));
-    AddStaticElement(NS_LITERAL_CSTRING("if-match"));
-    AddStaticElement(NS_LITERAL_CSTRING("if-modified-since"));
-    AddStaticElement(NS_LITERAL_CSTRING("if-none-match"));
-    AddStaticElement(NS_LITERAL_CSTRING("if-range"));
-    AddStaticElement(NS_LITERAL_CSTRING("if-unmodified-since"));
-    AddStaticElement(NS_LITERAL_CSTRING("last-modified"));
-    AddStaticElement(NS_LITERAL_CSTRING("link"));
-    AddStaticElement(NS_LITERAL_CSTRING("location"));
-    AddStaticElement(NS_LITERAL_CSTRING("max-forwards"));
-    AddStaticElement(NS_LITERAL_CSTRING("proxy-authenticate"));
-    AddStaticElement(NS_LITERAL_CSTRING("proxy-authorization"));
-    AddStaticElement(NS_LITERAL_CSTRING("range"));
-    AddStaticElement(NS_LITERAL_CSTRING("referer"));
-    AddStaticElement(NS_LITERAL_CSTRING("refresh"));
-    AddStaticElement(NS_LITERAL_CSTRING("retry-after"));
-    AddStaticElement(NS_LITERAL_CSTRING("server"));
-    AddStaticElement(NS_LITERAL_CSTRING("set-cookie"));
-    AddStaticElement(NS_LITERAL_CSTRING("strict-transport-security"));
-    AddStaticElement(NS_LITERAL_CSTRING("transfer-encoding"));
-    AddStaticElement(NS_LITERAL_CSTRING("user-agent"));
-    AddStaticElement(NS_LITERAL_CSTRING("vary"));
-    AddStaticElement(NS_LITERAL_CSTRING("via"));
-    AddStaticElement(NS_LITERAL_CSTRING("www-authenticate"));
+    AddStaticElement(":authority"_ns);
+    AddStaticElement(":method"_ns, "GET"_ns);
+    AddStaticElement(":method"_ns, "POST"_ns);
+    AddStaticElement(":path"_ns, "/"_ns);
+    AddStaticElement(":path"_ns, "/index.html"_ns);
+    AddStaticElement(":scheme"_ns, "http"_ns);
+    AddStaticElement(":scheme"_ns, "https"_ns);
+    AddStaticElement(":status"_ns, "200"_ns);
+    AddStaticElement(":status"_ns, "204"_ns);
+    AddStaticElement(":status"_ns, "206"_ns);
+    AddStaticElement(":status"_ns, "304"_ns);
+    AddStaticElement(":status"_ns, "400"_ns);
+    AddStaticElement(":status"_ns, "404"_ns);
+    AddStaticElement(":status"_ns, "500"_ns);
+    AddStaticElement("accept-charset"_ns);
+    AddStaticElement("accept-encoding"_ns, "gzip, deflate"_ns);
+    AddStaticElement("accept-language"_ns);
+    AddStaticElement("accept-ranges"_ns);
+    AddStaticElement("accept"_ns);
+    AddStaticElement("access-control-allow-origin"_ns);
+    AddStaticElement("age"_ns);
+    AddStaticElement("allow"_ns);
+    AddStaticElement("authorization"_ns);
+    AddStaticElement("cache-control"_ns);
+    AddStaticElement("content-disposition"_ns);
+    AddStaticElement("content-encoding"_ns);
+    AddStaticElement("content-language"_ns);
+    AddStaticElement("content-length"_ns);
+    AddStaticElement("content-location"_ns);
+    AddStaticElement("content-range"_ns);
+    AddStaticElement("content-type"_ns);
+    AddStaticElement("cookie"_ns);
+    AddStaticElement("date"_ns);
+    AddStaticElement("etag"_ns);
+    AddStaticElement("expect"_ns);
+    AddStaticElement("expires"_ns);
+    AddStaticElement("from"_ns);
+    AddStaticElement("host"_ns);
+    AddStaticElement("if-match"_ns);
+    AddStaticElement("if-modified-since"_ns);
+    AddStaticElement("if-none-match"_ns);
+    AddStaticElement("if-range"_ns);
+    AddStaticElement("if-unmodified-since"_ns);
+    AddStaticElement("last-modified"_ns);
+    AddStaticElement("link"_ns);
+    AddStaticElement("location"_ns);
+    AddStaticElement("max-forwards"_ns);
+    AddStaticElement("proxy-authenticate"_ns);
+    AddStaticElement("proxy-authorization"_ns);
+    AddStaticElement("range"_ns);
+    AddStaticElement("referer"_ns);
+    AddStaticElement("refresh"_ns);
+    AddStaticElement("retry-after"_ns);
+    AddStaticElement("server"_ns);
+    AddStaticElement("set-cookie"_ns);
+    AddStaticElement("strict-transport-security"_ns);
+    AddStaticElement("transfer-encoding"_ns);
+    AddStaticElement("user-agent"_ns);
+    AddStaticElement("vary"_ns);
+    AddStaticElement("via"_ns);
+    AddStaticElement("www-authenticate"_ns);
   }
 }
 
@@ -183,22 +182,25 @@ size_t nvPair::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
 
-nvFIFO::nvFIFO() : mByteCount(0), mTable() { InitializeStaticHeaders(); }
+nvFIFO::nvFIFO() { InitializeStaticHeaders(); }
 
 nvFIFO::~nvFIFO() { Clear(); }
 
 void nvFIFO::AddElement(const nsCString& name, const nsCString& value) {
   nvPair* pair = new nvPair(name, value);
   mByteCount += pair->Size();
+  MutexAutoLock lock(mMutex);
   mTable.PushFront(pair);
 }
 
-void nvFIFO::AddElement(const nsCString& name) {
-  AddElement(name, EmptyCString());
-}
+void nvFIFO::AddElement(const nsCString& name) { AddElement(name, ""_ns); }
 
 void nvFIFO::RemoveElement() {
-  nvPair* pair = static_cast<nvPair*>(mTable.Pop());
+  nvPair* pair = nullptr;
+  {
+    MutexAutoLock lock(mMutex);
+    pair = mTable.Pop();
+  }
   if (pair) {
     mByteCount -= pair->Size();
     delete pair;
@@ -217,7 +219,10 @@ size_t nvFIFO::StaticLength() const { return gStaticHeaders->GetSize(); }
 
 void nvFIFO::Clear() {
   mByteCount = 0;
-  while (mTable.GetSize()) delete static_cast<nvPair*>(mTable.Pop());
+  MutexAutoLock lock(mMutex);
+  while (mTable.GetSize()) {
+    delete mTable.Pop();
+  }
 }
 
 const nvPair* nvFIFO::operator[](size_t index) const {
@@ -229,20 +234,12 @@ const nvPair* nvFIFO::operator[](size_t index) const {
     return nullptr;
   }
   if (index >= gStaticHeaders->GetSize()) {
-    return static_cast<nvPair*>(
-        mTable.ObjectAt(index - gStaticHeaders->GetSize()));
+    return mTable.ObjectAt(index - gStaticHeaders->GetSize());
   }
-  return static_cast<nvPair*>(gStaticHeaders->ObjectAt(index));
+  return gStaticHeaders->ObjectAt(index);
 }
 
-Http2BaseCompressor::Http2BaseCompressor()
-    : mOutput(nullptr),
-      mMaxBuffer(kDefaultMaxBuffer),
-      mMaxBufferSetting(kDefaultMaxBuffer),
-      mSetInitialMaxBufferSizeAllowed(true),
-      mPeakSize(0),
-      mPeakCount(0),
-      mDumpTables(false) {
+Http2BaseCompressor::Http2BaseCompressor() {
   mDynamicReporter = new HpackDynamicTableReporter(this);
   RegisterStrongMemoryReporter(mDynamicReporter);
 }
@@ -255,20 +252,27 @@ Http2BaseCompressor::~Http2BaseCompressor() {
     Telemetry::Accumulate(mPeakCountID, mPeakCount);
   }
   UnregisterStrongMemoryReporter(mDynamicReporter);
-  mDynamicReporter->mCompressor = nullptr;
+  {
+    MutexAutoLock lock(mDynamicReporter->mMutex);
+    mDynamicReporter->mCompressor = nullptr;
+  }
   mDynamicReporter = nullptr;
+}
+
+size_t nvFIFO::SizeOfDynamicTable(mozilla::MallocSizeOf aMallocSizeOf) const {
+  size_t size = 0;
+  MutexAutoLock lock(mMutex);
+  for (const auto elem : mTable) {
+    size += elem->SizeOfIncludingThis(aMallocSizeOf);
+  }
+  return size;
 }
 
 void Http2BaseCompressor::ClearHeaderTable() { mHeaderTable.Clear(); }
 
 size_t Http2BaseCompressor::SizeOfExcludingThis(
     mozilla::MallocSizeOf aMallocSizeOf) const {
-  size_t size = 0;
-  for (uint32_t i = mHeaderTable.StaticLength(); i < mHeaderTable.Length();
-       ++i) {
-    size += mHeaderTable[i]->SizeOfIncludingThis(aMallocSizeOf);
-  }
-  return size;
+  return mHeaderTable.SizeOfDynamicTable(aMallocSizeOf);
 }
 
 void Http2BaseCompressor::MakeRoom(uint32_t amount, const char* direction) {
@@ -334,15 +338,12 @@ void Http2BaseCompressor::DumpState(const char* preamble) {
 void Http2BaseCompressor::SetMaxBufferSizeInternal(uint32_t maxBufferSize) {
   MOZ_ASSERT(maxBufferSize <= mMaxBufferSetting);
 
-  uint32_t removedCount = 0;
-
   LOG(("Http2BaseCompressor::SetMaxBufferSizeInternal %u called",
        maxBufferSize));
 
   while (mHeaderTable.VariableLength() &&
          (mHeaderTable.ByteCount() > maxBufferSize)) {
     mHeaderTable.RemoveElement();
-    ++removedCount;
   }
 
   mMaxBuffer = maxBufferSize;
@@ -493,9 +494,8 @@ nsresult Http2Decompressor::DecodeInteger(uint32_t prefixLen, uint32_t& accum) {
 }
 
 static bool HasConnectionBasedAuth(const nsACString& headerValue) {
-  nsCCharSeparatedTokenizer t(headerValue, '\n');
-  while (t.hasMoreTokens()) {
-    const nsDependentCSubstring& authMethod = t.nextToken();
+  for (const nsACString& authMethod :
+       nsCCharSeparatedTokenizer(headerValue, '\n').ToRange()) {
     if (authMethod.LowerCaseEqualsLiteral("ntlm")) {
       return true;
     }
@@ -522,6 +522,18 @@ nsresult Http2Decompressor::OutputHeader(const nsACString& name,
     return NS_OK;
   }
 
+  // Bug 1663836: reject invalid HTTP response header names - RFC7540 Sec 10.3
+  const char* cFirst = name.BeginReading();
+  if (cFirst != nullptr && *cFirst == ':') {
+    ++cFirst;
+  }
+  if (!nsHttp::IsValidToken(cFirst, name.EndReading())) {
+    nsCString toLog(name);
+    LOG(("HTTP Decompressor invalid response header found. [%s]\n",
+         toLog.get()));
+    return NS_ERROR_ILLEGAL_VALUE;
+  }
+
   // Look for upper case characters in the name.
   for (const char* cPtr = name.BeginReading(); cPtr && cPtr < name.EndReading();
        ++cPtr) {
@@ -533,19 +545,15 @@ nsresult Http2Decompressor::OutputHeader(const nsACString& name,
     }
   }
 
-  // Look for CR OR LF in value - could be smuggling Sec 10.3
-  // can map to space safely
-  for (const char* cPtr = value.BeginReading();
-       cPtr && cPtr < value.EndReading(); ++cPtr) {
-    if (*cPtr == '\r' || *cPtr == '\n') {
-      char* wPtr = const_cast<char*>(cPtr);
-      *wPtr = ' ';
-    }
+  // Look for CR, LF or NUL in value - could be smuggling (RFC7540 Sec 10.3)
+  // treat as malformed
+  if (!nsHttp::IsReasonableHeaderValue(value)) {
+    return NS_ERROR_ILLEGAL_VALUE;
   }
 
   // Status comes first
   if (name.EqualsLiteral(":status")) {
-    nsAutoCString status(NS_LITERAL_CSTRING("HTTP/2 "));
+    nsAutoCString status("HTTP/2 "_ns);
     status.Append(value);
     status.AppendLiteral("\r\n");
     mOutput->Insert(status, 0);
@@ -567,7 +575,8 @@ nsresult Http2Decompressor::OutputHeader(const nsACString& name,
     if (*cPtr == ':') {
       isColonHeader = true;
       break;
-    } else if (*cPtr != ' ' && *cPtr != '\t') {
+    }
+    if (*cPtr != ' ' && *cPtr != '\t') {
       isColonHeader = false;
       break;
     }
@@ -1066,17 +1075,16 @@ nsresult Http2Compressor::EncodeHeaderBlock(
 
   // colon headers first
   if (!simpleConnectForm) {
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":method"), method), false, false);
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":path"), path), true, false);
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":authority"), host), false, false);
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":scheme"), scheme), false, false);
+    ProcessHeader(nvPair(":method"_ns, method), false, false);
+    ProcessHeader(nvPair(":path"_ns, path), true, false);
+    ProcessHeader(nvPair(":authority"_ns, host), false, false);
+    ProcessHeader(nvPair(":scheme"_ns, scheme), false, false);
     if (isWebsocket) {
-      ProcessHeader(nvPair(NS_LITERAL_CSTRING(":protocol"), protocol), false,
-                    false);
+      ProcessHeader(nvPair(":protocol"_ns, protocol), false, false);
     }
   } else {
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":method"), method), false, false);
-    ProcessHeader(nvPair(NS_LITERAL_CSTRING(":authority"), host), false, false);
+    ProcessHeader(nvPair(":method"_ns, method), false, false);
+    ProcessHeader(nvPair(":authority"_ns, host), false, false);
   }
 
   // now the non colon headers
@@ -1087,13 +1095,12 @@ nsresult Http2Compressor::EncodeHeaderBlock(
   while (true) {
     int32_t startIndex = crlfIndex + 2;
 
-    crlfIndex = nvInput.Find("\r\n", false, startIndex);
+    crlfIndex = nvInput.Find("\r\n", startIndex);
     if (crlfIndex == -1) {
       break;
     }
 
-    int32_t colonIndex =
-        nvInput.Find(":", false, startIndex, crlfIndex - startIndex);
+    int32_t colonIndex = Substring(nvInput, 0, crlfIndex).Find(":", startIndex);
     if (colonIndex == -1) {
       break;
     }
@@ -1121,7 +1128,8 @@ nsresult Http2Compressor::EncodeHeaderBlock(
       if (*cPtr == ':') {
         isColonHeader = true;
         break;
-      } else if (*cPtr != ' ' && *cPtr != '\t') {
+      }
+      if (*cPtr != ' ' && *cPtr != '\t') {
         isColonHeader = false;
         break;
       }
@@ -1132,8 +1140,9 @@ nsresult Http2Compressor::EncodeHeaderBlock(
 
     int32_t valueIndex = colonIndex + 1;
 
-    while (valueIndex < crlfIndex && beginBuffer[valueIndex] == ' ')
+    while (valueIndex < crlfIndex && beginBuffer[valueIndex] == ' ') {
       ++valueIndex;
+    }
 
     nsDependentCSubstring value =
         Substring(beginBuffer + valueIndex, beginBuffer + crlfIndex);
@@ -1152,7 +1161,7 @@ nsresult Http2Compressor::EncodeHeaderBlock(
       int32_t nextCookie = valueIndex;
       while (haveMoreCookies) {
         int32_t semiSpaceIndex =
-            nvInput.Find("; ", false, nextCookie, crlfIndex - nextCookie);
+            Substring(nvInput, 0, crlfIndex).Find("; ", nextCookie);
         if (semiSpaceIndex == -1) {
           haveMoreCookies = false;
           semiSpaceIndex = crlfIndex;

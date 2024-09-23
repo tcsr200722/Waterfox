@@ -9,6 +9,7 @@ async function locateBookmarkAndTestCtrlClick(menupopup) {
     node => node.label == "Test1"
   );
   ok(testMenuitem, "Found test bookmark.");
+  ok(BrowserTestUtils.isVisible(testMenuitem), "Should be visible");
   let promiseTabOpened = BrowserTestUtils.waitForNewTab(gBrowser, null);
   EventUtils.synthesizeMouseAtCenter(testMenuitem, { accelKey: true });
   let newTab = await promiseTabOpened;
@@ -27,14 +28,14 @@ async function testContextmenu(menuitem) {
   });
   await promiseEvent;
   let promiseTabOpened = BrowserTestUtils.waitForNewTab(gBrowser, null);
-  EventUtils.synthesizeKey("KEY_ArrowDown");
-  BrowserTestUtils.waitForEvent(menuitem, "DOMMenuItemActive");
-  EventUtils.sendKey("return");
+  let hidden = BrowserTestUtils.waitForEvent(cm, "popuphidden");
+  cm.activateItem(doc.getElementById("placesContext_open:newtab"));
+  await hidden;
   let newTab = await promiseTabOpened;
   return newTab;
 }
 
-add_task(async function test_setup() {
+add_setup(async function () {
   // Ensure BMB is available in UI.
   let origBMBlocation = CustomizableUI.getPlacementOfWidget(
     "bookmarks-menu-button"
@@ -81,7 +82,7 @@ add_task(async function test_setup() {
     title: "Test1",
   });
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.eraseEverything();
     // if BMB was not originally in UI, remove it.
     if (!origBMBlocation) {
@@ -134,18 +135,13 @@ add_task(async function testStayopenBookmarksClicks() {
   );
   appMenu.click();
   await PopupShownPromise;
-  let libView = document.getElementById("appMenu-libraryView");
-  let libraryBtn = document.getElementById("appMenu-library-button");
-  let ViewShownPromise = BrowserTestUtils.waitForEvent(libView, "ViewShown");
-  libraryBtn.click();
-  await ViewShownPromise;
-  info("Library panel shown.");
-  let bookmarks = document.getElementById("appMenu-library-bookmarks-button");
-  let BMview = document.getElementById("PanelUI-bookmarks");
-  ViewShownPromise = BrowserTestUtils.waitForEvent(BMview, "ViewShown");
-  bookmarks.click();
-  await ViewShownPromise;
-  info("Library's bookmarks panel shown.");
+
+  let BMview;
+  document.getElementById("appMenu-bookmarks-button").click();
+  BMview = document.getElementById("PanelUI-bookmarks");
+  let promise = BrowserTestUtils.waitForEvent(BMview, "ViewShown");
+  await promise;
+  info("Bookmarks panel shown.");
 
   // Test App Menu's Bookmarks Library stayopen clicks: Ctrl-click.
   let menu = document.getElementById("panelMenu_bookmarksMenu");
@@ -206,8 +202,9 @@ add_task(async function testStayopenBookmarksClicks() {
   let toolbarbutton = BT.firstElementChild;
   ok(toolbarbutton, "Folder should be first item on Bookmarks Toolbar.");
   let buttonMenupopup = toolbarbutton.firstElementChild;
-  ok(
-    buttonMenupopup.tagName == "menupopup",
+  Assert.equal(
+    buttonMenupopup.tagName,
+    "menupopup",
     "Found toolbar button's menupopup."
   );
   promiseEvent = BrowserTestUtils.waitForEvent(buttonMenupopup, "popupshown");

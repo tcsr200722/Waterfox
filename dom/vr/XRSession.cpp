@@ -10,6 +10,7 @@
 #include "mozilla/dom/XRInputSourceEvent.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/Promise.h"
 #include "XRSystem.h"
 #include "XRRenderState.h"
 #include "XRBoundedReferenceSpace.h"
@@ -23,9 +24,10 @@
 #include "XRViewerPose.h"
 #include "VRLayerChild.h"
 #include "XRInputSourceArray.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIObserverService.h"
 #include "nsISupportsPrimitives.h"
+#include "nsRefreshDriver.h"
 #include "VRDisplayClient.h"
 #include "VRDisplayPresentation.h"
 
@@ -35,8 +37,7 @@
  */
 const uint32_t kMaxPoolSize = 16;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XRSession)
 
@@ -95,7 +96,7 @@ already_AddRefed<XRSession> XRSession::CreateInlineSession(
   RefPtr<XRSession> session =
       new XRSession(aWindow, aXRSystem, driver, nullptr, gfx::kVRGroupContent,
                     aEnabledReferenceSpaceTypes);
-  driver->AddRefreshObserver(session, FlushType::Display);
+  driver->AddRefreshObserver(session, FlushType::Display, "XR Session");
   return session.forget();
 }
 
@@ -143,7 +144,9 @@ XRSession::XRSession(
 
 XRSession::~XRSession() { MOZ_ASSERT(mShutdown); }
 
-gfx::VRDisplayClient* XRSession::GetDisplayClient() { return mDisplayClient; }
+gfx::VRDisplayClient* XRSession::GetDisplayClient() const {
+  return mDisplayClient;
+}
 
 JSObject* XRSession::WrapObject(JSContext* aCx,
                                 JS::Handle<JSObject*> aGivenProto) {
@@ -171,9 +174,17 @@ bool XRSession::IsImmersive() const {
   return mDisplayClient != nullptr;
 }
 
-XRVisibilityState XRSession::VisibilityState() {
+XRVisibilityState XRSession::VisibilityState() const {
   return XRVisibilityState::Visible;
   // TODO (Bug 1609771): Implement changing visibility state
+}
+
+// https://immersive-web.github.io/webxr/#poses-may-be-reported
+// Given that an XRSession cannot be requested without explicit consent
+// by the user, the only necessary check is whether the XRSession's
+// visiblityState is 'visible'.
+bool XRSession::CanReportPoses() const {
+  return VisibilityState() == XRVisibilityState::Visible;
 }
 
 // https://immersive-web.github.io/webxr/#dom-xrsession-updaterenderstate
@@ -219,6 +230,13 @@ void XRSession::UpdateRenderState(const XRRenderStateInit& aNewState,
 XRRenderState* XRSession::RenderState() { return mActiveRenderState; }
 
 XRInputSourceArray* XRSession::InputSources() { return mInputSources; }
+
+Nullable<float> XRSession::GetFrameRate() { return {}; }
+
+void XRSession::GetSupportedFrameRates(JSContext*,
+                                       JS::MutableHandle<JSObject*> aRetVal) {
+  aRetVal.set(nullptr);
+}
 
 // https://immersive-web.github.io/webxr/#apply-the-pending-render-state
 void XRSession::ApplyPendingRenderState() {
@@ -292,9 +310,13 @@ void XRSession::WillRefresh(mozilla::TimeStamp aTime) {
 }
 
 void XRSession::StartFrame() {
+  if (mShutdown || mEnded) {
+    return;
+  }
   ApplyPendingRenderState();
 
-  if (mActiveRenderState->GetBaseLayer() == nullptr) {
+  XRWebGLLayer* baseLayer = mActiveRenderState->GetBaseLayer();
+  if (!baseLayer) {
     return;
   }
 
@@ -311,7 +333,7 @@ void XRSession::StartFrame() {
   RefPtr<XRFrame> frame = PooledFrame();
   frame->StartAnimationFrame();
 
-  mActiveRenderState->GetBaseLayer()->StartAnimationFrame();
+  baseLayer->StartAnimationFrame();
   nsTArray<XRFrameRequest> callbacks;
   callbacks.AppendElements(mFrameRequestCallbacks);
   mFrameRequestCallbacks.Clear();
@@ -319,7 +341,7 @@ void XRSession::StartFrame() {
     callback.Call(timeStamp, *frame);
   }
 
-  mActiveRenderState->GetBaseLayer()->EndAnimationFrame();
+  baseLayer->EndAnimationFrame();
   frame->EndAnimationFrame();
   if (mDisplayPresentation) {
     mDisplayPresentation->SubmitFrame();
@@ -337,7 +359,7 @@ already_AddRefed<Promise> XRSession::RequestReferenceSpace(
   NS_ENSURE_TRUE(!aRv.Failed(), nullptr);
 
   if (!mEnabledReferenceSpaceTypes.Contains(aReferenceSpaceType)) {
-    promise->MaybeRejectWithNotSupportedError(NS_LITERAL_CSTRING(
+    promise->MaybeRejectWithNotSupportedError(nsLiteralCString(
         "Requested XRReferenceSpaceType not available for the XRSession."));
     return promise.forget();
   }
@@ -378,7 +400,34 @@ already_AddRefed<Promise> XRSession::RequestReferenceSpace(
   return promise.forget();
 }
 
-XRRenderState* XRSession::GetActiveRenderState() { return mActiveRenderState; }
+already_AddRefed<Promise> XRSession::UpdateTargetFrameRate(float aRate,
+                                                           ErrorResult& aRv) {
+  nsCOMPtr<nsIGlobalObject> global = GetParentObject();
+  NS_ENSURE_TRUE(global, nullptr);
+
+  RefPtr<Promise> promise = Promise::Create(global, aRv);
+  NS_ENSURE_TRUE(!aRv.Failed(), nullptr);
+
+  if (mEnded) {
+    promise->MaybeRejectWithInvalidStateError(
+        "UpdateTargetFrameRate can not be called on an XRSession that has "
+        "ended.");
+    return promise.forget();
+  }
+
+  // https://immersive-web.github.io/webxr/#dom-xrsession-updatetargetframerate
+  // TODO: Validate the rate with the frame rates supported from the device.
+  // We add a no op for now to avoid JS exceptions related to undefined method.
+  // The spec states that user agent MAY use rate to calculate a new display
+  // frame rate, so it's fine to let the default frame rate for now.
+
+  promise->MaybeResolve(JS::UndefinedHandleValue);
+  return promise.forget();
+}
+
+XRRenderState* XRSession::GetActiveRenderState() const {
+  return mActiveRenderState;
+}
 
 void XRSession::XRFrameRequest::Call(const DOMHighResTimeStamp& aTimeStamp,
                                      XRFrame& aFrame) {
@@ -410,6 +459,9 @@ void XRSession::Shutdown() {
   mViewerPosePoolIndex = 0;
   mFramePool.Clear();
   mFramePoolIndex = 0;
+  mActiveRenderState = nullptr;
+  mPendingRenderState = nullptr;
+  mFrameRequestCallbacks.Clear();
 
   // Unregister from nsRefreshObserver
   if (mRefreshDriver) {
@@ -447,7 +499,7 @@ void XRSession::ExitPresentInternal() {
     init.mCancelable = false;
     init.mSession = this;
     RefPtr<XRSessionEvent> event =
-        XRSessionEvent::Constructor(this, NS_LITERAL_STRING("end"), init);
+        XRSessionEvent::Constructor(this, u"end"_ns, init);
 
     event->SetTrusted(true);
     this->DispatchEvent(*event);
@@ -474,7 +526,8 @@ RefPtr<XRViewerPose> XRSession::PooledViewerPose(
     pose->Transform()->Update(aTransform);
     pose->SetEmulatedPosition(aEmulatedPosition);
   } else {
-    RefPtr<XRRigidTransform> transform = new XRRigidTransform(this, aTransform);
+    RefPtr<XRRigidTransform> transform =
+        new XRRigidTransform(static_cast<EventTarget*>(this), aTransform);
     nsTArray<RefPtr<XRView>> views;
     if (IsImmersive()) {
       views.AppendElement(new XRView(GetParentObject(), XREye::Left));
@@ -482,7 +535,8 @@ RefPtr<XRViewerPose> XRSession::PooledViewerPose(
     } else {
       views.AppendElement(new XRView(GetParentObject(), XREye::None));
     }
-    pose = new XRViewerPose(this, transform, aEmulatedPosition, views);
+    pose = new XRViewerPose(static_cast<EventTarget*>(this), transform,
+                            aEmulatedPosition, views);
     mViewerPosePool.AppendElement(pose);
   }
 
@@ -506,5 +560,4 @@ RefPtr<XRFrame> XRSession::PooledFrame() {
   return frame;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

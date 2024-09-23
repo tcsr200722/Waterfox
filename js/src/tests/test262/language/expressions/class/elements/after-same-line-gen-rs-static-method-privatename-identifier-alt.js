@@ -1,4 +1,3 @@
-// |reftest| skip -- class-static-methods-private is not supported
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-static-method-privatename-identifier-alt.case
 // - src/class-elements/productions/cls-expr-after-same-line-gen.template
@@ -100,7 +99,10 @@ var C = class {
 var c = new C();
 
 assert.sameValue(c.m().next().value, 42);
-assert.sameValue(Object.hasOwnProperty.call(c, "m"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m"),
+  "m doesn't appear as an own property on the C instance"
+);
 assert.sameValue(c.m, C.prototype.m);
 
 verifyProperty(C.prototype, "m", {

@@ -286,7 +286,7 @@ string DumpSymbols::Identifier() {
   FileID file_id(object_filename_.c_str());
   unsigned char identifier_bytes[16];
   cpu_type_t cpu_type = selected_object_file_->cputype;
-  cpu_subtype_t cpu_subtype = selected_object_file_->cpusubtype;
+  cpu_subtype_t cpu_subtype = selected_object_file_->cpusubtype & ~CPU_SUBTYPE_MASK;
   if (!file_id.MachoIdentifier(cpu_type, cpu_subtype, identifier_bytes)) {
     fprintf(stderr, "Unable to calculate UUID of mach-o binary %s!\n",
             object_filename_.c_str());
@@ -345,9 +345,8 @@ class DumpSymbols::DumperLineToModule:
   }
 
   void ReadProgram(const uint8_t *program, uint64 length,
-                   Module *module, vector<Module::Line> *lines,
-		   FileMap *files) {
-    DwarfLineToModule handler(module, compilation_dir_, lines, files);
+                   Module *module, vector<Module::Line> *lines) {
+    DwarfLineToModule handler(module, compilation_dir_, lines);
     dwarf2reader::LineInfo parser(program, length, byte_reader_, &handler);
     parser.Start();
   }

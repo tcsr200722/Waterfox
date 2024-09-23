@@ -10,6 +10,7 @@
 
 #include "SpeechSynthesisUtterance.h"
 #include "SpeechSynthesisVoice.h"
+#include "nsContentUtils.h"
 #include "nsSynthVoiceRegistry.h"
 #include "nsSpeechTask.h"
 #include "AudioChannelService.h"
@@ -18,6 +19,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/StaticPtr.h"
@@ -64,8 +66,7 @@ void GetAllSpeechSynthActors(
 
 }  // namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // VoiceData
 
@@ -145,17 +146,15 @@ NS_IMPL_ISUPPORTS(nsSynthVoiceRegistry, nsISynthVoiceRegistry)
 nsSynthVoiceRegistry::nsSynthVoiceRegistry()
     : mSpeechSynthChild(nullptr), mUseGlobalQueue(false), mIsSpeaking(false) {
   if (XRE_IsContentProcess()) {
-    mSpeechSynthChild = new SpeechSynthesisChild();
-    ContentChild::GetSingleton()->SendPSpeechSynthesisConstructor(
-        mSpeechSynthChild);
+    RefPtr<SpeechSynthesisChild> actor = new SpeechSynthesisChild();
+    if (ContentChild::GetSingleton()->SendPSpeechSynthesisConstructor(actor)) {
+      mSpeechSynthChild = actor;
+    }
   }
 }
 
 nsSynthVoiceRegistry::~nsSynthVoiceRegistry() {
   LOG(LogLevel::Debug, ("~nsSynthVoiceRegistry"));
-
-  // mSpeechSynthChild's lifecycle is managed by the Content protocol.
-  mSpeechSynthChild = nullptr;
 
   mUriVoiceMap.Clear();
 }
@@ -281,6 +280,15 @@ void nsSynthVoiceRegistry::RecvNotifyVoicesChanged() {
   gSynthVoiceRegistry->NotifyVoicesChanged();
 }
 
+void nsSynthVoiceRegistry::RecvNotifyVoicesError(const nsAString& aError) {
+  // If we dont have a local instance of the registry yet, we don't care.
+  if (!gSynthVoiceRegistry) {
+    return;
+  }
+
+  gSynthVoiceRegistry->NotifyVoicesError(aError);
+}
+
 NS_IMETHODIMP
 nsSynthVoiceRegistry::AddVoice(nsISpeechService* aService,
                                const nsAString& aUri, const nsAString& aName,
@@ -343,7 +351,7 @@ nsSynthVoiceRegistry::RemoveVoice(nsISpeechService* aService,
   GetAllSpeechSynthActors(ssplist);
 
   for (uint32_t i = 0; i < ssplist.Length(); ++i)
-    Unused << ssplist[i]->SendVoiceRemoved(nsString(aUri));
+    Unused << ssplist[i]->SendVoiceRemoved(aUri);
 
   return NS_OK;
 }
@@ -364,6 +372,27 @@ nsSynthVoiceRegistry::NotifyVoicesChanged() {
   }
 
   obs->NotifyObservers(nullptr, "synth-voices-changed", nullptr);
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSynthVoiceRegistry::NotifyVoicesError(const nsAString& aError) {
+  if (XRE_IsParentProcess()) {
+    nsTArray<SpeechSynthesisParent*> ssplist;
+    GetAllSpeechSynthActors(ssplist);
+
+    for (uint32_t i = 0; i < ssplist.Length(); ++i) {
+      Unused << ssplist[i]->SendNotifyVoicesError(aError);
+    }
+  }
+
+  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+  if (NS_WARN_IF(!(obs))) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  obs->NotifyObservers(nullptr, "synth-voices-error", aError.BeginReading());
 
   return NS_OK;
 }
@@ -391,7 +420,7 @@ nsSynthVoiceRegistry::SetDefaultVoice(const nsAString& aUri, bool aIsDefault) {
     GetAllSpeechSynthActors(ssplist);
 
     for (uint32_t i = 0; i < ssplist.Length(); ++i) {
-      Unused << ssplist[i]->SendSetDefaultVoice(nsString(aUri), aIsDefault);
+      Unused << ssplist[i]->SendSetDefaultVoice(aUri, aIsDefault);
     }
   }
 
@@ -476,8 +505,7 @@ nsSynthVoiceRegistry::GetVoiceName(const nsAString& aUri, nsAString& aRetval) {
 nsresult nsSynthVoiceRegistry::AddVoiceImpl(
     nsISpeechService* aService, const nsAString& aUri, const nsAString& aName,
     const nsAString& aLang, bool aLocalService, bool aQueuesUtterances) {
-  bool found = false;
-  mUriVoiceMap.GetWeak(aUri, &found);
+  const bool found = mUriVoiceMap.Contains(aUri);
   if (NS_WARN_IF(found)) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -486,7 +514,7 @@ nsresult nsSynthVoiceRegistry::AddVoiceImpl(
                                           aLocalService, aQueuesUtterances);
 
   mVoices.AppendElement(voice);
-  mUriVoiceMap.Put(aUri, std::move(voice));
+  mUriVoiceMap.InsertOrUpdate(aUri, std::move(voice));
   mUseGlobalQueue |= aQueuesUtterances;
 
   nsTArray<SpeechSynthesisParent*> ssplist;
@@ -535,7 +563,7 @@ bool nsSynthVoiceRegistry::FindVoiceByLang(const nsAString& aLang,
     dashPos = end;
     end = start;
 
-    if (!RFindInReadable(NS_LITERAL_STRING("-"), end, dashPos)) {
+    if (!RFindInReadable(u"-"_ns, end, dashPos)) {
       break;
     }
   }
@@ -582,7 +610,7 @@ VoiceData* nsSynthVoiceRegistry::FindBestMatch(const nsAString& aUri,
   }
 
   // Try en-US, the language of locale "C"
-  if (FindVoiceByLang(NS_LITERAL_STRING("en-US"), &retval)) {
+  if (FindVoiceByLang(u"en-US"_ns, &retval)) {
     LOG(LogLevel::Debug, ("nsSynthVoiceRegistry::FindBestMatch - Matched C "
                           "locale language (en-US ~= %s)",
                           NS_ConvertUTF16toUTF8(retval->mLang).get()));
@@ -620,21 +648,18 @@ already_AddRefed<nsSpeechTask> nsSynthVoiceRegistry::SpeakUtterance(
     }
   }
 
-  nsCOMPtr<nsPIDOMWindowInner> window = aUtterance.GetOwner();
-  nsCOMPtr<Document> doc = window ? window->GetDoc() : nullptr;
-
-  bool isChrome = nsContentUtils::IsChromeDoc(doc);
-
   RefPtr<nsSpeechTask> task;
   if (XRE_IsContentProcess()) {
-    task = new SpeechTaskChild(&aUtterance, isChrome);
+    task = new SpeechTaskChild(&aUtterance,
+                               aUtterance.ShouldResistFingerprinting());
     SpeechSynthesisRequestChild* actor = new SpeechSynthesisRequestChild(
         static_cast<SpeechTaskChild*>(task.get()));
     mSpeechSynthChild->SendPSpeechSynthesisRequestConstructor(
         actor, aUtterance.mText, lang, uri, volume, aUtterance.Rate(),
-        aUtterance.Pitch(), isChrome);
+        aUtterance.Pitch(), aUtterance.ShouldResistFingerprinting());
   } else {
-    task = new nsSpeechTask(&aUtterance, isChrome);
+    task =
+        new nsSpeechTask(&aUtterance, aUtterance.ShouldResistFingerprinting());
     Speak(aUtterance.mText, lang, uri, volume, aUtterance.Rate(),
           aUtterance.Pitch(), task);
   }
@@ -648,7 +673,7 @@ void nsSynthVoiceRegistry::Speak(const nsAString& aText, const nsAString& aLang,
                                  nsSpeechTask* aTask) {
   MOZ_ASSERT(XRE_IsParentProcess());
 
-  if (!aTask->IsChrome() && nsContentUtils::ShouldResistFingerprinting()) {
+  if (aTask->ShouldResistFingerprinting()) {
     aTask->ForceError(0, 0);
     return;
   }
@@ -762,5 +787,4 @@ void nsSynthVoiceRegistry::SpeakImpl(VoiceData* aVoice, nsSpeechTask* aTask,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

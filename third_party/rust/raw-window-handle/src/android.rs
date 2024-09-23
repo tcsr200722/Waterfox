@@ -1,31 +1,50 @@
-use core::ptr;
-use libc::c_void;
+use core::ffi::c_void;
+use core::ptr::NonNull;
 
-/// Raw window handle for Android.
-///
-/// ## Construction
-/// ```
-/// # use raw_window_handle::android::AndroidHandle;
-/// let handle = AndroidHandle {
-///     /* fields */
-///     ..AndroidHandle::empty()
-/// };
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AndroidHandle {
-    /// A pointer to an ANativeWindow.
-    pub a_native_window: *mut c_void,
-    #[doc(hidden)]
-    #[deprecated = "This field is used to ensure that this struct is non-exhaustive, so that it may be extended in the future. Do not refer to this field."]
-    pub _non_exhaustive_do_not_use: crate::seal::Seal,
+/// Raw display handle for Android.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AndroidDisplayHandle {}
+
+impl AndroidDisplayHandle {
+    /// Create a new empty display handle.
+    ///
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use raw_window_handle::AndroidDisplayHandle;
+    /// let handle = AndroidDisplayHandle::new();
+    /// ```
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
-impl AndroidHandle {
-    pub fn empty() -> AndroidHandle {
-        #[allow(deprecated)]
-        AndroidHandle {
-            a_native_window: ptr::null_mut(),
-            _non_exhaustive_do_not_use: crate::seal::Seal,
-        }
+/// Raw window handle for Android NDK.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AndroidNdkWindowHandle {
+    /// A pointer to an `ANativeWindow`.
+    pub a_native_window: NonNull<c_void>,
+}
+
+impl AndroidNdkWindowHandle {
+    /// Create a new handle to an `ANativeWindow`.
+    ///
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::ptr::NonNull;
+    /// # use raw_window_handle::AndroidNdkWindowHandle;
+    /// # type ANativeWindow = ();
+    /// #
+    /// let ptr: NonNull<ANativeWindow>;
+    /// # ptr = NonNull::from(&());
+    /// let handle = AndroidNdkWindowHandle::new(ptr.cast());
+    /// ```
+    pub fn new(a_native_window: NonNull<c_void>) -> Self {
+        Self { a_native_window }
     }
 }

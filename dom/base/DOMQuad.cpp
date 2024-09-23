@@ -6,11 +6,17 @@
 
 #include "mozilla/dom/DOMQuad.h"
 
+#include <algorithm>
+#include "mozilla/FloatingPoint.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/DOMPoint.h"
 #include "mozilla/dom/DOMQuadBinding.h"
 #include "mozilla/dom/DOMRect.h"
 #include "mozilla/dom/DOMRectBinding.h"
-#include "mozilla/FloatingPoint.h"
+#include "mozilla/gfx/BasePoint.h"
+#include "mozilla/gfx/MatrixFwd.h"
+#include "nsIGlobalObject.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -18,9 +24,6 @@ using namespace mozilla::gfx;
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(DOMQuad, mParent, mPoints[0], mPoints[1],
                                       mPoints[2], mPoints[3])
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(DOMQuad, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(DOMQuad, Release)
 
 DOMQuad::DOMQuad(nsISupports* aParent, CSSPoint aPoints[4]) : mParent(aParent) {
   for (uint32_t i = 0; i < 4; ++i) {

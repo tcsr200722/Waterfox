@@ -5,9 +5,8 @@
 /*---
 description: >
     Collection of functions used to capture references cleanup from garbage collectors
-features: [Symbol, async-functions]
+features: [FinalizationRegistry.prototype.cleanupSome, FinalizationRegistry, Symbol, async-functions]
 flags: [non-deterministic]
-features: [FinalizationRegistry]
 defines: [asyncGC, asyncGCDeref, resolveAsyncGC]
 ---*/
 
@@ -53,7 +52,32 @@ function resolveAsyncGC(err) {
   if (err === asyncGC.notCollected) {
     // Do not fail as GC can't provide necessary resources.
     $DONE();
+    return;
   }
 
   $DONE(err);
+}
+
+// file: isConstructor.js
+// Copyright (C) 2017 André Bargull. All rights reserved.
+// This code is governed by the BSD license found in the LICENSE file.
+
+/*---
+description: |
+    Test if a given function is a constructor function.
+defines: [isConstructor]
+features: [Reflect.construct]
+---*/
+
+function isConstructor(f) {
+    if (typeof f !== "function") {
+      throw new Test262Error("isConstructor invoked with a non-function value");
+    }
+
+    try {
+        Reflect.construct(function(){}, [], f);
+    } catch (e) {
+        return false;
+    }
+    return true;
 }

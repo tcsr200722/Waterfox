@@ -4,15 +4,15 @@ const url = SimpleTest.getTestFileURL("mockpushserviceparent.js");
 const chromeScript = SpecialPowers.loadChromeScript(url);
 
 /**
- * Replaces `PushService.jsm` with a mock implementation that handles requests
+ * Replaces `PushService.sys.mjs` with a mock implementation that handles requests
  * from the DOM API. This allows tests to simulate local errors and error
- * reporting, bypassing the `PushService.jsm` machinery.
+ * reporting, bypassing the `PushService.sys.mjs` machinery.
  */
 async function replacePushService(mockService) {
-  chromeScript.addMessageListener("service-delivery-error", function(msg) {
+  chromeScript.addMessageListener("service-delivery-error", function (msg) {
     mockService.reportDeliveryError(msg.messageId, msg.reason);
   });
-  chromeScript.addMessageListener("service-request", function(msg) {
+  chromeScript.addMessageListener("service-request", function (msg) {
     let promise;
     try {
       let handler = mockService[msg.name];
@@ -58,7 +58,7 @@ let currentMockSocket = null;
 
 /**
  * Sets up a mock connection for the WebSocket backend. This only replaces
- * the transport layer; `PushService.jsm` still handles DOM API requests,
+ * the transport layer; `PushService.sys.mjs` still handles DOM API requests,
  * observes permission changes, writes to IndexedDB, and notifies service
  * workers of incoming push messages.
  */
@@ -66,7 +66,7 @@ function setupMockPushSocket(mockWebSocket) {
   currentMockSocket = mockWebSocket;
   currentMockSocket._isActive = true;
   chromeScript.sendAsyncMessage("socket-setup");
-  chromeScript.addMessageListener("socket-client-msg", function(msg) {
+  chromeScript.addMessageListener("socket-client-msg", function (msg) {
     mockWebSocket.handleMessage(msg);
   });
 }
@@ -98,7 +98,7 @@ class MockWebSocket {
     this._isActive = false;
   }
 
-  onHello(request) {
+  onHello() {
     this.serverSendMsg(
       JSON.stringify({
         messageType: "hello",
@@ -131,7 +131,7 @@ class MockWebSocket {
     );
   }
 
-  onAck(request) {
+  onAck() {
     // Do nothing.
   }
 
@@ -164,7 +164,7 @@ class MockWebSocket {
 }
 
 // Remove permissions and prefs when the test finishes.
-SimpleTest.registerCleanupFunction(async function() {
+SimpleTest.registerCleanupFunction(async function () {
   await new Promise(resolve => SpecialPowers.flushPermissions(resolve));
   await SpecialPowers.flushPrefEnv();
   await restorePushService();
@@ -172,9 +172,30 @@ SimpleTest.registerCleanupFunction(async function() {
 });
 
 function setPushPermission(allow) {
-  return SpecialPowers.pushPermissions([
+  let permissions = [
     { type: "desktop-notification", allow, context: document },
-  ]);
+  ];
+
+  if (isXOrigin) {
+    // We need to add permission for the xorigin tests. In xorigin tests, the
+    // test page will be run under third-party context, so we need to use
+    // partitioned principal to add the permission.
+    let partitionedPrincipal =
+      SpecialPowers.wrap(document).partitionedPrincipal;
+
+    permissions.push({
+      type: "desktop-notification",
+      allow,
+      context: {
+        url: partitionedPrincipal.originNoSuffix,
+        originAttributes: {
+          partitionKey: partitionedPrincipal.originAttributes.partitionKey,
+        },
+      },
+    });
+  }
+
+  return SpecialPowers.pushPermissions(permissions);
 }
 
 function setupPrefs() {
@@ -201,7 +222,7 @@ function setupPrefsAndMockSocket(mockSocket) {
 }
 
 function injectControlledFrame(target = document.body) {
-  return new Promise(function(res, rej) {
+  return new Promise(function (res) {
     var iframe = document.createElement("iframe");
     iframe.src = "/tests/dom/push/test/frame.html";
 
@@ -216,8 +237,8 @@ function injectControlledFrame(target = document.body) {
           : Promise.reject(new Error("Frame removed from document"));
       },
       innerWindowId() {
-        var utils = SpecialPowers.getDOMWindowUtils(iframe.contentWindow);
-        return utils.currentInnerWindowID;
+        return SpecialPowers.wrap(iframe).browsingContext.currentWindowContext
+          .innerWindowId;
       },
     };
 
@@ -245,7 +266,7 @@ function waitForActive(swr) {
       resolve(swr);
       return;
     }
-    sw.addEventListener("statechange", function onStateChange(evt) {
+    sw.addEventListener("statechange", function onStateChange() {
       if (sw.state === "activated") {
         sw.removeEventListener("statechange", onStateChange);
         resolve(swr);

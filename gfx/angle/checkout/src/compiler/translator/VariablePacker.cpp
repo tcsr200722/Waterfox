@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2002-2012 The ANGLE Project Authors. All rights reserved.
+// Copyright 2002 The ANGLE Project Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
@@ -239,11 +239,10 @@ bool VariablePacker::checkExpandedVariablesWithinPackingLimits(
             break;
         }
         topNonFullRow_ += GetVariablePackingRows(variable);
-    }
-
-    if (topNonFullRow_ > maxRows_)
-    {
-        return false;
+        if (topNonFullRow_ > maxRows_)
+        {
+            return false;
+        }
     }
 
     // Packs the 3 column variables.
@@ -255,12 +254,12 @@ bool VariablePacker::checkExpandedVariablesWithinPackingLimits(
         {
             break;
         }
-        num3ColumnRows += GetVariablePackingRows(variable);
-    }
 
-    if (topNonFullRow_ + num3ColumnRows > maxRows_)
-    {
-        return false;
+        num3ColumnRows += GetVariablePackingRows(variable);
+        if (topNonFullRow_ + num3ColumnRows > maxRows_)
+        {
+            return false;
+        }
     }
 
     fillColumns(topNonFullRow_, num3ColumnRows, 0, 3);
@@ -392,8 +391,8 @@ int GetTypePackingRows(sh::GLenum type)
     }
 }
 
-template <typename T>
-bool CheckVariablesInPackingLimits(unsigned int maxVectors, const std::vector<T> &variables)
+bool CheckVariablesInPackingLimits(unsigned int maxVectors,
+                                   const std::vector<ShaderVariable> &variables)
 {
     VariablePacker packer;
     std::vector<sh::ShaderVariable> expandedVariables;
@@ -404,10 +403,7 @@ bool CheckVariablesInPackingLimits(unsigned int maxVectors, const std::vector<T>
     return packer.checkExpandedVariablesWithinPackingLimits(maxVectors, &expandedVariables);
 }
 
-template bool CheckVariablesInPackingLimits<ShaderVariable>(
-    unsigned int maxVectors,
-    const std::vector<ShaderVariable> &variables);
-template bool CheckVariablesInPackingLimits<Uniform>(unsigned int maxVectors,
-                                                     const std::vector<Uniform> &variables);
+bool CheckVariablesInPackingLimits(unsigned int maxVectors,
+                                   const std::vector<ShaderVariable> &variables);
 
 }  // namespace sh

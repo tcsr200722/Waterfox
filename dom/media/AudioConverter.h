@@ -137,7 +137,6 @@ class AudioConverter {
       AlignedBuffer<Value> temp = buffer.Forget();
       Process(temp, temp.Data(), SamplesInToFrames(temp.Length()));
       return AudioDataBuffer<Format, Value>(std::move(temp));
-      ;
     }
     return Process(buffer);
   }
@@ -233,6 +232,7 @@ class AudioConverter {
   bool CanReorderAudio() const {
     return mIn.Layout().MappingTable(mOut.Layout());
   }
+  static bool CanConvert(const AudioConfig& aIn, const AudioConfig& aOut);
 
   const AudioConfig& InputConfig() const { return mIn; }
   const AudioConfig& OutputConfig() const { return mOut; }

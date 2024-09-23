@@ -21,16 +21,10 @@
   const MozElements = {};
   window.MozElements = MozElements;
 
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
   );
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
-  );
-  const env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  const instrumentClasses = env.get("MOZ_INSTRUMENT_CUSTOM_ELEMENTS");
+  const instrumentClasses = Services.env.get("MOZ_INSTRUMENT_CUSTOM_ELEMENTS");
   const instrumentedClasses = instrumentClasses ? new Set() : null;
   const instrumentedBaseClasses = instrumentClasses ? new WeakSet() : null;
 
@@ -38,7 +32,7 @@
   // to modify the class so we can instrument function calls in local development:
   if (instrumentClasses) {
     let define = window.customElements.define;
-    window.customElements.define = function(name, c, opts) {
+    window.customElements.define = function (name, c, opts) {
       instrumentCustomElementClass(c);
       return define.call(this, name, c, opts);
     };
@@ -51,7 +45,7 @@
     );
   }
 
-  MozElements.printInstrumentation = function(collapsed) {
+  MozElements.printInstrumentation = function (collapsed) {
     let summaries = [];
     let totalCalls = 0;
     let totalTime = 0;
@@ -119,7 +113,7 @@
     let data = { instances: 0 };
 
     function wrapFunction(name, fn) {
-      return function() {
+      return function () {
         if (!data[name]) {
           data[name] = { time: 0, calls: 0 };
         }
@@ -370,9 +364,8 @@
 
         for (let [selector, newAttr] of list) {
           if (!(selector in this._inheritedElements)) {
-            this._inheritedElements[
-              selector
-            ] = this.getElementForAttrInheritance(selector);
+            this._inheritedElements[selector] =
+              this.getElementForAttrInheritance(selector);
           }
           let el = this._inheritedElements[selector];
           if (el) {
@@ -481,11 +474,6 @@
        *  class ElementA extends MozXULElement {
        *    static get markup() {
        *      return `<hbox class="example"`;
-       *    }
-       *
-       *    static get entities() {
-       *      // Optional field for parseXULToFragment
-       *      return `["chrome://global/locale/notification.dtd"]`;
        *    }
        *
        *    connectedCallback() {
@@ -652,18 +640,17 @@
         cls.prototype.customInterfaces = ifaces;
 
         cls.prototype.QueryInterface = ChromeUtils.generateQI(ifaces);
-        cls.prototype.getCustomInterfaceCallback = function getCustomInterfaceCallback(
-          ifaceToCheck
-        ) {
-          if (
-            cls.prototype.customInterfaces.some(iface =>
-              iface.equals(ifaceToCheck)
-            )
-          ) {
-            return getInterfaceProxy(this);
-          }
-          return null;
-        };
+        cls.prototype.getCustomInterfaceCallback =
+          function getCustomInterfaceCallback(ifaceToCheck) {
+            if (
+              cls.prototype.customInterfaces.some(iface =>
+                iface.equals(ifaceToCheck)
+              )
+            ) {
+              return getInterfaceProxy(this);
+            }
+            return null;
+          };
       }
     };
 
@@ -689,10 +676,10 @@
         get(target, prop, receiver) {
           let propOrMethod = target[prop];
           if (typeof propOrMethod == "function") {
-            if (propOrMethod instanceof MozQueryInterface) {
+            if (MozQueryInterface.isInstance(propOrMethod)) {
               return Reflect.get(target, prop, receiver);
             }
-            return function(...args) {
+            return function (...args) {
               return propOrMethod.apply(target, args);
             };
           }
@@ -742,25 +729,14 @@
     class BaseText extends MozElements.BaseControlMixin(Base) {
       set label(val) {
         this.setAttribute("label", val);
-        return val;
       }
 
       get label() {
-        return this.getAttribute("label");
-      }
-
-      set crop(val) {
-        this.setAttribute("crop", val);
-        return val;
-      }
-
-      get crop() {
-        return this.getAttribute("crop");
+        return this.getAttribute("label") || "";
       }
 
       set image(val) {
         this.setAttribute("image", val);
-        return val;
       }
 
       get image() {
@@ -769,7 +745,6 @@
 
       set command(val) {
         this.setAttribute("command", val);
-        return val;
       }
 
       get command() {
@@ -784,13 +759,10 @@
         if (this.labelElement) {
           this.labelElement.accessKey = val;
         }
-        return val;
       }
 
       get accessKey() {
-        return this.labelElement
-          ? this.labelElement.accessKey
-          : this.getAttribute("accesskey");
+        return this.labelElement?.accessKey || this.getAttribute("accesskey");
       }
     };
   MozElements.BaseTextMixin = BaseTextMixin;
@@ -814,6 +786,81 @@
     document.documentURI == "chrome://geckoview/content/geckoview.xhtml"
   );
   if (loadExtraCustomElements) {
+    // Lazily load the following elements
+    for (let [tag, script] of [
+      ["button-group", "chrome://global/content/elements/named-deck.js"],
+      ["findbar", "chrome://global/content/elements/findbar.js"],
+      ["menulist", "chrome://global/content/elements/menulist.js"],
+      ["named-deck", "chrome://global/content/elements/named-deck.js"],
+      ["named-deck-button", "chrome://global/content/elements/named-deck.js"],
+      ["panel-list", "chrome://global/content/elements/panel-list.js"],
+      ["search-textbox", "chrome://global/content/elements/search-textbox.js"],
+      ["stringbundle", "chrome://global/content/elements/stringbundle.js"],
+      [
+        "printpreview-pagination",
+        "chrome://global/content/printPreviewPagination.js",
+      ],
+      [
+        "autocomplete-input",
+        "chrome://global/content/elements/autocomplete-input.js",
+      ],
+      ["editor", "chrome://global/content/elements/editor.js"],
+    ]) {
+      customElements.setElementCreationCallback(tag, () => {
+        Services.scriptloader.loadSubScript(script, window);
+      });
+    }
+
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        // Only sync-import widgets once the document has loaded. If a widget is
+        // used before DOMContentLoaded it will be imported and upgraded when
+        // registering the customElements.setElementCreationCallback().
+        for (let [tag, script] of [
+          ["moz-button", "chrome://global/content/elements/moz-button.mjs"],
+          [
+            "moz-button-group",
+            "chrome://global/content/elements/moz-button-group.mjs",
+          ],
+          ["moz-card", "chrome://global/content/elements/moz-card.mjs"],
+          ["moz-checkbox", "chrome://global/content/elements/moz-checkbox.mjs"],
+          ["moz-fieldset", "chrome://global/content/elements/moz-fieldset.mjs"],
+          [
+            "moz-five-star",
+            "chrome://global/content/elements/moz-five-star.mjs",
+          ],
+          ["moz-label", "chrome://global/content/elements/moz-label.mjs"],
+          [
+            "moz-message-bar",
+            "chrome://global/content/elements/moz-message-bar.mjs",
+          ],
+          ["moz-page-nav", "chrome://global/content/elements/moz-page-nav.mjs"],
+          ["moz-radio", "chrome://global/content/elements/moz-radio-group.mjs"],
+          [
+            "moz-radio-group",
+            "chrome://global/content/elements/moz-radio-group.mjs",
+          ],
+          [
+            "moz-support-link",
+            "chrome://global/content/elements/moz-support-link.mjs",
+          ],
+          ["moz-toggle", "chrome://global/content/elements/moz-toggle.mjs"],
+        ]) {
+          if (!customElements.get(tag)) {
+            customElements.setElementCreationCallback(
+              tag,
+              function customElementCreationCallback() {
+                ChromeUtils.importESModule(script, { global: "current" });
+              }
+            );
+          }
+        }
+      },
+      { once: true }
+    );
+
+    // Immediately load the following elements
     for (let script of [
       "chrome://global/content/elements/arrowscrollbox.js",
       "chrome://global/content/elements/dialog.js",
@@ -837,26 +884,6 @@
       "chrome://global/content/elements/wizard.js",
     ]) {
       Services.scriptloader.loadSubScript(script, window);
-    }
-
-    for (let [tag, script] of [
-      ["findbar", "chrome://global/content/elements/findbar.js"],
-      ["menulist", "chrome://global/content/elements/menulist.js"],
-      ["search-textbox", "chrome://global/content/elements/search-textbox.js"],
-      ["stringbundle", "chrome://global/content/elements/stringbundle.js"],
-      [
-        "printpreview-toolbar",
-        "chrome://global/content/printPreviewToolbar.js",
-      ],
-      [
-        "autocomplete-input",
-        "chrome://global/content/elements/autocomplete-input.js",
-      ],
-      ["editor", "chrome://global/content/elements/editor.js"],
-    ]) {
-      customElements.setElementCreationCallback(tag, () => {
-        Services.scriptloader.loadSubScript(script, window);
-      });
     }
   }
 })();

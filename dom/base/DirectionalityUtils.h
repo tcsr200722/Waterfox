@@ -11,28 +11,28 @@
 #include "nsStringFwd.h"
 
 class nsIContent;
+class nsINode;
 class nsAttrValue;
 class nsTextNode;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Element;
 class HTMLSlotElement;
-}  // namespace dom
-}  // namespace mozilla
+struct UnbindContext;
+}  // namespace mozilla::dom
 
 namespace mozilla {
 
-enum Directionality : uint8_t { eDir_NotSet, eDir_RTL, eDir_LTR, eDir_Auto };
+enum class Directionality : uint8_t { Unset, Rtl, Ltr, Auto };
 
 /**
  * Various methods for returning the directionality of a string using the
  * first-strong algorithm defined in http://unicode.org/reports/tr9/#P2
  *
  * @param[out] aFirstStrong the offset to the first character in the string with
- *             strong directionality, or UINT32_MAX if there is none (return
-               value is eDir_NotSet).
- * @return the directionality of the string
+ *             strong directionality, or UINT32_MAX if there is none (in which
+ *             case the return value is Directionality::Unset).
+ * @return the directionality of the string, or Unset if not available.
  */
 Directionality GetDirectionFromText(const char16_t* aText,
                                     const uint32_t aLength,
@@ -40,13 +40,21 @@ Directionality GetDirectionFromText(const char16_t* aText,
 
 /**
  * Set the directionality of an element according to the algorithm defined at
- * http://www.whatwg.org/specs/web-apps/current-work/multipage/elements.html#the-directionality,
- * not including elements with auto direction.
+ * https://html.spec.whatwg.org/#the-directionality, not including elements with
+ * auto direction.
  *
  * @return the directionality that the element was set to
  */
 Directionality RecomputeDirectionality(mozilla::dom::Element* aElement,
                                        bool aNotify = true);
+
+/**
+ * Conceptually https://html.spec.whatwg.org/#parent-directionality, but a bit
+ * different in how we deal with shadow DOM.
+ *
+ * FIXME(bug 1857719): Update directionality to the latest version of the spec.
+ */
+Directionality GetParentDirectionality(const mozilla::dom::Element* aElement);
 
 /**
  * Set the directionality of any descendants of a node that do not themselves
@@ -67,10 +75,21 @@ void SetDirectionalityOnDescendants(mozilla::dom::Element* aElement,
 void WalkDescendantsResetAutoDirection(mozilla::dom::Element* aElement);
 
 /**
- * In case a slot element was added or removed or its assigned nodes changed,
- * it may change the directionality of ancestors or assigned nodes.
+ * In case a slot element was added or removed it may change the directionality
+ * of ancestors or assigned nodes.
+ *
+ * aAllAssignedNodesChanged forces the computation of the state for all of the
+ * assigned descendants.
  */
-void SlotStateChanged(mozilla::dom::HTMLSlotElement* aSlot);
+void SlotStateChanged(dom::HTMLSlotElement* aSlot,
+                      bool aAllAssignedNodesChanged = true);
+
+/**
+ * When only a single node in a slot is reassigned we can save some work
+ * compared to the above.
+ */
+void SlotAssignedNodeChanged(dom::HTMLSlotElement* aSlot,
+                             nsIContent& aAssignedNode);
 
 /**
  * After setting dir=auto on an element, walk its descendants in tree order.
@@ -115,10 +134,8 @@ void SetDirectionFromNewTextNode(nsTextNode* aTextNode);
 /**
  * When a text node is removed from a document, find any ancestors whose
  * directionality it determined and redetermine their directionality
- *
- * @param aTextNode the text node
  */
-void ResetDirectionSetByTextNode(nsTextNode* aTextNode);
+void ResetDirectionSetByTextNode(nsTextNode*, dom::UnbindContext&);
 
 /**
  * Set the directionality of an element according to the directionality of the

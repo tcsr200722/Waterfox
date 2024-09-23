@@ -14,7 +14,6 @@
           prefs: [
             ["apz.test.logging_enabled", true],
             ["full-screen-api.allow-trusted-requests-only", false],
-            ["dom.visualviewport.enabled", true],
           ],
         },
       ];
@@ -23,7 +22,7 @@
       // inside an iframe which means we have no control over the root APZC.
       window.onload = () => {
         runSubtestsSeriallyInFreshWindows(subtests)
-        .then(SimpleTest.finish, SimpleTest.finish);
+        .then(SimpleTest.finish, SimpleTest.finishWithFailure);
       };
     }
   </script>

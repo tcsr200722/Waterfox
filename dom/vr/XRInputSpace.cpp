@@ -5,9 +5,10 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XRInputSpace.h"
+#include "VRDisplayClient.h"
+#include "mozilla/dom/GamepadPoseState.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 XRInputSpace::XRInputSpace(nsIGlobalObject* aParent, XRSession* aSession,
                            XRNativeOrigin* aNativeOrigin,
@@ -30,5 +31,4 @@ bool XRInputSpace::IsPositionEmulated() const {
       GamepadCapabilityFlags::Cap_None);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

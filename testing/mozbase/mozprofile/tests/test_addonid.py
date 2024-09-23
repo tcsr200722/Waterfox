@@ -1,14 +1,10 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import
-
 import os
 
 import mozunit
 import pytest
-
 from mozprofile import addons
-
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -133,7 +129,9 @@ ADDON_ID_TESTS = [
 ]
 
 
-@pytest.fixture(params=ADDON_ID_TESTS, ids=[str(i) for i in range(0, len(ADDON_ID_TESTS))])
+@pytest.fixture(
+    params=ADDON_ID_TESTS, ids=[str(i) for i in range(0, len(ADDON_ID_TESTS))]
+)
 def profile(request, tmpdir):
     test = request.param
     path = tmpdir.mkdtemp().strpath
@@ -145,15 +143,15 @@ def profile(request, tmpdir):
 
 def test_addonID(profile):
     a = addons.AddonManager(os.path.join(profile, "profile"))
-    addon_id = a.addon_details(profile)['id']
+    addon_id = a.addon_details(profile)["id"]
     assert addon_id == "winning"
 
 
 def test_addonID_xpi():
     a = addons.AddonManager("profile")
     addon = a.addon_details(os.path.join(here, "addons", "empty.xpi"))
-    assert addon['id'] == "test-empty@quality.mozilla.org"
+    assert addon["id"] == "test-empty@quality.mozilla.org"
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

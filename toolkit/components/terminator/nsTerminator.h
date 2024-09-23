@@ -9,35 +9,33 @@
 
 #include "nsISupports.h"
 #include "nsIObserver.h"
+#include "nsITerminatorTest.h"
 
 namespace mozilla {
 
-class nsTerminator final : public nsIObserver {
+class nsTerminator final : public nsIObserver, public nsITerminatorTest {
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSITERMINATORTEST
 
   nsTerminator();
-  static bool IsCheckingLateWrites();
+  void AdvancePhase(mozilla::ShutdownPhase aPhase);
 
  private:
-  nsresult SelfInit();
   void Start();
   void StartWatchdog();
   void StartWriter();
 
-  void UpdateHeartbeat(const char* aTopic);
+  void UpdateHeartbeat(int aStep);
   void UpdateTelemetry();
   void UpdateCrashReport(const char* aTopic);
 
   ~nsTerminator() = default;
 
   bool mInitialized;
-  int32_t mCurrentStep;
+  int mCurrentStep;
 };
-
-// This is called by XPCOMInit when the shutdown is completed.
-void XPCOMShutdownNotified();
 
 }  // namespace mozilla
 

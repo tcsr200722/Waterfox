@@ -10,12 +10,18 @@
 #include "js/Class.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/ArrayObject.h"
+#include "vm/BytecodeUtil.h"
 #include "vm/GeneratorResumeKind.h"  // GeneratorResumeKind
-#include "vm/JSContext.h"
 #include "vm/JSObject.h"
 #include "vm/Stack.h"
 
 namespace js {
+
+class InterpreterActivation;
+
+namespace frontend {
+class TaggedParserAtomIndex;
+}
 
 extern const JSClass GeneratorFunctionClass;
 
@@ -29,34 +35,29 @@ class AbstractGeneratorObject : public NativeObject {
     CALLEE_SLOT = 0,
     ENV_CHAIN_SLOT,
     ARGS_OBJ_SLOT,
-    EXPRESSION_STACK_SLOT,
+    STACK_STORAGE_SLOT,
     RESUME_INDEX_SLOT,
     RESERVED_SLOTS
   };
 
  private:
-  static bool suspend(JSContext* cx, HandleObject obj, AbstractFramePtr frame,
-                      jsbytecode* pc, Value* vp, unsigned nvalues);
+  static JSObject* createModuleGenerator(JSContext* cx, AbstractFramePtr frame);
 
  public:
-  static JSObject* create(JSContext* cx, AbstractFramePtr frame);
+  static JSObject* createFromFrame(JSContext* cx, AbstractFramePtr frame);
+  static AbstractGeneratorObject* create(JSContext* cx, HandleFunction callee,
+                                         HandleScript script,
+                                         HandleObject environmentChain,
+                                         Handle<ArgumentsObject*> argsObject);
 
   static bool resume(JSContext* cx, InterpreterActivation& activation,
                      Handle<AbstractGeneratorObject*> genObj, HandleValue arg,
                      HandleValue resumeKind);
 
-  static bool initialSuspend(JSContext* cx, HandleObject obj,
-                             AbstractFramePtr frame, jsbytecode* pc) {
-    return suspend(cx, obj, frame, pc, nullptr, 0);
-  }
+  static bool suspend(JSContext* cx, HandleObject obj, AbstractFramePtr frame,
+                      const jsbytecode* pc, unsigned nvalues);
 
-  static bool normalSuspend(JSContext* cx, HandleObject obj,
-                            AbstractFramePtr frame, jsbytecode* pc, Value* vp,
-                            unsigned nvalues) {
-    return suspend(cx, obj, frame, pc, vp, nvalues);
-  }
-
-  static void finalSuspend(HandleObject obj);
+  static void finalSuspend(JSContext* cx, HandleObject obj);
 
   JSFunction& callee() const {
     return getFixedSlot(CALLEE_SLOT).toObject().as<JSFunction>();
@@ -80,21 +81,24 @@ class AbstractGeneratorObject : public NativeObject {
     setFixedSlot(ARGS_OBJ_SLOT, ObjectValue(argsObj));
   }
 
-  bool hasExpressionStack() const {
-    return getFixedSlot(EXPRESSION_STACK_SLOT).isObject();
+  bool hasStackStorage() const {
+    return getFixedSlot(STACK_STORAGE_SLOT).isObject();
   }
-  bool isExpressionStackEmpty() const {
-    return expressionStack().getDenseInitializedLength() == 0;
+  bool isStackStorageEmpty() const {
+    return stackStorage().getDenseInitializedLength() == 0;
   }
-  ArrayObject& expressionStack() const {
-    return getFixedSlot(EXPRESSION_STACK_SLOT).toObject().as<ArrayObject>();
+  ArrayObject& stackStorage() const {
+    return getFixedSlot(STACK_STORAGE_SLOT).toObject().as<ArrayObject>();
   }
-  void setExpressionStack(ArrayObject& expressionStack) {
-    setFixedSlot(EXPRESSION_STACK_SLOT, ObjectValue(expressionStack));
+  void setStackStorage(ArrayObject& stackStorage) {
+    setFixedSlot(STACK_STORAGE_SLOT, ObjectValue(stackStorage));
   }
-  void clearExpressionStack() {
-    setFixedSlot(EXPRESSION_STACK_SLOT, NullValue());
-  }
+
+  // Access stack storage. Requires `hasStackStorage() && isSuspended()`.
+  // `slot` is the index of the desired local in the stack frame when this
+  // generator is *not* suspended.
+  const Value& getUnaliasedLocal(uint32_t slot) const;
+  void setUnaliasedLocal(uint32_t slot, const Value& value);
 
   // The resumeIndex slot is abused for a few purposes.  It's undefined if
   // it hasn't been set yet (before the initial yield), and null if the
@@ -123,7 +127,7 @@ class AbstractGeneratorObject : public NativeObject {
     MOZ_ASSERT(isSuspended());
     setFixedSlot(RESUME_INDEX_SLOT, Int32Value(RESUME_INDEX_RUNNING));
   }
-  void setResumeIndex(jsbytecode* pc) {
+  void setResumeIndex(const jsbytecode* pc) {
     MOZ_ASSERT(JSOp(*pc) == JSOp::InitialYield || JSOp(*pc) == JSOp::Yield ||
                JSOp(*pc) == JSOp::Await);
 
@@ -145,13 +149,7 @@ class AbstractGeneratorObject : public NativeObject {
     return getFixedSlot(RESUME_INDEX_SLOT).toInt32();
   }
   bool isClosed() const { return getFixedSlot(CALLEE_SLOT).isNull(); }
-  void setClosed() {
-    setFixedSlot(CALLEE_SLOT, NullValue());
-    setFixedSlot(ENV_CHAIN_SLOT, NullValue());
-    setFixedSlot(ARGS_OBJ_SLOT, NullValue());
-    setFixedSlot(EXPRESSION_STACK_SLOT, NullValue());
-    setFixedSlot(RESUME_INDEX_SLOT, NullValue());
-  }
+  void setClosed(JSContext* cx);
 
   bool isAfterYield();
   bool isAfterAwait();
@@ -172,9 +170,19 @@ class AbstractGeneratorObject : public NativeObject {
   static size_t offsetOfResumeIndexSlot() {
     return getFixedSlotOffset(RESUME_INDEX_SLOT);
   }
-  static size_t offsetOfExpressionStackSlot() {
-    return getFixedSlotOffset(EXPRESSION_STACK_SLOT);
+  static size_t offsetOfStackStorageSlot() {
+    return getFixedSlotOffset(STACK_STORAGE_SLOT);
   }
+
+  static size_t calleeSlot() { return CALLEE_SLOT; }
+  static size_t envChainSlot() { return ENV_CHAIN_SLOT; }
+  static size_t argsObjectSlot() { return ARGS_OBJ_SLOT; }
+  static size_t stackStorageSlot() { return STACK_STORAGE_SLOT; }
+  static size_t resumeIndexSlot() { return RESUME_INDEX_SLOT; }
+
+#ifdef DEBUG
+  void dump() const;
+#endif
 };
 
 class GeneratorObject : public AbstractGeneratorObject {
@@ -208,19 +216,18 @@ bool GeneratorThrowOrReturn(JSContext* cx, AbstractFramePtr frame,
 AbstractGeneratorObject* GetGeneratorObjectForFrame(JSContext* cx,
                                                     AbstractFramePtr frame);
 
-void SetGeneratorClosed(JSContext* cx, AbstractFramePtr frame);
+/**
+ * If `env` or any enclosing environment is a `CallObject` associated with a
+ * generator object, return the generator.
+ *
+ * Otherwise `env` is not in a generator or async function, or the generator
+ * object hasn't been created yet; return nullptr with no pending exception.
+ */
+AbstractGeneratorObject* GetGeneratorObjectForEnvironment(JSContext* cx,
+                                                          HandleObject env);
 
-inline GeneratorResumeKind IntToResumeKind(int32_t value) {
-  MOZ_ASSERT(uint32_t(value) <= uint32_t(GeneratorResumeKind::Return));
-  return static_cast<GeneratorResumeKind>(value);
-}
-
-inline GeneratorResumeKind ResumeKindFromPC(jsbytecode* pc) {
-  MOZ_ASSERT(JSOp(*pc) == JSOp::ResumeKind);
-  return IntToResumeKind(GET_UINT8(pc));
-}
-
-GeneratorResumeKind AtomToResumeKind(JSContext* cx, JSAtom* atom);
+GeneratorResumeKind ParserAtomToResumeKind(
+    frontend::TaggedParserAtomIndex atom);
 JSAtom* ResumeKindToAtom(JSContext* cx, GeneratorResumeKind kind);
 
 }  // namespace js

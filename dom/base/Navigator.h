@@ -11,8 +11,8 @@
 #include "mozilla/dom/AddonManagerBinding.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Fetch.h"
+#include "mozilla/dom/NavigatorBinding.h"
 #include "mozilla/dom/Nullable.h"
-#include "mozilla/ErrorResult.h"
 #include "nsWrapperCache.h"
 #include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
@@ -28,6 +28,8 @@ class nsIPrincipal;
 class nsIURI;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 class AddonManager;
 class BodyExtractorBase;
@@ -35,12 +37,15 @@ class Geolocation;
 class systemMessageCallback;
 class MediaDevices;
 struct MediaStreamConstraints;
-class WakeLock;
 class ArrayBufferOrArrayBufferViewOrBlobOrFormDataOrUSVStringOrURLSearchParams;
 class ServiceWorkerContainer;
-class DOMRequest;
 class CredentialsContainer;
 class Clipboard;
+class LockManager;
+class PrivateAttribution;
+class HTMLMediaElement;
+class AudioContext;
+class WakeLockJS;
 }  // namespace dom
 namespace webgpu {
 class Instance;
@@ -51,8 +56,7 @@ class Instance;
 // Navigator: Script "navigator" object
 //*****************************************************************************
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Permissions;
 
@@ -66,15 +70,15 @@ class Gamepad;
 class GamepadServiceTest;
 class NavigatorUserMediaSuccessCallback;
 class NavigatorUserMediaErrorCallback;
-class MozGetUserMediaDevicesSuccessCallback;
 
 struct MIDIOptions;
+
+nsTArray<uint32_t> SanitizeVibratePattern(const nsTArray<uint32_t>& aPattern);
 
 namespace network {
 class Connection;
 }  // namespace network
 
-class Presentation;
 class LegacyMozTCPSocket;
 class VRDisplay;
 class VRServiceTest;
@@ -82,6 +86,7 @@ class XRSystem;
 class StorageManager;
 class MediaCapabilities;
 class MediaSession;
+class UserActivation;
 struct ShareData;
 class WindowGlobalChild;
 
@@ -90,19 +95,12 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   explicit Navigator(nsPIDOMWindowInner* aInnerWindow);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Navigator)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Navigator)
 
   void Invalidate();
   nsPIDOMWindowInner* GetWindow() const { return mWindow; }
 
-  void RefreshMIMEArray();
-
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
-
-  /**
-   * For use during document.write where our inner window changes.
-   */
-  void SetWindow(nsPIDOMWindowInner* aInnerWindow);
 
   /**
    * Called when the inner window navigates to a new page.
@@ -111,7 +109,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
 
   void GetProduct(nsAString& aProduct);
   void GetLanguage(nsAString& aLanguage);
-  void GetAppName(nsAString& aAppName, CallerType aCallerType) const;
+  void GetAppName(nsAString& aAppName) const;
   void GetAppVersion(nsAString& aAppName, CallerType aCallerType,
                      ErrorResult& aRv) const;
   void GetPlatform(nsAString& aPlatform, CallerType aCallerType,
@@ -123,30 +121,34 @@ class Navigator final : public nsISupports, public nsWrapperCache {
                                    nsIURI* aHandlerURI, nsIURI* aDocumentURI,
                                    ErrorResult& aRv);
   void RegisterProtocolHandler(const nsAString& aScheme, const nsAString& aURL,
-                               const nsAString& aTitle, ErrorResult& aRv);
+                               ErrorResult& aRv);
   nsMimeTypeArray* GetMimeTypes(ErrorResult& aRv);
   nsPluginArray* GetPlugins(ErrorResult& aRv);
+  bool PdfViewerEnabled();
   Permissions* GetPermissions(ErrorResult& aRv);
   void GetDoNotTrack(nsAString& aResult);
+  bool GlobalPrivacyControl();
   Geolocation* GetGeolocation(ErrorResult& aRv);
   Promise* GetBattery(ErrorResult& aRv);
+  dom::WakeLockJS* WakeLock();
 
-  Promise* Share(const ShareData& aData, ErrorResult& aRv);
+  bool CanShare(const ShareData& aData);
+  already_AddRefed<Promise> Share(const ShareData& aData, ErrorResult& aRv);
 
-  static void AppName(nsAString& aAppName, nsIPrincipal* aCallerPrincipal,
-                      bool aUsePrefOverriddenValue);
-
-  static nsresult GetPlatform(nsAString& aPlatform,
-                              nsIPrincipal* aCallerPrincipal,
+  static nsresult GetPlatform(nsAString& aPlatform, Document* aCallerDoc,
                               bool aUsePrefOverriddenValue);
 
-  static nsresult GetAppVersion(nsAString& aAppVersion,
-                                nsIPrincipal* aCallerPrincipal,
+  static nsresult GetAppVersion(nsAString& aAppVersion, Document* aCallerDoc,
                                 bool aUsePrefOverriddenValue);
 
   static nsresult GetUserAgent(nsPIDOMWindowInner* aWindow,
-                               nsIPrincipal* aCallerPrincipal,
-                               bool aIsCallerChrome, nsAString& aUserAgent);
+                               Document* aCallerDoc,
+                               Maybe<bool> aShouldResistFingerprinting,
+                               nsAString& aUserAgent);
+
+  // Clears the platform cache by calling:
+  // Navigator_Binding::ClearCachedPlatformValue(this);
+  void ClearPlatformCache();
 
   // Clears the user agent cache by calling:
   // Navigator_Binding::ClearCachedUserAgentValue(this);
@@ -172,23 +174,23 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   already_AddRefed<LegacyMozTCPSocket> MozTCPSocket();
   network::Connection* GetConnection(ErrorResult& aRv);
   MediaDevices* GetMediaDevices(ErrorResult& aRv);
+  MediaDevices* GetExtantMediaDevices() const { return mMediaDevices; };
 
   void GetGamepads(nsTArray<RefPtr<Gamepad>>& aGamepads, ErrorResult& aRv);
-  GamepadServiceTest* RequestGamepadServiceTest();
+  GamepadServiceTest* RequestGamepadServiceTest(ErrorResult& aRv);
+  already_AddRefed<Promise> RequestAllGamepads(ErrorResult& aRv);
   already_AddRefed<Promise> GetVRDisplays(ErrorResult& aRv);
   void FinishGetVRDisplays(bool isWebVRSupportedInwindow, Promise* p);
   void GetActiveVRDisplays(nsTArray<RefPtr<VRDisplay>>& aDisplays) const;
   void OnXRPermissionRequestAllow();
   void OnXRPermissionRequestCancel();
-  VRServiceTest* RequestVRServiceTest();
+  VRServiceTest* RequestVRServiceTest(ErrorResult& aRv);
   bool IsWebVRContentDetected() const;
   bool IsWebVRContentPresenting() const;
   void RequestVRPresentation(VRDisplay& aDisplay);
   XRSystem* GetXr(ErrorResult& aRv);
   already_AddRefed<Promise> RequestMIDIAccess(const MIDIOptions& aOptions,
                                               ErrorResult& aRv);
-
-  Presentation* GetPresentation(ErrorResult& aRv);
 
   bool SendBeacon(const nsAString& aUrl, const Nullable<fetch::BodyInit>& aData,
                   ErrorResult& aRv);
@@ -197,18 +199,18 @@ class Navigator final : public nsISupports, public nsWrapperCache {
                        NavigatorUserMediaSuccessCallback& aOnSuccess,
                        NavigatorUserMediaErrorCallback& aOnError,
                        CallerType aCallerType, ErrorResult& aRv);
-  MOZ_CAN_RUN_SCRIPT
-  void MozGetUserMediaDevices(const MediaStreamConstraints& aConstraints,
-                              MozGetUserMediaDevicesSuccessCallback& aOnSuccess,
-                              NavigatorUserMediaErrorCallback& aOnError,
-                              uint64_t aInnerWindowID, const nsAString& aCallID,
-                              ErrorResult& aRv);
 
   already_AddRefed<ServiceWorkerContainer> ServiceWorker();
+  // NOTE(krosylight): This currently exists solely for use counter purpose,
+  // since Navigator::ServiceWorker is also called by native functions. Remove
+  // this when we don't need the counter.
+  already_AddRefed<ServiceWorkerContainer> ServiceWorkerJS();
 
   mozilla::dom::CredentialsContainer* Credentials();
   dom::Clipboard* Clipboard();
   webgpu::Instance* Gpu();
+  dom::LockManager* Locks();
+  dom::PrivateAttribution* PrivateAttribution();
 
   static bool Webdriver();
 
@@ -228,6 +230,8 @@ class Navigator final : public nsISupports, public nsWrapperCache {
                                   JSObject* /* unused */);
   static bool HasShareSupport(JSContext* /* unused */, JSObject* /* unused */);
 
+  static bool HasMidiSupport(JSContext* /* unused */, JSObject* /* unused */);
+
   nsPIDOMWindowInner* GetParentObject() const { return GetWindow(); }
 
   virtual JSObject* WrapObject(JSContext* cx,
@@ -244,12 +248,23 @@ class Navigator final : public nsISupports, public nsWrapperCache {
 
   bool HasCreatedMediaSession() const;
 
+  // Following methods are for the Autoplay Policy Detection API.
+  // https://w3c.github.io/autoplay/#autoplay-detection-methods
+  AutoplayPolicy GetAutoplayPolicy(AutoplayPolicyMediaType aType);
+  AutoplayPolicy GetAutoplayPolicy(HTMLMediaElement& aElement);
+  AutoplayPolicy GetAutoplayPolicy(AudioContext& aContext);
+
+  already_AddRefed<dom::UserActivation> UserActivation();
+
  private:
+  void ValidateShareData(const ShareData& aData, ErrorResult& aRv);
   RefPtr<MediaKeySystemAccessManager> mMediaKeySystemAccessManager;
 
  public:
   void NotifyVRDisplaysUpdated();
   void NotifyActiveVRDisplaysChanged();
+
+  bool TestTrialGatedAttribute() const { return true; }
 
  private:
   virtual ~Navigator();
@@ -265,7 +280,6 @@ class Navigator final : public nsISupports, public nsWrapperCache {
     return mWindow ? mWindow->GetDocShell() : nullptr;
   }
 
-  RefPtr<nsMimeTypeArray> mMimeTypes;
   RefPtr<nsPluginArray> mPlugins;
   RefPtr<Permissions> mPermissions;
   RefPtr<Geolocation> mGeolocation;
@@ -277,7 +291,6 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   RefPtr<MediaDevices> mMediaDevices;
   RefPtr<ServiceWorkerContainer> mServiceWorkerContainer;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
-  RefPtr<Presentation> mPresentation;
   RefPtr<GamepadServiceTest> mGamepadServiceTest;
   nsTArray<RefPtr<Promise>> mVRGetDisplaysPromises;
   RefPtr<VRServiceTest> mVRServiceTest;
@@ -289,9 +302,12 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   RefPtr<AddonManager> mAddonManager;
   RefPtr<webgpu::Instance> mWebGpu;
   RefPtr<Promise> mSharePromise;  // Web Share API related
+  RefPtr<LockManager> mLocks;
+  RefPtr<dom::PrivateAttribution> mPrivateAttribution;
+  RefPtr<dom::UserActivation> mUserActivation;
+  RefPtr<dom::WakeLockJS> mWakeLock;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_Navigator_h

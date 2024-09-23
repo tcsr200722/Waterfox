@@ -8,8 +8,6 @@
 
 var tmp = {};
 
-const { Sanitizer } = ChromeUtils.import("resource:///modules/Sanitizer.jsm");
-
 function test() {
   waitForExplicitFinish();
 
@@ -17,10 +15,10 @@ function test() {
     {
       set: [["privacy.partition.network_state", false]],
     },
-    function() {
+    function () {
       Sanitizer.sanitize(["cache"], { ignoreTimespan: false });
 
-      getStorageEntryCount("regular", function(nrEntriesR1) {
+      getStorageEntryCount("regular", function (nrEntriesR1) {
         is(nrEntriesR1, 0, "Disk cache reports 0KB and has no entries");
 
         get_cache_for_private_window();
@@ -34,14 +32,12 @@ function getStorageEntryCount(device, goon) {
   switch (device) {
     case "private":
       storage = Services.cache2.diskCacheStorage(
-        Services.loadContextInfo.private,
-        false
+        Services.loadContextInfo.private
       );
       break;
     case "regular":
       storage = Services.cache2.diskCacheStorage(
-        Services.loadContextInfo.default,
-        false
+        Services.loadContextInfo.default
       );
       break;
     default:
@@ -50,11 +46,11 @@ function getStorageEntryCount(device, goon) {
 
   var visitor = {
     entryCount: 0,
-    onCacheStorageInfo(aEntryCount, aConsumption) {},
+    onCacheStorageInfo() {},
     onCacheEntryInfo(uri) {
       var urispec = uri.asciiSpec;
       info(device + ":" + urispec + "\n");
-      if (urispec.match(/^http:\/\/example.org\//)) {
+      if (urispec.match(/^https:\/\/example.com\//)) {
         ++this.entryCount;
       }
     },
@@ -67,23 +63,24 @@ function getStorageEntryCount(device, goon) {
 }
 
 function get_cache_for_private_window() {
-  let win = whenNewWindowLoaded({ private: true }, function() {
-    executeSoon(function() {
+  let win = whenNewWindowLoaded({ private: true }, function () {
+    executeSoon(function () {
       ok(true, "The private window got loaded");
 
-      let tab = BrowserTestUtils.addTab(win.gBrowser, "http://example.org");
+      let tab = BrowserTestUtils.addTab(win.gBrowser, "https://example.com");
       win.gBrowser.selectedTab = tab;
       let newTabBrowser = win.gBrowser.getBrowserForTab(tab);
 
-      BrowserTestUtils.browserLoaded(newTabBrowser).then(function() {
-        executeSoon(function() {
-          getStorageEntryCount("private", function(nrEntriesP) {
-            ok(
-              nrEntriesP >= 1,
+      BrowserTestUtils.browserLoaded(newTabBrowser).then(function () {
+        executeSoon(function () {
+          getStorageEntryCount("private", function (nrEntriesP) {
+            Assert.greaterOrEqual(
+              nrEntriesP,
+              1,
               "Memory cache reports some entries from example.org domain"
             );
 
-            getStorageEntryCount("regular", function(nrEntriesR2) {
+            getStorageEntryCount("regular", function (nrEntriesR2) {
               is(nrEntriesR2, 0, "Disk cache reports 0KB and has no entries");
 
               win.close();

@@ -1,18 +1,10 @@
 "use strict";
 
-const { E10SUtils } = ChromeUtils.import(
-  "resource://gre/modules/E10SUtils.jsm"
-);
-
 const COOP_PREF = "browser.tabs.remote.useCrossOriginOpenerPolicy";
-const DOCUMENT_CHANNEL_PREF = "browser.tabs.documentchannel";
 
 async function setPref() {
   await SpecialPowers.pushPrefEnv({
-    set: [
-      [COOP_PREF, true],
-      [DOCUMENT_CHANNEL_PREF, true],
-    ],
+    set: [[COOP_PREF, true]],
   });
 }
 
@@ -53,16 +45,14 @@ async function test_coop(
       url: start,
       waitForStateStop: true,
     },
-    async function(_browser) {
+    async function (_browser) {
       info(`test_coop: Test tab ready: ${start}`);
 
       let browser = gBrowser.selectedBrowser;
       let firstRemoteType = browser.remoteType;
-      let firstProcessID = browser.frameLoader.remoteTab.osPid;
+      let firstBC = browser.browsingContext;
 
-      info(
-        `firstProcessID: ${firstProcessID} firstRemoteType: ${firstRemoteType}`
-      );
+      info(`firstBC: ${firstBC.id} remoteType: ${firstRemoteType}`);
 
       if (startRemoteTypeCheck) {
         startRemoteTypeCheck(firstRemoteType);
@@ -74,32 +64,22 @@ async function test_coop(
           url: target,
           maybeErrorPage: false,
         },
-        async () => BrowserTestUtils.loadURI(browser, target)
+        async () => BrowserTestUtils.startLoadingURIString(browser, target)
       );
 
       info(`Navigated to: ${target}`);
       browser = gBrowser.selectedBrowser;
       let secondRemoteType = browser.remoteType;
-      let secondProcessID = browser.frameLoader.remoteTab.osPid;
+      let secondBC = browser.browsingContext;
 
-      info(
-        `secondProcessID: ${secondProcessID} secondRemoteType: ${secondRemoteType}`
-      );
+      info(`secondBC: ${secondBC.id} remoteType: ${secondRemoteType}`);
       if (targetRemoteTypeCheck) {
         targetRemoteTypeCheck(secondRemoteType);
       }
       if (expectedProcessSwitch) {
-        Assert.notEqual(
-          firstProcessID,
-          secondProcessID,
-          `from: ${start} to ${target}`
-        );
+        Assert.notEqual(firstBC.id, secondBC.id, `from: ${start} to ${target}`);
       } else {
-        Assert.equal(
-          firstProcessID,
-          secondProcessID,
-          `from: ${start} to ${target}`
-        );
+        Assert.equal(firstBC.id, secondBC.id, `from: ${start} to ${target}`);
       }
     }
   );
@@ -126,15 +106,50 @@ function waitForDownloadWindow() {
         var domwindow = aXULWindow.docShell.domWindow;
         domwindow.addEventListener("load", downloadOnLoad, true);
       },
-      onCloseWindow: aXULWindow => {},
+      onCloseWindow: () => {},
     };
 
     Services.wm.addListener(listener);
   });
 }
 
+async function waitForDownloadUI() {
+  return BrowserTestUtils.waitForEvent(DownloadsPanel.panel, "popupshown");
+}
+
+async function cleanupDownloads(downloadList) {
+  info("cleaning up downloads");
+  let [download] = await downloadList.getAll();
+  await downloadList.remove(download);
+  await download.finalize(true);
+
+  try {
+    if (Services.appinfo.OS === "WINNT") {
+      // We need to make the file writable to delete it on Windows.
+      await IOUtils.setPermissions(download.target.path, 0o600);
+    }
+    await IOUtils.remove(download.target.path);
+  } catch (error) {
+    info("The file " + download.target.path + " is not removed, " + error);
+  }
+
+  if (DownloadsPanel.panel.state !== "closed") {
+    let hiddenPromise = BrowserTestUtils.waitForEvent(
+      DownloadsPanel.panel,
+      "popuphidden"
+    );
+    DownloadsPanel.hidePanel();
+    await hiddenPromise;
+  }
+  is(
+    DownloadsPanel.panel.state,
+    "closed",
+    "Check that the download panel is closed"
+  );
+}
+
 async function test_download_from(initCoop, downloadCoop) {
-  return BrowserTestUtils.withNewTab("about:blank", async function(_browser) {
+  return BrowserTestUtils.withNewTab("about:blank", async function (_browser) {
     info(`test_download: Test tab ready`);
 
     let start = httpURL(
@@ -149,23 +164,37 @@ async function test_download_from(initCoop, downloadCoop) {
       },
       async () => {
         info(`test_download: Loading download page ${start}`);
-        return BrowserTestUtils.loadURI(_browser, start);
+        return BrowserTestUtils.startLoadingURIString(_browser, start);
       }
     );
 
     info(`test_download: Download page ready ${start}`);
     info(`Downloading ${downloadCoop}`);
 
-    let winPromise = waitForDownloadWindow();
+    let expectDialog = Services.prefs.getBoolPref(
+      "browser.download.always_ask_before_handling_new_types",
+      false
+    );
+    let resultPromise = expectDialog
+      ? waitForDownloadWindow()
+      : waitForDownloadUI();
     let browser = gBrowser.selectedBrowser;
     SpecialPowers.spawn(browser, [downloadCoop], downloadCoop => {
       content.document.getElementById(downloadCoop).click();
     });
 
     // if the download page doesn't appear, the promise leads a timeout.
-    let win = await winPromise;
-
-    await BrowserTestUtils.closeWindow(win);
+    if (expectDialog) {
+      let win = await resultPromise;
+      await BrowserTestUtils.closeWindow(win);
+    } else {
+      // verify link target will get automatically downloaded
+      await resultPromise;
+      let downloadList = await Downloads.getList(Downloads.PUBLIC);
+      is((await downloadList.getAll()).length, 1, "Target was downloaded");
+      await cleanupDownloads(downloadList);
+      is((await downloadList.getAll()).length, 0, "Downloads were cleaned up");
+    }
   });
 }
 
@@ -179,8 +208,8 @@ add_task(async function test_multiple_nav_process_switches() {
       url: httpURL("coop_header.sjs", "https://example.org"),
       waitForStateStop: true,
     },
-    async function(browser) {
-      let prevPID = browser.frameLoader.remoteTab.osPid;
+    async function (browser) {
+      let prevBC = browser.browsingContext;
 
       let target = httpURL("coop_header.sjs?.", "https://example.org");
       await performLoad(
@@ -189,13 +218,11 @@ add_task(async function test_multiple_nav_process_switches() {
           url: target,
           maybeErrorPage: false,
         },
-        async () => BrowserTestUtils.loadURI(browser, target)
+        async () => BrowserTestUtils.startLoadingURIString(browser, target)
       );
 
-      let currentPID = browser.frameLoader.remoteTab.osPid;
-
-      Assert.equal(prevPID, currentPID);
-      prevPID = currentPID;
+      Assert.equal(prevBC, browser.browsingContext);
+      prevBC = browser.browsingContext;
 
       target = httpURL(
         "coop_header.sjs?coop=same-origin",
@@ -207,13 +234,11 @@ add_task(async function test_multiple_nav_process_switches() {
           url: target,
           maybeErrorPage: false,
         },
-        async () => BrowserTestUtils.loadURI(browser, target)
+        async () => BrowserTestUtils.startLoadingURIString(browser, target)
       );
 
-      currentPID = browser.frameLoader.remoteTab.osPid;
-
-      Assert.notEqual(prevPID, currentPID);
-      prevPID = currentPID;
+      Assert.notEqual(prevBC, browser.browsingContext);
+      prevBC = browser.browsingContext;
 
       target = httpURL(
         "coop_header.sjs?coop=same-origin",
@@ -225,13 +250,11 @@ add_task(async function test_multiple_nav_process_switches() {
           url: target,
           maybeErrorPage: false,
         },
-        async () => BrowserTestUtils.loadURI(browser, target)
+        async () => BrowserTestUtils.startLoadingURIString(browser, target)
       );
 
-      currentPID = browser.frameLoader.remoteTab.osPid;
-
-      Assert.notEqual(prevPID, currentPID);
-      prevPID = currentPID;
+      Assert.notEqual(prevBC, browser.browsingContext);
+      prevBC = browser.browsingContext;
 
       target = httpURL(
         "coop_header.sjs?coop=same-origin&index=4",
@@ -243,13 +266,10 @@ add_task(async function test_multiple_nav_process_switches() {
           url: target,
           maybeErrorPage: false,
         },
-        async () => BrowserTestUtils.loadURI(browser, target)
+        async () => BrowserTestUtils.startLoadingURIString(browser, target)
       );
 
-      currentPID = browser.frameLoader.remoteTab.osPid;
-
-      Assert.equal(prevPID, currentPID);
-      prevPID = currentPID;
+      Assert.equal(prevBC, browser.browsingContext);
     }
   );
 });

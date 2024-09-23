@@ -16,45 +16,57 @@ namespace mozilla {
 class PresShell;
 }  // namespace mozilla
 
-// Page frame class used by the simple page sequence frame
+// Page content frame class. Represents a page's content, in paginated mode.
 class nsPageContentFrame final : public mozilla::ViewportFrame {
  public:
   NS_DECL_FRAMEARENA_HELPERS(nsPageContentFrame)
 
   friend nsPageContentFrame* NS_NewPageContentFrame(
-      mozilla::PresShell* aPresShell, ComputedStyle* aStyle);
+      mozilla::PresShell* aPresShell, ComputedStyle* aStyle,
+      already_AddRefed<const nsAtom> aPageName);
   friend class nsPageFrame;
 
   // nsIFrame
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aReflowOutput,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return ViewportFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eCanContainOverflowContainers));
-  }
+  const nsAtom* GetPageName() const { return mPageName; }
 
-  virtual void SetSharedPageData(nsSharedPageData* aPD) { mPD = aPD; }
+  void SetSharedPageData(nsSharedPageData* aPD) { mPD = aPD; }
 
-  virtual bool HasTransformGetter() const override { return true; }
+  ComputeTransformFunction GetTransformGetter() const override;
+  void BuildDisplayList(nsDisplayListBuilder*,
+                        const nsDisplayListSet&) override;
 
   /**
    * Return our canvas frame.
    */
   void AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) override;
 
+  void EnsurePageName();
+
 #ifdef DEBUG_FRAME_DUMP
   // Debugging
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const override;
+  void ExtraContainerFrameInfo(nsACString& aTo) const override;
 #endif
 
  protected:
   explicit nsPageContentFrame(ComputedStyle* aStyle,
-                              nsPresContext* aPresContext)
-      : ViewportFrame(aStyle, aPresContext, kClassID) {}
+                              nsPresContext* aPresContext,
+                              already_AddRefed<const nsAtom> aPageName)
+      : ViewportFrame(aStyle, aPresContext, kClassID), mPageName(aPageName) {}
 
-  nsSharedPageData* mPD;
+  RefPtr<const nsAtom> mPageName;
+
+  // Note: this will be set before reflow, and it's strongly owned by our
+  // nsPageSequenceFrame, which outlives us.
+  nsSharedPageData* mPD = nullptr;
+
+  // The combined InkOverflow from the previous and current page that does not
+  // yet have space allocated for it.
+  nscoord mRemainingOverflow = 0;
 };
 
 #endif /* nsPageContentFrame_h___ */

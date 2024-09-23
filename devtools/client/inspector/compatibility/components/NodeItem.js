@@ -4,36 +4,40 @@
 
 "use strict";
 
-const { PureComponent } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  PureComponent,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const {
   translateNodeFrontToGrip,
-} = require("devtools/client/inspector/shared/utils");
-const { REPS, MODE } = require("devtools/client/shared/components/reps/reps");
+} = require("resource://devtools/client/inspector/shared/utils.js");
+const {
+  REPS,
+  MODE,
+} = require("resource://devtools/client/shared/components/reps/index.js");
 const { Rep } = REPS;
 const ElementNode = REPS.ElementNode;
 
-const Types = require("devtools/client/inspector/compatibility/types");
+const Types = require("resource://devtools/client/inspector/compatibility/types.js");
+
+const {
+  highlightNode,
+  unhighlightNode,
+} = require("resource://devtools/client/inspector/boxmodel/actions/box-model-highlighter.js");
 
 class NodeItem extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       node: Types.node.isRequired,
-      hideBoxModelHighlighter: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
-      showBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
   render() {
-    const {
-      node,
-      hideBoxModelHighlighter,
-      setSelectedNode,
-      showBoxModelHighlighterForNode,
-    } = this.props;
+    const { dispatch, node, setSelectedNode } = this.props;
 
     return dom.li(
       { className: "compatibility-node-item" },
@@ -43,10 +47,10 @@ class NodeItem extends PureComponent {
         object: translateNodeFrontToGrip(node),
         onDOMNodeClick: () => {
           setSelectedNode(node);
-          hideBoxModelHighlighter();
+          dispatch(unhighlightNode());
         },
-        onDOMNodeMouseOut: () => hideBoxModelHighlighter(),
-        onDOMNodeMouseOver: () => showBoxModelHighlighterForNode(node),
+        onDOMNodeMouseOut: () => dispatch(unhighlightNode()),
+        onDOMNodeMouseOver: () => dispatch(highlightNode(node)),
       })
     );
   }

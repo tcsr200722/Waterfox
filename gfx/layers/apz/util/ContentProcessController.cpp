@@ -10,6 +10,7 @@
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/APZChild.h"
+#include "mozilla/layers/DoubleTapToZoom.h"
 #include "nsIContentInlines.h"
 
 #include "InputData.h"  // for InputData
@@ -24,7 +25,7 @@ ContentProcessController::ContentProcessController(
 }
 
 void ContentProcessController::NotifyLayerTransforms(
-    const nsTArray<MatrixMessage>& aTransforms) {
+    nsTArray<MatrixMessage>&& aTransforms) {
   // This should never get called
   MOZ_ASSERT(false);
 }
@@ -36,26 +37,28 @@ void ContentProcessController::RequestContentRepaint(
   }
 }
 
-void ContentProcessController::HandleTap(TapType aType,
-                                         const LayoutDevicePoint& aPoint,
-                                         Modifiers aModifiers,
-                                         const ScrollableLayerGuid& aGuid,
-                                         uint64_t aInputBlockId) {
+void ContentProcessController::HandleTap(
+    TapType aType, const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+    const ScrollableLayerGuid& aGuid, uint64_t aInputBlockId,
+    const Maybe<DoubleTapToZoomMetrics>& aMetrics) {
   // This should never get called
   MOZ_ASSERT(false);
 }
 
 void ContentProcessController::NotifyPinchGesture(
     PinchGestureInput::PinchGestureType aType, const ScrollableLayerGuid& aGuid,
-    LayoutDeviceCoord aSpanChange, Modifiers aModifiers) {
+    const LayoutDevicePoint& aFocusPoint, LayoutDeviceCoord aSpanChange,
+    Modifiers aModifiers) {
   // This should never get called
   MOZ_ASSERT_UNREACHABLE("Unexpected message to content process");
 }
 
 void ContentProcessController::NotifyAPZStateChange(
-    const ScrollableLayerGuid& aGuid, APZStateChange aChange, int aArg) {
+    const ScrollableLayerGuid& aGuid, APZStateChange aChange, int aArg,
+    Maybe<uint64_t> aInputBlockId) {
   if (mBrowser) {
-    mBrowser->NotifyAPZStateChange(aGuid.mScrollId, aChange, aArg);
+    mBrowser->NotifyAPZStateChange(aGuid.mScrollId, aChange, aArg,
+                                   aInputBlockId);
   }
 }
 
@@ -96,11 +99,24 @@ void ContentProcessController::CancelAutoscroll(
   MOZ_ASSERT_UNREACHABLE("Unexpected message to content process");
 }
 
+void ContentProcessController::NotifyScaleGestureComplete(
+    const ScrollableLayerGuid& aGuid, float aScale) {
+  // This should never get called
+  MOZ_ASSERT_UNREACHABLE("Unexpected message to content process");
+}
+
 bool ContentProcessController::IsRepaintThread() { return NS_IsMainThread(); }
 
 void ContentProcessController::DispatchToRepaintThread(
     already_AddRefed<Runnable> aTask) {
   NS_DispatchToMainThread(std::move(aTask));
+}
+
+PresShell* ContentProcessController::GetTopLevelPresShell() const {
+  if (!mBrowser) {
+    return nullptr;
+  }
+  return mBrowser->GetTopLevelPresShell();
 }
 
 }  // namespace layers

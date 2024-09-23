@@ -2,26 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppMenuNotifications",
-  "resource://gre/modules/AppMenuNotifications.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "NewTabUtils",
-  "resource://gre/modules/NewTabUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PanelMultiView",
-  "resource:///modules/PanelMultiView.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ToolbarPanelHub",
-  "resource://activity-stream/lib/ToolbarPanelHub.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  AppMenuNotifications: "resource://gre/modules/AppMenuNotifications.sys.mjs",
+  NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
+  PanelMultiView: "resource:///modules/PanelMultiView.sys.mjs",
+});
 
 /**
  * Maintains the state and dispatches events for the main menu panel.
@@ -38,18 +23,12 @@ const PanelUI = {
    */
   get kElements() {
     return {
-      mainView: "appMenu-mainView",
       multiView: "appMenu-multiView",
-      helpView: "PanelUI-helpView",
-      libraryView: "appMenu-libraryView",
-      libraryRecentHighlights: "appMenu-library-recentHighlights",
       menuButton: "PanelUI-menu-button",
       panel: "appMenu-popup",
-      addonNotificationContainer: "appMenu-addon-banners",
       overflowFixedList: "widget-overflow-fixed-list",
       overflowPanel: "widget-overflow",
       navbar: "nav-bar",
-      whatsNewPanel: "PanelUI-whatsNew",
     };
   },
 
@@ -57,7 +36,8 @@ const PanelUI = {
   _notifications: null,
   _notificationPanel: null,
 
-  init() {
+  init(shouldSuppress) {
+    this._shouldSuppress = shouldSuppress;
     this._initElements();
 
     this.menuButton.addEventListener("mousedown", this);
@@ -65,6 +45,7 @@ const PanelUI = {
 
     Services.obs.addObserver(this, "fullscreen-nav-toolbox");
     Services.obs.addObserver(this, "appMenu-notifications");
+    Services.obs.addObserver(this, "show-update-progress");
 
     XPCOMUtils.defineLazyPreferenceGetter(
       this,
@@ -87,7 +68,7 @@ const PanelUI = {
           window.removeEventListener("fullscreen", this);
         }
 
-        this._updateNotifications(false);
+        this.updateNotifications(false);
       },
       autoHidePref => autoHidePref && Services.appinfo.OS !== "Darwin"
     );
@@ -99,18 +80,6 @@ const PanelUI = {
       window.addEventListener("MozDOMFullscreen:Exited", this);
     }
 
-    XPCOMUtils.defineLazyPreferenceGetter(
-      this,
-      "libraryRecentHighlightsEnabled",
-      "browser.library.activity-stream.enabled",
-      false,
-      (pref, previousValue, newValue) => {
-        if (!newValue) {
-          this.clearLibraryRecentHighlights();
-        }
-      }
-    );
-
     window.addEventListener("activate", this);
     CustomizableUI.addListener(this);
 
@@ -119,7 +88,7 @@ const PanelUI = {
     this.overflowFixedList.hidden = false;
     // Also unhide the separator. We use CSS to hide/show it based on the panel's content.
     this.overflowFixedList.previousElementSibling.hidden = false;
-    CustomizableUI.registerMenuPanel(
+    CustomizableUI.registerPanelNode(
       this.overflowFixedList,
       CustomizableUI.AREA_FIXED_OVERFLOW_PANEL
     );
@@ -139,7 +108,7 @@ const PanelUI = {
       // Need to do fresh let-bindings per iteration
       let getKey = k;
       let id = v;
-      this.__defineGetter__(getKey, function() {
+      this.__defineGetter__(getKey, function () {
         delete this[getKey];
         return (this[getKey] = document.getElementById(id));
       });
@@ -159,7 +128,16 @@ const PanelUI = {
       this.panel.addEventListener(event, this);
     }
 
-    this.helpView.addEventListener("ViewShowing", this._onHelpViewShow);
+    this._onLibraryCommand = this._onLibraryCommand.bind(this);
+    PanelMultiView.getViewNode(document, "PanelUI-helpView").addEventListener(
+      "ViewShowing",
+      this._onHelpViewShow
+    );
+    PanelMultiView.getViewNode(
+      document,
+      "appMenu-libraryView"
+    ).addEventListener("command", this._onLibraryCommand);
+    this.mainView.addEventListener("command", this);
     this._eventListenersAdded = true;
   },
 
@@ -167,7 +145,15 @@ const PanelUI = {
     for (let event of this.kEvents) {
       this.panel.removeEventListener(event, this);
     }
-    this.helpView.removeEventListener("ViewShowing", this._onHelpViewShow);
+    PanelMultiView.getViewNode(
+      document,
+      "PanelUI-helpView"
+    ).removeEventListener("ViewShowing", this._onHelpViewShow);
+    PanelMultiView.getViewNode(
+      document,
+      "appMenu-libraryView"
+    ).removeEventListener("command", this._onLibraryCommand);
+    this.mainView.removeEventListener("command", this);
     this._eventListenersAdded = false;
   },
 
@@ -182,6 +168,7 @@ const PanelUI = {
 
     Services.obs.removeObserver(this, "fullscreen-nav-toolbox");
     Services.obs.removeObserver(this, "appMenu-notifications");
+    Services.obs.removeObserver(this, "show-update-progress");
 
     window.removeEventListener("MozDOMFullscreen:Entered", this);
     window.removeEventListener("MozDOMFullscreen:Exited", this);
@@ -190,8 +177,6 @@ const PanelUI = {
     this.menuButton.removeEventListener("mousedown", this);
     this.menuButton.removeEventListener("keypress", this);
     CustomizableUI.removeListener(this);
-    this.libraryView.removeEventListener("ViewShowing", this);
-    this.whatsNewPanel.removeEventListener("ViewShowing", this);
   },
 
   /**
@@ -242,7 +227,7 @@ const PanelUI = {
       await PanelMultiView.openPopup(this.panel, anchor, {
         triggerEvent: domEvent,
       });
-    })().catch(Cu.reportError);
+    })().catch(console.error);
   },
 
   /**
@@ -260,7 +245,7 @@ const PanelUI = {
     switch (topic) {
       case "fullscreen-nav-toolbox":
         if (this._notifications) {
-          this._updateNotifications(false);
+          this.updateNotifications(false);
         }
         break;
       case "appMenu-notifications":
@@ -269,7 +254,10 @@ const PanelUI = {
           break;
         }
         this._notifications = AppMenuNotifications.notifications;
-        this._updateNotifications(true);
+        this.updateNotifications(true);
+        break;
+      case "show-update-progress":
+        openAboutDialog();
         break;
     }
   },
@@ -294,7 +282,7 @@ const PanelUI = {
         }
       // Fall through
       case "popuphidden":
-        this._updateNotifications();
+        this.updateNotifications();
         this._updatePanelButton(aEvent.target);
         if (aEvent.type == "popuphidden") {
           CustomizableUI.removePanelCloseListeners(this.panel);
@@ -320,14 +308,55 @@ const PanelUI = {
       case "MozDOMFullscreen:Exited":
       case "fullscreen":
       case "activate":
-        this._updateNotifications();
+        this.updateNotifications();
         break;
-      case "ViewShowing":
-        if (aEvent.target == this.libraryView) {
-          this.onLibraryViewShowing(aEvent.target).catch(Cu.reportError);
-        } else if (aEvent.target == this.whatsNewPanel) {
-          this.onWhatsNewPanelShowing();
-        }
+      case "command":
+        this.onCommand(aEvent);
+        break;
+    }
+  },
+
+  // Note that we listen for bubbling command events. In the case where the
+  // button that the user clicks has a command attribute, those events are
+  // redirected to the relevant command element, and we never see them in
+  // here. Bear this in mind if you want to write code that applies to
+  // all commands, for which this wouldn't work well.
+  onCommand(aEvent) {
+    let { target } = aEvent;
+    switch (target.id) {
+      case "appMenu-update-banner":
+        this._onBannerItemSelected(aEvent);
+        break;
+      case "appMenu-fxa-label2":
+        gSync.toggleAccountPanel(target, aEvent);
+        break;
+      case "appMenu-profiles-button":
+        gProfiles.updateView(target);
+        break;
+      case "appMenu-bookmarks-button":
+        BookmarkingUI.showSubView(target);
+        break;
+      case "appMenu-history-button":
+        this.showSubView("PanelUI-history", target);
+        break;
+      case "appMenu-passwords-button":
+        LoginHelper.openPasswordManager(window, { entryPoint: "mainmenu" });
+        break;
+      case "appMenu-fullscreen-button2":
+        // Note that we're custom-handling the hiding of the panel to make
+        // sure it disappears before entering fullscreen. Otherwise it can
+        // end up moving around on the screen during the fullscreen transition.
+        target.closest("panel").hidePopup();
+        setTimeout(() => BrowserCommands.fullScreen(), 0);
+        break;
+      case "appMenu-settings-button":
+        openPreferences();
+        break;
+      case "appMenu-more-button2":
+        this.showMoreToolsPanel(target);
+        break;
+      case "appMenu-help-button2":
+        this.showSubView("PanelUI-helpView", target);
         break;
     }
   },
@@ -375,6 +404,22 @@ const PanelUI = {
   },
 
   /**
+   * Switch the panel to the "More Tools" view.
+   *
+   * @param moreTools The panel showing the "More Tools" view.
+   */
+  showMoreToolsPanel(moreTools) {
+    this.showSubView("appmenu-moreTools", moreTools);
+
+    // Notify DevTools the panel view is showing and need it to populate the
+    // "Browser Tools" section of the panel. We notify the observer setup by
+    // DevTools because we want to ensure the same menuitem list is shared
+    // between both the AppMenu and toolbar button views.
+    let view = document.getElementById("appmenu-developer-tools-view");
+    Services.obs.notifyObservers(view, "web-developer-tools-view-showing");
+  },
+
+  /**
    * Shows a subview in the panel with a given ID.
    *
    * @param aViewId the ID of the subview to show.
@@ -382,7 +427,6 @@ const PanelUI = {
    * @param aEvent the event triggering the view showing.
    */
   async showSubView(aViewId, aAnchor, aEvent) {
-    let domEvent = null;
     if (aEvent) {
       // On Mac, ctrl-click will send a context menu event from the widget, so
       // we don't want to bring up the panel when ctrl key is pressed.
@@ -400,52 +444,28 @@ const PanelUI = {
       ) {
         return;
       }
-      if (aEvent.type == "command" && aEvent.inputSource != null) {
-        // Synthesize a new DOM mouse event to pass on the inputSource.
-        domEvent = document.createEvent("MouseEvent");
-        domEvent.initNSMouseEvent(
-          "click",
-          true,
-          true,
-          null,
-          0,
-          aEvent.screenX,
-          aEvent.screenY,
-          0,
-          0,
-          false,
-          false,
-          false,
-          false,
-          0,
-          aEvent.target,
-          0,
-          aEvent.inputSource
-        );
-      } else if (aEvent.mozInputSource != null || aEvent.type == "keypress") {
-        domEvent = aEvent;
-      }
     }
 
     this._ensureEventListenersAdded();
-    let viewNode = document.getElementById(aViewId);
+
+    let viewNode = PanelMultiView.getViewNode(document, aViewId);
     if (!viewNode) {
-      Cu.reportError("Could not show panel subview with id: " + aViewId);
+      console.error("Could not show panel subview with id: ", aViewId);
       return;
     }
 
     if (!aAnchor) {
-      Cu.reportError(
-        "Expected an anchor when opening subview with id: " + aViewId
+      console.error(
+        "Expected an anchor when opening subview with id: ",
+        aViewId
       );
       return;
     }
 
-    this.ensureLibraryInitialized(viewNode);
-    this.ensureWhatsNewInitialized(viewNode);
+    this.ensurePanicViewInitialized(viewNode);
 
     let container = aAnchor.closest("panelmultiview");
-    if (container) {
+    if (container && !viewNode.hasAttribute("disallowSubView")) {
       container.showSubView(aViewId, aAnchor);
     } else if (!aAnchor.open) {
       aAnchor.open = true;
@@ -453,10 +473,17 @@ const PanelUI = {
       let tempPanel = document.createXULElement("panel");
       tempPanel.setAttribute("type", "arrow");
       tempPanel.setAttribute("id", "customizationui-widget-panel");
+      if (viewNode.hasAttribute("neverhidden")) {
+        tempPanel.setAttribute("neverhidden", "true");
+      }
+
       tempPanel.setAttribute("class", "cui-widget-panel panel-no-padding");
       tempPanel.setAttribute("viewId", aViewId);
       if (aAnchor.getAttribute("tabspecific")) {
         tempPanel.setAttribute("tabspecific", true);
+      }
+      if (aAnchor.getAttribute("locationspecific")) {
+        tempPanel.setAttribute("locationspecific", true);
       }
       if (this._disableAnimations) {
         tempPanel.setAttribute("animate", "false");
@@ -465,21 +492,21 @@ const PanelUI = {
       document
         .getElementById(CustomizableUI.AREA_NAVBAR)
         .appendChild(tempPanel);
-      // If the view has a footer, set a convenience class on the panel.
-      tempPanel.classList.toggle(
-        "cui-widget-panelWithFooter",
-        viewNode.querySelector(".panel-subview-footer")
-      );
 
       let multiView = document.createXULElement("panelmultiview");
       multiView.setAttribute("id", "customizationui-widget-multiview");
       multiView.setAttribute("viewCacheId", "appMenu-viewCache");
       multiView.setAttribute("mainViewId", viewNode.id);
+      multiView.appendChild(viewNode);
       tempPanel.appendChild(multiView);
-      viewNode.classList.add("cui-widget-panelview");
+      viewNode.classList.add("cui-widget-panelview", "PanelUI-subView");
 
       let viewShown = false;
-      let panelRemover = () => {
+      let panelRemover = event => {
+        // Avoid bubbled events triggering the panel closing.
+        if (event && event.target != tempPanel) {
+          return;
+        }
         viewNode.classList.remove("cui-widget-panelview");
         if (viewShown) {
           CustomizableUI.removePanelCloseListeners(tempPanel);
@@ -502,11 +529,11 @@ const PanelUI = {
 
       try {
         viewShown = await PanelMultiView.openPopup(tempPanel, anchor, {
-          position: "bottomcenter topright",
-          triggerEvent: domEvent,
+          position: "bottomright topright",
+          triggerEvent: aEvent,
         });
       } catch (ex) {
-        Cu.reportError(ex);
+        console.error(ex);
       }
 
       if (viewShown) {
@@ -519,165 +546,21 @@ const PanelUI = {
   },
 
   /**
-   * Sets up the event listener for when the Library view is shown.
+   * Adds FTL before appending the panic view markup to the main DOM.
    *
-   * @param {panelview} viewNode The library view.
+   * @param {panelview} panelView The Panic View panelview.
    */
-  ensureLibraryInitialized(viewNode) {
-    if (viewNode != this.libraryView || viewNode._initialized) {
+  ensurePanicViewInitialized(panelView) {
+    if (panelView.id != "PanelUI-panicView" || panelView._initialized) {
       return;
     }
 
-    viewNode._initialized = true;
-    viewNode.addEventListener("ViewShowing", this);
-  },
-
-  /**
-   * When the Library view is showing, we can start fetching and populating the
-   * list of Recent Highlights.
-   * This is done asynchronously and may finish when the view is already visible.
-   *
-   * @param {panelview} viewNode The library view.
-   */
-  async onLibraryViewShowing(viewNode) {
-    // Since the library is the first view shown, we don't want to add a blocker
-    // to the event, which would make PanelMultiView wait to show it. Instead,
-    // we keep the space currently reserved for the items, but we hide them.
-    if (this._loadingRecentHighlights || !this.libraryRecentHighlightsEnabled) {
-      return;
+    if (!this.panic) {
+      this.panic = panelView;
     }
 
-    // Make the elements invisible synchronously, before the view is shown.
-    this.makeLibraryRecentHighlightsInvisible();
-
-    // Perform the rest asynchronously while protecting from re-entrancy.
-    this._loadingRecentHighlights = true;
-    try {
-      await this.fetchAndPopulateLibraryRecentHighlights();
-    } finally {
-      this._loadingRecentHighlights = false;
-    }
-  },
-
-  /**
-   * Fetches the list of Recent Highlights and replaces the items in the Library
-   * view with the results.
-   */
-  async fetchAndPopulateLibraryRecentHighlights() {
-    let highlights = await NewTabUtils.activityStreamLinks
-      .getHighlights({
-        // As per bug 1402023, hard-coded limit, until Activity Stream develops a
-        // richer list.
-        numItems: 6,
-        withFavicons: true,
-        excludePocket: true,
-      })
-      .catch(ex => {
-        // Just hide the section if we can't retrieve the items from the database.
-        Cu.reportError(ex);
-        return [];
-      });
-
-    // Since the call above is asynchronous, the panel may be already hidden
-    // at this point, but we still prepare the items for the next time the
-    // panel is shown, so their space is reserved. The part of this function
-    // that adds the elements is the least expensive anyways.
-    this.clearLibraryRecentHighlights();
-    if (!highlights.length) {
-      return;
-    }
-
-    let container = this.libraryRecentHighlights;
-    container.hidden = container.previousElementSibling.hidden = container.previousElementSibling.previousElementSibling.hidden = false;
-    let fragment = document.createDocumentFragment();
-    for (let highlight of highlights) {
-      let button = document.createXULElement("toolbarbutton");
-      button.classList.add(
-        "subviewbutton",
-        "highlight",
-        "subviewbutton-iconic",
-        "bookmark-item"
-      );
-      let title = highlight.title || highlight.url;
-      button.setAttribute("label", title);
-      button.setAttribute("tooltiptext", title);
-      button.setAttribute("type", "highlight-" + highlight.type);
-      button.setAttribute("onclick", "PanelUI.onLibraryHighlightClick(event)");
-      if (highlight.favicon) {
-        button.setAttribute("image", highlight.favicon);
-      }
-      button._highlight = highlight;
-      fragment.appendChild(button);
-    }
-    container.appendChild(fragment);
-  },
-
-  /**
-   * Make all nodes from the 'Recent Highlights' section invisible while we
-   * refresh its contents. This is done while the Library view is opening to
-   * avoid showing potentially stale items, but still keep the space reserved.
-   */
-  makeLibraryRecentHighlightsInvisible() {
-    for (let button of this.libraryRecentHighlights.children) {
-      button.style.visibility = "hidden";
-    }
-  },
-
-  /**
-   * Remove all the nodes from the 'Recent Highlights' section and hide it as well.
-   */
-  clearLibraryRecentHighlights() {
-    let container = this.libraryRecentHighlights;
-    while (container.firstChild) {
-      container.firstChild.remove();
-    }
-    container.hidden = container.previousElementSibling.hidden = container.previousElementSibling.previousElementSibling.hidden = true;
-  },
-
-  /**
-   * Event handler; invoked when an item of the Recent Highlights is clicked.
-   *
-   * @param {MouseEvent} event Click event, originating from the Highlight.
-   */
-  onLibraryHighlightClick(event) {
-    let button = event.target;
-    if (event.button > 1 || !button._highlight) {
-      return;
-    }
-    if (event.button == 1) {
-      // Bug 1402849, close library panel on mid mouse click
-      CustomizableUI.hidePanelForNode(button);
-    }
-    window.openUILink(button._highlight.url, event, {
-      triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
-        {}
-      ),
-    });
-  },
-
-  /**
-   * Sets up the event listener for when the What's New panel is shown.
-   *
-   * @param {panelview} panelView The What's New panelview.
-   */
-  ensureWhatsNewInitialized(panelView) {
-    if (panelView != this.whatsNewPanel || panelView._initialized) {
-      return;
-    }
-
+    MozXULElement.insertFTLIfNeeded("browser/panicButton.ftl");
     panelView._initialized = true;
-    panelView.addEventListener("ViewShowing", this);
-  },
-
-  /**
-   * When the What's New panel is showing, we fetch the messages to show.
-   */
-  onWhatsNewPanelShowing() {
-    ToolbarPanelHub.renderMessages(
-      window,
-      document,
-      "PanelUI-whatsNew-message-container"
-    );
   },
 
   /**
@@ -705,7 +588,7 @@ const PanelUI = {
     }
   },
 
-  onWidgetAfterDOMChange(aNode, aNextNode, aContainer, aWasRemoval) {
+  onWidgetAfterDOMChange(aNode, aNextNode, aContainer) {
     if (aContainer == this.overflowFixedList) {
       this.updateOverflowStatus();
     }
@@ -722,17 +605,37 @@ const PanelUI = {
    * on the state of the panel.
    */
   _updatePanelButton() {
-    this.menuButton.open =
-      this.panel.state == "open" || this.panel.state == "showing";
+    let { state } = this.panel;
+    if (state == "open" || state == "showing") {
+      this.menuButton.open = true;
+      document.l10n.setAttributes(
+        this.menuButton,
+        "appmenu-menu-button-opened2"
+      );
+    } else {
+      this.menuButton.open = false;
+      document.l10n.setAttributes(
+        this.menuButton,
+        "appmenu-menu-button-closed2"
+      );
+    }
   },
 
-  _onHelpViewShow(aEvent) {
+  _onHelpViewShow() {
     // Call global menu setup function
     buildHelpMenu();
 
     let helpMenu = document.getElementById("menu_HelpPopup");
     let items = this.getElementsByTagName("vbox")[0];
-    let attrs = ["command", "oncommand", "onclick", "label", "key", "disabled"];
+    let attrs = [
+      "command",
+      "oncommand",
+      "onclick",
+      "key",
+      "disabled",
+      "accesskey",
+      "label",
+    ];
 
     // Remove all buttons from the view
     while (items.firstChild) {
@@ -756,39 +659,52 @@ const PanelUI = {
         }
         button.setAttribute(attrName, node.getAttribute(attrName));
       }
+
+      // We have AppMenu-specific strings for the Help menu. By convention,
+      // their localization IDs are set on "appmenu-data-l10n-id" attributes.
+      let l10nId = node.getAttribute("appmenu-data-l10n-id");
+      if (l10nId) {
+        document.l10n.setAttributes(button, l10nId);
+      }
+
       if (node.id) {
         button.id = "appMenu_" + node.id;
       }
-      button.setAttribute("class", "subviewbutton subviewbutton-iconic");
+
+      button.classList.add("subviewbutton");
       fragment.appendChild(button);
     }
+
+    // The Enterprise Support menu item has a different location than its
+    // placement in the menubar, so we need to specify it here.
+    let helpPolicySupport = fragment.querySelector(
+      "#appMenu_helpPolicySupport"
+    );
+    if (helpPolicySupport) {
+      fragment.insertBefore(
+        helpPolicySupport,
+        fragment.querySelector("#appMenu_menu_HelpPopup_reportPhishingtoolmenu")
+          .nextSibling
+      );
+    }
+
     items.appendChild(fragment);
   },
 
-  _updateQuitTooltip() {
-    if (AppConstants.platform == "win") {
-      return;
+  _onLibraryCommand(aEvent) {
+    let button = aEvent.target;
+    let { BookmarkingUI, DownloadsPanel } = button.ownerGlobal;
+    switch (button.id) {
+      case "appMenu-library-bookmarks-button":
+        BookmarkingUI.showSubView(button);
+        break;
+      case "appMenu-library-history-button":
+        this.showSubView("PanelUI-history", button);
+        break;
+      case "appMenu-library-downloads-button":
+        DownloadsPanel.showDownloadsHistory();
+        break;
     }
-
-    let tooltipId =
-      AppConstants.platform == "macosx"
-        ? "quit-button.tooltiptext.mac"
-        : "quit-button.tooltiptext.linux2";
-
-    let brands = Services.strings.createBundle(
-      "chrome://branding/locale/brand.properties"
-    );
-    let stringArgs = [brands.GetStringFromName("brandShortName")];
-
-    let key = document.getElementById("key_quitApplication");
-    stringArgs.push(ShortcutUtils.prettifyShortcut(key));
-    let tooltipString = CustomizableUI.getLocalizedProperty(
-      { x: tooltipId },
-      "x",
-      stringArgs
-    );
-    let quitButton = document.getElementById("PanelUI-quit");
-    quitButton.setAttribute("tooltiptext", tooltipString);
   },
 
   _hidePopup() {
@@ -801,7 +717,88 @@ const PanelUI = {
     }
   },
 
-  _updateNotifications(notificationsChanged) {
+  /**
+   * Selects and marks an item by id from the main view. The ids are an array,
+   * the first in the main view and the later ids in subsequent subviews that
+   * become marked when the user opens the subview. The subview marking is
+   * cancelled if a different subview is opened.
+   */
+  async selectAndMarkItem(itemIds) {
+    // This shouldn't really occur, but return early just in case.
+    if (document.documentElement.hasAttribute("customizing")) {
+      return;
+    }
+
+    // This function was triggered from a button while the menu was
+    // already open, so the panel should be in the process of hiding.
+    // Wait for the panel to hide first, then reopen it.
+    if (this.panel.state == "hiding") {
+      await new Promise(resolve => {
+        this.panel.addEventListener("popuphidden", resolve, { once: true });
+      });
+    }
+
+    if (this.panel.state != "open") {
+      await new Promise(resolve => {
+        this.panel.addEventListener("ViewShown", resolve, { once: true });
+        this.show();
+      });
+    }
+
+    let currentView;
+
+    let viewShownCB = event => {
+      viewHidingCB();
+
+      if (itemIds.length) {
+        let subItem = window.document.getElementById(itemIds[0]);
+        if (event.target.id == subItem?.closest("panelview")?.id) {
+          Services.tm.dispatchToMainThread(() => {
+            markItem(event.target);
+          });
+        } else {
+          itemIds = [];
+        }
+      }
+    };
+
+    let viewHidingCB = () => {
+      if (currentView) {
+        currentView.ignoreMouseMove = false;
+      }
+      currentView = null;
+    };
+
+    let popupHiddenCB = () => {
+      viewHidingCB();
+      this.panel.removeEventListener("ViewShown", viewShownCB);
+    };
+
+    let markItem = viewNode => {
+      let id = itemIds.shift();
+      let item = window.document.getElementById(id);
+      item.setAttribute("tabindex", "-1");
+
+      currentView = PanelView.forNode(viewNode);
+      currentView.selectedElement = item;
+      currentView.focusSelectedElement(true);
+
+      // Prevent the mouse from changing the highlight temporarily.
+      // This flag gets removed when the view is hidden or a key
+      // is pressed.
+      currentView.ignoreMouseMove = true;
+
+      if (itemIds.length) {
+        this.panel.addEventListener("ViewShown", viewShownCB, { once: true });
+      }
+      this.panel.addEventListener("ViewHiding", viewHidingCB, { once: true });
+    };
+
+    this.panel.addEventListener("popuphidden", popupHiddenCB, { once: true });
+    markItem(this.mainView);
+  },
+
+  updateNotifications(notificationsChanged) {
     let notifications = this._notifications;
     if (!notifications || !notifications.length) {
       if (notificationsChanged) {
@@ -813,7 +810,8 @@ const PanelUI = {
 
     if (
       (window.fullScreen && FullScreen.navToolboxHidden) ||
-      document.fullscreenElement
+      document.fullscreenElement ||
+      this._shouldSuppress()
     ) {
       this._hidePopup();
       return;
@@ -824,8 +822,10 @@ const PanelUI = {
     );
 
     if (this.panel.state == "showing" || this.panel.state == "open") {
-      // If the menu is already showing, then we need to dismiss all notifications
-      // since we don't want their doorhangers competing for attention
+      // If the menu is already showing, then we need to dismiss all
+      // notifications since we don't want their doorhangers competing for
+      // attention. Don't hide the badge though; it isn't really in competition
+      // with anything.
       doorhangers.forEach(n => {
         n.dismissed = true;
         if (n.options.onDismissed) {
@@ -833,7 +833,6 @@ const PanelUI = {
         }
       });
       this._hidePopup();
-      this._clearBadge();
       if (!notifications[0].options.badgeOnly) {
         this._showBannerItem(notifications[0]);
       }
@@ -883,7 +882,7 @@ const PanelUI = {
         el.removeAttribute("data-lazy-l10n-id");
       });
 
-    this.notificationPanel.openPopup(anchor, "bottomcenter topright");
+    this.notificationPanel.openPopup(anchor, "bottomright topright");
   },
 
   _clearNotificationPanel() {
@@ -912,6 +911,24 @@ const PanelUI = {
       }
     }
     return this._notificationPanel;
+  },
+
+  get mainView() {
+    if (!this._mainView) {
+      this._mainView = PanelMultiView.getViewNode(document, "appMenu-mainView");
+    }
+    return this._mainView;
+  },
+
+  get addonNotificationContainer() {
+    if (!this._addonNotificationContainer) {
+      this._addonNotificationContainer = PanelMultiView.getViewNode(
+        document,
+        "appMenu-addon-banners"
+      );
+    }
+
+    return this._addonNotificationContainer;
   },
 
   _formatDescriptionMessage(n) {
@@ -950,6 +967,13 @@ const PanelUI = {
     }
     if (notification.options.popupIconURL) {
       popupnotification.setAttribute("icon", notification.options.popupIconURL);
+      popupnotification.setAttribute("hasicon", true);
+    }
+    if (notification.options.learnMoreURL) {
+      popupnotification.setAttribute(
+        "learnmoreurl",
+        notification.options.learnMoreURL
+      );
     }
 
     popupnotification.notification = notification;
@@ -964,16 +988,25 @@ const PanelUI = {
   // "Banner item" here refers to an item in the hamburger panel menu. They will
   // typically show up as a colored row in the panel.
   _showBannerItem(notification) {
+    const supportedIds = [
+      "update-downloading",
+      "update-available",
+      "update-manual",
+      "update-unsupported",
+      "update-restart",
+    ];
+    if (!supportedIds.includes(notification.id)) {
+      return;
+    }
+
     if (!this._panelBannerItem) {
       this._panelBannerItem = this.mainView.querySelector(".panel-banner-item");
     }
-    let label = this._panelBannerItem.getAttribute("label-" + notification.id);
-    // Ignore items we don't know about.
-    if (!label) {
-      return;
-    }
+
+    let l10nId = "appmenuitem-banner-" + notification.id;
+    document.l10n.setAttributes(this._panelBannerItem, l10nId);
+
     this._panelBannerItem.setAttribute("notificationid", notification.id);
-    this._panelBannerItem.setAttribute("label", label);
     this._panelBannerItem.hidden = false;
     this._panelBannerItem.notification = notification;
   },
@@ -1038,7 +1071,6 @@ const PanelUI = {
     return iconAnchor || candidate;
   },
 
-  _addedShortcuts: false,
   _ensureShortcutsShown(view = this.mainView) {
     if (view.hasAttribute("added-shortcuts")) {
       return;

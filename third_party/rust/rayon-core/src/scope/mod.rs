@@ -1,23 +1,23 @@
 //! Methods for custom fork-join scopes, created by the [`scope()`]
-//! function. These are a more flexible alternative to [`join()`].
+//! and [`in_place_scope()`] functions. These are a more flexible alternative to [`join()`].
 //!
 //! [`scope()`]: fn.scope.html
+//! [`in_place_scope()`]: fn.in_place_scope.html
 //! [`join()`]: ../join/join.fn.html
 
-use job::{HeapJob, JobFifo};
-use latch::{CountLatch, Latch};
-use log::Event::*;
-use registry::{in_worker, Registry, WorkerThread};
+use crate::broadcast::BroadcastContext;
+use crate::job::{ArcJob, HeapJob, JobFifo, JobRef};
+use crate::latch::{CountLatch, Latch};
+use crate::registry::{global_registry, in_worker, Registry, WorkerThread};
+use crate::unwind;
 use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
-use std::mem;
+use std::mem::ManuallyDrop;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
-use unwind;
 
-mod internal;
 #[cfg(test)]
 mod test;
 
@@ -40,19 +40,15 @@ pub struct ScopeFifo<'scope> {
 }
 
 struct ScopeBase<'scope> {
-    /// thread where `scope()` was executed (note that individual jobs
-    /// may be executing on different worker threads, though they
-    /// should always be within the same pool of threads)
-    owner_thread_index: usize,
-
-    /// thread registry where `scope()` was executed.
+    /// thread registry where `scope()` was executed or where `in_place_scope()`
+    /// should spawn jobs.
     registry: Arc<Registry>,
 
     /// if some job panicked, the error is stored here; it will be
     /// propagated to the one who created the scope
     panic: AtomicPtr<Box<dyn Any + Send + 'static>>,
 
-    /// latch to set when the counter drops to zero (and hence this scope is complete)
+    /// latch to track job counts
     job_completed_latch: CountLatch,
 
     /// You can think of a scope as containing a list of closures to execute,
@@ -62,7 +58,7 @@ struct ScopeBase<'scope> {
     marker: PhantomData<Box<dyn FnOnce(&Scope<'scope>) + Send + Sync + 'scope>>,
 }
 
-/// Create a "fork-join" scope `s` and invokes the closure with a
+/// Creates a "fork-join" scope `s` and invokes the closure with a
 /// reference to `s`. This closure can then spawn asynchronous tasks
 /// into `s`. Those tasks may run asynchronously with respect to the
 /// closure; they may themselves spawn additional tasks into `s`. When
@@ -112,7 +108,7 @@ struct ScopeBase<'scope> {
 /// Task execution potentially starts as soon as `spawn()` is called.
 /// The task will end sometime before `scope()` returns. Note that the
 /// *closure* given to scope may return much earlier. In general
-/// the lifetime of a scope created like `scope(body) goes something like this:
+/// the lifetime of a scope created like `scope(body)` goes something like this:
 ///
 /// - Scope begins when `scope(body)` is called
 /// - Scope body `body()` is invoked
@@ -226,7 +222,7 @@ struct ScopeBase<'scope> {
 ///     });
 ///
 ///     // That closure is fine, but now we can't use `ok` anywhere else,
-///     // since it is owend by the previous task:
+///     // since it is owned by the previous task:
 ///     // s.spawn(|_| println!("ok: {:?}", ok));
 /// });
 /// ```
@@ -287,16 +283,16 @@ struct ScopeBase<'scope> {
 /// propagated at that point.
 pub fn scope<'scope, OP, R>(op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s Scope<'scope>) -> R + 'scope + Send,
+    OP: FnOnce(&Scope<'scope>) -> R + Send,
     R: Send,
 {
     in_worker(|owner_thread, _| {
-        let scope = Scope::<'scope>::new(owner_thread);
-        unsafe { scope.base.complete(owner_thread, || op(&scope)) }
+        let scope = Scope::<'scope>::new(Some(owner_thread), None);
+        scope.base.complete(Some(owner_thread), || op(&scope))
     })
 }
 
-/// Create a "fork-join" scope `s` with FIFO order, and invokes the
+/// Creates a "fork-join" scope `s` with FIFO order, and invokes the
 /// closure with a reference to `s`. This closure can then spawn
 /// asynchronous tasks into `s`. Those tasks may run asynchronously with
 /// respect to the closure; they may themselves spawn additional tasks
@@ -378,20 +374,93 @@ where
 /// panics are propagated at that point.
 pub fn scope_fifo<'scope, OP, R>(op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s ScopeFifo<'scope>) -> R + 'scope + Send,
+    OP: FnOnce(&ScopeFifo<'scope>) -> R + Send,
     R: Send,
 {
     in_worker(|owner_thread, _| {
-        let scope = ScopeFifo::<'scope>::new(owner_thread);
-        unsafe { scope.base.complete(owner_thread, || op(&scope)) }
+        let scope = ScopeFifo::<'scope>::new(Some(owner_thread), None);
+        scope.base.complete(Some(owner_thread), || op(&scope))
     })
 }
 
+/// Creates a "fork-join" scope `s` and invokes the closure with a
+/// reference to `s`. This closure can then spawn asynchronous tasks
+/// into `s`. Those tasks may run asynchronously with respect to the
+/// closure; they may themselves spawn additional tasks into `s`. When
+/// the closure returns, it will block until all tasks that have been
+/// spawned into `s` complete.
+///
+/// This is just like `scope()` except the closure runs on the same thread
+/// that calls `in_place_scope()`. Only work that it spawns runs in the
+/// thread pool.
+///
+/// # Panics
+///
+/// If a panic occurs, either in the closure given to `in_place_scope()` or in
+/// any of the spawned jobs, that panic will be propagated and the
+/// call to `in_place_scope()` will panic. If multiple panics occurs, it is
+/// non-deterministic which of their panic values will propagate.
+/// Regardless, once a task is spawned using `scope.spawn()`, it will
+/// execute, even if the spawning task should later panic. `in_place_scope()`
+/// returns once all spawned jobs have completed, and any panics are
+/// propagated at that point.
+pub fn in_place_scope<'scope, OP, R>(op: OP) -> R
+where
+    OP: FnOnce(&Scope<'scope>) -> R,
+{
+    do_in_place_scope(None, op)
+}
+
+pub(crate) fn do_in_place_scope<'scope, OP, R>(registry: Option<&Arc<Registry>>, op: OP) -> R
+where
+    OP: FnOnce(&Scope<'scope>) -> R,
+{
+    let thread = unsafe { WorkerThread::current().as_ref() };
+    let scope = Scope::<'scope>::new(thread, registry);
+    scope.base.complete(thread, || op(&scope))
+}
+
+/// Creates a "fork-join" scope `s` with FIFO order, and invokes the
+/// closure with a reference to `s`. This closure can then spawn
+/// asynchronous tasks into `s`. Those tasks may run asynchronously with
+/// respect to the closure; they may themselves spawn additional tasks
+/// into `s`. When the closure returns, it will block until all tasks
+/// that have been spawned into `s` complete.
+///
+/// This is just like `scope_fifo()` except the closure runs on the same thread
+/// that calls `in_place_scope_fifo()`. Only work that it spawns runs in the
+/// thread pool.
+///
+/// # Panics
+///
+/// If a panic occurs, either in the closure given to `in_place_scope_fifo()` or in
+/// any of the spawned jobs, that panic will be propagated and the
+/// call to `in_place_scope_fifo()` will panic. If multiple panics occurs, it is
+/// non-deterministic which of their panic values will propagate.
+/// Regardless, once a task is spawned using `scope.spawn_fifo()`, it will
+/// execute, even if the spawning task should later panic. `in_place_scope_fifo()`
+/// returns once all spawned jobs have completed, and any panics are
+/// propagated at that point.
+pub fn in_place_scope_fifo<'scope, OP, R>(op: OP) -> R
+where
+    OP: FnOnce(&ScopeFifo<'scope>) -> R,
+{
+    do_in_place_scope_fifo(None, op)
+}
+
+pub(crate) fn do_in_place_scope_fifo<'scope, OP, R>(registry: Option<&Arc<Registry>>, op: OP) -> R
+where
+    OP: FnOnce(&ScopeFifo<'scope>) -> R,
+{
+    let thread = unsafe { WorkerThread::current().as_ref() };
+    let scope = ScopeFifo::<'scope>::new(thread, registry);
+    scope.base.complete(thread, || op(&scope))
+}
+
 impl<'scope> Scope<'scope> {
-    fn new(owner_thread: &WorkerThread) -> Self {
-        Scope {
-            base: ScopeBase::new(owner_thread),
-        }
+    fn new(owner: Option<&WorkerThread>, registry: Option<&Arc<Registry>>) -> Self {
+        let base = ScopeBase::new(owner, registry);
+        Scope { base }
     }
 
     /// Spawns a job into the fork-join scope `self`. This job will
@@ -407,7 +476,7 @@ impl<'scope> Scope<'scope> {
     /// the stack (if those variables outlive the scope) or
     /// communicate through shared channels.
     ///
-    /// (The intention is to eventualy integrate with Rust futures to
+    /// (The intention is to eventually integrate with Rust futures to
     /// support spawns of functions that compute a value.)
     ///
     /// # Examples
@@ -450,27 +519,46 @@ impl<'scope> Scope<'scope> {
     where
         BODY: FnOnce(&Scope<'scope>) + Send + 'scope,
     {
-        self.base.increment();
-        unsafe {
-            let job_ref = Box::new(HeapJob::new(move || {
-                self.base.execute_job(move || body(self))
-            }))
-            .as_job_ref();
+        let scope_ptr = ScopePtr(self);
+        let job = HeapJob::new(move || unsafe {
+            // SAFETY: this job will execute before the scope ends.
+            let scope = scope_ptr.as_ref();
+            ScopeBase::execute_job(&scope.base, move || body(scope))
+        });
+        let job_ref = self.base.heap_job_ref(job);
 
-            // Since `Scope` implements `Sync`, we can't be sure that we're still in a
-            // thread of this pool, so we can't just push to the local worker thread.
-            self.base.registry.inject_or_push(job_ref);
-        }
+        // Since `Scope` implements `Sync`, we can't be sure that we're still in a
+        // thread of this pool, so we can't just push to the local worker thread.
+        // Also, this might be an in-place scope.
+        self.base.registry.inject_or_push(job_ref);
+    }
+
+    /// Spawns a job into every thread of the fork-join scope `self`. This job will
+    /// execute on each thread sometime before the fork-join scope completes.  The
+    /// job is specified as a closure, and this closure receives its own reference
+    /// to the scope `self` as argument, as well as a `BroadcastContext`.
+    pub fn spawn_broadcast<BODY>(&self, body: BODY)
+    where
+        BODY: Fn(&Scope<'scope>, BroadcastContext<'_>) + Send + Sync + 'scope,
+    {
+        let scope_ptr = ScopePtr(self);
+        let job = ArcJob::new(move || unsafe {
+            // SAFETY: this job will execute before the scope ends.
+            let scope = scope_ptr.as_ref();
+            let body = &body;
+            let func = move || BroadcastContext::with(move |ctx| body(scope, ctx));
+            ScopeBase::execute_job(&scope.base, func)
+        });
+        self.base.inject_broadcast(job)
     }
 }
 
 impl<'scope> ScopeFifo<'scope> {
-    fn new(owner_thread: &WorkerThread) -> Self {
-        let num_threads = owner_thread.registry().num_threads();
-        ScopeFifo {
-            base: ScopeBase::new(owner_thread),
-            fifos: (0..num_threads).map(|_| JobFifo::new()).collect(),
-        }
+    fn new(owner: Option<&WorkerThread>, registry: Option<&Arc<Registry>>) -> Self {
+        let base = ScopeBase::new(owner, registry);
+        let num_threads = base.registry.num_threads();
+        let fifos = (0..num_threads).map(|_| JobFifo::new()).collect();
+        ScopeFifo { base, fifos }
     }
 
     /// Spawns a job into the fork-join scope `self`. This job will
@@ -486,139 +574,156 @@ impl<'scope> ScopeFifo<'scope> {
     /// this distinction.
     ///
     /// [`Scope::spawn()`]: struct.Scope.html#method.spawn
-    /// [`scope_fifo` function]: fn.scope.html
+    /// [`scope_fifo` function]: fn.scope_fifo.html
     pub fn spawn_fifo<BODY>(&self, body: BODY)
     where
         BODY: FnOnce(&ScopeFifo<'scope>) + Send + 'scope,
     {
-        self.base.increment();
-        unsafe {
-            let job_ref = Box::new(HeapJob::new(move || {
-                self.base.execute_job(move || body(self))
-            }))
-            .as_job_ref();
+        let scope_ptr = ScopePtr(self);
+        let job = HeapJob::new(move || unsafe {
+            // SAFETY: this job will execute before the scope ends.
+            let scope = scope_ptr.as_ref();
+            ScopeBase::execute_job(&scope.base, move || body(scope))
+        });
+        let job_ref = self.base.heap_job_ref(job);
 
-            // If we're in the pool, use our scope's private fifo for this thread to execute
-            // in a locally-FIFO order.  Otherwise, just use the pool's global injector.
-            match self.base.registry.current_thread() {
-                Some(worker) => {
-                    let fifo = &self.fifos[worker.index()];
-                    worker.push(fifo.push(job_ref));
-                }
-                None => self.base.registry.inject(&[job_ref]),
+        // If we're in the pool, use our scope's private fifo for this thread to execute
+        // in a locally-FIFO order. Otherwise, just use the pool's global injector.
+        match self.base.registry.current_thread() {
+            Some(worker) => {
+                let fifo = &self.fifos[worker.index()];
+                // SAFETY: this job will execute before the scope ends.
+                unsafe { worker.push(fifo.push(job_ref)) };
             }
+            None => self.base.registry.inject(job_ref),
         }
+    }
+
+    /// Spawns a job into every thread of the fork-join scope `self`. This job will
+    /// execute on each thread sometime before the fork-join scope completes.  The
+    /// job is specified as a closure, and this closure receives its own reference
+    /// to the scope `self` as argument, as well as a `BroadcastContext`.
+    pub fn spawn_broadcast<BODY>(&self, body: BODY)
+    where
+        BODY: Fn(&ScopeFifo<'scope>, BroadcastContext<'_>) + Send + Sync + 'scope,
+    {
+        let scope_ptr = ScopePtr(self);
+        let job = ArcJob::new(move || unsafe {
+            // SAFETY: this job will execute before the scope ends.
+            let scope = scope_ptr.as_ref();
+            let body = &body;
+            let func = move || BroadcastContext::with(move |ctx| body(scope, ctx));
+            ScopeBase::execute_job(&scope.base, func)
+        });
+        self.base.inject_broadcast(job)
     }
 }
 
 impl<'scope> ScopeBase<'scope> {
-    /// Create the base of a new scope for the given worker thread
-    fn new(owner_thread: &WorkerThread) -> Self {
+    /// Creates the base of a new scope for the given registry
+    fn new(owner: Option<&WorkerThread>, registry: Option<&Arc<Registry>>) -> Self {
+        let registry = registry.unwrap_or_else(|| match owner {
+            Some(owner) => owner.registry(),
+            None => global_registry(),
+        });
+
         ScopeBase {
-            owner_thread_index: owner_thread.index(),
-            registry: owner_thread.registry().clone(),
+            registry: Arc::clone(registry),
             panic: AtomicPtr::new(ptr::null_mut()),
-            job_completed_latch: CountLatch::new(),
+            job_completed_latch: CountLatch::new(owner),
             marker: PhantomData,
         }
     }
 
-    fn increment(&self) {
-        self.job_completed_latch.increment();
+    fn heap_job_ref<FUNC>(&self, job: Box<HeapJob<FUNC>>) -> JobRef
+    where
+        FUNC: FnOnce() + Send + 'scope,
+    {
+        unsafe {
+            self.job_completed_latch.increment();
+            job.into_job_ref()
+        }
+    }
+
+    fn inject_broadcast<FUNC>(&self, job: Arc<ArcJob<FUNC>>)
+    where
+        FUNC: Fn() + Send + Sync + 'scope,
+    {
+        let n_threads = self.registry.num_threads();
+        let job_refs = (0..n_threads).map(|_| unsafe {
+            self.job_completed_latch.increment();
+            ArcJob::as_job_ref(&job)
+        });
+
+        self.registry.inject_broadcast(job_refs);
     }
 
     /// Executes `func` as a job, either aborting or executing as
     /// appropriate.
-    ///
-    /// Unsafe because it must be executed on a worker thread.
-    unsafe fn complete<FUNC, R>(&self, owner_thread: &WorkerThread, func: FUNC) -> R
+    fn complete<FUNC, R>(&self, owner: Option<&WorkerThread>, func: FUNC) -> R
     where
         FUNC: FnOnce() -> R,
     {
-        let result = self.execute_job_closure(func);
-        self.steal_till_jobs_complete(owner_thread);
+        let result = unsafe { Self::execute_job_closure(self, func) };
+        self.job_completed_latch.wait(owner);
+        self.maybe_propagate_panic();
         result.unwrap() // only None if `op` panicked, and that would have been propagated
     }
 
     /// Executes `func` as a job, either aborting or executing as
     /// appropriate.
-    ///
-    /// Unsafe because it must be executed on a worker thread.
-    unsafe fn execute_job<FUNC>(&self, func: FUNC)
+    unsafe fn execute_job<FUNC>(this: *const Self, func: FUNC)
     where
         FUNC: FnOnce(),
     {
-        let _: Option<()> = self.execute_job_closure(func);
+        let _: Option<()> = Self::execute_job_closure(this, func);
     }
 
     /// Executes `func` as a job in scope. Adjusts the "job completed"
     /// counters and also catches any panic and stores it into
     /// `scope`.
-    ///
-    /// Unsafe because this must be executed on a worker thread.
-    unsafe fn execute_job_closure<FUNC, R>(&self, func: FUNC) -> Option<R>
+    unsafe fn execute_job_closure<FUNC, R>(this: *const Self, func: FUNC) -> Option<R>
     where
         FUNC: FnOnce() -> R,
     {
-        match unwind::halt_unwinding(func) {
-            Ok(r) => {
-                self.job_completed_ok();
-                Some(r)
-            }
+        let result = match unwind::halt_unwinding(func) {
+            Ok(r) => Some(r),
             Err(err) => {
-                self.job_panicked(err);
+                (*this).job_panicked(err);
                 None
             }
-        }
+        };
+        Latch::set(&(*this).job_completed_latch);
+        result
     }
 
-    unsafe fn job_panicked(&self, err: Box<dyn Any + Send + 'static>) {
+    fn job_panicked(&self, err: Box<dyn Any + Send + 'static>) {
         // capture the first error we see, free the rest
-        let nil = ptr::null_mut();
-        let mut err = Box::new(err); // box up the fat ptr
-        if self
-            .panic
-            .compare_exchange(nil, &mut *err, Ordering::Release, Ordering::Relaxed)
-            .is_ok()
-        {
-            log!(JobPanickedErrorStored {
-                owner_thread: self.owner_thread_index
-            });
-            mem::forget(err); // ownership now transferred into self.panic
-        } else {
-            log!(JobPanickedErrorNotStored {
-                owner_thread: self.owner_thread_index
-            });
+        if self.panic.load(Ordering::Relaxed).is_null() {
+            let nil = ptr::null_mut();
+            let mut err = ManuallyDrop::new(Box::new(err)); // box up the fat ptr
+            let err_ptr: *mut Box<dyn Any + Send + 'static> = &mut **err;
+            if self
+                .panic
+                .compare_exchange(nil, err_ptr, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                // ownership now transferred into self.panic
+            } else {
+                // another panic raced in ahead of us, so drop ours
+                let _: Box<Box<_>> = ManuallyDrop::into_inner(err);
+            }
         }
-
-        self.job_completed_latch.set();
     }
 
-    unsafe fn job_completed_ok(&self) {
-        log!(JobCompletedOk {
-            owner_thread: self.owner_thread_index
-        });
-        self.job_completed_latch.set();
-    }
-
-    unsafe fn steal_till_jobs_complete(&self, owner_thread: &WorkerThread) {
-        // wait for job counter to reach 0:
-        owner_thread.wait_until(&self.job_completed_latch);
-
+    fn maybe_propagate_panic(&self) {
         // propagate panic, if any occurred; at this point, all
         // outstanding jobs have completed, so we can use a relaxed
         // ordering:
         let panic = self.panic.swap(ptr::null_mut(), Ordering::Relaxed);
         if !panic.is_null() {
-            log!(ScopeCompletePanicked {
-                owner_thread: owner_thread.index()
-            });
-            let value: Box<Box<dyn Any + Send + 'static>> = mem::transmute(panic);
+            let value = unsafe { Box::from_raw(panic) };
             unwind::resume_unwinding(*value);
-        } else {
-            log!(ScopeCompleteNoPanic {
-                owner_thread: owner_thread.index()
-            });
         }
     }
 }
@@ -627,7 +732,6 @@ impl<'scope> fmt::Debug for Scope<'scope> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Scope")
             .field("pool_id", &self.base.registry.id())
-            .field("owner_thread_index", &self.base.owner_thread_index)
             .field("panic", &self.base.panic)
             .field("job_completed_latch", &self.base.job_completed_latch)
             .finish()
@@ -635,13 +739,31 @@ impl<'scope> fmt::Debug for Scope<'scope> {
 }
 
 impl<'scope> fmt::Debug for ScopeFifo<'scope> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("ScopeFifo")
             .field("num_fifos", &self.fifos.len())
             .field("pool_id", &self.base.registry.id())
-            .field("owner_thread_index", &self.base.owner_thread_index)
             .field("panic", &self.base.panic)
             .field("job_completed_latch", &self.base.job_completed_latch)
             .finish()
+    }
+}
+
+/// Used to capture a scope `&Self` pointer in jobs, without faking a lifetime.
+///
+/// Unsafe code is still required to dereference the pointer, but that's fine in
+/// scope jobs that are guaranteed to execute before the scope ends.
+struct ScopePtr<T>(*const T);
+
+// SAFETY: !Send for raw pointers is not for safety, just as a lint
+unsafe impl<T: Sync> Send for ScopePtr<T> {}
+
+// SAFETY: !Sync for raw pointers is not for safety, just as a lint
+unsafe impl<T: Sync> Sync for ScopePtr<T> {}
+
+impl<T> ScopePtr<T> {
+    // Helper to avoid disjoint captures of `scope_ptr.0`
+    unsafe fn as_ref(&self) -> &T {
+        &*self.0
     }
 }

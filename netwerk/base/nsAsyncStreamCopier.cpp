@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsAsyncStreamCopier.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIOService.h"
 #include "nsIEventTarget.h"
 #include "nsStreamUtils.h"
@@ -11,6 +12,7 @@
 #include "nsNetCID.h"
 #include "nsIBufferedStreams.h"
 #include "nsIRequestObserver.h"
+#include "mozilla/Components.h"
 #include "mozilla/Logging.h"
 
 using namespace mozilla;
@@ -35,7 +37,7 @@ class AsyncApplyBufferingPolicyEvent final : public Runnable {
   explicit AsyncApplyBufferingPolicyEvent(nsAsyncStreamCopier* aCopier)
       : mozilla::Runnable("AsyncApplyBufferingPolicyEvent"),
         mCopier(aCopier),
-        mTarget(GetCurrentThreadEventTarget()) {}
+        mTarget(GetCurrentSerialEventTarget()) {}
 
   NS_IMETHOD Run() override {
     nsresult rv = mCopier->ApplyBufferingPolicy();
@@ -64,14 +66,7 @@ class AsyncApplyBufferingPolicyEvent final : public Runnable {
 //-----------------------------------------------------------------------------
 
 nsAsyncStreamCopier::nsAsyncStreamCopier()
-    : mLock("nsAsyncStreamCopier.mLock"),
-      mMode(NS_ASYNCCOPY_VIA_READSEGMENTS),
-      mChunkSize(nsIOService::gDefaultSegmentSize),
-      mStatus(NS_OK),
-      mIsPending(false),
-      mCloseSource{false},
-      mCloseSink{false},
-      mShouldSniffBuffering(false) {
+    : mChunkSize(nsIOService::gDefaultSegmentSize) {
   LOG(("Creating nsAsyncStreamCopier @%p\n", this));
 }
 
@@ -162,12 +157,28 @@ nsAsyncStreamCopier::GetStatus(nsresult* status) {
   return NS_OK;
 }
 
+NS_IMETHODIMP nsAsyncStreamCopier::SetCanceledReason(
+    const nsACString& aReason) {
+  return nsIAsyncStreamCopier::SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsAsyncStreamCopier::GetCanceledReason(nsACString& aReason) {
+  return nsIAsyncStreamCopier::GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsAsyncStreamCopier::CancelWithReason(nsresult aStatus,
+                                                    const nsACString& aReason) {
+  return nsIAsyncStreamCopier::CancelWithReasonImpl(aStatus, aReason);
+}
+
 NS_IMETHODIMP
 nsAsyncStreamCopier::Cancel(nsresult status) {
   nsCOMPtr<nsISupports> copierCtx;
   {
     MutexAutoLock lock(mLock);
-    if (!mIsPending) return NS_OK;
+    if (!mIsPending) {
+      return NS_OK;
+    }
     copierCtx.swap(mCopierCtx);
   }
 
@@ -221,11 +232,11 @@ nsAsyncStreamCopier::GetLoadGroup(nsILoadGroup** aLoadGroup) {
 NS_IMETHODIMP
 nsAsyncStreamCopier::SetLoadGroup(nsILoadGroup* aLoadGroup) { return NS_OK; }
 
-nsresult nsAsyncStreamCopier::InitInternal(nsIInputStream* source,
-                                           nsIOutputStream* sink,
-                                           nsIEventTarget* target,
-                                           uint32_t chunkSize, bool closeSource,
-                                           bool closeSink) {
+// Can't be accessed by multiple threads yet
+nsresult nsAsyncStreamCopier::InitInternal(
+    nsIInputStream* source, nsIOutputStream* sink, nsIEventTarget* target,
+    uint32_t chunkSize, bool closeSource,
+    bool closeSink) MOZ_NO_THREAD_SAFETY_ANALYSIS {
   NS_ASSERTION(!mSource && !mSink, "Init() called more than once");
   if (chunkSize == 0) {
     chunkSize = nsIOService::gDefaultSegmentSize;
@@ -241,7 +252,7 @@ nsresult nsAsyncStreamCopier::InitInternal(nsIInputStream* source,
     mTarget = target;
   } else {
     nsresult rv;
-    mTarget = do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID, &rv);
+    mTarget = mozilla::components::StreamTransport::Service(&rv);
     if (NS_FAILED(rv)) {
       return rv;
     }
@@ -335,7 +346,10 @@ nsAsyncStreamCopier::AsyncCopy(nsIRequestObserver* observer, nsISupports* ctx) {
 
   // from this point forward, AsyncCopy is going to return NS_OK.  any errors
   // will be reported via OnStopRequest.
-  mIsPending = true;
+  {
+    MutexAutoLock lock(mLock);
+    mIsPending = true;
+  }
 
   if (mObserver) {
     rv = mObserver->OnStartRequest(AsRequest());

@@ -19,20 +19,62 @@ class OpenTypeGLYF : public Table {
   explicit OpenTypeGLYF(Font *font, uint32_t tag)
       : Table(font, tag, tag), maxp(NULL) { }
 
+  ~OpenTypeGLYF() {
+    for (auto* p : fixed_bboxes) {
+      delete[] p;
+    }
+  }
+
   bool Parse(const uint8_t *data, size_t length);
   bool Serialize(OTSStream *out);
 
  private:
+  struct GidAtLevel {
+    uint16_t gid;
+    uint32_t level;
+  };
+
+  struct ComponentPointCount {
+    ComponentPointCount() : accumulated_component_points(0) {};
+    uint32_t accumulated_component_points;
+    std::vector<GidAtLevel> gid_stack;
+  };
+
   bool ParseFlagsForSimpleGlyph(Buffer &glyph,
                                 uint32_t num_flags,
+                                std::vector<uint8_t>& flags,
                                 uint32_t *flag_index,
                                 uint32_t *coordinates_length);
-  bool ParseSimpleGlyph(Buffer &glyph, int16_t num_contours);
-  bool ParseCompositeGlyph(Buffer &glyph);
+  bool ParseSimpleGlyph(Buffer &glyph,
+                        unsigned gid,
+                        int16_t num_contours,
+                        int16_t xmin,
+                        int16_t ymin,
+                        int16_t xmax,
+                        int16_t ymax,
+                        bool is_tricky_font);
+  bool ParseCompositeGlyph(
+      Buffer &glyph,
+      ComponentPointCount* component_point_count);
+
+
+  bool TraverseComponentsCountingPoints(
+      Buffer& glyph,
+      uint16_t base_glyph_id,
+      uint32_t level,
+      ComponentPointCount* component_point_count);
+
+  Buffer GetGlyphBufferSection(
+      const uint8_t *data,
+      size_t length,
+      const std::vector<uint32_t>& loca_offsets,
+      unsigned glyph_id);
 
   OpenTypeMAXP* maxp;
 
   std::vector<std::pair<const uint8_t*, size_t> > iov;
+
+  std::vector<uint8_t*> fixed_bboxes;
 };
 
 }  // namespace ots

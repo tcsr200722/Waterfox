@@ -34,6 +34,7 @@ pub trait SpawnExt: Spawn {
     /// today. Feel free to use this method in the meantime.
     ///
     /// ```
+    /// # {
     /// use futures::executor::ThreadPool;
     /// use futures::task::SpawnExt;
     ///
@@ -41,6 +42,8 @@ pub trait SpawnExt: Spawn {
     ///
     /// let future = async { /* ... */ };
     /// executor.spawn(future).unwrap();
+    /// # }
+    /// # std::thread::sleep(std::time::Duration::from_millis(500)); // wait for background threads closed: https://github.com/rust-lang/miri/issues/1371
     /// ```
     #[cfg(feature = "alloc")]
     fn spawn<Fut>(&self, future: Fut) -> Result<(), SpawnError>
@@ -58,6 +61,7 @@ pub trait SpawnExt: Spawn {
     /// resolves to the output of the spawned future.
     ///
     /// ```
+    /// # {
     /// use futures::executor::{block_on, ThreadPool};
     /// use futures::future;
     /// use futures::task::SpawnExt;
@@ -67,8 +71,11 @@ pub trait SpawnExt: Spawn {
     /// let future = future::ready(1);
     /// let join_handle_fut = executor.spawn_with_handle(future).unwrap();
     /// assert_eq!(block_on(join_handle_fut), 1);
+    /// # }
+    /// # std::thread::sleep(std::time::Duration::from_millis(500)); // wait for background threads closed: https://github.com/rust-lang/miri/issues/1371
     /// ```
     #[cfg(feature = "channel")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "channel")))]
     #[cfg(feature = "std")]
     fn spawn_with_handle<Fut>(&self, future: Fut) -> Result<RemoteHandle<Fut::Output>, SpawnError>
     where
@@ -83,6 +90,7 @@ pub trait SpawnExt: Spawn {
     /// Wraps a [`Spawn`] and makes it usable as a futures 0.1 `Executor`.
     /// Requires the `compat` feature to enable.
     #[cfg(feature = "compat")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "compat")))]
     fn compat(self) -> Compat<Self>
     where
         Self: Sized,
@@ -145,6 +153,7 @@ pub trait LocalSpawnExt: LocalSpawn {
     /// assert_eq!(executor.run_until(join_handle_fut), 1);
     /// ```
     #[cfg(feature = "channel")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "channel")))]
     #[cfg(feature = "std")]
     fn spawn_local_with_handle<Fut>(
         &self,

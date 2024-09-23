@@ -11,6 +11,7 @@
 #include "mozilla/dom/PMessagePort.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundParent.h"
+#include "xpcpublic.h"
 
 namespace mozilla {
 
@@ -109,7 +110,7 @@ void SharedMessageBody::Read(JSContext* aCx,
     return;
   }
 
-  mRefData->CloneData()->Read(aCx, aValue, cloneDataPolicy, aRv);
+  mRefData->Read(aCx, aValue, cloneDataPolicy, aRv);
 }
 
 bool SharedMessageBody::TakeTransferredPortsAsSequence(
@@ -119,7 +120,7 @@ bool SharedMessageBody::TakeTransferredPortsAsSequence(
   }
 
   MOZ_ASSERT(mRefData);
-  return mRefData->CloneData()->TakeTransferredPortsAsSequence(aPorts);
+  return mRefData->TakeTransferredPortsAsSequence(aPorts);
 }
 
 /* static */
@@ -133,8 +134,7 @@ void SharedMessageBody::FromSharedToMessageChild(
 
   if (aData->mCloneData) {
     ClonedMessageData clonedData;
-    aData->mCloneData->BuildClonedMessageDataForBackgroundChild(aManager,
-                                                                clonedData);
+    aData->mCloneData->BuildClonedMessageData(clonedData);
     aMessage.data() = std::move(clonedData);
     return;
   }
@@ -168,7 +168,7 @@ already_AddRefed<SharedMessageBody> SharedMessageBody::FromMessageToSharedChild(
   if (aMessage.data().type() == MessageDataType::TClonedMessageData) {
     data->mCloneData = MakeUnique<ipc::StructuredCloneData>(
         JS::StructuredCloneScope::UnknownDestination, aSupportsTransferring);
-    data->mCloneData->StealFromClonedMessageDataForBackgroundChild(
+    data->mCloneData->StealFromClonedMessageData(
         aMessage.data().get_ClonedMessageData());
   } else {
     MOZ_ASSERT(aMessage.data().type() == MessageDataType::TRefMessageData);
@@ -188,7 +188,7 @@ already_AddRefed<SharedMessageBody> SharedMessageBody::FromMessageToSharedChild(
   if (aMessage.data().type() == MessageDataType::TClonedMessageData) {
     data->mCloneData = MakeUnique<ipc::StructuredCloneData>(
         JS::StructuredCloneScope::UnknownDestination, aSupportsTransferring);
-    data->mCloneData->BorrowFromClonedMessageDataForBackgroundChild(
+    data->mCloneData->BorrowFromClonedMessageData(
         aMessage.data().get_ClonedMessageData());
   } else {
     MOZ_ASSERT(aMessage.data().type() == MessageDataType::TRefMessageData);
@@ -238,8 +238,7 @@ bool SharedMessageBody::FromSharedToMessagesParent(
 
     if (data->mCloneData) {
       ClonedMessageData clonedData;
-      data->mCloneData->BuildClonedMessageDataForBackgroundParent(aManager,
-                                                                  clonedData);
+      data->mCloneData->BuildClonedMessageData(clonedData);
       message->data() = std::move(clonedData);
       continue;
     }
@@ -256,13 +255,16 @@ already_AddRefed<SharedMessageBody>
 SharedMessageBody::FromMessageToSharedParent(
     MessageData& aMessage,
     StructuredCloneHolder::TransferringSupport aSupportsTransferring) {
+  // TODO: This alloc is not fallible and there is no codepath that returns
+  // nullptr. But the caller checks for nullptr and handles array allocations
+  // for these items as fallible. See bug 1750497.
   RefPtr<SharedMessageBody> data =
       new SharedMessageBody(aSupportsTransferring, aMessage.agentClusterId());
 
   if (aMessage.data().type() == MessageDataType::TClonedMessageData) {
     data->mCloneData = MakeUnique<ipc::StructuredCloneData>(
         JS::StructuredCloneScope::UnknownDestination, aSupportsTransferring);
-    data->mCloneData->StealFromClonedMessageDataForBackgroundParent(
+    data->mCloneData->StealFromClonedMessageData(
         aMessage.data().get_ClonedMessageData());
   } else {
     MOZ_ASSERT(aMessage.data().type() == MessageDataType::TRefMessageData);

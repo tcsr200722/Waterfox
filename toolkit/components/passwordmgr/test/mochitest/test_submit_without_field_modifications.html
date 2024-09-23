@@ -5,7 +5,6 @@
   <title>Don't send onFormSubmit message on navigation if the user did not interact
     with the login fields</title>
   <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
-  <script type="text/javascript" src="/tests/SimpleTest/AddTask.js"></script>
   <script type="text/javascript" src="pwmgr_common.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
 </head>
@@ -19,10 +18,9 @@
 
 <pre id="test"></pre>
 <script>
-const { TestUtils } = SpecialPowers.Cu.import("resource://testing-common/TestUtils.jsm");
 SimpleTest.requestFlakyTimeout("Giving a chance for the unexpected popup to show");
 
-const EXAMPLE_COM = "https://example.com/tests/toolkit/components/passwordmgr/test/mochitest/";
+const EXAMPLE_COM = window.location.origin + "/tests/toolkit/components/passwordmgr/test/mochitest/";
 const PREFILLED_FORM_URL = EXAMPLE_COM + "subtst_prefilled_form.html"
 
 let iframe = document.getElementById("loginFrame");
@@ -38,26 +36,23 @@ function waitForLoad() {
 }
 
 async function setupWithOneLogin(pageUrl) {
-  let chromeScript = runInParent(function testSetup() {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-    let login = Cc["@mozilla.org/login-manager/loginInfo;1"]
-                        .createInstance(Ci.nsILoginInfo);
-    login.init("https://example.com", "https://example.com", null,
-               "user1", "pass1");
+  let origin = window.location.origin;
+  await setStoredLoginsAsync([origin, origin, null, "user1", "pass1"]);
 
-    Services.logins.addLogin(login);
-    for (let l of Services.logins.getAllLogins()) {
+  let chromeScript = runInParent(async function testSetup() {
+    let logins = await Services.logins.getAllLogins();
+    for (let l of logins) {
       info("Got login: " + l.username + ", " + l.password);
     }
   });
+
   await setup(pageUrl);
   return chromeScript;
 }
 
 function resetSavedLogins() {
   let chromeScript = runInParent(function testTeardown() {
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-    Services.logins.removeAllLogins();
+    Services.logins.removeAllUserFacingLogins();
   });
   chromeScript.destroy();
 }
@@ -121,7 +116,8 @@ function checkDocumentUserHasInteracted() {
 
 add_task(async function test_init() {
   // For this test, we'll be testing with & without user document interaction.
-  // So we'll reset the pref which dictates the behavior of LMC._formHasModifiedFields in automation
+  // So we'll reset the pref which dictates the behavior of
+  // LoginFormState._formHasModifiedFields in automation
   // and ensure all interactions are properly emulated
   ok(SpecialPowers.getBoolPref("signon.testOnlyUserHasInteractedByPrefValue"), "signon.testOnlyUserHasInteractedByPrefValue should default to true");
   info("test_init, flipping the signon.testOnlyUserHasInteractedByPrefValue pref");
@@ -143,9 +139,7 @@ add_task(async function test_no_message_on_navigation() {
   await setup(PREFILLED_FORM_URL);
 
   let submitMessageSent = false;
-  getSubmitMessage().then(value => {
-    submitMessageSent = true;
-  });
+  getSubmitMessage().then(_value => submitMessageSent = true);
   await navigateWithoutUserInteraction();
 
   // allow time to pass before concluding no onFormSubmit message was sent
@@ -192,7 +186,7 @@ add_task(async function test_empty_form_with_input_handler() {
 add_task(async function test_no_message_on_autofill_without_user_interaction() {
   let chromeScript = await setupWithOneLogin(EXAMPLE_COM + "form_basic.html");
   // Check for autofilled values.
-  await checkLoginFormInChildFrame(getIframeBrowsingContext(window, 0),
+  await checkLoginFormInFrame(getIframeBrowsingContext(window, 0),
                                    "form-basic-username", "user1",
                                    "form-basic-password", "pass1");
 
@@ -201,9 +195,7 @@ add_task(async function test_no_message_on_autofill_without_user_interaction() {
   );
   ok(!(await checkDocumentUserHasInteracted()), "document.userHasInteracted should be initially false");
   let submitMessageSent = false;
-  getSubmitMessage().then(value => {
-    submitMessageSent = true;
-  });
+  getSubmitMessage().then(_value => submitMessageSent = true);
   info("Navigating the page")
   await navigateWithoutUserInteraction();
 
@@ -222,7 +214,7 @@ add_task(async function test_message_on_autofill_with_document_interaction() {
 
   let chromeScript = await setupWithOneLogin(EXAMPLE_COM + "form_basic.html");
   // Check for autofilled values.
-  await checkLoginFormInChildFrame(getIframeBrowsingContext(window, 0),
+  await checkLoginFormInFrame(getIframeBrowsingContext(window, 0),
                                    "form-basic-username", "user1",
                                    "form-basic-password", "pass1");
 
@@ -243,8 +235,8 @@ add_task(async function test_message_on_autofill_with_document_interaction() {
   let promiseSubmitMessage = getSubmitMessage();
   await navigateWithoutUserInteraction();
 
-  let messageData = await promiseSubmitMessage;
-  ok(messageData.autoFilledLoginGuid, "Message was sent with autoFilledLoginGuid");
+  let { data } = await promiseSubmitMessage;
+  ok(data.autoFilledLoginGuid, "Message was sent with autoFilledLoginGuid");
   info("Message was sent as expected after document user interaction");
 
   chromeScript.destroy();
@@ -256,7 +248,7 @@ add_task(async function test_message_on_autofill_with_user_interaction() {
   // there is both document interaction and field modification
   let chromeScript = await setupWithOneLogin(EXAMPLE_COM + "form_basic.html");
   // Check for autofilled values.
-  await checkLoginFormInChildFrame(getIframeBrowsingContext(window, 0),
+  await checkLoginFormInFrame(getIframeBrowsingContext(window, 0),
                                    "form-basic-username", "user1",
                                    "form-basic-password", "pass1");
 
@@ -264,9 +256,9 @@ add_task(async function test_message_on_autofill_with_user_interaction() {
   let promiseSubmitMessage = getSubmitMessage();
   await navigateWithoutUserInteraction();
 
-  let messageData = await promiseSubmitMessage;
-  ok(messageData.autoFilledLoginGuid, "Message was sent with autoFilledLoginGuid");
-  is(messageData.usernameField.value, "newuser", "Message was sent with correct usernameField.value");
+  let { data } = await promiseSubmitMessage;
+  ok(data.autoFilledLoginGuid, "Message was sent with autoFilledLoginGuid");
+  is(data.usernameField.value, "newuser", "Message was sent with correct usernameField.value");
   info("Message was sent as expected after user form interaction");
 
   chromeScript.destroy();

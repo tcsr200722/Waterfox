@@ -6,34 +6,47 @@
 #define __nsLookAndFeel
 
 #include "nsXPLookAndFeel.h"
-#include "AndroidBridge.h"
+
+namespace mozilla {
+// The order and number of the members in this structure must correspond
+// to the attrsAppearance array in GeckoAppShell.getSystemColors()
+struct AndroidSystemColors {
+  nscolor textColorPrimary;
+  nscolor textColorPrimaryInverse;
+  nscolor textColorSecondary;
+  nscolor textColorSecondaryInverse;
+  nscolor textColorTertiary;
+  nscolor textColorTertiaryInverse;
+  nscolor textColorHighlight;
+  nscolor colorForeground;
+  nscolor colorBackground;
+  nscolor panelColorForeground;
+  nscolor panelColorBackground;
+  nscolor colorAccent;
+};
+}  // namespace mozilla
 
 class nsLookAndFeel final : public nsXPLookAndFeel {
  public:
-  nsLookAndFeel();
+  explicit nsLookAndFeel();
   virtual ~nsLookAndFeel();
 
   void NativeInit() final;
   virtual void RefreshImpl() override;
-  virtual nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
-  virtual nsresult GetIntImpl(IntID aID, int32_t& aResult) override;
-  virtual nsresult GetFloatImpl(FloatID aID, float& aResult) override;
-  virtual bool GetFontImpl(FontID aID, nsString& aName,
-                           gfxFontStyle& aStyle) override;
-  virtual bool GetEchoPasswordImpl() override;
-  virtual uint32_t GetPasswordMaskDelayImpl() override;
-  virtual char16_t GetPasswordCharacterImpl() override;
-  virtual nsTArray<LookAndFeelInt> GetIntCacheImpl() override;
-  virtual void SetIntCacheImpl(
-      const nsTArray<LookAndFeelInt>& aLookAndFeelIntCache) override;
+  nsresult NativeGetInt(IntID, int32_t& aResult) override;
+  nsresult NativeGetFloat(FloatID, float& aResult) override;
+  nsresult NativeGetColor(ColorID, ColorScheme, nscolor& aResult) override;
+  bool NativeGetFont(FontID aID, nsString& aName,
+                     gfxFontStyle& aStyle) override;
+  bool GetEchoPasswordImpl() override;
+  uint32_t GetPasswordMaskDelayImpl() override;
+  char16_t GetPasswordCharacterImpl() override;
 
  protected:
   bool mInitializedSystemColors = false;
   mozilla::AndroidSystemColors mSystemColors;
   bool mInitializedShowPassword = false;
   bool mShowPassword = false;
-  int32_t mPrefersReducedMotion = -1;
-  bool mPrefersReducedMotionCached = false;
 
   nsresult GetSystemColors();
 

@@ -15,8 +15,7 @@
 
 class nsIPrincipal;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class UniqueMessagePortId;
 class RemoteWorkerData;
@@ -61,6 +60,15 @@ class SharedWorkerManagerWrapper final {
   RefPtr<SharedWorkerManagerHolder> mHolder;
 };
 
+/**
+ * PBackground instance that corresponds to a single logical Shared Worker that
+ * exists somewhere in the process tree. Referenced/owned by multiple
+ * SharedWorkerParent instances on the PBackground thread. Holds/owns a single
+ * RemoteWorkerController to interact with the actual shared worker thread,
+ * wherever it is located. Creates the RemoteWorkerController via
+ * RemoteWorkerController::Create which uses RemoteWorkerManager::Launch under
+ * the hood.
+ */
 class SharedWorkerManager final : public RemoteWorkerObserver {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SharedWorkerManager, override);
@@ -70,7 +78,7 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
   static already_AddRefed<SharedWorkerManagerHolder> Create(
       SharedWorkerService* aService, nsIEventTarget* aPBackgroundEventTarget,
       const RemoteWorkerData& aData, nsIPrincipal* aLoadingPrincipal,
-      const OriginAttributes& aStoragePrincipalAttrs);
+      const OriginAttributes& aEffectiveStoragePrincipalAttrs);
 
   // Returns a holder if this manager matches. The holder blocks the shutdown of
   // the manager.
@@ -78,7 +86,7 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
       SharedWorkerService* aService, const nsACString& aDomain,
       nsIURI* aScriptURL, const nsAString& aName,
       nsIPrincipal* aLoadingPrincipal,
-      const OriginAttributes& aStoragePrincipalAttrs);
+      const OriginAttributes& aEffectiveStoragePrincipalAttrs);
 
   // RemoteWorkerObserver
 
@@ -87,6 +95,10 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
   void CreationSucceeded() override;
 
   void ErrorReceived(const ErrorValue& aValue) override;
+
+  void LockNotified(bool aCreated) final;
+
+  void WebTransportNotified(bool aCreated) final;
 
   void Terminated() override;
 
@@ -119,7 +131,7 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
   SharedWorkerManager(nsIEventTarget* aPBackgroundEventTarget,
                       const RemoteWorkerData& aData,
                       nsIPrincipal* aLoadingPrincipal,
-                      const OriginAttributes& aStoragePrincipalAttrs);
+                      const OriginAttributes& aEffectiveStoragePrincipalAttrs);
 
   ~SharedWorkerManager();
 
@@ -127,12 +139,14 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
 
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
   const nsCString mDomain;
-  const OriginAttributes mStoragePrincipalAttrs;
+  const OriginAttributes mEffectiveStoragePrincipalAttrs;
   const nsCOMPtr<nsIURI> mResolvedScriptURL;
   const nsString mName;
   const bool mIsSecureContext;
   bool mSuspended;
   bool mFrozen;
+  uint32_t mLockCount = 0;
+  uint32_t mWebTransportCount = 0;
 
   // Raw pointers because SharedWorkerParent unregisters itself in
   // ActorDestroy().
@@ -145,7 +159,6 @@ class SharedWorkerManager final : public RemoteWorkerObserver {
   nsTArray<CheckedUnsafePtr<SharedWorkerManagerHolder>> mHolders;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_SharedWorkerManager_h

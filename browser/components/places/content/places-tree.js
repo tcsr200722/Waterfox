@@ -8,19 +8,21 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
+  /**
+   * Custom element definition for the places tree.
+   */
   class MozPlacesTree extends customElements.get("tree") {
     constructor() {
       super();
 
-      this.addEventListener("focus", event => {
+      this.addEventListener("focus", () => {
         this._cachedInsertionPoint = undefined;
-
         // See select handler. We need the sidebar's places commandset to be
         // updated as well
         document.commandDispatcher.updateCommands("focus");
       });
 
-      this.addEventListener("select", event => {
+      this.addEventListener("select", () => {
         this._cachedInsertionPoint = undefined;
 
         // This additional complexity is here for the sidebars
@@ -64,6 +66,10 @@
             break;
           }
         }
+
+        // Indicate to drag and drop listeners
+        // whether or not this was the start of the drag
+        this._isDragSource = true;
 
         this._controller.setDataTransfer(event);
         event.stopPropagation();
@@ -119,7 +125,8 @@
         event.stopPropagation();
       });
 
-      this.addEventListener("dragend", event => {
+      this.addEventListener("dragend", () => {
+        this._isDragSource = false;
         PlacesControllerDragHelper.currentDropTarget = null;
       });
     }
@@ -138,6 +145,8 @@
         // eslint-disable-next-line no-self-assign
         this.place = this.place;
       }
+
+      window.addEventListener("unload", this.disconnectedCallback);
     }
 
     get controller() {
@@ -150,7 +159,6 @@
       } else {
         this.removeAttribute("disableUserActions");
       }
-      return val;
     }
 
     get disableUserActions() {
@@ -158,17 +166,19 @@
     }
     /**
      * overriding
+     *
+     * @param {PlacesTreeView} val
+     *   The parent view
      */
     set view(val) {
       // We save the view so that we can avoid expensive get calls when
       // we need to get the view again.
       this._view = val;
-      /* eslint-disable no-undef */
-      return Object.getOwnPropertyDescriptor(
+      Object.getOwnPropertyDescriptor(
+        // eslint-disable-next-line no-undef
         XULTreeElement.prototype,
         "view"
       ).set.call(this, val);
-      /* eslint-enable no-undef */
     }
 
     get view() {
@@ -188,16 +198,12 @@
           this.place = this.place;
         }
       }
-      return val;
     }
 
     get flatList() {
       return this.getAttribute("flatList") == "true";
     }
 
-    /**
-     * nsIPlacesView
-     */
     get result() {
       try {
         return this.view.QueryInterface(Ci.nsINavHistoryResultObserver).result;
@@ -205,9 +211,7 @@
         return null;
       }
     }
-    /**
-     * nsIPlacesView
-     */
+
     set place(val) {
       this.setAttribute("place", val);
 
@@ -215,22 +219,20 @@
         options = {};
       PlacesUtils.history.queryStringToQuery(val, query, options);
       this.load(query.value, options.value);
-
-      return val;
     }
 
     get place() {
       return this.getAttribute("place");
     }
-    /**
-     * nsIPlacesView
-     */
-    get hasSelection() {
-      return this.view && this.view.selection.count >= 1;
+
+    get selectedCount() {
+      return this.view?.selection?.count || 0;
     }
-    /**
-     * nsIPlacesView
-     */
+
+    get hasSelection() {
+      return this.selectedCount >= 1;
+    }
+
     get selectedNodes() {
       let nodes = [];
       if (!this.hasSelection) {
@@ -250,9 +252,7 @@
       }
       return nodes;
     }
-    /**
-     * nsIPlacesView
-     */
+
     get removableSelectionRanges() {
       // This property exists in addition to selectedNodes because it
       // encodes selection ranges (which only occur in list views) into
@@ -308,31 +308,28 @@
       }
       return nodes;
     }
-    /**
-     * nsIPlacesView
-     */
+
     get draggableSelection() {
       return this.selectedNodes;
     }
-    /**
-     * nsIPlacesView
-     */
+
     get selectedNode() {
-      var view = this.view;
-      if (!view || view.selection.count != 1) {
+      if (this.selectedCount != 1) {
         return null;
       }
 
-      var selection = view.selection;
+      var selection = this.view.selection;
       var min = {},
         max = {};
       selection.getRangeAt(0, min, max);
 
       return this.view.nodeForTreeIndex(min.value);
     }
-    /**
-     * nsIPlacesView
-     */
+
+    get singleClickOpens() {
+      return this.getAttribute("singleclickopens") == "true";
+    }
+
     get insertionPoint() {
       // invalidated on selection and focus changes
       if (this._cachedInsertionPoint !== undefined) {
@@ -404,12 +401,16 @@
       return this._cachedInsertionPoint;
     }
 
+    get isDragSource() {
+      return this._isDragSource;
+    }
+
     get ownerWindow() {
       return window;
     }
 
     set active(val) {
-      return (this._active = val);
+      this._active = val;
     }
 
     get active() {
@@ -439,6 +440,7 @@
       if (folderRestrict) {
         query.setParents(folderRestrict);
         options.queryType = options.QUERY_TYPE_BOOKMARKS;
+        Services.telemetry.keyedScalarAdd("sidebar.search", "bookmarks", 1);
       }
 
       options.includeHidden = !!includeHidden;
@@ -477,6 +479,9 @@
      * Causes a particular node represented by the specified placeURI to be
      * selected in the tree. All containers above the node in the hierarchy
      * will be opened, so that the node is visible.
+     *
+     * @param {string} placeURI
+     *   The URI that should be selected
      */
     selectPlaceURI(placeURI) {
       // Do nothing if a node matching the given uri is already selected
@@ -543,6 +548,9 @@
      * Causes a particular node to be selected in the tree, resulting in all
      * containers above the node in the hierarchy to be opened, so that the
      * node is visible.
+     *
+     * @param {object} node
+     *   The node that should be selected
      */
     selectNode(node) {
       var view = this.view;
@@ -659,7 +667,6 @@
         : null;
 
       return new PlacesInsertionPoint({
-        parentId: PlacesUtils.getConcreteItemId(container),
         parentGuid: PlacesUtils.getConcreteItemGuid(container),
         index,
         orientation,
@@ -668,9 +675,6 @@
       });
     }
 
-    /**
-     * nsIPlacesView
-     */
     selectAll() {
       this.view.selection.selectAll();
     }
@@ -679,6 +683,11 @@
      * This method will select the first node in the tree that matches
      * each given item guid. It will open any folder nodes that it needs
      * to in order to show the selected items.
+     *
+     * @param {Array} aGuids
+     *   Guids to select.
+     * @param {boolean} aOpenContainers
+     *   Whether or not to open containers.
      */
     selectItems(aGuids, aOpenContainers) {
       // Never open containers in flat lists.
@@ -713,6 +722,11 @@
        *
        * NOTE: This method will leave open any node that had matching items
        * in its subtree.
+       *
+       * @param {object} node
+       *   The node to search.
+       * @returns {boolean}
+       *   Returns true if at least one item was found.
        */
       function findNodes(node) {
         var foundOne = false;
@@ -803,14 +817,23 @@
       for (let i = 0; i < nodesToOpen.length; i++) {
         nodesToOpen[i].containerOpen = true;
       }
+      let firstValidTreeIndex = -1;
       for (let i = 0; i < nodes.length; i++) {
         var index = resultview.treeIndexForNode(nodes[i]);
         if (index == -1) {
           continue;
         }
+        if (firstValidTreeIndex < 0 && index >= 0) {
+          firstValidTreeIndex = index;
+        }
         selection.rangedSelect(index, index, true);
       }
       selection.selectEventsSuppressed = false;
+
+      // Bring the first valid node into view if necessary
+      if (firstValidTreeIndex >= 0) {
+        this.ensureRowIsVisible(firstValidTreeIndex);
+      }
     }
 
     buildContextMenu(aPopup) {
@@ -818,8 +841,10 @@
       return this.controller.buildContextMenu(aPopup);
     }
 
-    destroyContextMenu(aPopup) {}
+    destroyContextMenu() {}
+
     disconnectedCallback() {
+      window.removeEventListener("unload", this.disconnectedCallback);
       // Unregister the controller before unlinking the view, otherwise it
       // may still try to update commands on a view with a null result.
       if (this._controller) {
@@ -829,11 +854,8 @@
 
       if (this.view) {
         this.view.uninit();
+        this.view = null;
       }
-      // view.setTree(null) will be called upon unsetting the view, which
-      // breaks the reference cycle between the PlacesTreeView and result.
-      // See the "setTree" method of PlacesTreeView in treeView.js.
-      this.view = null;
     }
   }
 

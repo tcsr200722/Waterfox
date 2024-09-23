@@ -17,7 +17,7 @@
 
 #include <type_traits>  // std::true_type
 
-#include "gc/Allocator.h"            // js::AllowGC, js::CanGC, js::NoGC
+#include "gc/GCEnum.h"               // js::AllowGC, js::CanGC, js::NoGC
 #include "js/ComparisonOperators.h"  // JS::detail::DefineComparisonOps
 #include "js/RootingAPI.h"  // js::{Rooted,MutableHandle}Base, JS::SafelyInitialized, DECLARE_POINTER_{CONSTREF,ASSIGN}_OPS, DECLARE_NONPOINTER_{,MUTABLE_}ACCESSOR_METHODS, JS::Rooted, JS::{,Mutable}Handle
 
@@ -28,43 +28,38 @@ namespace js {
  * memory.
  */
 template <typename T>
-class MOZ_RAII FakeRooted : public RootedBase<T, FakeRooted<T>> {
+class MOZ_RAII FakeRooted : public RootedOperations<T, FakeRooted<T>> {
  public:
   using ElementType = T;
 
-  template <typename CX>
-  explicit FakeRooted(CX* cx) : ptr(JS::SafelyInitialized<T>()) {}
+  explicit FakeRooted(JSContext* cx)
+      : ptr(JS::SafelyInitialized<T>::create()) {}
 
-  template <typename CX>
-  FakeRooted(CX* cx, T initial) : ptr(initial) {}
+  FakeRooted(JSContext* cx, const T& initial) : ptr(initial) {}
+
+  FakeRooted(const FakeRooted&) = delete;
 
   DECLARE_POINTER_CONSTREF_OPS(T);
   DECLARE_POINTER_ASSIGN_OPS(FakeRooted, T);
   DECLARE_NONPOINTER_ACCESSOR_METHODS(ptr);
   DECLARE_NONPOINTER_MUTABLE_ACCESSOR_METHODS(ptr);
 
+  operator JS::Handle<T>() { return JS::Handle<T>::fromMarkedLocation(&ptr); }
+
  private:
   T ptr;
 
   void set(const T& value) { ptr = value; }
-
-  FakeRooted(const FakeRooted&) = delete;
 };
 
 }  // namespace js
 
-namespace JS {
-
-namespace detail {
-
+namespace JS::detail {
 template <typename T>
 struct DefineComparisonOps<js::FakeRooted<T>> : std::true_type {
   static const T& get(const js::FakeRooted<T>& v) { return v.get(); }
 };
-
-}  // namespace detail
-
-}  // namespace JS
+}  // namespace JS::detail
 
 namespace js {
 
@@ -74,7 +69,7 @@ namespace js {
  */
 template <typename T>
 class FakeMutableHandle
-    : public js::MutableHandleBase<T, FakeMutableHandle<T>> {
+    : public js::MutableHandleOperations<T, FakeMutableHandle<T>> {
  public:
   using ElementType = T;
 
@@ -97,18 +92,12 @@ class FakeMutableHandle
 
 }  // namespace js
 
-namespace JS {
-
-namespace detail {
-
+namespace JS::detail {
 template <typename T>
 struct DefineComparisonOps<js::FakeMutableHandle<T>> : std::true_type {
   static const T& get(const js::FakeMutableHandle<T>& v) { return v.get(); }
 };
-
-}  // namespace detail
-
-}  // namespace JS
+}  // namespace JS::detail
 
 namespace js {
 
@@ -127,11 +116,6 @@ class MaybeRooted<T, CanGC> {
   using HandleType = JS::Handle<T>;
   using RootType = JS::Rooted<T>;
   using MutableHandleType = JS::MutableHandle<T>;
-
-  template <typename T2>
-  static JS::Handle<T2*> downcastHandle(HandleType v) {
-    return v.template as<T2>();
-  }
 };
 
 template <typename T>
@@ -140,11 +124,6 @@ class MaybeRooted<T, NoGC> {
   using HandleType = const T&;
   using RootType = FakeRooted<T>;
   using MutableHandleType = FakeMutableHandle<T>;
-
-  template <typename T2>
-  static T2* downcastHandle(HandleType v) {
-    return &v->template as<T2>();
-  }
 };
 
 }  // namespace js

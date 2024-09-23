@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGPatternElement_h
-#define mozilla_dom_SVGPatternElement_h
+#ifndef DOM_SVG_SVGPATTERNELEMENT_H_
+#define DOM_SVG_SVGPATTERNELEMENT_H_
 
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
@@ -16,19 +16,19 @@
 #include "mozilla/dom/SVGElement.h"
 #include "mozilla/UniquePtr.h"
 
-class nsSVGPatternFrame;
-
 nsresult NS_NewSVGPatternElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+class SVGPatternFrame;
+
 namespace dom {
 class DOMSVGAnimatedTransformList;
 
-typedef SVGElement SVGPatternElementBase;
+using SVGPatternElementBase = SVGElement;
 
 class SVGPatternElement final : public SVGPatternElementBase {
-  friend class ::nsSVGPatternFrame;
+  friend class mozilla::SVGPatternFrame;
 
  protected:
   friend nsresult(::NS_NewSVGPatternElement(
@@ -36,24 +36,18 @@ class SVGPatternElement final : public SVGPatternElementBase {
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
   explicit SVGPatternElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  typedef mozilla::SVGAnimatedPreserveAspectRatio
-      SVGAnimatedPreserveAspectRatio;
-
   // nsIContent interface
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* name) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  // SVGSVGElement methods:
+  bool HasValidDimensions() const override;
 
-  // nsSVGSVGElement methods:
-  virtual bool HasValidDimensions() const override;
-
-  virtual mozilla::SVGAnimatedTransformList* GetAnimatedTransformList(
+  SVGAnimatedTransformList* GetAnimatedTransformList(
       uint32_t aFlags = 0) override;
-  virtual nsStaticAtom* GetTransformListAttrName() const override {
+  nsStaticAtom* GetTransformListAttrName() const override {
     return nsGkAtoms::patternTransform;
   }
 
@@ -70,12 +64,11 @@ class SVGPatternElement final : public SVGPatternElementBase {
   already_AddRefed<DOMSVGAnimatedString> Href();
 
  protected:
-  virtual LengthAttributesInfo GetLengthInfo() override;
-  virtual EnumAttributesInfo GetEnumInfo() override;
-  virtual StringAttributesInfo GetStringInfo() override;
-  virtual SVGAnimatedPreserveAspectRatio* GetAnimatedPreserveAspectRatio()
-      override;
-  virtual SVGAnimatedViewBox* GetAnimatedViewBox() override;
+  LengthAttributesInfo GetLengthInfo() override;
+  EnumAttributesInfo GetEnumInfo() override;
+  StringAttributesInfo GetStringInfo() override;
+  SVGAnimatedPreserveAspectRatio* GetAnimatedPreserveAspectRatio() override;
+  SVGAnimatedViewBox* GetAnimatedViewBox() override;
 
   enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
   SVGAnimatedLength mLengthAttributes[4];
@@ -85,7 +78,7 @@ class SVGPatternElement final : public SVGPatternElementBase {
   SVGAnimatedEnumeration mEnumAttributes[2];
   static EnumInfo sEnumInfo[2];
 
-  UniquePtr<mozilla::SVGAnimatedTransformList> mPatternTransform;
+  UniquePtr<SVGAnimatedTransformList> mPatternTransform;
 
   enum { HREF, XLINK_HREF };
   SVGAnimatedString mStringAttributes[2];
@@ -99,4 +92,4 @@ class SVGPatternElement final : public SVGPatternElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGPatternElement_h
+#endif  // DOM_SVG_SVGPATTERNELEMENT_H_

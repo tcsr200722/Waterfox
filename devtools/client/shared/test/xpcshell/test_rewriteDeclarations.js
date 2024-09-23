@@ -3,9 +3,10 @@
 
 "use strict";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
-const RuleRewriter = require("devtools/client/fronts/inspector/rule-rewriter");
-const { isCssPropertyKnown } = require("devtools/server/actors/css-properties");
+const RuleRewriter = require("resource://devtools/client/fronts/inspector/rule-rewriter.js");
+const {
+  isCssPropertyKnown,
+} = require("resource://devtools/server/actors/css-properties.js");
 
 const TEST_DATA = [
   {
@@ -482,9 +483,7 @@ const TEST_DATA = [
       enabled: true,
     },
     expected: "something: \\\\;color: red;",
-    // The lexer rewrites the token before we see it.  However this is
-    // so obscure as to be inconsequential.
-    changed: { 0: "\uFFFD\\" },
+    changed: { 0: "\\\\" },
   },
 
   // Termination insertion corner case.

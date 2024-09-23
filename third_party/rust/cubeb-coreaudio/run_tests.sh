@@ -39,8 +39,9 @@ cargo clippy -- -D warnings
 
 # Regular Tests
 cargo test --verbose
-cargo test test_configure_output -- --ignored
-cargo test test_aggregate -- --ignored --test-threads=1
+
+# Timing sensitive tests must run serially so they cannot be impacted by other tasks on the queue
+cargo test test_ops_timing_sensitive -- --ignored --test-threads=1
 
 # Parallel Tests
 cargo test test_parallel -- --ignored --nocapture --test-threads=1
@@ -50,6 +51,5 @@ sh run_device_tests.sh
 
 # Manual Tests
 # cargo test test_switch_output_device -- --ignored --nocapture
-# cargo test test_add_then_remove_listeners -- --ignored --nocapture
 # cargo test test_device_collection_change -- --ignored --nocapture
 # cargo test test_stream_tester -- --ignored --nocapture

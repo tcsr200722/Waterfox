@@ -9,11 +9,16 @@
 #define SkImageFilterCache_DEFINED
 
 #include "include/core/SkMatrix.h"
+#include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
-#include "src/core/SkImageFilterTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
 
-struct SkIPoint;
+#include <cstddef>
+#include <cstdint>
+
 class SkImageFilter;
+namespace skif { class FilterResult; }
 
 struct SkImageFilterCacheKey {
     SkImageFilterCacheKey(const uint32_t uniqueID, const SkMatrix& matrix,
@@ -51,22 +56,20 @@ struct SkImageFilterCacheKey {
 // copy of the image filter (with exactly the same parameters) will not yield a cache hit.
 class SkImageFilterCache : public SkRefCnt {
 public:
-    SK_USE_FLUENT_IMAGE_FILTER_TYPES_IN_CLASS
+    static constexpr size_t kDefaultTransientSize = 32 * 1024 * 1024;
 
-    enum { kDefaultTransientSize = 32 * 1024 * 1024 };
-
-    virtual ~SkImageFilterCache() {}
-    static SkImageFilterCache* Create(size_t maxBytes);
-    static SkImageFilterCache* Get();
+    ~SkImageFilterCache() override {}
+    static sk_sp<SkImageFilterCache> Create(size_t maxBytes);
+    static sk_sp<SkImageFilterCache> Get();
 
     // Returns true on cache hit and updates 'result' to be the cached result. Returns false when
     // not in the cache, in which case 'result' is not modified.
     virtual bool get(const SkImageFilterCacheKey& key,
-                     skif::FilterResult<For::kOutput>* result) const = 0;
+                     skif::FilterResult* result) const = 0;
     // 'filter' is included in the caching to allow the purging of all of an image filter's cached
     // results when it is destroyed.
     virtual void set(const SkImageFilterCacheKey& key, const SkImageFilter* filter,
-                     const skif::FilterResult<For::kOutput>& result) = 0;
+                     const skif::FilterResult& result) = 0;
     virtual void purge() = 0;
     virtual void purgeByImageFilter(const SkImageFilter*) = 0;
     SkDEBUGCODE(virtual int count() const = 0;)

@@ -3,8 +3,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ChangeStyleTransaction.h"
+#include "ChangeStyleTransaction.h"
 
+#include "HTMLEditUtils.h"
+#include "mozilla/Logging.h"
+#include "mozilla/ToString.h"
 #include "mozilla/dom/Element.h"  // for Element
 #include "nsAString.h"            // for nsAString::Append, etc.
 #include "nsCRT.h"                // for nsCRT::IsAsciiSpace
@@ -47,14 +50,32 @@ ChangeStyleTransaction::ChangeStyleTransaction(nsStyledElement& aStyledElement,
     : EditTransactionBase(),
       mStyledElement(&aStyledElement),
       mProperty(&aProperty),
-      mValue(aValue),
-      mUndoValue(),
-      mRedoValue(),
       mRemoveProperty(aRemove),
       mUndoAttributeWasSet(false),
-      mRedoAttributeWasSet(false) {}
+      mRedoAttributeWasSet(false) {
+  CopyUTF16toUTF8(aValue, mValue);
+}
 
-#define kNullCh (char16_t('\0'))
+std::ostream& operator<<(std::ostream& aStream,
+                         const ChangeStyleTransaction& aTransaction) {
+  aStream << "{ mStyledElement=" << aTransaction.mStyledElement.get();
+  if (aTransaction.mStyledElement) {
+    aStream << " (" << *aTransaction.mStyledElement << ")";
+  }
+  aStream << ", mProperty=" << nsAtomCString(aTransaction.mProperty).get()
+          << ", mValue=\"" << aTransaction.mValue.get() << "\", mUndoValue=\""
+          << aTransaction.mUndoValue.get()
+          << "\", mRedoValue=" << aTransaction.mRedoValue.get()
+          << ", mRemoveProperty="
+          << (aTransaction.mRemoveProperty ? "true" : "false")
+          << ", mUndoAttributeWasSet="
+          << (aTransaction.mUndoAttributeWasSet ? "true" : "false")
+          << ", mRedoAttributeWasSet="
+          << (aTransaction.mRedoAttributeWasSet ? "true" : "false") << " }";
+  return aStream;
+}
+
+#define kNullCh ('\0')
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(ChangeStyleTransaction, EditTransactionBase,
                                    mStyledElement)
@@ -67,17 +88,16 @@ NS_IMPL_RELEASE_INHERITED(ChangeStyleTransaction, EditTransactionBase)
 
 // Answers true if aValue is in the string list of white-space separated values
 // aValueList.
-bool ChangeStyleTransaction::ValueIncludes(const nsAString& aValueList,
-                                           const nsAString& aValue) {
-  nsAutoString valueList(aValueList);
+bool ChangeStyleTransaction::ValueIncludes(const nsACString& aValueList,
+                                           const nsACString& aValue) {
+  nsAutoCString valueList(aValueList);
   bool result = false;
 
   // put an extra null at the end
   valueList.Append(kNullCh);
 
-  char16_t* value = ToNewUnicode(aValue);
-  char16_t* start = valueList.BeginWriting();
-  char16_t* end = start;
+  char* start = valueList.BeginWriting();
+  char* end = start;
 
   while (kNullCh != *start) {
     while (kNullCh != *start && nsCRT::IsAsciiSpace(*start)) {
@@ -94,55 +114,22 @@ bool ChangeStyleTransaction::ValueIncludes(const nsAString& aValueList,
     *end = kNullCh;
 
     if (start < end) {
-      if (nsDependentString(value).Equals(nsDependentString(start),
-                                          nsCaseInsensitiveStringComparator)) {
+      if (aValue.Equals(nsDependentCString(start),
+                        nsCaseInsensitiveCStringComparator)) {
         result = true;
         break;
       }
     }
     start = ++end;
   }
-  free(value);
   return result;
 }
 
-// Removes the value aRemoveValue from the string list of white-space separated
-// values aValueList
-void ChangeStyleTransaction::RemoveValueFromListOfValues(
-    nsAString& aValues, const nsAString& aRemoveValue) {
-  nsAutoString classStr(aValues);
-  nsAutoString outString;
-  // put an extra null at the end
-  classStr.Append(kNullCh);
-
-  char16_t* start = classStr.BeginWriting();
-  char16_t* end = start;
-
-  while (kNullCh != *start) {
-    while (kNullCh != *start && nsCRT::IsAsciiSpace(*start)) {
-      // skip leading space
-      start++;
-    }
-    end = start;
-
-    while (kNullCh != *end && !nsCRT::IsAsciiSpace(*end)) {
-      // look for space or end
-      end++;
-    }
-    // end string here
-    *end = kNullCh;
-
-    if (start < end && !aRemoveValue.Equals(start)) {
-      outString.Append(start);
-      outString.Append(char16_t(' '));
-    }
-
-    start = ++end;
-  }
-  aValues.Assign(outString);
-}
-
 NS_IMETHODIMP ChangeStyleTransaction::DoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ChangeStyleTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!mStyledElement)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
@@ -155,40 +142,29 @@ NS_IMETHODIMP ChangeStyleTransaction::DoTransaction() {
   nsAutoCString propertyNameString;
   mProperty->ToUTF8String(propertyNameString);
 
-  mUndoAttributeWasSet =
-      mStyledElement->HasAttr(kNameSpaceID_None, nsGkAtoms::style);
+  mUndoAttributeWasSet = mStyledElement->HasAttr(nsGkAtoms::style);
 
-  nsAutoString values;
-  nsresult rv = cssDecl->GetPropertyValue(propertyNameString, values);
-  if (NS_FAILED(rv)) {
-    NS_WARNING("nsICSSDeclaration::GetPropertyPriorityValue() failed");
-    return rv;
-  }
+  nsAutoCString values;
+  cssDecl->GetPropertyValue(propertyNameString, values);
   mUndoValue.Assign(values);
 
-  // Does this property accept more than one value? (bug 62682)
-  bool multiple = AcceptsMoreThanOneValue(*mProperty);
-
   if (mRemoveProperty) {
-    nsAutoString returnString;
-    if (multiple) {
-      // Let's remove only the value we have to remove and not the others
-      RemoveValueFromListOfValues(values, NS_LITERAL_STRING("none"));
-      RemoveValueFromListOfValues(values, mValue);
+    nsAutoCString returnString;
+    if (mProperty == nsGkAtoms::text_decoration) {
+      BuildTextDecorationValueToRemove(values, mValue, values);
       if (values.IsEmpty()) {
         ErrorResult error;
         cssDecl->RemoveProperty(propertyNameString, returnString, error);
-        if (error.Failed()) {
+        if (MOZ_UNLIKELY(error.Failed())) {
           NS_WARNING("nsICSSDeclaration::RemoveProperty() failed");
           return error.StealNSResult();
         }
       } else {
         ErrorResult error;
-        nsAutoString priority;
+        nsAutoCString priority;
         cssDecl->GetPropertyPriority(propertyNameString, priority);
-        cssDecl->SetProperty(propertyNameString, NS_ConvertUTF16toUTF8(values),
-                             priority, error);
-        if (error.Failed()) {
+        cssDecl->SetProperty(propertyNameString, values, priority, error);
+        if (MOZ_UNLIKELY(error.Failed())) {
           NS_WARNING("nsICSSDeclaration::SetProperty() failed");
           return error.StealNSResult();
         }
@@ -196,24 +172,22 @@ NS_IMETHODIMP ChangeStyleTransaction::DoTransaction() {
     } else {
       ErrorResult error;
       cssDecl->RemoveProperty(propertyNameString, returnString, error);
-      if (error.Failed()) {
+      if (MOZ_UNLIKELY(error.Failed())) {
         NS_WARNING("nsICSSDeclaration::RemoveProperty() failed");
         return error.StealNSResult();
       }
     }
   } else {
-    nsAutoString priority;
+    nsAutoCString priority;
     cssDecl->GetPropertyPriority(propertyNameString, priority);
-    if (multiple) {
-      // Let's add the value we have to add to the others
-      AddValueToMultivalueProperty(values, mValue);
+    if (mProperty == nsGkAtoms::text_decoration) {
+      BuildTextDecorationValueToSet(values, mValue, values);
     } else {
       values.Assign(mValue);
     }
     ErrorResult error;
-    cssDecl->SetProperty(propertyNameString, NS_ConvertUTF16toUTF8(values),
-                         priority, error);
-    if (error.Failed()) {
+    cssDecl->SetProperty(propertyNameString, values, priority, error);
+    if (MOZ_UNLIKELY(error.Failed())) {
       NS_WARNING("nsICSSDeclaration::SetProperty() failed");
       return error.StealNSResult();
     }
@@ -232,14 +206,12 @@ NS_IMETHODIMP ChangeStyleTransaction::DoTransaction() {
     mRedoAttributeWasSet = true;
   }
 
-  rv = cssDecl->GetPropertyValue(propertyNameString, mRedoValue);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                       "nsICSSDeclaration::GetPropertyValue() failed");
-  return rv;
+  cssDecl->GetPropertyValue(propertyNameString, mRedoValue);
+  return NS_OK;
 }
 
 nsresult ChangeStyleTransaction::SetStyle(bool aAttributeWasSet,
-                                          nsAString& aValue) {
+                                          nsACString& aValue) {
   if (NS_WARN_IF(!mStyledElement)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
@@ -256,18 +228,17 @@ nsresult ChangeStyleTransaction::SetStyle(bool aAttributeWasSet,
     ErrorResult error;
     if (aValue.IsEmpty()) {
       // An empty value means we have to remove the property
-      nsAutoString returnString;
+      nsAutoCString returnString;
       cssDecl->RemoveProperty(propertyNameString, returnString, error);
-      if (error.Failed()) {
+      if (MOZ_UNLIKELY(error.Failed())) {
         NS_WARNING("nsICSSDeclaration::RemoveProperty() failed");
         return error.StealNSResult();
       }
     }
     // Let's recreate the declaration as it was
-    nsAutoString priority;
+    nsAutoCString priority;
     cssDecl->GetPropertyPriority(propertyNameString, priority);
-    cssDecl->SetProperty(propertyNameString, NS_ConvertUTF16toUTF8(aValue),
-                         priority, error);
+    cssDecl->SetProperty(propertyNameString, aValue, priority, error);
     NS_WARNING_ASSERTION(!error.Failed(),
                          "nsICSSDeclaration::SetProperty() failed");
     return error.StealNSResult();
@@ -282,6 +253,10 @@ nsresult ChangeStyleTransaction::SetStyle(bool aAttributeWasSet,
 }
 
 NS_IMETHODIMP ChangeStyleTransaction::UndoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ChangeStyleTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   nsresult rv = SetStyle(mUndoAttributeWasSet, mUndoValue);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "ChangeStyleTransaction::SetStyle() failed");
@@ -289,26 +264,69 @@ NS_IMETHODIMP ChangeStyleTransaction::UndoTransaction() {
 }
 
 NS_IMETHODIMP ChangeStyleTransaction::RedoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p ChangeStyleTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   nsresult rv = SetStyle(mRedoAttributeWasSet, mRedoValue);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
                        "ChangeStyleTransaction::SetStyle() failed");
   return rv;
 }
 
-// True if the CSS property accepts more than one value
-bool ChangeStyleTransaction::AcceptsMoreThanOneValue(nsAtom& aCSSProperty) {
-  return &aCSSProperty == nsGkAtoms::text_decoration;
+// static
+void ChangeStyleTransaction::BuildTextDecorationValueToSet(
+    const nsACString& aCurrentValues, const nsACString& aAddingValues,
+    nsACString& aOutValues) {
+  const bool underline = ValueIncludes(aCurrentValues, "underline"_ns) ||
+                         ValueIncludes(aAddingValues, "underline"_ns);
+  const bool overline = ValueIncludes(aCurrentValues, "overline"_ns) ||
+                        ValueIncludes(aAddingValues, "overline"_ns);
+  const bool lineThrough = ValueIncludes(aCurrentValues, "line-through"_ns) ||
+                           ValueIncludes(aAddingValues, "line-through"_ns);
+  // FYI: Don't refer aCurrentValues which may refer same instance as
+  // aOutValues.
+  BuildTextDecorationValue(underline, overline, lineThrough, aOutValues);
 }
 
-// Adds the value aNewValue to the list of white-space separated values aValues
-void ChangeStyleTransaction::AddValueToMultivalueProperty(
-    nsAString& aValues, const nsAString& aNewValue) {
-  if (aValues.IsEmpty() || aValues.LowerCaseEqualsLiteral("none")) {
-    aValues.Assign(aNewValue);
-  } else if (!ValueIncludes(aValues, aNewValue)) {
-    // We already have another value but not this one; add it
-    aValues.Append(char16_t(' '));
-    aValues.Append(aNewValue);
+// static
+void ChangeStyleTransaction::BuildTextDecorationValueToRemove(
+    const nsACString& aCurrentValues, const nsACString& aRemovingValues,
+    nsACString& aOutValues) {
+  const bool underline = ValueIncludes(aCurrentValues, "underline"_ns) &&
+                         !ValueIncludes(aRemovingValues, "underline"_ns);
+  const bool overline = ValueIncludes(aCurrentValues, "overline"_ns) &&
+                        !ValueIncludes(aRemovingValues, "overline"_ns);
+  const bool lineThrough = ValueIncludes(aCurrentValues, "line-through"_ns) &&
+                           !ValueIncludes(aRemovingValues, "line-through"_ns);
+  // FYI: Don't refer aCurrentValues which may refer same instance as
+  // aOutValues.
+  BuildTextDecorationValue(underline, overline, lineThrough, aOutValues);
+}
+
+void ChangeStyleTransaction::BuildTextDecorationValue(bool aUnderline,
+                                                      bool aOverline,
+                                                      bool aLineThrough,
+                                                      nsACString& aOutValues) {
+  // We should build text-decoration(-line) value as same as Blink for
+  // compatibility.  Blink sets text-decoration-line to the values in the
+  // following order.  Blink drops `blink` and other styles like color and
+  // style.  For keeping the code simple, let's use the lossy behavior.
+  aOutValues.Truncate();
+  if (aUnderline) {
+    aOutValues.AssignLiteral("underline");
+  }
+  if (aOverline) {
+    if (!aOutValues.IsEmpty()) {
+      aOutValues.Append(HTMLEditUtils::kSpace);
+    }
+    aOutValues.AppendLiteral("overline");
+  }
+  if (aLineThrough) {
+    if (!aOutValues.IsEmpty()) {
+      aOutValues.Append(HTMLEditUtils::kSpace);
+    }
+    aOutValues.AppendLiteral("line-through");
   }
 }
 

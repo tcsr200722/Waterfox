@@ -7,17 +7,13 @@
  * Test that we don't show sync pane when it's disabled.
  * See https://bugzilla.mozilla.org/show_bug.cgi?id=1536752.
  */
-add_task(async function() {
+add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["identity.fxaccounts.enabled", false]],
   });
   await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
     leaveOpen: true,
   });
-  ok(
-    !gBrowser.contentDocument.getElementById("template-paneSync"),
-    "sync pane removed"
-  );
   ok(
     gBrowser.contentDocument.getElementById("category-sync").hidden,
     "sync category hidden"

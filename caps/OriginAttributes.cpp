@@ -5,12 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/OriginAttributes.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
-#include "mozilla/dom/URLSearchParams.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIURI.h"
+#include "nsNetCID.h"
+#include "nsNetUtil.h"
+#include "nsString.h"
 #include "nsURLHelper.h"
 
 static const char kSourceChar = ':';
@@ -18,14 +21,16 @@ static const char kSanitizedChar = '+';
 
 namespace mozilla {
 
-using dom::URLParams;
-
-void MakeFirstPartyDomain(const nsACString& aScheme, const nsACString& aHost,
-                          int32_t aPort, nsAString& aFirstPartyDomain) {
-  if (!OriginAttributes::UseSiteForFirstPartyDomain()) {
-    aFirstPartyDomain.Assign(NS_ConvertUTF8toUTF16(aHost));
+static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
+                             int32_t aPort, bool aForeignByAncestorContext,
+                             bool aUseSite, nsAString& aTopLevelInfo) {
+  if (!aUseSite) {
+    aTopLevelInfo.Assign(NS_ConvertUTF8toUTF16(aHost));
     return;
   }
+
+  // Note: If you change the serialization of the partition-key, please update
+  // StoragePrincipalHelper.cpp too.
 
   nsAutoCString site;
   site.AssignLiteral("(");
@@ -36,18 +41,28 @@ void MakeFirstPartyDomain(const nsACString& aScheme, const nsACString& aHost,
     site.Append(",");
     site.AppendInt(aPort);
   }
+  if (aForeignByAncestorContext) {
+    site.Append(",f");
+  }
   site.AppendLiteral(")");
 
-  aFirstPartyDomain.Assign(NS_ConvertUTF8toUTF16(site));
+  aTopLevelInfo.Assign(NS_ConvertUTF8toUTF16(site));
 }
 
-void MakeFirstPartyDomain(const nsACString& aScheme, const nsACString& aHost,
-                          nsAString& aFirstPartyDomain) {
-  MakeFirstPartyDomain(aScheme, aHost, -1, aFirstPartyDomain);
+static void MakeTopLevelInfo(const nsACString& aScheme, const nsACString& aHost,
+                             bool aForeignByAncestorContext, bool aUseSite,
+                             nsAString& aTopLevelInfo) {
+  MakeTopLevelInfo(aScheme, aHost, -1, aForeignByAncestorContext, aUseSite,
+                   aTopLevelInfo);
 }
 
-void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
-                                           nsIURI* aURI, bool aForced) {
+static void PopulateTopLevelInfoFromURI(const bool aIsTopLevelDocument,
+                                        nsIURI* aURI,
+                                        bool aForeignByAncestorContext,
+                                        bool aIsFirstPartyEnabled, bool aForced,
+                                        bool aUseSite,
+                                        nsString OriginAttributes::*aTarget,
+                                        OriginAttributes& aOriginAttributes) {
   nsresult rv;
 
   if (!aURI) {
@@ -55,18 +70,45 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
   }
 
   // If the prefs are off or this is not a top level load, bail out.
-  if ((!IsFirstPartyEnabled() || !aIsTopLevelDocument) && !aForced) {
+  if ((!aIsFirstPartyEnabled || !aIsTopLevelDocument) && !aForced) {
     return;
   }
 
+  nsAString& topLevelInfo = aOriginAttributes.*aTarget;
+
   nsAutoCString scheme;
-  rv = aURI->GetScheme(scheme);
-  NS_ENSURE_SUCCESS_VOID(rv);
+  nsCOMPtr<nsIURI> uri = aURI;
+  // The URI could be nested (for example view-source:http://example.com), in
+  // that case we want to get the innermost URI (http://example.com).
+  nsCOMPtr<nsINestedURI> nestedURI;
+  do {
+    NS_ENSURE_SUCCESS_VOID(uri->GetScheme(scheme));
+    nestedURI = do_QueryInterface(uri);
+    // We can't just use GetInnermostURI on the nested URI, since that would
+    // also unwrap some about: URIs to hidden moz-safe-about: URIs, which we do
+    // not want. Thus we loop through with GetInnerURI until the URI isn't
+    // nested anymore or we encounter a about: scheme.
+  } while (nestedURI && !scheme.EqualsLiteral("about") &&
+           NS_SUCCEEDED(nestedURI->GetInnerURI(getter_AddRefs(uri))));
 
   if (scheme.EqualsLiteral("about")) {
-    MakeFirstPartyDomain(scheme,
-                         NS_LITERAL_CSTRING(ABOUT_URI_FIRST_PARTY_DOMAIN),
-                         mFirstPartyDomain);
+    MakeTopLevelInfo(scheme, nsLiteralCString(ABOUT_URI_FIRST_PARTY_DOMAIN),
+                     aForeignByAncestorContext, aUseSite, topLevelInfo);
+    return;
+  }
+
+  // If a null principal URI was provided, extract the UUID portion of the URI
+  // to use for the first-party domain.
+  if (scheme.EqualsLiteral("moz-nullprincipal")) {
+    // Get the UUID portion of the URI, ignoring the precursor principal.
+    nsAutoCString filePath;
+    rv = uri->GetFilePath(filePath);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+    // Remove the `{}` characters from both ends.
+    filePath.Mid(filePath, 1, filePath.Length() - 2);
+    filePath.AppendLiteral(".mozilla");
+    // Store the generated file path.
+    topLevelInfo = NS_ConvertUTF8toUTF16(filePath);
     return;
   }
 
@@ -79,9 +121,9 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
 
   nsCOMPtr<nsIPrincipal> blobPrincipal;
   if (dom::BlobURLProtocolHandler::GetBlobURLPrincipal(
-          aURI, getter_AddRefs(blobPrincipal))) {
+          uri, getter_AddRefs(blobPrincipal))) {
     MOZ_ASSERT(blobPrincipal);
-    mFirstPartyDomain = blobPrincipal->OriginAttributesRef().mFirstPartyDomain;
+    topLevelInfo = blobPrincipal->OriginAttributesRef().*aTarget;
     return;
   }
 
@@ -91,9 +133,10 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
   NS_ENSURE_TRUE_VOID(tldService);
 
   nsAutoCString baseDomain;
-  rv = tldService->GetBaseDomain(aURI, 0, baseDomain);
+  rv = tldService->GetBaseDomain(uri, 0, baseDomain);
   if (NS_SUCCEEDED(rv)) {
-    MakeFirstPartyDomain(scheme, baseDomain, mFirstPartyDomain);
+    MakeTopLevelInfo(scheme, baseDomain, aForeignByAncestorContext, aUseSite,
+                     topLevelInfo);
     return;
   }
 
@@ -102,16 +145,16 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
   bool isInsufficientDomainLevels = (rv == NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS);
 
   int32_t port;
-  rv = aURI->GetPort(&port);
+  rv = uri->GetPort(&port);
   NS_ENSURE_SUCCESS_VOID(rv);
 
   nsAutoCString host;
-  rv = aURI->GetHost(host);
+  rv = uri->GetHost(host);
   NS_ENSURE_SUCCESS_VOID(rv);
 
   if (isIpAddress) {
     // If the host is an IPv4/IPv6 address, we still accept it as a
-    // valid firstPartyDomain.
+    // valid topLevelInfo.
     nsAutoCString ipAddr;
 
     if (net_IsValidIPv6Addr(host)) {
@@ -125,23 +168,34 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
       ipAddr = host;
     }
 
-    MakeFirstPartyDomain(scheme, ipAddr, port, mFirstPartyDomain);
+    MakeTopLevelInfo(scheme, ipAddr, port, aForeignByAncestorContext, aUseSite,
+                     topLevelInfo);
     return;
   }
 
-  if (OriginAttributes::UseSiteForFirstPartyDomain()) {
-    MakeFirstPartyDomain(scheme, host, port, mFirstPartyDomain);
+  if (aUseSite) {
+    MakeTopLevelInfo(scheme, host, port, aForeignByAncestorContext, aUseSite,
+                     topLevelInfo);
     return;
   }
 
   if (isInsufficientDomainLevels) {
     nsAutoCString publicSuffix;
-    rv = tldService->GetPublicSuffix(aURI, publicSuffix);
+    rv = tldService->GetPublicSuffix(uri, publicSuffix);
     if (NS_SUCCEEDED(rv)) {
-      MakeFirstPartyDomain(scheme, publicSuffix, port, mFirstPartyDomain);
+      MakeTopLevelInfo(scheme, publicSuffix, port, aForeignByAncestorContext,
+                       aUseSite, topLevelInfo);
       return;
     }
   }
+}
+
+void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
+                                           nsIURI* aURI, bool aForced) {
+  PopulateTopLevelInfoFromURI(
+      aIsTopLevelDocument, aURI, false, IsFirstPartyEnabled(), aForced,
+      StaticPrefs::privacy_firstparty_isolate_use_site(),
+      &OriginAttributes::mFirstPartyDomain, *this);
 }
 
 void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
@@ -160,9 +214,26 @@ void OriginAttributes::SetFirstPartyDomain(const bool aIsTopLevelDocument,
   mFirstPartyDomain = aDomain;
 }
 
+void OriginAttributes::SetPartitionKey(nsIURI* aURI,
+                                       bool aForeignByAncestorContext) {
+  PopulateTopLevelInfoFromURI(
+      false /* aIsTopLevelDocument */, aURI, aForeignByAncestorContext,
+      IsFirstPartyEnabled(), true /* aForced */,
+      StaticPrefs::privacy_dynamic_firstparty_use_site(),
+      &OriginAttributes::mPartitionKey, *this);
+}
+
+void OriginAttributes::SetPartitionKey(const nsACString& aOther) {
+  SetPartitionKey(NS_ConvertUTF8toUTF16(aOther));
+}
+
+void OriginAttributes::SetPartitionKey(const nsAString& aOther) {
+  mPartitionKey = aOther;
+}
+
 void OriginAttributes::CreateSuffix(nsACString& aStr) const {
   URLParams params;
-  nsAutoString value;
+  nsAutoCString value;
 
   //
   // Important: While serializing any string-valued attributes, perform a
@@ -171,45 +242,45 @@ void OriginAttributes::CreateSuffix(nsACString& aStr) const {
   // naming.
   //
 
-  if (mInIsolatedMozBrowser) {
-    params.Set(NS_LITERAL_STRING("inBrowser"), NS_LITERAL_STRING("1"));
-  }
-
   if (mUserContextId != nsIScriptSecurityManager::DEFAULT_USER_CONTEXT_ID) {
     value.Truncate();
     value.AppendInt(mUserContextId);
-    params.Set(NS_LITERAL_STRING("userContextId"), value);
+    params.Set("userContextId"_ns, value);
   }
 
   if (mPrivateBrowsingId) {
     value.Truncate();
     value.AppendInt(mPrivateBrowsingId);
-    params.Set(NS_LITERAL_STRING("privateBrowsingId"), value);
+    params.Set("privateBrowsingId"_ns, value);
   }
 
   if (!mFirstPartyDomain.IsEmpty()) {
     nsAutoString sanitizedFirstPartyDomain(mFirstPartyDomain);
     sanitizedFirstPartyDomain.ReplaceChar(kSourceChar, kSanitizedChar);
-
-    params.Set(NS_LITERAL_STRING("firstPartyDomain"),
-               sanitizedFirstPartyDomain);
+    params.Set("firstPartyDomain"_ns,
+               NS_ConvertUTF16toUTF8(sanitizedFirstPartyDomain));
   }
 
   if (!mGeckoViewSessionContextId.IsEmpty()) {
     nsAutoString sanitizedGeckoViewUserContextId(mGeckoViewSessionContextId);
     sanitizedGeckoViewUserContextId.ReplaceChar(
-        dom::quota::QuotaManager::kReplaceChars, kSanitizedChar);
+        dom::quota::QuotaManager::kReplaceChars16, kSanitizedChar);
+    params.Set("geckoViewUserContextId"_ns,
+               NS_ConvertUTF16toUTF8(sanitizedGeckoViewUserContextId));
+  }
 
-    params.Set(NS_LITERAL_STRING("geckoViewUserContextId"),
-               sanitizedGeckoViewUserContextId);
+  if (!mPartitionKey.IsEmpty()) {
+    nsAutoString sanitizedPartitionKey(mPartitionKey);
+    sanitizedPartitionKey.ReplaceChar(kSourceChar, kSanitizedChar);
+    params.Set("partitionKey"_ns, NS_ConvertUTF16toUTF8(sanitizedPartitionKey));
   }
 
   aStr.Truncate();
 
-  params.Serialize(value);
+  params.Serialize(value, true);
   if (!value.IsEmpty()) {
     aStr.AppendLiteral("^");
-    aStr.Append(NS_ConvertUTF16toUTF8(value));
+    aStr.Append(value);
   }
 
 // In debug builds, check the whole string for illegal characters too (just in
@@ -222,6 +293,12 @@ void OriginAttributes::CreateSuffix(nsACString& aStr) const {
 #endif
 }
 
+already_AddRefed<nsAtom> OriginAttributes::CreateSuffixAtom() const {
+  nsAutoCString suffix;
+  CreateSuffix(suffix);
+  return NS_Atomize(suffix);
+}
+
 void OriginAttributes::CreateAnonymizedSuffix(nsACString& aStr) const {
   OriginAttributes attrs = *this;
 
@@ -229,85 +306,12 @@ void OriginAttributes::CreateAnonymizedSuffix(nsACString& aStr) const {
     attrs.mFirstPartyDomain.AssignLiteral("_anonymizedFirstPartyDomain_");
   }
 
+  if (!attrs.mPartitionKey.IsEmpty()) {
+    attrs.mPartitionKey.AssignLiteral("_anonymizedPartitionKey_");
+  }
+
   attrs.CreateSuffix(aStr);
 }
-
-namespace {
-
-class MOZ_STACK_CLASS PopulateFromSuffixIterator final
-    : public URLParams::ForEachIterator {
- public:
-  explicit PopulateFromSuffixIterator(OriginAttributes* aOriginAttributes)
-      : mOriginAttributes(aOriginAttributes) {
-    MOZ_ASSERT(aOriginAttributes);
-    // If a non-default mPrivateBrowsingId is passed and is not present in the
-    // suffix, then it will retain the id when it should be default according
-    // to the suffix. Set to default before iterating to fix this.
-    mOriginAttributes->mPrivateBrowsingId =
-        nsIScriptSecurityManager::DEFAULT_PRIVATE_BROWSING_ID;
-  }
-
-  bool URLParamsIterator(const nsAString& aName,
-                         const nsAString& aValue) override {
-    if (aName.EqualsLiteral("inBrowser")) {
-      if (!aValue.EqualsLiteral("1")) {
-        return false;
-      }
-
-      mOriginAttributes->mInIsolatedMozBrowser = true;
-      return true;
-    }
-
-    if (aName.EqualsLiteral("addonId") || aName.EqualsLiteral("appId")) {
-      // No longer supported. Silently ignore so that legacy origin strings
-      // don't cause failures.
-      return true;
-    }
-
-    if (aName.EqualsLiteral("userContextId")) {
-      nsresult rv;
-      int64_t val = aValue.ToInteger64(&rv);
-      NS_ENSURE_SUCCESS(rv, false);
-      NS_ENSURE_TRUE(val <= UINT32_MAX, false);
-      mOriginAttributes->mUserContextId = static_cast<uint32_t>(val);
-
-      return true;
-    }
-
-    if (aName.EqualsLiteral("privateBrowsingId")) {
-      nsresult rv;
-      int64_t val = aValue.ToInteger64(&rv);
-      NS_ENSURE_SUCCESS(rv, false);
-      NS_ENSURE_TRUE(val >= 0 && val <= UINT32_MAX, false);
-      mOriginAttributes->mPrivateBrowsingId = static_cast<uint32_t>(val);
-
-      return true;
-    }
-
-    if (aName.EqualsLiteral("firstPartyDomain")) {
-      MOZ_RELEASE_ASSERT(mOriginAttributes->mFirstPartyDomain.IsEmpty());
-      nsAutoString firstPartyDomain(aValue);
-      firstPartyDomain.ReplaceChar(kSanitizedChar, kSourceChar);
-      mOriginAttributes->mFirstPartyDomain.Assign(firstPartyDomain);
-      return true;
-    }
-
-    if (aName.EqualsLiteral("geckoViewUserContextId")) {
-      MOZ_RELEASE_ASSERT(
-          mOriginAttributes->mGeckoViewSessionContextId.IsEmpty());
-      mOriginAttributes->mGeckoViewSessionContextId.Assign(aValue);
-      return true;
-    }
-
-    // No other attributes are supported.
-    return false;
-  }
-
- private:
-  OriginAttributes* mOriginAttributes;
-};
-
-}  // namespace
 
 bool OriginAttributes::PopulateFromSuffix(const nsACString& aStr) {
   if (aStr.IsEmpty()) {
@@ -318,8 +322,78 @@ bool OriginAttributes::PopulateFromSuffix(const nsACString& aStr) {
     return false;
   }
 
-  PopulateFromSuffixIterator iterator(this);
-  return URLParams::Parse(Substring(aStr, 1, aStr.Length() - 1), iterator);
+  // If a non-default mPrivateBrowsingId is passed and is not present in the
+  // suffix, then it will retain the id when it should be default according
+  // to the suffix. Set to default before iterating to fix this.
+  mPrivateBrowsingId = nsIScriptSecurityManager::DEFAULT_PRIVATE_BROWSING_ID;
+
+  // Checking that we are in a pristine state
+
+  MOZ_RELEASE_ASSERT(mUserContextId == 0);
+  MOZ_RELEASE_ASSERT(mPrivateBrowsingId == 0);
+  MOZ_RELEASE_ASSERT(mFirstPartyDomain.IsEmpty());
+  MOZ_RELEASE_ASSERT(mGeckoViewSessionContextId.IsEmpty());
+  MOZ_RELEASE_ASSERT(mPartitionKey.IsEmpty());
+
+  return URLParams::Parse(
+      Substring(aStr, 1, aStr.Length() - 1), true,
+      [this](const nsACString& aName, const nsACString& aValue) {
+        if (aName.EqualsLiteral("inBrowser")) {
+          if (!aValue.EqualsLiteral("1")) {
+            return false;
+          }
+
+          return true;
+        }
+
+        if (aName.EqualsLiteral("addonId") || aName.EqualsLiteral("appId")) {
+          // No longer supported. Silently ignore so that legacy origin strings
+          // don't cause failures.
+          return true;
+        }
+
+        if (aName.EqualsLiteral("userContextId")) {
+          nsresult rv;
+          int64_t val = aValue.ToInteger64(&rv);
+          NS_ENSURE_SUCCESS(rv, false);
+          NS_ENSURE_TRUE(val <= UINT32_MAX, false);
+          mUserContextId = static_cast<uint32_t>(val);
+
+          return true;
+        }
+
+        if (aName.EqualsLiteral("privateBrowsingId")) {
+          nsresult rv;
+          int64_t val = aValue.ToInteger64(&rv);
+          NS_ENSURE_SUCCESS(rv, false);
+          NS_ENSURE_TRUE(val >= 0 && val <= UINT32_MAX, false);
+          mPrivateBrowsingId = static_cast<uint32_t>(val);
+
+          return true;
+        }
+
+        if (aName.EqualsLiteral("firstPartyDomain")) {
+          nsAutoCString firstPartyDomain(aValue);
+          firstPartyDomain.ReplaceChar(kSanitizedChar, kSourceChar);
+          mFirstPartyDomain.Assign(NS_ConvertUTF8toUTF16(firstPartyDomain));
+          return true;
+        }
+
+        if (aName.EqualsLiteral("geckoViewUserContextId")) {
+          mGeckoViewSessionContextId.Assign(NS_ConvertUTF8toUTF16(aValue));
+          return true;
+        }
+
+        if (aName.EqualsLiteral("partitionKey")) {
+          nsAutoCString partitionKey(aValue);
+          partitionKey.ReplaceChar(kSanitizedChar, kSourceChar);
+          mPartitionKey.Assign(NS_ConvertUTF8toUTF16(partitionKey));
+          return true;
+        }
+
+        // No other attributes are supported.
+        return false;
+      });
 }
 
 bool OriginAttributes::PopulateFromOrigin(const nsACString& aOrigin,
@@ -351,6 +425,93 @@ bool OriginAttributes::IsPrivateBrowsing(const nsACString& aOrigin) {
   }
 
   return !!attrs.mPrivateBrowsingId;
+}
+
+/* static */
+bool OriginAttributes::ParsePartitionKey(const nsAString& aPartitionKey,
+                                         nsAString& outScheme,
+                                         nsAString& outBaseDomain,
+                                         int32_t& outPort,
+                                         bool& outForeignByAncestorContext) {
+  outScheme.Truncate();
+  outBaseDomain.Truncate();
+  outPort = -1;
+  outForeignByAncestorContext = false;
+
+  // Partition keys have the format
+  // "(<scheme>,<baseDomain>[,port][,foreignancestorbit])". The port and
+  // ancestor bits are optional. For example: "(https,example.com,8443)" or
+  // "(http,example.org)", or "(http,example.info,f)", or
+  // "(http,example.biz,8443,f)". When privacy.dynamic_firstparty.use_site =
+  // false, the partitionKey contains only the host, e.g. "example.com". See
+  // MakeTopLevelInfo for the partitionKey serialization code.
+
+  if (aPartitionKey.IsEmpty()) {
+    return true;
+  }
+
+  // PartitionKey contains only the host.
+  if (!StaticPrefs::privacy_dynamic_firstparty_use_site()) {
+    outBaseDomain = aPartitionKey;
+    return true;
+  }
+
+  // Smallest possible partitionKey is "(x,x)". Scheme and base domain are
+  // mandatory.
+  if (NS_WARN_IF(aPartitionKey.Length() < 5)) {
+    return false;
+  }
+
+  if (NS_WARN_IF(aPartitionKey.First() != '(' || aPartitionKey.Last() != ')')) {
+    return false;
+  }
+
+  // Remove outer brackets so we can string split.
+  nsAutoString str(Substring(aPartitionKey, 1, aPartitionKey.Length() - 2));
+
+  uint32_t fieldIndex = 0;
+  for (const nsAString& field : str.Split(',')) {
+    if (NS_WARN_IF(field.IsEmpty())) {
+      // There cannot be empty fields.
+      return false;
+    }
+
+    if (fieldIndex == 0) {
+      outScheme.Assign(field);
+    } else if (fieldIndex == 1) {
+      outBaseDomain.Assign(field);
+    } else if (fieldIndex == 2) {
+      // The first optional argument is either "f" or a port number
+      if (field.EqualsLiteral("f")) {
+        outForeignByAncestorContext = true;
+      } else {
+        // Parse the port which is represented in the partitionKey string as a
+        // decimal (base 10) number.
+        long port = strtol(NS_ConvertUTF16toUTF8(field).get(), nullptr, 10);
+        // Invalid port.
+        if (NS_WARN_IF(port == 0)) {
+          return false;
+        }
+        outPort = static_cast<int32_t>(port);
+      }
+    } else if (fieldIndex == 3) {
+      // The second optional argument, if it exists, is "f" and the first
+      // optional argument was a port
+      if (!field.EqualsLiteral("f") || outPort != -1) {
+        NS_WARNING("Invalid partitionKey. Invalid token.");
+        return false;
+      }
+      outForeignByAncestorContext = true;
+    } else {
+      NS_WARNING("Invalid partitionKey. Too many tokens");
+      return false;
+    }
+
+    fieldIndex++;
+  }
+
+  // scheme and base domain are required.
+  return fieldIndex > 1;
 }
 
 }  // namespace mozilla

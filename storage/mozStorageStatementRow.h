@@ -8,11 +8,12 @@
 #define MOZSTORAGESTATEMENTROW_H
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsPIDOMWindow.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace storage {
 
 class Statement;
@@ -20,7 +21,7 @@ class Statement;
 class StatementRow final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(StatementRow)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(StatementRow)
 
   explicit StatementRow(nsPIDOMWindowInner* aWindow, Statement* aStatement);
 

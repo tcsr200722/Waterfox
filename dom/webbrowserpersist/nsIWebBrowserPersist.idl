@@ -15,6 +15,7 @@ interface nsIChannel;
 interface nsILoadContext;
 interface nsIPrincipal;
 interface nsIReferrerInfo;
+interface nsICookieJarSettings;
 
 /**
  * Interface for persisting DOM documents and URIs to local or remote storage.
@@ -118,6 +119,8 @@ interface nsIWebBrowserPersist : nsICancelable
    * @param aCacheKey  The necko cache key integer.
    * @param aReferrerInfo  The referrer info for compute and send referrer via
    *                   HTTP Referer header.
+   * @param aCookieJarSettings The cookieJarSettings for the HTTP channel which
+   *                   is saving the URI.
    * @param aPostData  Post data to pass with an HTTP request or
    *                   <CODE>nullptr</CODE>.
    * @param aExtraHeaders Additional headers to supply with an HTTP request
@@ -126,11 +129,9 @@ interface nsIWebBrowserPersist : nsICancelable
    *                   nsIURI object with a file scheme or a scheme that
    *                   supports uploading (e.g. ftp).
    * @param aContentPolicyType The type of content we're saving.
-   * @param aPrivacyContext A context from which the privacy status of this
-   *                   save operation can be determined. Must only be null
-   *                   in situations in which no such context is available
-   *                   (eg. the operation has no logical association with any
-   *                   window or document)
+   * @param aIsPrivate Treat the save operation as private (ie. with
+   *                   regards to networking operations and persistence
+   *                   of intermediate data, etc.)
    *
    * @see nsIFile
    * @see nsIURI
@@ -138,23 +139,10 @@ interface nsIWebBrowserPersist : nsICancelable
    *
    * @throws NS_ERROR_INVALID_ARG One or more arguments was invalid.
    */
-  void saveURI(in nsIURI aURI, in nsIPrincipal aTriggeringPrincipal,
-      in unsigned long aCacheKey,
-      in nsIReferrerInfo aReferrerInfo,
-      in nsIInputStream aPostData,
-      in string aExtraHeaders, in nsISupports aFile,
-      in nsContentPolicyType aContentPolicyType,
-      in nsILoadContext aPrivacyContext);
-
-  /**
-   * @param aIsPrivate Treat the save operation as private (ie. with
-   *                   regards to networking operations and persistence
-   *                   of intermediate data, etc.)
-   * @see saveURI for all other parameter descriptions
-   */
-  void savePrivacyAwareURI(in nsIURI aURI,
+  void saveURI(in nsIURI aURI,
       in nsIPrincipal aTriggeringPrincipal, in unsigned long aCacheKey,
       in nsIReferrerInfo aReferrerInfo,
+      in nsICookieJarSettings aCookieJarSettings,
       in nsIInputStream aPostData,
       in string aExtraHeaders, in nsISupports aFile,
       in nsContentPolicyType aContentPolicyType,

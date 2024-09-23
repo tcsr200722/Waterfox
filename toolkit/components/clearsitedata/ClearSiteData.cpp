@@ -158,8 +158,9 @@ void ClearSiteData::ClearDataFromChannel(nsIHttpChannel* aChannel) {
   }
 
   nsCOMPtr<nsIPrincipal> principal;
-  rv = ssm->GetChannelResultPrincipal(aChannel, getter_AddRefs(principal));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  rv = ssm->GetChannelResultStoragePrincipal(aChannel,
+                                             getter_AddRefs(principal));
+  if (NS_WARN_IF(NS_FAILED(rv) || !principal)) {
     return;
   }
 
@@ -184,19 +185,18 @@ void ClearSiteData::ClearDataFromChannel(nsIHttpChannel* aChannel) {
   int32_t cleanFlags = 0;
   RefPtr<PendingCleanupHolder> holder = new PendingCleanupHolder(aChannel);
 
-  if (flags & eCache) {
-    LogOpToConsole(aChannel, uri, eCache);
-    cleanFlags |= nsIClearDataService::CLEAR_ALL_CACHES;
-  }
-
   if (flags & eCookies) {
     LogOpToConsole(aChannel, uri, eCookies);
-    cleanFlags |= nsIClearDataService::CLEAR_COOKIES;
+    cleanFlags |= nsIClearDataService::CLEAR_COOKIES |
+                  nsIClearDataService::CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
+                  nsIClearDataService::CLEAR_FINGERPRINTING_PROTECTION_STATE;
   }
 
   if (flags & eStorage) {
     LogOpToConsole(aChannel, uri, eStorage);
-    cleanFlags |= nsIClearDataService::CLEAR_DOM_STORAGES;
+    cleanFlags |= nsIClearDataService::CLEAR_DOM_STORAGES |
+                  nsIClearDataService::CLEAR_COOKIE_BANNER_EXECUTED_RECORD |
+                  nsIClearDataService::CLEAR_FINGERPRINTING_PROTECTION_STATE;
   }
 
   if (cleanFlags) {
@@ -222,23 +222,17 @@ uint32_t ClearSiteData::ParseHeader(nsIHttpChannel* aChannel,
   MOZ_ASSERT(aChannel);
 
   nsAutoCString headerValue;
-  nsresult rv = aChannel->GetResponseHeader(
-      NS_LITERAL_CSTRING("Clear-Site-Data"), headerValue);
+  nsresult rv = aChannel->GetResponseHeader("Clear-Site-Data"_ns, headerValue);
   if (NS_FAILED(rv)) {
     return 0;
   }
 
   uint32_t flags = 0;
 
-  nsCCharSeparatedTokenizer token(headerValue, ',');
-  while (token.hasMoreTokens()) {
-    auto value = token.nextToken();
+  for (auto value : nsCCharSeparatedTokenizer(headerValue, ',').ToRange()) {
+    // XXX This seems unnecessary, since the tokenizer already strips whitespace
+    // around tokens.
     value.StripTaggedASCII(mozilla::ASCIIMask::MaskWhitespace());
-
-    if (value.EqualsLiteral("\"cache\"")) {
-      flags |= eCache;
-      continue;
-    }
 
     if (value.EqualsLiteral("\"cookies\"")) {
       flags |= eCookies;
@@ -251,7 +245,7 @@ uint32_t ClearSiteData::ParseHeader(nsIHttpChannel* aChannel,
     }
 
     if (value.EqualsLiteral("\"*\"")) {
-      flags = eCache | eCookies | eStorage;
+      flags = eCookies | eStorage;
       break;
     }
 
@@ -296,18 +290,13 @@ void ClearSiteData::LogToConsoleInternal(
     return;
   }
 
-  httpChannel->AddConsoleReport(nsIScriptError::infoFlag,
-                                NS_LITERAL_CSTRING("Clear-Site-Data"),
+  httpChannel->AddConsoleReport(nsIScriptError::infoFlag, "Clear-Site-Data"_ns,
                                 nsContentUtils::eSECURITY_PROPERTIES, uri, 0, 0,
                                 nsDependentCString(aMsg), aParams);
 }
 
 void ClearSiteData::TypeToString(Type aType, nsAString& aStr) const {
   switch (aType) {
-    case eCache:
-      aStr.AssignLiteral("cache");
-      break;
-
     case eCookies:
       aStr.AssignLiteral("cookies");
       break;

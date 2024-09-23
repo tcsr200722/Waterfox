@@ -22,7 +22,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "wasm/WasmTypes.h"
+#include "js/Printf.h"
+#include "wasm/WasmTypeDecls.h"
 
 using namespace js;
 using namespace js::wasm;
@@ -31,8 +32,6 @@ extern "C" {
 bool wasm_text_to_binary(const char16_t* text, size_t text_len,
                          uint8_t** out_bytes, size_t* out_bytes_len,
                          uint8_t** out_error, size_t* out_error_len);
-void wasm_code_offsets(const uint8_t* bytes, size_t bytes_len,
-                       uint32_t** out_offsets, size_t* out_offset_len);
 }  // extern "C"
 
 bool wasm::TextToBinary(const char16_t* text, size_t textLen, Bytes* bytes,
@@ -47,6 +46,11 @@ bool wasm::TextToBinary(const char16_t* text, size_t textLen, Bytes* bytes,
                                     &outError, &outErrorLength);
 
   if (result) {
+    if (outBytesLength == 0) {
+      *error = JS_smprintf("missing bytes");
+      return false;
+    }
+
     MOZ_ASSERT(outBytes);
     MOZ_ASSERT(outBytesLength > 0);
     bytes->replaceRawBuffer(outBytes, outBytesLength);
@@ -57,19 +61,4 @@ bool wasm::TextToBinary(const char16_t* text, size_t textLen, Bytes* bytes,
   MOZ_ASSERT(outErrorLength > 0);
   *error = UniqueChars{(char*)outError};
   return false;
-}
-
-void wasm::CodeOffsets(const uint8_t* bytes, size_t bytesLen,
-                       Uint32Vector* offsets) {
-  uint32_t* outOffsets = nullptr;
-  size_t outOffsetsLength = 0;
-
-  wasm_code_offsets(bytes, bytesLen, &outOffsets, &outOffsetsLength);
-
-  if (outOffsets) {
-    MOZ_ASSERT(outOffsetsLength > 0);
-    offsets->replaceRawBuffer(outOffsets, outOffsetsLength);
-  } else {
-    offsets->clear();
-  }
 }

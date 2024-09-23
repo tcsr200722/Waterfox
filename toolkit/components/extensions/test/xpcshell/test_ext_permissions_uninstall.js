@@ -1,7 +1,7 @@
 "use strict";
 
-const { ExtensionPermissions } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionPermissions.jsm"
+const { ExtensionPermissions } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionPermissions.sys.mjs"
 );
 
 AddonTestUtils.init(this);
@@ -13,19 +13,11 @@ AddonTestUtils.createAppInfo(
   "42"
 );
 
-Services.prefs.setBoolPref(
-  "extensions.webextensions.background-delayed-startup",
-  false
-);
-
-const observer = {
-  observe(subject, topic, data) {
-    if (topic == "webextension-optional-permission-prompt") {
-      let { resolve } = subject.wrappedJSObject;
-      resolve(true);
-    }
-  },
-};
+// This test doesn't need the test extensions to be detected as privileged,
+// disabling it to avoid having to keep the list of expected "internal:*"
+// permissions that are added automatically to privileged extensions
+// and already covered by other tests.
+AddonTestUtils.usePrivilegedSignatures = false;
 
 // Look up the cached permissions, if any.
 async function getCachedPermissions(extensionId) {
@@ -47,41 +39,25 @@ async function getCachedPermissions(extensionId) {
 }
 
 // Look up the permissions from the file. Internal methods are used to avoid
-// inadvertently changing the permissions in the cache or JSON file.
+// inadvertently changing the permissions in the cache or the database.
 async function getStoredPermissions(extensionId) {
-  // The two _get calls that follow are expected to return the same object if
-  // the entry exists in the JSON file, otherwise we expect two different
-  // objects (with the same default properties).
-  let perms1 = await ExtensionPermissions._get(extensionId);
-  let perms2 = await ExtensionPermissions._get(extensionId);
-  if (perms1 === perms2) {
-    // There is an entry in the file.
-    return perms1;
+  if (await ExtensionPermissions._has(extensionId)) {
+    return ExtensionPermissions._get(extensionId);
   }
-  // Sanity check: The returned object should be empty.
-  Assert.deepEqual(perms1, perms2, "Expected same permission values");
-  Assert.deepEqual(
-    perms1,
-    { origins: [], permissions: [] },
-    "Expected empty permissions"
-  );
   return null;
 }
 
 add_task(async function setup() {
-  Services.prefs.setBoolPref(
-    "extensions.webextOptionalPermissionPrompts",
-    true
-  );
-  Services.obs.addObserver(observer, "webextension-optional-permission-prompt");
+  // Bug 1646182: Force ExtensionPermissions to run in rkv mode, the legacy
+  // storage mode will run in xpcshell-legacy-ep.toml
+  await ExtensionPermissions._uninit();
+
+  optionalPermissionsPromptHandler.init();
+  optionalPermissionsPromptHandler.acceptPrompt = true;
+
   await AddonTestUtils.promiseStartupManager();
   registerCleanupFunction(async () => {
     await AddonTestUtils.promiseShutdownManager();
-    Services.obs.removeObserver(
-      observer,
-      "webextension-optional-permission-prompt"
-    );
-    Services.prefs.clearUserPref("extensions.webextOptionalPermissionPrompts");
   });
 });
 
@@ -117,7 +93,11 @@ add_task(async function test_permissions_removed() {
 
   let id = extension.id;
   let perms = await ExtensionPermissions.get(id);
-  equal(perms.permissions.length, 1, "optional permission added");
+  equal(
+    perms.permissions.length,
+    1,
+    `optional permission added (${JSON.stringify(perms.permissions)})`
+  );
 
   Assert.deepEqual(
     await getCachedPermissions(id),
@@ -152,11 +132,19 @@ add_task(async function test_permissions_removed() {
   );
 
   perms = await ExtensionPermissions.get(id);
-  equal(perms.permissions.length, 0, "no permissions after uninstall");
-  equal(perms.origins.length, 0, "no origin permissions after uninstall");
+  equal(
+    perms.permissions.length,
+    0,
+    `no permissions after uninstall (${JSON.stringify(perms.permissions)})`
+  );
+  equal(
+    perms.origins.length,
+    0,
+    `no origin permissions after uninstall (${JSON.stringify(perms.origins)})`
+  );
 
   // The public ExtensionPermissions.get method should not store (empty)
-  // permissions in the persistent JSON file. Polluting the cache is not ideal,
+  // permissions in the persistent database. Polluting the cache is not ideal,
   // but acceptable since the cache will eventually be cleared, and non-test
   // code is not likely to call ExtensionPermissions.get() for non-installed
   // extensions anyway.

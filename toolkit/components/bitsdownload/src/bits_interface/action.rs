@@ -11,7 +11,6 @@
 //! A value of type `ServiceAction` or `RequestAction` can easily be converted
 //! to an `Action` using the `into()` method.
 
-use std::convert::From;
 use xpcom::interfaces::nsIBits;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -43,7 +42,7 @@ impl Action {
     }
 
     pub fn as_error_code(&self) -> i32 {
-        let val = match self {
+        match self {
             Action::StartDownload => nsIBits::ERROR_ACTION_START_DOWNLOAD,
             Action::MonitorDownload => nsIBits::ERROR_ACTION_MONITOR_DOWNLOAD,
             Action::Complete => nsIBits::ERROR_ACTION_COMPLETE,
@@ -53,8 +52,7 @@ impl Action {
             Action::SetNoProgressTimeout => nsIBits::ERROR_ACTION_SET_NO_PROGRESS_TIMEOUT,
             Action::Resume => nsIBits::ERROR_ACTION_RESUME,
             Action::Suspend => nsIBits::ERROR_ACTION_SUSPEND,
-        };
-        val as i32
+        }
     }
 }
 

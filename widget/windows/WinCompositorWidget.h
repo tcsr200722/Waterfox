@@ -7,7 +7,6 @@
 #define widget_windows_WinCompositorWidget_h
 
 #include "CompositorWidget.h"
-#include "gfxASurface.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/gfx/CriticalSection.h"
 #include "mozilla/gfx/Point.h"
@@ -19,8 +18,7 @@
 
 class nsWindow;
 
-namespace mozilla {
-namespace widget {
+namespace mozilla::widget {
 
 class PlatformCompositorWidgetDelegate : public CompositorWidgetDelegate {
  public:
@@ -32,8 +30,12 @@ class PlatformCompositorWidgetDelegate : public CompositorWidgetDelegate {
   virtual void OnWindowModeChange(nsSizeMode aSizeMode) = 0;
 
   // Transparency handling.
-  virtual void UpdateTransparency(nsTransparencyMode aMode) = 0;
+  virtual void UpdateTransparency(TransparencyMode aMode) = 0;
   virtual void ClearTransparentWindow() = 0;
+
+  // Deliver visibility info
+  virtual void NotifyVisibilityUpdated(nsSizeMode aSizeMode,
+                                       bool aIsFullyOccluded) = 0;
 
   // CompositorWidgetDelegate Overrides
 
@@ -71,10 +73,11 @@ class WinCompositorWidget : public CompositorWidget {
   void UpdateCompositorWndSizeIfNecessary();
 
   void RequestFxrOutput();
-  bool HasFxrOutputHandler() const { return mFxrHandler != nullptr; }
+  bool HasFxrOutputHandler() const { return !!mFxrHandler; }
   FxROutputHandler* GetFxrOutputHandler() const { return mFxrHandler.get(); }
 
-  virtual bool HasGlass() const = 0;
+  virtual nsSizeMode GetWindowSizeMode() const = 0;
+  virtual bool GetWindowIsFullyOccluded() const = 0;
 
   virtual void UpdateCompositorWnd(const HWND aCompositorWnd,
                                    const HWND aParentWnd) = 0;
@@ -93,7 +96,6 @@ class WinCompositorWidget : public CompositorWidget {
   UniquePtr<FxROutputHandler> mFxrHandler;
 };
 
-}  // namespace widget
-}  // namespace mozilla
+}  // namespace mozilla::widget
 
 #endif  // widget_windows_WinCompositorWidget_h

@@ -11,17 +11,19 @@
 #include "base/platform_thread.h"  // for PlatformThreadId
 #include "base/thread.h"           // for Thread
 #include "base/message_loop.h"
+#include "GLTypes.h"  // for GLenum
 #include "nsISupportsImpl.h"
-#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/Hal.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/DataMutex.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/webrender/webrender_ffi.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/webrender/WebRenderTypes.h"
+#include "mozilla/layers/CompositionRecorder.h"
 #include "mozilla/layers/SynchronousTask.h"
-#include "mozilla/layers/WebRenderCompositionRecorder.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/VsyncDispatcher.h"
 
 #include <list>
@@ -33,6 +35,8 @@ namespace gl {
 class GLContext;
 }  // namespace gl
 namespace layers {
+class CompositorBridgeParent;
+class ShaderProgramOGLsHolder;
 class SurfacePool;
 }  // namespace layers
 namespace wr {
@@ -117,8 +121,8 @@ class RendererEvent {
 /// The render thread owns the different RendererOGLs (one per window) and
 /// implements the RenderNotifier api exposed by the WebRender bindings.
 ///
-/// We should generally avoid posting tasks to the render thread's event loop
-/// directly and instead use the RendererEvent mechanism which avoids races
+/// Callers are not allowed to post tasks to the render thread's event loop
+/// directly and must instead use the RendererEvent mechanism which avoids races
 /// between the events and WebRender's own messages.
 ///
 /// The GL context(s) should be created and used on this thread only.
@@ -129,27 +133,23 @@ class RendererEvent {
 /// singleton but in some places we pretend it's not). Hopefully we can evolve
 /// this in a way that keeps the door open to removing the singleton bits.
 class RenderThread final {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_MAIN_THREAD_DESTRUCTION(
-      RenderThread)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(RenderThread)
 
  public:
   /// Can be called from any thread.
   static RenderThread* Get();
 
   /// Can only be called from the main thread.
-  static void Start();
+  static void Start(uint32_t aNamespace);
 
   /// Can only be called from the main thread.
   static void ShutDown();
 
   /// Can be called from any thread.
-  /// In most cases it is best to post RendererEvents through WebRenderAPI
-  /// instead of scheduling directly to this message loop (so as to preserve the
-  /// ordering of the messages).
-  static MessageLoop* Loop();
+  static bool IsInRenderThread();
 
   /// Can be called from any thread.
-  static bool IsInRenderThread();
+  static already_AddRefed<nsIThread> GetRenderThread();
 
   // Can be called from any thread. Dispatches an event to the Renderer thread
   // to iterate over all Renderers, accumulates memory statistics, and resolves
@@ -166,54 +166,62 @@ class RenderThread final {
   /// Can only be called from the render thread.
   RendererOGL* GetRenderer(wr::WindowId aWindowId);
 
-  // RenderNotifier implementation
-
-  /// Automatically forwarded to the render thread. Will trigger a render for
-  /// the current pending frame once one call per document in that pending
-  // frame has been received.
-  void HandleFrameOneDoc(wr::WindowId aWindowId, bool aRender);
+  /// Automatically forwarded to the render thread.
+  void SetClearColor(wr::WindowId aWindowId, wr::ColorF aColor);
 
   /// Automatically forwarded to the render thread.
-  void WakeUp(wr::WindowId aWindowId);
+  void SetProfilerUI(wr::WindowId aWindowId, const nsACString& aUI);
 
   /// Automatically forwarded to the render thread.
   void PipelineSizeChanged(wr::WindowId aWindowId, uint64_t aPipelineId,
                            float aWidth, float aHeight);
 
-  /// Automatically forwarded to the render thread.
-  void RunEvent(wr::WindowId aWindowId, UniquePtr<RendererEvent> aCallBack);
+  /// Post RendererEvent to the render thread.
+  void PostEvent(wr::WindowId aWindowId, UniquePtr<RendererEvent> aEvent);
+
+  /// Can only be called from the render thread.
+  void SetFramePublishId(wr::WindowId aWindowId, FramePublishId aPublishId);
 
   /// Can only be called from the render thread.
   void UpdateAndRender(wr::WindowId aWindowId, const VsyncId& aStartId,
                        const TimeStamp& aStartTime, bool aRender,
                        const Maybe<gfx::IntSize>& aReadbackSize,
                        const Maybe<wr::ImageFormat>& aReadbackFormat,
-                       const Maybe<Range<uint8_t>>& aReadbackBuffer);
+                       const Maybe<Range<uint8_t>>& aReadbackBuffer,
+                       bool* aNeedsYFlip = nullptr);
 
   void Pause(wr::WindowId aWindowId);
   bool Resume(wr::WindowId aWindowId);
 
   /// Can be called from any thread.
-  void RegisterExternalImage(uint64_t aExternalImageId,
+  void RegisterExternalImage(const wr::ExternalImageId& aExternalImageId,
                              already_AddRefed<RenderTextureHost> aTexture);
 
   /// Can be called from any thread.
-  void UnregisterExternalImage(uint64_t aExternalImageId);
+  void UnregisterExternalImage(const wr::ExternalImageId& aExternalImageId);
 
   /// Can be called from any thread.
-  void PrepareForUse(uint64_t aExternalImageId);
+  void DestroyExternalImagesSyncWait(
+      const std::vector<wr::ExternalImageId>&& aIds);
 
   /// Can be called from any thread.
-  void NotifyNotUsed(uint64_t aExternalImageId);
+  void PrepareForUse(const wr::ExternalImageId& aExternalImageId);
+
+  /// Can be called from any thread.
+  void NotifyNotUsed(const wr::ExternalImageId& aExternalImageId);
+
+  /// Can be called from any thread.
+  void NotifyForUse(const wr::ExternalImageId& aExternalImageId);
+
+  void HandleRenderTextureOps();
 
   /// Can only be called from the render thread.
-  void NofityForUse(uint64_t aExternalImageId);
+  void UnregisterExternalImageDuringShutdown(
+      const wr::ExternalImageId& aExternalImageId);
 
   /// Can only be called from the render thread.
-  void UnregisterExternalImageDuringShutdown(uint64_t aExternalImageId);
-
-  /// Can only be called from the render thread.
-  RenderTextureHost* GetRenderTexture(ExternalImageId aExternalImageId);
+  RenderTextureHost* GetRenderTexture(
+      const wr::ExternalImageId& aExternalImageId);
 
   /// Can be called from any thread.
   bool IsDestroyed(wr::WindowId aWindowId);
@@ -226,6 +234,14 @@ class RenderThread final {
                             const TimeStamp& aStartTime);
   /// Can be called from any thread.
   void DecPendingFrameBuildCount(wr::WindowId aWindowId);
+  void DecPendingFrameCount(wr::WindowId aWindowId);
+
+  // RenderNotifier implementation
+  void WrNotifierEvent_WakeUp(WrWindowId aWindowId, bool aCompositeNeeded);
+  void WrNotifierEvent_NewFrameReady(WrWindowId aWindowId,
+                                     bool aCompositeNeeded,
+                                     FramePublishId aPublishId);
+  void WrNotifierEvent_ExternalEvent(WrWindowId aWindowId, size_t aRawEvent);
 
   /// Can be called from any thread.
   WebRenderThreadPool& ThreadPool() { return mThreadPool; }
@@ -249,17 +265,25 @@ class RenderThread final {
   }
 
   /// Can only be called from the render thread.
-  gl::GLContext* SharedGL();
-  void ClearSharedGL();
+  gl::GLContext* SingletonGL(nsACString& aError);
+  gl::GLContext* SingletonGL();
+  gl::GLContext* SingletonGLForCompositorOGL();
+  void ClearSingletonGL();
   RefPtr<layers::SurfacePool> SharedSurfacePool();
   void ClearSharedSurfacePool();
 
+  RefPtr<layers::ShaderProgramOGLsHolder> GetProgramsForCompositorOGL();
+
   /// Can only be called from the render thread.
-  void HandleDeviceReset(const char* aWhere, bool aNotify);
+  void HandleDeviceReset(gfx::DeviceResetDetectPlace aPlace,
+                         gfx::DeviceResetReason aReason);
   /// Can only be called from the render thread.
   bool IsHandlingDeviceReset();
   /// Can be called from any thread.
   void SimulateDeviceReset();
+
+  /// Can only be called from the render thread.
+  void NotifyWebRenderError(WebRenderError aError);
 
   /// Can only be called from the render thread.
   void HandleWebRenderError(WebRenderError aError);
@@ -267,81 +291,214 @@ class RenderThread final {
   bool IsHandlingWebRenderError();
 
   /// Can only be called from the render thread.
-  void HandlePrepareForUse();
+  bool SyncObjectNeeded();
 
-  size_t RendererCount();
+  size_t RendererCount() const;
+  size_t ActiveRendererCount() const { return sActiveRendererCount; };
+  void UpdateActiveRendererCount();
 
-  void SetCompositionRecorderForWindow(
-      wr::WindowId aWindowId,
-      UniquePtr<layers::WebRenderCompositionRecorder> aCompositionRecorder);
+  void BeginRecordingForWindow(wr::WindowId aWindowId,
+                               const TimeStamp& aRecordingStart,
+                               wr::PipelineId aRootPipelineId);
 
-  void WriteCollectedFramesForWindow(wr::WindowId aWindowId);
-
-  Maybe<layers::CollectedFrames> GetCollectedFramesForWindow(
-      wr::WindowId aWindowId);
+  Maybe<layers::FrameRecording> EndRecordingForWindow(wr::WindowId aWindowId);
 
   static void MaybeEnableGLDebugMessage(gl::GLContext* aGLContext);
 
+  void SetBatteryInfo(const hal::BatteryInformation& aBatteryInfo);
+  bool GetPowerIsCharging();
+
  private:
-  explicit RenderThread(base::Thread* aThread);
+  static size_t sRendererCount;
+  static size_t sActiveRendererCount;
+
+  enum class RenderTextureOp {
+    PrepareForUse,
+    NotifyForUse,
+    NotifyNotUsed,
+  };
+  class WrNotifierEvent {
+   public:
+    enum class Tag {
+      WakeUp,
+      NewFrameReady,
+      ExternalEvent,
+    };
+    const Tag mTag;
+
+   private:
+    WrNotifierEvent(const Tag aTag, const bool aCompositeNeeded)
+        : mTag(aTag), mCompositeNeeded(aCompositeNeeded) {
+      MOZ_ASSERT(mTag == Tag::WakeUp);
+    }
+    WrNotifierEvent(const Tag aTag, bool aCompositeNeeded,
+                    FramePublishId aPublishId)
+        : mTag(aTag),
+          mCompositeNeeded(aCompositeNeeded),
+          mPublishId(aPublishId) {
+      MOZ_ASSERT(mTag == Tag::NewFrameReady);
+    }
+    WrNotifierEvent(const Tag aTag, UniquePtr<RendererEvent>&& aRendererEvent)
+        : mTag(aTag), mRendererEvent(std::move(aRendererEvent)) {
+      MOZ_ASSERT(mTag == Tag::ExternalEvent);
+    }
+
+    const bool mCompositeNeeded = false;
+    const FramePublishId mPublishId = FramePublishId::INVALID;
+    UniquePtr<RendererEvent> mRendererEvent;
+
+   public:
+    static WrNotifierEvent WakeUp(const bool aCompositeNeeded) {
+      return WrNotifierEvent(Tag::WakeUp, aCompositeNeeded);
+    }
+
+    static WrNotifierEvent NewFrameReady(const bool aCompositeNeeded,
+                                         const FramePublishId aPublishId) {
+      return WrNotifierEvent(Tag::NewFrameReady, aCompositeNeeded, aPublishId);
+    }
+
+    static WrNotifierEvent ExternalEvent(
+        UniquePtr<RendererEvent>&& aRendererEvent) {
+      return WrNotifierEvent(Tag::ExternalEvent, std::move(aRendererEvent));
+    }
+
+    bool CompositeNeeded() {
+      if (mTag == Tag::WakeUp || mTag == Tag::NewFrameReady) {
+        return mCompositeNeeded;
+      }
+      MOZ_ASSERT_UNREACHABLE("unexpected to be called");
+      return false;
+    }
+    FramePublishId PublishId() {
+      if (mTag == Tag::NewFrameReady) {
+        return mPublishId;
+      }
+      MOZ_ASSERT_UNREACHABLE("unexpected to be called");
+      return FramePublishId::INVALID;
+    }
+    UniquePtr<RendererEvent> ExternalEvent() {
+      if (mTag == Tag::ExternalEvent) {
+        MOZ_ASSERT(mRendererEvent);
+        return std::move(mRendererEvent);
+      }
+      MOZ_ASSERT_UNREACHABLE("unexpected to be called");
+      return nullptr;
+    }
+  };
+
+  explicit RenderThread(RefPtr<nsIThread> aThread);
+
+  void HandleFrameOneDocInner(wr::WindowId aWindowId, bool aRender,
+                              bool aTrackedFrame,
+                              Maybe<FramePublishId> aPublishId);
 
   void DeferredRenderTextureHostDestroy();
-  void ShutDownTask(layers::SynchronousTask* aTask);
+  void ShutDownTask();
   void InitDeviceTask();
+  void HandleFrameOneDoc(wr::WindowId aWindowId, bool aRender,
+                         bool aTrackedFrame, Maybe<FramePublishId> aPublishId);
+  void RunEvent(wr::WindowId aWindowId, UniquePtr<RendererEvent> aEvent);
+  void PostRunnable(already_AddRefed<nsIRunnable> aRunnable);
 
   void DoAccumulateMemoryReport(MemoryReport,
                                 const RefPtr<MemoryReportPromise::Private>&);
 
+  void AddRenderTextureOp(RenderTextureOp aOp,
+                          const wr::ExternalImageId& aExternalImageId);
+
+  void CreateSingletonGL(nsACString& aError);
+
+  void DestroyExternalImages(const std::vector<wr::ExternalImageId>&& aIds);
+
+  struct WindowInfo;
+
+  void PostWrNotifierEvents(WrWindowId aWindowId);
+  void PostWrNotifierEvents(WrWindowId aWindowId, WindowInfo* aInfo);
+  void HandleWrNotifierEvents(WrWindowId aWindowId);
+  void WrNotifierEvent_HandleWakeUp(wr::WindowId aWindowId,
+                                    bool aCompositeNeeded);
+  void WrNotifierEvent_HandleNewFrameReady(wr::WindowId aWindowId,
+                                           bool aCompositeNeeded,
+                                           FramePublishId aPublishId);
+  void WrNotifierEvent_HandleExternalEvent(
+      wr::WindowId aWindowId, UniquePtr<RendererEvent> aRendererEvent);
+
   ~RenderThread();
 
-  base::Thread* const mThread;
+  RefPtr<nsIThread> const mThread;
 
   WebRenderThreadPool mThreadPool;
   WebRenderThreadPool mThreadPoolLP;
 
   UniquePtr<WebRenderProgramCache> mProgramCache;
   UniquePtr<WebRenderShaders> mShaders;
+  RefPtr<layers::ShaderProgramOGLsHolder> mProgramsForCompositorOGL;
 
   // An optional shared GLContext to be used for all
   // windows.
-  RefPtr<gl::GLContext> mSharedGL;
+  RefPtr<gl::GLContext> mSingletonGL;
+  bool mSingletonGLIsForHardwareWebRender;
 
   RefPtr<layers::SurfacePool> mSurfacePool;
 
   std::map<wr::WindowId, UniquePtr<RendererOGL>> mRenderers;
-  std::map<wr::WindowId, UniquePtr<layers::WebRenderCompositionRecorder>>
-      mCompositionRecorders;
+
+  DataMutex<Maybe<hal::BatteryInformation>> mBatteryInfo;
 
   struct PendingFrameInfo {
     TimeStamp mStartTime;
     VsyncId mStartId;
-    bool mFrameNeedsRender = false;
   };
 
   struct WindowInfo {
     int64_t PendingCount() { return mPendingFrames.size(); }
-    // If mIsRendering is true, mPendingFrames.front() is currently being
-    // rendered.
     std::queue<PendingFrameInfo> mPendingFrames;
     uint8_t mPendingFrameBuild = 0;
     bool mIsDestroyed = false;
+    RefPtr<nsIRunnable> mWrNotifierEventsRunnable;
+    std::queue<WrNotifierEvent> mPendingWrNotifierEvents;
   };
 
-  DataMutex<std::unordered_map<uint64_t, WindowInfo*>> mWindowInfos;
+  DataMutex<std::unordered_map<uint64_t, UniquePtr<WindowInfo>>> mWindowInfos;
+
+  std::unordered_map<uint64_t, UniquePtr<std::queue<WrNotifierEvent>>>
+      mWrNotifierEventsQueues;
+
+  struct ExternalImageIdHashFn {
+    std::size_t operator()(const wr::ExternalImageId& aId) const {
+      return HashGeneric(wr::AsUint64(aId));
+    }
+  };
 
   Mutex mRenderTextureMapLock;
-  std::unordered_map<uint64_t, RefPtr<RenderTextureHost>> mRenderTextures;
-  // Hold RenderTextureHosts that are waiting for handling PrepareForUse().
-  // It is for ensuring that PrepareForUse() is called before
-  // RenderTextureHost::Lock().
-  std::list<RefPtr<RenderTextureHost>> mRenderTexturesPrepareForUse;
+  std::unordered_map<wr::ExternalImageId, RefPtr<RenderTextureHost>,
+                     ExternalImageIdHashFn>
+      mRenderTextures MOZ_GUARDED_BY(mRenderTextureMapLock);
+  std::unordered_map<wr::ExternalImageId, RefPtr<RenderTextureHost>,
+                     ExternalImageIdHashFn>
+      mSyncObjectNeededRenderTextures MOZ_GUARDED_BY(mRenderTextureMapLock);
+  std::list<std::pair<RenderTextureOp, RefPtr<RenderTextureHost>>>
+      mRenderTextureOps MOZ_GUARDED_BY(mRenderTextureMapLock);
+
   // Used to remove all RenderTextureHost that are going to be removed by
   // a deferred callback and remove them right away without waiting for the
   // callback. On device reset we have to remove all GL related resources right
   // away.
-  std::list<RefPtr<RenderTextureHost>> mRenderTexturesDeferred;
+  std::list<RefPtr<RenderTextureHost>> mRenderTexturesDeferred
+      MOZ_GUARDED_BY(mRenderTextureMapLock);
+
+  RefPtr<nsIRunnable> mRenderTextureOpsRunnable
+      MOZ_GUARDED_BY(mRenderTextureMapLock);
+
+#ifdef DEBUG
+  // used for tests only to ensure render textures don't increase
+  int32_t mRenderTexturesLastTime MOZ_GUARDED_BY(mRenderTextureMapLock) = -1;
+#endif
+
+  // Set from MainThread, read from either MainThread or RenderThread
   bool mHasShutdown;
 
+  // Only accessed from the RenderThread
   bool mHandlingDeviceReset;
   bool mHandlingWebRenderError;
 };

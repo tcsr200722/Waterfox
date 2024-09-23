@@ -15,9 +15,14 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/PRemoteWorkerControllerParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+/**
+ * PBackground-resident proxy used by ServiceWorkerManager because canonical
+ * ServiceWorkerManager state exists on the parent process main thread but the
+ * RemoteWorkerController API is used from the parent process PBackground
+ * thread.
+ */
 class RemoteWorkerControllerParent final : public PRemoteWorkerControllerParent,
                                            public RemoteWorkerObserver {
   friend class PRemoteWorkerControllerParent;
@@ -38,11 +43,11 @@ class RemoteWorkerControllerParent final : public PRemoteWorkerControllerParent,
   ~RemoteWorkerControllerParent();
 
   PFetchEventOpParent* AllocPFetchEventOpParent(
-      const ServiceWorkerFetchEventOpArgs& aArgs);
+      const ParentToParentServiceWorkerFetchEventOpArgs& aArgs);
 
   mozilla::ipc::IPCResult RecvPFetchEventOpConstructor(
       PFetchEventOpParent* aActor,
-      const ServiceWorkerFetchEventOpArgs& aArgs) override;
+      const ParentToParentServiceWorkerFetchEventOpArgs& aArgs) override;
 
   bool DeallocPFetchEventOpParent(PFetchEventOpParent* aActor);
 
@@ -61,6 +66,14 @@ class RemoteWorkerControllerParent final : public PRemoteWorkerControllerParent,
 
   void ErrorReceived(const ErrorValue& aValue) override;
 
+  void LockNotified(bool aCreated) final {
+    // no-op for service workers
+  }
+
+  void WebTransportNotified(bool aCreated) final {
+    // no-op for service workers
+  }
+
   void Terminated() override;
 
   RefPtr<RemoteWorkerController> mRemoteWorkerController;
@@ -68,7 +81,6 @@ class RemoteWorkerControllerParent final : public PRemoteWorkerControllerParent,
   bool mIPCActive = true;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_remoteworkercontrollerparent_h__

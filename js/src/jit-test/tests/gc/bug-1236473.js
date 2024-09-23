@@ -1,6 +1,5 @@
-// |jit-test| skip-if: !('oomTest' in this)
-
 oomTest(() => {
-    offThreadCompileScript(`try {} catch (NaN) {}`);
-    runOffThreadScript();
+    offThreadCompileToStencil(`try {} catch (NaN) {}`);
+    var stencil = finishOffThreadStencil();
+    evalStencil(stencil);
 });

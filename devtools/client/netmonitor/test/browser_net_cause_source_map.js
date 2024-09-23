@@ -8,11 +8,11 @@
  */
 
 const CAUSE_FILE_NAME = "html_maps-test-page.html";
-const CAUSE_URL = EXAMPLE_URL + CAUSE_FILE_NAME;
+const CAUSE_URL = HTTPS_EXAMPLE_URL + CAUSE_FILE_NAME;
 
 const N_EXPECTED_REQUESTS = 4;
 
-add_task(async function() {
+add_task(async function () {
   // the initNetMonitor function clears the network request list after the
   // page is loaded. That's why we first load a bogus page from SIMPLE_URL,
   // and only then load the real thing from CAUSE_URL - we want to catch
@@ -37,8 +37,7 @@ add_task(async function() {
 
   info("Clicking stack tab and waiting for stack panel to open");
   waitPromise = waitForDOM(document, "#stack-trace-panel");
-  const stackTab = document.querySelector("#stack-trace-tab");
-  EventUtils.sendMouseEvent({ type: "click" }, stackTab);
+  clickOnSidebarTab(document, "stack-trace");
   await waitPromise;
 
   info("Waiting for source maps to be applied");

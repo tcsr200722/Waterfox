@@ -10,7 +10,6 @@
 #include "mozilla/AtomArray.h"
 #include "mozilla/Attributes.h"
 
-#include "nsLeafBoxFrame.h"
 #include "nsITreeView.h"
 #include "nsIScrollbarMediator.h"
 #include "nsITimer.h"
@@ -18,11 +17,13 @@
 #include "nsTArray.h"
 #include "nsTreeStyleCache.h"
 #include "nsTreeColumns.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
+#include "nsTHashSet.h"
 #include "imgIRequest.h"
 #include "imgINotificationObserver.h"
 #include "nsScrollbarFrame.h"
 #include "nsThreadUtils.h"
+#include "SimpleXULLeafFrame.h"
 #include "mozilla/LookAndFeel.h"
 
 class nsFontMetrics;
@@ -31,6 +32,7 @@ class nsTreeImageListener;
 
 namespace mozilla {
 class PresShell;
+class ScrollContainerFrame;
 namespace layout {
 class ScrollbarActivity;
 }  // namespace layout
@@ -48,7 +50,7 @@ struct nsTreeImageCacheEntry {
 };
 
 // The actual frame that paints the cells and rows.
-class nsTreeBodyFrame final : public nsLeafBoxFrame,
+class nsTreeBodyFrame final : public mozilla::SimpleXULLeafFrame,
                               public nsIScrollbarMediator,
                               public nsIReflowCallback {
   typedef mozilla::layout::ScrollbarActivity ScrollbarActivity;
@@ -57,6 +59,8 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
  public:
   explicit nsTreeBodyFrame(ComputedStyle* aStyle, nsPresContext* aPresContext);
   ~nsTreeBodyFrame();
+
+  nscoord GetIntrinsicBSize() override;
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS(nsTreeBodyFrame)
@@ -75,6 +79,7 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
     nsCOMPtr<nsITreeView> view = mView;
     return view.forget();
   }
+  already_AddRefed<nsITreeSelection> GetSelection() const;
   nsresult GetView(nsITreeView** aView);
   nsresult SetView(nsITreeView* aView);
   bool GetFocused() const { return mFocused; }
@@ -112,61 +117,59 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
 
   void CancelImageRequests();
 
-  void ManageReflowCallback(const nsRect& aRect, nscoord aHorzWidth);
+  void ManageReflowCallback();
 
-  virtual nsSize GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) override;
-  virtual void SetXULBounds(nsBoxLayoutState& aBoxLayoutState,
-                            const nsRect& aRect,
-                            bool aRemoveOverflowArea = false) override;
+  void DidReflow(nsPresContext*, const ReflowInput*) override;
 
   // nsIReflowCallback
-  virtual bool ReflowFinished() override;
-  virtual void ReflowCallbackCanceled() override;
+  bool ReflowFinished() override;
+  void ReflowCallbackCanceled() override;
 
   // nsIScrollbarMediator
-  virtual void ScrollByPage(nsScrollbarFrame* aScrollbar, int32_t aDirection,
-                            nsIScrollbarMediator::ScrollSnapMode aSnap =
-                                nsIScrollbarMediator::DISABLE_SNAP) override;
-  virtual void ScrollByWhole(nsScrollbarFrame* aScrollbar, int32_t aDirection,
-                             nsIScrollbarMediator::ScrollSnapMode aSnap =
-                                 nsIScrollbarMediator::DISABLE_SNAP) override;
-  virtual void ScrollByLine(nsScrollbarFrame* aScrollbar, int32_t aDirection,
-                            nsIScrollbarMediator::ScrollSnapMode aSnap =
-                                nsIScrollbarMediator::DISABLE_SNAP) override;
-  virtual void RepeatButtonScroll(nsScrollbarFrame* aScrollbar) override;
-  virtual void ThumbMoved(nsScrollbarFrame* aScrollbar, nscoord aOldPos,
-                          nscoord aNewPos) override;
-  virtual void ScrollbarReleased(nsScrollbarFrame* aScrollbar) override {}
-  virtual void VisibilityChanged(bool aVisible) override { Invalidate(); }
-  virtual nsIFrame* GetScrollbarBox(bool aVertical) override {
+  void ScrollByPage(nsScrollbarFrame* aScrollbar, int32_t aDirection,
+                    mozilla::ScrollSnapFlags aSnapFlags =
+                        mozilla::ScrollSnapFlags::Disabled) override;
+  void ScrollByWhole(nsScrollbarFrame* aScrollbar, int32_t aDirection,
+                     mozilla::ScrollSnapFlags aSnapFlags =
+                         mozilla::ScrollSnapFlags::Disabled) override;
+  void ScrollByLine(nsScrollbarFrame* aScrollbar, int32_t aDirection,
+                    mozilla::ScrollSnapFlags aSnapFlags =
+                        mozilla::ScrollSnapFlags::Disabled) override;
+  void ScrollByUnit(nsScrollbarFrame* aScrollbar, mozilla::ScrollMode aMode,
+                    int32_t aDirection, mozilla::ScrollUnit aUnit,
+                    mozilla::ScrollSnapFlags aSnapFlags =
+                        mozilla::ScrollSnapFlags::Disabled) override;
+  void RepeatButtonScroll(nsScrollbarFrame* aScrollbar) override;
+  void ThumbMoved(nsScrollbarFrame* aScrollbar, nscoord aOldPos,
+                  nscoord aNewPos) override;
+  void ScrollbarReleased(nsScrollbarFrame* aScrollbar) override {}
+  void VisibilityChanged(bool aVisible) override { Invalidate(); }
+  nsScrollbarFrame* GetScrollbarBox(bool aVertical) override {
     ScrollParts parts = GetScrollParts();
     return aVertical ? parts.mVScrollbar : parts.mHScrollbar;
   }
-  virtual void ScrollbarActivityStarted() const override;
-  virtual void ScrollbarActivityStopped() const override;
-  virtual bool IsScrollbarOnRight() const override {
+  void ScrollbarActivityStarted() const override;
+  void ScrollbarActivityStopped() const override;
+  bool IsScrollbarOnRight() const override {
     return StyleVisibility()->mDirection == mozilla::StyleDirection::Ltr;
   }
-  virtual bool ShouldSuppressScrollbarRepaints() const override {
-    return false;
-  }
+  bool ShouldSuppressScrollbarRepaints() const override { return false; }
 
   // Overridden from nsIFrame to cache our pres context.
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) override;
+  void Destroy(DestroyContext&) override;
 
-  mozilla::Maybe<Cursor> GetCursor(const nsPoint&) override;
+  Cursor GetCursor(const nsPoint&) override;
 
-  virtual nsresult HandleEvent(nsPresContext* aPresContext,
-                               mozilla::WidgetGUIEvent* aEvent,
-                               nsEventStatus* aEventStatus) override;
+  nsresult HandleEvent(nsPresContext* aPresContext,
+                       mozilla::WidgetGUIEvent* aEvent,
+                       nsEventStatus* aEventStatus) override;
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
-  virtual void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
+  void DidSetComputedStyle(ComputedStyle* aOldComputedStyle) override;
 
   friend nsIFrame* NS_NewTreeBodyFrame(mozilla::PresShell* aPresShell);
   friend class nsTreeColumn;
@@ -177,7 +180,7 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
     nsScrollbarFrame* mHScrollbar;
     RefPtr<mozilla::dom::Element> mHScrollbarContent;
     nsIFrame* mColumnsFrame;
-    nsIScrollableFrame* mColumnsScrollFrame;
+    mozilla::ScrollContainerFrame* mColumnsScrollFrame;
   };
 
   ImgDrawResult PaintTreeBody(gfxContext& aRenderingContext,
@@ -293,15 +296,14 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
                  nsCSSAnonBoxPseudoStaticAtom** aChildElt);
 
   // Retrieve the area for the twisty for a cell.
-  nsITheme* GetTwistyRect(int32_t aRowIndex, nsTreeColumn* aColumn,
-                          nsRect& aImageRect, nsRect& aTwistyRect,
-                          nsPresContext* aPresContext,
-                          ComputedStyle* aTwistyContext);
+  void GetTwistyRect(int32_t aRowIndex, nsTreeColumn* aColumn,
+                     nsRect& aImageRect, nsRect& aTwistyRect,
+                     nsPresContext* aPresContext,
+                     ComputedStyle* aTwistyContext);
 
   // Fetch an image from the image cache.
   nsresult GetImage(int32_t aRowIndex, nsTreeColumn* aCol, bool aUseContext,
-                    ComputedStyle* aComputedStyle, bool& aAllowImageRegions,
-                    imgIContainer** aResult);
+                    ComputedStyle* aComputedStyle, imgIContainer** aResult);
 
   // Returns the size of a given image.   This size *includes* border and
   // padding.  It does not include margins.
@@ -310,12 +312,10 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
 
   // Returns the destination size of the image, not including borders and
   // padding.
-  nsSize GetImageDestSize(ComputedStyle* aComputedStyle, bool useImageRegion,
-                          imgIContainer* image);
+  nsSize GetImageDestSize(ComputedStyle*, imgIContainer*);
 
   // Returns the source rectangle of the image to be displayed.
-  nsRect GetImageSourceRect(ComputedStyle* aComputedStyle, bool useImageRegion,
-                            imgIContainer* image);
+  nsRect GetImageSourceRect(ComputedStyle*, imgIContainer*);
 
   // Returns the height of rows in the tree.
   int32_t GetRowHeight();
@@ -374,7 +374,6 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
   nsresult GetCellWidth(int32_t aRow, nsTreeColumn* aCol,
                         gfxContext* aRenderingContext, nscoord& aDesiredSize,
                         nscoord& aCurrentSize);
-  nscoord CalcMaxRowWidth();
 
   // Translate the given rect horizontally from tree coordinates into the
   // coordinate system of our nsTreeBodyFrame.  If clip is true, then clip the
@@ -438,7 +437,7 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
   };
 
   void PostScrollEvent();
-  void FireScrollEvent();
+  MOZ_CAN_RUN_SCRIPT void FireScrollEvent();
 
   /**
    * Clear the pointer to this frame for all nsTreeImageListeners that were
@@ -479,38 +478,34 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
  protected:  // Data Members
   class Slots {
    public:
-    Slots()
-        : mDropAllowed(false),
-          mIsDragging(false),
-          mDropRow(-1),
-          mDropOrient(-1),
-          mScrollLines(0),
-          mDragAction(0) {}
+    Slots() = default;
 
     ~Slots() {
-      if (mTimer) mTimer->Cancel();
+      if (mTimer) {
+        mTimer->Cancel();
+      }
     }
 
     friend class nsTreeBodyFrame;
 
    protected:
     // If the drop is actually allowed here or not.
-    bool mDropAllowed;
+    bool mDropAllowed = false;
 
     // True while dragging over the tree.
-    bool mIsDragging;
+    bool mIsDragging = false;
 
     // The row the mouse is hovering over during a drop.
-    int32_t mDropRow;
+    int32_t mDropRow = -1;
 
     // Where we want to draw feedback (above/on this row/below) if allowed.
-    int16_t mDropOrient;
+    int16_t mDropOrient = -1;
 
     // Number of lines to be scrolled.
-    int16_t mScrollLines;
+    int16_t mScrollLines = 0;
 
     // The drag action that was received for this slot
-    uint32_t mDragAction;
+    uint32_t mDragAction = 0;
 
     // Timer for opening/closing spring loaded folders or scrolling the tree.
     nsCOMPtr<nsITimer> mTimer;
@@ -519,7 +514,7 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
     nsTArray<int32_t> mArray;
   };
 
-  Slots* mSlots;
+  mozilla::UniquePtr<Slots> mSlots;
 
   nsRevocableEventPtr<ScrollEvent> mScrollEvent;
 
@@ -546,7 +541,7 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
   // is provided by the view or by the ComputedStyle. The ComputedStyle
   // represents a resolved :-moz-tree-cell-image (or twisty) pseudo-element.
   // It maps directly to an imgIRequest.
-  nsDataHashtable<nsStringHashKey, nsTreeImageCacheEntry> mImageCache;
+  nsTHashMap<nsStringHashKey, nsTreeImageCacheEntry> mImageCache;
 
   // A scratch array used when looking up cached ComputedStyles.
   mozilla::AtomArray mScratchArray;
@@ -573,11 +568,13 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
   // This depends on whether or not the columnpicker and scrollbars are present.
   nscoord mAdjustWidth;
 
+  // Our last reflowed rect, used for invalidation, see ManageReflowCallback().
+  Maybe<nsRect> mLastReflowRect;
+
   // Cached heights and indent info.
   nsRect mInnerBox;  // 4-byte aligned
   int32_t mRowHeight;
   int32_t mIndentation;
-  nscoord mStringWidth;
 
   int32_t mUpdateBatchNest;
 
@@ -602,9 +599,9 @@ class nsTreeBodyFrame final : public nsLeafBoxFrame,
   // overflow/underflow event handlers
   bool mCheckingOverflow;
 
-  // Hash table to keep track of which listeners we created and thus
+  // Hash set to keep track of which listeners we created and thus
   // have pointers to us.
-  nsTHashtable<nsPtrHashKey<nsTreeImageListener> > mCreatedListeners;
+  nsTHashSet<nsTreeImageListener*> mCreatedListeners;
 
 };  // class nsTreeBodyFrame
 

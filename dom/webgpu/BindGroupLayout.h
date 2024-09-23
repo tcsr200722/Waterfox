@@ -10,8 +10,7 @@
 #include "ObjectModel.h"
 #include "mozilla/webgpu/WebGPUTypes.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 class Device;
 
@@ -20,16 +19,16 @@ class BindGroupLayout final : public ObjectBase, public ChildOf<Device> {
   GPU_DECL_CYCLE_COLLECTION(BindGroupLayout)
   GPU_DECL_JS_WRAP(BindGroupLayout)
 
-  BindGroupLayout(Device* const aParent, RawId aId);
+  BindGroupLayout(Device* const aParent, RawId aId, bool aOwning);
 
   const RawId mId;
+  const bool mOwning;
 
  private:
   ~BindGroupLayout();
   void Cleanup();
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #endif  // GPU_BindGroupLayout_H_

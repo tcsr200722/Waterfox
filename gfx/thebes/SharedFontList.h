@@ -21,7 +21,9 @@ class FontList;  // See the separate SharedFontList-impl.h header
  * A Pointer in the shared font list contains a packed index/offset pair,
  * with a 12-bit index into the array of shared-memory blocks, and a 20-bit
  * offset into the block.
- * The maximum size of each block is therefore 2^20 bytes (1048576).
+ * The maximum size of each block is therefore 2^20 bytes (1 MB) if sub-parts
+ * of the block are to be allocated; however, a larger block (up to 2^32 bytes)
+ * can be created and used as a single allocation if necessary.
  */
 struct Pointer {
  private:
@@ -49,6 +51,14 @@ struct Pointer {
 
   Pointer(Pointer&& aOther) { mBlockAndOffset.store(aOther.mBlockAndOffset); }
 
+  /**
+   * Check if a Pointer has the null value.
+   *
+   * NOTE!
+   * In a child process, it is possible that conversion to a "real" pointer
+   * using ToPtr() will fail even when IsNull() is false, so calling code
+   * that may run in child processes must be prepared to handle this.
+   */
   bool IsNull() const { return mBlockAndOffset == kNullValue; }
 
   uint32_t Block() const { return mBlockAndOffset >> kBlockShift; }
@@ -59,8 +69,24 @@ struct Pointer {
    * Convert a fontlist::Pointer to a standard C++ pointer. This requires the
    * FontList, which will know where the shared memory block is mapped in
    * the current process's address space.
+   *
+   * aSize is the expected size of the pointed-to object, for bounds checking.
+   *
+   * NOTE!
+   * In child processes this may fail and return nullptr, even if IsNull() is
+   * false, in cases where the font list is in the process of being rebuilt.
    */
-  void* ToPtr(FontList* aFontList) const;
+  void* ToPtr(FontList* aFontList, size_t aSize) const;
+
+  template <typename T>
+  T* ToPtr(FontList* aFontList) const {
+    return static_cast<T*>(ToPtr(aFontList, sizeof(T)));
+  }
+
+  template <typename T>
+  T* ToArray(FontList* aFontList, size_t aCount) const {
+    return static_cast<T*>(ToPtr(aFontList, sizeof(T) * aCount));
+  }
 
   Pointer& operator=(const Pointer& aOther) {
     mBlockAndOffset.store(aOther.mBlockAndOffset);
@@ -97,18 +123,28 @@ struct String {
     // allocate or copy. But that's unsafe because in the event of font-list
     // reinitalization, that shared memory will be unmapped; then any copy of
     // the nsCString that may still be around will crash if accessed.
-    return nsCString(static_cast<const char*>(mPointer.ToPtr(aList)), mLength);
+    return nsCString(mPointer.ToArray<const char>(aList, mLength), mLength);
   }
 
   void Assign(const nsACString& aString, FontList* aList);
 
   const char* BeginReading(FontList* aList) const {
     MOZ_ASSERT(!mPointer.IsNull());
-    return static_cast<const char*>(mPointer.ToPtr(aList));
+    auto* str = mPointer.ToArray<const char>(aList, mLength);
+    return str ? str : "";
   }
 
   uint32_t Length() const { return mLength; }
 
+  /**
+   * Return whether the String has been set to a value.
+   *
+   * NOTE!
+   * In a child process, accessing the value could fail even if IsNull()
+   * returned false. In this case, the nsCString constructor used by AsString()
+   * will be passed a null pointer, and return an empty string despite the
+   * non-zero Length() recorded here.
+   */
   bool IsNull() const { return mPointer.IsNull(); }
 
  private:
@@ -133,29 +169,43 @@ struct Face {
     nsCString mDescriptor;  // descriptor that can be used to instantiate a
                             // platform font reference
     uint16_t mIndex;        // an index used with descriptor (on some platforms)
-    bool mFixedPitch;       // is the face fixed-pitch (monospaced)?
-    mozilla::WeightRange mWeight;     // CSS font-weight value
-    mozilla::StretchRange mStretch;   // CSS font-stretch value
-    mozilla::SlantStyleRange mStyle;  // CSS font-style value
+#ifdef MOZ_WIDGET_GTK
+    uint16_t mSize;  // pixel size if bitmap; zero indicates scalable
+#endif
+    bool mFixedPitch;                  // is the face fixed-pitch (monospaced)?
+    mozilla::WeightRange mWeight;      // CSS font-weight value
+    mozilla::StretchRange mStretch;    // CSS font-stretch value
+    mozilla::SlantStyleRange mStyle;   // CSS font-style value
+    RefPtr<gfxCharacterMap> mCharMap;  // character map, or null if not loaded
   };
 
+  // Note that mCharacterMap is not set from the InitData by this constructor;
+  // the caller must use SetCharacterMap to handle that separately if required.
   Face(FontList* aList, const InitData& aData)
       : mDescriptor(aList, aData.mDescriptor),
         mIndex(aData.mIndex),
+#ifdef MOZ_WIDGET_GTK
+        mSize(aData.mSize),
+#endif
         mFixedPitch(aData.mFixedPitch),
         mWeight(aData.mWeight),
         mStretch(aData.mStretch),
         mStyle(aData.mStyle),
-        mCharacterMap(Pointer::Null()) {}
+        mCharacterMap(Pointer::Null()) {
+  }
 
   bool HasValidDescriptor() const {
     return !mDescriptor.IsNull() && mIndex != uint16_t(-1);
   }
 
-  void SetCharacterMap(FontList* aList, gfxCharacterMap* aCharMap);
+  void SetCharacterMap(FontList* aList, gfxCharacterMap* aCharMap,
+                       const Family* aFamily);
 
   String mDescriptor;
   uint16_t mIndex;
+#ifdef MOZ_WIDGET_GTK
+  uint16_t mSize;
+#endif
   bool mFixedPitch;
   mozilla::WeightRange mWeight;
   mozilla::StretchRange mStretch;
@@ -171,16 +221,19 @@ struct Face {
  * want to use the family.
  */
 struct Family {
+  static constexpr uint32_t kNoIndex = uint32_t(-1);
+
   // Data required to initialize a Family
   struct InitData {
-    InitData(const nsACString& aKey,   // lookup key (lowercased)
-             const nsACString& aName,  // display name
-             uint32_t aIndex = 0,  // [win] index in the system font collection
+    InitData(const nsACString& aKey,      // lookup key (lowercased)
+             const nsACString& aName,     // display name
+             uint32_t aIndex = kNoIndex,  // [win] system collection index
              FontVisibility aVisibility = FontVisibility::Unknown,
              bool aBundled = false,       // [win] font was bundled with the app
                                           // rather than system-installed
              bool aBadUnderline = false,  // underline-position in font is bad
-             bool aForceClassic = false   // [win] use "GDI classic" rendering
+             bool aForceClassic = false,  // [win] use "GDI classic" rendering
+             bool aAltLocale = false      // font is alternate localized family
              )
         : mKey(aKey),
           mName(aName),
@@ -188,20 +241,22 @@ struct Family {
           mVisibility(aVisibility),
           mBundled(aBundled),
           mBadUnderline(aBadUnderline),
-          mForceClassic(aForceClassic) {}
+          mForceClassic(aForceClassic),
+          mAltLocale(aAltLocale) {}
     bool operator<(const InitData& aRHS) const { return mKey < aRHS.mKey; }
     bool operator==(const InitData& aRHS) const {
       return mKey == aRHS.mKey && mName == aRHS.mName &&
              mVisibility == aRHS.mVisibility && mBundled == aRHS.mBundled &&
              mBadUnderline == aRHS.mBadUnderline;
     }
-    const nsCString mKey;
-    const nsCString mName;
+    nsCString mKey;
+    nsCString mName;
     uint32_t mIndex;
     FontVisibility mVisibility;
     bool mBundled;
     bool mBadUnderline;
     bool mForceClassic;
+    bool mAltLocale;
   };
 
   /**
@@ -232,8 +287,8 @@ struct Family {
 
   const String& DisplayName() const { return mName; }
 
-  uint32_t Index() const { return mIndex & 0x7fffffffu; }
-  bool IsBundled() const { return mIndex & 0x80000000u; }
+  uint32_t Index() const { return mIndex; }
+  bool IsBundled() const { return mIsBundled; }
 
   uint32_t NumFaces() const {
     MOZ_ASSERT(IsInitialized());
@@ -242,7 +297,7 @@ struct Family {
 
   Pointer* Faces(FontList* aList) const {
     MOZ_ASSERT(IsInitialized());
-    return static_cast<Pointer*>(mFaces.ToPtr(aList));
+    return mFaces.ToArray<Pointer>(aList, mFaceCount);
   }
 
   FontVisibility Visibility() const { return mVisibility; }
@@ -250,8 +305,20 @@ struct Family {
 
   bool IsBadUnderlineFamily() const { return mIsBadUnderlineFamily; }
   bool IsForceClassic() const { return mIsForceClassic; }
+  bool IsSimple() const { return mIsSimple; }
+  bool IsAltLocaleFamily() const { return mIsAltLocale; }
 
+  // IsInitialized indicates whether the family has been populated with faces,
+  // and is therefore ready to use.
+  // It is possible that character maps have not yet been loaded.
   bool IsInitialized() const { return !mFaces.IsNull(); }
+
+  // IsFullyInitialized indicates that not only faces but also character maps
+  // have been set up, so the family can be searched without the possibility
+  // that IPC messaging will be triggered.
+  bool IsFullyInitialized() const {
+    return IsInitialized() && !mCharacterMap.IsNull();
+  }
 
   void FindAllFacesForStyle(FontList* aList, const gfxFontStyle& aStyle,
                             nsTArray<Face*>& aFaceList,
@@ -264,7 +331,17 @@ struct Family {
 
   void SetupFamilyCharMap(FontList* aList);
 
+  // Return the index of this family in the font-list's Families() or
+  // AliasFamilies() list, and which of those it belongs to.
+  // Returns Nothing if the family cannot be found.
+  mozilla::Maybe<std::pair<uint32_t, bool>> FindIndex(FontList* aList) const;
+
  private:
+  // Returns true if there are specifically-sized bitmap faces in the list,
+  // so size selection still needs to be done. (Currently only on Linux.)
+  bool FindAllFacesForStyleInternal(FontList* aList, const gfxFontStyle& aStyle,
+                                    nsTArray<Face*>& aFaceList) const;
+
   std::atomic<uint32_t> mFaceCount;
   String mKey;
   String mName;
@@ -273,10 +350,12 @@ struct Family {
   Pointer mFaces;         // Pointer to array of |mFaceCount| face pointers
   uint32_t mIndex;        // [win] Top bit set indicates app-bundled font family
   FontVisibility mVisibility;
-  bool mIsBadUnderlineFamily;
-  bool mIsForceClassic;
   bool mIsSimple;  // family allows simplified style matching: mFaces contains
                    // exactly 4 entries [Regular, Bold, Italic, BoldItalic].
+  bool mIsBundled : 1;
+  bool mIsBadUnderlineFamily : 1;
+  bool mIsForceClassic : 1;
+  bool mIsAltLocale : 1;
 };
 
 /**
@@ -290,14 +369,23 @@ struct LocalFaceRec {
    * The InitData struct needs to record the family name rather than index,
    * as we may be collecting these records at the same time as building the
    * family list, so we don't yet know the final family index.
+   * Likewise, in some cases we don't know the final face index because the
+   * faces may be re-sorted to fit into predefined positions in a "simple"
+   * family (if we're reading names before the family has been fully set up).
+   * In that case, we'll store uint32_t(-1) as mFaceIndex, and record the
+   * string descriptor instead.
    * When actually recorded in the FontList's mLocalFaces array, the family
-   * will be stored as a simple index into the mFamilies array.
+   * will be stored as a simple index into the mFamilies array, and the face
+   * as an index into the family's mFaces.
    */
   struct InitData {
     nsCString mFamilyName;
-    uint32_t mFaceIndex;
-    InitData(const nsACString& aFamily, uint32_t aFace)
-        : mFamilyName(aFamily), mFaceIndex(aFace) {}
+    nsCString mFaceDescriptor;
+    uint32_t mFaceIndex = uint32_t(-1);
+    InitData(const nsACString& aFamily, const nsACString& aFace)
+        : mFamilyName(aFamily), mFaceDescriptor(aFace) {}
+    InitData(const nsACString& aFamily, uint32_t aFaceIndex)
+        : mFamilyName(aFamily), mFaceIndex(aFaceIndex) {}
     InitData() = default;
   };
   String mKey;
@@ -307,30 +395,6 @@ struct LocalFaceRec {
 
 }  // namespace fontlist
 }  // namespace mozilla
-
-#include "ipc/IPCMessageUtils.h"
-
-namespace IPC {
-
-template <>
-struct ParamTraits<mozilla::fontlist::Pointer> {
-  typedef mozilla::fontlist::Pointer paramType;
-  static void Write(Message* aMsg, const paramType& aParam) {
-    uint32_t v = aParam.mBlockAndOffset;
-    WriteParam(aMsg, v);
-  }
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    uint32_t v;
-    if (ReadParam(aMsg, aIter, &v)) {
-      aResult->mBlockAndOffset.store(v);
-      return true;
-    }
-    return false;
-  }
-};
-
-}  // namespace IPC
 
 #undef ERROR  // This is defined via Windows.h, but conflicts with some bindings
               // code when this gets included in the same compilation unit.

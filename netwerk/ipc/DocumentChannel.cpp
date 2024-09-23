@@ -5,34 +5,41 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "DocumentChannel.h"
+#include "mozilla/net/DocumentChannel.h"
 
-#include "SerializedLoadContext.h"
-#include "mozIThirdPartyUtil.h"
+#include <inttypes.h>
+#include <utility>
+#include "mozIDOMWindow.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/LoadInfo.h"
-#include "mozilla/StaticPrefs_browser.h"
-#include "mozilla/dom/BrowserChild.h"
-#include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/extensions/StreamFilterParent.h"
-#include "mozilla/ipc/IPCStreamUtils.h"
-#include "mozilla/ipc/URIUtils.h"
+#include "mozilla/Logging.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/TimeStamp.h"
+#include "mozilla/Unused.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/net/DocumentChannelChild.h"
-#include "mozilla/net/HttpChannelChild.h"
-#include "mozilla/net/NeckoChild.h"
 #include "mozilla/net/ParentProcessDocumentChannel.h"
-#include "mozilla/net/UrlClassifierCommon.h"
-#include "nsContentSecurityManager.h"
+#include "nsCOMPtr.h"
+#include "nsDebug.h"
 #include "nsDocShell.h"
 #include "nsDocShellLoadState.h"
 #include "nsHttpHandler.h"
-#include "nsIInputStreamChannel.h"
+#include "nsIContentPolicy.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsILoadContext.h"
+#include "nsILoadGroup.h"
+#include "nsILoadInfo.h"
+#include "nsIStreamListener.h"
+#include "nsIURI.h"
+#include "nsMimeTypes.h"
 #include "nsNetUtil.h"
-#include "nsQueryObject.h"
-#include "nsSerializationHelper.h"
-#include "nsStreamListenerWrapper.h"
-#include "nsStringStream.h"
-#include "nsURLHelper.h"
+#include "nsPIDOMWindow.h"
+#include "nsPIDOMWindowInlines.h"
+#include "nsStringFwd.h"
+#include "nsThreadUtils.h"
+#include "nsXULAppAPI.h"
+#include "nscore.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::ipc;
@@ -53,7 +60,6 @@ NS_INTERFACE_MAP_BEGIN(DocumentChannel)
   NS_INTERFACE_MAP_ENTRY(nsIRequest)
   NS_INTERFACE_MAP_ENTRY(nsIChannel)
   NS_INTERFACE_MAP_ENTRY(nsIIdentChannel)
-  NS_INTERFACE_MAP_ENTRY(nsITraceableChannel)
   NS_INTERFACE_MAP_ENTRY_CONCRETE(DocumentChannel)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIRequest)
 NS_INTERFACE_MAP_END
@@ -61,15 +67,15 @@ NS_INTERFACE_MAP_END
 DocumentChannel::DocumentChannel(nsDocShellLoadState* aLoadState,
                                  net::LoadInfo* aLoadInfo,
                                  nsLoadFlags aLoadFlags, uint32_t aCacheKey,
-                                 bool aUriModified, bool aIsXFOError)
-    : mAsyncOpenTime(TimeStamp::Now()),
-      mLoadState(aLoadState),
+                                 bool aUriModified,
+                                 bool aIsEmbeddingBlockedError)
+    : mLoadState(aLoadState),
       mCacheKey(aCacheKey),
       mLoadFlags(aLoadFlags),
       mURI(aLoadState->URI()),
       mLoadInfo(aLoadInfo),
       mUriModified(aUriModified),
-      mIsXFOError(aIsXFOError) {
+      mIsEmbeddingBlockedError(aIsEmbeddingBlockedError) {
   LOG(("DocumentChannel ctor [this=%p, uri=%s]", this,
        aLoadState->URI()->GetSpecOrDefault().get()));
   RefPtr<nsHttpHandler> handler = nsHttpHandler::GetInstance();
@@ -97,16 +103,22 @@ void DocumentChannel::ShutdownListeners(nsresult aStatusCode) {
   mIsPending = false;
 
   listener = mListener;  // it might have changed!
-  if (listener) {
-    listener->OnStopRequest(this, aStatusCode);
-  }
+  nsCOMPtr<nsILoadGroup> loadGroup = mLoadGroup;
+
   mListener = nullptr;
+  mLoadGroup = nullptr;
   mCallbacks = nullptr;
 
-  if (mLoadGroup) {
-    mLoadGroup->RemoveRequest(this, nullptr, aStatusCode);
-    mLoadGroup = nullptr;
-  }
+  NS_DispatchToMainThread(NS_NewRunnableFunction(
+      "DocumentChannel::ShutdownListeners", [=, self = RefPtr{this}] {
+        if (listener) {
+          listener->OnStopRequest(self, aStatusCode);
+        }
+
+        if (loadGroup) {
+          loadGroup->RemoveRequest(self, nullptr, aStatusCode);
+        }
+      }));
 
   DeleteIPDL();
 }
@@ -142,68 +154,58 @@ nsDocShell* DocumentChannel::GetDocShell() {
   return nsDocShell::Cast(docshell);
 }
 
-// Changes here should also be made in
-// E10SUtils.documentChannelPermittedForURI().
 static bool URIUsesDocChannel(nsIURI* aURI) {
-  if (SchemeIsJavascript(aURI) || NS_IsAboutBlank(aURI)) {
+  if (SchemeIsJavascript(aURI)) {
     return false;
   }
 
   nsCString spec = aURI->GetSpecOrDefault();
-  return !spec.EqualsLiteral("about:printpreview") &&
-         !spec.EqualsLiteral("about:crashcontent");
+  return !spec.EqualsLiteral("about:crashcontent");
 }
 
-bool DocumentChannel::CanUseDocumentChannel(nsDocShellLoadState* aLoadState) {
-  MOZ_ASSERT(aLoadState);
-
-  if (XRE_IsParentProcess() &&
-      !StaticPrefs::browser_tabs_documentchannel_ppdc()) {
-    return false;
-  }
-
-  // We want to use DocumentChannel if we're using a supported scheme. Sandboxed
-  // srcdoc loads break due to failing assertions after changing processes, and
-  // non-sandboxed srcdoc loads need to share the same principal object as their
-  // outer document (and must load in the same process), which breaks if we
-  // serialize to the parent process.
-  return StaticPrefs::browser_tabs_documentchannel() &&
-         !aLoadState->HasLoadFlags(nsDocShell::INTERNAL_LOAD_FLAGS_IS_SRCDOC) &&
-         URIUsesDocChannel(aLoadState->URI());
+bool DocumentChannel::CanUseDocumentChannel(nsIURI* aURI) {
+  // We want to use DocumentChannel if we're using a supported scheme.
+  return URIUsesDocChannel(aURI);
 }
 
 /* static */
-already_AddRefed<DocumentChannel> DocumentChannel::CreateDocumentChannel(
+already_AddRefed<DocumentChannel> DocumentChannel::CreateForDocument(
     nsDocShellLoadState* aLoadState, class LoadInfo* aLoadInfo,
     nsLoadFlags aLoadFlags, nsIInterfaceRequestor* aNotificationCallbacks,
-    uint32_t aCacheKey, bool aUriModified, bool aIsXFOError) {
+    uint32_t aCacheKey, bool aUriModified, bool aIsEmbeddingBlockedError) {
   RefPtr<DocumentChannel> channel;
   if (XRE_IsContentProcess()) {
-    channel = new DocumentChannelChild(aLoadState, aLoadInfo, aLoadFlags,
-                                       aCacheKey, aUriModified, aIsXFOError);
-  } else {
     channel =
-        new ParentProcessDocumentChannel(aLoadState, aLoadInfo, aLoadFlags,
-                                         aCacheKey, aUriModified, aIsXFOError);
+        new DocumentChannelChild(aLoadState, aLoadInfo, aLoadFlags, aCacheKey,
+                                 aUriModified, aIsEmbeddingBlockedError);
+  } else {
+    channel = new ParentProcessDocumentChannel(
+        aLoadState, aLoadInfo, aLoadFlags, aCacheKey, aUriModified,
+        aIsEmbeddingBlockedError);
   }
   channel->SetNotificationCallbacks(aNotificationCallbacks);
   return channel.forget();
 }
 
-//-----------------------------------------------------------------------------
-// DocumentChannel::nsITraceableChannel
-//-----------------------------------------------------------------------------
+/* static */
+already_AddRefed<DocumentChannel> DocumentChannel::CreateForObject(
+    nsDocShellLoadState* aLoadState, class LoadInfo* aLoadInfo,
+    nsLoadFlags aLoadFlags, nsIInterfaceRequestor* aNotificationCallbacks) {
+  return CreateForDocument(aLoadState, aLoadInfo, aLoadFlags,
+                           aNotificationCallbacks, 0, false, false);
+}
 
-NS_IMETHODIMP
-DocumentChannel::SetNewListener(nsIStreamListener* aListener,
-                                nsIStreamListener** _retval) {
-  NS_ENSURE_ARG_POINTER(aListener);
+NS_IMETHODIMP DocumentChannel::SetCanceledReason(const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
 
-  nsCOMPtr<nsIStreamListener> wrapper = new nsStreamListenerWrapper(mListener);
+NS_IMETHODIMP DocumentChannel::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
 
-  wrapper.forget(_retval);
-  mListener = aListener;
-  return NS_OK;
+NS_IMETHODIMP DocumentChannel::CancelWithReason(nsresult aStatus,
+                                                const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
 }
 
 NS_IMETHODIMP
@@ -292,10 +294,25 @@ DocumentChannel::SetTRRMode(nsIRequest::TRRMode aTRRMode) {
 }
 
 NS_IMETHODIMP DocumentChannel::SetLoadFlags(nsLoadFlags aLoadFlags) {
-  NS_ERROR(
-      "DocumentChannel::SetLoadFlags: "
-      "Don't set flags after creation");
-  return NS_OK;
+  // Setting load flags for TYPE_OBJECT is OK, so long as the channel to parent
+  // isn't opened yet, or we're only setting the `LOAD_DOCUMENT_URI` flag.
+  auto contentPolicy = mLoadInfo->GetExternalContentPolicyType();
+  if (contentPolicy == ExtContentPolicy::TYPE_OBJECT) {
+    if (mWasOpened) {
+      MOZ_DIAGNOSTIC_ASSERT(
+          aLoadFlags == (mLoadFlags | nsIChannel::LOAD_DOCUMENT_URI),
+          "After the channel has been opened, can only set the "
+          "`LOAD_DOCUMENT_URI` flag.");
+    }
+    mLoadFlags = aLoadFlags;
+    return NS_OK;
+  }
+
+  MOZ_CRASH_UNSAFE_PRINTF(
+      "DocumentChannel::SetLoadFlags: Don't set flags after creation "
+      "(differing flags %x != %x)",
+      (mLoadFlags ^ aLoadFlags) & mLoadFlags,
+      (mLoadFlags ^ aLoadFlags) & aLoadFlags);
 }
 
 NS_IMETHODIMP DocumentChannel::GetOriginalURI(nsIURI** aOriginalURI) {
@@ -327,13 +344,23 @@ NS_IMETHODIMP DocumentChannel::SetOwner(nsISupports* aOwner) {
   return NS_OK;
 }
 
-NS_IMETHODIMP DocumentChannel::GetSecurityInfo(nsISupports** aSecurityInfo) {
+NS_IMETHODIMP DocumentChannel::GetSecurityInfo(
+    nsITransportSecurityInfo** aSecurityInfo) {
   *aSecurityInfo = nullptr;
   return NS_OK;
 }
 
 NS_IMETHODIMP DocumentChannel::GetContentType(nsACString& aContentType) {
-  MOZ_CRASH("If we get here, something is broken");
+  // We may be trying to load HTML object data, and have determined that we're
+  // going to be performing a document load. In that case, fake the "text/html"
+  // content type for nsObjectLoadingContent.
+  if ((mLoadFlags & nsIRequest::LOAD_HTML_OBJECT_DATA) &&
+      (mLoadFlags & nsIChannel::LOAD_DOCUMENT_URI)) {
+    aContentType = TEXT_HTML;
+    return NS_OK;
+  }
+
+  NS_ERROR("If we get here, something is broken");
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -432,6 +459,23 @@ NS_IMETHODIMP
 DocumentChannel::SetChannelId(uint64_t aChannelId) {
   mChannelId = aChannelId;
   return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// Helpers
+//-----------------------------------------------------------------------------
+
+uint64_t InnerWindowIDForExtantDoc(nsDocShell* docShell) {
+  if (!docShell) {
+    return 0;
+  }
+
+  Document* doc = docShell->GetExtantDocument();
+  if (!doc) {
+    return 0;
+  }
+
+  return doc->InnerWindowID();
 }
 
 }  // namespace net

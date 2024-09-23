@@ -12,15 +12,24 @@
 #ifndef mozilla_Bootstrap_h
 #define mozilla_Bootstrap_h
 
+#include "mozilla/Maybe.h"
+#include "mozilla/ResultVariant.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/UniquePtrExtensions.h"
+#include "mozilla/Variant.h"
 #include "nscore.h"
 #include "nsXULAppAPI.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "jni.h"
 
+namespace mozilla {
+struct StaticXREAppData;
+}
+
 extern "C" NS_EXPORT void GeckoStart(JNIEnv* aEnv, char** argv, int argc,
-                                     const mozilla::StaticXREAppData& aAppData);
+                                     const mozilla::StaticXREAppData& aAppData,
+                                     bool xpcshell, const char* outFilePath);
 #endif
 
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
@@ -31,17 +40,12 @@ class BrokerServices;
 
 namespace mozilla {
 
-#if defined(XP_WIN) && defined(MOZ_SANDBOX)
-namespace sandboxing {
-class PermissionsService;
-}
-#endif
+struct StaticXREAppData;
 
 struct BootstrapConfig {
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
   /* Chromium sandbox BrokerServices. */
   sandbox::BrokerServices* sandboxBrokerServices;
-  sandboxing::PermissionsService* sandboxPermissionsService;
 #endif
   /* Pointer to static XRE AppData from application.ini.h */
   const StaticXREAppData* appData;
@@ -110,7 +114,8 @@ class Bootstrap {
 
 #ifdef MOZ_WIDGET_ANDROID
   virtual void GeckoStart(JNIEnv* aEnv, char** argv, int argc,
-                          const StaticXREAppData& aAppData) = 0;
+                          const StaticXREAppData& aAppData, bool xpcshell,
+                          const char* outFilePath) = 0;
 
   virtual void XRE_SetAndroidChildFds(JNIEnv* aEnv,
                                       const XRE_AndroidChildFds& fds) = 0;
@@ -123,10 +128,6 @@ class Bootstrap {
   virtual void XRE_LibFuzzerSetDriver(LibFuzzerDriver aDriver) = 0;
 #endif
 
-#ifdef MOZ_IPDL_TESTS
-  virtual int XRE_RunIPDLTest(int argc, char** argv) = 0;
-#endif
-
 #ifdef MOZ_ENABLE_FORKSERVER
   virtual int XRE_ForkServer(int* argc, char*** argv) = 0;
 #endif
@@ -137,8 +138,18 @@ enum class LibLoadingStrategy {
   ReadAhead,
 };
 
+#if defined(XP_WIN)
+using DLErrorType = unsigned long;  // (DWORD)
+#else
+using DLErrorType = UniqueFreePtr<char>;
+#endif
+
+using BootstrapError = Variant<nsresult, DLErrorType>;
+
+using BootstrapResult = ::mozilla::Result<Bootstrap::UniquePtr, BootstrapError>;
+
 /**
- * Creates and returns the singleton instnace of the bootstrap object.
+ * Creates and returns the singleton instance of the bootstrap object.
  * @param `b` is an outparam. We use a parameter and not a return value
  *        because MSVC doesn't let us return a c++ class from a function with
  *        "C" linkage. On failure this will be null.
@@ -146,19 +157,25 @@ enum class LibLoadingStrategy {
  */
 #ifdef XPCOM_GLUE
 typedef void (*GetBootstrapType)(Bootstrap::UniquePtr&);
-Bootstrap::UniquePtr GetBootstrap(
+BootstrapResult GetBootstrap(
     const char* aXPCOMFile = nullptr,
     LibLoadingStrategy aLibLoadingStrategy = LibLoadingStrategy::NoReadAhead);
 #else
 extern "C" NS_EXPORT void NS_FROZENCALL
 XRE_GetBootstrap(Bootstrap::UniquePtr& b);
 
-inline Bootstrap::UniquePtr GetBootstrap(const char* aXPCOMFile = nullptr) {
+inline BootstrapResult GetBootstrap(
+    const char* aXPCOMFile = nullptr,
+    LibLoadingStrategy aLibLoadingStrategy = LibLoadingStrategy::NoReadAhead) {
   Bootstrap::UniquePtr bootstrap;
   XRE_GetBootstrap(bootstrap);
   return bootstrap;
 }
 #endif
+
+#if defined(XP_WIN) && defined(_M_X64) && defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED)
+extern "C" NS_EXPORT bool XRE_CheckBlockScopeStaticVarInit(uint32_t* aTlsIndex);
+#endif  // XP_WIN && _M_X64 && MOZ_DIAGNOSTIC_ASSERT_ENABLED
 
 }  // namespace mozilla
 

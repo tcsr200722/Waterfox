@@ -81,8 +81,9 @@ SVGMotionSMILPathUtils::PathGenerator::GetResultingPath() {
 
 bool SVGMotionSMILPathUtils::PathGenerator::ParseCoordinatePair(
     const nsAString& aCoordPairStr, float& aXVal, float& aYVal) {
-  nsCharSeparatedTokenizerTemplate<nsContentUtils::IsHTMLWhitespace> tokenizer(
-      aCoordPairStr, ',', nsCharSeparatedTokenizer::SEPARATOR_OPTIONAL);
+  nsCharSeparatedTokenizerTemplate<nsContentUtils::IsHTMLWhitespace,
+                                   nsTokenizerFlags::SeparatorOptional>
+      tokenizer(aCoordPairStr, ',');
 
   SVGLength x, y;
 
@@ -101,8 +102,8 @@ bool SVGMotionSMILPathUtils::PathGenerator::ParseCoordinatePair(
     return false;
   }
 
-  float xRes = x.GetValueInUserUnits(mSVGElement, SVGContentUtils::X);
-  float yRes = y.GetValueInUserUnits(mSVGElement, SVGContentUtils::Y);
+  float xRes = x.GetValueInPixels(mSVGElement, SVGContentUtils::X);
+  float yRes = y.GetValueInPixels(mSVGElement, SVGContentUtils::Y);
 
   NS_ENSURE_FINITE2(xRes, yRes, false);
 

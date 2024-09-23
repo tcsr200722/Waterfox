@@ -7,14 +7,36 @@
 #include "RenderBundle.h"
 
 #include "Device.h"
+#include "ipc/WebGPUChild.h"
 
-namespace mozilla {
-namespace webgpu {
-
-RenderBundle::~RenderBundle() = default;
+namespace mozilla::webgpu {
 
 GPU_IMPL_CYCLE_COLLECTION(RenderBundle, mParent)
 GPU_IMPL_JS_WRAP(RenderBundle)
 
-}  // namespace webgpu
-}  // namespace mozilla
+RenderBundle::RenderBundle(Device* const aParent, RawId aId)
+    : ChildOf(aParent), mId(aId) {
+  // TODO: we may be running into this if we finish an encoder twice.
+  MOZ_RELEASE_ASSERT(aId);
+}
+
+RenderBundle::~RenderBundle() { Cleanup(); }
+
+void RenderBundle::Cleanup() {
+  if (!mValid) {
+    return;
+  }
+  mValid = false;
+
+  auto bridge = mParent->GetBridge();
+  if (!bridge) {
+    return;
+  }
+
+  if (bridge->CanSend()) {
+    bridge->SendRenderBundleDrop(mId);
+  }
+  wgpu_client_free_render_bundle_id(bridge->GetClient(), mId);
+}
+
+}  // namespace mozilla::webgpu

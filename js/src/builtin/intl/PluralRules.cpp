@@ -10,19 +10,12 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Casting.h"
+#include "mozilla/intl/PluralRules.h"
 
 #include "builtin/Array.h"
 #include "builtin/intl/CommonFunctions.h"
-#include "builtin/intl/NumberFormat.h"
-#include "builtin/intl/ScopedICUObject.h"
-#include "gc/FreeOp.h"
-#include "js/CharacterEncoding.h"
+#include "gc/GCContext.h"
 #include "js/PropertySpec.h"
-#include "unicode/uenum.h"
-#include "unicode/uloc.h"
-#include "unicode/unumberformatter.h"
-#include "unicode/upluralrules.h"
-#include "unicode/utypes.h"
 #include "vm/GlobalObject.h"
 #include "vm/JSContext.h"
 #include "vm/PlainObject.h"  // js::PlainObject
@@ -35,9 +28,6 @@ using namespace js;
 
 using mozilla::AssertedCast;
 
-using js::intl::CallICU;
-using js::intl::IcuLocale;
-
 const JSClassOps PluralRulesObject::classOps_ = {
     nullptr,                      // addProperty
     nullptr,                      // delProperty
@@ -47,13 +37,12 @@ const JSClassOps PluralRulesObject::classOps_ = {
     nullptr,                      // mayResolve
     PluralRulesObject::finalize,  // finalize
     nullptr,                      // call
-    nullptr,                      // hasInstance
     nullptr,                      // construct
     nullptr,                      // trace
 };
 
 const JSClass PluralRulesObject::class_ = {
-    js_Object_str,
+    "Intl.PluralRules",
     JSCLASS_HAS_RESERVED_SLOTS(PluralRulesObject::SLOT_COUNT) |
         JSCLASS_HAS_CACHED_PROTO(JSProto_PluralRules) |
         JSCLASS_FOREGROUND_FINALIZE,
@@ -76,7 +65,12 @@ static const JSFunctionSpec pluralRules_methods[] = {
     JS_SELF_HOSTED_FN("resolvedOptions", "Intl_PluralRules_resolvedOptions", 0,
                       0),
     JS_SELF_HOSTED_FN("select", "Intl_PluralRules_select", 1, 0),
-    JS_FN(js_toSource_str, pluralRules_toSource, 0, 0), JS_FS_END};
+    JS_SELF_HOSTED_FN("selectRange", "Intl_PluralRules_selectRange", 2, 0),
+    JS_FN("toSource", pluralRules_toSource, 0, 0), JS_FS_END};
+
+static const JSPropertySpec pluralRules_properties[] = {
+    JS_STRING_SYM_PS(toStringTag, "Intl.PluralRules", JSPROP_READONLY),
+    JS_PS_END};
 
 static bool PluralRules(JSContext* cx, unsigned argc, Value* vp);
 
@@ -86,13 +80,14 @@ const ClassSpec PluralRulesObject::classSpec_ = {
     pluralRules_static_methods,
     nullptr,
     pluralRules_methods,
-    nullptr,
+    pluralRules_properties,
     nullptr,
     ClassSpec::DontDefineConstructor};
 
 /**
- * PluralRules constructor.
- * Spec: ECMAScript 402 API, PluralRules, 13.2.1
+ * 16.1.1 Intl.PluralRules ( [ locales [ , options ] ] )
+ *
+ * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
  */
 static bool PluralRules(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -129,44 +124,48 @@ static bool PluralRules(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-void js::PluralRulesObject::finalize(JSFreeOp* fop, JSObject* obj) {
-  MOZ_ASSERT(fop->onMainThread());
+void js::PluralRulesObject::finalize(JS::GCContext* gcx, JSObject* obj) {
+  MOZ_ASSERT(gcx->onMainThread());
 
   auto* pluralRules = &obj->as<PluralRulesObject>();
-  UPluralRules* pr = pluralRules->getPluralRules();
-  UNumberFormatter* nf = pluralRules->getNumberFormatter();
-  UFormattedNumber* formatted = pluralRules->getFormattedNumber();
-
-  if (pr) {
+  if (mozilla::intl::PluralRules* pr = pluralRules->getPluralRules()) {
     intl::RemoveICUCellMemory(
-        fop, obj, PluralRulesObject::UPluralRulesEstimatedMemoryUse);
-  }
-  if (nf) {
-    intl::RemoveICUCellMemory(
-        fop, obj, PluralRulesObject::UNumberFormatterEstimatedMemoryUse);
-
-    // UFormattedNumber memory tracked as part of UNumberFormatter.
-  }
-
-  if (pr) {
-    uplrules_close(pr);
-  }
-  if (nf) {
-    unumf_close(nf);
-  }
-  if (formatted) {
-    unumf_closeResult(formatted);
+        gcx, obj, PluralRulesObject::UPluralRulesEstimatedMemoryUse);
+    delete pr;
   }
 }
 
+static JSString* KeywordToString(mozilla::intl::PluralRules::Keyword keyword,
+                                 JSContext* cx) {
+  using Keyword = mozilla::intl::PluralRules::Keyword;
+  switch (keyword) {
+    case Keyword::Zero: {
+      return cx->names().zero;
+    }
+    case Keyword::One: {
+      return cx->names().one;
+    }
+    case Keyword::Two: {
+      return cx->names().two;
+    }
+    case Keyword::Few: {
+      return cx->names().few;
+    }
+    case Keyword::Many: {
+      return cx->names().many;
+    }
+    case Keyword::Other: {
+      return cx->names().other;
+    }
+  }
+  MOZ_CRASH("Unexpected PluralRules keyword");
+}
+
 /**
- * This creates a new UNumberFormatter with calculated digit formatting
- * properties for PluralRules.
- *
- * This is similar to NewUNumberFormatter but doesn't allow for currency or
- * percent types.
+ * Returns a new intl::PluralRules with the locale and type options of the given
+ * PluralRules.
  */
-static UNumberFormatter* NewUNumberFormatterForPluralRules(
+static mozilla::intl::PluralRules* NewPluralRules(
     JSContext* cx, Handle<PluralRulesObject*> pluralRules) {
   RootedObject internals(cx, intl::GetInternalsObject(cx, pluralRules));
   if (!internals) {
@@ -183,7 +182,26 @@ static UNumberFormatter* NewUNumberFormatterForPluralRules(
     return nullptr;
   }
 
-  intl::NumberFormatterSkeleton skeleton(cx);
+  using PluralRules = mozilla::intl::PluralRules;
+  mozilla::intl::PluralRulesOptions options;
+
+  if (!GetProperty(cx, internals, internals, cx->names().type, &value)) {
+    return nullptr;
+  }
+
+  {
+    JSLinearString* type = value.toString()->ensureLinear(cx);
+    if (!type) {
+      return nullptr;
+    }
+
+    if (StringEqualsLiteral(type, "ordinal")) {
+      options.mPluralType = PluralRules::Type::Ordinal;
+    } else {
+      MOZ_ASSERT(StringEqualsLiteral(type, "cardinal"));
+      options.mPluralType = PluralRules::Type::Cardinal;
+    }
+  }
 
   bool hasMinimumSignificantDigits;
   if (!HasProperty(cx, internals, cx->names().minimumSignificantDigits,
@@ -204,11 +222,17 @@ static UNumberFormatter* NewUNumberFormatterForPluralRules(
     }
     uint32_t maximumSignificantDigits = AssertedCast<uint32_t>(value.toInt32());
 
-    if (!skeleton.significantDigits(minimumSignificantDigits,
-                                    maximumSignificantDigits)) {
-      return nullptr;
-    }
-  } else {
+    options.mSignificantDigits = mozilla::Some(
+        std::make_pair(minimumSignificantDigits, maximumSignificantDigits));
+  }
+
+  bool hasMinimumFractionDigits;
+  if (!HasProperty(cx, internals, cx->names().minimumFractionDigits,
+                   &hasMinimumFractionDigits)) {
+    return nullptr;
+  }
+
+  if (hasMinimumFractionDigits) {
     if (!GetProperty(cx, internals, internals,
                      cx->names().minimumFractionDigits, &value)) {
       return nullptr;
@@ -221,150 +245,220 @@ static UNumberFormatter* NewUNumberFormatterForPluralRules(
     }
     uint32_t maximumFractionDigits = AssertedCast<uint32_t>(value.toInt32());
 
-    if (!skeleton.fractionDigits(minimumFractionDigits,
-                                 maximumFractionDigits)) {
+    options.mFractionDigits = mozilla::Some(
+        std::make_pair(minimumFractionDigits, maximumFractionDigits));
+  }
+
+  if (!GetProperty(cx, internals, internals, cx->names().roundingPriority,
+                   &value)) {
+    return nullptr;
+  }
+
+  {
+    JSLinearString* roundingPriority = value.toString()->ensureLinear(cx);
+    if (!roundingPriority) {
       return nullptr;
     }
+
+    using RoundingPriority =
+        mozilla::intl::PluralRulesOptions::RoundingPriority;
+
+    RoundingPriority priority;
+    if (StringEqualsLiteral(roundingPriority, "auto")) {
+      priority = RoundingPriority::Auto;
+    } else if (StringEqualsLiteral(roundingPriority, "morePrecision")) {
+      priority = RoundingPriority::MorePrecision;
+    } else {
+      MOZ_ASSERT(StringEqualsLiteral(roundingPriority, "lessPrecision"));
+      priority = RoundingPriority::LessPrecision;
+    }
+
+    options.mRoundingPriority = priority;
   }
 
   if (!GetProperty(cx, internals, internals, cx->names().minimumIntegerDigits,
                    &value)) {
     return nullptr;
   }
-  uint32_t minimumIntegerDigits = AssertedCast<uint32_t>(value.toInt32());
+  options.mMinIntegerDigits =
+      mozilla::Some(AssertedCast<uint32_t>(value.toInt32()));
 
-  if (!skeleton.integerWidth(minimumIntegerDigits)) {
+  if (!GetProperty(cx, internals, internals, cx->names().roundingIncrement,
+                   &value)) {
+    return nullptr;
+  }
+  options.mRoundingIncrement = AssertedCast<uint32_t>(value.toInt32());
+
+  if (!GetProperty(cx, internals, internals, cx->names().roundingMode,
+                   &value)) {
     return nullptr;
   }
 
-  if (!skeleton.roundingModeHalfUp()) {
-    return nullptr;
-  }
-
-  return skeleton.toFormatter(cx, locale.get());
-}
-
-static UFormattedNumber* NewUFormattedNumberForPluralRules(JSContext* cx) {
-  UErrorCode status = U_ZERO_ERROR;
-  UFormattedNumber* formatted = unumf_openResult(&status);
-  if (U_FAILURE(status)) {
-    intl::ReportInternalError(cx);
-    return nullptr;
-  }
-  return formatted;
-}
-
-/**
- * Returns a new UPluralRules with the locale and type options of the given
- * PluralRules.
- */
-static UPluralRules* NewUPluralRules(JSContext* cx,
-                                     Handle<PluralRulesObject*> pluralRules) {
-  RootedObject internals(cx, intl::GetInternalsObject(cx, pluralRules));
-  if (!internals) {
-    return nullptr;
-  }
-
-  RootedValue value(cx);
-
-  if (!GetProperty(cx, internals, internals, cx->names().locale, &value)) {
-    return nullptr;
-  }
-  UniqueChars locale = intl::EncodeLocale(cx, value.toString());
-  if (!locale) {
-    return nullptr;
-  }
-
-  if (!GetProperty(cx, internals, internals, cx->names().type, &value)) {
-    return nullptr;
-  }
-
-  UPluralType category;
   {
-    JSLinearString* type = value.toString()->ensureLinear(cx);
-    if (!type) {
+    JSLinearString* roundingMode = value.toString()->ensureLinear(cx);
+    if (!roundingMode) {
       return nullptr;
     }
 
-    if (StringEqualsLiteral(type, "cardinal")) {
-      category = UPLURAL_TYPE_CARDINAL;
+    using RoundingMode = mozilla::intl::PluralRulesOptions::RoundingMode;
+
+    RoundingMode rounding;
+    if (StringEqualsLiteral(roundingMode, "halfExpand")) {
+      // "halfExpand" is the default mode, so we handle it first.
+      rounding = RoundingMode::HalfExpand;
+    } else if (StringEqualsLiteral(roundingMode, "ceil")) {
+      rounding = RoundingMode::Ceil;
+    } else if (StringEqualsLiteral(roundingMode, "floor")) {
+      rounding = RoundingMode::Floor;
+    } else if (StringEqualsLiteral(roundingMode, "expand")) {
+      rounding = RoundingMode::Expand;
+    } else if (StringEqualsLiteral(roundingMode, "trunc")) {
+      rounding = RoundingMode::Trunc;
+    } else if (StringEqualsLiteral(roundingMode, "halfCeil")) {
+      rounding = RoundingMode::HalfCeil;
+    } else if (StringEqualsLiteral(roundingMode, "halfFloor")) {
+      rounding = RoundingMode::HalfFloor;
+    } else if (StringEqualsLiteral(roundingMode, "halfTrunc")) {
+      rounding = RoundingMode::HalfTrunc;
     } else {
-      MOZ_ASSERT(StringEqualsLiteral(type, "ordinal"));
-      category = UPLURAL_TYPE_ORDINAL;
+      MOZ_ASSERT(StringEqualsLiteral(roundingMode, "halfEven"));
+      rounding = RoundingMode::HalfEven;
+    }
+
+    options.mRoundingMode = rounding;
+  }
+
+  if (!GetProperty(cx, internals, internals, cx->names().trailingZeroDisplay,
+                   &value)) {
+    return nullptr;
+  }
+
+  {
+    JSLinearString* trailingZeroDisplay = value.toString()->ensureLinear(cx);
+    if (!trailingZeroDisplay) {
+      return nullptr;
+    }
+
+    if (StringEqualsLiteral(trailingZeroDisplay, "auto")) {
+      options.mStripTrailingZero = false;
+    } else {
+      MOZ_ASSERT(StringEqualsLiteral(trailingZeroDisplay, "stripIfInteger"));
+      options.mStripTrailingZero = true;
     }
   }
 
-  UErrorCode status = U_ZERO_ERROR;
-  UPluralRules* pr =
-      uplrules_openForType(IcuLocale(locale.get()), category, &status);
-  if (U_FAILURE(status)) {
-    intl::ReportInternalError(cx);
+  auto result = PluralRules::TryCreate(locale.get(), options);
+  if (result.isErr()) {
+    intl::ReportInternalError(cx, result.unwrapErr());
     return nullptr;
   }
+
+  return result.unwrap().release();
+}
+
+static mozilla::intl::PluralRules* GetOrCreatePluralRules(
+    JSContext* cx, Handle<PluralRulesObject*> pluralRules) {
+  // Obtain a cached PluralRules object.
+  mozilla::intl::PluralRules* pr = pluralRules->getPluralRules();
+  if (pr) {
+    return pr;
+  }
+
+  pr = NewPluralRules(cx, pluralRules);
+  if (!pr) {
+    return nullptr;
+  }
+  pluralRules->setPluralRules(pr);
+
+  intl::AddICUCellMemory(pluralRules,
+                         PluralRulesObject::UPluralRulesEstimatedMemoryUse);
   return pr;
 }
 
+/**
+ * 16.5.3 ResolvePlural ( pluralRules, n )
+ * 16.5.2 PluralRuleSelect ( locale, type, n, operands )
+ *
+ * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ */
 bool js::intl_SelectPluralRule(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 2);
 
+  // Steps 1-2.
   Rooted<PluralRulesObject*> pluralRules(
       cx, &args[0].toObject().as<PluralRulesObject>());
 
+  // Step 3.
   double x = args[1].toNumber();
 
-  // Obtain a cached UPluralRules object.
-  UPluralRules* pr = pluralRules->getPluralRules();
+  // Steps 4-11.
+  using PluralRules = mozilla::intl::PluralRules;
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
   if (!pr) {
-    pr = NewUPluralRules(cx, pluralRules);
-    if (!pr) {
-      return false;
-    }
-    pluralRules->setPluralRules(pr);
-
-    intl::AddICUCellMemory(pluralRules,
-                           PluralRulesObject::UPluralRulesEstimatedMemoryUse);
-  }
-
-  // Obtain a cached UNumberFormat object.
-  UNumberFormatter* nf = pluralRules->getNumberFormatter();
-  if (!nf) {
-    nf = NewUNumberFormatterForPluralRules(cx, pluralRules);
-    if (!nf) {
-      return false;
-    }
-    pluralRules->setNumberFormatter(nf);
-
-    intl::AddICUCellMemory(
-        pluralRules, PluralRulesObject::UNumberFormatterEstimatedMemoryUse);
-  }
-
-  // Obtain a cached UFormattedNumber object.
-  UFormattedNumber* formatted = pluralRules->getFormattedNumber();
-  if (!formatted) {
-    formatted = NewUFormattedNumberForPluralRules(cx);
-    if (!formatted) {
-      return false;
-    }
-    pluralRules->setFormattedNumber(formatted);
-
-    // UFormattedNumber memory tracked as part of UNumberFormatter.
-  }
-
-  UErrorCode status = U_ZERO_ERROR;
-  unumf_formatDouble(nf, x, formatted, &status);
-  if (U_FAILURE(status)) {
-    intl::ReportInternalError(cx);
     return false;
   }
 
-  JSString* str = CallICU(
-      cx, [pr, formatted](UChar* chars, int32_t size, UErrorCode* status) {
-        return uplrules_selectFormatted(pr, formatted, chars, size, status);
-      });
-  if (!str) {
+  auto keywordResult = pr->Select(x);
+  if (keywordResult.isErr()) {
+    intl::ReportInternalError(cx, keywordResult.unwrapErr());
     return false;
   }
+
+  JSString* str = KeywordToString(keywordResult.unwrap(), cx);
+  MOZ_ASSERT(str);
+
+  args.rval().setString(str);
+  return true;
+}
+
+/**
+ * 16.5.5 ResolvePluralRange ( pluralRules, x, y )
+ * 16.5.4 PluralRuleSelectRange ( locale, type, xp, yp )
+ *
+ * ES2024 Intl draft rev 74ca7099f103d143431b2ea422ae640c6f43e3e6
+ */
+bool js::intl_SelectPluralRuleRange(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  MOZ_ASSERT(args.length() == 3);
+
+  // Steps 1-2.
+  Rooted<PluralRulesObject*> pluralRules(
+      cx, &args[0].toObject().as<PluralRulesObject>());
+
+  // Steps 3-4.
+  double x = args[1].toNumber();
+  double y = args[2].toNumber();
+
+  // Step 5.
+  if (std::isnan(x)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_NAN_NUMBER_RANGE, "start", "PluralRules",
+                              "selectRange");
+    return false;
+  }
+  if (std::isnan(y)) {
+    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                              JSMSG_NAN_NUMBER_RANGE, "end", "PluralRules",
+                              "selectRange");
+    return false;
+  }
+
+  using PluralRules = mozilla::intl::PluralRules;
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
+  if (!pr) {
+    return false;
+  }
+
+  // Steps 6-11.
+  auto keywordResult = pr->SelectRange(x, y);
+  if (keywordResult.isErr()) {
+    intl::ReportInternalError(cx, keywordResult.unwrapErr());
+    return false;
+  }
+
+  JSString* str = KeywordToString(keywordResult.unwrap(), cx);
+  MOZ_ASSERT(str);
 
   args.rval().setString(str);
   return true;
@@ -377,54 +471,33 @@ bool js::intl_GetPluralCategories(JSContext* cx, unsigned argc, Value* vp) {
   Rooted<PluralRulesObject*> pluralRules(
       cx, &args[0].toObject().as<PluralRulesObject>());
 
-  // Obtain a cached UPluralRules object.
-  UPluralRules* pr = pluralRules->getPluralRules();
+  using PluralRules = mozilla::intl::PluralRules;
+  PluralRules* pr = GetOrCreatePluralRules(cx, pluralRules);
   if (!pr) {
-    pr = NewUPluralRules(cx, pluralRules);
-    if (!pr) {
-      return false;
-    }
-    pluralRules->setPluralRules(pr);
-
-    intl::AddICUCellMemory(pluralRules,
-                           PluralRulesObject::UPluralRulesEstimatedMemoryUse);
-  }
-
-  UErrorCode status = U_ZERO_ERROR;
-  UEnumeration* ue = uplrules_getKeywords(pr, &status);
-  if (U_FAILURE(status)) {
-    intl::ReportInternalError(cx);
     return false;
   }
-  ScopedICUObject<UEnumeration, uenum_close> closeEnum(ue);
 
-  RootedObject res(cx, NewDenseEmptyArray(cx));
+  auto categoriesResult = pr->Categories();
+  if (categoriesResult.isErr()) {
+    intl::ReportInternalError(cx, categoriesResult.unwrapErr());
+    return false;
+  }
+  auto categories = categoriesResult.unwrap();
+
+  ArrayObject* res = NewDenseFullyAllocatedArray(cx, categories.size());
   if (!res) {
     return false;
   }
+  res->setDenseInitializedLength(categories.size());
 
-  do {
-    int32_t catSize;
-    const char* cat = uenum_next(ue, &catSize, &status);
-    if (U_FAILURE(status)) {
-      intl::ReportInternalError(cx);
-      return false;
-    }
+  size_t index = 0;
+  for (PluralRules::Keyword keyword : categories) {
+    JSString* str = KeywordToString(keyword, cx);
+    MOZ_ASSERT(str);
 
-    if (!cat) {
-      break;
-    }
-
-    MOZ_ASSERT(catSize >= 0);
-    JSString* str = NewStringCopyN<CanGC>(cx, cat, catSize);
-    if (!str) {
-      return false;
-    }
-
-    if (!NewbornArrayPush(cx, res, StringValue(str))) {
-      return false;
-    }
-  } while (true);
+    res->initDenseElement(index++, StringValue(str));
+  }
+  MOZ_ASSERT(index == categories.size());
 
   args.rval().setObject(*res);
   return true;

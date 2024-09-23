@@ -3,53 +3,40 @@
 
 "use strict";
 
-const { SearchEngineSelector } = ChromeUtils.import(
-  "resource://gre/modules/SearchEngineSelector.jsm"
-);
-const { MockRegistrar } = ChromeUtils.import(
-  "resource://testing-common/MockRegistrar.jsm"
-);
-
-const SEARCH_SERVICE_TOPIC = "browser-search-service";
-const SEARCH_ENGINE_TOPIC = "browser-search-engine-modified";
-
 const CONFIG = [
   {
+    // Engine initially default, but the defaults will be changed to engine-pref.
     webExtension: {
       id: "engine@search.mozilla.org",
+      name: "Test search engine",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "contextmenu",
+          value: "rcs",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "keyword",
+          value: "fflb",
+        },
+      ],
+      suggest_url:
+        "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
     },
-    orderHint: 30,
     appliesTo: [
       {
         included: { everywhere: true },
-        excluded: { regions: ["FR"] },
         default: "yes",
         defaultPrivate: "yes",
       },
-    ],
-  },
-  {
-    webExtension: {
-      id: "engine-pref@search.mozilla.org",
-    },
-    orderHint: 20,
-    appliesTo: [
-      {
-        included: { regions: ["FR"] },
-        default: "yes",
-        defaultPrivate: "yes",
-      },
-    ],
-  },
-];
-
-const ALTERNATE_CONFIG = [
-  {
-    webExtension: {
-      id: "engine-pref@search.mozilla.org",
-    },
-    orderHint: 20,
-    appliesTo: [
       {
         included: { regions: ["FR"] },
         default: "no",
@@ -58,15 +45,58 @@ const ALTERNATE_CONFIG = [
     ],
   },
   {
+    // This will become defaults when region is changed to FR.
     webExtension: {
-      id: "engine-chromeicon@search.mozilla.org",
+      id: "engine-pref@search.mozilla.org",
+      name: "engine-pref",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+        {
+          name: "code",
+          condition: "pref",
+          pref: "code",
+        },
+        {
+          name: "test",
+          condition: "pref",
+          pref: "test",
+        },
+      ],
     },
-    orderHint: 20,
     appliesTo: [
+      {
+        included: { everywhere: true },
+      },
       {
         included: { regions: ["FR"] },
         default: "yes",
-        defaultPrivate: "no",
+        defaultPrivate: "yes",
+      },
+    ],
+  },
+  {
+    // This engine will get an update when region is changed to FR.
+    webExtension: {
+      id: "engine-chromeicon@search.mozilla.org",
+      name: "engine-chromeicon",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+      ],
+    },
+    appliesTo: [
+      {
+        included: { everywhere: true },
+      },
+      {
+        included: { regions: ["FR"] },
         extraParams: [
           { name: "c", value: "my-test" },
           { name: "q1", value: "{searchTerms}" },
@@ -75,168 +105,451 @@ const ALTERNATE_CONFIG = [
     ],
   },
   {
+    // This engine will be removed when the region is changed to FR.
     webExtension: {
-      id: "engine-resourceicon@search.mozilla.org",
+      id: "engine-rel-searchform-purpose@search.mozilla.org",
+      name: "engine-rel-searchform-purpose",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "contextmenu",
+          value: "rcs",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "keyword",
+          value: "fflb",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "searchbar",
+          value: "sb",
+        },
+      ],
     },
-    orderHint: 20,
+    appliesTo: [
+      {
+        included: { everywhere: true },
+        excluded: { regions: ["FR"] },
+      },
+    ],
+  },
+  {
+    // This engine will be added when the region is changed to FR.
+    webExtension: {
+      id: "engine-reordered@search.mozilla.org",
+      name: "Test search engine (Reordered)",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "contextmenu",
+          value: "rcs",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "keyword",
+          value: "fflb",
+        },
+      ],
+      suggest_url:
+        "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
+    },
     appliesTo: [
       {
         included: { regions: ["FR"] },
-        default: "no",
-        defaultPrivate: "yes",
+      },
+    ],
+  },
+  {
+    // This engine will be re-ordered and have a changed name, when moved to FR.
+    webExtension: {
+      id: "engine-resourceicon@search.mozilla.org",
+      name: "engine-resourceicon",
+      search_url: "https://www.google.com/search",
+      searchProvider: {
+        en: {
+          name: "engine-resourceicon",
+          search_url: "https://www.google.com/search",
+        },
+        gd: {
+          name: "engine-resourceicon-gd",
+          search_url: "https://www.google.com/search",
+        },
+      },
+    },
+    appliesTo: [
+      {
+        included: { everywhere: true },
+        excluded: { regions: ["FR"] },
+      },
+      {
+        included: { regions: ["FR"] },
+        webExtension: {
+          locales: ["gd"],
+        },
+        orderHint: 30,
+      },
+    ],
+  },
+  {
+    // This engine has the same name, but still should be replaced correctly.
+    webExtension: {
+      id: "engine-same-name@search.mozilla.org",
+      name: "engine-same-name",
+      search_url: "https://www.google.com/search?q={searchTerms}",
+      searchProvider: {
+        en: {
+          name: "engine-same-name",
+          search_url: "https://www.google.com/search?q={searchTerms}",
+        },
+        gd: {
+          name: "engine-same-name",
+          search_url: "https://www.example.com/search?q={searchTerms}",
+        },
+      },
+    },
+    appliesTo: [
+      {
+        included: { everywhere: true },
+        excluded: { regions: ["FR"] },
+      },
+      {
+        included: { regions: ["FR"] },
+        webExtension: {
+          locales: ["gd"],
+        },
       },
     ],
   },
 ];
 
-// Default engine with no region defined.
-const DEFAULT = "Test search engine";
-// Default engine with region set to FR.
-const FR_DEFAULT = "engine-pref";
-
-// The mock idle service.
-var idleService = {
-  _observers: new Set(),
-
-  _reset() {
-    this._observers.clear();
+const CONFIG_V2 = [
+  {
+    recordType: "engine",
+    identifier: "engine",
+    base: {
+      name: "Test search engine",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          params: [
+            {
+              name: "channel",
+              searchAccessPoint: {
+                addressbar: "fflb",
+                contextmenu: "rcs",
+              },
+            },
+          ],
+          searchTermParamName: "q",
+        },
+        suggestions: {
+          base: "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { allRegionsAndLocales: true },
+      },
+    ],
   },
-
-  _fireObservers(state) {
-    for (let observer of this._observers.values()) {
-      observer.observe(observer, state, null);
-    }
+  {
+    recordType: "engine",
+    identifier: "engine-pref",
+    base: {
+      name: "engine-pref",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          params: [
+            {
+              name: "code",
+              experimentConfig: "code",
+            },
+            {
+              name: "test",
+              experimentConfig: "test",
+            },
+          ],
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { allRegionsAndLocales: true },
+      },
+    ],
   },
-
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIIdleService]),
-  idleTime: 19999,
-
-  addIdleObserver(observer, time) {
-    this._observers.add(observer);
+  {
+    recordType: "engine",
+    identifier: "engine-chromeicon",
+    base: {
+      name: "engine-chromeicon",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { allRegionsAndLocales: true },
+      },
+      {
+        environment: { regions: ["FR"] },
+        urls: {
+          search: {
+            base: "https://www.google.com/search",
+            params: [
+              {
+                name: "c",
+                value: "my-test",
+              },
+            ],
+            searchTermParamName: "q1",
+          },
+        },
+      },
+    ],
   },
-
-  removeIdleObserver(observer, time) {
-    this._observers.delete(observer);
+  {
+    recordType: "engine",
+    identifier: "engine-rel-searchform-purpose",
+    base: {
+      name: "engine-rel-searchform-purpose",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { excludedRegions: ["FR"] },
+        urls: {
+          search: {
+            params: [
+              {
+                name: "channel",
+                searchAccessPoint: {
+                  addressbar: "fflb",
+                  contextmenu: "rcs",
+                  searchbar: "sb",
+                },
+              },
+            ],
+          },
+        },
+      },
+    ],
   },
-};
+  {
+    recordType: "engine",
+    identifier: "engine-reordered",
+    base: {
+      name: "Test search engine (Reordered)",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          params: [
+            {
+              name: "channel",
+              searchAccessPoint: {
+                addressbar: "fflb",
+                contextmenu: "rcs",
+              },
+            },
+          ],
+          searchTermParamName: "q",
+        },
+        suggestions: {
+          base: "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { regions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "engine",
+    identifier: "engine-resourceicon",
+    base: {
+      name: "engine-resourceicon",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { excludedRegions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "engine",
+    identifier: "engine-resourceicon-gd",
+    base: {
+      name: "engine-resourceicon-gd",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { regions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "engine",
+    identifier: "engine-same-name",
+    base: {
+      name: "engine-same-name",
+      urls: {
+        search: {
+          base: "https://www.google.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { excludedRegions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "engine",
+    identifier: "engine-same-name-gd",
+    base: {
+      name: "engine-same-name-gd",
+      urls: {
+        search: {
+          base: "https://www.example.com/search",
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { regions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "defaultEngines",
+    specificDefaults: [
+      {
+        default: "engine",
+        defaultPrivate: "engine",
+        environment: { excludedRegions: ["FR"] },
+      },
+      {
+        default: "engine-pref",
+        defaultPrivate: "engine-pref",
+        environment: { regions: ["FR"] },
+      },
+    ],
+  },
+  {
+    recordType: "engineOrders",
+    orders: [
+      {
+        order: ["engine-resourceicon-gd"],
+        environment: { regions: ["FR"] },
+      },
+    ],
+  },
+];
 
-function listenFor(name, key) {
-  let notifyObserved = false;
-  let obs = (subject, topic, data) => {
-    if (data == key) {
-      notifyObserved = true;
-    }
-  };
-  Services.obs.addObserver(obs, name);
-
-  return () => {
-    Services.obs.removeObserver(obs, name);
-    return notifyObserved;
-  };
+async function visibleEngines() {
+  return (await Services.search.getVisibleEngines()).map(e => e.identifier);
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   Services.prefs.setBoolPref("browser.search.separatePrivateDefault", true);
-  Services.prefs.setBoolPref("browser.search.geoSpecificDefaults", true);
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
     true
   );
 
-  let fakeIdleService = MockRegistrar.register(
-    "@mozilla.org/widget/idleservice;1",
-    idleService
+  SearchTestUtils.useMockIdleService();
+  await SearchTestUtils.useTestEngines(
+    "data",
+    null,
+    SearchUtils.newSearchConfigEnabled ? CONFIG_V2 : CONFIG
   );
-  registerCleanupFunction(() => {
-    MockRegistrar.unregister(fakeIdleService);
-  });
-
-  await useTestEngines("data", null, CONFIG);
   await AddonTestUtils.promiseStartupManager();
 });
 
-add_task(async function test_regular_init() {
-  let geoUrl = `data:application/json,{"country_code": "FR"}`;
-  Services.prefs.setCharPref("browser.region.network.url", geoUrl);
+// This is to verify that the loaded configuration matches what we expect for
+// the test.
+add_task(async function test_initial_config_correct() {
+  Region._setHomeRegion("", false);
 
-  await Promise.all([
-    Services.search.init(),
-    SearchTestUtils.promiseSearchNotification("engines-reloaded"),
-    promiseAfterCache(),
-  ]);
+  await Services.search.init();
+
+  const installedEngines = await Services.search.getAppProvidedEngines();
+  Assert.deepEqual(
+    installedEngines.map(e => e.identifier),
+    [
+      "engine",
+      "engine-chromeicon",
+      "engine-pref",
+      "engine-rel-searchform-purpose",
+      "engine-resourceicon",
+      "engine-same-name",
+    ],
+    "Should have the correct list of engines installed."
+  );
 
   Assert.equal(
-    Services.search.defaultEngine.name,
-    FR_DEFAULT,
-    "Geo defined default should be set"
+    (await Services.search.getDefault()).identifier,
+    "engine",
+    "Should have loaded the expected default engine"
   );
-});
-
-add_task(async function test_init_with_slow_region_lookup() {
-  let reloadObserved = listenFor(SEARCH_SERVICE_TOPIC, "engines-reloaded");
-  let initPromise;
-
-  // Ensure the region lookup completes after init so the
-  // engines are reloaded
-  let srv = useHttpServer();
-  srv.registerPathHandler("/fetch_region", async (req, res) => {
-    res.processAsync();
-    await initPromise;
-    res.setStatusLine("1.1", 200, "OK");
-    res.write(JSON.stringify({ country_code: "FR" }));
-    res.finish();
-  });
-
-  Services.prefs.setCharPref(
-    "browser.region.network.url",
-    `http://localhost:${srv.identity.primaryPort}/fetch_region`
-  );
-
-  Region._setRegion("", false);
-  Region.init();
-
-  // Kick off a re-init.
-  initPromise = asyncReInit();
-  await initPromise;
-
-  let otherPromises = [
-    promiseAfterCache(),
-    SearchTestUtils.promiseSearchNotification(
-      "engine-default",
-      SEARCH_ENGINE_TOPIC
-    ),
-  ];
 
   Assert.equal(
-    Services.search.defaultEngine.name,
-    DEFAULT,
-    "Test engine shouldn't be the default anymore"
+    (await Services.search.getDefaultPrivate()).identifier,
+    "engine",
+    "Should have loaded the expected private default engine"
   );
-
-  await Promise.all(otherPromises);
-
-  // Ensure that correct engine is being reported as the default.
-  Assert.equal(
-    Services.search.defaultEngine.name,
-    FR_DEFAULT,
-    "engine-pref should be the default in FR"
-  );
-  Assert.equal(
-    (await Services.search.getDefaultPrivate()).name,
-    FR_DEFAULT,
-    "engine-pref should be the private default in FR"
-  );
-
-  Assert.ok(reloadObserved(), "Engines do reload with delayed region fetch");
 });
 
 add_task(async function test_config_updated_engine_changes() {
-  // Note: The region here is FR.
-
   // Update the config.
-  const reloadObserved = SearchTestUtils.promiseSearchNotification(
-    "engines-reloaded"
-  );
+  const reloadObserved =
+    SearchTestUtils.promiseSearchNotification("engines-reloaded");
   const defaultEngineChanged = SearchTestUtils.promiseSearchNotification(
     SearchUtils.MODIFIED_TYPE.DEFAULT,
     SearchUtils.TOPIC_ENGINE_MODIFIED
@@ -247,57 +560,97 @@ add_task(async function test_config_updated_engine_changes() {
   );
 
   const enginesAdded = [];
+  const enginesModified = [];
+  const enginesRemoved = [];
 
-  function enginesAddedObs(subject, topic, data) {
-    if (data != SearchUtils.MODIFIED_TYPE.ADDED) {
-      return;
+  function enginesObs(subject, topic, data) {
+    if (data == SearchUtils.MODIFIED_TYPE.ADDED) {
+      enginesAdded.push(subject.QueryInterface(Ci.nsISearchEngine).identifier);
+    } else if (data == SearchUtils.MODIFIED_TYPE.CHANGED) {
+      enginesModified.push(
+        subject.QueryInterface(Ci.nsISearchEngine).identifier
+      );
+    } else if (data == SearchUtils.MODIFIED_TYPE.REMOVED) {
+      enginesRemoved.push(subject.QueryInterface(Ci.nsISearchEngine).name);
     }
-
-    enginesAdded.push(subject.QueryInterface(Ci.nsISearchEngine).identifier);
   }
-  Services.obs.addObserver(enginesAddedObs, SearchUtils.TOPIC_ENGINE_MODIFIED);
+  Services.obs.addObserver(enginesObs, SearchUtils.TOPIC_ENGINE_MODIFIED);
 
-  await RemoteSettings(SearchUtils.SETTINGS_KEY).emit("sync", {
-    data: {
-      current: ALTERNATE_CONFIG,
-    },
-  });
+  Region._setHomeRegion("FR", false);
 
-  idleService._fireObservers("idle");
+  await Services.search.wrappedJSObject._maybeReloadEngines();
 
   await reloadObserved;
-  Services.obs.removeObserver(
-    enginesAddedObs,
-    SearchUtils.TOPIC_ENGINE_MODIFIED
-  );
+  Services.obs.removeObserver(enginesObs, SearchUtils.TOPIC_ENGINE_MODIFIED);
 
-  Assert.deepEqual(
-    enginesAdded.sort(),
-    ["engine-chromeicon", "engine-resourceicon"],
-    "Should have installed the correct engines"
-  );
+  if (SearchUtils.newSearchConfigEnabled) {
+    Assert.deepEqual(
+      enginesAdded,
+      ["engine-resourceicon-gd", "engine-reordered", "engine-same-name-gd"],
+      "Should have added the correct engines"
+    );
 
-  const installedEngines = await Services.search.getDefaultEngines();
+    Assert.deepEqual(
+      enginesModified.sort(),
+      ["engine", "engine-chromeicon", "engine-pref"],
+      "Should have modified the expected engines"
+    );
+
+    Assert.deepEqual(
+      enginesRemoved,
+      [
+        "engine-rel-searchform-purpose",
+        "engine-resourceicon",
+        "engine-same-name",
+      ],
+      "Should have removed the expected engine"
+    );
+  } else {
+    Assert.deepEqual(
+      enginesAdded,
+      ["engine-resourceicon-gd", "engine-reordered"],
+      "Should have added the correct engines"
+    );
+
+    Assert.deepEqual(
+      enginesModified.sort(),
+      ["engine", "engine-chromeicon", "engine-pref", "engine-same-name-gd"],
+      "Should have modified the expected engines"
+    );
+
+    Assert.deepEqual(
+      enginesRemoved,
+      ["engine-rel-searchform-purpose", "engine-resourceicon"],
+      "Should have removed the expected engine"
+    );
+  }
+
+  const installedEngines = await Services.search.getAppProvidedEngines();
 
   Assert.deepEqual(
     installedEngines.map(e => e.identifier),
-    // TODO: engine shouldn't be in this list, since it is not in the new
-    // configuration.
-    ["engine-chromeicon", "engine-resourceicon", "engine", "engine-pref"],
-    "Should have the correct list of engines installed."
+    [
+      "engine-pref",
+      "engine-resourceicon-gd",
+      "engine-chromeicon",
+      "engine-same-name-gd",
+      "engine",
+      "engine-reordered",
+    ],
+    "Should have the correct list of engines installed in the expected order."
   );
 
   const newDefault = await defaultEngineChanged;
   Assert.equal(
-    newDefault.identifier,
-    "engine-chromeicon",
+    newDefault.QueryInterface(Ci.nsISearchEngine).name,
+    "engine-pref",
     "Should have correctly notified the new default engine"
   );
 
   const newDefaultPrivate = await defaultPrivateEngineChanged;
   Assert.equal(
-    newDefaultPrivate.identifier,
-    "engine-resourceicon",
+    newDefaultPrivate.QueryInterface(Ci.nsISearchEngine).name,
+    "engine-pref",
     "Should have correctly notified the new default private engine"
   );
 
@@ -308,5 +661,60 @@ add_task(async function test_config_updated_engine_changes() {
     engineWithParams.getSubmission("test").uri.spec,
     "https://www.google.com/search?c=my-test&q1=test",
     "Should have updated the parameters"
+  );
+
+  const engineWithSameName = await Services.search.getEngineByName(
+    SearchUtils.newSearchConfigEnabled
+      ? "engine-same-name-gd"
+      : "engine-same-name"
+  );
+  Assert.equal(
+    engineWithSameName.getSubmission("test").uri.spec,
+    "https://www.example.com/search?q=test",
+    "Should have correctly switched to the engine of the same name"
+  );
+
+  Assert.equal(
+    Services.search.wrappedJSObject._settings.getMetaDataAttribute(
+      "useSavedOrder"
+    ),
+    false,
+    "Should not have set the useSavedOrder preference"
+  );
+});
+
+add_task(async function test_user_settings_persist() {
+  let reload = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Region._setHomeRegion("");
+  await reload;
+
+  Assert.ok(
+    (await visibleEngines()).includes("engine-rel-searchform-purpose"),
+    "Rel Searchform engine should be included by default"
+  );
+
+  let settingsFileWritten = promiseAfterSettings();
+  let engine = await Services.search.getEngineByName(
+    "engine-rel-searchform-purpose"
+  );
+  await Services.search.removeEngine(engine);
+  await settingsFileWritten;
+
+  Assert.ok(
+    !(await visibleEngines()).includes("engine-rel-searchform-purpose"),
+    "Rel Searchform engine has been removed"
+  );
+
+  reload = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Region._setHomeRegion("FR");
+  await reload;
+
+  reload = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Region._setHomeRegion("");
+  await reload;
+
+  Assert.ok(
+    !(await visibleEngines()).includes("engine-rel-searchform-purpose"),
+    "Rel Searchform removal should be remembered"
   );
 });

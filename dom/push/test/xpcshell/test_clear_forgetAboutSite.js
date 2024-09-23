@@ -1,8 +1,7 @@
 "use strict";
 
-const { PushService, PushServiceWebSocket } = serviceExports;
-const { ForgetAboutSite } = ChromeUtils.import(
-  "resource://gre/modules/ForgetAboutSite.jsm"
+const { ForgetAboutSite } = ChromeUtils.importESModule(
+  "resource://gre/modules/ForgetAboutSite.sys.mjs"
 );
 
 var db;
@@ -31,6 +30,12 @@ add_task(async function setup() {
   await putTestRecord(db, "active-sub", "https://sub.example.com/sub-page", 4);
   await putTestRecord(
     db,
+    "active-sub-b",
+    "https://sub.example.net/sub-page",
+    4
+  );
+  await putTestRecord(
+    db,
     "expired-sub",
     "https://sub.example.com/yet-another-page",
     0
@@ -43,6 +48,18 @@ add_task(async function setup() {
     db,
     "active-2",
     "https://sub3.example.com/another-page",
+    16
+  );
+  await putTestRecord(
+    db,
+    "active-1-b",
+    "https://sub2.example.net/some-page",
+    8
+  );
+  await putTestRecord(
+    db,
+    "active-2-b",
+    "https://sub3.example.net/another-page",
     16
   );
 
@@ -62,7 +79,7 @@ add_task(async function setup() {
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
-        onHello(request) {
+        onHello() {
           this.serverSendMsg(
             JSON.stringify({
               messageType: "hello",
@@ -124,7 +141,14 @@ add_task(async function test_forgetAboutSubdomain() {
   let remainingIDs = await getAllKeyIDs(db);
   deepEqual(
     remainingIDs,
-    ["active-1", "active-2", "privileged"],
+    [
+      "active-1",
+      "active-1-b",
+      "active-2",
+      "active-2-b",
+      "active-sub-b",
+      "privileged",
+    ],
     "Should only forget subscriptions for subdomain"
   );
 });
@@ -151,6 +175,43 @@ add_task(async function test_forgetAboutRootDomain() {
     [
       "https://sub2.example.com/some-page",
       "https://sub3.example.com/another-page",
+    ],
+    "Should fire modified notifications for entire domain"
+  );
+
+  let remainingIDs = await getAllKeyIDs(db);
+  deepEqual(
+    remainingIDs,
+    ["active-1-b", "active-2-b", "active-sub-b", "privileged"],
+    "Should ignore privileged records with a real URL"
+  );
+});
+
+// Tests the legacy removeDataFromDomain method.
+add_task(async function test_forgetAboutBaseDomain() {
+  let modifiedScopes = [];
+  let promiseForgetSubs = Promise.all([
+    promiseUnregister("active-sub-b"),
+    promiseUnregister("active-1-b"),
+    promiseUnregister("active-2-b"),
+    promiseObserverNotification(
+      PushServiceComponent.subscriptionModifiedTopic,
+      (subject, data) => {
+        modifiedScopes.push(data);
+        return modifiedScopes.length == 3;
+      }
+    ),
+  ]);
+
+  await ForgetAboutSite.removeDataFromDomain("example.net");
+  await promiseForgetSubs;
+
+  deepEqual(
+    modifiedScopes.sort(compareAscending),
+    [
+      "https://sub.example.net/sub-page",
+      "https://sub2.example.net/some-page",
+      "https://sub3.example.net/another-page",
     ],
     "Should fire modified notifications for entire domain"
   );

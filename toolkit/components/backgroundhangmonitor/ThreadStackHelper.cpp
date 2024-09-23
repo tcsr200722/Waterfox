@@ -8,6 +8,7 @@
 #include "MainThreadUtils.h"
 #include "nsJSPrincipals.h"
 #include "nsScriptSecurityManager.h"
+#include "jsapi.h"
 #include "jsfriendapi.h"
 #ifdef MOZ_THREADSTACKHELPER_PROFILING_STACK
 #  include "js/ProfilingStack.h"
@@ -21,7 +22,6 @@
 #include "mozilla/HangTypes.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/MemoryChecking.h"
-#include "mozilla/Scoped.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/UniquePtr.h"
 #include "nsThread.h"
@@ -205,7 +205,8 @@ void ThreadStackHelper::CollectJitReturnAddr(void* aAddr) {
   TryAppendFrame(HangEntryJit());
 }
 
-void ThreadStackHelper::CollectWasmFrame(const char* aLabel) {
+void ThreadStackHelper::CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
+                                         const char* aLabel) {
   MOZ_RELEASE_ASSERT(mStackToFill);
   // We don't want to collect WASM frames, as they are probably for content, so
   // we just add a "(content wasm)" frame.
@@ -284,7 +285,7 @@ void ThreadStackHelper::CollectProfilingStackFrame(
         buffer[sizeof(buffer) - 1] = kTruncationIndicator;
         len = sizeof(buffer);
       }
-      if (MaybeAppendDynamicStackFrame(MakeSpan(buffer, len))) {
+      if (MaybeAppendDynamicStackFrame(Span(buffer, len))) {
         return;
       }
     }
@@ -327,8 +328,28 @@ void ThreadStackHelper::CollectProfilingStackFrame(
   // Rather than using the profiler's dynamic string, we compute our own string.
   // This is because we want to do some size-saving strategies, and throw out
   // information which won't help us as much.
-  // XXX: We currently don't collect the function name which hung.
   const char* filename = JS_GetScriptFilename(aFrame.script());
+
+  char buffer[256];  // Should be enough to fit our longest js function and file
+                     // names.
+  size_t len = 0;
+  if (JSFunction* func = aFrame.function()) {
+    if (JSString* str = JS_GetMaybePartialFunctionDisplayId(func)) {
+      JSLinearString* linear = JS_ASSERT_STRING_IS_LINEAR(str);
+      len = JS::GetLinearStringLength(linear);
+      JS::LossyCopyLinearStringChars(buffer, linear,
+                                     std::min(len, sizeof(buffer)));
+      // NOTE: >= so that we account for the trailing space that we'd want to
+      // otherwise append.
+      if (len >= sizeof(buffer)) {
+        len = sizeof(buffer);
+        buffer[sizeof(buffer) - 1] = kTruncationIndicator;
+      } else {
+        buffer[len++] = ' ';
+      }
+    }
+  }
+
   unsigned lineno = JS_PCToLineNumber(aFrame.script(), aFrame.pc());
 
   // Some script names are in the form "foo -> bar -> baz".
@@ -359,13 +380,13 @@ void ThreadStackHelper::CollectProfilingStackFrame(
     }
   }
 
-  char buffer[128];  // Enough to fit longest js file name from the tree
-  size_t len = SprintfLiteral(buffer, "%s:%u", basename, lineno);
+  len +=
+      SprintfBuf(buffer + len, sizeof(buffer) - len, "%s:%u", basename, lineno);
   if (len > sizeof(buffer)) {
     buffer[sizeof(buffer) - 1] = kTruncationIndicator;
     len = sizeof(buffer);
   }
-  if (MaybeAppendDynamicStackFrame(MakeSpan(buffer, len))) {
+  if (MaybeAppendDynamicStackFrame(Span(buffer, len))) {
     return;
   }
 

@@ -12,17 +12,15 @@
 #include "nsNetUtil.h"
 #include "nsScriptSecurityManager.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/extensions/WebExtensionPolicy.h"
-
-namespace Json {
-class Value;
-}
 
 namespace mozilla {
 
+class JSONWriter;
+
 class ContentPrincipal final : public BasePrincipal {
  public:
-  NS_DECL_NSISERIALIZABLE
   NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) override;
   uint32_t GetHashValue() override;
   NS_IMETHOD GetURI(nsIURI** aURI) override;
@@ -30,18 +28,15 @@ class ContentPrincipal final : public BasePrincipal {
   NS_IMETHOD SetDomain(nsIURI* aDomain) override;
   NS_IMETHOD GetBaseDomain(nsACString& aBaseDomain) override;
   NS_IMETHOD GetAddonId(nsAString& aAddonId) override;
-  NS_IMETHOD GetSiteOrigin(nsACString& aSiteOrigin) override;
+  NS_IMETHOD GetSiteOriginNoSuffix(nsACString& aSiteOrigin) override;
   bool IsContentPrincipal() const override { return true; }
 
-  ContentPrincipal();
+  ContentPrincipal(nsIURI* aURI, const OriginAttributes& aOriginAttributes,
+                   const nsACString& aOriginNoSuffix, nsIURI* aInitialDomain);
+  ContentPrincipal(ContentPrincipal* aOther,
+                   const OriginAttributes& aOriginAttributes);
 
   static PrincipalKind Kind() { return eContentPrincipal; }
-
-  // Init() must be called before the principal is in a usable state.
-  nsresult Init(nsIURI* aURI, const OriginAttributes& aOriginAttributes,
-                const nsACString& aOriginNoSuffix);
-  nsresult Init(ContentPrincipal* aOther,
-                const OriginAttributes& aOriginAttributes);
 
   virtual nsresult GetScriptLocation(nsACString& aStr) override;
 
@@ -50,12 +45,10 @@ class ContentPrincipal final : public BasePrincipal {
   static nsresult GenerateOriginNoSuffixFromURI(nsIURI* aURI,
                                                 nsACString& aOrigin);
 
-  extensions::WebExtensionPolicy* AddonPolicy();
+  RefPtr<extensions::WebExtensionPolicyCore> AddonPolicyCore();
 
-  nsCOMPtr<nsIURI> mDomain;
-  nsCOMPtr<nsIURI> mURI;
+  virtual nsresult WriteJSONInnerProperties(JSONWriter& aWriter) override;
 
-  virtual nsresult PopulateJSONObject(Json::Value& aObject) override;
   // Serializable keys are the valid enum fields the serialization supports
   enum SerializableKeys : uint8_t {
     eURI = 0,
@@ -63,10 +56,18 @@ class ContentPrincipal final : public BasePrincipal {
     eSuffix,
     eMax = eSuffix
   };
-  typedef mozilla::BasePrincipal::KeyValT<SerializableKeys> KeyVal;
 
-  static already_AddRefed<BasePrincipal> FromProperties(
-      nsTArray<ContentPrincipal::KeyVal>& aFields);
+  static constexpr char URIKey = '0';
+  static_assert(eURI == 0);
+  static constexpr char DomainKey = '1';
+  static_assert(eDomain == 1);
+  static constexpr char SuffixKey = '2';
+  static_assert(eSuffix == 2);
+
+  class Deserializer : public BasePrincipal::Deserializer {
+   public:
+    NS_IMETHOD Read(nsIObjectInputStream* aStream) override;
+  };
 
  protected:
   virtual ~ContentPrincipal();
@@ -76,12 +77,15 @@ class ContentPrincipal final : public BasePrincipal {
   bool MayLoadInternal(nsIURI* aURI) override;
 
  private:
-  Maybe<WeakPtr<extensions::WebExtensionPolicy>> mAddon;
+  const nsCOMPtr<nsIURI> mURI;
+  mozilla::Mutex mMutex{"ContentPrincipal::mMutex"};
+  nsCOMPtr<nsIURI> mDomain MOZ_GUARDED_BY(mMutex);
+  Maybe<RefPtr<extensions::WebExtensionPolicyCore>> mAddon
+      MOZ_GUARDED_BY(mMutex);
 };
 
 }  // namespace mozilla
 
-#define NS_PRINCIPAL_CONTRACTID "@mozilla.org/principal;1"
 #define NS_PRINCIPAL_CID                             \
   {                                                  \
     0x653e0e4d, 0x3ee4, 0x45fa, {                    \

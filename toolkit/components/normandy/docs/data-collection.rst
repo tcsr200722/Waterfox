@@ -122,38 +122,18 @@ reported under the key ``normandy/recipe/<recipe id>``:
    Normandy failed to verify the signature of the recipe.
 
 
-Additionally, Normandy reports a `keyed scalar`_ to measure recipe
+Additionally, Normandy reports a :ref:`keyed scalar <Scalars>` to measure recipe
 freshness. This scalar is called ``normandy.recipe_freshness``, and it
 corresponds to the ``last_modified`` date of each recipe (using its ID
 as the key), reported as seconds since 1970 in UTC.
-
-.. _keyed scalar: https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/collection/scalars.html
 
 
 Enrollment
 -----------
 Normandy records enrollment and unenrollment of users into studies, and
-records that data using `Telemetry Events`_. All data is stored in the
+records that data using :ref:`Telemetry Events <eventtelemetry>`. All data is stored in the
 ``normandy`` category.
 
-.. _Telemetry Events: https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/collection/events.html
-
-Enrollment IDs
-^^^^^^^^^^^^^^
-
-Most Normandy telemetry carries an *enrollment ID*. These IDs are generated
-when Normandy enrolls the client in a change, be it a study, rollout, or
-something else. These enrollment IDs are used for the lifetime of that
-change, and are only used for that change (not shared between similar
-changes). Once a change ends (either via unenrollment, graduation, or another
-method) the enrollment ID should not be used again.
-
-When Telemetry upload is disabled, we must clear these enrollment IDs. This
-is done by replacing existing enrollment IDs with a filler value. New changes
-continue to receive a enrollment IDs as normal. The only thing that
-enrollment IDs are used for Telemetry, and so generated them while Telemetry
-is disabled is fine. They don't correlate to anything else, and won't be sent
-anywhere.
 
 Preference Studies
 ^^^^^^^^^^^^^^^^^^
@@ -172,10 +152,24 @@ Enrollment
          The type of preference experiment. Currently this can take
          values "exp" and "exp-highpop", the latter being for
          experiments targeting large numbers of users.
-      enrollmentId
-         A UUID that is unique to this users enrollment in this study. It
-         will be included in all future telemetry for this user in this
-         study.
+
+Enrollment Failed
+   method
+      The string ``"enrollFailed"``
+   object
+      The string ``"preference_study"``
+   value
+      The slug of the study (``recipe.arguments.slug``)
+   extra
+      reason
+         The reason for unenrollment. Possible values are:
+
+         * ``"invalid-branch"``: The recipe specifies an invalid preference
+           branch (not to be confused with the experiment branch). Valid values
+           are "default" and "user".
+      preferenceBranch
+         If the reason was ``"invalid-branch"``, the branch that was
+         specified, truncated to 80 characters.
 
 Unenrollment
    method
@@ -197,19 +191,125 @@ Unenrollment
            applicable to this client This can be because the recipe
            was disabled, or the user no longer matches the recipe's
            filter.
-         * ``"user-preference-changed"``: The study preference was
-           changed on the user branch. This could mean the user
-           changed the preference, or that some other mechanism set a
-           non-default value for the preference.
-         * ``"user-preference-changed-sideload"``: The study
-           preference was changed on the user branch while Normandy was
-           inactive. This could mean that the value was manually
-           changed in a profile while Firefox was not running.
          * ``"unknown"``: A reason was not specified. This should be
            considered a bug.
-      enrollmentId
-         The ID that was generated at enrollment.
 
+Unenroll Failed
+   method
+      The string ``"unenrollFailed"``.
+   object
+      The string ``"preference_study"``.
+   value
+      The name of the study (``recipe.arguments.slug``)
+   extra
+      reason
+         A code describing the reason the unenroll failed. Possible values are:
+
+         * ``"does-not-exist"``: The system attempted to unenroll a study that
+           does not exist. This is a bug.
+         * ``"already-unenrolled"``: The system attempted to unenroll a study
+           that has already been unenrolled. This is likely a bug.
+      caller
+         On Nightly builds only, a string identifying the source of the requested stop.
+      originalReason
+         The code that would had been used for the unenrollment, had it not failed.
+
+Experimental Preference Changed
+   method
+      The string ``"expPrefChanged"``
+   object
+      The string ``"preference_study"``.
+   value
+      The name of the study (``recipe.arguments.slug``)
+   extra
+      preferenceName
+         The name of the preference that changed. Note that the value of the
+         preference (old or new) is not given.
+      reason
+         A code describing the reason that Normandy detected the preference
+         change. Possible values are:
+
+         * ``"atEnroll"``: The preferences already had user value when the
+           experiment started.
+         * ``"sideload"``: A preference was changed while Normandy's observers
+           weren't active, likely while the browser was shut down.
+         * ``"observer"``: The preference was observed to change by Normandy at
+           runtime.
+
+Preference Rollouts
+^^^^^^^^^^^^^^^^^^^
+Enrollment
+   Sent when a user first enrolls in a rollout.
+
+   method
+      The string ``"enroll"``
+   object
+      The string ``"preference_rollout"``
+   value
+      The slug of the rollout (``recipe.arguments.slug``)
+
+Enroll Failed
+   Sent when a user attempts to enroll in a rollout, but the enrollment process fails.
+
+   method
+      The string ``"enrollFailed"``
+   object
+      The string ``"preference_rollout"``
+   value
+      The slug of the rollout (``recipe.arguments.slug``)
+   extra
+      reason
+         A code describing the reason the unenroll failed. Possible values are:
+
+         * ``"invalid type"``: The preferences specified in the rollout do not
+           match the preferences built in to the browser. The represents a
+           misconfiguration of the preferences in the recipe on the server.
+         * ``"would-be-no-op"``: All of the preference specified in the rollout
+           already have the given values. This represents an error in targeting
+           on the server.
+         * ``"conflict"``: At least one of the preferences specified in the
+           rollout is already managed by another active rollout.
+      preference
+         For ``reason="invalid type"``, the first preference that was invalid.
+         For ``reason="conflict"``, the first preference that is conflicting.
+
+Update
+   Sent when the preferences specified in the recipe have changed, and the
+   client updates the preferences of the browser to match.
+
+   method
+      The string ``"update"``
+   object
+      The string ``"preference_rollout"``
+   value
+      The slug of the rollout (``recipe.arguments.slug``)
+   extra
+      previousState
+         The state the rollout was in before this update (such as ``"active"`` or ``"graduated"``).
+
+Graduation
+   Sent when Normandy determines that further intervention is no longer
+   needed for this rollout. After this point, Normandy will stop making
+   changes to the browser for this rollout, unless the rollout recipe changes
+   to specify preferences different than the built-in.
+
+   method
+      The string ``"graduate"``
+   object
+      The string ``"preference_rollout"``
+   value
+      The slug of the rollout (``recipe.arguments.slug``)
+   extra
+      reason
+         A code describing the reason for the graduation. Possible values are:
+
+         * ``"all-prefs-match"``: All preferences specified in the rollout now
+           have built-in values that match the rollouts values.
+           ``"in-graduation-set"``: The browser has changed versions (usually
+           updated) to one that specifies this rollout no longer applies and
+           should be graduated regardless of the built-in preference values.
+           This behavior is controlled by the constant
+           ``PreferenceRollouts.GRADUATION_SET``.
 
 Add-on Studies
 ^^^^^^^^^^^^^^
@@ -225,10 +325,6 @@ Enrollment
          The add-on's ID (example: ``"feature-study@shield.mozilla.com"``).
       addonVersion
          The add-on's version (example: ``"1.2.3"``).
-      enrollmentId
-         A UUID that is unique to this users enrollment in this study. It
-         will be included in all future telemetry for this user in this
-         study.
 
 Enroll Failure
    method
@@ -255,8 +351,6 @@ Update
          The add-on's ID (example: ``"feature-study@shield.mozilla.com"``).
       addonVersion
          The add-on's version (example: ``"1.2.3"``).
-      enrollmentId
-         The ID that was generated at enrollment.
 
 Update Failure
    method
@@ -271,8 +365,6 @@ Update Failure
          that failed, and the name of the error thrown. This information
          is purposely limited to avoid leaking personally identifiable
          information. This should be considered a bug.
-      enrollmentId
-         The ID that was generated at enrollment.
 
 Unenrollment
    method
@@ -307,5 +399,3 @@ Unenrollment
            from a profile.
          * ``"unknown"``: A reason was not specified. This should be
            considered a bug.
-      enrollmentId
-         The ID that was generated at enrollment.

@@ -10,15 +10,16 @@
 #include "mozilla/dom/NameSpaceConstants.h"
 #include "mozilla/IdentifierMapEntry.h"
 #include "mozilla/RelativeTo.h"
+#include "mozilla/ReverseIterator.h"
 #include "nsClassHashtable.h"
 #include "nsContentListDeclarations.h"
 #include "nsTArray.h"
+#include "nsTHashSet.h"
 
 class nsContentList;
 class nsCycleCollectionTraversalCallback;
 class nsINode;
 class nsINodeList;
-class nsIRadioVisitor;
 class nsWindowSizes;
 
 namespace mozilla {
@@ -33,7 +34,6 @@ class Element;
 class Document;
 class DocumentOrShadowRoot;
 class HTMLInputElement;
-struct nsRadioGroupStruct;
 class StyleSheetList;
 class ShadowRoot;
 template <typename T>
@@ -74,7 +74,9 @@ class DocumentOrShadowRoot {
 
   size_t SheetCount() const { return mStyleSheets.Length(); }
 
-  size_t AdoptedSheetCount() const { return mAdoptedStyleSheets.Length(); }
+  const nsTArray<RefPtr<StyleSheet>>& AdoptedStyleSheets() const {
+    return mAdoptedStyleSheets;
+  }
 
   /**
    * Returns an index for the sheet in relative style order.
@@ -87,11 +89,10 @@ class DocumentOrShadowRoot {
 
   StyleSheetList* StyleSheets();
 
-  void GetAdoptedStyleSheets(nsTArray<RefPtr<StyleSheet>>&) const;
-
   void RemoveStyleSheet(StyleSheet&);
 
-  Element* GetElementById(const nsAString& aElementId);
+  Element* GetElementById(const nsAString& aElementId) const;
+  Element* GetElementById(nsAtom* aElementId) const;
 
   /**
    * This method returns _all_ the elements in this scope which have id
@@ -99,8 +100,11 @@ class DocumentOrShadowRoot {
    *
    * This is useful for stuff like QuerySelector optimization and such.
    */
-  inline const nsTArray<Element*>* GetAllElementsForId(
-      const nsAString& aElementId) const;
+  const nsTArray<Element*>* GetAllElementsForId(
+      const IdentifierMapEntry::DependentAtomOrString& aElementId) const {
+    IdentifierMapEntry* entry = mIdentifierMap.GetEntry(aElementId);
+    return entry ? &entry->GetIdElements() : nullptr;
+  }
 
   already_AddRefed<nsContentList> GetElementsByTagName(
       const nsAString& aTagName) {
@@ -120,7 +124,7 @@ class DocumentOrShadowRoot {
   ~DocumentOrShadowRoot();
 
   Element* GetPointerLockElement();
-  Element* GetFullscreenElement();
+  Element* GetFullscreenElement() const;
 
   Element* ElementFromPoint(float aX, float aY);
   nsINode* NodeFromPoint(float aX, float aY);
@@ -142,7 +146,8 @@ class DocumentOrShadowRoot {
   void NodesFromRect(float aX, float aY, float aTopSize, float aRightSize,
                      float aBottomSize, float aLeftSize,
                      bool aIgnoreRootScrollFrame, bool aFlushLayout,
-                     bool aOnlyVisible, nsTArray<RefPtr<nsINode>>&);
+                     bool aOnlyVisible, float aVisibleThreshold,
+                     nsTArray<RefPtr<nsINode>>&);
 
   /**
    * This gets fired when the element that an id refers to changes.
@@ -198,36 +203,16 @@ class DocumentOrShadowRoot {
     return true;
   }
 
-  void ReportEmptyGetElementByIdArg();
+  void ReportEmptyGetElementByIdArg() const;
 
   // Web Animations
   MOZ_CAN_RUN_SCRIPT
   void GetAnimations(nsTArray<RefPtr<Animation>>& aAnimations);
 
-  // nsIRadioGroupContainer
-  NS_IMETHOD WalkRadioGroup(const nsAString& aName, nsIRadioVisitor* aVisitor,
-                            bool aFlushContent);
-  void SetCurrentRadioButton(const nsAString& aName, HTMLInputElement* aRadio);
-  HTMLInputElement* GetCurrentRadioButton(const nsAString& aName);
-  nsresult GetNextRadioButton(const nsAString& aName, const bool aPrevious,
-                              HTMLInputElement* aFocusedRadio,
-                              HTMLInputElement** aRadioOut);
-  void AddToRadioGroup(const nsAString& aName, HTMLInputElement* aRadio);
-  void RemoveFromRadioGroup(const nsAString& aName, HTMLInputElement* aRadio);
-  uint32_t GetRequiredRadioCount(const nsAString& aName) const;
-  void RadioRequiredWillChange(const nsAString& aName, bool aRequiredAdded);
-  bool GetValueMissingState(const nsAString& aName) const;
-  void SetValueMissingState(const nsAString& aName, bool aValue);
+  nsINode* Retarget(nsINode*) const;
 
-  // for radio group
-  nsRadioGroupStruct* GetRadioGroup(const nsAString& aName) const;
-  nsRadioGroupStruct* GetOrCreateRadioGroup(const nsAString& aName);
-
-  nsIContent* Retarget(nsIContent* aContent) const;
-
-  void SetAdoptedStyleSheets(
-      const Sequence<OwningNonNull<StyleSheet>>& aAdoptedStyleSheets,
-      ErrorResult& aRv);
+  void OnSetAdoptedStyleSheets(StyleSheet&, uint32_t aIndex, ErrorResult&);
+  void OnDeleteAdoptedStyleSheets(StyleSheet&, uint32_t aIndex, ErrorResult&);
 
   // This is needed because ServoStyleSet / ServoAuthorData don't deal with
   // duplicate stylesheets (and it's unclear we'd want to support that as it'd
@@ -252,7 +237,7 @@ class DocumentOrShadowRoot {
                            nsCycleCollectionTraversalCallback&);
   void UnlinkStyleSheets(nsTArray<RefPtr<StyleSheet>>&);
 
-  using StyleSheetSet = nsTHashtable<nsPtrHashKey<const StyleSheet>>;
+  using StyleSheetSet = nsTHashSet<const StyleSheet*>;
   void RemoveSheetFromStylesIfApplicable(StyleSheet&);
   void ClearAdoptedStyleSheets();
 
@@ -294,23 +279,11 @@ class DocumentOrShadowRoot {
    */
   nsTHashtable<IdentifierMapEntry> mIdentifierMap;
 
-  nsClassHashtable<nsStringHashKey, nsRadioGroupStruct> mRadioGroups;
-
   // Always non-null, see comment in the constructor as to why a pointer instead
   // of a reference.
   nsINode* mAsNode;
   const Kind mKind;
 };
-
-inline const nsTArray<Element*>* DocumentOrShadowRoot::GetAllElementsForId(
-    const nsAString& aElementId) const {
-  if (aElementId.IsEmpty()) {
-    return nullptr;
-  }
-
-  IdentifierMapEntry* entry = mIdentifierMap.GetEntry(aElementId);
-  return entry ? &entry->GetIdElements() : nullptr;
-}
 
 }  // namespace dom
 

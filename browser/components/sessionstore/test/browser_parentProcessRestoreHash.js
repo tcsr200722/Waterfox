@@ -11,8 +11,8 @@ const TESTCLASSID = "78742c04-3630-448c-9be3-6c5070f062de";
 const TESTURL = "about:testpageforsessionrestore#foo";
 
 let TestAboutPage = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAboutModule]),
-  getURIFlags(aURI) {
+  QueryInterface: ChromeUtils.generateQI(["nsIAboutModule"]),
+  getURIFlags() {
     // No CAN_ or MUST_LOAD_IN_CHILD means this loads in the parent:
     return (
       Ci.nsIAboutModule.ALLOW_SCRIPT |
@@ -29,10 +29,7 @@ let TestAboutPage = {
     return channel;
   },
 
-  createInstance(outer, iid) {
-    if (outer != null) {
-      throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-    }
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 
@@ -57,7 +54,7 @@ let TestAboutPage = {
  * Test that switching from a remote to a parent process browser
  * correctly clears the userTypedValue
  */
-add_task(async function() {
+add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["dom.security.skip_about_page_has_csp_assert", true]],
   });
@@ -76,7 +73,7 @@ add_task(async function() {
     r => (resolveLocationChangePromise = r)
   );
   let wpl = {
-    onStateChange(listener, request, state, status) {
+    onStateChange(listener, request, state, _status) {
       let location = request.QueryInterface(Ci.nsIChannel).originalURI;
       // Ignore about:blank loads.
       let docStop =

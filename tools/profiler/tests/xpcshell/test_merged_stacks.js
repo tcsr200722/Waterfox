@@ -6,21 +6,18 @@
  * Test that we correctly merge the three stack types, JS, native, and frame labels.
  */
 add_task(async () => {
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
   const entries = 10000;
   const interval = 1;
   const threads = [];
   const features = ["js", "stackwalk"];
 
-  Services.profiler.StartProfiler(entries, interval, features, threads);
+  await Services.profiler.StartProfiler(entries, interval, features, threads);
 
   // Call the following to get a nice stack in the profiler:
   // functionA -> functionB -> functionC
   const sampleIndex = await functionA();
 
-  const profile = await Services.profiler.getProfileDataAsync();
+  const profile = await stopNowAndGetProfile();
   const [thread] = profile.threads;
   const { samples } = thread;
 
@@ -45,14 +42,16 @@ add_task(async () => {
       // The following regexes match a string similar to:
       //
       // "functionA (/gecko/obj/_tests/xpcshell/tools/profiler/tests/xpcshell/test_merged_stacks.js:47:0)"
+      // or
+      // "functionA (test_merged_stacks.js:47:0)"
       //
       //          this matches the script location
       //          |                          match the line number
       //          |                          |   match the column number
       //          v                          v   v
-      /^functionA \(.+test_merged_stacks\.js:\d+:\d+\)$/,
-      /^functionB \(.+test_merged_stacks\.js:\d+:\d+\)$/,
-      /^functionC \(.+test_merged_stacks\.js:\d+:\d+\)$/,
+      /^functionA \(.*test_merged_stacks\.js:\d+:\d+\)$/,
+      /^functionB \(.*test_merged_stacks\.js:\d+:\d+\)$/,
+      /^functionC \(.*test_merged_stacks\.js:\d+:\d+\)$/,
       // After the JS frames, then there are a bunch of arbitrary native stack frames
       // that run.
       nativeStack,
@@ -62,11 +61,11 @@ add_task(async () => {
   );
 });
 
-function functionA() {
+async function functionA() {
   return functionB();
 }
 
-function functionB() {
+async function functionB() {
   return functionC();
 }
 

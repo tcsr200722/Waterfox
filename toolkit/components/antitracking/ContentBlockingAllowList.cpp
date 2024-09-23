@@ -9,12 +9,39 @@
 
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/PermissionManager.h"
 #include "mozilla/ScopeExit.h"
 #include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
+#include "nsICookieJarSettings.h"
+#include "nsIHttpChannel.h"
 #include "nsIHttpChannelInternal.h"
+#include "nsIPermission.h"
+#include "nsNetUtil.h"
+#include "nsString.h"
 
 using namespace mozilla;
+
+NS_IMPL_ISUPPORTS(ContentBlockingAllowList, nsIContentBlockingAllowList)
+
+NS_IMETHODIMP
+// Wrapper for the static ContentBlockingAllowList::ComputePrincipal method
+ContentBlockingAllowList::ComputeContentBlockingAllowListPrincipal(
+    nsIPrincipal* aDocumentPrincipal, nsIPrincipal** aPrincipal) {
+  NS_ENSURE_ARG_POINTER(aDocumentPrincipal);
+  NS_ENSURE_ARG_POINTER(aPrincipal);
+
+  nsCOMPtr<nsIPrincipal> principal;
+  ContentBlockingAllowList::ComputePrincipal(aDocumentPrincipal,
+                                             getter_AddRefs(principal));
+
+  NS_ENSURE_TRUE(principal, NS_ERROR_FAILURE);
+
+  principal.forget(aPrincipal);
+
+  return NS_OK;
+}
 
 /* static */ bool ContentBlockingAllowList::Check(
     nsIPrincipal* aTopWinPrincipal, bool aIsPrivateBrowsing) {
@@ -103,8 +130,7 @@ nsresult ContentBlockingAllowList::Check(
   // Check both the normal mode and private browsing mode user override
   // permissions.
   std::pair<const nsLiteralCString, bool> types[] = {
-      {NS_LITERAL_CSTRING("trackingprotection"), false},
-      {NS_LITERAL_CSTRING("trackingprotection-pb"), true}};
+      {"trackingprotection"_ns, false}, {"trackingprotection-pb"_ns, true}};
 
   for (const auto& type : types) {
     if (aIsPrivateBrowsing != type.second) {
@@ -155,7 +181,7 @@ nsresult ContentBlockingAllowList::Check(
   // Take the host/port portion so we can allowlist by site. Also ignore the
   // scheme, since users who put sites on the allowlist probably don't expect
   // allowlisting to depend on scheme.
-  nsAutoCString escaped(NS_LITERAL_CSTRING("https://"));
+  nsAutoCString escaped("https://"_ns);
   nsAutoCString temp;
   nsresult rv = aDocumentPrincipal->GetHostPort(temp);
   // view-source URIs will be handled by the next block.
@@ -200,7 +226,7 @@ nsresult ContentBlockingAllowList::Check(
   // Take the host/port portion so we can allowlist by site. Also ignore the
   // scheme, since users who put sites on the allowlist probably don't expect
   // allowlisting to depend on scheme.
-  nsAutoCString escaped(NS_LITERAL_CSTRING("https://"));
+  nsAutoCString escaped("https://"_ns);
   nsAutoCString temp;
   nsresult rv = aURIBeingLoaded->GetHostPort(temp);
   // view-source URIs will be handled by the next block.
@@ -230,4 +256,107 @@ nsresult ContentBlockingAllowList::Check(
 
   returnInputArgument.release();
   principal.forget(aPrincipal);
+}
+
+// ContentBlockingAllowListCache
+
+nsresult ContentBlockingAllowListCache::CheckForBaseDomain(
+    const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes,
+    bool& aIsAllowListed) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  NS_ENSURE_TRUE(!aBaseDomain.IsEmpty(), NS_ERROR_INVALID_ARG);
+  aIsAllowListed = false;
+
+  // Ensure we have the permission list.
+  nsresult rv = EnsureInit();
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (aOriginAttributes.mPrivateBrowsingId > 0) {
+    aIsAllowListed = mEntriesPrivateBrowsing.Contains(aBaseDomain);
+  } else {
+    aIsAllowListed = mEntries.Contains(aBaseDomain);
+  }
+
+  return NS_OK;
+}
+
+nsTArray<nsCString>
+ContentBlockingAllowListCache::GetAllowListPermissionTypes() {
+  nsTArray<nsCString> types;
+  types.AppendElement("trackingprotection");
+  types.AppendElement("trackingprotection-pb");
+  return types;
+}
+
+nsresult ContentBlockingAllowListCache::IsAllowListPermission(
+    nsIPermission* aPermission, bool* aResult) {
+  NS_ENSURE_ARG_POINTER(aPermission);
+  NS_ENSURE_ARG_POINTER(aResult);
+
+  // Assert that the permission type matches the types returned by
+  // GetAllowListPermissionTypes.
+#ifdef DEBUG
+  nsAutoCString type;
+  nsresult rv = aPermission->GetType(type);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  MOZ_ASSERT(type.EqualsLiteral("trackingprotection") ||
+             type.EqualsLiteral("trackingprotection-pb"));
+#endif
+
+  *aResult = true;
+  return NS_OK;
+}
+
+nsresult ContentBlockingAllowListCache::EnsureInit() {
+  MOZ_ASSERT(XRE_IsParentProcess());
+
+  if (mIsInitialized) {
+    return NS_OK;
+  }
+  mIsInitialized = true;
+
+  // 1. Get all permissions representing allow-list entries.
+  PermissionManager* permManager = PermissionManager::GetInstance();
+  NS_ENSURE_TRUE(permManager, NS_ERROR_FAILURE);
+
+  nsTArray<nsCString> types = GetAllowListPermissionTypes();
+
+  nsTArray<RefPtr<nsIPermission>> permissions;
+  nsresult rv = permManager->GetAllByTypes(types, permissions);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // 2. Populate mEntries and mEntriesPrivateBrowsing from permission list for
+  //    faster lookup.
+  for (auto& permission : permissions) {
+    MOZ_ASSERT(permission);
+
+    // Check if the permission is a suitable allow-list permission.
+    bool result = false;
+    nsresult rv = IsAllowListPermission(permission, &result);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    if (!result) {
+      continue;
+    }
+
+    // Permission is suitable, extract base domain from permission principal.
+    nsCOMPtr<nsIPrincipal> principal;
+    rv = permission->GetPrincipal(getter_AddRefs(principal));
+    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_ASSERT(principal);
+
+    nsAutoCString baseDomain;
+    rv = principal->GetBaseDomain(baseDomain);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // Sort base domains into sets for normal / private browsing.
+    if (principal->OriginAttributesRef().mPrivateBrowsingId > 0) {
+      mEntriesPrivateBrowsing.Insert(baseDomain);
+    } else {
+      mEntries.Insert(baseDomain);
+    }
+  }
+
+  return NS_OK;
 }

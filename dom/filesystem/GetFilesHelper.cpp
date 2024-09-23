@@ -7,14 +7,17 @@
 #include "GetFilesHelper.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Directory.h"
 #include "mozilla/dom/FileBlobImpl.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "FileSystemUtils.h"
+#include "nsNetCID.h"
 #include "nsProxyRelease.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -23,14 +26,14 @@ namespace {
 class ReleaseRunnable final : public Runnable {
  public:
   static void MaybeReleaseOnMainThread(
-      nsTArray<RefPtr<Promise>>& aPromises,
-      nsTArray<RefPtr<GetFilesCallback>>& aCallbacks) {
+      nsTArray<RefPtr<Promise>>&& aPromises,
+      nsTArray<RefPtr<GetFilesCallback>>&& aCallbacks) {
     if (NS_IsMainThread()) {
       return;
     }
 
     RefPtr<ReleaseRunnable> runnable =
-        new ReleaseRunnable(aPromises, aCallbacks);
+        new ReleaseRunnable(std::move(aPromises), std::move(aCallbacks));
     FileSystemUtils::DispatchRunnable(nullptr, runnable.forget());
   }
 
@@ -45,12 +48,11 @@ class ReleaseRunnable final : public Runnable {
   }
 
  private:
-  ReleaseRunnable(nsTArray<RefPtr<Promise>>& aPromises,
-                  nsTArray<RefPtr<GetFilesCallback>>& aCallbacks)
-      : Runnable("dom::ReleaseRunnable") {
-    mPromises.SwapElements(aPromises);
-    mCallbacks.SwapElements(aCallbacks);
-  }
+  ReleaseRunnable(nsTArray<RefPtr<Promise>>&& aPromises,
+                  nsTArray<RefPtr<GetFilesCallback>>&& aCallbacks)
+      : Runnable("dom::ReleaseRunnable"),
+        mPromises(std::move(aPromises)),
+        mCallbacks(std::move(aCallbacks)) {}
 
   nsTArray<RefPtr<Promise>> mPromises;
   nsTArray<RefPtr<GetFilesCallback>> mCallbacks;
@@ -126,7 +128,8 @@ GetFilesHelper::GetFilesHelper(bool aRecursiveFlag)
       mCanceled(false) {}
 
 GetFilesHelper::~GetFilesHelper() {
-  ReleaseRunnable::MaybeReleaseOnMainThread(mPromises, mCallbacks);
+  ReleaseRunnable::MaybeReleaseOnMainThread(std::move(mPromises),
+                                            std::move(mCallbacks));
 }
 
 void GetFilesHelper::AddPromise(Promise* aPromise) {
@@ -215,16 +218,14 @@ void GetFilesHelper::OperationCompleted() {
   mListingCompleted = true;
 
   // Let's process the pending promises.
-  nsTArray<RefPtr<Promise>> promises;
-  promises.SwapElements(mPromises);
+  nsTArray<RefPtr<Promise>> promises = std::move(mPromises);
 
   for (uint32_t i = 0; i < promises.Length(); ++i) {
     ResolveOrRejectPromise(promises[i]);
   }
 
   // Let's process the pending callbacks.
-  nsTArray<RefPtr<GetFilesCallback>> callbacks;
-  callbacks.SwapElements(mCallbacks);
+  nsTArray<RefPtr<GetFilesCallback>> callbacks = std::move(mCallbacks);
 
   for (uint32_t i = 0; i < callbacks.Length(); ++i) {
     RunCallback(callbacks[i]);
@@ -265,13 +266,8 @@ nsresult GetFilesHelperBase::ExploreDirectory(const nsAString& aDOMPath,
     return NS_OK;
   }
 
-  nsresult rv = AddExploredDirectory(aFile);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
   nsCOMPtr<nsIDirectoryEnumerator> entries;
-  rv = aFile->GetDirectoryEntries(getter_AddRefs(entries));
+  nsresult rv = aFile->GetDirectoryEntries(getter_AddRefs(entries));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -285,18 +281,18 @@ nsresult GetFilesHelperBase::ExploreDirectory(const nsAString& aDOMPath,
     bool isLink, isSpecial, isFile, isDir;
     if (NS_WARN_IF(NS_FAILED(currFile->IsSymlink(&isLink)) ||
                    NS_FAILED(currFile->IsSpecial(&isSpecial))) ||
-        isSpecial) {
+        isSpecial ||
+        // Although we allow explicit individual selection of symlinks via the
+        // file picker, we do not process symlinks in directory traversal.  Our
+        // specific policy decision is documented at
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=1813299#c20
+        isLink) {
       continue;
     }
 
     if (NS_WARN_IF(NS_FAILED(currFile->IsFile(&isFile)) ||
                    NS_FAILED(currFile->IsDirectory(&isDir))) ||
         !(isFile || isDir)) {
-      continue;
-    }
-
-    // We don't want to explore loops of links.
-    if (isDir && isLink && !ShouldFollowSymLink(currFile)) {
       continue;
     }
 
@@ -337,61 +333,6 @@ nsresult GetFilesHelperBase::ExploreDirectory(const nsAString& aDOMPath,
   }
 
   return NS_OK;
-}
-
-nsresult GetFilesHelperBase::AddExploredDirectory(nsIFile* aDir) {
-  nsresult rv;
-
-#ifdef DEBUG
-  bool isDir;
-  rv = aDir->IsDirectory(&isDir);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  MOZ_ASSERT(isDir, "Why are we here?");
-#endif
-
-  bool isLink;
-  rv = aDir->IsSymlink(&isLink);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  nsAutoString path;
-  if (!isLink) {
-    rv = aDir->GetPath(path);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-  } else {
-    rv = aDir->GetTarget(path);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-  }
-
-  mExploredDirectories.PutEntry(path);
-  return NS_OK;
-}
-
-bool GetFilesHelperBase::ShouldFollowSymLink(nsIFile* aDir) {
-#ifdef DEBUG
-  bool isLink, isDir;
-  if (NS_WARN_IF(NS_FAILED(aDir->IsSymlink(&isLink)) ||
-                 NS_FAILED(aDir->IsDirectory(&isDir)))) {
-    return false;
-  }
-
-  MOZ_ASSERT(isLink && isDir, "Why are we here?");
-#endif
-
-  nsAutoString targetPath;
-  if (NS_WARN_IF(NS_FAILED(aDir->GetTarget(targetPath)))) {
-    return false;
-  }
-
-  return !mExploredDirectories.Contains(targetPath);
 }
 
 void GetFilesHelper::ResolveOrRejectPromise(Promise* aPromise) {
@@ -446,7 +387,7 @@ void GetFilesHelperChild::Work(ErrorResult& aRv) {
     return;
   }
 
-  aRv = nsContentUtils::GenerateUUIDInPlace(mUUID);
+  aRv = nsID::GenerateUUIDInPlace(mUUID);
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
@@ -511,8 +452,7 @@ class GetFilesHelperParentCallback final : public GetFilesCallback {
     ipcBlobs.SetLength(aBlobImpls.Length());
 
     for (uint32_t i = 0; i < aBlobImpls.Length(); ++i) {
-      nsresult rv = IPCBlobUtils::Serialize(
-          aBlobImpls[i], mParent->mContentParent, ipcBlobs[i]);
+      nsresult rv = IPCBlobUtils::Serialize(aBlobImpls[i], ipcBlobs[i]);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         mParent->mContentParent->SendGetFilesResponseAndForget(
             mParent->mUUID, GetFilesResponseFailure(NS_ERROR_OUT_OF_MEMORY));
@@ -563,5 +503,4 @@ already_AddRefed<GetFilesHelperParent> GetFilesHelperParent::Create(
   return helper.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

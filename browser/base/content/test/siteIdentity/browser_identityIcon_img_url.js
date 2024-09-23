@@ -19,69 +19,76 @@ const kBaseURILocalhost = getRootDirectory(gTestPath).replace(
 const TEST_CASES = [
   {
     type: "http",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     testURL: "http://example.com",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/security-broken.svg")`,
   },
   {
     type: "https",
     testURL: "https://example.com",
-    img_url: `url("chrome://browser/skin/connection-secure.svg")`,
+    img_url: `url("chrome://global/skin/icons/security.svg")`,
   },
   {
     type: "non-chrome about page",
     testURL: "about:about",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/page-portrait.svg")`,
   },
   {
     type: "chrome about page",
     testURL: "about:preferences",
-    img_url: `url("chrome://branding/content/identity-icons-brand.svg")`,
+    img_url: `url("chrome://branding/content/icon${
+      window.devicePixelRatio > 1 ? 32 : 16
+    }.png")`,
   },
   {
     type: "file",
     testURL: "dummy_page.html",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/page-portrait.svg")`,
+  },
+  {
+    type: "resource",
+    testURL: "resource://gre/modules/AppConstants.sys.mjs",
+    img_url: `url("chrome://global/skin/icons/page-portrait.svg")`,
   },
   {
     type: "mixedPassiveContent",
     testURL: kBaseURI + "file_mixedPassiveContent.html",
-    img_url: `url("chrome://browser/skin/connection-mixed-passive-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/security-warning.svg")`,
   },
   {
     type: "mixedActiveContent",
     testURL: kBaseURI + "file_csp_block_all_mixedcontent.html",
-    img_url: `url("chrome://browser/skin/connection-secure.svg")`,
+    img_url: `url("chrome://global/skin/icons/security.svg")`,
   },
   {
     type: "certificateError",
     testURL: "https://self-signed.example.com",
-    img_url: `url("chrome://browser/skin/connection-mixed-passive-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/security-warning.svg")`,
   },
   {
     type: "localhost",
     testURL: "http://127.0.0.1",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/page-portrait.svg")`,
   },
   {
     type: "localhost + http frame",
     testURL: kBaseURILocalhost + "file_csp_block_all_mixedcontent.html",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/page-portrait.svg")`,
   },
   {
     type: "data URI",
     testURL: "data:text/html,<div>",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/security-broken.svg")`,
   },
   {
     type: "view-source HTTP",
     testURL: "view-source:http://example.com/",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/security-broken.svg")`,
   },
   {
     type: "view-source HTTPS",
     testURL: "view-source:https://example.com/",
-    // TODO this will get a secure treatment with bug 1496844.
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/security.svg")`,
   },
 ];
 
@@ -90,6 +97,7 @@ add_task(async function test() {
     set: [
       // By default, proxies don't apply to 127.0.0.1. We need them to for this test, though:
       ["network.proxy.allow_hijacking_localhost", true],
+      ["security.mixed_content.upgrade_display_content", false],
     ],
   });
 

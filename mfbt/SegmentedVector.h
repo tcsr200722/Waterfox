@@ -137,6 +137,13 @@ class SegmentedVector : private AllocPolicy {
 
   SegmentedVector(SegmentedVector&& aOther)
       : mSegments(std::move(aOther.mSegments)) {}
+  SegmentedVector& operator=(SegmentedVector&& aOther) {
+    if (&aOther != this) {
+      this->~SegmentedVector();
+      new (this) SegmentedVector(std::move(aOther));
+    }
+    return *this;
+  }
 
   ~SegmentedVector() { Clear(); }
 
@@ -156,7 +163,7 @@ class SegmentedVector : private AllocPolicy {
   // Returns false if the allocation failed. (If you are using an infallible
   // allocation policy, use InfallibleAppend() instead.)
   template <typename U>
-  MOZ_MUST_USE bool Append(U&& aU) {
+  [[nodiscard]] bool Append(U&& aU) {
     Segment* last = mSegments.getLast();
     if (!last || last->Length() == kSegmentCapacity) {
       last = this->template pod_malloc<Segment>(1);
@@ -289,7 +296,11 @@ class SegmentedVector : private AllocPolicy {
     }
 
    public:
-    bool Done() const { return !mSegment; }
+    bool Done() const {
+      MOZ_ASSERT_IF(mSegment, mSegment->isInList());
+      MOZ_ASSERT_IF(mSegment, mIndex < mSegment->Length());
+      return !mSegment;
+    }
 
     T& Get() {
       MOZ_ASSERT(!Done());

@@ -7,11 +7,13 @@
 #ifndef mozilla_saferefptr_h__
 #define mozilla_saferefptr_h__
 
+#include "mozilla/ArrayAlgorithm.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
+#include "nsTObserverArray.h"
 
 namespace mozilla {
 template <typename T>
@@ -56,26 +58,18 @@ class SafeRefCounted : public SafeRefCountedBase {
     // Note: this method must be thread safe for AtomicRefCounted.
     MOZ_ASSERT(int32_t(mRefCnt) >= 0);
     const MozRefCountType cnt = ++mRefCnt;
-#ifdef MOZ_REFCOUNTED_LEAK_CHECKING
-    const char* const type = static_cast<const T*>(this)->typeName();
-    const uint32_t size = static_cast<const T*>(this)->typeSize();
-    const void* const ptr = static_cast<const T*>(this);
-    detail::RefCountLogger::logAddRef(ptr, cnt, type, size);
-#endif
+    detail::RefCountLogger::logAddRef(static_cast<const T*>(this), cnt);
     return cnt;
   }
 
   MozRefCountType Release() const {
     // Note: this method must be thread safe for AtomicRefCounted.
     MOZ_ASSERT(int32_t(mRefCnt) > 0);
+    detail::RefCountLogger::ReleaseLogger logger(static_cast<const T*>(this));
     const MozRefCountType cnt = --mRefCnt;
-#ifdef MOZ_REFCOUNTED_LEAK_CHECKING
-    const char* const type = static_cast<const T*>(this)->typeName();
-    const void* const ptr = static_cast<const T*>(this);
     // Note: it's not safe to touch |this| after decrementing the refcount,
     // except for below.
-    detail::RefCountLogger::logRelease(ptr, cnt, type);
-#endif
+    logger.logRelease(cnt);
     if (0 == cnt) {
       // Because we have atomically decremented the refcount above, only
       // one thread can get a 0 count here, so as long as we can assume that
@@ -225,8 +219,7 @@ class MOZ_IS_REFPTR MOZ_TRIVIAL_ABI SafeRefPtr {
     aOther.mRawPtr = nullptr;
   }
   SafeRefPtr& operator=(SafeRefPtr&& aOther) noexcept {
-    assign_assuming_AddRef(aOther.mRawPtr);
-    aOther.mRawPtr = nullptr;
+    assign_assuming_AddRef(aOther.forget().take());
     return *this;
   }
 
@@ -260,9 +253,7 @@ class MOZ_IS_REFPTR MOZ_TRIVIAL_ABI SafeRefPtr {
     return mRawPtr;
   }
 
-  Maybe<T&> maybeDeref() const {
-    return mRawPtr ? SomeRef(*mRawPtr) : Nothing();
-  }
+  Maybe<T&> maybeDeref() const { return ToMaybeRef(mRawPtr); }
 
   T* unsafeGetRawPtr() const { return mRawPtr; }
 
@@ -297,10 +288,17 @@ class MOZ_IS_REFPTR MOZ_TRIVIAL_ABI SafeRefPtr {
 };
 
 template <typename T>
-SafeRefPtr(RefPtr<T> &&) -> SafeRefPtr<T>;
+SafeRefPtr(RefPtr<T>&&) -> SafeRefPtr<T>;
 
 template <typename T>
-SafeRefPtr(already_AddRefed<T> &&) -> SafeRefPtr<T>;
+SafeRefPtr(already_AddRefed<T>&&) -> SafeRefPtr<T>;
+
+template <typename T>
+class CheckedUnsafePtr;
+
+template <typename T>
+SafeRefPtr(const CheckedUnsafePtr<T>&,
+           const AcquireStrongRefFromRawPtr&) -> SafeRefPtr<T>;
 
 template <typename T>
 SafeRefPtr<T>::SafeRefPtr(T* aRawPtr, detail::InitialConstructionTag)
@@ -430,6 +428,29 @@ inline RefPtr<T> StrongOrRawPtr(SafeRefPtr<S>&& aPtr) {
 }  // namespace dom
 
 }  // namespace mozilla
+
+template <class T>
+class nsTObserverArray<mozilla::SafeRefPtr<T>>
+    : public nsAutoTObserverArray<mozilla::SafeRefPtr<T>, 0> {
+ public:
+  using base_type = nsAutoTObserverArray<mozilla::SafeRefPtr<T>, 0>;
+  using size_type = nsTObserverArray_base::size_type;
+
+  // Initialization methods
+  nsTObserverArray() = default;
+
+  // Initialize this array and pre-allocate some number of elements.
+  explicit nsTObserverArray(size_type aCapacity) {
+    base_type::mArray.SetCapacity(aCapacity);
+  }
+
+  nsTObserverArray Clone() const {
+    auto result = nsTObserverArray{};
+    result.mArray = mozilla::TransformIntoNewArray(
+        this->mArray, [](const auto& ptr) { return ptr.clonePtr(); });
+    return result;
+  }
+};
 
 // Use MOZ_INLINE_DECL_SAFEREFCOUNTING_INHERITED in a 'Class' derived from a
 // 'Super' class which derives from (Atomic)SafeRefCounted, and from some other

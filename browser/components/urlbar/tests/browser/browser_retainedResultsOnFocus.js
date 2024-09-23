@@ -69,43 +69,42 @@ async function checkDoesNotOpenOnFocus(win) {
   await promiseState;
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.autoFill", true]],
   });
   // Add some history for the empty panel and autofill.
   await PlacesTestUtils.addVisits([
     {
-      uri: "http://example.com/",
+      uri: "https://example.com/",
       transition: PlacesUtils.history.TRANSITIONS.TYPED,
     },
     {
-      uri: "http://example.com/foo/",
+      uri: "https://example.com/foo/",
       transition: PlacesUtils.history.TRANSITIONS.TYPED,
     },
   ]);
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.history.clear();
   });
 });
 
 async function test_window(win) {
-  for (let url of ["about:newtab", "about:home", "http://example.com/"]) {
+  for (let url of ["about:newtab", "about:home", "https://example.com/"]) {
     // withNewTab may hang on preloaded pages, thus instead of waiting for load
     // we just wait for the expected currentURI value.
     await BrowserTestUtils.withNewTab(
       { gBrowser: win.gBrowser, url, waitForLoad: false },
-      async browser => {
+      async () => {
         await TestUtils.waitForCondition(
           () => win.gBrowser.currentURI.spec == url,
           "Ensure we're on the expected page"
         );
 
         // In one case use a value that triggers autofill.
-        let autofill = url == "http://example.com/";
+        let autofill = url == "https://example.com/";
         await UrlbarTestUtils.promiseAutocompleteResultPopup({
           window: win,
-          waitForFocus,
           value: autofill ? "ex" : "foo",
           fireInputEvent: true,
         });
@@ -147,7 +146,6 @@ add_task(async function test_tabSwitch() {
   let win = await BrowserTestUtils.openNewBrowserWindow();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "ex",
     fireInputEvent: true,
   });
@@ -179,7 +177,6 @@ add_task(async function test_tabSwitch() {
   let tab2 = await BrowserTestUtils.openNewForegroundTab(win.gBrowser);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "ex",
     fireInputEvent: true,
   });
@@ -202,7 +199,6 @@ add_task(async function test_tabSwitch() {
   tab2 = await BrowserTestUtils.openNewForegroundTab(win.gBrowser);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "xam",
     fireInputEvent: true,
   });
@@ -226,7 +222,6 @@ add_task(async function test_tabSwitch() {
   info("autofill in tab2, switch to tab1, then back to tab2 with the mouse");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "e",
     fireInputEvent: true,
   });
@@ -267,13 +262,16 @@ add_task(async function test_tabSwitch_pageproxystate() {
 
   info("Adding some visits for the empty panel");
   await PlacesTestUtils.addVisits([
-    "http://example.com/",
-    "http://mochi.test:8888/",
+    "https://example.com/",
+    "https://example.org/",
   ]);
   registerCleanupFunction(PlacesUtils.history.clear);
 
   let win = await BrowserTestUtils.openNewBrowserWindow();
-  await BrowserTestUtils.loadURI(win.gBrowser.selectedBrowser, "about:robots");
+  BrowserTestUtils.startLoadingURIString(
+    win.gBrowser.selectedBrowser,
+    "about:robots"
+  );
   let tab1 = win.gBrowser.selectedTab;
 
   info("Open a new tab and the empty search");
@@ -367,7 +365,6 @@ add_task(async function test_pageproxystate_valid() {
   info("Search for a full url and confirm it with Enter");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "about:robots",
     fireInputEvent: true,
   });
@@ -415,7 +412,6 @@ add_task(async function test_clicks_after_autofill() {
   info("autofill in tab2, switch to tab1, then back to tab2 with the mouse");
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus,
     value: "e",
     fireInputEvent: true,
   });

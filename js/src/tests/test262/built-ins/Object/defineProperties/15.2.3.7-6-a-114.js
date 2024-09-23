@@ -17,7 +17,7 @@ Object.defineProperties(arr, {
 });
 
 if (arr.length !== 0) {
-  $ERROR("Expected arr.length to be 0, actually " + arr.length);
+  throw new Test262Error("Expected arr.length to be 0, actually " + arr.length);
 }
 
 arr.length = 2;
@@ -26,8 +26,9 @@ verifyEqualTo(arr, "length", 2);
 
 verifyWritable(arr, "length", "length", 5);
 
-verifyNotEnumerable(arr, "length");
-
-verifyNotConfigurable(arr, "length");
+verifyProperty(arr, "length", {
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

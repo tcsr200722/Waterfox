@@ -3,14 +3,14 @@
 
 "use strict";
 
-const { VariablesView } = ChromeUtils.import(
-  "resource://devtools/client/storage/VariablesView.jsm"
+const { VariablesView } = ChromeUtils.importESModule(
+  "resource://devtools/client/storage/VariablesView.sys.mjs"
 );
 
 const PENDING = {
   type: "object",
   class: "Promise",
-  actor: "conn0.pausedobj35",
+  actor: "conn0.obj35",
   extensible: true,
   frozen: false,
   sealed: false,
@@ -28,7 +28,7 @@ const PENDING = {
 const FULFILLED = {
   type: "object",
   class: "Promise",
-  actor: "conn0.pausedobj35",
+  actor: "conn0.obj35",
   extensible: true,
   frozen: false,
   sealed: false,
@@ -47,7 +47,7 @@ const FULFILLED = {
 const REJECTED = {
   type: "object",
   class: "Promise",
-  actor: "conn0.pausedobj35",
+  actor: "conn0.obj35",
   extensible: true,
   frozen: false,
   sealed: false,

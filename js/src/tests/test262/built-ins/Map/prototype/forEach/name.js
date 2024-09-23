@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.1.3.5
+esid: sec-map.prototype.forEach
 description: >
   Map.prototype.forEach.name value and descriptor.
 info: |
@@ -12,13 +12,11 @@ info: |
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(
-  Map.prototype.forEach.name, 'forEach',
-  'The value of `Map.prototype.forEach.name` is `"forEach"`'
-);
-
-verifyNotEnumerable(Map.prototype.forEach, 'name');
-verifyNotWritable(Map.prototype.forEach, 'name');
-verifyConfigurable(Map.prototype.forEach, 'name');
+verifyProperty(Map.prototype.forEach, "name", {
+  value: "forEach",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

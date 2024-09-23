@@ -2,10 +2,9 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-var { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm"
+const { Preferences } = ChromeUtils.importESModule(
+  "resource://gre/modules/Preferences.sys.mjs"
 );
-ChromeUtils.import("resource://gre/modules/Preferences.jsm", this);
 
 /**
  * Wait for view source tab after calling given function to open it.
@@ -44,7 +43,7 @@ async function waitForViewSourceTab(open) {
  */
 function openViewSourceForBrowser(browser) {
   return waitForViewSourceTab(() => {
-    window.BrowserViewSource(browser);
+    window.BrowserCommands.viewSource(browser);
   });
 }
 
@@ -74,8 +73,9 @@ async function openViewSource() {
       contentAreaContextMenuPopup,
       "popuphidden"
     );
-    let item = document.getElementById("context-viewsource");
-    EventUtils.synthesizeMouseAtCenter(item, {});
+    contentAreaContextMenuPopup.activateItem(
+      document.getElementById("context-viewsource")
+    );
     await popupHiddenPromise;
   });
 }
@@ -114,7 +114,7 @@ async function openViewPartialSource(
       "popuphidden"
     );
     let item = document.getElementById("context-viewpartialsource-selection");
-    EventUtils.synthesizeMouseAtCenter(item, {});
+    contentAreaContextMenuPopup.activateItem(item);
     await popupHiddenPromise;
   });
 }
@@ -146,7 +146,7 @@ async function openViewFrameSourceTab(aCSSSelector) {
     frameContextMenu,
     "popupshown"
   );
-  EventUtils.synthesizeMouseAtCenter(frameContextMenu, {});
+  frameContextMenu.openMenu(true);
   await popupShownPromise;
 
   return waitForViewSourceTab(async () => {
@@ -155,7 +155,7 @@ async function openViewFrameSourceTab(aCSSSelector) {
       "popuphidden"
     );
     let item = document.getElementById("context-viewframesource");
-    EventUtils.synthesizeMouseAtCenter(item, {});
+    frameContextMenu.menupopup.activateItem(item);
     await popupHiddenPromise;
   });
 }
@@ -184,14 +184,14 @@ function waitForSourceLoaded(tab) {
  */
 async function openDocumentSelect(aURI, aCSSSelector) {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, aURI);
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     gBrowser.removeTab(tab);
   });
 
   await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [{ selector: aCSSSelector }],
-    async function(arg) {
+    async function (arg) {
       let element = content.document.querySelector(arg.selector);
       content.getSelection().selectAllChildren(element);
     }
@@ -209,7 +209,7 @@ async function openDocumentSelect(aURI, aCSSSelector) {
  */
 async function openDocument(aURI) {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, aURI);
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     gBrowser.removeTab(tab);
   });
 
@@ -221,7 +221,7 @@ function pushPrefs(...aPrefs) {
 }
 
 function waitForPrefChange(pref) {
-  let deferred = PromiseUtils.defer();
+  let deferred = Promise.withResolvers();
   let observer = () => {
     Preferences.ignore(pref, observer);
     deferred.resolve();

@@ -21,7 +21,7 @@ extern crate libc;
 #[cfg(feature = "with-chrono")]
 extern crate chrono;
 
-use base::TCFType;
+use crate::base::TCFType;
 
 pub unsafe trait ConcreteCFType: TCFType {}
 
@@ -95,6 +95,7 @@ macro_rules! impl_TCFType {
 
             #[inline]
             unsafe fn wrap_under_get_rule(reference: $ty_ref) -> Self {
+                assert!(!reference.is_null(), "Attempted to create a NULL object.");
                 let reference = $crate::base::CFRetain(reference as *const ::std::os::raw::c_void) as $ty_ref;
                 $crate::base::TCFType::wrap_under_create_rule(reference)
             }
@@ -106,6 +107,7 @@ macro_rules! impl_TCFType {
 
             #[inline]
             unsafe fn wrap_under_create_rule(reference: $ty_ref) -> Self {
+                assert!(!reference.is_null(), "Attempted to create a NULL object.");
                 // we need one PhantomData for each type parameter so call ourselves
                 // again with @Phantom $p to produce that
                 $ty(reference $(, impl_TCFType!(@Phantom $p))*)
@@ -163,7 +165,6 @@ macro_rules! impl_TCFType {
     (@Phantom $x:ident) => { ::std::marker::PhantomData };
 }
 
-
 /// Implement `std::fmt::Debug` for the given type.
 ///
 /// This will invoke the implementation of `Debug` for [`CFType`]
@@ -198,7 +199,14 @@ macro_rules! impl_CFComparison {
             #[inline]
             fn partial_cmp(&self, other: &$ty) -> Option<::std::cmp::Ordering> {
                 unsafe {
-                    Some($compare(self.as_concrete_TypeRef(), other.as_concrete_TypeRef(), ::std::ptr::null_mut()).into())
+                    Some(
+                        $compare(
+                            self.as_concrete_TypeRef(),
+                            other.as_concrete_TypeRef(),
+                            ::std::ptr::null_mut(),
+                        )
+                        .into(),
+                    )
                 }
             }
         }
@@ -209,25 +217,26 @@ macro_rules! impl_CFComparison {
                 self.partial_cmp(other).unwrap()
             }
         }
-    }
+    };
 }
 
 pub mod array;
 pub mod attributed_string;
 pub mod base;
 pub mod boolean;
+pub mod bundle;
 pub mod characterset;
 pub mod data;
 pub mod date;
 pub mod dictionary;
 pub mod error;
 pub mod filedescriptor;
+pub mod mach_port;
 pub mod number;
-pub mod set;
-pub mod string;
-pub mod url;
-pub mod bundle;
 pub mod propertylist;
 pub mod runloop;
+pub mod set;
+pub mod string;
 pub mod timezone;
+pub mod url;
 pub mod uuid;

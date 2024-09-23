@@ -15,10 +15,10 @@ const EMPTY_URL = (URL_ROOT + "resources/service-workers/empty.html").replace(
   "test2.example.com"
 );
 
-add_task(async function() {
+add_task(async function () {
   await enableApplicationPanel();
 
-  const { panel, toolbox, tab } = await openNewTabAndApplicationPanel(
+  const { panel, commands, tab } = await openNewTabAndApplicationPanel(
     SIMPLE_URL
   );
   const doc = panel.panelWin.document;
@@ -62,7 +62,7 @@ add_task(async function() {
     "Second service worker registration is displayed for the correct domain"
   );
 
-  await unregisterAllWorkers(toolbox.target.client, doc);
+  await unregisterAllWorkers(commands.client, doc);
 
   // close the tab
   info("Closing the tab.");

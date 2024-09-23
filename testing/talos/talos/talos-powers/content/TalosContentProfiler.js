@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/frame-script */
+
 /**
  * This utility script is for instrumenting your Talos test for
  * performance profiles while running within content. If your test
@@ -20,7 +22,7 @@ if (typeof window !== "undefined") {
 
 var TalosContentProfiler;
 
-(function() {
+(function () {
   // Whether or not this TalosContentProfiler object has had initFromObject
   // or initFromURLQueryParams called on it. Any functions that will send
   // events to the parent to change the behaviour of the Gecko Profiler
@@ -32,7 +34,7 @@ var TalosContentProfiler;
   var currentTest = "unknown";
 
   // Profiler settings.
-  var interval, entries, threadsArray, profileDir;
+  var interval, entries, featuresArray, threadsArray, profileDir;
 
   /**
    * Emits a TalosContentProfiler prefixed event and then returns a Promise
@@ -55,16 +57,17 @@ var TalosContentProfiler;
     if (typeof sendAsyncMessage !== "undefined") {
       return new Promise(resolve => {
         sendAsyncMessage("TalosContentProfiler:Command", { name, data });
-        addMessageListener("TalosContentProfiler:Response", function onMsg(
-          msg
-        ) {
-          if (msg.data.name != name) {
-            return;
-          }
+        addMessageListener(
+          "TalosContentProfiler:Response",
+          function onMsg(msg) {
+            if (msg.data.name != name) {
+              return;
+            }
 
-          removeMessageListener("TalosContentProfiler:Response", onMsg);
-          resolve(msg.data);
-        });
+            removeMessageListener("TalosContentProfiler:Response", onMsg);
+            resolve(msg.data);
+          }
+        );
       });
     }
 
@@ -78,17 +81,18 @@ var TalosContentProfiler;
       });
       document.dispatchEvent(event);
 
-      addEventListener("TalosContentProfilerResponse", function onResponse(
-        event
-      ) {
-        if (event.detail.name != name) {
-          return;
+      addEventListener(
+        "TalosContentProfilerResponse",
+        function onResponse(event) {
+          if (event.detail.name != name) {
+            return;
+          }
+
+          removeEventListener("TalosContentProfilerResponse", onResponse);
+
+          resolve(event.detail.data);
         }
-
-        removeEventListener("TalosContentProfilerResponse", onResponse);
-
-        resolve(event.detail.data);
-      });
+      );
     });
   }
 
@@ -123,6 +127,7 @@ var TalosContentProfiler;
      *   The following properties on the object are respected:
      *     gecko_profile_interval (int)
      *     gecko_profile_entries (int)
+     *     gecko_profile_features (string, comma separated list of features to enable)
      *     gecko_profile_threads (string, comma separated list of threads to filter with)
      *     gecko_profile_dir (string)
      */
@@ -135,11 +140,14 @@ var TalosContentProfiler;
           Number.isFinite(obj.gecko_profile_interval * 1) &&
           "gecko_profile_entries" in obj &&
           Number.isFinite(obj.gecko_profile_entries * 1) &&
+          "gecko_profile_features" in obj &&
+          typeof obj.gecko_profile_features == "string" &&
           "gecko_profile_threads" in obj &&
           typeof obj.gecko_profile_threads == "string"
         ) {
           interval = obj.gecko_profile_interval;
           entries = obj.gecko_profile_entries;
+          featuresArray = obj.gecko_profile_features.split(",");
           threadsArray = obj.gecko_profile_threads.split(",");
           profileDir = obj.gecko_profile_dir;
           initted = true;
@@ -163,14 +171,12 @@ var TalosContentProfiler;
 
     /**
      * A Talos test is about to start. This will return a Promise that
-     * resolves once the Profiler has been initialized. Note that the
-     * Gecko Profiler will be paused immediately after starting and that
-     * resume() should be called in order to collect samples.
+     * resolves once the Profiler has been initialized.
      *
      * @param testName (string)
      *        The name of the test to use in Profiler markers.
      * @returns Promise
-     *        Resolves once the Gecko Profiler has been initialized and paused.
+     *        Resolves once the Gecko Profiler has been initialized.
      *        If the TalosContentProfiler is not initialized, then this resolves
      *        without doing anything.
      */
@@ -180,6 +186,7 @@ var TalosContentProfiler;
         return sendEventAndWait("Profiler:Begin", {
           interval,
           entries,
+          featuresArray,
           threadsArray,
         });
       }
@@ -199,8 +206,8 @@ var TalosContentProfiler;
      */
     finishTest() {
       if (initted) {
-        let profileFile = profileDir + "/" + currentTest + ".profile";
-        return sendEventAndWait("Profiler:Finish", { profileFile });
+        let profileFile = `${currentTest}.profile`;
+        return sendEventAndWait("Profiler:Finish", { profileDir, profileFile });
       }
       return Promise.resolve();
     },
@@ -216,14 +223,14 @@ var TalosContentProfiler;
      */
     finishStartupProfiling() {
       if (initted) {
-        let profileFile = profileDir + "/startup.profile";
-        return sendEventAndWait("Profiler:Finish", { profileFile });
+        let profileFile = "startup.profile";
+        return sendEventAndWait("Profiler:Finish", { profileDir, profileFile });
       }
       return Promise.resolve();
     },
 
     /**
-     * Resumes the Gecko Profiler sampler. Can also simultaneously set a marker.
+     * Add a marker to the profiler to indicate the start of the subtest.
      *
      * @param marker (string, optional)
      *        If non-empty, will set a marker immediately after resuming.
@@ -232,30 +239,33 @@ var TalosContentProfiler;
      *        for us, and we can skip the initialization check. This is usually
      *        true for pageloader tests.
      * @returns Promise
-     *          Resolves once the Gecko Profiler has resumed.
+     *        Resolves once the marker has been set.
      */
-    resume(marker = "", inittedInParent = false) {
+    subtestStart(marker = "", inittedInParent = false) {
       if (initted || inittedInParent) {
-        return sendEventAndWait("Profiler:Resume", { marker });
+        return sendEventAndWait("Profiler:SubtestStart", { marker });
       }
       return Promise.resolve();
     },
 
     /**
-     * Pauses the Gecko Profiler sampler. Can also simultaneously set a marker.
+     * Add a marker to the profiler to indicate the subtest duration.
      *
      * @param marker (string, optional)
-     *        If non-empty, will set a marker immediately before pausing.
+     *        If non-empty, will set a marker immediately.
      * @param inittedInParent (bool, optional)
      *        If true, it is assumed that the parent has already started profiling
      *        for us, and we can skip the initialization check. This is usually
      *        true for pageloader tests.
+     * @param startTime (number, optional)
+     *        Start time, used to create an interval profile marker. If
+     *        undefined, a single instance marker will be placed.
      * @returns Promise
-     *          Resolves once the Gecko Profiler has paused.
+     *        Resolves once the marker has been set.
      */
-    pause(marker = "", inittedInParent = false) {
+    subtestEnd(marker = "", inittedInParent = false, startTime = undefined) {
       if (initted || inittedInParent) {
-        return sendEventAndWait("Profiler:Pause", { marker });
+        return sendEventAndWait("Profiler:SubtestEnd", { marker, startTime });
       }
 
       return Promise.resolve();
@@ -264,17 +274,26 @@ var TalosContentProfiler;
     /**
      * Adds a marker to the profile.
      *
+     * @param marker (string)
+     *        If non-empty, will set a marker immediately.
+     * @param inittedInParent (bool, optional)
+     *        If true, it is assumed that the parent has already started profiling
+     *        for us, and we can skip the initialization check. This is usually
+     *        true for pageloader tests.
+     * @param startTime (number, optional)
+     *        Start time, used to create an interval profile marker. If
+     *        undefined, a single instance marker will be placed.
      * @returns Promise
      *          Resolves once the marker has been set.
      */
-    mark(marker) {
-      if (initted) {
+    mark(marker, inittedInParent = false, startTime = undefined) {
+      if (initted || inittedInParent) {
         // If marker is omitted, just use the test name
         if (!marker) {
           marker = currentTest;
         }
 
-        return sendEventAndWait("Profiler:Marker", { marker });
+        return sendEventAndWait("Profiler:Marker", { marker, startTime });
       }
 
       return Promise.resolve();

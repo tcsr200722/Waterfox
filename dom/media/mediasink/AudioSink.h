@@ -7,6 +7,7 @@
 #define AudioSink_h__
 
 #include "AudioStream.h"
+#include "AudibilityMonitor.h"
 #include "MediaEventSource.h"
 #include "MediaInfo.h"
 #include "MediaQueue.h"
@@ -16,6 +17,7 @@
 #include "mozilla/Monitor.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/Result.h"
 #include "nsISupportsImpl.h"
 
 namespace mozilla {
@@ -24,6 +26,11 @@ class AudioConverter;
 
 class AudioSink : private AudioStream::DataSource {
  public:
+  enum class InitializationType {
+    // This AudioSink is being initialized for the first time
+    INITIAL,
+    UNMUTING
+  };
   struct PlaybackParams {
     PlaybackParams(double aVolume, double aPlaybackRate, bool aPreservesPitch)
         : mVolume(aVolume),
@@ -35,15 +42,18 @@ class AudioSink : private AudioStream::DataSource {
   };
 
   AudioSink(AbstractThread* aThread, MediaQueue<AudioData>& aAudioQueue,
-            const media::TimeUnit& aStartTime, const AudioInfo& aInfo,
-            AudioDeviceInfo* aAudioDevice);
+            const AudioInfo& aInfo, bool aShouldResistFingerprinting);
 
   ~AudioSink();
 
-  // Return a promise which will be resolved when AudioSink
-  // finishes playing, or rejected if any error.
-  nsresult Init(const PlaybackParams& aParams,
-                RefPtr<MediaSink::EndedPromise>& aEndedPromise);
+  // Allocate and initialize mAudioStream. Returns NS_OK on success.
+  nsresult InitializeAudioStream(const PlaybackParams& aParams,
+                                 const RefPtr<AudioDeviceInfo>& aAudioDevice,
+                                 InitializationType aInitializationType);
+
+  // Start audio playback.  aStartTime is compared with MediaData::mTime to
+  // identify the first audio frame to be played.
+  RefPtr<MediaSink::EndedPromise> Start(const media::TimeUnit& aStartTime);
 
   /*
    * All public functions are not thread-safe.
@@ -52,14 +62,18 @@ class AudioSink : private AudioStream::DataSource {
   media::TimeUnit GetPosition();
   media::TimeUnit GetEndTime() const;
 
-  // Check whether we've pushed more frames to the audio hardware than it has
-  // played.
+  // Check whether we've pushed more frames to the audio stream than it
+  // has played.
   bool HasUnplayedFrames();
 
+  // The duration of the buffered frames.
+  media::TimeUnit UnplayedDuration() const;
+
   // Shut down the AudioSink's resources.
-  void Shutdown();
+  void ShutDown();
 
   void SetVolume(double aVolume);
+  void SetStreamName(const nsAString& aStreamName);
   void SetPlaybackRate(double aPlaybackRate);
   void SetPreservesPitch(bool aPreservesPitch);
   void SetPlaying(bool aPlaying);
@@ -68,73 +82,63 @@ class AudioSink : private AudioStream::DataSource {
 
   void GetDebugInfo(dom::MediaSinkDebugInfo& aInfo);
 
-  const RefPtr<AudioDeviceInfo>& AudioDevice() { return mAudioDevice; }
+  // This returns true if the audio callbacks are being called, and so the
+  // audio stream-based clock is moving forward.
+  bool AudioStreamCallbackStarted() {
+    return mAudioStream && mAudioStream->CallbackStarted();
+  }
+
+  void UpdateStartTime(const media::TimeUnit& aStartTime) {
+    mStartTime = aStartTime;
+  }
 
  private:
-  // Allocate and initialize mAudioStream. Returns NS_OK on success.
-  nsresult InitializeAudioStream(const PlaybackParams& aParams);
-
   // Interface of AudioStream::DataSource.
-  // Called on the callback thread of cubeb.
-  UniquePtr<AudioStream::Chunk> PopFrames(uint32_t aFrames) override;
+  // Called on the callback thread of cubeb. Returns the number of frames that
+  // were available.
+  uint32_t PopFrames(AudioDataValue* aBuffer, uint32_t aFrames,
+                     bool aAudioThreadChanged) override;
   bool Ended() const override;
-  void Drained() override;
-  void Errored() override;
 
-  void CheckIsAudible(const AudioData* aData);
+  // When shutting down, it's important to not lose any audio data, it might be
+  // still of use, in two scenarios:
+  // - If the audio is now captured to a MediaStream, whatever is enqueued in
+  // the ring buffer needs to be played out now ;
+  // - If the AudioSink is shutting down because the audio is muted, it's
+  // important to keep the audio around in case it's quickly unmuted,
+  // and in general to keep A/V sync correct when unmuted.
+  void ReenqueueUnplayedAudioDataIfNeeded();
+
+  void CheckIsAudible(const Span<AudioDataValue>& aInterleaved,
+                      size_t aChannel);
 
   // The audio stream resource. Used on the task queue of MDSM only.
   RefPtr<AudioStream> mAudioStream;
 
-  // The presentation time of the first audio frame that was played.
+  // The media data time of the first audio frame that was played.
   // We can add this to the audio stream position to determine
-  // the current audio time.
-  const media::TimeUnit mStartTime;
+  // the current audio data time.
+  media::TimeUnit mStartTime;
 
   // Keep the last good position returned from the audio stream. Used to ensure
   // position returned by GetPosition() is mono-increasing in spite of audio
   // stream error. Used on the task queue of MDSM only.
   media::TimeUnit mLastGoodPosition;
 
-  const AudioInfo mInfo;
-
-  // The output device this AudioSink is playing data to. The system's default
-  // device is used if this is null.
-  const RefPtr<AudioDeviceInfo> mAudioDevice;
-
   // Used on the task queue of MDSM only.
   bool mPlaying;
 
-  MozPromiseHolder<MediaSink::EndedPromise> mEndedPromise;
-
-  /*
-   * Members to implement AudioStream::DataSource.
-   * Used on the callback thread of cubeb.
-   */
-  // The AudioData at which AudioStream::DataSource is reading.
-  RefPtr<AudioData> mCurrentData;
-
-  // Monitor protecting access to mCursor and mWritten.
-  // mCursor is created/destroyed on the cubeb thread, while we must also
-  // ensure that mWritten and mCursor::Available() get modified simultaneously.
-  // (written on cubeb thread, and read on MDSM task queue).
-  mutable Monitor mMonitor;
-  // Keep track of the read position of mCurrentData.
-  UniquePtr<AudioBufferCursor> mCursor;
-
-  // PCM frames written to the stream so far.
-  int64_t mWritten;
+  // PCM frames written to the stream so far. Written on the callback thread,
+  // read on the MDSM thread.
+  Atomic<int64_t> mWritten;
 
   // True if there is any error in processing audio data like overflow.
   Atomic<bool> mErrored;
 
-  // Set on the callback thread of cubeb once the stream has drained.
-  Atomic<bool> mPlaybackComplete;
-
   const RefPtr<AbstractThread> mOwnerThread;
 
   // Audio Processing objects and methods
-  void OnAudioPopped(const RefPtr<AudioData>& aSample);
+  void OnAudioPopped();
   void OnAudioPushed(const RefPtr<AudioData>& aSample);
   void NotifyAudioNeeded();
   // Drain the converter and add the output to the processed audio queue.
@@ -142,13 +146,12 @@ class AudioSink : private AudioStream::DataSource {
   uint32_t DrainConverter(uint32_t aMaxFrames = UINT32_MAX);
   already_AddRefed<AudioData> CreateAudioFromBuffer(
       AlignedAudioBuffer&& aBuffer, AudioData* aReference);
-  // Add data to the processsed queue, update mProcessedQueueLength and
-  // return the number of frames added.
+  // Add data to the processsed queue return the number of frames added.
   uint32_t PushProcessedAudio(AudioData* aData);
+  uint32_t AudioQueuedInRingBufferMS() const;
+  uint32_t SampleToFrame(uint32_t aSamples) const;
   UniquePtr<AudioConverter> mConverter;
-  MediaQueue<AudioData> mProcessedQueue;
-  // Length in microseconds of the ProcessedQueue
-  Atomic<uint64_t> mProcessedQueueLength;
+  UniquePtr<SPSCQueue<AudioDataValue>> mProcessedSPSCQueue;
   MediaEventListener mAudioQueueListener;
   MediaEventListener mAudioQueueFinishListener;
   MediaEventListener mProcessedQueueListener;
@@ -161,13 +164,15 @@ class AudioSink : private AudioStream::DataSource {
   // Never modifed after construction.
   uint32_t mOutputRate;
   uint32_t mOutputChannels;
-
-  // True when audio is producing audible sound, false when audio is silent.
+  AudibilityMonitor mAudibilityMonitor;
   bool mIsAudioDataAudible;
-
   MediaEventProducer<bool> mAudibleEvent;
+  // Only signed on the real-time audio thread.
+  MediaEventProducer<void> mAudioPopped;
 
+  Atomic<bool> mProcessedQueueFinished;
   MediaQueue<AudioData>& mAudioQueue;
+  const float mProcessedQueueThresholdMS;
 };
 
 }  // namespace mozilla

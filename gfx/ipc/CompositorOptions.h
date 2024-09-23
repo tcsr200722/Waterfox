@@ -29,45 +29,60 @@ namespace layers {
 class CompositorOptions {
  public:
   // This constructor needed for IPDL purposes, don't use it anywhere else.
-  CompositorOptions()
-      : mUseAPZ(false),
-        mUseWebRender(false),
-        mUseAdvancedLayers(false),
-        mInitiallyPaused(false) {}
+  CompositorOptions() = default;
 
-  CompositorOptions(bool aUseAPZ, bool aUseWebRender)
-      : mUseAPZ(aUseAPZ),
-        mUseWebRender(aUseWebRender),
-        mUseAdvancedLayers(false),
-        mInitiallyPaused(false) {}
+  CompositorOptions(bool aUseAPZ, bool aUseSoftwareWebRender)
+      : mUseAPZ(aUseAPZ), mUseSoftwareWebRender(aUseSoftwareWebRender) {}
 
   bool UseAPZ() const { return mUseAPZ; }
-  bool UseWebRender() const { return mUseWebRender; }
-  bool UseAdvancedLayers() const { return mUseAdvancedLayers; }
+  bool UseSoftwareWebRender() const { return mUseSoftwareWebRender; }
+  bool AllowSoftwareWebRenderD3D11() const {
+    return mAllowSoftwareWebRenderD3D11;
+  }
+  bool AllowSoftwareWebRenderOGL() const { return mAllowSoftwareWebRenderOGL; }
   bool InitiallyPaused() const { return mInitiallyPaused; }
+  bool NeedFastSnaphot() const { return mNeedFastSnaphot; }
 
   void SetUseAPZ(bool aUseAPZ) { mUseAPZ = aUseAPZ; }
 
-  void SetUseAdvancedLayers(bool aUseAdvancedLayers) {
-    mUseAdvancedLayers = aUseAdvancedLayers;
+  void SetAllowSoftwareWebRenderD3D11(bool aAllowSoftwareWebRenderD3D11) {
+    mAllowSoftwareWebRenderD3D11 = aAllowSoftwareWebRenderD3D11;
+  }
+
+  void SetAllowSoftwareWebRenderOGL(bool aAllowSoftwareWebRenderOGL) {
+    mAllowSoftwareWebRenderOGL = aAllowSoftwareWebRenderOGL;
   }
 
   void SetInitiallyPaused(bool aPauseAtStartup) {
     mInitiallyPaused = aPauseAtStartup;
   }
 
+  void SetNeedFastSnaphot(bool aNeedFastSnaphot) {
+    mNeedFastSnaphot = aNeedFastSnaphot;
+  }
+
+  bool EqualsIgnoringApzEnablement(const CompositorOptions& aOther) const {
+    return mUseSoftwareWebRender == aOther.mUseSoftwareWebRender &&
+           mAllowSoftwareWebRenderD3D11 ==
+               aOther.mAllowSoftwareWebRenderD3D11 &&
+           mAllowSoftwareWebRenderOGL == aOther.mAllowSoftwareWebRenderOGL &&
+           mInitiallyPaused == aOther.mInitiallyPaused &&
+           mNeedFastSnaphot == aOther.mNeedFastSnaphot;
+  }
+
   bool operator==(const CompositorOptions& aOther) const {
-    return mUseAPZ == aOther.mUseAPZ && mUseWebRender == aOther.mUseWebRender &&
-           mUseAdvancedLayers == aOther.mUseAdvancedLayers;
+    return mUseAPZ == aOther.mUseAPZ && EqualsIgnoringApzEnablement(aOther);
   }
 
   friend struct IPC::ParamTraits<CompositorOptions>;
 
  private:
-  bool mUseAPZ;
-  bool mUseWebRender;
-  bool mUseAdvancedLayers;
-  bool mInitiallyPaused;
+  bool mUseAPZ = false;
+  bool mUseSoftwareWebRender = false;
+  bool mAllowSoftwareWebRenderD3D11 = false;
+  bool mAllowSoftwareWebRenderOGL = false;
+  bool mInitiallyPaused = false;
+  bool mNeedFastSnaphot = false;
 
   // Make sure to add new fields to the ParamTraits implementation
   // in LayersMessageUtils.h

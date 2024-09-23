@@ -12,14 +12,14 @@
 #include "mozilla/layers/IpcResourceUpdateQueue.h"
 #include "mozilla/layers/SharedSurfacesChild.h"
 #include "mozilla/layers/WebRenderCommandBuilder.h"
+#include "nsTHashSet.h"
 
 namespace mozilla {
 
 namespace layers {
 
 class RenderRootStateManager {
-  typedef nsTHashtable<nsRefPtrHashKey<WebRenderUserData>>
-      WebRenderUserDataRefTable;
+  typedef nsTHashSet<RefPtr<WebRenderUserData>> WebRenderUserDataRefTable;
 
  public:
   void AddRef();
@@ -57,20 +57,17 @@ class RenderRootStateManager {
 
   void AddWebRenderParentCommand(const WebRenderParentCommand& aCmd);
   void UpdateResources(wr::IpcResourceUpdateQueue& aResources);
-  void AddPipelineIdForAsyncCompositable(const wr::PipelineId& aPipelineId,
-                                         const CompositableHandle& aHandlee);
   void AddPipelineIdForCompositable(const wr::PipelineId& aPipelineId,
-                                    const CompositableHandle& aHandlee);
+                                    const CompositableHandle& aHandle,
+                                    CompositableHandleOwner aOwner);
   void RemovePipelineIdForCompositable(const wr::PipelineId& aPipelineId);
   /// Release TextureClient that is bounded to ImageKey.
   /// It is used for recycling TextureClient.
   void ReleaseTextureOfImage(const wr::ImageKey& aKey);
   Maybe<wr::FontInstanceKey> GetFontKeyForScaledFont(
-      gfx::ScaledFont* aScaledFont,
-      wr::IpcResourceUpdateQueue* aResources = nullptr);
+      gfx::ScaledFont* aScaledFont, wr::IpcResourceUpdateQueue& aResources);
   Maybe<wr::FontKey> GetFontKeyForUnscaledFont(
-      gfx::UnscaledFont* aUnscaledFont,
-      wr::IpcResourceUpdateQueue* aResources = nullptr);
+      gfx::UnscaledFont* aUnscaledFont, wr::IpcResourceUpdateQueue& aResources);
 
   void FlushAsyncResourceUpdates();
 

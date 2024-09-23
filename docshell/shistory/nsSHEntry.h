@@ -11,7 +11,7 @@
 #include "nsCOMPtr.h"
 #include "nsISHEntry.h"
 #include "nsString.h"
-
+#include "nsWeakReference.h"
 #include "mozilla/Attributes.h"
 
 class nsSHEntryShared;
@@ -19,23 +19,23 @@ class nsIInputStream;
 class nsIURI;
 class nsIReferrerInfo;
 
-class nsSHEntry : public nsISHEntry {
+class nsSHEntry : public nsISHEntry, public nsSupportsWeakReference {
  public:
-  explicit nsSHEntry(nsISHistory* aSHistory);
+  nsSHEntry();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSISHENTRY
 
-  virtual void EvictContentViewer();
+  virtual void EvictDocumentViewer();
 
   static nsresult Startup();
   static void Shutdown();
 
+  nsSHEntryShared* GetState() { return mShared; }
+
  protected:
   explicit nsSHEntry(const nsSHEntry& aOther);
   virtual ~nsSHEntry();
-
-  nsSHEntryShared* GetState() { return mShared; }
 
   // We share the state in here with other SHEntries which correspond to the
   // same document.
@@ -45,14 +45,16 @@ class nsSHEntry : public nsISHEntry {
   nsCOMPtr<nsIURI> mURI;
   nsCOMPtr<nsIURI> mOriginalURI;
   nsCOMPtr<nsIURI> mResultPrincipalURI;
+  nsCOMPtr<nsIURI> mUnstrippedURI;
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
   nsString mTitle;
+  nsString mName;
   nsCOMPtr<nsIInputStream> mPostData;
   uint32_t mLoadType;
   uint32_t mID;
   int32_t mScrollPositionX;
   int32_t mScrollPositionY;
-  nsISHEntry* mParent;
+  nsWeakPtr mParent;
   nsCOMArray<nsISHEntry> mChildren;
   nsCOMPtr<nsIStructuredCloneContainer> mStateData;
   nsString mSrcdocData;
@@ -63,6 +65,8 @@ class nsSHEntry : public nsISHEntry {
   bool mScrollRestorationIsManual;
   bool mLoadedInThisProcess;
   bool mPersist;
+  bool mHasUserInteraction;
+  bool mHasUserActivation;
 };
 
 #endif /* nsSHEntry_h */

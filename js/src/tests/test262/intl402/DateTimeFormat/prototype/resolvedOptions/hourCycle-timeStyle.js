@@ -1,4 +1,3 @@
-// |reftest| skip -- Intl.DateTimeFormat-datetimestyle is not supported
 // Copyright 2019 Mozilla Corporation, Igalia S.L. All rights reserved.
 // This code is governed by the license found in the LICENSE file.
 
@@ -8,7 +7,7 @@ description: >
   Intl.DateTimeFormat.prototype.resolvedOptions properly
   reflect hourCycle settings when using timeStyle.
 includes: [propertyHelper.js]
-features: [Intl.DateTimeFormat-datetimestyle]
+features: [Intl.DateTimeFormat-datetimestyle, Array.prototype.includes]
 ---*/
 
 const hcValues = ["h11", "h12", "h23", "h24"];

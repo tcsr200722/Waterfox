@@ -51,7 +51,7 @@ add_task(async function test_merged_item_chunking() {
   let buf = await openMirror("merged_item_chunking");
 
   info("Set up local tree with 1500 bookmarks");
-  let localGuids = await buf.db.executeTransaction(function() {
+  let localGuids = await buf.db.executeTransaction(function () {
     let url = new URL("http://example.com/a");
     return insertManyUnfiledBookmarks(buf.db, url);
   });
@@ -117,7 +117,7 @@ add_task(async function test_deletion_chunking() {
   let buf = await openMirror("deletion_chunking");
 
   info("Set up local tree with 1500 bookmarks");
-  let guids = await buf.db.executeTransaction(function() {
+  let guids = await buf.db.executeTransaction(function () {
     let url = new URL("http://example.com/a");
     return insertManyUnfiledBookmarks(buf.db, url);
   });
@@ -157,53 +157,6 @@ add_task(async function test_deletion_chunking() {
     localChildRecordIds,
     [],
     "Should delete all unfiled children locally"
-  );
-
-  await buf.finalize();
-  await PlacesUtils.bookmarks.eraseEverything();
-  await PlacesSyncUtils.bookmarks.reset();
-});
-
-add_task(async function test_weak_upload_chunking() {
-  let buf = await openMirror("weak_upload_chunking");
-
-  info("Set up empty local tree");
-  await PlacesTestUtils.markBookmarksAsSynced();
-
-  info("Set up remote tree with 1500 bookmarks");
-  let toolbarRecord = makeRecord({
-    id: "toolbar",
-    parentid: "places",
-    type: "folder",
-    children: [],
-  });
-  let records = [toolbarRecord];
-  for (let i = 0; i < 1500; ++i) {
-    let title = i.toString(10);
-    let guid = title.padStart(12, "B");
-    toolbarRecord.children.push(guid);
-    records.push(
-      makeRecord({
-        id: guid,
-        parentid: "toolbar",
-        type: "bookmark",
-        title,
-        bmkUri: "http://example.com/b",
-      })
-    );
-  }
-  await buf.store(shuffle(records));
-
-  info("Apply remote");
-  let changesToUpload = await buf.apply({
-    weakUpload: toolbarRecord.children,
-  });
-
-  let guidsToUpload = Object.keys(changesToUpload);
-  deepEqual(
-    guidsToUpload.sort(),
-    toolbarRecord.children.sort(),
-    "Should weakly upload records that haven't changed locally"
   );
 
   await buf.finalize();

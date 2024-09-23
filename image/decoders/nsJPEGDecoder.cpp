@@ -67,6 +67,7 @@ METHODDEF(boolean) fill_input_buffer(j_decompress_ptr jd);
 METHODDEF(void) skip_input_data(j_decompress_ptr jd, long num_bytes);
 METHODDEF(void) term_source(j_decompress_ptr jd);
 METHODDEF(void) my_error_exit(j_common_ptr cinfo);
+METHODDEF(void) progress_monitor(j_common_ptr info);
 
 // Normal JFIF markers can't have more bytes than this.
 #define MAX_JPEG_MARKER_LENGTH (((uint32_t)1 << 16) - 1)
@@ -101,6 +102,7 @@ nsJPEGDecoder::nsJPEGDecoder(RasterImage* aImage,
   mBytesToSkip = 0;
   memset(&mInfo, 0, sizeof(jpeg_decompress_struct));
   memset(&mSourceMgr, 0, sizeof(mSourceMgr));
+  memset(&mProgressMgr, 0, sizeof(mProgressMgr));
   mInfo.client_data = (void*)this;
 
   mSegment = nullptr;
@@ -157,6 +159,12 @@ nsresult nsJPEGDecoder::InitInternal() {
   mSourceMgr.resync_to_restart = jpeg_resync_to_restart;
   mSourceMgr.term_source = term_source;
 
+  mInfo.mem->max_memory_to_use = static_cast<long>(
+      std::min<size_t>(SurfaceCache::MaximumCapacity(), LONG_MAX));
+
+  mProgressMgr.progress_monitor = &progress_monitor;
+  mInfo.progress = &mProgressMgr;
+
   // Record app markers for ICC data
   for (uint32_t m = 0; m < 16; m++) {
     jpeg_save_markers(&mInfo, JPEG_APP0 + m, 0xFFFF);
@@ -196,18 +204,44 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
   mSegment = reinterpret_cast<const JOCTET*>(aData);
   mSegmentLen = aLength;
 
-  // Return here if there is a fatal error within libjpeg.
+  // Return here if there is a error within libjpeg.
   nsresult error_code;
   // This cast to nsresult makes sense because setjmp() returns whatever we
-  // passed to longjmp(), which was actually an nsresult.
+  // passed to longjmp(), which was actually an nsresult. These error codes
+  // have been translated from libjpeg error codes, like so:
+  // JERR_OUT_OF_MEMORY => NS_ERROR_OUT_OF_MEMORY
+  // JERR_UNKNOWN_MARKER => NS_ERROR_ILLEGAL_VALUE
+  // JERR_SOF_UNSUPPORTED =>  NS_ERROR_INVALID_CONTENT_ENCODING
+  // <any other error> => NS_ERROR_FAILURE
   if ((error_code = static_cast<nsresult>(setjmp(mErr.setjmp_buffer))) !=
       NS_OK) {
+    bool fatal = true;
     if (error_code == NS_ERROR_FAILURE) {
       // Error due to corrupt data. Make sure that we don't feed any more data
       // to libjpeg-turbo.
       mState = JPEG_SINK_NON_JPEG_TRAILER;
       MOZ_LOG(sJPEGDecoderAccountingLog, LogLevel::Debug,
               ("} (setjmp returned NS_ERROR_FAILURE)"));
+    } else if (error_code == NS_ERROR_ILLEGAL_VALUE) {
+      // This is a recoverable error. Consume the marker and continue.
+      mInfo.unread_marker = 0;
+      fatal = false;
+    } else if (error_code == NS_ERROR_INVALID_CONTENT_ENCODING) {
+      // The content is encoding frames with a format that libjpeg can't handle.
+      MOZ_LOG(sJPEGDecoderAccountingLog, LogLevel::Debug,
+              ("} (setjmp returned NS_ERROR_INVALID_CONTENT_ENCODING)"));
+      // Check to see if we're in the done state, which indicates that we've
+      // already processed the main JPEG data.
+      bool inDoneState = (mState == JPEG_DONE);
+      // Whether we succeed or fail, we shouldn't send any more data.
+      mState = JPEG_SINK_NON_JPEG_TRAILER;
+
+      // If we're in the done state, we exit successfully and attempt to
+      // display the content we've already received. Otherwise, we fallthrough
+      // and treat this as a fatal error.
+      if (inDoneState) {
+        return Transition::TerminateSuccess();
+      }
     } else {
       // Error for another reason. (Possibly OOM.)
       mState = JPEG_ERROR;
@@ -215,7 +249,9 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
               ("} (setjmp returned an error)"));
     }
 
-    return Transition::TerminateFailure();
+    if (fatal) {
+      return Transition::TerminateFailure();
+    }
   }
 
   MOZ_LOG(sJPEGLog, LogLevel::Debug,
@@ -236,8 +272,9 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
       }
 
       // Post our size to the superclass
-      PostSize(mInfo.image_width, mInfo.image_height,
-               ReadOrientationFromEXIF());
+      EXIFData exif = ReadExifData();
+      PostSize(mInfo.image_width, mInfo.image_height, exif.orientation,
+               exif.resolution);
       if (HasError()) {
         // Setting the size led to an error.
         mState = JPEG_ERROR;
@@ -283,7 +320,7 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
           return Transition::TerminateFailure();
       }
 
-      if (mCMSMode != eCMSMode_Off) {
+      if (mCMSMode != CMSMode::Off) {
         if ((mInProfile = GetICCProfile(mInfo)) != nullptr &&
             GetCMSOutputProfile()) {
           uint32_t profileSpace = qcms_profile_get_color_space(mInProfile);
@@ -326,6 +363,8 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
                                                GetCMSOutputProfile(),
                                                outputType, (qcms_intent)intent);
           }
+        } else if (mCMSMode == CMSMode::All) {
+          mTransform = GetCMSsRGBTransform(SurfaceFormat::OS_RGBX);
         }
       }
 
@@ -357,9 +396,9 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
       qcms_transform* pipeTransform =
           mInfo.out_color_space != JCS_GRAYSCALE ? mTransform : nullptr;
 
-      Maybe<SurfacePipe> pipe = SurfacePipeFactory::CreateSurfacePipe(
-          this, Size(), OutputSize(), FullFrame(), SurfaceFormat::OS_RGBX,
-          SurfaceFormat::OS_RGBX, Nothing(), pipeTransform, SurfacePipeFlags());
+      Maybe<SurfacePipe> pipe = SurfacePipeFactory::CreateReorientSurfacePipe(
+          this, Size(), OutputSize(), SurfaceFormat::OS_RGBX, pipeTransform,
+          GetOrientation());
       if (!pipe) {
         mState = JPEG_ERROR;
         MOZ_LOG(sJPEGDecoderAccountingLog, LogLevel::Debug,
@@ -439,23 +478,59 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::ReadJPEGData(
       if (mState == JPEG_DECOMPRESS_PROGRESSIVE) {
         LOG_SCOPE((mozilla::LogModule*)sJPEGLog,
                   "nsJPEGDecoder::Write -- JPEG_DECOMPRESS_PROGRESSIVE case");
-
+        auto AllComponentsSeen = [](jpeg_decompress_struct& info) {
+          bool all_components_seen = true;
+          if (info.coef_bits) {
+            for (int c = 0; c < info.num_components; ++c) {
+              bool current_component_seen = info.coef_bits[c][0] != -1;
+              all_components_seen &= current_component_seen;
+            }
+          }
+          return all_components_seen;
+        };
         int status;
+        int scan_to_display_first = 0;
+        bool all_components_seen;
+        all_components_seen = AllComponentsSeen(mInfo);
+        if (all_components_seen) {
+          scan_to_display_first = mInfo.input_scan_number;
+        }
+
         do {
           status = jpeg_consume_input(&mInfo);
+
+          if (status == JPEG_REACHED_SOS || status == JPEG_REACHED_EOI ||
+              status == JPEG_SUSPENDED) {
+            // record the first scan where all components are present
+            all_components_seen = AllComponentsSeen(mInfo);
+            if (!scan_to_display_first && all_components_seen) {
+              scan_to_display_first = mInfo.input_scan_number;
+            }
+          }
         } while ((status != JPEG_SUSPENDED) && (status != JPEG_REACHED_EOI));
 
+        if (!all_components_seen) {
+          return Transition::ContinueUnbuffered(
+              State::JPEG_DATA);  // I/O suspension
+        }
+        // make sure we never try to access the non-exsitent scan 0
+        if (!scan_to_display_first) {
+          scan_to_display_first = 1;
+        }
         while (mState != JPEG_DONE) {
           if (mInfo.output_scanline == 0) {
             int scan = mInfo.input_scan_number;
 
             // if we haven't displayed anything yet (output_scan_number==0)
             // and we have enough data for a complete scan, force output
-            // of the last full scan
-            if ((mInfo.output_scan_number == 0) && (scan > 1) &&
-                (status != JPEG_REACHED_EOI))
+            // of the last full scan,  but only if this last scan has seen
+            // DC data from all components
+            if ((mInfo.output_scan_number == 0) &&
+                (scan > scan_to_display_first) &&
+                (status != JPEG_REACHED_EOI)) {
               scan--;
-
+            }
+            MOZ_ASSERT(scan > 0, "scan number to small!");
             if (!jpeg_start_output(&mInfo, scan)) {
               MOZ_LOG(sJPEGDecoderAccountingLog, LogLevel::Debug,
                       ("} (I/O suspension after jpeg_start_output() -"
@@ -563,7 +638,7 @@ LexerTransition<nsJPEGDecoder::State> nsJPEGDecoder::FinishedJPEGData() {
   return Transition::TerminateFailure();
 }
 
-Orientation nsJPEGDecoder::ReadOrientationFromEXIF() {
+EXIFData nsJPEGDecoder::ReadExifData() const {
   jpeg_saved_marker_ptr marker;
 
   // Locate the APP1 marker, where EXIF data is stored, in the marker list.
@@ -575,13 +650,12 @@ Orientation nsJPEGDecoder::ReadOrientationFromEXIF() {
 
   // If we're at the end of the list, there's no EXIF data.
   if (!marker) {
-    return Orientation();
+    return EXIFData();
   }
 
-  // Extract the orientation information.
-  EXIFData exif = EXIFParser::Parse(marker->data,
-                                    static_cast<uint32_t>(marker->data_length));
-  return exif.orientation;
+  return EXIFParser::Parse(marker->data,
+                           static_cast<uint32_t>(marker->data_length),
+                           gfx::IntSize(mInfo.image_width, mInfo.image_height));
 }
 
 void nsJPEGDecoder::NotifyDone() {
@@ -594,7 +668,8 @@ WriteState nsJPEGDecoder::OutputScanlines() {
       [&](uint32_t* aPixelBlock, int32_t aBlockSize) {
         JSAMPROW sampleRow = (JSAMPROW)(mCMSLine ? mCMSLine : aPixelBlock);
         if (jpeg_read_scanlines(&mInfo, &sampleRow, 1) != 1) {
-          return MakeTuple(/* aWritten */ 0, Some(WriteState::NEED_MORE_DATA));
+          return std::make_tuple(/* aWritten */ 0,
+                                 Some(WriteState::NEED_MORE_DATA));
         }
 
         switch (mInfo.out_color_space) {
@@ -618,7 +693,7 @@ WriteState nsJPEGDecoder::OutputScanlines() {
             break;
         }
 
-        return MakeTuple(aBlockSize, Maybe<WriteState>());
+        return std::make_tuple(aBlockSize, Maybe<WriteState>());
       });
 
   Maybe<SurfaceInvalidRect> invalidRect = mPipe.TakeInvalidRect();
@@ -636,9 +711,20 @@ my_error_exit(j_common_ptr cinfo) {
   decoder_error_mgr* err = (decoder_error_mgr*)cinfo->err;
 
   // Convert error to a browser error code
-  nsresult error_code = err->pub.msg_code == JERR_OUT_OF_MEMORY
-                            ? NS_ERROR_OUT_OF_MEMORY
-                            : NS_ERROR_FAILURE;
+  nsresult error_code;
+  switch (err->pub.msg_code) {
+    case JERR_OUT_OF_MEMORY:
+      error_code = NS_ERROR_OUT_OF_MEMORY;
+      break;
+    case JERR_UNKNOWN_MARKER:
+      error_code = NS_ERROR_ILLEGAL_VALUE;
+      break;
+    case JERR_SOF_UNSUPPORTED:
+      error_code = NS_ERROR_INVALID_CONTENT_ENCODING;
+      break;
+    default:
+      error_code = NS_ERROR_FAILURE;
+  }
 
 #ifdef DEBUG
   char buffer[JMSG_LENGTH_MAX];
@@ -652,6 +738,17 @@ my_error_exit(j_common_ptr cinfo) {
   // Return control to the setjmp point.  We pass an nsresult masquerading as
   // an int, which works because the setjmp() caller casts it back.
   longjmp(err->setjmp_buffer, static_cast<int>(error_code));
+}
+
+static void progress_monitor(j_common_ptr info) {
+  int scan = ((j_decompress_ptr)info)->input_scan_number;
+  // Progressive images with a very large number of scans can cause the decoder
+  // to hang. Here we use the progress monitor to abort on a very large number
+  // of scans. 1000 is arbitrary, but much larger than the number of scans we
+  // might expect in a normal image.
+  if (scan >= 1000) {
+    my_error_exit(info);
+  }
 }
 
 /*******************************************************************************
@@ -893,9 +990,10 @@ static void cmyk_convert_bgra(uint32_t* aInput, uint32_t* aOutput,
     const uint8_t g = iM * iK / 255;
     const uint8_t b = iY * iK / 255;
 
-    *aOutput++ = (0xFF << SurfaceFormatBit::OS_A) |
-                 (r << SurfaceFormatBit::OS_R) | (g << SurfaceFormatBit::OS_G) |
-                 (b << SurfaceFormatBit::OS_B);
+    *aOutput++ = (0xFF << mozilla::gfx::SurfaceFormatBit::OS_A) |
+                 (r << mozilla::gfx::SurfaceFormatBit::OS_R) |
+                 (g << mozilla::gfx::SurfaceFormatBit::OS_G) |
+                 (b << mozilla::gfx::SurfaceFormatBit::OS_B);
     input += 4;
   }
 }

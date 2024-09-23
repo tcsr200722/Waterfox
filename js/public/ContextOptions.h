@@ -11,47 +11,47 @@
 
 #include "jstypes.h"  // JS_PUBLIC_API
 
+#include "js/CompileOptions.h"  // PrefableCompileOptions
+#include "js/WasmFeatures.h"
+
 struct JS_PUBLIC_API JSContext;
 
 namespace JS {
 
 class JS_PUBLIC_API ContextOptions {
  public:
+  // clang-format off
   ContextOptions()
-      : asmJS_(true),
-        wasm_(true),
+      : wasm_(true),
         wasmForTrustedPrinciples_(true),
         wasmVerbose_(false),
         wasmBaseline_(true),
         wasmIon_(true),
-        wasmCranelift_(false),
-        wasmReftypes_(true),
-        wasmGc_(false),
-        wasmMultiValue_(false),
-        wasmSimd_(false),
         testWasmAwaitTier2_(false),
-        throwOnAsmJSValidationFailure_(false),
         disableIon_(false),
         disableEvalSecurityChecks_(false),
         asyncStack_(true),
-        sourcePragmas_(true),
+        asyncStackCaptureDebuggeeOnly_(false),
         throwOnDebuggeeWouldRun_(true),
         dumpStackOnDebuggeeWouldRun_(false),
-        strictMode_(false),
 #ifdef JS_ENABLE_SMOOSH
         trackNotImplemented_(false),
         trySmoosh_(false),
 #endif
         fuzzing_(false) {
   }
+  // clang-format on
 
-  bool asmJS() const { return asmJS_; }
+  bool asmJS() const {
+    return compileOptions_.asmJSOption() == AsmJSOption::Enabled;
+  }
+  AsmJSOption asmJSOption() const { return compileOptions_.asmJSOption(); }
   ContextOptions& setAsmJS(bool flag) {
-    asmJS_ = flag;
+    compileOptions_.setAsmJS(flag);
     return *this;
   }
-  ContextOptions& toggleAsmJS() {
-    asmJS_ = !asmJS_;
+  ContextOptions& setAsmJSOption(AsmJSOption option) {
+    compileOptions_.setAsmJSOption(option);
     return *this;
   }
 
@@ -89,43 +89,21 @@ class JS_PUBLIC_API ContextOptions {
     return *this;
   }
 
-  bool wasmCranelift() const { return wasmCranelift_; }
-  // Defined out-of-line because it depends on a compile-time option
-  ContextOptions& setWasmCranelift(bool flag);
-
   bool testWasmAwaitTier2() const { return testWasmAwaitTier2_; }
   ContextOptions& setTestWasmAwaitTier2(bool flag) {
     testWasmAwaitTier2_ = flag;
     return *this;
   }
 
-  bool wasmReftypes() const { return wasmReftypes_; }
-  ContextOptions& setWasmReftypes(bool flag) {
-    wasmReftypes_ = flag;
-    return *this;
-  }
-
-  bool wasmGc() const { return wasmGc_; }
-  // Defined out-of-line because it depends on a compile-time option
-  ContextOptions& setWasmGc(bool flag);
-
-  bool wasmMultiValue() const { return wasmMultiValue_; }
-  // Defined out-of-line because it depends on a compile-time option
-  ContextOptions& setWasmMultiValue(bool flag);
-
-  bool wasmSimd() const { return wasmSimd_; }
-  // Defined out-of-line because it depends on a compile-time option
-  ContextOptions& setWasmSimd(bool flag);
-
   bool throwOnAsmJSValidationFailure() const {
-    return throwOnAsmJSValidationFailure_;
+    return compileOptions_.throwOnAsmJSValidationFailure();
   }
   ContextOptions& setThrowOnAsmJSValidationFailure(bool flag) {
-    throwOnAsmJSValidationFailure_ = flag;
+    compileOptions_.setThrowOnAsmJSValidationFailure(flag);
     return *this;
   }
   ContextOptions& toggleThrowOnAsmJSValidationFailure() {
-    throwOnAsmJSValidationFailure_ = !throwOnAsmJSValidationFailure_;
+    compileOptions_.toggleThrowOnAsmJSValidationFailure();
     return *this;
   }
 
@@ -135,6 +113,20 @@ class JS_PUBLIC_API ContextOptions {
   bool disableIon() const { return disableIon_; }
   ContextOptions& setDisableIon() {
     disableIon_ = true;
+    return *this;
+  }
+
+  bool importAttributes() const { return compileOptions_.importAttributes(); }
+  ContextOptions& setImportAttributes(bool enabled) {
+    compileOptions_.setImportAttributes(enabled);
+    return *this;
+  }
+
+  bool importAttributesAssertSyntax() const {
+    return compileOptions_.importAttributesAssertSyntax();
+  }
+  ContextOptions& setImportAttributesAssertSyntax(bool enabled) {
+    compileOptions_.setImportAttributesAssertSyntax(enabled);
     return *this;
   }
 
@@ -152,10 +144,18 @@ class JS_PUBLIC_API ContextOptions {
     return *this;
   }
 
+  bool asyncStackCaptureDebuggeeOnly() const {
+    return asyncStackCaptureDebuggeeOnly_;
+  }
+  ContextOptions& setAsyncStackCaptureDebuggeeOnly(bool flag) {
+    asyncStackCaptureDebuggeeOnly_ = flag;
+    return *this;
+  }
+
   // Enable/disable support for parsing '//(#@) source(Mapping)?URL=' pragmas.
-  bool sourcePragmas() const { return sourcePragmas_; }
+  bool sourcePragmas() const { return compileOptions_.sourcePragmas(); }
   ContextOptions& setSourcePragmas(bool flag) {
-    sourcePragmas_ = flag;
+    compileOptions_.setSourcePragmas(flag);
     return *this;
   }
 
@@ -170,16 +170,6 @@ class JS_PUBLIC_API ContextOptions {
   }
   ContextOptions& setDumpStackOnDebuggeeWouldRun(bool flag) {
     dumpStackOnDebuggeeWouldRun_ = flag;
-    return *this;
-  }
-
-  bool strictMode() const { return strictMode_; }
-  ContextOptions& setStrictMode(bool flag) {
-    strictMode_ = flag;
-    return *this;
-  }
-  ContextOptions& toggleStrictMode() {
-    strictMode_ = !strictMode_;
     return *this;
   }
 
@@ -206,41 +196,41 @@ class JS_PUBLIC_API ContextOptions {
   ContextOptions& setFuzzing(bool flag);
 
   void disableOptionsForSafeMode() {
-    setAsmJS(false);
-    setWasm(false);
+    setAsmJSOption(AsmJSOption::DisabledByAsmJSPref);
     setWasmBaseline(false);
-    setWasmIon(false);
-    setWasmGc(false);
-    setWasmMultiValue(false);
-    setWasmSimd(false);
+  }
+
+  PrefableCompileOptions& compileOptions() { return compileOptions_; }
+  const PrefableCompileOptions& compileOptions() const {
+    return compileOptions_;
   }
 
  private:
-  bool asmJS_ : 1;
+  // WASM options.
   bool wasm_ : 1;
   bool wasmForTrustedPrinciples_ : 1;
   bool wasmVerbose_ : 1;
   bool wasmBaseline_ : 1;
   bool wasmIon_ : 1;
-  bool wasmCranelift_ : 1;
-  bool wasmReftypes_ : 1;
-  bool wasmGc_ : 1;
-  bool wasmMultiValue_ : 1;
-  bool wasmSimd_ : 1;
   bool testWasmAwaitTier2_ : 1;
-  bool throwOnAsmJSValidationFailure_ : 1;
+
+  // JIT options.
   bool disableIon_ : 1;
   bool disableEvalSecurityChecks_ : 1;
+
+  // Runtime options.
   bool asyncStack_ : 1;
-  bool sourcePragmas_ : 1;
+  bool asyncStackCaptureDebuggeeOnly_ : 1;
   bool throwOnDebuggeeWouldRun_ : 1;
   bool dumpStackOnDebuggeeWouldRun_ : 1;
-  bool strictMode_ : 1;
 #ifdef JS_ENABLE_SMOOSH
   bool trackNotImplemented_ : 1;
   bool trySmoosh_ : 1;
 #endif
   bool fuzzing_ : 1;
+
+  // Compile options.
+  PrefableCompileOptions compileOptions_;
 };
 
 JS_PUBLIC_API ContextOptions& ContextOptionsRef(JSContext* cx);

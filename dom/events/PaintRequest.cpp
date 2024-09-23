@@ -10,8 +10,7 @@
 #include "mozilla/dom/PaintRequestListBinding.h"
 #include "mozilla/dom/DOMRect.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /******************************************************************************
  * mozilla::dom::PaintRequest
@@ -34,7 +33,7 @@ JSObject* PaintRequest::WrapObject(JSContext* aCx,
 }
 
 already_AddRefed<DOMRect> PaintRequest::ClientRect() {
-  RefPtr<DOMRect> clientRect = new DOMRect(this);
+  RefPtr<DOMRect> clientRect = new DOMRect(mParent);
   clientRect->SetLayoutRect(mRequest);
   return clientRect.forget();
 }
@@ -58,5 +57,4 @@ JSObject* PaintRequestList::WrapObject(JSContext* aCx,
   return PaintRequestList_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -13,9 +13,9 @@
 #include "nsPrintfCString.h"
 
 #include "nsGkAtoms.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IIRFilterNodeEngine final : public AudioNodeEngine {
  public:
@@ -31,6 +31,7 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
+    TRACE("IIRFilterNodeEngine::ProcessBlock");
     float inputBuffer[WEBAUDIO_BLOCK_SIZE + 4];
     float* alignedInputBuffer = ALIGNED16(inputBuffer);
     ASSERT_ALIGNED16(alignedInputBuffer);
@@ -174,7 +175,7 @@ already_AddRefed<IIRFilterNode> IIRFilterNode::Create(
   if (aOptions.mFeedback.Length() == 0 || aOptions.mFeedback.Length() > 20) {
     aRv.ThrowNotSupportedError(
         nsPrintfCString("\"feedback\" length %zu is not in the range [1,20]",
-                        aOptions.mFeedforward.Length()));
+                        aOptions.mFeedback.Length()));
     return nullptr;
   }
 
@@ -225,34 +226,41 @@ JSObject* IIRFilterNode::WrapObject(JSContext* aCx,
 void IIRFilterNode::GetFrequencyResponse(const Float32Array& aFrequencyHz,
                                          const Float32Array& aMagResponse,
                                          const Float32Array& aPhaseResponse) {
-  aFrequencyHz.ComputeState();
-  aMagResponse.ComputeState();
-  aPhaseResponse.ComputeState();
+  aFrequencyHz.ProcessData([&](const Span<float>& aFrequencyData,
+                               JS::AutoCheckCannotGC&&) {
+    aMagResponse.ProcessData([&](const Span<float>& aMagData,
+                                 JS::AutoCheckCannotGC&&) {
+      aPhaseResponse.ProcessData([&](const Span<float>& aPhaseData,
+                                     JS::AutoCheckCannotGC&&) {
+        uint32_t length = std::min(
+            {aFrequencyData.Length(), aMagData.Length(), aPhaseData.Length()});
+        if (!length) {
+          return;
+        }
 
-  uint32_t length =
-      std::min(std::min(aFrequencyHz.Length(), aMagResponse.Length()),
-               aPhaseResponse.Length());
-  if (!length) {
-    return;
-  }
+        auto frequencies = MakeUniqueForOverwriteFallible<float[]>(length);
+        if (!frequencies) {
+          return;
+        }
 
-  auto frequencies = MakeUnique<float[]>(length);
-  float* frequencyHz = aFrequencyHz.Data();
-  const double nyquist = Context()->SampleRate() * 0.5;
+        const double nyquist = Context()->SampleRate() * 0.5;
 
-  // Normalize the frequencies
-  for (uint32_t i = 0; i < length; ++i) {
-    if (frequencyHz[i] >= 0 && frequencyHz[i] <= nyquist) {
-      frequencies[i] = static_cast<float>(frequencyHz[i] / nyquist);
-    } else {
-      frequencies[i] = std::numeric_limits<float>::quiet_NaN();
-    }
-  }
+        // Normalize the frequencies
+        std::transform(aFrequencyData.begin(), aFrequencyData.begin() + length,
+                       frequencies.get(), [&](float aFrequency) {
+                         if (aFrequency >= 0 && aFrequency <= nyquist) {
+                           return static_cast<float>(aFrequency / nyquist);
+                         }
 
-  blink::IIRFilter filter(&mFeedforward, &mFeedback);
-  filter.getFrequencyResponse(int(length), frequencies.get(),
-                              aMagResponse.Data(), aPhaseResponse.Data());
+                         return std::numeric_limits<float>::quiet_NaN();
+                       });
+
+        blink::IIRFilter filter(&mFeedforward, &mFeedback);
+        filter.getFrequencyResponse(int(length), frequencies.get(),
+                                    aMagData.Elements(), aPhaseData.Elements());
+      });
+    });
+  });
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

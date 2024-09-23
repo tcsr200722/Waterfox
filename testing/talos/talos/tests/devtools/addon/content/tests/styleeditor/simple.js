@@ -11,9 +11,9 @@ const {
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(SIMPLE_URL);
   const toolbox = await openToolboxAndLog("simple.styleeditor", "styleeditor");
   await reloadPageAndLog("simple.styleeditor", toolbox);

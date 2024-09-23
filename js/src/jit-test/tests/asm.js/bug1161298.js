@@ -1,4 +1,4 @@
-// |jit-test| skip-if: !this.SharedArrayBuffer
+// |jit-test| skip-if: !this.SharedArrayBuffer || largeArrayBufferSupported()
 
 // The length exceeds INT32_MAX and should be rejected.
 

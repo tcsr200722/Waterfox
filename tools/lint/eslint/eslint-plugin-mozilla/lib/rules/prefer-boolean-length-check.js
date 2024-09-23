@@ -8,9 +8,6 @@
 
 "use strict";
 
-// -----------------------------------------------------------------------------
-// Rule Definition
-// -----------------------------------------------------------------------------
 function funcForBooleanLength(context, node, conditionCheck) {
   let newText = "";
   const sourceCode = context.getSourceCode();
@@ -59,66 +56,74 @@ function funcForBooleanLength(context, node, conditionCheck) {
   return newText;
 }
 
-module.exports = function(context) {
-  // ---------------------------------------------------------------------------
-  // Public
-  //  --------------------------------------------------------------------------
-
-  const conditionStatement = [
-    "IfStatement",
-    "WhileStatement",
-    "DoWhileStatement",
-    "ForStatement",
-    "ForInStatement",
-    "ConditionalExpression",
-  ];
-
-  return {
-    BinaryExpression(node) {
-      if (
-        ["==", "!=", ">", "<"].includes(node.operator) &&
-        ((node.right.type == "Literal" &&
-          node.right.value == 0 &&
-          node.left.property &&
-          node.left.property.name == "length") ||
-          (node.left.type == "Literal" &&
-            node.left.value == 0 &&
-            node.right.property &&
-            node.right.property.name == "length"))
-      ) {
-        if (
-          conditionStatement.includes(node.parent.type) ||
-          (node.parent.type == "LogicalExpression" &&
-            conditionStatement.includes(node.parent.parent.type))
-        ) {
-          context.report({
-            node,
-            fix: fixer => {
-              let generateExpression = funcForBooleanLength(
-                context,
-                node,
-                true
-              );
-
-              return fixer.replaceText(node, generateExpression);
-            },
-            message: "Prefer boolean length check",
-          });
-        } else {
-          context.report({
-            node,
-            fix: fixer => {
-              let generateExpression = funcForBooleanLength(
-                context,
-                node,
-                false
-              );
-              return fixer.replaceText(node, generateExpression);
-            },
-            message: "Prefer boolean length check",
-          });
-        }
-      }
+module.exports = {
+  meta: {
+    docs: {
+      url: "https://firefox-source-docs.mozilla.org/code-quality/lint/linters/eslint-plugin-mozilla/rules/prefer-boolean-length-check.html",
     },
-  };
+    fixable: "code",
+    messages: {
+      preferBooleanCheck: "Prefer boolean length check",
+    },
+    schema: [],
+    type: "suggestion",
+  },
+
+  create(context) {
+    const conditionStatement = [
+      "IfStatement",
+      "WhileStatement",
+      "DoWhileStatement",
+      "ForStatement",
+      "ForInStatement",
+      "ConditionalExpression",
+    ];
+
+    return {
+      BinaryExpression(node) {
+        if (
+          ["==", "!=", ">", "<"].includes(node.operator) &&
+          ((node.right.type == "Literal" &&
+            node.right.value == 0 &&
+            node.left.property?.name == "length") ||
+            (node.left.type == "Literal" &&
+              node.left.value == 0 &&
+              node.right.property?.name == "length"))
+        ) {
+          if (
+            conditionStatement.includes(node.parent.type) ||
+            (node.parent.type == "LogicalExpression" &&
+              conditionStatement.includes(node.parent.parent.type))
+          ) {
+            context.report({
+              node,
+              fix: fixer => {
+                let generateExpression = funcForBooleanLength(
+                  context,
+                  node,
+                  true
+                );
+
+                return fixer.replaceText(node, generateExpression);
+              },
+              messageId: "preferBooleanCheck",
+            });
+          } else {
+            context.report({
+              node,
+              fix: fixer => {
+                let generateExpression = funcForBooleanLength(
+                  context,
+                  node,
+                  false
+                );
+                return fixer.replaceText(node, generateExpression);
+              },
+              messageId: "preferBooleanCheck",
+            });
+          }
+        }
+      },
+    };
+  },
 };

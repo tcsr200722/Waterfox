@@ -15,4 +15,19 @@ interface nsIAccessibleCaretMoveEvent: nsIAccessibleEvent
    * Return caret offset.
    */
   readonly attribute long caretOffset;
+
+  /**
+   * Return true if there is no selection.
+   */
+  readonly attribute boolean isSelectionCollapsed;
+
+  /**
+   * Return true if the caret is at the end of a line.
+   */
+  readonly attribute boolean isAtEndOfLine;
+
+  /**
+   * Return caret move granularity.
+   */
+  readonly attribute long granularity;
 };

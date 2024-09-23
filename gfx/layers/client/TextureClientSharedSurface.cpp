@@ -14,71 +14,78 @@
 #include "nsThreadUtils.h"
 #include "SharedSurface.h"
 
+#ifdef MOZ_WIDGET_ANDROID
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
+#endif
+
 using namespace mozilla::gl;
 
 namespace mozilla {
 namespace layers {
 
+/* static */
+already_AddRefed<TextureClient> SharedSurfaceTextureData::CreateTextureClient(
+    const layers::SurfaceDescriptor& aDesc, const gfx::SurfaceFormat aFormat,
+    gfx::IntSize aSize, TextureFlags aFlags, LayersIPCChannel* aAllocator) {
+  auto data = MakeUnique<SharedSurfaceTextureData>(aDesc, aFormat, aSize);
+  return TextureClient::CreateWithData(data.release(), aFlags, aAllocator);
+}
+
 SharedSurfaceTextureData::SharedSurfaceTextureData(
-    UniquePtr<gl::SharedSurface> surf)
-    : mSurf(std::move(surf)) {}
+    const SurfaceDescriptor& desc, const gfx::SurfaceFormat format,
+    const gfx::IntSize size)
+    : mDesc(desc), mFormat(format), mSize(size) {}
 
 SharedSurfaceTextureData::~SharedSurfaceTextureData() = default;
 
 void SharedSurfaceTextureData::Deallocate(LayersIPCChannel*) {}
 
 void SharedSurfaceTextureData::FillInfo(TextureData::Info& aInfo) const {
-  aInfo.size = mSurf->mSize;
-  aInfo.format = gfx::SurfaceFormat::UNKNOWN;
-  aInfo.hasIntermediateBuffer = false;
+  aInfo.size = mSize;
+  aInfo.format = mFormat;
   aInfo.hasSynchronization = false;
   aInfo.supportsMoz2D = false;
   aInfo.canExposeMappedData = false;
 }
 
 bool SharedSurfaceTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
-  return mSurf->ToSurfaceDescriptor(&aOutDescriptor);
+  aOutDescriptor = mDesc;
+  return true;
 }
 
-SharedSurfaceTextureClient::SharedSurfaceTextureClient(
-    SharedSurfaceTextureData* aData, TextureFlags aFlags,
-    LayersIPCChannel* aAllocator)
-    : TextureClient(aData, aFlags, aAllocator) {
-  mWorkaroundAnnoyingSharedSurfaceLifetimeIssues = true;
+TextureFlags SharedSurfaceTextureData::GetTextureFlags() const {
+  TextureFlags flags = TextureFlags::NO_FLAGS;
+  return flags;
 }
 
-already_AddRefed<SharedSurfaceTextureClient> SharedSurfaceTextureClient::Create(
-    UniquePtr<gl::SharedSurface> surf, gl::SurfaceFactory* factory,
-    LayersIPCChannel* aAllocator, TextureFlags aFlags) {
-  if (!surf) {
-    return nullptr;
+Maybe<uint64_t> SharedSurfaceTextureData::GetBufferId() const {
+#ifdef MOZ_WIDGET_ANDROID
+  if (mDesc.type() ==
+      SurfaceDescriptor::TSurfaceDescriptorAndroidHardwareBuffer) {
+    const SurfaceDescriptorAndroidHardwareBuffer& desc =
+        mDesc.get_SurfaceDescriptorAndroidHardwareBuffer();
+    return Some(desc.bufferId());
   }
-  TextureFlags flags = aFlags | TextureFlags::RECYCLE | surf->GetTextureFlags();
-  SharedSurfaceTextureData* data =
-      new SharedSurfaceTextureData(std::move(surf));
-  return MakeAndAddRef<SharedSurfaceTextureClient>(data, flags, aAllocator);
+#endif
+  return Nothing();
 }
 
-SharedSurfaceTextureClient::~SharedSurfaceTextureClient() {
-  // XXX - Things break when using the proper destruction handshake with
-  // SharedSurfaceTextureData because the TextureData outlives its gl
-  // context. Having a strong reference to the gl context creates a cycle.
-  // This needs to be fixed in a better way, though, because deleting
-  // the TextureData here can race with the compositor and cause flashing.
-  TextureData* data = mData;
-  mData = nullptr;
+mozilla::ipc::FileDescriptor SharedSurfaceTextureData::GetAcquireFence() {
+#ifdef MOZ_WIDGET_ANDROID
+  if (mDesc.type() ==
+      SurfaceDescriptor::TSurfaceDescriptorAndroidHardwareBuffer) {
+    const SurfaceDescriptorAndroidHardwareBuffer& desc =
+        mDesc.get_SurfaceDescriptorAndroidHardwareBuffer();
+    RefPtr<AndroidHardwareBuffer> buffer =
+        AndroidHardwareBufferManager::Get()->GetBuffer(desc.bufferId());
+    if (!buffer) {
+      return ipc::FileDescriptor();
+    }
 
-  Destroy();
-
-  if (data) {
-    // Destroy mData right away without doing the proper deallocation handshake,
-    // because SharedSurface depends on things that may not outlive the
-    // texture's destructor so we can't wait until we know the compositor isn't
-    // using the texture anymore. It goes without saying that this is really bad
-    // and we should fix the bugs that block doing the right thing such as bug
-    // 1224199 sooner rather than later.
-    delete data;
+    return buffer->GetAcquireFence();
   }
+#endif
+  return ipc::FileDescriptor();
 }
 
 }  // namespace layers

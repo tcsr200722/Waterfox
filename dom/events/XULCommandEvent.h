@@ -13,8 +13,7 @@
 #include "mozilla/dom/UIEvent.h"
 #include "mozilla/dom/XULCommandEventBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class XULCommandEvent : public UIEvent {
  public:
@@ -36,6 +35,7 @@ class XULCommandEvent : public UIEvent {
   bool ShiftKey();
   bool MetaKey();
   uint16_t InputSource();
+  int16_t Button() { return mButton; }
 
   already_AddRefed<Event> GetSourceEvent() {
     RefPtr<Event> e = mSourceEvent;
@@ -45,18 +45,19 @@ class XULCommandEvent : public UIEvent {
   void InitCommandEvent(const nsAString& aType, bool aCanBubble,
                         bool aCancelable, nsGlobalWindowInner* aView,
                         int32_t aDetail, bool aCtrlKey, bool aAltKey,
-                        bool aShiftKey, bool aMetaKey, Event* aSourceEvent,
-                        uint16_t aInputSource, ErrorResult& aRv);
+                        bool aShiftKey, bool aMetaKey, int16_t aButton,
+                        Event* aSourceEvent, uint16_t aInputSource,
+                        ErrorResult& aRv);
 
  protected:
   ~XULCommandEvent() = default;
 
   RefPtr<Event> mSourceEvent;
   uint16_t mInputSource;
+  int16_t mButton = 0;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 already_AddRefed<mozilla::dom::XULCommandEvent> NS_NewDOMXULCommandEvent(
     mozilla::dom::EventTarget* aOwner, nsPresContext* aPresContext,

@@ -8,14 +8,16 @@
 #define mozilla_MemoryTelemetry_h
 
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Result.h"
-#include "nsIEventTarget.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
 #include "nsTArray.h"
 #include "nsWeakReference.h"
 
 #include <functional>
+
+class nsIEventTarget;
 
 namespace mozilla {
 
@@ -38,13 +40,15 @@ class MemoryTelemetry final : public nsIObserver,
   nsresult GatherReports(
       const std::function<void()>& aCompletionCallback = nullptr);
 
-  void GetUniqueSetSize(std::function<void(const int64_t&)>&& aCallback);
+  /**
+   * Called to signal that we can begin collecting telemetry.
+   */
+  void DelayedInit();
 
   /**
-   * Does expensive initialization, which should happen only after startup has
-   * completed, and the event loop is idle.
+   * Notify that the browser is active and telemetry should be recorded soon.
    */
-  nsresult DelayedInit();
+  void Poke();
 
   nsresult Shutdown();
 
@@ -57,38 +61,20 @@ class MemoryTelemetry final : public nsIObserver,
 
   static Result<uint32_t, nsresult> GetOpenTabsCount();
 
-  class TotalMemoryGatherer final : public nsITimerCallback {
-   public:
-    NS_DECL_THREADSAFE_ISUPPORTS
-    NS_DECL_NSITIMERCALLBACK
-
-    TotalMemoryGatherer() = default;
-
-    void CollectParentSize(int64_t aResident);
-    void CollectResult(int64_t aChildUSS);
-    void OnFailure(ipc::ResponseRejectReason aReason);
-
-    void Begin(nsIEventTarget* aThreadPool);
-
-   private:
-    ~TotalMemoryGatherer() = default;
-
-    nsresult MaybeFinish();
-
-    nsCOMPtr<nsITimer> mTimeout;
-
-    nsTArray<int64_t> mChildSizes;
-
-    int64_t mTotalMemory = 0;
-    uint32_t mRemainingChildCount = 0;
-
-    bool mHaveParentSize = false;
-  };
+  void GatherTotalMemory();
+  nsresult FinishGatheringTotalMemory(Maybe<int64_t> aTotalMemory,
+                                      const nsTArray<int64_t>& aChildSizes);
 
   nsCOMPtr<nsIEventTarget> mThreadPool;
-  RefPtr<TotalMemoryGatherer> mTotalMemoryGatherer;
 
-  TimeStamp mLastPoll{};
+  bool mGatheringTotalMemory = false;
+
+  TimeStamp mLastRun{};
+  TimeStamp mLastPoke{};
+  nsCOMPtr<nsITimer> mTimer;
+
+  // True if startup is finished and it's okay to start gathering telemetry.
+  bool mCanRun = false;
 };
 
 }  // namespace mozilla

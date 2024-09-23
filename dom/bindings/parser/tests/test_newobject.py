@@ -1,6 +1,7 @@
-# Import the WebIDL module, so we can do isinstance checks and whatnot
 import WebIDL
 
+
+# Import the WebIDL module, so we can do isinstance checks and whatnot
 def WebIDLTest(parser, harness):
     # Basic functionality
     parser.parse(
@@ -9,7 +10,8 @@ def WebIDLTest(parser, harness):
           [NewObject] readonly attribute Iface attr;
           [NewObject] Iface method();
         };
-        """)
+        """
+    )
     results = parser.finish()
     harness.ok(results, "Should not have thrown on basic [NewObject] usage")
 
@@ -21,9 +23,10 @@ def WebIDLTest(parser, harness):
             interface Iface {
               [Pure, NewObject] readonly attribute Iface attr;
             };
-            """)
-        results = parser.finish()
-    except:
+            """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
     harness.ok(threw, "[NewObject] attributes must depend on something")
 
@@ -35,9 +38,10 @@ def WebIDLTest(parser, harness):
             interface Iface {
               [Pure, NewObject] Iface method();
             };
-            """)
-        results = parser.finish()
-    except:
+            """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
     harness.ok(threw, "[NewObject] methods must depend on something")
 
@@ -49,9 +53,10 @@ def WebIDLTest(parser, harness):
             interface Iface {
               [Cached, NewObject, Affects=Nothing] readonly attribute Iface attr;
             };
-            """)
-        results = parser.finish()
-    except:
+            """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
     harness.ok(threw, "[NewObject] attributes must not be [Cached]")
 
@@ -63,8 +68,9 @@ def WebIDLTest(parser, harness):
             interface Iface {
               [StoreInSlot, NewObject, Affects=Nothing] readonly attribute Iface attr;
             };
-            """)
-        results = parser.finish()
-    except:
+            """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
     harness.ok(threw, "[NewObject] attributes must not be [StoreInSlot]")

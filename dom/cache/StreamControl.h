@@ -14,12 +14,7 @@
 
 struct nsID;
 
-namespace mozilla {
-namespace ipc {
-class AutoIPCStream;
-}  // namespace ipc
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 class CacheReadStream;
 
@@ -31,9 +26,8 @@ class StreamControl {
   // abstract interface that must be implemented by child class
   virtual void SerializeControl(CacheReadStream* aReadStreamOut) = 0;
 
-  virtual void SerializeStream(
-      CacheReadStream* aReadStreamOut, nsIInputStream* aStream,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList) = 0;
+  virtual void SerializeStream(CacheReadStream* aReadStreamOut,
+                               nsIInputStream* aStream) = 0;
 
   virtual void OpenStream(const nsID& aId, InputStreamResolver&& aResolver) = 0;
 
@@ -42,18 +36,17 @@ class StreamControl {
   // Begin controlling the given ReadStream.  This causes a strong ref to
   // be held by the control.  The ReadStream must call NoteClosed() or
   // ForgetReadStream() to release this ref.
-  void AddReadStream(ReadStream::Controllable* aReadStream);
+  void AddReadStream(SafeRefPtr<ReadStream::Controllable> aReadStream);
 
   // Forget the ReadStream without notifying the actor.
-  void ForgetReadStream(ReadStream::Controllable* aReadStream);
+  void ForgetReadStream(SafeRefPtr<ReadStream::Controllable> aReadStream);
 
   // Forget the ReadStream and then notify the actor the stream is closed.
-  void NoteClosed(ReadStream::Controllable* aReadStream, const nsID& aId);
+  void NoteClosed(SafeRefPtr<ReadStream::Controllable> aReadStream,
+                  const nsID& aId);
 
  protected:
   ~StreamControl();
-
-  void CloseReadStreams(const nsID& aId);
 
   void CloseAllReadStreams();
 
@@ -73,12 +66,10 @@ class StreamControl {
  private:
   // Hold strong references to ReadStream object.  When the stream is closed
   // it should call NoteClosed() or ForgetReadStream() to release this ref.
-  typedef nsTObserverArray<RefPtr<ReadStream::Controllable>> ReadStreamList;
+  using ReadStreamList = nsTObserverArray<SafeRefPtr<ReadStream::Controllable>>;
   ReadStreamList mReadStreamList;
 };
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_StreamControl_h

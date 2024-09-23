@@ -19,10 +19,13 @@ enum class EditAction {
   // eNone indicates no edit action is being handled.
   eNone,
 
-  // eNotEditing indicates that something is retrieved or initializing
-  // something at creating, destroying or focus move etc, i.e., not edit
-  // action is being handled but editor is doing something.
+  // eNotEditing indicates that something is retrieved, doing something at
+  // destroying or focus move etc, i.e., not edit action is being handled but
+  // editor is doing something.
   eNotEditing,
+
+  // eInitializing indicates that the editor instance is being initialized.
+  eInitializing,
 
   // eInsertText indicates to insert some characters.
   eInsertText,
@@ -78,15 +81,18 @@ enum class EditAction {
   // new non-empty composition string and IME selections.
   eUpdateComposition,
 
-  // eCommitComposition indicates that user commits composition.
+  // eUpdateCompositionToCommit indicates that user commits composition with
+  // the new data.  That means that there will be no IME selections, but the
+  // composition continues until the following eCompositionEnd event.
+  eUpdateCompositionToCommit,
+
+  // eCommitComposition indicates that user commits composition and ends the
+  // composition.
   eCommitComposition,
 
-  // eCancelComposition indicates that user cancels composition.
+  // eCancelComposition indicates that user cancels composition and ends the
+  // composition with empty string.
   eCancelComposition,
-
-  // eDeleteByComposition indicates that user starts composition with
-  // empty string and there was selected content.
-  eDeleteByComposition,
 
   // eUndo/eRedo indicate to undo/redo a transaction.
   eUndo,
@@ -224,6 +230,23 @@ enum class EditAction {
   // eSetTableCellElementType indicates to set table cell element type to
   // <td> or <th>.
   eSetTableCellElementType,
+
+  // Those edit actions are mapped to the methods in nsITableEditor which
+  // access table layout information.
+  eSelectTableCell,
+  eSelectTableRow,
+  eSelectTableColumn,
+  eSelectTable,
+  eSelectAllTableCells,
+  eGetCellIndexes,
+  eGetTableSize,
+  eGetCellAt,
+  eGetCellDataAt,
+  eGetFirstRow,
+  eGetSelectedOrParentTableElement,
+  eGetSelectedCellsType,
+  eGetFirstSelectedCellInTable,
+  eGetSelectedCells,
 
   // eSetInlineStyleProperty indicates to set CSS another inline style property
   // which is not defined below.
@@ -365,6 +388,10 @@ enum class EditSubAction : int32_t {
   // eDeleteNode indicates to remove a node from the DOM tree.
   eDeleteNode,
 
+  // eMoveNode indicates to move a node connected in the DOM tree to different
+  // place.
+  eMoveNode,
+
   // eSplitNode indicates to split a node to 2 nodes.
   eSplitNode,
 
@@ -425,9 +452,14 @@ enum class EditSubAction : int32_t {
   // move its descendants to where the block was.
   eCreateOrRemoveBlock,
 
+  // eFormatBlockForHTMLCommand wraps selected lines into format block, replaces
+  // format blocks around selection with new format block or deletes format
+  // blocks around selection.
+  eFormatBlockForHTMLCommand,
+
   // eMergeBlockContents is not an actual sub-action, but this is used by
   // HTMLEditor::MoveBlock() to request special handling in
-  // HTMLEditor::SplitInlinesAndCollectEditTargetNodesInOneHardLine().
+  // HTMLEditor::MaybeSplitElementsAtEveryBRElement().
   eMergeBlockContents,
 
   // eRemoveList removes specific type of list but keep its content.
@@ -473,6 +505,26 @@ enum class EditSubAction : int32_t {
   eCreatePaddingBRElementForEmptyEditor,
 };
 
+// You can use this macro as:
+//   case NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING:
+// clang-format off
+#define NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING \
+       mozilla::EditAction::eSelectTableCell:                     \
+  case mozilla::EditAction::eSelectTableRow:                      \
+  case mozilla::EditAction::eSelectTableColumn:                   \
+  case mozilla::EditAction::eSelectTable:                         \
+  case mozilla::EditAction::eSelectAllTableCells:                 \
+  case mozilla::EditAction::eGetCellIndexes:                      \
+  case mozilla::EditAction::eGetTableSize:                        \
+  case mozilla::EditAction::eGetCellAt:                           \
+  case mozilla::EditAction::eGetCellDataAt:                       \
+  case mozilla::EditAction::eGetFirstRow:                         \
+  case mozilla::EditAction::eGetSelectedOrParentTableElement:     \
+  case mozilla::EditAction::eGetSelectedCellsType:                \
+  case mozilla::EditAction::eGetFirstSelectedCellInTable:         \
+  case mozilla::EditAction::eGetSelectedCells
+// clang-format on
+
 inline EditorInputType ToInputType(EditAction aEditAction) {
   switch (aEditAction) {
     case EditAction::eInsertText:
@@ -498,6 +550,7 @@ inline EditorInputType ToInputType(EditAction aEditAction) {
     case EditAction::ePasteAsQuotation:
       return EditorInputType::eInsertFromPasteAsQuotation;
     case EditAction::eUpdateComposition:
+    case EditAction::eUpdateCompositionToCommit:
       return EditorInputType::eInsertCompositionText;
     case EditAction::eCommitComposition:
       if (StaticPrefs::dom_input_events_conform_to_level_1()) {
@@ -509,13 +562,6 @@ inline EditorInputType ToInputType(EditAction aEditAction) {
         return EditorInputType::eInsertCompositionText;
       }
       return EditorInputType::eDeleteCompositionText;
-    case EditAction::eDeleteByComposition:
-      if (StaticPrefs::dom_input_events_conform_to_level_1()) {
-        // XXX Or EditorInputType::eDeleteContent?  I don't know which IME may
-        //     causes this situation.
-        return EditorInputType::eInsertCompositionText;
-      }
-      return EditorInputType::eDeleteByComposition;
     case EditAction::eInsertLinkElement:
       return EditorInputType::eInsertLink;
     case EditAction::eDeleteWordBackward:
@@ -590,6 +636,223 @@ inline EditorInputType ToInputType(EditAction aEditAction) {
       return EditorInputType::eFormatFontName;
     default:
       return EditorInputType::eUnknown;
+  }
+}
+
+inline bool MayEditActionDeleteAroundCollapsedSelection(
+    const EditAction aEditAction) {
+  switch (aEditAction) {
+    case EditAction::eCut:
+    case EditAction::eDeleteSelection:
+    case EditAction::eDeleteBackward:
+    case EditAction::eDeleteForward:
+    case EditAction::eDeleteWordBackward:
+    case EditAction::eDeleteWordForward:
+    case EditAction::eDeleteToBeginningOfSoftLine:
+    case EditAction::eDeleteToEndOfSoftLine:
+      return true;
+    default:
+      return false;
+  }
+}
+
+inline bool IsEditActionInOrderToEditSomething(const EditAction aEditAction) {
+  switch (aEditAction) {
+    case EditAction::eNotEditing:
+    case NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING:
+      return false;
+    default:
+      return true;
+  }
+}
+
+inline bool IsEditActionTableEditing(const EditAction aEditAction) {
+  switch (aEditAction) {
+    case EditAction::eInsertTableRowElement:
+    case EditAction::eRemoveTableRowElement:
+    case EditAction::eInsertTableColumn:
+    case EditAction::eRemoveTableColumn:
+    case EditAction::eRemoveTableElement:
+    case EditAction::eRemoveTableCellElement:
+    case EditAction::eDeleteTableCellContents:
+    case EditAction::eInsertTableCellElement:
+    case EditAction::eJoinTableCellElements:
+    case EditAction::eSplitTableCellElement:
+    case EditAction::eSetTableCellElementType:
+      return true;
+    default:
+      return false;
+  }
+}
+
+inline bool MayEditActionDeleteSelection(const EditAction aEditAction) {
+  switch (aEditAction) {
+    case EditAction::eNone:
+    case EditAction::eNotEditing:
+    case EditAction::eInitializing:
+    case NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING:
+      return false;
+
+    // EditActions modifying around selection.
+    case EditAction::eInsertText:
+    case EditAction::eInsertParagraphSeparator:
+    case EditAction::eInsertLineBreak:
+    case EditAction::eDeleteSelection:
+    case EditAction::eDeleteBackward:
+    case EditAction::eDeleteForward:
+    case EditAction::eDeleteWordBackward:
+    case EditAction::eDeleteWordForward:
+    case EditAction::eDeleteToBeginningOfSoftLine:
+    case EditAction::eDeleteToEndOfSoftLine:
+    case EditAction::eDeleteByDrag:
+      return true;
+
+    case EditAction::eStartComposition:
+      return false;
+
+    case EditAction::eUpdateComposition:
+    case EditAction::eUpdateCompositionToCommit:
+    case EditAction::eCommitComposition:
+    case EditAction::eCancelComposition:
+      return true;
+
+    case EditAction::eUndo:
+    case EditAction::eRedo:
+    case EditAction::eSetTextDirection:
+      return false;
+
+    case EditAction::eCut:
+      return true;
+
+    case EditAction::eCopy:
+      return false;
+
+    case EditAction::ePaste:
+    case EditAction::ePasteAsQuotation:
+      return true;
+
+    case EditAction::eDrop:
+      return false;  // Not deleting selection at drop.
+
+    // EditActions changing format around selection.
+    case EditAction::eIndent:
+    case EditAction::eOutdent:
+      return false;
+
+    // EditActions inserting or deleting something at specified position.
+    case EditAction::eInsertTableRowElement:
+    case EditAction::eRemoveTableRowElement:
+    case EditAction::eInsertTableColumn:
+    case EditAction::eRemoveTableColumn:
+    case EditAction::eResizingElement:
+    case EditAction::eResizeElement:
+    case EditAction::eMovingElement:
+    case EditAction::eMoveElement:
+    case EditAction::eUnknown:
+    case EditAction::eSetAttribute:
+    case EditAction::eRemoveAttribute:
+    case EditAction::eRemoveNode:
+    case EditAction::eInsertBlockElement:
+      return false;
+
+    // EditActions inserting someting around selection or replacing selection
+    // with something.
+    case EditAction::eReplaceText:
+    case EditAction::eInsertNode:
+    case EditAction::eInsertHorizontalRuleElement:
+      return true;
+
+    // EditActions changing format around selection or inserting or deleting
+    // something at specific position.
+    case EditAction::eInsertLinkElement:
+    case EditAction::eInsertUnorderedListElement:
+    case EditAction::eInsertOrderedListElement:
+    case EditAction::eRemoveUnorderedListElement:
+    case EditAction::eRemoveOrderedListElement:
+    case EditAction::eRemoveListElement:
+    case EditAction::eInsertBlockquoteElement:
+    case EditAction::eNormalizeTable:
+    case EditAction::eRemoveTableElement:
+    case EditAction::eRemoveTableCellElement:
+    case EditAction::eDeleteTableCellContents:
+    case EditAction::eInsertTableCellElement:
+    case EditAction::eJoinTableCellElements:
+    case EditAction::eSplitTableCellElement:
+    case EditAction::eSetTableCellElementType:
+    case EditAction::eSetInlineStyleProperty:
+    case EditAction::eRemoveInlineStyleProperty:
+    case EditAction::eSetFontWeightProperty:
+    case EditAction::eRemoveFontWeightProperty:
+    case EditAction::eSetTextStyleProperty:
+    case EditAction::eRemoveTextStyleProperty:
+    case EditAction::eSetTextDecorationPropertyUnderline:
+    case EditAction::eRemoveTextDecorationPropertyUnderline:
+    case EditAction::eSetTextDecorationPropertyLineThrough:
+    case EditAction::eRemoveTextDecorationPropertyLineThrough:
+    case EditAction::eSetVerticalAlignPropertySuper:
+    case EditAction::eRemoveVerticalAlignPropertySuper:
+    case EditAction::eSetVerticalAlignPropertySub:
+    case EditAction::eRemoveVerticalAlignPropertySub:
+    case EditAction::eSetFontFamilyProperty:
+    case EditAction::eRemoveFontFamilyProperty:
+    case EditAction::eSetColorProperty:
+    case EditAction::eRemoveColorProperty:
+    case EditAction::eSetBackgroundColorPropertyInline:
+    case EditAction::eRemoveBackgroundColorPropertyInline:
+    case EditAction::eRemoveAllInlineStyleProperties:
+    case EditAction::eIncrementFontSize:
+    case EditAction::eDecrementFontSize:
+    case EditAction::eSetAlignment:
+    case EditAction::eAlignLeft:
+    case EditAction::eAlignRight:
+    case EditAction::eAlignCenter:
+    case EditAction::eJustify:
+    case EditAction::eSetBackgroundColor:
+    case EditAction::eSetPositionToAbsoluteOrStatic:
+    case EditAction::eIncreaseOrDecreaseZIndex:
+      return false;
+
+    // EditActions controlling editor feature or state.
+    case EditAction::eEnableOrDisableCSS:
+    case EditAction::eEnableOrDisableAbsolutePositionEditor:
+    case EditAction::eEnableOrDisableResizer:
+    case EditAction::eEnableOrDisableInlineTableEditingUI:
+    case EditAction::eSetCharacterSet:
+    case EditAction::eSetWrapWidth:
+      return false;
+
+    case EditAction::eRewrap:
+    case EditAction::eSetText:
+    case EditAction::eSetHTML:
+    case EditAction::eInsertHTML:
+      return true;
+
+    case EditAction::eHidePassword:
+    case EditAction::eCreatePaddingBRElementForEmptyEditor:
+      return false;
+  }
+  return false;
+}
+
+inline bool MayEditActionRequireLayout(const EditAction aEditAction) {
+  switch (aEditAction) {
+    // Table editing require layout information for referring table cell data
+    // such as row/column number and rowspan/colspan.
+    case EditAction::eInsertTableRowElement:
+    case EditAction::eRemoveTableRowElement:
+    case EditAction::eInsertTableColumn:
+    case EditAction::eRemoveTableColumn:
+    case EditAction::eRemoveTableElement:
+    case EditAction::eRemoveTableCellElement:
+    case EditAction::eDeleteTableCellContents:
+    case EditAction::eInsertTableCellElement:
+    case EditAction::eJoinTableCellElements:
+    case EditAction::eSplitTableCellElement:
+    case EditAction::eSetTableCellElementType:
+    case NS_EDIT_ACTION_CASES_ACCESSING_TABLE_DATA_WITHOUT_EDITING:
+      return true;
+    default:
+      return false;
   }
 }
 

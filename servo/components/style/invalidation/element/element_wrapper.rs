@@ -6,11 +6,13 @@
 //! against a past state of the element.
 
 use crate::dom::TElement;
-use crate::element_state::ElementState;
 use crate::selector_parser::{AttrValue, NonTSPseudoClass, PseudoElement, SelectorImpl};
 use crate::selector_parser::{Snapshot, SnapshotMap};
-use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, WeakAtom};
+use crate::values::AtomIdent;
+use crate::{CaseSensitivityExt, LocalName, Namespace, WeakAtom};
+use dom::ElementState;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
+use selectors::bloom::BloomFilter;
 use selectors::matching::{ElementSelectorFlags, MatchingContext};
 use selectors::{Element, OpaqueElement};
 use std::cell::Cell;
@@ -56,20 +58,31 @@ pub trait ElementSnapshot: Sized {
 
     /// Whether this snapshot contains the class `name`. Should only be called
     /// if `has_attrs()` returns true.
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool;
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool;
 
     /// Whether this snapshot represents the part named `name`. Should only be
     /// called if `has_attrs()` returns true.
-    fn is_part(&self, name: &Atom) -> bool;
+    fn is_part(&self, name: &AtomIdent) -> bool;
 
     /// See Element::imported_part.
-    fn imported_part(&self, name: &Atom) -> Option<Atom>;
+    fn imported_part(&self, name: &AtomIdent) -> Option<AtomIdent>;
 
     /// A callback that should be called for each class of the snapshot. Should
     /// only be called if `has_attrs()` returns true.
     fn each_class<F>(&self, _: F)
     where
-        F: FnMut(&Atom);
+        F: FnMut(&AtomIdent);
+
+    /// If this snapshot contains CustomStateSet information.
+    fn has_custom_states(&self) -> bool;
+
+    /// A callback that should be called for each CustomState of the snapshot.
+    fn has_custom_state(&self, state: &AtomIdent) -> bool;
+
+    /// A callback that should be called for each CustomState of the snapshot.
+    fn each_custom_state<F>(&self, callback: F)
+    where
+        F: FnMut(&AtomIdent);
 
     /// The `xml:lang=""` or `lang=""` attribute value per this snapshot.
     fn lang_attr(&self) -> Option<AttrValue>;
@@ -165,50 +178,14 @@ where
 {
     type Impl = SelectorImpl;
 
-    fn match_non_ts_pseudo_class<F>(
+    fn match_non_ts_pseudo_class(
         &self,
         pseudo_class: &NonTSPseudoClass,
         context: &mut MatchingContext<Self::Impl>,
-        _setter: &mut F,
-    ) -> bool
-    where
-        F: FnMut(&Self, ElementSelectorFlags),
-    {
+    ) -> bool {
         // Some pseudo-classes need special handling to evaluate them against
         // the snapshot.
         match *pseudo_class {
-            #[cfg(feature = "gecko")]
-            NonTSPseudoClass::MozAny(ref selectors) => {
-                use selectors::matching::matches_complex_selector;
-                return context.nest(|context| {
-                    selectors
-                        .iter()
-                        .any(|s| matches_complex_selector(s.iter(), self, context, _setter))
-                });
-            },
-
-            // :dir is implemented in terms of state flags, but which state flag
-            // it maps to depends on the argument to :dir.  That means we can't
-            // just add its state flags to the NonTSPseudoClass, because if we
-            // added all of them there, and tested via intersects() here, we'd
-            // get incorrect behavior for :not(:dir()) cases.
-            //
-            // FIXME(bz): How can I set this up so once Servo adds :dir()
-            // support we don't forget to update this code?
-            #[cfg(feature = "gecko")]
-            NonTSPseudoClass::Dir(ref dir) => {
-                let selector_flag = dir.element_state();
-                if selector_flag.is_empty() {
-                    // :dir() with some random argument; does not match.
-                    return false;
-                }
-                let state = match self.snapshot().and_then(|s| s.state()) {
-                    Some(snapshot_state) => snapshot_state,
-                    None => self.element.state(),
-                };
-                return state.contains(selector_flag);
-            },
-
             // For :link and :visited, we don't actually want to test the
             // element state directly.
             //
@@ -231,10 +208,10 @@ where
             },
 
             #[cfg(feature = "gecko")]
-            NonTSPseudoClass::MozBrowserFrame => {
+            NonTSPseudoClass::MozSelectListBox => {
                 if let Some(snapshot) = self.snapshot() {
                     if snapshot.has_other_pseudo_class_state() {
-                        return snapshot.mIsMozBrowserFrame();
+                        return snapshot.mIsSelectListBox();
                     }
                 }
             },
@@ -247,6 +224,9 @@ where
                     .match_element_lang(Some(self.get_lang()), lang_arg);
             },
 
+            // CustomStateSet should match against the snapshot before element
+            NonTSPseudoClass::CustomState(ref state) => return self.has_custom_state(&state.0),
+
             _ => {},
         }
 
@@ -254,14 +234,18 @@ where
         if flag.is_empty() {
             return self
                 .element
-                .match_non_ts_pseudo_class(pseudo_class, context, &mut |_, _| {});
+                .match_non_ts_pseudo_class(pseudo_class, context);
         }
         match self.snapshot().and_then(|s| s.state()) {
             Some(snapshot_state) => snapshot_state.intersects(flag),
             None => self
                 .element
-                .match_non_ts_pseudo_class(pseudo_class, context, &mut |_, _| {}),
+                .match_non_ts_pseudo_class(pseudo_class, context),
         }
+    }
+
+    fn apply_selector_flags(&self, _flags: ElementSelectorFlags) {
+        debug_assert!(false, "Shouldn't need selector flags for invalidation");
     }
 
     fn match_pseudo_element(
@@ -274,7 +258,7 @@ where
 
     fn is_link(&self) -> bool {
         match self.snapshot().and_then(|s| s.state()) {
-            Some(state) => state.intersects(ElementState::IN_VISITED_OR_UNVISITED_STATE),
+            Some(state) => state.intersects(ElementState::VISITED_OR_UNVISITED),
             None => self.element.is_link(),
         }
     }
@@ -305,6 +289,11 @@ where
     fn next_sibling_element(&self) -> Option<Self> {
         let sibling = self.element.next_sibling_element()?;
         Some(Self::new(sibling, self.snapshot_map))
+    }
+
+    fn first_element_child(&self) -> Option<Self> {
+        let child = self.element.first_element_child()?;
+        Some(Self::new(child, self.snapshot_map))
     }
 
     #[inline]
@@ -352,7 +341,7 @@ where
         }
     }
 
-    fn has_id(&self, id: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_id(&self, id: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         match self.snapshot() {
             Some(snapshot) if snapshot.has_attrs() => snapshot
                 .id_attr()
@@ -361,24 +350,31 @@ where
         }
     }
 
-    fn is_part(&self, name: &Atom) -> bool {
+    fn is_part(&self, name: &AtomIdent) -> bool {
         match self.snapshot() {
             Some(snapshot) if snapshot.has_attrs() => snapshot.is_part(name),
             _ => self.element.is_part(name),
         }
     }
 
-    fn imported_part(&self, name: &Atom) -> Option<Atom> {
+    fn imported_part(&self, name: &AtomIdent) -> Option<AtomIdent> {
         match self.snapshot() {
             Some(snapshot) if snapshot.has_attrs() => snapshot.imported_part(name),
             _ => self.element.imported_part(name),
         }
     }
 
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         match self.snapshot() {
             Some(snapshot) if snapshot.has_attrs() => snapshot.has_class(name, case_sensitivity),
             _ => self.element.has_class(name, case_sensitivity),
+        }
+    }
+
+    fn has_custom_state(&self, state: &AtomIdent) -> bool {
+        match self.snapshot() {
+            Some(snapshot) if snapshot.has_custom_states() => snapshot.has_custom_state(state),
+            _ => self.element.has_custom_state(state),
         }
     }
 
@@ -404,5 +400,10 @@ where
         self.element
             .assigned_slot()
             .map(|e| ElementWrapper::new(e, self.snapshot_map))
+    }
+
+    fn add_element_unique_hashes(&self, _filter: &mut BloomFilter) -> bool {
+        // Should not be relevant in the context of checking past elements in invalidation.
+        false
     }
 }

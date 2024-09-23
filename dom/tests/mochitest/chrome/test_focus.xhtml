@@ -9,12 +9,9 @@
   <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"/>
 
 <script>
-if (navigator.platform.startsWith("Win")) {
-  SimpleTest.expectAssertions(0, 1);
-}
-
+SimpleTest.expectAssertions(0, 1);
 SimpleTest.waitForExplicitFinish();
-function runTest()
+async function runTest()
 {
   window.openDialog("window_focus.xhtml", "_blank", "chrome,width=600,height=550,noopener", window);
 }

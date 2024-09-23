@@ -1,16 +1,13 @@
 "use strict";
 
-const { UrlClassifierTestUtils } = ChromeUtils.import(
-  "resource://testing-common/UrlClassifierTestUtils.jsm"
+const { UrlClassifierTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
 );
 
 const {
   // cookieBehavior constants.
   BEHAVIOR_REJECT,
   BEHAVIOR_REJECT_TRACKER,
-
-  // lifetimePolicy constants.
-  ACCEPT_SESSION,
 } = Ci.nsICookieService;
 
 function createPage({ script, body = "" } = {}) {
@@ -64,16 +61,33 @@ function assertCookiesForHost(url, cookiesCount, message) {
 // Test that the indexedDB and localStorage are allowed in an extension page
 // and that the indexedDB is allowed in a extension worker.
 add_task(async function test_ext_page_allowed_storage() {
-  function testWebStorages() {
+  async function testWebStorages() {
     const url = window.location.href;
 
     try {
       // In a webpage accessing indexedDB throws on cookiesBehavior reject,
       // here we verify that doesn't happen for an extension page.
+
+      await new Promise((resolve, reject) => {
+        const begin = indexedDB.open("door");
+        begin.onsuccess = resolve;
+        begin.onerror = err => reject(err.target);
+      });
+
+      const dbs = await indexedDB.databases();
       browser.test.assertTrue(
-        indexedDB,
-        "IndexedDB global should be accessible"
+        dbs.some(elem => elem.name === "door"),
+        "Just created database should be found"
       );
+
+      await new Promise((resolve, reject) => {
+        const end = indexedDB.deleteDatabase("door");
+        end.onsuccess = () => {
+          browser.test.log(`IndexedDB is accessible`);
+          resolve();
+        };
+        end.onerror = reject;
+      });
 
       // In a webpage localStorage is undefined on cookiesBehavior reject,
       // here we verify that doesn't happen for an extension page.
@@ -100,9 +114,37 @@ add_task(async function test_ext_page_allowed_storage() {
   }
 
   function testWorker() {
-    this.onmessage = () => {
+    this.onmessage = async () => {
       try {
         void indexedDB;
+
+        await new Promise((resolve, reject) => {
+          const onDatabasesSuccess = () => {
+            try {
+              const end = indexedDB.deleteDatabase("door");
+              end.onerror = err => reject(err.target);
+              end.onsuccess = resolve;
+            } catch (err) {
+              reject(err);
+            }
+          };
+
+          const onOpenSuccess = () => {
+            try {
+              indexedDB.databases().then(onDatabasesSuccess, reject);
+            } catch (err) {
+              reject(err);
+            }
+          };
+
+          try {
+            const begin = indexedDB.open("door");
+            begin.onerror = err => reject(err.target);
+            begin.onsuccess = onOpenSuccess;
+          } catch (err) {
+            reject(err);
+          }
+        });
         postMessage({ pass: true });
       } catch (err) {
         postMessage({ pass: false });
@@ -193,12 +235,20 @@ add_task(async function test_ext_page_allowed_storage() {
 });
 
 add_task(async function test_ext_page_3rdparty_cookies() {
+  if (AppConstants.platform === "android") {
+    // TODO bug 1844702: Fix test_ext_page_3rdparty_cookies on Android.
+    info("Skipped test_ext_page_3rdparty_cookies");
+    return;
+  }
+  // moz-extension:-document embeds http://example.com/page-with-tracker.html
+  allow_unsafe_parent_loads_when_extensions_not_remote();
+
   // Disable tracking protection to test cookies on BEHAVIOR_REJECT_TRACKER
   // (otherwise tracking protection would block the tracker iframe and
   // we would not be actually checking the cookie behavior).
   Services.prefs.setBoolPref("privacy.trackingprotection.enabled", false);
   await UrlClassifierTestUtils.addTestTrackers();
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     UrlClassifierTestUtils.cleanupTestTrackers();
     Services.prefs.clearUserPref("privacy.trackingprotection.enabled");
     Services.cookies.removeAll();
@@ -373,7 +423,7 @@ add_task(async function test_ext_page_3rdparty_cookies() {
   clearAllCookies();
 
   await extPage.spawn(
-    "http://example.com/page-with-tracker.html",
+    ["http://example.com/page-with-tracker.html"],
     async iframeURL => {
       const iframe = this.content.document.createElement("iframe");
       iframe.setAttribute("src", iframeURL);
@@ -393,12 +443,24 @@ add_task(async function test_ext_page_3rdparty_cookies() {
 
   await extPage.close();
   await extension.unload();
+
+  revert_allow_unsafe_parent_loads_when_extensions_not_remote();
 });
 
 // Test that a webpage embedded as a subframe of an extension page is not allowed to use
 // IndexedDB and register a ServiceWorker when it shouldn't be based on the cookieBehavior.
 add_task(
   async function test_webpage_subframe_storage_respect_cookiesBehavior() {
+    if (Services.appinfo.fissionAutostart) {
+      // TODO bug 1762638: Fix this test. It fails because it tries to read
+      // properties through .contentWindow cross-origin. That doesn't work with
+      // Fission enabled; Should spawn tasks in individual frames instead.
+      info("Skipped test_webpage_subframe_storage_respect_cookiesBehavior");
+      return;
+    }
+    // moz-extension://[uuid]/toplevel.html loads example.com/subframe.html
+    allow_unsafe_parent_loads_when_extensions_not_remote();
+
     let extension = ExtensionTestUtils.loadExtension({
       manifest: {
         permissions: ["http://example.com/*"],
@@ -427,13 +489,47 @@ add_task(
       }
     );
 
-    let results = await extensionPage.spawn(null, async () => {
+    let results = await extensionPage.spawn([], async () => {
       let extFrame = this.content.document.querySelector("iframe#ext");
       let webFrame = this.content.document.querySelector("iframe#web");
 
-      function testIDB(win) {
+      async function testIDB(win) {
         try {
-          void win.indexedDB;
+          if (!win.indexedDB) {
+            Assert.ok(false, "IndexedDB global should be accessible");
+            throw new Error("IndexedDB global was not available!");
+          }
+
+          await new Promise((resolve, reject) => {
+            const req = win.indexedDB.open("door");
+            req.onerror = err => {
+              reject(err.target);
+              Assert.ok(
+                false,
+                "IDB open should be accessible: " + err.target.message
+              );
+            };
+            req.onsuccess = resolve;
+          });
+
+          const dbs = await win.indexedDB.databases();
+          Assert.ok(
+            dbs.some(elem => elem.name === "door"),
+            "Just created database should be found"
+          );
+
+          await new Promise((resolve, reject) => {
+            const req = win.indexedDB.deleteDatabase("door");
+            req.onerror = err => {
+              reject(err.target);
+              Assert.ok(
+                false,
+                "IDB deleteDatabase should be accessible: " + err.target.message
+              );
+            };
+            req.onsuccess = resolve;
+          });
+
           return { success: true };
         } catch (err) {
           return { error: `${err}` };
@@ -450,9 +546,10 @@ add_task(
       }
 
       return {
-        extTopLevel: testIDB(this.content),
-        extSubFrame: testIDB(extFrame.contentWindow),
-        webSubFrame: testIDB(webFrame.contentWindow),
+        extTopLevel: await testIDB(this.content),
+        // TODO bug 1762638: Execute the following in their own tasks.
+        extSubFrame: await testIDB(extFrame.contentWindow),
+        webSubFrame: await testIDB(webFrame.contentWindow),
         webServiceWorker: await testServiceWorker(webFrame.contentWindow),
       };
     });
@@ -462,14 +559,35 @@ add_task(
     );
 
     results.extSubFrameContent = await contentPage.spawn(
-      extension.uuid,
+      [extension.uuid],
       uuid => {
         return new Promise(resolve => {
           let frame = this.content.document.createElement("iframe");
           frame.setAttribute("src", `moz-extension://${uuid}/subframe.html`);
-          frame.onload = () => {
+          frame.onload = async () => {
             try {
-              void frame.contentWindow.indexedDB;
+              if (!frame.contentWindow.indexedDB) {
+                throw Error("IndexedDB global should be accessible");
+              }
+              const indexedDB = frame.contentWindow.indexedDB;
+
+              await new Promise((success, failure) => {
+                const begin = indexedDB.open("door");
+                begin.onsuccess = success;
+                begin.onerror = err => failure(err.target);
+              });
+
+              const dbs = await indexedDB.databases();
+              if (!dbs.some(elem => elem.name === "door")) {
+                throw Error("Just created database should be found");
+              }
+
+              await new Promise((success, failure) => {
+                const end = indexedDB.deleteDatabase("door");
+                end.onsuccess = success;
+                end.onerror = err => failure(err.target);
+              });
+
               resolve({ success: true });
             } catch (err) {
               resolve({ error: `${err}` });
@@ -494,7 +612,7 @@ add_task(
 
     Assert.deepEqual(
       results.webSubFrame,
-      { error: "SecurityError: The operation is insecure." },
+      { error: "SecurityError: IDBFactory.open: The operation is insecure" },
       "IndexedDB not allowed in a subframe webpage with a top level extension page"
     );
     Assert.deepEqual(
@@ -513,6 +631,8 @@ add_task(
     await contentPage.close();
 
     await extension.unload();
+
+    revert_allow_unsafe_parent_loads_when_extensions_not_remote();
   }
 );
 
@@ -524,8 +644,14 @@ add_task(async function test_content_script_on_cookieBehaviorReject() {
   function contentScript() {
     // Ensure that when the current cookieBehavior doesn't allow a webpage to use indexedDB
     // or localStorage, then a WebExtension content script is not allowed to use it as well.
+    browser.test.assertTrue(indexedDB, "IndexedDB handle should be accessible");
+
     browser.test.assertThrows(
-      () => indexedDB,
+      () => {
+        indexedDB.open("door").onsuccess = () => {
+          browser.test.fail(`Unreached function`);
+        };
+      },
       /The operation is insecure/,
       "a content script can't use indexedDB from a page where it is disallowed"
     );
@@ -567,109 +693,4 @@ add_task(async function test_content_script_on_cookieBehaviorReject() {
 
 add_task(function clear_cookieBehavior_pref() {
   Services.prefs.clearUserPref("network.cookie.cookieBehavior");
-});
-
-// Test that localStorage is not in session-only mode for the extension pages,
-// even when the session-only mode has been globally enabled, but that the
-// lifetime policy currently set is respected in webpage subframes embedded in
-// an extension page.
-add_task(async function test_localStorage_on_session_lifetimePolicy() {
-  // localStorage in session-only mode.
-  Services.prefs.setIntPref("network.cookie.lifetimePolicy", ACCEPT_SESSION);
-
-  function extPageScript() {
-    localStorage.setItem("test-key", "test-value");
-
-    browser.test.sendMessage("bg_localStorage_set");
-  }
-
-  let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      permissions: ["http://example.com/*", "http://itisatracker.org/*"],
-    },
-    files: {
-      "ext.js": extPageScript,
-      "ext.html": createPage({
-        body: `<iframe src="http://example.com"></iframe>`,
-        script: "ext.js",
-      }),
-    },
-  });
-
-  await extension.startup();
-
-  let extensionPage = await ExtensionTestUtils.loadContentPage(
-    `moz-extension://${extension.uuid}/ext.html`,
-    {
-      extension,
-      remote: extension.extension.remote,
-    }
-  );
-  await extension.awaitMessage("bg_localStorage_set");
-
-  const results = await extensionPage.spawn(null, async () => {
-    const iframe = this.content.document.querySelector("iframe").contentWindow;
-    const { localStorage } = this.content;
-
-    await this.content.fetch("http://itisatracker.org/test-cookies");
-    await iframe.fetch("http://example.com/test-cookies");
-
-    return {
-      topLevel: {
-        isSessionOnly: localStorage.isSessionOnly,
-        domStorageLength: localStorage.length,
-        domStorageStoredValue: localStorage.getItem("test-key"),
-      },
-      webFrame: {
-        isSessionOnly: iframe.localStorage.isSessionOnly,
-      },
-    };
-  });
-
-  equal(
-    results.topLevel.isSessionOnly,
-    false,
-    "the extension localStorage is not set in session-only mode"
-  );
-  equal(
-    results.topLevel.domStorageLength,
-    1,
-    "the extension storage contains the expected number of keys"
-  );
-  equal(
-    results.topLevel.domStorageStoredValue,
-    "test-value",
-    "the extension storage contains the expected data"
-  );
-
-  equal(
-    results.webFrame.isSessionOnly,
-    true,
-    "the webpage sub frame localStorage is in session-only mode"
-  );
-
-  let cookies = assertCookiesForHost(
-    "http://example.com",
-    1,
-    "Got a cookie from the extension page request"
-  );
-  ok(
-    cookies[0].isSession,
-    "Got a session cookie from the extension page request"
-  );
-
-  cookies = assertCookiesForHost(
-    "http://itisatracker.org",
-    1,
-    "Got a cookie from the web page request"
-  );
-  ok(cookies[0].isSession, "Got a session cookie from the web page request");
-
-  await extensionPage.close();
-
-  await extension.unload();
-});
-
-add_task(function clear_lifetimePolicy_pref() {
-  Services.prefs.clearUserPref("network.cookie.lifetimePolicy");
 });

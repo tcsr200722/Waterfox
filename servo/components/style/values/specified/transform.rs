@@ -35,6 +35,49 @@ pub type TransformOrigin = generic::TransformOrigin<
     Length,
 >;
 
+#[cfg(feature = "gecko")]
+fn all_transform_boxes_are_enabled(_context: &ParserContext) -> bool {
+    static_prefs::pref!("layout.css.transform-box-content-stroke.enabled")
+}
+
+#[cfg(feature = "servo")]
+fn all_transform_boxes_are_enabled(_context: &ParserContext) -> bool {
+    false
+}
+
+/// The specified value of `transform-box`.
+/// https://drafts.csswg.org/css-transforms-1/#transform-box
+// Note: Once we ship everything, we can drop this and just use single_keyword for tranform-box.
+#[allow(missing_docs)]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Copy,
+    Debug,
+    Deserialize,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+pub enum TransformBox {
+    #[parse(condition = "all_transform_boxes_are_enabled")]
+    ContentBox,
+    BorderBox,
+    FillBox,
+    #[parse(condition = "all_transform_boxes_are_enabled")]
+    StrokeBox,
+    ViewBox,
+}
+
 impl TransformOrigin {
     /// Returns the initial specified value for `transform-origin`.
     #[inline]
@@ -68,7 +111,7 @@ impl Transform {
         use style_traits::{Separator, Space};
 
         if input
-            .try(|input| input.expect_ident_matching("none"))
+            .try_parse(|input| input.expect_ident_matching("none"))
             .is_ok()
         {
             return Ok(generic::Transform::none());
@@ -137,7 +180,7 @@ impl Transform {
                         },
                         "translate" => {
                             let sx = specified::LengthPercentage::parse(context, input)?;
-                            if input.try(|input| input.expect_comma()).is_ok() {
+                            if input.try_parse(|input| input.expect_comma()).is_ok() {
                                 let sy = specified::LengthPercentage::parse(context, input)?;
                                 Ok(generic::TransformOperation::Translate(sx, sy))
                             } else {
@@ -166,7 +209,7 @@ impl Transform {
                         },
                         "scale" => {
                             let sx = NumberOrPercentage::parse(context, input)?.to_number();
-                            if input.try(|input| input.expect_comma()).is_ok() {
+                            if input.try_parse(|input| input.expect_comma()).is_ok() {
                                 let sy = NumberOrPercentage::parse(context, input)?.to_number();
                                 Ok(generic::TransformOperation::Scale(sx, sy))
                             } else {
@@ -222,7 +265,7 @@ impl Transform {
                         },
                         "skew" => {
                             let ax = specified::Angle::parse_with_unitless(context, input)?;
-                            if input.try(|input| input.expect_comma()).is_ok() {
+                            if input.try_parse(|input| input.expect_comma()).is_ok() {
                                 let ay = specified::Angle::parse_with_unitless(context, input)?;
                                 Ok(generic::TransformOperation::Skew(ax, ay))
                             } else {
@@ -238,8 +281,14 @@ impl Transform {
                             Ok(generic::TransformOperation::SkewY(theta))
                         },
                         "perspective" => {
-                            let d = specified::Length::parse_non_negative(context, input)?;
-                            Ok(generic::TransformOperation::Perspective(d))
+                            let p = match input.try_parse(|input| specified::Length::parse_non_negative(context, input)) {
+                                Ok(p) => generic::PerspectiveFunction::Length(p),
+                                Err(..) => {
+                                    input.expect_ident_matching("none")?;
+                                    generic::PerspectiveFunction::None
+                                }
+                            };
+                            Ok(generic::TransformOperation::Perspective(p))
                         },
                         _ => Err(()),
                     };
@@ -282,17 +331,17 @@ impl Parse for TransformOrigin {
     ) -> Result<Self, ParseError<'i>> {
         let parse_depth = |input: &mut Parser| {
             input
-                .try(|i| Length::parse(context, i))
+                .try_parse(|i| Length::parse(context, i))
                 .unwrap_or(Length::zero())
         };
-        match input.try(|i| OriginComponent::parse(context, i)) {
+        match input.try_parse(|i| OriginComponent::parse(context, i)) {
             Ok(x_origin @ OriginComponent::Center) => {
-                if let Ok(y_origin) = input.try(|i| OriginComponent::parse(context, i)) {
+                if let Ok(y_origin) = input.try_parse(|i| OriginComponent::parse(context, i)) {
                     let depth = parse_depth(input);
                     return Ok(Self::new(x_origin, y_origin, depth));
                 }
                 let y_origin = OriginComponent::Center;
-                if let Ok(x_keyword) = input.try(HorizontalPositionKeyword::parse) {
+                if let Ok(x_keyword) = input.try_parse(HorizontalPositionKeyword::parse) {
                     let x_origin = OriginComponent::Side(x_keyword);
                     let depth = parse_depth(input);
                     return Ok(Self::new(x_origin, y_origin, depth));
@@ -301,7 +350,7 @@ impl Parse for TransformOrigin {
                 return Ok(Self::new(x_origin, y_origin, depth));
             },
             Ok(x_origin) => {
-                if let Ok(y_origin) = input.try(|i| OriginComponent::parse(context, i)) {
+                if let Ok(y_origin) = input.try_parse(|i| OriginComponent::parse(context, i)) {
                     let depth = parse_depth(input);
                     return Ok(Self::new(x_origin, y_origin, depth));
                 }
@@ -313,12 +362,15 @@ impl Parse for TransformOrigin {
         }
         let y_keyword = VerticalPositionKeyword::parse(input)?;
         let y_origin = OriginComponent::Side(y_keyword);
-        if let Ok(x_keyword) = input.try(HorizontalPositionKeyword::parse) {
+        if let Ok(x_keyword) = input.try_parse(HorizontalPositionKeyword::parse) {
             let x_origin = OriginComponent::Side(x_keyword);
             let depth = parse_depth(input);
             return Ok(Self::new(x_origin, y_origin, depth));
         }
-        if input.try(|i| i.expect_ident_matching("center")).is_ok() {
+        if input
+            .try_parse(|i| i.expect_ident_matching("center"))
+            .is_ok()
+        {
             let x_origin = OriginComponent::Center;
             let depth = parse_depth(input);
             return Ok(Self::new(x_origin, y_origin, depth));
@@ -368,7 +420,7 @@ impl Parse for Rotate {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Rotate::None);
         }
 
@@ -376,9 +428,11 @@ impl Parse for Rotate {
         //
         // The rotate axis and angle could be in any order, so we parse angle twice to cover
         // two cases. i.e. `<number>{3} <angle>` or `<angle> <number>{3}`
-        let angle = input.try(|i| specified::Angle::parse(context, i)).ok();
+        let angle = input
+            .try_parse(|i| specified::Angle::parse(context, i))
+            .ok();
         let axis = input
-            .try(|i| {
+            .try_parse(|i| {
                 Ok(try_match_ident_ignore_ascii_case! { i,
                     "x" => (Number::new(1.), Number::new(0.), Number::new(0.)),
                     "y" => (Number::new(0.), Number::new(1.), Number::new(0.)),
@@ -386,7 +440,7 @@ impl Parse for Rotate {
                 })
             })
             .or_else(|_: ParseError| -> Result<_, ParseError> {
-                input.try(|i| {
+                input.try_parse(|i| {
                     Ok((
                         Number::parse(context, i)?,
                         Number::parse(context, i)?,
@@ -415,13 +469,13 @@ impl Parse for Translate {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Translate::None);
         }
 
         let tx = specified::LengthPercentage::parse(context, input)?;
-        if let Ok(ty) = input.try(|i| specified::LengthPercentage::parse(context, i)) {
-            if let Ok(tz) = input.try(|i| specified::Length::parse(context, i)) {
+        if let Ok(ty) = input.try_parse(|i| specified::LengthPercentage::parse(context, i)) {
+            if let Ok(tz) = input.try_parse(|i| specified::Length::parse(context, i)) {
                 // 'translate: <length-percentage> <length-percentage> <length>'
                 return Ok(generic::Translate::Translate(tx, ty, tz));
             }
@@ -454,14 +508,14 @@ impl Parse for Scale {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(generic::Scale::None);
         }
 
         let sx = NumberOrPercentage::parse(context, input)?.to_number();
-        if let Ok(sy) = input.try(|i| NumberOrPercentage::parse(context, i)) {
+        if let Ok(sy) = input.try_parse(|i| NumberOrPercentage::parse(context, i)) {
             let sy = sy.to_number();
-            if let Ok(sz) = input.try(|i| NumberOrPercentage::parse(context, i)) {
+            if let Ok(sz) = input.try_parse(|i| NumberOrPercentage::parse(context, i)) {
                 // 'scale: <number> <number> <number>'
                 return Ok(generic::Scale::Scale(sx, sy, sz.to_number()));
             }

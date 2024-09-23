@@ -8,7 +8,8 @@
 
 #include "DOMSVGAnimatedNumberList.h"
 #include "mozilla/dom/SVGFEColorMatrixElementBinding.h"
-#include "nsSVGUtils.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 #define NUM_ENTRIES_IN_4x5_MATRIX 20
 
@@ -16,8 +17,7 @@ NS_IMPL_NS_NEW_SVG_ELEMENT(FEColorMatrix)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEColorMatrixElement::WrapNode(JSContext* aCx,
                                             JS::Handle<JSObject*> aGivenProto) {
@@ -67,7 +67,7 @@ void SVGFEColorMatrixElement::GetSourceImageNames(
 }
 
 FilterPrimitiveDescription SVGFEColorMatrixElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   uint32_t type = mEnumAttributes[TYPE].GetAnimValue();
@@ -107,6 +107,15 @@ bool SVGFEColorMatrixElement::AttributeAffectsRendering(
            aAttribute == nsGkAtoms::values));
 }
 
+nsresult SVGFEColorMatrixElement::BindToTree(BindContext& aCtx,
+                                             nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feColorMatrix);
+  }
+
+  return SVGFEColorMatrixElementBase::BindToTree(aCtx, aParent);
+}
+
 //----------------------------------------------------------------------
 // SVGElement methods
 
@@ -125,5 +134,4 @@ SVGFEColorMatrixElement::GetNumberListInfo() {
                                   ArrayLength(sNumberListInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

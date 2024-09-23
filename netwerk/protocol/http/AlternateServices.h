@@ -23,14 +23,15 @@ https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06
 #ifndef mozilla_net_AlternateServices_h
 #define mozilla_net_AlternateServices_h
 
-#include "mozilla/DataStorage.h"
+#include "nsHttp.h"
 #include "nsRefPtrHashtable.h"
 #include "nsString.h"
+#include "nsIDataStorage.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIStreamListener.h"
 #include "nsISpeculativeConnect.h"
 #include "mozilla/BasePrincipal.h"
-#include "NullHttpTransaction.h"
+#include "SpeculativeTransaction.h"
 
 class nsILoadInfo;
 
@@ -47,31 +48,30 @@ class AltSvcMapping {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AltSvcMapping)
 
  private:  // ctor from ProcessHeader
-  AltSvcMapping(DataStorage* storage, int32_t storageEpoch,
+  AltSvcMapping(nsIDataStorage* storage, int32_t storageEpoch,
                 const nsACString& originScheme, const nsACString& originHost,
                 int32_t originPort, const nsACString& username,
-                const nsACString& topWindowOrigin, bool privateBrowsing,
-                bool isolated, uint32_t expiresAt,
+                bool privateBrowsing, uint32_t expiresAt,
                 const nsACString& alternateHost, int32_t alternatePort,
                 const nsACString& npnToken,
-                const OriginAttributes& originAttributes, bool aIsHttp3);
+                const OriginAttributes& originAttributes, bool aIsHttp3,
+                SupportedAlpnRank aRank);
 
  public:
-  AltSvcMapping(DataStorage* storage, int32_t storageEpoch,
-                const nsCString& serialized);
+  AltSvcMapping(nsIDataStorage* storage, int32_t storageEpoch,
+                const nsCString& str);
 
-  static void ProcessHeader(const nsCString& buf, const nsCString& originScheme,
-                            const nsCString& originHost, int32_t originPort,
-                            const nsACString& username,
-                            const nsACString& topWindowOrigin,
-                            bool privateBrowsing, bool isolated,
-                            nsIInterfaceRequestor* callbacks,
-                            nsProxyInfo* proxyInfo, uint32_t caps,
-                            const OriginAttributes& originAttributes);
+  static void ProcessHeader(
+      const nsCString& buf, const nsCString& originScheme,
+      const nsCString& originHost, int32_t originPort,
+      const nsACString& username, bool privateBrowsing,
+      nsIInterfaceRequestor* callbacks, nsProxyInfo* proxyInfo, uint32_t caps,
+      const OriginAttributes& originAttributes,
+      bool aDontValidate = false);  // aDontValidate is only used for testing!
 
   // AcceptableProxy() decides whether a particular proxy configuration (pi) is
   // suitable for use with Alt-Svc. No proxy (including a null pi) is suitable.
-  static bool AcceptableProxy(nsProxyInfo* pi);
+  static bool AcceptableProxy(nsProxyInfo* proxyInfo);
 
   const nsCString& AlternateHost() const { return mAlternateHost; }
   const nsCString& OriginHost() const { return mOriginHost; }
@@ -89,7 +89,6 @@ class AltSvcMapping {
   int32_t TTL();
   int32_t StorageEpoch() { return mStorageEpoch; }
   bool Private() { return mPrivate; }
-  bool Isolated() { return mIsolated; }
 
   void SetValidated(bool val);
   void SetMixedScheme(bool val);
@@ -100,17 +99,18 @@ class AltSvcMapping {
 
   static void MakeHashKey(nsCString& outKey, const nsACString& originScheme,
                           const nsACString& originHost, int32_t originPort,
-                          bool privateBrowsing, bool isolated,
-                          const nsACString& topWindowOrigin,
-                          const OriginAttributes& originAttributes);
+                          bool privateBrowsing,
+                          const OriginAttributes& originAttributes,
+                          bool aHttp3);
 
   bool IsHttp3() { return mIsHttp3; }
   const nsCString& NPNToken() const { return mNPNToken; }
+  SupportedAlpnRank AlpnRank() const { return mAlpnRank; }
 
  private:
   virtual ~AltSvcMapping() = default;
-  void SyncString(const nsCString& val);
-  RefPtr<DataStorage> mStorage;
+  void SyncString(const nsCString& str);
+  nsCOMPtr<nsIDataStorage> mStorage;
   int32_t mStorageEpoch;
   void Serialize(nsCString& out);
 
@@ -118,29 +118,30 @@ class AltSvcMapping {
 
   // If you change any of these members, update Serialize()
   nsCString mAlternateHost;
-  MOZ_INIT_OUTSIDE_CTOR int32_t mAlternatePort;
+  int32_t mAlternatePort{-1};
 
   nsCString mOriginHost;
-  MOZ_INIT_OUTSIDE_CTOR int32_t mOriginPort;
+  int32_t mOriginPort{-1};
 
   nsCString mUsername;
-  nsCString mTopWindowOrigin;
-  MOZ_INIT_OUTSIDE_CTOR bool mPrivate;
-  MOZ_INIT_OUTSIDE_CTOR bool mIsolated;
+  bool mPrivate{false};
 
-  MOZ_INIT_OUTSIDE_CTOR uint32_t mExpiresAt;  // alt-svc mappping
+  // alt-svc mappping
+  uint32_t mExpiresAt{0};
 
-  MOZ_INIT_OUTSIDE_CTOR bool mValidated;
-  MOZ_INIT_OUTSIDE_CTOR bool mHttps;  // origin is https://
-  MOZ_INIT_OUTSIDE_CTOR bool
-      mMixedScheme;  // .wk allows http and https on same con
+  bool mValidated{false};
+  // origin is https://
+  MOZ_INIT_OUTSIDE_CTOR bool mHttps{false};
+  // .wk allows http and https on same con
+  MOZ_INIT_OUTSIDE_CTOR bool mMixedScheme{false};
 
   nsCString mNPNToken;
 
   OriginAttributes mOriginAttributes;
 
-  bool mSyncOnlyOnSuccess;
-  bool mIsHttp3;
+  bool mSyncOnlyOnSuccess{false};
+  bool mIsHttp3{false};
+  SupportedAlpnRank mAlpnRank{SupportedAlpnRank::NOT_SUPPORTED};
 };
 
 class AltSvcOverride : public nsIInterfaceRequestor,
@@ -185,22 +186,25 @@ class TransactionObserver final : public nsIStreamListener {
 
 class AltSvcCache {
  public:
-  AltSvcCache() : mStorageEpoch(0) {}
+  AltSvcCache() = default;
   virtual ~AltSvcCache() = default;
   void UpdateAltServiceMapping(
       AltSvcMapping* map, nsProxyInfo* pi, nsIInterfaceRequestor*,
       uint32_t caps,
       const OriginAttributes& originAttributes);  // main thread
+  void UpdateAltServiceMappingWithoutValidation(
+      AltSvcMapping* map, nsProxyInfo* pi, nsIInterfaceRequestor*,
+      uint32_t caps,
+      const OriginAttributes& originAttributes);  // main thread
   already_AddRefed<AltSvcMapping> GetAltServiceMapping(
-      const nsACString& scheme, const nsACString& host, int32_t port, bool pb,
-      bool isolated, const nsACString& topWindowOrigin,
-      const OriginAttributes& originAttributes, bool aHttp3Allowed);
+      const nsACString& scheme, const nsACString& host, int32_t port,
+      bool privateBrowsing, const OriginAttributes& originAttributes,
+      bool aHttp2Allowed, bool aHttp3Allowed);
   void ClearAltServiceMappings();
   void ClearHostMapping(const nsACString& host, int32_t port,
-                        const OriginAttributes& originAttributes,
-                        const nsACString& topWindowOrigin);
+                        const OriginAttributes& originAttributes);
   void ClearHostMapping(nsHttpConnectionInfo* ci);
-  DataStorage* GetStoragePtr() { return mStorage.get(); }
+  nsIDataStorage* GetStoragePtr() { return mStorage.get(); }
   int32_t StorageEpoch() { return mStorageEpoch; }
   nsresult GetAltSvcCacheKeys(nsTArray<nsCString>& value);
 
@@ -208,8 +212,8 @@ class AltSvcCache {
   void EnsureStorageInited();
   already_AddRefed<AltSvcMapping> LookupMapping(const nsCString& key,
                                                 bool privateBrowsing);
-  RefPtr<DataStorage> mStorage;
-  int32_t mStorageEpoch;
+  nsCOMPtr<nsIDataStorage> mStorage;
+  int32_t mStorageEpoch{0};
 };
 
 // This class is used to write the validated result to AltSvcMapping when the
@@ -235,12 +239,16 @@ class AltSvcMappingValidator final {
 // When http over socket process is enabled, this class should live only in
 // socket process.
 template <class Validator>
-class AltSvcTransaction final : public NullHttpTransaction {
+class AltSvcTransaction final : public SpeculativeTransaction {
  public:
   AltSvcTransaction(nsHttpConnectionInfo* ci, nsIInterfaceRequestor* callbacks,
                     uint32_t caps, Validator* aValidator, bool aIsHttp3);
 
   ~AltSvcTransaction() override;
+
+  // AltSvcTransaction is used to validate the alt-svc record, so we don't want
+  // to fetch HTTPS RR for this.
+  virtual nsresult FetchHTTPSRR() override { return NS_ERROR_NOT_IMPLEMENTED; }
 
  private:
   // check on alternate route.

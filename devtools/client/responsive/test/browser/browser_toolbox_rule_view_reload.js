@@ -25,15 +25,22 @@ addRDMTaskWithPreAndPost(
     return ruleViewValues;
   },
   async function task({ preTaskValue }) {
-    const { inspector, testActor, view } = preTaskValue;
+    const { inspector, view } = preTaskValue;
 
     info("Reload the current page");
     const onNewRoot = inspector.once("new-root");
     const onRuleViewRefreshed = inspector.once("rule-view-refreshed");
-    await testActor.reload();
+    await reloadBrowser();
     await onNewRoot;
     await inspector.markup._waitForChildren();
     await onRuleViewRefreshed;
+
+    // Await two reflows of the Rule View window.
+    await new Promise(resolve => {
+      view.styleWindow.requestAnimationFrame(() => {
+        view.styleWindow.requestAnimationFrame(resolve);
+      });
+    });
 
     is(
       numberOfRules(view),
@@ -41,8 +48,7 @@ addRDMTaskWithPreAndPost(
       "Rule view still has two rules and is not empty."
     );
   },
-  null,
-  { usingBrowserUI: true }
+  null
 );
 
 function numberOfRules(ruleView) {

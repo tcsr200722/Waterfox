@@ -124,6 +124,12 @@ class WebGLExtensionDepthTexture : public WebGLExtensionBase {
   static bool IsSupported(const WebGLContext*);
 };
 
+class WebGLExtensionDrawBuffersIndexed : public WebGLExtensionBase {
+ public:
+  explicit WebGLExtensionDrawBuffersIndexed(WebGLContext* webgl)
+      : WebGLExtensionBase(webgl) {}
+};
+
 class WebGLExtensionElementIndexUint : public WebGLExtensionBase {
  public:
   explicit WebGLExtensionElementIndexUint(WebGLContext* webgl)
@@ -170,6 +176,12 @@ class WebGLExtensionMultiview : public WebGLExtensionBase {
  public:
   explicit WebGLExtensionMultiview(WebGLContext*);
   static bool IsSupported(const WebGLContext*);
+};
+
+class WebGLExtensionProvokingVertex : public WebGLExtensionBase {
+ public:
+  explicit WebGLExtensionProvokingVertex(WebGLContext* webgl)
+      : WebGLExtensionBase(webgl) {}
 };
 
 class WebGLExtensionSRGB : public WebGLExtensionBase {
@@ -220,6 +232,12 @@ class WebGLExtensionTextureHalfFloat : public WebGLExtensionBase {
 class WebGLExtensionTextureHalfFloatLinear : public WebGLExtensionBase {
  public:
   explicit WebGLExtensionTextureHalfFloatLinear(WebGLContext*);
+};
+
+class WebGLExtensionTextureNorm16 : public WebGLExtensionBase {
+ public:
+  static bool IsSupported(const WebGLContext*);
+  explicit WebGLExtensionTextureNorm16(WebGLContext*);
 };
 
 class WebGLExtensionColorBufferFloat : public WebGLExtensionBase {

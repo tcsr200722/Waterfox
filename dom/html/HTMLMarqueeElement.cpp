@@ -7,7 +7,6 @@
 #include "mozilla/dom/HTMLMarqueeElement.h"
 #include "nsGenericHTMLElement.h"
 #include "nsStyleConsts.h"
-#include "nsMappedAttributes.h"
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/dom/HTMLMarqueeElementBinding.h"
 #include "mozilla/dom/CustomEvent.h"
@@ -17,8 +16,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Marquee)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLMarqueeElement::~HTMLMarqueeElement() = default;
 
@@ -36,11 +34,6 @@ static const nsAttrValue::EnumTable kDirectionTable[] = {
 // Default direction value is "left".
 static const nsAttrValue::EnumTable* kDefaultDirection = &kDirectionTable[0];
 
-bool HTMLMarqueeElement::IsEventAttributeNameInternal(nsAtom* aName) {
-  return nsContentUtils::IsEventAttributeName(
-      aName, EventNameType_HTML | EventNameType_HTMLMarqueeOnly);
-}
-
 JSObject* HTMLMarqueeElement::WrapNode(JSContext* aCx,
                                        JS::Handle<JSObject*> aGivenProto) {
   return dom::HTMLMarqueeElement_Binding::Wrap(aCx, this, aGivenProto);
@@ -53,20 +46,19 @@ nsresult HTMLMarqueeElement::BindToTree(BindContext& aContext,
 
   if (IsInComposedDoc()) {
     AttachAndSetUAShadowRoot();
-    NotifyUAWidgetSetupOrChange();
   }
 
   return rv;
 }
 
-void HTMLMarqueeElement::UnbindFromTree(bool aNullParent) {
+void HTMLMarqueeElement::UnbindFromTree(UnbindContext& aContext) {
   if (IsInComposedDoc()) {
     // We don't want to unattach the shadow root because it used to
     // contain a <slot>.
     NotifyUAWidgetTeardown(UnattachShadowRoot::No);
   }
 
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 void HTMLMarqueeElement::GetBehavior(nsAString& aValue) {
@@ -115,25 +107,12 @@ bool HTMLMarqueeElement::ParseAttribute(int32_t aNamespaceID,
                                               aMaybeScriptedPrincipal, aResult);
 }
 
-nsresult HTMLMarqueeElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                                          const nsAttrValue* aValue,
-                                          const nsAttrValue* aOldValue,
-                                          nsIPrincipal* aMaybeScriptedPrincipal,
-                                          bool aNotify) {
-  if (IsInComposedDoc() && aNameSpaceID == kNameSpaceID_None &&
-      aName == nsGkAtoms::direction) {
-    NotifyUAWidgetSetupOrChange();
-  }
-  return nsGenericHTMLElement::AfterSetAttr(
-      aNameSpaceID, aName, aValue, aOldValue, aMaybeScriptedPrincipal, aNotify);
-}
-
 void HTMLMarqueeElement::MapAttributesIntoRule(
-    const nsMappedAttributes* aAttributes, MappedDeclarations& aDecls) {
-  nsGenericHTMLElement::MapImageMarginAttributeInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapImageSizeAttributesInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapCommonAttributesInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapBGColorInto(aAttributes, aDecls);
+    MappedDeclarationsBuilder& aBuilder) {
+  nsGenericHTMLElement::MapImageMarginAttributeInto(aBuilder);
+  nsGenericHTMLElement::MapImageSizeAttributesInto(aBuilder);
+  nsGenericHTMLElement::MapCommonAttributesInto(aBuilder);
+  nsGenericHTMLElement::MapBGColorInto(aBuilder);
 }
 
 NS_IMETHODIMP_(bool)
@@ -163,15 +142,14 @@ void HTMLMarqueeElement::DispatchEventToShadowRoot(
 
 void HTMLMarqueeElement::Start() {
   if (GetShadowRoot()) {
-    DispatchEventToShadowRoot(NS_LITERAL_STRING("marquee-start"));
+    DispatchEventToShadowRoot(u"marquee-start"_ns);
   }
 }
 
 void HTMLMarqueeElement::Stop() {
   if (GetShadowRoot()) {
-    DispatchEventToShadowRoot(NS_LITERAL_STRING("marquee-stop"));
+    DispatchEventToShadowRoot(u"marquee-stop"_ns);
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

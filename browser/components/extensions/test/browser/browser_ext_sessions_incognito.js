@@ -8,13 +8,9 @@ add_task(async function test_sessions_tab_value_private() {
     "No closed window sessions at start of test"
   );
 
-  SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: "exampleextension@mozilla.org",
         },
@@ -87,11 +83,13 @@ add_task(async function test_sessions_tab_value_private() {
     "http://example.com"
   );
   let sessionUpdatePromise = BrowserTestUtils.waitForSessionStoreUpdate(tab);
-  await BrowserTestUtils.removeTab(tab);
+  BrowserTestUtils.removeTab(tab);
   await sessionUpdatePromise;
-  let closedTabData = SessionStore.getClosedTabData(winData.win, false);
+  let closedTabData = SessionStore.getClosedTabDataForWindow(winData.win);
 
-  extension.sendMessage("restore", { sesionId: closedTabData[0].closedId });
+  extension.sendMessage("restore", {
+    sessionId: String(closedTabData[0].closedId),
+  });
   await extension.awaitMessage("done");
 
   // Test restoring a private window.

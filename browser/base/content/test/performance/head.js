@@ -1,10 +1,11 @@
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AboutNewTab: "resource:///modules/AboutNewTab.jsm",
-  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  PerfTestHelpers: "resource://testing-common/PerfTestHelpers.sys.mjs",
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
 });
 
 /**
@@ -41,7 +42,7 @@ async function recordReflows(testPromise, win = window) {
   let reflows = [];
 
   let observer = {
-    reflow(start, end) {
+    reflow() {
       // Gather information about the current code path.
       reflows.push(new Error().stack);
 
@@ -49,14 +50,14 @@ async function recordReflows(testPromise, win = window) {
       dirtyFrame(win);
     },
 
-    reflowInterruptible(start, end) {
+    reflowInterruptible() {
       // Interruptible reflows are the reflows caused by the refresh
       // driver ticking. These are fine.
     },
 
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsIReflowObserver,
-      Ci.nsISupportsWeakReference,
+      "nsIReflowObserver",
+      "nsISupportsWeakReference",
     ]),
   };
 
@@ -98,11 +99,9 @@ async function recordReflows(testPromise, win = window) {
  *            // Sometimes, due to unpredictable timings, the reflow may be hit
  *            // less times.
  *            stack: [
- *              "select@chrome://global/content/bindings/textbox.xml",
- *              "focusAndSelectUrlBar@chrome://browser/content/browser.js",
- *              "openLinkIn@chrome://browser/content/utilityOverlay.js",
- *              "openUILinkIn@chrome://browser/content/utilityOverlay.js",
- *              "BrowserOpenTab@chrome://browser/content/browser.js",
+ *              "somefunction@chrome://somepackage/content/somefile.mjs",
+ *              "otherfunction@chrome://otherpackage/content/otherfile.js",
+ *              "morecode@resource://somewhereelse/SomeModule.sys.mjs",
  *            ],
  *            // We expect this particular reflow to happen up to 2 times.
  *            maxCount: 2,
@@ -112,10 +111,9 @@ async function recordReflows(testPromise, win = window) {
  *            // This reflow is caused by lorem ipsum. We expect this reflow
  *            // to only happen once, so we can omit the "maxCount" property.
  *            stack: [
- *              "get_scrollPosition@chrome://global/content/bindings/scrollbox.xml",
- *              "_fillTrailingGap@chrome://browser/content/tabbrowser.xml",
- *              "_handleNewTab@chrome://browser/content/tabbrowser.xml",
- *              "onxbltransitionend@chrome://browser/content/tabbrowser.xml",
+ *              "somefunction@chrome://somepackage/content/somefile.mjs",
+ *              "otherfunction@chrome://otherpackage/content/otherfile.js",
+ *              "morecode@resource://somewhereelse/SomeModule.sys.mjs",
  *            ],
  *          }
  *        ]
@@ -194,7 +192,7 @@ function reportUnexpectedReflows(reflows, expectedReflows = []) {
         `Unused expected reflow at ${firstFrame}:\nStack:\n` +
           reflow.stack.map(frame => "  " + frame).join("\n") +
           "\n" +
-          "This is probably a good thing - just remove it from the whitelist."
+          "This is probably a good thing - just remove it from the list of reflows."
       );
     } else {
       if (reflow.count > reflow.maxCount) {
@@ -258,8 +256,8 @@ async function ensureNoPreloadedBrowser(win = window) {
 // which confuses tests that look at repaints in the toolbar.  Use this
 // function to cancel the badge update.
 function disableFxaBadge() {
-  let { ToolbarBadgeHub } = ChromeUtils.import(
-    "resource://activity-stream/lib/ToolbarBadgeHub.jsm"
+  let { ToolbarBadgeHub } = ChromeUtils.importESModule(
+    "resource:///modules/asrouter/ToolbarBadgeHub.sys.mjs"
   );
   ToolbarBadgeHub.removeAllNotifications();
 
@@ -269,9 +267,47 @@ function disableFxaBadge() {
   });
 }
 
+function rectInBoundingClientRect(r, bcr) {
+  return (
+    bcr.x <= r.x1 &&
+    bcr.y <= r.y1 &&
+    bcr.x + bcr.width >= r.x2 &&
+    bcr.y + bcr.height >= r.y2
+  );
+}
+
+async function getBookmarksToolbarRect() {
+  // Temporarily open the bookmarks toolbar to measure its rect
+  let bookmarksToolbar = gNavToolbox.querySelector("#PersonalToolbar");
+  let wasVisible = !bookmarksToolbar.collapsed;
+  if (!wasVisible) {
+    setToolbarVisibility(bookmarksToolbar, true, false, false);
+    await TestUtils.waitForCondition(
+      () => bookmarksToolbar.getBoundingClientRect().height > 0,
+      "wait for non-zero bookmarks toolbar height"
+    );
+  }
+  let bookmarksToolbarRect = bookmarksToolbar.getBoundingClientRect();
+  if (!wasVisible) {
+    setToolbarVisibility(bookmarksToolbar, false, false, false);
+    await TestUtils.waitForCondition(
+      () => bookmarksToolbar.getBoundingClientRect().height == 0,
+      "wait for zero bookmarks toolbar height"
+    );
+  }
+  return bookmarksToolbarRect;
+}
+
+async function ensureAnimationsFinished(win = window) {
+  let animations = win.document.getAnimations();
+  info(`Waiting for ${animations.length} animations`);
+  await Promise.allSettled(animations.map(a => a.finished));
+}
+
 async function prepareSettledWindow() {
   let win = await BrowserTestUtils.openNewBrowserWindow();
   await ensureNoPreloadedBrowser(win);
+  await ensureAnimationsFinished(win);
   return win;
 }
 
@@ -287,7 +323,8 @@ function computeMaxTabCount() {
   let currentTabCount = gBrowser.tabs.length;
   let newTabButton = gBrowser.tabContainer.newTabButton;
   let newTabRect = newTabButton.getBoundingClientRect();
-  let tabStripRect = gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
+  let tabStripRect =
+    gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
   let availableTabStripWidth = tabStripRect.width - newTabRect.width;
 
   let tabMinWidth = parseInt(
@@ -356,6 +393,7 @@ async function addDummyHistoryEntries(searchStr = "") {
 
   for (let i = 0; i < NUM_VISITS; ++i) {
     visits.push({
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       uri: `http://example.com/urlbar-reflows-${i}`,
       title: `Reflow test for URL bar entry #${i} - ${searchStr}`,
     });
@@ -363,7 +401,7 @@ async function addDummyHistoryEntries(searchStr = "") {
 
   await PlacesTestUtils.addVisits(visits);
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.history.clear();
   });
 }
@@ -389,7 +427,7 @@ async function recordFrames(testPromise, win = window) {
 
   let frames = [];
 
-  let afterPaintListener = event => {
+  let afterPaintListener = () => {
     let width, height;
     canvas.width = width = win.innerWidth;
     canvas.height = height = win.innerHeight;
@@ -508,7 +546,7 @@ function compareFrames(frame, previousFrame) {
   // The following code block merges rects that are close to each other
   // (less than kMaxEmptyPixels away).
   // This is needed to avoid having a rect for each letter when a label moves.
-  let areRectsContiguous = function(r1, r2) {
+  let areRectsContiguous = function (r1, r2) {
     return (
       r1.y2 >= r2.y1 - 1 - kMaxEmptyPixels &&
       r2.x1 - 1 - kMaxEmptyPixels <= r1.x2 &&
@@ -595,26 +633,32 @@ function reportUnexpectedFlicker(frames, expectations) {
       previousFrame = frames[i - 1];
     let rects = compareFrames(frame, previousFrame);
 
+    let rectText = r => `${r.toSource()}, window width: ${frame.width}`;
+
+    rects = rects.filter(rect => {
+      for (let e of expectations.exceptions || []) {
+        if (e.condition(rect)) {
+          todo(false, e.name + ", " + rectText(rect));
+          return false;
+        }
+      }
+      return true;
+    });
+
     if (expectations.filter) {
       rects = expectations.filter(rects, frame, previousFrame);
     }
 
-    rects = rects.filter(rect => {
-      let rectText = `${rect.toSource()}, window width: ${frame.width}`;
-      for (let e of expectations.exceptions || []) {
-        if (e.condition(rect)) {
-          todo(false, e.name + ", " + rectText);
-          return false;
-        }
-      }
-
-      ok(false, "unexpected changed rect: " + rectText);
-      return true;
-    });
-
     if (!rects.length) {
       continue;
     }
+
+    ok(
+      false,
+      `unexpected ${rects.length} changed rects: ${rects
+        .map(rectText)
+        .join(", ")}`
+    );
 
     // Before dumping a frame with unexpected differences for the first time,
     // ensure at least one previous frame has been logged so that it's possible
@@ -698,7 +742,7 @@ async function runUrlbarTest(
 
   URLBar.focus();
   URLBar.value = SEARCH_TERM;
-  let testFn = async function() {
+  let testFn = async function () {
     let popup = URLBar.view;
     let oldOnQueryResults = popup.onQueryResults.bind(popup);
     let oldOnQueryFinished = popup.onQueryFinished.bind(popup);
@@ -752,14 +796,14 @@ async function runUrlbarTest(
   };
 
   let urlbarRect = URLBar.textbox.getBoundingClientRect();
-  const SHADOW_SIZE = 4;
+  const SHADOW_SIZE = 17;
   let expectedRects = {
     filter: rects => {
       // We put text into the urlbar so expect its textbox to change.
       // We expect many changes in the results view.
-      // So we just whitelist the whole urlbar. We don't check the bottom of
-      // the rect because the result view height varies depending on the
-      // results.
+      // So we just allow changes anywhere in the urlbar. We don't check the
+      // bottom of the rect because the result view height varies depending on
+      // the results.
       // We use floor/ceil because the Urlbar dimensions aren't always
       // integers.
       return rects.filter(
@@ -790,4 +834,163 @@ async function runUrlbarTest(
   }
 
   await BrowserTestUtils.closeWindow(win);
+}
+
+/**
+ * Helper method for checking which scripts are loaded on content process
+ * startup, used by `browser_startup_content.js` and
+ * `browser_startup_content_subframe.js`.
+ *
+ * Parameters to this function are passed in an object literal to avoid
+ * confusion about parameter order.
+ *
+ * @param loadedInfo (Object)
+ *        Mapping from script type to a set of scripts which have been loaded
+ *        of that type.
+ *
+ * @param known (Object)
+ *        Mapping from script type to a set of scripts which must have been
+ *        loaded of that type.
+ *
+ * @param intermittent (Object)
+ *        Mapping from script type to a set of scripts which may have been
+ *        loaded of that type. There must be a script type map for every type
+ *        in `known`.
+ *
+ * @param forbidden (Object)
+ *        Mapping from script type to a set of scripts which must not have been
+ *        loaded of that type.
+ *
+ * @param dumpAllStacks (bool)
+ *        If true, dump the stacks for all loaded modules. Makes the output
+ *        noisy.
+ */
+async function checkLoadedScripts({
+  loadedInfo,
+  known,
+  intermittent,
+  forbidden,
+  dumpAllStacks,
+}) {
+  let loadedList = {};
+
+  async function checkAllExist(scriptType, list, listType) {
+    if (scriptType == "services") {
+      for (let contract of list) {
+        ok(
+          contract in Cc,
+          `${listType} entry ${contract} for content process startup must exist`
+        );
+      }
+    } else {
+      let results = await PerfTestHelpers.throttledMapPromises(
+        list,
+        async uri => ({
+          uri,
+          exists: await PerfTestHelpers.checkURIExists(uri),
+        })
+      );
+
+      for (let { uri, exists } of results) {
+        ok(
+          exists,
+          `${listType} entry ${uri} for content process startup must exist`
+        );
+      }
+    }
+  }
+
+  for (let scriptType in known) {
+    loadedList[scriptType] = [...loadedInfo[scriptType].keys()].filter(c => {
+      if (!known[scriptType].has(c)) {
+        return true;
+      }
+      known[scriptType].delete(c);
+      return false;
+    });
+
+    loadedList[scriptType] = [...loadedList[scriptType]].filter(c => {
+      return !intermittent[scriptType].has(c);
+    });
+
+    if (loadedList[scriptType].length) {
+      console.log("Unexpected scripts:", loadedList[scriptType]);
+    }
+    is(
+      loadedList[scriptType].length,
+      0,
+      `should have no unexpected ${scriptType} loaded on content process startup`
+    );
+
+    for (let script of loadedList[scriptType]) {
+      record(
+        false,
+        `Unexpected ${scriptType} loaded during content process startup: ${script}`,
+        undefined,
+        loadedInfo[scriptType].get(script)
+      );
+    }
+
+    await checkAllExist(scriptType, intermittent[scriptType], "intermittent");
+
+    is(
+      known[scriptType].size,
+      0,
+      `all known ${scriptType} scripts should have been loaded`
+    );
+
+    for (let script of known[scriptType]) {
+      ok(
+        false,
+        `${scriptType} is expected to load for content process startup but wasn't: ${script}`
+      );
+    }
+
+    if (dumpAllStacks) {
+      info(`Stacks for all loaded ${scriptType}:`);
+      for (let [file, stack] of loadedInfo[scriptType]) {
+        if (stack) {
+          info(
+            `${file}\n------------------------------------\n` + stack + "\n"
+          );
+        }
+      }
+    }
+  }
+
+  for (let scriptType in forbidden) {
+    for (let script of forbidden[scriptType]) {
+      let loaded = loadedInfo[scriptType].has(script);
+      if (loaded) {
+        record(
+          false,
+          `Forbidden ${scriptType} loaded during content process startup: ${script}`,
+          undefined,
+          loadedInfo[scriptType].get(script)
+        );
+      }
+    }
+
+    await checkAllExist(scriptType, forbidden[scriptType], "forbidden");
+  }
+}
+
+// The first screenshot we get in OSX / Windows shows an unfocused browser
+// window for some reason. See bug 1445161. This function allows to deal with
+// that in a central place.
+function isLikelyFocusChange(rects, frame) {
+  if (rects.length > 3 && rects.every(r => r.y2 < 100)) {
+    // There are at least 4 areas that changed near the top of the screen.
+    // Note that we need a bit more leeway than the titlebar height, because on
+    // OSX other toolbarbuttons in the navigation toolbar also get disabled
+    // state.
+    return true;
+  }
+  if (
+    rects.every(r => r.y1 == 0 && r.x1 == 0 && r.w == frame.width && r.y2 < 100)
+  ) {
+    // Full-width rect in the top of the titlebar.
+    return true;
+  }
+  return false;
 }

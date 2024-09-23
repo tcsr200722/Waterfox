@@ -7,7 +7,9 @@
 /* Shared proto object for XPCWrappedNative. */
 
 #include "xpcprivate.h"
+#include "js/Object.h"  // JS::SetReservedSlot
 #include "pratom.h"
+#include "XPCMaps.h"
 
 using namespace mozilla;
 
@@ -53,17 +55,17 @@ bool XPCWrappedNativeProto::Init(JSContext* cx, nsIXPCScriptable* scriptable) {
   mScriptable = scriptable;
 
   JS::RootedObject proto(cx, JS::GetRealmObjectPrototype(cx));
-  mJSProtoObject = JS_NewObjectWithUniqueType(cx, &XPC_WN_Proto_JSClass, proto);
+  mJSProtoObject = JS_NewObjectWithGivenProto(cx, &XPC_WN_Proto_JSClass, proto);
 
   bool success = !!mJSProtoObject;
   if (success) {
-    JS_SetPrivate(mJSProtoObject, this);
+    JS::SetReservedSlot(mJSProtoObject, ProtoSlot, JS::PrivateValue(this));
   }
 
   return success;
 }
 
-void XPCWrappedNativeProto::JSProtoObjectFinalized(JSFreeOp* fop,
+void XPCWrappedNativeProto::JSProtoObjectFinalized(JS::GCContext* gcx,
                                                    JSObject* obj) {
   MOZ_ASSERT(obj == mJSProtoObject, "huh?");
 
@@ -73,7 +75,7 @@ void XPCWrappedNativeProto::JSProtoObjectFinalized(JSFreeOp* fop,
   MOZ_ASSERT(map->Find(mClassInfo) != this);
 #endif
 
-  GetRuntime()->GetDyingWrappedNativeProtoMap()->Add(this);
+  MOZ_ALWAYS_TRUE(GetRuntime()->GetDyingWrappedNativeProtos().append(this));
   mJSProtoObject = nullptr;
 }
 
@@ -90,7 +92,7 @@ void XPCWrappedNativeProto::SystemIsBeingShutDown() {
 
   if (mJSProtoObject) {
     // short circuit future finalization
-    JS_SetPrivate(mJSProtoObject, nullptr);
+    JS::SetReservedSlot(mJSProtoObject, ProtoSlot, JS::UndefinedValue());
     mJSProtoObject = nullptr;
   }
 }

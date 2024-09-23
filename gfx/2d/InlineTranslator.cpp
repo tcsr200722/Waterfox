@@ -6,12 +6,8 @@
 
 #include "InlineTranslator.h"
 #include "RecordedEventImpl.h"
-#include "DrawEventRecorder.h"
 
-#include "gfxContext.h"
-#include "nsDeviceContext.h"
 #include "mozilla/gfx/RecordingTypes.h"
-#include "mozilla/UniquePtr.h"
 
 using namespace mozilla::gfx;
 
@@ -23,26 +19,6 @@ InlineTranslator::InlineTranslator(DrawTarget* aDT, void* aFontContext)
     : mBaseDT(aDT), mFontContext(aFontContext) {}
 
 bool InlineTranslator::TranslateRecording(char* aData, size_t aLen) {
-  // an istream like class for reading from memory
-  struct MemReader {
-    MemReader(char* aData, size_t aLen) : mData(aData), mEnd(aData + aLen) {}
-    void read(char* s, std::streamsize n) {
-      if (n <= (mEnd - mData)) {
-        memcpy(s, mData, n);
-        mData += n;
-      } else {
-        // We've requested more data than is available
-        // set the Reader into an eof state
-        SetIsBad();
-      }
-    }
-    bool eof() { return mData > mEnd; }
-    bool good() { return !eof(); }
-    void SetIsBad() { mData = mEnd + 1; }
-
-    char* mData;
-    char* mEnd;
-  };
   MemReader reader(aData, aLen);
 
   uint32_t magicInt;
@@ -66,7 +42,7 @@ bool InlineTranslator::TranslateRecording(char* aData, size_t aLen) {
     return false;
   }
 
-  int32_t eventType;
+  uint8_t eventType = RecordedEvent::EventType::INVALID;
   ReadElement(reader, eventType);
   while (reader.good()) {
     bool success = RecordedEvent::DoWithEvent(
@@ -107,6 +83,15 @@ already_AddRefed<DrawTarget> InlineTranslator::CreateDrawTarget(
   RefPtr<DrawTarget> drawTarget = mBaseDT;
   AddDrawTarget(aRefPtr, drawTarget);
   return drawTarget.forget();
+}
+
+already_AddRefed<SourceSurface> InlineTranslator::LookupExternalSurface(
+    uint64_t aKey) {
+  if (!mExternalSurfaces) {
+    return nullptr;
+  }
+  RefPtr<SourceSurface> surface = mExternalSurfaces->Get(aKey);
+  return surface.forget();
 }
 
 }  // namespace mozilla::gfx

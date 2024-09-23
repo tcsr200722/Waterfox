@@ -18,7 +18,7 @@ function installLocale() {
   return new Promise(resolve => {
     gInstall = gProvider.createInstalls(gInstallProperties)[0];
     gInstall.addTestListener({
-      onInstallEnded(aInstall) {
+      onInstallEnded() {
         gInstall.removeTestListener(this);
         resolve();
       },
@@ -48,7 +48,7 @@ async function checkCategory(win, category, { expectHidden, expectSelected }) {
   }
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   gProvider = new MockProvider();
 });
 
@@ -193,7 +193,7 @@ add_task(async function testLocalesHiddenIfPreviousViewAndNoLocales() {
   });
   let win = await viewLoaded;
 
-  let categoryUtils = new CategoryUtilities(win.managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
 
   await TestUtils.waitForCondition(
     () => categoryUtils.selectedCategory != "locale"
@@ -206,7 +206,7 @@ add_task(async function testLocalesHiddenIfPreviousViewAndNoLocales() {
 
   is(
     categoryUtils.getSelectedViewId(),
-    win.managerWindow.gViewDefault,
+    win.gViewController.defaultViewId,
     "default view is selected"
   );
 

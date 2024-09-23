@@ -4,61 +4,56 @@
 
 "use strict";
 
-const { Cu } = require("chrome");
-
-loader.lazyRequireGetter(this, "colorUtils", "devtools/shared/css/color", true);
-loader.lazyRequireGetter(this, "AsyncUtils", "devtools/shared/async-utils");
-loader.lazyRequireGetter(this, "flags", "devtools/shared/flags");
+loader.lazyRequireGetter(
+  this,
+  "colorUtils",
+  "resource://devtools/shared/css/color.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "AsyncUtils",
+  "resource://devtools/shared/async-utils.js"
+);
+loader.lazyRequireGetter(this, "flags", "resource://devtools/shared/flags.js");
 loader.lazyRequireGetter(
   this,
   "DevToolsUtils",
-  "devtools/shared/DevToolsUtils"
+  "resource://devtools/shared/DevToolsUtils.js"
 );
 loader.lazyRequireGetter(
   this,
   "nodeFilterConstants",
-  "devtools/shared/dom-node-filter-constants"
+  "resource://devtools/shared/dom-node-filter-constants.js"
 );
 loader.lazyRequireGetter(
   this,
-  "isNativeAnonymous",
-  "devtools/shared/layout/utils",
+  ["isNativeAnonymous", "getAdjustedQuads"],
+  "resource://devtools/shared/layout/utils.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "CssLogic",
-  "devtools/server/actors/inspector/css-logic",
+  "resource://devtools/server/actors/inspector/css-logic.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "getBackgroundFor",
-  "devtools/server/actors/accessibility/audit/contrast",
+  "resource://devtools/server/actors/accessibility/audit/contrast.js",
   true
 );
 loader.lazyRequireGetter(
   this,
-  "loadSheetForBackgroundCalculation",
-  "devtools/server/actors/utils/accessibility",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "removeSheetForBackgroundCalculation",
-  "devtools/server/actors/utils/accessibility",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getAdjustedQuads",
-  "devtools/shared/layout/utils",
+  ["loadSheetForBackgroundCalculation", "removeSheetForBackgroundCalculation"],
+  "resource://devtools/server/actors/utils/accessibility.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "getTextProperties",
-  "devtools/shared/accessibility",
+  "resource://devtools/shared/accessibility.js",
   true
 );
 
@@ -75,7 +70,7 @@ const IMAGE_FETCHING_TIMEOUT = 500;
  * @return {String}
  *         Properly cased version of the node tag name
  */
-const getNodeDisplayName = function(rawNode) {
+const getNodeDisplayName = function (rawNode) {
   if (rawNode.nodeName && !rawNode.localName) {
     // The localName & prefix APIs have been moved from the Node interface to the Element
     // interface. Use Node.nodeName as a fallback.
@@ -155,10 +150,10 @@ function standardTreeWalkerFilter(node) {
       : nodeFilterConstants.FILTER_SKIP;
   }
 
-  // Ignore all native anonymous content inside a non-XUL document.
+  // Ignore all native anonymous roots inside a non-XUL document.
   // We need to do this to skip things like form controls, scrollbars,
   // video controls, etc (see bug 1187482).
-  if (!isInXULDocument(node) && isNativeAnonymous(node)) {
+  if (isNativeAnonymous(node) && !isInXULDocument(node)) {
     return nodeFilterConstants.FILTER_SKIP;
   }
 
@@ -190,17 +185,6 @@ function allAnonymousContentTreeWalkerFilter(node) {
       : nodeFilterConstants.FILTER_SKIP;
   }
   return nodeFilterConstants.FILTER_ACCEPT;
-}
-
-/**
- * This DeepTreeWalker filter only accepts <scrollbar> anonymous content.
- */
-function scrollbarTreeWalkerFilter(node) {
-  if (node.nodeName === "scrollbar" && nodeHasSize(node)) {
-    return nodeFilterConstants.FILTER_ACCEPT;
-  }
-
-  return nodeFilterConstants.FILTER_SKIP;
 }
 
 /**
@@ -297,7 +281,7 @@ function ensureImageLoaded(image, timeout) {
  *
  * If something goes wrong, the promise is rejected.
  */
-const imageToImageData = async function(node, maxDim) {
+const imageToImageData = async function (node, maxDim) {
   const { HTMLCanvasElement, HTMLImageElement } = node.ownerGlobal;
 
   const isImg = node instanceof HTMLImageElement;
@@ -366,7 +350,7 @@ function getClosestBackgroundColor(node) {
     const computedStyle = CssLogic.getComputedStyle(current);
     if (computedStyle) {
       const currentStyle = computedStyle.getPropertyValue("background-color");
-      if (colorUtils.isValidCSSColor(currentStyle)) {
+      if (InspectorUtils.isValidCSSColor(currentStyle)) {
         const currentCssColor = new colorUtils.CssColor(currentStyle);
         if (!currentCssColor.isTransparent()) {
           return currentCssColor.rgba;
@@ -395,9 +379,8 @@ function getClosestBackgroundImage(node) {
   while (current) {
     const computedStyle = CssLogic.getComputedStyle(current);
     if (computedStyle) {
-      const currentBackgroundImage = computedStyle.getPropertyValue(
-        "background-image"
-      );
+      const currentBackgroundImage =
+        computedStyle.getPropertyValue("background-image");
       if (currentBackgroundImage !== "none") {
         return currentBackgroundImage;
       }
@@ -472,31 +455,21 @@ async function getBackgroundColor({ rawNode: node, walker }) {
     !node.firstChild
   ) {
     return {
-      value: colorUtils.colorToRGBA(
-        getClosestBackgroundColor(node),
-        true,
-        true
-      ),
+      value: getClosestBackgroundColorInRGBA(node),
     };
   }
 
-  const bounds = getAdjustedQuads(
-    node.ownerGlobal,
-    node.firstChild,
-    "content"
-  )[0].bounds;
+  const quads = getAdjustedQuads(node.ownerGlobal, node.firstChild, "content");
 
   // Fall back to calculating contrast against closest bg if there are no bounds for text node.
   // Avoid creating doc walker by returning early.
-  if (!bounds) {
+  if (quads.length === 0 || !quads[0].bounds) {
     return {
-      value: colorUtils.colorToRGBA(
-        getClosestBackgroundColor(node),
-        true,
-        true
-      ),
+      value: getClosestBackgroundColorInRGBA(node),
     };
   }
+
+  const bounds = quads[0].bounds;
 
   const docWalker = walker.getDocumentWalker(node);
   const firstChild = docWalker.firstChild();
@@ -510,11 +483,7 @@ async function getBackgroundColor({ rawNode: node, walker }) {
     firstChild.nodeType !== Node.TEXT_NODE
   ) {
     return {
-      value: colorUtils.colorToRGBA(
-        getClosestBackgroundColor(node),
-        true,
-        true
-      ),
+      value: getClosestBackgroundColorInRGBA(node),
     };
   }
 
@@ -527,11 +496,7 @@ async function getBackgroundColor({ rawNode: node, walker }) {
   // Fall back to calculating contrast against closest bg if there are no text props.
   if (!props) {
     return {
-      value: colorUtils.colorToRGBA(
-        getClosestBackgroundColor(node),
-        true,
-        true
-      ),
+      value: getClosestBackgroundColorInRGBA(node),
     };
   }
 
@@ -546,17 +511,50 @@ async function getBackgroundColor({ rawNode: node, walker }) {
 
   return (
     bgColor || {
-      value: colorUtils.colorToRGBA(
-        getClosestBackgroundColor(node),
-        true,
-        true
-      ),
+      value: getClosestBackgroundColorInRGBA(node),
     }
   );
 }
 
+/**
+ *
+ * @param {DOMNode} node: The node we want the background color of
+ * @returns {Array[r,g,b,a]}
+ */
+function getClosestBackgroundColorInRGBA(node) {
+  const { r, g, b, a } = InspectorUtils.colorToRGBA(
+    getClosestBackgroundColor(node)
+  );
+  return [r, g, b, a];
+}
+/**
+ * Indicates if a document is ready (i.e. if it's not loading anymore)
+ *
+ * @param {HTMLDocument} document: The document we want to check
+ * @returns {Boolean}
+ */
+function isDocumentReady(document) {
+  if (!document) {
+    return false;
+  }
+
+  const { readyState } = document;
+  if (readyState == "interactive" || readyState == "complete") {
+    return true;
+  }
+
+  // A document might stay forever in unitialized state.
+  // If the target actor is not currently loading a document,
+  // assume the document is ready.
+  const webProgress = document.defaultView.docShell.QueryInterface(
+    Ci.nsIWebProgress
+  );
+  return !webProgress.isLoadingDocument;
+}
+
 module.exports = {
   allAnonymousContentTreeWalkerFilter,
+  isDocumentReady,
   isWhitespaceTextNode,
   findGridParentContainerForNode,
   getBackgroundColor,
@@ -567,7 +565,6 @@ module.exports = {
   imageToImageData,
   isNodeDead,
   nodeDocument,
-  scrollbarTreeWalkerFilter,
   standardTreeWalkerFilter,
   noAnonymousContentTreeWalkerFilter,
 };

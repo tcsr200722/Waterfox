@@ -8,15 +8,16 @@
 
 use crate::attr::{AttrIdentifier, AttrValue};
 use crate::dom::{OpaqueNode, TElement, TNode};
-use crate::element_state::{DocumentState, ElementState};
 use crate::invalidation::element::document_state::InvalidationMatchingData;
 use crate::invalidation::element::element_wrapper::ElementSnapshot;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::{ComputedValues, PropertyFlags};
 use crate::selector_parser::AttrValue as SelectorAttrValue;
 use crate::selector_parser::{PseudoElementCascadeType, SelectorParser};
+use crate::values::{AtomIdent, AtomString};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
 use cssparser::{serialize_identifier, CowRcStr, Parser as CssParser, SourceLocation, ToCss};
+use dom::{DocumentState, ElementState};
 use fxhash::FxHashMap;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::parser::SelectorParseErrorKind;
@@ -29,7 +30,9 @@ use style_traits::{ParseError, StyleParseErrorKind};
 /// A pseudo-element, both public and private.
 ///
 /// NB: If you add to this list, be sure to update `each_simple_pseudo_element` too.
-#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, ToShmem,
+)]
 #[allow(missing_docs)]
 #[repr(usize)]
 pub enum PseudoElement {
@@ -311,11 +314,6 @@ impl ::selectors::parser::NonTSPseudoClass for NonTSPseudoClass {
         )
     }
 
-    #[inline]
-    fn has_zero_specificity(&self) -> bool {
-        false
-    }
-
     fn visit<V>(&self, _: &mut V) -> bool
     where
         V: SelectorVisitor<Impl = Self::Impl>,
@@ -333,7 +331,7 @@ impl ToCss for NonTSPseudoClass {
         if let Lang(ref lang) = *self {
             dest.write_str(":lang(")?;
             serialize_identifier(lang, dest)?;
-            return dest.write_str(")");
+            return dest.write_char(')');
         }
 
         dest.write_str(match *self {
@@ -374,7 +372,7 @@ impl NonTSPseudoClass {
             Disabled => ElementState::IN_DISABLED_STATE,
             Checked => ElementState::IN_CHECKED_STATE,
             Indeterminate => ElementState::IN_INDETERMINATE_STATE,
-            ReadOnly | ReadWrite => ElementState::IN_READ_WRITE_STATE,
+            ReadOnly | ReadWrite => ElementState::IN_READWRITE_STATE,
             PlaceholderShown => ElementState::IN_PLACEHOLDER_SHOWN_STATE,
             Target => ElementState::IN_TARGET_STATE,
 
@@ -436,6 +434,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "fullscreen" => Fullscreen,
             "hover" => Hover,
             "indeterminate" => Indeterminate,
+            "-moz-inert" => MozInert,
             "link" => Link,
             "placeholder-shown" => PlaceholderShown,
             "read-write" => ReadWrite,
@@ -615,15 +614,14 @@ impl DerefMut for SnapshotMap {
 }
 
 /// Servo's version of an element snapshot.
-#[derive(Debug)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+#[derive(Debug, Default, MallocSizeOf)]
 pub struct ServoElementSnapshot {
     /// The stored state of the element.
     pub state: Option<ElementState>,
     /// The set of stored attributes and its values.
     pub attrs: Option<Vec<(AttrIdentifier, AttrValue)>>,
-    /// Whether this element is an HTML element in an HTML document.
-    pub is_html_element_in_html_document: bool,
+    /// The set of changed attributes and its values.
+    pub changed_attrs: Vec<LocalName>,
     /// Whether the class attribute changed or not.
     pub class_changed: bool,
     /// Whether the id attribute changed or not.
@@ -634,15 +632,8 @@ pub struct ServoElementSnapshot {
 
 impl ServoElementSnapshot {
     /// Create an empty element snapshot.
-    pub fn new(is_html_element_in_html_document: bool) -> Self {
-        ServoElementSnapshot {
-            state: None,
-            attrs: None,
-            is_html_element_in_html_document: is_html_element_in_html_document,
-            class_changed: false,
-            id_changed: false,
-            other_attributes_changed: false,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Returns whether the id attribute changed or not.
@@ -667,6 +658,17 @@ impl ServoElementSnapshot {
             .iter()
             .find(|&&(ref ident, _)| ident.local_name == *name && ident.namespace == *namespace)
             .map(|&(_, ref v)| v)
+    }
+
+    /// Executes the callback once for each attribute that changed.
+    #[inline]
+    pub fn each_attr_changed<F>(&self, mut callback: F)
+    where
+        F: FnMut(&LocalName),
+    {
+        for name in &self.changed_attrs {
+            callback(name)
+        }
     }
 
     fn any_attr_ignore_ns<F>(&self, name: &LocalName, mut f: F) -> bool
@@ -695,15 +697,15 @@ impl ElementSnapshot for ServoElementSnapshot {
             .map(|v| v.as_atom())
     }
 
-    fn is_part(&self, _name: &Atom) -> bool {
+    fn is_part(&self, _name: &AtomIdent) -> bool {
         false
     }
 
-    fn imported_part(&self, _: &Atom) -> Option<Atom> {
+    fn imported_part(&self, _: &AtomIdent) -> Option<AtomIdent> {
         None
     }
 
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         self.get_attr(&ns!(), &local_name!("class"))
             .map_or(false, |v| {
                 v.as_tokens()
@@ -714,11 +716,11 @@ impl ElementSnapshot for ServoElementSnapshot {
 
     fn each_class<F>(&self, mut callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         if let Some(v) = self.get_attr(&ns!(), &local_name!("class")) {
             for class in v.as_tokens() {
-                callback(class);
+                callback(AtomIdent::cast(class));
             }
         }
     }
@@ -726,7 +728,7 @@ impl ElementSnapshot for ServoElementSnapshot {
     fn lang_attr(&self) -> Option<SelectorAttrValue> {
         self.get_attr(&ns!(xml), &local_name!("lang"))
             .or_else(|| self.get_attr(&ns!(), &local_name!("lang")))
-            .map(|v| String::from(v as &str))
+            .map(|v| SelectorAttrValue::from(v as &str))
     }
 }
 
@@ -736,7 +738,7 @@ impl ServoElementSnapshot {
         &self,
         ns: &NamespaceConstraint<&Namespace>,
         local_name: &LocalName,
-        operation: &AttrSelectorOperation<&String>,
+        operation: &AttrSelectorOperation<&AtomString>,
     ) -> bool {
         match *ns {
             NamespaceConstraint::Specific(ref ns) => self

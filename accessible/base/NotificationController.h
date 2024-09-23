@@ -7,11 +7,12 @@
 #define mozilla_a11y_NotificationController_h_
 
 #include "EventQueue.h"
-#include "EventTree.h"
 
-#include "mozilla/Tuple.h"
+#include "nsClassHashtable.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsRefreshDriver.h"
+#include "nsIFrame.h"
+#include "nsRefreshObservers.h"
+#include "nsTHashSet.h"
 
 #include <utility>
 
@@ -78,12 +79,12 @@ class TNotification : public Notification {
 
   template <size_t... Indices>
   void ProcessHelper(std::index_sequence<Indices...>) {
-    (mInstance->*mCallback)(Get<Indices>(mArgs)...);
+    (mInstance->*mCallback)(std::get<Indices>(mArgs)...);
   }
 
   Class* mInstance;
   Callback mCallback;
-  Tuple<RefPtr<Args>...> mArgs;
+  std::tuple<RefPtr<Args>...> mArgs;
 };
 
 /**
@@ -114,49 +115,6 @@ class NotificationController final : public EventQueue,
   }
 
   /**
-   * Creates and adds a name change event into the queue for a container of
-   * the given accessible, if the accessible is a part of name computation of
-   * the container.
-   */
-  void QueueNameChange(Accessible* aChangeTarget) {
-    if (PushNameChange(aChangeTarget)) {
-      ScheduleProcessing();
-    }
-  }
-
-  /**
-   * Returns existing event tree for the given the accessible or creates one if
-   * it doesn't exists yet.
-   */
-  EventTree* QueueMutation(Accessible* aContainer);
-
-  class MoveGuard final {
-   public:
-    explicit MoveGuard(NotificationController* aController)
-        : mController(aController) {
-#ifdef DEBUG
-      MOZ_ASSERT(!mController->mMoveGuardOnStack,
-                 "Move guard is on stack already!");
-      mController->mMoveGuardOnStack = true;
-#endif
-    }
-    ~MoveGuard() {
-#ifdef DEBUG
-      MOZ_ASSERT(mController->mMoveGuardOnStack, "No move guard on stack!");
-      mController->mMoveGuardOnStack = false;
-#endif
-      mController->mPrecedingEvents.Clear();
-    }
-
-   private:
-    NotificationController* mController;
-  };
-
-#ifdef A11Y_LOG
-  const EventTree& RootEventTree() const { return mEventTree; };
-#endif
-
-  /**
    * Queue a mutation event to emit if not coalesced away.  Returns true if the
    * event was queued and has not yet been coalesced.
    */
@@ -184,20 +142,21 @@ class NotificationController final : public EventQueue,
     MOZ_ASSERT(aTextNode->GetPrimaryFrame()->StyleVisibility()->IsVisible(),
                "A text node is not visible");
 
-    mTextHash.PutEntry(aTextNode);
+    mTextArray.AppendElement(aTextNode);
+
     ScheduleProcessing();
   }
 
   /**
    * Pend accessible tree update for content insertion.
    */
-  void ScheduleContentInsertion(Accessible* aContainer,
+  void ScheduleContentInsertion(LocalAccessible* aContainer,
                                 nsTArray<nsCOMPtr<nsIContent>>& aInsertions);
 
   /**
    * Pend an accessible subtree relocation.
    */
-  void ScheduleRelocation(Accessible* aOwner) {
+  void ScheduleRelocation(LocalAccessible* aOwner) {
     if (!mRelocations.Contains(aOwner)) {
       // XXX(Bug 1631371) Check if this should use a fallible operation as it
       // pretended earlier, or change the return type to void.
@@ -228,8 +187,9 @@ class NotificationController final : public EventQueue,
     if (!IsUpdatePending()) {
 #ifdef A11Y_LOG
       if (mozilla::a11y::logging::IsEnabled(
-              mozilla::a11y::logging::eNotifications))
+              mozilla::a11y::logging::eNotifications)) {
         mozilla::a11y::logging::Text("sync notification processing");
+      }
 #endif
       (aInstance->*aMethod)(aArgs...);
       return;
@@ -308,24 +268,12 @@ class NotificationController final : public EventQueue,
   // nsARefreshObserver
   virtual void WillRefresh(mozilla::TimeStamp aTime) override;
 
-  /**
-   * Set and returns a hide event, paired with a show event, for the move.
-   */
-  void WithdrawPrecedingEvents(nsTArray<RefPtr<AccHideEvent>>* aEvs) {
-    if (mPrecedingEvents.Length() > 0) {
-      aEvs->AppendElements(std::move(mPrecedingEvents));
-    }
-  }
-  void StorePrecedingEvent(AccHideEvent* aEv) {
-    MOZ_ASSERT(mMoveGuardOnStack, "No move guard on stack!");
-    mPrecedingEvents.AppendElement(aEv);
-  }
-  void StorePrecedingEvents(nsTArray<RefPtr<AccHideEvent>>&& aEvs) {
-    MOZ_ASSERT(mMoveGuardOnStack, "No move guard on stack!");
-    mPrecedingEvents.InsertElementsAt(0, aEvs);
-  }
-
  private:
+  /**
+   * Remove a specific hide event if it should not be propagated.
+   */
+  void CoalesceHideEvent(AccHideEvent* aHideEvent);
+
   /**
    * get rid of a mutation event that is no longer necessary.
    */
@@ -361,7 +309,8 @@ class NotificationController final : public EventQueue,
   /**
    * Pending accessible tree update notifications for content insertions.
    */
-  nsClassHashtable<nsRefPtrHashKey<Accessible>, nsTArray<nsCOMPtr<nsIContent>>>
+  nsClassHashtable<nsRefPtrHashKey<LocalAccessible>,
+                   nsTArray<nsCOMPtr<nsIContent>>>
       mContentInsertions;
 
   template <class T>
@@ -391,8 +340,11 @@ class NotificationController final : public EventQueue,
 
   /**
    * Pending accessible tree update notifications for rendered text changes.
+   * When there are a lot of nearby text insertions (e.g. during a reflow), it
+   * is much more performant to process them in order because we then benefit
+   * from the layout line cursor. Therefore, we use an array here.
    */
-  nsTHashtable<nsCOMPtrHashKey<nsIContent>> mTextHash;
+  nsTArray<nsCOMPtr<nsIContent>> mTextArray;
 
   /**
    * Other notifications like DOM events. Don't make this an AutoTArray; we
@@ -403,25 +355,7 @@ class NotificationController final : public EventQueue,
   /**
    * Holds all scheduled relocations.
    */
-  nsTArray<RefPtr<Accessible>> mRelocations;
-
-  /**
-   * Holds all mutation events.
-   */
-  EventTree mEventTree;
-
-  /**
-   * A temporary collection of hide events that should be fired before related
-   * show event. Used by EventTree.
-   */
-  nsTArray<RefPtr<AccHideEvent>> mPrecedingEvents;
-
-#ifdef DEBUG
-  bool mMoveGuardOnStack;
-#endif
-
-  friend class MoveGuard;
-  friend class EventTree;
+  nsTArray<RefPtr<LocalAccessible>> mRelocations;
 
   /**
    * A list of all mutation events we may want to emit.  Ordered from the first
@@ -442,7 +376,7 @@ class NotificationController final : public EventQueue,
     };
 
     void PutEvent(AccTreeMutationEvent* aEvent);
-    AccTreeMutationEvent* GetEvent(Accessible* aTarget, EventType aType);
+    AccTreeMutationEvent* GetEvent(LocalAccessible* aTarget, EventType aType);
     void RemoveEvent(AccTreeMutationEvent* aEvent);
     void Clear() { mTable.Clear(); }
 

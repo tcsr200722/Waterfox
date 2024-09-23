@@ -13,10 +13,8 @@ l10n:
         - devtools/startup/locales/en-US
         - dom/locales/en-US
         - mobile/android/locales/en-US
-        - mobile/locales/en-US
         - netwerk/locales/en-US
         - security/manager/locales/en-US
-        - services/sync/locales/en-US
         - toolkit/locales/en-US
         - tools/lint/l10n.yml
     # files not supported by compare-locales,
@@ -30,7 +28,7 @@ l10n:
         - mobile/android/locales/l10n.toml
     type: external
     payload: python.l10n_lint:lint
-    setup: python.l10n_lint:gecko_strings_setup
+    setup: python.l10n_lint:source_repo_setup
     support-files:
         - '**/l10n.toml'
         - 'third_party/python/compare-locales/**'

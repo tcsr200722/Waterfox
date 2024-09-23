@@ -6,18 +6,19 @@
 
 /* exported withSyncContext */
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm", this);
+const { ExtensionCommon } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionCommon.sys.mjs"
+);
 
 class KintoExtContext extends ExtensionCommon.BaseContext {
   constructor(principal) {
-    super();
+    let fakeExtension = { id: "test@web.extension", manifestVersion: 2 };
+    super("addon_parent", fakeExtension);
     Object.defineProperty(this, "principal", {
       value: principal,
       configurable: true,
     });
     this.sandbox = Cu.Sandbox(principal, { wantXrays: false });
-    this.extension = { id: "test@web.extension" };
   }
 
   get cloneScope() {
@@ -29,7 +30,7 @@ class KintoExtContext extends ExtensionCommon.BaseContext {
  * Call the given function with a newly-constructed context.
  * Unload the context on the way out.
  *
- * @param {function} f    the function to call
+ * @param {Function} f    the function to call
  */
 async function withContext(f) {
   const ssm = Services.scriptSecurityManager;
@@ -50,7 +51,7 @@ async function withContext(f) {
  * Calls to this function can be replaced with calls to withContext
  * once the pref becomes on by default.
  *
- * @param {function} f    the function to call
+ * @param {Function} f    the function to call
  */
 async function withSyncContext(f) {
   const STORAGE_SYNC_PREF = "webextensions.storage.sync.enabled";

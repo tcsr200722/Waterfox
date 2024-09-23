@@ -1,7 +1,11 @@
+const { PromptTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromptTestUtils.sys.mjs"
+);
+
 function pageScript() {
   window.addEventListener(
     "beforeunload",
-    function(event) {
+    function (event) {
       var str = "Some text that causes the beforeunload dialog to be shown";
       event.returnValue = str;
       return str;
@@ -32,17 +36,17 @@ const PAGE_URL =
 
 add_task(async function doClick() {
   // The onbeforeunload dialog should appear.
-  let dialogShown = false;
-  function onDialogShown(node) {
-    dialogShown = true;
-    let dismissButton = node.querySelector(".tabmodalprompt-button0");
-    dismissButton.click();
-  }
-  let obsName = "tabmodal-dialog-loaded";
-  Services.obs.addObserver(onDialogShown, obsName);
-  await openPage(true);
-  Services.obs.removeObserver(onDialogShown, obsName);
-  Assert.ok(dialogShown, "Should have shown dialog.");
+  let dialogPromise = PromptTestUtils.waitForPrompt(null, {
+    modalType: Services.prompt.MODAL_TYPE_CONTENT,
+    promptType: "confirmEx",
+  });
+
+  let openPagePromise = openPage(true);
+  let dialog = await dialogPromise;
+  Assert.ok(true, "Showed the beforeunload dialog.");
+
+  await PromptTestUtils.handlePrompt(dialog, { buttonNumClick: 0 });
+  await openPagePromise;
 });
 
 add_task(async function noClick() {
@@ -55,9 +59,9 @@ async function openPage(shouldClick) {
   // Open about:blank in a new tab.
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async function(browser) {
+    async function (browser) {
       // Load the page.
-      await BrowserTestUtils.loadURI(browser, PAGE_URL);
+      BrowserTestUtils.startLoadingURIString(browser, PAGE_URL);
       await BrowserTestUtils.browserLoaded(browser);
 
       let frameBC = browser.browsingContext.children[0];
@@ -67,7 +71,7 @@ async function openPage(shouldClick) {
       let hasInteractedWith = await SpecialPowers.spawn(
         frameBC,
         [],
-        function() {
+        function () {
           return [
             content.document.userHasInteracted,
             content.document.userHasInteracted,
@@ -85,7 +89,7 @@ async function openPage(shouldClick) {
         "Click should update frame interactivity state"
       );
       // And then navigate away.
-      await BrowserTestUtils.loadURI(browser, "http://example.com/");
+      BrowserTestUtils.startLoadingURIString(browser, "http://example.com/");
       await BrowserTestUtils.browserLoaded(browser);
     }
   );

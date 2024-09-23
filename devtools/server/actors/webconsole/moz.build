@@ -5,17 +5,16 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 DIRS += [
-    'listeners',
+    "commands",
+    "listeners",
 ]
 
 DevToolsModules(
-    'commands.js',
-    'content-process-forward.js',
-    'eager-ecma-whitelist.js',
-    'eager-function-whitelist.js',
-    'eval-with-debugger.js',
-    'message-manager-mock.js',
-    'utils.js',
-    'webidl-pure-whitelist.js',
-    'worker-listeners.js',
+    "eager-ecma-allowlist.js",
+    "eager-function-allowlist.js",
+    "eval-with-debugger.js",
+    "utils.js",
+    "webidl-pure-allowlist.js",
+    "webidl-unsafe-getters-names.js",
+    "worker-listeners.js",
 )

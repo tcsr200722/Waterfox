@@ -8,6 +8,10 @@ test "$SIGNING_CERT"
 ARTIFACTS_DIR="/home/worker/artifacts"
 mkdir -p "$ARTIFACTS_DIR"
 
+# Strip trailing / if present
+TASKCLUSTER_ROOT_URL="${TASKCLUSTER_ROOT_URL%/}"
+export TASKCLUSTER_ROOT_URL
+
 # duplicate the functionality of taskcluster-lib-urls, but in bash..
 queue_base="${TASKCLUSTER_ROOT_URL%/}/api/queue/v1"
 
@@ -23,7 +27,7 @@ if [ -n "${S3_BUCKET_AND_PATH}" ] && getent hosts taskcluster
 then
   # Does this parse as we expect?
   S3_PATH=${S3_BUCKET_AND_PATH#*/}
-  AWS_BUCKET_NAME=${S3_BUCKET_AND_PATH%/${S3_PATH}*}
+  AWS_BUCKET_NAME=${S3_BUCKET_AND_PATH%/"${S3_PATH}"*}
   test "${S3_PATH}"
   test "${AWS_BUCKET_NAME}"
 
@@ -50,7 +54,7 @@ fi
 
 # EXTRA_PARAMS is optional
 # shellcheck disable=SC2086
-python3.8 /home/worker/bin/funsize.py \
+python3 /home/worker/bin/funsize.py \
     --artifacts-dir "$ARTIFACTS_DIR" \
     --task-definition /home/worker/task.json \
     --signing-cert "/home/worker/keys/${SIGNING_CERT}.pubkey" \

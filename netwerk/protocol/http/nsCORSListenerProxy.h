@@ -15,12 +15,12 @@
 #include "nsTArray.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIChannelEventSink.h"
-#include "nsIHttpChannel.h"
 #include "nsIThreadRetargetableStreamListener.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 
+class nsIHttpChannel;
 class nsIURI;
 class nsIPrincipal;
 class nsINetworkInterceptController;
@@ -35,10 +35,13 @@ class nsHttpChannel;
 
 enum class DataURIHandling { Allow, Disallow };
 
-enum class UpdateType { Default, InternalOrHSTSRedirect };
+enum class UpdateType {
+  Default,
+  StripRequestBodyHeader,
+  InternalOrHSTSRedirect
+};
 
-class nsCORSListenerProxy final : public nsIStreamListener,
-                                  public nsIInterfaceRequestor,
+class nsCORSListenerProxy final : public nsIInterfaceRequestor,
                                   public nsIChannelEventSink,
                                   public nsIThreadRetargetableStreamListener {
  public:
@@ -54,6 +57,8 @@ class nsCORSListenerProxy final : public nsIStreamListener,
   NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
   static void Shutdown();
+  static void ClearCache();
+  static void ClearPrivateBrowsingCache();
 
   [[nodiscard]] nsresult Init(nsIChannel* aChannel,
                               DataURIHandling aAllowDataURI);
@@ -67,7 +72,8 @@ class nsCORSListenerProxy final : public nsIStreamListener,
                                     bool aPrivateBrowsing,
                                     bool aFromChromeContext,
                                     const nsAString& aMessage,
-                                    const nsACString& aCategory);
+                                    const nsACString& aCategory,
+                                    bool aIsWarning = false);
 
  private:
   // Only HttpChannelParent can call RemoveFromCorsPreflightCache
@@ -75,20 +81,23 @@ class nsCORSListenerProxy final : public nsIStreamListener,
   // Only nsHttpChannel can invoke CORS preflights
   friend class mozilla::net::nsHttpChannel;
 
-  static void RemoveFromCorsPreflightCache(nsIURI* aURI,
-                                           nsIPrincipal* aRequestingPrincipal);
+  static void RemoveFromCorsPreflightCache(
+      nsIURI* aURI, nsIPrincipal* aRequestingPrincipal,
+      const mozilla::OriginAttributes& aOriginAttributes);
   [[nodiscard]] static nsresult StartCORSPreflight(
       nsIChannel* aRequestChannel, nsICorsPreflightCallback* aCallback,
-      nsTArray<nsCString>& aACUnsafeHeaders, nsIChannel** aPreflightChannel);
+      nsTArray<nsCString>& aUnsafeHeaders, nsIChannel** aPreflightChannel);
 
   ~nsCORSListenerProxy() = default;
 
   [[nodiscard]] nsresult UpdateChannel(nsIChannel* aChannel,
                                        DataURIHandling aAllowDataURI,
-                                       UpdateType aUpdateType);
+                                       UpdateType aUpdateType,
+                                       bool aStripAuthHeader);
   [[nodiscard]] nsresult CheckRequestApproved(nsIRequest* aRequest);
   [[nodiscard]] nsresult CheckPreflightNeeded(nsIChannel* aChannel,
-                                              UpdateType aUpdateType);
+                                              UpdateType aUpdateType,
+                                              bool aStripAuthHeader);
 
   nsCOMPtr<nsIStreamListener> mOuterListener;
   // The principal that originally kicked off the request
@@ -105,6 +114,7 @@ class nsCORSListenerProxy final : public nsIStreamListener,
   // an http: request to https: in nsHttpChannel::Connect() and hence
   // a request might not be marked as cross site request based on that promise.
   bool mHasBeenCrossSite;
+  bool mIsRedirect = false;
   // Under e10s, logging happens in the child process. Keep a reference to the
   // creator nsIHttpChannel in order to find the way back to the child. Released
   // in OnStopRequest().
@@ -116,7 +126,7 @@ class nsCORSListenerProxy final : public nsIStreamListener,
   // only locking mOuterListener, because it can be used on different threads.
   // We guarantee that OnStartRequest, OnDataAvailable and OnStopReques will be
   // called in order, but to make tsan happy we will lock mOuterListener.
-  mutable mozilla::Mutex mMutex;
+  mutable mozilla::Mutex mMutex MOZ_UNANNOTATED;
 };
 
 #endif

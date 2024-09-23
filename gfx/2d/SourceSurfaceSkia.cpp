@@ -8,8 +8,10 @@
 #include "SourceSurfaceSkia.h"
 #include "HelpersSkia.h"
 #include "DrawTargetSkia.h"
-#include "DataSurfaceHelpers.h"
 #include "skia/include/core/SkData.h"
+#include "skia/include/core/SkImage.h"
+#include "skia/include/core/SkSurface.h"
+#include "skia/include/private/base/SkMalloc.h"
 #include "mozilla/CheckedInt.h"
 
 namespace mozilla::gfx {
@@ -31,8 +33,32 @@ IntSize SourceSurfaceSkia::GetSize() const { return mSize; }
 
 SurfaceFormat SourceSurfaceSkia::GetFormat() const { return mFormat; }
 
-sk_sp<SkImage> SourceSurfaceSkia::GetImage() {
-  MutexAutoLock lock(mChangeMutex);
+// This is only ever called by the DT destructor, which can only ever happen
+// from one place at a time. Therefore it doesn't need to hold the ChangeMutex
+// as mSurface is never read to directly and is just there to keep the object
+// alive, which itself is refcounted in a thread-safe manner.
+void SourceSurfaceSkia::GiveSurface(SkSurface* aSurface) {
+  mSurface.reset(aSurface);
+  mDrawTarget = nullptr;
+}
+
+sk_sp<SkImage> SourceSurfaceSkia::GetImage(Maybe<MutexAutoLock>* aLock) {
+  // If we were provided a lock object, we can let the caller access
+  // a shared SkImage and we know it won't go away while the lock is held.
+  // Otherwise we need to call DrawTargetWillChange to ensure we have our
+  // own SkImage.
+  if (aLock) {
+    MOZ_ASSERT(aLock->isNothing());
+    aLock->emplace(mChangeMutex);
+
+    // Now that we are locked, we can check mDrawTarget. If it's null, then
+    // we're not shared and we can unlock eagerly.
+    if (!mDrawTarget) {
+      aLock->reset();
+    }
+  } else {
+    DrawTargetWillChange();
+  }
   sk_sp<SkImage> image = mImage;
   return image;
 }
@@ -53,11 +79,12 @@ static sk_sp<SkData> MakeSkData(void* aData, int32_t aHeight, size_t aStride) {
 }
 
 static sk_sp<SkImage> ReadSkImage(const sk_sp<SkImage>& aImage,
-                                  const SkImageInfo& aInfo, size_t aStride) {
+                                  const SkImageInfo& aInfo, size_t aStride,
+                                  int aX = 0, int aY = 0) {
   if (sk_sp<SkData> data = MakeSkData(nullptr, aInfo.height(), aStride)) {
-    if (aImage->readPixels(aInfo, data->writable_data(), aStride, 0, 0,
+    if (aImage->readPixels(aInfo, data->writable_data(), aStride, aX, aY,
                            SkImage::kDisallow_CachingHint)) {
-      return SkImage::MakeRasterData(aInfo, data, aStride);
+      return SkImages::RasterFromData(aInfo, data, aStride);
     }
   }
   return nullptr;
@@ -71,7 +98,7 @@ bool SourceSurfaceSkia::InitFromData(unsigned char* aData, const IntSize& aSize,
   }
 
   SkImageInfo info = MakeSkiaImageInfo(aSize, aFormat);
-  mImage = SkImage::MakeRasterData(info, data, aStride);
+  mImage = SkImages::RasterFromData(info, data, aStride);
   if (!mImage) {
     return false;
   }
@@ -108,7 +135,10 @@ bool SourceSurfaceSkia::InitFromImage(const sk_sp<SkImage>& aImage,
   } else if (aFormat != SurfaceFormat::UNKNOWN) {
     mFormat = aFormat;
     SkImageInfo info = MakeSkiaImageInfo(mSize, mFormat);
-    mStride = SkAlign4(info.minRowBytes());
+    mStride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
+    if (!mStride) {
+      return false;
+    }
   } else {
     return false;
   }
@@ -122,6 +152,27 @@ bool SourceSurfaceSkia::InitFromImage(const sk_sp<SkImage>& aImage,
   return true;
 }
 
+already_AddRefed<SourceSurface> SourceSurfaceSkia::ExtractSubrect(
+    const IntRect& aRect) {
+  if (!mImage || aRect.IsEmpty() || !GetRect().Contains(aRect)) {
+    return nullptr;
+  }
+  SkImageInfo info = MakeSkiaImageInfo(aRect.Size(), mFormat);
+  size_t stride = GetAlignedStride<4>(info.width(), info.bytesPerPixel());
+  if (!stride) {
+    return nullptr;
+  }
+  sk_sp<SkImage> subImage = ReadSkImage(mImage, info, stride, aRect.x, aRect.y);
+  if (!subImage) {
+    return nullptr;
+  }
+  RefPtr<SourceSurfaceSkia> surface = new SourceSurfaceSkia;
+  if (!surface->InitFromImage(subImage)) {
+    return nullptr;
+  }
+  return surface.forget().downcast<SourceSurface>();
+}
+
 uint8_t* SourceSurfaceSkia::GetData() {
   if (!mImage) {
     return nullptr;
@@ -133,7 +184,8 @@ uint8_t* SourceSurfaceSkia::GetData() {
   return reinterpret_cast<uint8_t*>(pixmap.writable_addr());
 }
 
-bool SourceSurfaceSkia::Map(MapType, MappedSurface* aMappedSurface) {
+bool SourceSurfaceSkia::Map(MapType, MappedSurface* aMappedSurface)
+    MOZ_NO_THREAD_SAFETY_ANALYSIS {
   mChangeMutex.Lock();
   aMappedSurface->mData = GetData();
   aMappedSurface->mStride = Stride();
@@ -142,10 +194,14 @@ bool SourceSurfaceSkia::Map(MapType, MappedSurface* aMappedSurface) {
   if (!mIsMapped) {
     mChangeMutex.Unlock();
   }
+  // Static analysis will warn due to a conditional Unlock
+  MOZ_PUSH_IGNORE_THREAD_SAFETY
   return isMapped;
+  MOZ_POP_THREAD_SAFETY
 }
 
-void SourceSurfaceSkia::Unmap() {
+void SourceSurfaceSkia::Unmap() MOZ_NO_THREAD_SAFETY_ANALYSIS {
+  mChangeMutex.AssertCurrentThreadOwns();
   MOZ_ASSERT(mIsMapped);
   mIsMapped = false;
   mChangeMutex.Unlock();
@@ -153,7 +209,7 @@ void SourceSurfaceSkia::Unmap() {
 
 void SourceSurfaceSkia::DrawTargetWillChange() {
   MutexAutoLock lock(mChangeMutex);
-  if (mDrawTarget) {
+  if (mDrawTarget.exchange(nullptr)) {
     // Raster snapshots do not use Skia's internal copy-on-write mechanism,
     // so we need to do an explicit copy here.
     // GPU snapshots, for which peekPixels is false, will already be dealt
@@ -166,7 +222,6 @@ void SourceSurfaceSkia::DrawTargetWillChange() {
         gfxCriticalError() << "Failed copying Skia raster snapshot";
       }
     }
-    mDrawTarget = nullptr;
   }
 }
 

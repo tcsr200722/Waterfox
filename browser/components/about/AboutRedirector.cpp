@@ -11,12 +11,9 @@
 #include "nsIChannel.h"
 #include "nsIURI.h"
 #include "nsIProtocolHandler.h"
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/StaticPrefs_browser.h"
-#include "mozilla/Preferences.h"
 #include "nsServiceManagerUtils.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/ContentParent.h"
 
 namespace mozilla {
 namespace browser {
@@ -27,8 +24,7 @@ static const uint32_t ACTIVITY_STREAM_FLAGS =
     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::ENABLE_INDEXED_DB |
     nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
     nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
-    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-    nsIAboutModule::ALLOW_UNSANITIZED_CONTENT;
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT;
 
 struct RedirEntry {
   const char* id;
@@ -43,83 +39,135 @@ struct RedirEntry {
   unless your about: page really needs chrome privileges. Security review is
   required before adding new map entries without
   URI_SAFE_FOR_UNTRUSTED_CONTENT.
+
+  NOTE: changes to this redir map need to be accompanied with changes to
+    browser/components/about/components.conf
 */
 static const RedirEntry kRedirMap[] = {
+    {"asrouter", "chrome://browser/content/asrouter/asrouter-admin.html",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"blocked", "chrome://browser/content/blockedSite.xhtml",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
-    {"certerror", "chrome://browser/content/aboutNetError.xhtml",
+    {"certerror", "chrome://global/content/aboutNetError.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
-    {"config", "chrome://browser/content/aboutconfig/aboutconfig.html", 0},
+    {"unloads", "chrome://browser/content/tabunloader/aboutUnloads.html",
+     nsIAboutModule::ALLOW_SCRIPT},
     {"framecrashed", "chrome://browser/content/aboutFrameCrashed.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::URI_CAN_LOAD_IN_CHILD |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"logins", "chrome://browser/content/aboutlogins/aboutLogins.html",
      nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
          nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
-         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT},
-    {"tabcrashed", "chrome://browser/content/aboutTabCrashed.xhtml",
-     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"loginsimportreport",
+     "chrome://browser/content/aboutlogins/aboutLoginsImportReport.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"firefoxview", "chrome://browser/content/firefoxview/firefoxview.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"policies", "chrome://browser/content/policies/aboutPolicies.html",
-     nsIAboutModule::ALLOW_SCRIPT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     {"privatebrowsing", "chrome://browser/content/aboutPrivateBrowsing.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT},
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS},
     {"profiling",
      "chrome://devtools/content/performance-new/aboutprofiling/index.xhtml",
-     nsIAboutModule::ALLOW_SCRIPT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     {"rights", "chrome://global/content/aboutRights.xhtml",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::ALLOW_SCRIPT},
+         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     {"robots", "chrome://browser/content/aboutRobots.xhtml",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::ALLOW_SCRIPT},
     {"sessionrestore", "chrome://browser/content/aboutSessionRestore.xhtml",
-     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"shoppingsidebar", "chrome://browser/content/shopping/shopping.html",
+     nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"tabcrashed", "chrome://browser/content/aboutTabCrashed.xhtml",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"welcomeback", "chrome://browser/content/aboutWelcomeBack.xhtml",
-     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
     // Actual activity stream URL for home and newtab are set in channel
     // creation
     {"home", "about:blank", ACTIVITY_STREAM_FLAGS},
-    {"newtab", "about:blank", ACTIVITY_STREAM_FLAGS},
+    {"newtab", "chrome://browser/content/blanktab.html", ACTIVITY_STREAM_FLAGS},
     {"welcome", "about:blank",
      nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
          nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
          nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::ALLOW_SCRIPT},
+    {"messagepreview",
+     "chrome://browser/content/messagepreview/messagepreview.html",
+     nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"pocket-saved", "chrome://pocket/content/panels/saved.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"pocket-signup", "chrome://pocket/content/panels/signup.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+    {"pocket-home", "chrome://pocket/content/panels/home.html",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+    {"pocket-style-guide", "chrome://pocket/content/panels/style-guide.html",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+    {"settings", "chrome://browser/content/preferences/preferences.xhtml",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"preferences", "chrome://browser/content/preferences/preferences.xhtml",
-     nsIAboutModule::ALLOW_SCRIPT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     {"downloads",
      "chrome://browser/content/downloads/contentAreaDownloadsView.xhtml",
-     nsIAboutModule::ALLOW_SCRIPT},
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::IS_SECURE_CHROME_UI},
     {"reader", "chrome://global/content/reader/aboutReader.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"restartrequired", "chrome://browser/content/aboutRestartRequired.xhtml",
      nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
-    {"newinstall", "chrome://browser/content/newInstallPage.html",
-     nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
-         nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-         nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
     {"protections", "chrome://browser/content/protections.html",
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
-         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS},
-    {"pioneer", "chrome://browser/content/pioneer.html",
-     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"ion", "chrome://browser/content/ion.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT |
+         nsIAboutModule::IS_SECURE_CHROME_UI},
+    {"profilemanager", "chrome://browser/content/profiles/profiles.html",
+     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+         nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
+         nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS |
+         nsIAboutModule::HIDE_FROM_ABOUTABOUT},
 };
 
 static nsAutoCString GetAboutModuleName(nsIURI* aURI) {
@@ -156,7 +204,7 @@ AboutRedirector::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
   // startup cache.
   if (XRE_IsContentProcess() && path.EqualsLiteral("home")) {
     auto& remoteType = dom::ContentChild::GetSingleton()->GetRemoteType();
-    if (remoteType.EqualsLiteral(PRIVILEGEDABOUT_REMOTE_TYPE)) {
+    if (remoteType == PRIVILEGEDABOUT_REMOTE_TYPE) {
       nsCOMPtr<nsIAboutNewTabService> aboutNewTabService =
           do_GetService("@mozilla.org/browser/aboutnewtab-service;1", &rv);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -241,8 +289,22 @@ AboutRedirector::GetURIFlags(nsIURI* aURI, uint32_t* result) {
   return NS_ERROR_ILLEGAL_VALUE;
 }
 
-nsresult AboutRedirector::Create(nsISupports* aOuter, REFNSIID aIID,
-                                 void** result) {
+NS_IMETHODIMP
+AboutRedirector::GetChromeURI(nsIURI* aURI, nsIURI** chromeURI) {
+  NS_ENSURE_ARG_POINTER(aURI);
+
+  nsAutoCString name = GetAboutModuleName(aURI);
+
+  for (const auto& redir : kRedirMap) {
+    if (name.Equals(redir.id)) {
+      return NS_NewURI(chromeURI, redir.url);
+    }
+  }
+
+  return NS_ERROR_ILLEGAL_VALUE;
+}
+
+nsresult AboutRedirector::Create(REFNSIID aIID, void** result) {
   AboutRedirector* about = new AboutRedirector();
   if (about == nullptr) return NS_ERROR_OUT_OF_MEMORY;
   NS_ADDREF(about);

@@ -12,12 +12,18 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
  * Back/fwd buttons should be re-enabled after customizing.
  */
 add_task(async function test_back_forward_buttons() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.navigation.requireUserInteraction", false]],
+  });
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_PATH);
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  BrowserTestUtils.loadURI(tab.linkedBrowser, "data:text/html,A separate page");
+  BrowserTestUtils.startLoadingURIString(
+    tab.linkedBrowser,
+    "data:text/html,A separate page"
+  );
   await loaded;
   loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     tab.linkedBrowser,
     "data:text/html,Another separate page"
   );
@@ -27,6 +33,13 @@ add_task(async function test_back_forward_buttons() {
 
   let backButton = document.getElementById("back-button");
   let forwardButton = document.getElementById("forward-button");
+
+  await BrowserTestUtils.waitForCondition(
+    () =>
+      !backButton.hasAttribute("disabled") &&
+      !forwardButton.hasAttribute("disabled")
+  );
+
   ok(!backButton.hasAttribute("disabled"), "Back button shouldn't be disabled");
   ok(
     !forwardButton.hasAttribute("disabled"),
@@ -46,6 +59,13 @@ add_task(async function test_back_forward_buttons() {
   );
 
   await endCustomizing();
+
+  await BrowserTestUtils.waitForCondition(
+    () =>
+      !backButton.hasAttribute("disabled") &&
+      !forwardButton.hasAttribute("disabled")
+  );
+
   ok(
     !backButton.hasAttribute("disabled"),
     "Back button shouldn't be disabled after customize mode"

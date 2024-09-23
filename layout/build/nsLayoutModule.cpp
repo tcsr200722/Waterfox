@@ -13,7 +13,6 @@
 #include "mozilla/ModuleUtils.h"
 #include "nsImageModule.h"
 #include "nsLayoutStatics.h"
-#include "nsContentCID.h"
 #include "nsContentDLF.h"
 #include "nsContentPolicyUtils.h"
 #include "nsDataDocumentContentPolicy.h"
@@ -23,12 +22,10 @@
 #include "nsHTMLContentSerializer.h"
 #include "nsHTMLParts.h"
 #include "nsIContentSerializer.h"
-#include "nsIContentViewer.h"
+#include "nsIDocumentViewer.h"
 #include "nsPlainTextSerializer.h"
 #include "nsXMLContentSerializer.h"
 #include "nsXHTMLContentSerializer.h"
-#include "nsIFrameTraversal.h"
-#include "nsLayoutCID.h"
 #include "nsFocusManager.h"
 #include "ThirdPartyUtil.h"
 #include "gfxPlatform.h"
@@ -69,14 +66,6 @@ using mozilla::dom::PushNotifier;
 class nsIDocumentLoaderFactory;
 
 #define PRODUCT_NAME "Gecko"
-
-/* 0ddf4df8-4dbb-4133-8b79-9afb966514f5 */
-#define NS_PLUGINDOCLOADERFACTORY_CID                \
-  {                                                  \
-    0x0ddf4df8, 0x4dbb, 0x4133, {                    \
-      0x8b, 0x79, 0x9a, 0xfb, 0x96, 0x65, 0x14, 0xf5 \
-    }                                                \
-  }
 
 #include "inDeepTreeWalker.h"
 
@@ -127,9 +116,7 @@ void Shutdown() {
   nsLayoutStatics::Release();
 }
 
-nsresult NS_CreateFrameTraversal(nsIFrameTraversal** aResult);
-
-already_AddRefed<nsIContentViewer> NS_NewContentViewer();
+already_AddRefed<nsIDocumentViewer> NS_NewDocumentViewer();
 nsresult NS_NewContentDocumentLoaderFactory(nsIDocumentLoaderFactory** aResult);
 nsresult NS_NewContentPolicy(nsIContentPolicy** aResult);
 
@@ -138,17 +125,16 @@ nsresult NS_NewGlobalMessageManager(nsISupports** aResult);
 nsresult NS_NewParentProcessMessageManager(nsISupports** aResult);
 nsresult NS_NewChildProcessMessageManager(nsISupports** aResult);
 
-#define MAKE_CTOR(ctor_, iface_, func_)                                \
-  nsresult ctor_(nsISupports* aOuter, REFNSIID aIID, void** aResult) { \
-    *aResult = nullptr;                                                \
-    if (aOuter) return NS_ERROR_NO_AGGREGATION;                        \
-    iface_* inst;                                                      \
-    nsresult rv = func_(&inst);                                        \
-    if (NS_SUCCEEDED(rv)) {                                            \
-      rv = inst->QueryInterface(aIID, aResult);                        \
-      NS_RELEASE(inst);                                                \
-    }                                                                  \
-    return rv;                                                         \
+#define MAKE_CTOR(ctor_, iface_, func_)           \
+  nsresult ctor_(REFNSIID aIID, void** aResult) { \
+    *aResult = nullptr;                           \
+    iface_* inst;                                 \
+    nsresult rv = func_(&inst);                   \
+    if (NS_SUCCEEDED(rv)) {                       \
+      rv = inst->QueryInterface(aIID, aResult);   \
+      NS_RELEASE(inst);                           \
+    }                                             \
+    return rv;                                    \
   }
 
 #define MAKE_GENERIC_CTOR(iface_, func_)             \
@@ -163,9 +149,7 @@ nsresult NS_NewChildProcessMessageManager(nsISupports** aResult);
 #define MAKE_GENERIC_CTOR2(iface_, func_) \
   NS_IMPL_COMPONENT_FACTORY(iface_) { return func_(); }
 
-MAKE_GENERIC_CTOR(nsIFrameTraversal, NS_CreateFrameTraversal)
-
-MAKE_GENERIC_CTOR2(nsIContentViewer, NS_NewContentViewer)
+MAKE_GENERIC_CTOR2(nsIDocumentViewer, NS_NewDocumentViewer)
 
 MAKE_CTOR(CreateXMLContentSerializer, nsIContentSerializer,
           NS_NewXMLContentSerializer)
@@ -190,15 +174,10 @@ MAKE_GENERIC_CTOR(nsIFocusManager, NS_NewFocusManager)
 // views are not refcounted, so this is the same as
 // NS_GENERIC_FACTORY_CONSTRUCTOR without the NS_ADDREF/NS_RELEASE
 #define NS_GENERIC_FACTORY_CONSTRUCTOR_NOREFS(_InstanceClass)                  \
-  static nsresult _InstanceClass##Constructor(nsISupports* aOuter,             \
-                                              REFNSIID aIID, void** aResult) { \
+  static nsresult _InstanceClass##Constructor(REFNSIID aIID, void** aResult) { \
     nsresult rv;                                                               \
                                                                                \
     *aResult = nullptr;                                                        \
-    if (nullptr != aOuter) {                                                   \
-      rv = NS_ERROR_NO_AGGREGATION;                                            \
-      return rv;                                                               \
-    }                                                                          \
                                                                                \
     _InstanceClass* inst = new _InstanceClass();                               \
     if (nullptr == inst) {                                                     \
@@ -216,11 +195,9 @@ MAKE_GENERIC_CTOR(nsIFocusManager, NS_NewFocusManager)
 MAKE_GENERIC_CTOR(nsIAccessibilityService, NS_GetAccessibilityService)
 #endif
 
-nsresult Construct_nsIScriptSecurityManager(nsISupports* aOuter, REFNSIID aIID,
-                                            void** aResult) {
+nsresult Construct_nsIScriptSecurityManager(REFNSIID aIID, void** aResult) {
   if (!aResult) return NS_ERROR_NULL_POINTER;
   *aResult = nullptr;
-  if (aOuter) return NS_ERROR_NO_AGGREGATION;
   nsScriptSecurityManager* obj =
       nsScriptSecurityManager::GetScriptSecurityManager();
   if (!obj) return NS_ERROR_OUT_OF_MEMORY;
@@ -228,28 +205,20 @@ nsresult Construct_nsIScriptSecurityManager(nsISupports* aOuter, REFNSIID aIID,
   return NS_OK;
 }
 
-nsresult LocalStorageManagerConstructor(nsISupports* aOuter, REFNSIID aIID,
-                                        void** aResult) {
+nsresult LocalStorageManagerConstructor(REFNSIID aIID, void** aResult) {
   if (NextGenLocalStorageEnabled()) {
-    RefPtr<LocalStorageManager2> manager = new LocalStorageManager2();
+    auto manager = MakeRefPtr<LocalStorageManager2>();
     return manager->QueryInterface(aIID, aResult);
   }
 
-  RefPtr<LocalStorageManager> manager = new LocalStorageManager();
+  auto manager = MakeRefPtr<LocalStorageManager>();
   return manager->QueryInterface(aIID, aResult);
 }
 
-nsresult SessionStorageManagerConstructor(nsISupports* aOuter, REFNSIID aIID,
-                                          void** aResult) {
-  RefPtr<SessionStorageManager> manager = new SessionStorageManager(nullptr);
+nsresult SessionStorageManagerConstructor(REFNSIID aIID, void** aResult) {
+  auto manager = MakeRefPtr<SessionStorageManager>(nullptr);
   return manager->QueryInterface(aIID, aResult);
 }
-
-static const mozilla::Module::CategoryEntry kLayoutCategories[] = {
-    // clang-format off
-    {nullptr}
-    // clang-format on
-};
 
 void nsLayoutModuleDtor() {
   if (XRE_GetProcessType() == GeckoProcessType_GPU ||
@@ -270,11 +239,3 @@ void nsLayoutModuleDtor() {
   nsScriptSecurityManager::Shutdown();
   xpcModuleDtor();
 }
-
-extern const mozilla::Module kLayoutModule = {mozilla::Module::kVersion,
-                                              nullptr,
-                                              nullptr,
-                                              kLayoutCategories,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr};

@@ -7,24 +7,28 @@
 #ifndef MOZILLA_DOMQUAD_H_
 #define MOZILLA_DOMQUAD_H_
 
-#include "js/StructuredClone.h"
-#include "nsWrapperCache.h"
-#include "nsISupports.h"
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/Attributes.h"
-#include "nsCOMPtr.h"
-#include "nsIGlobalObject.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
+#include <cstdint>
 #include "Units.h"
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/RefPtr.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
+#include "nsWrapperCache.h"
 
+class JSObject;
 class nsIGlobalObject;
+struct JSContext;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class DOMRectReadOnly;
 class DOMPoint;
+class GlobalObject;
 struct DOMPointInit;
 struct DOMQuadInit;
 struct DOMRectInit;
@@ -37,7 +41,7 @@ class DOMQuad final : public nsWrapperCache {
   explicit DOMQuad(nsISupports* aParent);
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMQuad)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(DOMQuad)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(DOMQuad)
 
   nsISupports* GetParentObject() const { return mParent; }
   virtual JSObject* WrapObject(JSContext* aCx,
@@ -80,7 +84,6 @@ class DOMQuad final : public nsWrapperCache {
   RefPtr<DOMPoint> mPoints[4];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /*MOZILLA_DOMRECT_H_*/

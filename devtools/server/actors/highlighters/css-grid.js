@@ -6,7 +6,7 @@
 
 const {
   AutoRefreshHighlighter,
-} = require("devtools/server/actors/highlighters/auto-refresh");
+} = require("resource://devtools/server/actors/highlighters/auto-refresh.js");
 const {
   CANVAS_SIZE,
   DEFAULT_COLOR,
@@ -20,28 +20,22 @@ const {
   getPointsFromDiagonal,
   updateCanvasElement,
   updateCanvasPosition,
-} = require("devtools/server/actors/highlighters/utils/canvas");
+} = require("resource://devtools/server/actors/highlighters/utils/canvas.js");
 const {
   CanvasFrameAnonymousContentHelper,
-  createNode,
-  createSVGNode,
   getComputedStyle,
   moveInfobar,
-} = require("devtools/server/actors/highlighters/utils/markup");
-const { apply } = require("devtools/shared/layout/dom-matrix-2d");
+} = require("resource://devtools/server/actors/highlighters/utils/markup.js");
+const { apply } = require("resource://devtools/shared/layout/dom-matrix-2d.js");
 const {
   getCurrentZoom,
   getDisplayPixelRatio,
   getWindowDimensions,
   setIgnoreLayoutChanges,
-} = require("devtools/shared/layout/utils");
-const {
-  stringifyGridFragments,
-} = require("devtools/server/actors/utils/css-grid-utils");
-const { LocalizationHelper } = require("devtools/shared/l10n");
-
-const STRINGS_URI = "devtools/shared/locales/highlighters.properties";
-const L10N = new LocalizationHelper(STRINGS_URI);
+} = require("resource://devtools/shared/layout/utils.js");
+loader.lazyGetter(this, "HighlightersBundle", () => {
+  return new Localization(["devtools/shared/highlighters.ftl"], true);
+});
 
 const COLUMNS = "cols";
 const ROWS = "rows";
@@ -237,6 +231,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       this.highlighterEnv,
       this._buildMarkup.bind(this)
     );
+    this.isReady = this.markup.initialize();
 
     this.onPageHide = this.onPageHide.bind(this);
     this.onWillNavigate = this.onWillNavigate.bind(this);
@@ -263,13 +258,13 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
   }
 
   _buildMarkup() {
-    const container = createNode(this.win, {
+    const container = this.markup.createNode({
       attributes: {
         class: "highlighter-container",
       },
     });
 
-    const root = createNode(this.win, {
+    const root = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
@@ -281,7 +276,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     // We use a <canvas> element so that we can draw an arbitrary number of lines
     // which wouldn't be possible with HTML or SVG without having to insert and remove
     // the whole markup on every update.
-    createNode(this.win, {
+    this.markup.createNode({
       parent: root,
       nodeType: "canvas",
       attributes: {
@@ -295,7 +290,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     });
 
     // Build the SVG element.
-    const svg = createSVGNode(this.win, {
+    const svg = this.markup.createSVGNode({
       nodeType: "svg",
       parent: root,
       attributes: {
@@ -307,7 +302,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const regions = createSVGNode(this.win, {
+    const regions = this.markup.createSVGNode({
       nodeType: "g",
       parent: svg,
       attributes: {
@@ -316,7 +311,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: regions,
       attributes: {
@@ -326,7 +321,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: regions,
       attributes: {
@@ -337,7 +332,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     });
 
     // Build the grid area infobar markup.
-    const areaInfobarContainer = createNode(this.win, {
+    const areaInfobarContainer = this.markup.createNode({
       parent: container,
       attributes: {
         class: "area-infobar-container",
@@ -348,7 +343,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const areaInfobar = createNode(this.win, {
+    const areaInfobar = this.markup.createNode({
       parent: areaInfobarContainer,
       attributes: {
         class: "infobar",
@@ -356,14 +351,14 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const areaTextbox = createNode(this.win, {
+    const areaTextbox = this.markup.createNode({
       parent: areaInfobar,
       attributes: {
         class: "infobar-text",
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: areaTextbox,
       attributes: {
@@ -372,7 +367,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: areaTextbox,
       attributes: {
@@ -383,7 +378,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     });
 
     // Build the grid cell infobar markup.
-    const cellInfobarContainer = createNode(this.win, {
+    const cellInfobarContainer = this.markup.createNode({
       parent: container,
       attributes: {
         class: "cell-infobar-container",
@@ -394,7 +389,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const cellInfobar = createNode(this.win, {
+    const cellInfobar = this.markup.createNode({
       parent: cellInfobarContainer,
       attributes: {
         class: "infobar",
@@ -402,14 +397,14 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const cellTextbox = createNode(this.win, {
+    const cellTextbox = this.markup.createNode({
       parent: cellInfobar,
       attributes: {
         class: "infobar-text",
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: cellTextbox,
       attributes: {
@@ -418,7 +413,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: cellTextbox,
       attributes: {
@@ -429,7 +424,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     });
 
     // Build the grid line infobar markup.
-    const lineInfobarContainer = createNode(this.win, {
+    const lineInfobarContainer = this.markup.createNode({
       parent: container,
       attributes: {
         class: "line-infobar-container",
@@ -440,7 +435,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const lineInfobar = createNode(this.win, {
+    const lineInfobar = this.markup.createNode({
       parent: lineInfobarContainer,
       attributes: {
         class: "infobar",
@@ -448,14 +443,14 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    const lineTextbox = createNode(this.win, {
+    const lineTextbox = this.markup.createNode({
       parent: lineInfobar,
       attributes: {
         class: "infobar-text",
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: lineTextbox,
       attributes: {
@@ -464,7 +459,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "span",
       parent: lineTextbox,
       attributes: {
@@ -566,7 +561,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     }
 
     // Create the diagonal lines pattern for the rendering the grid gaps.
-    const canvas = createNode(this.win, { nodeType: "canvas" });
+    const canvas = this.markup.createNode({ nodeType: "canvas" });
     const width = (canvas.width = GRID_GAP_PATTERN_WIDTH * devicePixelRatio);
     const height = (canvas.height = GRID_GAP_PATTERN_HEIGHT * devicePixelRatio);
 
@@ -628,16 +623,24 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
    * The AutoRefreshHighlighter's _hasMoved method returns true only if the
    * element's quads have changed. Override it so it also returns true if the
    * element's grid has changed (which can happen when you change the
-   * grid-template-* CSS properties with the highlighter displayed).
+   * grid-template-* CSS properties with the highlighter displayed). This
+   * check is prone to false positives, because it does a direct object
+   * comparison of the first grid fragment structure. This structure is
+   * generated by the first call to getGridFragments, and on any subsequent
+   * calls where a reflow is needed. Since a reflow is needed when the CSS
+   * changes, this will correctly detect that the grid structure has changed.
+   * However, it's possible that the reflow could generate a novel grid
+   * fragment object containing information that is unchanged -- a false
+   * positive.
    */
   _hasMoved() {
     const hasMoved = AutoRefreshHighlighter.prototype._hasMoved.call(this);
 
-    const oldGridData = stringifyGridFragments(this.gridData);
+    const oldFirstGridFragment = this.gridData?.[0];
     this.gridData = this.currentNode.getGridFragments();
-    const newGridData = stringifyGridFragments(this.gridData);
+    const newFirstGridFragment = this.gridData[0];
 
-    return hasMoved || oldGridData !== newGridData;
+    return hasMoved || oldFirstGridFragment !== newFirstGridFragment;
   }
 
   /**
@@ -1798,7 +1801,10 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     setIgnoreLayoutChanges(true);
 
     // Set z-index.
-    this.markup.content.setStyle("z-index", this.options.zIndex);
+    this.markup.content.root.firstElementChild.style.setProperty(
+      "z-index",
+      this.options.zIndex
+    );
 
     const root = this.getElement("root");
     const cells = this.getElement("cells");
@@ -1890,7 +1896,6 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     const container = this.getElement("area-infobar-container");
     moveInfobar(container, bounds, this.win, {
       position: "bottom",
-      hideIfOffscreen: true,
     });
   }
 
@@ -1910,10 +1915,9 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
       parseFloat(width.toPrecision(6)) +
       " \u00D7 " +
       parseFloat(height.toPrecision(6));
-    const position = L10N.getFormatStr(
-      "grid.rowColumnPositions",
-      rowNumber,
-      columnNumber
+    const position = HighlightersBundle.formatValueSync(
+      "grid-row-column-positions",
+      { row: rowNumber, column: columnNumber }
     );
 
     this.getElement("cell-infobar-position").setTextContent(position);
@@ -1922,7 +1926,6 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     const container = this.getElement("cell-infobar-container");
     moveInfobar(container, bounds, this.win, {
       position: "top",
-      hideIfOffscreen: true,
     });
   }
 

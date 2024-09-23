@@ -6,10 +6,10 @@
  * http://w3c.github.io/webrtc-pc/ (with https://github.com/w3c/webrtc-pc/pull/178)
  */
 
-[NoInterfaceObject,
+[LegacyNoInterfaceObject,
  Exposed=Window]
 interface RTCIdentityProviderRegistrar {
-  void register(RTCIdentityProvider idp);
+  undefined register(RTCIdentityProvider idp);
 
   /* Whether an IdP was passed to register() to chrome code. */
   [ChromeOnly]
@@ -63,4 +63,3 @@ dictionary RTCIdentityProviderOptions {
   DOMString usernameHint;
   DOMString peerIdentity;
 };
-

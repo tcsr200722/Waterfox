@@ -5,33 +5,40 @@
 
 const expect = require("expect");
 
-const actions = require("devtools/client/webconsole/actions/index");
-const { messagesAdd } = require("devtools/client/webconsole/actions/index");
-const { ConsoleCommand } = require("devtools/client/webconsole/types");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
+const {
+  messagesAdd,
+} = require("resource://devtools/client/webconsole/actions/index.js");
+const {
+  ConsoleCommand,
+} = require("resource://devtools/client/webconsole/types.js");
 const {
   getVisibleMessages,
-} = require("devtools/client/webconsole/selectors/messages");
+} = require("resource://devtools/client/webconsole/selectors/messages.js");
 const {
   getAllFilters,
-} = require("devtools/client/webconsole/selectors/filters");
+} = require("resource://devtools/client/webconsole/selectors/filters.js");
 const {
   setupStore,
   getFiltersPrefs,
-} = require("devtools/client/webconsole/test/node/helpers");
-const { FILTERS, PREFS } = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
+const {
+  FILTERS,
+  PREFS,
+} = require("resource://devtools/client/webconsole/constants.js");
 const {
   stubPackets,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
 const {
   stubPreparedMessages,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
 
 describe("Filtering", () => {
   let store;
   let numMessages;
   // Number of messages in prepareBaseStore which are not filtered out, i.e. Evaluation
-  // Results, console commands and console.groups .
-  const numUnfilterableMessages = 3;
+  // Results and console commands.
+  const numUnfilterableMessages = 2;
 
   beforeEach(() => {
     store = prepareBaseStore();
@@ -62,7 +69,7 @@ describe("Filtering", () => {
       store.dispatch(actions.filterToggle(FILTERS.LOG));
 
       const messages = getVisibleMessages(store.getState());
-      expect(messages.length).toEqual(numUnfilterableMessages + 5);
+      expect(messages.length).toEqual(numUnfilterableMessages + 6);
     });
 
     it("filters debug messages", () => {
@@ -90,10 +97,10 @@ describe("Filtering", () => {
       store.dispatch(actions.filterToggle(FILTERS.ERROR));
 
       const messages = getVisibleMessages(store.getState());
-      expect(messages.length).toEqual(numUnfilterableMessages + 4);
+      expect(messages.length).toEqual(numUnfilterableMessages + 5);
     });
 
-    it("filters css messages", () => {
+    it("filters css messages", async () => {
       const message = stubPreparedMessages.get(
         "Unknown property ‘such-unknown-property’.  Declaration dropped."
       );
@@ -102,7 +109,7 @@ describe("Filtering", () => {
       let messages = getVisibleMessages(store.getState());
       expect(messages.length).toEqual(numUnfilterableMessages);
 
-      store.dispatch(actions.filterToggle("css"));
+      await store.dispatch(actions.filterToggle("css"));
       messages = getVisibleMessages(store.getState());
       expect(messages.length).toEqual(numUnfilterableMessages + 1);
     });
@@ -120,7 +127,7 @@ describe("Filtering", () => {
     });
 
     it("filters network messages", () => {
-      const message = stubPreparedMessages.get("GET request");
+      const message = stubPreparedMessages.get("GET request update");
       store.dispatch(messagesAdd([message]));
 
       let messages = getVisibleMessages(store.getState());
@@ -202,7 +209,7 @@ describe("Filtering", () => {
     it("matches prefixed log message", () => {
       const stub = {
         level: "debug",
-        filename: "resource:///modules/CustomizableUI.jsm",
+        filename: "resource:///modules/CustomizableUI.sys.mjs",
         lineNumber: 181,
         functionName: "initialize",
         timeStamp: 1519311532912,
@@ -239,17 +246,17 @@ describe("Filtering", () => {
 
   describe("Combined filters", () => {
     // @TODO add test
-    it("filters");
+    it.todo("filters");
   });
 });
 
 describe("Clear filters", () => {
-  it("clears all filters", () => {
+  it("clears all filters", async () => {
     const store = setupStore();
 
     // Setup test case
     store.dispatch(actions.filterToggle(FILTERS.ERROR));
-    store.dispatch(actions.filterToggle(FILTERS.CSS));
+    await store.dispatch(actions.filterToggle(FILTERS.CSS));
     store.dispatch(actions.filterToggle(FILTERS.NET));
     store.dispatch(actions.filterToggle(FILTERS.NETXHR));
     store.dispatch(actions.filterTextSet("foobar"));
@@ -318,12 +325,15 @@ function prepareBaseStore() {
     // PageError
     "ReferenceError: asdf is not defined",
     "TypeError longString message",
-    "console.group('bar')",
     "console.debug('debug message');",
     "console.info('info message');",
     "console.error('error message');",
     "console.table(['red', 'green', 'blue']);",
     "console.assert(false, {message: 'foobar'})",
+    // This is a 404 request, it's displayed as an error
+    "GET request update",
+    "console.group('bar')",
+    "console.groupEnd()",
   ]);
 
   // Console Command - never filtered

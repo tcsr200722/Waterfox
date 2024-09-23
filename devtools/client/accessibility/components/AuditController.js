@@ -4,8 +4,8 @@
 
 "use strict";
 
-const React = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const React = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 class AuditController extends React.Component {
   static get propTypes() {
@@ -28,7 +28,8 @@ class AuditController extends React.Component {
     this.onAudited = this.onAudited.bind(this);
   }
 
-  componentWillMount() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillMount() {
     const { accessibleFront } = this.props;
     accessibleFront.on("audited", this.onAudited);
   }
@@ -48,7 +49,7 @@ class AuditController extends React.Component {
 
   onAudited() {
     const { accessibleFront } = this.props;
-    if (!accessibleFront.actorID) {
+    if (accessibleFront.isDestroyed()) {
       // Accessible front is being removed, stop listening for 'audited' events.
       accessibleFront.off("audited", this.onAudited);
       return;
@@ -59,7 +60,7 @@ class AuditController extends React.Component {
 
   maybeRequestAudit() {
     const { accessibleFront } = this.props;
-    if (!accessibleFront.actorID) {
+    if (accessibleFront.isDestroyed()) {
       // Accessible front is being removed, stop listening for 'audited' events.
       accessibleFront.off("audited", this.onAudited);
       return;
@@ -70,8 +71,9 @@ class AuditController extends React.Component {
     }
 
     accessibleFront.audit().catch(error => {
-      // Accessible actor was destroyed, connection closed.
-      if (accessibleFront.actorID) {
+      // If the actor was destroyed (due to a connection closed for instance) do
+      // nothing, otherwise log a warning
+      if (!accessibleFront.isDestroyed()) {
         console.warn(error);
       }
     });

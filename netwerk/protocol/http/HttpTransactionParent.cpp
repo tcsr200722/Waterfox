@@ -8,19 +8,22 @@
 #include "HttpLog.h"
 
 #include "HttpTransactionParent.h"
+
 #include "HttpTrafficAnalyzer.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
-#include "mozilla/net/InputChannelThrottleQueueParent.h"
 #include "mozilla/net/ChannelEventQueue.h"
+#include "mozilla/net/InputChannelThrottleQueueParent.h"
 #include "mozilla/net/SocketProcessParent.h"
 #include "nsHttpHandler.h"
+#include "nsIThreadRetargetableStreamListener.h"
+#include "nsITransportSecurityInfo.h"
+#include "nsNetUtil.h"
 #include "nsQueryObject.h"
 #include "nsSerializationHelper.h"
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 NS_IMPL_ADDREF(HttpTransactionParent)
 NS_INTERFACE_MAP_BEGIN(HttpTransactionParent)
@@ -32,19 +35,9 @@ NS_INTERFACE_MAP_END
 
 NS_IMETHODIMP_(MozExternalRefCountType) HttpTransactionParent::Release(void) {
   MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");
-
-  if (!mRefCnt.isThreadSafe) {
-    NS_ASSERT_OWNINGTHREAD(HttpTransactionParent);
-  }
-
   nsrefcnt count = --mRefCnt;
   NS_LOG_RELEASE(this, count, "HttpTransactionParent");
-
   if (count == 0) {
-    if (!nsAutoRefCnt::isThreadSafe) {
-      NS_ASSERT_OWNINGTHREAD(HttpTransactionParent);
-    }
-
     mRefCnt = 1; /* stabilize */
     delete (this);
     return 0;
@@ -54,7 +47,17 @@ NS_IMETHODIMP_(MozExternalRefCountType) HttpTransactionParent::Release(void) {
   // we are done with this transaction. We should send a delete message
   // to delete the transaction child in socket process.
   if (count == 1 && CanSend()) {
-    mozilla::Unused << Send__delete__(this);
+    if (!NS_IsMainThread()) {
+      RefPtr<HttpTransactionParent> self = this;
+      MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(
+          NS_NewRunnableFunction("HttpTransactionParent::Release", [self]() {
+            mozilla::Unused << self->Send__delete__(self);
+            // Make sure we can not send IPC after Send__delete__().
+            MOZ_ASSERT(!self->CanSend());
+          })));
+    } else {
+      mozilla::Unused << Send__delete__(this);
+    }
     return 1;
   }
   return count;
@@ -65,40 +68,14 @@ NS_IMETHODIMP_(MozExternalRefCountType) HttpTransactionParent::Release(void) {
 //-----------------------------------------------------------------------------
 
 HttpTransactionParent::HttpTransactionParent(bool aIsDocumentLoad)
-    : mResponseIsComplete(false),
-      mTransferSize(0),
-      mRequestSize(0),
-      mProxyConnectFailed(false),
-      mCanceled(false),
-      mStatus(NS_OK),
-      mSuspendCount(0),
-      mResponseHeadTaken(false),
-      mResponseTrailersTaken(false),
-      mHasStickyConnection(false),
-      mOnStartRequestCalled(false),
-      mOnStopRequestCalled(false),
-      mResolvedByTRR(false),
-      mProxyConnectResponseCode(0),
-      mChannelId(0),
-      mDataAlreadySent(false),
-      mIsDocumentLoad(aIsDocumentLoad) {
+    : mIsDocumentLoad(aIsDocumentLoad) {
   LOG(("Creating HttpTransactionParent @%p\n", this));
-
-  this->mSelfAddr.inet = {};
-  this->mPeerAddr.inet = {};
-
-#ifdef MOZ_VALGRIND
-  memset(&mSelfAddr, 0, sizeof(NetAddr));
-  memset(&mPeerAddr, 0, sizeof(NetAddr));
-#endif
-  mSelfAddr.raw.family = PR_AF_UNSPEC;
-  mPeerAddr.raw.family = PR_AF_UNSPEC;
-
   mEventQ = new ChannelEventQueue(static_cast<nsIRequest*>(this));
 }
 
 HttpTransactionParent::~HttpTransactionParent() {
   LOG(("Destroying HttpTransactionParent @%p\n", this));
+  mEventQ->NotifyReleasingOwner();
 }
 
 //-----------------------------------------------------------------------------
@@ -111,8 +88,8 @@ nsresult HttpTransactionParent::Init(
     nsIInputStream* requestBody, uint64_t requestContentLength,
     bool requestBodyHasHeaders, nsIEventTarget* target,
     nsIInterfaceRequestor* callbacks, nsITransportEventSink* eventsink,
-    uint64_t topLevelOuterContentWindowId, HttpTrafficCategory trafficCategory,
-    nsIRequestContext* requestContext, uint32_t classOfService,
+    uint64_t browserId, HttpTrafficCategory trafficCategory,
+    nsIRequestContext* requestContext, ClassOfService classOfService,
     uint32_t initialRwin, bool responseTimeoutEnabled, uint64_t channelId,
     TransactionObserverFunc&& transactionObserver,
     OnPushCallback&& aOnPushCallback,
@@ -124,17 +101,20 @@ nsresult HttpTransactionParent::Init(
   }
 
   mEventsink = eventsink;
-  mTargetThread = GetCurrentThreadEventTarget();
+  mTargetThread = GetCurrentSerialEventTarget();
   mChannelId = channelId;
   mTransactionObserver = std::move(transactionObserver);
   mOnPushCallback = std::move(aOnPushCallback);
+  mCaps = caps;
+  mConnInfo = cinfo->Clone();
+  mIsHttp3Used = cinfo->IsHttp3();
 
   HttpConnectionInfoCloneArgs infoArgs;
   nsHttpConnectionInfo::SerializeHttpConnectionInfo(cinfo, infoArgs);
 
-  mozilla::ipc::AutoIPCStream autoStream;
-  if (requestBody &&
-      !autoStream.Serialize(requestBody, SocketProcessParent::GetSingleton())) {
+  Maybe<mozilla::ipc::IPCStream> ipcStream;
+  if (!mozilla::ipc::SerializeIPCStream(do_AddRef(requestBody), ipcStream,
+                                        /* aAllowLazy */ false)) {
     return NS_ERROR_FAILURE;
   }
 
@@ -143,14 +123,13 @@ nsresult HttpTransactionParent::Init(
   Maybe<H2PushedStreamArg> pushedStreamArg;
   if (aTransWithPushedStream && aPushedStreamId) {
     MOZ_ASSERT(aTransWithPushedStream->AsHttpTransactionParent());
-    pushedStreamArg.emplace();
-    pushedStreamArg.ref().transWithPushedStreamParent() =
-        aTransWithPushedStream->AsHttpTransactionParent();
-    pushedStreamArg.ref().pushedStreamId() = aPushedStreamId;
+    pushedStreamArg.emplace(
+        WrapNotNull(aTransWithPushedStream->AsHttpTransactionParent()),
+        aPushedStreamId);
   }
 
   nsCOMPtr<nsIThrottledInputChannel> throttled = do_QueryInterface(mEventsink);
-  Maybe<PInputChannelThrottleQueueParent*> throttleQueue;
+  Maybe<NotNull<PInputChannelThrottleQueueParent*>> throttleQueue;
   if (throttled) {
     nsCOMPtr<nsIInputChannelThrottleQueue> queue;
     nsresult rv = throttled->GetThrottleQueue(getter_AddRefs(queue));
@@ -160,22 +139,29 @@ nsresult HttpTransactionParent::Init(
             queue.get()));
       RefPtr<InputChannelThrottleQueueParent> tqParent = do_QueryObject(queue);
       MOZ_ASSERT(tqParent);
-      throttleQueue.emplace(tqParent.get());
+      throttleQueue.emplace(WrapNotNull(tqParent.get()));
     }
   }
 
   // TODO: Figure out if we have to implement nsIThreadRetargetableRequest in
   // bug 1544378.
-  if (!SendInit(caps, infoArgs, *requestHead,
-                requestBody ? Some(autoStream.TakeValue()) : Nothing(),
-                requestContentLength, requestBodyHasHeaders,
-                topLevelOuterContentWindowId,
+  if (!SendInit(caps, infoArgs, *requestHead, ipcStream, requestContentLength,
+                requestBodyHasHeaders, browserId,
                 static_cast<uint8_t>(trafficCategory), requestContextID,
                 classOfService, initialRwin, responseTimeoutEnabled, mChannelId,
                 !!mTransactionObserver, pushedStreamArg, throttleQueue,
-                mIsDocumentLoad)) {
+                mIsDocumentLoad, mRedirectStart, mRedirectEnd)) {
     return NS_ERROR_FAILURE;
   }
+
+  nsCString reqHeaderBuf = nsHttp::ConvertRequestHeadToString(
+      *requestHead, !!requestBody, requestBodyHasHeaders,
+      cinfo->UsingConnect());
+  requestContentLength += reqHeaderBuf.Length();
+
+  mRequestSize = InScriptableRange(requestContentLength)
+                     ? static_cast<int64_t>(requestContentLength)
+                     : -1;
 
   return NS_OK;
 }
@@ -187,10 +173,6 @@ nsresult HttpTransactionParent::AsyncRead(nsIStreamListener* listener,
   *pump = do_AddRef(this).take();
   mChannel = listener;
   return NS_OK;
-}
-
-void HttpTransactionParent::SetClassOfService(uint32_t classOfService) {
-  Unused << SendUpdateClassOfService(classOfService);
 }
 
 UniquePtr<nsHttpResponseHead> HttpTransactionParent::TakeResponseHead() {
@@ -218,15 +200,64 @@ void HttpTransactionParent::SetSniffedTypeToChannel(
 }
 
 NS_IMETHODIMP
-HttpTransactionParent::GetDeliveryTarget(nsIEventTarget** aNewTarget) {
-  nsCOMPtr<nsIEventTarget> target = mTargetThread;
-  target.forget(aNewTarget);
+HttpTransactionParent::GetDeliveryTarget(nsISerialEventTarget** aEventTarget) {
+  MutexAutoLock lock(mEventTargetMutex);
+
+  nsCOMPtr<nsISerialEventTarget> target = mODATarget;
+  if (!mODATarget) {
+    target = mTargetThread;
+  }
+  target.forget(aEventTarget);
   return NS_OK;
 }
 
+already_AddRefed<nsISerialEventTarget> HttpTransactionParent::GetODATarget() {
+  nsCOMPtr<nsISerialEventTarget> target;
+  {
+    MutexAutoLock lock(mEventTargetMutex);
+    target = mODATarget ? mODATarget : mTargetThread;
+  }
+
+  if (!target) {
+    target = GetMainThreadSerialEventTarget();
+  }
+  return target.forget();
+}
+
 NS_IMETHODIMP HttpTransactionParent::RetargetDeliveryTo(
-    nsIEventTarget* aEventTarget) {
-  return NS_ERROR_NOT_IMPLEMENTED;
+    nsISerialEventTarget* aEventTarget) {
+  LOG(("HttpTransactionParent::RetargetDeliveryTo [this=%p, aTarget=%p]", this,
+       aEventTarget));
+
+  MOZ_ASSERT(NS_IsMainThread(), "Should be called on main thread only");
+  MOZ_ASSERT(!mODATarget);
+  NS_ENSURE_ARG(aEventTarget);
+
+  if (aEventTarget->IsOnCurrentThread()) {
+    NS_WARNING("Retargeting delivery to same thread");
+    return NS_OK;
+  }
+
+  nsresult rv = NS_OK;
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetableListener =
+      do_QueryInterface(mChannel, &rv);
+  if (!retargetableListener || NS_FAILED(rv)) {
+    NS_WARNING("Listener is not retargetable");
+    return NS_ERROR_NO_INTERFACE;
+  }
+
+  rv = retargetableListener->CheckListenerChain();
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Subsequent listeners are not retargetable");
+    return rv;
+  }
+
+  {
+    MutexAutoLock lock(mEventTargetMutex);
+    mODATarget = aEventTarget;
+  }
+
+  return NS_OK;
 }
 
 void HttpTransactionParent::SetDNSWasRefreshed() {
@@ -234,17 +265,20 @@ void HttpTransactionParent::SetDNSWasRefreshed() {
   Unused << SendSetDNSWasRefreshed();
 }
 
-void HttpTransactionParent::GetNetworkAddresses(NetAddr& self, NetAddr& peer,
-                                                bool& aResolvedByTRR) {
+void HttpTransactionParent::GetNetworkAddresses(
+    NetAddr& self, NetAddr& peer, bool& aResolvedByTRR,
+    nsIRequest::TRRMode& aEffectiveTRRMode, TRRSkippedReason& aSkipReason,
+    bool& aEchConfigUsed) {
   self = mSelfAddr;
   peer = mPeerAddr;
-
-  // TODO: will be implemented later in bug 1600254.
-  aResolvedByTRR = false;
+  aResolvedByTRR = mResolvedByTRR;
+  aEffectiveTRRMode = mEffectiveTRRMode;
+  aSkipReason = mTRRSkipReason;
+  aEchConfigUsed = mEchConfigUsed;
 }
 
 bool HttpTransactionParent::HasStickyConnection() const {
-  return mHasStickyConnection;
+  return mCaps & NS_HTTP_STICKY_CONNECTION;
 }
 
 mozilla::TimeStamp HttpTransactionParent::GetDomainLookupStart() {
@@ -283,7 +317,7 @@ mozilla::TimeStamp HttpTransactionParent::GetResponseEnd() {
   return mTimings.responseEnd;
 }
 
-const TimingStruct HttpTransactionParent::Timings() { return mTimings; }
+TimingStruct HttpTransactionParent::Timings() { return mTimings; }
 
 bool HttpTransactionParent::ResponseIsComplete() { return mResponseIsComplete; }
 
@@ -291,11 +325,28 @@ int64_t HttpTransactionParent::GetTransferSize() { return mTransferSize; }
 
 int64_t HttpTransactionParent::GetRequestSize() { return mRequestSize; }
 
-bool HttpTransactionParent::DataAlreadySent() { return mDataAlreadySent; }
+bool HttpTransactionParent::IsHttp3Used() { return mIsHttp3Used; }
 
-nsISupports* HttpTransactionParent::SecurityInfo() { return mSecurityInfo; }
+bool HttpTransactionParent::DataSentToChildProcess() {
+  return mDataSentToChildProcess;
+}
+
+already_AddRefed<nsITransportSecurityInfo>
+HttpTransactionParent::SecurityInfo() {
+  return do_AddRef(mSecurityInfo);
+}
 
 bool HttpTransactionParent::ProxyConnectFailed() { return mProxyConnectFailed; }
+
+bool HttpTransactionParent::TakeRestartedState() {
+  bool result = mRestarted;
+  mRestarted = false;
+  return result;
+}
+
+uint32_t HttpTransactionParent::HTTPSSVCReceivedStage() {
+  return mHTTPSSVCReceivedStage;
+}
 
 void HttpTransactionParent::DontReuseConnection() {
   MOZ_ASSERT(NS_IsMainThread());
@@ -336,27 +387,48 @@ int32_t HttpTransactionParent::GetProxyConnectResponseCode() {
   return mProxyConnectResponseCode;
 }
 
+bool HttpTransactionParent::Http2Disabled() const {
+  return mCaps & NS_HTTP_DISALLOW_SPDY;
+}
+
+bool HttpTransactionParent::Http3Disabled() const {
+  return mCaps & NS_HTTP_DISALLOW_HTTP3;
+}
+
+already_AddRefed<nsHttpConnectionInfo> HttpTransactionParent::GetConnInfo()
+    const {
+  RefPtr<nsHttpConnectionInfo> connInfo = mConnInfo->Clone();
+  return connInfo.forget();
+}
+
 already_AddRefed<nsIEventTarget> HttpTransactionParent::GetNeckoTarget() {
-  nsCOMPtr<nsIEventTarget> target = GetMainThreadEventTarget();
+  nsCOMPtr<nsIEventTarget> target = GetMainThreadSerialEventTarget();
   return target.forget();
 }
 
 mozilla::ipc::IPCResult HttpTransactionParent::RecvOnStartRequest(
     const nsresult& aStatus, const Maybe<nsHttpResponseHead>& aResponseHead,
-    const nsCString& aSecurityInfoSerialization,
-    const bool& aProxyConnectFailed, const TimingStructArgs& aTimings,
-    const int32_t& aProxyConnectResponseCode,
-    nsTArray<uint8_t>&& aDataForSniffer) {
+    nsITransportSecurityInfo* aSecurityInfo, const bool& aProxyConnectFailed,
+    const TimingStructArgs& aTimings, const int32_t& aProxyConnectResponseCode,
+    nsTArray<uint8_t>&& aDataForSniffer, const Maybe<nsCString>& aAltSvcUsed,
+    const bool& aDataToChildProcess, const bool& aRestarted,
+    const uint32_t& aHTTPSSVCReceivedStage, const bool& aSupportsHttp3,
+    const nsIRequest::TRRMode& aMode, const TRRSkippedReason& aTrrSkipReason,
+    const uint32_t& aCaps, const TimeStamp& aOnStartRequestStartTime) {
   mEventQ->RunOrEnqueue(new NeckoTargetChannelFunctionEvent(
-      this,
-      [self = UnsafePtr<HttpTransactionParent>(this), aStatus, aResponseHead,
-       aSecurityInfoSerialization, aProxyConnectFailed, aTimings,
-       aProxyConnectResponseCode,
-       aDataForSniffer = CopyableTArray{std::move(aDataForSniffer)}]() mutable {
-        self->DoOnStartRequest(aStatus, aResponseHead,
-                               aSecurityInfoSerialization, aProxyConnectFailed,
-                               aTimings, aProxyConnectResponseCode,
-                               std::move(aDataForSniffer));
+      this, [self = UnsafePtr<HttpTransactionParent>(this), aStatus,
+             aResponseHead, securityInfo = nsCOMPtr{aSecurityInfo},
+             aProxyConnectFailed, aTimings, aProxyConnectResponseCode,
+             aDataForSniffer = CopyableTArray{std::move(aDataForSniffer)},
+             aAltSvcUsed, aDataToChildProcess, aRestarted,
+             aHTTPSSVCReceivedStage, aSupportsHttp3, aMode, aTrrSkipReason,
+             aCaps, aOnStartRequestStartTime]() mutable {
+        self->DoOnStartRequest(
+            aStatus, aResponseHead, securityInfo, aProxyConnectFailed, aTimings,
+            aProxyConnectResponseCode, std::move(aDataForSniffer), aAltSvcUsed,
+            aDataToChildProcess, aRestarted, aHTTPSSVCReceivedStage,
+            aSupportsHttp3, aMode, aTrrSkipReason, aCaps,
+            aOnStartRequestStartTime);
       }));
   return IPC_OK();
 }
@@ -377,14 +449,18 @@ static void TimingStructArgsToTimingsStruct(const TimingStructArgs& aArgs,
   aTimings.requestStart = aArgs.requestStart();
   aTimings.responseStart = aArgs.responseStart();
   aTimings.responseEnd = aArgs.responseEnd();
+  aTimings.transactionPending = aArgs.transactionPending();
 }
 
 void HttpTransactionParent::DoOnStartRequest(
     const nsresult& aStatus, const Maybe<nsHttpResponseHead>& aResponseHead,
-    const nsCString& aSecurityInfoSerialization,
-    const bool& aProxyConnectFailed, const TimingStructArgs& aTimings,
-    const int32_t& aProxyConnectResponseCode,
-    nsTArray<uint8_t>&& aDataForSniffer) {
+    nsITransportSecurityInfo* aSecurityInfo, const bool& aProxyConnectFailed,
+    const TimingStructArgs& aTimings, const int32_t& aProxyConnectResponseCode,
+    nsTArray<uint8_t>&& aDataForSniffer, const Maybe<nsCString>& aAltSvcUsed,
+    const bool& aDataToChildProcess, const bool& aRestarted,
+    const uint32_t& aHTTPSSVCReceivedStage, const bool& aSupportsHttp3,
+    const nsIRequest::TRRMode& aMode, const TRRSkippedReason& aSkipReason,
+    const uint32_t& aCaps, const TimeStamp& aOnStartRequestStartTime) {
   LOG(("HttpTransactionParent::DoOnStartRequest [this=%p aStatus=%" PRIx32
        "]\n",
        this, static_cast<uint32_t>(aStatus)));
@@ -396,11 +472,14 @@ void HttpTransactionParent::DoOnStartRequest(
   MOZ_ASSERT(!mOnStartRequestCalled);
 
   mStatus = aStatus;
-
-  if (!aSecurityInfoSerialization.IsEmpty()) {
-    NS_DeserializeObject(aSecurityInfoSerialization,
-                         getter_AddRefs(mSecurityInfo));
-  }
+  mDataSentToChildProcess = aDataToChildProcess;
+  mHTTPSSVCReceivedStage = aHTTPSSVCReceivedStage;
+  mSupportsHTTP3 = aSupportsHttp3;
+  mEffectiveTRRMode = aMode;
+  mTRRSkipReason = aSkipReason;
+  mCaps = aCaps;
+  mSecurityInfo = aSecurityInfo;
+  mOnStartRequestStartTime = aOnStartRequestStartTime;
 
   if (aResponseHead.isSome()) {
     mResponseHead = MakeUnique<nsHttpResponseHead>(aResponseHead.ref());
@@ -410,6 +489,16 @@ void HttpTransactionParent::DoOnStartRequest(
 
   mProxyConnectResponseCode = aProxyConnectResponseCode;
   mDataForSniffer = std::move(aDataForSniffer);
+  mRestarted = aRestarted;
+
+  nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel);
+  MOZ_ASSERT(httpChannel, "mChannel is expected to implement nsIHttpChannel");
+  if (httpChannel) {
+    if (aAltSvcUsed.isSome()) {
+      Unused << httpChannel->SetRequestHeader(
+          nsHttp::Alternate_Service_Used.val(), aAltSvcUsed.ref(), false);
+    }
+  }
 
   AutoEventEnqueuer ensureSerialDispatch(mEventQ);
   nsresult rv = mChannel->OnStartRequest(this);
@@ -421,87 +510,122 @@ void HttpTransactionParent::DoOnStartRequest(
 
 mozilla::ipc::IPCResult HttpTransactionParent::RecvOnTransportStatus(
     const nsresult& aStatus, const int64_t& aProgress,
-    const int64_t& aProgressMax) {
-  mEventQ->RunOrEnqueue(new NeckoTargetChannelFunctionEvent(
-      this, [self = UnsafePtr<HttpTransactionParent>(this), aStatus, aProgress,
-             aProgressMax]() {
-        self->DoOnTransportStatus(aStatus, aProgress, aProgressMax);
-      }));
-  return IPC_OK();
-}
-
-void HttpTransactionParent::DoOnTransportStatus(const nsresult& aStatus,
-                                                const int64_t& aProgress,
-                                                const int64_t& aProgressMax) {
-  LOG(("HttpTransactionParent::DoOnTransportStatus [this=%p]\n", this));
-  AutoEventEnqueuer ensureSerialDispatch(mEventQ);
+    const int64_t& aProgressMax,
+    Maybe<NetworkAddressArg>&& aNetworkAddressArg) {
+  if (aNetworkAddressArg) {
+    mSelfAddr = aNetworkAddressArg->selfAddr();
+    mPeerAddr = aNetworkAddressArg->peerAddr();
+    mResolvedByTRR = aNetworkAddressArg->resolvedByTRR();
+    mEffectiveTRRMode = aNetworkAddressArg->mode();
+    mTRRSkipReason = aNetworkAddressArg->trrSkipReason();
+    mEchConfigUsed = aNetworkAddressArg->echConfigUsed();
+  }
   mEventsink->OnTransportStatus(nullptr, aStatus, aProgress, aProgressMax);
+  return IPC_OK();
 }
 
 mozilla::ipc::IPCResult HttpTransactionParent::RecvOnDataAvailable(
     const nsCString& aData, const uint64_t& aOffset, const uint32_t& aCount,
-    const bool& aDataSentToChildProcess) {
+    const TimeStamp& aOnDataAvailableStartTime) {
   LOG(("HttpTransactionParent::RecvOnDataAvailable [this=%p, aOffset= %" PRIu64
        " aCount=%" PRIu32,
        this, aOffset, aCount));
+
+  // The final transfer size is updated in OnStopRequest ipc message, but in the
+  // case that the socket process is crashed or something went wrong, we might
+  // not get the OnStopRequest. So, let's update the transfer size here.
+  mTransferSize += aCount;
 
   if (mCanceled) {
     return IPC_OK();
   }
 
-  mEventQ->RunOrEnqueue(new NeckoTargetChannelFunctionEvent(
-      this, [self = UnsafePtr<HttpTransactionParent>(this), aData, aOffset,
-             aCount, aDataSentToChildProcess]() {
+  mEventQ->RunOrEnqueue(new ChannelFunctionEvent(
+      [self = UnsafePtr<HttpTransactionParent>(this)]() {
+        return self->GetODATarget();
+      },
+      [self = UnsafePtr<HttpTransactionParent>(this), aData, aOffset, aCount,
+       aOnDataAvailableStartTime]() {
         self->DoOnDataAvailable(aData, aOffset, aCount,
-                                aDataSentToChildProcess);
+                                aOnDataAvailableStartTime);
       }));
   return IPC_OK();
 }
 
 void HttpTransactionParent::DoOnDataAvailable(
     const nsCString& aData, const uint64_t& aOffset, const uint32_t& aCount,
-    const bool& aDataSentToChildProcess) {
+    const TimeStamp& aOnDataAvailableStartTime) {
   LOG(("HttpTransactionParent::DoOnDataAvailable [this=%p]\n", this));
   if (mCanceled) {
     return;
   }
 
-  mDataAlreadySent = aDataSentToChildProcess;
   nsCOMPtr<nsIInputStream> stringStream;
-  nsresult rv = NS_NewByteInputStream(getter_AddRefs(stringStream),
-                                      MakeSpan(aData.get(), aCount),
-                                      NS_ASSIGNMENT_DEPEND);
+  nsresult rv =
+      NS_NewByteInputStream(getter_AddRefs(stringStream),
+                            Span(aData.get(), aCount), NS_ASSIGNMENT_DEPEND);
 
   if (NS_FAILED(rv)) {
-    Cancel(rv);
+    CancelOnMainThread(rv);
     return;
   }
 
+  mOnDataAvailableStartTime = aOnDataAvailableStartTime;
   AutoEventEnqueuer ensureSerialDispatch(mEventQ);
   rv = mChannel->OnDataAvailable(this, stringStream, aOffset, aCount);
   if (NS_FAILED(rv)) {
-    Cancel(rv);
+    CancelOnMainThread(rv);
   }
+}
+
+// Note: Copied from HttpChannelChild.
+void HttpTransactionParent::CancelOnMainThread(nsresult aRv) {
+  LOG(("HttpTransactionParent::CancelOnMainThread [this=%p]", this));
+
+  if (NS_IsMainThread()) {
+    Cancel(aRv);
+    return;
+  }
+
+  mEventQ->Suspend();
+  // Cancel is expected to preempt any other channel events, thus we put this
+  // event in the front of mEventQ to make sure nsIStreamListener not receiving
+  // any ODA/OnStopRequest callbacks.
+  mEventQ->PrependEvent(MakeUnique<NeckoTargetChannelFunctionEvent>(
+      this, [self = UnsafePtr<HttpTransactionParent>(this), aRv]() {
+        self->Cancel(aRv);
+      }));
+  mEventQ->Resume();
 }
 
 mozilla::ipc::IPCResult HttpTransactionParent::RecvOnStopRequest(
     const nsresult& aStatus, const bool& aResponseIsComplete,
     const int64_t& aTransferSize, const TimingStructArgs& aTimings,
     const Maybe<nsHttpHeaderArray>& aResponseTrailers,
-    const bool& aHasStickyConn,
-    Maybe<TransactionObserverResult>&& aTransactionObserverResult) {
+    Maybe<TransactionObserverResult>&& aTransactionObserverResult,
+    const TimeStamp& aLastActiveTabOptHit,
+    const HttpConnectionInfoCloneArgs& aArgs,
+    const TimeStamp& aOnStopRequestStartTime) {
   LOG(("HttpTransactionParent::RecvOnStopRequest [this=%p status=%" PRIx32
        "]\n",
        this, static_cast<uint32_t>(aStatus)));
+
+  nsHttp::SetLastActiveTabLoadOptimizationHit(aLastActiveTabOptHit);
+
+  if (mCanceled) {
+    return IPC_OK();
+  }
+  RefPtr<nsHttpConnectionInfo> cinfo =
+      nsHttpConnectionInfo::DeserializeHttpConnectionInfoCloneArgs(aArgs);
   mEventQ->RunOrEnqueue(new NeckoTargetChannelFunctionEvent(
       this, [self = UnsafePtr<HttpTransactionParent>(this), aStatus,
              aResponseIsComplete, aTransferSize, aTimings, aResponseTrailers,
-             aHasStickyConn,
-             aTransactionObserverResult{
-                 std::move(aTransactionObserverResult)}]() mutable {
+             aTransactionObserverResult{std::move(aTransactionObserverResult)},
+             cinfo{std::move(cinfo)}, aOnStopRequestStartTime]() mutable {
         self->DoOnStopRequest(aStatus, aResponseIsComplete, aTransferSize,
-                              aTimings, aResponseTrailers, aHasStickyConn,
-                              std::move(aTransactionObserverResult));
+                              aTimings, aResponseTrailers,
+                              std::move(aTransactionObserverResult), cinfo,
+                              aOnStopRequestStartTime);
       }));
   return IPC_OK();
 }
@@ -510,8 +634,8 @@ void HttpTransactionParent::DoOnStopRequest(
     const nsresult& aStatus, const bool& aResponseIsComplete,
     const int64_t& aTransferSize, const TimingStructArgs& aTimings,
     const Maybe<nsHttpHeaderArray>& aResponseTrailers,
-    const bool& aHasStickyConn,
-    Maybe<TransactionObserverResult>&& aTransactionObserverResult) {
+    Maybe<TransactionObserverResult>&& aTransactionObserverResult,
+    nsHttpConnectionInfo* aConnInfo, const TimeStamp& aOnStopRequestStartTime) {
   LOG(("HttpTransactionParent::DoOnStopRequest [this=%p]\n", this));
   if (mCanceled) {
     return;
@@ -525,12 +649,14 @@ void HttpTransactionParent::DoOnStopRequest(
 
   mResponseIsComplete = aResponseIsComplete;
   mTransferSize = aTransferSize;
+  mOnStopRequestStartTime = aOnStopRequestStartTime;
+
   TimingStructArgsToTimingsStruct(aTimings, mTimings);
 
   if (aResponseTrailers.isSome()) {
     mResponseTrailers = MakeUnique<nsHttpHeaderArray>(aResponseTrailers.ref());
   }
-  mHasStickyConnection = aHasStickyConn;
+  mConnInfo = aConnInfo;
   if (aTransactionObserverResult.isSome()) {
     TransactionObserverFunc obs = nullptr;
     std::swap(obs, mTransactionObserver);
@@ -540,15 +666,6 @@ void HttpTransactionParent::DoOnStopRequest(
   AutoEventEnqueuer ensureSerialDispatch(mEventQ);
   Unused << mChannel->OnStopRequest(this, mStatus);
   mOnStopRequestCalled = true;
-}
-
-mozilla::ipc::IPCResult HttpTransactionParent::RecvOnNetAddrUpdate(
-    const NetAddr& aSelfAddr, const NetAddr& aPeerAddr,
-    const bool& aResolvedByTRR) {
-  mSelfAddr = aSelfAddr;
-  mPeerAddr = aPeerAddr;
-  mResolvedByTRR = aResolvedByTRR;
-  return IPC_OK();
 }
 
 mozilla::ipc::IPCResult HttpTransactionParent::RecvOnInitFailed(
@@ -568,6 +685,23 @@ mozilla::ipc::IPCResult HttpTransactionParent::RecvOnH2PushStream(
   mOnPushCallback(aPushedStreamId, aResourceUrl, aRequestString, this);
   return IPC_OK();
 }  // namespace net
+
+mozilla::ipc::IPCResult HttpTransactionParent::RecvEarlyHint(
+    const nsCString& aValue, const nsACString& aReferrerPolicy,
+    const nsACString& aCSPHeader) {
+  LOG(
+      ("HttpTransactionParent::RecvEarlyHint header=%s aReferrerPolicy=%s "
+       "aCSPHeader=%s",
+       PromiseFlatCString(aValue).get(),
+       PromiseFlatCString(aReferrerPolicy).get(),
+       PromiseFlatCString(aCSPHeader).get()));
+  nsCOMPtr<nsIEarlyHintObserver> obs = do_QueryInterface(mChannel);
+  if (obs) {
+    Unused << obs->EarlyHint(aValue, aReferrerPolicy, aCSPHeader);
+  }
+
+  return IPC_OK();
+}
 
 //-----------------------------------------------------------------------------
 // HttpTransactionParent <nsIRequest>
@@ -589,6 +723,20 @@ NS_IMETHODIMP
 HttpTransactionParent::GetStatus(nsresult* aStatus) {
   *aStatus = mStatus;
   return NS_OK;
+}
+
+NS_IMETHODIMP HttpTransactionParent::SetCanceledReason(
+    const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP HttpTransactionParent::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP HttpTransactionParent::CancelWithReason(
+    nsresult aStatus, const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
 }
 
 NS_IMETHODIMP
@@ -626,17 +774,36 @@ HttpTransactionParent::Cancel(nsresult aStatus) {
 }
 
 void HttpTransactionParent::DoNotifyListener() {
+  LOG(("HttpTransactionParent::DoNotifyListener this=%p", this));
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (!mOnStartRequestCalled) {
-    mChannel->OnStartRequest(this);
+  if (mChannel && !mOnStartRequestCalled) {
+    nsCOMPtr<nsIStreamListener> listener = mChannel;
     mOnStartRequestCalled = true;
+    listener->OnStartRequest(this);
   }
+  mOnStartRequestCalled = true;
 
-  if (!mOnStopRequestCalled) {
-    mChannel->OnStopRequest(this, mStatus);
-    mOnStopRequestCalled = true;
+  // This is to make sure that ODA in the event queue can be processed before
+  // OnStopRequest.
+  mEventQ->RunOrEnqueue(new NeckoTargetChannelFunctionEvent(
+      this, [self = UnsafePtr<HttpTransactionParent>(this)] {
+        self->ContinueDoNotifyListener();
+      }));
+}
+
+void HttpTransactionParent::ContinueDoNotifyListener() {
+  LOG(("HttpTransactionParent::ContinueDoNotifyListener this=%p", this));
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (mChannel && !mOnStopRequestCalled) {
+    nsCOMPtr<nsIStreamListener> listener = mChannel;
+    mOnStopRequestCalled = true;  // avoid reentrancy bugs by setting this now
+    listener->OnStopRequest(this, mStatus);
   }
+  mOnStopRequestCalled = true;
+
+  mChannel = nullptr;
 }
 
 NS_IMETHODIMP
@@ -657,8 +824,23 @@ HttpTransactionParent::Resume() {
   MOZ_ASSERT(mSuspendCount, "Resume called more than Suspend");
 
   // SendResume only once, when suspend count drops to 0.
-  if (mSuspendCount && !--mSuspendCount && CanSend()) {
-    Unused << SendResumePump();
+  if (mSuspendCount && !--mSuspendCount) {
+    if (CanSend()) {
+      Unused << SendResumePump();
+    }
+
+    if (mCallOnResume) {
+      nsCOMPtr<nsIEventTarget> neckoTarget = GetNeckoTarget();
+      MOZ_ASSERT(neckoTarget);
+
+      RefPtr<HttpTransactionParent> self = this;
+      std::function<void()> callOnResume = nullptr;
+      std::swap(callOnResume, mCallOnResume);
+      neckoTarget->Dispatch(
+          NS_NewRunnableFunction("net::HttpTransactionParent::mCallOnResume",
+                                 [callOnResume]() { callOnResume(); }),
+          NS_DISPATCH_NORMAL);
+    }
   }
   mEventQ->Resume();
   return NS_OK;
@@ -703,9 +885,40 @@ HttpTransactionParent::SetTRRMode(nsIRequest::TRRMode aTRRMode) {
 void HttpTransactionParent::ActorDestroy(ActorDestroyReason aWhy) {
   LOG(("HttpTransactionParent::ActorDestroy [this=%p]\n", this));
   if (aWhy != Deletion) {
-    Cancel(NS_ERROR_FAILURE);
+    // Make sure all the messages are processed.
+    AutoEventEnqueuer ensureSerialDispatch(mEventQ);
+
+    mStatus = NS_ERROR_FAILURE;
+    HandleAsyncAbort();
+
+    mCanceled = true;
   }
 }
 
-}  // namespace net
-}  // namespace mozilla
+void HttpTransactionParent::HandleAsyncAbort() {
+  MOZ_ASSERT(!mCallOnResume, "How did that happen?");
+
+  if (mSuspendCount) {
+    LOG(
+        ("HttpTransactionParent Waiting until resume to do async notification "
+         "[this=%p]\n",
+         this));
+    RefPtr<HttpTransactionParent> self = this;
+    mCallOnResume = [self]() { self->HandleAsyncAbort(); };
+    return;
+  }
+
+  DoNotifyListener();
+}
+
+bool HttpTransactionParent::GetSupportsHTTP3() { return mSupportsHTTP3; }
+
+void HttpTransactionParent::SetIsForWebTransport(bool SetIsForWebTransport) {
+  // TODO: bug 1791727
+}
+
+mozilla::TimeStamp HttpTransactionParent::GetPendingTime() {
+  return mTimings.transactionPending;
+}
+
+}  // namespace mozilla::net

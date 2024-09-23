@@ -5,6 +5,7 @@
 "use strict";
 
 const kCustomClass = "acustomclassnoonewilluse";
+const kDevPanelId = "PanelUI-developer-tools";
 var tempElement = null;
 
 function insertClassNameToMenuChildren(parentMenu) {
@@ -15,12 +16,12 @@ function insertClassNameToMenuChildren(parentMenu) {
 }
 
 function checkSubviewButtonClass(menuId, buttonId, subviewId) {
-  return async function() {
+  return async function () {
     // Initialize DevTools before starting the test in order to create menuitems in
     // menuWebDeveloperPopup.
-    ChromeUtils.import("resource://devtools/shared/Loader.jsm", {}).require(
-      "devtools/client/framework/devtools-browser"
-    );
+    ChromeUtils.importESModule(
+      "resource://devtools/shared/loader/Loader.sys.mjs"
+    ).require("devtools/client/framework/devtools-browser");
 
     info(
       "Checking for items without the subviewbutton class in " +
@@ -45,7 +46,13 @@ function checkSubviewButtonClass(menuId, buttonId, subviewId) {
     await BrowserTestUtils.waitForEvent(PanelUI.overflowPanel, "ViewShown");
     let subview = document.getElementById(subviewId);
     ok(subview.firstElementChild, "Subview should have a kid");
-    let subviewchildren = subview.querySelectorAll("toolbarbutton");
+
+    // The Developer Panel contains the Customize Toolbar item,
+    // as well as the Developer Tools items (bug 1703150). We only want to query for
+    // the Developer Tools items in this case.
+    let query = "#appmenu-developer-tools-view toolbarbutton";
+    let subviewchildren = subview.querySelectorAll(query);
+
     for (let i = 0; i < subviewchildren.length; i++) {
       let item = subviewchildren[i];
       let itemReadable =
@@ -74,11 +81,11 @@ add_task(
   checkSubviewButtonClass(
     "menuWebDeveloperPopup",
     "developer-button",
-    "PanelUI-developerItems"
+    kDevPanelId
   )
 );
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   tempElement.classList.remove(kCustomClass);
   tempElement = null;
 });

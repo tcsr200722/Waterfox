@@ -10,29 +10,34 @@
 <div id="content" style="display: none">
 
 </div>
-<div id="editor" contenteditable>abc<br>def</div>
+<div contenteditable>abc<br>def</div>
 <pre id="test">
 <script type="application/javascript">
 
-var editor = document.getElementById("editor");
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
 
 SimpleTest.waitForExplicitFinish();
 
-const kIsWin = navigator.platform.indexOf("Win") == 0;
-const kIsMac = navigator.platform.indexOf("Mac") == 0;
+const kLineBreak = navigator.platform.indexOf("Win") == 0 && false ? "\r\n" : "\n";
 
-const kLineBreak = kIsWin ? "\r\n" : "\n";
+SimpleTest.waitForFocus(async () => {
+  const gUtils = window.windowUtils;
 
-var gUtils = window.windowUtils;
+  function escape(aStr)
+  {
+    var result = aStr.replace("\n", "\\n");
+    return result.replace("\r", "\\r");
+  }
 
-function escape(aStr)
-{
-  var result = aStr.replace("\n", "\\n");
-  return result.replace("\r", "\\r");
-}
+  function waitForFlushingIMEContentObserver() {
+    return new Promise(resolve => requestAnimationFrame(
+      () => requestAnimationFrame(resolve)
+    ));
+  }
 
-function runTests()
-{
+  const editor = document.querySelector("div[contenteditable]");
   editor.focus();
 
   // NOTE: For compatibility, calling without flags should work as with QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK.
@@ -61,7 +66,7 @@ function runTests()
      "sendQueryContentEvent(QUERY_TEXT_CONTENT, QUERY_CONTENT_FLAG_USE_XP_LINE_BREAK) got unexpected string");
 
   // QueryCaretRect
-  window.getSelection().collapse(editor.firstChild, 0);
+  getSelection().collapse(editor.firstChild, 0);
 
   var caretNative = gUtils.sendQueryContentEvent(gUtils.QUERY_CARET_RECT, 6, 0, 0, 0,
                                                  gUtils.QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK);
@@ -127,25 +132,21 @@ function runTests()
   var top = {};
   var width = {};
   var height = {};
+  textRectArray.getCharacterRect(0, left, top, width, height);
+  is(top.value, textRect.top,
+     "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same top that returns QUERY_TEXT_RECT");
+  is(left.value, textRect.left,
+     "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same left that returns QUERY_TEXT_RECT");
+
   var left2 = {};
   var top2 = {};
   var width2 = {};
   var height2 = {};
-  textRectArray.getCharacterRect(0, left, top, width, height);
-  is(textRect.top, top.value,
-     "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same top that returns QUERY_TEXT_RECT");
-  is(textRect.left, left.value,
-     "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same left that returns QUERY_TEXT_RECT");
   textRectArray.getCharacterRect(1, left2, top2, width2, height2);
+  isfuzzy(width.value + width2.value, textRect.width, 2,
+          "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same width that QUERY_TEXT_RECT is returned for offset 1 and 2");
 
-  // XXX: Switched to from ok() to todo_is() in Bug 1467712. Follow up in 1500961
-  // jdescottes: Bug 1467712 - wrong usage of ok(). This does not pass when switching to is():
-  // "got 16, expected 17". However on some other platforms it works as expected so we cannot
-  // use todo_is().
-  // is(textRect.width, width.value + width2.value,
-  //     "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same width that QUERY_TEXT_RECT is returned for offset 1 and 2");
-
-  is(textRect.height, height.value,
+  is(height.value, textRect.height,
      "sendQueryContentEvent(QUERY_TEXT_RECT_ARRAY) should return same height that returns QUERY_TEXT_RECT");
 
   // QueryCharacterAtOffset
@@ -194,6 +195,7 @@ function runTests()
      "The character offset is wrong");
 
   // SelectionSet and QuerySelectedText
+  await waitForFlushingIMEContentObserver();
   var selectionSet = gUtils.sendSelectionSetEvent(0, 6, gUtils.SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK);
   ok(selectionSet,
      "sendSelectionSetEvent(0, 6, SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK) should succeed");
@@ -208,6 +210,7 @@ function runTests()
   is(escape(result.text), expectedStr,
      "sendQueryContentEvent(QUERY_SELECTED_TEXT, QUERY_CONTENT_FLAG_USE_NATIVE_LINE_BREAK) got unexpected string");
 
+  await waitForFlushingIMEContentObserver();
   selectionSet = gUtils.sendSelectionSetEvent(0, 6, gUtils.SELECTION_SET_FLAG_USE_XP_LINE_BREAK);
   ok(selectionSet,
      "sendSelectionSetEvent(0, 6, SELECTION_SET_FLAG_USE_XP_LINE_BREAK) should succeed");
@@ -222,6 +225,8 @@ function runTests()
   is(escape(result.text), expectedStr,
      "sendQueryContentEvent(QUERY_SELECTED_TEXT, QUERY_CONTENT_FLAG_USE_XP_LINE_BREAK) got unexpected string");
 
+  getSelection().collapse(editor, 0);
+  await waitForFlushingIMEContentObserver();
   var selectionSet = gUtils.sendSelectionSetEvent(0, 6, gUtils.SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK | gUtils.SELECTION_SET_FLAG_REVERSE);
   ok(selectionSet,
      "sendSelectionSetEvent(0, 6, SELECTION_SET_FLAG_USE_NATIVE_LINE_BREAK) should succeed");
@@ -245,10 +250,7 @@ function runTests()
      "sendSelectionSetEvent(0, 6, SELECTION_SET_FLAG_USE_XP_LINE_BREAK | SELECTION_SET_FLAG_REVERSE) should set reversed selection");
 
   SimpleTest.finish();
-}
-
-SimpleTest.waitForFocus(runTests);
-
+});
 </script>
 </pre>
 </body>

@@ -948,7 +948,7 @@ TEST_P(pkixnames_MatchPresentedDNSIDWithReferenceDNSID,
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_MatchPresentedDNSIDWithReferenceDNSID,
+INSTANTIATE_TEST_SUITE_P(pkixnames_MatchPresentedDNSIDWithReferenceDNSID,
                         pkixnames_MatchPresentedDNSIDWithReferenceDNSID,
                         testing::ValuesIn(DNSID_MATCH_PARAMS));
 
@@ -995,7 +995,7 @@ TEST_P(pkixnames_Turkish_I_Comparison, MatchPresentedDNSIDWithReferenceDNSID)
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_Turkish_I_Comparison,
+INSTANTIATE_TEST_SUITE_P(pkixnames_Turkish_I_Comparison,
                         pkixnames_Turkish_I_Comparison,
                         testing::ValuesIn(DNSNAMES_VALIDITY_TURKISH_I));
 
@@ -1018,10 +1018,10 @@ TEST_P(pkixnames_IsValidReferenceDNSID, IsValidReferenceDNSID)
   ASSERT_EQ(inputValidity.isValidPresentedID, IsValidPresentedDNSID(input));
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_IsValidReferenceDNSID,
+INSTANTIATE_TEST_SUITE_P(pkixnames_IsValidReferenceDNSID,
                         pkixnames_IsValidReferenceDNSID,
                         testing::ValuesIn(DNSNAMES_VALIDITY));
-INSTANTIATE_TEST_CASE_P(pkixnames_IsValidReferenceDNSID_Turkish_I,
+INSTANTIATE_TEST_SUITE_P(pkixnames_IsValidReferenceDNSID_Turkish_I,
                         pkixnames_IsValidReferenceDNSID,
                         testing::ValuesIn(DNSNAMES_VALIDITY_TURKISH_I));
 
@@ -1049,7 +1049,7 @@ TEST_P(pkixnames_ParseIPv4Address, ParseIPv4Address)
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_ParseIPv4Address,
+INSTANTIATE_TEST_SUITE_P(pkixnames_ParseIPv4Address,
                         pkixnames_ParseIPv4Address,
                         testing::ValuesIn(IPV4_ADDRESSES));
 
@@ -1077,7 +1077,7 @@ TEST_P(pkixnames_ParseIPv6Address, ParseIPv6Address)
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_ParseIPv6Address,
+INSTANTIATE_TEST_SUITE_P(pkixnames_ParseIPv6Address,
                         pkixnames_ParseIPv6Address,
                         testing::ValuesIn(IPV6_ADDRESSES));
 
@@ -1135,8 +1135,8 @@ static const uint8_t example_com[] = {
 static const uint8_t ipv4_addr_bytes[] = {
   1, 2, 3, 4
 };
-static const uint8_t ipv4_addr_bytes_as_str[] = "\x01\x02\x03\x04";
-static const uint8_t ipv4_addr_str[] = "1.2.3.4";
+static const char ipv4_addr_bytes_as_str[] = "\x01\x02\x03\x04";
+static const char ipv4_addr_str[] = "1.2.3.4";
 static const uint8_t ipv4_addr_bytes_FFFFFFFF[8] = {
   1, 2, 3, 4, 0xff, 0xff, 0xff, 0xff
 };
@@ -1147,7 +1147,7 @@ static const uint8_t ipv4_compatible_ipv6_addr_bytes[] = {
   0, 0, 0, 0,
   1, 2, 3, 4
 };
-static const uint8_t ipv4_compatible_ipv6_addr_str[] = "::1.2.3.4";
+static const char ipv4_compatible_ipv6_addr_str[] = "::1.2.3.4";
 
 static const uint8_t ipv4_mapped_ipv6_addr_bytes[] = {
   0, 0, 0, 0,
@@ -1155,7 +1155,7 @@ static const uint8_t ipv4_mapped_ipv6_addr_bytes[] = {
   0, 0, 0xFF, 0xFF,
   1, 2, 3, 4
 };
-static const uint8_t ipv4_mapped_ipv6_addr_str[] = "::FFFF:1.2.3.4";
+static const char ipv4_mapped_ipv6_addr_str[] = "::FFFF:1.2.3.4";
 
 static const uint8_t ipv6_addr_bytes[] = {
   0x11, 0x22, 0x33, 0x44,
@@ -1163,13 +1163,13 @@ static const uint8_t ipv6_addr_bytes[] = {
   0x99, 0xaa, 0xbb, 0xcc,
   0xdd, 0xee, 0xff, 0x11
 };
-static const uint8_t ipv6_addr_bytes_as_str[] =
+static const char ipv6_addr_bytes_as_str[] =
   "\x11\x22\x33\x44"
   "\x55\x66\x77\x88"
   "\x99\xaa\xbb\xcc"
   "\xdd\xee\xff\x11";
 
-static const uint8_t ipv6_addr_str[] =
+static const char ipv6_addr_str[] =
   "1122:3344:5566:7788:99aa:bbcc:ddee:ff11";
 
 static const uint8_t ipv6_other_addr_bytes[] = {
@@ -1616,7 +1616,7 @@ TEST_P(pkixnames_CheckCertHostname, CheckCertHostname)
                                             mNameMatchingPolicy));
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckCertHostname,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckCertHostname,
                         pkixnames_CheckCertHostname,
                         testing::ValuesIn(CHECK_CERT_HOSTNAME_PARAMS));
 
@@ -1646,6 +1646,45 @@ TEST_F(pkixnames_CheckCertHostname, SANWithoutSequence)
   static const uint8_t a[] = { 'a' };
   ASSERT_EQ(Result::ERROR_EXTENSION_VALUE_INVALID,
             CheckCertHostname(certInput, Input(a), mNameMatchingPolicy));
+}
+
+class SkipInvalidSubjectAlternativeNamesNameMatchingPolicy : public NameMatchingPolicy {
+ public:
+  virtual Result FallBackToCommonName(
+      Time,
+      /*out*/ FallBackToSearchWithinSubject& fallBackToCommonName) override {
+    fallBackToCommonName = FallBackToSearchWithinSubject::No;
+    return Success;
+  }
+
+  virtual HandleInvalidSubjectAlternativeNamesBy
+  HandleInvalidSubjectAlternativeNames() override {
+    return HandleInvalidSubjectAlternativeNamesBy::Skipping;
+  }
+};
+
+TEST_F(pkixnames_CheckCertHostname, SkipInvalidSubjectAlternativeNames)
+{
+  ByteString cert(CreateCert(RDN(CN("invalid SAN example")), DNSName("192.0.2.0")));
+  ASSERT_FALSE(ENCODING_FAILED(cert));
+  Input certInput;
+  ASSERT_EQ(Success, certInput.Init(cert.data(), cert.length()));
+
+  const char* hostname = "example.com";
+  Input hostnameInput;
+  ASSERT_EQ(Success,
+            hostnameInput.Init(reinterpret_cast<const uint8_t*>(hostname),
+                               strlen(hostname)));
+
+  // The default name matching policy halts on invalid SAN entries.
+  ASSERT_EQ(Result::ERROR_BAD_DER,
+            CheckCertHostname(certInput, hostnameInput, mNameMatchingPolicy));
+
+  SkipInvalidSubjectAlternativeNamesNameMatchingPolicy nameMatchingPolicy;
+  // A policy that skips invalid SAN entries should result in a domain mismatch
+  // error.
+  ASSERT_EQ(Result::ERROR_BAD_CERT_DOMAIN,
+            CheckCertHostname(certInput, hostnameInput, nameMatchingPolicy));
 }
 
 class pkixnames_CheckCertHostname_PresentedMatchesReference
@@ -1701,7 +1740,7 @@ TEST_P(pkixnames_CheckCertHostname_PresentedMatchesReference,
                                               mNameMatchingPolicy));
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckCertHostname_DNSID_MATCH_PARAMS,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckCertHostname_DNSID_MATCH_PARAMS,
                         pkixnames_CheckCertHostname_PresentedMatchesReference,
                         testing::ValuesIn(DNSID_MATCH_PARAMS));
 
@@ -1820,7 +1859,7 @@ TEST_P(pkixnames_CheckCertHostname_IPV4_Addresses,
                                               mNameMatchingPolicy));
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckCertHostname_IPV4_ADDRESSES,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckCertHostname_IPV4_ADDRESSES,
                         pkixnames_CheckCertHostname_IPV4_Addresses,
                         testing::ValuesIn(IPV4_ADDRESSES));
 
@@ -2680,7 +2719,7 @@ TEST_P(pkixnames_CheckNameConstraints,
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckNameConstraints,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckNameConstraints,
                         pkixnames_CheckNameConstraints,
                         testing::ValuesIn(NAME_CONSTRAINT_PARAMS));
 
@@ -2772,7 +2811,7 @@ TEST_P(pkixnames_CheckNameConstraintsOnIntermediate,
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckNameConstraintsOnIntermediate,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckNameConstraintsOnIntermediate,
                         pkixnames_CheckNameConstraintsOnIntermediate,
                         testing::ValuesIn(NO_FALLBACK_NAME_CONSTRAINT_PARAMS));
 
@@ -2833,6 +2872,6 @@ TEST_P(pkixnames_CheckNameConstraintsForNonServerAuthUsage,
   }
 }
 
-INSTANTIATE_TEST_CASE_P(pkixnames_CheckNameConstraintsForNonServerAuthUsage,
+INSTANTIATE_TEST_SUITE_P(pkixnames_CheckNameConstraintsForNonServerAuthUsage,
                         pkixnames_CheckNameConstraintsForNonServerAuthUsage,
                         testing::ValuesIn(NO_FALLBACK_NAME_CONSTRAINT_PARAMS));

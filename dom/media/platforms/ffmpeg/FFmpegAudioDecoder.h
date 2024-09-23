@@ -25,20 +25,35 @@ class FFmpegAudioDecoder<LIBAV_VER>
     : public FFmpegDataDecoder<LIBAV_VER>,
       public DecoderDoctorLifeLogger<FFmpegAudioDecoder<LIBAV_VER>> {
  public:
-  FFmpegAudioDecoder(FFmpegLibWrapper* aLib, TaskQueue* aTaskQueue,
-                     const AudioInfo& aConfig);
+  FFmpegAudioDecoder(FFmpegLibWrapper* aLib,
+                     const CreateDecoderParams& aDecoderParams);
   virtual ~FFmpegAudioDecoder();
 
   RefPtr<InitPromise> Init() override;
-  void InitCodecContext() override;
-  static AVCodecID GetCodecId(const nsACString& aMimeType);
+  void InitCodecContext() MOZ_REQUIRES(sMutex) override;
+  static AVCodecID GetCodecId(const nsACString& aMimeType,
+                              const AudioInfo& aInfo);
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("ffmpeg audio decoder");
+#ifdef USING_MOZFFVPX
+    return "ffvpx audio decoder"_ns;
+#else
+    return "ffmpeg audio decoder"_ns;
+#endif
   }
+  nsCString GetCodecName() const override;
 
  private:
   MediaResult DoDecode(MediaRawData* aSample, uint8_t* aData, int aSize,
                        bool* aGotFrame, DecodedData& aResults) override;
+  MediaResult DecodeUsingFFmpeg(AVPacket* aPacket, bool& aDecoded,
+                                MediaRawData* aSample, DecodedData& aResults,
+                                bool* aGotFrame);
+  MediaResult PostProcessOutput(bool aDecoded, MediaRawData* aSample,
+                                DecodedData& aResults, bool* aGotFrame,
+                                int32_t aSubmitted);
+  const AudioInfo mAudioInfo;
+  // True if the audio will be downmixed and rendered in mono.
+  bool mDefaultPlaybackDeviceMono;
 };
 
 }  // namespace mozilla

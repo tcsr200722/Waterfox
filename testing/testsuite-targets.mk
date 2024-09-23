@@ -40,10 +40,10 @@ REMOTE_REFTEST = rm -f ./$@.log && $(PYTHON3) _tests/reftest/remotereftest.py \
 
 ifeq ($(OS_ARCH),WINNT) #{
 # GPU-rendered shadow layers are unsupported here
-OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=browser.tabs.remote.autostart=true --setpref=layers.acceleration.disabled=true
+OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=layers.acceleration.disabled=true
 GPU_RENDERING =
 else
-OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true --setpref=browser.tabs.remote.autostart=true
+OOP_CONTENT = --setpref=layers.async-pan-zoom.enabled=true
 GPU_RENDERING = --setpref=layers.acceleration.force-enabled=true
 endif #}
 
@@ -78,12 +78,10 @@ jstestbrowser:
 	$(call RUN_REFTEST,'$(DIST)/$(TESTS_PATH)/jstests.list' --extra-profile-file=$(DIST)/test-stage/jsreftest/tests/user.js)
 	$(CHECK_TEST_ERROR)
 
-GARBAGE += $(addsuffix .log,$(MOCHITESTS) reftest crashtest jstestbrowser)
-
 REMOTE_CPPUNITTESTS = \
 	$(PYTHON3) -u $(topsrcdir)/testing/remotecppunittests.py \
 	  --xre-path=$(DEPTH)/dist/bin \
-	  --localLib=$(DEPTH)/dist/fennec \
+	  --localLib=$(DEPTH)/dist/geckoview \
 	  --deviceIP=${TEST_DEVICE} \
 	  $(TEST_PATH) $(EXTRA_TEST_ARGS)
 
@@ -123,6 +121,8 @@ TEST_PKGS_TARGZ := \
   updater-dep \
   jsreftest \
   jittest \
+  perftests \
+  fuzztest \
   $(NULL)
 
 ifdef LINK_GTEST_DURING_COMPILE
@@ -185,7 +185,7 @@ stage-config: make-stage-dir
 
 stage-mach: make-stage-dir
 	@(cd $(topsrcdir)/python/mach && tar $(TAR_CREATE_FLAGS) - *) | (cd $(PKG_STAGE)/tools/mach && tar -xf -)
-	cp $(topsrcdir)/testing/tools/mach_test_package_bootstrap.py $(PKG_STAGE)/tools/mach_bootstrap.py
+	cp $(topsrcdir)/testing/tools/mach_test_package_initialize.py $(PKG_STAGE)/tools/mach_initialize.py
 	cp $(topsrcdir)/mach $(PKG_STAGE)
 
 stage-mochitest: make-stage-dir ;
@@ -195,7 +195,7 @@ stage-jstests: make-stage-dir
 
 ifdef OBJCOPY
 ifneq ($(OBJCOPY), :) # see build/autoconf/toolchain.m4:102 for why this is necessary
-ifndef PKG_SKIP_STRIP
+ifdef PKG_STRIP
 STRIP_COMPILED_TESTS := 1
 endif
 endif
@@ -213,6 +213,7 @@ ifdef STRIP_COMPILED_TESTS
 else
 	cp -RL $(DIST)/bin/gtest $(PKG_STAGE)/gtest/gtest_bin
 endif
+	cp -RL $(DIST)/bin/gtest/*buildid.* $(PKG_STAGE)/gtest/gtest_bin/gtest
 	cp -RL $(DEPTH)/_tests/gtest $(PKG_STAGE)
 	cp $(topsrcdir)/testing/gtest/rungtests.py $(PKG_STAGE)/gtest
 	cp $(topsrcdir)/testing/gtest/remotegtests.py $(PKG_STAGE)/gtest
@@ -256,16 +257,6 @@ TEST_EXTENSIONS := \
 stage-extensions: make-stage-dir
 	$(NSINSTALL) -D $(PKG_STAGE)/extensions/
 	@$(foreach ext,$(TEST_EXTENSIONS), cp -RL $(DIST)/xpi-stage/$(ext) $(PKG_STAGE)/extensions;)
-
-
-check::
-	$(eval cores=$(shell $(PYTHON3) -c 'import multiprocessing; print(multiprocessing.cpu_count())'))
-	@echo "Starting 'mach python-test' with -j$(cores)"
-	@$(topsrcdir)/mach --log-no-times python-test -j$(cores) --subsuite default
-	@echo "Finished 'mach python-test' successfully"
-	@echo "Starting 'mach python-test' with --python $(PYTHON3) -j$(cores)"
-	@$(topsrcdir)/mach --log-no-times python-test --python python3 -j$(cores) --subsuite default
-	@echo "Finished 'mach python-test' with py3 successfully"
 
 
 .PHONY: \

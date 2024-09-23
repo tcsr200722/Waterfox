@@ -6,15 +6,19 @@
 #ifndef _WaylandVsyncSource_h_
 #define _WaylandVsyncSource_h_
 
+#include "base/thread.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/layers/NativeLayerWayland.h"
 #include "MozContainer.h"
-#include "VsyncSource.h"
-#include "base/thread.h"
 #include "nsWaylandDisplay.h"
+#include "VsyncSource.h"
 
 namespace mozilla {
+
+using layers::NativeLayerRootWayland;
 
 /*
  * WaylandVsyncSource
@@ -39,68 +43,55 @@ namespace mozilla {
  */
 class WaylandVsyncSource final : public gfx::VsyncSource {
  public:
-  explicit WaylandVsyncSource(MozContainer* container) {
-    MOZ_ASSERT(NS_IsMainThread());
-    mGlobalDisplay = new WaylandDisplay(container);
-  }
+  explicit WaylandVsyncSource(nsWindow* aWindow);
+  virtual ~WaylandVsyncSource();
 
-  virtual ~WaylandVsyncSource() { MOZ_ASSERT(NS_IsMainThread()); }
+  static Maybe<TimeDuration> GetFastestVsyncRate();
 
-  virtual Display& GetGlobalDisplay() override { return *mGlobalDisplay; }
+  void MaybeUpdateSource(MozContainer* aContainer);
+  void MaybeUpdateSource(
+      const RefPtr<NativeLayerRootWayland>& aNativeLayerRoot);
 
-  struct WaylandFrameCallbackContext;
+  void EnableMonitor();
+  void DisableMonitor();
 
-  class WaylandDisplay final : public mozilla::gfx::VsyncSource::Display {
-   public:
-    explicit WaylandDisplay(MozContainer* container);
+  void FrameCallback(wl_callback* aCallback, uint32_t aTime);
+  // Returns whether we should keep firing.
+  bool IdleCallback();
 
-    bool Setup();
-    void EnableMonitor();
-    void DisableMonitor();
+  TimeDuration GetVsyncRate() override;
 
-    void FrameCallback();
-    void Notify();
+  void EnableVsync() override;
 
-    virtual void EnableVsync() override;
+  void DisableVsync() override;
 
-    virtual void DisableVsync() override;
+  bool IsVsyncEnabled() override;
 
-    virtual bool IsVsyncEnabled() override;
-
-    virtual void Shutdown() override;
-
-   private:
-    virtual ~WaylandDisplay() = default;
-    void Loop();
-    void SetupFrameCallback();
-    void ClearFrameCallback();
-
-    base::Thread mThread;
-    RefPtr<Runnable> mTask;
-    WaylandFrameCallbackContext* mCallbackContext;
-    Monitor mNotifyThreadMonitor;
-    Mutex mEnabledLock;
-    bool mVsyncEnabled;
-    bool mMonitorEnabled;
-    bool mShutdown;
-    struct wl_display* mDisplay;
-    MozContainer* mContainer;
-  };
-
-  // The WaylandFrameCallbackContext is a context owned by the frame callbacks.
-  // It is created by the display, but deleted by the frame callbacks on the
-  // next callback after being disabled.
-  struct WaylandFrameCallbackContext {
-    explicit WaylandFrameCallbackContext(
-        WaylandVsyncSource::WaylandDisplay* aDisplay)
-        : mEnabled(true), mDisplay(aDisplay) {}
-    bool mEnabled;
-    WaylandVsyncSource::WaylandDisplay* mDisplay;
-  };
+  void Shutdown() override;
 
  private:
-  // We need a refcounted VsyncSource::Display to use chromium IPC runnables.
-  RefPtr<WaylandDisplay> mGlobalDisplay;
+  Maybe<TimeDuration> GetVsyncRateIfEnabled();
+
+  void Refresh(const MutexAutoLock& aProofOfLock);
+  void SetupFrameCallback(const MutexAutoLock& aProofOfLock);
+  void CalculateVsyncRate(const MutexAutoLock& aProofOfLock,
+                          TimeStamp aVsyncTimestamp);
+  void* GetWindowForLogging() { return mWindow; };
+
+  Mutex mMutex;
+  bool mIsShutdown MOZ_GUARDED_BY(mMutex) = false;
+  bool mVsyncEnabled MOZ_GUARDED_BY(mMutex) = false;
+  bool mMonitorEnabled MOZ_GUARDED_BY(mMutex) = false;
+  bool mCallbackRequested MOZ_GUARDED_BY(mMutex) = false;
+  MozContainer* mContainer MOZ_GUARDED_BY(mMutex) = nullptr;
+  RefPtr<NativeLayerRootWayland> mNativeLayerRoot MOZ_GUARDED_BY(mMutex);
+  TimeDuration mVsyncRate MOZ_GUARDED_BY(mMutex);
+  TimeStamp mLastVsyncTimeStamp MOZ_GUARDED_BY(mMutex);
+  wl_callback* mCallback MOZ_GUARDED_BY(mMutex) = nullptr;
+
+  guint mIdleTimerID = 0;   // Main thread only.
+  nsWindow* const mWindow;  // Main thread only, except for logging.
+  const guint mIdleTimeout;
 };
 
 }  // namespace mozilla

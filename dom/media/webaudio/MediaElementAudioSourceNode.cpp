@@ -10,8 +10,7 @@
 #include "AudioNodeTrack.h"
 #include "MediaStreamTrack.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaElementAudioSourceNode)
 
@@ -75,14 +74,9 @@ JSObject* MediaElementAudioSourceNode::WrapObject(
 
 void MediaElementAudioSourceNode::ListenForAllowedToPlay(
     const MediaElementAudioSourceOptions& aOptions) {
-  if (!GetAbstractMainThread()) {
-    // The AudioContext must have been closed. It won't be able to start anyway.
-    return;
-  }
-
   aOptions.mMediaElement->GetAllowedToPlayPromise()
       ->Then(
-          GetAbstractMainThread(), __func__,
+          AbstractThread::MainThread(), __func__,
           // Capture by reference to bypass the mozilla-refcounted-inside-lambda
           // static analysis. We capture a non-owning reference so as to allow
           // cycle collection of the node. The reference is cleared via
@@ -103,5 +97,4 @@ HTMLMediaElement* MediaElementAudioSourceNode::MediaElement() {
   return mElement;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

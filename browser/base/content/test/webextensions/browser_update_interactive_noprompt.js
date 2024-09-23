@@ -1,5 +1,5 @@
 // Set some prefs that apply to all the tests in this file
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       // We don't have pre-pinned certificates for the local mochitest server
@@ -24,7 +24,10 @@ async function testUpdateNoPrompt(
   updateVersion = "2.0"
 ) {
   // Navigate away to ensure that BrowserOpenAddonMgr() opens a new tab
-  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, "about:robots");
+  BrowserTestUtils.startLoadingURIString(
+    gBrowser.selectedBrowser,
+    "about:mozilla"
+  );
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 
   // Install initial version of the test extension
@@ -33,9 +36,9 @@ async function testUpdateNoPrompt(
   is(addon.version, initialVersion, "Version 1 of the addon is installed");
 
   // Go to Extensions in about:addons
-  let win = await BrowserOpenAddonsMgr("addons://list/extension");
+  let win = await BrowserAddonUI.openAddonsMgr("addons://list/extension");
 
-  await BrowserTestUtils.waitForEvent(win.document, "ViewChanged");
+  await waitAboutAddonsViewLoaded(win.document);
 
   let sawPopup = false;
   function popupListener() {

@@ -13,16 +13,21 @@
 #include "mozilla/dom/ipc/StructuredCloneData.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/RandomNum.h"
 #include "nsFrameMessageManager.h"
+#include "prenv.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 LazyLogModule MMPrinter::sMMLog("MessageManager");
 
+// You can use
+// https://gist.github.com/tomrittervg/adb8688426a9a5340da96004e2c8af79 to parse
+// the output of the logs into logs more friendly to reading.
+
 /* static */
-void MMPrinter::PrintImpl(char const* aLocation, const nsAString& aMsg,
-                          ClonedMessageData const& aData) {
+Maybe<uint64_t> MMPrinter::PrintHeader(char const* aLocation,
+                                       const nsAString& aMsg) {
   NS_ConvertUTF16toUTF8 charMsg(aMsg);
 
   /*
@@ -38,13 +43,29 @@ void MMPrinter::PrintImpl(char const* aLocation, const nsAString& aMsg,
   char* mmSkipLog = PR_GetEnv("MOZ_LOG_MESSAGEMANAGER_SKIP");
 
   if (mmSkipLog && strstr(mmSkipLog, charMsg.get())) {
-    return;
+    return Nothing();
   }
 
-  MOZ_LOG(MMPrinter::sMMLog, LogLevel::Debug,
-          ("%s Message: %s in process type: %s", aLocation, charMsg.get(),
-           XRE_GetProcessTypeString()));
+  uint64_t aMsgId = RandomUint64OrDie();
 
+  MOZ_LOG(MMPrinter::sMMLog, LogLevel::Debug,
+          ("%" PRIu64 " %s Message: %s in process type: %s", aMsgId, aLocation,
+           charMsg.get(), XRE_GetProcessTypeString()));
+
+  return Some(aMsgId);
+}
+
+/* static */
+void MMPrinter::PrintNoData(uint64_t aMsgId) {
+  if (!MOZ_LOG_TEST(sMMLog, LogLevel::Verbose)) {
+    return;
+  }
+  MOZ_LOG(MMPrinter::sMMLog, LogLevel::Verbose,
+          ("%" PRIu64 " (No Data)", aMsgId));
+}
+
+/* static */
+void MMPrinter::PrintData(uint64_t aMsgId, ClonedMessageData const& aData) {
   if (!MOZ_LOG_TEST(sMMLog, LogLevel::Verbose)) {
     return;
   }
@@ -52,27 +73,33 @@ void MMPrinter::PrintImpl(char const* aLocation, const nsAString& aMsg,
   ErrorResult rv;
 
   AutoJSAPI jsapi;
-  MOZ_ALWAYS_TRUE(jsapi.Init(xpc::UnprivilegedJunkScope()));
+  // We're using this context to deserialize, stringify, and print a message
+  // manager message here. Since the messages are always sent from and to system
+  // scopes, we need to do this in a system scope, or attempting to deserialize
+  // certain privileged objects will fail.
+  MOZ_ALWAYS_TRUE(jsapi.Init(xpc::PrivilegedJunkScope()));
   JSContext* cx = jsapi.cx();
 
   ipc::StructuredCloneData data;
-  ipc::UnpackClonedMessageDataForChild(aData, data);
+  ipc::UnpackClonedMessageData(aData, data);
 
   /* Read original StructuredCloneData. */
-  JS::RootedValue scdContent(cx);
+  JS::Rooted<JS::Value> scdContent(cx);
   data.Read(cx, &scdContent, rv);
-  if (NS_WARN_IF(rv.Failed())) {
+  if (rv.Failed()) {
+    // In testing, the only reason this would fail was if there was no data in
+    // the message; so it seems like this is safe-ish.
+    MMPrinter::PrintNoData(aMsgId);
     rv.SuppressException();
     return;
   }
 
-  JS::RootedString unevalObj(cx, JS_ValueToSource(cx, scdContent));
+  JS::Rooted<JSString*> unevalObj(cx, JS_ValueToSource(cx, scdContent));
   nsAutoJSString srcString;
   if (!srcString.init(cx, unevalObj)) return;
 
   MOZ_LOG(MMPrinter::sMMLog, LogLevel::Verbose,
-          ("   %s", NS_ConvertUTF16toUTF8(srcString).get()));
+          ("%" PRIu64 " %s", aMsgId, NS_ConvertUTF16toUTF8(srcString).get()));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

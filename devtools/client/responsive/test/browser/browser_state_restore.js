@@ -13,7 +13,7 @@ const NEW_USER_AGENT = "Mozilla/5.0 (Mobile; rv:39.0) Gecko/39.0 Firefox/39.0";
 
 addRDMTask(
   TEST_URL,
-  async function({ ui, manager }) {
+  async function ({ ui, manager }) {
     const { store } = ui.toolWindow;
 
     reloadOnTouchChange(true);
@@ -37,12 +37,12 @@ addRDMTask(
     reloadOnTouchChange(false);
     reloadOnUAChange(false);
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );
 
 addRDMTask(
   TEST_URL,
-  async function({ ui }) {
+  async function ({ ui }) {
     const { store } = ui.toolWindow;
 
     reloadOnTouchChange(true);
@@ -63,12 +63,12 @@ addRDMTask(
     reloadOnTouchChange(false);
     reloadOnUAChange(false);
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );
 
 addRDMTask(
   TEST_URL,
-  async function({ ui }) {
+  async function ({ ui }) {
     const { store } = ui.toolWindow;
 
     reloadOnTouchChange(true);
@@ -86,5 +86,5 @@ addRDMTask(
     reloadOnTouchChange(false);
     reloadOnUAChange(false);
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );

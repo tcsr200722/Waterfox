@@ -6,26 +6,87 @@
 
 #include "ServiceWorkerUtils.h"
 
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/ClientInfo.h"
+#include "mozilla/dom/Navigator.h"
+#include "mozilla/dom/ServiceWorkerGlobalScopeBinding.h"
 #include "mozilla/dom/ServiceWorkerRegistrarTypes.h"
 #include "nsCOMPtr.h"
 #include "nsIPrincipal.h"
 #include "nsIURL.h"
+#include "nsPrintfCString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-bool ServiceWorkerParentInterceptEnabled() {
-  static Atomic<bool> sEnabled;
-  static Atomic<bool> sInitialized;
-  if (!sInitialized) {
-    AssertIsOnMainThread();
-    sInitialized = true;
-    sEnabled =
-        Preferences::GetBool("dom.serviceWorkers.parent_intercept", false);
+static bool IsServiceWorkersTestingEnabledInWindow(JSObject* const aGlobal) {
+  if (const nsCOMPtr<nsPIDOMWindowInner> innerWindow =
+          Navigator::GetWindowFromGlobal(aGlobal)) {
+    if (auto* bc = innerWindow->GetBrowsingContext()) {
+      return bc->Top()->ServiceWorkersTestingEnabled();
+    }
   }
-  return sEnabled;
+  return false;
+}
+
+static bool IsInPrivateBrowsing(JSContext* const aCx) {
+  if (const nsCOMPtr<nsIGlobalObject> global = xpc::CurrentNativeGlobal(aCx)) {
+    if (const nsCOMPtr<nsIPrincipal> principal = global->PrincipalOrNull()) {
+      return principal->GetPrivateBrowsingId() > 0;
+    }
+  }
+  return false;
+}
+
+bool ServiceWorkersEnabled(JSContext* aCx, JSObject* aGlobal) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!StaticPrefs::dom_serviceWorkers_enabled()) {
+    return false;
+  }
+
+  // xpc::CurrentNativeGlobal below requires rooting
+  JS::Rooted<JSObject*> global(aCx, aGlobal);
+
+  if (IsInPrivateBrowsing(aCx)) {
+    return false;
+  }
+
+  // Allow a webextension principal to register a service worker script with
+  // a moz-extension url only if 'extensions.service_worker_register.allowed'
+  // is true.
+  if (!StaticPrefs::extensions_serviceWorkerRegister_allowed()) {
+    nsIPrincipal* principal = nsContentUtils::SubjectPrincipal(aCx);
+    if (principal && BasePrincipal::Cast(principal)->AddonPolicy()) {
+      return false;
+    }
+  }
+
+  if (IsSecureContextOrObjectIsFromSecureContext(aCx, global)) {
+    return true;
+  }
+
+  return StaticPrefs::dom_serviceWorkers_testing_enabled() ||
+         IsServiceWorkersTestingEnabledInWindow(global);
+}
+
+bool ServiceWorkerVisible(JSContext* aCx, JSObject* aGlobal) {
+  if (NS_IsMainThread()) {
+    // We want to expose ServiceWorker interface only when
+    // navigator.serviceWorker is available. Currently it may not be available
+    // with some reasons:
+    // 1. navigator.serviceWorker is not supported in workers. (bug 1131324)
+    return ServiceWorkersEnabled(aCx, aGlobal);
+  }
+
+  // We are already in ServiceWorker and interfaces need to be exposed for e.g.
+  // globalThis.registration.serviceWorker. Note that navigator.serviceWorker
+  // is still not supported. (bug 1131324)
+  return IS_INSTANCE_OF(ServiceWorkerGlobalScope, aGlobal);
 }
 
 bool ServiceWorkerRegistrationDataIsValid(
@@ -79,9 +140,24 @@ void ServiceWorkerScopeAndScriptAreValid(const ClientInfo& aClientInfo,
     return;
   }
 
+  auto hasHTTPScheme = [](nsIURI* aURI) -> bool {
+    return aURI->SchemeIs("http") || aURI->SchemeIs("https");
+  };
+  auto hasMozExtScheme = [](nsIURI* aURI) -> bool {
+    return aURI->SchemeIs("moz-extension");
+  };
+
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+
+  auto isExtension = !!BasePrincipal::Cast(principal)->AddonPolicy();
+  auto hasValidURISchemes = !isExtension ? hasHTTPScheme : hasMozExtScheme;
+
   // https://w3c.github.io/ServiceWorker/#start-register-algorithm step 3.
-  if (!aScriptURI->SchemeIs("http") && !aScriptURI->SchemeIs("https")) {
-    aRv.ThrowTypeError("Script URL's scheme is not 'http' or 'https'");
+  if (!hasValidURISchemes(aScriptURI)) {
+    auto message = !isExtension
+                       ? "Script URL's scheme is not 'http' or 'https'"_ns
+                       : "Script URL's scheme is not 'moz-extension'"_ns;
+    aRv.ThrowTypeError(message);
     return;
   }
 
@@ -92,8 +168,11 @@ void ServiceWorkerScopeAndScriptAreValid(const ClientInfo& aClientInfo,
   }
 
   // https://w3c.github.io/ServiceWorker/#start-register-algorithm step 8.
-  if (!aScopeURI->SchemeIs("http") && !aScopeURI->SchemeIs("https")) {
-    aRv.ThrowTypeError("Scope URL's scheme is not 'http' or 'https'");
+  if (!hasValidURISchemes(aScopeURI)) {
+    auto message = !isExtension
+                       ? "Scope URL's scheme is not 'http' or 'https'"_ns
+                       : "Scope URL's scheme is not 'moz-extension'"_ns;
+    aRv.ThrowTypeError(message);
     return;
   }
 
@@ -118,8 +197,6 @@ void ServiceWorkerScopeAndScriptAreValid(const ClientInfo& aClientInfo,
     return;
   }
 
-  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
-
   // Unfortunately we don't seem to have an obvious window id here; in
   // particular ClientInfo does not have one.
   nsresult rv = principal->CheckMayLoadWithReporting(
@@ -137,5 +214,4 @@ void ServiceWorkerScopeAndScriptAreValid(const ClientInfo& aClientInfo,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

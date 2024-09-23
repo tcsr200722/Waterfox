@@ -7,24 +7,26 @@
 #ifndef mozilla_net_ParentProcessDocumentChannel_h
 #define mozilla_net_ParentProcessDocumentChannel_h
 
-#include "ProtocolUtils.h"
-#include "mozilla/net/ADocumentChannelBridge.h"
+#include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/net/DocumentChannel.h"
 #include "mozilla/net/DocumentLoadListener.h"
 #include "nsIObserver.h"
+#include "nsIAsyncVerifyRedirectCallback.h"
 
 namespace mozilla {
 namespace net {
 
+class EarlyHintConnectArgs;
+
 class ParentProcessDocumentChannel : public DocumentChannel,
                                      public nsIAsyncVerifyRedirectCallback,
-                                     public nsIObserver,
-                                     public ADocumentChannelBridge {
+                                     public nsIObserver {
  public:
   ParentProcessDocumentChannel(nsDocShellLoadState* aLoadState,
                                class LoadInfo* aLoadInfo,
                                nsLoadFlags aLoadFlags, uint32_t aCacheKey,
-                               bool aUriModified, bool aIsXFOError);
+                               bool aUriModified,
+                               bool aIsEmbeddingBlockedError);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
@@ -32,28 +34,18 @@ class ParentProcessDocumentChannel : public DocumentChannel,
 
   NS_IMETHOD AsyncOpen(nsIStreamListener* aListener) override;
   NS_IMETHOD Cancel(nsresult aStatusCode) override;
+  NS_IMETHOD CancelWithReason(nsresult aStatusCode,
+                              const nsACString& aReason) override;
 
   RefPtr<PDocumentChannelParent::RedirectToRealChannelPromise>
   RedirectToRealChannel(
       nsTArray<ipc::Endpoint<extensions::PStreamFilterParent>>&&
           aStreamFilterEndpoints,
-      uint32_t aRedirectFlags, uint32_t aLoadFlags) override;
-
-  void DisconnectChildListeners(nsresult aStatus,
-                                nsresult aLoadGroupStatus) override {
-    DocumentChannel::DisconnectChildListeners(aStatus, aLoadGroupStatus);
-    RemoveObserver();
-    mDocumentLoadListener = nullptr;
-  }
-  void Delete() override {}
-  void DeleteIPDL() override {
-    mPromise.ResolveIfExists(NS_BINDING_ABORTED, __func__);
-  }
-  base::ProcessId OtherPid() const override { return 0; }
+      uint32_t aRedirectFlags, uint32_t aLoadFlags,
+      const nsTArray<EarlyHintConnectArgs>& aEarlyHints);
 
  private:
   virtual ~ParentProcessDocumentChannel();
-  void DisconnectDocumentLoadListener();
   void RemoveObserver();
 
   RefPtr<DocumentLoadListener> mDocumentLoadListener;

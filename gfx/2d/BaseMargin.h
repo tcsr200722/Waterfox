@@ -56,34 +56,34 @@ namespace gfx {
  * Do not use this class directly. Subclass it, pass that subclass as the
  * Sub parameter, and only use that subclass.
  */
-template <class T, class Sub>
+template <class T, class Sub, class Coord = T>
 struct BaseMargin {
   typedef mozilla::Side SideT;  // because we have a method named Side
 
   // Do not change the layout of these members; the Side() methods below
   // depend on this order.
-  T top, right, bottom, left;
+  Coord top, right, bottom, left;
 
   // Constructors
   BaseMargin() : top(0), right(0), bottom(0), left(0) {}
-  BaseMargin(T aTop, T aRight, T aBottom, T aLeft)
+  BaseMargin(Coord aTop, Coord aRight, Coord aBottom, Coord aLeft)
       : top(aTop), right(aRight), bottom(aBottom), left(aLeft) {}
 
-  void SizeTo(T aTop, T aRight, T aBottom, T aLeft) {
+  void SizeTo(Coord aTop, Coord aRight, Coord aBottom, Coord aLeft) {
     top = aTop;
     right = aRight;
     bottom = aBottom;
     left = aLeft;
   }
 
-  T LeftRight() const { return left + right; }
-  T TopBottom() const { return top + bottom; }
+  Coord LeftRight() const { return left + right; }
+  Coord TopBottom() const { return top + bottom; }
 
-  T& Side(SideT aSide) {
+  Coord& Side(SideT aSide) {
     // This is ugly!
     return *(&top + int(aSide));
   }
-  T Side(SideT aSide) const {
+  Coord Side(SideT aSide) const {
     // This is ugly!
     return *(&top + int(aSide));
   }
@@ -104,6 +104,22 @@ struct BaseMargin {
     return *static_cast<Sub*>(this);
   }
 
+  // Ensures that all our sides are at least as big as the argument.
+  void EnsureAtLeast(const BaseMargin& aMargin) {
+    top = std::max(top, aMargin.top);
+    right = std::max(right, aMargin.right);
+    bottom = std::max(bottom, aMargin.bottom);
+    left = std::max(left, aMargin.left);
+  }
+
+  // Ensures that all our sides are at most as big as the argument.
+  void EnsureAtMost(const BaseMargin& aMargin) {
+    top = std::min(top, aMargin.top);
+    right = std::min(right, aMargin.right);
+    bottom = std::min(bottom, aMargin.bottom);
+    left = std::min(left, aMargin.left);
+  }
+
   // Overloaded operators. Note that '=' isn't defined so we'll get the
   // compiler generated default assignment operator
   bool operator==(const Sub& aMargin) const {
@@ -119,6 +135,7 @@ struct BaseMargin {
     return Sub(top - aMargin.top, right - aMargin.right,
                bottom - aMargin.bottom, left - aMargin.left);
   }
+  Sub operator-() const { return Sub(-top, -right, -bottom, -left); }
   Sub& operator+=(const Sub& aMargin) {
     top += aMargin.top;
     right += aMargin.right;
@@ -126,11 +143,18 @@ struct BaseMargin {
     left += aMargin.left;
     return *static_cast<Sub*>(this);
   }
+  Sub& operator-=(const Sub& aMargin) {
+    top -= aMargin.top;
+    right -= aMargin.right;
+    bottom -= aMargin.bottom;
+    left -= aMargin.left;
+    return *static_cast<Sub*>(this);
+  }
 
   friend std::ostream& operator<<(std::ostream& aStream,
                                   const BaseMargin& aMargin) {
-    return aStream << '(' << aMargin.top << ',' << aMargin.right << ','
-                   << aMargin.bottom << ',' << aMargin.left << ')';
+    return aStream << "(t=" << aMargin.top << ", r=" << aMargin.right
+                   << ", b=" << aMargin.bottom << ", l=" << aMargin.left << ')';
   }
 };
 

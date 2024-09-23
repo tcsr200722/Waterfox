@@ -7,13 +7,14 @@
 #include "TemporaryAccessGrantObserver.h"
 
 #include "mozilla/PermissionManager.h"
+#include "mozilla/Services.h"
 #include "nsIObserverService.h"
 #include "nsTHashtable.h"
 #include "nsXULAppAPI.h"
 
 using namespace mozilla;
 
-UniquePtr<TemporaryAccessGrantObserver::ObserversTable>
+StaticAutoPtr<TemporaryAccessGrantObserver::ObserversTable>
     TemporaryAccessGrantObserver::sObservers;
 
 TemporaryAccessGrantObserver::TemporaryAccessGrantObserver(
@@ -24,7 +25,7 @@ TemporaryAccessGrantObserver::TemporaryAccessGrantObserver(
              "the parent process");
 }
 
-NS_IMPL_ISUPPORTS(TemporaryAccessGrantObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(TemporaryAccessGrantObserver, nsIObserver, nsINamed)
 
 // static
 void TemporaryAccessGrantObserver::Create(PermissionManager* aPM,
@@ -33,29 +34,27 @@ void TemporaryAccessGrantObserver::Create(PermissionManager* aPM,
   MOZ_ASSERT(XRE_IsParentProcess());
 
   if (!sObservers) {
-    sObservers = MakeUnique<ObserversTable>();
+    sObservers = new ObserversTable();
   }
-  Unused << sObservers
-                ->LookupForAdd(std::make_pair(
-                    nsCOMPtr<nsIPrincipal>(aPrincipal), nsCString(aType)))
-                .OrInsert([&]() -> nsITimer* {
-                  // Only create a new observer if we don't have a matching
-                  // entry in our hashtable.
-                  nsCOMPtr<nsITimer> timer;
-                  RefPtr<TemporaryAccessGrantObserver> observer =
-                      new TemporaryAccessGrantObserver(aPM, aPrincipal, aType);
-                  nsresult rv =
-                      NS_NewTimerWithObserver(getter_AddRefs(timer), observer,
+  sObservers->LookupOrInsertWith(
+      std::make_pair(nsCOMPtr<nsIPrincipal>(aPrincipal), nsCString(aType)),
+      [&]() -> nsCOMPtr<nsITimer> {
+        // Only create a new observer if we don't have a matching
+        // entry in our hashtable.
+        nsCOMPtr<nsITimer> timer;
+        RefPtr<TemporaryAccessGrantObserver> observer =
+            new TemporaryAccessGrantObserver(aPM, aPrincipal, aType);
+        nsresult rv = NS_NewTimerWithObserver(getter_AddRefs(timer), observer,
                                               24 * 60 * 60 * 1000,  // 24 hours
                                               nsITimer::TYPE_ONE_SHOT);
 
-                  if (NS_SUCCEEDED(rv)) {
-                    observer->SetTimer(timer);
-                    return timer;
-                  }
-                  timer->Cancel();
-                  return nullptr;
-                });
+        if (NS_SUCCEEDED(rv)) {
+          observer->SetTimer(timer);
+          return timer;
+        }
+        timer->Cancel();
+        return nullptr;
+      });
 }
 
 void TemporaryAccessGrantObserver::SetTimer(nsITimer* aTimer) {
@@ -85,8 +84,14 @@ TemporaryAccessGrantObserver::Observe(nsISupports* aSubject, const char* aTopic,
       mTimer->Cancel();
       mTimer = nullptr;
     }
-    sObservers.reset();
+    sObservers = nullptr;
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+TemporaryAccessGrantObserver::GetName(nsACString& aName) {
+  aName.AssignLiteral("TemporaryAccessGrantObserver");
   return NS_OK;
 }

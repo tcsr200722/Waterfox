@@ -9,9 +9,11 @@ const TEST_URI =
   "data:text/html;charset=utf-8,<head>" +
   "<link rel='stylesheet' type='text/css' href='chrome://devtools/skin/widg" +
   "ets.css'></head><body><div></div><span></span></body>";
-const { TreeWidget } = require("devtools/client/shared/widgets/TreeWidget");
+const {
+  TreeWidget,
+} = require("resource://devtools/client/shared/widgets/TreeWidget.js");
 
-add_task(async function() {
+add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["security.allow_unsafe_parent_loads", true]],
   });
@@ -96,7 +98,7 @@ function populateTree(tree, doc) {
   tree.add([
     {
       id: "level1.2",
-      node: node,
+      node,
       attachment: {
         foo: "bar",
       },
@@ -115,21 +117,22 @@ function click(node) {
  */
 async function testMouseInteraction(tree) {
   info("Testing mouse interaction with the tree");
-  let event;
-  const pass = (d, a) => event.resolve([d, a]);
+  const waitForSelect = () =>
+    new Promise(resolve => {
+      tree.once("select", (d, a) => resolve({ data: d, attachment: a }));
+    });
 
   ok(!tree.selectedItem, "Nothing should be selected beforehand");
 
-  tree.once("select", pass);
+  let onTreeSelect = waitForSelect();
   const node = tree.root.children.firstChild.firstChild;
   info("clicking on first top level item");
-  event = defer();
   ok(
     !node.classList.contains("theme-selected"),
     "Node should not have selected class before clicking"
   );
   click(node);
-  let [data, attachment] = await event.promise;
+  let { data, attachment } = await onTreeSelect;
   ok(
     node.classList.contains("theme-selected"),
     "Node has selected class after click"
@@ -140,7 +143,6 @@ async function testMouseInteraction(tree) {
 
   info("clicking second top level item with children to check if it expands");
   const node2 = tree.root.children.firstChild.nextSibling.firstChild;
-  event = defer();
   // node should not have selected class
   ok(
     !node2.classList.contains("theme-selected"),
@@ -150,9 +152,9 @@ async function testMouseInteraction(tree) {
     !node2.hasAttribute("expanded"),
     "New node is not expanded before clicking"
   );
-  tree.once("select", pass);
+  onTreeSelect = waitForSelect();
   click(node2);
-  [data, attachment] = await event.promise;
+  ({ data, attachment } = await onTreeSelect);
   ok(
     node2.classList.contains("theme-selected"),
     "New node has selected class after clicking"
@@ -168,15 +170,16 @@ async function testMouseInteraction(tree) {
 
   // clicking again should just collapse
   // this will not emit "select" event
-  event = defer();
-  node2.addEventListener(
-    "click",
-    () => {
-      executeSoon(() => event.resolve(null));
-    },
-    { once: true }
-  );
+  const onClick = new Promise(resolve => {
+    node2.addEventListener(
+      "click",
+      () => {
+        executeSoon(() => resolve(null));
+      },
+      { once: true }
+    );
+  });
   click(node2);
-  await event.promise;
+  await onClick;
   ok(!node2.hasAttribute("expanded"), "New node collapsed after click again");
 }

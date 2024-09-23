@@ -7,7 +7,7 @@
  * Verify that urlbar state is reset when opening a new tab, so searching for the
  * same text will reopen the results popup.
  */
-add_task(async function() {
+add_task(async function () {
   let tab = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
     "about:blank",
@@ -15,7 +15,6 @@ add_task(async function() {
   );
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "m",
   });
   assertOpen();
@@ -27,7 +26,6 @@ add_task(async function() {
   );
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "m",
   });
   assertOpen();

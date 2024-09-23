@@ -11,6 +11,7 @@
 
 #include "APZUtils.h"
 #include "AxisPhysicsMSDModel.h"
+#include "mozilla/DataMutex.h"  // for DataMutex
 #include "mozilla/gfx/Types.h"  // for Side
 #include "mozilla/TimeStamp.h"  // for TimeDuration
 #include "nsTArray.h"           // for nsTArray
@@ -29,7 +30,7 @@ const float EPSILON = 0.0001f;
  * due to floating-point operations (which can be larger than COORDINATE_EPISLON
  * for sufficiently large coordinate values).
  */
-bool FuzzyEqualsCoordinate(float aValue1, float aValue2);
+bool FuzzyEqualsCoordinate(CSSCoord aValue1, CSSCoord aValue2);
 
 struct FrameMetrics;
 class AsyncPanZoomController;
@@ -46,14 +47,14 @@ class VelocityTracker {
    * Start tracking velocity along this axis, starting with the given
    * initial position and corresponding timestamp.
    */
-  virtual void StartTracking(ParentLayerCoord aPos, uint32_t aTimestamp) = 0;
+  virtual void StartTracking(ParentLayerCoord aPos, TimeStamp aTimestamp) = 0;
   /**
    * Record a new position along this axis, at the given timestamp.
    * Returns the average velocity between the last sample and this one, or
    * or Nothing() if a reasonable average cannot be computed.
    */
   virtual Maybe<float> AddPosition(ParentLayerCoord aPos,
-                                   uint32_t aTimestampMs) = 0;
+                                   TimeStamp aTimestamp) = 0;
   /**
    * Compute an estimate of the axis's current velocity, based on recent
    * position samples. It's up to implementation how many samples to consider
@@ -61,7 +62,7 @@ class VelocityTracker {
    * If the tracker doesn't have enough samples to compute a result, it
    * may return Nothing{}.
    */
-  virtual Maybe<float> ComputeVelocity(uint32_t aTimestampMs) = 0;
+  virtual Maybe<float> ComputeVelocity(TimeStamp aTimestamp) = 0;
   /**
    * Clear all state in the velocity tracker.
    */
@@ -85,20 +86,25 @@ class Axis {
    * accumulated displacements over the course of the pan gesture.
    */
   void UpdateWithTouchAtDevicePoint(ParentLayerCoord aPos,
-                                    uint32_t aTimestampMs);
+                                    TimeStamp aTimestamp);
 
  public:
   /**
    * Notify this Axis that a touch has begun, i.e. the user has put their finger
    * on the screen but has not yet tried to pan.
    */
-  void StartTouch(ParentLayerCoord aPos, uint32_t aTimestampMs);
+  void StartTouch(ParentLayerCoord aPos, TimeStamp aTimestamp);
+
+  /**
+   * Helper enum class for specifying if EndTouch() should clear the axis lock.
+   */
+  enum class ClearAxisLock { Yes, No };
 
   /**
    * Notify this Axis that a touch has ended gracefully. This may perform
    * recalculations of the axis velocity.
    */
-  void EndTouch(uint32_t aTimestampMs);
+  void EndTouch(TimeStamp aTimestamp, ClearAxisLock aClearAxisLock);
 
   /**
    * Notify this Axis that the gesture has ended forcefully. Useful for stopping
@@ -119,8 +125,8 @@ class Axis {
    * changed.
    */
   bool AdjustDisplacement(ParentLayerCoord aDisplacement,
-                          /* ParentLayerCoord */ float& aDisplacementOut,
-                          /* ParentLayerCoord */ float& aOverscrollAmountOut,
+                          ParentLayerCoord& aDisplacementOut,
+                          ParentLayerCoord& aOverscrollAmountOut,
                           bool aForceOverscroll = false);
 
   /**
@@ -141,15 +147,24 @@ class Axis {
   ParentLayerCoord GetOverscroll() const;
 
   /**
+   * Restore the amount by which this axis is overscrolled to the specified
+   * amount. This is for test-related use; overscrolling as a result of user
+   * input should happen via OverscrollBy().
+   */
+  void RestoreOverscroll(ParentLayerCoord aOverscroll);
+
+  /**
    * Start an overscroll animation with the given initial velocity.
    */
   void StartOverscrollAnimation(float aVelocity);
 
   /**
    * Sample the snap-back animation to relieve overscroll.
-   * |aDelta| is the time since the last sample.
+   * |aDelta| is the time since the last sample, |aOverscrollSideBits| is
+   * the direction where the overscroll happens on this axis.
    */
-  bool SampleOverscrollAnimation(const TimeDuration& aDelta);
+  bool SampleOverscrollAnimation(const TimeDuration& aDelta,
+                                 SideBits aOverscrollSideBits);
 
   /**
    * Stop an overscroll animation.
@@ -162,9 +177,31 @@ class Axis {
   bool IsOverscrolled() const;
 
   /**
+   * Return true if this axis is overscrolled but its scroll offset
+   * has changed in a way that makes the oversrolled state no longer
+   * valid (for example, it is overscrolled at the top but the
+   * scroll offset is no longer zero).
+   */
+  bool IsInInvalidOverscroll() const;
+
+  /**
    * Clear any overscroll amount on this axis.
    */
   void ClearOverscroll();
+
+  /**
+   * Returns whether the overscroll animation is alive.
+   */
+  bool IsOverscrollAnimationAlive() const;
+
+  /**
+   * Returns whether the overscroll animation is running.
+   * Note that unlike the above IsOverscrollAnimationAlive, this function
+   * returns false even if the animation is still there but is very close to
+   * the destination position and its velocity is quite low, i.e. it's time to
+   * finish.
+   */
+  bool IsOverscrollAnimationRunning() const;
 
   /**
    * Gets the starting position of the touch supplied in StartTouch().
@@ -192,6 +229,7 @@ class Axis {
   /**
    * Returns whether this axis can scroll any more in a particular direction.
    */
+  bool CanScroll(CSSCoord aDelta) const;
   bool CanScroll(ParentLayerCoord aDelta) const;
 
   /**
@@ -205,8 +243,6 @@ class Axis {
    * destination to the returned point will not contain any overscroll.
    */
   CSSCoord ClampOriginToScrollableRect(CSSCoord aOrigin) const;
-
-  void SetAxisLocked(bool aAxisLocked) { mAxisLocked = aAxisLocked; }
 
   /**
    * Gets the raw velocity of this axis at this moment.
@@ -259,6 +295,11 @@ class Axis {
    */
   bool IsAxisLocked() const;
 
+  /**
+   * Set whether or not the axis is locked.
+   */
+  void SetAxisLocked(bool aAxisLocked);
+
   ParentLayerCoord GetOrigin() const;
   ParentLayerCoord GetCompositionLength() const;
   ParentLayerCoord GetPageStart() const;
@@ -267,19 +308,34 @@ class Axis {
   ParentLayerCoord GetPageEnd() const;
   ParentLayerCoord GetScrollRangeEnd() const;
 
+  bool IsScrolledToStart() const;
+  bool IsScrolledToEnd() const;
+
   ParentLayerCoord GetPos() const { return mPos; }
 
   bool OverscrollBehaviorAllowsHandoff() const;
   bool OverscrollBehaviorAllowsOverscrollEffect() const;
 
+  virtual CSSToParentLayerScale GetAxisScale(
+      const CSSToParentLayerScale2D& aScale) const = 0;
+  virtual CSSCoord GetPointOffset(const CSSPoint& aPoint) const = 0;
+  virtual OuterCSSCoord GetPointOffset(const OuterCSSPoint& aPoint) const = 0;
   virtual ParentLayerCoord GetPointOffset(
       const ParentLayerPoint& aPoint) const = 0;
   virtual ParentLayerCoord GetRectLength(
       const ParentLayerRect& aRect) const = 0;
+  virtual CSSCoord GetRectLength(const CSSRect& aRect) const = 0;
   virtual ParentLayerCoord GetRectOffset(
       const ParentLayerRect& aRect) const = 0;
-  virtual CSSToParentLayerScale GetScaleForAxis(
-      const CSSToParentLayerScale2D& aScale) const = 0;
+  virtual CSSCoord GetRectOffset(const CSSRect& aRect) const = 0;
+  virtual float GetTransformScale(
+      const AsyncTransformComponentMatrix& aMatrix) const = 0;
+  virtual ParentLayerCoord GetTransformTranslation(
+      const AsyncTransformComponentMatrix& aMatrix) const = 0;
+  virtual void PostScale(AsyncTransformComponentMatrix& aMatrix,
+                         float aScale) const = 0;
+  virtual void PostTranslate(AsyncTransformComponentMatrix& aMatrix,
+                             ParentLayerCoord aTranslation) const = 0;
 
   virtual ScreenPoint MakePoint(ScreenCoord aCoord) const = 0;
 
@@ -301,8 +357,13 @@ class Axis {
   ParentLayerCoord mPos;
 
   ParentLayerCoord mStartPos;
-  float mVelocity;   // Units: ParentLayerCoords per millisecond
-  bool mAxisLocked;  // Whether movement on this axis is locked.
+  // The velocity can be accessed from multiple threads (e.g. APZ
+  // controller thread and APZ sampler thread), so needs to be
+  // protected by a mutex.
+  // Units: ParentLayerCoords per millisecond
+  mutable DataMutex<float> mVelocity;
+  // Whether movement on this axis is locked.
+  mutable DataMutex<bool> mAxisLocked;
   AsyncPanZoomController* mAsyncPanZoomController;
 
   // The amount by which we are overscrolled; see GetOverscroll().
@@ -316,9 +377,14 @@ class Axis {
   // This member can only be accessed on the controller/UI thread.
   UniquePtr<VelocityTracker> mVelocityTracker;
 
+  float DoGetVelocity() const;
+  void DoSetVelocity(float aVelocity);
+
   const FrameMetrics& GetFrameMetrics() const;
   const ScrollMetadata& GetScrollMetadata() const;
 
+  // Do not use this function directly, use
+  // AsyncPanZoomController::GetAllowedHandoffDirections instead.
   virtual OverscrollBehavior GetOverscrollBehavior() const = 0;
 
   // Adjust a requested overscroll amount for resistance, yielding a smaller
@@ -332,15 +398,28 @@ class Axis {
 class AxisX : public Axis {
  public:
   explicit AxisX(AsyncPanZoomController* mAsyncPanZoomController);
+  CSSToParentLayerScale GetAxisScale(
+      const CSSToParentLayerScale2D& aScale) const override;
+  CSSCoord GetPointOffset(const CSSPoint& aPoint) const override;
+  OuterCSSCoord GetPointOffset(const OuterCSSPoint& aPoint) const override;
   ParentLayerCoord GetPointOffset(
       const ParentLayerPoint& aPoint) const override;
   ParentLayerCoord GetRectLength(const ParentLayerRect& aRect) const override;
+  CSSCoord GetRectLength(const CSSRect& aRect) const override;
   ParentLayerCoord GetRectOffset(const ParentLayerRect& aRect) const override;
-  CSSToParentLayerScale GetScaleForAxis(
-      const CSSToParentLayerScale2D& aScale) const override;
+  CSSCoord GetRectOffset(const CSSRect& aRect) const override;
+  float GetTransformScale(
+      const AsyncTransformComponentMatrix& aMatrix) const override;
+  ParentLayerCoord GetTransformTranslation(
+      const AsyncTransformComponentMatrix& aMatrix) const override;
+  void PostScale(AsyncTransformComponentMatrix& aMatrix,
+                 float aScale) const override;
+  void PostTranslate(AsyncTransformComponentMatrix& aMatrix,
+                     ParentLayerCoord aTranslation) const override;
   ScreenPoint MakePoint(ScreenCoord aCoord) const override;
   const char* Name() const override;
   bool CanScrollTo(Side aSide) const;
+  SideBits ScrollableDirections() const;
 
  private:
   OverscrollBehavior GetOverscrollBehavior() const override;
@@ -349,18 +428,36 @@ class AxisX : public Axis {
 class AxisY : public Axis {
  public:
   explicit AxisY(AsyncPanZoomController* mAsyncPanZoomController);
+  CSSCoord GetPointOffset(const CSSPoint& aPoint) const override;
+  OuterCSSCoord GetPointOffset(const OuterCSSPoint& aPoint) const override;
   ParentLayerCoord GetPointOffset(
       const ParentLayerPoint& aPoint) const override;
-  ParentLayerCoord GetRectLength(const ParentLayerRect& aRect) const override;
-  ParentLayerCoord GetRectOffset(const ParentLayerRect& aRect) const override;
-  CSSToParentLayerScale GetScaleForAxis(
+  CSSToParentLayerScale GetAxisScale(
       const CSSToParentLayerScale2D& aScale) const override;
+  ParentLayerCoord GetRectLength(const ParentLayerRect& aRect) const override;
+  CSSCoord GetRectLength(const CSSRect& aRect) const override;
+  ParentLayerCoord GetRectOffset(const ParentLayerRect& aRect) const override;
+  CSSCoord GetRectOffset(const CSSRect& aRect) const override;
+  float GetTransformScale(
+      const AsyncTransformComponentMatrix& aMatrix) const override;
+  ParentLayerCoord GetTransformTranslation(
+      const AsyncTransformComponentMatrix& aMatrix) const override;
+  void PostScale(AsyncTransformComponentMatrix& aMatrix,
+                 float aScale) const override;
+  void PostTranslate(AsyncTransformComponentMatrix& aMatrix,
+                     ParentLayerCoord aTranslation) const override;
   ScreenPoint MakePoint(ScreenCoord aCoord) const override;
   const char* Name() const override;
   bool CanScrollTo(Side aSide) const;
+  bool CanVerticalScrollWithDynamicToolbar() const;
+  SideBits ScrollableDirections() const;
+  SideBits ScrollableDirectionsWithDynamicToolbar(
+      const ScreenMargin& aFixedLayerMargins) const;
 
  private:
   OverscrollBehavior GetOverscrollBehavior() const override;
+  ParentLayerCoord GetCompositionLengthWithoutDynamicToolbar() const;
+  bool HasDynamicToolbar() const;
 };
 
 }  // namespace layers

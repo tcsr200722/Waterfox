@@ -2,19 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React from "react";
-import type { Coords } from "./Popover";
-
-type Props = {
-  token: HTMLDivElement,
-  preview: ?HTMLDivElement,
-  type: ?string,
-  gapHeight: number,
-  coords: Coords,
-  offset: number,
-};
+import {
+  svg,
+  polygon,
+} from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
 function shorten(coordinates) {
   // In cases where the token is wider than the preview, the smartGap
@@ -26,12 +18,12 @@ function shorten(coordinates) {
 }
 
 function getSmartGapCoordinates(
-  preview: ClientRect,
-  token: ClientRect,
-  offset: number,
-  orientation: string,
-  gapHeight: number,
-  coords: Coords
+  preview,
+  token,
+  offset,
+  orientation,
+  gapHeight,
+  coords
 ) {
   if (orientation === "up") {
     const coordinates = [
@@ -84,12 +76,12 @@ function getSmartGapCoordinates(
 }
 
 function getSmartGapDimensions(
-  previewRect: ClientRect,
-  tokenRect: ClientRect,
-  offset: number,
-  orientation: string,
-  gapHeight: number,
-  coords: Coords
+  previewRect,
+  tokenRect,
+  offset,
+  orientation,
+  gapHeight,
+  coords
 ) {
   if (orientation === "up") {
     return {
@@ -117,13 +109,11 @@ function getSmartGapDimensions(
 export default function SmartGap({
   token,
   preview,
-  type,
   gapHeight,
   coords,
   offset,
-}: Props) {
+}) {
   const tokenRect = token.getBoundingClientRect();
-  // $FlowIgnore
   const previewRect = preview.getBoundingClientRect();
   const { orientation } = coords;
   let optionalMarginLeft, optionalMarginTop;
@@ -150,20 +140,30 @@ export default function SmartGap({
     gapHeight,
     coords
   );
-
-  return (
-    <svg
-      version="1.1"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{
+  return svg(
+    {
+      version: "1.1",
+      xmlns: "http://www.w3.org/2000/svg",
+      style: {
         height,
         width,
         position: "absolute",
         marginLeft: optionalMarginLeft,
         marginTop: optionalMarginTop,
-      }}
-    >
-      <polygon points={coordinates} fill="transparent" />
-    </svg>
+      },
+    },
+    polygon({
+      points: coordinates,
+      fill: "transparent",
+    })
   );
 }
+
+SmartGap.propTypes = {
+  coords: PropTypes.object.isRequired,
+  gapHeight: PropTypes.number.isRequired,
+  offset: PropTypes.number.isRequired,
+  preview: PropTypes.object.isRequired,
+  token: PropTypes.object.isRequired,
+  type: PropTypes.oneOf(["popover", "tooltip"]).isRequired,
+};

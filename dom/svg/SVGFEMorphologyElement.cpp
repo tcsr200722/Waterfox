@@ -6,14 +6,15 @@
 
 #include "mozilla/dom/SVGFEMorphologyElement.h"
 #include "mozilla/dom/SVGFEMorphologyElementBinding.h"
-#include "nsSVGFilterInstance.h"
+#include "mozilla/SVGFilterInstance.h"
+#include "mozilla/dom/BindContext.h"
+#include "mozilla/dom/Document.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEMorphology)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEMorphologyElement::WrapNode(JSContext* aCx,
                                            JS::Handle<JSObject*> aGivenProto) {
@@ -73,7 +74,7 @@ void SVGFEMorphologyElement::GetSourceImageNames(
 #define MORPHOLOGY_EPSILON 0.0001
 
 void SVGFEMorphologyElement::GetRXY(int32_t* aRX, int32_t* aRY,
-                                    const nsSVGFilterInstance& aInstance) {
+                                    const SVGFilterInstance& aInstance) {
   // Subtract an epsilon here because we don't want a value that's just
   // slightly larger than an integer to round up to the next integer; it's
   // probably meant to be the integer it's close to, modulo machine precision
@@ -89,7 +90,7 @@ void SVGFEMorphologyElement::GetRXY(int32_t* aRX, int32_t* aRY,
 }
 
 FilterPrimitiveDescription SVGFEMorphologyElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   int32_t rx, ry;
@@ -107,6 +108,15 @@ bool SVGFEMorphologyElement::AttributeAffectsRendering(
          (aNameSpaceID == kNameSpaceID_None &&
           (aAttribute == nsGkAtoms::in || aAttribute == nsGkAtoms::radius ||
            aAttribute == nsGkAtoms::_operator));
+}
+
+nsresult SVGFEMorphologyElement::BindToTree(BindContext& aCtx,
+                                            nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feMorphology);
+  }
+
+  return SVGFEMorphologyElementBase::BindToTree(aCtx, aParent);
 }
 
 //----------------------------------------------------------------------
@@ -127,5 +137,4 @@ SVGElement::StringAttributesInfo SVGFEMorphologyElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

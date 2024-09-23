@@ -4,21 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGFILTERSELEMENT_H__
-#define __NS_SVGFILTERSELEMENT_H__
+#ifndef DOM_SVG_SVGFILTERS_H_
+#define DOM_SVG_SVGFILTERS_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/SVGElement.h"
-#include "FilterSupport.h"
+#include "FilterDescription.h"
 #include "nsImageLoadingContent.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedNumber.h"
 #include "SVGAnimatedNumberPair.h"
 #include "SVGAnimatedString.h"
 
-class nsSVGFilterInstance;
-
 namespace mozilla {
+class SVGFilterInstance;
+
 namespace dom {
 
 struct SVGStringInfo {
@@ -29,36 +29,33 @@ struct SVGStringInfo {
   SVGElement* mElement;
 };
 
-typedef SVGElement SVGFEBase;
-
-#define NS_SVG_FE_CID                                \
-  {                                                  \
-    0x60483958, 0xd229, 0x4a77, {                    \
-      0x96, 0xb2, 0x62, 0x3e, 0x69, 0x95, 0x1e, 0x0e \
-    }                                                \
-  }
+using SVGFilterPrimitiveElementBase = SVGElement;
 
 /**
  * Base class for filter primitive elements
  * Children of those elements e.g. feMergeNode
- * derive from SVGFEUnstyledElement instead
+ * derive from SVGFilterPrimitiveChildElement instead
  */
-class SVGFE : public SVGFEBase {
-  friend class ::nsSVGFilterInstance;
+class SVGFilterPrimitiveElement : public SVGFilterPrimitiveElementBase {
+  friend class mozilla::SVGFilterInstance;
 
  protected:
-  typedef mozilla::gfx::SourceSurface SourceSurface;
-  typedef mozilla::gfx::Size Size;
-  typedef mozilla::gfx::IntRect IntRect;
-  typedef mozilla::gfx::ColorSpace ColorSpace;
-  typedef mozilla::gfx::FilterPrimitiveDescription FilterPrimitiveDescription;
+  using SourceSurface = mozilla::gfx::SourceSurface;
+  using Size = mozilla::gfx::Size;
+  using IntRect = mozilla::gfx::IntRect;
+  using ColorSpace = mozilla::gfx::ColorSpace;
+  using FilterPrimitiveDescription = mozilla::gfx::FilterPrimitiveDescription;
 
-  explicit SVGFE(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-      : SVGFEBase(std::move(aNodeInfo)) {}
-  virtual ~SVGFE() = default;
+  explicit SVGFilterPrimitiveElement(
+      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+      : SVGFilterPrimitiveElementBase(std::move(aNodeInfo)) {}
+  virtual ~SVGFilterPrimitiveElement() = default;
 
  public:
-  typedef mozilla::gfx::PrimitiveAttributes PrimitiveAttributes;
+  using PrimitiveAttributes = mozilla::gfx::PrimitiveAttributes;
+
+  NS_IMPL_FROMNODE_HELPER(SVGFilterPrimitiveElement,
+                          IsSVGFilterPrimitiveElement())
 
   ColorSpace GetInputColorSpace(int32_t aInputIndex,
                                 ColorSpace aUnchangedInputColorSpace) {
@@ -77,23 +74,12 @@ class SVGFE : public SVGFEBase {
   // See http://www.w3.org/TR/SVG/filters.html#FilterPrimitiveSubRegion
   virtual bool SubregionIsUnionOfRegions() { return true; }
 
-  NS_DECLARE_STATIC_IID_ACCESSOR(NS_SVG_FE_CID)
-
-  // interfaces:
-  NS_DECL_ISUPPORTS_INHERITED
-
-  // nsIContent interface
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  bool IsSVGFilterPrimitiveElement() const final { return true; }
 
   // SVGElement interface
-  virtual nsresult Clone(mozilla::dom::NodeInfo*,
-                         nsINode** aResult) const override = 0;
+  nsresult Clone(mozilla::dom::NodeInfo*, nsINode** aResult) const override = 0;
 
-  virtual bool HasValidDimensions() const override;
-
-  bool IsNodeOfType(uint32_t aFlags) const override {
-    return !(aFlags & ~eFILTER);
-  }
+  bool HasValidDimensions() const override;
 
   virtual SVGAnimatedString& GetResultImageName() = 0;
   // Return a list of all image names used as sources. Default is to
@@ -101,7 +87,7 @@ class SVGFE : public SVGFEBase {
   virtual void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources);
 
   virtual FilterPrimitiveDescription GetPrimitiveDescription(
-      nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+      SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
       const nsTArray<bool>& aInputsAreTainted,
       nsTArray<RefPtr<SourceSurface>>& aInputImages) = 0;
 
@@ -126,11 +112,11 @@ class SVGFE : public SVGFEBase {
   operator nsISupports*() { return static_cast<nsIContent*>(this); }
 
   // WebIDL
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedLength> X();
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedLength> Y();
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedLength> Width();
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedLength> Height();
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedString> Result();
+  already_AddRefed<DOMSVGAnimatedLength> X();
+  already_AddRefed<DOMSVGAnimatedLength> Y();
+  already_AddRefed<DOMSVGAnimatedLength> Width();
+  already_AddRefed<DOMSVGAnimatedLength> Height();
+  already_AddRefed<DOMSVGAnimatedString> Result();
 
  protected:
   virtual bool OperatesOnSRGB(int32_t aInputIndex, bool aInputIsAlreadySRGB) {
@@ -143,9 +129,9 @@ class SVGFE : public SVGFEBase {
   bool StyleIsSetToSRGB();
 
   // SVGElement specializations:
-  virtual LengthAttributesInfo GetLengthInfo() override;
+  LengthAttributesInfo GetLengthInfo() override;
 
-  Size GetKernelUnitLength(nsSVGFilterInstance* aInstance,
+  Size GetKernelUnitLength(SVGFilterInstance* aInstance,
                            SVGAnimatedNumberPair* aKernelUnitLength);
 
   enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
@@ -153,19 +139,22 @@ class SVGFE : public SVGFEBase {
   static LengthInfo sLengthInfo[4];
 };
 
-NS_DEFINE_STATIC_IID_ACCESSOR(SVGFE, NS_SVG_FE_CID)
+using SVGFilterPrimitiveChildElementBase = SVGElement;
 
-typedef SVGElement SVGFEUnstyledElementBase;
-
-class SVGFEUnstyledElement : public SVGFEUnstyledElementBase {
+class SVGFilterPrimitiveChildElement
+    : public SVGFilterPrimitiveChildElementBase {
  protected:
-  explicit SVGFEUnstyledElement(
+  explicit SVGFilterPrimitiveChildElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-      : SVGFEUnstyledElementBase(std::move(aNodeInfo)) {}
+      : SVGFilterPrimitiveChildElementBase(std::move(aNodeInfo)) {}
 
  public:
-  virtual nsresult Clone(mozilla::dom::NodeInfo*,
-                         nsINode** aResult) const override = 0;
+  NS_IMPL_FROMNODE_HELPER(SVGFilterPrimitiveChildElement,
+                          IsSVGFilterPrimitiveChildElement())
+
+  bool IsSVGFilterPrimitiveChildElement() const final { return true; }
+
+  nsresult Clone(mozilla::dom::NodeInfo*, nsINode** aResult) const override = 0;
 
   // returns true if changes to the attribute should cause us to
   // repaint the filter
@@ -175,7 +164,7 @@ class SVGFEUnstyledElement : public SVGFEUnstyledElementBase {
 
 //------------------------------------------------------------
 
-typedef SVGFE SVGFELightingElementBase;
+using SVGFELightingElementBase = SVGFilterPrimitiveElement;
 
 class SVGFELightingElement : public SVGFELightingElementBase {
  protected:
@@ -190,30 +179,32 @@ class SVGFELightingElement : public SVGFELightingElementBase {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(SVGFELightingElement,
                                        SVGFELightingElementBase)
 
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
-  virtual SVGAnimatedString& GetResultImageName() override {
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
+  SVGAnimatedString& GetResultImageName() override {
     return mStringAttributes[RESULT];
   }
-  virtual void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+
+  bool OutputIsTainted(const nsTArray<bool>& aInputsAreTainted,
+                       nsIPrincipal* aReferencePrincipal) override;
+
+  void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
 
  protected:
-  virtual bool OperatesOnSRGB(int32_t aInputIndex,
-                              bool aInputIsAlreadySRGB) override {
+  bool OperatesOnSRGB(int32_t aInputIndex, bool aInputIsAlreadySRGB) override {
     return true;
   }
 
-  virtual NumberAttributesInfo GetNumberInfo() override;
-  virtual NumberPairAttributesInfo GetNumberPairInfo() override;
-  virtual StringAttributesInfo GetStringInfo() override;
+  NumberAttributesInfo GetNumberInfo() override;
+  NumberPairAttributesInfo GetNumberPairInfo() override;
+  StringAttributesInfo GetStringInfo() override;
 
   mozilla::gfx::LightType ComputeLightAttributes(
-      nsSVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes);
+      SVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes);
 
   bool AddLightingAttributes(
       mozilla::gfx::DiffuseLightingAttributes* aAttributes,
-      nsSVGFilterInstance* aInstance);
+      SVGFilterInstance* aInstance);
 
   enum {
     SURFACE_SCALE,
@@ -233,7 +224,7 @@ class SVGFELightingElement : public SVGFELightingElementBase {
   static StringInfo sStringInfo[2];
 };
 
-typedef SVGFEUnstyledElement SVGFELightElementBase;
+using SVGFELightElementBase = SVGFilterPrimitiveChildElement;
 
 class SVGFELightElement : public SVGFELightElementBase {
  protected:
@@ -242,13 +233,13 @@ class SVGFELightElement : public SVGFELightElementBase {
       : SVGFELightElementBase(std::move(aNodeInfo)) {}
 
  public:
-  typedef gfx::PrimitiveAttributes PrimitiveAttributes;
+  using PrimitiveAttributes = gfx::PrimitiveAttributes;
 
   virtual mozilla::gfx::LightType ComputeLightAttributes(
-      nsSVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) = 0;
+      SVGFilterInstance* aInstance, nsTArray<float>& aFloatAttributes) = 0;
 };
 
 }  // namespace dom
 }  // namespace mozilla
 
-#endif
+#endif  // DOM_SVG_SVGFILTERS_H_

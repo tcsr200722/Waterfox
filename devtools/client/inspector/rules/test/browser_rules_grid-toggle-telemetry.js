@@ -18,18 +18,19 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   startTelemetry();
   const { inspector, view } = await openRuleView();
-  const highlighters = view.highlighters;
+  const HIGHLIGHTER_TYPE = inspector.highlighters.TYPES.GRID;
+  const { waitForHighlighterTypeShown } = getHighlighterTestHelpers(inspector);
 
   await selectNode("#grid", inspector);
   const container = getRuleViewProperty(view, "#grid", "display").valueSpan;
-  const gridToggle = container.querySelector(".ruleview-grid");
+  const gridToggle = container.querySelector(".js-toggle-grid-highlighter");
 
   info("Toggling ON the CSS grid highlighter from the rule-view.");
-  const onHighlighterShown = highlighters.once("grid-highlighter-shown");
+  const onHighlighterShown = waitForHighlighterTypeShown(HIGHLIGHTER_TYPE);
   gridToggle.click();
   await onHighlighterShown;
 

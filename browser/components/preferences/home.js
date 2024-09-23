@@ -32,6 +32,8 @@ const HOMEPAGE_OVERRIDE_KEY = "homepage_override";
 const URL_OVERRIDES_TYPE = "url_overrides";
 const NEW_TAB_KEY = "newTabURL";
 
+const BLANK_HOMEPAGE_URL = "chrome://browser/content/blanktab.html";
+
 var gHomePane = {
   HOME_MODE_FIREFOX_HOME: "0",
   HOME_MODE_BLANK: "1",
@@ -62,31 +64,202 @@ var gHomePane = {
     return false;
   },
 
-  /**
-   * _handleNewTabOverrides: disables new tab settings UI. Called by
-   * an observer in ._watchNewTab that watches for new tab url changes
-   */
-  async _handleNewTabOverrides() {
-    const isControlled = await handleControllingExtension(
-      URL_OVERRIDES_TYPE,
-      NEW_TAB_KEY
-    );
-    const el = document.getElementById("newTabMode");
-    el.disabled = isControlled;
+  async syncToNewTabPref() {
+    let menulist = document.getElementById("newTabMode");
+
+    if (["0", "1"].includes(menulist.value)) {
+      let newtabEnabledPref = Services.prefs.getBoolPref(
+        this.NEWTAB_ENABLED_PREF,
+        true
+      );
+      let newValue = menulist.value !== this.HOME_MODE_BLANK;
+      // Only set this if the pref has changed, otherwise the pref change will trigger other listeners to repeat.
+      if (newtabEnabledPref !== newValue) {
+        Services.prefs.setBoolPref(this.NEWTAB_ENABLED_PREF, newValue);
+      }
+      let selectedAddon = ExtensionSettingsStore.getSetting(
+        URL_OVERRIDES_TYPE,
+        NEW_TAB_KEY
+      );
+      if (selectedAddon) {
+        ExtensionSettingsStore.select(null, URL_OVERRIDES_TYPE, NEW_TAB_KEY);
+      }
+    } else {
+      let addon = await AddonManager.getAddonByID(menulist.value);
+      if (addon && addon.isActive) {
+        ExtensionSettingsStore.select(
+          addon.id,
+          URL_OVERRIDES_TYPE,
+          NEW_TAB_KEY
+        );
+      }
+    }
+  },
+
+  async syncFromNewTabPref() {
+    let menulist = document.getElementById("newTabMode");
+
+    // If the new tab url was changed to about:blank or about:newtab
+    if (
+      AboutNewTab.newTabURL === "about:newtab" ||
+      AboutNewTab.newTabURL === "about:blank" ||
+      AboutNewTab.newTabURL === BLANK_HOMEPAGE_URL
+    ) {
+      let newtabEnabledPref = Services.prefs.getBoolPref(
+        this.NEWTAB_ENABLED_PREF,
+        true
+      );
+      let newValue = newtabEnabledPref
+        ? this.HOME_MODE_FIREFOX_HOME
+        : this.HOME_MODE_BLANK;
+      if (newValue !== menulist.value) {
+        menulist.value = newValue;
+      }
+      menulist.disabled = Preferences.get(this.NEWTAB_ENABLED_PREF).locked;
+      // If change was triggered by installing an addon we need to update
+      // the value of the menulist to be that addon.
+    } else {
+      let selectedAddon = ExtensionSettingsStore.getSetting(
+        URL_OVERRIDES_TYPE,
+        NEW_TAB_KEY
+      );
+      if (selectedAddon && menulist.value !== selectedAddon.id) {
+        menulist.value = selectedAddon.id;
+      }
+    }
   },
 
   /**
-   * watchNewTab: Listen for changes to the new tab url and disable appropriate
-   * areas of the UI
+   *  _updateMenuInterface: adds items to or removes them from the menulists
+   * @param {string} selectId Optional Id of the menulist to add or remove items from.
+   *                          If not included this will update both home and newtab menus.
+   */
+  async _updateMenuInterface(selectId) {
+    let selects;
+    if (selectId) {
+      selects = [document.getElementById(selectId)];
+    } else {
+      let newTabSelect = document.getElementById("newTabMode");
+      let homeSelect = document.getElementById("homeMode");
+      selects = [homeSelect, newTabSelect];
+    }
+
+    for (let select of selects) {
+      // Remove addons from the menu popup which are no longer installed, or disabled.
+      // let menuOptions = select.menupopup.childNodes;
+      let menuOptions = Array.from(select.menupopup.childNodes);
+
+      for (let option of menuOptions) {
+        // If the value is not a number, assume it is an addon ID
+        if (!/^\d+$/.test(option.value)) {
+          let addon = await AddonManager.getAddonByID(option.value);
+          if (option && (!addon || !addon.isActive)) {
+            option.remove();
+          }
+        }
+      }
+
+      let extensionOptions;
+      await ExtensionSettingsStore.initialize();
+      if (select.id === "homeMode") {
+        extensionOptions = ExtensionSettingsStore.getAllSettings(
+          PREF_SETTING_TYPE,
+          HOMEPAGE_OVERRIDE_KEY
+        );
+      } else {
+        extensionOptions = ExtensionSettingsStore.getAllSettings(
+          URL_OVERRIDES_TYPE,
+          NEW_TAB_KEY
+        );
+      }
+      let addons = await AddonManager.getAddonsByIDs(
+        extensionOptions.map(a => a.id)
+      );
+
+      // Add addon options to the menu popups
+      let menupopup = select.querySelector("menupopup");
+      for (let addon of addons) {
+        if (!addon || !addon.id || !addon.isActive) {
+          continue;
+        }
+        let currentOption = select.querySelector(
+          `[value="${CSS.escape(addon.id)}"]`
+        );
+        if (!currentOption) {
+          let option = document.createXULElement("menuitem");
+          option.classList.add("addon-with-favicon");
+          option.value = addon.id;
+          option.label = addon.name;
+          menupopup.append(option);
+          option.querySelector("image").src = addon.iconURL;
+        }
+        let setting = extensionOptions.find(o => o.id == addon.id);
+        if (
+          (select.id === "homeMode" && setting.value == HomePage.get()) ||
+          (select.id === "newTabMode" && setting.value == AboutNewTab.newTabURL)
+        ) {
+          select.value = addon.id;
+        }
+      }
+    }
+  },
+
+  /**
+   * watchNewTab: Listen for changes to the new tab url and enable/disable appropriate
+   * areas of the UI.
    */
   watchNewTab() {
-    this._handleNewTabOverrides();
-    let newTabObserver = {
-      observe: this._handleNewTabOverrides.bind(this),
+    let newTabObserver = () => {
+      this.syncFromNewTabPref();
+      this._updateMenuInterface("newTabMode");
     };
     Services.obs.addObserver(newTabObserver, "newtab-url-changed");
     window.addEventListener("unload", () => {
       Services.obs.removeObserver(newTabObserver, "newtab-url-changed");
+    });
+  },
+
+  /**
+   * watchHomePrefChange: Listen for preferences changes on the Home Tab in order to
+   * show the appropriate home menu selection.
+   */
+  watchHomePrefChange() {
+    const homePrefObserver = (subject, topic, data) => {
+      // only update this UI if it is exactly the HOMEPAGE_PREF, not other prefs with the same root.
+      if (data && data != this.HOMEPAGE_PREF) {
+        return;
+      }
+      this._updateUseCurrentButton();
+      this._renderCustomSettings();
+      this._handleHomePageOverrides();
+      this._updateMenuInterface("homeMode");
+    };
+
+    Services.prefs.addObserver(this.HOMEPAGE_PREF, homePrefObserver);
+    window.addEventListener("unload", () => {
+      Services.prefs.removeObserver(this.HOMEPAGE_PREF, homePrefObserver);
+    });
+  },
+
+  /**
+   * Listen extension changes on the New Tab and Home Tab
+   * in order to update the UI and show or hide the Restore Defaults button.
+   */
+  watchExtensionPrefChange() {
+    const extensionSettingChanged = (evt, setting) => {
+      if (setting.key == "homepage_override" && setting.type == "prefs") {
+        this._updateMenuInterface("homeMode");
+      } else if (
+        setting.key == "newTabURL" &&
+        setting.type == "url_overrides"
+      ) {
+        this._updateMenuInterface("newTabMode");
+      }
+    };
+
+    Management.on("extension-setting-changed", extensionSettingChanged);
+    window.addEventListener("unload", () => {
+      Management.off("extension-setting-changed", extensionSettingChanged);
     });
   },
 
@@ -119,10 +292,12 @@ var gHomePane = {
     const customSettingsContainerEl = document.getElementById("customSettings");
     const customUrlEl = document.getElementById("homePageUrl");
     const homePage = HomePage.get();
-
     const isHomePageCustom =
-      isControlled ||
-      (!this._isHomePageDefaultValue() && !this.isHomePageBlank());
+      (!this._isHomePageDefaultValue() &&
+        !this.isHomePageBlank() &&
+        !isControlled) ||
+      homePage.locked;
+
     if (typeof shouldShow === "undefined") {
       shouldShow = isHomePageCustom;
     }
@@ -134,7 +309,7 @@ var gHomePane = {
     // (and it makes existing tests happy).
     let newValue;
     if (
-      homePage === "about:blank" ||
+      this._isBlankPage(homePage) ||
       (HomePage.isDefault && !HomePage.locked)
     ) {
       newValue = "";
@@ -164,29 +339,21 @@ var gHomePane = {
   isHomePageBlank() {
     const startupPref = Preferences.get("browser.startup.page");
     return (
-      ["about:blank", ""].includes(HomePage.get()) ||
+      ["about:blank", BLANK_HOMEPAGE_URL, ""].includes(HomePage.get()) ||
       startupPref.value === gMainPane.STARTUP_PREF_BLANK
     );
   },
-  /**
-   * isHomePageControlled
-   * @resolves {bool} Is the homepage being controlled by an extension?
-   * @returns {Promise}
-   */
-  isHomePageControlled() {
-    if (HomePage.locked) {
-      return Promise.resolve(false);
-    }
-    return handleControllingExtension(PREF_SETTING_TYPE, HOMEPAGE_OVERRIDE_KEY);
-  },
 
   /**
-   * _isTabAboutPreferences: Is a given tab set to about:preferences?
+   * _isTabAboutPreferencesOrSettings: Is a given tab set to about:preferences or about:settings?
    * @param {Element} aTab A tab element
-   * @returns {bool} Is the linkedBrowser of aElement set to about:preferences?
+   * @returns {bool} Is the linkedBrowser of aElement set to about:preferences or about:settings?
    */
-  _isTabAboutPreferences(aTab) {
-    return aTab.linkedBrowser.currentURI.spec.startsWith("about:preferences");
+  _isTabAboutPreferencesOrSettings(aTab) {
+    return (
+      aTab.linkedBrowser.currentURI.spec.startsWith("about:preferences") ||
+      aTab.linkedBrowser.currentURI.spec.startsWith("about:settings")
+    );
   },
 
   /**
@@ -204,7 +371,7 @@ var gHomePane = {
         "navigator:browser"
     ) {
       tabs = win.gBrowser.visibleTabs.slice(win.gBrowser._numPinnedTabs);
-      tabs = tabs.filter(tab => !this._isTabAboutPreferences(tab));
+      tabs = tabs.filter(tab => !this._isTabAboutPreferencesOrSettings(tab));
       // XXX: Bug 1441637 - Fix tabbrowser to report tab.closing before it blurs it
       tabs = tabs.filter(tab => !tab.closing);
     }
@@ -212,14 +379,14 @@ var gHomePane = {
     return tabs;
   },
 
-  _renderHomepageMode(isControlled) {
+  _renderHomepageMode(controllingExtension) {
     const isDefault = this._isHomePageDefaultValue();
     const isBlank = this.isHomePageBlank();
     const el = document.getElementById("homeMode");
     let newValue;
 
-    if (isControlled) {
-      newValue = this.HOME_MODE_CUSTOM;
+    if (controllingExtension && controllingExtension.id) {
+      newValue = controllingExtension.id;
     } else if (isDefault) {
       newValue = this.HOME_MODE_FIREFOX_HOME;
     } else if (isBlank) {
@@ -250,7 +417,7 @@ var gHomePane = {
         }
 
         if (pref === this.HOMEPAGE_PREF) {
-          isDisabled = HomePage.locked || isControlled;
+          isDisabled = HomePage.locked;
         } else {
           isDisabled = Preferences.get(pref).locked || isControlled;
         }
@@ -265,39 +432,33 @@ var gHomePane = {
   },
 
   async _handleHomePageOverrides() {
+    let controllingExtension;
     if (HomePage.locked) {
-      // An extension can't control these settings if they're locked.
-      hideControllingExtension(HOMEPAGE_OVERRIDE_KEY);
+      // Disable inputs if they are locked.
+      this._renderCustomSettings();
       this._setInputDisabledStates(false);
     } else {
-      const isControlled = await this.isHomePageControlled();
-      this._setInputDisabledStates(isControlled);
-      this._renderCustomSettings({ isControlled });
-      this._renderHomepageMode(isControlled);
+      if (HomePage.get().startsWith("moz-extension:")) {
+        controllingExtension = await getControllingExtension(
+          PREF_SETTING_TYPE,
+          HOMEPAGE_OVERRIDE_KEY
+        );
+      }
+      this._setInputDisabledStates();
+      this._renderCustomSettings({
+        isControlled: !!controllingExtension,
+      });
     }
-  },
-
-  syncFromHomePref() {
-    this._updateUseCurrentButton();
-    this._renderCustomSettings();
-    this._renderHomepageMode();
-    this._handleHomePageOverrides();
-  },
-
-  syncFromNewTabPref() {
-    const newtabPref = Preferences.get(this.NEWTAB_ENABLED_PREF);
-    return newtabPref.value
-      ? this.HOME_MODE_FIREFOX_HOME
-      : this.HOME_MODE_BLANK;
-  },
-
-  syncToNewTabPref(value) {
-    return value !== this.HOME_MODE_BLANK;
+    this._renderHomepageMode(controllingExtension);
   },
 
   onMenuChange(event) {
     const { value } = event.target;
     const startupPref = Preferences.get("browser.startup.page");
+    let selectedAddon = ExtensionSettingsStore.getSetting(
+      PREF_SETTING_TYPE,
+      HOMEPAGE_OVERRIDE_KEY
+    );
 
     switch (value) {
       case this.HOME_MODE_FIREFOX_HOME:
@@ -309,12 +470,26 @@ var gHomePane = {
         } else {
           this._renderCustomSettings({ shouldShow: false });
         }
+        if (selectedAddon) {
+          ExtensionSettingsStore.select(
+            null,
+            PREF_SETTING_TYPE,
+            HOMEPAGE_OVERRIDE_KEY
+          );
+        }
         break;
       case this.HOME_MODE_BLANK:
-        if (HomePage.get() !== "about:blank") {
-          HomePage.safeSet("about:blank");
+        if (!this._isBlankPage(HomePage.get())) {
+          HomePage.safeSet(BLANK_HOMEPAGE_URL);
         } else {
           this._renderCustomSettings({ shouldShow: false });
+        }
+        if (selectedAddon) {
+          ExtensionSettingsStore.select(
+            null,
+            PREF_SETTING_TYPE,
+            HOMEPAGE_OVERRIDE_KEY
+          );
         }
         break;
       case this.HOME_MODE_CUSTOM:
@@ -325,7 +500,25 @@ var gHomePane = {
           HomePage.clear();
         }
         this._renderCustomSettings({ shouldShow: true });
+        if (selectedAddon) {
+          ExtensionSettingsStore.select(
+            null,
+            PREF_SETTING_TYPE,
+            HOMEPAGE_OVERRIDE_KEY
+          );
+        }
         break;
+      // extensions will have a variety of values as their ID, so treat it as default
+      default:
+        AddonManager.getAddonByID(value).then(addon => {
+          if (addon && addon.isActive) {
+            ExtensionPreferencesManager.selectSetting(
+              addon.id,
+              HOMEPAGE_OVERRIDE_KEY
+            );
+          }
+          this._renderCustomSettings({ shouldShow: false });
+        });
     }
   },
 
@@ -370,10 +563,8 @@ var gHomePane = {
 
     // FIXME Bug 244192: using dangerous "|" joiner!
     if (tabs.length) {
-      HomePage.set(tabs.map(getTabURI).join("|")).catch(Cu.reportError);
+      HomePage.set(tabs.map(getTabURI).join("|")).catch(console.error);
     }
-
-    Services.telemetry.scalarAdd("preferences.use_current_page", 1);
   },
 
   _setHomePageToBookmarkClosed(rv, aEvent) {
@@ -382,7 +573,7 @@ var gHomePane = {
     }
     if (rv.urls && rv.names) {
       // XXX still using dangerous "|" joiner!
-      HomePage.set(rv.urls.join("|")).catch(Cu.reportError);
+      HomePage.set(rv.urls.join("|")).catch(console.error);
     }
   },
 
@@ -395,41 +586,24 @@ var gHomePane = {
     const rv = { urls: null, names: null };
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/selectBookmark.xhtml",
-      "resizable=yes, modal=yes",
-      rv,
-      this._setHomePageToBookmarkClosed.bind(this, rv)
+      {
+        features: "resizable=yes, modal=yes",
+        closingCallback: this._setHomePageToBookmarkClosed.bind(this, rv),
+      },
+      rv
     );
-    Services.telemetry.scalarAdd("preferences.use_bookmark", 1);
   },
 
   restoreDefaultHomePage() {
     HomePage.reset();
+    this._handleHomePageOverrides();
     Services.prefs.clearUserPref(this.NEWTAB_ENABLED_PREF);
-  },
-
-  onCustomHomePageInput(event) {
-    if (this._telemetryHomePageTimer) {
-      clearTimeout(this._telemetryHomePageTimer);
-    }
-    let browserHomePage = event.target.value;
-    // The length of the home page URL string should be more then four,
-    // and it should contain at least one ".", for example, "https://mozilla.org".
-    if (browserHomePage.length > 4 && browserHomePage.includes(".")) {
-      this._telemetryHomePageTimer = setTimeout(() => {
-        let homePageNumber = browserHomePage.split("|").length;
-        Services.telemetry.scalarAdd("preferences.browser_home_page_change", 1);
-        Services.telemetry.keyedScalarAdd(
-          "preferences.browser_home_page_count",
-          homePageNumber,
-          1
-        );
-      }, 3000);
-    }
+    AboutNewTab.resetNewTabURL();
   },
 
   onCustomHomePageChange(event) {
     const value = event.target.value || HomePage.getDefault();
-    HomePage.set(value).catch(Cu.reportError);
+    HomePage.set(value).catch(console.error);
   },
 
   /**
@@ -441,8 +615,21 @@ var gHomePane = {
       !this.isPocketNewtabEnabled &&
       this.homePanePrefs.some(pref => pref.hasUserValue);
     const newtabPref = Preferences.get(this.NEWTAB_ENABLED_PREF);
+    const extensionControlled = Preferences.get(
+      "browser.startup.homepage_override.extensionControlled"
+    );
 
-    return homeContentChanged || HomePage.overridden || newtabPref.hasUserValue;
+    return (
+      homeContentChanged ||
+      HomePage.overridden ||
+      newtabPref.hasUserValue ||
+      AboutNewTab.newTabURLOverridden ||
+      extensionControlled
+    );
+  },
+
+  _isBlankPage(url) {
+    return url == "about:blank" || url == BLANK_HOMEPAGE_URL;
   },
 
   /**
@@ -452,7 +639,11 @@ var gHomePane = {
   toggleRestoreDefaultsBtn() {
     const btn = document.getElementById("restoreDefaultHomePageBtn");
     const prefChanged = this._changedHomeTabDefaultPrefs();
-    btn.style.visibility = prefChanged ? "visible" : "hidden";
+    if (prefChanged) {
+      btn.style.removeProperty("visibility");
+    } else {
+      btn.style.visibility = "hidden";
+    }
   },
 
   /**
@@ -469,14 +660,8 @@ var gHomePane = {
   init() {
     // Event Listeners
     document
-      .getElementById("homeMode")
-      .addEventListener("command", this.onMenuChange.bind(this));
-    document
       .getElementById("homePageUrl")
       .addEventListener("change", this.onCustomHomePageChange.bind(this));
-    document
-      .getElementById("homePageUrl")
-      .addEventListener("input", this.onCustomHomePageInput.bind(this));
     document
       .getElementById("useCurrentBtn")
       .addEventListener("command", this.setHomePageToCurrent.bind(this));
@@ -487,40 +672,25 @@ var gHomePane = {
       .getElementById("restoreDefaultHomePageBtn")
       .addEventListener("command", this.restoreDefaultPrefsForHome.bind(this));
 
-    Preferences.addSyncFromPrefListener(
-      document.getElementById("homePrefHidden"),
-      () => this.syncFromHomePref()
-    );
-    Preferences.addSyncFromPrefListener(
-      document.getElementById("newTabMode"),
-      () => this.syncFromNewTabPref()
-    );
-    Preferences.addSyncToPrefListener(
-      document.getElementById("newTabMode"),
-      element => this.syncToNewTabPref(element.value)
-    );
+    // Setup the add-on options for the new tab section before registering the
+    // listener.
+    this._updateMenuInterface();
+    document
+      .getElementById("newTabMode")
+      .addEventListener("command", this.syncToNewTabPref.bind(this));
+    document
+      .getElementById("homeMode")
+      .addEventListener("command", this.onMenuChange.bind(this));
 
     this._updateUseCurrentButton();
+    this._handleHomePageOverrides();
+    this.syncFromNewTabPref();
     window.addEventListener("focus", this._updateUseCurrentButton.bind(this));
 
     // Extension/override-related events
     this.watchNewTab();
-    document
-      .getElementById("disableHomePageExtension")
-      .addEventListener(
-        "command",
-        makeDisableControllingExtension(
-          PREF_SETTING_TYPE,
-          HOMEPAGE_OVERRIDE_KEY
-        )
-      );
-    document
-      .getElementById("disableNewTabExtension")
-      .addEventListener(
-        "command",
-        makeDisableControllingExtension(URL_OVERRIDES_TYPE, NEW_TAB_KEY)
-      );
-
+    this.watchHomePrefChange();
+    this.watchExtensionPrefChange();
     this.watchHomeTabPrefChange();
     // Notify observers that the UI is now ready
     Services.obs.notifyObservers(window, "home-pane-loaded");

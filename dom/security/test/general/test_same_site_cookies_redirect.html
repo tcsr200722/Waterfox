@@ -22,7 +22,7 @@
 
 SimpleTest.waitForExplicitFinish();
 
-const SAME_ORIGIN = "http://mochi.test:8888/"
+const SAME_ORIGIN = location.origin + "/";
 const CROSS_ORIGIN = "http://example.com/";
 const PATH = "tests/dom/security/test/general/file_same_site_cookies_redirect.sjs";
 
@@ -93,8 +93,15 @@ function setCookieAndInitTest() {
   cookieImage.src =  tests[curTest].imgSRC;
 }
 
-// fire up the test
-setCookieAndInitTest();
+// Setup the prefs and fire up the test.
+// Note that we need to explicitly enable Always Partition Storage. Otherwise,
+// we will have an issue when CHIPS enabled in xorigin tests. See Bug 1899570
+// for more details.
+SpecialPowers.pushPrefEnv({
+    "set": [
+      ["privacy.partition.always_partition_third_party_non_cookie_storage", true],
+	  ]
+  }, setCookieAndInitTest);
 
 </script>
 </body>

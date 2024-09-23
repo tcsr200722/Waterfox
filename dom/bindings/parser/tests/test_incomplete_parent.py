@@ -1,9 +1,8 @@
-import WebIDL
-
 def WebIDLTest(parser, harness):
-    parser.parse("""
+    parser.parse(
+        """
         interface TestIncompleteParent : NotYetDefined {
-          void foo();
+          undefined foo();
         };
 
         interface NotYetDefined : EvenHigherOnTheChain {
@@ -11,7 +10,8 @@ def WebIDLTest(parser, harness):
 
         interface EvenHigherOnTheChain {
         };
-    """)
+    """
+    )
 
     parser.finish()
 

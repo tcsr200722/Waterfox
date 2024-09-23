@@ -14,9 +14,8 @@
 #include "mozilla/extensions/WebExtensionPolicy.h"
 
 #include "nsHashKeys.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 
-class nsAtom;
 class nsIRemoteTab;
 class nsITraceableChannel;
 
@@ -27,6 +26,8 @@ class ContentParent;
 }  // namespace dom
 
 namespace extensions {
+
+class ChannelWrapper;
 
 class WebRequestChannelEntry final {
  public:
@@ -60,15 +61,15 @@ class WebRequestService final {
   void UnregisterTraceableChannel(uint64_t aChannelId);
 
   already_AddRefed<nsITraceableChannel> GetTraceableChannel(
-      uint64_t aChannelId, nsAtom* aAddonId,
+      uint64_t aChannelId, const WebExtensionPolicy& aAddon,
       dom::ContentParent* aContentParent);
 
  private:
-  ~WebRequestService();
+  ~WebRequestService() = default;
 
   friend ChannelEntry;
 
-  nsDataHashtable<nsUint64HashKey, ChannelEntry*> mChannelEntries;
+  nsTHashMap<nsUint64HashKey, ChannelEntry*> mChannelEntries;
 };
 
 }  // namespace extensions

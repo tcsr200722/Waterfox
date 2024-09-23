@@ -4,14 +4,10 @@
 
 "use strict";
 
-const { EnterprisePolicyTesting, PoliciesPrefTracker } = ChromeUtils.import(
-  "resource://testing-common/EnterprisePolicyTesting.jsm",
-  null
-);
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm",
-  null
-);
+const { EnterprisePolicyTesting, PoliciesPrefTracker } =
+  ChromeUtils.importESModule(
+    "resource://testing-common/EnterprisePolicyTesting.sys.mjs"
+  );
 
 PoliciesPrefTracker.start();
 

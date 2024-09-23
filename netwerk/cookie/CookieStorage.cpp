@@ -6,11 +6,21 @@
 #include "Cookie.h"
 #include "CookieCommons.h"
 #include "CookieLogging.h"
+#include "CookieNotification.h"
+#include "mozilla/net/MozURL_ffi.h"
+#include "nsCOMPtr.h"
+#include "nsICookieNotification.h"
 #include "CookieStorage.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "nsIMutableArray.h"
 #include "nsTPriorityQueue.h"
+#include "nsIScriptError.h"
+#include "nsIUserIdleService.h"
+#include "nsServiceManagerUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "prprf.h"
+#include "nsIPrefService.h"
 
 #undef ADD_TEN_PERCENT
 #define ADD_TEN_PERCENT(i) static_cast<uint32_t>((i) + (i) / 10)
@@ -48,7 +58,6 @@ class CompareCookiesByAge {
 // Other non-expired cookies are sorted by their age.
 class CookieIterComparator {
  private:
-  CompareCookiesByAge mAgeComparator;
   int64_t mCurrentTime;
 
  public:
@@ -65,7 +74,7 @@ class CookieIterComparator {
       return false;
     }
 
-    return mAgeComparator.LessThan(lhs, rhs);
+    return mozilla::net::CompareCookiesByAge::LessThan(lhs, rhs);
   }
 };
 
@@ -104,20 +113,14 @@ size_t CookieEntry::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
   return amount;
 }
 
+bool CookieEntry::IsPartitioned() const {
+  return !mOriginAttributes.mPartitionKey.IsEmpty();
+}
+
 // ---------------------------------------------------------------------------
 // CookieStorage
 
 NS_IMPL_ISUPPORTS(CookieStorage, nsIObserver, nsISupportsWeakReference)
-
-CookieStorage::CookieStorage()
-    : mCookieCount(0),
-      mCookieOldestTime(INT64_MAX),
-      mMaxNumberOfCookies(kMaxNumberOfCookies),
-      mMaxCookiesPerHost(kMaxCookiesPerHost),
-      mCookieQuotaPerHost(kCookieQuotaPerHost),
-      mCookiePurgeAge(kCookiePurgeAge) {}
-
-CookieStorage::~CookieStorage() = default;
 
 void CookieStorage::Init() {
   // init our pref and observer
@@ -128,6 +131,13 @@ void CookieStorage::Init() {
     prefBranch->AddObserver(kPrefCookiePurgeAge, this, true);
     PrefChanged(prefBranch);
   }
+
+  nsCOMPtr<nsIObserverService> observerService = services::GetObserverService();
+  NS_ENSURE_TRUE_VOID(observerService);
+
+  nsresult rv =
+      observerService->AddObserver(this, OBSERVER_TOPIC_IDLE_DAILY, true);
+  NS_ENSURE_SUCCESS_VOID(rv);
 }
 
 size_t CookieStorage::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
@@ -141,8 +151,8 @@ size_t CookieStorage::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
 
 void CookieStorage::GetCookies(nsTArray<RefPtr<nsICookie>>& aCookies) const {
   aCookies.SetCapacity(mCookieCount);
-  for (auto iter = mHostTable.ConstIter(); !iter.Done(); iter.Next()) {
-    const CookieEntry::ArrayType& cookies = iter.Get()->GetCookies();
+  for (const auto& entry : mHostTable) {
+    const CookieEntry::ArrayType& cookies = entry.GetCookies();
     for (CookieEntry::IndexType i = 0; i < cookies.Length(); ++i) {
       aCookies.AppendElement(cookies[i]);
     }
@@ -152,8 +162,8 @@ void CookieStorage::GetCookies(nsTArray<RefPtr<nsICookie>>& aCookies) const {
 void CookieStorage::GetSessionCookies(
     nsTArray<RefPtr<nsICookie>>& aCookies) const {
   aCookies.SetCapacity(mCookieCount);
-  for (auto iter = mHostTable.ConstIter(); !iter.Done(); iter.Next()) {
-    const CookieEntry::ArrayType& cookies = iter.Get()->GetCookies();
+  for (const auto& entry : mHostTable) {
+    const CookieEntry::ArrayType& cookies = entry.GetCookies();
     for (CookieEntry::IndexType i = 0; i < cookies.Length(); ++i) {
       Cookie* cookie = cookies[i];
       // Filter out non-session cookies.
@@ -236,19 +246,24 @@ uint32_t CookieStorage::CountCookiesFromHost(const nsACString& aBaseDomain,
 void CookieStorage::GetAll(nsTArray<RefPtr<nsICookie>>& aResult) const {
   aResult.SetCapacity(mCookieCount);
 
-  for (auto iter = mHostTable.ConstIter(); !iter.Done(); iter.Next()) {
-    const CookieEntry::ArrayType& cookies = iter.Get()->GetCookies();
+  for (const auto& entry : mHostTable) {
+    const CookieEntry::ArrayType& cookies = entry.GetCookies();
     for (CookieEntry::IndexType i = 0; i < cookies.Length(); ++i) {
       aResult.AppendElement(cookies[i]);
     }
   }
 }
 
-const nsTArray<RefPtr<Cookie>>* CookieStorage::GetCookiesFromHost(
-    const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes) {
+void CookieStorage::GetCookiesFromHost(
+    const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes,
+    nsTArray<RefPtr<Cookie>>& aCookies) {
   CookieEntry* entry =
       mHostTable.GetEntry(CookieKey(aBaseDomain, aOriginAttributes));
-  return entry ? &entry->GetCookies() : nullptr;
+  if (!entry) {
+    return;
+  }
+
+  aCookies = entry->GetCookies().Clone();
 }
 
 void CookieStorage::GetCookiesWithOriginAttributes(
@@ -278,7 +293,7 @@ void CookieStorage::RemoveCookie(const nsACString& aBaseDomain,
                                  const nsACString& aHost,
                                  const nsACString& aName,
                                  const nsACString& aPath) {
-  CookieListIter matchIter;
+  CookieListIter matchIter{};
   RefPtr<Cookie> cookie;
   if (FindCookie(aBaseDomain, aOriginAttributes, aHost, aName, aPath,
                  matchIter)) {
@@ -288,7 +303,7 @@ void CookieStorage::RemoveCookie(const nsACString& aBaseDomain,
 
   if (cookie) {
     // Everything's done. Notify observers.
-    NotifyChanged(cookie, u"deleted");
+    NotifyChanged(cookie, nsICookieNotification::COOKIE_DELETED, aBaseDomain);
   }
 }
 
@@ -318,20 +333,90 @@ void CookieStorage::RemoveCookiesWithOriginAttributes(
       RemoveCookieFromList(iter);
 
       if (cookie) {
-        NotifyChanged(cookie, u"deleted");
+        NotifyChanged(cookie, nsICookieNotification::COOKIE_DELETED,
+                      aBaseDomain);
       }
     }
   }
 }
 
+/* static */ bool CookieStorage::isIPv6BaseDomain(
+    const nsACString& aBaseDomain) {
+  return aBaseDomain.Contains(':');
+}
+
+/* static */ bool CookieStorage::SerializeIPv6BaseDomain(
+    nsACString& aBaseDomain) {
+  bool hasStartBracket = aBaseDomain.First() == '[';
+  bool hasEndBracket = aBaseDomain.Last() == ']';
+
+  // If only start or end bracket exists host is malformed.
+  if (hasStartBracket != hasEndBracket) {
+    return false;
+  }
+
+  // If the base domain is not in URL format (e.g. [::1]) add brackets so we
+  // can use rusturl_parse_ipv6addr().
+  if (!hasStartBracket) {
+    aBaseDomain.Insert('[', 0);
+    aBaseDomain.Append(']');
+  }
+
+  // Serialize base domain to "zero abbreviation" and lower-case hex
+  // representation.
+  nsAutoCString baseDomain;
+  nsresult rv = (nsresult)rusturl_parse_ipv6addr(&aBaseDomain, &baseDomain);
+  NS_ENSURE_SUCCESS(rv, false);
+
+  // Strip brackets to match principal representation.
+  aBaseDomain = Substring(baseDomain, 1, baseDomain.Length() - 2);
+
+  return true;
+}
+
 void CookieStorage::RemoveCookiesFromExactHost(
     const nsACString& aHost, const nsACString& aBaseDomain,
     const OriginAttributesPattern& aPattern) {
+  // Intermediate fix until Bug 1882259 is resolved.
+  // Bug 1860033 - Cookies do not serialize IPv6 host / base domain in contrast
+  // to principals. To allow deletion by principal serialize before comparison.
+  // We check the base domain since it is used as the CookieList key and equals
+  // the normalized (ASCII) host for IP addresses
+  // (it is equal to the CookieService::NormalizeHost() output).
+  nsAutoCString removeBaseDomain;
+  bool isIPv6 = isIPv6BaseDomain(aBaseDomain);
+  if (isIPv6) {
+    MOZ_ASSERT(!aBaseDomain.IsEmpty());
+    // Copy base domain since argument is immutable.
+    removeBaseDomain = aBaseDomain;
+    if (NS_WARN_IF(!SerializeIPv6BaseDomain(removeBaseDomain))) {
+      // Return on malformed base domains.
+      return;
+    }
+  }
+
   // Iterate the hash table of CookieEntry.
   for (auto iter = mHostTable.Iter(); !iter.Done(); iter.Next()) {
     CookieEntry* entry = iter.Get();
 
-    if (!aBaseDomain.Equals(entry->mBaseDomain)) {
+    // IPv6 host / base domain cookies
+    if (isIPv6) {
+      // If we look for a IPv6 cookie skip non-IPv6 cookie entries.
+      if (!isIPv6BaseDomain(entry->mBaseDomain)) {
+        continue;
+      }
+      // Serialize IPv6 base domains before comparison.
+      // Copy base domain since argument is immutable.
+      nsAutoCString entryBaseDomain;
+      entryBaseDomain = entry->mBaseDomain;
+      if (NS_WARN_IF(!SerializeIPv6BaseDomain(entryBaseDomain))) {
+        continue;
+      }
+      if (!removeBaseDomain.Equals(entryBaseDomain)) {
+        continue;
+      }
+      // Non-IPv6 cookies
+    } else if (!aBaseDomain.Equals(entry->mBaseDomain)) {
       continue;
     }
 
@@ -344,7 +429,9 @@ void CookieStorage::RemoveCookiesFromExactHost(
       CookieListIter iter(entry, i - 1);
       RefPtr<Cookie> cookie = iter.Cookie();
 
-      if (!aHost.Equals(cookie->RawHost())) {
+      // For IP addresses (ASCII normalized) host == baseDomain, we checked
+      // equality already.
+      if (!isIPv6 && !aHost.Equals(cookie->RawHost())) {
         continue;
       }
 
@@ -352,7 +439,8 @@ void CookieStorage::RemoveCookiesFromExactHost(
       RemoveCookieFromList(iter);
 
       if (cookie) {
-        NotifyChanged(cookie, u"deleted");
+        NotifyChanged(cookie, nsICookieNotification::COOKIE_DELETED,
+                      aBaseDomain);
       }
     }
   }
@@ -367,27 +455,40 @@ void CookieStorage::RemoveAll() {
 
   RemoveAllInternal();
 
-  NotifyChanged(nullptr, u"cleared");
+  NotifyChanged(nullptr, nsICookieNotification::ALL_COOKIES_CLEARED, ""_ns);
 }
 
-// notify observers that the cookie list changed. there are five possible
-// values for aData:
-// "deleted" means a cookie was deleted. aSubject is the deleted cookie.
-// "added"   means a cookie was added. aSubject is the added cookie.
-// "changed" means a cookie was altered. aSubject is the new cookie.
-// "cleared" means the entire cookie list was cleared. aSubject is null.
-// "batch-deleted" means a set of cookies was purged. aSubject is the list of
-// cookies.
-void CookieStorage::NotifyChanged(nsISupports* aSubject, const char16_t* aData,
+// notify observers that the cookie list changed.
+void CookieStorage::NotifyChanged(nsISupports* aSubject,
+                                  nsICookieNotification::Action aAction,
+                                  const nsACString& aBaseDomain,
+                                  dom::BrowsingContext* aBrowsingContext,
                                   bool aOldCookieIsSession) {
   nsCOMPtr<nsIObserverService> os = services::GetObserverService();
   if (!os) {
     return;
   }
-  // Notify for topic "private-cookie-changed" or "cookie-changed"
-  os->NotifyObservers(aSubject, NotificationTopic(), aData);
 
-  NotifyChangedInternal(aSubject, aData, aOldCookieIsSession);
+  nsCOMPtr<nsICookie> cookie;
+  nsCOMPtr<nsIArray> batchDeletedCookies;
+
+  if (aAction == nsICookieNotification::COOKIES_BATCH_DELETED) {
+    batchDeletedCookies = do_QueryInterface(aSubject);
+  } else {
+    cookie = do_QueryInterface(aSubject);
+  }
+
+  uint64_t browsingContextId = 0;
+  if (aBrowsingContext) {
+    browsingContextId = aBrowsingContext->Id();
+  }
+
+  nsCOMPtr<nsICookieNotification> notification = new CookieNotification(
+      aAction, cookie, aBaseDomain, batchDeletedCookies, browsingContextId);
+  // Notify for topic "private-cookie-changed" or "cookie-changed"
+  os->NotifyObservers(notification, NotificationTopic(), u"");
+
+  NotifyChangedInternal(notification, aOldCookieIsSession);
 }
 
 // this is a backend function for adding a cookie to the list, via SetCookie.
@@ -395,14 +496,16 @@ void CookieStorage::NotifyChanged(nsISupports* aSubject, const char16_t* aData,
 // replaces an existing cookie; or adds the cookie to the hashtable, and
 // deletes a cookie (if maximum number of cookies has been reached). also
 // performs list maintenance by removing expired cookies.
-void CookieStorage::AddCookie(const nsACString& aBaseDomain,
+void CookieStorage::AddCookie(nsIConsoleReportCollector* aCRC,
+                              const nsACString& aBaseDomain,
                               const OriginAttributes& aOriginAttributes,
                               Cookie* aCookie, int64_t aCurrentTimeInUsec,
                               nsIURI* aHostURI, const nsACString& aCookieHeader,
-                              bool aFromHttp) {
+                              bool aFromHttp,
+                              dom::BrowsingContext* aBrowsingContext) {
   int64_t currentTime = aCurrentTimeInUsec / PR_USEC_PER_SEC;
 
-  CookieListIter exactIter;
+  CookieListIter exactIter{};
   bool foundCookie = false;
   foundCookie = FindCookie(aBaseDomain, aOriginAttributes, aCookie->Host(),
                            aCookie->Name(), aCookie->Path(), exactIter);
@@ -412,6 +515,7 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
     potentiallyTrustworthy =
         nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin(aHostURI);
   }
+  constexpr auto CONSOLE_REJECTION_CATEGORY = "cookiesRejection"_ns;
   bool oldCookieIsSession = false;
   // Step1, call FindSecureCookie(). FindSecureCookie() would
   // find the existing cookie with the security flag and has
@@ -430,6 +534,12 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
     COOKIE_LOGFAILURE(SET_COOKIE, aHostURI, aCookieHeader,
                       "cookie can't save because older cookie is secure "
                       "cookie but newer cookie is non-secure cookie");
+    CookieLogging::LogMessageToConsole(
+        aCRC, aHostURI, nsIScriptError::warningFlag, CONSOLE_REJECTION_CATEGORY,
+        "CookieRejectedNonsecureOverSecure"_ns,
+        AutoTArray<nsString, 1>{
+            NS_ConvertUTF8toUTF16(aCookie->Name()),
+        });
     return;
   }
 
@@ -469,11 +579,18 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
         COOKIE_LOGFAILURE(
             SET_COOKIE, aHostURI, aCookieHeader,
             "previously stored cookie is httponly; coming from script");
+        CookieLogging::LogMessageToConsole(
+            aCRC, aHostURI, nsIScriptError::warningFlag,
+            CONSOLE_REJECTION_CATEGORY,
+            "CookieRejectedHttpOnlyButFromScript"_ns,
+            AutoTArray<nsString, 1>{
+                NS_ConvertUTF8toUTF16(aCookie->Name()),
+            });
         return;
       }
 
       // If the new cookie has the same value, expiry date, isSecure, isSession,
-      // isHttpOnly and sameSite flags then we can just keep the old one.
+      // isHttpOnly and SameSite flags then we can just keep the old one.
       // Only if any of these differ we would want to override the cookie.
       if (oldCookie->Value().Equals(aCookie->Value()) &&
           oldCookie->Expiry() == aCookie->Expiry() &&
@@ -481,6 +598,8 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
           oldCookie->IsSession() == aCookie->IsSession() &&
           oldCookie->IsHttpOnly() == aCookie->IsHttpOnly() &&
           oldCookie->SameSite() == aCookie->SameSite() &&
+          oldCookie->RawSameSite() == aCookie->RawSameSite() &&
+          oldCookie->SchemeMap() == aCookie->SchemeMap() &&
           // We don't want to perform this optimization if the cookie is
           // considered stale, since in this case we would need to update the
           // database.
@@ -491,6 +610,10 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
         return;
       }
 
+      // Merge the scheme map in case the old cookie and the new cookie are
+      // used with different schemes.
+      MergeCookieSchemeMap(oldCookie, aCookie);
+
       // Remove the old cookie.
       RemoveCookieFromList(exactIter);
 
@@ -499,7 +622,8 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
       if (aCookie->Expiry() <= currentTime) {
         COOKIE_LOGFAILURE(SET_COOKIE, aHostURI, aCookieHeader,
                           "previously stored cookie was deleted");
-        NotifyChanged(oldCookie, u"deleted", oldCookieIsSession);
+        NotifyChanged(oldCookie, nsICookieNotification::COOKIE_DELETED,
+                      aBaseDomain, aBrowsingContext, oldCookieIsSession);
         return;
       }
 
@@ -545,9 +669,13 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
         RefPtr<Cookie> evictedCookie = (*it).Cookie();
         COOKIE_LOGEVICTED(evictedCookie, "Too many cookies for this domain");
         RemoveCookieFromList(*it);
-        CreateOrUpdatePurgeList(getter_AddRefs(purgedList), evictedCookie);
+        CreateOrUpdatePurgeList(purgedList, evictedCookie);
         MOZ_ASSERT((*it).entry);
       }
+      uint32_t purgedLength = 0;
+      purgedList->GetLength(&purgedLength);
+      mozilla::glean::networking::cookie_purge_entry_max.AccumulateSingleSample(
+          purgedLength);
 
     } else if (mCookieCount >= ADD_TEN_PERCENT(mMaxNumberOfCookies)) {
       int64_t maxAge = aCurrentTimeInUsec - mCookieOldestTime;
@@ -562,6 +690,10 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
         // eagerly.
         purgedList = PurgeCookies(aCurrentTimeInUsec, mMaxNumberOfCookies,
                                   mCookiePurgeAge);
+        uint32_t purgedLength = 0;
+        purgedList->GetLength(&purgedLength);
+        mozilla::glean::networking::cookie_purge_max.AccumulateSingleSample(
+            purgedLength);
       }
     }
   }
@@ -576,17 +708,26 @@ void CookieStorage::AddCookie(const nsACString& aBaseDomain,
   // Now that list mutations are complete, notify observers. We do it here
   // because observers may themselves attempt to mutate the list.
   if (purgedList) {
-    NotifyChanged(purgedList, u"batch-deleted");
+    NotifyChanged(purgedList, nsICookieNotification::COOKIES_BATCH_DELETED,
+                  ""_ns);
   }
 
-  NotifyChanged(aCookie, foundCookie ? u"changed" : u"added",
-                oldCookieIsSession);
+  // Notify for topic "private-cookie-changed" or "cookie-changed"
+  NotifyChanged(aCookie,
+                foundCookie ? nsICookieNotification::COOKIE_CHANGED
+                            : nsICookieNotification::COOKIE_ADDED,
+                aBaseDomain, aBrowsingContext, oldCookieIsSession);
 }
 
 void CookieStorage::UpdateCookieOldestTime(Cookie* aCookie) {
   if (aCookie->LastAccessed() < mCookieOldestTime) {
     mCookieOldestTime = aCookie->LastAccessed();
   }
+}
+
+void CookieStorage::MergeCookieSchemeMap(Cookie* aOldCookie,
+                                         Cookie* aNewCookie) {
+  aNewCookie->SetSchemeMap(aOldCookie->SchemeMap() | aNewCookie->SchemeMap());
 }
 
 void CookieStorage::AddCookieToList(const nsACString& aBaseDomain,
@@ -659,16 +800,15 @@ void CookieStorage::FindStaleCookies(CookieEntry* aEntry, int64_t aCurrentTime,
 }
 
 // static
-void CookieStorage::CreateOrUpdatePurgeList(nsIArray** aPurgedList,
+void CookieStorage::CreateOrUpdatePurgeList(nsCOMPtr<nsIArray>& aPurgedList,
                                             nsICookie* aCookie) {
-  if (!*aPurgedList) {
+  if (!aPurgedList) {
     COOKIE_LOGSTRING(LogLevel::Debug, ("Creating new purge list"));
-    nsCOMPtr<nsIArray> purgedList = CreatePurgeList(aCookie);
-    purgedList.forget(aPurgedList);
+    aPurgedList = CreatePurgeList(aCookie);
     return;
   }
 
-  nsCOMPtr<nsIMutableArray> purgedList = do_QueryInterface(*aPurgedList);
+  nsCOMPtr<nsIMutableArray> purgedList = do_QueryInterface(aPurgedList);
   if (purgedList) {
     COOKIE_LOGSTRING(LogLevel::Debug, ("Updating existing purge list"));
     purgedList->AppendElement(aCookie);
@@ -786,7 +926,7 @@ already_AddRefed<nsIArray> CookieStorage::PurgeCookiesWithCallbacks(
 
 // remove a cookie from the hashtable, and update the iterator state.
 void CookieStorage::RemoveCookieFromList(const CookieListIter& aIter) {
-  RemoveCookieFromDB(aIter);
+  RemoveCookieFromDB(*aIter.Cookie());
   RemoveCookieFromListInternal(aIter);
 }
 
@@ -836,6 +976,8 @@ CookieStorage::Observe(nsISupports* aSubject, const char* aTopic,
     if (prefBranch) {
       PrefChanged(prefBranch);
     }
+  } else if (!strcmp(aTopic, OBSERVER_TOPIC_IDLE_DAILY)) {
+    CollectCookieJarSizeData();
   }
 
   return NS_OK;

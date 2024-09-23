@@ -38,7 +38,6 @@ class AudioBlock : private AudioChunk {
   using AudioChunk::ChannelCount;
   using AudioChunk::ChannelData;
   using AudioChunk::GetDuration;
-  using AudioChunk::IsAudible;
   using AudioChunk::IsNull;
   using AudioChunk::SizeOfExcludingThis;
   using AudioChunk::SizeOfExcludingThisIfUnshared;
@@ -89,7 +88,7 @@ class AudioBlock : private AudioChunk {
   AudioBlock& operator=(const AudioChunk& aChunk) {
     MOZ_ASSERT(aChunk.mDuration == WEBAUDIO_BLOCK_SIZE);
     SetBuffer(aChunk.mBuffer);
-    mChannelData = aChunk.mChannelData.Clone();
+    mChannelData = aChunk.mChannelData;
     mVolume = aChunk.mVolume;
     mBufferFormat = aChunk.mBufferFormat;
     return *this;

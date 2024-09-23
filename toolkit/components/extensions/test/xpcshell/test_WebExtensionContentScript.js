@@ -4,21 +4,29 @@
 
 const { newURI } = Services.io;
 
-const server = createHttpServer();
+const server = createHttpServer({ hosts: ["example.com"] });
 server.registerDirectory("/data/", do_get_file("data"));
 
-let policy = new WebExtensionPolicy({
-  id: "foo@bar.baz",
-  mozExtensionHostname: "88fb51cd-159f-4859-83db-7065485bc9b2",
-  baseURL: "file:///foo",
+async function test_url_matching({
+  manifestVersion = 2,
+  allowedOrigins = [],
+  checkPermissions,
+  expectMatches,
+}) {
+  let policy = new WebExtensionPolicy({
+    id: "foo@bar.baz",
+    mozExtensionHostname: "88fb51cd-159f-4859-83db-7065485bc9b2",
+    baseURL: "file:///foo",
 
-  allowedOrigins: new MatchPatternSet([]),
-  localizeCallback() {},
-});
+    manifestVersion,
+    allowedOrigins: new MatchPatternSet(allowedOrigins),
+    localizeCallback() {},
+  });
 
-add_task(async function test_WebExtensinonContentScript_url_matching() {
   let contentScript = new WebExtensionContentScript(policy, {
-    matches: new MatchPatternSet(["http://foo.com/bar", "*://bar.com/baz/*"]),
+    checkPermissions,
+
+    matches: new MatchPatternSet(["http://*.foo.com/bar", "*://bar.com/baz/*"]),
 
     excludeMatches: new MatchPatternSet(["*://bar.com/baz/quux"]),
 
@@ -29,14 +37,16 @@ add_task(async function test_WebExtensinonContentScript_url_matching() {
     excludeGlobs: ["*glorg*"].map(glob => new MatchGlob(glob)),
   });
 
-  ok(
-    contentScript.matchesURI(newURI("http://foo.com/bar")),
-    "Simple matches include should match"
+  equal(
+    expectMatches,
+    contentScript.matchesURI(newURI("http://www.foo.com/bar")),
+    `Simple matches include should ${expectMatches ? "" : "not "} match.`
   );
 
-  ok(
+  equal(
+    expectMatches,
     contentScript.matchesURI(newURI("https://bar.com/baz/xflergx")),
-    "Simple matches include should match"
+    `Simple matches include should ${expectMatches ? "" : "not "} match.`
   );
 
   ok(
@@ -53,161 +63,323 @@ add_task(async function test_WebExtensinonContentScript_url_matching() {
     !contentScript.matchesURI(newURI("https://bar.com/baz/xflergxglorgx")),
     "Excluded match glob should not match"
   );
-});
-
-async function loadURL(url, { frameCount }) {
-  let windows = new Map();
-  let requests = new Map();
-
-  let resolveLoad;
-  let loadPromise = new Promise(resolve => {
-    resolveLoad = resolve;
-  });
-
-  function requestObserver(request) {
-    request.QueryInterface(Ci.nsIChannel);
-    if (request.isDocument) {
-      requests.set(request.name, request);
-    }
-  }
-  function loadObserver(window) {
-    window.addEventListener(
-      "load",
-      function onLoad() {
-        windows.set(window.location.href, window);
-        if (windows.size == frameCount) {
-          resolveLoad();
-        }
-      },
-      { once: true }
-    );
-  }
-
-  Services.obs.addObserver(requestObserver, "http-on-examine-response");
-  Services.obs.addObserver(loadObserver, "content-document-global-created");
-
-  let webNav = Services.appShell.createWindowlessBrowser(false);
-  let loadURIOptions = {
-    triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-  };
-  webNav.loadURI(url, loadURIOptions);
-
-  await loadPromise;
-
-  Services.obs.removeObserver(requestObserver, "http-on-examine-response");
-  Services.obs.removeObserver(loadObserver, "content-document-global-created");
-
-  return { webNav, windows, requests };
 }
 
-add_task(async function test_WebExtensinonContentScript_frame_matching() {
+add_task(function test_WebExtensionContentScript_urls_mv2() {
+  return test_url_matching({ manifestVersion: 2, expectMatches: true });
+});
+
+add_task(function test_WebExtensionContentScript_urls_mv2_checkPermissions() {
+  return test_url_matching({
+    manifestVersion: 2,
+    checkPermissions: true,
+    expectMatches: false,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_urls_mv2_with_permissions() {
+  return test_url_matching({
+    manifestVersion: 2,
+    checkPermissions: true,
+    allowedOrigins: ["<all_urls>"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_urls_mv3() {
+  // checkPermissions ignored here because it's forced for MV3.
+  return test_url_matching({
+    manifestVersion: 3,
+    checkPermissions: false,
+    expectMatches: false,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_mv3_all_urls() {
+  return test_url_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["<all_urls>"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_mv3_wildcards() {
+  return test_url_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["*://*.foo.com/*", "*://*.bar.com/*"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_mv3_specific() {
+  return test_url_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["http://www.foo.com/*", "https://bar.com/*"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_restricted() {
+  let tests = [
+    {
+      manifestVersion: 2,
+      permissions: [],
+      expect: false,
+    },
+    {
+      manifestVersion: 2,
+      permissions: ["mozillaAddons"],
+      expect: true,
+    },
+    {
+      manifestVersion: 3,
+      permissions: [],
+      expect: false,
+    },
+    {
+      manifestVersion: 3,
+      permissions: ["mozillaAddons"],
+      expect: true,
+    },
+  ];
+
+  for (let { manifestVersion, permissions, expect } of tests) {
+    let policy = new WebExtensionPolicy({
+      id: "foo@bar.baz",
+      mozExtensionHostname: "88fb51cd-159f-4859-83db-7065485bc9b2",
+      baseURL: "file:///foo",
+
+      manifestVersion,
+      permissions,
+      allowedOrigins: new MatchPatternSet(["<all_urls>"]),
+      localizeCallback() {},
+    });
+    let contentScript = new WebExtensionContentScript(policy, {
+      checkPermissions: true,
+      matches: new MatchPatternSet(["<all_urls>"]),
+    });
+
+    // AMO is on the extensions.webextensions.restrictedDomains list.
+    equal(
+      expect,
+      contentScript.matchesURI(newURI("https://addons.mozilla.org/foo")),
+      `Expect extension with [${permissions}] to ${expect ? "" : "not"} match`
+    );
+  }
+});
+
+async function test_frame_matching(meta) {
   if (AppConstants.platform == "linux") {
     // The windowless browser currently does not load correctly on Linux on
     // infra.
     return;
   }
-  Services.prefs.setBoolPref(
-    "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
-    true
-  );
-  Services.prefs.setBoolPref("security.allow_unsafe_parent_loads", true);
 
-  let baseURL = `http://localhost:${server.identity.primaryPort}/data`;
+  let baseURL = `http://example.com/data`;
   let urls = {
     topLevel: `${baseURL}/file_toplevel.html`,
     iframe: `${baseURL}/file_iframe.html`,
+    dataURL: "data:,data-URL",
+    javascriptVoid: "javascript://void",
+    javascriptTrue: "javascript:true",
     srcdoc: "about:srcdoc",
     aboutBlank: "about:blank",
   };
 
-  let { webNav, windows, requests } = await loadURL(urls.topLevel, {
-    frameCount: 4,
-  });
+  let contentPage = await ExtensionTestUtils.loadContentPage(urls.topLevel);
 
   let tests = [
     {
-      contentScript: {
-        matches: new MatchPatternSet(["http://localhost/data/*"]),
-      },
+      matches: ["http://example.com/data/*"],
+      contentScript: {},
       topLevel: true,
       iframe: false,
+      dataURL: false,
+      javascriptVoid: false,
+      javascriptTrue: false,
       aboutBlank: false,
       srcdoc: false,
     },
 
     {
+      matches: ["http://example.com/data/*"],
       contentScript: {
-        matches: new MatchPatternSet(["http://localhost/data/*"]),
         frameID: 0,
       },
       topLevel: true,
       iframe: false,
+      dataURL: false,
+      javascriptVoid: false,
+      javascriptTrue: false,
       aboutBlank: false,
       srcdoc: false,
     },
 
     {
+      matches: ["http://example.com/data/*"],
       contentScript: {
-        matches: new MatchPatternSet(["http://localhost/data/*"]),
         allFrames: true,
       },
       topLevel: true,
       iframe: true,
+      dataURL: false,
+      javascriptVoid: false,
+      javascriptTrue: false,
       aboutBlank: false,
       srcdoc: false,
     },
 
     {
+      matches: ["http://example.com/data/*"],
       contentScript: {
-        matches: new MatchPatternSet(["http://localhost/data/*"]),
         allFrames: true,
         matchAboutBlank: true,
       },
       topLevel: true,
       iframe: true,
+      // data-URLs used to inherit the principal until Firefox 57 (bug 1324406)
+      // but never did so in Chrome. In any case, match_about_blank should not
+      // match documents at data:-URLs.
+      dataURL: false,
+      javascriptVoid: true,
+      javascriptTrue: true,
       aboutBlank: true,
       srcdoc: true,
     },
 
     {
+      // Note: Chrome triggers a hard error when matchOriginAsFallback is used
+      // without a wildcard path (/*). We fail gracefully for simplicity.
+      matches: ["http://example.com/data/*"],
       contentScript: {
-        matches: new MatchPatternSet(["http://foo.com/data/*"]),
+        allFrames: true,
+        matchOriginAsFallback: true,
+      },
+      topLevel: true,
+      iframe: true,
+      // matchOriginAsFallback only matches 'matches' if the match pattern's
+      // path component is a wildcard. Since 'matches' is not, nothing happens.
+      dataURL: false,
+      javascriptVoid: true,
+      javascriptTrue: true,
+      aboutBlank: true,
+      srcdoc: true,
+    },
+
+    {
+      matches: ["http://example.com/*"],
+      contentScript: {
+        allFrames: true,
+        matchOriginAsFallback: true,
+      },
+      topLevel: true,
+      iframe: true,
+      dataURL: true,
+      javascriptVoid: true,
+      javascriptTrue: true,
+      aboutBlank: true,
+      srcdoc: true,
+    },
+
+    {
+      // pattern in "matches" does not match.
+      matches: ["http://foo.com/data/*"],
+      contentScript: {
         allFrames: true,
         matchAboutBlank: true,
       },
       topLevel: false,
       iframe: false,
+      dataURL: false,
+      javascriptVoid: false,
+      javascriptTrue: false,
       aboutBlank: false,
       srcdoc: false,
     },
   ];
 
-  for (let [i, test] of tests.entries()) {
-    let contentScript = new WebExtensionContentScript(
-      policy,
-      test.contentScript
-    );
+  // matchesWindowGlobal tests against content frames
+  await contentPage.spawn([{ tests, urls, meta }], args => {
+    let { manifestVersion = 2, allowedOrigins = [], expectMatches } = args.meta;
 
-    for (let [frame, url] of Object.entries(urls)) {
-      let should = test[frame] ? "should" : "should not";
+    this.windows = new Map();
+    this.windows.set(this.content.location.href, this.content);
+    for (let c of Array.from(this.content.frames)) {
+      let url = c.location.href;
+      if (url === "about:blank") {
+        // When javascript: URLs are loaded, the resulting URL is about:blank.
+        // Look up the frame's "src" attribute to distinguish them.
+        url = c.frameElement.src;
+      }
+      this.windows.set(url, c);
+    }
+    const { MatchPatternSet, WebExtensionContentScript, WebExtensionPolicy } =
+      Cu.getGlobalForObject(Services);
+    this.policy = new WebExtensionPolicy({
+      id: "foo@bar.baz",
+      mozExtensionHostname: "88fb51cd-159f-4859-83db-7065485bc9b2",
+      baseURL: "file:///foo",
 
-      equal(
-        contentScript.matchesWindow(windows.get(url)),
-        test[frame],
-        `Script ${i} ${should} match the ${frame} frame`
-      );
+      manifestVersion,
+      allowedOrigins: new MatchPatternSet(allowedOrigins),
+      localizeCallback() {},
+    });
 
-      if (url.startsWith("http")) {
-        let request = requests.get(url);
-
-        equal(
-          contentScript.matchesLoadInfo(request.URI, request.loadInfo),
-          test[frame],
-          `Script ${i} ${should} match the request LoadInfo for ${frame} frame`
+    let tests = args.tests.map(t => {
+      t.contentScript.matches = new MatchPatternSet(t.matches);
+      t.script = new WebExtensionContentScript(this.policy, t.contentScript);
+      return t;
+    });
+    for (let [i, test] of tests.entries()) {
+      for (let [frame, url] of Object.entries(args.urls)) {
+        let should = test[frame] ? "should" : "should not";
+        let wgc = this.windows.get(url).windowGlobalChild;
+        Assert.equal(
+          test.script.matchesWindowGlobal(wgc),
+          test[frame] && expectMatches,
+          `Script ${i} ${should} match the ${frame} frame`
         );
       }
     }
-  }
+  });
 
-  webNav.close();
+  await contentPage.close();
+}
+
+add_task(function test_WebExtensionContentScript_frames_mv2() {
+  return test_frame_matching({
+    manifestVersion: 2,
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_frames_mv3() {
+  return test_frame_matching({
+    manifestVersion: 3,
+    expectMatches: false,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_frames_mv3_all_urls() {
+  return test_frame_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["<all_urls>"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_frames_mv3_wildcards() {
+  return test_frame_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["*://*.example.com/*"],
+    expectMatches: true,
+  });
+});
+
+add_task(function test_WebExtensionContentScript_frames_mv3_specific() {
+  return test_frame_matching({
+    manifestVersion: 3,
+    allowedOrigins: ["http://example.com/*"],
+    expectMatches: true,
+  });
 });

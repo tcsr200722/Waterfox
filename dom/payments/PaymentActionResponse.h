@@ -7,10 +7,11 @@
 #ifndef mozilla_dom_PaymentActionResponse_h
 #define mozilla_dom_PaymentActionResponse_h
 
+#include "nsCOMPtr.h"
 #include "nsIPaymentActionResponse.h"
+#include "nsString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PaymentRequestParent;
 
@@ -186,7 +187,6 @@ class BasicCardMethodChangeDetails final : public MethodChangeDetails,
   nsCOMPtr<nsIPaymentAddress> mBillingAddress;
 };
 
-}  // namespace dom
-}  // end of namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

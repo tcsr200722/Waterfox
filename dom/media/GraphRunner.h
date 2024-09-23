@@ -35,25 +35,25 @@ class GraphRunner final : public Runnable {
    * Signals one iteration of mGraph. Hands state over to mThread and runs
    * the iteration there.
    */
-  IterationResult OneIteration(GraphTime aStateEnd, GraphTime aIterationEnd,
-                               AudioMixer* aMixer);
+  IterationResult OneIteration(GraphTime aStateTime, GraphTime aIterationEnd,
+                               MixerCallbackReceiver* aMixerReceiver);
 
   /**
    * Runs mGraph until it shuts down.
    */
-  NS_IMETHOD Run();
+  NS_IMETHOD Run() override;
 
   /**
    * Returns true if called on mThread.
    */
-  bool OnThread();
+  bool OnThread() const;
 
 #ifdef DEBUG
   /**
    * Returns true if called on mThread, and aDriver was the driver that called
    * OneIteration() last.
    */
-  bool InDriverIteration(GraphDriver* aDriver);
+  bool InDriverIteration(const GraphDriver* aDriver) const;
 #endif
 
  private:
@@ -62,18 +62,20 @@ class GraphRunner final : public Runnable {
   ~GraphRunner();
 
   class IterationState {
-    GraphTime mStateEnd;
+    GraphTime mStateTime;
     GraphTime mIterationEnd;
-    AudioMixer* MOZ_NON_OWNING_REF mMixer;
+    MixerCallbackReceiver* MOZ_NON_OWNING_REF mMixerReceiver;
 
    public:
-    IterationState(GraphTime aStateEnd, GraphTime aIterationEnd,
-                   AudioMixer* aMixer)
-        : mStateEnd(aStateEnd), mIterationEnd(aIterationEnd), mMixer(aMixer) {}
+    IterationState(GraphTime aStateTime, GraphTime aIterationEnd,
+                   MixerCallbackReceiver* aMixerReceiver)
+        : mStateTime(aStateTime),
+          mIterationEnd(aIterationEnd),
+          mMixerReceiver(aMixerReceiver) {}
     IterationState& operator=(const IterationState& aOther) = default;
-    GraphTime StateEnd() const { return mStateEnd; }
+    GraphTime StateTime() const { return mStateTime; }
     GraphTime IterationEnd() const { return mIterationEnd; }
-    AudioMixer* Mixer() const { return mMixer; }
+    MixerCallbackReceiver* MixerReceiver() const { return mMixerReceiver; }
   };
 
   // Monitor used for yielding mThread through Wait(), and scheduling mThread
@@ -84,21 +86,21 @@ class GraphRunner final : public Runnable {
   MediaTrackGraphImpl* const mGraph;
   // State being handed over to the graph through OneIteration. Protected by
   // mMonitor.
-  Maybe<IterationState> mIterationState;
+  Maybe<IterationState> mIterationState MOZ_GUARDED_BY(mMonitor);
   // Result from mGraph's OneIteration. Protected by mMonitor.
-  IterationResult mIterationResult;
+  IterationResult mIterationResult MOZ_GUARDED_BY(mMonitor);
 
   enum class ThreadState {
     Wait,      // Waiting for a message.  This is the initial state.
-               // A transition from Run back to Wait occurs on the runner
-               // thread after it processes as far as mIterationState->mStateEnd
+               // A transition from Run back to Wait occurs on the runner thread
+               // after it processes as far as mIterationState->mStateTime
                // and sets mIterationResult.
     Run,       // Set on driver thread after each mIterationState update.
     Shutdown,  // Set when Shutdown() is called on main thread.
   };
   // Protected by mMonitor until set to Shutdown, after which this is not
   // modified.
-  ThreadState mThreadState;
+  ThreadState mThreadState MOZ_GUARDED_BY(mMonitor);
 
   // The thread running mGraph.  Set on construction, after other members are
   // initialized.  Cleared at the end of Shutdown().

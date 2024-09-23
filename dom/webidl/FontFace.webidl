@@ -13,37 +13,42 @@
 typedef (ArrayBuffer or ArrayBufferView) BinaryData;
 
 dictionary FontFaceDescriptors {
-  DOMString style = "normal";
-  DOMString weight = "normal";
-  DOMString stretch = "normal";
-  DOMString unicodeRange = "U+0-10FFFF";
-  DOMString variant = "normal";
-  DOMString featureSettings = "normal";
-  DOMString variationSettings = "normal";
-  DOMString display = "auto";
+  UTF8String style = "normal";
+  UTF8String weight = "normal";
+  UTF8String stretch = "normal";
+  UTF8String unicodeRange = "U+0-10FFFF";
+  UTF8String variant = "normal";
+  UTF8String featureSettings = "normal";
+  [Pref="layout.css.font-variations.enabled"] UTF8String variationSettings = "normal";
+  UTF8String display = "auto";
+  UTF8String ascentOverride = "normal";
+  UTF8String descentOverride = "normal";
+  UTF8String lineGapOverride = "normal";
+  [Pref="layout.css.size-adjust.enabled"] UTF8String sizeAdjust = "100%";
 };
 
 enum FontFaceLoadStatus { "unloaded", "loading", "loaded", "error" };
 
-// Bug 1072107 is for exposing this in workers.
-// [Exposed=(Window,Worker)]
-[Pref="layout.css.font-loading-api.enabled",
- Exposed=Window]
+[Exposed=(Window,Worker)]
 interface FontFace {
   [Throws]
-  constructor(DOMString family,
-              (DOMString or BinaryData) source,
+  constructor(UTF8String family,
+              (UTF8String or BinaryData) source,
               optional FontFaceDescriptors descriptors = {});
 
-  [SetterThrows] attribute DOMString family;
-  [SetterThrows] attribute DOMString style;
-  [SetterThrows] attribute DOMString weight;
-  [SetterThrows] attribute DOMString stretch;
-  [SetterThrows] attribute DOMString unicodeRange;
-  [SetterThrows] attribute DOMString variant;
-  [SetterThrows] attribute DOMString featureSettings;
-  [SetterThrows, Pref="layout.css.font-variations.enabled"] attribute DOMString variationSettings;
-  [SetterThrows, Pref="layout.css.font-display.enabled"] attribute DOMString display;
+  [SetterThrows] attribute UTF8String family;
+  [SetterThrows] attribute UTF8String style;
+  [SetterThrows] attribute UTF8String weight;
+  [SetterThrows] attribute UTF8String stretch;
+  [SetterThrows] attribute UTF8String unicodeRange;
+  [SetterThrows] attribute UTF8String variant;
+  [SetterThrows] attribute UTF8String featureSettings;
+  [SetterThrows, Pref="layout.css.font-variations.enabled"] attribute UTF8String variationSettings;
+  [SetterThrows] attribute UTF8String display;
+  [SetterThrows] attribute UTF8String ascentOverride;
+  [SetterThrows] attribute UTF8String descentOverride;
+  [SetterThrows] attribute UTF8String lineGapOverride;
+  [SetterThrows, Pref="layout.css.size-adjust.enabled"] attribute UTF8String sizeAdjust;
 
   readonly attribute FontFaceLoadStatus status;
 

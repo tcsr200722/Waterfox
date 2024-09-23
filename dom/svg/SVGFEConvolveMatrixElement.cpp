@@ -6,18 +6,19 @@
 
 #include "mozilla/dom/SVGFEConvolveMatrixElement.h"
 #include "mozilla/dom/SVGFEConvolveMatrixElementBinding.h"
+#include "mozilla/SVGFilterInstance.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "DOMSVGAnimatedNumberList.h"
-#include "nsSVGUtils.h"
-#include "nsSVGFilterInstance.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEConvolveMatrix)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEConvolveMatrixElement::WrapNode(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
@@ -25,7 +26,7 @@ JSObject* SVGFEConvolveMatrixElement::WrapNode(
 }
 
 SVGElement::NumberInfo SVGFEConvolveMatrixElement::sNumberInfo[2] = {
-    {nsGkAtoms::divisor, 1, false}, {nsGkAtoms::bias, 0, false}};
+    {nsGkAtoms::divisor, 1}, {nsGkAtoms::bias, 0}};
 
 SVGElement::NumberPairInfo SVGFEConvolveMatrixElement::sNumberPairInfo[1] = {
     {nsGkAtoms::kernelUnitLength, 0, 0}};
@@ -126,7 +127,7 @@ void SVGFEConvolveMatrixElement::GetSourceImageNames(
 }
 
 FilterPrimitiveDescription SVGFEConvolveMatrixElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   FilterPrimitiveDescription failureDescription;
@@ -220,6 +221,15 @@ bool SVGFEConvolveMatrixElement::AttributeAffectsRendering(
            aAttribute == nsGkAtoms::kernelMatrix));
 }
 
+nsresult SVGFEConvolveMatrixElement::BindToTree(BindContext& aCtx,
+                                                nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feConvolveMatrix);
+  }
+
+  return SVGFEConvolveMatrixElementBase::BindToTree(aCtx, aParent);
+}
+
 //----------------------------------------------------------------------
 // SVGElement methods
 
@@ -265,5 +275,4 @@ SVGFEConvolveMatrixElement::GetNumberListInfo() {
                                   ArrayLength(sNumberListInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

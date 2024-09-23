@@ -8,84 +8,27 @@
 #ifndef _QUEUEPARAMTRAITS_H_
 #define _QUEUEPARAMTRAITS_H_ 1
 
-#include "mozilla/ipc/SharedMemoryBasic.h"
+#include "ipc/EnumSerializer.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/IntegerRange.h"
-#include "mozilla/ipc/Shmem.h"
 #include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/ipc/SharedMemoryBasic.h"
 #include "mozilla/Logging.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/TypeTraits.h"
+#include "nsExceptionHandler.h"
 #include "nsString.h"
+#include "WebGLTypes.h"
 
-namespace IPC {
-typedef uint32_t PcqTypeInfoID;
-template <typename T>
-struct PcqTypeInfo;
-}  // namespace IPC
+#include <optional>
 
-namespace mozilla {
-namespace webgl {
-
-using IPC::PcqTypeInfo;
-using IPC::PcqTypeInfoID;
-
-struct QueueStatus {
-  enum EStatus {
-    // Operation was successful
-    kSuccess,
-    // The operation failed because the queue isn't ready for it.
-    // Either the queue is too full for an insert or too empty for a remove.
-    // The operation may succeed if retried.
-    kNotReady,
-    // The operation was typed and the type check failed.
-    kTypeError,
-    // The operation required more room than the queue supports.
-    // It should not be retried -- it will always fail.
-    kTooSmall,
-    // The operation failed for some reason that is unrecoverable.
-    // All values below this value indicate a fata error.
-    kFatalError,
-    // Fatal error: Internal processing ran out of memory.  This is likely e.g.
-    // during de-serialization.
-    kOOMError,
-  } mValue;
-
-  MOZ_IMPLICIT QueueStatus(const EStatus status = kSuccess) : mValue(status) {}
-  explicit operator bool() const { return mValue == kSuccess; }
-  explicit operator int() const { return static_cast<int>(mValue); }
-  bool operator==(const EStatus& o) const { return mValue == o; }
-  bool operator!=(const EStatus& o) const { return !(*this == o); }
-};
-
-inline bool IsSuccess(QueueStatus status) {
-  return status == QueueStatus::kSuccess;
-}
+namespace mozilla::webgl {
 
 template <typename T>
 struct RemoveCVR {
-  typedef typename std::remove_reference<typename std::remove_cv<T>::type>::type
-      Type;
+  using Type =
+      typename std::remove_reference<typename std::remove_cv<T>::type>::type;
 };
-
-inline size_t UsedBytes(size_t aQueueBufferSize, size_t aRead, size_t aWrite) {
-  return (aRead <= aWrite) ? aWrite - aRead
-                           : (aQueueBufferSize - aRead) + aWrite;
-}
-
-inline size_t FreeBytes(size_t aQueueBufferSize, size_t aRead, size_t aWrite) {
-  // Remember, queueSize is queueBufferSize-1
-  return (aQueueBufferSize - 1) - UsedBytes(aQueueBufferSize, aRead, aWrite);
-}
-
-template <typename T>
-struct IsTriviallySerializable
-    : public std::integral_constant<bool, std::is_enum<T>::value ||
-                                              std::is_arithmetic<T>::value> {};
-
-class ProducerConsumerQueue;
-class PcqProducer;
-class PcqConsumer;
 
 /**
  * QueueParamTraits provide the user with a way to implement PCQ argument
@@ -96,102 +39,71 @@ class PcqConsumer;
  * complex.  Since the PCQ has a fixed amount of memory available to it,
  * TryInsert operations operations are expected to sometimes fail and be
  * re-issued later.  We want these failures to be inexpensive.  The same
- * goes for TryPeek/TryRemove, which fail when there isn't enough data in
+ * goes for TryRemove, which fails when there isn't enough data in
  * the queue yet for them to complete.
- *
- * QueueParamTraits resolve this problem by allowing the Try... operations to
- * use QueueParamTraits<typename RemoveCVR<Arg>::Type>::MinSize() to get a
- * lower-bound on the amount of room in the queue required for Arg.  If the
- * operation needs more than is available then the operation quickly fails.
- * Otherwise, (de)serialization will commence, although it may still fail if
- * MinSize() was too low.
  *
  * Their expected interface is:
  *
  * template<> struct QueueParamTraits<typename RemoveCVR<Arg>::Type> {
- *   // Write data from aArg into the PCQ.  It is an error to write less than
- *   // is reported by MinSize(aArg).
- *  *   static QueueStatus Write(ProducerView& aProducerView, const Arg& aArg)
- * {...};
+ *   // Write data from aArg into the PCQ.
+ *   static QueueStatus Write(ProducerView& aProducerView, const Arg& aArg)
+ *   {...};
  *
  *   // Read data from the PCQ into aArg, or just skip the data if aArg is null.
- *   // It is an error to read less than is reported by MinSize(aArg).
- *  *   static QueueStatus Read(ConsumerView& aConsumerView, Arg* aArg) {...}
- *
- *   // The minimum number of bytes needed to represent this object in the
- * queue.
- *   // It is intended to be a very fast estimate but most cases can easily
- *   // compute the exact value.
- *   // If aArg is null then this should be the minimum ever required (it is
- * only
- *   // null when checking for deserialization, since the argument is obviously
- *   // not yet available).  It is an error for the queue to require less room
- *   // than MinSize() reports.  A MinSize of 0 is always valid (albeit
- * wasteful). static size_t MinSize(const Arg* aArg) {...}
+ *   static QueueStatus Read(ConsumerView& aConsumerView, Arg* aArg) {...}
  * };
  */
 template <typename Arg>
-struct QueueParamTraits;
+struct QueueParamTraits;  // Todo: s/QueueParamTraits/SizedParamTraits/
 
-// Provides type-checking for queue parameters.
-template <typename Arg>
-struct PcqTypedArg {
-  explicit PcqTypedArg(const Arg& aArg) : mWrite(&aArg), mRead(nullptr) {}
-  explicit PcqTypedArg(Arg* aArg) : mWrite(nullptr), mRead(aArg) {}
+template <typename T>
+inline Range<T> AsRange(T* const begin, T* const end) {
+  const auto size = MaybeAs<size_t>(end - begin);
+  MOZ_RELEASE_ASSERT(size);
+  return {begin, *size};
+}
 
- private:
-  friend struct QueueParamTraits<PcqTypedArg<Arg>>;
-  const Arg* mWrite;
-  Arg* mRead;
+// -
+// BytesAlwaysValidT
+
+template <class T>
+struct BytesAlwaysValidT {
+  using non_cv = typename std::remove_cv<T>::type;
+  static constexpr bool value =
+      std::is_arithmetic<T>::value && !std::is_same<non_cv, bool>::value;
+};
+static_assert(BytesAlwaysValidT<float>::value);
+static_assert(!BytesAlwaysValidT<bool>::value);
+static_assert(!BytesAlwaysValidT<const bool>::value);
+static_assert(!BytesAlwaysValidT<int*>::value);
+static_assert(BytesAlwaysValidT<intptr_t>::value);
+
+template <class T, size_t N>
+struct BytesAlwaysValidT<std::array<T, N>> {
+  static constexpr bool value = BytesAlwaysValidT<T>::value;
+};
+static_assert(BytesAlwaysValidT<std::array<int, 4>>::value);
+static_assert(!BytesAlwaysValidT<std::array<bool, 4>>::value);
+
+template <class T, size_t N>
+struct BytesAlwaysValidT<T[N]> {
+  static constexpr bool value = BytesAlwaysValidT<T>::value;
+};
+static_assert(BytesAlwaysValidT<int[4]>::value);
+static_assert(!BytesAlwaysValidT<bool[4]>::value);
+
+// -
+
+template <>
+struct BytesAlwaysValidT<webgl::UniformDataVal> {
+  static constexpr bool value = true;
+};
+template <>
+struct BytesAlwaysValidT<const webgl::UniformDataVal> {
+  static constexpr bool value = true;
 };
 
-/**
- * The marshaller handles all data insertion into the queue.
- */
-class Marshaller {
- public:
-  static QueueStatus WriteObject(uint8_t* aQueue, size_t aQueueBufferSize,
-                                 size_t aRead, size_t* aWrite, const void* aArg,
-                                 size_t aArgLength) {
-    const uint8_t* buf = reinterpret_cast<const uint8_t*>(aArg);
-    if (FreeBytes(aQueueBufferSize, aRead, *aWrite) < aArgLength) {
-      return QueueStatus::kNotReady;
-    }
-
-    if (*aWrite + aArgLength <= aQueueBufferSize) {
-      memcpy(aQueue + *aWrite, buf, aArgLength);
-    } else {
-      size_t firstLen = aQueueBufferSize - *aWrite;
-      memcpy(aQueue + *aWrite, buf, firstLen);
-      memcpy(aQueue, &buf[firstLen], aArgLength - firstLen);
-    }
-    *aWrite = (*aWrite + aArgLength) % aQueueBufferSize;
-    return QueueStatus::kSuccess;
-  }
-
-  // The PcqBase must belong to a Consumer.
-  static QueueStatus ReadObject(const uint8_t* aQueue, size_t aQueueBufferSize,
-                                size_t* aRead, size_t aWrite, void* aArg,
-                                size_t aArgLength) {
-    if (UsedBytes(aQueueBufferSize, *aRead, aWrite) < aArgLength) {
-      return QueueStatus::kNotReady;
-    }
-
-    if (aArg) {
-      uint8_t* buf = reinterpret_cast<uint8_t*>(aArg);
-      if (*aRead + aArgLength <= aQueueBufferSize) {
-        memcpy(buf, aQueue + *aRead, aArgLength);
-      } else {
-        size_t firstLen = aQueueBufferSize - *aRead;
-        memcpy(buf, aQueue + *aRead, firstLen);
-        memcpy(&buf[firstLen], aQueue, aArgLength - firstLen);
-      }
-    }
-
-    *aRead = (*aRead + aArgLength) % aQueueBufferSize;
-    return QueueStatus::kSuccess;
-  }
-};
+// -
 
 /**
  * Used to give QueueParamTraits a way to write to the Producer without
@@ -204,59 +116,41 @@ class ProducerView {
  public:
   using Producer = _Producer;
 
-  ProducerView(Producer* aProducer, size_t aRead, size_t* aWrite)
-      : mProducer(aProducer),
-        mRead(aRead),
-        mWrite(aWrite),
-        mStatus(QueueStatus::kSuccess) {}
-
-  /**
-   * Write bytes from aBuffer to the producer if there is enough room.
-   * aBufferSize must not be 0.
-   */
-  inline QueueStatus Write(const void* aBuffer, size_t aBufferSize);
+  explicit ProducerView(Producer* aProducer) : mProducer(aProducer) {}
 
   template <typename T>
-  inline QueueStatus Write(const T* src, size_t count) {
-    return Write(reinterpret_cast<const void*>(src), count * sizeof(T));
+  bool WriteFromRange(const Range<const T>& src) {
+    static_assert(BytesAlwaysValidT<T>::value);
+    if (MOZ_LIKELY(mOk)) {
+      mOk &= mProducer->WriteFromRange(src);
+    }
+    return mOk;
+  }
+
+  /**
+   * Copy bytes from aBuffer to the producer if there is enough room.
+   * aBufferSize must not be 0.
+   */
+  template <typename T>
+  inline bool Write(const T* begin, const T* end) {
+    MOZ_RELEASE_ASSERT(begin <= end);
+    return WriteFromRange(AsRange(begin, end));
   }
 
   /**
    * Serialize aArg using Arg's QueueParamTraits.
    */
   template <typename Arg>
-  QueueStatus WriteParam(const Arg& aArg) {
+  bool WriteParam(const Arg& aArg) {
     return mozilla::webgl::QueueParamTraits<
         typename RemoveCVR<Arg>::Type>::Write(*this, aArg);
   }
 
-  /**
-   * Serialize aArg using Arg's QueueParamTraits and PcqTypeInfo.
-   */
-  template <typename Arg>
-  QueueStatus WriteTypedParam(const Arg& aArg) {
-    return mozilla::webgl::QueueParamTraits<PcqTypedArg<Arg>>::Write(
-        *this, PcqTypedArg<Arg>(aArg));
-  }
-
-  /**
-   * MinSize of Arg using QueueParamTraits.
-   */
-  template <typename Arg>
-  size_t MinSizeParam(const Arg* aArg = nullptr) {
-    return mozilla::webgl::QueueParamTraits<
-        typename RemoveCVR<Arg>::Type>::MinSize(*this, aArg);
-  }
-
-  inline size_t MinSizeBytes(size_t aNBytes);
-
-  QueueStatus GetStatus() { return mStatus; }
+  bool Ok() const { return mOk; }
 
  private:
-  Producer* mProducer;
-  size_t mRead;
-  size_t* mWrite;
-  QueueStatus mStatus;
+  Producer* const mProducer;
+  bool mOk = true;
 };
 
 /**
@@ -268,269 +162,292 @@ class ConsumerView {
  public:
   using Consumer = _Consumer;
 
-  ConsumerView(Consumer* aConsumer, size_t* aRead, size_t aWrite)
-      : mConsumer(aConsumer),
-        mRead(aRead),
-        mWrite(aWrite),
-        mStatus(QueueStatus::kSuccess) {}
-
-  // When reading raw memory blocks, we may get an error, a shared memory
-  // object that we take ownership of, or a pointer to a block of
-  // memory that is only guaranteed to exist as long as the ReadVariant
-  // call.
-  using PcqReadBytesVariant =
-      Variant<QueueStatus, RefPtr<mozilla::ipc::SharedMemoryBasic>, void*>;
+  explicit ConsumerView(Consumer* aConsumer) : mConsumer(aConsumer) {}
 
   /**
    * Read bytes from the consumer if there is enough data.  aBuffer may
    * be null (in which case the data is skipped)
    */
-  inline QueueStatus Read(void* aBuffer, size_t aBufferSize);
-
   template <typename T>
-  inline QueueStatus Read(T* dest, size_t count) {
-    return Read(reinterpret_cast<void*>(dest), count * sizeof(T));
+  inline bool Read(T* const destBegin, T* const destEnd) {
+    MOZ_ASSERT(destBegin);
+    MOZ_RELEASE_ASSERT(destBegin <= destEnd);
+
+    const auto dest = AsRange(destBegin, destEnd);
+    const auto view = ReadRange<T>(dest.length());
+    if (MOZ_LIKELY(view)) {
+      const auto byteSize = ByteSize(dest);
+      if (MOZ_LIKELY(byteSize)) {
+        memcpy(dest.begin().get(), view->begin().get(), byteSize);
+      }
+    }
+    return mOk;
   }
 
-  /**
-   * Calls a Matcher that returns a QueueStatus when told that the next bytes
-   * are in the queue or are in shared memory.
-   *
-   * The matcher looks like this:
-   * struct MyMatcher {
-   *   QueueStatus operator()(RefPtr<mozilla::ipc::SharedMemoryBasic>& x) {
-   *     Read or copy x; take responsibility for closing x.
-   *   }
-   *   QueueStatus operator()() { Data is in queue.  Use ConsumerView::Read. }
-   * };
-   *
-   * The only reason to use this instead of Read is if it is important to
-   * get the data without copying "large" items.  Few things are large
-   * enough to bother.
-   */
-  template <typename Matcher>
-  inline QueueStatus ReadVariant(size_t aBufferSize, Matcher&& aMatcher);
+  /// Return a view wrapping the shmem.
+  template <typename T>
+  inline Maybe<Range<const T>> ReadRange(const size_t elemCount) {
+    static_assert(BytesAlwaysValidT<T>::value);
+    if (MOZ_UNLIKELY(!mOk)) return {};
+    const auto view = mConsumer->template ReadRange<T>(elemCount);
+    mOk &= bool(view);
+    return view;
+  }
 
   /**
    * Deserialize aArg using Arg's QueueParamTraits.
    * If the return value is not Success then aArg is not changed.
    */
   template <typename Arg>
-  QueueStatus ReadParam(Arg* aArg = nullptr) {
-    return mozilla::webgl::QueueParamTraits<
-        typename RemoveCVR<Arg>::Type>::Read(*this, aArg);
+  bool ReadParam(Arg* aArg) {
+    MOZ_ASSERT(aArg);
+    return mozilla::webgl::QueueParamTraits<std::remove_cv_t<Arg>>::Read(*this,
+                                                                         aArg);
   }
 
-  /**
-   * Deserialize aArg using Arg's QueueParamTraits and PcqTypeInfo.
-   * If the return value is not Success then aArg is not changed.
-   */
-  template <typename Arg>
-  QueueStatus ReadTypedParam(Arg* aArg = nullptr) {
-    return mozilla::webgl::QueueParamTraits<PcqTypedArg<Arg>>::Read(
-        *this, PcqTypedArg(aArg));
-  }
-
-  /**
-   * MinSize of Arg using QueueParamTraits.  aArg may be null.
-   */
-  template <typename Arg>
-  size_t MinSizeParam(Arg* aArg = nullptr) {
-    return mozilla::webgl::QueueParamTraits<
-        typename RemoveCVR<Arg>::Type>::MinSize(*this, aArg);
-  }
-
-  inline size_t MinSizeBytes(size_t aNBytes);
-
-  QueueStatus GetStatus() { return mStatus; }
+  bool Ok() const { return mOk; }
 
  private:
-  Consumer* mConsumer;
-  size_t* mRead;
-  size_t mWrite;
-  QueueStatus mStatus;
+  Consumer* const mConsumer;
+  bool mOk = true;
 };
 
-template <typename T>
-QueueStatus ProducerView<T>::Write(const void* aBuffer, size_t aBufferSize) {
-  MOZ_ASSERT(aBuffer && (aBufferSize > 0));
-  if (!mStatus) {
-    return mStatus;
-  }
+// -
 
-  if (NeedsSharedMemory(aBufferSize, mProducer->Size())) {
-    auto smem = MakeRefPtr<mozilla::ipc::SharedMemoryBasic>();
-    if (!smem->Create(aBufferSize) || !smem->Map(aBufferSize)) {
-      return QueueStatus::kFatalError;
-    }
-    mozilla::ipc::SharedMemoryBasic::Handle handle;
-    if (!smem->ShareToProcess(mProducer->mOtherPid, &handle)) {
-      return QueueStatus::kFatalError;
-    }
-    memcpy(smem->memory(), aBuffer, aBufferSize);
-    smem->CloseHandle();
-    return WriteParam(handle);
-  }
-
-  return mProducer->WriteObject(mRead, mWrite, aBuffer, aBufferSize);
-}
-
-template <typename T>
-size_t ProducerView<T>::MinSizeBytes(size_t aNBytes) {
-  return NeedsSharedMemory(aNBytes, mProducer->Size())
-             ? MinSizeParam((mozilla::ipc::SharedMemoryBasic::Handle*)nullptr)
-             : aNBytes;
-}
-
-template <typename T>
-QueueStatus ConsumerView<T>::Read(void* aBuffer, size_t aBufferSize) {
-  struct PcqReadBytesMatcher {
-    QueueStatus operator()(RefPtr<mozilla::ipc::SharedMemoryBasic>& smem) {
-      MOZ_ASSERT(smem);
-      QueueStatus ret;
-      if (smem->memory()) {
-        if (mBuffer) {
-          memcpy(mBuffer, smem->memory(), mBufferSize);
-        }
-        ret = QueueStatus::kSuccess;
-      } else {
-        ret = QueueStatus::kFatalError;
-      }
-      // TODO: Problem: CloseHandle should only be called on the remove/skip
-      // call.  A peek should not CloseHandle!
-      smem->CloseHandle();
-      return ret;
-    }
-    QueueStatus operator()() {
-      return mConsumer.ReadObject(mRead, mWrite, mBuffer, mBufferSize);
-    }
-
-    Consumer& mConsumer;
-    size_t* mRead;
-    size_t mWrite;
-    void* mBuffer;
-    size_t mBufferSize;
-  };
-
-  MOZ_ASSERT(aBufferSize > 0);
-  if (!mStatus) {
-    return mStatus;
-  }
-
-  return ReadVariant(aBufferSize,
-                     PcqReadBytesMatcher{*(this->mConsumer), mRead, mWrite,
-                                         aBuffer, aBufferSize});
-}
-
-template <typename T>
-template <typename Matcher>
-QueueStatus ConsumerView<T>::ReadVariant(size_t aBufferSize,
-                                         Matcher&& aMatcher) {
-  if (!mStatus) {
-    return mStatus;
-  }
-
-  if (NeedsSharedMemory(aBufferSize, mConsumer->Size())) {
-    // Always read shared-memory -- don't just skip.
-    mozilla::ipc::SharedMemoryBasic::Handle handle;
-    if (!ReadParam(&handle)) {
-      return GetStatus();
-    }
-
-    // TODO: Find some way to MOZ_RELEASE_ASSERT that buffersize exactly matches
-    // what was in queue.  This doesn't appear to be possible with the
-    // information available.
-    // TODO: This needs to return the same refptr even when peeking/during
-    // transactions that get aborted/rewound.  So this is wrong.
-    auto sharedMem = MakeRefPtr<mozilla::ipc::SharedMemoryBasic>();
-    if (!sharedMem->IsHandleValid(handle) ||
-        !sharedMem->SetHandle(handle,
-                              mozilla::ipc::SharedMemory::RightsReadWrite) ||
-        !sharedMem->Map(aBufferSize)) {
-      return QueueStatus::kFatalError;
-    }
-    return aMatcher(sharedMem);
-  }
-  return aMatcher();
-}
-
-template <typename T>
-size_t ConsumerView<T>::MinSizeBytes(size_t aNBytes) {
-  return NeedsSharedMemory(aNBytes, mConsumer->Size())
-             ? MinSizeParam((mozilla::ipc::SharedMemoryBasic::Handle*)nullptr)
-             : aNBytes;
-}
-
-// ---------------------------------------------------------------
-
-template <typename Arg>
-struct QueueParamTraits<PcqTypedArg<Arg>> {
-  using ParamType = PcqTypedArg<Arg>;
-
-  template <typename U, PcqTypeInfoID ArgTypeId = PcqTypeInfo<Arg>::ID>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    MOZ_ASSERT(aArg.mWrite);
-    aProducerView.WriteParam(ArgTypeId);
-    return aProducerView.WriteParam(*aArg.mWrite);
-  }
-
-  template <typename U, PcqTypeInfoID ArgTypeId = PcqTypeInfo<Arg>::ID>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    MOZ_ASSERT(aArg->mRead);
-    PcqTypeInfoID typeId;
-    if (!aConsumerView.ReadParam(&typeId)) {
-      return aConsumerView.GetStatus();
-    }
-    return (typeId == ArgTypeId) ? aConsumerView.ReadParam(aArg)
-                                 : QueueStatus::kTypeError;
-  }
-
-  template <typename View>
-  static constexpr size_t MinSize(View& aView, const ParamType* aArg) {
-    return sizeof(PcqTypeInfoID) +
-           aView.MinSize(aArg->mWrite ? aArg->mWrite : aArg->mRead);
-  }
-};
-
-// ---------------------------------------------------------------
-
-/**
- * True for types that can be (de)serialized by memcpy.
- */
 template <typename Arg>
 struct QueueParamTraits {
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView, const Arg& aArg) {
-    static_assert(mozilla::webgl::template IsTriviallySerializable<Arg>::value,
+  template <typename ProducerView>
+  static bool Write(ProducerView& aProducerView, const Arg& aArg) {
+    static_assert(BytesAlwaysValidT<Arg>::value,
                   "No QueueParamTraits specialization was found for this type "
-                  "and it does not satisfy IsTriviallySerializable.");
+                  "and it does not satisfy BytesAlwaysValid.");
     // Write self as binary
-    return aProducerView.Write(&aArg, sizeof(Arg));
+    const auto pArg = &aArg;
+    return aProducerView.Write(pArg, pArg + 1);
   }
 
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, Arg* aArg) {
-    static_assert(mozilla::webgl::template IsTriviallySerializable<Arg>::value,
+  template <typename ConsumerView>
+  static bool Read(ConsumerView& aConsumerView, Arg* aArg) {
+    static_assert(BytesAlwaysValidT<Arg>::value,
                   "No QueueParamTraits specialization was found for this type "
-                  "and it does not satisfy IsTriviallySerializable.");
+                  "and it does not satisfy BytesAlwaysValid.");
     // Read self as binary
-    return aConsumerView.Read(aArg, sizeof(Arg));
-  }
-
-  template <typename View>
-  static constexpr size_t MinSize(View& aView, const Arg* aArg) {
-    static_assert(mozilla::webgl::template IsTriviallySerializable<Arg>::value,
-                  "No QueueParamTraits specialization was found for this type "
-                  "and it does not satisfy IsTriviallySerializable.");
-    return sizeof(Arg);
+    return aConsumerView.Read(aArg, aArg + 1);
   }
 };
 
 // ---------------------------------------------------------------
 
 template <>
-struct IsTriviallySerializable<QueueStatus> : std::true_type {};
+struct QueueParamTraits<bool> {
+  using ParamType = bool;
+
+  template <typename U>
+  static auto Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
+    uint8_t temp = aArg ? 1 : 0;
+    return aProducerView.WriteParam(temp);
+  }
+
+  template <typename U>
+  static auto Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+    uint8_t temp;
+    if (aConsumerView.ReadParam(&temp)) {
+      MOZ_ASSERT(temp == 1 || temp == 0);
+      *aArg = temp ? true : false;
+    }
+    return aConsumerView.Ok();
+  }
+};
+
+// ---------------------------------------------------------------
+
+template <class T>
+struct QueueParamTraits_IsEnumCase {
+  template <typename ProducerView>
+  static bool Write(ProducerView& aProducerView, const T& aArg) {
+    MOZ_ASSERT(IsEnumCase(aArg));
+    const auto shadow = static_cast<std::underlying_type_t<T>>(aArg);
+    aProducerView.WriteParam(shadow);
+    return true;
+  }
+
+  template <typename ConsumerView>
+  static bool Read(ConsumerView& aConsumerView, T* aArg) {
+    auto shadow = std::underlying_type_t<T>{};
+    aConsumerView.ReadParam(&shadow);
+    const auto e = AsEnumCase<T>(shadow);
+    if (!e) return false;
+    *aArg = *e;
+    return true;
+  }
+};
+
+// ---------------------------------------------------------------
+
+// We guarantee our robustness via these requirements:
+// * Object.MutTiedFields() gives us a tuple,
+// * where the combined sizeofs all field types sums to sizeof(Object),
+//   * (thus we know we are exhaustively listing all fields)
+// * where feeding each field back into ParamTraits succeeds,
+// * and ParamTraits is only automated for BytesAlwaysValidT<T> types.
+// (BytesAlwaysValidT rejects bool and enum types, and only accepts int/float
+// types, or array or std::arrays of such types)
+// (Yes, bit-field fields are rejected by MutTiedFields too)
+
+template <class T>
+struct QueueParamTraits_TiedFields {
+  template <typename ProducerView>
+  static bool Write(ProducerView& aProducerView, const T& aArg) {
+    const auto fields = TiedFields(aArg);
+    static_assert(AreAllBytesTiedFields<T>(),
+                  "Are there missing fields or padding between fields?");
+
+    bool ok = true;
+    MapTuple(fields, [&](const auto& field) {
+      ok &= aProducerView.WriteParam(field);
+      return true;
+    });
+    return ok;
+  }
+
+  template <typename ConsumerView>
+  static bool Read(ConsumerView& aConsumerView, T* aArg) {
+    const auto fields = TiedFields(*aArg);
+    static_assert(AreAllBytesTiedFields<T>());
+
+    bool ok = true;
+    MapTuple(fields, [&](auto& field) {
+      ok &= aConsumerView.ReadParam(&field);
+      return true;
+    });
+    return ok;
+  }
+};
+
+// ---------------------------------------------------------------
+
+// Adapted from IPC::EnumSerializer, this class safely handles enum values,
+// validating that they are in range using the same EnumValidators as IPDL
+// (namely ContiguousEnumValidator and ContiguousEnumValidatorInclusive).
+template <typename E, typename EnumValidator>
+struct EnumSerializer {
+  using ParamType = E;
+  using DataType = typename std::underlying_type<E>::type;
+
+  template <typename U>
+  static auto Write(ProducerView<U>& aProducerView, const ParamType& aValue) {
+    MOZ_RELEASE_ASSERT(
+        EnumValidator::IsLegalValue(static_cast<DataType>(aValue)));
+    return aProducerView.WriteParam(DataType(aValue));
+  }
+
+  template <typename U>
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aResult) {
+    DataType value;
+    if (!aConsumerView.ReadParam(&value)) {
+      CrashReporter::RecordAnnotationCString(
+          CrashReporter::Annotation::IPCReadErrorReason, "Bad iter");
+      return false;
+    }
+    if (!EnumValidator::IsLegalValue(static_cast<DataType>(value))) {
+      CrashReporter::RecordAnnotationCString(
+          CrashReporter::Annotation::IPCReadErrorReason, "Illegal value");
+      return false;
+    }
+
+    *aResult = ParamType(value);
+    return true;
+  }
+};
+
+using IPC::ContiguousEnumValidator;
+using IPC::ContiguousEnumValidatorInclusive;
+
+template <typename E, E MinLegal, E HighBound>
+struct ContiguousEnumSerializer
+    : EnumSerializer<E, ContiguousEnumValidator<E, MinLegal, HighBound>> {};
+
+template <typename E, E MinLegal, E MaxLegal>
+struct ContiguousEnumSerializerInclusive
+    : EnumSerializer<E,
+                     ContiguousEnumValidatorInclusive<E, MinLegal, MaxLegal>> {
+};
+
+// ---------------------------------------------------------------
+
+template <>
+struct QueueParamTraits<webgl::TexUnpackBlobDesc> {
+  using ParamType = webgl::TexUnpackBlobDesc;
+
+  template <typename U>
+  static bool Write(ProducerView<U>& view, const ParamType& in) {
+    MOZ_RELEASE_ASSERT(!in.image);
+    MOZ_RELEASE_ASSERT(!in.sd);
+    const bool isDataSurf = bool(in.dataSurf);
+    if (!view.WriteParam(in.imageTarget) || !view.WriteParam(in.size) ||
+        !view.WriteParam(in.srcAlphaType) || !view.WriteParam(in.unpacking) ||
+        !view.WriteParam(in.cpuData) || !view.WriteParam(in.pboOffset) ||
+        !view.WriteParam(in.structuredSrcSize) ||
+        !view.WriteParam(in.applyUnpackTransforms) ||
+        !view.WriteParam(isDataSurf)) {
+      return false;
+    }
+    if (isDataSurf) {
+      const auto& surf = in.dataSurf;
+      gfx::DataSourceSurface::ScopedMap map(surf, gfx::DataSourceSurface::READ);
+      if (!map.IsMapped()) {
+        return false;
+      }
+      const auto& surfSize = surf->GetSize();
+      const auto stride = *MaybeAs<size_t>(map.GetStride());
+      if (!view.WriteParam(surfSize) || !view.WriteParam(surf->GetFormat()) ||
+          !view.WriteParam(stride)) {
+        return false;
+      }
+
+      const size_t dataSize = stride * surfSize.height;
+      const auto& begin = map.GetData();
+      const auto range = Range<const uint8_t>{begin, dataSize};
+      if (!view.WriteFromRange(range)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  template <typename U>
+  static bool Read(ConsumerView<U>& view, ParamType* const out) {
+    bool isDataSurf;
+    if (!view.ReadParam(&out->imageTarget) || !view.ReadParam(&out->size) ||
+        !view.ReadParam(&out->srcAlphaType) ||
+        !view.ReadParam(&out->unpacking) || !view.ReadParam(&out->cpuData) ||
+        !view.ReadParam(&out->pboOffset) ||
+        !view.ReadParam(&out->structuredSrcSize) ||
+        !view.ReadParam(&out->applyUnpackTransforms) ||
+        !view.ReadParam(&isDataSurf)) {
+      return false;
+    }
+    if (isDataSurf) {
+      gfx::IntSize surfSize;
+      gfx::SurfaceFormat format;
+      size_t stride;
+      if (!view.ReadParam(&surfSize) || !view.ReadParam(&format) ||
+          !view.ReadParam(&stride)) {
+        return false;
+      }
+      const size_t dataSize = stride * surfSize.height;
+      const auto range = view.template ReadRange<uint8_t>(dataSize);
+      if (!range) return false;
+
+      // DataSourceSurface demands pointer-to-mutable.
+      const auto bytes = const_cast<uint8_t*>(range->begin().get());
+      out->dataSurf = gfx::Factory::CreateWrappingDataSourceSurface(
+          bytes, stride, surfSize, format);
+      MOZ_ASSERT(out->dataSurf);
+    }
+    return true;
+  }
+};
 
 // ---------------------------------------------------------------
 
@@ -539,68 +456,50 @@ struct QueueParamTraits<nsACString> {
   using ParamType = nsACString;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     if ((!aProducerView.WriteParam(aArg.IsVoid())) || aArg.IsVoid()) {
-      return aProducerView.GetStatus();
+      return false;
     }
 
     uint32_t len = aArg.Length();
     if ((!aProducerView.WriteParam(len)) || (len == 0)) {
-      return aProducerView.GetStatus();
+      return false;
     }
 
     return aProducerView.Write(aArg.BeginReading(), len);
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     bool isVoid = false;
     if (!aConsumerView.ReadParam(&isVoid)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
-    if (aArg) {
-      aArg->SetIsVoid(isVoid);
-    }
+    aArg->SetIsVoid(isVoid);
     if (isVoid) {
-      return QueueStatus::kSuccess;
+      return true;
     }
 
     uint32_t len = 0;
     if (!aConsumerView.ReadParam(&len)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
     if (len == 0) {
-      if (aArg) {
-        *aArg = "";
-      }
-      return QueueStatus::kSuccess;
+      *aArg = "";
+      return true;
     }
 
-    char* buf = aArg ? new char[len + 1] : nullptr;
-    if (aArg && (!buf)) {
-      return QueueStatus::kOOMError;
+    char* buf = new char[len + 1];
+    if (!buf) {
+      return false;
     }
     if (!aConsumerView.Read(buf, len)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
     buf[len] = '\0';
-    if (aArg) {
-      aArg->Adopt(buf, len);
-    }
-    return QueueStatus::kSuccess;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t minSize = aView.template MinSizeParam<bool>(nullptr);
-    if ((!aArg) || aArg->IsVoid()) {
-      return minSize;
-    }
-    minSize += aView.template MinSizeParam<uint32_t>(nullptr) +
-               aView.MinSizeBytes(aArg->Length());
-    return minSize;
+    aArg->Adopt(buf, len);
+    return true;
   }
 };
 
@@ -609,78 +508,56 @@ struct QueueParamTraits<nsAString> {
   using ParamType = nsAString;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     if ((!aProducerView.WriteParam(aArg.IsVoid())) || (aArg.IsVoid())) {
-      return aProducerView.GetStatus();
+      return false;
     }
     // DLP: No idea if this includes null terminator
     uint32_t len = aArg.Length();
     if ((!aProducerView.WriteParam(len)) || (len == 0)) {
-      return aProducerView.GetStatus();
+      return false;
     }
     constexpr const uint32_t sizeofchar = sizeof(typename ParamType::char_type);
     return aProducerView.Write(aArg.BeginReading(), len * sizeofchar);
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     bool isVoid = false;
     if (!aConsumerView.ReadParam(&isVoid)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
-    if (aArg) {
-      aArg->SetIsVoid(isVoid);
-    }
+    aArg->SetIsVoid(isVoid);
     if (isVoid) {
-      return QueueStatus::kSuccess;
+      return true;
     }
 
     // DLP: No idea if this includes null terminator
     uint32_t len = 0;
     if (!aConsumerView.ReadParam(&len)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
     if (len == 0) {
-      if (aArg) {
-        *aArg = nsString();
-      }
-      return QueueStatus::kSuccess;
+      *aArg = nsString();
+      return true;
     }
 
     uint32_t sizeofchar = sizeof(typename ParamType::char_type);
     typename ParamType::char_type* buf = nullptr;
-    if (aArg) {
-      buf = static_cast<typename ParamType::char_type*>(
-          malloc((len + 1) * sizeofchar));
-      if (!buf) {
-        return QueueStatus::kOOMError;
-      }
+    buf = static_cast<typename ParamType::char_type*>(
+        malloc((len + 1) * sizeofchar));
+    if (!buf) {
+      return false;
     }
 
     if (!aConsumerView.Read(buf, len * sizeofchar)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
     buf[len] = L'\0';
-    if (aArg) {
-      aArg->Adopt(buf, len);
-    }
-
-    return QueueStatus::kSuccess;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t minSize = aView.template MinSizeParam<bool>(nullptr);
-    if ((!aArg) || aArg->IsVoid()) {
-      return minSize;
-    }
-    uint32_t sizeofchar = sizeof(typename ParamType::char_type);
-    minSize += aView.template MinSizeParam<uint32_t>(nullptr) +
-               aView.MinSizeBytes(aArg->Length() * sizeofchar);
-    return minSize;
+    aArg->Adopt(buf, len);
+    return true;
   }
 };
 
@@ -697,59 +574,44 @@ struct QueueParamTraits<nsString> : public QueueParamTraits<nsAString> {
 // ---------------------------------------------------------------
 
 template <typename NSTArrayType,
-          bool =
-              IsTriviallySerializable<typename NSTArrayType::elem_type>::value>
+          bool = BytesAlwaysValidT<typename NSTArrayType::value_type>::value>
 struct NSArrayQueueParamTraits;
 
-// For ElementTypes that are !IsTriviallySerializable
+// For ElementTypes that are !BytesAlwaysValidT
 template <typename _ElementType>
 struct NSArrayQueueParamTraits<nsTArray<_ElementType>, false> {
   using ElementType = _ElementType;
   using ParamType = nsTArray<ElementType>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     aProducerView.WriteParam(aArg.Length());
     for (auto& elt : aArg) {
       aProducerView.WriteParam(elt);
     }
-    return aProducerView.GetStatus();
+    return true;
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     size_t arrayLen;
     if (!aConsumerView.ReadParam(&arrayLen)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
-    if (aArg && !aArg->AppendElements(arrayLen, fallible)) {
-      return QueueStatus::kOOMError;
+    if (!aArg->AppendElements(arrayLen, fallible)) {
+      return false;
     }
 
     for (auto i : IntegerRange(arrayLen)) {
-      ElementType* elt = aArg ? (&aArg->ElementAt(i)) : nullptr;
+      ElementType& elt = aArg->ElementAt(i);
       aConsumerView.ReadParam(elt);
     }
-    return aConsumerView.GetStatus();
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t ret = aView.template MinSizeParam<size_t>(nullptr);
-    if (!aArg) {
-      return ret;
-    }
-
-    for (auto& elt : aArg) {
-      ret += aView.MinSizeParam(&elt);
-    }
-    return ret;
+    return aConsumerView.Ok();
   }
 };
 
-// For ElementTypes that are IsTriviallySerializable
+// For ElementTypes that are BytesAlwaysValidT
 template <typename _ElementType>
 struct NSArrayQueueParamTraits<nsTArray<_ElementType>, true> {
   using ElementType = _ElementType;
@@ -757,36 +619,24 @@ struct NSArrayQueueParamTraits<nsTArray<_ElementType>, true> {
 
   // TODO: Are there alignment issues?
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     size_t arrayLen = aArg.Length();
     aProducerView.WriteParam(arrayLen);
     return aProducerView.Write(&aArg[0], aArg.Length() * sizeof(ElementType));
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     size_t arrayLen;
     if (!aConsumerView.ReadParam(&arrayLen)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
-    if (aArg && !aArg->AppendElements(arrayLen, fallible)) {
-      return QueueStatus::kOOMError;
+    if (!aArg->AppendElements(arrayLen, fallible)) {
+      return false;
     }
 
     return aConsumerView.Read(aArg->Elements(), arrayLen * sizeof(ElementType));
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t ret = aView.template MinSizeParam<size_t>(nullptr);
-    if (!aArg) {
-      return ret;
-    }
-
-    ret += aView.MinSizeBytes(aArg->Length() * sizeof(ElementType));
-    return ret;
   }
 };
 
@@ -799,64 +649,46 @@ struct QueueParamTraits<nsTArray<ElementType>>
 // ---------------------------------------------------------------
 
 template <typename ArrayType,
-          bool =
-              IsTriviallySerializable<typename ArrayType::ElementType>::value>
+          bool = BytesAlwaysValidT<typename ArrayType::ElementType>::value>
 struct ArrayQueueParamTraits;
 
-// For ElementTypes that are !IsTriviallySerializable
+// For ElementTypes that are !BytesAlwaysValidT
 template <typename _ElementType, size_t Length>
 struct ArrayQueueParamTraits<Array<_ElementType, Length>, false> {
   using ElementType = _ElementType;
   using ParamType = Array<ElementType, Length>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    for (size_t i = 0; i < Length; ++i) {
-      aProducerView.WriteParam(aArg[i]);
+  static auto Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
+    for (const auto& elt : aArg) {
+      aProducerView.WriteParam(elt);
     }
-    return aProducerView.GetStatus();
+    return aProducerView.Ok();
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    for (size_t i = 0; i < Length; ++i) {
-      ElementType* elt = aArg ? (&((*aArg)[i])) : nullptr;
+  static auto Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+    for (auto& elt : *aArg) {
       aConsumerView.ReadParam(elt);
     }
-    return aConsumerView.GetStatus();
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    size_t ret = 0;
-    for (size_t i = 0; i < Length; ++i) {
-      ret += aView.MinSizeParam(&((*aArg)[i]));
-    }
-    return ret;
+    return aConsumerView.Ok();
   }
 };
 
-// For ElementTypes that are IsTriviallySerializable
+// For ElementTypes that are BytesAlwaysValidT
 template <typename _ElementType, size_t Length>
 struct ArrayQueueParamTraits<Array<_ElementType, Length>, true> {
   using ElementType = _ElementType;
   using ParamType = Array<ElementType, Length>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static auto Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     return aProducerView.Write(aArg.begin(), sizeof(ElementType[Length]));
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static auto Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     return aConsumerView.Read(aArg->begin(), sizeof(ElementType[Length]));
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeBytes(sizeof(ElementType[Length]));
   }
 };
 
@@ -873,84 +705,28 @@ struct QueueParamTraits<Maybe<ElementType>> {
   using ParamType = Maybe<ElementType>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     aProducerView.WriteParam(static_cast<bool>(aArg));
-    return aArg ? aProducerView.WriteParam(aArg.ref())
-                : aProducerView.GetStatus();
+    if (aArg) {
+      aProducerView.WriteParam(aArg.ref());
+    }
+    return aProducerView.Ok();
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
     bool isSome;
     if (!aConsumerView.ReadParam(&isSome)) {
-      return aConsumerView.GetStatus();
+      return false;
     }
 
     if (!isSome) {
-      if (aArg) {
-        aArg->reset();
-      }
-      return QueueStatus::kSuccess;
-    }
-
-    if (!aArg) {
-      return aConsumerView.template ReadParam<ElementType>(nullptr);
+      aArg->reset();
+      return true;
     }
 
     aArg->emplace();
     return aConsumerView.ReadParam(aArg->ptr());
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.template MinSizeParam<bool>(nullptr) +
-           ((aArg && aArg->isSome()) ? aView.MinSizeParam(&aArg->ref()) : 0);
-  }
-};
-
-// ---------------------------------------------------------------
-
-// Maybe<Variant> needs special behavior since Variant is not default
-// constructable.  The Variant's first type must be default constructible.
-template <typename T, typename... Ts>
-struct QueueParamTraits<Maybe<Variant<T, Ts...>>> {
-  using ParamType = Maybe<Variant<T, Ts...>>;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    aProducerView.WriteParam(aArg.mIsSome);
-    return (aArg.mIsSome) ? aProducerView.WriteParam(aArg.ref())
-                          : aProducerView.GetStatus();
-  }
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    bool isSome;
-    if (!aConsumerView.ReadParam(&isSome)) {
-      return aConsumerView.GetStatus();
-    }
-
-    if (!isSome) {
-      if (aArg) {
-        aArg->reset();
-      }
-      return QueueStatus::kSuccess;
-    }
-
-    if (!aArg) {
-      return aConsumerView.template ReadParam<Variant<T, Ts...>>(nullptr);
-    }
-
-    aArg->emplace(VariantType<T>());
-    return aConsumerView.ReadParam(aArg->ptr());
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.template MinSizeParam<bool>(nullptr) +
-           ((aArg && aArg->isSome()) ? aView.MinSizeParam(&aArg->ref()) : 0);
   }
 };
 
@@ -961,224 +737,18 @@ struct QueueParamTraits<std::pair<TypeA, TypeB>> {
   using ParamType = std::pair<TypeA, TypeB>;
 
   template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
+  static bool Write(ProducerView<U>& aProducerView, const ParamType& aArg) {
     aProducerView.WriteParam(aArg.first());
     return aProducerView.WriteParam(aArg.second());
   }
 
   template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    aConsumerView.ReadParam(aArg ? (&aArg->first()) : nullptr);
-    return aConsumerView.ReadParam(aArg ? (&aArg->second()) : nullptr);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeParam(aArg ? aArg->first() : nullptr) +
-           aView.MinSizeParam(aArg ? aArg->second() : nullptr);
+  static bool Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
+    aConsumerView.ReadParam(aArg->first());
+    return aConsumerView.ReadParam(aArg->second());
   }
 };
 
-// ---------------------------------------------------------------
-
-template <typename T>
-struct QueueParamTraits<UniquePtr<T>> {
-  using ParamType = UniquePtr<T>;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    // TODO: Clean up move with PCQ
-    aProducerView.WriteParam(!static_cast<bool>(aArg));
-    if (aArg && aProducerView.WriteParam(*aArg.get())) {
-      const_cast<ParamType&>(aArg).reset();
-    }
-    return aProducerView.GetStatus();
-  }
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    bool isNull;
-    if (!aConsumerView.ReadParam(&isNull)) {
-      return aConsumerView.GetStatus();
-    }
-    if (isNull) {
-      if (aArg) {
-        aArg->reset(nullptr);
-      }
-      return QueueStatus::kSuccess;
-    }
-
-    T* obj = nullptr;
-    if (aArg) {
-      obj = new T();
-      if (!obj) {
-        return QueueStatus::kOOMError;
-      }
-      aArg->reset(obj);
-    }
-    return aConsumerView.ReadParam(obj);
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    if ((!aArg) || (!aArg->get())) {
-      return aView.template MinSizeParam<bool>(nullptr);
-    }
-    return aView.template MinSizeParam<bool>(nullptr) +
-           aView.MinSizeParam(aArg->get());
-  }
-};
-
-// ---------------------------------------------------------------
-
-// Both the Producer and the Consumer are required to maintain (i.e. close)
-// the FileDescriptor themselves.  The PCQ does not do this for you, nor does
-// it use FileDescriptor::auto_close.
-#if defined(OS_WIN)
-template <>
-struct IsTriviallySerializable<base::SharedMemoryHandle> : std::true_type {};
-#elif defined(OS_POSIX)
-// SharedMemoryHandle is typedefed to base::FileDescriptor
-template <>
-struct QueueParamTraits<base::FileDescriptor> {
-  using ParamType = base::FileDescriptor;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    // PCQs don't use auto-close.
-    // Convert any negative (i.e. invalid) fds to -1, as done with ParamTraits
-    // (TODO: why?)
-    return aProducerView.WriteParam(aArg.fd > 0 ? aArg.fd : -1);
-  }
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    int fd;
-    if (!aConsumerView.ReadParam(aArg ? &fd : nullptr)) {
-      return aConsumerView.GetStatus();
-    }
-
-    if (aArg) {
-      aArg->fd = fd;
-      aArg->auto_close = false;  // PCQs don't use auto-close.
-    }
-    return QueueStatus::kSuccess;
-  }
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    return aView.MinSizeParam(aArg ? &aArg->fd : nullptr);
-  }
-};
-#endif
-
-// ---------------------------------------------------------------
-
-// C++ does not allow this struct with a templated method to be local to
-// another struct (QueueParamTraits<Variant<...>>) so we put it here.
-template <typename U>
-struct PcqVariantWriter {
-  ProducerView<U>& mView;
-  template <typename T>
-  QueueStatus match(const T& x) {
-    return mView.WriteParam(x);
-  }
-};
-
-template <typename... Types>
-struct QueueParamTraits<Variant<Types...>> {
-  using ParamType = Variant<Types...>;
-  using Tag = typename mozilla::detail::VariantTag<Types...>::Type;
-
-  template <typename U>
-  static QueueStatus Write(ProducerView<U>& aProducerView,
-                           const ParamType& aArg) {
-    aProducerView.WriteParam(aArg.tag);
-    return aArg.match(PcqVariantWriter{aProducerView});
-  }
-
-  // Check the N-1th tag.  See ParamTraits<mozilla::Variant> for details.
-  template <size_t N, typename dummy = void>
-  struct VariantReader {
-    using Next = VariantReader<N - 1>;
-    template <typename U>
-    static QueueStatus Read(ConsumerView<U>& aView, Tag aTag, ParamType* aArg) {
-      if (aTag == N - 1) {
-        using EntryType = typename mozilla::detail::Nth<N - 1, Types...>::Type;
-        if (aArg) {
-          return aView.ReadParam(static_cast<EntryType*>(aArg->ptr()));
-        }
-        return aView.template ReadParam<EntryType>();
-      }
-      return Next::Read(aView, aTag, aArg);
-    }
-  };
-
-  template <typename dummy>
-  struct VariantReader<0, dummy> {
-    template <typename U>
-    static QueueStatus Read(ConsumerView<U>& aView, Tag aTag, ParamType* aArg) {
-      MOZ_ASSERT_UNREACHABLE("Tag wasn't for an entry in this Variant");
-      return QueueStatus::kFatalError;
-    }
-  };
-
-  template <typename U>
-  static QueueStatus Read(ConsumerView<U>& aConsumerView, ParamType* aArg) {
-    Tag tag;
-    if (!aConsumerView.ReadParam(&tag)) {
-      return aConsumerView.GetStatus();
-    }
-    if (aArg) {
-      aArg->tag = tag;
-    }
-    return VariantReader<sizeof...(Types)>::Read(aConsumerView, tag, aArg);
-  }
-
-  // Get the min size of the given variant or get the min size of all of the
-  // variant's types.
-  template <size_t N, typename View>
-  struct MinSizeVariant {
-    using Next = MinSizeVariant<N - 1, View>;
-    static size_t MinSize(View& aView, const Tag* aTag, const ParamType* aArg) {
-      using EntryType = typename mozilla::detail::Nth<N - 1, Types...>::Type;
-      if (!aArg) {
-        return std::min(aView.template MinSizeParam<EntryType>(),
-                        Next::MinSize(aView, aTag, aArg));
-      }
-      MOZ_ASSERT(aTag);
-      if (*aTag == N - 1) {
-        return aView.MinSizeParam(&aArg->template as<EntryType>());
-      }
-      return Next::MinSize(aView, aTag, aArg);
-    }
-  };
-
-  template <typename View>
-  struct MinSizeVariant<0, View> {
-    // We've reached the end of the type list.  We will legitimately get here
-    // when calculating MinSize for a null Variant.
-    static size_t MinSize(View& aView, const Tag* aTag, const ParamType* aArg) {
-      if (!aArg) {
-        return 0;
-      }
-      MOZ_ASSERT_UNREACHABLE("Tag wasn't for an entry in this Variant");
-      return 0;
-    }
-  };
-
-  template <typename View>
-  static size_t MinSize(View& aView, const ParamType* aArg) {
-    const Tag* tag = aArg ? &aArg->tag : nullptr;
-    return aView.MinSizeParam(tag) +
-           MinSizeVariant<sizeof...(Types), View>::MinSize(aView, tag, aArg);
-  }
-};
-
-}  // namespace webgl
-}  // namespace mozilla
+}  // namespace mozilla::webgl
 
 #endif  // _QUEUEPARAMTRAITS_H_

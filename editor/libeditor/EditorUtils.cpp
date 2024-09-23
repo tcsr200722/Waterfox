@@ -5,44 +5,32 @@
 
 #include "EditorUtils.h"
 
-#include "mozilla/ComputedStyle.h"
-#include "mozilla/ContentIterator.h"
-#include "mozilla/EditorDOMPoint.h"
-#include "mozilla/OwningNonNull.h"
-#include "mozilla/TextEditor.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/dom/HTMLBRElement.h"
-#include "mozilla/dom/Selection.h"
-#include "mozilla/dom/Text.h"
-#include "nsContentUtils.h"
-#include "nsComponentManagerUtils.h"
-#include "nsComputedDOMStyle.h"
-#include "nsError.h"
-#include "nsIContent.h"
-#include "nsIInterfaceRequestorUtils.h"
-#include "nsINode.h"
-#include "nsStyleStruct.h"
+#include "EditorDOMPoint.h"   // for EditorDOMPoint, EditorDOMRange, etc
+#include "HTMLEditHelpers.h"  // for MoveNodeResult
+#include "HTMLEditUtils.h"    // for HTMLEditUtils
+#include "TextEditor.h"       // for TextEditor
 
-class nsISupports;
-class nsRange;
+#include "mozilla/ComputedStyle.h"  // for ComputedStyle
+#include "mozilla/IntegerRange.h"   // for IntegerRange
+#include "mozilla/dom/Document.h"   // for dom::Document
+#include "mozilla/dom/Selection.h"  // for dom::Selection
+#include "mozilla/dom/Text.h"       // for dom::Text
+
+#include "nsComponentManagerUtils.h"  // for do_CreateInstance
+#include "nsContentUtils.h"           // for nsContentUtils
+#include "nsComputedDOMStyle.h"       // for nsComputedDOMStyle
+#include "nsError.h"                  // for NS_SUCCESS_* and NS_ERROR_*
+#include "nsFrameSelection.h"         // for nsFrameSelection
+#include "nsIContent.h"               // for nsIContent
+#include "nsINode.h"                  // for nsINode
+#include "nsITransferable.h"          // for nsITransferable
+#include "nsRange.h"                  // for nsRange
+#include "nsStyleConsts.h"            // for StyleWhiteSpace
+#include "nsStyleStruct.h"            // for nsStyleText, etc
 
 namespace mozilla {
 
 using namespace dom;
-
-template void DOMIterator::AppendAllNodesToArray(
-    nsTArray<OwningNonNull<nsIContent>>& aArrayOfNodes) const;
-template void DOMIterator::AppendAllNodesToArray(
-    nsTArray<OwningNonNull<HTMLBRElement>>& aArrayOfNodes) const;
-template void DOMIterator::AppendNodesToArray(
-    BoolFunctor aFunctor, nsTArray<OwningNonNull<nsIContent>>& aArrayOfNodes,
-    void* aClosure) const;
-template void DOMIterator::AppendNodesToArray(
-    BoolFunctor aFunctor, nsTArray<OwningNonNull<Element>>& aArrayOfNodes,
-    void* aClosure) const;
-template void DOMIterator::AppendNodesToArray(
-    BoolFunctor aFunctor, nsTArray<OwningNonNull<Text>>& aArrayOfNodes,
-    void* aClosure) const;
 
 /******************************************************************************
  * mozilla::EditActionResult
@@ -51,84 +39,7 @@ template void DOMIterator::AppendNodesToArray(
 EditActionResult& EditActionResult::operator|=(
     const MoveNodeResult& aMoveNodeResult) {
   mHandled |= aMoveNodeResult.Handled();
-  // When both result are same, keep the result.
-  if (mRv == aMoveNodeResult.Rv()) {
-    return *this;
-  }
-  // If one of the result is NS_ERROR_EDITOR_DESTROYED, use it since it's
-  // the most important error code for editor.
-  if (EditorDestroyed() || aMoveNodeResult.EditorDestroyed()) {
-    mRv = NS_ERROR_EDITOR_DESTROYED;
-    return *this;
-  }
-  // If aMoveNodeResult hasn't been set explicit nsresult value, keep current
-  // result.
-  if (aMoveNodeResult.Rv() == NS_ERROR_NOT_INITIALIZED) {
-    return *this;
-  }
-  // If one of the results is error, use NS_ERROR_FAILURE.
-  if (Failed() || aMoveNodeResult.Failed()) {
-    mRv = NS_ERROR_FAILURE;
-    return *this;
-  }
-  // Otherwise, use generic success code, NS_OK.
-  mRv = NS_OK;
   return *this;
-}
-
-/******************************************************************************
- * some helper classes for iterating the dom tree
- *****************************************************************************/
-
-DOMIterator::DOMIterator(nsINode& aNode MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-    : mIter(&mPostOrderIter) {
-  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  DebugOnly<nsresult> rv = mIter->Init(&aNode);
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
-}
-
-nsresult DOMIterator::Init(nsRange& aRange) { return mIter->Init(&aRange); }
-
-nsresult DOMIterator::Init(const RawRangeBoundary& aStartRef,
-                           const RawRangeBoundary& aEndRef) {
-  return mIter->Init(aStartRef, aEndRef);
-}
-
-DOMIterator::DOMIterator(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
-    : mIter(&mPostOrderIter) {
-  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-}
-
-template <class NodeClass>
-void DOMIterator::AppendAllNodesToArray(
-    nsTArray<OwningNonNull<NodeClass>>& aArrayOfNodes) const {
-  for (; !mIter->IsDone(); mIter->Next()) {
-    if (NodeClass* node = NodeClass::FromNode(mIter->GetCurrentNode())) {
-      aArrayOfNodes.AppendElement(*node);
-    }
-  }
-}
-
-template <class NodeClass>
-void DOMIterator::AppendNodesToArray(
-    BoolFunctor aFunctor, nsTArray<OwningNonNull<NodeClass>>& aArrayOfNodes,
-    void* aClosure /* = nullptr */) const {
-  for (; !mIter->IsDone(); mIter->Next()) {
-    NodeClass* node = NodeClass::FromNode(mIter->GetCurrentNode());
-    if (node && aFunctor(*node, aClosure)) {
-      aArrayOfNodes.AppendElement(*node);
-    }
-  }
-}
-
-DOMSubtreeIterator::DOMSubtreeIterator(
-    MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
-    : DOMIterator(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_TO_PARENT) {
-  mIter = &mSubtreeIter;
-}
-
-nsresult DOMSubtreeIterator::Init(nsRange& aRange) {
-  return mIter->Init(&aRange);
 }
 
 /******************************************************************************
@@ -178,63 +89,25 @@ bool EditorUtils::IsDescendantOf(const nsINode& aNode, const nsINode& aParent,
 }
 
 // static
-void EditorUtils::MaskString(nsString& aString, Text* aText,
-                             uint32_t aStartOffsetInString,
-                             uint32_t aStartOffsetInText) {
-  MOZ_ASSERT(aText->HasFlag(NS_MAYBE_MASKED));
-  MOZ_ASSERT(aStartOffsetInString == 0 || aStartOffsetInText == 0);
-
-  uint32_t unmaskStart = UINT32_MAX, unmaskLength = 0;
-  TextEditor* textEditor =
-      nsContentUtils::GetTextEditorFromAnonymousNodeWithoutCreation(aText);
-  if (textEditor && textEditor->UnmaskedLength() > 0) {
-    unmaskStart = textEditor->UnmaskedStart();
-    unmaskLength = textEditor->UnmaskedLength();
-    // If text is copied from after unmasked range, we can treat this case
-    // as mask all.
-    if (aStartOffsetInText >= unmaskStart + unmaskLength) {
-      unmaskLength = 0;
-      unmaskStart = UINT32_MAX;
-    } else {
-      // If text is copied from middle of unmasked range, reduce the length
-      // and adjust start offset.
-      if (aStartOffsetInText > unmaskStart) {
-        unmaskLength = unmaskStart + unmaskLength - aStartOffsetInText;
-        unmaskStart = 0;
-      }
-      // If text is copied from before start of unmasked range, just adjust
-      // the start offset.
-      else {
-        unmaskStart -= aStartOffsetInText;
-      }
-      // Make the range is in the string.
-      unmaskStart += aStartOffsetInString;
-    }
+Maybe<std::pair<StyleWhiteSpaceCollapse, StyleTextWrapMode>>
+EditorUtils::GetComputedWhiteSpaceStyles(const nsIContent& aContent) {
+  if (MOZ_UNLIKELY(!aContent.IsElement() && !aContent.GetParentElement())) {
+    return Nothing();
   }
-
-  const char16_t kPasswordMask = TextEditor::PasswordMask();
-  for (uint32_t i = aStartOffsetInString; i < aString.Length(); ++i) {
-    bool isSurrogatePair = NS_IS_HIGH_SURROGATE(aString.CharAt(i)) &&
-                           i < aString.Length() - 1 &&
-                           NS_IS_LOW_SURROGATE(aString.CharAt(i + 1));
-    if (i < unmaskStart || i >= unmaskStart + unmaskLength) {
-      if (isSurrogatePair) {
-        aString.SetCharAt(kPasswordMask, i);
-        aString.SetCharAt(kPasswordMask, i + 1);
-      } else {
-        aString.SetCharAt(kPasswordMask, i);
-      }
-    }
-
-    // Skip the following low surrogate.
-    if (isSurrogatePair) {
-      ++i;
-    }
+  RefPtr<const ComputedStyle> elementStyle =
+      nsComputedDOMStyle::GetComputedStyleNoFlush(
+          aContent.IsElement() ? aContent.AsElement()
+                               : aContent.GetParentElement());
+  if (NS_WARN_IF(!elementStyle)) {
+    return Nothing();
   }
+  const auto* styleText = elementStyle->StyleText();
+  return Some(
+      std::pair(styleText->mWhiteSpaceCollapse, styleText->mTextWrapMode));
 }
 
 // static
-bool EditorUtils::IsContentPreformatted(nsIContent& aContent) {
+bool EditorUtils::IsWhiteSpacePreformatted(const nsIContent& aContent) {
   // Look at the node (and its parent if it's not an element), and grab its
   // ComputedStyle.
   Element* element = aContent.GetAsElementOrParentElement();
@@ -242,8 +115,8 @@ bool EditorUtils::IsContentPreformatted(nsIContent& aContent) {
     return false;
   }
 
-  RefPtr<ComputedStyle> elementStyle =
-      nsComputedDOMStyle::GetComputedStyleNoFlush(element, nullptr);
+  RefPtr<const ComputedStyle> elementStyle =
+      nsComputedDOMStyle::GetComputedStyleNoFlush(element);
   if (!elementStyle) {
     // Consider nodes without a ComputedStyle to be NOT preformatted:
     // For instance, this is true of JS tags inside the body (which show
@@ -252,6 +125,321 @@ bool EditorUtils::IsContentPreformatted(nsIContent& aContent) {
   }
 
   return elementStyle->StyleText()->WhiteSpaceIsSignificant();
+}
+
+// static
+bool EditorUtils::IsNewLinePreformatted(const nsIContent& aContent) {
+  // Look at the node (and its parent if it's not an element), and grab its
+  // ComputedStyle.
+  Element* element = aContent.GetAsElementOrParentElement();
+  if (!element) {
+    return false;
+  }
+
+  RefPtr<const ComputedStyle> elementStyle =
+      nsComputedDOMStyle::GetComputedStyleNoFlush(element);
+  if (!elementStyle) {
+    // Consider nodes without a ComputedStyle to be NOT preformatted:
+    // For instance, this is true of JS tags inside the body (which show
+    // up as #text nodes but have no ComputedStyle).
+    return false;
+  }
+
+  return elementStyle->StyleText()->NewlineIsSignificantStyle();
+}
+
+// static
+bool EditorUtils::IsOnlyNewLinePreformatted(const nsIContent& aContent) {
+  // Look at the node (and its parent if it's not an element), and grab its
+  // ComputedStyle.
+  Element* element = aContent.GetAsElementOrParentElement();
+  if (!element) {
+    return false;
+  }
+
+  RefPtr<const ComputedStyle> elementStyle =
+      nsComputedDOMStyle::GetComputedStyleNoFlush(element);
+  if (!elementStyle) {
+    // Consider nodes without a ComputedStyle to be NOT preformatted:
+    // For instance, this is true of JS tags inside the body (which show
+    // up as #text nodes but have no ComputedStyle).
+    return false;
+  }
+
+  return elementStyle->StyleText()->mWhiteSpaceCollapse ==
+         StyleWhiteSpaceCollapse::PreserveBreaks;
+}
+
+// static
+Result<nsCOMPtr<nsITransferable>, nsresult>
+EditorUtils::CreateTransferableForPlainText(const Document& aDocument) {
+  // Create generic Transferable for getting the data
+  nsresult rv;
+  nsCOMPtr<nsITransferable> transferable =
+      do_CreateInstance("@mozilla.org/widget/transferable;1", &rv);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("do_CreateInstance() failed to create nsITransferable instance");
+    return Err(rv);
+  }
+
+  if (!transferable) {
+    NS_WARNING("do_CreateInstance() returned nullptr, but ignored");
+    return nsCOMPtr<nsITransferable>();
+  }
+
+  DebugOnly<nsresult> rvIgnored =
+      transferable->Init(aDocument.GetLoadContext());
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                       "nsITransferable::Init() failed, but ignored");
+
+  rvIgnored = transferable->AddDataFlavor(kTextMime);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "nsITransferable::AddDataFlavor(kTextMime) failed, but ignored");
+  rvIgnored = transferable->AddDataFlavor(kMozTextInternal);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "nsITransferable::AddDataFlavor(kMozTextInternal) failed, but ignored");
+  return transferable;
+}
+
+/******************************************************************************
+ * mozilla::EditorDOMPointBase
+ *****************************************************************************/
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharCollapsibleASCIISpace);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsCharCollapsibleASCIISpace() const {
+  if (IsCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsCharASCIISpace() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharCollapsibleNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsCharCollapsibleNBSP() const {
+  // TODO: Perhaps, we should return false if neither previous char nor
+  //       next char is collapsible white-space or NBSP.
+  return IsCharNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
+                                             IsCharCollapsibleASCIISpaceOrNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsCharCollapsibleASCIISpaceOrNBSP() const {
+  if (IsCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsCharASCIISpaceOrNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsPreviousCharCollapsibleASCIISpace);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsPreviousCharCollapsibleASCIISpace() const {
+  if (IsPreviousCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsPreviousCharASCIISpace() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
+                                             IsPreviousCharCollapsibleNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsPreviousCharCollapsibleNBSP() const {
+  return IsPreviousCharNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsPreviousCharCollapsibleASCIISpaceOrNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsPreviousCharCollapsibleASCIISpaceOrNBSP()
+    const {
+  if (IsPreviousCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsPreviousCharASCIISpaceOrNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
+                                             IsNextCharCollapsibleASCIISpace);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsNextCharCollapsibleASCIISpace() const {
+  if (IsNextCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsNextCharASCIISpace() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsNextCharCollapsibleNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsNextCharCollapsibleNBSP() const {
+  return IsNextCharNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsNextCharCollapsibleASCIISpaceOrNBSP);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsNextCharCollapsibleASCIISpaceOrNBSP() const {
+  if (IsNextCharNewLine()) {
+    return !EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+  }
+  return IsNextCharASCIISpaceOrNBSP() &&
+         !EditorUtils::IsWhiteSpacePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool, IsCharPreformattedNewLine);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsCharPreformattedNewLine() const {
+  return IsCharNewLine() &&
+         EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsCharPreformattedNewLineCollapsedWithWhiteSpaces);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<
+    PT, CT>::IsCharPreformattedNewLineCollapsedWithWhiteSpaces() const {
+  return IsCharNewLine() &&
+         EditorUtils::IsOnlyNewLinePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
+                                             IsPreviousCharPreformattedNewLine);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsPreviousCharPreformattedNewLine() const {
+  return IsPreviousCharNewLine() &&
+         EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsPreviousCharPreformattedNewLineCollapsedWithWhiteSpaces);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<
+    PT, CT>::IsPreviousCharPreformattedNewLineCollapsedWithWhiteSpaces() const {
+  return IsPreviousCharNewLine() &&
+         EditorUtils::IsOnlyNewLinePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(bool,
+                                             IsNextCharPreformattedNewLine);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<PT, CT>::IsNextCharPreformattedNewLine() const {
+  return IsNextCharNewLine() &&
+         EditorUtils::IsNewLinePreformatted(*ContainerAs<Text>());
+}
+
+NS_INSTANTIATE_EDITOR_DOM_POINT_CONST_METHOD(
+    bool, IsNextCharPreformattedNewLineCollapsedWithWhiteSpaces);
+
+template <typename PT, typename CT>
+bool EditorDOMPointBase<
+    PT, CT>::IsNextCharPreformattedNewLineCollapsedWithWhiteSpaces() const {
+  return IsNextCharNewLine() &&
+         EditorUtils::IsOnlyNewLinePreformatted(*ContainerAs<Text>());
+}
+
+/******************************************************************************
+ * mozilla::EditorDOMRangeBase
+ *****************************************************************************/
+
+NS_INSTANTIATE_EDITOR_DOM_RANGE_CONST_METHOD(nsINode*,
+                                             GetClosestCommonInclusiveAncestor);
+
+template <typename EditorDOMPointType>
+nsINode* EditorDOMRangeBase<
+    EditorDOMPointType>::GetClosestCommonInclusiveAncestor() const {
+  if (NS_WARN_IF(!IsPositioned())) {
+    return nullptr;
+  }
+  return nsContentUtils::GetClosestCommonInclusiveAncestor(
+      mStart.GetContainer(), mEnd.GetContainer());
+}
+
+/******************************************************************************
+ * mozilla::CaretPoint
+ *****************************************************************************/
+
+nsresult CaretPoint::SuggestCaretPointTo(
+    EditorBase& aEditorBase, const SuggestCaretOptions& aOptions) const {
+  mHandledCaretPoint = true;
+  if (!mCaretPoint.IsSet()) {
+    if (aOptions.contains(SuggestCaret::OnlyIfHasSuggestion)) {
+      return NS_OK;
+    }
+    NS_WARNING("There was no suggestion to put caret");
+    return NS_ERROR_FAILURE;
+  }
+  if (aOptions.contains(SuggestCaret::OnlyIfTransactionsAllowedToDoIt) &&
+      !aEditorBase.AllowsTransactionsToChangeSelection()) {
+    return NS_OK;
+  }
+  nsresult rv = aEditorBase.CollapseSelectionTo(mCaretPoint);
+  if (MOZ_UNLIKELY(rv == NS_ERROR_EDITOR_DESTROYED)) {
+    NS_WARNING(
+        "EditorBase::CollapseSelectionTo() caused destroying the editor");
+    return NS_ERROR_EDITOR_DESTROYED;
+  }
+  return aOptions.contains(SuggestCaret::AndIgnoreTrivialError) && NS_FAILED(rv)
+             ? NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR
+             : rv;
+}
+
+bool CaretPoint::CopyCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                                  const EditorBase& aEditorBase,
+                                  const SuggestCaretOptions& aOptions) const {
+  MOZ_ASSERT(!aOptions.contains(SuggestCaret::AndIgnoreTrivialError));
+  mHandledCaretPoint = true;
+  if (aOptions.contains(SuggestCaret::OnlyIfHasSuggestion) &&
+      !mCaretPoint.IsSet()) {
+    return false;
+  }
+  if (aOptions.contains(SuggestCaret::OnlyIfTransactionsAllowedToDoIt) &&
+      !aEditorBase.AllowsTransactionsToChangeSelection()) {
+    return false;
+  }
+  aPointToPutCaret = mCaretPoint;
+  return true;
+}
+
+bool CaretPoint::MoveCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                                  const EditorBase& aEditorBase,
+                                  const SuggestCaretOptions& aOptions) {
+  MOZ_ASSERT(!aOptions.contains(SuggestCaret::AndIgnoreTrivialError));
+  mHandledCaretPoint = true;
+  if (aOptions.contains(SuggestCaret::OnlyIfHasSuggestion) &&
+      !mCaretPoint.IsSet()) {
+    return false;
+  }
+  if (aOptions.contains(SuggestCaret::OnlyIfTransactionsAllowedToDoIt) &&
+      !aEditorBase.AllowsTransactionsToChangeSelection()) {
+    return false;
+  }
+  aPointToPutCaret = UnwrapCaretPoint();
+  return true;
 }
 
 }  // namespace mozilla

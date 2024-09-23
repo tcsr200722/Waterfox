@@ -20,14 +20,14 @@ async function checkOpensOnFocus(win = window) {
 
   // Focus with the mouse.
   await UrlbarTestUtils.promisePopupOpen(win, () => {
-    EventUtils.synthesizeMouseAtCenter(win.gURLBar.inputField, {});
+    EventUtils.synthesizeMouseAtCenter(win.gURLBar.inputField, {}, win);
   });
   await UrlbarTestUtils.promisePopupClose(win, () => {
     win.gURLBar.blur();
   });
 }
 
-add_task(async function setUp() {
+add_setup(async function () {
   // Add some history for the empty panel.
   await PlacesTestUtils.addVisits([
     {
@@ -41,7 +41,7 @@ add_task(async function setUp() {
 add_task(async function test() {
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:blank" },
-    async browser => {
+    async () => {
       await checkOpensOnFocus();
     }
   );
@@ -56,7 +56,7 @@ add_task(async function newtabAndHome() {
       async browser => {
         // We don't wait for load, but we must ensure to be on the expected url.
         await TestUtils.waitForCondition(
-          () => window.gBrowser.currentURI.spec == url,
+          () => gBrowser.currentURI.spec == url,
           "Ensure we're on the expected page"
         );
         await checkOpensOnFocus();
@@ -81,7 +81,7 @@ add_task(async function newtabAndHome() {
         // After example.com closes, about:newtab/home is selected again.
         await checkOpensOnFocus();
         // Load example.com in the same tab.
-        await BrowserTestUtils.loadURI(
+        BrowserTestUtils.startLoadingURIString(
           gBrowser.selectedBrowser,
           "http://example.com/"
         );

@@ -1,6 +1,7 @@
+use std::{collections::HashMap, iter::FromIterator};
+
 use ron::ser::{to_string_pretty, PrettyConfig};
 use serde::Serialize;
-use std::{collections::HashMap, iter::FromIterator};
 
 #[derive(Serialize)]
 struct Config {
@@ -39,12 +40,10 @@ fn main() {
         array: vec![(); 3],
     };
 
-    let pretty = PrettyConfig {
-        depth_limit: 2,
-        separate_tuple_members: true,
-        enumerate_arrays: true,
-        ..PrettyConfig::default()
-    };
+    let pretty = PrettyConfig::new()
+        .depth_limit(2)
+        .separate_tuple_members(true)
+        .enumerate_arrays(true);
     let s = to_string_pretty(&data, pretty).expect("Serialization failed");
 
     println!("{}", s);

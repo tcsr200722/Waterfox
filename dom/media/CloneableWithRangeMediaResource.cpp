@@ -9,7 +9,9 @@
 #include "mozilla/Monitor.h"
 #include "nsContentUtils.h"
 #include "nsIAsyncInputStream.h"
+#include "nsITimedChannel.h"
 #include "nsNetCID.h"
+#include "nsServiceManagerUtils.h"
 
 namespace mozilla {
 
@@ -111,7 +113,7 @@ class InputStreamReader final : public nsIInputStreamCallback {
 
   nsCOMPtr<nsIInputStream> mStream;
   nsCOMPtr<nsIAsyncInputStream> mAsyncStream;
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
 };
 
 NS_IMPL_ADDREF(InputStreamReader);

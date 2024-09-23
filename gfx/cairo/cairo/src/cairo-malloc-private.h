@@ -38,6 +38,7 @@
 #define CAIRO_MALLOC_PRIVATE_H
 
 #include "cairo-wideint-private.h"
+#include <stdlib.h>
 
 #if HAVE_MEMFAULT
 #include <memfault.h>
@@ -56,17 +57,17 @@
  *
  * Return value: A pointer to the newly allocated memory, or %NULL in
  * case of malloc() failure or size is 0.
- */
+ **/
 
 #define _cairo_malloc(size) \
-   ((size) ? malloc((unsigned) (size)) : NULL)
+   ((size) != 0 ? malloc(size) : NULL)
 
 /**
  * _cairo_malloc_ab:
- * @n: number of elements to allocate
+ * @a: number of elements to allocate
  * @size: size of each element
  *
- * Allocates @n*@size memory using _cairo_malloc(), taking care to not
+ * Allocates @a*@size memory using _cairo_malloc(), taking care to not
  * overflow when doing the multiplication.  Behaves much like
  * calloc(), except that the returned memory is not set to zero.
  * The memory should be freed using free().
@@ -76,19 +77,25 @@
  *
  * Return value: A pointer to the newly allocated memory, or %NULL in
  * case of malloc() failure or overflow.
- */
+ **/
 
-#define _cairo_malloc_ab(a, size) \
-  ((size) && (unsigned) (a) >= INT32_MAX / (unsigned) (size) ? NULL : \
-   _cairo_malloc((unsigned) (a) * (unsigned) (size)))
+static cairo_always_inline void *
+_cairo_malloc_ab(size_t a, size_t size)
+{
+    size_t c;
+    if (_cairo_mul_size_t_overflow (a, size, &c))
+	return NULL;
+
+    return _cairo_malloc(c);
+}
 
 /**
  * _cairo_realloc_ab:
  * @ptr: original pointer to block of memory to be resized
- * @n: number of elements to allocate
+ * @a: number of elements to allocate
  * @size: size of each element
  *
- * Reallocates @ptr a block of @n*@size memory using realloc(), taking
+ * Reallocates @ptr a block of @a*@size memory using realloc(), taking
  * care to not overflow when doing the multiplication.  The memory
  * should be freed using free().
  *
@@ -98,19 +105,25 @@
  * Return value: A pointer to the newly allocated memory, or %NULL in
  * case of realloc() failure or overflow (whereupon the original block
  * of memory * is left untouched).
- */
+ **/
 
-#define _cairo_realloc_ab(ptr, a, size) \
-  ((size) && (unsigned) (a) >= INT32_MAX / (unsigned) (size) ? NULL : \
-   realloc(ptr, (unsigned) (a) * (unsigned) (size)))
+static cairo_always_inline void *
+_cairo_realloc_ab(void *ptr, size_t a, size_t size)
+{
+    size_t c;
+    if (_cairo_mul_size_t_overflow (a, size, &c))
+	return NULL;
+
+    return realloc(ptr, c);
+}
 
 /**
  * _cairo_malloc_abc:
- * @n: first factor of number of elements to allocate
+ * @a: first factor of number of elements to allocate
  * @b: second factor of number of elements to allocate
  * @size: size of each element
  *
- * Allocates @n*@b*@size memory using _cairo_malloc(), taking care to not
+ * Allocates @a*@b*@size memory using _cairo_malloc(), taking care to not
  * overflow when doing the multiplication.  Behaves like
  * _cairo_malloc_ab().  The memory should be freed using free().
  *
@@ -119,30 +132,46 @@
  *
  * Return value: A pointer to the newly allocated memory, or %NULL in
  * case of malloc() failure or overflow.
- */
+ **/
 
-#define _cairo_malloc_abc(a, b, size) \
-  ((b) && (unsigned) (a) >= INT32_MAX / (unsigned) (b) ? NULL : \
-   (size) && (unsigned) ((a)*(b)) >= INT32_MAX / (unsigned) (size) ? NULL : \
-   _cairo_malloc((unsigned) (a) * (unsigned) (b) * (unsigned) (size)))
+static cairo_always_inline void *
+_cairo_malloc_abc(size_t a, size_t b, size_t size)
+{
+    size_t c, d;
+    if (_cairo_mul_size_t_overflow (a, b, &c))
+	return NULL;
+
+    if (_cairo_mul_size_t_overflow (c, size, &d))
+	return NULL;
+
+    return _cairo_malloc(d);
+}
 
 /**
  * _cairo_malloc_ab_plus_c:
- * @n: number of elements to allocate
+ * @a: number of elements to allocate
  * @size: size of each element
- * @k: additional size to allocate
+ * @c: additional size to allocate
  *
- * Allocates @n*@ksize+@k memory using _cairo_malloc(), taking care to not
- * overflow when doing the arithmetic.  Behaves like
+ * Allocates @a*@size+@c memory using _cairo_malloc(), taking care to not
+ * overflow when doing the arithmetic.  Behaves similar to
  * _cairo_malloc_ab().  The memory should be freed using free().
  *
  * Return value: A pointer to the newly allocated memory, or %NULL in
  * case of malloc() failure or overflow.
- */
+ **/
 
-#define _cairo_malloc_ab_plus_c(n, size, k) \
-  ((size) && (unsigned) (n) >= INT32_MAX / (unsigned) (size) ? NULL : \
-   (unsigned) (k) >= INT32_MAX - (unsigned) (n) * (unsigned) (size) ? NULL : \
-   _cairo_malloc((unsigned) (n) * (unsigned) (size) + (unsigned) (k)))
+static cairo_always_inline void *
+_cairo_malloc_ab_plus_c(size_t a, size_t size, size_t c)
+{
+    size_t d, e;
+    if (_cairo_mul_size_t_overflow (a, size, &d))
+	return NULL;
+
+    if (_cairo_add_size_t_overflow (d, c, &e))
+	return NULL;
+
+    return _cairo_malloc(e);
+}
 
 #endif /* CAIRO_MALLOC_PRIVATE_H */

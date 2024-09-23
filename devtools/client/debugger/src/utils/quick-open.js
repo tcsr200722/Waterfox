@@ -2,24 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
 import { endTruncateStr } from "./utils";
-import {
-  isPretty,
-  getFilename,
-  getSourceClassnames,
-  getSourceQueryString,
-} from "./source";
-
-import type { Location as BabelLocation } from "@babel/types";
-import type { Symbols } from "../reducers/ast";
-import type { QuickOpenType } from "../reducers/quick-open";
-import type { Tab } from "../reducers/tabs";
-import type { Source } from "../types";
-import type {
-  SymbolDeclaration,
-  IdentifierDeclaration,
-} from "../workers/parser";
+import { getSourceClassnames, getRelativeUrl } from "./source";
 
 export const MODIFIERS = {
   "@": "functions",
@@ -28,7 +12,7 @@ export const MODIFIERS = {
   "?": "shortcuts",
 };
 
-export function parseQuickOpenQuery(query: string): QuickOpenType {
+export function parseQuickOpenQuery(query) {
   const startsWithModifier =
     query[0] === "@" ||
     query[0] === "#" ||
@@ -49,57 +33,50 @@ export function parseQuickOpenQuery(query: string): QuickOpenType {
   return "sources";
 }
 
-export function parseLineColumn(query: string) {
+export function parseLineColumn(query) {
   const [, line, column] = query.split(":");
   const lineNumber = parseInt(line, 10);
   const columnNumber = parseInt(column, 10);
-  if (!isNaN(lineNumber)) {
-    return {
-      line: lineNumber,
-      ...(!isNaN(columnNumber) ? { column: columnNumber } : null),
-    };
+  if (isNaN(lineNumber)) {
+    return null;
   }
+  if (isNaN(columnNumber)) {
+    return { line: lineNumber };
+  }
+  // columnNumber here is the user input value which is 1-based.
+  // Whereas in location objects, line is 1-based, and column is 0-based.
+  return {
+    line: lineNumber,
+    column: columnNumber - 1,
+  };
 }
 
-export function formatSourcesForList(
-  source: Source,
-  tabUrls: Set<$PropertyType<Tab, "url">>
+export function formatSourceForList(
+  source,
+  hasTabOpened,
+  isBlackBoxed,
+  projectDirectoryRoot
 ) {
-  const title = getFilename(source);
-  const relativeUrlWithQuery = `${source.relativeUrl}${getSourceQueryString(
-    source
-  ) || ""}`;
+  const relativeUrlWithQuery = `${getRelativeUrl(
+    source,
+    projectDirectoryRoot
+  )}${source.displayURL.search || ""}`;
   const subtitle = endTruncateStr(relativeUrlWithQuery, 100);
   const value = relativeUrlWithQuery;
   return {
     value,
-    title,
+    title: source.shortName,
     subtitle,
-    icon: tabUrls.has(source.url)
+    icon: hasTabOpened
       ? "tab result-item-icon"
-      : `result-item-icon ${getSourceClassnames(source)}`,
+      : `result-item-icon ${getSourceClassnames(source, null, isBlackBoxed)}`,
     id: source.id,
     url: source.url,
+    source,
   };
 }
 
-export type QuickOpenResult = {|
-  id: string,
-  value: string,
-  title: string | React$Element<"div">,
-  subtitle?: string,
-  location?: BabelLocation,
-  url?: string,
-  icon?: string,
-|};
-
-export type FormattedSymbolDeclarations = {|
-  functions: Array<QuickOpenResult>,
-|};
-
-export function formatSymbol(
-  symbol: SymbolDeclaration | IdentifierDeclaration
-): QuickOpenResult {
+export function formatSymbol(symbol) {
   return {
     id: `${symbol.name}:${symbol.location.start.line}`,
     title: symbol.name,
@@ -109,19 +86,7 @@ export function formatSymbol(
   };
 }
 
-export function formatSymbols(symbols: ?Symbols): FormattedSymbolDeclarations {
-  if (!symbols || symbols.loading) {
-    return { functions: [] };
-  }
-
-  const { functions } = symbols;
-
-  return {
-    functions: functions.map(formatSymbol),
-  };
-}
-
-export function formatShortcutResults(): Array<QuickOpenResult> {
+export function formatShortcutResults() {
   return [
     {
       value: L10N.getStr("symbolSearch.search.functionsPlaceholder.title"),
@@ -139,21 +104,4 @@ export function formatShortcutResults(): Array<QuickOpenResult> {
       id: ":",
     },
   ];
-}
-
-export function formatSources(
-  sources: Source[],
-  tabUrls: Set<$PropertyType<Tab, "url">>
-): Array<QuickOpenResult> {
-  const formattedSources: Array<QuickOpenResult> = [];
-
-  for (let i = 0; i < sources.length; ++i) {
-    const source = sources[i];
-
-    if (!!source.relativeUrl && !isPretty(source)) {
-      formattedSources.push(formatSourcesForList(source, tabUrls));
-    }
-  }
-
-  return formattedSources;
 }

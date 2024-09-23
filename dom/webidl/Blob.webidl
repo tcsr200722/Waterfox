@@ -10,7 +10,7 @@
  * liability, trademark and document use rules apply.
  */
 
-typedef (BufferSource or Blob or USVString) BlobPart;
+typedef (BufferSource or Blob or UTF8String) BlobPart;
 
 [Exposed=(Window,Worker)]
 interface Blob {
@@ -34,6 +34,7 @@ interface Blob {
   [NewObject, Throws] ReadableStream stream();
   [NewObject] Promise<USVString> text();
   [NewObject] Promise<ArrayBuffer> arrayBuffer();
+  [NewObject] Promise<Uint8Array> bytes();
 };
 
 enum EndingType { "transparent", "native" };
@@ -48,4 +49,3 @@ partial interface Blob {
   [ChromeOnly]
   readonly attribute DOMString blobImplType;
 };
-

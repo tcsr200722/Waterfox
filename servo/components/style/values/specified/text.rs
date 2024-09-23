@@ -6,23 +6,19 @@
 
 use crate::parser::{Parse, ParserContext};
 use crate::properties::longhands::writing_mode::computed_value::T as SpecifiedWritingMode;
-use crate::values::computed::text::LineHeight as ComputedLineHeight;
 use crate::values::computed::text::TextEmphasisStyle as ComputedTextEmphasisStyle;
-use crate::values::computed::text::TextOverflow as ComputedTextOverflow;
 use crate::values::computed::{Context, ToComputedValue};
-use crate::values::generics::text::InitialLetter as GenericInitialLetter;
-use crate::values::generics::text::LineHeight as GenericLineHeight;
-use crate::values::generics::text::{GenericTextDecorationLength, Spacing};
-use crate::values::specified::length::NonNegativeLengthPercentage;
-use crate::values::specified::length::{FontRelativeLength, Length};
-use crate::values::specified::length::{LengthPercentage, NoCalcLength};
-use crate::values::specified::{AllowQuirks, Integer, NonNegativeNumber, Number};
-use cssparser::{Parser, Token};
-use selectors::parser::SelectorParseErrorKind;
+use crate::values::generics::text::{
+    GenericInitialLetter, GenericTextDecorationLength, GenericTextIndent, Spacing,
+};
+use crate::values::specified::length::{Length, LengthPercentage};
+use crate::values::specified::{AllowQuirks, Integer, Number};
+use cssparser::Parser;
+use icu_segmenter::GraphemeClusterSegmenter;
 use std::fmt::{self, Write};
 use style_traits::values::SequenceWriter;
 use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
-use unicode_segmentation::UnicodeSegmentation;
+use style_traits::{KeywordsCollectFn, SpecifiedValueInfo};
 
 /// A specified type for the `initial-letter` property.
 pub type InitialLetter = GenericInitialLetter<Number, Integer>;
@@ -33,20 +29,43 @@ pub type LetterSpacing = Spacing<Length>;
 /// A specified value for the `word-spacing` property.
 pub type WordSpacing = Spacing<LengthPercentage>;
 
-/// A specified value for the `line-height` property.
-pub type LineHeight = GenericLineHeight<NonNegativeNumber, NonNegativeLengthPercentage>;
+/// A value for the `hyphenate-character` property.
+#[derive(
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C, u8)]
+pub enum HyphenateCharacter {
+    /// `auto`
+    Auto,
+    /// `<string>`
+    String(crate::OwnedStr),
+}
 
 impl Parse for InitialLetter {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("normal")).is_ok() {
-            return Ok(GenericInitialLetter::Normal);
+        if input
+            .try_parse(|i| i.expect_ident_matching("normal"))
+            .is_ok()
+        {
+            return Ok(Self::normal());
         }
         let size = Number::parse_at_least_one(context, input)?;
-        let sink = input.try(|i| Integer::parse_positive(context, i)).ok();
-        Ok(GenericInitialLetter::Specified(size, sink))
+        let sink = input
+            .try_parse(|i| Integer::parse_positive(context, i))
+            .unwrap_or_else(|_| crate::Zero::zero());
+        Ok(Self { size, sink })
     }
 }
 
@@ -72,55 +91,6 @@ impl Parse for WordSpacing {
     }
 }
 
-impl ToComputedValue for LineHeight {
-    type ComputedValue = ComputedLineHeight;
-
-    #[inline]
-    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        use crate::values::specified::length::FontBaseSize;
-        match *self {
-            GenericLineHeight::Normal => GenericLineHeight::Normal,
-            #[cfg(feature = "gecko")]
-            GenericLineHeight::MozBlockHeight => GenericLineHeight::MozBlockHeight,
-            GenericLineHeight::Number(number) => {
-                GenericLineHeight::Number(number.to_computed_value(context))
-            },
-            GenericLineHeight::Length(ref non_negative_lp) => {
-                let result = match non_negative_lp.0 {
-                    LengthPercentage::Length(NoCalcLength::Absolute(ref abs)) => {
-                        context.maybe_zoom_text(abs.to_computed_value(context))
-                    },
-                    LengthPercentage::Length(ref length) => length.to_computed_value(context),
-                    LengthPercentage::Percentage(ref p) => FontRelativeLength::Em(p.0)
-                        .to_computed_value(context, FontBaseSize::CurrentStyle),
-                    LengthPercentage::Calc(ref calc) => {
-                        let computed_calc =
-                            calc.to_computed_value_zoomed(context, FontBaseSize::CurrentStyle);
-                        let base = context.style().get_font().clone_font_size().size();
-                        computed_calc.resolve(base)
-                    },
-                };
-                GenericLineHeight::Length(result.into())
-            },
-        }
-    }
-
-    #[inline]
-    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        match *computed {
-            GenericLineHeight::Normal => GenericLineHeight::Normal,
-            #[cfg(feature = "gecko")]
-            GenericLineHeight::MozBlockHeight => GenericLineHeight::MozBlockHeight,
-            GenericLineHeight::Number(ref number) => {
-                GenericLineHeight::Number(NonNegativeNumber::from_computed_value(number))
-            },
-            GenericLineHeight::Length(ref length) => {
-                GenericLineHeight::Length(NoCalcLength::from_computed_value(&length.0).into())
-            },
-        }
-    }
-}
-
 /// A generic value for the `text-overflow` property.
 #[derive(
     Clone,
@@ -142,16 +112,36 @@ pub enum TextOverflowSide {
     /// Render ellipsis to represent clipped inline content.
     Ellipsis,
     /// Render a given string to represent clipped inline content.
-    String(crate::OwnedStr),
+    String(crate::values::AtomString),
 }
 
-#[derive(Clone, Debug, Eq, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
-/// text-overflow. Specifies rendering when inline content overflows its line box edge.
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(C)]
+/// text-overflow.
+/// When the specified value only has one side, that's the "second"
+/// side, and the sides are logical, so "second" means "end".  The
+/// start side is Clip in that case.
+///
+/// When the specified value has two sides, those are our "first"
+/// and "second" sides, and they are physical sides ("left" and
+/// "right").
 pub struct TextOverflow {
-    /// First value. Applies to end line box edge if no second is supplied; line-left edge otherwise.
+    /// First side
     pub first: TextOverflowSide,
-    /// Second value. Applies to the line-right edge if supplied.
-    pub second: Option<TextOverflowSide>,
+    /// Second side
+    pub second: TextOverflowSide,
+    /// True if the specified value only has one side.
+    pub sides_are_logical: bool,
 }
 
 impl Parse for TextOverflow {
@@ -160,56 +150,73 @@ impl Parse for TextOverflow {
         input: &mut Parser<'i, 't>,
     ) -> Result<TextOverflow, ParseError<'i>> {
         let first = TextOverflowSide::parse(context, input)?;
-        let second = input
-            .try(|input| TextOverflowSide::parse(context, input))
-            .ok();
-        Ok(TextOverflow { first, second })
+        Ok(
+            if let Ok(second) = input.try_parse(|input| TextOverflowSide::parse(context, input)) {
+                Self {
+                    first,
+                    second,
+                    sides_are_logical: false,
+                }
+            } else {
+                Self {
+                    first: TextOverflowSide::Clip,
+                    second: first,
+                    sides_are_logical: true,
+                }
+            },
+        )
     }
 }
 
-impl ToComputedValue for TextOverflow {
-    type ComputedValue = ComputedTextOverflow;
-
-    #[inline]
-    fn to_computed_value(&self, _context: &Context) -> Self::ComputedValue {
-        if let Some(ref second) = self.second {
-            Self::ComputedValue {
-                first: self.first.clone(),
-                second: second.clone(),
-                sides_are_logical: false,
-            }
-        } else {
-            Self::ComputedValue {
-                first: TextOverflowSide::Clip,
-                second: self.first.clone(),
-                sides_are_logical: true,
-            }
-        }
-    }
-
-    #[inline]
-    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        if computed.sides_are_logical {
-            assert_eq!(computed.first, TextOverflowSide::Clip);
-            TextOverflow {
-                first: computed.second.clone(),
-                second: None,
-            }
-        } else {
-            TextOverflow {
-                first: computed.first.clone(),
-                second: Some(computed.second.clone()),
-            }
+impl TextOverflow {
+    /// Returns the initial `text-overflow` value
+    pub fn get_initial_value() -> TextOverflow {
+        TextOverflow {
+            first: TextOverflowSide::Clip,
+            second: TextOverflowSide::Clip,
+            sides_are_logical: true,
         }
     }
 }
 
+impl ToCss for TextOverflow {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        if self.sides_are_logical {
+            debug_assert_eq!(self.first, TextOverflowSide::Clip);
+            self.second.to_css(dest)?;
+        } else {
+            self.first.to_css(dest)?;
+            dest.write_char(' ')?;
+            self.second.to_css(dest)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    Parse,
+    Serialize,
+    SpecifiedValueInfo,
+    ToCss,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[css(bitflags(single = "none", mixed = "underline,overline,line-through,blink"))]
+#[repr(C)]
+/// Specified keyword values for the text-decoration-line property.
+pub struct TextDecorationLine(u8);
 bitflags! {
-    #[derive(MallocSizeOf, Serialize, SpecifiedValueInfo, ToComputedValue, ToResolvedValue, ToShmem)]
-    #[value_info(other_values = "none,underline,overline,line-through,blink")]
-    #[repr(C)]
-    /// Specified keyword values for the text-decoration-line property.
-    pub struct TextDecorationLine: u8 {
+    impl TextDecorationLine: u8 {
         /// No text decoration line is specified.
         const NONE = 0;
         /// underline
@@ -238,206 +245,11 @@ impl Default for TextDecorationLine {
     }
 }
 
-impl Parse for TextDecorationLine {
-    /// none | [ underline || overline || line-through || blink ]
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let mut result = TextDecorationLine::empty();
-
-        // NOTE(emilio): this loop has this weird structure because we run this
-        // code to parse the text-decoration shorthand as well, so we need to
-        // ensure we don't return an error if we don't consume the whole thing
-        // because we find an invalid identifier or other kind of token.
-        loop {
-            let flag: Result<_, ParseError<'i>> = input.try(|input| {
-                let flag = try_match_ident_ignore_ascii_case! { input,
-                    "none" if result.is_empty() => TextDecorationLine::NONE,
-                    "underline" => TextDecorationLine::UNDERLINE,
-                    "overline" => TextDecorationLine::OVERLINE,
-                    "line-through" => TextDecorationLine::LINE_THROUGH,
-                    "blink" => TextDecorationLine::BLINK,
-                };
-
-                Ok(flag)
-            });
-
-            let flag = match flag {
-                Ok(flag) => flag,
-                Err(..) => break,
-            };
-
-            if flag.is_empty() {
-                return Ok(TextDecorationLine::NONE);
-            }
-
-            if result.contains(flag) {
-                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-            }
-
-            result.insert(flag)
-        }
-
-        if !result.is_empty() {
-            Ok(result)
-        } else {
-            Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
-        }
-    }
-}
-
-impl ToCss for TextDecorationLine {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        if self.is_empty() {
-            return dest.write_str("none");
-        }
-
-        #[cfg(feature = "gecko")]
-        {
-            if *self == TextDecorationLine::COLOR_OVERRIDE {
-                return Ok(());
-            }
-        }
-
-        let mut writer = SequenceWriter::new(dest, " ");
-        let mut any = false;
-
-        macro_rules! maybe_write {
-            ($ident:ident => $str:expr) => {
-                if self.contains(TextDecorationLine::$ident) {
-                    any = true;
-                    writer.raw_item($str)?;
-                }
-            };
-        }
-
-        maybe_write!(UNDERLINE => "underline");
-        maybe_write!(OVERLINE => "overline");
-        maybe_write!(LINE_THROUGH => "line-through");
-        maybe_write!(BLINK => "blink");
-
-        debug_assert!(any);
-
-        Ok(())
-    }
-}
-
 impl TextDecorationLine {
     #[inline]
     /// Returns the initial value of text-decoration-line
     pub fn none() -> Self {
         TextDecorationLine::NONE
-    }
-}
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(C)]
-/// Specified value of the text-transform property, stored in two parts:
-/// the case-related transforms (mutually exclusive, only one may be in effect), and others (non-exclusive).
-pub struct TextTransform {
-    /// Case transform, if any.
-    pub case_: TextTransformCase,
-    /// Non-case transforms.
-    pub other_: TextTransformOther,
-}
-
-impl TextTransform {
-    #[inline]
-    /// Returns the initial value of text-transform
-    pub fn none() -> Self {
-        TextTransform {
-            case_: TextTransformCase::None,
-            other_: TextTransformOther::empty(),
-        }
-    }
-    #[inline]
-    /// Returns whether the value is 'none'
-    pub fn is_none(&self) -> bool {
-        self.case_ == TextTransformCase::None && self.other_.is_empty()
-    }
-}
-
-impl Parse for TextTransform {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        let mut result = TextTransform::none();
-
-        // Case keywords are mutually exclusive; other transforms may co-occur.
-        loop {
-            let location = input.current_source_location();
-            let ident = match input.next() {
-                Ok(&Token::Ident(ref ident)) => ident,
-                Ok(other) => return Err(location.new_unexpected_token_error(other.clone())),
-                Err(..) => break,
-            };
-
-            match_ignore_ascii_case! { ident,
-                "none" if result.is_none() => {
-                    return Ok(result);
-                },
-                "uppercase" if result.case_ == TextTransformCase::None => {
-                    result.case_ = TextTransformCase::Uppercase
-                },
-                "lowercase" if result.case_ == TextTransformCase::None => {
-                    result.case_ = TextTransformCase::Lowercase
-                },
-                "capitalize" if result.case_ == TextTransformCase::None => {
-                    result.case_ = TextTransformCase::Capitalize
-                },
-                "full-width" if !result.other_.intersects(TextTransformOther::FULL_WIDTH) => {
-                    result.other_.insert(TextTransformOther::FULL_WIDTH)
-                },
-                "full-size-kana" if !result.other_.intersects(TextTransformOther::FULL_SIZE_KANA) => {
-                    result.other_.insert(TextTransformOther::FULL_SIZE_KANA)
-                },
-                _ => return Err(location.new_custom_error(
-                    SelectorParseErrorKind::UnexpectedIdent(ident.clone())
-                )),
-            }
-        }
-
-        if result.is_none() {
-            Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
-        } else {
-            Ok(result)
-        }
-    }
-}
-
-impl ToCss for TextTransform {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        if self.is_none() {
-            return dest.write_str("none");
-        }
-
-        if self.case_ != TextTransformCase::None {
-            self.case_.to_css(dest)?;
-            if !self.other_.is_empty() {
-                dest.write_str(" ")?;
-            }
-        }
-
-        self.other_.to_css(dest)
     }
 }
 
@@ -465,43 +277,76 @@ pub enum TextTransformCase {
     Lowercase,
     /// Capitalize each word.
     Capitalize,
+    /// Automatic italicization of math variables.
+    MathAuto,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    Parse,
+    Serialize,
+    SpecifiedValueInfo,
+    ToCss,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[css(bitflags(
+    single = "none,math-auto",
+    mixed = "uppercase,lowercase,capitalize,full-width,full-size-kana",
+    validate_mixed = "Self::validate_mixed_flags",
+))]
+#[repr(C)]
+/// Specified value for the text-transform property.
+/// (The spec grammar gives
+/// `none | math-auto | [capitalize | uppercase | lowercase] || full-width || full-size-kana`.)
+/// https://drafts.csswg.org/css-text-4/#text-transform-property
+pub struct TextTransform(u8);
 bitflags! {
-    #[derive(MallocSizeOf, SpecifiedValueInfo, ToComputedValue, ToResolvedValue, ToShmem)]
-    #[value_info(other_values = "none,full-width,full-size-kana")]
-    #[repr(C)]
-    /// Specified keyword values for non-case transforms in the text-transform property. (Non-exclusive.)
-    pub struct TextTransformOther: u8 {
+    impl TextTransform: u8 {
+        /// none
+        const NONE = 0;
+        /// All uppercase.
+        const UPPERCASE = 1 << 0;
+        /// All lowercase.
+        const LOWERCASE = 1 << 1;
+        /// Capitalize each word.
+        const CAPITALIZE = 1 << 2;
+        /// Automatic italicization of math variables.
+        const MATH_AUTO = 1 << 3;
+
+        /// All the case transforms, which are exclusive with each other.
+        const CASE_TRANSFORMS = Self::UPPERCASE.0 | Self::LOWERCASE.0 | Self::CAPITALIZE.0 | Self::MATH_AUTO.0;
+
         /// full-width
-        const FULL_WIDTH = 1 << 0;
+        const FULL_WIDTH = 1 << 4;
         /// full-size-kana
-        const FULL_SIZE_KANA = 1 << 1;
+        const FULL_SIZE_KANA = 1 << 5;
     }
 }
 
-impl ToCss for TextTransformOther {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        let mut writer = SequenceWriter::new(dest, " ");
-        let mut any = false;
-        macro_rules! maybe_write {
-            ($ident:ident => $str:expr) => {
-                if self.contains(TextTransformOther::$ident) {
-                    writer.raw_item($str)?;
-                    any = true;
-                }
-            };
-        }
+impl TextTransform {
+    /// Returns the initial value of text-transform
+    #[inline]
+    pub fn none() -> Self {
+        Self::NONE
+    }
 
-        maybe_write!(FULL_WIDTH => "full-width");
-        maybe_write!(FULL_SIZE_KANA => "full-size-kana");
+    /// Returns whether the value is 'none'
+    #[inline]
+    pub fn is_none(self) -> bool {
+        self == Self::NONE
+    }
 
-        debug_assert!(any || self.is_empty());
-
-        Ok(())
+    fn validate_mixed_flags(&self) -> bool {
+        let case = self.intersection(Self::CASE_TRANSFORMS);
+        // Case bits are exclusive with each other.
+        case.is_empty() || case.bits().is_power_of_two()
     }
 }
 
@@ -558,24 +403,14 @@ pub enum TextAlignKeyword {
     Left,
     Right,
     Center,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Justify,
-    #[css(skip)]
-    #[cfg(feature = "gecko")]
-    Char,
     End,
-    #[cfg(feature = "gecko")]
+    #[parse(aliases = "-webkit-center")]
     MozCenter,
-    #[cfg(feature = "gecko")]
+    #[parse(aliases = "-webkit-left")]
     MozLeft,
-    #[cfg(feature = "gecko")]
+    #[parse(aliases = "-webkit-right")]
     MozRight,
-    #[cfg(feature = "servo-layout-2013")]
-    ServoCenter,
-    #[cfg(feature = "servo-layout-2013")]
-    ServoLeft,
-    #[cfg(feature = "servo-layout-2013")]
-    ServoRight,
 }
 
 /// Specified value of text-align property.
@@ -589,11 +424,20 @@ pub enum TextAlign {
     /// unlike other keywords.
     #[cfg(feature = "gecko")]
     MatchParent,
-    /// `MozCenterOrInherit` value of text-align property. It cannot be parsed,
-    /// only set directly on the elements and it has a different handling
-    /// unlike other values.
+    /// This is how we implement the following HTML behavior from
+    /// https://html.spec.whatwg.org/#tables-2:
+    ///
+    ///     User agents are expected to have a rule in their user agent style sheet
+    ///     that matches th elements that have a parent node whose computed value
+    ///     for the 'text-align' property is its initial value, whose declaration
+    ///     block consists of just a single declaration that sets the 'text-align'
+    ///     property to the value 'center'.
+    ///
+    /// Since selectors can't depend on the ancestor styles, we implement it with a
+    /// magic value that computes to the right thing. Since this is an
+    /// implementation detail, it shouldn't be exposed to web content.
     #[cfg(feature = "gecko")]
-    #[css(skip)]
+    #[parse(condition = "ParserContext::chrome_rules_enabled")]
     MozCenterOrInherit,
 }
 
@@ -758,14 +602,16 @@ impl ToComputedValue for TextEmphasisStyle {
             },
             TextEmphasisStyle::None => ComputedTextEmphasisStyle::None,
             TextEmphasisStyle::String(ref s) => {
-                // Passing `true` to iterate over extended grapheme clusters, following
-                // recommendation at http://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries
-                //
                 // FIXME(emilio): Doing this at computed value time seems wrong.
                 // The spec doesn't say that this should be a computed-value
                 // time operation. This is observable from getComputedStyle().
-                let s = s.graphemes(true).next().unwrap_or("").to_string();
-                ComputedTextEmphasisStyle::String(s.into())
+                //
+                // Note that the first grapheme cluster boundary should always be the start of the string.
+                let first_grapheme_end = GraphemeClusterSegmenter::new()
+                    .segment_str(s)
+                    .nth(1)
+                    .unwrap_or(0);
+                ComputedTextEmphasisStyle::String(s[0..first_grapheme_end].to_string().into())
             },
         }
     }
@@ -791,22 +637,22 @@ impl Parse for TextEmphasisStyle {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("none"))
+            .try_parse(|input| input.expect_ident_matching("none"))
             .is_ok()
         {
             return Ok(TextEmphasisStyle::None);
         }
 
-        if let Ok(s) = input.try(|i| i.expect_string().map(|s| s.as_ref().to_owned())) {
+        if let Ok(s) = input.try_parse(|i| i.expect_string().map(|s| s.as_ref().to_owned())) {
             // Handle <string>
             return Ok(TextEmphasisStyle::String(s.into()));
         }
 
         // Handle a pair of keywords
-        let mut shape = input.try(TextEmphasisShapeKeyword::parse).ok();
-        let fill = input.try(TextEmphasisFillMode::parse).ok();
+        let mut shape = input.try_parse(TextEmphasisShapeKeyword::parse).ok();
+        let fill = input.try_parse(TextEmphasisFillMode::parse).ok();
         if shape.is_none() {
-            shape = input.try(TextEmphasisShapeKeyword::parse).ok();
+            shape = input.try_parse(TextEmphasisShapeKeyword::parse).ok();
         }
 
         if shape.is_none() && fill.is_none() {
@@ -823,146 +669,54 @@ impl Parse for TextEmphasisStyle {
     }
 }
 
-/// The allowed horizontal values for the `text-emphasis-position` property.
 #[derive(
     Clone,
     Copy,
     Debug,
     Eq,
     MallocSizeOf,
+    PartialEq,
     Parse,
-    PartialEq,
+    Serialize,
     SpecifiedValueInfo,
-    ToComputedValue,
     ToCss,
+    ToComputedValue,
     ToResolvedValue,
     ToShmem,
 )]
-pub enum TextEmphasisHorizontalWritingModeValue {
-    /// Draw marks over the text in horizontal writing mode.
-    Over,
-    /// Draw marks under the text in horizontal writing mode.
-    Under,
+#[repr(C)]
+#[css(bitflags(
+    mixed = "over,under,left,right",
+    validate_mixed = "Self::validate_and_simplify"
+))]
+/// Values for text-emphasis-position:
+/// <https://drafts.csswg.org/css-text-decor/#text-emphasis-position-property>
+pub struct TextEmphasisPosition(u8);
+bitflags! {
+    impl TextEmphasisPosition: u8 {
+        /// Draws marks to the right of the text in vertical writing mode.
+        const OVER = 1 << 0;
+        /// Draw marks under the text in horizontal writing mode.
+        const UNDER = 1 << 1;
+        /// Draw marks to the left of the text in vertical writing mode.
+        const LEFT = 1 << 2;
+        /// Draws marks to the right of the text in vertical writing mode.
+        const RIGHT = 1 << 3;
+    }
 }
-
-/// The allowed vertical values for the `text-emphasis-position` property.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    Parse,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-pub enum TextEmphasisVerticalWritingModeValue {
-    /// Draws marks to the right of the text in vertical writing mode.
-    Right,
-    /// Draw marks to the left of the text in vertical writing mode.
-    Left,
-}
-
-/// Specified value of `text-emphasis-position` property.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-pub struct TextEmphasisPosition(
-    pub TextEmphasisHorizontalWritingModeValue,
-    pub TextEmphasisVerticalWritingModeValue,
-);
 
 impl TextEmphasisPosition {
-    #[inline]
-    /// Returns the initial value of `text-emphasis-position`
-    pub fn over_right() -> Self {
-        TextEmphasisPosition(
-            TextEmphasisHorizontalWritingModeValue::Over,
-            TextEmphasisVerticalWritingModeValue::Right,
-        )
-    }
-
-    #[cfg(feature = "gecko")]
-    /// Converts an enumerated value coming from Gecko to a `TextEmphasisPosition`.
-    pub fn from_gecko_keyword(kw: u32) -> Self {
-        use crate::gecko_bindings::structs;
-
-        let vert = if kw & structs::NS_STYLE_TEXT_EMPHASIS_POSITION_RIGHT != 0 {
-            TextEmphasisVerticalWritingModeValue::Right
-        } else {
-            debug_assert!(kw & structs::NS_STYLE_TEXT_EMPHASIS_POSITION_LEFT != 0);
-            TextEmphasisVerticalWritingModeValue::Left
-        };
-        let horiz = if kw & structs::NS_STYLE_TEXT_EMPHASIS_POSITION_OVER != 0 {
-            TextEmphasisHorizontalWritingModeValue::Over
-        } else {
-            debug_assert!(kw & structs::NS_STYLE_TEXT_EMPHASIS_POSITION_UNDER != 0);
-            TextEmphasisHorizontalWritingModeValue::Under
-        };
-        TextEmphasisPosition(horiz, vert)
-    }
-}
-
-impl Parse for TextEmphasisPosition {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        if let Ok(horizontal) =
-            input.try(|input| TextEmphasisHorizontalWritingModeValue::parse(input))
-        {
-            let vertical = TextEmphasisVerticalWritingModeValue::parse(input)?;
-            Ok(TextEmphasisPosition(horizontal, vertical))
-        } else {
-            let vertical = TextEmphasisVerticalWritingModeValue::parse(input)?;
-            let horizontal = TextEmphasisHorizontalWritingModeValue::parse(input)?;
-            Ok(TextEmphasisPosition(horizontal, vertical))
+    fn validate_and_simplify(&mut self) -> bool {
+        if self.intersects(Self::OVER) == self.intersects(Self::UNDER) {
+            return false;
         }
-    }
-}
 
-#[cfg(feature = "gecko")]
-impl From<u8> for TextEmphasisPosition {
-    fn from(bits: u8) -> Self {
-        TextEmphasisPosition::from_gecko_keyword(bits as u32)
-    }
-}
+        if self.intersects(Self::LEFT) {
+            return !self.intersects(Self::RIGHT);
+        }
 
-#[cfg(feature = "gecko")]
-impl From<TextEmphasisPosition> for u8 {
-    fn from(v: TextEmphasisPosition) -> u8 {
-        use crate::gecko_bindings::structs;
-
-        let mut result = match v.0 {
-            TextEmphasisHorizontalWritingModeValue::Over => {
-                structs::NS_STYLE_TEXT_EMPHASIS_POSITION_OVER
-            },
-            TextEmphasisHorizontalWritingModeValue::Under => {
-                structs::NS_STYLE_TEXT_EMPHASIS_POSITION_UNDER
-            },
-        };
-        match v.1 {
-            TextEmphasisVerticalWritingModeValue::Right => {
-                result |= structs::NS_STYLE_TEXT_EMPHASIS_POSITION_RIGHT;
-            },
-            TextEmphasisVerticalWritingModeValue::Left => {
-                result |= structs::NS_STYLE_TEXT_EMPHASIS_POSITION_LEFT;
-            },
-        };
-        result as u8
+        self.remove(Self::RIGHT); // Right is the default
+        true
     }
 }
 
@@ -993,6 +747,65 @@ pub enum WordBreak {
     /// `anywhere`, and `word-break` behave like `normal`.
     #[cfg(feature = "gecko")]
     BreakWord,
+}
+
+/// Values for the `text-justify` CSS property.
+#[repr(u8)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[allow(missing_docs)]
+pub enum TextJustify {
+    Auto,
+    None,
+    InterWord,
+    // See https://drafts.csswg.org/css-text-3/#valdef-text-justify-distribute
+    // and https://github.com/w3c/csswg-drafts/issues/6156 for the alias.
+    #[parse(aliases = "distribute")]
+    InterCharacter,
+}
+
+/// Values for the `-moz-control-character-visibility` CSS property.
+#[repr(u8)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[allow(missing_docs)]
+pub enum MozControlCharacterVisibility {
+    Hidden,
+    Visible,
+}
+
+impl Default for MozControlCharacterVisibility {
+    fn default() -> Self {
+        if static_prefs::pref!("layout.css.control-characters.visible") {
+            Self::Visible
+        } else {
+            Self::Hidden
+        }
+    }
 }
 
 /// Values for the `line-break` property.
@@ -1043,6 +856,60 @@ pub enum OverflowWrap {
     Anywhere,
 }
 
+/// A specified value for the `text-indent` property
+/// which takes the grammar of [<length-percentage>] && hanging? && each-line?
+///
+/// https://drafts.csswg.org/css-text/#propdef-text-indent
+pub type TextIndent = GenericTextIndent<LengthPercentage>;
+
+impl Parse for TextIndent {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        let mut length = None;
+        let mut hanging = false;
+        let mut each_line = false;
+
+        // The length-percentage and the two possible keywords can occur in any order.
+        while !input.is_exhausted() {
+            // If we haven't seen a length yet, try to parse one.
+            if length.is_none() {
+                if let Ok(len) = input
+                    .try_parse(|i| LengthPercentage::parse_quirky(context, i, AllowQuirks::Yes))
+                {
+                    length = Some(len);
+                    continue;
+                }
+            }
+
+            if static_prefs::pref!("layout.css.text-indent-keywords.enabled") {
+                // Check for the keywords (boolean flags).
+                try_match_ident_ignore_ascii_case! { input,
+                    "hanging" if !hanging => hanging = true,
+                    "each-line" if !each_line => each_line = true,
+                }
+                continue;
+            }
+
+            // If we reach here, there must be something that we failed to parse;
+            // just break and let the caller deal with it.
+            break;
+        }
+
+        // The length-percentage value is required for the declaration to be valid.
+        if let Some(length) = length {
+            Ok(Self {
+                length,
+                hanging,
+                each_line,
+            })
+        } else {
+            Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+        }
+    }
+}
+
 /// Implements text-decoration-skip-ink which takes the keywords auto | none | all
 ///
 /// https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-ink-property
@@ -1086,15 +953,32 @@ impl TextDecorationLength {
     }
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[css(bitflags(
+    single = "auto",
+    mixed = "from-font,under,left,right",
+    validate_mixed = "Self::validate_mixed_flags",
+))]
+#[repr(C)]
+/// Specified keyword values for the text-underline-position property.
+/// (Non-exclusive, but not all combinations are allowed: the spec grammar gives
+/// `auto | [ from-font | under ] || [ left | right ]`.)
+/// https://drafts.csswg.org/css-text-decor-4/#text-underline-position-property
+pub struct TextUnderlinePosition(u8);
 bitflags! {
-    #[derive(MallocSizeOf, SpecifiedValueInfo, ToComputedValue, ToResolvedValue, ToShmem)]
-    #[value_info(other_values = "auto,from-font,under,left,right")]
-    #[repr(C)]
-    /// Specified keyword values for the text-underline-position property.
-    /// (Non-exclusive, but not all combinations are allowed: the spec grammar gives
-    /// `auto | [ from-font | under ] || [ left | right ]`.)
-    /// https://drafts.csswg.org/css-text-decor-4/#text-underline-position-property
-    pub struct TextUnderlinePosition: u8 {
+    impl TextUnderlinePosition: u8 {
         /// Use automatic positioning below the alphabetic baseline.
         const AUTO = 0;
         /// Use underline position from the first available font.
@@ -1108,52 +992,17 @@ bitflags! {
     }
 }
 
-impl Parse for TextUnderlinePosition {
-    fn parse<'i, 't>(
-        _context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<TextUnderlinePosition, ParseError<'i>> {
-        let mut result = TextUnderlinePosition::empty();
-
-        loop {
-            let location = input.current_source_location();
-            let ident = match input.next() {
-                Ok(&Token::Ident(ref ident)) => ident,
-                Ok(other) => return Err(location.new_unexpected_token_error(other.clone())),
-                Err(..) => break,
-            };
-
-            match_ignore_ascii_case! { ident,
-                "auto" if result.is_empty() => {
-                    return Ok(result);
-                },
-                "from-font" if !result.intersects(TextUnderlinePosition::FROM_FONT |
-                                                  TextUnderlinePosition::UNDER) => {
-                    result.insert(TextUnderlinePosition::FROM_FONT);
-                },
-                "under" if !result.intersects(TextUnderlinePosition::FROM_FONT |
-                                              TextUnderlinePosition::UNDER) => {
-                    result.insert(TextUnderlinePosition::UNDER);
-                },
-                "left" if !result.intersects(TextUnderlinePosition::LEFT |
-                                             TextUnderlinePosition::RIGHT) => {
-                    result.insert(TextUnderlinePosition::LEFT);
-                },
-                "right" if !result.intersects(TextUnderlinePosition::LEFT |
-                                              TextUnderlinePosition::RIGHT) => {
-                    result.insert(TextUnderlinePosition::RIGHT);
-                },
-                _ => return Err(location.new_custom_error(
-                    SelectorParseErrorKind::UnexpectedIdent(ident.clone())
-                )),
-            }
+impl TextUnderlinePosition {
+    fn validate_mixed_flags(&self) -> bool {
+        if self.contains(Self::LEFT | Self::RIGHT) {
+            // left and right can't be mixed together.
+            return false;
         }
-
-        if !result.is_empty() {
-            Ok(result)
-        } else {
-            Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+        if self.contains(Self::FROM_FONT | Self::UNDER) {
+            // from-font and under can't be mixed together either.
+            return false;
         }
+        true
     }
 }
 
@@ -1186,5 +1035,70 @@ impl ToCss for TextUnderlinePosition {
         debug_assert!(any);
 
         Ok(())
+    }
+}
+
+/// Values for `ruby-position` property
+#[repr(u8)]
+#[derive(
+    Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToResolvedValue, ToShmem,
+)]
+#[allow(missing_docs)]
+pub enum RubyPosition {
+    AlternateOver,
+    AlternateUnder,
+    Over,
+    Under,
+}
+
+impl Parse for RubyPosition {
+    fn parse<'i, 't>(
+        _context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<RubyPosition, ParseError<'i>> {
+        // Parse alternate before
+        let alternate = input
+            .try_parse(|i| i.expect_ident_matching("alternate"))
+            .is_ok();
+        if alternate && input.is_exhausted() {
+            return Ok(RubyPosition::AlternateOver);
+        }
+        // Parse over / under
+        let over = try_match_ident_ignore_ascii_case! { input,
+            "over" => true,
+            "under" => false,
+        };
+        // Parse alternate after
+        let alternate = alternate ||
+            input
+                .try_parse(|i| i.expect_ident_matching("alternate"))
+                .is_ok();
+
+        Ok(match (over, alternate) {
+            (true, true) => RubyPosition::AlternateOver,
+            (false, true) => RubyPosition::AlternateUnder,
+            (true, false) => RubyPosition::Over,
+            (false, false) => RubyPosition::Under,
+        })
+    }
+}
+
+impl ToCss for RubyPosition {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        dest.write_str(match self {
+            RubyPosition::AlternateOver => "alternate",
+            RubyPosition::AlternateUnder => "alternate under",
+            RubyPosition::Over => "over",
+            RubyPosition::Under => "under",
+        })
+    }
+}
+
+impl SpecifiedValueInfo for RubyPosition {
+    fn collect_completion_keywords(f: KeywordsCollectFn) {
+        f(&["alternate", "over", "under"])
     }
 }

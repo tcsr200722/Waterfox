@@ -9,17 +9,17 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/MessageManagerGlobal.h"
+#include "mozilla/dom/MessageManagerCallback.h"
 #include "nsCOMPtr.h"
-#include "nsFrameMessageManager.h"
-#include "nsIScriptContext.h"
 #include "nsIScriptContext.h"
 #include "nsServiceManagerUtils.h"
 #include "nsWeakReference.h"
 #include "nsWrapperCache.h"
 #include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+class nsFrameMessageManager;
+
+namespace mozilla::dom {
 
 namespace ipc {
 class SharedMap;
@@ -58,7 +58,7 @@ class ContentProcessMessageManager : public nsIMessageSender,
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  JSObject* GetOrCreateWrapper();
+  [[nodiscard]] JSObject* GetOrCreateWrapper();
 
   using MessageManagerGlobal::AddMessageListener;
   using MessageManagerGlobal::AddWeakMessageListener;
@@ -76,7 +76,7 @@ class ContentProcessMessageManager : public nsIMessageSender,
     mMessageManager->GetInitialProcessData(aCx, aInitialProcessData, aError);
   }
 
-  already_AddRefed<ipc::SharedMap> SharedData();
+  already_AddRefed<ipc::SharedMap> GetSharedData();
 
   NS_FORWARD_SAFE_NSIMESSAGESENDER(mMessageManager)
 
@@ -84,11 +84,11 @@ class ContentProcessMessageManager : public nsIMessageSender,
     return xpc::NativeGlobal(xpc::PrivilegedJunkScope());
   }
 
-  virtual void LoadScript(const nsAString& aURL);
+  [[nodiscard]] virtual bool LoadScript(const nsAString& aURL);
 
   bool IsProcessScoped() const override { return true; }
 
-  void SetInitialProcessData(JS::HandleValue aInitialData);
+  void SetInitialProcessData(JS::Handle<JS::Value> aInitialData);
 
  protected:
   virtual ~ContentProcessMessageManager();
@@ -99,7 +99,6 @@ class ContentProcessMessageManager : public nsIMessageSender,
   static bool sWasCreated;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ContentProcessMessageManager_h

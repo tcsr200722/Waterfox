@@ -13,9 +13,9 @@
 #include "nsContentUtils.h"
 #include "nsIScriptError.h"
 #include "nsID.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaStreamAudioSourceNode)
 
@@ -23,12 +23,14 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(MediaStreamAudioSourceNode)
   tmp->Destroy();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputStream)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputTrack)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mListener)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(AudioNode)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(MediaStreamAudioSourceNode,
                                                   AudioNode)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputStream)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputTrack)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mListener)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MediaStreamAudioSourceNode)
@@ -65,12 +67,13 @@ already_AddRefed<MediaStreamAudioSourceNode> MediaStreamAudioSourceNode::Create(
 
 void MediaStreamAudioSourceNode::Init(DOMMediaStream& aMediaStream,
                                       ErrorResult& aRv) {
+  mListener = new TrackListener(this);
   mInputStream = &aMediaStream;
   AudioNodeEngine* engine = new MediaStreamAudioSourceNodeEngine(this);
   mTrack = AudioNodeExternalInputTrack::Create(Context()->Graph(), engine);
   mInputStream->AddConsumerToKeepAlive(ToSupports(this));
 
-  mInputStream->RegisterTrackListener(this);
+  mInputStream->RegisterTrackListener(mListener);
   if (mInputStream->Audible()) {
     NotifyAudible();
   }
@@ -79,8 +82,9 @@ void MediaStreamAudioSourceNode::Init(DOMMediaStream& aMediaStream,
 
 void MediaStreamAudioSourceNode::Destroy() {
   if (mInputStream) {
-    mInputStream->UnregisterTrackListener(this);
+    mInputStream->UnregisterTrackListener(mListener);
     mInputStream = nullptr;
+    mListener = nullptr;
   }
   DetachFromTrack();
 }
@@ -100,9 +104,8 @@ void MediaStreamAudioSourceNode::AttachToTrack(
   if (NS_WARN_IF(Context()->Graph() != aTrack->Graph())) {
     nsCOMPtr<nsPIDOMWindowInner> pWindow = Context()->GetParentObject();
     Document* document = pWindow ? pWindow->GetExtantDoc() : nullptr;
-    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
-                                    NS_LITERAL_CSTRING("Web Audio"), document,
-                                    nsContentUtils::eDOM_PROPERTIES,
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    document, nsContentUtils::eDOM_PROPERTIES,
                                     "MediaStreamAudioSourceNodeDifferentRate");
     // This is not a spec-required exception, just a limitation of our
     // implementation.
@@ -138,8 +141,7 @@ static int AudioTrackCompare(const RefPtr<AudioStreamTrack>& aLhs,
   nsAutoStringN<NSID_LENGTH> IDRhs;
   aLhs->GetId(IDLhs);
   aRhs->GetId(IDRhs);
-  return NS_ConvertUTF16toUTF8(IDLhs).Compare(
-      NS_ConvertUTF16toUTF8(IDRhs).get());
+  return Compare(NS_ConvertUTF16toUTF8(IDLhs), NS_ConvertUTF16toUTF8(IDRhs));
 }
 
 void MediaStreamAudioSourceNode::AttachToRightTrack(
@@ -242,9 +244,9 @@ void MediaStreamAudioSourceNode::PrincipalChanged(
   track->SetInt32Parameter(MediaStreamAudioSourceNodeEngine::ENABLE, enabled);
 
   if (!enabled && doc) {
-    nsContentUtils::ReportToConsole(
-        nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Web Audio"), doc,
-        nsContentUtils::eDOM_PROPERTIES, CrossOriginErrorString());
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    doc, nsContentUtils::eDOM_PROPERTIES,
+                                    CrossOriginErrorString());
   }
 }
 
@@ -277,5 +279,14 @@ JSObject* MediaStreamAudioSourceNode::WrapObject(
   return MediaStreamAudioSourceNode_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+NS_IMPL_CYCLE_COLLECTION_INHERITED(MediaStreamAudioSourceNode::TrackListener,
+                                   DOMMediaStream::TrackListener, mNode)
+NS_IMPL_ADDREF_INHERITED(MediaStreamAudioSourceNode::TrackListener,
+                         DOMMediaStream::TrackListener)
+NS_IMPL_RELEASE_INHERITED(MediaStreamAudioSourceNode::TrackListener,
+                          DOMMediaStream::TrackListener)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(
+    MediaStreamAudioSourceNode::TrackListener)
+NS_INTERFACE_MAP_END_INHERITING(DOMMediaStream::TrackListener)
+
+}  // namespace mozilla::dom

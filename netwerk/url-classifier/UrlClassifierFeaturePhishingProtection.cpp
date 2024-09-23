@@ -5,13 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "UrlClassifierFeaturePhishingProtection.h"
+#include "mozilla/StaticPrefs_browser.h"
+#include "nsCOMPtr.h"
 
 namespace mozilla {
 namespace net {
 
 struct UrlClassifierFeaturePhishingProtection::PhishingProtectionFeature {
   const char* mName;
-  const char* mBlacklistPrefTables;
+  const char* mBlocklistPrefTables;
   bool (*mPref)();
 
   RefPtr<UrlClassifierFeaturePhishingProtection> mFeature;
@@ -36,13 +38,13 @@ UrlClassifierFeaturePhishingProtection::UrlClassifierFeaturePhishingProtection(
         aFeature)
     : UrlClassifierFeatureBase(
           nsDependentCString(aFeature.mName),
-          nsDependentCString(aFeature.mBlacklistPrefTables),
-          EmptyCString(),    // aPrefWhitelistPrefTbles,
-          EmptyCString(),    // aPrefBlacklistHosts
-          EmptyCString(),    // aPrefWhitelistHosts
-          EmptyCString(),    // aPrefBlacklistTableName
-          EmptyCString(),    // aPrefWhitelistTableName
-          EmptyCString()) {  // aPrefSkipHosts
+          nsDependentCString(aFeature.mBlocklistPrefTables),
+          ""_ns,    // aPrefEntitylistPrefTbles,
+          ""_ns,    // aPrefBlocklistHosts
+          ""_ns,    // aPrefEntitylistHosts
+          ""_ns,    // aPrefBlocklistTableName
+          ""_ns,    // aPrefEntitylistTableName
+          ""_ns) {  // aPrefExceptionHosts
 }
 
 /* static */

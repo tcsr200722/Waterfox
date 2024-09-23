@@ -10,10 +10,8 @@
  * example.
  */
 
-const TEST_PATH =
-  "http://example.net/browser/browser/components/resistfingerprinting/test/browser/";
-const { RFPHelper } = ChromeUtils.import(
-  "resource://gre/modules/RFPHelper.jsm"
+const { RFPHelper } = ChromeUtils.importESModule(
+  "resource://gre/modules/RFPHelper.sys.mjs"
 );
 
 // A set of test cases which defines the width and the height of the outer window.
@@ -162,7 +160,7 @@ async function test_dynamical_window_rounding(aWindow, aCheckFunc) {
            *    check() functions use ok() while on Linux, we do not all ok() and instead
            *    rely on waitForCondition to fail).
            *
-           * The logging statements in this test, and RFPHelper.jsm, help narrow down and
+           * The logging statements in this test, and RFPHelper.sys.mjs, help narrow down and
            * illustrate the issue.
            */
           info(caseString + "We hit the weird resize bug. Resize it again.");
@@ -348,7 +346,7 @@ async function test_findbar(aWindow) {
   BrowserTestUtils.removeTab(tab);
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["privacy.resistFingerprinting.letterboxing", true],

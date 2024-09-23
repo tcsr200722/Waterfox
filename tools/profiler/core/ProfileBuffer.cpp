@@ -7,6 +7,7 @@
 #include "ProfileBuffer.h"
 
 #include "BaseProfiler.h"
+#include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin
 #include "js/GCAPI.h"
 #include "jsfriendapi.h"
 #include "mozilla/MathAlgorithms.h"
@@ -19,13 +20,6 @@ ProfileBuffer::ProfileBuffer(ProfileChunkedBuffer& aBuffer)
     : mEntries(aBuffer) {
   // Assume the given buffer is in-session.
   MOZ_ASSERT(mEntries.IsInSession());
-}
-
-ProfileBuffer::~ProfileBuffer() {
-  // Only ProfileBuffer controls this buffer, and it should be empty when there
-  // is no ProfileBuffer using it.
-  mEntries.ResetChunkManager();
-  MOZ_ASSERT(!mEntries.IsInSession());
 }
 
 /* static */
@@ -54,12 +48,12 @@ uint64_t ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry) {
 
 /* static */
 ProfileBufferBlockIndex ProfileBuffer::AddThreadIdEntry(
-    ProfileChunkedBuffer& aProfileChunkedBuffer, int aThreadId) {
+    ProfileChunkedBuffer& aProfileChunkedBuffer, ProfilerThreadId aThreadId) {
   return AddEntry(aProfileChunkedBuffer,
                   ProfileBufferEntry::ThreadId(aThreadId));
 }
 
-uint64_t ProfileBuffer::AddThreadIdEntry(int aThreadId) {
+uint64_t ProfileBuffer::AddThreadIdEntry(ProfilerThreadId aThreadId) {
   return AddThreadIdEntry(mEntries, aThreadId).ConvertToProfileBufferIndex();
 }
 
@@ -136,38 +130,44 @@ size_t ProfileBuffer::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
 
-void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
+void ProfileBuffer::CollectOverheadStats(double aSamplingTimeMs,
                                          TimeDuration aLocking,
                                          TimeDuration aCleaning,
                                          TimeDuration aCounters,
                                          TimeDuration aThreads) {
-  double time = aSamplingTime.ToMilliseconds() * 1000.0;
-  if (mFirstSamplingTimeNs == 0.0) {
-    mFirstSamplingTimeNs = time;
+  double timeUs = aSamplingTimeMs * 1000.0;
+  if (mFirstSamplingTimeUs == 0.0) {
+    mFirstSamplingTimeUs = timeUs;
   } else {
     // Note that we'll have 1 fewer interval than other numbers (because
     // we need both ends of an interval to know its duration). The final
     // difference should be insignificant over the expected many thousands
     // of iterations.
-    mIntervalsNs.Count(time - mLastSamplingTimeNs);
+    mIntervalsUs.Count(timeUs - mLastSamplingTimeUs);
   }
-  mLastSamplingTimeNs = time;
+  mLastSamplingTimeUs = timeUs;
   double locking = aLocking.ToMilliseconds() * 1000.0;
   double cleaning = aCleaning.ToMilliseconds() * 1000.0;
   double counters = aCounters.ToMilliseconds() * 1000.0;
   double threads = aThreads.ToMilliseconds() * 1000.0;
 
-  mOverheadsNs.Count(locking + cleaning + counters + threads);
-  mLockingsNs.Count(locking);
-  mCleaningsNs.Count(cleaning);
-  mCountersNs.Count(counters);
-  mThreadsNs.Count(threads);
+  mOverheadsUs.Count(locking + cleaning + counters + threads);
+  mLockingsUs.Count(locking);
+  mCleaningsUs.Count(cleaning);
+  mCountersUs.Count(counters);
+  mThreadsUs.Count(threads);
 
-  AddEntry(ProfileBufferEntry::ProfilerOverheadTime(time));
-  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(locking));
-  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(cleaning));
-  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(counters));
-  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(threads));
+  static const bool sRecordSamplingOverhead = []() {
+    const char* recordOverheads = getenv("MOZ_PROFILER_RECORD_OVERHEADS");
+    return recordOverheads && recordOverheads[0] != '\0';
+  }();
+  if (sRecordSamplingOverhead) {
+    AddEntry(ProfileBufferEntry::ProfilerOverheadTime(aSamplingTimeMs));
+    AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(locking));
+    AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(cleaning));
+    AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(counters));
+    AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(threads));
+  }
 }
 
 ProfilerBufferInfo ProfileBuffer::GetProfilerBufferInfo() const {
@@ -175,12 +175,12 @@ ProfilerBufferInfo ProfileBuffer::GetProfilerBufferInfo() const {
           BufferRangeEnd(),
           static_cast<uint32_t>(*mEntries.BufferLength() /
                                 8),  // 8 bytes per entry.
-          mIntervalsNs,
-          mOverheadsNs,
-          mLockingsNs,
-          mCleaningsNs,
-          mCountersNs,
-          mThreadsNs};
+          mIntervalsUs,
+          mOverheadsUs,
+          mLockingsUs,
+          mCleaningsUs,
+          mCountersUs,
+          mThreadsUs};
 }
 
 /* ProfileBufferCollector */
@@ -193,8 +193,10 @@ void ProfileBufferCollector::CollectJitReturnAddr(void* aAddr) {
   mBuf.AddEntry(ProfileBufferEntry::JitReturnAddr(aAddr));
 }
 
-void ProfileBufferCollector::CollectWasmFrame(const char* aLabel) {
-  mBuf.CollectCodeLocation("", aLabel, 0, 0, Nothing(), Nothing(), Nothing());
+void ProfileBufferCollector::CollectWasmFrame(
+    JS::ProfilingCategoryPair aCategory, const char* aLabel) {
+  mBuf.CollectCodeLocation("", aLabel, 0, 0, Nothing(), Nothing(),
+                           Some(aCategory));
 }
 
 void ProfileBufferCollector::CollectProfilingStackFrame(
@@ -224,9 +226,9 @@ void ProfileBufferCollector::CollectProfilingStackFrame(
       // a local variable in order -- to avoid rooting hazards.
       if (aFrame.script()) {
         if (aFrame.pc()) {
-          unsigned col = 0;
+          JS::LimitedColumnNumberOneOrigin col;
           line = Some(JS_PCToLineNumber(aFrame.script(), aFrame.pc(), &col));
-          column = Some(col);
+          column = Some(col.oneOriginValue());
         }
       }
 

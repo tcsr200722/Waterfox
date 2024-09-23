@@ -7,14 +7,17 @@
 #include "nsXULAppAPI.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
-#include "js/Array.h"  // JS::NewArrayObject
+#include "js/Array.h"             // JS::NewArrayObject
+#include "js/CallAndConstruct.h"  // JS_CallFunctionValue
 #include "js/CharacterEncoding.h"
 #include "js/CompilationAndEvaluation.h"  // JS::Evaluate
 #include "js/ContextOptions.h"
 #include "js/Printf.h"
+#include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunctions, JS_DefineProperty
 #include "js/PropertySpec.h"
 #include "js/SourceText.h"  // JS::SourceText
 #include "mozilla/ChaosMode.h"
+#include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/IOInterposer.h"
 #include "mozilla/Preferences.h"
@@ -34,6 +37,7 @@
 #include "nsDirectoryServiceUtils.h"
 #include "nsCOMPtr.h"
 #include "nsJSPrincipals.h"
+#include "nsJSUtils.h"
 #include "xpcpublic.h"
 #include "xpcprivate.h"
 #include "BackstagePass.h"
@@ -42,18 +46,24 @@
 #include "nsJSUtils.h"
 
 #include "nsIXULRuntime.h"
-#include "GeckoProfiler.h"
+#include "nsIAppStartup.h"
+#include "Components.h"
+#include "ProfilerControl.h"
 
 #ifdef ANDROID
 #  include <android/log.h>
+#  include "XREShellData.h"
 #endif
 
 #ifdef XP_WIN
+#  include "mozilla/mscom/ProcessRuntime.h"
 #  include "mozilla/ScopeExit.h"
 #  include "mozilla/widget/AudioSession.h"
 #  include "mozilla/WinDllServices.h"
+#  include "mozilla/WindowsBCryptInitialization.h"
 #  include <windows.h>
 #  if defined(MOZ_SANDBOX)
+#    include "XREShellData.h"
 #    include "sandboxBroker.h"
 #  endif
 #endif
@@ -75,6 +85,14 @@
 #ifdef ENABLE_TESTS
 #  include "xpctest_private.h"
 #endif
+
+// Fuzzing support for XPC runtime fuzzing
+#ifdef FUZZING_INTERFACES
+#  include "xpcrtfuzzing/xpcrtfuzzing.h"
+#  include "XREShellData.h"
+static bool fuzzDoDebug = !!getenv("MOZ_FUZZ_DEBUG");
+static bool fuzzHaveModule = !!getenv("FUZZER");
+#endif  // FUZZING_INTERFACES
 
 using namespace mozilla;
 using namespace JS;
@@ -102,15 +120,11 @@ class XPCShellDirProvider : public nsIDirectoryServiceProvider2 {
   // The app executable
   void SetAppFile(nsIFile* appFile);
   void ClearAppFile() { mAppFile = nullptr; }
-  // An additional custom plugin dir if specified
-  void SetPluginDir(nsIFile* pluginDir);
-  void ClearPluginDir() { mPluginDir = nullptr; }
 
  private:
   nsCOMPtr<nsIFile> mGREDir;
   nsCOMPtr<nsIFile> mGREBinDir;
   nsCOMPtr<nsIFile> mAppDir;
-  nsCOMPtr<nsIFile> mPluginDir;
   nsCOMPtr<nsIFile> mAppFile;
 };
 
@@ -150,18 +164,9 @@ static bool GetLocationProperty(JSContext* cx, unsigned argc, Value* vp) {
 #else
   JS::AutoFilename filename;
   if (JS::DescribeScriptedCaller(cx, &filename) && filename.get()) {
-#  if defined(XP_WIN)
-    // convert from the system codepage to UTF-16
-    int bufferSize =
-        MultiByteToWideChar(CP_ACP, 0, filename.get(), -1, nullptr, 0);
-    nsAutoString filenameString;
-    filenameString.SetLength(bufferSize);
-    MultiByteToWideChar(CP_ACP, 0, filename.get(), -1,
-                        (LPWSTR)filenameString.BeginWriting(),
-                        filenameString.Length());
-    // remove the null terminator
-    filenameString.SetLength(bufferSize - 1);
+    NS_ConvertUTF8toUTF16 filenameString(filename.get());
 
+#  if defined(XP_WIN)
     // replace forward slashes with backslashes,
     // since nsLocalFileWin chokes on them
     char16_t* start = filenameString.BeginWriting();
@@ -173,8 +178,6 @@ static bool GetLocationProperty(JSContext* cx, unsigned argc, Value* vp) {
       }
       start++;
     }
-#  elif defined(XP_UNIX)
-    NS_ConvertUTF8toUTF16 filenameString(filename.get());
 #  endif
 
     nsCOMPtr<nsIFile> location;
@@ -274,6 +277,15 @@ static bool Print(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   args.rval().setUndefined();
 
+#ifdef FUZZING_INTERFACES
+  if (fuzzHaveModule && !fuzzDoDebug) {
+    // When fuzzing and not debugging, suppress any print() output,
+    // as it slows down fuzzing and makes libFuzzer's output hard
+    // to read.
+    return true;
+  }
+#endif  // FUZZING_INTERFACES
+
   RootedString str(cx);
   nsAutoCString utf8output;
 
@@ -352,28 +364,14 @@ static bool Load(JSContext* cx, unsigned argc, Value* vp) {
     if (!str) {
       return false;
     }
-    JS::UniqueChars filename = JS_EncodeStringToLatin1(cx, str);
+    JS::UniqueChars filename = JS_EncodeStringToUTF8(cx, str);
     if (!filename) {
       return false;
     }
-    FILE* file = fopen(filename.get(), "r");
-    if (!file) {
-      filename = JS_EncodeStringToUTF8(cx, str);
-      if (!filename) {
-        return false;
-      }
-      JS_ReportErrorUTF8(cx, "cannot open file '%s' for reading",
-                         filename.get());
-      return false;
-    }
     JS::CompileOptions options(cx);
-    options.setFileAndLine(filename.get(), 1)
-        .setIsRunOnce(true)
-        .setSkipFilenameValidation(true);
-    JS::Rooted<JSScript*> script(cx);
-    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
-    script = JS::CompileUtf8File(cx, options, file);
-    fclose(file);
+    options.setIsRunOnce(true).setSkipFilenameValidation(true);
+    JS::Rooted<JSScript*> script(
+        cx, JS::CompileUtf8Path(cx, options, filename.get()));
     if (!script) {
       return false;
     }
@@ -433,7 +431,7 @@ static bool GCZeal(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  JS_SetGCZeal(cx, uint8_t(zeal), JS_DEFAULT_ZEAL_FREQ);
+  JS::SetGCZeal(cx, uint8_t(zeal), JS::ShellDefaultGCZealFrequency);
   args.rval().setUndefined();
   return true;
 }
@@ -470,12 +468,11 @@ static bool SendCommand(JSContext* cx, unsigned argc, Value* vp) {
 
 static bool Options(JSContext* cx, unsigned argc, Value* vp) {
   JS::CallArgs args = CallArgsFromVp(argc, vp);
-  ContextOptions oldContextOptions = ContextOptionsRef(cx);
 
   RootedString str(cx);
   JS::UniqueChars opt;
-  for (unsigned i = 0; i < args.length(); ++i) {
-    str = ToString(cx, args[i]);
+  if (args.length() > 0) {
+    str = ToString(cx, args[0]);
     if (!str) {
       return false;
     }
@@ -485,33 +482,11 @@ static bool Options(JSContext* cx, unsigned argc, Value* vp) {
       return false;
     }
 
-    if (strcmp(opt.get(), "strict_mode") == 0) {
-      ContextOptionsRef(cx).toggleStrictMode();
-    } else {
-      JS_ReportErrorUTF8(cx,
-                         "unknown option name '%s'. The valid name is "
-                         "strict_mode.",
-                         opt.get());
-      return false;
-    }
-  }
-
-  UniqueChars names;
-  if (names && oldContextOptions.strictMode()) {
-    names = JS_sprintf_append(std::move(names), "%s%s", names ? "," : "",
-                              "strict_mode");
-    if (!names) {
-      JS_ReportOutOfMemory(cx);
-      return false;
-    }
-  }
-
-  str = JS_NewStringCopyZ(cx, names.get());
-  if (!str) {
+    JS_ReportErrorUTF8(cx, "unknown option name '%s'.", opt.get());
     return false;
   }
 
-  args.rval().setString(str);
+  args.rval().setString(JS_GetEmptyString(cx));
   return true;
 }
 
@@ -613,6 +588,37 @@ static bool RegisterAppManifest(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
+#ifdef ANDROID
+static bool ChangeTestShellDir(JSContext* cx, unsigned argc, Value* vp) {
+  // This method should only be used by testing/xpcshell/head.js to change to
+  // the correct directory on Android Remote XPCShell tests.
+  //
+  // TODO: Bug 1801725 - Find a more ergonomic way to do this than exposing
+  // identical methods in XPCShellEnvironment and XPCShellImpl to chdir on
+  // android for Remote XPCShell tests on Android.
+  CallArgs args = CallArgsFromVp(argc, vp);
+
+  if (args.length() != 1) {
+    JS_ReportErrorASCII(cx, "changeTestShellDir() takes one argument");
+    return false;
+  }
+
+  nsAutoJSCString path;
+  if (!path.init(cx, args[0])) {
+    JS_ReportErrorASCII(
+        cx, "changeTestShellDir(): could not convert argument 1 to string");
+    return false;
+  }
+
+  if (chdir(path.get())) {
+    JS_ReportErrorASCII(cx, "changeTestShellDir(): could not change directory");
+    return false;
+  }
+
+  return true;
+}
+#endif
+
 #ifdef ENABLE_TESTS
 static bool RegisterXPCTestComponents(JSContext* cx, unsigned argc, Value* vp) {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
@@ -620,7 +626,7 @@ static bool RegisterXPCTestComponents(JSContext* cx, unsigned argc, Value* vp) {
     JS_ReportErrorASCII(cx, "Wrong number of arguments");
     return false;
   }
-  nsresult rv = XRE_AddStaticComponent(&kXPCTestModule);
+  nsresult rv = xpcTestRegisterComponents();
   if (NS_FAILED(rv)) {
     XPCThrower::Throw(rv, cx);
     return false;
@@ -648,6 +654,9 @@ static const JSFunctionSpec glob_functions[] = {
     JS_FN("setInterruptCallback", SetInterruptCallback, 1,0),
     JS_FN("simulateNoScriptActivity", SimulateNoScriptActivity, 1,0),
     JS_FN("registerAppManifest", RegisterAppManifest, 1, 0),
+#ifdef ANDROID
+    JS_FN("changeTestShellDir", ChangeTestShellDir, 1,0),
+#endif
 #ifdef ENABLE_TESTS
     JS_FN("registerXPCTestComponents", RegisterXPCTestComponents, 0, 0),
 #endif
@@ -736,9 +745,7 @@ static bool ProcessFile(AutoJSAPI& jsapi, const char* filename, FILE* file,
      * It's not interactive - just execute it.
      *
      * Support the UNIX #! shell hack; gobble the first line if it starts
-     * with '#'.  TODO - this isn't quite compatible with sharp variables,
-     * as a legal js program (using sharp variables) might start with '#'.
-     * But that would require multi-character lookahead.
+     * with '#'.
      */
     int ch = fgetc(file);
     if (ch == '#') {
@@ -750,10 +757,15 @@ static bool ProcessFile(AutoJSAPI& jsapi, const char* filename, FILE* file,
     }
     ungetc(ch, file);
 
+    JS::UniqueChars filenameUtf8 = JS::EncodeNarrowToUtf8(jsapi.cx(), filename);
+    if (!filenameUtf8) {
+      return false;
+    }
+
     JS::RootedScript script(cx);
     JS::RootedValue unused(cx);
     JS::CompileOptions options(cx);
-    options.setFileAndLine(filename, 1)
+    options.setFileAndLine(filenameUtf8.get(), 1)
         .setIsRunOnce(true)
         .setNoScriptRval(true)
         .setSkipFilenameValidation(true);
@@ -965,18 +977,6 @@ static bool ProcessArgs(AutoJSAPI& jsapi, char** argv, int argc,
         compileOnly = true;
         isInteractive = false;
         break;
-      case 'p': {
-        // plugins path
-        char* pluginPath = argv[++i];
-        nsCOMPtr<nsIFile> pluginsDir;
-        if (NS_FAILED(
-                XRE_GetFileFromPath(pluginPath, getter_AddRefs(pluginsDir)))) {
-          fprintf(gErrFile, "Couldn't use given plugins dir.\n");
-          return printUsageAndSetExitCode();
-        }
-        aDirProvider->SetPluginDir(pluginsDir);
-        break;
-      }
       default:
         return printUsageAndSetExitCode();
     }
@@ -1021,7 +1021,7 @@ static bool GetCurrentWorkingDirectory(nsAString& workingDirectory) {
   // size back down to the actual string length
   cwd.SetLength(strlen(result) + 1);
   cwd.Replace(cwd.Length() - 1, 1, '/');
-  workingDirectory = NS_ConvertUTF8toUTF16(cwd);
+  CopyUTF8toUTF16(cwd, workingDirectory);
 #endif
   return true;
 }
@@ -1036,8 +1036,13 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
   int result = 0;
   nsresult rv;
 
-  gErrFile = stderr;
+#ifdef ANDROID
+  gOutFile = aShellData->outFile;
+  gErrFile = aShellData->errFile;
+#else
   gOutFile = stdout;
+  gErrFile = stderr;
+#endif
   gInFile = stdin;
 
   NS_LogInit();
@@ -1046,12 +1051,13 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
   // This guard ensures that all threads that attempt to register themselves
   // with the IOInterposer will be properly tracked.
-  mozilla::IOInterposerInit ioInterposerGuard;
+  mozilla::AutoIOInterposer ioInterposerGuard;
+  ioInterposerGuard.Init();
 
-#ifdef MOZ_GECKO_PROFILER
+  XRE_InitCommandLine(argc, argv);
+
   char aLocal;
   profiler_init(&aLocal);
-#endif
 
 #ifdef MOZ_ASAN_REPORTER
   PR_SetEnv("MOZ_DISABLE_ASAN_REPORTER=1");
@@ -1072,6 +1078,18 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
         "*** You are running in chaos test mode. See ChaosMode.h. ***\n");
   }
 
+#ifdef XP_WIN
+  // Some COM settings are global to the process and must be set before any non-
+  // trivial COM is run in the application. Since these settings may affect
+  // stability, we should instantiate COM ASAP so that we can ensure that these
+  // global settings are configured before anything can interfere.
+  mscom::ProcessRuntime mscom;
+
+#  ifdef MOZ_SANDBOX
+  nsAutoString binDirPath;
+#  endif
+#endif
+
   // The provider needs to outlive the call to shutting down XPCOM.
   XPCShellDirProvider dirprovider;
 
@@ -1088,6 +1106,11 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
       printf("Couldn't get application directory.\n");
       return 1;
     }
+
+#if defined(XP_WIN) && defined(MOZ_SANDBOX)
+    // We need the binary directory to initialize the windows sandbox.
+    MOZ_ALWAYS_SUCCEEDS(appDir->GetPath(binDirPath));
+#endif
 
     dirprovider.SetAppFile(appFile);
 
@@ -1116,7 +1139,7 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
       XRE_GetFileFromPath(argv[0], getter_AddRefs(greDir));
       greDir->GetParent(getter_AddRefs(tmpDir));
       tmpDir->Clone(getter_AddRefs(greDir));
-      tmpDir->SetNativeLeafName(NS_LITERAL_CSTRING("Resources"));
+      tmpDir->SetNativeLeafName("Resources"_ns);
       bool dirExists = false;
       tmpDir->Exists(&dirExists);
       if (dirExists) {
@@ -1185,23 +1208,13 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
     if (argc > 1 && !strcmp(argv[1], "--greomni")) {
       nsCOMPtr<nsIFile> greOmni;
-      nsCOMPtr<nsIFile> appOmni;
       XRE_GetFileFromPath(argv[2], getter_AddRefs(greOmni));
-      if (argc > 3 && !strcmp(argv[3], "--appomni")) {
-        XRE_GetFileFromPath(argv[4], getter_AddRefs(appOmni));
-        argc -= 2;
-        argv += 2;
-      } else {
-        appOmni = greOmni;
-      }
-
-      XRE_InitOmnijar(greOmni, appOmni);
+      XRE_InitOmnijar(greOmni, greOmni);
       argc -= 2;
       argv += 2;
     }
 
-    nsCOMPtr<nsIServiceManager> servMan;
-    rv = NS_InitXPCOM(getter_AddRefs(servMan), appDir, &dirprovider);
+    rv = NS_InitXPCOM(nullptr, appDir, &dirprovider);
     if (NS_FAILED(rv)) {
       printf("NS_InitXPCOM failed!\n");
       return 1;
@@ -1268,6 +1281,11 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
     options.creationOptions().setNewCompartmentAndZone();
     xpc::SetPrefableRealmOptions(options);
 
+    // Even if we're building in a configuration where source is
+    // discarded, there's no reason to do that on XPCShell, and doing so
+    // might break various automation scripts.
+    options.behaviors().setDiscardSource(false);
+
     JS::Rooted<JSObject*> glob(cx);
     rv = xpc::InitClassesWithNewWrappedGlobal(
         cx, static_cast<nsIGlobalObject*>(backstagePass), systemprincipal, 0,
@@ -1278,29 +1296,34 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
     // Initialize e10s check on the main thread, if not already done
     BrowserTabsRemoteAutostart();
-#ifdef XP_WIN
+#if defined(XP_WIN)
     // Plugin may require audio session if installed plugin can initialize
     // asynchronized.
     AutoAudioSession audioSession;
 
     // Ensure that DLL Services are running
     RefPtr<DllServices> dllSvc(DllServices::Get());
-    dllSvc->StartUntrustedModulesProcessor();
+    dllSvc->StartUntrustedModulesProcessor(true);
     auto dllServicesDisable =
         MakeScopeExit([&dllSvc]() { dllSvc->DisableFull(); });
 
 #  if defined(MOZ_SANDBOX)
     // Required for sandboxed child processes.
     if (aShellData->sandboxBrokerServices) {
-      SandboxBroker::Initialize(aShellData->sandboxBrokerServices);
+      SandboxBroker::Initialize(aShellData->sandboxBrokerServices, binDirPath);
       SandboxBroker::GeckoDependentInitialize();
     } else {
       NS_WARNING(
           "Failed to initialize broker services, sandboxed "
           "processes will fail to start.");
     }
-#  endif
-#endif
+#  endif  // defined(MOZ_SANDBOX)
+
+    {
+      DebugOnly<bool> result = WindowsBCryptInitialization();
+      MOZ_ASSERT(result);
+    }
+#endif  // defined(XP_WIN)
 
 #ifdef MOZ_CODE_COVERAGE
     CodeCoverageHandler::Init();
@@ -1311,14 +1334,15 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
         return 1;
       }
 
+      nsCOMPtr<nsIAppStartup> appStartup(components::AppStartup::Service());
+      if (!appStartup) {
+        return 1;
+      }
+      appStartup->DoneStartingUp();
+
       backstagePass->SetGlobalObject(glob);
 
       JSAutoRealm ar(cx, glob);
-
-      // Even if we're building in a configuration where source is
-      // discarded, there's no reason to do that on XPCShell, and doing so
-      // might break various automation scripts.
-      JS::RealmBehaviorsRef(cx).setDiscardSource(false);
 
       if (!JS_InitReflectParse(cx, glob)) {
         return 1;
@@ -1337,22 +1361,40 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
                         0);
 
       {
-        // We are almost certainly going to run script here, so we need an
-        // AutoEntryScript. This is Gecko-specific and not in any spec.
-        AutoEntryScript aes(backstagePass, "xpcshell argument processing");
+#ifdef FUZZING_INTERFACES
+        if (fuzzHaveModule) {
+          // argv[0] was removed previously, but libFuzzer expects it
+          argc++;
+          argv--;
 
-        // If an exception is thrown, we'll set our return code
-        // appropriately, and then let the AutoEntryScript destructor report
-        // the error to the console.
-        if (!ProcessArgs(aes, argv, argc, &dirprovider)) {
-          if (gExitCode) {
-            result = gExitCode;
-          } else if (gQuitting) {
-            result = 0;
-          } else {
-            result = EXITCODE_RUNTIME_ERROR;
+          result = FuzzXPCRuntimeStart(&jsapi, &argc, &argv, aShellData);
+        } else {
+#endif
+          // We are almost certainly going to run script here, so we need an
+          // AutoEntryScript. This is Gecko-specific and not in any spec.
+          AutoEntryScript aes(backstagePass, "xpcshell argument processing");
+
+          // If an exception is thrown, we'll set our return code
+          // appropriately, and then let the AutoEntryScript destructor report
+          // the error to the console.
+          if (!ProcessArgs(aes, argv, argc, &dirprovider)) {
+            if (gExitCode) {
+              result = gExitCode;
+            } else if (gQuitting) {
+              result = 0;
+            } else {
+              result = EXITCODE_RUNTIME_ERROR;
+            }
           }
+#ifdef FUZZING_INTERFACES
         }
+#endif
+      }
+
+      // Signal that we're now shutting down.
+      nsCOMPtr<nsIObserver> obs = do_QueryInterface(appStartup);
+      if (obs) {
+        obs->Observe(nullptr, "quit-application-forced", nullptr);
       }
 
       JS_DropPrincipals(cx, gJSPrincipals);
@@ -1365,7 +1407,6 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
 
     dirprovider.ClearGREDirs();
     dirprovider.ClearAppDir();
-    dirprovider.ClearPluginDir();
     dirprovider.ClearAppFile();
   }  // this scopes the nsCOMPtrs
 
@@ -1383,13 +1424,13 @@ int XRE_XPCShellMain(int argc, char** argv, char** envp,
     CrashReporter::UnsetExceptionHandler();
   }
 
-#ifdef MOZ_GECKO_PROFILER
   // This must precede NS_LogTerm(), otherwise xpcshell return non-zero
   // during some tests, which causes failures.
   profiler_shutdown();
-#endif
 
   NS_LogTerm();
+
+  XRE_DeinitCommandLine();
 
   return result;
 }
@@ -1402,7 +1443,7 @@ void XPCShellDirProvider::SetGREDirs(nsIFile* greDir) {
   nsAutoCString leafName;
   mGREDir->GetNativeLeafName(leafName);
   if (leafName.EqualsLiteral("Resources")) {
-    mGREBinDir->SetNativeLeafName(NS_LITERAL_CSTRING("MacOS"));
+    mGREBinDir->SetNativeLeafName("MacOS"_ns);
   }
 #endif
 }
@@ -1410,10 +1451,6 @@ void XPCShellDirProvider::SetGREDirs(nsIFile* greDir) {
 void XPCShellDirProvider::SetAppFile(nsIFile* appFile) { mAppFile = appFile; }
 
 void XPCShellDirProvider::SetAppDir(nsIFile* appDir) { mAppDir = appDir; }
-
-void XPCShellDirProvider::SetPluginDir(nsIFile* pluginDir) {
-  mPluginDir = pluginDir;
-}
 
 NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::AddRef() { return 2; }
@@ -1440,8 +1477,8 @@ XPCShellDirProvider::GetFile(const char* prop, bool* persistent,
     nsCOMPtr<nsIFile> file;
     *persistent = true;
     if (NS_FAILED(mGREDir->Clone(getter_AddRefs(file))) ||
-        NS_FAILED(file->AppendNative(NS_LITERAL_CSTRING("defaults"))) ||
-        NS_FAILED(file->AppendNative(NS_LITERAL_CSTRING("pref"))))
+        NS_FAILED(file->AppendNative("defaults"_ns)) ||
+        NS_FAILED(file->AppendNative("pref"_ns)))
       return NS_ERROR_FAILURE;
     file.forget(result);
     return NS_OK;
@@ -1457,7 +1494,7 @@ XPCShellDirProvider::GetFiles(const char* prop, nsISimpleEnumerator** result) {
 
     nsCOMPtr<nsIFile> file;
     mGREDir->Clone(getter_AddRefs(file));
-    file->AppendNative(NS_LITERAL_CSTRING("chrome"));
+    file->AppendNative("chrome"_ns);
     dirs.AppendObject(file);
 
     nsresult rv =
@@ -1472,36 +1509,13 @@ XPCShellDirProvider::GetFiles(const char* prop, nsISimpleEnumerator** result) {
     nsCOMPtr<nsIFile> appDir;
     bool exists;
     if (mAppDir && NS_SUCCEEDED(mAppDir->Clone(getter_AddRefs(appDir))) &&
-        NS_SUCCEEDED(appDir->AppendNative(NS_LITERAL_CSTRING("defaults"))) &&
-        NS_SUCCEEDED(appDir->AppendNative(NS_LITERAL_CSTRING("preferences"))) &&
+        NS_SUCCEEDED(appDir->AppendNative("defaults"_ns)) &&
+        NS_SUCCEEDED(appDir->AppendNative("preferences"_ns)) &&
         NS_SUCCEEDED(appDir->Exists(&exists)) && exists) {
       dirs.AppendObject(appDir);
       return NS_NewArrayEnumerator(result, dirs, NS_GET_IID(nsIFile));
     }
     return NS_ERROR_FAILURE;
-  } else if (!strcmp(prop, NS_APP_PLUGINS_DIR_LIST)) {
-    nsCOMArray<nsIFile> dirs;
-    // Add the test plugin location passed in by the caller or through
-    // runxpcshelltests.
-    if (mPluginDir) {
-      dirs.AppendObject(mPluginDir);
-      // If there was no path specified, default to the one set up by automation
-    } else {
-      nsCOMPtr<nsIFile> file;
-      bool exists;
-      // We have to add this path, buildbot copies the test plugin directory
-      // to (app)/bin when unpacking test zips.
-      if (mGREDir) {
-        mGREDir->Clone(getter_AddRefs(file));
-        if (NS_SUCCEEDED(mGREDir->Clone(getter_AddRefs(file)))) {
-          file->AppendNative(NS_LITERAL_CSTRING("plugins"));
-          if (NS_SUCCEEDED(file->Exists(&exists)) && exists) {
-            dirs.AppendObject(file);
-          }
-        }
-      }
-    }
-    return NS_NewArrayEnumerator(result, dirs, NS_GET_IID(nsIFile));
   }
   return NS_ERROR_FAILURE;
 }

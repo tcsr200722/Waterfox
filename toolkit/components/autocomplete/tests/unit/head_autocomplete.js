@@ -1,8 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 /**
@@ -60,7 +60,7 @@ AutoCompleteInputBase.prototype = {
   },
 
   // nsISupports implementation
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompleteInput]),
+  QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteInput"]),
 };
 
 /**
@@ -101,7 +101,7 @@ AutoCompleteResultBase.prototype = {
     return this._styles[aIndex];
   },
 
-  getImageAt(aIndex) {
+  getImageAt() {
     return "";
   },
 
@@ -109,10 +109,14 @@ AutoCompleteResultBase.prototype = {
     return this._finalCompleteValues[aIndex] || this._values[aIndex];
   },
 
-  removeValueAt(aRowIndex) {},
+  isRemovableAt() {
+    return true;
+  },
+
+  removeValueAt() {},
 
   // nsISupports implementation
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompleteResult]),
+  QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteResult"]),
 };
 
 /**
@@ -141,12 +145,12 @@ AutoCompleteSearchBase.prototype = {
 
   // nsISupports implementation
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIFactory,
-    Ci.nsIAutoCompleteSearch,
+    "nsIFactory",
+    "nsIAutoCompleteSearch",
   ]),
 
   // nsIFactory implementation
-  createInstance(outer, iid) {
+  createInstance(iid) {
     return this.QueryInterface(iid);
   },
 };
@@ -157,7 +161,7 @@ function AutocompletePopupBase(input) {
 AutocompletePopupBase.prototype = {
   selectedIndex: 0,
   invalidate() {},
-  selectBy(reverse, page) {
+  selectBy(reverse) {
     let numRows = this.input.controller.matchCount;
     if (numRows > 0) {
       let delta = reverse ? -1 : 1;
@@ -167,7 +171,7 @@ AutocompletePopupBase.prototype = {
       }
     }
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompletePopup]),
+  QueryInterface: ChromeUtils.generateQI(["nsIAutoCompletePopup"]),
 };
 
 /**
@@ -176,9 +180,7 @@ AutocompletePopupBase.prototype = {
  */
 function registerAutoCompleteSearch(aSearch) {
   var name = "@mozilla.org/autocomplete/search;1?name=" + aSearch.name;
-  var cid = Cc["@mozilla.org/uuid-generator;1"]
-    .getService(Ci.nsIUUIDGenerator)
-    .generateUUID();
+  var cid = Services.uuid.generateUUID();
 
   var desc = "Test AutoCompleteSearch";
   var componentManager = Components.manager.QueryInterface(

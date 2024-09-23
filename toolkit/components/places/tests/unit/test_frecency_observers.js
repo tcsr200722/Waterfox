@@ -11,7 +11,7 @@ add_task(
     // two birds with one stone and expect two notifications.  Trigger the path by
     // adding a download.
     let url = Services.io.newURI("http://example.com/a");
-    let promises = [onFrecencyChanged(url), onFrecencyChanged(url)];
+    let promise = onRankingChanged();
     await PlacesUtils.history.insert({
       url,
       visits: [
@@ -20,23 +20,24 @@ add_task(
         },
       ],
     });
-    await Promise.all(promises);
+    await promise;
   }
 );
 
 // nsNavHistory::UpdateFrecency
 add_task(async function test_nsNavHistory_UpdateFrecency() {
   let url = Services.io.newURI("http://example.com/b");
-  let promise = onFrecencyChanged(url);
+  let promise = onRankingChanged();
   await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
     url,
     title: "test",
   });
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   await promise;
 });
 
-// History.jsm invalidateFrecencies()
+// History.sys.mjs invalidateFrecencies()
 add_task(async function test_invalidateFrecencies() {
   let url = Services.io.newURI("http://test-invalidateFrecencies.com/");
   // Bookmarking the URI is enough to add it to moz_places, and importantly, it
@@ -47,47 +48,52 @@ add_task(async function test_invalidateFrecencies() {
     url,
     title: "test",
   });
-  let promise = onFrecencyChanged(url);
+  let promise = onRankingChanged();
   await PlacesUtils.history.removeByFilter({ host: url.host });
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   await promise;
 });
 
-// History.jsm clear()
+// History.sys.mjs clear() should not cause a frecency recalculation since pages
+// are removed.
 add_task(async function test_clear() {
-  await Promise.all([onManyFrecenciesChanged(), PlacesUtils.history.clear()]);
+  let received = [];
+  let listener = events =>
+    (received = received.concat(events.map(e => e.type)));
+  PlacesObservers.addListener(
+    ["history-cleared", "pages-rank-changed"],
+    listener
+  );
+  await PlacesUtils.history.clear();
+  PlacesObservers.removeListener(
+    ["history-cleared", "pages-rank-changed"],
+    listener
+  );
+  Assert.deepEqual(received, ["history-cleared"]);
 });
 
-// nsNavHistory::FixAndDecayFrecency
-add_task(async function test_nsNavHistory_FixAndDecayFrecency() {
-  // Fix and decay frecencies by making nsNavHistory observe the idle-daily
-  // notification.
-  PlacesUtils.history
-    .QueryInterface(Ci.nsIObserver)
-    .observe(null, "idle-daily", "");
-  await Promise.all([onManyFrecenciesChanged()]);
+add_task(async function test_nsNavHistory_idleDaily() {
+  await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.unfiledGuid,
+    url: "https://test-site1.org",
+    title: "test",
+  });
+  PlacesFrecencyRecalculator.observe(null, "idle-daily", "");
+  await Promise.all([onRankingChanged()]);
 });
 
-function onFrecencyChanged(expectedURI) {
-  return new Promise(resolve => {
-    let obs = new NavHistoryObserver();
-    obs.onFrecencyChanged = (uri, newFrecency, guid, hidden, visitDate) => {
-      PlacesUtils.history.removeObserver(obs);
-      Assert.ok(!!uri);
-      Assert.ok(uri.equals(expectedURI));
-      resolve();
-    };
-    PlacesUtils.history.addObserver(obs);
+add_task(async function test_nsNavHistory_recalculate() {
+  await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.unfiledGuid,
+    url: "https://test-site1.org",
+    title: "test",
   });
-}
+  await Promise.all([
+    onRankingChanged(),
+    PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies(),
+  ]);
+});
 
-function onManyFrecenciesChanged() {
-  return new Promise(resolve => {
-    let obs = new NavHistoryObserver();
-    obs.onManyFrecenciesChanged = () => {
-      PlacesUtils.history.removeObserver(obs);
-      Assert.ok(true);
-      resolve();
-    };
-    PlacesUtils.history.addObserver(obs);
-  });
+function onRankingChanged() {
+  return PlacesTestUtils.waitForNotification("pages-rank-changed");
 }

@@ -8,12 +8,13 @@
 
 #include "mozilla/devtools/HeapSnapshot.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/RefCounted.h"
 #include "js/UbiNodeDominatorTree.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace devtools {
 
 class DominatorTree final : public nsISupports, public nsWrapperCache {
@@ -37,7 +38,7 @@ class DominatorTree final : public nsISupports, public nsWrapperCache {
   };
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS;
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DominatorTree);
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DominatorTree);
 
   nsISupports* GetParentObject() const { return mParent; }
 

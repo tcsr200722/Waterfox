@@ -2,31 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-import { PureComponent } from "react";
-import classnames from "classnames";
-import { showMenu } from "devtools-contextmenu";
+import { PureComponent } from "devtools/client/shared/vendor/react";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
-import { getDocument } from "../../utils/editor";
-import { breakpointItems, createBreakpointItems } from "./menus/breakpoints";
-import { getSelectedLocation } from "../../utils/selected-location";
+import { getDocument } from "../../utils/editor/index";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
 // eslint-disable-next-line max-len
-import type { ColumnBreakpoint as ColumnBreakpointType } from "../../selectors/visibleColumnBreakpoints";
-import type { BreakpointItemActions } from "./menus/breakpoints";
-import type { Source, Context } from "../../types";
-
-type Bookmark = {
-  clear: Function,
-};
-
-type Props = {
-  cx: Context,
-  editor: Object,
-  source: Source,
-  columnBreakpoint: ColumnBreakpointType,
-  breakpointActions: BreakpointItemActions,
-};
 
 const breakpointButton = document.createElement("button");
 breakpointButton.innerHTML =
@@ -54,11 +36,17 @@ function makeBookmark({ breakpoint }, { onClick, onContextMenu }) {
   return bp;
 }
 
-export default class ColumnBreakpoint extends PureComponent<Props> {
-  addColumnBreakpoint: Function;
-  bookmark: ?Bookmark;
+export default class ColumnBreakpoint extends PureComponent {
+  bookmark;
 
-  addColumnBreakpoint = (nextProps: ?Props) => {
+  static get propTypes() {
+    return {
+      columnBreakpoint: PropTypes.object.isRequired,
+      source: PropTypes.object.isRequired,
+    };
+  }
+
+  addColumnBreakpoint = nextProps => {
     const { columnBreakpoint, source } = nextProps || this.props;
 
     const sourceId = source.id;
@@ -83,48 +71,42 @@ export default class ColumnBreakpoint extends PureComponent<Props> {
     }
   };
 
-  onClick = (event: MouseEvent) => {
-    event.stopPropagation();
-    event.preventDefault();
-    const { cx, columnBreakpoint, breakpointActions } = this.props;
-
-    // disable column breakpoint on shift-click.
-    if (event.shiftKey) {
-      const breakpoint: breakpoint = columnBreakpoint.breakpoint;
-      return breakpointActions.toggleDisabledBreakpoint(cx, breakpoint);
-    }
-
-    if (columnBreakpoint.breakpoint) {
-      breakpointActions.removeBreakpoint(cx, columnBreakpoint.breakpoint);
-    } else {
-      breakpointActions.addBreakpoint(cx, columnBreakpoint.location);
-    }
-  };
-
-  onContextMenu = (event: MouseEvent) => {
+  onClick = event => {
     event.stopPropagation();
     event.preventDefault();
     const {
-      cx,
-      columnBreakpoint: { breakpoint, location },
-      source,
-      breakpointActions,
+      columnBreakpoint,
+      toggleDisabledBreakpoint,
+      removeBreakpoint,
+      addBreakpoint,
     } = this.props;
 
-    let items = createBreakpointItems(cx, location, breakpointActions);
-
-    if (breakpoint) {
-      const selectedLocation = getSelectedLocation(breakpoint, source);
-
-      items = breakpointItems(
-        cx,
-        breakpoint,
-        selectedLocation,
-        breakpointActions
-      );
+    // disable column breakpoint on shift-click.
+    if (event.shiftKey) {
+      toggleDisabledBreakpoint(columnBreakpoint.breakpoint);
+      return;
     }
 
-    showMenu(event, items);
+    if (columnBreakpoint.breakpoint) {
+      removeBreakpoint(columnBreakpoint.breakpoint);
+    } else {
+      addBreakpoint(columnBreakpoint.location);
+    }
+  };
+
+  onContextMenu = event => {
+    event.stopPropagation();
+    event.preventDefault();
+
+    const {
+      columnBreakpoint: { breakpoint, location },
+    } = this.props;
+
+    if (breakpoint) {
+      this.props.showEditorEditBreakpointContextMenu(event, breakpoint);
+    } else {
+      this.props.showEditorCreateBreakpointContextMenu(event, location);
+    }
   };
 
   componentDidMount() {

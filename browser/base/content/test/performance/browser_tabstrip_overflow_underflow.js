@@ -1,12 +1,12 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_*_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_*_REFLOWS.
+ * This is a (now empty) list of known reflows.
+ * Instead of adding more reflows to the lists, you should be modifying your
+ * code to avoid the reflow.
  *
- * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
+ * See https://firefox-source-docs.mozilla.org/performance/bestpractices.html
  * for tips on how to do that.
  */
 const EXPECTED_OVERFLOW_REFLOWS = [
@@ -28,11 +28,18 @@ const EXPECTED_UNDERFLOW_REFLOWS = [
  * uninterruptible reflows when closing that tab, which causes the tab strip to
  * underflow.
  */
-add_task(async function() {
+add_task(async function () {
   // Force-enable tab animations
   gReduceMotionOverride = false;
 
   await ensureNoPreloadedBrowser();
+
+  // The test starts on about:blank and opens an about:blank
+  // tab which triggers opening the toolbar since
+  // ensureNoPreloadedBrowser sets AboutNewTab.newTabURL to about:blank.
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.toolbars.bookmarks.visibility", "never"]],
+  });
 
   const TAB_COUNT_FOR_OVERFLOW = computeMaxTabCount();
 
@@ -41,7 +48,8 @@ add_task(async function() {
   gURLBar.focus();
   await disableFxaBadge();
 
-  let tabStripRect = gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
+  let tabStripRect =
+    gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
   let textBoxRect = gURLBar
     .querySelector("moz-input-box")
     .getBoundingClientRect();
@@ -80,9 +88,9 @@ add_task(async function() {
   };
 
   await withPerfObserver(
-    async function() {
+    async function () {
       let switchDone = BrowserTestUtils.waitForEvent(window, "TabSwitchDone");
-      BrowserOpenTab();
+      BrowserCommands.openTab();
       await BrowserTestUtils.waitForEvent(
         gBrowser.selectedTab,
         "TabAnimationEnd"
@@ -105,9 +113,9 @@ add_task(async function() {
   // Now test that opening and closing a tab while overflowed doesn't cause
   // us to reflow.
   await withPerfObserver(
-    async function() {
+    async function () {
       let switchDone = BrowserTestUtils.waitForEvent(window, "TabSwitchDone");
-      BrowserOpenTab();
+      BrowserCommands.openTab();
       await switchDone;
       await TestUtils.waitForCondition(() => {
         return gBrowser.tabContainer.arrowScrollbox.hasAttribute(
@@ -119,7 +127,7 @@ add_task(async function() {
   );
 
   await withPerfObserver(
-    async function() {
+    async function () {
       let switchDone = BrowserTestUtils.waitForEvent(window, "TabSwitchDone");
       BrowserTestUtils.removeTab(gBrowser.selectedTab, { animate: true });
       await switchDone;
@@ -142,7 +150,7 @@ add_task(async function() {
 
   // Now switch to the first tab. We shouldn't flush layout at all.
   await withPerfObserver(
-    async function() {
+    async function () {
       let firstTab = gBrowser.tabs[0];
       await BrowserTestUtils.switchTab(gBrowser, firstTab);
       await TestUtils.waitForCondition(() => {
@@ -175,7 +183,7 @@ add_task(async function() {
     // ... and make sure we don't flush layout when closing it, and exiting
     // the overflowed state.
     await withPerfObserver(
-      async function() {
+      async function () {
         let switchDone = BrowserTestUtils.waitForEvent(window, "TabSwitchDone");
         BrowserTestUtils.removeTab(lastTab, { animate: true });
         await switchDone;

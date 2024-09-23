@@ -6,10 +6,18 @@
 
 "use strict";
 
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/devtools/server/tests/browser/storage-helpers.js",
+  this
+);
+
+const l10n = new Localization(["devtools/client/storage.ftl"], true);
+const sessionString = l10n.formatValueSync("storage-expires-session");
+
 const TESTS = [
   // index 0
   {
-    action: async function(win) {
+    async action() {
       await addCookie("c1", "foobar1");
       await addCookie("c2", "foobar2");
       await localStorageSetItem("l1", "foobar1");
@@ -25,7 +33,7 @@ const TESTS = [
           value: "foobar2",
         },
       ],
-      localStorage: [
+      "local-storage": [
         {
           name: "l1",
           value: "foobar1",
@@ -36,7 +44,7 @@ const TESTS = [
 
   // index 1
   {
-    action: async function() {
+    async action() {
       await addCookie("c1", "new_foobar1");
       await localStorageSetItem("l2", "foobar2");
     },
@@ -51,7 +59,7 @@ const TESTS = [
           value: "foobar2",
         },
       ],
-      localStorage: [
+      "local-storage": [
         {
           name: "l1",
           value: "foobar1",
@@ -66,7 +74,7 @@ const TESTS = [
 
   // index 2
   {
-    action: async function() {
+    async action() {
       await removeCookie("c2");
       await localStorageRemoveItem("l1");
       await localStorageSetItem("l3", "foobar3");
@@ -78,7 +86,7 @@ const TESTS = [
           value: "new_foobar1",
         },
       ],
-      localStorage: [
+      "local-storage": [
         {
           name: "l2",
           value: "foobar2",
@@ -93,7 +101,7 @@ const TESTS = [
 
   // index 3
   {
-    action: async function() {
+    async action() {
       await removeCookie("c1");
       await addCookie("c3", "foobar3");
       await localStorageRemoveItem("l2");
@@ -108,13 +116,13 @@ const TESTS = [
           value: "foobar3",
         },
       ],
-      localStorage: [
+      "local-storage": [
         {
           name: "l3",
           value: "new_foobar3",
         },
       ],
-      sessionStorage: [
+      "session-storage": [
         {
           name: "s1",
           value: "foobar1",
@@ -129,7 +137,7 @@ const TESTS = [
 
   // index 4
   {
-    action: async function() {
+    async action() {
       await sessionStorageRemoveItem("s1");
     },
     snapshot: {
@@ -139,13 +147,13 @@ const TESTS = [
           value: "foobar3",
         },
       ],
-      localStorage: [
+      "local-storage": [
         {
           name: "l3",
           value: "new_foobar3",
         },
       ],
-      sessionStorage: [
+      "session-storage": [
         {
           name: "s2",
           value: "foobar2",
@@ -156,18 +164,18 @@ const TESTS = [
 
   // index 5
   {
-    action: async function() {
+    async action() {
       await clearCookies();
     },
     snapshot: {
       cookies: [],
-      localStorage: [
+      "local-storage": [
         {
           name: "l3",
           value: "new_foobar3",
         },
       ],
-      sessionStorage: [
+      "session-storage": [
         {
           name: "s2",
           value: "foobar2",
@@ -178,43 +186,56 @@ const TESTS = [
 
   // index 6
   {
-    action: async function() {
+    async action() {
       await clearLocalAndSessionStores();
     },
     snapshot: {
       cookies: [],
-      localStorage: [],
-      sessionStorage: [],
+      "local-storage": [],
+      "session-storage": [],
     },
   },
 ];
 
-add_task(async function() {
-  const target = await addTabTarget(MAIN_DOMAIN + "storage-updates.html");
-  const front = await target.getFront("storage");
+add_task(async function () {
+  const { commands } = await openTabAndSetupStorage(
+    MAIN_DOMAIN + "storage-updates.html"
+  );
 
   for (let i = 0; i < TESTS.length; i++) {
     const test = TESTS[i];
-    await runTest(test, front, i);
+    await runTest(test, commands, i);
   }
 
-  await finishTests(target);
+  await commands.destroy();
 });
 
-async function runTest({ action, snapshot }, front, index) {
+async function runTest({ action, snapshot }, commands, index) {
   info("Running test at index " + index);
   await action();
-  await checkStores(front, snapshot);
+  await checkStores(commands, snapshot);
 }
 
-async function checkStores(front, snapshot) {
-  const host = TEST_DOMAIN;
-  const stores = await front.listStores();
-  const actual = {
-    cookies: await stores.cookies.getStoreObjects(host),
-    localStorage: await stores.localStorage.getStoreObjects(host),
-    sessionStorage: await stores.sessionStorage.getStoreObjects(host),
-  };
+async function checkStores(commands, snapshot) {
+  const { resourceCommand } = commands;
+  const { TYPES } = resourceCommand;
+  const actual = {};
+  await resourceCommand.watchResources(
+    [TYPES.COOKIE, TYPES.LOCAL_STORAGE, TYPES.SESSION_STORAGE],
+    {
+      async onAvailable(resources) {
+        for (const resource of resources) {
+          actual[resource.resourceType] = await resource.getStoreObjects(
+            TEST_DOMAIN,
+            null,
+            {
+              sessionString,
+            }
+          );
+        }
+      },
+    }
+  );
 
   for (const [type, entries] of Object.entries(snapshot)) {
     const store = actual[type].data;
@@ -243,12 +264,6 @@ function checkStoreValue(name, value, store) {
     }
   }
   ok(false, `There is an entry for "${name}"`);
-}
-
-async function finishTests(target) {
-  await target.destroy();
-  DevToolsServer.destroy();
-  finish();
 }
 
 async function addCookie(name, value) {

@@ -71,7 +71,7 @@ RefPtr<BenchmarkScorePromise> DecoderBenchmark::Get(
   const nsCString name(aDecoderName);
   const nsCString key(aKey);
   return BenchmarkStorageChild::Instance()->SendGet(name, key)->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [](int32_t aResult) {
         return BenchmarkScorePromise::CreateAndResolve(aResult, __func__);
       },
@@ -112,7 +112,7 @@ nsCString KeyUtil::FindLevel(const uint32_t aLevels[], const size_t length,
                              uint32_t aValue) {
   MOZ_ASSERT(aValue);
   if (aValue <= aLevels[0]) {
-    return NS_LITERAL_CSTRING("Level0");
+    return "Level0"_ns;
   }
   nsAutoCString level("Level");
   size_t lastIndex = length - 1;
@@ -132,21 +132,21 @@ nsCString KeyUtil::FindLevel(const uint32_t aLevels[], const size_t length,
     return std::move(level);
   }
   MOZ_CRASH("Array is not sorted");
-  return NS_LITERAL_CSTRING("");
+  return ""_ns;
 }
 
 /* static */
 nsCString KeyUtil::BitDepthToStr(uint8_t aBitDepth) {
   switch (aBitDepth) {
     case 8:  // ColorDepth::COLOR_8
-      return NS_LITERAL_CSTRING("-8bit");
+      return "-8bit"_ns;
     case 10:  // ColorDepth::COLOR_10
     case 12:  // ColorDepth::COLOR_12
     case 16:  // ColorDepth::COLOR_16
-      return NS_LITERAL_CSTRING("-non8bit");
+      return "-non8bit"_ns;
   }
   MOZ_ASSERT_UNREACHABLE("invalid color depth value");
-  return NS_LITERAL_CSTRING("");
+  return ""_ns;
 }
 
 /* static */
@@ -189,8 +189,8 @@ RefPtr<BenchmarkScorePromise> DecoderBenchmark::Get(
                          KeyUtil::CreateKey(aBenchInfo));
 }
 
-static nsDataHashtable<nsCStringHashKey, int32_t> DecoderVersionTable() {
-  nsDataHashtable<nsCStringHashKey, int32_t> decoderVersionTable;
+static nsTHashMap<nsCStringHashKey, int32_t> DecoderVersionTable() {
+  nsTHashMap<nsCStringHashKey, int32_t> decoderVersionTable;
 
   /*
    * For the decoders listed here, the benchmark version number will be checked.
@@ -199,7 +199,7 @@ static nsDataHashtable<nsCStringHashKey, int32_t> DecoderVersionTable() {
    * will be erased. An example of assigning the version number `1` for AV1
    * decoder is:
    *
-   * decoderVersionTable.Put(NS_LITERAL_CSTRING("video/av1"), 1);
+   * decoderVersionTable.InsertOrUpdate("video/av1"_ns, 1);
    *
    * For the decoders not listed here the `CheckVersion` method exits early, to
    * avoid sending unecessary IPC messages.
@@ -233,7 +233,7 @@ void DecoderBenchmark::CheckVersion(const nsACString& aDecoderName) {
   }
 
   DebugOnly<nsresult> rv =
-      GetMainThreadEventTarget()->Dispatch(NS_NewRunnableFunction(
+      GetMainThreadSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
           "DecoderBenchmark::CheckVersion", [name, version]() {
             BenchmarkStorageChild::Instance()->SendCheckVersion(name, version);
           }));

@@ -14,18 +14,17 @@
   fill: currentColor;
   width: 30px;
   min-width: 30px;
-  margin-inline: 0;
+  margin: 0;
 }
 
 .menu {
   position: absolute;
-  top: 30px;
   inset-inline-end: 0;
   margin: 0;
   padding: 5px 0;
   background-color: var(--in-content-box-background);
   border: 1px solid var(--in-content-box-border-color);
-  border-radius: 5px;
+  border-radius: 4px;
   box-shadow: var(--shadow-30);
   min-width: max-content;
   list-style-type: none;
@@ -33,10 +32,11 @@
   flex-direction: column;
   /* Show on top of .breach-alert which is also positioned */
   z-index: 1;
+  font: menu;
 }
 
 .menuitem-button {
-  padding: 2px 8px;
+  padding: 4px 8px;
   /* 32px = 8px (padding) + 16px (icon) + 8px (padding) */
   padding-inline-start: 32px;
   background-repeat: no-repeat;
@@ -47,17 +47,23 @@
 
   /* Override common.inc.css properties */
   margin: 0;
+  border: 0;
   border-radius: 0;
   text-align: start;
   min-height: initial;
+  font: inherit;
 }
 
 .menuitem-button:dir(rtl) {
   background-position-x: right 8px;
 }
 
+.menuitem-button:focus-visible {
+  outline-offset: var(--in-content-focus-outline-inset);
+}
+
 .menuitem-separator {
-  border-top-width: 2px;
+  border-top-width: 1px;
   margin-block: 5px;
   width: 100%;
 }
@@ -66,7 +72,11 @@
   background-image: url("chrome://global/skin/icons/help.svg");
 }
 
-.menuitem-import {
+.menuitem-import-browser {
+  background-image: url("chrome://browser/skin/import.svg");
+}
+
+.menuitem-import-file {
   background-image: url("chrome://browser/skin/import.svg");
 }
 
@@ -74,14 +84,10 @@
   background-image: url("chrome://browser/skin/save.svg");
 }
 
+.menuitem-remove-all-logins {
+  background-image: url("chrome://global/skin/icons/delete.svg");
+}
+
 .menuitem-preferences {
   background-image: url("chrome://global/skin/icons/settings.svg");
-}
-
-.menuitem-mobile-ios {
-  background-image: url("chrome://browser/skin/logo-ios.svg");
-}
-
-.menuitem-mobile-android {
-  background-image: url("chrome://browser/skin/logo-android.svg");
 }

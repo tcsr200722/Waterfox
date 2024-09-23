@@ -22,8 +22,6 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 """
 
-from __future__ import absolute_import
-
 import sys
 import time
 
@@ -92,6 +90,7 @@ class Bar(object):
         self.last_progress = progress
         if (time.time() - self.etadelta) > ETA_INTERVAL:
             self.etadelta = time.time()
+            # pylint --py3k W1619
             self.ittimes = self.ittimes[-ETA_SMA_WINDOW:] + [
                 -(self.start - time.time()) / (progress + 1)
             ]
@@ -101,6 +100,7 @@ class Bar(object):
                 * (self.expected_size - progress)
             )
             self.etadisp = self.format_time(self.eta)
+        # pylint --py3k W1619
         x = int(self.width * progress / self.expected_size)
         if not self.hide:
             if (progress % self.every) == 0 or (  # True every "every" updates
@@ -206,7 +206,6 @@ def mill(it, label="", hide=None, expected_size=None, every=1):
             if (_i % every) == 0 or (  # True every "every" updates
                 _i == count
             ):  # And when we're done
-
                 STREAM.write(MILL_TEMPLATE % (label, _mill_char(_i), _i, count))
                 STREAM.flush()
 

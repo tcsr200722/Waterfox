@@ -1,16 +1,24 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use base64::DecodeError;
 use http::StatusCode;
 use serde::de::{Deserialize, Deserializer};
 use serde::ser::{Serialize, Serializer};
-use serde_json;
 use std::borrow::Cow;
-use std::convert::From;
-use std::error::Error;
-use std::fmt;
+use std::error;
 use std::io;
+use thiserror::Error;
 
 #[derive(Debug, PartialEq)]
 pub enum ErrorStatus {
+    /// The [element]'s [ShadowRoot] is not attached to the active document,
+    /// or the reference is stale
+    /// [element]: ../common/struct.WebElement.html
+    /// [ShadowRoot]: ../common/struct.ShadowRoot.html
+    DetachedShadowRoot,
+
     /// The [`ElementClick`] command could not be completed because the
     /// [element] receiving the events is obscuring the element that was
     /// requested clicked.
@@ -88,6 +96,12 @@ pub enum ErrorStatus {
     /// [command]: ../command/index.html
     NoSuchFrame,
 
+    /// An [element]'s [ShadowRoot] was not found attached to the element.
+    ///
+    /// [element]: ../common/struct.WebElement.html
+    /// [ShadowRoot]: ../common/struct.ShadowRoot.html
+    NoSuchShadowRoot,
+
     /// A [command] to switch to a window could not be satisfied because the
     /// window could not be found.
     ///
@@ -134,8 +148,6 @@ pub enum ErrorStatus {
     /// [command]: ../command/index.html
     UnknownMethod,
 
-    UnknownPath,
-
     /// Indicates that a [command] that should have executed properly is not
     /// currently supported.
     UnsupportedOperation,
@@ -165,6 +177,7 @@ impl ErrorStatus {
     pub fn error_code(&self) -> &'static str {
         use self::ErrorStatus::*;
         match *self {
+            DetachedShadowRoot => "detached shadow root",
             ElementClickIntercepted => "element click intercepted",
             ElementNotInteractable => "element not interactable",
             ElementNotSelectable => "element not selectable",
@@ -181,6 +194,7 @@ impl ErrorStatus {
             NoSuchCookie => "no such cookie",
             NoSuchElement => "no such element",
             NoSuchFrame => "no such frame",
+            NoSuchShadowRoot => "no such shadow root",
             NoSuchWindow => "no such window",
             ScriptTimeout => "script timeout",
             SessionNotCreated => "session not created",
@@ -189,9 +203,9 @@ impl ErrorStatus {
             UnableToCaptureScreen => "unable to capture screen",
             UnableToSetCookie => "unable to set cookie",
             UnexpectedAlertOpen => "unexpected alert open",
-            UnknownCommand | UnknownError => "unknown error",
+            UnknownError => "unknown error",
             UnknownMethod => "unknown method",
-            UnknownPath => "unknown command",
+            UnknownCommand => "unknown command",
             UnsupportedOperation => "unsupported operation",
         }
     }
@@ -200,6 +214,7 @@ impl ErrorStatus {
     pub fn http_status(&self) -> StatusCode {
         use self::ErrorStatus::*;
         match *self {
+            DetachedShadowRoot => StatusCode::NOT_FOUND,
             ElementClickIntercepted => StatusCode::BAD_REQUEST,
             ElementNotInteractable => StatusCode::BAD_REQUEST,
             ElementNotSelectable => StatusCode::BAD_REQUEST,
@@ -216,6 +231,7 @@ impl ErrorStatus {
             NoSuchCookie => StatusCode::NOT_FOUND,
             NoSuchElement => StatusCode::NOT_FOUND,
             NoSuchFrame => StatusCode::NOT_FOUND,
+            NoSuchShadowRoot => StatusCode::NOT_FOUND,
             NoSuchWindow => StatusCode::NOT_FOUND,
             ScriptTimeout => StatusCode::INTERNAL_SERVER_ERROR,
             SessionNotCreated => StatusCode::INTERNAL_SERVER_ERROR,
@@ -227,7 +243,6 @@ impl ErrorStatus {
             UnknownCommand => StatusCode::NOT_FOUND,
             UnknownError => StatusCode::INTERNAL_SERVER_ERROR,
             UnknownMethod => StatusCode::METHOD_NOT_ALLOWED,
-            UnknownPath => StatusCode::NOT_FOUND,
             UnsupportedOperation => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -238,6 +253,7 @@ impl From<String> for ErrorStatus {
     fn from(s: String) -> ErrorStatus {
         use self::ErrorStatus::*;
         match &*s {
+            "detached shadow root" => DetachedShadowRoot,
             "element click intercepted" => ElementClickIntercepted,
             "element not interactable" | "element not visible" => ElementNotInteractable,
             "element not selectable" => ElementNotSelectable,
@@ -253,6 +269,7 @@ impl From<String> for ErrorStatus {
             "no such alert" => NoSuchAlert,
             "no such element" => NoSuchElement,
             "no such frame" => NoSuchFrame,
+            "no such shadow root" => NoSuchShadowRoot,
             "no such window" => NoSuchWindow,
             "script timeout" => ScriptTimeout,
             "session not created" => SessionNotCreated,
@@ -271,8 +288,9 @@ impl From<String> for ErrorStatus {
 
 pub type WebDriverResult<T> = Result<T, WebDriverError>;
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Error)]
 #[serde(remote = "Self")]
+#[error("{}", .error.error_code())]
 pub struct WebDriverError {
     pub error: ErrorStatus,
     pub message: Cow<'static, str>,
@@ -331,22 +349,6 @@ impl WebDriverError {
     }
 }
 
-impl Error for WebDriverError {
-    fn description(&self) -> &str {
-        self.error_code()
-    }
-
-    fn cause(&self) -> Option<&dyn Error> {
-        None
-    }
-}
-
-impl fmt::Display for WebDriverError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.message.fmt(f)
-    }
-}
-
 impl From<serde_json::Error> for WebDriverError {
     fn from(err: serde_json::Error) -> WebDriverError {
         WebDriverError::new(ErrorStatus::InvalidArgument, err.to_string())
@@ -365,8 +367,8 @@ impl From<DecodeError> for WebDriverError {
     }
 }
 
-impl From<Box<dyn Error>> for WebDriverError {
-    fn from(err: Box<dyn Error>) -> WebDriverError {
+impl From<Box<dyn error::Error>> for WebDriverError {
+    fn from(err: Box<dyn error::Error>) -> WebDriverError {
         WebDriverError::new(ErrorStatus::UnknownError, err.to_string())
     }
 }

@@ -14,7 +14,7 @@
 namespace mozilla {
 
 nsresult GetSelectedCityInfo(nsAString& aCountryCode) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   // Can be replaced with [[NSLocale currentLocale] countryCode] once we build
   // with the 10.12 SDK.
@@ -24,9 +24,9 @@ nsresult GetSelectedCityInfo(nsAString& aCountryCode) {
     return NS_ERROR_FAILURE;
   }
 
-  return mozilla::CopyCocoaStringToXPCOMString((NSString*)countryCode, aCountryCode);
+  mozilla::CopyNSStringToXPCOMString((NSString*)countryCode, aCountryCode);
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }
 
-}  // namespace Mozilla
+}  // namespace mozilla

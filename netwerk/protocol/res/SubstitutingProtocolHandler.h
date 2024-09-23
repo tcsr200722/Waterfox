@@ -9,7 +9,7 @@
 
 #include "nsISubstitutingProtocolHandler.h"
 
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsStandardURL.h"
 #include "nsJARURI.h"
 #include "mozilla/chrome/RegistryMessageUtils.h"
@@ -28,9 +28,8 @@ namespace net {
 // to properly invoke CollectSubstitutions at the right time.
 class SubstitutingProtocolHandler {
  public:
-  SubstitutingProtocolHandler(const char* aScheme, uint32_t aFlags,
-                              bool aEnforceFileOrJar = true);
-  explicit SubstitutingProtocolHandler(const char* aScheme);
+  explicit SubstitutingProtocolHandler(const char* aScheme,
+                                       bool aEnforceFileOrJar = true);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(SubstitutingProtocolHandler);
   NS_DECL_NON_VIRTUAL_NSIPROTOCOLHANDLER;
@@ -45,7 +44,7 @@ class SubstitutingProtocolHandler {
                   nsIURI* aBaseURI, nsIURI** aResult);
 
   [[nodiscard]] nsresult CollectSubstitutions(
-      nsTArray<SubstitutionMapping>& aResources);
+      nsTArray<SubstitutionMapping>& aMappings);
 
  protected:
   virtual ~SubstitutingProtocolHandler() = default;
@@ -59,9 +58,8 @@ class SubstitutingProtocolHandler {
   // Override this in the subclass to try additional lookups after checking
   // mSubstitutions.
   [[nodiscard]] virtual nsresult GetSubstitutionInternal(
-      const nsACString& aRoot, nsIURI** aResult, uint32_t* aFlags) {
+      const nsACString& aRoot, nsIURI** aResult) {
     *aResult = nullptr;
-    *aFlags = 0;
     return NS_ERROR_NOT_AVAILABLE;
   }
 
@@ -74,10 +72,11 @@ class SubstitutingProtocolHandler {
     return false;
   }
 
-  // This method should only return true if GetSubstitutionInternal would
-  // return the RESOLVE_JAR_URI flag.
-  [[nodiscard]] virtual bool MustResolveJAR(const nsACString& aRoot) {
-    return false;
+  // This method should only return RESOLVE_JAR_URI when
+  // GetSubstitutionalInternal will return nsIJARURI instead of a nsIFileURL.
+  // Currently, this only happens on Android.
+  [[nodiscard]] virtual uint32_t GetJARFlags(const nsACString& aRoot) {
+    return 0;
   }
 
   // Override this in the subclass to check for special case when opening
@@ -92,12 +91,8 @@ class SubstitutingProtocolHandler {
 
  private:
   struct SubstitutionEntry {
-    SubstitutionEntry() : flags(0) {}
-
-    ~SubstitutionEntry() = default;
-
     nsCOMPtr<nsIURI> baseURI;
-    uint32_t flags;
+    uint32_t flags = 0;
   };
 
   // Notifies all observers that a new substitution from |aRoot| to
@@ -105,10 +100,10 @@ class SubstitutingProtocolHandler {
   void NotifyObservers(const nsACString& aRoot, nsIURI* aBaseURI);
 
   nsCString mScheme;
-  Maybe<uint32_t> mFlags;
 
   RWLock mSubstitutionsLock;
-  nsDataHashtable<nsCStringHashKey, SubstitutionEntry> mSubstitutions;
+  nsTHashMap<nsCStringHashKey, SubstitutionEntry> mSubstitutions
+      MOZ_GUARDED_BY(mSubstitutionsLock);
   nsCOMPtr<nsIIOService> mIOService;
 
   // Returns a SubstitutingJARURI if |aUrl| maps to a |jar:| URI,

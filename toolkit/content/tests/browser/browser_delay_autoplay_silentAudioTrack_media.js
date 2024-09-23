@@ -2,7 +2,7 @@ const PAGE =
   "https://example.com/browser/toolkit/content/tests/browser/file_silentAudioTrack.html";
 
 async function click_unblock_icon(tab) {
-  let icon = tab.soundPlayingIcon;
+  let icon = tab.overlayIcon;
 
   await hover_icon(icon, document.getElementById("tabbrowser-tab-tooltip"));
   EventUtils.synthesizeMouseAtCenter(icon, { button: 0 });
@@ -21,7 +21,7 @@ add_task(async function setup_test_preference() {
 add_task(async function unblock_icon_should_disapear_after_resume_tab() {
   info("- open new background tab -");
   let tab = BrowserTestUtils.addTab(window.gBrowser, "about:blank");
-  BrowserTestUtils.loadURI(tab.linkedBrowser, PAGE);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, PAGE);
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
 
   info("- tab should display unblocking icon -");
@@ -43,7 +43,7 @@ add_task(async function unblock_icon_should_disapear_after_resume_tab() {
 add_task(async function should_not_show_sound_indicator_after_resume_tab() {
   info("- open new background tab -");
   let tab = BrowserTestUtils.addTab(window.gBrowser, "about:blank");
-  BrowserTestUtils.loadURI(tab.linkedBrowser, PAGE);
+  BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, PAGE);
   await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
 
   info("- tab should display unblocking icon -");

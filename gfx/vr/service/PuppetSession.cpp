@@ -21,13 +21,19 @@ using namespace mozilla::gfx;
 
 namespace mozilla::gfx {
 
-PuppetSession::PuppetSession() : VRSession() {}
+PuppetSession::PuppetSession() = default;
 
 PuppetSession::~PuppetSession() { Shutdown(); }
 
 bool PuppetSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
                                bool aDetectRuntimesOnly) {
   if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_puppet_enabled()) {
+    return false;
+  }
+  if (!VRPuppetCommandBuffer::IsCreated()) {
+    // We only want to initialize VRPuppetCommandBuffer on the main thread.
+    // We can assume if it is not initialized, that the puppet display
+    // would not be enumerated.
     return false;
   }
   if (aDetectRuntimesOnly) {

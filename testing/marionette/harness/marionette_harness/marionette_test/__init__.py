@@ -2,15 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
+__version__ = "3.1.0"
 
-__version__ = '3.1.0'
-
-from unittest.case import (
-    expectedFailure,
-    skip,
-    SkipTest,
-)
+from unittest.case import SkipTest, skip
 
 from .decorators import (
     parameterized,
@@ -21,9 +15,10 @@ from .decorators import (
     skip_unless_protocol,
     with_parameters,
 )
-
 from .testcases import (
     CommonTestCase,
     MarionetteTestCase,
     MetaParameterized,
+    expectedFailure,
+    unexpectedSuccess,
 )

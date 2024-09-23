@@ -5,13 +5,12 @@
  */
 
 dictionary RemotenessOptions {
-  required DOMString? remoteType;
+  required UTF8String? remoteType;
 
   // Used to resume a given channel load within the target process. If present,
   // it will be used rather than the `src` & `srcdoc` attributes on the
   // frameloader to control the load behaviour.
   unsigned long long pendingSwitchID;
-  boolean replaceBrowsingContext = false;
 
   // True if we have an existing channel that we will resume in the
   // target process, either via pendingSwitchID or using messageManager.
@@ -36,11 +35,11 @@ interface mixin MozFrameLoaderOwner {
   readonly attribute BrowsingContext? browsingContext;
 
   [ChromeOnly, Throws]
-  void swapFrameLoaders(XULFrameElement aOtherLoaderOwner);
+  undefined swapFrameLoaders(XULFrameElement aOtherLoaderOwner);
 
   [ChromeOnly, Throws]
-  void swapFrameLoaders(HTMLIFrameElement aOtherLoaderOwner);
+  undefined swapFrameLoaders(HTMLIFrameElement aOtherLoaderOwner);
 
   [ChromeOnly, Throws]
-  void changeRemoteness(RemotenessOptions aOptions);
+  undefined changeRemoteness(RemotenessOptions aOptions);
 };

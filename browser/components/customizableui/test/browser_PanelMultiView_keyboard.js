@@ -7,9 +7,6 @@
  * Test the keyboard behavior of PanelViews.
  */
 
-const { PanelMultiView } = ChromeUtils.import(
-  "resource:///modules/PanelMultiView.jsm"
-);
 const kEmbeddedDocUrl =
   'data:text/html,<textarea id="docTextarea">value</textarea><button id="docButton"></button>';
 
@@ -24,6 +21,9 @@ let gMainRadiogroup;
 let gMainTextbox;
 let gMainButton2;
 let gMainButton3;
+let gCheckbox;
+let gNamespacedLink;
+let gLink;
 let gMainTabOrder;
 let gMainArrowOrder;
 let gSubView;
@@ -33,10 +33,11 @@ let gBrowserView;
 let gBrowserBrowser;
 let gIframeView;
 let gIframeIframe;
+let gToggle;
 
 async function openPopup() {
   let shown = BrowserTestUtils.waitForEvent(gMainView, "ViewShown");
-  PanelMultiView.openPopup(gPanel, gAnchor, "bottomcenter topright");
+  PanelMultiView.openPopup(gPanel, gAnchor, "bottomright topright");
   await shown;
 }
 
@@ -69,7 +70,7 @@ async function expectFocusAfterKey(aKey, aFocus) {
   ok(true, aFocus.id + " focused after " + aKey + " pressed");
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // This shouldn't be necessary - but it is, because we use same-process frames.
   // https://bugzilla.mozilla.org/show_bug.cgi?id=1565276 covers improving this.
   await SpecialPowers.pushPrefEnv({
@@ -129,6 +130,30 @@ add_task(async function setup() {
   gMainButton3 = document.createXULElement("button");
   gMainButton3.id = "gMainButton3";
   gMainView.appendChild(gMainButton3);
+  gCheckbox = document.createXULElement("checkbox");
+  gCheckbox.id = "gCheckbox";
+  gMainView.appendChild(gCheckbox);
+
+  // moz-support-links in XUL documents are created with the
+  // <html:a> tag and so we need to test this separately from
+  // <a> tags.
+  gNamespacedLink = document.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "html:a"
+  );
+  gNamespacedLink.href = "www.mozilla.org";
+  gNamespacedLink.innerText = "gNamespacedLink";
+  gNamespacedLink.id = "gNamespacedLink";
+  gMainView.appendChild(gNamespacedLink);
+  gLink = document.createElement("a");
+  gLink.href = "www.mozilla.org";
+  gLink.innerText = "gLink";
+  gLink.id = "gLink";
+  gMainView.appendChild(gLink);
+  gToggle = document.createElement("moz-toggle");
+  gToggle.label = "Test label";
+  gMainView.appendChild(gToggle);
+
   gMainTabOrder = [
     gMainButton1,
     gMainMenulist,
@@ -136,8 +161,20 @@ add_task(async function setup() {
     gMainTextbox,
     gMainButton2,
     gMainButton3,
+    gCheckbox,
+    gNamespacedLink,
+    gLink,
+    gToggle,
   ];
-  gMainArrowOrder = [gMainButton1, gMainButton2, gMainButton3];
+  gMainArrowOrder = [
+    gMainButton1,
+    gMainButton2,
+    gMainButton3,
+    gCheckbox,
+    gNamespacedLink,
+    gLink,
+    gToggle,
+  ];
 
   gSubView = document.createXULElement("panelview");
   gSubView.id = "testSubView";
@@ -159,8 +196,7 @@ add_task(async function setup() {
   gBrowserBrowser.id = "GBrowserBrowser";
   gBrowserBrowser.setAttribute("type", "content");
   gBrowserBrowser.setAttribute("src", kEmbeddedDocUrl);
-  gBrowserBrowser.setAttribute("width", 100);
-  gBrowserBrowser.setAttribute("height", 100);
+  gBrowserBrowser.style.minWidth = gBrowserBrowser.style.minHeight = "100px";
   gBrowserView.appendChild(gBrowserBrowser);
 
   gIframeView = document.createXULElement("panelview");
@@ -286,14 +322,11 @@ add_task(async function testTabOpenMenulist() {
   await shown;
   ok(gMainMenulist.open, "menulist open");
   let menuHidden = BrowserTestUtils.waitForEvent(popup, "popuphidden");
-  let panelHidden = BrowserTestUtils.waitForEvent(gPanel, "popuphidden");
   EventUtils.synthesizeKey("KEY_Tab");
   await menuHidden;
   ok(!gMainMenulist.open, "menulist closed after Tab");
-  // Tab in an open menulist closes the menulist, but also dismisses the panel
-  // above it (bug 1566673). So, we just wait for the panel to hide rather than
-  // using hidePopup().
-  await panelHidden;
+  is(gPanel.state, "open", "Panel should be open");
+  await hidePopup();
 });
 
 if (AppConstants.platform == "macosx") {
@@ -323,14 +356,11 @@ if (AppConstants.platform == "macosx") {
     );
 
     let menuHidden = BrowserTestUtils.waitForEvent(popup, "popuphidden");
-    let panelHidden = BrowserTestUtils.waitForEvent(gPanel, "popuphidden");
     EventUtils.synthesizeKey("KEY_Tab");
     await menuHidden;
     ok(!gMainMenulist.open, "menulist closed after Tab");
-    // Tab in an open menulist closes the menulist, but also dismisses the panel
-    // above it (bug 1566673). So, we just wait for the panel to hide rather than
-    // using hidePopup().
-    await panelHidden;
+    is(gPanel.state, "open", "Panel should be open");
+    await hidePopup();
   });
 }
 
@@ -409,7 +439,7 @@ add_task(async function testDynamicButton() {
 add_task(async function testActivation() {
   function checkActivated(elem, activationFn, reason) {
     let activated = false;
-    elem.onclick = function() {
+    elem.onclick = function () {
       activated = true;
     };
     activationFn();
@@ -443,7 +473,7 @@ add_task(async function testActivationMousedown() {
   await openPopup();
   await expectFocusAfterKey("ArrowDown", gMainButton1);
   let activated = false;
-  gMainButton1.onmousedown = function() {
+  gMainButton1.onmousedown = function () {
     activated = true;
   };
   EventUtils.synthesizeKey(" ");
@@ -456,10 +486,22 @@ add_task(async function testActivationMousedown() {
 async function testTabArrowsEmbeddedDoc(aView, aEmbedder) {
   await openPopup();
   await showSubView(aView);
+  let doc = aEmbedder.contentDocument;
+  if (doc.readyState != "complete" || doc.location.href != kEmbeddedDocUrl) {
+    info(`Embedded doc readyState ${doc.readyState}, location ${doc.location}`);
+    info("Waiting for load on embedder");
+    // Browsers don't fire load events, and iframes don't fire load events in
+    // typeChrome windows. We can handle both by using a capturing event
+    // listener to capture the load event from the child document.
+    await BrowserTestUtils.waitForEvent(aEmbedder, "load", true);
+    // The original doc might have been a temporary about:blank, so fetch it
+    // again.
+    doc = aEmbedder.contentDocument;
+  }
+  is(doc.location.href, kEmbeddedDocUrl, "Embedded doc has correct URl");
   let backButton = aView.querySelector(".subviewbutton-back");
   backButton.id = "docBack";
   await expectFocusAfterKey("Tab", backButton);
-  let doc = aEmbedder.contentDocument;
   // Documents don't have an id property, but expectFocusAfterKey wants one.
   doc.id = "doc";
   await expectFocusAfterKey("Tab", doc);
@@ -478,9 +520,7 @@ async function testTabArrowsEmbeddedDoc(aView, aEmbedder) {
   is(textarea.selectionStart, 0, "selectionStart 0 after ArrowLeft");
   is(doc.activeElement, textarea, "textarea still focused");
   let docButton = doc.getElementById("docButton");
-  expectFocusAfterKey("Tab", docButton);
-  // Make sure tab leaves the document and reaches the Back button.
-  expectFocusAfterKey("Tab", backButton);
+  await expectFocusAfterKey("Tab", docButton);
   await hidePopup();
 }
 
@@ -500,7 +540,7 @@ add_task(async function testArowsContext() {
   await expectFocusAfterKey("ArrowDown", gMainButton1);
   let shown = BrowserTestUtils.waitForEvent(gMainContext, "popupshown");
   // There's no cross-platform way to open a context menu from the keyboard.
-  gMainContext.openPopup();
+  gMainContext.openPopup(gMainButton1);
   await shown;
   let item = gMainContext.children[0];
   ok(
@@ -522,5 +562,21 @@ add_task(async function testArowsContext() {
   let hidden = BrowserTestUtils.waitForEvent(gMainContext, "popuphidden");
   gMainContext.hidePopup();
   await hidden;
+  await hidePopup();
+});
+
+add_task(async function testMozToggle() {
+  await openPopup();
+  is(gToggle.pressed, false, "The toggle is not pressed initially.");
+  // Focus the toggle via keyboard navigation.
+  while (document.activeElement !== gToggle) {
+    EventUtils.synthesizeKey("KEY_Tab");
+  }
+  EventUtils.synthesizeKey(" ");
+  await gToggle.updateComplete;
+  is(gToggle.pressed, true, "Toggle pressed state changes via spacebar.");
+  EventUtils.synthesizeKey("KEY_Enter");
+  await gToggle.updateComplete;
+  is(gToggle.pressed, false, "Toggle pressed state changes via enter.");
   await hidePopup();
 });

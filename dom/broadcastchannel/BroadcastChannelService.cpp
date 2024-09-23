@@ -6,6 +6,7 @@
 
 #include "BroadcastChannelService.h"
 #include "BroadcastChannelParent.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/ipc/BackgroundParent.h"
@@ -80,9 +81,7 @@ void BroadcastChannelService::RegisterActor(
   AssertIsOnBackgroundThread();
   MOZ_ASSERT(aParent);
 
-  const auto& parents = mAgents.LookupForAdd(aOriginChannelKey).OrInsert([]() {
-    return new nsTArray<BroadcastChannelParent*>();
-  });
+  auto* const parents = mAgents.GetOrInsertNew(aOriginChannelKey);
 
   MOZ_ASSERT(!parents->Contains(aParent));
   parents->AppendElement(aParent);
@@ -158,8 +157,7 @@ void BroadcastChannelService::PostMessage(BroadcastChannelParent* aParent,
 
       // Serialize Blob objects for this message.
       for (uint32_t i = 0, len = blobImpls.Length(); i < len; ++i) {
-        nsresult rv = IPCBlobUtils::Serialize(blobImpls[i], parent->Manager(),
-                                              newBlobImpls[i]);
+        nsresult rv = IPCBlobUtils::Serialize(blobImpls[i], newBlobImpls[i]);
         if (NS_WARN_IF(NS_FAILED(rv))) {
           return;
         }

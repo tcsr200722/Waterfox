@@ -21,7 +21,7 @@ function* testSteps() {
   let request = persisted(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persisted() succeeded");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persisted() succeeded");
   ok(!request.result, "The origin is not persisted");
 
   info("Verifying persist() does update the metadata");
@@ -29,7 +29,7 @@ function* testSteps() {
   request = persist(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persist() succeeded");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persist() succeeded");
 
   let originDir = getRelativeFile(origin.path);
   let exists = originDir.exists();
@@ -56,8 +56,12 @@ function* testSteps() {
   request = persisted(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persisted() succeeded");
-  ok(request.result === originPersisted, "Persisted() concurs with metadata");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persisted() succeeded");
+  Assert.strictEqual(
+    request.result,
+    originPersisted,
+    "Persisted() concurs with metadata"
+  );
 
   info("Clearing the origin");
 
@@ -68,7 +72,10 @@ function* testSteps() {
 
   info("Persisting an already initialized origin");
 
-  initStorageAndOrigin(principal, origin.persistence, continueToNextStepSync);
+  initTemporaryStorage(continueToNextStepSync);
+  yield undefined;
+
+  initTemporaryOrigin(origin.persistence, principal, continueToNextStepSync);
   yield undefined;
 
   info("Reading out contents of metadata file");
@@ -86,15 +93,19 @@ function* testSteps() {
   request = persisted(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persisted() succeeded");
-  ok(request.result === originPersisted, "Persisted() concurs with metadata");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persisted() succeeded");
+  Assert.strictEqual(
+    request.result,
+    originPersisted,
+    "Persisted() concurs with metadata"
+  );
 
   info("Verifying persist() does update the metadata");
 
   request = persist(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persist() succeeded");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persist() succeeded");
 
   info("Reading out contents of metadata file");
 
@@ -111,8 +122,12 @@ function* testSteps() {
   request = persisted(principal, continueToNextStepSync);
   yield undefined;
 
-  ok(request.resultCode === NS_OK, "Persisted() succeeded");
-  ok(request.result === originPersisted, "Persisted() concurs with metadata");
+  Assert.strictEqual(request.resultCode, NS_OK, "Persisted() succeeded");
+  Assert.strictEqual(
+    request.result,
+    originPersisted,
+    "Persisted() concurs with metadata"
+  );
 
   finishTest();
 }

@@ -3,17 +3,17 @@
 
 // There are shutdown issues for which multiple rejections are left uncaught.
 // See bug 1018184 for resolving these issues.
-const { PromiseTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm"
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/File closed/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/File closed/);
 
-// On debug test slave, it takes about 50s to run the test.
+// On debug test machine, it takes about 50s to run the test.
 requestLongerTimeout(4);
 
 // Test that DevTools panels are rendered in "rtl" (right-to-left) in the Browser Toolbox.
-add_task(async function() {
-  await pushPref("intl.uidirection", 1);
+add_task(async function () {
+  await pushPref("intl.l10n.pseudo", "bidi");
 
   const ToolboxTask = await initBrowserToolboxTask();
   await ToolboxTask.importFunctions({});

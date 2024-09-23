@@ -6,16 +6,19 @@
 
 #include "mozilla/Bootstrap.h"
 
-#include "nspr.h"
-#include "nsDebug.h"
 #include "nsXPCOMPrivate.h"
-#include "nsCOMPtr.h"
 #include <stdlib.h>
 #include <stdio.h>
 
 #include "mozilla/FileUtils.h"
-#include "mozilla/Sprintf.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/Try.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/UniquePtrExtensions.h"
+
+#if defined(XP_WIN) && defined(_M_X64) && defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED)
+#  include "mozilla/WindowsDiagnostics.h"
+#endif  // XP_WIN && _M_X64 && MOZ_DIAGNOSTIC_ASSERT_ENABLED
 
 using namespace mozilla;
 
@@ -31,18 +34,24 @@ typedef void (*NSFuncPtr)();
 
 #if defined(XP_WIN)
 #  include <windows.h>
+using LibHandleType = HMODULE;
+#else
+using LibHandleType = void*;
+#endif
+
+using LibHandleResult = ::mozilla::Result<LibHandleType, DLErrorType>;
+
+#if defined(XP_WIN)
 #  include <mbstring.h>
-#  include "mozilla/WindowsVersion.h"
+#  include "mozilla/PreXULSkeletonUI.h"
 
-typedef HINSTANCE LibHandleType;
-
-static LibHandleType GetLibHandle(pathstr_t aDependentLib) {
+static LibHandleResult GetLibHandle(pathstr_t aDependentLib) {
   LibHandleType libHandle =
       LoadLibraryExW(aDependentLib, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 
-#  ifdef DEBUG
   if (!libHandle) {
     DWORD err = GetLastError();
+#  if defined(DEBUG)
     LPWSTR lpMsgBuf;
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -50,8 +59,9 @@ static LibHandleType GetLibHandle(pathstr_t aDependentLib) {
                    (LPWSTR)&lpMsgBuf, 0, nullptr);
     wprintf(L"Error loading %ls: %s\n", aDependentLib, lpMsgBuf);
     LocalFree(lpMsgBuf);
+#  endif  // defined(DEBUG)
+    return Err(err);
   }
-#  endif
 
   return libHandle;
 }
@@ -79,17 +89,17 @@ NS_HIDDEN __typeof(dlclose) __wrap_dlclose;
 #    define dlclose __wrap_dlclose
 #  endif
 
-typedef void* LibHandleType;
-
-static LibHandleType GetLibHandle(pathstr_t aDependentLib) {
+static LibHandleResult GetLibHandle(pathstr_t aDependentLib) {
   LibHandleType libHandle = dlopen(aDependentLib, RTLD_GLOBAL | RTLD_LAZY
 #  ifdef XP_MACOSX
                                                       | RTLD_FIRST
 #  endif
   );
   if (!libHandle) {
+    UniqueFreePtr<char> errMsg(strdup(dlerror()));
     fprintf(stderr, "XPCOMGlueLoad error for file %s:\n%s\n", aDependentLib,
-            dlerror());
+            errMsg.get());
+    return Err(std::move(errMsg));
   }
   return libHandle;
 }
@@ -122,8 +132,10 @@ static void AppendDependentLib(LibHandleType aLibHandle) {
   sTop = d;
 }
 
-static bool ReadDependentCB(pathstr_t aDependentLib,
-                            LibLoadingStrategy aLibLoadingStrategy) {
+using ReadDependentCBResult = ::mozilla::Result<::mozilla::Ok, DLErrorType>;
+
+static ReadDependentCBResult ReadDependentCB(
+    pathstr_t aDependentLib, LibLoadingStrategy aLibLoadingStrategy) {
 #if !defined(MOZ_LINKER) && !defined(__ANDROID__)
   // Don't bother doing a ReadAhead if we're not in the parent process.
   // What we need from the library should already be in the system file
@@ -132,17 +144,16 @@ static bool ReadDependentCB(pathstr_t aDependentLib,
     ReadAheadLib(aDependentLib);
   }
 #endif
-  LibHandleType libHandle = GetLibHandle(aDependentLib);
-  if (libHandle) {
-    AppendDependentLib(libHandle);
-  }
+  LibHandleType libHandle;
+  MOZ_TRY_VAR(libHandle, GetLibHandle(aDependentLib));
 
-  return libHandle;
+  AppendDependentLib(libHandle);
+  return Ok();
 }
 
 #ifdef XP_WIN
-static bool ReadDependentCB(const char* aDependentLib,
-                            LibLoadingStrategy aLibLoadingStrategy) {
+static ReadDependentCBResult ReadDependentCB(
+    const char* aDependentLib, LibLoadingStrategy aLibLoadingStrategy) {
   wchar_t wideDependentLib[MAX_PATH];
   MultiByteToWideChar(CP_UTF8, 0, aDependentLib, -1, wideDependentLib,
                       MAX_PATH);
@@ -159,18 +170,6 @@ inline FILE* TS_tfopen(const char* aPath, const char* aMode) {
   return fopen(aPath, aMode);
 }
 #endif
-
-/* RAII wrapper for FILE descriptors */
-struct ScopedCloseFileTraits {
-  typedef FILE* type;
-  static type empty() { return nullptr; }
-  static void release(type aFile) {
-    if (aFile) {
-      fclose(aFile);
-    }
-  }
-};
-typedef Scoped<ScopedCloseFileTraits> ScopedCloseFile;
 
 #if !defined(MOZ_LINKER) && !defined(__ANDROID__)
 static void XPCOMGlueUnload() {
@@ -203,11 +202,17 @@ static const char* ns_strrpbrk(const char* string, const char* strCharSet) {
 }
 #endif
 
-static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
-                              LibLoadingStrategy aLibLoadingStrategy) {
+using XPCOMGlueLoadError = BootstrapError;
+using XPCOMGlueLoadResult =
+    ::mozilla::Result<::mozilla::Ok, XPCOMGlueLoadError>;
+
+static XPCOMGlueLoadResult XPCOMGlueLoad(
+    const char* aXPCOMFile, LibLoadingStrategy aLibLoadingStrategy) {
 #if defined(MOZ_LINKER) || defined(__ANDROID__)
-  if (!ReadDependentCB(aXPCOMFile, aLibLoadingStrategy)) {
-    return NS_ERROR_FAILURE;
+  ReadDependentCBResult readDependentCBResult =
+      ReadDependentCB(aXPCOMFile, aLibLoadingStrategy);
+  if (readDependentCBResult.isErr()) {
+    return Err(AsVariant(readDependentCBResult.unwrapErr()));
   }
 #else
   char xpcomDir[MAXPATHLEN];
@@ -221,7 +226,7 @@ static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
   const char* tempSlash = strrchr(aXPCOMFile, '/');
   size_t tempLen = size_t(tempSlash - aXPCOMFile);
   if (tempLen > MAXPATHLEN) {
-    return NS_ERROR_FAILURE;
+    return Err(AsVariant(NS_ERROR_FAILURE));
   }
   char tempBuffer[MAXPATHLEN];
   memcpy(tempBuffer, aXPCOMFile, tempLen);
@@ -241,7 +246,7 @@ static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
                                   "Resources" XPCOM_FILE_PATH_SEPARATOR
 #  endif
                                       XPCOM_DEPENDENT_LIBS_LIST)) {
-      return NS_ERROR_FAILURE;
+      return Err(AsVariant(NS_ERROR_FAILURE));
     }
     memcpy(xpcomDir, aXPCOMFile, len);
     strcpy(xpcomDir + len, XPCOM_FILE_PATH_SEPARATOR
@@ -263,16 +268,20 @@ static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
     strcat(xpcomDir, ".gtest");
   }
 
-  ScopedCloseFile flist;
-  flist = TS_tfopen(xpcomDir, READ_TEXTMODE);
+  const auto flist = TS_tfopen(xpcomDir, READ_TEXTMODE);
+  const auto cleanup = MakeScopeExit([&]() {
+    if (flist) {
+      fclose(flist);
+    }
+  });
   if (!flist) {
-    return NS_ERROR_FAILURE;
+    return Err(AsVariant(NS_ERROR_FAILURE));
   }
 
 #  ifdef XP_MACOSX
   tempLen = size_t(cursor - xpcomDir);
   if (tempLen > MAXPATHLEN - sizeof("MacOS" XPCOM_FILE_PATH_SEPARATOR) - 1) {
-    return NS_ERROR_FAILURE;
+    return Err(AsVariant(NS_ERROR_FAILURE));
   }
   strcpy(cursor, "MacOS" XPCOM_FILE_PATH_SEPARATOR);
   cursor += strlen(cursor);
@@ -288,13 +297,6 @@ static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
     if (l == 0 || *buffer == '#') {
       continue;
     }
-#  ifdef XP_WIN
-    // There is no point in reading Universal CRT forwarder DLLs ahead on
-    // Windows 10 because they will not be touched later.
-    if (IsWin10OrLater() && !strncmp(buffer, "api-", 4)) {
-      continue;
-    }
-#  endif
 
     // cut the trailing newline, if present
     if (buffer[l - 1] == '\n') {
@@ -302,17 +304,31 @@ static nsresult XPCOMGlueLoad(const char* aXPCOMFile,
     }
 
     if (l + size_t(cursor - xpcomDir) > MAXPATHLEN) {
-      return NS_ERROR_FAILURE;
+      return Err(AsVariant(NS_ERROR_FAILURE));
     }
 
     strcpy(cursor, buffer);
-    if (!ReadDependentCB(xpcomDir, aLibLoadingStrategy)) {
+    ReadDependentCBResult readDependentCBResult =
+        ReadDependentCB(xpcomDir, aLibLoadingStrategy);
+    if (readDependentCBResult.isErr()) {
       XPCOMGlueUnload();
-      return NS_ERROR_FAILURE;
+      return Err(AsVariant(readDependentCBResult.unwrapErr()));
     }
+
+#  ifdef XP_WIN
+    // We call PollPreXULSkeletonUIEvents here in order to not get flagged by
+    // Windows as nonresponsive. In order to not be flagged as such, we seem to
+    // simply need to respond to *a* message every few seconds. The halfway
+    // point on slow systems between process start and nsWindow taking over the
+    // skeleton UI window seems to be XUL being loaded. Accordingly, placing
+    // this call here covers the most ground (as we will call this after
+    // prefetching and loading all of the dlls in dependentlibs.list, which
+    // includes xul.dll.)
+    PollPreXULSkeletonUIEvents();
+#  endif
   }
 #endif
-  return NS_OK;
+  return Ok();
 }
 
 #if defined(MOZ_WIDGET_GTK) && \
@@ -352,21 +368,22 @@ class GSliceInit {
 
 namespace mozilla {
 
-Bootstrap::UniquePtr GetBootstrap(const char* aXPCOMFile,
-                                  LibLoadingStrategy aLibLoadingStrategy) {
+BootstrapResult GetBootstrap(const char* aXPCOMFile,
+                             LibLoadingStrategy aLibLoadingStrategy) {
 #ifdef MOZ_GSLICE_INIT
   GSliceInit gSliceInit;
 #endif
 
   if (!aXPCOMFile) {
-    return nullptr;
+    return Err(AsVariant(NS_ERROR_INVALID_ARG));
   }
 
   char* lastSlash =
       strrchr(const_cast<char*>(aXPCOMFile), XPCOM_FILE_PATH_SEPARATOR[0]);
   if (!lastSlash) {
-    return nullptr;
+    return Err(AsVariant(NS_ERROR_FILE_INVALID_PATH));
   }
+
   size_t base_len = size_t(lastSlash - aXPCOMFile) + 1;
 
   UniqueFreePtr<char> file(
@@ -374,14 +391,70 @@ Bootstrap::UniquePtr GetBootstrap(const char* aXPCOMFile,
   memcpy(file.get(), aXPCOMFile, base_len);
   memcpy(file.get() + base_len, XPCOM_DLL, sizeof(XPCOM_DLL));
 
-  if (NS_FAILED(XPCOMGlueLoad(file.get(), aLibLoadingStrategy))) {
-    return nullptr;
+  MOZ_TRY(XPCOMGlueLoad(file.get(), aLibLoadingStrategy));
+
+  if (!sTop) {
+    return Err(AsVariant(NS_ERROR_NOT_AVAILABLE));
   }
+
+#if defined(XP_WIN) && defined(_M_X64) && defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED)
+  auto check = reinterpret_cast<decltype(&XRE_CheckBlockScopeStaticVarInit)>(
+      GetSymbol(sTop->libHandle, "XRE_CheckBlockScopeStaticVarInit"));
+  MOZ_DIAGNOSTIC_ASSERT(check);
+
+  // Detect bug 1816848 ahead of the usual crash location.
+  uint32_t xulTlsIndex = 0;
+  if (!check(&xulTlsIndex)) {
+    // Unload xul, then load it again while recording single-step data.
+    XPCOMGlueUnload();
+
+    static constexpr int kMaxStepsNtdll = 0xc000;
+    static constexpr int kMaxErrorStatesNtdll = 0x200;
+    using NtdllSingleStepData =
+        ModuleSingleStepData<kMaxStepsNtdll, kMaxErrorStatesNtdll>;
+
+    XPCOMGlueLoadResult result = Err(AsVariant(NS_ERROR_FAILURE));
+    WindowsDiagnosticsError rv = CollectModuleSingleStepData<
+        kMaxStepsNtdll, kMaxErrorStatesNtdll>(
+        L"ntdll.dll",
+        [&result, &file, aLibLoadingStrategy]() {
+          result = XPCOMGlueLoad(file.get(), aLibLoadingStrategy);
+        },
+        [&result, xulTlsIndex](const NtdllSingleStepData& aData) {
+          bool didReload = false;
+          bool isStillBroken = false;
+          uint32_t newXulTlsIndex = 0;
+          if (result.isOk() && sTop) {
+            auto check =
+                reinterpret_cast<decltype(&XRE_CheckBlockScopeStaticVarInit)>(
+                    GetSymbol(sTop->libHandle,
+                              "XRE_CheckBlockScopeStaticVarInit"));
+            if (check) {
+              didReload = true;
+              isStillBroken = !check(&newXulTlsIndex);
+            }
+          }
+
+          // Crashing here gives access to the single-step data on stack.
+          MOZ_CRASH_UNSAFE_PRINTF(
+              "Detected lack of initialization of block-scope static variables "
+              "in xul, got single-step data (didReload=%d, isStillBroken=%d, "
+              "xulTlsIndex=%u, newXulTlsIndex=%u)",
+              didReload, isStillBroken, xulTlsIndex, newXulTlsIndex);
+        },
+        InstructionFilter::CallRet);
+
+    MOZ_CRASH_UNSAFE_PRINTF(
+        "Detected lack of initialization of block-scope static variables in "
+        "xul, failed to collect single-step data (rv=%d)",
+        static_cast<int>(rv));
+  }
+#endif  // XP_WIN && _M_X64 && MOZ_DIAGNOSTIC_ASSERT_ENABLED
 
   GetBootstrapType func =
       (GetBootstrapType)GetSymbol(sTop->libHandle, "XRE_GetBootstrap");
   if (!func) {
-    return nullptr;
+    return Err(AsVariant(NS_ERROR_NOT_AVAILABLE));
   }
 
   Bootstrap::UniquePtr b;

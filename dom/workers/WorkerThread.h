@@ -7,24 +7,24 @@
 #ifndef mozilla_dom_workers_WorkerThread_h__
 #define mozilla_dom_workers_WorkerThread_h__
 
-#include "mozilla/Attributes.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/CondVar.h"
-#include "mozilla/DebugOnly.h"
-#include "nsISupportsImpl.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/SafeRefPtr.h"
+#include "nsISupports.h"
 #include "nsThread.h"
+#include "nscore.h"
 
 class nsIRunnable;
 
 namespace mozilla {
-class AbstractThread;
+class Runnable;
+
 namespace dom {
 
 class WorkerRunnable;
 class WorkerPrivate;
-template <class>
-class WorkerPrivateParent;
-
 namespace workerinternals {
 class RuntimeService;
 }
@@ -35,7 +35,6 @@ class RuntimeService;
 class WorkerThreadFriendKey {
   friend class workerinternals::RuntimeService;
   friend class WorkerPrivate;
-  friend class WorkerPrivateParent<WorkerPrivate>;
 
   WorkerThreadFriendKey();
   ~WorkerThreadFriendKey();
@@ -44,7 +43,7 @@ class WorkerThreadFriendKey {
 class WorkerThread final : public nsThread {
   class Observer;
 
-  Mutex mLock;
+  Mutex mLock MOZ_UNANNOTATED;
   CondVar mWorkerPrivateCondVar;
 
   // Protected by nsThread::mLock.
@@ -56,40 +55,46 @@ class WorkerThread final : public nsThread {
   // Protected by nsThread::mLock and waited on with mWorkerPrivateCondVar.
   uint32_t mOtherThreadsDispatchingViaEventTarget;
 
-  // We create an AbstractThread for this current nsThread instance in order to
-  // support direct task dispatching. Direct tasks work in a similar fashion to
-  // microtasks and allow an IPDL MozPromise to behave like JS promise.
-  // An AbstractThread only need to exist on the current thread for Direct Task
-  // dispatch to be available.
-  RefPtr<AbstractThread> mAbstractThread;
 #ifdef DEBUG
   // Protected by nsThread::mLock.
   bool mAcceptingNonWorkerRunnables;
 #endif
 
+  // Using this struct we restrict access to the constructor while still being
+  // able to use MakeSafeRefPtr.
+  struct ConstructorKey {};
+
  public:
-  static already_AddRefed<WorkerThread> Create(
-      const WorkerThreadFriendKey& aKey);
+  explicit WorkerThread(ConstructorKey);
+
+  static SafeRefPtr<WorkerThread> Create(const WorkerThreadFriendKey& aKey);
 
   void SetWorker(const WorkerThreadFriendKey& aKey,
                  WorkerPrivate* aWorkerPrivate);
+
+  // This method is used to decouple the connection with the WorkerPrivate which
+  // is set in SetWorker(). And it also clears all pending runnables on this
+  // WorkerThread.
+  // After decoupling, WorkerThreadRunnable can not run on this WorkerThread
+  // anymore, since WorkerPrivate is invalid.
+  void ClearEventQueueAndWorker(const WorkerThreadFriendKey& aKey);
 
   nsresult DispatchPrimaryRunnable(const WorkerThreadFriendKey& aKey,
                                    already_AddRefed<nsIRunnable> aRunnable);
 
   nsresult DispatchAnyThread(const WorkerThreadFriendKey& aKey,
-                             already_AddRefed<WorkerRunnable> aWorkerRunnable);
+                             RefPtr<WorkerRunnable> aWorkerRunnable);
 
   uint32_t RecursionDepth(const WorkerThreadFriendKey& aKey) const;
 
-  PerformanceCounter* GetPerformanceCounter(nsIRunnable* aEvent) const override;
-
-  NS_IMETHODIMP Shutdown() override;
+  // Override HasPendingEvents to allow HasPendingEvents could be accessed by
+  // the parent thread. WorkerPrivate::IsEligibleForCC calls this method on the
+  // parent thread to check if there is any pending events on the worker thread.
+  NS_IMETHOD HasPendingEvents(bool* aHasPendingEvents) override;
 
   NS_INLINE_DECL_REFCOUNTING_INHERITED(WorkerThread, nsThread)
 
  private:
-  WorkerThread();
   ~WorkerThread();
 
   // This should only be called by consumers that have an
@@ -102,8 +107,6 @@ class WorkerThread final : public nsThread {
 
   NS_IMETHOD
   DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t) override;
-
-  void IncrementDispatchCounter();
 };
 
 }  // namespace dom

@@ -6,11 +6,13 @@
 #include "DecodedSurfaceProvider.h"
 
 #include "mozilla/StaticPrefs_image.h"
+#include "mozilla/layers/SharedSurfacesChild.h"
 #include "nsProxyRelease.h"
 
 #include "Decoder.h"
 
 using namespace mozilla::gfx;
+using namespace mozilla::layers;
 
 namespace mozilla {
 namespace image {
@@ -43,7 +45,8 @@ void DecodedSurfaceProvider::DropImageReference() {
   // get evicted is holding the surface cache lock, causing deadlock.
   RefPtr<RasterImage> image = mImage;
   mImage = nullptr;
-  NS_ReleaseOnMainThread(image.forget(), /* aAlwaysProxy = */ true);
+  SurfaceCache::ReleaseImageOnMainThread(image.forget(),
+                                         /* aAlwaysProxy = */ true);
 }
 
 DrawableFrameRef DecodedSurfaceProvider::DrawableRef(size_t aFrame) {
@@ -203,6 +206,35 @@ bool DecodedSurfaceProvider::ShouldPreferSyncRun() const {
   return mDecoder->ShouldSyncDecode(
       StaticPrefs::image_mem_decode_bytes_at_a_time_AtStartup());
 }
+
+nsresult DecodedSurfaceProvider::UpdateKey(
+    layers::RenderRootStateManager* aManager,
+    wr::IpcResourceUpdateQueue& aResources, wr::ImageKey& aKey) {
+  MOZ_ASSERT(mSurface);
+  RefPtr<SourceSurface> surface = mSurface->GetSourceSurface();
+  if (!surface) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return SharedSurfacesChild::Share(surface, aManager, aResources, aKey);
+}
+
+nsresult SimpleSurfaceProvider::UpdateKey(
+    layers::RenderRootStateManager* aManager,
+    wr::IpcResourceUpdateQueue& aResources, wr::ImageKey& aKey) {
+  if (mDirty) {
+    return NS_ERROR_FAILURE;
+  }
+
+  RefPtr<SourceSurface> surface = mSurface->GetSourceSurface();
+  if (!surface) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return SharedSurfacesChild::Share(surface, aManager, aResources, aKey);
+}
+
+void SimpleSurfaceProvider::InvalidateSurface() { mDirty = true; }
 
 }  // namespace image
 }  // namespace mozilla

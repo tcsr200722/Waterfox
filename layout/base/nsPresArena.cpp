@@ -13,7 +13,6 @@
 #include "nsDebug.h"
 #include "nsDisplayList.h"
 #include "nsPrintfCString.h"
-#include "FrameLayerBuilder.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/ComputedStyle.h"
 #include "mozilla/ComputedStyleInlines.h"
@@ -27,12 +26,10 @@ template <size_t ArenaSize, typename ObjectId, size_t ObjectIdCount>
 nsPresArena<ArenaSize, ObjectId, ObjectIdCount>::~nsPresArena() {
 #if defined(MOZ_HAVE_MEM_CHECKS)
   for (FreeList* entry = mFreeLists; entry != ArrayEnd(mFreeLists); ++entry) {
-    nsTArray<void*>::index_type len;
-    while ((len = entry->mEntries.Length())) {
-      void* result = entry->mEntries.ElementAt(len - 1);
-      entry->mEntries.RemoveElementAt(len - 1);
+    for (void* result : entry->mEntries) {
       MOZ_MAKE_MEM_UNDEFINED(result, entry->mEntrySize);
     }
+    entry->mEntries.Clear();
   }
 #endif
 }
@@ -65,9 +62,9 @@ void* nsPresArena<ArenaSize, ObjectId, ObjectIdCount>::Allocate(ObjectId aCode,
     // from ShrinkCapacity on smaller sizes.  500 pointers means the malloc size
     // for the array is 4096 bytes or more on a 64-bit system.  The next smaller
     // size is 2048 (with jemalloc), which we consider not worth compacting.
-    result = list->mEntries.ElementAt(len - 1);
+    result = list->mEntries.Elements()[len - 1];
     if (list->mEntries.Capacity() > 500) {
-      list->mEntries.RemoveElementAt(len - 1);
+      list->mEntries.RemoveElementAtUnsafe(len - 1);
     } else {
       list->mEntries.SetLengthAndRetainStorage(len - 1);
     }

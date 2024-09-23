@@ -54,12 +54,14 @@ add_task(async function test_contentscript_context() {
   await extension.awaitMessage("content-script-show");
 
   // Get the content script context and check that it points to the correct window.
-  await contentPage.spawn(extension.id, async extensionId => {
-    let { DocumentManager } = ChromeUtils.import(
-      "resource://gre/modules/ExtensionContent.jsm",
-      null
+  await contentPage.legacySpawn(extension.id, async extensionId => {
+    const { ExtensionContent } = ChromeUtils.importESModule(
+      "resource://gre/modules/ExtensionContent.sys.mjs"
     );
-    this.context = DocumentManager.getContext(extensionId, this.content);
+    this.context = ExtensionContent.getContextByExtensionId(
+      extensionId,
+      this.content
+    );
 
     Assert.ok(this.context, "Got content script context");
 
@@ -76,7 +78,7 @@ add_task(async function test_contentscript_context() {
 
   await extension.awaitMessage("content-script-hide");
 
-  await contentPage.spawn(null, async () => {
+  await contentPage.legacySpawn(null, async () => {
     Assert.equal(
       this.context.contentWindow,
       null,
@@ -89,7 +91,7 @@ add_task(async function test_contentscript_context() {
 
   await extension.awaitMessage("content-script-show");
 
-  await contentPage.spawn(null, async () => {
+  await contentPage.legacySpawn(null, async () => {
     Assert.equal(
       this.context.contentWindow,
       this.content,
@@ -102,7 +104,7 @@ add_task(async function test_contentscript_context() {
   await extension.unload();
 });
 
-async function contentscript_context_incognito_not_allowed_test() {
+add_task(async function test_contentscript_context_incognito_not_allowed() {
   async function background() {
     await browser.contentScripts.register({
       js: [{ file: "registered_script.js" }],
@@ -135,6 +137,11 @@ async function contentscript_context_incognito_not_allowed_test() {
     },
   });
 
+  // Bug 1715801: Re-enable pbm portion on GeckoView
+  if (AppConstants.platform == "android") {
+    Services.prefs.setBoolPref("dom.security.https_first_pbm", false);
+  }
+
   await extension.startup();
   await extension.awaitMessage("background-ready");
 
@@ -143,12 +150,14 @@ async function contentscript_context_incognito_not_allowed_test() {
     { privateBrowsing: true }
   );
 
-  await contentPage.spawn(extension.id, async extensionId => {
-    let { DocumentManager } = ChromeUtils.import(
-      "resource://gre/modules/ExtensionContent.jsm",
-      null
+  await contentPage.legacySpawn(extension.id, async extensionId => {
+    const { ExtensionContent } = ChromeUtils.importESModule(
+      "resource://gre/modules/ExtensionContent.sys.mjs"
     );
-    let context = DocumentManager.getContext(extensionId, this.content);
+    let context = ExtensionContent.getContextByExtensionId(
+      extensionId,
+      this.content
+    );
     Assert.equal(
       context,
       null,
@@ -158,13 +167,11 @@ async function contentscript_context_incognito_not_allowed_test() {
 
   await contentPage.close();
   await extension.unload();
-}
 
-add_task(async function test_contentscript_context_incognito_not_allowed() {
-  return runWithPrefs(
-    [["extensions.allowPrivateBrowsingByDefault", false]],
-    contentscript_context_incognito_not_allowed_test
-  );
+  // Bug 1715801: Re-enable pbm portion on GeckoView
+  if (AppConstants.platform == "android") {
+    Services.prefs.clearUserPref("dom.security.https_first_pbm");
+  }
 });
 
 add_task(async function test_contentscript_context_unload_while_in_bfcache() {
@@ -176,13 +183,15 @@ add_task(async function test_contentscript_context_unload_while_in_bfcache() {
   await extension.awaitMessage("content-script-ready");
 
   // Get the content script context and check that it points to the correct window.
-  await contentPage.spawn(extension.id, async extensionId => {
-    let { DocumentManager } = ChromeUtils.import(
-      "resource://gre/modules/ExtensionContent.jsm",
-      null
+  await contentPage.legacySpawn(extension.id, async extensionId => {
+    const { ExtensionContent } = ChromeUtils.importESModule(
+      "resource://gre/modules/ExtensionContent.sys.mjs"
     );
     // Save context so we can verify that contentWindow is nulled after unload.
-    this.context = DocumentManager.getContext(extensionId, this.content);
+    this.context = ExtensionContent.getContextByExtensionId(
+      extensionId,
+      this.content
+    );
 
     Assert.equal(
       this.context.contentWindow,
@@ -199,8 +208,8 @@ add_task(async function test_contentscript_context_unload_while_in_bfcache() {
         () => {
           // Yield to the event loop once more to ensure that all pageshow event
           // handlers have been dispatched before fulfilling the promise.
-          let { setTimeout } = ChromeUtils.import(
-            "resource://gre/modules/Timer.jsm"
+          let { setTimeout } = ChromeUtils.importESModule(
+            "resource://gre/modules/Timer.sys.mjs"
           );
           setTimeout(resolve, 0);
         },
@@ -215,7 +224,7 @@ add_task(async function test_contentscript_context_unload_while_in_bfcache() {
   await extension.awaitMessage("content-script-hide");
 
   await extension.unload();
-  await contentPage.spawn(null, async () => {
+  await contentPage.legacySpawn(null, async () => {
     await this.contextUnloadedPromise;
     Assert.equal(this.context.unloaded, true, "Context has been unloaded");
 
@@ -305,15 +314,17 @@ add_task(async function test_contentscript_context_valid_during_execution() {
   let contentPage = await ExtensionTestUtils.loadContentPage(
     "http://example.com/dummy?first"
   );
-  await contentPage.spawn(extension.id, async extensionId => {
+  await contentPage.legacySpawn(extension.id, async extensionId => {
     let context;
     let checkContextIsValid = description => {
       if (!context) {
-        let { DocumentManager } = ChromeUtils.import(
-          "resource://gre/modules/ExtensionContent.jsm",
-          null
+        const { ExtensionContent } = ChromeUtils.importESModule(
+          "resource://gre/modules/ExtensionContent.sys.mjs"
         );
-        context = DocumentManager.getContext(extensionId, this.content);
+        context = ExtensionContent.getContextByExtensionId(
+          extensionId,
+          this.content
+        );
       }
       Assert.equal(
         context.contentWindow,
@@ -329,13 +340,13 @@ add_task(async function test_contentscript_context_valid_during_execution() {
   await extension.startup();
   await extension.awaitMessage("content-script-ready");
 
-  await contentPage.spawn(extension.id, async extensionId => {
+  await contentPage.legacySpawn(extension.id, async () => {
     // Navigate so that the content page is frozen in the bfcache.
     this.content.location = "http://example.org/dummy?second";
   });
 
   await extension.awaitMessage("content-script-hide");
-  await contentPage.spawn(null, async () => {
+  await contentPage.legacySpawn(null, async () => {
     // Navigate back so the content page is resurrected from the bfcache.
     this.content.history.back();
   });

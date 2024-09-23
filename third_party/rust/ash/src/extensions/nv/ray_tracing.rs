@@ -1,108 +1,78 @@
-#![allow(dead_code)]
+//! <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_ray_tracing.html>
+
 use crate::prelude::*;
-use crate::version::{DeviceV1_0, InstanceV1_0, InstanceV1_1};
 use crate::vk;
 use crate::RawPtr;
-use std::ffi::CStr;
-use std::mem;
+use alloc::vec::Vec;
+use core::mem;
 
-#[derive(Clone)]
-pub struct RayTracing {
-    handle: vk::Device,
-    ray_tracing_fn: vk::NvRayTracingFn,
-}
-
-impl RayTracing {
-    pub fn new<I: InstanceV1_0, D: DeviceV1_0>(instance: &I, device: &D) -> RayTracing {
-        let ray_tracing_fn = vk::NvRayTracingFn::load(|name| unsafe {
-            mem::transmute(instance.get_device_proc_addr(device.handle(), name.as_ptr()))
-        });
-        RayTracing {
-            handle: device.handle(),
-            ray_tracing_fn,
-        }
-    }
-
-    pub unsafe fn get_properties<I: InstanceV1_1>(
-        instance: &I,
-        pdevice: vk::PhysicalDevice,
-    ) -> vk::PhysicalDeviceRayTracingPropertiesNV {
-        let mut props_rt = vk::PhysicalDeviceRayTracingPropertiesNV::default();
-        {
-            let mut props = vk::PhysicalDeviceProperties2::builder().push_next(&mut props_rt);
-            instance.get_physical_device_properties2(pdevice, &mut props);
-        }
-        props_rt
-    }
-
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCreateAccelerationStructureNV.html>"]
+impl crate::nv::ray_tracing::Device {
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCreateAccelerationStructureNV.html>
+    #[inline]
     pub unsafe fn create_acceleration_structure(
         &self,
-        create_info: &vk::AccelerationStructureCreateInfoNV,
-        allocation_callbacks: Option<&vk::AllocationCallbacks>,
+        create_info: &vk::AccelerationStructureCreateInfoNV<'_>,
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
     ) -> VkResult<vk::AccelerationStructureNV> {
-        let mut accel_struct = mem::zeroed();
-        let err_code = self.ray_tracing_fn.create_acceleration_structure_nv(
+        let mut accel_struct = mem::MaybeUninit::uninit();
+        (self.fp.create_acceleration_structure_nv)(
             self.handle,
             create_info,
             allocation_callbacks.as_raw_ptr(),
-            &mut accel_struct,
-        );
-        match err_code {
-            vk::Result::SUCCESS => Ok(accel_struct),
-            _ => Err(err_code),
-        }
+            accel_struct.as_mut_ptr(),
+        )
+        .assume_init_on_success(accel_struct)
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkDestroyAccelerationStructureNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkDestroyAccelerationStructureNV.html>
+    #[inline]
     pub unsafe fn destroy_acceleration_structure(
         &self,
         accel_struct: vk::AccelerationStructureNV,
-        allocation_callbacks: Option<&vk::AllocationCallbacks>,
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
     ) {
-        self.ray_tracing_fn.destroy_acceleration_structure_nv(
+        (self.fp.destroy_acceleration_structure_nv)(
             self.handle,
             accel_struct,
             allocation_callbacks.as_raw_ptr(),
         );
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkGetAccelerationStructureMemoryRequirementsNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetAccelerationStructureMemoryRequirementsNV.html>
+    #[inline]
     pub unsafe fn get_acceleration_structure_memory_requirements(
         &self,
-        info: &vk::AccelerationStructureMemoryRequirementsInfoNV,
-    ) -> vk::MemoryRequirements2KHR {
-        let mut requirements = mem::zeroed();
-        self.ray_tracing_fn
-            .get_acceleration_structure_memory_requirements_nv(
-                self.handle,
-                info,
-                &mut requirements,
-            );
+        info: &vk::AccelerationStructureMemoryRequirementsInfoNV<'_>,
+    ) -> vk::MemoryRequirements2KHR<'_> {
+        let mut requirements = Default::default();
+        (self.fp.get_acceleration_structure_memory_requirements_nv)(
+            self.handle,
+            info,
+            &mut requirements,
+        );
         requirements
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkBindAccelerationStructureMemoryNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkBindAccelerationStructureMemoryNV.html>
+    #[inline]
     pub unsafe fn bind_acceleration_structure_memory(
         &self,
-        bind_info: &[vk::BindAccelerationStructureMemoryInfoNV],
+        bind_info: &[vk::BindAccelerationStructureMemoryInfoNV<'_>],
     ) -> VkResult<()> {
-        let err_code = self.ray_tracing_fn.bind_acceleration_structure_memory_nv(
+        (self.fp.bind_acceleration_structure_memory_nv)(
             self.handle,
             bind_info.len() as u32,
             bind_info.as_ptr(),
-        );
-        match err_code {
-            vk::Result::SUCCESS => Ok(()),
-            _ => Err(err_code),
-        }
+        )
+        .result()
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdBuildAccelerationStructureNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCmdBuildAccelerationStructureNV.html>
+    #[inline]
     pub unsafe fn cmd_build_acceleration_structure(
         &self,
         command_buffer: vk::CommandBuffer,
-        info: &vk::AccelerationStructureInfoNV,
+        info: &vk::AccelerationStructureInfoNV<'_>,
         instance_data: vk::Buffer,
         instance_offset: vk::DeviceSize,
         update: bool,
@@ -111,7 +81,7 @@ impl RayTracing {
         scratch: vk::Buffer,
         scratch_offset: vk::DeviceSize,
     ) {
-        self.ray_tracing_fn.cmd_build_acceleration_structure_nv(
+        (self.fp.cmd_build_acceleration_structure_nv)(
             command_buffer,
             info,
             instance_data,
@@ -124,7 +94,8 @@ impl RayTracing {
         );
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdCopyAccelerationStructureNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCmdCopyAccelerationStructureNV.html>
+    #[inline]
     pub unsafe fn cmd_copy_acceleration_structure(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -132,11 +103,11 @@ impl RayTracing {
         src: vk::AccelerationStructureNV,
         mode: vk::CopyAccelerationStructureModeNV,
     ) {
-        self.ray_tracing_fn
-            .cmd_copy_acceleration_structure_nv(command_buffer, dst, src, mode);
+        (self.fp.cmd_copy_acceleration_structure_nv)(command_buffer, dst, src, mode);
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdTraceRaysNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCmdTraceRaysNV.html>
+    #[inline]
     pub unsafe fn cmd_trace_rays(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -155,7 +126,7 @@ impl RayTracing {
         height: u32,
         depth: u32,
     ) {
-        self.ray_tracing_fn.cmd_trace_rays_nv(
+        (self.fp.cmd_trace_rays_nv)(
             command_buffer,
             raygen_shader_binding_table_buffer,
             raygen_shader_binding_offset,
@@ -174,29 +145,36 @@ impl RayTracing {
         );
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCreateRayTracingPipelinesNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCreateRayTracingPipelinesNV.html>
+    ///
+    /// Pipelines are created and returned as described for [Multiple Pipeline Creation].
+    ///
+    /// [Multiple Pipeline Creation]: https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#pipelines-multiple
+    #[inline]
     pub unsafe fn create_ray_tracing_pipelines(
         &self,
         pipeline_cache: vk::PipelineCache,
-        create_info: &[vk::RayTracingPipelineCreateInfoNV],
-        allocation_callbacks: Option<&vk::AllocationCallbacks>,
-    ) -> VkResult<Vec<vk::Pipeline>> {
-        let mut pipelines = vec![mem::zeroed(); create_info.len()];
-        let err_code = self.ray_tracing_fn.create_ray_tracing_pipelines_nv(
+        create_infos: &[vk::RayTracingPipelineCreateInfoNV<'_>],
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+    ) -> Result<Vec<vk::Pipeline>, (Vec<vk::Pipeline>, vk::Result)> {
+        let mut pipelines = Vec::with_capacity(create_infos.len());
+        let err_code = (self.fp.create_ray_tracing_pipelines_nv)(
             self.handle,
             pipeline_cache,
-            create_info.len() as u32,
-            create_info.as_ptr(),
+            create_infos.len() as u32,
+            create_infos.as_ptr(),
             allocation_callbacks.as_raw_ptr(),
             pipelines.as_mut_ptr(),
         );
+        pipelines.set_len(create_infos.len());
         match err_code {
             vk::Result::SUCCESS => Ok(pipelines),
-            _ => Err(err_code),
+            _ => Err((pipelines, err_code)),
         }
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkGetRayTracingShaderGroupHandlesNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetRayTracingShaderGroupHandlesNV.html>
+    #[inline]
     pub unsafe fn get_ray_tracing_shader_group_handles(
         &self,
         pipeline: vk::Pipeline,
@@ -204,40 +182,35 @@ impl RayTracing {
         group_count: u32,
         data: &mut [u8],
     ) -> VkResult<()> {
-        let err_code = self.ray_tracing_fn.get_ray_tracing_shader_group_handles_nv(
+        (self.fp.get_ray_tracing_shader_group_handles_nv)(
             self.handle,
             pipeline,
             first_group,
             group_count,
             data.len(),
-            data.as_mut_ptr() as *mut std::ffi::c_void,
-        );
-        match err_code {
-            vk::Result::SUCCESS => Ok(()),
-            _ => Err(err_code),
-        }
+            data.as_mut_ptr().cast(),
+        )
+        .result()
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkGetAccelerationStructureHandleNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkGetAccelerationStructureHandleNV.html>
+    #[inline]
     pub unsafe fn get_acceleration_structure_handle(
         &self,
         accel_struct: vk::AccelerationStructureNV,
     ) -> VkResult<u64> {
-        let mut handle: u64 = 0;
-        let handle_ptr: *mut u64 = &mut handle;
-        let err_code = self.ray_tracing_fn.get_acceleration_structure_handle_nv(
+        let mut handle = mem::MaybeUninit::<u64>::uninit();
+        (self.fp.get_acceleration_structure_handle_nv)(
             self.handle,
             accel_struct,
-            std::mem::size_of::<u64>(),
-            handle_ptr as *mut std::ffi::c_void,
-        );
-        match err_code {
-            vk::Result::SUCCESS => Ok(handle),
-            _ => Err(err_code),
-        }
+            mem::size_of_val(&handle),
+            handle.as_mut_ptr().cast(),
+        )
+        .assume_init_on_success(handle)
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCmdWriteAccelerationStructuresPropertiesNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCmdWriteAccelerationStructuresPropertiesNV.html>
+    #[inline]
     pub unsafe fn cmd_write_acceleration_structures_properties(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -246,37 +219,19 @@ impl RayTracing {
         query_pool: vk::QueryPool,
         first_query: u32,
     ) {
-        self.ray_tracing_fn
-            .cmd_write_acceleration_structures_properties_nv(
-                command_buffer,
-                structures.len() as u32,
-                structures.as_ptr(),
-                query_type,
-                query_pool,
-                first_query,
-            );
+        (self.fp.cmd_write_acceleration_structures_properties_nv)(
+            command_buffer,
+            structures.len() as u32,
+            structures.as_ptr(),
+            query_type,
+            query_pool,
+            first_query,
+        );
     }
 
-    #[doc = "<https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/vkCompileDeferredNV.html>"]
+    /// <https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/vkCompileDeferredNV.html>
+    #[inline]
     pub unsafe fn compile_deferred(&self, pipeline: vk::Pipeline, shader: u32) -> VkResult<()> {
-        let err_code = self
-            .ray_tracing_fn
-            .compile_deferred_nv(self.handle, pipeline, shader);
-        match err_code {
-            vk::Result::SUCCESS => Ok(()),
-            _ => Err(err_code),
-        }
-    }
-
-    pub fn name() -> &'static CStr {
-        vk::NvRayTracingFn::name()
-    }
-
-    pub fn fp(&self) -> &vk::NvRayTracingFn {
-        &self.ray_tracing_fn
-    }
-
-    pub fn device(&self) -> vk::Device {
-        self.handle
+        (self.fp.compile_deferred_nv)(self.handle, pipeline, shader).result()
     }
 }

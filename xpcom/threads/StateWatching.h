@@ -4,16 +4,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if !defined(StateWatching_h_)
-#  define StateWatching_h_
+#ifndef XPCOM_THREADS_STATEWATCHING_H_
+#define XPCOM_THREADS_STATEWATCHING_H_
 
-#  include "mozilla/AbstractThread.h"
-#  include "mozilla/Logging.h"
-#  include "mozilla/TaskDispatcher.h"
-#  include "mozilla/UniquePtr.h"
-#  include "mozilla/Unused.h"
-
-#  include "nsISupportsImpl.h"
+#include <cstddef>
+#include <new>
+#include <utility>
+#include "mozilla/AbstractThread.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Logging.h"
+#include "mozilla/RefPtr.h"
+#include "nsISupports.h"
+#include "nsTArray.h"
+#include "nsThreadUtils.h"
 
 /*
  * The state-watching machinery automates the process of responding to changes
@@ -59,8 +62,8 @@ namespace mozilla {
 
 extern LazyLogModule gStateWatchingLog;
 
-#  define WATCH_LOG(x, ...) \
-    MOZ_LOG(gStateWatchingLog, LogLevel::Debug, (x, ##__VA_ARGS__))
+#define WATCH_LOG(x, ...) \
+  MOZ_LOG(gStateWatchingLog, LogLevel::Debug, (x, ##__VA_ARGS__))
 
 /*
  * AbstractWatcher is a superclass from which all watchers must inherit.
@@ -114,11 +117,8 @@ class WatchTarget {
   // subscribed to, and WatchTargets aren't reference-counted. So instead we
   // just prune dead ones at appropriate times, which works just fine.
   void PruneWatchers() {
-    for (int i = mWatchers.Length() - 1; i >= 0; --i) {
-      if (mWatchers[i]->IsDestroyed()) {
-        mWatchers.RemoveElementAt(i);
-      }
-    }
+    mWatchers.RemoveElementsBy(
+        [](const auto& watcher) { return watcher->IsDestroyed(); });
   }
 
   nsTArray<RefPtr<AbstractWatcher>> mWatchers;
@@ -295,7 +295,7 @@ class WatchManager {
   RefPtr<AbstractThread> mOwnerThread;
 };
 
-#  undef WATCH_LOG
+#undef WATCH_LOG
 
 }  // namespace mozilla
 

@@ -9,10 +9,8 @@
 
 #include "AudioSampleFormat.h"
 #include "MediaInfo.h"
-#include "TimeUnits.h"
+#include "MediaCodecsSupport.h"
 #include "VideoLimits.h"
-#include "mozilla/gfx/Point.h"  // for gfx::IntSize
-#include "mozilla/gfx/Types.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
@@ -20,12 +18,14 @@
 #include "mozilla/ReentrantMonitor.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SharedThreadPool.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/Point.h"  // for gfx::IntSize
+#include "mozilla/gfx/Types.h"
 #include "nsCOMPtr.h"
 #include "nsINamed.h"
 #include "nsIThread.h"
 #include "nsITimer.h"
-
 #include "nsThreadUtils.h"
 #include "prtime.h"
 
@@ -43,10 +43,6 @@ using mozilla::CheckedUint64;
 namespace mozilla {
 
 class MediaContainerType;
-
-// EME Key System String.
-#define EME_KEY_SYSTEM_CLEARKEY "org.w3.clearkey"
-#define EME_KEY_SYSTEM_WIDEVINE "com.widevine.alpha"
 
 /**
  * ReentrantMonitorConditionallyEnter
@@ -113,6 +109,7 @@ class MediaResource;
 media::TimeIntervals GetEstimatedBufferedTimeRanges(
     mozilla::MediaResource* aStream, int64_t aDurationUsecs);
 
+double ToMicrosecondResolution(double aSeconds);
 // Converts from number of audio frames (aFrames) to microseconds, given
 // the specified audio rate (aRate).
 CheckedInt64 FramesToUsecs(int64_t aFrames, uint32_t aRate);
@@ -155,6 +152,11 @@ void DownmixStereoToMono(mozilla::AudioDataValue* aBuffer, uint32_t aFrames);
 // given AudioInfo and the prefs that are being set.
 uint32_t DecideAudioPlaybackChannels(const AudioInfo& info);
 
+// Decide the sample-rate to use for audio output according to the
+// given AudioInfo and the prefs that are being set.
+uint32_t DecideAudioPlaybackSampleRate(const AudioInfo& info,
+                                       bool aShouldResistFingerprinting);
+
 bool IsDefaultPlaybackDeviceMono();
 
 bool IsVideoContentType(const nsCString& aContentType);
@@ -181,44 +183,17 @@ class AutoSetOnScopeExit {
 };
 
 enum class MediaThreadType {
-  PLAYBACK,          // MediaDecoderStateMachine and MediaFormatReader
+  SUPERVISOR,  // MediaFormatReader, RemoteDecoderManager, MediaDecodeTask and
+               // others
   PLATFORM_DECODER,  // MediaDataDecoder
   PLATFORM_ENCODER,  // MediaDataEncoder
-  MTG_CONTROL,
-  WEBRTC_DECODER,
-  MDSM,
+  WEBRTC_CALL_THREAD,
+  WEBRTC_WORKER,
+  MDSM,  // MediaDecoderStateMachine
 };
 // Returns the thread pool that is shared amongst all decoder state machines
 // for decoding streams.
 already_AddRefed<SharedThreadPool> GetMediaThreadPool(MediaThreadType aType);
-
-enum H264_PROFILE {
-  H264_PROFILE_UNKNOWN = 0,
-  H264_PROFILE_BASE = 0x42,
-  H264_PROFILE_MAIN = 0x4D,
-  H264_PROFILE_EXTENDED = 0x58,
-  H264_PROFILE_HIGH = 0x64,
-};
-
-enum H264_LEVEL {
-  H264_LEVEL_1 = 10,
-  H264_LEVEL_1_b = 11,
-  H264_LEVEL_1_1 = 11,
-  H264_LEVEL_1_2 = 12,
-  H264_LEVEL_1_3 = 13,
-  H264_LEVEL_2 = 20,
-  H264_LEVEL_2_1 = 21,
-  H264_LEVEL_2_2 = 22,
-  H264_LEVEL_3 = 30,
-  H264_LEVEL_3_1 = 31,
-  H264_LEVEL_3_2 = 32,
-  H264_LEVEL_4 = 40,
-  H264_LEVEL_4_1 = 41,
-  H264_LEVEL_4_2 = 42,
-  H264_LEVEL_5 = 50,
-  H264_LEVEL_5_1 = 51,
-  H264_LEVEL_5_2 = 52
-};
 
 // Extracts the H.264/AVC profile and level from an H.264 codecs string.
 // H.264 codecs parameters have a type defined as avc1.PPCCLL, where
@@ -231,14 +206,21 @@ bool ExtractH264CodecDetails(const nsAString& aCodecs, uint8_t& aProfile,
                              uint8_t& aConstraint, uint8_t& aLevel);
 
 struct VideoColorSpace {
-  // TODO: Define the value type as strong type enum
-  // to better know the exact meaning corresponding to ISO/IEC 23001-8:2016.
-  // Default value is listed
+  // Default values are set according to
   // https://www.webmproject.org/vp9/mp4/#optional-fields
-  uint8_t mPrimaryId = 1;   // Table 2
-  uint8_t mTransferId = 1;  // Table 3
-  uint8_t mMatrixId = 1;    // Table 4
-  uint8_t mRangeId = 0;
+  // and https://aomediacodec.github.io/av1-isobmff/#codecsparam
+  gfx::CICP::ColourPrimaries mPrimaries = gfx::CICP::CP_BT709;
+  gfx::CICP::TransferCharacteristics mTransfer = gfx::CICP::TC_BT709;
+  gfx::CICP::MatrixCoefficients mMatrix = gfx::CICP::MC_BT709;
+  gfx::ColorRange mRange = gfx::ColorRange::LIMITED;
+
+  bool operator==(const VideoColorSpace& aOther) const {
+    return mPrimaries == aOther.mPrimaries && mTransfer == aOther.mTransfer &&
+           mMatrix == aOther.mMatrix && mRange == aOther.mRange;
+  }
+  bool operator!=(const VideoColorSpace& aOther) const {
+    return !(*this == aOther);
+  }
 };
 
 // Extracts the VPX codecs parameter string.
@@ -250,7 +232,16 @@ bool ExtractVPXCodecDetails(const nsAString& aCodec, uint8_t& aProfile,
 bool ExtractVPXCodecDetails(const nsAString& aCodec, uint8_t& aProfile,
                             uint8_t& aLevel, uint8_t& aBitDepth,
                             uint8_t& aChromaSubsampling,
-                            VideoColorSpace& aColorSpace);
+                            mozilla::VideoColorSpace& aColorSpace);
+
+// Extracts AV1 codecs parameter string.
+// See https://aomediacodec.github.io/av1-isobmff/#codecsparam
+// Returns false if the codec is invalid.
+bool ExtractAV1CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
+                            uint8_t& aLevel, uint8_t& aTier, uint8_t& aBitDepth,
+                            bool& aMonochrome, bool& aSubsamplingX,
+                            bool& aSubsamplingY, uint8_t& aChromaSamplePosition,
+                            mozilla::VideoColorSpace& aColorSpace);
 
 // Use a cryptographic quality PRNG to generate raw random bytes
 // and convert that to a base64 string.
@@ -328,6 +319,8 @@ bool ParseCodecsString(const nsAString& aCodecs,
                        nsTArray<nsString>& aOutCodecs);
 
 bool IsH264CodecString(const nsAString& aCodec);
+
+bool IsH265CodecString(const nsAString& aCodec);
 
 bool IsAACCodecString(const nsAString& aCodec);
 
@@ -417,8 +410,8 @@ enum class StringListRangeEmptyItems {
 template <typename String,
           StringListRangeEmptyItems empties = StringListRangeEmptyItems::Skip>
 class StringListRange {
-  typedef typename String::char_type CharType;
-  typedef const CharType* Pointer;
+  using CharType = typename String::char_type;
+  using Pointer = const CharType*;
 
  public:
   // Iterator into range, trims items and optionally skips empty items.
@@ -433,7 +426,7 @@ class StringListRange {
     }
     // DereferencedType should be 'const nsDependent[C]String' pointing into
     // mList (which is 'const ns[C]String&').
-    typedef decltype(Substring(Pointer(), Pointer())) DereferencedType;
+    using DereferencedType = decltype(Substring(Pointer(), Pointer()));
     DereferencedType operator*() { return Substring(mStart, mEnd); }
 
    private:
@@ -542,7 +535,7 @@ static bool StringListContains(const ListString& aList,
 
 inline void AppendStringIfNotEmpty(nsACString& aDest, nsACString&& aSrc) {
   if (!aSrc.IsEmpty()) {
-    aDest.Append(NS_LITERAL_CSTRING("\n"));
+    aDest.Append("\n"_ns);
     aDest.Append(aSrc);
   }
 }
@@ -555,6 +548,15 @@ inline gfx::YUVColorSpace DefaultColorSpace(const gfx::IntSize& aSize) {
   return aSize.height < 720 ? gfx::YUVColorSpace::BT601
                             : gfx::YUVColorSpace::BT709;
 }
+
+bool IsWaveMimetype(const nsACString& aMimeType);
+
+void DetermineResolutionForTelemetry(const MediaInfo& aInfo,
+                                     nsCString& aResolutionOut);
+
+// True if given MediaCodecsSupported contains any hardware decoding support.
+bool ContainHardwareCodecsSupported(
+    const media::MediaCodecsSupported& aSupport);
 
 }  // end namespace mozilla
 

@@ -35,7 +35,7 @@ Structure:
                                       // Runnable names are only collected for the XPCOM main thread.
             "process": <string>, // Type of process that hung, see below for a list of types.
             "remoteType": <string>, // Remote type of process which hung, see below.
-            "annotations": { ... }, // A set of annotations on the hang, see below.
+            "annotations": [ ... ], // A list of annotations on the hang, see below.
             "pseudoStack": [ ... ], // List of label stack frames and js frames.
             "stack": [ ... ], // interleaved hang stack, see below.
           },
@@ -92,7 +92,7 @@ the stack will consist only of label stack and chrome JS script frames.
 A single frame in the stack is either a raw string, representing a label stack
 or chrome JS script frame, or a native stack frame.
 
-Label stack frames contain the static string from all insances of the
+Label stack frames contain the static string from all instances of the
 AUTO_PROFILER_LABEL* macros. Additionally, dynamic strings are collected from
 all usages of the AUTO_PROFILER_LABEL_DYNAMIC*_NONSENSITIVE macros. The dynamic
 strings are simply appended to the static strings after a space character.
@@ -126,15 +126,18 @@ Native stack frames are as such:
 Annotations
 -----------
 
-The annotations field is a map from key to string value, for example if the user
+The annotations field is an array of key-value pairs, for example if the user
 was interacting during a hang the annotations field would look something like
 this:
 
 .. code-block:: js
 
-    {
-        "UserInteracting": "true"
-    }
+    [
+        [
+            "UserInteracting",
+            "true"
+        ]
+    ]
 
 The following annotations are currently present in tree:
 
@@ -155,3 +158,5 @@ The following annotations are currently present in tree:
 +-----------------+-------------------------------------------------+
 | Unrecovered     | "true" if the hang persisted until process exit |
 +-----------------+-------------------------------------------------+
+
+Additional annotations can be added at run-time via :doc:`../collection/user-interactions`.

@@ -4,19 +4,10 @@
 
 "use strict";
 
-/* import-globals-from ../../../../client/shared/test/shared-head.js */
-
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
   this
 );
-
-async function getTargetForTab(tab) {
-  const target = await TargetFactory.forTab(tab);
-  info("Attaching to the active tab.");
-  await target.attach();
-  return target;
-}
 
 function checkObject(object, expected) {
   for (const name of Object.keys(expected)) {

@@ -4,8 +4,6 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 var gSWM;
 var gSWCount = 0;
 
@@ -124,13 +122,6 @@ async function display(info, pushService) {
     );
   }
 
-  let updateButton = document.createElement("button");
-  document.l10n.setAttributes(updateButton, "update-button");
-  updateButton.onclick = function() {
-    gSWM.propagateSoftUpdate(info.principal.originAttributes, info.scope);
-  };
-  div.appendChild(updateButton);
-
   let unregisterButton = document.createElement("button");
   document.l10n.setAttributes(unregisterButton, "unregister-button");
   div.appendChild(unregisterButton);
@@ -140,7 +131,7 @@ async function display(info, pushService) {
   loadingMessage.classList.add("inactive");
   div.appendChild(loadingMessage);
 
-  unregisterButton.onclick = function() {
+  unregisterButton.onclick = function () {
     let cb = {
       unregisterSucceeded() {
         parent.removeChild(div);
@@ -159,7 +150,7 @@ async function display(info, pushService) {
       },
 
       QueryInterface: ChromeUtils.generateQI([
-        Ci.nsIServiceWorkerUnregisterCallback,
+        "nsIServiceWorkerUnregisterCallback",
       ]),
     };
 
@@ -175,7 +166,7 @@ async function display(info, pushService) {
 
 window.addEventListener(
   "DOMContentLoaded",
-  function() {
+  function () {
     init();
   },
   { once: true }

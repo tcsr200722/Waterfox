@@ -37,3 +37,26 @@ function doNamedEval() {
       ")();\n //# sourceURL=evaled.js"
   );
 }
+
+class MyClass {
+  constructor(a, b, ...rest) {
+    this.#a = a;
+    this.#b = b;
+  }
+
+  #a;
+  #b;
+
+  test(...args) {}
+  #privateFunc(a, b) {}
+}
+
+class Klass {
+  constructor() {
+    this.id = Math.random();
+  }
+  test() {}
+}
+
+const o = 1 + 2;
+console.log(o);

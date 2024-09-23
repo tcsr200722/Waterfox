@@ -1,33 +1,31 @@
 //! Device
 
-use com::WeakPtr;
-use command_list::{CmdListType, CommandSignature, IndirectArgument};
-use descriptor::{CpuDescriptor, DescriptorHeapFlags, DescriptorHeapType, RenderTargetViewDesc};
-use heap::{Heap, HeapFlags, HeapProperties};
-use std::ops::Range;
-use winapi::um::d3d12;
-use winapi::Interface;
-use {pso, query, queue};
-use {
-    Blob, CachedPSO, CommandAllocator, CommandQueue, D3DResult, DescriptorHeap,
+use crate::{
+    com::ComPtr,
+    command_list::{CmdListType, CommandSignature, IndirectArgument},
+    descriptor::{CpuDescriptor, DescriptorHeapFlags, DescriptorHeapType, RenderTargetViewDesc},
+    heap::{Heap, HeapFlags, HeapProperties},
+    pso, query, queue, Blob, CachedPSO, CommandAllocator, CommandQueue, D3DResult, DescriptorHeap,
     Fence, GraphicsCommandList, NodeMask, PipelineState, QueryHeap, Resource, RootSignature,
     Shader, TextureAddressMode,
 };
+use std::ops::Range;
+use winapi::{um::d3d12, Interface};
 
-pub type Device = WeakPtr<d3d12::ID3D12Device>;
+pub type Device = ComPtr<d3d12::ID3D12Device>;
 
 #[cfg(feature = "libloading")]
 impl crate::D3D12Lib {
     pub fn create_device<I: Interface>(
         &self,
-        adapter: WeakPtr<I>,
+        adapter: &ComPtr<I>,
         feature_level: crate::FeatureLevel,
-    ) -> libloading::Result<D3DResult<Device>> {
+    ) -> Result<D3DResult<Device>, libloading::Error> {
         type Fun = extern "system" fn(
             *mut winapi::um::unknwnbase::IUnknown,
             winapi::um::d3dcommon::D3D_FEATURE_LEVEL,
             winapi::shared::guiddef::REFGUID,
-            *mut *mut  winapi::ctypes::c_void,
+            *mut *mut winapi::ctypes::c_void,
         ) -> crate::HRESULT;
 
         let mut device = Device::null();
@@ -48,7 +46,7 @@ impl crate::D3D12Lib {
 impl Device {
     #[cfg(feature = "implicit-link")]
     pub fn create<I: Interface>(
-        adapter: WeakPtr<I>,
+        adapter: ComPtr<I>,
         feature_level: crate::FeatureLevel,
     ) -> D3DResult<Self> {
         let mut device = Device::null();
@@ -157,7 +155,7 @@ impl Device {
     pub fn create_graphics_command_list(
         &self,
         list_type: CmdListType,
-        allocator: CommandAllocator,
+        allocator: &CommandAllocator,
         initial: PipelineState,
         node_mask: NodeMask,
     ) -> D3DResult<GraphicsCommandList> {
@@ -217,7 +215,7 @@ impl Device {
 
     pub fn create_compute_pipeline_state(
         &self,
-        root_signature: RootSignature,
+        root_signature: &RootSignature,
         cs: Shader,
         node_mask: NodeMask,
         cached_pso: CachedPSO,

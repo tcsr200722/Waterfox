@@ -1,4 +1,6 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,22 +8,15 @@
 #import "mozActionElements.h"
 
 #import "MacUtils.h"
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
 #include "DocAccessible.h"
 #include "XULTabAccessible.h"
 #include "HTMLFormControlAccessible.h"
 
-#include "nsDeckFrame.h"
-#include "nsObjCExceptions.h"
+#include "nsCocoaUtils.h"
+#include "mozilla/FloatingPoint.h"
 
 using namespace mozilla::a11y;
-
-enum CheckboxValue {
-  // these constants correspond to the values in the OS
-  kUnchecked = 0,
-  kChecked = 1,
-  kMixed = 2
-};
 
 @implementation mozButtonAccessible
 
@@ -31,7 +26,7 @@ enum CheckboxValue {
 
 - (NSString*)moxPopupValue {
   if ([self stateWithMask:states::HASPOPUP] != 0) {
-    return utils::GetAccAttr(self, "haspopup");
+    return utils::GetAccAttr(self, nsGkAtoms::aria_haspopup);
   }
 
   return nil;
@@ -75,51 +70,13 @@ enum CheckboxValue {
   }
 }
 
-- (BOOL)ignoreWithParent:(mozAccessible*)parent {
-  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
-    if (acc->IsContent() && acc->GetContent()->IsXULElement(nsGkAtoms::menulist)) {
-      // The way select elements work is that content has a COMBOBOX accessible, when it is clicked
-      // it expands a COMBOBOX in our top-level main XUL window. The latter COMBOBOX is a stand-in
-      // for the content one while it is expanded.
-      // XXX: VO focus behaves weirdly if we expose the dummy XUL COMBOBOX in the tree.
-      // We are only interested in its menu child.
-      return YES;
-    }
-  }
-
-  return [super ignoreWithParent:parent];
-}
-
 @end
 
 @implementation mozRadioButtonAccessible
 
-- (id)accessibilityAttributeValue:(NSString*)attribute {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
-  if ([self isExpired]) {
-    return nil;
-  }
-
-  if ([attribute isEqualToString:NSAccessibilityLinkedUIElementsAttribute]) {
-    if (HTMLRadioButtonAccessible* radioAcc =
-            (HTMLRadioButtonAccessible*)mGeckoAccessible.AsAccessible()) {
-      NSMutableArray* radioSiblings = [NSMutableArray new];
-      Relation rel = radioAcc->RelationByType(RelationType::MEMBER_OF);
-      Accessible* tempAcc;
-      while ((tempAcc = rel.Next())) {
-        [radioSiblings addObject:GetNativeFromGeckoAccessible(tempAcc)];
-      }
-      return radioSiblings;
-    } else {
-      ProxyAccessible* proxy = mGeckoAccessible.AsProxy();
-      nsTArray<ProxyAccessible*> accs = proxy->RelationByType(RelationType::MEMBER_OF);
-      return utils::ConvertToNSArray(accs);
-    }
-  }
-
-  return [super accessibilityAttributeValue:attribute];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+- (NSArray*)moxLinkedUIElements {
+  return [[self getRelationsByType:RelationType::MEMBER_OF]
+      arrayByAddingObjectsFromArray:[super moxLinkedUIElements]];
 }
 
 @end
@@ -128,7 +85,8 @@ enum CheckboxValue {
 
 - (int)isChecked {
   // check if we're checked or in a mixed state
-  uint64_t state = [self stateWithMask:(states::CHECKED | states::PRESSED | states::MIXED)];
+  uint64_t state =
+      [self stateWithMask:(states::CHECKED | states::PRESSED | states::MIXED)];
   if (state & (states::CHECKED | states::PRESSED)) {
     return kChecked;
   }
@@ -141,11 +99,19 @@ enum CheckboxValue {
 }
 
 - (id)moxValue {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   return [NSNumber numberWithInt:[self isChecked]];
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
+}
+
+- (void)stateChanged:(uint64_t)state isEnabled:(BOOL)enabled {
+  [super stateChanged:state isEnabled:enabled];
+
+  if (state & (states::CHECKED | states::PRESSED | states::MIXED)) {
+    [self moxPostNotification:NSAccessibilityValueChangedNotification];
+  }
 }
 
 @end
@@ -153,35 +119,48 @@ enum CheckboxValue {
 @implementation mozPaneAccessible
 
 - (NSArray*)moxChildren {
-  if (!mGeckoAccessible.AsAccessible()) return nil;
-
-  nsDeckFrame* deckFrame = do_QueryFrame(mGeckoAccessible.AsAccessible()->GetFrame());
-  nsIFrame* selectedFrame = deckFrame ? deckFrame->GetSelectedBox() : nullptr;
-
-  Accessible* selectedAcc = nullptr;
-  if (selectedFrame) {
-    nsINode* node = selectedFrame->GetContent();
-    selectedAcc = mGeckoAccessible.AsAccessible()->Document()->GetAccessible(node);
+  // By default, all tab panels are exposed in the a11y tree
+  // even if the tab they represent isn't the active tab. To
+  // prevent VoiceOver from navigating background tab content,
+  // only expose the tab panel that is currently on screen.
+  for (mozAccessible* child in [super moxChildren]) {
+    if (!([child state] & states::OFFSCREEN)) {
+      return [NSArray arrayWithObject:GetObjectOrRepresentedView(child)];
+    }
   }
-
-  if (selectedAcc) {
-    mozAccessible* curNative = GetNativeFromGeckoAccessible(selectedAcc);
-    if (curNative) return [NSArray arrayWithObjects:GetObjectOrRepresentedView(curNative), nil];
-  }
-
-  return nil;
+  MOZ_ASSERT_UNREACHABLE("We have no on screen tab content?");
+  return @[];
 }
 
 @end
 
-@implementation mozIncrementableAccessible
+@implementation mozRangeAccessible
 
-- (void)moxPerformIncrement {
-  [self changeValueBySteps:1];
+- (id)moxValue {
+  return [NSNumber numberWithDouble:mGeckoAccessible->CurValue()];
 }
 
-- (void)moxPerformDecrement {
-  [self changeValueBySteps:-1];
+- (id)moxMinValue {
+  return [NSNumber numberWithDouble:mGeckoAccessible->MinValue()];
+}
+
+- (id)moxMaxValue {
+  return [NSNumber numberWithDouble:mGeckoAccessible->MaxValue()];
+}
+
+- (NSString*)moxOrientation {
+  RefPtr<AccAttributes> attributes = mGeckoAccessible->Attributes();
+  if (attributes) {
+    nsAutoString result;
+    attributes->GetAttribute(nsGkAtoms::aria_orientation, result);
+    if (result.Equals(u"horizontal"_ns)) {
+      return NSAccessibilityHorizontalOrientationValue;
+    } else if (result.Equals(u"vertical"_ns)) {
+      return NSAccessibilityVerticalOrientationValue;
+    }
+  }
+
+  return NSAccessibilityUnknownOrientationValue;
 }
 
 - (void)handleAccessibleEvent:(uint32_t)eventType {
@@ -196,36 +175,101 @@ enum CheckboxValue {
   }
 }
 
-/*
- * Updates the accessible's current value by (factor * step).
- * If incrementing factor should be positive, if decrementing
- * factor should be negative.
- */
+@end
 
-- (void)changeValueBySteps:(int)factor {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+@implementation mozMeterAccessible
 
-  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
-    double newVal = acc->CurValue() + (acc->Step() * factor);
-    double min = acc->MinValue();
-    double max = acc->MaxValue();
-    if ((IsNaN(min) || newVal >= min) && (IsNaN(max) || newVal <= max)) {
-      acc->SetCurValue(newVal);
-    }
-  } else if (ProxyAccessible* proxy = mGeckoAccessible.AsProxy()) {
-    double newVal = proxy->CurValue() + (proxy->Step() * factor);
-    double min = proxy->MinValue();
-    double max = proxy->MaxValue();
-    // Because min and max are not required attributes, we first check
-    // if the value is undefined. If this check fails,
-    // the value is defined, and we we verify our new value falls
-    // within the bound (inclusive).
-    if ((IsNaN(min) || newVal >= min) && (IsNaN(max) || newVal <= max)) {
-      proxy->SetCurValue(newVal);
-    }
+- (NSString*)moxValueDescription {
+  nsAutoString valueDesc;
+  mGeckoAccessible->Value(valueDesc);
+  if (mGeckoAccessible->TagName() != nsGkAtoms::meter) {
+    // We're dealing with an aria meter, which shouldn't get
+    // a value region.
+    return nsCocoaUtils::ToNSString(valueDesc);
   }
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  if (!valueDesc.IsEmpty()) {
+    // Append a comma to separate the existing value description
+    // from the value region.
+    valueDesc.Append(u", "_ns);
+  }
+  // We need to concat the given value description
+  // with a description of the value as either optimal,
+  // suboptimal, or critical.
+  int32_t region;
+  if (mGeckoAccessible->IsRemote()) {
+    region = mGeckoAccessible->AsRemote()->ValueRegion();
+  } else {
+    HTMLMeterAccessible* localMeter =
+        static_cast<HTMLMeterAccessible*>(mGeckoAccessible->AsLocal());
+    region = localMeter->ValueRegion();
+  }
+
+  if (region == 1) {
+    valueDesc.Append(u"Optimal value"_ns);
+  } else if (region == 0) {
+    valueDesc.Append(u"Suboptimal value"_ns);
+  } else {
+    MOZ_ASSERT(region == -1);
+    valueDesc.Append(u"Critical value"_ns);
+  }
+
+  return nsCocoaUtils::ToNSString(valueDesc);
+}
+
+@end
+
+@implementation mozIncrementableAccessible
+
+- (NSString*)moxValueDescription {
+  nsAutoString valueDesc;
+  mGeckoAccessible->Value(valueDesc);
+  return nsCocoaUtils::ToNSString(valueDesc);
+}
+
+- (void)moxSetValue:(id)value {
+  [self setValue:([value doubleValue])];
+}
+
+- (void)moxPerformIncrement {
+  [self changeValueBySteps:1];
+}
+
+- (void)moxPerformDecrement {
+  [self changeValueBySteps:-1];
+}
+
+/*
+ * Updates the accessible's current value by factor and step.
+ *
+ * factor: A signed integer representing the number of times to
+ *    apply step to the current value. A positive value will increment,
+ *    while a negative one will decrement.
+ * step: An unsigned integer specified by the webauthor and indicating the
+ *    amount by which to increment/decrement the current value.
+ */
+- (void)changeValueBySteps:(int)factor {
+  MOZ_ASSERT(mGeckoAccessible, "mGeckoAccessible is null");
+
+  double newValue =
+      mGeckoAccessible->CurValue() + (mGeckoAccessible->Step() * factor);
+  [self setValue:(newValue)];
+}
+
+/*
+ * Updates the accessible's current value to the specified value
+ */
+- (void)setValue:(double)value {
+  MOZ_ASSERT(mGeckoAccessible, "mGeckoAccessible is null");
+  mGeckoAccessible->SetCurValue(value);
+}
+
+@end
+
+@implementation mozDatePickerAccessible
+
+- (NSString*)moxTitle {
+  return utils::LocalizedString(u"dateField"_ns);
 }
 
 @end

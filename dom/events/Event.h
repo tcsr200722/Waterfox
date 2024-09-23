@@ -7,34 +7,42 @@
 #ifndef mozilla_dom_Event_h_
 #define mozilla_dom_Event_h_
 
-#include "mozilla/Attributes.h"
-#include "mozilla/BasicEvents.h"
-#include "nsISupports.h"
-#include "nsCOMPtr.h"
-#include "nsPIDOMWindow.h"
-#include "nsPoint.h"
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/EventBinding.h"
-#include "mozilla/dom/PopupBlocker.h"
-#include "nsIScriptGlobalObject.h"
+#include <cstdint>
 #include "Units.h"
 #include "js/TypeDecls.h"
-#include "nsIGlobalObject.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/BasicEvents.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsID.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsWrapperCache.h"
 
-class nsIContent;
-class nsPresContext;
 class PickleIterator;
+class nsCycleCollectionTraversalCallback;
+class nsIContent;
+class nsIGlobalObject;
+class nsIPrincipal;
+class nsPIDOMWindowInner;
+class nsPresContext;
 
 namespace IPC {
 class Message;
+class MessageReader;
+class MessageWriter;
 }  // namespace IPC
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class BeforeUnloadEvent;
 class CustomEvent;
+class Document;
 class DragEvent;
 class EventTarget;
 class EventMessageAutoOverride;
@@ -43,10 +51,13 @@ class EventMessageAutoOverride;
 class ExtendableEvent;
 class KeyboardEvent;
 class MouseEvent;
+class MessageEvent;
 class TimeEvent;
 class UIEvent;
 class WantsPopupControlCheck;
 class XULCommandEvent;
+struct EventInit;
+
 #define GENERATED_EVENT(EventClass_) class EventClass_;
 #include "mozilla/dom/GeneratedEventList.h"
 #undef GENERATED_EVENT
@@ -73,11 +84,13 @@ class Event : public nsISupports, public nsWrapperCache {
   void ConstructorInit(EventTarget* aOwner, nsPresContext* aPresContext,
                        WidgetEvent* aEvent);
 
+  void UpdateDefaultPreventedOnContentForDragEvent();
+
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Event)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Event)
 
-  nsIGlobalObject* GetParentObject() { return mOwner; }
+  nsIGlobalObject* GetParentObject() const { return mOwner; }
 
   JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
 
@@ -117,6 +130,9 @@ class Event : public nsISupports, public nsWrapperCache {
   // CustomEvent has a non-autogeneratable initCustomEvent.
   virtual CustomEvent* AsCustomEvent() { return nullptr; }
 
+  // MessageEvent has a non-autogeneratable initMessageEvent and more.
+  virtual MessageEvent* AsMessageEvent() { return nullptr; }
+
   void InitEvent(const nsAString& aEventTypeArg, bool aCanBubble,
                  bool aCancelable) {
     InitEvent(aEventTypeArg, aCanBubble ? CanBubble::eYes : CanBubble::eNo,
@@ -131,18 +147,28 @@ class Event : public nsISupports, public nsWrapperCache {
   virtual void DuplicatePrivateData();
   bool IsDispatchStopped();
   WidgetEvent* WidgetEventPtr();
-  virtual void Serialize(IPC::Message* aMsg, bool aSerializeInterfaceType);
-  virtual bool Deserialize(const IPC::Message* aMsg, PickleIterator* aIter);
+  const WidgetEvent* WidgetEventPtr() const {
+    return const_cast<Event*>(this)->WidgetEventPtr();
+  }
+  virtual void Serialize(IPC::MessageWriter* aWriter,
+                         bool aSerializeInterfaceType);
+  virtual bool Deserialize(IPC::MessageReader* aReader);
   void SetOwner(EventTarget* aOwner);
   void StopCrossProcessForwarding();
   void SetTrusted(bool aTrusted);
+
+  // When listening to chrome EventTargets, in the parent process, nsWindowRoot
+  // might receive events we've already handled via
+  // InProcessBrowserChildMessageManager, and handlers should call this to avoid
+  // handling the same event twice.
+  bool ShouldIgnoreChromeEventTargetListener() const;
 
   void InitPresContextData(nsPresContext* aPresContext);
 
   // Returns true if the event should be trusted.
   bool Init(EventTarget* aGlobal);
 
-  static const char* GetEventName(EventMessage aEventType);
+  static const char16_t* GetEventName(EventMessage aEventType);
   static CSSIntPoint GetClientCoords(nsPresContext* aPresContext,
                                      WidgetEvent* aEvent,
                                      LayoutDeviceIntPoint aPoint,
@@ -151,9 +177,9 @@ class Event : public nsISupports, public nsWrapperCache {
                                    WidgetEvent* aEvent,
                                    LayoutDeviceIntPoint aPoint,
                                    CSSIntPoint aDefaultPoint);
-  static CSSIntPoint GetScreenCoords(nsPresContext* aPresContext,
-                                     WidgetEvent* aEvent,
-                                     LayoutDeviceIntPoint aPoint);
+  static Maybe<CSSIntPoint> GetScreenCoords(nsPresContext* aPresContext,
+                                            WidgetEvent* aEvent,
+                                            LayoutDeviceIntPoint aPoint);
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   static CSSIntPoint GetOffsetCoords(nsPresContext* aPresContext,
                                      WidgetEvent* aEvent,
@@ -275,6 +301,20 @@ class Event : public nsISupports, public nsWrapperCache {
    */
   static void GetWidgetEventType(WidgetEvent* aEvent, nsAString& aType);
 
+  void RequestReplyFromRemoteContent() {
+    mEvent->MarkAsWaitingReplyFromRemoteProcess();
+  }
+
+  bool IsWaitingReplyFromRemoteContent() const {
+    return mEvent->IsWaitingReplyFromRemoteProcess();
+  }
+
+  bool IsReplyEventFromRemoteContent() const {
+    return mEvent->IsHandledInRemoteProcess();
+  }
+
+  static bool IsDragExitEnabled(JSContext* aCx, JSObject* aGlobal);
+
  protected:
   // Internal helper functions
   void SetEventType(const nsAString& aEventTypeArg);
@@ -362,8 +402,7 @@ class MOZ_STACK_CLASS WantsPopupControlCheck {
 
 NS_DEFINE_STATIC_IID_ACCESSOR(Event, NS_EVENT_IID)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 already_AddRefed<mozilla::dom::Event> NS_NewDOMEvent(
     mozilla::dom::EventTarget* aOwner, nsPresContext* aPresContext,

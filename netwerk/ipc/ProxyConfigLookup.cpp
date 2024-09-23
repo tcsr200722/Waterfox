@@ -6,6 +6,7 @@
 
 #include "ProxyConfigLookup.h"
 #include "ProxyConfigLookupChild.h"
+#include "mozilla/Components.h"
 #include "mozilla/Unused.h"
 #include "nsContentUtils.h"
 #include "nsICancelable.h"
@@ -13,6 +14,7 @@
 #include "nsIProtocolProxyService2.h"
 #include "nsNetUtil.h"
 #include "nsThreadUtils.h"
+#include "nsIChannel.h"
 
 namespace mozilla {
 namespace net {
@@ -52,14 +54,14 @@ nsresult ProxyConfigLookup::DoProxyResolve(nsICancelable** aLookupCancellable) {
   nsCOMPtr<nsIChannel> channel;
   rv = NS_NewChannel(getter_AddRefs(channel), mURI,
                      nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                      nsIContentPolicy::TYPE_OTHER);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  nsCOMPtr<nsIProtocolProxyService> pps =
-      do_GetService(NS_PROTOCOLPROXYSERVICE_CONTRACTID, &rv);
+  nsCOMPtr<nsIProtocolProxyService> pps;
+  pps = mozilla::components::ProtocolProxy::Service(&rv);
   if (NS_FAILED(rv)) {
     return rv;
   }

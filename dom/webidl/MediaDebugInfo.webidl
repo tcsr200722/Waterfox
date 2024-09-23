@@ -77,7 +77,7 @@ dictionary AudioSinkDebugInfo {
   boolean isPlaying = false;
   boolean isStarted = false;
   boolean audioEnded = false;
-  long outputRate = 0;
+  unsigned long outputRate = 0;
   long long written = 0;
   boolean hasErrored = false;
   boolean playbackComplete = false;
@@ -150,6 +150,7 @@ dictionary MediaDecoderStateMachineDebugInfo {
   boolean videoCompleted = false;
   MediaDecoderStateMachineDecodingStateDebugInfo stateObj = {};
   MediaSinkDebugInfo mediaSink = {};
+  double totalBufferingTimeMs = 0;
 };
 
 dictionary MediaStateDebugInfo {
@@ -169,7 +170,7 @@ dictionary MediaStateDebugInfo {
   long demuxEOS = 0;
   long drainState = 0;
   boolean waitingForKey = false;
-  long lastStreamSourceID = 0;
+  long long lastStreamSourceID = 0;
 };
 
 dictionary MediaFrameStats {
@@ -195,6 +196,8 @@ dictionary MediaFormatReaderDebugInfo {
   MediaStateDebugInfo audioState = {};
   MediaStateDebugInfo videoState = {};
   MediaFrameStats frameStats = {};
+  double totalReadMetadataTimeMs = 0.0;
+  double totalWaitingForVideoDataTimeMs = 0.0;
 };
 
 dictionary BufferRange {
@@ -229,7 +232,7 @@ dictionary EMEDebugInfo {
 };
 
 dictionary HTMLMediaElementDebugInfo {
-  long compositorDroppedFrames = 0;
+  unsigned long compositorDroppedFrames = 0;
   EMEDebugInfo EMEInfo = {};
   MediaDecoderDebugInfo decoder = {};
 };

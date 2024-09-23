@@ -1,16 +1,5 @@
 "use strict";
 
-var _PSvc;
-function get_pref_service() {
-  if (_PSvc) {
-    return _PSvc;
-  }
-
-  return (_PSvc = Cc["@mozilla.org/preferences-service;1"].getService(
-    Ci.nsIPrefBranch
-  ));
-}
-
 function gen_1MiB() {
   var i;
   var data = "x";
@@ -47,10 +36,9 @@ function write_datafile(status, entry) {
   }
 
   os.close();
-  entry.close();
 
   // now change max_entry_size so that the existing entry is too big
-  get_pref_service().setIntPref("browser.cache.disk.max_entry_size", 1024);
+  Services.prefs.setIntPref("browser.cache.disk.max_entry_size", 1024);
 
   // append to entry
   asyncOpenCacheEntry(
@@ -78,8 +66,6 @@ function append_datafile(status, entry) {
     os.close();
     do_throw();
   } catch (ex) {}
-
-  entry.close();
 
   do_test_finished();
 }

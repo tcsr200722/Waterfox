@@ -13,7 +13,7 @@ still in use in a stable channel with a different value.
 
 The warnings on string ID changes get reported on phabricator, but they're
 not making the build fail. To find out when to change IDs and when not to,
-read the :doc:`Lifecycle & Workflow </intl/localization>` section in the
+read the :ref:`Lifecycle & Workflow <Localization>` section in the
 localization documentation.
 
 Run Locally
@@ -41,5 +41,5 @@ updated clone, remove the marker file in
 Sources
 -------
 
-* `Configuration (YAML) <https://searchfox.org/mozilla-central/source/tools/lint/l10n.yml>`_
-* `Source <https://searchfox.org/mozilla-central/source/tools/lint/python/l10n_lint.py>`_
+* :searchfox:`Configuration (YAML) <tools/lint/l10n.yml>`
+* :searchfox:`Source <tools/lint/python/l10n_lint.py>`

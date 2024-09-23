@@ -9,15 +9,22 @@
 #include "nsNetUtil.h"
 #include "nsIChannel.h"
 
+#ifdef FUZZING_SNAPSHOT
+#  define MOZ_ALWAYS_SUCCEEDS_FUZZING(...) (void)__VA_ARGS__
+#else
+#  define MOZ_ALWAYS_SUCCEEDS_FUZZING(...) MOZ_ALWAYS_SUCCEEDS(__VA_ARGS__)
+#endif
+
 namespace mozilla {
 namespace net {
 
 NS_IMPL_ISUPPORTS(SimpleChannelParent, nsIParentChannel, nsIStreamListener)
 
-bool SimpleChannelParent::Init(const uint32_t& channelId) {
+bool SimpleChannelParent::Init(const uint64_t& aChannelId) {
   nsCOMPtr<nsIChannel> channel;
-  MOZ_ALWAYS_SUCCEEDS(
-      NS_LinkRedirectChannels(channelId, this, getter_AddRefs(channel)));
+
+  MOZ_ALWAYS_SUCCEEDS_FUZZING(
+      NS_LinkRedirectChannels(aChannelId, this, getter_AddRefs(channel)));
 
   return true;
 }
@@ -31,13 +38,6 @@ SimpleChannelParent::SetParentListener(ParentChannelListener* aListener) {
 NS_IMETHODIMP
 SimpleChannelParent::NotifyClassificationFlags(uint32_t aClassificationFlags,
                                                bool aIsThirdParty) {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-SimpleChannelParent::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
   // Nothing to do.
   return NS_OK;
 }
@@ -61,6 +61,11 @@ NS_IMETHODIMP
 SimpleChannelParent::Delete() {
   // Nothing to do.
   return NS_OK;
+}
+
+NS_IMETHODIMP
+SimpleChannelParent::GetRemoteType(nsACString& aRemoteType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 void SimpleChannelParent::ActorDestroy(ActorDestroyReason aWhy) {}

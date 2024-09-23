@@ -15,14 +15,12 @@
 # To install what you need, on Ubuntu,
 #   sudo apt-get install python-fontforge
 
-from __future__ import print_function, absolute_import
-
 import fontforge
 
 # generate a set of fonts, each with our special glyph at one codepoint,
 # and nothing else
 for codepoint in range(ord("A"), ord("D") + 1):
-    for (mark, width) in [("", 1500), ("2", 1800)]:
+    for mark, width in [("", 1500), ("2", 1800)]:
         charname = chr(codepoint)
         f = fontforge.font()
         n = "Mark" + mark + charname
@@ -43,8 +41,8 @@ for codepoint in range(ord("A"), ord("D") + 1):
 
 
 for codepoint in range(ord("A"), ord("A") + 1):
-    for (mark, width) in [("", 1500), ("2", 1800)]:
-        for (uposname, upos) in [("low", -350), ("high", -50)]:
+    for mark, width in [("", 1500), ("2", 1800)]:
+        for uposname, upos in [("low", -350), ("high", -50)]:
             charname = chr(codepoint)
             f = fontforge.font()
             n = "Mark" + mark + charname
@@ -55,16 +53,15 @@ for codepoint in range(ord("A"), ord("A") + 1):
             f.upos = upos
             f.uwidth = 100
             f.copyright = "Copyright (c) 2008-2020 Mozilla Corporation"
-    
+
             g = f.createChar(ord(" "), "space")
             g.width = 1000
 
             g = f.createChar(codepoint, charname)
             g.importOutlines("mark" + mark + "-glyph.svg")
             g.width = width
-    
-            f.generate("mark" + mark + charname + "-" + uposname +
-                       "underline.ttf")
+
+            f.generate("mark" + mark + charname + "-" + uposname + "underline.ttf")
 
 # font with a ligature involving a space
 
@@ -82,10 +79,10 @@ for charname in ["A", "B"]:
     g.importOutlines("mark-glyph.svg")
     g.width = 1500
 
-f.addLookup("liga-table", "gsub_ligature", (), (("liga",(("latn",("dflt")),)),))
+f.addLookup("liga-table", "gsub_ligature", (), (("liga", (("latn", ("dflt")),)),))
 f.addLookupSubtable("liga-table", "liga-subtable")
 g = f.createChar(-1, "spaceA")
-g.glyphclass = "baseligature";
+g.glyphclass = "baseligature"
 g.addPosSub("liga-subtable", ("space", "A"))
 g.importOutlines("mark2-glyph.svg")
 g.width = 1800
@@ -155,7 +152,17 @@ f.os2_windescent = winHeight / 2
 f.os2_windescent_add = False
 
 f.os2_use_typo_metrics = True
-f.generate("markA-lineheight" + str(winHeight) +
-           "-typolineheight" + str(typoLineHeight) + ".otf")
-f.generate("markA-lineheight" + str(winHeight) +
-           "-typolineheight" + str(typoLineHeight) + ".ttf")
+f.generate(
+    "markA-lineheight"
+    + str(winHeight)
+    + "-typolineheight"
+    + str(typoLineHeight)
+    + ".otf"
+)
+f.generate(
+    "markA-lineheight"
+    + str(winHeight)
+    + "-typolineheight"
+    + str(typoLineHeight)
+    + ".ttf"
+)

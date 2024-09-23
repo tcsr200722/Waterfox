@@ -318,7 +318,7 @@
     function tmpl_moveTo(aID, aInvokerFunc, aWholeText, aCharIter) {
       this.offset = aCharIter.offset;
 
-      var checker = new caretMoveChecker(this.offset, aID);
+      var checker = new caretMoveChecker(this.offset, true, aID);
       this.__proto__ = new (aInvokerFunc)(aID, checker);
 
       this.finalCheck = function genericMoveTo_finalCheck() {
@@ -379,8 +379,10 @@
                           ] );
 
       var line4 = [ // "riend "
-        [ "TextBeforeOffset", BOUNDARY_WORD_END, kTodo, kTodo, kTodo ],
-        [ "TextAfterOffset", BOUNDARY_WORD_END, kTodo, kTodo, kTodo ],
+        [ "TextBeforeOffset", BOUNDARY_WORD_END,
+          kOk, kOk, kOk],
+        [ "TextAfterOffset", BOUNDARY_WORD_END,
+          kOk, kOk, kOk ],
       ];
       traverseTextByLines(gQueue, "ta_wrapped",
                           [ [ "hi ", "", 0, 3, { words: [ 0, 2 ] } ],

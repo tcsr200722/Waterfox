@@ -15,12 +15,18 @@
 #include "nsIWebNavigation.h"
 #include "nsReadableUtils.h"
 #include "nsContentUtils.h"
+#include "mozilla/dom/WindowContext.h"
 #include "mozilla/dom/Location.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/BasePrincipal.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
+
+extern LazyLogModule gSHistoryLog;
+
+#define LOG(format) MOZ_LOG(gSHistoryLog, mozilla::LogLevel::Debug, format)
 
 //
 //  History class implementation
@@ -59,13 +65,10 @@ uint32_t nsHistory::GetLength(ErrorResult& aRv) const {
   // Get session History from docshell
   RefPtr<ChildSHistory> sHistory = GetSessionHistory();
   if (!sHistory) {
-    aRv.Throw(NS_ERROR_FAILURE);
-
-    return 0;
+    return 1;
   }
 
   int32_t len = sHistory->Count();
-  ;
   return len >= 0 ? len : 0;
 }
 
@@ -115,27 +118,12 @@ void nsHistory::GetState(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
     return;
   }
 
-  nsCOMPtr<nsIVariant> variant;
-  doc->GetStateObject(getter_AddRefs(variant));
-
-  if (variant) {
-    aRv = variant->GetAsJSVal(aResult);
-
-    if (aRv.Failed()) {
-      return;
-    }
-
-    if (!JS_WrapValue(aCx, aResult)) {
-      aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-    }
-
-    return;
-  }
-
-  aResult.setNull();
+  aRv = doc->GetStateObject(aResult);
 }
 
-void nsHistory::Go(int32_t aDelta, ErrorResult& aRv) {
+void nsHistory::Go(int32_t aDelta, nsIPrincipal& aSubjectPrincipal,
+                   ErrorResult& aRv) {
+  LOG(("nsHistory::Go(%d)", aDelta));
   nsCOMPtr<nsPIDOMWindowInner> win(do_QueryReferent(mInnerWindow));
   if (!win || !win->HasActiveDocument()) {
     return aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
@@ -146,7 +134,7 @@ void nsHistory::Go(int32_t aDelta, ErrorResult& aRv) {
     // "When the go(delta) method is invoked, if delta is zero, the user agent
     // must act as if the location.reload() method was called instead."
     RefPtr<Location> location = win->Location();
-    return location->Reload(false, aRv);
+    return location->Reload(false, aSubjectPrincipal, aRv);
   }
 
   RefPtr<ChildSHistory> session_history = GetSessionHistory();
@@ -155,16 +143,21 @@ void nsHistory::Go(int32_t aDelta, ErrorResult& aRv) {
     return;
   }
 
-  // Ignore the return value from Go(), since returning errors from Go() can
-  // lead to exceptions and a possible leak of history length
-  if (StaticPrefs::dom_window_history_async()) {
-    session_history->AsyncGo(aDelta);
-  } else {
-    session_history->Go(aDelta, IgnoreErrors());
-  }
+  bool userActivation =
+      win->GetWindowContext()
+          ? win->GetWindowContext()->HasValidTransientUserGestureActivation()
+          : false;
+
+  CallerType callerType = aSubjectPrincipal.IsSystemPrincipal()
+                              ? CallerType::System
+                              : CallerType::NonSystem;
+
+  // AsyncGo throws if we hit the location change rate limit.
+  session_history->AsyncGo(aDelta, /* aRequireUserInteraction = */ false,
+                           userActivation, callerType, aRv);
 }
 
-void nsHistory::Back(ErrorResult& aRv) {
+void nsHistory::Back(CallerType aCallerType, ErrorResult& aRv) {
   nsCOMPtr<nsPIDOMWindowInner> win(do_QueryReferent(mInnerWindow));
   if (!win || !win->HasActiveDocument()) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
@@ -179,14 +172,16 @@ void nsHistory::Back(ErrorResult& aRv) {
     return;
   }
 
-  if (StaticPrefs::dom_window_history_async()) {
-    sHistory->AsyncGo(-1);
-  } else {
-    sHistory->Go(-1, IgnoreErrors());
-  }
+  bool userActivation =
+      win->GetWindowContext()
+          ? win->GetWindowContext()->HasValidTransientUserGestureActivation()
+          : false;
+
+  sHistory->AsyncGo(-1, /* aRequireUserInteraction = */ false, userActivation,
+                    aCallerType, aRv);
 }
 
-void nsHistory::Forward(ErrorResult& aRv) {
+void nsHistory::Forward(CallerType aCallerType, ErrorResult& aRv) {
   nsCOMPtr<nsPIDOMWindowInner> win(do_QueryReferent(mInnerWindow));
   if (!win || !win->HasActiveDocument()) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
@@ -201,28 +196,31 @@ void nsHistory::Forward(ErrorResult& aRv) {
     return;
   }
 
-  if (StaticPrefs::dom_window_history_async()) {
-    sHistory->AsyncGo(1);
-  } else {
-    sHistory->Go(1, IgnoreErrors());
-  }
+  bool userActivation =
+      win->GetWindowContext()
+          ? win->GetWindowContext()->HasValidTransientUserGestureActivation()
+          : false;
+
+  sHistory->AsyncGo(1, /* aRequireUserInteraction = */ false, userActivation,
+                    aCallerType, aRv);
 }
 
 void nsHistory::PushState(JSContext* aCx, JS::Handle<JS::Value> aData,
                           const nsAString& aTitle, const nsAString& aUrl,
-                          ErrorResult& aRv) {
-  PushOrReplaceState(aCx, aData, aTitle, aUrl, aRv, false);
+                          CallerType aCallerType, ErrorResult& aRv) {
+  PushOrReplaceState(aCx, aData, aTitle, aUrl, aCallerType, aRv, false);
 }
 
 void nsHistory::ReplaceState(JSContext* aCx, JS::Handle<JS::Value> aData,
                              const nsAString& aTitle, const nsAString& aUrl,
-                             ErrorResult& aRv) {
-  PushOrReplaceState(aCx, aData, aTitle, aUrl, aRv, true);
+                             CallerType aCallerType, ErrorResult& aRv) {
+  PushOrReplaceState(aCx, aData, aTitle, aUrl, aCallerType, aRv, true);
 }
 
 void nsHistory::PushOrReplaceState(JSContext* aCx, JS::Handle<JS::Value> aData,
                                    const nsAString& aTitle,
-                                   const nsAString& aUrl, ErrorResult& aRv,
+                                   const nsAString& aUrl,
+                                   CallerType aCallerType, ErrorResult& aRv,
                                    bool aReplace) {
   nsCOMPtr<nsPIDOMWindowInner> win(do_QueryReferent(mInnerWindow));
   if (!win) {
@@ -235,6 +233,15 @@ void nsHistory::PushOrReplaceState(JSContext* aCx, JS::Handle<JS::Value> aData,
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
 
     return;
+  }
+
+  BrowsingContext* bc = win->GetBrowsingContext();
+  if (bc) {
+    nsresult rv = bc->CheckLocationChangeRateLimit(aCallerType);
+    if (NS_FAILED(rv)) {
+      aRv.Throw(rv);
+      return;
+    }
   }
 
   // AddState might run scripts, so we need to hold a strong reference to the
@@ -253,24 +260,13 @@ void nsHistory::PushOrReplaceState(JSContext* aCx, JS::Handle<JS::Value> aData,
   aRv = docShell->AddState(aData, aTitle, aUrl, aReplace, aCx);
 }
 
-nsIDocShell* nsHistory::GetDocShell() const {
-  nsCOMPtr<nsPIDOMWindowInner> win = do_QueryReferent(mInnerWindow);
-  if (!win) {
-    return nullptr;
-  }
-  return win->GetDocShell();
-}
-
 already_AddRefed<ChildSHistory> nsHistory::GetSessionHistory() const {
-  nsIDocShell* docShell = GetDocShell();
-  NS_ENSURE_TRUE(docShell, nullptr);
+  nsCOMPtr<nsPIDOMWindowInner> win = do_QueryReferent(mInnerWindow);
+  NS_ENSURE_TRUE(win, nullptr);
 
-  // Get the root DocShell from it
-  nsCOMPtr<nsIDocShellTreeItem> root;
-  docShell->GetInProcessSameTypeRootTreeItem(getter_AddRefs(root));
-  nsCOMPtr<nsIWebNavigation> webNav(do_QueryInterface(root));
-  NS_ENSURE_TRUE(webNav, nullptr);
+  BrowsingContext* bc = win->GetBrowsingContext();
+  NS_ENSURE_TRUE(bc, nullptr);
 
-  // Get SH from nsIWebNavigation
-  return webNav->GetSessionHistory();
+  RefPtr<ChildSHistory> childSHistory = bc->Top()->GetChildSessionHistory();
+  return childSHistory.forget();
 }

@@ -22,16 +22,16 @@ Object.defineProperties(arr, {
     configurable: true
   }
 });
-verifyEqualTo(arr, "property", 12);
 
-verifyWritable(arr, "property");
-
-verifyEnumerable(arr, "property");
-
-verifyConfigurable(arr, "property");
+verifyProperty(arr, "property", {
+  value: 12,
+  writable: true,
+  enumerable: true,
+  configurable: true,
+});
 
 if (arr.length !== 0) {
-  $ERROR('Expected arr.length === 0, actually ' + arr.length);
+  throw new Test262Error('Expected arr.length === 0, actually ' + arr.length);
 }
 
 reportCompare(0, 0);

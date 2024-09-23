@@ -72,10 +72,10 @@ namespace soundtouch
 {
 
 /// Soundtouch library version string
-#define SOUNDTOUCH_VERSION          "2.1.3"
+#define SOUNDTOUCH_VERSION          "2.2"
 
 /// SoundTouch library version id
-#define SOUNDTOUCH_VERSION_ID       (20103)
+#define SOUNDTOUCH_VERSION_ID       (20200)
 
 //
 // Available setting IDs for the 'setSetting' & 'get_setting' functions:
@@ -165,7 +165,7 @@ namespace soundtouch
 #define SETTING_INITIAL_LATENCY             8
 
 
-class SOUNDTOUCH_API SoundTouch : public FIFOProcessor
+class SoundTouch : public FIFOProcessor
 {
 private:
     /// Rate transposer class instance

@@ -60,24 +60,34 @@
   let bigStringPrefix = bigString.substring(0, 100);
 
   // Generate many copies of two distinctive short strings, "!)(*&" and
-  // "@)(*&".  We'll check that these strings are reported in at least
-  // one of the memory reporters.
+  // "@)(*&". We'll check that these strings are reported in at least one of
+  // the memory reporters. We will create these strings in the tenured heap to
+  // avoid nursery string deduplication.
   let shortStrings = [];
+  let newString = Cu.getJSTestingFunctions().newString;
   for (let i = 0; i < 10000; i++) {
     let str = (Math.random() > 0.5 ? "!" : "@") + ")(*&";
-    shortStrings.push(str);
+    shortStrings.push(newString(str, {tenured: true}));
   }
 
+  // Don't assert when BigInt values are used.
+  let bigIntValue = BigInt("1234567891234567891234") + 12n;
+
   // Strings in the nursery are not reported, so make sure the above test
-  // strings are tenured.
+  // strings are tenured (not all are created tenured).
   Cu.forceGC();
 
   let mySandbox = Cu.Sandbox(document.nodePrincipal,
                     { sandboxName: "this-is-a-sandbox-name" });
 
-  function handleReportNormal(aProcess, aPath, aKind, aUnits, aAmount,
-                              aDescription)
+  function handleReportNormal(aProcess, aPath, aKind, aUnits, aAmount)
   {
+    if (aProcess.startsWith(`Utility `)) {
+      // The Utility process that runs the ORB JavaScript validator starts on first
+      // idle in the parent process. This makes it notoriously hard to know _if_ it
+      // actually has started. So we bail. See Bug 1813985.
+      return;
+    }
     // Record the values of some notable reporters.
     if (aPath === "vsize") {
       vsizeAmounts.push(aAmount);
@@ -120,8 +130,7 @@
     }
   }
 
-  function handleReportAnonymized(aProcess, aPath, aKind, aUnits, aAmount,
-                                  aDescription)
+  function handleReportAnonymized(aProcess, aPath)
   {
     // Path might include an xmlns using http, which is safe to ignore.
     let reducedPath = aPath.replace(XUL_NS, "");
@@ -155,8 +164,6 @@
     "JSMainRuntimeRealmsUser",
     "imagesContentUsedUncompressed",
     "storageSQLite",
-    "lowMemoryEventsVirtual",
-    "lowMemoryEventsCommitSpace",
     "lowMemoryEventsPhysical",
     "ghostWindows",
     "pageFaultsHard",
@@ -226,7 +233,12 @@
 
   function checkSpecialReport(aName, aAmounts, aCanBeUnreasonable)
   {
-    ok(aAmounts.length == 1, aName + " has " + aAmounts.length + " report");
+    let socketProcessRunning = 0;
+    if (SpecialPowers.Services.io.socketProcessLaunched) {
+      socketProcessRunning = 1;
+    }
+    is(aAmounts.length, 1 + socketProcessRunning,
+       aName + " has " + aAmounts.length + " report");
     let n = aAmounts[0];
     if (!aCanBeUnreasonable) {
       checkSizeReasonable(aName, n);
@@ -239,6 +251,7 @@
       // Nb: mgr.heapAllocated will throw NS_ERROR_NOT_AVAILABLE if this is a
       // --disable-jemalloc build.  Allow for skipping this test on that
       // exception, but *only* that exception.
+      // eslint-disable-next-line no-unused-vars
       let dummy = mgr.heapAllocated;
       checkSpecialReport("heap-allocated", heapAllocatedAmounts);
     } catch (ex) {
@@ -319,7 +332,7 @@
       }
     },
     // nsIMemoryReporter
-    collectReports: function(callback, data, anonymize) {
+    collectReports(callback, data) {
       for (let path of Object.keys(this.tests)) {
         try {
           let test = this.tests[path];
@@ -338,7 +351,7 @@
       }
     },
     // nsIHandleReportCallback
-    callback: function(process, path, kind, units, amount, data) {
+    callback(process, path, kind, units, amount) {
       if (path in this.tests) {
         this.seen++;
         let test = this.tests[path];
@@ -351,7 +364,7 @@
     // resets the callback counter.
     // @param expected  Optional.  Expected number of reports the callback
     //                  should have processed.
-    finish: function(expected) {
+    finish(expected) {
       if (expected === undefined) {
         expected = Object.keys(this.tests).length;
       }
@@ -405,7 +418,7 @@
       mgr.registerWeakReporter(reporterAndCallback);
       ok(false, "Shouldn't be allowed to register a JS component (WrappedJS)");
     }
-    catch (ex) {
+    catch (ex) {
       ok(ex.message.includes("NS_ERROR_"),
          "WrappedJS reporter got rejected: " + ex);
     }

@@ -15,19 +15,13 @@
  * the content side, just the overhead of spawning a new content process.
  */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "TalosParentProfiler",
-  "resource://talos-powers/TalosParentProfiler.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  TalosParentProfiler: "resource://talos-powers/TalosParentProfiler.sys.mjs",
+});
 
 const PREALLOCATED_PREF = "dom.ipc.processPrelaunch.enabled";
-const MESSAGES = ["CPStartup:Go", "Content:BrowserChildReady"];
+const MESSAGES = ["CPStartup:Go", "CPStartup:BrowserChildReady"];
+const BROWSER_FLUSH_TOPIC = "sessionstore-browser-shutdown-flush";
 let domainID = 1;
 
 /* global ExtensionAPI */
@@ -41,9 +35,8 @@ this.cpstartup = class extends ExtensionAPI {
     this.framescriptURL = this.extension.baseURI.resolve("/framescript.js");
     Services.mm.loadFrameScript(this.framescriptURL, true);
 
-    this.originalPreallocatedEnabled = Services.prefs.getBoolPref(
-      PREALLOCATED_PREF
-    );
+    this.originalPreallocatedEnabled =
+      Services.prefs.getBoolPref(PREALLOCATED_PREF);
     Services.prefs.setBoolPref(PREALLOCATED_PREF, false);
 
     this.readyCallback = null;
@@ -75,7 +68,7 @@ this.cpstartup = class extends ExtensionAPI {
         break;
       }
 
-      case "Content:BrowserChildReady": {
+      case "CPStartup:BrowserChildReady": {
         // Content has reported that it's ready to process an URL.
         if (!this.readyCallback) {
           throw new Error(
@@ -98,7 +91,9 @@ this.cpstartup = class extends ExtensionAPI {
 
   async openTab(gBrowser, url) {
     // Start the timer and the profiler right before the tab open on the parent side.
-    TalosParentProfiler.resume("tab opening starts");
+    TalosParentProfiler.subtestStart("cpstartup: Begin Tab Open");
+    let startTime = Cu.now();
+
     this.startStamp = Services.telemetry.msSystemNow();
     let newDomainURL = url.replace(
       /http:\/\/127\.0\.0\.1:[0-9]+/,
@@ -107,7 +102,7 @@ this.cpstartup = class extends ExtensionAPI {
     this.tab = gBrowser.selectedTab = gBrowser.addTrustedTab(newDomainURL);
 
     let { tab, delta } = await this.whenTabReady();
-    TalosParentProfiler.pause("tab opening end");
+    TalosParentProfiler.subtestEnd("cpstartup: Tab Open", startTime);
     await this.removeTab(tab);
     return delta;
   }
@@ -120,18 +115,14 @@ this.cpstartup = class extends ExtensionAPI {
 
   removeTab(tab) {
     return new Promise(resolve => {
-      let { messageManager: mm, frameLoader } = tab.linkedBrowser;
-      mm.addMessageListener(
-        "SessionStore:update",
-        function onMessage(msg) {
-          if (msg.targetFrameLoader == frameLoader && msg.data.isFinal) {
-            mm.removeMessageListener("SessionStore:update", onMessage);
-            resolve();
-          }
-        },
-        true
-      );
-
+      let browser = tab.linkedBrowser;
+      let observer = subject => {
+        if (subject === browser) {
+          Services.obs.removeObserver(observer, BROWSER_FLUSH_TOPIC);
+          resolve();
+        }
+      };
+      Services.obs.addObserver(observer, BROWSER_FLUSH_TOPIC);
       tab.ownerGlobal.gBrowser.removeTab(tab);
     });
   }

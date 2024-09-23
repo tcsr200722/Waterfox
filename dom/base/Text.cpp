@@ -8,8 +8,7 @@
 #include "nsTextNode.h"
 #include "mozAutoDocUpdate.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 already_AddRefed<Text> Text::SplitText(uint32_t aOffset, ErrorResult& aRv) {
   nsAutoString cutText;
@@ -53,7 +52,7 @@ already_AddRefed<Text> Text::SplitText(uint32_t aOffset, ErrorResult& aRv) {
   nsCOMPtr<nsINode> parent = GetParentNode();
   if (parent) {
     nsCOMPtr<nsIContent> beforeNode = GetNextSibling();
-    parent->InsertChildBefore(newContent, beforeNode, true);
+    parent->InsertChildBefore(newContent, beforeNode, true, IgnoreErrors());
   }
 
   return newContent.forget();
@@ -80,7 +79,7 @@ static Text* LastLogicallyAdjacentTextNode(Text* aNode) {
   } while (1);  // Must run out of next siblings eventually!
 }
 
-void Text::GetWholeText(nsAString& aWholeText, ErrorResult& aRv) {
+void Text::GetWholeText(nsAString& aWholeText) {
   nsIContent* parent = GetParent();
 
   // Handle parent-less nodes
@@ -155,5 +154,4 @@ bool Text::HasTextForTranslation() {
   return false;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

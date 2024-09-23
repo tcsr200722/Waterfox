@@ -5,7 +5,7 @@ const DEFAULT_PROCESS_COUNT = Services.prefs
   .getDefaultBranch(null)
   .getIntPref("dom.ipc.processCount");
 
-add_task(async function() {
+add_task(async function () {
   // We must temporarily disable `Once` StaticPrefs check for the duration of
   // this test (see bug 1556131). We must do so in a separate operation as
   // pushPrefEnv doesn't set the preferences in the order one could expect.
@@ -84,7 +84,7 @@ add_task(async function testPrefsAreDefault() {
   );
   is(
     contentProcessCount.selectedItem.value,
-    DEFAULT_PROCESS_COUNT,
+    "" + DEFAULT_PROCESS_COUNT,
     "selected item should be the default one"
   );
 
@@ -132,7 +132,7 @@ add_task(async function testPrefsSetByUser() {
   );
   is(
     contentProcessCount.selectedItem.value,
-    kNewCount,
+    "" + kNewCount,
     "selected item should be the set one"
   );
 

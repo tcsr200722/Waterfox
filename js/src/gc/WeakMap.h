@@ -7,14 +7,20 @@
 #ifndef gc_WeakMap_h
 #define gc_WeakMap_h
 
+#include "mozilla/Atomics.h"
 #include "mozilla/LinkedList.h"
 
 #include "gc/Barrier.h"
-#include "gc/DeletePolicy.h"
+#include "gc/Marking.h"
 #include "gc/Tracer.h"
+#include "gc/Zone.h"
 #include "gc/ZoneAllocator.h"
 #include "js/HashTable.h"
 #include "js/HeapAPI.h"
+
+namespace JS {
+class Zone;
+}
 
 namespace js {
 
@@ -77,13 +83,13 @@ bool CheckWeakMapEntryMarking(const WeakMapBase* map, Cell* key, Cell* value);
 //   key marked, then map marked:
 //    - value was marked with map in `markEntries()`
 //   map marked, key already in map, key marked before weak marking mode:
-//    - key added to weakKeys when map marked in `markEntries()`
+//    - key added to gcEphemeronEdges when map marked in `markEntries()`
 //    - value marked during `enterWeakMarkingMode`
 //   map marked, key already in map, key marked after weak marking mode:
-//    - when key is marked, weakKeys[key] triggers marking of value in
+//    - when key is marked, gcEphemeronEdges[key] triggers marking of value in
 //      `markImplicitEdges()`
 //   map marked, key inserted into map, key marked:
-//    - value marked by insert barrier in `barrierForInsert`
+//    - value was live when inserted and must get marked at some point
 //
 
 using WeakMapColors = HashMap<WeakMapBase*, js::gc::CellColor,
@@ -107,9 +113,6 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
   // Unmark all weak maps in a zone.
   static void unmarkZone(JS::Zone* zone);
 
-  // Trace all the weakmaps in a zone.
-  static void traceZone(JS::Zone* zone, JSTracer* tracer);
-
   // Check all weak maps in a zone that have been marked as live in this garbage
   // collection, and mark the values of all entries that have become strong
   // references to them. Return true if we marked any new values, indicating
@@ -118,11 +121,7 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
   static bool markZoneIteratively(JS::Zone* zone, GCMarker* marker);
 
   // Add zone edges for weakmaps with key delegates in a different zone.
-  static MOZ_MUST_USE bool findSweepGroupEdgesForZone(JS::Zone* zone);
-
-  // Sweep the weak maps in a zone, removing dead weak maps and removing
-  // entries of live weak maps whose keys are dead.
-  static void sweepZone(JS::Zone* zone);
+  [[nodiscard]] static bool findSweepGroupEdgesForZone(JS::Zone* zone);
 
   // Sweep the marked weak maps in a zone, updating moved keys.
   static void sweepZoneAfterMinorGC(JS::Zone* zone);
@@ -141,26 +140,34 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
   static bool checkMarkingForZone(JS::Zone* zone);
 #endif
 
+#ifdef JSGC_HASH_TABLE_CHECKS
+  static void checkWeakMapsAfterMovingGC(JS::Zone* zone);
+#endif
+
  protected:
   // Instance member functions called by the above. Instantiations of WeakMap
   // override these with definitions appropriate for their Key and Value types.
   virtual void trace(JSTracer* tracer) = 0;
   virtual bool findSweepGroupEdges() = 0;
-  virtual void sweep() = 0;
+  virtual void traceWeakEdges(JSTracer* trc) = 0;
   virtual void traceMappings(WeakMapTracer* tracer) = 0;
   virtual void clearAndCompact() = 0;
 
-  // Any weakmap key types that want to participate in the non-iterative
-  // ephemeron marking must override this method.
-  virtual void markKey(GCMarker* marker, gc::Cell* markedCell, gc::Cell* l) = 0;
-
-  // An unmarked CCW with a delegate will add a weakKeys entry for the
-  // delegate. If the delegate is removed with NukeCrossCompartmentWrapper,
-  // then the (former) CCW needs to be added to weakKeys instead.
-  virtual void postSeverDelegate(GCMarker* marker, JSObject* key,
-                                 Compartment* comp) = 0;
+  // We have a key that, if it or its delegate is marked, may lead to a WeakMap
+  // value getting marked. Insert the necessary edges into the appropriate
+  // zone's gcEphemeronEdges or gcNurseryEphemeronEdges tables.
+  [[nodiscard]] bool addEphemeronEdgesForEntry(gc::MarkColor mapColor,
+                                               gc::Cell* key,
+                                               gc::Cell* delegate,
+                                               gc::TenuredCell* value);
+  [[nodiscard]] bool addEphemeronEdge(gc::MarkColor color, gc::Cell* src,
+                                      gc::Cell* dst);
 
   virtual bool markEntries(GCMarker* marker) = 0;
+
+  gc::CellColor mapColor() const { return gc::CellColor(uint32_t(mapColor_)); }
+  void setMapColor(gc::CellColor newColor) { mapColor_ = uint32_t(newColor); }
+  bool markMap(gc::MarkColor markColor);
 
 #ifdef JS_GC_ZEAL
   virtual bool checkMarking() const = 0;
@@ -169,37 +176,29 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
                                            gc::Cell*);
 #endif
 
+#ifdef JSGC_HASH_TABLE_CHECKS
+  virtual void checkAfterMovingGC() const = 0;
+#endif
+
   // Object that this weak map is part of, if any.
-  GCPtrObject memberOf;
+  HeapPtr<JSObject*> memberOf;
 
   // Zone containing this weak map.
   JS::Zone* zone_;
 
   // Whether this object has been marked during garbage collection and which
   // color it was marked.
-  gc::CellColor mapColor;
+  mozilla::Atomic<uint32_t, mozilla::Relaxed> mapColor_;
 
   friend class JS::Zone;
 };
 
-namespace detail {
-
-template <typename T>
-struct RemoveBarrier {};
-
-template <typename T>
-struct RemoveBarrier<js::HeapPtr<T>> {
-  using Type = T;
-};
-
-}  // namespace detail
-
 template <class Key, class Value>
 class WeakMap
-    : private HashMap<Key, Value, MovableCellHasher<Key>, ZoneAllocPolicy>,
+    : private HashMap<Key, Value, StableCellHasher<Key>, ZoneAllocPolicy>,
       public WeakMapBase {
  public:
-  using Base = HashMap<Key, Value, MovableCellHasher<Key>, ZoneAllocPolicy>;
+  using Base = HashMap<Key, Value, StableCellHasher<Key>, ZoneAllocPolicy>;
 
   using Lookup = typename Base::Lookup;
   using Entry = typename Base::Entry;
@@ -213,15 +212,18 @@ class WeakMap
 
   using Base::all;
   using Base::clear;
+  using Base::count;
+  using Base::empty;
   using Base::has;
   using Base::shallowSizeOfExcludingThis;
 
   // Resolve ambiguity with LinkedListElement<>::remove.
   using Base::remove;
 
-  using UnbarrieredKey = typename detail::RemoveBarrier<Key>::Type;
+  using UnbarrieredKey = typename RemoveBarrier<Key>::Type;
 
   explicit WeakMap(JSContext* cx, JSObject* memOf = nullptr);
+  explicit WeakMap(JS::Zone* zone, JSObject* memOf = nullptr);
 
   // Add a read barrier to prevent an incorrectly gray value from escaping the
   // weak map. See the UnmarkGrayTracer::onChild comment in gc/Marking.cpp.
@@ -243,65 +245,34 @@ class WeakMap
     return p;
   }
 
-  void remove(Ptr p) {
-    MOZ_ASSERT(p.found());
-    if (mapColor) {
-      forgetKey(p->key());
-    }
-    Base::remove(p);
-  }
-
-  void remove(const Lookup& l) {
-    if (Ptr p = lookup(l)) {
-      remove(p);
-    }
-  }
-
-  void clear();
-
   template <typename KeyInput, typename ValueInput>
-  MOZ_MUST_USE bool add(AddPtr& p, KeyInput&& k, ValueInput&& v) {
-    MOZ_ASSERT(k);
-    if (!Base::add(p, std::forward<KeyInput>(k), std::forward<ValueInput>(v))) {
-      return false;
-    }
-    barrierForInsert(p->key(), p->value());
-    return true;
+  [[nodiscard]] bool add(AddPtr& p, KeyInput&& k, ValueInput&& v) {
+    MOZ_ASSERT(gc::ToMarkable(k));
+    return Base::add(p, std::forward<KeyInput>(k), std::forward<ValueInput>(v));
   }
 
   template <typename KeyInput, typename ValueInput>
-  MOZ_MUST_USE bool relookupOrAdd(AddPtr& p, KeyInput&& k, ValueInput&& v) {
-    MOZ_ASSERT(k);
-    if (!Base::relookupOrAdd(p, std::forward<KeyInput>(k),
-                             std::forward<ValueInput>(v))) {
-      return false;
-    }
-    barrierForInsert(p->key(), p->value());
-    return true;
+  [[nodiscard]] bool relookupOrAdd(AddPtr& p, KeyInput&& k, ValueInput&& v) {
+    MOZ_ASSERT(gc::ToMarkable(k));
+    return Base::relookupOrAdd(p, std::forward<KeyInput>(k),
+                               std::forward<ValueInput>(v));
   }
 
   template <typename KeyInput, typename ValueInput>
-  MOZ_MUST_USE bool put(KeyInput&& k, ValueInput&& v) {
-    MOZ_ASSERT(k);
-    AddPtr p = lookupForAdd(k);
-    if (p) {
-      p->value() = std::forward<ValueInput>(v);
-      return true;
-    }
-    return add(p, std::forward<KeyInput>(k), std::forward<ValueInput>(v));
+  [[nodiscard]] bool put(KeyInput&& k, ValueInput&& v) {
+    MOZ_ASSERT(gc::ToMarkable(k));
+    return Base::put(std::forward<KeyInput>(k), std::forward<ValueInput>(v));
   }
 
   template <typename KeyInput, typename ValueInput>
-  MOZ_MUST_USE bool putNew(KeyInput&& k, ValueInput&& v) {
-    MOZ_ASSERT(k);
-    barrierForInsert(k, v);
+  [[nodiscard]] bool putNew(KeyInput&& k, ValueInput&& v) {
+    MOZ_ASSERT(gc::ToMarkable(k));
     return Base::putNew(std::forward<KeyInput>(k), std::forward<ValueInput>(v));
   }
 
   template <typename KeyInput, typename ValueInput>
   void putNewInfallible(KeyInput&& k, ValueInput&& v) {
-    MOZ_ASSERT(k);
-    barrierForInsert(k, v);
+    MOZ_ASSERT(gc::ToMarkable(k));
     Base::putNewInfallible(std::forward(k), std::forward<KeyInput>(k));
   }
 
@@ -313,42 +284,22 @@ class WeakMap
   }
 #endif
 
-  void markKey(GCMarker* marker, gc::Cell* markedCell,
-               gc::Cell* origKey) override;
-
-  bool markEntry(GCMarker* marker, Key& key, Value& value);
-
-  // 'key' has lost its delegate, update our weak key state.
-  void postSeverDelegate(GCMarker* marker, JSObject* key,
-                         Compartment* comp) override;
+  bool markEntry(GCMarker* marker, gc::CellColor mapColor, Key& key,
+                 Value& value, bool populateWeakKeysTable);
 
   void trace(JSTracer* trc) override;
 
+  size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
+
  protected:
-  inline void forgetKey(UnbarrieredKey key);
-
-  void barrierForInsert(Key k, const Value& v) {
-    if (!mapColor) {
-      return;
-    }
-    auto mapZone = JS::shadow::Zone::from(zone());
-    if (!mapZone->needsIncrementalBarrier()) {
-      return;
-    }
-
-    JSTracer* trc = mapZone->barrierTracer();
-    Value tmp = v;
-    TraceEdge(trc, &tmp, "weakmap inserted value");
-    MOZ_ASSERT(tmp == v);
-  }
-
-  // We have a key that, if it or its delegate is marked, may lead to a WeakMap
-  // value getting marked. Insert it or its delegate (if any) into the
-  // appropriate zone's gcWeakKeys or gcNurseryWeakKeys.
-  static void addWeakEntry(GCMarker* marker, gc::Cell* key,
-                           const gc::WeakMarkable& markable);
+  inline void assertMapIsSameZoneWithValue(const Value& v);
 
   bool markEntries(GCMarker* marker) override;
+
+ protected:
+  // Find sweep group edges for delegates, if the key type has delegates. (If
+  // not, the optimizer should make this a nop.)
+  bool findSweepGroupEdges() override;
 
   /**
    * If a wrapper is used as a key in a weakmap, the garbage collector should
@@ -367,12 +318,7 @@ class WeakMap
     JS::ExposeObjectToActiveJS(obj);
   }
 
-  bool findSweepGroupEdges() override {
-    // This is overridden by ObjectValueWeakMap and DebuggerWeakMap.
-    return true;
-  }
-
-  void sweep() override;
+  void traceWeakEdges(JSTracer* trc) override;
 
   void clearAndCompact() override {
     Base::clear();
@@ -391,16 +337,14 @@ class WeakMap
 #ifdef JS_GC_ZEAL
   bool checkMarking() const override;
 #endif
+
+#ifdef JSGC_HASH_TABLE_CHECKS
+  void checkAfterMovingGC() const override;
+#endif
 };
 
-class ObjectValueWeakMap : public WeakMap<HeapPtr<JSObject*>, HeapPtr<Value>> {
- public:
-  ObjectValueWeakMap(JSContext* cx, JSObject* obj) : WeakMap(cx, obj) {}
-
-  bool findSweepGroupEdges() override;
-
-  size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
-};
+using ObjectValueWeakMap = WeakMap<HeapPtr<JSObject*>, HeapPtr<Value>>;
+using ValueValueWeakMap = WeakMap<HeapPtr<Value>, HeapPtr<Value>>;
 
 // Generic weak map for mapping objects to other objects.
 class ObjectWeakMap {
@@ -423,20 +367,53 @@ class ObjectWeakMap {
   }
 
   ObjectValueWeakMap& valueMap() { return map; }
+};
 
-#ifdef JSGC_HASH_TABLE_CHECKS
-  void checkAfterMovingGC();
-#endif
+// Get the hash from the Symbol.
+[[nodiscard]] HashNumber GetHash(JS::Symbol* sym);
+
+// Return true if the hashes of two Symbols match.
+[[nodiscard]] bool HashMatch(JS::Symbol* key, JS::Symbol* lookup);
+
+// NB: The specialization works based on pointer equality and not on JS Value
+// semantics, and it will assert if the Value's isGCThing() is false.
+//
+// When the JS Value is of type JS::Symbol, we cannot access uniqueIds when it
+// runs on the worker thread, so we get the hashes from the Symbols directly
+// instead.
+template <>
+struct StableCellHasher<HeapPtr<Value>> {
+  using Key = HeapPtr<Value>;
+  using Lookup = Value;
+
+  static bool maybeGetHash(const Lookup& l, HashNumber* hashOut) {
+    if (l.isSymbol()) {
+      *hashOut = GetHash(l.toSymbol());
+      return true;
+    }
+    return StableCellHasher<gc::Cell*>::maybeGetHash(l.toGCThing(), hashOut);
+  }
+  static bool ensureHash(const Lookup& l, HashNumber* hashOut) {
+    if (l.isSymbol()) {
+      *hashOut = GetHash(l.toSymbol());
+      return true;
+    }
+    return StableCellHasher<gc::Cell*>::ensureHash(l.toGCThing(), hashOut);
+  }
+  static HashNumber hash(const Lookup& l) {
+    if (l.isSymbol()) {
+      return GetHash(l.toSymbol());
+    }
+    return StableCellHasher<gc::Cell*>::hash(l.toGCThing());
+  }
+  static bool match(const Key& k, const Lookup& l) {
+    if (l.isSymbol()) {
+      return HashMatch(k.toSymbol(), l.toSymbol());
+    }
+    return StableCellHasher<gc::Cell*>::match(k.toGCThing(), l.toGCThing());
+  }
 };
 
 } /* namespace js */
-
-namespace JS {
-
-template <>
-struct DeletePolicy<js::ObjectValueWeakMap>
-    : public js::GCManagedDeletePolicy<js::ObjectValueWeakMap> {};
-
-} /* namespace JS */
 
 #endif /* gc_WeakMap_h */

@@ -14,11 +14,11 @@ const TEST_DATA = [
   },
   {
     targetClass: "compositor-notall",
-    expectedNumber: 3,
+    expectedNumber: 4,
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept(TEST_DATA.map(t => `.${t.targetClass}`));
   const { animationInspector, panel } = await openAnimationInspector();
@@ -38,18 +38,15 @@ add_task(async function() {
       panel,
       `.${targetClass}`
     );
+
+    await waitUntil(
+      () =>
+        panel.querySelectorAll(".animated-property-item").length ===
+        expectedNumber
+    );
     ok(
-      panel.querySelector(".animated-property-list"),
-      `The animated-property-list should be in the DOM at ${targetClass}`
-    );
-    const itemEls = panel.querySelectorAll(
-      ".animated-property-list .animated-property-item"
-    );
-    is(
-      itemEls.length,
-      expectedNumber,
-      `The number of animated-property-list should be ${expectedNumber} ` +
-        `at ${targetClass}`
+      true,
+      `The number of animated-property-list should be ${expectedNumber} at ${targetClass}`
     );
   }
 });

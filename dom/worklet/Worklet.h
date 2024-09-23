@@ -8,7 +8,6 @@
 #define mozilla_dom_Worklet_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsRefPtrHashtable.h"
 #include "nsWrapperCache.h"
 #include "nsCOMPtr.h"
@@ -17,19 +16,21 @@ class nsPIDOMWindowInner;
 
 namespace mozilla {
 
+class ErrorResult;
 class WorkletImpl;
 
 namespace dom {
 
 class Promise;
 class WorkletFetchHandler;
+class WorkletScriptHandler;
 struct WorkletOptions;
 enum class CallerType : uint32_t;
 
 class Worklet final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Worklet)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Worklet)
 
   // |aOwnedObject| may be provided by the WorkletImpl as a parent thread
   // object to keep alive and traverse for CC as long as the Worklet has
@@ -49,6 +50,10 @@ class Worklet final : public nsISupports, public nsWrapperCache {
 
   WorkletImpl* Impl() const { return mImpl; }
 
+  const nsTArray<nsString>& GetLocalizedStrings() const {
+    return mLocalizedStrings;
+  }
+
  private:
   ~Worklet();
 
@@ -64,7 +69,10 @@ class Worklet final : public nsISupports, public nsWrapperCache {
 
   const RefPtr<WorkletImpl> mImpl;
 
+  nsTArray<nsString> mLocalizedStrings;
+
   friend class WorkletFetchHandler;
+  friend class WorkletScriptHandler;
 };
 
 }  // namespace dom

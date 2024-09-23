@@ -5,8 +5,10 @@
 
 #include "LookupCacheV4.h"
 #include "HashStore.h"
+#include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
 #include "nsCheckSummedOutputStream.h"
+#include "nsUrlClassifierDBService.h"
 #include "crc32c.h"
 #include <string>
 
@@ -17,15 +19,10 @@ extern mozilla::LazyLogModule gUrlClassifierDbServiceLog;
 #define LOG_ENABLED() \
   MOZ_LOG_TEST(gUrlClassifierDbServiceLog, mozilla::LogLevel::Debug)
 
-#define METADATA_SUFFIX NS_LITERAL_CSTRING(".metadata")
+#define METADATA_SUFFIX ".metadata"_ns
 
 namespace mozilla {
 namespace safebrowsing {
-
-const int LookupCacheV4::VER = 4;
-const uint32_t LookupCacheV4::VLPSET_MAGIC = 0x36044a35;
-const uint32_t LookupCacheV4::VLPSET_VERSION = 1;
-const uint32_t LookupCacheV4::MAX_METADATA_VALUE_LENGTH = 256;
 
 ////////////////////////////////////////////////////////////////////////
 
@@ -155,6 +152,13 @@ nsresult LookupCacheV4::GetFixedLengthPrefixes(
   return mVLPrefixSet->GetFixedLengthPrefixes(&aPrefixes, nullptr);
 }
 
+nsresult LookupCacheV4::GetFixedLengthPrefixByIndex(
+    uint32_t aIndex, uint32_t* aOutPrefix) const {
+  NS_ENSURE_ARG_POINTER(aOutPrefix);
+
+  return mVLPrefixSet->GetFixedLengthPrefixByIndex(aIndex, aOutPrefix);
+}
+
 nsresult LookupCacheV4::ClearLegacyFile() {
   nsCOMPtr<nsIFile> file;
   nsresult rv = mStoreDirectory->Clone(getter_AddRefs(file));
@@ -162,7 +166,7 @@ nsresult LookupCacheV4::ClearLegacyFile() {
     return rv;
   }
 
-  rv = file->AppendNative(mTableName + NS_LITERAL_CSTRING(".pset"));
+  rv = file->AppendNative(mTableName + ".pset"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -192,7 +196,7 @@ nsresult LookupCacheV4::LoadLegacyFile() {
     return rv;
   }
 
-  rv = file->AppendNative(mTableName + NS_LITERAL_CSTRING(".pset"));
+  rv = file->AppendNative(mTableName + ".pset"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -264,9 +268,7 @@ nsresult LookupCacheV4::SanityCheck(const Header& aHeader) {
   return NS_OK;
 }
 
-nsCString LookupCacheV4::GetPrefixSetSuffix() const {
-  return NS_LITERAL_CSTRING(".vlpset");
-}
+nsCString LookupCacheV4::GetPrefixSetSuffix() const { return ".vlpset"_ns; }
 
 static nsresult AppendPrefixToMap(PrefixStringMap& prefixes,
                                   const nsACString& prefix) {
@@ -276,7 +278,7 @@ static nsresult AppendPrefixToMap(PrefixStringMap& prefixes,
     return NS_OK;
   }
 
-  nsCString* prefixString = prefixes.LookupOrAdd(len);
+  nsCString* prefixString = prefixes.GetOrInsertNew(len);
   if (!prefixString->Append(prefix, fallible)) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -514,19 +516,19 @@ nsresult LookupCacheV4::LoadMetadata(nsACString& aState, nsACString& aSHA256) {
 }
 
 VLPrefixSet::VLPrefixSet(const PrefixStringMap& aMap) : mCount(0) {
-  for (auto iter = aMap.ConstIter(); !iter.Done(); iter.Next()) {
-    uint32_t size = iter.Key();
-    MOZ_ASSERT(iter.Data()->Length() % size == 0,
+  for (const auto& entry : aMap) {
+    uint32_t size = entry.GetKey();
+    MOZ_ASSERT(entry.GetData()->Length() % size == 0,
                "PrefixString must be a multiple of the prefix size.");
-    mMap.Put(size, new PrefixString(*iter.Data(), size));
-    mCount += iter.Data()->Length() / size;
+    mMap.InsertOrUpdate(size, MakeUnique<PrefixString>(*entry.GetData(), size));
+    mCount += entry.GetData()->Length() / size;
   }
 }
 
 void VLPrefixSet::Merge(PrefixStringMap& aPrefixMap) {
-  for (auto iter = mMap.ConstIter(); !iter.Done(); iter.Next()) {
-    nsCString* prefixString = aPrefixMap.LookupOrAdd(iter.Key());
-    PrefixString* str = iter.UserData();
+  for (const auto& entry : mMap) {
+    nsCString* prefixString = aPrefixMap.GetOrInsertNew(entry.GetKey());
+    PrefixString* str = entry.GetWeak();
 
     nsAutoCString remainingString;
     str->getRemainingString(remainingString);
@@ -539,8 +541,8 @@ void VLPrefixSet::Merge(PrefixStringMap& aPrefixMap) {
 
 bool VLPrefixSet::GetSmallestPrefix(nsACString& aOutString) const {
   PrefixString* pick = nullptr;
-  for (auto iter = mMap.ConstIter(); !iter.Done(); iter.Next()) {
-    PrefixString* str = iter.UserData();
+  for (const auto& entry : mMap) {
+    PrefixString* str = entry.GetWeak();
 
     if (str->remaining() <= 0) {
       continue;
@@ -548,7 +550,7 @@ bool VLPrefixSet::GetSmallestPrefix(nsACString& aOutString) const {
 
     if (aOutString.IsEmpty()) {
       str->getPrefix(aOutString);
-      MOZ_ASSERT(aOutString.Length() == iter.Key());
+      MOZ_ASSERT(aOutString.Length() == entry.GetKey());
       pick = str;
       continue;
     }
@@ -557,7 +559,7 @@ bool VLPrefixSet::GetSmallestPrefix(nsACString& aOutString) const {
     str->getPrefix(cur);
     if (!cur.IsEmpty() && cur < aOutString) {
       aOutString.Assign(cur);
-      MOZ_ASSERT(aOutString.Length() == iter.Key());
+      MOZ_ASSERT(aOutString.Length() == entry.GetKey());
       pick = str;
     }
   }

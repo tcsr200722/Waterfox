@@ -77,9 +77,14 @@ typedef struct dyld_all_image_infos32 {
   uint32_t                      infoArray;  // const struct dyld_image_info*
   uint32_t                      notification;
   bool                          processDetachedFromSharedRegion;
-  uint32_t                      padding[15];
+  // Only in version 2 (Mac OS X 10.6, iPhoneOS 2.0) and later
+  const struct mach_header*     dyldImageLoadAddress;
+  uint32_t                      padding[14];
   // Only in version 12 (Mac OS X 10.7, iOS 4.3) and later
   uint32_t                      sharedCacheSlide;
+  uint32_t                      padding1[6];
+  // Only in version 15 (macOS 10.12, iOS 10.0) and later
+  const char*                   dyldPath;
 } dyld_all_image_infos32;
 
 typedef struct dyld_all_image_infos64 {
@@ -88,9 +93,14 @@ typedef struct dyld_all_image_infos64 {
   uint64_t                      infoArray;  // const struct dyld_image_info*
   uint64_t                      notification;
   bool                          processDetachedFromSharedRegion;
-  uint64_t                      padding[15];
+  // Only in version 2 (Mac OS X 10.6, iPhoneOS 2.0) and later
+  const struct mach_header_64*  dyldImageLoadAddress;
+  uint64_t                      padding[14];
   // Only in version 12 (Mac OS X 10.7, iOS 4.3) and later
   uint64_t                      sharedCacheSlide;
+  uint64_t                      padding1[4];
+  // Only in version 15 (macOS 10.12, iOS 10.0) and later
+  const char*                   dyldPath;
 } dyld_all_image_infos64;
 
 // some typedefs to isolate 64/32 bit differences
@@ -101,6 +111,13 @@ typedef segment_command_64 breakpad_mach_segment_command;
 typedef mach_header breakpad_mach_header;
 typedef segment_command breakpad_mach_segment_command;
 #endif
+
+// Bit in mach_header.flags that indicates whether or not the image is in the
+// dyld shared cache. The dyld shared cache is a single image into which
+// commonly used system dylibs and frameworks are incorporated. dyld maps it
+// into every process at load time. The component images all have the same
+// slide.
+#define MH_SHAREDCACHE 0x80000000
 
 // Helper functions to deal with 32-bit/64-bit Mach-O differences.
 class DynamicImage;
@@ -122,16 +139,19 @@ class DynamicImage {
                mach_port_t task,
                cpu_type_t cpu_type,
                cpu_subtype_t cpu_subtype,
-               ptrdiff_t shared_cache_slide)
+               ptrdiff_t shared_cache_slide,
+               bool is_dyld)
     : header_(header, header + header_size),
       header_size_(header_size),
       load_address_(load_address),
       vmaddr_(0),
       vmsize_(0),
       slide_(0),
+      crash_info_(),
       version_(0),
       file_path_(file_path),
       file_mod_date_(image_mod_date),
+      is_dyld_(is_dyld),
       task_(task),
       cpu_type_(cpu_type),
       cpu_subtype_(cpu_subtype),
@@ -153,11 +173,30 @@ class DynamicImage {
   // Address where the image should be loaded
   mach_vm_address_t GetVMAddr() const {return vmaddr_;}
 
+  bool GetInDyldSharedCache()
+    {return (shared_cache_slide_ && (slide_ == shared_cache_slide_));}
+
+  bool GetIsDyld() {return is_dyld_;}
+
   // Difference between GetLoadAddress() and GetVMAddr()
   ptrdiff_t GetVMAddrSlide() const {return slide_;}
 
   // Size of the image
   mach_vm_size_t GetVMSize() const {return vmsize_;}
+
+  // Returns the address of the locally cached __DATA,__crash_info section.
+  // The vector will be empty if the image doesn't have a __crash_info
+  // section. But even if the vector isn't empty, its contents may be "empty"
+  // of useful data (see definition of crashreporter_annotations_t in
+  // mach_vm_compat.h).
+  mach_vm_address_t GetCrashInfo() const {
+    return reinterpret_cast<mach_vm_address_t>(&crash_info_[0]);
+  }
+
+  // Size of the locally cached __DATA,__crash_info section. This will be zero
+  // if the vector is empty. But even if it's non-zero, the __crash_info
+  // section of which it's a copy may be empty of useful data.
+  size_t GetCrashInfoSize() const {return crash_info_.size();}
 
   // Task owning this loaded image
   mach_port_t GetTask() {return task_;}
@@ -202,9 +241,11 @@ class DynamicImage {
   mach_vm_address_t       vmaddr_;
   mach_vm_size_t          vmsize_;
   ptrdiff_t               slide_;
+  vector<uint8_t>         crash_info_;
   uint32_t                version_;        // Dylib version
   string                  file_path_;     // path dyld used to load the image
   uintptr_t               file_mod_date_;  // time_t of image file
+  bool                    is_dyld_;        // Is image file dyld itself?
 
   mach_port_t             task_;
   cpu_type_t              cpu_type_;        // CPU type of task_ and image
@@ -244,6 +285,10 @@ class DynamicImageRef {
 
 // Helper function to deal with 32-bit/64-bit Mach-O differences.
 class DynamicImages;
+template<typename MachBits>
+void ReadOneImageInfo(DynamicImages& images, uint64_t image_address,
+                      uint64_t file_path_address, uint64_t file_mod_date,
+                      uint64_t shared_cache_slide, bool is_dyld);
 template<typename MachBits>
 void ReadImageInfo(DynamicImages& images, uint64_t image_list_address);
 
@@ -309,6 +354,10 @@ class DynamicImages {
 
  private:
   template<typename MachBits>
+  friend void ReadOneImageInfo(DynamicImages& images, uint64_t image_address,
+                               uint64_t file_path_address, uint64_t file_mod_date,
+                               uint64_t shared_cache_slide, bool is_dyld);
+  template<typename MachBits>
   friend void ReadImageInfo(DynamicImages& images, uint64_t image_list_address);
 
   bool IsOurTask() {return task_ == mach_task_self();}
@@ -328,6 +377,9 @@ kern_return_t ReadTaskMemory(task_port_t target_task,
                              const uint64_t address,
                              size_t length,
                              vector<uint8_t> &bytes);
+
+std::string ReadTaskString(task_port_t target_task,
+                           const uint64_t address);
 
 }   // namespace google_breakpad
 

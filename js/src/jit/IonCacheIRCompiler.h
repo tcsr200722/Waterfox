@@ -7,14 +7,33 @@
 #ifndef jit_IonCacheIRCompiler_h
 #define jit_IonCacheIRCompiler_h
 
+#include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
+
+#include <stdint.h>
+
+#include "jstypes.h"
 
 #include "jit/CacheIR.h"
 #include "jit/CacheIRCompiler.h"
-#include "jit/IonIC.h"
+#include "jit/CacheIROpsGenerated.h"
+#include "jit/CacheIRReader.h"
+#include "jit/Registers.h"
+#include "jit/RegisterSets.h"
+#include "js/Vector.h"
+
+struct JS_PUBLIC_API JSContext;
 
 namespace js {
 namespace jit {
+
+class CacheIRWriter;
+class CodeOffset;
+class IonIC;
+class IonICStub;
+class IonScript;
+class JitCode;
+class MacroAssembler;
 
 // IonCacheIRCompiler compiles CacheIR to IonIC native code.
 class MOZ_RAII IonCacheIRCompiler : public CacheIRCompiler {
@@ -22,61 +41,56 @@ class MOZ_RAII IonCacheIRCompiler : public CacheIRCompiler {
   friend class AutoSaveLiveRegisters;
   friend class AutoCallVM;
 
-  IonCacheIRCompiler(JSContext* cx, const CacheIRWriter& writer, IonIC* ic,
-                     IonScript* ionScript, IonICStub* stub,
-                     const PropertyTypeCheckInfo* typeCheckInfo,
-                     uint32_t stubDataOffset);
+  IonCacheIRCompiler(JSContext* cx, TempAllocator& alloc,
+                     const CacheIRWriter& writer, IonIC* ic,
+                     IonScript* ionScript, uint32_t stubDataOffset);
 
-  MOZ_MUST_USE bool init();
-  JitCode* compile();
+  [[nodiscard]] bool init();
+  JitCode* compile(IonICStub* stub);
 
 #ifdef DEBUG
   void assertFloatRegisterAvailable(FloatRegister reg);
 #endif
+
+  IonICPerfSpewer& perfSpewer() { return perfSpewer_; }
+  uint8_t localTracingSlots() const { return localTracingSlots_; }
 
  private:
   const CacheIRWriter& writer_;
   IonIC* ic_;
   IonScript* ionScript_;
 
-  // The stub we're generating code for.
-  IonICStub* stub_;
-
-  // Information necessary to generate property type checks. Non-null iff
-  // this is a SetProp/SetElem stub.
-  const PropertyTypeCheckInfo* typeCheckInfo_;
-
   Vector<CodeOffset, 4, SystemAllocPolicy> nextCodeOffsets_;
   mozilla::Maybe<LiveRegisterSet> liveRegs_;
   mozilla::Maybe<CodeOffset> stubJitCodeOffset_;
 
   bool savedLiveRegs_;
+  uint8_t localTracingSlots_;
+
+  IonICPerfSpewer perfSpewer_;
 
   template <typename T>
-  T rawWordStubField(uint32_t offset);
+  T rawPointerStubField(uint32_t offset);
 
   template <typename T>
   T rawInt64StubField(uint32_t offset);
 
-  uint64_t* expandoGenerationStubFieldPtr(uint32_t offset);
-
-  void prepareVMCall(MacroAssembler& masm, const AutoSaveLiveRegisters&);
+  void enterStubFrame(MacroAssembler& masm, const AutoSaveLiveRegisters&);
+  void storeTracedValue(MacroAssembler& masm, ValueOperand value);
+  void loadTracedValue(MacroAssembler& masm, uint8_t slotIndex,
+                       ValueOperand value);
 
   template <typename Fn, Fn fn>
   void callVM(MacroAssembler& masm);
 
-  MOZ_MUST_USE bool emitAddAndStoreSlotShared(
+  [[nodiscard]] bool emitAddAndStoreSlotShared(
       CacheOp op, ObjOperandId objId, uint32_t offsetOffset, ValOperandId rhsId,
-      bool changeGroup, uint32_t newGroupOffset, uint32_t newShapeOffset,
-      mozilla::Maybe<uint32_t> numNewSlotsOffset);
-  MOZ_MUST_USE bool emitCallScriptedGetterResultShared(
-      TypedOrValueRegister receiver, uint32_t getterOffset, bool sameRealm,
-      TypedOrValueRegister output);
-  MOZ_MUST_USE bool emitCallNativeGetterResultShared(
-      TypedOrValueRegister receiver, uint32_t getterOffset,
-      const AutoOutputRegister& output, AutoSaveLiveRegisters& save);
+      uint32_t newShapeOffset, mozilla::Maybe<uint32_t> numNewSlotsOffset);
 
-  bool needsPostBarrier() const;
+  template <typename IdType>
+  [[nodiscard]] bool emitCallScriptedProxyGetShared(
+      ValOperandId targetId, ObjOperandId receiverId, ObjOperandId handlerId,
+      ObjOperandId trapId, IdType id, uint32_t nargsAndFlags);
 
   void pushStubCodePointer();
 

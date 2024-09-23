@@ -111,6 +111,9 @@ Time Now();
 // Note the epoch is the unix epoch (ie 00:00:00 UTC, 1 January 1970)
 Time TimeFromEpochInSeconds(uint64_t secondsSinceEpoch);
 
+// Note the epoch is the unix epoch (ie 00:00:00 UTC, 1 January 1970)
+Result SecondsSinceEpochFromTime(Time time, uint64_t* outSeconds);
+
 class Duration final {
  public:
   Duration(Time timeA, Time timeB)
@@ -129,9 +132,11 @@ class Duration final {
   }
 
  private:
+  friend Result SecondsSinceEpochFromTime(Time time, uint64_t* outSeconds);
+
   uint64_t durationInSeconds;
 };
-}
-}  // namespace mozilla::pkix
+}  // namespace pkix
+}  // namespace mozilla
 
 #endif  // mozilla_pkix_Time_h

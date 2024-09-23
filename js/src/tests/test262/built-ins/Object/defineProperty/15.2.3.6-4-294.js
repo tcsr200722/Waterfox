@@ -22,21 +22,19 @@ includes: [propertyHelper.js]
     Object.defineProperty(arguments, "0", {
       writable: true
     });
-    $ERROR("Expected an exception.");
+    throw new Test262Error("Expected an exception.");
   } catch (e) {
-    verifyEqualTo(arguments, "0", 10);
-
-    verifyNotWritable(arguments, "0");
-
-    verifyNotEnumerable(arguments, "0");
-
-    verifyNotConfigurable(arguments, "0");
-
     if (!(e instanceof TypeError)) {
-      $ERROR("Expected TypeError, got " + e);
+      throw new Test262Error("Expected TypeError, got " + e);
     }
-
   }
+
+  verifyProperty(arguments, "0", {
+    value: 10,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
 }(0, 1, 2));
 
 reportCompare(0, 0);

@@ -1,6 +1,8 @@
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+// These are defined in test_tcpsocket_client_and_server_basics.html
+/* global createServer, createSocket, socketCompartmentInstanceOfArrayBuffer */
+
 // Bug 788960 and later bug 1329245 have taught us that attempting to connect to
 // a port that is not listening or is no longer listening fails to consistently
 // result in the error (or any) event we expect on Darwin/OSX/"OS X".
@@ -59,7 +61,7 @@ function listenForEventsOnSocket(socket, socketType) {
   let pendingResolve = null;
   let receivedEvents = [];
   let receivedData = null;
-  let handleGenericEvent = function(event) {
+  let handleGenericEvent = function (event) {
     dump("(" + socketType + " event: " + event.type + ")\n");
     if (pendingResolve && wantDataLength === null) {
       pendingResolve(event);
@@ -72,7 +74,7 @@ function listenForEventsOnSocket(socket, socketType) {
   socket.onopen = handleGenericEvent;
   socket.ondrain = handleGenericEvent;
   socket.onerror = handleGenericEvent;
-  socket.onclose = function(event) {
+  socket.onclose = function (event) {
     if (!wantDataAndClose) {
       handleGenericEvent(event);
     } else if (pendingResolve) {
@@ -82,7 +84,7 @@ function listenForEventsOnSocket(socket, socketType) {
       wantDataAndClose = false;
     }
   };
-  socket.ondata = function(event) {
+  socket.ondata = function (event) {
     dump(
       "(" +
         socketType +
@@ -127,7 +129,7 @@ function listenForEventsOnSocket(socket, socketType) {
       }
 
       dump("(" + socketType + " waiting for event)\n");
-      return new Promise(function(resolve, reject) {
+      return new Promise(function (resolve) {
         pendingResolve = resolve;
       });
     },
@@ -147,7 +149,7 @@ function listenForEventsOnSocket(socket, socketType) {
         return promise;
       }
       dump("(" + socketType + " waiting for " + length + " bytes)\n");
-      return new Promise(function(resolve, reject) {
+      return new Promise(function (resolve) {
         pendingResolve = resolve;
         wantDataLength = length;
       });
@@ -157,7 +159,7 @@ function listenForEventsOnSocket(socket, socketType) {
         throw new Error("only one wait allowed at a time.");
       }
 
-      return new Promise(function(resolve, reject) {
+      return new Promise(function (resolve) {
         pendingResolve = resolve;
         // we may receive no data before getting close, in which case we want to
         // return an empty array
@@ -175,14 +177,14 @@ function listenForEventsOnSocket(socket, socketType) {
  * to add the event listener during the connection.
  */
 function waitForConnection(listeningServer) {
-  return new Promise(function(resolve, reject) {
+  return new Promise(function (resolve) {
     // Because of the event model of sockets, we can't use the
     // listenForEventsOnSocket mechanism; we need to hook up listeners during
     // the connect event.
-    listeningServer.onconnect = function(event) {
+    listeningServer.onconnect = function (event) {
       // Clobber the listener to get upset if it receives any more connections
       // after this.
-      listeningServer.onconnect = function() {
+      listeningServer.onconnect = function () {
         ok(false, "Received a connection when not expecting one.");
       };
       ok(true, "Listening server accepted socket");
@@ -196,7 +198,7 @@ function waitForConnection(listeningServer) {
 
 function defer() {
   var deferred = {};
-  deferred.promise = new Promise(function(resolve, reject) {
+  deferred.promise = new Promise(function (resolve, reject) {
     deferred.resolve = resolve;
     deferred.reject = reject;
   });
@@ -314,12 +316,23 @@ async function test_basics() {
   for (let i = 0; i < bigUint8Array.length; i++) {
     bigUint8Array[i] = i % 256;
   }
+  // This can be anything from 1 to 65536. The idea is spliting and sending
+  // bigUint8Array in two chunks should trigger ondrain the same as sending
+  // bigUint8Array in one chunk.
+  let lengthOfChunk1 = 65536;
+  is(
+    clientSocket.send(bigUint8Array.buffer, 0, lengthOfChunk1),
+    true,
+    "Client sending chunk1 should not result in the buffer being full."
+  );
   // Do this twice so we have confidence that the 'drain' event machinery
-  // doesn't break after the first use.
+  // doesn't break after the first use. The first time we send bigUint8Array in
+  // two chunks, the second time we send bigUint8Array in one chunk.
   for (let iSend = 0; iSend < 2; iSend++) {
     // - Send "big" data from the client to the server
+    let offset = iSend == 0 ? lengthOfChunk1 : 0;
     is(
-      clientSocket.send(bigUint8Array.buffer, 0, bigUint8Array.length),
+      clientSocket.send(bigUint8Array.buffer, offset, bigUint8Array.length),
       false,
       "Client sending more than 64k should result in the buffer being full."
     );
@@ -338,9 +351,16 @@ async function test_basics() {
       "server received/client sent"
     );
 
+    if (iSend == 0) {
+      is(
+        serverSocket.send(bigUint8Array.buffer, 0, lengthOfChunk1),
+        true,
+        "Server sending chunk1 should not result in the buffer being full."
+      );
+    }
     // - Send "big" data from the server to the client
     is(
-      serverSocket.send(bigUint8Array.buffer, 0, bigUint8Array.length),
+      serverSocket.send(bigUint8Array.buffer, offset, bigUint8Array.length),
       false,
       "Server sending more than 64k should result in the buffer being full."
     );
@@ -571,3 +591,27 @@ async function test_basics() {
 }
 
 add_task(test_basics);
+
+/**
+ * Test that TCPSocket works with ipv6 address.
+ */
+add_task(async function test_ipv6() {
+  const { HttpServer } = ChromeUtils.importESModule(
+    "resource://testing-common/httpd.sys.mjs"
+  );
+  let deferred = defer();
+  let httpServer = new HttpServer();
+  httpServer.start_ipv6(-1);
+
+  let clientSocket = new TCPSocket("::1", httpServer.identity.primaryPort);
+  clientSocket.onopen = () => {
+    ok(true, "Connect to ipv6 address succeeded");
+    deferred.resolve();
+  };
+  clientSocket.onerror = () => {
+    ok(false, "Connect to ipv6 address failed");
+    deferred.reject();
+  };
+  await deferred.promise;
+  await httpServer.stop();
+});

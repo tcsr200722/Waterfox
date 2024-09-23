@@ -13,6 +13,7 @@
 
 #include <utility>
 
+#include "mozilla/UniquePtrExtensions.h"
 #include "nsError.h"
 #include "nsGkAtoms.h"
 #include "txExpr.h"
@@ -120,13 +121,11 @@ nsresult txExprParser::createAVT(const nsAString& aAttrValue,
     } else {
       if (!concat) {
         concat = new txCoreFunctionCall(txCoreFunctionCall::CONCAT);
-        rv = concat->addParam(expr.release());
+        concat->addParam(expr.release());
         expr = WrapUnique(concat);
-        NS_ENSURE_SUCCESS(rv, rv);
       }
 
-      rv = concat->addParam(newExpr.release());
-      NS_ENSURE_SUCCESS(rv, rv);
+      concat->addParam(newExpr.release());
     }
   }
 
@@ -136,7 +135,7 @@ nsresult txExprParser::createAVT(const nsAString& aAttrValue,
   }
 
   if (!expr) {
-    expr = MakeUnique<txLiteralExpr>(EmptyString());
+    expr = MakeUnique<txLiteralExpr>(u""_ns);
   }
 
   *aResult = expr.release();
@@ -173,8 +172,7 @@ nsresult txExprParser::createExprInternal(const nsAString& aExpression,
 
   txXPathOptimizer optimizer;
   Expr* newExpr = nullptr;
-  rv = optimizer.optimize(expr.get(), &newExpr);
-  NS_ENSURE_SUCCESS(rv, rv);
+  optimizer.optimize(expr.get(), &newExpr);
 
   *aExpr = newExpr ? newExpr : expr.release();
 
@@ -252,7 +250,6 @@ nsresult txExprParser::createBinaryExpr(UniquePtr<Expr>& left,
       MOZ_ASSERT_UNREACHABLE("operator tokens should be already checked");
       return NS_ERROR_UNEXPECTED;
   }
-  NS_ENSURE_TRUE(expr, NS_ERROR_OUT_OF_MEMORY);
 
   Unused << left.release();
   Unused << right.release();
@@ -287,13 +284,11 @@ nsresult txExprParser::createExpr(txExprLexer& lexer, txIParseContext* aContext,
 
     if (negations > 0) {
       if (negations % 2 == 0) {
-        FunctionCall* fcExpr =
-            new txCoreFunctionCall(txCoreFunctionCall::NUMBER);
+        auto fcExpr =
+            MakeUnique<txCoreFunctionCall>(txCoreFunctionCall::NUMBER);
 
-        rv = fcExpr->addParam(expr.get());
-        if (NS_FAILED(rv)) return rv;
-        Unused << expr.release();
-        expr = WrapUnique(fcExpr);
+        fcExpr->addParam(expr.release());
+        expr = std::move(fcExpr);
       } else {
         expr = MakeUnique<UnaryExpr>(expr.release());
       }
@@ -436,8 +431,7 @@ nsresult txExprParser::createFunctionCall(txExprLexer& lexer,
       rv = parseParameters(0, lexer, aContext);
       NS_ENSURE_SUCCESS(rv, rv);
 
-      *aResult = new txLiteralExpr(tok->Value() +
-                                   NS_LITERAL_STRING(" not implemented."));
+      *aResult = new txLiteralExpr(tok->Value() + u" not implemented."_ns);
 
       return NS_OK;
     }
@@ -591,8 +585,6 @@ nsresult txExprParser::createNodeTypeTest(txExprLexer& lexer,
       return NS_ERROR_XPATH_NO_NODE_TYPE_TEST;
   }
 
-  NS_ENSURE_TRUE(nodeTest, NS_ERROR_OUT_OF_MEMORY);
-
   if (nodeTok->mType == Token::PROC_INST_AND_PAREN &&
       lexer.peek()->mType == Token::LITERAL) {
     Token* tok = lexer.nextToken();
@@ -651,11 +643,7 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
 
   // We have a PathExpr containing several steps
   UniquePtr<PathExpr> pathExpr(new PathExpr());
-
-  rv = pathExpr->addExpr(expr.get(), PathExpr::RELATIVE_OP);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  Unused << expr.release();
+  pathExpr->addExpr(expr.release(), PathExpr::RELATIVE_OP);
 
   // this is ugly
   while (1) {
@@ -676,10 +664,7 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
     rv = createLocationStep(lexer, aContext, getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = pathExpr->addExpr(expr.get(), pathOp);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    Unused << expr.release();
+    pathExpr->addExpr(expr.release(), pathOp);
   }
   MOZ_ASSERT_UNREACHABLE("internal xpath parser error");
   return NS_ERROR_UNEXPECTED;
@@ -704,11 +689,7 @@ nsresult txExprParser::createUnionExpr(txExprLexer& lexer,
   }
 
   UniquePtr<UnionExpr> unionExpr(new UnionExpr());
-
-  rv = unionExpr->addExpr(expr.get());
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  Unused << expr.release();
+  unionExpr->addExpr(expr.release());
 
   while (lexer.peek()->mType == Token::UNION_OP) {
     lexer.nextToken();  //-- eat token
@@ -716,8 +697,7 @@ nsresult txExprParser::createUnionExpr(txExprLexer& lexer,
     rv = createPathExpr(lexer, aContext, getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = unionExpr->addExpr(expr.release());
-    NS_ENSURE_SUCCESS(rv, rv);
+    unionExpr->addExpr(expr.release());
   }
 
   *aResult = unionExpr.release();
@@ -756,10 +736,7 @@ nsresult txExprParser::parsePredicates(PredicateList* aPredicateList,
     rv = createExpr(lexer, aContext, getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = aPredicateList->add(expr.get());
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    Unused << expr.release();
+    aPredicateList->add(expr.release());
 
     if (lexer.peek()->mType != Token::R_BRACKET) {
       return NS_ERROR_XPATH_BRACKET_EXPECTED;
@@ -792,8 +769,7 @@ nsresult txExprParser::parseParameters(FunctionCall* aFnCall,
     NS_ENSURE_SUCCESS(rv, rv);
 
     if (aFnCall) {
-      rv = aFnCall->addParam(expr.release());
-      NS_ENSURE_SUCCESS(rv, rv);
+      aFnCall->addParam(expr.release());
     }
 
     switch (lexer.peek()->mType) {
@@ -847,33 +823,25 @@ nsresult txExprParser::resolveQName(const nsAString& aQName, nsAtom** aPrefix,
                                     txIParseContext* aContext,
                                     nsAtom** aLocalName, int32_t& aNamespace,
                                     bool aIsNameTest) {
-  aNamespace = kNameSpaceID_None;
   int32_t idx = aQName.FindChar(':');
   if (idx > 0) {
-    *aPrefix = NS_Atomize(StringHead(aQName, (uint32_t)idx)).take();
-    if (!*aPrefix) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
-    *aLocalName = NS_Atomize(Substring(aQName, (uint32_t)idx + 1,
-                                       aQName.Length() - (idx + 1)))
+    *aPrefix = NS_AtomizeMainThread(StringHead(aQName, (uint32_t)idx)).take();
+    *aLocalName = NS_AtomizeMainThread(Substring(aQName, (uint32_t)idx + 1,
+                                                 aQName.Length() - (idx + 1)))
                       .take();
-    if (!*aLocalName) {
-      NS_RELEASE(*aPrefix);
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
-    return aContext->resolveNamespacePrefix(*aPrefix, aNamespace);
+    aNamespace = aContext->resolveNamespacePrefix(*aPrefix);
+    return aNamespace != kNameSpaceID_Unknown ? NS_OK
+                                              : NS_ERROR_DOM_NAMESPACE_ERR;
   }
+  aNamespace = kNameSpaceID_None;
   // the lexer dealt with idx == 0
   *aPrefix = 0;
   if (aIsNameTest && aContext->caseInsensitiveNameTests()) {
     nsAutoString lcname;
     nsContentUtils::ASCIIToLower(aQName, lcname);
-    *aLocalName = NS_Atomize(lcname).take();
+    *aLocalName = NS_AtomizeMainThread(lcname).take();
   } else {
-    *aLocalName = NS_Atomize(aQName).take();
-  }
-  if (!*aLocalName) {
-    return NS_ERROR_OUT_OF_MEMORY;
+    *aLocalName = NS_AtomizeMainThread(aQName).take();
   }
   return NS_OK;
 }

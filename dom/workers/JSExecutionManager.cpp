@@ -4,17 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "JSExecutionManager.h"
+#include "mozilla/dom/JSExecutionManager.h"
+
+#include "WorkerCommon.h"
 #include "WorkerPrivate.h"
 
 #include "mozilla/dom/DocGroup.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSExecutionManager* JSExecutionManager::mCurrentMTManager;
 
@@ -190,7 +189,7 @@ AutoRequestJSThreadExecution::AutoRequestJSThreadExecution(
 
     nsPIDOMWindowInner* innerWindow = nullptr;
     if (aGlobalObject) {
-      innerWindow = aGlobalObject->AsInnerWindow();
+      innerWindow = aGlobalObject->GetAsInnerWindow();
     }
 
     DocGroup* docGroup = nullptr;
@@ -249,5 +248,4 @@ AutoYieldJSThreadExecution::AutoYieldJSThreadExecution() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

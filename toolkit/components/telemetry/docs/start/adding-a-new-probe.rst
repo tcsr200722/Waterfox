@@ -74,8 +74,6 @@ Most of our data collection happens through :doc:`scalars <../collection/scalars
 
 Both scalars & histograms allow recording by keys. This allows for more flexible, two-level data collection.
 
-Other collections can build on top of scalars & histograms. An example is :doc:`use counters <../collection/use-counters>`, which submit web feature usage through histograms.
-
 We also collect :doc:`environment data <../data/environment>`. This consists of mostly scalar values that capture the “working environment” a Firefox session lives in, and includes e.g. data on hardware, OS, add-ons and some settings. Any data that is part of the "working environment", or needs to split :doc:`subsessions <../concepts/sessions>`, should go into it.
 
 Rich data
@@ -129,7 +127,7 @@ Any data collection that you need to base decisions on needs to have test covera
 
 - for events, `snapshotEvents() <https://searchfox.org/mozilla-central/rev/f997bd6bbfc4773e774fdb6cd010142370d186f9/toolkit/components/telemetry/core/nsITelemetry.idl#542-558>`_
 
-If you need to test that pings were correctly passed to Telemetry, you can use `TelemetryArchiveTesting <https://dxr.mozilla.org/mozilla-central/search?q=TelemetryArchiveTesting&redirect=false>`_.
+If you need to test that pings were correctly passed to Telemetry, you can use `TelemetryArchiveTesting <https://searchfox.org/mozilla-central/search?q=TelemetryArchiveTesting&redirect=false>`_.
 
 Validation
 ----------
@@ -147,7 +145,7 @@ You can find all important Telemetry resources listed on `telemetry.mozilla.org 
 
 The Telemetry team is there to help with any problems. You can reach us via:
 
-- IRC in `#telemetry <https://chat.mibbit.com/?server=irc.mozilla.org&channel=%23telemetry>`_
-- Slack in `#fx-metrics <https://mozilla.slack.com/messages/fx-metrics/>`_
+- Matrix in `#telemetry:mozilla.org <https://chat.mozilla.org/#/room/#telemetry:mozilla.org>`_
+- Slack in `#data-help <https://mozilla.slack.com/messages/data-help/>`_
 - the `fx-data-dev mailing list <https://mail.mozilla.org/listinfo/fx-data-dev>`_
 - flags for `one of the peers <https://wiki.mozilla.org/Modules/Toolkit#Telemetry>`_ on Bugzilla or send us an e-mail

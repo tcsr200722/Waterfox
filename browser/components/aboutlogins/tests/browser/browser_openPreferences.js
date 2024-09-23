@@ -1,7 +1,20 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function setup() {
+let { TelemetryTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TelemetryTestUtils.sys.mjs"
+);
+
+add_setup(async function () {
+  await TestUtils.waitForCondition(() => {
+    Services.telemetry.clearEvents();
+    let events = Services.telemetry.snapshotEvents(
+      Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
+      true
+    ).content;
+    return !events || !events.length;
+  }, "Waiting for content telemetry events to get cleared");
+
   await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
     url: "about:logins",
@@ -25,7 +38,7 @@ add_task(async function test_open_preferences() {
         seenFirstURL = true;
         return true;
       } else if (url == "about:preferences#privacy") {
-        ok(
+        Assert.ok(
           seenFirstURL,
           "Must have seen an onLocationChange notification for the privacy-logins hash"
         );
@@ -47,25 +60,23 @@ add_task(async function test_open_preferences() {
     }, "waiting for menu to open");
   });
 
-  // Not using synthesizeMouseAtCenter here because the element we want clicked on
-  // is in the shadow DOM. BrowserTestUtils.synthesizeMouseAtCenter/AsyncUtilsContent
-  // thinks that the shadow DOM element is in another document and throws an exception
-  // when trying to call element.ownerGlobal on the targeted shadow DOM node. This is
-  // on file as bug 1557489. As a workaround, this manually calculates the position to click.
-  let { x, y } = await SpecialPowers.spawn(browser, [], async () => {
-    let menuButton = Cu.waiveXrays(
-      content.document.querySelector("menu-button")
-    );
-    let prefsItem = menuButton.shadowRoot.querySelector(
-      ".menuitem-preferences"
-    );
-    return prefsItem.getBoundingClientRect();
-  });
-  await BrowserTestUtils.synthesizeMouseAtPoint(x + 5, y + 5, {}, browser);
+  function getPrefsItem() {
+    let menuButton = window.document.querySelector("menu-button");
+    return menuButton.shadowRoot.querySelector(".menuitem-preferences");
+  }
+  await BrowserTestUtils.synthesizeMouseAtCenter(getPrefsItem, {}, browser);
 
   info("waiting for new tab to get opened");
   let newTab = await promiseNewTab;
-  ok(true, "New tab opened to about:preferences");
+  Assert.ok(true, "New tab opened to about:preferences");
 
   BrowserTestUtils.removeTab(newTab);
+
+  // First event is for opening about:logins
+  await LoginTestUtils.telemetry.waitForEventCount(2);
+  TelemetryTestUtils.assertEvents(
+    [["pwmgr", "mgmt_menu_item_used", "preferences"]],
+    { category: "pwmgr", method: "mgmt_menu_item_used" },
+    { process: "content" }
+  );
 });

@@ -12,7 +12,6 @@ namespace mozilla {
 template <typename T>
 class StaticRefPtr;
 }
-class nsIPersistentProperties;
 
 /**
  * Used for everything about events.
@@ -31,15 +30,16 @@ class nsEventShell {
    * @param  aAccessible  [in] the event target
    */
   static void FireEvent(uint32_t aEventType,
-                        mozilla::a11y::Accessible* aAccessible,
+                        mozilla::a11y::LocalAccessible* aAccessible,
                         mozilla::a11y::EIsFromUserInput aIsFromUserInput =
                             mozilla::a11y::eAutoDetect);
 
   /**
    * Fire state change event.
    */
-  static void FireEvent(mozilla::a11y::Accessible* aTarget, uint64_t aState,
-                        bool aIsEnabled, bool aIsFromUserInput) {
+  static void FireEvent(mozilla::a11y::LocalAccessible* aTarget,
+                        uint64_t aState, bool aIsEnabled,
+                        bool aIsFromUserInput) {
     RefPtr<mozilla::a11y::AccStateChangeEvent> stateChangeEvent =
         new mozilla::a11y::AccStateChangeEvent(
             aTarget, aState, aIsEnabled,
@@ -47,20 +47,6 @@ class nsEventShell {
                               : mozilla::a11y::eNoUserInput));
     FireEvent(stateChangeEvent);
   }
-
-  /**
-   * Append 'event-from-input' object attribute if the accessible event has
-   * been fired just now for the given node.
-   *
-   * @param  aNode        [in] the DOM node
-   * @param  aAttributes  [in, out] the attributes
-   */
-  static void GetEventAttributes(nsINode* aNode,
-                                 nsIPersistentProperties* aAttributes);
-
- private:
-  static mozilla::StaticRefPtr<nsINode> sEventTargetNode;
-  static bool sEventFromUserInput;
 };
 
 #endif

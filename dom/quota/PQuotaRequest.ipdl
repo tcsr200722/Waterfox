@@ -4,6 +4,11 @@
 
 include protocol PQuota;
 
+include "mozilla/dom/quota/SerializationHelpers.h";
+
+using mozilla::dom::quota::FullOriginMetadata
+  from "mozilla/dom/quota/CommonMetadata.h";
+
 namespace mozilla {
 namespace dom {
 namespace quota {
@@ -13,46 +18,22 @@ struct StorageNameResponse
   nsString name;
 };
 
-struct StorageInitializedResponse
-{
-  bool initialized;
-};
-
-struct TemporaryStorageInitializedResponse
-{
-  bool initialized;
-};
-
-struct InitResponse
-{
-};
-
-struct InitTemporaryStorageResponse
-{
-};
-
-struct InitStorageAndOriginResponse
+struct InitializePersistentOriginResponse
 {
   bool created;
 };
 
-struct ClearOriginResponse
+struct InitializeTemporaryOriginResponse
 {
+  bool created;
+};
+
+struct GetFullOriginMetadataResponse
+{
+  FullOriginMetadata? maybeFullOriginMetadata;
 };
 
 struct ResetOriginResponse
-{
-};
-
-struct ClearDataResponse
-{
-};
-
-struct ClearAllResponse
-{
-};
-
-struct ResetAllResponse
 {
 };
 
@@ -80,22 +61,17 @@ union RequestResponse
 {
   nsresult;
   StorageNameResponse;
-  StorageInitializedResponse;
-  TemporaryStorageInitializedResponse;
-  InitResponse;
-  InitTemporaryStorageResponse;
-  InitStorageAndOriginResponse;
-  ClearOriginResponse;
+  InitializePersistentOriginResponse;
+  InitializeTemporaryOriginResponse;
+  GetFullOriginMetadataResponse;
   ResetOriginResponse;
-  ClearDataResponse;
-  ClearAllResponse;
-  ResetAllResponse;
   PersistedResponse;
   PersistResponse;
   EstimateResponse;
   ListOriginsResponse;
 };
 
+[ManualDealloc, ChildImpl=virtual, ParentImpl=virtual]
 protocol PQuotaRequest
 {
   manager PQuota;

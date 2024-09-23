@@ -13,9 +13,12 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/ChromeUtilsBinding.h"
 #include "nsContentUtils.h"
 #include "nsJSPrincipals.h"
 #include "nsIScriptError.h"
+#include "js/PropertyAndElement.h"  // JS_DefineProperty
 #include "js/Wrapper.h"
 #include "mozilla/Utf8.h"
 
@@ -29,7 +32,7 @@ using mozilla::dom::AutoJSAPI;
 
 static JS::PersistentRooted<JSObject*> autoconfigSystemSb;
 static JS::PersistentRooted<JSObject*> autoconfigSb;
-static bool sandboxEnabled;
+bool sandboxEnabled;
 
 nsresult CentralizedAdminPrefManagerInit(bool aSandboxEnabled) {
   // If the sandbox is already created, no need to create it again.
@@ -73,6 +76,11 @@ nsresult CentralizedAdminPrefManagerInit(bool aSandboxEnabled) {
     return NS_ERROR_FAILURE;
   }
 
+  // Define ChromeUtils for ChromeUtils.import.
+  if (!mozilla::dom::ChromeUtils_Binding::CreateAndDefineOnGlobal(cx)) {
+    return NS_ERROR_FAILURE;
+  }
+
   return NS_OK;
 }
 
@@ -98,7 +106,7 @@ nsresult EvaluateAdminConfigScript(const char* js_buffer, size_t length,
       filename, globalContext, callbacks, skipFirstLine);
 }
 
-nsresult EvaluateAdminConfigScript(JS::HandleObject sandbox,
+nsresult EvaluateAdminConfigScript(JS::Handle<JSObject*> sandbox,
                                    const char* js_buffer, size_t length,
                                    const char* filename, bool globalContext,
                                    bool callbacks, bool skipFirstLine) {
@@ -132,17 +140,17 @@ nsresult EvaluateAdminConfigScript(JS::HandleObject sandbox,
   JSContext* cx = jsapi.cx();
 
   nsAutoCString script(js_buffer, length);
-  JS::RootedValue v(cx);
+  JS::Rooted<JS::Value> v(cx);
 
   nsString convertedScript;
   bool isUTF8 = IsUtf8(script);
   if (isUTF8) {
-    convertedScript = NS_ConvertUTF8toUTF16(script);
+    CopyUTF8toUTF16(script, convertedScript);
   } else {
     nsContentUtils::ReportToConsoleNonLocalized(
-        NS_LITERAL_STRING(
-            "Your AutoConfig file is ASCII. Please convert it to UTF-8."),
-        nsIScriptError::warningFlag, NS_LITERAL_CSTRING("autoconfig"), nullptr);
+        nsLiteralString(
+            u"Your AutoConfig file is ASCII. Please convert it to UTF-8."),
+        nsIScriptError::warningFlag, "autoconfig"_ns, nullptr);
     /* If the length is 0, the conversion failed. Fallback to ASCII */
     convertedScript = NS_ConvertASCIItoUTF16(script);
   }

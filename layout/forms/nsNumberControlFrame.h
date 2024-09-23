@@ -49,29 +49,18 @@ class nsNumberControlFrame final : public nsTextControlFrame {
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS(nsNumberControlFrame)
 
-  void DestroyFrom(nsIFrame* aDestructRoot, PostDestroyData&) override;
-
 #ifdef ACCESSIBILITY
   mozilla::a11y::AccType AccessibleType() override;
 #endif
 
   // nsIAnonymousContentCreator
   nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) override;
-  void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
-                                uint32_t aFilter) override;
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("NumberControl"), aResult);
+    return MakeFrameName(u"NumberControl"_ns, aResult);
   }
 #endif
-
-  /**
-   * If the frame is the frame for an nsNumberControlFrame's anonymous text
-   * field, returns the nsNumberControlFrame. Else returns nullptr.
-   */
-  static nsNumberControlFrame* GetNumberControlFrameForTextField(
-      nsIFrame* aFrame);
 
   /**
    * If the frame is the frame for an nsNumberControlFrame's up or down spin
@@ -102,14 +91,8 @@ class nsNumberControlFrame final : public nsTextControlFrame {
   bool ShouldUseNativeStyleForSpinner() const;
 
  private:
-  already_AddRefed<Element> MakeAnonymousElement(Element* aParent,
-                                                 nsAtom* aTagName,
-                                                 PseudoStyleType aPseudoType);
-
   // See nsNumberControlFrame::CreateAnonymousContent for a description of
   // these.
-  nsCOMPtr<Element> mOuterWrapper;
-  nsCOMPtr<Element> mSpinBox;
   nsCOMPtr<Element> mSpinUp;
   nsCOMPtr<Element> mSpinDown;
 };

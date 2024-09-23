@@ -6,96 +6,285 @@
 // that aren't initialized outside of a XUL app environment like AddonManager
 // and the "@mozilla.org/xre/app-info;1" component.
 
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+const { Troubleshoot } = ChromeUtils.importESModule(
+  "resource://gre/modules/Troubleshoot.sys.mjs"
 );
-const { Troubleshoot } = ChromeUtils.import(
-  "resource://gre/modules/Troubleshoot.jsm"
+const { sinon } = ChromeUtils.importESModule(
+  "resource://testing-common/Sinon.sys.mjs"
 );
 
-function test() {
-  waitForExplicitFinish();
-  function doNextTest() {
-    if (!tests.length) {
-      finish();
-      return;
-    }
-    tests.shift()(doNextTest);
+const { FeatureGate } = ChromeUtils.importESModule(
+  "resource://featuregates/FeatureGate.sys.mjs"
+);
+const { PreferenceExperiments } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceExperiments.sys.mjs"
+);
+const { PreferenceRollouts } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceRollouts.sys.mjs"
+);
+const { AddonStudies } = ChromeUtils.importESModule(
+  "resource://normandy/lib/AddonStudies.sys.mjs"
+);
+const { NormandyTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NormandyTestUtils.sys.mjs"
+);
+
+NormandyTestUtils.init({ Assert });
+
+add_task(async function snapshotSchema() {
+  let snapshot = await Troubleshoot.snapshot();
+  try {
+    validateObject(snapshot, SNAPSHOT_SCHEMA);
+    ok(true, "The snapshot should conform to the schema.");
+  } catch (err) {
+    ok(false, "Schema mismatch, " + err);
   }
-  doNextTest();
-}
-
-registerCleanupFunction(function() {
-  // Troubleshoot.jsm is imported into the global scope -- the window -- above.
-  // If it's not deleted, it outlives the test and is reported as a leak.
-  delete window.Troubleshoot;
 });
 
-var tests = [
-  function snapshotSchema(done) {
-    Troubleshoot.snapshot(function(snapshot) {
-      try {
-        validateObject(snapshot, SNAPSHOT_SCHEMA);
-        ok(true, "The snapshot should conform to the schema.");
-      } catch (err) {
-        ok(false, "Schema mismatch, " + err);
+add_task(async function experimentalFeatures() {
+  let featureGates = await FeatureGate.all();
+  ok(featureGates.length, "Should be at least one FeatureGate");
+
+  let snapshot = await Troubleshoot.snapshot();
+  for (let i = 0; i < snapshot.experimentalFeatures.length; i++) {
+    let experimentalFeature = snapshot.experimentalFeatures[i];
+    is(
+      experimentalFeature[0],
+      featureGates[i].title,
+      "The first item in the array should be the title's l10n-id of the FeatureGate"
+    );
+    is(
+      experimentalFeature[1],
+      featureGates[i].preference,
+      "The second item in the array should be the preference name for the FeatureGate"
+    );
+    is(
+      experimentalFeature[2],
+      Services.prefs.getBoolPref(featureGates[i].preference),
+      "The third item in the array should be the preference value of the FeatureGate"
+    );
+  }
+});
+
+add_task(async function modifiedPreferences() {
+  let prefs = [
+    "javascript.troubleshoot",
+    "troubleshoot.foo",
+    "network.proxy.troubleshoot",
+    "print.print_to_filename",
+  ];
+  prefs.forEach(function (p) {
+    Services.prefs.setBoolPref(p, true);
+    is(Services.prefs.getBoolPref(p), true, "The pref should be set: " + p);
+  });
+  Services.prefs.setCharPref("dom.push.userAgentID", "testvalue");
+  let snapshot = await Troubleshoot.snapshot();
+  let p = snapshot.modifiedPreferences;
+  is(
+    p["javascript.troubleshoot"],
+    true,
+    "The pref should be present because it's in the allowed prefs " +
+      "and not in the pref regexes that are disallowed."
+  );
+  ok(
+    !("troubleshoot.foo" in p),
+    "The pref should be absent because it's not in the allowed prefs."
+  );
+  ok(
+    !("network.proxy.troubleshoot" in p),
+    "The pref should be absent because it's in the pref regexes " +
+      "that are disallowed."
+  );
+  ok(
+    !("dom.push.userAgentID" in p),
+    "The pref should be absent because it's in the pref regexes " +
+      "that are disallowed."
+  );
+  ok(
+    !("print.print_to_filename" in p),
+    "The pref should be absent because it's not in the allowed prefs."
+  );
+  prefs.forEach(p => Services.prefs.deleteBranch(p));
+  Services.prefs.clearUserPref("dom.push.userAgentID");
+});
+
+add_task(async function unicodePreferences() {
+  let name = "font.name.sans-serif.x-western";
+  let utf8Value = "\xc4\x8capk\xc5\xafv Krasopis";
+  let unicodeValue = "\u010Capk\u016Fv Krasopis";
+
+  // set/getCharPref work with 8bit strings (utf8)
+  Services.prefs.setCharPref(name, utf8Value);
+
+  let snapshot = await Troubleshoot.snapshot();
+  let p = snapshot.modifiedPreferences;
+  is(p[name], unicodeValue, "The pref should have correct Unicode value.");
+  Services.prefs.deleteBranch(name);
+});
+
+add_task(async function printingPreferences() {
+  let prefs = [
+    "javascript.print_to_filename",
+    "print.print_bgimages",
+    "print.print_to_filename",
+  ];
+  prefs.forEach(function (p) {
+    Services.prefs.setBoolPref(p, true);
+    is(Services.prefs.getBoolPref(p), true, "The pref should be set: " + p);
+  });
+  let snapshot = await Troubleshoot.snapshot();
+  let p = snapshot.printingPreferences;
+  is(p["print.print_bgimages"], true, "The pref should be present");
+  ok(
+    !("print.print_to_filename" in p),
+    "The pref should not be present (sensitive)"
+  );
+  ok(
+    !("javascript.print_to_filename" in p),
+    "The pref should be absent because it's not a print pref."
+  );
+  prefs.forEach(p => Services.prefs.deleteBranch(p));
+});
+
+add_task(function normandy() {
+  const {
+    preferenceStudyFactory,
+    branchedAddonStudyFactory,
+    preferenceRolloutFactory,
+  } = NormandyTestUtils.factories;
+
+  return NormandyTestUtils.decorate(
+    PreferenceExperiments.withMockExperiments([
+      preferenceStudyFactory({
+        userFacingName: "Test Pref Study B",
+        branch: "test-branch-pref",
+      }),
+      preferenceStudyFactory({
+        userFacingName: "Test Pref Study A",
+        branch: "test-branch-pref",
+      }),
+    ]),
+    AddonStudies.withStudies([
+      branchedAddonStudyFactory({
+        userFacingName: "Test Addon Study B",
+        branch: "test-branch-addon",
+      }),
+      branchedAddonStudyFactory({
+        userFacingName: "Test Addon Study A",
+        branch: "test-branch-addon",
+      }),
+    ]),
+    PreferenceRollouts.withTestMock({
+      rollouts: [
+        preferenceRolloutFactory({
+          statue: "ACTIVE",
+          slug: "test-pref-rollout-b",
+        }),
+        preferenceRolloutFactory({
+          statue: "ACTIVE",
+          slug: "test-pref-rollout-a",
+        }),
+      ],
+    }),
+    async function testNormandyInfoInTroubleshooting({
+      prefExperiments,
+      addonStudies,
+      prefRollouts,
+    }) {
+      let snapshot = await Troubleshoot.snapshot();
+      let info = snapshot.normandy;
+      // The order should be flipped, since each category is sorted by slug.
+      Assert.deepEqual(
+        info.prefStudies,
+        [prefExperiments[1], prefExperiments[0]],
+        "prefs studies should exist in the right order"
+      );
+      Assert.deepEqual(
+        info.addonStudies,
+        [addonStudies[1], addonStudies[0]],
+        "addon studies should exist in the right order"
+      );
+      Assert.deepEqual(
+        info.prefRollouts,
+        [prefRollouts[1], prefRollouts[0]],
+        "pref rollouts should exist in the right order"
+      );
+    }
+  )();
+});
+
+add_task(function normandyErrorHandling() {
+  return NormandyTestUtils.decorate(
+    NormandyTestUtils.withStub(PreferenceExperiments, "getAllActive", {
+      returnValue: Promise.reject("Expected error - PreferenceExperiments"),
+    }),
+    NormandyTestUtils.withStub(AddonStudies, "getAllActive", {
+      returnValue: Promise.reject("Expected error - AddonStudies"),
+    }),
+    NormandyTestUtils.withStub(PreferenceRollouts, "getAllActive", {
+      returnValue: Promise.reject("Expected error - PreferenceRollouts"),
+    }),
+    async function testNormandyErrorHandling() {
+      let consoleEndFn = TestUtils.listenForConsoleMessages();
+      let snapshot = await Troubleshoot.snapshot();
+      let info = snapshot.normandy;
+      Assert.deepEqual(
+        info.prefStudies,
+        [],
+        "prefs studies should be an empty list if there is an error"
+      );
+      Assert.deepEqual(
+        info.addonStudies,
+        [],
+        "addon studies should be an empty list if there is an error"
+      );
+      Assert.deepEqual(
+        info.prefRollouts,
+        [],
+        "pref rollouts should be an empty list if there is an error"
+      );
+      let msgs = await consoleEndFn();
+      let expectedSet = new Set([
+        /Expected error - PreferenceExperiments/,
+        /Expected error - AddonStudies/,
+        /Expected error - PreferenceRollouts/,
+      ]);
+
+      for (let msg of msgs) {
+        msg = msg.wrappedJSObject;
+        if (msg.level != "error") {
+          continue;
+        }
+
+        let msgContents = msg.arguments[0];
+        for (let expected of expectedSet) {
+          if (expected.test(msgContents)) {
+            expectedSet.delete(expected);
+            break;
+          }
+        }
       }
-      done();
-    });
-  },
 
-  function modifiedPreferences(done) {
-    let prefs = [
-      "javascript.troubleshoot",
-      "troubleshoot.foo",
-      "javascript.print_to_filename",
-      "network.proxy.troubleshoot",
-    ];
-    prefs.forEach(function(p) {
-      Services.prefs.setBoolPref(p, true);
-      is(Services.prefs.getBoolPref(p), true, "The pref should be set: " + p);
-    });
-    Troubleshoot.snapshot(function(snapshot) {
-      let p = snapshot.modifiedPreferences;
-      is(
-        p["javascript.troubleshoot"],
-        true,
-        "The pref should be present because it's whitelisted " +
-          "but not blacklisted."
+      Assert.equal(
+        expectedSet.size,
+        0,
+        "Should have no messages left in the expected set"
       );
-      ok(
-        !("troubleshoot.foo" in p),
-        "The pref should be absent because it's not in the whitelist."
-      );
-      ok(
-        !("javascript.print_to_filename" in p),
-        "The pref should be absent because it's blacklisted."
-      );
-      ok(
-        !("network.proxy.troubleshoot" in p),
-        "The pref should be absent because it's blacklisted."
-      );
-      prefs.forEach(p => Services.prefs.deleteBranch(p));
-      done();
-    });
-  },
+    }
+  )();
+});
 
-  function unicodePreferences(done) {
-    let name = "font.name.sans-serif.x-western";
-    let utf8Value = "\xc4\x8capk\xc5\xafv Krasopis";
-    let unicodeValue = "\u010Capk\u016Fv Krasopis";
-
-    // set/getCharPref work with 8bit strings (utf8)
-    Services.prefs.setCharPref(name, utf8Value);
-
-    Troubleshoot.snapshot(function(snapshot) {
-      let p = snapshot.modifiedPreferences;
-      is(p[name], unicodeValue, "The pref should have correct Unicode value.");
-      Services.prefs.deleteBranch(name);
-      done();
-    });
-  },
-];
+add_task(async function themes() {
+  let snapshot = await Troubleshoot.snapshot();
+  let foundTheme = false;
+  for (let addon of snapshot.addons) {
+    if (addon.type == "theme") {
+      foundTheme = true;
+      break;
+    }
+  }
+  ok(foundTheme, "found a theme in the addons list");
+});
 
 // This is inspired by JSON Schema, or by the example on its Wikipedia page
 // anyway.
@@ -131,6 +320,13 @@ const SNAPSHOT_SCHEMA = {
           required: true,
           type: "string",
         },
+        osTheme: {
+          type: "string",
+        },
+        rosetta: {
+          required: false,
+          type: "boolean",
+        },
         vendor: {
           type: "string",
         },
@@ -147,10 +343,16 @@ const SNAPSHOT_SCHEMA = {
           type: "boolean",
           required: true,
         },
-        autoStartStatus: {
-          type: "number",
+        fissionAutoStart: {
+          type: "boolean",
+        },
+        fissionDecisionStatus: {
+          type: "string",
         },
         numTotalWindows: {
+          type: "number",
+        },
+        numFissionWindows: {
           type: "number",
         },
         numRemoteWindows: {
@@ -170,6 +372,16 @@ const SNAPSHOT_SCHEMA = {
         },
         safeMode: {
           type: "boolean",
+        },
+        memorySizeBytes: {
+          type: "number",
+        },
+        diskAvailableBytes: {
+          type: "number",
+        },
+        pointingDevices: {
+          required: false,
+          type: "array",
         },
       },
     },
@@ -204,13 +416,17 @@ const SNAPSHOT_SCHEMA = {
         },
       },
     },
-    extensions: {
+    addons: {
       required: true,
       type: "array",
       items: {
         type: "object",
         properties: {
           name: {
+            required: true,
+            type: "string",
+          },
+          type: {
             required: true,
             type: "string",
           },
@@ -282,7 +498,19 @@ const SNAPSHOT_SCHEMA = {
         },
       },
     },
+    experimentalFeatures: {
+      required: true,
+      type: "array",
+    },
+    environmentVariables: {
+      required: true,
+      type: "object",
+    },
     modifiedPreferences: {
+      required: true,
+      type: "object",
+    },
+    printingPreferences: {
       required: true,
       type: "object",
     },
@@ -294,9 +522,74 @@ const SNAPSHOT_SCHEMA = {
           required: false,
           type: "boolean",
         },
-        "dom.ipc.processCount.webIsolated": {
+        "fission.autostart.session": {
           required: false,
-          type: "number",
+          type: "boolean",
+        },
+        "media.utility-process.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-ffmpeg.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-ffvpx.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-wmf.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-applemedia.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-vorbis.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-wav.enabled": {
+          required: false,
+          type: "boolean",
+        },
+        "media.utility-opus.enabled": {
+          required: false,
+          type: "boolean",
+        },
+      },
+    },
+    places: {
+      required: true,
+      type: "array",
+      items: {
+        type: "object",
+        items: {
+          entity: {
+            required: true,
+            type: "string",
+          },
+          count: {
+            required: true,
+            type: "number",
+          },
+          sizeBytes: {
+            required: true,
+            type: "number",
+          },
+          sizePerc: {
+            required: true,
+            type: "number",
+          },
+          efficiencyPerc: {
+            required: true,
+            type: "number",
+          },
+          sequentialityPerc: {
+            required: true,
+            type: "number",
+          },
         },
       },
     },
@@ -312,13 +605,16 @@ const SNAPSHOT_SCHEMA = {
           required: true,
           type: "number",
         },
+        graphicsDevicePixelRatios: {
+          type: "array",
+          items: {
+            type: "number",
+          },
+        },
         windowLayerManagerType: {
           type: "string",
         },
         windowLayerManagerRemote: {
-          type: "boolean",
-        },
-        windowUsingAdvancedLayers: {
           type: "boolean",
         },
         numAcceleratedWindowsMessage: {
@@ -400,18 +696,6 @@ const SNAPSHOT_SCHEMA = {
         directWriteVersion: {
           type: "string",
         },
-        usesTiling: {
-          type: "boolean",
-        },
-        contentUsesTiling: {
-          type: "boolean",
-        },
-        offMainThreadPaintEnabled: {
-          type: "boolean",
-        },
-        offMainThreadPaintWorkerCount: {
-          type: "number",
-        },
         clearTypeParameters: {
           type: "string",
         },
@@ -444,6 +728,12 @@ const SNAPSHOT_SCHEMA = {
         },
         webgl2WSIInfo: {
           type: "string",
+        },
+        webgpuDefaultAdapter: {
+          type: "object",
+        },
+        webgpuFallbackAdapter: {
+          type: "object",
         },
         info: {
           type: "object",
@@ -493,6 +783,9 @@ const SNAPSHOT_SCHEMA = {
           type: "string",
         },
         desktopEnvironment: {
+          type: "string",
+        },
+        supportFontDetermination: {
           type: "string",
         },
       },
@@ -643,6 +936,10 @@ const SNAPSHOT_SCHEMA = {
             },
           },
         },
+        codecSupportInfo: {
+          required: false,
+          type: "string",
+        },
       },
     },
     accessibility: {
@@ -786,6 +1083,14 @@ const SNAPSHOT_SCHEMA = {
           required: AppConstants.MOZ_SANDBOX,
           type: "number",
         },
+        contentWin32kLockdownState: {
+          required: AppConstants.MOZ_SANDBOX && AppConstants.platform == "win",
+          type: "string",
+        },
+        supportSandboxGpuLevel: {
+          required: AppConstants.MOZ_SANDBOX && AppConstants.platform == "win",
+          type: "number",
+        },
         syscallLog: {
           required: AppConstants.platform == "linux",
           type: "array",
@@ -895,13 +1200,147 @@ const SNAPSHOT_SCHEMA = {
     remoteAgent: {
       type: "object",
       properties: {
-        listening: {
+        running: {
           required: true,
           type: "boolean",
         },
         url: {
           required: true,
           type: "string",
+        },
+      },
+    },
+    normandy: {
+      type: "object",
+      required: AppConstants.MOZ_NORMANDY,
+      properties: {
+        addonStudies: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              userFacingName: { type: "string", required: true },
+              branch: { type: "string", required: true },
+            },
+          },
+          required: true,
+        },
+        prefRollouts: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              slug: { type: "string", required: true },
+              state: { type: "string", required: true },
+            },
+          },
+          required: true,
+        },
+        prefStudies: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              userFacingName: { type: "string", required: true },
+              branch: { type: "string", required: true },
+            },
+          },
+          required: true,
+        },
+        nimbusExperiments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              userFacingName: { type: "string", required: true },
+              branch: {
+                type: "object",
+                properties: {
+                  slug: { type: "string", required: true },
+                },
+              },
+            },
+          },
+          required: true,
+        },
+        nimbusRollouts: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              featureId: { type: "string", required: true },
+              slug: { type: "string", required: true },
+            },
+          },
+        },
+      },
+    },
+    remoteSettings: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        isSynchronizationBroken: {
+          required: true,
+          type: "boolean",
+        },
+        lastCheck: {
+          required: true,
+          type: "string",
+        },
+        localTimestamp: {
+          required: false,
+          type: ["number", "null"],
+        },
+        history: {
+          required: true,
+          type: "object",
+          properties: {
+            "settings-sync": {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  status: { type: "string", required: true },
+                  datetime: { type: "string", required: true },
+                  infos: { type: "object", required: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    legacyUserStylesheets: {
+      type: "object",
+      properties: {
+        active: {
+          required: true,
+          type: "boolean",
+        },
+        types: {
+          required: true,
+          type: "array",
+        },
+      },
+    },
+    contentAnalysis: {
+      type: "object",
+      properties: {
+        active: {
+          required: true,
+          type: "boolean",
+        },
+        connected: {
+          type: "boolean",
+        },
+        agentPath: {
+          type: "string",
+        },
+        failedSignatureVerification: {
+          type: "boolean",
+        },
+        requestCount: {
+          type: "number",
         },
       },
     },
@@ -921,17 +1360,27 @@ function validateObject(obj, schema) {
   if (obj === undefined && !schema.required) {
     return;
   }
-  if (typeof schema.type != "string") {
-    throw schemaErr("'type' must be a string", schema);
+  let types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (!types.every(elt => typeof elt == "string")) {
+    throw schemaErr("'type' must be a string or array of strings", schema);
   }
-  if (objType(obj) != schema.type) {
+  if (!types.includes(objType(obj))) {
     throw validationErr("Object is not of the expected type", obj, schema);
   }
-  let validatorFnName = "validateObject_" + schema.type;
-  if (!(validatorFnName in this)) {
-    throw schemaErr("Validator function not defined for type", schema);
+  let lastError;
+  for (let type of types) {
+    let validatorFnName = "validateObject_" + type;
+    if (!(validatorFnName in this)) {
+      throw schemaErr("Validator function not defined for type", schema);
+    }
+    try {
+      this[validatorFnName](obj, schema);
+      return;
+    } catch (e) {
+      lastError = e;
+    }
   }
-  this[validatorFnName](obj, schema);
+  throw lastError;
 }
 
 function validateObject_object(obj, schema) {
@@ -944,13 +1393,15 @@ function validateObject_object(obj, schema) {
     validateObject(obj[prop], schema.properties[prop]);
   }
   // Now check that the object doesn't have any properties not in the schema.
-  for (let prop in obj) {
-    if (!(prop in schema.properties)) {
-      throw validationErr(
-        "Object has property " + prop + " not in schema",
-        obj,
-        schema
-      );
+  if (!schema.additionalProperties) {
+    for (let prop in obj) {
+      if (!(prop in schema.properties)) {
+        throw validationErr(
+          "Object has property " + prop + " not in schema",
+          obj,
+          schema
+        );
+      }
     }
   }
 }
@@ -963,9 +1414,9 @@ function validateObject_array(array, schema) {
   array.forEach(elt => validateObject(elt, schema.items));
 }
 
-function validateObject_string(str, schema) {}
-function validateObject_boolean(bool, schema) {}
-function validateObject_number(num, schema) {}
+function validateObject_string() {}
+function validateObject_boolean() {}
+function validateObject_number() {}
 
 function validationErr(msg, obj, schema) {
   return new Error(

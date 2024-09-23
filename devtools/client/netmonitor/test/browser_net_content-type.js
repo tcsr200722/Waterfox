@@ -7,7 +7,7 @@
  * Tests if different response content types are handled correctly.
  */
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(
     CONTENT_TYPE_WITHOUT_CACHE_URL,
     { requestCount: 1 }
@@ -137,7 +137,7 @@ add_task(async function() {
       type: "plain",
       fullMimeType: "text/plain",
       transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 324),
-      size: L10N.getFormatStrWithNumbers("networkMenu.sizeKB", 10.73),
+      size: L10N.getFormatStrWithNumbers("networkMenu.size.kB", 10.99),
       time: true,
     }
   );
@@ -174,8 +174,7 @@ add_task(async function() {
         true,
         "The response error header doesn't display"
       );
-      const jsonView =
-        tabpanel.querySelector(".accordion-item .accordion-header-label") || {};
+      const jsonView = tabpanel.querySelector(".data-label") || {};
       is(
         jsonView.textContent !== L10N.getStr("jsonScopeName"),
         box != "json",
@@ -234,9 +233,9 @@ add_task(async function() {
         checkVisibility("json");
 
         is(
-          tabpanel.querySelectorAll(".accordion-item").length,
-          2,
-          "There should be 2 accordion items displayed in this tabpanel."
+          tabpanel.querySelectorAll(".raw-data-toggle").length,
+          1,
+          "The response payload toggle should be displayed in this tabpanel."
         );
         is(
           tabpanel.querySelectorAll(".empty-notice").length,
@@ -245,8 +244,7 @@ add_task(async function() {
         );
 
         is(
-          tabpanel.querySelector(".accordion-item .accordion-header-label")
-            .textContent,
+          tabpanel.querySelector(".data-label").textContent,
           L10N.getStr("jsonScopeName"),
           "The json view section doesn't have the correct title."
         );
@@ -273,10 +271,14 @@ add_task(async function() {
       case "html": {
         checkVisibility("html");
 
-        const text = document.querySelector(".html-preview iframe").srcdoc;
+        const text = document.querySelector(".html-preview iframe").src;
+        const expectedText =
+          "data:text/html;charset=UTF-8," +
+          encodeURIComponent("<blink>Not Found</blink>");
+
         is(
           text,
-          "<blink>Not Found</blink>",
+          expectedText,
           "The text shown in the iframe is incorrect for the html request."
         );
         break;

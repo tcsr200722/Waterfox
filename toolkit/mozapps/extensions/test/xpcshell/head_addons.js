@@ -4,8 +4,8 @@
 
 /* eslint no-unused-vars: ["error", {vars: "local", args: "none"}] */
 
-if (!_TEST_FILE[0].includes("toolkit/mozapps/extensions/test/xpcshell/")) {
-  ok(
+if (!_TEST_NAME.includes("toolkit/mozapps/extensions/test/xpcshell/")) {
+  Assert.ok(
     false,
     "head_addons.js may not be loaded by tests outside of " +
       "the add-on manager component."
@@ -17,10 +17,6 @@ const PREF_EM_STRICT_COMPATIBILITY = "extensions.strictCompatibility";
 const PREF_GETADDONS_BYIDS = "extensions.getAddons.get.url";
 const PREF_XPI_SIGNATURES_REQUIRED = "xpinstall.signatures.required";
 
-const PREF_DISABLE_SECURITY =
-  "security.turn_off_all_security_so_that_" +
-  "viruses_can_take_over_this_computer";
-
 // Maximum error in file modification times. Some file systems don't store
 // modification times exactly. As long as we are closer than this then it
 // still passes.
@@ -30,79 +26,43 @@ const MAX_TIME_DIFFERENCE = 3000;
 // times are modified (10 hours old).
 const MAKE_FILE_OLD_DIFFERENCE = 10 * 3600 * 1000;
 
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+const { AddonManager, AddonManagerPrivate } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
 );
-var { FileUtils } = ChromeUtils.import("resource://gre/modules/FileUtils.jsm");
-var { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+var { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
-var { AddonRepository } = ChromeUtils.import(
-  "resource://gre/modules/addons/AddonRepository.jsm"
+var { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
-var { OS, require } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
+var { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+var { AddonRepository } = ChromeUtils.importESModule(
+  "resource://gre/modules/addons/AddonRepository.sys.mjs"
+);
 
-var { AddonTestUtils, MockAsyncShutdown } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+var { AddonTestUtils, MockAsyncShutdown } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Blocklist",
-  "resource://gre/modules/Blocklist.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Extension",
-  "resource://gre/modules/Extension.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionTestUtils",
-  "resource://testing-common/ExtensionXPCShellUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionTestCommon",
-  "resource://testing-common/ExtensionTestCommon.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "HttpServer",
-  "resource://testing-common/httpd.js"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "MockRegistrar",
-  "resource://testing-common/MockRegistrar.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "MockRegistry",
-  "resource://testing-common/MockRegistry.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PromiseTestUtils",
-  "resource://testing-common/PromiseTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "RemoteSettings",
-  "resource://services-settings/remote-settings.js"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TestUtils",
-  "resource://testing-common/TestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "setTimeout",
-  "resource://gre/modules/Timer.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  Blocklist: "resource://gre/modules/Blocklist.sys.mjs",
+  Extension: "resource://gre/modules/Extension.sys.mjs",
+  ExtensionTestCommon: "resource://testing-common/ExtensionTestCommon.sys.mjs",
+  ExtensionTestUtils:
+    "resource://testing-common/ExtensionXPCShellUtils.sys.mjs",
+  HttpServer: "resource://testing-common/httpd.sys.mjs",
+  MockRegistrar: "resource://testing-common/MockRegistrar.sys.mjs",
+  MockRegistry: "resource://testing-common/MockRegistry.sys.mjs",
+  PromiseTestUtils: "resource://testing-common/PromiseTestUtils.sys.mjs",
+  RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
+  TestUtils: "resource://testing-common/TestUtils.sys.mjs",
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -143,7 +103,7 @@ ExtensionTestUtils.init(this);
 AddonTestUtils.init(this);
 AddonTestUtils.overrideCertDB();
 
-XPCOMUtils.defineLazyGetter(
+ChromeUtils.defineLazyGetter(
   this,
   "BOOTSTRAP_REASONS",
   () => AddonManagerPrivate.BOOTSTRAP_REASONS
@@ -195,7 +155,7 @@ Object.defineProperty(this, "gUseRealCertChecks", {
     return AddonTestUtils.useRealCertChecks;
   },
   set(val) {
-    return (AddonTestUtils.useRealCertChecks = val);
+    AddonTestUtils.useRealCertChecks = val;
   },
 });
 
@@ -204,19 +164,13 @@ Object.defineProperty(this, "TEST_UNPACKED", {
     return AddonTestUtils.testUnpacked;
   },
   set(val) {
-    return (AddonTestUtils.testUnpacked = val);
+    AddonTestUtils.testUnpacked = val;
   },
 });
 
-// We need some internal bits of AddonManager
-var AMscope = ChromeUtils.import(
-  "resource://gre/modules/AddonManager.jsm",
-  null
-);
-var { AddonManager, AddonManagerInternal, AddonManagerPrivate } = AMscope;
-
 const promiseAddonByID = AddonManager.getAddonByID;
 const promiseAddonsByIDs = AddonManager.getAddonsByIDs;
+const promiseAddonsByTypes = AddonManager.getAddonsByTypes;
 
 var gPort = null;
 
@@ -292,7 +246,7 @@ var BootstrapMonitor = {
         break;
       case "update":
         this.checkMatches("update", "install", params, this.installed.get(id));
-        this.installed.set(id, { reason, params });
+        this.installed.set(id, { reason, params, method });
         break;
     }
   },
@@ -314,7 +268,7 @@ var BootstrapMonitor = {
       equal(
         params.oldVersion,
         lastParams.version,
-        "params.version should match last call"
+        "params.oldVersion should match last call"
       );
     } else {
       equal(
@@ -358,6 +312,17 @@ var BootstrapMonitor = {
   checkInstalled(id, version = undefined) {
     const installed = this.installed.get(id);
     ok(installed, `Should have seen install call for ${id}`);
+
+    if (version !== undefined) {
+      equal(installed.params.version, version, "Expected version number");
+    }
+
+    return installed;
+  },
+
+  checkUpdated(id, version = undefined) {
+    const installed = this.installed.get(id);
+    equal(installed.method, "update", `Should have seen update call for ${id}`);
 
     if (version !== undefined) {
       equal(installed.params.version, version, "Expected version number");
@@ -505,7 +470,7 @@ function do_check_not_in_crash_annotation(aId, aVersion) {
 
 function do_get_file_hash(aFile, aAlgorithm) {
   if (!aAlgorithm) {
-    aAlgorithm = "sha1";
+    aAlgorithm = "sha256";
   }
 
   let crypto = Cc["@mozilla.org/security/hash;1"].createInstance(
@@ -597,7 +562,7 @@ function do_check_addons(aActualAddons, aExpectedAddons, aProperties) {
 function do_check_addon(aActualAddon, aExpectedAddon, aProperties) {
   Assert.notEqual(aActualAddon, null);
 
-  aProperties.forEach(function(aProperty) {
+  aProperties.forEach(function (aProperty) {
     let actualValue = aActualAddon[aProperty];
     let expectedValue = aExpectedAddon[aProperty];
 
@@ -761,14 +726,15 @@ function isExtensionInBootstrappedList(aDir, aId) {
  *          An optional string to override the default installation aId
  * @return  A file pointing to where the extension was installed
  */
-function promiseWriteWebManifestForExtension(
-  aData,
-  aDir,
-  aId = aData.applications.gecko.id
-) {
+function promiseWriteWebManifestForExtension(aData, aDir, aId) {
   let files = {
     "manifest.json": JSON.stringify(aData),
   };
+  if (!aId) {
+    aId =
+      aData?.browser_specific_settings?.gecko?.id ||
+      aData?.applications?.gecko?.id;
+  }
   return AddonTestUtils.promiseWriteFilesToExtension(aDir.path, aId, files);
 }
 
@@ -969,7 +935,7 @@ class EventChecker {
     return this.checkAddonEvent("onInstalled", addon);
   }
 
-  onUninstalling(addon, requiresRestart) {
+  onUninstalling(addon) {
     return this.checkAddonEvent("onUninstalling", addon);
   }
 
@@ -1067,7 +1033,7 @@ class EventChecker {
     });
   }
 
-  onInstallEnded(install, newAddon) {
+  onInstallEnded(install) {
     return this.checkInstall("onInstallEnded", install, {
       state: "STATE_INSTALLED",
       error: 0,
@@ -1181,38 +1147,34 @@ function copyBlocklistToProfile(blocklistFile) {
 }
 
 async function mockGfxBlocklistItemsFromDisk(path) {
-  Cu.importGlobalProperties(["fetch"]);
   let response = await fetch(Services.io.newFileURI(do_get_file(path)).spec);
   let json = await response.json();
   return mockGfxBlocklistItems(json);
 }
 
 async function mockGfxBlocklistItems(items) {
-  const { generateUUID } = Cc["@mozilla.org/uuid-generator;1"].getService(
-    Ci.nsIUUIDGenerator
+  const { generateUUID } = Services.uuid;
+  const { BlocklistPrivate } = ChromeUtils.importESModule(
+    "resource://gre/modules/Blocklist.sys.mjs"
   );
-  let bsPass = ChromeUtils.import("resource://gre/modules/Blocklist.jsm", null);
-  const client = RemoteSettings(
-    Services.prefs.getCharPref("services.blocklist.gfx.collection"),
-    { bucketNamePref: "services.blocklist.bucket" }
-  );
-  await client.db.clear();
+  const client = RemoteSettings("gfx", {
+    bucketName: "blocklists",
+  });
   const records = items.map(item => {
     if (item.id && item.last_modified) {
       return item;
     }
     return {
-      id: generateUUID()
-        .toString()
-        .replace(/[{}]/g, ""),
+      id: generateUUID().toString().replace(/[{}]/g, ""),
       last_modified: Date.now(),
       ...item,
     };
   });
   const collectionTimestamp = Math.max(...records.map(r => r.last_modified));
-  await client.db.importBulk(records);
-  await client.db.saveLastModified(collectionTimestamp);
-  let rv = await bsPass.GfxBlocklistRS.checkForEntries();
+  await client.db.importChanges({}, collectionTimestamp, records, {
+    clear: true,
+  });
+  let rv = await BlocklistPrivate.GfxBlocklistRS.checkForEntries();
   return rv;
 }
 
@@ -1220,89 +1182,9 @@ async function mockGfxBlocklistItems(items) {
  * Change the schema version of the JSON extensions database
  */
 async function changeXPIDBVersion(aNewVersion) {
-  let json = await loadJSON(gExtensionsJSON.path);
+  let json = await IOUtils.readJSON(gExtensionsJSON.path);
   json.schemaVersion = aNewVersion;
-  await saveJSON(json, gExtensionsJSON.path);
-}
-
-/**
- * Load a file into a string
- */
-async function loadFile(aFile) {
-  let buffer = await OS.File.read(aFile);
-  return new TextDecoder().decode(buffer);
-}
-
-/**
- * Raw load of a JSON file
- */
-async function loadJSON(aFile) {
-  let data = await loadFile(aFile);
-  info("Loaded JSON file " + aFile);
-  return JSON.parse(data);
-}
-
-/**
- * Raw save of a JSON blob to file
- */
-async function saveJSON(aData, aFile) {
-  info("Starting to save JSON file " + aFile);
-  await OS.File.writeAtomic(
-    aFile,
-    new TextEncoder().encode(JSON.stringify(aData, null, 2))
-  );
-  info("Done saving JSON file " + aFile);
-}
-
-XPCOMUtils.defineLazyServiceGetter(
-  this,
-  "pluginHost",
-  "@mozilla.org/plugin/host;1",
-  "nsIPluginHost"
-);
-
-class MockPluginTag {
-  constructor(opts, enabledState = Ci.nsIPluginTag.STATE_ENABLED) {
-    this.pluginTag = pluginHost.createFakePlugin({
-      handlerURI: "resource://fake-plugin/${Math.random()}.xhtml",
-      mimeEntries: [{ type: "application/x-fake-plugin" }],
-      fileName: `${opts.name}.so`,
-      ...opts,
-    });
-    this.pluginTag.enabledState = enabledState;
-
-    this.name = opts.name;
-    this.version = opts.version;
-  }
-  async isBlocklisted() {
-    let state = await Blocklist.getPluginBlocklistState(this.pluginTag);
-    return state == Services.blocklist.STATE_BLOCKED;
-  }
-  get disabled() {
-    return this.pluginTag.enabledState == Ci.nsIPluginTag.STATE_DISABLED;
-  }
-  set disabled(val) {
-    this.enabledState =
-      Ci.nsIPluginTag[val ? "STATE_DISABLED" : "STATE_ENABLED"];
-  }
-  get enabledState() {
-    return this.pluginTag.enabledState;
-  }
-  set enabledState(val) {
-    this.pluginTag.enabledState = val;
-  }
-}
-
-function mockPluginHost(plugins) {
-  let PluginHost = {
-    getPluginTags() {
-      return plugins.map(p => p.pluginTag);
-    },
-
-    QueryInterface: ChromeUtils.generateQI(["nsIPluginHost"]),
-  };
-
-  MockRegistrar.register("@mozilla.org/plugin/host;1", PluginHost);
+  await IOUtils.writeJSON(gExtensionsJSON.path, json);
 }
 
 async function setInitialState(addon, initialState) {
@@ -1313,7 +1195,7 @@ async function setInitialState(addon, initialState) {
   }
 }
 
-async function setupBuiltinExtension(extensionData) {
+async function setupBuiltinExtension(extensionData, location = "ext-test") {
   let xpi = await AddonTestUtils.createTempWebExtensionFile(extensionData);
 
   // The built-in location requires a resource: URL that maps to a
@@ -1323,17 +1205,26 @@ async function setupBuiltinExtension(extensionData) {
   let resProto = Services.io
     .getProtocolHandler("resource")
     .QueryInterface(Ci.nsIResProtocolHandler);
-  resProto.setSubstitution("ext-test", base);
+  resProto.setSubstitution(location, base);
 }
 
 async function installBuiltinExtension(extensionData, waitForStartup = true) {
   await setupBuiltinExtension(extensionData);
 
-  let id = extensionData.manifest.applications.gecko.id;
+  let id =
+    extensionData.manifest?.browser_specific_settings?.gecko?.id ||
+    extensionData.manifest?.applications?.gecko?.id;
   let wrapper = ExtensionTestUtils.expectExtension(id);
   await AddonManager.installBuiltinAddon("resource://ext-test/");
   if (waitForStartup) {
     await wrapper.awaitStartup();
   }
   return wrapper;
+}
+
+function useAMOStageCert() {
+  // NOTE: add_task internally calls add_test which mutate the add_task properties object,
+  // and so we should not reuse the same object as add_task options passed to multiple
+  // add_task calls.
+  return { pref_set: [["xpinstall.signatures.dev-root", true]] };
 }

@@ -26,7 +26,27 @@ class UnscaledFontMac final : public UnscaledFont {
       : mFont(aFont), mIsDataFont(aIsDataFont) {
     CFRetain(mFont);
   }
-  virtual ~UnscaledFontMac() { CFRelease(mFont); }
+  explicit UnscaledFontMac(CTFontDescriptorRef aFontDesc, CGFontRef aFont,
+                           bool aIsDataFont = false)
+      : mFontDesc(aFontDesc), mFont(aFont), mIsDataFont(aIsDataFont) {
+    CFRetain(mFontDesc);
+    CFRetain(mFont);
+  }
+
+  virtual ~UnscaledFontMac() {
+    if (mCTAxesCache) {
+      CFRelease(mCTAxesCache);
+    }
+    if (mCGAxesCache) {
+      CFRelease(mCGAxesCache);
+    }
+    if (mFontDesc) {
+      CFRelease(mFontDesc);
+    }
+    if (mFont) {
+      CFRelease(mFont);
+    }
+  }
 
   FontType GetType() const override { return FontType::MAC; }
 
@@ -47,16 +67,28 @@ class UnscaledFontMac final : public UnscaledFont {
       const FontVariation* aVariations, uint32_t aNumVariations) override;
 
   static CGFontRef CreateCGFontWithVariations(CGFontRef aFont,
+                                              CFArrayRef& aCGAxesCache,
+                                              CFArrayRef& aCTAxesCache,
                                               uint32_t aVariationCount,
                                               const FontVariation* aVariations);
 
+  // Generate a font descriptor to send to WebRender. The descriptor consists
+  // of a string that concatenates the PostScript name of the font and the path
+  // to the font file, and an "index" that indicates the length of the psname
+  // part of the string (= starting offset of the path).
   bool GetFontDescriptor(FontDescriptorOutput aCb, void* aBaton) override;
+
+  CFArrayRef& CGAxesCache() { return mCGAxesCache; }
+  CFArrayRef& CTAxesCache() { return mCTAxesCache; }
 
   static already_AddRefed<UnscaledFont> CreateFromFontDescriptor(
       const uint8_t* aData, uint32_t aDataLength, uint32_t aIndex);
 
  private:
-  CGFontRef mFont;
+  CTFontDescriptorRef mFontDesc = nullptr;
+  CGFontRef mFont = nullptr;
+  CFArrayRef mCGAxesCache = nullptr;  // Cached arrays of variation axis details
+  CFArrayRef mCTAxesCache = nullptr;
   bool mIsDataFont;
 };
 

@@ -2,43 +2,38 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import React from "devtools/client/shared/vendor/react";
+import { div } from "devtools/client/shared/vendor/react-dom-factories";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
-import PropTypes from "prop-types";
-import React from "react";
-import type { Node as ReactNode } from "react";
-import classnames from "classnames";
-import Transition from "react-transition-group/Transition";
-import "./Modal.css";
+class Modal extends React.Component {
+  static get propTypes() {
+    return {
+      additionalClass: PropTypes.string,
+      children: PropTypes.node.isRequired,
+      handleClose: PropTypes.func.isRequired,
+    };
+  }
 
-type TransitionStatus = "entering" | "exiting" | "entered" | "exited";
-
-type ModalProps = {
-  status: TransitionStatus,
-  children?: ReactNode,
-  additionalClass?: string,
-  handleClose: () => any,
-};
-
-export const transitionTimeout = 50;
-
-export class Modal extends React.Component<ModalProps> {
-  onClick = (e: SyntheticEvent<HTMLElement>) => {
+  onClick = e => {
     e.stopPropagation();
   };
 
   render() {
-    const { additionalClass, children, handleClose, status } = this.props;
-
-    return (
-      <div className="modal-wrapper" onClick={handleClose}>
-        <div
-          className={classnames("modal", additionalClass, status)}
-          onClick={this.onClick}
-        >
-          {children}
-        </div>
-      </div>
+    const { additionalClass, children, handleClose } = this.props;
+    return div(
+      {
+        className: "modal-wrapper",
+        onClick: handleClose,
+      },
+      div(
+        {
+          className: classnames("modal", additionalClass),
+          onClick: this.onClick,
+        },
+        children
+      )
     );
   }
 }
@@ -47,30 +42,4 @@ Modal.contextTypes = {
   shortcuts: PropTypes.object,
 };
 
-type SlideProps = {
-  in: boolean,
-  children?: ReactNode,
-  additionalClass?: string,
-  handleClose: () => any,
-};
-
-export default function Slide({
-  in: inProp,
-  children,
-  additionalClass,
-  handleClose,
-}: SlideProps) {
-  return (
-    <Transition in={inProp} timeout={transitionTimeout} appear>
-      {(status: TransitionStatus) => (
-        <Modal
-          status={status}
-          additionalClass={additionalClass}
-          handleClose={handleClose}
-        >
-          {children}
-        </Modal>
-      )}
-    </Transition>
-  );
-}
+export default Modal;

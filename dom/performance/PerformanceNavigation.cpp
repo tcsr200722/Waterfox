@@ -8,13 +8,9 @@
 #include "PerformanceTiming.h"
 #include "mozilla/dom/PerformanceNavigationBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PerformanceNavigation, mPerformance)
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(PerformanceNavigation, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(PerformanceNavigation, Release)
 
 PerformanceNavigation::PerformanceNavigation(Performance* aPerformance)
     : mPerformance(aPerformance) {
@@ -32,5 +28,4 @@ uint16_t PerformanceNavigation::RedirectCount() const {
   return GetPerformanceTiming()->Data()->GetRedirectCount();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

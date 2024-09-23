@@ -4,15 +4,48 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, you can obtain one at http://mozilla.org/MPL/2.0/.
 
-UNIFIED_SOURCES = [
-    'TestCheckedUnsafePtr.cpp',
-    'TestQuotaManager.cpp',
+EXPORTS.mozilla.dom.quota += [
+    "QuotaTestChild.h",
+    "QuotaTestParent.h",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+EXPORTS.mozilla.dom.quota.test += [
+    "QuotaManagerDependencyFixture.h",
+]
 
-FINAL_LIBRARY = 'xul-gtest'
+UNIFIED_SOURCES = [
+    "Common.cpp",
+    "QuotaManagerDependencyFixture.cpp",
+    "TestCheckedUnsafePtr.cpp",
+    "TestClientUsageArray.cpp",
+    "TestEncryptedStream.cpp",
+    "TestFileOutputStream.cpp",
+    "TestFlatten.cpp",
+    "TestForwardDecls.cpp",
+    "TestOriginParser.cpp",
+    "TestOriginScope.cpp",
+    "TestPersistenceType.cpp",
+    "TestQMResult.cpp",
+    "TestQuotaCommon.cpp",
+    "TestQuotaManager.cpp",
+    "TestResultExtensions.cpp",
+    "TestScopedLogExtraInfo.cpp",
+    "TestStorageConnection.cpp",
+    "TestStorageOriginAttributes.cpp",
+    "TestStringifyUtils.cpp",
+    "TestTelemetry.cpp",
+    "TestThreadUtils.cpp",
+    "TestUsageInfo.cpp",
+]
+
+IPDL_SOURCES += [
+    "PQuotaTest.ipdl",
+]
+
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul-gtest"
 
 LOCAL_INCLUDES += [
-    '/dom/quota',
+    "/dom/quota",
 ]

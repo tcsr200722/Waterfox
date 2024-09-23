@@ -13,7 +13,11 @@
 
 "use strict";
 
-add_task(async function init() {
+add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    // The example.com engine can interfere with this test.
+    set: [["browser.urlbar.suggest.engines", false]],
+  });
   await cleanUp();
 });
 
@@ -24,7 +28,6 @@ add_task(async function origin() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "ExA",
     fireInputEvent: true,
   });
@@ -51,7 +54,6 @@ add_task(async function originPort() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "ExA",
     fireInputEvent: true,
   });
@@ -78,7 +80,6 @@ add_task(async function originScheme() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "http://ExA",
     fireInputEvent: true,
   });
@@ -105,7 +106,6 @@ add_task(async function originPortScheme() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "http://ExA",
     fireInputEvents: true,
   });
@@ -133,7 +133,6 @@ add_task(async function url() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "ExAmple.com/f",
     fireInputEvent: true,
   });
@@ -161,9 +160,8 @@ add_task(async function urlPort() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "ExAmple.com:8888/f",
-    fireInputEvents: true,
+    fireInputEvent: true,
   });
   let details = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
   Assert.ok(details.autofill);
@@ -182,17 +180,9 @@ add_task(async function urlPort() {
 });
 
 add_task(async function tokenAlias() {
-  await Services.search.addEngineWithDetails("Test", {
-    alias: "@example",
-    template: "http://example.com/?search={searchTerms}",
-  });
-  registerCleanupFunction(async function() {
-    let engine = Services.search.getEngineByName("Test");
-    await Services.search.removeEngine(engine);
-  });
+  await SearchTestUtils.installSearchExtension({ keyword: "@example" });
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "@ExA",
     fireInputEvent: true,
   });
@@ -218,7 +208,6 @@ add_task(async function backspaceNoAutofill() {
   ]);
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "ExA",
     fireInputEvent: true,
   });
@@ -262,7 +251,7 @@ function checkKeys(testTuples) {
 
 async function cleanUp() {
   EventUtils.synthesizeKey("KEY_Escape");
-  await UrlbarTestUtils.promisePopupClose(window);
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
   await PlacesUtils.bookmarks.eraseEverything();
   await PlacesUtils.history.clear();
 }

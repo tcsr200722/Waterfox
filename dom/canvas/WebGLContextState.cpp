@@ -22,16 +22,47 @@
 
 namespace mozilla {
 
-void WebGLContext::SetEnabled(const char* const funcName, const GLenum cap,
+void WebGLContext::SetEnabled(const GLenum cap, const Maybe<GLuint> i,
                               const bool enabled) {
-  const FuncScope funcScope(*this, funcName);
+  const FuncScope funcScope(*this, "enable(i)/disable(i)");
   if (IsContextLost()) return;
 
-  if (!ValidateCapabilityEnum(cap)) return;
+  static const auto webgl1Map = webgl::MakeIsEnabledMap(false);
+  static const auto webgl2Map = webgl::MakeIsEnabledMap(true);
+  const auto* map = &webgl2Map;
+  if (!IsWebGL2()) {
+    map = &webgl1Map;
+  }
+  if (!MaybeFind(*map, cap)) {
+    MOZ_ASSERT(false, "Bad cap.");
+    return;
+  }
 
-  const auto& slot = GetStateTrackingSlot(cap);
-  if (slot) {
-    *slot = enabled;
+  if (cap == LOCAL_GL_BLEND) {
+    if (i) {
+      const auto limit = MaxValidDrawBuffers();
+      if (*i >= limit) {
+        ErrorInvalidValue("`index` (%u) must be < %s (%u)", *i,
+                          "MAX_DRAW_BUFFERS", limit);
+        return;
+      }
+      mBlendEnabled[*i] = enabled;
+    } else {
+      if (enabled) {
+        mBlendEnabled.set();
+      } else {
+        mBlendEnabled.reset();
+      }
+    }
+  } else {
+    if (i) {
+      MOZ_ASSERT(false, "i");
+      return;
+    }
+    const auto slot = GetStateTrackingSlot(cap);
+    if (slot) {
+      *slot = enabled;
+    }
   }
 
   switch (cap) {
@@ -41,7 +72,15 @@ void WebGLContext::SetEnabled(const char* const funcName, const GLenum cap,
 
     default:
       // Non-lazy caps.
-      gl->SetEnabled(cap, enabled);
+      if (i) {
+        if (enabled) {
+          gl->fEnablei(cap, *i);
+        } else {
+          gl->fDisablei(cap, *i);
+        }
+      } else {
+        gl->SetEnabled(cap, enabled);
+      }
       break;
   }
 }
@@ -88,7 +127,8 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
         }
       } else {
         const auto& fb = *mBoundDrawFramebuffer;
-        if (fb.IsDrawBufferEnabled(slotId)) {
+        const auto& bs = fb.DrawBufferEnabled();
+        if (bs[slotId]) {
           ret = LOCAL_GL_COLOR_ATTACHMENT0 + slotId;
         }
       }
@@ -233,8 +273,6 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
     }
 
     case LOCAL_GL_STENCIL_CLEAR_VALUE:
-    case LOCAL_GL_UNPACK_ALIGNMENT:
-    case LOCAL_GL_PACK_ALIGNMENT:
     case LOCAL_GL_SUBPIXEL_BITS: {
       GLint i = 0;
       gl->fGetIntegerv(pname, &i);
@@ -267,8 +305,7 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
               default:
                 return fb->ColorAttachment0();
             }
-          }
-          ();
+          }();
 
           const auto imageInfo = attachment.GetImageInfo();
           if (!imageInfo) return nullptr;
@@ -357,6 +394,9 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
     case LOCAL_GL_STENCIL_WRITEMASK:
       return Some(mStencilWriteMaskFront);
 
+    case LOCAL_GL_COLOR_WRITEMASK:
+      return Some(mColorWriteMask0);
+
     // float
     case LOCAL_GL_LINE_WIDTH:
       return Some((double)mLineWidth);
@@ -390,16 +430,6 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
       return Some(bool(b));
     }
 
-    // bool, WebGL-specific
-    case UNPACK_FLIP_Y_WEBGL:
-      return Some((bool)mPixelStore.mFlipY);
-    case UNPACK_PREMULTIPLY_ALPHA_WEBGL:
-      return Some((bool)mPixelStore.mPremultiplyAlpha);
-
-    // uint, WebGL-specific
-    case UNPACK_COLORSPACE_CONVERSION_WEBGL:
-      return Some(mPixelStore.mColorspaceConversion);
-
     default:
       break;
   }
@@ -408,39 +438,7 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
   return Nothing();
 }
 
-bool WebGLContext::IsEnabled(GLenum cap) {
-  const FuncScope funcScope(*this, "isEnabled");
-  if (IsContextLost()) return false;
-
-  if (!ValidateCapabilityEnum(cap)) return false;
-
-  const auto& slot = GetStateTrackingSlot(cap);
-  if (slot) return *slot;
-
-  return gl->fIsEnabled(cap);
-}
-
-bool WebGLContext::ValidateCapabilityEnum(GLenum cap) {
-  switch (cap) {
-    case LOCAL_GL_BLEND:
-    case LOCAL_GL_CULL_FACE:
-    case LOCAL_GL_DEPTH_TEST:
-    case LOCAL_GL_DITHER:
-    case LOCAL_GL_POLYGON_OFFSET_FILL:
-    case LOCAL_GL_SAMPLE_ALPHA_TO_COVERAGE:
-    case LOCAL_GL_SAMPLE_COVERAGE:
-    case LOCAL_GL_SCISSOR_TEST:
-    case LOCAL_GL_STENCIL_TEST:
-      return true;
-    case LOCAL_GL_RASTERIZER_DISCARD:
-      return IsWebGL2();
-    default:
-      ErrorInvalidEnumInfo("cap", cap);
-      return false;
-  }
-}
-
-realGLboolean* WebGLContext::GetStateTrackingSlot(GLenum cap) {
+bool* WebGLContext::GetStateTrackingSlot(GLenum cap) {
   switch (cap) {
     case LOCAL_GL_DEPTH_TEST:
       return &mDepthTestEnabled;
@@ -452,8 +450,6 @@ realGLboolean* WebGLContext::GetStateTrackingSlot(GLenum cap) {
       return &mScissorTestEnabled;
     case LOCAL_GL_STENCIL_TEST:
       return &mStencilTestEnabled;
-    case LOCAL_GL_BLEND:
-      return &mBlendEnabled;
   }
 
   return nullptr;

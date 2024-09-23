@@ -9,28 +9,27 @@
 
 #include "nsPoint.h"
 #include "mozilla/Saturate.h"
+#include "mozilla/TimeStamp.h"
 
 class nsFrameList;
 class nsIFrame;
-class nsIScrollableFrame;
 
 namespace mozilla {
-class ScrollFrameHelper;
-}  // namespace mozilla
+class ScrollContainerFrame;
+}
 
-namespace mozilla {
-namespace layout {
+namespace mozilla::layout {
 
 /**
- * A scroll anchor container finds a descendent element of a scrollable frame
- * to be an anchor node. After every reflow, the scroll anchor will apply
+ * A scroll anchor container finds a descendent element of a scroll container
+ * frame to be an anchor node. After every reflow, the scroll anchor will apply
  * scroll adjustments to keep the anchor node in the same relative position.
  *
  * See: https://drafts.csswg.org/css-scroll-anchoring/
  */
 class ScrollAnchorContainer final {
  public:
-  explicit ScrollAnchorContainer(ScrollFrameHelper* aScrollFrame);
+  explicit ScrollAnchorContainer(ScrollContainerFrame* aScrollFrame);
   ~ScrollAnchorContainer();
 
   /**
@@ -45,21 +44,19 @@ class ScrollAnchorContainer final {
    */
   nsIFrame* AnchorNode() const { return mAnchorNode; }
 
-  /**
-   * Returns the frame that owns this scroll anchor container. This is always
-   * non-null.
-   */
-  nsIFrame* Frame() const;
+  // The owner of this scroll anchor container.
+  ScrollContainerFrame* Frame() const;
 
   /**
-   * Returns the frame that owns this scroll anchor container as a scrollable
-   * frame. This is always non-null.
+   * Returns the scroll container frame that owns this scroll anchor container.
+   * This is always non-null.
    */
-  nsIScrollableFrame* ScrollableFrame() const;
+  ScrollContainerFrame* ScrollContainer() const;
 
   /**
-   * Find a suitable anchor node among the descendants of the scrollable frame.
-   * This should only be called after the scroll anchor has been invalidated.
+   * Find a suitable anchor node among the descendants of the scroll container
+   * frame. This should only be called after the scroll anchor has been
+   * invalidated.
    */
   void SelectAnchor();
 
@@ -139,34 +136,43 @@ class ScrollAnchorContainer final {
   // anchoring on this scroller altogether based on various prefs.
   void AdjustmentMade(nscoord aAdjustment);
 
-  // The owner of this scroll anchor container
-  ScrollFrameHelper* mScrollFrame;
-
   // The anchor node that we will scroll to keep in the same relative position
   // after reflows. This may be null if we were not able to select a valid
   // scroll anchor
-  nsIFrame* mAnchorNode;
+  nsIFrame* mAnchorNode = nullptr;
 
   // The last offset of the scroll anchor node's scrollable overflow rect start
   // edge relative to the scroll-port start edge, in the block axis of the
   // scroll frame. This is used for calculating the distance to scroll to keep
   // the anchor node in the same relative position
-  nscoord mLastAnchorOffset;
+  nscoord mLastAnchorOffset = 0;
 
-  // The number of consecutive scroll anchoring adjustments that have happened
-  // without a user scroll.
-  SaturateUint32 mConsecutiveScrollAnchoringAdjustments{0};
+  struct DisablingHeuristic {
+    // The number of consecutive scroll anchoring adjustments that have happened
+    // without a user scroll.
+    SaturateUint32 mConsecutiveScrollAnchoringAdjustments{0};
 
-  // The total length that has been adjusted by all the consecutive adjustments
-  // referenced above. Note that this is a sum, so that oscillating adjustments
-  // average towards zero.
-  nscoord mConsecutiveScrollAnchoringAdjustmentLength{0};
+    // The total length that has been adjusted by all the consecutive
+    // adjustments referenced above. Note that this is a sum, so that
+    // oscillating adjustments average towards zero.
+    nscoord mConsecutiveScrollAnchoringAdjustmentLength{0};
+
+    // The time we started checking for adjustments.
+    TimeStamp mTimeStamp;
+
+    // Returns whether anchoring should get disabled.
+    bool AdjustmentMade(const ScrollAnchorContainer&, nscoord aAdjustment);
+    void Reset();
+  } mHeuristic;
 
   // True if we've been disabled by the heuristic controlled by
   // layout.css.scroll-anchoring.max-consecutive-adjustments and
   // layout.css.scroll-anchoring.min-adjustment-threshold.
   bool mDisabled : 1;
 
+  // True if when we selected the current scroll anchor, there were unlaid out
+  // children that could be better anchor nodes after layout.
+  bool mAnchorMightBeSubOptimal : 1;
   // True if we should recalculate our anchor node at the next chance
   bool mAnchorNodeIsDirty : 1;
   // True if we are applying a scroll anchor adjustment
@@ -175,7 +181,6 @@ class ScrollAnchorContainer final {
   bool mSuppressAnchorAdjustment : 1;
 };
 
-}  // namespace layout
-}  // namespace mozilla
+}  // namespace mozilla::layout
 
 #endif  // mozilla_layout_ScrollAnchorContainer_h_

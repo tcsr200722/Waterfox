@@ -6,8 +6,9 @@
 #ifndef nsHTMLTags_h___
 #define nsHTMLTags_h___
 
+#include "nsAtomHashKeys.h"
 #include "nsString.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 
 /*
@@ -40,8 +41,9 @@ enum nsHTMLTag {
 
 class nsHTMLTags {
  public:
-  using TagStringHash = nsDataHashtable<nsStringHashKey, nsHTMLTag>;
-  using TagAtomHash = nsDataHashtable<nsPtrHashKey<nsAtom>, nsHTMLTag>;
+  using TagStringHash = nsTHashMap<nsStringHashKey, nsHTMLTag>;
+  // Can be weak, because we know these are always static, see AddRefTable.
+  using TagAtomHash = nsTHashMap<nsAtom*, nsHTMLTag>;
 
   static nsresult AddRefTable(void);
   static void ReleaseTable(void);
@@ -55,15 +57,13 @@ class nsHTMLTags {
   static nsHTMLTag CaseSensitiveStringTagToId(const nsAString& aTagName) {
     NS_ASSERTION(gTagTable, "no lookup table, needs addref");
 
-    nsHTMLTag* tag = gTagTable->GetValue(aTagName);
-    return tag ? *tag : eHTMLTag_userdefined;
+    return gTagTable->MaybeGet(aTagName).valueOr(eHTMLTag_userdefined);
   }
   static nsHTMLTag CaseSensitiveAtomTagToId(nsAtom* aTagName) {
     NS_ASSERTION(gTagAtomTable, "no lookup table, needs addref");
     NS_ASSERTION(aTagName, "null tagname!");
 
-    nsHTMLTag* tag = gTagAtomTable->GetValue(aTagName);
-    return tag ? *tag : eHTMLTag_userdefined;
+    return gTagAtomTable->MaybeGet(aTagName).valueOr(eHTMLTag_userdefined);
   }
 
 #ifdef DEBUG

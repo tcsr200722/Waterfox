@@ -6,7 +6,7 @@
 
 const {
   CONNECTION_TYPES,
-} = require("devtools/client/shared/remote-debugging/constants");
+} = require("resource://devtools/client/shared/remote-debugging/constants.js");
 
 /**
  * This class is designed to be a singleton shared by all DevTools to get access to
@@ -131,7 +131,7 @@ class RemoteClientManager {
    */
   _onClientClosed() {
     const closedClientKeys = [...this._clients.keys()].filter(key => {
-      return this._clients.get(key)._closed;
+      return this._clients.get(key)._transportClosed;
     });
 
     for (const key of closedClientKeys) {

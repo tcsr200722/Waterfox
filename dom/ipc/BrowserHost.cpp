@@ -8,12 +8,13 @@
 
 #include "mozilla/Unused.h"
 #include "mozilla/dom/CancelContentJSOptionsBinding.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/WindowGlobalParent.h"
+#include "mozilla/ProcessPriorityManager.h"
 
 #include "nsIObserverService.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(BrowserHost)
   NS_INTERFACE_MAP_ENTRY(nsIRemoteTab)
@@ -52,15 +53,15 @@ nsILoadContext* BrowserHost::GetLoadContext() const {
   return loadContext;
 }
 
+bool BrowserHost::CanRecv() const { return mRoot && mRoot->CanRecv(); }
+
 a11y::DocAccessibleParent* BrowserHost::GetTopLevelDocAccessible() const {
-  return mRoot->GetTopLevelDocAccessible();
+  return mRoot ? mRoot->GetTopLevelDocAccessible() : nullptr;
 }
 
-void BrowserHost::LoadURL(nsIURI* aURI, nsIPrincipal* aTriggeringPrincipal) {
-  MOZ_ASSERT(aURI);
-  MOZ_ASSERT(aTriggeringPrincipal);
-
-  mRoot->LoadURL(aURI, aTriggeringPrincipal);
+void BrowserHost::LoadURL(nsDocShellLoadState* aLoadState) {
+  MOZ_ASSERT(aLoadState);
+  mRoot->LoadURL(aLoadState);
 }
 
 void BrowserHost::ResumeLoad(uint64_t aPendingSwitchId) {
@@ -102,50 +103,6 @@ void BrowserHost::UpdateEffects(EffectsInfo aEffects) {
   Unused << mRoot->SendUpdateEffects(mEffectsInfo);
 }
 
-/* attribute boolean suspendMediaWhenInactive; */
-NS_IMETHODIMP
-BrowserHost::GetSuspendMediaWhenInactive(bool* aSuspendMediaWhenInactive) {
-  if (!mRoot) {
-    *aSuspendMediaWhenInactive = false;
-    return NS_OK;
-  }
-  *aSuspendMediaWhenInactive = mRoot->GetSuspendMediaWhenInactive();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-BrowserHost::SetSuspendMediaWhenInactive(bool aSuspendMediaWhenInactive) {
-  if (!mRoot) {
-    return NS_OK;
-  }
-  VisitAll([&](BrowserParent* aBrowserParent) {
-    aBrowserParent->SetSuspendMediaWhenInactive(aSuspendMediaWhenInactive);
-  });
-  return NS_OK;
-}
-
-/* attribute boolean docShellIsActive; */
-NS_IMETHODIMP
-BrowserHost::GetDocShellIsActive(bool* aDocShellIsActive) {
-  if (!mRoot) {
-    *aDocShellIsActive = false;
-    return NS_OK;
-  }
-  *aDocShellIsActive = mRoot->GetDocShellIsActive();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-BrowserHost::SetDocShellIsActive(bool aDocShellIsActive) {
-  if (!mRoot) {
-    return NS_OK;
-  }
-  VisitAll([&](BrowserParent* aBrowserParent) {
-    aBrowserParent->SetDocShellIsActive(aDocShellIsActive);
-  });
-  return NS_OK;
-}
-
 /* attribute boolean renderLayers; */
 NS_IMETHODIMP
 BrowserHost::GetRenderLayers(bool* aRenderLayers) {
@@ -162,6 +119,7 @@ BrowserHost::SetRenderLayers(bool aRenderLayers) {
   if (!mRoot) {
     return NS_OK;
   }
+
   mRoot->SetRenderLayers(aRenderLayers);
   return NS_OK;
 }
@@ -169,17 +127,29 @@ BrowserHost::SetRenderLayers(bool aRenderLayers) {
 /* readonly attribute boolean hasLayers; */
 NS_IMETHODIMP
 BrowserHost::GetHasLayers(bool* aHasLayers) {
+  *aHasLayers = mRoot && mRoot->GetHasLayers();
+  return NS_OK;
+}
+
+/* attribute boolean priorityHint; */
+NS_IMETHODIMP
+BrowserHost::SetPriorityHint(bool aPriorityHint) {
   if (!mRoot) {
-    *aHasLayers = false;
     return NS_OK;
   }
-  *aHasLayers = mRoot->GetHasLayers();
+  mRoot->SetPriorityHint(aPriorityHint);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BrowserHost::GetPriorityHint(bool* aPriorityHint) {
+  *aPriorityHint = mRoot && mRoot->GetPriorityHint();
   return NS_OK;
 }
 
 /* void resolutionChanged (); */
 NS_IMETHODIMP
-BrowserHost::NotifyResolutionChanged(void) {
+BrowserHost::NotifyResolutionChanged() {
   if (!mRoot) {
     return NS_OK;
   }
@@ -191,12 +161,13 @@ BrowserHost::NotifyResolutionChanged(void) {
 
 /* void deprioritize (); */
 NS_IMETHODIMP
-BrowserHost::Deprioritize(void) {
+BrowserHost::Deprioritize() {
   if (!mRoot) {
     return NS_OK;
   }
-  VisitAll(
-      [](BrowserParent* aBrowserParent) { aBrowserParent->Deprioritize(); });
+  auto* bc = GetBrowsingContext()->Canonical();
+  ProcessPriorityManager::BrowserPriorityChanged(bc,
+                                                 /* aPriority = */ false);
   return NS_OK;
 }
 
@@ -241,6 +212,18 @@ BrowserHost::GetOsPid(int32_t* aOsPid) {
   return NS_OK;
 }
 
+/* readonly attribute BrowsingContext browsingContext; */
+NS_IMETHODIMP
+BrowserHost::GetBrowsingContext(BrowsingContext** aBc) {
+  if (!mRoot) {
+    *aBc = nullptr;
+    return NS_OK;
+  }
+  RefPtr<BrowsingContext> bc = mRoot->GetBrowsingContext();
+  bc.forget(aBc);
+  return NS_OK;
+}
+
 /* readonly attribute boolean hasPresented; */
 NS_IMETHODIMP
 BrowserHost::GetHasPresented(bool* aHasPresented) {
@@ -261,51 +244,24 @@ BrowserHost::TransmitPermissionsForPrincipal(nsIPrincipal* aPrincipal) {
   return GetContentParent()->TransmitPermissionsForPrincipal(aPrincipal);
 }
 
-/* readonly attribute boolean hasBeforeUnload; */
+/* void createAboutBlankDocumentViewer(in nsIPrincipal aPrincipal, in
+ * nsIPrincipal aPartitionedPrincipal); */
 NS_IMETHODIMP
-BrowserHost::GetHasBeforeUnload(bool* aHasBeforeUnload) {
-  if (!mRoot || !GetBrowsingContext()) {
-    *aHasBeforeUnload = false;
-    return NS_OK;
-  }
-
-  bool result = false;
-
-  GetBrowsingContext()->PreOrderWalk(
-      [&result](BrowsingContext* aBrowsingContext) {
-        WindowGlobalParent* windowGlobal =
-            aBrowsingContext->Canonical()->GetCurrentWindowGlobal();
-
-        if (windowGlobal) {
-          result |= windowGlobal->HasBeforeUnload();
-        }
-      });
-
-  *aHasBeforeUnload = result;
-  return NS_OK;
-}
-
-/* boolean startApzAutoscroll (in float aAnchorX, in float aAnchorY, in nsViewID
- * aScrollId, in uint32_t aPresShellId); */
-NS_IMETHODIMP
-BrowserHost::StartApzAutoscroll(float aAnchorX, float aAnchorY,
-                                nsViewID aScrollId, uint32_t aPresShellId,
-                                bool* _retval) {
+BrowserHost::CreateAboutBlankDocumentViewer(
+    nsIPrincipal* aPrincipal, nsIPrincipal* aPartitionedPrincipal) {
   if (!mRoot) {
     return NS_OK;
   }
-  *_retval =
-      mRoot->StartApzAutoscroll(aAnchorX, aAnchorY, aScrollId, aPresShellId);
-  return NS_OK;
-}
 
-/* void stopApzAutoscroll (in nsViewID aScrollId, in uint32_t aPresShellId); */
-NS_IMETHODIMP
-BrowserHost::StopApzAutoscroll(nsViewID aScrollId, uint32_t aPresShellId) {
-  if (!mRoot) {
-    return NS_OK;
+  // Ensure the content process has permisisons for the new document we're about
+  // to create in it.
+  nsresult rv = GetContentParent()->TransmitPermissionsForPrincipal(aPrincipal);
+  if (NS_FAILED(rv)) {
+    return rv;
   }
-  mRoot->StopApzAutoscroll(aScrollId, aPresShellId);
+
+  Unused << mRoot->SendCreateAboutBlankDocumentViewer(aPrincipal,
+                                                      aPartitionedPrincipal);
   return NS_OK;
 }
 
@@ -323,12 +279,9 @@ BrowserHost::MaybeCancelContentJSExecutionFromScript(
   if (!cancelContentJSOptions.Init(aCx, aCancelContentJSOptions)) {
     return NS_ERROR_INVALID_ARG;
   }
-  if (StaticPrefs::dom_ipc_cancel_content_js_when_navigating()) {
-    GetContentParent()->CancelContentJSExecutionIfRunning(
-        mRoot, aNavigationType, cancelContentJSOptions);
-  }
+  GetContentParent()->CancelContentJSExecutionIfRunning(mRoot, aNavigationType,
+                                                        cancelContentJSOptions);
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

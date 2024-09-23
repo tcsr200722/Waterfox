@@ -17,7 +17,7 @@ function test() {
   requestLongerTimeout(2);
 
   Services.prefs.setIntPref("browser.sessionstore.interval", 4000);
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.sessionstore.interval");
   });
 
@@ -26,16 +26,16 @@ function test() {
   let browser = tab.linkedBrowser;
 
   promiseTabState(tab, tabState).then(() => {
-    let sessionHistory = browser.sessionHistory;
-    let entry = sessionHistory.legacySHistory.getEntryAtIndex(0);
+    let sessionHistory = browser.browsingContext.sessionHistory;
+    let entry = sessionHistory.getEntryAtIndex(0);
 
-    whenChildCount(entry, 1, function() {
-      whenChildCount(entry, 2, function() {
+    whenChildCount(entry, 1, function () {
+      whenChildCount(entry, 2, function () {
         promiseBrowserLoaded(browser).then(() => {
-          let newSessionHistory = browser.sessionHistory;
-          let newEntry = newSessionHistory.legacySHistory.getEntryAtIndex(0);
+          let newSessionHistory = browser.browsingContext.sessionHistory;
+          let newEntry = newSessionHistory.getEntryAtIndex(0);
 
-          whenChildCount(newEntry, 0, function() {
+          whenChildCount(newEntry, 0, function () {
             // Make sure that we reset the state.
             let blankState = {
               windows: [

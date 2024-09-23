@@ -7,8 +7,11 @@
 #ifndef mozilla_dom_localstorage_LSObserver_h
 #define mozilla_dom_localstorage_LSObserver_h
 
-namespace mozilla {
-namespace dom {
+#include "mozilla/Assertions.h"
+#include "nsISupports.h"
+#include "nsString.h"
+
+namespace mozilla::dom {
 
 class LSObserverChild;
 
@@ -60,7 +63,6 @@ class LSObserver final {
   ~LSObserver();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_localstorage_LSObserver_h

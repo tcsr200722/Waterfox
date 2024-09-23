@@ -7,12 +7,12 @@
 #include "ZoomConstraintsClient.h"
 
 #include <inttypes.h>
-#include "LayersLogging.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/ScrollableLayerGuid.h"
 #include "mozilla/layers/ZoomConstraints.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/StaticPrefs_apz.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Event.h"
@@ -29,18 +29,22 @@ static mozilla::LazyLogModule sApzZoomLog("apz.zoom");
 
 NS_IMPL_ISUPPORTS(ZoomConstraintsClient, nsIDOMEventListener, nsIObserver)
 
-#define DOM_META_ADDED NS_LITERAL_STRING("DOMMetaAdded")
-#define DOM_META_CHANGED NS_LITERAL_STRING("DOMMetaChanged")
-#define FULLSCREEN_CHANGED NS_LITERAL_STRING("fullscreenchange")
-#define BEFORE_FIRST_PAINT NS_LITERAL_CSTRING("before-first-paint")
-#define NS_PREF_CHANGED NS_LITERAL_CSTRING("nsPref:changed")
+#define DOM_META_ADDED u"DOMMetaAdded"_ns
+#define DOM_META_CHANGED u"DOMMetaChanged"_ns
+#define FULLSCREEN_CHANGED u"fullscreenchange"_ns
+#define BEFORE_FIRST_PAINT "before-first-paint"_ns
+#define COMPOSITOR_REINITIALIZED "compositor-reinitialized"_ns
+#define NS_PREF_CHANGED "nsPref:changed"_ns
 
 using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::layers;
 
 ZoomConstraintsClient::ZoomConstraintsClient()
-    : mDocument(nullptr), mPresShell(nullptr) {}
+    : mDocument(nullptr),
+      mPresShell(nullptr),
+      mZoomConstraints(false, false, CSSToParentLayerScale(1.f),
+                       CSSToParentLayerScale(1.f)) {}
 
 ZoomConstraintsClient::~ZoomConstraintsClient() = default;
 
@@ -49,7 +53,14 @@ static nsIWidget* GetWidget(PresShell* aPresShell) {
     return nullptr;
   }
   if (nsIFrame* rootFrame = aPresShell->GetRootFrame()) {
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_UIKIT)
+#if defined(MOZ_WIDGET_ANDROID)
+    // On Android in cases of about:XX pages loaded in the browser parent
+    // process we need to return the nearest widget since it's the widget owning
+    // an IAPZCTreeManager to communicate with the APZCTreeManager for the
+    // browser.
+    // In bug 1648427 we will apply this code to desktops as well to make
+    // about pages zoomable on desktops, but it will be involving more works,
+    // see https://bugzilla.mozilla.org/show_bug.cgi?id=1648427#c7 .
     return rootFrame->GetNearestWidget();
 #else
     if (nsView* view = rootFrame->GetView()) {
@@ -78,6 +89,7 @@ void ZoomConstraintsClient::Destroy() {
       mozilla::services::GetObserverService();
   if (observerService) {
     observerService->RemoveObserver(this, BEFORE_FIRST_PAINT.Data());
+    observerService->RemoveObserver(this, COMPOSITOR_REINITIALIZED.Data());
   }
 
   Preferences::RemoveObserver(this, "browser.ui.zoom.force-user-scalable");
@@ -117,6 +129,7 @@ void ZoomConstraintsClient::Init(PresShell* aPresShell, Document* aDocument) {
       mozilla::services::GetObserverService();
   if (observerService) {
     observerService->AddObserver(this, BEFORE_FIRST_PAINT.Data(), false);
+    observerService->AddObserver(this, COMPOSITOR_REINITIALIZED.Data(), false);
   }
 
   Preferences::AddStrongObserver(this, "browser.ui.zoom.force-user-scalable");
@@ -148,6 +161,9 @@ ZoomConstraintsClient::Observe(nsISupports* aSubject, const char* aTopic,
       BEFORE_FIRST_PAINT.EqualsASCII(aTopic)) {
     ZCC_LOG("Got a before-first-paint event in %p\n", this);
     RefreshZoomConstraints();
+  } else if (COMPOSITOR_REINITIALIZED.EqualsASCII(aTopic)) {
+    ZCC_LOG("Got a compositor-reinitialized notification in %p\n", this);
+    RefreshZoomConstraints();
   } else if (NS_PREF_CHANGED.EqualsASCII(aTopic)) {
     ZCC_LOG("Got a pref-change event in %p\n", this);
     // We need to run this later because all the pref change listeners need
@@ -158,7 +174,7 @@ ZoomConstraintsClient::Observe(nsISupports* aSubject, const char* aTopic,
     RefPtr<nsRunnableMethod<ZoomConstraintsClient>> event =
         NewRunnableMethod("ZoomConstraintsClient::RefreshZoomConstraints", this,
                           &ZoomConstraintsClient::RefreshZoomConstraints);
-    mDocument->Dispatch(TaskCategory::Other, event.forget());
+    mDocument->Dispatch(event.forget());
   }
   return NS_OK;
 }
@@ -186,8 +202,16 @@ static mozilla::layers::ZoomConstraints ComputeZoomConstraintsFromViewportInfo(
 }
 
 void ZoomConstraintsClient::RefreshZoomConstraints() {
+  mZoomConstraints = ZoomConstraints(false, false, CSSToParentLayerScale(1.f),
+                                     CSSToParentLayerScale(1.f));
+
   nsIWidget* widget = GetWidget(mPresShell);
   if (!widget) {
+    return;
+  }
+
+  // Ignore documents which has been removed from the doc shell.
+  if (!mDocument->IsActive()) {
     return;
   }
 
@@ -201,41 +225,61 @@ void ZoomConstraintsClient::RefreshZoomConstraints() {
   }
 
   LayoutDeviceIntSize screenSize;
-  if (!nsLayoutUtils::GetContentViewerSize(mPresShell->GetPresContext(),
-                                           screenSize)) {
+  if (!nsLayoutUtils::GetDocumentViewerSize(mPresShell->GetPresContext(),
+                                            screenSize)) {
     return;
   }
 
   nsViewportInfo viewportInfo = mDocument->GetViewportInfo(ViewAs<ScreenPixel>(
       screenSize, PixelCastJustification::LayoutDeviceIsScreenForBounds));
 
-  mozilla::layers::ZoomConstraints zoomConstraints =
+  mZoomConstraints =
       ComputeZoomConstraintsFromViewportInfo(viewportInfo, mDocument);
 
   if (mDocument->Fullscreen()) {
     ZCC_LOG("%p is in fullscreen, disallowing zooming\n", this);
-    zoomConstraints.mAllowZoom = false;
-    zoomConstraints.mAllowDoubleTapZoom = false;
+    mZoomConstraints.mAllowZoom = false;
+    mZoomConstraints.mAllowDoubleTapZoom = false;
   }
 
-  if (zoomConstraints.mAllowDoubleTapZoom) {
+  if (mDocument->IsStaticDocument()) {
+    ZCC_LOG("%p is in print or print preview, disallowing double tap zooming\n",
+            this);
+    mZoomConstraints.mAllowDoubleTapZoom = false;
+  }
+
+  if (nsContentUtils::IsPDFJS(mDocument->GetPrincipal())) {
+    ZCC_LOG("%p is pdf.js viewer, disallowing double tap zooming\n", this);
+    mZoomConstraints.mAllowDoubleTapZoom = false;
+  }
+
+  // On macOS the OS can send us a double tap zoom event from the touchpad and
+  // there are no touch screen macOS devices so we never wait to see if a second
+  // tap is coming so we can always allow double tap zooming on mac. We need
+  // this because otherwise the width check usually disables it.
+  bool allow_double_tap_always = false;
+#ifdef XP_MACOSX
+  allow_double_tap_always =
+      StaticPrefs::apz_mac_enable_double_tap_zoom_touchpad_gesture();
+#endif
+  if (!allow_double_tap_always && mZoomConstraints.mAllowDoubleTapZoom) {
     // If the CSS viewport is narrower than the screen (i.e. width <=
     // device-width) then we disable double-tap-to-zoom behaviour.
     CSSToLayoutDeviceScale scale =
         mPresShell->GetPresContext()->CSSToDevPixelScale();
     if ((viewportInfo.GetSize() * scale).width <= screenSize.width) {
-      zoomConstraints.mAllowDoubleTapZoom = false;
+      mZoomConstraints.mAllowDoubleTapZoom = false;
     }
   }
 
   // We only ever create a ZoomConstraintsClient for an RCD, so the RSF of
   // the presShell must be the RCD-RSF (if it exists).
   MOZ_ASSERT(mPresShell->GetPresContext()->IsRootContentDocumentCrossProcess());
-  if (nsIScrollableFrame* rcdrsf =
-          mPresShell->GetRootScrollFrameAsScrollable()) {
+  if (ScrollContainerFrame* rcdrsf =
+          mPresShell->GetRootScrollContainerFrame()) {
     ZCC_LOG("Notifying RCD-RSF that it is zoomable: %d\n",
-            zoomConstraints.mAllowZoom);
-    rcdrsf->SetZoomableByAPZ(zoomConstraints.mAllowZoom);
+            mZoomConstraints.mAllowZoom);
+    rcdrsf->SetZoomableByAPZ(mZoomConstraints.mAllowZoom);
   }
 
   ScrollableLayerGuid newGuid(LayersId{0}, presShellId, viewId);
@@ -248,6 +292,6 @@ void ZoomConstraintsClient::RefreshZoomConstraints() {
   }
   mGuid = Some(newGuid);
   ZCC_LOG("Sending constraints %s in %p for { %u, %" PRIu64 " }\n",
-          Stringify(zoomConstraints).c_str(), this, presShellId, viewId);
-  widget->UpdateZoomConstraints(presShellId, viewId, Some(zoomConstraints));
+          ToString(mZoomConstraints).c_str(), this, presShellId, viewId);
+  widget->UpdateZoomConstraints(presShellId, viewId, Some(mZoomConstraints));
 }

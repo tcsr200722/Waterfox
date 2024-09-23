@@ -36,6 +36,7 @@ nsresult CheckInternal(nsIContentSecurityPolicy* aCSP,
   // The value is set at any "return", but better to have a default value here.
   *aAllowed = false;
 
+  // This is the non-CSP check for gating eval() use in the SystemPrincipal
 #if !defined(ANDROID)
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (!nsContentSecurityUtils::IsEvalAllowed(
@@ -61,8 +62,7 @@ nsresult CheckInternal(nsIContentSecurityPolicy* aCSP,
     aCSP->LogViolationDetails(nsIContentSecurityPolicy::VIOLATION_TYPE_EVAL,
                               nullptr,  // triggering element
                               aCSPEventListener, aFileNameString, aExpression,
-                              aLineNum, aColumnNum, EmptyString(),
-                              EmptyString());
+                              aLineNum, aColumnNum, u""_ns, u""_ns);
   }
 
   return NS_OK;
@@ -74,8 +74,7 @@ class WorkerCSPCheckRunnable final : public WorkerMainThreadRunnable {
                          const nsAString& aExpression,
                          const nsAString& aFileNameString, uint32_t aLineNum,
                          uint32_t aColumnNum)
-      : WorkerMainThreadRunnable(aWorkerPrivate,
-                                 NS_LITERAL_CSTRING("CSP Eval Check")),
+      : WorkerMainThreadRunnable(aWorkerPrivate, "CSP Eval Check"_ns),
         mExpression(aExpression),
         mFileNameString(aFileNameString),
         mLineNum(aLineNum),
@@ -84,7 +83,7 @@ class WorkerCSPCheckRunnable final : public WorkerMainThreadRunnable {
 
   bool MainThreadRun() override {
     mResult = CheckInternal(
-        mWorkerPrivate->GetCSP(), mWorkerPrivate->CSPEventListener(),
+        mWorkerPrivate->GetCsp(), mWorkerPrivate->CSPEventListener(),
         mWorkerPrivate->GetLoadingPrincipal(), mExpression, mFileNameString,
         mLineNum, mColumnNum, &mEvalAllowed);
     return true;
@@ -132,7 +131,7 @@ nsresult CSPEvalChecker::CheckForWindow(JSContext* aCx,
 
   // Get the calling location.
   uint32_t lineNum = 0;
-  uint32_t columnNum = 0;
+  uint32_t columnNum = 1;
   nsAutoString fileNameString;
   if (!nsJSUtils::GetCallingLocation(aCx, fileNameString, &lineNum,
                                      &columnNum)) {
@@ -165,7 +164,7 @@ nsresult CSPEvalChecker::CheckForWorker(JSContext* aCx,
 
   // Get the calling location.
   uint32_t lineNum = 0;
-  uint32_t columnNum = 0;
+  uint32_t columnNum = 1;
   nsAutoString fileNameString;
   if (!nsJSUtils::GetCallingLocation(aCx, fileNameString, &lineNum,
                                      &columnNum)) {

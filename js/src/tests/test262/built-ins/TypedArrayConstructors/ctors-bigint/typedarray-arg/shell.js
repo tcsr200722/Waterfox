@@ -1,29 +1,13 @@
 // GENERATED, DO NOT EDIT
-// file: detachArrayBuffer.js
-// Copyright (C) 2016 the V8 project authors.  All rights reserved.
-// This code is governed by the BSD license found in the LICENSE file.
-/*---
-description: |
-    A function used in the process of asserting correctness of TypedArray objects.
-
-    $262.detachArrayBuffer is defined by a host.
-defines: [$DETACHBUFFER]
----*/
-
-function $DETACHBUFFER(buffer) {
-  if (!$262 || typeof $262.detachArrayBuffer !== "function") {
-    throw new Test262Error("No method available to detach an ArrayBuffer");
-  }
-  $262.detachArrayBuffer(buffer);
-}
-
 // file: testBigIntTypedArray.js
 // Copyright (C) 2015 André Bargull. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 description: |
     Collection of functions used to assert the correctness of BigInt TypedArray objects.
-defines: [TypedArray, testWithBigIntTypedArrayConstructors]
+defines:
+  - TypedArray
+  - testWithBigIntTypedArrayConstructors
 ---*/
 
 /**
@@ -35,12 +19,13 @@ var TypedArray = Object.getPrototypeOf(Int8Array);
  * Calls the provided function for every typed array constructor.
  *
  * @param {typedArrayConstructorCallback} f - the function to call for each typed array constructor.
+ * @param {Array} selected - An optional Array with filtered typed arrays
  */
-function testWithBigIntTypedArrayConstructors(f) {
+function testWithBigIntTypedArrayConstructors(f, selected) {
   /**
    * Array containing every BigInt typed array constructor.
    */
-  var constructors = [
+  var constructors = selected || [
     BigInt64Array,
     BigUint64Array
   ];
@@ -63,31 +48,45 @@ function testWithBigIntTypedArrayConstructors(f) {
 description: |
     Collection of functions used to assert the correctness of TypedArray objects.
 defines:
-  - typedArrayConstructors
   - floatArrayConstructors
+  - nonClampedIntArrayConstructors
   - intArrayConstructors
+  - typedArrayConstructors
   - TypedArray
   - testWithTypedArrayConstructors
+  - nonAtomicsFriendlyTypedArrayConstructors
+  - testWithAtomicsFriendlyTypedArrayConstructors
+  - testWithNonAtomicsFriendlyTypedArrayConstructors
   - testTypedArrayConversions
 ---*/
 
-/**
- * Array containing every typed array constructor.
- */
-var typedArrayConstructors = [
+var floatArrayConstructors = [
   Float64Array,
-  Float32Array,
+  Float32Array
+];
+
+var nonClampedIntArrayConstructors = [
   Int32Array,
   Int16Array,
   Int8Array,
   Uint32Array,
   Uint16Array,
-  Uint8Array,
-  Uint8ClampedArray
+  Uint8Array
 ];
 
-var floatArrayConstructors = typedArrayConstructors.slice(0, 2);
-var intArrayConstructors = typedArrayConstructors.slice(2, 7);
+var intArrayConstructors = nonClampedIntArrayConstructors.concat([Uint8ClampedArray]);
+
+// Float16Array is a newer feature
+// adding it to this list unconditionally would cause implementations lacking it to fail every test which uses it
+if (typeof Float16Array !== 'undefined') {
+  floatArrayConstructors.push(Float16Array);
+}
+
+/**
+ * Array containing every non-bigint typed array constructor.
+ */
+
+var typedArrayConstructors = floatArrayConstructors.concat(intArrayConstructors);
 
 /**
  * The %TypedArray% intrinsic constructor function.
@@ -120,6 +119,34 @@ function testWithTypedArrayConstructors(f, selected) {
   }
 }
 
+var nonAtomicsFriendlyTypedArrayConstructors = floatArrayConstructors.concat([Uint8ClampedArray]);
+/**
+ * Calls the provided function for every non-"Atomics Friendly" typed array constructor.
+ *
+ * @param {typedArrayConstructorCallback} f - the function to call for each typed array constructor.
+ * @param {Array} selected - An optional Array with filtered typed arrays
+ */
+function testWithNonAtomicsFriendlyTypedArrayConstructors(f) {
+  testWithTypedArrayConstructors(f, nonAtomicsFriendlyTypedArrayConstructors);
+}
+
+/**
+ * Calls the provided function for every "Atomics Friendly" typed array constructor.
+ *
+ * @param {typedArrayConstructorCallback} f - the function to call for each typed array constructor.
+ * @param {Array} selected - An optional Array with filtered typed arrays
+ */
+function testWithAtomicsFriendlyTypedArrayConstructors(f) {
+  testWithTypedArrayConstructors(f, [
+    Int32Array,
+    Int16Array,
+    Int8Array,
+    Uint32Array,
+    Uint16Array,
+    Uint8Array,
+  ]);
+}
+
 /**
  * Helper for conversion operations on TypedArrays, the expected values
  * properties are indexed in order to match the respective value for each
@@ -145,4 +172,32 @@ function testTypedArrayConversions(byteConversionValues, fn) {
       fn(TA, value, exp, initial);
     });
   });
+}
+
+/**
+ * Checks if the given argument is one of the float-based TypedArray constructors.
+ *
+ * @param {constructor} ctor - the value to check
+ * @returns {boolean}
+ */
+function isFloatTypedArrayConstructor(arg) {
+  return floatArrayConstructors.indexOf(arg) !== -1;
+}
+
+/**
+ * Determines the precision of the given float-based TypedArray constructor.
+ *
+ * @param {constructor} ctor - the value to check
+ * @returns {string} "half", "single", or "double" for Float16Array, Float32Array, and Float64Array respectively.
+ */
+function floatTypedArrayConstructorPrecision(FA) {
+  if (typeof Float16Array !== "undefined" && FA === Float16Array) {
+    return "half";
+  } else if (FA === Float32Array) {
+    return "single";
+  } else if (FA === Float64Array) {
+    return "double";
+  } else {
+    throw new Error("Malformed test - floatTypedArrayConstructorPrecision called with non-float TypedArray");
+  }
 }

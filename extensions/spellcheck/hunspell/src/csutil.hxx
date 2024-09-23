@@ -1,7 +1,7 @@
 /* ***** BEGIN LICENSE BLOCK *****
  * Version: MPL 1.1/GPL 2.0/LGPL 2.1
  *
- * Copyright (C) 2002-2017 Németh László
+ * Copyright (C) 2002-2022 Németh László
  *
  * The contents of this file are subject to the Mozilla Public License Version
  * 1.1 (the "License"); you may not use this file except in compliance with
@@ -81,10 +81,6 @@
 #include <string.h>
 #include "w_char.hxx"
 #include "htypes.hxx"
-
-#ifdef MOZILLA_CLIENT
-#include "nscore.h"  // for mozalloc headers
-#endif
 
 // casing
 #define NOCAP 0

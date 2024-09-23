@@ -11,7 +11,6 @@
 
 /* Threadsafe. */
 
-#include "nsMemory.h"
 #include "nsCOMArray.h"
 #include "nsThreadUtils.h"
 
@@ -24,11 +23,12 @@
 #include "nsProxyRelease.h"
 #include "nsIScriptError.h"
 #include "nsISupportsPrimitives.h"
+#include "js/friend/ErrorMessages.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/ScriptSettings.h"
 
-#include "mozilla/Preferences.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
 
@@ -39,11 +39,6 @@
 #endif
 #ifdef XP_WIN
 #  include <windows.h>
-#endif
-
-#ifdef MOZ_TASK_TRACER
-#  include "GeckoTaskTracer.h"
-using namespace mozilla::tasktracer;
 #endif
 
 using namespace mozilla;
@@ -66,13 +61,12 @@ nsConsoleService::MessageElement::~MessageElement() = default;
 
 nsConsoleService::nsConsoleService()
     : mCurrentSize(0),
+      // XXX grab this from a pref!
+      // hm, but worry about circularity, bc we want to be able to report
+      // prefs errs...
+      mMaximumSize(250),
       mDeliveringMessage(false),
       mLock("nsConsoleService.mLock") {
-  // XXX grab this from a pref!
-  // hm, but worry about circularity, bc we want to be able to report
-  // prefs errs...
-  mMaximumSize = 250;
-
 #ifdef XP_WIN
   // This environment variable controls whether the console service
   // should be prevented from putting output to the attached debugger.
@@ -270,12 +264,12 @@ LogMessageRunnable::Run() {
 // nsIConsoleService methods
 NS_IMETHODIMP
 nsConsoleService::LogMessage(nsIConsoleMessage* aMessage) {
-  return LogMessageWithMode(aMessage, OutputToLog);
+  return LogMessageWithMode(aMessage, nsIConsoleService::OutputToLog);
 }
 
 // This can be called off the main thread.
 nsresult nsConsoleService::LogMessageWithMode(
-    nsIConsoleMessage* aMessage, nsConsoleService::OutputMode aOutputMode) {
+    nsIConsoleMessage* aMessage, nsIConsoleService::OutputMode aOutputMode) {
   if (!aMessage) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -364,17 +358,6 @@ nsresult nsConsoleService::LogMessageWithMode(
       OutputDebugStringW(msg.get());
     }
 #endif
-#ifdef MOZ_TASK_TRACER
-    if (IsStartLogging()) {
-      nsCString msg;
-      aMessage->ToString(msg);
-      int prefixPos = msg.Find(GetJSLabelPrefix());
-      if (prefixPos >= 0) {
-        nsDependentCSubstring submsg(msg, prefixPos);
-        AddLabel("%s", submsg.BeginReading());
-      }
-    }
-#endif
 
     if (gLoggingBuffered) {
       MessageElement* e = new MessageElement(aMessage);
@@ -406,8 +389,55 @@ nsresult nsConsoleService::LogMessageWithMode(
     // avoid failing in XPCShell tests
     nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
     if (mainThread) {
-      SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+      SchedulerGroup::Dispatch(r.forget());
     }
+  }
+
+  return NS_OK;
+}
+
+// See nsIConsoleService.idl for more info about this method
+NS_IMETHODIMP
+nsConsoleService::CallFunctionAndLogException(
+    JS::Handle<JS::Value> targetGlobal, JS::HandleValue function, JSContext* cx,
+    JS::MutableHandleValue retval) {
+  if (!targetGlobal.isObject() || !function.isObject()) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  JS::Rooted<JS::Realm*> contextRealm(cx, JS::GetCurrentRealmOrNull(cx));
+  if (!contextRealm) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  JS::Rooted<JSObject*> global(
+      cx, js::CheckedUnwrapDynamic(&targetGlobal.toObject(), cx));
+  if (!global) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  // Use AutoJSAPI in order to trigger AutoJSAPI::ReportException
+  // which will do most of the work required for this function.
+  //
+  // We only have to pick the right global for which we want to flag
+  // the exception against.
+  dom::AutoJSAPI jsapi;
+  if (!jsapi.Init(global)) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  JSContext* ccx = jsapi.cx();
+
+  // AutoJSAPI picks `targetGlobal` as execution compartment
+  // whereas we expect to run `function` from the callsites compartment.
+  JSAutoRealm ar(ccx, JS::GetRealmGlobalOrNull(contextRealm));
+
+  JS::RootedValue funVal(ccx, function);
+  if (!JS_WrapValue(ccx, &funVal)) {
+    return NS_ERROR_FAILURE;
+  }
+  if (!JS_CallFunctionValue(ccx, nullptr, funVal, JS::HandleValueArray::empty(),
+                            retval)) {
+    return NS_ERROR_XPC_JAVASCRIPT_ERROR;
   }
 
   return NS_OK;
@@ -416,9 +446,10 @@ nsresult nsConsoleService::LogMessageWithMode(
 void nsConsoleService::CollectCurrentListeners(
     nsCOMArray<nsIConsoleListener>& aListeners) {
   MutexAutoLock lock(mLock);
-  for (auto iter = mListeners.Iter(); !iter.Done(); iter.Next()) {
-    nsIConsoleListener* value = iter.UserData();
-    aListeners.AppendObject(value);
+  // XXX When MakeBackInserter(nsCOMArray<T>&) is added, we can do:
+  // AppendToArray(aListeners, mListeners.Values());
+  for (const auto& listener : mListeners.Values()) {
+    aListeners.AppendObject(listener);
   }
 }
 
@@ -428,8 +459,9 @@ nsConsoleService::LogStringMessage(const char16_t* aMessage) {
     return NS_OK;
   }
 
-  RefPtr<nsConsoleMessage> msg(new nsConsoleMessage(aMessage));
-  return this->LogMessage(msg);
+  RefPtr<nsConsoleMessage> msg(new nsConsoleMessage(
+      aMessage ? nsDependentString(aMessage) : EmptyString()));
+  return LogMessage(msg);
 }
 
 NS_IMETHODIMP
@@ -462,14 +494,17 @@ nsConsoleService::RegisterListener(nsIConsoleListener* aListener) {
   }
 
   nsCOMPtr<nsISupports> canonical = do_QueryInterface(aListener);
+  MOZ_ASSERT(canonical);
 
   MutexAutoLock lock(mLock);
-  if (mListeners.GetWeak(canonical)) {
-    // Reregistering a listener isn't good
-    return NS_ERROR_FAILURE;
-  }
-  mListeners.Put(canonical, aListener);
-  return NS_OK;
+  return mListeners.WithEntryHandle(canonical, [&](auto&& entry) {
+    if (entry) {
+      // Reregistering a listener isn't good
+      return NS_ERROR_FAILURE;
+    }
+    entry.Insert(aListener);
+    return NS_OK;
+  });
 }
 
 NS_IMETHODIMP
@@ -483,12 +518,10 @@ nsConsoleService::UnregisterListener(nsIConsoleListener* aListener) {
 
   MutexAutoLock lock(mLock);
 
-  if (!mListeners.GetWeak(canonical)) {
-    // Unregistering a listener that was never registered?
-    return NS_ERROR_FAILURE;
-  }
-  mListeners.Remove(canonical);
-  return NS_OK;
+  return mListeners.Remove(canonical)
+             ? NS_OK
+             // Unregistering a listener that was never registered?
+             : NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP

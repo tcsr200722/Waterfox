@@ -3,18 +3,13 @@
 
 "use strict";
 
-const availableRegions = [
-  ...Services.intl.getAvailableLocaleDisplayNames("region"),
-  null,
-];
-
 const DOMAIN_LOCALES = {
   "ebay-ca": ["en-CA"],
   "ebay-ch": ["rm"],
   "ebay-de": ["de", "dsb", "hsb"],
   "ebay-es": ["an", "ast", "ca", "ca-valencia", "es-ES", "eu", "gl"],
   "ebay-ie": ["ga-IE", "ie"],
-  "ebay-it": ["it", "lij"],
+  "ebay-it": ["fur", "it", "lij", "sc"],
   "ebay-nl": ["fy-NL", "nl"],
   "ebay-uk": ["cy", "en-GB", "gd"],
 };
@@ -32,77 +27,84 @@ const test = new SearchConfigTest({
         // regions: [
         //   "us", "gb", "ca", "ie", "fr", "it", "de", "at", "es", "nl", "ch", "au"
         // ],
-        locales: {
-          matches: [
-            "an",
-            "ast",
-            "br",
-            "ca",
-            "ca-valencia",
-            "cy",
-            "de",
-            "dsb",
-            "en-CA",
-            "en-GB",
-            "es-ES",
-            "eu",
-            "fr",
-            "fy-NL",
-            "ga-IE",
-            "gd",
-            "gl",
-            "hsb",
-            "it",
-            "lij",
-            "nl",
-            "rm",
-            "wo",
-          ],
-        },
+        locales: [
+          "an",
+          "ast",
+          "br",
+          "ca",
+          "ca-valencia",
+          "cy",
+          "de",
+          "dsb",
+          "en-CA",
+          "en-GB",
+          "es-ES",
+          "eu",
+          "fur",
+          "fr",
+          "fy-NL",
+          "ga-IE",
+          "gd",
+          "gl",
+          "hsb",
+          "it",
+          "lij",
+          "nl",
+          "rm",
+          "sc",
+          "wo",
+        ],
+      },
+      {
+        regions: ["pl"],
       },
       {
         regions: ["au", "be", "ca", "ch", "gb", "ie", "nl", "us"],
-        locales: {
-          matches: ["en-US"],
-        },
+        locales: ["en-US"],
+      },
+      {
+        regions: ["gb"],
+        locales: ["sco"],
       },
     ],
   },
-  searchUrlBase: "https://rover.ebay.com/rover/1/",
+  suggestionUrlBase: "https://autosug.ebay.com/autosug",
   details: [
     {
       // Note: These should be based on region, but we don't currently enforce that.
       // Note: the order here is important. A region/locale match higher up in the
       // list will override a region/locale match lower down.
-      domain: "befr.ebay.be",
+      domain: "www.befr.ebay.be",
       telemetryId: "ebay-be",
       included: [
         {
           regions: ["be"],
-          locales: {
-            matches: ["br", "unknown", "en-US", "fr", "fy-NL", "nl", "wo"],
-          },
+          locales: ["br", "unknown", "en-US", "fr", "fy-NL", "nl", "wo"],
         },
       ],
-      searchUrlEnd: "1553-53471-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=1553-53471-19255-0",
+      suggestUrlCode: "sId=23",
     },
     {
-      domain: "ebay.at",
+      domain: "www.ebay.at",
       telemetryId: "ebay-at",
       included: [
         {
           regions: ["at"],
-          locales: { matches: ["de", "dsb", "hsb"] },
+          locales: ["de", "dsb", "hsb"],
         },
       ],
-      searchUrlEnd: "5221-53469-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=5221-53469-19255-0",
+      suggestUrlCode: "sId=16",
     },
     {
-      domain: "ebay.ca",
+      domain: "www.ebay.ca",
       telemetryId: "ebay-ca",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-ca"] },
+          locales: DOMAIN_LOCALES["ebay-ca"],
         },
         {
           regions: ["ca"],
@@ -110,27 +112,29 @@ const test = new SearchConfigTest({
       ],
       excluded: [
         {
-          locales: {
-            matches: [
-              ...DOMAIN_LOCALES["ebay-ch"],
-              ...DOMAIN_LOCALES["ebay-de"],
-              ...DOMAIN_LOCALES["ebay-es"],
-              ...DOMAIN_LOCALES["ebay-ie"],
-              ...DOMAIN_LOCALES["ebay-it"],
-              ...DOMAIN_LOCALES["ebay-nl"],
-              ...DOMAIN_LOCALES["ebay-uk"],
-            ],
-          },
+          locales: [
+            ...DOMAIN_LOCALES["ebay-ch"],
+            ...DOMAIN_LOCALES["ebay-de"],
+            ...DOMAIN_LOCALES["ebay-es"],
+            ...DOMAIN_LOCALES["ebay-ie"],
+            ...DOMAIN_LOCALES["ebay-it"],
+            ...DOMAIN_LOCALES["ebay-nl"],
+            ...DOMAIN_LOCALES["ebay-uk"],
+          ],
+        },
+        {
+          regions: ["pl"],
         },
       ],
-      searchUrlEnd: "706-53473-19255-0/1",
+      searchUrlCode: "mkrid=706-53473-19255-0",
+      suggestUrlCode: "sId=2",
     },
     {
-      domain: "ebay.ch",
+      domain: "www.ebay.ch",
       telemetryId: "ebay-ch",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-ch"] },
+          locales: DOMAIN_LOCALES["ebay-ch"],
         },
         {
           regions: ["ch"],
@@ -138,148 +142,161 @@ const test = new SearchConfigTest({
       ],
       excluded: [
         {
-          locales: {
-            matches: [
-              ...DOMAIN_LOCALES["ebay-ca"],
-              ...DOMAIN_LOCALES["ebay-es"],
-              ...DOMAIN_LOCALES["ebay-ie"],
-              ...DOMAIN_LOCALES["ebay-it"],
-              ...DOMAIN_LOCALES["ebay-nl"],
-              ...DOMAIN_LOCALES["ebay-uk"],
-            ],
-          },
+          locales: [
+            ...DOMAIN_LOCALES["ebay-ca"],
+            ...DOMAIN_LOCALES["ebay-es"],
+            ...DOMAIN_LOCALES["ebay-ie"],
+            ...DOMAIN_LOCALES["ebay-it"],
+            ...DOMAIN_LOCALES["ebay-nl"],
+            ...DOMAIN_LOCALES["ebay-uk"],
+          ],
+        },
+        {
+          regions: ["pl"],
         },
       ],
-      searchUrlEnd: "5222-53480-19255-0/1",
+      searchUrlCode: "mkrid=5222-53480-19255-0",
+      suggestUrlCode: "sId=193",
     },
     {
-      domain: "ebay.com",
+      domain: "www.ebay.com",
       telemetryId: "ebay",
       included: [
         {
-          locales: { matches: ["unknown", "en-US"] },
+          locales: ["unknown", "en-US"],
         },
       ],
-      excluded: [{ regions: ["au", "be", "ca", "ch", "gb", "ie", "nl"] }],
-      searchUrlEnd: "711-53200-19255-0/1",
+      excluded: [{ regions: ["au", "be", "ca", "ch", "gb", "ie", "nl", "pl"] }],
+      searchUrlCode: "mkrid=711-53200-19255-0",
+      suggestUrlCode: "sId=0",
     },
     {
-      domain: "ebay.com.au",
+      domain: "www.ebay.com.au",
       telemetryId: "ebay-au",
       included: [
         {
           regions: ["au"],
-          locales: { matches: ["cy", "unknown", "en-GB", "en-US", "gd"] },
+          locales: ["cy", "unknown", "en-GB", "en-US", "gd"],
         },
       ],
-      searchUrlEnd: "705-53470-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=705-53470-19255-0",
+      suggestUrlCode: "sId=15",
     },
     {
-      domain: "ebay.ie",
+      domain: "www.ebay.ie",
       telemetryId: "ebay-ie",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-ie"] },
+          locales: DOMAIN_LOCALES["ebay-ie"],
         },
         {
           regions: ["ie"],
-          locales: { matches: ["cy", "unknown", "en-GB", "en-US", "gd"] },
+          locales: ["cy", "unknown", "en-GB", "en-US", "gd"],
         },
       ],
-      searchUrlEnd: "5282-53468-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=5282-53468-19255-0",
+      suggestUrlCode: "sId=205",
     },
     {
-      domain: "ebay.co.uk",
+      domain: "www.ebay.co.uk",
       telemetryId: "ebay-uk",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-uk"] },
+          locales: DOMAIN_LOCALES["ebay-uk"],
         },
         {
-          locales: { matches: ["unknown", "en-US"] },
+          locales: ["unknown", "en-US", "sco"],
           regions: ["gb"],
         },
       ],
-      excluded: [{ regions: ["au", "ie"] }],
-      searchUrlEnd: "710-53481-19255-0/1",
+      excluded: [{ regions: ["au", "ie", "pl"] }],
+      searchUrlCode: "mkrid=710-53481-19255-0",
+      suggestUrlCode: "sId=3",
     },
     {
-      domain: "ebay.de",
+      domain: "www.ebay.de",
       telemetryId: "ebay-de",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-de"] },
+          locales: DOMAIN_LOCALES["ebay-de"],
         },
       ],
-      excluded: [{ regions: ["at", "ch"] }],
-      searchUrlEnd: "707-53477-19255-0/1",
+      excluded: [{ regions: ["at", "ch", "pl"] }],
+      searchUrlCode: "mkrid=707-53477-19255-0",
+      suggestUrlCode: "sId=77",
     },
     {
-      domain: "ebay.es",
+      domain: "www.ebay.es",
       telemetryId: "ebay-es",
       included: [
         {
-          locales: {
-            matches: DOMAIN_LOCALES["ebay-es"],
-          },
+          locales: DOMAIN_LOCALES["ebay-es"],
         },
       ],
-      searchUrlEnd: "1185-53479-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=1185-53479-19255-0",
+      suggestUrlCode: "sId=186",
     },
     {
-      domain: "ebay.fr",
+      domain: "www.ebay.fr",
       telemetryId: "ebay-fr",
       included: [
         {
-          locales: { matches: ["br", "fr", "wo"] },
+          locales: ["br", "fr", "wo"],
         },
       ],
-      excluded: [{ regions: ["be", "ca", "ch"] }],
-      searchUrlEnd: "709-53476-19255-0/1",
+      excluded: [{ regions: ["be", "ca", "ch", "pl"] }],
+      searchUrlCode: "mkrid=709-53476-19255-0",
+      suggestUrlCode: "sId=71",
     },
     {
-      domain: "ebay.it",
+      domain: "www.ebay.it",
       telemetryId: "ebay-it",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-it"] },
+          locales: DOMAIN_LOCALES["ebay-it"],
         },
       ],
-      searchUrlEnd: "724-53478-19255-0/1",
+      excluded: [{ regions: ["pl"] }],
+      searchUrlCode: "mkrid=724-53478-19255-0",
+      suggestUrlCode: "sId=101",
     },
     {
-      domain: "ebay.nl",
+      domain: "www.ebay.nl",
       telemetryId: "ebay-nl",
       included: [
         {
-          locales: { matches: DOMAIN_LOCALES["ebay-nl"] },
+          locales: DOMAIN_LOCALES["ebay-nl"],
         },
         {
-          locales: { matches: ["unknown", "en-US"] },
+          locales: ["unknown", "en-US"],
           regions: ["nl"],
         },
       ],
-      excluded: [{ regions: ["be"] }],
-      searchUrlEnd: "1346-53482-19255-0/1",
+      excluded: [{ regions: ["be", "pl"] }],
+      searchUrlCode: "mkrid=1346-53482-19255-0",
+      suggestUrlCode: "sId=146",
+    },
+    {
+      domain: "www.ebay.pl",
+      telemetryId: "ebay-pl",
+      included: [
+        {
+          regions: ["pl"],
+        },
+      ],
+      searchUrlCode: "mkrid=4908-226936-19255-0",
+      suggestUrlCode: "sId=212",
     },
   ],
-  noSuggestionsURL: true,
 });
 
-add_task(async function setup() {
+add_setup(async function () {
   await test.setup();
 });
 
 add_task(async function test_searchConfig_ebay() {
-  await test.run(true);
-  // Only applies to the default locale fallback for the legacy config.
-  // Note: when we remove the legacy config, we should remove the "unknown"
-  // references in the 'details' section of the test above.
-  test._config.available.included[0].locales.matches.push("unknown");
-  // In the legacy configuration, eBay was turned on for most regions with en-US
-  // locale by default, but turned off by abSearch.
-  test._config.available.included[1].regions = availableRegions.filter(
-    region => !["by", "kz", "ru", "tr"].includes(region)
-  );
-  await test.run(false);
+  await test.run();
 });

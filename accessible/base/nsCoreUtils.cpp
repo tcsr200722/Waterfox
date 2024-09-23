@@ -5,17 +5,16 @@
 
 #include "nsCoreUtils.h"
 
+#include "nsAttrValue.h"
 #include "nsIAccessibleTypes.h"
 
-#include "nsIBaseWindow.h"
-#include "nsIDocShellTreeOwner.h"
 #include "mozilla/dom/Document.h"
+#include "nsAccUtils.h"
 #include "nsRange.h"
 #include "nsXULElement.h"
 #include "nsIDocShell.h"
 #include "nsIObserverService.h"
 #include "nsPresContext.h"
-#include "nsIScrollableFrame.h"
 #include "nsISelectionController.h"
 #include "nsISimpleEnumerator.h"
 #include "mozilla/dom/TouchEvent.h"
@@ -24,6 +23,7 @@
 #include "mozilla/EventStateManager.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ScrollContainerFrame.h"
 #include "mozilla/TouchEvents.h"
 #include "nsView.h"
 #include "nsGkAtoms.h"
@@ -31,8 +31,11 @@
 #include "nsComponentManagerUtils.h"
 
 #include "XULTreeElement.h"
+#include "nsIContentInlines.h"
 #include "nsTreeColumns.h"
+#include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/ElementInternals.h"
 #include "mozilla/dom/HTMLLabelElement.h"
 #include "mozilla/dom/MouseEventBinding.h"
 #include "mozilla/dom/Selection.h"
@@ -43,6 +46,8 @@ using mozilla::dom::DOMRect;
 using mozilla::dom::Element;
 using mozilla::dom::Selection;
 using mozilla::dom::XULTreeElement;
+
+using mozilla::a11y::nsAccUtils;
 
 ////////////////////////////////////////////////////////////////////////////////
 // nsCoreUtils
@@ -128,8 +133,7 @@ void nsCoreUtils::DispatchMouseEvent(EventMessage aMessage, int32_t aX,
   event.mRefPoint = LayoutDeviceIntPoint(aX, aY);
 
   event.mClickCount = 1;
-  event.mButton = MouseButton::eLeft;
-  event.mTime = PR_IntervalNow();
+  event.mButton = MouseButton::ePrimary;
   event.mInputSource = dom::MouseEvent_Binding::MOZ_SOURCE_UNKNOWN;
 
   nsEventStatus status = nsEventStatus_eIgnore;
@@ -150,8 +154,6 @@ void nsCoreUtils::DispatchTouchEvent(EventMessage aMessage, int32_t aX,
 
   WidgetTouchEvent event(true, aMessage, aRootWidget);
 
-  event.mTime = PR_IntervalNow();
-
   // XXX: Touch has an identifier of -1 to hint that it is synthesized.
   RefPtr<dom::Touch> t = new dom::Touch(-1, LayoutDeviceIntPoint(aX, aY),
                                         LayoutDeviceIntPoint(1, 1), 0.0f, 1.0f);
@@ -165,9 +167,10 @@ uint32_t nsCoreUtils::GetAccessKeyFor(nsIContent* aContent) {
   // Accesskeys are registered by @accesskey attribute only. At first check
   // whether it is presented on the given element to avoid the slow
   // EventStateManager::GetRegisteredAccessKey() method.
-  if (!aContent->IsElement() ||
-      !aContent->AsElement()->HasAttr(kNameSpaceID_None, nsGkAtoms::accesskey))
+  if (!aContent->IsElement() || !aContent->AsElement()->HasAttr(
+                                    kNameSpaceID_None, nsGkAtoms::accesskey)) {
     return 0;
+  }
 
   nsPresContext* presContext = aContent->OwnerDoc()->GetPresContext();
   if (!presContext) return 0;
@@ -250,21 +253,24 @@ nsresult nsCoreUtils::ScrollSubstringTo(nsIFrame* aFrame, nsRange* aRange,
   return NS_OK;
 }
 
-void nsCoreUtils::ScrollFrameToPoint(nsIFrame* aScrollableFrame,
+void nsCoreUtils::ScrollFrameToPoint(nsIFrame* aScrollContainerFrame,
                                      nsIFrame* aFrame,
-                                     const nsIntPoint& aPoint) {
-  nsIScrollableFrame* scrollableFrame = do_QueryFrame(aScrollableFrame);
-  if (!scrollableFrame) return;
+                                     const LayoutDeviceIntPoint& aPoint) {
+  ScrollContainerFrame* scrollContainerFrame =
+      do_QueryFrame(aScrollContainerFrame);
+  if (!scrollContainerFrame) {
+    return;
+  }
 
-  nsPoint point =
-      ToAppUnits(aPoint, aFrame->PresContext()->AppUnitsPerDevPixel());
+  nsPoint point = LayoutDeviceIntPoint::ToAppUnits(
+      aPoint, aFrame->PresContext()->AppUnitsPerDevPixel());
   nsRect frameRect = aFrame->GetScreenRectInAppUnits();
   nsPoint deltaPoint = point - frameRect.TopLeft();
 
-  nsPoint scrollPoint = scrollableFrame->GetScrollPosition();
+  nsPoint scrollPoint = scrollContainerFrame->GetScrollPosition();
   scrollPoint -= deltaPoint;
 
-  scrollableFrame->ScrollTo(scrollPoint, ScrollMode::Instant);
+  scrollContainerFrame->ScrollTo(scrollPoint, ScrollMode::Instant);
 }
 
 void nsCoreUtils::ConvertScrollTypeToPercents(uint32_t aScrollType,
@@ -274,65 +280,49 @@ void nsCoreUtils::ConvertScrollTypeToPercents(uint32_t aScrollType,
   WhenToScroll whenY, whenX;
   switch (aScrollType) {
     case nsIAccessibleScrollType::SCROLL_TYPE_TOP_LEFT:
-      whereY = kScrollToTop;
+      whereY = WhereToScroll::Start;
       whenY = WhenToScroll::Always;
-      whereX = kScrollToLeft;
+      whereX = WhereToScroll::Start;
       whenX = WhenToScroll::Always;
       break;
     case nsIAccessibleScrollType::SCROLL_TYPE_BOTTOM_RIGHT:
-      whereY = kScrollToBottom;
+      whereY = WhereToScroll::End;
       whenY = WhenToScroll::Always;
-      whereX = kScrollToRight;
+      whereX = WhereToScroll::End;
       whenX = WhenToScroll::Always;
       break;
     case nsIAccessibleScrollType::SCROLL_TYPE_TOP_EDGE:
-      whereY = kScrollToTop;
+      whereY = WhereToScroll::Start;
       whenY = WhenToScroll::Always;
-      whereX = kScrollMinimum;
+      whereX = WhereToScroll::Nearest;
       whenX = WhenToScroll::IfNotFullyVisible;
       break;
     case nsIAccessibleScrollType::SCROLL_TYPE_BOTTOM_EDGE:
-      whereY = kScrollToBottom;
+      whereY = WhereToScroll::End;
       whenY = WhenToScroll::Always;
-      whereX = kScrollMinimum;
+      whereX = WhereToScroll::Nearest;
       whenX = WhenToScroll::IfNotFullyVisible;
       break;
     case nsIAccessibleScrollType::SCROLL_TYPE_LEFT_EDGE:
-      whereY = kScrollMinimum;
+      whereY = WhereToScroll::Nearest;
       whenY = WhenToScroll::IfNotFullyVisible;
-      whereX = kScrollToLeft;
+      whereX = WhereToScroll::Start;
       whenX = WhenToScroll::Always;
       break;
     case nsIAccessibleScrollType::SCROLL_TYPE_RIGHT_EDGE:
-      whereY = kScrollMinimum;
+      whereY = WhereToScroll::Nearest;
       whenY = WhenToScroll::IfNotFullyVisible;
-      whereX = kScrollToRight;
+      whereX = WhereToScroll::End;
       whenX = WhenToScroll::Always;
       break;
     default:
-      whereY = kScrollMinimum;
+      whereY = WhereToScroll::Center;
       whenY = WhenToScroll::IfNotFullyVisible;
-      whereX = kScrollMinimum;
+      whereX = WhereToScroll::Center;
       whenX = WhenToScroll::IfNotFullyVisible;
   }
   *aVertical = ScrollAxis(whereY, whenY);
   *aHorizontal = ScrollAxis(whereX, whenX);
-}
-
-nsIntPoint nsCoreUtils::GetScreenCoordsForWindow(nsINode* aNode) {
-  nsIntPoint coords(0, 0);
-  nsCOMPtr<nsIDocShellTreeItem> treeItem(GetDocShellFor(aNode));
-  if (!treeItem) return coords;
-
-  nsCOMPtr<nsIDocShellTreeOwner> treeOwner;
-  treeItem->GetTreeOwner(getter_AddRefs(treeOwner));
-  if (!treeOwner) return coords;
-
-  nsCOMPtr<nsIBaseWindow> baseWindow = do_QueryInterface(treeOwner);
-  if (baseWindow)
-    baseWindow->GetPosition(&coords.x, &coords.y);  // in device pixels
-
-  return coords;
 }
 
 already_AddRefed<nsIDocShell> nsCoreUtils::GetDocShellFor(nsINode* aNode) {
@@ -352,27 +342,13 @@ bool nsCoreUtils::IsRootDocument(Document* aDocument) {
   return !parentTreeItem;
 }
 
-bool nsCoreUtils::IsContentDocument(Document* aDocument) {
-  nsCOMPtr<nsIDocShellTreeItem> docShellTreeItem = aDocument->GetDocShell();
-  NS_ASSERTION(docShellTreeItem, "No document shell tree item for document!");
-
-  return (docShellTreeItem->ItemType() == nsIDocShellTreeItem::typeContent);
-}
-
-bool nsCoreUtils::IsTabDocument(Document* aDocumentNode) {
-  nsCOMPtr<nsIDocShellTreeItem> treeItem(aDocumentNode->GetDocShell());
-
-  nsCOMPtr<nsIDocShellTreeItem> parentTreeItem;
-  treeItem->GetInProcessParent(getter_AddRefs(parentTreeItem));
-
-  // Tab document running in own process doesn't have parent.
-  if (XRE_IsContentProcess()) return !parentTreeItem;
-
-  // Parent of docshell for tab document running in chrome process is root.
-  nsCOMPtr<nsIDocShellTreeItem> rootTreeItem;
-  treeItem->GetInProcessRootTreeItem(getter_AddRefs(rootTreeItem));
-
-  return parentTreeItem == rootTreeItem;
+bool nsCoreUtils::IsTopLevelContentDocInProcess(Document* aDocumentNode) {
+  mozilla::dom::BrowsingContext* bc = aDocumentNode->GetBrowsingContext();
+  return bc->IsContent() && (
+                                // Tab document.
+                                bc->IsTop() ||
+                                // Out-of-process iframe.
+                                !bc->GetParent()->IsInProcess());
 }
 
 bool nsCoreUtils::IsErrorPage(Document* aDocument) {
@@ -384,24 +360,36 @@ bool nsCoreUtils::IsErrorPage(Document* aDocument) {
   nsAutoCString path;
   uri->GetPathQueryRef(path);
 
-  NS_NAMED_LITERAL_CSTRING(neterror, "neterror");
-  NS_NAMED_LITERAL_CSTRING(certerror, "certerror");
+  constexpr auto neterror = "neterror"_ns;
+  constexpr auto certerror = "certerror"_ns;
 
   return StringBeginsWith(path, neterror) || StringBeginsWith(path, certerror);
 }
 
+PresShell* nsCoreUtils::GetPresShellFor(nsINode* aNode) {
+  return aNode->OwnerDoc()->GetPresShell();
+}
+
 bool nsCoreUtils::GetID(nsIContent* aContent, nsAString& aID) {
   return aContent->IsElement() &&
-         aContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::id, aID);
+         aContent->AsElement()->GetAttr(nsGkAtoms::id, aID);
 }
 
 bool nsCoreUtils::GetUIntAttr(nsIContent* aContent, nsAtom* aAttr,
                               int32_t* aUInt) {
-  nsAutoString value;
   if (!aContent->IsElement()) {
     return false;
   }
-  aContent->AsElement()->GetAttr(kNameSpaceID_None, aAttr, value);
+  return GetUIntAttrValue(nsAccUtils::GetARIAAttr(aContent->AsElement(), aAttr),
+                          aUInt);
+}
+
+bool nsCoreUtils::GetUIntAttrValue(const nsAttrValue* aVal, int32_t* aUInt) {
+  if (!aVal) {
+    return false;
+  }
+  nsAutoString value;
+  aVal->ToString(value);
   if (!value.IsEmpty()) {
     nsresult error = NS_OK;
     int32_t integer = value.ToInteger(&error);
@@ -421,9 +409,9 @@ void nsCoreUtils::GetLanguageFor(nsIContent* aContent, nsIContent* aRootContent,
   nsIContent* walkUp = aContent;
   while (walkUp && walkUp != aRootContent &&
          (!walkUp->IsElement() ||
-          !walkUp->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::lang,
-                                        aLanguage)))
+          !walkUp->AsElement()->GetAttr(nsGkAtoms::lang, aLanguage))) {
     walkUp = walkUp->GetParent();
+  }
 }
 
 XULTreeElement* nsCoreUtils::GetTree(nsIContent* aContent) {
@@ -545,6 +533,12 @@ void nsCoreUtils::ScrollTo(PresShell* aPresShell, nsIContent* aContent,
                                     ScrollFlags::ScrollOverflowHidden);
 }
 
+bool nsCoreUtils::IsHTMLTableHeader(nsIContent* aContent) {
+  return aContent->NodeInfo()->Equals(nsGkAtoms::th) ||
+         (aContent->IsElement() &&
+          aContent->AsElement()->HasAttr(nsGkAtoms::scope));
+}
+
 bool nsCoreUtils::IsWhitespaceString(const nsAString& aString) {
   nsAString::const_char_iterator iterBegin, iterEnd;
 
@@ -579,6 +573,85 @@ void nsCoreUtils::DispatchAccEvent(RefPtr<nsIAccessibleEvent> event) {
 }
 
 bool nsCoreUtils::IsDisplayContents(nsIContent* aContent) {
-  return aContent && aContent->IsElement() &&
-         aContent->AsElement()->IsDisplayContents();
+  auto* element = Element::FromNodeOrNull(aContent);
+  return element && element->IsDisplayContents();
+}
+
+bool nsCoreUtils::CanCreateAccessibleWithoutFrame(nsIContent* aContent) {
+  auto* element = Element::FromNodeOrNull(aContent);
+  if (!element) {
+    return false;
+  }
+  if (!element->HasServoData() || Servo_Element_IsDisplayNone(element)) {
+    // Out of the flat tree or in a display: none subtree.
+    return false;
+  }
+
+  // If we aren't display: contents or option/optgroup we can't create an
+  // accessible without frame. Our select combobox code relies on the latter.
+  if (!element->IsDisplayContents() &&
+      !element->IsAnyOfHTMLElements(nsGkAtoms::option, nsGkAtoms::optgroup)) {
+    return false;
+  }
+
+  // Even if we're display: contents or optgroups, we might not be able to
+  // create an accessible if we're in a content-visibility: hidden subtree.
+  //
+  // To check that, find the closest ancestor element with a frame.
+  for (nsINode* ancestor = element->GetFlattenedTreeParentNode();
+       ancestor && ancestor->IsContent();
+       ancestor = ancestor->GetFlattenedTreeParentNode()) {
+    if (nsIFrame* f = ancestor->AsContent()->GetPrimaryFrame()) {
+      if (f->HidesContent(nsIFrame::IncludeContentVisibility::Hidden) ||
+          f->IsHiddenByContentVisibilityOnAnyAncestor(
+              nsIFrame::IncludeContentVisibility::Hidden)) {
+        return false;
+      }
+      break;
+    }
+  }
+
+  return true;
+}
+
+bool nsCoreUtils::IsDocumentVisibleConsideringInProcessAncestors(
+    const Document* aDocument) {
+  const Document* parent = aDocument;
+  do {
+    if (!parent->IsVisible()) {
+      return false;
+    }
+  } while ((parent = parent->GetInProcessParentDocument()));
+  return true;
+}
+
+bool nsCoreUtils::IsDescendantOfAnyShadowIncludingAncestor(
+    nsINode* aDescendant, nsINode* aStartAncestor) {
+  const nsINode* descRoot = aDescendant->SubtreeRoot();
+  nsINode* ancRoot = aStartAncestor->SubtreeRoot();
+  for (;;) {
+    if (ancRoot == descRoot) {
+      return true;
+    }
+    auto* shadow = mozilla::dom::ShadowRoot::FromNode(ancRoot);
+    if (!shadow || !shadow->GetHost()) {
+      break;
+    }
+    ancRoot = shadow->GetHost()->SubtreeRoot();
+  }
+  return false;
+}
+
+Element* nsCoreUtils::GetAriaActiveDescendantElement(Element* aElement) {
+  if (Element* activeDescendant = aElement->GetAriaActiveDescendantElement()) {
+    return activeDescendant;
+  }
+
+  if (auto* element = nsGenericHTMLElement::FromNode(aElement)) {
+    if (auto* internals = element->GetInternals()) {
+      return internals->GetAriaActiveDescendantElement();
+    }
+  }
+
+  return nullptr;
 }

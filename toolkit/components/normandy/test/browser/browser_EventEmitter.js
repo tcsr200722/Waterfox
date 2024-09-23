@@ -1,7 +1,8 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://normandy/lib/EventEmitter.jsm", this);
+const { EventEmitter } = ChromeUtils.importESModule(
+  "resource://normandy/lib/EventEmitter.sys.mjs"
+);
 
 const evidence = {
   a: 0,
@@ -25,7 +26,7 @@ function listenerC(x) {
   evidence.log += "c";
 }
 
-decorate_task(async function() {
+decorate_task(async function () {
   const eventEmitter = new EventEmitter();
 
   // Fire an unrelated event, to make sure nothing goes wrong

@@ -41,7 +41,7 @@ doesn't only contain trivial geometry, it can also store another
 [stacking_contexts]: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Positioning/Understanding_z_index/The_stacking_context
 */
 
-#![cfg_attr(feature = "cargo-clippy", allow(clippy::unreadable_literal, clippy::new_without_default, clippy::too_many_arguments))]
+#![allow(clippy::unreadable_literal, clippy::new_without_default, clippy::too_many_arguments)]
 
 
 // Cribbed from the |matches| crate, for simplicity.
@@ -57,10 +57,6 @@ macro_rules! matches {
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
-extern crate cfg_if;
-#[macro_use]
-extern crate cstr;
-#[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
@@ -71,12 +67,14 @@ extern crate malloc_size_of_derive;
 extern crate serde;
 #[macro_use]
 extern crate tracy_rs;
-
+#[macro_use]
+extern crate derive_more;
 extern crate malloc_size_of;
 extern crate svg_fmt;
 
 #[macro_use]
 mod profiler;
+mod telemetry;
 
 mod batch;
 mod border;
@@ -84,30 +82,32 @@ mod box_shadow;
 #[cfg(any(feature = "capture", feature = "replay"))]
 mod capture;
 mod clip;
+mod space;
 mod spatial_tree;
+mod command_buffer;
 mod composite;
+mod compositor;
 mod debug_colors;
 mod debug_font_data;
-mod debug_render;
-#[cfg(feature = "debugger")]
-mod debug_server;
+mod debug_item;
 mod device;
 mod ellipse;
 mod filterdata;
 mod frame_builder;
 mod freelist;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-mod gamma_lut;
 mod glyph_cache;
-mod glyph_rasterizer;
 mod gpu_cache;
 mod gpu_types;
 mod hit_test;
-mod intern;
 mod internal_types;
+mod lru_cache;
+mod pattern;
 mod picture;
+mod picture_graph;
+mod prepare;
 mod prim_store;
 mod print_tree;
+mod quad;
 mod render_backend;
 mod render_target;
 mod render_task_graph;
@@ -120,53 +120,27 @@ mod scene_builder_thread;
 mod scene_building;
 mod screen_capture;
 mod segment;
-mod shade;
 mod spatial_node;
-mod storage;
-mod texture_allocator;
+mod surface;
+mod texture_pack;
 mod texture_cache;
+mod tile_cache;
 mod util;
+mod visibility;
+mod api_resources;
+mod image_tiling;
+mod image_source;
+mod rectangle_occlusion;
+mod picture_textures;
 
-mod shader_source {
+///
+pub mod intern;
+///
+pub mod render_api;
+
+pub mod shader_source {
     include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 }
-
-mod platform {
-    #[cfg(target_os = "macos")]
-    pub use crate::platform::macos::font;
-    #[cfg(any(target_os = "android", all(unix, not(target_os = "macos"))))]
-    pub use crate::platform::unix::font;
-    #[cfg(target_os = "windows")]
-    pub use crate::platform::windows::font;
-
-    #[cfg(target_os = "macos")]
-    pub mod macos {
-        pub mod font;
-    }
-    #[cfg(any(target_os = "android", all(unix, not(target_os = "macos"))))]
-    pub mod unix {
-        pub mod font;
-    }
-    #[cfg(target_os = "windows")]
-    pub mod windows {
-        pub mod font;
-    }
-}
-
-#[cfg(target_os = "macos")]
-extern crate core_foundation;
-#[cfg(target_os = "macos")]
-extern crate core_graphics;
-#[cfg(target_os = "macos")]
-extern crate core_text;
-
-#[cfg(all(unix, not(target_os = "macos")))]
-extern crate freetype;
-#[cfg(all(unix, not(target_os = "macos")))]
-extern crate libc;
-
-#[cfg(target_os = "windows")]
-extern crate dwrote;
 
 extern crate bincode;
 extern crate byteorder;
@@ -178,48 +152,45 @@ extern crate plane_split;
 extern crate rayon;
 #[cfg(feature = "ron")]
 extern crate ron;
-#[cfg(feature = "debugger")]
-extern crate serde_json;
 #[macro_use]
 extern crate smallvec;
 extern crate time;
-#[cfg(feature = "debugger")]
-extern crate ws;
-#[cfg(feature = "debugger")]
-extern crate image_loader;
-#[cfg(feature = "debugger")]
-extern crate base64;
 #[cfg(all(feature = "capture", feature = "png"))]
 extern crate png;
 #[cfg(test)]
 extern crate rand;
 
-#[macro_use]
 pub extern crate api;
 extern crate webrender_build;
 
 #[doc(hidden)]
-pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities};
-pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo};
+pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities, CompositorSurfaceTransform};
+pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo, PartialPresentCompositor};
+pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo, WindowVisibility};
 pub use crate::device::{UploadMethod, VertexUsageHint, get_gl_target, get_unoptimized_shader_source};
 pub use crate::device::{ProgramBinary, ProgramCache, ProgramCacheObserver, FormatDesc};
 pub use crate::device::Device;
-pub use crate::frame_builder::ChasePrimitive;
-pub use crate::prim_store::PrimitiveDebugId;
 pub use crate::profiler::{ProfilerHooks, set_profiler_hooks};
 pub use crate::renderer::{
-    AsyncPropertySampler, CpuProfile, DebugFlags, GpuProfile, GraphicsApi,
-    GraphicsApiInfo, PipelineInfo, Renderer, RendererError, RendererOptions, RenderResults,
-    RendererStats, SceneBuilderHooks, ThreadListener, ShaderPrecacheFlags,
+    CpuProfile, DebugFlags, GpuProfile, GraphicsApi,
+    GraphicsApiInfo, PipelineInfo, Renderer, RendererError, RenderResults,
+    RendererStats, Shaders, SharedShaders, ShaderPrecacheFlags,
     MAX_VERTEX_TEXTURE_WIDTH,
 };
+pub use crate::renderer::init::{WebRenderOptions, create_webrender_instance, AsyncPropertySampler, SceneBuilderHooks, ONE_TIME_USAGE_HINT};
 pub use crate::hit_test::SharedHitTester;
 pub use crate::internal_types::FastHashMap;
 pub use crate::screen_capture::{AsyncScreenshotHandle, RecordedFrameHandle};
-pub use crate::shade::{Shaders, WrShaders};
+pub use crate::texture_cache::TextureCacheConfig;
 pub use api as webrender_api;
-pub use webrender_build::shader::ProgramSourceDigest;
+pub use webrender_build::shader::{ProgramSourceDigest, ShaderKind};
 pub use crate::picture::{TileDescriptor, TileId, InvalidationReason};
-pub use crate::picture::{PrimitiveCompareResult, PrimitiveCompareResultDetail, CompareHelperResult};
-pub use crate::picture::{TileNode, TileNodeKind, TileSerializer, TileCacheInstanceSerializer, TileOffset, TileCacheLoggerUpdateLists};
+pub use crate::picture::{PrimitiveCompareResult, CompareHelperResult};
+pub use crate::picture::{TileNode, TileNodeKind, TileOffset};
 pub use crate::intern::ItemUid;
+pub use crate::render_api::*;
+pub use crate::tile_cache::{PictureCacheDebugInfo, DirtyTileDebugInfo, TileDebugInfo, SliceDebugInfo};
+pub use glyph_rasterizer;
+
+#[cfg(feature = "sw_compositor")]
+pub use crate::compositor::sw_compositor;

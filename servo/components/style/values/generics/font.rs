@@ -5,6 +5,7 @@
 //! Generic types for font stuff.
 
 use crate::parser::{Parse, ParserContext};
+use crate::values::animated::ToAnimatedZero;
 use crate::One;
 use byteorder::{BigEndian, ReadBytesExt};
 use cssparser::Parser;
@@ -12,6 +13,13 @@ use std::fmt::{self, Write};
 use std::io::Cursor;
 use style_traits::{CssWriter, ParseError};
 use style_traits::{StyleParseErrorKind, ToCss};
+
+/// A trait for values that are labelled with a FontTag (for feature and
+/// variation settings).
+pub trait TaggedFontValue {
+    /// The value's tag.
+    fn tag(&self) -> FontTag;
+}
 
 /// https://drafts.csswg.org/css-fonts-4/#feature-tag-value
 #[derive(
@@ -30,6 +38,12 @@ pub struct FeatureTagValue<Integer> {
     pub tag: FontTag,
     /// The actual value.
     pub value: Integer,
+}
+
+impl<T> TaggedFontValue for FeatureTagValue<T> {
+    fn tag(&self) -> FontTag {
+        self.tag
+    }
 }
 
 impl<Integer> ToCss for FeatureTagValue<Integer>
@@ -76,20 +90,17 @@ pub struct VariationValue<Number> {
     pub value: Number,
 }
 
+impl<T> TaggedFontValue for VariationValue<T> {
+    fn tag(&self) -> FontTag {
+        self.tag
+    }
+}
+
 /// A value both for font-variation-settings and font-feature-settings.
-#[css(comma)]
 #[derive(
-    Clone,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
+    Clone, Debug, Eq, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToResolvedValue, ToShmem,
 )]
+#[css(comma)]
 pub struct FontSettings<T>(#[css(if_empty = "normal", iterable)] pub Box<[T]>);
 
 impl<T> FontSettings<T> {
@@ -107,7 +118,10 @@ impl<T: Parse> Parse for FontSettings<T> {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("normal")).is_ok() {
+        if input
+            .try_parse(|i| i.expect_ident_matching("normal"))
+            .is_ok()
+        {
             return Ok(Self::normal());
         }
 
@@ -198,4 +212,105 @@ pub enum FontStyle<Angle> {
     Italic,
     #[value_info(starts_with_keyword)]
     Oblique(Angle),
+}
+
+/// A generic value for the `font-size-adjust` property.
+///
+/// https://drafts.csswg.org/css-fonts-5/#font-size-adjust-prop
+#[allow(missing_docs)]
+#[repr(u8)]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Copy,
+    Debug,
+    Hash,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToAnimatedZero,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+pub enum GenericFontSizeAdjust<Factor> {
+    #[animation(error)]
+    None,
+    #[value_info(starts_with_keyword)]
+    ExHeight(Factor),
+    #[value_info(starts_with_keyword)]
+    CapHeight(Factor),
+    #[value_info(starts_with_keyword)]
+    ChWidth(Factor),
+    #[value_info(starts_with_keyword)]
+    IcWidth(Factor),
+    #[value_info(starts_with_keyword)]
+    IcHeight(Factor),
+}
+
+impl<Factor: ToCss> ToCss for GenericFontSizeAdjust<Factor> {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        let (prefix, value) = match self {
+            Self::None => return dest.write_str("none"),
+            Self::ExHeight(v) => ("", v),
+            Self::CapHeight(v) => ("cap-height ", v),
+            Self::ChWidth(v) => ("ch-width ", v),
+            Self::IcWidth(v) => ("ic-width ", v),
+            Self::IcHeight(v) => ("ic-height ", v),
+        };
+
+        dest.write_str(prefix)?;
+        value.to_css(dest)
+    }
+}
+
+/// A generic value for the `line-height` property.
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Copy,
+    Debug,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToCss,
+    ToShmem,
+    Parse,
+)]
+#[repr(C, u8)]
+pub enum GenericLineHeight<N, L> {
+    /// `normal`
+    Normal,
+    /// `-moz-block-height`
+    #[cfg(feature = "gecko")]
+    #[parse(condition = "ParserContext::in_ua_sheet")]
+    MozBlockHeight,
+    /// `<number>`
+    Number(N),
+    /// `<length-percentage>`
+    Length(L),
+}
+
+pub use self::GenericLineHeight as LineHeight;
+
+impl<N, L> ToAnimatedZero for LineHeight<N, L> {
+    #[inline]
+    fn to_animated_zero(&self) -> Result<Self, ()> {
+        Err(())
+    }
+}
+
+impl<N, L> LineHeight<N, L> {
+    /// Returns `normal`.
+    #[inline]
+    pub fn normal() -> Self {
+        LineHeight::Normal
+    }
 }

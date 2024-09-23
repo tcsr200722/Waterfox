@@ -1,15 +1,20 @@
 "use strict";
 
-ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
-ChromeUtils.import("resource://normandy/lib/ActionsManager.jsm", this);
-ChromeUtils.import("resource://normandy/lib/NormandyApi.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Uptake.jsm", this);
-const { ActionSchemas } = ChromeUtils.import(
-  "resource://normandy/actions/schemas/index.js"
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
+);
+const { ActionsManager } = ChromeUtils.importESModule(
+  "resource://normandy/lib/ActionsManager.sys.mjs"
+);
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
+const { ActionSchemas } = ChromeUtils.importESModule(
+  "resource://normandy/actions/schemas/index.sys.mjs"
 );
 
 // Test life cycle methods for actions
-decorate_task(async function(reportActionStub, Stub) {
+decorate_task(async function () {
   let manager = new ActionsManager();
   const recipe = { id: 1, action: "test-local-action-used" };
 
@@ -49,7 +54,7 @@ decorate_task(async function(reportActionStub, Stub) {
   );
 });
 
-decorate_task(async function() {
+decorate_task(async function () {
   for (const [name, Constructor] of Object.entries(
     ActionsManager.actionConstructors
   )) {

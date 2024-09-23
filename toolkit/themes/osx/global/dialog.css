@@ -5,7 +5,6 @@
 @namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
 
 :host {
-  -moz-appearance: dialog;
   padding: 14px;
 }
 

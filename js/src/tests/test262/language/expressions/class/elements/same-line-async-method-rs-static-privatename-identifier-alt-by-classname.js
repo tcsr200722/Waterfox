@@ -1,4 +1,4 @@
-// |reftest| skip async -- class-static-fields-private is not supported
+// |reftest| async
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-static-privatename-identifier-alt-by-classname.case
 // - src/class-elements/productions/cls-expr-after-same-line-async-method.template
@@ -87,7 +87,10 @@ var C = class {
 
 var c = new C();
 
-assert.sameValue(Object.hasOwnProperty.call(c, "m"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m"),
+  "m doesn't appear as an own property on the C instance"
+);
 assert.sameValue(c.m, C.prototype.m);
 
 verifyProperty(C.prototype, "m", {
@@ -116,4 +119,4 @@ c.m().then(function(v) {
   }
 
   return Promise.resolve(assertions());
-}, $DONE).then($DONE, $DONE);
+}).then($DONE, $DONE);

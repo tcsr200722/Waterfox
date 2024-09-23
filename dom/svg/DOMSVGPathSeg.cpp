@@ -13,8 +13,7 @@
 
 // See the architecture comment in DOMSVGPathSegList.h.
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace dom::SVGPathSeg_Binding;
 
@@ -40,41 +39,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(DOMSVGPathSeg)
   NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(DOMSVGPathSeg, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(DOMSVGPathSeg, Release)
-
-//----------------------------------------------------------------------
-// Helper class: AutoChangePathSegNotifier
-// Stack-based helper class to pair calls to WillChangePathSegList
-// and DidChangePathSegList.
-class MOZ_RAII AutoChangePathSegNotifier : public mozAutoDocUpdate {
- public:
-  explicit AutoChangePathSegNotifier(
-      DOMSVGPathSeg* aPathSeg MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mozAutoDocUpdate(aPathSeg->Element()->GetComposedDoc(), true),
-        mPathSeg(aPathSeg) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    MOZ_ASSERT(mPathSeg, "Expecting non-null pathSeg");
-    MOZ_ASSERT(mPathSeg->HasOwner(),
-               "Expecting list to have an owner for notification");
-    mEmptyOrOldValue = mPathSeg->Element()->WillChangePathSegList(*this);
-  }
-
-  ~AutoChangePathSegNotifier() {
-    mPathSeg->Element()->DidChangePathSegList(mEmptyOrOldValue, *this);
-    // Null check mPathSeg->mList, since DidChangePathSegList can run script,
-    // potentially removing mPathSeg from its list.
-    if (mPathSeg->mList && mPathSeg->mList->AttrIsAnimating()) {
-      mPathSeg->Element()->AnimationNeedsResample();
-    }
-  }
-
- private:
-  DOMSVGPathSeg* const mPathSeg;
-  nsAttrValue mEmptyOrOldValue;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-};
 
 DOMSVGPathSeg::DOMSVGPathSeg(DOMSVGPathSegList* aList, uint32_t aListIndex,
                              bool aIsAnimValItem)
@@ -154,7 +118,7 @@ bool DOMSVGPathSeg::IndexIsValid() {
       if (InternalItem()[1 + index] == float(a##propName)) {            \
         return;                                                         \
       }                                                                 \
-      AutoChangePathSegNotifier notifier(this);                         \
+      AutoChangePathSegListNotifier notifier(this);                     \
       InternalItem()[1 + index] = float(a##propName);                   \
     } else {                                                            \
       mArgs[index] = float(a##propName);                                \
@@ -347,5 +311,4 @@ DOMSVGPathSeg* DOMSVGPathSeg::CreateFor(DOMSVGPathSegList* aList,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

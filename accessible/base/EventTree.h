@@ -7,7 +7,7 @@
 #define mozilla_a11y_EventTree_h_
 
 #include "AccEvent.h"
-#include "Accessible.h"
+#include "LocalAccessible.h"
 
 #include "mozilla/a11y/DocAccessible.h"
 #include "mozilla/RefPtr.h"
@@ -29,11 +29,11 @@ class TreeMutation final {
   static const bool kNoEvents = true;
   static const bool kNoShutdown = true;
 
-  explicit TreeMutation(Accessible* aParent, bool aNoEvents = false);
+  explicit TreeMutation(LocalAccessible* aParent, bool aNoEvents = false);
   ~TreeMutation();
 
-  void AfterInsertion(Accessible* aChild);
-  void BeforeRemoval(Accessible* aChild, bool aNoShutdown = false);
+  void AfterInsertion(LocalAccessible* aChild);
+  void BeforeRemoval(LocalAccessible* aChild, bool aNoShutdown = false);
   void Done();
 
  private:
@@ -41,13 +41,7 @@ class TreeMutation final {
     return mParent->Document()->Controller();
   }
 
-  static EventTree* const kNoEventTree;
-
-#ifdef A11Y_LOG
-  static const char* PrefixLog(void* aData, Accessible*);
-#endif
-
-  Accessible* mParent;
+  LocalAccessible* mParent;
   uint32_t mStartIdx;
   uint32_t mStateFlagsCopy;
 
@@ -59,67 +53,6 @@ class TreeMutation final {
 #ifdef DEBUG
   bool mIsDone;
 #endif
-};
-
-/**
- * A mutation events coalescence structure.
- */
-class EventTree final {
- public:
-  EventTree()
-      : mFirst(nullptr),
-        mNext(nullptr),
-        mContainer(nullptr),
-        mFireReorder(false) {}
-  explicit EventTree(Accessible* aContainer, bool aFireReorder)
-      : mFirst(nullptr),
-        mNext(nullptr),
-        mContainer(aContainer),
-        mFireReorder(aFireReorder) {}
-  ~EventTree() { Clear(); }
-
-  void Shown(Accessible* aTarget);
-  void Hidden(Accessible*, bool);
-
-  /**
-   * Return an event tree node for the given accessible.
-   */
-  const EventTree* Find(const Accessible* aContainer) const;
-
-  /**
-   * Add a mutation event to this event tree.
-   */
-  void Mutated(AccMutationEvent* aEv);
-
-#ifdef A11Y_LOG
-  void Log(uint32_t aLevel = UINT32_MAX) const;
-#endif
-
- private:
-  /**
-   * Processes the event queue and fires events.
-   */
-  void Process(const RefPtr<DocAccessible>& aDeathGrip);
-
-  /**
-   * Return an event subtree for the given accessible.
-   */
-  EventTree* FindOrInsert(Accessible* aContainer);
-
-  void Clear();
-
-  UniquePtr<EventTree> mFirst;
-  UniquePtr<EventTree> mNext;
-
-  Accessible* mContainer;
-  nsTArray<RefPtr<AccMutationEvent>> mDependentEvents;
-  bool mFireReorder;
-
-  static NotificationController* Controller(Accessible* aAcc) {
-    return aAcc->Document()->Controller();
-  }
-
-  friend class NotificationController;
 };
 
 }  // namespace a11y

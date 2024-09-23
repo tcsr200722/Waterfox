@@ -6,23 +6,24 @@
 
 // Test handling errors in CacheStorage
 
-add_task(async function() {
+add_task(async function () {
   // Open the URL in a private browsing window.
   const win = await BrowserTestUtils.openNewBrowserWindow({ private: true });
   const tab = win.gBrowser.selectedBrowser;
-  const systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
-  tab.loadURI(MAIN_DOMAIN + "storage-cache-error.html", {
-    triggeringPrincipal: systemPrincipal,
-  });
+  const triggeringPrincipal =
+    Services.scriptSecurityManager.getSystemPrincipal();
+  tab.loadURI(
+    Services.io.newURI(ALT_DOMAIN_SECURED + "storage-cache-error.html"),
+    { triggeringPrincipal }
+  );
   await BrowserTestUtils.browserLoaded(tab);
 
   // On enumerating cache storages, CacheStorage::Keys would throw a
   // DOM security exception. We'd like to verify storage panel still work in
   // this case.
-  const target = await TargetFactory.forTab(win.gBrowser.selectedTab);
-  await openStoragePanel(null, target);
+  await openStoragePanel({ tab: win.gBrowser.selectedTab });
 
-  const cacheItemId = ["Cache", "http://test2.example.org"];
+  const cacheItemId = ["Cache", "https://test2.example.org"];
 
   await selectTreeItem(cacheItemId);
   ok(
@@ -31,5 +32,4 @@ add_task(async function() {
   );
 
   await BrowserTestUtils.closeWindow(win);
-  await finishTests();
 });

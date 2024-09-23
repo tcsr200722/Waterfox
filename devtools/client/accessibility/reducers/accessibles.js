@@ -9,7 +9,7 @@ const {
   HIGHLIGHT,
   RESET,
   SELECT,
-} = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/client/accessibility/constants.js");
 
 /**
  * Initial state definition
@@ -122,7 +122,7 @@ function onReceiveChildren(cache, action) {
     return updateChildrenCache(new Map(cache), accessible, children);
   }
 
-  if (accessible.actorID) {
+  if (!accessible.isDestroyed()) {
     console.warn(`Error fetching children: `, error);
     return cache;
   }

@@ -1,13 +1,13 @@
 const URI =
   "https://example.com/browser/browser/base/content/test/pageinfo/svg_image.html";
 
-add_task(async function() {
+add_task(async function () {
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
 
-  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, URI);
+  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, URI);
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, false, URI);
 
-  const pageInfo = BrowserPageInfo(
+  const pageInfo = BrowserCommands.pageInfo(
     gBrowser.selectedBrowser.currentURI.spec,
     "mediaTab"
   );

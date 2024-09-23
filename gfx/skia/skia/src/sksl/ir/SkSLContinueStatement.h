@@ -16,21 +16,25 @@ namespace SkSL {
 /**
  * A 'continue' statement.
  */
-struct ContinueStatement : public Statement {
-    ContinueStatement(int offset)
-    : INHERITED(offset, kContinue_Kind) {}
+class ContinueStatement final : public Statement {
+public:
+    inline static constexpr Kind kIRNodeKind = Kind::kContinue;
 
-    std::unique_ptr<Statement> clone() const override {
-        return std::unique_ptr<Statement>(new ContinueStatement(fOffset));
+    ContinueStatement(Position pos)
+    : INHERITED(pos, kIRNodeKind) {}
+
+    static std::unique_ptr<Statement> Make(Position pos) {
+        return std::make_unique<ContinueStatement>(pos);
     }
 
-    String description() const override {
-        return String("continue;");
+    std::string description() const override {
+        return "continue;";
     }
 
-    typedef Statement INHERITED;
+private:
+    using INHERITED = Statement;
 };
 
-} // namespace
+}  // namespace SkSL
 
 #endif

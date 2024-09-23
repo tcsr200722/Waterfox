@@ -7,11 +7,16 @@
 #ifndef ProfilerChild_h
 #define ProfilerChild_h
 
+#include "mozilla/BaseProfilerDetail.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/PProfilerChild.h"
 #include "mozilla/ProfileBufferControlledChunkManager.h"
+#include "mozilla/ProgressLogger.h"
 #include "mozilla/RefPtr.h"
+#include "ProfileAdditionalInformation.h"
 
 class nsIThread;
+struct PRThread;
 
 namespace mozilla {
 
@@ -21,7 +26,7 @@ namespace mozilla {
 // profiles from us.
 class ProfilerChild final : public PProfilerChild,
                             public mozilla::ipc::IShmemAllocator {
-  NS_INLINE_DECL_REFCOUNTING(ProfilerChild)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ProfilerChild, final)
 
   ProfilerChild();
 
@@ -29,25 +34,40 @@ class ProfilerChild final : public PProfilerChild,
   // This method can be used to grab a profile just before PProfiler is torn
   // down. The collected profile should then be sent through a different
   // message channel that is guaranteed to stay open long enough.
-  nsCString GrabShutdownProfile();
+  ProfileAndAdditionalInformation GrabShutdownProfile();
 
   void Destroy();
+
+  // This should be called regularly from outside of the profiler lock.
+  static void ProcessPendingUpdate();
+
+  static bool IsLockedOnCurrentThread();
 
  private:
   virtual ~ProfilerChild();
 
-  mozilla::ipc::IPCResult RecvStart(const ProfilerInitParams& params) override;
+  mozilla::ipc::IPCResult RecvStart(const ProfilerInitParams& params,
+                                    StartResolver&& aResolve) override;
   mozilla::ipc::IPCResult RecvEnsureStarted(
-      const ProfilerInitParams& params) override;
-  mozilla::ipc::IPCResult RecvStop() override;
-  mozilla::ipc::IPCResult RecvPause() override;
-  mozilla::ipc::IPCResult RecvResume() override;
+      const ProfilerInitParams& params,
+      EnsureStartedResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvStop(StopResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvPause(PauseResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvResume(ResumeResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvPauseSampling(
+      PauseSamplingResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvResumeSampling(
+      ResumeSamplingResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvWaitOnePeriodicSampling(
+      WaitOnePeriodicSamplingResolver&& aResolve) override;
   mozilla::ipc::IPCResult RecvAwaitNextChunkManagerUpdate(
       AwaitNextChunkManagerUpdateResolver&& aResolve) override;
   mozilla::ipc::IPCResult RecvDestroyReleasedChunksAtOrBefore(
       const TimeStamp& aTimeStamp) override;
   mozilla::ipc::IPCResult RecvGatherProfile(
       GatherProfileResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvGetGatherProfileProgress(
+      GetGatherProfileProgressResolver&& aResolve) override;
   mozilla::ipc::IPCResult RecvClearAllPages() override;
 
   void ActorDestroy(ActorDestroyReason aActorDestroyReason) override;
@@ -58,8 +78,10 @@ class ProfilerChild final : public PProfilerChild,
   void ResetChunkManager();
   void ResolveChunkUpdate(
       PProfilerChild::AwaitNextChunkManagerUpdateResolver& aResolve);
-  void ChunkManagerUpdateCallback(
+  void ProcessChunkManagerUpdate(
       ProfileBufferControlledChunkManager::Update&& aUpdate);
+
+  static void GatherProfileThreadFunction(void* already_AddRefedParameters);
 
   nsCOMPtr<nsIThread> mThread;
   bool mDestroyed;
@@ -67,6 +89,16 @@ class ProfilerChild final : public PProfilerChild,
   ProfileBufferControlledChunkManager* mChunkManager = nullptr;
   AwaitNextChunkManagerUpdateResolver mAwaitNextChunkManagerUpdateResolver;
   ProfileBufferControlledChunkManager::Update mChunkManagerUpdate;
+
+  struct ProfilerChildAndUpdate {
+    RefPtr<ProfilerChild> mProfilerChild;
+    ProfileBufferControlledChunkManager::Update mUpdate;
+  };
+  static DataMutexBase<ProfilerChildAndUpdate,
+                       baseprofiler::detail::BaseProfilerMutex>
+      sPendingChunkManagerUpdate;
+
+  RefPtr<ProgressLogger::SharedProgress> mGatherProfileProgress;
 };
 
 }  // namespace mozilla

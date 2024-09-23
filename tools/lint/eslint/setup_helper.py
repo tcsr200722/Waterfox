@@ -10,14 +10,16 @@ import platform
 import re
 import subprocess
 import sys
-from distutils.version import LooseVersion
 from filecmp import dircmp
 
-from mozbuild.nodeutil import (find_node_executable, find_npm_executable,
-                               NPM_MIN_VERSION, NODE_MIN_VERSION)
-from mozbuild.util import ensure_subprocess_env
+from mozbuild.nodeutil import (
+    NODE_MIN_VERSION,
+    NPM_MIN_VERSION,
+    find_node_executable,
+    find_npm_executable,
+)
 from mozfile.mozfile import remove as mozfileremove
-
+from packaging.version import Version
 
 NODE_MACHING_VERSION_NOT_FOUND_MESSAGE = """
 Could not find Node.js executable later than %s.
@@ -70,11 +72,25 @@ def eslint_setup(should_clobber=False):
     guide you through an interactive wizard helping you configure
     eslint for optimal use on Mozilla projects.
     """
-    package_setup(get_project_root(), 'eslint', should_clobber=should_clobber)
+    package_setup(get_project_root(), "eslint", should_clobber=should_clobber)
 
 
-def package_setup(package_root, package_name, should_update=False, should_clobber=False,
-                  no_optional=False):
+def remove_directory(path):
+    print("Clobbering %s..." % path)
+    if sys.platform.startswith("win") and have_winrm():
+        process = subprocess.Popen(["winrm", "-rf", path])
+        process.wait()
+    else:
+        mozfileremove(path)
+
+
+def package_setup(
+    package_root,
+    package_name,
+    should_update=False,
+    should_clobber=False,
+    no_optional=False,
+):
     """Ensure `package_name` at `package_root` is installed.
 
     When `should_update` is true, clobber, install, and produce a new
@@ -99,13 +115,15 @@ def package_setup(package_root, package_name, should_update=False, should_clobbe
         os.chdir(project_root)
 
         if should_clobber:
-            node_modules_path = os.path.join(project_root, "node_modules")
-            print("Clobbering %s..." % node_modules_path)
-            if sys.platform.startswith('win') and have_winrm():
-                process = subprocess.Popen(['winrm', '-rf', node_modules_path])
-                process.wait()
-            else:
-                mozfileremove(node_modules_path)
+            remove_directory(os.path.join(project_root, "node_modules"))
+
+        # Always remove the eslint-plugin-mozilla sub-directory as that can
+        # sometimes conflict with the top level node_modules, see bug 1809036.
+        remove_directory(
+            os.path.join(
+                get_eslint_module_path(), "eslint-plugin-mozilla", "node_modules"
+            )
+        )
 
         npm_path, _ = find_npm_executable()
         if not npm_path:
@@ -118,7 +136,7 @@ def package_setup(package_root, package_name, should_update=False, should_clobbe
         extra_parameters = ["--loglevel=error"]
 
         if no_optional:
-            extra_parameters.append('--no-optional')
+            extra_parameters.append("--no-optional")
 
         package_lock_json_path = os.path.join(get_project_root(), "package-lock.json")
 
@@ -133,20 +151,27 @@ def package_setup(package_root, package_name, should_update=False, should_clobbe
         if platform.system() != "Windows":
             cmd.insert(0, node_path)
 
+        cmd.extend(extra_parameters)
+
         # Ensure that bare `node` and `npm` in scripts, including post-install scripts, finds the
         # binary we're invoking with.  Without this, it's easy for compiled extensions to get
         # mismatched versions of the Node.js extension API.
-        extra_parameters.append("--scripts-prepend-node-path")
+        path = os.environ.get("PATH", "").split(os.pathsep)
+        node_dir = os.path.dirname(node_path)
+        if node_dir not in path:
+            path = [node_dir] + path
 
-        cmd.extend(extra_parameters)
-
-        print("Installing %s for mach using \"%s\"..." % (package_name, " ".join(cmd)))
-        result = call_process(package_name, cmd)
+        print('Installing %s for mach using "%s"...' % (package_name, " ".join(cmd)))
+        result = call_process(
+            package_name, cmd, append_env={"PATH": os.pathsep.join(path)}
+        )
 
         if not result:
             return 1
 
-        bin_path = os.path.join(get_project_root(), "node_modules", ".bin", package_name)
+        bin_path = os.path.join(
+            get_project_root(), "node_modules", ".bin", package_name
+        )
 
         print("\n%s installed successfully!" % package_name)
         print("\nNOTE: Your local %s binary is at %s\n" % (package_name, bin_path))
@@ -158,7 +183,7 @@ def package_setup(package_root, package_name, should_update=False, should_clobbe
 
 def call_process(name, cmd, cwd=None, append_env={}):
     env = dict(os.environ)
-    env.update(ensure_subprocess_env(append_env))
+    env.update(append_env)
 
     try:
         with open(os.devnull, "w") as fnull:
@@ -177,24 +202,27 @@ def call_process(name, cmd, cwd=None, append_env={}):
 def expected_eslint_modules():
     # Read the expected version of ESLint and external modules
     expected_modules_path = os.path.join(get_project_root(), "package.json")
-    with open(expected_modules_path, "r", encoding="utf-8") as f:
+    with open(expected_modules_path, encoding="utf-8") as f:
         sections = json.load(f)
-        expected_modules = sections["dependencies"]
-        expected_modules.update(sections["devDependencies"])
+        expected_modules = sections.get("dependencies", {})
+        expected_modules.update(sections.get("devDependencies", {}))
 
     # Also read the in-tree ESLint plugin mozilla information, to ensure the
     # dependencies are up to date.
-    mozilla_json_path = os.path.join(get_eslint_module_path(),
-                                     "eslint-plugin-mozilla", "package.json")
-    with open(mozilla_json_path, "r", encoding="utf-8") as f:
-        expected_modules.update(json.load(f)["dependencies"])
+    mozilla_json_path = os.path.join(
+        get_eslint_module_path(), "eslint-plugin-mozilla", "package.json"
+    )
+    with open(mozilla_json_path, encoding="utf-8") as f:
+        dependencies = json.load(f).get("dependencies", {})
+        expected_modules.update(dependencies)
 
     # Also read the in-tree ESLint plugin spidermonkey information, to ensure the
     # dependencies are up to date.
-    mozilla_json_path = os.path.join(get_eslint_module_path(),
-                                     "eslint-plugin-spidermonkey-js", "package.json")
-    with open(mozilla_json_path, "r", encoding="utf-8") as f:
-        expected_modules.update(json.load(f)["dependencies"])
+    mozilla_json_path = os.path.join(
+        get_eslint_module_path(), "eslint-plugin-spidermonkey-js", "package.json"
+    )
+    with open(mozilla_json_path, encoding="utf-8") as f:
+        expected_modules.update(json.load(f).get("dependencies", {}))
 
     return expected_modules
 
@@ -204,7 +232,7 @@ def check_eslint_files(node_modules_path, name):
         # Diff files only looks at files that are different. Not for files
         # that are only present on one side. This should be generally OK as
         # new files will need to be added in the index.js for the package.
-        if dcmp.diff_files and dcmp.diff_files != ['package.json']:
+        if dcmp.diff_files and dcmp.diff_files != ["package.json"]:
             return True
 
         result = False
@@ -216,8 +244,10 @@ def check_eslint_files(node_modules_path, name):
 
         return result
 
-    dcmp = dircmp(os.path.join(node_modules_path, name),
-                  os.path.join(get_eslint_module_path(), name))
+    dcmp = dircmp(
+        os.path.join(node_modules_path, name),
+        os.path.join(get_eslint_module_path(), name),
+    )
 
     return check_file_diffs(dcmp)
 
@@ -249,7 +279,7 @@ def eslint_module_needs_setup():
             # these are symlinked, so we'll always pick up the latest.
             continue
 
-        if name == "eslint" and LooseVersion("4.0.0") > LooseVersion(data["version"]):
+        if name == "eslint" and Version("4.0.0") > Version(data["version"]):
             print("ESLint is an old version, clobbering node_modules directory")
             needs_clobber = True
             has_issues = True
@@ -274,7 +304,7 @@ def version_in_range(version, version_range):
     version_match = VERSION_RE.match(version)
     if not version_match:
         raise RuntimeError("mach eslint doesn't understand module version %s" % version)
-    version = LooseVersion(version)
+    version = Version(version)
 
     # Caret ranges as specified by npm allow changes that do not modify the left-most non-zero
     # digit in the [major, minor, patch] tuple.  The code below assumes the major digit is
@@ -284,8 +314,8 @@ def version_in_range(version, version_range):
         range_version = range_match.group(1)
         range_major = int(range_match.group(2))
 
-        range_min = LooseVersion(range_version)
-        range_max = LooseVersion("%d.0.0" % (range_major + 1))
+        range_min = Version(range_version)
+        range_max = Version("%d.0.0" % (range_major + 1))
 
         return range_min <= version < range_max
 
@@ -299,18 +329,21 @@ def get_possible_node_paths_win():
     if platform.system() != "Windows":
         return []
 
-    return list({
-        "%s\\nodejs" % os.environ.get("SystemDrive"),
-        os.path.join(os.environ.get("ProgramFiles"), "nodejs"),
-        os.path.join(os.environ.get("PROGRAMW6432"), "nodejs"),
-        os.path.join(os.environ.get("PROGRAMFILES"), "nodejs")
-    })
+    return list(
+        {
+            "%s\\nodejs" % os.environ.get("SystemDrive"),
+            os.path.join(os.environ.get("ProgramFiles"), "nodejs"),
+            os.path.join(os.environ.get("PROGRAMW6432"), "nodejs"),
+            os.path.join(os.environ.get("PROGRAMFILES"), "nodejs"),
+        }
+    )
 
 
 def get_version(path):
     try:
-        version_str = subprocess.check_output([path, "--version"], stderr=subprocess.STDOUT,
-                                              universal_newlines=True)
+        version_str = subprocess.check_output(
+            [path, "--version"], stderr=subprocess.STDOUT, universal_newlines=True
+        )
         return version_str
     except (subprocess.CalledProcessError, OSError):
         return None
@@ -332,8 +365,8 @@ def set_project_root(root=None):
     file_found = False
     folder = os.getcwd()
 
-    while (folder):
-        if os.path.exists(os.path.join(folder, 'mach')):
+    while folder:
+        if os.path.exists(os.path.join(folder, "mach")):
             file_found = True
             break
         else:
@@ -382,9 +415,9 @@ def check_node_executables_valid():
 def have_winrm():
     # `winrm -h` should print 'winrm version ...' and exit 1
     try:
-        p = subprocess.Popen(['winrm.exe', '-h'],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT)
-        return p.wait() == 1 and p.stdout.read().startswith('winrm')
+        p = subprocess.Popen(
+            ["winrm.exe", "-h"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        return p.wait() == 1 and p.stdout.read().startswith("winrm")
     except Exception:
         return False

@@ -5,9 +5,10 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SessionStorageObserver.h"
+#include "StorageIPC.h"
+#include "mozilla/dom/LocalStorageCommon.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -51,5 +52,4 @@ void SessionStorageObserver::SetActor(SessionStorageObserverChild* aActor) {
   mActor = aActor;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

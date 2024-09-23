@@ -2,16 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 /**
  * Utils for keyboard command strings
  * @module utils/text
  */
-import Services from "devtools-services";
-const { appinfo } = Services;
 
-const isMacOS = appinfo.OS === "Darwin";
+const isMacOS = Services.appinfo.OS === "Darwin";
 
 /**
  * Formats key for use in tooltips
@@ -26,7 +22,7 @@ const isMacOS = appinfo.OS === "Darwin";
  * @memberof utils/text
  * @static
  */
-export function formatKeyShortcut(shortcut: string): string {
+export function formatKeyShortcut(shortcut) {
   if (isMacOS) {
     return shortcut
       .replace(/Shift\+/g, "\u21E7")
@@ -48,10 +44,7 @@ export function formatKeyShortcut(shortcut: string): string {
  * @memberof utils/text
  * @static
  */
-export function truncateMiddleText(
-  sourceText: string,
-  maxLength: number
-): string {
+export function truncateMiddleText(sourceText, maxLength) {
   let truncatedText = sourceText;
   if (sourceText.length > maxLength) {
     truncatedText = `${sourceText.substring(

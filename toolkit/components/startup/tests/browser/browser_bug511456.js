@@ -24,11 +24,11 @@ function test() {
   );
   win2.addEventListener(
     "load",
-    function() {
+    function () {
       // Create background test tab
       let browser = BrowserTestUtils.addTab(gBrowser, TEST_URL).linkedBrowser;
 
-      whenBrowserLoaded(browser, function() {
+      whenBrowserLoaded(browser, function () {
         let seenDialog = false;
 
         // Cancel the prompt the first time.
@@ -45,7 +45,7 @@ function test() {
         win2.close();
 
         // Leave the page the second time.
-        waitForOnBeforeUnloadDialog(browser, (btnLeave, btnStay) => {
+        waitForOnBeforeUnloadDialog(browser, btnLeave => {
           btnLeave.click();
         });
 

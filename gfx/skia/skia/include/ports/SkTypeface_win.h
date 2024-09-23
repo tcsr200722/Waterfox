@@ -8,6 +8,7 @@
 #ifndef SkTypeface_win_DEFINED
 #define SkTypeface_win_DEFINED
 
+#include "include/core/SkRefCnt.h"
 #include "include/core/SkTypeface.h"
 #include "include/core/SkTypes.h"
 
@@ -26,7 +27,7 @@ typedef LOGFONTA LOGFONT;
  *  corresponding typeface for the specified logfont. The caller is responsible
  *  for calling unref() when it is finished.
  */
-SK_API SkTypeface* SkCreateTypefaceFromLOGFONT(const LOGFONT&);
+SK_API sk_sp<SkTypeface> SkCreateTypefaceFromLOGFONT(const LOGFONT&);
 
 /**
  *  Copy the LOGFONT associated with this typeface into the lf parameter. Note
@@ -67,8 +68,8 @@ SK_API SkTypeface* SkCreateTypefaceFromDWriteFont(IDWriteFactory* aFactory,
                                                   float aClearTypeLevel);
 
 SK_API sk_sp<SkFontMgr> SkFontMgr_New_GDI();
-SK_API sk_sp<SkFontMgr> SkFontMgr_New_DirectWrite(IDWriteFactory* factory = NULL,
-                                                  IDWriteFontCollection* collection = NULL);
+SK_API sk_sp<SkFontMgr> SkFontMgr_New_DirectWrite(IDWriteFactory* factory = nullptr,
+                                                  IDWriteFontCollection* collection = nullptr);
 SK_API sk_sp<SkFontMgr> SkFontMgr_New_DirectWrite(IDWriteFactory* factory,
                                                   IDWriteFontCollection* collection,
                                                   IDWriteFontFallback* fallback);

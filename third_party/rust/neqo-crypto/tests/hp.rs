@@ -1,15 +1,40 @@
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
-#![warn(clippy::pedantic)]
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 
-use neqo_crypto::constants::*;
-use neqo_crypto::hkdf;
-use neqo_crypto::hp::HpKey;
+use std::mem;
+
+use neqo_crypto::{
+    constants::{
+        Cipher, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
+        TLS_VERSION_1_3,
+    },
+    hkdf,
+    hp::HpKey,
+};
 use test_fixture::fixture_init;
 
 fn make_hp(cipher: Cipher) -> HpKey {
-    let ikm = hkdf::import_key(TLS_VERSION_1_3, cipher, &[0; 16]).expect("import IKM");
+    fixture_init();
+    let ikm = hkdf::import_key(TLS_VERSION_1_3, &[0; 16]).expect("import IKM");
     let prk = hkdf::extract(TLS_VERSION_1_3, cipher, None, &ikm).expect("extract works");
     HpKey::extract(TLS_VERSION_1_3, cipher, &prk, "hp").expect("extract label works")
+}
+
+fn hp_test(cipher: Cipher, expected: &[u8]) {
+    let hp = make_hp(cipher);
+    let mask = hp.mask(&[0; 16]).expect("should produce a mask");
+    assert_eq!(mask, expected, "first invocation should be correct");
+
+    #[allow(clippy::redundant_clone)] // This is deliberate.
+    let hp2 = hp.clone();
+    let mask = hp2.mask(&[0; 16]).expect("clone produces mask");
+    assert_eq!(mask, expected, "clone should produce the same mask");
+
+    let mask = hp.mask(&[0; 16]).expect("should produce a mask again");
+    assert_eq!(mask, expected, "second invocation should be the same");
 }
 
 #[test]
@@ -19,11 +44,7 @@ fn aes128() {
         0x14,
     ];
 
-    fixture_init();
-    let mask = make_hp(TLS_AES_128_GCM_SHA256)
-        .mask(&[0; 16])
-        .expect("should produce a mask");
-    assert_eq!(mask, EXPECTED);
+    hp_test(TLS_AES_128_GCM_SHA256, EXPECTED);
 }
 
 #[test]
@@ -33,14 +54,9 @@ fn aes256() {
         0x2b,
     ];
 
-    fixture_init();
-    let mask = make_hp(TLS_AES_256_GCM_SHA384)
-        .mask(&[0; 16])
-        .expect("should produce a mask");
-    assert_eq!(mask, EXPECTED);
+    hp_test(TLS_AES_256_GCM_SHA384, EXPECTED);
 }
 
-#[cfg(feature = "chacha")]
 #[test]
 fn chacha20_ctr() {
     const EXPECTED: &[u8] = &[
@@ -51,9 +67,19 @@ fn chacha20_ctr() {
         0x2f, 0x52, 0x46, 0x89,
     ];
 
-    fixture_init();
-    let mask = make_hp(TLS_CHACHA20_POLY1305_SHA256)
-        .mask(&[0; 16])
-        .expect("should produce a mask");
-    assert_eq!(mask, EXPECTED);
+    hp_test(TLS_CHACHA20_POLY1305_SHA256, EXPECTED);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn aes_short() {
+    let hp = make_hp(TLS_AES_128_GCM_SHA256);
+    mem::drop(hp.mask(&[0; 15]));
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn chacha20_short() {
+    let hp = make_hp(TLS_CHACHA20_POLY1305_SHA256);
+    mem::drop(hp.mask(&[0; 15]));
 }

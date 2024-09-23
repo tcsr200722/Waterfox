@@ -5,22 +5,19 @@
 
 #include "TreeWalker.h"
 
-#include "Accessible.h"
-#include "AccIterator.h"
 #include "nsAccessibilityService.h"
 #include "DocAccessible.h"
 
 #include "mozilla/dom/ChildIterator.h"
 #include "mozilla/dom/Element.h"
 
-using namespace mozilla;
-using namespace mozilla::a11y;
+namespace mozilla::a11y {
 
 ////////////////////////////////////////////////////////////////////////////////
 // TreeWalker
 ////////////////////////////////////////////////////////////////////////////////
 
-TreeWalker::TreeWalker(Accessible* aContext)
+TreeWalker::TreeWalker(LocalAccessible* aContext)
     : mDoc(aContext->Document()),
       mContext(aContext),
       mAnchorNode(nullptr),
@@ -36,7 +33,7 @@ TreeWalker::TreeWalker(Accessible* aContext)
   MOZ_COUNT_CTOR(TreeWalker);
 }
 
-TreeWalker::TreeWalker(Accessible* aContext, nsIContent* aAnchorNode,
+TreeWalker::TreeWalker(LocalAccessible* aContext, nsIContent* aAnchorNode,
                        uint32_t aFlags)
     : mDoc(aContext->Document()),
       mContext(aContext),
@@ -69,7 +66,7 @@ TreeWalker::TreeWalker(DocAccessible* aDocument, nsIContent* aAnchorNode)
 
 TreeWalker::~TreeWalker() { MOZ_COUNT_DTOR(TreeWalker); }
 
-Accessible* TreeWalker::Scope(nsIContent* aAnchorNode) {
+LocalAccessible* TreeWalker::Scope(nsIContent* aAnchorNode) {
   Reset();
 
   mAnchorNode = aAnchorNode;
@@ -77,7 +74,7 @@ Accessible* TreeWalker::Scope(nsIContent* aAnchorNode) {
   mFlags |= eScoped;
 
   bool skipSubtree = false;
-  Accessible* acc = AccessibleFor(aAnchorNode, 0, &skipSubtree);
+  LocalAccessible* acc = AccessibleFor(aAnchorNode, 0, &skipSubtree);
   if (acc) {
     mPhase = eAtEnd;
     return acc;
@@ -115,19 +112,20 @@ bool TreeWalker::Seek(nsIContent* aChildNode) {
     }
 
     // If ARIA owned child.
-    Accessible* child = mDoc->GetAccessible(childNode);
+    LocalAccessible* child = mDoc->GetAccessible(childNode);
     if (child && child->IsRelocated()) {
       MOZ_ASSERT(
           !(mFlags & eScoped),
           "Walker should not be scoped when seeking into relocated children");
-      if (child->Parent() != mContext) {
+      if (child->LocalParent() != mContext) {
         return false;
       }
 
-      Accessible* ownedChild = nullptr;
+      LocalAccessible* ownedChild = nullptr;
       while ((ownedChild = mDoc->ARIAOwnedAt(mContext, mARIAOwnsIdx++)) &&
-             ownedChild != child)
+             ownedChild != child) {
         ;
+      }
 
       MOZ_ASSERT(ownedChild, "A child has to be in ARIA owned elements");
       mPhase = eAtARIAOwns;
@@ -147,10 +145,10 @@ bool TreeWalker::Seek(nsIContent* aChildNode) {
     }
   } while (true);
 
-  return false;
+  MOZ_ASSERT_UNREACHABLE("because the do-while loop never breaks");
 }
 
-Accessible* TreeWalker::Next() {
+LocalAccessible* TreeWalker::Next() {
   if (mStateStack.IsEmpty()) {
     if (mPhase == eAtEnd) {
       return nullptr;
@@ -159,7 +157,7 @@ Accessible* TreeWalker::Next() {
     if (mPhase == eAtDOM || mPhase == eAtARIAOwns) {
       if (!(mFlags & eScoped)) {
         mPhase = eAtARIAOwns;
-        Accessible* child = mDoc->ARIAOwnedAt(mContext, mARIAOwnsIdx);
+        LocalAccessible* child = mDoc->ARIAOwnedAt(mContext, mARIAOwnsIdx);
         if (child) {
           mARIAOwnsIdx++;
           return child;
@@ -184,7 +182,7 @@ Accessible* TreeWalker::Next() {
   while (top) {
     while (nsIContent* childNode = top->GetNextChild()) {
       bool skipSubtree = false;
-      Accessible* child = AccessibleFor(childNode, mFlags, &skipSubtree);
+      LocalAccessible* child = AccessibleFor(childNode, mFlags, &skipSubtree);
       if (child) {
         return child;
       }
@@ -231,7 +229,7 @@ Accessible* TreeWalker::Next() {
   return Next();
 }
 
-Accessible* TreeWalker::Prev() {
+LocalAccessible* TreeWalker::Prev() {
   if (mStateStack.IsEmpty()) {
     if (mPhase == eAtStart || mPhase == eAtDOM) {
       mPhase = eAtStart;
@@ -269,7 +267,8 @@ Accessible* TreeWalker::Prev() {
     while (nsIContent* childNode = top->GetPreviousChild()) {
       // No accessible creation on the way back.
       bool skipSubtree = false;
-      Accessible* child = AccessibleFor(childNode, eWalkCache, &skipSubtree);
+      LocalAccessible* child =
+          AccessibleFor(childNode, eWalkCache, &skipSubtree);
       if (child) {
         return child;
       }
@@ -310,11 +309,11 @@ Accessible* TreeWalker::Prev() {
   return nullptr;
 }
 
-Accessible* TreeWalker::AccessibleFor(nsIContent* aNode, uint32_t aFlags,
-                                      bool* aSkipSubtree) {
+LocalAccessible* TreeWalker::AccessibleFor(nsIContent* aNode, uint32_t aFlags,
+                                           bool* aSkipSubtree) {
   // Ignore the accessible and its subtree if it was repositioned by means
   // of aria-owns.
-  Accessible* child = mDoc->GetAccessible(aNode);
+  LocalAccessible* child = mDoc->GetAccessible(aNode);
   if (child) {
     if (child->IsRelocated()) {
       *aSkipSubtree = true;
@@ -346,3 +345,5 @@ dom::AllChildrenIterator* TreeWalker::PopState() {
   mStateStack.RemoveLastElement();
   return mStateStack.IsEmpty() ? nullptr : &mStateStack.LastElement();
 }
+
+}  // namespace mozilla::a11y

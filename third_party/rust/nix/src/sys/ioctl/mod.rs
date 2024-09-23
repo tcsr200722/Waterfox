@@ -29,7 +29,7 @@
 //! Historically `ioctl` numbers were arbitrary hard-coded values. In Linux (before 2.6) and some
 //! unices this has changed to a more-ordered system where the ioctl numbers are partitioned into
 //! subcomponents (For linux this is documented in
-//! [`Documentation/ioctl/ioctl-number.txt`](http://elixir.free-electrons.com/linux/latest/source/Documentation/ioctl/ioctl-number.txt)):
+//! [`Documentation/ioctl/ioctl-number.rst`](https://elixir.bootlin.com/linux/latest/source/Documentation/userspace-api/ioctl/ioctl-number.rst)):
 //!
 //!   * Number: The actual ioctl ID
 //!   * Type: A grouping of ioctls for a common purpose or driver
@@ -72,7 +72,7 @@
 //! # const SPI_IOC_MAGIC: u8 = b'k'; // Defined in linux/spi/spidev.h
 //! # const SPI_IOC_TYPE_MODE: u8 = 1;
 //! pub unsafe fn spi_read_mode(fd: c_int, data: *mut u8) -> Result<c_int> {
-//!     let res = libc::ioctl(fd, request_code_read!(SPI_IOC_MAGIC, SPI_IOC_TYPE_MODE, mem::size_of::<u8>()), data);
+//!     let res = unsafe { libc::ioctl(fd, request_code_read!(SPI_IOC_MAGIC, SPI_IOC_TYPE_MODE, mem::size_of::<u8>()), data) };
 //!     Errno::result(res)
 //! }
 //! # fn main() {}
@@ -104,7 +104,7 @@
 //! respectively. To determine the specific `write_` variant to use you'll need to find
 //! what the argument type is supposed to be. If it's an `int`, then `write_int` should be used,
 //! otherwise it should be a pointer and `write_ptr` should be used. On Linux the
-//! [`ioctl_list` man page](http://man7.org/linux/man-pages/man2/ioctl_list.2.html) describes a
+//! [`ioctl_list` man page](https://man7.org/linux/man-pages/man2/ioctl_list.2.html) describes a
 //! large number of `ioctl`s and describes their argument data type.
 //!
 //! Using "bad" `ioctl`s
@@ -121,11 +121,11 @@
 //!
 //! ```
 //! # #[macro_use] extern crate nix;
-//! # #[cfg(any(target_os = "android", target_os = "linux"))]
+//! # #[cfg(linux_android)]
 //! # use nix::libc::TCGETS as TCGETS;
-//! # #[cfg(any(target_os = "android", target_os = "linux"))]
+//! # #[cfg(linux_android)]
 //! # use nix::libc::termios as termios;
-//! # #[cfg(any(target_os = "android", target_os = "linux"))]
+//! # #[cfg(linux_android)]
 //! ioctl_read_bad!(tcgets, TCGETS, termios);
 //! # fn main() {}
 //! ```
@@ -179,9 +179,13 @@
 //! # const SPI_IOC_TYPE_MESSAGE: u8 = 0;
 //! # pub struct spi_ioc_transfer(u64);
 //! pub unsafe fn spi_message(fd: c_int, data: &mut [spi_ioc_transfer]) -> Result<c_int> {
-//!     let res = libc::ioctl(fd,
-//!                           request_code_write!(SPI_IOC_MAGIC, SPI_IOC_TYPE_MESSAGE, data.len() * mem::size_of::<spi_ioc_transfer>()),
-//!                           data);
+//!     let res = unsafe {
+//!         libc::ioctl(
+//!             fd,
+//!             request_code_write!(SPI_IOC_MAGIC, SPI_IOC_TYPE_MESSAGE, data.len() * mem::size_of::<spi_ioc_transfer>()),
+//!             data
+//!         )
+//!     };
 //!     Errno::result(res)
 //! }
 //! # fn main() {}
@@ -221,39 +225,29 @@
 //!
 //! # fn main() {}
 //! ```
-#[cfg(any(target_os = "android", target_os = "linux"))]
+use cfg_if::cfg_if;
+
+#[cfg(any(linux_android, target_os = "redox"))]
 #[macro_use]
 mod linux;
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(any(linux_android, target_os = "redox"))]
 pub use self::linux::*;
 
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
+#[cfg(any(bsd, solarish, target_os = "haiku",))]
 #[macro_use]
 mod bsd;
 
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
+#[cfg(any(bsd, solarish, target_os = "haiku",))]
 pub use self::bsd::*;
 
 /// Convert raw ioctl return value to a Nix result
 #[macro_export]
 #[doc(hidden)]
 macro_rules! convert_ioctl_res {
-    ($w:expr) => (
-        {
-            $crate::errno::Errno::result($w)
-        }
-    );
+    ($w:expr) => {{
+        $crate::errno::Errno::result($w)
+    }};
 }
 
 /// Generates a wrapper function for an ioctl that passes no data to the kernel.
@@ -287,13 +281,15 @@ macro_rules! convert_ioctl_res {
 /// ioctl_none!(log_status, b'V', 70);
 /// fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_none {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_none!($ioty, $nr) as $crate::sys::ioctl::ioctl_num_type))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_none!($ioty, $nr) as $crate::sys::ioctl::ioctl_num_type))
+            }
         }
     )
 }
@@ -317,7 +313,6 @@ macro_rules! ioctl_none {
 ///
 /// ```no_run
 /// # #[macro_use] extern crate nix;
-/// # extern crate libc;
 /// # use libc::TIOCNXCL;
 /// # use std::fs::File;
 /// # use std::os::unix::io::AsRawFd;
@@ -328,13 +323,15 @@ macro_rules! ioctl_none {
 /// }
 /// ```
 // TODO: add an example using request_code_*!()
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_none_bad {
     ($(#[$attr:meta])* $name:ident, $nr:expr) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type))
+            }
         }
     )
 }
@@ -365,14 +362,16 @@ macro_rules! ioctl_none_bad {
 /// ioctl_read!(spi_read_mode, SPI_IOC_MAGIC, SPI_IOC_TYPE_MODE, u8);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_read {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *mut $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_read!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_read!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -396,20 +395,21 @@ macro_rules! ioctl_read {
 /// # Example
 ///
 /// ```
-/// # extern crate libc;
 /// # #[macro_use] extern crate nix;
-/// # #[cfg(any(target_os = "android", target_os = "linux"))]
+/// # #[cfg(linux_android)]
 /// ioctl_read_bad!(tcgets, libc::TCGETS, libc::termios);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_read_bad {
     ($(#[$attr:meta])* $name:ident, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *mut $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -439,14 +439,16 @@ macro_rules! ioctl_read_bad {
 /// ioctl_write_ptr!(s_audio, b'V', 34, v4l2_audio);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_write_ptr {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *const $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -470,26 +472,27 @@ macro_rules! ioctl_write_ptr {
 /// # Example
 ///
 /// ```
-/// # extern crate libc;
 /// # #[macro_use] extern crate nix;
-/// # #[cfg(any(target_os = "android", target_os = "linux"))]
+/// # #[cfg(linux_android)]
 /// ioctl_write_ptr_bad!(tcsets, libc::TCSETS, libc::termios);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_write_ptr_bad {
     ($(#[$attr:meta])* $name:ident, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *const $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
 
-cfg_if!{
-    if #[cfg(any(target_os = "dragonfly", target_os = "freebsd"))] {
+cfg_if! {
+    if #[cfg(freebsdlike)] {
         /// Generates a wrapper function for a ioctl that writes an integer to the kernel.
         ///
         /// The arguments to this macro are:
@@ -517,14 +520,16 @@ cfg_if!{
         /// ioctl_write_int!(vt_activate, b'v', 4);
         /// # fn main() {}
         /// ```
-        #[macro_export]
+        #[macro_export(local_inner_macros)]
         macro_rules! ioctl_write_int {
             ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr) => (
                 $(#[$attr])*
                 pub unsafe fn $name(fd: $crate::libc::c_int,
                                     data: $crate::sys::ioctl::ioctl_param_type)
                                     -> $crate::Result<$crate::libc::c_int> {
-                    convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write_int!($ioty, $nr) as $crate::sys::ioctl::ioctl_num_type, data))
+                    unsafe {
+                        convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write_int!($ioty, $nr) as $crate::sys::ioctl::ioctl_num_type, data))
+                    }
                 }
             )
         }
@@ -558,14 +563,16 @@ cfg_if!{
         /// ioctl_write_int!(hci_dev_up, HCI_IOC_MAGIC, HCI_IOC_HCIDEVUP);
         /// # fn main() {}
         /// ```
-        #[macro_export]
+        #[macro_export(local_inner_macros)]
         macro_rules! ioctl_write_int {
             ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr) => (
                 $(#[$attr])*
                 pub unsafe fn $name(fd: $crate::libc::c_int,
                                     data: $crate::sys::ioctl::ioctl_param_type)
                                     -> $crate::Result<$crate::libc::c_int> {
-                    convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, ::std::mem::size_of::<$crate::libc::c_int>()) as $crate::sys::ioctl::ioctl_num_type, data))
+                    unsafe {
+                        convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, ::std::mem::size_of::<$crate::libc::c_int>()) as $crate::sys::ioctl::ioctl_num_type, data))
+                    }
                 }
             )
         }
@@ -590,9 +597,8 @@ cfg_if!{
 /// # Examples
 ///
 /// ```
-/// # extern crate libc;
 /// # #[macro_use] extern crate nix;
-/// # #[cfg(any(target_os = "android", target_os = "linux"))]
+/// # #[cfg(linux_android)]
 /// ioctl_write_int_bad!(tcsbrk, libc::TCSBRK);
 /// # fn main() {}
 /// ```
@@ -603,14 +609,16 @@ cfg_if!{
 /// ioctl_write_int_bad!(kvm_create_vm, request_code_none!(KVMIO, 0x03));
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_write_int_bad {
     ($(#[$attr:meta])* $name:ident, $nr:expr) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: $crate::libc::c_int)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -640,14 +648,16 @@ macro_rules! ioctl_write_int_bad {
 /// ioctl_readwrite!(enum_audio, b'V', 65, v4l2_audio);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_readwrite {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *mut $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_readwrite!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_readwrite!($ioty, $nr, ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -668,14 +678,16 @@ macro_rules! ioctl_readwrite {
 ///
 /// For a more in-depth explanation of ioctls, see [`::sys::ioctl`](sys/ioctl/index.html).
 // TODO: Find an example for ioctl_readwrite_bad
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_readwrite_bad {
     ($(#[$attr:meta])* $name:ident, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: *mut $ty)
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, $nr as $crate::sys::ioctl::ioctl_num_type, data))
+            }
         }
     )
 }
@@ -697,14 +709,16 @@ macro_rules! ioctl_readwrite_bad {
 ///
 /// For a more in-depth explanation of ioctls, see [`::sys::ioctl`](sys/ioctl/index.html).
 // TODO: Find an example for ioctl_read_buf
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_read_buf {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: &mut [$ty])
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_read!($ioty, $nr, data.len() * ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_read!($ioty, $nr, ::std::mem::size_of_val(data)) as $crate::sys::ioctl::ioctl_num_type, data.as_mut_ptr()))
+            }
         }
     )
 }
@@ -736,14 +750,16 @@ macro_rules! ioctl_read_buf {
 /// ioctl_write_buf!(spi_transfer, SPI_IOC_MAGIC, SPI_IOC_TYPE_MESSAGE, spi_ioc_transfer);
 /// # fn main() {}
 /// ```
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_write_buf {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: &[$ty])
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, data.len() * ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_write!($ioty, $nr, ::std::mem::size_of_val(data)) as $crate::sys::ioctl::ioctl_num_type, data.as_ptr()))
+            }
         }
     )
 }
@@ -765,14 +781,16 @@ macro_rules! ioctl_write_buf {
 ///
 /// For a more in-depth explanation of ioctls, see [`::sys::ioctl`](sys/ioctl/index.html).
 // TODO: Find an example for readwrite_buf
-#[macro_export]
+#[macro_export(local_inner_macros)]
 macro_rules! ioctl_readwrite_buf {
     ($(#[$attr:meta])* $name:ident, $ioty:expr, $nr:expr, $ty:ty) => (
         $(#[$attr])*
         pub unsafe fn $name(fd: $crate::libc::c_int,
                             data: &mut [$ty])
                             -> $crate::Result<$crate::libc::c_int> {
-            convert_ioctl_res!($crate::libc::ioctl(fd, request_code_readwrite!($ioty, $nr, data.len() * ::std::mem::size_of::<$ty>()) as $crate::sys::ioctl::ioctl_num_type, data))
+            unsafe {
+                convert_ioctl_res!($crate::libc::ioctl(fd, request_code_readwrite!($ioty, $nr, ::std::mem::size_of_val(data)) as $crate::sys::ioctl::ioctl_num_type, data.as_mut_ptr()))
+            }
         }
     )
 }

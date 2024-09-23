@@ -3,13 +3,10 @@
 
 "use strict";
 
-const { fxAccounts } = ChromeUtils.import(
-  "resource://gre/modules/FxAccounts.jsm"
+const { getFxAccountsSingleton } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccounts.sys.mjs"
 );
-
-const { PREF_ACCOUNT_ROOT } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsCommon.js"
-);
+const fxAccounts = getFxAccountsSingleton();
 
 _("Misc tests for FxAccounts.telemetry");
 

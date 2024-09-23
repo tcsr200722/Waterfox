@@ -13,7 +13,7 @@ const TEST_URI = `<style>
   </style>
   <div id="div1"></div>`;
 
-add_task(async function() {
+add_task(async function () {
   // Make sure the toolbox is tall enough to have empty space below the
   // boxmodel-container.
   await pushPref("devtools.toolbox.footer.height", 500);
@@ -31,7 +31,7 @@ async function testClickingOutsideEditor(boxmodel) {
   const span = boxmodel.document.querySelector(
     ".boxmodel-margin.boxmodel-top > span"
   );
-  is(span.textContent, 10, "Should have the right value in the box model.");
+  await waitForElementTextContent(span, "10");
 
   EventUtils.synthesizeMouseAtCenter(span, {}, boxmodel.document.defaultView);
   const editor = boxmodel.document.querySelector(
@@ -63,7 +63,7 @@ async function testClickingBelowContainer(boxmodel) {
   const span = boxmodel.document.querySelector(
     ".boxmodel-margin.boxmodel-top > span"
   );
-  is(span.textContent, 10, "Should have the right value in the box model.");
+  await waitForElementTextContent(span, "10");
 
   info(
     "Test that clicking below the boxmodel-container blurs the opened editor"

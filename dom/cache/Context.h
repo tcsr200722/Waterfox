@@ -7,8 +7,10 @@
 #ifndef mozilla_dom_cache_Context_h
 #define mozilla_dom_cache_Context_h
 
+#include "CacheCipherKeyManager.h"
 #include "mozilla/dom/SafeRefPtr.h"
 #include "mozilla/dom/cache/Types.h"
+#include "mozilla/dom/quota/StringifyUtils.h"
 #include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
 #include "nsProxyRelease.h"
@@ -19,8 +21,7 @@
 class nsIEventTarget;
 class nsIThread;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace quota {
 
@@ -48,9 +49,9 @@ class Manager;
 //     have removed themselves as listener.  This means an idle context with
 //     no active DOM objects will close gracefully.
 //  2) The QuotaManager aborts all operations so it can delete the files.
-//     In this case the QuotaManager calls Client::AbortOperations() which
-//     in turn cancels all existing Action objects and then marks the Manager
-//     as invalid.
+//     In this case the QuotaManager calls Client::AbortOperationsForLocks()
+//     which in turn cancels all existing Action objects and then marks the
+//     Manager as invalid.
 //  3) Browser shutdown occurs and the Manager calls Context::CancelAll().
 //
 // In either case, though, the Action objects must be destroyed first to
@@ -63,8 +64,8 @@ class Manager;
 // As an invariant, all Context objects must be destroyed before permitting
 // the "profile-before-change" shutdown event to complete.  This is ensured
 // via the code in ShutdownObserver.cpp.
-class Context final : public SafeRefCounted<Context> {
-  typedef mozilla::dom::quota::DirectoryLock DirectoryLock;
+class Context final : public SafeRefCounted<Context>, public Stringifyable {
+  using DirectoryLock = mozilla::dom::quota::DirectoryLock;
 
  public:
   // Define a class allowing other threads to hold the Context alive.  This also
@@ -104,7 +105,7 @@ class Context final : public SafeRefCounted<Context> {
   // interface and register themselves with the AddActivity().  When they are
   // destroyed they must call RemoveActivity().  This allows the Context to
   // cancel any outstanding Activity work when the Context is cancelled.
-  class Activity {
+  class Activity : public Stringifyable {
    public:
     virtual void Cancel() = 0;
     virtual bool MatchesCacheId(CacheId aCacheId) const = 0;
@@ -115,14 +116,20 @@ class Context final : public SafeRefCounted<Context> {
   // be execute synchronously.
   static SafeRefPtr<Context> Create(SafeRefPtr<Manager> aManager,
                                     nsISerialEventTarget* aTarget,
-                                    Action* aInitAction,
+                                    SafeRefPtr<Action> aInitAction,
                                     Maybe<Context&> aOldContext);
 
   // Execute given action on the target once the quota manager has been
   // initialized.
   //
   // Only callable from the thread that created the Context.
-  void Dispatch(Action* aAction);
+  void Dispatch(SafeRefPtr<Action> aAction);
+
+  Maybe<DirectoryLock&> MaybeDirectoryLockRef() const;
+
+  CipherKeyManager& MutableCipherKeyManagerRef();
+
+  const Maybe<CacheDirectoryMetadata>& MaybeCacheDirectoryMetadataRef() const;
 
   // Cancel any Actions running or waiting to run.  This should allow the
   // Context to be released and Listener::RemoveContext() will be called
@@ -147,10 +154,8 @@ class Context final : public SafeRefCounted<Context> {
   // Only callable from the thread that created the Context.
   void CancelForCacheId(CacheId aCacheId);
 
-  void AddActivity(Activity* aActivity);
-  void RemoveActivity(Activity* aActivity);
-
-  const QuotaInfo& GetQuotaInfo() const { return mQuotaInfo; }
+  void AddActivity(Activity& aActivity);
+  void RemoveActivity(Activity& aActivity);
 
   // Tell the Context that some state information has been orphaned in the
   // data store and won't be cleaned up.  The Context will leave the marker
@@ -171,14 +176,16 @@ class Context final : public SafeRefCounted<Context> {
 
   struct PendingAction {
     nsCOMPtr<nsIEventTarget> mTarget;
-    RefPtr<Action> mAction;
+    SafeRefPtr<Action> mAction;
   };
 
   void Init(Maybe<Context&> aOldContext);
   void Start();
-  void DispatchAction(Action* aAction, bool aDoomData = false);
-  void OnQuotaInit(nsresult aRv, const QuotaInfo& aQuotaInfo,
-                   already_AddRefed<DirectoryLock> aDirectoryLock);
+  void DispatchAction(SafeRefPtr<Action> aAction, bool aDoomData = false);
+  void OnQuotaInit(nsresult aRv,
+                   const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata,
+                   RefPtr<DirectoryLock> aDirectoryLock,
+                   RefPtr<CipherKeyManager> aCipherKeyManager);
 
   SafeRefPtr<ThreadsafeHandle> CreateThreadsafeHandle();
 
@@ -186,20 +193,21 @@ class Context final : public SafeRefCounted<Context> {
 
   void DoomTargetData();
 
+  void DoStringify(nsACString& aData) override;
+
   SafeRefPtr<Manager> mManager;
   nsCOMPtr<nsISerialEventTarget> mTarget;
   RefPtr<Data> mData;
   State mState;
   bool mOrphanedData;
-  QuotaInfo mQuotaInfo;
+  Maybe<CacheDirectoryMetadata> mDirectoryMetadata;
   RefPtr<QuotaInitRunnable> mInitRunnable;
-  RefPtr<Action> mInitAction;
+  SafeRefPtr<Action> mInitAction;
   nsTArray<PendingAction> mPendingActions;
 
   // Weak refs since activites must remove themselves from this list before
   // being destroyed by calling RemoveActivity().
-  typedef nsTObserverArray<Activity*> ActivityList;
-  ActivityList mActivityList;
+  nsTObserverArray<NotNull<Activity*>> mActivityList;
 
   // The ThreadsafeHandle may have a strong ref back to us.  This creates
   // a ref-cycle that keeps the Context alive.  The ref-cycle is broken
@@ -207,12 +215,13 @@ class Context final : public SafeRefCounted<Context> {
   SafeRefPtr<ThreadsafeHandle> mThreadsafeHandle;
 
   RefPtr<DirectoryLock> mDirectoryLock;
+  RefPtr<CipherKeyManager> mCipherKeyManager;
   SafeRefPtr<Context> mNextContext;
 
  public:
   // XXX Consider adding a private guard parameter.
   Context(SafeRefPtr<Manager> aManager, nsISerialEventTarget* aTarget,
-          Action* aInitAction);
+          SafeRefPtr<Action> aInitAction);
   ~Context();
 
   NS_DECL_OWNINGTHREAD
@@ -220,7 +229,6 @@ class Context final : public SafeRefCounted<Context> {
 };
 
 }  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_cache_Context_h

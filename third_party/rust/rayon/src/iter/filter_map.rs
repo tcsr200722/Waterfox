@@ -24,7 +24,7 @@ impl<I: ParallelIterator + Debug, P> Debug for FilterMap<I, P> {
 }
 
 impl<I: ParallelIterator, P> FilterMap<I, P> {
-    /// Create a new `FilterMap` iterator.
+    /// Creates a new `FilterMap` iterator.
     pub(super) fn new(base: I, filter_op: P) -> Self {
         FilterMap { base, filter_op }
     }
@@ -50,7 +50,7 @@ where
 /// ////////////////////////////////////////////////////////////////////////
 /// Consumer implementation
 
-struct FilterMapConsumer<'p, C, P: 'p> {
+struct FilterMapConsumer<'p, C, P> {
     base: C,
     filter_op: &'p P,
 }
@@ -98,7 +98,7 @@ where
     P: Fn(T) -> Option<U> + Sync + 'p,
 {
     fn split_off_left(&self) -> Self {
-        FilterMapConsumer::new(self.base.split_off_left(), &self.filter_op)
+        FilterMapConsumer::new(self.base.split_off_left(), self.filter_op)
     }
 
     fn to_reducer(&self) -> Self::Reducer {
@@ -106,7 +106,7 @@ where
     }
 }
 
-struct FilterMapFolder<'p, C, P: 'p> {
+struct FilterMapFolder<'p, C, P> {
     base: C,
     filter_op: &'p P,
 }

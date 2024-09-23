@@ -14,7 +14,7 @@ extern crate nserror;
 use nserror::*;
 
 extern crate xpcom;
-use xpcom::interfaces::nsrefcnt;
+use xpcom::interfaces::mozIThirdPartyUtil;
 use xpcom::{AtomicRefcnt, RefCounted, RefPtr};
 
 extern crate uuid;
@@ -55,7 +55,6 @@ fn default_port(scheme: &str) -> Option<u16> {
         "ws" => Some(80),
         "wss" => Some(443),
         "rtsp" => Some(443),
-        "moz-anno" => Some(443),
         "android" => Some(443),
         _ => None,
     }
@@ -120,17 +119,16 @@ impl ops::DerefMut for MozURL {
 
 // Memory Management for MozURL
 #[no_mangle]
-pub unsafe extern "C" fn mozurl_addref(url: &MozURL) -> nsrefcnt {
-    url.refcnt.inc()
+pub unsafe extern "C" fn mozurl_addref(url: &MozURL) {
+    url.refcnt.inc();
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mozurl_release(url: &MozURL) -> nsrefcnt {
+pub unsafe extern "C" fn mozurl_release(url: &MozURL) {
     let rc = url.refcnt.dec();
     if rc == 0 {
-        Box::from_raw(url as *const MozURL as *mut MozURL);
+        mem::drop(Box::from_raw(url as *const MozURL as *mut MozURL));
     }
-    rc
 }
 
 // xpcom::RefPtr support
@@ -216,7 +214,10 @@ pub extern "C" fn mozurl_real_port(url: &MozURL) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn mozurl_host_port(url: &MozURL) -> SpecSlice {
-    (&url[Position::BeforeHost..Position::BeforePath]).into()
+    if url.port().is_some() {
+        return (&url[Position::BeforeHost..Position::BeforePath]).into();
+    }
+    url.host_str().unwrap_or("").into()
 }
 
 #[no_mangle]
@@ -247,6 +248,11 @@ pub extern "C" fn mozurl_spec_no_ref(url: &MozURL) -> SpecSlice {
 #[no_mangle]
 pub extern "C" fn mozurl_has_fragment(url: &MozURL) -> bool {
     url.fragment().is_some()
+}
+
+#[no_mangle]
+pub extern "C" fn mozurl_has_query(url: &MozURL) -> bool {
+    url.query().is_some()
 }
 
 #[no_mangle]
@@ -316,7 +322,9 @@ pub extern "C" fn mozurl_origin(url: &MozURL, origin: &mut nsACString) {
 fn get_base_domain(url: &MozURL) -> Result<Option<String>, nsresult> {
     match url.scheme() {
         "ftp" | "http" | "https" | "moz-extension" | "resource" => {
-            let third_party_util = xpcom::services::get_ThirdPartyUtil().unwrap();
+            let third_party_util: RefPtr<mozIThirdPartyUtil> =
+                xpcom::components::ThirdPartyUtil::service()
+                    .map_err(|_| NS_ERROR_ILLEGAL_DURING_SHUTDOWN)?;
 
             let scheme = nsCString::from(url.scheme());
 
@@ -383,6 +391,12 @@ macro_rules! debug_assert_mut {
 }
 
 #[no_mangle]
+pub extern "C" fn mozurl_cannot_be_a_base(url: &mut MozURL) -> bool {
+    debug_assert_mut!(url);
+    url.cannot_be_a_base()
+}
+
+#[no_mangle]
 pub extern "C" fn mozurl_set_scheme(url: &mut MozURL, scheme: &nsACString) -> nsresult {
     debug_assert_mut!(url);
     let scheme = try_or_malformed!(str::from_utf8(scheme));
@@ -425,6 +439,11 @@ pub extern "C" fn mozurl_set_hostname(url: &mut MozURL, host: &nsACString) -> ns
 #[no_mangle]
 pub extern "C" fn mozurl_set_port_no(url: &mut MozURL, new_port: i32) -> nsresult {
     debug_assert_mut!(url);
+
+    if new_port > u16::MAX as i32 {
+        return NS_ERROR_UNEXPECTED;
+    }
+
     if url.cannot_be_a_base() {
         return NS_ERROR_MALFORMED_URI;
     }

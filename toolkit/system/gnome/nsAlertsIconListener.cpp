@@ -6,21 +6,24 @@
 #include "nsAlertsIconListener.h"
 #include "imgIContainer.h"
 #include "imgIRequest.h"
-#include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
 #include "nsSystemAlertsService.h"
 #include "nsIAlertsService.h"
 #include "nsICancelable.h"
-#include "nsIImageToPixbuf.h"
+#include "nsImageToPixbuf.h"
 #include "nsIStringBundle.h"
 #include "nsIObserverService.h"
 #include "nsCRT.h"
 #include "mozilla/XREAppData.h"
+#include "mozilla/GRefPtr.h"
+#include "mozilla/GUniquePtr.h"
+#include "mozilla/UniquePtrExtensions.h"
 
 #include <dlfcn.h>
 #include <gdk/gdk.h>
 
-extern const mozilla::StaticXREAppData* gAppData;
+using namespace mozilla;
+extern const StaticXREAppData* gAppData;
 
 static bool gHasActions = false;
 static bool gHasCaps = false;
@@ -44,6 +47,8 @@ nsAlertsIconListener::notify_notification_close_t
     nsAlertsIconListener::notify_notification_close = nullptr;
 nsAlertsIconListener::notify_notification_set_hint_t
     nsAlertsIconListener::notify_notification_set_hint = nullptr;
+nsAlertsIconListener::notify_notification_set_timeout_t
+    nsAlertsIconListener::notify_notification_set_timeout = nullptr;
 
 static void notify_action_cb(NotifyNotification* notification, gchar* action,
                              gpointer user_data) {
@@ -64,7 +69,8 @@ static void notify_closed_marshal(GClosure* closure, GValue* return_value,
   NS_RELEASE(alert);
 }
 
-static GdkPixbuf* GetPixbufFromImgRequest(imgIRequest* aRequest) {
+static already_AddRefed<GdkPixbuf> GetPixbufFromImgRequest(
+    imgIRequest* aRequest) {
   nsCOMPtr<imgIContainer> image;
   nsresult rv = aRequest->GetImage(getter_AddRefs(image));
   if (NS_FAILED(rv)) {
@@ -84,10 +90,7 @@ static GdkPixbuf* GetPixbufFromImgRequest(imgIRequest* aRequest) {
     return nullptr;
   }
 
-  nsCOMPtr<nsIImageToPixbuf> imgToPixbuf =
-      do_GetService("@mozilla.org/widget/image-to-gdk-pixbuf;1");
-
-  return imgToPixbuf->ConvertImageToPixbuf(image);
+  return nsImageToPixbuf::ImageToPixbuf(image);
 }
 
 NS_IMPL_ISUPPORTS(nsAlertsIconListener, nsIAlertNotificationImageListener,
@@ -124,6 +127,8 @@ nsAlertsIconListener::nsAlertsIconListener(nsSystemAlertsService* aBackend,
         libNotifyHandle, "notify_notification_close");
     notify_notification_set_hint = (notify_notification_set_hint_t)dlsym(
         libNotifyHandle, "notify_notification_set_hint");
+    notify_notification_set_timeout = (notify_notification_set_timeout_t)dlsym(
+        libNotifyHandle, "notify_notification_set_timeout");
     if (!notify_is_initted || !notify_init || !notify_get_server_caps ||
         !notify_notification_new || !notify_notification_show ||
         !notify_notification_set_icon_from_pixbuf ||
@@ -148,14 +153,8 @@ nsAlertsIconListener::OnImageMissing(nsISupports*) {
 
 NS_IMETHODIMP
 nsAlertsIconListener::OnImageReady(nsISupports*, imgIRequest* aRequest) {
-  GdkPixbuf* imagePixbuf = GetPixbufFromImgRequest(aRequest);
-  if (!imagePixbuf) {
-    ShowAlert(nullptr);
-  } else {
-    ShowAlert(imagePixbuf);
-    g_object_unref(imagePixbuf);
-  }
-
+  RefPtr<GdkPixbuf> imagePixbuf = GetPixbufFromImgRequest(aRequest);
+  ShowAlert(imagePixbuf);
   return NS_OK;
 }
 
@@ -183,6 +182,9 @@ nsresult nsAlertsIconListener::ShowAlert(GdkPixbuf* aPixbuf) {
   }
 
   if (notify_notification_set_hint) {
+    notify_notification_set_hint(mNotification, "suppress-sound",
+                                 g_variant_new_boolean(mAlertIsSilent));
+
     // If MOZ_DESKTOP_FILE_NAME variable is set, use it as the application id,
     // otherwise use gAppData->name
     if (getenv("MOZ_DESKTOP_FILE_NAME")) {
@@ -197,6 +199,11 @@ nsresult nsAlertsIconListener::ShowAlert(GdkPixbuf* aPixbuf) {
     }
   }
 
+  if (notify_notification_set_timeout && mAlertRequiresInteraction) {
+    constexpr gint kNotifyExpiresNever = 0;
+    notify_notification_set_timeout(mNotification, kNotifyExpiresNever);
+  }
+
   // Fedora 10 calls NotifyNotification "closed" signal handlers with a
   // different signature, so a marshaller is used instead of a C callback to
   // get the user_data (this) in a parseable format.  |closure| is created
@@ -205,10 +212,9 @@ nsresult nsAlertsIconListener::ShowAlert(GdkPixbuf* aPixbuf) {
   g_closure_set_marshal(closure, notify_closed_marshal);
   mClosureHandler =
       g_signal_connect_closure(mNotification, "closed", closure, FALSE);
-  GError* error = nullptr;
-  if (!notify_notification_show(mNotification, &error)) {
+  GUniquePtr<GError> error;
+  if (!notify_notification_show(mNotification, getter_Transfers(error))) {
     NS_WARNING(error->message);
-    g_error_free(error);
     return NS_ERROR_FAILURE;
   }
 
@@ -256,10 +262,9 @@ nsresult nsAlertsIconListener::Close() {
     return NS_OK;
   }
 
-  GError* error = nullptr;
-  if (!notify_notification_close(mNotification, &error)) {
+  GUniquePtr<GError> error;
+  if (!notify_notification_close(mNotification, getter_Transfers(error))) {
     NS_WARNING(error->message);
-    g_error_free(error);
     return NS_ERROR_FAILURE;
   }
 
@@ -284,14 +289,14 @@ nsresult nsAlertsIconListener::InitAlertAsync(nsIAlertNotification* aAlert,
 
       if (bundle) {
         bundle->GetStringFromName("brandShortName", appName);
-        appShortName = NS_ConvertUTF16toUTF8(appName);
+        CopyUTF16toUTF8(appName, appShortName);
       } else {
         NS_WARNING(
             "brand.properties not present, using default application name");
-        appShortName.AssignLiteral("Mozilla");
+        appShortName.AssignLiteral("Waterfox");
       }
     } else {
-      appShortName.AssignLiteral("Mozilla");
+      appShortName.AssignLiteral("Waterfox");
     }
 
     if (!notify_init(appShortName.get())) return NS_ERROR_FAILURE;
@@ -321,21 +326,27 @@ nsresult nsAlertsIconListener::InitAlertAsync(nsIAlertNotification* aAlert,
   if (!gHasActions && mAlertHasAction)
     return NS_ERROR_FAILURE;  // No good, fallback to XUL
 
+  rv = aAlert->GetSilent(&mAlertIsSilent);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  rv = aAlert->GetRequireInteraction(&mAlertRequiresInteraction);
+  NS_ENSURE_SUCCESS(rv, rv);
+
   nsAutoString title;
   rv = aAlert->GetTitle(title);
   NS_ENSURE_SUCCESS(rv, rv);
   // Workaround for a libnotify bug - blank titles aren't dealt with
   // properly so we use a space
   if (title.IsEmpty()) {
-    mAlertTitle = NS_LITERAL_CSTRING(" ");
+    mAlertTitle = " "_ns;
   } else {
-    mAlertTitle = NS_ConvertUTF16toUTF8(title);
+    CopyUTF16toUTF8(title, mAlertTitle);
   }
 
   nsAutoString text;
   rv = aAlert->GetText(text);
   NS_ENSURE_SUCCESS(rv, rv);
-  mAlertText = NS_ConvertUTF16toUTF8(text);
+  CopyUTF16toUTF8(text, mAlertText);
 
   mAlertListener = aAlertListener;
 

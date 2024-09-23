@@ -5,19 +5,17 @@
 #[cfg(feature = "bench")]
 extern crate test;
 
-use encoding_rs;
-use matches::matches;
-use serde_json::{self, json, Map, Value};
+use serde_json::{json, Map, Value};
 
 #[cfg(feature = "bench")]
 use self::test::Bencher;
 
 use super::{
     parse_important, parse_nth, parse_one_declaration, parse_one_rule, stylesheet_encoding,
-    AtRuleParser, AtRuleType, BasicParseError, BasicParseErrorKind, Color, CowRcStr,
-    DeclarationListParser, DeclarationParser, Delimiter, EncodingSupport, ParseError,
-    ParseErrorKind, Parser, ParserInput, QualifiedRuleParser, RuleListParser, SourceLocation,
-    ToCss, Token, TokenSerializationType, UnicodeRange, RGBA,
+    AtRuleParser, BasicParseError, BasicParseErrorKind, CowRcStr, DeclarationParser, Delimiter,
+    EncodingSupport, ParseError, ParseErrorKind, Parser, ParserInput, ParserState,
+    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, SourceLocation, StyleSheetParser,
+    ToCss, Token, TokenSerializationType, UnicodeRange,
 };
 
 macro_rules! JArray {
@@ -26,25 +24,23 @@ macro_rules! JArray {
 }
 
 fn almost_equals(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (&Value::Number(ref a), &Value::Number(ref b)) => {
+    let var_name = match (a, b) {
+        (Value::Number(a), Value::Number(b)) => {
             let a = a.as_f64().unwrap();
             let b = b.as_f64().unwrap();
             (a - b).abs() <= a.abs() * 1e-6
         }
 
         (&Value::Bool(a), &Value::Bool(b)) => a == b,
-        (&Value::String(ref a), &Value::String(ref b)) => a == b,
-        (&Value::Array(ref a), &Value::Array(ref b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b.iter())
-                    .all(|(ref a, ref b)| almost_equals(*a, *b))
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| almost_equals(a, b))
         }
         (&Value::Object(_), &Value::Object(_)) => panic!("Not implemented"),
         (&Value::Null, &Value::Null) => true,
         _ => false,
-    }
+    };
+    var_name
 }
 
 fn normalize(json: &mut Value) {
@@ -78,10 +74,10 @@ fn assert_json_eq(results: Value, mut expected: Value, message: &str) {
     }
 }
 
-fn run_raw_json_tests<F: Fn(Value, Value) -> ()>(json_data: &str, run: F) {
+fn run_raw_json_tests<F: Fn(Value, Value)>(json_data: &str, run: F) {
     let items = match serde_json::from_str(json_data) {
         Ok(Value::Array(items)) => items,
-        _ => panic!("Invalid JSON"),
+        other => panic!("Invalid JSON: {:?}", other),
     };
     assert!(items.len() % 2 == 0);
     let mut input = None;
@@ -134,7 +130,7 @@ fn declaration_list() {
         include_str!("css-parsing-tests/declaration_list.json"),
         |input| {
             Value::Array(
-                DeclarationListParser::new(input, JsonParser)
+                RuleBodyParser::new(input, &mut JsonParser)
                     .map(|result| result.unwrap_or(JArray!["error", "invalid"]))
                     .collect(),
             )
@@ -156,7 +152,7 @@ fn one_declaration() {
 fn rule_list() {
     run_json_tests(include_str!("css-parsing-tests/rule_list.json"), |input| {
         Value::Array(
-            RuleListParser::new_for_nested_rule(input, JsonParser)
+            RuleBodyParser::new(input, &mut JsonParser)
                 .map(|result| result.unwrap_or(JArray!["error", "invalid"]))
                 .collect(),
         )
@@ -167,7 +163,7 @@ fn rule_list() {
 fn stylesheet() {
     run_json_tests(include_str!("css-parsing-tests/stylesheet.json"), |input| {
         Value::Array(
-            RuleListParser::new_for_stylesheet(input, JsonParser)
+            StyleSheetParser::new(input, &mut JsonParser)
                 .map(|result| result.unwrap_or(JArray!["error", "invalid"]))
                 .collect(),
         )
@@ -232,7 +228,7 @@ fn stylesheet_from_bytes() {
                 let (css_unicode, used_encoding, _) = encoding.decode(&css);
                 let mut input = ParserInput::new(&css_unicode);
                 let input = &mut Parser::new(&mut input);
-                let rules = RuleListParser::new_for_stylesheet(input, JsonParser)
+                let rules = StyleSheetParser::new(input, &mut JsonParser)
                     .map(|result| result.unwrap_or(JArray!["error", "invalid"]))
                     .collect::<Vec<_>>();
                 JArray![rules, used_encoding.name().to_lowercase()]
@@ -243,7 +239,7 @@ fn stylesheet_from_bytes() {
 
     fn get_string<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
         match map.get(key) {
-            Some(&Value::String(ref s)) => Some(s),
+            Some(Value::String(s)) => Some(s),
             Some(&Value::Null) => None,
             None => None,
             _ => panic!("Unexpected JSON"),
@@ -354,37 +350,6 @@ fn test_expect_url() {
     assert!(parse(&mut input).is_err());
 }
 
-fn run_color_tests<F: Fn(Result<Color, ()>) -> Value>(json_data: &str, to_json: F) {
-    run_json_tests(json_data, |input| {
-        let result: Result<_, ParseError<()>> =
-            input.parse_entirely(|i| Color::parse(i).map_err(Into::into));
-        to_json(result.map_err(|_| ()))
-    });
-}
-
-#[test]
-fn color3() {
-    run_color_tests(include_str!("css-parsing-tests/color3.json"), |c| {
-        c.ok().map(|v| v.to_json()).unwrap_or(Value::Null)
-    })
-}
-
-#[test]
-fn color3_hsl() {
-    run_color_tests(include_str!("css-parsing-tests/color3_hsl.json"), |c| {
-        c.ok().map(|v| v.to_json()).unwrap_or(Value::Null)
-    })
-}
-
-/// color3_keywords.json is different: R, G and B are in 0..255 rather than 0..1
-#[test]
-fn color3_keywords() {
-    run_color_tests(
-        include_str!("css-parsing-tests/color3_keywords.json"),
-        |c| c.ok().map(|v| v.to_json()).unwrap_or(Value::Null),
-    )
-}
-
 #[test]
 fn nth() {
     run_json_tests(include_str!("css-parsing-tests/An+B.json"), |input| {
@@ -400,6 +365,24 @@ fn nth() {
 }
 
 #[test]
+fn parse_comma_separated_ignoring_errors() {
+    let input = "red, green something, yellow, whatever, blue";
+    let mut input = ParserInput::new(input);
+    let mut input = Parser::new(&mut input);
+    let result = input.parse_comma_separated_ignoring_errors(|input| {
+        let loc = input.current_source_location();
+        let ident = input.expect_ident()?;
+        crate::color::parse_named_color(ident).map_err(|()| {
+            loc.new_unexpected_token_error::<ParseError<()>>(Token::Ident(ident.clone()))
+        })
+    });
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0], (255, 0, 0));
+    assert_eq!(result[1], (255, 255, 0));
+    assert_eq!(result[2], (0, 0, 255));
+}
+
+#[test]
 fn unicode_range() {
     run_json_tests(include_str!("css-parsing-tests/urange.json"), |input| {
         let result: Result<_, ParseError<()>> = input.parse_comma_separated(|input| {
@@ -407,7 +390,7 @@ fn unicode_range() {
             if input.is_exhausted() {
                 Ok(result)
             } else {
-                while let Ok(_) = input.next() {}
+                while input.next().is_ok() {}
                 Ok(None)
             }
         });
@@ -447,11 +430,9 @@ fn serializer(preserve_comments: bool) {
                 preserve_comments: bool,
             ) {
                 while let Ok(token) = if preserve_comments {
-                    input
-                        .next_including_whitespace_and_comments()
-                        .map(|t| t.clone())
+                    input.next_including_whitespace_and_comments().cloned()
                 } else {
-                    input.next_including_whitespace().map(|t| t.clone())
+                    input.next_including_whitespace().cloned()
                 } {
                     let token_type = token.serialization_type();
                     if !preserve_comments && previous_token.needs_separator_when_before(token_type)
@@ -469,11 +450,10 @@ fn serializer(preserve_comments: bool) {
                         _ => None,
                     };
                     if let Some(closing_token) = closing_token {
-                        let result: Result<_, ParseError<()>> =
-                            input.parse_nested_block(|input| {
-                                write_to(previous_token, input, string, preserve_comments);
-                                Ok(())
-                            });
+                        let result: Result<_, ParseError<()>> = input.parse_nested_block(|input| {
+                            write_to(previous_token, input, string, preserve_comments);
+                            Ok(())
+                        });
                         result.unwrap();
                         closing_token.to_css(string).unwrap();
                     }
@@ -481,7 +461,7 @@ fn serializer(preserve_comments: bool) {
             }
             let mut serialized = String::new();
             write_to(
-                TokenSerializationType::nothing(),
+                TokenSerializationType::Nothing,
                 input,
                 &mut serialized,
                 preserve_comments,
@@ -511,30 +491,6 @@ fn serialize_bad_tokens() {
     assert_eq!(token.to_css_string(), "4");
 
     assert!(parser.next().is_err());
-}
-
-#[test]
-fn serialize_current_color() {
-    let c = Color::CurrentColor;
-    assert!(c.to_css_string() == "currentcolor");
-}
-
-#[test]
-fn serialize_rgb_full_alpha() {
-    let c = Color::RGBA(RGBA::new(255, 230, 204, 255));
-    assert_eq!(c.to_css_string(), "rgb(255, 230, 204)");
-}
-
-#[test]
-fn serialize_rgba() {
-    let c = Color::RGBA(RGBA::new(26, 51, 77, 32));
-    assert_eq!(c.to_css_string(), "rgba(26, 51, 77, 0.125)");
-}
-
-#[test]
-fn serialize_rgba_two_digit_float_if_roundtrips() {
-    let c = Color::RGBA(RGBA::from_floats(0., 0., 0., 0.5));
-    assert_eq!(c.to_css_string(), "rgba(0, 0, 0, 0.5)");
 }
 
 #[test]
@@ -632,9 +588,6 @@ fn line_numbers() {
 
 #[test]
 fn overflow() {
-    use std::f32;
-    use std::iter::repeat;
-
     let css = r"
          2147483646
          2147483647
@@ -659,7 +612,7 @@ fn overflow() {
          -3.402824e+38
 
     "
-    .replace("{309 zeros}", &repeat('0').take(309).collect::<String>());
+    .replace("{309 zeros}", &"0".repeat(309));
     let mut input = ParserInput::new(&css);
     let mut input = Parser::new(&mut input);
 
@@ -677,15 +630,13 @@ fn overflow() {
     assert_eq!(input.expect_integer(), Ok(-2147483648));
     assert_eq!(input.expect_integer(), Ok(-2147483648));
 
-    assert_eq!(input.expect_number(), Ok(3.30282347e+38));
+    assert_eq!(input.expect_number(), Ok(3.302_823_5e38));
     assert_eq!(input.expect_number(), Ok(f32::MAX));
     assert_eq!(input.expect_number(), Ok(f32::INFINITY));
-    assert!(f32::MAX != f32::INFINITY);
 
-    assert_eq!(input.expect_number(), Ok(-3.30282347e+38));
+    assert_eq!(input.expect_number(), Ok(-3.302_823_5e38));
     assert_eq!(input.expect_number(), Ok(f32::MIN));
     assert_eq!(input.expect_number(), Ok(f32::NEG_INFINITY));
-    assert!(f32::MIN != f32::NEG_INFINITY);
 }
 
 #[test]
@@ -822,20 +773,24 @@ where
     }
 }
 
-impl ToJson for Color {
+impl<'a> ToJson for CowRcStr<'a> {
     fn to_json(&self) -> Value {
-        match *self {
-            Color::RGBA(ref rgba) => json!([rgba.red, rgba.green, rgba.blue, rgba.alpha]),
-            Color::CurrentColor => "currentcolor".to_json(),
-        }
+        let s: &str = self;
+        s.to_json()
     }
 }
 
-impl<'a> ToJson for CowRcStr<'a> {
-    fn to_json(&self) -> Value {
-        let s: &str = &*self;
-        s.to_json()
-    }
+#[bench]
+#[cfg(feature = "bench")]
+fn delimiter_from_byte(b: &mut Bencher) {
+    use crate::Delimiters;
+    b.iter(|| {
+        for _ in 0..1000 {
+            for i in 0..256 {
+                std::hint::black_box(Delimiters::from_byte(Some(i as u8)));
+            }
+        }
+    })
 }
 
 #[cfg(feature = "bench")]
@@ -858,6 +813,7 @@ fn unquoted_url(b: &mut Bencher) {
     })
 }
 
+#[cfg_attr(all(miri, feature = "skip_long_tests"), ignore)]
 #[cfg(feature = "bench")]
 #[bench]
 fn numeric(b: &mut Bencher) {
@@ -872,6 +828,7 @@ fn numeric(b: &mut Bencher) {
 
 struct JsonParser;
 
+#[cfg_attr(all(miri, feature = "skip_long_tests"), ignore)]
 #[test]
 fn no_stack_overflow_multiple_nested_blocks() {
     let mut input: String = "{{".into();
@@ -881,7 +838,7 @@ fn no_stack_overflow_multiple_nested_blocks() {
     }
     let mut input = ParserInput::new(&input);
     let mut input = Parser::new(&mut input);
-    while let Ok(..) = input.next() {}
+    while input.next().is_ok() {}
 }
 
 impl<'i> DeclarationParser<'i> for JsonParser {
@@ -897,18 +854,16 @@ impl<'i> DeclarationParser<'i> for JsonParser {
         let mut important = false;
         loop {
             let start = input.state();
-            if let Ok(mut token) = input.next_including_whitespace().map(|t| t.clone()) {
+            if let Ok(mut token) = input.next_including_whitespace().cloned() {
                 // Hack to deal with css-parsing-tests assuming that
                 // `!important` in the middle of a declaration value is OK.
                 // This can never happen per spec
                 // (even CSS Variables forbid top-level `!`)
                 if token == Token::Delim('!') {
                     input.reset(&start);
-                    if parse_important(input).is_ok() {
-                        if input.is_exhausted() {
-                            important = true;
-                            break;
-                        }
+                    if parse_important(input).is_ok() && input.is_exhausted() {
+                        important = true;
+                        break;
                     }
                     input.reset(&start);
                     token = input.next_including_whitespace().unwrap().clone();
@@ -923,8 +878,7 @@ impl<'i> DeclarationParser<'i> for JsonParser {
 }
 
 impl<'i> AtRuleParser<'i> for JsonParser {
-    type PreludeNoBlock = Vec<Value>;
-    type PreludeBlock = Vec<Value>;
+    type Prelude = Vec<Value>;
     type AtRule = Value;
     type Error = ();
 
@@ -932,30 +886,33 @@ impl<'i> AtRuleParser<'i> for JsonParser {
         &mut self,
         name: CowRcStr<'i>,
         input: &mut Parser<'i, 't>,
-    ) -> Result<AtRuleType<Vec<Value>, Vec<Value>>, ParseError<'i, ()>> {
+    ) -> Result<Vec<Value>, ParseError<'i, ()>> {
         let prelude = vec![
             "at-rule".to_json(),
             name.to_json(),
             Value::Array(component_values_to_json(input)),
         ];
         match_ignore_ascii_case! { &*name,
-            "media" | "foo-with-block" => Ok(AtRuleType::WithBlock(prelude)),
             "charset" => {
-                Err(input.new_error(BasicParseErrorKind::AtRuleInvalid(name.clone()).into()))
+                Err(input.new_error(BasicParseErrorKind::AtRuleInvalid(name.clone())))
             },
-            _ => Ok(AtRuleType::WithoutBlock(prelude)),
+            _ => Ok(prelude),
         }
     }
 
-    fn rule_without_block(&mut self, mut prelude: Vec<Value>, _location: SourceLocation) -> Value {
+    fn rule_without_block(
+        &mut self,
+        mut prelude: Vec<Value>,
+        _: &ParserState,
+    ) -> Result<Value, ()> {
         prelude.push(Value::Null);
-        Value::Array(prelude)
+        Ok(Value::Array(prelude))
     }
 
     fn parse_block<'t>(
         &mut self,
         mut prelude: Vec<Value>,
-        _location: SourceLocation,
+        _: &ParserState,
         input: &mut Parser<'i, 't>,
     ) -> Result<Value, ParseError<'i, ()>> {
         prelude.push(Value::Array(component_values_to_json(input)));
@@ -978,7 +935,7 @@ impl<'i> QualifiedRuleParser<'i> for JsonParser {
     fn parse_block<'t>(
         &mut self,
         prelude: Vec<Value>,
-        _location: SourceLocation,
+        _: &ParserState,
         input: &mut Parser<'i, 't>,
     ) -> Result<Value, ParseError<'i, ()>> {
         Ok(JArray![
@@ -989,9 +946,18 @@ impl<'i> QualifiedRuleParser<'i> for JsonParser {
     }
 }
 
+impl<'i> RuleBodyItemParser<'i, Value, ()> for JsonParser {
+    fn parse_qualified(&self) -> bool {
+        true
+    }
+    fn parse_declarations(&self) -> bool {
+        true
+    }
+}
+
 fn component_values_to_json(input: &mut Parser) -> Vec<Value> {
     let mut values = vec![];
-    while let Ok(token) = input.next_including_whitespace().map(|t| t.clone()) {
+    while let Ok(token) = input.next_including_whitespace().cloned() {
         values.push(one_component_value_to_json(token, input));
     }
     values
@@ -1001,9 +967,9 @@ fn one_component_value_to_json(token: Token, input: &mut Parser) -> Value {
     fn numeric(value: f32, int_value: Option<i32>, has_sign: bool) -> Vec<Value> {
         vec![
             Token::Number {
-                value: value,
-                int_value: int_value,
-                has_sign: has_sign,
+                value,
+                int_value,
+                has_sign,
             }
             .to_css_string()
             .to_json(),
@@ -1116,8 +1082,8 @@ fn procedural_masquerade_whitespace() {
             "  \t\n" => ()
         }
     }
-    assert_eq!(map("  \t\n"), Some(&()));
-    assert_eq!(map(" "), None);
+    assert_eq!(map::get("  \t\n"), Some(&()));
+    assert_eq!(map::get(" "), None);
 
     match_ignore_ascii_case! { "  \t\n",
         " " => panic!("1"),
@@ -1160,7 +1126,7 @@ fn parse_until_before_stops_at_delimiter_or_end_of_input() {
                             let ox = ix.next();
                             let oy = iy.next();
                             assert_eq!(ox, oy);
-                            if let Err(_) = ox {
+                            if ox.is_err() {
                                 break;
                             }
                         }
@@ -1189,52 +1155,6 @@ fn parser_maintains_current_line() {
 
     assert_eq!(parser.next(), Ok(&Token::Ident("ident".into())));
     assert_eq!(parser.current_line(), "ident");
-}
-
-#[test]
-fn parser_with_line_number_offset() {
-    let mut input = ParserInput::new_with_line_number_offset("ident\nident", 72);
-    let mut parser = Parser::new(&mut input);
-    assert_eq!(
-        parser.current_source_location(),
-        SourceLocation {
-            line: 72,
-            column: 1
-        }
-    );
-    assert_eq!(
-        parser.next_including_whitespace_and_comments(),
-        Ok(&Token::Ident("ident".into()))
-    );
-    assert_eq!(
-        parser.current_source_location(),
-        SourceLocation {
-            line: 72,
-            column: 6
-        }
-    );
-    assert_eq!(
-        parser.next_including_whitespace_and_comments(),
-        Ok(&Token::WhiteSpace("\n".into()))
-    );
-    assert_eq!(
-        parser.current_source_location(),
-        SourceLocation {
-            line: 73,
-            column: 1
-        }
-    );
-    assert_eq!(
-        parser.next_including_whitespace_and_comments(),
-        Ok(&Token::Ident("ident".into()))
-    );
-    assert_eq!(
-        parser.current_source_location(),
-        SourceLocation {
-            line: 73,
-            column: 6
-        }
-    );
 }
 
 #[test]
@@ -1292,7 +1212,7 @@ fn parse_sourcemapping_comments() {
     for test in tests {
         let mut input = ParserInput::new(test.0);
         let mut parser = Parser::new(&mut input);
-        while let Ok(_) = parser.next_including_whitespace() {}
+        while parser.next_including_whitespace().is_ok() {}
         assert_eq!(parser.current_source_map_url(), test.1);
     }
 }
@@ -1316,11 +1236,12 @@ fn parse_sourceurl_comments() {
     for test in tests {
         let mut input = ParserInput::new(test.0);
         let mut parser = Parser::new(&mut input);
-        while let Ok(_) = parser.next_including_whitespace() {}
+        while parser.next_including_whitespace().is_ok() {}
         assert_eq!(parser.current_source_url(), test.1);
     }
 }
 
+#[cfg_attr(all(miri, feature = "skip_long_tests"), ignore)]
 #[test]
 fn roundtrip_percentage_token() {
     fn test_roundtrip(value: &str) {
@@ -1389,7 +1310,8 @@ fn utf16_columns() {
                     break;
                 }
                 Err(_) => {
-                    assert!(false);
+                    // should this be an explicit panic instead?
+                    unreachable!();
                 }
                 Ok(_) => {}
             };
@@ -1403,7 +1325,7 @@ fn utf16_columns() {
 #[test]
 fn servo_define_css_keyword_enum() {
     macro_rules! define_css_keyword_enum {
-        (pub enum $name:ident { $($variant:ident = $css:expr,)+ }) => {
+        (pub enum $name:ident { $($variant:ident = $css:pat,)+ }) => {
             #[derive(PartialEq, Debug)]
             pub enum $name {
                 $($variant),+

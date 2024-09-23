@@ -17,7 +17,7 @@ addAccessibleTask(
   <ul id="ul">
     <li id="li">item1</li>
   </ul>`,
-  async function(browser, iframeDocAcc, contentDocAcc) {
+  async function (browser, iframeDocAcc, contentDocAcc) {
     ok(iframeDocAcc, "IFRAME document accessible is present");
     (gIsRemoteIframe ? isnot : is)(
       browser.browsingContext.currentWindowGlobal.osPid,
@@ -46,7 +46,7 @@ addAccessibleTask(
                 {
                   LIST: [
                     {
-                      LISTITEM: [{ STATICTEXT: [] }, { TEXT_LEAF: [] }],
+                      LISTITEM: [{ LISTITEM_MARKER: [] }, { TEXT_LEAF: [] }],
                     },
                   ],
                 },

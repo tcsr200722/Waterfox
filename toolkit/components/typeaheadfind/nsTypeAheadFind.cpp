@@ -5,12 +5,9 @@
 
 #include "nsCOMPtr.h"
 #include "nsDocShell.h"
-#include "nsMemory.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/ModuleUtils.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/Services.h"
-#include "nsCURILoader.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsNetUtil.h"
 #include "nsIURL.h"
@@ -24,22 +21,15 @@
 #include "nsGenericHTMLElement.h"
 
 #include "nsIFrame.h"
-#include "nsContainerFrame.h"
-#include "nsFrameTraversal.h"
 #include "mozilla/dom/Document.h"
 #include "nsIContent.h"
 #include "nsTextFragment.h"
 #include "nsIEditor.h"
 
 #include "nsIDocShellTreeItem.h"
-#include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsContentCID.h"
-#include "nsLayoutCID.h"
-#include "nsWidgetsCID.h"
-#include "nsIFormControl.h"
-#include "nsNameSpaceManager.h"
 #include "nsIObserverService.h"
+#include "nsISound.h"
 #include "nsFocusManager.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLInputElement.h"
@@ -47,6 +37,7 @@
 #include "mozilla/dom/Link.h"
 #include "mozilla/dom/RangeBinding.h"
 #include "mozilla/dom/Selection.h"
+#include "nsLayoutUtils.h"
 #include "nsRange.h"
 
 #include "nsTypeAheadFind.h"
@@ -66,8 +57,8 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(nsTypeAheadFind)
 
 NS_IMPL_CYCLE_COLLECTION_WEAK(nsTypeAheadFind, mFoundLink, mFoundEditable,
                               mCurrentWindow, mStartFindRange, mSearchRange,
-                              mStartPointRange, mEndPointRange, mSoundInterface,
-                              mFind, mFoundRange)
+                              mStartPointRange, mEndPointRange, mFind,
+                              mFoundRange)
 
 #define NS_FIND_CONTRACTID "@mozilla.org/embedcomp/rangefind;1"
 
@@ -76,7 +67,6 @@ nsTypeAheadFind::nsTypeAheadFind()
       mCaretBrowsingOn(false),
       mDidAddObservers(false),
       mLastFindLength(0),
-      mIsSoundInitialized(false),
       mCaseSensitive(false),
       mEntireWord(false),
       mMatchDiacritics(false) {}
@@ -119,18 +109,6 @@ nsresult nsTypeAheadFind::Init(nsIDocShell* aDocShell) {
     }
   }
 
-  if (!mIsSoundInitialized && !mNotFoundSoundURL.IsEmpty()) {
-    // This makes sure system sound library is loaded so that
-    // there's no lag before the first sound is played
-    // by waiting for the first keystroke, we still get the startup time
-    // benefits.
-    mIsSoundInitialized = true;
-    mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
-    if (mSoundInterface && !mNotFoundSoundURL.EqualsLiteral("beep")) {
-      mSoundInterface->Init();
-    }
-  }
-
   return NS_OK;
 }
 
@@ -149,19 +127,6 @@ nsresult nsTypeAheadFind::PrefsReset() {
     prefBranch->GetCharPref("accessibility.typeaheadfind.soundURL", soundStr);
 
   mNotFoundSoundURL = soundStr;
-
-  if (!mNotFoundSoundURL.IsEmpty() &&
-      !mNotFoundSoundURL.EqualsLiteral("beep")) {
-    if (!mSoundInterface) {
-      mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
-    }
-
-    // Init to load the system sound library if the lib is not ready
-    if (mSoundInterface) {
-      mIsSoundInitialized = true;
-      mSoundInterface->Init();
-    }
-  }
 
   prefBranch->GetBoolPref("accessibility.browsewithcaret", &mCaretBrowsingOn);
 
@@ -229,7 +194,7 @@ nsTypeAheadFind::SetDocShell(nsIDocShell* aDocShell) {
   mWebBrowserFind = do_GetInterface(aDocShell);
   NS_ENSURE_TRUE(mWebBrowserFind, NS_ERROR_FAILURE);
 
-  mPresShell = do_GetWeakReference(aDocShell->GetPresShell());
+  mDocument = aDocShell->GetExtantDocument();
 
   ReleaseStrongMemberVariables();
   return NS_OK;
@@ -266,8 +231,7 @@ nsTypeAheadFind::SetSelectionModeAndRepaint(int16_t aToggle) {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsTypeAheadFind::CollapseSelection() {
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP nsTypeAheadFind::CollapseSelection() {
   nsCOMPtr<nsISelectionController> selectionController =
       do_QueryReferent(mSelectionController);
   if (!selectionController) {
@@ -308,26 +272,23 @@ void nsTypeAheadFind::PlayNotFoundSound() {
   if (mNotFoundSoundURL.IsEmpty())  // no sound
     return;
 
-  if (!mSoundInterface)
-    mSoundInterface = do_CreateInstance("@mozilla.org/sound;1");
+  nsCOMPtr<nsISound> soundInterface = do_GetService("@mozilla.org/sound;1");
 
-  if (mSoundInterface) {
-    mIsSoundInitialized = true;
-
+  if (soundInterface) {
     if (mNotFoundSoundURL.EqualsLiteral("beep")) {
-      mSoundInterface->Beep();
+      soundInterface->Beep();
       return;
     }
 
     nsCOMPtr<nsIURI> soundURI;
     if (mNotFoundSoundURL.EqualsLiteral("default"))
       NS_NewURI(getter_AddRefs(soundURI),
-                NS_LITERAL_CSTRING(TYPEAHEADFIND_NOTFOUND_WAV_URL));
+                nsLiteralCString(TYPEAHEADFIND_NOTFOUND_WAV_URL));
     else
       NS_NewURI(getter_AddRefs(soundURI), mNotFoundSoundURL);
 
     nsCOMPtr<nsIURL> soundURL(do_QueryInterface(soundURI));
-    if (soundURL) mSoundInterface->Play(soundURL);
+    if (soundURL) soundInterface->Play(soundURL);
   }
 }
 
@@ -340,27 +301,17 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
   mFoundEditable = nullptr;
   mFoundRange = nullptr;
   mCurrentWindow = nullptr;
-  RefPtr<PresShell> startingPresShell = GetPresShell();
-  if (!startingPresShell) {
-    nsCOMPtr<nsIDocShell> ds = do_QueryReferent(mDocShell);
-    NS_ENSURE_TRUE(ds, NS_ERROR_FAILURE);
-
-    startingPresShell = ds->GetPresShell();
-    mPresShell = do_GetWeakReference(startingPresShell);
-  }
-
-  RefPtr<PresShell> presShell = startingPresShell;
-  if (!presShell) {
-    return NS_ERROR_FAILURE;
-  }
+  RefPtr<Document> startingDocument = GetDocument();
+  NS_ENSURE_TRUE(startingDocument, NS_ERROR_FAILURE);
 
   // There could be unflushed notifications which hide textareas or other
   // elements that we don't want to find text in.
-  presShell->FlushPendingNotifications(mozilla::FlushType::Layout);
+  startingDocument->FlushPendingNotifications(mozilla::FlushType::Layout);
 
+  RefPtr<PresShell> presShell = startingDocument->GetPresShell();
+  NS_ENSURE_TRUE(presShell, NS_ERROR_FAILURE);
   RefPtr<nsPresContext> presContext = presShell->GetPresContext();
-
-  if (!presContext) return NS_ERROR_FAILURE;
+  NS_ENSURE_TRUE(presContext, NS_ERROR_FAILURE);
 
   RefPtr<Selection> selection;
   nsCOMPtr<nsISelectionController> selectionController =
@@ -390,7 +341,7 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
   if (!aDontIterateFrames) {
     // The use of GetInProcessSameTypeRootTreeItem (and later in this method) is
     // OK here as out-of-process frames are handled externally by
-    // FinderParent.jsm, which will end up only calling this method with
+    // FinderParent.sys.mjs, which will end up only calling this method with
     // aDontIterateFrames set to true.
     startingDocShell->GetInProcessSameTypeRootTreeItem(
         getter_AddRefs(rootContentTreeItem));
@@ -493,21 +444,23 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
         SetSelectionModeAndRepaint(nsISelectionController::SELECTION_ON);
       }
 
-      // Make sure new document is selected
-      if (presShell != startingPresShell) {
-        // We are in a new document (because of frames/iframes)
-        mPresShell = do_GetWeakReference(presShell);
-      }
-
       RefPtr<Document> document = presShell->GetDocument();
       NS_ASSERTION(document, "Wow, presShell doesn't have document!");
-      if (!document) return NS_ERROR_UNEXPECTED;
+      if (!document) {
+        return NS_ERROR_UNEXPECTED;
+      }
+
+      // Make sure new document is selected
+      if (document != startingDocument) {
+        // We are in a new document (because of frames/iframes)
+        mDocument = document;
+      }
 
       nsCOMPtr<nsPIDOMWindowInner> window = document->GetInnerWindow();
       NS_ASSERTION(window, "document has no window");
       if (!window) return NS_ERROR_UNEXPECTED;
 
-      nsFocusManager* fm = nsFocusManager::GetFocusManager();
+      RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager();
       if (usesIndependentSelection) {
         /* If a search result is found inside an editable element, we'll focus
          * the element only if focus is in our content window, i.e.
@@ -532,7 +485,7 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
         // We may be inside an editable element, and therefore the selection
         // may be controlled by a different selection controller.  Walk up the
         // chain of parent nodes to see if we find one.
-        nsCOMPtr<nsINode> node = returnRange->GetStartContainer();
+        nsINode* node = returnRange->GetStartContainer();
         while (node) {
           nsCOMPtr<nsIEditor> editor;
           if (RefPtr<HTMLInputElement> input =
@@ -565,7 +518,8 @@ nsresult nsTypeAheadFind::FindItNow(uint32_t aMode, bool aIsLinksOnly,
 
           // Otherwise move focus/caret to editable element
           if (fm) {
-            fm->SetFocus(mFoundEditable, 0);
+            nsCOMPtr<Element> newFocusElement = mFoundEditable;
+            fm->SetFocus(newFocusElement, 0);
           }
           break;
         }
@@ -777,9 +731,8 @@ nsresult nsTypeAheadFind::GetSearchContainers(
   // Consider current selection as null if
   // it's not in the currently focused document
   RefPtr<const nsRange> currentSelectionRange;
-  RefPtr<PresShell> selectionPresShell = GetPresShell();
-  if (aSelectionController && selectionPresShell &&
-      selectionPresShell == presShell) {
+  RefPtr<Document> selectionDocument = GetDocument();
+  if (aSelectionController && selectionDocument && selectionDocument == doc) {
     RefPtr<Selection> selection = aSelectionController->GetSelection(
         nsISelectionController::SELECTION_NORMAL);
     if (selection) {
@@ -848,10 +801,8 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
       // look for non whitespace character before start offset
       for (uint32_t index = 0; index < startOffset; index++) {
         // FIXME: take content language into account when deciding whitespace.
-        if (!mozilla::dom::IsSpaceCharacter(
-                textFrag->CharAt(static_cast<int32_t>(index)))) {
+        if (!mozilla::dom::IsSpaceCharacter(textFrag->CharAt(index))) {
           *aIsStartingLink = false;  // not at start of a node
-
           break;
         }
       }
@@ -871,8 +822,7 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
       nsCOMPtr<mozilla::dom::Link> link(do_QueryInterface(startContent));
       if (link) {
         // Check to see if inside HTML link
-        *aIsInsideLink = startContent->AsElement()->HasAttr(kNameSpaceID_None,
-                                                            nsGkAtoms::href);
+        *aIsInsideLink = startContent->AsElement()->HasAttr(nsGkAtoms::href);
         return;
       }
     } else {
@@ -882,8 +832,8 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
                                            kNameSpaceID_XLink, nsGkAtoms::href);
       if (*aIsInsideLink) {
         if (!startContent->AsElement()->AttrValueIs(
-                kNameSpaceID_XLink, nsGkAtoms::type,
-                NS_LITERAL_STRING("simple"), eCaseMatters)) {
+                kNameSpaceID_XLink, nsGkAtoms::type, u"simple"_ns,
+                eCaseMatters)) {
           *aIsInsideLink = false;  // Xlink must be type="simple"
         }
 
@@ -914,10 +864,9 @@ void nsTypeAheadFind::RangeStartsInsideLink(nsRange* aRange,
   *aIsStartingLink = false;
 }
 
-NS_IMETHODIMP
-nsTypeAheadFind::Find(const nsAString& aSearchString, bool aLinksOnly,
-                      uint32_t aMode, bool aDontIterateFrames,
-                      uint16_t* aResult) {
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP nsTypeAheadFind::Find(
+    const nsAString& aSearchString, bool aLinksOnly, uint32_t aMode,
+    bool aDontIterateFrames, uint16_t* aResult) {
   if (aMode == nsITypeAheadFind::FIND_PREVIOUS ||
       aMode == nsITypeAheadFind::FIND_NEXT) {
     if (mTypeAheadBuffer.IsEmpty()) {
@@ -941,15 +890,11 @@ nsresult nsTypeAheadFind::FindInternal(uint32_t aMode,
                                        uint16_t* aResult) {
   *aResult = FIND_NOTFOUND;
 
-  RefPtr<PresShell> presShell = GetPresShell();
-  if (!presShell) {
-    nsCOMPtr<nsIDocShell> ds(do_QueryReferent(mDocShell));
-    NS_ENSURE_TRUE(ds, NS_ERROR_FAILURE);
+  RefPtr<Document> doc = GetDocument();
+  NS_ENSURE_TRUE(doc, NS_ERROR_FAILURE);
 
-    presShell = ds->GetPresShell();
-    NS_ENSURE_TRUE(presShell, NS_ERROR_FAILURE);
-    mPresShell = do_GetWeakReference(presShell);
-  }
+  RefPtr<PresShell> presShell = doc->GetPresShell();
+  NS_ENSURE_TRUE(presShell, NS_ERROR_FAILURE);
 
   RefPtr<Selection> selection;
   nsCOMPtr<nsISelectionController> selectionController =
@@ -1026,9 +971,8 @@ nsresult nsTypeAheadFind::FindInternal(uint32_t aMode,
       nsCOMPtr<Document> document = presShell->GetDocument();
       if (!document) return NS_ERROR_UNEXPECTED;
 
-      nsFocusManager* fm = nsFocusManager::GetFocusManager();
-      if (fm) {
-        nsPIDOMWindowOuter* window = document->GetWindow();
+      if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
+        nsCOMPtr<nsPIDOMWindowOuter> window = document->GetWindow();
         RefPtr<Element> focusedElement;
         nsCOMPtr<mozIDOMWindowProxy> focusedWindow;
         fm->GetFocusedElementForWindow(window, false,
@@ -1139,7 +1083,7 @@ bool nsTypeAheadFind::IsRangeVisible(nsRange* aRange, bool aMustBeInViewPort,
   // selection controller.
   if (aUsesIndependentSelection) {
     *aUsesIndependentSelection =
-        (frame->GetStateBits() & NS_FRAME_INDEPENDENT_SELECTION);
+        frame->HasAnyStateBits(NS_FRAME_INDEPENDENT_SELECTION);
   }
 
   return aMustBeInViewPort ? IsRangeRendered(aRange) : true;
@@ -1187,9 +1131,9 @@ bool nsTypeAheadFind::IsRangeRendered(nsRange* aRange) {
     // Append visible frames to frames array.
     nsLayoutUtils::GetFramesForArea(
         RelativeTo{rootFrame}, r, frames,
-        {FrameForPointOption::IgnorePaintSuppression,
-         FrameForPointOption::IgnoreRootScrollFrame,
-         FrameForPointOption::OnlyVisible});
+        {{FrameForPointOption::IgnorePaintSuppression,
+          FrameForPointOption::IgnoreRootScrollFrame,
+          FrameForPointOption::OnlyVisible}});
 
     // See if any of the frames contain the content. If they do, then the range
     // is visible. We search for the content rather than the original frame,
@@ -1207,16 +1151,21 @@ bool nsTypeAheadFind::IsRangeRendered(nsRange* aRange) {
   return false;
 }
 
-already_AddRefed<PresShell> nsTypeAheadFind::GetPresShell() {
-  if (!mPresShell) {
+already_AddRefed<Document> nsTypeAheadFind::GetDocument() {
+  // Try the last document we found and ensure it's sane.
+  RefPtr<Document> doc(mDocument);
+  if (doc && doc->GetPresShell() && doc->GetDocShell()) {
+    return doc.forget();
+  }
+
+  // Otherwise fall back to the document from which we were initialized (the one
+  // from mDocShell).
+  mDocument = nullptr;
+  nsCOMPtr<nsIDocShell> ds = do_QueryReferent(mDocShell);
+  if (!ds) {
     return nullptr;
   }
-  RefPtr<PresShell> presShell = do_QueryReferent(mPresShell);
-  if (presShell) {
-    nsPresContext* pc = presShell->GetPresContext();
-    if (!pc || !pc->GetContainerWeak()) {
-      return nullptr;
-    }
-  }
-  return presShell.forget();
+  doc = ds->GetExtantDocument();
+  mDocument = doc;
+  return doc.forget();
 }

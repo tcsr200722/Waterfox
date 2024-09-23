@@ -10,49 +10,40 @@
 
 #include <cstdint>
 
-#ifdef SKSL_STANDALONE
-#if defined(_WIN32) || defined(__SYMBIAN32__)
-#define SKSL_BUILD_FOR_WIN
-#endif
-#else
-#ifdef SK_BUILD_FOR_WIN
-#define SKSL_BUILD_FOR_WIN
-#endif // SK_BUILD_FOR_WIN
-#endif // SKSL_STANDALONE
-
-#ifdef SKSL_STANDALONE
-#define SkASSERT(x) do { if (!(x)) abort(); } while (false)
-#define SkAssertResult(x) do { if (!(x)) abort(); } while (false)
-#define SkDEBUGCODE(...) __VA_ARGS__
-#define SK_API
-#if !defined(SkUNREACHABLE)
-#  if defined(_MSC_VER) && !defined(__clang__)
-#    define SkUNREACHABLE __assume(false)
-#  else
-#    define SkUNREACHABLE __builtin_unreachable()
-#  endif
-#endif
-#else
 #include "include/core/SkTypes.h"
-#endif
+#include "include/private/base/SkTArray.h"
 
-#if defined(__clang__) || defined(__GNUC__)
-#define SKSL_PRINTF_LIKE(A, B) __attribute__((format(printf, (A), (B))))
-#define SKSL_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
-#else
-#define SKSL_PRINTF_LIKE(A, B)
-#define SKSL_WARN_UNUSED_RESULT
-#endif
-
-#define ABORT(...) (printf(__VA_ARGS__), sksl_abort())
-
-#if _MSC_VER
-#define NORETURN __declspec(noreturn)
-#else
-#define NORETURN __attribute__((__noreturn__))
-#endif
-
-using SKSL_INT = int32_t;
+using SKSL_INT = int64_t;
 using SKSL_FLOAT = float;
+
+namespace SkSL {
+
+class Expression;
+class Statement;
+
+using ComponentArray = skia_private::STArray<4, int8_t>; // for Swizzles
+
+class ExpressionArray : public skia_private::STArray<2, std::unique_ptr<Expression>> {
+public:
+    using STArray::STArray;
+
+    /** Returns a new ExpressionArray containing a clone of every element. */
+    ExpressionArray clone() const;
+};
+
+using StatementArray = skia_private::STArray<2, std::unique_ptr<Statement>>;
+
+// Functions larger than this (measured in IR nodes) will not be inlined. This growth factor
+// accounts for the number of calls being inlined--i.e., a function called five times (that is, with
+// five inlining opportunities) would be considered 5x larger than if it were called once. This
+// default threshold value is arbitrary, but tends to work well in practice.
+static constexpr int kDefaultInlineThreshold = 50;
+
+// A hard upper limit on the number of variable slots allowed in a function/global scope.
+// This is an arbitrary limit, but is needed to prevent code generation from taking unbounded
+// amounts of time or space.
+static constexpr int kVariableSlotLimit = 100000;
+
+}  // namespace SkSL
 
 #endif

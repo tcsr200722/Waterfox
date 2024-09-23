@@ -1,3 +1,4 @@
+
 /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim:set ts=4 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
@@ -10,31 +11,37 @@
 #include "nsHttp.h"
 #include "CacheControlParser.h"
 #include "PLDHashTable.h"
-#include "mozilla/Mutex.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/HashFunctions.h"
+#include "mozilla/OriginAttributes.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "nsCRT.h"
+#include "nsContentUtils.h"
 #include "nsHttpRequestHead.h"
 #include "nsHttpResponseHead.h"
 #include "nsHttpHandler.h"
 #include "nsICacheEntry.h"
 #include "nsIRequest.h"
+#include "nsIStandardURL.h"
 #include "nsJSUtils.h"
+#include "nsStandardURL.h"
+#include "sslerr.h"
 #include <errno.h>
 #include <functional>
+#include "nsLiteralString.h"
+#include <string.h>
 
 namespace mozilla {
 namespace net {
 
-const nsCString kHttp3Version = NS_LITERAL_CSTRING("h3-27");
+const uint32_t kHttp3VersionCount = 5;
+const nsCString kHttp3Versions[] = {"h3-29"_ns, "h3-30"_ns, "h3-31"_ns,
+                                    "h3-32"_ns, "h3"_ns};
 
-// define storage for all atoms
-namespace nsHttp {
-#define HTTP_ATOM(_name, _value) nsHttpAtom _name(_value);
-#include "nsHttpAtomList.h"
-#undef HTTP_ATOM
-}  // namespace nsHttp
+// https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-4.3
+constexpr uint64_t kWebTransportErrorCodeStart = 0x52e4a40fa8db;
+constexpr uint64_t kWebTransportErrorCodeEnd = 0x52e4a40fa9e2;
 
 // find out how many atoms we have
 #define HTTP_ATOM(_name, _value) Unused_##_name,
@@ -44,125 +51,85 @@ enum {
 };
 #undef HTTP_ATOM
 
-// we keep a linked list of atoms allocated on the heap for easy clean up when
-// the atom table is destroyed.  The structure and value string are allocated
-// as one contiguous block.
+static StaticDataMutex<nsTHashtable<nsCStringASCIICaseInsensitiveHashKey>>
+    sAtomTable("nsHttp::sAtomTable");
 
-struct HttpHeapAtom {
-  struct HttpHeapAtom* next;
-  char value[1];
-};
-
-static PLDHashTable* sAtomTable;
-static struct HttpHeapAtom* sHeapAtoms = nullptr;
-static Mutex* sLock = nullptr;
-
-HttpHeapAtom* NewHeapAtom(const char* value) {
-  int len = strlen(value);
-
-  HttpHeapAtom* a = reinterpret_cast<HttpHeapAtom*>(malloc(sizeof(*a) + len));
-  if (!a) return nullptr;
-  memcpy(a->value, value, len + 1);
-
-  // add this heap atom to the list of all heap atoms
-  a->next = sHeapAtoms;
-  sHeapAtoms = a;
-
-  return a;
-}
-
-// Hash string ignore case, based on PL_HashString
-static PLDHashNumber StringHash(const void* key) {
-  PLDHashNumber h = 0;
-  for (const char* s = reinterpret_cast<const char*>(key); *s; ++s)
-    h = AddToHash(h, nsCRT::ToLower(*s));
-  return h;
-}
-
-static bool StringCompare(const PLDHashEntryHdr* entry, const void* testKey) {
-  const void* entryKey = reinterpret_cast<const PLDHashEntryStub*>(entry)->key;
-
-  return PL_strcasecmp(reinterpret_cast<const char*>(entryKey),
-                       reinterpret_cast<const char*>(testKey)) == 0;
-}
-
-static const PLDHashTableOps ops = {StringHash, StringCompare,
-                                    PLDHashTable::MoveEntryStub,
-                                    PLDHashTable::ClearEntryStub, nullptr};
+// This is set to true in DestroyAtomTable so we don't try to repopulate the
+// table if ResolveAtom gets called during shutdown for some reason.
+static Atomic<bool> sTableDestroyed{false};
 
 // We put the atoms in a hash table for speedy lookup.. see ResolveAtom.
 namespace nsHttp {
-nsresult CreateAtomTable() {
-  MOZ_ASSERT(!sAtomTable, "atom table already initialized");
 
-  if (!sLock) {
-    sLock = new Mutex("nsHttp.sLock");
+nsresult CreateAtomTable(
+    nsTHashtable<nsCStringASCIICaseInsensitiveHashKey>& base) {
+  if (sTableDestroyed) {
+    return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
   }
-
-  // The initial length for this table is a value greater than the number of
-  // known atoms (NUM_HTTP_ATOMS) because we expect to encounter a few random
-  // headers right off the bat.
-  sAtomTable =
-      new PLDHashTable(&ops, sizeof(PLDHashEntryStub), NUM_HTTP_ATOMS + 10);
-
   // fill the table with our known atoms
-  const char* const atoms[] = {
-#define HTTP_ATOM(_name, _value) _name._val,
+  const nsHttpAtomLiteral* atoms[] = {
+#define HTTP_ATOM(_name, _value) &(_name),
 #include "nsHttpAtomList.h"
 #undef HTTP_ATOM
-      nullptr};
+  };
 
-  for (int i = 0; atoms[i]; ++i) {
-    auto stub =
-        static_cast<PLDHashEntryStub*>(sAtomTable->Add(atoms[i], fallible));
-    if (!stub) return NS_ERROR_OUT_OF_MEMORY;
-
-    MOZ_ASSERT(!stub->key, "duplicate static atom");
-    stub->key = atoms[i];
+  if (!base.IsEmpty()) {
+    return NS_OK;
+  }
+  for (const auto* atom : atoms) {
+    Unused << base.PutEntry(atom->val(), fallible);
   }
 
+  LOG(("Added static atoms to atomTable"));
   return NS_OK;
 }
 
-void DestroyAtomTable() {
-  delete sAtomTable;
-  sAtomTable = nullptr;
-
-  while (sHeapAtoms) {
-    HttpHeapAtom* next = sHeapAtoms->next;
-    free(sHeapAtoms);
-    sHeapAtoms = next;
-  }
-
-  delete sLock;
-  sLock = nullptr;
+nsresult CreateAtomTable() {
+  LOG(("CreateAtomTable"));
+  auto atomTable = sAtomTable.Lock();
+  return CreateAtomTable(atomTable.ref());
 }
 
-Mutex* GetLock() { return sLock; }
+void DestroyAtomTable() {
+  LOG(("DestroyAtomTable"));
+  sTableDestroyed = true;
+  auto atomTable = sAtomTable.Lock();
+  atomTable.ref().Clear();
+}
 
 // this function may be called from multiple threads
-nsHttpAtom ResolveAtom(const char* str) {
-  nsHttpAtom atom;
-
-  if (!str || !sAtomTable) return atom;
-
-  MutexAutoLock lock(*sLock);
-
-  auto stub = static_cast<PLDHashEntryStub*>(sAtomTable->Add(str, fallible));
-  if (!stub) return atom;  // out of memory
-
-  if (stub->key) {
-    atom._val = reinterpret_cast<const char*>(stub->key);
-    return atom;
+nsHttpAtom ResolveAtom(const nsACString& str) {
+  if (str.IsEmpty()) {
+    return {};
   }
 
-  // if the atom could not be found in the atom table, then we'll go
-  // and allocate a new atom on the heap.
-  HttpHeapAtom* heapAtom = NewHeapAtom(str);
-  if (!heapAtom) return atom;  // out of memory
+  auto atomTable = sAtomTable.Lock();
 
-  stub->key = atom._val = heapAtom->value;
-  return atom;
+  if (atomTable.ref().IsEmpty()) {
+    if (sTableDestroyed) {
+      NS_WARNING("ResolveAtom called during shutdown");
+      return {};
+    }
+
+    NS_WARNING("ResolveAtom called before CreateAtomTable");
+    if (NS_FAILED(CreateAtomTable(atomTable.ref()))) {
+      return {};
+    }
+  }
+
+  // Check if we already have an entry in the table
+  auto* entry = atomTable.ref().GetEntry(str);
+  if (entry) {
+    return nsHttpAtom(entry->GetKey());
+  }
+
+  LOG(("Putting %s header into atom table", nsPromiseFlatCString(str).get()));
+  // Put the string in the table. If it works create the atom.
+  entry = atomTable.ref().PutEntry(str, fallible);
+  if (entry) {
+    return nsHttpAtom(entry->GetKey());
+  }
+  return {};
 }
 
 //
@@ -267,7 +234,7 @@ const char* FindToken(const char* input, const char* token, const char* seps) {
   const char* inputTop = input;
   const char* inputEnd = input + inputLen - tokenLen;
   for (; input <= inputEnd; ++input) {
-    if (PL_strncasecmp(input, token, tokenLen) == 0) {
+    if (nsCRT::strncasecmp(input, token, tokenLen) == 0) {
       if (input > inputTop && !strchr(seps, *(input - 1))) continue;
       if (input < inputEnd && !strchr(seps, *(input + tokenLen))) continue;
       return input;
@@ -307,7 +274,8 @@ bool IsPermanentRedirect(uint32_t httpStatus) {
 bool ValidationRequired(bool isForcedValid,
                         nsHttpResponseHead* cachedResponseHead,
                         uint32_t loadFlags, bool allowStaleCacheContent,
-                        bool isImmutable, bool customConditionalRequest,
+                        bool forceValidateCacheContent, bool isImmutable,
+                        bool customConditionalRequest,
                         nsHttpRequestHead& requestHead, nsICacheEntry* entry,
                         CacheControlParser& cacheControlRequest,
                         bool fromPreviousSession,
@@ -334,7 +302,9 @@ bool ValidationRequired(bool isForcedValid,
 
   // If the VALIDATE_ALWAYS flag is set, any cached data won't be used until
   // it's revalidated with the server.
-  if ((loadFlags & nsIRequest::VALIDATE_ALWAYS) && !isImmutable) {
+  if (((loadFlags & nsIRequest::VALIDATE_ALWAYS) ||
+       forceValidateCacheContent) &&
+      !isImmutable) {
     LOG(("Validating based on VALIDATE_ALWAYS load flag\n"));
     return true;
   }
@@ -436,10 +406,11 @@ bool ValidationRequired(bool isForcedValid,
     // or not this is the first access this session.  This behavior
     // is consistent with existing browsers and is generally expected
     // by web authors.
-    if (freshness == 0)
+    if (freshness == 0) {
       doValidation = true;
-    else
+    } else {
       doValidation = fromPreviousSession;
+    }
   } else {
     doValidation = true;
   }
@@ -522,13 +493,50 @@ bool IsBeforeLastActiveTabLoadOptimization(TimeStamp const& when) {
          gHttpHandler->IsBeforeLastActiveTabLoadOptimization(when);
 }
 
+nsCString ConvertRequestHeadToString(nsHttpRequestHead& aRequestHead,
+                                     bool aHasRequestBody,
+                                     bool aRequestBodyHasHeaders,
+                                     bool aUsingConnect) {
+  // Make sure that there is "Content-Length: 0" header in the requestHead
+  // in case of POST and PUT methods when there is no requestBody and
+  // requestHead doesn't contain "Transfer-Encoding" header.
+  //
+  // RFC1945 section 7.2.2:
+  //   HTTP/1.0 requests containing an entity body must include a valid
+  //   Content-Length header field.
+  //
+  // RFC2616 section 4.4:
+  //   For compatibility with HTTP/1.0 applications, HTTP/1.1 requests
+  //   containing a message-body MUST include a valid Content-Length header
+  //   field unless the server is known to be HTTP/1.1 compliant.
+  if ((aRequestHead.IsPost() || aRequestHead.IsPut()) && !aHasRequestBody &&
+      !aRequestHead.HasHeader(nsHttp::Transfer_Encoding)) {
+    DebugOnly<nsresult> rv =
+        aRequestHead.SetHeader(nsHttp::Content_Length, "0"_ns);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+  }
+
+  nsCString reqHeaderBuf;
+  reqHeaderBuf.Truncate();
+
+  // make sure we eliminate any proxy specific headers from
+  // the request if we are using CONNECT
+  aRequestHead.Flatten(reqHeaderBuf, aUsingConnect);
+
+  if (!aRequestBodyHasHeaders || !aHasRequestBody) {
+    reqHeaderBuf.AppendLiteral("\r\n");
+  }
+
+  return reqHeaderBuf;
+}
+
 void NotifyActiveTabLoadOptimization() {
   if (gHttpHandler) {
     gHttpHandler->NotifyActiveTabLoadOptimization();
   }
 }
 
-TimeStamp const GetLastActiveTabLoadOptimizationHit() {
+TimeStamp GetLastActiveTabLoadOptimizationHit() {
   return gHttpHandler ? gHttpHandler->GetLastActiveTabLoadOptimizationHit()
                       : TimeStamp();
 }
@@ -571,20 +579,17 @@ void EnsureBuffer(UniquePtr<uint8_t[]>& buf, uint32_t newSize,
 }
 
 static bool IsTokenSymbol(signed char chr) {
-  if (chr < 33 || chr == 127 || chr == '(' || chr == ')' || chr == '<' ||
-      chr == '>' || chr == '@' || chr == ',' || chr == ';' || chr == ':' ||
-      chr == '"' || chr == '/' || chr == '[' || chr == ']' || chr == '?' ||
-      chr == '=' || chr == '{' || chr == '}' || chr == '\\') {
-    return false;
-  }
-  return true;
+  return !(chr < 33 || chr == 127 || chr == '(' || chr == ')' || chr == '<' ||
+           chr == '>' || chr == '@' || chr == ',' || chr == ';' || chr == ':' ||
+           chr == '"' || chr == '/' || chr == '[' || chr == ']' || chr == '?' ||
+           chr == '=' || chr == '{' || chr == '}' || chr == '\\');
 }
 
 ParsedHeaderPair::ParsedHeaderPair(const char* name, int32_t nameLen,
                                    const char* val, int32_t valLen,
                                    bool isQuotedValue)
-    : mName(nsDependentCSubstring(nullptr, 0u)),
-      mValue(nsDependentCSubstring(nullptr, 0u)),
+    : mName(nsDependentCSubstring(nullptr, size_t(0))),
+      mValue(nsDependentCSubstring(nullptr, size_t(0))),
       mIsQuotedValue(isQuotedValue) {
   if (nameLen > 0) {
     mName.Rebind(name, name + nameLen);
@@ -689,8 +694,9 @@ void ParsedHeaderValueList::ParseNameAndValue(const char* input,
 
   for (; *input && *input != ';' && *input != ',' &&
          !nsCRT::IsAsciiSpace(*input) && *input != '=';
-       input++)
+       input++) {
     ;
+  }
 
   nameEnd = input;
 
@@ -729,8 +735,9 @@ void ParsedHeaderValueList::ParseNameAndValue(const char* input,
     valueStart = input;
     for (valueEnd = input; *valueEnd && !nsCRT::IsAsciiSpace(*valueEnd) &&
                            *valueEnd != ';' && *valueEnd != ',';
-         valueEnd++)
+         valueEnd++) {
       ;
+    }
     if (!allowInvalidValue) {
       for (const char* c = valueStart; c < valueEnd; c++) {
         if (!IsTokenSymbol(*c)) {
@@ -786,35 +793,53 @@ ParsedHeaderValueListList::ParsedHeaderValueListList(
   Tokenize(mFull.BeginReading(), mFull.Length(), ',', consumer);
 }
 
-void LogCallingScriptLocation(void* instance) {
-  if (!LOG4_ENABLED()) {
-    return;
+Maybe<nsCString> CallingScriptLocationString() {
+  if (!LOG4_ENABLED() && !xpc::IsInAutomation()) {
+    return Nothing();
   }
 
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (!cx) {
-    return;
+    return Nothing();
   }
 
   nsAutoCString fileNameString;
   uint32_t line = 0, col = 0;
   if (!nsJSUtils::GetCallingLocation(cx, fileNameString, &line, &col)) {
+    return Nothing();
+  }
+
+  nsCString logString = ""_ns;
+  logString.AppendPrintf("%s:%u:%u", fileNameString.get(), line, col);
+  return Some(logString);
+}
+
+void LogCallingScriptLocation(void* instance) {
+  Maybe<nsCString> logLocation = CallingScriptLocationString();
+  LogCallingScriptLocation(instance, logLocation);
+}
+
+void LogCallingScriptLocation(void* instance,
+                              const Maybe<nsCString>& aLogLocation) {
+  if (aLogLocation.isNothing()) {
     return;
   }
 
-  LOG(("%p called from script: %s:%u:%u", instance, fileNameString.get(), line,
-       col));
+  nsCString logString;
+  logString.AppendPrintf("%p called from script: ", instance);
+  logString.AppendPrintf("%s", aLogLocation->get());
+  LOG(("%s", logString.get()));
 }
 
 void LogHeaders(const char* lineStart) {
   nsAutoCString buf;
-  char* endOfLine;
-  while ((endOfLine = PL_strstr(lineStart, "\r\n"))) {
+  const char* endOfLine;
+  while ((endOfLine = strstr(lineStart, "\r\n"))) {
     buf.Assign(lineStart, endOfLine - lineStart);
     if (StaticPrefs::network_http_sanitize_headers_in_logs() &&
-        (PL_strcasestr(buf.get(), "authorization: ") ||
-         PL_strcasestr(buf.get(), "proxy-authorization: "))) {
-      char* p = PL_strchr(buf.get(), ' ');
+        (nsCRT::strcasestr(buf.get(), "authorization: ") ||
+         nsCRT::strcasestr(buf.get(), "proxy-authorization: "))) {
+      char* p = strchr(buf.BeginWriting(), ' ');
       while (p && *++p) {
         *p = '*';
       }
@@ -960,6 +985,184 @@ nsresult HttpProxyResponseToErrorCode(uint32_t aStatusCode) {
   }
 
   return rv;
+}
+
+SupportedAlpnRank H3VersionToRank(const nsACString& aVersion) {
+  for (uint32_t i = 0; i < kHttp3VersionCount; i++) {
+    if (aVersion.Equals(kHttp3Versions[i])) {
+      return static_cast<SupportedAlpnRank>(
+          static_cast<uint32_t>(SupportedAlpnRank::HTTP_3_DRAFT_29) + i);
+    }
+  }
+
+  return SupportedAlpnRank::NOT_SUPPORTED;
+}
+
+SupportedAlpnRank IsAlpnSupported(const nsACString& aAlpn) {
+  if (nsHttpHandler::IsHttp3Enabled() &&
+      gHttpHandler->IsHttp3VersionSupported(aAlpn)) {
+    return H3VersionToRank(aAlpn);
+  }
+
+  if (StaticPrefs::network_http_http2_enabled()) {
+    SpdyInformation* spdyInfo = gHttpHandler->SpdyInfo();
+    if (aAlpn.Equals(spdyInfo->VersionString)) {
+      return SupportedAlpnRank::HTTP_2;
+    }
+  }
+
+  if (aAlpn.LowerCaseEqualsASCII("http/1.1")) {
+    return SupportedAlpnRank::HTTP_1_1;
+  }
+
+  return SupportedAlpnRank::NOT_SUPPORTED;
+}
+
+// NSS Errors which *may* have been triggered by the use of 0-RTT in the
+// presence of badly behaving middleboxes. We may re-attempt the connection
+// without early data.
+bool PossibleZeroRTTRetryError(nsresult aReason) {
+  return (aReason ==
+          psm::GetXPCOMFromNSSError(SSL_ERROR_PROTOCOL_VERSION_ALERT)) ||
+         (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_BAD_MAC_ALERT)) ||
+         (aReason ==
+          psm::GetXPCOMFromNSSError(SSL_ERROR_HANDSHAKE_UNEXPECTED_ALERT));
+}
+
+nsresult MakeOriginURL(const nsACString& origin, nsCOMPtr<nsIURI>& url) {
+  nsAutoCString scheme;
+  nsresult rv = net_ExtractURLScheme(origin, scheme);
+  NS_ENSURE_SUCCESS(rv, rv);
+  return MakeOriginURL(scheme, origin, url);
+}
+
+nsresult MakeOriginURL(const nsACString& scheme, const nsACString& origin,
+                       nsCOMPtr<nsIURI>& url) {
+  return NS_MutateURI(new nsStandardURL::Mutator())
+      .Apply(&nsIStandardURLMutator::Init, nsIStandardURL::URLTYPE_AUTHORITY,
+             scheme.EqualsLiteral("http") ? NS_HTTP_DEFAULT_PORT
+                                          : NS_HTTPS_DEFAULT_PORT,
+             origin, nullptr, nullptr, nullptr)
+      .Finalize(url);
+}
+
+void CreatePushHashKey(const nsCString& scheme, const nsCString& hostHeader,
+                       const mozilla::OriginAttributes& originAttributes,
+                       uint64_t serial, const nsACString& pathInfo,
+                       nsCString& outOrigin, nsCString& outKey) {
+  nsCString fullOrigin = scheme;
+  fullOrigin.AppendLiteral("://");
+  fullOrigin.Append(hostHeader);
+
+  nsCOMPtr<nsIURI> origin;
+  nsresult rv = MakeOriginURL(scheme, fullOrigin, origin);
+
+  if (NS_SUCCEEDED(rv)) {
+    rv = origin->GetAsciiSpec(outOrigin);
+    outOrigin.Trim("/", false, true, false);
+  }
+
+  if (NS_FAILED(rv)) {
+    // Fallback to plain text copy - this may end up behaving poorly
+    outOrigin = fullOrigin;
+  }
+
+  outKey = outOrigin;
+  outKey.AppendLiteral("/[");
+  nsAutoCString suffix;
+  originAttributes.CreateSuffix(suffix);
+  outKey.Append(suffix);
+  outKey.Append(']');
+  outKey.AppendLiteral("/[http2.");
+  outKey.AppendInt(serial);
+  outKey.Append(']');
+  outKey.Append(pathInfo);
+}
+
+nsresult GetNSResultFromWebTransportError(uint8_t aErrorCode) {
+  return static_cast<nsresult>((uint32_t)NS_ERROR_WEBTRANSPORT_CODE_BASE +
+                               (uint32_t)aErrorCode);
+}
+
+uint8_t GetWebTransportErrorFromNSResult(nsresult aResult) {
+  if (aResult < NS_ERROR_WEBTRANSPORT_CODE_BASE ||
+      aResult > NS_ERROR_WEBTRANSPORT_CODE_END) {
+    return 0;
+  }
+
+  return static_cast<uint8_t>((uint32_t)aResult -
+                              (uint32_t)NS_ERROR_WEBTRANSPORT_CODE_BASE);
+}
+
+uint64_t WebTransportErrorToHttp3Error(uint8_t aErrorCode) {
+  return kWebTransportErrorCodeStart + aErrorCode + aErrorCode / 0x1e;
+}
+
+uint8_t Http3ErrorToWebTransportError(uint64_t aErrorCode) {
+  // Ensure the code is within the valid range.
+  if (aErrorCode < kWebTransportErrorCodeStart ||
+      aErrorCode > kWebTransportErrorCodeEnd) {
+    return 0;
+  }
+
+  uint64_t shifted = aErrorCode - kWebTransportErrorCodeStart;
+  uint64_t result = shifted - shifted / 0x1f;
+
+  if (result <= std::numeric_limits<uint8_t>::max()) {
+    return (uint8_t)result;
+  }
+
+  return 0;
+}
+
+ConnectionCloseReason ToCloseReason(nsresult aErrorCode) {
+  if (NS_SUCCEEDED(aErrorCode)) {
+    return ConnectionCloseReason::OK;
+  }
+
+  if (aErrorCode == NS_ERROR_UNKNOWN_HOST) {
+    return ConnectionCloseReason::DNS_ERROR;
+  }
+  if (aErrorCode == NS_ERROR_NET_RESET) {
+    return ConnectionCloseReason::NET_RESET;
+  }
+  if (aErrorCode == NS_ERROR_CONNECTION_REFUSED) {
+    return ConnectionCloseReason::NET_REFUSED;
+  }
+  if (aErrorCode == NS_ERROR_SOCKET_ADDRESS_NOT_SUPPORTED) {
+    return ConnectionCloseReason::SOCKET_ADDRESS_NOT_SUPPORTED;
+  }
+  if (aErrorCode == NS_ERROR_NET_TIMEOUT) {
+    return ConnectionCloseReason::NET_TIMEOUT;
+  }
+  if (aErrorCode == NS_ERROR_OUT_OF_MEMORY) {
+    return ConnectionCloseReason::OUT_OF_MEMORY;
+  }
+  if (aErrorCode == NS_ERROR_SOCKET_ADDRESS_IN_USE) {
+    return ConnectionCloseReason::SOCKET_ADDRESS_IN_USE;
+  }
+  if (aErrorCode == NS_BINDING_ABORTED) {
+    return ConnectionCloseReason::BINDING_ABORTED;
+  }
+  if (aErrorCode == NS_BINDING_REDIRECTED) {
+    return ConnectionCloseReason::BINDING_REDIRECTED;
+  }
+  if (aErrorCode == NS_ERROR_ABORT) {
+    return ConnectionCloseReason::ERROR_ABORT;
+  }
+
+  int32_t code = -1 * NS_ERROR_GET_CODE(aErrorCode);
+  if (mozilla::psm::IsNSSErrorCode(code)) {
+    return ConnectionCloseReason::SECURITY_ERROR;
+  }
+
+  return ConnectionCloseReason::OTHER_NET_ERROR;
+}
+
+void DisallowHTTPSRR(uint32_t& aCaps) {
+  // NS_HTTP_DISALLOW_HTTPS_RR should take precedence than
+  // NS_HTTP_FORCE_WAIT_HTTP_RR.
+  aCaps = (aCaps | NS_HTTP_DISALLOW_HTTPS_RR) & ~NS_HTTP_FORCE_WAIT_HTTP_RR;
 }
 
 }  // namespace net

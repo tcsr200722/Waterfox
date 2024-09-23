@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -24,7 +23,7 @@ add_task(
     Assert.ok(!!response);
     Assert.ok(!!response.sources);
 
-    const source = response.sources.filter(function(s) {
+    const source = response.sources.filter(function (s) {
       return s.url === SOURCE_URL;
     })[0];
 
@@ -40,13 +39,15 @@ add_task(
     Assert.ok(!!response2.source);
     Assert.equal(SOURCE_CONTENT, response2.source);
 
-    threadFront.resume();
+    await threadFront.resume();
   })
 );
 
 function evaluateTestCode(debuggee) {
   Cu.evalInSandbox(
     "" +
+      // These arguments are tested.
+      // eslint-disable-next-line no-unused-vars
       function stopMe(arg1) {
         debugger;
       },

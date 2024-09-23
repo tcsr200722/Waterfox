@@ -4,26 +4,31 @@ function check_ogg(v, enabled, finish) {
   }
 
   function basic_test() {
-    return new Promise(function(resolve, reject) {
-      // Ogg types
-      check("video/ogg", "maybe");
+    return new Promise(function (resolve) {
+      if (SpecialPowers.getBoolPref("media.theora.enabled")) {
+        check("video/ogg", "maybe");
+        check("video/ogg; codecs=vorbis", "probably");
+        check("video/ogg; codecs=vorbis,theora", "probably");
+        check('video/ogg; codecs="vorbis, theora"', "probably");
+        check("video/ogg; codecs=theora", "probably");
+      } else {
+        check("video/ogg", "");
+        check("video/ogg; codecs=vorbis", "");
+        check("video/ogg; codecs=vorbis,theora", "");
+        check('video/ogg; codecs="vorbis, theora"', "");
+        check("video/ogg; codecs=theora", "");
+      }
       check("audio/ogg", "maybe");
       check("application/ogg", "maybe");
 
-      // Supported Ogg codecs
       check("audio/ogg; codecs=vorbis", "probably");
-      check("video/ogg; codecs=vorbis", "probably");
-      check("video/ogg; codecs=vorbis,theora", "probably");
-      check('video/ogg; codecs="vorbis, theora"', "probably");
-      check("video/ogg; codecs=theora", "probably");
-
       resolve();
     });
   }
 
   // Verify Opus support
   function verify_opus_support() {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
       var OpusEnabled = SpecialPowers.getBoolPref(
         "media.opus.enabled",
         undefined
@@ -42,7 +47,7 @@ function check_ogg(v, enabled, finish) {
   function opus_enable() {
     return SpecialPowers.pushPrefEnv({
       set: [["media.opus.enabled", true]],
-    }).then(function() {
+    }).then(function () {
       check("audio/ogg; codecs=opus", "probably");
     });
   }
@@ -50,7 +55,7 @@ function check_ogg(v, enabled, finish) {
   function opus_disable() {
     return SpecialPowers.pushPrefEnv({
       set: [["media.opus.enabled", false]],
-    }).then(function() {
+    }).then(function () {
       check("audio/ogg; codecs=opus", "");
     });
   }

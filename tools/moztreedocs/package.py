@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
-
 import os
 
 from mozpack.archive import create_tar_gz_from_files
@@ -17,14 +15,15 @@ def distribution_files(root):
     of (path, BaseFile) for files that should be archived, uploaded, etc.
     Paths are relative to given root directory.
     """
-    finder = FileFinder(root, ignore=('_staging', '_venv'))
-    return finder.find('**')
+    finder = FileFinder(root, ignore=("_staging", "_venv"))
+    return finder.find("**")
 
 
 def create_tarball(filename, root):
     """Create a tar.gz archive of docs in a directory."""
     files = dict(distribution_files(root))
 
-    with open(filename, 'wb') as fh:
-        create_tar_gz_from_files(fh, files, filename=os.path.basename(filename),
-                                 compresslevel=6)
+    with open(filename, "wb") as fh:
+        create_tar_gz_from_files(
+            fh, files, filename=os.path.basename(filename), compresslevel=6
+        )

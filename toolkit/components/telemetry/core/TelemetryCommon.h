@@ -6,25 +6,30 @@
 #ifndef TelemetryCommon_h__
 #define TelemetryCommon_h__
 
-#include "jsapi.h"
+#include "PLDHashTable.h"
+#include "js/RootingAPI.h"
+#include "js/TypeDecls.h"
 #include "mozilla/TypedEnumBits.h"
 #include "mozilla/TelemetryProcessEnums.h"
-#include "nsIScriptError.h"
+#include "nsHashtablesFwd.h"
+#include "nsTHashSet.h"
 #include "nsTHashtable.h"
-#include "nsHashKeys.h"
+#include "nsIScriptError.h"
 #include "nsXULAppAPI.h"
 
 namespace mozilla {
 namespace Telemetry {
 namespace Common {
 
-typedef nsTHashtable<nsCStringHashKey> StringHashSet;
+typedef nsTHashSet<nsCString> StringHashSet;
 
 enum class RecordedProcessType : uint16_t {
   Main = (1 << GeckoProcessType_Default),  // Also known as "parent process"
   Content = (1 << GeckoProcessType_Content),
   Gpu = (1 << GeckoProcessType_GPU),
+  Rdd = (1 << GeckoProcessType_RDD),
   Socket = (1 << GeckoProcessType_Socket),
+  Utility = (1 << GeckoProcessType_Utility),
   AllChildren = 0xFFFF - 1,  // All the child processes (i.e. content, gpu, ...)
                              // Always `All-Main` to allow easy matching.
   All = 0xFFFF               // All the processes
@@ -37,8 +42,8 @@ static_assert(static_cast<uint16_t>(RecordedProcessType::Main) == 1,
 enum class SupportedProduct : uint8_t {
   Firefox = (1 << 0),
   Fennec = (1 << 1),
-  Geckoview = (1 << 2),
-  GeckoviewStreaming = (1 << 3),
+  // Note that `1 << 2` and `1 << 3` (former GeckoView, GeckoviewStreaming) are
+  // missing in the representation. We see no point in filling it at this time.
   Thunderbird = (1 << 4),
 };
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(SupportedProduct);
@@ -85,12 +90,33 @@ bool CanRecordProduct(SupportedProduct aProducts);
 
 /**
  * Return the number of milliseconds since process start using monotonic
- * timestamps (unaffected by system clock changes).
+ * timestamps (unaffected by system clock changes). Depending on the platform,
+ * this can include the time the device was suspended (Windows) or not (Linux,
+ * macOS).
  *
- * @return NS_OK on success, NS_ERROR_NOT_AVAILABLE if TimeStamp doesn't have
- *               the data.
+ * @return NS_OK on success.
  */
 nsresult MsSinceProcessStart(double* aResult);
+
+/**
+ * Return the number of milliseconds since process start using monotonic
+ * timestamps (unaffected by system clock changes), including the time the
+ * system was suspended.
+ *
+ * @return NS_OK on success, NS_ERROR_NOT_AVAILABLE if the data is unavailable
+ * (this can happen on old operating systems).
+ */
+nsresult MsSinceProcessStartIncludingSuspend(double* aResult);
+
+/**
+ * Return the number of milliseconds since process start using monotonic
+ * timestamps (unaffected by system clock changes), excluding the time the
+ * system was suspended.
+ *
+ * @return NS_OK on success, NS_ERROR_NOT_AVAILABLE if the data is unavailable
+ * (this can happen on old operating systems).
+ */
+nsresult MsSinceProcessStartExcludingSuspend(double* aResult);
 
 /**
  * Dumps a log message to the Browser Console using the provided level.

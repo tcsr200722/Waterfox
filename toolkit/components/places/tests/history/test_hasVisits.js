@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Tests for `History.hasVisits` as implemented in History.jsm
+// Tests for `History.hasVisits` as implemented in History.sys.mjs
 
 "use strict";
 
@@ -48,7 +48,9 @@ add_task(async function test_history_has_visits() {
     true,
     "Test Url should be in history."
   );
-  let guid = await PlacesTestUtils.fieldInDB(TEST_URL, "guid");
+  let guid = await PlacesTestUtils.getDatabaseValue("moz_places", "guid", {
+    url: TEST_URL,
+  });
   Assert.equal(
     await PlacesUtils.history.hasVisits(guid),
     true,

@@ -27,7 +27,7 @@ add_task(async function testClickingSidebarEntriesChangesView() {
   assertListView(win, "theme");
 
   loaded = waitForViewLoad(win);
-  getAddonCard(win, THEME_ID).click();
+  getAddonCard(win, THEME_ID).querySelector(".addon-name-link").click();
   await loaded;
 
   ok(!doc.querySelector("addon-list"), "No more addon-list");
@@ -54,17 +54,16 @@ add_task(async function testClickingSidebarEntriesChangesView() {
 
 add_task(async function testClickingSidebarPaddingNoChange() {
   let win = await loadInitialView("theme");
-  let { managerWindow } = win;
-  let categoryUtils = new CategoryUtilities(managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
   let themeCategory = categoryUtils.get("theme");
 
   let loadDetailView = async () => {
     let loaded = waitForViewLoad(win);
-    getAddonCard(win, THEME_ID).click();
+    getAddonCard(win, THEME_ID).querySelector(".addon-name-link").click();
     await loaded;
 
     is(
-      managerWindow.gViewController.currentViewId,
+      win.gViewController.currentViewId,
       `addons://detail/${THEME_ID}`,
       "The detail view loaded"
     );
@@ -76,15 +75,21 @@ add_task(async function testClickingSidebarPaddingNoChange() {
   EventUtils.synthesizeMouseAtCenter(themeCategory, {}, win);
   await loaded;
   is(
-    managerWindow.gViewController.currentViewId,
+    win.gViewController.currentViewId,
     `addons://list/theme`,
     "The detail view loaded"
   );
 
   // Confirm that clicking on the padding beside it does nothing.
   await loadDetailView();
+  // We intentionally turn off this a11y check, because the following click
+  // is purposefully targeting a non-interactive padding of the container
+  // to confirm nothing happens, thus this rule check shall be ignored by
+  // a11y_checks suite.
+  AccessibilityUtils.setEnv({ mustHaveAccessibleRule: false });
   EventUtils.synthesizeMouse(themeCategory, -5, -5, {}, win);
-  ok(!managerWindow.gViewController.isLoading, "No view is loading");
+  AccessibilityUtils.resetEnv();
+  ok(!win.gViewController.isLoading, "No view is loading");
 
   await closeView(win);
 });
@@ -108,8 +113,6 @@ add_task(async function testKeyboardUsage() {
 
   ok(!isFocusInCategories(), "Focus is not in the category list");
 
-  // Tab into the HTML browser.
-  await sendTabKey();
   // Tab to the first focusable element.
   await sendTabKey();
 
@@ -148,7 +151,7 @@ add_task(async function testKeyboardUsage() {
 
   await sendKey("VK_DOWN");
   is(win.document.activeElement, pluginCategory, "Plugins is still focused");
-  ok(!win.managerWindow.gViewController.isLoading, "No view is loading");
+  ok(!win.gViewController.isLoading, "No view is loading");
 
   loaded = waitForViewLoad(win);
   await sendKey("VK_UP");

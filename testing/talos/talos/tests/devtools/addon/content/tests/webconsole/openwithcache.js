@@ -10,11 +10,11 @@ const {
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 
 const TOTAL_MESSAGES = 100;
 
-module.exports = async function() {
+module.exports = async function () {
   let tab = await testSetup(SIMPLE_URL);
 
   // Load a frame script using a data URI so we can do logs

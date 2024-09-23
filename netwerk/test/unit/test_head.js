@@ -6,14 +6,16 @@
 
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 const ReferrerInfo = Components.Constructor(
   "@mozilla.org/referrer-info;1",
   "nsIReferrerInfo",
   "init"
 );
 
-XPCOMUtils.defineLazyGetter(this, "URL", function() {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return "http://localhost:" + httpserver.identity.primaryPort;
 });
 
@@ -21,7 +23,6 @@ var httpserver = new HttpServer();
 var testpath = "/simple";
 var httpbody = "0123456789";
 var channel;
-var ios;
 
 var dbg = 0;
 if (dbg) {
@@ -82,7 +83,8 @@ function setup_test() {
   uri = NetUtil.newURI("http://foo2.invalid:90/bar");
   channel.referrerInfo = new ReferrerInfo(Ci.nsIReferrerInfo.EMPTY, true, uri);
   setOK = channel.getRequestHeader("Referer");
-  Assert.equal(setOK, "http://foo2.invalid:90/bar");
+  // No triggering URI inloadInfo, assume load is cross-origin.
+  Assert.equal(setOK, "http://foo2.invalid:90/");
 
   // ChannelListener defined in head_channels.js
   channel.asyncOpen(new ChannelListener(checkRequestResponse, channel));
@@ -118,7 +120,7 @@ function serverHandler(metadata, response) {
   setOK = metadata.getHeader("MergeWithEmpty");
   Assert.equal(setOK, "foo");
   setOK = metadata.getHeader("Referer");
-  Assert.equal(setOK, "http://foo2.invalid:90/bar");
+  Assert.equal(setOK, "http://foo2.invalid:90/");
 
   response.setHeader("Content-Type", "text/plain", false);
   response.setStatusLine("1.1", 200, "OK");
@@ -139,7 +141,7 @@ function serverHandler(metadata, response) {
   }
 }
 
-function checkRequestResponse(request, data, context) {
+function checkRequestResponse(request, data) {
   if (dbg) {
     print("============== checkRequestResponse: in");
   }

@@ -11,6 +11,8 @@
  * JS public API typedefs.
  */
 
+#include "mozilla/Assertions.h"  // MOZ_ASSERT_UNREACHABLE
+
 #include "jstypes.h"
 
 #include "js/ProtoKey.h"
@@ -20,6 +22,7 @@
 
 #if defined(JS_GC_ZEAL) || defined(DEBUG)
 #  define JSGC_HASH_TABLE_CHECKS
+#  define JS_CHECK_UNSAFE_CALL_WITH_ABI
 #endif
 
 namespace JS {
@@ -38,11 +41,44 @@ enum JSType {
   JSTYPE_STRING,    /* string */
   JSTYPE_NUMBER,    /* number */
   JSTYPE_BOOLEAN,   /* boolean */
-  JSTYPE_NULL,      /* null */
   JSTYPE_SYMBOL,    /* symbol */
-  JSTYPE_BIGINT,    /* BigInt */
+  JSTYPE_BIGINT,    /* bigint */
+#ifdef ENABLE_RECORD_TUPLE
+  JSTYPE_RECORD, /* record */
+  JSTYPE_TUPLE,  /* tuple */
+#endif
   JSTYPE_LIMIT
 };
+
+inline const char* JSTypeToString(JSType type) {
+  switch (type) {
+    case JSTYPE_UNDEFINED:
+      return "undefined";
+    case JSTYPE_OBJECT:
+      return "object";
+    case JSTYPE_FUNCTION:
+      return "function";
+    case JSTYPE_STRING:
+      return "string";
+    case JSTYPE_NUMBER:
+      return "number";
+    case JSTYPE_BOOLEAN:
+      return "boolean";
+    case JSTYPE_SYMBOL:
+      return "symbol";
+    case JSTYPE_BIGINT:
+      return "bigint";
+#ifdef ENABLE_RECORD_TUPLE
+    case JSTYPE_RECORD:
+      return "record";
+    case JSTYPE_TUPLE:
+      return "tuple";
+#endif
+    default:
+      MOZ_ASSERT_UNREACHABLE("Unknown JSType");
+  }
+  return "";
+}
 
 /* Dense index into cached prototypes and class atoms for standard objects. */
 enum JSProtoKey {
@@ -53,7 +89,7 @@ enum JSProtoKey {
 };
 
 /* Struct forward declarations. */
-struct JS_PUBLIC_API JSClass;
+struct JSClass;
 class JSErrorReport;
 struct JSFunctionSpec;
 struct JSPrincipals;
@@ -79,17 +115,18 @@ inline JS::Zone* GetContextZone(const JSContext* cx);
 
 // Whether the current thread is permitted access to any part of the specified
 // runtime or zone.
-JS_FRIEND_API bool CurrentThreadCanAccessRuntime(const JSRuntime* rt);
+JS_PUBLIC_API bool CurrentThreadCanAccessRuntime(const JSRuntime* rt);
 
 #ifdef DEBUG
-JS_FRIEND_API bool CurrentThreadIsPerformingGC();
+JS_PUBLIC_API bool CurrentThreadIsMainThread();
+JS_PUBLIC_API bool CurrentThreadIsPerformingGC();
 #endif
 
 }  // namespace js
 
 namespace JS {
 
-struct JS_PUBLIC_API PropertyDescriptor;
+class JS_PUBLIC_API PropertyDescriptor;
 
 // Decorates the Unlinking phase of CycleCollection so that accidental use
 // of barriered accessors results in assertions instead of leaks.

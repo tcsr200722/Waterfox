@@ -14,10 +14,9 @@
 #include "mozilla/FloatingPoint.h"
 #include "nsDOMMutationObserver.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(AnimationEffect)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(AnimationEffect)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AnimationEffect)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDocument, mAnimation)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
@@ -26,8 +25,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(AnimationEffect)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDocument, mAnimation)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(AnimationEffect)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(AnimationEffect)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(AnimationEffect)
@@ -38,9 +35,15 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(AnimationEffect)
 NS_INTERFACE_MAP_END
 
 AnimationEffect::AnimationEffect(Document* aDocument, TimingParams&& aTiming)
-    : mDocument(aDocument), mTiming(std::move(aTiming)) {}
+    : mDocument(aDocument), mTiming(std::move(aTiming)) {
+  mRTPCallerType = mDocument->GetScopeObject()->GetRTPCallerType();
+}
 
 AnimationEffect::~AnimationEffect() = default;
+
+nsISupports* AnimationEffect::GetParentObject() const {
+  return ToSupports(mDocument);
+}
 
 // https://drafts.csswg.org/web-animations/#current
 bool AnimationEffect::IsCurrent() const {
@@ -72,6 +75,8 @@ void AnimationEffect::SetSpecifiedTiming(TimingParams&& aTiming) {
 
   mTiming = aTiming;
 
+  UpdateNormalizedTiming();
+
   if (mAnimation) {
     Maybe<nsAutoAnimationMutationBatch> mb;
     if (AsKeyframeEffect() && AsKeyframeEffect()->GetAnimationTarget()) {
@@ -88,14 +93,16 @@ void AnimationEffect::SetSpecifiedTiming(TimingParams&& aTiming) {
       AsKeyframeEffect()->RequestRestyle(EffectCompositor::RestyleType::Layer);
     }
   }
-  // For keyframe effects, NotifyEffectTimingUpdated above will eventually cause
-  // KeyframeEffect::NotifyAnimationTimingUpdated to be called so it can
+
+  // For keyframe effects, NotifyEffectTimingUpdated above will eventually
+  // cause KeyframeEffect::NotifyAnimationTimingUpdated to be called so it can
   // update its registration with the target element as necessary.
 }
 
 ComputedTiming AnimationEffect::GetComputedTimingAt(
     const Nullable<TimeDuration>& aLocalTime, const TimingParams& aTiming,
-    double aPlaybackRate) {
+    double aPlaybackRate,
+    Animation::ProgressTimelinePosition aProgressTimelinePosition) {
   static const StickyTimeDuration zeroDuration;
 
   // Always return the same object to benefit from return-value optimization.
@@ -107,7 +114,7 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
     result.mDuration = aTiming.Duration().ref();
   }
 
-  MOZ_ASSERT(aTiming.Iterations() >= 0.0 && !IsNaN(aTiming.Iterations()),
+  MOZ_ASSERT(aTiming.Iterations() >= 0.0 && !std::isnan(aTiming.Iterations()),
              "mIterations should be nonnegative & finite, as ensured by "
              "ValidateIterations or CSSParser");
   result.mIterations = aTiming.Iterations();
@@ -128,18 +135,16 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
     return result;
   }
   const TimeDuration& localTime = aLocalTime.Value();
+  const bool atProgressTimelineBoundary =
+      aProgressTimelinePosition ==
+      Animation::ProgressTimelinePosition::Boundary;
 
-  StickyTimeDuration beforeActiveBoundary =
-      std::max(std::min(StickyTimeDuration(aTiming.Delay()), result.mEndTime),
-               zeroDuration);
-
-  StickyTimeDuration activeAfterBoundary = std::max(
-      std::min(StickyTimeDuration(aTiming.Delay() + result.mActiveDuration),
-               result.mEndTime),
-      zeroDuration);
+  StickyTimeDuration beforeActiveBoundary = aTiming.CalcBeforeActiveBoundary();
+  StickyTimeDuration activeAfterBoundary = aTiming.CalcActiveAfterBoundary();
 
   if (localTime > activeAfterBoundary ||
-      (aPlaybackRate >= 0 && localTime == activeAfterBoundary)) {
+      (aPlaybackRate >= 0 && localTime == activeAfterBoundary &&
+       !atProgressTimelineBoundary)) {
     result.mPhase = ComputedTiming::AnimationPhase::After;
     if (!result.FillsForwards()) {
       // The animation isn't active or filling at this time.
@@ -150,7 +155,8 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
                           result.mActiveDuration),
                  zeroDuration);
   } else if (localTime < beforeActiveBoundary ||
-             (aPlaybackRate < 0 && localTime == beforeActiveBoundary)) {
+             (aPlaybackRate < 0 && localTime == beforeActiveBoundary &&
+              !atProgressTimelineBoundary)) {
     result.mPhase = ComputedTiming::AnimationPhase::Before;
     if (!result.FillsBackwards()) {
       // The animation isn't active or filling at this time.
@@ -159,8 +165,8 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
     result.mActiveTime =
         std::max(StickyTimeDuration(localTime - aTiming.Delay()), zeroDuration);
   } else {
-    MOZ_ASSERT(result.mActiveDuration,
-               "How can we be in the middle of a zero-duration interval?");
+    // Note: For progress-based timeline, it's possible to have a zero active
+    // duration with active phase.
     result.mPhase = ComputedTiming::AnimationPhase::Active;
     result.mActiveTime = localTime - aTiming.Delay();
   }
@@ -177,7 +183,7 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
   }
 
   // Factor in iteration start offset.
-  if (IsFinite(overallProgress)) {
+  if (std::isfinite(overallProgress)) {
     overallProgress += result.mIterationStart;
   }
 
@@ -189,12 +195,12 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
               overallProgress >= double(UINT64_MAX)
           ? UINT64_MAX  // In GetComputedTimingDictionary(),
                         // we will convert this into Infinity
-          : static_cast<uint64_t>(overallProgress);
+          : static_cast<uint64_t>(std::max(overallProgress, 0.0));
 
   // Convert the overall progress to a fraction of a single iteration--the
   // simply iteration progress.
   // https://drafts.csswg.org/web-animations/#simple-iteration-progress
-  double progress = IsFinite(overallProgress)
+  double progress = std::isfinite(overallProgress)
                         ? fmod(overallProgress, 1.0)
                         : fmod(result.mIterationStart, 1.0);
 
@@ -208,8 +214,8 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
       result.mActiveTime == result.mActiveDuration &&
       result.mIterations != 0.0) {
     // The only way we can reach the end of the active interval and have
-    // a progress of zero and a current iteration of zero, is if we have a zero
-    // iteration count -- something we should have detected above.
+    // a progress of zero and a current iteration of zero, is if we have a
+    // zero iteration count -- something we should have detected above.
     MOZ_ASSERT(result.mCurrentIteration != 0,
                "Should not have zero current iteration");
     progress = 1.0;
@@ -246,24 +252,28 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
        thisIterationReverse) ||
       (result.mPhase == ComputedTiming::AnimationPhase::Before &&
        !thisIterationReverse)) {
-    result.mBeforeFlag = ComputedTimingFunction::BeforeFlag::Set;
+    result.mBeforeFlag = true;
   }
 
   // Apply the easing.
-  if (aTiming.TimingFunction()) {
-    progress = aTiming.TimingFunction()->GetValue(progress, result.mBeforeFlag);
+  if (const auto& fn = aTiming.TimingFunction()) {
+    progress = fn->At(progress, result.mBeforeFlag);
   }
 
-  MOZ_ASSERT(IsFinite(progress), "Progress value should be finite");
+  MOZ_ASSERT(std::isfinite(progress), "Progress value should be finite");
   result.mProgress.SetValue(progress);
   return result;
 }
 
 ComputedTiming AnimationEffect::GetComputedTiming(
     const TimingParams* aTiming) const {
-  double playbackRate = mAnimation ? mAnimation->PlaybackRate() : 1;
-  return GetComputedTimingAt(
-      GetLocalTime(), aTiming ? *aTiming : SpecifiedTiming(), playbackRate);
+  const double playbackRate = mAnimation ? mAnimation->PlaybackRate() : 1;
+  const auto progressTimelinePosition =
+      mAnimation ? mAnimation->AtProgressTimelineBoundary()
+                 : Animation::ProgressTimelinePosition::NotBoundary;
+  return GetComputedTimingAt(GetLocalTime(),
+                             aTiming ? *aTiming : NormalizedTiming(),
+                             playbackRate, progressTimelinePosition);
 }
 
 // Helper function for generating an (Computed)EffectTiming dictionary
@@ -297,15 +307,19 @@ void AnimationEffect::GetComputedTimingAsDict(
   // Computed timing
   double playbackRate = mAnimation ? mAnimation->PlaybackRate() : 1;
   const Nullable<TimeDuration> currentTime = GetLocalTime();
-  ComputedTiming computedTiming =
-      GetComputedTimingAt(currentTime, SpecifiedTiming(), playbackRate);
+  const auto progressTimelinePosition =
+      mAnimation ? mAnimation->AtProgressTimelineBoundary()
+                 : Animation::ProgressTimelinePosition::NotBoundary;
+  ComputedTiming computedTiming = GetComputedTimingAt(
+      currentTime, SpecifiedTiming(), playbackRate, progressTimelinePosition);
 
   aRetVal.mDuration.SetAsUnrestrictedDouble() =
       computedTiming.mDuration.ToMilliseconds();
   aRetVal.mFill = computedTiming.mFill;
   aRetVal.mActiveDuration = computedTiming.mActiveDuration.ToMilliseconds();
   aRetVal.mEndTime = computedTiming.mEndTime.ToMilliseconds();
-  aRetVal.mLocalTime = AnimationUtils::TimeDurationToDouble(currentTime);
+  aRetVal.mLocalTime =
+      AnimationUtils::TimeDurationToDouble(currentTime, mRTPCallerType);
   aRetVal.mProgress = computedTiming.mProgress;
 
   if (!aRetVal.mProgress.IsNull()) {
@@ -322,12 +336,25 @@ void AnimationEffect::GetComputedTimingAsDict(
 void AnimationEffect::UpdateTiming(const OptionalEffectTiming& aTiming,
                                    ErrorResult& aRv) {
   TimingParams timing =
-      TimingParams::MergeOptionalEffectTiming(mTiming, aTiming, mDocument, aRv);
+      TimingParams::MergeOptionalEffectTiming(mTiming, aTiming, aRv);
   if (aRv.Failed()) {
     return;
   }
 
   SetSpecifiedTiming(std::move(timing));
+}
+
+void AnimationEffect::UpdateNormalizedTiming() {
+  mNormalizedTiming.reset();
+
+  if (!mAnimation || !mAnimation->UsingScrollTimeline()) {
+    return;
+  }
+
+  // Since `mAnimation` has a scroll timeline, we can be sure `GetTimeline()`
+  // and `TimelineDuration()` will not return null.
+  mNormalizedTiming.emplace(
+      mTiming.Normalize(mAnimation->GetTimeline()->TimelineDuration().Value()));
 }
 
 Nullable<TimeDuration> AnimationEffect::GetLocalTime() const {
@@ -340,5 +367,4 @@ Nullable<TimeDuration> AnimationEffect::GetLocalTime() const {
   return result;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -5,7 +5,6 @@
 
 "use strict";
 
-/* import-globals-from ../../../../../toolkit/content/tests/browser/common/mockTransfer.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/content/tests/browser/common/mockTransfer.js",
   this
@@ -16,7 +15,7 @@ const TEST_ORIGIN = `http://${TEST_FIRST_PARTY}`;
 const TEST_BASE_PATH =
   "/browser/browser/components/originattributes/test/browser/";
 const TEST_PATH = `${TEST_BASE_PATH}file_saveAs.sjs`;
-const TEST_PATH_VIDEO = `${TEST_BASE_PATH}file_thirdPartyChild.video.ogv`;
+const TEST_PATH_VIDEO = `${TEST_BASE_PATH}file_thirdPartyChild.video.webm`;
 const TEST_PATH_IMAGE = `${TEST_BASE_PATH}file_favicon.png`;
 
 // For the "Save Page As" test, we will check the channel of the sub-resource
@@ -28,21 +27,24 @@ const TEST_PATH_PAGE = `${TEST_BASE_PATH}file_favicon.png`;
 const TEST_PATH_FRAME = `${TEST_BASE_PATH}file_favicon.png`;
 
 let MockFilePicker = SpecialPowers.MockFilePicker;
-MockFilePicker.init(window);
+MockFilePicker.init(window.browsingContext);
 const tempDir = createTemporarySaveDirectory();
 MockFilePicker.displayDirectory = tempDir;
 
-add_task(async function setup() {
+add_setup(async function () {
   info("Setting the prefs.");
 
   await SpecialPowers.pushPrefEnv({
-    set: [["privacy.firstparty.isolate", true]],
+    set: [
+      ["privacy.firstparty.isolate", true],
+      ["dom.security.https_first", false],
+    ],
   });
 
   info("Setting MockFilePicker.");
   mockTransferRegisterer.register();
 
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     mockTransferRegisterer.unregister();
     MockFilePicker.cleanup();
     tempDir.remove(true);
@@ -97,7 +99,7 @@ function createPromiseForTransferComplete() {
       MockFilePicker.filterIndex = 0; // kSaveAsType_Complete
 
       MockFilePicker.showCallback = null;
-      mockTransferCallback = function(downloadSuccess) {
+      mockTransferCallback = function (downloadSuccess) {
         ok(downloadSuccess, "File should have been downloaded successfully");
         mockTransferCallback = () => {};
         resolve();
@@ -109,18 +111,19 @@ function createPromiseForTransferComplete() {
 async function doCommandForFrameType() {
   info("Opening the frame sub-menu under the context menu.");
   let contextMenu = document.getElementById("contentAreaContextMenu");
-  let frameMenuPopup = contextMenu.querySelector("#frame").menupopup;
+  let frameMenu = contextMenu.querySelector("#frame");
+  let frameMenuPopup = frameMenu.menupopup;
   let frameMenuPopupPromise = BrowserTestUtils.waitForEvent(
     frameMenuPopup,
     "popupshown"
   );
 
-  frameMenuPopup.openPopup();
+  frameMenu.openMenu(true);
   await frameMenuPopupPromise;
 
   info("Triggering the save process.");
   let saveFrameCommand = contextMenu.querySelector("#context-saveframe");
-  saveFrameCommand.doCommand();
+  frameMenuPopup.activateItem(saveFrameCommand);
 }
 
 add_task(async function test_setup() {
@@ -182,11 +185,17 @@ add_task(async function testContextMenuSaveAs() {
       TEST_FIRST_PARTY
     );
 
+    let contextMenu = document.getElementById("contentAreaContextMenu");
+    let popupHiddenPromise = BrowserTestUtils.waitForEvent(
+      contextMenu,
+      "popuphidden"
+    );
+
     // Select "Save As" option from context menu.
     if (!data.doCommandFunc) {
       let saveElement = document.getElementById(`context-save${data.type}`);
       info("Triggering the save process.");
-      saveElement.doCommand();
+      contextMenu.activateItem(saveElement);
     } else {
       await data.doCommandFunc();
     }
@@ -197,13 +206,7 @@ add_task(async function testContextMenuSaveAs() {
     info("Wait until the save is finished.");
     await transferCompletePromise;
 
-    info("Close the context menu.");
-    let contextMenu = document.getElementById("contentAreaContextMenu");
-    let popupHiddenPromise = BrowserTestUtils.waitForEvent(
-      contextMenu,
-      "popuphidden"
-    );
-    contextMenu.hidePopup();
+    info("Wait until the menu is closed.");
     await popupHiddenPromise;
 
     BrowserTestUtils.removeTab(tab);
@@ -281,7 +284,7 @@ add_task(async function testPageInfoMediaSaveAs() {
   );
 
   info("Open the media panel of the pageinfo.");
-  let pageInfo = BrowserPageInfo(
+  let pageInfo = BrowserCommands.pageInfo(
     gBrowser.selectedBrowser.currentURI.spec,
     "mediaTab"
   );

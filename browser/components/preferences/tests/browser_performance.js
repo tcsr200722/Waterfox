@@ -5,7 +5,7 @@ const DEFAULT_PROCESS_COUNT = Services.prefs
   .getDefaultBranch(null)
   .getIntPref("dom.ipc.processCount");
 
-add_task(async function() {
+add_task(async function () {
   // We must temporarily disable `Once` StaticPrefs check for the duration of
   // this test (see bug 1556131). We must do so in a separate operation as
   // pushPrefEnv doesn't set the preferences in the order one could expect.
@@ -21,7 +21,7 @@ add_task(async function() {
   });
 });
 
-add_task(async function() {
+add_task(async function () {
   let prefs = await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
     leaveOpen: true,
   });
@@ -93,26 +93,8 @@ add_task(async function() {
   );
   is(
     contentProcessCount.selectedItem.value,
-    DEFAULT_PROCESS_COUNT,
+    "" + DEFAULT_PROCESS_COUNT,
     "selected item should be the default one"
-  );
-
-  let contentProcessCountEnabledDescription = doc.querySelector(
-    "#contentProcessCountEnabledDescription"
-  );
-  is(
-    contentProcessCountEnabledDescription.hidden,
-    false,
-    "process count enabled description should be shown"
-  );
-
-  let contentProcessCountDisabledDescription = doc.querySelector(
-    "#contentProcessCountDisabledDescription"
-  );
-  is(
-    contentProcessCountDisabledDescription.hidden,
-    true,
-    "process count enabled description should be hidden"
   );
 
   allowHWAccel.click();
@@ -135,7 +117,7 @@ add_task(async function() {
     7,
     "pref value should be 7"
   );
-  is(contentProcessCount.selectedItem.value, 7, "selected item should be 7");
+  is(contentProcessCount.selectedItem.value, "7", "selected item should be 7");
 
   allowHWAccel.click();
   allowHWAccelPref = Services.prefs.getBoolPref("layers.acceleration.disabled");
@@ -159,7 +141,7 @@ add_task(async function() {
   );
   is(
     contentProcessCount.selectedItem.value,
-    DEFAULT_PROCESS_COUNT,
+    "" + DEFAULT_PROCESS_COUNT,
     "selected item should be default one"
   );
 
@@ -176,7 +158,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });
 
-add_task(async function() {
+add_task(async function () {
   let prefs = await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
     leaveOpen: true,
   });
@@ -220,7 +202,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });
 
-add_task(async function() {
+add_task(async function () {
   let prefs = await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
     leaveOpen: true,
   });
@@ -253,7 +235,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });
 
-add_task(async function() {
+add_task(async function () {
   Services.prefs.setIntPref("dom.ipc.processCount", 7);
 
   let prefs = await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
@@ -276,7 +258,7 @@ add_task(async function() {
     7,
     "pref value should be 7"
   );
-  is(contentProcessCount.selectedItem.value, 7, "selected item should be 7");
+  is(contentProcessCount.selectedItem.value, "7", "selected item should be 7");
 
   Services.prefs.setBoolPref(
     "browser.preferences.defaultPerformanceSettings.enabled",
@@ -285,7 +267,7 @@ add_task(async function() {
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });
 
-add_task(async function() {
+add_task(async function () {
   Services.prefs.setBoolPref("layers.acceleration.disabled", true);
 
   let prefs = await openPreferencesViaOpenPreferencesAPI("paneGeneral", {

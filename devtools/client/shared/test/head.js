@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 /* eslint no-unused-vars: [2, {"vars": "local", "args": "none"}] */
-/* import-globals-from shared-head.js */
-/* import-globals-from telemetry-test-helpers.js */
 
 "use strict";
 
@@ -13,17 +11,20 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-const { DOMHelpers } = require("devtools/shared/dom-helpers");
-const { Hosts } = require("devtools/client/framework/toolbox-hosts");
+const { DOMHelpers } = require("resource://devtools/shared/dom-helpers.js");
+const {
+  Hosts,
+} = require("resource://devtools/client/framework/toolbox-hosts.js");
 
 const TEST_URI_ROOT = "http://example.com/browser/devtools/client/shared/test/";
-const OPTIONS_VIEW_URL = CHROME_URL_ROOT + "doc_options-view.xhtml";
+const TEST_URI_ROOT_SSL =
+  "https://example.com/browser/devtools/client/shared/test/";
 
 const EXAMPLE_URL =
   "chrome://mochitests/content/browser/devtools/client/shared/test/";
 
 function catchFail(func) {
-  return function() {
+  return function () {
     try {
       return func.apply(null, arguments);
     } catch (ex) {
@@ -98,7 +99,7 @@ function waitForValue(options) {
 
 function oneTimeObserve(name, callback) {
   return new Promise(resolve => {
-    const func = function() {
+    const func = function () {
       Services.obs.removeObserver(func, name);
       if (callback) {
         callback();
@@ -109,7 +110,7 @@ function oneTimeObserve(name, callback) {
   });
 }
 
-const createHost = async function(
+const createHost = async function (
   type = "bottom",
   src = CHROME_URL_ROOT + "dummy.html"
 ) {
@@ -121,7 +122,11 @@ const createHost = async function(
     DOMHelpers.onceDOMReady(iframe.contentWindow, resolve);
   });
 
-  return { host: host, win: iframe.contentWindow, doc: iframe.contentDocument };
+  // Popup tests fail very frequently on Linux + webrender because they run
+  // too early.
+  await waitForPresShell(iframe);
+
+  return { host, win: iframe.contentWindow, doc: iframe.contentDocument };
 };
 
 /**
@@ -134,8 +139,9 @@ const createHost = async function(
 async function openAndCloseToolbox(nbOfTimes, usageTime, toolId) {
   for (let i = 0; i < nbOfTimes; i++) {
     info("Opening toolbox " + (i + 1));
-    const target = await TargetFactory.forTab(gBrowser.selectedTab);
-    const toolbox = await gDevTools.showToolbox(target, toolId);
+
+    const tab = gBrowser.selectedTab;
+    const toolbox = await gDevTools.showToolboxForTab(tab, { toolId });
 
     // We use a timeout to check the toolbox's active time
     await new Promise(resolve => setTimeout(resolve, usageTime));
@@ -143,27 +149,6 @@ async function openAndCloseToolbox(nbOfTimes, usageTime, toolId) {
     info("Closing toolbox " + (i + 1));
     await toolbox.destroy();
   }
-}
-
-/**
- * Synthesize a profile for testing.
- */
-function synthesizeProfileForTest(samples) {
-  const RecordingUtils = require("devtools/shared/performance/recording-utils");
-
-  samples.unshift({
-    time: 0,
-    frames: [],
-  });
-
-  const uniqueStacks = new RecordingUtils.UniqueStacks();
-  return RecordingUtils.deflateThread(
-    {
-      samples: samples,
-      markers: [],
-    },
-    uniqueStacks
-  );
 }
 
 /**
@@ -179,7 +164,7 @@ function waitUntil(predicate, interval = 10) {
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       waitUntil(predicate).then(() => resolve(true));
     }, interval);
   });
@@ -203,7 +188,7 @@ function showFilterPopupPresets(widget) {
  * @param  {string} value
  * @return {Promise}
  */
-const showFilterPopupPresetsAndCreatePreset = async function(
+const showFilterPopupPresetsAndCreatePreset = async function (
   widget,
   name,
   value

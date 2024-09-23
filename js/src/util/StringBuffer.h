@@ -7,21 +7,58 @@
 #ifndef util_StringBuffer_h
 #define util_StringBuffer_h
 
-#include "mozilla/DebugOnly.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/MaybeOneOf.h"
 #include "mozilla/Utf8.h"
 
+#include "frontend/FrontendContext.h"
 #include "js/Vector.h"
-#include "vm/JSContext.h"
+#include "vm/StringType.h"
 
 namespace js {
 
+class FrontendContext;
+
+namespace frontend {
+class ParserAtomsTable;
+class TaggedParserAtomIndex;
+}  // namespace frontend
+
+namespace detail {
+
+// GrowEltsAggressively will multiply the space by a factor of 8 on overflow, to
+// avoid very expensive memcpys for large strings (eg giant toJSON output for
+// sessionstore.js). Drop back to the normal expansion policy once the buffer
+// hits 128MB.
+static constexpr size_t AggressiveLimit = 128 << 20;
+
+template <size_t EltSize>
+inline size_t GrowEltsAggressively(size_t aOldElts, size_t aIncr) {
+  mozilla::CheckedInt<size_t> required =
+      mozilla::CheckedInt<size_t>(aOldElts) + aIncr;
+  if (!(required * 2).isValid()) {
+    return 0;
+  }
+  required = mozilla::RoundUpPow2(required.value());
+  required *= 8;
+  if (!(required * EltSize).isValid() || required.value() > AggressiveLimit) {
+    // Fall back to doubling behavior if the aggressive growth fails or gets too
+    // big.
+    return mozilla::detail::GrowEltsByDoubling<EltSize>(aOldElts, aIncr);
+  }
+  return required.value();
+};
+
+}  // namespace detail
+
 class StringBufferAllocPolicy {
   TempAllocPolicy impl_;
-
   const arena_id_t& arenaId_;
 
  public:
+  StringBufferAllocPolicy(FrontendContext* fc, const arena_id_t& arenaId)
+      : impl_(fc), arenaId_(arenaId) {}
+
   StringBufferAllocPolicy(JSContext* cx, const arena_id_t& arenaId)
       : impl_(cx), arenaId_(arenaId) {}
 
@@ -55,6 +92,12 @@ class StringBufferAllocPolicy {
   }
   void reportAllocOverflow() const { impl_.reportAllocOverflow(); }
   bool checkSimulatedOOM() const { return impl_.checkSimulatedOOM(); }
+
+  // See ComputeGrowth in mfbt/Vector.h.
+  template <size_t EltSize>
+  static size_t computeGrowth(size_t aOldElts, size_t aIncr) {
+    return detail::GrowEltsAggressively<EltSize>(aOldElts, aIncr);
+  }
 };
 
 /*
@@ -80,8 +123,7 @@ class StringBuffer {
   using Latin1CharBuffer = BufferType<Latin1Char>;
   using TwoByteCharBuffer = BufferType<char16_t>;
 
-  JSContext* cx_;
-  const arena_id_t& arenaId_;
+  JSContext* maybeCx_ = nullptr;
 
   /*
    * If Latin1 strings are enabled, cb starts out as a Latin1CharBuffer. When
@@ -91,7 +133,7 @@ class StringBuffer {
   mozilla::MaybeOneOf<Latin1CharBuffer, TwoByteCharBuffer> cb;
 
   /* Number of reserve()'d chars, see inflateChars. */
-  size_t reserved_;
+  size_t reserved_ = 0;
 
   StringBuffer(const StringBuffer& other) = delete;
   void operator=(const StringBuffer& other) = delete;
@@ -133,16 +175,28 @@ class StringBuffer {
     return chars<Latin1Char>();
   }
 
-  MOZ_MUST_USE bool inflateChars();
+  [[nodiscard]] bool inflateChars();
 
   template <typename CharT>
-  JSLinearString* finishStringInternal(JSContext* cx);
+  JSLinearString* finishStringInternal(JSContext* cx, gc::Heap heap);
 
  public:
   explicit StringBuffer(JSContext* cx,
                         const arena_id_t& arenaId = js::MallocArena)
-      : cx_(cx), arenaId_(arenaId), reserved_(0) {
-    cb.construct<Latin1CharBuffer>(StringBufferAllocPolicy{cx_, arenaId_});
+      : maybeCx_(cx) {
+    MOZ_ASSERT(cx);
+    cb.construct<Latin1CharBuffer>(StringBufferAllocPolicy{cx, arenaId});
+  }
+
+  // This constructor should only be used if the methods related to the
+  // following are not used, because they require a JSContext:
+  //   * JSString
+  //   * JSAtom
+  //   * mozilla::Utf8Unit
+  explicit StringBuffer(FrontendContext* fc,
+                        const arena_id_t& arenaId = js::MallocArena) {
+    MOZ_ASSERT(fc);
+    cb.construct<Latin1CharBuffer>(StringBufferAllocPolicy{fc, arenaId});
   }
 
   void clear() {
@@ -152,17 +206,17 @@ class StringBuffer {
       twoByteChars().clear();
     }
   }
-  MOZ_MUST_USE bool reserve(size_t len) {
+  [[nodiscard]] bool reserve(size_t len) {
     if (len > reserved_) {
       reserved_ = len;
     }
     return isLatin1() ? latin1Chars().reserve(len)
                       : twoByteChars().reserve(len);
   }
-  MOZ_MUST_USE bool resize(size_t len) {
+  [[nodiscard]] bool resize(size_t len) {
     return isLatin1() ? latin1Chars().resize(len) : twoByteChars().resize(len);
   }
-  MOZ_MUST_USE bool growByUninitialized(size_t incr) {
+  [[nodiscard]] bool growByUninitialized(size_t incr) {
     return isLatin1() ? latin1Chars().growByUninitialized(incr)
                       : twoByteChars().growByUninitialized(incr);
   }
@@ -180,11 +234,11 @@ class StringBuffer {
     return isLatin1() ? latin1Chars()[idx] : twoByteChars()[idx];
   }
 
-  MOZ_MUST_USE bool ensureTwoByteChars() {
+  [[nodiscard]] bool ensureTwoByteChars() {
     return isTwoByte() || inflateChars();
   }
 
-  MOZ_MUST_USE bool append(const char16_t c) {
+  [[nodiscard]] bool append(const char16_t c) {
     if (isLatin1()) {
       if (c <= JSString::MAX_LATIN1_CHAR) {
         return latin1Chars().append(Latin1Char(c));
@@ -195,22 +249,22 @@ class StringBuffer {
     }
     return twoByteChars().append(c);
   }
-  MOZ_MUST_USE bool append(Latin1Char c) {
+  [[nodiscard]] bool append(Latin1Char c) {
     return isLatin1() ? latin1Chars().append(c) : twoByteChars().append(c);
   }
-  MOZ_MUST_USE bool append(char c) { return append(Latin1Char(c)); }
+  [[nodiscard]] bool append(char c) { return append(Latin1Char(c)); }
 
-  inline MOZ_MUST_USE bool append(const char16_t* begin, const char16_t* end);
+  [[nodiscard]] inline bool append(const char16_t* begin, const char16_t* end);
 
-  MOZ_MUST_USE bool append(const char16_t* chars, size_t len) {
+  [[nodiscard]] bool append(const char16_t* chars, size_t len) {
     return append(chars, chars + len);
   }
 
-  MOZ_MUST_USE bool append(const Latin1Char* begin, const Latin1Char* end) {
+  [[nodiscard]] bool append(const Latin1Char* begin, const Latin1Char* end) {
     return isLatin1() ? latin1Chars().append(begin, end)
                       : twoByteChars().append(begin, end);
   }
-  MOZ_MUST_USE bool append(const Latin1Char* chars, size_t len) {
+  [[nodiscard]] bool append(const Latin1Char* chars, size_t len) {
     return append(chars, chars + len);
   }
 
@@ -220,29 +274,31 @@ class StringBuffer {
    * UTF-8, leave the internal buffer in a consistent but unspecified state,
    * report an error, and return false.
    */
-  MOZ_MUST_USE bool append(const mozilla::Utf8Unit* units, size_t len);
+  [[nodiscard]] bool append(const mozilla::Utf8Unit* units, size_t len);
 
-  MOZ_MUST_USE bool append(const JS::ConstCharPtr chars, size_t len) {
+  [[nodiscard]] bool append(const JS::ConstCharPtr chars, size_t len) {
     return append(chars.get(), chars.get() + len);
   }
-  MOZ_MUST_USE bool appendN(Latin1Char c, size_t n) {
+  [[nodiscard]] bool appendN(Latin1Char c, size_t n) {
     return isLatin1() ? latin1Chars().appendN(c, n)
                       : twoByteChars().appendN(c, n);
   }
 
-  inline MOZ_MUST_USE bool append(JSString* str);
-  inline MOZ_MUST_USE bool append(JSLinearString* str);
-  inline MOZ_MUST_USE bool appendSubstring(JSString* base, size_t off,
-                                           size_t len);
-  inline MOZ_MUST_USE bool appendSubstring(JSLinearString* base, size_t off,
-                                           size_t len);
+  [[nodiscard]] inline bool append(JSString* str);
+  [[nodiscard]] inline bool append(JSLinearString* str);
+  [[nodiscard]] inline bool appendSubstring(JSString* base, size_t off,
+                                            size_t len);
+  [[nodiscard]] inline bool appendSubstring(JSLinearString* base, size_t off,
+                                            size_t len);
+  [[nodiscard]] bool append(const frontend::ParserAtomsTable& parserAtoms,
+                            frontend::TaggedParserAtomIndex atom);
 
-  MOZ_MUST_USE bool append(const char* chars, size_t len) {
+  [[nodiscard]] bool append(const char* chars, size_t len) {
     return append(reinterpret_cast<const Latin1Char*>(chars), len);
   }
 
   template <size_t ArrayLength>
-  MOZ_MUST_USE bool append(const char (&array)[ArrayLength]) {
+  [[nodiscard]] bool append(const char (&array)[ArrayLength]) {
     return append(array, ArrayLength - 1); /* No trailing '\0'. */
   }
 
@@ -311,6 +367,8 @@ class StringBuffer {
 
   /* Identical to finishString() except that an atom is created. */
   JSAtom* finishAtom();
+  frontend::TaggedParserAtomIndex finishParserAtom(
+      frontend::ParserAtomsTable& parserAtoms, FrontendContext* fc);
 
   /*
    * Creates a raw string from the characters in this buffer.  The string is
@@ -320,6 +378,7 @@ class StringBuffer {
   char16_t* stealChars();
 };
 
+// Like StringBuffer, but uses StringBufferArena for the characters.
 class JSStringBuilder : public StringBuffer {
  public:
   explicit JSStringBuilder(JSContext* cx)
@@ -328,8 +387,10 @@ class JSStringBuilder : public StringBuffer {
   /*
    * Creates a string from the characters in this buffer, then (regardless
    * whether string creation succeeded or failed) empties the buffer.
+   *
+   * Returns nullptr if string creation failed.
    */
-  JSLinearString* finishString();
+  JSLinearString* finishString(gc::Heap heap = gc::Heap::Default);
 };
 
 inline bool StringBuffer::append(const char16_t* begin, const char16_t* end) {
@@ -402,7 +463,9 @@ inline bool StringBuffer::appendSubstring(JSLinearString* base, size_t off,
 
 inline bool StringBuffer::appendSubstring(JSString* base, size_t off,
                                           size_t len) {
-  JSLinearString* linear = base->ensureLinear(cx_);
+  MOZ_ASSERT(maybeCx_);
+
+  JSLinearString* linear = base->ensureLinear(maybeCx_);
   if (!linear) {
     return false;
   }
@@ -411,7 +474,9 @@ inline bool StringBuffer::appendSubstring(JSString* base, size_t off,
 }
 
 inline bool StringBuffer::append(JSString* str) {
-  JSLinearString* linear = str->ensureLinear(cx_);
+  MOZ_ASSERT(maybeCx_);
+
+  JSLinearString* linear = str->ensureLinear(maybeCx_);
   if (!linear) {
     return false;
   }

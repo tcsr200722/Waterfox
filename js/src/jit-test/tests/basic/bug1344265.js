@@ -1,3 +1,3 @@
-// |jit-test| allow-unhandlable-oom; allow-oom; skip-if: !('oomAfterAllocations' in this)
+// |jit-test| allow-unhandlable-oom; allow-oom
 oomAfterAllocations(1);
-newExternalString("a");
+newString("a", {external: true});

@@ -3,18 +3,18 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details.
 
-use {ChannelLayout, SampleFormat, StreamParams, StreamPrefs};
 use ffi;
+use {ChannelLayout, SampleFormat, StreamParams, StreamPrefs};
 
-///
 #[derive(Debug)]
 pub struct StreamParamsBuilder(ffi::cubeb_stream_params);
 
 impl Default for StreamParamsBuilder {
     fn default() -> Self {
-        let mut r = ffi::cubeb_stream_params::default();
-        r.format = ffi::CUBEB_SAMPLE_S16NE;
-        StreamParamsBuilder(r)
+        StreamParamsBuilder(ffi::cubeb_stream_params {
+            format: ffi::CUBEB_SAMPLE_S16NE,
+            ..Default::default()
+        })
     }
 }
 
@@ -55,8 +55,8 @@ impl StreamParamsBuilder {
 
 #[cfg(test)]
 mod tests {
-    use {ffi, StreamParamsBuilder, StreamPrefs};
     use SampleFormat;
+    use {ffi, StreamParamsBuilder, StreamPrefs};
 
     #[test]
     fn stream_params_builder_channels() {

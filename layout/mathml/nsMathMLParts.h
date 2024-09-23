@@ -29,8 +29,6 @@ nsIFrame* NS_NewMathMLmspaceFrame(mozilla::PresShell* aPresShell,
                                   mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmsFrame(mozilla::PresShell* aPresShell,
                               mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLmfencedFrame(mozilla::PresShell* aPresShell,
-                                   mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmfracFrame(mozilla::PresShell* aPresShell,
                                  mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmsubFrame(mozilla::PresShell* aPresShell,
@@ -58,12 +56,8 @@ nsIFrame* NS_NewMathMLmsqrtFrame(mozilla::PresShell* aPresShell,
                                  mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmrootFrame(mozilla::PresShell* aPresShell,
                                  mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLmactionFrame(mozilla::PresShell* aPresShell,
-                                   mozilla::ComputedStyle* aStyle);
 nsIFrame* NS_NewMathMLmencloseFrame(mozilla::PresShell* aPresShell,
                                     mozilla::ComputedStyle* aStyle);
-nsIFrame* NS_NewMathMLsemanticsFrame(mozilla::PresShell* aPresShell,
-                                     mozilla::ComputedStyle* aStyle);
 
 nsContainerFrame* NS_NewMathMLmathBlockFrame(mozilla::PresShell* aPresShell,
                                              mozilla::ComputedStyle* aStyle);

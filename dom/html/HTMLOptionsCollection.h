@@ -11,13 +11,14 @@
 #include "nsWrapperCache.h"
 
 #include "mozilla/dom/HTMLOptionElement.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCOMPtr.h"
 #include "nsError.h"
 #include "nsGenericHTMLElement.h"
 #include "nsTArray.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class DocGroup;
@@ -62,8 +63,8 @@ class HTMLOptionsCollection final : public nsIHTMLCollection,
   virtual nsINode* GetParentObject() override;
   DocGroup* GetDocGroup() const;
 
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(HTMLOptionsCollection,
-                                                         nsIHTMLCollection)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS_AMBIGUOUS(HTMLOptionsCollection,
+                                                        nsIHTMLCollection)
 
   // Helpers for HTMLSelectElement
   /**

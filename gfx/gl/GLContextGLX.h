@@ -11,8 +11,6 @@
 #include "GLXLibrary.h"
 #include "mozilla/X11Util.h"
 
-class gfxXlibSurface;
-
 namespace mozilla {
 namespace gl {
 
@@ -20,18 +18,15 @@ class GLContextGLX : public GLContext {
  public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(GLContextGLX, override)
   static already_AddRefed<GLContextGLX> CreateGLContext(
-      CreateContextFlags flags, const SurfaceCaps& caps, bool isOffscreen,
-      Display* display, GLXDrawable drawable, GLXFBConfig cfg,
-      bool deleteDrawable, gfxXlibSurface* pixmap);
+      const GLContextDesc&, std::shared_ptr<gfx::XlibDisplay> display,
+      GLXDrawable drawable, GLXFBConfig cfg, Drawable ownedPixmap = X11None);
 
-  static bool FindVisual(Display* display, int screen, bool useWebRender,
-                         bool useAlpha, int* const out_visualId);
+  static bool FindVisual(Display* display, int screen, int* const out_visualId);
 
   // Finds a GLXFBConfig compatible with the provided window.
-  static bool FindFBConfigForWindow(
-      Display* display, int screen, Window window,
-      ScopedXFree<GLXFBConfig>* const out_scopedConfigArr,
-      GLXFBConfig* const out_config, int* const out_visid, bool aWebRender);
+  static bool FindFBConfigForWindow(Display* display, int screen, Window window,
+                                    GLXFBConfig* const out_config,
+                                    int* const out_visid, bool aWebRender);
 
   virtual ~GLContextGLX();
 
@@ -54,6 +49,8 @@ class GLContextGLX : public GLContext {
 
   bool SwapBuffers() override;
 
+  GLint GetBufferAge() const override;
+
   void GetWSIInfo(nsCString* const out) const override;
 
   // Overrides the current GLXDrawable backing the context and makes the
@@ -66,21 +63,22 @@ class GLContextGLX : public GLContext {
  private:
   friend class GLContextProviderGLX;
 
-  GLContextGLX(CreateContextFlags flags, const SurfaceCaps& caps,
-               bool isOffscreen, Display* aDisplay, GLXDrawable aDrawable,
-               GLXContext aContext, bool aDeleteDrawable, bool aDoubleBuffered,
-               gfxXlibSurface* aPixmap);
+  GLContextGLX(const GLContextDesc&, std::shared_ptr<gfx::XlibDisplay> aDisplay,
+               GLXDrawable aDrawable, GLXContext aContext, bool aDoubleBuffered,
+               Drawable aOwnedPixmap = X11None);
 
-  GLXContext mContext;
-  Display* mDisplay;
-  GLXDrawable mDrawable;
-  bool mDeleteDrawable;
-  bool mDoubleBuffered;
+  const GLXContext mContext;
+  const std::shared_ptr<gfx::XlibDisplay> mDisplay;
+  const GLXDrawable mDrawable;
+  // The X pixmap associated with the GLX pixmap. If this is provided, then this
+  // class assumes responsibility for freeing both. Otherwise, the user of this
+  // class is responsibility for freeing the drawables.
+  const Drawable mOwnedPixmap;
+  const bool mDoubleBuffered;
 
-  GLXLibrary* mGLX;
+  GLXLibrary* const mGLX;
 
-  RefPtr<gfxXlibSurface> mPixmap;
-  bool mOwnsContext = true;
+  const bool mOwnsContext = true;
 };
 
 }  // namespace gl

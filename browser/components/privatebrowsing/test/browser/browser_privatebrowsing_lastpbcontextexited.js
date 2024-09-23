@@ -7,11 +7,11 @@ function test() {
   // when clearing the PB mode flag.
   function runTest(aCloseWindow, aCallback) {
     let newWin = OpenBrowserWindow({ private: true });
-    SimpleTest.waitForFocus(function() {
+    SimpleTest.waitForFocus(function () {
       let expectedExiting = true;
       let expectedExited = false;
       let observerExiting = {
-        observe(aSubject, aTopic, aData) {
+        observe(aSubject, aTopic) {
           is(
             aTopic,
             "last-pb-context-exiting",
@@ -26,7 +26,7 @@ function test() {
         },
       };
       let observerExited = {
-        observe(aSubject, aTopic, aData) {
+        observe(aSubject, aTopic) {
           is(
             aTopic,
             "last-pb-context-exited",
@@ -49,12 +49,12 @@ function test() {
   waitForExplicitFinish();
 
   runTest(
-    function(newWin) {
+    function (newWin) {
       // Simulate pressing the window close button
       newWin.document.getElementById("cmd_closeWindow").doCommand();
     },
-    function() {
-      runTest(function(newWin) {
+    function () {
+      runTest(function (newWin) {
         // Simulate closing the last tab
         newWin.document.getElementById("cmd_close").doCommand();
       }, finish);

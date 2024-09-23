@@ -16,14 +16,25 @@ use xpcom::interfaces::{mozISyncedBookmarksMerger, nsINavBookmarksService};
 use crate::driver::{AbortController, Driver};
 use crate::error::{Error, Result};
 
-pub const LMANNO_FEEDURI: &'static str = "livemark/feedURI";
-
 extern "C" {
     fn NS_NavBookmarksTotalSyncChanges() -> i64;
 }
 
 fn total_sync_changes() -> i64 {
     unsafe { NS_NavBookmarksTotalSyncChanges() }
+}
+
+// Return all the non-root-roots as a 'sql set' (ie, suitable for use in an
+// IN statement)
+fn user_roots_as_sql_set() -> String {
+    format!(
+        "('{0}', '{1}', '{2}', '{3}', '{4}')",
+        dogear::MENU_GUID,
+        dogear::MOBILE_GUID,
+        dogear::TAGS_GUID,
+        dogear::TOOLBAR_GUID,
+        dogear::UNFILED_GUID
+    )
 }
 
 pub struct Store<'s> {
@@ -39,7 +50,6 @@ pub struct Store<'s> {
 
     local_time_millis: i64,
     remote_time_millis: i64,
-    weak_uploads: &'s [nsString],
 }
 
 impl<'s> Store<'s> {
@@ -49,7 +59,6 @@ impl<'s> Store<'s> {
         controller: &'s AbortController,
         local_time_millis: i64,
         remote_time_millis: i64,
-        weak_uploads: &'s [nsString],
     ) -> Store<'s> {
         Store {
             db,
@@ -58,7 +67,6 @@ impl<'s> Store<'s> {
             total_sync_changes: total_sync_changes(),
             local_time_millis,
             remote_time_millis,
-            weak_uploads,
         }
     }
 
@@ -75,19 +83,15 @@ impl<'s> Store<'s> {
             "SELECT NOT EXISTS(
                SELECT 1 FROM moz_bookmarks
                WHERE id = (SELECT parent FROM moz_bookmarks
-                           WHERE guid = '{0}')
+                           WHERE guid = '{root}')
              ) AND NOT EXISTS(
                SELECT 1 FROM moz_bookmarks b
                JOIN moz_bookmarks p ON p.id = b.parent
-               WHERE b.guid IN ('{1}', '{2}', '{3}', '{4}', '{5}') AND
-                     p.guid <> '{0}'
+               WHERE b.guid IN {user_roots} AND
+                     p.guid <> '{root}'
              )",
-            dogear::ROOT_GUID,
-            dogear::MENU_GUID,
-            dogear::MOBILE_GUID,
-            dogear::TAGS_GUID,
-            dogear::TOOLBAR_GUID,
-            dogear::UNFILED_GUID,
+            root = dogear::ROOT_GUID,
+            user_roots = user_roots_as_sql_set(),
         ))?;
         let has_valid_roots = match statement.step()? {
             Some(row) => row.get_by_index::<i64>(0)? == 1,
@@ -170,12 +174,12 @@ impl<'s> Store<'s> {
         };
 
         let typ: i64 = step.get_by_name("type")?;
-        let kind = match typ {
-            nsINavBookmarksService::TYPE_BOOKMARK => match url.as_ref() {
+        let kind = match u16::try_from(typ) {
+            Ok(nsINavBookmarksService::TYPE_BOOKMARK) => match url.as_ref() {
                 Some(u) if u.scheme() == "place" => Kind::Query,
                 _ => Kind::Bookmark,
             },
-            nsINavBookmarksService::TYPE_FOLDER => {
+            Ok(nsINavBookmarksService::TYPE_FOLDER) => {
                 let is_livemark: i64 = step.get_by_name("isLivemark")?;
                 if is_livemark == 1 {
                     Kind::Livemark
@@ -183,7 +187,7 @@ impl<'s> Store<'s> {
                     Kind::Folder
                 }
             }
-            nsINavBookmarksService::TYPE_SEPARATOR => Kind::Separator,
+            Ok(nsINavBookmarksService::TYPE_SEPARATOR) => Kind::Separator,
             _ => return Err(Error::UnknownItemType(typ)),
         };
 
@@ -201,15 +205,15 @@ impl<'s> Store<'s> {
             None
         } else {
             let sync_status: i64 = step.get_by_name("syncStatus")?;
-            match sync_status {
-                nsINavBookmarksService::SYNC_STATUS_NORMAL => None,
+            match u16::try_from(sync_status) {
+                Ok(nsINavBookmarksService::SYNC_STATUS_NORMAL) => None,
                 _ => match kind {
                     Kind::Bookmark | Kind::Query => {
                         let raw_title: nsString = step.get_by_name("title")?;
                         let title = String::from_utf16(&*raw_title)?;
                         url.map(|url| Content::Bookmark {
                             title,
-                            url_href: url.into_string(),
+                            url_href: url.into(),
                         })
                     }
                     Kind::Folder | Kind::Livemark => {
@@ -315,15 +319,11 @@ impl<'s> dogear::Store for Store<'s> {
                     b.syncStatus, b.lastModified / 1000 AS localModified,
                     IFNULL(b.title, '') AS title,
                     (SELECT h.url FROM moz_places h WHERE h.id = b.fk) AS url,
-                    EXISTS(SELECT 1 FROM moz_items_annos a
-                           JOIN moz_anno_attributes n ON n.id = a.anno_attribute_id
-                           WHERE a.item_id = b.id AND
-                                 n.name = '{}') AS isLivemark
+                    0 AS isLivemark
              FROM moz_bookmarks b
              JOIN moz_bookmarks p ON p.id = b.parent
              WHERE b.guid <> '{}'
              ORDER BY b.parent, b.position",
-            LMANNO_FEEDURI,
             dogear::ROOT_GUID,
         ))?;
         while let Some(step) = items_statement.step()? {
@@ -444,7 +444,7 @@ impl<'s> dogear::Store for Store<'s> {
     fn apply<'t>(&mut self, root: MergedRoot<'t>) -> Result<ApplyStatus> {
         let ops = root.completion_ops_with_signal(self.controller)?;
 
-        if ops.is_empty() && self.weak_uploads.is_empty() {
+        if ops.is_empty() {
             // If we don't have any items to apply, upload, or delete,
             // no need to open a transaction at all.
             return Ok(ApplyStatus::Skipped);
@@ -477,7 +477,6 @@ impl<'s> dogear::Store for Store<'s> {
             &self.controller,
             &ops.upload_items,
             &ops.upload_tombstones,
-            &self.weak_uploads,
         )?;
 
         cleanup(&tx)?;
@@ -532,7 +531,8 @@ fn update_local_items_in_places<'t>(
         let mut statement = db.prepare(format!(
             "INSERT OR IGNORE INTO moz_places(url, url_hash, rev_host, hidden,
                                               frecency, guid)
-             SELECT u.url, u.hash, u.revHost, 0,
+             SELECT u.url, u.hash, u.revHost,
+                    (CASE WHEN u.url BETWEEN 'place:' AND 'place:' || X'FFFF' THEN 1 ELSE 0 END),
                     (CASE v.kind WHEN {} THEN 0 ELSE -1 END),
                     IFNULL((SELECT h.guid FROM moz_places h
                             WHERE h.url_hash = u.hash AND
@@ -550,11 +550,6 @@ fn update_local_items_in_places<'t>(
         }
         statement.execute()?;
     }
-
-    // Trigger frecency updates for all new origins.
-    debug!(driver, "Updating origins for new URLs");
-    controller.err_if_aborted()?;
-    db.exec("DELETE FROM moz_updateoriginsinsert_temp")?;
 
     // Build a table of new and updated items.
     debug!(driver, "Staging apply remote item ops");
@@ -747,11 +742,6 @@ fn update_local_items_in_places<'t>(
     debug!(driver, "Applying remote items");
     apply_remote_items(db, driver, controller)?;
 
-    // Trigger frecency updates for all affected origins.
-    debug!(driver, "Updating origins for changed URLs");
-    controller.err_if_aborted()?;
-    db.exec("DELETE FROM moz_updateoriginsupdate_temp")?;
-
     // Fires the `applyNewLocalStructure` trigger.
     debug!(driver, "Applying new local structure");
     controller.err_if_aborted()?;
@@ -891,18 +881,32 @@ fn apply_remote_items(db: &Conn, driver: &Driver, controller: &AbortController) 
                 /* The last modified date should always be newer than the date
                    added, so we pick the newer of the two here. */
                 MAX(lastModifiedMicroseconds, remoteDateAddedMicroseconds),
-                {}, 0
+                {syncStatusNormal}, 0
          FROM itemsToApply
          WHERE 1
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            dateAdded = excluded.dateAdded,
            lastModified = excluded.lastModified,
+           syncStatus = {syncStatusNormal},
            /* It's important that we update the URL *after* removing old keywords
               and *before* inserting new ones, so that the above DELETEs select
               the correct affected items. */
            fk = excluded.fk",
-        nsINavBookmarksService::SYNC_STATUS_NORMAL
+        syncStatusNormal = nsINavBookmarksService::SYNC_STATUS_NORMAL
+    ))?;
+    // The roots are never in `itemsToApply` but still need to (well, at least
+    // *should*) have a syncStatus of NORMAL after a reconcilliation. The
+    // ROOT_GUID doesn't matter in practice, but we include it to be consistent.
+    db.exec(format!(
+        "UPDATE moz_bookmarks SET
+            syncStatus={syncStatusNormal}
+         WHERE guid IN {user_roots} OR
+               guid = '{root}'
+               ",
+        syncStatusNormal = nsINavBookmarksService::SYNC_STATUS_NORMAL,
+        root = dogear::ROOT_GUID,
+        user_roots = user_roots_as_sql_set(),
     ))?;
 
     // Flag frecencies for recalculation. This is a multi-index OR that uses the
@@ -915,8 +919,8 @@ fn apply_remote_items(db: &Conn, driver: &Driver, controller: &AbortController) 
     controller.err_if_aborted()?;
     db.exec(
         "UPDATE moz_places SET
-           frecency = -frecency
-         WHERE frecency > 0 AND (
+           recalc_frecency = 1, recalc_alt_frecency = 1
+         WHERE frecency <> 0 AND (
            id IN (
              SELECT oldPlaceId FROM itemsToApply
              WHERE oldPlaceId <> newPlaceId
@@ -959,10 +963,10 @@ fn remove_local_items(
     let mut observer_statement = db.prepare(format!(
         "WITH
          ops(guid, level) AS (VALUES {})
-         INSERT INTO itemsRemoved(itemId, parentId, position, type, placeId,
-                                  guid, parentGuid, level)
-         SELECT b.id, b.parent, b.position, b.type, b.fk,
-                b.guid, p.guid, n.level
+         INSERT INTO itemsRemoved(itemId, parentId, position, type, title,
+                                  placeId, guid, parentGuid, level, keywordRemoved)
+         SELECT b.id, b.parent, b.position, b.type, IFNULL(b.title, \"\"), b.fk,
+                b.guid, p.guid, n.level, EXISTS(SELECT 1 FROM moz_keywords k WHERE k.place_id = b.fk)
          FROM ops n
          JOIN moz_bookmarks b ON b.guid = n.guid
          JOIN moz_bookmarks p ON p.id = b.parent",
@@ -983,10 +987,10 @@ fn remove_local_items(
     debug!(driver, "Recalculating frecencies for removed bookmark URLs");
     let mut frecency_statement = db.prepare(format!(
         "UPDATE moz_places SET
-           frecency = -frecency
+            recalc_frecency = 1, recalc_alt_frecency = 1
          WHERE id IN (SELECT b.fk FROM moz_bookmarks b
                       WHERE b.guid IN ({})) AND
-               frecency > 0",
+               frecency <> 0",
         repeat_sql_vars(ops.len())
     ))?;
     for (index, op) in ops.iter().enumerate() {
@@ -1014,6 +1018,25 @@ fn remove_local_items(
         )?;
     }
     annos_statement.execute()?;
+
+    debug!(
+        driver,
+        "Removing keywords associated with deleted bookmarks"
+    );
+    let mut keywords_statement = db.prepare(format!(
+        "DELETE FROM moz_keywords
+         WHERE place_id IN (SELECT b.fk FROM moz_bookmarks b
+            WHERE b.guid IN ({}))",
+        repeat_sql_vars(ops.len()),
+    ))?;
+    for (index, op) in ops.iter().enumerate() {
+        controller.err_if_aborted()?;
+        keywords_statement.bind_by_index(
+            index as u32,
+            nsString::from(&*op.local_node().guid.as_str()),
+        )?;
+    }
+    keywords_statement.execute()?;
 
     debug!(driver, "Removing deleted items from Places");
     let mut delete_statement = db.prepare(format!(
@@ -1057,30 +1080,10 @@ fn stage_items_to_upload(
     controller: &AbortController,
     upload_items: &[UploadItem],
     upload_tombstones: &[UploadTombstone],
-    weak_upload: &[nsString],
 ) -> Result<()> {
     debug!(driver, "Cleaning up staged items left from last sync");
     controller.err_if_aborted()?;
     db.exec("DELETE FROM itemsToUpload")?;
-
-    debug!(driver, "Staging weak uploads");
-    for chunk in weak_upload.chunks(db.variable_limit()?) {
-        let mut statement = db.prepare(format!(
-            "INSERT INTO itemsToUpload(id, guid, syncChangeCounter, parentGuid,
-                                       parentTitle, dateAdded, type, title,
-                                       placeId, isQuery, url, keyword, position,
-                                       tagFolderName)
-             {}
-             WHERE b.guid IN ({})",
-            UploadItemsFragment("b"),
-            repeat_sql_vars(chunk.len()),
-        ))?;
-        for (index, guid) in chunk.iter().enumerate() {
-            controller.err_if_aborted()?;
-            statement.bind_by_index(index as u32, nsString::from(guid.as_ref()))?;
-        }
-        statement.execute()?;
-    }
 
     // Stage remotely changed items with older local creation dates. These are
     // tracked "weakly": if the upload is interrupted or fails, we won't
@@ -1091,7 +1094,8 @@ fn stage_items_to_upload(
         "INSERT OR IGNORE INTO itemsToUpload(id, guid, syncChangeCounter,
                                              parentGuid, parentTitle, dateAdded,
                                              type, title, placeId, isQuery, url,
-                                             keyword, position, tagFolderName)
+                                             keyword, position, tagFolderName,
+                                             unknownFields)
          {}
          JOIN itemsToApply n ON n.mergedGuid = b.guid
          WHERE n.localDateAddedMicroseconds < n.remoteDateAddedMicroseconds",
@@ -1105,7 +1109,8 @@ fn stage_items_to_upload(
                                                  parentGuid, parentTitle,
                                                  dateAdded, type, title,
                                                  placeId, isQuery, url, keyword,
-                                                 position, tagFolderName)
+                                                 position, tagFolderName,
+                                                 unknownFields)
              {}
              WHERE b.guid IN ({})",
             UploadItemsFragment("b"),
@@ -1214,48 +1219,29 @@ trait Column<T> {
     fn from_column(raw: T) -> Result<Self>
     where
         Self: Sized;
-    fn into_column(self) -> T;
 }
 
 impl Column<i64> for Kind {
     fn from_column(raw: i64) -> Result<Kind> {
-        Ok(match raw {
-            mozISyncedBookmarksMerger::KIND_BOOKMARK => Kind::Bookmark,
-            mozISyncedBookmarksMerger::KIND_QUERY => Kind::Query,
-            mozISyncedBookmarksMerger::KIND_FOLDER => Kind::Folder,
-            mozISyncedBookmarksMerger::KIND_LIVEMARK => Kind::Livemark,
-            mozISyncedBookmarksMerger::KIND_SEPARATOR => Kind::Separator,
+        Ok(match i16::try_from(raw) {
+            Ok(mozISyncedBookmarksMerger::KIND_BOOKMARK) => Kind::Bookmark,
+            Ok(mozISyncedBookmarksMerger::KIND_QUERY) => Kind::Query,
+            Ok(mozISyncedBookmarksMerger::KIND_FOLDER) => Kind::Folder,
+            Ok(mozISyncedBookmarksMerger::KIND_LIVEMARK) => Kind::Livemark,
+            Ok(mozISyncedBookmarksMerger::KIND_SEPARATOR) => Kind::Separator,
             _ => return Err(Error::UnknownItemKind(raw)),
         })
-    }
-
-    fn into_column(self) -> i64 {
-        match self {
-            Kind::Bookmark => mozISyncedBookmarksMerger::KIND_BOOKMARK,
-            Kind::Query => mozISyncedBookmarksMerger::KIND_QUERY,
-            Kind::Folder => mozISyncedBookmarksMerger::KIND_FOLDER,
-            Kind::Livemark => mozISyncedBookmarksMerger::KIND_LIVEMARK,
-            Kind::Separator => mozISyncedBookmarksMerger::KIND_SEPARATOR,
-        }
     }
 }
 
 impl Column<i64> for Validity {
     fn from_column(raw: i64) -> Result<Validity> {
-        Ok(match raw {
-            mozISyncedBookmarksMerger::VALIDITY_VALID => Validity::Valid,
-            mozISyncedBookmarksMerger::VALIDITY_REUPLOAD => Validity::Reupload,
-            mozISyncedBookmarksMerger::VALIDITY_REPLACE => Validity::Replace,
+        Ok(match i16::try_from(raw) {
+            Ok(mozISyncedBookmarksMerger::VALIDITY_VALID) => Validity::Valid,
+            Ok(mozISyncedBookmarksMerger::VALIDITY_REUPLOAD) => Validity::Reupload,
+            Ok(mozISyncedBookmarksMerger::VALIDITY_REPLACE) => Validity::Replace,
             _ => return Err(Error::UnknownItemValidity(raw).into()),
         })
-    }
-
-    fn into_column(self) -> i64 {
-        match self {
-            Validity::Valid => mozISyncedBookmarksMerger::VALIDITY_VALID,
-            Validity::Reupload => mozISyncedBookmarksMerger::VALIDITY_REUPLOAD,
-            Validity::Replace => mozISyncedBookmarksMerger::VALIDITY_REPLACE,
-        }
     }
 }
 
@@ -1291,10 +1277,12 @@ impl fmt::Display for UploadItemsFragment {
                        (SELECT keyword FROM moz_keywords WHERE place_id = h.id),
                        {0}.position,
                        (SELECT get_query_param(substr(url, 7), 'tag')
-                        WHERE substr(h.url, 1, 6) = 'place:') AS tagFolderName
+                        WHERE substr(h.url, 1, 6) = 'place:') AS tagFolderName,
+                        v.unknownFields
                 FROM moz_bookmarks {0}
                 JOIN moz_bookmarks p ON p.id = {0}.parent
-                LEFT JOIN moz_places h ON h.id = {0}.fk",
+                LEFT JOIN moz_places h ON h.id = {0}.fk
+                LEFT JOIN items v ON v.guid = {0}.guid",
             self.0
         )
     }

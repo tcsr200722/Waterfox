@@ -86,8 +86,10 @@ const uint64_t kByteMask = UINT64_C(0xff);
 const uint64_t kHalfWordMask = UINT64_C(0xffff);
 const uint64_t kWordMask = UINT64_C(0xffffffff);
 const uint64_t kXMaxUInt = UINT64_C(0xffffffffffffffff);
+const uint64_t kXMaxExactUInt = UINT64_C(0xfffffffffffff800);
 const uint64_t kWMaxUInt = UINT64_C(0xffffffff);
 const int64_t kXMaxInt = INT64_C(0x7fffffffffffffff);
+const int64_t kXMaxExactInt = UINT64_C(0x7ffffffffffffc00);
 const int64_t kXMinInt = INT64_C(0x8000000000000000);
 const int32_t kWMaxInt = INT32_C(0x7fffffff);
 const int32_t kWMinInt = INT32_C(0x80000000);
@@ -102,7 +104,19 @@ const uint64_t kAddressTagMask =
     ((UINT64_C(1) << kAddressTagWidth) - 1) << kAddressTagOffset;
 VIXL_STATIC_ASSERT(kAddressTagMask == UINT64_C(0xff00000000000000));
 
-unsigned CalcLSDataSize(LoadStoreOp op);
+static inline unsigned CalcLSDataSize(LoadStoreOp op) {
+  VIXL_ASSERT((LSSize_offset + LSSize_width) == (kInstructionSize * 8));
+  unsigned size = static_cast<Instr>(op) >> LSSize_offset;
+  if ((op & LSVector_mask) != 0) {
+    // Vector register memory operations encode the access size in the "size"
+    // and "opc" fields.
+    if ((size == 0) && ((op & LSOpc_mask) >> LSOpc_offset) >= 2) {
+      size = kQRegSizeInBytesLog2;
+    }
+  }
+  return size;
+}
+
 unsigned CalcLSPairDataSize(LoadStorePairOp op);
 
 enum ImmBranchType {

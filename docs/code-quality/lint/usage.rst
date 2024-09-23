@@ -54,6 +54,7 @@ Examples:
     ./mach lint --outgoing origin/master
     ./mach lint -wo
 
+.. _lint-vcs-hook:
 
 Using a VCS Hook
 ----------------
@@ -79,18 +80,19 @@ To enable a pre-push git hook, run the following command:
 
 .. parsed-literal::
 
-    $ ln -s /path/to/gecko/tools/lint/hooks.py .git/hooks/pre-push
+    $ ln -s ../../tools/lint/hooks.py .git/hooks/pre-push
 
 
 To enable a pre-commit git hook, run the following command:
 
 .. parsed-literal::
 
-    $ ln -s /path/to/gecko/tools/lint/hooks.py .git/hooks/pre-commit
+    $ ln -s ../../tools/lint/hooks.py .git/hooks/pre-commit
 
+Note that the symlink will be interpreted as ``.git/hooks/../../tools/lint/hooks.py``.
 
-Fixing Lint Errors
-==================
+Automatically Fixing Lint Errors
+--------------------------------
 
 ``Mozlint`` has a best-effort ability to fix lint errors:
 
@@ -114,4 +116,23 @@ The ``--fix`` and ``--edit`` arguments can be combined, in which case any
 errors that can be fixed automatically will be, and the rest will be opened
 with your $EDITOR.
 
+Editor Integration
+==================
+
+.. note::
+
+    See details on `how to set up your editor here </contributing/editor.html#editor-ide-integration>`_
+
+Editor integrations are highly recommended for linters, as they let you see
+errors in real time, and can help you fix issues before you compile or run tests.
+
+Although mozilla-central does not currently have an integration available for
+`./mach lint`, there are various integrations available for some of the major
+linting tools that we use:
+
+* `ESLint`_
+* `Black (Python)`_
+
 .. _quickfix list: http://vimdoc.sourceforge.net/htmldoc/quickfix.html
+.. _ESLint: https://eslint.org/docs/user-guide/integrations#editors
+.. _Black (Python): https://black.readthedocs.io/en/stable/editor_integration.html

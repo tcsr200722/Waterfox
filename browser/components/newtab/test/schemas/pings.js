@@ -1,8 +1,7 @@
-import { CONTENT_MESSAGE_TYPE, MAIN_MESSAGE_TYPE } from "common/Actions.jsm";
+import { CONTENT_MESSAGE_TYPE, MAIN_MESSAGE_TYPE } from "common/Actions.mjs";
 import Joi from "joi-browser";
 
 export const baseKeys = {
-  // client_id will be set by PingCentre if it doesn't exist.
   client_id: Joi.string().optional(),
   addon_version: Joi.string().required(),
   locale: Joi.string().required(),
@@ -14,14 +13,8 @@ export const baseKeys = {
     "both",
     "unknown",
   ]),
-  user_prefs: Joi.number()
-    .integer()
-    .required(),
+  user_prefs: Joi.number().integer().required(),
 };
-
-export const BasePing = Joi.object()
-  .keys(baseKeys)
-  .options({ allowUnknown: true });
 
 export const eventsTelemetryExtraKeys = Joi.object()
   .keys({
@@ -33,32 +26,9 @@ export const eventsTelemetryExtraKeys = Joi.object()
   })
   .options({ allowUnknown: false });
 
-export const UserEventPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    session_id: baseKeys.session_id.required(),
-    page: baseKeys.page.required(),
-    source: Joi.string(),
-    event: Joi.string().required(),
-    action: Joi.valid("activity_stream_user_event").required(),
-    metadata_source: Joi.string(),
-    highlight_type: Joi.valid(["bookmarks", "recommendation", "history"]),
-    recommender_type: Joi.string(),
-    value: Joi.object().keys({
-      newtab_url_category: Joi.string(),
-      newtab_extension_id: Joi.string(),
-      home_url_category: Joi.string(),
-      home_extension_id: Joi.string(),
-    }),
-  })
-);
-
 export const UTUserEventPing = Joi.array().items(
-  Joi.string()
-    .required()
-    .valid("activity_stream"),
-  Joi.string()
-    .required()
-    .valid("event"),
+  Joi.string().required().valid("activity_stream"),
+  Joi.string().required().valid("event"),
   Joi.string()
     .required()
     .valid([
@@ -157,197 +127,23 @@ export const UserEventAction = Joi.object().keys({
     .required(),
 });
 
-export const UndesiredPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    source: Joi.string().required(),
-    event: Joi.string().required(),
-    action: Joi.valid("activity_stream_undesired_event").required(),
-    value: Joi.number().required(),
-  })
-);
-
 export const TileSchema = Joi.object().keys({
-  id: Joi.number()
-    .integer()
-    .required(),
+  id: Joi.number().integer().required(),
   pos: Joi.number().integer(),
 });
 
-export const ImpressionStatsPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    source: Joi.string().required(),
-    impression_id: Joi.string().required(),
-    client_id: Joi.valid("n/a").required(),
-    session_id: Joi.valid("n/a").required(),
-    action: Joi.valid("activity_stream_impression_stats").required(),
-    tiles: Joi.array()
-      .items(TileSchema)
-      .required(),
-    click: Joi.number().integer(),
-    block: Joi.number().integer(),
-    pocket: Joi.number().integer(),
-  })
-);
-
-export const SpocsFillEntrySchema = Joi.object().keys({
-  id: Joi.number()
-    .integer()
-    .required(),
-  displayed: Joi.number()
-    .integer()
-    .required(),
-  reason: Joi.string().required(),
-  full_recalc: Joi.number()
-    .integer()
-    .required(),
-});
-
-export const SpocsFillPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    impression_id: Joi.string().required(),
-    session_id: Joi.valid("n/a").required(),
-    spoc_fills: Joi.array()
-      .items(SpocsFillEntrySchema)
-      .required(),
-  })
-);
-
-export const PerfPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    source: Joi.string(),
-    event: Joi.string().required(),
-    action: Joi.valid("activity_stream_performance_event").required(),
-    value: Joi.number().required(),
-  })
-);
-
-export const SessionPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    session_id: baseKeys.session_id.required(),
-    page: baseKeys.page.required(),
-    session_duration: Joi.number().integer(),
-    action: Joi.valid("activity_stream_session").required(),
-    profile_creation_date: Joi.number().integer(),
-    perf: Joi.object()
-      .keys({
-        // How long it took in ms for data to be ready for display.
-        highlights_data_late_by_ms: Joi.number().positive(),
-
-        // Timestamp of the action perceived by the user to trigger the load
-        // of this page.
-        //
-        // Not required at least for the error cases where the
-        // observer event doesn't fire
-        load_trigger_ts: Joi.number()
-          .integer()
-          .notes(["server counter", "server counter alert"]),
-
-        // What was the perceived trigger of the load action?
-        //
-        // Not required at least for the error cases where the observer event
-        // doesn't fire
-        load_trigger_type: Joi.valid([
-          "first_window_opened",
-          "menu_plus_or_keyboard",
-          "unexpected",
-        ])
-          .notes(["server counter", "server counter alert"])
-          .required(),
-
-        // How long it took in ms for data to be ready for display.
-        topsites_data_late_by_ms: Joi.number().positive(),
-
-        // When did the topsites element finish painting?  Note that, at least for
-        // the first tab to be loaded, and maybe some others, this will be before
-        // topsites has yet to receive screenshots updates from the add-on code,
-        // and is therefore just showing placeholder screenshots.
-        topsites_first_painted_ts: Joi.number()
-          .integer()
-          .notes(["server counter", "server counter alert"]),
-
-        // Information about the quality of TopSites images and icons.
-        topsites_icon_stats: Joi.object().keys({
-          custom_screenshot: Joi.number(),
-          rich_icon: Joi.number(),
-          screenshot: Joi.number(),
-          screenshot_with_icon: Joi.number(),
-          tippytop: Joi.number(),
-          no_image: Joi.number(),
-        }),
-
-        // The count of pinned Top Sites.
-        topsites_pinned: Joi.number(),
-
-        // The count of search shortcut Top Sites.
-        topsites_search_shortcuts: Joi.number(),
-
-        // When the page itself receives an event that document.visibilityState
-        // == visible.
-        //
-        // Not required at least for the (error?) case where the
-        // visibility_event doesn't fire.  (It's not clear whether this
-        // can happen in practice, but if it does, we'd like to know about it).
-        visibility_event_rcvd_ts: Joi.number()
-          .integer()
-          .notes(["server counter", "server counter alert"]),
-
-        // The boolean to signify whether the page is preloaded or not.
-        is_preloaded: Joi.bool().required(),
-      })
-      .required(),
-  })
-);
-
-export const ASRouterEventPing = Joi.object()
-  .keys({
-    addon_version: Joi.string().required(),
-    locale: Joi.string().required(),
-    message_id: Joi.string().required(),
-    event: Joi.string().required(),
-    client_id: Joi.string(),
-    impression_id: Joi.string(),
-  })
-  .or("client_id", "impression_id");
-
 export const UTSessionPing = Joi.array().items(
-  Joi.string()
-    .required()
-    .valid("activity_stream"),
-  Joi.string()
-    .required()
-    .valid("end"),
-  Joi.string()
-    .required()
-    .valid("session"),
+  Joi.string().required().valid("activity_stream"),
+  Joi.string().required().valid("end"),
+  Joi.string().required().valid("session"),
   Joi.string().required(),
   eventsTelemetryExtraKeys
 );
 
-export const trailheadEnrollExtraKeys = Joi.object()
-  .keys({
-    experimentType: Joi.string().required(),
-    branch: Joi.string().required(),
-  })
-  .options({ allowUnknown: false });
-
-export const UTTrailheadEnrollPing = Joi.array().items(
-  Joi.string()
-    .required()
-    .valid("activity_stream"),
-  Joi.string()
-    .required()
-    .valid("enroll"),
-  Joi.string()
-    .required()
-    .valid("preference_study"),
-  Joi.string().required(),
-  trailheadEnrollExtraKeys
-);
-
-export function chaiAssertions(_chai, utils) {
+export function chaiAssertions(_chai) {
   const { Assertion } = _chai;
 
-  Assertion.addMethod("validate", function(schema, schemaName) {
+  Assertion.addMethod("validate", function (schema, schemaName) {
     const { error } = Joi.validate(this._obj, schema, { allowUnknown: false });
     this.assert(
       !error,

@@ -10,7 +10,7 @@ CustomizableUI.createWidget({
 });
 
 // Dragging an item from the palette to another button in the panel should work.
-add_task(async function() {
+add_task(async function () {
   await startCustomizing();
   let btn = document.getElementById("new-window-button");
   let placements = getAreaWidgetIds(CustomizableUI.AREA_FIXED_OVERFLOW_PANEL);
@@ -31,10 +31,11 @@ add_task(async function() {
   simulateItemDrag(btn, palette);
   CustomizableUI.removeWidgetFromArea("cui-panel-item-to-drag-to");
   ok(CustomizableUI.inDefaultState, "Should be in default state again.");
+  await endCustomizing();
 });
 
 // Dragging an item from the palette to the panel itself should also work.
-add_task(async function() {
+add_task(async function () {
   CustomizableUI.addWidgetToArea(
     "cui-panel-item-to-drag-to",
     CustomizableUI.AREA_FIXED_OVERFLOW_PANEL
@@ -55,10 +56,11 @@ add_task(async function() {
   simulateItemDrag(btn, palette);
   CustomizableUI.removeWidgetFromArea("cui-panel-item-to-drag-to");
   ok(CustomizableUI.inDefaultState, "Should be in default state again.");
+  await endCustomizing();
 });
 
 // Dragging an item from the palette to an empty panel should also work.
-add_task(async function() {
+add_task(async function () {
   let widgetIds = getAreaWidgetIds(CustomizableUI.AREA_FIXED_OVERFLOW_PANEL);
   while (widgetIds.length) {
     CustomizableUI.removeWidgetFromArea(widgetIds.shift());
@@ -79,10 +81,10 @@ add_task(async function() {
   let palette = document.getElementById("customization-palette");
   simulateItemDrag(btn, palette);
   assertAreaPlacements(panel.id, []);
+  await endCustomizing();
 });
 
 registerCleanupFunction(async function asyncCleanup() {
   CustomizableUI.destroyWidget("cui-panel-item-to-drag-to");
-  await endCustomizing();
   await resetCustomization();
 });

@@ -13,10 +13,12 @@
 // To keep the code independent of whether the line is horizontal or vertical,
 // vLocalPos.x is always parallel, and .y always perpendicular, to the line
 // being decorated.
-varying vec2 vLocalPos;
+varying highp vec2 vLocalPos;
 
-flat varying int vStyle;
-flat varying vec4 vParams;
+// Line style. Packed in to a vector to work around bug 1630356.
+flat varying mediump ivec2 vStyle;
+
+flat varying mediump vec4 vParams;
 
 #ifdef WR_VERTEX_SHADER
 
@@ -25,7 +27,7 @@ PER_INSTANCE in vec4 aTaskRect;
 
 // The size of the mask tile. aLocalSize.x is always horizontal and .y vertical,
 // regardless of the line's orientation. The size is chosen by
-// prim_store::get_line_decoration_sizes.
+// prim_store::line_dec::get_line_decoration_sizes.
 PER_INSTANCE in vec2 aLocalSize;
 
 // A LINE_STYLE_* value, indicating what sort of line to draw.
@@ -40,9 +42,9 @@ PER_INSTANCE in float aWavyLineThickness;
 
 void main(void) {
     vec2 size = mix(aLocalSize, aLocalSize.yx, aAxisSelect);
-    vStyle = aStyle;
+    vStyle.x = aStyle;
 
-    switch (vStyle) {
+    switch (vStyle.x) {
         case LINE_STYLE_SOLID: {
             break;
         }
@@ -84,7 +86,7 @@ void main(void) {
 
     vLocalPos = mix(aPosition.xy, aPosition.yx, aAxisSelect) * size;
 
-    gl_Position = uTransform * vec4(aTaskRect.xy + aTaskRect.zw * aPosition.xy, 0.0, 1.0);
+    gl_Position = uTransform * vec4(mix(aTaskRect.xy, aTaskRect.zw, aPosition.xy), 0.0, 1.0);
 }
 #endif
 
@@ -98,7 +100,7 @@ void main(void) {
     float aa_range = compute_aa_range(pos);
     float alpha = 1.0;
 
-    switch (vStyle) {
+    switch (vStyle.x) {
         case LINE_STYLE_SOLID: {
             break;
         }

@@ -3,7 +3,9 @@
 
 "use strict";
 
-const { getTextAtLineColumn } = require("devtools/server/actors/styles");
+const {
+  getTextAtLineColumn,
+} = require("resource://devtools/server/actors/utils/style-utils.js");
 
 const TEST_DATA = [
   {

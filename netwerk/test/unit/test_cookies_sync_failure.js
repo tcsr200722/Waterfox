@@ -28,7 +28,7 @@ let now;
 let futureExpiry;
 let cookie;
 
-var COOKIE_DATABASE_SCHEMA_CURRENT = 11;
+var COOKIE_DATABASE_SCHEMA_CURRENT = 13;
 
 var test_generator = do_run_test();
 
@@ -38,7 +38,7 @@ function run_test() {
 }
 
 function finish_test() {
-  executeSoon(function() {
+  executeSoon(function () {
     test_generator.return();
     do_test_finished();
   });

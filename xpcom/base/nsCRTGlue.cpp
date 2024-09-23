@@ -19,12 +19,10 @@
 #ifdef XP_WIN
 #  include <io.h>
 #  include <windows.h>
-#  include "mozilla/LateWriteChecks.h"
-#  include "mozilla/UniquePtr.h"
 #endif
 
-#ifdef ANDROID
-#  include <android/log.h>
+#ifdef FUZZING_SNAPSHOT
+#  include <mozilla/fuzzing/NyxWrapper.h>
 #endif
 
 using namespace mozilla;
@@ -226,68 +224,3 @@ void NS_MakeRandomString(char* aBuf, int32_t aBufLen) {
 }
 
 #endif
-
-#ifdef HAVE_VA_COPY
-#  define VARARGS_ASSIGN(foo, bar) VA_COPY(foo, bar)
-#elif defined(HAVE_VA_LIST_AS_ARRAY)
-#  define VARARGS_ASSIGN(foo, bar) foo[0] = bar[0]
-#else
-#  define VARARGS_ASSIGN(foo, bar) (foo) = (bar)
-#endif
-
-#if defined(XP_WIN)
-void vprintf_stderr(const char* aFmt, va_list aArgs) {
-  if (IsDebuggerPresent()) {
-    int lengthNeeded = _vscprintf(aFmt, aArgs);
-    if (lengthNeeded) {
-      lengthNeeded++;
-      auto buf = MakeUnique<char[]>(lengthNeeded);
-      if (buf) {
-        va_list argsCpy;
-        VARARGS_ASSIGN(argsCpy, aArgs);
-        vsnprintf(buf.get(), lengthNeeded, aFmt, argsCpy);
-        buf[lengthNeeded - 1] = '\0';
-        va_end(argsCpy);
-        OutputDebugStringA(buf.get());
-      }
-    }
-  }
-
-  FILE* fp = _fdopen(_dup(2), "a");
-  if (!fp) {
-    return;
-  }
-
-  vfprintf(fp, aFmt, aArgs);
-
-  AutoSuspendLateWriteChecks suspend;
-  fclose(fp);
-}
-
-#elif defined(ANDROID)
-void vprintf_stderr(const char* aFmt, va_list aArgs) {
-  __android_log_vprint(ANDROID_LOG_INFO, "Gecko", aFmt, aArgs);
-}
-#else
-void vprintf_stderr(const char* aFmt, va_list aArgs) {
-  vfprintf(stderr, aFmt, aArgs);
-}
-#endif
-
-void printf_stderr(const char* aFmt, ...) {
-  va_list args;
-  va_start(args, aFmt);
-  vprintf_stderr(aFmt, args);
-  va_end(args);
-}
-
-void fprintf_stderr(FILE* aFile, const char* aFmt, ...) {
-  va_list args;
-  va_start(args, aFmt);
-  if (aFile == stderr) {
-    vprintf_stderr(aFmt, args);
-  } else {
-    vfprintf(aFile, aFmt, args);
-  }
-  va_end(args);
-}

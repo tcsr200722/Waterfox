@@ -7,6 +7,8 @@
 #ifndef MainThreadUtils_h_
 #define MainThreadUtils_h_
 
+#include "mozilla/Assertions.h"
+#include "mozilla/ThreadSafety.h"
 #include "nscore.h"
 
 class nsIThread;
@@ -20,14 +22,6 @@ class nsIThread;
 extern nsresult NS_GetMainThread(nsIThread** aResult);
 
 #ifdef MOZILLA_INTERNAL_API
-// Fast access to the current thread.  Do not release the returned pointer!  If
-// you want to use this pointer from some other thread, then you will need to
-// AddRef it.  Otherwise, you should only consider this pointer valid from code
-// running on the current thread.
-extern nsIThread* NS_GetCurrentThread();
-#endif
-
-#ifdef MOZILLA_INTERNAL_API
 bool NS_IsMainThreadTLSInitialized();
 extern "C" {
 bool NS_IsMainThread();
@@ -35,11 +29,29 @@ bool NS_IsMainThread();
 
 namespace mozilla {
 
+/**
+ * A dummy static capability for the thread safety analysis which can be
+ * required by functions and members using `MOZ_REQUIRE(sMainThreadCapability)`
+ * and `MOZ_GUARDED_BY(sMainThreadCapability)` and asserted using
+ * `AssertIsOnMainThread()`.
+ *
+ * If you want a thread-safety-analysis capability for a non-main thread,
+ * consider using the `EventTargetCapability` type.
+ */
+class MOZ_CAPABILITY("main thread") MainThreadCapability final {};
+constexpr MainThreadCapability sMainThreadCapability;
+
 #  ifdef DEBUG
-void AssertIsOnMainThread();
+void AssertIsOnMainThread() MOZ_ASSERT_CAPABILITY(sMainThreadCapability);
 #  else
-inline void AssertIsOnMainThread() {}
+inline void AssertIsOnMainThread()
+    MOZ_ASSERT_CAPABILITY(sMainThreadCapability) {}
 #  endif
+
+inline void ReleaseAssertIsOnMainThread()
+    MOZ_ASSERT_CAPABILITY(sMainThreadCapability) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+}
 
 }  // namespace mozilla
 

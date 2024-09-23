@@ -1,6 +1,7 @@
 "use strict";
 
 var notificationURL =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.org/browser/browser/base/content/test/alerts/file_dom_notifications.html";
 var expectedURL = "about:preferences#privacy";
 
@@ -13,7 +14,7 @@ add_task(async function test_settingsOpen_observer() {
       gBrowser,
       url: "about:robots",
     },
-    async function dummyTabTask(aBrowser) {
+    async function dummyTabTask() {
       // Ensure preferences is loaded before removing the tab.
       let syncPaneLoadedPromise = TestUtils.topicObserved(
         "sync-pane-loaded",
@@ -45,12 +46,6 @@ add_task(async function test_settingsOpen_button() {
       url: notificationURL,
     },
     async function tabTask(aBrowser) {
-      // Ensure preferences is loaded before removing the tab.
-      let syncPaneLoadedPromise = TestUtils.topicObserved(
-        "sync-pane-loaded",
-        () => true
-      );
-
       info("Waiting for notification");
       await openNotification(aBrowser, "showNotification2");
 
@@ -61,6 +56,11 @@ add_task(async function test_settingsOpen_button() {
         return;
       }
 
+      // Ensure preferences is loaded before removing the tab.
+      let syncPaneLoadedPromise = TestUtils.topicObserved(
+        "sync-pane-loaded",
+        () => true
+      );
       let closePromise = promiseWindowClosed(alertWindow);
       let tabPromise = BrowserTestUtils.waitForNewTab(gBrowser, expectedURL);
       let openSettingsMenuItem = alertWindow.document.getElementById(

@@ -5,14 +5,10 @@
 
 const CC = Components.Constructor;
 
-const TEST_DOMAIN = "http://example.net/";
-const TEST_PATH =
-  TEST_DOMAIN + "browser/browser/components/resistfingerprinting/test/browser/";
-
 let gMaxAvailWidth;
 let gMaxAvailHeight;
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["privacy.resistFingerprinting", true]],
   });
@@ -37,7 +33,7 @@ add_task(async function test_new_window() {
   await SpecialPowers.spawn(
     tab.linkedBrowser,
     [{ gMaxAvailWidth, gMaxAvailHeight }],
-    async function(input) {
+    async function (input) {
       is(
         content.screen.width,
         input.gMaxAvailWidth,

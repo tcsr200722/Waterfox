@@ -1,25 +1,30 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
-ChromeUtils.import("resource://normandy/actions/AddonRolloutAction.jsm", this);
-ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
-ChromeUtils.import("resource://normandy/lib/AddonRollouts.jsm", this);
-ChromeUtils.import("resource://normandy/lib/TelemetryEvents.jsm", this);
-ChromeUtils.import("resource://testing-common/NormandyTestUtils.jsm", this);
+const { AddonRolloutAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/AddonRolloutAction.sys.mjs"
+);
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
+);
+const { AddonRollouts } = ChromeUtils.importESModule(
+  "resource://normandy/lib/AddonRollouts.sys.mjs"
+);
+const { NormandyTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NormandyTestUtils.sys.mjs"
+);
 
 // Test that a simple recipe enrolls as expected
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
   withStub(TelemetryEnvironment, "setExperimentActive"),
-  withSendEventStub,
-  async function simple_recipe_enrollment(
-    mockApi,
+  withSendEventSpy(),
+  async function simple_recipe_enrollment({
+    mockNormandyApi,
     setExperimentActiveStub,
-    sendEventStub
-  ) {
+    sendEventSpy,
+  }) {
     const recipe = {
       id: 1,
       arguments: {
@@ -27,15 +32,14 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
       }),
     };
 
-    const webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    const webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     const action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -62,17 +66,12 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(
-      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
-      "enrollmentId should be a UUID"
-    );
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       ["enroll", "addon_rollout", recipe.arguments.slug],
     ]);
     ok(
@@ -89,11 +88,11 @@ decorate_task(
 
 // Test that a rollout can update the addon
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
-  withSendEventStub,
-  async function update_rollout(mockApi, sendEventStub) {
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
+  withSendEventSpy(),
+  async function update_rollout({ mockNormandyApi, sendEventSpy }) {
     // first enrollment
     const recipe = {
       id: 1,
@@ -102,7 +101,7 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
       }),
@@ -114,9 +113,8 @@ decorate_task(
       }),
     };
 
-    let webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    let webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     let action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -131,9 +129,8 @@ decorate_task(
 
     // update existing enrollment
     recipe.arguments.extensionApiId = 2;
-    webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
     action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
@@ -159,17 +156,12 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-2.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-2.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(
-      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
-      "enrollmentId should be a UUID"
-    );
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       ["enroll", "addon_rollout", "test-rollout"],
       ["update", "addon_rollout", "test-rollout"],
     ]);
@@ -181,11 +173,11 @@ decorate_task(
 
 // Re-running a recipe does nothing
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
-  withSendEventStub,
-  async function rerun_recipe(mockApi, sendEventStub) {
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
+  withSendEventSpy(),
+  async function rerun_recipe({ mockNormandyApi, sendEventSpy }) {
     const recipe = {
       id: 1,
       arguments: {
@@ -193,15 +185,14 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
       }),
     };
 
-    const webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    const webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     let action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -238,17 +229,12 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(
-      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
-      "Enrollment ID should be a UUID"
-    );
 
-    sendEventStub.assertEvents([["enroll", "addon_rollout", "test-rollout"]]);
+    sendEventSpy.assertEvents([["enroll", "addon_rollout", "test-rollout"]]);
 
     // Cleanup
     await addon.uninstall();
@@ -257,11 +243,11 @@ decorate_task(
 
 // Conflicting rollouts
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
-  withSendEventStub,
-  async function conflicting_rollout(mockApi, sendEventStub) {
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
+  withSendEventSpy(),
+  async function conflicting_rollout({ mockNormandyApi, sendEventSpy }) {
     const recipe = {
       id: 1,
       arguments: {
@@ -269,15 +255,14 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
       }),
     };
 
-    const webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    const webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     let action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -324,25 +309,23 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(NormandyTestUtils.isUuid(rollouts[0].enrollmentId));
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       [
         "enroll",
         "addon_rollout",
         "test-rollout",
-        { addonId: FIXTURE_ADDON_ID, enrollmentId: rollouts[0].enrollmentId },
+        { addonId: FIXTURE_ADDON_ID },
       ],
       [
         "enrollFailed",
         "addon_rollout",
         "test-conflict",
-        { enrollmentId: rollouts[0].enrollmentId, reason: "conflict" },
+        { reason: "conflict" },
       ],
     ]);
 
@@ -353,11 +336,14 @@ decorate_task(
 
 // Add-on ID changed
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
-  withSendEventStub,
-  async function enroll_failed_addon_id_changed(mockApi, sendEventStub) {
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
+  withSendEventSpy(),
+  async function enroll_failed_addon_id_changed({
+    mockNormandyApi,
+    sendEventSpy,
+  }) {
     const recipe = {
       id: 1,
       arguments: {
@@ -365,7 +351,7 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
       }),
@@ -378,9 +364,8 @@ decorate_task(
       }),
     };
 
-    const webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    const webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     let action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -418,17 +403,12 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(
-      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
-      "enrollment ID should be a UUID"
-    );
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       ["enroll", "addon_rollout", "test-rollout"],
       [
         "updateFailed",
@@ -445,11 +425,14 @@ decorate_task(
 
 // Add-on upgrade required
 decorate_task(
-  AddonRollouts.withTestMock,
-  ensureAddonCleanup,
-  withMockNormandyApi,
-  withSendEventStub,
-  async function enroll_failed_upgrade_required(mockApi, sendEventStub) {
+  AddonRollouts.withTestMock(),
+  ensureAddonCleanup(),
+  withMockNormandyApi(),
+  withSendEventSpy(),
+  async function enroll_failed_upgrade_required({
+    mockNormandyApi,
+    sendEventSpy,
+  }) {
     const recipe = {
       id: 1,
       arguments: {
@@ -457,7 +440,7 @@ decorate_task(
         extensionApiId: 1,
       },
     };
-    mockApi.extensionDetails = {
+    mockNormandyApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetailsFactory({
         id: recipe.arguments.extensionApiId,
         xpi: FIXTURE_ADDON_DETAILS["normandydriver-a-2.0"].url,
@@ -469,9 +452,8 @@ decorate_task(
       }),
     };
 
-    const webExtStartupPromise = AddonTestUtils.promiseWebExtensionStartup(
-      FIXTURE_ADDON_ID
-    );
+    const webExtStartupPromise =
+      AddonTestUtils.promiseWebExtensionStartup(FIXTURE_ADDON_ID);
 
     let action = new AddonRolloutAction();
     await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
@@ -509,17 +491,12 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-2.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-2.0"].hash,
           xpiHashAlgorithm: "sha256",
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be stored in db"
     );
-    ok(
-      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
-      "enrollment ID should be a UUID"
-    );
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       ["enroll", "addon_rollout", "test-rollout"],
       [
         "updateFailed",

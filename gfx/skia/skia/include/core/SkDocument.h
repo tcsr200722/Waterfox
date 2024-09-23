@@ -10,6 +10,7 @@
 
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkScalar.h"
+#include "include/private/base/SkAPI.h"
 
 class SkCanvas;
 class SkWStream;
@@ -35,6 +36,7 @@ public:
      *  Begin a new page for the document, returning the canvas that will draw
      *  into the page. The document owns this canvas, and it will go out of
      *  scope when endPage() or close() is called, or the document is deleted.
+     *  This will call endPage() if there is a currently active page.
      */
     SkCanvas* beginPage(SkScalar width, SkScalar height, const SkRect* content = nullptr);
 
@@ -64,7 +66,7 @@ protected:
 
     // note: subclasses must call close() in their destructor, as the base class
     // cannot do this for them.
-    virtual ~SkDocument();
+    ~SkDocument() override;
 
     virtual SkCanvas* onBeginPage(SkScalar width, SkScalar height) = 0;
     virtual void onEndPage() = 0;
@@ -85,7 +87,7 @@ private:
     SkWStream* fStream;
     State      fState;
 
-    typedef SkRefCnt INHERITED;
+    using INHERITED = SkRefCnt;
 };
 
 #endif

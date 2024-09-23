@@ -8,26 +8,25 @@
 
 // There are shutdown issues for which multiple rejections are left uncaught.
 // See bug 1018184 for resolving these issues.
-PromiseTestUtils.whitelistRejectionsGlobally(/Component not initialized/);
-PromiseTestUtils.whitelistRejectionsGlobally(/this\.worker is null/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/Component not initialized/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/this\.worker is null/);
 
 const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/" +
   "test/browser/" +
   "test-stacktrace-location-debugger-link.html";
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  const toolbox = gDevTools.getToolbox(target);
+  const toolbox = gDevTools.getToolboxForTab(gBrowser.selectedTab);
 
-  await testOpenInDebugger(hud, toolbox, "console.trace()");
-  await testOpenInDebugger(hud, toolbox, "myErrorObject");
+  await testOpenFrameInDebugger(hud, toolbox, "console.trace()");
+  await testOpenFrameInDebugger(hud, toolbox, "myErrorObject");
 });
 
-async function testOpenInDebugger(hud, toolbox, text) {
+async function testOpenFrameInDebugger(hud, toolbox, text) {
   info(`Testing message with text "${text}"`);
-  const messageNode = await waitFor(() => findMessage(hud, text));
+  const messageNode = await waitFor(() => findConsoleAPIMessage(hud, text));
   const framesNode = await waitFor(() => messageNode.querySelector(".frames"));
 
   const frameNodes = framesNode.querySelectorAll(".frame");
@@ -38,14 +37,14 @@ async function testOpenInDebugger(hud, toolbox, text) {
   );
 
   for (const frameNode of frameNodes) {
-    await checkClickOnNode(hud, toolbox, frameNode);
+    await checkMousedownOnNode(hud, toolbox, frameNode);
 
     info("Selecting the console again");
     await toolbox.selectTool("webconsole");
   }
 }
 
-async function checkClickOnNode(hud, toolbox, frameNode) {
+async function checkMousedownOnNode(hud, toolbox, frameNode) {
   info("checking click on node location");
   const onSourceInDebuggerOpened = once(hud, "source-in-debugger-opened");
   EventUtils.sendMouseEvent(

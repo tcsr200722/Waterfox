@@ -25,33 +25,22 @@
 #define MOZ_WM_HSCROLL (WM_APP + 0x0313)
 #define MOZ_WM_MOUSEWHEEL_FIRST MOZ_WM_MOUSEVWHEEL
 #define MOZ_WM_MOUSEWHEEL_LAST MOZ_WM_HSCROLL
-// If a popup window is being activated, we try to reactivate the previous
-// window with this message.
-#define MOZ_WM_REACTIVATE (WM_APP + 0x0314)
 // If TSFTextStore needs to notify TSF/TIP of layout change later, this
 // message is posted.
 #define MOZ_WM_NOTIY_TSF_OF_LAYOUT_CHANGE (WM_APP + 0x0315)
 // Internal message used in correcting backwards clock skew
 #define MOZ_WM_SKEWFIX (WM_APP + 0x0316)
+// Internal message used for rolling up popups for dmanip events
+#define MOZ_WM_DMANIP (WM_APP + 0x0317)
 
-// Following MOZ_WM_*KEY* messages are used by PluginInstanceChild and
-// NativeKey internally. (never posted to the queue)
-#define MOZ_WM_KEYDOWN (WM_APP + 0x0318)
-#define MOZ_WM_KEYUP (WM_APP + 0x0319)
-#define MOZ_WM_SYSKEYDOWN (WM_APP + 0x031A)
-#define MOZ_WM_SYSKEYUP (WM_APP + 0x031B)
-#define MOZ_WM_CHAR (WM_APP + 0x031C)
-#define MOZ_WM_SYSCHAR (WM_APP + 0x031D)
-#define MOZ_WM_DEADCHAR (WM_APP + 0x031E)
-#define MOZ_WM_SYSDEADCHAR (WM_APP + 0x031F)
+// Internal message used to work around race condition in explorer.exe's
+// fullscreen window-state update handler in Windows 10+. (See bug 1835851.)
+#define MOZ_WM_FULLSCREEN_STATE_UPDATE (WM_APP + 0x0318)
 
 // XXX Should rename them to MOZ_WM_* and use safer values!
 // Messages for fullscreen transition window
 #define WM_FULLSCREEN_TRANSITION_BEFORE (WM_USER + 0)
 #define WM_FULLSCREEN_TRANSITION_AFTER (WM_USER + 1)
-
-// Drop shadow window style
-#define CS_XP_DROPSHADOW 0x00020000
 
 #ifndef APPCOMMAND_BROWSER_BACKWARD
 #  define APPCOMMAND_BROWSER_BACKWARD 1

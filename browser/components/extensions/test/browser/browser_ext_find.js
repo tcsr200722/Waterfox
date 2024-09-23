@@ -15,9 +15,10 @@ function frameScript() {
   }
 
   let range = selection.getRangeAt(0);
-  let scope = {};
-  ChromeUtils.import("resource://gre/modules/FindContent.jsm", scope);
-  let highlighter = new scope.FindContent(docShell).highlighter;
+  const { FindContent } = ChromeUtils.importESModule(
+    "resource://gre/modules/FindContent.sys.mjs"
+  );
+  let highlighter = new FindContent(docShell).highlighter;
   let r1 = content.parent.frameElement.getBoundingClientRect();
   let f1 = highlighter._getFrameElementOffsets(content.parent);
   let r2 = content.frameElement.getBoundingClientRect();
@@ -79,7 +80,7 @@ add_task(async function testFind() {
     browser.test.log(
       "Test that the text found in the top window and nested frames corresponds to the proper position."
     );
-    let terms = ["Banana", "bAnana", "baNana", "banAna", "banaNa", "bananA"];
+    let terms = ["Bánana", "bAnana", "baNana", "banAna", "banaNa", "bananA"];
     for (let i = 0; i < terms.length; i++) {
       browser.test.assertEq(
         terms[i],
@@ -95,6 +96,14 @@ add_task(async function testFind() {
     });
     browser.test.assertEq(1, data.count, "The number of matches found:");
     browser.test.assertEq("baNana", data.rangeData[0].text, "The text found:");
+
+    browser.test.log("Test that diacritic sensitive match works properly.");
+    data = await browser.find.find("bánana", {
+      matchDiacritics: true,
+      includeRangeData: true,
+    });
+    browser.test.assertEq(1, data.count, "The number of matches found:");
+    browser.test.assertEq("Bánana", data.rangeData[0].text, "The text found:");
 
     browser.test.log("Test that case insensitive match works properly.");
     data = await browser.find.find("banana", { caseSensitive: false });
@@ -112,33 +121,33 @@ add_task(async function testFind() {
       {
         framePos: 0,
         text: "example",
-        startTextNodePos: 15,
+        startTextNodePos: 16,
         startOffset: 11,
-        endTextNodePos: 15,
+        endTextNodePos: 16,
         endOffset: 18,
       },
       {
         framePos: 0,
         text: "example",
-        startTextNodePos: 15,
+        startTextNodePos: 16,
         startOffset: 25,
-        endTextNodePos: 15,
+        endTextNodePos: 16,
         endOffset: 32,
       },
       {
         framePos: 0,
         text: "example",
-        startTextNodePos: 18,
+        startTextNodePos: 19,
         startOffset: 6,
-        endTextNodePos: 18,
+        endTextNodePos: 19,
         endOffset: 13,
       },
       {
         framePos: 0,
         text: "example",
-        startTextNodePos: 20,
+        startTextNodePos: 21,
         startOffset: 3,
-        endTextNodePos: 20,
+        endTextNodePos: 21,
         endOffset: 10,
       },
       {
@@ -380,10 +389,6 @@ add_task(async function testAboutFind() {
 });
 
 add_task(async function testIncognitoFind() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   async function background() {
     await browser.test.assertRejects(
       browser.find.find("banana"),
@@ -407,7 +412,7 @@ add_task(async function testIncognitoFind() {
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
   });
-  await BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     privateWin.gBrowser.selectedBrowser,
     "http://example.com"
   );
@@ -427,10 +432,6 @@ add_task(async function testIncognitoFind() {
 });
 
 add_task(async function testIncognitoFindAllowed() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   // We're only testing we can make the calls in a private window,
   // testFind above tests full functionality.
   async function background() {
@@ -446,7 +447,10 @@ add_task(async function testIncognitoFindAllowed() {
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
   });
-  await BrowserTestUtils.loadURI(privateWin.gBrowser.selectedBrowser, url);
+  BrowserTestUtils.startLoadingURIString(
+    privateWin.gBrowser.selectedBrowser,
+    url
+  );
   await BrowserTestUtils.browserLoaded(privateWin.gBrowser.selectedBrowser);
 
   let extension = ExtensionTestUtils.loadExtension({

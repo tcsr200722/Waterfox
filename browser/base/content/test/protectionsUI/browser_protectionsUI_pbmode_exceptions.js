@@ -6,13 +6,14 @@
 
 const TP_PB_PREF = "privacy.trackingprotection.enabled";
 const TRACKING_PAGE =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://tracking.example.org/browser/browser/base/content/test/protectionsUI/trackingPage.html";
 const DTSCBN_PREF = "dom.testing.sync-content-blocking-notifications";
 var TrackingProtection = null;
 var gProtectionsHandler = null;
 var browser = null;
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   Services.prefs.clearUserPref(TP_PB_PREF);
   Services.prefs.clearUserPref(DTSCBN_PREF);
   gProtectionsHandler = TrackingProtection = browser = null;
@@ -28,7 +29,7 @@ function hidden(sel) {
 
 function protectionsPopupState() {
   let win = browser.ownerGlobal;
-  return win.document.getElementById("protections-popup").state;
+  return win.document.getElementById("protections-popup")?.state || "closed";
 }
 
 function clickButton(sel) {
@@ -37,19 +38,13 @@ function clickButton(sel) {
   el.doCommand();
 }
 
-function testTrackingPage(window) {
+function testTrackingPage() {
   info("Tracking content must be blocked");
-  ok(
-    gProtectionsHandler._protectionsPopup.hasAttribute("detected"),
-    "trackers are detected"
-  );
-  ok(
-    !gProtectionsHandler._protectionsPopup.hasAttribute("hasException"),
-    "content shows no exception"
-  );
+  ok(gProtectionsHandler.anyDetected, "trackers are detected");
+  ok(!gProtectionsHandler.hasException, "content shows no exception");
 
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is visible"
   );
   ok(gProtectionsHandler.iconBox.hasAttribute("active"), "shield is active");
@@ -58,22 +53,18 @@ function testTrackingPage(window) {
     "icon box shows no exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    gNavigatorBundle.getString("trackingProtection.icon.activeTooltip2"),
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    "tracking-protection-icon-active",
     "correct tooltip"
   );
 }
 
 function testTrackingPageUnblocked() {
-  info("Tracking content must be white-listed and not blocked");
-  ok(
-    gProtectionsHandler._protectionsPopup.hasAttribute("detected"),
-    "trackers are detected"
-  );
-  ok(
-    gProtectionsHandler._protectionsPopup.hasAttribute("hasException"),
-    "content shows exception"
-  );
+  info("Tracking content must be allowlisted and not blocked");
+  ok(gProtectionsHandler.anyDetected, "trackers are detected");
+  ok(gProtectionsHandler.hasException, "content shows exception");
 
   ok(!gProtectionsHandler.iconBox.hasAttribute("active"), "shield is active");
   ok(
@@ -81,18 +72,24 @@ function testTrackingPageUnblocked() {
     "shield shows exception"
   );
   is(
-    gProtectionsHandler._trackingProtectionIconTooltipLabel.textContent,
-    gNavigatorBundle.getString("trackingProtection.icon.disabledTooltip2"),
+    gProtectionsHandler._trackingProtectionIconTooltipLabel.getAttribute(
+      "data-l10n-id"
+    ),
+    "tracking-protection-icon-disabled",
     "correct tooltip"
   );
 
   ok(
-    BrowserTestUtils.is_visible(gProtectionsHandler.iconBox),
+    BrowserTestUtils.isVisible(gProtectionsHandler.iconBox),
     "icon box is visible"
   );
 }
 
 add_task(async function testExceptionAddition() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.security.https_first_pbm", false]],
+  });
+
   await UrlClassifierTestUtils.addTestTrackers();
   Services.prefs.setBoolPref(DTSCBN_PREF, true);
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
@@ -103,7 +100,9 @@ add_task(async function testExceptionAddition() {
 
   gProtectionsHandler = browser.ownerGlobal.gProtectionsHandler;
   ok(gProtectionsHandler, "CB is attached to the private window");
-  TrackingProtection = browser.ownerGlobal.TrackingProtection;
+
+  TrackingProtection =
+    browser.ownerGlobal.gProtectionsHandler.blockers.TrackingProtection;
   ok(TrackingProtection, "TP is attached to the private window");
 
   Services.prefs.setBoolPref(TP_PB_PREF, true);
@@ -138,6 +137,10 @@ add_task(async function testExceptionAddition() {
 });
 
 add_task(async function testExceptionPersistence() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.security.https_first_pbm", false]],
+  });
+
   info("Open another private browsing window");
   let privateWin = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
@@ -147,7 +150,8 @@ add_task(async function testExceptionPersistence() {
 
   gProtectionsHandler = browser.ownerGlobal.gProtectionsHandler;
   ok(gProtectionsHandler, "CB is attached to the private window");
-  TrackingProtection = browser.ownerGlobal.TrackingProtection;
+  TrackingProtection =
+    browser.ownerGlobal.gProtectionsHandler.blockers.TrackingProtection;
   ok(TrackingProtection, "TP is attached to the private window");
 
   ok(TrackingProtection.enabled, "TP is still enabled");

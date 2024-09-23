@@ -14,7 +14,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=656379
       display: none;
     }
     input[type=button] {
-      -moz-appearance: none;
+      appearance: none;
       padding: 0;
       border: none;
       color: black;
@@ -128,7 +128,7 @@ function* tests() {
   // Release.
   sendMouseEvent("mouseup", label);
   yield undefined;
-  var focusOnMouse = (navigator.platform.indexOf("Mac") != 0);
+  var focusOnMouse = SpecialPowers.getIntPref("accessibility.mouse_focuses_formcontrol") > 0;
   compareSnapshots_(focusOnMouse ? normalFocusedButtonCanvas : normalButtonCanvas,
                     currentSnapshot, true, "Releasing the mouse over the label should have unpressed" +
                                             (focusOnMouse ? " (and focused)" : "") + " the button.");

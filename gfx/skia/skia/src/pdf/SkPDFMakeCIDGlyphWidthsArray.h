@@ -9,7 +9,6 @@
 
 #include "src/pdf/SkPDFTypes.h"
 
-class SkStrike;
 class SkPDFGlyphUse;
 class SkTypeface;
 
@@ -18,6 +17,6 @@ class SkTypeface;
    one width for a range of CIDs". */
 std::unique_ptr<SkPDFArray> SkPDFMakeCIDGlyphWidthsArray(const SkTypeface& typeface,
                                                          const SkPDFGlyphUse& subset,
-                                                         SkScalar* defaultAdvance);
+                                                         int32_t* defaultAdvance);
 
 #endif  // SkPDFMakeCIDGlyphWidthsArray_DEFINED

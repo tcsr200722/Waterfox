@@ -10,6 +10,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/ipc/SharedMemoryBasic.h"
+#include "nsExpirationTracker.h"
 
 namespace mozilla {
 namespace gfx {
@@ -45,9 +46,8 @@ class SourceSurfaceSharedDataWrapper final : public DataSourceSurface {
         mCreatorPid(0),
         mCreatorRef(true) {}
 
-  bool Init(const IntSize& aSize, int32_t aStride, SurfaceFormat aFormat,
-            const SharedMemoryBasic::Handle& aHandle,
-            base::ProcessId aCreatorPid);
+  void Init(const IntSize& aSize, int32_t aStride, SurfaceFormat aFormat,
+            SharedMemoryBasic::Handle aHandle, base::ProcessId aCreatorPid);
 
   void Init(SourceSurfaceSharedData* aSurface);
 
@@ -55,13 +55,21 @@ class SourceSurfaceSharedDataWrapper final : public DataSourceSurface {
 
   int32_t Stride() override { return mStride; }
 
-  SurfaceType GetType() const override { return SurfaceType::DATA; }
+  SurfaceType GetType() const override {
+    return SurfaceType::DATA_SHARED_WRAPPER;
+  }
   IntSize GetSize() const override { return mSize; }
   SurfaceFormat GetFormat() const override { return mFormat; }
 
   uint8_t* GetData() override { return static_cast<uint8_t*>(mBuf->memory()); }
 
   bool OnHeap() const override { return false; }
+
+  bool Map(MapType aMapType, MappedSurface* aMappedSurface) final;
+
+  void Unmap() final;
+
+  void ExpireMap();
 
   bool AddConsumer() { return ++mConsumers == 1; }
 
@@ -84,6 +92,8 @@ class SourceSurfaceSharedDataWrapper final : public DataSourceSurface {
 
   bool HasCreatorRef() const { return mCreatorRef; }
 
+  nsExpirationState* GetExpirationState() { return &mExpirationState; }
+
  private:
   size_t GetDataLength() const {
     return static_cast<size_t>(mStride) * mSize.height;
@@ -93,6 +103,11 @@ class SourceSurfaceSharedDataWrapper final : public DataSourceSurface {
     return mozilla::ipc::SharedMemory::PageAlignedSize(GetDataLength());
   }
 
+  bool EnsureMapped(size_t aLength);
+
+  // Protects mapping and unmapping of mBuf.
+  Maybe<Mutex> mHandleLock;
+  nsExpirationState mExpirationState;
   int32_t mStride;
   uint32_t mConsumers;
   IntSize mSize;
@@ -106,7 +121,7 @@ class SourceSurfaceSharedDataWrapper final : public DataSourceSurface {
  * This class is used to wrap shared (as in process) data buffers used by a
  * source surface.
  */
-class SourceSurfaceSharedData final : public DataSourceSurface {
+class SourceSurfaceSharedData : public DataSourceSurface {
   typedef mozilla::ipc::SharedMemoryBasic SharedMemoryBasic;
 
  public:
@@ -130,23 +145,21 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
   bool Init(const IntSize& aSize, int32_t aStride, SurfaceFormat aFormat,
             bool aShare = true);
 
-  uint8_t* GetData() override {
+  uint8_t* GetData() final {
     MutexAutoLock lock(mMutex);
     return GetDataInternal();
   }
 
-  int32_t Stride() override { return mStride; }
+  int32_t Stride() final { return mStride; }
 
   SurfaceType GetType() const override { return SurfaceType::DATA_SHARED; }
-  IntSize GetSize() const override { return mSize; }
-  SurfaceFormat GetFormat() const override { return mFormat; }
-
-  void GuaranteePersistance() override;
+  IntSize GetSize() const final { return mSize; }
+  SurfaceFormat GetFormat() const final { return mFormat; }
 
   void SizeOfExcludingThis(MallocSizeOf aMallocSizeOf,
-                           SizeOfInfo& aInfo) const override;
+                           SizeOfInfo& aInfo) const final;
 
-  bool OnHeap() const override { return false; }
+  bool OnHeap() const final { return false; }
 
   /**
    * Although Map (and Moz2D in general) isn't normally threadsafe,
@@ -161,15 +174,19 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
    * the same data pointer by retaining the old shared buffer until
    * the last mapping is freed via Unmap.
    */
-  bool Map(MapType, MappedSurface* aMappedSurface) override {
+  bool Map(MapType aMapType, MappedSurface* aMappedSurface) final {
     MutexAutoLock lock(mMutex);
+    if (mFinalized && aMapType != MapType::READ) {
+      // Once finalized the data may be write-protected
+      return false;
+    }
     ++mMapCount;
     aMappedSurface->mData = GetDataInternal();
     aMappedSurface->mStride = mStride;
     return true;
   }
 
-  void Unmap() override {
+  void Unmap() final {
     MutexAutoLock lock(mMutex);
     MOZ_ASSERT(mMapCount > 0);
     if (--mMapCount == 0) {
@@ -183,8 +200,7 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
    *   NS_ERROR_NOT_AVAILABLE -- handle was closed, need to reallocate.
    *   NS_ERROR_FAILURE -- failed to create a handle to share.
    */
-  nsresult ShareToProcess(base::ProcessId aPid,
-                          SharedMemoryBasic::Handle& aHandle);
+  nsresult CloneHandle(SharedMemoryBasic::Handle& aHandle);
 
   /**
    * Indicates the buffer is not expected to be shared with any more processes.
@@ -208,7 +224,7 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
 
   /**
    * Allocate a new shared memory buffer so that we can get a new handle for
-   * sharing to new processes. ShareToProcess must have failed with
+   * sharing to new processes. CloneHandle must have failed with
    * NS_ERROR_NOT_AVAILABLE in order for this to be safe to call. Returns true
    * if the operation succeeds. If it fails, there is no state change.
    */
@@ -232,7 +248,7 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
   /**
    * Yields a dirty rect of what has changed since it was last called.
    */
-  Maybe<IntRect> TakeDirtyRect() override {
+  Maybe<IntRect> TakeDirtyRect() final {
     MutexAutoLock lock(mMutex);
     if (mDirtyRect) {
       Maybe<IntRect> ret = std::move(mDirtyRect);
@@ -244,7 +260,7 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
   /**
    * Increment the invalidation counter.
    */
-  void Invalidate(const IntRect& aDirtyRect) override {
+  void Invalidate(const IntRect& aDirtyRect) final {
     MutexAutoLock lock(mMutex);
     if (!aDirtyRect.IsEmpty()) {
       if (mDirtyRect) {
@@ -275,10 +291,11 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
     RefPtr<SourceSurfaceSharedData> mSurface;
   };
 
+ protected:
+  virtual ~SourceSurfaceSharedData() = default;
+
  private:
   friend class SourceSurfaceSharedDataWrapper;
-
-  virtual ~SourceSurfaceSharedData() = default;
 
   void LockHandle() {
     MutexAutoLock lock(mMutex);
@@ -309,7 +326,7 @@ class SourceSurfaceSharedData final : public DataSourceSurface {
    */
   void CloseHandleInternal();
 
-  mutable Mutex mMutex;
+  mutable Mutex mMutex MOZ_UNANNOTATED;
   int32_t mStride;
   int32_t mHandleCount;
   Maybe<IntRect> mDirtyRect;

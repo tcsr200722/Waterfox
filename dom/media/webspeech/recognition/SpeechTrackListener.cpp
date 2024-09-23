@@ -9,18 +9,26 @@
 #include "SpeechRecognition.h"
 #include "nsProxyRelease.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 SpeechTrackListener::SpeechTrackListener(SpeechRecognition* aRecognition)
-    : mRecognition(aRecognition),
+    : mRecognition(new nsMainThreadPtrHolder<SpeechRecognition>(
+          "SpeechTrackListener::SpeechTrackListener", aRecognition, false)),
       mRemovedPromise(
           mRemovedHolder.Ensure("SpeechTrackListener::mRemovedPromise")) {
   MOZ_ASSERT(NS_IsMainThread());
-  mRemovedPromise->Then(GetCurrentThreadSerialEventTarget(), __func__,
-                        [self = RefPtr<SpeechTrackListener>(this), this] {
-                          mRecognition = nullptr;
-                        });
+}
+
+already_AddRefed<SpeechTrackListener> SpeechTrackListener::Create(
+    SpeechRecognition* aRecognition) {
+  MOZ_ASSERT(NS_IsMainThread());
+  RefPtr<SpeechTrackListener> listener = new SpeechTrackListener(aRecognition);
+
+  listener->mRemovedPromise->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [listener] { listener->mRecognition = nullptr; });
+
+  return listener.forget();
 }
 
 void SpeechTrackListener::NotifyQueuedChanges(
@@ -77,7 +85,8 @@ void SpeechTrackListener::ConvertAndDispatchAudioChunk(int aDuration,
   int16_t* to = static_cast<int16_t*>(samples->Data());
   ConvertAudioSamplesWithScale(aData, to, aDuration, aVolume);
 
-  mRecognition->FeedAudioData(samples.forget(), aDuration, this, aTrackRate);
+  mRecognition->FeedAudioData(mRecognition, samples.forget(), aDuration, this,
+                              aTrackRate);
 }
 
 void SpeechTrackListener::NotifyEnded(MediaTrackGraph* aGraph) {
@@ -88,5 +97,4 @@ void SpeechTrackListener::NotifyRemoved(MediaTrackGraph* aGraph) {
   mRemovedHolder.ResolveIfExists(true, __func__);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

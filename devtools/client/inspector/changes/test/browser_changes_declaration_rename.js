@@ -14,7 +14,7 @@ const TEST_URI = `
   <div></div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view: ruleView } = await openRuleView();
   const { document: doc, store } = selectChangesView(inspector);
@@ -28,13 +28,13 @@ add_task(async function() {
   const newPropertyName = "background-color";
 
   info(`Rename the CSS declaration name to ${newPropertyName}`);
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   await renameProperty(ruleView, prop, newPropertyName);
   info("Wait for the change to be tracked");
   await onTrackChange;
 
-  let removeDecl = getRemovedDeclarations(doc);
-  let addDecl = getAddedDeclarations(doc);
+  const removeDecl = getRemovedDeclarations(doc);
+  const addDecl = getAddedDeclarations(doc);
 
   is(removeDecl.length, 1, "One declaration tracked as removed");
   is(
@@ -52,14 +52,17 @@ add_task(async function() {
   info(
     `Reverting the CSS declaration name to ${oldPropertyName} should clear changes.`
   );
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   await renameProperty(ruleView, prop, oldPropertyName);
   info("Wait for the change to be tracked");
   await onTrackChange;
 
-  removeDecl = getRemovedDeclarations(doc);
-  addDecl = getAddedDeclarations(doc);
-
-  is(removeDecl.length, 0, "No declaration tracked as removed");
-  is(addDecl.length, 0, "No declaration tracked as added");
+  await waitFor(
+    () => !getRemovedDeclarations(doc).length,
+    "No declaration tracked as removed"
+  );
+  await waitFor(
+    () => !getAddedDeclarations(doc).length,
+    "No declaration tracked as added"
+  );
 });

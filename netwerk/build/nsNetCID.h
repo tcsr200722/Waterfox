@@ -342,6 +342,15 @@
     }                                                \
   }
 
+#define NS_LOCALFILERANDOMACCESSSTREAM_CONTRACTID \
+  "@mozilla.org/network/file-random-access-stream;1"
+#define NS_LOCALFILERANDOMACCESSSTREAM_CID           \
+  { /* 648705e9-757a-4d4b-a5bF-0248e512c309 */       \
+    0x648705e9, 0x757a, 0x4d4b, {                    \
+      0xa5, 0xbF, 0x02, 0x48, 0xe5, 0x12, 0xc3, 0x09 \
+    }                                                \
+  }
+
 #define NS_BUFFEREDINPUTSTREAM_CONTRACTID \
   "@mozilla.org/network/buffered-input-stream;1"
 #define NS_BUFFEREDINPUTSTREAM_CID                   \
@@ -414,7 +423,7 @@
   }
 
 /******************************************************************************
- * netwerk/cache/ classes
+ * netwerk/cache2/ classes
  */
 
 // service implementing nsICacheService.
@@ -423,16 +432,6 @@
   { /* 6c84aec9-29a5-4264-8fbc-bee8f922ea67 */       \
     0x6c84aec9, 0x29a5, 0x4264, {                    \
       0x8f, 0xbc, 0xbe, 0xe8, 0xf9, 0x22, 0xea, 0x67 \
-    }                                                \
-  }
-
-// service implementing nsIApplicationCacheService.
-#define NS_APPLICATIONCACHESERVICE_CONTRACTID \
-  "@mozilla.org/network/application-cache-service;1"
-#define NS_APPLICATIONCACHESERVICE_CID               \
-  { /* 02bf7a2a-39d8-4a23-a50c-2cbb085ab7a5 */       \
-    0x02bf7a2a, 0x39d8, 0x4a23, {                    \
-      0xa5, 0x0c, 0x2c, 0xbb, 0x08, 0x5a, 0xb7, 0xa5 \
     }                                                \
   }
 
@@ -498,17 +497,6 @@
     0x4c39159c, 0xcd90, 0x4dd3, {                    \
       0x97, 0xa7, 0x06, 0xaf, 0x5e, 0x6d, 0x84, 0xc4 \
     }                                                \
-  }
-
-/******************************************************************************
- * netwerk/protocol/ftp/ classes
- */
-
-#define NS_FTPPROTOCOLHANDLER_CID                   \
-  { /* 25029490-F132-11d2-9588-00805F369F95 */      \
-    0x25029490, 0xf132, 0x11d2, {                   \
-      0x95, 0x88, 0x0, 0x80, 0x5f, 0x36, 0x9f, 0x95 \
-    }                                               \
   }
 
 /******************************************************************************
@@ -794,11 +782,6 @@
  */
 #define NS_CRYPTO_HASH_CONTRACTID "@mozilla.org/security/hash;1"
 
-/**
- * Must implement nsICryptoHMAC.
- */
-#define NS_CRYPTO_HMAC_CONTRACTID "@mozilla.org/security/hmac;1"
-
 /******************************************************************************
  * Categories
  */
@@ -833,6 +816,18 @@
  * from the network, and they won't be told about each load.
  */
 #define NS_DATA_SNIFFER_CATEGORY "content-sniffing-services"
+
+/**
+ * Services in this category similar to "net-content-sniffers" but it's
+ * initiated by the opaque response blocking algorithm.
+ */
+#define NS_ORB_SNIFFER_CATEGORY "orb-content-sniffers"
+
+/**
+ * Services in this category are the union of "net-content-sniffers" and
+ * "orb-content-sniffers".
+ */
+#define NS_CONTENT_AND_ORB_SNIFFER_CATEGORY "net-and-orb-content-sniffers"
 
 /**
  * Must implement nsINSSErrorsService.

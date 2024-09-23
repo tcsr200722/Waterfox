@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -25,8 +24,7 @@ add_task(
     // Successful promotion won't return an error.
     Assert.equal(response.error, undefined);
 
-    threadFront.resume();
-    const packet2 = await waitForPause(threadFront);
+    const packet2 = await resumeAndWaitForPause(threadFront);
 
     // Verify that the promoted actor is returned again.
     Assert.equal(pauseGrip.actor, packet2.frame.arguments[0].actor);
@@ -48,7 +46,7 @@ add_task(
     try {
       await objFront2
         .request({ to: pauseGrip.actor, type: "bogusRequest" })
-        .catch(function(error) {
+        .catch(function (error) {
           Assert.ok(!!error.message.match(/noSuchActor/));
           threadFront.resume();
           throw new Error();
@@ -63,7 +61,9 @@ add_task(
 function evaluateTestCode(debuggee) {
   debuggee.eval(
     "(" +
-      function() {
+      function () {
+        // These arguments are tested.
+        // eslint-disable-next-line no-unused-vars
         function stopMe(arg1) {
           debugger;
           debugger;

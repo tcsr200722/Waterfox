@@ -13,7 +13,7 @@ use crate::route::Route;
 
 use self::internal::WithLog;
 
-/// Create a wrapping filter with the specified `name` as the `target`.
+/// Create a wrapping [`Filter`](crate::Filter) with the specified `name` as the `target`.
 ///
 /// This uses the default access logging format, and log records produced
 /// will have their `target` set to `name`.
@@ -30,8 +30,8 @@ use self::internal::WithLog;
 ///     .map(warp::reply)
 ///     .with(log);
 /// ```
-pub fn log(name: &'static str) -> Log<impl Fn(Info) + Copy> {
-    let func = move |info: Info| {
+pub fn log(name: &'static str) -> Log<impl Fn(Info<'_>) + Copy> {
+    let func = move |info: Info<'_>| {
         // TODO?
         // - response content length?
         log::info!(
@@ -50,7 +50,7 @@ pub fn log(name: &'static str) -> Log<impl Fn(Info) + Copy> {
     Log { func }
 }
 
-/// Create a wrapping filter that receives `warp::log::Info`.
+/// Create a wrapping [`Filter`](crate::Filter) that receives `warp::log::Info`.
 ///
 /// # Example
 ///
@@ -72,12 +72,12 @@ pub fn log(name: &'static str) -> Log<impl Fn(Info) + Copy> {
 /// ```
 pub fn custom<F>(func: F) -> Log<F>
 where
-    F: Fn(Info),
+    F: Fn(Info<'_>),
 {
     Log { func }
 }
 
-/// Decorates a [`Filter`](crate::Filter) to log requests and responses.
+/// Decorates a [`Filter`] to log requests and responses.
 #[derive(Clone, Copy, Debug)]
 pub struct Log<F> {
     func: F,
@@ -93,7 +93,7 @@ pub struct Info<'a> {
 
 impl<FN, F> WrapSealed<F> for Log<FN>
 where
-    FN: Fn(Info) + Clone + Send,
+    FN: Fn(Info<'_>) + Clone + Send,
     F: Filter + Clone + Send,
     F::Extract: Reply,
     F::Error: IsReject,
@@ -162,12 +162,17 @@ impl<'a> Info<'a> {
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
     }
+
+    /// Access the full headers of the request
+    pub fn request_headers(&self) -> &http::HeaderMap {
+        self.route.headers()
+    }
 }
 
 struct OptFmt<T>(Option<T>);
 
 impl<T: fmt::Display> fmt::Display for OptFmt<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref t) = self.0 {
             fmt::Display::fmt(t, f)
         } else {
@@ -182,7 +187,7 @@ mod internal {
     use std::task::{Context, Poll};
     use std::time::Instant;
 
-    use futures::{ready, TryFuture};
+    use futures_util::{ready, TryFuture};
     use pin_project::pin_project;
 
     use super::{Info, Log};
@@ -210,7 +215,7 @@ mod internal {
 
     impl<FN, F> FilterBase for WithLog<FN, F>
     where
-        FN: Fn(Info) + Clone + Send,
+        FN: Fn(Info<'_>) + Clone + Send,
         F: Filter + Clone + Send,
         F::Extract: Reply,
         F::Error: IsReject,
@@ -240,14 +245,14 @@ mod internal {
 
     impl<FN, F> Future for WithLogFuture<FN, F>
     where
-        FN: Fn(Info),
+        FN: Fn(Info<'_>),
         F: TryFuture,
         F::Ok: Reply,
         F::Error: IsReject,
     {
         type Output = Result<(Logged,), F::Error>;
 
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let pin = self.as_mut().project();
             let (result, status) = match ready!(pin.future.try_poll(cx)) {
                 Ok(reply) => {

@@ -3,11 +3,18 @@
 
 // Tests common Places telemetry probes by faking the telemetry service.
 
-const { PlacesDBUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesDBUtils.jsm"
+// Enable the collection (during test) for all products so even products
+// that don't collect the data will be able to run the test without failure.
+Services.prefs.setBoolPref(
+  "toolkit.telemetry.testing.overrideProductsCheck",
+  true
 );
 
-var histograms = {
+const { PlacesDBUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesDBUtils.sys.mjs"
+);
+
+const histograms = {
   PLACES_PAGES_COUNT: val => Assert.equal(val, 1),
   PLACES_BOOKMARKS_COUNT: val => Assert.equal(val, 1),
   PLACES_TAGS_COUNT: val => Assert.equal(val, 1),
@@ -16,14 +23,14 @@ var histograms = {
   PLACES_TAGGED_BOOKMARKS_PERC: val => Assert.equal(val, 100),
   PLACES_DATABASE_FILESIZE_MB: val => Assert.ok(val > 0),
   PLACES_DATABASE_FAVICONS_FILESIZE_MB: val => Assert.ok(val > 0),
-  PLACES_DATABASE_PAGESIZE_B: val => Assert.equal(val, 32768),
-  PLACES_DATABASE_SIZE_PER_PAGE_B: val => Assert.ok(val > 0),
   PLACES_EXPIRATION_STEPS_TO_CLEAN2: val => Assert.ok(val > 1),
-  PLACES_IDLE_FRECENCY_DECAY_TIME_MS: val => Assert.ok(val >= 0),
   PLACES_IDLE_MAINTENANCE_TIME_MS: val => Assert.ok(val > 0),
-  PLACES_ANNOS_BOOKMARKS_COUNT: val => Assert.equal(val, 1),
   PLACES_ANNOS_PAGES_COUNT: val => Assert.equal(val, 1),
   PLACES_MAINTENANCE_DAYSFROMLAST: val => Assert.ok(val >= 0),
+};
+
+const scalars = {
+  pages_need_frecency_recalculation: 1, // 1 bookmark is added causing recalc.
 };
 
 /**
@@ -69,7 +76,7 @@ add_task(async function test_execute() {
   // Put some trash in the database.
   let uri = Services.io.newURI("http://moz.org/");
 
-  let bookmarks = await PlacesUtils.bookmarks.insertTree({
+  PlacesUtils.bookmarks.insertTree({
     guid: PlacesUtils.bookmarks.unfiledGuid,
     children: [
       {
@@ -94,16 +101,12 @@ add_task(async function test_execute() {
     content += "0";
   }
 
-  await setItemAnnotation(bookmarks[1].guid, "test-anno", content);
   await PlacesUtils.history.update({
     url: uri,
     annotations: new Map([["test-anno", content]]),
   });
 
-  // Request to gather telemetry data.
-  Cc["@mozilla.org/places/categoriesStarter;1"]
-    .getService(Ci.nsIObserver)
-    .observe(null, "gather-telemetry", null);
+  await PlacesDBUtils.telemetry();
 
   await PlacesTestUtils.promiseAsyncUpdates();
 
@@ -126,9 +129,6 @@ add_task(async function test_execute() {
   await promiseForceExpirationStep(2);
 
   // Test idle probes.
-  PlacesUtils.history
-    .QueryInterface(Ci.nsIObserver)
-    .observe(null, "idle-daily", null);
   await PlacesDBUtils.maintenanceOnIdle();
 
   for (let histogramId in histograms) {
@@ -137,5 +137,15 @@ add_task(async function test_execute() {
     let snapshot = Services.telemetry.getHistogramById(histogramId).snapshot();
     validate(snapshot.sum);
     Assert.ok(Object.values(snapshot.values).reduce((a, b) => a + b, 0) > 0);
+  }
+  for (let scalarName in scalars) {
+    let scalar = "places." + scalarName;
+    info("checking scalar " + scalar);
+    TelemetryTestUtils.assertScalar(
+      TelemetryTestUtils.getProcessScalars("parent"),
+      scalar,
+      scalars[scalarName],
+      "Verify scalar value matches"
+    );
   }
 });

@@ -8,17 +8,17 @@
 #include "mozilla/dom/FileBlobImpl.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/dom/MultipartBlobImpl.h"
+#include "nsIFile.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 FileCreatorParent::FileCreatorParent()
-    : mBackgroundEventTarget(GetCurrentThreadEventTarget()), mIPCActive(true) {}
+    : mBackgroundEventTarget(GetCurrentSerialEventTarget()), mIPCActive(true) {}
 
 FileCreatorParent::~FileCreatorParent() = default;
 
 mozilla::ipc::IPCResult FileCreatorParent::CreateAndShareFile(
-    const nsString& aFullPath, const nsString& aType, const nsString& aName,
+    const nsAString& aFullPath, const nsAString& aType, const nsAString& aName,
     const Maybe<int64_t>& aLastModified, const bool& aExistenceCheck,
     const bool& aIsFromNsIFile) {
   RefPtr<dom::BlobImpl> blobImpl;
@@ -27,7 +27,7 @@ mozilla::ipc::IPCResult FileCreatorParent::CreateAndShareFile(
                      aLastModified.isSome() ? aLastModified.value() : 0,
                      aExistenceCheck, aIsFromNsIFile, getter_AddRefs(blobImpl));
   if (NS_WARN_IF(NS_FAILED(rv))) {
-    Unused << Send__delete__(this, FileCreationErrorResult(rv));
+    (void)Send__delete__(this, FileCreationErrorResult(rv));
     return IPC_OK();
   }
 
@@ -47,15 +47,13 @@ mozilla::ipc::IPCResult FileCreatorParent::CreateAndShareFile(
             "FileCreatorParent::CreateAndShareFile return", [self, blobImpl]() {
               if (self->mIPCActive) {
                 IPCBlob ipcBlob;
-                nsresult rv = dom::IPCBlobUtils::Serialize(
-                    blobImpl, self->Manager(), ipcBlob);
+                nsresult rv = dom::IPCBlobUtils::Serialize(blobImpl, ipcBlob);
                 if (NS_WARN_IF(NS_FAILED(rv))) {
-                  Unused << Send__delete__(self, FileCreationErrorResult(rv));
+                  (void)Send__delete__(self, FileCreationErrorResult(rv));
                   return;
                 }
 
-                Unused << Send__delete__(self,
-                                         FileCreationSuccessResult(ipcBlob));
+                (void)Send__delete__(self, FileCreationSuccessResult(ipcBlob));
               }
             }));
       }));
@@ -127,12 +125,11 @@ nsresult FileCreatorParent::CreateBlobImpl(
   }
 
   if (!aIsFromNsIFile) {
-    impl->SetMozFullPath(EmptyString());
+    impl->SetMozFullPath(u""_ns);
   }
 
   impl.forget(aBlobImpl);
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

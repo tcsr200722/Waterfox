@@ -8,22 +8,35 @@
 
 "use strict";
 
-/* import-globals-from ../../../../../toolkit/mozapps/update/tests/browser/head.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/mozapps/update/tests/browser/head.js",
   this
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  HttpServer: "resource://testing-common/httpd.js",
-  ResetProfile: "resource://gre/modules/ResetProfile.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  HttpServer: "resource://testing-common/httpd.sys.mjs",
+  ResetProfile: "resource://gre/modules/ResetProfile.sys.mjs",
+  TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
   UrlbarProviderInterventions:
-    "resource:///modules/UrlbarProviderInterventions.jsm",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
-  UrlbarResult: "resource:///modules/UrlbarResult.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.jsm",
+    "resource:///modules/UrlbarProviderInterventions.sys.mjs",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+});
+
+ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
+  const { UrlbarTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/UrlbarTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
+});
+
+ChromeUtils.defineLazyGetter(this, "SearchTestUtils", () => {
+  const { SearchTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/SearchTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
 });
 
 // For each intervention type, a search string that trigger the intervention.
@@ -33,16 +46,66 @@ const SEARCH_STRINGS = {
   UPDATE: "firefox update",
 };
 
-add_task(async function init() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.update1.interventions", true]],
-  });
-  registerCleanupFunction(() => {
-    // We need to reset the provider's appUpdater.status between tests so that
-    // each test doesn't interfere with the next.
-    UrlbarProviderInterventions.resetAppUpdater();
-  });
+registerCleanupFunction(() => {
+  // We need to reset the provider's appUpdater.status between tests so that
+  // each test doesn't interfere with the next.
+  UrlbarProviderInterventions.resetAppUpdater();
 });
+
+/**
+ * Override our binary path so that the update lock doesn't think more than one
+ * instance of this test is running.
+ * This is a heavily pared down copy of the function in xpcshellUtilsAUS.js.
+ */
+function adjustGeneralPaths() {
+  let dirProvider = {
+    getFile(aProp, aPersistent) {
+      // Set the value of persistent to false so when this directory provider is
+      // unregistered it will revert back to the original provider.
+      aPersistent.value = false;
+      // The sync manager only uses XRE_EXECUTABLE_FILE, so that's all we need
+      // to override, we won't bother handling anything else.
+      if (aProp == XRE_EXECUTABLE_FILE) {
+        // The temp directory that the mochitest runner creates is unique per
+        // test, so its path can serve to provide the unique key that the update
+        // sync manager requires (it doesn't need for this to be the actual
+        // path to any real file, it's only used as an opaque string).
+        let tempPath = Services.env.get("MOZ_PROCESS_LOG");
+        let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        file.initWithPath(tempPath);
+        return file;
+      }
+      return null;
+    },
+    QueryInterface: ChromeUtils.generateQI(["nsIDirectoryServiceProvider"]),
+  };
+
+  let ds = Services.dirsvc.QueryInterface(Ci.nsIDirectoryService);
+  try {
+    ds.QueryInterface(Ci.nsIProperties).undefine(XRE_EXECUTABLE_FILE);
+  } catch (_ex) {
+    // We only override one property, so we have nothing to do if that fails.
+    return;
+  }
+  ds.registerProvider(dirProvider);
+  registerCleanupFunction(() => {
+    ds.unregisterProvider(dirProvider);
+    // Reset the update lock once again so that we know the lock we're
+    // interested in here will be closed properly (normally that happens during
+    // XPCOM shutdown, but that isn't consistent during tests).
+    let syncManager = Cc[
+      "@mozilla.org/updates/update-sync-manager;1"
+    ].getService(Ci.nsIUpdateSyncManager);
+    syncManager.resetLock();
+  });
+
+  // Now that we've overridden the directory provider, the name of the update
+  // lock needs to be changed to match the overridden path.
+  let syncManager = Cc["@mozilla.org/updates/update-sync-manager;1"].getService(
+    Ci.nsIUpdateSyncManager
+  );
+  syncManager.resetLock();
+}
 
 /**
  * Initializes a mock app update.  Adapted from runAboutDialogUpdateTest:
@@ -52,7 +115,7 @@ add_task(async function init() {
  *   See the files in toolkit/mozapps/update/tests/browser.
  */
 async function initUpdate(params) {
-  gEnv.set("MOZ_TEST_SLOW_SKIP_UPDATE_STAGE", "1");
+  Services.env.set("MOZ_TEST_SLOW_SKIP_UPDATE_STAGE", "1");
   await SpecialPowers.pushPrefEnv({
     set: [
       [PREF_APP_UPDATE_DISABLEDFORTESTING, false],
@@ -60,6 +123,7 @@ async function initUpdate(params) {
     ],
   });
 
+  adjustGeneralPaths();
   await setupTestUpdater();
 
   let queryString = params.queryString ? params.queryString : "";
@@ -71,15 +135,21 @@ async function initUpdate(params) {
     getVersionParams();
   if (params.backgroundUpdate) {
     setUpdateURL(updateURL);
-    gAUS.checkForBackgroundUpdates();
+    await gAUS.checkForBackgroundUpdates();
     if (params.continueFile) {
       await continueFileHandler(params.continueFile);
     }
     if (params.waitForUpdateState) {
+      let whichUpdateFn =
+        params.waitForUpdateState == STATE_DOWNLOADING
+          ? "getDownloadingUpdate"
+          : "getReadyUpdate";
+      let update;
       await TestUtils.waitForCondition(
-        () =>
-          gUpdateManager.activeUpdate &&
-          gUpdateManager.activeUpdate.state == params.waitForUpdateState,
+        async () => {
+          update = await gUpdateManager[whichUpdateFn]();
+          return update && update.state == params.waitForUpdateState;
+        },
         "Waiting for update state: " + params.waitForUpdateState,
         undefined,
         200
@@ -90,7 +160,7 @@ async function initUpdate(params) {
       });
       // Display the UI after the update state equals the expected value.
       Assert.equal(
-        gUpdateManager.activeUpdate.state,
+        update.state,
         params.waitForUpdateState,
         "The update state value should equal " + params.waitForUpdateState
       );
@@ -105,7 +175,7 @@ async function initUpdate(params) {
  * Performs steps in a mock update.  Adapted from runAboutDialogUpdateTest:
  * https://searchfox.org/mozilla-central/source/toolkit/mozapps/update/tests/browser/head.js
  *
- * @param {array} steps
+ * @param {Array} steps
  *   See the files in toolkit/mozapps/update/tests/browser.
  */
 async function processUpdateSteps(steps) {
@@ -128,24 +198,42 @@ async function processUpdateStep(step) {
   }
 
   const { panelId, checkActiveUpdate, continueFile, downloadInfo } = step;
+
+  if (
+    panelId == "downloading" &&
+    gAUS.currentState == Ci.nsIApplicationUpdateService.STATE_IDLE
+  ) {
+    // Now that `AUS.downloadUpdate` is async, we start showing the
+    // downloading panel while `AUS.downloadUpdate` is still resolving.
+    // But the below checks assume that this resolution has already
+    // happened. So we need to wait for things to actually resolve.
+    await gAUS.stateTransition;
+  }
+
   if (checkActiveUpdate) {
-    await TestUtils.waitForCondition(
-      () => gUpdateManager.activeUpdate,
-      "Waiting for active update"
-    );
-    Assert.ok(
-      !!gUpdateManager.activeUpdate,
-      "There should be an active update"
-    );
+    let whichUpdateFn =
+      checkActiveUpdate.state == STATE_DOWNLOADING
+        ? "getDownloadingUpdate"
+        : "getReadyUpdate";
+    let update;
+    await TestUtils.waitForCondition(async () => {
+      update = await gUpdateManager[whichUpdateFn]();
+      return update;
+    }, "Waiting for active update");
+    Assert.ok(!!update, "There should be an active update");
     Assert.equal(
-      gUpdateManager.activeUpdate.state,
+      update.state,
       checkActiveUpdate.state,
       "The active update state should equal " + checkActiveUpdate.state
     );
   } else {
     Assert.ok(
-      !gUpdateManager.activeUpdate,
-      "There should not be an active update"
+      !(await gUpdateManager.getReadyUpdate()),
+      "There should not be a ready update"
+    );
+    Assert.ok(
+      !(await gUpdateManager.getDownloadingUpdate()),
+      "There should not be a downloadingUpdate update"
     );
   }
 
@@ -154,7 +242,10 @@ async function processUpdateStep(step) {
       let data = downloadInfo[i];
       // The About Dialog tests always specify a continue file.
       await continueFileHandler(continueFile);
-      let patch = getPatchOfType(data.patchType);
+      let patch = getPatchOfType(
+        data.patchType,
+        await gUpdateManager.getDownloadingUpdate()
+      );
       // The update is removed early when the last download fails so check
       // that there is a patch before proceeding.
       let isLastPatch = i == downloadInfo.length - 1;
@@ -194,15 +285,17 @@ async function processUpdateStep(step) {
  * Checks an intervention tip.  This works by starting a search that should
  * trigger a tip, picks the tip, and waits for the tip's action to happen.
  *
- * @param {string} searchString
+ * @param {object} options
+ *   Options for the test
+ * @param {string} options.searchString
  *   The search string.
- * @param {string} tip
+ * @param {string} options.tip
  *   The expected tip type.
- * @param {string/regexp} title
+ * @param {string | RegExp} options.title
  *   The expected tip title.
- * @param {string/regexp} button
+ * @param {string | RegExp} options.button
  *   The expected button title.
- * @param {function} awaitCallback
+ * @param {Function} options.awaitCallback
  *   A function that checks the tip's action.  Should return a promise (or be
  *   async).
  * @returns {object}
@@ -228,7 +321,7 @@ async function doUpdateTest({
     Assert.ok(title.test(actualTitle), "Title regexp");
   }
 
-  let actualButton = element._elements.get("tipButton").textContent;
+  let actualButton = element._buttons.get("0").textContent;
   if (typeof button == "string") {
     Assert.equal(actualButton, button, "Button string");
   } else {
@@ -236,10 +329,7 @@ async function doUpdateTest({
     Assert.ok(button.test(actualButton), "Button regexp");
   }
 
-  Assert.ok(
-    BrowserTestUtils.is_visible(element._elements.get("helpButton")),
-    "Help button visible"
-  );
+  Assert.ok(element._buttons.has("menu"), "Tip has a menu button");
 
   // Pick the tip and wait for the action.
   let values = await Promise.all([awaitCallback(), pickTip()]);
@@ -269,7 +359,7 @@ async function doUpdateTest({
  *   The search string.
  * @param {window} win
  *   The window.
- * @returns {[result, element]}
+ * @returns {(result| element)[]}
  *   The result and its element in the DOM.
  */
 async function awaitTip(searchString, win = window) {
@@ -279,9 +369,12 @@ async function awaitTip(searchString, win = window) {
     waitForFocus,
     fireInputEvent: true,
   });
-  Assert.ok(context.results.length >= 2);
+  Assert.ok(
+    context.results.length >= 2,
+    "Number of results is greater than or equal to 2"
+  );
   let result = context.results[1];
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
   let element = await UrlbarTestUtils.waitForAutocompleteResultAt(win, 1);
   return [result, element];
 }
@@ -292,7 +385,7 @@ async function awaitTip(searchString, win = window) {
  */
 async function pickTip() {
   let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
-  let button = result.element.row._elements.get("tipButton");
+  let button = result.element.row._buttons.get("0");
   await UrlbarTestUtils.promisePopupClose(window, () => {
     EventUtils.synthesizeMouseAtCenter(button, {});
   });
@@ -347,15 +440,17 @@ function makeProfileResettable() {
  * Starts a search that should trigger a tip, picks the tip, and waits for the
  * tip's action to happen.
  *
- * @param {string} searchString
+ * @param {object} options
+ *   Options for the test
+ * @param {string} options.searchString
  *   The search string.
- * @param {TIPS} tip
+ * @param {TIPS} options.tip
  *   The expected tip type.
- * @param {string} title
+ * @param {string} options.title
  *   The expected tip title.
- * @param {string} button
+ * @param {string} options.button
  *   The expected button title.
- * @param {function} awaitCallback
+ * @param {Function} options.awaitCallback
  *   A function that checks the tip's action.  Should return a promise (or be
  *   async).
  * @returns {*}
@@ -384,7 +479,7 @@ function checkIntervention({
       Assert.ok(title.test(actualTitle), "Title regexp");
     }
 
-    let actualButton = element._elements.get("tipButton").textContent;
+    let actualButton = element._buttons.get("0").textContent;
     if (typeof button == "string") {
       Assert.equal(actualButton, button, "Button string");
     } else {
@@ -392,7 +487,9 @@ function checkIntervention({
       Assert.ok(button.test(actualButton), "Button regexp");
     }
 
-    Assert.ok(BrowserTestUtils.is_visible(element._elements.get("helpButton")));
+    let menuButton = element._buttons.get("menu");
+    Assert.ok(menuButton, "Menu button exists");
+    Assert.ok(BrowserTestUtils.isVisible(menuButton), "Menu button is visible");
 
     let values = await Promise.all([awaitCallback(), pickTip()]);
     Assert.ok(true, "Refresh dialog opened");
@@ -424,6 +521,7 @@ function checkIntervention({
  * @param {string} searchString
  *   The search string.
  * @param {Window} win
+ *   The host window.
  */
 async function awaitNoTip(searchString, win = window) {
   let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
@@ -438,66 +536,31 @@ async function awaitNoTip(searchString, win = window) {
 }
 
 /**
- * Copied from BrowserTestUtils.jsm, but lets you listen for any one of multiple
- * dialog URIs instead of only one.
- * @param {string} buttonAction
- *   What button should be pressed on the alert dialog.
- * @param {array} uris
- *   The URIs for the alert dialogs.
- * @param {function} [func]
- *   An optional callback.
+ * Search tips helper.  Asserts that a particular search tip is shown or that no
+ * search tip is shown.
+ *
+ * @param {window} win
+ *   A browser window.
+ * @param {UrlbarProviderSearchTips.TIP_TYPE} expectedTip
+ *   The expected search tip.  Pass a falsey value (like zero) for none.
+ * @param {boolean} closeView
+ *   If true, this function closes the urlbar view before returning.
  */
-async function promiseAlertDialogOpen(buttonAction, uris, func) {
-  let win = await BrowserTestUtils.domWindowOpened(null, async aWindow => {
-    // The test listens for the "load" event which guarantees that the alert
-    // class has already been added (it is added when "DOMContentLoaded" is
-    // fired).
-    await BrowserTestUtils.waitForEvent(aWindow, "load");
-
-    return uris.includes(aWindow.document.documentURI);
-  });
-
-  if (func) {
-    await func(win);
-    return win;
-  }
-
-  let dialog = win.document.querySelector("dialog");
-  dialog.getButton(buttonAction).click();
-
-  return win;
-}
-
-/**
- * Copied from BrowserTestUtils.jsm, but lets you listen for any one of multiple
- * dialog URIs instead of only one.
- * @param {string} buttonAction
- *   What button should be pressed on the alert dialog.
- * @param {array} uris
- *   The URIs for the alert dialogs.
- * @param {function} [func]
- *   An optional callback.
- */
-async function promiseAlertDialog(buttonAction, uris, func) {
-  let win = await promiseAlertDialogOpen(buttonAction, uris, func);
-  return BrowserTestUtils.windowClosed(win);
-}
-
 async function checkTip(win, expectedTip, closeView = true) {
   if (!expectedTip) {
     // Wait a bit for the tip to not show up.
     // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
     await new Promise(resolve => setTimeout(resolve, 100));
-    Assert.ok(!win.gURLBar.view.isOpen);
+    Assert.ok(!win.gURLBar.view.isOpen, "View is not open");
     return;
   }
 
   // Wait for the view to open, and then check the tip result.
   await UrlbarTestUtils.promisePopupOpen(win, () => {});
   Assert.ok(true, "View opened");
-  Assert.equal(UrlbarTestUtils.getResultCount(win), 1);
+  Assert.equal(UrlbarTestUtils.getResultCount(win), 1, "Number of results");
   let result = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
-  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TIP, "Result type");
   let heuristic;
   let title;
   let name = Services.search.defaultEngine.name;
@@ -514,15 +577,26 @@ async function checkTip(win, expectedTip, closeView = true) {
         `Start your search in the address bar to see suggestions from ` +
         `${name} and your browsing history.`;
       break;
+    case UrlbarProviderSearchTips.TIP_TYPE.PERSIST:
+      heuristic = false;
+      title =
+        "Searching just got simpler." +
+        " Try making your search more specific here in the address bar." +
+        " To show the URL instead, visit Search, in settings.";
+      break;
   }
-  Assert.equal(result.heuristic, heuristic);
-  Assert.equal(result.displayed.title, title);
+  Assert.equal(result.heuristic, heuristic, "Result is heuristic");
+  Assert.equal(result.displayed.title, title, "Title");
   Assert.equal(
-    result.element.row._elements.get("tipButton").textContent,
-    `Okay, Got It`
+    result.element.row._buttons.get("0").textContent,
+    expectedTip == UrlbarProviderSearchTips.TIP_TYPE.PERSIST
+      ? `Got it`
+      : `Okay, Got It`,
+    "Button text"
   );
   Assert.ok(
-    BrowserTestUtils.is_hidden(result.element.row._elements.get("helpButton"))
+    !result.element.row._buttons.has("help"),
+    "Buttons in row does not include help"
   );
 
   const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);
@@ -533,11 +607,48 @@ async function checkTip(win, expectedTip, closeView = true) {
     1
   );
 
+  Assert.ok(
+    !UrlbarTestUtils.getOneOffSearchButtonsVisible(window),
+    "One-offs should be hidden when showing a search tip"
+  );
+
   if (closeView) {
     await UrlbarTestUtils.promisePopupClose(win);
   }
 }
 
+function makeTipResult({ buttonUrl, helpUrl = undefined }) {
+  return new UrlbarResult(
+    UrlbarUtils.RESULT_TYPE.TIP,
+    UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+    {
+      helpUrl,
+      type: "test",
+      titleL10n: { id: "urlbar-search-tips-confirm" },
+      buttons: [
+        {
+          url: buttonUrl,
+          l10n: { id: "urlbar-search-tips-confirm" },
+        },
+      ],
+    }
+  );
+}
+
+/**
+ * Search tips helper.  Opens a foreground tab and asserts that a particular
+ * search tip is shown or that no search tip is shown.
+ *
+ * @param {window} win
+ *   A browser window.
+ * @param {string} url
+ *   The URL to load in a new foreground tab.
+ * @param {UrlbarProviderSearchTips.TIP_TYPE} expectedTip
+ *   The expected search tip.  Pass a falsey value (like zero) for none.
+ * @param {boolean} reset
+ *   If true, the search tips provider will be reset before this function
+ *   returns.  See resetSearchTipsProvider.
+ */
 async function checkTab(win, url, expectedTip, reset = true) {
   // BrowserTestUtils.withNewTab always waits for tab load, which hangs on
   // about:newtab for some reason, so don't use it.
@@ -571,11 +682,12 @@ async function checkTab(win, url, expectedTip, reset = true) {
 /**
  * This lets us visit www.google.com (for example) and have it redirect to
  * our test HTTP server instead of visiting the actual site.
+ *
  * @param {string} domain
  *   The domain to which we are redirecting.
  * @param {string} path
  *   The pathname on the domain.
- * @param {function} callback
+ * @param {Function} callback
  *   Executed when the test suite thinks `domain` is loaded.
  */
 async function withDNSRedirect(domain, path, callback) {
@@ -622,12 +734,14 @@ async function withDNSRedirect(domain, path, callback) {
     Ci.nsISiteSecurityService
   );
   sss.clearAll();
-  sss.clearPreloads();
 }
 
 function resetSearchTipsProvider() {
   Services.prefs.clearUserPref(
     `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.ONBOARD}`
+  );
+  Services.prefs.clearUserPref(
+    `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.PERSIST}`
   );
   Services.prefs.clearUserPref(
     `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.REDIRECT}`
@@ -638,5 +752,8 @@ function resetSearchTipsProvider() {
 async function setDefaultEngine(name) {
   let engine = (await Services.search.getEngines()).find(e => e.name == name);
   Assert.ok(engine);
-  await Services.search.setDefault(engine);
+  await Services.search.setDefault(
+    engine,
+    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+  );
 }

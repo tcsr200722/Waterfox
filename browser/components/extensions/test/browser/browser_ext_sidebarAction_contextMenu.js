@@ -24,14 +24,14 @@ let extData = {
       </body></html>
     `,
 
-    "sidebar.js": function() {
+    "sidebar.js": function () {
       window.onload = () => {
         browser.test.sendMessage("sidebar");
       };
     },
   },
 
-  background: function() {
+  background: function () {
     browser.contextMenus.create({
       id: "clickme-page",
       title: "Click me!",
@@ -44,15 +44,21 @@ let extData = {
 };
 
 let contextMenuItems = {
-  "context-navigation": "hidden",
   "context-sep-navigation": "hidden",
   "context-viewsource": "",
-  "context-viewinfo": "",
   "inspect-separator": "hidden",
   "context-inspect": "hidden",
   "context-inspect-a11y": "hidden",
   "context-bookmarkpage": "hidden",
 };
+if (AppConstants.platform == "macosx") {
+  contextMenuItems["context-back"] = "hidden";
+  contextMenuItems["context-forward"] = "hidden";
+  contextMenuItems["context-reload"] = "hidden";
+  contextMenuItems["context-stop"] = "hidden";
+} else {
+  contextMenuItems["context-navigation"] = "hidden";
+}
 
 add_task(async function sidebar_contextmenu() {
   let extension = ExtensionTestUtils.loadExtension(extData);
@@ -117,7 +123,7 @@ add_task(async function sidebar_image_contextmenu() {
 
   let contentAreaContextMenu = await openContextMenuInSidebar("#testimg");
 
-  let item = contentAreaContextMenu.querySelector("#context-viewimageinfo");
+  let item = contentAreaContextMenu.querySelector("#context-copyimage");
   ok(!item.hidden);
   ok(!item.disabled);
 

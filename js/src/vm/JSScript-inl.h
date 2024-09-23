@@ -11,23 +11,17 @@
 
 #include <utility>
 
-#include "jit/BaselineJIT.h"
-#include "jit/IonAnalysis.h"
+#include "jit/IonScript.h"
 #include "jit/JitScript.h"
-#include "vm/EnvironmentObject.h"
 #include "vm/RegExpObject.h"
 #include "wasm/AsmJS.h"
 
-#include "vm/Realm-inl.h"
-#include "vm/Shape-inl.h"
-
 namespace js {
 
-ScriptCounts::ScriptCounts()
-    : pcCounts_(), throwCounts_(), ionCounts_(nullptr) {}
+ScriptCounts::ScriptCounts() : ionCounts_(nullptr) {}
 
 ScriptCounts::ScriptCounts(PCCountsVector&& jumpTargets)
-    : pcCounts_(std::move(jumpTargets)), throwCounts_(), ionCounts_(nullptr) {}
+    : pcCounts_(std::move(jumpTargets)), ionCounts_(nullptr) {}
 
 ScriptCounts::ScriptCounts(ScriptCounts&& src)
     : pcCounts_(std::move(src.pcCounts_)),
@@ -46,8 +40,7 @@ ScriptCounts& ScriptCounts::operator=(ScriptCounts&& src) {
 
 ScriptCounts::~ScriptCounts() { js_delete(ionCounts_); }
 
-ScriptAndCounts::ScriptAndCounts(JSScript* script)
-    : script(script), scriptCounts() {
+ScriptAndCounts::ScriptAndCounts(JSScript* script) : script(script) {
   script->releaseScriptCounts(&scriptCounts);
 }
 
@@ -65,7 +58,7 @@ inline void ScriptWarmUpData::initEnclosingScript(BaseScript* enclosingScript) {
                 "BaseScript must be TenuredCell to avoid post-barriers");
 }
 inline void ScriptWarmUpData::clearEnclosingScript() {
-  BaseScript::writeBarrierPre(toEnclosingScript());
+  gc::PreWriteBarrier(toEnclosingScript());
   data_ = ResetState();
 }
 
@@ -76,7 +69,7 @@ inline void ScriptWarmUpData::initEnclosingScope(Scope* enclosingScope) {
                 "Scope must be TenuredCell to avoid post-barriers");
 }
 inline void ScriptWarmUpData::clearEnclosingScope() {
-  Scope::writeBarrierPre(toEnclosingScope());
+  gc::PreWriteBarrier(toEnclosingScope());
   data_ = ResetState();
 }
 
@@ -91,19 +84,19 @@ inline JSScript* BaseScript::asJSScript() {
 
 }  // namespace js
 
-inline JSFunction* JSScript::getFunction(size_t index) const {
+inline JSFunction* JSScript::getFunction(js::GCThingIndex index) const {
   JSObject* obj = getObject(index);
   MOZ_RELEASE_ASSERT(obj->is<JSFunction>(), "Script object is not JSFunction");
   JSFunction* fun = &obj->as<JSFunction>();
-  MOZ_ASSERT_IF(fun->isNative(), IsAsmJSModuleNative(fun->native()));
+  MOZ_ASSERT_IF(fun->isNativeFun(), IsAsmJSModuleNative(fun->native()));
   return fun;
 }
 
 inline JSFunction* JSScript::getFunction(jsbytecode* pc) const {
-  return getFunction(GET_UINT32_INDEX(pc));
+  return getFunction(GET_GCTHING_INDEX(pc));
 }
 
-inline js::RegExpObject* JSScript::getRegExp(size_t index) const {
+inline js::RegExpObject* JSScript::getRegExp(js::GCThingIndex index) const {
   JSObject* obj = getObject(index);
   MOZ_RELEASE_ASSERT(obj->is<js::RegExpObject>(),
                      "Script object is not RegExpObject");
@@ -159,13 +152,6 @@ inline js::Shape* JSScript::initialEnvironmentShape() const {
   return nullptr;
 }
 
-inline bool JSScript::ensureHasAnalyzedArgsUsage(JSContext* cx) {
-  if (needsArgsAnalysis()) {
-    return js::jit::AnalyzeArgumentsUsage(cx, this);
-  }
-  return true;
-}
-
 inline bool JSScript::isDebuggee() const {
   return realm()->debuggerObservesAllExecution() || hasDebugScript();
 }
@@ -183,7 +169,7 @@ inline bool JSScript::isIonCompilingOffThread() const {
 }
 
 inline bool JSScript::canBaselineCompile() const {
-  bool disabled = hasFlag(MutableFlags::BaselineDisabled);
+  bool disabled = baselineDisabled();
 #ifdef DEBUG
   if (hasJitScript()) {
     bool jitScriptDisabled =
@@ -195,7 +181,7 @@ inline bool JSScript::canBaselineCompile() const {
 }
 
 inline bool JSScript::canIonCompile() const {
-  bool disabled = hasFlag(MutableFlags::IonDisabled);
+  bool disabled = ionDisabled();
 #ifdef DEBUG
   if (hasJitScript()) {
     bool jitScriptDisabled =
@@ -234,14 +220,26 @@ inline uint32_t JSScript::getWarmUpCount() const {
   if (warmUpData_.isWarmUpCount()) {
     return warmUpData_.toWarmUpCount();
   }
-  return warmUpData_.toJitScript()->warmUpCount_;
+  return warmUpData_.toJitScript()->warmUpCount();
 }
 
-inline void JSScript::incWarmUpCounter(uint32_t amount) {
+inline void JSScript::updateLastICStubCounter() {
+  if (!hasJitScript()) {
+    return;
+  }
+  jitScript()->updateLastICStubCounter();
+}
+
+inline uint32_t JSScript::warmUpCountAtLastICStub() const {
+  MOZ_ASSERT(hasJitScript());
+  return jitScript()->warmUpCountAtLastICStub();
+}
+
+inline void JSScript::incWarmUpCounter() {
   if (warmUpData_.isWarmUpCount()) {
-    warmUpData_.incWarmUpCount(amount);
+    warmUpData_.incWarmUpCount();
   } else {
-    warmUpData_.toJitScript()->warmUpCount_ += amount;
+    warmUpData_.toJitScript()->incWarmUpCount();
   }
 }
 
@@ -250,7 +248,7 @@ inline void JSScript::resetWarmUpCounterForGC() {
   if (warmUpData_.isWarmUpCount()) {
     warmUpData_.resetWarmUpCount(0);
   } else {
-    warmUpData_.toJitScript()->warmUpCount_ = 0;
+    warmUpData_.toJitScript()->resetWarmUpCount(0);
   }
 }
 

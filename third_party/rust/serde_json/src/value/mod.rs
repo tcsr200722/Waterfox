@@ -5,7 +5,7 @@
 //! Serde JSON provides a [`json!` macro][macro] to build `serde_json::Value`
 //! objects with very natural JSON syntax.
 //!
-//! ```edition2018
+//! ```
 //! use serde_json::json;
 //!
 //! fn main() {
@@ -34,7 +34,7 @@
 //! will check at compile time that the value you are interpolating is able to
 //! be represented as JSON.
 //!
-//! ```edition2018
+//! ```
 //! # use serde_json::json;
 //! #
 //! # fn random_phone() -> u16 { 0 }
@@ -58,7 +58,7 @@
 //! [`from_reader`][from_reader] for parsing from any `io::Read` like a File or
 //! a TCP stream.
 //!
-//! ```edition2018
+//! ```
 //! use serde_json::{json, Value, Error};
 //!
 //! fn untyped_example() -> Result<(), Error> {
@@ -85,38 +85,38 @@
 //! # untyped_example().unwrap();
 //! ```
 //!
-//! [macro]: https://docs.serde.rs/serde_json/macro.json.html
-//! [from_str]: https://docs.serde.rs/serde_json/de/fn.from_str.html
-//! [from_slice]: https://docs.serde.rs/serde_json/de/fn.from_slice.html
-//! [from_reader]: https://docs.serde.rs/serde_json/de/fn.from_reader.html
+//! [macro]: crate::json
+//! [from_str]: crate::de::from_str
+//! [from_slice]: crate::de::from_slice
+//! [from_reader]: crate::de::from_reader
 
-use std::fmt::{self, Debug};
-use std::io;
-use std::mem;
-use std::str;
-
+use crate::error::Error;
+use crate::io;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::{self, Debug, Display};
+use core::mem;
+use core::str;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 
-use error::Error;
-pub use map::Map;
-pub use number::Number;
+pub use self::index::Index;
+pub use self::ser::Serializer;
+pub use crate::map::Map;
+pub use crate::number::Number;
 
 #[cfg(feature = "raw_value")]
-pub use raw::RawValue;
-
-pub use self::index::Index;
-
-use self::ser::Serializer;
+#[cfg_attr(docsrs, doc(cfg(feature = "raw_value")))]
+pub use crate::raw::{to_raw_value, RawValue};
 
 /// Represents any valid JSON value.
 ///
-/// See the `serde_json::value` module documentation for usage examples.
-#[derive(Clone, PartialEq)]
+/// See the [`serde_json::value` module documentation](self) for usage examples.
+#[derive(Clone, Eq, PartialEq)]
 pub enum Value {
     /// Represents a JSON null value.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!(null);
@@ -125,7 +125,7 @@ pub enum Value {
 
     /// Represents a JSON boolean.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!(true);
@@ -134,7 +134,7 @@ pub enum Value {
 
     /// Represents a JSON number, whether integer or floating point.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!(12.5);
@@ -143,7 +143,7 @@ pub enum Value {
 
     /// Represents a JSON string.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!("a string");
@@ -152,7 +152,7 @@ pub enum Value {
 
     /// Represents a JSON array.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!(["an", "array"]);
@@ -167,7 +167,7 @@ pub enum Value {
     /// allows JSON data to be deserialized into a Value and serialized to a
     /// string while retaining the order of map keys in the input.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "an": "object" });
@@ -177,42 +177,27 @@ pub enum Value {
 
 impl Debug for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Value::Null => formatter.debug_tuple("Null").finish(),
-            Value::Bool(v) => formatter.debug_tuple("Bool").field(&v).finish(),
-            Value::Number(ref v) => Debug::fmt(v, formatter),
-            Value::String(ref v) => formatter.debug_tuple("String").field(v).finish(),
-            Value::Array(ref v) => formatter.debug_tuple("Array").field(v).finish(),
-            Value::Object(ref v) => formatter.debug_tuple("Object").field(v).finish(),
+        match self {
+            Value::Null => formatter.write_str("Null"),
+            Value::Bool(boolean) => write!(formatter, "Bool({})", boolean),
+            Value::Number(number) => Debug::fmt(number, formatter),
+            Value::String(string) => write!(formatter, "String({:?})", string),
+            Value::Array(vec) => {
+                tri!(formatter.write_str("Array "));
+                Debug::fmt(vec, formatter)
+            }
+            Value::Object(map) => {
+                tri!(formatter.write_str("Object "));
+                Debug::fmt(map, formatter)
+            }
         }
     }
 }
 
-struct WriterFormatter<'a, 'b: 'a> {
-    inner: &'a mut fmt::Formatter<'b>,
-}
-
-impl<'a, 'b> io::Write for WriterFormatter<'a, 'b> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        fn io_error<E>(_: E) -> io::Error {
-            // Error value does not matter because fmt::Display impl below just
-            // maps it to fmt::Error
-            io::Error::new(io::ErrorKind::Other, "fmt error")
-        }
-        let s = try!(str::from_utf8(buf).map_err(io_error));
-        try!(self.inner.write_str(s).map_err(io_error));
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl fmt::Display for Value {
+impl Display for Value {
     /// Display a JSON value as a string.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let json = json!({ "city": "London", "street": "10 Downing Street" });
@@ -235,6 +220,30 @@ impl fmt::Display for Value {
     ///     "{\n  \"city\": \"London\",\n  \"street\": \"10 Downing Street\"\n}");
     /// ```
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        struct WriterFormatter<'a, 'b: 'a> {
+            inner: &'a mut fmt::Formatter<'b>,
+        }
+
+        impl<'a, 'b> io::Write for WriterFormatter<'a, 'b> {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                // Safety: the serializer below only emits valid utf8 when using
+                // the default formatter.
+                let s = unsafe { str::from_utf8_unchecked(buf) };
+                tri!(self.inner.write_str(s).map_err(io_error));
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn io_error(_: fmt::Error) -> io::Error {
+            // Error value does not matter because Display impl just maps it
+            // back to fmt::Error.
+            io::Error::new(io::ErrorKind::Other, "fmt error")
+        }
+
         let alternate = f.alternate();
         let mut wr = WriterFormatter { inner: f };
         if alternate {
@@ -264,7 +273,7 @@ impl Value {
     /// number. Also returns `None` if the given key does not exist in the map
     /// or the given index is not within the bounds of the array.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let object = json!({ "A": 65, "B": 66, "C": 67 });
@@ -280,7 +289,7 @@ impl Value {
     /// way. This returns `Value::Null` in cases where `get` would have returned
     /// `None`.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let object = json!({
@@ -306,7 +315,7 @@ impl Value {
     /// number. Also returns `None` if the given key does not exist in the map
     /// or the given index is not within the bounds of the array.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let mut object = json!({ "A": 65, "B": 66, "C": 67 });
@@ -325,7 +334,7 @@ impl Value {
     /// `as_object_mut` are guaranteed to return the map representation of the
     /// object.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let obj = json!({ "a": { "nested": true }, "b": ["an", "array"] });
@@ -343,7 +352,7 @@ impl Value {
     /// If the `Value` is an Object, returns the associated Map. Returns None
     /// otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": { "nested": true }, "b": ["an", "array"] });
@@ -355,8 +364,8 @@ impl Value {
     /// assert_eq!(v["b"].as_object(), None);
     /// ```
     pub fn as_object(&self) -> Option<&Map<String, Value>> {
-        match *self {
-            Value::Object(ref map) => Some(map),
+        match self {
+            Value::Object(map) => Some(map),
             _ => None,
         }
     }
@@ -364,7 +373,7 @@ impl Value {
     /// If the `Value` is an Object, returns the associated mutable Map.
     /// Returns None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let mut v = json!({ "a": { "nested": true } });
@@ -373,8 +382,8 @@ impl Value {
     /// assert_eq!(v, json!({ "a": {} }));
     /// ```
     pub fn as_object_mut(&mut self) -> Option<&mut Map<String, Value>> {
-        match *self {
-            Value::Object(ref mut map) => Some(map),
+        match self {
+            Value::Object(map) => Some(map),
             _ => None,
         }
     }
@@ -385,7 +394,7 @@ impl Value {
     /// `as_array_mut` are guaranteed to return the vector representing the
     /// array.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let obj = json!({ "a": ["an", "array"], "b": { "an": "object" } });
@@ -402,7 +411,7 @@ impl Value {
     /// If the `Value` is an Array, returns the associated vector. Returns None
     /// otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": ["an", "array"], "b": { "an": "object" } });
@@ -414,8 +423,8 @@ impl Value {
     /// assert_eq!(v["b"].as_array(), None);
     /// ```
     pub fn as_array(&self) -> Option<&Vec<Value>> {
-        match *self {
-            Value::Array(ref array) => Some(&*array),
+        match self {
+            Value::Array(array) => Some(array),
             _ => None,
         }
     }
@@ -423,7 +432,7 @@ impl Value {
     /// If the `Value` is an Array, returns the associated mutable vector.
     /// Returns None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let mut v = json!({ "a": ["an", "array"] });
@@ -432,8 +441,8 @@ impl Value {
     /// assert_eq!(v, json!({ "a": [] }));
     /// ```
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
-        match *self {
-            Value::Array(ref mut list) => Some(list),
+        match self {
+            Value::Array(list) => Some(list),
             _ => None,
         }
     }
@@ -443,7 +452,7 @@ impl Value {
     /// For any Value on which `is_string` returns true, `as_str` is guaranteed
     /// to return the string slice.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": "some string", "b": false });
@@ -460,7 +469,7 @@ impl Value {
     /// If the `Value` is a String, returns the associated str. Returns None
     /// otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": "some string", "b": false });
@@ -481,15 +490,15 @@ impl Value {
     /// println!("The value is: {}", v["a"].as_str().unwrap());
     /// ```
     pub fn as_str(&self) -> Option<&str> {
-        match *self {
-            Value::String(ref s) => Some(s),
+        match self {
+            Value::String(s) => Some(s),
             _ => None,
         }
     }
 
     /// Returns true if the `Value` is a Number. Returns false otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": 1, "b": "2" });
@@ -506,13 +515,35 @@ impl Value {
         }
     }
 
+    /// If the `Value` is a Number, returns the associated [`Number`]. Returns
+    /// None otherwise.
+    ///
+    /// ```
+    /// # use serde_json::{json, Number};
+    /// #
+    /// let v = json!({ "a": 1, "b": 2.2, "c": -3, "d": "4" });
+    ///
+    /// assert_eq!(v["a"].as_number(), Some(&Number::from(1u64)));
+    /// assert_eq!(v["b"].as_number(), Some(&Number::from_f64(2.2).unwrap()));
+    /// assert_eq!(v["c"].as_number(), Some(&Number::from(-3i64)));
+    ///
+    /// // The string `"4"` is not a number.
+    /// assert_eq!(v["d"].as_number(), None);
+    /// ```
+    pub fn as_number(&self) -> Option<&Number> {
+        match self {
+            Value::Number(number) => Some(number),
+            _ => None,
+        }
+    }
+
     /// Returns true if the `Value` is an integer between `i64::MIN` and
     /// `i64::MAX`.
     ///
     /// For any Value on which `is_i64` returns true, `as_i64` is guaranteed to
     /// return the integer value.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let big = i64::max_value() as u64 + 10;
@@ -527,8 +558,8 @@ impl Value {
     /// assert!(!v["c"].is_i64());
     /// ```
     pub fn is_i64(&self) -> bool {
-        match *self {
-            Value::Number(ref n) => n.is_i64(),
+        match self {
+            Value::Number(n) => n.is_i64(),
             _ => false,
         }
     }
@@ -538,7 +569,7 @@ impl Value {
     /// For any Value on which `is_u64` returns true, `as_u64` is guaranteed to
     /// return the integer value.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": 64, "b": -64, "c": 256.0 });
@@ -552,8 +583,8 @@ impl Value {
     /// assert!(!v["c"].is_u64());
     /// ```
     pub fn is_u64(&self) -> bool {
-        match *self {
-            Value::Number(ref n) => n.is_u64(),
+        match self {
+            Value::Number(n) => n.is_u64(),
             _ => false,
         }
     }
@@ -566,7 +597,7 @@ impl Value {
     /// Currently this function returns true if and only if both `is_i64` and
     /// `is_u64` return false but this is not a guarantee in the future.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": 256.0, "b": 64, "c": -64 });
@@ -578,8 +609,8 @@ impl Value {
     /// assert!(!v["c"].is_f64());
     /// ```
     pub fn is_f64(&self) -> bool {
-        match *self {
-            Value::Number(ref n) => n.is_f64(),
+        match self {
+            Value::Number(n) => n.is_f64(),
             _ => false,
         }
     }
@@ -587,7 +618,7 @@ impl Value {
     /// If the `Value` is an integer, represent it as i64 if possible. Returns
     /// None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let big = i64::max_value() as u64 + 10;
@@ -598,8 +629,8 @@ impl Value {
     /// assert_eq!(v["c"].as_i64(), None);
     /// ```
     pub fn as_i64(&self) -> Option<i64> {
-        match *self {
-            Value::Number(ref n) => n.as_i64(),
+        match self {
+            Value::Number(n) => n.as_i64(),
             _ => None,
         }
     }
@@ -607,7 +638,7 @@ impl Value {
     /// If the `Value` is an integer, represent it as u64 if possible. Returns
     /// None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": 64, "b": -64, "c": 256.0 });
@@ -617,8 +648,8 @@ impl Value {
     /// assert_eq!(v["c"].as_u64(), None);
     /// ```
     pub fn as_u64(&self) -> Option<u64> {
-        match *self {
-            Value::Number(ref n) => n.as_u64(),
+        match self {
+            Value::Number(n) => n.as_u64(),
             _ => None,
         }
     }
@@ -626,7 +657,7 @@ impl Value {
     /// If the `Value` is a number, represent it as f64 if possible. Returns
     /// None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": 256.0, "b": 64, "c": -64 });
@@ -636,8 +667,8 @@ impl Value {
     /// assert_eq!(v["c"].as_f64(), Some(-64.0));
     /// ```
     pub fn as_f64(&self) -> Option<f64> {
-        match *self {
-            Value::Number(ref n) => n.as_f64(),
+        match self {
+            Value::Number(n) => n.as_f64(),
             _ => None,
         }
     }
@@ -647,7 +678,7 @@ impl Value {
     /// For any Value on which `is_boolean` returns true, `as_bool` is
     /// guaranteed to return the boolean value.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": false, "b": "false" });
@@ -664,7 +695,7 @@ impl Value {
     /// If the `Value` is a Boolean, returns the associated bool. Returns None
     /// otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": false, "b": "false" });
@@ -686,7 +717,7 @@ impl Value {
     /// For any Value on which `is_null` returns true, `as_null` is guaranteed
     /// to return `Some(())`.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": null, "b": false });
@@ -702,7 +733,7 @@ impl Value {
 
     /// If the `Value` is a Null, returns (). Returns None otherwise.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let v = json!({ "a": null, "b": false });
@@ -733,7 +764,7 @@ impl Value {
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let data = json!({
@@ -745,32 +776,22 @@ impl Value {
     /// assert_eq!(data.pointer("/x/y/1").unwrap(), &json!("zz"));
     /// assert_eq!(data.pointer("/a/b/c"), None);
     /// ```
-    pub fn pointer<'a>(&'a self, pointer: &str) -> Option<&'a Value> {
-        if pointer == "" {
+    pub fn pointer(&self, pointer: &str) -> Option<&Value> {
+        if pointer.is_empty() {
             return Some(self);
         }
         if !pointer.starts_with('/') {
             return None;
         }
-        let tokens = pointer
+        pointer
             .split('/')
             .skip(1)
-            .map(|x| x.replace("~1", "/").replace("~0", "~"));
-        let mut target = self;
-
-        for token in tokens {
-            let target_opt = match *target {
-                Value::Object(ref map) => map.get(&token),
-                Value::Array(ref list) => parse_index(&token).and_then(|x| list.get(x)),
-                _ => return None,
-            };
-            if let Some(t) = target_opt {
-                target = t;
-            } else {
-                return None;
-            }
-        }
-        Some(target)
+            .map(|x| x.replace("~1", "/").replace("~0", "~"))
+            .try_fold(self, |target, token| match target {
+                Value::Object(map) => map.get(&token),
+                Value::Array(list) => parse_index(&token).and_then(|x| list.get(x)),
+                _ => None,
+            })
     }
 
     /// Looks up a value by a JSON Pointer and returns a mutable reference to
@@ -788,7 +809,7 @@ impl Value {
     ///
     /// # Example of Use
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// fn main() {
@@ -801,6 +822,8 @@ impl Value {
     ///     *value.pointer_mut("/x").unwrap() = 1.5.into();
     ///     // Check that new value was written
     ///     assert_eq!(value.pointer("/x"), Some(&1.5.into()));
+    ///     // Or change the value only if it exists
+    ///     value.pointer_mut("/x").map(|v| *v = 1.5.into());
     ///
     ///     // "Steal" ownership of a value. Can replace with any valid Value.
     ///     let old_x = value.pointer_mut("/x").map(Value::take).unwrap();
@@ -808,42 +831,27 @@ impl Value {
     ///     assert_eq!(value.pointer("/x").unwrap(), &Value::Null);
     /// }
     /// ```
-    pub fn pointer_mut<'a>(&'a mut self, pointer: &str) -> Option<&'a mut Value> {
-        if pointer == "" {
+    pub fn pointer_mut(&mut self, pointer: &str) -> Option<&mut Value> {
+        if pointer.is_empty() {
             return Some(self);
         }
         if !pointer.starts_with('/') {
             return None;
         }
-        let tokens = pointer
+        pointer
             .split('/')
             .skip(1)
-            .map(|x| x.replace("~1", "/").replace("~0", "~"));
-        let mut target = self;
-
-        for token in tokens {
-            // borrow checker gets confused about `target` being mutably borrowed too many times because of the loop
-            // this once-per-loop binding makes the scope clearer and circumvents the error
-            let target_once = target;
-            let target_opt = match *target_once {
-                Value::Object(ref mut map) => map.get_mut(&token),
-                Value::Array(ref mut list) => {
-                    parse_index(&token).and_then(move |x| list.get_mut(x))
-                }
-                _ => return None,
-            };
-            if let Some(t) = target_opt {
-                target = t;
-            } else {
-                return None;
-            }
-        }
-        Some(target)
+            .map(|x| x.replace("~1", "/").replace("~0", "~"))
+            .try_fold(self, |target, token| match target {
+                Value::Object(map) => map.get_mut(&token),
+                Value::Array(list) => parse_index(&token).and_then(move |x| list.get_mut(x)),
+                _ => None,
+            })
     }
 
     /// Takes the value out of the `Value`, leaving a `Null` in its place.
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let mut v = json!({ "x": "y" });
@@ -861,7 +869,7 @@ impl Value {
 ///
 /// # Examples
 ///
-/// ```edition2018
+/// ```
 /// # use serde::Deserialize;
 /// use serde_json::Value;
 ///
@@ -901,10 +909,9 @@ mod ser;
 ///
 /// # Example
 ///
-/// ```edition2018
+/// ```
 /// use serde::Serialize;
 /// use serde_json::json;
-///
 /// use std::error::Error;
 ///
 /// #[derive(Serialize)]
@@ -913,7 +920,7 @@ mod ser;
 ///     location: String,
 /// }
 ///
-/// fn compare_json_values() -> Result<(), Box<Error>> {
+/// fn compare_json_values() -> Result<(), Box<dyn Error>> {
 ///     let u = User {
 ///         fingerprint: "0xF9BA143B95FF6D82".to_owned(),
 ///         location: "Menlo Park, CA".to_owned(),
@@ -939,7 +946,7 @@ mod ser;
 /// This conversion can fail if `T`'s implementation of `Serialize` decides to
 /// fail, or if `T` contains a map with non-string keys.
 ///
-/// ```edition2018
+/// ```
 /// use std::collections::BTreeMap;
 ///
 /// fn main() {
@@ -963,7 +970,7 @@ where
 ///
 /// # Example
 ///
-/// ```edition2018
+/// ```
 /// use serde::Deserialize;
 /// use serde_json::json;
 ///

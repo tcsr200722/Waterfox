@@ -126,7 +126,7 @@ class FifoWatcher : public FdWatcher {
       : mDirPath(aPath), mFifoInfoLock("FifoWatcher.mFifoInfoLock") {}
 
   mozilla::Mutex mFifoInfoLock;  // protects mFifoInfo
-  FifoInfoArray mFifoInfo;
+  FifoInfoArray mFifoInfo MOZ_GUARDED_BY(mFifoInfoLock);
 };
 
 typedef void (*PipeCallback)(const uint8_t aRecvSig);
@@ -160,7 +160,7 @@ class SignalPipeWatcher : public FdWatcher {
   }
 
   mozilla::Mutex mSignalInfoLock;  // protects mSignalInfo
-  SignalInfoArray mSignalInfo;
+  SignalInfoArray mSignalInfo MOZ_GUARDED_BY(mSignalInfoLock);
 };
 
 #endif  // XP_UNIX }
@@ -177,7 +177,7 @@ class nsDumpUtils {
    * instead.
    */
   static nsresult OpenTempFile(const nsACString& aFilename, nsIFile** aFile,
-                               const nsACString& aFoldername = EmptyCString(),
+                               const nsACString& aFoldername = ""_ns,
                                Mode aMode = CREATE_UNIQUE);
 };
 

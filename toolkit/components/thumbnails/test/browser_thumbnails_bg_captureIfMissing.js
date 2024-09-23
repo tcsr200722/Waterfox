@@ -3,14 +3,14 @@
 
 add_task(async function thumbnails_bg_captureIfMissing() {
   let numNotifications = 0;
-  function observe(subject, topic, data) {
+  function observe(subject, topic) {
     is(topic, "page-thumbnail:create", "got expected topic");
     numNotifications += 1;
   }
 
   Services.obs.addObserver(observe, "page-thumbnail:create");
 
-  let url = "http://example.com/";
+  let url = "https://example.com/";
   let file = thumbnailFile(url);
   ok(!file.exists(), "Thumbnail file should not already exist.");
 
@@ -22,13 +22,18 @@ add_task(async function thumbnails_bg_captureIfMissing() {
   let past = Date.now() - 1000000000;
   let pastFudge = past + 30000;
   file.lastModifiedTime = past;
-  ok(file.lastModifiedTime < pastFudge, "Last modified time should stick!");
+  Assert.less(
+    file.lastModifiedTime,
+    pastFudge,
+    "Last modified time should stick!"
+  );
   [capturedURL] = await bgCaptureIfMissing(url);
   is(numNotifications, 1, "still only 1 notification of item being created.");
   is(capturedURL, url, "Captured URL should be URL passed to second capture");
   ok(file.exists(), "Thumbnail should remain cached after second capture");
-  ok(
-    file.lastModifiedTime < pastFudge,
+  Assert.less(
+    file.lastModifiedTime,
+    pastFudge,
     "File should not have been overwritten"
   );
 

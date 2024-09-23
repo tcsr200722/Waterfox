@@ -7,88 +7,60 @@
 #if !defined(PlatformEncoderModule_h_)
 #  define PlatformEncoderModule_h_
 
-#  include "MediaData.h"
-#  include "MediaInfo.h"
+#  include "MP4Decoder.h"
 #  include "MediaResult.h"
-#  include "mozilla/Attributes.h"
+#  include "VPXDecoder.h"
 #  include "mozilla/Maybe.h"
 #  include "mozilla/MozPromise.h"
 #  include "mozilla/RefPtr.h"
 #  include "mozilla/TaskQueue.h"
 #  include "mozilla/dom/ImageBitmapBinding.h"
 #  include "nsISupportsImpl.h"
+#  include "VideoUtils.h"
+#  include "EncoderConfig.h"
 
 namespace mozilla {
 
 class MediaDataEncoder;
-struct CreateEncoderParams;
+class MediaData;
+struct EncoderConfigurationChangeList;
 
 class PlatformEncoderModule {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(PlatformEncoderModule)
 
   virtual already_AddRefed<MediaDataEncoder> CreateVideoEncoder(
-      const CreateEncoderParams& aParams) const {
+      const EncoderConfig& aConfig, const RefPtr<TaskQueue>& aTaskQueue) const {
     return nullptr;
   };
 
   virtual already_AddRefed<MediaDataEncoder> CreateAudioEncoder(
-      const CreateEncoderParams& aParams) const {
+      const EncoderConfig& aConfig, const RefPtr<TaskQueue>& aTaskQueue) const {
     return nullptr;
   };
 
-  // Indicates if the PlatformDecoderModule supports encoding of aMimeType.
-  virtual bool SupportsMimeType(const nsACString& aMimeType) const = 0;
+  using CreateEncoderPromise = MozPromise<RefPtr<MediaDataEncoder>, MediaResult,
+                                          /* IsExclusive = */ true>;
+
+  // Indicates if the PlatformDecoderModule supports encoding of a codec.
+  virtual bool Supports(const EncoderConfig& aConfig) const = 0;
+  virtual bool SupportsCodec(CodecType aCodecType) const = 0;
+
+  // Returns a readable name for this Platform Encoder Module
+  virtual const char* GetName() const = 0;
+
+  // Asychronously create an encoder
+  RefPtr<PlatformEncoderModule::CreateEncoderPromise> AsyncCreateEncoder(
+      const EncoderConfig& aEncoderConfig, const RefPtr<TaskQueue>& aTaskQueue);
 
  protected:
   PlatformEncoderModule() = default;
   virtual ~PlatformEncoderModule() = default;
-  ;
 };
 
 class MediaDataEncoder {
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaDataEncoder)
-
-  enum class Usage {
-    Realtime,  // For WebRTC
-    Record     // For MediaRecoder
-  };
-
-  enum class CodecType {
-    _BeginVideo_,
-    H264,
-    VP8,
-    VP9,
-    _EndVideo_,
-    _BeginAudio_ = _EndVideo_,
-    Opus,
-    G722,
-    _EndAudio_,
-  };
-
-  struct H264Specific final {
-    enum class ProfileLevel { BaselineAutoLevel, MainAutoLevel };
-
-    const size_t mKeyframeInterval;
-    const ProfileLevel mProfileLevel;
-
-    H264Specific(const size_t aKeyframeInterval,
-                 const ProfileLevel aProfileLevel)
-        : mKeyframeInterval(aKeyframeInterval), mProfileLevel(aProfileLevel) {}
-  };
-
-  struct OpusSpecific final {
-    enum class Application { Voip, Audio, RestricedLowDelay };
-
-    const Application mApplication;
-    const uint8_t mComplexity;  // from 0-10
-
-    OpusSpecific(const Application aApplication, const uint8_t aComplexity)
-        : mApplication(aApplication), mComplexity(aComplexity) {
-      MOZ_ASSERT(mComplexity <= 10);
-    }
-  };
+  NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
 
   static bool IsVideo(const CodecType aCodec) {
     return aCodec > CodecType::_BeginVideo_ && aCodec < CodecType::_EndVideo_;
@@ -97,15 +69,12 @@ class MediaDataEncoder {
     return aCodec > CodecType::_BeginAudio_ && aCodec < CodecType::_EndAudio_;
   }
 
-  using PixelFormat = dom::ImageBitmapFormat;
-  // Sample rate for audio, framerate for video, and bitrate for both.
-  using Rate = uint32_t;
-
-  using InitPromise =
-      MozPromise<TrackInfo::TrackType, MediaResult, /* IsExclusive = */ true>;
+  using InitPromise = MozPromise<bool, MediaResult, /* IsExclusive = */ true>;
   using EncodedData = nsTArray<RefPtr<MediaRawData>>;
   using EncodePromise =
       MozPromise<EncodedData, MediaResult, /* IsExclusive = */ true>;
+  using ReconfigurationPromise =
+      MozPromise<bool, MediaResult, /* IsExclusive = */ true>;
 
   // Initialize the encoder. It should be ready to encode once the returned
   // promise resolves. The encoder should do any initialization here, rather
@@ -120,6 +89,12 @@ class MediaDataEncoder {
   // returns will be resolved with already encoded MediaRawData at the moment,
   // or empty when there is none available yet.
   virtual RefPtr<EncodePromise> Encode(const MediaData* aSample) = 0;
+
+  // Attempt to reconfigure the encoder on the fly. This can fail if the
+  // underlying PEM doesn't support this type of reconfiguration.
+  virtual RefPtr<ReconfigurationPromise> Reconfigure(
+      const RefPtr<const EncoderConfigurationChangeList>&
+          aConfigurationChanges) = 0;
 
   // Causes all complete samples in the pipeline that can be encoded to be
   // output. It indicates that there is no more input sample to insert.
@@ -138,7 +113,7 @@ class MediaDataEncoder {
   // The ShutdownPromise must only ever be resolved.
   virtual RefPtr<ShutdownPromise> Shutdown() = 0;
 
-  virtual RefPtr<GenericPromise> SetBitrate(Rate aBitsPerSec) {
+  virtual RefPtr<GenericPromise> SetBitrate(uint32_t aBitsPerSec) {
     return GenericPromise::CreateAndResolve(true, __func__);
   }
 
@@ -156,130 +131,85 @@ class MediaDataEncoder {
   friend class PlatformEncoderModule;
 
  protected:
-  template <typename T>
-  struct BaseConfig {
-    const CodecType mCodecType;
-    const Usage mUsage;
-    const Rate mBitsPerSec;
-    Maybe<T> mCodecSpecific;
-
-    void SetCodecSpecific(const T& aCodecSpecific) {
-      mCodecSpecific.emplace(aCodecSpecific);
-    }
-
-   protected:
-    BaseConfig(const CodecType aCodecType, const Usage aUsage,
-               const Rate aBitsPerSec)
-        : mCodecType(aCodecType), mUsage(aUsage), mBitsPerSec(aBitsPerSec) {}
-
-    virtual ~BaseConfig() = default;
-  };
-
-  template <typename T>
-  struct VideoConfig final : public BaseConfig<T> {
-    const gfx::IntSize mSize;
-    const PixelFormat mSourcePixelFormat;
-    const uint8_t mFramerate;
-    VideoConfig(const CodecType aCodecType, const Usage aUsage,
-                const gfx::IntSize& aSize, const PixelFormat aSourcePixelFormat,
-                const uint8_t aFramerate, const Rate aBitrate)
-        : BaseConfig<T>(aCodecType, aUsage, aBitrate),
-          mSize(aSize),
-          mSourcePixelFormat(aSourcePixelFormat),
-          mFramerate(aFramerate) {}
-  };
-
-  template <typename T>
-  struct AudioConfig final : public BaseConfig<T> {
-    const uint8_t mNumChannels;
-    const Rate mSampleRate;
-
-    AudioConfig(const CodecType aCodecType, const Usage aUsage,
-                const Rate aBitrate, const Rate aSampleRate,
-                const uint8_t aNumChannels)
-        : BaseConfig<T>(aCodecType, aUsage, aBitrate),
-          mNumChannels(aNumChannels),
-          mSampleRate(aSampleRate) {}
-  };
-
   virtual ~MediaDataEncoder() = default;
-
- public:
-  using H264Config = VideoConfig<H264Specific>;
 };
 
-struct MOZ_STACK_CLASS CreateEncoderParams final {
-  union CodecSpecific {
-    MediaDataEncoder::H264Specific mH264;
-    MediaDataEncoder::OpusSpecific mOpus;
-
-    explicit CodecSpecific(const MediaDataEncoder::H264Specific&& aH264)
-        : mH264(aH264) {}
-    explicit CodecSpecific(const MediaDataEncoder::OpusSpecific&& aOpus)
-        : mOpus(aOpus) {}
-  };
-
-  CreateEncoderParams(const TrackInfo& aConfig,
-                      const MediaDataEncoder::Usage aUsage,
-                      const RefPtr<TaskQueue> aTaskQueue,
-                      const MediaDataEncoder::PixelFormat aPixelFormat,
-                      const uint8_t aFramerate,
-                      const MediaDataEncoder::Rate aBitrate)
-      : mConfig(aConfig),
-        mUsage(aUsage),
-        mTaskQueue(aTaskQueue),
-        mPixelFormat(aPixelFormat),
-        mFramerate(aFramerate),
-        mBitrate(aBitrate) {
-    MOZ_ASSERT(mTaskQueue);
-  }
-
-  template <typename... Ts>
-  CreateEncoderParams(const TrackInfo& aConfig,
-                      const MediaDataEncoder::Usage aUsage,
-                      const RefPtr<TaskQueue> aTaskQueue,
-                      const MediaDataEncoder::PixelFormat aPixelFormat,
-                      const uint8_t aFramerate,
-                      const MediaDataEncoder::Rate aBitrate,
-                      const Ts&&... aCodecSpecific)
-      : mConfig(aConfig),
-        mUsage(aUsage),
-        mTaskQueue(aTaskQueue),
-        mPixelFormat(aPixelFormat),
-        mFramerate(aFramerate),
-        mBitrate(aBitrate) {
-    MOZ_ASSERT(mTaskQueue);
-    Set(std::forward<const Ts>(aCodecSpecific)...);
-  }
-
-  const MediaDataEncoder::H264Config ToH264Config() const {
-    const VideoInfo* info = mConfig.GetAsVideoInfo();
-    MOZ_ASSERT(info);
-
-    auto config = MediaDataEncoder::H264Config(
-        MediaDataEncoder::CodecType::H264, mUsage, info->mImage, mPixelFormat,
-        mFramerate, mBitrate);
-    if (mCodecSpecific) {
-      config.SetCodecSpecific(mCodecSpecific.ref().mH264);
-    }
-
-    return config;
-  }
-
-  const TrackInfo& mConfig;
-  const MediaDataEncoder::Usage mUsage;
-  const RefPtr<TaskQueue> mTaskQueue;
-  const MediaDataEncoder::PixelFormat mPixelFormat;
-  const uint8_t mFramerate;
-  const MediaDataEncoder::Rate mBitrate;
-  Maybe<CodecSpecific> mCodecSpecific;
+// Wrap a type to make it unique. This allows using ergonomically in the Variant
+// below. Simply aliasing with `using` isn't enough, because typedefs in C++
+// don't produce strong types, so two integer variants result in
+// the same type, making it ambiguous to the Variant code.
+// T is the type to be wrapped. Phantom is a type that is only used to
+// disambiguate and should be unique in the program.
+template <typename T, typename Phantom>
+class StrongTypedef {
+ public:
+  explicit StrongTypedef(T const& value) : mValue(value) {}
+  explicit StrongTypedef(T&& value) : mValue(std::move(value)) {}
+  T& get() { return mValue; }
+  T const& get() const { return mValue; }
 
  private:
-  template <typename T>
-  void Set(const T&& aCodecSpecific) {
-    mCodecSpecific.emplace(std::forward<const T>(aCodecSpecific));
-  }
+  T mValue;
 };
+
+// Dimensions of the video frames
+using DimensionsChange =
+    StrongTypedef<gfx::IntSize, struct DimensionsChangeType>;
+// Expected display size of the encoded frames, can influence encoding
+using DisplayDimensionsChange =
+    StrongTypedef<Maybe<gfx::IntSize>, struct DisplayDimensionsChangeType>;
+// If present, the bitrate in kbps of the encoded stream. If absent, let the
+// platform decide.
+using BitrateChange = StrongTypedef<Maybe<uint32_t>, struct BitrateChangeType>;
+// If present, the expected framerate of the output video stream. If absent,
+// infer from the input frames timestamp.
+using FramerateChange =
+    StrongTypedef<Maybe<double>, struct FramerateChangeType>;
+// The bitrate mode (variable, constant) of the encoding
+using BitrateModeChange =
+    StrongTypedef<BitrateMode, struct BitrateModeChangeType>;
+// The usage for the encoded stream, this influence latency, ordering, etc.
+using UsageChange = StrongTypedef<Usage, struct UsageChangeType>;
+// If present, the expected content of the video frames (screen, movie, etc.).
+// The value the string can have isn't decided just yet. When absent, the
+// encoder uses generic settings.
+using ContentHintChange =
+    StrongTypedef<Maybe<nsString>, struct ContentHintTypeType>;
+// If present, the new sample-rate of the audio
+using SampleRateChange = StrongTypedef<uint32_t, struct SampleRateChangeType>;
+// If present, the new sample-rate of the audio
+using NumberOfChannelsChange =
+    StrongTypedef<uint32_t, struct NumberOfChannelsChangeType>;
+
+// A change to a parameter of an encoder instance.
+using EncoderConfigurationItem =
+    Variant<DimensionsChange, DisplayDimensionsChange, BitrateModeChange,
+            BitrateChange, FramerateChange, UsageChange, ContentHintChange,
+            SampleRateChange, NumberOfChannelsChange>;
+
+// A list of changes to an encoder configuration, that _might_ be able to change
+// on the fly. Not all encoder modules can adjust their configuration on the
+// fly.
+struct EncoderConfigurationChangeList {
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(EncoderConfigurationChangeList)
+  bool Empty() const { return mChanges.IsEmpty(); }
+  template <typename T>
+  void Push(const T& aItem) {
+    mChanges.AppendElement(aItem);
+  }
+  nsString ToString() const;
+
+  nsTArray<EncoderConfigurationItem> mChanges;
+
+ private:
+  ~EncoderConfigurationChangeList() = default;
+};
+
+// Just by inspecting the configuration and before asking the PEM, it's
+// sometimes possible to know that a media won't be able to be encoded. For
+// example, VP8 encodes the frame size on 14 bits, so a resolution of more than
+// 16383x16383 pixels cannot work.
+bool CanLikelyEncode(const EncoderConfig& aConfig);
 
 }  // namespace mozilla
 

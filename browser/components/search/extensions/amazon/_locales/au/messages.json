@@ -6,12 +6,12 @@
     "message": "Amazon.com.au Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.com.au/exec/obidos/external-search/"
+    "message": "https://www.amazon.com.au/s"
   },
   "searchForm": {
-    "message": "https://www.amazon.com.au/exec/obidos/external-search/?field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "https://www.amazon.com.au/"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "k={searchTerms}"
   }
 }

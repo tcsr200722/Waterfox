@@ -4,10 +4,12 @@
  */
 "use strict";
 
-let syncService = {};
-ChromeUtils.import("resource://services-sync/service.js", syncService);
-const service = syncService.Service;
-const { UIState } = ChromeUtils.import("resource://services-sync/UIState.jsm");
+let { Service } = ChromeUtils.importESModule(
+  "resource://services-sync/service.sys.mjs"
+);
+const { UIState } = ChromeUtils.importESModule(
+  "resource://services-sync/UIState.sys.mjs"
+);
 
 let getState;
 let originalSync;
@@ -35,14 +37,14 @@ add_task(async function testSyncRemoteTabsButtonFunctionality() {
   info("The panel menu was opened");
 
   let syncRemoteTabsBtn = document.getElementById("sync-button");
-  let remoteTabsPanel = document.getElementById("PanelUI-remotetabs");
-  let viewShown = BrowserTestUtils.waitForEvent(remoteTabsPanel, "ViewShown");
   ok(
     syncRemoteTabsBtn,
     "The sync remote tabs button was added to the Panel Menu"
   );
   // click the button - the panel should open.
   syncRemoteTabsBtn.click();
+  let remoteTabsPanel = document.getElementById("PanelUI-remotetabs");
+  let viewShown = BrowserTestUtils.waitForEvent(remoteTabsPanel, "ViewShown");
   await viewShown;
   ok(remoteTabsPanel.getAttribute("visible"), "Sync Panel is in view");
 
@@ -51,7 +53,7 @@ add_task(async function testSyncRemoteTabsButtonFunctionality() {
   syncNowButton.click();
   info("The sync now button was clicked");
 
-  await waitForCondition(() => syncWasCalled);
+  await TestUtils.waitForCondition(() => syncWasCalled);
 
   // We need to stop the Syncing animation manually otherwise the button
   // will be disabled at the beginning of a next test.
@@ -80,7 +82,7 @@ function mockFunctions() {
     email: "user@mozilla.com",
   });
 
-  service.sync = mocked_sync;
+  Service.sync = mocked_sync;
 }
 
 function mocked_sync() {
@@ -89,10 +91,10 @@ function mocked_sync() {
 
 function restoreValues() {
   UIState.get = getState;
-  service.sync = originalSync;
+  Service.sync = originalSync;
 }
 
 function storeInitialValues() {
   getState = UIState.get;
-  originalSync = service.sync;
+  originalSync = Service.sync;
 }

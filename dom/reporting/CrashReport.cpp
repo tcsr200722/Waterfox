@@ -9,30 +9,20 @@
 #include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/ReportingHeader.h"
 #include "mozilla/dom/ReportDeliver.h"
-#include "mozilla/JSONWriter.h"
+#include "mozilla/JSONStringWriteFuncs.h"
 #include "nsIPrincipal.h"
 #include "nsIURIMutator.h"
 #include "nsString.h"
 
-namespace mozilla {
-namespace dom {
-
-struct StringWriteFunc : public JSONWriteFunc {
-  nsCString& mCString;
-  explicit StringWriteFunc(nsCString& aCString) : mCString(aCString) {}
-  void Write(const char* aStr) override { mCString.Append(aStr); }
-  void Write(const char* aStr, size_t aLen) override {
-    mCString.Append(aStr, aLen);
-  }
-};
+namespace mozilla::dom {
 
 /* static */
 bool CrashReport::Deliver(nsIPrincipal* aPrincipal, bool aIsOOM) {
   MOZ_ASSERT(aPrincipal);
 
   nsAutoCString endpoint_url;
-  ReportingHeader::GetEndpointForReport(NS_LITERAL_STRING("default"),
-                                        aPrincipal, endpoint_url);
+  ReportingHeader::GetEndpointForReport(u"default"_ns, aPrincipal,
+                                        endpoint_url);
   if (endpoint_url.IsEmpty()) {
     return false;
   }
@@ -41,18 +31,18 @@ bool CrashReport::Deliver(nsIPrincipal* aPrincipal, bool aIsOOM) {
   aPrincipal->GetExposableSpec(safe_origin_spec);
 
   ReportDeliver::ReportData data;
-  data.mType = NS_LITERAL_STRING("crash");
-  data.mGroupName = NS_LITERAL_STRING("default");
-  data.mURL = NS_ConvertUTF8toUTF16(safe_origin_spec);
+  data.mType = u"crash"_ns;
+  data.mGroupName = u"default"_ns;
+  CopyUTF8toUTF16(safe_origin_spec, data.mURL);
   data.mCreationTime = TimeStamp::Now();
 
-  Navigator::GetUserAgent(nullptr, aPrincipal, false, data.mUserAgent);
+  Navigator::GetUserAgent(nullptr, nullptr, Nothing(), data.mUserAgent);
   data.mPrincipal = aPrincipal;
   data.mFailures = 0;
   data.mEndpointURL = endpoint_url;
 
-  nsCString body;
-  JSONWriter writer{MakeUnique<StringWriteFunc>(body)};
+  JSONStringWriteFunc<nsCString> body;
+  JSONWriter writer{body};
 
   writer.Start();
   if (aIsOOM) {
@@ -60,11 +50,10 @@ bool CrashReport::Deliver(nsIPrincipal* aPrincipal, bool aIsOOM) {
   }
   writer.End();
 
-  data.mReportBodyJSON = body;
+  data.mReportBodyJSON = std::move(body).StringRRef();
 
   ReportDeliver::Fetch(data);
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -17,7 +17,7 @@
 #include "nsIOutputStream.h"
 #include "nsClassHashtable.h"
 #include "nsComponentManagerUtils.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "plbase64.h"
 
 namespace mozilla {
@@ -266,28 +266,11 @@ typedef FallibleTArray<SubComplete> SubCompleteArray;
 typedef FallibleTArray<Prefix> MissPrefixArray;
 
 /**
- * Compares chunks by their add chunk, then their prefix.
- */
-template <class T>
-class EntryCompare {
- public:
-  typedef T elem_type;
-  static int Compare(const void* e1, const void* e2) {
-    const elem_type* a = static_cast<const elem_type*>(e1);
-    const elem_type* b = static_cast<const elem_type*>(e2);
-    return a->Compare(*b);
-  }
-};
-
-/**
- * Sort an array of store entries.  nsTArray::Sort uses Equal/LessThan
- * to sort, this does a single Compare so it's a bit quicker over the
- * large sorts we do.
+ * Sort an array of store entries.
  */
 template <class T, class Alloc>
 void EntrySort(nsTArray_Impl<T, Alloc>& aArray) {
-  qsort(aArray.Elements(), aArray.Length(), sizeof(T),
-        EntryCompare<T>::Compare);
+  aArray.Sort([](const T& aA, const T& aB) { return aA.Compare(aB); });
 }
 
 template <class T, class Alloc>
@@ -312,11 +295,11 @@ nsresult WriteTArray(nsIOutputStream* aStream,
 
 typedef nsClassHashtable<nsUint32HashKey, nsCString> PrefixStringMap;
 
-typedef nsDataHashtable<nsCStringHashKey, int64_t> TableFreshnessMap;
+typedef nsTHashMap<nsCStringHashKey, int64_t> TableFreshnessMap;
 
 typedef nsCStringHashKey FullHashString;
 
-typedef nsDataHashtable<FullHashString, int64_t> FullHashExpiryCache;
+typedef nsTHashMap<FullHashString, int64_t> FullHashExpiryCache;
 
 struct CachedFullHashResponse {
   int64_t negativeCacheExpirySec;
@@ -328,10 +311,7 @@ struct CachedFullHashResponse {
   CachedFullHashResponse& operator=(const CachedFullHashResponse& aOther) {
     negativeCacheExpirySec = aOther.negativeCacheExpirySec;
 
-    fullHashes.Clear();
-    for (auto iter = aOther.fullHashes.ConstIter(); !iter.Done(); iter.Next()) {
-      fullHashes.Put(iter.Key(), iter.Data());
-    }
+    fullHashes = aOther.fullHashes.Clone();
 
     return *this;
   }
@@ -341,8 +321,8 @@ struct CachedFullHashResponse {
         fullHashes.Count() != aOther.fullHashes.Count()) {
       return false;
     }
-    for (auto iter = fullHashes.ConstIter(); !iter.Done(); iter.Next()) {
-      if (iter.Data() != aOther.fullHashes.Get(iter.Key())) {
+    for (const auto& entry : fullHashes) {
+      if (entry.GetData() != aOther.fullHashes.Get(entry.GetKey())) {
         return false;
       }
     }
@@ -355,9 +335,9 @@ typedef nsClassHashtable<nsUint32HashKey, CachedFullHashResponse>
 
 template <class T>
 void CopyClassHashTable(const T& aSource, T& aDestination) {
-  for (auto iter = aSource.ConstIter(); !iter.Done(); iter.Next()) {
-    auto value = aDestination.LookupOrAdd(iter.Key());
-    *value = *(iter.Data());
+  for (const auto& entry : aSource) {
+    auto value = aDestination.GetOrInsertNew(entry.GetKey());
+    *value = *(entry.GetData());
   }
 }
 

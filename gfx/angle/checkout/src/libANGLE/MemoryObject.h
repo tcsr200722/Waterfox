@@ -24,20 +24,35 @@ namespace gl
 {
 class Context;
 
-class MemoryObject final : public RefCountObject
+class MemoryObject final : public RefCountObject<MemoryObjectID>
 {
   public:
-    MemoryObject(rx::GLImplFactory *factory, GLuint id);
+    MemoryObject(rx::GLImplFactory *factory, MemoryObjectID id);
     ~MemoryObject() override;
 
     void onDestroy(const Context *context) override;
 
     rx::MemoryObjectImpl *getImplementation() const { return mImplementation.get(); }
 
+    bool isImmutable() const { return mImmutable; }
+
+    angle::Result setDedicatedMemory(const Context *context, bool dedicatedMemory);
+    bool isDedicatedMemory() const { return mDedicatedMemory; }
+    angle::Result setProtectedMemory(const Context *context, bool protectedMemory);
+    bool isProtectedMemory() const { return mProtectedMemory; }
+
     angle::Result importFd(Context *context, GLuint64 size, HandleType handleType, GLint fd);
+    angle::Result importZirconHandle(Context *context,
+                                     GLuint64 size,
+                                     HandleType handleType,
+                                     GLuint handle);
 
   private:
     std::unique_ptr<rx::MemoryObjectImpl> mImplementation;
+
+    bool mImmutable;
+    bool mDedicatedMemory;
+    bool mProtectedMemory;
 };
 
 }  // namespace gl

@@ -10,7 +10,9 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "nsCOMPtr.h"
+#include "nsContentUtils.h"
 #include "nsDOMNavigationTiming.h"
+#include "nsTObserverArray.h"
 
 class nsITimedChannel;
 
@@ -20,13 +22,22 @@ class ErrorResult;
 
 namespace dom {
 
+class OwningStringOrDouble;
+class StringOrPerformanceMeasureOptions;
 class PerformanceEntry;
+class PerformanceMark;
+struct PerformanceMarkOptions;
+struct PerformanceMeasureOptions;
+class PerformanceMeasure;
 class PerformanceNavigation;
+class PerformancePaintTiming;
 class PerformanceObserver;
 class PerformanceService;
 class PerformanceStorage;
 class PerformanceTiming;
-class WorkerPrivate;
+class PerformanceEventTiming;
+class WorkerGlobalScope;
+class EventCounts;
 
 // Base class for main-thread and worker Performance API
 class Performance : public DOMEventTargetHelper {
@@ -41,7 +52,11 @@ class Performance : public DOMEventTargetHelper {
       nsDOMNavigationTiming* aDOMTiming, nsITimedChannel* aChannel);
 
   static already_AddRefed<Performance> CreateForWorker(
-      WorkerPrivate* aWorkerPrivate);
+      WorkerGlobalScope* aGlobalScope);
+
+  // This will return nullptr if called outside of a Window or Worker.
+  static already_AddRefed<Performance> Get(JSContext* aCx,
+                                           nsIGlobalObject* aGlobal);
 
   JSObject* WrapObject(JSContext* cx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -50,6 +65,9 @@ class Performance : public DOMEventTargetHelper {
 
   virtual void GetEntriesByType(const nsAString& aEntryType,
                                 nsTArray<RefPtr<PerformanceEntry>>& aRetval);
+
+  virtual void GetEntriesByTypeForObserver(
+      const nsAString& aEntryType, nsTArray<RefPtr<PerformanceEntry>>& aRetval);
 
   virtual void GetEntriesByName(const nsAString& aName,
                                 const Optional<nsAString>& aEntryType,
@@ -65,12 +83,16 @@ class Performance : public DOMEventTargetHelper {
 
   DOMHighResTimeStamp TimeOrigin();
 
-  void Mark(const nsAString& aName, ErrorResult& aRv);
+  already_AddRefed<PerformanceMark> Mark(
+      JSContext* aCx, const nsAString& aName,
+      const PerformanceMarkOptions& aMarkOptions, ErrorResult& aRv);
 
   void ClearMarks(const Optional<nsAString>& aName);
 
-  void Measure(const nsAString& aName, const Optional<nsAString>& aStartMark,
-               const Optional<nsAString>& aEndMark, ErrorResult& aRv);
+  already_AddRefed<PerformanceMeasure> Measure(
+      JSContext* aCx, const nsAString& aName,
+      const StringOrPerformanceMeasureOptions& aStartOrMeasureOptions,
+      const Optional<nsAString>& aEndMark, ErrorResult& aRv);
 
   void ClearMeasures(const Optional<nsAString>& aName);
 
@@ -85,6 +107,8 @@ class Performance : public DOMEventTargetHelper {
 
   virtual PerformanceNavigation* Navigation() = 0;
 
+  virtual void SetFCPTimingEntry(PerformancePaintTiming* aEntry) = 0;
+
   IMPL_EVENT_HANDLER(resourcetimingbufferfull)
 
   virtual void GetMozMemory(JSContext* aCx,
@@ -96,7 +120,14 @@ class Performance : public DOMEventTargetHelper {
 
   virtual TimeStamp CreationTimeStamp() const = 0;
 
-  uint64_t IsSystemPrincipal() { return mSystemPrincipal; }
+  RTPCallerType GetRTPCallerType() const { return mRTPCallerType; }
+
+  bool CrossOriginIsolated() const { return mCrossOriginIsolated; }
+  bool ShouldResistFingerprinting() const {
+    return mShouldResistFingerprinting;
+  }
+
+  DOMHighResTimeStamp TimeStampToDOMHighResForRendering(TimeStamp) const;
 
   virtual uint64_t GetRandomTimelineSeed() = 0;
 
@@ -104,18 +135,34 @@ class Performance : public DOMEventTargetHelper {
 
   size_t SizeOfUserEntries(mozilla::MallocSizeOf aMallocSizeOf) const;
   size_t SizeOfResourceEntries(mozilla::MallocSizeOf aMallocSizeOf) const;
+  virtual size_t SizeOfEventEntries(mozilla::MallocSizeOf aMallocSizeOf) const {
+    return 0;
+  }
 
   void InsertResourceEntry(PerformanceEntry* aEntry);
 
+  virtual void InsertEventTimingEntry(PerformanceEventTiming* aEntry) = 0;
+
+  virtual void BufferEventTimingEntryIfNeeded(
+      PerformanceEventTiming* aEntry) = 0;
+
+  virtual class EventCounts* EventCounts() = 0;
+
   virtual void QueueNavigationTimingEntry() = 0;
 
-  virtual bool CrossOriginIsolated() const = 0;
+  virtual void UpdateNavigationTimingEntry() = 0;
+
+  virtual void DispatchPendingEventTimingEntries() = 0;
 
   void QueueNotificationObserversTask();
 
+  bool IsPerformanceTimingAttribute(const nsAString& aName) const;
+
+  virtual bool IsGlobalObjectWindow() const { return false; };
+
  protected:
-  explicit Performance(bool aSystemPrincipal);
-  Performance(nsPIDOMWindowInner* aWindow, bool aSystemPrincipal);
+  Performance(nsIGlobalObject* aGlobal);
+  Performance(nsPIDOMWindowInner* aWindow);
 
   virtual ~Performance();
 
@@ -124,16 +171,9 @@ class Performance : public DOMEventTargetHelper {
   void ClearUserEntries(const Optional<nsAString>& aEntryName,
                         const nsAString& aEntryType);
 
-  DOMHighResTimeStamp ResolveTimestampFromName(const nsAString& aName,
-                                               ErrorResult& aRv);
-
   virtual void DispatchBufferFullEvent() = 0;
 
   virtual DOMHighResTimeStamp CreationTime() const = 0;
-
-  virtual bool IsPerformanceTimingAttribute(const nsAString& aName) {
-    return false;
-  }
 
   virtual DOMHighResTimeStamp GetPerformanceTimingFromString(
       const nsAString& aTimingName) {
@@ -142,12 +182,12 @@ class Performance : public DOMEventTargetHelper {
 
   void LogEntry(PerformanceEntry* aEntry, const nsACString& aOwner) const;
   void TimingNotification(PerformanceEntry* aEntry, const nsACString& aOwner,
-                          uint64_t epoch);
+                          const double aEpoch);
 
   void RunNotificationObserversTask();
   void QueueEntry(PerformanceEntry* aEntry);
 
-  nsTObserverArray<PerformanceObserver*> mObservers;
+  nsTObserverArray<RefPtr<PerformanceObserver>> mObservers;
 
  protected:
   static const uint64_t kDefaultResourceTimingBufferSize = 250;
@@ -168,11 +208,49 @@ class Performance : public DOMEventTargetHelper {
 
   RefPtr<PerformanceService> mPerformanceService;
 
-  bool mSystemPrincipal;
+  const RTPCallerType mRTPCallerType;
+  const bool mCrossOriginIsolated;
+  const bool mShouldResistFingerprinting;
 
  private:
   MOZ_ALWAYS_INLINE bool CanAddResourceTimingEntry();
   void BufferEvent();
+  void MaybeEmitExternalProfilerMarker(
+      const nsAString& aName, Maybe<const PerformanceMeasureOptions&> aOptions,
+      Maybe<const nsAString&> aStartMark, const Optional<nsAString>& aEndMark);
+
+  // The attributes of a PerformanceMeasureOptions that we call
+  // ResolveTimestamp* on.
+  enum class ResolveTimestampAttribute;
+
+  DOMHighResTimeStamp ConvertMarkToTimestampWithString(const nsAString& aName,
+                                                       ErrorResult& aRv,
+                                                       bool aReturnUnclamped);
+  DOMHighResTimeStamp ConvertMarkToTimestampWithDOMHighResTimeStamp(
+      const ResolveTimestampAttribute aAttribute, const double aTimestamp,
+      ErrorResult& aRv);
+  DOMHighResTimeStamp ConvertMarkToTimestamp(
+      const ResolveTimestampAttribute aAttribute,
+      const OwningStringOrDouble& aMarkNameOrTimestamp, ErrorResult& aRv,
+      bool aReturnUnclamped);
+
+  DOMHighResTimeStamp ConvertNameToTimestamp(const nsAString& aName,
+                                             ErrorResult& aRv);
+
+  DOMHighResTimeStamp ResolveEndTimeForMeasure(
+      const Optional<nsAString>& aEndMark,
+      const Maybe<const PerformanceMeasureOptions&>& aOptions, ErrorResult& aRv,
+      bool aReturnUnclamped);
+  DOMHighResTimeStamp ResolveStartTimeForMeasure(
+      const Maybe<const nsAString&>& aStartMark,
+      const Maybe<const PerformanceMeasureOptions&>& aOptions, ErrorResult& aRv,
+      bool aReturnUnclamped);
+
+  std::pair<TimeStamp, TimeStamp> GetTimeStampsForMarker(
+      const Maybe<const nsAString&>& aStartMark,
+      const Optional<nsAString>& aEndMark,
+      const Maybe<const PerformanceMeasureOptions&>& aOptions,
+      ErrorResult& aRv);
 };
 
 }  // namespace dom

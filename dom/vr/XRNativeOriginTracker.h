@@ -8,9 +8,9 @@
 #define mozilla_dom_XRNativeOriginTracker_h_
 
 #include "gfxVR.h"
+#include "XRNativeOrigin.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class XRNativeOriginTracker : public XRNativeOrigin {
  public:
@@ -25,7 +25,6 @@ class XRNativeOriginTracker : public XRNativeOrigin {
   const gfx::VRPose* mPose;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_XRNativeOriginTracker_h_

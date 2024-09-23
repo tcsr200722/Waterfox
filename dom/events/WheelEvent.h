@@ -11,8 +11,7 @@
 #include "mozilla/dom/WheelEventBinding.h"
 #include "mozilla/EventForwards.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class WheelEvent : public MouseEvent {
  public:
@@ -30,13 +29,31 @@ class WheelEvent : public MouseEvent {
     return WheelEvent_Binding::Wrap(aCx, this, aGivenProto);
   }
 
+  double DevToCssPixels(double aDevPxValue) const {
+    if (!mAppUnitsPerDevPixel) {
+      return aDevPxValue;
+    }
+    return aDevPxValue * mAppUnitsPerDevPixel / AppUnitsPerCSSPixel();
+  }
+
   // NOTE: DeltaX(), DeltaY() and DeltaZ() return CSS pixels when deltaMode is
   //       DOM_DELTA_PIXEL. (The internal event's delta values are device pixels
   //       if it's dispatched by widget)
-  double DeltaX();
-  double DeltaY();
-  double DeltaZ();
-  uint32_t DeltaMode();
+  double DeltaX(CallerType);
+  double DeltaY(CallerType);
+  double DeltaZ(CallerType);
+  uint32_t DeltaMode(CallerType);
+
+  int32_t WheelDelta(CallerType aCallerType) {
+    int32_t y = WheelDeltaY(aCallerType);
+    return y ? y : WheelDeltaX(aCallerType);
+  }
+
+  static constexpr int32_t kNativeTicksToWheelDelta = 120;
+  static constexpr double kTrustedDeltaToWheelDelta = 3.0;
+
+  int32_t WheelDeltaX(CallerType);
+  int32_t WheelDeltaY(CallerType);
 
   void InitWheelEvent(const nsAString& aType, bool aCanBubble, bool aCancelable,
                       nsGlobalWindowInner* aView, int32_t aDetail,
@@ -49,12 +66,14 @@ class WheelEvent : public MouseEvent {
  protected:
   ~WheelEvent() = default;
 
+  double ToWebExposedDelta(WidgetWheelEvent&, double aDelta,
+                           nscoord aLineOrPageAmount, CallerType);
+
  private:
   int32_t mAppUnitsPerDevPixel;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 already_AddRefed<mozilla::dom::WheelEvent> NS_NewDOMWheelEvent(
     mozilla::dom::EventTarget* aOwner, nsPresContext* aPresContext,

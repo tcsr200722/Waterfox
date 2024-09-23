@@ -2,28 +2,30 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-import { Component } from "react";
-import { range, isEmpty } from "lodash";
-import { connect } from "../../utils/connect";
-import { getHighlightedLineRange } from "../../selectors";
+/**
+ * Uses of this panel are:-
+ * - Highlighting lines of a function selected to be copied using the "Copy function" context menu in the Outline panel
+ */
 
-type OwnProps = {|
-  editor: Object,
-|};
-type Props = {
-  highlightedLineRange: Object,
-  editor: Object,
-};
+import { Component } from "devtools/client/shared/vendor/react";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { fromEditorLine } from "../../utils/editor/index";
+import { features } from "../../utils/prefs";
 
-class HighlightLines extends Component<Props> {
-  highlightLineRange: Function;
+class HighlightLines extends Component {
+  static get propTypes() {
+    return {
+      editor: PropTypes.object.isRequired,
+      range: PropTypes.object.isRequired,
+    };
+  }
 
   componentDidMount() {
     this.highlightLineRange();
   }
 
-  componentWillUpdate() {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillUpdate() {
     this.clearHighlightRange();
   }
 
@@ -36,39 +38,65 @@ class HighlightLines extends Component<Props> {
   }
 
   clearHighlightRange() {
-    const { highlightedLineRange, editor } = this.props;
+    const { range, editor } = this.props;
 
-    const { codeMirror } = editor;
-
-    if (isEmpty(highlightedLineRange) || !codeMirror) {
+    if (!range) {
       return;
     }
 
-    const { start, end } = highlightedLineRange;
+    if (features.codemirrorNext) {
+      if (editor) {
+        editor.removeLineContentMarker("multi-highlight-line-marker");
+      }
+      return;
+    }
+
+    const { codeMirror } = editor;
+    if (!codeMirror) {
+      return;
+    }
+
+    const { start, end } = range;
     codeMirror.operation(() => {
-      range(start - 1, end).forEach(line => {
-        codeMirror.removeLineClass(line, "wrapClass", "highlight-lines");
-      });
+      for (let line = start - 1; line < end; line++) {
+        codeMirror.removeLineClass(line, "wrap", "highlight-lines");
+      }
     });
   }
 
   highlightLineRange = () => {
-    const { highlightedLineRange, editor } = this.props;
+    const { range, editor } = this.props;
 
-    const { codeMirror } = editor;
-
-    if (isEmpty(highlightedLineRange) || !codeMirror) {
+    if (!range) {
       return;
     }
 
-    const { start, end } = highlightedLineRange;
+    if (features.codemirrorNext) {
+      if (editor) {
+        editor.scrollTo(range.start, 0);
+        editor.setLineContentMarker({
+          id: "multi-highlight-line-marker",
+          lineClassName: "highlight-lines",
+          condition(line) {
+            const lineNumber = fromEditorLine(null, line);
+            return lineNumber >= range.start && lineNumber <= range.end;
+          },
+        });
+      }
+      return;
+    }
 
+    const { codeMirror } = editor;
+    if (!codeMirror) {
+      return;
+    }
+
+    const { start, end } = range;
     codeMirror.operation(() => {
       editor.alignLine(start);
-
-      range(start - 1, end).forEach(line => {
-        codeMirror.addLineClass(line, "wrapClass", "highlight-lines");
-      });
+      for (let line = start - 1; line < end; line++) {
+        codeMirror.addLineClass(line, "wrap", "highlight-lines");
+      }
     });
   };
 
@@ -77,6 +105,4 @@ class HighlightLines extends Component<Props> {
   }
 }
 
-export default connect<Props, OwnProps, _, _, _, _>(state => ({
-  highlightedLineRange: getHighlightedLineRange(state),
-}))(HighlightLines);
+export default HighlightLines;

@@ -4,22 +4,24 @@
 
 "use strict";
 
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const Localized = createFactory(FluentReact.Localized);
 
-const Actions = require("devtools/client/aboutdebugging/src/actions/index");
-const Types = require("devtools/client/aboutdebugging/src/types/index");
+const Actions = require("resource://devtools/client/aboutdebugging/src/actions/index.js");
+const Types = require("resource://devtools/client/aboutdebugging/src/types/index.js");
 const {
   PROFILER_PAGE_CONTEXT,
-} = require("devtools/client/aboutdebugging/src/constants");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
 
 /**
  * This component is a modal dialog containing the performance profiler UI. It uses
@@ -41,6 +43,13 @@ class ProfilerDialog extends PureComponent {
     this.props.hideProfilerDialog();
   }
 
+  setProfilerIframeDirection(frameWindow) {
+    // Set iframe direction according to the parent document direction.
+    const { documentElement } = document;
+    const dir = window.getComputedStyle(documentElement).direction;
+    frameWindow.document.documentElement.setAttribute("dir", dir);
+  }
+
   /**
    * The profiler iframe can either be the simplified devtools recording panel,
    * or the more detailed about:profiling settings page.
@@ -58,7 +67,10 @@ class ProfilerDialog extends PureComponent {
       case PROFILER_PAGE_CONTEXT.DEVTOOLS_REMOTE:
         src = clientWrapper.getPerformancePanelUrl();
         onLoad = e => {
-          clientWrapper.loadPerformanceProfiler(e.target.contentWindow, () => {
+          const frameWindow = e.target.contentWindow;
+          this.setProfilerIframeDirection(frameWindow);
+
+          clientWrapper.loadPerformanceProfiler(frameWindow, () => {
             switchProfilerContext(PROFILER_PAGE_CONTEXT.ABOUTPROFILING_REMOTE);
           });
         };
@@ -67,7 +79,10 @@ class ProfilerDialog extends PureComponent {
       case PROFILER_PAGE_CONTEXT.ABOUTPROFILING_REMOTE:
         src = "about:profiling#remote";
         onLoad = e => {
-          clientWrapper.loadAboutProfiling(e.target.contentWindow, () => {
+          const frameWindow = e.target.contentWindow;
+          this.setProfilerIframeDirection(frameWindow);
+
+          clientWrapper.loadAboutProfiling(frameWindow, () => {
             switchProfilerContext(PROFILER_PAGE_CONTEXT.DEVTOOLS_REMOTE);
           });
         };

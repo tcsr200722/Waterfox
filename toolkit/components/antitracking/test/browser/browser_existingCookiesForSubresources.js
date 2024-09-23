@@ -1,4 +1,4 @@
-add_task(async function() {
+add_task(async function () {
   info("Starting subResources test");
 
   await SpecialPowers.flushPrefEnv();
@@ -26,7 +26,7 @@ add_task(async function() {
   info(
     "Loading tracking scripts and tracking images before restricting 3rd party cookies"
   );
-  await SpecialPowers.spawn(browser, [], async function() {
+  await SpecialPowers.spawn(browser, [], async function () {
     // Let's load the script twice here.
     {
       let src = content.document.createElement("script");
@@ -77,7 +77,7 @@ add_task(async function() {
   )
     .then(r => r.text())
     .then(text => {
-      is(text, 1, "Cookies received for images");
+      is(text, "1", "Cookies received for images");
     });
 
   await fetch(
@@ -85,7 +85,7 @@ add_task(async function() {
   )
     .then(r => r.text())
     .then(text => {
-      is(text, 1, "Cookies received for scripts");
+      is(text, "1", "Cookies received for scripts");
     });
 
   info("Removing the tab");
@@ -98,6 +98,10 @@ add_task(async function() {
     set: [
       [
         "network.cookie.cookieBehavior",
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+      ],
+      [
+        "network.cookie.cookieBehavior.pbmode",
         Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
       ],
       [
@@ -118,10 +122,10 @@ add_task(async function() {
   await SpecialPowers.spawn(
     browser,
     [{ page: TEST_3RD_PARTY_PAGE, callback: (async _ => {}).toString() }],
-    async function(obj) {
+    async function (obj) {
       await new content.Promise(resolve => {
         let ifr = content.document.createElement("iframe");
-        ifr.onload = function() {
+        ifr.onload = function () {
           info("Sending code to the 3rd party content");
           ifr.contentWindow.postMessage(obj.callback, "*");
         };
@@ -153,7 +157,7 @@ add_task(async function() {
   );
 
   info("Loading tracking scripts and tracking images again");
-  await SpecialPowers.spawn(browser, [], async function() {
+  await SpecialPowers.spawn(browser, [], async function () {
     // Let's load the script twice here.
     {
       let src = content.document.createElement("script");
@@ -204,7 +208,7 @@ add_task(async function() {
   )
     .then(r => r.text())
     .then(text => {
-      is(text, 0, "No cookie received for images.");
+      is(text, "0", "No cookie received for images.");
     });
 
   await fetch(
@@ -212,7 +216,7 @@ add_task(async function() {
   )
     .then(r => r.text())
     .then(text => {
-      is(text, 0, "No cookie received received for scripts.");
+      is(text, "0", "No cookie received received for scripts.");
     });
 
   info("Removing the tab");
@@ -221,10 +225,10 @@ add_task(async function() {
   UrlClassifierTestUtils.cleanupTestTrackers();
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Cleaning up.");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

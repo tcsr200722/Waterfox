@@ -7,7 +7,7 @@
 #define mozilla_a11y_BaseAccessibles_h__
 
 #include "AccessibleWrap.h"
-#include "HyperTextAccessibleWrap.h"
+#include "HyperTextAccessible.h"
 
 class nsIContent;
 
@@ -30,11 +30,11 @@ class LeafAccessible : public AccessibleWrap {
   // nsISupports
   NS_INLINE_DECL_REFCOUNTING_INHERITED(LeafAccessible, AccessibleWrap)
 
-  // Accessible
-  virtual Accessible* ChildAtPoint(int32_t aX, int32_t aY,
-                                   EWhichChildAtPoint aWhichChild) override;
-  bool InsertChildAt(uint32_t aIndex, Accessible* aChild) final;
-  bool RemoveChild(Accessible* aChild) final;
+  // LocalAccessible
+  virtual LocalAccessible* LocalChildAtPoint(
+      int32_t aX, int32_t aY, EWhichChildAtPoint aWhichChild) override;
+  bool InsertChildAt(uint32_t aIndex, LocalAccessible* aChild) final;
+  bool RemoveChild(LocalAccessible* aChild) final;
 
   virtual bool IsAcceptableChild(nsIContent* aEl) const override;
 
@@ -45,36 +45,27 @@ class LeafAccessible : public AccessibleWrap {
 /**
  * Used for text or image accessible nodes contained by link accessibles or
  * accessibles for nodes with registered click event handler. It knows how to
- * report the state of the host link (traveled or not) and can activate (click)
- * the host accessible programmatically.
+ * report the state of the host link (traveled or not) and can focus the host
+ * accessible programmatically.
  */
 class LinkableAccessible : public AccessibleWrap {
  public:
-  enum { eAction_Jump = 0 };
-
   LinkableAccessible(nsIContent* aContent, DocAccessible* aDoc)
       : AccessibleWrap(aContent, aDoc) {}
 
   NS_INLINE_DECL_REFCOUNTING_INHERITED(LinkableAccessible, AccessibleWrap)
 
-  // Accessible
+  // LocalAccessible
   virtual void Value(nsString& aValue) const override;
   virtual uint64_t NativeLinkState() const override;
   virtual void TakeFocus() const override;
 
   // ActionAccessible
-  virtual uint8_t ActionCount() const override;
-  virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t index) const override;
   virtual KeyBinding AccessKey() const override;
 
   // ActionAccessible helpers
-  const Accessible* ActionWalk(bool* aIsLink = nullptr,
-                               bool* aIsOnclick = nullptr,
-                               bool* aIsLabelWithControl = nullptr) const;
-  // HyperLinkAccessible
-  virtual already_AddRefed<nsIURI> AnchorURIAt(
-      uint32_t aAnchorIndex) const override;
+  const LocalAccessible* ActionWalk(bool* aIsLink = nullptr,
+                                    bool* aIsOnclick = nullptr) const;
 
  protected:
   virtual ~LinkableAccessible() {}
@@ -90,14 +81,30 @@ class EnumRoleAccessible : public AccessibleWrap {
       : AccessibleWrap(aContent, aDoc) {}
 
   NS_IMETHOD QueryInterface(REFNSIID aIID, void** aPtr) override {
-    return Accessible::QueryInterface(aIID, aPtr);
+    return LocalAccessible::QueryInterface(aIID, aPtr);
   }
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override { return R; }
 
  protected:
   virtual ~EnumRoleAccessible() {}
+};
+
+/**
+ * Like EnumRoleAccessible, but with text support.
+ */
+template <a11y::role R>
+class EnumRoleHyperTextAccessible : public HyperTextAccessible {
+ public:
+  EnumRoleHyperTextAccessible(nsIContent* aContent, DocAccessible* aDoc)
+      : HyperTextAccessible(aContent, aDoc) {}
+
+  // LocalAccessible
+  virtual a11y::role NativeRole() const override { return R; }
+
+ protected:
+  virtual ~EnumRoleHyperTextAccessible() {}
 };
 
 /**
@@ -107,7 +114,11 @@ class EnumRoleAccessible : public AccessibleWrap {
 class DummyAccessible : public AccessibleWrap {
  public:
   explicit DummyAccessible(DocAccessible* aDocument = nullptr)
-      : AccessibleWrap(nullptr, aDocument) {}
+      : AccessibleWrap(nullptr, aDocument) {
+    // IsDefunct() asserts if mContent is null, which is always true for
+    // DummyAccessible. We can prevent this by setting eSharedNode.
+    mStateFlags |= eSharedNode;
+  }
 
   uint64_t NativeState() const final;
   uint64_t NativeInteractiveState() const final;

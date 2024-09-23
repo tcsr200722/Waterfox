@@ -8,6 +8,8 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
+mod arch_migrator;
+mod arch_migrator_error;
 mod cursor;
 mod database;
 mod environment;
@@ -18,25 +20,15 @@ mod iter;
 mod stat;
 mod transaction;
 
-pub use cursor::{
-    RoCursorImpl,
-    RwCursorImpl,
+pub use arch_migrator::{
+    MigrateError as ArchMigrateError, MigrateResult as ArchMigrateResult, Migrator as ArchMigrator,
 };
+pub use cursor::{RoCursorImpl, RwCursorImpl};
 pub use database::DatabaseImpl;
-pub use environment::{
-    EnvironmentBuilderImpl,
-    EnvironmentImpl,
-};
+pub use environment::{EnvironmentBuilderImpl, EnvironmentImpl};
 pub use error::ErrorImpl;
-pub use flags::{
-    DatabaseFlagsImpl,
-    EnvironmentFlagsImpl,
-    WriteFlagsImpl,
-};
+pub use flags::{DatabaseFlagsImpl, EnvironmentFlagsImpl, WriteFlagsImpl};
 pub use info::InfoImpl;
 pub use iter::IterImpl;
 pub use stat::StatImpl;
-pub use transaction::{
-    RoTransactionImpl,
-    RwTransactionImpl,
-};
+pub use transaction::{RoTransactionImpl, RwTransactionImpl};

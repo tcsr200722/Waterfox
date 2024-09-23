@@ -1,11 +1,10 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow */
 
 "use strict";
 
 add_task(
-  threadFrontTest(async ({ threadFront, debuggee, client, targetFront }) => {
+  threadFrontTest(async ({ threadFront }) => {
     const onPaused = waitForEvent(threadFront, "paused");
     await threadFront.interrupt();
     await onPaused;

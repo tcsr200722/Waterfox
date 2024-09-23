@@ -59,7 +59,18 @@ interface nsIApplicationReputationService : nsISupports {
    * @param aFilename
    *        The filename to check.
    */
-  bool isBinary(in AUTF8String aFilename);
+  boolean isBinary(in AUTF8String aFilename);
+
+  /**
+   * Check if a file with this name should be treated as an executable,
+   * and should not be opened without caution.
+   * Will return true if the filename's extension is in sExecutableExts
+   * in nsLocalFileCommon.h.
+   *
+   * @param aFilename
+   *        The filename to check.
+   */
+  boolean isExecutable(in AUTF8String aFilename);
 };
 
 /**
@@ -130,7 +141,7 @@ interface nsIApplicationReputationCallback : nsISupports {
    *        This may be set to a value different than "VERDICT_SAFE" even if
    *        aShouldBlock is false, so you should always check aShouldBlock.
    */
-  void onComplete(in bool aShouldBlock,
+  void onComplete(in boolean aShouldBlock,
                   in nsresult aStatus,
                   in unsigned long aVerdict);
 };

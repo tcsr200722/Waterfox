@@ -4,23 +4,23 @@
 
 "use strict";
 
-loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/debugger/packages/devtools-reps/src/reps/constants")
+loader.lazyGetter(this, "MODE", function () {
+  return require("resource://devtools/client/shared/components/reps/index.js")
     .MODE;
 });
 
-loader.lazyGetter(this, "ElementNode", function() {
-  return require("devtools/client/debugger/packages/devtools-reps/src/reps/element-node");
+loader.lazyGetter(this, "ElementNode", function () {
+  return require("resource://devtools/client/shared/components/reps/reps/element-node.js");
 });
 
-loader.lazyGetter(this, "TextNode", function() {
-  return require("devtools/client/debugger/packages/devtools-reps/src/reps/text-node");
+loader.lazyGetter(this, "TextNode", function () {
+  return require("resource://devtools/client/shared/components/reps/reps/text-node.js");
 });
 
 loader.lazyRequireGetter(
   this,
   "translateNodeFrontToGrip",
-  "devtools/client/inspector/shared/utils",
+  "resource://devtools/client/inspector/shared/utils.js",
   true
 );
 

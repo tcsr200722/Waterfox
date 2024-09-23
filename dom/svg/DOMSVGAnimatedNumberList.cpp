@@ -15,8 +15,7 @@
 
 // See the architecture comment in this file's header.
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static inline SVGAttrTearoffTable<SVGAnimatedNumberList,
                                   DOMSVGAnimatedNumberList>&
@@ -28,14 +27,6 @@ SVGAnimatedNumberListTearoffTable() {
 
 NS_SVG_VAL_IMPL_CYCLE_COLLECTION_WRAPPERCACHED(DOMSVGAnimatedNumberList,
                                                mElement)
-
-NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMSVGAnimatedNumberList)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMSVGAnimatedNumberList)
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGAnimatedNumberList)
-  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-NS_INTERFACE_MAP_END
 
 JSObject* DOMSVGAnimatedNumberList::WrapObject(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
@@ -133,5 +124,4 @@ const SVGAnimatedNumberList& DOMSVGAnimatedNumberList::InternalAList() const {
   return *mElement->GetAnimatedNumberList(mAttrEnum);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

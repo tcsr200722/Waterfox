@@ -2,13 +2,30 @@
 
 requestLongerTimeout(2);
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [["dom.ipc.processCount", 1]],
   });
 });
 
-add_task(async function() {
+function promiseTabsRestored(win, nExpected) {
+  return new Promise(resolve => {
+    let nReceived = 0;
+    function handler() {
+      if (++nReceived === nExpected) {
+        win.gBrowser.tabContainer.removeEventListener(
+          "SSTabRestored",
+          handler,
+          true
+        );
+        resolve();
+      }
+    }
+    win.gBrowser.tabContainer.addEventListener("SSTabRestored", handler, true);
+  });
+}
+
+add_task(async function () {
   let win = await BrowserTestUtils.openNewBrowserWindow();
 
   // Create 4 tabs with different userContextId.
@@ -26,7 +43,7 @@ add_task(async function() {
   // userContextId.
   win.gBrowser.moveTabTo(win.gBrowser.tabs[0], win.gBrowser.tabs.length - 1);
 
-  let winState = JSON.parse(ss.getWindowState(win));
+  let winState = ss.getWindowState(win);
 
   for (let i = 0; i < 4; i++) {
     Assert.equal(
@@ -48,13 +65,37 @@ add_task(async function() {
     await TabStateFlusher.flush(tab.linkedBrowser);
   }
 
+  let tabsRestored = promiseTabsRestored(win2, 5);
   await setWindowState(win2, winState, true);
+  await tabsRestored;
 
   for (let i = 0; i < 4; i++) {
     let browser = win2.gBrowser.tabs[i].linkedBrowser;
-    await ContentTask.spawn(browser, { expectedId: i + 1 }, async function(
-      args
-    ) {
+    await ContentTask.spawn(
+      browser,
+      { expectedId: i + 1 },
+      async function (args) {
+        Assert.equal(
+          docShell.getOriginAttributes().userContextId,
+          args.expectedId,
+          "The docShell has the correct userContextId"
+        );
+
+        Assert.equal(
+          content.document.nodePrincipal.originAttributes.userContextId,
+          args.expectedId,
+          "The document has the correct userContextId"
+        );
+      }
+    );
+  }
+
+  // Test the last tab, which doesn't have userContextId.
+  let browser = win2.gBrowser.tabs[4].linkedBrowser;
+  await SpecialPowers.spawn(
+    browser,
+    [{ expectedId: 0 }],
+    async function (args) {
       Assert.equal(
         docShell.getOriginAttributes().userContextId,
         args.expectedId,
@@ -66,30 +107,14 @@ add_task(async function() {
         args.expectedId,
         "The document has the correct userContextId"
       );
-    });
-  }
-
-  // Test the last tab, which doesn't have userContextId.
-  let browser = win2.gBrowser.tabs[4].linkedBrowser;
-  await SpecialPowers.spawn(browser, [{ expectedId: 0 }], async function(args) {
-    Assert.equal(
-      docShell.getOriginAttributes().userContextId,
-      args.expectedId,
-      "The docShell has the correct userContextId"
-    );
-
-    Assert.equal(
-      content.document.nodePrincipal.originAttributes.userContextId,
-      args.expectedId,
-      "The document has the correct userContextId"
-    );
-  });
+    }
+  );
 
   await BrowserTestUtils.closeWindow(win);
   await BrowserTestUtils.closeWindow(win2);
 });
 
-add_task(async function() {
+add_task(async function () {
   let win = await BrowserTestUtils.openNewBrowserWindow();
   await TabStateFlusher.flush(win.gBrowser.selectedBrowser);
 
@@ -102,7 +127,7 @@ add_task(async function() {
   // win should have 1 default tab, and 1 container tab.
   Assert.equal(win.gBrowser.tabs.length, 2, "win should have 2 tabs");
 
-  let winState = JSON.parse(ss.getWindowState(win));
+  let winState = ss.getWindowState(win);
 
   for (let i = 0; i < 2; i++) {
     Assert.equal(
@@ -125,11 +150,13 @@ add_task(async function() {
   win2.gBrowser.moveTabTo(win2.gBrowser.tabs[0], win2.gBrowser.tabs.length - 1);
   await TabStateFlusher.flush(win2.gBrowser.tabs[0].linkedBrowser);
 
+  let tabsRestored = promiseTabsRestored(win2, 2);
   await setWindowState(win2, winState, true);
+  await tabsRestored;
 
   for (let i = 0; i < 2; i++) {
     let browser = win2.gBrowser.tabs[i].linkedBrowser;
-    await ContentTask.spawn(browser, { expectedId: i }, async function(args) {
+    await ContentTask.spawn(browser, { expectedId: i }, async function (args) {
       Assert.equal(
         docShell.getOriginAttributes().userContextId,
         args.expectedId,

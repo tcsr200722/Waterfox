@@ -2,7 +2,6 @@
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 
 requestLongerTimeout(2);
 add_task(setup_UITourTest);
@@ -37,7 +36,7 @@ async function loadForegroundTab() {
   let promise = SpecialPowers.spawn(
     gBrowser.selectedTab.linkedBrowser,
     [],
-    async function() {
+    async function () {
       return new Promise(resolve => {
         let document = content.document;
         document.addEventListener("visibilitychange", function onStateChange() {

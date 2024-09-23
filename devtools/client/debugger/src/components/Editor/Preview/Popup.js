@@ -2,14 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import React, { Component } from "devtools/client/shared/vendor/react";
+import { div } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
-import React, { Component } from "react";
-import { connect } from "../../../utils/connect";
-
-import Reps from "devtools-reps";
+import Reps from "devtools/client/shared/components/reps/index";
 const {
-  REPS: { Rep },
+  REPS: { Grip },
   MODE,
   objectInspector,
 } = Reps;
@@ -17,69 +17,66 @@ const {
 const { ObjectInspector, utils } = objectInspector;
 
 const {
-  node: { nodeIsPrimitive, nodeIsFunction, nodeIsObject },
+  node: { nodeIsPrimitive },
 } = utils;
 
-import actions from "../../../actions";
-import { getThreadContext } from "../../../selectors";
+import ExceptionPopup from "./ExceptionPopup";
+
+import actions from "../../../actions/index";
 import Popover from "../../shared/Popover";
-import PreviewFunction from "../../shared/PreviewFunction";
 
-import "./Popup.css";
-
-import type { ThreadContext } from "../../../types";
-import type { Preview } from "../../../reducers/types";
-
-type OwnProps = {|
-  editor: any,
-  preview: Preview,
-  editorRef: ?HTMLDivElement,
-|};
-type Props = {
-  cx: ThreadContext,
-  preview: Preview,
-  editor: any,
-  editorRef: ?HTMLDivElement,
-  addExpression: typeof actions.addExpression,
-  selectSourceURL: typeof actions.selectSourceURL,
-  openLink: typeof actions.openLink,
-  openElementInInspector: typeof actions.openElementInInspectorCommand,
-  highlightDomElement: typeof actions.highlightDomElement,
-  unHighlightDomElement: typeof actions.unHighlightDomElement,
-  clearPreview: typeof actions.clearPreview,
-};
-
-export class Popup extends Component<Props> {
-  marker: any;
-  pos: any;
-  popover: ?React$ElementRef<typeof Popover>;
-
-  constructor(props: Props) {
+export class Popup extends Component {
+  constructor(props) {
     super(props);
   }
 
+  static get propTypes() {
+    return {
+      clearPreview: PropTypes.func.isRequired,
+      editorRef: PropTypes.object.isRequired,
+      highlightDomElement: PropTypes.func.isRequired,
+      openElementInInspector: PropTypes.func.isRequired,
+      openLink: PropTypes.func.isRequired,
+      preview: PropTypes.object.isRequired,
+      selectSourceURL: PropTypes.func.isRequired,
+      unHighlightDomElement: PropTypes.func.isRequired,
+    };
+  }
+
   componentDidMount() {
-    this.addHighlightToToken();
+    this.addHighlightToToken(this.props.preview.target);
   }
 
   componentWillUnmount() {
-    this.removeHighlightFromToken();
+    this.removeHighlightFromToken(this.props.preview.target);
   }
 
-  addHighlightToToken() {
+  componentDidUpdate(prevProps) {
     const { target } = this.props.preview;
-    if (target) {
-      target.classList.add("preview-token");
-      addHighlightToTargetSiblings(target, this.props);
+    if (prevProps.target == target) {
+      return;
     }
+
+    this.removeHighlightFromToken(prevProps.preview.target);
+    this.addHighlightToToken(target);
   }
 
-  removeHighlightFromToken() {
-    const { target } = this.props.preview;
-    if (target) {
-      target.classList.remove("preview-token");
-      removeHighlightForTargetSiblings(target);
+  addHighlightToToken(target) {
+    if (!target) {
+      return;
     }
+
+    target.classList.add("preview-token");
+    addHighlightToTargetSiblings(target, this.props);
+  }
+
+  removeHighlightFromToken(target) {
+    if (!target) {
+      return;
+    }
+
+    target.classList.remove("preview-token");
+    removeHighlightForTargetSiblings(target);
   }
 
   calculateMaxHeight = () => {
@@ -97,154 +94,105 @@ export class Popup extends Component<Props> {
     return 250;
   };
 
-  renderFunctionPreview() {
-    const {
-      cx,
-      selectSourceURL,
-      preview: { resultGrip },
-    } = this.props;
-
-    if (!resultGrip) {
-      return null;
-    }
-
-    const { location } = resultGrip;
-
-    return (
-      <div
-        className="preview-popup"
-        onClick={() =>
-          location &&
-          selectSourceURL(cx, location.url, {
-            line: location.line,
-          })
-        }
-      >
-        <PreviewFunction func={resultGrip} />
-      </div>
-    );
+  createElement(element) {
+    return document.createElement(element);
   }
 
-  renderObjectPreview() {
-    const {
-      preview: { properties },
-      openLink,
-      openElementInInspector,
-      highlightDomElement,
-      unHighlightDomElement,
-    } = this.props;
-
-    if (properties.length == 0) {
-      return (
-        <div className="preview-popup">
-          <span className="label">{L10N.getStr("preview.noProperties")}</span>
-        </div>
-      );
-    }
-
-    return (
-      <div
-        className="preview-popup"
-        style={{ maxHeight: this.calculateMaxHeight() }}
-      >
-        <ObjectInspector
-          roots={properties}
-          autoExpandDepth={0}
-          disableWrap={true}
-          focusable={false}
-          openLink={openLink}
-          onDOMNodeClick={grip => openElementInInspector(grip)}
-          onInspectIconClick={grip => openElementInInspector(grip)}
-          onDOMNodeMouseOver={grip => highlightDomElement(grip)}
-          onDOMNodeMouseOut={grip => unHighlightDomElement(grip)}
-        />
-      </div>
-    );
-  }
-
-  renderSimplePreview() {
-    const {
-      openLink,
-      preview: { resultGrip },
-    } = this.props;
-    return (
-      <div className="preview-popup">
-        {Rep({
-          object: resultGrip,
-          mode: MODE.LONG,
-          openLink,
-        })}
-      </div>
-    );
+  renderExceptionPreview(exception) {
+    return React.createElement(ExceptionPopup, {
+      exception,
+      clearPreview: this.props.clearPreview,
+    });
   }
 
   renderPreview() {
-    // We don't have to check and
-    // return on `false`, `""`, `0`, `undefined` etc,
-    // these falsy simple typed value because we want to
-    // do `renderSimplePreview` on these values below.
     const {
-      preview: { root },
+      preview: { root, exception, resultGrip },
     } = this.props;
 
-    if (nodeIsFunction(root)) {
-      return this.renderFunctionPreview();
+    const usesCustomFormatter =
+      root?.contents?.value?.useCustomFormatter ?? false;
+
+    if (exception) {
+      return this.renderExceptionPreview(exception);
     }
 
-    if (nodeIsObject(root)) {
-      return <div>{this.renderObjectPreview()}</div>;
-    }
-
-    return this.renderSimplePreview();
+    return div(
+      {
+        className: "preview-popup",
+        style: {
+          maxHeight: this.calculateMaxHeight(),
+        },
+      },
+      React.createElement(ObjectInspector, {
+        roots: [root],
+        autoExpandDepth: 1,
+        autoReleaseObjectActors: false,
+        mode: usesCustomFormatter ? MODE.LONG : MODE.SHORT,
+        disableWrap: true,
+        displayRootNodeAsHeader: true,
+        focusable: false,
+        openLink: this.props.openLink,
+        defaultRep: Grip,
+        createElement: this.createElement,
+        onDOMNodeClick: grip => this.props.openElementInInspector(grip),
+        onInspectIconClick: grip => this.props.openElementInInspector(grip),
+        onDOMNodeMouseOver: grip => this.props.highlightDomElement(grip),
+        onDOMNodeMouseOut: grip => this.props.unHighlightDomElement(grip),
+        mayUseCustomFormatter: true,
+        onViewSourceInDebugger: () => {
+          return (
+            resultGrip.location &&
+            this.props.selectSourceURL(resultGrip.location.url, {
+              line: resultGrip.location.line,
+              column: resultGrip.location.column,
+            })
+          );
+        },
+      })
+    );
   }
 
   getPreviewType() {
     const {
-      preview: { root, properties },
+      preview: { root, exception },
     } = this.props;
-    if (
-      nodeIsPrimitive(root) ||
-      nodeIsFunction(root) ||
-      !Array.isArray(properties) ||
-      properties.length === 0
-    ) {
+    if (exception || nodeIsPrimitive(root)) {
       return "tooltip";
     }
 
     return "popover";
   }
 
-  onMouseOut = () => {
-    const { clearPreview, cx } = this.props;
-    clearPreview(cx);
-  };
-
   render() {
     const {
-      preview: { cursorPos, resultGrip },
+      preview: { cursorPos, resultGrip, exception },
       editorRef,
     } = this.props;
 
-    if (typeof resultGrip == "undefined" || resultGrip?.optimizedOut) {
+    if (
+      !exception &&
+      (typeof resultGrip == "undefined" || resultGrip?.optimizedOut)
+    ) {
       return null;
     }
 
     const type = this.getPreviewType();
-    return (
-      <Popover
-        targetPosition={cursorPos}
-        type={type}
-        editorRef={editorRef}
-        target={this.props.preview.target}
-        mouseout={this.onMouseOut}
-      >
-        {this.renderPreview()}
-      </Popover>
+    return React.createElement(
+      Popover,
+      {
+        targetPosition: cursorPos,
+        type,
+        editorRef,
+        target: this.props.preview.target,
+        mouseout: this.props.clearPreview,
+      },
+      this.renderPreview()
     );
   }
 }
 
-export function addHighlightToTargetSiblings(target: Element, props: Object) {
+export function addHighlightToTargetSiblings(target, props) {
   // This function searches for related tokens that should also be highlighted when previewed.
   // Here is the process:
   // It conducts a search on the target's next siblings and then another search for the previous siblings.
@@ -298,7 +246,7 @@ export function addHighlightToTargetSiblings(target: Element, props: Object) {
   }
 }
 
-export function removeHighlightForTargetSiblings(target: Element) {
+export function removeHighlightForTargetSiblings(target) {
   // Look at target's previous and next token siblings.
   // If they also have the highlight class 'preview-token',
   // remove that class.
@@ -317,31 +265,13 @@ export function removeHighlightForTargetSiblings(target: Element) {
   }
 }
 
-const mapStateToProps = state => ({
-  cx: getThreadContext(state),
-});
-
-const {
-  addExpression,
-  selectSourceURL,
-  openLink,
-  openElementInInspectorCommand,
-  highlightDomElement,
-  unHighlightDomElement,
-  clearPreview,
-} = actions;
-
 const mapDispatchToProps = {
-  addExpression,
-  selectSourceURL,
-  openLink,
-  openElementInInspector: openElementInInspectorCommand,
-  highlightDomElement,
-  unHighlightDomElement,
-  clearPreview,
+  addExpression: actions.addExpression,
+  selectSourceURL: actions.selectSourceURL,
+  openLink: actions.openLink,
+  openElementInInspector: actions.openElementInInspectorCommand,
+  highlightDomElement: actions.highlightDomElement,
+  unHighlightDomElement: actions.unHighlightDomElement,
 };
 
-export default connect<Props, OwnProps, _, _, _, _>(
-  mapStateToProps,
-  mapDispatchToProps
-)(Popup);
+export default connect(null, mapDispatchToProps)(Popup);

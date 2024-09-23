@@ -8,38 +8,51 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
  * behaves correctly, both with and without touch simulation enabled.
  */
 
+const PAINT_LISTENER_JS_URL =
+  URL_ROOT + "../../../../../../tests/SimpleTest/paint_listener.js";
+
+const APZ_TEST_UTILS_JS_URL =
+  URL_ROOT + "../../../../../gfx/layers/apz/test/mochitest/apz_test_utils.js";
+
 const TEST_URL =
   "data:text/html;charset=utf-8," +
-  '<head><meta name="viewport" content="width=100, height=100"/></head>' +
+  '<head><meta name="viewport" content="width=100, height=100"/>' +
+  '<script src="' +
+  PAINT_LISTENER_JS_URL +
+  '"></script>' +
+  '<script src="' +
+  APZ_TEST_UTILS_JS_URL +
+  '"></script>' +
+  "</head>" +
   '<div style="background:blue; width:200px; height:200px"></div>';
 
-addRDMTask(
-  TEST_URL,
-  async function({ ui, manager }) {
-    await setViewportSize(ui, manager, 50, 50);
-    const browser = ui.getViewportBrowser();
+addRDMTask(TEST_URL, async function ({ ui, manager }) {
+  await setViewportSize(ui, manager, 50, 50);
+  const browser = ui.getViewportBrowser();
 
-    for (const mv in [true, false]) {
-      const reloadNeeded = await ui.updateTouchSimulation(mv);
-      if (reloadNeeded) {
-        info("Reload is needed -- waiting for it.");
-        const reload = waitForViewportLoad(ui);
-        browser.reload();
-        await reload;
-      }
-      info("Setting focus on the browser.");
-      browser.focus();
+  for (const mv in [true, false]) {
+    await ui.updateTouchSimulation(mv);
 
-      await SpecialPowers.spawn(browser, [], () => {
-        content.scrollTo(0, 0);
-      });
+    info("Setting focus on the browser.");
+    browser.focus();
 
-      info("Testing scroll behavior with touch simulation " + mv + ".");
-      await testScrollingOfContent(ui);
-    }
-  },
-  { usingBrowserUI: true }
-);
+    await SpecialPowers.spawn(browser, [], async () => {
+      // First of all, cancel any async scroll animation if there is. If there's
+      // an on-going async scroll animation triggered by synthesizeKey, below
+      // scrollTo call scrolls to a position nearby (0, 0) so that this test
+      // won't work as expected.
+      await content.wrappedJSObject.cancelScrollAnimation(
+        content.document.scrollingElement,
+        content
+      );
+
+      content.scrollTo(0, 0);
+    });
+
+    info("Testing scroll behavior with touch simulation " + mv + ".");
+    await testScrollingOfContent(ui);
+  }
+});
 
 async function testScrollingOfContent(ui) {
   let scroll;

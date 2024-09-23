@@ -1,6 +1,7 @@
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+/* eslint-env mozilla/process-script */
+
+const { ComponentUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ComponentUtils.sys.mjs"
 );
 
 const WEBEXTENSION_ID = "tabswitch-talos@mozilla.org";
@@ -18,7 +19,7 @@ const TPSProcessScript = {
 
     class TabSwitchAboutModule {
       constructor() {
-        this.QueryInterface = ChromeUtils.generateQI([Ci.nsIAboutModule]);
+        this.QueryInterface = ChromeUtils.generateQI(["nsIAboutModule"]);
       }
       newChannel(aURI, aLoadInfo) {
         let uri = Services.io.newURI(aboutPageURI);
@@ -26,15 +27,16 @@ const TPSProcessScript = {
         chan.originalURI = aURI;
         return chan;
       }
-      getURIFlags(aURI) {
+      getURIFlags() {
         return (
           Ci.nsIAboutModule.ALLOW_SCRIPT |
-          Ci.nsIAboutModule.URI_MUST_LOAD_IN_CHILD
+          Ci.nsIAboutModule.URI_MUST_LOAD_IN_CHILD |
+          Ci.nsIAboutModule.URI_SAFE_FOR_UNTRUSTED_CONTENT
         );
       }
     }
 
-    let factory = XPCOMUtils._getFactory(TabSwitchAboutModule);
+    let factory = ComponentUtils.generateSingletonFactory(TabSwitchAboutModule);
     this._factory = factory;
 
     Registrar.registerFactory(

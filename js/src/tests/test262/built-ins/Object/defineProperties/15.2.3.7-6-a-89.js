@@ -30,14 +30,15 @@ Object.defineProperties(obj, {
   }
 });
 
-verifyNotEnumerable(obj, "foo");
-
-verifyNotConfigurable(obj, "foo");
+verifyProperty(obj, "foo", {
+  enumerable: false,
+  configurable: false,
+});
 
 var desc = Object.getOwnPropertyDescriptor(obj, "foo");
 
 if (typeof(desc.set) !== "undefined") {
-  $ERROR('Expected typeof (desc.set) === "undefined", actually ' + typeof(desc.set));
+  throw new Test262Error('Expected typeof (desc.set) === "undefined", actually ' + typeof(desc.set));
 }
 
 reportCompare(0, 0);

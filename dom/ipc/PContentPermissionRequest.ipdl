@@ -5,20 +5,21 @@
 include protocol PContent;
 include PContentPermission;
 
+include "nsContentPermissionHelper.h";
+
 namespace mozilla {
 namespace dom {
 
+[ManualDealloc, ChildImpl="RemotePermissionRequest", ParentImpl=virtual]
 protocol PContentPermissionRequest
 {
   manager PContent;
 
 parent:
   async prompt();
-  async NotifyVisibility(bool visibility);
   async Destroy();
 
 child:
-  async GetVisibility();
   async NotifyResult(bool allow, PermissionChoice[] choices);
   async __delete__();
 };

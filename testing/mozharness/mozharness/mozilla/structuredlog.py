@@ -4,19 +4,21 @@
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 # ***** END LICENSE BLOCK *****
 import json
+from collections import defaultdict, namedtuple
+
+from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
 
 from mozharness.base import log
-from mozharness.base.log import OutputParser, WARNING, INFO, ERROR
-from mozharness.mozilla.automation import TBPL_WARNING, TBPL_FAILURE
-from mozharness.mozilla.automation import TBPL_SUCCESS, TBPL_WORST_LEVEL_TUPLE
-from mozharness.mozilla.automation import TBPL_RETRY
+from mozharness.base.log import ERROR, INFO, WARNING, OutputParser
+from mozharness.mozilla.automation import (
+    TBPL_FAILURE,
+    TBPL_RETRY,
+    TBPL_SUCCESS,
+    TBPL_WARNING,
+    TBPL_WORST_LEVEL_TUPLE,
+)
 from mozharness.mozilla.testing.errors import TinderBoxPrintRe
 from mozharness.mozilla.testing.unittest import tbox_print_summary
-
-from collections import (
-    defaultdict,
-    namedtuple,
-)
 
 
 class StructuredOutputParser(OutputParser):
@@ -28,12 +30,12 @@ class StructuredOutputParser(OutputParser):
         # from the harness process other than line-delimited json indicates
         # failure. If it does not, the errors_list parameter may be used
         # to detect additional failure output from the harness process.
-        if 'strict' in kwargs:
-            self.strict = kwargs.pop('strict')
+        if "strict" in kwargs:
+            self.strict = kwargs.pop("strict")
         else:
             self.strict = True
 
-        self.suite_category = kwargs.pop('suite_category', None)
+        self.suite_category = kwargs.pop("suite_category", None)
 
         tbpl_compact = kwargs.pop("log_compact", False)
         super(StructuredOutputParser, self).__init__(**kwargs)
@@ -46,15 +48,17 @@ class StructuredOutputParser(OutputParser):
 
         self.worst_log_level = INFO
         self.tbpl_status = TBPL_SUCCESS
-        self.harness_retry_re = TinderBoxPrintRe['harness_error']['retry_regex']
+        self.harness_retry_re = TinderBoxPrintRe["harness_error"]["retry_regex"]
         self.prev_was_unstructured = False
 
     def _get_mozlog_module(self):
         try:
             import mozlog
         except ImportError:
-            self.fatal("A script class using structured logging must inherit "
-                       "from the MozbaseMixin to ensure that mozlog is available.")
+            self.fatal(
+                "A script class using structured logging must inherit "
+                "from the MozbaseMixin to ensure that mozlog is available."
+            )
         return mozlog
 
     def _handle_unstructured_output(self, line, log_output=True):
@@ -72,8 +76,11 @@ class StructuredOutputParser(OutputParser):
         data = None
         try:
             candidate_data = json.loads(line)
-            if (isinstance(candidate_data, dict) and
-               'action' in candidate_data and candidate_data['action'] in self.log_actions):
+            if (
+                isinstance(candidate_data, dict)
+                and "action" in candidate_data
+                and candidate_data["action"] in self.log_actions
+            ):
                 data = candidate_data
         except ValueError:
             pass
@@ -81,11 +88,12 @@ class StructuredOutputParser(OutputParser):
         if data is None:
             if self.strict:
                 if not self.prev_was_unstructured:
-                    self.critical(("Test harness output was not a valid structured log message: "
-                                   "\n%s") % line)
+                    self.info(
+                        "Test harness output was not a valid structured log message"
+                    )
+                    self.info(line)
                 else:
-                    self.critical(line)
-                self.update_levels(TBPL_FAILURE, log.CRITICAL)
+                    self.info(line)
                 self.prev_was_unstructured = True
             else:
                 self._handle_unstructured_output(line)
@@ -96,12 +104,27 @@ class StructuredOutputParser(OutputParser):
         self.handler(data)
 
         action = data["action"]
-        if action in ('log', 'process_output'):
-            if action == 'log':
-                message = data['message']
-                level = getattr(log, data['level'].upper())
+        if action == "test_start":
+            SystemResourceMonitor.begin_marker("test", data["test"])
+        elif action == "test_end":
+            SystemResourceMonitor.end_marker("test", data["test"])
+        elif action == "suite_start":
+            SystemResourceMonitor.begin_marker("suite", data["source"])
+        elif action == "suite_end":
+            SystemResourceMonitor.end_marker("suite", data["source"])
+        elif action == "group_start":
+            SystemResourceMonitor.begin_marker("test", data["name"])
+        elif action == "group_end":
+            SystemResourceMonitor.end_marker("test", data["name"])
+        if line.startswith("TEST-UNEXPECTED-FAIL"):
+            SystemResourceMonitor.record_event(line)
+
+        if action in ("log", "process_output"):
+            if action == "log":
+                message = data["message"]
+                level = getattr(log, data["level"].upper())
             else:
-                message = data['data']
+                message = data["data"]
 
             # Run log and process_output actions through the error lists, but make sure
             # the super parser doesn't print them to stdout (they should go through the
@@ -140,18 +163,24 @@ class StructuredOutputParser(OutputParser):
             1) Remove previous data from the new summary to only look at new data
             2) Build a joined summary to include the previous + new data
         """
-        RunSummary = namedtuple("RunSummary",
-                                ("unexpected_statuses",
-                                 "expected_statuses",
-                                 "known_intermittent_statuses",
-                                 "log_level_counts",
-                                 "action_counts"))
+        RunSummary = namedtuple(
+            "RunSummary",
+            (
+                "unexpected_statuses",
+                "expected_statuses",
+                "known_intermittent_statuses",
+                "log_level_counts",
+                "action_counts",
+            ),
+        )
         if previous_summary == {}:
-            previous_summary = RunSummary(defaultdict(int),
-                                          defaultdict(int),
-                                          defaultdict(int),
-                                          defaultdict(int),
-                                          defaultdict(int))
+            previous_summary = RunSummary(
+                defaultdict(int),
+                defaultdict(int),
+                defaultdict(int),
+                defaultdict(int),
+                defaultdict(int),
+            )
         if previous_summary:
             # Always preserve retry status: if any failure triggers retry, the script
             # must exit with TBPL_RETRY to trigger task retry.
@@ -160,19 +189,25 @@ class StructuredOutputParser(OutputParser):
             joined_summary = summary
 
             # Remove previously known status messages
-            if 'ERROR' in summary.log_level_counts:
-                summary.log_level_counts['ERROR'] -= self.handler.no_tests_run_count
+            if "ERROR" in summary.log_level_counts:
+                summary.log_level_counts["ERROR"] -= self.handler.no_tests_run_count
 
-            summary = RunSummary(self._subtract_tuples(previous_summary.unexpected_statuses,
-                                                       summary.unexpected_statuses),
-                                 self._subtract_tuples(previous_summary.expected_statuses,
-                                                       summary.expected_statuses),
-                                 self._subtract_tuples(
-                                    previous_summary.known_intermittent_statuses,
-                                    summary.known_intermittent_statuses),
-                                 self._subtract_tuples(previous_summary.log_level_counts,
-                                                       summary.log_level_counts),
-                                 summary.action_counts)
+            summary = RunSummary(
+                self._subtract_tuples(
+                    previous_summary.unexpected_statuses, summary.unexpected_statuses
+                ),
+                self._subtract_tuples(
+                    previous_summary.expected_statuses, summary.expected_statuses
+                ),
+                self._subtract_tuples(
+                    previous_summary.known_intermittent_statuses,
+                    summary.known_intermittent_statuses,
+                ),
+                self._subtract_tuples(
+                    previous_summary.log_level_counts, summary.log_level_counts
+                ),
+                summary.action_counts,
+            )
 
             # If we have previous data to ignore,
             # cache it so we don't parse the log multiple times
@@ -186,10 +221,18 @@ class StructuredOutputParser(OutputParser):
         # These are warning/orange statuses.
         failure_conditions = [
             (sum(summary.unexpected_statuses.values()), 0, "statuses", False),
-            (summary.action_counts.get('crash', 0),
-             summary.expected_statuses.get('CRASH', 0), "crashes", self.allow_crashes),
-            (summary.action_counts.get('valgrind_error', 0), 0,
-             "valgrind errors", False)
+            (
+                summary.action_counts.get("crash", 0),
+                summary.expected_statuses.get("CRASH", 0),
+                "crashes",
+                self.allow_crashes,
+            ),
+            (
+                summary.action_counts.get("valgrind_error", 0),
+                0,
+                "valgrind errors",
+                False,
+            ),
         ]
         for value, limit, type_name, allow in failure_conditions:
             if value > limit:
@@ -199,7 +242,8 @@ class StructuredOutputParser(OutputParser):
                 if not allow:
                     self.update_levels(*fail_pair)
                     msg = "Got " + msg
-                    self.error(msg)
+                    # Force level to be WARNING as message is not necessary in Treeherder
+                    self.warning(msg)
                 else:
                     msg = "Ignored " + msg
                     self.warning(msg)
@@ -207,15 +251,15 @@ class StructuredOutputParser(OutputParser):
         # These are error/red statuses. A message is output here every time something
         # wouldn't otherwise be highlighted in the UI.
         required_actions = {
-            'suite_end': 'No suite end message was emitted by this harness.',
-            'test_end': 'No checks run.',
+            "suite_end": "No suite end message was emitted by this harness.",
+            "test_end": "No checks run.",
         }
         for action, diagnostic_message in required_actions.items():
             if action not in summary.action_counts:
                 self.log(diagnostic_message, ERROR)
                 self.update_levels(*error_pair)
 
-        failure_log_levels = ['ERROR', 'CRITICAL']
+        failure_log_levels = ["ERROR", "CRITICAL"]
         for level in failure_log_levels:
             if level in summary.log_level_counts:
                 self.update_levels(*error_pair)
@@ -234,8 +278,9 @@ class StructuredOutputParser(OutputParser):
 
     def update_levels(self, tbpl_level, log_level):
         self.worst_log_level = self.worst_level(log_level, self.worst_log_level)
-        self.tbpl_status = self.worst_level(tbpl_level, self.tbpl_status,
-                                            levels=TBPL_WORST_LEVEL_TUPLE)
+        self.tbpl_status = self.worst_level(
+            tbpl_level, self.tbpl_status, levels=TBPL_WORST_LEVEL_TUPLE
+        )
 
     def print_summary(self, suite_name):
         # Summary text provided for compatibility. Counts are currently
@@ -250,12 +295,12 @@ class StructuredOutputParser(OutputParser):
 
         unexpected_count = sum(summary.unexpected_statuses.values())
         expected_count = sum(summary.expected_statuses.values())
-        expected_failures = summary.expected_statuses.get('FAIL', 0)
+        expected_failures = summary.expected_statuses.get("FAIL", 0)
 
         if unexpected_count:
             fail_text = '<em class="testfail">%s</em>' % unexpected_count
         else:
-            fail_text = '0'
+            fail_text = "0"
 
         text_summary = "%s/%s/%s" % (expected_count, fail_text, expected_failures)
         self.info("TinderboxPrint: %s<br/>%s\n" % (suite_name, text_summary))
@@ -268,13 +313,11 @@ class StructuredOutputParser(OutputParser):
 
         unexpected_count = sum(summary.unexpected_statuses.values())
         expected_count = sum(summary.expected_statuses.values())
-        expected_failures = summary.expected_statuses.get('FAIL', 0)
+        expected_failures = summary.expected_statuses.get("FAIL", 0)
         crashed = 0
-        if 'crash' in summary.action_counts:
-            crashed = summary.action_counts['crash']
-        text_summary = tbox_print_summary(expected_count,
-                                          unexpected_count,
-                                          expected_failures,
-                                          crashed > 0,
-                                          False)
+        if "crash" in summary.action_counts:
+            crashed = summary.action_counts["crash"]
+        text_summary = tbox_print_summary(
+            expected_count, unexpected_count, expected_failures, crashed > 0, False
+        )
         self.info("TinderboxPrint: %s<br/>%s\n" % (suite_name, text_summary))

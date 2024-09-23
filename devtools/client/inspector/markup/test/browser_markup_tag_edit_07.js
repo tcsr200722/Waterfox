@@ -9,12 +9,18 @@
 loadHelperScript("helper_attributes_test_runner.js");
 
 /*eslint-disable */
-const LONG_ATTRIBUTE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const LONG_ATTRIBUTE_COLLAPSED = "ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEF\u2026UVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const DATA_URL_INLINE_STYLE='color: red; background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQAQMAAAAlPW0iAAAABlBMVEUAAAD///+l2Z/dAAAAM0lEQVR4nGP4/5/h/1+G/58ZDrAz3D/McH8yw83NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC");';
-const DATA_URL_INLINE_STYLE_COLLAPSED='color: red; background: url("data:image/png;base64,iVBORw0KG\u2026NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC");';
-const DATA_URL_ATTRIBUTE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQAQMAAAAlPW0iAAAABlBMVEUAAAD///+l2Z/dAAAAM0lEQVR4nGP4/5/h/1+G/58ZDrAz3D/McH8yw83NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC";
-const DATA_URL_ATTRIBUTE_COLLAPSED = "data:image/png;base64,iVBORw0K\u20269/AFGGFyjOXZtQAAAAAElFTkSuQmCC";
+const LONG_ATTRIBUTE =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const LONG_ATTRIBUTE_COLLAPSED =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEF\u2026UVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const DATA_URL_INLINE_STYLE =
+  'color: red; background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQAQMAAAAlPW0iAAAABlBMVEUAAAD///+l2Z/dAAAAM0lEQVR4nGP4/5/h/1+G/58ZDrAz3D/McH8yw83NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC");';
+const DATA_URL_INLINE_STYLE_COLLAPSED =
+  'color: red; background: url("data:image/png;base64,iVBORw0KG\u2026NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC");';
+const DATA_URL_ATTRIBUTE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQAQMAAAAlPW0iAAAABlBMVEUAAAD///+l2Z/dAAAAM0lEQVR4nGP4/5/h/1+G/58ZDrAz3D/McH8yw83NDDeNGe4Ug9C9zwz3gVLMDA/A6P9/AFGGFyjOXZtQAAAAAElFTkSuQmCC";
+const DATA_URL_ATTRIBUTE_COLLAPSED =
+  "data:image/png;base64,iVBORw0K\u20269/AFGGFyjOXZtQAAAAAElFTkSuQmCC";
 /* eslint-enable */
 
 var TEST_URL = "data:text/html,<div>markup-view attributes addition test</div>";
@@ -53,7 +59,7 @@ var TEST_DATA = [
     expectedAttributes: {
       style: DATA_URL_INLINE_STYLE,
     },
-    validate: (container, inspector) => {
+    validate: container => {
       const editor = container.editor;
       const visibleAttrText = editor.attrElements
         .get("style")
@@ -69,7 +75,7 @@ var TEST_DATA = [
     expectedAttributes: {
       "data-long": LONG_ATTRIBUTE,
     },
-    validate: (container, inspector) => {
+    validate: container => {
       const editor = container.editor;
       const visibleAttrText = editor.attrElements
         .get("data-long")
@@ -85,7 +91,7 @@ var TEST_DATA = [
     expectedAttributes: {
       src: DATA_URL_ATTRIBUTE,
     },
-    validate: (container, inspector) => {
+    validate: container => {
       const editor = container.editor;
       const visibleAttrText = editor.attrElements
         .get("src")
@@ -101,17 +107,17 @@ var TEST_DATA = [
     expectedAttributes: {
       "data-long": LONG_ATTRIBUTE,
     },
-    setUp: function(inspector) {
+    setUp() {
       Services.prefs.setBoolPref("devtools.markup.collapseAttributes", false);
     },
-    validate: (container, inspector) => {
+    validate: container => {
       const editor = container.editor;
       const visibleAttrText = editor.attrElements
         .get("data-long")
         .querySelector(".attr-value").textContent;
       is(visibleAttrText, LONG_ATTRIBUTE);
     },
-    tearDown: function(inspector) {
+    tearDown() {
       Services.prefs.clearUserPref("devtools.markup.collapseAttributes");
     },
   },
@@ -121,10 +127,10 @@ var TEST_DATA = [
     expectedAttributes: {
       "data-long": LONG_ATTRIBUTE,
     },
-    setUp: function(inspector) {
+    setUp() {
       Services.prefs.setIntPref("devtools.markup.collapseAttributeLength", 2);
     },
-    validate: (container, inspector) => {
+    validate: container => {
       const firstChar = LONG_ATTRIBUTE[0];
       const lastChar = LONG_ATTRIBUTE[LONG_ATTRIBUTE.length - 1];
       const collapsed = firstChar + "\u2026" + lastChar;
@@ -134,13 +140,13 @@ var TEST_DATA = [
         .querySelector(".attr-value").textContent;
       is(visibleAttrText, collapsed);
     },
-    tearDown: function(inspector) {
+    tearDown() {
       Services.prefs.clearUserPref("devtools.markup.collapseAttributeLength");
     },
   },
 ];
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_URL);
-  await runAddAttributesTests(TEST_DATA, "div", inspector, testActor);
+add_task(async function () {
+  const { inspector } = await openInspectorForURL(TEST_URL);
+  await runAddAttributesTests(TEST_DATA, "div", inspector);
 });

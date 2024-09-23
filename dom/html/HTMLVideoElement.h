@@ -8,8 +8,10 @@
 #define mozilla_dom_HTMLVideoElement_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "Units.h"
 
 namespace mozilla {
 
@@ -35,8 +37,9 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   using HTMLMediaElement::GetPaused;
 
-  void Invalidate(bool aImageSizeChanged, Maybe<nsIntSize>& aNewIntrinsicSize,
-                  bool aForceInvalidate) override;
+  void Invalidate(ImageSizeChanged aImageSizeChanged,
+                  const Maybe<nsIntSize>& aNewIntrinsicSize,
+                  ForceInvalidate aForceInvalidate) override;
 
   virtual bool IsVideo() const override { return true; }
 
@@ -46,23 +49,20 @@ class HTMLVideoElement final : public HTMLMediaElement {
                               nsAttrValue& aResult) override;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
 
-  virtual nsMapRuleToAttributesFunc GetAttributeMappingFunction()
-      const override;
+  nsMapRuleToAttributesFunc GetAttributeMappingFunction() const override;
 
-  virtual nsresult Clone(NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(NodeInfo*, nsINode** aResult) const override;
 
-  virtual void UnbindFromTree(bool aNullParent = true) override;
+  void UnbindFromTree(UnbindContext&) override;
 
-  // Set size with the current video frame's height and width.
-  // If there is no video frame, returns NS_ERROR_FAILURE.
-  nsresult GetVideoSize(nsIntSize* size);
+  mozilla::Maybe<mozilla::CSSIntSize> GetVideoSize() const;
 
-  virtual void UpdateMediaSize(const nsIntSize& aSize) override;
+  void UpdateMediaSize(const nsIntSize& aSize) override;
 
-  virtual nsresult SetAcceptHeader(nsIHttpChannel* aChannel) override;
+  nsresult SetAcceptHeader(nsIHttpChannel* aChannel) override;
 
   // Element
-  virtual bool IsInteractiveHTMLContent() const override;
+  bool IsInteractiveHTMLContent() const override;
 
   // WebIDL
 
@@ -82,31 +82,11 @@ class HTMLVideoElement final : public HTMLMediaElement {
     SetUnsignedIntAttr(nsGkAtoms::height, aValue, 0, aRv);
   }
 
-  uint32_t VideoWidth() const {
-    if (mMediaInfo.HasVideo()) {
-      if (mMediaInfo.mVideo.mRotation == VideoInfo::Rotation::kDegree_90 ||
-          mMediaInfo.mVideo.mRotation == VideoInfo::Rotation::kDegree_270) {
-        return mMediaInfo.mVideo.mDisplay.height;
-      }
-      return mMediaInfo.mVideo.mDisplay.width;
-    }
-    return 0;
-  }
+  uint32_t VideoWidth();
 
-  uint32_t VideoHeight() const {
-    if (mMediaInfo.HasVideo()) {
-      if (mMediaInfo.mVideo.mRotation == VideoInfo::Rotation::kDegree_90 ||
-          mMediaInfo.mVideo.mRotation == VideoInfo::Rotation::kDegree_270) {
-        return mMediaInfo.mVideo.mDisplay.width;
-      }
-      return mMediaInfo.mVideo.mDisplay.height;
-    }
-    return 0;
-  }
+  uint32_t VideoHeight();
 
-  VideoInfo::Rotation RotationDegrees() const {
-    return mMediaInfo.mVideo.mRotation;
-  }
+  VideoRotation RotationDegrees() const { return mMediaInfo.mVideo.mRotation; }
 
   bool HasAlpha() const { return mMediaInfo.mVideo.HasAlpha(); }
 
@@ -121,7 +101,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   uint32_t MozDecodedFrames() const;
 
-  uint32_t MozPresentedFrames() const;
+  uint32_t MozPresentedFrames();
 
   uint32_t MozPaintedFrames();
 
@@ -129,18 +109,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   bool MozHasAudio() const;
 
-  // Gives access to the decoder's frame statistics, if present.
-  FrameStatistics* GetFrameStatistics();
-
   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
-
-  bool MozOrientationLockEnabled() const {
-    return StaticPrefs::media_videocontrols_lock_video_orientation();
-  }
-
-  bool MozIsOrientationLocked() const { return mIsOrientationLocked; }
-
-  void SetMozIsOrientationLocked(bool aLock) { mIsOrientationLocked = aLock; }
 
   already_AddRefed<Promise> CloneElementVisually(HTMLVideoElement& aTarget,
                                                  ErrorResult& rv);
@@ -151,6 +120,18 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   void OnSecondaryVideoContainerInstalled(
       const RefPtr<VideoFrameContainer>& aSecondaryContainer) override;
+
+  void OnSecondaryVideoOutputFirstFrameRendered();
+
+  void OnVisibilityChange(Visibility aNewVisibility) override;
+
+  bool DisablePictureInPicture() const {
+    return GetBoolAttr(nsGkAtoms::disablepictureinpicture);
+  }
+
+  void SetDisablePictureInPicture(bool aValue, ErrorResult& aError) {
+    SetHTMLBoolAttr(nsGkAtoms::disablepictureinpicture, aValue, aError);
+  }
 
  protected:
   virtual ~HTMLVideoElement();
@@ -171,9 +152,11 @@ class HTMLVideoElement final : public HTMLMediaElement {
   void CreateVideoWakeLockIfNeeded();
   void ReleaseVideoWakeLockIfExists();
 
+  gfx::IntSize GetVideoIntrinsicDimensions();
+
   RefPtr<WakeLock> mScreenWakeLock;
 
-  bool mIsOrientationLocked;
+  WatchManager<HTMLVideoElement> mVideoWatchManager;
 
  private:
   bool SetVisualCloneTarget(
@@ -192,11 +175,11 @@ class HTMLVideoElement final : public HTMLMediaElement {
   // Set when mVisualCloneTarget is set, and resolved (and unset) when the
   // secondary container has been applied to the underlying resource.
   RefPtr<Promise> mVisualCloneTargetPromise;
-  // Set when mVisualCloneTarget is set and we are playing a MediaStream with a
-  // video track. This is the output wrapping the VideoFrameContainer of
-  // mVisualCloneTarget, so the selected video track can render its frames to
-  // it.
-  RefPtr<SecondaryVideoOutput> mSecondaryVideoOutput;
+  // Set when beginning to clone visually and we are playing a MediaStream.
+  // This is the output wrapping the VideoFrameContainer of mVisualCloneTarget,
+  // so we can render its first frame, and resolve mVisualCloneTargetPromise as
+  // we do.
+  RefPtr<FirstFrameVideoOutput> mSecondaryVideoOutput;
   // If this video is the clone target of another video element,
   // then mVisualCloneSource points to that originating video
   // element.
@@ -205,8 +188,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
   // SetVisualCloneTarget() instead.
   RefPtr<HTMLVideoElement> mVisualCloneSource;
 
-  static void MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
-                                    MappedDeclarations&);
+  static void MapAttributesIntoRule(MappedDeclarationsBuilder&);
 
   static bool IsVideoStatsEnabled();
   double TotalPlayTime() const;

@@ -33,13 +33,15 @@ class MockWidget : public nsBaseWidget {
 
   void* GetNativeData(uint32_t aDataType) override {
     if (aDataType == NS_NATIVE_OPENGL_CONTEXT) {
-      mozilla::gl::SurfaceCaps caps = mozilla::gl::SurfaceCaps::ForRGB();
-      caps.preserve = false;
-      caps.bpp16 = false;
       nsCString discardFailureId;
-      RefPtr<GLContext> context = GLContextProvider::CreateOffscreen(
-          IntSize(mCompWidth, mCompHeight), caps,
-          CreateContextFlags::REQUIRE_COMPAT_PROFILE, &discardFailureId);
+      RefPtr<GLContext> context = GLContextProvider::CreateHeadless(
+          {CreateContextFlags::REQUIRE_COMPAT_PROFILE}, &discardFailureId);
+      if (!context) {
+        return nullptr;
+      }
+      if (!context->CreateOffscreenDefaultFb({mCompWidth, mCompHeight})) {
+        return nullptr;
+      }
       return context.forget().take();
     }
     return nullptr;
@@ -47,12 +49,12 @@ class MockWidget : public nsBaseWidget {
 
   virtual nsresult Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
                           const LayoutDeviceIntRect& aRect,
-                          nsWidgetInitData* aInitData = nullptr) override {
+                          InitData* aInitData = nullptr) override {
     return NS_OK;
   }
   virtual nsresult Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
                           const DesktopIntRect& aRect,
-                          nsWidgetInitData* aInitData = nullptr) override {
+                          InitData* aInitData = nullptr) override {
     return NS_OK;
   }
   virtual void Show(bool aState) override {}
@@ -64,11 +66,11 @@ class MockWidget : public nsBaseWidget {
 
   virtual void Enable(bool aState) override {}
   virtual bool IsEnabled() const override { return true; }
+
+  virtual nsSizeMode SizeMode() override { return mSizeMode; }
+  virtual void SetSizeMode(nsSizeMode aMode) override { mSizeMode = aMode; }
+
   virtual void SetFocus(Raise, mozilla::dom::CallerType aCallerType) override {}
-  virtual nsresult ConfigureChildren(
-      const nsTArray<Configuration>& aConfigurations) override {
-    return NS_OK;
-  }
   virtual void Invalidate(const LayoutDeviceIntRect& aRect) override {}
   virtual nsresult SetTitle(const nsAString& title) override { return NS_OK; }
   virtual LayoutDeviceIntPoint WidgetToScreenOffset() override {
@@ -84,6 +86,8 @@ class MockWidget : public nsBaseWidget {
 
  private:
   ~MockWidget() = default;
+
+  nsSizeMode mSizeMode = nsSizeMode_Normal;
 
   int mCompWidth;
   int mCompHeight;

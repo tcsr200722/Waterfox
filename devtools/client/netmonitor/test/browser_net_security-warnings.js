@@ -15,7 +15,7 @@ const TEST_CASES = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL, {
     requestCount: 1,
   });
@@ -29,11 +29,13 @@ add_task(async function() {
 
     info("Performing request to " + test.uri);
     let wait = waitForNetworkEvents(monitor, 1);
-    await SpecialPowers.spawn(tab.linkedBrowser, [test.uri], async function(
-      url
-    ) {
-      content.wrappedJSObject.performRequests(1, url);
-    });
+    await SpecialPowers.spawn(
+      tab.linkedBrowser,
+      [test.uri],
+      async function (url) {
+        content.wrappedJSObject.performRequests(1, url);
+      }
+    );
     await wait;
 
     info("Selecting the request.");
@@ -47,10 +49,7 @@ add_task(async function() {
     if (!document.querySelector("#security-tab[aria-selected=true]")) {
       info("Selecting security tab.");
       wait = waitForDOM(document, "#security-panel .properties-view");
-      EventUtils.sendMouseEvent(
-        { type: "click" },
-        document.querySelector("#security-tab")
-      );
+      clickOnSidebarTab(document, "security");
       await wait;
     }
 
@@ -60,7 +59,7 @@ add_task(async function() {
       "Cipher suite warning is hidden."
     );
 
-    store.dispatch(Actions.clearRequests());
+    await clearNetworkEvents(monitor);
   }
 
   return teardown(monitor);

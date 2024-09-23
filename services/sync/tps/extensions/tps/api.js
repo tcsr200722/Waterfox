@@ -2,15 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
+const { FileUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
 );
 
-/* globals ExtensionAPI */
+/* globals ExtensionAPI, Services, XPCOMUtils */
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -21,8 +17,11 @@ XPCOMUtils.defineLazyServiceGetter(
 
 async function tpsStartup() {
   try {
-    var { TPS } = ChromeUtils.import("resource://tps/tps.jsm");
-    ChromeUtils.import("resource://tps/quit.js", TPS);
+    var { TPS } = ChromeUtils.importESModule("resource://tps/tps.sys.mjs");
+    let { goQuitApplication } = ChromeUtils.importESModule(
+      "resource://tps/quit.sys.mjs"
+    );
+    TPS.goQuitApplication = goQuitApplication;
 
     let testFile = Services.prefs.getStringPref("testing.tps.testFile", "");
     let testPhase = Services.prefs.getStringPref("testing.tps.testPhase", "");
@@ -58,22 +57,6 @@ async function tpsStartup() {
     // to kill us if initialization failed.
     Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
   }
-}
-
-function onStartupFinished() {
-  return new Promise(resolve => {
-    const onStartupFinished = () => {
-      Services.obs.removeObserver(
-        onStartupFinished,
-        "browser-delayed-startup-finished"
-      );
-      resolve();
-    };
-    Services.obs.addObserver(
-      onStartupFinished,
-      "browser-delayed-startup-finished"
-    );
-  });
 }
 
 this.tps = class extends ExtensionAPI {

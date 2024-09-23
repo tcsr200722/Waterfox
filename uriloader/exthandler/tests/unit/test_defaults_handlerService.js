@@ -9,31 +9,15 @@ XPCOMUtils.defineLazyServiceGetter(
   "@mozilla.org/uriloader/external-protocol-service;1",
   "nsIExternalProtocolService"
 );
-
-const kDefaultHandlerList = Services.prefs
-  .getChildList("gecko.handlerService.schemes")
-  .filter(p => {
-    try {
-      let val = Services.prefs.getComplexValue(p, Ci.nsIPrefLocalizedString)
-        .data;
-      return !!val;
-    } catch (ex) {
-      return false;
-    }
-  });
+ChromeUtils.defineESModuleGetters(this, {
+  kHandlerList: "resource://gre/modules/handlers/HandlerList.sys.mjs",
+});
 
 add_task(async function test_check_defaults_get_added() {
-  let protocols = new Set(
-    kDefaultHandlerList.map(p => p.match(/schemes\.(\w+)/)[1])
-  );
+  let protocols = Object.keys(kHandlerList.default.schemes);
   for (let protocol of protocols) {
-    const kPrefStr = `schemes.${protocol}.`;
-    let matchingPrefs = kDefaultHandlerList.filter(p => p.includes(kPrefStr));
-    let protocolHandlerCount = matchingPrefs.length / 2;
-    Assert.ok(
-      protocolHandlerCount,
-      `Prefs for ${protocol} have at least 1 protocol handler`
-    );
+    let protocolHandlerCount =
+      kHandlerList.default.schemes[protocol].handlers.length;
     Assert.ok(
       gHandlerService.wrappedJSObject._store.data.schemes[protocol].stubEntry,
       `Expect stub for ${protocol}`
@@ -80,9 +64,6 @@ add_task(async function test_check_defaults_get_added() {
 });
 
 add_task(async function test_check_default_modification() {
-  let mailtoHandlerCount =
-    kDefaultHandlerList.filter(p => p.includes("mailto")).length / 2;
-  Assert.ok(mailtoHandlerCount, "Prefs have at least 1 mailto handler");
   Assert.ok(
     true,
     JSON.stringify(gHandlerService.wrappedJSObject._store.data.schemes.mailto)
@@ -105,59 +86,117 @@ add_task(async function test_check_default_modification() {
   await deleteHandlerStore();
 });
 
-/**
- * Check that we don't add bogus handlers.
- */
-add_task(async function test_check_restrictions() {
-  const kTestData = {
-    testdeleteme: [
-      ["Delete me", ""],
-      ["Delete me insecure", "http://example.com/%s"],
-      ["Delete me no substitution", "https://example.com/"],
-      ["Keep me", "https://example.com/%s"],
-    ],
-    testreallydeleteme: [
-      // used to check we remove the entire entry.
-      ["Delete me", "http://example.com/%s"],
-    ],
-  };
-  for (let [scheme, handlers] of Object.entries(kTestData)) {
-    let count = 1;
-    for (let [name, uriTemplate] of handlers) {
-      let pref = `gecko.handlerService.schemes.${scheme}.${count}.`;
-      let obj = Cc["@mozilla.org/pref-localizedstring;1"].createInstance(
-        Ci.nsIPrefLocalizedString
+add_task(async function test_migrations() {
+  const kTestData = [
+    ["A", "http://compose.mail.yahoo.co.jp/ym/Compose?To=%s"],
+    ["B", "http://www.inbox.lv/rfc2368/?value=%s"],
+    ["C", "http://poczta.interia.pl/mh/?mailto=%s"],
+    ["D", "http://win.mail.ru/cgi-bin/sentmsg?mailto=%s"],
+  ];
+  // Set up the test handlers. This doesn't use prefs like the previous test,
+  // because we now refuse to import insecure handler prefs. They can only
+  // exist if they were added into the handler store before this restriction
+  // was created (bug 1526890).
+  gHandlerService.wrappedJSObject._injectDefaultProtocolHandlers();
+  let handler = gExternalProtocolService.getProtocolHandlerInfo("mailto");
+  while (handler.possibleApplicationHandlers.length) {
+    handler.possibleApplicationHandlers.removeElementAt(0);
+  }
+  for (let [name, uriTemplate] of kTestData) {
+    let app = Cc["@mozilla.org/uriloader/web-handler-app;1"].createInstance(
+      Ci.nsIWebHandlerApp
+    );
+    app.uriTemplate = uriTemplate;
+    app.name = name;
+    handler.possibleApplicationHandlers.appendElement(app);
+  }
+  gHandlerService.store(handler);
+
+  // Now migrate them:
+  Services.prefs.setCharPref("browser.handlers.migrations", "blah,secure-mail");
+  gHandlerService.wrappedJSObject._migrateProtocolHandlersIfNeeded();
+
+  // Now check the result:
+  handler = gExternalProtocolService.getProtocolHandlerInfo("mailto");
+
+  let expectedURIs = new Set([
+    "https://mail.yahoo.co.jp/compose/?To=%s",
+    "https://mail.inbox.lv/compose?to=%s",
+    "https://poczta.interia.pl/mh/?mailto=%s",
+    "https://e.mail.ru/cgi-bin/sentmsg?mailto=%s",
+  ]);
+
+  let possibleApplicationHandlers = Array.from(
+    handler.possibleApplicationHandlers.enumerate(Ci.nsIWebHandlerApp)
+  );
+  // Set iterators are stable to deletion, so this works:
+  for (let expected of expectedURIs) {
+    for (let app of possibleApplicationHandlers) {
+      if (app instanceof Ci.nsIWebHandlerApp && app.uriTemplate == expected) {
+        Assert.ok(true, "Found handler with URI " + expected);
+        // ... even when we remove items.
+        expectedURIs.delete(expected);
+        break;
+      }
+    }
+  }
+  Assert.equal(expectedURIs.size, 0, "Should have seen all the expected URIs.");
+
+  for (let app of possibleApplicationHandlers) {
+    if (app instanceof Ci.nsIWebHandlerApp) {
+      Assert.ok(
+        !kTestData.some(n => n[1] == app.uriTemplate),
+        "Should not be any of the original handlers"
       );
-      obj.data = name;
-      Services.prefs.setComplexValue(
-        pref + "name",
-        Ci.nsIPrefLocalizedString,
-        obj
-      );
-      obj.data = uriTemplate;
-      Services.prefs.setComplexValue(
-        pref + "uriTemplate",
-        Ci.nsIPrefLocalizedString,
-        obj
-      );
-      count++;
     }
   }
 
-  gHandlerService.wrappedJSObject._injectDefaultProtocolHandlers();
-  let schemeData = gHandlerService.wrappedJSObject._store.data.schemes;
-
-  Assert.ok(schemeData.testdeleteme, "Expect an entry for testdeleteme");
   Assert.ok(
-    schemeData.testdeleteme.stubEntry,
-    "Expect a stub entry for testdeleteme"
+    !handler.preferredApplicationHandler,
+    "Shouldn't have preferred handler initially."
   );
+  await deleteHandlerStore();
+});
+
+/**
+ * Check that non-https templates or ones without a '%s' are ignored.
+ */
+add_task(async function invalid_handlers_are_rejected() {
+  let schemes = kHandlerList.default.schemes;
+  schemes.myfancyinvalidstuff = {
+    handlers: [
+      {
+        name: "No template at all",
+      },
+      {
+        name: "Not secure",
+        uriTemplate: "http://example.com/%s",
+      },
+      {
+        name: "No replacement percent-s bit",
+        uriTemplate: "https://example.com/",
+      },
+      {
+        name: "Actually valid",
+        uriTemplate: "https://example.com/%s",
+      },
+    ],
+  };
+  gHandlerService.wrappedJSObject._injectDefaultProtocolHandlers();
+  // Now check the result:
+  let handler = gExternalProtocolService.getProtocolHandlerInfo(
+    "myfancyinvalidstuff"
+  );
+
+  let expectedURIs = ["https://example.com/%s"];
 
   Assert.deepEqual(
-    schemeData.testdeleteme.handlers,
-    [null, { name: "Keep me", uriTemplate: "https://example.com/%s" }],
-    "Expect only one handler is kept."
+    Array.from(
+      handler.possibleApplicationHandlers.enumerate(Ci.nsIWebHandlerApp),
+      e => e.uriTemplate
+    ),
+    expectedURIs,
+    "Should have seen only 1 handler added."
   );
-
-  Assert.ok(!schemeData.testreallydeleteme, "No entry for reallydeleteme");
+  await deleteHandlerStore();
 });

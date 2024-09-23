@@ -7,7 +7,6 @@
 const kInterfaceName = "wifi";
 const kOtherInterfaceName = "ril";
 
-var server;
 var step = 0;
 var loginFinished = false;
 
@@ -23,7 +22,7 @@ function xhr_handler(metadata, response) {
 }
 
 function fakeUIResponse() {
-  Services.obs.addObserver(function observe(subject, topic, data) {
+  Services.obs.addObserver(function observe(subject, topic) {
     if (topic === "captive-portal-login") {
       let xhr = new XMLHttpRequest();
       xhr.open("GET", gServerURL + kCanonicalSitePath, true);
@@ -38,7 +37,7 @@ function test_abort() {
   do_test_pending();
 
   let callback = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalCallback"]),
     prepare: function prepare() {
       Assert.equal(++step, 1);
       gCaptivePortalDetector.finishPreparation(kInterfaceName);
@@ -51,13 +50,13 @@ function test_abort() {
   };
 
   let otherCallback = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalCallback"]),
     prepare: function prepare() {
       do_throw(
         "should not execute |prepare| callback for " + kOtherInterfaceName
       );
     },
-    complete: function complete(success) {
+    complete: function complete() {
       do_throw("should not execute |complete| callback for " + kInterfaceName);
     },
   };

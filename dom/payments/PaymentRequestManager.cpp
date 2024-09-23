@@ -7,15 +7,16 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/PaymentRequestChild.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/Preferences.h"
 #include "nsContentUtils.h"
 #include "nsString.h"
 #include "nsIPrincipal.h"
+#include "nsIPaymentActionResponse.h"
 #include "PaymentRequestManager.h"
 #include "PaymentRequestUtils.h"
 #include "PaymentResponse.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 namespace {
 
 /*
@@ -28,7 +29,7 @@ void ConvertMethodData(JSContext* aCx, const PaymentMethodData& aMethodData,
   // Convert JSObject to a serialized string
   nsAutoString serializedData;
   if (aMethodData.mData.WasPassed()) {
-    JS::RootedObject object(aCx, aMethodData.mData.Value());
+    JS::Rooted<JSObject*> object(aCx, aMethodData.mData.Value());
     if (NS_WARN_IF(
             NS_FAILED(SerializeFromJSObject(aCx, object, serializedData)))) {
       aRv.ThrowTypeError(
@@ -59,7 +60,7 @@ void ConvertModifier(JSContext* aCx, const PaymentDetailsModifier& aModifier,
   // Convert JSObject to a serialized string
   nsAutoString serializedData;
   if (aModifier.mData.WasPassed()) {
-    JS::RootedObject object(aCx, aModifier.mData.Value());
+    JS::Rooted<JSObject*> object(aCx, aModifier.mData.Value());
     if (NS_WARN_IF(
             NS_FAILED(SerializeFromJSObject(aCx, object, serializedData)))) {
       aRv.ThrowTypeError("The Modifier.data must be a serializable object");
@@ -152,10 +153,10 @@ void ConvertDetailsInit(JSContext* aCx, const PaymentDetailsInit& aDetails,
 
   aIPCDetails =
       IPCPaymentDetails(id, total, displayItems, shippingOptions, modifiers,
-                        EmptyString(),   // error message
-                        EmptyString(),   // shippingAddressErrors
-                        EmptyString(),   // payerErrors
-                        EmptyString());  // paymentMethodErrors
+                        u""_ns,   // error message
+                        u""_ns,   // shippingAddressErrors
+                        u""_ns,   // payerErrors
+                        u""_ns);  // paymentMethodErrors
 }
 
 void ConvertDetailsUpdate(JSContext* aCx, const PaymentDetailsUpdate& aDetails,
@@ -203,7 +204,7 @@ void ConvertDetailsUpdate(JSContext* aCx, const PaymentDetailsUpdate& aDetails,
 
   nsAutoString paymentMethodErrors;
   if (aDetails.mPaymentMethodErrors.WasPassed()) {
-    JS::RootedObject object(aCx, aDetails.mPaymentMethodErrors.Value());
+    JS::Rooted<JSObject*> object(aCx, aDetails.mPaymentMethodErrors.Value());
     if (NS_WARN_IF(NS_FAILED(
             SerializeFromJSObject(aCx, object, paymentMethodErrors)))) {
       aRv.ThrowTypeError("The PaymentMethodErrors can not be serialized");
@@ -211,7 +212,7 @@ void ConvertDetailsUpdate(JSContext* aCx, const PaymentDetailsUpdate& aDetails,
     }
   }
 
-  aIPCDetails = IPCPaymentDetails(EmptyString(),  // id
+  aIPCDetails = IPCPaymentDetails(u""_ns,  // id
                                   total, displayItems, shippingOptions,
                                   modifiers, error, shippingAddressErrors,
                                   payerErrors, paymentMethodErrors);
@@ -219,8 +220,7 @@ void ConvertDetailsUpdate(JSContext* aCx, const PaymentDetailsUpdate& aDetails,
 
 void ConvertOptions(const PaymentOptions& aOptions,
                     IPCPaymentOptions& aIPCOption) {
-  NS_ConvertASCIItoUTF16 shippingType(
-      PaymentShippingTypeValues::GetString(aOptions.mShippingType));
+  NS_ConvertASCIItoUTF16 shippingType(GetEnumString(aOptions.mShippingType));
   aIPCOption =
       IPCPaymentOptions(aOptions.mRequestPayerName, aOptions.mRequestPayerEmail,
                         aOptions.mRequestPayerPhone, aOptions.mRequestShipping,
@@ -359,7 +359,10 @@ PaymentRequestChild* PaymentRequestManager::GetPaymentChild(
   aRequest->GetInternalId(requestId);
 
   PaymentRequestChild* paymentChild = new PaymentRequestChild(aRequest);
-  browserChild->SendPPaymentRequestConstructor(paymentChild);
+  if (!browserChild->SendPPaymentRequestConstructor(paymentChild)) {
+    // deleted by Constructor
+    return nullptr;
+  }
 
   return paymentChild;
 }
@@ -379,12 +382,7 @@ nsresult PaymentRequestManager::SendRequestPayment(
   }
 
   if (aResponseExpected) {
-    auto count = mActivePayments.LookupForAdd(aRequest);
-    if (count) {
-      count.Data()++;
-    } else {
-      count.OrInsert([]() { return 1; });
-    }
+    ++mActivePayments.LookupOrInsert(aRequest, 0);
   }
   return NS_OK;
 }
@@ -499,14 +497,8 @@ void PaymentRequestManager::CreatePayment(
   IPCPaymentOptions options;
   ConvertOptions(aOptions, options);
 
-  nsCOMPtr<nsPIDOMWindowOuter> outerWindow = aWindow->GetOuterWindow();
-  MOZ_ASSERT(outerWindow);
-  if (nsCOMPtr<nsPIDOMWindowOuter> topOuterWindow =
-          outerWindow->GetInProcessTop()) {
-    outerWindow = topOuterWindow;
-  }
-  uint64_t topOuterWindowId = outerWindow->WindowID();
-
+  uint64_t topOuterWindowId =
+      aWindow->GetWindowContext()->TopWindowContext()->OuterWindowId();
   IPCPaymentCreateActionRequest action(topOuterWindowId, internalId,
                                        aTopLevelPrincipal, methodData, details,
                                        options, shippingOption);
@@ -551,12 +543,11 @@ void PaymentRequestManager::AbortPayment(PaymentRequest* aRequest,
 void PaymentRequestManager::CompletePayment(PaymentRequest* aRequest,
                                             const PaymentComplete& aComplete,
                                             ErrorResult& aRv, bool aTimedOut) {
-  nsString completeStatusString(NS_LITERAL_STRING("unknown"));
+  nsString completeStatusString(u"unknown"_ns);
   if (aTimedOut) {
     completeStatusString.AssignLiteral("timeout");
   } else {
-    completeStatusString.AssignASCII(
-        PaymentCompleteValues::GetString(aComplete));
+    completeStatusString.AssignASCII(GetEnumString(aComplete));
   }
 
   nsAutoString requestId;
@@ -638,7 +629,7 @@ void PaymentRequestManager::RetryPayment(JSContext* aCx,
 
   nsAutoString paymentMethodErrors;
   if (aErrors.mPaymentMethod.WasPassed()) {
-    JS::RootedObject object(aCx, aErrors.mPaymentMethod.Value());
+    JS::Rooted<JSObject*> object(aCx, aErrors.mPaymentMethod.Value());
     if (NS_WARN_IF(NS_FAILED(
             SerializeFromJSObject(aCx, object, paymentMethodErrors)))) {
       aRv.ThrowTypeError("The PaymentMethodErrors can not be serialized");
@@ -749,5 +740,4 @@ nsresult PaymentRequestManager::ChangePaymentMethod(
   return aRequest->UpdatePaymentMethod(aMethodName, methodDetails);
 }
 
-}  // end of namespace dom
-}  // end of namespace mozilla
+}  // namespace mozilla::dom

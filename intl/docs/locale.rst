@@ -44,7 +44,7 @@ On top of that, a locale may contain:
      These fields can be used to carry additional information about a locale.
      Mozilla currently has partial support for them in the JS implementation and plans to
      extend support to all APIs.
- - extkeys and grandfathered tags
+ - extkeys and "grandfathered" tags (unfortunate language, but part of the spec)
      Mozilla does not support these yet.
 
 
@@ -323,7 +323,7 @@ Available Locales
 =================
 
 In Gecko, available locales come from the `Packaged Locales` and the installed
-`language packs`. Language packs are a variant of web extensions providing just
+`language packs`. Language packs are a variant of WebExtensions providing just
 localized resources for one or more languages.
 
 The primary notion of which locales are available is based on which locales Gecko has
@@ -451,6 +451,12 @@ process.
 
 To check the mode the process is operating in, the :js:`LocaleService::IsServer` method is available.
 
+Note that :js:`L10nRegistry.registerSources`, :js:`L10nRegistry.updateSources`, and
+:js:`L10nRegistry.removeSources` each trigger an IPC synchronization between the parent
+process and any extant content processes, which is expensive. If you need to change the
+registration of multiple sources, the best way to do so is to coalesce multiple requests
+into a single array and then call the method once.
+
 Mozilla Exceptions
 ==================
 
@@ -500,21 +506,30 @@ Testing Localization
 --------------------
 
 If the goal is to test that the correct localization ends up in the correct place,
-the developer needs to register a new :js:`FileSource` in :js:`L10nRegistry` and
+the developer needs to register a new :js:`L10nFileSource` in :js:`L10nRegistry` and
 provide a mock cached data to be returned by the API.
 
 It may look like this:
 
 .. code-block:: javascript
 
-    let fs = new FileSource(["ko-KR", "ar"], "resource://mock-addon/localization/{locale}");
+    let source = L10nFileSource.createMock(
+      "mock-source", "app",
+      ["ko-KR", "ar"],
+      "resource://mock-addon/localization/{locale}",
+      [
+        {
+          path: "resource://mock-addon/localization/ko-KR/test.ftl",
+          source: "key = Value in Korean"
+        },
+        {
+          path: "resource://mock-addon/localization/ar/test.ftl",
+          source: "key = Value in Arabic"
+        }
+      ]
+    );
 
-    fs.cache = {
-      "resource://mock-addon/localization/ko-KR/test.ftl": "key = Value in Korean",
-      "resource://mock-addon/localization/ar/test.ftl": "key = Value in Arabic"
-    };
-
-    L10nRegistry.registerSource(fs);
+    L10nRegistry.registerSources([fs]);
 
     let availableLocales = Services.locale.availableLocales;
 

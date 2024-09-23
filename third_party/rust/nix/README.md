@@ -1,7 +1,8 @@
 # Rust bindings to *nix APIs
 
-[![Build Status](https://travis-ci.org/nix-rust/nix.svg?branch=master)](https://travis-ci.org/nix-rust/nix)
-[![crates.io](http://meritbadge.herokuapp.com/nix)](https://crates.io/crates/nix)
+[![Cirrus Build Status](https://api.cirrus-ci.com/github/nix-rust/nix.svg)](https://cirrus-ci.com/github/nix-rust/nix)
+[![crates.io](https://img.shields.io/crates/v/nix.svg)](https://crates.io/crates/nix)
+[![maintenance-status](https://img.shields.io/badge/maintenance-looking--for--maintainer-orange.svg)](https://github.com/nix-rust/nix/issues/2132)
 
 [Documentation (Releases)](https://docs.rs/nix/)
 
@@ -17,20 +18,20 @@ usage.
 
 As an example of what Nix provides, examine the differences between what is
 exposed by libc and nix for the
-[gethostname](http://man7.org/linux/man-pages/man2/gethostname.2.html) system
+[gethostname](https://man7.org/linux/man-pages/man2/gethostname.2.html) system
 call:
 
 ```rust,ignore
 // libc api (unsafe, requires handling return code/errno)
 pub unsafe extern fn gethostname(name: *mut c_char, len: size_t) -> c_int;
 
-// nix api (returns a nix::Result<CStr>)
-pub fn gethostname<'a>(buffer: &'a mut [u8]) -> Result<&'a CStr>;
+// nix api (returns a nix::Result<OsString>)
+pub fn gethostname() -> Result<OsString>;
 ```
 
 ## Supported Platforms
 
-nix target support consists of two tiers. While nix attempts to support all
+nix target support consists of three tiers. While nix attempts to support all
 platforms supported by [libc](https://github.com/rust-lang/libc), only some
 platforms are actively supported due to either technical or manpower
 limitations. Support for platforms is split into three tiers:
@@ -41,61 +42,72 @@ limitations. Support for platforms is split into three tiers:
              blocks the inclusion of new code. Tests may be run, but failures
              in tests don't block the inclusion of new code.
   * Tier 3 - Builds for this target are run in CI. Failures during the build
-             *do not* block the inclusion of new code. Testing may be run, but
-             failures in tests don't block the inclusion of new code.
+             *do not* necessarily block the inclusion of new code.  That is, at
+             our discretion a Tier 3 target may be dropped at any time, if it
+             would otherwise block development.
 
-The following targets are all supported by nix on Rust 1.24.1 or newer (unless
-otherwise noted):
+Platforms not listed are supported on a best-effort basis, relying on our users
+to report any problems.
 
-Tier 1:
-  * aarch64-unknown-linux-gnu
-  * arm-unknown-linux-gnueabi
-  * armv7-unknown-linux-gnueabihf
-  * i686-apple-darwin
-  * i686-unknown-freebsd
-  * i686-unknown-linux-gnu
-  * i686-unknown-linux-musl
-  * mips-unknown-linux-gnu
-  * mips64-unknown-linux-gnuabi64
-  * mips64el-unknown-linux-gnuabi64
-  * mipsel-unknown-linux-gnu
-  * powerpc64-unknown-linux-gnu
-  * powerpc64le-unknown-linux-gnu
-  * x86_64-apple-darwin
-  * x86_64-unknown-freebsd
-  * x86_64-unknown-linux-gnu
-  * x86_64-unknown-linux-musl
+The following targets are supported by `nix`:
 
-Tier 2:
-  * aarch64-apple-ios
-  * aarch64-linux-android
-  * arm-linux-androideabi
-  * arm-unknown-linux-musleabi
-  * armv7-apple-ios
-  * armv7-linux-androideabi
-  * armv7s-apple-ios
-  * i386-apple-ios
-  * i686-linux-android
-  * powerpc-unknown-linux-gnu
-  * s390x-unknown-linux-gnu
-  * x86_64-apple-ios
-  * x86_64-linux-android
-  * x86_64-unknown-netbsd
+<table>
+ <tr>
+  <th>Tier 1</th>
+  <th>Tier 2</th>
+  <th>Tier 3</th>
+ </tr>
+ <tr>
+  <td>
+   <ul>
+    <li>aarch64-apple-darwin</li>
+    <li>aarch64-unknown-linux-gnu</li>
+    <li>arm-unknown-linux-gnueabi</li>
+    <li>armv7-unknown-linux-gnueabihf</li>
+    <li>i686-unknown-freebsd</li>
+    <li>i686-unknown-linux-gnu</li>
+    <li>i686-unknown-linux-musl</li>
+    <li>mips-unknown-linux-gnu</li>
+    <li>mips64-unknown-linux-gnuabi64</li>
+    <li>mips64el-unknown-linux-gnuabi64</li>
+    <li>mipsel-unknown-linux-gnu</li>
+    <li>powerpc64le-unknown-linux-gnu</li>
+    <li>x86_64-unknown-freebsd</li>
+    <li>x86_64-unknown-linux-gnu</li>
+    <li>x86_64-unknown-linux-musl</li>
+   </ul>
+  </td>
+  <td>
+   <ul>
+    <li>aarch64-apple-ios</li>
+    <li>aarch64-linux-android</li>
+    <li>arm-linux-androideabi</li>
+    <li>arm-unknown-linux-musleabi</li>
+    <li>armv7-linux-androideabi</li>
+    <li>i686-linux-android</li>
+    <li>s390x-unknown-linux-gnu</li>
+    <li>x86_64-linux-android</li>
+    <li>x86_64-unknown-illumos</li>
+    <li>x86_64-unknown-netbsd</li>
+   </td>
+   <td>
+    <li>armv7-unknown-linux-uclibceabihf</li>
+    <li>powerpc64-unknown-linux-gnu</li>
+    <li>x86_64-fuchsia</li>
+    <li>x86_64-unknown-dragonfly</li>
+    <li>x86_64-unknown-haiku</li>
+    <li>x86_64-unknown-linux-gnux32</li>
+    <li>x86_64-unknown-openbsd</li>
+    <li>x86_64-unknown-redox</li>
+    <li>i686-unknown-hurd-gnu</li>
+   </td>
+  </tr>
+</table>
 
-## Usage
+## Minimum Supported Rust Version (MSRV)
 
-To use `nix`, first add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-nix = "0.13.1"
-```
-
-Then, add this to your crate root:
-
-```rust,ignore
-extern crate nix;
-```
+nix is supported on Rust 1.69 and higher.  Its MSRV will not be
+changed in the future without bumping the major or minor version.
 
 ## Contributing
 

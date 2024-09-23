@@ -8,15 +8,13 @@
 #define mozilla_dom_FileSystem_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
 class nsIGlobalObject;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class FileSystemDirectoryEntry;
 class FileSystemEntry;
@@ -25,7 +23,7 @@ class OwningFileOrDirectory;
 class FileSystem final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(FileSystem)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(FileSystem)
 
   static already_AddRefed<FileSystem> Create(nsIGlobalObject* aGlobalObject);
 
@@ -49,7 +47,6 @@ class FileSystem final : public nsISupports, public nsWrapperCache {
   nsString mName;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_FileSystem_h

@@ -4,75 +4,90 @@
 
 "use strict";
 
-const Services = require("Services");
-const { debounce } = require("devtools/shared/debounce");
+const { debounce } = require("resource://devtools/shared/debounce.js");
 const isMacOS = Services.appinfo.OS === "Darwin";
 
 loader.lazyRequireGetter(this, "Debugger", "Debugger");
-loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
+loader.lazyRequireGetter(
+  this,
+  "EventEmitter",
+  "resource://devtools/shared/event-emitter.js"
+);
 loader.lazyRequireGetter(
   this,
   "AutocompletePopup",
-  "devtools/client/shared/autocomplete-popup"
+  "resource://devtools/client/shared/autocomplete-popup.js"
 );
 
 loader.lazyRequireGetter(
   this,
   "PropTypes",
-  "devtools/client/shared/vendor/react-prop-types"
+  "resource://devtools/client/shared/vendor/react-prop-types.js"
 );
 loader.lazyRequireGetter(
   this,
   "KeyCodes",
-  "devtools/client/shared/keycodes",
+  "resource://devtools/client/shared/keycodes.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "Editor",
-  "devtools/client/shared/sourceeditor/editor"
+  "resource://devtools/client/shared/sourceeditor/editor.js"
 );
 loader.lazyRequireGetter(
   this,
   "getFocusableElements",
-  "devtools/client/shared/focus",
+  "resource://devtools/client/shared/focus.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "l10n",
-  "devtools/client/webconsole/utils/messages",
+  "resource://devtools/client/webconsole/utils/messages.js",
   true
 );
-loader.lazyRequireGetter(this, "saveAs", "devtools/shared/DevToolsUtils", true);
+loader.lazyRequireGetter(
+  this,
+  "saveAs",
+  "resource://devtools/shared/DevToolsUtils.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "beautify",
+  "resource://devtools/shared/jsbeautify/beautify.js"
+);
 
 // React & Redux
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 // History Modules
 const {
   getHistory,
   getHistoryValue,
-} = require("devtools/client/webconsole/selectors/history");
+} = require("resource://devtools/client/webconsole/selectors/history.js");
 const {
   getAutocompleteState,
-} = require("devtools/client/webconsole/selectors/autocomplete");
-const actions = require("devtools/client/webconsole/actions/index");
+} = require("resource://devtools/client/webconsole/selectors/autocomplete.js");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
 
 const EvaluationContextSelector = createFactory(
-  require("devtools/client/webconsole/components/Input/EvaluationContextSelector")
+  require("resource://devtools/client/webconsole/components/Input/EvaluationContextSelector.js")
 );
 
 // Constants used for defining the direction of JSTerm input history navigation.
 const {
   HISTORY_BACK,
   HISTORY_FORWARD,
-} = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/constants.js");
 
 const JSTERM_CODEMIRROR_ORIGIN = "jsterm";
 
@@ -113,6 +128,7 @@ class JSTerm extends Component {
       // Is the input in editor mode.
       editorMode: PropTypes.bool,
       editorWidth: PropTypes.number,
+      editorPrettifiedAt: PropTypes.number,
       showEditorOnboarding: PropTypes.bool,
       autocomplete: PropTypes.bool,
       showEvaluationContextSelector: PropTypes.bool,
@@ -131,6 +147,7 @@ class JSTerm extends Component {
 
     this._onEditorChanges = this._onEditorChanges.bind(this);
     this._onEditorBeforeChange = this._onEditorBeforeChange.bind(this);
+    this._onEditorKeyHandled = this._onEditorKeyHandled.bind(this);
     this.onContextMenu = this.onContextMenu.bind(this);
     this.imperativeUpdate = this.imperativeUpdate.bind(this);
 
@@ -249,7 +266,7 @@ class JSTerm extends Component {
 
       this.editor = new Editor({
         autofocus: true,
-        enableCodeFolding: false,
+        enableCodeFolding: this.props.editorMode,
         lineNumbers: this.props.editorMode,
         lineWrapping: true,
         mode: {
@@ -497,6 +514,9 @@ class JSTerm extends Component {
 
       this.editor.on("changes", this._onEditorChanges);
       this.editor.on("beforeChange", this._onEditorBeforeChange);
+      this.editor.on("blur", this._onEditorBlur);
+      this.editor.on("keyHandled", this._onEditorKeyHandled);
+
       this.editor.appendToLocalElement(this.node);
       const cm = this.editor.codeMirror;
       cm.on("paste", (_, event) => this.props.onPaste(event));
@@ -521,13 +541,27 @@ class JSTerm extends Component {
         }
       });
 
+      this.resizeObserver = new ResizeObserver(() => {
+        // If we don't have the node reference, or if the node isn't connected
+        // anymore, we disconnect the resize observer (componentWillUnmount is never
+        // called on this component, so we have to do it here).
+        if (!this.node || !this.node.isConnected) {
+          this.resizeObserver.disconnect();
+          return;
+        }
+        // Calling `refresh` will update the cursor position, and all the selection blocks.
+        this.editor.codeMirror.refresh();
+      });
+      this.resizeObserver.observe(this.node);
+
       // Update the character width needed for the popup offset calculations.
       this._inputCharWidth = this._getInputCharWidth();
       this.lastInputValue && this._setValue(this.lastInputValue);
     }
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     this.imperativeUpdate(nextProps);
   }
 
@@ -558,6 +592,7 @@ class JSTerm extends Component {
     if (nextProps.editorMode !== this.props.editorMode) {
       if (this.editor) {
         this.editor.setOption("lineNumbers", nextProps.editorMode);
+        this.editor.setOption("enableCodeFolding", nextProps.editorMode);
       }
 
       if (nextProps.editorMode && nextProps.editorWidth) {
@@ -577,6 +612,23 @@ class JSTerm extends Component {
       this.autocompletePopup
     ) {
       this.autocompletePopup.position = nextProps.autocompletePopupPosition;
+    }
+
+    if (
+      nextProps.editorPrettifiedAt &&
+      nextProps.editorPrettifiedAt !== this.props.editorPrettifiedAt
+    ) {
+      this._setValue(
+        beautify.js(this._getValue(), {
+          // Read directly from prefs because this.editor.config.indentUnit and
+          // this.editor.getOption('indentUnit') are not really synced with
+          // prefs.
+          indent_size: Services.prefs.getIntPref("devtools.editor.tabsize"),
+          indent_with_tabs: !Services.prefs.getBoolPref(
+            "devtools.editor.expandtab"
+          ),
+        })
+      );
     }
   }
 
@@ -637,7 +689,13 @@ class JSTerm extends Component {
    * Execute a string. Execution happens asynchronously in the content process.
    */
   _execute() {
-    const executeString = this.getSelectedText() || this._getValue();
+    const value = this._getValue();
+    // In editor mode, we only evaluate the text selection if there's one. The feature isn't
+    // enabled in inline mode as it can be confusing since input is cleared when evaluating.
+    const executeString = this.props.editorMode
+      ? this.getSelectedText() || value
+      : value;
+
     if (!executeString) {
       return;
     }
@@ -700,7 +758,7 @@ class JSTerm extends Component {
   async _openFile() {
     const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
     fp.init(
-      this.webConsoleUI.document.defaultView,
+      this.webConsoleUI.document.defaultView.browsingContext,
       l10n.getStr("webconsole.input.openJavaScriptFile"),
       Ci.nsIFilePicker.modeOpen
     );
@@ -713,8 +771,7 @@ class JSTerm extends Component {
 
     function readFile(file) {
       return new Promise(resolve => {
-        const { OS } = Cu.import("resource://gre/modules/osfile.jsm");
-        OS.File.read(file.path).then(data => {
+        IOUtils.read(file.path).then(data => {
           const decoder = new TextDecoder();
           resolve(decoder.decode(data));
         });
@@ -818,6 +875,40 @@ class JSTerm extends Component {
   }
 
   /**
+   * Even handler for the "blur" event fired by codeMirror.
+   */
+  _onEditorBlur(cm) {
+    if (cm.somethingSelected()) {
+      // If there's a selection when the input is blurred, then we remove it by setting
+      // the cursor at the position that matches the start of the first selection.
+      const [{ head }] = cm.listSelections();
+      cm.setCursor(head, { scroll: false });
+    }
+  }
+
+  /**
+   * Fired after a key is handled through a key map.
+   *
+   * @param {CodeMirror} cm: codeMirror instance
+   * @param {String} key: The key that was handled
+   */
+  _onEditorKeyHandled(cm, key) {
+    // The autocloseBracket addon handle closing brackets keys when they're typed, but
+    // there's already an existing closing bracket.
+    // ex:
+    //  1. input is `foo(x|)` (where | represents the cursor)
+    //  2. user types `)`
+    //  3. input is now `foo(x)|` (i.e. the typed character wasn't inserted)
+    // In such case, _onEditorBeforeChange isn't triggered, so we need to hide the popup
+    // here. We can do that because this function won't be called when codeMirror _do_
+    // insert the closing char.
+    const closingKeys = [`']'`, `')'`, "'}'"];
+    if (this.autocompletePopup.isOpen && closingKeys.includes(key)) {
+      this.clearCompletion();
+    }
+  }
+
+  /**
    * Retrieve variable declared in the expression from the CodeMirror state, in order
    * to display them in the autocomplete popup.
    */
@@ -829,7 +920,9 @@ class JSTerm extends Component {
     if (state.context) {
       for (let c = state.context; c; c = c.prev) {
         for (let v = c.vars; v; v = v.next) {
-          variables.push(v.name);
+          if (v.name) {
+            variables.push(v.name);
+          }
         }
       }
     }
@@ -838,7 +931,9 @@ class JSTerm extends Component {
     for (const key of keys) {
       if (state[key]) {
         for (let v = state[key]; v; v = v.next) {
-          variables.push(v.name);
+          if (v.name) {
+            variables.push(v.name);
+          }
         }
       }
     }
@@ -990,7 +1085,7 @@ class JSTerm extends Component {
       return { preLabel, label, isElementAccess };
     });
 
-    if (items.length > 0) {
+    if (items.length) {
       const { preLabel, label } = items[0];
       let suffix = label.substring(preLabel.length);
       if (isElementAccess) {
@@ -1033,11 +1128,26 @@ class JSTerm extends Component {
       // We need to show the popup at the "." or "[".
       const xOffset = -1 * matchProp.length * this._inputCharWidth;
       const yOffset = 5;
-      const popupAlignElement = this.props.serviceContainer.getJsTermTooltipAnchor();
-      await popup.openPopup(popupAlignElement, xOffset, yOffset, 0, {
-        preventSelectCallback: true,
-      });
-    } else if (items.length < minimumAutoCompleteLength && popup.isOpen) {
+      const popupAlignElement =
+        this.props.serviceContainer.getJsTermTooltipAnchor();
+      this._openPopupPendingPromise = popup.openPopup(
+        popupAlignElement,
+        xOffset,
+        yOffset,
+        0,
+        {
+          preventSelectCallback: true,
+        }
+      );
+      await this._openPopupPendingPromise;
+      this._openPopupPendingPromise = null;
+    } else if (
+      items.length < minimumAutoCompleteLength &&
+      (popup.isOpen || this._openPopupPendingPromise)
+    ) {
+      if (this._openPopupPendingPromise) {
+        await this._openPopupPendingPromise;
+      }
       popup.hidePopup();
     }
 
@@ -1099,9 +1209,16 @@ class JSTerm extends Component {
     if (this.autocompletePopup) {
       this.autocompletePopup.clearItems();
 
-      if (this.autocompletePopup.isOpen) {
+      if (this.autocompletePopup.isOpen || this._openPopupPendingPromise) {
         onPopupClosed = this.autocompletePopup.once("popup-closed");
-        this.autocompletePopup.hidePopup();
+
+        if (this._openPopupPendingPromise) {
+          this._openPopupPendingPromise.then(() =>
+            this.autocompletePopup.hidePopup()
+          );
+        } else {
+          this.autocompletePopup.hidePopup();
+        }
         onPopupClosed.then(() => this.focus());
       }
     }
@@ -1114,17 +1231,35 @@ class JSTerm extends Component {
   acceptProposedCompletion() {
     const {
       completionText,
+      numberOfCharsToMoveTheCursorForward,
       numberOfCharsToReplaceCharsBeforeCursor,
     } = this.getInputValueWithCompletionText();
 
     this.autocompleteUpdate.cancel();
     this.props.autocompleteClear();
 
+    // If the code triggering the opening of the popup was already triggered but not yet
+    // settled, then we need to wait until it's resolved in order to close the popup (See
+    // Bug 1655406).
+    if (this._openPopupPendingPromise) {
+      this._openPopupPendingPromise.then(() =>
+        this.autocompletePopup.hidePopup()
+      );
+    }
+
     if (completionText) {
       this.insertStringAtCursor(
         completionText,
         numberOfCharsToReplaceCharsBeforeCursor
       );
+
+      if (numberOfCharsToMoveTheCursorForward) {
+        const { line, ch } = this.editor.getCursor();
+        this.editor.setCursor({
+          line,
+          ch: ch + numberOfCharsToMoveTheCursorForward,
+        });
+      }
     }
   }
 
@@ -1141,6 +1276,10 @@ class JSTerm extends Component {
    *                     should be removed from the current input before the cursor to
    *                     cleanly apply the completionText. This is handy when we only want
    *                     to insert the completionText.
+   *         - {Integer} numberOfCharsToMoveTheCursorForward: The number of chars that the
+   *                     cursor should be moved after the completion is done. This can
+   *                     be useful for element access where there's already a closing
+   *                     quote and/or bracket.
    */
   getInputValueWithCompletionText() {
     const inputBeforeCursor = this.getInputValueBeforeCursor();
@@ -1149,6 +1288,7 @@ class JSTerm extends Component {
     );
     let completionText = this.getAutoCompletionText();
     let numberOfCharsToReplaceCharsBeforeCursor;
+    let numberOfCharsToMoveTheCursorForward = 0;
 
     // If the autocompletion popup is open, we always get the selected element from there,
     // since the autocompletion text might not be enough (e.g. `dOcUmEn` should
@@ -1170,9 +1310,34 @@ class JSTerm extends Component {
           ).length;
         }
 
-        // If there's not a bracket after the cursor, add it.
-        if (!inputAfterCursor.trimLeft().startsWith("]")) {
+        // If the autoclose bracket option is enabled, the input might be in a state where
+        // there's already the closing quote and the closing bracket, e.g.
+        // `document["activeEl|"]`, so we don't need to add
+        // Let's retrieve the completionText last character, to see if it's a quote.
+        const completionTextLastChar =
+          completionText[completionText.length - 1];
+        const endingQuote = [`"`, `'`, "`"].includes(completionTextLastChar)
+          ? completionTextLastChar
+          : "";
+        if (
+          endingQuote &&
+          inputAfterCursor.trimLeft().startsWith(endingQuote)
+        ) {
+          completionText = completionText.substring(
+            0,
+            completionText.length - 1
+          );
+          numberOfCharsToMoveTheCursorForward++;
+        }
+
+        // If there's not a closing bracket already, we add one.
+        if (
+          !inputAfterCursor.trimLeft().match(new RegExp(`^${endingQuote}?]`))
+        ) {
           completionText = completionText + "]";
+        } else {
+          // if there's already one, we want to move the cursor after the closing bracket.
+          numberOfCharsToMoveTheCursorForward++;
         }
       }
     }
@@ -1188,8 +1353,9 @@ class JSTerm extends Component {
 
     return {
       completionText,
-      numberOfCharsToReplaceCharsBeforeCursor,
       expression,
+      numberOfCharsToMoveTheCursorForward,
+      numberOfCharsToReplaceCharsBeforeCursor,
     };
   }
 
@@ -1300,6 +1466,7 @@ class JSTerm extends Component {
   destroy() {
     this.autocompleteUpdate.cancel();
     this.terminalInputChanged.cancel();
+    this._openPopupPendingPromise = null;
 
     if (this.autocompletePopup) {
       this.autocompletePopup.destroy();
@@ -1307,6 +1474,7 @@ class JSTerm extends Component {
     }
 
     if (this.editor) {
+      this.resizeObserver.disconnect();
       this.editor.destroy();
       this.editor = null;
     }
@@ -1331,11 +1499,7 @@ class JSTerm extends Component {
   }
 
   renderEvaluationContextSelector() {
-    if (
-      !this.props.webConsoleUI.wrapper.toolbox ||
-      this.props.editorMode ||
-      !this.props.showEvaluationContextSelector
-    ) {
+    if (this.props.editorMode || !this.props.showEvaluationContextSelector) {
       return null;
     }
 
@@ -1417,6 +1581,7 @@ function mapStateToProps(state) {
     showEditorOnboarding: state.ui.showEditorOnboarding,
     showEvaluationContextSelector: state.ui.showEvaluationContextSelector,
     autocompletePopupPosition: state.prefs.eagerEvaluation ? "top" : "bottom",
+    editorPrettifiedAt: state.ui.editorPrettifiedAt,
   };
 }
 

@@ -5,6 +5,10 @@
 #ifndef nsAHtml5TreeOpSink_h
 #define nsAHtml5TreeOpSink_h
 
+#include "nsTArrayForwardDeclare.h"
+
+class nsHtml5TreeOperation;
+
 /**
  * The purpose of this interface is to connect a tree op executor
  * (main-thread case), a tree op stage (non-speculative off-the-main-thread
@@ -15,8 +19,11 @@ class nsAHtml5TreeOpSink {
   /**
    * Flush the operations from the tree operations from the argument
    * queue into this sink unconditionally.
+   *
+   * Returns `true` on success and `false` on OOM.
    */
-  virtual void MoveOpsFrom(nsTArray<nsHtml5TreeOperation>& aOpQueue) = 0;
+  [[nodiscard]] virtual bool MoveOpsFrom(
+      nsTArray<nsHtml5TreeOperation>& aOpQueue) = 0;
 };
 
 #endif /* nsAHtml5TreeOpSink_h */

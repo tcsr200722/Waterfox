@@ -1,19 +1,15 @@
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
 [
   {
     "namespace": "manifest",
     "types": [
       {
         "$extend": "OptionalPermission",
-        "choices": [{
-          "type": "string",
-          "enum": [
-            "bookmarks"
-          ]
-        }]
+        "choices": [
+          {
+            "type": "string",
+            "enum": ["bookmarks"]
+          }
+        ]
       }
     ]
   },
@@ -174,7 +170,7 @@
               {
                 "name": "results",
                 "type": "array",
-                "items": { "$ref": "BookmarkTreeNode"}
+                "items": { "$ref": "BookmarkTreeNode" }
               }
             ]
           }
@@ -425,36 +421,6 @@
             "type": "string",
             "name": "id"
           },
-          {
-            "type": "function",
-            "name": "callback",
-            "optional": true,
-            "parameters": []
-          }
-        ]
-      },
-      {
-        "name": "import",
-        "unsupported": true,
-        "type": "function",
-        "description": "Imports bookmarks from an html bookmark file",
-        "async": "callback",
-        "parameters": [
-          {
-            "type": "function",
-            "name": "callback",
-            "optional": true,
-            "parameters": []
-          }
-        ]
-      },
-      {
-        "name": "export",
-        "unsupported": true,
-        "type": "function",
-        "description": "Exports bookmarks to an html bookmark file",
-        "async": "callback",
-        "parameters": [
           {
             "type": "function",
             "name": "callback",

@@ -8,6 +8,7 @@
 #define mozilla_dom_DataTransfer_h
 
 #include "nsString.h"
+#include "nsStringStream.h"
 #include "nsTArray.h"
 #include "nsIVariant.h"
 #include "nsIPrincipal.h"
@@ -23,6 +24,7 @@
 #include "mozilla/dom/DataTransferItemList.h"
 #include "mozilla/dom/File.h"
 
+class nsIAsyncGetClipboardData;
 class nsINode;
 class nsITransferable;
 class nsILoadContext;
@@ -33,13 +35,16 @@ class EventStateManager;
 
 namespace dom {
 
+class IPCDataTransfer;
 class DataTransferItem;
+class DataTransferItemList;
 class DOMStringList;
 class Element;
 class FileList;
 class Promise;
 template <typename T>
 class Optional;
+class WindowContext;
 
 #define NS_DATATRANSFER_IID                          \
   {                                                  \
@@ -48,13 +53,16 @@ class Optional;
     }                                                \
   }
 
+/**
+ * See <https://html.spec.whatwg.org/multipage/dnd.html#datatransfer>.
+ */
 class DataTransfer final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_DATATRANSFER_IID)
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DataTransfer)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DataTransfer)
 
   friend class mozilla::EventStateManager;
 
@@ -78,7 +86,8 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
                bool aIsExternal, bool aUserCancelled,
                bool aIsCrossDomainSubFrameDrop, int32_t aClipboardType,
                DataTransferItemList* aItems, Element* aDragImage,
-               uint32_t aDragImageX, uint32_t aDragImageY);
+               uint32_t aDragImageX, uint32_t aDragImageY,
+               bool aShowFailAnimation);
 
   ~DataTransfer();
 
@@ -202,7 +211,7 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   bool HasFile() const;
 
   void GetData(const nsAString& aFormat, nsAString& aData,
-               nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv);
+               nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) const;
 
   void SetData(const nsAString& aFormat, const nsAString& aData,
                nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv);
@@ -216,13 +225,6 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
    * invalid index access on the resulting file list will return null.
    */
   already_AddRefed<FileList> GetFiles(nsIPrincipal& aSubjectPrincipal);
-
-  already_AddRefed<Promise> GetFilesAndDirectories(
-      nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aRv);
-
-  already_AddRefed<Promise> GetFiles(bool aRecursiveFlag,
-                                     nsIPrincipal& aSubjectPrincipal,
-                                     ErrorResult& aRv);
 
   void AddElement(Element& aElement, mozilla::ErrorResult& aRv);
 
@@ -238,24 +240,24 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   void SetMozCursor(const nsAString& aCursor);
 
   already_AddRefed<DOMStringList> MozTypesAt(uint32_t aIndex,
-                                             CallerType aCallerType,
                                              mozilla::ErrorResult& aRv) const;
 
   void MozClearDataAt(const nsAString& aFormat, uint32_t aIndex,
-                      nsIPrincipal& aSubjectPrincipal,
                       mozilla::ErrorResult& aRv);
 
   void MozSetDataAt(JSContext* aCx, const nsAString& aFormat,
                     JS::Handle<JS::Value> aData, uint32_t aIndex,
-                    nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aRv);
+                    mozilla::ErrorResult& aRv);
 
   void MozGetDataAt(JSContext* aCx, const nsAString& aFormat, uint32_t aIndex,
                     JS::MutableHandle<JS::Value> aRetval,
-                    nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aRv);
+                    mozilla::ErrorResult& aRv);
 
   bool MozUserCancelled() const { return mUserCancelled; }
 
   already_AddRefed<nsINode> GetMozSourceNode();
+
+  already_AddRefed<WindowContext> GetSourceTopWindowContext();
 
   /*
    * Integer version of dropEffect, set to one of the constants in
@@ -281,7 +283,7 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   mozilla::dom::Element* GetDragTarget() const { return mDragTarget; }
 
   nsresult GetDataAtNoSecurityCheck(const nsAString& aFormat, uint32_t aIndex,
-                                    nsIVariant** aData);
+                                    nsIVariant** aData) const;
 
   DataTransferItemList* Items() const { return mItems; }
 
@@ -337,6 +339,11 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
 
   // Variation of SetDataWithPrincipal with handles extracting
   // kCustomTypesMime data into separate types.
+  //
+  // @param aHidden if true and `aFormat != kCustomTypesMime`, the data will be
+  //                hidden from non-chrome code.
+  //                TODO: unclear, whether `aHidden` should be considered for
+  //                the custom types.
   void SetDataWithPrincipalFromOtherProcess(const nsAString& aFormat,
                                             nsIVariant* aData, uint32_t aIndex,
                                             nsIPrincipal* aPrincipal,
@@ -360,7 +367,7 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
                  DataTransfer** aResult);
 
   // converts some formats used for compatibility in aInFormat into aOutFormat.
-  // Text and text/unicode become text/plain, and URL becomes text/uri-list
+  // Text becomes text/plain, and URL becomes text/uri-list
   void GetRealFormat(const nsAString& aInFormat, nsAString& aOutFormat) const;
 
   static bool PrincipalMaySetData(const nsAString& aFormat, nsIVariant* aData,
@@ -376,13 +383,10 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   already_AddRefed<DataTransfer> MozCloneForEvent(const nsAString& aEvent,
                                                   ErrorResult& aRv);
 
-  // Retrieve a list of clipboard formats supported
-  //
-  // If kFileMime is supported, then it will be placed either at
-  // index 0 or at index 1 in aResult
-  static void GetExternalClipboardFormats(const int32_t& aWhichClipboard,
-                                          const bool& aPlainTextOnly,
-                                          nsTArray<nsCString>* aResult);
+  void SetMozShowFailAnimation(bool aShouldAnimate) {
+    mShowFailAnimation = aShouldAnimate;
+  }
+  bool MozShowFailAnimation() const { return mShowFailAnimation; }
 
   // Retrieve a list of supporting formats in aTransferable.
   //
@@ -392,13 +396,56 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
                                              bool aPlainTextOnly,
                                              nsTArray<nsCString>* aResult);
 
-  // Returns true if moz* APIs should be exposed (true for chrome code or if
-  // dom.datatransfer.moz pref is enabled).
-  // The affected moz* APIs are mozItemCount, mozTypesAt, mozClearDataAt,
-  // mozSetDataAt, mozGetDataAt
-  static bool MozAtAPIsEnabled(JSContext* cx, JSObject* obj);
+  // Formats that are "known" and won't be converted to the kCustomTypesMime.
+  static inline const char* const kKnownFormats[] = {kTextMime,
+                                                     kHTMLMime,
+                                                     kNativeHTMLMime,
+                                                     kRTFMime,
+                                                     kURLMime,
+                                                     kURLDataMime,
+                                                     kURLDescriptionMime,
+                                                     kURLPrivateMime,
+                                                     kPNGImageMime,
+                                                     kJPEGImageMime,
+                                                     kGIFImageMime,
+                                                     kNativeImageMime,
+                                                     kFileMime,
+                                                     kFilePromiseMime,
+                                                     kFilePromiseURLMime,
+                                                     kFilePromiseDestFilename,
+                                                     kFilePromiseDirectoryMime,
+                                                     kMozTextInternal,
+                                                     kHTMLContext,
+                                                     kHTMLInfo,
+                                                     kImageRequestMime,
+                                                     kPDFJSMime};
+
+  already_AddRefed<nsIGlobalObject> GetGlobal() const;
+
+  already_AddRefed<WindowContext> GetWindowContext() const;
+
+  nsIAsyncGetClipboardData* GetAsyncGetClipboardData() const;
+
+  // The drag session on the widget of the owner, if any.
+  nsIDragSession* GetOwnerDragSession();
+
+  // format is first element, data is second
+  using ParseExternalCustomTypesStringData = std::pair<nsString&&, nsString&&>;
+
+  // Parses out the contents of aString and calls aCallback for every data
+  // of type eCustomClipboardTypeId_String.
+  static void ParseExternalCustomTypesString(
+      mozilla::Span<const char> aString,
+      std::function<void(ParseExternalCustomTypesStringData&&)>&& aCallback);
 
  protected:
+  // Retrieve a list of clipboard formats supported
+  //
+  // If kFileMime is supported, then it will be placed either at
+  // index 0 or at index 1 in aResult
+  void GetExternalClipboardFormats(const bool& aPlainTextOnly,
+                                   nsTArray<nsCString>& aResult);
+
   // caches text and uri-list data formats that exist in the drag service or
   // clipboard for retrieval later.
   nsresult CacheExternalData(const char* aFormat, uint32_t aIndex,
@@ -421,12 +468,12 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   FileList* GetFilesInternal(ErrorResult& aRv, nsIPrincipal* aSubjectPrincipal);
   nsresult GetDataAtInternal(const nsAString& aFormat, uint32_t aIndex,
                              nsIPrincipal* aSubjectPrincipal,
-                             nsIVariant** aData);
+                             nsIVariant** aData) const;
 
   nsresult SetDataAtInternal(const nsAString& aFormat, nsIVariant* aData,
                              uint32_t aIndex, nsIPrincipal* aSubjectPrincipal);
 
-  friend class ContentParent;
+  friend class BrowserParent;
   friend class Clipboard;
 
   void FillAllExternalData();
@@ -439,6 +486,9 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   void MozClearDataAtHelper(const nsAString& aFormat, uint32_t aIndex,
                             nsIPrincipal& aSubjectPrincipal,
                             mozilla::ErrorResult& aRv);
+
+  // Returns the widget of the owner, if known.
+  nsIWidget* GetOwnerWidget();
 
   nsCOMPtr<nsISupports> mParent;
 
@@ -476,6 +526,11 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   // drag and drop.
   int32_t mClipboardType;
 
+  // The nsIAsyncGetClipboardData that is used for getting clipboard formats.
+  // XXXedgar we should get the actual data from this in the future, see bug
+  // 1879401.
+  nsCOMPtr<nsIAsyncGetClipboardData> mAsyncGetClipboardData;
+
   // The items contained with the DataTransfer
   RefPtr<DataTransferItemList> mItems;
 
@@ -487,6 +542,10 @@ class DataTransfer final : public nsISupports, public nsWrapperCache {
   nsCOMPtr<mozilla::dom::Element> mDragImage;
   uint32_t mDragImageX;
   uint32_t mDragImageY;
+
+  // Whether to animate the drag back to its starting point if it fails.
+  // Not supported everywhere.
+  bool mShowFailAnimation = true;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(DataTransfer, NS_DATATRANSFER_IID)

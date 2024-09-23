@@ -12,12 +12,14 @@
 #include "nsIGlobalObject.h"
 #include "nsRefPtrHashtable.h"
 #include "nsString.h"
+#include "mozilla/dom/GamepadHandle.h"
 #include "mozilla/dom/GamepadManager.h"
 #include "mozilla/dom/Gamepad.h"
 #include "mozilla/dom/XRSession.h"
 #include "mozilla/dom/XRInputSourceArray.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Unused.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/dom/WebXRBinding.h"
 #include "nsServiceManagerUtils.h"
@@ -33,6 +35,9 @@
 
 using namespace mozilla;
 using namespace mozilla::gfx;
+
+using mozilla::dom::GamepadHandle;
+using mozilla::dom::GamepadHandleKind;
 
 VRDisplayClient::VRDisplayClient(const VRDisplayInfo& aDisplayInfo)
     : mDisplayInfo(aDisplayInfo),
@@ -170,9 +175,7 @@ void VRDisplayClient::FireEvents() {
 
 void VRDisplayClient::GamepadMappingForWebVR(
     VRControllerState& aControllerState) {
-  float triggerValue[kVRControllerMaxButtons];
-  memcpy(triggerValue, aControllerState.triggerValue,
-         sizeof(aControllerState.triggerValue));
+  auto triggerValue = aControllerState.triggerValue;
   const uint64_t buttonPressed = aControllerState.buttonPressed;
   const uint64_t buttonTouched = aControllerState.buttonTouched;
 
@@ -258,9 +261,7 @@ void VRDisplayClient::GamepadMappingForWebVR(
                            aControllerState.pose.orientation[1],
                            aControllerState.pose.orientation[2],
                            aControllerState.pose.orientation[3]);
-      // We need to invert its quaternion here because we did an invertion
-      // in FxR WaveVR delegate.
-      originalMtx.SetRotationFromQuaternion(quat.Invert());
+      originalMtx.SetRotationFromQuaternion(quat);
       originalMtx._41 = aControllerState.pose.position[0];
       originalMtx._42 = aControllerState.pose.position[1];
       originalMtx._43 = aControllerState.pose.position[2];
@@ -269,7 +270,6 @@ void VRDisplayClient::GamepadMappingForWebVR(
       gfx::Point3D pos, scale;
       originalMtx.Decompose(pos, quat, scale);
 
-      quat.Invert();
       aControllerState.pose.position[0] = pos.x;
       aControllerState.pose.position[1] = pos.y;
       aControllerState.pose.position[2] = pos.z;
@@ -299,9 +299,7 @@ void VRDisplayClient::GamepadMappingForWebVR(
                            aControllerState.pose.orientation[1],
                            aControllerState.pose.orientation[2],
                            aControllerState.pose.orientation[3]);
-      // We need to invert its quaternion here because we did an invertion
-      // in FxR OculusVR delegate.
-      originalMtx.SetRotationFromQuaternion(quat.Invert());
+      originalMtx.SetRotationFromQuaternion(quat);
       originalMtx._41 = aControllerState.pose.position[0];
       originalMtx._42 = aControllerState.pose.position[1];
       originalMtx._43 = aControllerState.pose.position[2];
@@ -310,7 +308,6 @@ void VRDisplayClient::GamepadMappingForWebVR(
       gfx::Point3D pos, scale;
       originalMtx.Decompose(pos, quat, scale);
 
-      quat.Invert();
       aControllerState.pose.position[0] = pos.x;
       aControllerState.pose.position[1] = pos.y;
       aControllerState.pose.position[2] = pos.z;
@@ -337,7 +334,8 @@ void VRDisplayClient::GamepadMappingForWebVR(
       aControllerState.numButtons = 6;
       aControllerState.numAxes = 2;
       break;
-    case VRControllerType::OculusTouch2: {
+    case VRControllerType::OculusTouch2:
+    case VRControllerType::OculusTouch3: {
       aControllerState.buttonPressed =
           ShiftButtonBitForNewSlot(0, 3) | ShiftButtonBitForNewSlot(1, 0) |
           ShiftButtonBitForNewSlot(2, 1) | ShiftButtonBitForNewSlot(3, 4) |
@@ -353,30 +351,27 @@ void VRDisplayClient::GamepadMappingForWebVR(
       aControllerState.numButtons = 6;
       aControllerState.numAxes = 2;
 
-      static Matrix4x4 touch2Transform;
+      static Matrix4x4 touchTransform;
       Matrix4x4 originalMtx;
 
-      if (touch2Transform.IsIdentity()) {
-        touch2Transform.RotateX(-0.77f);
-        touch2Transform.PostTranslate(0.0f, 0.0f, -0.025f);
-        touch2Transform.Inverse();
+      if (touchTransform.IsIdentity()) {
+        touchTransform.RotateX(-0.77f);
+        touchTransform.PostTranslate(0.0f, 0.0f, -0.025f);
+        touchTransform.Inverse();
       }
       gfx::Quaternion quat(aControllerState.pose.orientation[0],
                            aControllerState.pose.orientation[1],
                            aControllerState.pose.orientation[2],
                            aControllerState.pose.orientation[3]);
-      // We need to invert its quaternion here because we did an invertion
-      // in FxR OculusVR delegate.
-      originalMtx.SetRotationFromQuaternion(quat.Invert());
+      originalMtx.SetRotationFromQuaternion(quat);
       originalMtx._41 = aControllerState.pose.position[0];
       originalMtx._42 = aControllerState.pose.position[1];
       originalMtx._43 = aControllerState.pose.position[2];
-      originalMtx = touch2Transform * originalMtx;
+      originalMtx = touchTransform * originalMtx;
 
       gfx::Point3D pos, scale;
       originalMtx.Decompose(pos, quat, scale);
 
-      quat.Invert();
       aControllerState.pose.position[0] = pos.x;
       aControllerState.pose.position[1] = pos.y;
       aControllerState.pose.position[2] = pos.z;
@@ -457,8 +452,11 @@ void VRDisplayClient::FireGamepadEvents() {
     GamepadMappingForWebVR(state);
     GamepadMappingForWebVR(lastState);
 
-    uint32_t gamepadId =
+    uint32_t gamepadHandleValue =
         mDisplayInfo.mDisplayID * kVRControllerMaxCount + stateIndex;
+
+    GamepadHandle gamepadHandle{gamepadHandleValue, GamepadHandleKind::VR};
+
     bool bIsNew = false;
 
     // Send events to notify that controllers are removed
@@ -468,8 +466,7 @@ void VRDisplayClient::FireGamepadEvents() {
         // Controller has been removed
         dom::GamepadRemoved info;
         dom::GamepadChangeEventBody body(info);
-        dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                      body);
+        dom::GamepadChangeEvent event(gamepadHandle, body);
         gamepadManager->Update(event);
       }
       // Do not process any further events for removed controllers
@@ -477,19 +474,17 @@ void VRDisplayClient::FireGamepadEvents() {
     }
 
     // Send events to notify that new controllers are added
-    RefPtr<dom::Gamepad> existing =
-        gamepadManager->GetGamepad(gamepadId, dom::GamepadServiceType::VR);
+    RefPtr<dom::Gamepad> existing = gamepadManager->GetGamepad(gamepadHandle);
     // ControllerState in OpenVR action-based API gets delay to query btn and
     // axis count. So, we need to check if they are more than zero.
     if ((lastState.controllerName[0] == '\0' || !existing) &&
         (state.numButtons > 0 || state.numAxes > 0)) {
-      dom::GamepadAdded info(NS_ConvertUTF8toUTF16(state.controllerName),
+      dom::GamepadAdded info(NS_ConvertUTF8toUTF16(state.controllerName.data()),
                              dom::GamepadMappingType::_empty, state.hand,
                              mDisplayInfo.mDisplayID, state.numButtons,
                              state.numAxes, state.numHaptics, 0, 0);
       dom::GamepadChangeEventBody body(info);
-      dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                    body);
+      dom::GamepadChangeEvent event(gamepadHandle, body);
       gamepadManager->Update(event);
       bIsNew = true;
     }
@@ -498,8 +493,7 @@ void VRDisplayClient::FireGamepadEvents() {
     if (state.hand != lastState.hand) {
       dom::GamepadHandInformation info(state.hand);
       dom::GamepadChangeEventBody body(info);
-      dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                    body);
+      dom::GamepadChangeEvent event(gamepadHandle, body);
       gamepadManager->Update(event);
     }
 
@@ -508,8 +502,7 @@ void VRDisplayClient::FireGamepadEvents() {
       if (state.axisValue[axisIndex] != lastState.axisValue[axisIndex]) {
         dom::GamepadAxisInformation info(axisIndex, state.axisValue[axisIndex]);
         dom::GamepadChangeEventBody body(info);
-        dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                      body);
+        dom::GamepadChangeEvent event(gamepadHandle, body);
         gamepadManager->Update(event);
       }
     }
@@ -533,8 +526,7 @@ void VRDisplayClient::FireGamepadEvents() {
           dom::GamepadButtonInformation info(
               buttonIndex, state.triggerValue[buttonIndex], bPressed, bTouched);
           dom::GamepadChangeEventBody body(info);
-          dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                        body);
+          dom::GamepadChangeEvent event(gamepadHandle, body);
           gamepadManager->Update(event);
         }
       }
@@ -579,16 +571,12 @@ void VRDisplayClient::FireGamepadEvents() {
       // Send the event
       dom::GamepadPoseInformation info(poseState);
       dom::GamepadChangeEventBody body(info);
-      dom::GamepadChangeEvent event(gamepadId, dom::GamepadServiceType::VR,
-                                    body);
+      dom::GamepadChangeEvent event(gamepadHandle, body);
       gamepadManager->Update(event);
     }
   }
 
-  // Note that VRControllerState is asserted to be a POD type and memcpy is
-  // safe.
-  memcpy(mLastEventControllerState, mDisplayInfo.mControllerState,
-         sizeof(VRControllerState) * kVRControllerMaxCount);
+  mLastEventControllerState = mDisplayInfo.mControllerState;
 }
 
 const VRHMDSensorState& VRDisplayClient::GetSensorState() const {

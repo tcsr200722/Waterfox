@@ -3,14 +3,16 @@
 
 "use strict";
 
-const { thunk } = require("devtools/client/shared/redux/middleware/thunk.js");
+const {
+  thunk,
+} = require("resource://devtools/client/shared/redux/middleware/thunk.js");
 const configureStore = require("redux-mock-store").default;
 
 /**
  * Prepare the store for use in testing.
  */
 function setupStore(preloadedState = {}) {
-  const middleware = [thunk];
+  const middleware = [thunk()];
   const mockStore = configureStore(middleware);
   return mockStore(preloadedState);
 }

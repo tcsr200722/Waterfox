@@ -5,17 +5,14 @@
 
 // Test whether the most left position means negative current time.
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_multi_timings.html");
   await removeAnimatedElementsExcept([
     ".cssanimation-normal",
     ".delay-negative",
   ]);
-  const {
-    animationInspector,
-    panel,
-    inspector,
-  } = await openAnimationInspector();
+  const { animationInspector, panel, inspector } =
+    await openAnimationInspector();
 
   info("Checking scrubber controller existence");
   const controllerEl = panel.querySelector(".current-time-scrubber-area");
@@ -23,21 +20,29 @@ add_task(async function() {
 
   info("Checking the current time of most left scrubber position");
   const timeScale = animationInspector.state.timeScale;
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
-  assertAnimationsCurrentTime(
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+  await waitUntilCurrentTimeChangedAt(
     animationInspector,
     -1 * timeScale.zeroPositionTime
   );
+  ok(true, "Current time is correct");
 
   info("Select negative current time animation");
-  await selectNodeAndWaitForAnimations(".cssanimation-normal", inspector);
-  assertAnimationsCurrentTime(
+  await selectNode(".cssanimation-normal", inspector);
+  await waitUntilCurrentTimeChangedAt(
     animationInspector,
     -1 * timeScale.zeroPositionTime
   );
+  ok(true, "Current time is correct");
 
   info("Back to 'body' and rewind the animation");
-  await selectNodeAndWaitForAnimations("body", inspector);
-  await clickOnRewindButton(animationInspector, panel);
-  assertAnimationsCurrentTime(animationInspector, 0);
+  await selectNode("body", inspector);
+  await waitUntil(
+    () =>
+      panel.querySelectorAll(".animation-item").length ===
+      animationInspector.state.animations.length
+  );
+  clickOnRewindButton(animationInspector, panel);
+  await waitUntilCurrentTimeChangedAt(animationInspector, 0);
 });

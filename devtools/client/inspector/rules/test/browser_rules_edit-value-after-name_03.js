@@ -21,7 +21,7 @@ const TEST_URI = `
   <div id="testid">Styled Node</div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
 
@@ -78,5 +78,9 @@ add_task(async function() {
   );
 
   const spectrum = colorPicker.spectrum;
-  is(spectrum.rgb, "200,170,140,0.5", "The correct color picker was shown");
+  is(
+    `"${spectrum.rgb}"`,
+    '"200,170,140,0.5"',
+    "The correct color picker was shown"
+  );
 });

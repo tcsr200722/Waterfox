@@ -18,7 +18,7 @@ const TEST_URI = `
   <div id="testid2">Styled Node</div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
@@ -90,15 +90,11 @@ async function testEditProperty(inspector, ruleView) {
   }
   await onBlur;
 
-  const newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  const newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "red", "border-color should have been set.");
 
   ruleView.styleDocument.activeElement.blur();
-  await addProperty(ruleView, 1, "color", "red", ";");
+  await addProperty(ruleView, 1, "color", "red", { commitValueWith: ";" });
 
   const props = ruleView.element.querySelectorAll(".ruleview-property");
   for (let i = 0; i < props.length; i++) {
@@ -119,21 +115,13 @@ async function testDisableProperty(inspector, ruleView) {
   info("Disabling a property");
   await togglePropStatus(ruleView, prop);
 
-  let newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  let newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "", "Border-color should have been unset.");
 
   info("Enabling the property again");
   await togglePropStatus(ruleView, prop);
 
-  newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "red", "Border-color should have been reset.");
 }
 

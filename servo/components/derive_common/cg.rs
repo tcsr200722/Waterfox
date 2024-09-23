@@ -5,9 +5,9 @@
 use darling::{FromDeriveInput, FromField, FromVariant};
 use proc_macro2::{Span, TokenStream};
 use quote::TokenStreamExt;
-use syn::{self, AngleBracketedGenericArguments, Binding, DeriveInput, Field};
+use syn::{self, AngleBracketedGenericArguments, AssocType, DeriveInput, Field};
 use syn::{GenericArgument, GenericParam, Ident, Path};
-use syn::{PathArguments, PathSegment, QSelf, Type, TypeArray};
+use syn::{PathArguments, PathSegment, QSelf, Type, TypeArray, TypeGroup};
 use syn::{TypeParam, TypeParen, TypePath, TypeSlice, TypeTuple};
 use syn::{Variant, WherePredicate};
 use synstructure::{self, BindStyle, BindingInfo, VariantAst, VariantInfo};
@@ -143,7 +143,10 @@ pub fn fmap_trait_output(input: &DeriveInput, trait_path: &Path, trait_output: &
                         let ident = &data.ident;
                         GenericArgument::Type(parse_quote!(<#ident as #trait_path>::#trait_output))
                     },
-                    ref arg => panic!("arguments {:?} cannot be mapped yet", arg),
+                    &GenericParam::Const(ref inner) => {
+                        let ident = &inner.ident;
+                        GenericArgument::Const(parse_quote!(#ident))
+                    },
                 })
                 .collect(),
             colon2_token: Default::default(),
@@ -154,19 +157,19 @@ pub fn fmap_trait_output(input: &DeriveInput, trait_path: &Path, trait_output: &
     segment.into()
 }
 
-pub fn map_type_params<F>(ty: &Type, params: &[&TypeParam], f: &mut F) -> Type
+pub fn map_type_params<F>(ty: &Type, params: &[&TypeParam], self_type: &Path, f: &mut F) -> Type
 where
     F: FnMut(&Ident) -> Type,
 {
     match *ty {
         Type::Slice(ref inner) => Type::from(TypeSlice {
-            elem: Box::new(map_type_params(&inner.elem, params, f)),
+            elem: Box::new(map_type_params(&inner.elem, params, self_type, f)),
             ..inner.clone()
         }),
         Type::Array(ref inner) => {
             //ref ty, ref expr) => {
             Type::from(TypeArray {
-                elem: Box::new(map_type_params(&inner.elem, params, f)),
+                elem: Box::new(map_type_params(&inner.elem, params, self_type, f)),
                 ..inner.clone()
             })
         },
@@ -175,7 +178,7 @@ where
             elems: inner
                 .elems
                 .iter()
-                .map(|ty| map_type_params(&ty, params, f))
+                .map(|ty| map_type_params(&ty, params, self_type, f))
                 .collect(),
             ..inner.clone()
         }),
@@ -187,10 +190,16 @@ where
                 if params.iter().any(|ref param| &param.ident == ident) {
                     return f(ident);
                 }
+                if ident == "Self" {
+                    return Type::from(TypePath {
+                        qself: None,
+                        path: self_type.clone(),
+                    });
+                }
             }
             Type::from(TypePath {
                 qself: None,
-                path: map_type_params_in_path(path, params, f),
+                path: map_type_params_in_path(path, params, self_type, f),
             })
         },
         Type::Path(TypePath {
@@ -198,21 +207,30 @@ where
             ref path,
         }) => Type::from(TypePath {
             qself: qself.as_ref().map(|qself| QSelf {
-                ty: Box::new(map_type_params(&qself.ty, params, f)),
+                ty: Box::new(map_type_params(&qself.ty, params, self_type, f)),
                 position: qself.position,
                 ..qself.clone()
             }),
-            path: map_type_params_in_path(path, params, f),
+            path: map_type_params_in_path(path, params, self_type, f),
         }),
         Type::Paren(ref inner) => Type::from(TypeParen {
-            elem: Box::new(map_type_params(&inner.elem, params, f)),
+            elem: Box::new(map_type_params(&inner.elem, params, self_type, f)),
+            ..inner.clone()
+        }),
+        Type::Group(ref inner) => Type::from(TypeGroup {
+            elem: Box::new(map_type_params(&inner.elem, params, self_type, f)),
             ..inner.clone()
         }),
         ref ty => panic!("type {:?} cannot be mapped yet", ty),
     }
 }
 
-fn map_type_params_in_path<F>(path: &Path, params: &[&TypeParam], f: &mut F) -> Path
+fn map_type_params_in_path<F>(
+    path: &Path,
+    params: &[&TypeParam],
+    self_type: &Path,
+    f: &mut F,
+) -> Path
 where
     F: FnMut(&Ident) -> Type,
 {
@@ -231,12 +249,12 @@ where
                                 .iter()
                                 .map(|arg| match arg {
                                     ty @ &GenericArgument::Lifetime(_) => ty.clone(),
-                                    &GenericArgument::Type(ref data) => {
-                                        GenericArgument::Type(map_type_params(data, params, f))
-                                    },
-                                    &GenericArgument::Binding(ref data) => {
-                                        GenericArgument::Binding(Binding {
-                                            ty: map_type_params(&data.ty, params, f),
+                                    &GenericArgument::Type(ref data) => GenericArgument::Type(
+                                        map_type_params(data, params, self_type, f),
+                                    ),
+                                    &GenericArgument::AssocType(ref data) => {
+                                        GenericArgument::AssocType(AssocType {
+                                            ty: map_type_params(&data.ty, params, self_type, f),
                                             ..data.clone()
                                         })
                                     },
@@ -350,12 +368,17 @@ pub fn to_css_identifier(mut camel_case: &str) -> String {
             }
         }
         if !first {
-            result.push_str("-");
+            result.push('-');
         }
         first = false;
         result.push_str(&segment.to_lowercase());
     }
     result
+}
+
+/// Transforms foo-bar to FOO_BAR.
+pub fn to_scream_case(css_case: &str) -> String {
+    css_case.to_uppercase().replace('-', "_")
 }
 
 /// Given "FooBar", returns "Foo" and sets `camel_case` to "Bar".

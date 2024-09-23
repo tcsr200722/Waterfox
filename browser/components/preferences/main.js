@@ -4,45 +4,17 @@
 
 /* import-globals-from extensionControlled.js */
 /* import-globals-from preferences.js */
-/* import-globals-from ../../../toolkit/mozapps/preferences/fontbuilder.js */
-/* import-globals-from ../../base/content/aboutDialog-appUpdater.js */
+/* import-globals-from /toolkit/mozapps/preferences/fontbuilder.js */
+/* import-globals-from /browser/base/content/aboutDialog-appUpdater.js */
 /* global MozXULElement */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { Downloads } = ChromeUtils.import("resource://gre/modules/Downloads.jsm");
-var { FileUtils } = ChromeUtils.import("resource://gre/modules/FileUtils.jsm");
-var { TransientPrefs } = ChromeUtils.import(
-  "resource:///modules/TransientPrefs.jsm"
-);
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
-var { L10nRegistry } = ChromeUtils.import(
-  "resource://gre/modules/L10nRegistry.jsm"
-);
-var { HomePage } = ChromeUtils.import("resource:///modules/HomePage.jsm");
-ChromeUtils.defineModuleGetter(
-  this,
-  "CloudStorage",
-  "resource://gre/modules/CloudStorage.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "SelectionChangedMenulist",
-  "resource:///modules/SelectionChangedMenulist.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "UpdateUtils",
-  "resource://gre/modules/UpdateUtils.jsm"
-);
-
-XPCOMUtils.defineLazyServiceGetters(this, {
-  gHandlerService: [
-    "@mozilla.org/uriloader/handler-service;1",
-    "nsIHandlerService",
-  ],
-  gMIMEService: ["@mozilla.org/mime;1", "nsIMIMEService"],
+ChromeUtils.defineESModuleGetters(this, {
+  BackgroundUpdate: "resource://gre/modules/BackgroundUpdate.sys.mjs",
+  UpdateListener: "resource://gre/modules/UpdateListener.sys.mjs",
+  MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
+  TranslationsParent: "resource://gre/actors/TranslationsParent.sys.mjs",
+  WindowsLaunchOnLogin: "resource://gre/modules/WindowsLaunchOnLogin.sys.mjs",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
 });
 
 // Constants & Enumeration Values
@@ -50,59 +22,43 @@ const TYPE_PDF = "application/pdf";
 
 const PREF_PDFJS_DISABLED = "pdfjs.disabled";
 
-const PREF_DISABLED_PLUGIN_TYPES = "plugin.disable_full_page_plugin_for_types";
-
 // Pref for when containers is being controlled
 const PREF_CONTAINERS_EXTENSION = "privacy.userContext.extension";
-
-// Preferences that affect which entries to show in the list.
-const PREF_SHOW_PLUGINS_IN_LIST = "browser.download.show_plugins_in_list";
-const PREF_HIDE_PLUGINS_WITHOUT_EXTENSIONS =
-  "browser.download.hide_plugins_without_extensions";
 
 // Strings to identify ExtensionSettingsStore overrides
 const CONTAINERS_KEY = "privacy.containers";
 
-const AUTO_UPDATE_CHANGED_TOPIC = "auto-update-config-change";
+const PREF_USE_SYSTEM_COLORS = "browser.display.use_system_colors";
+const PREF_CONTENT_APPEARANCE =
+  "layout.css.prefers-color-scheme.content-override";
+const FORCED_COLORS_QUERY = matchMedia("(forced-colors)");
 
-// The nsHandlerInfoAction enumeration values in nsIHandlerInfo identify
-// the actions the application can take with content of various types.
-// But since nsIHandlerInfo doesn't support plugins, there's no value
-// identifying the "use plugin" action, so we use this constant instead.
-const kActionUsePlugin = 5;
+const AUTO_UPDATE_CHANGED_TOPIC =
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.auto"].observerTopic;
+const BACKGROUND_UPDATE_CHANGED_TOPIC =
+  UpdateUtils.PER_INSTALLATION_PREFS["app.update.background.enabled"]
+    .observerTopic;
 
 const ICON_URL_APP =
   AppConstants.platform == "linux"
     ? "moz-icon://dummy.exe?size=16"
     : "chrome://browser/skin/preferences/application.png";
 
-// For CSS. Can be one of "ask", "save", "handleInternally" or "plugin". If absent, the icon URL
+// For CSS. Can be one of "ask", "save" or "handleInternally". If absent, the icon URL
 // was set by us to a custom handler icon and CSS should not try to override it.
 const APP_ICON_ATTR_NAME = "appHandlerIcon";
 
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
-
-if (AppConstants.MOZ_DEV_EDITION) {
-  ChromeUtils.defineModuleGetter(
-    this,
-    "fxAccounts",
-    "resource://gre/modules/FxAccounts.jsm"
-  );
-  ChromeUtils.defineModuleGetter(
-    this,
-    "FxAccounts",
-    "resource://gre/modules/FxAccounts.jsm"
-  );
-}
+// WATERFOX
+const PREF_UPDATE_ENABLED = "app.update.enabled";
 
 Preferences.addAll([
   // Startup
   { id: "browser.startup.page", type: "int" },
   { id: "browser.privatebrowsing.autostart", type: "bool" },
-  { id: "browser.sessionstore.warnOnQuit", type: "bool" },
 
   // Downloads
-  { id: "browser.download.useDownloadDir", type: "bool" },
+  { id: "browser.download.useDownloadDir", type: "bool", inverted: true },
+  { id: "browser.download.always_ask_before_handling_new_types", type: "bool" },
   { id: "browser.download.folderList", type: "int" },
   { id: "browser.download.dir", type: "file" },
 
@@ -122,6 +78,8 @@ Preferences.addAll([
   browser.tabs.warnOnOpen
   - true if the user should be warned if he attempts to open a lot of tabs at
     once (e.g. a large folder of bookmarks), false otherwise
+  browser.warnOnQuitShortcut
+  - true if the user should be warned if they quit using the keyboard shortcut
   browser.taskbar.previews.enable
   - true if tabs are to be shown in the Windows 7 taskbar
   */
@@ -129,8 +87,11 @@ Preferences.addAll([
   { id: "browser.link.open_newwindow", type: "int" },
   { id: "browser.tabs.loadInBackground", type: "bool", inverted: true },
   { id: "browser.tabs.warnOnClose", type: "bool" },
+  { id: "browser.warnOnQuitShortcut", type: "bool" },
   { id: "browser.tabs.warnOnOpen", type: "bool" },
-  { id: "browser.ctrlTab.recentlyUsedOrder", type: "bool" },
+  { id: "browser.ctrlTab.sortByRecentlyUsed", type: "bool" },
+  { id: "browser.tabs.hoverPreview.enabled", type: "bool" },
+  { id: "browser.tabs.hoverPreview.showThumbnails", type: "bool" },
 
   // CFR
   {
@@ -146,7 +107,6 @@ Preferences.addAll([
   { id: "font.language.group", type: "wstring" },
 
   // Languages
-  { id: "browser.translation.detectLanguage", type: "bool" },
   { id: "intl.regional_prefs.use_os_locales", type: "bool" },
 
   // General tab
@@ -175,7 +135,10 @@ Preferences.addAll([
        page-down, and other such page movements */
   { id: "general.autoScroll", type: "bool" },
   { id: "general.smoothScroll", type: "bool" },
+  { id: "widget.gtk.overlay-scrollbars.enabled", type: "bool", inverted: true },
+  { id: "layout.css.always_underline_links", type: "bool" },
   { id: "layout.spellcheckDefault", type: "int" },
+  { id: "accessibility.tabfocus", type: "int" },
 
   {
     id: "browser.preferences.defaultPerformanceSettings.enabled",
@@ -206,6 +169,13 @@ Preferences.addAll([
     id: "media.videocontrols.picture-in-picture.video-toggle.enabled",
     type: "bool",
   },
+
+  // Media
+  { id: "media.hardwaremediakeys.enabled", type: "bool" },
+
+  // WATERFOX
+  // Enable auto update checking
+  { id: "app.update.enabled", type: "bool" },
 ]);
 
 if (AppConstants.HAVE_SHELL_SERVICE) {
@@ -227,10 +197,14 @@ if (AppConstants.MOZ_UPDATER) {
     { id: "app.update.disable_button.showUpdateHistory", type: "bool" },
   ]);
 
-  if (AppConstants.MOZ_MAINTENANCE_SERVICE) {
-    Preferences.addAll([{ id: "app.update.service.enabled", type: "bool" }]);
+  if (AppConstants.NIGHTLY_BUILD) {
+    Preferences.addAll([{ id: "app.update.suppressPrompts", type: "bool" }]);
   }
 }
+
+ChromeUtils.defineLazyGetter(this, "gIsPackagedApp", () => {
+  return Services.sysinfo.getProperty("isPackagedApp");
+});
 
 // A promise that resolves when the list of application handlers is loaded.
 // We store this in a global so tests can await it.
@@ -245,13 +219,11 @@ function getBundleForLocales(newLocales) {
       Services.locale.lastFallbackLocale,
     ])
   );
-  function generateBundles(resourceIds) {
-    return L10nRegistry.generateBundles(locales, resourceIds);
-  }
   return new Localization(
     ["browser/preferences/preferences.ftl", "branding/brand.ftl"],
     false,
-    { generateBundles }
+    undefined,
+    locales
   );
 }
 
@@ -307,23 +279,17 @@ var gMainPane = {
       // Exponential backoff mechanism will delay the polling times if user doesn't
       // trigger SetDefaultBrowser for a long time.
       let backoffTimes = [
-        1000,
-        1000,
-        1000,
-        1000,
-        2000,
-        2000,
-        2000,
-        5000,
-        5000,
-        10000,
+        1000, 1000, 1000, 1000, 2000, 2000, 2000, 5000, 5000, 10000,
       ];
 
       let pollForDefaultBrowser = () => {
         let uri = win.gBrowser.currentURI.spec;
 
         if (
-          (uri == "about:preferences" || uri == "about:preferences#general") &&
+          (uri == "about:preferences" ||
+            uri == "about:preferences#general" ||
+            uri == "about:settings" ||
+            uri == "about:settings#general") &&
           document.visibilityState == "visible"
         ) {
           this.updateSetDefaultBrowser();
@@ -343,14 +309,6 @@ var gMainPane = {
     this.initBrowserContainers();
     this.buildContentProcessCountMenuList();
 
-    let performanceSettingsLink = document.getElementById(
-      "performanceSettingsLearnMore"
-    );
-    let performanceSettingsUrl =
-      Services.urlFormatter.formatURLPref("app.support.baseURL") +
-      "performance";
-    performanceSettingsLink.setAttribute("href", performanceSettingsUrl);
-
     this.updateDefaultPerformanceSettingsPref();
 
     let defaultPerformancePref = Preferences.get(
@@ -361,18 +319,11 @@ var gMainPane = {
     });
     this.updatePerformanceSettingsBox({ duringChangeEvent: false });
     this.displayUseSystemLocale();
-    let connectionSettingsLink = document.getElementById(
-      "connectionSettingsLearnMore"
-    );
-    let connectionSettingsUrl =
-      Services.urlFormatter.formatURLPref("app.support.baseURL") +
-      "prefs-connection-settings";
-    connectionSettingsLink.setAttribute("href", connectionSettingsUrl);
     this.updateProxySettingsUI();
     initializeProxyUI(gMainPane);
 
     if (Services.prefs.getBoolPref("intl.multilingual.enabled")) {
-      gMainPane.initBrowserLocale();
+      gMainPane.initPrimaryBrowserLanguageUI();
     }
 
     // We call `initDefaultZoomValues` to set and unhide the
@@ -380,13 +331,7 @@ var gMainPane = {
     // listener for future menu changes.
     gMainPane.initDefaultZoomValues();
 
-    let cfrLearnMoreUrl =
-      Services.urlFormatter.formatURLPref("app.support.baseURL") +
-      "extensionrecommendations";
-    for (const id of ["cfrLearnMore", "cfrFeaturesLearnMore"]) {
-      let link = document.getElementById(id);
-      link.setAttribute("href", cfrLearnMoreUrl);
-    }
+    gMainPane.initTranslations();
 
     if (
       Services.prefs.getBoolPref(
@@ -394,12 +339,19 @@ var gMainPane = {
       )
     ) {
       document.getElementById("pictureInPictureBox").hidden = false;
-
-      let pipLearnMoreUrl =
-        Services.urlFormatter.formatURLPref("app.support.baseURL") +
-        "picture-in-picture";
-      let link = document.getElementById("pictureInPictureLearnMore");
-      link.setAttribute("href", pipLearnMoreUrl);
+      setEventListener(
+        "pictureInPictureToggleEnabled",
+        "command",
+        function (event) {
+          if (!event.target.checked) {
+            Services.telemetry.recordEvent(
+              "pictureinpicture.settings",
+              "disable",
+              "settings"
+            );
+          }
+        }
+      );
     }
 
     if (AppConstants.platform == "win") {
@@ -411,38 +363,65 @@ var gMainPane = {
       } catch (ex) {}
     }
 
-    // The "closing multiple tabs" and "opening multiple tabs might slow down
-    // &brandShortName;" warnings provide options for not showing these
-    // warnings again. When the user disabled them, we provide checkboxes to
-    // re-enable the warnings.
-    if (!TransientPrefs.prefShouldBeVisible("browser.tabs.warnOnClose")) {
-      document.getElementById("warnCloseMultiple").hidden = true;
-    }
+    let thumbsCheckbox = document.getElementById("tabPreviewShowThumbnails");
+    let cardPreviewEnabledPref = Preferences.get(
+      "browser.tabs.hoverPreview.enabled"
+    );
+    let maybeShowThumbsCheckbox = () =>
+      (thumbsCheckbox.hidden = !cardPreviewEnabledPref.value);
+    cardPreviewEnabledPref.on("change", maybeShowThumbsCheckbox);
+    maybeShowThumbsCheckbox();
+
+    // The "opening multiple tabs might slow down Firefox" warning provides
+    // an option for not showing this warning again. When the user disables it,
+    // we provide checkboxes to re-enable the warning.
     if (!TransientPrefs.prefShouldBeVisible("browser.tabs.warnOnOpen")) {
       document.getElementById("warnOpenMany").hidden = true;
     }
 
-    setEventListener("ctrlTabRecentlyUsedOrder", "command", function() {
+    if (AppConstants.platform != "win") {
+      let quitKeyElement =
+        window.browsingContext.topChromeWindow.document.getElementById(
+          "key_quitApplication"
+        );
+      if (quitKeyElement) {
+        let quitKey = ShortcutUtils.prettifyShortcut(quitKeyElement);
+        document.l10n.setAttributes(
+          document.getElementById("warnOnQuitKey"),
+          "confirm-on-quit-with-key",
+          { quitKey }
+        );
+      } else {
+        // If the quit key element does not exist, then the quit key has
+        // been disabled, so just hide the checkbox.
+        document.getElementById("warnOnQuitKey").hidden = true;
+      }
+    }
+
+    setEventListener("ctrlTabRecentlyUsedOrder", "command", function () {
       Services.prefs.clearUserPref("browser.ctrlTab.migrated");
     });
-    setEventListener("manageBrowserLanguagesButton", "command", function() {
-      gMainPane.showBrowserLanguages({ search: false });
+    setEventListener("manageBrowserLanguagesButton", "command", function () {
+      gMainPane.showBrowserLanguagesSubDialog({ search: false });
     });
     if (AppConstants.MOZ_UPDATER) {
       // These elements are only compiled in when the updater is enabled
-      setEventListener("checkForUpdatesButton", "command", function() {
+      setEventListener("checkForUpdatesButton", "command", function () {
         gAppUpdater.checkForUpdates();
       });
-      setEventListener("downloadAndInstallButton", "command", function() {
+      setEventListener("downloadAndInstallButton", "command", function () {
         gAppUpdater.startDownload();
       });
-      setEventListener("updateButton", "command", function() {
+      setEventListener("updateButton", "command", function () {
         gAppUpdater.buttonRestartAfterDownload();
       });
-      setEventListener("checkForUpdatesButton2", "command", function() {
+      setEventListener("checkForUpdatesButton2", "command", function () {
         gAppUpdater.checkForUpdates();
       });
-      setEventListener("checkForUpdatesButton3", "command", function() {
+      setEventListener("checkForUpdatesButton3", "command", function () {
+        gAppUpdater.checkForUpdates();
+      });
+      setEventListener("checkForUpdatesButton4", "command", function () {
         gAppUpdater.checkForUpdates();
       });
     }
@@ -453,9 +432,38 @@ var gMainPane = {
       "command",
       gMainPane.onBrowserRestoreSessionChange
     );
-    gMainPane.updateBrowserStartupUI = gMainPane.updateBrowserStartupUI.bind(
-      gMainPane
-    );
+    if (AppConstants.platform == "win") {
+      setEventListener(
+        "windowsLaunchOnLogin",
+        "command",
+        gMainPane.onWindowsLaunchOnLoginChange
+      );
+      // We do a check here for startWithLastProfile as we could
+      // have disabled the pref for the user before they're ever
+      // exposed to the experiment on a new profile.
+      // If we're using MSIX, we don't show the checkbox as MSIX
+      // can't write to the registry.
+      if (
+        Cc["@mozilla.org/toolkit/profile-service;1"].getService(
+          Ci.nsIToolkitProfileService
+        ).startWithLastProfile
+      ) {
+        NimbusFeatures.windowsLaunchOnLogin.recordExposureEvent({
+          once: true,
+        });
+
+        if (
+          Services.prefs.getBoolPref(
+            "browser.startup.windowsLaunchOnLogin.enabled",
+            false
+          )
+        ) {
+          document.getElementById("windowsLaunchOnLoginBox").hidden = false;
+        }
+      }
+    }
+    gMainPane.updateBrowserStartupUI =
+      gMainPane.updateBrowserStartupUI.bind(gMainPane);
     Preferences.get("browser.privatebrowsing.autostart").on(
       "change",
       gMainPane.updateBrowserStartupUI
@@ -483,13 +491,9 @@ var gMainPane = {
       makeDisableControllingExtension(PREF_SETTING_TYPE, CONTAINERS_KEY)
     );
     setEventListener("chooseLanguage", "command", gMainPane.showLanguages);
+    // TODO (Bug 1817084) Remove this code when we disable the extension
     setEventListener(
-      "translationAttributionImage",
-      "click",
-      gMainPane.openTranslationProviderAttribution
-    );
-    setEventListener(
-      "translateButton",
+      "fxtranslateButton",
       "command",
       gMainPane.showTranslationExceptions
     );
@@ -518,41 +522,51 @@ var gMainPane = {
       "command",
       gMainPane.showContainerSettings
     );
+    setEventListener(
+      "data-migration",
+      "command",
+      gMainPane.onMigrationButtonCommand
+    );
+
+    document
+      .getElementById("migrationWizardDialog")
+      .addEventListener("MigrationWizard:Close", function (e) {
+        e.currentTarget.close();
+      });
+
+    if (Services.policies && !Services.policies.isAllowed("profileImport")) {
+      document.getElementById("dataMigrationGroup").remove();
+    }
+
+    if (
+      Services.prefs.getBoolPref("browser.backup.preferences.ui.enabled", false)
+    ) {
+      let backupGroup = document.getElementById("dataBackupGroup");
+      backupGroup.hidden = false;
+      backupGroup.removeAttribute("data-hidden-from-search");
+    }
+
+    // For media control toggle button, we support it on Windows, macOS and
+    // gtk-based Linux.
+    if (
+      AppConstants.platform == "win" ||
+      AppConstants.platform == "macosx" ||
+      AppConstants.MOZ_WIDGET_GTK
+    ) {
+      document.getElementById("mediaControlBox").hidden = false;
+    }
 
     // Initializes the fonts dropdowns displayed in this pane.
     this._rebuildFonts();
 
-    if (Services.prefs.getBoolPref("intl.charset.detector.ng.enabled", false)) {
-      let advancedBtn = document.getElementById("advancedFonts");
-      let l10nIds = advancedBtn
-        .getAttribute("search-l10n-ids")
-        .split(/\s*,\s*/);
-      l10nIds = l10nIds.filter(id => !id.includes("languages-fallback"));
-      advancedBtn.setAttribute("search-l10n-ids", l10nIds.join(", "));
+    // Firefox Translations settings panel
+    // TODO (Bug 1817084) Remove this code when we disable the extension
+    const fxtranslationsDisabledPrefName = "extensions.translations.disabled";
+    if (!Services.prefs.getBoolPref(fxtranslationsDisabledPrefName, true)) {
+      let fxtranslationRow = document.getElementById("fxtranslationsBox");
+      fxtranslationRow.hidden = false;
     }
 
-    this.updateOnScreenKeyboardVisibility();
-
-    // Show translation preferences if we may:
-    const prefName = "browser.translation.ui.show";
-    if (Services.prefs.getBoolPref(prefName)) {
-      let row = document.getElementById("translationBox");
-      row.removeAttribute("hidden");
-      // Showing attribution only for Bing Translator.
-      var { Translation } = ChromeUtils.import(
-        "resource:///modules/translation/TranslationParent.jsm"
-      );
-      if (Translation.translationEngine == "Bing") {
-        document.getElementById("bingAttribution").removeAttribute("hidden");
-      }
-    }
-
-    let drmInfoURL =
-      Services.urlFormatter.formatURLPref("app.support.baseURL") +
-      "drm-content";
-    document
-      .getElementById("playDRMContentLink")
-      .setAttribute("href", drmInfoURL);
     let emeUIEnabled = Services.prefs.getBoolPref("browser.eme.ui.enabled");
     // Force-disable/hide on WinXP:
     if (navigator.platform.toLowerCase().startsWith("win")) {
@@ -607,14 +621,12 @@ var gMainPane = {
       }
     }
 
-    let distroId = Services.prefs.getCharPref("distribution.id", "");
+    let defaults = Services.prefs.getDefaultBranch(null);
+    let distroId = defaults.getCharPref("distribution.id", "");
     if (distroId) {
       let distroString = distroId;
 
-      let distroVersion = Services.prefs.getCharPref(
-        "distribution.version",
-        ""
-      );
+      let distroVersion = defaults.getCharPref("distribution.version", "");
       if (distroVersion) {
         distroString += " - " + distroVersion;
       }
@@ -623,7 +635,7 @@ var gMainPane = {
       distroIdField.value = distroString;
       distroIdField.hidden = false;
 
-      let distroAbout = Services.prefs.getStringPref("distribution.about", "");
+      let distroAbout = defaults.getStringPref("distribution.about", "");
       if (distroAbout) {
         let distroField = document.getElementById("distribution");
         distroField.value = distroAbout;
@@ -632,37 +644,74 @@ var gMainPane = {
     }
 
     if (AppConstants.MOZ_UPDATER) {
-      // XXX Workaround bug 1523453 -- changing selectIndex of a <deck> before
-      // frame construction could confuse nsDeckFrame::RemoveFrame().
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          gAppUpdater = new appUpdater();
-        });
-      });
+      gAppUpdater = new appUpdater();
       setEventListener("showUpdateHistory", "command", gMainPane.showUpdates);
 
       let updateDisabled =
         Services.policies && !Services.policies.isAllowed("appUpdate");
-      if (updateDisabled || UpdateUtils.appUpdateAutoSettingIsLocked()) {
+
+      if (gIsPackagedApp) {
+        // When we're running inside an app package, there's no point in
+        // displaying any update content here, and it would get confusing if we
+        // did, because our updater is not enabled.
+        // We can't rely on the hidden attribute for the toplevel elements,
+        // because of the pane hiding/showing code interfering.
+        document
+          .getElementById("updatesCategory")
+          .setAttribute("style", "display: none !important");
+        document
+          .getElementById("updateApp")
+          .setAttribute("style", "display: none !important");
+      } else if (
+        updateDisabled ||
+        UpdateUtils.appUpdateAutoSettingIsLocked() ||
+        gApplicationUpdateService.manualUpdateOnly
+      ) {
         document.getElementById("updateAllowDescription").hidden = true;
         document.getElementById("updateSettingsContainer").hidden = true;
-        if (updateDisabled && AppConstants.MOZ_MAINTENANCE_SERVICE) {
-          document.getElementById("useService").hidden = true;
-        }
       } else {
         // Start with no option selected since we are still reading the value
         document.getElementById("autoDesktop").removeAttribute("selected");
         document.getElementById("manualDesktop").removeAttribute("selected");
+        // WATERFOX
+        document.getElementById("disabledDesktop").removeAttribute("selected");
         // Start reading the correct value from the disk
-        this.updateReadPrefs();
-        setEventListener(
-          "updateRadioGroup",
-          "command",
-          gMainPane.updateWritePrefs
-        );
+        this.readUpdateAutoPref();
+        setEventListener("updateRadioGroup", "command", event => {
+          if (event.target.id == "backgroundUpdate") {
+            this.writeBackgroundUpdatePref();
+          } else {
+            this.writeUpdateAutoPref();
+          }
+        });
+        if (this.isBackgroundUpdateUIAvailable()) {
+          document.getElementById("backgroundUpdate").hidden = false;
+          // Start reading the background update pref's value from the disk.
+          this.readBackgroundUpdatePref();
+        }
       }
 
       if (AppConstants.platform == "win") {
+        // Check for a launch on login registry key
+        // This accounts for if a user manually changes it in the registry
+        // Disabling in Task Manager works outside of just deleting the registry key
+        // in HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run
+        // but it is not possible to change it back to enabled as the disabled value is just a random
+        // hexadecimal number
+        let launchOnLoginCheckbox = document.getElementById(
+          "windowsLaunchOnLogin"
+        );
+        WindowsLaunchOnLogin.getLaunchOnLoginEnabled().then(enabled => {
+          launchOnLoginCheckbox.checked = enabled;
+        });
+        WindowsLaunchOnLogin.getLaunchOnLoginApproved().then(
+          approvedByWindows => {
+            launchOnLoginCheckbox.disabled = !approvedByWindows;
+            document.getElementById("windowsLaunchOnLoginDisabledBox").hidden =
+              approvedByWindows;
+          }
+        );
+
         // On Windows, the Application Update setting is an installation-
         // specific preference, not a profile-specific one. Show a warning to
         // inform users of this.
@@ -670,28 +719,9 @@ var gMainPane = {
           "updateSettingsContainer"
         );
         updateContainer.classList.add("updateSettingCrossUserWarningContainer");
-        document.getElementById("updateSettingCrossUserWarning").hidden = false;
-      }
-
-      if (AppConstants.MOZ_MAINTENANCE_SERVICE) {
-        // Check to see if the maintenance service is installed.
-        // If it isn't installed, don't show the preference at all.
-        let installed;
-        try {
-          let wrk = Cc["@mozilla.org/windows-registry-key;1"].createInstance(
-            Ci.nsIWindowsRegKey
-          );
-          wrk.open(
-            wrk.ROOT_KEY_LOCAL_MACHINE,
-            "SOFTWARE\\Mozilla\\MaintenanceService",
-            wrk.ACCESS_READ | wrk.WOW64_64
-          );
-          installed = wrk.readIntValue("Installed");
-          wrk.close();
-        } catch (e) {}
-        if (installed != 1) {
-          document.getElementById("useService").hidden = true;
-        }
+        document.getElementById(
+          "updateSettingCrossUserWarningDesc"
+        ).hidden = false;
       }
     }
 
@@ -699,15 +729,13 @@ var gMainPane = {
 
     // Observe preferences that influence what we display so we can rebuild
     // the view when they change.
-    Services.prefs.addObserver(PREF_SHOW_PLUGINS_IN_LIST, this);
-    Services.prefs.addObserver(PREF_HIDE_PLUGINS_WITHOUT_EXTENSIONS, this);
     Services.obs.addObserver(this, AUTO_UPDATE_CHANGED_TOPIC);
+    Services.obs.addObserver(this, BACKGROUND_UPDATE_CHANGED_TOPIC);
 
     setEventListener("filter", "command", gMainPane.filter);
     setEventListener("typeColumn", "click", gMainPane.sort);
     setEventListener("actionColumn", "click", gMainPane.sort);
     setEventListener("chooseFolder", "command", gMainPane.chooseFolder);
-    setEventListener("saveWhere", "command", gMainPane.handleSaveToCommand);
     Preferences.get("browser.download.folderList").on(
       "change",
       gMainPane.displayDownloadDirPref.bind(gMainPane)
@@ -735,13 +763,17 @@ var gMainPane = {
       this._sortColumn = document.getElementById("typeColumn");
     }
 
-    let browserBundle = document.getElementById("browserBundle");
-    appendSearchKeywords("browserContainersSettings", [
-      browserBundle.getString("userContextPersonal.label"),
-      browserBundle.getString("userContextWork.label"),
-      browserBundle.getString("userContextBanking.label"),
-      browserBundle.getString("userContextShopping.label"),
-    ]);
+    appendSearchKeywords(
+      "browserContainersSettings",
+      [
+        "user-context-personal",
+        "user-context-work",
+        "user-context-banking",
+        "user-context-shopping",
+      ].map(ContextualIdentityService.formatContextLabel)
+    );
+
+    AppearanceChooser.init();
 
     // Notify observers that the UI is now ready
     Services.obs.notifyObservers(window, "main-pane-loaded");
@@ -750,14 +782,18 @@ var gMainPane = {
       document.getElementById("defaultFont"),
       element => FontBuilder.readFontSelection(element)
     );
-    Preferences.addSyncFromPrefListener(
-      document.getElementById("translate"),
-      () =>
-        this.updateButtons(
-          "translateButton",
-          "browser.translation.detectLanguage"
-        )
-    );
+    if (AppConstants.platform == "macosx") {
+      // We only expose this control on macOS, so don't try
+      // to add listeners if it doesn't exist.
+      Preferences.addSyncFromPrefListener(
+        document.getElementById("useFullKeyboardNavigation"),
+        () => this.readUseFullKeyboardNavigation()
+      );
+      Preferences.addSyncToPrefListener(
+        document.getElementById("useFullKeyboardNavigation"),
+        () => this.writeUseFullKeyboardNavigation()
+      );
+    }
     Preferences.addSyncFromPrefListener(
       document.getElementById("checkSpelling"),
       () => this.readCheckSpelling()
@@ -767,7 +803,7 @@ var gMainPane = {
       () => this.writeCheckSpelling()
     );
     Preferences.addSyncFromPrefListener(
-      document.getElementById("saveWhere"),
+      document.getElementById("alwaysAsk"),
       () => this.readUseDownloadDir()
     );
     Preferences.addSyncFromPrefListener(
@@ -809,6 +845,22 @@ var gMainPane = {
         { once: true }
       );
     });
+  },
+
+  handleSubcategory(subcategory) {
+    if (Services.policies && !Services.policies.isAllowed("profileImport")) {
+      return false;
+    }
+    if (subcategory == "migrate") {
+      this.showMigrationWizardDialog();
+      return true;
+    }
+
+    if (subcategory == "migrate-autoclose") {
+      this.showMigrationWizardDialog({ closeTabWhenDone: true });
+    }
+
+    return false;
   },
 
   // CONTAINERS
@@ -857,15 +909,11 @@ var gMainPane = {
     }
     Services.prefs.addObserver(PREF_CONTAINERS_EXTENSION, this);
 
-    const link = document.getElementById("browserContainersLearnMore");
-    link.href =
-      Services.urlFormatter.formatURLPref("app.support.baseURL") + "containers";
-
     document.getElementById("browserContainersbox").hidden = false;
     this.readBrowserContainersCheckbox();
   },
 
-  async onGetStarted(aEvent) {
+  async onGetStarted() {
     if (!AppConstants.MOZ_DEV_EDITION) {
       return;
     }
@@ -877,6 +925,9 @@ var gMainPane = {
     if (user) {
       // We have a user, open Sync preferences in the same tab
       win.openTrustedLinkIn("about:preferences#sync", "current");
+      return;
+    }
+    if (!(await FxAccounts.canConnectAccount())) {
       return;
     }
     let url = await FxAccounts.config.promiseConnectAccountURI(
@@ -926,26 +977,12 @@ var gMainPane = {
 
     let newValue;
     let checkbox = document.getElementById("browserRestoreSession");
-    let warnOnQuitCheckbox = document.getElementById(
-      "browserRestoreSessionQuitWarning"
-    );
-    if (pbAutoStartPref.value || startupPref.locked) {
-      checkbox.setAttribute("disabled", "true");
-      warnOnQuitCheckbox.setAttribute("disabled", "true");
-    } else {
-      checkbox.removeAttribute("disabled");
-    }
+    checkbox.disabled = pbAutoStartPref.value || startupPref.locked;
     newValue = pbAutoStartPref.value
       ? false
       : startupPref.value === this.STARTUP_PREF_RESTORE_SESSION;
     if (checkbox.checked !== newValue) {
       checkbox.checked = newValue;
-      let warnOnQuitPref = Preferences.get("browser.sessionstore.warnOnQuit");
-      if (newValue && !warnOnQuitPref.locked && !pbAutoStartPref.value) {
-        warnOnQuitCheckbox.removeAttribute("disabled");
-      } else {
-        warnOnQuitCheckbox.setAttribute("disabled", "true");
-      }
     }
   },
   /**
@@ -955,7 +992,7 @@ var gMainPane = {
    * changes.
    */
   async initDefaultZoomValues() {
-    let win = window.docShell.rootTreeItem.domWindow;
+    let win = window.browsingContext.topChromeWindow;
     let selected = await win.ZoomUI.getGlobalValue();
     let menulist = document.getElementById("defaultZoom");
 
@@ -964,8 +1001,10 @@ var gMainPane = {
       gMainPane.handleDefaultZoomChange(parsedZoom);
     });
 
-    setEventListener("zoomText", "command", function() {
+    setEventListener("zoomText", "command", function () {
       win.ZoomManager.toggleZoom();
+      document.getElementById("text-zoom-override-warning").hidden =
+        !document.getElementById("zoomText").checked;
     });
 
     let zoomValues = win.ZoomManager.zoomValues.map(a => {
@@ -988,11 +1027,390 @@ var gMainPane = {
 
     let checkbox = document.getElementById("zoomText");
     checkbox.checked = !win.ZoomManager.useFullZoom;
-
+    document.getElementById("text-zoom-override-warning").hidden =
+      !checkbox.checked;
     document.getElementById("zoomBox").hidden = false;
   },
 
-  initBrowserLocale() {
+  /**
+   * Initialize the translations view.
+   */
+  async initTranslations() {
+    if (!Services.prefs.getBoolPref("browser.translations.enable")) {
+      return;
+    }
+
+    /**
+     * Which phase a language download is in.
+     *
+     * @typedef {"downloaded" | "loading" | "uninstalled"} DownloadPhase
+     */
+
+    // Immediately show the group so that the async load of the component does
+    // not cause the layout to jump. The group will be empty initially.
+    document.getElementById("translationsGroup").hidden = false;
+
+    class TranslationsState {
+      /**
+       * The fully initialized state.
+       *
+       * @param {Object} supportedLanguages
+       * @param {Array<{ langTag: string, displayName: string}} languageList
+       * @param {Map<string, DownloadPhase>} downloadPhases
+       */
+      constructor(supportedLanguages, languageList, downloadPhases) {
+        this.supportedLanguages = supportedLanguages;
+        this.languageList = languageList;
+        this.downloadPhases = downloadPhases;
+      }
+
+      /**
+       * Handles all of the async initialization logic.
+       */
+      static async create() {
+        const supportedLanguages =
+          await TranslationsParent.getSupportedLanguages();
+        const languageList =
+          TranslationsParent.getLanguageList(supportedLanguages);
+        const downloadPhases = await TranslationsState.createDownloadPhases(
+          languageList
+        );
+
+        if (supportedLanguages.languagePairs.length === 0) {
+          throw new Error(
+            "The supported languages list was empty. RemoteSettings may not be available at the moment."
+          );
+        }
+
+        return new TranslationsState(
+          supportedLanguages,
+          languageList,
+          downloadPhases
+        );
+      }
+
+      /**
+       * Determine the download phase of each language file.
+       *
+       * @param {Array<{ langTag: string, displayName: string}} languageList.
+       * @returns {Map<string, DownloadPhase>} Map the language tag to whether it is downloaded.
+       */
+      static async createDownloadPhases(languageList) {
+        const downloadPhases = new Map();
+        for (const { langTag } of languageList) {
+          downloadPhases.set(
+            langTag,
+            (await TranslationsParent.hasAllFilesForLanguage(langTag))
+              ? "downloaded"
+              : "uninstalled"
+          );
+        }
+        return downloadPhases;
+      }
+    }
+
+    class TranslationsView {
+      /** @type {Map<string, XULButton>} */
+      deleteButtons = new Map();
+      /** @type {Map<string, XULButton>} */
+      downloadButtons = new Map();
+
+      /**
+       * @param {TranslationsState} state
+       */
+      constructor(state) {
+        this.state = state;
+        this.elements = {
+          settingsButton: document.getElementById(
+            "translations-manage-settings-button"
+          ),
+          installList: document.getElementById(
+            "translations-manage-install-list"
+          ),
+          installAll: document.getElementById(
+            "translations-manage-install-all"
+          ),
+          deleteAll: document.getElementById("translations-manage-delete-all"),
+          error: document.getElementById("translations-manage-error"),
+        };
+        this.setup();
+      }
+
+      setup() {
+        this.buildLanguageList();
+
+        this.elements.settingsButton.addEventListener(
+          "command",
+          gMainPane.showTranslationsSettings
+        );
+        this.elements.installAll.addEventListener(
+          "command",
+          this.handleInstallAll
+        );
+        this.elements.deleteAll.addEventListener(
+          "command",
+          this.handleDeleteAll
+        );
+      }
+
+      handleInstallAll = async () => {
+        this.hideError();
+        this.disableButtons(true);
+        try {
+          await TranslationsParent.downloadAllFiles();
+          this.markAllDownloadPhases("downloaded");
+        } catch (error) {
+          TranslationsView.showError(
+            "translations-manage-error-download",
+            error
+          );
+          await this.reloadDownloadPhases();
+          this.updateAllButtons();
+        }
+        this.disableButtons(false);
+      };
+
+      handleDeleteAll = async () => {
+        this.hideError();
+        this.disableButtons(true);
+        try {
+          await TranslationsParent.deleteAllLanguageFiles();
+          this.markAllDownloadPhases("uninstalled");
+        } catch (error) {
+          TranslationsView.showError("translations-manage-error-remove", error);
+          // The download phases are invalidated with the error and must be reloaded.
+          await this.reloadDownloadPhases();
+          console.error(error);
+        }
+        this.disableButtons(false);
+      };
+
+      /**
+       * @param {string} langTag
+       * @returns {Function}
+       */
+      getDownloadButtonHandler(langTag) {
+        return async () => {
+          this.hideError();
+          this.updateDownloadPhase(langTag, "loading");
+          try {
+            await TranslationsParent.downloadLanguageFiles(langTag);
+            this.updateDownloadPhase(langTag, "downloaded");
+          } catch (error) {
+            TranslationsView.showError(
+              "translations-manage-error-download",
+              error
+            );
+            this.updateDownloadPhase(langTag, "uninstalled");
+          }
+        };
+      }
+
+      /**
+       * @param {string} langTag
+       * @returns {Function}
+       */
+      getDeleteButtonHandler(langTag) {
+        return async () => {
+          this.hideError();
+          this.updateDownloadPhase(langTag, "loading");
+          try {
+            await TranslationsParent.deleteLanguageFiles(langTag);
+            this.updateDownloadPhase(langTag, "uninstalled");
+          } catch (error) {
+            TranslationsView.showError(
+              "translations-manage-error-remove",
+              error
+            );
+            // The download phases are invalidated with the error and must be reloaded.
+            await this.reloadDownloadPhases();
+          }
+        };
+      }
+
+      buildLanguageList() {
+        const listFragment = document.createDocumentFragment();
+
+        for (const { langTag, displayName } of this.state.languageList) {
+          const hboxRow = document.createXULElement("hbox");
+          hboxRow.classList.add("translations-manage-language");
+
+          const languageLabel = document.createXULElement("label");
+          languageLabel.textContent = displayName; // The display name is already localized.
+
+          const downloadButton = document.createXULElement("button");
+          const deleteButton = document.createXULElement("button");
+
+          downloadButton.addEventListener(
+            "command",
+            this.getDownloadButtonHandler(langTag)
+          );
+          deleteButton.addEventListener(
+            "command",
+            this.getDeleteButtonHandler(langTag)
+          );
+
+          document.l10n.setAttributes(
+            downloadButton,
+            "translations-manage-language-download-button"
+          );
+          document.l10n.setAttributes(
+            deleteButton,
+            "translations-manage-language-remove-button"
+          );
+
+          downloadButton.hidden = true;
+          deleteButton.hidden = true;
+
+          this.deleteButtons.set(langTag, deleteButton);
+          this.downloadButtons.set(langTag, downloadButton);
+
+          hboxRow.appendChild(languageLabel);
+          hboxRow.appendChild(downloadButton);
+          hboxRow.appendChild(deleteButton);
+          listFragment.appendChild(hboxRow);
+        }
+        this.updateAllButtons();
+        this.elements.installList.appendChild(listFragment);
+        this.elements.installList.hidden = false;
+      }
+
+      /**
+       * Update the DownloadPhase for a single langTag.
+       * @param {string} langTag
+       * @param {DownloadPhase} downloadPhase
+       */
+      updateDownloadPhase(langTag, downloadPhase) {
+        this.state.downloadPhases.set(langTag, downloadPhase);
+        this.updateButton(langTag, downloadPhase);
+        this.updateHeaderButtons();
+      }
+
+      /**
+       * Recreates the download map when the state is invalidated.
+       */
+      async reloadDownloadPhases() {
+        this.state.downloadPhases =
+          await TranslationsState.createDownloadPhases(this.state.languageList);
+        this.updateAllButtons();
+      }
+
+      /**
+       * Set all the downloads.
+       * @param {DownloadPhase} downloadPhase
+       */
+      markAllDownloadPhases(downloadPhase) {
+        const { downloadPhases } = this.state;
+        for (const key of downloadPhases.keys()) {
+          downloadPhases.set(key, downloadPhase);
+        }
+        this.updateAllButtons();
+      }
+
+      /**
+       * If all languages are downloaded, or no languages are downloaded then
+       * the visibility of the buttons need to change.
+       */
+      updateHeaderButtons() {
+        let allDownloaded = true;
+        let allUninstalled = true;
+        for (const downloadPhase of this.state.downloadPhases.values()) {
+          if (downloadPhase === "loading") {
+            // Don't count loading towards this calculation.
+            continue;
+          }
+          allDownloaded &&= downloadPhase === "downloaded";
+          allUninstalled &&= downloadPhase === "uninstalled";
+        }
+
+        this.elements.installAll.hidden = allDownloaded;
+        this.elements.deleteAll.hidden = allUninstalled;
+      }
+
+      /**
+       * Update the buttons according to their download state.
+       */
+      updateAllButtons() {
+        this.updateHeaderButtons();
+        for (const [langTag, downloadPhase] of this.state.downloadPhases) {
+          this.updateButton(langTag, downloadPhase);
+        }
+      }
+
+      /**
+       * @param {string} langTag
+       * @param {DownloadPhase} downloadPhase
+       */
+      updateButton(langTag, downloadPhase) {
+        const downloadButton = this.downloadButtons.get(langTag);
+        const deleteButton = this.deleteButtons.get(langTag);
+        switch (downloadPhase) {
+          case "downloaded":
+            downloadButton.hidden = true;
+            deleteButton.hidden = false;
+            downloadButton.removeAttribute("disabled");
+            break;
+          case "uninstalled":
+            downloadButton.hidden = false;
+            deleteButton.hidden = true;
+            downloadButton.removeAttribute("disabled");
+            break;
+          case "loading":
+            downloadButton.hidden = false;
+            deleteButton.hidden = true;
+            downloadButton.setAttribute("disabled", true);
+            break;
+        }
+      }
+
+      /**
+       * @param {boolean} isDisabled
+       */
+      disableButtons(isDisabled) {
+        this.elements.installAll.disabled = isDisabled;
+        this.elements.deleteAll.disabled = isDisabled;
+        for (const button of this.downloadButtons.values()) {
+          button.disabled = isDisabled;
+        }
+        for (const button of this.deleteButtons.values()) {
+          button.disabled = isDisabled;
+        }
+      }
+
+      /**
+       * This method is static in case an error happens during the creation of the
+       * TranslationsState.
+       *
+       * @param {string} l10nId
+       * @param {Error} error
+       */
+      static showError(l10nId, error) {
+        console.error(error);
+        const errorMessage = document.getElementById(
+          "translations-manage-error"
+        );
+        errorMessage.hidden = false;
+        document.l10n.setAttributes(errorMessage, l10nId);
+      }
+
+      hideError() {
+        this.elements.error.hidden = true;
+      }
+    }
+
+    TranslationsState.create().then(
+      state => {
+        new TranslationsView(state);
+      },
+      error => {
+        // This error can happen when a user is not connected to the internet, or
+        // RemoteSettings is down for some reason.
+        TranslationsView.showError("translations-manage-error-list", error);
+      }
+    );
+  },
+
+  initPrimaryBrowserLanguageUI() {
     // Enable telemetry.
     Services.telemetry.setEventRecordingEnabled(
       "intl.ui.browserLanguage",
@@ -1000,22 +1418,28 @@ var gMainPane = {
     );
 
     // This will register the "command" listener.
-    let menulist = document.getElementById("defaultBrowserLanguage");
+    let menulist = document.getElementById("primaryBrowserLocale");
     new SelectionChangedMenulist(menulist, event => {
-      gMainPane.onBrowserLanguageChange(event);
+      gMainPane.onPrimaryBrowserLanguageMenuChange(event);
     });
 
-    gMainPane.setBrowserLocales(Services.locale.appLocaleAsBCP47);
+    gMainPane.updatePrimaryBrowserLanguageUI(Services.locale.appLocaleAsBCP47);
   },
 
   /**
    * Update the available list of locales and select the locale that the user
    * is "selecting". This could be the currently requested locale or a locale
    * that the user would like to switch to after confirmation.
+   *
+   * @param {string} selected - The selected BCP 47 locale.
    */
-  async setBrowserLocales(selected) {
-    let available = await getAvailableLocales();
-    let localeNames = Services.intl.getLocaleDisplayNames(undefined, available);
+  async updatePrimaryBrowserLanguageUI(selected) {
+    let available = await LangPackMatcher.getAvailableLocales();
+    let localeNames = Services.intl.getLocaleDisplayNames(
+      undefined,
+      available,
+      { preferNative: true }
+    );
     let locales = available.map((code, i) => ({ code, name: localeNames[i] }));
     locales.sort((a, b) => a.name > b.name);
 
@@ -1030,7 +1454,7 @@ var gMainPane = {
     // Add an option to search for more languages if downloading is supported.
     if (Services.prefs.getBoolPref("intl.multilingual.downloadEnabled")) {
       let menuitem = document.createXULElement("menuitem");
-      menuitem.id = "defaultBrowserLanguageSearch";
+      menuitem.id = "primaryBrowserLocaleSearch";
       menuitem.setAttribute(
         "label",
         await document.l10n.formatValue("browser-languages-search")
@@ -1039,7 +1463,7 @@ var gMainPane = {
       fragment.appendChild(menuitem);
     }
 
-    let menulist = document.getElementById("defaultBrowserLanguage");
+    let menulist = document.getElementById("primaryBrowserLocale");
     let menupopup = menulist.querySelector("menupopup");
     menupopup.textContent = "";
     menupopup.appendChild(fragment);
@@ -1081,11 +1505,15 @@ var gMainPane = {
     for (let i = 0; i < messages.length; i++) {
       let messageContainer = document.createXULElement("hbox");
       messageContainer.classList.add("message-bar-content");
-      messageContainer.setAttribute("flex", "1");
+      messageContainer.style.flex = "1 50%";
       messageContainer.setAttribute("align", "center");
 
       let description = document.createXULElement("description");
       description.classList.add("message-bar-description");
+
+      if (i == 0 && Services.intl.getScriptDirection(locales[0]) === "rtl") {
+        description.classList.add("rtl-locale");
+      }
       description.setAttribute("flex", "1");
       description.textContent = messages[i];
       messageContainer.appendChild(description);
@@ -1104,7 +1532,7 @@ var gMainPane = {
     }
 
     messageBar.hidden = false;
-    gMainPane.selectedLocales = locales;
+    gMainPane.selectedLocalesForRestart = locales;
   },
 
   hideConfirmLanguageChangeMessageBar() {
@@ -1146,24 +1574,46 @@ var gMainPane = {
   },
 
   /* Show or hide the confirm change message bar based on the new locale. */
-  onBrowserLanguageChange(event) {
+  onPrimaryBrowserLanguageMenuChange(event) {
     let locale = event.target.value;
 
     if (locale == "search") {
-      gMainPane.showBrowserLanguages({ search: true });
+      gMainPane.showBrowserLanguagesSubDialog({ search: true });
       return;
     } else if (locale == Services.locale.appLocaleAsBCP47) {
       this.hideConfirmLanguageChangeMessageBar();
       return;
     }
 
-    // Note the change in telemetry.
-    gMainPane.recordBrowserLanguagesTelemetry("reorder");
-
-    let locales = Array.from(
+    let newLocales = Array.from(
       new Set([locale, ...Services.locale.requestedLocales]).values()
     );
-    this.showConfirmLanguageChangeMessageBar(locales);
+
+    gMainPane.recordBrowserLanguagesTelemetry("reorder");
+
+    switch (gMainPane.getLanguageSwitchTransitionType(newLocales)) {
+      case "requires-restart":
+        // Prepare to change the locales, as they were different.
+        gMainPane.showConfirmLanguageChangeMessageBar(newLocales);
+        gMainPane.updatePrimaryBrowserLanguageUI(newLocales[0]);
+        break;
+      case "live-reload":
+        Services.locale.requestedLocales = newLocales;
+        gMainPane.updatePrimaryBrowserLanguageUI(
+          Services.locale.appLocaleAsBCP47
+        );
+        gMainPane.hideConfirmLanguageChangeMessageBar();
+        break;
+      case "locales-match":
+        // They matched, so we can reset the UI.
+        gMainPane.updatePrimaryBrowserLanguageUI(
+          Services.locale.appLocaleAsBCP47
+        );
+        gMainPane.hideConfirmLanguageChangeMessageBar();
+        break;
+      default:
+        throw new Error("Unhandled transition type.");
+    }
   },
 
   /**
@@ -1183,7 +1633,7 @@ var gMainPane = {
      * to set the property, regardless of our actual context.
      */
 
-    let win = window.docShell.rootTreeItem.domWindow;
+    let win = window.browsingContext.topChromeWindow;
     cps2.setGlobal(win.FullZoom.name, newZoom, nonPrivateLoadContext);
   },
 
@@ -1192,24 +1642,37 @@ var gMainPane = {
     const startupPref = Preferences.get("browser.startup.page");
     let newValue;
 
-    let warnOnQuitCheckbox = document.getElementById(
-      "browserRestoreSessionQuitWarning"
-    );
     if (value) {
       // We need to restore the blank homepage setting in our other pref
       if (startupPref.value === this.STARTUP_PREF_BLANK) {
         HomePage.safeSet("about:blank");
       }
       newValue = this.STARTUP_PREF_RESTORE_SESSION;
-      let warnOnQuitPref = Preferences.get("browser.sessionstore.warnOnQuit");
-      if (!warnOnQuitPref.locked) {
-        warnOnQuitCheckbox.removeAttribute("disabled");
-      }
     } else {
       newValue = this.STARTUP_PREF_HOMEPAGE;
-      warnOnQuitCheckbox.setAttribute("disabled", "true");
     }
     startupPref.value = newValue;
+  },
+
+  async onWindowsLaunchOnLoginChange(event) {
+    if (AppConstants.platform !== "win") {
+      return;
+    }
+    if (event.target.checked) {
+      // windowsLaunchOnLogin has been checked: create registry key or shortcut
+      // The shortcut is created with the same AUMID as Firefox itself. However,
+      // this is not set during browser tests and the fallback of checking the
+      // registry fails. As such we pass an arbitrary AUMID for the purpose
+      // of testing.
+      await WindowsLaunchOnLogin.createLaunchOnLogin();
+      Services.prefs.setBoolPref(
+        "browser.startup.windowsLaunchOnLogin.disableLaunchOnLoginPrompt",
+        true
+      );
+    } else {
+      // windowsLaunchOnLogin has been unchecked: delete registry key and shortcut
+      await WindowsLaunchOnLogin.removeLaunchOnLogin();
+    }
   },
 
   // TABS
@@ -1228,6 +1691,9 @@ var gMainPane = {
    * browser.tabs.warnOnClose - bool
    *   True - If when closing a window with multiple tabs the user is warned and
    *          allowed to cancel the action, false to just close the window.
+   * browser.warnOnQuitShortcut - bool
+   *   True - If the keyboard shortcut (Ctrl/Cmd+Q) is pressed, the user should
+   *          be warned, false to just quit without prompting.
    * browser.tabs.warnOnOpen - bool
    *   True - Whether the user should be warned when trying to open a lot of
    *          tabs at once (e.g. a large folder of bookmarks), allowing to
@@ -1273,23 +1739,27 @@ var gMainPane = {
     if (AppConstants.HAVE_SHELL_SERVICE) {
       let shellSvc = getShellService();
       let defaultBrowserBox = document.getElementById("defaultBrowserBox");
-      if (!shellSvc) {
+      let isInFlatpak = gGIOService?.isRunningUnderFlatpak;
+      // Flatpak does not support setting nor detection of default browser
+      if (!shellSvc || isInFlatpak) {
         defaultBrowserBox.hidden = true;
         return;
       }
-      let setDefaultPane = document.getElementById("setDefaultPane");
       let isDefault = shellSvc.isDefaultBrowser(false, true);
-      setDefaultPane.selectedIndex = isDefault ? 1 : 0;
+      let setDefaultPane = document.getElementById("setDefaultPane");
+      setDefaultPane.classList.toggle("is-default", isDefault);
       let alwaysCheck = document.getElementById("alwaysCheckDefault");
-      alwaysCheck.disabled =
-        alwaysCheck.disabled || (isDefault && alwaysCheck.checked);
+      let alwaysCheckPref = Preferences.get(
+        "browser.shell.checkDefaultBrowser"
+      );
+      alwaysCheck.disabled = alwaysCheckPref.locked || isDefault;
     }
   },
 
   /**
    * Set browser as the operating system default browser.
    */
-  setDefaultBrowser() {
+  async setDefaultBrowser() {
     if (AppConstants.HAVE_SHELL_SERVICE) {
       let alwaysCheckPref = Preferences.get(
         "browser.shell.checkDefaultBrowser"
@@ -1303,15 +1773,25 @@ var gMainPane = {
       if (!shellSvc) {
         return;
       }
+
+      // Disable the set default button, so that the user doesn't try to hit it again
+      // while awaiting on setDefaultBrowser
+      let setDefaultButton = document.getElementById("setDefaultButton");
+      setDefaultButton.disabled = true;
+
       try {
-        shellSvc.setDefaultBrowser(true, false);
+        await shellSvc.setDefaultBrowser(false);
       } catch (ex) {
-        Cu.reportError(ex);
+        console.error(ex);
         return;
+      } finally {
+        // Make sure to re-enable the default button when we're finished, regardless of the outcome
+        setDefaultButton.disabled = false;
       }
 
-      let selectedIndex = shellSvc.isDefaultBrowser(false, true) ? 1 : 0;
-      document.getElementById("setDefaultPane").selectedIndex = selectedIndex;
+      let isDefault = shellSvc.isDefaultBrowser(false, true);
+      let setDefaultPane = document.getElementById("setDefaultPane");
+      setDefaultPane.classList.toggle("is-default", isDefault);
     }
   },
 
@@ -1333,7 +1813,14 @@ var gMainPane = {
     );
   },
 
-  showBrowserLanguages({ search }) {
+  /**
+   * Open the browser languages sub dialog in either the normal mode, or search mode.
+   * The search mode is only available from the menu to change the primary browser
+   * language.
+   *
+   * @param {{ search: boolean }}
+   */
+  showBrowserLanguagesSubDialog({ search }) {
     // Record the telemetry event with an id to associate related actions.
     let telemetryId = parseInt(
       Services.telemetry.msSinceProcessStart(),
@@ -1342,34 +1829,87 @@ var gMainPane = {
     let method = search ? "search" : "manage";
     gMainPane.recordBrowserLanguagesTelemetry(method, telemetryId);
 
-    let opts = { selected: gMainPane.selectedLocales, search, telemetryId };
+    let opts = {
+      selectedLocalesForRestart: gMainPane.selectedLocalesForRestart,
+      search,
+      telemetryId,
+    };
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/browserLanguages.xhtml",
-      null,
-      opts,
-      this.browserLanguagesClosed
+      { closingCallback: this.browserLanguagesClosed },
+      opts
     );
+  },
+
+  /**
+   * Determine the transition strategy for switching the locale based on prefs
+   * and the switched locales.
+   *
+   * @param {Array<string>} newLocales - List of BCP 47 locale identifiers.
+   * @returns {"locales-match" | "requires-restart" | "live-reload"}
+   */
+  getLanguageSwitchTransitionType(newLocales) {
+    const { appLocalesAsBCP47 } = Services.locale;
+    if (appLocalesAsBCP47.join(",") === newLocales.join(",")) {
+      // The selected locales match, the order matters.
+      return "locales-match";
+    }
+
+    if (Services.prefs.getBoolPref("intl.multilingual.liveReload")) {
+      if (
+        Services.intl.getScriptDirection(newLocales[0]) !==
+          Services.intl.getScriptDirection(appLocalesAsBCP47[0]) &&
+        !Services.prefs.getBoolPref("intl.multilingual.liveReloadBidirectional")
+      ) {
+        // Bug 1750852: The directionality of the text changed, which requires a restart
+        // until the quality of the switch can be improved.
+        return "requires-restart";
+      }
+
+      return "live-reload";
+    }
+
+    return "requires-restart";
   },
 
   /* Show or hide the confirm change message bar based on the updated ordering. */
   browserLanguagesClosed() {
-    let { accepted, selected } = this.gBrowserLanguagesDialog;
-    let active = Services.locale.appLocalesAsBCP47;
+    // When the subdialog is closed, settings are stored on gBrowserLanguagesDialog.
+    // The next time the dialog is opened, a new gBrowserLanguagesDialog is created.
+    let { selected } = this.gBrowserLanguagesDialog;
 
     this.gBrowserLanguagesDialog.recordTelemetry(
-      accepted ? "accept" : "cancel"
+      selected ? "accept" : "cancel"
     );
 
-    // Prepare for changing the locales if they are different than the current locales.
-    if (selected && selected.join(",") != active.join(",")) {
-      gMainPane.showConfirmLanguageChangeMessageBar(selected);
-      gMainPane.setBrowserLocales(selected[0]);
+    if (!selected) {
+      // No locales were selected. Cancel the operation.
       return;
     }
 
-    // They matched, so we can reset the UI.
-    gMainPane.setBrowserLocales(Services.locale.appLocaleAsBCP47);
-    gMainPane.hideConfirmLanguageChangeMessageBar();
+    switch (gMainPane.getLanguageSwitchTransitionType(selected)) {
+      case "requires-restart":
+        gMainPane.showConfirmLanguageChangeMessageBar(selected);
+        gMainPane.updatePrimaryBrowserLanguageUI(selected[0]);
+        break;
+      case "live-reload":
+        Services.locale.requestedLocales = selected;
+
+        gMainPane.updatePrimaryBrowserLanguageUI(
+          Services.locale.appLocaleAsBCP47
+        );
+        gMainPane.hideConfirmLanguageChangeMessageBar();
+        break;
+      case "locales-match":
+        // They matched, so we can reset the UI.
+        gMainPane.updatePrimaryBrowserLanguageUI(
+          Services.locale.appLocaleAsBCP47
+        );
+        gMainPane.hideConfirmLanguageChangeMessageBar();
+        break;
+      default:
+        throw new Error("Unhandled transition type.");
+    }
   },
 
   displayUseSystemLocale() {
@@ -1379,9 +1919,11 @@ var gMainPane = {
       return;
     }
     let systemLocale = regionalPrefsLocales[0];
-    let localeDisplayname = Services.intl.getLocaleDisplayNames(undefined, [
-      systemLocale,
-    ]);
+    let localeDisplayname = Services.intl.getLocaleDisplayNames(
+      undefined,
+      [systemLocale],
+      { preferNative: true }
+    );
     if (!localeDisplayname.length) {
       return;
     }
@@ -1399,17 +1941,28 @@ var gMainPane = {
    * Displays the translation exceptions dialog where specific site and language
    * translation preferences can be set.
    */
+  // TODO (Bug 1817084) Remove this code when we disable the extension
   showTranslationExceptions() {
     gSubDialog.open(
-      "chrome://browser/content/preferences/dialogs/translation.xhtml"
+      "chrome://browser/content/preferences/dialogs/translationExceptions.xhtml"
     );
   },
 
-  openTranslationProviderAttribution() {
-    var { Translation } = ChromeUtils.import(
-      "resource:///modules/translation/TranslationParent.jsm"
-    );
-    Translation.openProviderAttribution();
+  showTranslationsSettings() {
+    if (
+      Services.prefs.getBoolPref("browser.translations.newSettingsUI.enable")
+    ) {
+      const translationsSettings = document.getElementById(
+        "translations-settings-page"
+      );
+      translationsSettings.setAttribute("data-hidden-from-search", "false");
+      translationsSettings.hidden = false;
+      gotoPref("translations");
+    } else {
+      gSubDialog.open(
+        "chrome://browser/content/preferences/dialogs/translations.xhtml"
+      );
+    }
   },
 
   /**
@@ -1419,7 +1972,7 @@ var gMainPane = {
   configureFonts() {
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/fonts.xhtml",
-      "resizable=no"
+      { features: "resizable=no" }
     );
   },
 
@@ -1430,7 +1983,7 @@ var gMainPane = {
   configureColors() {
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/colors.xhtml",
-      "resizable=no"
+      { features: "resizable=no" }
     );
   },
 
@@ -1441,9 +1994,7 @@ var gMainPane = {
   showConnections() {
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/connection.xhtml",
-      null,
-      null,
-      this.updateProxySettingsUI.bind(this)
+      { closingCallback: this.updateProxySettingsUI.bind(this) }
     );
   },
 
@@ -1471,7 +2022,7 @@ var gMainPane = {
     }
   },
 
-  async checkBrowserContainers(event) {
+  async checkBrowserContainers() {
     let checkbox = document.getElementById("browserContainersCheckbox");
     if (checkbox.checked) {
       Services.prefs.setBoolPref("privacy.userContext.enabled", true);
@@ -1484,17 +2035,13 @@ var gMainPane = {
       return;
     }
 
-    let [
-      title,
-      message,
-      okButton,
-      cancelButton,
-    ] = await document.l10n.formatValues([
-      { id: "containers-disable-alert-title" },
-      { id: "containers-disable-alert-desc", args: { tabCount: count } },
-      { id: "containers-disable-alert-ok-button", args: { tabCount: count } },
-      { id: "containers-disable-alert-cancel-button" },
-    ]);
+    let [title, message, okButton, cancelButton] =
+      await document.l10n.formatValues([
+        { id: "containers-disable-alert-title" },
+        { id: "containers-disable-alert-desc", args: { tabCount: count } },
+        { id: "containers-disable-alert-ok-button", args: { tabCount: count } },
+        { id: "containers-disable-alert-cancel-button" },
+      ]);
 
     let buttonFlags =
       Ci.nsIPrompt.BUTTON_TITLE_IS_STRING * Ci.nsIPrompt.BUTTON_POS_0 +
@@ -1524,28 +2071,6 @@ var gMainPane = {
    */
   showContainerSettings() {
     gotoPref("containers");
-  },
-
-  /**
-   * ui.osk.enabled
-   * - when set to true, subject to other conditions, we may sometimes invoke
-   *   an on-screen keyboard when a text input is focused.
-   *   (Currently Windows-only, and depending on prefs, may be Windows-8-only)
-   */
-  updateOnScreenKeyboardVisibility() {
-    if (AppConstants.platform == "win") {
-      let minVersion = Services.prefs.getBoolPref("ui.osk.require_win10")
-        ? 10
-        : 6.2;
-      if (
-        Services.vc.compare(
-          Services.sysinfo.getProperty("version"),
-          minVersion
-        ) >= 0
-      ) {
-        document.getElementById("useOnScreenKeyboard").hidden = false;
-      }
-    }
   },
 
   updateHardwareAcceleration() {
@@ -1649,7 +2174,105 @@ var gMainPane = {
           preference.setElementValue(element);
         }
       }
-    })().catch(Cu.reportError);
+    })().catch(console.error);
+  },
+
+  onMigrationButtonCommand() {
+    // Even though we're going to be showing the migration wizard here in
+    // about:preferences, we'll delegate the call to
+    // `MigrationUtils.showMigrationWizard`, as this will allow us to
+    // properly measure entering the dialog from the PREFERENCES entrypoint.
+    const browserWindow = window.browsingContext.topChromeWindow;
+
+    MigrationUtils.showMigrationWizard(browserWindow, {
+      entrypoint: MigrationUtils.MIGRATION_ENTRYPOINTS.PREFERENCES,
+    });
+  },
+
+  /**
+   * Displays the migration wizard dialog in an HTML dialog.
+   */
+  async showMigrationWizardDialog({ closeTabWhenDone = false } = {}) {
+    let migrationWizardDialog = document.getElementById(
+      "migrationWizardDialog"
+    );
+
+    if (migrationWizardDialog.open) {
+      return;
+    }
+
+    await customElements.whenDefined("migration-wizard");
+
+    // If we've been opened before, remove the old wizard and insert a
+    // new one to put it back into its starting state.
+    if (!migrationWizardDialog.firstElementChild) {
+      let wizard = document.createElement("migration-wizard");
+      wizard.toggleAttribute("dialog-mode", true);
+      migrationWizardDialog.appendChild(wizard);
+    }
+    migrationWizardDialog.firstElementChild.requestState();
+
+    migrationWizardDialog.addEventListener(
+      "close",
+      () => {
+        // Let others know that the wizard is closed -- potentially because of a
+        // user action within the dialog that dispatches "MigrationWizard:Close"
+        // but this also covers cases like hitting Escape.
+        Services.obs.notifyObservers(
+          migrationWizardDialog,
+          "MigrationWizard:Closed"
+        );
+        if (closeTabWhenDone) {
+          window.close();
+        }
+      },
+      { once: true }
+    );
+
+    migrationWizardDialog.showModal();
+  },
+
+  /**
+   * Stores the original value of the tabfocus preference to enable proper
+   * restoration if unchanged (since we're mapping an int pref onto a checkbox).
+   */
+  _storedFullKeyboardNavigation: Preferences.get("accessibility.tabfocus"),
+
+  /**
+   * Returns true if any full keyboard nav is enabled and false otherwise, caching
+   * the current value to enable proper pref restoration if the checkbox is
+   * never changed.
+   *
+   * accessibility.tabfocus
+   * - an integer controlling the focusability of:
+   *     1  text controls
+   *     2  form elements
+   *     4  links
+   *     7  all of the above
+   */
+  readUseFullKeyboardNavigation() {
+    var pref = Preferences.get("accessibility.tabfocus");
+    this._storedFullKeyboardNavigation = pref.value;
+
+    return pref.value == 7;
+  },
+
+  /**
+   * Returns the value of the full keyboard nav preference represented by UI,
+   * preserving the preference's "hidden" value if the preference is
+   * unchanged and represents a value not strictly allowed in UI.
+   */
+  writeUseFullKeyboardNavigation() {
+    var checkbox = document.getElementById("useFullKeyboardNavigation");
+    if (checkbox.checked) {
+      return 7;
+    }
+    if (this._storedFullKeyboardNavigation != 7) {
+      // 1/2/4 values set via about:config should persist
+      return this._storedFullKeyboardNavigation;
+    }
+    // When the checkbox is unchecked, default to just text controls.
+    return 1;
   },
 
   /**
@@ -1706,7 +2329,7 @@ var gMainPane = {
     }
   },
 
-  updatePerformanceSettingsBox({ duringChangeEvent }) {
+  updatePerformanceSettingsBox() {
     let defaultPerformancePref = Preferences.get(
       "browser.preferences.defaultPerformanceSettings.enabled"
     );
@@ -1724,11 +2347,23 @@ var gMainPane = {
   },
 
   buildContentProcessCountMenuList() {
+    if (Services.appinfo.fissionAutostart) {
+      document.getElementById("limitContentProcess").hidden = true;
+      document.getElementById("contentProcessCount").hidden = true;
+      document.getElementById(
+        "contentProcessCountEnabledDescription"
+      ).hidden = true;
+      document.getElementById(
+        "contentProcessCountDisabledDescription"
+      ).hidden = true;
+      return;
+    }
     if (Services.appinfo.browserTabsRemoteAutostart) {
       let processCountPref = Preferences.get("dom.ipc.processCount");
       let defaultProcessCount = processCountPref.defaultValue;
 
-      let contentProcessCount = document.querySelector(`#contentProcessCount > menupopup >
+      let contentProcessCount =
+        document.querySelector(`#contentProcessCount > menupopup >
                                 menuitem[value="${defaultProcessCount}"]`);
 
       document.l10n.setAttributes(
@@ -1757,61 +2392,164 @@ var gMainPane = {
     }
   },
 
+  _minUpdatePrefDisableTime: 1000,
   /**
    * Selects the correct item in the update radio group
    */
-  async updateReadPrefs() {
+  async readUpdateAutoPref() {
     if (
       AppConstants.MOZ_UPDATER &&
-      (!Services.policies || Services.policies.isAllowed("appUpdate"))
+      (!Services.policies || Services.policies.isAllowed("appUpdate")) &&
+      !gIsPackagedApp
     ) {
       let radiogroup = document.getElementById("updateRadioGroup");
+
       radiogroup.disabled = true;
-      try {
-        let enabled = await UpdateUtils.getAppUpdateAutoEnabled();
-        radiogroup.value = enabled;
-        radiogroup.disabled = false;
-      } catch (error) {
-        Cu.reportError(error);
+      let autoPref = await UpdateUtils.getAppUpdateAutoEnabled();
+      // WATERFOX
+      // If user sets app.update.enabled to false, set value to disabled, else use enabled
+      var enabledPref = Preferences.get("app.update.enabled");
+
+      if (!enabledPref.value) {
+        // Don't care for autoPref.value in this case.
+        radiogroup.value = "disabled"; // 3. Never check for updates.
+      } else if (autoPref.value) {
+        radiogroup.value = "true"; //1. Automatically install updates
+      } else {
+        radiogroup.value = "false"; // 2. Check, but let me choose
       }
+      radiogroup.disabled = false;
+
+      this.maybeDisableBackgroundUpdateControls();
     }
   },
 
   /**
-   * Writes the value of the update radio group to the disk
+   * Writes the value of the automatic update radio group to the disk
    */
-  async updateWritePrefs() {
+  async writeUpdateAutoPref() {
     if (
       AppConstants.MOZ_UPDATER &&
-      (!Services.policies || Services.policies.isAllowed("appUpdate"))
+      (!Services.policies || Services.policies.isAllowed("appUpdate")) &&
+      !gIsPackagedApp
     ) {
       let radiogroup = document.getElementById("updateRadioGroup");
       let updateAutoValue = radiogroup.value == "true";
+      let _disableTimeOverPromise = new Promise(r =>
+        setTimeout(r, this._minUpdatePrefDisableTime)
+      );
       radiogroup.disabled = true;
       try {
+        // We need to set this pref first so that the auto pref observer
+        // has access to the correct enabled pref value.
+        Services.prefs.setBoolPref(
+          PREF_UPDATE_ENABLED,
+          radiogroup.value != "disabled"
+        );
         await UpdateUtils.setAppUpdateAutoEnabled(updateAutoValue);
+        await _disableTimeOverPromise;
+
         radiogroup.disabled = false;
       } catch (error) {
-        Cu.reportError(error);
-        await this.updateReadPrefs();
-        await this.reportUpdatePrefWriteError(error);
+        console.error(error);
+        await Promise.all([
+          this.readUpdateAutoPref(),
+          this.reportUpdatePrefWriteError(),
+        ]);
         return;
       }
+
+      this.maybeDisableBackgroundUpdateControls();
 
       // If the value was changed to false the user should be given the option
       // to discard an update if there is one.
       if (!updateAutoValue) {
         await this.checkUpdateInProgress();
       }
+      // For tests:
+      radiogroup.dispatchEvent(new CustomEvent("ProcessedUpdatePrefChange"));
     }
   },
 
-  async reportUpdatePrefWriteError(error) {
+  isBackgroundUpdateUIAvailable() {
+    return (
+      AppConstants.MOZ_UPDATE_AGENT &&
+      // This UI controls a per-installation pref. It won't necessarily work
+      // properly if per-installation prefs aren't supported.
+      UpdateUtils.PER_INSTALLATION_PREFS_SUPPORTED &&
+      (!Services.policies || Services.policies.isAllowed("appUpdate")) &&
+      !gIsPackagedApp &&
+      !UpdateUtils.appUpdateSettingIsLocked("app.update.background.enabled")
+    );
+  },
+
+  maybeDisableBackgroundUpdateControls() {
+    if (this.isBackgroundUpdateUIAvailable()) {
+      let radiogroup = document.getElementById("updateRadioGroup");
+      let updateAutoEnabled = radiogroup.value == "true";
+
+      // This control is only active if auto update is enabled.
+      document.getElementById("backgroundUpdate").disabled = !updateAutoEnabled;
+    }
+  },
+
+  async readBackgroundUpdatePref() {
+    const prefName = "app.update.background.enabled";
+    if (this.isBackgroundUpdateUIAvailable()) {
+      let backgroundCheckbox = document.getElementById("backgroundUpdate");
+
+      // When the page first loads, the checkbox is unchecked until we finish
+      // reading the config file from the disk. But, ideally, we don't want to
+      // give the user the impression that this setting has somehow gotten
+      // turned off and they need to turn it back on. We also don't want the
+      // user interacting with the control, expecting a particular behavior, and
+      // then have the read complete and change the control in an unexpected
+      // way. So we disable the control while we are reading.
+      // The only entry points for this function are page load and user
+      // interaction with the control. By disabling the control to prevent
+      // further user interaction, we prevent the possibility of entering this
+      // function a second time while we are still reading.
+      backgroundCheckbox.disabled = true;
+
+      // If we haven't already done this, it might result in the effective value
+      // of the Background Update pref changing. Thus, we should do it before
+      // we tell the user what value this pref has.
+      await BackgroundUpdate.ensureExperimentToRolloutTransitionPerformed();
+
+      let enabled = await UpdateUtils.readUpdateConfigSetting(prefName);
+      backgroundCheckbox.checked = enabled;
+      this.maybeDisableBackgroundUpdateControls();
+    }
+  },
+
+  async writeBackgroundUpdatePref() {
+    const prefName = "app.update.background.enabled";
+    if (this.isBackgroundUpdateUIAvailable()) {
+      let backgroundCheckbox = document.getElementById("backgroundUpdate");
+      backgroundCheckbox.disabled = true;
+      let backgroundUpdateEnabled = backgroundCheckbox.checked;
+      try {
+        await UpdateUtils.writeUpdateConfigSetting(
+          prefName,
+          backgroundUpdateEnabled
+        );
+      } catch (error) {
+        console.error(error);
+        await this.readBackgroundUpdatePref();
+        await this.reportUpdatePrefWriteError();
+        return;
+      }
+
+      this.maybeDisableBackgroundUpdateControls();
+    }
+  },
+
+  async reportUpdatePrefWriteError() {
     let [title, message] = await document.l10n.formatValues([
-      { id: "update-setting-write-failure-title" },
+      { id: "update-setting-write-failure-title2" },
       {
-        id: "update-setting-write-failure-message",
-        args: { path: error.path },
+        id: "update-setting-write-failure-message2",
+        args: { path: UpdateUtils.configFilePath },
       },
     ]);
 
@@ -1832,24 +2570,26 @@ var gMainPane = {
   },
 
   async checkUpdateInProgress() {
+    const aus = Cc["@mozilla.org/updates/update-service;1"].getService(
+      Ci.nsIApplicationUpdateService
+    );
     let um = Cc["@mozilla.org/updates/update-manager;1"].getService(
       Ci.nsIUpdateManager
     );
-    if (!um.activeUpdate) {
+    // We don't want to see an idle state just because the updater hasn't
+    // initialized yet.
+    await aus.init();
+    if (aus.currentState == Ci.nsIApplicationUpdateService.STATE_IDLE) {
       return;
     }
 
-    let [
-      title,
-      message,
-      okButton,
-      cancelButton,
-    ] = await document.l10n.formatValues([
-      { id: "update-in-progress-title" },
-      { id: "update-in-progress-message" },
-      { id: "update-in-progress-ok-button" },
-      { id: "update-in-progress-cancel-button" },
-    ]);
+    let [title, message, okButton, cancelButton] =
+      await document.l10n.formatValues([
+        { id: "update-in-progress-title" },
+        { id: "update-in-progress-message" },
+        { id: "update-in-progress-ok-button" },
+        { id: "update-in-progress-cancel-button" },
+      ]);
 
     // Continue is the cancel button which is BUTTON_POS_1 and is set as the
     // default so pressing escape or using a platform standard method of closing
@@ -1871,11 +2611,9 @@ var gMainPane = {
       {}
     );
     if (rv != 1) {
-      let aus = Cc["@mozilla.org/updates/update-service;1"].getService(
-        Ci.nsIApplicationUpdateService
-      );
-      aus.stopDownload();
-      um.cleanupActiveUpdate();
+      await aus.stopDownload();
+      await um.cleanupActiveUpdates();
+      UpdateListener.clearPendingAndActiveNotifications();
     }
   },
 
@@ -1888,17 +2626,15 @@ var gMainPane = {
 
   destroy() {
     window.removeEventListener("unload", this);
-    Services.prefs.removeObserver(PREF_SHOW_PLUGINS_IN_LIST, this);
-    Services.prefs.removeObserver(PREF_HIDE_PLUGINS_WITHOUT_EXTENSIONS, this);
-
     Services.prefs.removeObserver(PREF_CONTAINERS_EXTENSION, this);
-
     Services.obs.removeObserver(this, AUTO_UPDATE_CHANGED_TOPIC);
+    Services.obs.removeObserver(this, BACKGROUND_UPDATE_CHANGED_TOPIC);
+    AppearanceChooser.destroy();
   },
 
   // nsISupports
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
   // nsIObserver
 
@@ -1911,24 +2647,35 @@ var gMainPane = {
       // Rebuild the list when there are changes to preferences that influence
       // whether or not to show certain entries in the list.
       if (!this._storingAction) {
-        // These two prefs alter the list of visible types, so we have to rebuild
-        // that list when they change.
-        if (
-          aData == PREF_SHOW_PLUGINS_IN_LIST ||
-          aData == PREF_HIDE_PLUGINS_WITHOUT_EXTENSIONS
-        ) {
-          await this._rebuildVisibleTypes();
-          await this._rebuildView();
-          await this._sortListView();
-        } else {
-          await this._rebuildView();
-        }
+        await this._rebuildView();
       }
     } else if (aTopic == AUTO_UPDATE_CHANGED_TOPIC) {
+      if (!AppConstants.MOZ_UPDATER) {
+        return;
+      }
       if (aData != "true" && aData != "false") {
         throw new Error("Invalid preference value for app.update.auto");
       }
-      document.getElementById("updateRadioGroup").value = aData;
+      // WATERFOX
+      let manualUpdates = Services.prefs.getBoolPref(
+        "app.update.enabled",
+        true
+      );
+      // Only if enabledPref and autoPref are false should we select
+      // disabled, otherwise we just use the value of autoPref.
+      document.getElementById("updateRadioGroup").value =
+        !manualUpdates && !(aData === "true") ? "disabled" : aData;
+      this.maybeDisableBackgroundUpdateControls();
+    } else if (aTopic == BACKGROUND_UPDATE_CHANGED_TOPIC) {
+      if (!AppConstants.MOZ_UPDATE_AGENT) {
+        return;
+      }
+      if (aData != "true" && aData != "false") {
+        throw new Error(
+          "Invalid preference value for app.update.background.enabled"
+        );
+      }
+      document.getElementById("backgroundUpdate").checked = aData == "true";
     }
   },
 
@@ -1947,7 +2694,6 @@ var gMainPane = {
 
   _loadData() {
     this._loadInternalHandlers();
-    this._loadPluginHandlers();
     this._loadApplicationHandlers();
   },
 
@@ -1956,54 +2702,22 @@ var gMainPane = {
    * applications menu.
    */
   _loadInternalHandlers() {
-    var internalHandlers = [new PDFHandlerInfoWrapper()];
+    let internalHandlers = [new PDFHandlerInfoWrapper()];
+
+    let enabledHandlers = Services.prefs
+      .getCharPref("browser.download.viewableInternally.enabledTypes", "")
+      .trim();
+    if (enabledHandlers) {
+      for (let ext of enabledHandlers.split(",")) {
+        internalHandlers.push(
+          new ViewableInternallyHandlerInfoWrapper(null, ext.trim())
+        );
+      }
+    }
     for (let internalHandler of internalHandlers) {
       if (internalHandler.enabled) {
         this._handledTypes[internalHandler.type] = internalHandler;
       }
-    }
-  },
-
-  /**
-   * Load the set of handlers defined by plugins.
-   *
-   * Note: if there's more than one plugin for a given MIME type, we assume
-   * the last one is the one that the application will use.  That may not be
-   * correct, but it's how we've been doing it for years.
-   *
-   * Perhaps we should instead query navigator.mimeTypes for the set of types
-   * supported by the application and then get the plugin from each MIME type's
-   * enabledPlugin property.  But if there's a plugin for a type, we need
-   * to know about it even if it isn't enabled, since we're going to give
-   * the user an option to enable it.
-   *
-   * Also note that enabledPlugin does not get updated when
-   * plugin.disable_full_page_plugin_for_types changes, so even if we could use
-   * enabledPlugin to get the plugin that would be used, we'd still need to
-   * check the pref ourselves to find out if it's enabled.
-   */
-  _loadPluginHandlers() {
-    "use strict";
-
-    let mimeTypes = navigator.mimeTypes;
-
-    for (let mimeType of mimeTypes) {
-      let handlerInfoWrapper;
-      if (mimeType.type in this._handledTypes) {
-        handlerInfoWrapper = this._handledTypes[mimeType.type];
-      } else {
-        let wrappedHandlerInfo = gMIMEService.getFromTypeAndExtension(
-          mimeType.type,
-          null
-        );
-        handlerInfoWrapper = new HandlerInfoWrapper(
-          mimeType.type,
-          wrappedHandlerInfo
-        );
-        handlerInfoWrapper.handledOnlyByPlugin = true;
-        this._handledTypes[mimeType.type] = handlerInfoWrapper;
-      }
-      handlerInfoWrapper.pluginName = mimeType.enabledPlugin.name;
     }
   },
 
@@ -2018,11 +2732,13 @@ var gMainPane = {
       if (type in this._handledTypes) {
         handlerInfoWrapper = this._handledTypes[type];
       } else {
-        handlerInfoWrapper = new HandlerInfoWrapper(type, wrappedHandlerInfo);
+        if (DownloadIntegration.shouldViewDownloadInternally(type)) {
+          handlerInfoWrapper = new ViewableInternallyHandlerInfoWrapper(type);
+        } else {
+          handlerInfoWrapper = new HandlerInfoWrapper(type, wrappedHandlerInfo);
+        }
         this._handledTypes[type] = handlerInfoWrapper;
       }
-
-      handlerInfoWrapper.handledOnlyByPlugin = false;
     }
   },
 
@@ -2062,13 +2778,6 @@ var gMainPane = {
     // to determine whether or not to annotate descriptions with their types to
     // distinguish duplicate descriptions from each other.
     let visibleDescriptions = new Map();
-
-    // Get the preferences that help determine what types to show.
-    var showPlugins = Services.prefs.getBoolPref(PREF_SHOW_PLUGINS_IN_LIST);
-    var hidePluginsWithoutExtensions = Services.prefs.getBoolPref(
-      PREF_HIDE_PLUGINS_WITHOUT_EXTENSIONS
-    );
-
     for (let type in this._handledTypes) {
       // Yield before processing each handler info object to avoid monopolizing
       // the main thread, as the objects are retrieved lazily, and retrieval
@@ -2076,27 +2785,6 @@ var gMainPane = {
       await new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
 
       let handlerInfo = this._handledTypes[type];
-
-      // Hide plugins without associated extensions if so prefed so we don't
-      // show a whole bunch of obscure types handled by plugins on Mac.
-      // Note: though protocol types don't have extensions, we still show them;
-      // the pref is only meant to be applied to MIME types, since plugins are
-      // only associated with MIME types.
-      // FIXME: should we also check the "suffixes" property of the plugin?
-      // Filed as bug 395135.
-      if (
-        hidePluginsWithoutExtensions &&
-        handlerInfo.handledOnlyByPlugin &&
-        handlerInfo.wrappedHandlerInfo instanceof Ci.nsIMIMEInfo &&
-        !handlerInfo.primaryExtension
-      ) {
-        continue;
-      }
-
-      // Hide types handled only by plugins if so prefed.
-      if (handlerInfo.handledOnlyByPlugin && !showPlugins) {
-        continue;
-      }
 
       // We couldn't find any reason to exclude the type, so include it.
       this._visibleTypes.push(handlerInfo);
@@ -2234,7 +2922,10 @@ var gMainPane = {
 
     let internalMenuItem;
     // Add the "Open in Firefox" option for optional internal handlers.
-    if (handlerInfo instanceof InternalHandlerInfoWrapper) {
+    if (
+      handlerInfo instanceof InternalHandlerInfoWrapper &&
+      !handlerInfo.preventInternalViewing
+    ) {
       internalMenuItem = document.createXULElement("menuitem");
       internalMenuItem.setAttribute(
         "action",
@@ -2332,11 +3023,8 @@ var gMainPane = {
       possibleAppMenuItems.push(menuItem);
     }
     // Add gio handlers
-    if (Cc["@mozilla.org/gio-service;1"]) {
-      let gIOSvc = Cc["@mozilla.org/gio-service;1"].getService(
-        Ci.nsIGIOService
-      );
-      var gioApps = gIOSvc.getAppsForURIScheme(handlerInfo.type);
+    if (gGIOService) {
+      var gioApps = gGIOService.getAppsForURIScheme(handlerInfo.type);
       let possibleHandlers = handlerInfo.possibleApplicationHandlers;
       for (let handler of gioApps.enumerate(Ci.nsIHandlerApp)) {
         // OS handler share the same name, it's most likely the same app, skipping...
@@ -2374,21 +3062,6 @@ var gMainPane = {
       }
     }
 
-    // Create a menu item for the plugin.
-    if (handlerInfo.pluginName) {
-      var pluginMenuItem = document.createXULElement("menuitem");
-      pluginMenuItem.setAttribute("action", kActionUsePlugin);
-      document.l10n.setAttributes(
-        pluginMenuItem,
-        "applications-use-plugin-in",
-        {
-          "plugin-name": handlerInfo.pluginName,
-        }
-      );
-      pluginMenuItem.setAttribute(APP_ICON_ATTR_NAME, "plugin");
-      menuPopup.appendChild(pluginMenuItem);
-    }
-
     // Create a menu item for selecting a local application.
     let canOpenWithOtherApp = true;
     if (AppConstants.platform == "win") {
@@ -2402,7 +3075,7 @@ var gMainPane = {
     if (canOpenWithOtherApp) {
       let menuItem = document.createXULElement("menuitem");
       menuItem.className = "choose-app-item";
-      menuItem.addEventListener("command", function(e) {
+      menuItem.addEventListener("command", function (e) {
         gMainPane.chooseApp(e);
       });
       document.l10n.setAttributes(menuItem, "applications-use-other");
@@ -2415,7 +3088,7 @@ var gMainPane = {
       menuPopup.appendChild(menuItem);
       menuItem = document.createXULElement("menuitem");
       menuItem.className = "manage-app-item";
-      menuItem.addEventListener("command", function(e) {
+      menuItem.addEventListener("command", function (e) {
         gMainPane.manageApp(e);
       });
       document.l10n.setAttributes(menuItem, "applications-manage-app");
@@ -2429,12 +3102,18 @@ var gMainPane = {
     if (handlerInfo.alwaysAskBeforeHandling) {
       menu.selectedItem = askMenuItem;
     } else {
+      // The nsHandlerInfoAction enumeration values in nsIHandlerInfo identify
+      // the actions the application can take with content of various types.
+      // But since we've stopped support for plugins, there's no value
+      // identifying the "use plugin" action, so we use this constant instead.
+      const kActionUsePlugin = 5;
+
       switch (handlerInfo.preferredAction) {
         case Ci.nsIHandlerInfo.handleInternally:
           if (internalMenuItem) {
             menu.selectedItem = internalMenuItem;
           } else {
-            Cu.reportError("No menu item defined to set!");
+            console.error("No menu item defined to set!");
           }
           break;
         case Ci.nsIHandlerInfo.useSystemDefault:
@@ -2455,7 +3134,7 @@ var gMainPane = {
               let possible = possibleAppMenuItems
                 .map(v => v.handlerApp && v.handlerApp.name)
                 .join(", ");
-              Cu.reportError(
+              console.error(
                 new Error(
                   `Preferred handler for ${handlerInfo.type} not in list of possible handlers!? (List: ${possible})`
                 )
@@ -2465,8 +3144,8 @@ var gMainPane = {
           }
           break;
         case kActionUsePlugin:
-          // The plugin may have been removed, if so, select 'always ask':
-          menu.selectedItem = pluginMenuItem || askMenuItem;
+          // We no longer support plugins, select "ask" instead:
+          menu.selectedItem = askMenuItem;
           break;
         case Ci.nsIHandlerInfo.saveToDisk:
           menu.selectedItem = saveMenuItem;
@@ -2483,6 +3162,9 @@ var gMainPane = {
    * Sort the list when the user clicks on a column header.
    */
   sort(event) {
+    if (event.button != 0) {
+      return;
+    }
     var column = event.target;
 
     // If the user clicked on a new sort column, remove the direction indicator
@@ -2534,8 +3216,8 @@ var gMainPane = {
   _filterView(frag = this._list) {
     const filterValue = this._filter.value.toLowerCase();
     for (let elem of frag.children) {
-      const typeDescription = elem.querySelector(".typeDescription")
-        .textContent;
+      const typeDescription =
+        elem.querySelector(".typeDescription").textContent;
       const actionDescription = elem
         .querySelector(".actionDescription")
         .getAttribute("value");
@@ -2549,7 +3231,7 @@ var gMainPane = {
    * Filter the list when the user enters a filter term into the filter field.
    */
   filter() {
-    this._rebuildView();
+    this._rebuildView(); // FIXME: Should this be await since bug 1508156?
   },
 
   focusFilterBox() {
@@ -2564,8 +3246,7 @@ var gMainPane = {
   // we make changes that may spawn such updates.
   // XXXgijs: this was definitely necessary when we changed feed preferences
   // from within _storeAction and its calltree. Now, it may still be
-  // necessary, either to avoid calling _rebuildView or to avoid the plugin-
-  // related prefs change code. bug 1499350 has more details.
+  // necessary, to avoid calling _rebuildView. bug 1499350 has more details.
   _storingAction: false,
 
   onSelectAction(aActionItem) {
@@ -2582,13 +3263,6 @@ var gMainPane = {
     var handlerInfo = this.selectedHandlerListItem.handlerInfoWrapper;
 
     let action = parseInt(aActionItem.getAttribute("action"));
-
-    // Set the plugin state if we're enabling or disabling a plugin.
-    if (action == kActionUsePlugin) {
-      handlerInfo.enablePluginType();
-    } else if (handlerInfo.pluginName && !handlerInfo.isDisabledPluginType) {
-      handlerInfo.disablePluginType();
-    }
 
     // Set the preferred application handler.
     // We leave the existing preferred app in the list when we set
@@ -2612,10 +3286,6 @@ var gMainPane = {
 
     handlerInfo.store();
 
-    // Make sure the handler info object is flagged to indicate that there is
-    // now some user configuration for the type.
-    handlerInfo.handledOnlyByPlugin = false;
-
     // Update the action label and image to reflect the new preferred action.
     this.selectedHandlerListItem.refreshAction();
   },
@@ -2638,9 +3308,8 @@ var gMainPane = {
 
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/applicationManager.xhtml",
-      "resizable=no",
-      handlerInfo,
-      onComplete
+      { features: "resizable=no", closingCallback: onComplete },
+      handlerInfo
     );
   },
 
@@ -2704,9 +3373,8 @@ var gMainPane = {
 
       gSubDialog.open(
         "chrome://global/content/appPicker.xhtml",
-        null,
-        params,
-        onAppSelected
+        { closingCallback: onAppSelected },
+        params
       );
     } else {
       let winTitle = await document.l10n.formatValue(
@@ -2735,7 +3403,7 @@ var gMainPane = {
 
       // Prompt the user to pick an app.  If they pick one, and it's a valid
       // selection, then add it to the list of possible handlers.
-      fp.init(window, winTitle, Ci.nsIFilePicker.modeOpen);
+      fp.init(window.browsingContext, winTitle, Ci.nsIFilePicker.modeOpen);
       fp.appendFilters(Ci.nsIFilePicker.filterApps);
       fp.open(fpCallback);
     }
@@ -2758,7 +3426,7 @@ var gMainPane = {
     var fph = Services.io
       .getProtocolHandler("file")
       .QueryInterface(Ci.nsIFileProtocolHandler);
-    var urlSpec = fph.getURLSpecFromFile(aFile);
+    var urlSpec = fph.getURLSpecFromActualFile(aFile);
 
     return "moz-icon://" + urlSpec + "?size=16";
   },
@@ -2793,6 +3461,12 @@ var gMainPane = {
    *   browser.download.folderList preference.
    *   False - Always ask the user where to save a file and default to
    *   browser.download.lastDir when displaying a folder picker dialog.
+   * browser.download.always_ask_before_handling_new_types - bool
+   *   Defines the default behavior for new file handlers.
+   *   True - When downloading a file that doesn't match any existing
+   *   handlers, ask the user whether to save or open the file.
+   *   False - Save the file. The user can change the default action in
+   *   the Applications section in the preferences UI.
    * browser.download.dir - local file handle
    *   A local folder the user may have selected for downloaded files to be
    *   saved. Migration of other browser settings may also set this path.
@@ -2809,8 +3483,6 @@ var gMainPane = {
    *     1 - The system's downloads folder is the default download location.
    *     2 - The default download location is elsewhere as specified in
    *         browser.download.dir.
-   *     3 - The default download location is elsewhere as specified by
-   *         cloud storage API getDownloadFolder
    * browser.download.downloadDir
    *   deprecated.
    * browser.download.defaultFolder
@@ -2818,116 +3490,18 @@ var gMainPane = {
    */
 
   /**
-   * Enables/disables the folder field and Browse button based on whether a
-   * default download directory is being used.
+   * Disables the downloads folder field and Browse button if the default
+   * download directory pref is locked (e.g., by the DownloadDirectory or
+   * DefaultDownloadDirectory policies)
    */
   readUseDownloadDir() {
-    var downloadFolder = document.getElementById("downloadFolder");
-    var chooseFolder = document.getElementById("chooseFolder");
-    var useDownloadDirPreference = Preferences.get(
-      "browser.download.useDownloadDir"
-    );
-    var dirPreference = Preferences.get("browser.download.dir");
-
-    downloadFolder.disabled =
-      !useDownloadDirPreference.value || dirPreference.locked;
-    chooseFolder.disabled =
-      !useDownloadDirPreference.value || dirPreference.locked;
-
-    this.readCloudStorage().catch(Cu.reportError);
+    document.getElementById("downloadFolder").disabled =
+      document.getElementById("chooseFolder").disabled =
+      document.getElementById("saveTo").disabled =
+        Preferences.get("browser.download.dir").locked ||
+        Preferences.get("browser.download.folderList").locked;
     // don't override the preference's value in UI
     return undefined;
-  },
-
-  /**
-   * Show/Hide the cloud storage radio button with provider name as label if
-   * cloud storage provider is in use.
-   * Select cloud storage radio button if browser.download.useDownloadDir is true
-   * and browser.download.folderList has value 3. Enables/disables the folder field
-   * and Browse button if cloud storage radio button is selected.
-   *
-   */
-  async readCloudStorage() {
-    // Get preferred provider in use display name
-    let providerDisplayName = await CloudStorage.getProviderIfInUse();
-    if (providerDisplayName) {
-      // Show cloud storage radio button with provider name in label
-      let saveToCloudRadio = document.getElementById("saveToCloud");
-      document.l10n.setAttributes(
-        saveToCloudRadio,
-        "save-files-to-cloud-storage",
-        {
-          "service-name": providerDisplayName,
-        }
-      );
-      saveToCloudRadio.hidden = false;
-
-      let useDownloadDirPref = Preferences.get(
-        "browser.download.useDownloadDir"
-      );
-      let folderListPref = Preferences.get("browser.download.folderList");
-
-      // Check if useDownloadDir is true and folderListPref is set to Cloud Storage value 3
-      // before selecting cloudStorageradio button. Disable folder field and Browse button if
-      // 'Save to Cloud Storage Provider' radio option is selected
-      if (useDownloadDirPref.value && folderListPref.value === 3) {
-        document.getElementById("saveWhere").selectedItem = saveToCloudRadio;
-        document.getElementById("downloadFolder").disabled = true;
-        document.getElementById("chooseFolder").disabled = true;
-      }
-    }
-  },
-
-  /**
-   * Handle clicks to 'Save To <custom path> or <system default downloads>' and
-   * 'Save to <cloud storage provider>' if cloud storage radio button is displayed in UI.
-   * Sets browser.download.folderList value and Enables/disables the folder field and Browse
-   * button based on option selected.
-   */
-  handleSaveToCommand(event) {
-    return this.handleSaveToCommandTask(event).catch(Cu.reportError);
-  },
-  async handleSaveToCommandTask(event) {
-    if (event.target.id !== "saveToCloud" && event.target.id !== "saveTo") {
-      return;
-    }
-    // Check if Save To Cloud Storage Provider radio option is displayed in UI
-    // before continuing.
-    let saveToCloudRadio = document.getElementById("saveToCloud");
-    if (!saveToCloudRadio.hidden) {
-      // When switching between SaveTo and SaveToCloud radio button
-      // with useDownloadDirPref value true, if selectedIndex is other than
-      // SaveTo radio button disable downloadFolder filefield and chooseFolder button
-      let saveWhere = document.getElementById("saveWhere");
-      let useDownloadDirPref = Preferences.get(
-        "browser.download.useDownloadDir"
-      );
-      if (useDownloadDirPref.value) {
-        let downloadFolder = document.getElementById("downloadFolder");
-        let chooseFolder = document.getElementById("chooseFolder");
-        downloadFolder.disabled =
-          saveWhere.selectedIndex || useDownloadDirPref.locked;
-        chooseFolder.disabled =
-          saveWhere.selectedIndex || useDownloadDirPref.locked;
-      }
-
-      // Set folderListPref value depending on radio option
-      // selected. folderListPref should be set to 3 if Save To Cloud Storage Provider
-      // option is selected. If user switch back to 'Save To' custom path or system
-      // default Downloads, check pref 'browser.download.dir' before setting respective
-      // folderListPref value. If currentDirPref is unspecified folderList should
-      // default to 1
-      let folderListPref = Preferences.get("browser.download.folderList");
-      let saveTo = document.getElementById("saveTo");
-      if (saveWhere.selectedItem == saveToCloudRadio) {
-        folderListPref.value = 3;
-      } else if (saveWhere.selectedItem == saveTo) {
-        let currentDirPref = Preferences.get("browser.download.dir");
-        folderListPref.value = currentDirPref.value
-          ? await this._folderToIndex(currentDirPref.value)
-          : 1;
-      }
-    }
   },
 
   /**
@@ -2936,7 +3510,7 @@ var gMainPane = {
    * response to the choice, if one is made.
    */
   chooseFolder() {
-    return this.chooseFolderTask().catch(Cu.reportError);
+    return this.chooseFolderTask().catch(console.error);
   },
   async chooseFolderTask() {
     let [title] = await document.l10n.formatValues([
@@ -2947,7 +3521,7 @@ var gMainPane = {
     let defDownloads = await this._indexToFolder(1);
     let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
 
-    fp.init(window, title, Ci.nsIFilePicker.modeGetFolder);
+    fp.init(window.browsingContext, title, Ci.nsIFilePicker.modeGetFolder);
     fp.appendFilters(Ci.nsIFilePicker.filterAll);
     // First try to open what's currently configured
     if (currentDirPref && currentDirPref.exists()) {
@@ -2979,59 +3553,138 @@ var gMainPane = {
    * preferences.
    */
   displayDownloadDirPref() {
-    this.displayDownloadDirPrefTask().catch(Cu.reportError);
+    this.displayDownloadDirPrefTask().catch(console.error);
 
     // don't override the preference's value in UI
     return undefined;
   },
 
   async displayDownloadDirPrefTask() {
-    var folderListPref = Preferences.get("browser.download.folderList");
+    // We're async for localization reasons, and we can get called several
+    // times in the same turn of the event loop (!) because of how the
+    // preferences bindings work... but the speed of localization
+    // shouldn't impact what gets displayed to the user in the end - the
+    // last call should always win.
+    // To accomplish this, store a unique object when we enter this function,
+    // and if by the end of the function that stored object has been
+    // overwritten, don't update the UI but leave it to the last
+    // caller to this function to do.
+    let token = {};
+    this._downloadDisplayToken = token;
+
     var downloadFolder = document.getElementById("downloadFolder");
-    var currentDirPref = Preferences.get("browser.download.dir");
 
-    // Used in defining the correct path to the folder icon.
-    var fph = Services.io
-      .getProtocolHandler("file")
-      .QueryInterface(Ci.nsIFileProtocolHandler);
-    var iconUrlSpec;
-
-    let folderIndex = folderListPref.value;
+    let folderIndex = Preferences.get("browser.download.folderList").value;
+    // For legacy users using cloudstorage pref with folderIndex as 3 (See bug 1751093),
+    // compute folderIndex using the current directory pref
     if (folderIndex == 3) {
-      // When user has selected cloud storage, use value in currentDirPref to
-      // compute index to display download folder label and icon to avoid
-      // displaying blank downloadFolder label and icon on load of preferences UI
-      // Set folderIndex to 1 if currentDirPref is unspecified
+      let currentDirPref = Preferences.get("browser.download.dir");
       folderIndex = currentDirPref.value
         ? await this._folderToIndex(currentDirPref.value)
         : 1;
     }
 
     // Display a 'pretty' label or the path in the UI.
-    // note: downloadFolder.value is not read elsewhere in the code, its only purpose is to display to the user
-    if (folderIndex == 2) {
-      // Force the left-to-right direction when displaying a custom path.
-      downloadFolder.value = currentDirPref.value
-        ? `\u2066${currentDirPref.value.path}\u2069`
-        : "";
-      iconUrlSpec = fph.getURLSpecFromFile(currentDirPref.value);
-    } else if (folderIndex == 1) {
-      // 'Downloads'
-      [downloadFolder.value] = await document.l10n.formatValues([
-        { id: "downloads-folder-name" },
-      ]);
-      iconUrlSpec = fph.getURLSpecFromFile(await this._indexToFolder(1));
-    } else {
-      // 'Desktop'
-      [downloadFolder.value] = await document.l10n.formatValues([
-        { id: "desktop-folder-name" },
-      ]);
-      iconUrlSpec = fph.getURLSpecFromFile(
-        await this._getDownloadsFolder("Desktop")
-      );
+    let { folderDisplayName, file } =
+      await this._getSystemDownloadFolderDetails(folderIndex);
+    // Figure out an icon url:
+    let fph = Services.io
+      .getProtocolHandler("file")
+      .QueryInterface(Ci.nsIFileProtocolHandler);
+    let iconUrlSpec = fph.getURLSpecFromDir(file);
+
+    // Ensure that the last entry to this function always wins
+    // (see comment at the start of this method):
+    if (this._downloadDisplayToken != token) {
+      return;
     }
+    // note: downloadFolder.value is not read elsewhere in the code, its only purpose is to display to the user
+    downloadFolder.value = folderDisplayName;
     downloadFolder.style.backgroundImage =
       "url(moz-icon://" + iconUrlSpec + "?size=16)";
+  },
+
+  async _getSystemDownloadFolderDetails(folderIndex) {
+    let downloadsDir = await this._getDownloadsFolder("Downloads");
+    let desktopDir = await this._getDownloadsFolder("Desktop");
+    let currentDirPref = Preferences.get("browser.download.dir");
+
+    let file;
+    let firefoxLocalizedName;
+    if (folderIndex == 2 && currentDirPref.value) {
+      file = currentDirPref.value;
+      if (file.equals(downloadsDir)) {
+        folderIndex = 1;
+      } else if (file.equals(desktopDir)) {
+        folderIndex = 0;
+      }
+    }
+    switch (folderIndex) {
+      case 2: // custom path, handled above.
+        break;
+
+      case 1: {
+        // downloads
+        file = downloadsDir;
+        firefoxLocalizedName = await document.l10n.formatValues([
+          { id: "downloads-folder-name" },
+        ]);
+        break;
+      }
+
+      case 0:
+      // fall through
+      default: {
+        file = desktopDir;
+        firefoxLocalizedName = await document.l10n.formatValues([
+          { id: "desktop-folder-name" },
+        ]);
+      }
+    }
+    if (firefoxLocalizedName) {
+      let folderDisplayName, leafName;
+      // Either/both of these can throw, so check for failures in both cases
+      // so we don't just break display of the download pref:
+      try {
+        folderDisplayName = file.displayName;
+      } catch (ex) {
+        /* ignored */
+      }
+      try {
+        leafName = file.leafName;
+      } catch (ex) {
+        /* ignored */
+      }
+
+      // If we found a localized name that's different from the leaf name,
+      // use that:
+      if (folderDisplayName && folderDisplayName != leafName) {
+        return { file, folderDisplayName };
+      }
+
+      // Otherwise, check if we've got a localized name ourselves.
+      if (firefoxLocalizedName) {
+        // You can't move the system download or desktop dir on macOS,
+        // so if those are in use just display them. On other platforms
+        // only do so if the folder matches the localized name.
+        if (
+          AppConstants.platform == "macosx" ||
+          leafName == firefoxLocalizedName
+        ) {
+          return { file, folderDisplayName: firefoxLocalizedName };
+        }
+      }
+    }
+    // If we get here, attempts to use a "pretty" name failed. Just display
+    // the full path:
+    if (file) {
+      // Force the left-to-right direction when displaying a custom path.
+      return { file, folderDisplayName: `\u2066${file.path}\u2069` };
+    }
+    // Don't even have a file - fall back to desktop directory for the
+    // use of the icon, and an empty label:
+    file = desktopDir;
+    return { file, folderDisplayName: "" };
   },
 
   /**
@@ -3133,21 +3786,19 @@ function getLocalHandlerApp(aFile) {
 // eslint-disable-next-line no-undef
 let gHandlerListItemFragment = MozXULElement.parseXULToFragment(`
   <richlistitem>
-    <hbox flex="1" equalsize="always">
-      <hbox class="typeContainer" flex="1" align="center">
-        <image class="typeIcon" width="16" height="16"
-               src="moz-icon://goat?size=16"/>
-        <label class="typeDescription" flex="1" crop="end"/>
-      </hbox>
-      <hbox class="actionContainer" flex="1" align="center">
-        <image class="actionIcon" width="16" height="16"/>
-        <label class="actionDescription" flex="1" crop="end"/>
-      </hbox>
-      <hbox class="actionsMenuContainer" flex="1">
-        <menulist class="actionsMenu" flex="1" crop="end" selectedIndex="1">
-          <menupopup/>
-        </menulist>
-      </hbox>
+    <hbox class="typeContainer" flex="1" align="center">
+      <image class="typeIcon" width="16" height="16"
+              src="moz-icon://goat?size=16"/>
+      <label class="typeDescription" flex="1" crop="end"/>
+    </hbox>
+    <hbox class="actionContainer" flex="1" align="center">
+      <image class="actionIcon" width="16" height="16"/>
+      <label class="actionDescription" flex="1" crop="end"/>
+    </hbox>
+    <hbox class="actionsMenuContainer" flex="1">
+      <menulist class="actionsMenu" flex="1" crop="end" selectedIndex="1" aria-labelledby="actionColumn">
+        <menupopup/>
+      </menulist>
     </hbox>
   </richlistitem>
 `);
@@ -3212,7 +3863,7 @@ class HandlerListItem {
     ]);
     const selectedItem = this.node.querySelector("[selected=true]");
     if (!selectedItem) {
-      Cu.reportError("No selected item for " + this.handlerInfoWrapper.type);
+      console.error("No selected item for " + this.handlerInfoWrapper.type);
       return;
     }
     const { id, args } = document.l10n.getAttributes(selectedItem);
@@ -3257,7 +3908,7 @@ function localizeElement(node, l10n) {
  *
  * We create an instance of this wrapper for each entry we might display
  * in the prefpane, and we compose the instances from various sources,
- * including plugins and the handler service.
+ * including the handler service.
  *
  * We don't implement all the original nsIHandlerInfo functionality,
  * just the stuff that the prefpane needs.
@@ -3267,27 +3918,6 @@ class HandlerInfoWrapper {
     this.type = type;
     this.wrappedHandlerInfo = handlerInfo;
     this.disambiguateDescription = false;
-
-    // A plugin that can handle this type, if any.
-    //
-    // Note: just because we have one doesn't mean it *will* handle the type.
-    // That depends on whether or not the type is in the list of types for which
-    // plugin handling is disabled.
-    this.pluginName = "";
-
-    // Whether or not this type is only handled by a plugin or is also handled
-    // by some user-configured action as specified in the handler info object.
-    //
-    // Note: we can't just check if there's a handler info object for this type,
-    // because OS and user configuration is mixed up in the handler info object,
-    // so we always need to retrieve it for the OS info and can't tell whether
-    // it represents only OS-default information or user-configured information.
-    //
-    // FIXME: once handler info records are broken up into OS-provided records
-    // and user-configured records, stop using this boolean flag and simply
-    // check for the presence of a user-configured record to determine whether
-    // or not this type is only handled by a plugin.  Filed as bug 395142.
-    this.handledOnlyByPlugin = false;
   }
 
   get description() {
@@ -3349,9 +3979,6 @@ class HandlerInfoWrapper {
           return "handleInternally";
         }
         break;
-
-      case kActionUsePlugin:
-        return "plugin";
     }
 
     return "";
@@ -3455,11 +4082,6 @@ class HandlerInfoWrapper {
 
   // What to do with content of this type.
   get preferredAction() {
-    // If we have an enabled plugin, then the action is to use that plugin.
-    if (this.pluginName && !this.isDisabledPluginType) {
-      return kActionUsePlugin;
-    }
-
     // If the action is to use a helper app, but we don't have a preferred
     // handler app, then switch to using the system default, if any; otherwise
     // fall back to saving to disk, which is the default action in nsMIMEInfo.
@@ -3481,36 +4103,10 @@ class HandlerInfoWrapper {
   }
 
   set preferredAction(aNewValue) {
-    // If the action is to use the plugin,
-    // we must set the preferred action to "save to disk".
-    // But only if it's not currently the preferred action.
-    if (
-      aNewValue == kActionUsePlugin &&
-      this.preferredAction != Ci.nsIHandlerInfo.saveToDisk
-    ) {
-      aNewValue = Ci.nsIHandlerInfo.saveToDisk;
-    }
-
-    // We don't modify the preferred action if the new action is to use a plugin
-    // because handler info objects don't understand our custom "use plugin"
-    // value.  Also, leaving it untouched means that we can automatically revert
-    // to the old setting if the user ever removes the plugin.
-
-    if (aNewValue != kActionUsePlugin) {
-      this.wrappedHandlerInfo.preferredAction = aNewValue;
-    }
+    this.wrappedHandlerInfo.preferredAction = aNewValue;
   }
 
   get alwaysAskBeforeHandling() {
-    // If this type is handled only by a plugin, we can't trust the value
-    // in the handler info object, since it'll be a default based on the absence
-    // of any user configuration, and the default in that case is to always ask,
-    // even though we never ask for content handled by a plugin, so special case
-    // plugin-handled types by returning false here.
-    if (this.pluginName && this.handledOnlyByPlugin) {
-      return false;
-    }
-
     // If this is a protocol type and the preferred action is "save to disk",
     // which is invalid for such types, then return true here to override that
     // action.  This could happen when the preferred action is to use a helper
@@ -3532,10 +4128,6 @@ class HandlerInfoWrapper {
   }
 
   // The primary file extension associated with this type, if any.
-  //
-  // XXX Plugin objects contain an array of MimeType objects with "suffixes"
-  // properties; if this object has an associated plugin, shouldn't we check
-  // those properties for an extension?
   get primaryExtension() {
     try {
       if (
@@ -3547,67 +4139,6 @@ class HandlerInfoWrapper {
     } catch (ex) {}
 
     return null;
-  }
-
-  get isDisabledPluginType() {
-    return this._getDisabledPluginTypes().includes(this.type);
-  }
-
-  _getDisabledPluginTypes() {
-    var types = "";
-
-    if (Services.prefs.prefHasUserValue(PREF_DISABLED_PLUGIN_TYPES)) {
-      types = Services.prefs.getCharPref(PREF_DISABLED_PLUGIN_TYPES);
-    }
-
-    // Only split if the string isn't empty so we don't end up with an array
-    // containing a single empty string.
-    if (types != "") {
-      return types.split(",");
-    }
-
-    return [];
-  }
-
-  disablePluginType() {
-    var disabledPluginTypes = this._getDisabledPluginTypes();
-
-    if (!disabledPluginTypes.includes(this.type)) {
-      disabledPluginTypes.push(this.type);
-    }
-
-    Services.prefs.setCharPref(
-      PREF_DISABLED_PLUGIN_TYPES,
-      disabledPluginTypes.join(",")
-    );
-
-    // Update the category manager so existing browser windows update.
-    Services.catMan.deleteCategoryEntry(
-      "Gecko-Content-Viewers",
-      this.type,
-      false
-    );
-  }
-
-  enablePluginType() {
-    var disabledPluginTypes = this._getDisabledPluginTypes();
-
-    var type = this.type;
-    disabledPluginTypes = disabledPluginTypes.filter(v => v != type);
-
-    Services.prefs.setCharPref(
-      PREF_DISABLED_PLUGIN_TYPES,
-      disabledPluginTypes.join(",")
-    );
-
-    // Update the category manager so existing browser windows update.
-    Services.catMan.addCategoryEntry(
-      "Gecko-Content-Viewers",
-      this.type,
-      "@mozilla.org/content/plugin/document-loader-factory;1",
-      false,
-      true
-    );
   }
 
   store() {
@@ -3639,8 +4170,9 @@ class HandlerInfoWrapper {
  * menu.
  */
 class InternalHandlerInfoWrapper extends HandlerInfoWrapper {
-  constructor(mimeType) {
-    super(mimeType, gMIMEService.getFromTypeAndExtension(mimeType, null));
+  constructor(mimeType, extension) {
+    let type = gMIMEService.getFromTypeAndExtension(mimeType, extension);
+    super(mimeType || type.type, type);
   }
 
   // Override store so we so we can notify any code listening for registration
@@ -3649,25 +4181,145 @@ class InternalHandlerInfoWrapper extends HandlerInfoWrapper {
     super.store();
   }
 
-  get enabled() {
-    throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
+  get preventInternalViewing() {
+    return false;
   }
 
-  get description() {
-    return { id: this._appPrefLabel };
+  get enabled() {
+    throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   }
 }
 
 class PDFHandlerInfoWrapper extends InternalHandlerInfoWrapper {
   constructor() {
-    super(TYPE_PDF);
+    super(TYPE_PDF, null);
   }
 
-  get _appPrefLabel() {
-    return "applications-type-pdf";
+  get preventInternalViewing() {
+    return Services.prefs.getBoolPref(PREF_PDFJS_DISABLED);
   }
 
+  // PDF is always shown in the list, but the 'show internally' option is
+  // hidden when the internal PDF viewer is disabled.
   get enabled() {
-    return !Services.prefs.getBoolPref(PREF_PDFJS_DISABLED);
+    return true;
   }
 }
+
+class ViewableInternallyHandlerInfoWrapper extends InternalHandlerInfoWrapper {
+  get enabled() {
+    return DownloadIntegration.shouldViewDownloadInternally(this.type);
+  }
+}
+
+const AppearanceChooser = {
+  // NOTE: This order must match the values of the
+  // layout.css.prefers-color-scheme.content-override
+  // preference.
+  choices: ["dark", "light", "auto"],
+  chooser: null,
+  radios: null,
+  warning: null,
+
+  init() {
+    this.chooser = document.getElementById("web-appearance-chooser");
+    this.radios = [...this.chooser.querySelectorAll("input")];
+    for (let radio of this.radios) {
+      radio.addEventListener("change", e => {
+        let index = this.choices.indexOf(e.target.value);
+        // The pref change callback will update state if needed.
+        if (index >= 0) {
+          Services.prefs.setIntPref(PREF_CONTENT_APPEARANCE, index);
+        } else {
+          // Shouldn't happen but let's do something sane...
+          Services.prefs.clearUserPref(PREF_CONTENT_APPEARANCE);
+        }
+      });
+    }
+
+    let webAppearanceSettings = document.getElementById(
+      "webAppearanceSettings"
+    );
+    webAppearanceSettings.addEventListener("click", this);
+
+    this.warning = document.getElementById("web-appearance-override-warning");
+
+    FORCED_COLORS_QUERY.addEventListener("change", this);
+    Services.prefs.addObserver(PREF_USE_SYSTEM_COLORS, this);
+    Services.obs.addObserver(this, "look-and-feel-changed");
+    this._update();
+  },
+
+  _update() {
+    this._updateWarning();
+    this._updateOptions();
+  },
+
+  handleEvent(e) {
+    if (e.type == "click") {
+      switch (e.target.id) {
+        // Forward the click to the "colors" button.
+        case "web-appearance-manage-colors-button":
+          document.getElementById("colors").click();
+          e.preventDefault();
+          break;
+        case "web-appearance-manage-themes-link":
+          window.browsingContext.topChromeWindow.BrowserAddonUI.openAddonsMgr(
+            "addons://list/theme"
+          );
+          e.preventDefault();
+          break;
+        default:
+          break;
+      }
+    }
+    this._update();
+  },
+
+  observe() {
+    this._update();
+  },
+
+  destroy() {
+    Services.prefs.removeObserver(PREF_USE_SYSTEM_COLORS, this);
+    Services.obs.removeObserver(this, "look-and-feel-changed");
+    FORCED_COLORS_QUERY.removeEventListener("change", this);
+  },
+
+  _isValueDark(value) {
+    switch (value) {
+      case "light":
+        return false;
+      case "dark":
+        return true;
+      case "auto":
+        return Services.appinfo.contentThemeDerivedColorSchemeIsDark;
+    }
+    throw new Error("Unknown value");
+  },
+
+  _updateOptions() {
+    let index = Services.prefs.getIntPref(PREF_CONTENT_APPEARANCE);
+    if (index < 0 || index >= this.choices.length) {
+      index = Services.prefs
+        .getDefaultBranch(null)
+        .getIntPref(PREF_CONTENT_APPEARANCE);
+    }
+    let value = this.choices[index];
+    for (let radio of this.radios) {
+      let checked = radio.value == value;
+      let isDark = this._isValueDark(radio.value);
+
+      radio.checked = checked;
+      radio.closest("label").classList.toggle("dark", isDark);
+    }
+  },
+
+  _updateWarning() {
+    let forcingColorsAndNoColorSchemeSupport =
+      FORCED_COLORS_QUERY.matches &&
+      (AppConstants.platform == "win" ||
+        !Services.prefs.getBoolPref(PREF_USE_SYSTEM_COLORS));
+    this.warning.hidden = !forcingColorsAndNoColorSchemeSupport;
+  },
+};

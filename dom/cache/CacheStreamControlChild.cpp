@@ -10,31 +10,17 @@
 #include "mozilla/dom/cache/ActorUtils.h"
 #include "mozilla/dom/cache/CacheTypes.h"
 #include "mozilla/dom/cache/CacheWorkerRef.h"
-#include "mozilla/dom/cache/ReadStream.h"
-#include "mozilla/ipc/FileDescriptorSetChild.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
-#include "mozilla/ipc/PFileDescriptorSetChild.h"
 #include "nsISupportsImpl.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
-using mozilla::dom::OptionalFileDescriptorSet;
-using mozilla::ipc::AutoIPCStream;
 using mozilla::ipc::FileDescriptor;
-using mozilla::ipc::FileDescriptorSetChild;
-using mozilla::ipc::PFileDescriptorSetChild;
 
 // declared in ActorUtils.h
-PCacheStreamControlChild* AllocPCacheStreamControlChild() {
-  return new CacheStreamControlChild();
-}
-
-// declared in ActorUtils.h
-void DeallocPCacheStreamControlChild(PCacheStreamControlChild* aActor) {
-  delete aActor;
+already_AddRefed<PCacheStreamControlChild> AllocPCacheStreamControlChild() {
+  return MakeAndAddRef<CacheStreamControlChild>();
 }
 
 CacheStreamControlChild::CacheStreamControlChild()
@@ -81,19 +67,15 @@ void CacheStreamControlChild::SerializeControl(
     CacheReadStream* aReadStreamOut) {
   NS_ASSERT_OWNINGTHREAD(CacheStreamControlChild);
   MOZ_DIAGNOSTIC_ASSERT(aReadStreamOut);
-  aReadStreamOut->controlParent() = nullptr;
-  aReadStreamOut->controlChild() = this;
+  aReadStreamOut->control() = this;
 }
 
-void CacheStreamControlChild::SerializeStream(
-    CacheReadStream* aReadStreamOut, nsIInputStream* aStream,
-    nsTArray<UniquePtr<AutoIPCStream>>& aStreamCleanupList) {
+void CacheStreamControlChild::SerializeStream(CacheReadStream* aReadStreamOut,
+                                              nsIInputStream* aStream) {
   NS_ASSERT_OWNINGTHREAD(CacheStreamControlChild);
   MOZ_DIAGNOSTIC_ASSERT(aReadStreamOut);
-  UniquePtr<AutoIPCStream> autoStream(
-      new AutoIPCStream(aReadStreamOut->stream()));
-  autoStream->Serialize(aStream, Manager());
-  aStreamCleanupList.AppendElement(std::move(autoStream));
+  MOZ_ALWAYS_TRUE(mozilla::ipc::SerializeIPCStream(
+      do_AddRef(aStream), aReadStreamOut->stream(), /* aAllowLazy */ false));
 }
 
 void CacheStreamControlChild::OpenStream(const nsID& aId,
@@ -113,10 +95,11 @@ void CacheStreamControlChild::OpenStream(const nsID& aId,
   const SafeRefPtr<CacheWorkerRef> holder = GetWorkerRefPtr().clonePtr();
 
   SendOpenStream(aId)->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [aResolver,
-       holder = holder.clonePtr()](RefPtr<nsIInputStream>&& aOptionalStream) {
-        aResolver(nsCOMPtr<nsIInputStream>(std::move(aOptionalStream)));
+       holder = holder.clonePtr()](const Maybe<IPCStream>& aOptionalStream) {
+        nsCOMPtr<nsIInputStream> stream = DeserializeIPCStream(aOptionalStream);
+        aResolver(std::move(stream));
       },
       [aResolver, holder = holder.clonePtr()](ResponseRejectReason&& aReason) {
         aResolver(nullptr);
@@ -125,7 +108,8 @@ void CacheStreamControlChild::OpenStream(const nsID& aId,
 
 void CacheStreamControlChild::NoteClosedAfterForget(const nsID& aId) {
   NS_ASSERT_OWNINGTHREAD(CacheStreamControlChild);
-  Unused << SendNoteClosed(aId);
+
+  QM_WARNONLY_TRY(OkIf(SendNoteClosed(aId)));
 
   // A stream has closed.  If we delayed StartDestry() due to this stream
   // being read, then we should check to see if any of the remaining streams
@@ -149,18 +133,10 @@ void CacheStreamControlChild::ActorDestroy(ActorDestroyReason aReason) {
   RemoveWorkerRef();
 }
 
-mozilla::ipc::IPCResult CacheStreamControlChild::RecvClose(const nsID& aId) {
-  NS_ASSERT_OWNINGTHREAD(CacheStreamControlChild);
-  CloseReadStreams(aId);
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult CacheStreamControlChild::RecvCloseAll() {
   NS_ASSERT_OWNINGTHREAD(CacheStreamControlChild);
   CloseAllReadStreams();
   return IPC_OK();
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

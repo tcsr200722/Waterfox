@@ -7,41 +7,43 @@
 with Files("**"):
     BUG_COMPONENT = ("Core", "DOM: Core & HTML")
 
-XPIDL_SOURCES += [
-    'nsIScriptLoaderObserver.idl',
-]
-
-XPIDL_MODULE = 'dom'
-
 EXPORTS += [
-    'nsIScriptElement.h',
+    "nsIScriptElement.h",
+    "nsIScriptLoaderObserver.h",
 ]
 
 EXPORTS.mozilla.dom += [
-    'LoadedScript.h',
-    'ScriptDecoding.h',
-    'ScriptElement.h',
-    'ScriptKind.h',
-    'ScriptLoader.h',
-    'ScriptLoadRequest.h',
-    'ScriptSettings.h',
+    "AutoEntryScript.h",
+    "ModuleLoader.h",
+    "ScriptCompression.h",
+    "ScriptDecoding.h",
+    "ScriptElement.h",
+    "ScriptLoadContext.h",
+    "ScriptLoader.h",
+    "ScriptLoadHandler.h",
+    "ScriptSettings.h",
+    "ScriptTrace.h",
+    "ShadowRealmGlobalScope.h",
 ]
 
 UNIFIED_SOURCES += [
-    'LoadedScript.cpp',
-    'ModuleLoadRequest.cpp',
-    'ScriptElement.cpp',
-    'ScriptLoader.cpp',
-    'ScriptLoadHandler.cpp',
-    'ScriptLoadRequest.cpp',
-    'ScriptSettings.cpp',
-    'ScriptTrace.cpp',
+    "AutoEntryScript.cpp",
+    "ModuleLoader.cpp",
+    "nsIScriptElement.cpp",
+    "ScriptCompression.cpp",
+    "ScriptElement.cpp",
+    "ScriptLoadContext.cpp",
+    "ScriptLoader.cpp",
+    "ScriptLoadHandler.cpp",
+    "ScriptSettings.cpp",
+    "ShadowRealmGlobalScope.cpp",
 ]
 
 LOCAL_INCLUDES += [
-    '/dom/base',
+    "/dom/base",
+    "/js/loader",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+include("/ipc/chromium/chromium-config.mozbuild")
 
-FINAL_LIBRARY = 'xul'
+FINAL_LIBRARY = "xul"

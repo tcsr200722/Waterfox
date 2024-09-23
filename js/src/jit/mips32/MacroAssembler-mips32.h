@@ -9,10 +9,10 @@
 
 #include "mozilla/EndianUtils.h"
 
-#include "jit/JitFrames.h"
 #include "jit/mips-shared/MacroAssembler-mips-shared.h"
 #include "jit/MoveResolver.h"
 #include "vm/BytecodeUtil.h"
+#include "wasm/WasmBuiltins.h"
 
 namespace js {
 namespace jit {
@@ -72,7 +72,7 @@ class MacroAssemblerMIPS : public MacroAssemblerMIPSShared {
   using MacroAssemblerMIPSShared::ma_sd;
   using MacroAssemblerMIPSShared::ma_ss;
   using MacroAssemblerMIPSShared::ma_store;
-  using MacroAssemblerMIPSShared::ma_subTestOverflow;
+  using MacroAssemblerMIPSShared::ma_sub32TestOverflow;
 
   void ma_li(Register dest, CodeLabel* label);
 
@@ -90,13 +90,50 @@ class MacroAssemblerMIPS : public MacroAssemblerMIPSShared {
 
   // arithmetic based ops
   // add
-  void ma_addTestOverflow(Register rd, Register rs, Register rt,
-                          Label* overflow);
-  void ma_addTestOverflow(Register rd, Register rs, Imm32 imm, Label* overflow);
+  void ma_add32TestOverflow(Register rd, Register rs, Register rt,
+                            Label* overflow);
+  void ma_add32TestOverflow(Register rd, Register rs, Imm32 imm,
+                            Label* overflow);
+
+  void ma_addPtrTestOverflow(Register rd, Register rs, Register rt,
+                             Label* overflow) {
+    ma_add32TestOverflow(rd, rs, rt, overflow);
+  }
+
+  void ma_addPtrTestOverflow(Register rd, Register rs, Imm32 imm,
+                             Label* overflow) {
+    ma_add32TestOverflow(rd, rs, imm, overflow);
+  }
+
+  void ma_addPtrTestCarry(Condition cond, Register rd, Register rs, Register rt,
+                          Label* overflow) {
+    ma_add32TestCarry(cond, rd, rs, rt, overflow);
+  }
+
+  void ma_addPtrTestCarry(Condition cond, Register rd, Register rs, Imm32 imm,
+                          Label* overflow) {
+    ma_add32TestCarry(cond, rd, rs, imm, overflow);
+  }
 
   // subtract
-  void ma_subTestOverflow(Register rd, Register rs, Register rt,
-                          Label* overflow);
+  void ma_sub32TestOverflow(Register rd, Register rs, Register rt,
+                            Label* overflow);
+
+  void ma_subPtrTestOverflow(Register rd, Register rs, Register rt,
+                             Label* overflow) {
+    ma_sub32TestOverflow(rd, rs, rt, overflow);
+  }
+
+  void ma_subPtrTestOverflow(Register rd, Register rs, Imm32 imm,
+                             Label* overflow) {
+    ma_li(ScratchRegister, imm);
+    ma_sub32TestOverflow(rd, rs, ScratchRegister, overflow);
+  }
+
+  void ma_mulPtrTestOverflow(Register rd, Register rs, Register rt,
+                             Label* overflow) {
+    ma_mul32TestOverflow(rd, rs, rt, overflow);
+  }
 
   // memory
   // shortcut for when we know we're transferring 32 bits of data
@@ -202,6 +239,8 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
   void convertDoubleToFloat32(FloatRegister src, FloatRegister dest);
   void convertDoubleToInt32(FloatRegister src, Register dest, Label* fail,
                             bool negativeZeroCheck = true);
+  void convertDoubleToPtr(FloatRegister src, Register dest, Label* fail,
+                          bool negativeZeroCheck = true);
   void convertFloat32ToInt32(FloatRegister src, Register dest, Label* fail,
                              bool negativeZeroCheck = true);
 
@@ -370,31 +409,32 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
   // Extended unboxing API. If the payload is already in a register, returns
   // that register. Otherwise, provides a move to the given scratch register,
   // and returns that.
-  MOZ_MUST_USE Register extractObject(const Address& address, Register scratch);
-  MOZ_MUST_USE Register extractObject(const ValueOperand& value,
-                                      Register scratch) {
-    return value.payloadReg();
-  }
-  MOZ_MUST_USE Register extractString(const ValueOperand& value,
-                                      Register scratch) {
-    return value.payloadReg();
-  }
-  MOZ_MUST_USE Register extractSymbol(const ValueOperand& value,
-                                      Register scratch) {
-    return value.payloadReg();
-  }
-  MOZ_MUST_USE Register extractInt32(const ValueOperand& value,
-                                     Register scratch) {
-    return value.payloadReg();
-  }
-  MOZ_MUST_USE Register extractBoolean(const ValueOperand& value,
+  [[nodiscard]] Register extractObject(const Address& address,
+                                       Register scratch);
+  [[nodiscard]] Register extractObject(const ValueOperand& value,
                                        Register scratch) {
     return value.payloadReg();
   }
-  MOZ_MUST_USE Register extractTag(const Address& address, Register scratch);
-  MOZ_MUST_USE Register extractTag(const BaseIndex& address, Register scratch);
-  MOZ_MUST_USE Register extractTag(const ValueOperand& value,
-                                   Register scratch) {
+  [[nodiscard]] Register extractString(const ValueOperand& value,
+                                       Register scratch) {
+    return value.payloadReg();
+  }
+  [[nodiscard]] Register extractSymbol(const ValueOperand& value,
+                                       Register scratch) {
+    return value.payloadReg();
+  }
+  [[nodiscard]] Register extractInt32(const ValueOperand& value,
+                                      Register scratch) {
+    return value.payloadReg();
+  }
+  [[nodiscard]] Register extractBoolean(const ValueOperand& value,
+                                        Register scratch) {
+    return value.payloadReg();
+  }
+  [[nodiscard]] Register extractTag(const Address& address, Register scratch);
+  [[nodiscard]] Register extractTag(const BaseIndex& address, Register scratch);
+  [[nodiscard]] Register extractTag(const ValueOperand& value,
+                                    Register scratch) {
     return value.typeReg();
   }
 
@@ -452,10 +492,6 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
       load32(ToPayload(address), dest.gpr());
     }
   }
-
-  template <typename T>
-  void storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
-                         const T& dest, MIRType slotType);
 
   template <typename T>
   void storeUnboxedPayload(ValueOperand value, T address, size_t nbytes,
@@ -568,7 +604,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
   void storeTypeTag(ImmTag tag, Address dest);
   void storeTypeTag(ImmTag tag, const BaseIndex& dest);
 
-  void handleFailureWithHandlerTail(void* handler, Label* profilerExitTail);
+  void handleFailureWithHandlerTail(Label* profilerExitTail);
 
   template <typename T>
   void wasmAtomicStore64(const wasm::MemoryAccessDesc& access, const T& mem,
@@ -602,7 +638,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
 
   template <typename S>
   void load16UnalignedSignExtend(const S& src, Register dest) {
-    MOZ_CRASH("NYI");
+    ma_load_unaligned(dest, src, SizeHalfWord, SignExtend);
   }
 
   void load16ZeroExtend(const Address& address, Register dest);
@@ -610,7 +646,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
 
   template <typename S>
   void load16UnalignedZeroExtend(const S& src, Register dest) {
-    MOZ_CRASH("NYI");
+    ma_load_unaligned(dest, src, SizeHalfWord, ZeroExtend);
   }
 
   void load32(const Address& address, Register dest);
@@ -620,7 +656,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
 
   template <typename S>
   void load32Unaligned(const S& src, Register dest) {
-    MOZ_CRASH("NYI");
+    ma_load_unaligned(dest, src);
   }
 
   void load64(const Address& address, Register64 dest) {
@@ -634,7 +670,8 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
 
   template <typename S>
   void load64Unaligned(const S& src, Register64 dest) {
-    MOZ_CRASH("NYI");
+    ma_load_unaligned(dest.low, LowWord(src));
+    ma_load_unaligned(dest.high, HighWord(src));
   }
 
   void loadPtr(const Address& address, Register dest);
@@ -662,9 +699,9 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
   void store16(Register src, const BaseIndex& address);
   void store16(Imm32 imm, const BaseIndex& address);
 
-  template <typename S, typename T>
-  void store16Unaligned(const S& src, const T& dest) {
-    MOZ_CRASH("NYI");
+  template <typename T>
+  void store16Unaligned(Register src, const T& dest) {
+    ma_store_unaligned(src, dest, SizeHalfWord);
   }
 
   void store32(Register src, AbsoluteAddress address);
@@ -673,15 +710,9 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
   void store32(Imm32 src, const Address& address);
   void store32(Imm32 src, const BaseIndex& address);
 
-  // NOTE: This will use second scratch on MIPS. Only ARM needs the
-  // implementation without second scratch.
-  void store32_NoSecondScratch(Imm32 src, const Address& address) {
-    store32(src, address);
-  }
-
-  template <typename S, typename T>
-  void store32Unaligned(const S& src, const T& dest) {
-    MOZ_CRASH("NYI");
+  template <typename T>
+  void store32Unaligned(Register src, const T& dest) {
+    ma_store_unaligned(src, dest);
   }
 
   void store64(Register64 src, Address address) {
@@ -702,9 +733,10 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
     store32(imm.hi(), Address(address.base, address.offset + HIGH_32_OFFSET));
   }
 
-  template <typename S, typename T>
-  void store64Unaligned(const S& src, const T& dest) {
-    MOZ_CRASH("NYI");
+  template <typename T>
+  void store64Unaligned(Register64 src, const T& dest) {
+    ma_store_unaligned(src.low, LowWord(dest));
+    ma_store_unaligned(src.high, HighWord(dest));
   }
 
   template <typename T>
@@ -776,14 +808,6 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS {
 
   void moveFloat32(FloatRegister src, FloatRegister dest) {
     as_movs(dest, src);
-  }
-  void loadWasmGlobalPtr(uint32_t globalDataOffset, Register dest) {
-    loadPtr(Address(WasmTlsReg,
-                    offsetof(wasm::TlsData, globalArea) + globalDataOffset),
-            dest);
-  }
-  void loadWasmPinnedRegsFromTls() {
-    loadPtr(Address(WasmTlsReg, offsetof(wasm::TlsData, memoryBase)), HeapReg);
   }
 
   // Instrumentation for entering and leaving the profiler.

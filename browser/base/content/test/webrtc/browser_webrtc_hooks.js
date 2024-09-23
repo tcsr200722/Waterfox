@@ -2,12 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { webrtcUI } = ChromeUtils.import("resource:///modules/webrtcUI.jsm");
-
 const ORIGIN = "https://example.com";
 
 async function tryPeerConnection(browser, expectedError = null) {
-  let errtype = await SpecialPowers.spawn(browser, [], async function() {
+  let errtype = await SpecialPowers.spawn(browser, [], async function () {
     let pc = new content.RTCPeerConnection();
     try {
       await pc.createOffer({ offerToReceiveAudio: true });
@@ -124,7 +122,7 @@ var gTests = [
     run: async function testDeferredBlocker(browser) {
       Events.on();
 
-      let blocker = params => Promise.resolve("allow");
+      let blocker = () => Promise.resolve("allow");
       webrtcUI.addPeerConnectionBlocker(blocker);
 
       await tryPeerConnection(browser);
@@ -140,7 +138,7 @@ var gTests = [
     run: async function testBlockerDeny(browser) {
       Events.on();
 
-      let blocker = params => "deny";
+      let blocker = () => "deny";
       webrtcUI.addPeerConnectionBlocker(blocker);
 
       await tryPeerConnection(browser, "NotAllowedError");
@@ -158,14 +156,14 @@ var gTests = [
       Events.on();
 
       let blocker1Called = false,
-        blocker1 = params => {
+        blocker1 = () => {
           blocker1Called = true;
           return "allow";
         };
       webrtcUI.addPeerConnectionBlocker(blocker1);
 
       let blocker2Called = false,
-        blocker2 = params => {
+        blocker2 = () => {
           blocker2Called = true;
           return "allow";
         };
@@ -189,14 +187,14 @@ var gTests = [
       Events.on();
 
       let blocker1Called = false,
-        blocker1 = params => {
+        blocker1 = () => {
           blocker1Called = true;
           return "allow";
         };
       webrtcUI.addPeerConnectionBlocker(blocker1);
 
       let blocker2Called = false,
-        blocker2 = params => {
+        blocker2 = () => {
           blocker2Called = true;
           return "deny";
         };
@@ -220,14 +218,14 @@ var gTests = [
       Events.on();
 
       let blocker1Called = false,
-        blocker1 = params => {
+        blocker1 = () => {
           blocker1Called = true;
           return "deny";
         };
       webrtcUI.addPeerConnectionBlocker(blocker1);
 
       let blocker2Called = false,
-        blocker2 = params => {
+        blocker2 = () => {
           blocker2Called = true;
           return "allow";
         };
@@ -254,14 +252,14 @@ var gTests = [
       Events.on();
 
       let blocker1Called = false,
-        blocker1 = params => {
+        blocker1 = () => {
           blocker1Called = true;
           return "allow";
         };
       webrtcUI.addPeerConnectionBlocker(blocker1);
 
       let blocker2Called = false,
-        blocker2 = params => {
+        blocker2 = () => {
           blocker2Called = true;
           return "allow";
         };
@@ -285,14 +283,14 @@ var gTests = [
     run: async function testBlockerThrows(browser) {
       Events.on();
       let blocker1Called = false,
-        blocker1 = params => {
+        blocker1 = () => {
           blocker1Called = true;
           throw new Error("kaboom");
         };
       webrtcUI.addPeerConnectionBlocker(blocker1);
 
       let blocker2Called = false,
-        blocker2 = params => {
+        blocker2 = () => {
           blocker2Called = true;
           return "allow";
         };
@@ -315,15 +313,15 @@ var gTests = [
     run: async function testBlockerCancel(browser) {
       let blocker,
         blockerPromise = new Promise(resolve => {
-          blocker = params => {
+          blocker = () => {
             resolve();
             // defer indefinitely
-            return new Promise(innerResolve => {});
+            return new Promise(() => {});
           };
         });
       webrtcUI.addPeerConnectionBlocker(blocker);
 
-      await SpecialPowers.spawn(browser, [], async function() {
+      await SpecialPowers.spawn(browser, [], async function () {
         new content.RTCPeerConnection().createOffer({
           offerToReceiveAudio: true,
         });
@@ -338,7 +336,7 @@ var gTests = [
         });
       });
 
-      await SpecialPowers.spawn(browser, [], async function() {
+      await SpecialPowers.spawn(browser, [], async function () {
         content.location.reload();
       });
 

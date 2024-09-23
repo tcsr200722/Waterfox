@@ -11,7 +11,7 @@
  */
 
 [Pref="media.webspeech.recognition.enable",
- NamedConstructor=webkitSpeechGrammar,
+ LegacyFactoryFunction=webkitSpeechGrammar,
  Func="SpeechRecognition::IsAuthorized",
  Exposed=Window]
 interface SpeechGrammar {
@@ -22,4 +22,3 @@ interface SpeechGrammar {
     [Throws]
     attribute float weight;
 };
-

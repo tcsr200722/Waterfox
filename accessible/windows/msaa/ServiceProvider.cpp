@@ -6,6 +6,7 @@
 
 #include "ServiceProvider.h"
 
+#include "AccessibleApplication_i.c"
 #include "ApplicationAccessibleWrap.h"
 #include "DocAccessible.h"
 #include "nsAccUtils.h"
@@ -15,7 +16,7 @@
 #include "uiaRawElmProvider.h"
 
 #include "mozilla/a11y/DocAccessibleChild.h"
-#include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_accessibility.h"
 
 #include "ISimpleDOM.h"
 
@@ -24,7 +25,7 @@ namespace a11y {
 
 IMPL_IUNKNOWN_QUERY_HEAD(ServiceProvider)
 IMPL_IUNKNOWN_QUERY_IFACE(IServiceProvider)
-IMPL_IUNKNOWN_QUERY_TAIL_AGGREGATED(mAccessible)
+IMPL_IUNKNOWN_QUERY_TAIL_AGGREGATED(mMsaa)
 
 ////////////////////////////////////////////////////////////////////////////////
 // IServiceProvider
@@ -35,15 +36,9 @@ ServiceProvider::QueryService(REFGUID aGuidService, REFIID aIID,
   if (!aInstancePtr) return E_INVALIDARG;
 
   *aInstancePtr = nullptr;
-
-  // UIA IAccessibleEx
-  if (aGuidService == IID_IAccessibleEx &&
-      Preferences::GetBool("accessibility.uia.enable")) {
-    uiaRawElmProvider* accEx = new uiaRawElmProvider(mAccessible);
-    HRESULT hr = accEx->QueryInterface(aIID, aInstancePtr);
-    if (FAILED(hr)) delete accEx;
-
-    return hr;
+  Accessible* acc = mMsaa->Acc();
+  if (!acc) {
+    return CO_E_OBJNOTCONNECTED;
   }
 
   // Provide a special service ID for getting the accessible for the browser tab
@@ -59,29 +54,13 @@ ServiceProvider::QueryService(REFGUID aGuidService, REFIID aIID,
   if (aGuidService == SID_IAccessibleContentDocument) {
     if (aIID != IID_IAccessible) return E_NOINTERFACE;
 
-    // If mAccessible is within an OOP iframe document, the top level document
-    // lives in a different process.
-    if (XRE_IsContentProcess()) {
-      RootAccessible* root = mAccessible->RootAccessible();
-      MOZ_ASSERT(root);
-      DocAccessibleChild* ipcDoc = root->IPCDoc();
-      if (ipcDoc) {
-        RefPtr<IAccessible> topDoc = ipcDoc->GetTopLevelDocIAccessible();
-        // topDoc will be null if this isn't an OOP iframe document.
-        if (topDoc) {
-          topDoc.forget(aInstancePtr);
-          return S_OK;
-        }
-      }
+    Relation rel = acc->RelationByType(RelationType::CONTAINING_TAB_PANE);
+    RefPtr<IAccessible> next = MsaaAccessible::GetFrom(rel.Next());
+    if (!next) {
+      return E_NOINTERFACE;
     }
 
-    Relation rel =
-        mAccessible->RelationByType(RelationType::CONTAINING_TAB_PANE);
-    AccessibleWrap* tabDoc = static_cast<AccessibleWrap*>(rel.Next());
-    if (!tabDoc) return E_NOINTERFACE;
-
-    *aInstancePtr = static_cast<IAccessible*>(tabDoc);
-    (reinterpret_cast<IUnknown*>(*aInstancePtr))->AddRef();
+    next.forget(aInstancePtr);
     return S_OK;
   }
 
@@ -94,7 +73,9 @@ ServiceProvider::QueryService(REFGUID aGuidService, REFIID aIID,
         static_cast<ApplicationAccessibleWrap*>(ApplicationAcc());
     if (!applicationAcc) return E_NOINTERFACE;
 
-    return applicationAcc->QueryInterface(aIID, aInstancePtr);
+    RefPtr<IAccessible> appIa;
+    applicationAcc->GetNativeInterface(getter_AddRefs(appIa));
+    return appIa->QueryInterface(aIID, aInstancePtr);
   }
 
   static const GUID IID_SimpleDOMDeprecated = {
@@ -104,8 +85,12 @@ ServiceProvider::QueryService(REFGUID aGuidService, REFIID aIID,
       {0xb6, 0x61, 0x00, 0xaa, 0x00, 0x4c, 0xd6, 0xd8}};
   if (aGuidService == IID_ISimpleDOMNode ||
       aGuidService == IID_SimpleDOMDeprecated ||
-      aGuidService == IID_IAccessible || aGuidService == IID_IAccessible2)
-    return mAccessible->QueryInterface(aIID, aInstancePtr);
+      aGuidService == IID_IAccessible || aGuidService == IID_IAccessible2 ||
+      // UIA IAccessibleEx
+      (aGuidService == IID_IAccessibleEx &&
+       StaticPrefs::accessibility_uia_enable())) {
+    return mMsaa->QueryInterface(aIID, aInstancePtr);
+  }
 
   return E_INVALIDARG;
 }

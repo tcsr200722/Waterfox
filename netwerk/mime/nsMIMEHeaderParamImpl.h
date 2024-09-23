@@ -16,7 +16,7 @@ class nsMIMEHeaderParamImpl : public nsIMIMEHeaderParam {
 
   /**
    * Identical to calling
-   * GetParameterHTTP(aHeaderVal, aParameterName, EmptyCString(), false,
+   * GetParameterHTTP(aHeaderVal, aParameterName, ""_ns, false,
    * nullptr, aResult) See nsIMIMEHeaderParam.idl for more information.
    */
   static nsresult GetParameterHTTP(const nsACString& aHeaderVal,
@@ -33,10 +33,12 @@ class nsMIMEHeaderParamImpl : public nsIMIMEHeaderParam {
                                  bool aTryLocaleCharset, char** aLang,
                                  nsAString& aResult);
 
-  static nsresult DoParameterInternal(const char* aHeaderValue,
+  static nsresult DoParameterInternal(const nsACString& aHeaderVal,
                                       const char* aParamName,
                                       ParamDecoding aDecoding, char** aCharset,
                                       char** aLang, char** aResult);
+
+  static bool ContainsTrailingCharPastNull(const nsACString& aVal);
 };
 
 #endif

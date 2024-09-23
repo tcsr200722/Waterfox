@@ -7,11 +7,8 @@
 // This is loaded into chrome windows with the subscript loader. Wrap in
 // a block to prevent accidentally leaking globals onto `window`.
 {
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
-  );
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
   );
 
   const XUL_NS =
@@ -69,16 +66,13 @@
         <html:link rel="stylesheet" href="chrome://global/skin/button.css"/>
         <html:link rel="stylesheet" href="chrome://global/skin/wizard.css"/>
         <hbox class="wizard-header"></hbox>
-        <deck class="wizard-page-box" flex="1">
-          <html:slot name="wizardpage"/>
-        </deck>
+        <html:slot name="wizardpage" class="wizard-page-box" style="display: grid; flex: 1;"/>
         <html:slot/>
         <wizard-buttons class="wizard-buttons"></wizard-buttons>
     `)
       );
       this.initializeAttributeInheritance();
 
-      this._deck = this.shadowRoot.querySelector(".wizard-page-box");
       this._wizardButtons = this.shadowRoot.querySelector(".wizard-buttons");
 
       this._wizardHeader = this.shadowRoot.querySelector(".wizard-header");
@@ -118,6 +112,7 @@
         document.l10n.connectRoot(this.shadowRoot);
       }
       document.documentElement.setAttribute("role", "dialog");
+      document.documentElement.classList.add("wizard-window");
       this._maybeStartWizard();
 
       window.addEventListener("close", event => {
@@ -145,7 +140,7 @@
     }
 
     set title(val) {
-      return (document.title = val);
+      document.title = val;
     }
 
     get title() {
@@ -154,7 +149,7 @@
 
     set canAdvance(val) {
       this.getButton("next").disabled = !val;
-      return (this._canAdvance = val);
+      this._canAdvance = val;
     }
 
     get canAdvance() {
@@ -163,7 +158,7 @@
 
     set canRewind(val) {
       this.getButton("back").disabled = !val;
-      return (this._canRewind = val);
+      this._canRewind = val;
     }
 
     get canRewind() {
@@ -180,8 +175,11 @@
 
     set currentPage(val) {
       if (!val) {
-        return val;
+        return;
       }
+
+      this._currentPage?.classList.remove("selected");
+      val.classList.add("selected");
 
       this._currentPage = val;
 
@@ -191,12 +189,9 @@
 
       this._initCurrentPage();
 
-      this._deck.setAttribute("selectedIndex", val.pageIndex);
       this._advanceFocusToPage(val);
 
       this._fireEvent(val, "pageshow");
-
-      return val;
     }
 
     get currentPage() {
@@ -205,14 +200,12 @@
 
     set pageIndex(val) {
       if (val < 0 || val >= this.pageCount) {
-        return val;
+        return;
       }
 
       var page = this.wizardPages[val];
       this._pageStack[this._pageStack.length - 1] = page;
       this.currentPage = page;
-
-      return val;
     }
 
     get pageIndex() {
@@ -229,7 +222,7 @@
         cp &&
         ((this._accessMethod == "sequential" &&
           cp.pageIndex == this.pageCount - 1) ||
-          (this._accessMethod == "random" && cp.next == ""))
+          (this._accessMethod == "random" && !cp.next))
       );
     }
 
@@ -297,7 +290,7 @@
 
       if (this.onLastPage && !aPageId) {
         if (this._fireEvent(this, "wizardfinish")) {
-          window.setTimeout(function() {
+          window.setTimeout(function () {
             window.close();
           }, 1);
         }
@@ -342,25 +335,17 @@
       }
 
       window.close();
-      window.setTimeout(function() {
+      window.setTimeout(function () {
         window.close();
       }, 1);
       return false;
     }
 
     _initCurrentPage() {
-      if (this.onFirstPage) {
-        this.canRewind = false;
-        this.setAttribute("firstpage", "true");
-        if (AppConstants.platform == "linux") {
-          this.getButton("back").setAttribute("hidden", "true");
-        }
-      } else {
-        this.canRewind = true;
-        this.setAttribute("firstpage", "false");
-        if (AppConstants.platform == "linux") {
-          this.getButton("back").setAttribute("hidden", "false");
-        }
+      this.canRewind = !this.onFirstPage;
+      this.setAttribute("firstpage", String(this.onFirstPage));
+      if (AppConstants.platform == "linux") {
+        this.getButton("back").hidden = this.onFirstPage;
       }
 
       if (this.onLastPage) {
@@ -374,7 +359,7 @@
       this._wizardButtons.onPageChange();
     }
 
-    _advanceFocusToPage(aPage) {
+    _advanceFocusToPage() {
       if (!this._hasLoaded) {
         return;
       }
@@ -396,7 +381,7 @@
       aPage.pageIndex = this.pageCount;
       this.pageCount += 1;
       if (!this._accessMethod) {
-        this._accessMethod = aPage.next == "" ? "sequential" : "random";
+        this._accessMethod = aPage.next ? "random" : "sequential";
       }
       if (!this._maybeStartWizard() && this._hasStarted) {
         // If the wizard has already started, adding a page might require
@@ -411,7 +396,7 @@
       this._maybeStartWizard();
     }
 
-    _maybeStartWizard(aIsConnected) {
+    _maybeStartWizard() {
       if (
         !this._hasStarted &&
         this.isConnected &&
@@ -430,9 +415,8 @@
         ".wizard-header-label"
       );
       // First deal with fluent. Ideally, we'd stop supporting anything else,
-      // but right now the migration wizard still uses non-fluent l10n
-      // (fixing is bug 1518234), as do some comm-central consumers
-      // (bug 1627049). Removing the DTD support is bug 1627051.
+      // but some comm-central consumers still use DTDs. (bug 1627049).
+      // Removing the DTD support is bug 1627051.
       if (this.currentPage.hasAttribute("data-header-label-id")) {
         let id = this.currentPage.getAttribute("data-header-label-id");
         document.l10n.setAttributes(labelElement, id);
@@ -512,7 +496,6 @@
     set next(val) {
       this.setAttribute("next", val);
       this.parentNode._accessMethod = "random";
-      return val;
     }
   }
 
@@ -636,9 +619,9 @@
           this.getAttribute("lastpage") == "true"
         );
       } else if (this.getAttribute("lastpage") == "true") {
-        this._wizardButtonDeck.setAttribute("selectedIndex", 0);
+        this._wizardButtonDeck.selectedIndex = 0;
       } else {
-        this._wizardButtonDeck.setAttribute("selectedIndex", 1);
+        this._wizardButtonDeck.selectedIndex = 1;
       }
     }
 

@@ -6,16 +6,17 @@
 
 #include "WindowNamedPropertiesHandler.h"
 #include "mozilla/dom/EventTargetBinding.h"
+#include "mozilla/dom/ProxyHandlerUtils.h"
 #include "mozilla/dom/WindowBinding.h"
 #include "mozilla/dom/WindowProxyHolder.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsHTMLDocument.h"
 #include "nsJSUtils.h"
 #include "xpcprivate.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static bool ShouldExposeChildWindow(const nsString& aNameBeingResolved,
                                     BrowsingContext* aChild) {
@@ -74,8 +75,11 @@ static bool ShouldExposeChildWindow(const nsString& aNameBeingResolved,
 
 bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
     JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
-    bool /* unused */, JS::MutableHandle<JS::PropertyDescriptor> aDesc) const {
-  if (!JSID_IS_STRING(aId)) {
+    bool /* unused */,
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const {
+  aDesc.reset();
+
+  if (aId.isSymbol()) {
     if (aId.isWellKnownSymbol(JS::SymbolCode::toStringTag)) {
       JS::Rooted<JSString*> toStringTagStr(
           aCx, JS_NewStringCopyZ(aCx, "WindowProperties"));
@@ -83,12 +87,13 @@ bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
         return false;
       }
 
-      JS::Rooted<JS::Value> v(aCx, JS::StringValue(toStringTagStr));
-      FillPropertyDescriptor(aDesc, aProxy, JSPROP_READONLY, v);
+      aDesc.set(Some(
+          JS::PropertyDescriptor::Data(JS::StringValue(toStringTagStr),
+                                       {JS::PropertyAttribute::Configurable})));
       return true;
     }
 
-    // Nothing to do if we're resolving another non-string property.
+    // Nothing to do if we're resolving another symbol property.
     return true;
   }
 
@@ -101,7 +106,7 @@ bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
   }
 
   nsAutoJSString str;
-  if (!str.init(aCx, JSID_TO_STRING(aId))) {
+  if (!str.init(aCx, aId)) {
     return false;
   }
 
@@ -121,7 +126,9 @@ bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
       if (!ToJSValue(aCx, WindowProxyHolder(std::move(child)), &v)) {
         return false;
       }
-      FillPropertyDescriptor(aDesc, aProxy, 0, v);
+      aDesc.set(mozilla::Some(
+          JS::PropertyDescriptor::Data(v, {JS::PropertyAttribute::Configurable,
+                                           JS::PropertyAttribute::Writable})));
       return true;
     }
   }
@@ -139,7 +146,9 @@ bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
     if (!ToJSValue(aCx, element, &v)) {
       return false;
     }
-    FillPropertyDescriptor(aDesc, aProxy, 0, v);
+    aDesc.set(mozilla::Some(
+        JS::PropertyDescriptor::Data(v, {JS::PropertyAttribute::Configurable,
+                                         JS::PropertyAttribute::Writable})));
     return true;
   }
 
@@ -150,7 +159,9 @@ bool WindowNamedPropertiesHandler::getOwnPropDescriptor(
   }
 
   if (found) {
-    FillPropertyDescriptor(aDesc, aProxy, 0, v);
+    aDesc.set(mozilla::Some(
+        JS::PropertyDescriptor::Data(v, {JS::PropertyAttribute::Configurable,
+                                         JS::PropertyAttribute::Writable})));
   }
   return true;
 }
@@ -159,11 +170,7 @@ bool WindowNamedPropertiesHandler::defineProperty(
     JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
     JS::Handle<JS::PropertyDescriptor> aDesc,
     JS::ObjectOpResult& result) const {
-  ErrorResult rv;
-  rv.ThrowTypeError(
-      "Not allowed to define a property on the named properties object.");
-  MOZ_ALWAYS_TRUE(rv.MaybeSetPendingException(aCx));
-  return false;
+  return result.failCantDefineWindowNamedProperty();
 }
 
 bool WindowNamedPropertiesHandler::ownPropNames(
@@ -201,8 +208,8 @@ bool WindowNamedPropertiesHandler::ownPropNames(
   if (!doc || !doc->IsHTMLOrXHTML()) {
     // Define to @@toStringTag on this object to keep Object.prototype.toString
     // backwards compatible.
-    JS::Rooted<jsid> toStringTagId(aCx, SYMBOL_TO_JSID(JS::GetWellKnownSymbol(
-                                            aCx, JS::SymbolCode::toStringTag)));
+    JS::Rooted<jsid> toStringTagId(
+        aCx, JS::GetWellKnownSymbolKey(aCx, JS::SymbolCode::toStringTag));
     return aProps.append(toStringTagId);
   }
 
@@ -216,8 +223,8 @@ bool WindowNamedPropertiesHandler::ownPropNames(
     return false;
   }
 
-  JS::Rooted<jsid> toStringTagId(aCx, SYMBOL_TO_JSID(JS::GetWellKnownSymbol(
-                                          aCx, JS::SymbolCode::toStringTag)));
+  JS::Rooted<jsid> toStringTagId(
+      aCx, JS::GetWellKnownSymbolKey(aCx, JS::SymbolCode::toStringTag));
   if (!docProps.append(toStringTagId)) {
     return false;
   }
@@ -238,11 +245,9 @@ static const DOMIfaceAndProtoJSClass WindowNamedPropertiesClass = {
     PROXY_CLASS_DEF("WindowProperties", JSCLASS_IS_DOMIFACEANDPROTOJSCLASS |
                                             JSCLASS_HAS_RESERVED_SLOTS(1)),
     eNamedPropertiesObject,
-    false,
     prototypes::id::_ID_Count,
     0,
     &sEmptyNativePropertyHooks,
-    "[object WindowProperties]",
     EventTarget_Binding::GetProtoObject};
 
 // static
@@ -251,13 +256,9 @@ JSObject* WindowNamedPropertiesHandler::Create(JSContext* aCx,
   js::ProxyOptions options;
   options.setClass(&WindowNamedPropertiesClass.mBase);
 
-  // Note: since the scope polluter proxy lives on the window's prototype
-  // chain, it needs a singleton type to avoid polluting type information
-  // for properties on the window.
   JS::Rooted<JSObject*> gsp(
-      aCx, js::NewSingletonProxyObject(
-               aCx, WindowNamedPropertiesHandler::getInstance(),
-               JS::NullHandleValue, aProto, options));
+      aCx, js::NewProxyObject(aCx, WindowNamedPropertiesHandler::getInstance(),
+                              JS::NullHandleValue, aProto, options));
   if (!gsp) {
     return nullptr;
   }
@@ -273,5 +274,4 @@ JSObject* WindowNamedPropertiesHandler::Create(JSContext* aCx,
   return gsp;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

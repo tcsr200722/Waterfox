@@ -8,17 +8,17 @@
 
 #include "mozilla/FlushType.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLFormControlsCollectionBinding.h"
 #include "mozilla/dom/HTMLFormElement.h"
 #include "nsGenericHTMLElement.h"  // nsGenericHTMLFormElement
-#include "mozilla/dom/Document.h"
+#include "nsQueryObject.h"
 #include "nsIFormControl.h"
 #include "RadioNodeList.h"
 #include "jsfriendapi.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* static */
 bool HTMLFormControlsCollection::ShouldBeInElements(
@@ -28,55 +28,50 @@ bool HTMLFormControlsCollection::ShouldBeInElements(
   // form.
 
   switch (aFormControl->ControlType()) {
-    case NS_FORM_BUTTON_BUTTON:
-    case NS_FORM_BUTTON_RESET:
-    case NS_FORM_BUTTON_SUBMIT:
-    case NS_FORM_INPUT_BUTTON:
-    case NS_FORM_INPUT_CHECKBOX:
-    case NS_FORM_INPUT_COLOR:
-    case NS_FORM_INPUT_EMAIL:
-    case NS_FORM_INPUT_FILE:
-    case NS_FORM_INPUT_HIDDEN:
-    case NS_FORM_INPUT_RESET:
-    case NS_FORM_INPUT_PASSWORD:
-    case NS_FORM_INPUT_RADIO:
-    case NS_FORM_INPUT_SEARCH:
-    case NS_FORM_INPUT_SUBMIT:
-    case NS_FORM_INPUT_TEXT:
-    case NS_FORM_INPUT_TEL:
-    case NS_FORM_INPUT_URL:
-    case NS_FORM_INPUT_NUMBER:
-    case NS_FORM_INPUT_RANGE:
-    case NS_FORM_INPUT_DATE:
-    case NS_FORM_INPUT_TIME:
-    case NS_FORM_INPUT_MONTH:
-    case NS_FORM_INPUT_WEEK:
-    case NS_FORM_INPUT_DATETIME_LOCAL:
-    case NS_FORM_SELECT:
-    case NS_FORM_TEXTAREA:
-    case NS_FORM_FIELDSET:
-    case NS_FORM_OBJECT:
-    case NS_FORM_OUTPUT:
+    case FormControlType::ButtonButton:
+    case FormControlType::ButtonReset:
+    case FormControlType::ButtonSubmit:
+    case FormControlType::InputButton:
+    case FormControlType::InputCheckbox:
+    case FormControlType::InputColor:
+    case FormControlType::InputEmail:
+    case FormControlType::InputFile:
+    case FormControlType::InputHidden:
+    case FormControlType::InputReset:
+    case FormControlType::InputPassword:
+    case FormControlType::InputRadio:
+    case FormControlType::InputSearch:
+    case FormControlType::InputSubmit:
+    case FormControlType::InputText:
+    case FormControlType::InputTel:
+    case FormControlType::InputUrl:
+    case FormControlType::InputNumber:
+    case FormControlType::InputRange:
+    case FormControlType::InputDate:
+    case FormControlType::InputTime:
+    case FormControlType::InputMonth:
+    case FormControlType::InputWeek:
+    case FormControlType::InputDatetimeLocal:
+    case FormControlType::Select:
+    case FormControlType::Textarea:
+    case FormControlType::Fieldset:
+    case FormControlType::Object:
+    case FormControlType::Output:
+    case FormControlType::FormAssociatedCustomElement:
       return true;
+
+    // These form control types are not supposed to end up in the
+    // form.elements array
+    // XXXbz maybe we should just return aType != InputImage or something
+    // instead of the big switch?
+    case FormControlType::InputImage:
+      break;
   }
-
-  // These form control types are not supposed to end up in the
-  // form.elements array
-  //
-  // NS_FORM_INPUT_IMAGE
-  //
-  // XXXbz maybe we should just check for that type here instead of the big
-  // switch?
-
   return false;
 }
 
 HTMLFormControlsCollection::HTMLFormControlsCollection(HTMLFormElement* aForm)
-    : mForm(aForm)
-      // Initialize the elements list to have an initial capacity
-      // of 8 to reduce allocations on small forms.
-      ,
-      mElements(8),
+    : mForm(aForm),
       mNameLookupTable(HTMLFormElement::FORM_CONTROL_LIST_HASHTABLE_LENGTH) {}
 
 HTMLFormControlsCollection::~HTMLFormControlsCollection() {
@@ -91,26 +86,21 @@ void HTMLFormControlsCollection::DropFormReference() {
 
 void HTMLFormControlsCollection::Clear() {
   // Null out childrens' pointer to me.  No refcounting here
-  for (int32_t i = mElements.Length() - 1; i >= 0; i--) {
-    mElements[i]->ClearForm(false, false);
+  for (nsGenericHTMLFormElement* element : Reversed(mElements.AsList())) {
+    nsCOMPtr<nsIFormControl> formControl = do_QueryObject(element);
+    MOZ_ASSERT(formControl);
+    formControl->ClearForm(false, false);
   }
   mElements.Clear();
 
-  for (int32_t i = mNotInElements.Length() - 1; i >= 0; i--) {
-    mNotInElements[i]->ClearForm(false, false);
+  for (nsGenericHTMLFormElement* element : Reversed(mNotInElements.AsList())) {
+    nsCOMPtr<nsIFormControl> formControl = do_QueryObject(element);
+    MOZ_ASSERT(formControl);
+    formControl->ClearForm(false, false);
   }
   mNotInElements.Clear();
 
   mNameLookupTable.Clear();
-}
-
-void HTMLFormControlsCollection::FlushPendingNotifications() {
-  if (mForm) {
-    Document* doc = mForm->GetUncomposedDoc();
-    if (doc) {
-      doc->FlushPendingNotifications(FlushType::Content);
-    }
-  }
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLFormControlsCollection)
@@ -139,45 +129,40 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(HTMLFormControlsCollection)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(HTMLFormControlsCollection)
 
-// nsIHTMLCollection interface
+// nsIHTMLCollection interfac
 
-uint32_t HTMLFormControlsCollection::Length() {
-  FlushPendingNotifications();
-  return mElements.Length();
-}
+uint32_t HTMLFormControlsCollection::Length() { return mElements->Length(); }
 
 nsISupports* HTMLFormControlsCollection::NamedItemInternal(
-    const nsAString& aName, bool aFlushContent) {
-  if (aFlushContent) {
-    FlushPendingNotifications();
-  }
-
+    const nsAString& aName) {
   return mNameLookupTable.GetWeak(aName);
 }
 
 nsresult HTMLFormControlsCollection::AddElementToTable(
     nsGenericHTMLFormElement* aChild, const nsAString& aName) {
-  if (!ShouldBeInElements(aChild)) {
+  nsCOMPtr<nsIFormControl> formControl = do_QueryObject(aChild);
+  MOZ_ASSERT(formControl);
+  if (!ShouldBeInElements(formControl)) {
     return NS_OK;
   }
 
   return mForm->AddElementToTableInternal(mNameLookupTable, aChild, aName);
 }
 
-nsresult HTMLFormControlsCollection::IndexOfControl(nsIFormControl* aControl,
+nsresult HTMLFormControlsCollection::IndexOfContent(nsIContent* aContent,
                                                     int32_t* aIndex) {
   // Note -- not a DOM method; callers should handle flushing themselves
 
   NS_ENSURE_ARG_POINTER(aIndex);
-
-  *aIndex = mElements.IndexOf(aControl);
-
+  *aIndex = mElements->IndexOf(aContent);
   return NS_OK;
 }
 
 nsresult HTMLFormControlsCollection::RemoveElementFromTable(
     nsGenericHTMLFormElement* aChild, const nsAString& aName) {
-  if (!ShouldBeInElements(aChild)) {
+  nsCOMPtr<nsIFormControl> formControl = do_QueryObject(aChild);
+  MOZ_ASSERT(formControl);
+  if (!ShouldBeInElements(formControl)) {
     return NS_OK;
   }
 
@@ -195,8 +180,8 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
 
   // Merge the elements list and the not in elements list. Both lists are
   // already sorted.
-  uint32_t elementsLen = mElements.Length();
-  uint32_t notInElementsLen = mNotInElements.Length();
+  uint32_t elementsLen = mElements->Length();
+  uint32_t notInElementsLen = mNotInElements->Length();
   aControls.SetCapacity(elementsLen + notInElementsLen);
 
   uint32_t elementsIdx = 0;
@@ -210,7 +195,7 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
       // Append the remaining mNotInElements elements
       // XXX(Bug 1631371) Check if this should use a fallible operation as it
       // pretended earlier.
-      aControls.AppendElements(mNotInElements.Elements() + notInElementsIdx,
+      aControls.AppendElements(mNotInElements->Elements() + notInElementsIdx,
                                notInElementsLen - notInElementsIdx);
       break;
     }
@@ -221,23 +206,24 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
       // Append the remaining mElements elements
       // XXX(Bug 1631371) Check if this should use a fallible operation as it
       // pretended earlier.
-      aControls.AppendElements(mElements.Elements() + elementsIdx,
+      aControls.AppendElements(mElements->Elements() + elementsIdx,
                                elementsLen - elementsIdx);
       break;
     }
     // Both lists have elements left.
-    NS_ASSERTION(mElements[elementsIdx] && mNotInElements[notInElementsIdx],
+    NS_ASSERTION(mElements->ElementAt(elementsIdx) &&
+                     mNotInElements->ElementAt(notInElementsIdx),
                  "Should have remaining elements");
     // Determine which of the two elements should be ordered
     // first and add it to the end of the list.
     nsGenericHTMLFormElement* elementToAdd;
-    if (HTMLFormElement::CompareFormControlPosition(
-            mElements[elementsIdx], mNotInElements[notInElementsIdx], mForm) <
-        0) {
-      elementToAdd = mElements[elementsIdx];
+    if (nsContentUtils::CompareTreePosition<TreeKind::DOM>(
+            mElements->ElementAt(elementsIdx),
+            mNotInElements->ElementAt(notInElementsIdx), mForm) < 0) {
+      elementToAdd = mElements->ElementAt(elementsIdx);
       ++elementsIdx;
     } else {
-      elementToAdd = mNotInElements[notInElementsIdx];
+      elementToAdd = mNotInElements->ElementAt(notInElementsIdx);
       ++notInElementsIdx;
     }
     // Add the first element to the list.
@@ -256,9 +242,7 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
 }
 
 Element* HTMLFormControlsCollection::GetElementAt(uint32_t aIndex) {
-  FlushPendingNotifications();
-
-  return mElements.SafeElementAt(aIndex, nullptr);
+  return mElements->SafeElementAt(aIndex, nullptr);
 }
 
 /* virtual */
@@ -288,7 +272,7 @@ Element* HTMLFormControlsCollection::GetFirstNamedElement(
 void HTMLFormControlsCollection::NamedGetter(
     const nsAString& aName, bool& aFound,
     Nullable<OwningRadioNodeListOrElement>& aResult) {
-  nsISupports* item = NamedItemInternal(aName, true);
+  nsISupports* item = NamedItemInternal(aName);
   if (!item) {
     aFound = false;
     return;
@@ -306,13 +290,10 @@ void HTMLFormControlsCollection::NamedGetter(
 }
 
 void HTMLFormControlsCollection::GetSupportedNames(nsTArray<nsString>& aNames) {
-  FlushPendingNotifications();
   // Just enumerate mNameLookupTable.  This won't guarantee order, but
   // that's OK, because the HTML5 spec doesn't define an order for
   // this enumeration.
-  for (auto iter = mNameLookupTable.Iter(); !iter.Done(); iter.Next()) {
-    aNames.AppendElement(iter.Key());
-  }
+  AppendToArray(aNames, mNameLookupTable.Keys());
 }
 
 /* virtual */
@@ -321,5 +302,4 @@ JSObject* HTMLFormControlsCollection::WrapObject(
   return HTMLFormControlsCollection_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

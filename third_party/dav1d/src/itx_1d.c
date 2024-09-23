@@ -119,13 +119,13 @@ inv_dct8_1d_internal_c(int32_t *const c, const ptrdiff_t stride,
         t7a = ((in1 * (4017 - 4096) + in7 *  799          + 2048) >> 12) + in1;
     }
 
-    int t4  = CLIP(t4a + t5a);
-        t5a = CLIP(t4a - t5a);
-    int t7  = CLIP(t7a + t6a);
-        t6a = CLIP(t7a - t6a);
+    const int t4  = CLIP(t4a + t5a);
+              t5a = CLIP(t4a - t5a);
+    const int t7  = CLIP(t7a + t6a);
+              t6a = CLIP(t7a - t6a);
 
-    int t5  = ((t6a - t5a) * 181 + 128) >> 8;
-    int t6  = ((t6a + t5a) * 181 + 128) >> 8;
+    const int t5  = ((t6a - t5a) * 181 + 128) >> 8;
+    const int t6  = ((t6a + t5a) * 181 + 128) >> 8;
 
     const int t0 = c[0 * stride];
     const int t1 = c[2 * stride];
@@ -812,23 +812,23 @@ inv_adst8_1d_internal_c(const int32_t *const in, const ptrdiff_t in_s,
     const int in4 = in[4 * in_s], in5 = in[5 * in_s];
     const int in6 = in[6 * in_s], in7 = in[7 * in_s];
 
-    int t0a = (((4076 - 4096) * in7 +   401         * in0 + 2048) >> 12) + in7;
-    int t1a = ((  401         * in7 - (4076 - 4096) * in0 + 2048) >> 12) - in0;
-    int t2a = (((3612 - 4096) * in5 +  1931         * in2 + 2048) >> 12) + in5;
-    int t3a = (( 1931         * in5 - (3612 - 4096) * in2 + 2048) >> 12) - in2;
-    int t4a =  ( 1299         * in3 +  1583         * in4 + 1024) >> 11;
-    int t5a =  ( 1583         * in3 -  1299         * in4 + 1024) >> 11;
-    int t6a = (( 1189         * in1 + (3920 - 4096) * in6 + 2048) >> 12) + in6;
-    int t7a = (((3920 - 4096) * in1 -  1189         * in6 + 2048) >> 12) + in1;
+    const int t0a = (((4076 - 4096) * in7 +   401         * in0 + 2048) >> 12) + in7;
+    const int t1a = ((  401         * in7 - (4076 - 4096) * in0 + 2048) >> 12) - in0;
+    const int t2a = (((3612 - 4096) * in5 +  1931         * in2 + 2048) >> 12) + in5;
+    const int t3a = (( 1931         * in5 - (3612 - 4096) * in2 + 2048) >> 12) - in2;
+          int t4a =  ( 1299         * in3 +  1583         * in4 + 1024) >> 11;
+          int t5a =  ( 1583         * in3 -  1299         * in4 + 1024) >> 11;
+          int t6a = (( 1189         * in1 + (3920 - 4096) * in6 + 2048) >> 12) + in6;
+          int t7a = (((3920 - 4096) * in1 -  1189         * in6 + 2048) >> 12) + in1;
 
-    int t0 = CLIP(t0a + t4a);
-    int t1 = CLIP(t1a + t5a);
-    int t2 = CLIP(t2a + t6a);
-    int t3 = CLIP(t3a + t7a);
-    int t4 = CLIP(t0a - t4a);
-    int t5 = CLIP(t1a - t5a);
-    int t6 = CLIP(t2a - t6a);
-    int t7 = CLIP(t3a - t7a);
+    const int t0 = CLIP(t0a + t4a);
+    const int t1 = CLIP(t1a + t5a);
+          int t2 = CLIP(t2a + t6a);
+          int t3 = CLIP(t3a + t7a);
+    const int t4 = CLIP(t0a - t4a);
+    const int t5 = CLIP(t1a - t5a);
+          int t6 = CLIP(t2a - t6a);
+          int t7 = CLIP(t3a - t7a);
 
     t4a = (((3784 - 4096) * t4 +  1567         * t5 + 2048) >> 12) + t4;
     t5a = (( 1567         * t4 - (3784 - 4096) * t5 + 2048) >> 12) - t5;
@@ -1016,6 +1016,10 @@ void dav1d_inv_identity32_1d_c(int32_t *const c, const ptrdiff_t stride,
         c[stride * i] *= 4;
 }
 
+#if !(HAVE_ASM && TRIM_DSP_FUNCTIONS && ( \
+  ARCH_AARCH64 || \
+  (ARCH_ARM && (defined(__ARM_NEON) || defined(__APPLE__) || defined(_WIN32))) \
+))
 void dav1d_inv_wht4_1d_c(int32_t *const c, const ptrdiff_t stride) {
     assert(stride > 0);
     const int in0 = c[0 * stride], in1 = c[1 * stride];
@@ -1032,3 +1036,4 @@ void dav1d_inv_wht4_1d_c(int32_t *const c, const ptrdiff_t stride) {
     c[2 * stride] = t1;
     c[3 * stride] = t2 + t1;
 }
+#endif

@@ -4,60 +4,72 @@
 
 "use strict";
 
-const { BrowserLoader } = ChromeUtils.import(
-  "resource://devtools/client/shared/browser-loader.js"
+const { BrowserLoader } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/browser-loader.sys.mjs"
 );
 const require = BrowserLoader({
   baseURI: "resource://devtools/client/application/",
   window,
 }).require;
 
-const { createFactory } = require("devtools/client/shared/vendor/react");
+const {
+  createFactory,
+} = require("resource://devtools/client/shared/vendor/react.js");
 const {
   render,
   unmountComponentAtNode,
-} = require("devtools/client/shared/vendor/react-dom");
+} = require("resource://devtools/client/shared/vendor/react-dom.js");
 const Provider = createFactory(
-  require("devtools/client/shared/vendor/react-redux").Provider
+  require("resource://devtools/client/shared/vendor/react-redux.js").Provider
 );
-const { bindActionCreators } = require("devtools/client/shared/vendor/redux");
-const { l10n } = require("devtools/client/application/src/modules/l10n");
+const {
+  bindActionCreators,
+} = require("resource://devtools/client/shared/vendor/redux.js");
+const {
+  l10n,
+} = require("resource://devtools/client/application/src/modules/l10n.js");
 
 const {
   configureStore,
-} = require("devtools/client/application/src/create-store");
-const actions = require("devtools/client/application/src/actions/index");
+} = require("resource://devtools/client/application/src/create-store.js");
+const actions = require("resource://devtools/client/application/src/actions/index.js");
 
-const { WorkersListener } = require("devtools/client/shared/workers-listener");
+const {
+  WorkersListener,
+} = require("resource://devtools/client/shared/workers-listener.js");
 
 const {
   services,
-} = require("devtools/client/application/src/modules/application-services");
+} = require("resource://devtools/client/application/src/modules/application-services.js");
 
 const App = createFactory(
-  require("devtools/client/application/src/components/App")
+  require("resource://devtools/client/application/src/components/App.js")
 );
+
+const {
+  safeAsyncMethod,
+} = require("resource://devtools/shared/async-utils.js");
 
 /**
  * Global Application object in this panel. This object is expected by panel.js and is
  * called to start the UI for the panel.
  */
 window.Application = {
-  async bootstrap({ toolbox, panel }) {
+  async bootstrap({ toolbox, commands }) {
     // bind event handlers to `this`
-    this.handleOnNavigate = this.handleOnNavigate.bind(this);
-    this.updateWorkers = this.updateWorkers.bind(this);
     this.updateDomain = this.updateDomain.bind(this);
-    this.updateCanDebugWorkers = this.updateCanDebugWorkers.bind(this);
-    this.onTargetAvailable = this.onTargetAvailable.bind(this);
-    this.onTargetDestroyed = this.onTargetDestroyed.bind(this);
+
+    // wrap updateWorkers to swallow rejections occurring after destroy
+    this.safeUpdateWorkers = safeAsyncMethod(
+      () => this.updateWorkers(),
+      () => this._destroyed
+    );
 
     this.toolbox = toolbox;
-    // NOTE: the client is the same through the lifecycle of the toolbox, even
-    // though we get it from toolbox.target
-    this.client = toolbox.target.client;
+    this._commands = commands;
+    this.client = commands.client;
 
-    this.store = configureStore();
+    this.store = configureStore(toolbox.telemetry);
     this.actions = bindActionCreators(actions, this.store.dispatch);
 
     services.init(this.toolbox);
@@ -65,23 +77,20 @@ window.Application = {
 
     await this.updateWorkers();
     this.workersListener = new WorkersListener(this.client.mainRoot);
-    this.workersListener.addListener(this.updateWorkers);
+    this.workersListener.addListener(this.safeUpdateWorkers);
 
-    this.deviceFront = await this.client.mainRoot.getFront("device");
-    await this.updateCanDebugWorkers();
-    if (this.deviceFront) {
-      this.canDebugWorkersListener = this.deviceFront.on(
-        "can-debug-sw-updated",
-        this.updateCanDebugWorkers
-      );
-    }
+    const deviceFront = await this.client.mainRoot.getFront("device");
+    const { canDebugServiceWorkers } = await deviceFront.getDescription();
+    this.actions.updateCanDebugWorkers(
+      canDebugServiceWorkers && services.features.doesDebuggerSupportWorkers
+    );
 
-    // awaiting for watchTargets will return the targets that are currently
-    // available, so we can have our first render with all the data ready
-    await this.toolbox.targetList.watchTargets(
-      [this.toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable,
-      this.onTargetDestroyed
+    this.onResourceAvailable = this.onResourceAvailable.bind(this);
+    await this._commands.resourceCommand.watchResources(
+      [this._commands.resourceCommand.TYPES.DOCUMENT_EVENT],
+      {
+        onAvailable: this.onResourceAvailable,
+      }
     );
 
     // Render the root Application component.
@@ -93,13 +102,9 @@ window.Application = {
     render(Provider({ store: this.store }, app), this.mount);
   },
 
-  handleOnNavigate() {
-    this.updateDomain();
-    this.actions.resetManifest();
-  },
-
   async updateWorkers() {
-    const registrationsWithWorkers = await this.client.mainRoot.listAllServiceWorkers();
+    const registrationsWithWorkers =
+      await this.client.mainRoot.listAllServiceWorkers();
     this.actions.updateWorkers(registrationsWithWorkers);
   },
 
@@ -107,60 +112,39 @@ window.Application = {
     this.actions.updateDomain(this.toolbox.target.url);
   },
 
-  async updateCanDebugWorkers() {
-    const canDebugWorkers = this.deviceFront
-      ? (await this.deviceFront.getDescription()).canDebugServiceWorkers
-      : false;
+  handleOnNavigate() {
+    this.updateDomain();
+    this.actions.resetManifest();
+  },
 
-    this.actions.updateCanDebugWorkers(
-      canDebugWorkers && services.features.doesDebuggerSupportWorkers
+  onResourceAvailable(resources) {
+    // Only consider top level document, and ignore remote iframes top document
+    const hasDocumentDomComplete = resources.some(
+      resource =>
+        resource.resourceType ===
+          this._commands.resourceCommand.TYPES.DOCUMENT_EVENT &&
+        resource.name === "dom-complete" &&
+        resource.targetFront.isTopLevel
     );
-  },
-
-  setupTarget(targetFront) {
-    this.handleOnNavigate(); // update domain and manifest for the new target
-    targetFront.on("navigate", this.handleOnNavigate);
-  },
-
-  cleanUpTarget(targetFront) {
-    targetFront.off("navigate", this.handleOnNavigate);
-  },
-
-  onTargetAvailable({ targetFront }) {
-    if (!targetFront.isTopLevel) {
-      return; // ignore target frames that are not top level for now
+    if (hasDocumentDomComplete) {
+      this.handleOnNavigate(); // update domain and manifest for the new target
     }
-
-    this.setupTarget(targetFront);
-  },
-
-  onTargetDestroyed({ targetFront }) {
-    if (!targetFront.isTopLevel) {
-      return; // ignore target frames that are not top level for now
-    }
-
-    this.cleanUpTarget(targetFront);
   },
 
   destroy() {
     this.workersListener.removeListener();
-    if (this.deviceFront) {
-      this.deviceFront.off("can-debug-sw-updated", this.updateCanDebugWorkers);
-    }
 
-    this.toolbox.targetList.unwatchTargets(
-      [this.toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable,
-      this.onTargetDestroyed
+    this._commands.resourceCommand.unwatchResources(
+      [this._commands.resourceCommand.TYPES.DOCUMENT_EVENT],
+      { onAvailable: this.onResourceAvailable }
     );
-
-    this.cleanUpTarget(this.toolbox.target);
 
     unmountComponentAtNode(this.mount);
     this.mount = null;
     this.toolbox = null;
     this.client = null;
+    this._commands = null;
     this.workersListener = null;
-    this.deviceFront = null;
+    this._destroyed = true;
   },
 };

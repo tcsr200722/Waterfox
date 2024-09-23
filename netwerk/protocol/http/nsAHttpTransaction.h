@@ -5,9 +5,10 @@
 #ifndef nsAHttpTransaction_h__
 #define nsAHttpTransaction_h__
 
-#include "nsISupports.h"
 #include "nsTArray.h"
 #include "nsWeakReference.h"
+#include "nsIRequest.h"
+#include "nsITRRSkipReason.h"
 
 #ifdef Status
 /* Xlib headers insist on this for some reason... Nuke it because
@@ -17,9 +18,12 @@ typedef Status __StatusTmp;
 typedef __StatusTmp Status;
 #endif
 
+class nsIDNSHTTPSSVCRecord;
 class nsIInterfaceRequestor;
-class nsITransport;
 class nsIRequestContext;
+class nsISVCBRecord;
+class nsITLSSocketControl;
+class nsITransport;
 
 namespace mozilla {
 namespace net {
@@ -31,7 +35,8 @@ class nsHttpTransaction;
 class nsHttpRequestHead;
 class nsHttpConnectionInfo;
 class NullHttpTransaction;
-class SpdyConnectTransaction;
+
+enum class WebSocketSupport { UNSURE, NO_SUPPORT, SUPPORTED };
 
 //----------------------------------------------------------------------------
 // Abstract base class for a HTTP transaction:
@@ -148,13 +153,6 @@ class nsAHttpTransaction : public nsSupportsWeakReference {
   // non nsHttpTransaction implementations of nsAHttpTransaction
   virtual nsHttpTransaction* QueryHttpTransaction() { return nullptr; }
 
-  // If we used rtti this would be the result of doing
-  // dynamic_cast<SpdyConnectTransaction *>(this).. i.e. it can be nullptr for
-  // other types
-  virtual SpdyConnectTransaction* QuerySpdyConnectTransaction() {
-    return nullptr;
-  }
-
   // return the request context associated with the transaction
   virtual nsIRequestContext* RequestContext() { return nullptr; }
 
@@ -165,19 +163,28 @@ class nsAHttpTransaction : public nsSupportsWeakReference {
   virtual bool ResponseTimeoutEnabled() const;
   virtual PRIntervalTime ResponseTimeout();
 
-  // conceptually the security info is part of the connection, but sometimes
+  // conceptually the socket control is part of the connection, but sometimes
   // in the case of TLS tunneled within TLS the transaction might present
-  // a more specific security info that cannot be represented as a layer in
+  // a more specific socket control that cannot be represented as a layer in
   // the connection due to multiplexing. This interface represents such an
   // overload. If it returns NS_FAILURE the connection should be considered
   // authoritative.
-  [[nodiscard]] virtual nsresult GetTransactionSecurityInfo(nsISupports**) {
+  [[nodiscard]] virtual nsresult GetTransactionTLSSocketControl(
+      nsITLSSocketControl**) {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
   virtual void DisableSpdy() {}
+  // When called, we disallow to connect through a Http/2 proxy.
+  virtual void DisableHttp2ForProxy() {}
+  virtual void DisableHttp3(bool aAllowRetryHTTPSRR) {}
   virtual void MakeNonSticky() {}
+  virtual void MakeRestartable() {}
   virtual void ReuseConnectionOnRestartOK(bool) {}
+  virtual void SetIsHttp2Websocket(bool) {}
+  virtual bool IsHttp2Websocket() { return false; }
+  virtual void SetTRRInfo(nsIRequest::TRRMode aMode,
+                          TRRSkippedReason aSkipReason){};
 
   // We call this function if we want to use alt-svc host again on the next
   // restart. If this function is not called on the next restart the
@@ -187,8 +194,10 @@ class nsAHttpTransaction : public nsSupportsWeakReference {
   // want to use the alt-svc on the restart.
   virtual void DoNotRemoveAltSvc() {}
 
-  // Returns true if early-data or fast open is possible.
-  [[nodiscard]] virtual bool CanDo0RTT() { return false; }
+  // We call this function if we do want to reset IP family preference again on
+  // the next restart.
+  virtual void DoNotResetIPFamilyPreference() {}
+
   // Returns true if early-data is possible and transaction will remember
   // that it is in 0RTT mode (to know should it rewide transaction or not
   // in the case of an error).
@@ -208,18 +217,18 @@ class nsAHttpTransaction : public nsSupportsWeakReference {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
-  [[nodiscard]] virtual nsresult RestartOnFastOpenError() {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  virtual uint64_t TopLevelOuterContentWindowId() {
+  virtual uint64_t BrowserId() {
     MOZ_ASSERT(false);
     return 0;
   }
 
-  virtual void SetFastOpenStatus(uint8_t aStatus) {}
-
   virtual void OnProxyConnectComplete(int32_t aResponseCode) {}
+
+  virtual nsresult FetchHTTPSRR() { return NS_ERROR_NOT_IMPLEMENTED; }
+  virtual nsresult OnHTTPSRRAvailable(nsIDNSHTTPSSVCRecord* aHTTPSSVCRecord,
+                                      nsISVCBRecord* aHighestPriorityRecord) {
+    return NS_ERROR_NOT_IMPLEMENTED;
+  }
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsAHttpTransaction, NS_AHTTPTRANSACTION_IID)
@@ -250,6 +259,8 @@ NS_DEFINE_STATIC_IID_ACCESSOR(nsAHttpTransaction, NS_AHTTPTRANSACTION_IID)
 //-----------------------------------------------------------------------------
 
 class nsAHttpSegmentReader {
+  NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
+
  public:
   // any returned failure code stops segment iteration
   [[nodiscard]] virtual nsresult OnReadSegment(const char* segment,

@@ -6,13 +6,14 @@
 
 use super::{Context, Number, ToComputedValue};
 use crate::values::animated::ToAnimatedValue;
-use crate::values::computed::NonNegativeNumber;
+use crate::values::computed::{NonNegativeNumber, Zoom};
 use crate::values::generics::length as generics;
 use crate::values::generics::length::{
     GenericLengthOrNumber, GenericLengthPercentageOrNormal, GenericMaxSize, GenericSize,
 };
 use crate::values::generics::NonNegative;
-use crate::values::specified::length::{AbsoluteLength, FontBaseSize};
+use crate::values::resolved::{Context as ResolvedContext, ToResolvedValue};
+use crate::values::specified::length::{AbsoluteLength, FontBaseSize, LineHeightBase};
 use crate::values::{specified, CSSFloat};
 use crate::Zero;
 use app_units::Au;
@@ -30,23 +31,37 @@ impl ToComputedValue for specified::NoCalcLength {
 
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
-        match *self {
-            specified::NoCalcLength::Absolute(length) => length.to_computed_value(context),
-            specified::NoCalcLength::FontRelative(length) => {
-                length.to_computed_value(context, FontBaseSize::CurrentStyle)
-            },
-            specified::NoCalcLength::ViewportPercentage(length) => {
-                length.to_computed_value(context.viewport_size_for_viewport_unit_resolution())
-            },
-            specified::NoCalcLength::ServoCharacterWidth(length) => {
-                length.to_computed_value(context.style().get_font().clone_font_size().size())
-            },
-        }
+        self.to_computed_value_with_base_size(
+            context,
+            FontBaseSize::CurrentStyle,
+            LineHeightBase::CurrentStyle,
+        )
     }
 
     #[inline]
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        specified::NoCalcLength::Absolute(AbsoluteLength::Px(computed.px()))
+        Self::Absolute(AbsoluteLength::Px(computed.px()))
+    }
+}
+
+impl specified::NoCalcLength {
+    /// Computes a length with a given font-relative base size.
+    pub fn to_computed_value_with_base_size(
+        &self,
+        context: &Context,
+        base_size: FontBaseSize,
+        line_height_base: LineHeightBase,
+    ) -> Length {
+        match *self {
+            Self::Absolute(length) => length.to_computed_value(context),
+            Self::FontRelative(length) => {
+                length.to_computed_value(context, base_size, line_height_base)
+            },
+            Self::ViewportPercentage(length) => length.to_computed_value(context),
+            Self::ContainerRelative(length) => length.to_computed_value(context),
+            Self::ServoCharacterWidth(length) => length
+                .to_computed_value(context.style().get_font().clone_font_size().computed_size()),
+        }
     }
 }
 
@@ -56,16 +71,23 @@ impl ToComputedValue for specified::Length {
     #[inline]
     fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
         match *self {
-            specified::Length::NoCalc(l) => l.to_computed_value(context),
-            specified::Length::Calc(ref calc) => {
-                calc.to_computed_value(context).to_length().unwrap()
+            Self::NoCalc(l) => l.to_computed_value(context),
+            Self::Calc(ref calc) => {
+                let result = calc.to_computed_value(context);
+                debug_assert!(
+                    result.to_length().is_some(),
+                    "{:?} didn't resolve to a length: {:?}",
+                    calc,
+                    result,
+                );
+                result.to_length().unwrap_or_else(Length::zero)
             },
         }
     }
 
     #[inline]
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
-        specified::Length::NoCalc(specified::NoCalcLength::from_computed_value(computed))
+        Self::NoCalc(specified::NoCalcLength::from_computed_value(computed))
     }
 }
 
@@ -77,17 +99,15 @@ macro_rules! computed_length_percentage_or_auto {
         #[inline]
         pub fn to_used_value(&self, percentage_basis: Au) -> Option<Au> {
             match *self {
-                generics::GenericLengthPercentageOrAuto::Auto => None,
-                generics::GenericLengthPercentageOrAuto::LengthPercentage(ref lp) => {
-                    Some(lp.to_used_value(percentage_basis))
-                },
+                Self::Auto => None,
+                Self::LengthPercentage(ref lp) => Some(lp.to_used_value(percentage_basis)),
             }
         }
 
         /// Returns true if the computed value is absolute 0 or 0%.
         #[inline]
         pub fn is_definitely_zero(&self) -> bool {
-            use values::generics::length::LengthPercentageOrAuto::*;
+            use crate::values::generics::length::LengthPercentageOrAuto::*;
             match *self {
                 LengthPercentage(ref l) => l.is_definitely_zero(),
                 Auto => false,
@@ -102,7 +122,7 @@ pub type LengthPercentageOrAuto = generics::GenericLengthPercentageOrAuto<Length
 impl LengthPercentageOrAuto {
     /// Clamps the value to a non-negative value.
     pub fn clamp_to_non_negative(self) -> Self {
-        use values::generics::length::LengthPercentageOrAuto::*;
+        use crate::values::generics::length::LengthPercentageOrAuto::*;
         match self {
             LengthPercentage(l) => LengthPercentage(l.clamp_to_non_negative()),
             Auto => Auto,
@@ -111,7 +131,7 @@ impl LengthPercentageOrAuto {
 
     /// Convert to have a borrow inside the enum
     pub fn as_ref(&self) -> generics::GenericLengthPercentageOrAuto<&LengthPercentage> {
-        use values::generics::length::LengthPercentageOrAuto::*;
+        use crate::values::generics::length::LengthPercentageOrAuto::*;
         match *self {
             LengthPercentage(ref lp) => LengthPercentage(lp),
             Auto => Auto,
@@ -125,7 +145,7 @@ impl generics::GenericLengthPercentageOrAuto<&LengthPercentage> {
     /// Resolves the percentage.
     #[inline]
     pub fn percentage_relative_to(&self, basis: Length) -> LengthOrAuto {
-        use values::generics::length::LengthPercentageOrAuto::*;
+        use crate::values::generics::length::LengthPercentageOrAuto::*;
         match self {
             LengthPercentage(length_percentage) => {
                 LengthPercentage(length_percentage.percentage_relative_to(basis))
@@ -137,7 +157,7 @@ impl generics::GenericLengthPercentageOrAuto<&LengthPercentage> {
     /// Maybe resolves the percentage.
     #[inline]
     pub fn maybe_percentage_relative_to(&self, basis: Option<Length>) -> LengthOrAuto {
-        use values::generics::length::LengthPercentageOrAuto::*;
+        use crate::values::generics::length::LengthPercentageOrAuto::*;
         match self {
             LengthPercentage(length_percentage) => length_percentage
                 .maybe_percentage_relative_to(basis)
@@ -182,10 +202,14 @@ impl Size {
     #[inline]
     pub fn is_definitely_zero(&self) -> bool {
         match *self {
-            GenericSize::Auto => false,
-            GenericSize::LengthPercentage(ref lp) => lp.is_definitely_zero(),
+            Self::Auto => false,
+            Self::LengthPercentage(ref lp) => lp.is_definitely_zero(),
             #[cfg(feature = "gecko")]
-            GenericSize::ExtremumLength(..) => false,
+            Self::MinContent |
+            Self::MaxContent |
+            Self::FitContent |
+            Self::MozAvailable |
+            Self::FitContentFunction(_) => false,
         }
     }
 }
@@ -204,11 +228,23 @@ impl Size {
     ToAnimatedValue,
     ToAnimatedZero,
     ToComputedValue,
-    ToResolvedValue,
     ToShmem,
 )]
 #[repr(C)]
 pub struct CSSPixelLength(CSSFloat);
+
+impl ToResolvedValue for CSSPixelLength {
+    type ResolvedValue = Self;
+
+    fn to_resolved_value(self, context: &ResolvedContext) -> Self::ResolvedValue {
+        Self(context.style.effective_zoom.unzoom(self.0))
+    }
+
+    #[inline]
+    fn from_resolved_value(value: Self::ResolvedValue) -> Self {
+        value
+    }
+}
 
 impl fmt::Debug for CSSPixelLength {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -224,10 +260,34 @@ impl CSSPixelLength {
         CSSPixelLength(px)
     }
 
+    /// Returns a normalized (NaN turned to zero) version of this length.
+    #[inline]
+    pub fn normalized(self) -> Self {
+        Self::new(crate::values::normalize(self.0))
+    }
+
+    /// Returns a finite (normalized and clamped to float min and max) version of this length.
+    #[inline]
+    pub fn finite(self) -> Self {
+        Self::new(crate::values::normalize(self.0).min(f32::MAX).max(f32::MIN))
+    }
+
+    /// Scale the length by a given amount.
+    #[inline]
+    pub fn scale_by(self, scale: CSSFloat) -> Self {
+        CSSPixelLength(self.0 * scale)
+    }
+
     /// Return the containing pixel value.
     #[inline]
     pub fn px(self) -> CSSFloat {
         self.0
+    }
+
+    /// Zooms a particular length.
+    #[inline]
+    pub fn zoom(self, zoom: Zoom) -> Self {
+        Self::new(zoom.zoom(self.px()))
     }
 
     /// Return the length with app_unit i32 type.
@@ -307,6 +367,12 @@ impl ToCss for CSSPixelLength {
     }
 }
 
+impl std::iter::Sum for CSSPixelLength {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Length::zero(), Add::add)
+    }
+}
+
 impl Add for CSSPixelLength {
     type Output = Self;
 
@@ -320,6 +386,15 @@ impl AddAssign for CSSPixelLength {
     #[inline]
     fn add_assign(&mut self, other: Self) {
         self.0 += other.0;
+    }
+}
+
+impl Div for CSSPixelLength {
+    type Output = CSSFloat;
+
+    #[inline]
+    fn div(self, other: Self) -> CSSFloat {
+        self.px() / other.px()
     }
 }
 
@@ -467,37 +542,6 @@ pub type NonNegativeLengthPercentageOrNormal =
 
 /// Either a non-negative `<length>` or a `<number>`.
 pub type NonNegativeLengthOrNumber = GenericLengthOrNumber<NonNegativeLength, NonNegativeNumber>;
-
-/// A type for possible values for min- and max- flavors of width, height,
-/// block-size, and inline-size.
-#[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    FromPrimitive,
-    MallocSizeOf,
-    Parse,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToAnimatedValue,
-    ToAnimatedZero,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(u8)]
-pub enum ExtremumLength {
-    #[parse(aliases = "-moz-max-content")]
-    MaxContent,
-    #[parse(aliases = "-moz-min-content")]
-    MinContent,
-    MozFitContent,
-    MozAvailable,
-}
 
 /// A computed value for `min-width`, `min-height`, `width` or `height` property.
 pub type Size = GenericSize<NonNegativeLengthPercentage>;

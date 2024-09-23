@@ -22,7 +22,6 @@ input.i {
 input.mi {
   min-width: 0;
   max-width: 100%;
-  width: -moz-max-content;
   width: max-content;
   background: lime;
 }
@@ -69,10 +68,6 @@ div {
   <input type="range" class="i" style="max-width:50%">
 </div></div>
 
-<div class="grid" style="grid-template-columns:4px">
-  <input type="range" class="i" style="width:2px;">
-</div>
-
 <div class="grid" style="grid-template-columns:30px">
   <input type="range" class="i" style="width:15px">
 </div>
@@ -88,10 +83,6 @@ div {
 <div style="width:30px"><div style="width:28px;">
   <input type="range" class="i n" style="width:14px; margin-right:0">
 </div></div>
-
-<div class="grid" style="grid-template-columns:4px">
-  <input type="range" class="i n" style="width:2px;">
-</div>
 
 <div class="grid" style="grid-template-columns:30px">
   <input type="range" class="i n" style="width:15px">
@@ -128,7 +119,7 @@ div {
   <input type="range" class="mi n">
 </div></div>
 
-<div style="width:30px"><div style="width:-moz-max-content;width:max-content">
+<div style="width:30px"><div style="width:max-content">
   <input type="range" class="mi n" style="width:50%">
 </div></div>
 

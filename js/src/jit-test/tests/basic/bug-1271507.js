@@ -1,4 +1,4 @@
-// |jit-test| allow-oom; skip-if: typeof oomAfterAllocations !== 'function'
+// |jit-test| allow-oom; skip-if: !hasFunction.oomAfterAllocations
 lfcode = new Array();
 oomAfterAllocations(100);
 loadFile(file);
@@ -6,5 +6,6 @@ lfGlobal = newGlobal()
 for (lfLocal in this)
   if (!(lfLocal in lfGlobal))
     lfGlobal[lfLocal] = this[lfLocal]
-offThreadCompileScript(lfVarx)
-lfGlobal.runOffThreadScript()
+offThreadCompileToStencil(lfVarx);
+var stencil = lfGlobal.finishOffThreadStencil();
+lfGlobal.evalStencil(stencil);

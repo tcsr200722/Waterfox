@@ -2,9 +2,10 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /**
- * Dynamically create a search engine offering search suggestions via searchSuggestions.sjs.
+ * Dynamically create an OpenSearch search engine offering search suggestions
+ * via searchSuggestions.sjs.
  *
- * The engine is constructed by passing a JSON object with engine datails as the query string.
+ * The engine is constructed by passing a JSON object with engine details as the query string.
  */
 
 function handleRequest(request, response) {
@@ -16,7 +17,8 @@ function handleRequest(request, response) {
   }
 
   engineData.name = engineData.name || "Generated test engine";
-  engineData.description = engineData.description || "Generated test engine description";
+  engineData.description =
+    engineData.description || "Generated test engine description";
   engineData.method = engineData.method || "GET";
 
   response.setStatusLine(request.httpVersion, 200, "OK");
@@ -25,10 +27,18 @@ function handleRequest(request, response) {
 
 /**
  * Create an OpenSearch engine for the given base URL.
+ *
+ * @param {Response} response
+ *   The response object to write the engine to.
+ * @param {object} engineData
+ *   Information about the search engine to write to the response.
  */
 function createOpenSearchEngine(response, engineData) {
-  let params = "", queryString = "";
-  if (engineData.method == "POST") {
+  let params = "";
+  let queryString = "";
+  if (engineData.queryString) {
+    queryString = engineData.queryString.replace("&", "&amp;");
+  } else if (engineData.method == "POST") {
     params = "<Param name='q' value='{searchTerms}'/>";
   } else {
     queryString = "?q={searchTerms}";
@@ -37,6 +47,17 @@ function createOpenSearchEngine(response, engineData) {
   if (engineData.alternativeJSONType) {
     type = "type='application/json' rel='suggestions'";
   }
+  let image = "";
+  if (engineData.image) {
+    image = `<Image width="16" height="16">${engineData.baseURL}${engineData.image}</Image>`;
+  }
+  let updateFile = "";
+  if (engineData.updateFile) {
+    updateFile = `<Url type="application/opensearchdescription+xml"
+      rel="self"
+      template="${engineData.baseURL}${engineData.updateFile}" />
+    `;
+  }
 
   let result = `<?xml version='1.0' encoding='utf-8'?>
 <OpenSearchDescription xmlns='http://a9.com/-/spec/opensearch/1.1/'>
@@ -44,12 +65,14 @@ function createOpenSearchEngine(response, engineData) {
   <Description>${engineData.description}</Description>
   <InputEncoding>UTF-8</InputEncoding>
   <LongName>${engineData.name}</LongName>
+  ${image}
   <Url ${type} method='${engineData.method}'
        template='${engineData.baseURL}searchSuggestions.sjs${queryString}'>
     ${params}
   </Url>
   <Url type='text/html' method='${engineData.method}'
        template='${engineData.baseURL}${queryString}'/>
+  ${updateFile}
 </OpenSearchDescription>
 `;
   response.write(result);

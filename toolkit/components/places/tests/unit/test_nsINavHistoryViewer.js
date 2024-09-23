@@ -6,11 +6,11 @@
 
 var resultObserver = {
   insertedNode: null,
-  nodeInserted(parent, node, newIndex) {
+  nodeInserted(parent, node) {
     this.insertedNode = node;
   },
   removedNode: null,
-  nodeRemoved(parent, node, oldIndex) {
+  nodeRemoved(parent, node) {
     this.removedNode = node;
   },
 
@@ -24,14 +24,14 @@ var resultObserver = {
   newAccessCount: 0,
   newTime: 0,
   nodeChangedByHistoryDetails: null,
-  nodeHistoryDetailsChanged(node, oldVisitDate, oldVisitCount) {
+  nodeHistoryDetailsChanged(node) {
     this.nodeChangedByHistoryDetails = node;
     this.newTime = node.time;
     this.newAccessCount = node.accessCount;
   },
 
   movedNode: null,
-  nodeMoved(node, oldParent, oldIndex, newParent, newIndex) {
+  nodeMoved(node) {
     this.movedNode = node;
   },
   openedContainer: null,
@@ -52,9 +52,11 @@ var resultObserver = {
     this.sortingMode = sortingMode;
   },
   inBatchMode: false,
+  batchingCallCount: 0,
   batching(aToggleMode) {
     Assert.notEqual(this.inBatchMode, aToggleMode);
     this.inBatchMode = aToggleMode;
+    this.batchingCallCount++;
   },
   result: null,
   reset() {
@@ -68,6 +70,8 @@ var resultObserver = {
     this.closedContainer = null;
     this.invalidatedContainer = null;
     this.sortingMode = null;
+    this.inBatchMode = false;
+    this.batchingCallCount = 0;
   },
 };
 
@@ -199,7 +203,6 @@ add_task(async function check_bookmarks_query() {
 add_task(async function check_mixed_query() {
   let options = PlacesUtils.history.getNewQueryOptions();
   let query = PlacesUtils.history.getNewQuery();
-  query.onlyBookmarked = true;
   let result = PlacesUtils.history.executeQuery(query, options);
   result.addObserver(resultObserver);
   let root = result.root;
@@ -209,6 +212,72 @@ add_task(async function check_mixed_query() {
 
   root.containerOpen = false;
   Assert.equal(resultObserver.closedContainer, resultObserver.openedContainer);
+  result.removeObserver(resultObserver);
+  resultObserver.reset();
+  await PlacesTestUtils.promiseAsyncUpdates();
+});
+
+add_task(async function check_a_batch_process() {
+  const options = PlacesUtils.history.getNewQueryOptions();
+  const query = PlacesUtils.history.getNewQuery();
+  const result = PlacesUtils.history.executeQuery(query, options);
+  result.addObserver(resultObserver);
+
+  info("Check initial state");
+  Assert.equal(resultObserver.inBatchMode, false);
+  Assert.equal(resultObserver.batchingCallCount, 0);
+
+  info("Check whether batching is called when call onBeginUpdateBatch");
+  result.onBeginUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, true);
+  Assert.equal(resultObserver.batchingCallCount, 1);
+
+  info("Check whether batching is called when call onEndUpdateBatch");
+  result.onEndUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, false);
+  Assert.equal(resultObserver.batchingCallCount, 2);
+
+  result.removeObserver(resultObserver);
+  resultObserver.reset();
+  await PlacesTestUtils.promiseAsyncUpdates();
+});
+
+add_task(async function check_multi_batch_processes() {
+  const options = PlacesUtils.history.getNewQueryOptions();
+  const query = PlacesUtils.history.getNewQuery();
+  const result = PlacesUtils.history.executeQuery(query, options);
+  result.addObserver(resultObserver);
+
+  info("Check initial state");
+  Assert.equal(resultObserver.inBatchMode, false);
+  Assert.equal(resultObserver.batchingCallCount, 0);
+
+  info("Check whether batching is called when calling onBeginUpdateBatch");
+  result.onBeginUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, true);
+  Assert.equal(resultObserver.batchingCallCount, 1);
+
+  info(
+    "Check whether batching is not called when calling onBeginUpdateBatch again"
+  );
+  result.onBeginUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, true);
+  Assert.equal(resultObserver.batchingCallCount, 1);
+
+  info(
+    "Check whether batching is not called until calling onEndUpdateBatch the same number times that onBeginUpdateBatch is called"
+  );
+  result.onEndUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, true);
+  Assert.equal(resultObserver.batchingCallCount, 1);
+
+  info(
+    "Check whether batching is called when calling onEndUpdateBatch the same number times"
+  );
+  result.onEndUpdateBatch();
+  Assert.equal(resultObserver.inBatchMode, false);
+  Assert.equal(resultObserver.batchingCallCount, 2);
+
   result.removeObserver(resultObserver);
   resultObserver.reset();
   await PlacesTestUtils.promiseAsyncUpdates();

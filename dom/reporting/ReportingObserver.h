@@ -7,18 +7,25 @@
 #ifndef mozilla_dom_ReportingObserver_h
 #define mozilla_dom_ReportingObserver_h
 
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
+#include "mozilla/RefPtr.h"
+#include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsWeakReference.h"
-#include "nsWrapperCache.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
 #include "nsTArray.h"
+#include "nsWrapperCache.h"
 
 class nsIGlobalObject;
 
 namespace mozilla {
-namespace dom {
+class ErrorResult;
 
+namespace dom {
+class GlobalObject;
 class Report;
 class ReportingObserverCallback;
 struct ReportingObserverOptions;
@@ -26,7 +33,7 @@ struct ReportingObserverOptions;
 class ReportingObserver final : public nsWrapperCache {
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(ReportingObserver)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(ReportingObserver)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(ReportingObserver)
 
   static already_AddRefed<ReportingObserver> Constructor(
       const GlobalObject& aGlobal, ReportingObserverCallback& aCallback,

@@ -2,73 +2,139 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import { setupCommands, clientCommands } from "./firefox/commands";
-import {
-  removeEventsTopTarget,
-  setupEvents,
-  setupEventsTopTarget,
-  clientEvents,
-} from "./firefox/events";
-import { features, prefs } from "../utils/prefs";
+import { setupCreate, createPause } from "./firefox/create";
+import { features } from "../utils/prefs";
+
+import { recordEvent } from "../utils/telemetry";
+import sourceQueue from "../utils/source-queue";
 
 let actions;
+let commands;
+let targetCommand;
+let resourceCommand;
 
-export async function onConnect(
-  connection: any,
-  _actions: Object
-): Promise<void> {
-  const { devToolsClient, targetList } = connection;
+export async function onConnect(_commands, _resourceCommand, _actions, store) {
   actions = _actions;
+  commands = _commands;
+  targetCommand = _commands.targetCommand;
+  resourceCommand = _resourceCommand;
 
-  setupCommands({ devToolsClient, targetList });
-  setupEvents({ actions, devToolsClient });
-  await targetList.watchTargets(
-    targetList.ALL_TYPES,
-    onTargetAvailable,
-    onTargetDestroyed
-  );
+  setupCommands(commands);
+  setupCreate({ store });
+
+  sourceQueue.initialize(actions);
+
+  const { descriptorFront } = commands;
+
+  // For tab, browser and webextension toolboxes, we want to enable watching for
+  // worker targets as soon as the debugger is opened.
+  // And also for service workers, if the related experimental feature is enabled
+  if (
+    descriptorFront.isTabDescriptor ||
+    descriptorFront.isWebExtensionDescriptor ||
+    descriptorFront.isBrowserProcessDescriptor
+  ) {
+    targetCommand.listenForWorkers = true;
+    if (descriptorFront.isLocalTab && features.windowlessServiceWorkers) {
+      targetCommand.listenForServiceWorkers = true;
+    }
+    await targetCommand.startListening();
+  }
+
+  const options = {
+    // `pauseWorkersUntilAttach` is one option set when the debugger panel is opened rather that from the toolbox.
+    // The reason is to support early breakpoints in workers, which will force the workers to pause
+    // and later on (when TargetMixin.attachThread is called) resume worker execution, after passing the breakpoints.
+    // We only observe workers when the debugger panel is opened (see the few lines before and listenForWorkers = true).
+    // So if we were passing `pauseWorkersUntilAttach=true` from the toolbox code, workers would freeze as we would not watch
+    // for their targets and not resume them.
+    pauseWorkersUntilAttach: true,
+
+    // Bug 1719615 - Immediately turn on WASM debugging when the debugger opens.
+    // We avoid enabling that as soon as DevTools open as WASM generates different kind of machine code
+    // with debugging instruction which significantly increase the memory usage.
+    observeWasm: true,
+  };
+  await commands.threadConfigurationCommand.updateConfiguration(options);
+
+  await targetCommand.watchTargets({
+    types: targetCommand.ALL_TYPES,
+    onAvailable: onTargetAvailable,
+    onDestroyed: onTargetDestroyed,
+  });
+
+  // Use independant listeners for SOURCE and THREAD_STATE in order to ease
+  // doing batching and notify about a set of SOURCE's in one redux action.
+  await resourceCommand.watchResources([resourceCommand.TYPES.SOURCE], {
+    onAvailable: onSourceAvailable,
+  });
+  await resourceCommand.watchResources([resourceCommand.TYPES.THREAD_STATE], {
+    onAvailable: onThreadStateAvailable,
+  });
+  await resourceCommand.watchResources([resourceCommand.TYPES.JSTRACER_STATE], {
+    onAvailable: onTracingStateAvailable,
+  });
+
+  await resourceCommand.watchResources([resourceCommand.TYPES.ERROR_MESSAGE], {
+    onAvailable: actions.addExceptionFromResources,
+  });
+  await resourceCommand.watchResources([resourceCommand.TYPES.DOCUMENT_EVENT], {
+    onAvailable: onDocumentEventAvailable,
+    // we only care about future events for DOCUMENT_EVENT
+    ignoreExistingResources: true,
+  });
 }
 
-async function onTargetAvailable({
-  targetFront,
-  isTargetSwitching,
-}): Promise<void> {
-  if (!targetFront.isTopLevel) {
+export function onDisconnect() {
+  targetCommand.unwatchTargets({
+    types: targetCommand.ALL_TYPES,
+    onAvailable: onTargetAvailable,
+    onDestroyed: onTargetDestroyed,
+  });
+  resourceCommand.unwatchResources([resourceCommand.TYPES.SOURCE], {
+    onAvailable: onSourceAvailable,
+  });
+  resourceCommand.unwatchResources([resourceCommand.TYPES.THREAD_STATE], {
+    onAvailable: onThreadStateAvailable,
+  });
+  resourceCommand.unwatchResources([resourceCommand.TYPES.JSTRACER_STATE], {
+    onAvailable: onTracingStateAvailable,
+  });
+  resourceCommand.unwatchResources([resourceCommand.TYPES.ERROR_MESSAGE], {
+    onAvailable: actions.addExceptionFromResources,
+  });
+  resourceCommand.unwatchResources([resourceCommand.TYPES.DOCUMENT_EVENT], {
+    onAvailable: onDocumentEventAvailable,
+  });
+  sourceQueue.clear();
+}
+
+async function onTargetAvailable({ targetFront }) {
+  const isBrowserToolbox = commands.descriptorFront.isBrowserProcessDescriptor;
+  const isNonTopLevelFrameTarget =
+    !targetFront.isTopLevel &&
+    targetFront.targetType === targetCommand.TYPES.FRAME;
+
+  if (isBrowserToolbox && isNonTopLevelFrameTarget) {
+    // In the BrowserToolbox, non-top-level frame targets are already
+    // debugged via content-process targets.
+    // Do not attach the thread here, as it was already done by the
+    // corresponding content-process target.
     return;
   }
 
-  if (isTargetSwitching) {
-    // Simulate navigation actions when target switching.
-    // The will-navigate event will be missed when using target switching,
-    // however `navigate` corresponds more or less to the load event, so it
-    // should still be received on the new target.
-    actions.willNavigate({ url: targetFront.url });
+  if (!targetFront.isTopLevel) {
+    await actions.addTarget(targetFront);
+    return;
   }
 
-  // Make sure targetFront.threadFront is availabled and attached.
-  await targetFront.onThreadAttached;
-
+  // At this point, we expect the target and its thread to be attached.
   const { threadFront } = targetFront;
   if (!threadFront) {
+    console.error("The thread for", targetFront, "isn't attached.");
     return;
   }
-
-  setupEventsTopTarget(targetFront);
-  targetFront.on("will-navigate", actions.willNavigate);
-  targetFront.on("navigate", actions.navigated);
-
-  const wasmBinarySource =
-    features.wasm && !!targetFront.client.mainRoot.traits.wasmBinarySource;
-
-  await threadFront.reconfigure({
-    observeAsmJS: true,
-    pauseWorkersUntilAttach: true,
-    wasmBinarySource,
-    skipBreakpoints: prefs.skipPausing,
-    logEventBreakpoints: prefs.logEventBreakpoints,
-  });
 
   // Retrieve possible event listener breakpoints
   actions.getEventListenerBreakpointTypes().catch(e => console.error(e));
@@ -77,26 +143,64 @@ async function onTargetAvailable({
   // they are active once attached.
   actions.addEventListenerBreakpoints([]).catch(e => console.error(e));
 
-  const { traits } = targetFront;
-  await actions.connect(
-    targetFront.url,
-    threadFront.actor,
-    traits,
-    targetFront.isWebExtension
-  );
-
   await actions.addTarget(targetFront);
-
-  await clientCommands.checkIfAlreadyPaused();
 }
 
-function onTargetDestroyed({ targetFront }): void {
-  if (targetFront.isTopLevel) {
-    targetFront.off("will-navigate", actions.willNavigate);
-    targetFront.off("navigate", actions.navigated);
-    removeEventsTopTarget(targetFront);
-  }
+function onTargetDestroyed({ targetFront }) {
   actions.removeTarget(targetFront);
 }
 
-export { clientCommands, clientEvents };
+async function onSourceAvailable(sources) {
+  await actions.newGeneratedSources(sources);
+}
+
+async function onThreadStateAvailable(resources) {
+  for (const resource of resources) {
+    if (resource.targetFront.isDestroyed()) {
+      continue;
+    }
+    const threadFront = await resource.targetFront.getFront("thread");
+    if (resource.state == "paused") {
+      const pause = await createPause(threadFront.actorID, resource);
+      await actions.paused(pause);
+      recordEvent("pause", { reason: resource.why.type });
+    } else if (resource.state == "resumed") {
+      await actions.resumed(threadFront.actorID);
+    }
+  }
+}
+
+async function onTracingStateAvailable(resources) {
+  for (const resource of resources) {
+    if (resource.targetFront.isDestroyed()) {
+      continue;
+    }
+    const threadFront = await resource.targetFront.getFront("thread");
+    await actions.tracingToggled(threadFront.actor, resource.enabled);
+  }
+}
+
+function onDocumentEventAvailable(events) {
+  for (const event of events) {
+    // Only consider top level document, and ignore remote iframes top document
+    if (!event.targetFront.isTopLevel) continue;
+    // The browser toolbox debugger doesn't support the iframe dropdown.
+    // you will always see all the sources of all targets of your debugging context.
+    //
+    // But still allow it to clear the debugger when reloading the addon, or when
+    // switching between fallback document and other addon document.
+    if (
+      event.isFrameSwitching &&
+      !commands.descriptorFront.isWebExtensionDescriptor
+    ) {
+      continue;
+    }
+    if (event.name == "will-navigate") {
+      actions.willNavigate({ url: event.newURI });
+    } else if (event.name == "dom-complete") {
+      actions.navigated();
+    }
+  }
+}
+
+export { clientCommands };

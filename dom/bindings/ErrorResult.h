@@ -35,6 +35,7 @@
 #include "js/Value.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Utf8.h"
 #include "nsISupportsImpl.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -42,6 +43,8 @@
 
 namespace IPC {
 class Message;
+class MessageReader;
+class MessageWriter;
 template <typename>
 struct ParamTraits;
 }  // namespace IPC
@@ -274,9 +277,8 @@ class TErrorResult {
   // If "context" is not null and our exception has a useful message string, the
   // string "%s: ", with the value of "context" replacing %s, will be prepended
   // to the message string.  The passed-in string must be ASCII.
-  MOZ_MUST_USE
-  bool MaybeSetPendingException(JSContext* cx,
-                                const char* description = nullptr) {
+  [[nodiscard]] bool MaybeSetPendingException(
+      JSContext* cx, const char* description = nullptr) {
     WouldReportJSException();
     if (!Failed()) {
       return false;
@@ -462,6 +464,11 @@ class TErrorResult {
   // hopefully it's all temporary until we sort out the EME bits.
   friend class dom::Promise;
 
+  // Implementation of MaybeSetPendingException for the case when we're a
+  // failure result.  See documentation of MaybeSetPendingException for the
+  // "context" argument.
+  void SetPendingException(JSContext* cx, const char* context);
+
  private:
 #ifdef DEBUG
   enum UnionState {
@@ -474,12 +481,11 @@ class TErrorResult {
 
   friend struct IPC::ParamTraits<TErrorResult>;
   friend struct IPC::ParamTraits<ErrorResult>;
-  void SerializeMessage(IPC::Message* aMsg) const;
-  bool DeserializeMessage(const IPC::Message* aMsg, PickleIterator* aIter);
+  void SerializeMessage(IPC::MessageWriter* aWriter) const;
+  bool DeserializeMessage(IPC::MessageReader* aReader);
 
-  void SerializeDOMExceptionInfo(IPC::Message* aMsg) const;
-  bool DeserializeDOMExceptionInfo(const IPC::Message* aMsg,
-                                   PickleIterator* aIter);
+  void SerializeDOMExceptionInfo(IPC::MessageWriter* aWriter) const;
+  bool DeserializeDOMExceptionInfo(IPC::MessageReader* aReader);
 
   // Helper method that creates a new Message for this TErrorResult,
   // and returns the arguments array from that Message.
@@ -565,11 +571,6 @@ class TErrorResult {
   // reinitialize it or change mResult to something that will not involve us
   // touching the union anymore.
   void ClearUnionData();
-
-  // Implementation of MaybeSetPendingException for the case when we're a
-  // failure result.  See documentation of MaybeSetPendingException for the
-  // "context" argument.
-  void SetPendingException(JSContext* cx, const char* context);
 
   // Methods for setting various specific kinds of pending exceptions.  See
   // documentation of MaybeSetPendingException for the "context" argument.
@@ -818,7 +819,7 @@ class CopyableErrorResult
 
   // Allow conversion to ErrorResult&& so we can move out of ourselves into
   // an ErrorResult.
-  operator ErrorResult &&() && {
+  operator ErrorResult&&() && {
     auto* val = reinterpret_cast<ErrorResult*>(this);
     return std::move(*val);
   }
@@ -827,13 +828,47 @@ class CopyableErrorResult
 inline ErrorResult::ErrorResult(CopyableErrorResult&& aRHS)
     : ErrorResult(reinterpret_cast<ErrorResult&&>(aRHS)) {}
 
-namespace dom {
-namespace binding_detail {
+namespace dom::binding_detail {
+
+enum class ErrorFor {
+  getter,
+  setter,
+};
+
+template <ErrorFor ErrorType>
+struct ErrorDescriptionFor {
+  const char* mInterface;
+  const char* mMember;
+};
+
 class FastErrorResult : public mozilla::binding_danger::TErrorResult<
                             mozilla::binding_danger::JustAssertCleanupPolicy> {
+ public:
+  using TErrorResult::MaybeSetPendingException;
+
+  template <ErrorFor ErrorType>
+  [[nodiscard]] bool MaybeSetPendingException(
+      JSContext* aCx, const ErrorDescriptionFor<ErrorType>& aDescription) {
+    WouldReportJSException();
+    if (!Failed()) {
+      return false;
+    }
+
+    nsAutoCString description(aDescription.mInterface);
+    description.Append('.');
+    description.Append(aDescription.mMember);
+    if constexpr (ErrorType == ErrorFor::getter) {
+      description.AppendLiteral(" getter");
+    } else {
+      static_assert(ErrorType == ErrorFor::setter);
+      description.AppendLiteral(" setter");
+    }
+    SetPendingException(aCx, description.get());
+    return true;
+  }
 };
-}  // namespace binding_detail
-}  // namespace dom
+
+}  // namespace dom::binding_detail
 
 // We want an OOMReporter class that has the following properties:
 //

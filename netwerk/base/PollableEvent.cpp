@@ -9,6 +9,7 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Logging.h"
+#include "mozilla/net/DNS.h"
 #include "prerror.h"
 #include "prio.h"
 #include "private/pprio.h"
@@ -138,11 +139,8 @@ failed:
 #endif
 
 PollableEvent::PollableEvent()
-    : mWriteFD(nullptr),
-      mReadFD(nullptr),
-      mSignaled(false),
-      mWriteFailed(false),
-      mSignalTimestampAdjusted(false) {
+
+{
   MOZ_COUNT_CTOR(PollableEvent);
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   // create pair of prfiledesc that can be used as a poll()ble

@@ -74,7 +74,7 @@ add_task(async function testRecentUpdatesList() {
   // Load extension view first so we can mock the startOfDay property.
   let win = await loadInitialView("extension");
   let doc = win.document;
-  let categoryUtils = new CategoryUtilities(win.managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
   const RECENT_URL = "addons://updates/recent";
   let recentCat = categoryUtils.get("recent-updates");
 
@@ -141,7 +141,7 @@ add_task(async function testRecentUpdatesList() {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       name: "New extension",
-      applications: { gecko: { id: "new@mochi.test" } },
+      browser_specific_settings: { gecko: { id: "new@mochi.test" } },
     },
     useAddonManager: "temporary",
   });

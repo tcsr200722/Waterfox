@@ -5,16 +5,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SharedSurfacesChild.h"
-#include "SharedSurfacesParent.h"
 #include "CompositorManagerChild.h"
-#include "mozilla/gfx/gfxVars.h"
-#include "mozilla/image/RecyclingSourceSurface.h"
 #include "mozilla/layers/IpcResourceUpdateQueue.h"
 #include "mozilla/layers/SourceSurfaceSharedData.h"
 #include "mozilla/layers/WebRenderBridgeChild.h"
 #include "mozilla/layers/RenderRootStateManager.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
+#include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/layers/CompositorManagerParent.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_image.h"
+#include "mozilla/PresShell.h"
+#include "nsRefreshDriver.h"
+#include "nsView.h"
 
 namespace mozilla {
 namespace layers {
@@ -55,10 +58,9 @@ void SharedSurfacesChild::ImageKeyData::MergeDirtyRect(
   }
 }
 
-SharedSurfacesChild::SharedUserData::SharedUserData(
-    const wr::ExternalImageId& aId)
+SharedSurfacesChild::SharedUserData::SharedUserData()
     : Runnable("SharedSurfacesChild::SharedUserData"),
-      mId(aId),
+      mId({}),
       mShared(false) {}
 
 SharedSurfacesChild::SharedUserData::~SharedUserData() {
@@ -79,7 +81,7 @@ void SharedSurfacesChild::SharedUserData::Destroy(void* aClosure) {
   RefPtr<SharedUserData> data =
       dont_AddRef(static_cast<SharedUserData*>(aClosure));
   if (data->mShared || !data->mKeys.IsEmpty()) {
-    SchedulerGroup::Dispatch(TaskCategory::Other, data.forget());
+    SchedulerGroup::Dispatch(data.forget());
   }
 }
 
@@ -157,13 +159,8 @@ SourceSurfaceSharedData* SharedSurfacesChild::AsSourceSurfaceSharedData(
   MOZ_ASSERT(aSurface);
   switch (aSurface->GetType()) {
     case SurfaceType::DATA_SHARED:
+    case SurfaceType::DATA_RECYCLING_SHARED:
       return static_cast<SourceSurfaceSharedData*>(aSurface);
-    case SurfaceType::DATA_RECYCLING_SHARED: {
-      auto recycleSurface =
-          static_cast<image::RecyclingSourceSurface*>(aSurface);
-      auto childSurface = recycleSurface->GetChildSurface();
-      return static_cast<SourceSurfaceSharedData*>(childSurface);
-    }
     default:
       return nullptr;
   }
@@ -177,7 +174,7 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
   MOZ_ASSERT(aUserData);
 
   CompositorManagerChild* manager = CompositorManagerChild::GetInstance();
-  if (NS_WARN_IF(!manager || !manager->CanSend() || !gfxVars::UseWebRender())) {
+  if (NS_WARN_IF(!manager || !manager->CanSend())) {
     // We cannot try to share the surface, most likely because the GPU process
     // crashed. Ideally, we would retry when it is ready, but the handles may be
     // a scarce resource, which can cause much more serious problems if we run
@@ -189,17 +186,18 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
   SharedUserData* data =
       static_cast<SharedUserData*>(aSurface->GetUserData(&sSharedKey));
   if (!data) {
-    data =
-        MakeAndAddRef<SharedUserData>(manager->GetNextExternalImageId()).take();
+    data = MakeAndAddRef<SharedUserData>().take();
     aSurface->AddUserData(&sSharedKey, data, SharedUserData::Destroy);
-  } else if (!manager->OwnsExternalImageId(data->Id())) {
+  } else if (data->IsShared()) {
+    if (manager->OwnsExternalImageId(data->Id())) {
+      // It has already been shared with the GPU process.
+      *aUserData = data;
+      return NS_OK;
+    }
+
     // If the id isn't owned by us, that means the bridge was reinitialized, due
     // to the GPU process crashing. All previous mappings have been released.
-    data->SetId(manager->GetNextExternalImageId());
-  } else if (data->IsShared()) {
-    // It has already been shared with the GPU process.
-    *aUserData = data;
-    return NS_OK;
+    data->ClearShared();
   }
 
   // Ensure that the handle doesn't get released until after we have finished
@@ -212,10 +210,9 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
   // If we live in the same process, then it is a simple matter of directly
   // asking the parent instance to store a pointer to the same data, no need
   // to map the data into our memory space twice.
-  auto pid = manager->OtherPid();
-  if (pid == base::GetCurrentProcId()) {
-    SharedSurfacesParent::AddSameProcess(data->Id(), aSurface);
-    data->MarkShared();
+  if (manager->SameProcess()) {
+    data->MarkShared(manager->GetNextExternalImageId());
+    CompositorManagerParent::AddSharedSurface(data->Id(), aSurface);
     *aUserData = data;
     return NS_OK;
   }
@@ -224,7 +221,7 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
   // be available -- it will only be available if it is either not yet finalized
   // and/or if it has been finalized but never used for drawing in process.
   ipc::SharedMemoryBasic::Handle handle = ipc::SharedMemoryBasic::NULLHandle();
-  nsresult rv = aSurface->ShareToProcess(pid, handle);
+  nsresult rv = aSurface->CloneHandle(handle);
   if (rv == NS_ERROR_NOT_AVAILABLE) {
     // It is at least as expensive to copy the image to the GPU process if we
     // have already closed the handle necessary to share, but if we reallocate
@@ -234,7 +231,7 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
     }
 
     // Reattempt the sharing of the handle to the GPU process.
-    rv = aSurface->ShareToProcess(pid, handle);
+    rv = aSurface->CloneHandle(handle);
   }
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -247,10 +244,11 @@ nsresult SharedSurfacesChild::ShareInternal(SourceSurfaceSharedData* aSurface,
       format == SurfaceFormat::B8G8R8X8 || format == SurfaceFormat::B8G8R8A8,
       "bad format");
 
-  data->MarkShared();
+  data->MarkShared(manager->GetNextExternalImageId());
   manager->SendAddSharedSurface(
-      data->Id(), SurfaceDescriptorShared(aSurface->GetSize(),
-                                          aSurface->Stride(), format, handle));
+      data->Id(),
+      SurfaceDescriptorShared(aSurface->GetSize(), aSurface->Stride(), format,
+                              std::move(handle)));
   *aUserData = data;
   return NS_OK;
 }
@@ -279,8 +277,7 @@ void SharedSurfacesChild::Share(SourceSurfaceSharedData* aSurface) {
       RefPtr<SourceSurfaceSharedData> mSurface;
     };
 
-    SchedulerGroup::Dispatch(TaskCategory::Other,
-                             MakeAndAddRef<ShareRunnable>(aSurface));
+    SchedulerGroup::Dispatch(MakeAndAddRef<ShareRunnable>(aSurface));
     return;
   }
 
@@ -330,53 +327,6 @@ nsresult SharedSurfacesChild::Share(SourceSurface* aSurface,
 }
 
 /* static */
-nsresult SharedSurfacesChild::Share(ImageContainer* aContainer,
-                                    RenderRootStateManager* aManager,
-                                    wr::IpcResourceUpdateQueue& aResources,
-                                    wr::ImageKey& aKey,
-                                    ContainerProducerID aProducerId) {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aContainer);
-  MOZ_ASSERT(aManager);
-
-  if (aContainer->IsAsync()) {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  AutoTArray<ImageContainer::OwningImage, 4> images;
-  aContainer->GetCurrentImages(&images);
-  if (images.IsEmpty()) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  if (aProducerId != kContainerProducerID_Invalid &&
-      images[0].mProducerID != aProducerId) {
-    // If the producer ID of the surface in the container does not match the
-    // expected producer ID, then we do not want to proceed with sharing. This
-    // is useful for when callers are unsure if given container is for the same
-    // producer / underlying image request.
-    return NS_ERROR_FAILURE;
-  }
-
-  RefPtr<gfx::SourceSurface> surface = images[0].mImage->GetAsSourceSurface();
-  if (!surface) {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  auto sharedSurface = AsSourceSurfaceSharedData(surface);
-  if (!sharedSurface) {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  SharedSurfacesAnimation* anim = aContainer->GetSharedSurfacesAnimation();
-  if (anim) {
-    return anim->UpdateKey(surface, sharedSurface, aManager, aResources, aKey);
-  }
-
-  return Share(sharedSurface, aManager, aResources, aKey);
-}
-
-/* static */
 nsresult SharedSurfacesChild::Share(SourceSurface* aSurface,
                                     wr::ExternalImageId& aId) {
   MOZ_ASSERT(NS_IsMainThread());
@@ -398,6 +348,30 @@ nsresult SharedSurfacesChild::Share(SourceSurface* aSurface,
   }
 
   return rv;
+}
+
+/* static */ nsresult SharedSurfacesChild::Share(
+    gfx::SourceSurface* aSurface, Maybe<SurfaceDescriptor>& aDesc) {
+  if (!aSurface) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  // TODO(aosmond): With a refactor of how we store the external image ID, we
+  // could probably make it safe to access off the main thread. This would be
+  // useful for OffscreenCanvas on DOM workers.
+  if (!NS_IsMainThread()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  wr::ExternalImageId extId{};
+  nsresult rv = Share(aSurface, extId);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  aDesc = Some(SurfaceDescriptorExternalImage(
+      wr::ExternalImageSource::SharedSurfaces, extId));
+  return NS_OK;
 }
 
 /* static */
@@ -422,20 +396,11 @@ void SharedSurfacesChild::Unshare(const wr::ExternalImageId& aId,
     return;
   }
 
-  if (manager->OtherPid() == base::GetCurrentProcId()) {
-    // We are in the combined UI/GPU process. Call directly to it to remove its
-    // wrapper surface to free the underlying buffer, but only if the external
-    // image ID is owned by the manager. It can be different if the surface was
-    // last shared with the GPU process, which crashed several times, and its
-    // job was moved into the parent process.
-    if (manager->OwnsExternalImageId(aId)) {
-      SharedSurfacesParent::RemoveSameProcess(aId);
-    }
-  } else if (manager->OwnsExternalImageId(aId)) {
-    // Only attempt to release current mappings in the GPU process. It is
-    // possible we had a surface that was previously shared, the GPU process
-    // crashed / was restarted, and then we freed the surface. In that case
-    // we know the mapping has already been freed.
+  if (manager->OwnsExternalImageId(aId)) {
+    // Only attempt to release current mappings in the compositor process. It is
+    // possible we had a surface that was previously shared, the compositor
+    // process crashed / was restarted, and then we freed the surface. In that
+    // case we know the mapping has already been freed.
     manager->SendRemoveSharedSurface(aId);
   }
 }
@@ -452,28 +417,6 @@ void SharedSurfacesChild::Unshare(const wr::ExternalImageId& aId,
   }
 
   return Some(data->Id());
-}
-
-/* static */
-nsresult SharedSurfacesChild::UpdateAnimation(ImageContainer* aContainer,
-                                              SourceSurface* aSurface,
-                                              const IntRect& aDirtyRect) {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aContainer);
-  MOZ_ASSERT(!aContainer->IsAsync());
-  MOZ_ASSERT(aSurface);
-
-  // If we aren't using shared surfaces, then is nothing to do.
-  auto sharedSurface = SharedSurfacesChild::AsSourceSurfaceSharedData(aSurface);
-  if (!sharedSurface) {
-    MOZ_ASSERT(!aContainer->GetSharedSurfacesAnimation());
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  SharedSurfacesAnimation* anim = aContainer->EnsureSharedSurfacesAnimation();
-  MOZ_ASSERT(anim);
-
-  return anim->SetCurrentFrame(aSurface, sharedSurface, aDirtyRect);
 }
 
 AnimationImageKeyData::AnimationImageKeyData(RenderRootStateManager* aManager,
@@ -502,7 +445,7 @@ void SharedSurfacesAnimation::Destroy() {
     nsCOMPtr<nsIRunnable> task =
         NewRunnableMethod("SharedSurfacesAnimation::Destroy", this,
                           &SharedSurfacesAnimation::Destroy);
-    SchedulerGroup::Dispatch(TaskCategory::Other, task.forget());
+    NS_DispatchToMainThread(task.forget());
     return;
   }
 
@@ -522,19 +465,36 @@ void SharedSurfacesAnimation::Destroy() {
 }
 
 void SharedSurfacesAnimation::HoldSurfaceForRecycling(
-    AnimationImageKeyData& aEntry, SourceSurface* aParentSurface,
-    SourceSurfaceSharedData* aSurface) {
-  if (aParentSurface == static_cast<SourceSurface*>(aSurface)) {
+    AnimationImageKeyData& aEntry, SourceSurfaceSharedData* aSurface) {
+  if (aSurface->GetType() != SurfaceType::DATA_RECYCLING_SHARED) {
     return;
   }
 
   MOZ_ASSERT(StaticPrefs::image_animated_decode_on_demand_recycle_AtStartup());
-  aEntry.mPendingRelease.AppendElement(aParentSurface);
+  aEntry.mPendingRelease.AppendElement(aSurface);
+}
+
+// This will get the widget listener that handles painting. Generally, this is
+// the attached widget listener (or previously attached if the attached is paint
+// suppressed). Otherwise it is the widget listener. There should be a function
+// in nsIWidget that does this for us but there isn't yet.
+static nsIWidgetListener* GetPaintWidgetListener(nsIWidget* aWidget) {
+  if (auto* attached = aWidget->GetAttachedWidgetListener()) {
+    if (attached->GetView() &&
+        attached->GetView()->IsPrimaryFramePaintSuppressed()) {
+      if (auto* previouslyAttached =
+              aWidget->GetPreviouslyAttachedWidgetListener()) {
+        return previouslyAttached;
+      }
+    }
+    return attached;
+  }
+
+  return aWidget->GetWidgetListener();
 }
 
 nsresult SharedSurfacesAnimation::SetCurrentFrame(
-    SourceSurface* aParentSurface, SourceSurfaceSharedData* aSurface,
-    const gfx::IntRect& aDirtyRect) {
+    SourceSurfaceSharedData* aSurface, const gfx::IntRect& aDirtyRect) {
   MOZ_ASSERT(aSurface);
 
   SharedSurfacesChild::SharedUserData* data = nullptr;
@@ -552,10 +512,32 @@ nsresult SharedSurfacesAnimation::SetCurrentFrame(
     AnimationImageKeyData& entry = mKeys[i];
     MOZ_ASSERT(!entry.mManager->IsDestroyed());
 
+    if (auto* cbc =
+            entry.mManager->LayerManager()->GetCompositorBridgeChild()) {
+      if (cbc->IsPaused()) {
+        continue;
+      }
+    }
+
+    // Only root compositor bridge childs record if they are paused, so check
+    // the refresh driver.
+    if (auto* widget = entry.mManager->LayerManager()->GetWidget()) {
+      nsIWidgetListener* wl = GetPaintWidgetListener(widget);
+      // Note call to wl->GetView() to make sure this is view type widget
+      // listener even though we don't use the view in this code.
+      if (wl && wl->GetView() && wl->GetPresShell()) {
+        if (auto* rd = wl->GetPresShell()->GetRefreshDriver()) {
+          if (rd->IsThrottled()) {
+            continue;
+          }
+        }
+      }
+    }
+
     entry.MergeDirtyRect(Some(aDirtyRect));
     Maybe<IntRect> dirtyRect = entry.TakeDirtyRect();
     if (dirtyRect) {
-      HoldSurfaceForRecycling(entry, aParentSurface, aSurface);
+      HoldSurfaceForRecycling(entry, aSurface);
       auto& resourceUpdates = entry.mManager->AsyncResourceUpdates();
       resourceUpdates.UpdateSharedExternalImage(
           mId, entry.mImageKey, ViewAs<ImagePixel>(dirtyRect.ref()));
@@ -566,9 +548,8 @@ nsresult SharedSurfacesAnimation::SetCurrentFrame(
 }
 
 nsresult SharedSurfacesAnimation::UpdateKey(
-    SourceSurface* aParentSurface, SourceSurfaceSharedData* aSurface,
-    RenderRootStateManager* aManager, wr::IpcResourceUpdateQueue& aResources,
-    wr::ImageKey& aKey) {
+    SourceSurfaceSharedData* aSurface, RenderRootStateManager* aManager,
+    wr::IpcResourceUpdateQueue& aResources, wr::ImageKey& aKey) {
   SharedSurfacesChild::SharedUserData* data = nullptr;
   nsresult rv = SharedSurfacesChild::ShareInternal(aSurface, &data);
   if (NS_FAILED(rv)) {
@@ -603,7 +584,7 @@ nsresult SharedSurfacesAnimation::UpdateKey(
       bool ownsKey = wrBridge->GetNamespace() == entry.mImageKey.mNamespace;
       if (!ownsKey) {
         entry.mImageKey = wrBridge->GetNextImageKey();
-        HoldSurfaceForRecycling(entry, aParentSurface, aSurface);
+        HoldSurfaceForRecycling(entry, aSurface);
         aResources.AddSharedExternalImage(mId, entry.mImageKey);
       } else {
         MOZ_ASSERT(entry.mDirtyRect.isNothing());
@@ -622,7 +603,7 @@ nsresult SharedSurfacesAnimation::UpdateKey(
     }
 
     AnimationImageKeyData data(aManager, aKey);
-    HoldSurfaceForRecycling(data, aParentSurface, aSurface);
+    HoldSurfaceForRecycling(data, aSurface);
     mKeys.AppendElement(std::move(data));
     aResources.AddSharedExternalImage(mId, aKey);
   }
@@ -642,12 +623,8 @@ void SharedSurfacesAnimation::ReleasePreviousFrame(
     if (entry.mManager == aManager) {
       size_t k;
       for (k = 0; k < entry.mPendingRelease.Length(); ++k) {
-        auto sharedSurface = SharedSurfacesChild::AsSourceSurfaceSharedData(
-            entry.mPendingRelease[k]);
-        MOZ_ASSERT(sharedSurface);
-
         Maybe<wr::ExternalImageId> extId =
-            SharedSurfacesChild::GetExternalId(sharedSurface);
+            SharedSurfacesChild::GetExternalId(entry.mPendingRelease[k]);
         if (extId && extId.ref() == aId) {
           break;
         }

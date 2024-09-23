@@ -9,16 +9,14 @@
 
 #include <stdint.h>
 
-#include "jsapi.h"
 #include "js/ContextOptions.h"
 #include "js/GCAPI.h"
+#include "js/RealmOptions.h"
 #include "mozilla/Maybe.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
-namespace workerinternals {
+namespace mozilla::dom::workerinternals {
 
 // Random unique constant to facilitate JSPrincipal debugging
 const uint32_t kJSPrincipalsDebugToken = 0x7e2df9d2;
@@ -34,14 +32,8 @@ struct JSSettings {
     bool operator==(JSGCParamKey k) const { return key == k; }
   };
 
-  // Settings that change based on chrome/content context.
-  struct JSContentChromeSettings {
-    JS::RealmOptions realmOptions;
-    int32_t maxScriptRuntime = 0;
-  };
-
-  JSContentChromeSettings chrome;
-  JSContentChromeSettings content;
+  JS::RealmOptions chromeRealmOptions;
+  JS::RealmOptions contentRealmOptions;
   CopyableTArray<JSGCSetting> gcSettings;
   JS::ContextOptions contextOptions;
 
@@ -65,8 +57,6 @@ struct JSSettings {
   }
 };
 
-}  // namespace workerinternals
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::workerinternals
 
 #endif  // mozilla_dom_workerinternals_JSSettings_h

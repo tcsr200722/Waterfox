@@ -4,7 +4,6 @@
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 var handleDialog;
 
 // Modified from toolkit/components/passwordmgr/test/prompt_common.js
@@ -31,7 +30,7 @@ var observer = SpecialPowers.wrapCallbackObject({
     ];
 
     if (
-      !interfaces.some(function(v) {
+      !interfaces.some(function (v) {
         return iid.equals(v);
       })
     ) {
@@ -40,7 +39,7 @@ var observer = SpecialPowers.wrapCallbackObject({
     return this;
   },
 
-  observe(subject, topic, data) {
+  observe() {
     var doc = getDialogDoc();
     if (doc) {
       handleDialog(doc);
@@ -66,7 +65,7 @@ function getDialogDoc() {
       if (childDocShell.busyFlags != Ci.nsIDocShell.BUSY_FLAGS_NONE) {
         continue;
       }
-      var childDoc = childDocShell.contentViewer.DOMDocument;
+      var childDoc = childDocShell.docViewer.DOMDocument;
 
       // ok(true, "Got window: " + childDoc.location.href);
       if (
@@ -92,7 +91,7 @@ var tests = [
     handleDialog = doc => {
       popup = document.getElementById("UITourTooltip");
       gContentAPI.showInfo("appMenu", "test title", "test text");
-      doc.defaultView.setTimeout(function() {
+      doc.defaultView.setTimeout(function () {
         is(
           popup.state,
           "closed",

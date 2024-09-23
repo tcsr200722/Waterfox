@@ -1,10 +1,5 @@
 // Check that asm.js code shows up on the stack.
-function run_test() {
-  // Just skip the test if the profiler component isn't present.
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
-
+add_task(async () => {
   // This test assumes that it's starting on an empty profiler stack.
   // (Note that the other profiler tests also assume the profiler
   // isn't already started.)
@@ -16,7 +11,7 @@ function run_test() {
   }
 
   const ms = 10;
-  Services.profiler.StartProfiler(10000, ms, ["js"]);
+  await Services.profiler.StartProfiler(10000, ms, ["js"]);
 
   let stack = null;
   function ffi_function() {
@@ -35,7 +30,7 @@ function run_test() {
 
       delayMS *= 2;
 
-      if (thread0.samples.data.length == 0) {
+      if (!thread0.samples.data.length) {
         continue;
       }
 
@@ -77,5 +72,5 @@ function run_test() {
   Assert.ok(i2 < i3);
   Assert.ok(i3 < i4);
 
-  Services.profiler.StopProfiler();
-}
+  await Services.profiler.StopProfiler();
+});

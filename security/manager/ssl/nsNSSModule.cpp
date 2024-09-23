@@ -6,38 +6,19 @@
 
 #include "nsNSSModule.h"
 
-#ifndef MOZ_NEW_CERT_STORAGE
-#  include "CertBlocklist.h"
-#endif
 #include "ContentSignatureVerifier.h"
-#include "NSSErrorsService.h"
 #include "OSKeyStore.h"
 #include "OSReauthenticator.h"
 #include "PKCS11ModuleDB.h"
 #include "SecretDecoderRing.h"
-#include "TransportSecurityInfo.h"
 #include "mozilla/MacroArgs.h"
 #include "mozilla/ModuleUtils.h"
 #include "mozilla/SyncRunnable.h"
-#include "nsCURILoader.h"
-#include "nsCertOverrideService.h"
-#include "nsCryptoHash.h"
-#include "nsKeyModule.h"
-#include "nsNSSCertificate.h"
+#include "nsCertTree.h"
 #include "nsNSSCertificateDB.h"
-#include "nsNSSComponent.h"
-#include "nsNSSVersion.h"
-#include "nsNetCID.h"
 #include "nsPK11TokenDB.h"
-#include "nsPKCS11Slot.h"
 #include "nsRandomGenerator.h"
-#include "nsSecureBrowserUI.h"
-#include "nsSiteSecurityService.h"
 #include "nsXULAppAPI.h"
-
-#ifdef MOZ_XUL
-#  include "nsCertTree.h"
-#endif
 
 namespace mozilla {
 namespace psm {
@@ -79,12 +60,8 @@ template <class InstanceClass,
           ProcessRestriction processRestriction =
               ProcessRestriction::ParentProcessOnly,
           ThreadRestriction threadRestriction = ThreadRestriction::AnyThread>
-static nsresult Constructor(nsISupports* aOuter, REFNSIID aIID,
-                            void** aResult) {
+static nsresult Constructor(REFNSIID aIID, void** aResult) {
   *aResult = nullptr;
-  if (aOuter != nullptr) {
-    return NS_ERROR_NO_AGGREGATION;
-  }
 
   if (processRestriction == ProcessRestriction::ParentProcessOnly &&
       !XRE_IsParentProcess()) {
@@ -97,30 +74,16 @@ static nsresult Constructor(nsISupports* aOuter, REFNSIID aIID,
 
   if (threadRestriction == ThreadRestriction::MainThreadOnly &&
       !NS_IsMainThread()) {
-    nsCOMPtr<nsIThread> mainThread;
-    nsresult rv = NS_GetMainThread(getter_AddRefs(mainThread));
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
-
-    // Forward to the main thread synchronously.
-    mozilla::SyncRunnable::DispatchToThread(
-        mainThread,
-        new SyncRunnable(NS_NewRunnableFunction("psm::Constructor", [&]() {
-          rv = Instantiate<InstanceClass, InitMethod>(aIID, aResult);
-        })));
-
-    return rv;
+    return NS_ERROR_NOT_SAME_THREAD;
   }
 
   return Instantiate<InstanceClass, InitMethod>(aIID, aResult);
 }
 
-#define IMPL(type, ...)                                                  \
-  template <>                                                            \
-  nsresult NSSConstructor<type>(nsISupports * aOuter, const nsIID& aIID, \
-                                void** aResult) {                        \
-    return Constructor<type, __VA_ARGS__>(aOuter, aIID, aResult);        \
+#define IMPL(type, ...)                                              \
+  template <>                                                        \
+  nsresult NSSConstructor<type>(const nsIID& aIID, void** aResult) { \
+    return Constructor<type, __VA_ARGS__>(aIID, aResult);            \
   }
 
 // Components that require main thread initialization could cause a deadlock
@@ -130,26 +93,10 @@ static nsresult Constructor(nsISupports* aOuter, REFNSIID aIID,
 IMPL(SecretDecoderRing, nullptr)
 IMPL(nsPK11TokenDB, nullptr)
 IMPL(PKCS11ModuleDB, nullptr)
-IMPL(nsNSSCertificate, nullptr, ProcessRestriction::AnyProcess)
 IMPL(nsNSSCertificateDB, nullptr)
-#ifdef MOZ_XUL
 IMPL(nsCertTree, nullptr)
-#endif
-IMPL(nsCryptoHash, nullptr, ProcessRestriction::AnyProcess)
-IMPL(nsCryptoHMAC, nullptr, ProcessRestriction::AnyProcess)
-IMPL(nsKeyObject, nullptr, ProcessRestriction::AnyProcess)
-IMPL(nsKeyObjectFactory, nullptr, ProcessRestriction::AnyProcess)
 IMPL(ContentSignatureVerifier, nullptr)
-IMPL(nsCertOverrideService, &nsCertOverrideService::Init,
-     ProcessRestriction::ParentProcessOnly, ThreadRestriction::MainThreadOnly)
 IMPL(nsRandomGenerator, nullptr, ProcessRestriction::AnyProcess)
-IMPL(TransportSecurityInfo, nullptr, ProcessRestriction::AnyProcess)
-IMPL(nsSiteSecurityService, &nsSiteSecurityService::Init,
-     ProcessRestriction::AnyProcess, ThreadRestriction::MainThreadOnly)
-#ifndef MOZ_NEW_CERT_STORAGE
-IMPL(CertBlocklist, &CertBlocklist::Init, ProcessRestriction::ParentProcessOnly,
-     ThreadRestriction::MainThreadOnly)
-#endif
 IMPL(OSKeyStore, nullptr, ProcessRestriction::ParentProcessOnly,
      ThreadRestriction::MainThreadOnly)
 IMPL(OSReauthenticator, nullptr, ProcessRestriction::ParentProcessOnly,

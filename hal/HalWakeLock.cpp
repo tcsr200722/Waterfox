@@ -5,13 +5,16 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Hal.h"
+#include "base/process_util.h"
+#include "mozilla/FOGIPC.h"
 #include "mozilla/HalWakeLock.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "nsClassHashtable.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsIPropertyBag2.h"
+#include "nsIObserver.h"
 #include "nsIObserverService.h"
 
 using namespace mozilla;
@@ -26,7 +29,7 @@ struct LockCount {
   CopyableTArray<uint64_t> processes;
 };
 
-typedef nsDataHashtable<nsUint64HashKey, LockCount> ProcessLockTable;
+typedef nsTHashMap<nsUint64HashKey, LockCount> ProcessLockTable;
 typedef nsClassHashtable<nsStringHashKey, ProcessLockTable> LockTable;
 
 int sActiveListeners = 0;
@@ -104,8 +107,7 @@ CleanupOnContentShutdown::Observe(nsISupports* aSubject, const char* aTopic,
   }
 
   uint64_t childID = 0;
-  nsresult rv =
-      props->GetPropertyAsUint64(NS_LITERAL_STRING("childID"), &childID);
+  nsresult rv = props->GetPropertyAsUint64(u"childID"_ns, &childID);
   if (NS_SUCCEEDED(rv)) {
     for (auto iter = sLockTable->Iter(); !iter.Done(); iter.Next()) {
       auto table = iter.UserData();
@@ -167,25 +169,29 @@ void EnableWakeLockNotifications() { sActiveListeners++; }
 
 void DisableWakeLockNotifications() { sActiveListeners--; }
 
-void ModifyWakeLock(const nsAString& aTopic, hal::WakeLockControl aLockAdjust,
-                    hal::WakeLockControl aHiddenAdjust, uint64_t aProcessID) {
+void ModifyWakeLockWithChildID(const nsAString& aTopic,
+                               hal::WakeLockControl aLockAdjust,
+                               hal::WakeLockControl aHiddenAdjust,
+                               uint64_t aChildID) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aProcessID != CONTENT_PROCESS_ID_UNKNOWN);
+  MOZ_ASSERT(aChildID != CONTENT_PROCESS_ID_UNKNOWN);
 
   if (sIsShuttingDown) {
     return;
   }
 
-  ProcessLockTable* table = sLockTable->Get(aTopic);
   LockCount processCount;
   LockCount totalCount;
-  if (!table) {
-    table = new ProcessLockTable();
-    sLockTable->Put(aTopic, table);
-  } else {
-    table->Get(aProcessID, &processCount);
-    CountWakeLocks(table, &totalCount);
-  }
+  ProcessLockTable* const table =
+      sLockTable->WithEntryHandle(aTopic, [&](auto&& entry) {
+        if (!entry) {
+          entry.Insert(MakeUnique<ProcessLockTable>());
+        } else {
+          Unused << entry.Data()->Get(aChildID, &processCount);
+          CountWakeLocks(entry->get(), &totalCount);
+        }
+        return entry->get();
+      });
 
   MOZ_ASSERT(processCount.numLocks >= processCount.numHidden);
   MOZ_ASSERT(aLockAdjust >= 0 || processCount.numLocks > 0);
@@ -196,6 +202,14 @@ void ModifyWakeLock(const nsAString& aTopic, hal::WakeLockControl aLockAdjust,
 
   WakeLockState oldState =
       ComputeWakeLockState(totalCount.numLocks, totalCount.numHidden);
+
+  if (ComputeWakeLockState(totalCount.numLocks + aLockAdjust,
+                           totalCount.numHidden + aHiddenAdjust) != oldState &&
+      (aTopic.Equals(u"video-playing"_ns) ||
+       aTopic.Equals(u"audio-playing"_ns))) {
+    glean::RecordPowerMetrics();
+  }
+
   bool processWasLocked = processCount.numLocks > 0;
 
   processCount.numLocks += aLockAdjust;
@@ -205,9 +219,9 @@ void ModifyWakeLock(const nsAString& aTopic, hal::WakeLockControl aLockAdjust,
   totalCount.numHidden += aHiddenAdjust;
 
   if (processCount.numLocks) {
-    table->Put(aProcessID, processCount);
+    table->InsertOrUpdate(aChildID, processCount);
   } else {
-    table->Remove(aProcessID);
+    table->Remove(aChildID);
   }
   if (!totalCount.numLocks) {
     sLockTable->Remove(aTopic);
@@ -223,11 +237,24 @@ void ModifyWakeLock(const nsAString& aTopic, hal::WakeLockControl aLockAdjust,
   }
 }
 
+void ModifyWakeLock(const nsAString& aTopic, hal::WakeLockControl aLockAdjust,
+                    hal::WakeLockControl aHiddenAdjust) {
+  ModifyWakeLockWithChildID(aTopic, aLockAdjust, aHiddenAdjust,
+                            CONTENT_PROCESS_ID_MAIN);
+}
+
 void GetWakeLockInfo(const nsAString& aTopic,
                      WakeLockInformation* aWakeLockInfo) {
   if (sIsShuttingDown) {
     NS_WARNING(
         "You don't want to get wake lock information during xpcom-shutdown!");
+    *aWakeLockInfo = WakeLockInformation();
+    return;
+  }
+
+  if (!sLockTable) {
+    // This can happen during some gtests.
+    NS_WARNING("Attempting to get wake lock information before initialization");
     *aWakeLockInfo = WakeLockInformation();
     return;
   }

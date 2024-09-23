@@ -2,15 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import {
-  traverseResults,
   toEditorLine,
   toEditorPosition,
-  toEditorRange,
   toSourceLine,
-  scrollToColumn,
   markText,
   lineAtHeight,
   getSourceLocationFromMouseEvent,
@@ -23,32 +18,6 @@ import {
 
 import { makeMockSource } from "../../test-mockup";
 
-describe("traverseResults", () => {
-  const e: any = { stopPropagation: jest.fn(), preventDefault: jest.fn() };
-  const ctx = {};
-  const query = "Awesome books";
-  const modifiers = {
-    caseSensitive: false,
-    regexMatch: false,
-    wholeWord: false,
-  };
-  it("traverses next", () => {
-    traverseResults(e, ctx, query, "next", modifiers);
-    expect(e.stopPropagation).toHaveBeenCalled();
-    expect(e.preventDefault).toHaveBeenCalled();
-    // expect(findNext).toHaveBeenCalledWith(ctx, query, true, modifiers);
-  });
-
-  it("traverses previous", () => {
-    e.stopPropagation.mockClear();
-    e.preventDefault.mockClear();
-    traverseResults(e, ctx, query, "prev", modifiers);
-    expect(e.stopPropagation).toHaveBeenCalled();
-    expect(e.preventDefault).toHaveBeenCalled();
-    // expect(findPrev).toHaveBeenCalledWith(ctx, query, true, modifiers);
-  });
-});
-
 describe("toEditorLine", () => {
   it("returns an editor line", () => {
     const testId = "test-123";
@@ -59,24 +28,10 @@ describe("toEditorLine", () => {
 
 describe("toEditorPosition", () => {
   it("returns an editor position", () => {
-    const loc = { sourceId: "source", line: 100, column: 25 };
+    const loc = { source: { id: "source" }, line: 100, column: 25 };
     expect(toEditorPosition(loc)).toEqual({
       line: 99,
       column: 25,
-    });
-  });
-});
-
-describe("toEditorRange", () => {
-  it("returns an editor range", () => {
-    const testId = "test-123";
-    const loc = {
-      start: { line: 100, column: 25 },
-      end: { line: 200, column: 0 },
-    };
-    expect(toEditorRange(testId, loc)).toEqual({
-      start: { line: 99, column: 25 },
-      end: { line: 199, column: 0 },
     });
   });
 });
@@ -126,17 +81,6 @@ const codeMirror = {
 
 const editor = { codeMirror };
 
-describe("scrollToColumn", () => {
-  it("calls codemirror APIs charCoords, getScrollerElement, scrollTo", () => {
-    scrollToColumn(codeMirror, 60, 123);
-    expect(codeMirror.charCoords).toHaveBeenCalledWith(
-      { line: 60, ch: 123 },
-      "local"
-    );
-    expect(codeMirror.scrollTo).toHaveBeenCalledWith(0, 50);
-  });
-});
-
 describe("markText", () => {
   it("calls codemirror API markText & returns marker", () => {
     const loc = {
@@ -154,7 +98,7 @@ describe("markText", () => {
 
 describe("lineAtHeight", () => {
   it("calls codemirror API lineAtHeight", () => {
-    const e: any = { clientX: 30, clientY: 60 };
+    const e = { clientX: 30, clientY: 60 };
     expect(lineAtHeight(editor, "test-123", e)).toEqual(301);
     expect(editor.codeMirror.lineAtHeight).toHaveBeenCalledWith(e.clientY);
   });
@@ -163,11 +107,13 @@ describe("lineAtHeight", () => {
 describe("getSourceLocationFromMouseEvent", () => {
   it("calls codemirror API coordsChar & returns location", () => {
     const source = makeMockSource(undefined, "test-123");
-    const e: any = { clientX: 30, clientY: 60 };
+    const e = { clientX: 30, clientY: 60 };
     expect(getSourceLocationFromMouseEvent(editor, source, e)).toEqual({
-      sourceId: "test-123",
+      source,
       line: 7,
       column: 31,
+      sourceActorId: undefined,
+      sourceActor: null,
     });
     expect(editor.codeMirror.coordsChar).toHaveBeenCalledWith({
       left: 30,
@@ -192,7 +138,7 @@ describe("removeLineClass", () => {
     removeLineClass(codeMirror, line, className);
     expect(codeMirror.removeLineClass).toHaveBeenCalledWith(
       line,
-      "wrapClass",
+      "wrap",
       className
     );
   });

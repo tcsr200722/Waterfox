@@ -4,7 +4,6 @@
 
 "use strict";
 
-/* global __dirname */
 const path = require("path");
 
 module.exports = (env, argv) => {
@@ -14,6 +13,7 @@ module.exports = (env, argv) => {
       "./codemirror/addon/dialog/dialog.js",
       "./codemirror/addon/search/searchcursor.js",
       "./codemirror/addon/search/search.js",
+      "./codemirror/addon/search/match-highlighter.js",
       "./codemirror/addon/edit/matchbrackets.js",
       "./codemirror/addon/edit/closebrackets.js",
       "./codemirror/addon/comment/comment.js",
@@ -23,6 +23,7 @@ module.exports = (env, argv) => {
       "./codemirror/mode/css/css.js",
       "./codemirror/mode/clojure/clojure.js",
       "./codemirror/mode/haxe/haxe.js",
+      "./codemirror/mode/http/http.js",
       "./codemirror/mode/htmlmixed/htmlmixed.js",
       "./codemirror/mode/jsx/jsx.js",
       "./codemirror/mode/coffeescript/coffeescript.js",
@@ -38,12 +39,11 @@ module.exports = (env, argv) => {
       "./codemirror/addon/fold/xml-fold.js",
       "./codemirror/addon/fold/foldgutter.js",
       "./codemirror/addon/runmode/runmode.js",
+      "./codemirror/addon/display/placeholder.js",
       "./codemirror/lib/codemirror.js",
     ],
     optimization: {
-      minimize: !(
-        argv?.optimization && argv.optimization.minimizer === "false"
-      ),
+      minimize: !(argv.optimization && argv.optimization.minimizer === "false"),
     },
     output: {
       path: path.resolve(__dirname, "./codemirror/"),
@@ -52,6 +52,9 @@ module.exports = (env, argv) => {
       library: "CodeMirror",
     },
     resolve: {
+      alias: {
+        "resource://devtools": "devtools",
+      },
       modules: [path.resolve(__dirname, "../../../..")],
     },
   };

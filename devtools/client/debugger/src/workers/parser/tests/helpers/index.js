@@ -2,32 +2,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import fs from "fs";
 import path from "path";
 
-import type {
-  Source,
-  TextSourceContent,
-  SourceBase,
-  SourceWithContent,
-} from "../../../../types";
 import { makeMockSourceAndContent } from "../../../../utils/test-mockup";
 import { setSource } from "../../sources";
 import * as asyncValue from "../../../../utils/async-value";
 
-export function getFixture(name: string, type: string = "js") {
+export function getFixture(name, type = "js") {
   return fs.readFileSync(
     path.join(__dirname, `../fixtures/${name}.${type}`),
     "utf8"
   );
 }
 
-function getSourceContent(
-  name: string,
-  type: string = "js"
-): TextSourceContent {
+function getSourceContent(name, type = "js") {
   const text = getFixture(name, type);
   let contentType = "text/javascript";
   if (type === "html") {
@@ -47,21 +36,14 @@ function getSourceContent(
   };
 }
 
-export function getSource(name: string, type?: string): Source {
-  return getSourceWithContent(name, type);
-}
-
-export function getSourceWithContent(
-  name: string,
-  type?: string
-): { ...SourceBase, content: TextSourceContent } {
+export function getSource(name, type) {
   const { value: text, contentType } = getSourceContent(name, type);
 
   return makeMockSourceAndContent(undefined, name, contentType, text);
 }
 
-export function populateSource(name: string, type?: string): SourceWithContent {
-  const { content, ...source } = getSourceWithContent(name, type);
+export function populateSource(name, type) {
+  const { content, ...source } = getSource(name, type);
   setSource({
     id: source.id,
     text: content.value,
@@ -74,14 +56,11 @@ export function populateSource(name: string, type?: string): SourceWithContent {
   };
 }
 
-export function getOriginalSource(name: string, type?: string): Source {
+export function getOriginalSource(name, type) {
   return getOriginalSourceWithContent(name, type);
 }
 
-export function getOriginalSourceWithContent(
-  name: string,
-  type?: string
-): { ...SourceBase, content: TextSourceContent } {
+export function getOriginalSourceWithContent(name, type) {
   const { value: text, contentType } = getSourceContent(name, type);
 
   return makeMockSourceAndContent(
@@ -92,10 +71,7 @@ export function getOriginalSourceWithContent(
   );
 }
 
-export function populateOriginalSource(
-  name: string,
-  type?: string
-): SourceWithContent {
+export function populateOriginalSource(name, type) {
   const { content, ...source } = getOriginalSourceWithContent(name, type);
   setSource({
     id: source.id,

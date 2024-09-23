@@ -2,8 +2,15 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { Preferences } = ChromeUtils.import(
-  "resource://gre/modules/Preferences.jsm"
+const { AddonManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
+);
+const { Preferences } = ChromeUtils.importESModule(
+  "resource://gre/modules/Preferences.sys.mjs"
+);
+
+const { TestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TestUtils.sys.mjs"
 );
 
 AddonTestUtils.init(this);
@@ -12,13 +19,8 @@ AddonTestUtils.overrideCertDB();
 AddonTestUtils.createAppInfo(
   "xpcshell@tests.mozilla.org",
   "XPCShell",
-  "1",
+  "42",
   "42"
-);
-
-Services.prefs.setBoolPref(
-  "extensions.webextensions.background-delayed-startup",
-  false
 );
 
 const ADDON_ID = "test-startup-cache@xpcshell.mozilla.org";
@@ -29,7 +31,7 @@ function makeExtension(opts) {
 
     manifest: {
       version: opts.version,
-      applications: { gecko: { id: ADDON_ID } },
+      browser_specific_settings: { gecko: { id: ADDON_ID } },
 
       name: "__MSG_name__",
 
@@ -61,9 +63,44 @@ function makeExtension(opts) {
   };
 }
 
-add_task(async function() {
+add_task(async function test_langpack_startup_cache() {
   Preferences.set("extensions.logging.enabled", false);
   await AddonTestUtils.promiseStartupManager();
+
+  // Install langpacks to get proper locale startup.
+  let langpack = {
+    "manifest.json": {
+      name: "test Language Pack",
+      version: "1.0",
+      manifest_version: 2,
+      browser_specific_settings: {
+        gecko: {
+          id: "@test-langpack",
+          strict_min_version: "42.0",
+          strict_max_version: "42.0",
+        },
+      },
+      langpack_id: "fr",
+      languages: {
+        fr: {
+          chrome_resources: {
+            global: "chrome/fr/locale/fr/global/",
+          },
+          version: "20171001190118",
+        },
+      },
+      sources: {
+        browser: {
+          base_path: "browser/",
+        },
+      },
+    },
+  };
+
+  let [, { addon }] = await Promise.all([
+    TestUtils.topicObserved("webextension-langpack-startup"),
+    AddonTestUtils.promiseInstallXPI(langpack),
+  ]);
 
   let extension = ExtensionTestUtils.loadExtension(
     makeExtension({ version: "1.0" })
@@ -80,7 +117,7 @@ add_task(async function() {
   //
   // In the future, we should provide some way for tests to decouple their
   // language selection from that of Firefox.
-  Services.locale.availableLocales = ["en-US", "fr", "jp"];
+  ok(Services.locale.availableLocales.includes("fr"), "fr locale is avialable");
 
   await extension.startup();
 
@@ -90,7 +127,7 @@ add_task(async function() {
 
   info("Restart and re-check");
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   equal(extension.version, "1.0", "Expected extension version");
   manifest = await getManifest();
@@ -99,7 +136,7 @@ add_task(async function() {
   info("Change locale to 'fr' and restart");
   Services.locale.requestedLocales = ["fr"];
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   equal(extension.version, "1.0", "Expected extension version");
   manifest = await getManifest();
@@ -115,11 +152,27 @@ add_task(async function() {
   info("Change locale to 'en-US' and restart");
   Services.locale.requestedLocales = ["en-US"];
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   equal(extension.version, "1.1", "Expected extension version");
   manifest = await getManifest();
   equal(manifest.name, "en-US 1.1", "Got expected manifest name");
+
+  info("Disable locale 'fr'");
+  addon = await AddonManager.getAddonByID("@test-langpack");
+
+  // We disable the installed langpack instead of uninstalling it
+  // because the xpi file may technically be still in use by the
+  // time the XPIProvider will try to remove the file and will
+  // make this test to fail intermittently on windows.
+  //
+  // Disabling the addon is equivalent from the perspective of this
+  // test case, and the langpack xpi will be uninstalled automatically
+  // at the end of this test case by AddonTestUtils (from its
+  // cleanupTempXPIs method, which will also force a GC if the
+  // file fails to be removed after we flushed the jar cache).
+  await addon.disable();
+  ok(!Services.locale.availableLocales.includes("fr"), "fr locale is removed");
 
   await extension.unload();
 });

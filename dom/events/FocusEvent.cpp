@@ -8,8 +8,7 @@
 #include "mozilla/ContentEvents.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 FocusEvent::FocusEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                        InternalFocusEvent* aEvent)
@@ -19,7 +18,6 @@ FocusEvent::FocusEvent(EventTarget* aOwner, nsPresContext* aPresContext,
     mEventIsInternal = false;
   } else {
     mEventIsInternal = true;
-    mEvent->mTime = PR_Now();
   }
 }
 
@@ -50,8 +48,7 @@ already_AddRefed<FocusEvent> FocusEvent::Constructor(
   return e.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

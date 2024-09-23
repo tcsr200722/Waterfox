@@ -6,6 +6,7 @@
 #ifndef mozilla_net_SocketProcessHost_h
 #define mozilla_net_SocketProcessHost_h
 
+#include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/MemoryReportingProcess.h"
@@ -19,7 +20,6 @@ class SandboxBroker;
 
 namespace net {
 
-class OfflineObserver;
 class SocketProcessParent;
 
 // SocketProcessHost is the "parent process" container for a subprocess handle
@@ -74,8 +74,7 @@ class SocketProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   }
 
   // Called on the IO thread.
-  void OnChannelConnected(int32_t peer_pid) override;
-  void OnChannelError() override;
+  void OnChannelConnected(base::ProcessId peer_pid) override;
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
   // Return the sandbox type to be used with this process type.
@@ -87,7 +86,6 @@ class SocketProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
 
   // Called on the main thread.
   void OnChannelConnectedTask();
-  void OnChannelErrorTask();
 
   // Called on the main thread after a connection has been established.
   void InitAfterConnect(bool aSucceeded);
@@ -110,19 +108,18 @@ class SocketProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   DISALLOW_COPY_AND_ASSIGN(SocketProcessHost);
 
   RefPtr<Listener> mListener;
-  mozilla::ipc::TaskFactory<SocketProcessHost> mTaskFactory;
+  mozilla::Maybe<mozilla::ipc::TaskFactory<SocketProcessHost>> mTaskFactory;
 
   enum class LaunchPhase { Unlaunched, Waiting, Complete };
   LaunchPhase mLaunchPhase;
 
-  UniquePtr<SocketProcessParent> mSocketProcessParent;
+  RefPtr<SocketProcessParent> mSocketProcessParent;
   // mShutdownRequested is set to true only when Shutdown() is called.
   // If mShutdownRequested is false and the IPC channel is closed,
   // OnProcessUnexpectedShutdown will be invoked.
   bool mShutdownRequested;
   bool mChannelClosed;
 
-  RefPtr<OfflineObserver> mOfflineObserver;
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
   UniquePtr<SandboxBroker> mSandboxBroker;
 #endif

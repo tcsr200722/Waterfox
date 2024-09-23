@@ -10,22 +10,20 @@
 #include "gfxFont.h"
 #include "gfxGDIFontList.h"
 
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 
 #include "usp10.h"
 
-class gfxGDIFont : public gfxFont {
+class gfxGDIFont final : public gfxFont {
  public:
   gfxGDIFont(GDIFontEntry* aFontEntry, const gfxFontStyle* aFontStyle,
              AntialiasOption anAAOption = kAntialiasDefault);
 
-  virtual ~gfxGDIFont();
-
-  HFONT GetHFONT() { return mFont; }
+  HFONT GetHFONT() const { return mFont; }
 
   already_AddRefed<mozilla::gfx::ScaledFont> GetScaledFont(
-      DrawTarget* aTarget) override;
+      const TextRunDrawParams& aRunParams) override;
 
   /* override Measure to add padding for antialiasing */
   RunMetrics Measure(const gfxTextRun* aTextRun, uint32_t aStart, uint32_t aEnd,
@@ -35,8 +33,7 @@ class gfxGDIFont : public gfxFont {
                      mozilla::gfx::ShapedTextFlags aOrientation) override;
 
   /* required for MathML to suppress effects of ClearType "padding" */
-  mozilla::UniquePtr<gfxFont> CopyWithAntialiasOption(
-      AntialiasOption anAAOption) override;
+  gfxFont* CopyWithAntialiasOption(AntialiasOption anAAOption) const override;
 
   // If the font has a cmap table, we handle it purely with harfbuzz;
   // but if not (e.g. .fon fonts), we'll use a GDI callback to get glyphs.
@@ -59,12 +56,13 @@ class gfxGDIFont : public gfxFont {
   FontType GetType() const override { return FONT_TYPE_GDI; }
 
  protected:
-  const Metrics& GetHorizontalMetrics() override;
+  ~gfxGDIFont() override;
 
-  /* override to ensure the cairo font is set up properly */
+  const Metrics& GetHorizontalMetrics() const override { return *mMetrics; }
+
   bool ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
                  uint32_t aOffset, uint32_t aLength, Script aScript,
-                 bool aVertical, RoundingFlags aRounding,
+                 nsAtom* aLanguage, bool aVertical, RoundingFlags aRounding,
                  gfxShapedText* aShapedText) override;
 
   void Initialize();  // creates metrics and Cairo fonts
@@ -83,11 +81,11 @@ class gfxGDIFont : public gfxFont {
   bool mNeedsSyntheticBold;
 
   // cache of glyph IDs (used for non-sfnt fonts only)
-  mozilla::UniquePtr<nsDataHashtable<nsUint32HashKey, uint32_t> > mGlyphIDs;
+  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, uint32_t> > mGlyphIDs;
   SCRIPT_CACHE mScriptCache;
 
   // cache of glyph widths in 16.16 fixed-point pixels
-  mozilla::UniquePtr<nsDataHashtable<nsUint32HashKey, int32_t> > mGlyphWidths;
+  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, int32_t> > mGlyphWidths;
 };
 
 #endif /* GFX_GDIFONT_H */

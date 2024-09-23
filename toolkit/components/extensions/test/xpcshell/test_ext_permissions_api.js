@@ -1,22 +1,15 @@
 "use strict";
 
-Services.prefs.setBoolPref(
-  "extensions.webextensions.background-delayed-startup",
-  false
+const { AddonManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
+);
+const { ExtensionPermissions } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionPermissions.sys.mjs"
 );
 
-const { AddonManager } = ChromeUtils.import(
-  "resource://gre/modules/AddonManager.jsm"
-);
-const { ExtensionPermissions } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionPermissions.jsm"
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionParent",
-  "resource://gre/modules/ExtensionParent.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  ExtensionParent: "resource://gre/modules/ExtensionParent.sys.mjs",
+});
 
 AddonTestUtils.init(this);
 AddonTestUtils.overrideCertDB();
@@ -30,6 +23,15 @@ AddonTestUtils.createAppInfo(
 let OptionalPermissions;
 
 add_task(async function setup() {
+  // FOG needs a profile and to be initialized.
+  do_get_profile();
+  Services.fog.initializeFOG();
+  Services.fog.testResetFOG();
+
+  // Bug 1646182: Force ExtensionPermissions to run in rkv mode, the legacy
+  // storage mode will run in xpcshell-legacy-ep.toml
+  await ExtensionPermissions._uninit();
+
   Services.prefs.setBoolPref(
     "extensions.webextOptionalPermissionPrompts",
     false
@@ -50,15 +52,21 @@ add_task(async function setup() {
     "activeTab",
     "clipboardRead",
     "clipboardWrite",
+    "declarativeNetRequestFeedback",
     "devtools",
     "downloads.open",
     "geolocation",
     "management",
     "menus.overrideContext",
+    "nativeMessaging",
+    "scripting",
     "search",
     "tabHide",
     "tabs",
+    "webRequestAuthProvider",
     "webRequestBlocking",
+    "webRequestFilterResponse",
+    "webRequestFilterResponse.serviceWorkerScript",
   ];
   OptionalPermissions = Schemas.getPermissionNames([
     "OptionalPermission",
@@ -150,7 +158,7 @@ add_task(async function test_api_on_permissions_changed() {
 
   // Verify access on restart
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
   await verifyPermissions(true);
 
   await withHandlingUserInput(extension, async () => {
@@ -215,7 +223,7 @@ add_task(async function test_geo_permissions() {
   let extension = ExtensionTestUtils.loadExtension({
     background,
     manifest: {
-      applications: { gecko: { id: "geo-test@test" } },
+      browser_specific_settings: { gecko: { id: "geo-test@test" } },
       optional_permissions: ["geolocation"],
     },
     useAddonManager: "permanent",
@@ -261,7 +269,7 @@ add_task(async function test_geo_permissions() {
   // We should not have geo permission after this upgrade.
   await extension.upgrade({
     manifest: {
-      applications: { gecko: { id: "geo-test@test" } },
+      browser_specific_settings: { gecko: { id: "geo-test@test" } },
     },
     useAddonManager: "permanent",
   });
@@ -323,7 +331,7 @@ add_task(async function test_browserSetting_permissions() {
   await ExtensionPermissions._uninit();
   extensionHandlers.delete(extension);
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   await withHandlingUserInput(extension, async () => {
     extension.sendMessage("remove");
@@ -381,7 +389,7 @@ add_task(async function test_privacy_permissions() {
   await ExtensionPermissions._uninit();
   extensionHandlers.delete(extension);
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   await withHandlingUserInput(extension, async () => {
     extension.sendMessage("remove");
@@ -391,3 +399,130 @@ add_task(async function test_privacy_permissions() {
 
   await extension.unload();
 });
+
+add_task(
+  { pref_set: [["extensions.eventPages.enabled", true]] },
+  async function test_permissions_event_page() {
+    let extension = ExtensionTestUtils.loadExtension({
+      useAddonManager: "permanent",
+      manifest: {
+        optional_permissions: ["privacy"],
+        background: { persistent: false },
+      },
+      background() {
+        browser.permissions.onAdded.addListener(details => {
+          browser.test.sendMessage("added", details);
+        });
+
+        browser.permissions.onRemoved.addListener(details => {
+          browser.test.sendMessage("removed", details);
+        });
+      },
+    });
+
+    await extension.startup();
+    let events = ["onAdded", "onRemoved"];
+    for (let event of events) {
+      assertPersistentListeners(extension, "permissions", event, {
+        primed: false,
+      });
+    }
+
+    await extension.terminateBackground();
+    for (let event of events) {
+      assertPersistentListeners(extension, "permissions", event, {
+        primed: true,
+      });
+    }
+
+    let permObj = {
+      permissions: ["privacy"],
+      origins: [],
+    };
+
+    // enable the permissions while the background is stopped
+    await ExtensionPermissions.add(extension.id, permObj, extension.extension);
+    let details = await extension.awaitMessage("added");
+    Assert.deepEqual(permObj, details, "got added event");
+
+    // Restart and test that permission removal wakes the background.
+    await AddonTestUtils.promiseRestartManager();
+    await extension.awaitStartup();
+
+    for (let event of events) {
+      assertPersistentListeners(extension, "permissions", event, {
+        primed: true,
+      });
+    }
+
+    // remove the permissions while the background is stopped
+    await ExtensionPermissions.remove(
+      extension.id,
+      permObj,
+      extension.extension
+    );
+
+    details = await extension.awaitMessage("removed");
+    Assert.deepEqual(permObj, details, "got removed event");
+
+    await extension.unload();
+  }
+);
+
+add_task(
+  {
+    pref_set: [
+      ["extensions.background.idle.timeout", 100],
+      ["extensions.webextOptionalPermissionPrompts", true],
+    ],
+  },
+  async function test_permissions_request_idle_suspend() {
+    info("Test that permissions.request() keeps bg page alive.");
+
+    let pr = Glean.extensionsCounters.eventPageIdleResult.permissions_request;
+    let before = pr.testGetValue() ?? 0;
+    info(`Glean value permissions_request before: ${before}`);
+
+    async function background() {
+      browser.test.onMessage.addListener(async () => {
+        browser.test.log("Calling permissions.request().");
+        await browser.permissions.request({ permissions: ["browserSettings"] });
+        browser.test.log("permissions.request() resolved.");
+        browser.test.sendMessage("done");
+      });
+    }
+
+    let extension = ExtensionTestUtils.loadExtension({
+      manifest: {
+        manifest_version: 3,
+        optional_permissions: ["browserSettings"],
+      },
+      background,
+    });
+    await extension.startup();
+
+    function obs(subject, _topic) {
+      info("Waiting 200ms, normally the bg page would idle out.");
+      // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+      setTimeout(() => subject.wrappedJSObject.resolve(true), 200);
+    }
+
+    info("Setup permissions prompt observer.");
+    Services.obs.addObserver(obs, "webextension-optional-permission-prompt");
+
+    await withHandlingUserInput(extension, async () => {
+      extension.sendMessage("request");
+      await extension.awaitMessage("done");
+    });
+    info("permissions.request() resolved successfully, bg page not suspended.");
+
+    let count = pr.testGetValue() - before;
+    // Because this "counter" measures time in increments of
+    // background.idle.timeout, we know it should take at least 200ms,
+    // but we need to leave slack of up to 500ms for slow test runs.
+    ok(count >= 2 && count <= 5, `permissions_request counter: ${count}.`);
+
+    Services.obs.removeObserver(obs, "webextension-optional-permission-prompt");
+    await extension.unload();
+  }
+);

@@ -3,26 +3,15 @@
 
 "use strict";
 
-const { FxAccountsPairingFlow } = ChromeUtils.import(
-  "resource://gre/modules/FxAccountsPairing.jsm",
-  {}
+const { FxAccountsPairingFlow } = ChromeUtils.importESModule(
+  "resource://gre/modules/FxAccountsPairing.sys.mjs"
 );
-const { EventEmitter } = ChromeUtils.import(
-  "resource://gre/modules/EventEmitter.jsm",
-  {}
+const { EventEmitter } = ChromeUtils.importESModule(
+  "resource://gre/modules/EventEmitter.sys.mjs"
 );
-const { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm",
-  {}
-);
-const { CryptoUtils } = ChromeUtils.import(
-  "resource://services-crypto/utils.js",
-  {}
-);
-XPCOMUtils.defineLazyModuleGetters(this, {
-  jwcrypto: "resource://services-crypto/jwcrypto.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  jwcrypto: "resource://services-crypto/jwcrypto.sys.mjs",
 });
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL", "crypto"]);
 
 const CHANNEL_ID = "sW-UA97Q6Dljqen7XRlYPw";
 const CHANNEL_KEY = crypto.getRandomValues(new Uint8Array(32));
@@ -43,6 +32,7 @@ const DEVICE_NAME = "Foo's computer";
 const PAIR_URI = "https://foo.bar/pair";
 const OAUTH_URI = "https://foo.bar/oauth";
 const KSYNC = "myksync";
+const SESSION = "mysession";
 const fxaConfig = {
   promisePairingURI() {
     return PAIR_URI;
@@ -52,20 +42,6 @@ const fxaConfig = {
   },
 };
 const fxAccounts = {
-  keys: {
-    getScopedKeys(scope) {
-      return {
-        [scope]: {
-          kid: "123456",
-          k: KSYNC,
-          kty: "oct",
-        },
-      };
-    },
-  },
-  authorizeOAuthCode() {
-    return { code: "mycode", state: "mystate" };
-  },
   getSignedInUser() {
     return {
       uid: UID,
@@ -73,6 +49,39 @@ const fxAccounts = {
       avatar: AVATAR,
       displayName: DISPLAY_NAME,
     };
+  },
+  async _withVerifiedAccountState(cb) {
+    return cb({
+      async getUserAccountData() {
+        return {
+          sessionToken: SESSION,
+        };
+      },
+    });
+  },
+  _internal: {
+    keys: {
+      getKeyForScope() {
+        return {
+          kid: "123456",
+          k: KSYNC,
+          kty: "oct",
+        };
+      },
+    },
+    fxAccountsClient: {
+      async getScopedKeyData() {
+        return {
+          [SCOPE_APP_SYNC]: {
+            identifier: SCOPE_APP_SYNC,
+            keyRotationTimestamp: 12345678,
+          },
+        };
+      },
+      async oauthAuthorize() {
+        return { code: "mycode", state: "mystate" };
+      },
+    },
   },
 };
 const weave = {
@@ -132,6 +141,7 @@ add_task(async function testFullFlow() {
   const promiseSwitchToWebContent = emitter.once("view:SwitchToWebContent");
   const promiseMetadataSent = promiseOutgoingMessage(pairingChannel);
   const epk = await generateEphemeralKeypair();
+
   pairingChannel.simulateIncoming({
     message: "pair:supp:request",
     data: {
@@ -141,7 +151,7 @@ add_task(async function testFullFlow() {
         new TextEncoder().encode(JSON.stringify(epk.publicJWK)),
         { pad: false }
       ),
-      scope: "profile https://identity.mozilla.com/apps/oldsync",
+      scope: `profile ${SCOPE_APP_SYNC}`,
       code_challenge: "chal",
       code_challenge_method: "S256",
     },
@@ -159,7 +169,9 @@ add_task(async function testFullFlow() {
   const oauthUrl = await promiseSwitchToWebContent;
   Assert.equal(
     oauthUrl,
-    `${OAUTH_URI}?client_id=client_id_1&scope=profile+https%3A%2F%2Fidentity.mozilla.com%2Fapps%2Foldsync&email=foo%40bar.com&uid=abcd&channel_id=${CHANNEL_ID}&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob%3Apair-auth-webchannel`
+    `${OAUTH_URI}?client_id=client_id_1&scope=profile+${encodeURIComponent(
+      SCOPE_APP_SYNC
+    )}&email=foo%40bar.com&uid=abcd&channel_id=${CHANNEL_ID}&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob%3Apair-auth-webchannel`
   );
 
   let pairSuppMetadata = await simulateIncomingWebChannel(
@@ -177,50 +189,68 @@ add_task(async function testFullFlow() {
     pairSuppMetadata
   );
 
-  const authorizeOAuthCode = sinon.spy(fxAccounts, "authorizeOAuthCode");
+  const generateJWE = sinon.spy(jwcrypto, "generateJWE");
+  const oauthAuthorize = sinon.spy(
+    fxAccounts._internal.fxAccountsClient,
+    "oauthAuthorize"
+  );
   const promiseOAuthParamsMsg = promiseOutgoingMessage(pairingChannel);
   await simulateIncomingWebChannel(flow, "fxaccounts:pair_authorize");
-  Assert.ok(authorizeOAuthCode.calledOnce);
-  const oauthCodeArgs = authorizeOAuthCode.firstCall.args[0];
-  Assert.equal(
-    oauthCodeArgs.keys_jwk,
-    ChromeUtils.base64URLEncode(
-      new TextEncoder().encode(JSON.stringify(epk.publicJWK)),
-      { pad: false }
-    )
+  // We should have generated the expected JWE.
+  Assert.ok(generateJWE.calledOnce);
+  const generateArgs = generateJWE.firstCall.args;
+  Assert.deepEqual(generateArgs[0], epk.publicJWK);
+  Assert.deepEqual(JSON.parse(new TextDecoder().decode(generateArgs[1])), {
+    [SCOPE_APP_SYNC]: {
+      kid: "123456",
+      k: KSYNC,
+      kty: "oct",
+    },
+  });
+  // We should have authorized an oauth code with expected parameters.
+  Assert.ok(oauthAuthorize.calledOnce);
+  const oauthCodeArgs = oauthAuthorize.firstCall.args[1];
+  console.log(oauthCodeArgs);
+  Assert.ok(!oauthCodeArgs.keys_jwk);
+  Assert.deepEqual(
+    oauthCodeArgs.keys_jwe,
+    await generateJWE.firstCall.returnValue
   );
   Assert.equal(oauthCodeArgs.client_id, "client_id_1");
   Assert.equal(oauthCodeArgs.access_type, "offline");
   Assert.equal(oauthCodeArgs.state, "mystate");
-  Assert.equal(
-    oauthCodeArgs.scope,
-    "profile https://identity.mozilla.com/apps/oldsync"
-  );
+  Assert.equal(oauthCodeArgs.scope, `profile ${SCOPE_APP_SYNC}`);
   Assert.equal(oauthCodeArgs.code_challenge, "chal");
   Assert.equal(oauthCodeArgs.code_challenge_method, "S256");
+
   const oAuthParams = await promiseOAuthParamsMsg;
   Assert.deepEqual(oAuthParams, {
     message: "pair:auth:authorize",
     data: { code: "mycode", state: "mystate" },
   });
+
   let heartbeat = await simulateIncomingWebChannel(
     flow,
     "fxaccounts:pair_heartbeat"
   );
   Assert.ok(!heartbeat.suppAuthorized);
+
   await pairingChannel.simulateIncoming({
     message: "pair:supp:authorize",
   });
+
   heartbeat = await simulateIncomingWebChannel(
     flow,
     "fxaccounts:pair_heartbeat"
   );
   Assert.ok(heartbeat.suppAuthorized);
+
   await simulateIncomingWebChannel(flow, "fxaccounts:pair_complete");
   // The flow should have been destroyed!
   Assert.ok(!FxAccountsPairingFlow.get(CHANNEL_ID));
   Assert.ok(pairingChannel.closed);
-  fxAccounts.authorizeOAuthCode.restore();
+  generateJWE.restore();
+  oauthAuthorize.restore();
 });
 
 add_task(async function testUnknownPairingMessage() {
@@ -287,7 +317,7 @@ add_task(async function testPairingChannelFailure() {
     data: {
       client_id: "client_id_1",
       state: "mystate",
-      scope: "profile https://identity.mozilla.com/apps/oldsync",
+      scope: `profile ${SCOPE_APP_SYNC}`,
       code_challenge: "chal",
       code_challenge_method: "S256",
     },

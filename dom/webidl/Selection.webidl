@@ -12,16 +12,23 @@
 
 [Exposed=Window]
 interface Selection {
+  [NeedsCallerType]
   readonly attribute Node?         anchorNode;
+  [NeedsCallerType]
   readonly attribute unsigned long anchorOffset;
+  [NeedsCallerType]
   readonly attribute Node?         focusNode;
+  [NeedsCallerType]
   readonly attribute unsigned long focusOffset;
   readonly attribute boolean       isCollapsed;
+  [ChromeOnly]
+  readonly attribute boolean       areNormalAndCrossShadowBoundaryRangesCollapsed;
   /**
    * Returns the number of ranges in the selection.
    */
   readonly attribute unsigned long rangeCount;
   readonly attribute DOMString     type;
+  readonly attribute DOMString direction;
   /**
    * Returns the range at the specified index.  Throws if the index is
    * out of range.
@@ -32,38 +39,42 @@ interface Selection {
    * Adds a range to the current selection.
    */
   [Throws, BinaryName="addRangeJS"]
-  void      addRange(Range range);
+  undefined addRange(Range range);
   /**
    * Removes a range from the current selection.
    */
   [Throws, BinaryName="removeRangeAndUnselectFramesAndNotifyListeners"]
-  void      removeRange(Range range);
+  undefined removeRange(Range range);
   /**
    * Removes all ranges from the current selection.
    */
   [Throws]
-  void      removeAllRanges();
+  undefined removeAllRanges();
   [Throws, BinaryName="RemoveAllRanges"]
-  void      empty();
+  undefined empty();
+
+  [Pref="dom.shadowdom.selection_across_boundary_enabled"]
+  sequence<StaticRange> getComposedRanges(ShadowRoot... shadowRoots);
+
   [Throws, BinaryName="collapseJS"]
-  void      collapse(Node? node, optional unsigned long offset = 0);
+  undefined collapse(Node? node, optional unsigned long offset = 0);
   [Throws, BinaryName="collapseJS"]
-  void      setPosition(Node? node, optional unsigned long offset = 0);
+  undefined setPosition(Node? node, optional unsigned long offset = 0);
   [Throws, BinaryName="collapseToStartJS"]
-  void      collapseToStart();
+  undefined collapseToStart();
   [Throws, BinaryName="collapseToEndJS"]
-  void      collapseToEnd();
+  undefined collapseToEnd();
   [Throws, BinaryName="extendJS"]
-  void      extend(Node node, optional unsigned long offset = 0);
+  undefined extend(Node node, optional unsigned long offset = 0);
   [Throws, BinaryName="setBaseAndExtentJS"]
-  void      setBaseAndExtent(Node anchorNode,
+  undefined setBaseAndExtent(Node anchorNode,
                              unsigned long anchorOffset,
                              Node focusNode,
                              unsigned long focusOffset);
   [Throws, BinaryName="selectAllChildrenJS"]
-  void      selectAllChildren(Node node);
+  undefined selectAllChildren(Node node);
   [CEReactions, Throws]
-  void      deleteFromDocument();
+  undefined deleteFromDocument();
   [Throws]
   boolean   containsNode(Node node,
                          optional boolean allowPartialContainment = false);
@@ -73,8 +84,8 @@ interface Selection {
 // Additional methods not currently in the spec
 partial interface Selection {
   [Throws]
-  void modify(DOMString alter, DOMString direction,
-              DOMString granularity);
+  undefined modify(DOMString alter, DOMString direction,
+                   DOMString granularity);
 };
 
 // Additional chrome-only methods.
@@ -84,7 +95,7 @@ partial interface Selection {
    * A true value means "selection after newline"; false means "selection before
    * newline" when a selection is positioned "between lines".
    */
-  [ChromeOnly,Throws]
+  [ChromeOnly,Throws, BinaryName=interlinePositionJS]
   attribute boolean interlinePosition;
 
   [Throws]
@@ -93,16 +104,16 @@ partial interface Selection {
   [ChromeOnly,Throws]
   DOMString  toStringWithFormat(DOMString formatType, unsigned long flags, long wrapColumn);
   [ChromeOnly]
-  void  addSelectionListener(nsISelectionListener newListener);
+  undefined  addSelectionListener(nsISelectionListener newListener);
   [ChromeOnly]
-  void  removeSelectionListener(nsISelectionListener listenerToRemove);
+  undefined  removeSelectionListener(nsISelectionListener listenerToRemove);
 
   [ChromeOnly,BinaryName="rawType"]
   readonly attribute short selectionType;
 
   /**
    * Return array of ranges intersecting with the given DOM interval.
-   */  
+   */
   [ChromeOnly,Throws,Pref="dom.testing.selection.GetRangesForInterval"]
   sequence<Range> GetRangesForInterval(Node beginNode, long beginOffset, Node endNode, long endOffset,
                                        boolean allowAdjacent);
@@ -121,7 +132,7 @@ partial interface Selection {
    * @param aHPercent how to align the frame horizontally.
    */
   [ChromeOnly,Throws]
-  void scrollIntoView(short aRegion, boolean aIsSynchronous, short aVPercent, short aHPercent);
+  undefined scrollIntoView(short aRegion, boolean aIsSynchronous, short aVPercent, short aHPercent);
 
   /**
    * setColors() sets custom colors for the selection.
@@ -144,12 +155,12 @@ partial interface Selection {
    *                             selection.
    */
   [ChromeOnly,Throws]
-  void setColors(DOMString aForegroundColor, DOMString aBackgroundColor,
-                 DOMString aAltForegroundColor, DOMString aAltBackgroundColor);
+  undefined setColors(DOMString aForegroundColor, DOMString aBackgroundColor,
+                      DOMString aAltForegroundColor, DOMString aAltBackgroundColor);
 
   /**
    * resetColors() forget the customized colors which were set by setColors().
    */
-  [ChromeOnly,Throws]
-  void resetColors();
+  [ChromeOnly]
+  undefined resetColors();
 };

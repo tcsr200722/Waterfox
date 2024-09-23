@@ -5,7 +5,9 @@
 
 // Check that inline inherited properties appear in the nested element.
 
-var { ELEMENT_STYLE } = require("devtools/shared/specs/styles");
+var {
+  style: { ELEMENT_STYLE },
+} = require("resource://devtools/shared/constants.js");
 
 const TEST_URI = `
   <div id="test2" style="color: red">
@@ -13,11 +15,10 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   await selectNode("#test1", inspector);
-  await getRuleViewSelectorHighlighterIcon(view, "element", 1);
   await elementStyleInherit(inspector, view);
 });
 

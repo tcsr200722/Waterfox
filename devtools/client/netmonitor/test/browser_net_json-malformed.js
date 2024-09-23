@@ -7,8 +7,10 @@
  * Tests if malformed JSON responses are handled correctly.
  */
 
-add_task(async function() {
-  const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
+add_task(async function () {
+  const {
+    L10N,
+  } = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
   const { tab, monitor } = await initNetMonitor(JSON_MALFORMED_URL, {
     requestCount: 1,
   });
@@ -47,10 +49,7 @@ add_task(async function() {
 
   const wait = waitForDOM(document, "#response-panel .CodeMirror-code");
   store.dispatch(Actions.toggleNetworkDetails());
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#response-tab")
-  );
+  clickOnSidebarTab(document, "response");
   await wait;
 
   const tabpanel = document.querySelector("#response-panel");

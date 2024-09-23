@@ -19,7 +19,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=765772
   </form>
 </div>
 <pre id="test">
-<script type="application/javascript">
+<script>
 
 /*
  * This test checks that when a user types in some input types, it will not be
@@ -57,8 +57,7 @@ function runTestsForNextInputType()
 function checkValueSubmittedIsValid()
 {
   is(frames.submit_frame.location.href,
-     'http://mochi.test:8888/tests/dom/html/test/forms/foo?i='
-     + urlify(gValidData[valueIndex++]),
+     `${location.origin}/tests/dom/html/test/forms/foo?i=${urlify(gValidData[valueIndex++])}`,
      "The submitted value should not have been sanitized");
 
   input.value = "";
@@ -80,7 +79,7 @@ function checkValueSubmittedIsValid()
 function checkValueSubmittedIsInvalid()
 {
   is(frames.submit_frame.location.href,
-     'http://mochi.test:8888/tests/dom/html/test/forms/foo?i=',
+     `${location.origin}/tests/dom/html/test/forms/foo?i=`,
      "The submitted value should have been sanitized");
 
   valueIndex++;
@@ -169,24 +168,6 @@ function* runTest()
         '2000/W30',
         '1985-W00',
         '1000-W'
-      ]
-    },
-    {
-      type: 'datetime-local',
-      validData: [
-        '0001-01-01T00:00',
-        '2016-11-07T16:45',
-        '2016-11-07T16:45:30',
-        '2016-11-07T16:45:30.10',
-        '2016-11-07T16:45:00.111',
-      ],
-      invalidData: [
-        '1-01-01T00:00',
-        '1970-01-01T9:30',
-        '2016/11/07T16:45',
-        '2016-11-07T16.45',
-        'T',
-        'datetime-local'
       ]
     },
   ];

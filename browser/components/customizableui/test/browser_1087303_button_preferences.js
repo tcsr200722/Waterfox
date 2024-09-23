@@ -7,7 +7,7 @@
 
 var newTab = null;
 
-add_task(async function() {
+add_task(async function () {
   info("Check preferences button existence and functionality");
   CustomizableUI.addWidgetToArea(
     "preferences-button",
@@ -47,7 +47,7 @@ function waitForPageLoad(aTab) {
       reject("Page didn't load within " + 20000 + "ms");
     }, 20000);
 
-    async function onTabLoad(event) {
+    async function onTabLoad() {
       clearTimeout(timeoutId);
       aTab.linkedBrowser.removeEventListener("load", onTabLoad, true);
       info("Tab event received: load");

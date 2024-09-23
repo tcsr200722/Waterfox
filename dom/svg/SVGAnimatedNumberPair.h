@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGNUMBERPAIR_H__
-#define __NS_SVGNUMBERPAIR_H__
+#ifndef DOM_SVG_SVGANIMATEDNUMBERPAIR_H_
+#define DOM_SVG_SVGANIMATEDNUMBERPAIR_H_
 
 #include "DOMSVGAnimatedNumber.h"
 #include "nsCycleCollectionParticipant.h"
@@ -27,7 +27,8 @@ class SVGElement;
 
 class SVGAnimatedNumberPair {
  public:
-  typedef mozilla::dom::SVGElement SVGElement;
+  friend class AutoChangeNumberPairNotifier;
+  using SVGElement = dom::SVGElement;
 
   enum PairIndex { eFirst, eSecond };
 
@@ -60,9 +61,9 @@ class SVGAnimatedNumberPair {
   // usable, and represents the default base value of the attribute.
   bool IsExplicitlySet() const { return mIsAnimated || mIsBaseSet; }
 
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedNumber> ToDOMAnimatedNumber(
+  already_AddRefed<dom::DOMSVGAnimatedNumber> ToDOMAnimatedNumber(
       PairIndex aIndex, SVGElement* aSVGElement);
-  mozilla::UniquePtr<SMILAttr> ToSMILAttr(SVGElement* aSVGElement);
+  UniquePtr<SMILAttr> ToSMILAttr(SVGElement* aSVGElement);
 
  private:
   float mAnimVal[2];
@@ -74,26 +75,24 @@ class SVGAnimatedNumberPair {
  public:
   // DOM wrapper class for the (DOM)SVGAnimatedNumber interface where the
   // wrapped class is SVGAnimatedNumberPair.
-  struct DOMAnimatedNumber final : public mozilla::dom::DOMSVGAnimatedNumber {
+  struct DOMAnimatedNumber final : public dom::DOMSVGAnimatedNumber {
     DOMAnimatedNumber(SVGAnimatedNumberPair* aVal, PairIndex aIndex,
                       SVGElement* aSVGElement)
-        : mozilla::dom::DOMSVGAnimatedNumber(aSVGElement),
-          mVal(aVal),
-          mIndex(aIndex) {}
+        : dom::DOMSVGAnimatedNumber(aSVGElement), mVal(aVal), mIndex(aIndex) {}
     virtual ~DOMAnimatedNumber();
 
     SVGAnimatedNumberPair* mVal;  // kept alive because it belongs to content
     PairIndex mIndex;             // are we the first or second number
 
-    virtual float BaseVal() override { return mVal->GetBaseValue(mIndex); }
-    virtual void SetBaseVal(float aValue) override {
-      MOZ_ASSERT(mozilla::IsFinite(aValue));
+    float BaseVal() override { return mVal->GetBaseValue(mIndex); }
+    void SetBaseVal(float aValue) override {
+      MOZ_ASSERT(std::isfinite(aValue));
       mVal->SetBaseValue(aValue, mIndex, mSVGElement);
     }
 
     // Script may have modified animation parameters or timeline -- DOM getters
     // need to flush any resample requests to reflect these modifications.
-    virtual float AnimVal() override {
+    float AnimVal() override {
       mSVGElement->FlushAnimations();
       return mVal->GetAnimValue(mIndex);
     }
@@ -111,16 +110,16 @@ class SVGAnimatedNumberPair {
     SVGElement* mSVGElement;
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr,
-        const mozilla::dom::SVGAnimationElement* aSrcElement, SMILValue& aValue,
-        bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aValue) override;
   };
 };
 
 }  // namespace mozilla
 
-#endif  //__NS_SVGNUMBERPAIR_H__
+#endif  // DOM_SVG_SVGANIMATEDNUMBERPAIR_H_

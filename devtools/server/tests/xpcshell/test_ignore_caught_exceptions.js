@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow */
 
 "use strict";
 
@@ -11,13 +10,16 @@
 
 add_task(
   threadFrontTest(
-    async ({ threadFront, debuggee }) => {
+    async ({ threadFront, debuggee, commands }) => {
       await executeOnNextTickAndWaitForPause(
         () => evaluateTestCode(debuggee),
         threadFront
       );
 
-      threadFront.pauseOnExceptions(true, true);
+      await commands.threadConfigurationCommand.updateConfiguration({
+        pauseOnExceptions: true,
+        ignoreCaughtExceptions: true,
+      });
       await resume(threadFront);
       const paused = await waitForPause(threadFront);
       Assert.equal(paused.why.type, "exception");
@@ -33,7 +35,7 @@ add_task(
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
+  // prettier-ignore
   try {
   Cu.evalInSandbox(`                    // 1
    debugger;                            // 2
@@ -48,5 +50,4 @@ function evaluateTestCode(debuggee) {
     1
   );
   } catch (e) {}
-  /* eslint-disable */
 }

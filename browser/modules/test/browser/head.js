@@ -1,13 +1,7 @@
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TelemetryTestUtils",
-  "resource://testing-common/TelemetryTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.sys.mjs",
+});
 
 const SINGLE_TRY_TIMEOUT = 100;
 const NUMBER_OF_TRIES = 30;
@@ -56,16 +50,17 @@ function waitForCondition(condition, nextTest, errorMsg) {
  * @param {String} fieldName
  *        The name of the field to write to.
  */
-let typeInSearchField = async function(browser, text, fieldName) {
-  await SpecialPowers.spawn(browser, [[fieldName, text]], async function([
-    contentFieldName,
-    contentText,
-  ]) {
-    // Put the focus on the search box.
-    let searchInput = content.document.getElementById(contentFieldName);
-    searchInput.focus();
-    searchInput.value = contentText;
-  });
+let typeInSearchField = async function (browser, text, fieldName) {
+  await SpecialPowers.spawn(
+    browser,
+    [[fieldName, text]],
+    async function ([contentFieldName, contentText]) {
+      // Put the focus on the search box.
+      let searchInput = content.document.getElementById(contentFieldName);
+      searchInput.focus();
+      searchInput.value = contentText;
+    }
+  );
 };
 
 /**
@@ -81,7 +76,7 @@ let typeInSearchField = async function(browser, text, fieldName) {
 function makeMockPermissionRequest(browser) {
   let type = {
     options: Cc["@mozilla.org/array;1"].createInstance(Ci.nsIArray),
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionType]),
+    QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionType"]),
   };
   let types = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
   types.appendElement(type);
@@ -100,10 +95,10 @@ function makeMockPermissionRequest(browser) {
     allow() {
       this._allowed = true;
     },
-    getDelegatePrincipal(aType) {
+    getDelegatePrincipal() {
       return principal;
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionRequest]),
+    QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionRequest"]),
   };
 
   // In the e10s-case, nsIContentPermissionRequest will have
@@ -159,7 +154,7 @@ function clickSecondaryAction(actionIndex) {
     return removePromise;
   }
 
-  return (async function() {
+  return (async function () {
     // Click the dropmarker arrow and wait for the menu to show up.
     let dropdownPromise = BrowserTestUtils.waitForEvent(
       popupNotification.menupopup,
@@ -172,9 +167,8 @@ function clickSecondaryAction(actionIndex) {
     // because they are injected into a <children> node in the XBL binding.
     // The target action is the menuitem at index actionIndex - 1, because the first
     // secondary action (index 0) is the button shown directly in the panel.
-    let actionMenuItem = popupNotification.querySelectorAll("menuitem")[
-      actionIndex - 1
-    ];
+    let actionMenuItem =
+      popupNotification.querySelectorAll("menuitem")[actionIndex - 1];
     await EventUtils.synthesizeMouseAtCenter(actionMenuItem, {});
     await removePromise;
   })();
@@ -211,4 +205,127 @@ async function disableNonReleaseActions() {
       false
     );
   }
+}
+
+function assertActivatedPageActionPanelHidden() {
+  Assert.ok(
+    !document.getElementById(BrowserPageActions._activatedActionPanelID)
+  );
+}
+
+function promiseOpenPageActionPanel() {
+  let dwu = window.windowUtils;
+  return TestUtils.waitForCondition(() => {
+    // Wait for the main page action button to become visible.  It's hidden for
+    // some URIs, so depending on when this is called, it may not yet be quite
+    // visible.  It's up to the caller to make sure it will be visible.
+    info("Waiting for main page action button to have non-0 size");
+    let bounds = dwu.getBoundsWithoutFlushing(
+      BrowserPageActions.mainButtonNode
+    );
+    return bounds.width > 0 && bounds.height > 0;
+  })
+    .then(() => {
+      // Wait for the panel to become open, by clicking the button if necessary.
+      info("Waiting for main page action panel to be open");
+      if (BrowserPageActions.panelNode.state == "open") {
+        return Promise.resolve();
+      }
+      let shownPromise = promisePageActionPanelShown();
+      EventUtils.synthesizeMouseAtCenter(BrowserPageActions.mainButtonNode, {});
+      return shownPromise;
+    })
+    .then(() => {
+      // Wait for items in the panel to become visible.
+      return promisePageActionViewChildrenVisible(
+        BrowserPageActions.mainViewNode
+      );
+    });
+}
+
+function promisePageActionPanelShown() {
+  return promisePanelShown(BrowserPageActions.panelNode);
+}
+
+function promisePageActionPanelHidden() {
+  return promisePanelHidden(BrowserPageActions.panelNode);
+}
+
+function promisePanelShown(panelIDOrNode) {
+  return promisePanelEvent(panelIDOrNode, "popupshown");
+}
+
+function promisePanelHidden(panelIDOrNode) {
+  return promisePanelEvent(panelIDOrNode, "popuphidden");
+}
+
+function promisePanelEvent(panelIDOrNode, eventType) {
+  return new Promise(resolve => {
+    let panel = panelIDOrNode;
+    if (typeof panel == "string") {
+      panel = document.getElementById(panelIDOrNode);
+      if (!panel) {
+        throw new Error(`Panel with ID "${panelIDOrNode}" does not exist.`);
+      }
+    }
+    if (
+      (eventType == "popupshown" && panel.state == "open") ||
+      (eventType == "popuphidden" && panel.state == "closed")
+    ) {
+      executeSoon(resolve);
+      return;
+    }
+    panel.addEventListener(
+      eventType,
+      () => {
+        executeSoon(resolve);
+      },
+      { once: true }
+    );
+  });
+}
+
+function promisePageActionViewShown() {
+  info("promisePageActionViewShown waiting for ViewShown");
+  return BrowserTestUtils.waitForEvent(
+    BrowserPageActions.panelNode,
+    "ViewShown"
+  ).then(async event => {
+    let panelViewNode = event.originalTarget;
+    await promisePageActionViewChildrenVisible(panelViewNode);
+    return panelViewNode;
+  });
+}
+
+async function promisePageActionViewChildrenVisible(panelViewNode) {
+  info(
+    "promisePageActionViewChildrenVisible waiting for a child node to be visible"
+  );
+  await new Promise(requestAnimationFrame);
+  let dwu = window.windowUtils;
+  return TestUtils.waitForCondition(() => {
+    let bodyNode = panelViewNode.firstElementChild;
+    for (let childNode of bodyNode.children) {
+      let bounds = dwu.getBoundsWithoutFlushing(childNode);
+      if (bounds.width > 0 && bounds.height > 0) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+async function initPageActionsTest() {
+  await disableNonReleaseActions();
+
+  // Ensure screenshots is really disabled (bug 1498738)
+  const addon = await AddonManager.getAddonByID("screenshots@mozilla.org");
+  await addon.disable({ allowSystemAddons: true });
+
+  // Make the main button visible. It's not unless the window is narrow. This
+  // test isn't concerned with that behavior. We have other tests for that.
+  BrowserPageActions.mainButtonNode.style.visibility = "visible";
+  registerCleanupFunction(() => {
+    BrowserPageActions.mainButtonNode.style.removeProperty("visibility");
+  });
 }

@@ -14,7 +14,6 @@
 #include "nsCOMPtr.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStringFwd.h"
-#include "plstr.h"
 #include "js/TypeDecls.h"
 
 #include <stdint.h>
@@ -26,6 +25,10 @@ namespace mozilla {
 class OriginAttributes;
 class SystemPrincipal;
 }  // namespace mozilla
+
+namespace JS {
+enum class RuntimeCode;
+}  // namespace JS
 
 /////////////////////////////
 // nsScriptSecurityManager //
@@ -67,6 +70,7 @@ class nsScriptSecurityManager final : public nsIScriptSecurityManager {
    */
   static bool SecurityCompareURIs(nsIURI* aSourceURI, nsIURI* aTargetURI);
   static uint32_t SecurityHashURI(nsIURI* aURI);
+  static bool IsHttpOrHttpsAndCrossOrigin(nsIURI* aUriA, nsIURI* aUriB);
 
   static nsresult ReportError(const char* aMessageTag, nsIURI* aSource,
                               nsIURI* aTarget, bool aFromPrivateWindow,
@@ -76,8 +80,6 @@ class nsScriptSecurityManager final : public nsIScriptSecurityManager {
                               const nsACString& targetSpec,
                               bool aFromPrivateWindow,
                               uint64_t aInnerWindowID = 0);
-
-  static uint32_t HashPrincipalByOrigin(nsIPrincipal* aPrincipal);
 
   static bool GetStrictFileOriginPolicy() { return sStrictFileOriginPolicy; }
 
@@ -90,7 +92,8 @@ class nsScriptSecurityManager final : public nsIScriptSecurityManager {
 
   // Decides, based on CSP, whether or not eval() and stuff can be executed.
   static bool ContentSecurityPolicyPermitsJSAction(JSContext* cx,
-                                                   JS::HandleString aCode);
+                                                   JS::RuntimeCode kind,
+                                                   JS::Handle<JSString*> aCode);
 
   static bool JSPrincipalsSubsume(JSPrincipals* first, JSPrincipals* second);
 
@@ -129,9 +132,9 @@ class nsScriptSecurityManager final : public nsIScriptSecurityManager {
   // policy machinery will be removed soon.
   nsCOMPtr<nsIDomainPolicy> mDomainPolicy;
 
-  static bool sStrictFileOriginPolicy;
+  static std::atomic<bool> sStrictFileOriginPolicy;
 
-  static nsIIOService* sIOService;
+  static mozilla::StaticRefPtr<nsIIOService> sIOService;
   static nsIStringBundle* sStrBundle;
 };
 

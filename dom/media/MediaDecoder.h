@@ -17,6 +17,7 @@
 #  include "MediaResource.h"
 #  include "MediaStatistics.h"
 #  include "SeekTarget.h"
+#  include "TelemetryProbesReporter.h"
 #  include "TimeUnits.h"
 #  include "mozilla/Atomics.h"
 #  include "mozilla/CDMProxy.h"
@@ -35,10 +36,6 @@ class nsIPrincipal;
 
 namespace mozilla {
 
-namespace dom {
-class MediaMemoryInfo;
-}
-
 class AbstractThread;
 class DOMMediaStream;
 class DecoderBenchmark;
@@ -46,13 +43,50 @@ class ProcessedMediaTrack;
 class FrameStatistics;
 class VideoFrameContainer;
 class MediaFormatReader;
-class MediaDecoderStateMachine;
+class MediaDecoderStateMachineBase;
 struct MediaPlaybackEvent;
+struct SharedDummyTrack;
 
-enum class Visibility : uint8_t;
+template <typename T>
+struct DurationToType {
+  double operator()(double aDouble);
+  double operator()(const media::TimeUnit& aTimeUnit);
+};
+
+template <>
+struct DurationToType<double> {
+  double operator()(double aDouble) { return aDouble; }
+  double operator()(const media::TimeUnit& aTimeUnit) {
+    if (aTimeUnit.IsValid()) {
+      if (aTimeUnit.IsPosInf()) {
+        return std::numeric_limits<double>::infinity();
+      }
+      if (aTimeUnit.IsNegInf()) {
+        return -std::numeric_limits<double>::infinity();
+      }
+      return aTimeUnit.ToSeconds();
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+};
+
+using DurationToDouble = DurationToType<double>;
+
+template <>
+struct DurationToType<media::TimeUnit> {
+  media::TimeUnit operator()(double aDouble) {
+    return media::TimeUnit::FromSeconds(aDouble);
+  }
+  media::TimeUnit operator()(const media::TimeUnit& aTimeUnit) {
+    return aTimeUnit;
+  }
+};
+
+using DurationToTimeUnit = DurationToType<media::TimeUnit>;
 
 struct MOZ_STACK_CLASS MediaDecoderInit {
   MediaDecoderOwner* const mOwner;
+  TelemetryProbesReporterOwner* const mReporterOwner;
   const double mVolume;
   const bool mPreservesPitch;
   const double mPlaybackRate;
@@ -60,12 +94,15 @@ struct MOZ_STACK_CLASS MediaDecoderInit {
   const bool mHasSuspendTaint;
   const bool mLooping;
   const MediaContainerType mContainerType;
+  const nsAutoString mStreamName;
 
-  MediaDecoderInit(MediaDecoderOwner* aOwner, double aVolume,
+  MediaDecoderInit(MediaDecoderOwner* aOwner,
+                   TelemetryProbesReporterOwner* aReporterOwner, double aVolume,
                    bool aPreservesPitch, double aPlaybackRate,
                    bool aMinimizePreroll, bool aHasSuspendTaint, bool aLooping,
                    const MediaContainerType& aContainerType)
       : mOwner(aOwner),
+        mReporterOwner(aReporterOwner),
         mVolume(aVolume),
         mPreservesPitch(aPreservesPitch),
         mPlaybackRate(aPlaybackRate),
@@ -87,7 +124,6 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
 
   // Enumeration for the valid play states (see mPlayState)
   enum PlayState {
-    PLAY_STATE_START,
     PLAY_STATE_LOADING,
     PLAY_STATE_PAUSED,
     PLAY_STATE_PLAYING,
@@ -132,17 +168,13 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // the seek target.
   void Seek(double aTime, SeekTarget::Type aSeekType);
 
-  // Initialize state machine and schedule it.
-  nsresult InitializeStateMachine();
-
   // Start playback of a video. 'Load' must have previously been
   // called.
   virtual void Play();
 
   // Notify activity of the decoder owner is changed.
-  virtual void NotifyOwnerActivityChanged(bool aIsDocumentVisible,
-                                          Visibility aElementVisibility,
-                                          bool aIsElementInTree);
+  virtual void NotifyOwnerActivityChanged(bool aIsOwnerInvisible,
+                                          bool aIsOwnerConnected);
 
   // Pause video playback.
   virtual void Pause();
@@ -152,6 +184,7 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   void SetPlaybackRate(double aPlaybackRate);
   void SetPreservesPitch(bool aPreservesPitch);
   void SetLooping(bool aLooping);
+  void SetStreamName(const nsAutoString& aStreamName);
 
   // Set the given device as the output device.
   RefPtr<GenericPromise> SetSink(AudioDeviceInfo* aSinkDevice);
@@ -173,13 +206,32 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // replaying after the input as ended. In the latter case, the new source is
   // not connected to streams created by captureStreamUntilEnded.
 
-  // Turn output capturing of this decoder on or off. If it is on, the
-  // MediaDecoderStateMachine's media sink will only play after output tracks
-  // have been set. This is to ensure that it doesn't skip over any data
-  // while the owner has intended to capture the full output, thus missing to
-  // capture some of it. The owner of the MediaDecoder is responsible for adding
-  // output tracks in a timely fashion while the output is captured.
-  void SetOutputCaptured(bool aCaptured);
+  enum class OutputCaptureState { Capture, Halt, None };
+  const char* OutputCaptureStateToStr(OutputCaptureState aState) const {
+    switch (aState) {
+      case OutputCaptureState::Capture:
+        return "Capture";
+      case OutputCaptureState::Halt:
+        return "Halt";
+      case OutputCaptureState::None:
+        return "None";
+      default:
+        MOZ_ASSERT_UNREACHABLE("Not defined state!");
+        return "Not-defined";
+    }
+  }
+
+  // Set the output capture state of this decoder.
+  // @param aState Capture: Output is captured into output tracks, and
+  //                        aDummyTrack must be provided.
+  //               Halt:    A capturing media sink is used, but capture is
+  //                        halted.
+  //               None:    Output is not captured.
+  // @param aDummyTrack A SharedDummyTrack the capturing media sink can use to
+  //                    access a MediaTrackGraph, so it can create tracks even
+  //                    when there are no output tracks available.
+  void SetOutputCaptureState(OutputCaptureState aState,
+                             SharedDummyTrack* aDummyTrack = nullptr);
   // Add an output track. All decoder output for the track's media type will be
   // sent to the track.
   // Note that only one audio track and one video track is supported by
@@ -218,8 +270,14 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // supports range requests, we are playing a file, etc.).
   virtual bool IsTransportSeekable() = 0;
 
-  // Return the time ranges that can be seeked into.
+  // Return the time ranges that can be seeked into, in TimeUnits.
   virtual media::TimeIntervals GetSeekable();
+  // Return the time ranges that can be seeked into, in seconds, double
+  // precision.
+  virtual media::TimeRanges GetSeekableTimeRanges();
+
+  template <typename T>
+  T GetSeekableImpl();
 
   // Set the end time of the media resource. When playback reaches
   // this point the media pauses. aTime is in seconds.
@@ -250,8 +308,8 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // SetLoadInBackground() on mResource.
   virtual void SetLoadInBackground(bool aLoadInBackground) {}
 
-  MediaDecoderStateMachine* GetStateMachine() const;
-  void SetStateMachine(MediaDecoderStateMachine* aStateMachine);
+  MediaDecoderStateMachineBase* GetStateMachine() const;
+  void SetStateMachine(MediaDecoderStateMachineBase* aStateMachine);
 
   // Constructs the time ranges representing what segments of the media
   // are buffered and playable.
@@ -288,22 +346,13 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
 
   layers::ImageContainer* GetImageContainer();
 
-  // Fire timeupdate events if needed according to the time constraints
-  // outlined in the specification.
-  void FireTimeUpdate();
-
-  // True if we're going to loop back to the head position when media is in
-  // looping.
-  bool IsLoopingBack(double aPrevPos, double aCurPos) const;
-
   // Returns true if we can play the entire media through without stopping
   // to buffer, given the current download and playback rates.
   bool CanPlayThrough();
 
   // Called from HTMLMediaElement when owner document activity changes
-  virtual void SetElementVisibility(bool aIsDocumentVisible,
-                                    Visibility aElementVisibility,
-                                    bool aIsElementInTree);
+  virtual void SetElementVisibility(bool aIsOwnerInvisible,
+                                    bool aIsOwnerConnected);
 
   // Force override the visible state to hidden.
   // Called from HTMLMediaElement when testing of video decode suspend from
@@ -319,11 +368,16 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   void UpdateVideoDecodeMode();
 
   void SetSecondaryVideoContainer(
-      RefPtr<VideoFrameContainer> aSecondaryVideoContainer);
+      const RefPtr<VideoFrameContainer>& aSecondaryVideoContainer);
 
   void SetIsBackgroundVideoDecodingAllowed(bool aAllowed);
 
   bool IsVideoDecodingSuspended() const;
+
+  // The MediaDecoderOwner of this decoder wants to resist fingerprinting.
+  bool ShouldResistFingerprinting() const {
+    return mShouldResistFingerprinting;
+  }
 
   /******
    * The following methods must only be called on the main
@@ -379,10 +433,6 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   static bool IsWaveEnabled();
   static bool IsWebMEnabled();
 
-#  ifdef MOZ_WMF
-  static bool IsWMFEnabled();
-#  endif
-
   // Return the frame decode/paint related statistics.
   FrameStatistics& GetFrameStatistics() { return *mFrameStats; }
 
@@ -402,6 +452,8 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
 
   void GetDebugInfo(dom::MediaDecoderDebugInfo& aInfo);
 
+  virtual bool IsHLSDecoder() const { return false; }
+
  protected:
   virtual ~MediaDecoder();
 
@@ -410,7 +462,20 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   virtual void FirstFrameLoaded(UniquePtr<MediaInfo> aInfo,
                                 MediaDecoderEventVisibility aEventVisibility);
 
+  // Return error if fail to init the state machine.
+  nsresult CreateAndInitStateMachine(bool aIsLiveStream,
+                                     bool aDisableExternalEngine = false);
+
+  // Always return a state machine. If the decoder supports using external
+  // engine, `aDisableExternalEngine` can disable the external engine if needed.
+  virtual MediaDecoderStateMachineBase* CreateStateMachine(
+      bool aDisableExternalEngine) MOZ_NONNULL_RETURN = 0;
+
   void SetStateMachineParameters();
+
+  // Disconnect any events before shutting down the state machine.
+  void DisconnectEvents();
+  RefPtr<ShutdownPromise> ShutdownStateMachine();
 
   // Called when MediaDecoder shutdown is finished. Subclasses use this to clean
   // up internal structures, and unregister potential shutdown blockers when
@@ -445,6 +510,8 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
                               UniquePtr<MetadataTags> aTags,
                               MediaDecoderEventVisibility aEventVisibility);
 
+  void SetLogicalPosition(const media::TimeUnit& aNewPosition);
+
   /******
    * The following members should be accessed with the decoder lock held.
    ******/
@@ -465,7 +532,10 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   already_AddRefed<layers::KnowsCompositor> GetCompositor();
 
   // Official duration of the media resource as observed by script.
-  double mDuration;
+  // This can be a TimeUnit representing the exact duration found by demuxing,
+  // as a TimeUnit. This can also be a duration set explicitly by script, as a
+  // double.
+  Variant<media::TimeUnit, double> mDuration;
 
   /******
    * The following member variables can be accessed from any thread.
@@ -491,14 +561,17 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
 
   void OnNextFrameStatus(MediaDecoderOwner::NextFrameStatus);
 
+  void OnTrackInfoUpdated(const VideoInfo& aVideoInfo,
+                          const AudioInfo& aAudioInfo);
+
   void OnSecondaryVideoContainerInstalled(
-      const RefPtr<VideoFrameContainer>& aSecondaryContainer);
+      const RefPtr<VideoFrameContainer>& aSecondaryVideoContainer);
 
   void OnStoreDecoderBenchmark(const VideoInfo& aInfo);
 
   void FinishShutdown();
 
-  void ConnectMirrors(MediaDecoderStateMachine* aObject);
+  void ConnectMirrors(MediaDecoderStateMachineBase* aObject);
   void DisconnectMirrors();
 
   virtual bool CanPlayThroughImpl() = 0;
@@ -510,7 +583,7 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // is safe to access it during this period.
   //
   // Explicitly prievate to force access via accessors.
-  RefPtr<MediaDecoderStateMachine> mDecoderStateMachine;
+  RefPtr<MediaDecoderStateMachineBase> mDecoderStateMachine;
 
  protected:
   void NotifyReaderDataArrived();
@@ -563,14 +636,12 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // only be accessed from main thread.
   UniquePtr<MediaInfo> mInfo;
 
-  // Tracks the visibility status of owner element's document.
-  bool mIsDocumentVisible;
+  // True if the owner element is actually visible to users.
+  bool mIsOwnerInvisible;
 
-  // Tracks the visibility status of owner element.
-  Visibility mElementVisibility;
-
-  // Tracks the owner is in-tree or not.
-  bool mIsElementInTree;
+  // True if the owner element is connected to a document tree.
+  // https://dom.spec.whatwg.org/#connected
+  bool mIsOwnerConnected;
 
   // If true, forces the decoder to be considered hidden.
   bool mForcedHidden;
@@ -578,6 +649,9 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // True if the decoder has a suspend taint - meaning suspend-video-decoder is
   // disabled.
   bool mHasSuspendTaint;
+
+  // If true, the decoder should resist fingerprinting.
+  const bool mShouldResistFingerprinting;
 
   MediaDecoderOwner::NextFrameStatus mNextFrameStatus =
       MediaDecoderOwner::NEXT_FRAME_UNAVAILABLE;
@@ -596,6 +670,7 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   MediaEventListener mOnWaitingForKey;
   MediaEventListener mOnDecodeWarning;
   MediaEventListener mOnNextFrameStatus;
+  MediaEventListener mOnTrackInfoUpdated;
   MediaEventListener mOnSecondaryVideoContainerInstalled;
   MediaEventListener mOnStoreDecoderBenchmark;
 
@@ -628,6 +703,8 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
 
   Canonical<bool> mLooping;
 
+  Canonical<nsAutoString> mStreamName;
+
   // The device used with SetSink, or nullptr if no explicit device has been
   // set.
   Canonical<RefPtr<AudioDeviceInfo>> mSinkDevice;
@@ -636,9 +713,13 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   // should not suspend the decoder.
   Canonical<RefPtr<VideoFrameContainer>> mSecondaryVideoContainer;
 
-  // Whether this MediaDecoder's output is captured. When captured, all decoded
-  // data must be played out through mOutputTracks.
-  Canonical<bool> mOutputCaptured;
+  // Whether this MediaDecoder's output is captured, halted or not captured.
+  // When captured, all decoded data must be played out through mOutputTracks.
+  Canonical<OutputCaptureState> mOutputCaptureState;
+
+  // A dummy track used to access the right MediaTrackGraph instance. Needed
+  // since there's no guarantee that output tracks are present.
+  Canonical<nsMainThreadPtrHandle<SharedDummyTrack>> mOutputDummyTrack;
 
   // Tracks that, if set, will get data routed through them.
   Canonical<CopyableTArray<RefPtr<ProcessedMediaTrack>>> mOutputTracks;
@@ -678,43 +759,84 @@ class MediaDecoder : public DecoderDoctorLifeLogger<MediaDecoder> {
   Maybe<SeekTarget> mDelayedSeekTarget;
 
  public:
-  AbstractCanonical<double>* CanonicalVolume() { return &mVolume; }
-  AbstractCanonical<bool>* CanonicalPreservesPitch() {
-    return &mPreservesPitch;
+  Canonical<double>& CanonicalVolume() { return mVolume; }
+  Canonical<bool>& CanonicalPreservesPitch() { return mPreservesPitch; }
+  Canonical<bool>& CanonicalLooping() { return mLooping; }
+  Canonical<nsAutoString>& CanonicalStreamName() { return mStreamName; }
+  Canonical<RefPtr<AudioDeviceInfo>>& CanonicalSinkDevice() {
+    return mSinkDevice;
   }
-  AbstractCanonical<bool>* CanonicalLooping() { return &mLooping; }
-  AbstractCanonical<RefPtr<AudioDeviceInfo>>* CanonicalSinkDevice() {
-    return &mSinkDevice;
+  Canonical<RefPtr<VideoFrameContainer>>& CanonicalSecondaryVideoContainer() {
+    return mSecondaryVideoContainer;
   }
-  AbstractCanonical<RefPtr<VideoFrameContainer>>*
-  CanonicalSecondaryVideoContainer() {
-    return &mSecondaryVideoContainer;
+  Canonical<OutputCaptureState>& CanonicalOutputCaptureState() {
+    return mOutputCaptureState;
   }
-  AbstractCanonical<bool>* CanonicalOutputCaptured() {
-    return &mOutputCaptured;
+  Canonical<nsMainThreadPtrHandle<SharedDummyTrack>>&
+  CanonicalOutputDummyTrack() {
+    return mOutputDummyTrack;
   }
-  AbstractCanonical<CopyableTArray<RefPtr<ProcessedMediaTrack>>>*
+  Canonical<CopyableTArray<RefPtr<ProcessedMediaTrack>>>&
   CanonicalOutputTracks() {
-    return &mOutputTracks;
+    return mOutputTracks;
   }
-  AbstractCanonical<PrincipalHandle>* CanonicalOutputPrincipal() {
-    return &mOutputPrincipal;
+  Canonical<PrincipalHandle>& CanonicalOutputPrincipal() {
+    return mOutputPrincipal;
   }
-  AbstractCanonical<PlayState>* CanonicalPlayState() { return &mPlayState; }
+  Canonical<PlayState>& CanonicalPlayState() { return mPlayState; }
+
+  void UpdateTelemetryHelperBasedOnPlayState(PlayState aState) const;
+
+  TelemetryProbesReporter::Visibility OwnerVisibility() const;
+
+  // Those methods exist to report telemetry related metrics.
+  double GetTotalVideoPlayTimeInSeconds() const;
+  double GetTotalVideoHDRPlayTimeInSeconds() const;
+  double GetVisibleVideoPlayTimeInSeconds() const;
+  double GetInvisibleVideoPlayTimeInSeconds() const;
+  double GetVideoDecodeSuspendedTimeInSeconds() const;
+  double GetTotalAudioPlayTimeInSeconds() const;
+  double GetAudiblePlayTimeInSeconds() const;
+  double GetInaudiblePlayTimeInSeconds() const;
+  double GetMutedPlayTimeInSeconds() const;
 
  private:
+  /**
+   * This enum describes the reason why we need to update the logical position.
+   * ePeriodicUpdate : the position grows periodically during playback
+   * eSeamlessLoopingSeeking : the position changes due to demuxer level seek.
+   * eOther : due to normal seeking or other attributes changes, eg. playstate
+   */
+  enum class PositionUpdate {
+    ePeriodicUpdate,
+    eSeamlessLoopingSeeking,
+    eOther,
+  };
+  PositionUpdate GetPositionUpdateReason(double aPrevPos,
+                                         const media::TimeUnit& aCurPos) const;
+
   // Notify owner when the audible state changed
   void NotifyAudibleStateChanged();
+
+  void NotifyVolumeChanged();
 
   bool mTelemetryReported;
   const MediaContainerType mContainerType;
   bool mCanPlayThrough = false;
+
+  UniquePtr<TelemetryProbesReporter> mTelemetryProbesReporter;
+
+#  ifdef MOZ_WMF_MEDIA_ENGINE
+  // True when we need to update the newly created MDSM's status to make it
+  // consistent with the previous destroyed one.
+  bool mPendingStatusUpdateForNewlyCreatedStateMachine = false;
+#  endif
+
+  // The time of creating the media decoder state machine, it's used to record
+  // the probe for measuring the first video frame loaded time. Reset after
+  // reporting the measurement to avoid a dulpicated report.
+  Maybe<TimeStamp> mMDSMCreationTime;
 };
-
-typedef MozPromise<mozilla::dom::MediaMemoryInfo, nsresult, true>
-    MediaMemoryPromise;
-
-RefPtr<MediaMemoryPromise> GetMediaMemorySizes();
 
 }  // namespace mozilla
 

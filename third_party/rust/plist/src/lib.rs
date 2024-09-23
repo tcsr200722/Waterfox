@@ -8,7 +8,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! plist = "0.5"
+//! plist = "1"
 //! ```
 //!
 //! And put this in your crate root:
@@ -72,6 +72,8 @@
 //! specify a tilde requirement e.g. `plist = "~1.0.3"` in you `Cargo.toml` so that the plist crate
 //! is not automatically updated to version 1.1.
 
+#![allow(warnings)] // Third-party
+
 pub mod dictionary;
 
 #[cfg(feature = "enable_unstable_features_that_may_break_with_minor_version_bumps")]
@@ -89,6 +91,7 @@ pub use date::Date;
 pub use dictionary::Dictionary;
 pub use error::Error;
 pub use integer::Integer;
+pub use stream::XmlWriteOptions;
 pub use uid::Uid;
 pub use value::Value;
 
@@ -110,8 +113,10 @@ mod ser;
 pub use self::{de::Deserializer, ser::Serializer};
 #[cfg(feature = "serde")]
 pub use self::{
-    de::{from_file, from_reader, from_reader_xml},
-    ser::{to_file_binary, to_file_xml, to_writer_binary, to_writer_xml},
+    de::{from_bytes, from_file, from_reader, from_reader_xml},
+    ser::{
+        to_file_binary, to_file_xml, to_writer_binary, to_writer_xml, to_writer_xml_with_options,
+    },
 };
 
 #[cfg(all(test, feature = "serde"))]

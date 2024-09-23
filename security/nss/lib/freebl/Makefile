@@ -101,6 +101,9 @@ endif
 ifdef NSS_NO_INIT_SUPPORT
     DEFINES += -DNSS_NO_INIT_SUPPORT
 endif
+ifdef NSS_STRICT_INTEGRITY
+    DEFINES += -DNSS_STRICT_INTEGRITY_
+endif
 
 ifdef FREEBL_PRELINK_COMMAND
 	DEFINES +=-DFREEBL_PRELINK_COMMAND=\"$(FREEBL_PRELINK_COMMAND)\"
@@ -118,34 +121,61 @@ ifneq (,$(USE_64)$(USE_X32))
 else
         DEFINES += -DNSS_X86
 endif
+    ifdef CC_IS_CLANG
+        EXTRA_SRCS += sha256-x86.c
+        DEFINES += -DUSE_HW_SHA2
+    else ifeq (1,$(CC_IS_GCC))
+        # Old compiler doesn't support Intel SHA extension
+        ifneq (,$(filter 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
+            EXTRA_SRCS += sha256-x86.c
+            DEFINES += -DUSE_HW_SHA2
+        endif
+        ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
+            EXTRA_SRCS += sha256-x86.c
+            DEFINES += -DUSE_HW_SHA2
+        endif
+    endif
 endif
 ifeq ($(CPU_ARCH),aarch64)
-    DEFINES += -DUSE_HW_AES
-    EXTRA_SRCS += aes-armv8.c gcm-aarch64.c
+    ifdef CC_IS_CLANG
+        DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+        EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
+    else ifeq (1,$(CC_IS_GCC))
+        # GCC versions older than 4.9 don't support ARM AES. The check
+        # is done in two parts, first allows "major.minor" == "4.9",
+        # and then rejects any major versions prior to 5. Note that
+        # there has been no GCC 4.10, as it was renamed to GCC 5.
+        ifneq (,$(filter 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
+            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+            EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
+        endif
+        ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
+            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+            EXTRA_SRCS += aes-armv8.c gcm-aarch64.c sha1-armv8.c sha256-armv8.c
+        endif
+    endif
 endif
 ifeq ($(CPU_ARCH),arm)
 ifndef NSS_DISABLE_ARM32_NEON
     EXTRA_SRCS += gcm-arm32-neon.c
 endif
     ifdef CC_IS_CLANG
-        DEFINES += -DUSE_HW_AES
-        EXTRA_SRCS += aes-armv8.c
+        DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+        EXTRA_SRCS += aes-armv8.c sha1-armv8.c sha256-armv8.c
     else ifeq (1,$(CC_IS_GCC))
-        # Old compiler doesn't support ARM AES.
+        # GCC versions older than 4.9 don't support ARM AES. The check
+        # is done in two parts, first allows "major.minor" == "4.9",
+        # and then rejects any major versions prior to 5. Note that
+        # there has been no GCC 4.10, as it was renamed to GCC 5.
         ifneq (,$(filter 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
-            DEFINES += -DUSE_HW_AES
-            EXTRA_SRCS += aes-armv8.c
+            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+            EXTRA_SRCS += aes-armv8.c sha1-armv8.c sha256-armv8.c
         endif
         ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
-            DEFINES += -DUSE_HW_AES
-            EXTRA_SRCS += aes-armv8.c
+            DEFINES += -DUSE_HW_AES -DUSE_HW_SHA1 -DUSE_HW_SHA2
+            EXTRA_SRCS += aes-armv8.c sha1-armv8.c sha256-armv8.c
         endif
     endif
-endif
-
-ifeq ($(OS_TARGET),OSF1)
-    DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_NO_MP_WORD
-    MPI_SRCS += mpvalpha.c
 endif
 
 ifeq (OS2,$(OS_TARGET))
@@ -186,6 +216,11 @@ else
 	    INTEL_GCM_CLANG_CL = 1
 	endif
     endif
+    # The Intel SHA extenstion requires Visual C++ 2015.
+    ifeq ($(_MSC_VER_GE_14),1)
+        DEFINES += -DUSE_HW_SHA2
+        EXTRA_SRCS += sha256-x86.c
+    endif
 endif
 else
     # -DMP_NO_MP_WORD
@@ -198,6 +233,7 @@ else
     ifdef BUILD_OPT
 	OPTIMIZER += -Ox  # maximum optimization for freebl
     endif
+ifeq ($(CPU_ARCH),x86_64)
     ASFILES  = arcfour-amd64-masm.asm mpi_amd64_masm.asm mp_comba_amd64_masm.asm
     DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
     DEFINES += -DNSS_USE_COMBA
@@ -211,26 +247,24 @@ else
 	    INTEL_GCM_CLANG_CL = 1
 	endif
     endif
+    # The Intel SHA extenstion requires Visual C++ 2015.
+    ifeq ($(_MSC_VER_GE_14),1)
+        DEFINES += -DUSE_HW_SHA2
+        EXTRA_SRCS += sha256-x86.c
+    endif
     MPI_SRCS += mpi_amd64.c
 endif
 endif
 endif
-
-ifeq ($(OS_TARGET),IRIX)
-ifeq ($(USE_N32),1)
-    ASFILES  = mpi_mips.s
-    ifeq ($(NS_USE_GCC),1)
-	ASFLAGS = -Wp,-P -Wp,-traditional -O -mips3
-    else
-	ASFLAGS = -O -OPT:Olimit=4000 -dollar -fullwarn -xansi -n32 -mips3
-    endif
-    DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE
-    DEFINES += -DMP_USE_UINT_DIGIT
-endif
 endif
 
 ifeq ($(OS_TARGET),Darwin)
-ifeq ($(CPU_ARCH),x86)
+ifeq ($(CPU_ARCH),x86_64)
+    ASFILES  = mpi_amd64_common.s
+    DEFINES += -DMPI_AMD64 -DMP_IS_LITTLE_ENDIAN
+    DEFINES += -DMP_ASSEMBLY_MULTIPLY -DNSS_USE_COMBA
+    MPI_SRCS += mpi_amd64.c mp_comba.c
+else ifeq ($(CPU_ARCH),x86)
     ASFILES  = mpi_sse2.s
     DEFINES += -DMP_USE_UINT_DIGIT
     DEFINES += -DMP_ASSEMBLY_MULTIPLY -DMP_ASSEMBLY_SQUARE
@@ -240,7 +274,8 @@ endif # Darwin
 
 ifeq ($(OS_TARGET),Linux)
 ifeq ($(CPU_ARCH),x86_64)
-    ASFILES  = arcfour-amd64-gas.s mpi_amd64_gas.s
+    # Lower case s on mpi_amd64_common due to make implicit rules.
+    ASFILES  = arcfour-amd64-gas.s mpi_amd64_common.s
     ASFLAGS += -fPIC -Wa,--noexecstack
     DEFINES += -DNSS_BEVAND_ARCFOUR -DMPI_AMD64 -DMP_ASSEMBLY_MULTIPLY
     DEFINES += -DNSS_USE_COMBA
@@ -267,9 +302,17 @@ ifeq ($(CPU_ARCH),arm)
 endif
 ifeq ($(CPU_ARCH),ppc)
     EXTRA_SRCS += gcm-ppc.c
-    ASFILES += sha512-p8.s
 ifdef USE_64
     DEFINES += -DNSS_NO_INIT_SUPPORT
+    PPC_ABI := $(shell $(CC) -dM -E - < /dev/null | awk '$$2 == "_CALL_ELF" {print $$3}')
+    ifeq ($(PPC_ABI),2)
+        ASFILES += sha512-p8.s
+    ifeq ($(OS_TEST),ppc64le)
+        DEFINES += -DPPC_GCM
+        EXTRA_SRCS += chacha20poly1305-ppc.c ppc-gcm-wrap.c
+        ASFILES += chacha20-ppc64le.s ppc-gcm.s
+    endif # ppc64le
+    endif
 endif # USE_64
 endif # ppc
 endif # Linux
@@ -480,7 +523,7 @@ else
     ifeq ($(USE_64),1)
 	# Solaris for AMD64
 	ifdef NS_USE_GCC
-	    ASFILES  = arcfour-amd64-gas.s mpi_amd64_gas.s
+	    ASFILES  = arcfour-amd64-gas.s mpi_amd64_common.s
 	    ASFLAGS += -march=opteron -m64 -fPIC
 	    MPI_SRCS += mp_comba.c
 	    # comment the next four lines to turn off Intel HW acceleration
@@ -529,13 +572,17 @@ ifneq ($(shell $(CC) -? 2>&1 >/dev/null </dev/null | sed -e 's/:.*//;1q'),lcc)
             HAVE_INT128_SUPPORT = 1
             DEFINES += -DHAVE_INT128_SUPPORT
         endif
-        ifneq (,$(filter 4.8 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
+        ifneq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
             NSS_DISABLE_AVX2 = 1
         endif
         ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
             HAVE_INT128_SUPPORT = 1
-            NSS_DISABLE_AVX2 = 0
             DEFINES += -DHAVE_INT128_SUPPORT
+        endif
+        ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
+            NSS_DISABLE_SSE3 = 1
+            NSS_DISABLE_SSE4_1 = 1
+            NSS_DISABLE_SSE4_2 = 1
         endif
     endif
 endif # lcc
@@ -545,26 +592,28 @@ ifndef HAVE_INT128_SUPPORT
     DEFINES += -DKRML_VERIFIED_UINT128
 endif
 
-ifndef NSS_DISABLE_DEPRECATED_SEED
-	CSRCS += deprecated/seed.c
-endif
-
 ifndef NSS_DISABLE_CHACHAPOLY
     ifeq ($(CPU_ARCH),x86_64)
         ifndef NSS_DISABLE_AVX2
             EXTRA_SRCS += Hacl_Poly1305_256.c Hacl_Chacha20_Vec256.c Hacl_Chacha20Poly1305_256.c
-        else
-            EXTRA_SRCS += Hacl_Poly1305_128.c Hacl_Chacha20_Vec128.c Hacl_Chacha20Poly1305_128.c
+            DEFINES += -DHACL_CAN_COMPILE_VEC256
         endif # NSS_DISABLE_AVX2
+        ifndef NSS_DISABLE_SSE3
+            EXTRA_SRCS += Hacl_Poly1305_128.c Hacl_Chacha20_Vec128.c Hacl_Chacha20Poly1305_128.c
+            DEFINES += -DHACL_CAN_COMPILE_VEC128 
+        endif
     endif # x86_64
 
     VERIFIED_SRCS += Hacl_Poly1305_32.c Hacl_Chacha20.c Hacl_Chacha20Poly1305_32.c
 endif # NSS_DISABLE_CHACHAPOLY
 
+VERIFIED_SRCS += Hacl_Hash_SHA3.c Hacl_P256.c Hacl_P384.c Hacl_P521.c
+VERIFIED_SRCS += Hacl_Ed25519.c
+VERIFIED_SRCS += Hacl_Curve25519_51.c
+
 ifeq (,$(filter-out x86_64 aarch64,$(CPU_ARCH)))
     # All 64-bit architectures get the 64 bit version.
     ECL_SRCS += curve25519_64.c
-    VERIFIED_SRCS += Hacl_Curve25519_51.c
 else
     # All other architectures get the generic 32 bit implementation
     ECL_SRCS += curve25519_32.c
@@ -597,12 +646,12 @@ vpath %.c mpi ecl verified deprecated
 vpath %.S mpi ecl
 vpath %.s mpi ecl
 vpath %.asm mpi ecl
-INCLUDES += -Impi -Iecl -Iverified -Iverified/kremlin/include -Iverified/kremlin/kremlib/dist/minimal -Ideprecated
+INCLUDES += -Impi -Iecl -Iverified -Iverified/internal -Iverified/karamel/include -Iverified/karamel/krmllib/dist/minimal -Ideprecated
 
 
 DEFINES += -DMP_API_COMPATIBLE
 
-MPI_USERS = dh.c pqg.c dsa.c rsa.c ec.c
+MPI_USERS = secmpi.c dh.c pqg.c dsa.c rsa.c ec.c
 
 MPI_OBJS = $(addprefix $(OBJDIR)/$(PROG_PREFIX), $(MPI_SRCS:.c=$(OBJ_SUFFIX)))
 MPI_OBJS += $(addprefix $(OBJDIR)/$(PROG_PREFIX), $(MPI_USERS:.c=$(OBJ_SUFFIX)))
@@ -707,37 +756,52 @@ ifdef INTEL_GCM_CLANG_CL
 $(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
 endif
 
+$(OBJDIR)/$(PROG_PREFIX)sha256-x86$(OBJ_SUFFIX): CFLAGS += -msha -mssse3 -msse4.1
+
 ifeq ($(CPU_ARCH),arm)
 # When the compiler uses the softfloat ABI, we want to use the compatible softfp ABI when
 # enabling NEON for these objects.
 # Confusingly, __SOFTFP__ is the name of the define for the softfloat ABI, not for the softfp ABI.
 USES_SOFTFLOAT_ABI := $(shell $(CC) -o - -E -dM - $(CFLAGS) < /dev/null | grep __SOFTFP__ > /dev/null && echo 1)
 $(OBJDIR)/$(PROG_PREFIX)aes-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=crypto-neon-fp-armv8$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
+$(OBJDIR)/$(PROG_PREFIX)sha1-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=crypto-neon-fp-armv8$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
+$(OBJDIR)/$(PROG_PREFIX)sha256-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a -mfpu=crypto-neon-fp-armv8$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
 ifndef NSS_DISABLE_ARM32_NEON
 $(OBJDIR)/$(PROG_PREFIX)gcm-arm32-neon$(OBJ_SUFFIX): CFLAGS += -mfpu=neon$(if $(USES_SOFTFLOAT_ABI), -mfloat-abi=softfp)
 endif
 endif
+
 ifeq ($(CPU_ARCH),aarch64)
 $(OBJDIR)/$(PROG_PREFIX)aes-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 $(OBJDIR)/$(PROG_PREFIX)gcm-aarch64$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
+$(OBJDIR)/$(PROG_PREFIX)sha1-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
+$(OBJDIR)/$(PROG_PREFIX)sha256-armv8$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 endif
 
 ifeq ($(CPU_ARCH),ppc)
-ifndef NSS_DISABLE_ALTIVEC
-$(OBJDIR)/$(PROG_PREFIX)gcm-ppc$(OBJ_SUFFIX): CFLAGS += -mcrypto -maltivec -mvsx
-$(OBJDIR)/$(PROG_PREFIX)gcm$(OBJ_SUFFIX): CFLAGS += -mcrypto -maltivec -mvsx
-$(OBJDIR)/$(PROG_PREFIX)rijndael$(OBJ_SUFFIX): CFLAGS += -mcrypto -maltivec -mvsx
-$(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -mcrypto -maltivec -mvsx \
-					-funroll-loops -fpeel-loops
+$(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -funroll-loops -fpeel-loops
+ifneq ($(NSS_DISABLE_ALTIVEC),1)
+$(OBJDIR)/$(PROG_PREFIX)gcm-ppc$(OBJ_SUFFIX): CFLAGS += -maltivec
+$(OBJDIR)/$(PROG_PREFIX)gcm$(OBJ_SUFFIX): CFLAGS += -maltivec
+$(OBJDIR)/$(PROG_PREFIX)rijndael$(OBJ_SUFFIX): CFLAGS += -maltivec
+$(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -maltivec
+$(OBJDIR)/$(PROG_PREFIX)chacha20poly1305-ppc$(OBJ_SUFFIX): CFLAGS += -maltivec
+endif
+ifneq ($(NSS_DISABLE_CRYPTO_VSX),1)
+$(OBJDIR)/$(PROG_PREFIX)gcm-ppc$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
+$(OBJDIR)/$(PROG_PREFIX)gcm$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
+$(OBJDIR)/$(PROG_PREFIX)rijndael$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
+$(OBJDIR)/$(PROG_PREFIX)sha512$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
+$(OBJDIR)/$(PROG_PREFIX)chacha20poly1305-ppc$(OBJ_SUFFIX): CFLAGS += -mcrypto -mvsx
 endif
 endif
 
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20_Vec128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -maes
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20Poly1305_128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -maes
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Poly1305_128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -maes -mpclmul
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20_Vec128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20Poly1305_128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Poly1305_128$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx
 
 ifndef NSS_DISABLE_AVX2
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20Poly1305_256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx2 -maes
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20_Vec256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -mavx2 -maes
-$(OBJDIR)/$(PROG_PREFIX)Hacl_Poly1305_256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -mavx2 -maes -mpclmul
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20Poly1305_256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx2
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Chacha20_Vec256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -mavx2
+$(OBJDIR)/$(PROG_PREFIX)Hacl_Poly1305_256$(OBJ_SUFFIX): CFLAGS += -mssse3 -msse4.1 -msse4.2 -mavx -mavx2
 endif

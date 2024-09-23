@@ -8,14 +8,17 @@
 #define mozilla_a11y_ia2Accessible_h_
 
 #include "nsISupports.h"
+#include "nsTArray.h"
 
-#include "Accessible2_3.h"
+#include "Accessible2_2.h"
 
 namespace mozilla {
 namespace a11y {
-class Attribute;
+class Accessible;
+class AccAttributes;
+class AccessibleWrap;
 
-class ia2Accessible : public IAccessible2_3 {
+class ia2Accessible : public IAccessible2_2 {
  public:
   // IUnknown
   STDMETHODIMP QueryInterface(REFIID, void**);
@@ -102,16 +105,13 @@ class ia2Accessible : public IAccessible2_3 {
       /* [out, size_is(,*nTargets)] */ IUnknown*** targets,
       /* [out, retval] */ long* nTargets);
 
-  // IAccessible2_3
-  virtual /* [propget] */ HRESULT STDMETHODCALLTYPE get_selectionRanges(
-      /* [out, size_is(,*nRanges)] */ IA2Range** ranges,
-      /* [out, retval] */ long* nRanges);
-
   // Helper method
-  static HRESULT ConvertToIA2Attributes(nsIPersistentProperties* aAttributes,
+  static HRESULT ConvertToIA2Attributes(AccAttributes* aAttributes,
                                         BSTR* aIA2Attributes);
-  static HRESULT ConvertToIA2Attributes(nsTArray<Attribute>* aAttributes,
-                                        BSTR* aIA2Attributes);
+
+ private:
+  AccessibleWrap* LocalAcc();
+  Accessible* Acc();
 };
 
 }  // namespace a11y

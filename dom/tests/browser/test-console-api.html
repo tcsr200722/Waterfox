@@ -1,5 +1,7 @@
 <!DOCTYPE HTML>
-<html dir="ltr" xml:lang="en-US" lang="en-US"><head>
+<html dir="ltr" xml:lang="en-US" lang="en-US">
+  <head>
+    <meta charset=utf8>
     <title>Console API test page</title>
     <script type="text/javascript">
       window.foobar585956c = function(a) {
@@ -52,7 +54,7 @@
       }
 
       function nativeCallback() {
-        new Promise(function(resolve, reject) { resolve(42); }).then(console.log);
+        new Promise(function(resolve) { resolve(42); }).then(console.log);
       }
 
       function timeStamp(val) {

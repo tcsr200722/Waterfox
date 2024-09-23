@@ -7,9 +7,10 @@
 #ifndef mozilla_dom_ReportBody_h
 #define mozilla_dom_ReportBody_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
+#include "mozilla/Assertions.h"
+#include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
 #include "nsWrapperCache.h"
 
 class nsIGlobalObject;
@@ -23,7 +24,7 @@ namespace dom {
 class ReportBody : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ReportBody)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ReportBody)
 
   explicit ReportBody(nsIGlobalObject* aGlobal);
 

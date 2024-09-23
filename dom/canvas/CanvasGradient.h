@@ -5,37 +5,30 @@
 #ifndef mozilla_dom_CanvasGradient_h
 #define mozilla_dom_CanvasGradient_h
 
-#include "mozilla/Attributes.h"
 #include "nsTArray.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/CanvasRenderingContext2DBinding.h"
-#include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/gfx/2D.h"
 #include "nsWrapperCache.h"
 #include "gfxGradientCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+class CanvasRenderingContext2D;
 
 class CanvasGradient : public nsWrapperCache {
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(CanvasGradient)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(CanvasGradient)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(CanvasGradient)
 
-  enum class Type : uint8_t { LINEAR = 0, RADIAL };
+  enum class Type : uint8_t { LINEAR = 0, RADIAL, CONIC };
 
   Type GetType() { return mType; }
 
-  mozilla::gfx::GradientStops* GetGradientStopsForTarget(
+  already_AddRefed<mozilla::gfx::GradientStops> GetGradientStopsForTarget(
       mozilla::gfx::DrawTarget* aRT) {
-    if (mStops && mStops->GetBackendType() == aRT->GetBackendType()) {
-      return mStops;
-    }
-
-    mStops = gfx::gfxGradientCache::GetOrCreateGradientStops(
+    return gfx::gfxGradientCache::GetOrCreateGradientStops(
         aRT, mRawStops, gfx::ExtendMode::CLAMP);
-
-    return mStops;
   }
 
   // WebIDL
@@ -51,17 +44,15 @@ class CanvasGradient : public nsWrapperCache {
  protected:
   friend struct CanvasBidiProcessor;
 
-  CanvasGradient(CanvasRenderingContext2D* aContext, Type aType)
-      : mContext(aContext), mType(aType) {}
+  CanvasGradient(CanvasRenderingContext2D* aContext, Type aType);
+
+  virtual ~CanvasGradient();
 
   RefPtr<CanvasRenderingContext2D> mContext;
   nsTArray<mozilla::gfx::GradientStop> mRawStops;
-  RefPtr<mozilla::gfx::GradientStops> mStops;
   Type mType;
-  virtual ~CanvasGradient() = default;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_CanvasGradient_h

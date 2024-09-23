@@ -5,9 +5,13 @@
 
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
-  ShortcutUtils: "resource://gre/modules/ShortcutUtils.jsm",
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
+ChromeUtils.defineESModuleGetters(this, {
+  ExtensionShortcutKeyMap: "resource://gre/modules/ExtensionShortcuts.sys.mjs",
+  ShortcutUtils: "resource://gre/modules/ShortcutUtils.sys.mjs",
 });
 
 {
@@ -16,10 +20,9 @@ XPCOMUtils.defineLazyModuleGetters(this, {
     limit: 5, // We only want to show 5 when collapsed.
     allowOver: 1, // Avoid collapsing to hide 1 row.
   };
-  const SHORTCUT_KEY_SEPARATOR = "|";
 
   let templatesLoaded = false;
-  let shortcutKeyMap = new Map();
+  let shortcutKeyMap = new ExtensionShortcutKeyMap();
   const templates = {};
 
   function loadTemplates() {
@@ -44,6 +47,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   }
 
   let builtInNames = new Map([
+    ["_execute_action", "shortcuts-browserAction2"],
     ["_execute_browser_action", "shortcuts-browserAction2"],
     ["_execute_page_action", "shortcuts-pageAction"],
     ["_execute_sidebar_action", "shortcuts-sidebarAction"],
@@ -279,55 +283,26 @@ XPCOMUtils.defineLazyModuleGetters(this, {
     }
 
     return Object.entries(modifierMap)
-      .filter(([key, isDown]) => isDown)
+      .filter(([, isDown]) => isDown)
       .map(([key]) => key)
       .concat(getStringForEvent(e))
       .join("+");
   }
 
-  function buildDuplicateShortcutsMap(addons) {
-    return Promise.all(
-      addons.map(async addon => {
-        let extension = extensionForAddonId(addon.id);
-        if (extension && extension.shortcuts) {
-          let commands = await extension.shortcuts.allCommands();
-          for (let command of commands) {
-            recordShortcut(command.shortcut, addon.name, command.name);
-          }
-        }
-      })
-    );
+  async function buildDuplicateShortcutsMap(addons) {
+    await shortcutKeyMap.buildForAddonIds(addons.map(addon => addon.id));
   }
 
   function recordShortcut(shortcut, addonName, commandName) {
-    if (!shortcut) {
-      return;
-    }
-    let addons = shortcutKeyMap.get(shortcut);
-    let addonString = `${addonName}${SHORTCUT_KEY_SEPARATOR}${commandName}`;
-    if (addons) {
-      addons.add(addonString);
-    } else {
-      shortcutKeyMap.set(shortcut, new Set([addonString]));
-    }
+    shortcutKeyMap.recordShortcut(shortcut, addonName, commandName);
   }
 
   function removeShortcut(shortcut, addonName, commandName) {
-    let addons = shortcutKeyMap.get(shortcut);
-    let addonString = `${addonName}${SHORTCUT_KEY_SEPARATOR}${commandName}`;
-    if (addons) {
-      addons.delete(addonString);
-      if (addons.size === 0) {
-        shortcutKeyMap.delete(shortcut);
-      }
-    }
+    shortcutKeyMap.removeShortcut(shortcut, addonName, commandName);
   }
 
   function getAddonName(shortcut) {
-    let addons = shortcutKeyMap.get(shortcut);
-    // Get the first addon name with given shortcut.
-    let name = addons.values().next().value;
-    return name.split(SHORTCUT_KEY_SEPARATOR)[0];
+    return shortcutKeyMap.getFirstAddonName(shortcut);
   }
 
   function setDuplicateWarnings() {
@@ -357,17 +332,16 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   }
 
   function createDuplicateWarningBar(shortcut) {
-    let messagebar = document.createElement("message-bar");
+    let messagebar = document.createElement("moz-message-bar");
     messagebar.setAttribute("type", "warning");
 
-    let message = document.createElement("span");
     document.l10n.setAttributes(
-      message,
-      "shortcuts-duplicate-warning-message",
+      messagebar,
+      "shortcuts-duplicate-warning-message2",
       { shortcut }
     );
+    messagebar.setAttribute("data-l10n-attrs", "message");
 
-    messagebar.append(message);
     return messagebar;
   }
 
@@ -530,8 +504,10 @@ XPCOMUtils.defineLazyModuleGetters(this, {
       }
 
       if (extension.shortcuts) {
-        let card = document.importNode(templates.card.content, true)
-          .firstElementChild;
+        let card = document.importNode(
+          templates.card.content,
+          true
+        ).firstElementChild;
         let icon = AddonManager.getPreferredIconURL(addon, 24, window);
         card.setAttribute("addon-id", addon.id);
         card.setAttribute("addon-name", addon.name);
@@ -568,8 +544,10 @@ XPCOMUtils.defineLazyModuleGetters(this, {
         for (let i = 0; i < commands.length; i++) {
           let command = commands[i];
 
-          let row = document.importNode(templates.row.content, true)
-            .firstElementChild;
+          let row = document.importNode(
+            templates.row.content,
+            true
+          ).firstElementChild;
 
           if (willHideCommands && i >= limit) {
             row.setAttribute("hide-before-expand", "true");
@@ -626,7 +604,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
               card.setAttribute("expanded", "true");
               setLabel("collapse");
               // If this as a keyboard event then focus the next input.
-              if (event.mozInputSource == MouseEvent.MOZ_SOURCE_KEYBOARD) {
+              if (event.inputSource == MouseEvent.MOZ_SOURCE_KEYBOARD) {
                 firstHiddenInput.focus();
               }
             }

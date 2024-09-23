@@ -10,87 +10,72 @@
   DDMOZ_LOG(sPDMLog, mozilla::LogLevel::Debug, "::%s: " arg, __func__, \
             ##__VA_ARGS__)
 
+#define LOGV(arg, ...)                                                   \
+  DDMOZ_LOG(sPDMLog, mozilla::LogLevel::Verbose, "::%s: " arg, __func__, \
+            ##__VA_ARGS__)
+
 namespace mozilla {
 
 using media::TimeInterval;
 using media::TimeUnit;
 
-// All the MediaDataDecoder overridden methods dispatch to mTaskQueue in order
-// to insure that access to mTrimmers is only ever accessed on the same thread.
-
 RefPtr<MediaDataDecoder::InitPromise> AudioTrimmer::Init() {
-  RefPtr<AudioTrimmer> self = this;
-  return InvokeAsync(mTaskQueue, __func__,
-                     [self]() { return self->mDecoder->Init(); });
+  mThread = GetCurrentSerialEventTarget();
+  return mDecoder->Init();
 }
 
 RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::Decode(
     MediaRawData* aSample) {
-  // A compress sample indicates that it needs to be trimmed after decoding by
-  // having its mOriginalPresentationWindow member set; in which case
-  // mOriginalPresentationWindow contains the original time and duration of the
-  // frame set by the demuxer and mTime and mDuration set to what it should be
-  // after trimming.
-  RefPtr<MediaRawData> sample = aSample;
+  MOZ_ASSERT(mThread->IsOnCurrentThread(),
+             "We're not on the thread we were first initialized on");
+  LOG("AudioTrimmer::Decode");
+  PrepareTrimmers(aSample);
   RefPtr<AudioTrimmer> self = this;
-  return InvokeAsync(mTaskQueue, __func__, [self, sample, this]() {
-    if (sample->mOriginalPresentationWindow) {
-      LOG("sample[%" PRId64 ",%" PRId64 "] has trimming info ([%" PRId64
-          ",%" PRId64 "]",
-          sample->mOriginalPresentationWindow->mStart.ToMicroseconds(),
-          sample->mOriginalPresentationWindow->mEnd.ToMicroseconds(),
-          sample->mTime.ToMicroseconds(),
-          sample->GetEndTime().ToMicroseconds());
-      mTrimmers.AppendElement(
-          Some(TimeInterval(sample->mTime, sample->GetEndTime())));
-      sample->mTime = sample->mOriginalPresentationWindow->mStart;
-      sample->mDuration = sample->mOriginalPresentationWindow->Length();
-    } else {
-      LOG("sample[%" PRId64 ",%" PRId64 "] no trimming information",
-          sample->mTime.ToMicroseconds(),
-          sample->GetEndTime().ToMicroseconds());
-      mTrimmers.AppendElement(Nothing());
-    }
-    RefPtr<DecodePromise> p = self->mDecoder->Decode(sample)->Then(
-        self->mTaskQueue, __func__,
-        [self, sample](DecodePromise::ResolveOrRejectValue&& aValue) {
-          return self->HandleDecodedResult(std::move(aValue), sample);
-        });
-    return p;
-  });
+  RefPtr<DecodePromise> p = mDecoder->Decode(aSample)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self](DecodePromise::ResolveOrRejectValue&& aValue) {
+        return self->HandleDecodedResult(std::move(aValue));
+      });
+  return p;
 }
 
 RefPtr<MediaDataDecoder::FlushPromise> AudioTrimmer::Flush() {
-  RefPtr<AudioTrimmer> self = this;
-  return InvokeAsync(mTaskQueue, __func__, [self]() {
-    RefPtr<FlushPromise> p = self->mDecoder->Flush();
-    self->mTrimmers.Clear();
-    return p;
-  });
+  MOZ_ASSERT(mThread->IsOnCurrentThread(),
+             "We're not on the thread we were first initialized on");
+  LOG("Flushing");
+  RefPtr<FlushPromise> p = mDecoder->Flush();
+  mTrimmers.Clear();
+  return p;
 }
 
 RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::Drain() {
-  RefPtr<AudioTrimmer> self = this;
-  return InvokeAsync(mTaskQueue, __func__, [self, this]() {
-    LOG("Draining");
-    RefPtr<DecodePromise> p = self->mDecoder->Drain()->Then(
-        self->mTaskQueue, __func__,
-        [self](DecodePromise::ResolveOrRejectValue&& aValue) {
-          auto p = self->HandleDecodedResult(std::move(aValue), nullptr);
-          return p;
-        });
-    return p;
-  });
+  MOZ_ASSERT(mThread->IsOnCurrentThread(),
+             "We're not on the thread we were first initialized on");
+  LOG("Draining");
+  RefPtr<DecodePromise> p = mDecoder->Drain()->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [self = RefPtr{this}](DecodePromise::ResolveOrRejectValue&& aValue) {
+        return self->HandleDecodedResult(std::move(aValue));
+      });
+  return p;
 }
 
 RefPtr<ShutdownPromise> AudioTrimmer::Shutdown() {
-  RefPtr<AudioTrimmer> self = this;
-  return InvokeAsync(self->mTaskQueue, __func__,
-                     [self]() { return self->mDecoder->Shutdown(); });
+  // mThread may not be set if Init hasn't been called first.
+  MOZ_ASSERT(!mThread || mThread->IsOnCurrentThread());
+  return mDecoder->Shutdown();
 }
 
 nsCString AudioTrimmer::GetDescriptionName() const {
   return mDecoder->GetDescriptionName();
+}
+
+nsCString AudioTrimmer::GetProcessName() const {
+  return mDecoder->GetProcessName();
+}
+
+nsCString AudioTrimmer::GetCodecName() const {
+  return mDecoder->GetCodecName();
 }
 
 bool AudioTrimmer::IsHardwareAccelerated(nsACString& aFailureReason) const {
@@ -110,32 +95,39 @@ MediaDataDecoder::ConversionRequired AudioTrimmer::NeedsConversion() const {
 }
 
 RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::HandleDecodedResult(
-    DecodePromise::ResolveOrRejectValue&& aValue, MediaRawData* aRaw) {
+    DecodePromise::ResolveOrRejectValue&& aValue) {
+  MOZ_ASSERT(mThread->IsOnCurrentThread(),
+             "We're not on the thread we were first initialized on");
   if (aValue.IsReject()) {
     return DecodePromise::CreateAndReject(std::move(aValue.RejectValue()),
                                           __func__);
   }
-  int64_t rawStart = aRaw ? aRaw->mTime.ToMicroseconds() : 0;
-  int64_t rawEnd = aRaw ? aRaw->GetEndTime().ToMicroseconds() : 0;
   MediaDataDecoder::DecodedData results = std::move(aValue.ResolveValue());
+  LOG("HandleDecodedResults: %zu decoded data, %zu trimmers", results.Length(),
+      mTrimmers.Length());
   if (results.IsEmpty()) {
     // No samples returned, we assume this is due to the latency of the
     // decoder and that the related decoded sample will be returned during
     // the next call to Decode().
-    LOG("No sample returned for sample[%" PRId64 ",%" PRId64 "]", rawStart,
-        rawEnd);
+    LOGV("No sample returned -- decoder has latency");
+    return DecodePromise::CreateAndResolve(std::move(results), __func__);
   }
+
   for (uint32_t i = 0; i < results.Length();) {
     const RefPtr<MediaData>& data = results[i];
     MOZ_ASSERT(data->mType == MediaData::Type::AUDIO_DATA);
+
+    if (!data->mDuration.IsValid()) {
+      return DecodePromise::CreateAndReject(std::move(aValue.RejectValue()),
+                                            __func__);
+    }
     TimeInterval sampleInterval(data->mTime, data->GetEndTime());
     if (mTrimmers.IsEmpty()) {
       // mTrimmers being empty can only occurs if the decoder returned more
       // frames than we pushed in. We can't handle this case, abort trimming.
-      LOG("sample[%" PRId64 ",%" PRId64 "] (decoded[%" PRId64 ",%" PRId64
-          "] no trimming information",
-          rawStart, rawEnd, sampleInterval.mStart.ToMicroseconds(),
-          sampleInterval.mEnd.ToMicroseconds());
+      LOG("decoded buffer [%s, %s] has no trimming information)",
+          sampleInterval.mStart.ToString().get(),
+          sampleInterval.mEnd.ToString().get());
       i++;
       continue;
     }
@@ -144,27 +136,23 @@ RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::HandleDecodedResult(
     mTrimmers.RemoveElementAt(0);
     if (!trimmer) {
       // Those frames didn't need trimming.
-      LOG("sample[%" PRId64 ",%" PRId64 "] (decoded[%" PRId64 ",%" PRId64
-          "] no trimming needed",
-          rawStart, rawEnd, sampleInterval.mStart.ToMicroseconds(),
-          sampleInterval.mEnd.ToMicroseconds());
+      LOGV("decoded buffer [%s, %s] doesn't need trimming",
+           sampleInterval.mStart.ToString().get(),
+           sampleInterval.mEnd.ToString().get());
       i++;
       continue;
     }
     if (!trimmer->Intersects(sampleInterval)) {
-      LOG("sample[%" PRId64 ",%" PRId64 "] (decoded[%" PRId64 ",%" PRId64
-          "] would be empty after trimming, dropping it",
-          rawStart, rawEnd, sampleInterval.mStart.ToMicroseconds(),
-          sampleInterval.mEnd.ToMicroseconds());
+      LOGV("decoded buffer [%s, %s] would be empty after trimming, dropping it",
+           sampleInterval.mStart.ToString().get(),
+           sampleInterval.mEnd.ToString().get());
       results.RemoveElementAt(i);
       continue;
     }
-    LOG("Trimming sample[%" PRId64 ",%" PRId64 "] to [%" PRId64 ",%" PRId64
-        "] (raw "
-        "was:[%" PRId64 ",%" PRId64 "])",
-        sampleInterval.mStart.ToMicroseconds(),
-        sampleInterval.mEnd.ToMicroseconds(), trimmer->mStart.ToMicroseconds(),
-        trimmer->mEnd.ToMicroseconds(), rawStart, rawEnd);
+    LOGV("Trimming sample[%s,%s] to [%s,%s]",
+         sampleInterval.mStart.ToString().get(),
+         sampleInterval.mEnd.ToString().get(), trimmer->mStart.ToString().get(),
+         trimmer->mEnd.ToString().get());
 
     TimeInterval trim({std::max(trimmer->mStart, sampleInterval.mStart),
                        std::min(trimmer->mEnd, sampleInterval.mEnd)});
@@ -173,15 +161,56 @@ RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::HandleDecodedResult(
     NS_ASSERTION(ok, "Trimming of audio sample failed");
     Unused << ok;
     if (sample->Frames() == 0) {
-      LOG("sample[%" PRId64 ",%" PRId64
-          "] is empty after trimming, dropping it",
-          rawStart, rawEnd);
+      LOGV("sample[%s, %s] is empty after trimming, dropping it",
+           sampleInterval.mStart.ToString().get(),
+           sampleInterval.mEnd.ToString().get());
       results.RemoveElementAt(i);
       continue;
     }
     i++;
   }
   return DecodePromise::CreateAndResolve(std::move(results), __func__);
+}
+
+RefPtr<MediaDataDecoder::DecodePromise> AudioTrimmer::DecodeBatch(
+    nsTArray<RefPtr<MediaRawData>>&& aSamples) {
+  MOZ_ASSERT(mThread->IsOnCurrentThread(),
+             "We're not on the thread we were first initialized on");
+  LOGV("DecodeBatch");
+
+  for (auto&& sample : aSamples) {
+    PrepareTrimmers(sample);
+  }
+  RefPtr<DecodePromise> p =
+      mDecoder->DecodeBatch(std::move(aSamples))
+          ->Then(GetCurrentSerialEventTarget(), __func__,
+                 [self = RefPtr{this}](
+                     DecodePromise::ResolveOrRejectValue&& aValue) {
+                   return self->HandleDecodedResult(std::move(aValue));
+                 });
+  return p;
+}
+
+void AudioTrimmer::PrepareTrimmers(MediaRawData* aRaw) {
+  // A compress sample indicates that it needs to be trimmed after decoding by
+  // having its mOriginalPresentationWindow member set; in which case
+  // mOriginalPresentationWindow contains the original time and duration of
+  // the frame set by the demuxer and mTime and mDuration set to what it
+  // should be after trimming.
+  if (aRaw->mOriginalPresentationWindow) {
+    LOGV("sample[%s, %s] has trimming info ([%s, %s]",
+         aRaw->mOriginalPresentationWindow->mStart.ToString().get(),
+         aRaw->mOriginalPresentationWindow->mEnd.ToString().get(),
+         aRaw->mTime.ToString().get(), aRaw->GetEndTime().ToString().get());
+    mTrimmers.AppendElement(
+        Some(TimeInterval(aRaw->mTime, aRaw->GetEndTime())));
+    aRaw->mTime = aRaw->mOriginalPresentationWindow->mStart;
+    aRaw->mDuration = aRaw->mOriginalPresentationWindow->Length();
+  } else {
+    LOGV("sample[%s,%s] no trimming information", aRaw->mTime.ToString().get(),
+         aRaw->GetEndTime().ToString().get());
+    mTrimmers.AppendElement(Nothing());
+  }
 }
 
 }  // namespace mozilla

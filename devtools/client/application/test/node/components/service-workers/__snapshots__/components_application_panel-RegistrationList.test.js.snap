@@ -16,7 +16,7 @@ Array [
     <ul
       className="registrations-container__list"
     >
-      <Registration
+      <Connect(Registration)
         className="registrations-container__item"
         isDebugEnabled={true}
         key="id-reg-1-example"
@@ -31,7 +31,7 @@ Array [
                 "state": 4,
                 "stateText": "activated",
                 "url": "http://example.com/worker.js",
-                "workerTargetFront": "",
+                "workerDescriptorFront": "",
               },
             ],
           }
@@ -74,7 +74,7 @@ Array [
     <ul
       className="registrations-container__list"
     >
-      <Registration
+      <Connect(Registration)
         className="registrations-container__item"
         isDebugEnabled={true}
         key="id-reg-1-example"
@@ -89,13 +89,13 @@ Array [
                 "state": 4,
                 "stateText": "activated",
                 "url": "http://example.com/worker.js",
-                "workerTargetFront": "",
+                "workerDescriptorFront": "",
               },
             ],
           }
         }
       />
-      <Registration
+      <Connect(Registration)
         className="registrations-container__item"
         isDebugEnabled={true}
         key="id-reg-1-example"
@@ -110,13 +110,13 @@ Array [
                 "state": 2,
                 "stateText": "installed",
                 "url": "http://example.com/worker.js",
-                "workerTargetFront": "",
+                "workerDescriptorFront": "",
               },
             ],
           }
         }
       />
-      <Registration
+      <Connect(Registration)
         className="registrations-container__item"
         isDebugEnabled={true}
         key="id-reg-3-example"
@@ -131,7 +131,7 @@ Array [
                 "state": 4,
                 "stateText": "activated",
                 "url": "http://example.com/worker.js",
-                "workerTargetFront": "",
+                "workerDescriptorFront": "",
               },
             ],
           }

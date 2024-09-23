@@ -10,7 +10,6 @@
 #define mozilla_dom_MediaList_h
 
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoUtils.h"
 
@@ -19,6 +18,7 @@
 class nsMediaQueryResultCacheKey;
 
 namespace mozilla {
+class ErrorResult;
 class StyleSheet;
 
 namespace dom {
@@ -28,34 +28,40 @@ class Document;
 class MediaList final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaList)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MediaList)
 
   // Needed for CSSOM, but please don't use it outside of that :)
-  explicit MediaList(already_AddRefed<RawServoMediaList> aRawList)
+  explicit MediaList(already_AddRefed<StyleLockedMediaList> aRawList)
       : mRawList(aRawList) {}
 
   static already_AddRefed<MediaList> Create(
-      const nsAString& aMedia, CallerType aCallerType = CallerType::NonSystem);
+      const nsACString& aMedia, CallerType aCallerType = CallerType::NonSystem);
 
   already_AddRefed<MediaList> Clone();
 
   JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
-  nsISupports* GetParentObject() const { return nullptr; }
+  nsISupports* GetParentObject() const;
 
-  void GetText(nsAString& aMediaText);
-  void SetText(const nsAString& aMediaText);
+  void GetText(nsACString&) const;
+  void SetText(const nsACString&);
   bool Matches(const Document&) const;
+  bool IsViewportDependent() const;
 
   void SetStyleSheet(StyleSheet* aSheet);
+  void SetRawAfterClone(RefPtr<StyleLockedMediaList> aRaw) {
+    mRawList = std::move(aRaw);
+  }
 
   // WebIDL
-  void GetMediaText(nsAString& aMediaText);
-  void SetMediaText(const nsAString& aMediaText);
-  uint32_t Length();
-  void IndexedGetter(uint32_t aIndex, bool& aFound, nsAString& aReturn);
-  void Item(uint32_t aIndex, nsAString& aResult);
-  void DeleteMedium(const nsAString& aMedium, ErrorResult& aRv);
-  void AppendMedium(const nsAString& aMedium, ErrorResult& aRv);
+  void GetMediaText(nsACString& aMediaText) const {
+    return GetText(aMediaText);
+  }
+  void SetMediaText(const nsACString&);
+  uint32_t Length() const;
+  void IndexedGetter(uint32_t aIndex, bool& aFound, nsACString&) const;
+  void Item(uint32_t aIndex, nsACString&);
+  void DeleteMedium(const nsACString&, ErrorResult&);
+  void AppendMedium(const nsACString&, ErrorResult&);
 
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const;
 
@@ -64,13 +70,13 @@ class MediaList final : public nsISupports, public nsWrapperCache {
   }
 
  protected:
-  MediaList(const nsAString& aMedia, CallerType);
+  MediaList(const nsACString& aMedia, CallerType);
   MediaList();
 
-  void SetTextInternal(const nsAString& aMediaText, CallerType);
+  void SetTextInternal(const nsACString& aMediaText, CallerType);
 
-  void Delete(const nsAString& aOldMedium, ErrorResult& aRv);
-  void Append(const nsAString& aNewMedium, ErrorResult& aRv);
+  void Delete(const nsACString& aOldMedium, ErrorResult& aRv);
+  void Append(const nsACString& aNewMedium, ErrorResult& aRv);
 
   ~MediaList() {
     MOZ_ASSERT(!mStyleSheet, "Backpointer should have been cleared");
@@ -86,7 +92,7 @@ class MediaList final : public nsISupports, public nsWrapperCache {
  private:
   template <typename Func>
   inline void DoMediaChange(Func aCallback, ErrorResult& aRv);
-  RefPtr<RawServoMediaList> mRawList;
+  RefPtr<StyleLockedMediaList> mRawList;
 };
 
 }  // namespace dom

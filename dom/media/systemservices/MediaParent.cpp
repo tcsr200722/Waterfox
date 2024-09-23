@@ -12,6 +12,7 @@
 #include "MediaUtils.h"
 #include "MediaEngine.h"
 #include "VideoUtils.h"
+#include "nsClassHashtable.h"
 #include "nsThreadUtils.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
@@ -20,6 +21,7 @@
 #include "nsIOutputStream.h"
 #include "nsISafeOutputStream.h"
 #include "nsAppDirectoryServiceDefs.h"
+#include "nsIFile.h"
 #include "nsISupportsImpl.h"
 #include "mozilla/Logging.h"
 
@@ -30,17 +32,15 @@ mozilla::LazyLogModule gMediaParentLog("MediaParent");
 // A file in the profile dir is used to persist mOriginKeys used to anonymize
 // deviceIds to be unique per origin, to avoid them being supercookies.
 
-#define ORIGINKEYS_FILE "enumerate_devices.txt"
+#define ORIGINKEYS_FILE u"enumerate_devices.txt"
 #define ORIGINKEYS_VERSION "1"
 
-namespace mozilla {
-namespace media {
+namespace mozilla::media {
 
-StaticMutex sOriginKeyStoreMutex;
-static OriginKeyStore* sOriginKeyStore = nullptr;
+StaticMutex sOriginKeyStoreStsMutex;
 
-class OriginKeyStore : public nsISupports {
-  NS_DECL_THREADSAFE_ISUPPORTS
+class OriginKeyStore {
+  NS_INLINE_DECL_REFCOUNTING(OriginKeyStore);
   class OriginKey {
    public:
     static const size_t DecodedLength = 18;
@@ -70,8 +70,8 @@ class OriginKeyStore : public nsISupports {
         if (NS_WARN_IF(NS_FAILED(rv))) {
           return rv;
         }
-        key = new OriginKey(salt);
-        mKeys.Put(principalString, key);
+        key = mKeys.InsertOrUpdate(principalString, MakeUnique<OriginKey>(salt))
+                  .get();
       }
       if (aPersist && !key->mSecondsStamp) {
         key->mSecondsStamp = PR_Now() / PR_USEC_PER_SEC;
@@ -181,7 +181,7 @@ class OriginKeyStore : public nsISupports {
       if (NS_WARN_IF(NS_FAILED(rv))) {
         return nullptr;
       }
-      file->Append(NS_LITERAL_STRING(ORIGINKEYS_FILE));
+      file->Append(nsLiteralString(ORIGINKEYS_FILE));
       return file.forget();
     }
 
@@ -243,7 +243,7 @@ class OriginKeyStore : public nsISupports {
         if (f < 0) {
           continue;
         }
-        int64_t secondsstamp = nsCString(Substring(s, 0, f)).ToInteger64(&rv);
+        int64_t secondsstamp = Substring(s, 0, f).ToInteger64(&rv);
         if (NS_FAILED(rv)) {
           continue;
         }
@@ -258,7 +258,7 @@ class OriginKeyStore : public nsISupports {
         if (NS_FAILED(rv)) {
           continue;
         }
-        mKeys.Put(origin, new OriginKey(key, secondsstamp));
+        mKeys.InsertOrUpdate(origin, MakeUnique<OriginKey>(key, secondsstamp));
       }
       mPersistCount = mKeys.Count();
       return NS_OK;
@@ -289,9 +289,9 @@ class OriginKeyStore : public nsISupports {
       if (count != versionBuffer.Length()) {
         return NS_ERROR_UNEXPECTED;
       }
-      for (auto iter = mKeys.Iter(); !iter.Done(); iter.Next()) {
-        const nsACString& origin = iter.Key();
-        OriginKey* originKey = iter.UserData();
+      for (const auto& entry : mKeys) {
+        const nsACString& origin = entry.GetKey();
+        OriginKey* originKey = entry.GetWeak();
 
         if (!originKey->mSecondsStamp) {
           continue;  // don't write temporal ones
@@ -374,28 +374,29 @@ class OriginKeyStore : public nsISupports {
   };
 
  private:
+  static OriginKeyStore* sOriginKeyStore;
+
   virtual ~OriginKeyStore() {
-    StaticMutexAutoLock lock(sOriginKeyStoreMutex);
+    MOZ_ASSERT(NS_IsMainThread());
     sOriginKeyStore = nullptr;
     LOG(("%s", __FUNCTION__));
   }
 
  public:
-  static OriginKeyStore* Get() {
+  static RefPtr<OriginKeyStore> Get() {
     MOZ_ASSERT(NS_IsMainThread());
-    StaticMutexAutoLock lock(sOriginKeyStoreMutex);
     if (!sOriginKeyStore) {
       sOriginKeyStore = new OriginKeyStore();
     }
-    return sOriginKeyStore;
+    return RefPtr(sOriginKeyStore);
   }
 
-  // Only accessed on StreamTS thread
-  OriginKeysLoader mOriginKeys;
-  OriginKeysTable mPrivateBrowsingOriginKeys;
+  // Only accessed on StreamTS threads
+  OriginKeysLoader mOriginKeys MOZ_GUARDED_BY(sOriginKeyStoreStsMutex);
+  OriginKeysTable mPrivateBrowsingOriginKeys
+      MOZ_GUARDED_BY(sOriginKeyStoreStsMutex);
 };
-
-NS_IMPL_ISUPPORTS0(OriginKeyStore)
+OriginKeyStore* OriginKeyStore::sOriginKeyStore = nullptr;
 
 template <class Super>
 mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
@@ -423,28 +424,24 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
   nsCOMPtr<nsIEventTarget> sts =
       do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
   MOZ_ASSERT(sts);
-  auto taskQueue = MakeRefPtr<TaskQueue>(sts.forget(), "RecvGetPrincipalKey");
+  auto taskQueue = TaskQueue::Create(sts.forget(), "RecvGetPrincipalKey");
   RefPtr<Parent<Super>> that(this);
 
   InvokeAsync(
       taskQueue, __func__,
-      [that, profileDir, aPrincipalInfo, aPersist]() {
+      [this, that, profileDir, aPrincipalInfo, aPersist]() {
         MOZ_ASSERT(!NS_IsMainThread());
 
-        StaticMutexAutoLock lock(sOriginKeyStoreMutex);
-        if (!sOriginKeyStore) {
-          return PrincipalKeyPromise::CreateAndReject(NS_ERROR_FAILURE,
-                                                      __func__);
-        }
-        sOriginKeyStore->mOriginKeys.SetProfileDir(profileDir);
+        StaticMutexAutoLock lock(sOriginKeyStoreStsMutex);
+        mOriginKeyStore->mOriginKeys.SetProfileDir(profileDir);
 
         nsresult rv;
         nsAutoCString result;
         if (IsPrincipalInfoPrivate(aPrincipalInfo)) {
-          rv = sOriginKeyStore->mPrivateBrowsingOriginKeys.GetPrincipalKey(
+          rv = mOriginKeyStore->mPrivateBrowsingOriginKeys.GetPrincipalKey(
               aPrincipalInfo, result);
         } else {
-          rv = sOriginKeyStore->mOriginKeys.GetPrincipalKey(aPrincipalInfo,
+          rv = mOriginKeyStore->mOriginKeys.GetPrincipalKey(aPrincipalInfo,
                                                             result, aPersist);
         }
 
@@ -454,10 +451,10 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
         return PrincipalKeyPromise::CreateAndResolve(result, __func__);
       })
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolve](const PrincipalKeyPromise::ResolveOrRejectValue& aValue) {
             if (aValue.IsReject()) {
-              aResolve(NS_LITERAL_CSTRING(""));
+              aResolve(""_ns);
             } else {
               aResolve(aValue.ResolveValue());
             }
@@ -481,19 +478,17 @@ mozilla::ipc::IPCResult Parent<Super>::RecvSanitizeOriginKeys(
   nsCOMPtr<nsIEventTarget> sts =
       do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
   MOZ_ASSERT(sts);
+  RefPtr<Parent<Super>> that(this);
 
   rv = sts->Dispatch(
       NewRunnableFrom(
-          [profileDir, aSinceWhen, aOnlyPrivateBrowsing]() -> nsresult {
+          [this, that, profileDir, aSinceWhen, aOnlyPrivateBrowsing]() {
             MOZ_ASSERT(!NS_IsMainThread());
-            StaticMutexAutoLock lock(sOriginKeyStoreMutex);
-            if (!sOriginKeyStore) {
-              return NS_ERROR_FAILURE;
-            }
-            sOriginKeyStore->mPrivateBrowsingOriginKeys.Clear(aSinceWhen);
+            StaticMutexAutoLock lock(sOriginKeyStoreStsMutex);
+            mOriginKeyStore->mPrivateBrowsingOriginKeys.Clear(aSinceWhen);
             if (!aOnlyPrivateBrowsing) {
-              sOriginKeyStore->mOriginKeys.SetProfileDir(profileDir);
-              sOriginKeyStore->mOriginKeys.Clear(aSinceWhen);
+              mOriginKeyStore->mOriginKeys.SetProfileDir(profileDir);
+              mOriginKeyStore->mOriginKeys.Clear(aSinceWhen);
             }
             return NS_OK;
           }),
@@ -519,6 +514,8 @@ Parent<Super>::Parent()
 
 template <class Super>
 Parent<Super>::~Parent() {
+  NS_ReleaseOnMainThread("Parent<Super>::mOriginKeyStore",
+                         mOriginKeyStore.forget());
   LOG(("~media::Parent: %p", this));
 }
 
@@ -533,8 +530,7 @@ bool DeallocPMediaParent(media::PMediaParent* aActor) {
   return true;
 }
 
-}  // namespace media
-}  // namespace mozilla
+}  // namespace mozilla::media
 
 // Instantiate templates to satisfy linker
 template class mozilla::media::Parent<mozilla::media::NonE10s>;

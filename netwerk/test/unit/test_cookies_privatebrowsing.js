@@ -20,7 +20,7 @@ function getCookieStringFromPrivateDocument(uriSpec) {
 
 add_task(async () => {
   // Set up a profile.
-  let profile = do_get_profile();
+  do_get_profile();
 
   // We don't want to have CookieJarSettings blocking this test.
   Services.prefs.setBoolPref(
@@ -30,6 +30,10 @@ add_task(async () => {
 
   // Test with cookies enabled.
   Services.prefs.setIntPref("network.cookie.cookieBehavior", 0);
+  Services.prefs.setBoolPref("dom.security.https_first", false);
+
+  // Test with https-first-mode disabled in PBM
+  Services.prefs.setBoolPref("dom.security.https_first_pbm", false);
 
   CookieXPCShellUtils.createServer({ hosts: ["foo.com", "bar.com"] });
 
@@ -50,7 +54,7 @@ add_task(async () => {
     "oh=hai; max-age=1000",
     make_channel(uri1.spec)
   );
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri1.host), 1);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri1.host), 1);
 
   // Enter private browsing mode, set a cookie for host 2, and check the counts.
   var chan1 = make_channel(uri1.spec);
@@ -75,16 +79,16 @@ add_task(async () => {
 
   // Leave private browsing mode and check counts.
   Services.obs.notifyObservers(null, "last-pb-context-exited");
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri1.host), 1);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri2.host), 0);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri1.host), 1);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri2.host), 0);
 
   // Fake a profile change.
   await promise_close_profile();
   do_load_profile();
 
   // Check that the right cookie persisted.
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri1.host), 1);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri2.host), 0);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri1.host), 1);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri2.host), 0);
 
   // Enter private browsing mode, set a cookie for host 2, and check the counts.
   Assert.equal(await getCookieStringFromPrivateDocument(uri1.spec), "");
@@ -92,9 +96,20 @@ add_task(async () => {
   Services.cookies.setCookieStringFromHttp(uri2, "oh=hai; max-age=1000", chan2);
   Assert.equal(await getCookieStringFromPrivateDocument(uri2.spec), "oh=hai");
 
+  // on android fission the privateBrowsingHolder prevents
+  // the cookies on the content process from being updated
+  // Let's release the last PB window.
+  await privateBrowsingHolder.close();
+
   // Fake a profile change.
   await promise_close_profile();
   do_load_profile();
+
+  // keep the private browsing window open again
+  const privateBrowsingHolder2 = await CookieXPCShellUtils.loadContentPage(
+    "http://bar.com/",
+    { privateBrowsing: true }
+  );
 
   // We're still in private browsing mode, but should have a new session.
   // Check counts.
@@ -103,8 +118,8 @@ add_task(async () => {
 
   // Leave private browsing mode and check counts.
   Services.obs.notifyObservers(null, "last-pb-context-exited");
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri1.host), 1);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri2.host), 0);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri1.host), 1);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri2.host), 0);
 
   // Enter private browsing mode.
 
@@ -119,9 +134,10 @@ add_task(async () => {
 
   // Leave private browsing mode and check counts.
   Services.obs.notifyObservers(null, "last-pb-context-exited");
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri1.host), 1);
-  Assert.equal(Services.cookiemgr.countCookiesFromHost(uri2.host), 0);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri1.host), 1);
+  Assert.equal(Services.cookies.countCookiesFromHost(uri2.host), 0);
 
   // Let's release the last PB window.
-  privateBrowsingHolder.close();
+  await privateBrowsingHolder2.close();
+  Services.prefs.clearUserPref("dom.security.https_first");
 });

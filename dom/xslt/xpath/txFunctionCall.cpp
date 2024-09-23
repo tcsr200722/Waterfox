@@ -8,6 +8,10 @@
 #include "txIXPathContext.h"
 #include "txNodeSet.h"
 
+#ifdef TX_TO_STRING
+#  include "nsReadableUtils.h"
+#endif
+
 /**
  * This class represents a FunctionCall as defined by the XSL Working Draft
  **/
@@ -46,7 +50,7 @@ nsresult FunctionCall::evaluateToNodeSet(Expr* aExpr, txIEvalContext* aContext,
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (exprRes->getResultType() != txAExprResult::NODESET) {
-    aContext->receiveError(NS_LITERAL_STRING("NodeSet expected as argument"),
+    aContext->receiveError(u"NodeSet expected as argument"_ns,
                            NS_ERROR_XSLT_NODESET_EXPECTED);
     return NS_ERROR_XSLT_NODESET_EXPECTED;
   }
@@ -61,8 +65,7 @@ bool FunctionCall::requireParams(int32_t aParamCountMin, int32_t aParamCountMax,
                                  txIEvalContext* aContext) {
   int32_t argc = mParams.Length();
   if (argc < aParamCountMin || (aParamCountMax > -1 && argc > aParamCountMax)) {
-    nsAutoString err(
-        NS_LITERAL_STRING("invalid number of parameters for function"));
+    nsAutoString err(u"invalid number of parameters for function"_ns);
 #ifdef TX_TO_STRING
     err.AppendLiteral(": ");
     toString(err);
@@ -99,12 +102,9 @@ bool FunctionCall::argsSensitiveTo(ContextSensitivity aContext) {
 void FunctionCall::toString(nsAString& aDest) {
   appendName(aDest);
   aDest.AppendLiteral("(");
-  for (uint32_t i = 0; i < mParams.Length(); ++i) {
-    if (i != 0) {
-      aDest.Append(char16_t(','));
-    }
-    mParams[i]->toString(aDest);
-  }
+  StringJoinAppend(
+      aDest, u","_ns, mParams,
+      [](nsAString& dest, const auto& param) { param->toString(dest); });
   aDest.Append(char16_t(')'));
 }
 #endif

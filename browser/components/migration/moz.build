@@ -4,64 +4,82 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-XPCSHELL_TESTS_MANIFESTS += ['tests/unit/xpcshell.ini']
+XPCSHELL_TESTS_MANIFESTS += ["tests/unit/xpcshell.toml"]
 
-MARIONETTE_UNIT_MANIFESTS += ['tests/marionette/manifest.ini']
+MARIONETTE_MANIFESTS += ["tests/marionette/manifest.toml"]
 
-JAR_MANIFESTS += ['jar.mn']
+MOCHITEST_CHROME_MANIFESTS += ["tests/chrome/chrome.toml"]
+
+BROWSER_CHROME_MANIFESTS += ["tests/browser/browser.toml"]
+
+SPHINX_TREES["docs"] = "docs"
+
+JAR_MANIFESTS += ["jar.mn"]
 
 XPIDL_SOURCES += [
-    'nsIBrowserProfileMigrator.idl',
+    "nsIEdgeMigrationUtils.idl",
 ]
 
-XPIDL_MODULE = 'migration'
+XPIDL_MODULE = "migration"
 
 EXTRA_JS_MODULES += [
-    'ChromeMigrationUtils.jsm',
-    'ChromeProfileMigrator.jsm',
-    'FirefoxProfileMigrator.jsm',
-    'MigrationUtils.jsm',
-    'ProfileMigrator.jsm',
+    "ChromeMigrationUtils.sys.mjs",
+    "ChromeProfileMigrator.sys.mjs",
+    "FileMigrators.sys.mjs",
+    "FirefoxProfileMigrator.sys.mjs",
+    "InternalTestingProfileMigrator.sys.mjs",
+    "MigrationUtils.sys.mjs",
+    "MigratorBase.sys.mjs",
+    "ProfileMigrator.sys.mjs",
 ]
 
-if CONFIG['OS_ARCH'] == 'WINNT':
-    if CONFIG['ENABLE_TESTS']:
+FINAL_TARGET_FILES.actors = [
+    "MigrationWizardChild.sys.mjs",
+    "MigrationWizardParent.sys.mjs",
+]
+
+if CONFIG["OS_ARCH"] == "WINNT":
+    if CONFIG["ENABLE_TESTS"]:
         DIRS += [
-            'tests/unit/insertIEHistory',
+            "tests/unit/insertIEHistory",
         ]
-    SOURCES += [
-        'nsIEHistoryEnumerator.cpp',
+    EXPORTS += [
+        "nsEdgeMigrationUtils.h",
+    ]
+    UNIFIED_SOURCES += [
+        "nsEdgeMigrationUtils.cpp",
+        "nsIEHistoryEnumerator.cpp",
     ]
     EXTRA_JS_MODULES += [
-        '360seProfileMigrator.jsm',
-        'ChromeWindowsLoginCrypto.jsm',
-        'EdgeProfileMigrator.jsm',
-        'ESEDBReader.jsm',
-        'IEProfileMigrator.jsm',
-        'MSMigrationUtils.jsm',
+        "360seMigrationUtils.sys.mjs",
+        "ChromeWindowsLoginCrypto.sys.mjs",
+        "EdgeProfileMigrator.sys.mjs",
+        "ESEDBReader.sys.mjs",
+        "IEProfileMigrator.sys.mjs",
+        "MSMigrationUtils.sys.mjs",
     ]
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
+if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
     EXPORTS += [
-        'nsKeychainMigrationUtils.h',
+        "nsKeychainMigrationUtils.h",
     ]
     EXTRA_JS_MODULES += [
-        'ChromeMacOSLoginCrypto.jsm',
-        'SafariProfileMigrator.jsm',
+        "ChromeMacOSLoginCrypto.sys.mjs",
+        "SafariProfileMigrator.sys.mjs",
     ]
-    SOURCES += [
-        'nsKeychainMigrationUtils.mm',
+    UNIFIED_SOURCES += [
+        "nsKeychainMigrationUtils.mm",
     ]
     XPIDL_SOURCES += [
-        'nsIKeychainMigrationUtils.idl',
+        "nsIKeychainMigrationUtils.idl",
     ]
 
 
 XPCOM_MANIFESTS += [
-    'components.conf',
+    "components.conf",
 ]
 
-FINAL_LIBRARY = 'browsercomps'
+FINAL_LIBRARY = "browsercomps"
 
-with Files('**'):
-    BUG_COMPONENT = ('Firefox', 'Migration')
+with Files("**"):
+    BUG_COMPONENT = ("Firefox", "Migration")

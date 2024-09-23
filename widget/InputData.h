@@ -16,9 +16,10 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/WheelHandlingHelper.h"  // for WheelDeltaAdjustmentStrategy
 #include "mozilla/gfx/MatrixFwd.h"
-#include "mozilla/layers/APZUtils.h"
+#include "mozilla/layers/APZPublicUtils.h"
 #include "mozilla/layers/KeyboardScrollAction.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/ipc/IPCForwards.h"
 
 template <class E>
 struct already_AddRefed;
@@ -76,14 +77,8 @@ class InputData {
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
   InputType mInputType;
-  // Time in milliseconds that this data is relevant to. This only really
-  // matters when this data is used as an event. We use uint32_t instead of
-  // TimeStamp because it is easier to convert from WidgetInputEvent. The time
-  // is platform-specific but it in the case of B2G and Fennec it is since
-  // startup.
-  uint32_t mTime;
-  // Set in parallel to mTime until we determine it is safe to drop
-  // platform-specific event times (see bug 77992).
+  // Time that this data is relevant to. This only really matters when this data
+  // is used as an event.
   TimeStamp mTimeStamp;
   // The sequence number of the last potentially focus changing event handled
   // by APZ. This is used to track when that event has been processed by
@@ -108,8 +103,7 @@ class InputData {
   explicit InputData(InputType aInputType);
 
  protected:
-  InputData(InputType aInputType, uint32_t aTime, TimeStamp aTimeStamp,
-            Modifiers aModifiers);
+  InputData(InputType aInputType, TimeStamp aTimeStamp, Modifiers aModifiers);
 };
 
 /**
@@ -149,6 +143,28 @@ class SingleTouchData {
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
 
+  // Historical data of this touch, which  was coalesced into this event.
+  // Touch event coalescing can happen at the system level when the touch
+  // screen's sampling frequency is higher than the vsync rate, or when the
+  // UI thread is busy. When multiple "samples" of touch data are coalesced into
+  // one touch event, the touch event's regular position information is the
+  // information from the last sample. And the previous, "coalesced-away"
+  // samples are stored in mHistoricalData.
+
+  struct HistoricalTouchData {
+    // The timestamp at which the information in this "sample" was originally
+    // sampled.
+    TimeStamp mTimeStamp;
+
+    // The touch data of this historical sample.
+    ScreenIntPoint mScreenPoint;
+    ParentLayerPoint mLocalScreenPoint;
+    ScreenSize mRadius;
+    float mRotationAngle = 0.0f;
+    float mForce = 0.0f;
+  };
+  CopyableTArray<HistoricalTouchData> mHistoricalData;
+
   // A unique number assigned to each SingleTouchData within a MultiTouchInput
   // so that they can be easily distinguished when handling a touch
   // start/move/end.
@@ -173,6 +189,10 @@ class SingleTouchData {
 
   // How hard the screen is being pressed.
   float mForce;
+
+  int32_t mTiltX = 0;
+  int32_t mTiltY = 0;
+  int32_t mTwist = 0;
 };
 
 /**
@@ -200,12 +220,19 @@ class MultiTouchInput : public InputData {
   MultiTouchInput(MultiTouchType aType, uint32_t aTime, TimeStamp aTimeStamp,
                   Modifiers aModifiers);
   MultiTouchInput();
-  MultiTouchInput(const MultiTouchInput& aOther);
+  MultiTouchInput(MultiTouchInput&&) = default;
+  MultiTouchInput(const MultiTouchInput&) = default;
   explicit MultiTouchInput(const WidgetTouchEvent& aTouchEvent);
+
+  MultiTouchInput& operator=(MultiTouchInput&&) = default;
+  MultiTouchInput& operator=(const MultiTouchInput&) = default;
+
   void Translate(const ScreenPoint& aTranslation);
 
-  WidgetTouchEvent ToWidgetTouchEvent(nsIWidget* aWidget) const;
-  WidgetMouseEvent ToWidgetMouseEvent(nsIWidget* aWidget) const;
+  WidgetTouchEvent ToWidgetEvent(
+      nsIWidget* aWidget,
+      uint16_t aInputSource =
+          /* MouseEvent_Binding::MOZ_SOURCE_TOUCH = */ 5) const;
 
   // Return the index into mTouches of the SingleTouchData with the given
   // identifier, or -1 if there is no such SingleTouchData.
@@ -221,12 +248,17 @@ class MultiTouchInput : public InputData {
   // the touch interaction, so we sstore it in the event.
   ExternalPoint mScreenOffset;
   bool mHandledByAPZ;
+  // These button fields match to the corresponding fields in
+  // WidgetMouseEventBase, except mButton defaults to -1 to follow PointerEvent.
+  int16_t mButton = eNotPressed;
+  int16_t mButtons = 0;
 };
 
 class MouseInput : public InputData {
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   MouseInput();
 
@@ -242,27 +274,29 @@ class MouseInput : public InputData {
       MOUSE_DRAG_END,
       MOUSE_WIDGET_ENTER,
       MOUSE_WIDGET_EXIT,
-      MOUSE_HITTEST
+      MOUSE_HITTEST,
+      MOUSE_EXPLORE_BY_TOUCH,
+      MOUSE_CONTEXTMENU
   ));
 
   MOZ_DEFINE_ENUM_AT_CLASS_SCOPE(
     ButtonType, (
-      LEFT_BUTTON,
+      PRIMARY_BUTTON,
       MIDDLE_BUTTON,
-      RIGHT_BUTTON,
+      SECONDARY_BUTTON,
       NONE
   ));
   // clang-format on
 
   MouseInput(MouseType aType, ButtonType aButtonType, uint16_t aInputSource,
-             int16_t aButtons, const ScreenPoint& aPoint, uint32_t aTime,
-             TimeStamp aTimeStamp, Modifiers aModifiers);
+             int16_t aButtons, const ScreenPoint& aPoint, TimeStamp aTimeStamp,
+             Modifiers aModifiers);
   explicit MouseInput(const WidgetMouseEventBase& aMouseEvent);
 
   bool IsLeftButton() const;
 
   bool TransformToLocal(const ScreenToParentLayerMatrix4x4& aTransform);
-  WidgetMouseEvent ToWidgetMouseEvent(nsIWidget* aWidget) const;
+  WidgetMouseEvent ToWidgetEvent(nsIWidget* aWidget) const;
 
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
@@ -273,6 +307,11 @@ class MouseInput : public InputData {
   ScreenPoint mOrigin;
   ParentLayerPoint mLocalOrigin;
   bool mHandledByAPZ;
+  /**
+   * If click event should not be fired in the content after the "mousedown"
+   * event or following "mouseup", set to true.
+   */
+  bool mPreventClickEvent;
 };
 
 /**
@@ -280,9 +319,12 @@ class MouseInput : public InputData {
  * These events are currently only used for scrolling on desktop.
  */
 class PanGestureInput : public InputData {
+  friend struct IPC::ParamTraits<PanGestureInput>;
+
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   PanGestureInput();
 
@@ -331,7 +373,12 @@ class PanGestureInput : public InputData {
       // MomentumEnd: The momentum animation has ended, for example because the
       // momentum velocity has gone below the stopping threshold, or because the
       // user has stopped the animation by putting their fingers on a touchpad.
-      PANGESTURE_MOMENTUMEND
+      PANGESTURE_MOMENTUMEND,
+
+      // Interrupted:: A pan gesture started being handled by an APZC but
+      // subsequent pan events might have been consumed by other operations
+      // which haven't been handled by the APZC (e.g. full zoom).
+      PANGESTURE_INTERRUPTED
   ));
 
   MOZ_DEFINE_ENUM_AT_CLASS_SCOPE(
@@ -346,18 +393,52 @@ class PanGestureInput : public InputData {
   ));
   // clang-format on
 
-  PanGestureInput(PanGestureType aType, uint32_t aTime, TimeStamp aTimeStamp,
+  PanGestureInput(PanGestureType aType, TimeStamp aTimeStamp,
                   const ScreenPoint& aPanStartPoint,
                   const ScreenPoint& aPanDisplacement, Modifiers aModifiers);
 
+  enum class IsEligibleForSwipe : bool { No, Yes };
+  PanGestureInput(PanGestureType aType, TimeStamp aTimeStamp,
+                  const ScreenPoint& aPanStartPoint,
+                  const ScreenPoint& aPanDisplacement, Modifiers aModifiers,
+                  IsEligibleForSwipe aIsEligibleForSwipe);
+
+  void SetLineOrPageDeltas(int32_t aLineOrPageDeltaX,
+                           int32_t aLineOrPageDeltaY);
+
   bool IsMomentum() const;
 
-  WidgetWheelEvent ToWidgetWheelEvent(nsIWidget* aWidget) const;
+  WidgetWheelEvent ToWidgetEvent(nsIWidget* aWidget) const;
 
   bool TransformToLocal(const ScreenToParentLayerMatrix4x4& aTransform);
 
   ScreenPoint UserMultipliedPanDisplacement() const;
   ParentLayerPoint UserMultipliedLocalPanDisplacement() const;
+
+  void SetHandledByAPZ(bool aHandled) { mHandledByAPZ = aHandled; }
+  void SetOverscrollBehaviorAllowsSwipe(bool aAllows) {
+    mOverscrollBehaviorAllowsSwipe = aAllows;
+  }
+  void SetSimulateMomentum(bool aSimulate) { mSimulateMomentum = aSimulate; }
+  void SetIsNoLineOrPageDelta(bool aIsNoLineOrPageDelta) {
+    mIsNoLineOrPageDelta = aIsNoLineOrPageDelta;
+  }
+
+  // Returns true if this pan gesture event is elligible for browser swipe
+  // gesture considering the overscroll-behavior property of the target
+  // scroll container.
+  bool AllowsSwipe() const {
+    MOZ_ASSERT(mHandledByAPZ);
+    return mMayTriggerSwipe && mOverscrollBehaviorAllowsSwipe;
+  }
+
+  // Similar to above AllowsSwipe() but this doesn't care the
+  // overscroll-behavior property, this function should be only used for cases
+  // where APZ isn't involved.
+  bool MayTriggerSwipe() const { return mMayTriggerSwipe; }
+  bool RequiresContentResponseIfCannotScrollHorizontallyInStartDirection();
+
+  static gfx::IntPoint GetIntegerDeltaForEvent(bool aIsStart, float x, float y);
 
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
@@ -384,20 +465,8 @@ class PanGestureInput : public InputData {
 
   bool mHandledByAPZ : 1;
 
-  // true if this is a PANGESTURE_END event that will be followed by a
-  // PANGESTURE_MOMENTUMSTART event.
-  bool mFollowedByMomentum : 1;
-
-  // If this is true, and this event started a new input block that couldn't
-  // find a scrollable target which is scrollable in the horizontal component
-  // of the scroll start direction, then this input block needs to be put on
-  // hold until a content response has arrived, even if the block has a
-  // confirmed target.
-  // This is used by events that can result in a swipe instead of a scroll.
-  bool mRequiresContentResponseIfCannotScrollHorizontallyInStartDirection : 1;
-
-  // This is used by APZ to communicate to the macOS widget code whether
-  // the overscroll-behavior of the scroll frame handling this swipe allows
+  // This is used by APZ to communicate to widget code whether the
+  // overscroll-behavior of the scroll frame handling this swipe allows
   // non-local overscroll behaviors in the horizontal direction (such as
   // swipe navigation).
   bool mOverscrollBehaviorAllowsSwipe : 1;
@@ -407,19 +476,22 @@ class PanGestureInput : public InputData {
   // events.)
   bool mSimulateMomentum : 1;
 
-  void SetHandledByAPZ(bool aHandled) { mHandledByAPZ = aHandled; }
-  void SetFollowedByMomentum(bool aFollowed) {
-    mFollowedByMomentum = aFollowed;
-  }
-  void SetRequiresContentResponseIfCannotScrollHorizontallyInStartDirection(
-      bool aRequires) {
-    mRequiresContentResponseIfCannotScrollHorizontallyInStartDirection =
-        aRequires;
-  }
-  void SetOverscrollBehaviorAllowsSwipe(bool aAllows) {
-    mOverscrollBehaviorAllowsSwipe = aAllows;
-  }
-  void SetSimulateMomentum(bool aSimulate) { mSimulateMomentum = aSimulate; }
+  // true if the creator of this object does not set the mLineOrPageDeltaX/Y
+  // fields and when/if WidgetWheelEvent's are generated from this object wants
+  // the corresponding mLineOrPageDeltaX/Y fields in the WidgetWheelEvent to be
+  // automatically calculated (upon event dispatch by the EventStateManager
+  // code).
+  bool mIsNoLineOrPageDelta : 1;
+
+ private:
+  // If this is true, and this event started a new input block that couldn't
+  // find a scrollable target which is scrollable in the horizontal component
+  // of the scroll start direction, then this input block needs to be put on
+  // hold until a content response has arrived, even if the block has a
+  // confirmed target.
+  // This is used by events that can result in a swipe instead of a scroll.
+  bool mMayTriggerSwipe : 1;
+  void SetMayTriggerSwipe(bool aValue) { mMayTriggerSwipe = aValue; }
 };
 
 /**
@@ -431,6 +503,7 @@ class PinchGestureInput : public InputData {
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   PinchGestureInput();
 
@@ -449,21 +522,51 @@ class PinchGestureInput : public InputData {
       // meaningful data.
       PINCHGESTURE_END
   ));
+
+  MOZ_DEFINE_ENUM_AT_CLASS_SCOPE(
+    PinchGestureSource, (
+      UNKNOWN, // Default initialization value. Should never actually be used.
+      TOUCH, // From two-finger pinch gesture
+      ONE_TOUCH, // From one-finger pinch gesture
+      TRACKPAD, // From trackpad pinch gesture
+      MOUSEWHEEL // Synthesized from modifier+mousewheel
+
+      // If adding more items here, increase n_values for the
+      // APZ_ZOOM_PINCHSOURCE Telemetry metric.
+  ));
   // clang-format on
 
   // Construct a pinch gesture from a Screen point.
-  PinchGestureInput(PinchGestureType aType, uint32_t aTime,
+  PinchGestureInput(PinchGestureType aType, PinchGestureSource aSource,
                     TimeStamp aTimeStamp, const ExternalPoint& aScreenOffset,
                     const ScreenPoint& aFocusPoint, ScreenCoord aCurrentSpan,
                     ScreenCoord aPreviousSpan, Modifiers aModifiers);
 
   bool TransformToLocal(const ScreenToParentLayerMatrix4x4& aTransform);
 
-  WidgetWheelEvent ToWidgetWheelEvent(nsIWidget* aWidget) const;
+  WidgetWheelEvent ToWidgetEvent(nsIWidget* aWidget) const;
+
+  double ComputeDeltaY(nsIWidget* aWidget) const;
+
+  // Set mLineOrPageDeltaY based on ComputeDeltaY().
+  // Return false if the caller should drop this event to ensure
+  // that preventDefault() is respected. (More specifically, this will be
+  // true for event types other than PINCHGESTURE_END if the computed
+  // mLineOrPageDeltaY is zero. In such cases, the resulting DOMMouseScroll
+  // event will not be dispatched, which is a problem if the page is relying
+  // on DOMMouseScroll to prevent browser zooming).
+  // Note that even if the function returns false, the delta from the event
+  // is accumulated and available to be sent in a later event.
+  bool SetLineOrPageDeltaY(nsIWidget* aWidget);
+
+  static gfx::IntPoint GetIntegerDeltaForEvent(bool aIsStart, float x, float y);
 
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
   PinchGestureType mType;
+
+  // Some indication of the input device that generated this pinch gesture.
+  PinchGestureSource mSource;
 
   // Center point of the pinch gesture. That is, if there are two fingers on the
   // screen, it is their midpoint. In the case of more than two fingers, the
@@ -492,6 +595,14 @@ class PinchGestureInput : public InputData {
   // of this type then there must have been a history of spans.
   ScreenCoord mPreviousSpan;
 
+  // We accumulate (via GetIntegerDeltaForEvent) the deltaY that would be
+  // computed by ToWidgetEvent, and then whenever we get a whole integer
+  // value we put it in mLineOrPageDeltaY. Since we only ever use deltaY we
+  // don't need a mLineOrPageDeltaX. This field is used to dispatch legacy mouse
+  // events which are only dispatched when the corresponding field on
+  // WidgetWheelEvent is non-zero.
+  int32_t mLineOrPageDeltaY;
+
   bool mHandledByAPZ;
 };
 
@@ -504,6 +615,7 @@ class TapGestureInput : public InputData {
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   TapGestureInput();
 
@@ -523,15 +635,17 @@ class TapGestureInput : public InputData {
 
   // Construct a tap gesture from a Screen point.
   // mLocalPoint remains (0,0) unless it's set later.
-  TapGestureInput(TapGestureType aType, uint32_t aTime, TimeStamp aTimeStamp,
+  TapGestureInput(TapGestureType aType, TimeStamp aTimeStamp,
                   const ScreenIntPoint& aPoint, Modifiers aModifiers);
 
   // Construct a tap gesture from a ParentLayer point.
   // mPoint remains (0,0) unless it's set later.
-  TapGestureInput(TapGestureType aType, uint32_t aTime, TimeStamp aTimeStamp,
+  TapGestureInput(TapGestureType aType, TimeStamp aTimeStamp,
                   const ParentLayerPoint& aLocalPoint, Modifiers aModifiers);
 
   bool TransformToLocal(const ScreenToParentLayerMatrix4x4& aTransform);
+
+  WidgetSimpleGestureEvent ToWidgetEvent(nsIWidget* aWidget) const;
 
   // Warning, this class is serialized and sent over IPC. Any change to its
   // fields must be reflected in its ParamTraits<>, in nsGUIEventIPC.h
@@ -552,6 +666,7 @@ class ScrollWheelInput : public InputData {
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   typedef mozilla::layers::APZWheelAction APZWheelAction;
 
@@ -576,7 +691,7 @@ class ScrollWheelInput : public InputData {
   );
   // clang-format on
 
-  ScrollWheelInput(uint32_t aTime, TimeStamp aTimeStamp, Modifiers aModifiers,
+  ScrollWheelInput(TimeStamp aTimeStamp, Modifiers aModifiers,
                    ScrollMode aScrollMode, ScrollDeltaType aDeltaType,
                    const ScreenPoint& aOrigin, double aDeltaX, double aDeltaY,
                    bool aAllowToOverrideSystemScrollSpeed,
@@ -587,14 +702,18 @@ class ScrollWheelInput : public InputData {
   static uint32_t DeltaModeForDeltaType(ScrollDeltaType aDeltaType);
   static mozilla::ScrollUnit ScrollUnitForDeltaType(ScrollDeltaType aDeltaType);
 
-  WidgetWheelEvent ToWidgetWheelEvent(nsIWidget* aWidget) const;
+  WidgetWheelEvent ToWidgetEvent(nsIWidget* aWidget) const;
   bool TransformToLocal(const ScreenToParentLayerMatrix4x4& aTransform);
 
   bool IsCustomizedByUserPrefs() const;
 
   // The following two functions are for auto-dir scrolling. For detailed
   // information on auto-dir, @see mozilla::WheelDeltaAdjustmentStrategy
-  bool IsAutoDir() const {
+  bool IsAutoDir(bool aForce = false) const {
+    if (aForce) {
+      return true;
+    }
+
     switch (mWheelDeltaAdjustmentStrategy) {
       case WheelDeltaAdjustmentStrategy::eAutoDir:
       case WheelDeltaAdjustmentStrategy::eAutoDirWithRootHonour:
@@ -613,9 +732,10 @@ class ScrollWheelInput : public InputData {
   // not an auto-dir scroll.
   // For detailed information on auto-dir,
   // @see mozilla::WheelDeltaAdjustmentStrategy
-  bool HonoursRoot() const {
+  bool HonoursRoot(bool aForce = false) const {
     return WheelDeltaAdjustmentStrategy::eAutoDirWithRootHonour ==
-           mWheelDeltaAdjustmentStrategy;
+               mWheelDeltaAdjustmentStrategy ||
+           aForce;
   }
 
   // Warning, this class is serialized and sent over IPC. Any change to its
@@ -636,6 +756,10 @@ class ScrollWheelInput : public InputData {
   // scrolling down.
   double mDeltaX;
   double mDeltaY;
+
+  // The number of scroll wheel ticks.
+  double mWheelTicksX = 0.0;
+  double mWheelTicksY = 0.0;
 
   // The location of the scroll in local coordinates. This is set and used by
   // APZ.
@@ -676,7 +800,7 @@ class KeyboardInput : public InputData {
     KEY_DOWN,
     KEY_PRESS,
     KEY_UP,
-    // Any other key event such as eKeyDownOnPlugin
+    // Any other key event such as eAccessKeyNotFound
     KEY_OTHER,
 
     // Used as an upper bound for ContiguousEnumSerializer
@@ -702,6 +826,7 @@ class KeyboardInput : public InputData {
  protected:
   friend mozilla::layers::APZInputBridgeChild;
   friend mozilla::layers::PAPZInputBridgeParent;
+  ALLOW_DEPRECATED_READPARAM
 
   KeyboardInput();
 };

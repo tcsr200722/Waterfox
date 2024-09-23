@@ -55,6 +55,8 @@ bool InitGlobalNt() {
   INIT_GLOBAL_NT(QuerySection);
   INIT_GLOBAL_NT(QueryVirtualMemory);
   INIT_GLOBAL_NT(UnmapViewOfSection);
+  INIT_GLOBAL_NT(SignalAndWaitForSingleObject);
+  INIT_GLOBAL_NT(WaitForSingleObject);
 
   INIT_GLOBAL_RTL(RtlAllocateHeap);
   INIT_GLOBAL_RTL(RtlAnsiStringToUnicodeString);
@@ -98,6 +100,8 @@ bool SetupBasicInterceptions(InterceptionManager* manager,
   // Interceptions with neither policy nor IPC.
   if (!INTERCEPT_NT(manager, NtSetInformationThread, SET_INFORMATION_THREAD_ID,
                     20) ||
+      !INTERCEPT_NT(manager, NtImpersonateAnonymousToken,
+                    IMPERSONATE_ANONYMOUS_TOKEN_ID, 8) ||
       !INTERCEPT_NT(manager, NtOpenThreadToken, OPEN_THREAD_TOKEN_ID, 20))
     return false;
 

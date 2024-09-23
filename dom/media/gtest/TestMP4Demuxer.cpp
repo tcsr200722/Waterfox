@@ -41,8 +41,8 @@ class MP4DemuxerBinding {
   explicit MP4DemuxerBinding(const char* aFileName = "dash_dashinit.mp4")
       : resource(new MockMediaResource(aFileName)),
         mDemuxer(new MP4Demuxer(resource)),
-        mTaskQueue(
-            new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK))),
+        mTaskQueue(TaskQueue::Create(
+            GetMediaThreadPool(MediaThreadType::SUPERVISOR), "TestMP4Demuxer")),
         mIndex(0) {
     EXPECT_EQ(NS_OK, resource->Open());
   }
@@ -56,7 +56,7 @@ class MP4DemuxerBinding {
   }
 
   RefPtr<GenericPromise> CheckTrackKeyFrame(MediaTrackDemuxer* aTrackDemuxer) {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+    MOZ_RELEASE_ASSERT(mTaskQueue->IsCurrentThreadIn());
 
     RefPtr<MediaTrackDemuxer> track = aTrackDemuxer;
     RefPtr<MP4DemuxerBinding> binding = this;
@@ -97,7 +97,7 @@ class MP4DemuxerBinding {
   }
 
   RefPtr<GenericPromise> CheckTrackSamples(MediaTrackDemuxer* aTrackDemuxer) {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+    MOZ_RELEASE_ASSERT(mTaskQueue->IsCurrentThreadIn());
 
     RefPtr<MediaTrackDemuxer> track = aTrackDemuxer;
     RefPtr<MP4DemuxerBinding> binding = this;

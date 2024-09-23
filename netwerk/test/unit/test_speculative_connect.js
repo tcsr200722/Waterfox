@@ -54,13 +54,15 @@ var localIPLiterals = localIPv4Literals.concat(localIPv6Literals);
 /** Test function list and descriptions.
  */
 var testList = [
-  test_speculative_connect,
+  test_localhost_http_speculative_connect,
+  test_localhost_https_speculative_connect,
   test_hostnames_resolving_to_local_addresses,
   test_proxies_with_local_addresses,
 ];
 
 var testDescription = [
-  "Expect pass with localhost",
+  "Expect pass with localhost, http",
+  "Expect pass with localhost, https",
   "Expect failure with resolved local IPs",
   "Expect failure for proxies with local IPs",
 ];
@@ -79,7 +81,7 @@ function TestServer() {
 
 TestServer.prototype = {
   QueryInterface: ChromeUtils.generateQI(["nsIServerSocket"]),
-  onSocketAccepted(socket, trans) {
+  onSocketAccepted() {
     try {
       this.listener.close();
     } catch (e) {}
@@ -87,7 +89,7 @@ TestServer.prototype = {
     next_test();
   },
 
-  onStopListening(socket) {},
+  onStopListening() {},
 };
 
 /** TestFailedStreamCallback
@@ -100,6 +102,7 @@ function TestFailedStreamCallback(transport, hostname, next) {
   this.hostname = hostname;
   this.next = next;
   this.dummyContent = "G";
+  this.closed = false;
 }
 
 TestFailedStreamCallback.prototype = {
@@ -108,11 +111,15 @@ TestFailedStreamCallback.prototype = {
     "nsIOutputStreamCallback",
   ]),
   processException(e) {
+    if (this.closed) {
+      return;
+    }
     do_check_instanceof(e, Ci.nsIException);
     // A refusal to connect speculatively should throw an error.
     Assert.equal(e.result, Cr.NS_ERROR_CONNECTION_REFUSED);
+    this.closed = true;
     this.transport.close(Cr.NS_BINDING_ABORTED);
-    return true;
+    this.next();
   },
   onOutputStreamReady(outstream) {
     info("outputstream handler.");
@@ -121,7 +128,6 @@ TestFailedStreamCallback.prototype = {
       outstream.write(this.dummyContent, this.dummyContent.length);
     } catch (e) {
       this.processException(e);
-      this.next();
       return;
     }
     info("no exception on write. Wait for read.");
@@ -133,7 +139,6 @@ TestFailedStreamCallback.prototype = {
       instream.available();
     } catch (e) {
       this.processException(e);
-      this.next();
       return;
     }
     do_throw("Speculative Connect should have failed for " + this.hostname);
@@ -142,16 +147,14 @@ TestFailedStreamCallback.prototype = {
   },
 };
 
-/** test_speculative_connect
+/** test_localhost_http_speculative_connect
  *
  * Tests a basic positive case using nsIOService.SpeculativeConnect:
- * connecting to localhost.
+ * connecting to localhost via http.
  */
-function test_speculative_connect() {
+function test_localhost_http_speculative_connect() {
   serv = new TestServer();
-  var ssm = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-    Ci.nsIScriptSecurityManager
-  );
+  var ssm = Services.scriptSecurityManager;
   var URI = ios.newURI(
     "http://localhost:" + serv.listener.port + "/just/a/test"
   );
@@ -159,7 +162,25 @@ function test_speculative_connect() {
 
   ios
     .QueryInterface(Ci.nsISpeculativeConnect)
-    .speculativeConnect(URI, principal, null);
+    .speculativeConnect(URI, principal, null, false);
+}
+
+/** test_localhost_https_speculative_connect
+ *
+ * Tests a basic positive case using nsIOService.SpeculativeConnect:
+ * connecting to localhost via https.
+ */
+function test_localhost_https_speculative_connect() {
+  serv = new TestServer();
+  var ssm = Services.scriptSecurityManager;
+  var URI = ios.newURI(
+    "https://localhost:" + serv.listener.port + "/just/a/test"
+  );
+  var principal = ssm.createContentPrincipal(URI, {});
+
+  ios
+    .QueryInterface(Ci.nsISpeculativeConnect)
+    .speculativeConnect(URI, principal, null, false);
 }
 
 /* Speculative connections should not be allowed for hosts with local IP
@@ -184,7 +205,7 @@ function test_hostnames_resolving_to_addresses(host, next) {
     Ci.nsISocketTransportService
   );
   Assert.notEqual(typeof sts, undefined);
-  var transport = sts.createTransport([], host, 80, null);
+  var transport = sts.createTransport([], host, 80, null, null);
   Assert.notEqual(typeof transport, undefined);
 
   transport.connectionFlags = Ci.nsISocketTransport.DISABLE_RFC1918;
@@ -207,9 +228,7 @@ function test_hostnames_resolving_to_addresses(host, next) {
   // Need to get main thread pointer to ensure nsSocketTransport::AsyncWait
   // adds callback to ns*StreamReadyEvent on main thread, and doesn't
   // addref off the main thread.
-  var gThreadManager = Cc["@mozilla.org/thread-manager;1"].getService(
-    Ci.nsIThreadManager
-  );
+  var gThreadManager = Services.tm;
   var mainThread = gThreadManager.currentThread;
 
   try {
@@ -266,7 +285,7 @@ function test_proxies(proxyHost, next) {
   var proxyInfo = pps.newProxyInfo("http", proxyHost, 8080, "", "", 0, 1, null);
   Assert.notEqual(typeof proxyInfo, undefined);
 
-  var transport = sts.createTransport([], "dummyHost", 80, proxyInfo);
+  var transport = sts.createTransport([], "dummyHost", 80, proxyInfo, null);
   Assert.notEqual(typeof transport, undefined);
 
   transport.connectionFlags = Ci.nsISocketTransport.DISABLE_RFC1918;
@@ -290,9 +309,7 @@ function test_proxies(proxyHost, next) {
   // Need to get main thread pointer to ensure nsSocketTransport::AsyncWait
   // adds callback to ns*StreamReadyEvent on main thread, and doesn't
   // addref off the main thread.
-  var gThreadManager = Cc["@mozilla.org/thread-manager;1"].getService(
-    Ci.nsIThreadManager
-  );
+  var gThreadManager = Services.tm;
   var mainThread = gThreadManager.currentThread;
 
   try {
@@ -353,7 +370,7 @@ function next_test() {
  * Main entry function for test execution.
  */
 function run_test() {
-  ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
+  ios = Services.io;
 
   Services.prefs.setIntPref("network.http.speculative-parallel-limit", 6);
   registerCleanupFunction(() => {

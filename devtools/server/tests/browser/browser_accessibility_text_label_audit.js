@@ -33,17 +33,13 @@ const {
       },
     },
   },
-} = require("devtools/shared/constants");
+} = require("resource://devtools/shared/constants.js");
 
-add_task(async function() {
-  const {
-    target,
-    walker,
-    a11yWalker,
-    parentAccessibility,
-  } = await initAccessibilityFrontsForUrl(
-    `${MAIN_DOMAIN}doc_accessibility_text_label_audit.html`
-  );
+add_task(async function () {
+  const { target, walker, a11yWalker, parentAccessibility } =
+    await initAccessibilityFrontsForUrl(
+      `${MAIN_DOMAIN}doc_accessibility_text_label_audit.html`
+    );
 
   const tests = [
     ["Button menu with inner content", "#buttonmenu-1", null],
@@ -323,27 +319,26 @@ add_task(async function() {
     ["Image with aria-label", "#img-2", null],
     ["Image with aria-labelledby", "#img-3", null],
     ["Image with alt text", "#img-4", null],
-    ["Image with empty alt text", "#img-5", null],
     [
       "Image with aria-labelledby an element with empty content",
-      "#img-6",
+      "#img-5",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
     [
       "Aria image with no name",
-      "#img-7",
+      "#img-6",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
-    ["Aria image with aria-label", "#img-8", null],
-    ["Aria image with aria-labelledby", "#img-9", null],
+    ["Aria image with aria-label", "#img-7", null],
+    ["Aria image with aria-labelledby", "#img-8", null],
     [
       "Aria image with empty aria-label",
-      "#img-10",
+      "#img-9",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
     [
       "Aria image with aria-labelledby an element with empty content",
-      "#img-11",
+      "#img-10",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
     ["<optgroup> with label", "#optgroup-1", null],
@@ -442,10 +437,9 @@ add_task(async function() {
     ["Image map with aria-label", "#imagemap-2", null],
     ["Image map with aria-labelledby", "#imagemap-3", null],
     ["Image map with alt attribute", "#imagemap-4", null],
-    ["Image map with empty alt attribute", "#imagemap-5", null],
     [
       "Image map with aria-labelledby an element with empty content",
-      "#imagemap-6",
+      "#imagemap-5",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
     ["<iframe> with title", "#iframe-1", null],
@@ -489,11 +483,7 @@ add_task(async function() {
     ],
     ["<embed> with video data type and aria-label", "#embed-3", null],
     ["<embed> with video data type and aria-labelledby", "#embed-4", null],
-    [
-      "Link with no inner content",
-      "#link-1",
-      { score: FAIL, issue: INTERACTIVE_NO_NAME },
-    ],
+    ["Link with no inner content", "#link-1", null],
     ["Link with inner content", "#link-2", null],
     [
       "Link with href and no inner content",
@@ -910,8 +900,7 @@ add_task(async function() {
       { score: WARNING, issue: FORM_NO_VISIBLE_NAME },
     ],
     ["Aria slider with aria-labelledby a visible element", "#slider-9", null],
-    // See bug: https://bugzilla.mozilla.org/show_bug.cgi?id=1555551
-    // ["Number input inside a label", "#spinbutton-1", null],
+    ["Number input inside a label", "#spinbutton-1", null],
     [
       "Number input with no label",
       "#spinbutton-2",
@@ -1065,63 +1054,43 @@ add_task(async function() {
     ],
     ["Non-unique aria toolbar with aria-labelledby", "#toolbar-4", null],
     ["SVGElement with role=img that has a title", "#svg-1", null],
-    [
-      "SVGElement with no name and with ownerSVGElement with role=img that has a title",
-      "#svg-2",
-      null,
-    ],
-    ["SVGElement without role=img that has a title", "#svg-3", null],
-    [
-      "SVGElement with no name and with ownerSVGElement without role=img",
-      "#svg-4",
-      { score: FAIL, issue: IMAGE_NO_NAME },
-    ],
+    ["SVGElement without role=img that has a title", "#svg-2", null],
     [
       "SVGElement with role=img and no name",
-      "#svg-5",
+      "#svg-3",
       { score: FAIL, issue: IMAGE_NO_NAME },
-    ],
-    [
-      "SVGElement with no name and with ownerSVGElement with role=img",
-      "#svg-6",
-      null,
     ],
     [
       "SVGElement with no name",
-      "#svg-7",
+      "#svg-4",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
-    [
-      "SVGElement with no name and with ownerSVGElement with no name",
-      "#svg-8",
-      { score: FAIL, issue: IMAGE_NO_NAME },
-    ],
-    ["SVGElement with a name", "#svg-9", null],
+    ["SVGElement with a name", "#svg-5", null],
     [
       "SVGElement with a name and with ownerSVGElement with a name",
-      "#svg-10",
+      "#svg-6",
       null,
     ],
-    ["SVGElement with a title", "#svg-11", null],
+    ["SVGElement with a title", "#svg-7", null],
     [
       "SVGElement with a name and with ownerSVGElement with a title",
-      "#svg-12",
+      "#svg-8",
       null,
     ],
-    ["SVGElement with role=img that has a title", "#svg-13", null],
+    ["SVGElement with role=img that has a title", "#svg-9", null],
     [
       "SVGElement with a name and with ownerSVGElement with role=img that has a title",
-      "#svg-14",
+      "#svg-10",
       null,
     ],
     [
       "SVGElement with role=img and no title",
-      "#svg-15",
+      "#svg-11",
       { score: FAIL, issue: IMAGE_NO_NAME },
     ],
     [
       "SVGElement with a name and with ownerSVGElement with role=img and no title",
-      "#svg-16",
+      "#svg-12",
       null,
     ],
   ];

@@ -19,7 +19,7 @@ requestLongerTimeout(2);
  * tabs in a restored window (bug 1153393).
  */
 add_task(async function test_scroll_background_about_reader_tabs() {
-  pushPrefs(["browser.sessionstore.restore_on_demand", true]);
+  await pushPrefs(["browser.sessionstore.restore_on_demand", true]);
 
   let newWin = await BrowserTestUtils.openNewBrowserWindow();
   let tab = BrowserTestUtils.addTab(newWin.gBrowser, READER_MODE_URL);

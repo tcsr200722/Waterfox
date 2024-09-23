@@ -8,8 +8,10 @@
 
 #include "ScopedNSSTypes.h"
 #include "mozilla/ArrayAlgorithm.h"
+#include "mozilla/Components.h"
 #include "mozilla/Casting.h"
 #include "mozilla/Logging.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Telemetry.h"
 #include "nsCOMArray.h"
 #include "nsComponentManagerUtils.h"
@@ -82,28 +84,7 @@ class NotifyTargetChangeRunnable final : public Runnable {
 uint32_t BackgroundFileSaver::sThreadCount = 0;
 uint32_t BackgroundFileSaver::sTelemetryMaxThreadCount = 0;
 
-BackgroundFileSaver::BackgroundFileSaver()
-    : mControlEventTarget(nullptr),
-      mBackgroundET(nullptr),
-      mPipeOutputStream(nullptr),
-      mPipeInputStream(nullptr),
-      mObserver(nullptr),
-      mLock("BackgroundFileSaver.mLock"),
-      mWorkerThreadAttentionRequested(false),
-      mFinishRequested(false),
-      mComplete(false),
-      mStatus(NS_OK),
-      mAppend(false),
-      mInitialTarget(nullptr),
-      mInitialTargetKeepPartial(false),
-      mRenamedTarget(nullptr),
-      mRenamedTargetKeepPartial(false),
-      mAsyncCopyContext(nullptr),
-      mSha256Enabled(false),
-      mSignatureInfoEnabled(false),
-      mActualTarget(nullptr),
-      mActualTargetKeepPartial(false),
-      mDigestContext(nullptr) {
+BackgroundFileSaver::BackgroundFileSaver() {
   LOG(("Created BackgroundFileSaver [this = %p]", this));
 }
 
@@ -115,18 +96,15 @@ BackgroundFileSaver::~BackgroundFileSaver() {
 nsresult BackgroundFileSaver::Init() {
   MOZ_ASSERT(NS_IsMainThread(), "This should be called on the main thread");
 
-  nsresult rv;
+  NS_NewPipe2(getter_AddRefs(mPipeInputStream),
+              getter_AddRefs(mPipeOutputStream), true, true, 0,
+              HasInfiniteBuffer() ? UINT32_MAX : 0);
 
-  rv = NS_NewPipe2(getter_AddRefs(mPipeInputStream),
-                   getter_AddRefs(mPipeOutputStream), true, true, 0,
-                   HasInfiniteBuffer() ? UINT32_MAX : 0);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  mControlEventTarget = GetCurrentThreadEventTarget();
+  mControlEventTarget = GetCurrentSerialEventTarget();
   NS_ENSURE_TRUE(mControlEventTarget, NS_ERROR_NOT_INITIALIZED);
 
-  rv = NS_CreateBackgroundTaskQueue("BgFileSaver",
-                                    getter_AddRefs(mBackgroundET));
+  nsresult rv = NS_CreateBackgroundTaskQueue("BgFileSaver",
+                                             getter_AddRefs(mBackgroundET));
   NS_ENSURE_SUCCESS(rv, rv);
 
   sThreadCount++;
@@ -141,8 +119,7 @@ nsresult BackgroundFileSaver::Init() {
 NS_IMETHODIMP
 BackgroundFileSaver::GetObserver(nsIBackgroundFileSaverObserver** aObserver) {
   NS_ENSURE_ARG_POINTER(aObserver);
-  *aObserver = mObserver;
-  NS_IF_ADDREF(*aObserver);
+  *aObserver = do_AddRef(mObserver).take();
   return NS_OK;
 }
 
@@ -218,10 +195,11 @@ BackgroundFileSaver::EnableSha256() {
              "Can't enable sha256 or initialize NSS off the main thread");
   // Ensure Personal Security Manager is initialized. This is required for
   // PK11_* operations to work.
-  nsresult rv;
-  nsCOMPtr<nsISupports> nssDummy = do_GetService("@mozilla.org/psm;1", &rv);
+  nsresult rv = NS_OK;
+  mozilla::components::NSSComponent::Service(&rv);
   NS_ENSURE_SUCCESS(rv, rv);
-  mSha256Enabled = true;
+  MutexAutoLock lock(mLock);
+  mSha256Enabled = true;  // this will be read by the worker thread
   return NS_OK;
 }
 
@@ -242,9 +220,10 @@ BackgroundFileSaver::EnableSignatureInfo() {
   MOZ_ASSERT(NS_IsMainThread(),
              "Can't enable signature extraction off the main thread");
   // Ensure Personal Security Manager is initialized.
-  nsresult rv;
-  nsCOMPtr<nsISupports> nssDummy = do_GetService("@mozilla.org/psm;1", &rv);
+  nsresult rv = NS_OK;
+  mozilla::components::NSSComponent::Service(&rv);
   NS_ENSURE_SUCCESS(rv, rv);
+  MutexAutoLock lock(mLock);
   mSignatureInfoEnabled = true;
   return NS_OK;
 }
@@ -359,9 +338,17 @@ nsresult BackgroundFileSaver::ProcessAttention() {
   // If mAsyncCopyContext is not null, we interrupt the copy and re-enter
   // through AsyncCopyCallback.  This allows us to check if, for instance, we
   // should rename the target file.  We will then restart the copy if needed.
-  if (mAsyncCopyContext) {
-    NS_CancelAsyncCopy(mAsyncCopyContext, NS_ERROR_ABORT);
-    return NS_OK;
+
+  // mAsyncCopyContext is only written on the worker thread (which we are on)
+  MOZ_ASSERT(!NS_IsMainThread());
+  {
+    // Even though we're the only thread that writes this, we have to take the
+    // lock
+    MutexAutoLock lock(mLock);
+    if (mAsyncCopyContext) {
+      NS_CancelAsyncCopy(mAsyncCopyContext, NS_ERROR_ABORT);
+      return NS_OK;
+    }
   }
   // Use the current shared state to determine the next operation to execute.
   rv = ProcessStateChange();
@@ -518,21 +505,24 @@ nsresult BackgroundFileSaver::ProcessStateChange() {
     }
   }
 
-  // Create the digest context if requested and NSS hasn't been shut down.
-  if (sha256Enabled && !mDigestContext) {
-    mDigestContext =
-        UniquePK11Context(PK11_CreateDigestContext(SEC_OID_SHA256));
-    NS_ENSURE_TRUE(mDigestContext, NS_ERROR_OUT_OF_MEMORY);
+  // Create the digest if requested and NSS hasn't been shut down.
+  if (sha256Enabled && mDigest.isNothing()) {
+    mDigest.emplace(Digest());
+    mDigest->Begin(SEC_OID_SHA256);
   }
 
   // When we are requested to append to an existing file, we should read the
   // existing data and ensure we include it as part of the final hash.
-  if (mDigestContext && append && !isContinuation) {
+  if (mDigest.isSome() && append && !isContinuation) {
     nsCOMPtr<nsIInputStream> inputStream;
     rv = NS_NewLocalFileInputStream(getter_AddRefs(inputStream), mActualTarget,
                                     PR_RDONLY | nsIFile::OS_READAHEAD);
     if (rv != NS_ERROR_FILE_NOT_FOUND) {
       NS_ENSURE_SUCCESS(rv, rv);
+
+      // Try to clean up the inputStream if an error occurs.
+      auto closeGuard =
+          mozilla::MakeScopeExit([&] { Unused << inputStream->Close(); });
 
       char buffer[BUFFERED_IO_SIZE];
       while (true) {
@@ -545,12 +535,21 @@ nsresult BackgroundFileSaver::ProcessStateChange() {
           break;
         }
 
-        nsresult rv = MapSECStatus(
-            PK11_DigestOp(mDigestContext.get(),
-                          BitwiseCast<unsigned char*, char*>(buffer), count));
+        rv = mDigest->Update(BitwiseCast<unsigned char*, char*>(buffer), count);
         NS_ENSURE_SUCCESS(rv, rv);
+
+        // The pending resume operation may have been cancelled by the control
+        // thread while the worker thread was reading in the existing file.
+        // Abort reading in the original file in that case, as the digest will
+        // be discarded anyway.
+        MutexAutoLock lock(mLock);
+        if (NS_FAILED(mStatus)) {
+          return NS_ERROR_ABORT;
+        }
       }
 
+      // Close explicitly to handle any errors.
+      closeGuard.release();
       rv = inputStream->Close();
       NS_ENSURE_SUCCESS(rv, rv);
     }
@@ -582,14 +581,14 @@ nsresult BackgroundFileSaver::ProcessStateChange() {
   NS_ENSURE_SUCCESS(rv, rv);
   outputStream = bufferedStream;
 
-  // Wrap the output stream so that it feeds the digest context if needed.
-  if (mDigestContext) {
-    // Constructing the DigestOutputStream cannot fail. Passing mDigestContext
+  // Wrap the output stream so that it feeds the digest if needed.
+  if (mDigest.isSome()) {
+    // Constructing the DigestOutputStream cannot fail. Passing mDigest
     // to DigestOutputStream is safe, because BackgroundFileSaver always
     // outlives the outputStream. BackgroundFileSaver is reference-counted
-    // before the call to AsyncCopy, and mDigestContext is never destroyed
+    // before the call to AsyncCopy, and mDigest is never destroyed
     // before AsyncCopyCallback.
-    outputStream = new DigestOutputStream(outputStream, mDigestContext.get());
+    outputStream = new DigestOutputStream(outputStream, mDigest.ref());
   }
 
   // Start copying our input to the target file.  No errors can be raised past
@@ -624,12 +623,11 @@ nsresult BackgroundFileSaver::ProcessStateChange() {
 bool BackgroundFileSaver::CheckCompletion() {
   nsresult rv;
 
-  MOZ_ASSERT(!mAsyncCopyContext,
-             "Should not be copying when checking completion conditions.");
-
   bool failed = true;
   {
     MutexAutoLock lock(mLock);
+    MOZ_ASSERT(!mAsyncCopyContext,
+               "Should not be copying when checking completion conditions.");
 
     if (mComplete) {
       return true;
@@ -675,13 +673,13 @@ bool BackgroundFileSaver::CheckCompletion() {
   }
 
   // Finish computing the hash
-  if (!failed && mDigestContext) {
-    Digest d;
-    rv = d.End(SEC_OID_SHA256, mDigestContext);
+  if (!failed && mDigest.isSome()) {
+    nsTArray<uint8_t> outArray;
+    rv = mDigest->End(outArray);
     if (NS_SUCCEEDED(rv)) {
       MutexAutoLock lock(mLock);
       mSha256 = nsDependentCSubstring(
-          BitwiseCast<char*, unsigned char*>(d.get().data), d.get().len);
+          BitwiseCast<char*, uint8_t*>(outArray.Elements()), outArray.Length());
     }
   }
 
@@ -861,7 +859,7 @@ NS_IMPL_ISUPPORTS(BackgroundFileSaverOutputStream, nsIBackgroundFileSaver,
                   nsIOutputStreamCallback)
 
 BackgroundFileSaverOutputStream::BackgroundFileSaverOutputStream()
-    : BackgroundFileSaver(), mAsyncWaitCallback(nullptr) {}
+    : mAsyncWaitCallback(nullptr) {}
 
 bool BackgroundFileSaverOutputStream::HasInfiniteBuffer() { return false; }
 
@@ -874,6 +872,11 @@ BackgroundFileSaverOutputStream::Close() { return mPipeOutputStream->Close(); }
 
 NS_IMETHODIMP
 BackgroundFileSaverOutputStream::Flush() { return mPipeOutputStream->Flush(); }
+
+NS_IMETHODIMP
+BackgroundFileSaverOutputStream::StreamStatus() {
+  return mPipeOutputStream->StreamStatus();
+}
 
 NS_IMETHODIMP
 BackgroundFileSaverOutputStream::Write(const char* aBuf, uint32_t aCount,
@@ -933,13 +936,6 @@ BackgroundFileSaverOutputStream::OnOutputStreamReady(
 
 NS_IMPL_ISUPPORTS(BackgroundFileSaverStreamListener, nsIBackgroundFileSaver,
                   nsIRequestObserver, nsIStreamListener)
-
-BackgroundFileSaverStreamListener::BackgroundFileSaverStreamListener()
-    : BackgroundFileSaver(),
-      mSuspensionLock("BackgroundFileSaverStreamListener.mSuspensionLock"),
-      mReceivedTooMuchData(false),
-      mRequest(nullptr),
-      mRequestSuspended(false) {}
 
 bool BackgroundFileSaverStreamListener::HasInfiniteBuffer() { return true; }
 
@@ -1077,9 +1073,8 @@ nsresult BackgroundFileSaverStreamListener::NotifySuspendOrResume() {
 NS_IMPL_ISUPPORTS(DigestOutputStream, nsIOutputStream)
 
 DigestOutputStream::DigestOutputStream(nsIOutputStream* aStream,
-                                       PK11Context* aContext)
-    : mOutputStream(aStream), mDigestContext(aContext) {
-  MOZ_ASSERT(mDigestContext, "Can't have null digest context");
+                                       Digest& aDigest)
+    : mOutputStream(aStream), mDigest(aDigest) {
   MOZ_ASSERT(mOutputStream, "Can't have null output stream");
 }
 
@@ -1090,10 +1085,12 @@ NS_IMETHODIMP
 DigestOutputStream::Flush() { return mOutputStream->Flush(); }
 
 NS_IMETHODIMP
+DigestOutputStream::StreamStatus() { return mOutputStream->StreamStatus(); }
+
+NS_IMETHODIMP
 DigestOutputStream::Write(const char* aBuf, uint32_t aCount, uint32_t* retval) {
-  nsresult rv = MapSECStatus(PK11_DigestOp(
-      mDigestContext, BitwiseCast<const unsigned char*, const char*>(aBuf),
-      aCount));
+  nsresult rv = mDigest.Update(
+      BitwiseCast<const unsigned char*, const char*>(aBuf), aCount);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return mOutputStream->Write(aBuf, aCount, retval);

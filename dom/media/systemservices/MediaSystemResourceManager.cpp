@@ -7,6 +7,8 @@
 #include "mozilla/TaskQueue.h"
 
 #include "MediaSystemResourceManagerChild.h"
+#include "MediaSystemResourceClient.h"
+
 #include "mozilla/layers/ImageBridgeChild.h"
 
 #include "MediaSystemResourceManager.h"
@@ -57,7 +59,7 @@ void MediaSystemResourceManager::Init() {
     return;
   }
 
-  ReentrantMonitor barrier("MediaSystemResourceManager::Init");
+  ReentrantMonitor barrier MOZ_UNANNOTATED("MediaSystemResourceManager::Init");
   ReentrantMonitorAutoEnter mainThreadAutoMon(barrier);
   bool done = false;
 
@@ -120,16 +122,16 @@ bool MediaSystemResourceManager::IsIpcClosed() { return mChild ? true : false; }
 void MediaSystemResourceManager::Register(MediaSystemResourceClient* aClient) {
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
   MOZ_ASSERT(aClient);
-  MOZ_ASSERT(!mResourceClients.Get(aClient->mId));
+  MOZ_ASSERT(!mResourceClients.Contains(aClient->mId));
 
-  mResourceClients.Put(aClient->mId, aClient);
+  mResourceClients.InsertOrUpdate(aClient->mId, aClient);
 }
 
 void MediaSystemResourceManager::Unregister(
     MediaSystemResourceClient* aClient) {
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
   MOZ_ASSERT(aClient);
-  MOZ_ASSERT(mResourceClients.Get(aClient->mId));
+  MOZ_ASSERT(mResourceClients.Contains(aClient->mId));
   MOZ_ASSERT(mResourceClients.Get(aClient->mId) == aClient);
 
   mResourceClients.Remove(aClient->mId);
@@ -189,7 +191,8 @@ bool MediaSystemResourceManager::AcquireSyncNoWait(
   MOZ_ASSERT(aClient);
   MOZ_ASSERT(!InImageBridgeChildThread());
 
-  ReentrantMonitor barrier("MediaSystemResourceManager::AcquireSyncNoWait");
+  ReentrantMonitor barrier MOZ_UNANNOTATED(
+      "MediaSystemResourceManager::AcquireSyncNoWait");
   ReentrantMonitorAutoEnter autoMon(barrier);
   bool done = false;
   {

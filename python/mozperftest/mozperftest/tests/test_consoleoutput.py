@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-import mozunit
 from unittest import mock
 
-from mozperftest.tests.support import EXAMPLE_TEST, get_running_env, temp_dir, BT_DATA
+import mozunit
+
 from mozperftest.environment import METRICS
-from mozperftest.utils import silence
+from mozperftest.tests.support import BT_DATA, EXAMPLE_TEST, get_running_env
+from mozperftest.utils import silence, temp_dir
 
 
 @mock.patch("mozperftest.metrics.common.validate_intermediate_results")

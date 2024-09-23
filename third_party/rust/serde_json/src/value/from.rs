@@ -1,8 +1,9 @@
-use std::borrow::Cow;
-
 use super::Value;
-use map::Map;
-use number::Number;
+use crate::map::Map;
+use crate::number::Number;
+use alloc::borrow::Cow;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 macro_rules! from_integer {
     ($($ty:ident)*) => {
@@ -22,34 +23,34 @@ from_integer! {
 }
 
 #[cfg(feature = "arbitrary_precision")]
-serde_if_integer128! {
-    from_integer! {
-        i128 u128
-    }
+from_integer! {
+    i128 u128
 }
 
 impl From<f32> for Value {
-    /// Convert 32-bit floating point number to `Value`
+    /// Convert 32-bit floating point number to `Value::Number`, or
+    /// `Value::Null` if infinite or NaN.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let f: f32 = 13.37;
     /// let x: Value = f.into();
     /// ```
     fn from(f: f32) -> Self {
-        From::from(f as f64)
+        Number::from_f32(f).map_or(Value::Null, Value::Number)
     }
 }
 
 impl From<f64> for Value {
-    /// Convert 64-bit floating point number to `Value`
+    /// Convert 64-bit floating point number to `Value::Number`, or
+    /// `Value::Null` if infinite or NaN.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let f: f64 = 13.37;
@@ -61,11 +62,11 @@ impl From<f64> for Value {
 }
 
 impl From<bool> for Value {
-    /// Convert boolean to `Value`
+    /// Convert boolean to `Value::Bool`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let b = false;
@@ -77,11 +78,11 @@ impl From<bool> for Value {
 }
 
 impl From<String> for Value {
-    /// Convert `String` to `Value`
+    /// Convert `String` to `Value::String`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let s: String = "lorem".to_string();
@@ -92,12 +93,12 @@ impl From<String> for Value {
     }
 }
 
-impl<'a> From<&'a str> for Value {
-    /// Convert string slice to `Value`
+impl From<&str> for Value {
+    /// Convert string slice to `Value::String`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let s: &str = "lorem";
@@ -109,11 +110,11 @@ impl<'a> From<&'a str> for Value {
 }
 
 impl<'a> From<Cow<'a, str>> for Value {
-    /// Convert copy-on-write string to `Value`
+    /// Convert copy-on-write string to `Value::String`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     /// use std::borrow::Cow;
     ///
@@ -121,7 +122,7 @@ impl<'a> From<Cow<'a, str>> for Value {
     /// let x: Value = s.into();
     /// ```
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     /// use std::borrow::Cow;
     ///
@@ -133,12 +134,28 @@ impl<'a> From<Cow<'a, str>> for Value {
     }
 }
 
-impl From<Map<String, Value>> for Value {
-    /// Convert map (with string keys) to `Value`
+impl From<Number> for Value {
+    /// Convert `Number` to `Value::Number`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
+    /// use serde_json::{Number, Value};
+    ///
+    /// let n = Number::from(7);
+    /// let x: Value = n.into();
+    /// ```
+    fn from(f: Number) -> Self {
+        Value::Number(f)
+    }
+}
+
+impl From<Map<String, Value>> for Value {
+    /// Convert map (with string keys) to `Value::Object`.
+    ///
+    /// # Examples
+    ///
+    /// ```
     /// use serde_json::{Map, Value};
     ///
     /// let mut m = Map::new();
@@ -151,11 +168,11 @@ impl From<Map<String, Value>> for Value {
 }
 
 impl<T: Into<Value>> From<Vec<T>> for Value {
-    /// Convert a `Vec` to `Value`
+    /// Convert a `Vec` to `Value::Array`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let v = vec!["lorem", "ipsum", "dolor"];
@@ -166,42 +183,42 @@ impl<T: Into<Value>> From<Vec<T>> for Value {
     }
 }
 
-impl<'a, T: Clone + Into<Value>> From<&'a [T]> for Value {
-    /// Convert a slice to `Value`
+impl<T: Clone + Into<Value>> From<&[T]> for Value {
+    /// Convert a slice to `Value::Array`.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let v: &[&str] = &["lorem", "ipsum", "dolor"];
     /// let x: Value = v.into();
     /// ```
-    fn from(f: &'a [T]) -> Self {
+    fn from(f: &[T]) -> Self {
         Value::Array(f.iter().cloned().map(Into::into).collect())
     }
 }
 
-impl<T: Into<Value>> ::std::iter::FromIterator<T> for Value {
-    /// Convert an iteratable type to a `Value`
+impl<T: Into<Value>> FromIterator<T> for Value {
+    /// Create a `Value::Array` by collecting an iterator of array elements.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let v = std::iter::repeat(42).take(5);
     /// let x: Value = v.collect();
     /// ```
     ///
-    /// ```edition2018
+    /// ```
     /// use serde_json::Value;
     ///
     /// let v: Vec<_> = vec!["lorem", "ipsum", "dolor"];
     /// let x: Value = v.into_iter().collect();
     /// ```
     ///
-    /// ```edition2018
+    /// ```
     /// use std::iter::FromIterator;
     /// use serde_json::Value;
     ///
@@ -212,12 +229,32 @@ impl<T: Into<Value>> ::std::iter::FromIterator<T> for Value {
     }
 }
 
-impl From<()> for Value {
-    /// Convert `()` to `Value`
+impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Value {
+    /// Create a `Value::Object` by collecting an iterator of key-value pairs.
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
+    /// use serde_json::Value;
+    ///
+    /// let v: Vec<_> = vec![("lorem", 40), ("ipsum", 2)];
+    /// let x: Value = v.into_iter().collect();
+    /// ```
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        Value::Object(
+            iter.into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        )
+    }
+}
+
+impl From<()> for Value {
+    /// Convert `()` to `Value::Null`.
+    ///
+    /// # Examples
+    ///
+    /// ```
     /// use serde_json::Value;
     ///
     /// let u = ();
@@ -225,5 +262,17 @@ impl From<()> for Value {
     /// ```
     fn from((): ()) -> Self {
         Value::Null
+    }
+}
+
+impl<T> From<Option<T>> for Value
+where
+    T: Into<Value>,
+{
+    fn from(opt: Option<T>) -> Self {
+        match opt {
+            None => Value::Null,
+            Some(value) => Into::into(value),
+        }
     }
 }

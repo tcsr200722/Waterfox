@@ -1,28 +1,54 @@
 "use strict";
 
 let contextMenu;
-let LOGIN_FILL_ITEMS = [
-  "---",
-  null,
-  "fill-login",
-  null,
-  [
-    "fill-login-no-logins",
-    false,
-    "---",
-    null,
-    "fill-login-saved-passwords",
-    true,
-  ],
-  null,
-];
+let LOGIN_FILL_ITEMS = ["---", null, "manage-saved-logins", true];
+let NAVIGATION_ITEMS =
+  AppConstants.platform == "macosx"
+    ? [
+        "context-back",
+        false,
+        "context-forward",
+        false,
+        "context-reload",
+        true,
+        "---",
+        null,
+        "context-bookmarkpage",
+        true,
+      ]
+    : [
+        "context-navigation",
+        null,
+        [
+          "context-back",
+          false,
+          "context-forward",
+          false,
+          "context-reload",
+          true,
+          "context-bookmarkpage",
+          true,
+        ],
+        null,
+        "---",
+        null,
+      ];
 let hasPocket = Services.prefs.getBoolPref("extensions.pocket.enabled");
+let hasStripOnShare = Services.prefs.getBoolPref(
+  "privacy.query_stripping.strip_on_share.enabled"
+);
 let hasContainers =
   Services.prefs.getBoolPref("privacy.userContext.enabled") &&
   ContextualIdentityService.getPublicIdentities().length;
 
+const hasSelectTranslations =
+  Services.prefs.getBoolPref("browser.translations.enable") &&
+  Services.prefs.getBoolPref("browser.translations.select.enable");
+
 const example_base =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://example.com/browser/browser/base/content/test/contextMenu/";
+const about_preferences_base = "about:preferences";
 const chrome_base =
   "chrome://mochitests/content/browser/browser/base/content/test/contextMenu/";
 const head_base =
@@ -34,9 +60,6 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-/* import-globals-from ../general/head.js */
-Services.scriptloader.loadSubScript(head_base + "head.js", this);
-
 function getThisFrameSubMenu(base_menu) {
   if (AppConstants.NIGHTLY_BUILD) {
     let osPidItem = ["context-frameOsPid", false];
@@ -45,12 +68,13 @@ function getThisFrameSubMenu(base_menu) {
   return base_menu;
 }
 
-add_task(async function init() {
-  // Ensure screenshots is really disabled (bug 1498738).
-  const addon = await AddonManager.getAddonByID("screenshots@mozilla.org");
-  await addon.disable({ allowSystemAddons: true });
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.search.separatePrivateDefault.ui.enabled", true]],
+    set: [
+      ["browser.search.separatePrivateDefault.ui.enabled", true],
+      ["extensions.screenshots.disabled", false],
+      ["layout.forms.reveal-password-context-menu.enabled", true],
+    ],
   });
 });
 
@@ -85,16 +109,13 @@ add_task(async function test_xul_text_link_label() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 
   // Clean up so won't affect HTML element test cases.
@@ -109,7 +130,7 @@ add_task(async function test_setup_html() {
 
   await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
     let doc = content.document;
     let audioIframe = doc.querySelector("#test-audio-in-iframe");
     // media documents always use a <video> tag.
@@ -120,7 +141,7 @@ add_task(async function test_setup_html() {
     audio.loop = true;
     audio.src = "audio.ogg";
     video.loop = true;
-    video.src = "video.ogg";
+    video.src = "video.webm";
 
     let awaitPause = ContentTaskUtils.waitForEvent(audio, "pause");
     await ContentTaskUtils.waitForCondition(
@@ -142,80 +163,57 @@ add_task(async function test_setup_html() {
 
 let plainTextItems;
 add_task(async function test_plaintext() {
-  plainTextItems = [
-    "context-navigation",
-    null,
-    [
-      "context-back",
-      false,
-      "context-forward",
-      false,
-      "context-reload",
-      true,
-      "context-bookmarkpage",
-      true,
-    ],
-    null,
-    "---",
-    null,
+  await test_contextmenu("#test-text", [
+    ...NAVIGATION_ITEMS,
     "context-savepage",
     true,
     ...(hasPocket ? ["context-pocket", true] : []),
-    "---",
-    null,
-    "context-sendpagetodevice",
-    true,
-    [],
-    null,
-    "---",
-    null,
-    "context-viewbgimage",
-    false,
     "context-selectall",
+    true,
+    "---",
+    null,
+    "context-take-screenshot",
     true,
     "---",
     null,
     "context-viewsource",
     true,
-    "context-viewinfo",
-    true,
-  ];
-  await test_contextmenu("#test-text", plainTextItems, {
-    maybeScreenshotsPresent: true,
-  });
+  ]);
 });
+
+const kLinkItems = [
+  "context-openlinkintab",
+  true,
+  ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+  // We need a blank entry here because the containers submenu is
+  // dynamically generated with no ids.
+  ...(hasContainers ? ["", null] : []),
+  "context-openlink",
+  true,
+  "context-openlinkprivate",
+  true,
+  "---",
+  null,
+  "context-bookmarklink",
+  true,
+  "context-savelink",
+  true,
+  ...(hasPocket ? ["context-savelinktopocket", true] : []),
+  "context-copylink",
+  true,
+  ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+  "---",
+  null,
+  "context-searchselect",
+  true,
+  "context-searchselect-private",
+  true,
+];
 
 add_task(async function test_link() {
   await test_contextmenu("#test-link", [
-    "context-openlinkintab",
-    true,
-    ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
-    // We need a blank entry here because the containers submenu is
-    // dynamically generated with no ids.
-    ...(hasContainers ? ["", null] : []),
-    "context-openlink",
-    true,
-    "context-openlinkprivate",
-    true,
-    "---",
-    null,
-    "context-bookmarklink",
-    true,
-    "context-savelink",
-    true,
-    ...(hasPocket ? ["context-savelinktopocket", true] : []),
-    "context-copylink",
-    true,
-    "context-searchselect",
-    true,
-    "context-searchselect-private",
-    true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
+    ...kLinkItems,
+    ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
   ]);
 });
 
@@ -223,35 +221,8 @@ add_task(async function test_link_in_shadow_dom() {
   await test_contextmenu(
     "#shadow-host",
     [
-      "context-openlinkintab",
-      true,
-      ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
-      // We need a blank entry here because the containers submenu is
-      // dynamically generated with no ids.
-      ...(hasContainers ? ["", null] : []),
-      "context-openlink",
-      true,
-      "context-openlinkprivate",
-      true,
-      "---",
-      null,
-      "context-bookmarklink",
-      true,
-      "context-savelink",
-      true,
-      ...(hasPocket ? ["context-savelinktopocket", true] : []),
-      "context-copylink",
-      true,
-      "context-searchselect",
-      true,
-      "context-searchselect-private",
-      true,
-      "---",
-      null,
-      "context-sendlinktodevice",
-      true,
-      [],
-      null,
+      ...kLinkItems,
+      ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
     ],
     {
       offsetX: 6,
@@ -260,14 +231,38 @@ add_task(async function test_link_in_shadow_dom() {
   );
 });
 
+add_task(async function test_link_over_shadow_dom() {
+  await test_contextmenu("#shadow-host-in-link", kLinkItems, {
+    offsetX: 6,
+    offsetY: 6,
+  });
+});
+
 add_task(async function test_mailto() {
   await test_contextmenu("#test-mailto", [
     "context-copyemail",
     true,
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
+    ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
+  ]);
+});
+
+add_task(async function test_tel() {
+  await test_contextmenu("#test-tel", [
+    "context-copyphone",
+    true,
+    "---",
+    null,
+    "context-searchselect",
+    true,
+    "context-searchselect-private",
+    true,
+    ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
   ]);
 });
 
@@ -278,19 +273,25 @@ add_task(async function test_image() {
       [
         "context-viewimage",
         true,
+        "context-saveimage",
+        true,
         "context-copyimage-contents",
         true,
         "context-copyimage",
         true,
-        "---",
-        null,
-        "context-saveimage",
-        true,
         "context-sendimage",
         true,
+        ...getTextRecognitionItems(),
+        ...(Services.prefs.getBoolPref("browser.menu.showViewImageInfo", false)
+          ? ["context-viewimageinfo", true]
+          : []),
+        "---",
+        null,
         "context-setDesktopBackground",
         true,
-        "context-viewimageinfo",
+        "---",
+        null,
+        "context-take-screenshot",
         true,
       ],
       {
@@ -312,20 +313,20 @@ add_task(async function test_image() {
 });
 
 add_task(async function test_canvas() {
-  await test_contextmenu(
-    "#test-canvas",
-    [
-      "context-viewimage",
-      true,
-      "context-saveimage",
-      true,
-      "context-selectall",
-      true,
-    ],
-    {
-      maybeScreenshotsPresent: true,
-    }
-  );
+  await test_contextmenu("#test-canvas", [
+    "context-viewimage",
+    true,
+    "context-saveimage",
+    true,
+    "---",
+    null,
+    "context-selectall",
+    true,
+    "---",
+    null,
+    "context-take-screenshot",
+    true,
+  ]);
 });
 
 add_task(async function test_video_ok() {
@@ -355,25 +356,29 @@ add_task(async function test_video_ok() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    true,
     "context-video-fullscreen",
     true,
-    "context-video-pictureinpicture",
+    "context-media-hidecontrols",
     true,
     "---",
     null,
     "context-viewvideo",
     true,
-    "context-copyvideourl",
+    "context-video-pictureinpicture",
     true,
     "---",
     null,
-    "context-savevideo",
-    true,
     "context-video-saveimage",
     true,
+    "context-savevideo",
+    true,
+    "context-copyvideourl",
+    true,
     "context-sendvideo",
+    true,
+    "---",
+    null,
+    "context-take-screenshot",
     true,
   ]);
 
@@ -405,23 +410,27 @@ add_task(async function test_video_ok() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    true,
     "context-video-fullscreen",
+    true,
+    "context-media-hidecontrols",
     true,
     "---",
     null,
     "context-viewvideo",
     true,
+    "---",
+    null,
+    "context-video-saveimage",
+    true,
+    "context-savevideo",
+    true,
     "context-copyvideourl",
+    true,
+    "context-sendvideo",
     true,
     "---",
     null,
-    "context-savevideo",
-    true,
-    "context-video-saveimage",
-    true,
-    "context-sendvideo",
+    "context-take-screenshot",
     true,
   ]);
 
@@ -455,11 +464,9 @@ add_task(async function test_audio_in_video() {
     true,
     "---",
     null,
-    "context-copyaudiourl",
-    true,
-    "---",
-    null,
     "context-saveaudio",
+    true,
+    "context-copyaudiourl",
     true,
     "context-sendaudio",
     true,
@@ -493,25 +500,27 @@ add_task(async function test_video_bad() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    false,
     "context-video-fullscreen",
     false,
-    "context-video-pictureinpicture",
+    "context-media-hidecontrols",
     false,
     "---",
     null,
     "context-viewvideo",
     true,
+    "---",
+    null,
+    "context-video-saveimage",
+    false,
+    "context-savevideo",
+    true,
     "context-copyvideourl",
+    true,
+    "context-sendvideo",
     true,
     "---",
     null,
-    "context-savevideo",
-    true,
-    "context-video-saveimage",
-    false,
-    "context-sendvideo",
+    "context-take-screenshot",
     true,
   ]);
 
@@ -543,23 +552,27 @@ add_task(async function test_video_bad() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    false,
     "context-video-fullscreen",
+    false,
+    "context-media-hidecontrols",
     false,
     "---",
     null,
     "context-viewvideo",
     true,
+    "---",
+    null,
+    "context-video-saveimage",
+    false,
+    "context-savevideo",
+    true,
     "context-copyvideourl",
+    true,
+    "context-sendvideo",
     true,
     "---",
     null,
-    "context-savevideo",
-    true,
-    "context-video-saveimage",
-    false,
-    "context-sendvideo",
+    "context-take-screenshot",
     true,
   ]);
 
@@ -593,26 +606,28 @@ add_task(async function test_video_bad2() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    false,
     "context-video-fullscreen",
     false,
-    "context-video-pictureinpicture",
+    "context-media-hidecontrols",
     false,
     "---",
     null,
     "context-viewvideo",
     false,
-    "context-copyvideourl",
-    false,
     "---",
     null,
+    "context-video-saveimage",
+    false,
     "context-savevideo",
     false,
-    "context-video-saveimage",
+    "context-copyvideourl",
     false,
     "context-sendvideo",
     false,
+    "---",
+    null,
+    "context-take-screenshot",
+    true,
   ]);
 
   await SpecialPowers.popPrefEnv();
@@ -643,24 +658,28 @@ add_task(async function test_video_bad2() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    false,
     "context-video-fullscreen",
+    false,
+    "context-media-hidecontrols",
     false,
     "---",
     null,
     "context-viewvideo",
     false,
-    "context-copyvideourl",
-    false,
     "---",
     null,
+    "context-video-saveimage",
+    false,
     "context-savevideo",
     false,
-    "context-video-saveimage",
+    "context-copyvideourl",
     false,
     "context-sendvideo",
     false,
+    "---",
+    null,
+    "context-take-screenshot",
+    true,
   ]);
 
   await SpecialPowers.popPrefEnv();
@@ -668,36 +687,14 @@ add_task(async function test_video_bad2() {
 
 add_task(async function test_iframe() {
   await test_contextmenu("#test-iframe", [
-    "context-navigation",
-    null,
-    [
-      "context-back",
-      false,
-      "context-forward",
-      false,
-      "context-reload",
-      true,
-      "context-bookmarkpage",
-      true,
-    ],
-    null,
-    "---",
-    null,
+    ...NAVIGATION_ITEMS,
     "context-savepage",
     true,
     ...(hasPocket ? ["context-pocket", true] : []),
-    "---",
-    null,
-    "context-sendpagetodevice",
-    true,
-    [],
-    null,
-    "---",
-    null,
-    "context-viewbgimage",
-    false,
     "context-selectall",
     true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -723,6 +720,10 @@ add_task(async function test_iframe() {
       true,
       "---",
       null,
+      "context-take-frame-screenshot",
+      true,
+      "---",
+      null,
       "context-viewframesource",
       true,
       "context-viewframeinfo",
@@ -732,8 +733,6 @@ add_task(async function test_iframe() {
     "---",
     null,
     "context-viewsource",
-    true,
-    "context-viewinfo",
     true,
   ]);
 });
@@ -765,26 +764,28 @@ add_task(async function test_video_in_iframe() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    true,
     "context-video-fullscreen",
     true,
-    "context-video-pictureinpicture",
+    "context-media-hidecontrols",
     true,
     "---",
     null,
     "context-viewvideo",
     true,
-    "context-copyvideourl",
+    "context-video-pictureinpicture",
     true,
     "---",
     null,
+    "context-video-saveimage",
+    true,
     "context-savevideo",
     true,
-    "context-video-saveimage",
+    "context-copyvideourl",
     true,
     "context-sendvideo",
     true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -807,6 +808,10 @@ add_task(async function test_video_in_iframe() {
       "---",
       null,
       "context-printframe",
+      true,
+      "---",
+      null,
+      "context-take-frame-screenshot",
       true,
       "---",
       null,
@@ -844,24 +849,26 @@ add_task(async function test_video_in_iframe() {
     null,
     "context-media-loop",
     true,
-    "context-media-hidecontrols",
-    true,
     "context-video-fullscreen",
+    true,
+    "context-media-hidecontrols",
     true,
     "---",
     null,
     "context-viewvideo",
     true,
-    "context-copyvideourl",
-    true,
     "---",
     null,
+    "context-video-saveimage",
+    true,
     "context-savevideo",
     true,
-    "context-video-saveimage",
+    "context-copyvideourl",
     true,
     "context-sendvideo",
     true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -884,6 +891,10 @@ add_task(async function test_video_in_iframe() {
       "---",
       null,
       "context-printframe",
+      true,
+      "---",
+      null,
+      "context-take-frame-screenshot",
       true,
       "---",
       null,
@@ -921,14 +932,14 @@ add_task(async function test_audio_in_iframe() {
     true,
     "---",
     null,
-    "context-copyaudiourl",
-    true,
-    "---",
-    null,
     "context-saveaudio",
+    true,
+    "context-copyaudiourl",
     true,
     "context-sendaudio",
     true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -965,20 +976,24 @@ add_task(async function test_image_in_iframe() {
   await test_contextmenu("#test-image-in-iframe", [
     "context-viewimage",
     true,
+    "context-saveimage",
+    true,
     "context-copyimage-contents",
     true,
     "context-copyimage",
     true,
-    "---",
-    null,
-    "context-saveimage",
-    true,
     "context-sendimage",
     true,
+    ...getTextRecognitionItems(),
+    ...(Services.prefs.getBoolPref("browser.menu.showViewImageInfo", false)
+      ? ["context-viewimageinfo", true]
+      : []),
+    "---",
+    null,
     "context-setDesktopBackground",
     true,
-    "context-viewimageinfo",
-    true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -1004,6 +1019,10 @@ add_task(async function test_image_in_iframe() {
       true,
       "---",
       null,
+      "context-take-frame-screenshot",
+      true,
+      "---",
+      null,
       "context-viewframeinfo",
       true,
     ]),
@@ -1015,32 +1034,14 @@ add_task(async function test_pdf_viewer_in_iframe() {
   await test_contextmenu(
     "#test-pdf-viewer-in-frame",
     [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
+      ...NAVIGATION_ITEMS,
       "context-savepage",
       true,
       ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
       "context-selectall",
       true,
+      "---",
+      null,
       "frame",
       null,
       getThisFrameSubMenu([
@@ -1066,6 +1067,10 @@ add_task(async function test_pdf_viewer_in_iframe() {
         true,
         "---",
         null,
+        "context-take-frame-screenshot",
+        true,
+        "---",
+        null,
         "context-viewframeinfo",
         true,
       ]),
@@ -1074,10 +1079,10 @@ add_task(async function test_pdf_viewer_in_iframe() {
       null,
       "context-viewsource",
       true,
-      "context-viewinfo",
-      true,
     ],
-    { maybeScreenshotsPresent: true, shiftkey: true }
+    {
+      shiftkey: true,
+    }
   );
 });
 
@@ -1089,6 +1094,7 @@ add_task(async function test_textarea() {
   /*
   yield test_contextmenu("#test-textarea",
     ["context-undo",                false,
+     "context-redo",                false,
      "---",                         null,
      "context-cut",                 true,
      "context-copy",                true,
@@ -1115,6 +1121,7 @@ add_task(async function test_textarea_spellcheck() {
      "spell-add-to-dictionary", true,
      "---",                 null,
      "context-undo",        false,
+     "context-redo",        false,
      "---",                 null,
      "context-cut",         true,
      "context-copy",        true,
@@ -1142,9 +1149,7 @@ add_task(async function test_textarea_spellcheck() {
 });
 
 add_task(async function test_plaintext2() {
-  await test_contextmenu("#test-text", plainTextItems, {
-    maybeScreenshotsPresent: true,
-  });
+  await test_contextmenu("#test-text", plainTextItems);
 });
 
 add_task(async function test_undo_add_to_dictionary() {
@@ -1155,12 +1160,12 @@ add_task(async function test_undo_add_to_dictionary() {
     ["spell-undo-add-to-dictionary", true,
      "---",                 null,
      "context-undo",        false,
+     "context-redo",        false,
      "---",                 null,
      "context-cut",         true,
      "context-copy",        true,
      "context-paste",       null, // ignore clipboard state
      "context-delete",      false,
-     "---",                 null,
      "context-selectall",   true,
      "---",                 null,
      "spell-check-enabled", true,
@@ -1189,12 +1194,12 @@ add_task(async function test_contenteditable() {
      "spell-add-to-dictionary", true,
      "---",                 null,
      "context-undo",        false,
+     "context-redo",        false,
      "---",                 null,
      "context-cut",         true,
      "context-copy",        true,
      "context-paste",       null, // ignore clipboard state
      "context-delete",      false,
-     "---",                 null,
      "context-selectall",   true,
      "---",                 null,
      "spell-check-enabled", true,
@@ -1217,270 +1222,153 @@ add_task(async function test_copylinkcommand() {
 
       // The easiest way to check the clipboard is to paste the contents
       // into a textbox.
-      await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
-        let doc = content.document;
-        let input = doc.getElementById("test-input");
-        input.focus();
-        input.value = "";
-      });
+      await SpecialPowers.spawn(
+        gBrowser.selectedBrowser,
+        [],
+        async function () {
+          let doc = content.document;
+          let input = doc.getElementById("test-input");
+          input.focus();
+          input.value = "";
+        }
+      );
       document.commandDispatcher
         .getControllerForCommand("cmd_paste")
         .doCommand("cmd_paste");
-      await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
-        let doc = content.document;
-        let input = doc.getElementById("test-input");
-        Assert.equal(
-          input.value,
-          "http://mozilla.com/",
-          "paste for command cmd_paste"
-        );
-      });
+      await SpecialPowers.spawn(
+        gBrowser.selectedBrowser,
+        [],
+        async function () {
+          let doc = content.document;
+          let input = doc.getElementById("test-input");
+          Assert.equal(
+            input.value,
+            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            "http://mozilla.com/",
+            "paste for command cmd_paste"
+          );
+          // Don't keep focus, because that may affect clipboard commands in
+          // subsequently-opened menus.
+          input.blur();
+        }
+      );
     },
   });
 });
 
-add_task(async function test_pagemenu() {
-  await test_contextmenu(
-    "#test-pagemenu",
-    [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
-      "+Plain item",
-      { type: "", icon: "", checked: false, disabled: false },
-      "+Disabled item",
-      { type: "", icon: "", checked: false, disabled: true },
-      "+Item w/ textContent",
-      { type: "", icon: "", checked: false, disabled: false },
-      "---",
-      null,
-      "+Checkbox",
-      { type: "checkbox", icon: "", checked: true, disabled: false },
-      "---",
-      null,
-      "+Radio1",
-      { type: "checkbox", icon: "", checked: true, disabled: false },
-      "+Radio2",
-      { type: "checkbox", icon: "", checked: false, disabled: false },
-      "+Radio3",
-      { type: "checkbox", icon: "", checked: false, disabled: false },
-      "---",
-      null,
-      "+Item w/ icon",
-      { type: "", icon: "favicon.ico", checked: false, disabled: false },
-      "+Item w/ bad icon",
-      { type: "", icon: "", checked: false, disabled: false },
-      "---",
-      null,
-      "generated-submenu-1",
-      true,
-      [
-        "+Radio1",
-        { type: "checkbox", icon: "", checked: false, disabled: false },
-        "+Radio2",
-        { type: "checkbox", icon: "", checked: true, disabled: false },
-        "+Radio3",
-        { type: "checkbox", icon: "", checked: false, disabled: false },
-        "---",
-        null,
-        "+Checkbox",
-        { type: "checkbox", icon: "", checked: false, disabled: false },
-      ],
-      null,
-      "---",
-      null,
-      "context-savepage",
-      true,
-      ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
-      "---",
-      null,
-      "context-viewbgimage",
-      false,
-      "context-selectall",
-      true,
-      "---",
-      null,
-      "context-viewsource",
-      true,
-      "context-viewinfo",
-      true,
-    ],
-    {
-      async postCheckContextMenuFn() {
-        let item = contextMenu.getElementsByAttribute(
-          "generateditemid",
-          "1"
-        )[0];
-        ok(item, "Got generated XUL menu item");
-        item.doCommand();
-        await SpecialPowers.spawn(
-          gBrowser.selectedBrowser,
-          [],
-          async function() {
-            let pagemenu = content.document.getElementById("test-pagemenu");
-            Assert.ok(
-              !pagemenu.hasAttribute("hopeless"),
-              "attribute got removed"
-            );
-          }
-        );
-      },
-      maybeScreenshotsPresent: true,
-    }
-  );
-});
-
 add_task(async function test_dom_full_screen() {
-  await test_contextmenu(
-    "#test-dom-full-screen",
-    [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
-      "context-leave-dom-fullscreen",
-      true,
-      "---",
-      null,
-      "context-savepage",
-      true,
-      ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
-      "---",
-      null,
-      "context-viewbgimage",
-      false,
-      "context-selectall",
-      true,
-      "---",
-      null,
-      "context-viewsource",
-      true,
-      "context-viewinfo",
-      true,
-    ],
-    {
-      maybeScreenshotsPresent: true,
-      shiftkey: true,
-      async preCheckContextMenuFn() {
-        await pushPrefs(
+  let exited = BrowserTestUtils.waitForEvent(window, "MozDOMFullscreen:Exited");
+
+  let fullscreenItems = NAVIGATION_ITEMS.concat([
+    "context-leave-dom-fullscreen",
+    true,
+    "---",
+    null,
+    "context-savepage",
+    true,
+    ...(hasPocket ? ["context-pocket", true] : []),
+    "context-selectall",
+    true,
+    "---",
+    null,
+    "context-take-screenshot",
+    true,
+    "---",
+    null,
+    "context-viewsource",
+    true,
+  ]);
+  if (AppConstants.platform == "macosx") {
+    // Put the bookmarks item next to save page:
+    const bmPageIndex = fullscreenItems.indexOf("context-bookmarkpage");
+    let bmPageItems = fullscreenItems.splice(bmPageIndex, 2);
+    fullscreenItems.splice(
+      fullscreenItems.indexOf("context-savepage"),
+      0,
+      ...bmPageItems
+    );
+  }
+  await test_contextmenu("#test-dom-full-screen", fullscreenItems, {
+    shiftkey: true,
+    async preCheckContextMenuFn() {
+      await SpecialPowers.pushPrefEnv({
+        set: [
           ["full-screen-api.allow-trusted-requests-only", false],
           ["full-screen-api.transition-duration.enter", "0 0"],
-          ["full-screen-api.transition-duration.leave", "0 0"]
-        );
-        await SpecialPowers.spawn(
-          gBrowser.selectedBrowser,
-          [],
-          async function() {
-            let doc = content.document;
-            let win = doc.defaultView;
-            let full_screen_element = doc.getElementById(
-              "test-dom-full-screen"
-            );
-            let awaitFullScreenChange = ContentTaskUtils.waitForEvent(
-              win,
-              "fullscreenchange"
-            );
-            full_screen_element.requestFullscreen();
-            await awaitFullScreenChange;
-          }
-        );
-      },
-      async postCheckContextMenuFn() {
-        await SpecialPowers.spawn(
-          gBrowser.selectedBrowser,
-          [],
-          async function() {
-            let win = content.document.defaultView;
-            let awaitFullScreenChange = ContentTaskUtils.waitForEvent(
-              win,
-              "fullscreenchange"
-            );
-            content.document.exitFullscreen();
-            await awaitFullScreenChange;
-          }
-        );
-      },
-    }
-  );
+          ["full-screen-api.transition-duration.leave", "0 0"],
+        ],
+      });
+      await SpecialPowers.spawn(
+        gBrowser.selectedBrowser,
+        [],
+        async function () {
+          let doc = content.document;
+          let win = doc.defaultView;
+          let full_screen_element = doc.getElementById("test-dom-full-screen");
+          let awaitFullScreenChange = ContentTaskUtils.waitForEvent(
+            win,
+            "fullscreenchange"
+          );
+          full_screen_element.requestFullscreen();
+          await awaitFullScreenChange;
+        }
+      );
+    },
+    async postCheckContextMenuFn() {
+      await SpecialPowers.spawn(
+        gBrowser.selectedBrowser,
+        [],
+        async function () {
+          let win = content.document.defaultView;
+          let awaitFullScreenChange = ContentTaskUtils.waitForEvent(
+            win,
+            "fullscreenchange"
+          );
+          content.document.exitFullscreen();
+          await awaitFullScreenChange;
+        }
+      );
+    },
+  });
+  await exited;
+
+  await BrowserTestUtils.waitForCondition(() => {
+    return !TelemetryStopwatch.running("FULLSCREEN_CHANGE_MS");
+  });
+
+  if (AppConstants.platform == "macosx") {
+    // On macOS, the fullscreen transition takes some extra time
+    // to complete, and we don't receive events for it. We need to
+    // wait for it to complete or else input events in the next test
+    // might get eaten up. This is the best we can currently do.
+
+    // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  await SimpleTest.promiseFocus(window);
 });
 
 add_task(async function test_pagemenu2() {
   await test_contextmenu(
     "#test-text",
     [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
+      ...NAVIGATION_ITEMS,
       "context-savepage",
       true,
       ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
-      "---",
-      null,
-      "context-viewbgimage",
-      false,
       "context-selectall",
+      true,
+      "---",
+      null,
+      "context-take-screenshot",
       true,
       "---",
       null,
       "context-viewsource",
       true,
-      "context-viewinfo",
-      true,
     ],
-    { maybeScreenshotsPresent: true, shiftkey: true }
+    { shiftkey: true }
   );
 });
 
@@ -1492,12 +1380,21 @@ add_task(async function test_select_text() {
       true,
       "context-selectall",
       true,
+      "context-print-selection",
+      true,
+      "---",
+      null,
+      "context-take-screenshot",
+      true,
       "---",
       null,
       "context-searchselect",
       true,
       "context-searchselect-private",
       true,
+      ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
+      "---",
+      null,
       "context-viewpartialsource-selection",
       true,
     ],
@@ -1509,6 +1406,45 @@ add_task(async function test_select_text() {
       },
     }
   );
+});
+
+add_task(async function test_select_text_search_service_not_initialized() {
+  // Pretend the search service is not initialised.
+  Services.search.wrappedJSObject.forceInitializationStatusForTests(
+    "not initialized"
+  );
+  await test_contextmenu(
+    "#test-select-text",
+    [
+      "context-copy",
+      true,
+      "context-selectall",
+      true,
+      "context-print-selection",
+      true,
+      "---",
+      null,
+      "context-take-screenshot",
+      true,
+      ...(hasSelectTranslations
+        ? ["---", null, "context-translate-selection", true]
+        : []),
+      "---",
+      null,
+      "context-viewpartialsource-selection",
+      true,
+    ],
+    {
+      offsetX: 6,
+      offsetY: 6,
+      async preCheckContextMenuFn() {
+        await selectText("#test-select-text");
+      },
+    }
+  );
+
+  // Restore the search service initialization status
+  Services.search.wrappedJSObject.forceInitializationStatusForTests("success");
 });
 
 add_task(async function test_select_text_link() {
@@ -1533,9 +1469,13 @@ add_task(async function test_select_text_link() {
       true,
       "context-savelink",
       true,
+      "---",
+      null,
       "context-copy",
       true,
       "context-selectall",
+      true,
+      "context-print-selection",
       true,
       "---",
       null,
@@ -1543,11 +1483,8 @@ add_task(async function test_select_text_link() {
       true,
       "context-searchselect-private",
       true,
+      ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
       "---",
-      null,
-      "context-sendlinktodevice",
-      true,
-      [],
       null,
       "context-viewpartialsource-selection",
       true,
@@ -1562,7 +1499,7 @@ add_task(async function test_select_text_link() {
         await SpecialPowers.spawn(
           gBrowser.selectedBrowser,
           [],
-          async function() {
+          async function () {
             let win = content.document.defaultView;
             win.getSelection().removeAllRanges();
           }
@@ -1593,30 +1530,27 @@ add_task(async function test_imagelink() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
     "---",
     null,
     "context-viewimage",
+    true,
+    "context-saveimage",
     true,
     "context-copyimage-contents",
     true,
     "context-copyimage",
     true,
-    "---",
-    null,
-    "context-saveimage",
-    true,
     "context-sendimage",
     true,
-    "context-setDesktopBackground",
-    true,
-    "context-viewimageinfo",
-    true,
+    ...getTextRecognitionItems(),
+    ...(Services.prefs.getBoolPref("browser.menu.showViewImageInfo", false)
+      ? ["context-viewimageinfo", true]
+      : []),
     "---",
     null,
-    "context-sendlinktodevice",
+    "context-setDesktopBackground",
     true,
-    [],
-    null,
   ]);
 });
 
@@ -1626,13 +1560,14 @@ add_task(async function test_select_input_text() {
   /*
   yield test_contextmenu("#test-select-input-text",
     ["context-undo",                 false,
+     "context-redo",                 false,
      "---",                          null,
      "context-cut",                  true,
      "context-copy",                 true,
      "context-paste",                null, // ignore clipboard state
      "context-delete",               true,
-     "---",                          null,
      "context-selectall",            true,
+     "---",                          null,
      "context-searchselect",         true,
      "context-searchselect-private", true,
      "---",                          null,
@@ -1659,12 +1594,12 @@ add_task(async function test_select_input_text_password() {
   /*
   yield test_contextmenu("#test-select-input-text-type-password",
     ["context-undo",        false,
+     "context-redo",        false,
      "---",                 null,
      "context-cut",         true,
      "context-copy",        true,
      "context-paste",       null, // ignore clipboard state
      "context-delete",      true,
-     "---",                 null,
      "context-selectall",   true,
      "---",                 null,
      "spell-check-enabled", true,
@@ -1695,120 +1630,45 @@ add_task(async function test_select_input_text_password() {
   */
 });
 
-add_task(async function test_click_to_play_blocked_plugin() {
-  await test_contextmenu(
-    "#test-plugin",
-    [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
-      "context-ctp-play",
-      true,
-      "context-ctp-hide",
-      true,
-      "---",
-      null,
-      "context-savepage",
-      true,
-      ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
-      "---",
-      null,
-      "context-viewbgimage",
-      false,
-      "context-selectall",
-      true,
-      "---",
-      null,
-      "context-viewsource",
-      true,
-      "context-viewinfo",
-      true,
-    ],
-    {
-      maybeScreenshotsPresent: true,
-      preCheckContextMenuFn() {
-        setTestPluginEnabledState(Ci.nsIPluginTag.STATE_CLICKTOPLAY);
-      },
-      postCheckContextMenuFn() {
-        getTestPlugin().enabledState = Ci.nsIPluginTag.STATE_ENABLED;
-      },
-    }
-  );
-});
-
 add_task(async function test_longdesc() {
   await test_contextmenu("#test-longdesc", [
     "context-viewimage",
+    true,
+    "context-saveimage",
     true,
     "context-copyimage-contents",
     true,
     "context-copyimage",
     true,
-    "---",
-    null,
-    "context-saveimage",
-    true,
     "context-sendimage",
     true,
+    ...getTextRecognitionItems(),
+    ...(Services.prefs.getBoolPref("browser.menu.showViewImageInfo", false)
+      ? ["context-viewimageinfo", true]
+      : []),
+    "context-viewimagedesc",
+    true,
+    "---",
+    null,
     "context-setDesktopBackground",
     true,
-    "context-viewimageinfo",
-    true,
-    "context-viewimagedesc",
+    "---",
+    null,
+    "context-take-screenshot",
     true,
   ]);
 });
 
 add_task(async function test_srcdoc() {
   await test_contextmenu("#test-srcdoc", [
-    "context-navigation",
-    null,
-    [
-      "context-back",
-      false,
-      "context-forward",
-      false,
-      "context-reload",
-      true,
-      "context-bookmarkpage",
-      true,
-    ],
-    null,
-    "---",
-    null,
+    ...NAVIGATION_ITEMS,
     "context-savepage",
     true,
     ...(hasPocket ? ["context-pocket", true] : []),
-    "---",
-    null,
-    "context-sendpagetodevice",
-    true,
-    [],
-    null,
-    "---",
-    null,
-    "context-viewbgimage",
-    false,
     "context-selectall",
     true,
+    "---",
+    null,
     "frame",
     null,
     getThisFrameSubMenu([
@@ -1824,6 +1684,10 @@ add_task(async function test_srcdoc() {
       true,
       "---",
       null,
+      "context-take-frame-screenshot",
+      true,
+      "---",
+      null,
       "context-viewframesource",
       true,
       "context-viewframeinfo",
@@ -1834,8 +1698,6 @@ add_task(async function test_srcdoc() {
     null,
     "context-viewsource",
     true,
-    "context-viewinfo",
-    true,
   ]);
 });
 
@@ -1845,12 +1707,12 @@ add_task(async function test_input_spell_false() {
   /*
   yield test_contextmenu("#test-contenteditable-spellcheck-false",
     ["context-undo",        false,
+     "context-redo",        false,
      "---",                 null,
      "context-cut",         true,
      "context-copy",        true,
      "context-paste",       null, // ignore clipboard state
      "context-delete",      false,
-     "---",                 null,
      "context-selectall",   true,
     ]
   );
@@ -1878,16 +1740,13 @@ add_task(async function test_svg_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 
   await test_contextmenu("#svg-with-link2 > a", [
@@ -1910,16 +1769,13 @@ add_task(async function test_svg_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 
   await test_contextmenu("#svg-with-link3 > a", [
@@ -1942,16 +1798,13 @@ add_task(async function test_svg_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 });
 
@@ -1976,16 +1829,13 @@ add_task(async function test_svg_relative_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 
   await test_contextmenu("#svg-with-relative-link2 > a", [
@@ -2008,16 +1858,13 @@ add_task(async function test_svg_relative_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 
   await test_contextmenu("#svg-with-relative-link3 > a", [
@@ -2040,20 +1887,180 @@ add_task(async function test_svg_relative_link() {
     ...(hasPocket ? ["context-savelinktopocket", true] : []),
     "context-copylink",
     true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
     "context-searchselect",
     true,
     "context-searchselect-private",
     true,
-    "---",
-    null,
-    "context-sendlinktodevice",
-    true,
-    [],
-    null,
   ]);
 });
 
+add_task(async function test_background_image() {
+  let bgImageItems = [
+    "context-viewimage",
+    true,
+    "context-copyimage",
+    true,
+    "context-sendimage",
+    true,
+    "---",
+    null,
+    "context-savepage",
+    true,
+    ...(hasPocket ? ["context-pocket", true] : []),
+    "context-selectall",
+    true,
+    "---",
+    null,
+    "context-take-screenshot",
+    true,
+    "---",
+    null,
+    "context-viewsource",
+    true,
+  ];
+  if (AppConstants.platform == "macosx") {
+    // Back/fwd/(stop|reload) and their separator go before the image items,
+    // followed by the bookmark item which goes with save page - so we need
+    // to split up NAVIGATION_ITEMS and bgImageItems:
+    bgImageItems = [
+      ...NAVIGATION_ITEMS.slice(0, 8),
+      ...bgImageItems.slice(0, 8),
+      ...NAVIGATION_ITEMS.slice(8),
+      ...bgImageItems.slice(8),
+    ];
+  } else {
+    bgImageItems = NAVIGATION_ITEMS.concat(bgImageItems);
+  }
+  await test_contextmenu("#test-background-image", bgImageItems);
+
+  // Don't show image related context menu commands for links with background images.
+  await test_contextmenu("#test-background-image-link", [
+    "context-openlinkintab",
+    true,
+    ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+    // We need a blank entry here because the containers submenu is
+    // dynamically generated with no ids.
+    ...(hasContainers ? ["", null] : []),
+    "context-openlink",
+    true,
+    "context-openlinkprivate",
+    true,
+    "---",
+    null,
+    "context-bookmarklink",
+    true,
+    "context-savelink",
+    true,
+    "context-copylink",
+    true,
+    ...(hasStripOnShare ? ["context-stripOnShareLink", true] : []),
+    "---",
+    null,
+    "context-searchselect",
+    true,
+    "context-searchselect-private",
+    true,
+    ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
+  ]);
+
+  // Don't show image related context menu commands when there is a selection
+  // with background images.
+  await test_contextmenu(
+    "#test-background-image",
+    [
+      "context-copy",
+      true,
+      "context-selectall",
+      true,
+      "context-print-selection",
+      true,
+      "---",
+      null,
+      "context-take-screenshot",
+      true,
+      "---",
+      null,
+      "context-searchselect",
+      true,
+      "context-searchselect-private",
+      true,
+      ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
+      "---",
+      null,
+      "context-viewpartialsource-selection",
+      true,
+    ],
+    {
+      async preCheckContextMenuFn() {
+        await selectText("#test-background-image");
+      },
+    }
+  );
+});
+
 add_task(async function test_cleanup_html() {
+  lastElementSelector = null;
+  gBrowser.removeCurrentTab();
+});
+
+/*
+ *   Testing that Copy without Site Tracking option does not
+ *   appear on internal about: pages.
+ */
+add_task(async function test_strip_on_share_on_secure_about_page() {
+  let url = about_preferences_base;
+
+  let tab = await BrowserTestUtils.openNewForegroundTab({
+    gBrowser,
+    url,
+  });
+
+  let browser2 = tab.linkedBrowser;
+
+  await SpecialPowers.spawn(browser2, [], () => {
+    let link = content.document.createElement("a");
+    link.href = "https://mozilla.com";
+    link.textContent = "link with query param";
+    link.id = "link-test-strip";
+    content.document.body.appendChild(link);
+  });
+
+  // the Copy without Site Tracking option should not
+  // show up within internal about: pages
+  await test_contextmenu("#link-test-strip", [
+    "context-openlinkintab",
+    true,
+    ...(hasContainers ? ["context-openlinkinusercontext-menu", true] : []),
+    // We need a blank entry here because the containers submenu is
+    // dynamically generated with no ids.
+    ...(hasContainers ? ["", null] : []),
+    "context-openlink",
+    true,
+    "context-openlinkprivate",
+    true,
+    "---",
+    null,
+    "context-bookmarklink",
+    true,
+    "context-savelink",
+    true,
+    ...(hasPocket ? ["context-savelinktopocket", true] : []),
+    "context-copylink",
+    true,
+    "---",
+    null,
+    "context-searchselect",
+    true,
+    "context-searchselect-private",
+    true,
+    ...(hasSelectTranslations ? ["context-translate-selection", true] : []),
+  ]);
+
+  // Clean up
+  lastElementSelector = null;
   gBrowser.removeCurrentTab();
 });
 
@@ -2068,7 +2075,7 @@ async function selectText(selector) {
   await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [selector],
-    async function(contentSelector) {
+    async function (contentSelector) {
       info(`Selecting text of ${contentSelector}`);
       let doc = content.document;
       let win = doc.defaultView;
@@ -2081,4 +2088,15 @@ async function selectText(selector) {
       win.getSelection().addRange(div);
     }
   );
+}
+
+/**
+ * Not all platforms support text recognition.
+ * @returns {string[]}
+ */
+function getTextRecognitionItems() {
+  return Services.prefs.getBoolPref("dom.text-recognition.enabled") &&
+    Services.appinfo.isTextRecognitionSupported
+    ? ["context-imagetext", true]
+    : [];
 }

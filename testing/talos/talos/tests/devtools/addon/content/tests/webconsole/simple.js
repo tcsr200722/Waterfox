@@ -10,12 +10,14 @@ const {
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
-const { reloadConsoleAndLog } = require("./webconsole-helpers");
+} = require("damp-test/tests/head");
+const {
+  reloadConsoleAndLog,
+} = require("damp-test/tests/webconsole/webconsole-helpers");
 
 const EXPECTED_MESSAGES = 1;
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(SIMPLE_URL);
 
   let toolbox = await openToolboxAndLog("simple.webconsole", "webconsole");

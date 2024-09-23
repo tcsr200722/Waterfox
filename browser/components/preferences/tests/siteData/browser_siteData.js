@@ -17,7 +17,7 @@ function getPersistentStoragePermStatus(origin) {
 
 // Test listing site using quota usage or site using appcache
 // This is currently disabled because of bug 1414751.
-add_task(async function() {
+add_task(async function () {
   // Open a test site which would save into appcache
   await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_OFFLINE_URL);
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
@@ -55,17 +55,12 @@ add_task(async function() {
   ok(qoutaUsageSite, "Should list site using quota usage");
 
   // Always remember to clean up
-  OfflineAppCacheHelper.clear();
   await new Promise(resolve => {
-    let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-      TEST_QUOTA_USAGE_ORIGIN
-    );
-    let request = Services.qms.clearStoragesForPrincipal(
-      principal,
-      null,
-      null,
-      true
-    );
+    let principal =
+      Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+        TEST_QUOTA_USAGE_ORIGIN
+      );
+    let request = Services.qms.clearStoragesForOriginPrefix(principal);
     request.callback = resolve;
   });
 
@@ -74,7 +69,7 @@ add_task(async function() {
 }).skip(); // Bug 1414751
 
 // Test buttons are disabled and loading message shown while updating sites
-add_task(async function() {
+add_task(async function () {
   let updatedPromise = promiseSiteDataManagerSitesUpdated();
   await openPreferencesViaOpenPreferencesAPI("privacy", { leaveOpen: true });
   await updatedPromise;
@@ -153,8 +148,8 @@ add_task(async function() {
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });
 
-// Test clearing service wroker through the settings panel
-add_task(async function() {
+// Test clearing service worker through the settings panel
+add_task(async function () {
   // Register a test service worker
   await loadServiceWorkerTestPage(TEST_SERVICE_WORKER_URL);
   await openPreferencesViaOpenPreferencesAPI("privacy", { leaveOpen: true });
@@ -174,7 +169,7 @@ add_task(async function() {
       let site = sitesList.querySelector(`richlistitem[host="${host}"]`);
       if (site) {
         let removeBtn = frameDoc.getElementById("removeSelected");
-        let saveBtn = frameDoc.getElementById("save");
+        let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
         site.click();
         removeBtn.doCommand();
         saveBtn.doCommand();
@@ -191,7 +186,7 @@ add_task(async function() {
 });
 
 // Test showing and removing sites with cookies.
-add_task(async function() {
+add_task(async function () {
   // Add some test cookies.
   let uri = Services.io.newURI("https://example.com");
   let uri2 = Services.io.newURI("https://example.org");
@@ -205,7 +200,8 @@ add_task(async function() {
     false,
     Date.now() + 1000 * 60 * 60,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
   Services.cookies.add(
     uri.host,
@@ -217,7 +213,8 @@ add_task(async function() {
     false,
     Date.now() + 1000 * 60 * 60,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
   Services.cookies.add(
     uri2.host,
@@ -229,7 +226,8 @@ add_task(async function() {
     false,
     Date.now() + 1000 * 60 * 60,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
 
   // Ensure that private browsing cookies are ignored.
@@ -243,7 +241,8 @@ add_task(async function() {
     false,
     Date.now() + 1000 * 60 * 60,
     { privateBrowsingId: 1 },
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
 
   // Get the exact creation date from the cookies (to avoid intermittents
@@ -279,7 +278,7 @@ add_task(async function() {
         creationDate2Formatted,
       },
     ],
-    function(args) {
+    function (args) {
       let frameDoc = content.gSubDialog._topDialog._frame.contentDocument;
 
       let siteItems = frameDoc.getElementsByTagName("richlistitem");
@@ -321,7 +320,7 @@ add_task(async function() {
       );
 
       let removeBtn = frameDoc.getElementById("removeSelected");
-      let saveBtn = frameDoc.getElementById("save");
+      let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
       site2.click();
       removeBtn.doCommand();
       saveBtn.doCommand();
@@ -345,7 +344,7 @@ add_task(async function() {
   await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [{ creationDate1Formatted }],
-    function(args) {
+    function (args) {
       let frameDoc = content.gSubDialog._topDialog._frame.contentDocument;
 
       let siteItems = frameDoc.getElementsByTagName("richlistitem");
@@ -370,7 +369,7 @@ add_task(async function() {
       );
 
       let removeBtn = frameDoc.getElementById("removeSelected");
-      let saveBtn = frameDoc.getElementById("save");
+      let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
       site1.click();
       removeBtn.doCommand();
       saveBtn.doCommand();
@@ -385,7 +384,7 @@ add_task(async function() {
 
   await openSiteDataSettingsDialog();
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     let frameDoc = content.gSubDialog._topDialog._frame.contentDocument;
 
     let siteItems = frameDoc.getElementsByTagName("richlistitem");

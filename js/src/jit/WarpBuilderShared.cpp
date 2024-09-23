@@ -6,22 +6,32 @@
 
 #include "jit/WarpBuilderShared.h"
 
-#include "jit/MIRBuilderShared.h"
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
 
 using namespace js;
 using namespace js::jit;
 
-WarpBuilderShared::WarpBuilderShared(MIRGenerator& mirGen,
+WarpBuilderShared::WarpBuilderShared(WarpSnapshot& snapshot,
+                                     MIRGenerator& mirGen,
                                      MBasicBlock* current_)
-    : mirGen_(mirGen), alloc_(mirGen.alloc()), current(current_) {}
+    : snapshot_(snapshot),
+      mirGen_(mirGen),
+      alloc_(mirGen.alloc()),
+      current(current_) {}
 
 bool WarpBuilderShared::resumeAfter(MInstruction* ins, BytecodeLocation loc) {
-  MOZ_ASSERT(ins->isEffectful());
+  // resumeAfter should only be used with effectful instructions. The only
+  // exceptions are:
+  // 1. MInt64ToBigInt, which is used to convert the result of a call into Wasm
+  //    code so we attach the resume point to that instead of to the call.
+  // 2. MPostIntPtrConversion which is used after conversion from IntPtr.
+  MOZ_ASSERT(ins->isEffectful() || ins->isInt64ToBigInt() ||
+             ins->isPostIntPtrConversion());
+  MOZ_ASSERT(!ins->isMovable());
 
   MResumePoint* resumePoint = MResumePoint::New(
-      alloc(), ins->block(), loc.toRawBytecode(), MResumePoint::ResumeAfter);
+      alloc(), ins->block(), loc.toRawBytecode(), ResumeMode::ResumeAfter);
   if (!resumePoint) {
     return false;
   }
@@ -31,7 +41,7 @@ bool WarpBuilderShared::resumeAfter(MInstruction* ins, BytecodeLocation loc) {
 }
 
 MConstant* WarpBuilderShared::constant(const Value& v) {
-  MOZ_ASSERT_IF(v.isString(), v.toString()->isAtom());
+  MOZ_ASSERT_IF(v.isString(), v.toString()->isLinear());
   MOZ_ASSERT_IF(v.isGCThing(), !IsInsideNursery(v.toGCThing()));
 
   MConstant* cst = MConstant::New(alloc(), v);
@@ -44,66 +54,74 @@ void WarpBuilderShared::pushConstant(const Value& v) {
   current->push(cst);
 }
 
+MDefinition* WarpBuilderShared::unboxObjectInfallible(MDefinition* def,
+                                                      IsMovable movable) {
+  if (def->type() == MIRType::Object) {
+    return def;
+  }
+
+  if (def->type() != MIRType::Value) {
+    // Corner case: if the MIR node has a type other than Object or Value, this
+    // code isn't actually reachable and we expect an earlier guard to fail.
+    // Just insert a Box to satisfy MIR invariants.
+    MOZ_ASSERT(movable == IsMovable::No);
+    auto* box = MBox::New(alloc(), def);
+    current->add(box);
+    def = box;
+  }
+
+  auto* unbox = MUnbox::New(alloc(), def, MIRType::Object, MUnbox::Infallible);
+  if (movable == IsMovable::No) {
+    unbox->setNotMovable();
+  }
+  current->add(unbox);
+  return unbox;
+}
+
 MCall* WarpBuilderShared::makeCall(CallInfo& callInfo, bool needsThisCheck,
-                                   WrappedFunction* target) {
+                                   WrappedFunction* target, bool isDOMCall) {
+  auto addUndefined = [this]() -> MConstant* {
+    return constant(UndefinedValue());
+  };
+
+  return MakeCall(alloc(), addUndefined, callInfo, needsThisCheck, target,
+                  isDOMCall);
+}
+
+MInstruction* WarpBuilderShared::makeSpreadCall(CallInfo& callInfo,
+                                                bool needsThisCheck,
+                                                bool isSameRealm,
+                                                WrappedFunction* target) {
+  MOZ_ASSERT(callInfo.argFormat() == CallInfo::ArgFormat::Array);
   MOZ_ASSERT_IF(needsThisCheck, !target);
 
-  // TODO: Investigate DOM calls.
-  bool isDOMCall = false;
-  DOMObjectKind objKind = DOMObjectKind::Unknown;
-
-  uint32_t targetArgs = callInfo.argc();
-
-  // Collect number of missing arguments provided that the target is
-  // scripted. Native functions are passed an explicit 'argc' parameter.
-  if (target && !target->isBuiltinNative()) {
-    targetArgs = std::max<uint32_t>(target->nargs(), callInfo.argc());
-  }
-
-  MCall* call =
-      MCall::New(alloc(), target, targetArgs + 1 + callInfo.constructing(),
-                 callInfo.argc(), callInfo.constructing(),
-                 callInfo.ignoresReturnValue(), isDOMCall, objKind);
-  if (!call) {
-    return nullptr;
-  }
+  // Load dense elements of the argument array.
+  MElements* elements = MElements::New(alloc(), callInfo.arrayArg());
+  current->add(elements);
 
   if (callInfo.constructing()) {
-    // Note: setThis should have been done by the caller of makeCall.
+    auto* newTarget = unboxObjectInfallible(callInfo.getNewTarget());
+    auto* construct =
+        MConstructArray::New(alloc(), target, callInfo.callee(), elements,
+                             callInfo.thisArg(), newTarget);
+    if (isSameRealm) {
+      construct->setNotCrossRealm();
+    }
     if (needsThisCheck) {
-      call->setNeedsThisCheck();
+      construct->setNeedsThisCheck();
     }
-
-    // Pass |new.target|
-    call->addArg(targetArgs + 1, callInfo.getNewTarget());
+    return construct;
   }
 
-  // Explicitly pad any missing arguments with |undefined|.
-  // This permits skipping the argumentsRectifier.
-  MOZ_ASSERT_IF(target && targetArgs > callInfo.argc(),
-                !target->isBuiltinNative());
-  for (uint32_t i = targetArgs; i > callInfo.argc(); i--) {
-    MConstant* undef = constant(UndefinedValue());
-    if (!alloc().ensureBallast()) {
-      return nullptr;
-    }
-    call->addArg(i, undef);
+  auto* apply = MApplyArray::New(alloc(), target, callInfo.callee(), elements,
+                                 callInfo.thisArg());
+
+  if (callInfo.ignoresReturnValue()) {
+    apply->setIgnoresReturnValue();
   }
-
-  // Add explicit arguments.
-  // Skip addArg(0) because it is reserved for |this|.
-  for (int32_t i = callInfo.argc() - 1; i >= 0; i--) {
-    call->addArg(i + 1, callInfo.getArg(i));
+  if (isSameRealm) {
+    apply->setNotCrossRealm();
   }
-
-  // Pass |this| and callee.
-  call->addArg(0, callInfo.thisArg());
-  call->initCallee(callInfo.callee());
-
-  if (target) {
-    // The callee must be a JSFunction so we don't need a Class check.
-    call->disableClassCheck();
-  }
-
-  return call;
+  MOZ_ASSERT(!needsThisCheck);
+  return apply;
 }

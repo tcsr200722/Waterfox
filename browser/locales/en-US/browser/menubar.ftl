@@ -2,6 +2,49 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+# NOTE: For English locales, strings in this file should be in APA-style Title Case.
+# See https://apastyle.apa.org/style-grammar-guidelines/capitalization/title-case
+#
+# NOTE: For Engineers, please don't reuse these strings outside of the menubar.
+
+## Application Menu (macOS only)
+
+menu-application-preferences =
+    .label = Preferences
+menu-application-services =
+    .label = Services
+menu-application-hide-this =
+    .label = Hide { -brand-shorter-name }
+menu-application-hide-other =
+    .label = Hide Others
+menu-application-show-all =
+    .label = Show All
+menu-application-touch-bar =
+    .label = Customize Touch Bar…
+
+##
+
+# These menu-quit strings are only used on Windows and Linux.
+menu-quit =
+    .label =
+        { PLATFORM() ->
+            [windows] Exit
+           *[other] Quit
+        }
+    .accesskey =
+        { PLATFORM() ->
+            [windows] x
+           *[other] Q
+        }
+
+# This menu-quit-mac string is only used on macOS.
+menu-quit-mac =
+    .label = Quit { -brand-shorter-name }
+
+menu-about =
+    .label = About { -brand-shorter-name }
+    .accesskey = A
+
 ## File Menu
 
 menu-file =
@@ -27,8 +70,14 @@ menu-file-open-location =
 menu-file-open-file =
     .label = Open File…
     .accesskey = O
-menu-file-close =
-    .label = Close
+# Variables:
+#  $tabCount (Number): the number of tabs that are affected by the action.
+menu-file-close-tab =
+    .label =
+        { $tabCount ->
+            [1] Close Tab
+           *[other] Close { $tabCount } Tabs
+        }
     .accesskey = C
 menu-file-close-window =
     .label = Close Window
@@ -39,17 +88,17 @@ menu-file-save-page =
 menu-file-email-link =
     .label = Email Link…
     .accesskey = E
+menu-file-share-url =
+    .label = Share
+    .accesskey = h
 menu-file-print-setup =
     .label = Page Setup…
     .accesskey = u
-menu-file-print-preview =
-    .label = Print Preview
-    .accesskey = v
 menu-file-print =
     .label = Print…
     .accesskey = P
 menu-file-import-from-another-browser =
-    .label = Import from Another Browser…
+    .label = Import From Another Browser…
     .accesskey = I
 menu-file-go-offline =
     .label = Work Offline
@@ -60,8 +109,8 @@ menu-file-go-offline =
 menu-edit =
     .label = Edit
     .accesskey = E
-menu-edit-find-on =
-    .label = Find in This Page…
+menu-edit-find-in-page =
+    .label = Find in Page…
     .accesskey = F
 menu-edit-find-again =
     .label = Find Again
@@ -78,8 +127,8 @@ menu-view =
 menu-view-toolbars-menu =
     .label = Toolbars
     .accesskey = T
-menu-view-customize-toolbar =
-    .label = Customize…
+menu-view-customize-toolbar2 =
+    .label = Customize Toolbar…
     .accesskey = C
 menu-view-sidebar =
     .label = Sidebar
@@ -90,6 +139,8 @@ menu-view-history-button =
     .label = History
 menu-view-synced-tabs-sidebar =
     .label = Synced Tabs
+menu-view-megalist-sidebar =
+    .label = Passwords
 menu-view-full-zoom =
     .label = Zoom
     .accesskey = Z
@@ -114,8 +165,8 @@ menu-view-page-style-no-style =
 menu-view-page-basic-style =
     .label = Basic Page Style
     .accesskey = B
-menu-view-charset =
-    .label = Text Encoding
+menu-view-repair-text-encoding =
+    .label = Repair Text Encoding
     .accesskey = c
 
 ## These should match what Safari and other Apple applications
@@ -130,6 +181,17 @@ menu-view-exit-full-screen =
 menu-view-full-screen =
     .label = Full Screen
     .accesskey = F
+
+## These menu items may use the same accesskey.
+
+# This should match reader-view-enter-button in browser.ftl
+menu-view-enter-readerview =
+    .label = Enter Reader View
+    .accesskey = R
+# This should match reader-view-close-button in browser.ftl
+menu-view-close-readerview =
+    .label = Close Reader View
+    .accesskey = R
 
 ##
 
@@ -159,18 +221,24 @@ menu-history-undo-menu =
     .label = Recently Closed Tabs
 menu-history-undo-window-menu =
     .label = Recently Closed Windows
+# "Search" is a verb, as in "Search in History"
+menu-history-search =
+    .label = Search History
 
 ## Bookmarks Menu
 
 menu-bookmarks-menu =
     .label = Bookmarks
     .accesskey = B
-menu-bookmarks-show-all =
-    .label = Show All Bookmarks
-menu-bookmark-this-page =
-    .label = Bookmark This Page
-menu-bookmark-edit =
-    .label = Edit This Bookmark
+menu-bookmarks-manage =
+    .label = Manage Bookmarks
+menu-bookmark-tab =
+    .label = Bookmark Current Tab…
+menu-edit-bookmark =
+    .label = Edit This Bookmark…
+# "Search" is a verb, as in "Search in bookmarks"
+menu-bookmarks-search =
+    .label = Search Bookmarks
 menu-bookmarks-all-tabs =
     .label = Bookmark All Tabs…
 menu-bookmarks-toolbar =
@@ -188,39 +256,38 @@ menu-tools =
 menu-tools-downloads =
     .label = Downloads
     .accesskey = D
-menu-tools-addons =
-    .label = Add-ons
+menu-tools-addons-and-themes =
+    .label = Add-ons and Themes
     .accesskey = A
-menu-tools-fxa-sign-in =
-    .label = Sign In To { -brand-product-name }…
+menu-tools-fxa-sign-in2 =
+    .label = Sign In
     .accesskey = g
-menu-tools-turn-on-sync =
-    .label = Turn on { -sync-brand-short-name }…
+menu-tools-turn-on-sync2 =
+    .label = Turn on Sync…
     .accesskey = n
 menu-tools-sync-now =
     .label = Sync Now
-    .accesskey = S
+    .accesskey = o
 menu-tools-fxa-re-auth =
     .label = Reconnect to { -brand-product-name }…
     .accesskey = R
-menu-tools-web-developer =
-    .label = Web Developer
-    .accesskey = W
+menu-tools-browser-tools =
+    .label = Browser Tools
+    .accesskey = B
+menu-tools-task-manager =
+    .label = Task Manager
+    .accesskey = M
 menu-tools-page-source =
     .label = Page Source
     .accesskey = o
 menu-tools-page-info =
     .label = Page Info
     .accesskey = I
-menu-preferences =
-    .label =
-        { PLATFORM() ->
-            [windows] Options
-           *[other] Preferences
-        }
+menu-settings =
+    .label = Settings
     .accesskey =
         { PLATFORM() ->
-            [windows] O
+            [windows] S
            *[other] n
         }
 menu-tools-layout-debugger =
@@ -236,38 +303,44 @@ menu-window-bring-all-to-front =
 
 ## Help Menu
 
+# NOTE: For Engineers, any additions or changes to Help menu strings should
+# also be reflected in the related strings in appmenu.ftl. Those strings, by
+# convention, will have the same ID as these, but prefixed with "app".
+# Example: appmenu-get-help
+#
+# These strings are duplicated to allow for different casing depending on
+# where the strings appear.
+
 menu-help =
     .label = Help
     .accesskey = H
-menu-help-product =
-    .label = { -brand-shorter-name } Help
+menu-get-help =
+    .label = Get Help
     .accesskey = H
-menu-help-show-tour =
-    .label = { -brand-shorter-name } Tour
-    .accesskey = o
-menu-help-import-from-another-browser =
-    .label = Import from Another Browser…
-    .accesskey = I
-menu-help-keyboard-shortcuts =
-    .label = Keyboard Shortcuts
-    .accesskey = K
-menu-help-troubleshooting-info =
-    .label = Troubleshooting Information
+menu-help-more-troubleshooting-info =
+    .label = More Troubleshooting Information
     .accesskey = T
-menu-help-feedback-page =
-    .label = Submit Feedback…
+menu-help-report-site-issue =
+    .label = Report Site Issue…
+menu-help-share-ideas =
+    .label = Share Ideas and Feedback…
     .accesskey = S
-menu-help-safe-mode-without-addons =
-    .label = Restart with Add-ons Disabled…
-    .accesskey = R
-menu-help-safe-mode-with-addons =
-    .label = Restart with Add-ons Enabled
-    .accesskey = R
+menu-help-enter-troubleshoot-mode2 =
+    .label = Troubleshoot Mode…
+    .accesskey = M
+menu-help-exit-troubleshoot-mode =
+    .label = Turn Troubleshoot Mode Off
+    .accesskey = M
+menu-help-switch-device =
+    .label = Switching to a New Device
+    .accesskey = N
 # Label of the Help menu item. Either this or
 # menu-help-notdeceptive is shown.
 menu-help-report-deceptive-site =
     .label = Report Deceptive Site…
     .accesskey = D
 menu-help-not-deceptive =
-    .label = This isn’t a deceptive site…
-    .accesskey = d
+    .label = This Isn’t a Deceptive Site…
+    .accesskey = D
+menu-report-broken-site =
+  .label = Report Broken Site

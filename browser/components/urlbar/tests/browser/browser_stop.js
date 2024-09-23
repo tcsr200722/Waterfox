@@ -11,19 +11,19 @@
 const goodURL = "http://mochi.test:8888/";
 const badURL = "http://mochi.test:8888/whatever.html";
 
-add_task(async function() {
+add_task(async function () {
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, goodURL);
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
   is(
     gURLBar.value,
-    BrowserUtils.trimURL(goodURL),
+    BrowserUIUtils.trimURL(goodURL),
     "location bar reflects loaded page"
   );
 
   await typeAndSubmitAndStop(badURL);
   is(
     gURLBar.value,
-    BrowserUtils.trimURL(goodURL),
+    BrowserUIUtils.trimURL(goodURL),
     "location bar reflects loaded page after stop()"
   );
   gBrowser.removeCurrentTab();
@@ -34,7 +34,7 @@ add_task(async function() {
   await typeAndSubmitAndStop(badURL);
   is(
     gURLBar.value,
-    BrowserUtils.trimURL(badURL),
+    BrowserUIUtils.trimURL(badURL),
     "location bar reflects stopped page in an empty tab"
   );
   gBrowser.removeCurrentTab();
@@ -43,7 +43,6 @@ add_task(async function() {
 async function typeAndSubmitAndStop(url) {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: url,
     fireInputEvent: true,
   });
@@ -58,7 +57,7 @@ async function typeAndSubmitAndStop(url) {
   // urlbar value has been updated, add our own progress listener here.
   let progressPromise = new Promise(resolve => {
     let listener = {
-      onStateChange(browser, webProgress, request, stateFlags, status) {
+      onStateChange(browser, webProgress, request, stateFlags) {
         if (
           webProgress.isTopLevel &&
           stateFlags & Ci.nsIWebProgressListener.STATE_STOP

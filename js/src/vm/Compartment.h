@@ -7,24 +7,21 @@
 #ifndef vm_Compartment_h
 #define vm_Compartment_h
 
-#include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Tuple.h"
-#include "mozilla/Variant.h"
 
 #include <stddef.h>
 #include <utility>
 
-#include "gc/Barrier.h"
 #include "gc/NurseryAwareHashMap.h"
 #include "gc/ZoneAllocator.h"
-#include "js/UniquePtr.h"
-#include "js/Value.h"
+#include "vm/Iteration.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 
 namespace js {
+
+JSString* CopyStringPure(JSContext* cx, JSString* str);
 
 // The data structure use to storing JSObject CCWs for a given source
 // compartment. These are partitioned by target compartment so that we can
@@ -33,9 +30,7 @@ namespace js {
 class ObjectWrapperMap {
   static const size_t InitialInnerMapSize = 4;
 
-  using InnerMap =
-      NurseryAwareHashMap<JSObject*, JSObject*, DefaultHasher<JSObject*>,
-                          ZoneAllocPolicy>;
+  using InnerMap = NurseryAwareHashMap<JSObject*, JSObject*, ZoneAllocPolicy>;
   using OuterMap = GCHashMap<JS::Compartment*, InnerMap,
                              DefaultHasher<JS::Compartment*>, ZoneAllocPolicy>;
 
@@ -125,7 +120,7 @@ class ObjectWrapperMap {
 
     InnerMap* map;
 
-    Ptr() : InnerMap::Ptr(), map(nullptr) {}
+    Ptr() : map(nullptr) {}
     Ptr(const InnerMap::Ptr& p, InnerMap& m) : InnerMap::Ptr(p), map(&m) {}
   };
 
@@ -186,7 +181,7 @@ class ObjectWrapperMap {
     }
   }
 
-  MOZ_MUST_USE bool put(JSObject* key, JSObject* value) {
+  [[nodiscard]] bool put(JSObject* key, JSObject* value) {
     JS::Compartment* comp = key->compartment();
     auto ptr = map.lookupForAdd(comp);
     if (!ptr) {
@@ -237,10 +232,10 @@ class ObjectWrapperMap {
     }
   }
 
-  void sweep() {
+  void traceWeak(JSTracer* trc) {
     for (OuterMap::Enum e(map); !e.empty(); e.popFront()) {
       InnerMap& m = e.front().value();
-      m.sweep();
+      m.traceWeak(trc);
       if (m.empty()) {
         e.removeFront();
       }
@@ -249,8 +244,8 @@ class ObjectWrapperMap {
 };
 
 using StringWrapperMap =
-    NurseryAwareHashMap<JSString*, JSString*, DefaultHasher<JSString*>,
-                        ZoneAllocPolicy>;
+    NurseryAwareHashMap<JSString*, JSString*, ZoneAllocPolicy,
+                        DuplicatesPossible>;
 
 }  // namespace js
 
@@ -284,6 +279,7 @@ class JS::Compartment {
     // the compartment, not the realm, because same-compartment realms can
     // have cross-realm pointers without wrappers.
     bool scheduledForDestruction = false;
+    bool hasMarkedCells = false;
     bool maybeAlive = true;
 
     // During GC, we may set this to |true| if we entered a realm in this
@@ -351,28 +347,35 @@ class JS::Compartment {
  public:
   explicit Compartment(JS::Zone* zone, bool invisibleToDebugger);
 
-  void destroy(JSFreeOp* fop);
+  void destroy(JS::GCContext* gcx);
 
-  MOZ_MUST_USE inline bool wrap(JSContext* cx, JS::MutableHandleValue vp);
+  [[nodiscard]] inline bool wrap(JSContext* cx, JS::MutableHandleValue vp);
 
-  MOZ_MUST_USE inline bool wrap(JSContext* cx,
-                                MutableHandle<mozilla::Maybe<Value>> vp);
+  [[nodiscard]] inline bool wrap(JSContext* cx,
+                                 MutableHandle<mozilla::Maybe<Value>> vp);
 
-  MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandleString strp);
-  MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandle<JS::BigInt*> bi);
-  MOZ_MUST_USE bool wrap(JSContext* cx, JS::MutableHandleObject obj);
-  MOZ_MUST_USE bool wrap(JSContext* cx,
-                         JS::MutableHandle<JS::PropertyDescriptor> desc);
-  MOZ_MUST_USE bool wrap(JSContext* cx,
-                         JS::MutableHandle<JS::GCVector<JS::Value>> vec);
-  MOZ_MUST_USE bool rewrap(JSContext* cx, JS::MutableHandleObject obj,
-                           JS::HandleObject existing);
+  [[nodiscard]] bool wrap(JSContext* cx, js::MutableHandleString strp);
+  [[nodiscard]] bool wrap(JSContext* cx, js::MutableHandle<JS::BigInt*> bi);
+  [[nodiscard]] bool wrap(JSContext* cx, JS::MutableHandleObject obj);
+  [[nodiscard]] bool wrap(JSContext* cx,
+                          JS::MutableHandle<JS::PropertyDescriptor> desc);
+  [[nodiscard]] bool wrap(
+      JSContext* cx,
+      JS::MutableHandle<mozilla::Maybe<JS::PropertyDescriptor>> desc);
+  [[nodiscard]] bool wrap(JSContext* cx,
+                          JS::MutableHandle<JS::GCVector<JS::Value>> vec);
+#ifdef ENABLE_RECORD_TUPLE
+  [[nodiscard]] bool wrapExtendedPrimitive(JSContext* cx,
+                                           JS::MutableHandleObject obj);
+#endif
+  [[nodiscard]] bool rewrap(JSContext* cx, JS::MutableHandleObject obj,
+                            JS::HandleObject existing);
 
-  MOZ_MUST_USE bool putWrapper(JSContext* cx, JSObject* wrapped,
-                               JSObject* wrapper);
+  [[nodiscard]] bool putWrapper(JSContext* cx, JSObject* wrapped,
+                                JSObject* wrapper);
 
-  MOZ_MUST_USE bool putWrapper(JSContext* cx, JSString* wrapped,
-                               JSString* wrapper);
+  [[nodiscard]] bool putWrapper(JSContext* cx, JSString* wrapped,
+                                JSString* wrapper);
 
   js::ObjectWrapperMap::Ptr lookupWrapper(JSObject* obj) const {
     return crossCompartmentObjectWrappers.lookup(obj);
@@ -414,40 +417,52 @@ class JS::Compartment {
    * dangling (full GCs naturally follow pointers across compartments) and
    * when compacting to update cross-compartment pointers.
    */
-  enum EdgeSelector { AllEdges, NonGrayEdges, GrayEdges };
+  enum EdgeSelector { AllEdges, NonGrayEdges, GrayEdges, BlackEdges };
   void traceWrapperTargetsInCollectedZones(JSTracer* trc,
                                            EdgeSelector whichEdges);
   static void traceIncomingCrossCompartmentEdgesForZoneGC(
       JSTracer* trc, EdgeSelector whichEdges);
 
-  void sweepRealms(JSFreeOp* fop, bool keepAtleastOne, bool destroyingRuntime);
+  void sweepRealms(JS::GCContext* gcx, bool keepAtleastOne,
+                   bool destroyingRuntime);
   void sweepAfterMinorGC(JSTracer* trc);
-  void sweepCrossCompartmentObjectWrappers();
+  void traceCrossCompartmentObjectWrapperEdges(JSTracer* trc);
 
   void fixupCrossCompartmentObjectWrappersAfterMovingGC(JSTracer* trc);
   void fixupAfterMovingGC(JSTracer* trc);
 
-  MOZ_MUST_USE bool findSweepGroupEdges();
+  [[nodiscard]] bool findSweepGroupEdges();
+
+ private:
+  // Head node of list of active iterators that may need deleted property
+  // suppression.
+  js::NativeIteratorListHead enumerators_;
+
+ public:
+  js::NativeIteratorListHead* enumeratorsAddr() { return &enumerators_; }
+  MOZ_ALWAYS_INLINE bool objectMaybeInIteration(JSObject* obj);
+
+  void traceWeakNativeIterators(JSTracer* trc);
 };
 
 namespace js {
 
-// We only set the maybeAlive flag for objects and scripts. It's assumed that,
-// if a compartment is alive, then it will have at least some live object or
-// script it in. Even if we get this wrong, the worst that will happen is that
-// scheduledForDestruction will be set on the compartment, which will cause
+// We only set the hasMarkedCells flag for objects and scripts. It's assumed
+// that, if a compartment is alive, then it will have at least some live object
+// or script it in. Even if we get this wrong, the worst that will happen is
+// that scheduledForDestruction will be set on the compartment, which will cause
 // some extra GC activity to try to free the compartment.
 template <typename T>
-inline void SetMaybeAliveFlag(T* thing) {}
+inline void SetCompartmentHasMarkedCells(T* thing) {}
 
 template <>
-inline void SetMaybeAliveFlag(JSObject* thing) {
-  thing->compartment()->gcState.maybeAlive = true;
+inline void SetCompartmentHasMarkedCells(JSObject* thing) {
+  thing->compartment()->gcState.hasMarkedCells = true;
 }
 
 template <>
-inline void SetMaybeAliveFlag(JSScript* thing) {
-  thing->compartment()->gcState.maybeAlive = true;
+inline void SetCompartmentHasMarkedCells(JSScript* thing) {
+  thing->compartment()->gcState.hasMarkedCells = true;
 }
 
 /*
@@ -495,25 +510,19 @@ struct WrapperValue {
 class MOZ_RAII AutoWrapperVector : public JS::GCVector<WrapperValue, 8>,
                                    public JS::AutoGCRooter {
  public:
-  explicit AutoWrapperVector(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  explicit AutoWrapperVector(JSContext* cx)
       : JS::GCVector<WrapperValue, 8>(cx),
-        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {}
 
   void trace(JSTracer* trc);
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
  public:
-  AutoWrapperRooter(JSContext* cx,
-                    const WrapperValue& v MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  AutoWrapperRooter(JSContext* cx, const WrapperValue& v)
+      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {}
 
   operator JSObject*() const { return value; }
 
@@ -521,7 +530,6 @@ class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
 
  private:
   WrapperValue value;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace js */

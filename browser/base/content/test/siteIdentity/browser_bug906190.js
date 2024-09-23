@@ -35,7 +35,7 @@ async function doTest(
       gBrowser,
       url: parentTabSpec,
     },
-    async function(browser) {
+    async function (browser) {
       // As a sanity check, test that active content has been blocked as expected.
       await assertMixedContentBlockingState(gBrowser, {
         activeLoaded: false,
@@ -45,6 +45,7 @@ async function doTest(
 
       // Disable the Mixed Content Blocker for the page, which reloads it.
       let promiseReloaded = BrowserTestUtils.browserLoaded(browser);
+      let principal = gBrowser.contentPrincipal;
       gIdentityHandler.disableMixedContentProtection();
       await promiseReloaded;
 
@@ -61,7 +62,6 @@ async function doTest(
           // Add the link for the child tab to the page.
           let mainDiv = content.document.createElement("div");
 
-          // eslint-disable-next-line no-unsanitized/property
           mainDiv.innerHTML =
             '<p><a id="linkToOpenInNewTab" href="' +
             childTabSpecContent +
@@ -85,6 +85,8 @@ async function doTest(
 
         gBrowser.removeCurrentTab();
       }
+
+      SitePermissions.removeFromPrincipal(principal, "mixed-content");
     }
   );
 }
@@ -126,7 +128,13 @@ function waitForSomeTabToLoad() {
  */
 add_task(async function test_initialize() {
   await SpecialPowers.pushPrefEnv({
-    set: [["security.mixed_content.block_active_content", true]],
+    set: [
+      ["security.mixed_content.block_active_content", true],
+      // We need to disable the dFPI heuristic. So, we won't have unnecessary
+      // 3rd party cookie permission that could affect following tests because
+      // it will create a permission icon on the URL bar.
+      ["privacy.restrict3rdpartystorage.heuristic.recently_visited", false],
+    ],
   });
 });
 
@@ -140,7 +148,7 @@ add_task(async function test_same_origin() {
   await doTest(
     HTTPS_TEST_ROOT_1 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_1 + "file_bug906190_2.html",
-    async function() {
+    async function () {
       // The doorhanger should appear but activeBlocked should be >> NOT << true,
       // because our decision of disabling the mixed content blocker is persistent
       // across tabs.
@@ -171,7 +179,7 @@ add_task(async function test_different_origin() {
   await doTest(
     HTTPS_TEST_ROOT_1 + "file_bug906190_2.html",
     HTTPS_TEST_ROOT_2 + "file_bug906190_2.html",
-    async function() {
+    async function () {
       // The doorhanger should appear and activeBlocked should be >> TRUE <<,
       // because our decision of disabling the mixed content blocker should only
       // persist if pages are from the same domain.
@@ -204,7 +212,7 @@ add_task(async function test_same_origin_metarefresh_same_origin() {
   await doTest(
     HTTPS_TEST_ROOT_1 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_1 + "file_bug906190_3_4.html",
-    async function() {
+    async function () {
       // The doorhanger should appear but activeBlocked should be >> NOT << true!
       await assertMixedContentBlockingState(gBrowser, {
         activeLoaded: true,
@@ -235,7 +243,7 @@ add_task(async function test_same_origin_metarefresh_different_origin() {
   await doTest(
     HTTPS_TEST_ROOT_2 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_2 + "file_bug906190_3_4.html",
-    async function() {
+    async function () {
       // The doorhanger should appear and activeBlocked should be >> TRUE <<.
       await assertMixedContentBlockingState(gBrowser, {
         activeLoaded: false,
@@ -266,7 +274,7 @@ add_task(async function test_same_origin_302redirect_same_origin() {
   await doTest(
     HTTPS_TEST_ROOT_1 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_1 + "file_bug906190.sjs",
-    async function() {
+    async function () {
       // The doorhanger should appear but activeBlocked should be >> NOT << true.
       // Currently it is >> TRUE << - see follow up bug 914860
       ok(
@@ -296,7 +304,7 @@ add_task(async function test_same_origin_302redirect_different_origin() {
   await doTest(
     HTTPS_TEST_ROOT_2 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_2 + "file_bug906190.sjs",
-    async function() {
+    async function () {
       // The doorhanger should appear and activeBlocked should be >> TRUE <<.
       await assertMixedContentBlockingState(gBrowser, {
         activeLoaded: false,
@@ -323,7 +331,7 @@ add_task(async function test_bad_redirection() {
   await doTest(
     HTTPS_TEST_ROOT_2 + "file_bug906190_1.html",
     HTTPS_TEST_ROOT_2 + "file_bug906190.sjs?bad-redirection=1",
-    function() {
+    function () {
       // Nothing to do. Just see if memory leak is reported in the end.
       ok(true, "Nothing to do");
     }

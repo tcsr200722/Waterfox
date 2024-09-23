@@ -21,20 +21,18 @@ try {
   Object.defineProperty(arrObj, "property", {
     writable: true
   });
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
-  verifyEqualTo(arrObj, "property", undefined);
-
-  verifyNotWritable(arrObj, "property");
-
-  verifyNotEnumerable(arrObj, "property");
-
-  verifyNotConfigurable(arrObj, "property");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(arrObj, "property", {
+  value: undefined,
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

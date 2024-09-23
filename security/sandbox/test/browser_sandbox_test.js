@@ -6,39 +6,50 @@
 
 function test() {
   waitForExplicitFinish();
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
 
   // Types of processes to test, taken from GeckoProcessTypes.h
-  var processTypes = ["tab", "gpu"];
+  // GPU process might not run depending on the platform, so we need it to be
+  // the last one of the list to allow the remainingTests logic below to work
+  // as expected.
+  //
+  // For UtilityProcess, allow constructing a string made of the process type
+  // and the sandbox variant we want to test, e.g.,
+  // utility:0 for GENERIC_UTILITY
+  // utility:1 for AppleMedia/WMF on macOS/Windows
+  var processTypes = ["tab", "socket", "rdd", "gmplugin", "utility:0", "gpu"];
+
+  const platform = SpecialPowers.Services.appinfo.OS;
+  if (platform === "WINNT" || platform === "Darwin") {
+    processTypes.push("utility:1");
+  }
 
   // A callback called after each test-result.
-  Services.obs.addObserver(function result(subject, topic, data) {
-    let { testid, shouldPermit, wasPermitted, message } = JSON.parse(data);
+  let sandboxTestResult = (subject, topic, data) => {
+    let { testid, passed, message } = JSON.parse(data);
     ok(
-      shouldPermit == wasPermitted,
-      "Test " +
-        testid +
-        " was " +
-        (wasPermitted ? "" : "not ") +
-        "permitted.  | " +
-        message
+      passed,
+      "Test " + testid + (passed ? " passed: " : " failed: ") + message
     );
-  }, "sandbox-test-result");
+  };
+  Services.obs.addObserver(sandboxTestResult, "sandbox-test-result");
+
+  var remainingTests = processTypes.length;
 
   // A callback that is notified when a child process is done running tests.
-  var remainingTests = processTypes.length;
-  Services.obs.addObserver(_ => {
+  let sandboxTestDone = () => {
     remainingTests = remainingTests - 1;
     if (remainingTests == 0) {
+      Services.obs.removeObserver(sandboxTestResult, "sandbox-test-result");
+      Services.obs.removeObserver(sandboxTestDone, "sandbox-test-done");
+
       // Notify SandboxTest component that it should terminate the connection
       // with the child processes.
       comp.finishTests();
       // Notify mochitest that all process tests are complete.
       finish();
     }
-  }, "sandbox-test-done");
+  };
+  Services.obs.addObserver(sandboxTestDone, "sandbox-test-done");
 
   var comp = Cc["@mozilla.org/sandbox/sandbox-test;1"].getService(
     Ci.mozISandboxTest

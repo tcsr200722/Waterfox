@@ -9,6 +9,8 @@
 
 #include <functional>
 #include "mozilla/Maybe.h"
+#include "mozilla/ResultExtensions.h"
+#include "nsAttrValue.h"
 #include "nsCOMPtr.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -26,6 +28,7 @@
 #include "nsReadableUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
+#include "nsTArray.h"
 
 class nsIPrincipal;
 class nsIAsyncStreamCopier;
@@ -37,7 +40,7 @@ class nsICookieJarSettings;
 class nsIDownloadObserver;
 class nsIEventTarget;
 class nsIFileProtocolHandler;
-class nsIFileStream;
+class nsIFileRandomAccessStream;
 class nsIHttpChannel;
 class nsIInputStream;
 class nsIInputStreamPump;
@@ -46,7 +49,9 @@ class nsIOutputStream;
 class nsIParentChannel;
 class nsIPersistentProperties;
 class nsIProxyInfo;
+class nsIRandomAccessStream;
 class nsIRequestObserver;
+class nsISerialEventTarget;
 class nsIStreamListener;
 class nsIStreamLoader;
 class nsIStreamLoaderObserver;
@@ -56,6 +61,7 @@ class nsIIncrementalStreamLoaderObserver;
 namespace mozilla {
 class Encoding;
 class OriginAttributes;
+class OriginTrials;
 namespace dom {
 class ClientInfo;
 class PerformanceStorage;
@@ -80,7 +86,7 @@ already_AddRefed<nsINetUtil> do_GetNetUtil(nsresult* error = nullptr);
 // private little helper function... don't call this directly!
 nsresult net_EnsureIOService(nsIIOService** ios, nsCOMPtr<nsIIOService>& grip);
 
-nsresult NS_NewURI(nsIURI** result, const nsACString& spec,
+nsresult NS_NewURI(nsIURI** aURI, const nsACString& spec,
                    const char* charset = nullptr, nsIURI* baseURI = nullptr);
 
 nsresult NS_NewURI(nsIURI** result, const nsACString& spec,
@@ -101,6 +107,21 @@ nsresult NS_NewFileURI(
     nsIURI** result, nsIFile* spec,
     nsIIOService* ioService =
         nullptr);  // pass in nsIIOService to optimize callers
+
+// Functions for adding additional encoding to a URL for compatibility with
+// Apple's NSURL class URLWithString method.
+//
+// @param aResult
+//        Out parameter for the encoded URL spec
+// @param aSpec
+//        The spec for the URL to be encoded
+nsresult NS_GetSpecWithNSURLEncoding(nsACString& aResult,
+                                     const nsACString& aSpec);
+// @param aResult
+//        Out parameter for the encoded URI
+// @param aSpec
+//        The spec for the URL to be encoded
+nsresult NS_NewURIWithNSURLEncoding(nsIURI** aResult, const nsACString& aSpec);
 
 // These methods will only mutate the URI if the ref of aInput doesn't already
 // match the ref we are trying to set.
@@ -169,7 +190,8 @@ nsresult NS_NewChannelInternal(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannelInternal(
@@ -226,7 +248,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannel(
@@ -237,7 +260,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 // See NS_NewChannelInternal for usage and argument description
 nsresult NS_NewChannel(
@@ -250,7 +274,8 @@ nsresult NS_NewChannel(
     nsILoadGroup* aLoadGroup = nullptr,
     nsIInterfaceRequestor* aCallbacks = nullptr,
     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
-    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0);
+    nsIIOService* aIoService = nullptr, uint32_t aSandboxFlags = 0,
+    bool aSkipCheckForBrokenURLOrZeroSized = false);
 
 nsresult NS_GetIsDocumentChannel(nsIChannel* aChannel, bool* aIsDocument);
 
@@ -269,10 +294,28 @@ int32_t NS_GetDefaultPort(const char* scheme,
                           nsIIOService* ioService = nullptr);
 
 /**
- * This function is a helper function to apply the ToAscii conversion
- * to a string
+ * The UTS #46 ToASCII operation as parametrized by the WHATWG URL Standard.
+ *
+ * Use this function to prepare a host name for network protocols.
  */
-bool NS_StringToACE(const nsACString& idn, nsACString& result);
+nsresult NS_DomainToASCII(const nsACString& aHost, nsACString& aASCII);
+
+/**
+ * The UTS #46 ToUnicode operation as parametrized by the WHATWG URL Standard,
+ * except potentially misleading labels are treated according to ToASCII
+ * instead.
+ *
+ * Use this function to prepare a host name for display to the user.
+ */
+nsresult NS_DomainToDisplay(const nsACString& aHost, nsACString& aDisplay);
+
+/**
+ * The UTS #46 ToUnicode operation as parametrized by the WHATWG URL Standard.
+ *
+ * It's most likely incorrect to call this function, and `NS_DomainToDisplay`
+ * should typically be called instead.
+ */
+nsresult NS_DomainToUnicode(const nsACString& aHost, nsACString& aUnicode);
 
 /**
  * This function is a helper function to get a protocol's default port if the
@@ -293,12 +336,13 @@ nsresult NS_NewInputStreamChannelInternal(
     nsIPrincipal* aLoadingPrincipal, nsIPrincipal* aTriggeringPrincipal,
     nsSecurityFlags aSecurityFlags, nsContentPolicyType aContentPolicyType);
 
-nsresult NS_NewInputStreamChannel(
-    nsIChannel** outChannel, nsIURI* aUri,
-    already_AddRefed<nsIInputStream> aStream, nsIPrincipal* aLoadingPrincipal,
-    nsSecurityFlags aSecurityFlags, nsContentPolicyType aContentPolicyType,
-    const nsACString& aContentType = EmptyCString(),
-    const nsACString& aContentCharset = EmptyCString());
+nsresult NS_NewInputStreamChannel(nsIChannel** outChannel, nsIURI* aUri,
+                                  already_AddRefed<nsIInputStream> aStream,
+                                  nsIPrincipal* aLoadingPrincipal,
+                                  nsSecurityFlags aSecurityFlags,
+                                  nsContentPolicyType aContentPolicyType,
+                                  const nsACString& aContentType = ""_ns,
+                                  const nsACString& aContentCharset = ""_ns);
 
 nsresult NS_NewInputStreamChannelInternal(
     nsIChannel** outChannel, nsIURI* aUri, const nsAString& aData,
@@ -321,11 +365,10 @@ nsresult NS_NewInputStreamChannel(nsIChannel** outChannel, nsIURI* aUri,
                                   nsContentPolicyType aContentPolicyType,
                                   bool aIsSrcdocChannel = false);
 
-nsresult NS_NewInputStreamPump(nsIInputStreamPump** aResult,
-                               already_AddRefed<nsIInputStream> aStream,
-                               uint32_t aSegsize = 0, uint32_t aSegcount = 0,
-                               bool aCloseWhenDone = false,
-                               nsIEventTarget* aMainThreadTarget = nullptr);
+nsresult NS_NewInputStreamPump(
+    nsIInputStreamPump** aResult, already_AddRefed<nsIInputStream> aStream,
+    uint32_t aSegsize = 0, uint32_t aSegcount = 0, bool aCloseWhenDone = false,
+    nsISerialEventTarget* aMainThreadTarget = nullptr);
 
 nsresult NS_NewLoadGroup(nsILoadGroup** result, nsIRequestObserver* obs);
 
@@ -463,9 +506,17 @@ nsresult NS_NewLocalFileInputStream(nsIInputStream** result, nsIFile* file,
                                     int32_t ioFlags = -1, int32_t perm = -1,
                                     int32_t behaviorFlags = 0);
 
+mozilla::Result<nsCOMPtr<nsIInputStream>, nsresult> NS_NewLocalFileInputStream(
+    nsIFile* file, int32_t ioFlags = -1, int32_t perm = -1,
+    int32_t behaviorFlags = 0);
+
 nsresult NS_NewLocalFileOutputStream(nsIOutputStream** result, nsIFile* file,
                                      int32_t ioFlags = -1, int32_t perm = -1,
                                      int32_t behaviorFlags = 0);
+
+mozilla::Result<nsCOMPtr<nsIOutputStream>, nsresult>
+NS_NewLocalFileOutputStream(nsIFile* file, int32_t ioFlags = -1,
+                            int32_t perm = -1, int32_t behaviorFlags = 0);
 
 nsresult NS_NewLocalFileOutputStream(nsIOutputStream** result,
                                      const mozilla::ipc::FileDescriptor& fd);
@@ -481,13 +532,21 @@ nsresult NS_NewSafeLocalFileOutputStream(nsIOutputStream** result,
                                          int32_t perm = -1,
                                          int32_t behaviorFlags = 0);
 
-nsresult NS_NewLocalFileStream(nsIFileStream** result, nsIFile* file,
-                               int32_t ioFlags = -1, int32_t perm = -1,
-                               int32_t behaviorFlags = 0);
+nsresult NS_NewLocalFileRandomAccessStream(nsIRandomAccessStream** result,
+                                           nsIFile* file, int32_t ioFlags = -1,
+                                           int32_t perm = -1,
+                                           int32_t behaviorFlags = 0);
+
+mozilla::Result<nsCOMPtr<nsIRandomAccessStream>, nsresult>
+NS_NewLocalFileRandomAccessStream(nsIFile* file, int32_t ioFlags = -1,
+                                  int32_t perm = -1, int32_t behaviorFlags = 0);
 
 [[nodiscard]] nsresult NS_NewBufferedInputStream(
     nsIInputStream** aResult, already_AddRefed<nsIInputStream> aInputStream,
     uint32_t aBufferSize);
+
+mozilla::Result<nsCOMPtr<nsIInputStream>, nsresult> NS_NewBufferedInputStream(
+    already_AddRefed<nsIInputStream> aInputStream, uint32_t aBufferSize);
 
 // note: the resulting stream can be QI'ed to nsISafeOutputStream iff the
 // provided stream supports it.
@@ -597,21 +656,9 @@ bool NS_UsePrivateBrowsing(nsIChannel* channel);
 bool NS_HasBeenCrossOrigin(nsIChannel* aChannel, bool aReport = false);
 
 /**
- * Returns true if the channel is a safe top-level navigation.
- */
-bool NS_IsSafeTopLevelNav(nsIChannel* aChannel);
-
-/**
  * Returns true if the channel has a safe method.
  */
 bool NS_IsSafeMethodNav(nsIChannel* aChannel);
-
-/**
- * Returns true if the channel is a foreign with respect to the host-uri.
- * For loads of TYPE_DOCUMENT, this function returns true if it's a
- * cross origin navigation.
- */
-bool NS_IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI);
 
 // Unique first-party domain for separating the safebrowsing cookie.
 // Note if this value is changed, code in test_cookiejars_safebrowsing.js and
@@ -622,11 +669,6 @@ bool NS_IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI);
 // Unique first-party domain for separating about uri.
 #define ABOUT_URI_FIRST_PARTY_DOMAIN \
   "about.ef2a7dd5-93bc-417f-a698-142c3116864f.mozilla"
-
-/**
- * Determines whether appcache should be checked for a given principal.
- */
-bool NS_ShouldCheckAppCache(nsIPrincipal* aPrincipal);
 
 /**
  * Wraps an nsIAuthPrompt so that it can be used as an nsIAuthPrompt2. This
@@ -783,25 +825,13 @@ bool NS_IsInternalSameURIRedirect(nsIChannel* aOldChannel,
 bool NS_IsHSTSUpgradeRedirect(nsIChannel* aOldChannel, nsIChannel* aNewChannel,
                               uint32_t aFlags);
 
-nsresult NS_LinkRedirectChannels(uint32_t channelId,
+bool NS_ShouldRemoveAuthHeaderOnRedirect(nsIChannel* aOldChannel,
+                                         nsIChannel* aNewChannel,
+                                         uint32_t aFlags);
+
+nsresult NS_LinkRedirectChannels(uint64_t channelId,
                                  nsIParentChannel* parentChannel,
                                  nsIChannel** _result);
-
-/**
- * Helper function which checks whether the channel can be
- * openend using Open() or has to fall back to opening
- * the channel using Open().
- */
-nsresult NS_MaybeOpenChannelUsingOpen(nsIChannel* aChannel,
-                                      nsIInputStream** aStream);
-
-/**
- * Helper function which checks whether the channel can be
- * openend using AsyncOpen() or has to fall back to opening
- * the channel using AsyncOpen().
- */
-nsresult NS_MaybeOpenChannelUsingAsyncOpen(nsIChannel* aChannel,
-                                           nsIStreamListener* aListener);
 
 /**
  * Returns nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP if `aHeader` is
@@ -809,12 +839,9 @@ nsresult NS_MaybeOpenChannelUsingAsyncOpen(nsIChannel* aChannel,
  *
  * See: https://mikewest.github.io/corpp/#parsing
  */
-inline nsILoadInfo::CrossOriginEmbedderPolicy
-NS_GetCrossOriginEmbedderPolicyFromHeader(const nsACString& aHeader) {
-  return aHeader.EqualsLiteral("require-corp")
-             ? nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP
-             : nsILoadInfo::EMBEDDER_POLICY_NULL;
-}
+nsILoadInfo::CrossOriginEmbedderPolicy
+NS_GetCrossOriginEmbedderPolicyFromHeader(
+    const nsACString& aHeader, bool aIsOriginTrialCoepCredentiallessEnabled);
 
 /** Given the first (disposition) token from a Content-Disposition header,
  * tell whether it indicates the content is inline or attachment
@@ -847,6 +874,17 @@ void net_EnsurePSMInit();
  * Test whether a URI is "about:blank".  |uri| must not be null
  */
 bool NS_IsAboutBlank(nsIURI* uri);
+
+/**
+ * Test whether a URI is "about:blank", possibly with fragment or query.  |uri|
+ * must not be null
+ */
+bool NS_IsAboutBlankAllowQueryAndFragment(nsIURI* uri);
+
+/**
+ * Test whether a URI is "about:srcdoc".  |uri| must not be null
+ */
+bool NS_IsAboutSrcdoc(nsIURI* uri);
 
 nsresult NS_GenerateHostPort(const nsCString& host, int32_t port,
                              nsACString& hostLine);
@@ -889,6 +927,30 @@ bool NS_IsValidHTTPToken(const nsACString& aToken);
  */
 void NS_TrimHTTPWhitespace(const nsACString& aSource, nsACString& aDest);
 
+template <typename Char>
+constexpr bool NS_IsHTTPTokenPoint(Char aChar) {
+  using UnsignedChar = typename mozilla::detail::MakeUnsignedChar<Char>::Type;
+  auto c = static_cast<UnsignedChar>(aChar);
+  return c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+         c == '\'' || c == '*' || c == '+' || c == '-' || c == '.' ||
+         c == '^' || c == '_' || c == '`' || c == '|' || c == '~' ||
+         mozilla::IsAsciiAlphanumeric(c);
+}
+
+template <typename Char>
+constexpr bool NS_IsHTTPQuotedStringTokenPoint(Char aChar) {
+  using UnsignedChar = typename mozilla::detail::MakeUnsignedChar<Char>::Type;
+  auto c = static_cast<UnsignedChar>(aChar);
+  return c == 0x9 || (c >= ' ' && c <= '~') || mozilla::IsNonAsciiLatin1(c);
+}
+
+template <typename Char>
+constexpr bool NS_IsHTTPWhitespace(Char aChar) {
+  using UnsignedChar = typename mozilla::detail::MakeUnsignedChar<Char>::Type;
+  auto c = static_cast<UnsignedChar>(aChar);
+  return c == 0x9 || c == 0xA || c == 0xD || c == 0x20;
+}
+
 /**
  * Return true if the given request must be upgraded to HTTPS.
  * If |aResultCallback| is provided and the storage is not ready to read, the
@@ -898,9 +960,9 @@ void NS_TrimHTTPWhitespace(const nsACString& aSource, nsACString& aDest);
  */
 nsresult NS_ShouldSecureUpgrade(
     nsIURI* aURI, nsILoadInfo* aLoadInfo, nsIPrincipal* aChannelResultPrincipal,
-    bool aPrivateBrowsing, bool aAllowSTS,
-    const mozilla::OriginAttributes& aOriginAttributes, bool& aShouldUpgrade,
-    std::function<void(bool, nsresult)>&& aResultCallback, bool& aWillCallback);
+    bool aAllowSTS, const mozilla::OriginAttributes& aOriginAttributes,
+    bool& aShouldUpgrade, std::function<void(bool, nsresult)>&& aResultCallback,
+    bool& aWillCallback);
 
 /**
  * Returns an https URI for channels that need to go through secure upgrades.
@@ -977,6 +1039,92 @@ bool SchemeIsData(nsIURI* aURI);
 bool SchemeIsViewSource(nsIURI* aURI);
 bool SchemeIsResource(nsIURI* aURI);
 bool SchemeIsFTP(nsIURI* aURI);
+
+// Helper functions for SetProtocol methods to follow
+// step 2.1 in https://url.spec.whatwg.org/#scheme-state
+bool SchemeIsSpecial(const nsACString&);
+bool IsSchemeChangePermitted(nsIURI*, const nsACString&);
+already_AddRefed<nsIURI> TryChangeProtocol(nsIURI*, const nsACString&);
+
+struct LinkHeader {
+  nsString mHref;
+  nsString mRel;
+  nsString mTitle;
+  nsString mNonce;
+  nsString mIntegrity;
+  nsString mSrcset;
+  nsString mSizes;
+  nsString mType;
+  nsString mMedia;
+  nsString mAnchor;
+  nsString mCrossOrigin;
+  nsString mReferrerPolicy;
+  nsString mAs;
+  nsString mFetchPriority;
+
+  LinkHeader();
+  void Reset();
+
+  nsresult NewResolveHref(nsIURI** aOutURI, nsIURI* aBaseURI) const;
+
+  bool operator==(const LinkHeader& rhs) const;
+
+  void MaybeUpdateAttribute(const nsAString& aAttribute,
+                            const char16_t* aValue);
+};
+
+// Implements roughly step 2 to 4 of
+// <https://httpwg.org/specs/rfc8288.html#parse-set>.
+nsTArray<LinkHeader> ParseLinkHeader(const nsAString& aLinkData);
+
+enum ASDestination : uint8_t {
+  DESTINATION_INVALID,
+  DESTINATION_AUDIO,
+  DESTINATION_DOCUMENT,
+  DESTINATION_EMBED,
+  DESTINATION_FONT,
+  DESTINATION_IMAGE,
+  DESTINATION_MANIFEST,
+  DESTINATION_OBJECT,
+  DESTINATION_REPORT,
+  DESTINATION_SCRIPT,
+  DESTINATION_SERVICEWORKER,
+  DESTINATION_SHAREDWORKER,
+  DESTINATION_STYLE,
+  DESTINATION_TRACK,
+  DESTINATION_VIDEO,
+  DESTINATION_WORKER,
+  DESTINATION_XSLT,
+  DESTINATION_FETCH
+};
+
+void ParseAsValue(const nsAString& aValue, nsAttrValue& aResult);
+nsContentPolicyType AsValueToContentPolicy(const nsAttrValue& aValue);
+bool IsScriptLikeOrInvalid(const nsAString& aAs);
+
+bool CheckPreloadAttrs(const nsAttrValue& aAs, const nsAString& aType,
+                       const nsAString& aMedia,
+                       mozilla::dom::Document* aDocument);
+void WarnIgnoredPreload(const mozilla::dom::Document&, nsIURI&);
+
+/**
+ * Returns true if the |aInput| in is part of the root domain of |aHost|.
+ * For example, if |aInput| is "www.mozilla.org", and we pass in
+ * "mozilla.org" as |aHost|, this will return true.  It would return false
+ * the other way around.
+ *
+ * @param aInput The host to be analyzed.
+ * @param aHost  The host to compare to.
+ */
+nsresult HasRootDomain(const nsACString& aInput, const nsACString& aHost,
+                       bool* aResult);
+
+void CheckForBrokenChromeURL(nsILoadInfo* aLoadInfo, nsIURI* aURI);
+
+bool IsCoepCredentiallessEnabled(bool aIsOriginTrialCoepCredentiallessEnabled);
+
+void ParseSimpleURISchemes(const nsACString& schemeList);
+
 }  // namespace net
 }  // namespace mozilla
 

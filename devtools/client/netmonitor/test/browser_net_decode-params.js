@@ -6,7 +6,7 @@
 /**
  * Tests if "+" is replaces with spaces in the headers panel.
  */
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(POST_RAW_URL_WITH_HASH, {
     requestCount: 1,
   });
@@ -29,10 +29,7 @@ add_task(async function() {
   );
   await wait;
 
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#request-tab")
-  );
+  clickOnSidebarTab(document, "request");
 
   return teardown(monitor);
 });

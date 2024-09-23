@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGAnimatedTransformList_h
-#define mozilla_dom_SVGAnimatedTransformList_h
+#ifndef DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_
+#define DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_
 
 #include "nsCycleCollectionParticipant.h"
 #include "SVGElement.h"
@@ -91,8 +91,8 @@ class DOMSVGAnimatedTransformList final : public nsWrapperCache {
 
   // WebIDL
   SVGElement* GetParentObject() const { return mElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   // These aren't weak refs because mBaseVal and mAnimVal are weak
   already_AddRefed<DOMSVGTransformList> BaseVal();
   already_AddRefed<DOMSVGTransformList> AnimVal();
@@ -125,4 +125,4 @@ class DOMSVGAnimatedTransformList final : public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGAnimatedTransformList_h
+#endif  // DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_

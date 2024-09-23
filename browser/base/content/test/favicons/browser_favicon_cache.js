@@ -1,7 +1,9 @@
 add_task(async () => {
   const testPath =
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example.com/browser/browser/base/content/test/favicons/cookie_favicon.html";
   const resetPath =
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example.com/browser/browser/base/content/test/favicons/cookie_favicon.sjs?reset";
 
   let tab = BrowserTestUtils.addTab(gBrowser, testPath);
@@ -19,13 +21,13 @@ add_task(async () => {
   for (let cookie of cookies) {
     if (cookie.name == "faviconCookie") {
       seenCookie = true;
-      is(cookie.value, 1, "Should have seen the right initial cookie.");
+      is(cookie.value, "1", "Should have seen the right initial cookie.");
     }
   }
   ok(seenCookie, "Should have seen the cookie.");
 
   faviconPromise = waitForLinkAvailable(browser);
-  BrowserTestUtils.loadURI(browser, testPath);
+  BrowserTestUtils.startLoadingURIString(browser, testPath);
   await BrowserTestUtils.browserLoaded(browser);
   await faviconPromise;
   cookies = Services.cookies.getCookiesFromHost(
@@ -36,7 +38,7 @@ add_task(async () => {
   for (let cookie of cookies) {
     if (cookie.name == "faviconCookie") {
       seenCookie = true;
-      is(cookie.value, 1, "Should have seen the cached cookie.");
+      is(cookie.value, "1", "Should have seen the cached cookie.");
     }
   }
   ok(seenCookie, "Should have seen the cookie.");

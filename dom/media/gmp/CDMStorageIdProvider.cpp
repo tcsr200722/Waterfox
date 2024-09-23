@@ -6,7 +6,7 @@
 #include "CDMStorageIdProvider.h"
 #include "GMPLog.h"
 #include "nsCOMPtr.h"
-#include "nsComponentManagerUtils.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsICryptoHash.h"
 
 #ifdef SUPPORT_STORAGE_ID
@@ -18,7 +18,7 @@ namespace mozilla {
 /*static*/
 nsCString CDMStorageIdProvider::ComputeStorageId(const nsCString& aOriginSalt) {
 #ifndef SUPPORT_STORAGE_ID
-  return EmptyCString();
+  return ""_ns;
 #else
   GMP_LOG_DEBUG("CDMStorageIdProvider::ComputeStorageId");
 
@@ -26,30 +26,20 @@ nsCString CDMStorageIdProvider::ComputeStorageId(const nsCString& aOriginSalt) {
   if (!rlz_lib::GetMachineId(&machineId)) {
     GMP_LOG_DEBUG(
         "CDMStorageIdProvider::ComputeStorageId: get machineId failed.");
-    return EmptyCString();
+    return ""_ns;
   }
 
   std::string originSalt(aOriginSalt.BeginReading(), aOriginSalt.Length());
   std::string input =
       machineId + originSalt + CDMStorageIdProvider::kBrowserIdentifier;
-  nsresult rv;
-  nsCOMPtr<nsICryptoHash> hasher =
-      do_CreateInstance("@mozilla.org/security/hash;1", &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    GMP_LOG_DEBUG(
-        "CDMStorageIdProvider::ComputeStorageId: no crypto hash(0x%08" PRIx32
-        ")",
-        static_cast<uint32_t>(rv));
-    return EmptyCString();
-  }
-
-  rv = hasher->Init(nsICryptoHash::SHA256);
+  nsCOMPtr<nsICryptoHash> hasher;
+  nsresult rv = NS_NewCryptoHash(nsICryptoHash::SHA256, getter_AddRefs(hasher));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     GMP_LOG_DEBUG(
         "CDMStorageIdProvider::ComputeStorageId: failed to initialize "
         "hash(0x%08" PRIx32 ")",
         static_cast<uint32_t>(rv));
-    return EmptyCString();
+    return ""_ns;
   }
 
   rv = hasher->Update(reinterpret_cast<const uint8_t*>(input.c_str()),
@@ -59,7 +49,7 @@ nsCString CDMStorageIdProvider::ComputeStorageId(const nsCString& aOriginSalt) {
         "CDMStorageIdProvider::ComputeStorageId: failed to update "
         "hash(0x%08" PRIx32 ")",
         static_cast<uint32_t>(rv));
-    return EmptyCString();
+    return ""_ns;
   }
 
   nsCString storageId;
@@ -69,7 +59,7 @@ nsCString CDMStorageIdProvider::ComputeStorageId(const nsCString& aOriginSalt) {
         "CDMStorageIdProvider::ComputeStorageId: failed to get the final hash "
         "result(0x%08" PRIx32 ")",
         static_cast<uint32_t>(rv));
-    return EmptyCString();
+    return ""_ns;
   }
   return storageId;
 #endif

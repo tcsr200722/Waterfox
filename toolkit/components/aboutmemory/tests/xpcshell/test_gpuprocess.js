@@ -11,25 +11,18 @@ function run_test() {
   let ok = gfxInfo.controlGPUProcessForXPCShell(true);
   Assert.equal(ok, true);
 
-  let endTesting = function() {
+  let endTesting = function () {
     gfxInfo.controlGPUProcessForXPCShell(false);
     do_test_finished();
   };
 
   let foundGPUProcess = false;
-  let onHandleReport = function(
-    aProcess,
-    aPath,
-    aKind,
-    aUnits,
-    aAmount,
-    aDescription
-  ) {
+  let onHandleReport = function (aProcess) {
     if (/GPU \(pid \d+\)/.test(aProcess)) {
       foundGPUProcess = true;
     }
   };
-  let onFinishReporting = function() {
+  let onFinishReporting = function () {
     Assert.equal(foundGPUProcess, true);
     endTesting();
   };

@@ -2,7 +2,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-// Test whether a machine which exactly matches the blacklist entry is
+// Test whether a machine which exactly matches the blocklist entry is
 // successfully blocked.
 // Uses test_gfxBlacklist_AllOS.json
 
@@ -17,10 +17,11 @@ async function run_test() {
   }
 
   gfxInfo.QueryInterface(Ci.nsIGfxInfoDebug);
-  gfxInfo.fireTestProcess();
 
+  // Save OS in variable since createAppInfo below will change it to "xpcshell".
+  const OS = Services.appinfo.OS;
   // Set the vendor/device ID, etc, to match the test file.
-  switch (Services.appinfo.OS) {
+  switch (OS) {
     case "WINNT":
       gfxInfo.spoofVendorID("0xabcd");
       gfxInfo.spoofDeviceID("0x1234");
@@ -38,8 +39,8 @@ async function run_test() {
       gfxInfo.spoofOSVersion(0xa0900);
       break;
     case "Android":
-      gfxInfo.spoofVendorID("abcd");
-      gfxInfo.spoofDeviceID("asdf");
+      gfxInfo.spoofVendorID("0xabcd");
+      gfxInfo.spoofDeviceID("0x1234");
       gfxInfo.spoofDriverVersion("5");
       break;
   }
@@ -49,7 +50,7 @@ async function run_test() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "15.0", "8");
   await promiseStartupManager();
 
-  function checkBlacklist() {
+  function checkBlocklist() {
     var failureId = {};
     var status;
 
@@ -58,14 +59,14 @@ async function run_test() {
       failureId
     );
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLACKLIST_g1");
+    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLOCKLIST_g1");
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_DIRECT3D_9_LAYERS,
       failureId
     );
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLACKLIST_g2");
+    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLOCKLIST_g2");
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_DIRECT3D_10_LAYERS,
@@ -81,8 +82,6 @@ async function run_test() {
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
     Assert.equal(failureId.value, "");
 
-    // These four pass on Linux independent of the blocklist XML file as the
-    // try machines don't have support.
     status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_OPENGL_LAYERS);
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
 
@@ -91,24 +90,18 @@ async function run_test() {
       failureId
     );
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLACKLIST_g11");
+    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLOCKLIST_g11");
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_WEBGL_ANGLE,
       failureId
     );
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLACKLIST_NO_ID");
+    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLOCKLIST_NO_ID");
 
     status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL2, failureId);
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLACKLIST_NO_ID");
-
-    status = gfxInfo.getFeatureStatus(
-      Ci.nsIGfxInfo.FEATURE_WEBGL_MSAA,
-      failureId
-    );
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
+    Assert.equal(failureId.value, "FEATURE_FAILURE_DL_BLOCKLIST_NO_ID");
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_STAGEFRIGHT,
@@ -120,19 +113,35 @@ async function run_test() {
       Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION_H264,
       failureId
     );
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    if (OS == "Android" && status != Ci.nsIGfxInfo.FEATURE_STATUS_OK) {
+      // Hardware acceleration for H.264 varies by device.
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
+      Assert.equal(failureId.value, "FEATURE_FAILURE_WEBRTC_H264");
+    } else {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    }
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION_ENCODE,
       failureId
     );
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    if (OS == "Android" && status != Ci.nsIGfxInfo.FEATURE_STATUS_OK) {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
+      Assert.equal(failureId.value, "FEATURE_FAILURE_WEBRTC_ENCODE");
+    } else {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    }
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_WEBRTC_HW_ACCELERATION_DECODE,
       failureId
     );
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    if (OS == "Android" && status != Ci.nsIGfxInfo.FEATURE_STATUS_OK) {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
+      Assert.equal(failureId.value, "FEATURE_FAILURE_WEBRTC_DECODE");
+    } else {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    }
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_DIRECT3D_11_LAYERS,
@@ -144,7 +153,17 @@ async function run_test() {
       Ci.nsIGfxInfo.FEATURE_HARDWARE_VIDEO_DECODING,
       failureId
     );
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    if (OS == "Linux" && status != Ci.nsIGfxInfo.FEATURE_STATUS_OK) {
+      // Linux test suite is running on SW OpenGL backend and we disable
+      // HW video decoding there.
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_PLATFORM_TEST);
+      Assert.equal(
+        failureId.value,
+        "FEATURE_FAILURE_VIDEO_DECODING_TEST_FAILED"
+      );
+    } else {
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
+    }
 
     status = gfxInfo.getFeatureStatus(
       Ci.nsIGfxInfo.FEATURE_DIRECT3D_11_ANGLE,
@@ -161,10 +180,10 @@ async function run_test() {
     do_test_finished();
   }
 
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+  Services.obs.addObserver(function () {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
-    executeSoon(checkBlacklist);
+    executeSoon(checkBlocklist);
   }, "blocklist-data-gfxItems");
 
   mockGfxBlocklistItemsFromDisk("../data/test_gfxBlacklist_AllOS.json");

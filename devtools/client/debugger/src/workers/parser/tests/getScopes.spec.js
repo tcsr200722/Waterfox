@@ -3,8 +3,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import getScopes from "../getScopes";
 import { populateOriginalSource } from "./helpers";
 import cases from "jest-in-case";
@@ -16,7 +14,7 @@ cases(
 
     locations.forEach(([line, column]) => {
       const scopes = getScopes({
-        sourceId: source.id,
+        source,
         line,
         column,
       });

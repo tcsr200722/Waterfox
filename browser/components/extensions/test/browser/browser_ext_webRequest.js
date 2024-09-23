@@ -5,7 +5,9 @@
 /* import-globals-from ../../../../../toolkit/components/extensions/test/mochitest/head_webrequest.js */
 loadTestSubscript("head_webrequest.js");
 
-ChromeUtils.import("resource://gre/modules/HiddenFrame.jsm", this);
+const { HiddenFrame } = ChromeUtils.importESModule(
+  "resource://gre/modules/HiddenFrame.sys.mjs"
+);
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
 SimpleTest.requestCompleteLog();
@@ -63,7 +65,7 @@ let events = {
   onCompleted: [{ urls }, ["responseHeaders"]],
 };
 
-add_task(async function setup() {
+add_setup(async function () {
   extension = makeExtension(events);
   await extension.startup();
 });

@@ -6,13 +6,14 @@
 
 #include "mozilla/dom/SVGFECompositeElement.h"
 #include "mozilla/dom/SVGFECompositeElementBinding.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEComposite)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFECompositeElement::WrapNode(JSContext* aCx,
                                           JS::Handle<JSObject*> aGivenProto) {
@@ -20,10 +21,10 @@ JSObject* SVGFECompositeElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFECompositeElement::sNumberInfo[4] = {
-    {nsGkAtoms::k1, 0, false},
-    {nsGkAtoms::k2, 0, false},
-    {nsGkAtoms::k3, 0, false},
-    {nsGkAtoms::k4, 0, false}};
+    {nsGkAtoms::k1, 0},
+    {nsGkAtoms::k2, 0},
+    {nsGkAtoms::k3, 0},
+    {nsGkAtoms::k4, 0}};
 
 SVGEnumMapping SVGFECompositeElement::sOperatorMap[] = {
     {nsGkAtoms::over, SVG_FECOMPOSITE_OPERATOR_OVER},
@@ -32,6 +33,7 @@ SVGEnumMapping SVGFECompositeElement::sOperatorMap[] = {
     {nsGkAtoms::atop, SVG_FECOMPOSITE_OPERATOR_ATOP},
     {nsGkAtoms::xor_, SVG_FECOMPOSITE_OPERATOR_XOR},
     {nsGkAtoms::arithmetic, SVG_FECOMPOSITE_OPERATOR_ARITHMETIC},
+    {nsGkAtoms::lighter, SVG_FECOMPOSITE_OPERATOR_LIGHTER},
     {nullptr, 0}};
 
 SVGElement::EnumInfo SVGFECompositeElement::sEnumInfo[1] = {
@@ -83,7 +85,7 @@ void SVGFECompositeElement::SetK(float k1, float k2, float k3, float k4) {
 }
 
 FilterPrimitiveDescription SVGFECompositeElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   CompositeAttributes atts;
@@ -116,6 +118,15 @@ void SVGFECompositeElement::GetSourceImageNames(
   aSources.AppendElement(SVGStringInfo(&mStringAttributes[IN2], this));
 }
 
+nsresult SVGFECompositeElement::BindToTree(BindContext& aCtx,
+                                           nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feComposite);
+  }
+
+  return SVGFECompositeElementBase::BindToTree(aCtx, aParent);
+}
+
 //----------------------------------------------------------------------
 // SVGElement methods
 
@@ -133,5 +144,4 @@ SVGElement::StringAttributesInfo SVGFECompositeElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

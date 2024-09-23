@@ -1,11 +1,14 @@
 import WebIDL
 
+
 def WebIDLTest(parser, harness):
-    parser.parse("""
+    parser.parse(
+        """
         callback interface TestCallbackInterface {
           attribute boolean bool;
         };
-    """)
+    """
+    )
 
     results = parser.finish()
 
@@ -16,15 +19,17 @@ def WebIDLTest(parser, harness):
     parser = parser.reset()
     threw = False
     try:
-        parser.parse("""
+        parser.parse(
+            """
             interface TestInterface {
             };
             callback interface TestCallbackInterface : TestInterface {
               attribute boolean bool;
             };
-        """)
-        results = parser.finish()
-    except:
+        """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
 
     harness.ok(threw, "Should not allow non-callback parent of callback interface")
@@ -32,47 +37,50 @@ def WebIDLTest(parser, harness):
     parser = parser.reset()
     threw = False
     try:
-        parser.parse("""
+        parser.parse(
+            """
             interface TestInterface : TestCallbackInterface {
             };
             callback interface TestCallbackInterface {
               attribute boolean bool;
             };
-        """)
-        results = parser.finish()
-    except:
+        """
+        )
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
 
     harness.ok(threw, "Should not allow callback parent of non-callback interface")
 
     parser = parser.reset()
-    parser.parse("""
+    parser.parse(
+        """
         callback interface TestCallbackInterface1 {
-          void foo();
+          undefined foo();
         };
         callback interface TestCallbackInterface2 {
-          void foo(DOMString arg);
-          void foo(TestCallbackInterface1 arg);
+          undefined foo(DOMString arg);
+          undefined foo(TestCallbackInterface1 arg);
         };
         callback interface TestCallbackInterface3 {
-          void foo(DOMString arg);
-          void foo(TestCallbackInterface1 arg);
-          static void bar();
+          undefined foo(DOMString arg);
+          undefined foo(TestCallbackInterface1 arg);
+          static undefined bar();
         };
         callback interface TestCallbackInterface4 {
-          void foo(DOMString arg);
-          void foo(TestCallbackInterface1 arg);
-          static void bar();
+          undefined foo(DOMString arg);
+          undefined foo(TestCallbackInterface1 arg);
+          static undefined bar();
           const long baz = 5;
         };
         callback interface TestCallbackInterface5 {
           static attribute boolean bool;
-          void foo();
+          undefined foo();
         };
         callback interface TestCallbackInterface6 {
-          void foo(DOMString arg);
-          void foo(TestCallbackInterface1 arg);
-          void bar();
+          undefined foo(DOMString arg);
+          undefined foo(TestCallbackInterface1 arg);
+          undefined bar();
         };
         callback interface TestCallbackInterface7 {
           static attribute boolean bool;
@@ -81,14 +89,18 @@ def WebIDLTest(parser, harness):
           attribute boolean bool;
         };
         callback interface TestCallbackInterface9 : TestCallbackInterface1 {
-          void foo();
+          undefined foo();
         };
         callback interface TestCallbackInterface10 : TestCallbackInterface1 {
-          void bar();
+          undefined bar();
         };
-    """)
+    """
+    )
     results = parser.finish()
-    for (i, iface) in enumerate(results):
-      harness.check(iface.isSingleOperationInterface(), i < 4,
-                    "Interface %s should be a single operation interface" %
-                    iface.identifier.name)
+    for i, iface in enumerate(results):
+        harness.check(
+            iface.isSingleOperationInterface(),
+            i < 4,
+            "Interface %s should be a single operation interface"
+            % iface.identifier.name,
+        )

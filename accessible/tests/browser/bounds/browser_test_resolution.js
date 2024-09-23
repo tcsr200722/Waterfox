@@ -19,8 +19,8 @@ async function testScaledBounds(browser, accDoc, scale, id, type = "object") {
       : getBounds(acc);
 
   await invokeContentTask(browser, [scale], _scale => {
-    const { Layout } = ChromeUtils.import(
-      "chrome://mochitests/content/browser/accessible/tests/browser/Layout.jsm"
+    const { Layout } = ChromeUtils.importESModule(
+      "chrome://mochitests/content/browser/accessible/tests/browser/Layout.sys.mjs"
     );
     Layout.setResolution(content.document, _scale);
   });
@@ -37,14 +37,19 @@ async function testScaledBounds(browser, accDoc, scale, id, type = "object") {
   isWithin(scaledY - docY, (y - docY) * scale, 2, "Wrong scaled y of " + name);
 
   await invokeContentTask(browser, [], () => {
-    const { Layout } = ChromeUtils.import(
-      "chrome://mochitests/content/browser/accessible/tests/browser/Layout.jsm"
+    const { Layout } = ChromeUtils.importESModule(
+      "chrome://mochitests/content/browser/accessible/tests/browser/Layout.sys.mjs"
     );
     Layout.setResolution(content.document, 1.0);
   });
 }
 
 async function runTests(browser, accDoc) {
+  // The scrollbars get in the way of container bounds calculation.
+  await SpecialPowers.pushPrefEnv({
+    set: [["ui.useOverlayScrollbars", 1]],
+  });
+
   await testScaledBounds(browser, accDoc, 2.0, "p1");
   await testScaledBounds(browser, accDoc, 0.5, "p2");
   await testScaledBounds(browser, accDoc, 3.5, "b1");

@@ -10,8 +10,8 @@ const TEST_URL =
 
 var origBlockActive;
 
-add_task(async function() {
-  registerCleanupFunction(function() {
+add_task(async function () {
+  registerCleanupFunction(function () {
     Services.prefs.setBoolPref(PREF_ACTIVE, origBlockActive);
     gBrowser.removeCurrentTab();
   });
@@ -54,11 +54,13 @@ async function test1(gTestBrowser) {
     passiveLoaded: false,
   });
 
-  await SpecialPowers.spawn(gTestBrowser, [], function() {
-    var x = content.document
-      .getElementsByTagName("iframe")[0]
-      .contentDocument.getElementById("mixedContentContainer");
-    is(x, null, "Mixed Content is NOT to be found in Test1");
+  await SpecialPowers.spawn(gTestBrowser, [], function () {
+    let iframe = content.document.getElementsByTagName("iframe")[0];
+
+    SpecialPowers.spawn(iframe, [], () => {
+      let container = content.document.getElementById("mixedContentContainer");
+      is(container, null, "Mixed Content is NOT to be found in Test1");
+    });
   });
 
   // Disable Mixed Content Protection for the page (and reload)
@@ -72,11 +74,13 @@ async function test2(gTestBrowser) {
     passiveLoaded: false,
   });
 
-  await SpecialPowers.spawn(gTestBrowser, [], function() {
-    var x = content.document
-      .getElementsByTagName("iframe")[0]
-      .contentDocument.getElementById("mixedContentContainer");
-    isnot(x, null, "Mixed Content is to be found in Test2");
+  await SpecialPowers.spawn(gTestBrowser, [], function () {
+    let iframe = content.document.getElementsByTagName("iframe")[0];
+
+    SpecialPowers.spawn(iframe, [], () => {
+      let container = content.document.getElementById("mixedContentContainer");
+      isnot(container, null, "Mixed Content is to be found in Test2");
+    });
   });
 
   // Re-enable Mixed Content Protection for the page (and reload)
@@ -90,10 +94,12 @@ async function test3(gTestBrowser) {
     passiveLoaded: false,
   });
 
-  await SpecialPowers.spawn(gTestBrowser, [], function() {
-    var x = content.document
-      .getElementsByTagName("iframe")[0]
-      .contentDocument.getElementById("mixedContentContainer");
-    is(x, null, "Mixed Content is NOT to be found in Test3");
+  await SpecialPowers.spawn(gTestBrowser, [], function () {
+    let iframe = content.document.getElementsByTagName("iframe")[0];
+
+    SpecialPowers.spawn(iframe, [], () => {
+      let container = content.document.getElementById("mixedContentContainer");
+      is(container, null, "Mixed Content is NOT to be found in Test3");
+    });
   });
 }

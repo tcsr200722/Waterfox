@@ -19,14 +19,12 @@ input { margin: 2px; }
 
 input.i {
   width: 50%;
-  min-width: -moz-min-content;
   min-width: min-content;
   background: lime;
 }
 
 input.mi {
   max-width: 50%;
-  min-width: -moz-min-content;
   min-width: min-content;
   background: lime;
 }
@@ -92,10 +90,6 @@ div {
 <div style="width:30px"><div>
   <input type="range" class="i n">
 </div></div>
-
-<div class="grid">
-  <input type="range" class="i n">
-</div>
 
 <div class="grid" style="grid-template-columns:minmax(min-content,30px)">
   <input type="range" class="i n">

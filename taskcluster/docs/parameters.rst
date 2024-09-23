@@ -22,6 +22,11 @@ topic.
 Push Information
 ----------------
 
+``backstop``
+   Whether or not this push is a "backstop" push. That is a push where all
+   builds and tests should run to ensure regressions aren't accidentally
+   missed.
+
 ``base_repository``
    The repository from which to do an initial clone, utilizing any available
    caching.
@@ -31,14 +36,26 @@ Push Information
    ``base_repository`` in cases where ``base_repository`` is likely to be cached
    and only a few additional commits are needed from ``head_repository``.
 
+``base_rev``
+   The previous revision before ``head_rev`` got merged into. This can be a short revision string.
+
 ``head_rev``
    The revision to check out; this can be a short revision string
+
+``base_ref``
+   Reference where ``head_rev`` got merged into. It is usually a branch or a tag.
 
 ``head_ref``
    For Mercurial repositories, this is the same as ``head_rev``.  For
    git repositories, which do not allow pulling explicit revisions, this gives
    the symbolic ref containing ``head_rev`` that should be pulled from
    ``head_repository``.
+
+``head_tag``
+   The tag attached to the revision, if any.
+
+``files_changed``
+   The list of all files added or modified by the push.
 
 ``owner``
    Email address indicating the person who made the push.  Note that this
@@ -64,6 +81,9 @@ Push Information
 ``moz_build_date``
    A formatted timestamp of ``build_date``. Expressed as a string with the following
    format: %Y%m%d%H%M%S
+
+``repository_type``
+   The type of repository, either ``hg`` or ``git``.
 
 ``tasks_for``
    The ``tasks_for`` value used to generate the decision task.
@@ -117,14 +137,26 @@ those in the target set, recursively.  In a decision task, this set can be
 specified programmatically using one of a variety of methods (e.g., parsing try
 syntax or reading a project-specific configuration file).
 
+``enable_always_target``
+   Can either be a boolean or a list of kinds.
+
+   When ``True``, any task with the ``always_target`` attribute will be included
+   in the ``target_task_graph`` regardless of whether they were filtered out by
+   the ``target_tasks_method`` or not. Because they are not part of the
+   ``target_set``, they will still be eligible for optimization when the
+   ``optimize_target_tasks`` parameter is ``False``.
+
+   When specified as a list of kinds, only tasks with a matching kind will be
+   eligible for addition to the graph.
+
 ``filters``
-    List of filter functions (from ``taskcluster/taskgraph/filter_tasks.py``) to
-    apply. This is usually defined internally, as filters are typically
-    global.
+   List of filter functions (from ``taskcluster/gecko_taskgraph/filter_tasks.py``) to
+   apply. This is usually defined internally, as filters are typically
+   global.
 
 ``target_tasks_method``
-    The method to use to determine the target task set.  This is the suffix of
-    one of the functions in ``taskcluster/taskgraph/target_tasks.py``.
+   The method to use to determine the target task set.  This is the suffix of
+   one of the functions in ``taskcluster/gecko_taskgraph/target_tasks.py``.
 
 ``release_history``
    History of recent releases by platform and locale, used when generating
@@ -135,8 +167,12 @@ syntax or reading a project-specific configuration file).
 Optimization
 ------------
 
+``optimize_strategies``
+   A python path of the form ``<module>:<object>`` containing a dictionary of
+   optimization strategies to use, overwriting the defaults.
+
 ``optimize_target_tasks``
-    If true, then target tasks are eligible for optimization.
+   If true, then target tasks are eligible for optimization.
 
 ``do_not_optimize``
    Specify tasks to not optimize out of the graph. This is a list of labels.
@@ -164,25 +200,28 @@ Release Promotion
    Specify the next version for version bump tasks.
 
 ``release_type``
-   The type of release being promoted. One of "nightly", "beta", "esr68", "release-rc", or "release".
+   The type of release being promoted. One of "nightly", "beta", "esr115", "esr128", "release-rc", or "release".
 
 ``release_eta``
    The time and date when a release is scheduled to live. This value is passed to Balrog.
 
-``release_enable_partners``
+``release_enable_partner_repack``
    Boolean which controls repacking vanilla Firefox builds for partners.
 
-``release_partners``
-   List of partners to repack. A null value defaults to all.
-
-``release_partner_config``
-   Configuration for partner repacks.
-
-``release_partner_build_number``
-   The build number for partner repacks. We sometimes have multiple partner build numbers per release build number; this parameter lets us bump them independently. Defaults to 1.
+``release_enable_partner_attribution``
+   Boolean which controls adding attribution to vanilla Firefox builds for partners.
 
 ``release_enable_emefree``
    Boolean which controls repacking vanilla Firefox builds into EME-free builds.
+
+``release_partners``
+   List of partners to repack or attribute if a subset of the whole config. A null value defaults to all.
+
+``release_partner_config``
+   Configuration for partner repacks & attribution, as well as EME-free repacks.
+
+``release_partner_build_number``
+   The build number for partner repacks. We sometimes have multiple partner build numbers per release build number; this parameter lets us bump them independently. Defaults to 1.
 
 ``release_product``
    The product that is being released.
@@ -216,22 +255,16 @@ Repository Merge Day
    Don't push any results to target repositories.
 
 
-Comm Push Information
----------------------
-
-These parameters correspond to the repository and revision of the comm-central
-repository to checkout. Their meaning is the same as the corresponding
-parameters for the gecko repository above. They are optional, but if any of
-them are specified, they must all be specified.
-
-``comm_base_repository``
-``comm_head_repository``
-``comm_head_rev``
-``comm_head_ref``
-
 Code Review
 -----------
 
 ``phabricator_diff``
    The code review process needs to know the Phabricator Differential diff that
    started the analysis. This parameter must start with `PHID-DIFF-`
+
+Local configuration
+-------------------
+
+``target-kinds``
+  Generate only the given kinds and their kind-dependencies. This is used for local inspection of the graph
+  and is not supported at run-time.

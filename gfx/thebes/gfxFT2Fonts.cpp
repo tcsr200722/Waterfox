@@ -42,10 +42,11 @@ using namespace mozilla::gfx;
 
 bool gfxFT2Font::ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
                            uint32_t aOffset, uint32_t aLength, Script aScript,
-                           bool aVertical, RoundingFlags aRounding,
+                           nsAtom* aLanguage, bool aVertical,
+                           RoundingFlags aRounding,
                            gfxShapedText* aShapedText) {
   if (!gfxFont::ShapeText(aDrawTarget, aText, aOffset, aLength, aScript,
-                          aVertical, aRounding, aShapedText)) {
+                          aLanguage, aVertical, aRounding, aShapedText)) {
     // harfbuzz must have failed(?!), just render raw glyphs
     AddRange(aText, aOffset, aLength, aShapedText);
     PostShapingFixup(aDrawTarget, aText, aOffset, aLength, aVertical,
@@ -144,10 +145,7 @@ void gfxFT2Font::AddRange(const char16_t* aText, uint32_t aOffset,
       NS_ASSERTION(details.mGlyphID == gid,
                    "Seriously weird glyph ID detected!");
       details.mAdvance = advance;
-      bool isClusterStart = charGlyphs[aOffset].IsClusterStart();
-      aShapedText->SetGlyphs(
-          aOffset, CompressedGlyph::MakeComplex(isClusterStart, true, 1),
-          &details);
+      aShapedText->SetDetailedGlyphs(aOffset, 1, &details);
     }
   }
 }
@@ -166,16 +164,26 @@ gfxFT2Font::gfxFT2Font(const RefPtr<UnscaledFontFreeType>& aUnscaledFont,
 
 gfxFT2Font::~gfxFT2Font() {}
 
-already_AddRefed<ScaledFont> gfxFT2Font::GetScaledFont(DrawTarget* aTarget) {
-  if (!mAzureScaledFont) {
-    mAzureScaledFont = Factory::CreateScaledFontForFreeTypeFont(
-        GetUnscaledFont(), GetAdjustedSize(), mFTFace,
-        GetStyle()->NeedsSyntheticBold(GetFontEntry()));
-    InitializeScaledFont();
+already_AddRefed<ScaledFont> gfxFT2Font::GetScaledFont(
+    const TextRunDrawParams& aRunParams) {
+  if (ScaledFont* scaledFont = mAzureScaledFont) {
+    return do_AddRef(scaledFont);
   }
 
-  RefPtr<ScaledFont> scaledFont(mAzureScaledFont);
-  return scaledFont.forget();
+  RefPtr<ScaledFont> newScaledFont = Factory::CreateScaledFontForFreeTypeFont(
+      GetUnscaledFont(), GetAdjustedSize(), mFTFace,
+      GetStyle()->NeedsSyntheticBold(GetFontEntry()));
+  if (!newScaledFont) {
+    return nullptr;
+  }
+
+  InitializeScaledFont(newScaledFont);
+
+  if (mAzureScaledFont.compareExchange(nullptr, newScaledFont.get())) {
+    Unused << newScaledFont.forget();
+  }
+  ScaledFont* scaledFont = mAzureScaledFont;
+  return do_AddRef(scaledFont);
 }
 
 bool gfxFT2Font::ShouldHintMetrics() const {

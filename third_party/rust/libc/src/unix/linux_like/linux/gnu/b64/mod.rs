@@ -1,7 +1,5 @@
 //! 64-bit specific definitions for linux-like values
 
-pub type clock_t = i64;
-pub type time_t = i64;
 pub type ino_t = u64;
 pub type off_t = i64;
 pub type blkcnt_t = i64;
@@ -11,7 +9,22 @@ pub type msglen_t = u64;
 pub type fsblkcnt_t = u64;
 pub type fsfilcnt_t = u64;
 pub type rlim_t = u64;
-pub type __fsword_t = i64;
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "32"))]
+pub type __syscall_ulong_t = ::c_ulonglong;
+#[cfg(not(all(target_arch = "x86_64", target_pointer_width = "32")))]
+pub type __syscall_ulong_t = ::c_ulong;
+
+cfg_if! {
+    if #[cfg(all(target_arch = "aarch64", target_pointer_width = "32"))] {
+        pub type clock_t = i32;
+        pub type time_t = i32;
+        pub type __fsword_t = i32;
+    } else {
+        pub type __fsword_t = i64;
+        pub type clock_t = i64;
+        pub type time_t = i64;
+    }
+}
 
 s! {
     pub struct sigset_t {
@@ -52,9 +65,34 @@ s! {
         __glibc_reserved5: u64,
     }
 
+    pub struct semid_ds {
+        pub sem_perm: ipc_perm,
+        pub sem_otime: ::time_t,
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "mips64",
+            target_arch = "mips64r6",
+            target_arch = "powerpc64",
+            target_arch = "riscv64",
+            target_arch = "sparc64")))]
+        __reserved: ::__syscall_ulong_t,
+        pub sem_ctime: ::time_t,
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "mips64",
+            target_arch = "mips64r6",
+            target_arch = "powerpc64",
+            target_arch = "riscv64",
+            target_arch = "sparc64")))]
+        __reserved2: ::__syscall_ulong_t,
+        pub sem_nsems: ::__syscall_ulong_t,
+        __glibc_reserved3: ::__syscall_ulong_t,
+        __glibc_reserved4: ::__syscall_ulong_t,
+    }
 }
 
-pub const RLIM_INFINITY: ::rlim_t = !0;
 pub const __SIZEOF_PTHREAD_RWLOCKATTR_T: usize = 8;
 
 pub const O_LARGEFILE: ::c_int = 0;
@@ -69,7 +107,7 @@ cfg_if! {
     } else if #[cfg(any(target_arch = "sparc64"))] {
         mod sparc64;
         pub use self::sparc64::*;
-    } else if #[cfg(any(target_arch = "mips64"))] {
+    } else if #[cfg(any(target_arch = "mips64", target_arch = "mips64r6"))] {
         mod mips64;
         pub use self::mips64::*;
     } else if #[cfg(any(target_arch = "s390x"))] {
@@ -78,6 +116,12 @@ cfg_if! {
     } else if #[cfg(any(target_arch = "x86_64"))] {
         mod x86_64;
         pub use self::x86_64::*;
+    } else if #[cfg(any(target_arch = "riscv64"))] {
+        mod riscv64;
+        pub use self::riscv64::*;
+    } else if #[cfg(any(target_arch = "loongarch64"))] {
+        mod loongarch64;
+        pub use self::loongarch64::*;
     } else {
         // Unknown target_arch
     }

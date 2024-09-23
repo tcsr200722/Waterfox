@@ -2,16 +2,12 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-add_task(async function setup() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-});
-
 async function testIncognito(incognitoOverride) {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      browser_action: {},
+      browser_action: {
+        default_area: "navbar",
+      },
     },
     incognitoOverride,
   });

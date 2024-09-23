@@ -32,7 +32,7 @@ namespace places {
  * In SQL, you'd use it in the WHERE clause like so:
  * WHERE AUTOCOMPLETE_MATCH(aSearchString, aURL, aTitle, aTags, aVisitCount,
  *                          aTyped, aBookmark, aOpenPageCount, aMatchBehavior,
- *                          aSearchBehavior)
+ *                          aSearchBehavior, aFallbackTitle)
  *
  * @param aSearchString
  *        The string to compare against.
@@ -55,6 +55,9 @@ namespace places {
  *        The match behavior to use for this search.
  * @param aSearchBehavior
  *        A bitfield dictating the search behavior.
+ * @param aFallbackTitle
+ *        The title may come from a bookmark or a snapshot, in that case the
+ *        caller can provide the original history title to match on both.
  */
 class MatchAutoCompleteFunction final : public mozIStorageFunction {
  public:
@@ -94,7 +97,8 @@ class MatchAutoCompleteFunction final : public mozIStorageFunction {
   static const uint32_t kArgIndexOpenPageCount = 7;
   static const uint32_t kArgIndexMatchBehavior = 8;
   static const uint32_t kArgIndexSearchBehavior = 9;
-  static const uint32_t kArgIndexLength = 10;
+  static const uint32_t kArgIndexFallbackTitle = 10;
+  static const uint32_t kArgIndexLength = 11;
 
   /**
    * Typedefs
@@ -216,6 +220,40 @@ class CalculateFrecencyFunction final : public mozIStorageFunction {
   ~CalculateFrecencyFunction() = default;
 };
 
+////////////////////////////////////////////////////////////////////////////////
+//// Alternative Frecency Calculation Function
+
+/**
+ * This function is used to calculate alternative frecency for a page.
+ *
+ * In SQL, you'd use it in when setting frecency like:
+ * SET alt_frecency = CALCULATE_ALT_FRECENCY(place_id).
+ * Optional parameters must be passed in if the page is not yet in the database,
+ * otherwise they will be fetched from it automatically.
+ *
+ * @param {int64_t} pageId
+ *        The id of the page.  Pass -1 if the page is being added right now.
+ * @param {int32_t} [useRedirectBonus]
+ *        Whether we should use the lower redirect bonus for the most recent
+ *        page visit.  If not passed in, it will use a database guess.
+ */
+class CalculateAltFrecencyFunction final : public mozIStorageFunction {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+
+  /**
+   * Registers the function with the specified database connection.
+   *
+   * @param aDBConn
+   *        The database connection to register with.
+   */
+  static nsresult create(mozIStorageConnection* aDBConn);
+
+ private:
+  ~CalculateAltFrecencyFunction() = default;
+};
+
 /**
  * SQL function to generate a GUID for a place or bookmark item.  This is just
  * a wrapper around GenerateGUID in Helpers.h.
@@ -317,43 +355,6 @@ class FixupURLFunction final : public mozIStorageFunction {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-//// Frecency Changed Notification Function
-
-/**
- * For a given place, posts a runnable to the main thread that calls
- * onFrecencyChanged on nsNavHistory's nsINavHistoryObservers.  The passed-in
- * newFrecency value is returned unchanged.
- *
- * @param newFrecency
- *        The place's new frecency.
- * @param url
- *        The place's URL.
- * @param guid
- *        The place's GUID.
- * @param hidden
- *        The place's hidden boolean.
- * @param lastVisitDate
- *        The place's last visit date.
- * @return newFrecency
- */
-class FrecencyNotificationFunction final : public mozIStorageFunction {
- public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_MOZISTORAGEFUNCTION
-
-  /**
-   * Registers the function with the specified database connection.
-   *
-   * @param aDBConn
-   *        The database connection to register with.
-   */
-  static nsresult create(mozIStorageConnection* aDBConn);
-
- private:
-  ~FrecencyNotificationFunction() = default;
-};
-
-////////////////////////////////////////////////////////////////////////////////
 //// Store Last Inserted Id Function
 
 /**
@@ -408,6 +409,34 @@ class HashFunction final : public mozIStorageFunction {
 
  private:
   ~HashFunction() = default;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//// SHA256Hex Function
+
+/**
+ * Calculates SHA256 hash for a given string in hex format.
+ *
+ * @param string
+ *        A string.
+ * @return
+ *        The hash for the string.
+ */
+class SHA256HexFunction final : public mozIStorageFunction {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+
+  /**
+   * Registers the function with the specified database connection.
+   *
+   * @param aDBConn
+   *        The database connection to register with.
+   */
+  static nsresult create(mozIStorageConnection* aDBConn);
+
+ private:
+  ~SHA256HexFunction() = default;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -556,12 +585,14 @@ class IsFrecencyDecayingFunction final : public mozIStorageFunction {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-//// sqrt function
+//// Should start frecency recalculation function
 
 /**
- * Gets the square root of a given value.
+ * sets nsNavHistory::sShouldStartFrecencyRecalculation to true.
+ * @returns {boolean} true
  */
-class SqrtFunction final : public mozIStorageFunction {
+class SetShouldStartFrecencyRecalculationFunction final
+    : public mozIStorageFunction {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_MOZISTORAGEFUNCTION
@@ -575,7 +606,7 @@ class SqrtFunction final : public mozIStorageFunction {
   static nsresult create(mozIStorageConnection* aDBConn);
 
  private:
-  ~SqrtFunction() = default;
+  ~SetShouldStartFrecencyRecalculationFunction() = default;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -601,6 +632,52 @@ class NoteSyncChangeFunction final : public mozIStorageFunction {
 
  private:
   ~NoteSyncChangeFunction() = default;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//// Invalidate days of history Function
+
+/**
+ * Invalidate the days of history in nsNavHistory.
+ */
+class InvalidateDaysOfHistoryFunction final : public mozIStorageFunction {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+
+  /**
+   * Registers the function with the specified database connection.
+   *
+   * @param aDBConn
+   *        The database connection to register with.
+   */
+  static nsresult create(mozIStorageConnection* aDBConn);
+
+ private:
+  ~InvalidateDaysOfHistoryFunction() = default;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//// Target folder guid from places query Function
+
+/**
+ * Target folder guid from places query.
+ */
+class TargetFolderGuidFunction final : public mozIStorageFunction {
+ public:
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+
+  /**
+   * Registers the function with the specified database connection.
+   *
+   * @param aDBConn
+   *        The database connection to register with.
+   */
+  static nsresult create(mozIStorageConnection* aDBConn);
+
+ private:
+  ~TargetFolderGuidFunction() = default;
 };
 
 }  // namespace places

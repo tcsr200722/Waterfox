@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -13,14 +12,14 @@
 // eslint-disable-next-line no-undef
 _profileInitialized = true;
 
-add_task(async function() {
+add_task(async function () {
   const testFile = do_get_file("xpcshell_debugging_script.js");
 
   // _setupDevToolsServer is from xpcshell-test's head.js
   /* global _setupDevToolsServer */
-  let testResumed = false;
+  let testInitialized = false;
   const { DevToolsServer } = _setupDevToolsServer([testFile.path], () => {
-    testResumed = true;
+    testInitialized = true;
   });
   const transport = DevToolsServer.connectPipe();
   const client = new DevToolsClient(transport);
@@ -36,21 +35,33 @@ add_task(async function() {
   );
 
   // Even though we have no tabs, getMainProcess gives us the chrome debugger.
-  const targetDescriptor = await client.mainRoot.getMainProcess();
-  const front = await targetDescriptor.getTarget();
-  const threadFront = await front.attachThread();
+  const commands = await CommandsFactory.forMainProcess({ client });
+  await commands.targetCommand.startListening();
 
-  // tell the thread to do the initial resume. This would cause the
-  // xpcshell test harness to resume and load the file under test.
-  threadFront.resume().then(() => {
-    // should have been told to resume the test itself.
-    ok(testResumed);
-    // Now load our test script.
+  // We have to pass at least one valid thread configuration in order to initialize
+  // the thread actor and make it pause on breakpoint/debugger statements.
+  await commands.threadConfigurationCommand.updateConfiguration({
+    skipBreakpoints: false,
+  });
+  const threadFront = await commands.targetCommand.targetFront.getFront(
+    "thread"
+  );
+
+  // Checks that the thread actor initializes immediately and that _setupDevToolsServer
+  // callback gets called.
+  ok(testInitialized);
+
+  const onPause = waitForPause(threadFront);
+
+  // Now load our test script,
+  // in another event loop so that the test can keep running!
+  Services.tm.dispatchToMainThread(() => {
     load(testFile.path);
-    // and our "paused" listener below should get hit.
   });
 
-  const packet1 = await waitForPause(threadFront);
+  // and our "paused" listener should get hit.
+  info("Wait for first paused event");
+  const packet1 = await onPause;
   equal(
     packet1.why.type,
     "breakpoint",
@@ -58,15 +69,28 @@ add_task(async function() {
   );
 
   // Resume again - next stop should be our "debugger" statement.
-  threadFront.resume();
-
-  const packet2 = await waitForPause(threadFront);
+  info("Wait for second pause event");
+  const packet2 = await resumeAndWaitForPause(threadFront);
   equal(
     packet2.why.type,
     "debuggerStatement",
     "yay - hit the 'debugger' statement in our script"
   );
-  threadFront.resume();
 
+  info("Dynamically add a breakpoint after the debugger statement");
+  const breakpointsFront = await commands.watcherFront.getBreakpointListActor();
+  await breakpointsFront.setBreakpoint(
+    { sourceUrl: testFile.path, line: 11, column: 0 },
+    {}
+  );
+
+  // Resume again - next stop should be the new breakpoint.
+  info("Wait for third pause event");
+  const packet3 = await resumeAndWaitForPause(threadFront);
+  equal(
+    packet3.why.type,
+    "breakpoint",
+    "yay - hit the breakpoint added after starting the test"
+  );
   finishClient(client);
 });

@@ -38,11 +38,12 @@ try {
   verifyEqualTo(obj, "prop", getFunc());
 
   verifyWritable(obj, "prop", "verifySetFunction");
-
-  verifyNotEnumerable(obj, "prop");
-
-  verifyNotConfigurable(obj, "prop");
 }
+
+verifyProperty(obj, "prop", {
+  enumerable: false,
+  configurable: false,
+});
 
 try {
   Object.defineProperty(obj, "prop", {
@@ -52,7 +53,7 @@ try {
   });
 } catch (e1) {
   if (!result) {
-    $ERROR('Expected result to be true, actually ' + result);
+    throw new Test262Error('Expected result to be true, actually ' + result);
   }
 
 
@@ -60,15 +61,14 @@ try {
 
   verifyWritable(obj, "prop", "verifySetFunction");
 
-  verifyNotEnumerable(obj, "prop");
-
-  verifyNotConfigurable(obj, "prop");
-
-
   if (!(e1 instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e1);
+    throw new Test262Error("Expected TypeError, got " + e1);
   }
-
 }
+
+verifyProperty(obj, "prop", {
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

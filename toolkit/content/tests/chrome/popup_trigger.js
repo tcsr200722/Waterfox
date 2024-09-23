@@ -11,7 +11,7 @@ var gCachedEvent2 = null;
 function cacheEvent(modifiers) {
   var cachedEvent = null;
 
-  var mouseFn = function(event) {
+  var mouseFn = function (event) {
     cachedEvent = event;
   };
 
@@ -75,20 +75,6 @@ var popupTests = [
         gIsMenu ? null : gTrigger,
         testname + " triggerNode"
       );
-      is(
-        document.popupNode,
-        gIsMenu ? null : gTrigger,
-        testname + " document.popupNode"
-      );
-      is(document.tooltipNode, null, testname + " document.tooltipNode");
-      // check to ensure the popup node for a different document isn't used
-      if (window.opener) {
-        is(
-          window.opener.document.popupNode,
-          null,
-          testname + " opener.document.popupNode"
-        );
-      }
 
       // Popup may have wrong initial size in non e10s mode tests, because
       // layout is not yet ready for popup content lazy population on
@@ -252,10 +238,9 @@ var popupTests = [
       // rollup this way.
       // synthesizeMouse(gTrigger, 0, -12, { });
     },
-    result(testname, step) {
+    result(testname) {
       is(gMenuPopup.anchorNode, null, testname + " anchorNode");
       is(gMenuPopup.triggerNode, null, testname + " triggerNode");
-      is(document.popupNode, null, testname + " document.popupNode");
       checkClosed("trigger", testname);
     },
   },
@@ -274,7 +259,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
       "topleft topleft",
       "topcenter topleft",
@@ -287,6 +271,8 @@ var popupTests = [
       "topleft bottomright",
       "bottomcenter bottomright",
       "rightcenter topright",
+      "bottomcenter topcenter",
+      "rightcenter leftcenter",
     ],
     test(testname, step) {
       gExpectedTriggerNode = "notset";
@@ -297,7 +283,6 @@ var popupTests = [
       gExpectedTriggerNode = null;
       is(gMenuPopup.anchorNode, gTrigger, testname + " anchorNode");
       is(gMenuPopup.triggerNode, null, testname + " triggerNode");
-      is(document.popupNode, null, testname + " document.popupNode");
       compareEdge(gTrigger, gMenuPopup, step, 0, 0, testname);
     },
   },
@@ -315,7 +300,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
       "topleft topleft",
       "topcenter topleft",
@@ -373,7 +357,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
     ],
     test(testname, step) {
@@ -415,7 +398,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
     ],
     test(testname, step) {
@@ -461,7 +443,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
     ],
     test(testname, step) {
@@ -526,7 +507,6 @@ var popupTests = [
       "start_after",
       "end_before",
       "end_after",
-      "after_pointer",
       "overlap",
       "topcenter topleft",
       "topright bottomright",
@@ -546,7 +526,7 @@ var popupTests = [
     // event to openPopup to check the trigger node.
     testname: "open popup anchored with override",
     events: ["popupshowing thepopup 0010", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       // attribute overrides the position passed in
       gMenuPopup.setAttribute("position", "end_after");
       gExpectedTriggerNode = gCachedEvent.target;
@@ -560,18 +540,13 @@ var popupTests = [
         gCachedEvent
       );
     },
-    result(testname, step) {
+    result(testname) {
       gExpectedTriggerNode = null;
       is(gMenuPopup.anchorNode, gTrigger, testname + " anchorNode");
       is(
         gMenuPopup.triggerNode,
         gCachedEvent.target,
         testname + " triggerNode"
-      );
-      is(
-        document.popupNode,
-        gCachedEvent.target,
-        testname + " document.popupNode"
       );
       compareEdge(gTrigger, gMenuPopup, "end_after", 0, 0, testname);
     },
@@ -583,7 +558,7 @@ var popupTests = [
       "popuphidden thepopup",
       "DOMMenuInactive thepopup",
     ],
-    test(testname, step) {
+    test(testname) {
       synthesizeKey("KEY_Escape");
       checkClosed("trigger", testname);
     },
@@ -593,12 +568,12 @@ var popupTests = [
     testname: "open popup anchored with offsets",
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       // attribute is empty so does not override
       gMenuPopup.setAttribute("position", "");
       gMenuPopup.openPopup(gTrigger, "before_start", 5, 10, true, true);
     },
-    result(testname, step) {
+    result(testname) {
       compareEdge(gTrigger, gMenuPopup, "before_start", 5, 10, testname);
     },
   },
@@ -607,10 +582,10 @@ var popupTests = [
     // to the viewport.
     testname: "open popup unanchored",
     events: ["popupshowing thepopup", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       gMenuPopup.openPopup(null, "after_start", 6, 8, false);
     },
-    result(testname, step) {
+    result(testname) {
       var rect = gMenuPopup.getBoundingClientRect();
       ok(
         rect.left == 6 && rect.top == 8 && rect.right && rect.bottom,
@@ -625,13 +600,12 @@ var popupTests = [
       "command item3",
       "popuphiding thepopup",
       "popuphidden thepopup",
-      "DOMMenuItemInactive item3",
     ],
-    test(testname, step) {
+    test() {
       var item3 = document.getElementById("item3");
       synthesizeMouse(item3, 4, 4, {});
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
     },
   },
@@ -645,22 +619,21 @@ var popupTests = [
       "popuphidden thepopup",
       "DOMMenuInactive thepopup",
     ],
-    test(testname, step) {
+    test() {
       gMenuPopup.hidePopup();
     },
   },
   {
     testname: "open popup at screen",
     events: ["popupshowing thepopup", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       gExpectedTriggerNode = "notset";
       gMenuPopup.openPopupAtScreen(gScreenX + 24, gScreenY + 20, false);
     },
-    result(testname, step) {
+    result(testname) {
       gExpectedTriggerNode = null;
       is(gMenuPopup.anchorNode, null, testname + " anchorNode");
       is(gMenuPopup.triggerNode, null, testname + " triggerNode");
-      is(document.popupNode, null, testname + " document.popupNode");
       var rect = gMenuPopup.getBoundingClientRect();
       is(rect.left, 24, testname + " left");
       is(rect.top, 20, testname + " top");
@@ -680,7 +653,6 @@ var popupTests = [
       "command amenu",
       "popuphiding thepopup",
       "popuphidden thepopup",
-      "DOMMenuItemInactive amenu",
     ],
     test() {
       sendString("M");
@@ -692,7 +664,7 @@ var popupTests = [
   {
     testname: "open context popup at screen",
     events: ["popupshowing thepopup 0010", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       gExpectedTriggerNode = gCachedEvent.target;
       gMenuPopup.openPopupAtScreen(
         gScreenX + 8,
@@ -701,7 +673,7 @@ var popupTests = [
         gCachedEvent
       );
     },
-    result(testname, step) {
+    result(testname) {
       gExpectedTriggerNode = null;
       is(gMenuPopup.anchorNode, null, testname + " anchorNode");
       is(
@@ -709,29 +681,6 @@ var popupTests = [
         gCachedEvent.target,
         testname + " triggerNode"
       );
-      is(
-        document.popupNode,
-        gCachedEvent.target,
-        testname + " document.popupNode"
-      );
-
-      var childframe = document.getElementById("childframe");
-      if (childframe) {
-        for (var t = 0; t < 2; t++) {
-          var child = childframe.contentDocument;
-          var evt = child.createEvent("Event");
-          evt.initEvent("click", true, true);
-          child.documentElement.dispatchEvent(evt);
-          is(
-            child.documentElement.getAttribute("data"),
-            "xundefined",
-            "cannot get popupNode from other document"
-          );
-          child.documentElement.setAttribute("data", "none");
-          // now try again with document.popupNode set explicitly
-          document.popupNode = gCachedEvent.target;
-        }
-      }
 
       var openX = 8;
       var openY = 16;
@@ -801,7 +750,6 @@ var popupTests = [
       "popuphidden submenupopup",
       "DOMMenuItemInactive submenuitem",
       "DOMMenuInactive submenupopup",
-      "DOMMenuItemActive submenu",
     ],
     test() {
       synthesizeKey("KEY_ArrowLeft");
@@ -843,7 +791,6 @@ var popupTests = [
       "popuphidden submenupopup",
       "DOMMenuItemInactive submenuitem",
       "DOMMenuInactive submenupopup",
-      "DOMMenuItemActive submenu",
     ],
     test() {
       synthesizeKey("KEY_Escape");
@@ -907,7 +854,6 @@ var popupTests = [
       "command amenu",
       "popuphiding thepopup",
       "popuphidden thepopup",
-      "DOMMenuItemInactive amenu",
     ],
     test() {
       sendString("M");
@@ -921,7 +867,7 @@ var popupTests = [
     testname: "open context popup at screen with all modifiers set",
     events: ["popupshowing thepopup 1111", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gMenuPopup.openPopupAtScreen(
         gScreenX + 8,
         gScreenY + 16,
@@ -933,10 +879,10 @@ var popupTests = [
   {
     testname: "open popup with open property",
     events: ["popupshowing thepopup", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       openMenu(gTrigger);
     },
-    result(testname, step) {
+    result(testname) {
       checkOpen("trigger", testname);
       if (gIsMenu) {
         compareEdge(gTrigger, gMenuPopup, "after_start", 0, 0, testname);
@@ -950,10 +896,10 @@ var popupTests = [
       "DOMMenuItemActive submenu",
       "popupshown submenupopup",
     ],
-    test(testname, step) {
+    test() {
       openMenu(document.getElementById("submenu"));
     },
-    result(testname, step) {
+    result(testname) {
       checkOpen("trigger", testname);
       checkOpen("submenu", testname);
       // XXXndeakin
@@ -972,23 +918,22 @@ var popupTests = [
       "popuphidden thepopup",
       "DOMMenuInactive submenupopup",
       "DOMMenuItemInactive submenu",
-      "DOMMenuItemInactive submenu",
       "DOMMenuInactive thepopup",
     ],
     test() {
       gMenuPopup.hidePopup();
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
       checkClosed("submenu", testname);
     },
   },
   {
     testname: "open submenu with open property without parent open",
-    test(testname, step) {
+    test() {
       openMenu(document.getElementById("submenu"));
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
       checkClosed("submenu", testname);
     },
@@ -999,11 +944,11 @@ var popupTests = [
       return gIsMenu;
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       gMenuPopup.setAttribute("position", "before_start");
       openMenu(gTrigger);
     },
-    result(testname, step) {
+    result(testname) {
       compareEdge(gTrigger, gMenuPopup, "before_start", 0, 0, testname);
     },
   },
@@ -1017,10 +962,10 @@ var popupTests = [
       "popuphidden thepopup",
       "DOMMenuInactive thepopup",
     ],
-    test(testname, step) {
+    test() {
       closeMenu(gTrigger, gMenuPopup);
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
     },
   },
@@ -1031,13 +976,13 @@ var popupTests = [
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gMenuPopup.setAttribute("position", "start_after");
       gMenuPopup.setAttribute("popupanchor", "topright");
       gMenuPopup.setAttribute("popupalign", "bottomright");
       openMenu(gTrigger);
     },
-    result(testname, step) {
+    result(testname) {
       compareEdge(gTrigger, gMenuPopup, "start_after", 0, 0, testname);
     },
   },
@@ -1048,13 +993,13 @@ var popupTests = [
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gMenuPopup.removeAttribute("position");
       gMenuPopup.setAttribute("popupanchor", "bottomright");
       gMenuPopup.setAttribute("popupalign", "topright");
       openMenu(gTrigger);
     },
-    result(testname, step) {
+    result(testname) {
       compareEdge(gTrigger, gMenuPopup, "after_end", 0, 0, testname);
       gMenuPopup.removeAttribute("popupanchor");
       gMenuPopup.removeAttribute("popupalign");
@@ -1067,11 +1012,11 @@ var popupTests = [
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gTrigger.focus();
       synthesizeKey("KEY_ArrowDown", { altKey: !platformIsMac() });
     },
-    result(testname, step) {
+    result(testname) {
       checkOpen("trigger", testname);
       checkActive(gMenuPopup, "", testname);
     },
@@ -1082,11 +1027,11 @@ var popupTests = [
       return gIsMenu;
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
-    test(testname, step) {
+    test() {
       gTrigger.focus();
       synthesizeKey("KEY_ArrowUp", { altKey: !platformIsMac() });
     },
-    result(testname, step) {
+    result(testname) {
       checkOpen("trigger", testname);
       checkActive(gMenuPopup, "", testname);
     },
@@ -1103,13 +1048,12 @@ var popupTests = [
       "command item1",
       "popuphiding thepopup",
       "popuphidden thepopup",
-      "DOMMenuItemInactive item1",
     ],
-    test(testname, step) {
+    test() {
       synthesizeKey("KEY_ArrowDown");
       synthesizeKey("KEY_Enter");
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
     },
   },
@@ -1120,11 +1064,11 @@ var popupTests = [
     },
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gTrigger.focus();
       synthesizeKey(platformIsMac() ? " " : "KEY_F4");
     },
-    result(testname, step) {
+    result(testname) {
       checkOpen("trigger", testname);
       checkActive(gMenuPopup, "", testname);
     },
@@ -1135,7 +1079,7 @@ var popupTests = [
     condition() {
       return gIsMenu;
     },
-    test(testname, step) {
+    test() {
       gTrigger.focus();
       if (platformIsMac()) {
         synthesizeKey("KEY_F4", { altKey: true });
@@ -1143,7 +1087,7 @@ var popupTests = [
         synthesizeKey("", { metaKey: true });
       }
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
     },
   },
@@ -1152,11 +1096,11 @@ var popupTests = [
     condition() {
       return gIsMenu;
     },
-    test(testname, step) {
+    test() {
       gTrigger.setAttribute("disabled", "true");
       synthesizeMouse(gTrigger, 4, 4, {});
     },
-    result(testname, step) {
+    result(testname) {
       checkClosed("trigger", testname);
       gTrigger.removeAttribute("disabled");
     },
@@ -1166,11 +1110,11 @@ var popupTests = [
     testname: "openPopup with object argument",
     events: ["popupshowing thepopup 0000", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test(testname) {
       gMenuPopup.openPopup(gTrigger, { position: "before_start", x: 5, y: 7 });
       checkOpen("trigger", testname);
     },
-    result(testname, step) {
+    result(testname) {
       var triggerrect = gTrigger.getBoundingClientRect();
       var popuprect = gMenuPopup.getBoundingClientRect();
       is(
@@ -1186,11 +1130,10 @@ var popupTests = [
     },
   },
   {
-    // openPopup using object as position argument with event
     testname: "openPopup with object argument with event",
     events: ["popupshowing thepopup 1000", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test(testname) {
       gMenuPopup.openPopup(gTrigger, {
         position: "after_start",
         x: 0,
@@ -1201,14 +1144,13 @@ var popupTests = [
     },
   },
   {
-    // openPopup with no arguments
     testname: "openPopup with no arguments",
     events: ["popupshowing thepopup", "popupshown thepopup"],
     autohide: "thepopup",
-    test(testname, step) {
+    test() {
       gMenuPopup.openPopup();
     },
-    result(testname, step) {
+    result(testname) {
       let isMenu = gTrigger.type == "menu";
       // With no arguments, open in default menu position
       var triggerrect = gTrigger.getBoundingClientRect();
@@ -1236,7 +1178,7 @@ var popupTests = [
       "DOMMenuItemActive submenu",
       "popupshown submenupopup",
     ],
-    test(testname, step) {
+    test(testname) {
       gMenuPopup.openPopup(gTrigger, "after_start", 0, 0, false, true);
       document
         .getElementById("submenupopup")
@@ -1248,7 +1190,7 @@ var popupTests = [
   {
     // remove the content nodes for the popup
     testname: "remove content",
-    test(testname, step) {
+    test() {
       var submenupopup = document.getElementById("submenupopup");
       submenupopup.remove();
       var popup = document.getElementById("thepopup");

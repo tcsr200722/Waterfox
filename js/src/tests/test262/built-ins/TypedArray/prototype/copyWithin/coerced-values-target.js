@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -88,6 +89,14 @@ testWithTypedArrayConstructors(function(TA) {
       [0, 0, 1, 2]
     ),
     '1.5 float value coerced to integer 1'
+  );
+
+  assert(
+    compareArray(
+      new TA([0, 1, 2, 3]).copyWithin({}, 1),
+      [1, 2, 3, 3]
+    ),
+    'object value coerced to integer 0'
   );
 });
 

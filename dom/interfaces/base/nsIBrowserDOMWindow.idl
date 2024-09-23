@@ -68,10 +68,14 @@ interface nsIBrowserDOMWindow : nsISupports
    */
   const short OPEN_NEWTAB        = 3;
   /**
-   * Open in an existing content tab based on the URI. If a match can't be
-   * found, revert to OPEN_NEWTAB behavior.
+   * Open in a hidden browser. Used for printing.
    */
-  const short OPEN_SWITCHTAB     = 4;
+  const short OPEN_PRINT_BROWSER = 4;
+  /**
+   * Open in a new background content tab in the toplevel browser window
+   * corresponding to this nsIBrowserDOMWindow.
+   */
+  const short OPEN_NEWTAB_BACKGROUND = 5;
 
   /**
    * Values for createContentWindow's and openURI's aFlags parameter.
@@ -140,7 +144,6 @@ interface nsIBrowserDOMWindow : nsISupports
 
   /**
    * Load a URI.
-
    * @param aURI the URI to open. null is not allowed. To create the window
    *        without loading the URI, use createContentWindow instead.
    * @param aWhere see possible values described above.
@@ -173,17 +176,10 @@ interface nsIBrowserDOMWindow : nsISupports
                  in AString aName);
 
   /**
-   * @param  aWindow the window to test.
-   * @return whether the window is the main content window for any
-   *         currently open tab in this toplevel browser window.
-   */
-  boolean isTabContentWindow(in nsIDOMWindow aWindow);
-
-  /**
    * This function is responsible for calling
-   * nsIContentViewer::PermitUnload on each frame in the window. It
+   * nsIDocumentViewer::PermitUnload on each frame in the window. It
    * returns true if closing the window is allowed. See canClose() in
-   * BrowserUtils.jsm for a simple implementation of this method.
+   * BrowserUtils.sys.mjs for a simple implementation of this method.
    */
   boolean canClose();
 
@@ -193,4 +189,3 @@ interface nsIBrowserDOMWindow : nsISupports
    */
   readonly attribute unsigned long tabCount;
 };
-

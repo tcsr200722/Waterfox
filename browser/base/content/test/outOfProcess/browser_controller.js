@@ -1,4 +1,4 @@
-function checkCommandState(testid, undoEnabled, deleteEnabled) {
+function checkCommandState(testid, undoEnabled, copyEnabled, deleteEnabled) {
   is(
     !document.getElementById("cmd_undo").hasAttribute("disabled"),
     undoEnabled,
@@ -6,9 +6,9 @@ function checkCommandState(testid, undoEnabled, deleteEnabled) {
   );
   is(
     !document.getElementById("cmd_copy").hasAttribute("disabled"),
-    true,
+    copyEnabled,
     testid + " copy"
-  ); // copy should always be enabled
+  );
   is(
     !document.getElementById("cmd_delete").hasAttribute("disabled"),
     deleteEnabled,
@@ -42,14 +42,25 @@ add_task(async function test_controllers_subframes() {
 
   gURLBar.focus();
 
+  let canTabMoveFocusToRootElement = !SpecialPowers.getBoolPref(
+    "dom.disable_tab_focus_to_root_element"
+  );
   for (let stepNum = 0; stepNum < browsingContexts.length; stepNum++) {
-    await keyAndUpdate(stepNum > 0 ? "VK_TAB" : "VK_F6", {}, 6);
+    let useTab = stepNum > 0;
+    // When canTabMoveFocusToRootElement is true, this kepress will move the
+    // focus to a root element, which will trigger an extra "select" command
+    // compare to the case when canTabMoveFocusToRootElement is false.
+    await keyAndUpdate(
+      useTab ? "VK_TAB" : "VK_F6",
+      {},
+      canTabMoveFocusToRootElement ? 6 : 4
+    );
 
     // Since focus may be switching into a separate process here,
     // need to wait for the focus to have been updated.
     await SpecialPowers.spawn(browsingContexts[stepNum], [], () => {
       return ContentTaskUtils.waitForCondition(
-        () => docShell.isActive && content.document.hasFocus()
+        () => content.browsingContext.isActive && content.document.hasFocus()
       );
     });
 
@@ -59,20 +70,35 @@ add_task(async function test_controllers_subframes() {
       goUpdateGlobalEditMenuItems(true);
     }
 
-    await SpecialPowers.spawn(browsingContexts[stepNum], [], () => {
-      // Both the tab key and document navigation with F6 will focus
-      // the root of the document within the frame.
-      let document = content.document;
-      Assert.equal(
-        document.activeElement,
-        document.documentElement,
-        "root focused"
-      );
-    });
-    checkCommandState("step " + stepNum + " root focused", false, false);
+    await SpecialPowers.spawn(
+      browsingContexts[stepNum],
+      [{ canTabMoveFocusToRootElement, useTab }],
+      args => {
+        // Both the tab key and document navigation with F6 will focus
+        // the root of the document within the frame.
+        // When dom.disable_tab_focus_to_root_element is true, only F6 will do this.
+        let document = content.document;
+        let expectedElement =
+          args.canTabMoveFocusToRootElement || !args.useTab
+            ? document.documentElement
+            : document.getElementById("input");
+        Assert.equal(document.activeElement, expectedElement, "root focused");
+      }
+    );
 
-    // Tab to the textbox.
-    await keyAndUpdate("VK_TAB", {}, 1);
+    if (canTabMoveFocusToRootElement || !useTab) {
+      // XXX Currently, Copy is always enabled when the root (not an editor element)
+      // is focused. Possibly that should only be true if a listener is present?
+      checkCommandState(
+        "step " + stepNum + " root focused",
+        false,
+        true,
+        false
+      );
+
+      // Tab to the textbox.
+      await keyAndUpdate("VK_TAB", {}, 1);
+    }
 
     if (AppConstants.platform != "macosx") {
       goUpdateGlobalEditMenuItems(true);
@@ -85,11 +111,16 @@ add_task(async function test_controllers_subframes() {
         "input focused"
       );
     });
-    checkCommandState("step " + stepNum + " input focused", false, false);
+    checkCommandState(
+      "step " + stepNum + " input focused",
+      false,
+      false,
+      false
+    );
 
     // Type into the textbox.
     await keyAndUpdate("a", {}, 1);
-    checkCommandState("step " + stepNum + " typed", true, false);
+    checkCommandState("step " + stepNum + " typed", true, false, false);
 
     await SpecialPowers.spawn(browsingContexts[stepNum], [], () => {
       Assert.equal(
@@ -99,13 +130,13 @@ add_task(async function test_controllers_subframes() {
       );
     });
 
-    // Select all text.
+    // Select all text; this causes the Copy and Delete commands to be enabled.
     await keyAndUpdate("a", { accelKey: true }, 1);
     if (AppConstants.platform != "macosx") {
       goUpdateGlobalEditMenuItems(true);
     }
 
-    checkCommandState("step " + stepNum + " selected", true, true);
+    checkCommandState("step " + stepNum + " selected", true, true, true);
 
     // Now make sure that the text is selected.
     await SpecialPowers.spawn(browsingContexts[stepNum], [], () => {

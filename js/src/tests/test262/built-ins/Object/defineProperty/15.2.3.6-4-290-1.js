@@ -30,16 +30,17 @@ includes: [propertyHelper.js]
     configurable: true
   });
   if (a !== 0) {
-    $ERROR('Expected a === 0, actually ' + a);
+    throw new Test262Error('Expected a === 0, actually ' + a);
   }
 
   verifyEqualTo(arguments, "0", getFunc());
 
   verifyWritable(arguments, "0", "setVerifyHelpProp");
 
-  verifyEnumerable(arguments, "0");
-
-  verifyConfigurable(arguments, "0");
+  verifyProperty(arguments, "0", {
+    enumerable: true,
+    configurable: true,
+  });
 }(0, 1, 2));
 
 reportCompare(0, 0);

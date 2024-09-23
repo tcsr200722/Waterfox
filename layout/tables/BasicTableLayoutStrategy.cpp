@@ -37,7 +37,6 @@ BasicTableLayoutStrategy::~BasicTableLayoutStrategy() = default;
 
 /* virtual */
 nscoord BasicTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
-  DISPLAY_MIN_INLINE_SIZE(mTableFrame, mMinISize);
   if (mMinISize == NS_INTRINSIC_ISIZE_UNKNOWN) {
     ComputeIntrinsicISizes(aRenderingContext);
   }
@@ -47,7 +46,6 @@ nscoord BasicTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
 /* virtual */
 nscoord BasicTableLayoutStrategy::GetPrefISize(gfxContext* aRenderingContext,
                                                bool aComputingSize) {
-  DISPLAY_PREF_INLINE_SIZE(mTableFrame, mPrefISize);
   NS_ASSERTION((mPrefISize == NS_INTRINSIC_ISIZE_UNKNOWN) ==
                    (mPrefISizePctExpand == NS_INTRINSIC_ISIZE_UNKNOWN),
                "dirtyness out of sync");
@@ -97,18 +95,10 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
 
     // XXX Should we ignore percentage padding?
     nsIFrame::IntrinsicSizeOffsetData offsets = aFrame->IntrinsicISizeOffsets();
-
-    // In quirks mode, table cell isize should be content-box,
-    // but bsize should be border box.
-    // Because of this historic anomaly, we do not use quirk.css.
-    // (We can't specify one value of box-sizing for isize and another
-    // for bsize).
-    // For this reason, we also do not use box-sizing for just one of
-    // them, as this may be confusing.
-    if (isQuirks || stylePos->mBoxSizing == StyleBoxSizing::Content) {
+    if (stylePos->mBoxSizing == StyleBoxSizing::Content) {
       boxSizingToBorderEdge = offsets.padding + offsets.border;
     } else {
-      // StyleBoxSizing::Border and standards-mode
+      // StyleBoxSizing::Border
       minCoord += offsets.padding + offsets.border;
       prefCoord += offsets.padding + offsets.border;
     }
@@ -126,56 +116,56 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   // columns.
   if (iSize.ConvertsToLength()) {
     hasSpecifiedISize = true;
-    // Note: since ComputeISizeValue was designed to return content-box
-    // isize, it will (in some cases) subtract the box-sizing edges.
-    // We prevent this unwanted behavior by calling it with
-    // aContentEdgeToBoxSizing and aBoxSizingToMarginEdge set to 0.
-    nscoord c = aFrame->ComputeISizeValue(aRenderingContext, 0, 0, 0, iSize);
+    nscoord c = iSize.ToLength();
     // Quirk: A cell with "nowrap" set and a coord value for the
     // isize which is bigger than the intrinsic minimum isize uses
     // that coord value as the minimum isize.
     // This is kept up-to-date with dynamic changes to nowrap by code in
     // nsTableCellFrame::AttributeChanged
     if (aIsCell && c > minCoord && isQuirks &&
-        aFrame->GetContent()->AsElement()->HasAttr(kNameSpaceID_None,
-                                                   nsGkAtoms::nowrap)) {
+        aFrame->GetContent()->AsElement()->HasAttr(nsGkAtoms::nowrap)) {
       minCoord = c;
     }
     prefCoord = std::max(c, minCoord);
   } else if (iSize.ConvertsToPercentage()) {
     prefPercent = iSize.ToPercentage();
-  } else if (iSize.IsExtremumLength() && aIsCell) {
-    switch (iSize.AsExtremumLength()) {
-      case StyleExtremumLength::MaxContent:
+  } else if (aIsCell) {
+    switch (iSize.tag) {
+      case StyleSize::Tag::MaxContent:
         // 'inline-size' only affects pref isize, not min
         // isize, so don't change anything
         break;
-      case StyleExtremumLength::MinContent:
+      case StyleSize::Tag::MinContent:
         prefCoord = minCoord;
         break;
-      case StyleExtremumLength::MozFitContent:
-      case StyleExtremumLength::MozAvailable:
+      case StyleSize::Tag::MozAvailable:
+      case StyleSize::Tag::FitContent:
+      case StyleSize::Tag::FitContentFunction:
+        // TODO: Bug 1708310: Make sure fit-content() work properly in table.
+      case StyleSize::Tag::Auto:
+      case StyleSize::Tag::LengthPercentage:
         break;
-      default:
-        MOZ_ASSERT_UNREACHABLE("unexpected enumerated value");
     }
   }
 
   StyleMaxSize maxISize = stylePos->MaxISize(aWM);
-  if (maxISize.IsExtremumLength()) {
-    if (!aIsCell ||
-        maxISize.AsExtremumLength() == StyleExtremumLength::MozAvailable) {
+  if (nsIFrame::ToExtremumLength(maxISize)) {
+    if (!aIsCell || maxISize.IsMozAvailable()) {
       maxISize = StyleMaxSize::None();
-    } else if (maxISize.AsExtremumLength() ==
-               StyleExtremumLength::MozFitContent) {
+    } else if (maxISize.IsFitContent() || maxISize.IsFitContentFunction()) {
+      // TODO: Bug 1708310: Make sure fit-content() work properly in table.
       // for 'max-inline-size', '-moz-fit-content' is like 'max-content'
-      maxISize = StyleMaxSize::ExtremumLength(StyleExtremumLength::MaxContent);
+      maxISize = StyleMaxSize::MaxContent();
     }
   }
   // XXX To really implement 'max-inline-size' well, we'd need to store
   // it separately on the columns.
-  if (maxISize.ConvertsToLength() || maxISize.IsExtremumLength()) {
-    nscoord c = aFrame->ComputeISizeValue(aRenderingContext, 0, 0, 0, maxISize);
+  const LogicalSize zeroSize(aWM);
+  if (maxISize.ConvertsToLength() || nsIFrame::ToExtremumLength(maxISize)) {
+    nscoord c = aFrame
+                    ->ComputeISizeValue(aRenderingContext, aWM, zeroSize,
+                                        zeroSize, 0, maxISize)
+                    .mISize;
     minCoord = std::min(c, minCoord);
     prefCoord = std::min(c, prefCoord);
   } else if (maxISize.ConvertsToPercentage()) {
@@ -186,18 +176,21 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   }
 
   StyleSize minISize = stylePos->MinISize(aWM);
-  if (minISize.IsExtremumLength()) {
-    if (!aIsCell ||
-        minISize.AsExtremumLength() == StyleExtremumLength::MozAvailable) {
+  if (nsIFrame::ToExtremumLength(maxISize)) {
+    if (!aIsCell || minISize.IsMozAvailable()) {
       minISize = StyleSize::LengthPercentage(LengthPercentage::Zero());
-    } else if (minISize.AsExtremumLength() ==
-               StyleExtremumLength::MozFitContent) {
+    } else if (minISize.IsFitContent() || minISize.IsFitContentFunction()) {
+      // TODO: Bug 1708310: Make sure fit-content() work properly in table.
       // for 'min-inline-size', '-moz-fit-content' is like 'min-content'
-      minISize = StyleSize::ExtremumLength(StyleExtremumLength::MinContent);
+      minISize = StyleSize::MinContent();
     }
   }
-  if (minISize.ConvertsToLength() || minISize.IsExtremumLength()) {
-    nscoord c = aFrame->ComputeISizeValue(aRenderingContext, 0, 0, 0, minISize);
+
+  if (minISize.ConvertsToLength() || nsIFrame::ToExtremumLength(minISize)) {
+    nscoord c = aFrame
+                    ->ComputeISizeValue(aRenderingContext, aWM, zeroSize,
+                                        zeroSize, 0, minISize)
+                    .mISize;
     minCoord = std::max(c, minCoord);
     prefCoord = std::max(c, prefCoord);
   } else if (minISize.ConvertsToPercentage()) {
@@ -703,7 +696,7 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
       if (val < min_iSize) {
         val = min_iSize;
       }
-      guess_min_pct += val;
+      guess_min_pct = NSCoordSaturatingAdd(guess_min_pct, val);
       guess_pref = NSCoordSaturatingAdd(guess_pref, val);
     } else {
       nscoord pref_iSize = colFrame->GetPrefCoord();
@@ -711,7 +704,7 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
         ++numInfiniteISizeCols;
       }
       guess_pref = NSCoordSaturatingAdd(guess_pref, pref_iSize);
-      guess_min_pct += min_iSize;
+      guess_min_pct = NSCoordSaturatingAdd(guess_min_pct, min_iSize);
       if (colFrame->GetHasSpecifiedCoord()) {
         // we'll add on the rest of guess_min_spec outside the
         // loop
@@ -831,7 +824,8 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
           if (pct_minus_min > 0) {
             float c = float(space) / float(basis.c);
             basis.c -= pct_minus_min;
-            col_iSize += NSToCoordRound(float(pct_minus_min) * c);
+            col_iSize = NSCoordSaturatingAdd(
+                col_iSize, NSToCoordRound(float(pct_minus_min) * c));
           }
         }
         break;
@@ -845,8 +839,10 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
             col_iSize = col_iSize_before_adjust = col_min;
             if (pref_minus_min != 0) {
               float c = float(space) / float(basis.c);
-              basis.c -= pref_minus_min;
-              col_iSize += NSToCoordRound(float(pref_minus_min) * c);
+              basis.c = NSCoordSaturatingSubtract(basis.c, pref_minus_min,
+                                                  nscoord_MAX);
+              col_iSize = NSCoordSaturatingAdd(
+                  col_iSize, NSToCoordRound(float(pref_minus_min) * c));
             }
           } else
             col_iSize = col_iSize_before_adjust = colFrame->GetMinCoord();
@@ -880,7 +876,8 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
             }
             basis.c =
                 NSCoordSaturatingSubtract(basis.c, pref_minus_min, nscoord_MAX);
-            col_iSize += NSToCoordRound(float(pref_minus_min) * c);
+            col_iSize = NSCoordSaturatingAdd(
+                col_iSize, NSToCoordRound(float(pref_minus_min) * c));
           }
         }
         break;
@@ -894,8 +891,10 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
               col_iSize = nscoord_MAX;
             } else {
               float c = float(space) / float(basis.c);
-              basis.c -= col_iSize;
-              col_iSize += NSToCoordRound(float(col_iSize) * c);
+              basis.c =
+                  NSCoordSaturatingSubtract(basis.c, col_iSize, nscoord_MAX);
+              col_iSize = NSCoordSaturatingAdd(
+                  col_iSize, NSToCoordRound(float(col_iSize) * c));
             }
           }
         }
@@ -921,8 +920,10 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
               "wrong case");
           if (col_iSize != 0) {
             float c = float(space) / float(basis.c);
-            basis.c -= col_iSize;
-            col_iSize += NSToCoordRound(float(col_iSize) * c);
+            basis.c =
+                NSCoordSaturatingSubtract(basis.c, col_iSize, nscoord_MAX);
+            col_iSize = NSCoordSaturatingAdd(
+                col_iSize, NSToCoordRound(float(col_iSize) * c));
           }
         }
         break;
@@ -931,13 +932,13 @@ void BasicTableLayoutStrategy::DistributeISizeToColumns(
                      "wrong case");
         if (pct != 0.0f) {
           float c = float(space) / basis.f;
-          col_iSize += NSToCoordRound(pct * c);
+          col_iSize = NSCoordSaturatingAdd(col_iSize, NSToCoordRound(pct * c));
           basis.f -= pct;
         }
         break;
       case FLEX_ALL_LARGE: {
         float c = float(space) / float(basis.c);
-        col_iSize += NSToCoordRound(c);
+        col_iSize = NSCoordSaturatingAdd(col_iSize, NSToCoordRound(c));
         --basis.c;
       } break;
     }

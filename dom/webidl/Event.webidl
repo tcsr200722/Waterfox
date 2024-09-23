@@ -10,7 +10,7 @@
  * liability, trademark and document use rules apply.
  */
 
-[Exposed=(Window,Worker), ProbablyShortLivingWrapper]
+[Exposed=(Window,Worker,AudioWorklet), ProbablyShortLivingWrapper]
 interface Event {
   constructor(DOMString type, optional EventInit eventInitDict = {});
 
@@ -30,8 +30,8 @@ interface Event {
   [Pure]
   readonly attribute unsigned short eventPhase;
 
-  void stopPropagation();
-  void stopImmediatePropagation();
+  undefined stopPropagation();
+  undefined stopImmediatePropagation();
 
   [Pure]
   readonly attribute boolean bubbles;
@@ -40,7 +40,7 @@ interface Event {
   [NeedsCallerType]
   attribute boolean returnValue;
   [NeedsCallerType]
-  void preventDefault();
+  undefined preventDefault();
   [Pure, NeedsCallerType]
   readonly attribute boolean defaultPrevented;
   [ChromeOnly, Pure]
@@ -50,14 +50,14 @@ interface Event {
   [Pure]
   readonly attribute boolean composed;
 
-  [Unforgeable, Pure]
+  [LegacyUnforgeable, Pure]
   readonly attribute boolean isTrusted;
   [Pure]
   readonly attribute DOMHighResTimeStamp timeStamp;
 
-  void initEvent(DOMString type,
-                 optional boolean bubbles = false,
-                 optional boolean cancelable = false);
+  undefined initEvent(DOMString type,
+                      optional boolean bubbles = false,
+                      optional boolean cancelable = false);
   attribute boolean cancelBubble;
 };
 
@@ -82,9 +82,22 @@ partial interface Event {
    */
   readonly attribute EventTarget? explicitOriginalTarget;
   [ChromeOnly] readonly attribute EventTarget? composedTarget;
-  [ChromeOnly] void preventMultipleActions();
+  [ChromeOnly] undefined preventMultipleActions();
   [ChromeOnly] readonly attribute boolean multipleActionsPrevented;
   [ChromeOnly] readonly attribute boolean isSynthesized;
+  /**
+   * When the event target is a remote browser, calling this will fire an
+   * reply event in the chrome process.
+   */
+  [ChromeOnly] undefined requestReplyFromRemoteContent();
+  /**
+   * Returns true when the event shouldn't be handled by chrome.
+   */
+  [ChromeOnly] readonly attribute boolean isWaitingReplyFromRemoteContent;
+  /**
+   * Returns true when the event is a reply event from a remote process.
+   */
+  [ChromeOnly] readonly attribute boolean isReplyEventFromRemoteContent;
 };
 
 dictionary EventInit {

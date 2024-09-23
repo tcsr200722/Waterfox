@@ -32,25 +32,6 @@ namespace base {
 
 namespace {
 
-// Used by ReplaceStringPlaceholders to track the position in the string of
-// replaced parameters.
-struct ReplacementOffset {
-  ReplacementOffset(uintptr_t parameter, size_t offset)
-      : parameter(parameter),
-        offset(offset) {}
-
-  // Index of the parameter.
-  uintptr_t parameter;
-
-  // Starting position in the string.
-  size_t offset;
-};
-
-static bool CompareParameter(const ReplacementOffset& elem1,
-                             const ReplacementOffset& elem2) {
-  return elem1.parameter < elem2.parameter;
-}
-
 // Overloaded function to append one string onto the end of another. Having a
 // separate overload for |source| as both string and StringPiece allows for more
 // efficient usage from functions templated to work with either type (avoiding a
@@ -237,17 +218,16 @@ bool ReplaceCharsT(const StringType& input,
 
 bool ReplaceChars(const string16& input,
                   StringPiece16 replace_chars,
-                  const string16& replace_with,
+                  StringPiece16 replace_with,
                   string16* output) {
-  return ReplaceCharsT(input, replace_chars, StringPiece16(replace_with),
-                       output);
+  return ReplaceCharsT(input, replace_chars, replace_with, output);
 }
 
 bool ReplaceChars(const std::string& input,
                   StringPiece replace_chars,
-                  const std::string& replace_with,
+                  StringPiece replace_with,
                   std::string* output) {
-  return ReplaceCharsT(input, replace_chars, StringPiece(replace_with), output);
+  return ReplaceCharsT(input, replace_chars, replace_with, output);
 }
 
 bool RemoveChars(const string16& input,
@@ -262,8 +242,8 @@ bool RemoveChars(const std::string& input,
   return ReplaceCharsT(input, remove_chars, StringPiece(), output);
 }
 
-template<typename Str>
-TrimPositions TrimStringT(const Str& input,
+template <typename Str>
+TrimPositions TrimStringT(BasicStringPiece<Str> input,
                           BasicStringPiece<Str> trim_chars,
                           TrimPositions positions,
                           Str* output) {
@@ -271,40 +251,40 @@ TrimPositions TrimStringT(const Str& input,
   // a StringPiece version of input to be able to call find* on it with the
   // StringPiece version of trim_chars (normally the trim_chars will be a
   // constant so avoid making a copy).
-  BasicStringPiece<Str> input_piece(input);
   const size_t last_char = input.length() - 1;
-  const size_t first_good_char = (positions & TRIM_LEADING) ?
-      input_piece.find_first_not_of(trim_chars) : 0;
-  const size_t last_good_char = (positions & TRIM_TRAILING) ?
-      input_piece.find_last_not_of(trim_chars) : last_char;
+  const size_t first_good_char =
+      (positions & TRIM_LEADING) ? input.find_first_not_of(trim_chars) : 0;
+  const size_t last_good_char = (positions & TRIM_TRAILING)
+                                    ? input.find_last_not_of(trim_chars)
+                                    : last_char;
 
   // When the string was all trimmed, report that we stripped off characters
   // from whichever position the caller was interested in. For empty input, we
   // stripped no characters, but we still need to clear |output|.
-  if (input.empty() ||
-      (first_good_char == Str::npos) || (last_good_char == Str::npos)) {
+  if (input.empty() || first_good_char == Str::npos ||
+      last_good_char == Str::npos) {
     bool input_was_empty = input.empty();  // in case output == &input
     output->clear();
     return input_was_empty ? TRIM_NONE : positions;
   }
 
   // Trim.
-  *output =
-      input.substr(first_good_char, last_good_char - first_good_char + 1);
+  output->assign(input.data() + first_good_char,
+                 last_good_char - first_good_char + 1);
 
   // Return where we trimmed from.
   return static_cast<TrimPositions>(
-      ((first_good_char == 0) ? TRIM_NONE : TRIM_LEADING) |
-      ((last_good_char == last_char) ? TRIM_NONE : TRIM_TRAILING));
+      (first_good_char == 0 ? TRIM_NONE : TRIM_LEADING) |
+      (last_good_char == last_char ? TRIM_NONE : TRIM_TRAILING));
 }
 
-bool TrimString(const string16& input,
+bool TrimString(StringPiece16 input,
                 StringPiece16 trim_chars,
                 string16* output) {
   return TrimStringT(input, trim_chars, TRIM_ALL, output) != TRIM_NONE;
 }
 
-bool TrimString(const std::string& input,
+bool TrimString(StringPiece input,
                 StringPiece trim_chars,
                 std::string* output) {
   return TrimStringT(input, trim_chars, TRIM_ALL, output) != TRIM_NONE;
@@ -370,7 +350,7 @@ void TruncateUTF8ToByteSize(const std::string& input,
     output->clear();
 }
 
-TrimPositions TrimWhitespace(const string16& input,
+TrimPositions TrimWhitespace(StringPiece16 input,
                              TrimPositions positions,
                              string16* output) {
   return TrimStringT(input, StringPiece16(kWhitespaceUTF16), positions, output);
@@ -381,7 +361,7 @@ StringPiece16 TrimWhitespace(StringPiece16 input,
   return TrimStringPieceT(input, StringPiece16(kWhitespaceUTF16), positions);
 }
 
-TrimPositions TrimWhitespaceASCII(const std::string& input,
+TrimPositions TrimWhitespaceASCII(StringPiece input,
                                   TrimPositions positions,
                                   std::string* output) {
   return TrimStringT(input, StringPiece(kWhitespaceASCII), positions, output);
@@ -506,18 +486,27 @@ bool IsStringASCII(WStringPiece str) {
 }
 #endif
 
-bool IsStringUTF8(StringPiece str) {
-  const char *src = str.data();
+template <bool (*Validator)(uint32_t)>
+inline static bool DoIsStringUTF8(StringPiece str) {
+  const char* src = str.data();
   int32_t src_len = static_cast<int32_t>(str.length());
   int32_t char_index = 0;
 
   while (char_index < src_len) {
     int32_t code_point;
     CBU8_NEXT(src, char_index, src_len, code_point);
-    if (!IsValidCharacter(code_point))
+    if (!Validator(code_point))
       return false;
   }
   return true;
+}
+
+bool IsStringUTF8(StringPiece str) {
+  return DoIsStringUTF8<IsValidCharacter>(str);
+}
+
+bool IsStringUTF8AllowingNoncharacters(StringPiece str) {
+  return DoIsStringUTF8<IsValidCodepoint>(str);
 }
 
 // Implementation note: Normally this function will be called with a hardcoded
@@ -913,7 +902,7 @@ void ReplaceSubstringsAfterOffset(std::string* str,
 template <class string_type>
 inline typename string_type::value_type* WriteIntoT(string_type* str,
                                                     size_t length_with_null) {
-  DCHECK_GT(length_with_null, 1u);
+  DCHECK_GE(length_with_null, 1u);
   str->reserve(length_with_null);
   str->resize(length_with_null - 1);
   return &((*str)[0]);
@@ -1004,86 +993,35 @@ string16 JoinString(std::initializer_list<StringPiece16> parts,
   return JoinStringT(parts, separator);
 }
 
-template<class FormatStringType, class OutStringType>
-OutStringType DoReplaceStringPlaceholders(
-    const FormatStringType& format_string,
-    const std::vector<OutStringType>& subst,
-    std::vector<size_t>* offsets) {
-  size_t substitutions = subst.size();
-  DCHECK_LT(substitutions, 10U);
+#if defined(OS_WIN) && defined(BASE_STRING16_IS_STD_U16STRING)
 
-  size_t sub_length = 0;
-  for (const auto& cur : subst)
-    sub_length += cur.length();
-
-  OutStringType formatted;
-  formatted.reserve(format_string.length() + sub_length);
-
-  std::vector<ReplacementOffset> r_offsets;
-  for (auto i = format_string.begin(); i != format_string.end(); ++i) {
-    if ('$' == *i) {
-      if (i + 1 != format_string.end()) {
-        ++i;
-        if ('$' == *i) {
-          while (i != format_string.end() && '$' == *i) {
-            formatted.push_back('$');
-            ++i;
-          }
-          --i;
-        } else {
-          if (*i < '1' || *i > '9') {
-            DLOG(ERROR) << "Invalid placeholder: $" << *i;
-            continue;
-          }
-          uintptr_t index = *i - '1';
-          if (offsets) {
-            ReplacementOffset r_offset(index,
-                                       static_cast<int>(formatted.size()));
-            r_offsets.insert(
-                std::upper_bound(r_offsets.begin(), r_offsets.end(), r_offset,
-                                 &CompareParameter),
-                r_offset);
-          }
-          if (index < substitutions)
-            formatted.append(subst.at(index));
-        }
-      }
-    } else {
-      formatted.push_back(*i);
-    }
-  }
-  if (offsets) {
-    for (const auto& cur : r_offsets)
-      offsets->push_back(cur.offset);
-  }
-  return formatted;
+TrimPositions TrimWhitespace(WStringPiece input,
+                             TrimPositions positions,
+                             std::wstring* output) {
+  return TrimStringT(input, WStringPiece(kWhitespaceWide), positions, output);
 }
 
-string16 ReplaceStringPlaceholders(const string16& format_string,
-                                   const std::vector<string16>& subst,
-                                   std::vector<size_t>* offsets) {
-  return DoReplaceStringPlaceholders(format_string, subst, offsets);
+WStringPiece TrimWhitespace(WStringPiece input, TrimPositions positions) {
+  return TrimStringPieceT(input, WStringPiece(kWhitespaceWide), positions);
 }
 
-std::string ReplaceStringPlaceholders(StringPiece format_string,
-                                      const std::vector<std::string>& subst,
-                                      std::vector<size_t>* offsets) {
-  return DoReplaceStringPlaceholders(format_string, subst, offsets);
+bool TrimString(WStringPiece input,
+                WStringPiece trim_chars,
+                std::wstring* output) {
+  return TrimStringT(input, trim_chars, TRIM_ALL, output) != TRIM_NONE;
 }
 
-string16 ReplaceStringPlaceholders(const string16& format_string,
-                                   const string16& a,
-                                   size_t* offset) {
-  std::vector<size_t> offsets;
-  std::vector<string16> subst;
-  subst.push_back(a);
-  string16 result = ReplaceStringPlaceholders(format_string, subst, &offsets);
-
-  DCHECK_EQ(1U, offsets.size());
-  if (offset)
-    *offset = offsets[0];
-  return result;
+WStringPiece TrimString(WStringPiece input,
+                        WStringPiece trim_chars,
+                        TrimPositions positions) {
+  return TrimStringPieceT(input, trim_chars, positions);
 }
+
+wchar_t* WriteInto(std::wstring* str, size_t length_with_null) {
+  return WriteIntoT(str, length_with_null);
+}
+
+#endif
 
 // The following code is compatible with the OpenBSD lcpy interface.  See:
 //   http://www.gratisoft.us/todd/papers/strlcpy.html

@@ -12,14 +12,14 @@ self.addEventListener('message', e => {
       if (e.data === 'WithCorp') {
         url = get_host_info().HTTPS_REMOTE_ORIGIN +
             '/html/cross-origin-embedder-policy/resources/' +
-            'nothing-cross-origin-corp.txt';
+            'nothing-cross-origin-corp.js';
       } else if (e.data === 'WithoutCorp') {
         url = get_host_info().HTTPS_REMOTE_ORIGIN + '/common/blank.html';
       }
       const response = await fetch(url, { mode: 'no-cors' });
       result = response.type;
     } catch (error) {
-      result = `${error.name}: ${error.message}`;
+      result = `Exception: ${error.name}`;
     } finally {
       e.source.postMessage(result);
     }

@@ -14,8 +14,8 @@
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/ipc/StructuredCloneData.h"
 #include "mozilla/dom/RefMessageBodyService.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/SharedMessageBody.h"
-#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
@@ -23,9 +23,8 @@
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/StorageAccess.h"
-#include "nsContentUtils.h"
 
-#include "nsIBFCacheEntry.h"
+#include "nsICookieJarSettings.h"
 #include "mozilla/dom/Document.h"
 
 #ifdef XP_WIN
@@ -42,107 +41,23 @@ using namespace ipc;
 
 namespace {
 
-nsIPrincipal* GetStoragePrincipalFromThreadSafeWorkerRef(
-    ThreadSafeWorkerRef* aWorkerRef) {
-  nsIPrincipal* storagePrincipal =
-      aWorkerRef->Private()->GetEffectiveStoragePrincipal();
-  if (storagePrincipal) {
-    return storagePrincipal;
-  }
-
-  // Walk up to our containing page
-  WorkerPrivate* wp = aWorkerRef->Private();
-  while (wp->GetParent()) {
-    wp = wp->GetParent();
-  }
-
-  return wp->GetEffectiveStoragePrincipal();
-}
-
-class InitializeRunnable final : public WorkerMainThreadRunnable {
+class CloseRunnable final : public DiscardableRunnable {
  public:
-  InitializeRunnable(ThreadSafeWorkerRef* aWorkerRef, nsACString& aOrigin,
-                     nsACString& aOriginNoSuffix,
-                     PrincipalInfo& aStoragePrincipalInfo, ErrorResult& aRv)
-      : WorkerMainThreadRunnable(
-            aWorkerRef->Private(),
-            NS_LITERAL_CSTRING("BroadcastChannel :: Initialize")),
-        mWorkerRef(aWorkerRef),
-        mOrigin(aOrigin),
-        mOriginNoSuffix(aOriginNoSuffix),
-        mStoragePrincipalInfo(aStoragePrincipalInfo),
-        mRv(aRv) {
-    MOZ_ASSERT(mWorkerRef);
+  explicit CloseRunnable(BroadcastChannel* aBC)
+      : DiscardableRunnable("BroadcastChannel CloseRunnable"), mBC(aBC) {
+    MOZ_ASSERT(mBC);
   }
-
-  bool MainThreadRun() override {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsIPrincipal* storagePrincipal =
-        GetStoragePrincipalFromThreadSafeWorkerRef(mWorkerRef);
-    if (!storagePrincipal) {
-      mRv.Throw(NS_ERROR_FAILURE);
-      return true;
-    }
-
-    mRv = PrincipalToPrincipalInfo(storagePrincipal, &mStoragePrincipalInfo);
-    if (NS_WARN_IF(mRv.Failed())) {
-      return true;
-    }
-
-    mRv = storagePrincipal->GetOrigin(mOrigin);
-    if (NS_WARN_IF(mRv.Failed())) {
-      return true;
-    }
-
-    mRv = storagePrincipal->GetOriginNoSuffix(mOriginNoSuffix);
-    if (NS_WARN_IF(mRv.Failed())) {
-      return true;
-    }
-
-    // Walk up to our containing page
-    WorkerPrivate* wp = mWorkerRef->Private();
-    while (wp->GetParent()) {
-      wp = wp->GetParent();
-    }
-
-    // Window doesn't exist for some kind of workers (eg: SharedWorkers)
-    nsPIDOMWindowInner* window = wp->GetWindow();
-    if (!window) {
-      return true;
-    }
-
-    return true;
-  }
-
- private:
-  RefPtr<ThreadSafeWorkerRef> mWorkerRef;
-  nsACString& mOrigin;
-  nsACString& mOriginNoSuffix;
-  PrincipalInfo& mStoragePrincipalInfo;
-  ErrorResult& mRv;
-};
-
-class CloseRunnable final : public nsIRunnable, public nsICancelableRunnable {
- public:
-  NS_DECL_ISUPPORTS
-
-  explicit CloseRunnable(BroadcastChannel* aBC) : mBC(aBC) { MOZ_ASSERT(mBC); }
 
   NS_IMETHOD Run() override {
     mBC->Shutdown();
     return NS_OK;
   }
 
-  nsresult Cancel() override { return NS_OK; }
-
  private:
   ~CloseRunnable() = default;
 
   RefPtr<BroadcastChannel> mBC;
 };
-
-NS_IMPL_ISUPPORTS(CloseRunnable, nsICancelableRunnable, nsIRunnable)
 
 class TeardownRunnable {
  protected:
@@ -181,7 +96,7 @@ class TeardownRunnableOnWorker final : public WorkerControlRunnable,
  public:
   TeardownRunnableOnWorker(WorkerPrivate* aWorkerPrivate,
                            BroadcastChannelChild* aActor)
-      : WorkerControlRunnable(aWorkerPrivate, WorkerThreadUnchangedBusyCount),
+      : WorkerControlRunnable("TeardownRunnableOnWorker"),
         TeardownRunnable(aActor) {}
 
   bool WorkerRun(JSContext*, WorkerPrivate*) override {
@@ -211,7 +126,7 @@ BroadcastChannel::BroadcastChannel(nsIGlobalObject* aGlobal,
       mState(StateActive),
       mPortUUID(aPortUUID) {
   MOZ_ASSERT(aGlobal);
-  KeepAliveIfHasListenersFor(NS_LITERAL_STRING("message"));
+  KeepAliveIfHasListenersFor(nsGkAtoms::onmessage);
 }
 
 BroadcastChannel::~BroadcastChannel() {
@@ -234,7 +149,7 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
   }
 
   nsID portUUID = {};
-  aRv = nsContentUtils::GenerateUUIDInPlace(portUUID);
+  aRv = nsID::GenerateUUIDInPlace(portUUID);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -242,9 +157,7 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
   RefPtr<BroadcastChannel> bc =
       new BroadcastChannel(global, aChannel, portUUID);
 
-  nsAutoCString origin;
-  nsAutoCString originNoSuffix;
-  PrincipalInfo storagePrincipalInfo;
+  nsCOMPtr<nsIPrincipal> storagePrincipal;
 
   StorageAccess storageAccess;
 
@@ -269,27 +182,11 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
       return nullptr;
     }
 
-    nsIPrincipal* storagePrincipal = sop->GetEffectiveStoragePrincipal();
+    storagePrincipal = sop->GetEffectiveStoragePrincipal();
     if (!storagePrincipal) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
       return nullptr;
     }
-
-    aRv = storagePrincipal->GetOrigin(origin);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return nullptr;
-    }
-
-    aRv = storagePrincipal->GetOriginNoSuffix(originNoSuffix);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return nullptr;
-    }
-
-    aRv = PrincipalToPrincipalInfo(storagePrincipal, &storagePrincipalInfo);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return nullptr;
-    }
-
     storageAccess = StorageAllowedForWindow(window);
 
     Document* doc = window->GetExtantDoc();
@@ -311,23 +208,17 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
       return nullptr;
     }
 
-    RefPtr<ThreadSafeWorkerRef> tsr = new ThreadSafeWorkerRef(workerRef);
-
-    RefPtr<InitializeRunnable> runnable = new InitializeRunnable(
-        tsr, origin, originNoSuffix, storagePrincipalInfo, aRv);
-    runnable->Dispatch(Canceling, aRv);
-    if (aRv.Failed()) {
-      return nullptr;
-    }
-
     storageAccess = workerPrivate->StorageAccess();
+
+    storagePrincipal = workerPrivate->GetEffectiveStoragePrincipal();
+
     bc->mWorkerRef = workerRef;
 
     cjs = workerPrivate->CookieJarSettings();
   }
 
   // We want to allow opaque origins.
-  if (storagePrincipalInfo.type() != PrincipalInfo::TNullPrincipalInfo &&
+  if (!storagePrincipal->GetIsNullPrincipal() &&
       (storageAccess == StorageAccess::eDeny ||
        (ShouldPartitionStorage(storageAccess) &&
         !StoragePartitioningEnabled(storageAccess, cjs)))) {
@@ -343,14 +234,36 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
     return nullptr;
   }
 
+  nsAutoCString origin;
+  aRv = storagePrincipal->GetOrigin(origin);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  nsString originForEvents;
+  aRv = nsContentUtils::GetWebExposedOriginSerialization(storagePrincipal,
+                                                         originForEvents);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
+  PrincipalInfo storagePrincipalInfo;
+  aRv = PrincipalToPrincipalInfo(storagePrincipal, &storagePrincipalInfo);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
+
   PBroadcastChannelChild* actor = actorChild->SendPBroadcastChannelConstructor(
       storagePrincipalInfo, origin, nsString(aChannel));
+  if (!actor) {
+    // The PBackground actor is shutting down, return a 'generic' error.
+    aRv.Throw(NS_ERROR_FAILURE);
+    return nullptr;
+  }
 
   bc->mActor = static_cast<BroadcastChannelChild*>(actor);
-  MOZ_ASSERT(bc->mActor);
-
   bc->mActor->SetParent(bc);
-  CopyUTF8toUTF16(originNoSuffix, bc->mOriginNoSuffix);
+  bc->mOriginForEvents = std::move(originForEvents);
 
   return bc.forget();
 }
@@ -368,6 +281,10 @@ void BroadcastChannel::PostMessage(JSContext* aCx,
   MOZ_ASSERT(global);
   if (global) {
     agentClusterId = global->GetAgentClusterId();
+  }
+
+  if (!global->IsEligibleForMessaging()) {
+    return;
   }
 
   RefPtr<SharedMessageBody> data = new SharedMessageBody(
@@ -422,13 +339,13 @@ void BroadcastChannel::Shutdown() {
 
       RefPtr<TeardownRunnableOnWorker> runnable =
           new TeardownRunnableOnWorker(workerPrivate, mActor);
-      runnable->Dispatch();
+      runnable->Dispatch(workerPrivate);
     }
 
     mActor = nullptr;
   }
 
-  IgnoreKeepAliveIfHasListenersFor(NS_LITERAL_STRING("message"));
+  IgnoreKeepAliveIfHasListenersFor(nsGkAtoms::onmessage);
 }
 
 void BroadcastChannel::RemoveDocFromBFCache() {
@@ -436,22 +353,9 @@ void BroadcastChannel::RemoveDocFromBFCache() {
     return;
   }
 
-  nsPIDOMWindowInner* window = GetOwner();
-  if (!window) {
-    return;
+  if (nsPIDOMWindowInner* window = GetOwner()) {
+    window->RemoveFromBFCacheSync();
   }
-
-  Document* doc = window->GetExtantDoc();
-  if (!doc) {
-    return;
-  }
-
-  nsCOMPtr<nsIBFCacheEntry> bfCacheEntry = doc->GetBFCacheEntry();
-  if (!bfCacheEntry) {
-    return;
-  }
-
-  bfCacheEntry->RemoveFromBFCacheSync();
 }
 
 void BroadcastChannel::DisconnectFromOwner() {
@@ -461,6 +365,7 @@ void BroadcastChannel::DisconnectFromOwner() {
 
 void BroadcastChannel::MessageReceived(const MessageData& aData) {
   if (NS_FAILED(CheckCurrentGlobalCorrectness())) {
+    RemoveDocFromBFCache();
     return;
   }
 
@@ -510,11 +415,11 @@ void BroadcastChannel::MessageReceived(const MessageData& aData) {
   RootedDictionary<MessageEventInit> init(cx);
   init.mBubbles = false;
   init.mCancelable = false;
-  init.mOrigin = mOriginNoSuffix;
+  init.mOrigin = mOriginForEvents;
   init.mData = value;
 
   RefPtr<MessageEvent> event =
-      MessageEvent::Constructor(this, NS_LITERAL_STRING("message"), init);
+      MessageEvent::Constructor(this, u"message"_ns, init);
 
   event->SetTrusted(true);
 
@@ -530,10 +435,10 @@ void BroadcastChannel::DispatchError(JSContext* aCx) {
   RootedDictionary<MessageEventInit> init(aCx);
   init.mBubbles = false;
   init.mCancelable = false;
-  init.mOrigin = mOriginNoSuffix;
+  init.mOrigin = mOriginForEvents;
 
   RefPtr<Event> event =
-      MessageEvent::Constructor(this, NS_LITERAL_STRING("messageerror"), init);
+      MessageEvent::Constructor(this, u"messageerror"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);

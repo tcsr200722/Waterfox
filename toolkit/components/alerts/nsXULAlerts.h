@@ -7,11 +7,11 @@
 #define nsXULAlerts_h__
 
 #include "nsCycleCollectionParticipant.h"
-#include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
 
 #include "mozIDOMWindow.h"
+#include "nsIAlertsService.h"
 #include "nsIObserver.h"
 
 struct PendingAlert {

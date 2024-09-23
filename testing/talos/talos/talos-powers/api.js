@@ -2,16 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* globals ExtensionAPI */
+/* globals ExtensionAPI, Services, XPCOMUtils */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { ComponentUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ComponentUtils.sys.mjs"
 );
-XPCOMUtils.defineLazyModuleGetters(this, {
-  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
-  OS: "resource://gre/modules/osfile.jsm",
-  Services: "resource://gre/modules/Services.jsm",
-  PerTestCoverageUtils: "resource://testing-common/PerTestCoverageUtils.jsm",
+
+ChromeUtils.defineESModuleGetters(this, {
+  AboutHomeStartupCache: "resource:///modules/BrowserGlue.sys.mjs",
+  AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  PerTestCoverageUtils:
+    "resource://testing-common/PerTestCoverageUtils.sys.mjs",
+  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -21,17 +25,15 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsISubstitutingProtocolHandler"
 );
 
-// To support the 'new TextEncoder()' call inside of 'profilerFinish()' here,
-// we have to import TextEncoder.  It's not automagically defined for us,
-// because we are in a child process, because we are an extension. See second
-// category in https://bugzilla.mozilla.org/show_bug.cgi?id=1501127#c2
+// These are not automagically defined for us because we are an extension.
 //
 // eslint-disable-next-line mozilla/reject-importGlobalProperties
-Cu.importGlobalProperties(["TextEncoder"]);
+Cu.importGlobalProperties(["IOUtils", "PathUtils"]);
 
 const Cm = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
 
 let frameScriptURL;
+let profilerSubtestStartTime;
 
 function TalosPowersService() {
   this.wrappedJSObject = this;
@@ -40,7 +42,7 @@ function TalosPowersService() {
 }
 
 TalosPowersService.prototype = {
-  factory: XPCOMUtils._getFactory(TalosPowersService),
+  factory: ComponentUtils.generateSingletonFactory(TalosPowersService),
   classDescription: "Talos Powers",
   classID: Components.ID("{f5d53443-d58d-4a2f-8df0-98525d4f91ad}"),
   contractID: "@mozilla.org/talos/talos-powers-service;1",
@@ -101,7 +103,7 @@ TalosPowersService.prototype = {
   },
 
   /**
-   * Enable the Gecko Profiler with some settings and then pause immediately.
+   * Enable the Gecko Profiler with some settings.
    *
    * @param data (object)
    *        A JavaScript object with the following properties:
@@ -119,11 +121,9 @@ TalosPowersService.prototype = {
     Services.profiler.StartProfiler(
       data.entries,
       data.interval,
-      ["js", "leaf", "stackwalk", "threads"],
+      data.featuresArray,
       data.threadsArray
     );
-
-    Services.profiler.PauseSampling();
   },
 
   /**
@@ -132,28 +132,28 @@ TalosPowersService.prototype = {
    * the profiles have been dumped. This method returns a Promise that
    * will resolve once this has occurred.
    *
+   * @param profileDir (string)
+   *        The name of the directory to write the profile in.
    * @param profileFile (string)
    *        The name of the file to write to.
    *
    * @returns Promise
    */
-  profilerFinish(profileFile) {
+  profilerFinish(profileDir, profileFile) {
+    const profilePath = PathUtils.join(profileDir, profileFile);
     return new Promise((resolve, reject) => {
+      Services.profiler.Pause();
       Services.profiler.getProfileDataAsync().then(
-        profile => {
-          let encoder = new TextEncoder();
-          let array = encoder.encode(JSON.stringify(profile));
-
-          OS.File.writeAtomic(profileFile, array, {
-            tmpPath: profileFile + ".tmp",
+        profile =>
+          IOUtils.writeJSON(profilePath, profile, {
+            tmpPath: `${profilePath}.tmp`,
           }).then(() => {
             Services.profiler.StopProfiler();
             resolve();
             Services.obs.notifyObservers(null, "talos-profile-gathered");
-          });
-        },
+          }),
         error => {
-          Cu.reportError("Failed to gather profile: " + error);
+          console.error("Failed to gather profile:", error);
           // FIXME: We should probably send a message down to the
           // child which causes it to reject the waiting Promise.
           reject();
@@ -163,40 +163,57 @@ TalosPowersService.prototype = {
   },
 
   /**
-   * Pauses the Profiler, optionally setting a parent process marker before
-   * doing so.
+   * Add a parent process marker to the profiler to indicate the subtest duration.
    *
    * @param marker (string, optional)
-   *        A marker to set before pausing.
+   *        Marker name.
    */
-  profilerPause(marker = null) {
+  profilerSubtestEnd(marker = null, startTime = undefined) {
     if (marker) {
-      Services.profiler.AddMarker(marker);
+      this.addIntervalMarker(marker, startTime ?? profilerSubtestStartTime);
     }
-
-    Services.profiler.PauseSampling();
   },
 
   /**
-   * Resumes a pausedProfiler, optionally setting a parent process marker
-   * after doing so.
+   * * Add a parent process marker to the profiler to indicate the start of the subtest.
    *
    * @param marker (string, optional)
-   *        A marker to set after resuming.
+   *        Marker name.
    */
-  profilerResume(marker = null) {
-    Services.profiler.ResumeSampling();
+  profilerSubtestStart(marker = null) {
+    profilerSubtestStartTime = Cu.now();
 
     if (marker) {
-      Services.profiler.AddMarker(marker);
+      this.addInstantMarker(marker);
     }
+  },
+
+  /**
+   * Adds an instant marker to the Profile in the parent process.
+   *
+   * @param marker (string)  A marker to set.
+   *
+   */
+  addInstantMarker(marker) {
+    ChromeUtils.addProfilerMarker("Talos", { category: "Test" }, marker);
   },
 
   /**
    * Adds a marker to the Profile in the parent process.
+   *
+   * @param marker (string)
+   *        A marker to set.
+   *
+   * @param startTime (number)
+   *        Start time, used to create an interval profile marker. If
+   *        undefined, a single instance marker will be placed.
    */
-  profilerMarker(marker) {
-    Services.profiler.AddMarker(marker);
+  addIntervalMarker(marker, startTime) {
+    ChromeUtils.addProfilerMarker(
+      "Talos",
+      { startTime, category: "Test" },
+      marker
+    );
   },
 
   receiveProfileCommand(message) {
@@ -218,37 +235,40 @@ TalosPowersService.prototype = {
 
       case "Profiler:Finish": {
         // The test is done. Dump the profile.
-        this.profilerFinish(data.profileFile).then(() => {
+        this.profilerFinish(data.profileDir, data.profileFile).then(() => {
           mm.sendAsyncMessage(ACK_NAME, { name });
         });
         break;
       }
 
-      case "Profiler:Pause": {
-        this.profilerPause(data.marker);
+      case "Profiler:SubtestEnd": {
+        this.profilerSubtestEnd(data.marker, data.startTime);
         mm.sendAsyncMessage(ACK_NAME, { name });
         break;
       }
 
-      case "Profiler:Resume": {
-        this.profilerResume(data.marker);
+      case "Profiler:SubtestStart": {
+        this.profilerSubtestStart(data.marker);
         mm.sendAsyncMessage(ACK_NAME, { name });
         break;
       }
 
       case "Profiler:Marker": {
-        this.profilerMarker(data.marker);
+        this.profilerMarker(data.marker, data.startTime);
         mm.sendAsyncMessage(ACK_NAME, { name });
+        break;
       }
     }
   },
 
   async forceQuit(messageData) {
-    if (messageData && messageData.waitForSafeBrowsing) {
-      let SafeBrowsing = ChromeUtils.import(
-        "resource://gre/modules/SafeBrowsing.jsm",
-        {}
-      ).SafeBrowsing;
+    if (messageData && messageData.waitForStartupFinished) {
+      // We can wait for various startup items here to complete during
+      // the getInfo.html step for Talos so that subsequent runs don't
+      // have to do things like re-request the SafeBrowsing list.
+      let { SafeBrowsing } = ChromeUtils.importESModule(
+        "resource://gre/modules/SafeBrowsing.sys.mjs"
+      );
 
       // Speed things up in case nobody else called this:
       SafeBrowsing.init();
@@ -258,7 +278,35 @@ TalosPowersService.prototype = {
       } catch (e) {
         // We don't care if things go wrong here - let's just shut down.
       }
+
+      // We wait for the AboutNewTab's TopSitesFeed (and its "Contile"
+      // integration, which shows the sponsored Top Sites) to finish
+      // being enabled here. This is because it's possible for getInfo.html
+      // to run so quickly that the feed will still be initializing, and
+      // that would cause us to write a mostly empty cache to the
+      // about:home startup cache on shutdown, which causes that test
+      // to break periodically.
+      AboutNewTab.onBrowserReady();
+      // There aren't currently any easily observable notifications or
+      // events to let us know when the feed is ready, so we'll just poll
+      // for now.
+      let pollForFeed = async function () {
+        let foundFeed = AboutNewTab.activityStream.store.feeds.get(
+          "feeds.system.topsites"
+        );
+        if (!foundFeed) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          return pollForFeed();
+        }
+        return foundFeed;
+      };
+      let feed = await pollForFeed();
+      await feed._contile.refresh();
+      await feed.refresh({ broadcast: true });
+      await AboutHomeStartupCache.cacheNow();
     }
+
+    await SessionStore.promiseAllWindowsRestored;
 
     // Check to see if the top-most browser window still needs to fire its
     // idle tasks notification. If so, we'll wait for it before shutting
@@ -266,7 +314,7 @@ TalosPowersService.prototype = {
     // keys off of that notification.
     let topWin = BrowserWindowTracker.getTopWindow();
     if (topWin && topWin.gBrowserInit) {
-      await topWin.gBrowserInit.idleTasksFinishedPromise;
+      await topWin.gBrowserInit.idleTasksFinished.promise;
     }
 
     for (let domWindow of Services.wm.getEnumerator(null)) {
@@ -284,12 +332,12 @@ TalosPowersService.prototype = {
     let mm = message.target.messageManager;
     let startupInfo = Services.startup.getStartupInfo();
 
-    if (!startupInfo.firstPaint) {
+    if (!startupInfo.firstPaint2) {
       // It's possible that we were called early enough that
-      // the firstPaint measurement hasn't been set yet. In
+      // the firstPaint2 measurement hasn't been set yet. In
       // that case, we set up an observer for the next time
       // a window is painted and re-retrieve the startup info.
-      let obs = function(subject, topic) {
+      let obs = function (subject, topic) {
         Services.obs.removeObserver(this, topic);
         startupInfo = Services.startup.getStartupInfo();
         mm.sendAsyncMessage(
@@ -323,7 +371,7 @@ TalosPowersService.prototype = {
     },
   */
   ParentExecServices: {
-    ping(arg, callback, win) {
+    ping(arg, callback) {
       callback();
     },
 
@@ -339,22 +387,22 @@ TalosPowersService.prototype = {
       callback(rv);
     },
 
-    requestDumpCoverageCounters(arg, callback, win) {
+    requestDumpCoverageCounters(arg, callback) {
       PerTestCoverageUtils.afterTest().then(callback);
     },
 
-    requestResetCoverageCounters(arg, callback, win) {
+    requestResetCoverageCounters(arg, callback) {
       PerTestCoverageUtils.beforeTest().then(callback);
     },
 
-    dumpAboutSupport(arg, callback, win) {
-      const { Troubleshoot } = ChromeUtils.import(
-        "resource://gre/modules/Troubleshoot.jsm"
+    dumpAboutSupport(arg, callback) {
+      const { Troubleshoot } = ChromeUtils.importESModule(
+        "resource://gre/modules/Troubleshoot.sys.mjs"
       );
-      Troubleshoot.snapshot(function(snapshot) {
+      Troubleshoot.snapshot().then(snapshot => {
         dump("about:support\t" + JSON.stringify(snapshot) + "\n");
+        callback();
       });
-      callback();
     },
   },
 
@@ -391,7 +439,7 @@ this.talos_powers = class extends ExtensionAPI {
       resProto.ALLOW_CONTENT_ACCESS
     );
 
-    frameScriptURL = this.extension.baseURI.resolve(
+    frameScriptURL = this.extension.rootURI.resolve(
       "chrome/talos-powers-content.js"
     );
 

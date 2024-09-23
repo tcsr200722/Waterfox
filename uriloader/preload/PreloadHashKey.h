@@ -7,12 +7,14 @@
 
 #include "mozilla/CORSMode.h"
 #include "mozilla/css/SheetParsingMode.h"
-#include "mozilla/dom/ReferrerPolicyBinding.h"
-#include "mozilla/dom/ScriptKind.h"
+#include "js/loader/ScriptKind.h"
 #include "nsURIHashKey.h"
 
 class nsIPrincipal;
-class nsIReferrerInfo;
+
+namespace JS::loader {
+enum class ScriptKind;
+}
 
 namespace mozilla {
 
@@ -34,8 +36,8 @@ class PreloadHashKey : public nsURIHashKey {
  public:
   enum class ResourceType : uint8_t { NONE, SCRIPT, STYLE, IMAGE, FONT, FETCH };
 
-  typedef PreloadHashKey* KeyType;
-  typedef const PreloadHashKey* KeyTypePointer;
+  using KeyType = const PreloadHashKey&;
+  using KeyTypePointer = const PreloadHashKey*;
 
   PreloadHashKey() = default;
   PreloadHashKey(const nsIURI* aKey, ResourceType aAs);
@@ -45,45 +47,37 @@ class PreloadHashKey : public nsURIHashKey {
   PreloadHashKey& operator=(const PreloadHashKey& aOther);
 
   // Construct key for "script"
-  static PreloadHashKey CreateAsScript(
-      nsIURI* aURI, const CORSMode& aCORSMode,
-      const dom::ScriptKind& aScriptKind,
-      const dom::ReferrerPolicy& aReferrerPolicy);
-  static PreloadHashKey CreateAsScript(
-      nsIURI* aURI, const nsAString& aCrossOrigin, const nsAString& aType,
-      const dom::ReferrerPolicy& aReferrerPolicy);
+  static PreloadHashKey CreateAsScript(nsIURI* aURI, CORSMode aCORSMode,
+                                       JS::loader::ScriptKind aScriptKind);
+  static PreloadHashKey CreateAsScript(nsIURI* aURI,
+                                       const nsAString& aCrossOrigin,
+                                       const nsAString& aType);
 
   // Construct key for "style"
   static PreloadHashKey CreateAsStyle(nsIURI* aURI, nsIPrincipal* aPrincipal,
-                                      nsIReferrerInfo* aReferrerInfo,
                                       CORSMode aCORSMode,
                                       css::SheetParsingMode aParsingMode);
   static PreloadHashKey CreateAsStyle(css::SheetLoadData&);
 
   // Construct key for "image"
-  static PreloadHashKey CreateAsImage(
-      nsIURI* aURI, nsIPrincipal* aPrincipal, CORSMode aCORSMode,
-      dom::ReferrerPolicy const& aReferrerPolicy);
+  static PreloadHashKey CreateAsImage(nsIURI* aURI, nsIPrincipal* aPrincipal,
+                                      CORSMode aCORSMode);
 
   // Construct key for "fetch"
-  static PreloadHashKey CreateAsFetch(
-      nsIURI* aURI, const CORSMode aCORSMode,
-      const dom::ReferrerPolicy& aReferrerPolicy);
-  static PreloadHashKey CreateAsFetch(
-      nsIURI* aURI, const nsAString& aCrossOrigin,
-      const dom::ReferrerPolicy& aReferrerPolicy);
+  static PreloadHashKey CreateAsFetch(nsIURI* aURI, CORSMode aCORSMode);
+  static PreloadHashKey CreateAsFetch(nsIURI* aURI,
+                                      const nsAString& aCrossOrigin);
 
   // Construct key for "font"
-  static PreloadHashKey CreateAsFont(
-      nsIURI* aURI, const CORSMode aCORSMode,
-      const dom::ReferrerPolicy& aReferrerPolicy);
+  static PreloadHashKey CreateAsFont(nsIURI* aURI, CORSMode aCORSMode);
 
-  KeyType GetKey() const { return const_cast<PreloadHashKey*>(this); }
+  KeyType GetKey() const { return *this; }
   KeyTypePointer GetKeyPointer() const { return this; }
-  static KeyTypePointer KeyToPointer(KeyType aKey) { return aKey; }
+  static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
 
   bool KeyEquals(KeyTypePointer aOther) const;
   static PLDHashNumber HashKey(KeyTypePointer aKey);
+  ResourceType As() const { return mAs; }
 
 #ifdef MOZILLA_INTERNAL_API
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
@@ -99,15 +93,13 @@ class PreloadHashKey : public nsURIHashKey {
   ResourceType mAs = ResourceType::NONE;
 
   CORSMode mCORSMode = CORS_NONE;
-  enum dom::ReferrerPolicy mReferrerPolicy = dom::ReferrerPolicy::_empty;
   nsCOMPtr<nsIPrincipal> mPrincipal;
 
   struct {
-    dom::ScriptKind mScriptKind = dom::ScriptKind::eClassic;
+    JS::loader::ScriptKind mScriptKind = JS::loader::ScriptKind::eClassic;
   } mScript;
 
   struct {
-    nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
     css::SheetParsingMode mParsingMode = css::eAuthorSheetFeatures;
   } mStyle;
 };

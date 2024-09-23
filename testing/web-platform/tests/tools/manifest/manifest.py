@@ -1,50 +1,31 @@
-import io
-import itertools
-import json
 import os
+from atomicwrites import atomic_write
 from copy import deepcopy
-from multiprocessing import Pool, cpu_count
-from six import (
-    PY3,
-    binary_type,
-    ensure_text,
-    iteritems,
-    itervalues,
-    string_types,
-    text_type,
-)
+from logging import Logger
+from multiprocessing import Pool
+from typing import (Any, Callable, Container, Dict, IO, Iterator, Iterable, Optional, Set, Text, Tuple, Type,
+                    Union)
 
+from . import jsonlib
 from . import vcs
-from .item import (ConformanceCheckerTest, ManifestItem, ManualTest, RefTest, SupportFile,
-                   TestharnessTest, VisualTest, WebDriverSpecTest, CrashTest)
+from .item import (ConformanceCheckerTest,
+                   CrashTest,
+                   ManifestItem,
+                   ManualTest,
+                   PrintRefTest,
+                   RefTest,
+                   SpecItem,
+                   SupportFile,
+                   TestharnessTest,
+                   VisualTest,
+                   WebDriverSpecTest)
 from .log import get_logger
+from .mputil import max_parallelism
 from .sourcefile import SourceFile
 from .typedata import TypeData
 
-MYPY = False
-if MYPY:
-    # MYPY is set to True when run under Mypy.
-    from logging import Logger
-    from typing import Any
-    from typing import Container
-    from typing import Dict
-    from typing import IO
-    from typing import Iterator
-    from typing import Iterable
-    from typing import Optional
-    from typing import Set
-    from typing import Text
-    from typing import Tuple
-    from typing import Type
-    from typing import Union
 
-try:
-    import ujson
-    fast_json = ujson
-except ImportError:
-    fast_json = json  # type: ignore
-
-CURRENT_VERSION = 8  # type: int
+CURRENT_VERSION: int = 8
 
 
 class ManifestError(Exception):
@@ -55,108 +36,111 @@ class ManifestVersionMismatch(ManifestError):
     pass
 
 
-item_classes = {"testharness": TestharnessTest,
-                "reftest": RefTest,
-                "crashtest": CrashTest,
-                "manual": ManualTest,
-                "wdspec": WebDriverSpecTest,
-                "conformancechecker": ConformanceCheckerTest,
-                "visual": VisualTest,
-                "support": SupportFile}  # type: Dict[str, Type[ManifestItem]]
+class InvalidCacheError(Exception):
+    pass
 
 
-def compute_manifest_items(source_file):
-    # type: (SourceFile) -> Tuple[Tuple[Text, ...], Text, Set[ManifestItem], Text]
+item_classes: Dict[Text, Type[ManifestItem]] = {"testharness": TestharnessTest,
+                                                "reftest": RefTest,
+                                                "print-reftest": PrintRefTest,
+                                                "crashtest": CrashTest,
+                                                "manual": ManualTest,
+                                                "wdspec": WebDriverSpecTest,
+                                                "conformancechecker": ConformanceCheckerTest,
+                                                "visual": VisualTest,
+                                                "spec": SpecItem,
+                                                "support": SupportFile}
+
+
+def compute_manifest_items(source_file: SourceFile) -> Optional[Tuple[Tuple[Text, ...], Text, Set[ManifestItem], Text]]:
     rel_path_parts = source_file.rel_path_parts
     new_type, manifest_items = source_file.manifest_items()
     file_hash = source_file.hash
     return rel_path_parts, new_type, set(manifest_items), file_hash
 
-if MYPY:
-    ManifestDataType = Dict[Any, TypeData]
-else:
-    ManifestDataType = dict
+
+def compute_manifest_spec_items(source_file: SourceFile) -> Optional[Tuple[Tuple[Text, ...], Text, Set[ManifestItem], Text]]:
+    spec_tuple = source_file.manifest_spec_items()
+    if not spec_tuple:
+        return None
+
+    new_type, manifest_items = spec_tuple
+    rel_path_parts = source_file.rel_path_parts
+    file_hash = source_file.hash
+    return rel_path_parts, new_type, set(manifest_items), file_hash
+
+
+ManifestDataType = Dict[Any, TypeData]
+
 
 class ManifestData(ManifestDataType):
-    def __init__(self, manifest):
-        # type: (Manifest) -> None
+    def __init__(self, manifest: "Manifest") -> None:
         """Dictionary subclass containing a TypeData instance for each test type,
         keyed by type name"""
-        self.initialized = False  # type: bool
-        for key, value in iteritems(item_classes):
+        self.initialized: bool = False
+        for key, value in item_classes.items():
             self[key] = TypeData(manifest, value)
         self.initialized = True
-        self.json_obj = None  # type: None
+        self.json_obj: None = None
 
-    def __setitem__(self, key, value):
-        # type: (str, TypeData) -> None
+    def __setitem__(self, key: Text, value: TypeData) -> None:
         if self.initialized:
             raise AttributeError
         dict.__setitem__(self, key, value)
 
-    def paths(self):
-        # type: () -> Set[Text]
+    def paths(self) -> Set[Text]:
         """Get a list of all paths containing test items
         without actually constructing all the items"""
-        rv = set()  # type: Set[Text]
-        for item_data in itervalues(self):
+        rv: Set[Text] = set()
+        for item_data in self.values():
             for item in item_data:
                 rv.add(os.path.sep.join(item))
         return rv
 
-    def type_by_path(self):
-        # type: () -> Dict[Tuple[Text, ...], str]
+    def type_by_path(self) -> Dict[Tuple[Text, ...], Text]:
         rv = {}
-        for item_type, item_data in iteritems(self):
+        for item_type, item_data in self.items():
             for item in item_data:
                 rv[item] = item_type
         return rv
 
 
-
-class Manifest(object):
-    def __init__(self, tests_root=None, url_base="/"):
-        # type: (Optional[str], Text) -> None
+class Manifest:
+    def __init__(self, tests_root: Text, url_base: Text = "/") -> None:
         assert url_base is not None
-        self._data = ManifestData(self)  # type: ManifestData
-        self.tests_root = tests_root  # type: Optional[str]
-        self.url_base = url_base  # type: Text
+        self._data: ManifestData = ManifestData(self)
+        self.tests_root: Text = tests_root
+        self.url_base: Text = url_base
 
-    def __iter__(self):
-        # type: () -> Iterator[Tuple[str, Text, Set[ManifestItem]]]
+    def __iter__(self) -> Iterator[Tuple[Text, Text, Set[ManifestItem]]]:
         return self.itertypes()
 
-    def itertypes(self, *types):
-        # type: (*str) -> Iterator[Tuple[str, Text, Set[ManifestItem]]]
+    def itertypes(self, *types: Text) -> Iterator[Tuple[Text, Text, Set[ManifestItem]]]:
         for item_type in (types or sorted(self._data.keys())):
             for path in self._data[item_type]:
-                str_path = os.sep.join(path)
+                rel_path = os.sep.join(path)
                 tests = self._data[item_type][path]
-                yield item_type, str_path, tests
+                yield item_type, rel_path, tests
 
-    def iterpath(self, path):
-        # type: (Text) -> Iterable[ManifestItem]
+    def iterpath(self, path: Text) -> Iterable[ManifestItem]:
         tpath = tuple(path.split(os.path.sep))
 
         for type_tests in self._data.values():
             i = type_tests.get(tpath, set())
             assert i is not None
-            for test in i:
-                yield test
+            yield from i
 
-    def iterdir(self, dir_name):
-        # type: (Text) -> Iterable[ManifestItem]
+    def iterdir(self, dir_name: Text) -> Iterable[ManifestItem]:
         tpath = tuple(dir_name.split(os.path.sep))
         tpath_len = len(tpath)
 
         for type_tests in self._data.values():
-            for path, tests in iteritems(type_tests):
+            for path, tests in type_tests.items():
                 if path[:tpath_len] == tpath:
-                    for test in tests:
-                        yield test
+                    yield from tests
 
-    def update(self, tree, parallel=True):
-        # type: (Iterable[Tuple[Union[SourceFile, bytes], bool]], bool) -> bool
+    def update(self, tree: Iterable[Tuple[Text, Optional[Text], bool]], parallel: bool = True,
+               update_func: Callable[..., Any] = compute_manifest_items) -> bool:
         """Update the manifest given an iterable of items that make up the updated manifest.
 
         The iterable must either generate tuples of the form (SourceFile, True) for paths
@@ -165,6 +149,8 @@ class Manifest(object):
         constructed in the case we are not updating a path, but the absence of an item from
         the iterator may be used to remove defunct entries from the manifest."""
 
+        logger = get_logger()
+
         changed = False
 
         # Create local variable references to these dicts so we avoid the
@@ -172,73 +158,94 @@ class Manifest(object):
         data = self._data
 
         types = data.type_by_path()
-        deleted = set(types)
+        remaining_manifest_paths = set(types)
 
         to_update = []
 
-        for source_file_or_path, update in tree:
-            if not update:
-                assert isinstance(source_file_or_path, (binary_type, text_type))
-                path = ensure_text(source_file_or_path)
-                deleted.remove(tuple(path.split(os.path.sep)))
-            else:
-                assert not isinstance(source_file_or_path, (binary_type, text_type))
-                source_file = source_file_or_path
-                rel_path_parts = source_file.rel_path_parts
-                assert isinstance(rel_path_parts, tuple)
+        for path, file_hash, updated in tree:
+            path_parts = tuple(path.split(os.path.sep))
+            is_new = path_parts not in remaining_manifest_paths
 
-                is_new = rel_path_parts not in deleted  # type: bool
-                hash_changed = False  # type: bool
+            if not updated and is_new:
+                # This is kind of a bandaid; if we ended up here the cache
+                # was invalid but we've been using it anyway. That's obviously
+                # bad; we should fix the underlying issue that we sometimes
+                # use an invalid cache. But at least this fixes the immediate
+                # problem
+                raise InvalidCacheError
+
+            if not updated:
+                remaining_manifest_paths.remove(path_parts)
+            else:
+                assert self.tests_root is not None
+                source_file = SourceFile(self.tests_root,
+                                         path,
+                                         self.url_base,
+                                         file_hash)
+
+                hash_changed: bool = False
 
                 if not is_new:
-                    deleted.remove(rel_path_parts)
-                    old_type = types[rel_path_parts]
-                    old_hash = data[old_type].hashes[rel_path_parts]
-                    file_hash = source_file.hash  # type: Text
+                    if file_hash is None:
+                        file_hash = source_file.hash
+                    remaining_manifest_paths.remove(path_parts)
+                    old_type = types[path_parts]
+                    old_hash = data[old_type].hashes[path_parts]
                     if old_hash != file_hash:
                         hash_changed = True
-                        del data[old_type][rel_path_parts]
+                        del data[old_type][path_parts]
 
                 if is_new or hash_changed:
                     to_update.append(source_file)
 
         if to_update:
+            logger.debug("Computing manifest update for %s items" % len(to_update))
             changed = True
 
-        if parallel and len(to_update) > 25 and cpu_count() > 1:
-            # 25 derived experimentally (2020-01) to be approximately
-            # the point at which it is quicker to create Pool and
-            # parallelize this
-            pool = Pool()
+        # 25 items was derived experimentally (2020-01) to be approximately the
+        # point at which it is quicker to create a Pool and parallelize update.
+        pool = None
+        processes = max_parallelism()
+        if parallel and len(to_update) > 25 and processes > 1:
+            pool = Pool(processes)
 
             # chunksize set > 1 when more than 10000 tests, because
             # chunking is a net-gain once we get to very large numbers
             # of items (again, experimentally, 2020-01)
-            results = pool.imap_unordered(compute_manifest_items,
-                                          to_update,
-                                          chunksize=max(1, len(to_update) // 10000)
-                                          )  # type: Iterator[Tuple[Tuple[Text, ...], Text, Set[ManifestItem], Text]]
-        elif PY3:
-            results = map(compute_manifest_items, to_update)
+            chunksize = max(1, len(to_update) // 10000)
+            logger.debug("Doing a multiprocessed update. "
+                "Processes: %s, chunksize: %s" % (processes, chunksize))
+            results: Iterator[Optional[Tuple[Tuple[Text, ...],
+                                    Text,
+                                    Set[ManifestItem], Text]]] = pool.imap_unordered(
+                                        update_func,
+                                        to_update,
+                                        chunksize=chunksize)
         else:
-            results = itertools.imap(compute_manifest_items, to_update)
+            results = map(update_func, to_update)
 
         for result in results:
+            if not result:
+                continue
             rel_path_parts, new_type, manifest_items, file_hash = result
             data[new_type][rel_path_parts] = manifest_items
             data[new_type].hashes[rel_path_parts] = file_hash
 
-        if deleted:
+        # Make sure to terminate the Pool, to avoid hangs on Python 3.
+        # https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool
+        if pool is not None:
+            pool.terminate()
+
+        if remaining_manifest_paths:
             changed = True
-            for rel_path_parts in deleted:
-                for test_data in itervalues(data):
+            for rel_path_parts in remaining_manifest_paths:
+                for test_data in data.values():
                     if rel_path_parts in test_data:
                         del test_data[rel_path_parts]
 
         return changed
 
-    def to_json(self, caller_owns_obj=True):
-        # type: (bool) -> Dict[Text, Any]
+    def to_json(self, caller_owns_obj: bool = True) -> Dict[Text, Any]:
         """Dump a manifest into a object which can be serialized as JSON
 
         If caller_owns_obj is False, then the return value remains
@@ -251,20 +258,23 @@ class Manifest(object):
         """
         out_items = {
             test_type: type_paths.to_json()
-            for test_type, type_paths in iteritems(self._data) if type_paths
+            for test_type, type_paths in self._data.items() if type_paths
         }
 
         if caller_owns_obj:
             out_items = deepcopy(out_items)
 
-        rv = {"url_base": self.url_base,
+        rv: Dict[Text, Any] = {"url_base": self.url_base,
               "items": out_items,
-              "version": CURRENT_VERSION}  # type: Dict[Text, Any]
+              "version": CURRENT_VERSION}
         return rv
 
     @classmethod
-    def from_json(cls, tests_root, obj, types=None, callee_owns_obj=False):
-        # type: (str, Dict[Text, Any], Optional[Container[Text]], bool) -> Manifest
+    def from_json(cls,
+                  tests_root: Text,
+                  obj: Dict[Text, Any],
+                  types: Optional[Container[Text]] = None,
+                  callee_owns_obj: bool = False) -> "Manifest":
         """Load a manifest from a JSON object
 
         This loads a manifest for a given local test_root path from an
@@ -285,7 +295,7 @@ class Manifest(object):
         if not hasattr(obj, "items"):
             raise ManifestError
 
-        for test_type, type_paths in iteritems(obj["items"]):
+        for test_type, type_paths in obj["items"].items():
             if test_type not in item_classes:
                 raise ManifestError
 
@@ -300,48 +310,46 @@ class Manifest(object):
         return self
 
 
-def load(tests_root, manifest, types=None):
-    # type: (str, Union[IO[bytes], str], Optional[Container[Text]]) -> Optional[Manifest]
+def load(tests_root: Text, manifest: Union[IO[bytes], Text], types: Optional[Container[Text]] = None) -> Optional[Manifest]:
     logger = get_logger()
 
     logger.warning("Prefer load_and_update instead")
     return _load(logger, tests_root, manifest, types)
 
 
-__load_cache = {}  # type: Dict[str, Manifest]
+__load_cache: Dict[Text, Manifest] = {}
 
 
-def _load(logger,  # type: Logger
-          tests_root,  # type: str
-          manifest,  # type: Union[IO[bytes], str]
-          types=None,  # type: Optional[Container[Text]]
-          allow_cached=True  # type: bool
-          ):
-    # type: (...) -> Optional[Manifest]
-    manifest_path = (manifest if isinstance(manifest, string_types)
+def _load(logger: Logger,
+          tests_root: Text,
+          manifest: Union[IO[bytes], Text],
+          types: Optional[Container[Text]] = None,
+          allow_cached: bool = True
+          ) -> Optional[Manifest]:
+    manifest_path = (manifest if isinstance(manifest, str)
                      else manifest.name)
     if allow_cached and manifest_path in __load_cache:
         return __load_cache[manifest_path]
 
-    if isinstance(manifest, string_types):
+    if isinstance(manifest, str):
         if os.path.exists(manifest):
             logger.debug("Opening manifest at %s" % manifest)
         else:
             logger.debug("Creating new manifest at %s" % manifest)
         try:
-            with io.open(manifest, "r", encoding="utf-8") as f:
+            with open(manifest, encoding="utf-8") as f:
                 rv = Manifest.from_json(tests_root,
-                                        fast_json.load(f),
+                                        jsonlib.load(f),
                                         types=types,
                                         callee_owns_obj=True)
-        except IOError:
+        except OSError:
             return None
         except ValueError:
             logger.warning("%r may be corrupted", manifest)
             return None
     else:
         rv = Manifest.from_json(tests_root,
-                                fast_json.load(manifest),
+                                jsonlib.load(manifest),
                                 types=types,
                                 callee_owns_obj=True)
 
@@ -350,20 +358,20 @@ def _load(logger,  # type: Logger
     return rv
 
 
-def load_and_update(tests_root,  # type: bytes
-                    manifest_path,  # type: bytes
-                    url_base,  # type: Text
-                    update=True,  # type: bool
-                    rebuild=False,  # type: bool
-                    metadata_path=None,  # type: Optional[bytes]
-                    cache_root=None,  # type: Optional[bytes]
-                    working_copy=True,  # type: bool
-                    types=None,  # type: Optional[Container[Text]]
-                    write_manifest=True,  # type: bool
-                    allow_cached=True,  # type: bool
-                    parallel=True  # type: bool
-                    ):
-    # type: (...) -> Manifest
+def load_and_update(tests_root: Text,
+                    manifest_path: Text,
+                    url_base: Text,
+                    update: bool = True,
+                    rebuild: bool = False,
+                    metadata_path: Optional[Text] = None,
+                    cache_root: Optional[Text] = None,
+                    working_copy: bool = True,
+                    types: Optional[Container[Text]] = None,
+                    write_manifest: bool = True,
+                    allow_cached: bool = True,
+                    parallel: bool = True
+                    ) -> Manifest:
+
     logger = get_logger()
 
     manifest = None
@@ -376,6 +384,8 @@ def load_and_update(tests_root,  # type: bytes
                              allow_cached=allow_cached)
         except ManifestVersionMismatch:
             logger.info("Manifest version changed, rebuilding")
+        except ManifestError:
+            logger.warning("Failed to load manifest, rebuilding")
 
         if manifest is not None and manifest.url_base != url_base:
             logger.info("Manifest url base did not match, rebuilding")
@@ -387,9 +397,19 @@ def load_and_update(tests_root,  # type: bytes
         update = True
 
     if rebuild or update:
-        tree = vcs.get_tree(tests_root, manifest, manifest_path, cache_root,
-                            working_copy, rebuild)
-        changed = manifest.update(tree, parallel)
+        logger.info("Updating manifest")
+        for retry in range(2):
+            try:
+                tree = vcs.get_tree(tests_root, manifest, manifest_path, cache_root,
+                                    working_copy, rebuild)
+                changed = manifest.update(tree, parallel)
+                break
+            except InvalidCacheError:
+                logger.warning("Manifest cache was invalid, doing a complete rebuild")
+                rebuild = True
+        else:
+            # If we didn't break there was an error
+            raise
         if write_manifest and changed:
             write(manifest, manifest_path)
         tree.dump_caches()
@@ -397,14 +417,12 @@ def load_and_update(tests_root,  # type: bytes
     return manifest
 
 
-def write(manifest, manifest_path):
-    # type: (Manifest, bytes) -> None
+def write(manifest: Manifest, manifest_path: Text) -> None:
     dir_name = os.path.dirname(manifest_path)
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
-    with open(manifest_path, "w") as f:
+    with atomic_write(manifest_path, overwrite=True) as f:
         # Use ',' instead of the default ', ' separator to prevent trailing
         # spaces: https://docs.python.org/2/library/json.html#json.dump
-        json.dump(manifest.to_json(caller_owns_obj=True), f,
-                  sort_keys=True, indent=1, separators=(',', ': '))
+        jsonlib.dump_dist(manifest.to_json(caller_owns_obj=True), f)
         f.write("\n")

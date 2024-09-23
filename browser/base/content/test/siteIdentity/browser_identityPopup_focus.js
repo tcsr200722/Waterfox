@@ -6,7 +6,7 @@ async function focusIdentityBox() {
   gURLBar.inputField.focus();
   is(document.activeElement, gURLBar.inputField, "urlbar should be focused");
   const focused = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityBox,
+    gIdentityHandler._identityIconBox,
     "focus"
   );
   EventUtils.synthesizeKey("VK_TAB", { shiftKey: true });
@@ -17,16 +17,18 @@ async function focusIdentityBox() {
 // Access the identity popup via mouseclick. Focus should not be moved inside.
 add_task(async function testIdentityPopupFocusClick() {
   await SpecialPowers.pushPrefEnv({ set: [["accessibility.tabfocus", 7]] });
-  await BrowserTestUtils.withNewTab("https://example.com", async function() {
+  await BrowserTestUtils.withNewTab("https://example.com", async function () {
     let shown = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      window,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
-    EventUtils.synthesizeMouseAtCenter(gIdentityHandler._identityBox, {});
+    EventUtils.synthesizeMouseAtCenter(gIdentityHandler._identityIconBox, {});
     await shown;
     isnot(
       Services.focus.focusedElement,
-      document.getElementById("identity-popup-security-expander")
+      document.getElementById("identity-popup-security-button")
     );
   });
 });
@@ -34,17 +36,19 @@ add_task(async function testIdentityPopupFocusClick() {
 // Access the identity popup via keyboard. Focus should be moved inside.
 add_task(async function testIdentityPopupFocusKeyboard() {
   await SpecialPowers.pushPrefEnv({ set: [["accessibility.tabfocus", 7]] });
-  await BrowserTestUtils.withNewTab("https://example.com", async function() {
+  await BrowserTestUtils.withNewTab("https://example.com", async function () {
     await focusIdentityBox();
     let shown = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      window,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
     EventUtils.sendString(" ");
     await shown;
     is(
       Services.focus.focusedElement,
-      document.getElementById("identity-popup-security-expander")
+      document.getElementById("identity-popup-security-button")
     );
   });
 });
@@ -53,18 +57,20 @@ add_task(async function testIdentityPopupFocusKeyboard() {
 // Tabbing should be able to reach the More Information button.
 add_task(async function testSiteSecurityTabOrder() {
   await SpecialPowers.pushPrefEnv({ set: [["accessibility.tabfocus", 7]] });
-  await BrowserTestUtils.withNewTab("https://example.com", async function() {
+  await BrowserTestUtils.withNewTab("https://example.com", async function () {
     // 1. Access the identity popup.
     await focusIdentityBox();
     let shown = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      window,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
     EventUtils.sendString(" ");
     await shown;
     is(
       Services.focus.focusedElement,
-      document.getElementById("identity-popup-security-expander")
+      document.getElementById("identity-popup-security-button")
     );
 
     // 2. Access the Site Security section.

@@ -1,47 +1,31 @@
-from __future__ import unicode_literals
-
 import abc
 import inspect
 import os
 import re
-
-import six
-
-MYPY = False
-if MYPY:
-    # MYPY is set to True when run under Mypy.
-    from typing import Any, List, Match, Optional, Pattern, Text, Tuple, cast
-    Error = Tuple[Text, Text, Text, Optional[int]]
+from typing import Any, List, Match, Optional, Pattern, Text, Tuple, cast
 
 
-def collapse(text):
-    # type: (Text) -> Text
+Error = Tuple[str, str, str, Optional[int]]
+
+def collapse(text: Text) -> Text:
     return inspect.cleandoc(str(text)).replace("\n", " ")
 
 
-class Rule(six.with_metaclass(abc.ABCMeta)):
+class Rule(metaclass=abc.ABCMeta):
     @abc.abstractproperty
-    def name(self):
-        # type: () -> Text
+    def name(self) -> Text:
         pass
 
     @abc.abstractproperty
-    def description(self):
-        # type: () -> Text
+    def description(self) -> Text:
         pass
 
-    to_fix = None  # type: Optional[Text]
+    to_fix: Optional[Text] = None
 
     @classmethod
-    def error(cls, path, context=(), line_no=None):
-        # type: (Text, Tuple[Any, ...], Optional[int]) -> Error
-        if MYPY:
-            name = cast(Text, cls.name)
-            description = cast(Text, cls.description)
-        else:
-            name = cls.name
-            description = cls.description
-        description = description % context
+    def error(cls, path: Text, context: Tuple[Any, ...] = (), line_no: Optional[int] = None) -> Error:
+        name = cast(str, cls.name)
+        description = cast(str, cls.description) % context
         return (name, description, path, line_no)
 
 
@@ -81,6 +65,18 @@ class GitIgnoreFile(Rule):
     description = ".gitignore found outside the root"
 
 
+class MojomJSFile(Rule):
+    name = "MOJOM-JS"
+    description = "Don't check *.mojom.js files into WPT"
+    to_fix = """
+        Check if the file is already included in mojojs.zip:
+        https://source.chromium.org/chromium/chromium/src/+/master:chrome/tools/build/linux/FILES.cfg
+        If yes, use `loadMojoResources` from `resources/test-only-api.js` to load
+        it; if not, contact ecosystem-infra@chromium.org for adding new files
+        to mojojs.zip.
+    """
+
+
 class AhemCopy(Rule):
     name = "AHEM COPY"
     description = "Don't add extra copies of Ahem, use /fonts/Ahem.ttf"
@@ -98,26 +94,6 @@ class IgnoredPath(Rule):
         %s matches an ignore filter in .gitignore - please add a .gitignore
         exception
     """)
-
-
-class CSSCollidingTestName(Rule):
-    name = "CSS-COLLIDING-TEST-NAME"
-    description = "The filename %s in the %s testsuite is shared by: %s"
-
-
-class CSSCollidingRefName(Rule):
-    name = "CSS-COLLIDING-REF-NAME"
-    description = "The filename %s is shared by: %s"
-
-
-class CSSCollidingSupportName(Rule):
-    name = "CSS-COLLIDING-SUPPORT-NAME"
-    description = "The filename %s is shared by: %s"
-
-
-class SupportWrongDir(Rule):
-    name = "SUPPORT-WRONG-DIR"
-    description = "Support file not in support directory"
 
 
 class ParseFailed(Rule):
@@ -180,8 +156,18 @@ class MultipleTestharness(Rule):
     name = "MULTIPLE-TESTHARNESS"
     description = "More than one `<script src='/resources/testharness.js'>`"
     to_fix = """
-        ensure each test has only one `<script
-        src='/resources/testharnessreport.js'>` instance
+        Ensure each test has only one `<script
+        src='/resources/testharness.js'>` instance.
+        For `.js` tests, remove `// META: script=/resources/testharness.js`,
+        which wptserve already adds to the boilerplate markup.
+    """
+
+
+class MissingReftestWait(Rule):
+    name = "MISSING-REFTESTWAIT"
+    description = "Missing `class=reftest-wait`"
+    to_fix = """
+        ensure tests that include reftest-wait.js also use class=reftest-wait on the root element.
     """
 
 
@@ -197,6 +183,12 @@ class MissingTestharnessReport(Rule):
 class MultipleTestharnessReport(Rule):
     name = "MULTIPLE-TESTHARNESSREPORT"
     description = "More than one `<script src='/resources/testharnessreport.js'>`"
+    to_fix = """
+        Ensure each test has only one `<script
+        src='/resources/testharnessreport.js'>` instance.
+        For `.js` tests, remove `// META: script=/resources/testharnessreport.js`,
+        which wptserve already adds to the boilerplate markup.
+    """
 
 
 class VariantMissing(Rule):
@@ -214,8 +206,8 @@ class VariantMissing(Rule):
 class MalformedVariant(Rule):
     name = "MALFORMED-VARIANT"
     description = collapse("""
-        %s `<meta name=variant>` 'content' attribute must be the empty string
-        or start with '?' or '#'
+        %s must be a non empty string
+        and start with '?' or '#'
     """)
 
 
@@ -238,6 +230,16 @@ class EarlyTestharnessReport(Rule):
         Test file has an instance of
         `<script src='/resources/testharnessreport.js'>` prior to
         `<script src='/resources/testharness.js'>`
+    """)
+    to_fix = "flip the order"
+
+
+class EarlyTestdriverVendor(Rule):
+    name = "EARLY-TESTDRIVER-VENDOR"
+    description = collapse("""
+        Test file has an instance of
+        `<script src='/resources/testdriver-vendor.js'>` prior to
+        `<script src='/resources/testdriver.js'>`
     """)
     to_fix = "flip the order"
 
@@ -275,6 +277,11 @@ class TestdriverPath(Rule):
 class TestdriverVendorPath(Rule):
     name = "TESTDRIVER-VENDOR-PATH"
     description = "testdriver-vendor.js script seen with incorrect path"
+
+
+class TestdriverInUnsupportedType(Rule):
+    name = "TESTDRIVER-IN-UNSUPPORTED-TYPE"
+    description = "testdriver.js included in a %s test, which doesn't support testdriver.js"
 
 
 class OpenNoMode(Rule):
@@ -322,6 +329,11 @@ class TestharnessInOtherType(Rule):
     description = "testharness.js included in a %s test"
 
 
+class ReferenceInOtherType(Rule):
+    name = "REFERENCE-IN-OTHER-TYPE"
+    description = "Reference link included in a %s test"
+
+
 class DuplicateBasenamePath(Rule):
     name = "DUPLICATE-BASENAME-PATH"
     description = collapse("""
@@ -331,35 +343,60 @@ class DuplicateBasenamePath(Rule):
     to_fix = "rename files so they have unique basename paths"
 
 
-class Regexp(six.with_metaclass(abc.ABCMeta)):
+class DuplicatePathCaseInsensitive(Rule):
+    name = "DUPLICATE-CASE-INSENSITIVE-PATH"
+    description = collapse("""
+            Path differs from path %s only in case
+    """)
+    to_fix = "rename files so they are unique irrespective of case"
+
+
+class TentativeDirectoryName(Rule):
+    name = "TENTATIVE-DIRECTORY-NAME"
+    description = "Directories for tentative tests must be named exactly 'tentative'"
+    to_fix = "rename directory to be called 'tentative'"
+
+
+class InvalidMetaFile(Rule):
+    name = "INVALID-META-FILE"
+    description = "The META.yml is not a YAML file with the expected structure"
+
+
+class InvalidWebFeaturesFile(Rule):
+    name = "INVALID-WEB-FEATURES-FILE"
+    description = "The WEB_FEATURES.yml file contains an invalid structure"
+
+
+class MissingTestInWebFeaturesFile(Rule):
+    name = "MISSING-WEB-FEATURES-FILE"
+    description = collapse("""
+        The WEB_FEATURES.yml file references a test that does not exist: '%s'
+    """)
+
+
+class Regexp(metaclass=abc.ABCMeta):
     @abc.abstractproperty
-    def pattern(self):
-        # type: () -> bytes
+    def pattern(self) -> bytes:
         pass
 
     @abc.abstractproperty
-    def name(self):
-        # type: () -> Text
+    def name(self) -> Text:
         pass
 
     @abc.abstractproperty
-    def description(self):
-        # type: () -> Text
+    def description(self) -> Text:
         pass
 
-    file_extensions = None  # type: Optional[List[Text]]
+    file_extensions: Optional[List[Text]] = None
 
-    def __init__(self):
-        # type: () -> None
-        self._re = re.compile(self.pattern)  # type: Pattern[bytes]
+    def __init__(self) -> None:
+        self._re: Pattern[bytes] = re.compile(self.pattern)
 
-    def applies(self, path):
-        # type: (str) -> bool
+    def applies(self, path: Text) -> bool:
         return (self.file_extensions is None or
                 os.path.splitext(path)[1] in self.file_extensions)
 
-    def search(self, line):
-        # type: (bytes) -> Optional[Match[bytes]]
+    def search(self, line: bytes) -> Optional[Match[bytes]]:
         return self._re.search(line)
 
 
@@ -404,6 +441,11 @@ class WebPlatformTestRegexp(Regexp):
     pattern = br"web\-platform\.test"
     name = "WEB-PLATFORM.TEST"
     description = "Internal web-platform.test domain used"
+    to_fix = """
+        use [server-side substitution](https://web-platform-tests.org/writing-tests/server-pipes.html#sub),
+        along with the [`.sub` filename-flag](https://web-platform-tests.org/writing-tests/file-names.html#test-features),
+        to replace web-platform.test with `{{domains[]}}`
+    """
 
 
 class Webidl2Regexp(Regexp):
@@ -495,3 +537,15 @@ class AssertPreconditionRegexp(Regexp):
     file_extensions = [".html", ".htm", ".js", ".xht", ".xhtml", ".svg"]
     description = "Test-file line has an `assert_precondition(...)` call"
     to_fix = """Replace with `assert_implements` or `assert_implements_optional`"""
+
+
+class HTMLInvalidSyntaxRegexp(Regexp):
+    pattern = (br"<(a|abbr|article|audio|b|bdi|bdo|blockquote|body|button|canvas|caption|cite|code|colgroup|data|datalist|dd|del|details|"
+               br"dfn|dialog|div|dl|dt|em|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|html|i|iframe|ins|kbd|label|legend|li|"
+               br"main|map|mark|menu|meter|nav|noscript|object|ol|optgroup|option|output|p|picture|pre|progress|q|rp|rt|ruby|s|samp|script|"
+               br"search|section|select|slot|small|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|"
+               br"title|tr|u|ul|var|video)(\s+[^>]+)?\s*/>")
+    name = "HTML INVALID SYNTAX"
+    file_extensions = [".html", ".htm"]
+    description = "Test-file line has a non-void HTML tag with /> syntax"
+    to_fix = """Replace with start tag and end tag"""

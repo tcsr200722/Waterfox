@@ -7,6 +7,14 @@
 #ifndef jit_InlinableNatives_h
 #define jit_InlinableNatives_h
 
+#include <stdint.h>  // For uint16_t
+
+#ifdef FUZZING_JS_FUZZILLI
+#  define INLINABLE_NATIVE_FUZZILLI_LIST(_) _(FuzzilliHash)
+#else
+#  define INLINABLE_NATIVE_FUZZILLI_LIST(_)
+#endif
+
 #define INLINABLE_NATIVE_LIST(_)                   \
   _(Array)                                         \
   _(ArrayIsArray)                                  \
@@ -26,6 +34,9 @@
   _(AtomicsOr)                                     \
   _(AtomicsXor)                                    \
   _(AtomicsIsLockFree)                             \
+                                                   \
+  _(BigIntAsIntN)                                  \
+  _(BigIntAsUintN)                                 \
                                                    \
   _(Boolean)                                       \
                                                    \
@@ -50,6 +61,8 @@
   _(DataViewSetBigInt64)                           \
   _(DataViewSetBigUint64)                          \
                                                    \
+  _(FunctionBind)                                  \
+                                                   \
   _(IntlGuardToCollator)                           \
   _(IntlGuardToDateTimeFormat)                     \
   _(IntlGuardToDisplayNames)                       \
@@ -57,6 +70,12 @@
   _(IntlGuardToNumberFormat)                       \
   _(IntlGuardToPluralRules)                        \
   _(IntlGuardToRelativeTimeFormat)                 \
+  _(IntlGuardToSegmenter)                          \
+  _(IntlGuardToSegments)                           \
+  _(IntlGuardToSegmentIterator)                    \
+                                                   \
+  _(MapGet)                                        \
+  _(MapHas)                                        \
                                                    \
   _(MathAbs)                                       \
   _(MathFloor)                                     \
@@ -94,24 +113,44 @@
   _(MathTrunc)                                     \
   _(MathCbrt)                                      \
                                                    \
+  _(Number)                                        \
+  _(NumberParseInt)                                \
+  _(NumberToString)                                \
+                                                   \
   _(ReflectGetPrototypeOf)                         \
                                                    \
   _(RegExpMatcher)                                 \
   _(RegExpSearcher)                                \
-  _(RegExpTester)                                  \
+  _(RegExpSearcherLastLimit)                       \
+  _(RegExpHasCaptureGroups)                        \
   _(IsRegExpObject)                                \
   _(IsPossiblyWrappedRegExpObject)                 \
   _(RegExpPrototypeOptimizable)                    \
   _(RegExpInstanceOptimizable)                     \
   _(GetFirstDollarIndex)                           \
                                                    \
+  _(SetHas)                                        \
+  _(SetSize)                                       \
+                                                   \
   _(String)                                        \
+  _(StringToString)                                \
+  _(StringValueOf)                                 \
   _(StringCharCodeAt)                              \
+  _(StringCodePointAt)                             \
   _(StringFromCharCode)                            \
   _(StringFromCodePoint)                           \
   _(StringCharAt)                                  \
+  _(StringAt)                                      \
+  _(StringIncludes)                                \
+  _(StringIndexOf)                                 \
+  _(StringLastIndexOf)                             \
+  _(StringStartsWith)                              \
+  _(StringEndsWith)                                \
   _(StringToLowerCase)                             \
   _(StringToUpperCase)                             \
+  _(StringTrim)                                    \
+  _(StringTrimStart)                               \
+  _(StringTrimEnd)                                 \
                                                    \
   _(IntrinsicStringReplaceString)                  \
   _(IntrinsicStringSplitString)                    \
@@ -119,6 +158,8 @@
   _(Object)                                        \
   _(ObjectCreate)                                  \
   _(ObjectIs)                                      \
+  _(ObjectIsPrototypeOf)                           \
+  _(ObjectKeys)                                    \
   _(ObjectToString)                                \
                                                    \
   _(TestBailout)                                   \
@@ -130,7 +171,6 @@
   _(IntrinsicUnsafeGetObjectFromReservedSlot)      \
   _(IntrinsicUnsafeGetInt32FromReservedSlot)       \
   _(IntrinsicUnsafeGetStringFromReservedSlot)      \
-  _(IntrinsicUnsafeGetBooleanFromReservedSlot)     \
                                                    \
   _(IntrinsicIsCallable)                           \
   _(IntrinsicIsConstructor)                        \
@@ -138,11 +178,10 @@
   _(IntrinsicIsObject)                             \
   _(IntrinsicIsCrossRealmArrayConstructor)         \
   _(IntrinsicToInteger)                            \
-  _(IntrinsicToString)                             \
+  _(IntrinsicToLength)                             \
   _(IntrinsicIsConstructing)                       \
   _(IntrinsicSubstringKernel)                      \
   _(IntrinsicObjectHasPrototype)                   \
-  _(IntrinsicFinishBoundFunctionInit)              \
   _(IntrinsicIsPackedArray)                        \
                                                    \
   _(IntrinsicIsSuspendedGenerator)                 \
@@ -152,6 +191,9 @@
   _(IntrinsicGuardToSetIterator)                   \
   _(IntrinsicGuardToStringIterator)                \
   _(IntrinsicGuardToRegExpStringIterator)          \
+  _(IntrinsicGuardToWrapForValidIterator)          \
+  _(IntrinsicGuardToIteratorHelper)                \
+  _(IntrinsicGuardToAsyncIteratorHelper)           \
                                                    \
   _(IntrinsicGuardToMapObject)                     \
   _(IntrinsicGetNextMapEntryForIterator)           \
@@ -175,11 +217,19 @@
   _(IntrinsicIsTypedArray)                         \
   _(IntrinsicIsPossiblyWrappedTypedArray)          \
   _(IntrinsicTypedArrayLength)                     \
+  _(IntrinsicTypedArrayLengthZeroOnOutOfBounds)    \
   _(IntrinsicPossiblyWrappedTypedArrayLength)      \
+  _(IntrinsicRegExpBuiltinExec)                    \
+  _(IntrinsicRegExpBuiltinExecForTest)             \
+  _(IntrinsicRegExpExec)                           \
+  _(IntrinsicRegExpExecForTest)                    \
   _(IntrinsicTypedArrayByteOffset)                 \
-  _(IntrinsicTypedArrayElementShift)
+  _(IntrinsicTypedArrayElementSize)                \
+                                                   \
+  INLINABLE_NATIVE_FUZZILLI_LIST(_)
 
-struct JSJitInfo;
+struct JSClass;
+class JSJitInfo;
 
 namespace js {
 namespace jit {
@@ -194,6 +244,10 @@ enum class InlinableNative : uint16_t {
 #define ADD_NATIVE(native) extern const JSJitInfo JitInfo_##native;
 INLINABLE_NATIVE_LIST(ADD_NATIVE)
 #undef ADD_NATIVE
+
+const JSClass* InlinableNativeGuardToClass(InlinableNative native);
+
+bool CanInlineNativeCrossRealm(InlinableNative native);
 
 }  // namespace jit
 }  // namespace js

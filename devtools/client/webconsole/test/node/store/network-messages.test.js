@@ -4,15 +4,15 @@
 
 const {
   getAllNetworkMessagesUpdateById,
-} = require("devtools/client/webconsole/selectors/messages");
+} = require("resource://devtools/client/webconsole/selectors/messages.js");
 const {
   setupActions,
   setupStore,
   clonePacket,
-} = require("devtools/client/webconsole/test/node/helpers");
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
 const {
   stubPackets,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
 
 const expect = require("expect");
 
@@ -21,7 +21,7 @@ describe("Network message reducer:", () => {
   let getState;
   let dispatch;
 
-  before(() => {
+  beforeAll(() => {
     actions = setupActions();
   });
 
@@ -35,11 +35,9 @@ describe("Network message reducer:", () => {
     const updatePacket = clonePacket(stubPackets.get("GET request update"));
 
     packet.actor = "message1";
-    updatePacket.networkInfo.actor = "message1";
+    updatePacket.actor = "message1";
     dispatch(actions.messagesAdd([packet]));
-    dispatch(
-      actions.networkMessageUpdate(updatePacket.networkInfo, null, updatePacket)
-    );
+    dispatch(actions.networkMessageUpdates([updatePacket], null));
   });
 
   describe("networkMessagesUpdateById", () => {
@@ -49,13 +47,41 @@ describe("Network message reducer:", () => {
       };
 
       dispatch(
-        actions.networkUpdateRequest("message1", {
-          requestHeaders: headers,
-        })
+        actions.networkUpdateRequests([
+          {
+            id: "message1",
+            data: {
+              requestHeaders: headers,
+            },
+          },
+        ])
       );
 
       const networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(networkUpdates.message1.requestHeaders).toBe(headers);
+    });
+
+    it("makes sure multiple HTTP updates of same request does not override", () => {
+      dispatch(
+        actions.networkUpdateRequests([
+          {
+            id: "message1",
+            data: {
+              stacktrace: [{}],
+            },
+          },
+          {
+            id: "message1",
+            data: {
+              requestHeaders: { headers: [] },
+            },
+          },
+        ])
+      );
+
+      const networkUpdates = getAllNetworkMessagesUpdateById(getState());
+      expect(networkUpdates.message1.requestHeaders).toNotBe(undefined);
+      expect(networkUpdates.message1.stacktrace).toNotBe(undefined);
     });
 
     it("adds fetched HTTP security info", () => {
@@ -64,9 +90,14 @@ describe("Network message reducer:", () => {
       };
 
       dispatch(
-        actions.networkUpdateRequest("message1", {
-          securityInfo: securityInfo,
-        })
+        actions.networkUpdateRequests([
+          {
+            id: "message1",
+            data: {
+              securityInfo,
+            },
+          },
+        ])
       );
 
       const networkUpdates = getAllNetworkMessagesUpdateById(getState());
@@ -84,9 +115,14 @@ describe("Network message reducer:", () => {
       };
 
       dispatch(
-        actions.networkUpdateRequest("message1", {
-          requestPostData,
-        })
+        actions.networkUpdateRequests([
+          {
+            id: "message1",
+            data: {
+              requestPostData,
+            },
+          },
+        ])
       );
 
       const { message1 } = getAllNetworkMessagesUpdateById(getState());

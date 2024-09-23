@@ -30,12 +30,10 @@ var uri = NetUtil.newURI("http://www.example.com");
 var principal = Services.scriptSecurityManager.createContentPrincipal(uri, {});
 
 function get_channel(spec) {
-  var channelURI = NetUtil.newURI(spec);
-
   var channel = NetUtil.newChannel({
     uri: NetUtil.newURI(spec),
     loadingPrincipal: principal,
-    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
     contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
   });
 
@@ -112,7 +110,7 @@ function run_test() {
   let baseRoot = resProto.resolveURI(Services.io.newURI("resource:///"));
   let greRoot = resProto.resolveURI(Services.io.newURI("resource://gre/"));
 
-  for (var spec of specs) {
+  for (let spec of specs) {
     check_safe_resolution(spec, rootURI.spec);
     check_safe_resolution(
       spec.replace("res-test", "res-inexistent"),
@@ -122,7 +120,7 @@ function run_test() {
     check_safe_resolution(spec.replace("res-test", "gre"), greRoot);
   }
 
-  for (var spec of error_specs) {
+  for (let spec of error_specs) {
     check_resolution_error(spec);
   }
 }

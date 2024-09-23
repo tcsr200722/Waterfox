@@ -77,7 +77,9 @@ void MediaSystemResourceService::Acquire(
     // Send success response
     mozilla::Unused << aParent->SendResponse(aId, true /* success */);
     return;
-  } else if (!aWillWait) {
+  }
+
+  if (!aWillWait) {
     // Resource is not available and do not wait.
     // Send fail response
     mozilla::Unused << aParent->SendResponse(aId, false /* fail */);
@@ -117,8 +119,7 @@ void MediaSystemResourceService::ReleaseResource(
     return;
   }
 
-  for (auto iter = mResources.Iter(); !iter.Done(); iter.Next()) {
-    const uint32_t& key = iter.Key();
+  for (const uint32_t& key : mResources.Keys()) {
     RemoveRequests(aParent, static_cast<MediaSystemResourceType>(key));
     UpdateRequests(static_cast<MediaSystemResourceType>(key));
   }

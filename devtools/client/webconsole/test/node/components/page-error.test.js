@@ -8,27 +8,36 @@ const { render, mount } = require("enzyme");
 const sinon = require("sinon");
 
 // React
-const { createFactory } = require("devtools/client/shared/vendor/react");
-const Provider = createFactory(require("react-redux").Provider);
-const { setupStore } = require("devtools/client/webconsole/test/node/helpers");
-const { prepareMessage } = require("devtools/client/webconsole/utils/messages");
+const {
+  createFactory,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const Provider = createFactory(
+  require("resource://devtools/client/shared/vendor/react-redux.js").Provider
+);
+const {
+  formatErrorTextWithCausedBy,
+  setupStore,
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
+const {
+  prepareMessage,
+} = require("resource://devtools/client/webconsole/utils/messages.js");
 
 // Components under test.
-const PageError = require("devtools/client/webconsole/components/Output/message-types/PageError");
+const PageError = require("resource://devtools/client/webconsole/components/Output/message-types/PageError.js");
 const {
   MESSAGE_OPEN,
   MESSAGE_CLOSE,
-} = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/constants.js");
 const {
   INDENT_WIDTH,
-} = require("devtools/client/webconsole/components/Output/MessageIndent");
+} = require("resource://devtools/client/webconsole/components/Output/MessageIndent.js");
 
 // Test fakes.
 const {
   stubPackets,
   stubPreparedMessages,
-} = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
-const serviceContainer = require("devtools/client/webconsole/test/node/fixtures/serviceContainer");
+} = require("resource://devtools/client/webconsole/test/node/fixtures/stubs/index.js");
+const serviceContainer = require("resource://devtools/client/webconsole/test/node/fixtures/serviceContainer.js");
 
 describe("PageError component:", () => {
   it("renders", () => {
@@ -44,7 +53,7 @@ describe("PageError component:", () => {
     );
     const {
       timestampString,
-    } = require("devtools/client/webconsole/utils/l10n");
+    } = require("resource://devtools/client/webconsole/utils/l10n.js");
 
     expect(wrapper.find(".timestamp").text()).toBe(
       timestampString(message.timeStamp)
@@ -134,7 +143,7 @@ describe("PageError component:", () => {
     const message = stubPreparedMessages.get(`throw Symbol`);
     const wrapper = render(PageError({ message, serviceContainer }));
     const text = wrapper.find(".message-body").text();
-    expect(text).toBe(`Uncaught Symbol(potato)`);
+    expect(text).toBe(`Uncaught Symbol("potato")`);
   });
 
   it("renders thrown object", () => {
@@ -167,6 +176,118 @@ describe("PageError component:", () => {
     const wrapper = render(PageError({ message, serviceContainer }));
     const text = wrapper.find(".message-body").text();
     expect(text).toBe(`Uncaught JuicyError: pineapple`);
+  });
+
+  it("renders thrown Error with error cause", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with error cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe(
+      "Uncaught Error: something went wrong\nCaused by: SyntaxError: original error"
+    );
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with error cause chain", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with cause chain`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe(
+      [
+        "Uncaught Error: err-d",
+        "Caused by: Error: err-c",
+        "Caused by: Error: err-b",
+        "Caused by: Error: err-a",
+      ].join("\n")
+    );
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with cyclical cause chain", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with cyclical cause chain`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    // TODO: This is not how we should display cyclical cause chain, but we have it here
+    // to ensure it's displaying something that makes _some_ sense.
+    // This should be properly handled in Bug 1719605.
+    expect(text).toBe(
+      [
+        "Uncaught Error: err-b",
+        "Caused by: Error: err-a",
+        "Caused by: Error: err-b",
+        "Caused by: Error: err-a",
+      ].join("\n")
+    );
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with null cause", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with falsy cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe("Uncaught Error: null cause\nCaused by: null");
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with number cause", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with number cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe("Uncaught Error: number cause\nCaused by: 0");
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with string cause", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with string cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe(
+      `Uncaught Error: string cause\nCaused by: "cause message"`
+    );
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
+  it("renders thrown Error with object cause", () => {
+    const message = stubPreparedMessages.get(
+      `throw Error Object with object cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe("Uncaught Error: object cause\nCaused by: Object { … }");
+    expect(wrapper.hasClass("error")).toBe(true);
   });
 
   it("renders uncaught rejected Promise with empty string", () => {
@@ -215,7 +336,7 @@ describe("PageError component:", () => {
     const message = stubPreparedMessages.get(`Promise reject Symbol`);
     const wrapper = render(PageError({ message, serviceContainer }));
     const text = wrapper.find(".message-body").text();
-    expect(text).toBe(`Uncaught (in promise) Symbol(potato)`);
+    expect(text).toBe(`Uncaught (in promise) Symbol("potato")`);
   });
 
   it("renders uncaught rejected Promise with object", () => {
@@ -248,6 +369,24 @@ describe("PageError component:", () => {
     expect(text).toBe(`Uncaught (in promise) JuicyError: pineapple`);
   });
 
+  it("renders uncaught rejected Promise with Error with cause", () => {
+    const message = stubPreparedMessages.get(
+      `Promise reject Error Object with error cause`
+    );
+    const wrapper = render(PageError({ message, serviceContainer }));
+
+    const text = formatErrorTextWithCausedBy(
+      wrapper.find(".message-body").text()
+    );
+    expect(text).toBe(
+      [
+        `Uncaught (in promise) Error: something went wrong`,
+        `Caused by: ReferenceError: unknownFunc is not defined`,
+      ].join("\n")
+    );
+    expect(wrapper.hasClass("error")).toBe(true);
+  });
+
   it("renders URLs in message as actual, cropped, links", () => {
     // Let's replace the packet data in order to mimick a pageError.
     const packet = stubPackets.get("throw string with URL");
@@ -266,22 +405,13 @@ describe("PageError component:", () => {
     const message = prepareMessage(packet, { getNextId: () => "1" });
     const wrapper = render(PageError({ message, serviceContainer }));
 
-    // Keep in sync with `urlCropLimit` in PageError.js.
-    const cropLimit = 120;
-    const partLength = cropLimit / 2;
-    const getCroppedUrl = url =>
-      `${url}${"a".repeat(partLength - url.length)}…${"a".repeat(partLength)}`;
-
-    const croppedEvil = getCroppedUrl(evilDomain);
-    const croppedbad = getCroppedUrl(badDomain);
-
     const text = wrapper.find(".message-body").text();
     expect(text).toBe(
-      `Uncaught “${croppedEvil}“ is evil and “${croppedbad}“ is not good either`
+      `Uncaught “${evilURL}“ is evil and “${badURL}“ is not good either`
     );
 
-    // There should be 2 links.
-    const links = wrapper.find(".message-body a");
+    // There should be 2 cropped links.
+    const links = wrapper.find(".message-body a.cropped-url");
     expect(links.length).toBe(2);
 
     expect(links.eq(0).attr("href")).toBe(evilURL);
@@ -396,14 +526,14 @@ describe("PageError component:", () => {
         serviceContainer,
       })
     );
-    let indentEl = wrapper.find(".indent");
+    expect(wrapper.prop("data-indent")).toBe(`${indent}`);
+    const indentEl = wrapper.find(".indent");
     expect(indentEl.prop("style").width).toBe(`${indent * INDENT_WIDTH}px`);
-    expect(indentEl.prop("data-indent")).toBe(`${indent}`);
 
     wrapper = render(PageError({ message, serviceContainer }));
-    indentEl = wrapper.find(".indent");
-    expect(indentEl.prop("style").width).toBe(`0`);
-    expect(indentEl.prop("data-indent")).toBe(`0`);
+    expect(wrapper.prop("data-indent")).toBe(`0`);
+    // there's no indent element where the indent is 0
+    expect(wrapper.find(".indent").length).toBe(0);
   });
 
   it("has empty error notes", () => {
@@ -426,7 +556,7 @@ describe("PageError component:", () => {
         {
           messageBody: "test note",
           frame: {
-            source: "http://example.com/test.js",
+            source: "https://example.com/test.js",
             line: 2,
             column: 6,
           },
@@ -457,7 +587,7 @@ describe("PageError component:", () => {
         {
           messageBody: "test note 1",
           frame: {
-            source: "http://example.com/test1.js",
+            source: "https://example.com/test1.js",
             line: 2,
             column: 6,
           },
@@ -465,7 +595,7 @@ describe("PageError component:", () => {
         {
           messageBody: "test note 2",
           frame: {
-            source: "http://example.com/test2.js",
+            source: "https://example.com/test2.js",
             line: 10,
             column: 18,
           },
@@ -473,7 +603,7 @@ describe("PageError component:", () => {
         {
           messageBody: "test note 3",
           frame: {
-            source: "http://example.com/test3.js",
+            source: "https://example.com/test3.js",
             line: 9,
             column: 4,
           },
@@ -520,12 +650,12 @@ describe("PageError component:", () => {
 
     const note = notes.eq(0);
     expect(note.find(".message-body").text()).toBe(
-      "note: Previously declared at line 2, column 6"
+      "note: Previously declared at line 2, column 7"
     );
 
     // There should be the location.
     const locationLink = note.find(`.message-location`);
     expect(locationLink.length).toBe(1);
-    expect(locationLink.text()).toBe("test-console-api.html:2:6");
+    expect(locationLink.text()).toBe("test-console-api.html:2:7");
   });
 });

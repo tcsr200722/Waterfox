@@ -4,7 +4,7 @@
 
 "use strict";
 
-const protocol = require("devtools/shared/protocol");
+const protocol = require("resource://devtools/shared/protocol.js");
 const { Arg, generateActorSpec, RetVal, types } = protocol;
 
 types.addActorType("accessible");
@@ -196,6 +196,16 @@ const accessibleWalkerSpec = generateActorSpec({
     pick: {},
     pickAndFocus: {},
     cancelPick: {},
+    showTabbingOrder: {
+      request: {
+        elm: Arg(0, "domnode"),
+        index: Arg(1, "number"),
+      },
+      response: {
+        tabbingOrderInfo: RetVal("json"),
+      },
+    },
+    hideTabbingOrder() {},
   },
 });
 
@@ -225,6 +235,10 @@ const accessibilitySpec = generateActorSpec({
   },
 
   methods: {
+    getTraits: {
+      request: {},
+      response: { traits: RetVal("json") },
+    },
     bootstrap: {
       request: {},
       response: {

@@ -8,18 +8,18 @@
 const TEST_URL =
   "data:text/html;charset=utf-8,CanvasFrameAnonymousContentHelper test";
 
-add_task(async function() {
-  const browser = await addTab(TEST_URL);
-  await SpecialPowers.spawn(browser, [], async function() {
-    const { require } = ChromeUtils.import(
-      "resource://devtools/shared/Loader.jsm"
+add_task(async function () {
+  const tab = await addTab(TEST_URL);
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
+    const { require } = ChromeUtils.importESModule(
+      "resource://devtools/shared/loader/Loader.sys.mjs"
     );
     const {
       HighlighterEnvironment,
-    } = require("devtools/server/actors/highlighters");
+    } = require("resource://devtools/server/actors/highlighters.js");
     const {
       CanvasFrameAnonymousContentHelper,
-    } = require("devtools/server/actors/highlighters/utils/markup");
+    } = require("resource://devtools/server/actors/highlighters/utils/markup.js");
     const doc = content.document;
 
     const nodeBuilder = () => {
@@ -37,6 +37,7 @@ add_task(async function() {
     const env = new HighlighterEnvironment();
     env.initFromWindow(doc.defaultView);
     const helper = new CanvasFrameAnonymousContentHelper(env, nodeBuilder);
+    await helper.initialize();
 
     const el = helper.getElement("child-element");
 

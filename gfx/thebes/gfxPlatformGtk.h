@@ -16,13 +16,9 @@ struct _XDisplay;
 typedef struct _XDisplay Display;
 #endif  // MOZ_X11
 
-namespace mozilla {
-namespace dom {
-class SystemFontListEntry;
-};
-};  // namespace mozilla
-
 class gfxPlatformGtk final : public gfxPlatform {
+  friend class gfxPlatform;
+
  public:
   gfxPlatformGtk();
   virtual ~gfxPlatformGtk();
@@ -31,8 +27,7 @@ class gfxPlatformGtk final : public gfxPlatform {
     return (gfxPlatformGtk*)gfxPlatform::GetPlatform();
   }
 
-  void ReadSystemFontList(
-      nsTArray<mozilla::dom::SystemFontListEntry>* retValue) override;
+  void ReadSystemFontList(mozilla::dom::SystemFontList* retValue) override;
 
   already_AddRefed<gfxASurface> CreateOffscreenSurface(
       const IntSize& aSize, gfxImageFormat aFormat) override;
@@ -40,29 +35,14 @@ class gfxPlatformGtk final : public gfxPlatform {
   nsresult GetFontList(nsAtom* aLangGroup, const nsACString& aGenericFamily,
                        nsTArray<nsString>& aListOfFonts) override;
 
-  nsresult UpdateFontList() override;
-
-  void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
+                              eFontPresentation aPresentation,
                               nsTArray<const char*>& aFontList) override;
 
-  gfxPlatformFontList* CreatePlatformFontList() override;
-
-  /**
-   * Calls XFlush if xrender is enabled.
-   */
-  void FlushContentDrawing() override;
+  bool CreatePlatformFontList() override;
 
   static int32_t GetFontScaleDPI();
   static double GetFontScaleFactor();
-
-#ifdef MOZ_X11
-  void GetAzureBackendInfo(mozilla::widget::InfoObject& aObj) override {
-    gfxPlatform::GetAzureBackendInfo(aObj);
-    aObj.DefineProperty("CairoUseXRender", mozilla::gfx::gfxVars::UseXRender());
-  }
-#endif
-
-  bool UseImageOffscreenSurfaces();
 
   gfxImageFormat GetOffscreenFormat() override;
 
@@ -70,46 +50,39 @@ class gfxPlatformGtk final : public gfxPlatform {
 
   void FontsPrefsChanged(const char* aPref) override;
 
-  // maximum number of fonts to substitute for a generic
-  uint32_t MaxGenericSubstitions();
-
   bool SupportsPluginDirectBitmapDrawing() override { return true; }
 
   bool AccelerateLayersByDefault() override;
 
-#ifdef MOZ_X11
-  already_AddRefed<mozilla::gfx::VsyncSource> CreateHardwareVsyncSource()
+  already_AddRefed<mozilla::gfx::VsyncSource> CreateGlobalHardwareVsyncSource()
       override;
-#endif
-
-#ifdef MOZ_X11
-  Display* GetCompositorDisplay() { return mCompositorDisplay; }
-#endif  // MOZ_X11
-
-#ifdef MOZ_WAYLAND
-  bool UseWaylandDMABufTextures();
-  bool UseWaylandDMABufWebGL();
-  bool UseWaylandHardwareVideoDecoding();
-#endif
 
   bool IsX11Display() { return mIsX11Display; }
-  bool IsWaylandDisplay() {
+  bool IsWaylandDisplay() override {
     return !mIsX11Display && !gfxPlatform::IsHeadless();
   }
 
- protected:
-  void InitPlatformGPUProcessPrefs() override;
-  bool CheckVariationFontSupport() override;
+  static bool CheckVariationFontSupport();
 
-  int8_t mMaxGenericSubstitutions;
+ protected:
+  void InitAcceleration() override;
+  void InitX11EGLConfig();
+  void InitDmabufConfig();
+  bool InitVAAPIConfig(bool aForceEnabledByUser);
+  void InitPlatformGPUProcessPrefs() override;
+  void InitWebRenderConfig() override;
+  void BuildContentDeviceData(mozilla::gfx::ContentDeviceData* aOut) override;
 
  private:
   nsTArray<uint8_t> GetPlatformCMSOutputProfileData() override;
 
   bool mIsX11Display;
-#ifdef MOZ_X11
-  Display* mCompositorDisplay;
-#endif
 };
+
+// Wrapper for third party code (WebRTC for instance) where
+// gfxVars can't be included.
+namespace mozilla::gfx {
+bool IsDMABufEnabled();
+}
 
 #endif /* GFX_PLATFORM_GTK_H */

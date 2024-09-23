@@ -4,15 +4,11 @@
 tests for mozfile.load
 """
 
-from __future__ import absolute_import
-
 import mozunit
 import pytest
-
+from mozfile import load
 from wptserve.handlers import handler
 from wptserve.server import WebTestHttpd
-
-from mozfile import load
 
 
 @pytest.fixture(name="httpd_url")
@@ -31,7 +27,7 @@ def fixture_httpd_url():
 
     httpd = WebTestHttpd(host="127.0.0.1", routes=[("GET", "*", example)])
 
-    httpd.start(block=False)
+    httpd.start()
     yield httpd.get_url()
     httpd.stop()
 

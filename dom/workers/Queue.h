@@ -7,14 +7,10 @@
 #ifndef mozilla_dom_workerinternal_Queue_h
 #define mozilla_dom_workerinternal_Queue_h
 
-#include "mozilla/dom/WorkerCommon.h"
-
 #include "mozilla/Mutex.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
-namespace workerinternals {
+namespace mozilla::dom::workerinternals {
 
 template <typename T, int TCount>
 struct StorageWithTArray {
@@ -37,11 +33,8 @@ struct StorageWithTArray {
     return !!aStorage.IsEmpty();
   }
 
-  static bool Push(StorageType& aStorage, const T& aEntry) {
-    // XXX(Bug 1631371) Check if this should use a fallible operation as it
-    // pretended earlier, or change the return type to void.
+  static void Push(StorageType& aStorage, const T& aEntry) {
     aStorage.AppendElement(aEntry);
-    return true;
   }
 
   static bool Pop(StorageType& aStorage, T& aEntry) {
@@ -49,9 +42,7 @@ struct StorageWithTArray {
       return false;
     }
 
-    uint32_t index = aStorage.Length() - 1;
-    aEntry = aStorage.ElementAt(index);
-    aStorage.RemoveElementAt(index);
+    aEntry = aStorage.PopLastElement();
     return true;
   }
 
@@ -60,23 +51,26 @@ struct StorageWithTArray {
   static void Compact(StorageType& aStorage) { aStorage.Compact(); }
 };
 
-class LockingWithMutex {
+class MOZ_CAPABILITY("mutex") LockingWithMutex {
   mozilla::Mutex mMutex;
 
  protected:
   LockingWithMutex() : mMutex("LockingWithMutex::mMutex") {}
 
-  void Lock() { mMutex.Lock(); }
+  void Lock() MOZ_CAPABILITY_ACQUIRE() { mMutex.Lock(); }
 
-  void Unlock() { mMutex.Unlock(); }
+  void Unlock() MOZ_CAPABILITY_RELEASE() { mMutex.Unlock(); }
 
-  class AutoLock {
+  class MOZ_SCOPED_CAPABILITY AutoLock {
     LockingWithMutex& mHost;
 
    public:
-    explicit AutoLock(LockingWithMutex& aHost) : mHost(aHost) { mHost.Lock(); }
+    explicit AutoLock(LockingWithMutex& aHost) MOZ_CAPABILITY_ACQUIRE(aHost)
+        : mHost(aHost) {
+      mHost.Lock();
+    }
 
-    ~AutoLock() { mHost.Unlock(); }
+    ~AutoLock() MOZ_CAPABILITY_RELEASE() { mHost.Unlock(); }
   };
 
   friend class AutoLock;
@@ -117,9 +111,9 @@ class Queue : public LockingPolicy {
     return StoragePolicy::IsEmpty(*mFront) && StoragePolicy::IsEmpty(*mBack);
   }
 
-  bool Push(const T& aEntry) {
+  void Push(const T& aEntry) {
     AutoLock lock(*this);
-    return StoragePolicy::Push(*mBack, aEntry);
+    StoragePolicy::Push(*mBack, aEntry);
   }
 
   bool Pop(T& aEntry) {
@@ -152,8 +146,6 @@ class Queue : public LockingPolicy {
   Queue& operator=(const Queue&);
 };
 
-}  // namespace workerinternals
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::workerinternals
 
 #endif /* mozilla_dom_workerinternals_Queue_h*/

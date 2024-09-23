@@ -11,14 +11,7 @@
 namespace mozilla {
 
 /* static */
-bool FlacDecoder::IsEnabled() {
-#ifdef MOZ_FFVPX
-  return StaticPrefs::media_flac_enabled();
-#else
-  // Until bug 1295886 is fixed.
-  return false;
-#endif
-}
+bool FlacDecoder::IsEnabled() { return StaticPrefs::media_flac_enabled(); }
 
 /* static */
 bool FlacDecoder::IsSupportedType(const MediaContainerType& aContainerType) {
@@ -38,7 +31,7 @@ nsTArray<UniquePtr<TrackInfo>> FlacDecoder::GetTracksInfo(
 
   tracks.AppendElement(
       CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-          NS_LITERAL_CSTRING("audio/flac"), aType));
+          "audio/flac"_ns, aType));
 
   return tracks;
 }

@@ -6,12 +6,12 @@
     "message": "Amazon.co.uk Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.co.uk/exec/obidos/external-search/"
+    "message": "https://www.amazon.co.uk/s"
   },
   "searchForm": {
     "message": "https://www.amazon.co.uk/"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended&tag=firefox-uk-21&sourceid=Mozilla-search"
+    "message": "k={searchTerms}"
   }
 }

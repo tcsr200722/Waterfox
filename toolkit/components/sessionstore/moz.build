@@ -5,30 +5,47 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 EXPORTS.mozilla.dom += [
-    'SessionStoreData.h',
-    'SessionStoreListener.h',
-    'SessionStoreMessageUtils.h',
-    'SessionStoreUtils.h',
+    "BrowserSessionStore.h",
+    "SessionStoreChangeListener.h",
+    "SessionStoreChild.h",
+    "SessionStoreData.h",
+    "SessionStoreFormData.h",
+    "SessionStoreListener.h",
+    "SessionStoreMessageUtils.h",
+    "SessionStoreParent.h",
+    "SessionStoreRestoreData.h",
+    "SessionStoreScrollData.h",
+    "SessionStoreUtils.h",
 ]
 
 UNIFIED_SOURCES += [
-    'SessionStoreListener.cpp',
-    'SessionStoreUtils.cpp',
+    "BrowserSessionStore.cpp",
+    "RestoreTabContentObserver.cpp",
+    "SessionStoreChangeListener.cpp",
+    "SessionStoreChild.cpp",
+    "SessionStoreFormData.cpp",
+    "SessionStoreListener.cpp",
+    "SessionStoreParent.cpp",
+    "SessionStoreRestoreData.cpp",
+    "SessionStoreScrollData.cpp",
+    "SessionStoreUtils.cpp",
 ]
 
-EXTRA_JS_MODULES += [
-    'SessionStoreFunctions.jsm',
-]
-
-XPIDL_MODULE = 'sessionStore_funcs'
+XPIDL_MODULE = "sessionstore"
 
 XPIDL_SOURCES += [
-    'SessionStoreFunctions.idl',
+    "nsISessionStoreFunctions.idl",
+    "nsISessionStoreRestoreData.idl",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+IPDL_SOURCES += [
+    "PSessionStore.ipdl",
+    "SessionStoreTypes.ipdlh",
+]
 
-FINAL_LIBRARY = 'xul'
+include("/ipc/chromium/chromium-config.mozbuild")
 
-with Files('**'):
-    BUG_COMPONENT = ('Firefox', 'Session Restore')
+FINAL_LIBRARY = "xul"
+
+with Files("**"):
+    BUG_COMPONENT = ("Firefox", "Session Restore")

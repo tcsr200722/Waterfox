@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const constants = require("devtools/client/dom/content/constants");
+const constants = require("resource://devtools/client/dom/content/constants.js");
 
 /**
  * Initial state definition
@@ -26,7 +26,7 @@ function grips(state = getInitialState(), action) {
   switch (action.status) {
     case "start":
       return onRequestProperties(state, action);
-    case "end":
+    case "done":
       return onReceiveProperties(state, action);
   }
 
@@ -36,7 +36,7 @@ function grips(state = getInitialState(), action) {
 /**
  * Handle requestProperties action
  */
-function onRequestProperties(state, action) {
+function onRequestProperties(state) {
   return state;
 }
 

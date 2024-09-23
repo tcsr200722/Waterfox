@@ -1,22 +1,13 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import
-
 import os
 import random
 from collections import defaultdict
 from itertools import chain
 from unittest import TestCase
 
-from six.moves import range
-from six import iteritems
-
 import mozunit
-from manifestparser.filters import (
-    chunk_by_dir,
-    chunk_by_runtime,
-    chunk_by_slice,
-)
+from manifestparser.filters import chunk_by_dir, chunk_by_runtime, chunk_by_slice
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -28,9 +19,9 @@ class ChunkBySlice(TestCase):
         disabled = disabled or []
         tests = []
         for i in range(num):
-            test = {'name': 'test%i' % i}
+            test = {"name": "test%i" % i}
             if i in disabled:
-                test['disabled'] = ''
+                test["disabled"] = ""
             tests.append(test)
         return tests
 
@@ -47,7 +38,7 @@ class ChunkBySlice(TestCase):
                     f.disabled = True
                     res_disabled.append(list(f(tests, {})))
 
-            lengths = [len([t for t in c if 'disabled' not in t]) for c in res]
+            lengths = [len([t for t in c if "disabled" not in t]) for c in res]
             # the chunk with the most tests should have at most one more test
             # than the chunk with the least tests
             self.assertLessEqual(max(lengths) - min(lengths), 1)
@@ -59,8 +50,7 @@ class ChunkBySlice(TestCase):
             if disabled:
                 lengths = [len(c) for c in res_disabled]
                 self.assertLessEqual(max(lengths) - min(lengths), 1)
-                self.assertEqual(list(chain.from_iterable(res_disabled)),
-                                 list(tests))
+                self.assertEqual(list(chain.from_iterable(res_disabled)), list(tests))
 
     def test_chunk_by_slice(self):
         chunk = chunk_by_slice(1, 1)
@@ -92,25 +82,24 @@ class ChunkByDir(TestCase):
                         { <dir>: <num tests> }
         """
         i = 0
-        for d, num in iteritems(dirs):
+        for d, num in dirs.items():
             for _ in range(num):
                 i += 1
-                name = 'test%i' % i
-                test = {'name': name,
-                        'relpath': os.path.join(d, name)}
+                name = "test%i" % i
+                test = {"name": name, "relpath": os.path.join(d, name)}
                 yield test
 
     def run_all_combos(self, dirs):
         tests = list(self.generate_tests(dirs))
 
-        deepest = max(len(t['relpath'].split(os.sep)) - 1 for t in tests)
+        deepest = max(len(t["relpath"].split(os.sep)) - 1 for t in tests)
         for depth in range(1, deepest + 1):
 
             def num_groups(tests):
                 unique = set()
-                for p in [t['relpath'] for t in tests]:
-                    p = p.split(os.sep)
-                    p = p[:min(depth, len(p) - 1)]
+                for rp in [t["relpath"] for t in tests]:
+                    p = rp.split(os.sep)
+                    p = p[: min(depth, len(p) - 1)]
                     unique.add(os.sep.join(p))
                 return len(unique)
 
@@ -137,39 +126,39 @@ class ChunkByDir(TestCase):
         self.assertEqual(list(chunk([], {})), [])
 
         dirs = {
-            'a': 2,
+            "a": 2,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            '': 1,
-            'foo': 1,
-            'bar': 0,
-            '/foobar': 1,
+            "": 1,
+            "foo": 1,
+            "bar": 0,
+            "/foobar": 1,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            'a': 1,
-            'b': 1,
-            'a/b': 2,
-            'a/c': 1,
+            "a": 1,
+            "b": 1,
+            "a/b": 2,
+            "a/c": 1,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            'a': 5,
-            'a/b': 4,
-            'a/b/c': 7,
-            'a/b/c/d': 1,
-            'a/b/c/e': 3,
-            'b/c': 2,
-            'b/d': 5,
-            'b/d/e': 6,
-            'c': 8,
-            'c/d/e/f/g/h/i/j/k/l': 5,
-            'c/d/e/f/g/i/j/k/l/m/n': 2,
-            'c/e': 1,
+            "a": 5,
+            "a/b": 4,
+            "a/b/c": 7,
+            "a/b/c/d": 1,
+            "a/b/c/e": 3,
+            "b/c": 2,
+            "b/d": 5,
+            "b/d/e": 6,
+            "c": 8,
+            "c/d/e/f/g/h/i/j/k/l": 5,
+            "c/d/e/f/g/i/j/k/l/m/n": 2,
+            "c/e": 1,
         }
         self.run_all_combos(dirs)
 
@@ -183,29 +172,29 @@ class ChunkByRuntime(TestCase):
                      { <dir>: <num tests> }
         """
         i = 0
-        for d, num in iteritems(dirs):
+        for d, num in dirs.items():
             for _ in range(num):
                 i += 1
-                name = 'test%i' % i
-                manifest = os.path.join(d, 'manifest.ini')
+                name = "test%i" % i
+                manifest = os.path.join(d, "manifest.toml")
                 test = {
-                    'name': name,
-                    'relpath': os.path.join(d, name),
-                    'manifest': manifest,
-                    'manifest_relpath': manifest,
+                    "name": name,
+                    "relpath": os.path.join(d, name),
+                    "manifest": manifest,
+                    "manifest_relpath": manifest,
                 }
                 yield test
 
     def get_runtimes(self, tests):
         runtimes = defaultdict(int)
         for test in tests:
-            runtimes[test['manifest_relpath']] += random.randint(0, 100)
+            runtimes[test["manifest_relpath"]] += random.randint(0, 100)
         return runtimes
 
     def chunk_by_round_robin(self, tests, total, runtimes):
         tests_by_manifest = []
-        for manifest, runtime in iteritems(runtimes):
-            mtests = [t for t in tests if t['manifest_relpath'] == manifest]
+        for manifest, runtime in runtimes.items():
+            mtests = [t for t in tests if t["manifest_relpath"] == manifest]
             tests_by_manifest.append((runtime, mtests))
         tests_by_manifest.sort(key=lambda x: x[0], reverse=False)
 
@@ -250,10 +239,11 @@ class ChunkByRuntime(TestCase):
             def runtime_delta(chunks):
                 totals = []
                 for chunk in chunks:
-                    manifests = set([t['manifest_relpath'] for t in chunk])
+                    manifests = set([t["manifest_relpath"] for t in chunk])
                     total = sum(runtimes[m] for m in manifests)
                     totals.append(total)
                 return max(totals) - min(totals)
+
             delta = runtime_delta(chunks)
 
             # redo the chunking a second time using a round robin style
@@ -277,42 +267,42 @@ class ChunkByRuntime(TestCase):
         self.assertEqual(list(chunk([], {})), [])
 
         dirs = {
-            'a': 2,
+            "a": 2,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            '': 1,
-            'foo': 1,
-            'bar': 0,
-            '/foobar': 1,
+            "": 1,
+            "foo": 1,
+            "bar": 0,
+            "/foobar": 1,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            'a': 1,
-            'b': 1,
-            'a/b': 2,
-            'a/c': 1,
+            "a": 1,
+            "b": 1,
+            "a/b": 2,
+            "a/c": 1,
         }
         self.run_all_combos(dirs)
 
         dirs = {
-            'a': 5,
-            'a/b': 4,
-            'a/b/c': 7,
-            'a/b/c/d': 1,
-            'a/b/c/e': 3,
-            'b/c': 2,
-            'b/d': 5,
-            'b/d/e': 6,
-            'c': 8,
-            'c/d/e/f/g/h/i/j/k/l': 5,
-            'c/d/e/f/g/i/j/k/l/m/n': 2,
-            'c/e': 1,
+            "a": 5,
+            "a/b": 4,
+            "a/b/c": 7,
+            "a/b/c/d": 1,
+            "a/b/c/e": 3,
+            "b/c": 2,
+            "b/d": 5,
+            "b/d/e": 6,
+            "c": 8,
+            "c/d/e/f/g/h/i/j/k/l": 5,
+            "c/d/e/f/g/i/j/k/l/m/n": 2,
+            "c/e": 1,
         }
         self.run_all_combos(dirs)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

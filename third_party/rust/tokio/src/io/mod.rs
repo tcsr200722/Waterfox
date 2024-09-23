@@ -1,5 +1,3 @@
-#![cfg_attr(loom, allow(dead_code, unreachable_pub))]
-
 //! Traits, helpers, and type definitions for asynchronous I/O functionality.
 //!
 //! This module is the asynchronous version of `std::io`. Primarily, it
@@ -15,19 +13,19 @@
 //! type will _yield_ to the Tokio scheduler when IO is not ready, rather than
 //! blocking. This allows other tasks to run while waiting on IO.
 //!
-//! Another difference is that [`AsyncRead`] and [`AsyncWrite`] only contain
+//! Another difference is that `AsyncRead` and `AsyncWrite` only contain
 //! core methods needed to provide asynchronous reading and writing
 //! functionality. Instead, utility methods are defined in the [`AsyncReadExt`]
 //! and [`AsyncWriteExt`] extension traits. These traits are automatically
-//! implemented for all values that implement [`AsyncRead`] and [`AsyncWrite`]
+//! implemented for all values that implement `AsyncRead` and `AsyncWrite`
 //! respectively.
 //!
-//! End users will rarely interact directly with [`AsyncRead`] and
-//! [`AsyncWrite`]. Instead, they will use the async functions defined in the
-//! extension traits. Library authors are expected to implement [`AsyncRead`]
-//! and [`AsyncWrite`] in order to provide types that behave like byte streams.
+//! End users will rarely interact directly with `AsyncRead` and
+//! `AsyncWrite`. Instead, they will use the async functions defined in the
+//! extension traits. Library authors are expected to implement `AsyncRead`
+//! and `AsyncWrite` in order to provide types that behave like byte streams.
 //!
-//! Even with these differences, Tokio's [`AsyncRead`] and [`AsyncWrite`] traits
+//! Even with these differences, Tokio's `AsyncRead` and `AsyncWrite` traits
 //! can be used in almost exactly the same manner as the standard library's
 //! `Read` and `Write`. Most types in the standard library that implement `Read`
 //! and `Write` have asynchronous equivalents in `tokio` that implement
@@ -57,7 +55,7 @@
 //! [`File`]: crate::fs::File
 //! [`TcpStream`]: crate::net::TcpStream
 //! [`std::fs::File`]: std::fs::File
-//! [std_example]: https://doc.rust-lang.org/std/io/index.html#read-and-write
+//! [std_example]: std::io#read-and-write
 //!
 //! ## Buffered Readers and Writers
 //!
@@ -93,7 +91,8 @@
 //! ```
 //!
 //! [`BufWriter`] doesn't add any new ways of writing; it just buffers every call
-//! to [`write`](crate::io::AsyncWriteExt::write):
+//! to [`write`](crate::io::AsyncWriteExt::write). However, you **must** flush
+//! [`BufWriter`] to ensure that any buffered data is written.
 //!
 //! ```no_run
 //! use tokio::io::{self, BufWriter, AsyncWriteExt};
@@ -105,16 +104,19 @@
 //!     {
 //!         let mut writer = BufWriter::new(f);
 //!
-//!         // write a byte to the buffer
+//!         // Write a byte to the buffer.
 //!         writer.write(&[42u8]).await?;
 //!
-//!     } // the buffer is flushed once writer goes out of scope
+//!         // Flush the buffer before it goes out of scope.
+//!         writer.flush().await?;
+//!
+//!     } // Unless flushed or shut down, the contents of the buffer is discarded on drop.
 //!
 //!     Ok(())
 //! }
 //! ```
 //!
-//! [stdbuf]: https://doc.rust-lang.org/std/io/index.html#bufreader-and-bufwriter
+//! [stdbuf]: std::io#bufreader-and-bufwriter
 //! [`std::io::BufRead`]: std::io::BufRead
 //! [`AsyncBufRead`]: crate::io::AsyncBufRead
 //! [`BufReader`]: crate::io::BufReader
@@ -122,11 +124,29 @@
 //!
 //! ## Implementing AsyncRead and AsyncWrite
 //!
-//! Because they are traits, we can implement `AsyncRead` and `AsyncWrite` for
+//! Because they are traits, we can implement [`AsyncRead`] and [`AsyncWrite`] for
 //! our own types, as well. Note that these traits must only be implemented for
 //! non-blocking I/O types that integrate with the futures type system. In
 //! other words, these types must never block the thread, and instead the
 //! current task is notified when the I/O resource is ready.
+//!
+//! ## Conversion to and from Stream/Sink
+//!
+//! It is often convenient to encapsulate the reading and writing of bytes in a
+//! [`Stream`] or [`Sink`] of data.
+//!
+//! Tokio provides simple wrappers for converting [`AsyncRead`] to [`Stream`]
+//! and vice-versa in the [tokio-util] crate, see [`ReaderStream`] and
+//! [`StreamReader`].
+//!
+//! There are also utility traits that abstract the asynchronous buffering
+//! necessary to write your own adaptors for encoding and decoding bytes to/from
+//! your structured data, allowing to transform something that implements
+//! [`AsyncRead`]/[`AsyncWrite`] into a [`Stream`]/[`Sink`], see [`Decoder`] and
+//! [`Encoder`] in the [tokio-util::codec] module.
+//!
+//! [tokio-util]: https://docs.rs/tokio-util
+//! [tokio-util::codec]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
 //!
 //! # Standard input and output
 //!
@@ -144,16 +164,32 @@
 //!
 //! # `std` re-exports
 //!
-//! Additionally, [`Error`], [`ErrorKind`], and [`Result`] are re-exported
-//! from `std::io` for ease of use.
+//! Additionally, [`Error`], [`ErrorKind`], [`Result`], and [`SeekFrom`] are
+//! re-exported from `std::io` for ease of use.
 //!
 //! [`AsyncRead`]: trait@AsyncRead
 //! [`AsyncWrite`]: trait@AsyncWrite
+//! [`AsyncReadExt`]: trait@AsyncReadExt
+//! [`AsyncWriteExt`]: trait@AsyncWriteExt
+//! ["codec"]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
+//! [`Encoder`]: https://docs.rs/tokio-util/latest/tokio_util/codec/trait.Encoder.html
+//! [`Decoder`]: https://docs.rs/tokio-util/latest/tokio_util/codec/trait.Decoder.html
+//! [`ReaderStream`]: https://docs.rs/tokio-util/latest/tokio_util/io/struct.ReaderStream.html
+//! [`StreamReader`]: https://docs.rs/tokio-util/latest/tokio_util/io/struct.StreamReader.html
 //! [`Error`]: struct@Error
 //! [`ErrorKind`]: enum@ErrorKind
 //! [`Result`]: type@Result
 //! [`Read`]: std::io::Read
+//! [`SeekFrom`]: enum@SeekFrom
+//! [`Sink`]: https://docs.rs/futures/0.3/futures/sink/trait.Sink.html
+//! [`Stream`]: https://docs.rs/futures/0.3/futures/stream/trait.Stream.html
 //! [`Write`]: std::io::Write
+
+#![cfg_attr(
+    not(all(feature = "rt", feature = "net")),
+    allow(dead_code, unused_imports)
+)]
+
 cfg_io_blocking! {
     pub(crate) mod blocking;
 }
@@ -170,17 +206,52 @@ pub use self::async_seek::AsyncSeek;
 mod async_write;
 pub use self::async_write::AsyncWrite;
 
-cfg_io_driver! {
-    pub(crate) mod driver;
+mod read_buf;
+pub use self::read_buf::ReadBuf;
 
+// Re-export some types from `std::io` so that users don't have to deal
+// with conflicts when `use`ing `tokio::io` and `std::io`.
+#[doc(no_inline)]
+pub use std::io::{Error, ErrorKind, Result, SeekFrom};
+
+cfg_io_driver_impl! {
+    pub(crate) mod interest;
+    pub(crate) mod ready;
+
+    cfg_net! {
+        pub use interest::Interest;
+        pub use ready::Ready;
+    }
+
+    #[cfg_attr(tokio_wasi, allow(unused_imports))]
     mod poll_evented;
-    pub use poll_evented::PollEvented;
 
-    mod registration;
-    pub use registration::Registration;
+    #[cfg(not(loom))]
+    #[cfg_attr(tokio_wasi, allow(unused_imports))]
+    pub(crate) use poll_evented::PollEvented;
+}
+
+cfg_aio! {
+    /// BSD-specific I/O types.
+    pub mod bsd {
+        mod poll_aio;
+
+        pub use poll_aio::{Aio, AioEvent, AioSource};
+    }
+}
+
+cfg_net_unix! {
+    mod async_fd;
+
+    pub mod unix {
+        //! Asynchronous IO structures specific to Unix-like operating systems.
+        pub use super::async_fd::{AsyncFd, AsyncFdReadyGuard, AsyncFdReadyMutGuard, TryIoError};
+    }
 }
 
 cfg_io_std! {
+    mod stdio_common;
+
     mod stderr;
     pub use stderr::{stderr, Stderr};
 
@@ -196,21 +267,11 @@ cfg_io_util! {
     pub use split::{split, ReadHalf, WriteHalf};
 
     pub(crate) mod seek;
-    pub use self::seek::Seek;
-
     pub(crate) mod util;
     pub use util::{
-        copy, empty, repeat, sink, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt,
-        BufReader, BufStream, BufWriter, Copy, Empty, Lines, Repeat, Sink, Split, Take,
+        copy, copy_bidirectional, copy_buf, duplex, empty, repeat, sink, AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt,
+        BufReader, BufStream, BufWriter, DuplexStream, Empty, Lines, Repeat, Sink, Split, Take,
     };
-
-    cfg_stream! {
-        pub use util::{stream_reader, StreamReader};
-    }
-
-    // Re-export io::Error so that users don't have to deal with conflicts when
-    // `use`ing `tokio::io` and `std::io`.
-    pub use std::io::{Error, ErrorKind, Result};
 }
 
 cfg_not_io_util! {
@@ -223,7 +284,7 @@ cfg_io_blocking! {
     /// Types in this module can be mocked out in tests.
     mod sys {
         // TODO: don't rename
-        pub(crate) use crate::runtime::spawn_blocking as run;
-        pub(crate) use crate::task::JoinHandle as Blocking;
+        pub(crate) use crate::blocking::spawn_blocking as run;
+        pub(crate) use crate::blocking::JoinHandle as Blocking;
     }
 }

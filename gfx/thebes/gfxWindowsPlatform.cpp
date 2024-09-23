@@ -12,6 +12,7 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
 
+#include "gfxBlur.h"
 #include "gfxImageSurface.h"
 #include "gfxWindowsSurface.h"
 
@@ -19,7 +20,9 @@
 #include "nsUnicodeProperties.h"
 
 #include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/ProfilerThreadSleep.h"
+#include "mozilla/Components.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/WindowsVersion.h"
 #include "nsIGfxInfo.h"
@@ -27,7 +30,6 @@
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Telemetry.h"
-#include "GeckoProfiler.h"
 
 #include "plbase64.h"
 #include "nsIXULRuntime.h"
@@ -40,9 +42,8 @@
 #include "gfxGDIFontList.h"
 #include "gfxGDIFont.h"
 
+#include "mozilla/layers/CanvasChild.h"
 #include "mozilla/layers/CompositorThread.h"
-#include "mozilla/layers/PaintThread.h"
-#include "mozilla/layers/ReadbackManagerD3D11.h"
 
 #include "gfxDWriteFontList.h"
 #include "gfxDWriteFonts.h"
@@ -61,8 +62,6 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/gfxVars.h"
 
-#include "nsMemory.h"
-
 #include <dwmapi.h>
 #include <d3d11.h>
 #include <d2d1_1.h>
@@ -79,8 +78,11 @@
 #include "DriverCrashGuard.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/gfx/DeviceManagerDx.h"
+#include "mozilla/gfx/DisplayConfigWindows.h"
 #include "mozilla/layers/DeviceAttachmentsD3D11.h"
+#include "mozilla/WindowsProcessMitigations.h"
 #include "D3D11Checks.h"
+#include "mozilla/ScreenHelperWin.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -116,17 +118,6 @@ class GfxD2DVramReporter final : public nsIMemoryReporter {
 };
 
 NS_IMPL_ISUPPORTS(GfxD2DVramReporter, nsIMemoryReporter)
-
-#define GFX_CLEARTYPE_PARAMS "gfx.font_rendering.cleartype_params."
-#define GFX_CLEARTYPE_PARAMS_GAMMA "gfx.font_rendering.cleartype_params.gamma"
-#define GFX_CLEARTYPE_PARAMS_CONTRAST \
-  "gfx.font_rendering.cleartype_params.enhanced_contrast"
-#define GFX_CLEARTYPE_PARAMS_LEVEL \
-  "gfx.font_rendering.cleartype_params.cleartype_level"
-#define GFX_CLEARTYPE_PARAMS_STRUCTURE \
-  "gfx.font_rendering.cleartype_params.pixel_structure"
-#define GFX_CLEARTYPE_PARAMS_MODE \
-  "gfx.font_rendering.cleartype_params.rendering_mode"
 
 class GPUAdapterReporter final : public nsIMemoryReporter {
   // Callers must Release the DXGIAdapter after use or risk mem-leak
@@ -200,28 +191,15 @@ class GPUAdapterReporter final : public nsIMemoryReporter {
           queryStatistics.QuerySegment.SegmentId = i;
 
           if (NT_SUCCESS(queryD3DKMTStatistics(&queryStatistics))) {
-            bool aperture;
-
-            // SegmentInformation has a different definition in Win7 than later
-            // versions
-            if (!IsWin8OrLater())
-              aperture = queryStatistics.QueryResult.SegmentInfoWin7.Aperture;
-            else
-              aperture = queryStatistics.QueryResult.SegmentInfoWin8.Aperture;
-
+            bool aperture = queryStatistics.QueryResult.SegmentInfo.Aperture;
             memset(&queryStatistics, 0, sizeof(D3DKMTQS));
             queryStatistics.Type = D3DKMTQS_PROCESS_SEGMENT;
             queryStatistics.AdapterLuid = adapterDesc.AdapterLuid;
             queryStatistics.hProcess = ProcessHandle;
             queryStatistics.QueryProcessSegment.SegmentId = i;
             if (NT_SUCCESS(queryD3DKMTStatistics(&queryStatistics))) {
-              ULONGLONG bytesCommitted;
-              if (!IsWin8OrLater())
-                bytesCommitted = queryStatistics.QueryResult.ProcessSegmentInfo
-                                     .Win7.BytesCommitted;
-              else
-                bytesCommitted = queryStatistics.QueryResult.ProcessSegmentInfo
-                                     .Win8.BytesCommitted;
+              ULONGLONG bytesCommitted =
+                  queryStatistics.QueryResult.ProcessSegmentInfo.BytesCommitted;
               if (aperture)
                 sharedBytesUsed += bytesCommitted;
               else
@@ -281,17 +259,19 @@ class D3DSharedTexturesReporter final : public nsIMemoryReporter {
 
 NS_IMPL_ISUPPORTS(D3DSharedTexturesReporter, nsIMemoryReporter)
 
-gfxWindowsPlatform::gfxWindowsPlatform()
-    : mRenderMode(RENDER_GDI),
-      mDwmCompositionStatus(DwmCompositionStatus::Unknown) {
-  /*
-   * Initialize COM
-   */
-  CoInitialize(nullptr);
+gfxWindowsPlatform::gfxWindowsPlatform() : mRenderMode(RENDER_GDI) {
+  // If win32k is locked down then we can't use COM STA and shouldn't need it.
+  // Also, we won't be using any GPU memory in this process.
+  if (!IsWin32kLockedDown()) {
+    /*
+     * Initialize COM
+     */
+    CoInitialize(nullptr);
 
-  RegisterStrongMemoryReporter(new GfxD2DVramReporter());
-  RegisterStrongMemoryReporter(new GPUAdapterReporter());
-  RegisterStrongMemoryReporter(new D3DSharedTexturesReporter());
+    RegisterStrongMemoryReporter(new GfxD2DVramReporter());
+    RegisterStrongMemoryReporter(new GPUAdapterReporter());
+    RegisterStrongMemoryReporter(new D3DSharedTexturesReporter());
+  }
 }
 
 gfxWindowsPlatform::~gfxWindowsPlatform() {
@@ -299,16 +279,92 @@ gfxWindowsPlatform::~gfxWindowsPlatform() {
 
   DeviceManagerDx::Shutdown();
 
-  /*
-   * Uninitialize COM
-   */
-  CoUninitialize();
+  // We don't initialize COM when win32k is locked down.
+  if (!IsWin32kLockedDown()) {
+    /*
+     * Uninitialize COM
+     */
+    CoUninitialize();
+  }
+}
+
+/* static */
+void gfxWindowsPlatform::InitMemoryReportersForGPUProcess() {
+  MOZ_RELEASE_ASSERT(XRE_IsGPUProcess());
+
+  RegisterStrongMemoryReporter(new GfxD2DVramReporter());
+  RegisterStrongMemoryReporter(new GPUAdapterReporter());
+  RegisterStrongMemoryReporter(new D3DSharedTexturesReporter());
+}
+
+/* static */
+nsresult gfxWindowsPlatform::GetGpuTimeSinceProcessStartInMs(
+    uint64_t* aResult) {
+  // If win32k is locked down then we should not have any GPU processing and
+  // cannot use these APIs either way.
+  if (IsWin32kLockedDown()) {
+    *aResult = 0;
+    return NS_OK;
+  }
+
+  nsModuleHandle module(LoadLibrary(L"gdi32.dll"));
+  if (!module) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  PFND3DKMTQS queryD3DKMTStatistics =
+      (PFND3DKMTQS)GetProcAddress(module, "D3DKMTQueryStatistics");
+  if (!queryD3DKMTStatistics) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  gfx::DeviceManagerDx* dm = DeviceManagerDx::Get();
+  if (!dm) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  D3D11DeviceStatus status;
+  if (!dm->ExportDeviceInfo(&status)) {
+    // Assume that we used 0ms of GPU time if the device manager
+    // doesn't know the device status.
+    *aResult = 0;
+    return NS_OK;
+  }
+
+  const DxgiAdapterDesc& adapterDesc = status.adapter();
+
+  D3DKMTQS queryStatistics;
+  memset(&queryStatistics, 0, sizeof(D3DKMTQS));
+  queryStatistics.Type = D3DKMTQS_ADAPTER;
+  queryStatistics.AdapterLuid = adapterDesc.AdapterLuid;
+  if (!NT_SUCCESS(queryD3DKMTStatistics(&queryStatistics))) {
+    return NS_ERROR_FAILURE;
+  }
+
+  uint64_t result = 0;
+  ULONG nodeCount = queryStatistics.QueryResult.AdapterInfo.NodeCount;
+  for (ULONG i = 0; i < nodeCount; ++i) {
+    memset(&queryStatistics, 0, sizeof(D3DKMTQS));
+    queryStatistics.Type = D3DKMTQS_PROCESS_NODE;
+    queryStatistics.AdapterLuid = adapterDesc.AdapterLuid;
+    queryStatistics.hProcess = GetCurrentProcess();
+    queryStatistics.QueryProcessNode.NodeId = i;
+    if (NT_SUCCESS(queryD3DKMTStatistics(&queryStatistics))) {
+      result += queryStatistics.QueryResult.ProcessNodeInformation.RunningTime
+                    .QuadPart *
+                100 / PR_NSEC_PER_MSEC;
+    }
+  }
+
+  *aResult = result;
+  return NS_OK;
 }
 
 static void UpdateANGLEConfig() {
   if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
     gfxConfig::Disable(Feature::D3D11_HW_ANGLE, FeatureStatus::Disabled,
-                       "D3D11 compositing is disabled");
+                       "D3D11 compositing is disabled",
+                       "FEATURE_FAILURE_HW_ANGLE_D3D11_DISABLED"_ns);
   }
 }
 
@@ -317,7 +373,11 @@ void gfxWindowsPlatform::InitAcceleration() {
 
   DeviceManagerDx::Init();
 
+  // Content processes should have received content device data from parent.
+  MOZ_ASSERT_IF(XRE_IsContentProcess(), GetInitContentDeviceData());
+
   InitializeConfig();
+  InitGPUProcessSupport();
   // Ensure devices initialization. SharedSurfaceANGLE and
   // SharedSurfaceD3D11Interop use them. The devices are lazily initialized
   // with WebRender to reduce memory usage.
@@ -337,54 +397,21 @@ void gfxWindowsPlatform::InitAcceleration() {
   gfxVars::SetSystemTextQualityListener(
       gfxDWriteFont::SystemTextQualityChanged);
 
-  if (XRE_IsParentProcess()) {
-    BOOL dwmEnabled = FALSE;
-    if (FAILED(::DwmIsCompositionEnabled(&dwmEnabled)) || !dwmEnabled) {
-      gfxVars::SetDwmCompositionEnabled(false);
-    } else {
-      gfxVars::SetDwmCompositionEnabled(true);
-    }
-  }
-
-  // gfxVars are not atomic, but multiple threads can query DWM status
-  // Therefore, mirror value into an atomic
-  mDwmCompositionStatus = gfxVars::DwmCompositionEnabled()
-                              ? DwmCompositionStatus::Enabled
-                              : DwmCompositionStatus::Disabled;
-
-  gfxVars::SetDwmCompositionEnabledListener([this] {
-    this->mDwmCompositionStatus = gfxVars::DwmCompositionEnabled()
-                                      ? DwmCompositionStatus::Enabled
-                                      : DwmCompositionStatus::Disabled;
-  });
-
   // CanUseHardwareVideoDecoding depends on DeviceManagerDx state,
   // so update the cached value now.
   UpdateCanUseHardwareVideoDecoding();
+
+  // Our ScreenHelperWin also depends on DeviceManagerDx state.
+  if (XRE_IsParentProcess() && !gfxPlatform::IsHeadless()) {
+    ScreenHelperWin::RefreshScreens();
+  }
 
   RecordStartupTelemetry();
 }
 
 void gfxWindowsPlatform::InitWebRenderConfig() {
   gfxPlatform::InitWebRenderConfig();
-  if (XRE_IsParentProcess()) {
-    bool prev =
-        Preferences::GetBool("sanity-test.webrender.force-disabled", false);
-    bool current = Preferences::GetBool("gfx.webrender.force-disabled", false);
-    // When "gfx.webrender.force-disabled" pref is changed from false to true,
-    // set "layers.mlgpu.sanity-test-failed" pref to false.
-    // "layers.mlgpu.sanity-test-failed" pref is re-tested by SanityTest.jsm.
-    bool doRetest = !prev && current;
-    if (doRetest) {
-      Preferences::SetBool("layers.mlgpu.sanity-test-failed", false);
-    }
-    // Need to be called after gfxPlatform::InitWebRenderConfig().
-    InitializeAdvancedLayersConfig();
-  }
-
-  if (gfxVars::UseWebRender()) {
-    UpdateBackendPrefs();
-  }
+  UpdateBackendPrefs();
 }
 
 bool gfxWindowsPlatform::CanUseHardwareVideoDecoding() {
@@ -400,22 +427,22 @@ bool gfxWindowsPlatform::CanUseHardwareVideoDecoding() {
 
 bool gfxWindowsPlatform::InitDWriteSupport() {
   mozilla::ScopedGfxFeatureReporter reporter("DWrite");
-  if (!Factory::EnsureDWriteFactory()) {
+  if (!gfxDWriteFont::InitDWriteSupport()) {
     return false;
   }
 
-  SetupClearTypeParams();
   reporter.SetSuccessful();
   return true;
 }
 
 bool gfxWindowsPlatform::HandleDeviceReset() {
-  DeviceResetReason resetReason = DeviceResetReason::OK;
+  mozilla::gfx::DeviceResetReason resetReason =
+      mozilla::gfx::DeviceResetReason::OK;
   if (!DidRenderingDeviceReset(&resetReason)) {
     return false;
   }
 
-  if (resetReason != DeviceResetReason::FORCED_RESET) {
+  if (resetReason != mozilla::gfx::DeviceResetReason::FORCED_RESET) {
     Telemetry::Accumulate(Telemetry::DEVICE_RESET_REASON,
                           uint32_t(resetReason));
   }
@@ -430,14 +457,13 @@ bool gfxWindowsPlatform::HandleDeviceReset() {
   gfxAlphaBoxBlur::ShutdownBlurCache();
 
   gfxConfig::Reset(Feature::D3D11_COMPOSITING);
-  gfxConfig::Reset(Feature::ADVANCED_LAYERS);
   gfxConfig::Reset(Feature::D3D11_HW_ANGLE);
   gfxConfig::Reset(Feature::DIRECT2D);
 
   InitializeConfig();
   // XXX Add InitWebRenderConfig() calling.
-  InitializeAdvancedLayersConfig();
   if (mInitializedDevices) {
+    InitGPUProcessSupport();
     InitializeDevices();
   }
   UpdateANGLEConfig();
@@ -455,11 +481,6 @@ BackendPrefsData gfxWindowsPlatform::GetBackendPrefs() const {
   if (gfxConfig::IsEnabled(Feature::DIRECT2D)) {
     data.mCanvasBitmask |= BackendTypeBit(BackendType::DIRECT2D1_1);
     data.mCanvasDefault = BackendType::DIRECT2D1_1;
-    // We do not use d2d for content when WebRender is used.
-    if (!gfxVars::UseWebRender()) {
-      data.mContentBitmask |= BackendTypeBit(BackendType::DIRECT2D1_1);
-      data.mContentDefault = BackendType::DIRECT2D1_1;
-    }
   }
   return data;
 }
@@ -468,13 +489,18 @@ void gfxWindowsPlatform::UpdateBackendPrefs() {
   BackendPrefsData data = GetBackendPrefs();
   // Remove DIRECT2D1 preference if D2D1Device does not exist.
   if (!Factory::HasD2D1Device()) {
-    data.mCanvasBitmask &= ~BackendTypeBit(BackendType::DIRECT2D1_1);
     data.mContentBitmask &= ~BackendTypeBit(BackendType::DIRECT2D1_1);
-    if (data.mCanvasDefault == BackendType::DIRECT2D1_1) {
-      data.mCanvasDefault = BackendType::SKIA;
-    }
     if (data.mContentDefault == BackendType::DIRECT2D1_1) {
       data.mContentDefault = BackendType::SKIA;
+    }
+
+    // Don't exclude DIRECT2D1_1 if using remote canvas, because DIRECT2D1_1 and
+    // hence the device will be used in the GPU process.
+    if (!gfxPlatform::UseRemoteCanvas()) {
+      data.mCanvasBitmask &= ~BackendTypeBit(BackendType::DIRECT2D1_1);
+      if (data.mCanvasDefault == BackendType::DIRECT2D1_1) {
+        data.mCanvasDefault = BackendType::SKIA;
+      }
     }
   }
   InitBackendPrefs(std::move(data));
@@ -488,10 +514,6 @@ void gfxWindowsPlatform::UpdateRenderMode() {
   bool didReset = HandleDeviceReset();
 
   UpdateBackendPrefs();
-
-  if (PaintThread::Get()) {
-    PaintThread::Get()->UpdateRenderMode();
-  }
 
   if (didReset) {
     mScreenReferenceDrawTarget = CreateOffscreenContentDrawTarget(
@@ -518,10 +540,6 @@ mozilla::gfx::BackendType gfxWindowsPlatform::GetContentBackendFor(
     mozilla::layers::LayersBackend aLayers) {
   mozilla::gfx::BackendType defaultBackend =
       gfxPlatform::GetDefaultContentBackend();
-  if (aLayers == LayersBackend::LAYERS_D3D11) {
-    return defaultBackend;
-  }
-
   if (aLayers == LayersBackend::LAYERS_WR &&
       gfx::gfxVars::UseWebRenderANGLE()) {
     return defaultBackend;
@@ -539,45 +557,41 @@ mozilla::gfx::BackendType gfxWindowsPlatform::GetContentBackendFor(
 mozilla::gfx::BackendType gfxWindowsPlatform::GetPreferredCanvasBackend() {
   mozilla::gfx::BackendType backend = gfxPlatform::GetPreferredCanvasBackend();
 
-  if (backend == BackendType::DIRECT2D1_1 && gfx::gfxVars::UseWebRender() &&
-      !gfx::gfxVars::UseWebRenderANGLE()) {
-    // We can't have D2D without ANGLE when WebRender is enabled, so fallback to
-    // Skia.
-    return BackendType::SKIA;
+  if (backend == BackendType::DIRECT2D1_1) {
+    if (!gfx::gfxVars::UseWebRenderANGLE()) {
+      // We can't have D2D without ANGLE when WebRender is enabled, so fallback
+      // to Skia.
+      return BackendType::SKIA;
+    }
+
+    // Fall back to software when remote canvas has been deactivated.
+    if (CanvasChild::Deactivated()) {
+      return BackendType::SKIA;
+    }
   }
   return backend;
 }
 
-gfxPlatformFontList* gfxWindowsPlatform::CreatePlatformFontList() {
-  gfxPlatformFontList* pfl;
-
-  // bug 630201 - older pre-RTM versions of Direct2D/DirectWrite cause odd
-  // crashers so blacklist them altogether
-  if (IsNotWin7PreRTM() && DWriteEnabled()) {
-    pfl = new gfxDWriteFontList();
-    if (NS_SUCCEEDED(pfl->InitFontList())) {
-      return pfl;
+bool gfxWindowsPlatform::CreatePlatformFontList() {
+  if (DWriteEnabled()) {
+    if (gfxPlatformFontList::Initialize(new gfxDWriteFontList)) {
+      return true;
     }
+
     // DWrite font initialization failed! Don't know why this would happen,
     // but apparently it can - see bug 594865.
     // So we're going to fall back to GDI fonts & rendering.
-    gfxPlatformFontList::Shutdown();
     DisableD2D(FeatureStatus::Failed, "Failed to initialize fonts",
-               NS_LITERAL_CSTRING("FEATURE_FAILURE_FONT_FAIL"));
+               "FEATURE_FAILURE_FONT_FAIL"_ns);
   }
 
-  // Ensure this is false, even if the Windows version was recent enough to
-  // permit it, as we're using GDI fonts.
-  mHasVariationFontSupport = false;
+  // Make sure the static variable is initialized...
+  gfxPlatform::HasVariationFontSupport();
+  // ...then force it to false, even if the Windows version was recent enough
+  // to permit it, as we're using GDI fonts.
+  sHasVariationFontSupport = false;
 
-  pfl = new gfxGDIFontList();
-
-  if (NS_SUCCEEDED(pfl->InitFontList())) {
-    return pfl;
-  }
-
-  gfxPlatformFontList::Shutdown();
-  return nullptr;
+  return gfxPlatformFontList::Initialize(new gfxGDIFontList);
 }
 
 // This function will permanently disable D2D for the session. It's intended to
@@ -656,17 +670,11 @@ static const char kFontUtsaah[] = "Utsaah";
 static const char kFontYuGothic[] = "Yu Gothic";
 
 void gfxWindowsPlatform::GetCommonFallbackFonts(
-    uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+    uint32_t aCh, Script aRunScript, eFontPresentation aPresentation,
     nsTArray<const char*>& aFontList) {
-  EmojiPresentation emoji = GetEmojiPresentation(aCh);
-  if (emoji != EmojiPresentation::TextOnly) {
-    if (aNextCh == kVariationSelector16 ||
-        (aNextCh != kVariationSelector15 &&
-         emoji == EmojiPresentation::EmojiDefault)) {
-      // if char is followed by VS16, try for a color emoji glyph
-      aFontList.AppendElement(kFontSegoeUIEmoji);
-      aFontList.AppendElement(kFontTwemojiMozilla);
-    }
+  if (PrefersColor(aPresentation)) {
+    aFontList.AppendElement(kFontSegoeUIEmoji);
+    aFontList.AppendElement(kFontTwemojiMozilla);
   }
 
   // Arial is used as the default fallback for system fallback
@@ -853,10 +861,18 @@ void gfxWindowsPlatform::GetCommonFallbackFonts(
   // Arial Unicode MS has lots of glyphs for obscure characters,
   // use it as a last resort
   aFontList.AppendElement(kFontArialUnicodeMS);
+
+  // If we didn't begin with the color-emoji fonts, include them here
+  // so that they'll be preferred over user-installed (and possibly
+  // broken) fonts in the global fallback path.
+  if (!PrefersColor(aPresentation)) {
+    aFontList.AppendElement(kFontSegoeUIEmoji);
+    aFontList.AppendElement(kFontTwemojiMozilla);
+  }
 }
 
 bool gfxWindowsPlatform::DidRenderingDeviceReset(
-    DeviceResetReason* aResetReason) {
+    mozilla::gfx::DeviceResetReason* aResetReason) {
   DeviceManagerDx* dm = DeviceManagerDx::Get();
   if (!dm) {
     return false;
@@ -866,7 +882,7 @@ bool gfxWindowsPlatform::DidRenderingDeviceReset(
 
 void gfxWindowsPlatform::CompositorUpdated() {
   DeviceManagerDx::Get()->ForceDeviceReset(
-      ForcedDeviceResetReason::COMPOSITOR_UPDATED);
+      mozilla::gfx::ForcedDeviceResetReason::COMPOSITOR_UPDATED);
   UpdateRenderMode();
 }
 
@@ -879,7 +895,8 @@ BOOL CALLBACK InvalidateWindowForDeviceReset(HWND aWnd, LPARAM aMsg) {
 void gfxWindowsPlatform::SchedulePaintIfDeviceReset() {
   AUTO_PROFILER_LABEL("gfxWindowsPlatform::SchedulePaintIfDeviceReset", OTHER);
 
-  DeviceResetReason resetReason = DeviceResetReason::OK;
+  mozilla::gfx::DeviceResetReason resetReason =
+      mozilla::gfx::DeviceResetReason::OK;
   if (!DidRenderingDeviceReset(&resetReason)) {
     return;
   }
@@ -924,31 +941,37 @@ void gfxWindowsPlatform::CheckForContentOnlyDeviceReset() {
 
 nsTArray<uint8_t> gfxWindowsPlatform::GetPlatformCMSOutputProfileData() {
   if (XRE_IsContentProcess()) {
-    // This will be passed in during InitChild so we can avoid sending a
-    // sync message back to the parent during init.
-    const mozilla::gfx::ContentDeviceData* contentDeviceData =
-        GetInitContentDeviceData();
-    if (contentDeviceData) {
-      MOZ_ASSERT(!contentDeviceData->cmsOutputProfileData().IsEmpty());
-      return contentDeviceData->cmsOutputProfileData().Clone();
+    auto& cmsOutputProfileData = GetCMSOutputProfileData();
+    // We should have set our profile data when we received our initial
+    // ContentDeviceData.
+    MOZ_ASSERT(cmsOutputProfileData.isSome(),
+               "Should have created output profile data when we received "
+               "initial content device data.");
+
+    // If we have data, it should not be empty.
+    MOZ_ASSERT_IF(cmsOutputProfileData.isSome(),
+                  !cmsOutputProfileData->IsEmpty());
+
+    if (cmsOutputProfileData.isSome()) {
+      return cmsOutputProfileData.ref().Clone();
     }
-
-    // Otherwise we need to ask the parent for the updated color profile
-    mozilla::dom::ContentChild* cc = mozilla::dom::ContentChild::GetSingleton();
-    nsTArray<uint8_t> result;
-    Unused << cc->SendGetOutputColorProfileData(&result);
-    return result;
+    return nsTArray<uint8_t>();
   }
 
-  if (!mCachedOutputColorProfile.IsEmpty()) {
-    return mCachedOutputColorProfile.Clone();
-  }
+  return GetPlatformCMSOutputProfileData_Impl();
+}
 
-  mCachedOutputColorProfile = [&] {
-    nsTArray<uint8_t> prefProfileData = GetPrefCMSOutputProfileData();
+nsTArray<uint8_t> gfxWindowsPlatform::GetPlatformCMSOutputProfileData_Impl() {
+  static nsTArray<uint8_t> sCached = [&] {
+    // Check override pref first:
+    nsTArray<uint8_t> prefProfileData =
+        gfxPlatform::GetPrefCMSOutputProfileData();
     if (!prefProfileData.IsEmpty()) {
       return prefProfileData;
     }
+
+    // -
+    // Otherwise, create a dummy DC and pull from that.
 
     HDC dc = ::GetDC(nullptr);
     if (!dc) {
@@ -982,7 +1005,7 @@ nsTArray<uint8_t> gfxWindowsPlatform::GetPlatformCMSOutputProfileData() {
     return result;
   }();
 
-  return mCachedOutputColorProfile.Clone();
+  return sCached.Clone();
 }
 
 void gfxWindowsPlatform::GetDLLVersion(char16ptr_t aDLLPath,
@@ -1023,7 +1046,7 @@ void gfxWindowsPlatform::GetDLLVersion(char16ptr_t aDLLPath,
   vers[3] = LOWORD(fileVersLS);
 
   char buf[256];
-  SprintfLiteral(buf, "%u.%u.%u.%u", vers[0], vers[1], vers[2], vers[3]);
+  SprintfLiteral(buf, "%lu.%lu.%lu.%lu", vers[0], vers[1], vers[2], vers[3]);
   aVersion.Assign(NS_ConvertUTF8toUTF16(buf));
 }
 
@@ -1072,7 +1095,7 @@ void gfxWindowsPlatform::FontsPrefsChanged(const char* aPref) {
 
   if (aPref &&
       !strncmp(GFX_CLEARTYPE_PARAMS, aPref, strlen(GFX_CLEARTYPE_PARAMS))) {
-    SetupClearTypeParams();
+    gfxDWriteFont::UpdateClearTypeVars();
   } else {
     clearTextFontCaches = false;
   }
@@ -1083,143 +1106,6 @@ void gfxWindowsPlatform::FontsPrefsChanged(const char* aPref) {
       fc->Flush();
     }
   }
-}
-
-#define DISPLAY1_REGISTRY_KEY \
-  HKEY_CURRENT_USER, L"Software\\Microsoft\\Avalon.Graphics\\DISPLAY1"
-
-#define ENHANCED_CONTRAST_VALUE_NAME L"EnhancedContrastLevel"
-
-void gfxWindowsPlatform::SetupClearTypeParams() {
-  if (DWriteEnabled()) {
-    // any missing prefs will default to invalid (-1) and be ignored;
-    // out-of-range values will also be ignored
-    FLOAT gamma = -1.0;
-    FLOAT contrast = -1.0;
-    FLOAT level = -1.0;
-    int geometry = -1;
-    int mode = -1;
-    int32_t value;
-    if (NS_SUCCEEDED(Preferences::GetInt(GFX_CLEARTYPE_PARAMS_GAMMA, &value))) {
-      if (value >= 1000 && value <= 2200) {
-        gamma = FLOAT(value / 1000.0);
-      }
-    }
-
-    if (NS_SUCCEEDED(
-            Preferences::GetInt(GFX_CLEARTYPE_PARAMS_CONTRAST, &value))) {
-      if (value >= 0 && value <= 1000) {
-        contrast = FLOAT(value / 100.0);
-      }
-    }
-
-    if (NS_SUCCEEDED(Preferences::GetInt(GFX_CLEARTYPE_PARAMS_LEVEL, &value))) {
-      if (value >= 0 && value <= 100) {
-        level = FLOAT(value / 100.0);
-      }
-    }
-
-    if (NS_SUCCEEDED(
-            Preferences::GetInt(GFX_CLEARTYPE_PARAMS_STRUCTURE, &value))) {
-      if (value >= 0 && value <= 2) {
-        geometry = value;
-      }
-    }
-
-    if (NS_SUCCEEDED(Preferences::GetInt(GFX_CLEARTYPE_PARAMS_MODE, &value))) {
-      if (value >= 0 && value <= 5) {
-        mode = value;
-      }
-    }
-
-    cairo_dwrite_set_cleartype_params(gamma, contrast, level, geometry, mode);
-
-    switch (mode) {
-      case DWRITE_RENDERING_MODE_ALIASED:
-      case DWRITE_RENDERING_MODE_CLEARTYPE_GDI_CLASSIC:
-        mMeasuringMode = DWRITE_MEASURING_MODE_GDI_CLASSIC;
-        break;
-      case DWRITE_RENDERING_MODE_CLEARTYPE_GDI_NATURAL:
-        mMeasuringMode = DWRITE_MEASURING_MODE_GDI_NATURAL;
-        break;
-      default:
-        mMeasuringMode = DWRITE_MEASURING_MODE_NATURAL;
-        break;
-    }
-
-    RefPtr<IDWriteRenderingParams> defaultRenderingParams;
-    Factory::GetDWriteFactory()->CreateRenderingParams(
-        getter_AddRefs(defaultRenderingParams));
-    // For EnhancedContrast, we override the default if the user has not set it
-    // in the registry (by using the ClearType Tuner).
-    if (contrast < 0.0 || contrast > 10.0) {
-      HKEY hKey;
-      LONG res = RegOpenKeyExW(DISPLAY1_REGISTRY_KEY, 0, KEY_READ, &hKey);
-      if (res == ERROR_SUCCESS) {
-        res = RegQueryValueExW(hKey, ENHANCED_CONTRAST_VALUE_NAME, nullptr,
-                               nullptr, nullptr, nullptr);
-        if (res == ERROR_SUCCESS) {
-          contrast = defaultRenderingParams->GetEnhancedContrast();
-        }
-        RegCloseKey(hKey);
-      }
-
-      if (contrast < 0.0 || contrast > 10.0) {
-        contrast = 1.0;
-      }
-    }
-
-    // For parameters that have not been explicitly set,
-    // we copy values from default params (or our overridden value for contrast)
-    if (gamma < 1.0 || gamma > 2.2) {
-      gamma = defaultRenderingParams->GetGamma();
-    }
-
-    if (level < 0.0 || level > 1.0) {
-      level = defaultRenderingParams->GetClearTypeLevel();
-    }
-
-    DWRITE_PIXEL_GEOMETRY dwriteGeometry =
-        static_cast<DWRITE_PIXEL_GEOMETRY>(geometry);
-    DWRITE_RENDERING_MODE renderMode = static_cast<DWRITE_RENDERING_MODE>(mode);
-
-    if (dwriteGeometry < DWRITE_PIXEL_GEOMETRY_FLAT ||
-        dwriteGeometry > DWRITE_PIXEL_GEOMETRY_BGR) {
-      dwriteGeometry = defaultRenderingParams->GetPixelGeometry();
-    }
-
-    Factory::SetBGRSubpixelOrder(dwriteGeometry == DWRITE_PIXEL_GEOMETRY_BGR);
-
-    if (renderMode < DWRITE_RENDERING_MODE_DEFAULT ||
-        renderMode > DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC) {
-      renderMode = defaultRenderingParams->GetRenderingMode();
-    }
-
-    mRenderingParams[TEXT_RENDERING_NO_CLEARTYPE] = defaultRenderingParams;
-
-    HRESULT hr = Factory::GetDWriteFactory()->CreateCustomRenderingParams(
-        gamma, contrast, level, dwriteGeometry, renderMode,
-        getter_AddRefs(mRenderingParams[TEXT_RENDERING_NORMAL]));
-    if (FAILED(hr) || !mRenderingParams[TEXT_RENDERING_NORMAL]) {
-      mRenderingParams[TEXT_RENDERING_NORMAL] = defaultRenderingParams;
-    }
-
-    hr = Factory::GetDWriteFactory()->CreateCustomRenderingParams(
-        gamma, contrast, level, dwriteGeometry,
-        DWRITE_RENDERING_MODE_CLEARTYPE_GDI_CLASSIC,
-        getter_AddRefs(mRenderingParams[TEXT_RENDERING_GDI_CLASSIC]));
-    if (FAILED(hr) || !mRenderingParams[TEXT_RENDERING_GDI_CLASSIC]) {
-      mRenderingParams[TEXT_RENDERING_GDI_CLASSIC] = defaultRenderingParams;
-    }
-  }
-}
-
-ReadbackManagerD3D11* gfxWindowsPlatform::GetReadbackManager() {
-  if (!mD3D11ReadbackManager) {
-    mD3D11ReadbackManager = new ReadbackManagerD3D11();
-  }
-
-  return mD3D11ReadbackManager;
 }
 
 bool gfxWindowsPlatform::IsOptimus() {
@@ -1235,24 +1121,14 @@ bool gfxWindowsPlatform::IsOptimus() {
   }
   return knowIsOptimus;
 }
-/*
-static inline bool
-IsWARPStable()
-{
-  // It seems like nvdxgiwrap makes a mess of WARP. See bug 1154703.
-  if (!IsWin8OrLater() || GetModuleHandleA("nvdxgiwrap.dll")) {
-    return false;
-  }
-  return true;
-}
-*/
+
 static void InitializeANGLEConfig() {
   FeatureState& d3d11ANGLE = gfxConfig::GetFeature(Feature::D3D11_HW_ANGLE);
 
   if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
-    d3d11ANGLE.DisableByDefault(
-        FeatureStatus::Unavailable, "D3D11 compositing is disabled",
-        NS_LITERAL_CSTRING("FEATURE_FAILURE_D3D11_DISABLED"));
+    d3d11ANGLE.DisableByDefault(FeatureStatus::Unavailable,
+                                "D3D11 compositing is disabled",
+                                "FEATURE_FAILURE_HW_ANGLE_D3D11_DISABLED"_ns);
     return;
   }
 
@@ -1262,7 +1138,7 @@ static void InitializeANGLEConfig() {
   nsCString failureId;
   if (!gfxPlatform::IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_DIRECT3D_11_ANGLE,
                                         &message, failureId)) {
-    d3d11ANGLE.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
+    d3d11ANGLE.Disable(FeatureStatus::Blocklisted, message.get(), failureId);
   }
 }
 
@@ -1281,7 +1157,7 @@ void gfxWindowsPlatform::InitializeConfig() {
     InitializeANGLEConfig();
     InitializeD2DConfig();
   } else {
-    FetchAndImportContentDeviceData();
+    ImportCachedContentDeviceData();
     InitializeANGLEConfig();
   }
 }
@@ -1292,9 +1168,9 @@ void gfxWindowsPlatform::InitializeD3D11Config() {
   FeatureState& d3d11 = gfxConfig::GetFeature(Feature::D3D11_COMPOSITING);
 
   if (!gfxConfig::IsEnabled(Feature::HW_COMPOSITING)) {
-    d3d11.DisableByDefault(
-        FeatureStatus::Unavailable, "Hardware compositing is disabled",
-        NS_LITERAL_CSTRING("FEATURE_FAILURE_D3D11_NEED_HWCOMP"));
+    d3d11.DisableByDefault(FeatureStatus::Unavailable,
+                           "Hardware compositing is disabled",
+                           "FEATURE_FAILURE_D3D11_NEED_HWCOMP"_ns);
     return;
   }
 
@@ -1306,70 +1182,12 @@ void gfxWindowsPlatform::InitializeD3D11Config() {
     d3d11.UserForceEnable("User force-enabled WARP");
   }
 
-  if (!IsWin8OrLater() &&
-      !DeviceManagerDx::Get()->CheckRemotePresentSupport()) {
-    nsCOMPtr<nsIGfxInfo> gfxInfo;
-    gfxInfo = services::GetGfxInfo();
-    nsAutoString adaptorId;
-    gfxInfo->GetAdapterDeviceID(adaptorId);
-    // Blacklist Intel HD Graphics 510/520/530 on Windows 7 without platform
-    // update due to the crashes in Bug 1351349.
-    if (adaptorId.EqualsLiteral("0x1912") ||
-        adaptorId.EqualsLiteral("0x1916") ||
-        adaptorId.EqualsLiteral("0x1902")) {
-#ifdef RELEASE_OR_BETA
-      d3d11.Disable(FeatureStatus::Blacklisted, "Blacklisted, see bug 1351349",
-                    NS_LITERAL_CSTRING("FEATURE_FAILURE_BUG_1351349"));
-#else
-      Preferences::SetBool("gfx.compositor.clearstate", true);
-#endif
-    }
-  }
-
   nsCString message;
   nsCString failureId;
   if (StaticPrefs::layers_d3d11_enable_blacklist_AtStartup() &&
       !gfxPlatform::IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_DIRECT3D_11_LAYERS,
                                         &message, failureId)) {
-    d3d11.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
-  }
-}
-
-/* static */
-void gfxWindowsPlatform::InitializeAdvancedLayersConfig() {
-  // Only enable Advanced Layers if D3D11 succeeded.
-  if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
-    return;
-  }
-
-  FeatureState& al = gfxConfig::GetFeature(Feature::ADVANCED_LAYERS);
-  al.SetDefaultFromPref(StaticPrefs::GetPrefName_layers_mlgpu_enabled(),
-                        true /* aIsEnablePref */,
-                        StaticPrefs::GetPrefDefault_layers_mlgpu_enabled());
-
-  // Windows 7 has an extra pref since it uses totally different buffer paths
-  // that haven't been performance tested yet.
-  if (al.IsEnabled() && !IsWin8OrLater()) {
-    if (StaticPrefs::layers_mlgpu_enable_on_windows7_AtStartup()) {
-      al.UserEnable("Enabled for Windows 7 via user-preference");
-    } else {
-      al.Disable(FeatureStatus::Disabled,
-                 "Advanced Layers is disabled on Windows 7 by default",
-                 NS_LITERAL_CSTRING("FEATURE_FAILURE_DISABLED_ON_WIN7"));
-    }
-  }
-
-  nsCString message, failureId;
-  if (!IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_ADVANCED_LAYERS, &message,
-                           failureId)) {
-    al.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
-  } else if (gfxVars::UseWebRender()) {
-    al.Disable(FeatureStatus::Blocked,
-               "Blocked from fallback candidate by WebRender usage",
-               NS_LITERAL_CSTRING("FEATURE_BLOCKED_BY_WEBRENDER_USAGE"));
-  } else if (Preferences::GetBool("layers.mlgpu.sanity-test-failed", false)) {
-    al.Disable(FeatureStatus::Broken, "Failed to render sanity test",
-               NS_LITERAL_CSTRING("FEATURE_FAILURE_FAILED_TO_RENDER"));
+    d3d11.Disable(FeatureStatus::Blocklisted, message.get(), failureId);
   }
 }
 
@@ -1410,6 +1228,8 @@ void gfxWindowsPlatform::RecordStartupTelemetry() {
 // Supports lazy device initialization on Windows, so that WebRender can avoid
 // initializing GPU state and allocating swap chains for most non-GPU processes.
 void gfxWindowsPlatform::EnsureDevicesInitialized() {
+  MOZ_DIAGNOSTIC_ASSERT(!IsWin32kLockedDown());
+
   if (!mInitializedDevices) {
     mInitializedDevices = true;
     InitializeDevices();
@@ -1427,7 +1247,7 @@ void gfxWindowsPlatform::InitializeDevices() {
     // initialize any DirectX devices. We do leave them enabled in gfxConfig
     // though. If the GPU process fails to create these devices it will send
     // a message back and we'll update their status.
-    if (InitGPUProcessSupport()) {
+    if (gfxConfig::IsEnabled(Feature::GPU_PROCESS)) {
       return;
     }
 
@@ -1468,9 +1288,9 @@ void gfxWindowsPlatform::InitializeDevices() {
 
 void gfxWindowsPlatform::InitializeD3D11() {
   // This function attempts to initialize our D3D11 devices, if the hardware
-  // is not blacklisted for D3D11 layers. This first attempt will try to create
+  // is not blocklisted for D3D11 layers. This first attempt will try to create
   // a hardware accelerated device. If this creation fails or the hardware is
-  // blacklisted, then this function will abort if WARP is disabled, causing us
+  // blocklisted, then this function will abort if WARP is disabled, causing us
   // to fallback to Basic layers. If WARP is not disabled it will use a WARP
   // device which should always be available on Windows 7 and higher.
   if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
@@ -1502,7 +1322,7 @@ void gfxWindowsPlatform::InitializeD2DConfig() {
   if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
     d2d1.DisableByDefault(FeatureStatus::Unavailable,
                           "Direct2D requires Direct3D 11 compositing",
-                          NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_D3D11_COMP"));
+                          "FEATURE_FAILURE_D2D_D3D11_COMP"_ns);
     return;
   }
 
@@ -1514,7 +1334,7 @@ void gfxWindowsPlatform::InitializeD2DConfig() {
   nsCString failureId;
   if (!gfxPlatform::IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_DIRECT2D, &message,
                                         failureId)) {
-    d2d1.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
+    d2d1.Disable(FeatureStatus::Blocklisted, message.get(), failureId);
   }
 
   if (!d2d1.IsEnabled() &&
@@ -1535,7 +1355,7 @@ void gfxWindowsPlatform::InitializeD2D() {
   if (dm->IsWARP()) {
     d2d1.Disable(FeatureStatus::Blocked,
                  "Direct2D is not compatible with Direct3D11 WARP",
-                 NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_WARP_BLOCK"));
+                 "FEATURE_FAILURE_D2D_WARP_BLOCK"_ns);
   }
 
   // If we pass all the initial checks, we can proceed to runtime decisions.
@@ -1546,21 +1366,21 @@ void gfxWindowsPlatform::InitializeD2D() {
   if (!Factory::SupportsD2D1()) {
     d2d1.SetFailed(FeatureStatus::Unavailable,
                    "Failed to acquire a Direct2D 1.1 factory",
-                   NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_FACTORY"));
+                   "FEATURE_FAILURE_D2D_FACTORY"_ns);
     return;
   }
 
   if (!dm->GetContentDevice()) {
     d2d1.SetFailed(FeatureStatus::Failed,
                    "Failed to acquire a Direct3D 11 content device",
-                   NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_DEVICE"));
+                   "FEATURE_FAILURE_D2D_DEVICE"_ns);
     return;
   }
 
   if (!dm->TextureSharingWorks()) {
     d2d1.SetFailed(FeatureStatus::Failed,
                    "Direct3D11 device does not support texture sharing",
-                   NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_TXT_SHARING"));
+                   "FEATURE_FAILURE_D2D_TXT_SHARING"_ns);
     return;
   }
 
@@ -1568,7 +1388,7 @@ void gfxWindowsPlatform::InitializeD2D() {
   if (!DWriteEnabled() && !InitDWriteSupport()) {
     d2d1.SetFailed(FeatureStatus::Failed,
                    "Failed to initialize DirectWrite support",
-                   NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_DWRITE"));
+                   "FEATURE_FAILURE_D2D_DWRITE"_ns);
     return;
   }
 
@@ -1576,7 +1396,7 @@ void gfxWindowsPlatform::InitializeD2D() {
   RefPtr<ID3D11Device> contentDevice = dm->GetContentDevice();
   if (!Factory::SetDirect3D11Device(contentDevice)) {
     d2d1.SetFailed(FeatureStatus::Failed, "Failed to create a Direct2D device",
-                   NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_CREATE_FAILED"));
+                   "FEATURE_FAILURE_D2D_CREATE_FAILED"_ns);
     return;
   }
 
@@ -1584,378 +1404,292 @@ void gfxWindowsPlatform::InitializeD2D() {
   d2d1_1.SetSuccessful();
 }
 
-bool gfxWindowsPlatform::InitGPUProcessSupport() {
+void gfxWindowsPlatform::InitGPUProcessSupport() {
   FeatureState& gpuProc = gfxConfig::GetFeature(Feature::GPU_PROCESS);
 
   if (!gpuProc.IsEnabled()) {
-    return false;
-  }
-
-  nsCString message;
-  nsCString failureId;
-  if (!gfxPlatform::IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_GPU_PROCESS,
-                                        &message, failureId)) {
-    gpuProc.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
-    return false;
+    return;
   }
 
   if (!gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
     // Don't use the GPU process if not using D3D11, unless software
     // compositor is allowed
     if (StaticPrefs::layers_gpu_process_allow_software_AtStartup()) {
-      return gpuProc.IsEnabled();
+      return;
     }
     gpuProc.Disable(FeatureStatus::Unavailable,
                     "Not using GPU Process since D3D11 is unavailable",
-                    NS_LITERAL_CSTRING("FEATURE_FAILURE_NO_D3D11"));
-  } else if (!IsWin7SP1OrLater()) {
-    // On Windows 7 Pre-SP1, DXGI 1.2 is not available and remote presentation
-    // for D3D11 will not work. Rather than take a regression we revert back
-    // to in-process rendering.
-    gpuProc.Disable(FeatureStatus::Unavailable,
-                    "Windows 7 Pre-SP1 cannot use the GPU process",
-                    NS_LITERAL_CSTRING("FEATURE_FAILURE_OLD_WINDOWS"));
-  } else if (!IsWin8OrLater()) {
-    // Windows 7 SP1 can have DXGI 1.2 only via the Platform Update, so we
-    // explicitly check for that here.
-    if (!DeviceManagerDx::Get()->CheckRemotePresentSupport()) {
-      gpuProc.Disable(FeatureStatus::Unavailable,
-                      "GPU Process requires the Windows 7 Platform Update",
-                      NS_LITERAL_CSTRING("FEATURE_FAILURE_PLATFORM_UPDATE"));
-    } else {
-      // Clear anything cached by the above call since we don't need it.
-      DeviceManagerDx::Get()->ResetDevices();
-    }
+                    "FEATURE_FAILURE_NO_D3D11"_ns);
   }
-
   // If we're still enabled at this point, the user set the force-enabled pref.
-  return gpuProc.IsEnabled();
-}
-
-bool gfxWindowsPlatform::DwmCompositionEnabled() {
-  MOZ_RELEASE_ASSERT(mDwmCompositionStatus != DwmCompositionStatus::Unknown);
-
-  return mDwmCompositionStatus == DwmCompositionStatus::Enabled;
 }
 
 class D3DVsyncSource final : public VsyncSource {
  public:
-  class D3DVsyncDisplay final : public VsyncSource::Display {
-   public:
-    D3DVsyncDisplay()
-        : mPrevVsync(TimeStamp::Now()),
-          mVsyncEnabledLock("D3DVsyncEnabledLock"),
-          mVsyncEnabled(false),
-          mWaitVBlankMonitor(NULL),
-          mIsWindows10OrLater(false) {
-      mVsyncThread = new base::Thread("WindowsVsyncThread");
-      MOZ_RELEASE_ASSERT(mVsyncThread->Start(),
-                         "GFX: Could not start Windows vsync thread");
-      SetVsyncRate();
+  D3DVsyncSource()
+      : mPrevVsync(TimeStamp::Now()),
+        mVsyncEnabled(false),
+        mWaitVBlankMonitor(NULL) {
+    mVsyncThread = new base::Thread("WindowsVsyncThread");
+    MOZ_RELEASE_ASSERT(mVsyncThread->Start(),
+                       "GFX: Could not start Windows vsync thread");
+    SetVsyncRate();
+  }
 
-      mIsWindows10OrLater = IsWin10OrLater();
+  void SetVsyncRate() {
+    DWM_TIMING_INFO vblankTime;
+    // Make sure to init the cbSize, otherwise GetCompositionTiming will fail
+    vblankTime.cbSize = sizeof(DWM_TIMING_INFO);
+    HRESULT hr = DwmGetCompositionTimingInfo(0, &vblankTime);
+    if (SUCCEEDED(hr)) {
+      UNSIGNED_RATIO refreshRate = vblankTime.rateRefresh;
+      // We get the rate in hertz / time, but we want the rate in ms.
+      float rate =
+          ((float)refreshRate.uiDenominator / (float)refreshRate.uiNumerator) *
+          1000;
+      mVsyncRate = TimeDuration::FromMilliseconds(rate);
+    } else {
+      mVsyncRate = TimeDuration::FromMilliseconds(1000.0 / 60.0);
     }
+  }
 
-    void SetVsyncRate() {
-      if (!gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
-        mVsyncRate = TimeDuration::FromMilliseconds(1000.0 / 60.0);
+  virtual void Shutdown() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    DisableVsync();
+    mVsyncThread->Stop();
+    delete mVsyncThread;
+  }
+
+  virtual void EnableVsync() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_ASSERT(mVsyncThread->IsRunning());
+    {  // scope lock
+      if (mVsyncEnabled) {
         return;
       }
-
-      DWM_TIMING_INFO vblankTime;
-      // Make sure to init the cbSize, otherwise GetCompositionTiming will fail
-      vblankTime.cbSize = sizeof(DWM_TIMING_INFO);
-      HRESULT hr = DwmGetCompositionTimingInfo(0, &vblankTime);
-      if (SUCCEEDED(hr)) {
-        UNSIGNED_RATIO refreshRate = vblankTime.rateRefresh;
-        // We get the rate in hertz / time, but we want the rate in ms.
-        float rate = ((float)refreshRate.uiDenominator /
-                      (float)refreshRate.uiNumerator) *
-                     1000;
-        mVsyncRate = TimeDuration::FromMilliseconds(rate);
-      } else {
-        mVsyncRate = TimeDuration::FromMilliseconds(1000.0 / 60.0);
-      }
+      mVsyncEnabled = true;
     }
 
-    virtual void Shutdown() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      DisableVsync();
-      mVsyncThread->Stop();
-      delete mVsyncThread;
+    mVsyncThread->message_loop()->PostTask(NewRunnableMethod(
+        "D3DVsyncSource::VBlankLoop", this, &D3DVsyncSource::VBlankLoop));
+  }
+
+  virtual void DisableVsync() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_ASSERT(mVsyncThread->IsRunning());
+    if (!mVsyncEnabled) {
+      return;
+    }
+    mVsyncEnabled = false;
+  }
+
+  virtual bool IsVsyncEnabled() override {
+    MOZ_ASSERT(NS_IsMainThread());
+    return mVsyncEnabled;
+  }
+
+  virtual TimeDuration GetVsyncRate() override { return mVsyncRate; }
+
+  void ScheduleSoftwareVsync(TimeStamp aVsyncTimestamp) {
+    MOZ_ASSERT(IsInVsyncThread());
+    NS_WARNING(
+        "DwmComposition dynamically disabled, falling back to software "
+        "timers");
+
+    TimeStamp nextVsync = aVsyncTimestamp + mVsyncRate;
+    TimeDuration delay = nextVsync - TimeStamp::Now();
+    if (delay.ToMilliseconds() < 0) {
+      delay = mozilla::TimeDuration::FromMilliseconds(0);
     }
 
-    virtual void EnableVsync() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MOZ_ASSERT(mVsyncThread->IsRunning());
-      {  // scope lock
-        MonitorAutoLock lock(mVsyncEnabledLock);
-        if (mVsyncEnabled) {
-          return;
-        }
-        mVsyncEnabled = true;
-      }
+    mVsyncThread->message_loop()->PostDelayedTask(
+        NewRunnableMethod("D3DVsyncSource::VBlankLoop", this,
+                          &D3DVsyncSource::VBlankLoop),
+        delay.ToMilliseconds());
+  }
 
-      mVsyncThread->message_loop()->PostTask(NewRunnableMethod(
-          "D3DVsyncDisplay::VBlankLoop", this, &D3DVsyncDisplay::VBlankLoop));
-    }
+  // Returns the timestamp for the just happened vsync
+  TimeStamp GetVBlankTime() {
+    TimeStamp vsync = TimeStamp::Now();
+    TimeStamp now = vsync;
 
-    virtual void DisableVsync() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MOZ_ASSERT(mVsyncThread->IsRunning());
-      MonitorAutoLock lock(mVsyncEnabledLock);
-      if (!mVsyncEnabled) {
-        return;
-      }
-      mVsyncEnabled = false;
-    }
-
-    virtual bool IsVsyncEnabled() override {
-      MOZ_ASSERT(NS_IsMainThread());
-      MonitorAutoLock lock(mVsyncEnabledLock);
-      return mVsyncEnabled;
-    }
-
-    virtual TimeDuration GetVsyncRate() override { return mVsyncRate; }
-
-    void ScheduleSoftwareVsync(TimeStamp aVsyncTimestamp) {
-      MOZ_ASSERT(IsInVsyncThread());
-      NS_WARNING(
-          "DwmComposition dynamically disabled, falling back to software "
-          "timers");
-
-      TimeStamp nextVsync = aVsyncTimestamp + mVsyncRate;
-      TimeDuration delay = nextVsync - TimeStamp::Now();
-      if (delay.ToMilliseconds() < 0) {
-        delay = mozilla::TimeDuration::FromMilliseconds(0);
-      }
-
-      mVsyncThread->message_loop()->PostDelayedTask(
-          NewRunnableMethod("D3DVsyncDisplay::VBlankLoop", this,
-                            &D3DVsyncDisplay::VBlankLoop),
-          delay.ToMilliseconds());
-    }
-
-    // Returns the timestamp for the just happened vsync
-    TimeStamp GetVBlankTime() {
-      TimeStamp vsync = TimeStamp::Now();
-      TimeStamp now = vsync;
-
-      DWM_TIMING_INFO vblankTime;
-      // Make sure to init the cbSize, otherwise
-      // GetCompositionTiming will fail
-      vblankTime.cbSize = sizeof(DWM_TIMING_INFO);
-      HRESULT hr = DwmGetCompositionTimingInfo(0, &vblankTime);
-      if (!SUCCEEDED(hr)) {
-        return vsync;
-      }
-
-      LARGE_INTEGER frequency;
-      QueryPerformanceFrequency(&frequency);
-
-      LARGE_INTEGER qpcNow;
-      QueryPerformanceCounter(&qpcNow);
-
-      const int microseconds = 1000000;
-      int64_t adjust = qpcNow.QuadPart - vblankTime.qpcVBlank;
-      int64_t usAdjust = (adjust * microseconds) / frequency.QuadPart;
-      vsync -= TimeDuration::FromMicroseconds((double)usAdjust);
-
-      if (IsWin10OrLater()) {
-        // On Windows 10 and on, DWMGetCompositionTimingInfo, mostly
-        // reports the upcoming vsync time, which is in the future.
-        // It can also sometimes report a vblank time in the past.
-        // Since large parts of Gecko assume TimeStamps can't be in future,
-        // use the previous vsync.
-
-        // Windows 10 and Intel HD vsync timestamps are messy and
-        // all over the place once in a while. Most of the time,
-        // it reports the upcoming vsync. Sometimes, that upcoming
-        // vsync is in the past. Sometimes that upcoming vsync is before
-        // the previously seen vsync.
-        // In these error cases, normalize to Now();
-        if (vsync >= now) {
-          vsync = vsync - mVsyncRate;
-        }
-      }
-
-      // On Windows 7 and 8, DwmFlush wakes up AFTER qpcVBlankTime
-      // from DWMGetCompositionTimingInfo. We can return the adjusted vsync.
-      if (vsync >= now) {
-        vsync = now;
-      }
-
-      // Our vsync time is some time very far in the past, adjust to Now.
-      // 4 ms is arbitrary, so feel free to pick something else if this isn't
-      // working. See the comment above within IsWin10OrLater().
-      if ((now - vsync).ToMilliseconds() > 4.0) {
-        vsync = now;
-      }
-
+    DWM_TIMING_INFO vblankTime;
+    // Make sure to init the cbSize, otherwise
+    // GetCompositionTiming will fail
+    vblankTime.cbSize = sizeof(DWM_TIMING_INFO);
+    HRESULT hr = DwmGetCompositionTimingInfo(0, &vblankTime);
+    if (!SUCCEEDED(hr)) {
       return vsync;
     }
 
-    void VBlankLoop() {
-      MOZ_ASSERT(IsInVsyncThread());
-      MOZ_ASSERT(sizeof(int64_t) == sizeof(QPC_TIME));
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
 
-      TimeStamp vsync = TimeStamp::Now();
-      mPrevVsync = TimeStamp();
-      TimeStamp flushTime = TimeStamp::Now();
-      TimeDuration longVBlank = mVsyncRate * 2;
+    LARGE_INTEGER qpcNow;
+    QueryPerformanceCounter(&qpcNow);
 
-      for (;;) {
-        {  // scope lock
-          MonitorAutoLock lock(mVsyncEnabledLock);
-          if (!mVsyncEnabled) return;
-        }
+    const int microseconds = 1000000;
+    int64_t adjust = qpcNow.QuadPart - vblankTime.qpcVBlank;
+    int64_t usAdjust = (adjust * microseconds) / frequency.QuadPart;
+    vsync -= TimeDuration::FromMicroseconds((double)usAdjust);
 
-        // Large parts of gecko assume that the refresh driver timestamp
-        // must be <= Now() and cannot be in the future.
-        MOZ_ASSERT(vsync <= TimeStamp::Now());
-        Display::NotifyVsync(vsync);
+    // On Windows 10 and on, DWMGetCompositionTimingInfo, mostly
+    // reports the upcoming vsync time, which is in the future.
+    // It can also sometimes report a vblank time in the past.
+    // Since large parts of Gecko assume TimeStamps can't be in future,
+    // use the previous vsync.
 
-        // DwmComposition can be dynamically enabled/disabled
-        // so we have to check every time that it's available.
-        // When it is unavailable, we fallback to software but will try
-        // to get back to dwm rendering once it's re-enabled
-        if (!gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
-          ScheduleSoftwareVsync(vsync);
-          return;
-        }
+    // Windows 10 and Intel HD vsync timestamps are messy and
+    // all over the place once in a while. Most of the time,
+    // it reports the upcoming vsync. Sometimes, that upcoming
+    // vsync is in the past. Sometimes that upcoming vsync is before
+    // the previously seen vsync.
+    // In these error cases, normalize to Now();
+    if (vsync >= now) {
+      vsync = vsync - mVsyncRate;
+    }
 
-        HRESULT hr = E_FAIL;
-        if (mIsWindows10OrLater &&
-            !StaticPrefs::gfx_vsync_force_disable_waitforvblank()) {
-          UpdateVBlankOutput();
-          if (mWaitVBlankOutput) {
-            const TimeStamp vblank_begin_wait = TimeStamp::Now();
+    // On Windows 7 and 8, DwmFlush wakes up AFTER qpcVBlankTime
+    // from DWMGetCompositionTimingInfo. We can return the adjusted vsync.
+    if (vsync >= now) {
+      vsync = now;
+    }
+
+    // Our vsync time is some time very far in the past, adjust to Now.
+    // 4 ms is arbitrary, so feel free to pick something else if this isn't
+    // working. See the comment above.
+    if ((now - vsync).ToMilliseconds() > 4.0) {
+      vsync = now;
+    }
+
+    return vsync;
+  }
+
+  void VBlankLoop() {
+    MOZ_ASSERT(IsInVsyncThread());
+    MOZ_ASSERT(sizeof(int64_t) == sizeof(QPC_TIME));
+
+    TimeStamp vsync = TimeStamp::Now();
+    mPrevVsync = TimeStamp();
+    TimeStamp flushTime = TimeStamp::Now();
+    TimeDuration longVBlank = mVsyncRate * 2;
+
+    for (;;) {
+      {  // scope lock
+        if (!mVsyncEnabled) return;
+      }
+
+      // Large parts of gecko assume that the refresh driver timestamp
+      // must be <= Now() and cannot be in the future.
+      MOZ_ASSERT(vsync <= TimeStamp::Now());
+      NotifyVsync(vsync, vsync + mVsyncRate);
+
+      HRESULT hr = E_FAIL;
+      if (!StaticPrefs::gfx_vsync_force_disable_waitforvblank()) {
+        UpdateVBlankOutput();
+        if (mWaitVBlankOutput) {
+          const TimeStamp vblank_begin_wait = TimeStamp::Now();
+          {
+            AUTO_PROFILER_THREAD_SLEEP;
             hr = mWaitVBlankOutput->WaitForVBlank();
-            if (SUCCEEDED(hr)) {
-              // vblank might return instantly when running headless,
-              // monitor powering off, etc.  Since we're on a dedicated
-              // thread, instant-return should not happen in the normal
-              // case, so catch any odd behavior with a time cutoff:
-              TimeDuration vblank_wait = TimeStamp::Now() - vblank_begin_wait;
-              if (vblank_wait.ToMilliseconds() < 1.0) {
-                hr = E_FAIL;  // fall back on old behavior
-              }
+          }
+          if (SUCCEEDED(hr)) {
+            // vblank might return instantly when running headless,
+            // monitor powering off, etc.  Since we're on a dedicated
+            // thread, instant-return should not happen in the normal
+            // case, so catch any odd behavior with a time cutoff:
+            TimeDuration vblank_wait = TimeStamp::Now() - vblank_begin_wait;
+            if (vblank_wait.ToMilliseconds() < 1.0) {
+              hr = E_FAIL;  // fall back on old behavior
             }
           }
         }
-        if (!SUCCEEDED(hr)) {
-          hr = DwmFlush();
-        }
-        if (!SUCCEEDED(hr)) {
-          // DWMFlush isn't working, fallback to software vsync.
-          ScheduleSoftwareVsync(TimeStamp::Now());
-          return;
-        }
-
-        TimeStamp now = TimeStamp::Now();
-        TimeDuration flushDiff = now - flushTime;
-        flushTime = now;
-        if ((flushDiff > longVBlank) || mPrevVsync.IsNull()) {
-          // Our vblank took longer than 2 intervals, readjust our timestamps
-          vsync = GetVBlankTime();
-          mPrevVsync = vsync;
-        } else {
-          // Instead of giving the actual vsync time, a constant interval
-          // between vblanks instead of the noise generated via hardware
-          // is actually what we want. Most apps just care about the diff
-          // between vblanks to animate, so a clean constant interval is
-          // smoother.
-          vsync = mPrevVsync + mVsyncRate;
-          if (vsync > now) {
-            // DWMFlush woke up very early, so readjust our times again
-            vsync = GetVBlankTime();
-          }
-
-          if (vsync <= mPrevVsync) {
-            vsync = TimeStamp::Now();
-          }
-
-          if ((now - vsync).ToMilliseconds() > 2.0) {
-            // Account for time drift here where vsync never quite catches up to
-            // Now and we'd fall ever so slightly further behind Now().
-            vsync = GetVBlankTime();
-          }
-
-          mPrevVsync = vsync;
-        }
-      }  // end for
-    }
-    virtual ~D3DVsyncDisplay() { MOZ_ASSERT(NS_IsMainThread()); }
-
-   private:
-    bool IsInVsyncThread() {
-      return mVsyncThread->thread_id() == PlatformThread::CurrentId();
-    }
-
-    void UpdateVBlankOutput() {
-      HMONITOR primary_monitor =
-          MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
-      if (primary_monitor == mWaitVBlankMonitor && mWaitVBlankOutput) {
+      }
+      if (!SUCCEEDED(hr)) {
+        hr = DwmFlush();
+      }
+      if (!SUCCEEDED(hr)) {
+        // DWMFlush isn't working, fallback to software vsync.
+        ScheduleSoftwareVsync(TimeStamp::Now());
         return;
       }
 
-      mWaitVBlankMonitor = primary_monitor;
-
-      RefPtr<IDXGIOutput> output = nullptr;
-      if (DeviceManagerDx* dx = DeviceManagerDx::Get()) {
-        if (dx->GetOutputFromMonitor(mWaitVBlankMonitor, &output)) {
-          mWaitVBlankOutput = output;
-          return;
+      TimeStamp now = TimeStamp::Now();
+      TimeDuration flushDiff = now - flushTime;
+      flushTime = now;
+      if ((flushDiff > longVBlank) || mPrevVsync.IsNull()) {
+        // Our vblank took longer than 2 intervals, readjust our timestamps
+        vsync = GetVBlankTime();
+        mPrevVsync = vsync;
+      } else {
+        // Instead of giving the actual vsync time, a constant interval
+        // between vblanks instead of the noise generated via hardware
+        // is actually what we want. Most apps just care about the diff
+        // between vblanks to animate, so a clean constant interval is
+        // smoother.
+        vsync = mPrevVsync + mVsyncRate;
+        if (vsync > now) {
+          // DWMFlush woke up very early, so readjust our times again
+          vsync = GetVBlankTime();
         }
+
+        if (vsync <= mPrevVsync) {
+          vsync = TimeStamp::Now();
+        }
+
+        if ((now - vsync).ToMilliseconds() > 2.0) {
+          // Account for time drift here where vsync never quite catches up to
+          // Now and we'd fall ever so slightly further behind Now().
+          vsync = GetVBlankTime();
+        }
+
+        mPrevVsync = vsync;
       }
-
-      // failed to convert a monitor to an output so keep trying
-      mWaitVBlankOutput = nullptr;
-    }
-
-    TimeStamp mPrevVsync;
-    Monitor mVsyncEnabledLock;
-    base::Thread* mVsyncThread;
-    TimeDuration mVsyncRate;
-    bool mVsyncEnabled;
-
-    HMONITOR mWaitVBlankMonitor;
-    RefPtr<IDXGIOutput> mWaitVBlankOutput;
-    bool mIsWindows10OrLater;
-  };  // end d3dvsyncdisplay
-
-  D3DVsyncSource() { mPrimaryDisplay = new D3DVsyncDisplay(); }
-
-  virtual Display& GetGlobalDisplay() override { return *mPrimaryDisplay; }
+    }  // end for
+  }
+  virtual ~D3DVsyncSource() { MOZ_ASSERT(NS_IsMainThread()); }
 
  private:
-  virtual ~D3DVsyncSource() = default;
-  RefPtr<D3DVsyncDisplay> mPrimaryDisplay;
-};  // end D3DVsyncSource
+  bool IsInVsyncThread() {
+    return mVsyncThread->thread_id() == PlatformThread::CurrentId();
+  }
+
+  void UpdateVBlankOutput() {
+    HMONITOR primary_monitor =
+        MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+    if (primary_monitor == mWaitVBlankMonitor && mWaitVBlankOutput) {
+      return;
+    }
+
+    mWaitVBlankMonitor = primary_monitor;
+
+    RefPtr<IDXGIOutput> output = nullptr;
+    if (DeviceManagerDx* dx = DeviceManagerDx::Get()) {
+      if (dx->GetOutputFromMonitor(mWaitVBlankMonitor, &output)) {
+        mWaitVBlankOutput = output;
+        return;
+      }
+    }
+
+    // failed to convert a monitor to an output so keep trying
+    mWaitVBlankOutput = nullptr;
+  }
+
+  TimeStamp mPrevVsync;
+  base::Thread* mVsyncThread;
+  TimeDuration mVsyncRate;
+  Atomic<bool> mVsyncEnabled;
+
+  HMONITOR mWaitVBlankMonitor;
+  RefPtr<IDXGIOutput> mWaitVBlankOutput;
+};  // D3DVsyncSource
 
 already_AddRefed<mozilla::gfx::VsyncSource>
-gfxWindowsPlatform::CreateHardwareVsyncSource() {
+gfxWindowsPlatform::CreateGlobalHardwareVsyncSource() {
   MOZ_RELEASE_ASSERT(NS_IsMainThread(), "GFX: Not in main thread.");
-
-  if (!DwmCompositionEnabled()) {
-    NS_WARNING("DWM not enabled, falling back to software vsync");
-    return gfxPlatform::CreateHardwareVsyncSource();
-  }
 
   RefPtr<VsyncSource> d3dVsyncSource = new D3DVsyncSource();
   return d3dVsyncSource.forget();
-}
-
-void gfxWindowsPlatform::GetAcceleratedCompositorBackends(
-    nsTArray<LayersBackend>& aBackends) {
-  if (gfxConfig::IsEnabled(Feature::OPENGL_COMPOSITING) &&
-      StaticPrefs::layers_prefer_opengl_AtStartup()) {
-    aBackends.AppendElement(LayersBackend::LAYERS_OPENGL);
-  }
-
-  if (gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
-    aBackends.AppendElement(LayersBackend::LAYERS_D3D11);
-  }
 }
 
 void gfxWindowsPlatform::ImportGPUDeviceData(
@@ -1978,7 +1712,7 @@ void gfxWindowsPlatform::ImportGPUDeviceData(
     if (d2d1.IsEnabled()) {
       d2d1.SetFailed(FeatureStatus::Unavailable,
                      "Direct2D requires Direct3D 11 compositing",
-                     NS_LITERAL_CSTRING("FEATURE_FAILURE_D2D_D3D11_COMP"));
+                     "FEATURE_FAILURE_D2D_D3D11_COMP"_ns);
     }
   }
 
@@ -2006,9 +1740,6 @@ void gfxWindowsPlatform::ImportContentDeviceData(
     DeviceManagerDx* dm = DeviceManagerDx::Get();
     dm->ImportDeviceInfo(aData.d3d11());
   }
-
-  // aData->cmsOutputProfileData() will be read during color profile init,
-  // not as part of this import function
 }
 
 void gfxWindowsPlatform::BuildContentDeviceData(ContentDeviceData* aOut) {
@@ -2033,4 +1764,31 @@ void gfxWindowsPlatform::BuildContentDeviceData(ContentDeviceData* aOut) {
 bool gfxWindowsPlatform::CheckVariationFontSupport() {
   // Variation font support is only available on Fall Creators Update or later.
   return IsWin10FallCreatorsUpdateOrLater();
+}
+
+void gfxWindowsPlatform::GetPlatformDisplayInfo(
+    mozilla::widget::InfoObject& aObj) {
+  HwStretchingSupport stretch;
+  DeviceManagerDx::Get()->CheckHardwareStretchingSupport(stretch);
+
+  nsPrintfCString stretchValue(
+      "both=%u window-only=%u full-screen-only=%u none=%u error=%u",
+      stretch.mBoth, stretch.mWindowOnly, stretch.mFullScreenOnly,
+      stretch.mNone, stretch.mError);
+  aObj.DefineProperty("HardwareStretching", stretchValue.get());
+
+  ScaledResolutionSet scaled;
+  GetScaledResolutions(scaled);
+  if (scaled.IsEmpty()) {
+    return;
+  }
+
+  aObj.DefineProperty("ScaledResolutionCount", scaled.Length());
+  for (size_t i = 0; i < scaled.Length(); ++i) {
+    auto& s = scaled[i];
+    nsPrintfCString name("ScaledResolution%zu", i);
+    nsPrintfCString value("source %dx%d, target %dx%d", s.first.width,
+                          s.first.height, s.second.width, s.second.height);
+    aObj.DefineProperty(name.get(), value.get());
+  }
 }

@@ -6,7 +6,9 @@
 #include "nsISerializable.idl"
 
 %{C++
-#include "mozilla/dom/ReferrerPolicyBinding.h"
+namespace mozilla::dom {
+enum class ReferrerPolicy : uint8_t;
+}
 %}
 
 interface nsIURI;
@@ -25,6 +27,10 @@ interface nsIReferrerInfo : nsISerializable
    * ReferrerPolicyIDL to set up the ReferrerInfo object from JS. If you need
    * ReferrerPolicy in native code, please directly query it from
    * ReferrerPolicy.webidl.
+   *
+   * Note that the deserialization code assumes that the ReferrerPolicyIDL only
+   * uses one byte. If we would need to change the format here, we should also
+   * update the deserialization code.
    */
   cenum ReferrerPolicyIDL : 8 {
   /**
@@ -102,7 +108,7 @@ interface nsIReferrerInfo : nsISerializable
   /**
   * Indicates if the referrer should not be sent or not even when it's available.
   */
-  readonly attribute AString computedReferrerSpec;
+  readonly attribute ACString computedReferrerSpec;
 
   /**
    * Get the computed referrer, if one has been set. The computed referrer is
@@ -123,7 +129,6 @@ interface nsIReferrerInfo : nsISerializable
    * @param aSendReferrer sendReferrer of the created object, defaults to false
    * @param aOriginalReferrer the original referrer, defaults to null.
    */
-  [implicit_jscontext]
   void init(in nsIReferrerInfo_ReferrerPolicyIDL aReferrerPolicy,
            [optional] in boolean aSendReferrer,
            [optional] in nsIURI aOriginalReferrer);

@@ -9,6 +9,12 @@ import java.util.regex.*;
 import java.util.stream.Collectors;
 
 /**
+ * Java program to estimate the memory usage of ICU objects (bug 1585536).
+ *
+ * It computes for each Intl constructor the amount of allocated memory. We're
+ * currently using the maximum memory ("max" in the output) to estimate the
+ * memory consumption of ICU objects.
+ *
  * Insert before {@code JS_InitWithFailureDiagnostic} in "js.cpp":
  * 
  * <pre>
@@ -40,7 +46,7 @@ import java.util.stream.Collectors;
  * </pre>
  * 
  * Run this script with:
- * {@code java --enable-preview --source=14 IcuMemoryUsage.java $MOZ_JS_SHELL}.
+ * {@code java IcuMemoryUsage.java $MOZ_JS_SHELL}.
  */
 @SuppressWarnings("preview")
 public class IcuMemoryUsage {
@@ -118,12 +124,8 @@ public class IcuMemoryUsage {
         return Long.parseLong(m.group(group), 16);
     }
 
-    private static void measure(String exec, String constructor, String initializer) throws IOException {
-        var locales = Arrays.stream(Locale.getAvailableLocales()).map(Locale::toLanguageTag).sorted()
-                .collect(Collectors.toUnmodifiableList());
-
-        var pb = new ProcessBuilder(exec, "--file=-", "--", constructor, initializer,
-                locales.stream().collect(Collectors.joining(",")));
+    private static void measure(String exec, String constructor, String description, String initializer) throws IOException {
+        var pb = new ProcessBuilder(exec, "--file=-", "--", constructor, initializer);
         var process = pb.start();
 
         try (var writer = new BufferedWriter(
@@ -169,7 +171,7 @@ public class IcuMemoryUsage {
 
         var stats = memory.statistics();
 
-        System.out.printf("%s%n", constructor);
+        System.out.printf("%s%n", description);
         System.out.printf("  max: %d%n", stats.getMax());
         System.out.printf("  min: %d%n", stats.getMin());
         System.out.printf("  avg: %.0f%n", stats.getAverage());
@@ -189,42 +191,66 @@ public class IcuMemoryUsage {
             throw new RuntimeException("The first argument must point to the SpiderMonkey shell executable");
         }
 
-        var objects = new ArrayList<Map.Entry<String, String>>();
-        objects.add(Map.entry("Collator", "o.compare('a', 'b')"));
-        objects.add(Map.entry("DateTimeFormat", "o.format(0)"));
-        objects.add(Map.entry("DisplayNames", "o.of('en')"));
-        objects.add(Map.entry("ListFormat", "o.format(['a', 'b'])"));
-        objects.add(Map.entry("NumberFormat", "o.format(0)"));
-        // Instantiates UPluralRules and UNumberFormatter
-        // objects.add(Map.entry("PluralRules", "o.select(0)"));
-        // Instantiates only UPluralRules
-        objects.add(Map.entry("PluralRules", "o.resolvedOptions()"));
-        objects.add(Map.entry("RelativeTimeFormat", "o.format(0, 'hour')"));
+        record Entry (String constructor, String description, String initializer) {
+            public static Entry of(String constructor, String description, String initializer) {
+                return new Entry(constructor, description, initializer);
+            }
+
+            public static Entry of(String constructor, String initializer) {
+                return new Entry(constructor, constructor, initializer);
+            }
+        }
+
+        var objects = new ArrayList<Entry>();
+        objects.add(Entry.of("Intl.Collator", "o.compare('a', 'b')"));
+        objects.add(Entry.of("Intl.DateTimeFormat", "DateTimeFormat (UDateFormat)", "o.format(0)"));
+        objects.add(Entry.of("Intl.DateTimeFormat", "DateTimeFormat (UDateFormat+UDateIntervalFormat)",
+                             "o.formatRange(0, 24*60*60*1000)"));
+        objects.add(Entry.of("Intl.DisplayNames", "o.of('en')"));
+        objects.add(Entry.of("Intl.ListFormat", "o.format(['a', 'b'])"));
+        objects.add(Entry.of("Intl.NumberFormat", "o.format(0)"));
+        objects.add(Entry.of("Intl.NumberFormat", "NumberFormat (UNumberRangeFormatter)",
+                             "o.formatRange(0, 1000)"));
+        objects.add(Entry.of("Intl.PluralRules", "o.select(0)"));
+        objects.add(Entry.of("Intl.RelativeTimeFormat", "o.format(0, 'hour')"));
+        objects.add(Entry.of("Temporal.TimeZone", "o.getNextTransition(new Temporal.Instant(0n))"));
 
         for (var entry : objects) {
-            measure(args[0], entry.getKey(), entry.getValue());
+            measure(args[0], entry.constructor, entry.description, entry.initializer);
         }
     }
 
     private static final String sourceCode = """
 const constructorName = scriptArgs[0];
 const initializer = Function("o", scriptArgs[1]);
-const locales = scriptArgs[2].split(",");
 
 const extras = {};
 addIntlExtras(extras);
-if (extras.DisplayNames) {
-  Intl.DisplayNames = extras.DisplayNames;
+
+let constructor;
+let inputs;
+if (constructorName.startsWith("Intl.")) {
+  let simpleName = constructorName.substring("Intl.".length);
+  constructor = Intl[simpleName];
+  inputs = getAvailableLocalesOf(simpleName);
+} else if (constructorName === "Temporal.TimeZone") {
+  constructor = Temporal.TimeZone;
+  inputs = Intl.supportedValuesOf("timeZone");
+} else {
+  throw new Error("Unsupported constructor name: " + constructorName);
 }
 
-for (let i = 0; i < locales.length; ++i) {
+for (let i = 0; i < inputs.length; ++i) {
   // Loop twice in case the first time we create an object with a new locale
   // allocates additional memory when loading the locale data.
   for (let j = 0; j < 2; ++j) {
-    let constructor = Intl[constructorName];
+    let options = undefined;
+    if (constructor === Intl.DisplayNames) {
+      options = {type: "language"};
+    }
 
     print("Create");
-    let obj = new constructor(locales[i]);
+    let obj = new constructor(inputs[i], options);
 
     print("Init");
     initializer(obj);

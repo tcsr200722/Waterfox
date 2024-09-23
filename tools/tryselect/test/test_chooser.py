@@ -2,37 +2,40 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, print_function, unicode_literals
+import multiprocessing
 
 import mozunit
 import pytest
-
 from tryselect.selectors.chooser.app import create_application
-
 
 TASKS = [
     {
-        'kind': 'build',
-        'label': 'build-windows',
-        'attributes': {
-            'build_platform': 'windows',
+        "kind": "build",
+        "label": "build-windows",
+        "attributes": {
+            "build_platform": "windows",
         },
     },
     {
-        'kind': 'test',
-        'label': 'test-windows-mochitest-e10s',
-        'attributes': {
-            'unittest_suite': 'mochitest-browser-chrome',
-            'mochitest_try_name': 'mochitest-browser-chrome',
+        "kind": "test",
+        "label": "test-windows-mochitest-e10s",
+        "attributes": {
+            "unittest_suite": "mochitest-browser-chrome",
+            "mochitest_try_name": "mochitest-browser-chrome",
         },
     },
 ]
 
 
 @pytest.fixture
-def app(tg):
-    app = create_application(tg)
-    app.config['TESTING'] = True
+def queue():
+    return multiprocessing.Queue()
+
+
+@pytest.fixture
+def app(tg, queue):
+    app = create_application(tg, queue)
+    app.config["TESTING"] = True
 
     ctx = app.app_context()
     ctx.push()
@@ -40,10 +43,10 @@ def app(tg):
     ctx.pop()
 
 
-def test_try_chooser(app):
+def test_try_chooser(app, queue: multiprocessing.Queue):
     client = app.test_client()
 
-    response = client.get('/')
+    response = client.get("/")
     assert response.status_code == 200
 
     expected_output = [
@@ -55,24 +58,27 @@ def test_try_chooser(app):
     for expected in expected_output:
         assert expected in response.data
 
-    response = client.post('/', data={'action': 'Cancel'})
+    response = client.post("/", data={"action": "Cancel"})
     assert response.status_code == 200
     assert b"You may now close this page" in response.data
-    assert app.tasks == []
+    assert queue.get() == []
 
-    response = client.post('/', data={'action': 'Push', 'selected-tasks': ''})
+    response = client.post("/", data={"action": "Push", "selected-tasks": ""})
     assert response.status_code == 200
     assert b"You may now close this page" in response.data
-    assert app.tasks == []
+    assert queue.get() == []
 
-    response = client.post('/', data={
-        'action': 'Push',
-        'selected-tasks': 'build-windows\ntest-windows-mochitest-e10s'
-    })
+    response = client.post(
+        "/",
+        data={
+            "action": "Push",
+            "selected-tasks": "build-windows\ntest-windows-mochitest-e10s",
+        },
+    )
     assert response.status_code == 200
     assert b"You may now close this page" in response.data
-    assert set(app.tasks) == set(['build-windows', 'test-windows-mochitest-e10s'])
+    assert set(queue.get()) == set(["build-windows", "test-windows-mochitest-e10s"])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

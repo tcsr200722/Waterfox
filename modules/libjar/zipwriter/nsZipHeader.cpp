@@ -5,7 +5,6 @@
 
 #include "StreamFunctions.h"
 #include "nsZipHeader.h"
-#include "nsMemory.h"
 #include "prtime.h"
 
 #define ZIP_FILE_HEADER_SIGNATURE 0x04034b50
@@ -162,7 +161,7 @@ nsresult nsZipHeader::Init(const nsACString& aPath, PRTime aDate,
   mEAttr = aAttr;
   mOffset = aOffset;
   mName = aPath;
-  mComment = NS_LITERAL_CSTRING("");
+  mComment.Truncate();
   // Claim a UTF-8 path in case it needs it.
   mFlags |= FLAGS_IS_UTF8;
   mInited = true;
@@ -282,7 +281,7 @@ nsresult nsZipHeader::ReadCDSHeader(nsIInputStream* stream) {
     NS_ENSURE_SUCCESS(rv, rv);
     mName.Assign(field.get(), namelength);
   } else
-    mName = NS_LITERAL_CSTRING("");
+    mName.Truncate();
 
   if (mFieldLength > 0) {
     mExtraField = MakeUnique<uint8_t[]>(mFieldLength);
@@ -298,7 +297,7 @@ nsresult nsZipHeader::ReadCDSHeader(nsIInputStream* stream) {
     NS_ENSURE_SUCCESS(rv, rv);
     mComment.Assign(field.get(), commentlength);
   } else
-    mComment = NS_LITERAL_CSTRING("");
+    mComment.Truncate();
 
   mInited = true;
   return NS_OK;

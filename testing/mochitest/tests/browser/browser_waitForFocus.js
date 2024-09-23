@@ -3,13 +3,13 @@ const gBaseURL = "https://example.com/browser/testing/mochitest/tests/browser/";
 function promiseTabLoadEvent(tab, url) {
   let promise = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, url);
   if (url) {
-    tab.linkedBrowser.loadURI(url);
+    tab.linkedBrowser.loadURI(Services.io.newURI(url));
   }
   return promise;
 }
 
 // Load a new blank tab
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.openNewForegroundTab(gBrowser);
 
   gURLBar.focus();
@@ -27,7 +27,7 @@ add_task(async function() {
   gURLBar.focus();
 });
 
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.openNewForegroundTab(gBrowser);
 
   gURLBar.focus();
@@ -50,7 +50,7 @@ add_task(async function() {
 });
 
 // Load a tab with a subframe inside it and wait until the subframe is focused
-add_task(async function() {
+add_task(async function () {
   let tab = BrowserTestUtils.addTab(gBrowser);
   gBrowser.selectedTab = tab;
 
@@ -81,7 +81,7 @@ add_task(async function() {
 });
 
 // Pass a browser to promiseFocus
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
     gBaseURL + "waitForFocusPage.html"
@@ -98,4 +98,63 @@ add_task(async function() {
   );
 
   gBrowser.removeCurrentTab();
+});
+
+// Tests focusing the sidebar, which is in a parent process subframe
+// and then switching the focus to another window.
+add_task(async function () {
+  await SidebarController.show("viewBookmarksSidebar");
+
+  gURLBar.focus();
+
+  // Focus the sidebar.
+  await SimpleTest.promiseFocus(SidebarController.browser);
+  is(
+    document.activeElement,
+    document.getElementById("sidebar"),
+    "sidebar focused"
+  );
+  ok(
+    document.activeElement.contentDocument.hasFocus(),
+    "sidebar document hasFocus"
+  );
+
+  // Focus the sidebar again, which should cause no change.
+  await SimpleTest.promiseFocus(SidebarController.browser);
+  is(
+    document.activeElement,
+    document.getElementById("sidebar"),
+    "sidebar focused"
+  );
+  ok(
+    document.activeElement.contentDocument.hasFocus(),
+    "sidebar document hasFocus"
+  );
+
+  // Focus another window. The sidebar should no longer be focused.
+  let window2 = await BrowserTestUtils.openNewBrowserWindow();
+  is(
+    document.activeElement,
+    document.getElementById("sidebar"),
+    "sidebar focused after window 2 opened"
+  );
+  ok(
+    !document.activeElement.contentDocument.hasFocus(),
+    "sidebar document hasFocus after window 2 opened"
+  );
+
+  // Focus the first window again and the sidebar should be focused again.
+  await SimpleTest.promiseFocus(window);
+  is(
+    document.activeElement,
+    document.getElementById("sidebar"),
+    "sidebar focused after window1 refocused"
+  );
+  ok(
+    document.activeElement.contentDocument.hasFocus(),
+    "sidebar document hasFocus after window1 refocused"
+  );
+
+  await BrowserTestUtils.closeWindow(window2);
+  await SidebarController.hide();
 });

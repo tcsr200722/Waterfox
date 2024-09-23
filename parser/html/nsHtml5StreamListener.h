@@ -7,8 +7,8 @@
 
 #include "nsIStreamListener.h"
 #include "nsIThreadRetargetableStreamListener.h"
-#include "nsHtml5StreamParserPtr.h"
 #include "nsHtml5StreamParser.h"
+#include "mozilla/ReentrantMonitor.h"
 
 /**
  * The purpose of this class is to reconcile the problem that
@@ -28,8 +28,7 @@
  * threads, so there is no need to have a mutex around nsHtml5StreamParserPtr to
  * prevent it from double-releasing nsHtml5StreamParser.
  */
-class nsHtml5StreamListener : public nsIStreamListener,
-                              public nsIThreadRetargetableStreamListener {
+class nsHtml5StreamListener : public nsIThreadRetargetableStreamListener {
  public:
   explicit nsHtml5StreamListener(nsHtml5StreamParser* aDelegate);
 
@@ -38,14 +37,25 @@ class nsHtml5StreamListener : public nsIStreamListener,
   NS_DECL_NSISTREAMLISTENER
   NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
-  inline nsHtml5StreamParser* GetDelegate() { return mDelegate; }
+  // Main-thread-only
+  nsHtml5StreamParser* GetDelegate();
 
+  // Main-thread-only
   void DropDelegate();
 
  private:
+  void DropDelegateImpl();
   virtual ~nsHtml5StreamListener();
 
-  nsHtml5StreamParserPtr mDelegate;
+  // ReentrantMonitor instead of Mutex, because `GetDelegate()`
+  // can be called from within the Necko callbacks when Necko events
+  // are delivered on the main thread.
+  mozilla::ReentrantMonitor mDelegateMonitor MOZ_UNANNOTATED;
+  // Owning pointer with manually-managed refcounting, protected by
+  // mDelegateMonitor.   Access to it is Atomic, which avoids getting a lock
+  // to check if it's set or to return the pointer.   Access to the data within
+  // it needs the monitor.   MOZ_PT_GUARDED_BY() can't be used with Atomic<...*>
+  mozilla::Atomic<nsHtml5StreamParser*, mozilla::ReleaseAcquire> mDelegate;
 };
 
 #endif  // nsHtml5StreamListener_h

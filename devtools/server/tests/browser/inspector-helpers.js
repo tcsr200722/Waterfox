@@ -4,22 +4,22 @@
 "use strict";
 
 /* exported assertOwnershipTrees, checkMissing, waitForMutation,
-   isSrcChange, isUnretained, isNewRoot,
-   assertSrcChange, assertUnload, assertFrameLoad, assertChildList,
-*/
+   isSrcChange, isUnretained, isChildList */
 
 function serverOwnershipTree(walkerArg) {
   return SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [[walkerArg.actorID]],
-    function(actorID) {
-      const { require } = ChromeUtils.import(
-        "resource://devtools/shared/Loader.jsm"
+    function (actorID) {
+      const { require } = ChromeUtils.importESModule(
+        "resource://devtools/shared/loader/Loader.sys.mjs"
       );
-      const { DevToolsServer } = require("devtools/server/devtools-server");
+      const {
+        DevToolsServer,
+      } = require("resource://devtools/server/devtools-server.js");
       const {
         DocumentWalker,
-      } = require("devtools/server/actors/inspector/document-walker");
+      } = require("resource://devtools/server/actors/inspector/document-walker.js");
 
       // Convert actorID to current compartment string otherwise
       // searchAllConnectionsForActor is confused and won't find the actor.
@@ -31,7 +31,7 @@ function serverOwnershipTree(walkerArg) {
       }
 
       function serverOwnershipSubtree(walker, node) {
-        const actor = walker._refMap.get(node);
+        const actor = walker.getNode(node);
         if (!actor) {
           return undefined;
         }
@@ -106,31 +106,26 @@ async function assertOwnershipTrees(walker) {
 }
 
 // Verify that an actorID is inaccessible both from the client library and the server.
-function checkMissing({ client }, actorID) {
-  return new Promise(resolve => {
-    const front = client.getFrontByID(actorID);
-    ok(
-      !front,
-      "Front shouldn't be accessible from the client for actorID: " + actorID
-    );
+async function checkMissing({ client }, actorID) {
+  const front = client.getFrontByID(actorID);
+  ok(
+    !front,
+    "Front shouldn't be accessible from the client for actorID: " + actorID
+  );
 
-    client
-      .request(
-        {
-          to: actorID,
-          type: "request",
-        },
-        response => {
-          is(
-            response.error,
-            "noSuchActor",
-            "node list actor should no longer be contactable."
-          );
-          resolve(undefined);
-        }
-      )
-      .catch(() => {});
-  });
+  try {
+    await client.request({
+      to: actorID,
+      type: "request",
+    });
+    ok(false, "The actor wasn't missing as the request worked");
+  } catch (e) {
+    is(
+      e.error,
+      "noSuchActor",
+      "node list actor should no longer be contactable."
+    );
+  }
 }
 
 // Load mutations aren't predictable, so keep accumulating mutations until
@@ -153,23 +148,8 @@ function waitForMutation(walker, test, mutations = []) {
   });
 }
 
-function assertAndStrip(mutations, message, test) {
-  const size = mutations.length;
-  mutations = mutations.filter(test);
-  ok(mutations.size != size, message);
-  return mutations;
-}
-
 function isSrcChange(change) {
   return change.type === "attributes" && change.attributeName === "src";
-}
-
-function isUnload(change) {
-  return change.type === "documentUnload";
-}
-
-function isFrameLoad(change) {
-  return change.type === "frameLoad";
 }
 
 function isUnretained(change) {
@@ -178,48 +158,4 @@ function isUnretained(change) {
 
 function isChildList(change) {
   return change.type === "childList";
-}
-
-function isNewRoot(change) {
-  return change.type === "newRoot";
-}
-
-// Make sure an iframe's src attribute changed and then
-// strip that mutation out of the list.
-function assertSrcChange(mutations) {
-  return assertAndStrip(
-    mutations,
-    "Should have had an iframe source change.",
-    isSrcChange
-  );
-}
-
-// Make sure there's an unload in the mutation list and strip
-// that mutation out of the list
-function assertUnload(mutations) {
-  return assertAndStrip(
-    mutations,
-    "Should have had a document unload change.",
-    isUnload
-  );
-}
-
-// Make sure there's a frame load in the mutation list and strip
-// that mutation out of the list
-function assertFrameLoad(mutations) {
-  return assertAndStrip(
-    mutations,
-    "Should have had a frame load change.",
-    isFrameLoad
-  );
-}
-
-// Make sure there's a childList change in the mutation list and strip
-// that mutation out of the list
-function assertChildList(mutations) {
-  return assertAndStrip(
-    mutations,
-    "Should have had a frame load change.",
-    isChildList
-  );
 }

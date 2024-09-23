@@ -4,16 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "ChromiumCDMCallback.h"
+#include "ChromiumCDMParent.h"
+#include "GMPServiceParent.h"
+#include "GMPTestMonitor.h"
+#include "MediaResult.h"
 #include "gtest/gtest.h"
-
+#include "mozilla/gtest/MozAssertions.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SchedulerGroup.h"
-
-#include "ChromiumCDMCallback.h"
-#include "GMPTestMonitor.h"
-#include "GMPServiceParent.h"
-#include "MediaResult.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "nsIFile.h"
+#include "nsCRTGlue.h"
+#include "nsDirectoryServiceDefs.h"
+#include "nsDirectoryServiceUtils.h"
 #include "nsNSSComponent.h"  //For EnsureNSSInitializedChromeOrContent
 #include "nsThreadUtils.h"
 
@@ -24,15 +28,10 @@ static already_AddRefed<nsIThread> GetGMPThread() {
   RefPtr<GeckoMediaPluginService> service =
       GeckoMediaPluginService::GetGeckoMediaPluginService();
   nsCOMPtr<nsIThread> thread;
-  EXPECT_TRUE(NS_SUCCEEDED(service->GetThread(getter_AddRefs(thread))));
+  EXPECT_NS_SUCCEEDED(service->GetThread(getter_AddRefs(thread)));
   return thread.forget();
 }
 
-static RefPtr<AbstractThread> GetAbstractGMPThread() {
-  RefPtr<GeckoMediaPluginService> service =
-      GeckoMediaPluginService::GetGeckoMediaPluginService();
-  return service->GetAbstractGMPThread();
-}
 /**
  * Enumerate files under |aPath| (non-recursive).
  */
@@ -59,7 +58,7 @@ template <typename T>
 static nsresult EnumerateCDMStorageDir(const nsACString& aDir, T&& aDirIter) {
   RefPtr<GeckoMediaPluginServiceParent> service =
       GeckoMediaPluginServiceParent::GetSingleton();
-  MOZ_ASSERT(service);
+  MOZ_RELEASE_ASSERT(service);
 
   // $profileDir/gmp/$platform/
   nsCOMPtr<nsIFile> path;
@@ -69,7 +68,7 @@ static nsresult EnumerateCDMStorageDir(const nsACString& aDir, T&& aDirIter) {
   }
 
   // $profileDir/gmp/$platform/gmp-fake/
-  rv = path->Append(NS_LITERAL_STRING("gmp-fake"));
+  rv = path->Append(u"gmp-fake"_ns);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -95,7 +94,7 @@ class GMPShutdownObserver : public nsIRunnable, public nsIObserver {
   NS_DECL_THREADSAFE_ISUPPORTS
 
   NS_IMETHOD Run() override {
-    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_RELEASE_ASSERT(NS_IsMainThread());
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
     EXPECT_TRUE(observerService);
@@ -134,7 +133,7 @@ class NotifyObserversTask : public Runnable {
   explicit NotifyObserversTask(const char* aTopic)
       : mozilla::Runnable("NotifyObserversTask"), mTopic(aTopic) {}
   NS_IMETHOD Run() override {
-    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_RELEASE_ASSERT(NS_IsMainThread());
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
     if (observerService) {
@@ -154,7 +153,7 @@ class ClearCDMStorageTask : public nsIRunnable, public nsIObserver {
   NS_DECL_THREADSAFE_ISUPPORTS
 
   NS_IMETHOD Run() override {
-    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_RELEASE_ASSERT(NS_IsMainThread());
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
     EXPECT_TRUE(observerService);
@@ -195,12 +194,13 @@ static void ClearCDMStorage(already_AddRefed<nsIRunnable> aContinuation,
                             nsIThread* aTarget, PRTime aSince = -1) {
   RefPtr<ClearCDMStorageTask> task(
       new ClearCDMStorageTask(std::move(aContinuation), aTarget, aSince));
-  SchedulerGroup::Dispatch(TaskCategory::Other, task.forget());
+  SchedulerGroup::Dispatch(task.forget());
 }
 
 static void SimulatePBModeExit() {
-  NS_DispatchToMainThread(new NotifyObserversTask("last-pb-context-exited"),
-                          NS_DISPATCH_SYNC);
+  NS_DispatchAndSpinEventLoopUntilComplete(
+      "SimulatePBModeExit"_ns, GetMainThreadSerialEventTarget(),
+      MakeAndAddRef<NotifyObserversTask>("last-pb-context-exited"));
 }
 
 class TestGetNodeIdCallback : public GetNodeIdCallback {
@@ -218,9 +218,9 @@ class TestGetNodeIdCallback : public GetNodeIdCallback {
   nsresult& mResult;
 };
 
-static NodeId GetNodeId(const nsAString& aOrigin,
-                        const nsAString& aTopLevelOrigin,
-                        const nsAString& aGmpName, bool aInPBMode) {
+static NodeIdParts GetNodeIdParts(const nsAString& aOrigin,
+                                  const nsAString& aTopLevelOrigin,
+                                  const nsAString& aGmpName, bool aInPBMode) {
   OriginAttributes attrs;
   attrs.mPrivateBrowsingId = aInPBMode ? 1 : 0;
 
@@ -234,7 +234,7 @@ static NodeId GetNodeId(const nsAString& aOrigin,
   nsAutoString topLevelOrigin;
   topLevelOrigin.Assign(aTopLevelOrigin);
   topLevelOrigin.Append(NS_ConvertUTF8toUTF16(suffix));
-  return NodeId(origin, topLevelOrigin, aGmpName);
+  return NodeIdParts{origin, topLevelOrigin, nsString(aGmpName)};
 }
 
 static nsCString GetNodeId(const nsAString& aOrigin,
@@ -263,9 +263,8 @@ static nsCString GetNodeId(const nsAString& aOrigin,
 
   // We rely on the fact that the GetNodeId implementation for
   // GeckoMediaPluginServiceParent is synchronous.
-  nsresult rv =
-      service->GetNodeId(origin, topLevelOrigin, NS_LITERAL_STRING("gmp-fake"),
-                         std::move(callback));
+  nsresult rv = service->GetNodeId(origin, topLevelOrigin, u"gmp-fake"_ns,
+                                   std::move(callback));
   EXPECT_TRUE(NS_SUCCEEDED(rv) && NS_SUCCEEDED(result));
   return nodeId;
 }
@@ -273,10 +272,10 @@ static nsCString GetNodeId(const nsAString& aOrigin,
 static bool IsCDMStorageIsEmpty() {
   RefPtr<GeckoMediaPluginServiceParent> service =
       GeckoMediaPluginServiceParent::GetSingleton();
-  MOZ_ASSERT(service);
+  MOZ_RELEASE_ASSERT(service);
   nsCOMPtr<nsIFile> storage;
   nsresult rv = service->GetStorageDir(getter_AddRefs(storage));
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   bool exists = false;
   if (storage) {
     storage->Exists(&exists);
@@ -287,14 +286,14 @@ static bool IsCDMStorageIsEmpty() {
 static void AssertIsOnGMPThread() {
   RefPtr<GeckoMediaPluginService> service =
       GeckoMediaPluginService::GetGeckoMediaPluginService();
-  MOZ_ASSERT(service);
+  MOZ_RELEASE_ASSERT(service);
   nsCOMPtr<nsIThread> thread;
   service->GetThread(getter_AddRefs(thread));
-  MOZ_ASSERT(thread);
+  MOZ_RELEASE_ASSERT(thread);
   nsCOMPtr<nsIThread> currentThread;
-  DebugOnly<nsresult> rv = NS_GetCurrentThread(getter_AddRefs(currentThread));
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
-  MOZ_ASSERT(currentThread == thread);
+  nsresult rv = NS_GetCurrentThread(getter_AddRefs(currentThread));
+  MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
+  MOZ_RELEASE_ASSERT(currentThread == thread);
 }
 
 class CDMStorageTest {
@@ -313,7 +312,7 @@ class CDMStorageTest {
   void Update(const nsCString& aMessage) {
     nsTArray<uint8_t> msg;
     msg.AppendElements(aMessage.get(), aMessage.Length());
-    mCDM->UpdateSession(NS_LITERAL_CSTRING("fake-session-id"), 1, msg);
+    mCDM->UpdateSession("fake-session-id"_ns, 1, msg);
   }
 
   void TestGetNodeId() {
@@ -321,8 +320,8 @@ class CDMStorageTest {
 
     EXPECT_TRUE(IsCDMStorageIsEmpty());
 
-    const nsString origin1 = NS_LITERAL_STRING("http://example1.com");
-    const nsString origin2 = NS_LITERAL_STRING("http://example2.org");
+    const nsString origin1 = u"http://example1.com"_ns;
+    const nsString origin2 = u"http://example2.org"_ns;
 
     nsCString PBnodeId1 = GetNodeId(origin1, origin2, true);
     nsCString PBnodeId2 = GetNodeId(origin1, origin2, true);
@@ -362,8 +361,8 @@ class CDMStorageTest {
 
     // Once we clear storage, the node ids generated for the same origin-pair
     // should be different.
-    const nsString origin1 = NS_LITERAL_STRING("http://example1.com");
-    const nsString origin2 = NS_LITERAL_STRING("http://example2.org");
+    const nsString origin1 = u"http://example1.com"_ns;
+    const nsString origin2 = u"http://example2.org"_ns;
     nsCString nodeId3 = GetNodeId(origin1, origin2, false);
     EXPECT_TRUE(!aNodeId1.Equals(nodeId3));
 
@@ -381,23 +380,23 @@ class CDMStorageTest {
   void CreateDecryptor(const nsAString& aOrigin,
                        const nsAString& aTopLevelOrigin, bool aInPBMode,
                        nsTArray<nsCString>&& aUpdates) {
-    CreateDecryptor(GetNodeId(aOrigin, aTopLevelOrigin,
-                              NS_LITERAL_STRING("gmp-fake"), aInPBMode),
-                    std::move(aUpdates));
+    CreateDecryptor(
+        GetNodeIdParts(aOrigin, aTopLevelOrigin, u"gmp-fake"_ns, aInPBMode),
+        std::move(aUpdates));
   }
 
-  void CreateDecryptor(const NodeId& aNodeId, nsTArray<nsCString>&& aUpdates) {
+  void CreateDecryptor(const NodeIdParts& aNodeId,
+                       nsTArray<nsCString>&& aUpdates) {
     RefPtr<GeckoMediaPluginService> service =
         GeckoMediaPluginService::GetGeckoMediaPluginService();
     EXPECT_TRUE(service);
 
-    nsTArray<nsCString> tags;
-    tags.AppendElement(NS_LITERAL_CSTRING("fake"));
+    nsCString keySystem{"fake"_ns};
 
     RefPtr<CDMStorageTest> self = this;
     RefPtr<gmp::GetCDMParentPromise> promise =
-        service->GetCDM(aNodeId, std::move(tags), nullptr);
-    auto thread = GetAbstractGMPThread();
+        service->GetCDM(aNodeId, keySystem, nullptr);
+    nsCOMPtr<nsISerialEventTarget> thread = GetGMPThread();
     promise->Then(
         thread, __func__,
         [self, updates = std::move(aUpdates),
@@ -408,7 +407,7 @@ class CDMStorageTest {
           nsCString failureReason;
           self->mCDM
               ->Init(self->mCallback.get(), false, true,
-                     GetMainThreadEventTarget())
+                     GetMainThreadSerialEventTarget())
               ->Then(
                   thread, __func__,
                   [self, updates = std::move(updates)] {
@@ -431,13 +430,12 @@ class CDMStorageTest {
     // Send a message to the fake GMP for it to run its own tests internally.
     // It sends us a "test-storage complete" message when its passed, or
     // some other message if its tests fail.
-    Expect(NS_LITERAL_CSTRING("test-storage complete"),
+    Expect("test-storage complete"_ns,
            NewRunnableMethod("CDMStorageTest::SetFinished", this,
                              &CDMStorageTest::SetFinished));
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example1.com"),
-                    NS_LITERAL_STRING("http://example2.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example1.com"_ns, u"http://example2.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   /**
@@ -454,11 +452,10 @@ class CDMStorageTest {
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "CDMStorageTest::TestForgetThisSite_AnotherSite", this,
         &CDMStorageTest::TestForgetThisSite_AnotherSite);
-    Expect(NS_LITERAL_CSTRING("test-storage complete"), r.forget());
+    Expect("test-storage complete"_ns, r.forget());
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example1.com"),
-                    NS_LITERAL_STRING("http://example2.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example1.com"_ns, u"http://example2.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   void TestForgetThisSite_AnotherSite() {
@@ -468,11 +465,10 @@ class CDMStorageTest {
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "CDMStorageTest::TestForgetThisSite_CollectSiteInfo", this,
         &CDMStorageTest::TestForgetThisSite_CollectSiteInfo);
-    Expect(NS_LITERAL_CSTRING("test-storage complete"), r.forget());
+    Expect("test-storage complete"_ns, r.forget());
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example3.com"),
-                    NS_LITERAL_STRING("http://example4.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example3.com"_ns, u"http://example4.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   struct NodeInfo {
@@ -481,7 +477,7 @@ class CDMStorageTest {
         : siteToForget(aSite), mPattern(aPattern) {}
     nsCString siteToForget;
     mozilla::OriginAttributesPattern mPattern;
-    nsTArray<nsCString> expectedRemainingNodeIds;
+    nsTArray<nsCString> mExpectedRemainingNodeIds;
   };
 
   class NodeIdCollector {
@@ -490,9 +486,9 @@ class CDMStorageTest {
     void operator()(nsIFile* aFile) {
       nsCString salt;
       nsresult rv = ReadSalt(aFile, salt);
-      ASSERT_TRUE(NS_SUCCEEDED(rv));
+      ASSERT_NS_SUCCEEDED(rv);
       if (!MatchOrigin(aFile, mNodeInfo->siteToForget, mNodeInfo->mPattern)) {
-        mNodeInfo->expectedRemainingNodeIds.AppendElement(salt);
+        mNodeInfo->mExpectedRemainingNodeIds.AppendElement(salt);
       }
     }
 
@@ -504,16 +500,13 @@ class CDMStorageTest {
     mozilla::OriginAttributesPattern pattern;
 
     UniquePtr<NodeInfo> siteInfo(
-        new NodeInfo(NS_LITERAL_CSTRING("http://example1.com"), pattern));
+        new NodeInfo("http://example1.com"_ns, pattern));
     // Collect nodeIds that are expected to remain for later comparison.
-    EnumerateCDMStorageDir(NS_LITERAL_CSTRING("id"),
-                           NodeIdCollector(siteInfo.get()));
+    EnumerateCDMStorageDir("id"_ns, NodeIdCollector(siteInfo.get()));
     // Invoke "Forget this site" on the main thread.
-    SchedulerGroup::Dispatch(
-        TaskCategory::Other,
-        NewRunnableMethod<UniquePtr<NodeInfo>&&>(
-            "CDMStorageTest::TestForgetThisSite_Forget", this,
-            &CDMStorageTest::TestForgetThisSite_Forget, std::move(siteInfo)));
+    SchedulerGroup::Dispatch(NewRunnableMethod<UniquePtr<NodeInfo>&&>(
+        "CDMStorageTest::TestForgetThisSite_Forget", this,
+        &CDMStorageTest::TestForgetThisSite_Forget, std::move(siteInfo)));
   }
 
   void TestForgetThisSite_Forget(UniquePtr<NodeInfo>&& aSiteInfo) {
@@ -539,18 +532,26 @@ class CDMStorageTest {
    public:
     explicit NodeIdVerifier(const NodeInfo* aInfo)
         : mNodeInfo(aInfo),
-          mExpectedRemainingNodeIds(aInfo->expectedRemainingNodeIds.Clone()) {}
+          mExpectedRemainingNodeIds(aInfo->mExpectedRemainingNodeIds.Clone()) {}
     void operator()(nsIFile* aFile) {
       nsCString salt;
       nsresult rv = ReadSalt(aFile, salt);
-      ASSERT_TRUE(NS_SUCCEEDED(rv));
+      ASSERT_NS_SUCCEEDED(rv);
       // Shouldn't match the origin if we clear correctly.
       EXPECT_FALSE(
-          MatchOrigin(aFile, mNodeInfo->siteToForget, mNodeInfo->mPattern));
+          MatchOrigin(aFile, mNodeInfo->siteToForget, mNodeInfo->mPattern))
+          << "Found files persisted that match against a site that should "
+             "have been removed!";
       // Check if remaining nodeIDs are as expected.
-      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt));
+      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt))
+          << "Failed to remove salt from expected remaining node ids. This "
+             "indicates storage that should be forgotten is still persisted!";
     }
-    ~NodeIdVerifier() { EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty()); }
+    ~NodeIdVerifier() {
+      EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty())
+          << "Some expected remaining node ids were not checked against. This "
+             "indicates that data we expected to find in storage was missing!";
+    }
 
    private:
     const NodeInfo* mNodeInfo;
@@ -560,27 +561,201 @@ class CDMStorageTest {
   class StorageVerifier {
    public:
     explicit StorageVerifier(const NodeInfo* aInfo)
-        : mExpectedRemainingNodeIds(aInfo->expectedRemainingNodeIds.Clone()) {}
+        : mExpectedRemainingNodeIds(aInfo->mExpectedRemainingNodeIds.Clone()) {}
     void operator()(nsIFile* aFile) {
       nsCString salt;
       nsresult rv = aFile->GetNativeLeafName(salt);
-      ASSERT_TRUE(NS_SUCCEEDED(rv));
-      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt));
+      ASSERT_NS_SUCCEEDED(rv);
+      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt))
+          << "Failed to remove salt from expected remaining node ids. This "
+             "indicates storage that should be forgotten is still persisted!";
     }
-    ~StorageVerifier() { EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty()); }
+    ~StorageVerifier() {
+      EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty())
+          << "Some expected remaining node ids were not checked against. This "
+             "indicates that data we expected to find in storage was missing!";
+    }
 
    private:
     nsTArray<nsCString> mExpectedRemainingNodeIds;
   };
 
   void TestForgetThisSite_Verify(UniquePtr<NodeInfo>&& aSiteInfo) {
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("id"),
-                                         NodeIdVerifier(aSiteInfo.get()));
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv =
+        EnumerateCDMStorageDir("id"_ns, NodeIdVerifier(aSiteInfo.get()));
+    EXPECT_NS_SUCCEEDED(rv);
 
-    rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("storage"),
-                                StorageVerifier(aSiteInfo.get()));
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    rv = EnumerateCDMStorageDir("storage"_ns, StorageVerifier(aSiteInfo.get()));
+    EXPECT_NS_SUCCEEDED(rv);
+  }
+
+  /**
+   * 1. Generate storage data for some sites.
+   * 2. Forget about base domain example1.com
+   * 3. Check if the storage data for the forgotten site are erased correctly.
+   * 4. Check if the storage data for other sites remain unchanged.
+   */
+  void TestForgetThisBaseDomain() {
+    AssertIsOnGMPThread();
+    EXPECT_TRUE(IsCDMStorageIsEmpty());
+
+    // Generate storage data for some site.
+    nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
+        "CDMStorageTest::TestForgetThisBaseDomain_SecondSite", this,
+        &CDMStorageTest::TestForgetThisBaseDomain_SecondSite);
+    Expect("test-storage complete"_ns, r.forget());
+
+    CreateDecryptor(u"http://media.example1.com"_ns,
+                    u"http://tld.example2.com"_ns, false, "test-storage"_ns);
+  }
+
+  void TestForgetThisBaseDomain_SecondSite() {
+    Shutdown();
+
+    // Generate storage data for another site.
+    nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
+        "CDMStorageTest::TestForgetThisBaseDomain_ThirdSite", this,
+        &CDMStorageTest::TestForgetThisBaseDomain_ThirdSite);
+    Expect("test-storage complete"_ns, r.forget());
+
+    CreateDecryptor(u"http://media.somewhereelse.com"_ns,
+                    u"http://home.example1.com"_ns, false, "test-storage"_ns);
+  }
+
+  void TestForgetThisBaseDomain_ThirdSite() {
+    Shutdown();
+
+    // Generate storage data for another site.
+    nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
+        "CDMStorageTest::TestForgetThisBaseDomain_CollectSiteInfo", this,
+        &CDMStorageTest::TestForgetThisBaseDomain_CollectSiteInfo);
+    Expect("test-storage complete"_ns, r.forget());
+
+    CreateDecryptor(u"http://media.example3.com"_ns,
+                    u"http://tld.long-example1.com"_ns, false,
+                    "test-storage"_ns);
+  }
+
+  struct BaseDomainNodeInfo {
+    explicit BaseDomainNodeInfo(const nsACString& aBaseDomain)
+        : baseDomainToForget(aBaseDomain) {}
+    nsCString baseDomainToForget;
+
+    nsTArray<nsCString> mExpectedRemainingNodeIds;
+  };
+
+  class BaseDomainNodeIdCollector {
+   public:
+    explicit BaseDomainNodeIdCollector(BaseDomainNodeInfo* aInfo)
+        : mNodeInfo(aInfo) {}
+    void operator()(nsIFile* aFile) {
+      nsCString salt;
+      nsresult rv = ReadSalt(aFile, salt);
+      ASSERT_NS_SUCCEEDED(rv);
+      if (!MatchBaseDomain(aFile, mNodeInfo->baseDomainToForget)) {
+        mNodeInfo->mExpectedRemainingNodeIds.AppendElement(salt);
+      }
+    }
+
+   private:
+    BaseDomainNodeInfo* mNodeInfo;
+  };
+
+  void TestForgetThisBaseDomain_CollectSiteInfo() {
+    UniquePtr<BaseDomainNodeInfo> siteInfo(
+        new BaseDomainNodeInfo("example1.com"_ns));
+    // Collect nodeIds that are expected to remain for later comparison.
+    EnumerateCDMStorageDir("id"_ns, BaseDomainNodeIdCollector(siteInfo.get()));
+    // Invoke "ForgetThisBaseDomain" on the main thread.
+    SchedulerGroup::Dispatch(NewRunnableMethod<UniquePtr<BaseDomainNodeInfo>&&>(
+        "CDMStorageTest::TestForgetThisBaseDomain_Forget", this,
+        &CDMStorageTest::TestForgetThisBaseDomain_Forget, std::move(siteInfo)));
+  }
+
+  void TestForgetThisBaseDomain_Forget(
+      UniquePtr<BaseDomainNodeInfo>&& aSiteInfo) {
+    RefPtr<GeckoMediaPluginServiceParent> service =
+        GeckoMediaPluginServiceParent::GetSingleton();
+    service->ForgetThisBaseDomain(
+        NS_ConvertUTF8toUTF16(aSiteInfo->baseDomainToForget));
+
+    nsCOMPtr<nsIThread> thread;
+    service->GetThread(getter_AddRefs(thread));
+
+    nsCOMPtr<nsIRunnable> r =
+        NewRunnableMethod<UniquePtr<BaseDomainNodeInfo>&&>(
+            "CDMStorageTest::TestForgetThisBaseDomain_Verify", this,
+            &CDMStorageTest::TestForgetThisBaseDomain_Verify,
+            std::move(aSiteInfo));
+    thread->Dispatch(r, NS_DISPATCH_NORMAL);
+
+    nsCOMPtr<nsIRunnable> f = NewRunnableMethod(
+        "CDMStorageTest::SetFinished", this, &CDMStorageTest::SetFinished);
+    thread->Dispatch(f, NS_DISPATCH_NORMAL);
+  }
+
+  class BaseDomainNodeIdVerifier {
+   public:
+    explicit BaseDomainNodeIdVerifier(const BaseDomainNodeInfo* aInfo)
+        : mNodeInfo(aInfo),
+          mExpectedRemainingNodeIds(aInfo->mExpectedRemainingNodeIds.Clone()) {}
+    void operator()(nsIFile* aFile) {
+      nsCString salt;
+      nsresult rv = ReadSalt(aFile, salt);
+      ASSERT_NS_SUCCEEDED(rv);
+      // Shouldn't match the origin if we clear correctly.
+      EXPECT_FALSE(MatchBaseDomain(aFile, mNodeInfo->baseDomainToForget))
+          << "Found files persisted that match against a domain that should "
+             "have been removed!";
+      // Check if remaining nodeIDs are as expected.
+      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt))
+          << "Failed to remove salt from expected remaining node ids. This "
+             "indicates storage that should be forgotten is still persisted!";
+    }
+    ~BaseDomainNodeIdVerifier() {
+      EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty())
+          << "Some expected remaining node ids were not checked against. This "
+             "indicates that data we expected to find in storage was missing!";
+    }
+
+   private:
+    const BaseDomainNodeInfo* mNodeInfo;
+    nsTArray<nsCString> mExpectedRemainingNodeIds;
+  };
+
+  class BaseDomainStorageVerifier {
+   public:
+    explicit BaseDomainStorageVerifier(const BaseDomainNodeInfo* aInfo)
+        : mExpectedRemainingNodeIds(aInfo->mExpectedRemainingNodeIds.Clone()) {}
+    void operator()(nsIFile* aFile) {
+      nsCString salt;
+      nsresult rv = aFile->GetNativeLeafName(salt);
+      ASSERT_NS_SUCCEEDED(rv);
+      EXPECT_TRUE(mExpectedRemainingNodeIds.RemoveElement(salt))
+          << "Failed to remove salt from expected remaining node ids. This "
+             "indicates storage that should be forgotten is still persisted!";
+      ;
+    }
+    ~BaseDomainStorageVerifier() {
+      EXPECT_TRUE(mExpectedRemainingNodeIds.IsEmpty())
+          << "Some expected remaining node ids were not checked against. This "
+             "indicates that data we expected to find in storage was missing!";
+      ;
+    }
+
+   private:
+    nsTArray<nsCString> mExpectedRemainingNodeIds;
+  };
+
+  void TestForgetThisBaseDomain_Verify(
+      UniquePtr<BaseDomainNodeInfo>&& aSiteInfo) {
+    nsresult rv = EnumerateCDMStorageDir(
+        "id"_ns, BaseDomainNodeIdVerifier(aSiteInfo.get()));
+    EXPECT_NS_SUCCEEDED(rv);
+
+    rv = EnumerateCDMStorageDir("storage"_ns,
+                                BaseDomainStorageVerifier(aSiteInfo.get()));
+    EXPECT_NS_SUCCEEDED(rv);
   }
 
   /**
@@ -598,11 +773,10 @@ class CDMStorageTest {
     nsCOMPtr<nsIRunnable> r =
         NewRunnableMethod("CDMStorageTest::TestClearRecentHistory1_Clear", this,
                           &CDMStorageTest::TestClearRecentHistory1_Clear);
-    Expect(NS_LITERAL_CSTRING("test-storage complete"), r.forget());
+    Expect("test-storage complete"_ns, r.forget());
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example1.com"),
-                    NS_LITERAL_STRING("http://example2.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example1.com"_ns, u"http://example2.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   /**
@@ -620,11 +794,10 @@ class CDMStorageTest {
     nsCOMPtr<nsIRunnable> r =
         NewRunnableMethod("CDMStorageTest::TestClearRecentHistory2_Clear", this,
                           &CDMStorageTest::TestClearRecentHistory2_Clear);
-    Expect(NS_LITERAL_CSTRING("test-storage complete"), r.forget());
+    Expect("test-storage complete"_ns, r.forget());
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example1.com"),
-                    NS_LITERAL_STRING("http://example2.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example1.com"_ns, u"http://example2.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   /**
@@ -642,11 +815,10 @@ class CDMStorageTest {
     nsCOMPtr<nsIRunnable> r =
         NewRunnableMethod("CDMStorageTest::TestClearRecentHistory3_Clear", this,
                           &CDMStorageTest::TestClearRecentHistory3_Clear);
-    Expect(NS_LITERAL_CSTRING("test-storage complete"), r.forget());
+    Expect("test-storage complete"_ns, r.forget());
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example1.com"),
-                    NS_LITERAL_STRING("http://example2.com"), false,
-                    NS_LITERAL_CSTRING("test-storage"));
+    CreateDecryptor(u"http://example1.com"_ns, u"http://example2.com"_ns, false,
+                    "test-storage"_ns);
   }
 
   class MaxMTimeFinder {
@@ -668,8 +840,8 @@ class CDMStorageTest {
 
   void TestClearRecentHistory1_Clear() {
     MaxMTimeFinder f;
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("id"), f);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv = EnumerateCDMStorageDir("id"_ns, f);
+    EXPECT_NS_SUCCEEDED(rv);
 
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "CDMStorageTest::TestClearRecentHistory_CheckEmpty", this,
@@ -680,8 +852,8 @@ class CDMStorageTest {
 
   void TestClearRecentHistory2_Clear() {
     MaxMTimeFinder f;
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("storage"), f);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv = EnumerateCDMStorageDir("storage"_ns, f);
+    EXPECT_NS_SUCCEEDED(rv);
 
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "CDMStorageTest::TestClearRecentHistory_CheckEmpty", this,
@@ -692,8 +864,8 @@ class CDMStorageTest {
 
   void TestClearRecentHistory3_Clear() {
     MaxMTimeFinder f;
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("storage"), f);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv = EnumerateCDMStorageDir("storage"_ns, f);
+    EXPECT_NS_SUCCEEDED(rv);
 
     nsCOMPtr<nsIRunnable> r = NewRunnableMethod(
         "CDMStorageTest::TestClearRecentHistory_CheckNonEmpty", this,
@@ -714,14 +886,14 @@ class CDMStorageTest {
 
   void TestClearRecentHistory_CheckEmpty() {
     FileCounter c1;
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("id"), c1);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv = EnumerateCDMStorageDir("id"_ns, c1);
+    EXPECT_NS_SUCCEEDED(rv);
     // There should be no files under $profileDir/gmp/$platform/gmp-fake/id/
     EXPECT_EQ(c1.GetCount(), 0);
 
     FileCounter c2;
-    rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("storage"), c2);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    rv = EnumerateCDMStorageDir("storage"_ns, c2);
+    EXPECT_NS_SUCCEEDED(rv);
     // There should be no files under
     // $profileDir/gmp/$platform/gmp-fake/storage/
     EXPECT_EQ(c2.GetCount(), 0);
@@ -731,15 +903,15 @@ class CDMStorageTest {
 
   void TestClearRecentHistory_CheckNonEmpty() {
     FileCounter c1;
-    nsresult rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("id"), c1);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    nsresult rv = EnumerateCDMStorageDir("id"_ns, c1);
+    EXPECT_NS_SUCCEEDED(rv);
     // There should be one directory under
     // $profileDir/gmp/$platform/gmp-fake/id/
     EXPECT_EQ(c1.GetCount(), 1);
 
     FileCounter c2;
-    rv = EnumerateCDMStorageDir(NS_LITERAL_CSTRING("storage"), c2);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    rv = EnumerateCDMStorageDir("storage"_ns, c2);
+    EXPECT_NS_SUCCEEDED(rv);
     // There should be one directory under
     // $profileDir/gmp/$platform/gmp-fake/storage/
     EXPECT_EQ(c2.GetCount(), 1);
@@ -767,8 +939,8 @@ class CDMStorageTest {
 
     // Open decryptor on one, origin, write a record, and test that that
     // record can't be read on another origin.
-    CreateDecryptor(NS_LITERAL_STRING("http://example3.com"),
-                    NS_LITERAL_STRING("http://example4.com"), false, update);
+    CreateDecryptor(u"http://example3.com"_ns, u"http://example4.com"_ns, false,
+                    update);
   }
 
   void TestCrossOriginStorage_RecordStoredContinuation() {
@@ -776,14 +948,13 @@ class CDMStorageTest {
     // and try to read the record.
     Shutdown();
 
-    Expect(NS_LITERAL_CSTRING(
+    Expect(nsLiteralCString(
                "retrieve crossOriginTestRecordId succeeded (length 0 bytes)"),
            NewRunnableMethod("CDMStorageTest::SetFinished", this,
                              &CDMStorageTest::SetFinished));
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example5.com"),
-                    NS_LITERAL_STRING("http://example6.com"), false,
-                    NS_LITERAL_CSTRING("retrieve crossOriginTestRecordId"));
+    CreateDecryptor(u"http://example5.com"_ns, u"http://example6.com"_ns, false,
+                    "retrieve crossOriginTestRecordId"_ns);
   }
 
   void TestPBStorage() {
@@ -799,91 +970,87 @@ class CDMStorageTest {
     // open another, and test that record can be read, close decryptor,
     // then send pb-last-context-closed notification, then open decryptor
     // and check that it can't read that data; it should have been purged.
-    CreateDecryptor(NS_LITERAL_STRING("http://pb1.com"),
-                    NS_LITERAL_STRING("http://pb2.com"), true,
-                    NS_LITERAL_CSTRING("store pbdata test-pb-data"));
+    CreateDecryptor(u"http://pb1.com"_ns, u"http://pb2.com"_ns, true,
+                    "store pbdata test-pb-data"_ns);
   }
 
   void TestPBStorage_RecordStoredContinuation() {
     Shutdown();
 
     Expect(
-        NS_LITERAL_CSTRING("retrieve pbdata succeeded (length 12 bytes)"),
+        "retrieve pbdata succeeded (length 12 bytes)"_ns,
         NewRunnableMethod(
             "CDMStorageTest::TestPBStorage_RecordRetrievedContinuation", this,
             &CDMStorageTest::TestPBStorage_RecordRetrievedContinuation));
 
-    CreateDecryptor(NS_LITERAL_STRING("http://pb1.com"),
-                    NS_LITERAL_STRING("http://pb2.com"), true,
-                    NS_LITERAL_CSTRING("retrieve pbdata"));
+    CreateDecryptor(u"http://pb1.com"_ns, u"http://pb2.com"_ns, true,
+                    "retrieve pbdata"_ns);
   }
 
   void TestPBStorage_RecordRetrievedContinuation() {
     Shutdown();
     SimulatePBModeExit();
 
-    Expect(NS_LITERAL_CSTRING("retrieve pbdata succeeded (length 0 bytes)"),
+    Expect("retrieve pbdata succeeded (length 0 bytes)"_ns,
            NewRunnableMethod("CDMStorageTest::SetFinished", this,
                              &CDMStorageTest::SetFinished));
 
-    CreateDecryptor(NS_LITERAL_STRING("http://pb1.com"),
-                    NS_LITERAL_STRING("http://pb2.com"), true,
-                    NS_LITERAL_CSTRING("retrieve pbdata"));
+    CreateDecryptor(u"http://pb1.com"_ns, u"http://pb2.com"_ns, true,
+                    "retrieve pbdata"_ns);
   }
 
 #if defined(XP_WIN)
   void TestOutputProtection() {
     Shutdown();
 
-    Expect(NS_LITERAL_CSTRING("OP tests completed"),
+    Expect("OP tests completed"_ns,
            NewRunnableMethod("CDMStorageTest::SetFinished", this,
                              &CDMStorageTest::SetFinished));
 
-    CreateDecryptor(NS_LITERAL_STRING("http://example15.com"),
-                    NS_LITERAL_STRING("http://example16.com"), false,
-                    NS_LITERAL_CSTRING("test-op-apis"));
+    CreateDecryptor(u"http://example15.com"_ns, u"http://example16.com"_ns,
+                    false, "test-op-apis"_ns);
   }
 #endif
 
   void TestLongRecordNames() {
-    NS_NAMED_LITERAL_CSTRING(longRecordName,
-                             "A_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_very_very_very_"
-                             "very_very_very_very_very_very_"
-                             "long_record_name");
+    constexpr auto longRecordName =
+        "A_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "very_very_very_very_very_very_very_very_very_"
+        "very_very_very_very_very_very_"
+        "long_record_name"_ns;
 
-    NS_NAMED_LITERAL_CSTRING(data, "Just_some_arbitrary_data.");
+    constexpr auto data = "Just_some_arbitrary_data."_ns;
 
-    MOZ_ASSERT(longRecordName.Length() < GMP_MAX_RECORD_NAME_SIZE);
-    MOZ_ASSERT(longRecordName.Length() > 260);  // Windows MAX_PATH
+    MOZ_RELEASE_ASSERT(longRecordName.Length() < GMP_MAX_RECORD_NAME_SIZE);
+    MOZ_RELEASE_ASSERT(longRecordName.Length() > 260);  // Windows MAX_PATH
 
     nsCString response("stored ");
     response.Append(longRecordName);
@@ -896,8 +1063,7 @@ class CDMStorageTest {
     update.Append(longRecordName);
     update.AppendLiteral(" ");
     update.Append(data);
-    CreateDecryptor(NS_LITERAL_STRING("http://fuz.com"),
-                    NS_LITERAL_STRING("http://baz.com"), false, update);
+    CreateDecryptor(u"http://fuz.com"_ns, u"http://baz.com"_ns, false, update);
   }
 
   void Expect(const nsCString& aMessage,
@@ -907,7 +1073,8 @@ class CDMStorageTest {
   }
 
   void AwaitFinished() {
-    mozilla::SpinEventLoopUntil([&]() -> bool { return mFinished; });
+    mozilla::SpinEventLoopUntil("CDMStorageTest::AwaitFinished"_ns,
+                                [&]() -> bool { return mFinished; });
     mFinished = false;
   }
 
@@ -921,14 +1088,14 @@ class CDMStorageTest {
         NewRunnableMethod("CDMStorageTest::Shutdown", this,
                           &CDMStorageTest::Shutdown),
         std::move(aContinuation), mNodeId));
-    SchedulerGroup::Dispatch(TaskCategory::Other, task.forget());
+    SchedulerGroup::Dispatch(task.forget());
   }
 
   void Shutdown() {
     if (mCDM) {
       mCDM->Shutdown();
       mCDM = nullptr;
-      mNodeId = EmptyCString();
+      mNodeId.Truncate();
     }
   }
 
@@ -939,7 +1106,7 @@ class CDMStorageTest {
     Shutdown();
     nsCOMPtr<nsIRunnable> task = NewRunnableMethod(
         "CDMStorageTest::Dummy", this, &CDMStorageTest::Dummy);
-    SchedulerGroup::Dispatch(TaskCategory::Other, task.forget());
+    SchedulerGroup::Dispatch(task.forget());
   }
 
   void SessionMessage(const nsACString& aSessionId, uint32_t aMessageType,
@@ -979,10 +1146,8 @@ class CDMStorageTest {
 
   nsTArray<ExpectedMessage> mExpected;
 
-  RefPtr<nsIRunnable> mSetDecryptorIdContinuation;
-
   RefPtr<gmp::ChromiumCDMParent> mCDM;
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
   Atomic<bool> mFinished;
   nsCString mNodeId;
 
@@ -1018,6 +1183,8 @@ class CDMStorageTest {
 
     void SessionClosed(const nsCString& aSessionId) override {}
 
+    void QueryOutputProtectionStatus() override {}
+
     void Terminated() override { mRunner->Terminated(); }
 
     void Shutdown() override { mRunner->Shutdown(); }
@@ -1030,6 +1197,81 @@ class CDMStorageTest {
   UniquePtr<CallbackProxy> mCallback;
 };  // class CDMStorageTest
 
+static nsresult CreateTestDirectory(nsCOMPtr<nsIFile>& aOut) {
+  nsresult rv = NS_GetSpecialDirectory(NS_OS_TEMP_DIR, getter_AddRefs(aOut));
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  nsCString dirName;
+  dirName.SetLength(32);
+  NS_MakeRandomString(dirName.BeginWriting(), 32);
+  aOut->Append(NS_ConvertUTF8toUTF16(dirName));
+  rv = aOut->Create(nsIFile::DIRECTORY_TYPE, 0755);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  return NS_OK;
+}
+
+void TestMatchBaseDomain_MatchOrigin() {
+  nsCOMPtr<nsIFile> testDir;
+  nsresult rv = CreateTestDirectory(testDir);
+  EXPECT_NS_SUCCEEDED(rv);
+
+  rv = WriteToFile(testDir, "origin"_ns,
+                   "https://video.subdomain.removeme.github.io"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  rv = WriteToFile(testDir, "topLevelOrigin"_ns,
+                   "https://embedder.example.com"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  bool result = MatchBaseDomain(testDir, "removeme.github.io"_ns);
+  EXPECT_TRUE(result);
+  testDir->Remove(true);
+}
+
+void TestMatchBaseDomain_MatchTLD() {
+  nsCOMPtr<nsIFile> testDir;
+  nsresult rv = CreateTestDirectory(testDir);
+  EXPECT_NS_SUCCEEDED(rv);
+
+  rv = WriteToFile(testDir, "origin"_ns,
+                   "https://video.example.com^userContextId=4"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  rv = WriteToFile(testDir, "topLevelOrigin"_ns,
+                   "https://evil.web.megacorp.co.uk^privateBrowsingId=1"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  bool result = MatchBaseDomain(testDir, "megacorp.co.uk"_ns);
+  EXPECT_TRUE(result);
+  testDir->Remove(true);
+}
+
+void TestMatchBaseDomain_NoMatch() {
+  nsCOMPtr<nsIFile> testDir;
+  nsresult rv = CreateTestDirectory(testDir);
+  EXPECT_NS_SUCCEEDED(rv);
+
+  rv = WriteToFile(testDir, "origin"_ns,
+                   "https://video.example.com^userContextId=4"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  rv = WriteToFile(testDir, "topLevelOrigin"_ns,
+                   "https://evil.web.megacorp.co.uk^privateBrowsingId=1"_ns);
+  EXPECT_NS_SUCCEEDED(rv);
+  bool result = MatchBaseDomain(testDir, "longer-example.com"_ns);
+  EXPECT_FALSE(result);
+  testDir->Remove(true);
+}
+
+TEST(GeckoMediaPlugins, MatchBaseDomain_MatchOrigin)
+{ TestMatchBaseDomain_MatchOrigin(); }
+
+TEST(GeckoMediaPlugins, MatchBaseDomain_MatchTLD)
+{ TestMatchBaseDomain_MatchTLD(); }
+
+TEST(GeckoMediaPlugins, MatchBaseDomain_NoMatch)
+{ TestMatchBaseDomain_NoMatch(); }
+
+// Bug 1776767 - Skip all GMP tests on Windows ASAN
+#if !(defined(XP_WIN) && defined(MOZ_ASAN))
 TEST(GeckoMediaPlugins, CDMStorageGetNodeId)
 {
   RefPtr<CDMStorageTest> runner = new CDMStorageTest();
@@ -1046,6 +1288,12 @@ TEST(GeckoMediaPlugins, CDMStorageForgetThisSite)
 {
   RefPtr<CDMStorageTest> runner = new CDMStorageTest();
   runner->DoTest(&CDMStorageTest::TestForgetThisSite);
+}
+
+TEST(GeckoMediaPlugins, CDMStorageForgetThisBaseDomain)
+{
+  RefPtr<CDMStorageTest> runner = new CDMStorageTest();
+  runner->DoTest(&CDMStorageTest::TestForgetThisBaseDomain);
 }
 
 TEST(GeckoMediaPlugins, CDMStorageClearRecentHistory1)
@@ -1078,16 +1326,17 @@ TEST(GeckoMediaPlugins, CDMStoragePrivateBrowsing)
   runner->DoTest(&CDMStorageTest::TestPBStorage);
 }
 
-#if defined(XP_WIN)
-TEST(GeckoMediaPlugins, GMPOutputProtection)
-{
-  RefPtr<CDMStorageTest> runner = new CDMStorageTest();
-  runner->DoTest(&CDMStorageTest::TestOutputProtection);
-}
-#endif
-
 TEST(GeckoMediaPlugins, CDMStorageLongRecordNames)
 {
   RefPtr<CDMStorageTest> runner = new CDMStorageTest();
   runner->DoTest(&CDMStorageTest::TestLongRecordNames);
 }
+
+#  if defined(XP_WIN)
+TEST(GeckoMediaPlugins, GMPOutputProtection)
+{
+  RefPtr<CDMStorageTest> runner = new CDMStorageTest();
+  runner->DoTest(&CDMStorageTest::TestOutputProtection);
+}
+#  endif  // defined(XP_WIN)
+#endif    // !(defined(XP_WIN) && defined(MOZ_ASAN))

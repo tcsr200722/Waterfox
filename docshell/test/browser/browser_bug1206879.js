@@ -1,35 +1,47 @@
-add_task(async function() {
+add_task(async function () {
   let url =
     getRootDirectory(gTestPath).replace(
       "chrome://mochitests/content/",
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       "http://example.com/"
     ) + "file_bug1206879.html";
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url, true);
 
-  let numLocationChanges = 0;
+  let numLocationChanges = await SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [],
+    async function () {
+      let webprogress = content.docShell.QueryInterface(Ci.nsIWebProgress);
+      let locationChangeCount = 0;
+      let listener = {
+        onLocationChange(aWebProgress, aRequest, aLocation) {
+          info("onLocationChange: " + aLocation.spec);
+          locationChangeCount++;
+          this.resolve();
+        },
+        QueryInterface: ChromeUtils.generateQI([
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
+        ]),
+      };
+      let locationPromise = new Promise(resolve => {
+        listener.resolve = resolve;
+      });
+      webprogress.addProgressListener(
+        listener,
+        Ci.nsIWebProgress.NOTIFY_LOCATION
+      );
 
-  let listener = {
-    onLocationChange(browser, wp, request, uri, flags) {
-      if (browser != tab.linkedBrowser) {
-        return;
-      }
-      info("onLocationChange: " + uri.spec);
-      numLocationChanges++;
-      this.resolve();
-    },
-  };
-  let locationPromise = new Promise((resolve, reject) => {
-    listener.resolve = resolve;
-    gBrowser.addTabsProgressListener(listener);
-  });
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
-    content.frames[0].history.pushState(null, null, "foo");
-  });
+      content.frames[0].history.pushState(null, null, "foo");
 
-  await locationPromise;
+      await locationPromise;
+      webprogress.removeProgressListener(listener);
+
+      return locationChangeCount;
+    }
+  );
 
   gBrowser.removeTab(tab);
-  gBrowser.removeTabsProgressListener(listener);
   is(
     numLocationChanges,
     1,

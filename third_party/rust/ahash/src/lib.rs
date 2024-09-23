@@ -1,53 +1,209 @@
-//! # aHash
+//! AHash is a high performance keyed hash function.
 //!
-//! This hashing algorithm is intended to be a high performance, (hardware specific), keyed hash function.
-//! This can be seen as a DOS resistant alternative to `FxHash`, or a fast equivalent to `SipHash`.
-//! It provides a high speed hash algorithm, but where the result is not predictable without knowing a Key.
-//! This allows it to be used in a `HashMap` without allowing for the possibility that an malicious user can
+//! It quickly provides a high quality hash where the result is not predictable without knowing the Key.
+//! AHash works with `HashMap` to hash keys, but without allowing for the possibility that an malicious user can
 //! induce a collision.
 //!
 //! # How aHash works
 //!
-//! aHash uses the hardware AES instruction on x86 processors to provide a keyed hash function.
-//! It uses two rounds of AES per hash. So it should not be considered cryptographically secure.
+//! When it is available aHash uses the hardware AES instructions to provide a keyed hash function.
+//! When it is not, aHash falls back on a slightly slower alternative algorithm.
+//!
+//! Because aHash does not have a fixed standard for its output, it is able to improve over time.
+//! But this also means that different computers or computers using different versions of ahash may observe different
+//! hash values for the same input.
+#![cfg_attr(
+    all(
+        feature = "std",
+        any(feature = "compile-time-rng", feature = "runtime-rng", feature = "no-rng")
+    ),
+    doc = r##"
+# Basic Usage
+AHash provides an implementation of the [Hasher] trait.
+To construct a HashMap using aHash as its hasher do the following:
+```
+use ahash::{AHasher, RandomState};
+use std::collections::HashMap;
+
+let mut map: HashMap<i32, i32, RandomState> = HashMap::default();
+map.insert(12, 34);
+```
+
+### Randomness
+
+The above requires a source of randomness to generate keys for the hashmap. By default this obtained from the OS.
+It is also possible to have randomness supplied via the `compile-time-rng` flag, or manually.
+
+### If randomess is not available
+
+[AHasher::default()] can be used to hash using fixed keys. This works with
+[BuildHasherDefault](std::hash::BuildHasherDefault). For example:
+
+```
+use std::hash::BuildHasherDefault;
+use std::collections::HashMap;
+use ahash::AHasher;
+
+let mut m: HashMap<_, _, BuildHasherDefault<AHasher>> = HashMap::default();
+ # m.insert(12, 34);
+```
+It is also possible to instantiate [RandomState] directly:
+
+```
+use ahash::HashMap;
+use ahash::RandomState;
+
+let mut m = HashMap::with_hasher(RandomState::with_seed(42));
+ # m.insert(1, 2);
+```
+Or for uses besides a hashhmap:
+```
+use std::hash::BuildHasher;
+use ahash::RandomState;
+
+let hash_builder = RandomState::with_seed(42);
+let hash = hash_builder.hash_one("Some Data");
+```
+There are several constructors for [RandomState] with different ways to supply seeds.
+
+# Convenience wrappers
+
+For convenience, both new-type wrappers and type aliases are provided.
+
+The new type wrappers are called called `AHashMap` and `AHashSet`.
+```
+use ahash::AHashMap;
+
+let mut map: AHashMap<i32, i32> = AHashMap::new();
+map.insert(12, 34);
+```
+This avoids the need to type "RandomState". (For convenience `From`, `Into`, and `Deref` are provided).
+
+# Aliases
+
+For even less typing and better interop with existing libraries (such as rayon) which require a `std::collection::HashMap` ,
+the type aliases [HashMap], [HashSet] are provided.
+
+```
+use ahash::{HashMap, HashMapExt};
+
+let mut map: HashMap<i32, i32> = HashMap::new();
+map.insert(12, 34);
+```
+Note the import of [HashMapExt]. This is needed for the constructor.
+
+"##
+)]
 #![deny(clippy::correctness, clippy::complexity, clippy::perf)]
 #![allow(clippy::pedantic, clippy::cast_lossless, clippy::unreadable_literal)]
 #![cfg_attr(all(not(test), not(feature = "std")), no_std)]
+#![cfg_attr(feature = "specialize", feature(min_specialization))]
+#![cfg_attr(feature = "nightly-arm-aes", feature(stdarch_arm_neon_intrinsics))]
 
 #[macro_use]
 mod convert;
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes"))]
-mod aes_hash;
 mod fallback_hash;
+
+cfg_if::cfg_if! {
+    if #[cfg(any(
+            all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes", not(miri)),
+            all(feature = "nightly-arm-aes", target_arch = "aarch64", target_feature = "aes", not(miri)),
+            all(feature = "nightly-arm-aes", target_arch = "arm", target_feature = "aes", not(miri)),
+        ))] {
+        mod aes_hash;
+        pub use crate::aes_hash::AHasher;
+    } else {
+        pub use crate::fallback_hash::AHasher;
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "std")] {
+        mod hash_map;
+        mod hash_set;
+
+        pub use crate::hash_map::AHashMap;
+        pub use crate::hash_set::AHashSet;
+
+        /// [Hasher]: std::hash::Hasher
+        /// [HashMap]: std::collections::HashMap
+        /// Type alias for [HashMap]<K, V, ahash::RandomState>
+        pub type HashMap<K, V> = std::collections::HashMap<K, V, crate::RandomState>;
+
+        /// Type alias for [HashSet]<K, ahash::RandomState>
+        pub type HashSet<K> = std::collections::HashSet<K, crate::RandomState>;
+    }
+}
+
 #[cfg(test)]
 mod hash_quality_test;
 
-mod folded_multiply;
-#[cfg(feature = "std")]
-mod hash_map;
-#[cfg(feature = "std")]
-mod hash_set;
-mod random_state;
+mod operations;
+pub mod random_state;
+mod specialize;
 
-#[cfg(feature = "compile-time-rng")]
-use const_random::const_random;
-
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes"))]
-pub use crate::aes_hash::AHasher;
-
-#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "aes")))]
-pub use crate::fallback_hash::AHasher;
 pub use crate::random_state::RandomState;
 
-#[cfg(feature = "std")]
-pub use crate::hash_map::AHashMap;
-#[cfg(feature = "std")]
-pub use crate::hash_set::AHashSet;
+use core::hash::BuildHasher;
+use core::hash::Hash;
+use core::hash::Hasher;
 
-/// Provides a default [Hasher] compile time generated constants for keys.
-/// This is typically used in conjunction with [`BuildHasherDefault`] to create
+#[cfg(feature = "std")]
+/// A convenience trait that can be used together with the type aliases defined to
+/// get access to the `new()` and `with_capacity()` methods for the HashMap type alias.
+pub trait HashMapExt {
+    /// Constructs a new HashMap
+    fn new() -> Self;
+    /// Constructs a new HashMap with a given initial capacity
+    fn with_capacity(capacity: usize) -> Self;
+}
+
+#[cfg(feature = "std")]
+/// A convenience trait that can be used together with the type aliases defined to
+/// get access to the `new()` and `with_capacity()` methods for the HashSet type aliases.
+pub trait HashSetExt {
+    /// Constructs a new HashSet
+    fn new() -> Self;
+    /// Constructs a new HashSet with a given initial capacity
+    fn with_capacity(capacity: usize) -> Self;
+}
+
+#[cfg(feature = "std")]
+impl<K, V, S> HashMapExt for std::collections::HashMap<K, V, S>
+where
+    S: BuildHasher + Default,
+{
+    fn new() -> Self {
+        std::collections::HashMap::with_hasher(S::default())
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        std::collections::HashMap::with_capacity_and_hasher(capacity, S::default())
+    }
+}
+
+#[cfg(feature = "std")]
+impl<K, S> HashSetExt for std::collections::HashSet<K, S>
+where
+    S: BuildHasher + Default,
+{
+    fn new() -> Self {
+        std::collections::HashSet::with_hasher(S::default())
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        std::collections::HashSet::with_capacity_and_hasher(capacity, S::default())
+    }
+}
+
+/// Provides a default [Hasher] with fixed keys.
+/// This is typically used in conjunction with [BuildHasherDefault] to create
 /// [AHasher]s in order to hash the keys of the map.
+///
+/// Generally it is preferable to use [RandomState] instead, so that different
+/// hashmaps will have different keys. However if fixed keys are desirable this
+/// may be used instead.
 ///
 /// # Example
 /// ```
@@ -55,22 +211,22 @@ pub use crate::hash_set::AHashSet;
 /// use ahash::{AHasher, RandomState};
 /// use std::collections::HashMap;
 ///
-/// let mut map: HashMap<i32, i32, RandomState> = HashMap::default();
+/// let mut map: HashMap<i32, i32, BuildHasherDefault<AHasher>> = HashMap::default();
 /// map.insert(12, 34);
 /// ```
 ///
 /// [BuildHasherDefault]: std::hash::BuildHasherDefault
 /// [Hasher]: std::hash::Hasher
 /// [HashMap]: std::collections::HashMap
-#[cfg(feature = "compile-time-rng")]
 impl Default for AHasher {
-    /// Constructs a new [AHasher] with compile time generated constants for keys.
-    /// This means the keys will be the same from one instance to another,
-    /// but different from build to the next. So if it is possible for a potential
-    /// attacker to have access to the compiled binary it would be better
-    /// to specify keys generated at runtime.
+    /// Constructs a new [AHasher] with fixed keys.
+    /// If `std` is enabled these will be generated upon first invocation.
+    /// Otherwise if the `compile-time-rng`feature is enabled these will be generated at compile time.
+    /// If neither of these features are available, hardcoded constants will be used.
     ///
-    /// This is defined only if the `compile-time-rng` feature is enabled.
+    /// Because the values are fixed, different hashers will all hash elements the same way.
+    /// This could make hash values predictable, if DOS attacks are a concern. If this behaviour is
+    /// not required, it may be preferable to use [RandomState] instead.
     ///
     /// # Examples
     ///
@@ -88,30 +244,102 @@ impl Default for AHasher {
     /// ```
     #[inline]
     fn default() -> AHasher {
-        AHasher::new_with_keys(const_random!(u64), const_random!(u64))
+        RandomState::with_fixed_keys().build_hasher()
     }
 }
 
-//#[inline(never)]
-//pub fn hash_test(input: &[u8]) -> u64 {
-//    use std::hash::Hasher;
-//    let mut a = AHasher::new_with_keys(67, 87);
-//    a.write(input);
-//    a.finish()
-//}
+/// Used for specialization. (Sealed)
+pub(crate) trait BuildHasherExt: BuildHasher {
+    #[doc(hidden)]
+    fn hash_as_u64<T: Hash + ?Sized>(&self, value: &T) -> u64;
 
+    #[doc(hidden)]
+    fn hash_as_fixed_length<T: Hash + ?Sized>(&self, value: &T) -> u64;
+
+    #[doc(hidden)]
+    fn hash_as_str<T: Hash + ?Sized>(&self, value: &T) -> u64;
+}
+
+impl<B: BuildHasher> BuildHasherExt for B {
+    #[inline]
+    #[cfg(feature = "specialize")]
+    default fn hash_as_u64<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[inline]
+    #[cfg(not(feature = "specialize"))]
+    fn hash_as_u64<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[inline]
+    #[cfg(feature = "specialize")]
+    default fn hash_as_fixed_length<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[inline]
+    #[cfg(not(feature = "specialize"))]
+    fn hash_as_fixed_length<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[inline]
+    #[cfg(feature = "specialize")]
+    default fn hash_as_str<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[inline]
+    #[cfg(not(feature = "specialize"))]
+    fn hash_as_str<T: Hash + ?Sized>(&self, value: &T) -> u64 {
+        let mut hasher = self.build_hasher();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+// #[inline(never)]
+// #[doc(hidden)]
+// pub fn hash_test(input: &[u8]) -> u64 {
+//     let a = RandomState::with_seeds(11, 22, 33, 44);
+//     <[u8]>::get_hash(input, &a)
+// }
+
+#[cfg(feature = "std")]
 #[cfg(test)]
 mod test {
     use crate::convert::Convert;
+    use crate::specialize::CallHasher;
     use crate::*;
-    use core::hash::BuildHasherDefault;
     use std::collections::HashMap;
 
     #[test]
+    fn test_ahash_alias_map_construction() {
+        let mut map = super::HashMap::with_capacity(1234);
+        map.insert(1, "test");
+    }
+
+    #[test]
+    fn test_ahash_alias_set_construction() {
+        let mut set = super::HashSet::with_capacity(1234);
+        set.insert(1);
+    }
+
+    #[test]
     fn test_default_builder() {
+        use core::hash::BuildHasherDefault;
+
         let mut map = HashMap::<u32, u64, BuildHasherDefault<AHasher>>::default();
         map.insert(1, 3);
     }
+
     #[test]
     fn test_builder() {
         let mut map = HashMap::<u32, u64, RandomState>::default();
@@ -126,7 +354,43 @@ mod test {
     }
 
     #[test]
+    fn test_non_zero() {
+        let mut hasher1 = AHasher::new_with_keys(0, 0);
+        let mut hasher2 = AHasher::new_with_keys(0, 0);
+        "foo".hash(&mut hasher1);
+        "bar".hash(&mut hasher2);
+        assert_ne!(hasher1.finish(), 0);
+        assert_ne!(hasher2.finish(), 0);
+        assert_ne!(hasher1.finish(), hasher2.finish());
+
+        let mut hasher1 = AHasher::new_with_keys(0, 0);
+        let mut hasher2 = AHasher::new_with_keys(0, 0);
+        3_u64.hash(&mut hasher1);
+        4_u64.hash(&mut hasher2);
+        assert_ne!(hasher1.finish(), 0);
+        assert_ne!(hasher2.finish(), 0);
+        assert_ne!(hasher1.finish(), hasher2.finish());
+    }
+
+    #[test]
+    fn test_non_zero_specialized() {
+        let hasher_build = RandomState::with_seeds(0, 0, 0, 0);
+
+        let h1 = str::get_hash("foo", &hasher_build);
+        let h2 = str::get_hash("bar", &hasher_build);
+        assert_ne!(h1, 0);
+        assert_ne!(h2, 0);
+        assert_ne!(h1, h2);
+
+        let h1 = u64::get_hash(&3_u64, &hasher_build);
+        let h2 = u64::get_hash(&4_u64, &hasher_build);
+        assert_ne!(h1, 0);
+        assert_ne!(h2, 0);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
     fn test_ahasher_construction() {
-        let _ = AHasher::new_with_keys(1245, 5678);
+        let _ = AHasher::new_with_keys(1234, 5678);
     }
 }

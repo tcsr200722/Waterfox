@@ -7,6 +7,8 @@
 
 #include "mozilla/PresShell.h"
 #include "mozilla/SMILAnimationController.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/dom/Animation.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentTimeline.h"
 #include "mozilla/dom/Element.h"
@@ -15,7 +17,7 @@
 #include "mozilla/dom/SVGSVGElement.h"
 #include "nsICategoryManager.h"
 #include "nsIChannel.h"
-#include "nsIContentViewer.h"
+#include "nsIDocumentViewer.h"
 #include "nsIDocumentLoaderFactory.h"
 #include "nsIHttpChannel.h"
 #include "nsIObserverService.h"
@@ -26,8 +28,8 @@
 #include "nsNetCID.h"
 #include "nsComponentManagerUtils.h"
 #include "nsServiceManagerUtils.h"
-#include "SVGObserverUtils.h"
 #include "nsMimeTypes.h"
+#include "nsRefreshDriver.h"
 
 namespace mozilla {
 
@@ -40,7 +42,9 @@ NS_IMPL_ISUPPORTS(SVGDocumentWrapper, nsIStreamListener, nsIRequestObserver,
                   nsIObserver, nsISupportsWeakReference)
 
 SVGDocumentWrapper::SVGDocumentWrapper()
-    : mIgnoreInvalidation(false), mRegisteredForXPCOMShutdown(false) {}
+    : mIgnoreInvalidation(false),
+      mRegisteredForXPCOMShutdown(false),
+      mIsDrawing(false) {}
 
 SVGDocumentWrapper::~SVGDocumentWrapper() {
   DestroyViewer();
@@ -50,6 +54,7 @@ SVGDocumentWrapper::~SVGDocumentWrapper() {
 }
 
 void SVGDocumentWrapper::DestroyViewer() {
+  MOZ_ASSERT(NS_IsMainThread());
   if (mViewer) {
     mViewer->GetDocument()->OnPageHide(false, nullptr);
     mViewer->Close(nullptr);
@@ -176,7 +181,9 @@ void SVGDocumentWrapper::SetCurrentTime(float aTime) {
 void SVGDocumentWrapper::TickRefreshDriver() {
   if (RefPtr<PresShell> presShell = mViewer->GetPresShell()) {
     if (RefPtr<nsPresContext> presContext = presShell->GetPresContext()) {
-      presContext->RefreshDriver()->DoTick();
+      if (RefPtr<nsRefreshDriver> driver = presContext->RefreshDriver()) {
+        driver->DoTick();
+      }
     }
   }
 }
@@ -252,7 +259,7 @@ SVGDocumentWrapper::Observe(nsISupports* aSubject, const char* aTopic,
 // This method is largely cribbed from
 // nsExternalResourceMap::PendingLoad::SetupViewer.
 nsresult SVGDocumentWrapper::SetupViewer(nsIRequest* aRequest,
-                                         nsIContentViewer** aViewer,
+                                         nsIDocumentViewer** aViewer,
                                          nsILoadGroup** aLoadGroup) {
   nsCOMPtr<nsIChannel> chan(do_QueryInterface(aRequest));
   NS_ENSURE_TRUE(chan, NS_ERROR_UNEXPECTED);
@@ -276,23 +283,16 @@ nsresult SVGDocumentWrapper::SetupViewer(nsIRequest* aRequest,
   NS_ENSURE_TRUE(newLoadGroup, NS_ERROR_OUT_OF_MEMORY);
   newLoadGroup->SetLoadGroup(loadGroup);
 
-  nsCOMPtr<nsICategoryManager> catMan =
-      do_GetService(NS_CATEGORYMANAGER_CONTRACTID);
-  NS_ENSURE_TRUE(catMan, NS_ERROR_NOT_AVAILABLE);
-  nsCString contractId;
-  nsresult rv = catMan->GetCategoryEntry("Gecko-Content-Viewers", IMAGE_SVG_XML,
-                                         contractId);
-  NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIDocumentLoaderFactory> docLoaderFactory =
-      do_GetService(contractId.get());
+      nsContentUtils::FindInternalDocumentViewer(
+          nsLiteralCString(IMAGE_SVG_XML));
   NS_ENSURE_TRUE(docLoaderFactory, NS_ERROR_NOT_AVAILABLE);
 
-  nsCOMPtr<nsIContentViewer> viewer;
+  nsCOMPtr<nsIDocumentViewer> viewer;
   nsCOMPtr<nsIStreamListener> listener;
-  rv = docLoaderFactory->CreateInstance(
-      "external-resource", chan, newLoadGroup,
-      NS_LITERAL_CSTRING(IMAGE_SVG_XML), nullptr, nullptr,
-      getter_AddRefs(listener), getter_AddRefs(viewer));
+  nsresult rv = docLoaderFactory->CreateInstance(
+      "external-resource", chan, newLoadGroup, nsLiteralCString(IMAGE_SVG_XML),
+      nullptr, nullptr, getter_AddRefs(listener), getter_AddRefs(viewer));
   NS_ENSURE_SUCCESS(rv, rv);
 
   NS_ENSURE_TRUE(viewer, NS_ERROR_UNEXPECTED);

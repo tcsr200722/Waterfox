@@ -1,21 +1,24 @@
 /**
- * Test for LoginManagerChild.getUserNameAndPasswordFields
+ * Test for LoginFormState.getUserNameAndPasswordFields
  */
 
 "use strict";
 
-XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
-
-const LMCBackstagePass = ChromeUtils.import(
-  "resource://gre/modules/LoginManagerChild.jsm",
-  null
+const { LoginManagerChild } = ChromeUtils.importESModule(
+  "resource://gre/modules/LoginManagerChild.sys.mjs"
 );
-const { LoginManagerChild } = LMCBackstagePass;
 const TESTCASES = [
   {
     description: "1 password field outside of a <form>",
     document: `<input id="pw1" type=password>`,
     returnedFieldIDs: [null, "pw1", null],
+  },
+  {
+    description: "1 text field in a <form> without a password field",
+    document: `<form>
+      <input id="un1">
+      </form>`,
+    returnedFieldIDs: [null, null, null],
   },
   {
     description: "1 text field outside of a <form> without a password field",
@@ -89,14 +92,45 @@ const TESTCASES = [
       <form id="form1"></form>`,
     returnedFieldIDs: [null, "pw1", null],
   },
+  {
+    description: "1 username field in a <form>",
+    document: `<form>
+      <input id="un1" autocomplete=username>
+      </form>`,
+    returnedFieldIDs: ["un1", null, null],
+  },
+  {
+    description: "1 username field outside of a <form>",
+    document: `<input id="un1" autocomplete=username>`,
+    returnedFieldIDs: [null, null, null],
+  },
+  {
+    description: "username with type=user",
+    document: `<form><input id="un1" type="user"><input id="pwd" type="password"></form>`,
+    returnedFieldIDs: ["un1", "pwd", null],
+  },
+  {
+    description: "username with type=username",
+    document: `<form><input id="un1" type="username"><input id="pwd" type="password"></form>`,
+    returnedFieldIDs: ["un1", "pwd", null],
+  },
 ];
+
+function _setPrefs() {
+  Services.prefs.setBoolPref("signon.usernameOnlyForm.enabled", true);
+  registerCleanupFunction(() => {
+    Services.prefs.clearUserPref("signon.usernameOnlyForm.enabled");
+  });
+}
+
+_setPrefs();
 
 for (let tc of TESTCASES) {
   info("Sanity checking the testcase: " + tc.description);
 
-  (function() {
+  (function () {
     let testcase = tc;
-    add_task(async function() {
+    add_task(async function () {
       info("Starting testcase: " + testcase.description);
       let document = MockDocument.createTestDocument(
         "http://localhost:8080/test/",
@@ -122,7 +156,9 @@ for (let tc of TESTCASES) {
       let formOrigin = LoginHelper.getLoginOrigin(document.documentURI);
       LoginRecipesContent.cacheRecipes(formOrigin, win, new Set());
 
-      let actual = new LoginManagerChild().getUserNameAndPasswordFields(input);
+      const loginManagerChild = new LoginManagerChild();
+      const docState = loginManagerChild.stateForDocument(document);
+      let actual = docState.getUserNameAndPasswordFields(input);
 
       Assert.strictEqual(
         testcase.returnedFieldIDs.length,

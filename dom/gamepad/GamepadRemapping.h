@@ -7,10 +7,12 @@
 #ifndef mozilla_dom_GamepadRemapping_h_
 #define mozilla_dom_GamepadRemapping_h_
 
+#include "mozilla/dom/GamepadBinding.h"
 #include "mozilla/dom/GamepadLightIndicator.h"
+#include "mozilla/dom/GamepadPoseState.h"
+#include "mozilla/dom/GamepadTouchState.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // GamepadId is (vendorId << 16) | productId)
 enum class GamepadId : uint32_t {
@@ -28,6 +30,34 @@ enum class GamepadId : uint32_t {
   kLogitechProductc218 = 0x046dc218,
   // Logitech F710, D-mode
   kLogitechProductc219 = 0x046dc219,
+  // Microsoft Xbox 360
+  kMicrosoftProductXbox360 = 0x045e028e,
+  // Microsoft Xbox 360 Wireless
+  kMicrosoftProductXbox360Wireless = 0x045e028f,
+  // Microsoft Xbox 360 Wireless
+  kMicrosoftProductXbox360Wireless2 = 0x045e0719,
+  // Microsoft Xbox One 2013
+  kMicrosoftProductXbox2013 = 0x045e02d1,
+  // Microsoft Xbox One (2015 FW)
+  kMicrosoftProductXbox2015 = 0x045e02dd,
+  // Microsoft Xbox One S
+  kMicrosoftProductXboxOneS = 0x045e02ea,
+  // Microsoft Xbox One S Wireless
+  kMicrosoftProductXboxOneSWireless = 0x045e02e0,
+  // Microsoft Xbox One Elite
+  kMicrosoftProductXboxOneElite = 0x045e02e3,
+  // Microsoft Xbox One Elite 2
+  kMicrosoftProductXboxOneElite2 = 0x045e0b00,
+  // Microsoft Xbox One Elite 2 Wireless
+  kMicrosoftProductXboxOneElite2Wireless = 0x045e0b05,
+  // Xbox One S Wireless (2016 FW)
+  kMicrosoftProductXboxOneSWireless2016 = 0x045e02fd,
+  // Microsoft Xbox Adaptive
+  kMicrosoftProductXboxAdaptive = 0x045e0b0a,
+  // Microsoft Xbox Adaptive Wireless
+  kMicrosoftProductXboxAdaptiveWireless = 0x045e0b0c,
+  // Microsoft Xbox Series X Wireless
+  kMicrosoftProductXboxSeriesXWireless = 0x045e0b13,
   // Switch Joy-Con L
   kNintendoProduct2006 = 0x057e2006,
   // Switch Joy-Con R
@@ -68,6 +98,41 @@ enum class GamepadId : uint32_t {
   kVendor2836Product0001 = 0x28360001,
 };
 
+// Follow the canonical ordering recommendation for the "Standard Gamepad"
+// from https://www.w3.org/TR/gamepad/#remapping.
+enum CanonicalButtonIndex {
+  BUTTON_INDEX_PRIMARY,
+  BUTTON_INDEX_SECONDARY,
+  BUTTON_INDEX_TERTIARY,
+  BUTTON_INDEX_QUATERNARY,
+  BUTTON_INDEX_LEFT_SHOULDER,
+  BUTTON_INDEX_RIGHT_SHOULDER,
+  BUTTON_INDEX_LEFT_TRIGGER,
+  BUTTON_INDEX_RIGHT_TRIGGER,
+  BUTTON_INDEX_BACK_SELECT,
+  BUTTON_INDEX_START,
+  BUTTON_INDEX_LEFT_THUMBSTICK,
+  BUTTON_INDEX_RIGHT_THUMBSTICK,
+  BUTTON_INDEX_DPAD_UP,
+  BUTTON_INDEX_DPAD_DOWN,
+  BUTTON_INDEX_DPAD_LEFT,
+  BUTTON_INDEX_DPAD_RIGHT,
+  BUTTON_INDEX_META,
+  BUTTON_INDEX_COUNT
+};
+
+enum CanonicalAxisIndex {
+  AXIS_INDEX_LEFT_STICK_X,
+  AXIS_INDEX_LEFT_STICK_Y,
+  AXIS_INDEX_RIGHT_STICK_X,
+  AXIS_INDEX_RIGHT_STICK_Y,
+  AXIS_INDEX_COUNT
+};
+
+static inline bool AxisNegativeAsButton(double input) { return input < -0.5; }
+
+static inline bool AxisPositiveAsButton(double input) { return input > 0.5; }
+
 class GamepadRemapper {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(GamepadRemapper)
 
@@ -87,10 +152,10 @@ class GamepadRemapper {
   virtual GamepadMappingType GetMappingType() const {
     return GamepadMappingType::Standard;
   }
-  virtual void ProcessTouchData(uint32_t aIndex, void* aInput) {}
-  virtual void RemapAxisMoveEvent(uint32_t aIndex, uint32_t aAxis,
+  virtual void ProcessTouchData(GamepadHandle aHandle, void* aInput) {}
+  virtual void RemapAxisMoveEvent(GamepadHandle aHandle, uint32_t aAxis,
                                   double aValue) const = 0;
-  virtual void RemapButtonEvent(uint32_t aIndex, uint32_t aButton,
+  virtual void RemapButtonEvent(GamepadHandle aHandle, uint32_t aButton,
                                 bool aPressed) const = 0;
 
  protected:
@@ -107,7 +172,6 @@ already_AddRefed<GamepadRemapper> GetGamepadRemapper(const uint16_t aVendorId,
                                                      const uint16_t aProductId,
                                                      bool& aUsingDefault);
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif
+#endif  // mozilla_dom_GamepadRemapping_h_

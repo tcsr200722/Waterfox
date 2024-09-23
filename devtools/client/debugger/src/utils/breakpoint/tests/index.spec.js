@@ -2,14 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import { sortSelectedBreakpoints } from "../index";
 
 import { makeMockBreakpoint, makeMockSource } from "../../test-mockup";
 
 describe("breakpoint sorting", () => {
-  it("sortSelectedBreakpoints should sort by line number and column ", () => {
+  it("sortSelectedBreakpoints should sort by line number and column", () => {
     const sorted = sortSelectedBreakpoints(
       [
         makeMockBreakpoint(undefined, 100, 2),

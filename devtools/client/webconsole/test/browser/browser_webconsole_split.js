@@ -3,17 +3,21 @@
 
 "use strict";
 
-const TEST_URI = "data:text/html;charset=utf-8,Web Console test for splitting";
-const { LocalizationHelper } = require("devtools/shared/l10n");
-const L10N = new LocalizationHelper(
-  "devtools/client/locales/toolbox.properties"
-);
+const TEST_URI =
+  "data:text/html;charset=utf-8,<!DOCTYPE html>Web Console test for splitting";
 
 // Test is slow on Linux EC2 instances - Bug 962931
 requestLongerTimeout(4);
 
-add_task(async function() {
+add_task(async function () {
   let toolbox;
+  const getFluentString = await getFluentStringHelper([
+    "devtools/client/toolbox.ftl",
+  ]);
+  const hideSplitConsoleLabel = getFluentString(
+    "toolbox-meatball-menu-hideconsole-label"
+  );
+
   await addTab(TEST_URI);
   await testConsoleLoadOnDifferentPanel();
   await testKeyboardShortcuts();
@@ -79,19 +83,19 @@ add_task(async function() {
     const containerHeight = deck.parentNode.getBoundingClientRect().height;
     const deckHeight = deck.getBoundingClientRect().height;
     const webconsoleHeight = webconsolePanel.getBoundingClientRect().height;
-    const splitterVisibility = !splitter.getAttribute("hidden");
+    const splitterVisibility = !splitter.hidden;
     // Splitter height will be 1px since the margin is negative.
     const splitterHeight = splitterVisibility ? 1 : 0;
     const openedConsolePanel = toolbox.currentToolId === "webconsole";
     const menuLabel = await getMenuLabel(toolbox);
 
     return {
-      deckHeight: deckHeight,
-      containerHeight: containerHeight,
-      webconsoleHeight: webconsoleHeight,
-      splitterVisibility: splitterVisibility,
-      splitterHeight: splitterHeight,
-      openedConsolePanel: openedConsolePanel,
+      deckHeight,
+      containerHeight,
+      webconsoleHeight,
+      splitterVisibility,
+      splitterHeight,
+      openedConsolePanel,
       menuLabel,
     };
   }
@@ -105,7 +109,12 @@ add_task(async function() {
       { once: true }
     );
     info("Click on menu and wait for the popup to be visible");
+    AccessibilityUtils.setEnv({
+      // Toobox toolbar buttons are handled with arrow keys.
+      nonNegativeTabIndexRule: false,
+    });
     EventUtils.sendMouseEvent({ type: "click" }, button);
+    AccessibilityUtils.resetEnv();
     await onPopupShown;
 
     const menuItem = toolbox.doc.getElementById(
@@ -116,8 +125,7 @@ add_task(async function() {
     let label;
     if (menuItem && menuItem.querySelector(".label")) {
       label =
-        menuItem.querySelector(".label").textContent ===
-        L10N.getStr("toolbox.meatballMenu.hideconsole.label")
+        menuItem.querySelector(".label").textContent === hideSplitConsoleLabel
           ? "hide"
           : "split";
     }
@@ -151,12 +159,14 @@ add_task(async function() {
       currentUIState.splitterVisibility,
       "Splitter is visible when console is split"
     );
-    ok(
-      currentUIState.deckHeight > 0,
+    Assert.greater(
+      currentUIState.deckHeight,
+      0,
       "Deck has a height > 0 when console is split"
     );
-    ok(
-      currentUIState.webconsoleHeight > 0,
+    Assert.greater(
+      currentUIState.webconsoleHeight,
+      0,
       "Web console has a height > 0 when console is split"
     );
     ok(
@@ -232,12 +242,14 @@ add_task(async function() {
       currentUIState.splitterVisibility,
       "Splitter is visible when console is split"
     );
-    ok(
-      currentUIState.deckHeight > 0,
+    Assert.greater(
+      currentUIState.deckHeight,
+      0,
       "Deck has a height > 0 when console is split"
     );
-    ok(
-      currentUIState.webconsoleHeight > 0,
+    Assert.greater(
+      currentUIState.webconsoleHeight,
+      0,
       "Web console has a height > 0 when console is split"
     );
     ok(
@@ -285,12 +297,14 @@ add_task(async function() {
       currentUIState.splitterVisibility,
       "Splitter is visible when console is split"
     );
-    ok(
-      currentUIState.deckHeight > 0,
+    Assert.greater(
+      currentUIState.deckHeight,
+      0,
       "Deck has a height > 0 when console is split"
     );
-    ok(
-      currentUIState.webconsoleHeight > 0,
+    Assert.greater(
+      currentUIState.webconsoleHeight,
+      0,
       "Web console has a height > 0 when console is split"
     );
     is(
@@ -299,7 +313,7 @@ add_task(async function() {
           currentUIState.webconsoleHeight +
           currentUIState.splitterHeight
       ),
-      currentUIState.containerHeight,
+      Math.round(currentUIState.containerHeight),
       "Everything adds up to container height"
     );
     ok(
@@ -339,8 +353,8 @@ add_task(async function() {
   }
 
   async function openPanel(toolId) {
-    const target = await TargetFactory.forTab(gBrowser.selectedTab);
-    toolbox = await gDevTools.showToolbox(target, toolId);
+    const tab = gBrowser.selectedTab;
+    toolbox = await gDevTools.showToolboxForTab(tab, { toolId });
   }
 
   async function openAndCheckPanel(toolId) {

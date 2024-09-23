@@ -4,13 +4,14 @@
 
 // The rejection "The fetching process for the media resource was aborted by the
 // user agent at the user's request." is left unhandled in some cases. This bug
-// should be fixed, but for the moment this file is whitelisted.
+// should be fixed, but for the moment this file allows a class of rejections.
 //
-// NOTE: Whitelisting a class of rejections should be limited. Normally you
+// NOTE: Allowing a whole class of rejections should be avoided. Normally you
 //       should use "expectUncaughtRejection" to flag individual failures.
-ChromeUtils.import("resource://testing-common/PromiseTestUtils.jsm", this);
-PromiseTestUtils.whitelistRejectionsGlobally(/aborted by the user agent/);
-ChromeUtils.import("resource:///modules/BrowserWindowTracker.jsm", this);
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
+);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/aborted by the user agent/);
 
 const permissionError =
   "error: NotAllowedError: The request is not allowed " +
@@ -18,10 +19,29 @@ const permissionError =
 
 const notFoundError = "error: NotFoundError: The object can not be found here.";
 
-let env = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
-);
-const isHeadless = env.get("MOZ_HEADLESS");
+const isHeadless = Services.env.get("MOZ_HEADLESS");
+
+function verifyTabSharingPopup(expectedItems) {
+  let event = new MouseEvent("popupshowing");
+  let sharingMenu = document.getElementById("tabSharingMenuPopup");
+  sharingMenu.dispatchEvent(event);
+
+  is(
+    sharingMenu.children.length,
+    expectedItems.length,
+    "correct number of items on tab sharing menu"
+  );
+  for (let i = 0; i < expectedItems.length; i++) {
+    is(
+      JSON.parse(sharingMenu.children[i].getAttribute("data-l10n-args"))
+        .itemList,
+      expectedItems[i],
+      "label of item " + i + " + was correct"
+    );
+  }
+
+  sharingMenu.dispatchEvent(new MouseEvent("popuphiding"));
+}
 
 var gTests = [
   {
@@ -38,15 +58,14 @@ var gTests = [
         "webRTC-shareScreen-notification-icon",
         "anchored to device icon"
       );
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
       let notification = PopupNotifications.panel.firstElementChild;
-      let iconclass = notification.getAttribute("iconclass");
-      ok(iconclass.includes("screen-icon"), "panel using screen icon");
 
       let menulist = document.getElementById("webRTC-selectWindow-menulist");
       let count = menulist.itemCount;
-      ok(
-        count >= 4,
+      Assert.greaterOrEqual(
+        count,
+        4,
         "There should be the 'Select Window or Screen' item, a separator and at least one window and one screen"
       );
 
@@ -60,7 +79,7 @@ var gTests = [
         noWindowOrScreenItem,
         "'Select Window or Screen' is the selected item"
       );
-      is(menulist.value, -1, "no window or screen is selected by default");
+      is(menulist.value, "-1", "no window or screen is selected by default");
       ok(
         noWindowOrScreenItem.disabled,
         "'Select Window or Screen' item is disabled"
@@ -105,8 +124,9 @@ var gTests = [
           scaryScreenIndex = i;
         }
       }
-      ok(
-        typeof scaryScreenIndex == "number",
+      Assert.equal(
+        typeof scaryScreenIndex,
+        "number",
         "there's at least one scary screen, as as all screens are"
       );
 
@@ -127,7 +147,7 @@ var gTests = [
         "the preview area is visible"
       );
       ok(
-        !document.getElementById("webRTC-previewWarning").hidden,
+        !document.getElementById("webRTC-previewWarningBox").hidden,
         "the scary warning is visible"
       );
       ok(!notification.button.disabled, "Allow button is enabled");
@@ -164,6 +184,7 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ screen: "Screen" });
+      verifyTabSharingPopup(["screen"]);
 
       // we always show prompt for screen sharing.
       promise = promisePopupNotificationShown("webRTC-shareDevices");
@@ -177,7 +198,7 @@ var gTests = [
         "webRTC-shareScreen-notification-icon",
         "anchored to device icon"
       );
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
 
       observerPromise = expectObserverCalled("getUserMedia:response:deny");
       await promiseMessage(permissionError, () => {
@@ -208,15 +229,14 @@ var gTests = [
         "webRTC-shareScreen-notification-icon",
         "anchored to device icon"
       );
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
       let notification = PopupNotifications.panel.firstElementChild;
-      let iconclass = notification.getAttribute("iconclass");
-      ok(iconclass.includes("screen-icon"), "panel using screen icon");
 
       let menulist = document.getElementById("webRTC-selectWindow-menulist");
       let count = menulist.itemCount;
-      ok(
-        count >= 4,
+      Assert.greaterOrEqual(
+        count,
+        4,
         "There should be the 'Select Window or Screen' item, a separator and at least one window and one screen"
       );
 
@@ -230,7 +250,7 @@ var gTests = [
         noWindowOrScreenItem,
         "'Select Window or Screen' is the selected item"
       );
-      is(menulist.value, -1, "no window or screen is selected by default");
+      is(menulist.value, "-1", "no window or screen is selected by default");
       ok(
         noWindowOrScreenItem.disabled,
         "'Select Window or Screen' item is disabled"
@@ -293,8 +313,9 @@ var gTests = [
           "there's at least one scary window, as Firefox is running"
         );
       }
-      ok(
-        typeof scaryScreenIndex == "number",
+      Assert.equal(
+        typeof scaryScreenIndex,
+        "number",
         "there's at least one scary screen, as all screens are"
       );
 
@@ -327,7 +348,7 @@ var gTests = [
           "the preview area is visible"
         );
         ok(
-          !document.getElementById("webRTC-previewWarning").hidden,
+          !document.getElementById("webRTC-previewWarningBox").hidden,
           "the scary warning is visible"
         );
         // Select the 'Select Window' item again, the preview should be hidden.
@@ -344,7 +365,7 @@ var gTests = [
       let sharingNonScaryWindow = typeof nonScaryWindowIndex == "number";
 
       // If we have a non-scary window, select it and verify the warning isn't displayed.
-      // A non-scary window may not always exist on test slaves.
+      // A non-scary window may not always exist on test machines.
       if (sharingNonScaryWindow) {
         menulist.getItemAtIndex(nonScaryWindowIndex).doCommand();
         ok(
@@ -362,11 +383,11 @@ var gTests = [
           "the preview area is visible"
         );
         ok(
-          document.getElementById("webRTC-previewWarning").hidden,
+          document.getElementById("webRTC-previewWarningBox").hidden,
           "the scary warning is hidden"
         );
       } else {
-        info("no non-scary window available on this test slave");
+        info("no non-scary window available on this test machine");
       }
 
       let indicator = promiseIndicatorWindow();
@@ -381,7 +402,7 @@ var gTests = [
       await observerPromise2;
       Assert.deepEqual(
         await getMediaCaptureState(),
-        { screen: "Window" },
+        { window: true },
         "expected screen to be shared"
       );
 
@@ -391,6 +412,8 @@ var gTests = [
       } else {
         await checkSharingUI({ screen: "Window", browserwindow: true });
       }
+
+      verifyTabSharingPopup(["window"]);
 
       await closeStream();
     },
@@ -418,16 +441,13 @@ var gTests = [
         "webRTC-shareScreen-notification-icon",
         "anchored to device icon"
       );
-      checkDeviceSelectors(true, false, true);
-      let iconclass = PopupNotifications.panel.firstElementChild.getAttribute(
-        "iconclass"
-      );
-      ok(iconclass.includes("screen-icon"), "panel using screen icon");
+      checkDeviceSelectors(["microphone", "screen"]);
 
       let menulist = document.getElementById("webRTC-selectWindow-menulist");
       let count = menulist.itemCount;
-      ok(
-        count >= 4,
+      Assert.greaterOrEqual(
+        count,
+        4,
         "There should be the 'Select Window or Screen' item, a separator and at least one window and one screen"
       );
 
@@ -448,7 +468,7 @@ var gTests = [
         "the preview area is visible"
       );
       ok(
-        !document.getElementById("webRTC-previewWarning").hidden,
+        !document.getElementById("webRTC-previewWarningBox").hidden,
         "the scary warning is visible"
       );
 
@@ -470,6 +490,9 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ audio: true, screen: "Screen" });
+
+      verifyTabSharingPopup(["microphone and screen"]);
+
       await closeStream();
     },
   },
@@ -482,7 +505,7 @@ var gTests = [
       await promiseRequestDevice(false, true, null, "screen");
       await promise;
       await observerPromise;
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
 
       let observerPromise1 = expectObserverCalled("getUserMedia:response:deny");
       let observerPromise2 = expectObserverCalled("recording-window-ended");
@@ -517,18 +540,18 @@ var gTests = [
         return;
       }
 
-      async function share(audio, video, screen) {
+      async function share(deviceTypes) {
         let promise = promisePopupNotificationShown("webRTC-shareDevices");
         let observerPromise = expectObserverCalled("getUserMedia:request");
         await promiseRequestDevice(
-          audio,
-          video || !!screen,
+          /* audio */ deviceTypes.includes("microphone"),
+          /* video */ deviceTypes.some(t => t == "screen" || t == "camera"),
           null,
-          screen && "window"
+          deviceTypes.includes("screen") && "window"
         );
         await promise;
         await observerPromise;
-        checkDeviceSelectors(audio, video, screen);
+        checkDeviceSelectors(deviceTypes);
         if (screen) {
           let menulist = document.getElementById(
             "webRTC-selectWindow-menulist"
@@ -546,7 +569,7 @@ var gTests = [
         await observerPromise2;
       }
 
-      async function check(expected = {}) {
+      async function check(expected = {}, expectedSharingLabel) {
         let shared = Object.keys(expected).join(" and ");
         if (shared) {
           Assert.deepEqual(
@@ -555,37 +578,45 @@ var gTests = [
             "expected " + shared + " to be shared"
           );
           await checkSharingUI(expected);
+          verifyTabSharingPopup([expectedSharingLabel]);
         } else {
           await checkNotSharing();
+          verifyTabSharingPopup([""]);
         }
       }
 
       info("Share screen and microphone");
       let indicator = promiseIndicatorWindow();
-      await share(true, false, true);
+      await share(["microphone", "screen"]);
       await indicator;
-      await check({ audio: true, screen: "Screen" });
+      await check({ audio: true, screen: "Screen" }, "microphone and screen");
 
       info("Share camera");
-      await share(false, true);
-      await check({ video: true, audio: true, screen: "Screen" });
+      await share(["camera"]);
+      await check(
+        { video: true, audio: true, screen: "Screen" },
+        "microphone, screen, and camera"
+      );
 
       info("Stop the screen share, mic+cam should continue");
       await stopSharing("screen", true);
-      await check({ video: true, audio: true });
+      await check({ video: true, audio: true }, "microphone and camera");
 
       info("Stop the camera, everything should stop.");
       await stopSharing("camera");
 
       info("Now, share only the screen...");
       indicator = promiseIndicatorWindow();
-      await share(false, false, true);
+      await share(["screen"]);
       await indicator;
-      await check({ screen: "Screen" });
+      await check({ screen: "Screen" }, "screen");
 
       info("... and add camera and microphone in a second request.");
-      await share(true, true);
-      await check({ video: true, audio: true, screen: "Screen" });
+      await share(["microphone", "camera"]);
+      await check(
+        { video: true, audio: true, screen: "Screen" },
+        "screen, microphone, and camera"
+      );
 
       info("Stop the camera, this should stop everything.");
       await stopSharing("camera");
@@ -600,7 +631,7 @@ var gTests = [
       await promiseRequestDevice(false, true, null, "screen");
       await promise;
       await observerPromise;
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
       let menulist = document.getElementById("webRTC-selectWindow-menulist");
       menulist.getItemAtIndex(menulist.itemCount - 1).doCommand();
 
@@ -622,73 +653,9 @@ var gTests = [
 
       await indicator;
       await checkSharingUI({ screen: "Screen" });
+      verifyTabSharingPopup(["screen"]);
 
       await reloadAndAssertClosedStreams();
-    },
-  },
-
-  {
-    desc: "test showControlCenter from screen icon",
-    run: async function checkShowControlCenter() {
-      if (!USING_LEGACY_INDICATOR) {
-        info(
-          "Skipping since this test doesn't apply to the new global sharing " +
-            "indicator."
-        );
-        return;
-      }
-      let observerPromise = expectObserverCalled("getUserMedia:request");
-      let promise = promisePopupNotificationShown("webRTC-shareDevices");
-      await promiseRequestDevice(false, true, null, "screen");
-      await promise;
-      await observerPromise;
-      checkDeviceSelectors(false, false, true);
-      let menulist = document.getElementById("webRTC-selectWindow-menulist");
-      menulist.getItemAtIndex(menulist.itemCount - 1).doCommand();
-
-      let observerPromise1 = expectObserverCalled(
-        "getUserMedia:response:allow"
-      );
-      let observerPromise2 = expectObserverCalled("recording-device-events");
-      let indicator = promiseIndicatorWindow();
-      await promiseMessage("ok", () => {
-        PopupNotifications.panel.firstElementChild.button.click();
-      });
-      await observerPromise1;
-      await observerPromise2;
-      Assert.deepEqual(
-        await getMediaCaptureState(),
-        { screen: "Screen" },
-        "expected screen to be shared"
-      );
-      await indicator;
-      await checkSharingUI({ screen: "Screen" });
-
-      ok(
-        gIdentityHandler._identityPopup.hidden,
-        "control center should be hidden"
-      );
-      if (IS_MAC) {
-        let activeStreams = webrtcUI.getActiveStreams(false, false, true);
-        webrtcUI.showSharingDoorhanger(activeStreams[0]);
-      } else {
-        let win = Services.wm.getMostRecentWindow(
-          "Browser:WebRTCGlobalIndicator"
-        );
-        let elt = win.document.getElementById("screenShareButton");
-        EventUtils.synthesizeMouseAtCenter(elt, {}, win);
-        await TestUtils.waitForCondition(
-          () => !gIdentityHandler._identityPopup.hidden
-        );
-      }
-      ok(
-        !gIdentityHandler._identityPopup.hidden,
-        "control center should be open"
-      );
-
-      gIdentityHandler._identityPopup.hidden = true;
-
-      await closeStream();
     },
   },
 
@@ -719,7 +686,7 @@ var gTests = [
       await promiseRequestDevice(false, true, null, "screen");
       await promise;
       await observerPromise;
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
       document
         .getElementById("webRTC-selectWindow-menulist")
         .getItemAtIndex(2)
@@ -766,11 +733,13 @@ var gTests = [
       );
 
       // Request screensharing again, expect an immediate failure.
-      observerPromise = expectObserverCalled("recording-window-ended");
-      promise = promiseMessage(permissionError);
-      await promiseRequestDevice(false, true, null, "screen");
-      await promise;
-      await observerPromise;
+      await Promise.all([
+        expectObserverCalled("getUserMedia:request"),
+        expectObserverCalled("getUserMedia:response:deny"),
+        expectObserverCalled("recording-window-ended"),
+        promiseMessage(permissionError),
+        promiseRequestDevice(false, true, null, "screen"),
+      ]);
 
       // Now set the permission to allow and expect a prompt.
       SitePermissions.setForPrincipal(
@@ -813,8 +782,7 @@ var gTests = [
   },
 
   {
-    desc:
-      "Switching between menu options maintains correct main action state while window sharing",
+    desc: "Switching between menu options maintains correct main action state while window sharing",
     skipObserverVerification: true,
     run: async function checkDoorhangerState() {
       await enableObserverVerification();
@@ -844,12 +812,11 @@ var gTests = [
         ok(!notification.button.disabled, "Allow button is not disabled");
       } else {
         ok(notification.button.disabled, "Allow button is disabled");
+        ok(
+          !notification.hasAttribute("warninghidden"),
+          "warning message is shown"
+        );
       }
-
-      ok(
-        !notification.hasAttribute("warninghidden"),
-        "warning message is shown"
-      );
 
       menulist.getItemAtIndex(3).doCommand();
       ok(checkbox.checked, "checkbox still checked");
@@ -860,12 +827,11 @@ var gTests = [
         ok(!notification.button.disabled, "Allow button remains not disabled");
       } else {
         ok(notification.button.disabled, "Allow button remains disabled");
+        ok(
+          !notification.hasAttribute("warninghidden"),
+          "warning message is still shown"
+        );
       }
-
-      ok(
-        !notification.hasAttribute("warninghidden"),
-        "warning message is still shown"
-      );
 
       await disableObserverVerification();
 

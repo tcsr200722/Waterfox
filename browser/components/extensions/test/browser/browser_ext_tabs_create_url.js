@@ -3,10 +3,10 @@
 "use strict";
 
 async function runWithDisabledPrivateBrowsing(callback) {
-  const { EnterprisePolicyTesting, PoliciesPrefTracker } = ChromeUtils.import(
-    "resource://testing-common/EnterprisePolicyTesting.jsm",
-    null
-  );
+  const { EnterprisePolicyTesting, PoliciesPrefTracker } =
+    ChromeUtils.importESModule(
+      "resource://testing-common/EnterprisePolicyTesting.sys.mjs"
+    );
 
   PoliciesPrefTracker.start();
   await EnterprisePolicyTesting.setupPolicyEngineWithJson({
@@ -80,7 +80,7 @@ add_task(async function test_urlbar_focus() {
   info(`After opening an empty tab, gURLBar.focused: ${gURLBar.focused}`);
 
   is(active.tagName, "html:input", "Input element focused");
-  is(active.id, "urlbar-input", "Urlbar focused");
+  ok(active.classList.contains("urlbar-input"), "Urlbar focused");
 
   extension.sendMessage("remove", tab2.id);
   await extension.awaitMessage("result");

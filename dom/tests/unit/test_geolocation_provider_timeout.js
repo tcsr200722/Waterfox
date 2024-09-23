@@ -1,5 +1,6 @@
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 var httpserver = null;
 var geolocation = null;
@@ -34,7 +35,6 @@ function run_test() {
     "geo.provider.network.url",
     "http://localhost:" + httpserver.identity.primaryPort + "/geo"
   );
-  Services.prefs.setBoolPref("dom.testing.ignore_ipc_principal", true);
   Services.prefs.setBoolPref("geo.provider.network.scan", false);
 
   // Setting timeout to a very low value to ensure time out will happen.

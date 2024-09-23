@@ -16,8 +16,12 @@
 #  include <jni.h>
 #  include <android/native_window.h>
 #  include <android/native_window_jni.h>
+#  include <sys/socket.h>
+#  include "mozilla/ipc/FileDescriptor.h"
 #  include "mozilla/java/GeckoSurfaceWrappers.h"
 #  include "mozilla/java/SurfaceAllocatorWrappers.h"
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
+#  include "mozilla/UniquePtrExtensions.h"
 #endif
 
 using namespace mozilla::gl;
@@ -34,24 +38,29 @@ class CompositableForwarder;
 
 already_AddRefed<TextureClient> AndroidSurfaceTextureData::CreateTextureClient(
     AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
-    gl::OriginPos aOriginPos, bool aHasAlpha, LayersIPCChannel* aAllocator,
+    gl::OriginPos aOriginPos, bool aHasAlpha, bool aForceBT709ColorSpace,
+    Maybe<gfx::Matrix4x4> aTransformOverride, LayersIPCChannel* aAllocator,
     TextureFlags aFlags) {
   if (aOriginPos == gl::OriginPos::BottomLeft) {
     aFlags |= TextureFlags::ORIGIN_BOTTOM_LEFT;
   }
 
   return TextureClient::CreateWithData(
-      new AndroidSurfaceTextureData(aHandle, aSize, aContinuous, aHasAlpha),
+      new AndroidSurfaceTextureData(aHandle, aSize, aContinuous, aHasAlpha,
+                                    aForceBT709ColorSpace, aTransformOverride),
       aFlags, aAllocator);
 }
 
 AndroidSurfaceTextureData::AndroidSurfaceTextureData(
     AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
-    bool aHasAlpha)
+    bool aHasAlpha, bool aForceBT709ColorSpace,
+    Maybe<gfx::Matrix4x4> aTransformOverride)
     : mHandle(aHandle),
       mSize(aSize),
       mContinuous(aContinuous),
-      mHasAlpha(aHasAlpha) {
+      mHasAlpha(aHasAlpha),
+      mForceBT709ColorSpace(aForceBT709ColorSpace),
+      mTransformOverride(aTransformOverride) {
   MOZ_ASSERT(mHandle);
 }
 
@@ -60,7 +69,6 @@ AndroidSurfaceTextureData::~AndroidSurfaceTextureData() {}
 void AndroidSurfaceTextureData::FillInfo(TextureData::Info& aInfo) const {
   aInfo.size = mSize;
   aInfo.format = gfx::SurfaceFormat::UNKNOWN;
-  aInfo.hasIntermediateBuffer = false;
   aInfo.hasSynchronization = false;
   aInfo.supportsMoz2D = false;
   aInfo.canExposeMappedData = false;
@@ -70,7 +78,7 @@ bool AndroidSurfaceTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
   aOutDescriptor = SurfaceTextureDescriptor(
       mHandle, mSize,
       mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8 : gfx::SurfaceFormat::R8G8B8X8,
-      mContinuous, false /* do not ignore transform */);
+      mContinuous, mForceBT709ColorSpace, mTransformOverride);
   return true;
 }
 
@@ -105,8 +113,8 @@ AndroidNativeWindowTextureData::AndroidNativeWindowTextureData(
     java::GeckoSurface::Param aSurface, gfx::IntSize aSize,
     gfx::SurfaceFormat aFormat)
     : mSurface(aSurface), mIsLocked(false), mSize(aSize), mFormat(aFormat) {
-  mNativeWindow =
-      ANativeWindow_fromSurface(jni::GetEnvForThread(), mSurface.Get());
+  mNativeWindow = ANativeWindow_fromSurface(jni::GetEnvForThread(),
+                                            mSurface->GetSurface().Get());
   MOZ_ASSERT(mNativeWindow, "Failed to create NativeWindow.");
 
   // SurfaceTextures don't technically support BGR, but we can just pretend to
@@ -137,13 +145,12 @@ AndroidNativeWindowTextureData::AndroidNativeWindowTextureData(
 
   // Ideally here we'd call ANativeWindow_setBuffersTransform() with the
   // identity transform, but that is only available on api level >= 26.
-  // Instead use the SurfaceDescriptor's ignoreTransform flag when serializing.
+  // Instead use SurfaceDescriptor's transformOverride flag when serializing.
 }
 
 void AndroidNativeWindowTextureData::FillInfo(TextureData::Info& aInfo) const {
   aInfo.size = mSize;
   aInfo.format = mFormat;
-  aInfo.hasIntermediateBuffer = false;
   aInfo.hasSynchronization = false;
   aInfo.supportsMoz2D = true;
   aInfo.canExposeMappedData = false;
@@ -152,9 +159,10 @@ void AndroidNativeWindowTextureData::FillInfo(TextureData::Info& aInfo) const {
 
 bool AndroidNativeWindowTextureData::Serialize(
     SurfaceDescriptor& aOutDescriptor) {
-  aOutDescriptor = SurfaceTextureDescriptor(mSurface->GetHandle(), mSize,
-                                            mFormat, false /* not continuous */,
-                                            true /* ignore transform */);
+  aOutDescriptor = SurfaceTextureDescriptor(
+      mSurface->GetHandle(), mSize, mFormat, false /* not continuous */,
+      false /* do not override colorspace */,
+      Some(gfx::Matrix4x4()) /* always use identity transform */);
   return true;
 }
 
@@ -206,6 +214,115 @@ void AndroidNativeWindowTextureData::OnForwardedToHost() {
     }
     mIsLocked = false;
   }
+}
+
+AndroidHardwareBufferTextureData* AndroidHardwareBufferTextureData::Create(
+    gfx::IntSize aSize, gfx::SurfaceFormat aFormat) {
+  RefPtr<AndroidHardwareBuffer> buffer =
+      AndroidHardwareBuffer::Create(aSize, aFormat);
+  if (!buffer) {
+    return nullptr;
+  }
+  return new AndroidHardwareBufferTextureData(buffer, aSize, aFormat);
+}
+
+AndroidHardwareBufferTextureData::AndroidHardwareBufferTextureData(
+    AndroidHardwareBuffer* aAndroidHardwareBuffer, gfx::IntSize aSize,
+    gfx::SurfaceFormat aFormat)
+    : mAndroidHardwareBuffer(aAndroidHardwareBuffer),
+      mSize(aSize),
+      mFormat(aFormat),
+      mAddress(nullptr),
+      mIsLocked(false) {}
+
+AndroidHardwareBufferTextureData::~AndroidHardwareBufferTextureData() {}
+
+void AndroidHardwareBufferTextureData::FillInfo(
+    TextureData::Info& aInfo) const {
+  aInfo.size = mSize;
+  aInfo.format = mFormat;
+  aInfo.hasSynchronization = true;
+  aInfo.supportsMoz2D = true;
+  aInfo.canExposeMappedData = false;
+  aInfo.canConcurrentlyReadLock = true;
+}
+
+bool AndroidHardwareBufferTextureData::Serialize(
+    SurfaceDescriptor& aOutDescriptor) {
+  aOutDescriptor = SurfaceDescriptorAndroidHardwareBuffer(
+      mAndroidHardwareBuffer->mId, mSize, mFormat);
+  return true;
+}
+
+bool AndroidHardwareBufferTextureData::Lock(OpenMode aMode) {
+  if (!mIsLocked) {
+    MOZ_ASSERT(!mAddress);
+
+    uint64_t usage = 0;
+    if (aMode & OpenMode::OPEN_READ) {
+      usage |= AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
+    }
+    if (aMode & OpenMode::OPEN_WRITE) {
+      usage |= AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+    }
+
+    int ret = mAndroidHardwareBuffer->Lock(usage, 0, &mAddress);
+    if (ret) {
+      mAddress = nullptr;
+      return false;
+    }
+    mIsLocked = true;
+  }
+  return true;
+}
+
+void AndroidHardwareBufferTextureData::Unlock() {
+  // The TextureClient may want to call Lock again before handing ownership
+  // to the host, so we cannot call AHardwareBuffer_unlock yet.
+}
+
+void AndroidHardwareBufferTextureData::Forget(LayersIPCChannel*) {
+  MOZ_ASSERT(!mIsLocked);
+  mAndroidHardwareBuffer = nullptr;
+  mAddress = nullptr;
+}
+
+already_AddRefed<gfx::DrawTarget>
+AndroidHardwareBufferTextureData::BorrowDrawTarget() {
+  MOZ_ASSERT(mIsLocked);
+
+  const int bpp = (mFormat == gfx::SurfaceFormat::R5G6B5_UINT16) ? 2 : 4;
+
+  return gfx::Factory::CreateDrawTargetForData(
+      gfx::BackendType::SKIA, static_cast<unsigned char*>(mAddress),
+      gfx::IntSize(mAndroidHardwareBuffer->mSize.width,
+                   mAndroidHardwareBuffer->mSize.height),
+      mAndroidHardwareBuffer->mStride * bpp, mFormat, true);
+}
+
+void AndroidHardwareBufferTextureData::OnForwardedToHost() {
+  if (mIsLocked) {
+    mAndroidHardwareBuffer->Unlock();
+    mAddress = nullptr;
+    mIsLocked = false;
+  }
+}
+
+TextureFlags AndroidHardwareBufferTextureData::GetTextureFlags() const {
+  return TextureFlags::WAIT_HOST_USAGE_END;
+}
+
+Maybe<uint64_t> AndroidHardwareBufferTextureData::GetBufferId() const {
+  return Some(mAndroidHardwareBuffer->mId);
+}
+
+mozilla::ipc::FileDescriptor
+AndroidHardwareBufferTextureData::GetAcquireFence() {
+  if (!mAndroidHardwareBuffer) {
+    return ipc::FileDescriptor();
+  }
+
+  return mAndroidHardwareBuffer->GetAcquireFence();
 }
 
 #endif  // MOZ_WIDGET_ANDROID

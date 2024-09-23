@@ -6,8 +6,10 @@
 #ifndef MOZILLA_SCRATCHBUFFER_H_
 #define MOZILLA_SCRATCHBUFFER_H_
 
+#include "AudioSegment.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/UniquePtr.h"
+#include "nsDebug.h"
 
 #include <algorithm>
 
@@ -79,7 +81,7 @@ class AudioCallbackBufferWrapper {
 
   /**
    * Write some frames to the internal buffer. Free space in the buffer should
-   * be check prior to calling this.
+   * be checked prior to calling these.
    */
   void WriteFrames(T* aBuffer, uint32_t aFrames) {
     MOZ_ASSERT(aFrames <= Available(),
@@ -87,6 +89,15 @@ class AudioCallbackBufferWrapper {
 
     PodCopy(mBuffer + mSampleWriteOffset, aBuffer,
             FramesToSamples(mChannels, aFrames));
+    mSampleWriteOffset += FramesToSamples(mChannels, aFrames);
+  }
+  void WriteFrames(const AudioChunk& aChunk, uint32_t aFrames) {
+    MOZ_ASSERT(aFrames <= Available(),
+               "Writing more that we can in the audio buffer.");
+
+    InterleaveAndConvertBuffer(aChunk.ChannelData<T>().Elements(), aFrames,
+                               aChunk.mVolume, aChunk.ChannelCount(),
+                               mBuffer + mSampleWriteOffset);
     mSampleWriteOffset += FramesToSamples(mChannels, aFrames);
   }
 
@@ -102,23 +113,8 @@ class AudioCallbackBufferWrapper {
    * instance can be reused.
    */
   void BufferFilled() {
-    // It's okay to have exactly zero samples here, it can happen we have an
-    // audio callback driver because of a hint on MTG creation, but the
-    // AudioOutputStream has not been created yet, or if all the tracks have
-    // finished but we're still running. Note: it's also ok if we had data in
-    // the scratch buffer - and we usually do - and all the tracks were ended
-    // (no mixer callback occured).
-    // XXX Remove this warning, or find a way to avoid it if the mixer callback
-    // isn't called.
-    NS_WARNING_ASSERTION(
-        Available() == 0 || mSampleWriteOffset == 0,
-        "Audio Buffer is not full by the end of the callback.");
-    // Make sure the data returned is always set and not random!
-    if (Available()) {
-      PodZero(mBuffer + mSampleWriteOffset,
-              FramesToSamples(mChannels, Available()));
-    }
-    MOZ_ASSERT(mSamples, "Buffer not set.");
+    MOZ_ASSERT(Available() == 0, "Frames should have been written");
+    MOZ_ASSERT(mBuffer, "Buffer not set.");
     mSamples = 0;
     mSampleWriteOffset = 0;
     mBuffer = nullptr;
@@ -192,16 +188,18 @@ class SpillBuffer {
 
     return framesToWrite;
   }
-  /* Fill the spill buffer from aInput, containing aFrames frames, return the
-   * number of frames written to the spill buffer */
-  uint32_t Fill(T* aInput, uint32_t aFrames) {
+  /* Fill the spill buffer from aInput.
+   * Return the number of frames written to the spill buffer */
+  uint32_t Fill(const AudioChunk& aInput) {
     uint32_t framesToWrite =
-        std::min(aFrames, BLOCK_SIZE - SamplesToFrames(mChannels, mPosition));
+        std::min(static_cast<uint32_t>(aInput.mDuration),
+                 BLOCK_SIZE - SamplesToFrames(mChannels, mPosition));
 
     MOZ_ASSERT(FramesToSamples(mChannels, framesToWrite) + mPosition <=
                BLOCK_SIZE * mChannels);
-    PodCopy(mBuffer.get() + mPosition, aInput,
-            FramesToSamples(mChannels, framesToWrite));
+    InterleaveAndConvertBuffer(
+        aInput.ChannelData<T>().Elements(), framesToWrite, aInput.mVolume,
+        aInput.ChannelCount(), mBuffer.get() + mPosition);
 
     mPosition += FramesToSamples(mChannels, framesToWrite);
 

@@ -1,7 +1,6 @@
 SimpleTest.requestCompleteLog();
-ChromeUtils.import(
-  "resource://testing-common/HandlerServiceTestUtils.jsm",
-  this
+const { HandlerServiceTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/HandlerServiceTestUtils.sys.mjs"
 );
 
 let gHandlerService = Cc["@mozilla.org/uriloader/handler-service;1"].getService(
@@ -13,7 +12,7 @@ let gDummyHandlers = [];
 let gOriginalPreferredMailHandler;
 let gOriginalPreferredPDFHandler;
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   function removeDummyHandlers(handlers) {
     // Remove any of the dummy handlers we created.
     for (let i = handlers.Count() - 1; i >= 0; i--) {
@@ -42,9 +41,8 @@ registerCleanupFunction(function() {
   mailHandlerInfo.preferredApplicationHandler = gOriginalPreferredMailHandler;
   gHandlerService.store(mailHandlerInfo);
 
-  let pdfHandlerInfo = HandlerServiceTestUtils.getHandlerInfo(
-    "application/pdf"
-  );
+  let pdfHandlerInfo =
+    HandlerServiceTestUtils.getHandlerInfo("application/pdf");
   removeDummyHandlers(pdfHandlerInfo.possibleApplicationHandlers);
   pdfHandlerInfo.preferredApplicationHandler = gOriginalPreferredPDFHandler;
   gHandlerService.store(pdfHandlerInfo);
@@ -66,7 +64,7 @@ function scrubMailtoHandlers(handlerInfo) {
   }
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // Create our dummy handlers
   let handler1 = Cc["@mozilla.org/uriloader/web-handler-app;1"].createInstance(
     Ci.nsIWebHandlerApp
@@ -95,9 +93,8 @@ add_task(async function setup() {
   substituteWebHandlers(mailtoHandlerInfo);
 
   // Now do the same for pdf handler:
-  let pdfHandlerInfo = HandlerServiceTestUtils.getHandlerInfo(
-    "application/pdf"
-  );
+  let pdfHandlerInfo =
+    HandlerServiceTestUtils.getHandlerInfo("application/pdf");
   // PDF doesn't have built-in web handlers, so no need to scrub.
   gOriginalPreferredPDFHandler = pdfHandlerInfo.preferredApplicationHandler;
   substituteWebHandlers(pdfHandlerInfo);
@@ -121,8 +118,7 @@ async function selectStandardOptions(itemToUse) {
     if (typeof item == "function") {
       item = item();
     }
-    item.click();
-    popup.hidePopup();
+    popup.activateItem(item);
     await popupHidden;
     return item;
   }
@@ -142,10 +138,8 @@ async function selectStandardOptions(itemToUse) {
   // select one of our test cases:
   let handlerItem = list.querySelector("menuitem[data-l10n-args*='Handler 1']");
   await selectItemInPopup(handlerItem);
-  let {
-    preferredAction,
-    alwaysAskBeforeHandling,
-  } = HandlerServiceTestUtils.getHandlerInfo(itemType);
+  let { preferredAction, alwaysAskBeforeHandling } =
+    HandlerServiceTestUtils.getHandlerInfo(itemType);
   Assert.notEqual(
     preferredAction,
     Ci.nsIHandlerInfo.alwaysAsk,
@@ -167,8 +161,8 @@ async function selectStandardOptions(itemToUse) {
     alwaysAskItem,
     "Should have selected always ask item (" + itemType + ")"
   );
-  alwaysAskBeforeHandling = HandlerServiceTestUtils.getHandlerInfo(itemType)
-    .alwaysAskBeforeHandling;
+  alwaysAskBeforeHandling =
+    HandlerServiceTestUtils.getHandlerInfo(itemType).alwaysAskBeforeHandling;
   Assert.ok(
     alwaysAskBeforeHandling,
     "Should have turned on asking before handling (" + itemType + ")"
@@ -184,10 +178,10 @@ async function selectStandardOptions(itemToUse) {
     Assert.equal(
       list.selectedItem,
       useDefaultItem,
-      "Should have selected always ask item (" + itemType + ")"
+      "Should have selected 'use default' item (" + itemType + ")"
     );
-    preferredAction = HandlerServiceTestUtils.getHandlerInfo(itemType)
-      .preferredAction;
+    preferredAction =
+      HandlerServiceTestUtils.getHandlerInfo(itemType).preferredAction;
     Assert.equal(
       preferredAction,
       Ci.nsIHandlerInfo.useSystemDefault,
@@ -228,9 +222,8 @@ async function selectStandardOptions(itemToUse) {
     itemToUse.querySelector(".actionContainer label").value,
     "Should have selected correct item (" + itemType + ")"
   );
-  let { preferredApplicationHandler } = HandlerServiceTestUtils.getHandlerInfo(
-    itemType
-  );
+  let { preferredApplicationHandler } =
+    HandlerServiceTestUtils.getHandlerInfo(itemType);
   preferredApplicationHandler.QueryInterface(Ci.nsIWebHandlerApp);
   Assert.equal(
     selectedItem.handlerApp.uriTemplate,
@@ -250,8 +243,10 @@ async function selectStandardOptions(itemToUse) {
     itemToUse.querySelector(".actionContainer label").value,
     "Should have selected correct item (" + itemType + ")"
   );
-  preferredApplicationHandler = HandlerServiceTestUtils.getHandlerInfo(itemType)
-    .preferredApplicationHandler;
+  preferredApplicationHandler =
+    HandlerServiceTestUtils.getHandlerInfo(
+      itemType
+    ).preferredApplicationHandler;
   preferredApplicationHandler.QueryInterface(Ci.nsIWebHandlerApp);
   Assert.equal(
     selectedItem.handlerApp.uriTemplate,
@@ -282,8 +277,8 @@ add_task(async function sortingCheck() {
   const typeColumn = win.document.getElementById("typeColumn");
   Assert.ok(typeColumn, "typeColumn is present in handlersView.");
 
-  let expectedNumberOfItems = handlerView.querySelectorAll("richlistitem")
-    .length;
+  let expectedNumberOfItems =
+    handlerView.querySelectorAll("richlistitem").length;
 
   // Test default sorting
   assertSortByType("ascending");
@@ -340,10 +335,12 @@ add_task(async function sortingCheck() {
       "Number of items should not change."
     );
     for (let i = 0; i < siteItems.length - 1; ++i) {
-      let aType = siteItems[i].getAttribute("actionDescription").toLowerCase();
-      let bType = siteItems[i + 1]
-        .getAttribute("actionDescription")
-        .toLowerCase();
+      let aType = (
+        siteItems[i].getAttribute("actionDescription") || ""
+      ).toLowerCase();
+      let bType = (
+        siteItems[i + 1].getAttribute("actionDescription") || ""
+      ).toLowerCase();
       let result = 0;
       if (aType > bType) {
         result = 1;
@@ -380,10 +377,12 @@ add_task(async function sortingCheck() {
       "Number of items should not change."
     );
     for (let i = 0; i < siteItems.length - 1; ++i) {
-      let aType = siteItems[i].getAttribute("typeDescription").toLowerCase();
-      let bType = siteItems[i + 1]
-        .getAttribute("typeDescription")
-        .toLowerCase();
+      let aType = (
+        siteItems[i].getAttribute("typeDescription") || ""
+      ).toLowerCase();
+      let bType = (
+        siteItems[i + 1].getAttribute("typeDescription") || ""
+      ).toLowerCase();
       let result = 0;
       if (aType > bType) {
         result = 1;

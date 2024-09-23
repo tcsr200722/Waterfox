@@ -2,13 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import * as t from "@babel/types";
 
-import type { SymbolDeclarations } from "./getSymbols";
-
-export function getFramework(symbols: SymbolDeclarations): ?string {
+export function getFramework(symbols) {
   if (isReactComponent(symbols)) {
     return "React";
   }
@@ -18,31 +14,16 @@ export function getFramework(symbols: SymbolDeclarations): ?string {
   if (isVueComponent(symbols)) {
     return "Vue";
   }
+
+  return null;
 }
 
-function isReactComponent({ imports, classes, callExpressions, identifiers }) {
+function isReactComponent({ importsReact, classes, identifiers }) {
   return (
-    importsReact(imports) ||
-    requiresReact(callExpressions) ||
+    importsReact ||
     extendsReactComponent(classes) ||
     isReact(identifiers) ||
     isRedux(identifiers)
-  );
-}
-
-function importsReact(imports) {
-  return imports.some(
-    importObj =>
-      importObj.source === "react" &&
-      importObj.specifiers.some(specifier => specifier === "React")
-  );
-}
-
-function requiresReact(callExpressions) {
-  return callExpressions.some(
-    callExpression =>
-      callExpression.name === "require" &&
-      callExpression.values.some(value => value === "react")
   );
 }
 

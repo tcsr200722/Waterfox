@@ -12,28 +12,26 @@ add_task(async function test() {
 
   function promiseLocationChange() {
     return new Promise(resolve => {
-      Services.obs.addObserver(function onLocationChange(subj, topic, data) {
+      Services.obs.addObserver(function onLocationChange(subj, topic) {
         Services.obs.removeObserver(onLocationChange, topic);
         resolve();
       }, "browser-fullZoom:location-change");
     });
   }
 
-  function promiseTestReady(aIsZoomedWindow, aWindow) {
+  async function promiseTestReady(aIsZoomedWindow, aWindow) {
     // Need to wait on two things, the ordering of which is not guaranteed:
     // (1) the page load, and (2) FullZoom's update to the new page's zoom
     // level.  FullZoom broadcasts "browser-fullZoom:location-change" when its
     // update is done.  (See bug 856366 for details.)
 
     let browser = aWindow.gBrowser.selectedBrowser;
-    return BrowserTestUtils.loadURI(browser, "about:blank")
-      .then(() => {
-        return Promise.all([
-          BrowserTestUtils.browserLoaded(browser),
-          promiseLocationChange(),
-        ]);
-      })
-      .then(() => doTest(aIsZoomedWindow, aWindow));
+    BrowserTestUtils.startLoadingURIString(browser, "about:blank");
+    await Promise.all([
+      BrowserTestUtils.browserLoaded(browser),
+      promiseLocationChange(),
+    ]);
+    doTest(aIsZoomedWindow, aWindow);
   }
 
   function doTest(aIsZoomedWindow, aWindow) {
@@ -61,7 +59,7 @@ add_task(async function test() {
     );
   }
 
-  function testOnWindow(options, callback) {
+  function testOnWindow(options) {
     return BrowserTestUtils.openNewBrowserWindow(options).then(win => {
       windowsToClose.push(win);
       windowsToReset.push(win);

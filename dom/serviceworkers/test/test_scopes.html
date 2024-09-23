@@ -66,6 +66,8 @@
 
   async function testScopes() {
     function chromeScriptSource() {
+      /* eslint-env mozilla/chrome-script */
+
       let swm = Cc["@mozilla.org/serviceworkers/manager;1"]
                   .getService(Ci.nsIServiceWorkerManager);
       let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"]
@@ -80,23 +82,15 @@
       });
     }
 
-    let getScope;
-    let parent_intercept_enabled =
-      SpecialPowers.getBoolPref("dom.serviceWorkers.parent_intercept");
+    let chromeScript = SpecialPowers.loadChromeScript(chromeScriptSource);
+    let docPrincipal = SpecialPowers.wrap(document).nodePrincipal.spec;
 
-    if (parent_intercept_enabled) {
-      let chromeScript = SpecialPowers.loadChromeScript(chromeScriptSource);
-      let docPrincipal = SpecialPowers.wrap(document).nodePrincipal.URI.spec;
-
-      getScope = async (path) => {
-        let rv = await chromeScript.sendQuery("getScope", { principal: docPrincipal, path });
-        if (rv.exception)
-          throw rv.exception;
-        return rv.scope;
-      };
-    } else {
-      getScope = navigator.serviceWorker.getScopeForUrl.bind(navigator.serviceWorker);
-    }
+    getScope = async (path) => {
+      let rv = await chromeScript.sendQuery("getScope", { principal: docPrincipal, path });
+      if (rv.exception)
+        throw rv.exception;
+      return rv.scope;
+    };
 
     var base = new URL(".", document.baseURI);
 
@@ -147,4 +141,3 @@
 </pre>
 </body>
 </html>
-

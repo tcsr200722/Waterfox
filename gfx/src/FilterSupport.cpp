@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FilterSupport.h"
+#include "FilterDescription.h"
 
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Filters.h"
@@ -947,13 +948,15 @@ static already_AddRefed<FilterNode> FilterNodeFromPrimitiveDescription(
         if (!filter) {
           return nullptr;
         }
-        static const uint8_t operators[SVG_FECOMPOSITE_OPERATOR_ARITHMETIC] = {
-            COMPOSITE_OPERATOR_OVER,  // SVG_FECOMPOSITE_OPERATOR_UNKNOWN
-            COMPOSITE_OPERATOR_OVER,  // SVG_FECOMPOSITE_OPERATOR_OVER
-            COMPOSITE_OPERATOR_IN,    // SVG_FECOMPOSITE_OPERATOR_IN
-            COMPOSITE_OPERATOR_OUT,   // SVG_FECOMPOSITE_OPERATOR_OUT
-            COMPOSITE_OPERATOR_ATOP,  // SVG_FECOMPOSITE_OPERATOR_ATOP
-            COMPOSITE_OPERATOR_XOR    // SVG_FECOMPOSITE_OPERATOR_XOR
+        static const uint8_t operators[SVG_FECOMPOSITE_OPERATOR_LIGHTER + 1] = {
+            COMPOSITE_OPERATOR_OVER,    // SVG_FECOMPOSITE_OPERATOR_UNKNOWN
+            COMPOSITE_OPERATOR_OVER,    // SVG_FECOMPOSITE_OPERATOR_OVER
+            COMPOSITE_OPERATOR_IN,      // SVG_FECOMPOSITE_OPERATOR_IN
+            COMPOSITE_OPERATOR_OUT,     // SVG_FECOMPOSITE_OPERATOR_OUT
+            COMPOSITE_OPERATOR_ATOP,    // SVG_FECOMPOSITE_OPERATOR_ATOP
+            COMPOSITE_OPERATOR_XOR,     // SVG_FECOMPOSITE_OPERATOR_XOR
+            COMPOSITE_OPERATOR_OVER,    // Unused, arithmetic is handled above
+            COMPOSITE_OPERATOR_LIGHTER  // SVG_FECOMPOSITE_OPERATOR_LIGHTER
         };
         filter->SetAttribute(ATT_COMPOSITE_OPERATOR, (uint32_t)operators[op]);
         filter->SetInput(IN_COMPOSITE_IN_START, mSources[1]);
@@ -1419,10 +1422,12 @@ static nsIntRegion ResultChangeRegionForPrimitive(
       IntSize kernelSize = aConvolveMatrix.mKernelSize;
       IntPoint target = aConvolveMatrix.mTarget;
       nsIntMargin m(
-          ceil(kernelUnitLength.width * (target.x)),
-          ceil(kernelUnitLength.height * (target.y)),
-          ceil(kernelUnitLength.width * (kernelSize.width - target.x - 1)),
-          ceil(kernelUnitLength.height * (kernelSize.height - target.y - 1)));
+          static_cast<int32_t>(ceil(kernelUnitLength.width * (target.x))),
+          static_cast<int32_t>(ceil(kernelUnitLength.height * (target.y))),
+          static_cast<int32_t>(
+              ceil(kernelUnitLength.width * (kernelSize.width - target.x - 1))),
+          static_cast<int32_t>(ceil(kernelUnitLength.height *
+                                    (kernelSize.height - target.y - 1))));
       return mInputChangeRegions[0].Inflated(m);
     }
 
@@ -1795,10 +1800,12 @@ static nsIntRegion SourceNeededRegionForPrimitive(
       IntSize kernelSize = aConvolveMatrix.mKernelSize;
       IntPoint target = aConvolveMatrix.mTarget;
       nsIntMargin m(
-          ceil(kernelUnitLength.width * (kernelSize.width - target.x - 1)),
-          ceil(kernelUnitLength.height * (kernelSize.height - target.y - 1)),
-          ceil(kernelUnitLength.width * (target.x)),
-          ceil(kernelUnitLength.height * (target.y)));
+          static_cast<int32_t>(
+              ceil(kernelUnitLength.width * (kernelSize.width - target.x - 1))),
+          static_cast<int32_t>(ceil(kernelUnitLength.height *
+                                    (kernelSize.height - target.y - 1))),
+          static_cast<int32_t>(ceil(kernelUnitLength.width * (target.x))),
+          static_cast<int32_t>(ceil(kernelUnitLength.height * (target.y))));
       return mResultNeededRegion.Inflated(m);
     }
 

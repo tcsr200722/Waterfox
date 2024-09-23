@@ -7,6 +7,8 @@
 #ifndef mozilla_logging_h
 #define mozilla_logging_h
 
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
@@ -14,7 +16,6 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Likely.h"
-#include "mozilla/TimeStamp.h"
 
 // We normally have logging enabled everywhere, but measurements showed that
 // having logging enabled on Android is quite expensive (hundreds of kilobytes
@@ -39,6 +40,8 @@
 #define MOZ_LOG_PID_TOKEN "%PID"
 
 namespace mozilla {
+
+class TimeStamp;
 
 // While not a 100% mapping to PR_LOG's numeric values, mozilla::LogLevel does
 // maintain a direct mapping for the Disabled, Debug and Verbose levels.
@@ -115,6 +118,17 @@ class LogModule {
    * @param aIsSync If we should flush the file after every logged message.
    */
   static void SetIsSync(bool aIsSync);
+
+  /**
+   * @param aCaptureStacks If we should capture stacks for the Firefox
+   * Profiler markers that are recorded for for each log entry.
+   */
+  static void SetCaptureStacks(bool aCaptureStacks);
+
+  /**
+   * Disable all log modules.
+   */
+  static void DisableModules();
 
   /**
    * Indicates whether or not the given log level is enabled.
@@ -269,9 +283,9 @@ void log_print(const LogModule* aModule, LogLevel aLevel, TimeStamp* aStart,
 // code will never be executed.)  Hence, the following code.
 //
 // MOZ_LOG_DURATION takes a start time, and will generate a time range
-// in the logs.  Also, if 'profilermarkers' is used in the env var
-// MOZ_LOG, MOZ_LOG_DURATION will generate a marker with a time
-// duration instead of a single point in time.
+// in the logs.  Also, if the Firefox Profiler is running,
+// MOZ_LOG_DURATION will generate a marker with a time duration
+// instead of a single point in time.
 #if MOZ_LOGGING_ENABLED
 #  define MOZ_LOG(_module, _level, _args)                      \
     do {                                                       \

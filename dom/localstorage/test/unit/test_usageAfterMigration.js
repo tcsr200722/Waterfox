@@ -3,7 +3,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-async function testSteps() {
+add_task(async function testSteps() {
   const principal = getPrincipal("http://example.com");
 
   const dataFile = getRelativeFile(
@@ -38,10 +38,21 @@ async function testSteps() {
     installPackage("usageAfterMigration_profile");
 
     if (createUsageDir) {
+      // Origin must be initialized before the usage dir is created.
+
+      info("Initializing storage");
+
+      request = initStorage();
+      await requestFinished(request);
+
+      info("Initializing temporary storage");
+
+      request = initTemporaryStorage();
+      await requestFinished(request);
+
       info("Initializing origin");
 
-      // Origin must be initialized before the usage dir is created.
-      request = initStorageAndOrigin(principal, "default");
+      request = initTemporaryOrigin("default", principal);
       await requestFinished(request);
 
       info("Creating usage as a directory");
@@ -82,7 +93,10 @@ async function testSteps() {
 
   info("Setting prefs");
 
-  Services.prefs.setBoolPref("dom.storage.next_gen", true);
+  Services.prefs.setBoolPref(
+    "dom.storage.enable_unsupported_legacy_implementation",
+    false
+  );
 
   info("Stage 1 - Testing usage after successful data migration");
 
@@ -147,4 +161,4 @@ async function testSteps() {
   verifyData();
 
   await verifyUsage(/* success */ true);
-}
+});

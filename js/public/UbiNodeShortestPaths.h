@@ -7,15 +7,16 @@
 #ifndef js_UbiNodeShortestPaths_h
 #define js_UbiNodeShortestPaths_h
 
-#include "mozilla/Attributes.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/Maybe.h"
 
 #include <utility>
 
 #include "js/AllocPolicy.h"
+#include "js/GCAPI.h"
+#include "js/UbiNode.h"
 #include "js/UbiNodeBreadthFirst.h"
 #include "js/UniquePtr.h"
-#include "js/Vector.h"
 
 namespace JS {
 namespace ubi {
@@ -33,7 +34,7 @@ struct JS_PUBLIC_API BackEdge {
 
   BackEdge() : predecessor_(), name_(nullptr) {}
 
-  MOZ_MUST_USE bool init(const Node& predecessor, Edge& edge) {
+  [[nodiscard]] bool init(const Node& predecessor, Edge& edge) {
     MOZ_ASSERT(!predecessor_);
     MOZ_ASSERT(!name_);
 
@@ -246,6 +247,12 @@ struct JS_PUBLIC_API ShortestPaths {
     MOZ_ASSERT(targets.count() > 0);
     MOZ_ASSERT(maxNumPaths > 0);
 
+    mozilla::CheckedInt<uint32_t> max = maxNumPaths;
+    max *= targets.count();
+    if (!max.isValid()) {
+      return mozilla::Nothing();
+    }
+
     ShortestPaths paths(maxNumPaths, root, std::move(targets));
 
     Handler handler(paths);
@@ -281,7 +288,7 @@ struct JS_PUBLIC_API ShortestPaths {
    * the given target, in which case `func` will not be invoked.
    */
   template <class Func>
-  MOZ_MUST_USE bool forEachPath(const Node& target, Func func) {
+  [[nodiscard]] bool forEachPath(const Node& target, Func func) {
     MOZ_ASSERT(targets_.has(target));
 
     auto ptr = paths_.lookup(target);

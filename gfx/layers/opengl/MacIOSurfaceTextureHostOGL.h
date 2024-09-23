@@ -31,21 +31,13 @@ class MacIOSurfaceTextureHostOGL : public TextureHost {
   // MacIOSurfaceTextureSourceOGL doesn't own any GL texture
   void DeallocateDeviceData() override {}
 
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
-
-  bool Lock() override;
-
   gfx::SurfaceFormat GetFormat() const override;
   gfx::SurfaceFormat GetReadFormat() const override;
 
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override {
-    aTexture = mTextureSource;
-    return !!aTexture;
-  }
-
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override {
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override {
     RefPtr<gfx::SourceSurface> surf =
-        CreateSourceSurfaceFromMacIOSurface(GetMacIOSurface());
+        CreateSourceSurfaceFromMacIOSurface(GetMacIOSurface(), aSurface);
     return surf->GetDataSurface();
   }
 
@@ -77,14 +69,12 @@ class MacIOSurfaceTextureHostOGL : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
 
   gfx::YUVColorSpace GetYUVColorSpace() const override;
   gfx::ColorRange GetColorRange() const override;
 
  protected:
-  GLTextureSource* CreateTextureSourceForPlane(size_t aPlane);
-
   RefPtr<GLTextureSource> mTextureSource;
   RefPtr<MacIOSurface> mSurface;
 };

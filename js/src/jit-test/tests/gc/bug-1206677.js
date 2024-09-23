@@ -1,4 +1,4 @@
-// |jit-test| skip-if: !('oomTest' in this) || helperThreadCount() === 0
+// |jit-test| skip-if: helperThreadCount() === 0
 
 var lfGlobal = newGlobal();
 for (lfLocal in this) {
@@ -7,5 +7,6 @@ for (lfLocal in this) {
     }
 }
 const script = 'oomTest(() => getBacktrace({args: true, locals: "123795", thisprops: true}));';
-lfGlobal.offThreadCompileScript(script);
-lfGlobal.runOffThreadScript();
+lfGlobal.offThreadCompileToStencil(script);
+var stencil = lfGlobal.finishOffThreadStencil();
+lfGlobal.evalStencil(stencil);

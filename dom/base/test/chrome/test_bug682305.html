@@ -29,7 +29,9 @@ SimpleTest.waitForExplicitFinish();
  * nsIChannel component written in Javascript.
  */
 
-const {XPCOMUtils} = ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
+const { ComponentUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ComponentUtils.sys.mjs"
+);
 
 var contentSecManager = Cc["@mozilla.org/contentsecuritymanager;1"]
                           .getService(Ci.nsIContentSecurityManager);
@@ -90,7 +92,7 @@ CustomChannel.prototype = {
   resume() {
     throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIChannel, Ci.nsIRequest]),
+  QueryInterface: ChromeUtils.generateQI(["nsIChannel", "nsIRequest"]),
 };
 
 
@@ -99,36 +101,28 @@ CustomProtocol.prototype = {
   get scheme() {
     return PROTOCOL_SCHEME;
   },
-  get protocolFlags() {
-    return (Ci.nsIProtocolHandler.URI_NORELATIVE |
-            Ci.nsIProtocolHandler.URI_IS_LOCAL_RESOURCE |
-            Ci.nsIProtocolHandler.URI_DANGEROUS_TO_LOAD);
-  },
-  get defaultPort() {
-    return -1;
-  },
   allowPort: function allowPort() {
     return false;
   },
   newChannel: function newChannel(URI, loadInfo) {
     return new CustomChannel(URI, loadInfo);
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsISupportsWeakReference, Ci.nsIProtocolHandler]),
+  QueryInterface: ChromeUtils.generateQI(["nsISupportsWeakReference", "nsIProtocolHandler"]),
 };
 
 var gFactory = {
   register() {
-    var registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
-
-    var classID = Components.ID("{ed064287-1e76-49ba-a28d-dc74394a8334}");
-    var description = PROTOCOL_SCHEME + ": protocol";
-    var contractID = "@mozilla.org/network/protocol;1?name=" + PROTOCOL_SCHEME;
-    var factory = XPCOMUtils._getFactory(CustomProtocol);
-
-    registrar.registerFactory(classID, description, contractID, factory);
+    Services.io.registerProtocolHandler(
+      PROTOCOL_SCHEME,
+      new CustomProtocol(),
+      Ci.nsIProtocolHandler.URI_NORELATIVE |
+        Ci.nsIProtocolHandler.URI_IS_LOCAL_RESOURCE |
+        Ci.nsIProtocolHandler.URI_DANGEROUS_TO_LOAD,
+      -1
+    );
 
     this.unregister = function() {
-      registrar.unregisterFactory(classID, factory);
+      Services.io.unregisterProtocolHandler(PROTOCOL_SCHEME);
       delete this.unregister;
     };
   },

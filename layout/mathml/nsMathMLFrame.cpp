@@ -9,6 +9,7 @@
 #include "gfxContext.h"
 #include "gfxUtils.h"
 #include "mozilla/gfx/2D.h"
+#include "nsCSSValue.h"
 #include "nsLayoutUtils.h"
 #include "nsNameSpaceManager.h"
 #include "nsMathMLChar.h"
@@ -86,23 +87,6 @@ nsMathMLFrame::UpdatePresentationData(uint32_t aFlagsValues,
   return NS_OK;
 }
 
-// Helper to give a ComputedStyle suitable for doing the stretching of
-// a MathMLChar. Frame classes that use this should ensure that the
-// extra leaf ComputedStyle given to the MathMLChars are accessible to
-// the Style System via the Get/Set AdditionalComputedStyle() APIs.
-/* static */
-void nsMathMLFrame::ResolveMathMLCharStyle(nsPresContext* aPresContext,
-                                           nsIContent* aContent,
-                                           ComputedStyle* aParentComputedStyle,
-                                           nsMathMLChar* aMathMLChar) {
-  PseudoStyleType pseudoType = PseudoStyleType::mozMathAnonymous;  // savings
-  RefPtr<ComputedStyle> newComputedStyle;
-  newComputedStyle = aPresContext->StyleSet()->ResolvePseudoElementStyle(
-      *aContent->AsElement(), pseudoType, aParentComputedStyle);
-
-  aMathMLChar->SetComputedStyle(newComputedStyle);
-}
-
 /* static */
 void nsMathMLFrame::GetEmbellishDataFrom(nsIFrame* aFrame,
                                          nsEmbellishData& aEmbellishData) {
@@ -113,7 +97,7 @@ void nsMathMLFrame::GetEmbellishDataFrom(nsIFrame* aFrame,
   aEmbellishData.leadingSpace = 0;
   aEmbellishData.trailingSpace = 0;
 
-  if (aFrame && aFrame->IsFrameOfType(nsIFrame::eMathML)) {
+  if (aFrame && aFrame->IsMathMLFrame()) {
     nsIMathMLFrame* mathMLFrame = do_QueryFrame(aFrame);
     if (mathMLFrame) {
       mathMLFrame->GetEmbellishData(aEmbellishData);
@@ -132,7 +116,7 @@ void nsMathMLFrame::GetPresentationDataFrom(
 
   nsIFrame* frame = aFrame;
   while (frame) {
-    if (frame->IsFrameOfType(nsIFrame::eMathML)) {
+    if (frame->IsMathMLFrame()) {
       nsIMathMLFrame* mathMLFrame = do_QueryFrame(frame);
       if (mathMLFrame) {
         mathMLFrame->GetPresentationData(aPresentationData);
@@ -178,7 +162,8 @@ void nsMathMLFrame::GetRuleThickness(DrawTarget* aDrawTarget,
 void nsMathMLFrame::GetAxisHeight(DrawTarget* aDrawTarget,
                                   nsFontMetrics* aFontMetrics,
                                   nscoord& aAxisHeight) {
-  gfxFont* mathFont = aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont =
+      aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
   if (mathFont) {
     aAxisHeight = mathFont->MathTable()->Constant(
         gfxMathTable::AxisHeight, aFontMetrics->AppUnitsPerDevPixel());
@@ -211,9 +196,10 @@ nscoord nsMathMLFrame::CalcLength(nsPresContext* aPresContext,
 
   if (eCSSUnit_EM == unit) {
     const nsStyleFont* font = aComputedStyle->StyleFont();
-    return NSToCoordRound(aCSSValue.GetFloatValue() * (float)font->mFont.size);
-  } else if (eCSSUnit_XHeight == unit) {
-    aPresContext->SetUsesExChUnits(true);
+    return font->mFont.size.ScaledBy(aCSSValue.GetFloatValue()).ToAppUnits();
+  }
+
+  if (eCSSUnit_XHeight == unit) {
     RefPtr<nsFontMetrics> fm = nsLayoutUtils::GetFontMetricsForComputedStyle(
         aComputedStyle, aPresContext, aFontSizeInflation);
     nscoord xHeight = fm->XHeight();
@@ -223,6 +209,22 @@ nscoord nsMathMLFrame::CalcLength(nsPresContext* aPresContext,
   // MathML doesn't specify other CSS units such as rem or ch
   NS_ERROR("Unsupported unit");
   return 0;
+}
+
+/* static */
+void nsMathMLFrame::GetSubDropFromChild(nsIFrame* aChild, nscoord& aSubDrop,
+                                        float aFontSizeInflation) {
+  RefPtr<nsFontMetrics> fm =
+      nsLayoutUtils::GetFontMetricsForFrame(aChild, aFontSizeInflation);
+  GetSubDrop(fm, aSubDrop);
+}
+
+/* static */
+void nsMathMLFrame::GetSupDropFromChild(nsIFrame* aChild, nscoord& aSupDrop,
+                                        float aFontSizeInflation) {
+  RefPtr<nsFontMetrics> fm =
+      nsLayoutUtils::GetFontMetricsForFrame(aChild, aFontSizeInflation);
+  GetSupDrop(fm, aSupDrop);
 }
 
 /* static */
@@ -255,6 +257,7 @@ void nsMathMLFrame::ParseNumericValue(const nsString& aString,
       CalcLength(aPresContext, aComputedStyle, cssValue, aFontSizeInflation);
 }
 
+namespace mozilla {
 #if defined(DEBUG) && defined(SHOW_BOUNDING_BOX)
 class nsDisplayMathMLBoundingMetrics final : public nsDisplayItem {
  public:
@@ -324,6 +327,8 @@ void nsDisplayMathMLBar::Paint(nsDisplayListBuilder* aBuilder,
   drawTarget->FillRect(rect, color);
 }
 
+}  // namespace mozilla
+
 void nsMathMLFrame::DisplayBar(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                                const nsRect& aRect,
                                const nsDisplayListSet& aLists,
@@ -340,7 +345,8 @@ void nsMathMLFrame::GetRadicalParameters(nsFontMetrics* aFontMetrics,
                                          nscoord& aRadicalExtraAscender,
                                          nscoord& aRadicalVerticalGap) {
   nscoord oneDevPixel = aFontMetrics->AppUnitsPerDevPixel();
-  gfxFont* mathFont = aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
+  RefPtr<gfxFont> mathFont =
+      aFontMetrics->GetThebesFontGroup()->GetFirstMathFont();
 
   // get the radical rulethickness
   if (mathFont) {

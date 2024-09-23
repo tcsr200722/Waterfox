@@ -11,7 +11,7 @@ use lock_api;
 /// A mutual exclusion primitive useful for protecting shared data
 ///
 /// This mutex will block threads waiting for the lock to become available. The
-/// mutex can also be statically initialized or created via a `new`
+/// mutex can be statically initialized or created by the `new`
 /// constructor. Each mutex has a type parameter which represents the data that
 /// it is protecting. The data can only be accessed through the RAII guards
 /// returned from `lock` and `try_lock`, which guarantees that the data is only
@@ -21,18 +21,18 @@ use lock_api;
 ///
 /// A typical unfair lock can often end up in a situation where a single thread
 /// quickly acquires and releases the same mutex in succession, which can starve
-/// other threads waiting to acquire the mutex. While this improves performance
+/// other threads waiting to acquire the mutex. While this improves throughput
 /// because it doesn't force a context switch when a thread tries to re-acquire
 /// a mutex it has just released, this can starve other threads.
 ///
 /// This mutex uses [eventual fairness](https://trac.webkit.org/changeset/203350)
 /// to ensure that the lock will be fair on average without sacrificing
-/// performance. This is done by forcing a fair unlock on average every 0.5ms,
+/// throughput. This is done by forcing a fair unlock on average every 0.5ms,
 /// which will force the lock to go to the next thread waiting for the mutex.
 ///
 /// Additionally, any critical section longer than 1ms will always use a fair
-/// unlock, which has a negligible performance impact compared to the length of
-/// the critical section.
+/// unlock, which has a negligible impact on throughput considering the length
+/// of the critical section.
 ///
 /// You can also force a fair unlock by calling `MutexGuard::unlock_fair` when
 /// unlocking a mutex instead of simply dropping the `MutexGuard`.
@@ -42,7 +42,7 @@ use lock_api;
 /// - No poisoning, the lock is released normally on panic.
 /// - Only requires 1 byte of space, whereas the standard library boxes the
 ///   `Mutex` due to platform limitations.
-/// - Can be statically constructed (requires the `const_fn` nightly feature).
+/// - Can be statically constructed.
 /// - Does not require any drop glue when dropped.
 /// - Inline fast path for the uncontended case.
 /// - Efficient handling of micro-contention using adaptive spinning.

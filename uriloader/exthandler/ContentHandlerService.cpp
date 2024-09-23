@@ -10,6 +10,9 @@
 #include "nsIMutableArray.h"
 #include "nsIMIMEInfo.h"
 #include "nsIStringEnumerator.h"
+#include "nsReadableUtils.h"
+#include "nsMIMEInfoImpl.h"
+#include "nsMIMEInfoChild.h"
 
 using mozilla::dom::ContentChild;
 using mozilla::dom::HandlerInfo;
@@ -22,6 +25,21 @@ NS_IMPL_ISUPPORTS(ContentHandlerService, nsIHandlerService)
 
 ContentHandlerService::ContentHandlerService() {}
 
+/* static */ already_AddRefed<nsIHandlerService>
+ContentHandlerService::Create() {
+  if (XRE_IsContentProcess()) {
+    RefPtr service = new ContentHandlerService();
+    if (NS_SUCCEEDED(service->Init())) {
+      return service.forget();
+    }
+    return nullptr;
+  }
+
+  nsCOMPtr<nsIHandlerService> service =
+      do_GetService("@mozilla.org/uriloader/handler-service-parent;1");
+  return service.forget();
+}
+
 nsresult ContentHandlerService::Init() {
   if (!XRE_IsContentProcess()) {
     return NS_ERROR_FAILURE;
@@ -31,6 +49,7 @@ nsresult ContentHandlerService::Init() {
   mHandlerServiceChild = new HandlerServiceChild();
   if (!cpc->SendPHandlerServiceConstructor(mHandlerServiceChild)) {
     mHandlerServiceChild = nullptr;
+    return NS_ERROR_UNEXPECTED;
   }
   return NS_OK;
 }
@@ -123,7 +142,7 @@ NS_IMETHODIMP RemoteHandlerApp::LaunchWithURI(
 
 NS_IMPL_ISUPPORTS(RemoteHandlerApp, nsIHandlerApp)
 
-static inline void CopyHanderInfoTonsIHandlerInfo(
+static inline void CopyHandlerInfoTonsIHandlerInfo(
     const HandlerInfo& info, nsIHandlerInfo* aHandlerInfo) {
   HandlerApp preferredApplicationHandler = info.preferredApplicationHandler();
   nsCOMPtr<nsIHandlerApp> preferredApp(
@@ -134,23 +153,14 @@ static inline void CopyHanderInfoTonsIHandlerInfo(
       getter_AddRefs(possibleHandlers));
   possibleHandlers->AppendElement(preferredApp);
 
+  aHandlerInfo->SetPreferredAction(info.preferredAction());
+  aHandlerInfo->SetAlwaysAskBeforeHandling(info.alwaysAskBeforeHandling());
+
   if (info.isMIMEInfo()) {
-    const auto& fileExtensions = info.extensions();
-    bool first = true;
-    nsAutoCString extensionsStr;
-    for (const auto& extension : fileExtensions) {
-      if (!first) {
-        extensionsStr.Append(',');
-      }
-
-      extensionsStr.Append(extension);
-      first = false;
-    }
-
     nsCOMPtr<nsIMIMEInfo> mimeInfo(do_QueryInterface(aHandlerInfo));
     MOZ_ASSERT(mimeInfo,
                "parent and child don't agree on whether this is a MIME info");
-    mimeInfo->SetFileExtensions(extensionsStr);
+    mimeInfo->SetFileExtensions(StringJoin(","_ns, info.extensions()));
   }
 }
 
@@ -168,19 +178,17 @@ NS_IMETHODIMP ContentHandlerService::FillHandlerInfo(
     nsIHandlerInfo* aHandlerInfo, const nsACString& aOverrideType) {
   HandlerInfo info, returnedInfo;
   nsIHandlerInfoToHandlerInfo(aHandlerInfo, &info);
-  mHandlerServiceChild->SendFillHandlerInfo(info, nsCString(aOverrideType),
-                                            &returnedInfo);
-  CopyHanderInfoTonsIHandlerInfo(returnedInfo, aHandlerInfo);
+  mHandlerServiceChild->SendFillHandlerInfo(info, aOverrideType, &returnedInfo);
+  CopyHandlerInfoTonsIHandlerInfo(returnedInfo, aHandlerInfo);
   return NS_OK;
 }
 
 NS_IMETHODIMP ContentHandlerService::GetMIMEInfoFromOS(
-    nsIHandlerInfo* aHandlerInfo, const nsACString& aMIMEType,
-    const nsACString& aExtension, bool* aFound) {
+    const nsACString& aMIMEType, const nsACString& aFileExt, bool* aFound,
+    nsIMIMEInfo** aMIMEInfo) {
   nsresult rv = NS_ERROR_FAILURE;
   HandlerInfo returnedInfo;
-  if (!mHandlerServiceChild->SendGetMIMEInfoFromOS(nsCString(aMIMEType),
-                                                   nsCString(aExtension), &rv,
+  if (!mHandlerServiceChild->SendGetMIMEInfoFromOS(aMIMEType, aFileExt, &rv,
                                                    &returnedInfo, aFound)) {
     return NS_ERROR_FAILURE;
   }
@@ -189,7 +197,10 @@ NS_IMETHODIMP ContentHandlerService::GetMIMEInfoFromOS(
     return rv;
   }
 
-  CopyHanderInfoTonsIHandlerInfo(returnedInfo, aHandlerInfo);
+  RefPtr<nsChildProcessMIMEInfo> mimeInfo =
+      new nsChildProcessMIMEInfo(returnedInfo.type());
+  CopyHandlerInfoTonsIHandlerInfo(returnedInfo, mimeInfo);
+  mimeInfo.forget(aMIMEInfo);
   return NS_OK;
 }
 
@@ -212,7 +223,7 @@ NS_IMETHODIMP ContentHandlerService::Remove(nsIHandlerInfo* aHandlerInfo) {
 NS_IMETHODIMP
 ContentHandlerService::ExistsForProtocolOS(const nsACString& aProtocolScheme,
                                            bool* aRetval) {
-  if (!mHandlerServiceChild->SendExistsForProtocolOS(nsCString(aProtocolScheme),
+  if (!mHandlerServiceChild->SendExistsForProtocolOS(aProtocolScheme,
                                                      aRetval)) {
     return NS_ERROR_FAILURE;
   }
@@ -222,8 +233,7 @@ ContentHandlerService::ExistsForProtocolOS(const nsACString& aProtocolScheme,
 NS_IMETHODIMP
 ContentHandlerService::ExistsForProtocol(const nsACString& aProtocolScheme,
                                          bool* aRetval) {
-  if (!mHandlerServiceChild->SendExistsForProtocol(nsCString(aProtocolScheme),
-                                                   aRetval)) {
+  if (!mHandlerServiceChild->SendExistsForProtocol(aProtocolScheme, aRetval)) {
     return NS_ERROR_FAILURE;
   }
   return NS_OK;
@@ -231,17 +241,11 @@ ContentHandlerService::ExistsForProtocol(const nsACString& aProtocolScheme,
 
 NS_IMETHODIMP ContentHandlerService::GetTypeFromExtension(
     const nsACString& aFileExtension, nsACString& _retval) {
-  nsCString* cachedType = nullptr;
-  if (!!mExtToTypeMap.Get(aFileExtension, &cachedType) && !!cachedType) {
-    _retval.Assign(*cachedType);
-    return NS_OK;
-  }
-  nsCString type;
-  mHandlerServiceChild->SendGetTypeFromExtension(nsCString(aFileExtension),
-                                                 &type);
-  _retval.Assign(type);
-  mExtToTypeMap.Put(nsCString(aFileExtension), new nsCString(type));
-
+  _retval.Assign(*mExtToTypeMap.LookupOrInsertWith(aFileExtension, [&] {
+    nsCString type;
+    mHandlerServiceChild->SendGetTypeFromExtension(aFileExtension, &type);
+    return MakeUnique<nsCString>(type);
+  }));
   return NS_OK;
 }
 

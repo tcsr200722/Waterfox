@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-extern crate nserror;
-
 use nserror::{nsresult, NS_ERROR_NULL_POINTER};
 
 /// The xpcom_method macro generates a Rust XPCOM method stub that converts
@@ -19,13 +17,11 @@ use nserror::{nsresult, NS_ERROR_NULL_POINTER};
 /// }
 /// ```
 ///
-/// And a Rust implementation that uses #[derive(xpcom)] to implement it:
+/// And a Rust implementation that uses #[xpcom] to implement it:
 ///
 /// ```ignore
-/// #[derive(xpcom)]
-/// #[xpimplements(nsIFooBarBaz)]
-/// #[refcnt = "atomic"]
-/// struct InitFooBarBaz {
+/// #[xpcom(implement(nsIFooBarBaz), atomic)]
+/// struct FooBarBaz {
 ///     // …
 /// }
 /// ```
@@ -219,7 +215,7 @@ macro_rules! xpcom_method {
 /// itself.
 #[doc(hidden)]
 pub trait Ensure<T> {
-    unsafe fn ensure(T) -> Self;
+    unsafe fn ensure(value: T) -> Self;
 }
 
 impl<'a, T: 'a> Ensure<*const T> for Result<&'a T, nsresult> {

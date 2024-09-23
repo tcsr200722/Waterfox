@@ -20,21 +20,17 @@
  *    for certain types of links (_blank links for example) to open new tabs.
  */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "TalosParentProfiler",
-  "resource://talos-powers/TalosParentProfiler.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  TalosParentProfiler: "resource://talos-powers/TalosParentProfiler.sys.mjs",
+});
 
 const REDUCE_MOTION_PREF = "ui.prefersReducedMotion";
 const MULTI_OPT_OUT_PREF = "dom.ipc.multiOptOut";
 
 const MESSAGES = ["TabPaint:Go", "TabPaint:Painted"];
+
+const BROWSER_FLUSH_TOPIC = "sessionstore-browser-shutdown-flush";
 
 /* globals ExtensionAPI */
 this.tabpaint = class extends ExtensionAPI {
@@ -128,15 +124,27 @@ this.tabpaint = class extends ExtensionAPI {
    *         with the time (in ms) it took to open the tab from the parent.
    */
   async openTabFromParent(gBrowser, target) {
-    TalosParentProfiler.resume("tabpaint parent start");
+    let win = BrowserWindowTracker.getTopWindow();
 
-    // eslint-disable-next-line mozilla/avoid-Date-timing
-    gBrowser.selectedTab = gBrowser.addTab(`${target}?${Date.now()}`, {
-      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-    });
+    TalosParentProfiler.subtestStart("TabPaint Parent Start");
+    let startTime = Cu.now();
+
+    gBrowser.selectedTab = gBrowser.addTab(
+      //win.performance.now() + win.performance.timing.navigationStart gives the UNIX timestamp.
+      `${target}?${
+        win.performance.now() + win.performance.timing.navigationStart
+      }`,
+      {
+        triggeringPrincipal:
+          Services.scriptSecurityManager.getSystemPrincipal(),
+      }
+    );
 
     let { tab, delta } = await this.whenTabShown();
-    TalosParentProfiler.pause("tabpaint parent end");
+    TalosParentProfiler.subtestEnd(
+      "Talos - Tabpaint: Open Tab from Parent",
+      startTime
+    );
     await this.removeTab(tab);
     return delta;
   }
@@ -152,13 +160,17 @@ this.tabpaint = class extends ExtensionAPI {
    *         Resolves once the tab has been fully removed. Resolves
    *         with the time (in ms) it took to open the tab from content.
    */
-  async openTabFromContent(gBrowser) {
-    TalosParentProfiler.resume("tabpaint content start");
+  async openTabFromContent() {
+    TalosParentProfiler.subtestStart("TabPaint Content Start");
+    let start_time = Cu.now();
 
     Services.mm.broadcastAsyncMessage("TabPaint:OpenFromContent");
 
     let { tab, delta } = await this.whenTabShown();
-    TalosParentProfiler.pause("tabpaint content end");
+    TalosParentProfiler.subtestEnd(
+      "Talos - Tabpaint: Open Tab from Content",
+      start_time
+    );
     await this.removeTab(tab);
     return delta;
   }
@@ -185,19 +197,16 @@ this.tabpaint = class extends ExtensionAPI {
    * @return Promise
    */
   removeTab(tab) {
+    TalosParentProfiler.mark("Tabpaint: Remove Tab");
     return new Promise(resolve => {
-      let { messageManager: mm, frameLoader } = tab.linkedBrowser;
-      mm.addMessageListener(
-        "SessionStore:update",
-        function onMessage(msg) {
-          if (msg.targetFrameLoader == frameLoader && msg.data.isFinal) {
-            mm.removeMessageListener("SessionStore:update", onMessage);
-            resolve();
-          }
-        },
-        true
-      );
-
+      let browser = tab.linkedBrowser;
+      let observer = subject => {
+        if (subject === browser) {
+          Services.obs.removeObserver(observer, BROWSER_FLUSH_TOPIC);
+          resolve();
+        }
+      };
+      Services.obs.addObserver(observer, BROWSER_FLUSH_TOPIC);
       tab.ownerGlobal.gBrowser.removeTab(tab);
     });
   }

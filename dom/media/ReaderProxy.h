@@ -9,11 +9,11 @@
 
 #include "mozilla/AbstractThread.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/Variant.h"
 #include "nsISupportsImpl.h"
 
 #include "MediaEventSource.h"
 #include "MediaFormatReader.h"
+#include "MediaPromiseDefs.h"
 
 namespace mozilla {
 
@@ -41,7 +41,7 @@ class ReaderProxy {
   RefPtr<AudioDataPromise> RequestAudioData();
 
   RefPtr<VideoDataPromise> RequestVideoData(
-      const media::TimeUnit& aTimeThreshold);
+      const media::TimeUnit& aTimeThreshold, bool aRequestNextVideoKeyFrame);
 
   RefPtr<WaitForDataPromise> WaitForData(MediaData::Type aType);
 
@@ -65,6 +65,9 @@ class ReaderProxy {
   MediaEventSource<void>& OnMediaNotSeekable() {
     return mReader->OnMediaNotSeekable();
   }
+  MediaEventProducer<VideoInfo, AudioInfo>& OnTrackInfoUpdatedEvent() {
+    return mReader->OnTrackInfoUpdatedEvent();
+  }
   size_t SizeOfAudioQueueInFrames() const {
     return mReader->SizeOfAudioQueueInFrames();
   }
@@ -78,12 +81,13 @@ class ReaderProxy {
     return mReader->CanonicalBuffered();
   }
 
-  void SetCDMProxy(CDMProxy* aProxy) { mReader->SetCDMProxy(aProxy); }
+  RefPtr<SetCDMPromise> SetCDMProxy(CDMProxy* aProxy);
 
   void SetVideoBlankDecode(bool aIsBlankDecode);
 
-  void SetCanonicalDuration(
-      AbstractCanonical<media::NullableTimeUnit>* aCanonical);
+  void SetCanonicalDuration(Canonical<media::NullableTimeUnit>& aCanonical);
+
+  void UpdateMediaEngineId(uint64_t aMediaEngineId);
 
  private:
   ~ReaderProxy();

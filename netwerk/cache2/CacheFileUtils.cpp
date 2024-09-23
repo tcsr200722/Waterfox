@@ -5,7 +5,9 @@
 #include "CacheIndex.h"
 #include "CacheLog.h"
 #include "CacheFileUtils.h"
+#include "CacheObserver.h"
 #include "LoadContextInfo.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "mozilla/Tokenizer.h"
 #include "mozilla/Telemetry.h"
 #include "nsCOMPtr.h"
@@ -13,9 +15,7 @@
 #include <algorithm>
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace net {
-namespace CacheFileUtils {
+namespace mozilla::net::CacheFileUtils {
 
 // This designates the format for the "alt-data" metadata.
 // When the format changes we need to update the version.
@@ -90,7 +90,6 @@ class KeyParser : protected Tokenizer {
         break;
       case 'b':
         // Leaving to be able to read and understand oldformatted entries
-        originAttribs.mInIsolatedMozBrowser = true;
         break;
       case 'a':
         isAnonymous = true;
@@ -195,6 +194,10 @@ void AppendKeyPrefix(nsILoadContextInfo* aInfo, nsACString& _retval) {
    * Keep the attributes list sorted according their ASCII code.
    */
 
+  if (!aInfo) {
+    return;
+  }
+
   OriginAttributes const* oa = aInfo->OriginAttributesPtr();
   nsAutoCString suffix;
   oa->CreateSuffix(suffix);
@@ -223,8 +226,7 @@ void AppendTagWithValue(nsACString& aTarget, char const aTag,
       aTarget.Append(aValue);
     } else {
       nsAutoCString escapedValue(aValue);
-      escapedValue.ReplaceSubstring(NS_LITERAL_CSTRING(","),
-                                    NS_LITERAL_CSTRING(",,"));
+      escapedValue.ReplaceSubstring(","_ns, ",,"_ns);
       aTarget.Append(escapedValue);
     }
   }
@@ -417,8 +419,8 @@ void DetailedCacheHitTelemetry::AddRecord(ERecType aType,
     mozilla::Telemetry::AccumulateTimeDelta(
         mozilla::Telemetry::NETWORK_CACHE_V2_MISS_TIME_MS, aLoadStart);
   } else {
-    mozilla::Telemetry::AccumulateTimeDelta(
-        mozilla::Telemetry::NETWORK_CACHE_V2_HIT_TIME_MS, aLoadStart);
+    mozilla::glean::network::cache_hit_time.AccumulateRawDuration(
+        TimeStamp::Now() - aLoadStart);
   }
 
   Telemetry::Accumulate(Telemetry::NETWORK_CACHE_HIT_MISS_STAT_PER_CACHE_SIZE,
@@ -599,6 +601,7 @@ bool CachePerfStats::IsCacheSlow() {
 
 // static
 void CachePerfStats::GetSlowStats(uint32_t* aSlow, uint32_t* aNotSlow) {
+  StaticMutexAutoLock lock(sLock);
   *aSlow = sCacheSlowCnt;
   *aNotSlow = sCacheNotSlowCnt;
 }
@@ -661,6 +664,4 @@ void BuildAlternativeDataInfo(const char* aInfo, int64_t aOffset,
   _retval.Append(aInfo);
 }
 
-}  // namespace CacheFileUtils
-}  // namespace net
-}  // namespace mozilla
+}  // namespace mozilla::net::CacheFileUtils

@@ -1,4 +1,6 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,9 +34,6 @@
 // override
 - (void)stateChanged:(uint64_t)state isEnabled:(BOOL)enabled;
 
-// override
-- (BOOL)ignoreWithParent:(mozAccessible*)parent;
-
 @end
 
 @interface mozCheckboxAccessible : mozButtonAccessible
@@ -42,11 +41,17 @@
 // override
 - (id)moxValue;
 
+// override
+- (void)stateChanged:(uint64_t)state isEnabled:(BOOL)enabled;
+
 @end
 
-// Accessible for a radio button
+// LocalAccessible for a radio button
 @interface mozRadioButtonAccessible : mozCheckboxAccessible
-- (id)accessibilityAttributeValue:(NSString*)attribute;
+
+// override
+- (NSArray*)moxLinkedUIElements;
+
 @end
 
 /**
@@ -60,9 +65,46 @@
 @end
 
 /**
- * Base accessible for an incrementable
+ * Base accessible for a range, an acc with a min, max that cannot
+ * be modified by the user directly.
  */
-@interface mozIncrementableAccessible : mozAccessible
+
+@interface mozRangeAccessible : mozAccessible
+
+// override
+- (id)moxValue;
+
+// override
+- (id)moxMinValue;
+
+// override
+- (id)moxMaxValue;
+
+// override
+- (NSString*)moxOrientation;
+
+// override
+- (void)handleAccessibleEvent:(uint32_t)eventType;
+
+@end
+
+@interface mozMeterAccessible : mozRangeAccessible
+
+// override
+- (NSString*)moxValueDescription;
+
+@end
+
+/**
+ * Base accessible for an incrementable, a settable range
+ */
+@interface mozIncrementableAccessible : mozRangeAccessible
+
+// override
+- (NSString*)moxValueDescription;
+
+// override
+- (void)moxSetValue:(id)value;
 
 // override
 - (void)moxPerformIncrement;
@@ -70,9 +112,13 @@
 // override
 - (void)moxPerformDecrement;
 
-// override
-- (void)handleAccessibleEvent:(uint32_t)eventType;
-
 - (void)changeValueBySteps:(int)factor;
+
+@end
+
+@interface mozDatePickerAccessible : mozAccessible
+
+// override
+- (NSString*)moxTitle;
 
 @end

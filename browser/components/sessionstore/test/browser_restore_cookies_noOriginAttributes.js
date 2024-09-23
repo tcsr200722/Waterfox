@@ -25,8 +25,7 @@ const SESSION_DATA = JSON.stringify({
         {
           entries: [
             {
-              url:
-                "http://www.example.com/browser/browser/components/sessionstore/test/browser_1267910_page.html",
+              url: "http://www.example.com/browser/browser/components/sessionstore/test/browser_1267910_page.html",
               triggeringPrincipal_base64,
               charset: "UTF-8",
               ID: 0,
@@ -88,8 +87,7 @@ const SESSION_DATA_OA = JSON.stringify({
         {
           entries: [
             {
-              url:
-                "http://www.example.com/browser/browser/components/sessionstore/test/browser_1267910_page.html",
+              url: "http://www.example.com/browser/browser/components/sessionstore/test/browser_1267910_page.html",
               triggeringPrincipal_base64,
               charset: "UTF-8",
               ID: 0,
@@ -167,6 +165,12 @@ add_task(async function run_test() {
 
   // Clear cookies.
   Services.cookies.removeAll();
+
+  // In real usage, the event loop would get to spin between setWindowState
+  // uses.  Without a spin, we can defer handling the STATE_STOP that
+  // removes the progress listener until after the mozbrowser has been
+  // destroyed, causing a window leak.
+  await new Promise(resolve => win.setTimeout(resolve, 0));
 
   // Restore window with session cookies that have originAttributes within.
   await setWindowState(win, SESSION_DATA_OA, true);

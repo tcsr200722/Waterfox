@@ -32,7 +32,7 @@ static bool InitUpdateResponse(ListUpdateResponse* aUpdateResponse,
     auto prefixes = rawHashes->mutable_raw_hashes();
     for (auto p : aFixedLengthPrefixes) {
       char buffer[4];
-      NativeEndian::copyAndSwapToBigEndian(buffer, &p, 1);
+      mozilla::NativeEndian::copyAndSwapToBigEndian(buffer, &p, 1);
       prefixes->append(buffer, 4);
     }
     return true;
@@ -102,7 +102,7 @@ TEST(UrlClassifierProtocolParser, SingleValueEncoding)
                           nsCString("check\x0sum", 9), true,
                           // As per spec, we should interpret the prefix as
                           // uint32 in little endian before encoding.
-                          {LittleEndian::readUint32(expectedPrefix)},
+                          {mozilla::LittleEndian::readUint32(expectedPrefix)},
                           true /* aDoPrefixEncoding */)) {
     printf("Failed to initialize update response.");
     ASSERT_TRUE(false);
@@ -126,13 +126,13 @@ TEST(UrlClassifierProtocolParser, SingleValueEncoding)
   const TableUpdateArray& tus = p->GetTableUpdates();
   RefPtr<const TableUpdateV4> tuv4 = TableUpdate::Cast<TableUpdateV4>(tus[0]);
   auto& prefixMap = tuv4->Prefixes();
-  for (auto iter = prefixMap.ConstIter(); !iter.Done(); iter.Next()) {
+  for (const auto& entry : prefixMap) {
     // This prefix map should contain only a single 4-byte prefixe.
-    ASSERT_EQ(iter.Key(), 4u);
+    ASSERT_EQ(entry.GetKey(), 4u);
 
     // The fixed-length prefix string from ProtocolParser should
     // exactly match the expected prefix string.
-    nsCString* prefix = iter.UserData();
+    nsCString* prefix = entry.GetWeak();
     ASSERT_TRUE(prefix->Equals(nsCString(expectedPrefix, 4)));
   }
 

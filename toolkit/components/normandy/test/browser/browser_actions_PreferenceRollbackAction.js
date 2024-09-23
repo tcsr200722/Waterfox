@@ -1,23 +1,24 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/Preferences.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
-ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
-ChromeUtils.import(
-  "resource://normandy/actions/PreferenceRollbackAction.jsm",
-  this
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
 );
-ChromeUtils.import("resource://normandy/lib/Uptake.jsm", this);
-ChromeUtils.import("resource://normandy/lib/PreferenceRollouts.jsm", this);
-ChromeUtils.import("resource://normandy/lib/TelemetryEvents.jsm", this);
+const { PreferenceRollbackAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/PreferenceRollbackAction.sys.mjs"
+);
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
+const { PreferenceRollouts } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceRollouts.sys.mjs"
+);
 
 // Test that a simple recipe rollsback as expected
 decorate_task(
-  PreferenceRollouts.withTestMock,
   withStub(TelemetryEnvironment, "setExperimentInactive"),
-  withSendEventStub,
-  async function simple_rollback(setExperimentInactiveStub, sendEventStub) {
+  withSendEventSpy(),
+  PreferenceRollouts.withTestMock(),
+  async function simple_rollback({ setExperimentInactiveStub, sendEventSpy }) {
     Services.prefs.getDefaultBranch("").setIntPref("test.pref1", 2);
     Services.prefs
       .getDefaultBranch("")
@@ -36,7 +37,6 @@ decorate_task(
         },
         { preferenceName: "test.pref3", value: true, previousValue: false },
       ],
-      enrollmentId: "test-enrollment-id",
     });
 
     const recipe = { id: 1, arguments: { rolloutSlug: "test-rollout" } };
@@ -97,14 +97,13 @@ decorate_task(
             },
             { preferenceName: "test.pref3", value: true, previousValue: false },
           ],
-          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollout should be updated in db"
     );
 
     // Telemetry is updated
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       [
         "unenroll",
         "preference_rollback",
@@ -127,9 +126,9 @@ decorate_task(
 
 // Test that a graduated rollout can't be rolled back
 decorate_task(
-  PreferenceRollouts.withTestMock,
-  withSendEventStub,
-  async function cant_rollback_graduated(sendEventStub) {
+  withSendEventSpy(),
+  PreferenceRollouts.withTestMock(),
+  async function cant_rollback_graduated({ sendEventSpy }) {
     Services.prefs.getDefaultBranch("").setIntPref("test.pref", 1);
     await PreferenceRollouts.add({
       slug: "graduated-rollout",
@@ -137,7 +136,6 @@ decorate_task(
       preferences: [
         { preferenceName: "test.pref", value: 1, previousValue: 1 },
       ],
-      enrollmentId: "test-enrollment-id",
     });
 
     let recipe = { id: 1, arguments: { rolloutSlug: "graduated-rollout" } };
@@ -164,18 +162,17 @@ decorate_task(
           preferences: [
             { preferenceName: "test.pref", value: 1, previousValue: 1 },
           ],
-          enrollmentId: "test-enrollment-id",
         },
       ],
       "Rollout should not change in db"
     );
 
-    sendEventStub.assertEvents([
+    sendEventSpy.assertEvents([
       [
         "unenrollFailed",
         "preference_rollback",
         "graduated-rollout",
-        { reason: "graduated", enrollmentId: "test-enrollment-id" },
+        { reason: "graduated" },
       ],
     ]);
 
@@ -186,10 +183,10 @@ decorate_task(
 
 // Test that a rollback without a matching rollout does not send telemetry
 decorate_task(
-  PreferenceRollouts.withTestMock,
-  withSendEventStub,
+  withSendEventSpy(),
   withStub(Uptake, "reportRecipe"),
-  async function rollback_without_rollout(sendEventStub, reportRecipeStub) {
+  PreferenceRollouts.withTestMock(),
+  async function rollback_without_rollout({ sendEventSpy, reportRecipeStub }) {
     let recipe = { id: 1, arguments: { rolloutSlug: "missing-rollout" } };
 
     const action = new PreferenceRollbackAction();
@@ -197,7 +194,7 @@ decorate_task(
     await action.finalize();
     is(action.lastError, null, "lastError should be null");
 
-    sendEventStub.assertEvents([]);
+    sendEventSpy.assertEvents([]);
     Assert.deepEqual(
       reportRecipeStub.args,
       [[recipe, Uptake.RECIPE_SUCCESS]],
@@ -208,13 +205,13 @@ decorate_task(
 
 // Test that rolling back an already rolled back recipe doesn't do anything
 decorate_task(
-  PreferenceRollouts.withTestMock,
   withStub(TelemetryEnvironment, "setExperimentInactive"),
-  withSendEventStub,
-  async function rollback_already_rolled_back(
+  withSendEventSpy(),
+  PreferenceRollouts.withTestMock(),
+  async function rollback_already_rolled_back({
     setExperimentInactiveStub,
-    sendEventStub
-  ) {
+    sendEventSpy,
+  }) {
     Services.prefs.getDefaultBranch("").setIntPref("test.pref", 1);
 
     const recipe = { id: 1, arguments: { rolloutSlug: "test-rollout" } };
@@ -224,7 +221,6 @@ decorate_task(
       preferences: [
         { preferenceName: "test.pref", value: 2, previousValue: 1 },
       ],
-      enrollmentId: "test-rollout-id",
     };
     await PreferenceRollouts.add(rollout);
 
@@ -248,7 +244,7 @@ decorate_task(
     );
 
     // Telemetry is updated
-    sendEventStub.assertEvents([]);
+    sendEventSpy.assertEvents([]);
     Assert.deepEqual(
       setExperimentInactiveStub.args,
       [],
@@ -261,45 +257,92 @@ decorate_task(
 );
 
 // Test that a rollback doesn't affect user prefs
-decorate_task(PreferenceRollouts.withTestMock, async function simple_rollback(
-  setExperimentInactiveStub,
-  sendEventStub
-) {
-  Services.prefs.getDefaultBranch("").setCharPref("test.pref", "rollout value");
-  Services.prefs.setCharPref("test.pref", "user value");
+decorate_task(
+  PreferenceRollouts.withTestMock(),
+  async function simple_rollback() {
+    Services.prefs
+      .getDefaultBranch("")
+      .setCharPref("test.pref", "rollout value");
+    Services.prefs.setCharPref("test.pref", "user value");
 
-  await PreferenceRollouts.add({
-    slug: "test-rollout",
-    state: PreferenceRollouts.STATE_ACTIVE,
-    preferences: [
-      {
-        preferenceName: "test.pref",
-        value: "rollout value",
-        previousValue: "builtin value",
-      },
-    ],
-    enrollmentId: "test-enrollment-id",
-  });
+    await PreferenceRollouts.add({
+      slug: "test-rollout",
+      state: PreferenceRollouts.STATE_ACTIVE,
+      preferences: [
+        {
+          preferenceName: "test.pref",
+          value: "rollout value",
+          previousValue: "builtin value",
+        },
+      ],
+    });
 
-  const recipe = { id: 1, arguments: { rolloutSlug: "test-rollout" } };
+    const recipe = { id: 1, arguments: { rolloutSlug: "test-rollout" } };
 
-  const action = new PreferenceRollbackAction();
-  await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
-  await action.finalize();
-  is(action.lastError, null, "lastError should be null");
+    const action = new PreferenceRollbackAction();
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
+    await action.finalize();
+    is(action.lastError, null, "lastError should be null");
 
-  is(
-    Services.prefs.getDefaultBranch("").getCharPref("test.pref"),
-    "builtin value",
-    "default branch should be reset"
-  );
-  is(
-    Services.prefs.getCharPref("test.pref"),
-    "user value",
-    "user branch should remain the same"
-  );
+    is(
+      Services.prefs.getDefaultBranch("").getCharPref("test.pref"),
+      "builtin value",
+      "default branch should be reset"
+    );
+    is(
+      Services.prefs.getCharPref("test.pref"),
+      "user value",
+      "user branch should remain the same"
+    );
 
-  // Cleanup
-  Services.prefs.deleteBranch("test.pref");
-  Services.prefs.getDefaultBranch("").deleteBranch("test.pref");
-});
+    // Cleanup
+    Services.prefs.deleteBranch("test.pref");
+    Services.prefs.getDefaultBranch("").deleteBranch("test.pref");
+  }
+);
+
+// Test that a rollouts in the graduation set can't be rolled back
+decorate_task(
+  withSendEventSpy(),
+  PreferenceRollouts.withTestMock({
+    graduationSet: new Set(["graduated-rollout"]),
+  }),
+  async function cant_rollback_graduation_set({ sendEventSpy }) {
+    Services.prefs.getDefaultBranch("").setIntPref("test.pref", 1);
+
+    let recipe = { id: 1, arguments: { rolloutSlug: "graduated-rollout" } };
+
+    const action = new PreferenceRollbackAction();
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
+    await action.finalize();
+    is(action.lastError, null, "lastError should be null");
+
+    is(Services.prefs.getIntPref("test.pref"), 1, "pref should not change");
+    is(
+      Services.prefs.getPrefType("app.normandy.startupRolloutPrefs.test.pref"),
+      Services.prefs.PREF_INVALID,
+      "no startup pref should be added"
+    );
+
+    // No entry in the DB
+    Assert.deepEqual(
+      await PreferenceRollouts.getAll(),
+      [],
+      "Rollout should be in the db"
+    );
+
+    sendEventSpy.assertEvents([
+      [
+        "unenrollFailed",
+        "preference_rollback",
+        "graduated-rollout",
+        {
+          reason: "in-graduation-set",
+        },
+      ],
+    ]);
+
+    // Cleanup
+    Services.prefs.getDefaultBranch("").deleteBranch("test.pref");
+  }
+);

@@ -6,14 +6,14 @@
 // Test that copying from the urlbar page works correctly after a result is
 // confirmed but takes a while to load.
 
-add_task(async function() {
+add_task(async function () {
   const SLOW_PAGE =
     getRootDirectory(gTestPath).replace(
       "chrome://mochitests/content",
       "http://www.example.com"
     ) + "slow-page.sjs";
 
-  await BrowserTestUtils.withNewTab(gBrowser, async tab => {
+  await BrowserTestUtils.withNewTab(gBrowser, async () => {
     gURLBar.focus();
     gURLBar.value = SLOW_PAGE;
     let promise = TestUtils.waitForCondition(
@@ -45,7 +45,7 @@ add_task(async function() {
       null,
       true
     );
-    BrowserStop();
+    BrowserCommands.stop();
     await browserStoppedPromise;
   });
 });

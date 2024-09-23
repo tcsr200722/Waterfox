@@ -1,19 +1,10 @@
 "use strict";
-/* eslint-env mozilla/frame-script */
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
-);
-const { ExtensionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/ExtensionXPCShellUtils.jsm"
+const { XPCShellContentUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/XPCShellContentUtils.sys.mjs"
 );
 
-AddonTestUtils.init(this);
-ExtensionTestUtils.init(this);
-
-ChromeUtils.import(
-  "resource://gre/modules/ContentPrefServiceParent.jsm"
-).ContentPrefServiceParent.init();
+XPCShellContentUtils.init(this);
 
 const childFramePath = "/file_bug1086684.html";
 const childFrameURL = "http://example.com" + childFramePath;
@@ -30,20 +21,23 @@ const childFrameContents = `<!DOCTYPE html>
 </body>
 </html>`;
 
-const server = AddonTestUtils.createHttpServer({ hosts: ["example.com"] });
+const server = XPCShellContentUtils.createHttpServer({
+  hosts: ["example.com"],
+});
 server.registerPathHandler(childFramePath, (request, response) => {
   response.write(childFrameContents);
 });
 
 function childFrameScript() {
+  /* eslint-env mozilla/frame-script */
   "use strict";
 
-  let { MockFilePicker } = ChromeUtils.import(
-    "resource://testing-common/MockFilePicker.jsm"
+  let { MockFilePicker } = ChromeUtils.importESModule(
+    "resource://testing-common/MockFilePicker.sys.mjs"
   );
 
   function parentReady(message) {
-    MockFilePicker.init(content);
+    MockFilePicker.init(content.browsingContext);
     MockFilePicker.setFiles([message.data.file]);
     MockFilePicker.returnValue = MockFilePicker.returnOK;
 
@@ -54,17 +48,21 @@ function childFrameScript() {
       message.target.sendAsyncMessage("testBug1086684:childDone", { value });
     });
 
+    // Activate the page to allow opening the file picker.
+    content.document.notifyUserGestureActivation();
+
     input.focus();
     input.click();
   }
 
-  addMessageListener("testBug1086684:parentReady", function(message) {
+  addMessageListener("testBug1086684:parentReady", function (message) {
     parentReady(message);
   });
 }
 
-add_task(async function() {
-  let page = await ExtensionTestUtils.loadContentPage(childFrameURL, {
+add_task(async function () {
+  Services.prefs.setBoolPref("dom.security.https_first", false);
+  let page = await XPCShellContentUtils.loadContentPage(childFrameURL, {
     remote: true,
   });
 
@@ -100,4 +98,5 @@ add_task(async function() {
   });
 
   await page.close();
+  Services.prefs.clearUserPref("dom.security.https_first");
 });

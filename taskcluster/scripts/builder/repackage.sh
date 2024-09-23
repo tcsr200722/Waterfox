@@ -4,8 +4,6 @@ set -x -e
 
 echo "running as" $(id)
 
-. /builds/worker/scripts/xvfb.sh
-
 ####
 # Taskcluster friendly wrapper for performing fx desktop builds via mozharness.
 ####
@@ -23,6 +21,7 @@ echo "running as" $(id)
 : MOZ_SCM_LEVEL                 ${MOZ_SCM_LEVEL:=1}
 
 : WORKSPACE                     ${WORKSPACE:=/builds/worker/workspace}
+: MOZ_OBJDIR                    ${MOZ_OBJDIR:=$WORKSPACE/obj-build}
 
 set -v
 
@@ -43,13 +42,6 @@ export MOZ_SIMPLE_PACKAGE_NAME=target
 if [[ -z ${MOZHARNESS_SCRIPT} ]]; then fail "MOZHARNESS_SCRIPT is not set"; fi
 if [[ -z "${MOZHARNESS_CONFIG}" && -z "${EXTRA_MOZHARNESS_CONFIG}" ]]; then fail "MOZHARNESS_CONFIG or EXTRA_MOZHARNESS_CONFIG is not set"; fi
 
-cleanup() {
-    local rv=$?
-    cleanup_xvfb
-    exit $rv
-}
-trap cleanup EXIT INT
-
 # set up mozharness configuration, via command line, env, etc.
 
 debug_flag=""
@@ -61,6 +53,8 @@ fi
 # cache.  However, only some mozharness scripts use tooltool_wrapper.sh, so this may not be
 # entirely effective.
 export TOOLTOOL_CACHE
+
+export MOZ_OBJDIR
 
 config_path_cmds=""
 for path in ${MOZHARNESS_CONFIG_PATHS}; do

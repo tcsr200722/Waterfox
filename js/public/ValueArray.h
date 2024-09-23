@@ -11,7 +11,6 @@
 
 #include "mozilla/Assertions.h"  // MOZ_ASSERT
 #include "mozilla/Attributes.h"  // MOZ_IMPLICIT, MOZ_RAII
-#include "mozilla/GuardObjects.h"  // MOZ_GUARD_OBJECT_NOTIFIER_{INIT,PARAM}, MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
 #include <stdint.h>  // size_t
 
@@ -56,6 +55,9 @@ class HandleValueArray {
       : length_(1), elements_(value.address()) {}
 
   MOZ_IMPLICIT HandleValueArray(const RootedVector<Value>& values)
+      : length_(values.length()), elements_(values.begin()) {}
+
+  MOZ_IMPLICIT HandleValueArray(const PersistentRootedVector<Value>& values)
       : length_(values.length()), elements_(values.begin()) {}
 
   template <size_t N>

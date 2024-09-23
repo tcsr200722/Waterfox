@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "nsUpdateDriver.h"
+
+#include "nsDebug.h"
 #include "nsXULAppAPI.h"
 #include "nsAppRunner.h"
 #include "nsIFile.h"
@@ -23,11 +25,15 @@
 #include "mozilla/Preferences.h"
 #include "nsPrintfCString.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/ErrorNames.h"
 #include "mozilla/Printf.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIObserverService.h"
 #include "nsNetCID.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/CmdLineAndEnvUtils.h"
 
 #ifdef XP_MACOSX
 #  include "nsILocalFileMac.h"
@@ -35,6 +41,7 @@
 #  include "MacLaunchHelper.h"
 #  include "updaterfileutils_osx.h"
 #  include "mozilla/Monitor.h"
+#  include "gfxPlatformMac.h"
 #endif
 
 #if defined(XP_WIN)
@@ -43,8 +50,11 @@
 #  include <windows.h>
 #  include <shlwapi.h>
 #  include <strsafe.h>
+#  include <shellapi.h>
 #  include "commonupdatedir.h"
 #  include "nsWindowsHelpers.h"
+#  include "pathhash.h"
+#  include "WinUtils.h"
 #  define getcwd(path, size) _getcwd(path, size)
 #  define getpid() GetCurrentProcessId()
 #elif defined(XP_UNIX)
@@ -55,57 +65,11 @@
 using namespace mozilla;
 
 static LazyLogModule sUpdateLog("updatedriver");
+// Some other file in our unified batch might have defined LOG already.
+#ifdef LOG
+#  undef LOG
+#endif
 #define LOG(args) MOZ_LOG(sUpdateLog, mozilla::LogLevel::Debug, args)
-
-#ifdef XP_WIN
-#  define UPDATER_BIN "updater.exe"
-#  define MAINTENANCE_SVC_NAME L"MozillaMaintenance"
-#elif XP_MACOSX
-#  define UPDATER_APP "updater.app"
-#  define UPDATER_BIN "org.mozilla.updater"
-#else
-#  define UPDATER_BIN "updater"
-#endif
-
-#ifdef XP_MACOSX
-static void UpdateDriverSetupMacCommandLine(int& argc, char**& argv,
-                                            bool restart) {
-  if (NS_IsMainThread()) {
-    CommandLineServiceMac::SetupMacCommandLine(argc, argv, restart);
-    return;
-  }
-  // Bug 1335916: SetupMacCommandLine calls a CoreFoundation function that
-  // asserts that it was called from the main thread, so if we are not the main
-  // thread, we have to dispatch that call to there. But we also have to get the
-  // result from it, so we can't just dispatch and return, we have to wait
-  // until the dispatched operation actually completes. So we also set up a
-  // monitor to signal us when that happens, and block until then.
-  Monitor monitor("nsUpdateDriver SetupMacCommandLine");
-
-  nsresult rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "UpdateDriverSetupMacCommandLine",
-      [&argc, &argv, restart, &monitor]() -> void {
-        CommandLineServiceMac::SetupMacCommandLine(argc, argv, restart);
-        MonitorAutoLock(monitor).Notify();
-      }));
-
-  if (NS_FAILED(rv)) {
-    LOG(
-        ("Update driver error dispatching SetupMacCommandLine to main thread: "
-         "%d\n",
-         rv));
-    return;
-  }
-
-  // The length of this wait is arbitrary, but should be long enough that having
-  // it expire means something is seriously wrong.
-  CVStatus status =
-      MonitorAutoLock(monitor).Wait(TimeDuration::FromSeconds(60));
-  if (status == CVStatus::Timeout) {
-    LOG(("Update driver timed out waiting for SetupMacCommandLine\n"));
-  }
-}
-#endif
 
 static nsresult GetCurrentWorkingDir(nsACString& aOutPath) {
   // Cannot use NS_GetSpecialDirectory because XPCOM is not yet initialized.
@@ -151,7 +115,7 @@ static nsresult GetInstallDirPath(nsIFile* appDir, nsACString& installDirPath) {
   nsAutoString installDirPathW;
   rv = appDir->GetPath(installDirPathW);
   NS_ENSURE_SUCCESS(rv, rv);
-  installDirPath = NS_ConvertUTF16toUTF8(installDirPathW);
+  CopyUTF16toUTF8(installDirPathW, installDirPath);
 #else
   rv = appDir->GetNativePath(installDirPath);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -179,7 +143,7 @@ static bool GetFile(nsIFile* dir, const nsACString& name,
 }
 
 static bool GetStatusFile(nsIFile* dir, nsCOMPtr<nsIFile>& result) {
-  return GetFile(dir, NS_LITERAL_CSTRING("update.status"), result);
+  return GetFile(dir, "update.status"_ns, result);
 }
 
 /**
@@ -211,14 +175,14 @@ static bool GetStatusFileContents(nsIFile* statusFile, char (&buf)[Size]) {
   return (n >= 0);
 }
 
-typedef enum {
+enum UpdateStatus {
   eNoUpdateAction,
   ePendingUpdate,
   ePendingService,
   ePendingElevate,
   eAppliedUpdate,
   eAppliedService,
-} UpdateStatus;
+};
 
 /**
  * Returns a value indicating what needs to be done in order to handle an
@@ -260,7 +224,7 @@ static UpdateStatus GetUpdateStatus(nsIFile* dir,
 }
 
 static bool GetVersionFile(nsIFile* dir, nsCOMPtr<nsIFile>& result) {
-  return GetFile(dir, NS_LITERAL_CSTRING("update.version"), result);
+  return GetFile(dir, "update.version"_ns, result);
 }
 
 // Compares the current application version with the update's application
@@ -312,6 +276,9 @@ static bool IsOlderVersion(nsIFile* versionFile, const char* appVersion) {
 static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
                         int appArgc, char** appArgv, bool restart,
                         bool isStaged, ProcessType* outpid) {
+  MOZ_DIAGNOSTIC_ASSERT(
+      !restart || NS_IsMainThread(),
+      "restart may only be set when called on the main thread");
   // The following determines the update operation to perform.
   // 1. When restart is false the update will be staged.
   // 2. When restart is true and isStaged is false the update will apply the mar
@@ -326,7 +293,7 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
   nsAutoCString updateDirPath;
 #if defined(XP_WIN)
   // Get an nsIFile reference for the updater in the installation dir.
-  if (!GetFile(greDir, NS_LITERAL_CSTRING(UPDATER_BIN), updater)) {
+  if (!GetFile(greDir, nsLiteralCString(UPDATER_BIN), updater)) {
     return;
   }
 
@@ -336,7 +303,7 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
   if (NS_FAILED(rv)) {
     return;
   }
-  updaterPath = NS_ConvertUTF16toUTF8(updaterPathW);
+  CopyUTF16toUTF8(updaterPathW, updaterPath);
 
   // Get the path to the update dir.
   nsAutoString updateDirPathW;
@@ -344,21 +311,21 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
   if (NS_FAILED(rv)) {
     return;
   }
-  updateDirPath = NS_ConvertUTF16toUTF8(updateDirPathW);
+  CopyUTF16toUTF8(updateDirPathW, updateDirPath);
 #elif defined(XP_MACOSX)
   // Get an nsIFile reference for the updater in the installation dir.
-  if (!GetFile(appDir, NS_LITERAL_CSTRING(UPDATER_APP), updater)) {
+  if (!GetFile(appDir, nsLiteralCString(UPDATER_APP), updater)) {
     return;
   }
-  rv = updater->AppendNative(NS_LITERAL_CSTRING("Contents"));
+  rv = updater->AppendNative("Contents"_ns);
   if (NS_FAILED(rv)) {
     return;
   }
-  rv = updater->AppendNative(NS_LITERAL_CSTRING("MacOS"));
+  rv = updater->AppendNative("MacOS"_ns);
   if (NS_FAILED(rv)) {
     return;
   }
-  rv = updater->AppendNative(NS_LITERAL_CSTRING(UPDATER_BIN));
+  rv = updater->AppendNative(nsLiteralCString(UPDATER_BIN));
   if (NS_FAILED(rv)) {
     return;
   }
@@ -376,7 +343,7 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
   }
 #else
   // Get an nsIFile reference for the updater in the installation dir.
-  if (!GetFile(greDir, NS_LITERAL_CSTRING(UPDATER_BIN), updater)) {
+  if (!GetFile(greDir, nsLiteralCString(UPDATER_BIN), updater)) {
     return;
   }
 
@@ -418,7 +385,7 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
     if (NS_FAILED(rv)) {
       return;
     }
-    appFilePath = NS_ConvertUTF16toUTF8(appFilePathW);
+    CopyUTF16toUTF8(appFilePathW, appFilePath);
 #else
     rv = appFile->GetNativePath(appFilePath);
     if (NS_FAILED(rv)) {
@@ -434,17 +401,55 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
     return;
   }
 
+#if defined(XP_MACOSX)
+  // If we're going to do a restart, we need to make sure the font registration
+  // thread has finished before this process exits (bug 1777332).
+  if (restart) {
+    gfxPlatformMac::WaitForFontRegistration();
+  }
+
+  // We need to detect whether elevation is required for this update. This can
+  // occur when an admin user installs the application, but another admin
+  // user attempts to update (see bug 394984).
+  // We only check if we need elevation if we are restarting. We don't attempt
+  // to stage if elevation is required. Staging happens without the user knowing
+  // about it, and we don't want to ask for elevation for seemingly no reason.
+  bool needElevation = false;
+  if (restart) {
+    needElevation = !IsRecursivelyWritable(installDirPath.get());
+    if (needElevation) {
+      // Normally we would check this via nsIAppStartup::wasSilentlyStarted,
+      // but nsIAppStartup isn't available yet.
+      char* mozAppSilentStart = PR_GetEnv("MOZ_APP_SILENT_START");
+      bool wasSilentlyStarted =
+          mozAppSilentStart && (strcmp(mozAppSilentStart, "") != 0);
+      if (wasSilentlyStarted) {
+        // Elevation always requires prompting for credentials on macOS. If we
+        // are trying to restart silently, we must not display UI such as this
+        // prompt.
+        // We make this check here rather than in the updater, because it is
+        // actually Firefox that shows the elevation prompt (via
+        // InstallPrivilegedHelper), not the updater.
+        return;
+      }
+    }
+  }
+#endif
+
   nsAutoCString applyToDirPath;
   nsCOMPtr<nsIFile> updatedDir;
   if (restart && !isStaged) {
     // The install directory is the same as the apply to directory.
     applyToDirPath.Assign(installDirPath);
   } else {
-    // Get the directory where the update is staged or will be staged.
+    // Get the directory where the update is staged or will be staged. This is
+    // `updateDir` for macOS and `appDir` for all other platforms. macOS cannot
+    // stage updates inside the .app bundle (`appDir`) without breaking the code
+    // signature on the bundle, so we use `updateDir` instead.
 #if defined(XP_MACOSX)
-    if (!GetFile(updateDir, NS_LITERAL_CSTRING("Updated.app"), updatedDir)) {
+    if (!GetFile(updateDir, "Updated.app"_ns, updatedDir)) {
 #else
-    if (!GetFile(appDir, NS_LITERAL_CSTRING("updated"), updatedDir)) {
+    if (!GetFile(appDir, "updated"_ns, updatedDir)) {
 #endif
       return;
     }
@@ -454,7 +459,7 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
     if (NS_FAILED(rv)) {
       return;
     }
-    applyToDirPath = NS_ConvertUTF16toUTF8(applyToDirPathW);
+    CopyUTF16toUTF8(applyToDirPathW, applyToDirPath);
 #else
     rv = updatedDir->GetNativePath(applyToDirPath);
 #endif
@@ -553,7 +558,8 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
   if (*outpid == -1) {
     free(argv);
     return;
-  } else if (*outpid == 0) {
+  }
+  if (*outpid == 0) {
     int execResult = execv(updaterPath.get(), argv);
     free(argv);
     exit(execResult);
@@ -573,18 +579,20 @@ static void ApplyUpdate(nsIFile* greDir, nsIFile* updateDir, nsIFile* appDir,
     }
   }
 #elif defined(XP_MACOSX)
-UpdateDriverSetupMacCommandLine(argc, argv, restart);
-// We need to detect whether elevation is required for this update. This can
-// occur when an admin user installs the application, but another admin
-// user attempts to update (see bug 394984).
-if (restart && !IsRecursivelyWritable(installDirPath.get())) {
-  bool hasLaunched = LaunchElevatedUpdate(argc, argv, outpid);
-  free(argv);
-  if (!hasLaunched) {
-    LOG(("Failed to launch elevated update!"));
-    exit(1);
+if (restart) {
+  // Ensure we've added URLs to load into the app command line if we're
+  // restarting.
+  CommandLineServiceMac::SetupMacCommandLine(argc, argv, restart);
+
+  if (needElevation) {
+    bool hasLaunched = LaunchElevatedUpdate(argc, argv, outpid);
+    free(argv);
+    if (!hasLaunched) {
+      LOG(("Failed to launch elevated update!"));
+      exit(1);
+    }
+    exit(0);
   }
-  exit(0);
 }
 
 if (isStaged) {
@@ -609,20 +617,17 @@ if (isStaged) {
   }
 }
 
+#if !defined(XP_WIN)
 /**
  * Wait briefly to see if a process terminates, then return true if it has.
+ *
+ * (Not implemented on Windows, where HandleWatcher is used instead.)
  */
 static bool ProcessHasTerminated(ProcessType pt) {
-#if defined(XP_WIN)
-  if (WaitForSingleObject(pt, 1000)) {
-    return false;
-  }
-  CloseHandle(pt);
-  return true;
-#elif defined(XP_MACOSX)
+#  if defined(XP_MACOSX)
   // We're waiting for the process to terminate in LaunchChildMac.
   return true;
-#elif defined(XP_UNIX)
+#  elif defined(XP_UNIX)
   int exitStatus;
   pid_t exited = waitpid(pt, &exitStatus, WNOHANG);
   if (exited == 0) {
@@ -641,7 +646,7 @@ static bool ProcessHasTerminated(ProcessType pt) {
     LOG(("Error while running the updater process, check update.log"));
   }
   return true;
-#else
+#  else
   // No way to have a non-blocking implementation on these platforms,
   // because we're using NSPR and it only provides a blocking wait.
   int32_t exitCode;
@@ -650,20 +655,28 @@ static bool ProcessHasTerminated(ProcessType pt) {
     LOG(("Error while running the updater process, check update.log"));
   }
   return true;
-#endif
+#  endif
 }
+#endif
 
 nsresult ProcessUpdates(nsIFile* greDir, nsIFile* appDir, nsIFile* updRootDir,
                         int argc, char** argv, const char* appVersion,
                         bool restart, ProcessType* pid) {
   nsresult rv;
 
+#ifdef XP_WIN
+  // If we're in a package, we know any updates that we find are not for us.
+  if (mozilla::widget::WinUtils::HasPackageIdentity()) {
+    return NS_OK;
+  }
+#endif
+
   nsCOMPtr<nsIFile> updatesDir;
   rv = updRootDir->Clone(getter_AddRefs(updatesDir));
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = updatesDir->AppendNative(NS_LITERAL_CSTRING("updates"));
+  rv = updatesDir->AppendNative("updates"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = updatesDir->AppendNative(NS_LITERAL_CSTRING("0"));
+  rv = updatesDir->AppendNative("0"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Return early since there isn't a valid update when the update application
@@ -706,7 +719,11 @@ NS_IMPL_ISUPPORTS(nsUpdateProcessor, nsIUpdateProcessor)
 
 nsUpdateProcessor::nsUpdateProcessor() : mUpdaterPID(0) {}
 
+#ifdef XP_WIN
+nsUpdateProcessor::~nsUpdateProcessor() { mProcessWatcher.Stop(); }
+#else
 nsUpdateProcessor::~nsUpdateProcessor() = default;
+#endif
 
 NS_IMETHODIMP
 nsUpdateProcessor::ProcessUpdate() {
@@ -750,7 +767,7 @@ nsUpdateProcessor::ProcessUpdate() {
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Copy the parameters to the StagedUpdateInfo structure shared with the
-  // watcher thread.
+  // worker thread.
   mInfo.mGREDir = greDir;
   mInfo.mAppDir = appDir;
   mInfo.mUpdateRoot = updRoot;
@@ -762,295 +779,75 @@ nsUpdateProcessor::ProcessUpdate() {
   nsCOMPtr<nsIRunnable> r =
       NewRunnableMethod("nsUpdateProcessor::StartStagedUpdate", this,
                         &nsUpdateProcessor::StartStagedUpdate);
-  return NS_NewNamedThread("Update Watcher", getter_AddRefs(mProcessWatcher),
-                           r);
-}
-
-NS_IMETHODIMP
-nsUpdateProcessor::FixUpdateDirectoryPerms(bool aUseServiceOnFailure) {
-#ifndef XP_WIN
-  return NS_ERROR_NOT_IMPLEMENTED;
-#else
-  enum class State {
-    Initializing,
-    WaitingToStart,
-    Starting,
-    WaitingForFinish,
-  };
-
-  class FixUpdateDirectoryPermsRunnable final : public mozilla::Runnable {
-   public:
-    FixUpdateDirectoryPermsRunnable(const char* aName,
-                                    bool aUseServiceOnFailure,
-                                    const nsAutoString& aInstallPath)
-        : Runnable(aName),
-          mState(State::Initializing)
-#  ifdef MOZ_MAINTENANCE_SERVICE
-          ,
-          mUseServiceOnFailure(aUseServiceOnFailure)
-#  endif
-    {
-      size_t installPathSize = aInstallPath.Length() + 1;
-      mInstallPath = mozilla::MakeUnique<wchar_t[]>(installPathSize);
-      if (mInstallPath) {
-        HRESULT hrv = StringCchCopyW(mInstallPath.get(), installPathSize,
-                                     PromiseFlatString(aInstallPath).get());
-        if (FAILED(hrv)) {
-          mInstallPath.reset();
-        }
-      }
-    }
-
-    NS_IMETHOD Run() override {
-#  ifdef MOZ_MAINTENANCE_SERVICE
-      // These constants control how often and how many times we poll the
-      // maintenance service to see if it has stopped. If there is no delay in
-      // the event queue, this works out to 8 minutes of polling.
-      const unsigned int kMaxQueries = 2400;
-      const unsigned int kQueryIntervalMS = 200;
-      // These constants control how often and how many times we attempt to
-      // start the service. If there is no delay in the event queue, this works
-      // out to 5 seconds of polling.
-      const unsigned int kMaxStartAttempts = 50;
-      const unsigned int kStartAttemptIntervalMS = 100;
-#  endif
-
-      if (mState == State::Initializing) {
-        if (!mInstallPath) {
-          LOG(
-              ("Warning: No install path available in "
-               "FixUpdateDirectoryPermsRunnable\n"));
-        }
-        // In the event that the directory is owned by this user, we may be able
-        // to fix things without the maintenance service
-        mozilla::UniquePtr<wchar_t[]> updateDir;
-        HRESULT permResult = GetCommonUpdateDirectory(
-            mInstallPath.get(), SetPermissionsOf::AllFilesAndDirs, updateDir);
-        if (SUCCEEDED(permResult)) {
-          LOG(("Successfully fixed permissions from within Firefox\n"));
-          return NS_OK;
-        }
-#  ifdef MOZ_MAINTENANCE_SERVICE
-        else if (!mUseServiceOnFailure) {
-          LOG(
-              ("Error: Unable to fix permissions within Firefox and "
-               "maintenance service is disabled\n"));
-          return ReportUpdateError();
-        }
-#  else
-        LOG(("Error: Unable to fix permissions\n"));
-        return ReportUpdateError();
-#  endif
-
-#  ifdef MOZ_MAINTENANCE_SERVICE
-        SC_HANDLE serviceManager =
-            OpenSCManager(nullptr, nullptr,
-                          SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE);
-        mServiceManager.own(serviceManager);
-        if (!serviceManager) {
-          LOG(
-              ("Error: Unable to get the service manager. Cannot fix "
-               "permissions.\n"));
-          return NS_ERROR_FAILURE;
-        }
-        SC_HANDLE service = OpenServiceW(serviceManager, MAINTENANCE_SVC_NAME,
-                                         SERVICE_QUERY_STATUS | SERVICE_START);
-        mService.own(service);
-        if (!service) {
-          LOG(
-              ("Error: Unable to get the maintenance service. Unable fix "
-               "permissions without it.\n"));
-          return NS_ERROR_FAILURE;
-        }
-
-        mStartServiceArgCount = mInstallPath ? 3 : 2;
-        mStartServiceArgs =
-            mozilla::MakeUnique<LPCWSTR[]>(mStartServiceArgCount);
-        if (!mStartServiceArgs) {
-          LOG(
-              ("Error: Unable to allocate memory for argument pointers. Cannot "
-               "fix permissions.\n"));
-          return NS_ERROR_FAILURE;
-        }
-        mStartServiceArgs[0] = L"MozillaMaintenance";
-        mStartServiceArgs[1] = L"fix-update-directory-perms";
-        if (mInstallPath) {
-          mStartServiceArgs[2] = mInstallPath.get();
-        }
-
-        mState = State::WaitingToStart;
-        mCurrentTry = 1;
-#  endif
-      }
-#  ifdef MOZ_MAINTENANCE_SERVICE
-      if (mState == State::WaitingToStart ||
-          mState == State::WaitingForFinish) {
-        SERVICE_STATUS_PROCESS ssp;
-        DWORD bytesNeeded;
-        BOOL success =
-            QueryServiceStatusEx(mService, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp,
-                                 sizeof(SERVICE_STATUS_PROCESS), &bytesNeeded);
-        if (!success) {
-          DWORD lastError = GetLastError();
-          // These 3 errors can occur when the service is not yet stopped but it
-          // is stopping. If we got another error, waiting will probably not
-          // help.
-          if (lastError != ERROR_INVALID_SERVICE_CONTROL &&
-              lastError != ERROR_SERVICE_CANNOT_ACCEPT_CTRL &&
-              lastError != ERROR_SERVICE_NOT_ACTIVE) {
-            LOG(
-                ("Error: Unable to query service when fixing permissions. Got "
-                 "an error that cannot be fixed by waiting: 0x%lx\n",
-                 lastError));
-            return NS_ERROR_FAILURE;
-          }
-          if (mCurrentTry >= kMaxQueries) {
-            LOG(
-                ("Error: Unable to query service when fixing permissions: "
-                 "Timed out after %u attempts.\n",
-                 mCurrentTry));
-            return NS_ERROR_FAILURE;
-          }
-          return RetryInMS(kQueryIntervalMS);
-        } else {  // We successfully queried the service
-          if (ssp.dwCurrentState != SERVICE_STOPPED) {
-            return RetryInMS(kQueryIntervalMS);
-          }
-          if (mState == State::WaitingForFinish) {
-            if (ssp.dwWin32ExitCode != NO_ERROR) {
-              LOG(
-                  ("Error: Maintenance Service was unable to fix update "
-                   "directory permissions\n"));
-              return ReportUpdateError();
-            }
-            LOG(
-                ("Maintenance service successully fixed update directory "
-                 "permissions\n"));
-            return NS_OK;
-          }
-          mState = State::Starting;
-          mCurrentTry = 1;
-        }
-      }
-      if (mState == State::Starting) {
-        BOOL success = StartServiceW(mService, mStartServiceArgCount,
-                                     mStartServiceArgs.get());
-        if (success) {
-          mState = State::WaitingForFinish;
-          mCurrentTry = 1;
-          return RetryInMS(kQueryIntervalMS);
-        } else if (mCurrentTry >= kMaxStartAttempts) {
-          LOG(
-              ("Error: Unable to fix permissions: Timed out after %u attempts "
-               "to start the maintenance service\n",
-               mCurrentTry));
-          return NS_ERROR_FAILURE;
-        }
-        return RetryInMS(kStartAttemptIntervalMS);
-      }
-#  endif
-      // We should not have fallen through all three state checks above
-      LOG(
-          ("Error: Reached logically unreachable code when correcting update "
-           "directory permissions\n"));
-      return NS_ERROR_FAILURE;
-    }
-
-   private:
-    State mState;
-    mozilla::UniquePtr<wchar_t[]> mInstallPath;
-#  ifdef MOZ_MAINTENANCE_SERVICE
-    bool mUseServiceOnFailure;
-    unsigned int mCurrentTry;
-    nsAutoServiceHandle mServiceManager;
-    nsAutoServiceHandle mService;
-    DWORD mStartServiceArgCount;
-    mozilla::UniquePtr<LPCWSTR[]> mStartServiceArgs;
-
-    nsresult RetryInMS(unsigned int aDelayMS) {
-      ++mCurrentTry;
-      nsCOMPtr<nsIRunnable> runnable(this);
-      return NS_DelayedDispatchToCurrentThread(runnable.forget(), aDelayMS);
-    }
-#  endif
-    nsresult ReportUpdateError() {
-      return NS_DispatchToMainThread(NS_NewRunnableFunction(
-          "nsUpdateProcessor::FixUpdateDirectoryPerms::"
-          "FixUpdateDirectoryPermsRunnable::ReportUpdateError",
-          []() -> void {
-            nsCOMPtr<nsIObserverService> observerService =
-                services::GetObserverService();
-            if (NS_WARN_IF(!observerService)) {
-              return;
-            }
-            observerService->NotifyObservers(nullptr, "update-error",
-                                             u"bad-perms");
-          }));
-    }
-  };
-
-  nsCOMPtr<nsIProperties> dirSvc(
-      do_GetService("@mozilla.org/file/directory_service;1"));
-  NS_ENSURE_TRUE(dirSvc, NS_ERROR_FAILURE);
-
-  nsCOMPtr<nsIFile> appPath;
-  nsresult rv = dirSvc->Get(XRE_EXECUTABLE_FILE, NS_GET_IID(nsIFile),
-                            getter_AddRefs(appPath));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIFile> installDir;
-  rv = appPath->GetParent(getter_AddRefs(installDir));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoString installPath;
-  rv = installDir->GetPath(installPath);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  // Stream transport service has a thread pool we can use so that this happens
-  // off the main thread.
-  nsCOMPtr<nsIEventTarget> eventTarget =
-      do_GetService(NS_STREAMTRANSPORTSERVICE_CONTRACTID);
-  NS_ENSURE_TRUE(eventTarget, NS_ERROR_FAILURE);
-
-  nsCOMPtr<nsIRunnable> runnable = new FixUpdateDirectoryPermsRunnable(
-      "FixUpdateDirectoryPermsRunnable", aUseServiceOnFailure, installPath);
-  rv = eventTarget->Dispatch(runnable.forget());
-  NS_ENSURE_SUCCESS(rv, rv);
-#endif
-  return NS_OK;
+  return NS_NewNamedThread("UpdateProcessor", getter_AddRefs(mWorkerThread), r);
 }
 
 void nsUpdateProcessor::StartStagedUpdate() {
   MOZ_ASSERT(!NS_IsMainThread(), "main thread");
 
+  // If we fail to launch the updater process or its monitor for some reason, we
+  // need to shut down the worker thread, as there isn't anything more for us to
+  // do.
+  auto onExitStopThread = mozilla::MakeScopeExit([&] {
+    nsresult rv = NS_DispatchToMainThread(
+        NewRunnableMethod("nsUpdateProcessor::ShutdownWorkerThread", this,
+                          &nsUpdateProcessor::ShutdownWorkerThread));
+    NS_ENSURE_SUCCESS_VOID(rv);
+  });
+
+  // Launch updater. (We do this on a worker thread to avoid blocking the main
+  // thread with file I/O.)
   nsresult rv = ProcessUpdates(mInfo.mGREDir, mInfo.mAppDir, mInfo.mUpdateRoot,
                                mInfo.mArgc, mInfo.mArgv,
                                mInfo.mAppVersion.get(), false, &mUpdaterPID);
-  NS_ENSURE_SUCCESS_VOID(rv);
-
-  if (mUpdaterPID) {
-    // Track the state of the updater process while it is staging an update.
-    rv = NS_DispatchToCurrentThread(
-        NewRunnableMethod("nsUpdateProcessor::WaitForProcess", this,
-                          &nsUpdateProcessor::WaitForProcess));
-    NS_ENSURE_SUCCESS_VOID(rv);
-  } else {
-    // Failed to launch the updater process for some reason.
-    // We need to shutdown the current thread as there isn't anything more for
-    // us to do...
-    rv = NS_DispatchToMainThread(
-        NewRunnableMethod("nsUpdateProcessor::ShutdownWatcherThread", this,
-                          &nsUpdateProcessor::ShutdownWatcherThread));
-    NS_ENSURE_SUCCESS_VOID(rv);
+  if (NS_FAILED(rv)) {
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Error,
+            ("could not start updater process: %s", GetStaticErrorName(rv)));
+    return;
   }
+
+  if (!mUpdaterPID) {
+    // not an error
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Verbose,
+            ("ProcessUpdates() indicated nothing to do"));
+    return;
+  }
+
+#ifdef WIN32
+  // Set up a HandleWatcher to report to the main thread when we're done.
+  RefPtr<nsIThread> mainThread;
+  NS_GetMainThread(getter_AddRefs(mainThread));
+  mProcessWatcher.Watch(mUpdaterPID, mainThread,
+                        NewRunnableMethod("nsUpdateProcessor::UpdateDone", this,
+                                          &nsUpdateProcessor::UpdateDone));
+
+// On Windows, that's all we need the worker thread for. Let
+// `onExitStopThread` shut us down.
+#else
+  // Monitor the state of the updater process while it is staging an update.
+  rv = NS_DispatchToCurrentThread(
+      NewRunnableMethod("nsUpdateProcessor::WaitForProcess", this,
+                        &nsUpdateProcessor::WaitForProcess));
+  if (NS_FAILED(rv)) {
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Error,
+            ("could not start updater process poll: error %s",
+             GetStaticErrorName(rv)));
+    return;
+  }
+
+  // Leave the worker thread alive to run WaitForProcess. Either it or its
+  // successors will be responsible for shutting down the worker thread.
+  onExitStopThread.release();
+#endif
 }
 
-void nsUpdateProcessor::ShutdownWatcherThread() {
+void nsUpdateProcessor::ShutdownWorkerThread() {
   MOZ_ASSERT(NS_IsMainThread(), "not main thread");
-  mProcessWatcher->Shutdown();
-  mProcessWatcher = nullptr;
+  mWorkerThread->Shutdown();
+  mWorkerThread = nullptr;
 }
 
+#ifndef WIN32
 void nsUpdateProcessor::WaitForProcess() {
   MOZ_ASSERT(!NS_IsMainThread(), "main thread");
   if (ProcessHasTerminated(mUpdaterPID)) {
@@ -1062,6 +859,7 @@ void nsUpdateProcessor::WaitForProcess() {
                           &nsUpdateProcessor::WaitForProcess));
   }
 }
+#endif
 
 void nsUpdateProcessor::UpdateDone() {
   MOZ_ASSERT(NS_IsMainThread(), "not main thread");
@@ -1069,8 +867,159 @@ void nsUpdateProcessor::UpdateDone() {
   nsCOMPtr<nsIUpdateManager> um =
       do_GetService("@mozilla.org/updates/update-manager;1");
   if (um) {
-    um->RefreshUpdateStatus();
+    // This completes asynchronously, but nothing else that we are doing in this
+    // function requires waiting for this to complete.
+    RefPtr<mozilla::dom::Promise> outPromise;
+    um->RefreshUpdateStatus(getter_AddRefs(outPromise));
   }
 
-  ShutdownWatcherThread();
+// On Windows, shutting down the worker thread is taken care of by another task.
+// (Which may not have run yet, so we can't assert.)
+#ifndef XP_WIN
+  ShutdownWorkerThread();
+#endif
+}
+
+NS_IMETHODIMP
+nsUpdateProcessor::GetServiceRegKeyExists(bool* aResult) {
+#ifndef XP_WIN
+  return NS_ERROR_NOT_IMPLEMENTED;
+#else   // #ifdef XP_WIN
+  nsCOMPtr<nsIProperties> dirSvc(
+      do_GetService("@mozilla.org/file/directory_service;1"));
+  NS_ENSURE_TRUE(dirSvc, NS_ERROR_SERVICE_NOT_AVAILABLE);
+
+  nsCOMPtr<nsIFile> installBin;
+  nsresult rv = dirSvc->Get(XRE_EXECUTABLE_FILE, NS_GET_IID(nsIFile),
+                            getter_AddRefs(installBin));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsCOMPtr<nsIFile> installDir;
+  rv = installBin->GetParent(getter_AddRefs(installDir));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoString installPath;
+  rv = installDir->GetPath(installPath);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  wchar_t maintenanceServiceKey[MAX_PATH + 1];
+  BOOL success = CalculateRegistryPathFromFilePath(
+      PromiseFlatString(installPath).get(), maintenanceServiceKey);
+  NS_ENSURE_TRUE(success, NS_ERROR_FAILURE);
+
+  HKEY regHandle;
+  LSTATUS ls = RegOpenKeyExW(HKEY_LOCAL_MACHINE, maintenanceServiceKey, 0,
+                             KEY_QUERY_VALUE | KEY_WOW64_64KEY, &regHandle);
+  if (ls == ERROR_SUCCESS) {
+    RegCloseKey(regHandle);
+    *aResult = true;
+    return NS_OK;
+  }
+  if (ls == ERROR_FILE_NOT_FOUND) {
+    *aResult = false;
+    return NS_OK;
+  }
+  // We got an error we weren't expecting reading the registry.
+  return NS_ERROR_NOT_AVAILABLE;
+#endif  // #ifdef XP_WIN
+}
+
+NS_IMETHODIMP
+nsUpdateProcessor::AttemptAutomaticApplicationRestartWithLaunchArgs(
+    const nsTArray<nsString>& argvExtra, int32_t* pidRet) {
+#ifndef XP_WIN
+  return NS_ERROR_NOT_IMPLEMENTED;
+#else
+  // Retrieve current command line arguments for restart
+  // GetCommandLineW() returns a read only pointer to
+  // the arguments the process was launched with.
+  LPWSTR currentCommandLine = GetCommandLineW();
+
+  // Spawn a new process for the application based on the current
+  // command line with the -restart-pid <pid> flag. This flag
+  // can be used with MaybeWaitForProcessExit() to have
+  // the process wait until the parent process has exited.
+  if (currentCommandLine) {
+    // Append additional command line arguments to current command line for
+    // restart.
+    int currentArgc = 0;
+    UniquePtr<LPWSTR, LocalFreeDeleter> currentArgv(
+        CommandLineToArgvW(currentCommandLine, &currentArgc));
+    nsTArray<wchar_t*> restartCommandLineArgv(currentArgc + argvExtra.Length() +
+                                              2);
+    for (int i = 0; i < currentArgc; i++) {
+      restartCommandLineArgv.AppendElement(currentArgv.get()[i]);
+    }
+    for (const nsString& arg : argvExtra) {
+      restartCommandLineArgv.AppendElement(static_cast<wchar_t*>(arg.get()));
+    }
+    // Append -restart-pid flag and pid to restart command line.
+    DWORD pidCurrent = GetCurrentProcessId();
+    nsString pid;
+    pid.AppendInt(static_cast<uint32_t>(pidCurrent));
+    nsString pidFlag = u"-restart-pid"_ns;
+    restartCommandLineArgv.AppendElement(pidFlag.get());
+    restartCommandLineArgv.AppendElement(pid.get());
+
+    // Create new process that interacts with MaybeWaitForProcessExit()
+    // and sleeps until the original process is killed.
+    wchar_t exeName[MAX_PATH];
+    GetModuleFileNameW(NULL, exeName, MAX_PATH);
+    HANDLE childHandle;
+    WinLaunchChild(exeName, restartCommandLineArgv.Length(),
+                   restartCommandLineArgv.Elements(), nullptr, &childHandle);
+    *pidRet = GetProcessId(childHandle);
+    CloseHandle(childHandle);
+    if (!*pidRet) {
+      printf_stderr("*** ApplyUpdate: !pidRet ***\n");
+      return NS_ERROR_ABORT;
+    }
+    printf_stderr("*** ApplyUpdate: launched pidRet = %d ***\n", *pidRet);
+
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Debug,
+            ("register application restart succeeded"));
+  } else {
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Error,
+            ("could not register application restart"));
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  return NS_OK;
+#endif  // #ifndef XP_WIN
+}
+
+NS_IMETHODIMP
+nsUpdateProcessor::WaitForProcessExit(uint32_t pid, uint32_t timeoutMS) {
+#ifndef XP_WIN
+  return NS_ERROR_NOT_IMPLEMENTED;
+#else
+
+  nsAutoHandle hProcess(OpenProcess(SYNCHRONIZE, FALSE, pid));
+  if (!hProcess) {
+    // It's possible the pid is incorrect, or the process has exited.
+    // This isn't necessarily a failure state as if the process has
+    // already exited then that is the desired behavior.
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Warning,
+            ("WaitForProcessExit(%d): failed to OpenProcess", pid));
+    return NS_OK;
+  }
+
+  // Wait up to timeoutMS milliseconds for termination.
+  DWORD waitRv = WaitForSingleObjectEx(hProcess, timeoutMS, FALSE);
+  if (waitRv != WAIT_OBJECT_0) {
+    if (waitRv == WAIT_TIMEOUT) {
+      MOZ_LOG(
+          sUpdateLog, mozilla::LogLevel::Debug,
+          ("WaitForProcessExit(%d): timed out after %d MS", pid, timeoutMS));
+      return NS_ERROR_ABORT;
+    }
+
+    MOZ_LOG(sUpdateLog, mozilla::LogLevel::Warning,
+            ("WaitForProcessExit(%d): unexpected error %lx", pid, waitRv));
+    return NS_ERROR_FAILURE;
+  }
+
+  MOZ_LOG(sUpdateLog, mozilla::LogLevel::Debug,
+          ("WaitForProcessExit(%d): success", pid));
+  return NS_OK;
+#endif  // XP_WIN
 }

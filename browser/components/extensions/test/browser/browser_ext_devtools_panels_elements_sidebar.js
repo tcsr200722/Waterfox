@@ -157,7 +157,7 @@ add_task(async function test_devtools_panels_elements_sidebar() {
 
   await extension.startup();
 
-  const { toolbox, target } = await openToolboxForTab(tab);
+  const toolbox = await openToolboxForTab(tab);
 
   await extension.awaitMessage("devtools_page_loaded");
 
@@ -293,29 +293,29 @@ add_task(async function test_devtools_panels_elements_sidebar() {
 
   is(
     inspector.sidebar.getTabPanel(sidebarIds[0]),
-    undefined,
+    null,
     "The first registered sidebar has been removed"
   );
 
   is(
     inspector.sidebar.getTabPanel(sidebarIds[1]),
-    undefined,
+    null,
     "The second registered sidebar has been removed"
   );
 
   is(
     inspector.sidebar.getTabPanel(sidebarIds[2]),
-    undefined,
+    null,
     "The third registered sidebar has been removed"
   );
 
   is(
     inspector.sidebar.getTabPanel(sidebarIds[3]),
-    undefined,
-    "The third registered sidebar has been removed"
+    null,
+    "The fourth registered sidebar has been removed"
   );
 
-  await expectNoSuchActorIDs(target.client, actors);
+  await expectNoSuchActorIDs(toolbox.target.client, actors);
 
   await closeToolboxForTab(tab);
 

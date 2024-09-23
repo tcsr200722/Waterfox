@@ -8,7 +8,6 @@
 #define mozilla_dom_MessageChannel_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
@@ -17,6 +16,8 @@
 class nsIGlobalObject;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class MessagePort;
@@ -24,7 +25,7 @@ class MessagePort;
 class MessageChannel final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MessageChannel)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MessageChannel)
 
   nsIGlobalObject* GetParentObject() const { return mGlobal; }
 

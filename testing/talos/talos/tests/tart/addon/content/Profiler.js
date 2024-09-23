@@ -16,7 +16,7 @@
 // relevant parts of our tests.
 var Profiler;
 
-(function() {
+(function () {
   var _profiler;
 
   // If this script is loaded in a framescript context, there won't be a
@@ -30,8 +30,16 @@ var Profiler;
   // The subtest name that beginTest() was called with.
   var currentTest = "";
 
+  // Start time of the current subtest. It will be used to create a duration
+  // marker at the end of the subtest.
+  var profilerSubtestStartTime;
+
   // Profiling settings.
-  var profiler_interval, profiler_entries, profiler_threadsArray, profiler_dir;
+  var profiler_interval,
+    profiler_entries,
+    profiler_featuresArray,
+    profiler_threadsArray,
+    profiler_dir;
 
   try {
     // eslint-disable-next-line mozilla/use-services
@@ -61,6 +69,7 @@ var Profiler;
      * The following properties on the object are respected:
      *  - gecko_profile_interval
      *  - gecko_profile_entries
+     *  - gecko_profile_features
      *  - gecko_profile_threads
      *  - gecko_profile_dir
      */
@@ -73,11 +82,14 @@ var Profiler;
         Number.isFinite(obj.gecko_profile_interval * 1) &&
         "gecko_profile_entries" in obj &&
         Number.isFinite(obj.gecko_profile_entries * 1) &&
+        "gecko_profile_features" in obj &&
+        typeof obj.gecko_profile_features == "string" &&
         "gecko_profile_threads" in obj &&
         typeof obj.gecko_profile_threads == "string"
       ) {
         profiler_interval = obj.gecko_profile_interval;
         profiler_entries = obj.gecko_profile_entries;
+        profiler_featuresArray = obj.gecko_profile_features.split(",");
         profiler_threadsArray = obj.gecko_profile_threads.split(",");
         profiler_dir = obj.gecko_profile_dir;
         enabled = true;
@@ -94,16 +106,14 @@ var Profiler;
         _profiler.StartProfiler(
           profiler_entries,
           profiler_interval,
-          ["js", "leaf", "stackwalk", "threads"],
+          profiler_featuresArray,
           profiler_threadsArray
         );
-        if (_profiler.PauseSampling) {
-          _profiler.PauseSampling();
-        }
       }
     },
     finishTest: function Profiler__finishTest() {
       if (_profiler && enabled) {
+        _profiler.Pause();
         _profiler.dumpProfileToFile(
           profiler_dir + "/" + currentTest + ".profile"
         );
@@ -116,29 +126,45 @@ var Profiler;
         _profiler.StopProfiler();
       }
     },
-    resume: function Profiler__resume(name, explicit) {
+
+    /**
+     * Set a marker indicating the start of the subtest.
+     *
+     * It will also set the `profilerSubtestStartTime` to be used later by
+     * `subtestEnd`.
+     */
+    subtestStart: function Profiler__subtestStart(name, explicit) {
+      profilerSubtestStartTime = performance.now();
       if (_profiler) {
-        if (_profiler.ResumeSampling) {
-          _profiler.ResumeSampling();
-        }
-        _profiler.AddMarker(
+        ChromeUtils.addProfilerMarker(
+          "Talos",
+          { category: "Test" },
           explicit ? name : 'Start of test "' + (name || test_name) + '"'
         );
       }
     },
-    pause: function Profiler__pause(name, explicit) {
+
+    /**
+     * Set a marker indicating the duration of the subtest.
+     *
+     * This will take the `profilerSubtestStartTime` that was set by
+     * `subtestStart` and will create a duration marker by setting the `endTime`
+     * to the current time.
+     */
+    subtestEnd: function Profiler__subtestEnd(name, explicit) {
       if (_profiler) {
-        if (_profiler.PauseSampling) {
-          _profiler.PauseSampling();
-        }
-        _profiler.AddMarker(
-          explicit ? name : 'End of test "' + (name || test_name) + '"'
+        ChromeUtils.addProfilerMarker(
+          "Talos",
+          { startTime: profilerSubtestStartTime, category: "Test" },
+          explicit ? name : 'Test "' + (name || test_name) + '"'
         );
       }
     },
     mark: function Profiler__mark(marker, explicit) {
       if (_profiler) {
-        _profiler.AddMarker(
+        ChromeUtils.addProfilerMarker(
+          "Talos",
+          { category: "Test" },
           explicit ? marker : 'Profiler: "' + (marker || test_name) + '"'
         );
       }

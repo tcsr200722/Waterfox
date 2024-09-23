@@ -20,15 +20,11 @@ ifndef INCLUDED_CONFIG_MK
 include $(topsrcdir)/config/config.mk
 endif
 
-ifndef INCLUDED_VERSION_MK
-include $(MOZILLA_DIR)/config/version.mk
-endif
-
 USE_AUTOTARGETS_MK = 1
 include $(MOZILLA_DIR)/config/makefiles/makeutils.mk
 
 ifdef REBUILD_CHECK
-REPORT_BUILD = $(info $(shell $(PYTHON3) $(MOZILLA_DIR)/config/rebuild_check.py $@ $^))
+REPORT_BUILD = $(info $(shell $(PYTHON3) $(MOZILLA_DIR)/config/rebuild_check.py $@ $?))
 REPORT_BUILD_VERBOSE = $(REPORT_BUILD)
 else
 REPORT_BUILD = $(info $(relativesrcdir)/$(notdir $@))
@@ -103,8 +99,6 @@ ifdef LIB_IS_C_ONLY
 MKSHLIB			= $(MKCSHLIB)
 endif
 
-EMBED_MANIFEST_AT=2
-
 endif # MKSHLIB
 endif # FORCE_SHARED_LIB
 
@@ -134,7 +128,7 @@ LINK_PDBFILE = $(basename $@).pdb
 endif
 endif
 
-ifndef GNU_CC
+ifeq ($(CC_TYPE),clang-cl)
 
 ifdef SIMPLE_PROGRAMS
 COMPILE_PDB_FLAG ?= -Fd$(basename $(@F)).pdb
@@ -146,13 +140,22 @@ ifdef MOZ_DEBUG
 CODFILE=$(basename $(@F)).cod
 endif
 
-endif # !GNU_CC
+endif # CC_TYPE == clang-cl
 endif # WINNT
 
-ifeq (arm-Darwin,$(CPU_ARCH)-$(OS_TARGET))
+ifeq (arm-Darwin,$(TARGET_CPU)-$(OS_TARGET))
 ifdef PROGRAM
 MOZ_PROGRAM_LDFLAGS += -Wl,-rpath -Wl,@executable_path/Frameworks
 endif
+endif
+
+# For Mac executables, set the @rpath to be @executable_path by default so that
+# shared libraries built with an @rpath install name in the same directory
+# as the executable can be resolved. Executables not in the same directory
+# should override the @rpath with a relative path such as @executable_path/../
+# depending on their install location.
+ifeq ($(OS_ARCH),Darwin)
+MOZ_PROGRAM_LDFLAGS += -Wl,-rpath,@executable_path
 endif
 
 ifeq ($(OS_ARCH),WINNT)
@@ -178,7 +181,7 @@ endif
 
 ifdef COMPILE_ENVIRONMENT
 ifndef TARGETS
-TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_SHARED_LIBRARY) $(WASM_LIBRARY)
+TARGETS			= $(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_SHARED_LIBRARY)
 endif
 
 COBJS = $(notdir $(CSRCS:.c=.$(OBJ_SUFFIX)))
@@ -197,11 +200,11 @@ _OBJS = $(COBJS) $(SOBJS) $(CPPOBJS) $(CMOBJS) $(CMMOBJS) $(ASOBJS) $(CWASMOBJS)
 OBJS = $(strip $(_OBJS))
 endif
 
-HOST_COBJS = $(addprefix host_,$(notdir $(HOST_CSRCS:.c=.$(_OBJ_SUFFIX))))
+HOST_COBJS = $(addprefix host_,$(notdir $(HOST_CSRCS:.c=.$(OBJ_SUFFIX))))
 # HOST_CPPOBJS can have different extensions (eg: .cpp, .cc)
-HOST_CPPOBJS = $(addprefix host_,$(notdir $(addsuffix .$(_OBJ_SUFFIX),$(basename $(HOST_CPPSRCS)))))
-HOST_CMOBJS = $(addprefix host_,$(notdir $(HOST_CMSRCS:.m=.$(_OBJ_SUFFIX))))
-HOST_CMMOBJS = $(addprefix host_,$(notdir $(HOST_CMMSRCS:.mm=.$(_OBJ_SUFFIX))))
+HOST_CPPOBJS = $(addprefix host_,$(notdir $(addsuffix .$(OBJ_SUFFIX),$(basename $(HOST_CPPSRCS)))))
+HOST_CMOBJS = $(addprefix host_,$(notdir $(HOST_CMSRCS:.m=.$(OBJ_SUFFIX))))
+HOST_CMMOBJS = $(addprefix host_,$(notdir $(HOST_CMMSRCS:.mm=.$(OBJ_SUFFIX))))
 ifndef HOST_OBJS
 _HOST_OBJS = $(HOST_COBJS) $(HOST_CPPOBJS) $(HOST_CMOBJS) $(HOST_CMMOBJS)
 HOST_OBJS = $(strip $(_HOST_OBJS))
@@ -216,42 +219,12 @@ SIMPLE_PROGRAMS :=
 HOST_SHARED_LIBRARY :=
 HOST_PROGRAM :=
 HOST_SIMPLE_PROGRAMS :=
-WASM_LIBRARY :=
-endif
-
-WASM_ARCHIVE = $(addsuffix .$(WASM_OBJ_SUFFIX),$(WASM_LIBRARY))
-
-ALL_TRASH = \
-	$(GARBAGE) $(TARGETS) $(OBJS) $(PROGOBJS) LOGS TAGS a.out \
-	$(filter-out $(ASFILES),$(OBJS:.$(OBJ_SUFFIX)=.s)) $(OBJS:.$(OBJ_SUFFIX)=.ii) \
-	$(OBJS:.$(OBJ_SUFFIX)=.i) $(OBJS:.$(OBJ_SUFFIX)=.i_o) \
-	$(HOST_PROGOBJS) $(HOST_OBJS) $(IMPORT_LIBRARY) \
-	so_locations _gen _stubs $(wildcard *.res) $(wildcard *.RES) \
-	$(wildcard *.pdb) $(CODFILE) $(IMPORT_LIBRARY) \
-	$(SHARED_LIBRARY:$(DLL_SUFFIX)=.exp) $(wildcard *.ilk) \
-	$(PROGRAM:$(BIN_SUFFIX)=.exp) $(SIMPLE_PROGRAMS:$(BIN_SUFFIX)=.exp) \
-	$(PROGRAM:$(BIN_SUFFIX)=.lib) $(SIMPLE_PROGRAMS:$(BIN_SUFFIX)=.lib) \
-	$(SIMPLE_PROGRAMS:$(BIN_SUFFIX)=.$(OBJ_SUFFIX)) \
-	$(WASM_ARCHIVE) $(wildcard gts_tmp_*) $(LIBRARY:%.a=.%.timestamp)
-ALL_TRASH_DIRS = \
-	$(GARBAGE_DIRS) /no-such-file
-
-ifdef QTDIR
-GARBAGE                 += $(MOCSRCS)
-endif
-
-ifdef SIMPLE_PROGRAMS
-GARBAGE			+= $(SIMPLE_PROGRAMS:%=%.$(OBJ_SUFFIX))
-endif
-
-ifdef HOST_SIMPLE_PROGRAMS
-GARBAGE			+= $(HOST_SIMPLE_PROGRAMS:%=%.$(_OBJ_SUFFIX))
 endif
 
 ifdef MACH
 ifndef NO_BUILDSTATUS_MESSAGES
 define BUILDSTATUS
-@echo 'BUILDSTATUS $1'
+@echo 'BUILDSTATUS@$(relativesrcdir) $1'
 
 endef
 endif
@@ -284,8 +257,6 @@ ifndef HOST_PROGOBJS
 HOST_PROGOBJS		= $(HOST_OBJS)
 endif
 
-GARBAGE_DIRS    += $(wildcard $(CURDIR)/$(MDDEPDIR))
-
 #
 # Tags: emacs (etags), vi (ctags)
 # TAG_PROGRAM := ctags -L -
@@ -306,9 +277,9 @@ endif
 #
 
 ifeq ($(OS_ARCH),Darwin)
-ifdef SHARED_LIBRARY
-_LOADER_PATH := @executable_path
-EXTRA_DSO_LDOPTS	+= -dynamiclib -install_name $(_LOADER_PATH)/$(SHARED_LIBRARY) -compatibility_version 1 -current_version 1 -single_module
+ifneq (,$(SHARED_LIBRARY))
+_LOADER_PATH := @rpath
+EXTRA_DSO_LDOPTS	+= -dynamiclib -install_name $(_LOADER_PATH)/$(@F) -compatibility_version 1 -current_version 1
 endif
 endif
 
@@ -324,7 +295,7 @@ endif
 # MINGW32
 #
 ifeq ($(OS_ARCH),WINNT)
-ifdef GNU_CC
+ifneq ($(CC_TYPE),clang-cl)
 DSO_LDOPTS += -Wl,--out-implib -Wl,$(IMPORT_LIBRARY)
 endif
 endif
@@ -337,11 +308,11 @@ IFLAGS1 = -m 644
 IFLAGS2 = -m 755
 endif
 
-ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
+ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
 OUTOPTION = -Fo# eol
 else
 OUTOPTION = -o # eol
-endif # WINNT && !GNU_CC
+endif # WINNT && clang-cl
 
 ifeq (,$(CROSS_COMPILE))
 HOST_OUTOPTION = $(OUTOPTION)
@@ -397,21 +368,27 @@ ECHO := true
 QUIET := -q
 endif
 
-# Do everything from scratch
-everything::
-	$(MAKE) clean
-	$(MAKE) all
-
 # Dependencies which, if modified, should cause everything to rebuild
 GLOBAL_DEPS += Makefile $(addprefix $(DEPTH)/config/,$(INCLUDED_AUTOCONF_MK)) $(MOZILLA_DIR)/config/config.mk
+
+ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+# We always build .res files for programs and shared libraries
+resfile = $(notdir $1).res
+# We also build .res files for simple programs if a corresponding manifest
+# exists. We'll generate a .rc file that includes the manifest.
+resfile_for_manifest = $(if $(wildcard $(srcdir)/$(notdir $1).manifest),$(call resfile,$1))
+else
+resfile =
+resfile_for_manifest =
+endif
 
 ##############################################
 ifdef COMPILE_ENVIRONMENT
 compile:: host target
 
-host:: $(HOST_OBJS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_RUST_PROGRAMS) $(HOST_RUST_LIBRARY_FILE) $(HOST_SHARED_LIBRARY)
+host:: $(HOST_OBJS) $(HOST_PROGRAM) $(HOST_SIMPLE_PROGRAMS) $(HOST_RUST_PROGRAMS) $(HOST_SHARED_LIBRARY)
 
-target:: $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(RUST_LIBRARY_FILE) $(RUST_PROGRAMS) $(WASM_LIBRARY))
+target:: $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(LIBRARY) $(SHARED_LIBRARY) $(PROGRAM) $(SIMPLE_PROGRAMS) $(RUST_PROGRAMS))
 
 ifndef LIBRARY
 ifdef OBJS
@@ -419,59 +396,35 @@ target:: $(OBJS)
 endif
 endif
 
-target-objects: $(OBJS) $(PROGOBJS)
-host-objects: $(HOST_OBJS) $(HOST_PROGOBJS)
+target-objects: $(OBJS) $(PROGOBJS) $(filter-out $(MOZBUILD_NON_DEFAULT_TARGETS),$(RUST_LIBRARY_FILE))
+host-objects: $(HOST_OBJS) $(HOST_PROGOBJS) $(HOST_RUST_LIBRARY_FILE)
 
 syms::
 
 include $(MOZILLA_DIR)/config/makefiles/target_binaries.mk
 endif
 
-clean clobber realclean clobber_all::
-	-$(RM) $(ALL_TRASH)
-	-$(RM) -r $(ALL_TRASH_DIRS)
-
-clean clobber realclean clobber_all distclean::
-	$(foreach dir,$(DIRS),-$(call SUBMAKE,$@,$(dir)))
-
-distclean::
-	-$(RM) -r $(ALL_TRASH_DIRS)
-	-$(RM) $(ALL_TRASH)  \
-	Makefile .HSancillary \
-	$(wildcard *.$(OBJ_SUFFIX)) $(wildcard *.ho) $(wildcard host_*.o*) \
-	$(wildcard *.$(LIB_SUFFIX)) $(wildcard *$(DLL_SUFFIX)) \
-	$(wildcard *.$(IMPORT_LIB_SUFFIX))
-
 alltags:
 	$(RM) TAGS
 	find $(topsrcdir) -name dist -prune -o \( -name '*.[hc]' -o -name '*.cp' -o -name '*.cpp' -o -name '*.idl' \) -print | $(TAG_PROGRAM)
 
 define EXPAND_CC_OR_CXX
-$(if $(PROG_IS_C_ONLY_$(1)),$(CC),$(CCC))
+$(if $(PROG_IS_C_ONLY_$(notdir $(1))),$(CC),$(CCC))
 endef
 
 #
 # PROGRAM = Foo
 # creates OBJS, links with LIBS to create Foo
 #
-$(PROGRAM): $(PROGOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(RESFILE) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
+$(PROGRAM): $(PROGOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(call resfile,$(PROGRAM)) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
 	$(REPORT_BUILD)
-	@$(RM) $@.manifest
-ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
-	$(LINKER) -OUT:$@ -PDB:$(LINK_PDBFILE) -IMPLIB:$(basename $(@F)).lib $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $($(notdir $@)_OBJS) $(RESFILE) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
-ifdef MSMANIFEST_TOOL
-	@if test -f $@.manifest; then \
-		echo "Manifest in objdir is not supported"; \
-		exit 1; \
-	elif test -f '$(srcdir)/$(notdir $@).manifest'; then \
-		echo 'Embedding manifest from $(srcdir_rel)/$(notdir $@).manifest'; \
-		$(call WINEWRAP,$(MT)) -NOLOGO -MANIFEST '$(srcdir_rel)/$(notdir $@).manifest' -OUTPUTRESOURCE:$@\;1; \
-	fi
-endif	# MSVC with manifest tool
-else # !WINNT || GNU_CC
-	$(call EXPAND_CC_OR_CXX,$@) -o $@ $(COMPUTED_CXX_LDFLAGS) $(PGO_CFLAGS) $($(notdir $@)_OBJS) $(RESFILE) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
-	$(call py_action,check_binary,--target $@)
-endif # WINNT && !GNU_CC
+	$(call BUILDSTATUS,START_Program $(@F))
+ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
+	$(LINKER) -OUT:$@ -PDB:$(LINK_PDBFILE) -IMPLIB:$(basename $(@F)).lib $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $($(notdir $@)_OBJS) $(filter %.res,$^) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
+else # !WINNT || !clang-cl
+	$(call EXPAND_CC_OR_CXX,$@) -o $@ $(COMPUTED_CXX_LDFLAGS) $($(notdir $@)_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
+	$(call py_action,check_binary $(@F),$@)
+endif # WINNT && clang-cl
 
 ifdef ENABLE_STRIP
 	$(STRIP) $(STRIP_FLAGS) $@
@@ -479,20 +432,13 @@ endif
 ifdef MOZ_POST_PROGRAM_COMMAND
 	$(MOZ_POST_PROGRAM_COMMAND) $@
 endif
+	$(call BUILDSTATUS,END_Program $(@F))
 
 $(HOST_PROGRAM): $(HOST_PROGOBJS) $(HOST_LIBS) $(HOST_EXTRA_DEPS) $(GLOBAL_DEPS) $(call mkdir_deps,$(DEPTH)/dist/host/bin)
 	$(REPORT_BUILD)
-ifeq (_WINNT,$(GNU_CC)_$(HOST_OS_ARCH))
+	$(call BUILDSTATUS,START_Program $(@F))
+ifeq (clang-cl_WINNT,$(HOST_CC_TYPE)_$(HOST_OS_ARCH))
 	$(HOST_LINKER) -OUT:$@ -PDB:$(HOST_PDBFILE) $($(notdir $@)_OBJS) $(WIN32_EXE_LDFLAGS) $(HOST_LDFLAGS) $(HOST_LINKER_LIBPATHS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
-ifdef MSMANIFEST_TOOL
-	@if test -f $@.manifest; then \
-		echo "Manifest in objdir is not supported"; \
-		exit 1; \
-	elif test -f '$(srcdir)/$(notdir $@).manifest'; then \
-		echo 'Embedding manifest from $(srcdir_rel)/$(notdir $@).manifest'; \
-		$(call WINEWRAP,$(MT)) -NOLOGO -MANIFEST '$(srcdir_rel)/$(notdir $@).manifest' -OUTPUTRESOURCE:$@\;1; \
-	fi
-endif	# MSVC with manifest tool
 else
 ifeq ($(HOST_CPP_PROG_LINK),1)
 	$(HOST_CXX) -o $@ $(HOST_CXX_LDFLAGS) $(HOST_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
@@ -500,9 +446,7 @@ else
 	$(HOST_CC) -o $@ $(HOST_C_LDFLAGS) $(HOST_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 endif # HOST_CPP_PROG_LINK
 endif
-ifndef CROSS_COMPILE
-	$(call py_action,check_binary,--host $@)
-endif
+	$(call BUILDSTATUS,END_Program $(@F))
 
 #
 # This is an attempt to support generation of multiple binaries
@@ -512,22 +456,20 @@ endif
 # SIMPLE_PROGRAMS = Foo Bar
 # creates Foo.o Bar.o, links with LIBS to create Foo, Bar.
 #
-$(SIMPLE_PROGRAMS): %$(BIN_SUFFIX): %.$(OBJ_SUFFIX) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
+define simple_program_deps
+$1: $(1:$(BIN_SUFFIX)=.$(OBJ_SUFFIX)) $(STATIC_LIBS) $(EXTRA_DEPS) $(call resfile_for_manifest,$1) $(GLOBAL_DEPS)
+endef
+$(foreach p,$(SIMPLE_PROGRAMS),$(eval $(call simple_program_deps,$(p))))
+
+$(SIMPLE_PROGRAMS):
 	$(REPORT_BUILD)
-ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
-	$(LINKER) -out:$@ -pdb:$(LINK_PDBFILE) $($@_OBJS) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
-ifdef MSMANIFEST_TOOL
-	@if test -f $@.manifest; then \
-		echo "Manifest in objdir is not supported"; \
-		exit 1; \
-	elif test -f '$(srcdir)/$(notdir $@).manifest'; then \
-		$(call WINEWRAP,$(MT)) -NOLOGO -MANIFEST '$(srcdir_rel)/$(notdir $@).manifest' -OUTPUTRESOURCE:$@\;1; \
-	fi
-endif	# MSVC with manifest tool
+	$(call BUILDSTATUS,START_Program $(@F))
+ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
+	$(LINKER) -out:$@ -pdb:$(LINK_PDBFILE) $($@_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(MOZ_PROGRAM_LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(OS_LIBS)
 else
-	$(call EXPAND_CC_OR_CXX,$@) $(COMPUTED_CXX_LDFLAGS) $(PGO_CFLAGS) -o $@ $($@_OBJS) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
-	$(call py_action,check_binary,--target $@)
-endif # WINNT && !GNU_CC
+	$(call EXPAND_CC_OR_CXX,$@) $(COMPUTED_CXX_LDFLAGS) -o $@ $($@_OBJS) $(filter %.res,$^) $(WIN32_EXE_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(MOZ_PROGRAM_LDFLAGS) $(SHARED_LIBS) $(OS_LIBS)
+	$(call py_action,check_binary $(@F),$@)
+endif # WINNT && clang-cl
 
 ifdef ENABLE_STRIP
 	$(STRIP) $(STRIP_FLAGS) $@
@@ -535,45 +477,35 @@ endif
 ifdef MOZ_POST_PROGRAM_COMMAND
 	$(MOZ_POST_PROGRAM_COMMAND) $@
 endif
+	$(call BUILDSTATUS,END_Program $(@F))
 
 $(HOST_SIMPLE_PROGRAMS): host_%$(HOST_BIN_SUFFIX): $(HOST_LIBS) $(HOST_EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
-ifeq (WINNT_,$(HOST_OS_ARCH)_$(GNU_CC))
+	$(call BUILDSTATUS,START_Program $(@F))
+ifeq (WINNT_clang-cl,$(HOST_OS_ARCH)_$(HOST_CC_TYPE))
 	$(HOST_LINKER) -OUT:$@ -PDB:$(HOST_PDBFILE) $($(notdir $@)_OBJS) $(WIN32_EXE_LDFLAGS) $(HOST_LDFLAGS) $(HOST_LINKER_LIBPATHS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 else
 ifneq (,$(HOST_CPPSRCS)$(USE_HOST_CXX))
-	$(HOST_CXX) $(HOST_OUTOPTION)$@ $(HOST_CXX_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
+	$(HOST_CXX) $(HOST_OUTOPTION)$@ $(HOST_CXX_LDFLAGS) $(HOST_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 else
-	$(HOST_CC) $(HOST_OUTOPTION)$@ $(HOST_C_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
+	$(HOST_CC) $(HOST_OUTOPTION)$@ $(HOST_C_LDFLAGS) $(HOST_LDFLAGS) $($(notdir $@)_OBJS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 endif
 endif
-ifndef CROSS_COMPILE
-	$(call py_action,check_binary,--host $@)
-endif
+	$(call BUILDSTATUS,END_Program $(@F))
 
 $(LIBRARY): $(OBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD)
+	$(call BUILDSTATUS,START_StaticLib $@)
 	$(RM) $(REAL_LIBRARY)
 	$(AR) $(AR_FLAGS) $($@_OBJS)
+	$(call BUILDSTATUS,END_StaticLib $@)
 
 $(WASM_ARCHIVE): $(CWASMOBJS) $(CPPWASMOBJS) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 	$(REPORT_BUILD_VERBOSE)
-	$(RM) $(WASM_LIBRARY).$(WASM_OBJ_SUFFIX)
-	$(WASM_CXX) $(OUTOPTION)$@ -Wl,--export-all $(WASM_LDFLAGS) $(CWASMOBJS) $(CPPWASMOBJS)
-
-lucet_options := \
-    --target $(LUCETC_TARGET) \
-    --target-cpu baseline \
-    --bindings $(topsrcdir)/third_party/rust/lucet-wasi/bindings.json \
-    --guard-size 4GiB \
-    --min-reserved-size 4GiB \
-    --max-reserved-size 4GiB \
-    --opt-level 2
-
-$(WASM_LIBRARY): $(WASM_LIBRARY).$(WASM_OBJ_SUFFIX)
-	$(REPORT_BUILD)
-	$(RM) $(WASM_LIBRARY)
-	env LD="$(CC)" LDFLAGS="$(LUCETC_LDFLAGS)" $(LUCETC) $(lucet_options) $(WASM_LIBRARY).$(WASM_OBJ_SUFFIX) -o $(WASM_LIBRARY)
+	$(call BUILDSTATUS,START_WasmLib $@)
+	$(RM) $(WASM_ARCHIVE)
+	$(WASM_CXX) -o $@ -Wl,--export-all -Wl,--stack-first -Wl,-z,stack-size=$(if $(MOZ_OPTIMIZE),262144,1048576) -Wl,--no-entry -Wl,--import-memory -Wl,--import-table $(CWASMOBJS) $(CPPWASMOBJS) $(addprefix -l,$(WASM_LIBS))
+	$(call BUILDSTATUS,END_WasmLib $@)
 
 ifeq ($(OS_ARCH),WINNT)
 # Import libraries are created by the rules creating shared libraries.
@@ -588,43 +520,34 @@ endif
 
 $(HOST_SHARED_LIBRARY): Makefile
 	$(REPORT_BUILD)
+	$(call BUILDSTATUS,START_SharedLib $@)
 	$(RM) $@
 ifneq (,$(filter clang-cl,$(HOST_CC_TYPE)))
 	$(HOST_LINKER) -DLL -OUT:$@ $($(notdir $@)_OBJS) $(HOST_CXX_LDFLAGS) $(HOST_LDFLAGS) $(HOST_LINKER_LIBPATHS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 else
 	$(HOST_CXX) $(HOST_OUTOPTION)$@ $($(notdir $@)_OBJS) $(HOST_CXX_LDFLAGS) $(HOST_LDFLAGS) $(HOST_LIBS) $(HOST_EXTRA_LIBS)
 endif
+	$(call BUILDSTATUS,END_SharedLib $@)
 
 # On Darwin (Mac OS X), dwarf2 debugging uses debug info left in .o files,
 # so instead of deleting .o files after repacking them into a dylib, we make
 # symlinks back to the originals. The symlinks are a no-op for stabs debugging,
 # so no need to conditionalize on OS version or debugging format.
 
-$(SHARED_LIBRARY): $(OBJS) $(RESFILE) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
+$(SHARED_LIBRARY): $(OBJS) $(call resfile,$(SHARED_LIBRARY)) $(STATIC_LIBS) $(EXTRA_DEPS) $(GLOBAL_DEPS) $(call mkdir_deps,$(FINAL_TARGET))
 	$(REPORT_BUILD)
-ifndef INCREMENTAL_LINKER
+	$(call BUILDSTATUS,START_SharedLib $@)
 	$(RM) $@
-endif
-	$(MKSHLIB) $($@_OBJS) $(RESFILE) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS)
-	$(call py_action,check_binary,--target $@)
+	$(MKSHLIB) $(if $(filter clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH)),-IMPLIB:$(basename $(@F)).lib )$($(notdir $@)_OBJS) $(filter %.res,$^) $(RELRHACK_LDFLAGS) $(LDFLAGS) $(STATIC_LIBS) $(SHARED_LIBS) $(EXTRA_DSO_LDOPTS) $(MOZ_GLUE_LDFLAGS) $(OS_LIBS)
+	$(call py_action,check_binary,$@)
 
-ifeq (_WINNT,$(GNU_CC)_$(OS_ARCH))
-ifdef MSMANIFEST_TOOL
-ifdef EMBED_MANIFEST_AT
-	@if test -f $@.manifest; then \
-		echo "Manifest in objdir is not supported"; \
-		exit 1; \
-	elif test -f '$(srcdir)/$@.manifest'; then \
-		echo 'Embedding manifest from $(srcdir_rel)/$@.manifest'; \
-		$(call WINEWRAP,$(MT)) -NOLOGO -MANIFEST '$(srcdir_rel)/$@.manifest' -OUTPUTRESOURCE:$@\;$(EMBED_MANIFEST_AT); \
-	fi
-endif   # EMBED_MANIFEST_AT
-endif	# MSVC with manifest tool
+ifeq (clang-cl_WINNT,$(CC_TYPE)_$(OS_ARCH))
 endif	# WINNT && !GCC
 	chmod +x $@
 ifdef ENABLE_STRIP
 	$(STRIP) $(STRIP_FLAGS) $@
 endif
+	$(call BUILDSTATUS,END_SharedLib $@)
 
 # The object file is in the current directory, and the source file can be any
 # relative path. This macro adds the dependency obj: src for each source file.
@@ -635,7 +558,7 @@ define src_objdep
 $(basename $3$(notdir $1)).$2: $1 $$(call mkdir_deps,$$(MDDEPDIR))
 endef
 $(foreach f,$(CSRCS) $(SSRCS) $(CPPSRCS) $(CMSRCS) $(CMMSRCS) $(ASFILES),$(eval $(call src_objdep,$(f),$(OBJ_SUFFIX))))
-$(foreach f,$(HOST_CSRCS) $(HOST_CPPSRCS) $(HOST_CMSRCS) $(HOST_CMMSRCS),$(eval $(call src_objdep,$(f),$(_OBJ_SUFFIX),host_)))
+$(foreach f,$(HOST_CSRCS) $(HOST_CPPSRCS) $(HOST_CMSRCS) $(HOST_CMMSRCS),$(eval $(call src_objdep,$(f),$(OBJ_SUFFIX),host_)))
 $(foreach f,$(WASM_CSRCS) $(WASM_CPPSRCS),$(eval $(call src_objdep,$(f),wasm)))
 
 # The Rust compiler only outputs library objects, and so we need different
@@ -649,28 +572,39 @@ $(OBJS) $(HOST_OBJS) $(PROGOBJS) $(HOST_PROGOBJS): $(GLOBAL_DEPS)
 # Rules for building native targets must come first because of the host_ prefix
 $(HOST_COBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(HOST_CC) $(HOST_OUTOPTION)$@ -c $(HOST_CPPFLAGS) $(HOST_CFLAGS) $(NSPR_CFLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(HOST_CPPOBJS):
 	$(REPORT_BUILD_VERBOSE)
 	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CPPFLAGS) $(HOST_CXXFLAGS) $(NSPR_CFLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(HOST_CMOBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(HOST_CC) $(HOST_OUTOPTION)$@ -c $(HOST_CPPFLAGS) $(HOST_CFLAGS) $(HOST_CMFLAGS) $(NSPR_CFLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(HOST_CMMOBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(HOST_CXX) $(HOST_OUTOPTION)$@ -c $(HOST_CPPFLAGS) $(HOST_CXXFLAGS) $(HOST_CMMFLAGS) $(NSPR_CFLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(COBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(CC) $(OUTOPTION)$@ -c $(COMPILE_CFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(CWASMOBJS):
 	$(REPORT_BUILD_VERBOSE)
-	$(WASM_CC) $(OUTOPTION)$@ -c $(WASM_CFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,OBJECT_FILE $@)
+	$(WASM_CC) -o $@ -c $(WASM_CFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 WINEWRAP = $(if $(and $(filter %.exe,$1),$(WINE)),$(WINE) $1,$1)
 
@@ -686,19 +620,26 @@ else
 relativize = $1
 endif
 
+ifdef WINE
+# asmarm64 needs a library that can be found in $PATH but for some reason,
+# wine wants its path in $WINEPATH, so fill that to make it happy.
+$(ASOBJS) $(SOBJS): export WINEPATH=$(subst :,;,$(PATH))
+endif
+
 ifdef ASFILES
 # The AS_DASH_C_FLAG is needed cause not all assemblers (Solaris) accept
 # a '-c' flag.
 $(ASOBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(call WINEWRAP,$(AS)) $(ASOUTOPTION)$@ $(ASFLAGS) $($(notdir $<)_FLAGS) $(AS_DASH_C_FLAG) $(call relativize,$<)
+	$(call BUILDSTATUS,END_Object $@)
 endif
 
 define syms_template
-syms:: $(2)
 $(2): $(1)
 ifdef MOZ_CRASHREPORTER
-	$$(call py_action,dumpsymbols,$$(abspath $$<) $$(abspath $$@) $$(DUMP_SYMBOLS_FLAGS))
+	$$(call py_action,dumpsymbols $$@,$$(abspath $$<) $$(abspath $$@) $$(DUMP_SYMBOLS_FLAGS))
 ifeq ($(OS_ARCH),WINNT)
 ifdef WINCHECKSEC
 	$$(PYTHON3) $$(topsrcdir)/build/win32/autowinchecksec.py $$<
@@ -732,6 +673,7 @@ endif
 
 else ifdef MOZ_CRASHREPORTER
 $(foreach file,$(DUMP_SYMS_TARGETS),$(eval $(call syms_template,$(file),$(notdir $(file))_syms.track)))
+syms:: $(foreach file,$(DUMP_SYMS_TARGETS),$(notdir $(file))_syms.track)
 endif
 
 ifneq (,$(RUST_TESTS)$(RUST_LIBRARY_FILE)$(HOST_RUST_LIBRARY_FILE)$(RUST_PROGRAMS)$(HOST_RUST_PROGRAMS))
@@ -746,19 +688,25 @@ $(CPPOBJS):
 	$(REPORT_BUILD_VERBOSE)
 	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(CCC) $(OUTOPTION)$@ -c $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(CPPWASMOBJS):
 	$(REPORT_BUILD_VERBOSE)
 	$(call BUILDSTATUS,OBJECT_FILE $@)
-	$(WASM_CXX) $(OUTOPTION)$@ -c $(WASM_CXXFLAGS) $($(notdir $<)_FLAGS) $<
+	$(WASM_CXX) -o $@ -c $(WASM_CXXFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(CMMOBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(CCC) -o $@ -c $(COMPILE_CXXFLAGS) $(COMPILE_CMMFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(CMOBJS):
 	$(REPORT_BUILD_VERBOSE)
+	$(call BUILDSTATUS,OBJECT_FILE $@)
 	$(CC) -o $@ -c $(COMPILE_CFLAGS) $(COMPILE_CMFLAGS) $($(notdir $<)_FLAGS) $<
+	$(call BUILDSTATUS,END_Object $@)
 
 $(filter %.s,$(CPPSRCS:%.cpp=%.s)): %.s: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD_VERBOSE)
@@ -863,14 +811,17 @@ endif
 
 endif
 
-$(RESFILE): %.res: $(RCFILE)
+# EXTRA_DEPS contains manifests (manually added in Makefile.in ; bug 1498414)
+%.res: $(or $(RCFILE),%.rc) $(MOZILLA_DIR)/config/create_res.py $(EXTRA_DEPS)
 	$(REPORT_BUILD)
-	@echo Creating Resource file: $@
-ifdef GNU_CC
-	$(RC) $(RCFLAGS) $(filter-out -U%,$(DEFINES)) $(INCLUDES:-I%=--include-dir %) $(OUTOPTION)$@ $<
-else
-	$(call WINEWRAP,$(RC)) $(RCFLAGS) -r $(DEFINES) $(INCLUDES:-I%=-I$(call relativize,%)) $(OUTOPTION)$@ $(call relativize,$<)
-endif
+	$(call BUILDSTATUS,START_Res $@)
+	$(PYTHON3) $(MOZILLA_DIR)/config/create_res.py $(DEFINES) $(INCLUDES) -o $@ $<
+	$(call BUILDSTATUS,END_Res $@)
+
+$(notdir $(addsuffix .rc,$(PROGRAM) $(SHARED_LIBRARY) $(SIMPLE_PROGRAMS) module)): %.rc: $(RCINCLUDE) $(MOZILLA_DIR)/config/create_rc.py
+	$(call BUILDSTATUS,START_Rc $@)
+	$(PYTHON3) $(MOZILLA_DIR)/config/create_rc.py '$(if $(filter module,$*),,$*)' '$(RCINCLUDE)'
+	$(call BUILDSTATUS,END_Rc $@)
 
 # Cancel GNU make built-in implicit rules
 MAKEFLAGS += -r
@@ -936,12 +887,16 @@ endif
 endif
 endif
 
-libs realchrome:: $(FINAL_TARGET)/chrome
-	$(call py_action,jar_maker,\
+misc realchrome:: $(FINAL_TARGET)/chrome
+	$(call py_action,jar_maker $(subst $(topsrcdir)/,,$(JAR_MANIFEST)),\
 	  $(QUIET) -d $(FINAL_TARGET) \
 	  $(MAKE_JARS_FLAGS) $(DEFINES) $(ACDEFINES) \
 	  $(JAR_MANIFEST))
 
+ifdef AB_CD
+.PHONY: l10n
+l10n: misc ;
+endif
 endif
 
 endif
@@ -950,50 +905,8 @@ endif
 # hacks in recursivemake.py that check if Makefile.in sets the variable.
 ifneq ($(XPI_PKGNAME),)
 tools realchrome::
-ifdef STRIP_XPI
-ifndef MOZ_DEBUG
-	@echo 'Stripping $(XPI_PKGNAME) package directory...'
-	@echo $(FINAL_TARGET)
-	@cd $(FINAL_TARGET) && find . ! -type d \
-			! -name '*.js' \
-			! -name '*.xpt' \
-			! -name '*.gif' \
-			! -name '*.jpg' \
-			! -name '*.png' \
-			! -name '*.xpm' \
-			! -name '*.txt' \
-			! -name '*.rdf' \
-			! -name '*.sh' \
-			! -name '*.properties' \
-			! -name '*.dtd' \
-			! -name '*.html' \
-			! -name '*.xul' \
-			! -name '*.css' \
-			! -name '*.xml' \
-			! -name '*.jar' \
-			! -name '*.dat' \
-			! -name '*.tbl' \
-			! -name '*.src' \
-			! -name '*.reg' \
-			$(PLATFORM_EXCLUDE_LIST) \
-			-exec $(STRIP) $(STRIP_FLAGS) {} >/dev/null 2>&1 \;
-endif
-endif
 	@echo 'Packaging $(XPI_PKGNAME).xpi...'
-	$(call py_action,zip,-C $(FINAL_TARGET) ../$(XPI_PKGNAME).xpi '*')
-endif
-
-# See comment above about moving this out of the tools tier.
-ifdef INSTALL_EXTENSION_ID
-ifndef XPI_NAME
-$(error XPI_NAME must be set for INSTALL_EXTENSION_ID)
-endif
-
-tools::
-	$(RM) -r '$(DIST)/bin/distribution$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)'
-	$(NSINSTALL) -D '$(DIST)/bin/distribution$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID)'
-	$(call copy_dir,$(FINAL_TARGET),$(DIST)/bin/distribution$(DIST_SUBDIR:%=/%)/extensions/$(INSTALL_EXTENSION_ID))
-
+	$(call py_action,zip $(XPI_PKGNAME).xpi,-C $(FINAL_TARGET) ../$(XPI_PKGNAME).xpi '*')
 endif
 
 #############################################################################
@@ -1087,18 +1000,22 @@ $(foreach category,$(INSTALL_TARGETS),\
 )
 
 $(foreach tier,$(INSTALL_TARGETS_TIERS), \
-  $(eval $(tier):: $(INSTALL_TARGETS_FILES_$(tier)) $(INSTALL_TARGETS_EXECUTABLES_$(tier))) \
+  $(eval $(if $(filter .,$(DEPTH)),recurse_$(tier):,$(tier)::) $(INSTALL_TARGETS_FILES_$(tier)) $(INSTALL_TARGETS_EXECUTABLES_$(tier))) \
 )
 
 install_targets_sanity = $(if $(filter-out $(notdir $@),$(notdir $(<))),$(error Looks like $@ has an unexpected dependency on $< which breaks INSTALL_TARGETS))
 
 $(sort $(foreach tier,$(INSTALL_TARGETS_TIERS),$(INSTALL_TARGETS_FILES_$(tier)))):
 	$(install_targets_sanity)
+	$(call BUILDSTATUS,START_Install $@)
 	$(call install_cmd,$(IFLAGS1) '$<' '$(@D)')
+	$(call BUILDSTATUS,END_Install $@)
 
 $(sort $(foreach tier,$(INSTALL_TARGETS_TIERS),$(INSTALL_TARGETS_EXECUTABLES_$(tier)))):
 	$(install_targets_sanity)
+	$(call BUILDSTATUS,START_Install $@)
 	$(call install_cmd,$(IFLAGS2) '$<' '$(@D)')
+	$(call BUILDSTATUS,END_Install $@)
 
 ################################################################################
 # Preprocessing rules
@@ -1153,14 +1070,14 @@ $(foreach category,$(PP_TARGETS), \
 )
 
 $(foreach tier,$(PP_TARGETS_TIERS), \
-  $(eval $(tier):: $(PP_TARGETS_RESULTS_$(tier))) \
+  $(eval $(if $(filter .,$(DEPTH)),recurse_$(tier):,$(tier)::) $(PP_TARGETS_RESULTS_$(tier))) \
 )
 
 PP_TARGETS_ALL_RESULTS := $(sort $(foreach tier,$(PP_TARGETS_TIERS),$(PP_TARGETS_RESULTS_$(tier))))
 $(PP_TARGETS_ALL_RESULTS):
 	$(if $(filter-out $(notdir $@),$(notdir $(<:.in=))),$(error Looks like $@ has an unexpected dependency on $< which breaks PP_TARGETS))
 	$(RM) '$@'
-	$(call py_action,preprocessor,--depend $(MDDEPDIR)/$(@F).pp $(PP_TARGET_FLAGS) $(DEFINES) $(ACDEFINES) '$<' -o '$@')
+	$(call py_action,preprocessor $(@F),--depend $(MDDEPDIR)/$(@F).pp $(PP_TARGET_FLAGS) $(DEFINES) $(ACDEFINES) '$<' -o '$@')
 
 $(filter %.css,$(PP_TARGETS_ALL_RESULTS)): PP_TARGET_FLAGS+=--marker %
 
@@ -1211,7 +1128,7 @@ endif
 # Fake targets.  Always run these rules, even if a file/directory with that
 # name already exists.
 #
-.PHONY: all alltags boot chrome realchrome clean clobber clobber_all export install libs makefiles realclean run_apprunner tools $(DIRS) FORCE
+.PHONY: all alltags boot chrome realchrome export install libs makefiles run_apprunner tools $(DIRS) FORCE
 
 # Used as a dependency to force targets to rebuild
 FORCE:
@@ -1238,7 +1155,6 @@ FREEZE_VARIABLES = \
   EXPORTS \
   DIRS \
   LIBRARY \
-  WASM_LIBRARY \
   MODULE \
   $(NULL)
 

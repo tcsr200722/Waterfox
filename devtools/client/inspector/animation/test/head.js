@@ -4,14 +4,12 @@
 
 "use strict";
 
-/* import-globals-from ../../test/head.js */
 // Import the inspector's head.js first (which itself imports shared-head.js).
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/inspector/test/head.js",
   this
 );
 
-const FRAME_SCRIPT_URL = CHROME_URL_ROOT + "doc_frame_script.js";
 const TAB_NAME = "animationinspector";
 
 const ANIMATION_L10N = new LocalizationHelper(
@@ -31,14 +29,29 @@ registerCleanupFunction(() => {
  *
  * @return {Promise} that resolves when the inspector is ready.
  */
-const openAnimationInspector = async function() {
+const openAnimationInspector = async function () {
   const { inspector, toolbox } = await openInspectorSidebarTab(TAB_NAME);
   await inspector.once("inspector-updated");
   const animationInspector = inspector.getPanel("animationinspector");
-  await waitForRendering(animationInspector);
   const panel = inspector.panelWin.document.getElementById(
     "animation-container"
   );
+
+  info("Wait for loading first content");
+  const count = getDisplayedGraphCount(animationInspector, panel);
+  await waitUntil(
+    () =>
+      panel.querySelectorAll(".animation-summary-graph-path").length >= count &&
+      panel.querySelectorAll(".animation-target .objectBox").length >= count
+  );
+
+  if (
+    animationInspector.state.selectedAnimation &&
+    animationInspector.state.detailVisibility
+  ) {
+    await waitUntil(() => panel.querySelector(".animated-property-list"));
+  }
+
   return { animationInspector, toolbox, inspector, panel };
 };
 
@@ -47,48 +60,8 @@ const openAnimationInspector = async function() {
  *
  * @return {Promise} that resolves when the toolbox has closed.
  */
-const closeAnimationInspector = async function() {
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  return gDevTools.closeToolbox(target);
-};
-
-/**
- * Some animation features are not enabled by default in release/beta channels
- * yet including parts of the Web Animations API.
- */
-const enableAnimationFeatures = function() {
-  return new Promise(resolve => {
-    SpecialPowers.pushPrefEnv(
-      {
-        set: [
-          ["dom.animations-api.core.enabled", true],
-          ["dom.animations-api.getAnimations.enabled", true],
-          ["dom.animations-api.implicit-keyframes.enabled", true],
-          ["dom.animations-api.timelines.enabled", true],
-          ["layout.css.step-position-jump.enabled", true],
-        ],
-      },
-      resolve
-    );
-  });
-};
-
-/**
- * Add a new test tab in the browser and load the given url.
- *
- * @param {String} url
- *        The url to be loaded in the new tab
- * @return a promise that resolves to the tab object when the url is loaded
- */
-const _addTab = addTab;
-addTab = async function(url) {
-  await enableAnimationFeatures();
-  const tab = await _addTab(url);
-  const browser = tab.linkedBrowser;
-  info("Loading the helper frame script " + FRAME_SCRIPT_URL);
-  browser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
-  loadFrameScriptUtils(browser);
-  return tab;
+const closeAnimationInspector = async function () {
+  return gDevTools.closeToolboxForTab(gBrowser.selectedTab);
 };
 
 /**
@@ -97,8 +70,28 @@ addTab = async function(url) {
  * @param {Array} selectors
  * @return {Promise}
  */
-const removeAnimatedElementsExcept = async function(selectors) {
-  return executeInContent("Test:RemoveAnimatedElementsExcept", { selectors });
+const removeAnimatedElementsExcept = function (selectors) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selectors],
+    selectorsChild => {
+      function isRemovableElement(animation, selectorsInner) {
+        for (const selector of selectorsInner) {
+          if (animation.effect.target.matches(selector)) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+
+      for (const animation of content.document.getAnimations()) {
+        if (isRemovableElement(animation, selectorsChild)) {
+          animation.effect.target.remove();
+        }
+      }
+    }
+  );
 };
 
 /**
@@ -110,12 +103,13 @@ const removeAnimatedElementsExcept = async function(selectors) {
  * @param {Number} index
  *        The index of the animation to click on.
  */
-const clickOnAnimation = async function(animationInspector, panel, index) {
+const clickOnAnimation = async function (animationInspector, panel, index) {
   info("Click on animation " + index + " in the timeline");
-  const summaryGraphEl = panel.querySelectorAll(".animation-summary-graph")[
-    index
-  ];
-  await clickOnSummaryGraph(animationInspector, panel, summaryGraphEl);
+  const animationItemEl = await findAnimationItemByIndex(panel, index);
+  const summaryGraphEl = animationItemEl.querySelector(
+    ".animation-summary-graph"
+  );
+  clickOnSummaryGraph(animationInspector, panel, summaryGraphEl);
 };
 
 /**
@@ -127,20 +121,20 @@ const clickOnAnimation = async function(animationInspector, panel, index) {
  * @param {String} selector
  *        Selector of node which is target element of animation.
  */
-const clickOnAnimationByTargetSelector = async function(
+const clickOnAnimationByTargetSelector = async function (
   animationInspector,
   panel,
   selector
 ) {
   info(`Click on animation whose selector of target element is '${selector}'`);
-  const animationItemEl = findAnimationItemElementsByTargetSelector(
+  const animationItemEl = await findAnimationItemByTargetSelector(
     panel,
     selector
   );
   const summaryGraphEl = animationItemEl.querySelector(
     ".animation-summary-graph"
   );
-  await clickOnSummaryGraph(animationInspector, panel, summaryGraphEl);
+  clickOnSummaryGraph(animationInspector, panel, summaryGraphEl);
 };
 
 /**
@@ -149,7 +143,7 @@ const clickOnAnimationByTargetSelector = async function(
  * @param {DOMElement} panel
  *        #animation-container element.
  */
-const clickOnDetailCloseButton = function(panel) {
+const clickOnDetailCloseButton = function (panel) {
   info("Click on close button for animation detail pane");
   const buttonEl = panel.querySelector(".animation-detail-close-button");
   const bounds = buttonEl.getBoundingClientRect();
@@ -165,14 +159,13 @@ const clickOnDetailCloseButton = function(panel) {
  * @param {DOMElement} panel
  *        #animation-container element.
  */
-const clickOnPauseResumeButton = async function(animationInspector, panel) {
+const clickOnPauseResumeButton = function (animationInspector, panel) {
   info("Click on pause/resume button");
   const buttonEl = panel.querySelector(".pause-resume-button");
   const bounds = buttonEl.getBoundingClientRect();
   const x = bounds.width / 2;
   const y = bounds.height / 2;
   EventUtils.synthesizeMouse(buttonEl, x, y, {}, buttonEl.ownerGlobal);
-  await waitForSummaryAndDetail(animationInspector);
 };
 
 /**
@@ -182,14 +175,13 @@ const clickOnPauseResumeButton = async function(animationInspector, panel) {
  * @param {DOMElement} panel
  *        #animation-container element.
  */
-const clickOnRewindButton = async function(animationInspector, panel) {
+const clickOnRewindButton = function (animationInspector, panel) {
   info("Click on rewind button");
   const buttonEl = panel.querySelector(".rewind-button");
   const bounds = buttonEl.getBoundingClientRect();
   const x = bounds.width / 2;
   const y = bounds.height / 2;
   EventUtils.synthesizeMouse(buttonEl, x, y, {}, buttonEl.ownerGlobal);
-  await waitForSummaryAndDetail(animationInspector);
 };
 
 /**
@@ -203,7 +195,7 @@ const clickOnRewindButton = async function(animationInspector, panel) {
  *        `mouseDownPosition * offsetWidth + offsetLeft of scrubber controller pane`
  *        as the clientX of MouseEvent.
  */
-const clickOnCurrentTimeScrubberController = async function(
+const clickOnCurrentTimeScrubberController = function (
   animationInspector,
   panel,
   mouseDownPosition
@@ -220,7 +212,6 @@ const clickOnCurrentTimeScrubberController = async function(
     {},
     controllerEl.ownerGlobal
   );
-  await waitForSummaryAndDetail(animationInspector);
 };
 
 /**
@@ -232,37 +223,34 @@ const clickOnCurrentTimeScrubberController = async function(
  * @param {Number} index
  *        The index of the AnimationTargetComponent to click on.
  */
-const clickOnInspectIcon = async function(animationInspector, panel, index) {
+const clickOnInspectIcon = async function (animationInspector, panel, index) {
   info(`Click on an inspect icon in animation target component[${index}]`);
-  const iconEl = panel.querySelectorAll(
-    ".animation-target .objectBox .open-inspector"
-  )[index];
+  const animationItemEl = await findAnimationItemByIndex(panel, index);
+  const iconEl = animationItemEl.querySelector(
+    ".animation-target .objectBox .highlight-node"
+  );
   iconEl.scrollIntoView(false);
   EventUtils.synthesizeMouseAtCenter(iconEl, {}, iconEl.ownerGlobal);
-  // We wait just one time, because the components are updated synchronously.
-  await animationInspector.once("animation-target-rendered");
 };
 
 /**
- * Click on playback rate selector to select given rate.
+ * Change playback rate selector to select given rate.
  *
  * @param {AnimationInspector} animationInspector
  * @param {DOMElement} panel
  *        #animation-container element.
  * @param {Number} rate
  */
-const clickOnPlaybackRateSelector = async function(
+const changePlaybackRateSelector = async function (
   animationInspector,
   panel,
   rate
 ) {
   info(`Click on playback rate selector to select ${rate}`);
   const selectEl = panel.querySelector(".playback-rate-selector");
-  const optionEl = [...selectEl.options].filter(
-    o => Number(o.value) === rate
-  )[0];
+  const optionIndex = [...selectEl.options].findIndex(o => +o.value == rate);
 
-  if (!optionEl) {
+  if (optionIndex == -1) {
     ok(
       false,
       `Could not find an option for rate ${rate} in the rate selector. ` +
@@ -271,10 +259,13 @@ const clickOnPlaybackRateSelector = async function(
     return;
   }
 
+  selectEl.focus();
+
   const win = selectEl.ownerGlobal;
-  EventUtils.synthesizeMouseAtCenter(selectEl, { type: "mousedown" }, win);
-  EventUtils.synthesizeMouseAtCenter(optionEl, { type: "mouseup" }, win);
-  await waitForSummaryAndDetail(animationInspector);
+  while (selectEl.selectedIndex != optionIndex) {
+    const key = selectEl.selectedIndex > optionIndex ? "LEFT" : "RIGHT";
+    EventUtils.sendKey(key, win);
+  }
 };
 
 /**
@@ -285,7 +276,7 @@ const clickOnPlaybackRateSelector = async function(
  *        #animation-container element.
  * @param {Element} summaryGraphEl
  */
-const clickOnSummaryGraph = async function(
+const clickOnSummaryGraph = function (
   animationInspector,
   panel,
   summaryGraphEl
@@ -300,7 +291,6 @@ const clickOnSummaryGraph = async function(
     {},
     summaryGraphEl.ownerGlobal
   );
-  await waitForAnimationDetail(animationInspector);
   // Restore the scrubber style.
   scrubberEl.style.pointerEvents = "unset";
 };
@@ -314,21 +304,19 @@ const clickOnSummaryGraph = async function(
  * @param {Number} index
  *        The index of the AnimationTargetComponent to click on.
  */
-const clickOnTargetNode = async function(animationInspector, panel, index) {
+const clickOnTargetNode = async function (animationInspector, panel, index) {
+  const { inspector } = animationInspector;
+  const { waitForHighlighterTypeShown } = getHighlighterTestHelpers(inspector);
   info(`Click on a target node in animation target component[${index}]`);
-  const targetEl = panel.querySelectorAll(".animation-target .objectBox")[
-    index
-  ];
-  targetEl.scrollIntoView(false);
-  const onHighlight = animationInspector.inspector.highlighter.once(
-    "node-highlight"
+
+  const animationItemEl = await findAnimationItemByIndex(panel, index);
+  const targetEl = animationItemEl.querySelector(
+    ".animation-target .objectBox"
   );
-  const onAnimationTargetUpdated = animationInspector.once(
-    "animation-target-rendered"
+  const onHighlight = waitForHighlighterTypeShown(
+    inspector.highlighters.TYPES.BOXMODEL
   );
   EventUtils.synthesizeMouseAtCenter(targetEl, {}, targetEl.ownerGlobal);
-  await onAnimationTargetUpdated;
-  await waitForSummaryAndDetail(animationInspector);
   await onHighlight;
 };
 
@@ -342,7 +330,7 @@ const clickOnTargetNode = async function(animationInspector, panel, index) {
  * @param {Number} mouseYPixel
  *        Y of mouse in pixel.
  */
-const dragOnCurrentTimeScrubber = async function(
+const dragOnCurrentTimeScrubber = async function (
   animationInspector,
   panel,
   mouseMovePixel,
@@ -357,7 +345,10 @@ const dragOnCurrentTimeScrubber = async function(
     { type: "mousedown" },
     controllerEl.ownerGlobal
   );
-  await waitForSummaryAndDetail(animationInspector);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+
+  const animation = animationInspector.state.animations[0];
+  let currentTime = animation.state.currentTime;
   EventUtils.synthesizeMouse(
     controllerEl,
     mouseMovePixel,
@@ -365,6 +356,9 @@ const dragOnCurrentTimeScrubber = async function(
     { type: "mousemove" },
     controllerEl.ownerGlobal
   );
+  await waitUntil(() => animation.state.currentTime !== currentTime);
+
+  currentTime = animation.state.currentTime;
   EventUtils.synthesizeMouse(
     controllerEl,
     mouseMovePixel,
@@ -372,7 +366,7 @@ const dragOnCurrentTimeScrubber = async function(
     { type: "mouseup" },
     controllerEl.ownerGlobal
   );
-  await waitForSummaryAndDetail(animationInspector);
+  await waitUntil(() => animation.state.currentTime !== currentTime);
 };
 
 /**
@@ -389,7 +383,7 @@ const dragOnCurrentTimeScrubber = async function(
  *        Dispatch mousemove event with mouseMovePosition after mousedown.
  *        Calculation for clinetX is same to above.
  */
-const dragOnCurrentTimeScrubberController = async function(
+const dragOnCurrentTimeScrubberController = async function (
   animationInspector,
   panel,
   mouseDownPosition,
@@ -408,7 +402,10 @@ const dragOnCurrentTimeScrubberController = async function(
     { type: "mousedown" },
     controllerEl.ownerGlobal
   );
-  await waitForSummaryAndDetail(animationInspector);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+
+  const animation = animationInspector.state.animations[0];
+  let currentTime = animation.state.currentTime;
   EventUtils.synthesizeMouse(
     controllerEl,
     mousemoveX,
@@ -416,6 +413,9 @@ const dragOnCurrentTimeScrubberController = async function(
     { type: "mousemove" },
     controllerEl.ownerGlobal
   );
+  await waitUntil(() => animation.state.currentTime !== currentTime);
+
+  currentTime = animation.state.currentTime;
   EventUtils.synthesizeMouse(
     controllerEl,
     mousemoveX,
@@ -423,7 +423,7 @@ const dragOnCurrentTimeScrubberController = async function(
     { type: "mouseup" },
     controllerEl.ownerGlobal
   );
-  await waitForSummaryAndDetail(animationInspector);
+  await waitUntil(() => animation.state.currentTime !== currentTime);
 };
 
 /**
@@ -440,7 +440,7 @@ const dragOnCurrentTimeScrubberController = async function(
  *           rate,
  *         }
  */
-const getDurationAndRate = function(animationInspector, panel, pixels) {
+const getDurationAndRate = function (animationInspector, panel, pixels) {
   const controllerEl = panel.querySelector(".current-time-scrubber-area");
   const bounds = controllerEl.getBoundingClientRect();
   const duration =
@@ -458,7 +458,7 @@ const getDurationAndRate = function(animationInspector, panel, pixels) {
  * @param {Number} index
  *        The index of the AnimationTargetComponent to click on.
  */
-const mouseOverOnTargetNode = function(animationInspector, panel, index) {
+const mouseOverOnTargetNode = function (animationInspector, panel, index) {
   info(`Mouse over on a target node in animation target component[${index}]`);
   const el = panel.querySelectorAll(".animation-target .objectBox")[index];
   el.scrollIntoView(false);
@@ -474,7 +474,7 @@ const mouseOverOnTargetNode = function(animationInspector, panel, index) {
  * @param {Number} index
  *        The index of the AnimationTargetComponent to click on.
  */
-const mouseOutOnTargetNode = function(animationInspector, panel, index) {
+const mouseOutOnTargetNode = function (animationInspector, panel, index) {
   info(`Mouse out on a target node in animation target component[${index}]`);
   const el = panel.querySelectorAll(".animation-target .objectBox")[index];
   el.scrollIntoView(false);
@@ -486,38 +486,11 @@ const mouseOutOnTargetNode = function(animationInspector, panel, index) {
  *
  * @param {InspectorPanel} inspector
  */
-const selectAnimationInspector = async function(inspector) {
+const selectAnimationInspector = async function (inspector) {
   await inspector.toolbox.selectTool("inspector");
-  const onDispatched = waitForDispatch(inspector, "UPDATE_ANIMATIONS");
+  const onDispatched = waitForDispatch(inspector.store, "UPDATE_ANIMATIONS");
   inspector.sidebar.select("animationinspector");
   await onDispatched;
-  await waitForRendering(inspector.getPanel("animationinspector"));
-};
-
-/**
- * Set the inspector's current selection to a node or to the first match of the
- * given css selector and wait for the animations to be displayed
- *
- * @param {String|NodeFront}
- *        data The node to select
- * @param {InspectorPanel} inspector
- *        The instance of InspectorPanel currently loaded in the toolbox
- * @param {String} reason
- *        Defaults to "test" which instructs the inspector not
- *        to highlight the node upon selection
- * @return {Promise} Resolves when the inspector is updated with the new node
- *                   and animations of its subtree are properly displayed.
- */
-const selectNodeAndWaitForAnimations = async function(
-  data,
-  inspector,
-  reason = "test"
-) {
-  // We want to make sure the rest of the test waits for the animations to
-  // be properly displayed (wait for all target DOM nodes to be previewed).
-  selectNode(data, inspector, reason);
-  await waitForDispatch(inspector, "UPDATE_ANIMATIONS");
-  await waitForRendering(inspector.getPanel("animationinspector"));
 };
 
 /**
@@ -526,10 +499,9 @@ const selectNodeAndWaitForAnimations = async function(
  * @param {AnimationInspector} animationInspector
  * @param {DOMElement} target element.
  */
-const sendSpaceKeyEvent = async function(animationInspector, element) {
+const sendSpaceKeyEvent = function (animationInspector, element) {
   element.focus();
   EventUtils.sendKey("SPACE", element.ownerGlobal);
-  await waitForSummaryAndDetail(animationInspector);
 };
 
 /**
@@ -540,14 +512,19 @@ const sendSpaceKeyEvent = async function(animationInspector, element) {
  * @param {String} cls
  *        e.g. ".ball.still"
  */
-const setClassAttribute = async function(animationInspector, selector, cls) {
-  const options = {
-    attributeName: "class",
-    attributeValue: cls,
-    selector,
-  };
-  await executeInContent("devtools:test:setAttribute", options);
-  await waitForSummaryAndDetail(animationInspector);
+const setClassAttribute = async function (animationInspector, selector, cls) {
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [cls, selector],
+    (attributeValue, selectorChild) => {
+      const node = content.document.querySelector(selectorChild);
+      if (!node) {
+        return;
+      }
+
+      node.setAttribute("class", attributeValue);
+    }
+  );
 };
 
 /**
@@ -561,19 +538,33 @@ const setClassAttribute = async function(animationInspector, selector, cls) {
  *               animationTimingFunction: "linear",
  *             }
  */
-const setEffectTimingAndPlayback = async function(
+const setEffectTimingAndPlayback = async function (
   animationInspector,
   selector,
   effectTiming,
   playbackRate
 ) {
-  const options = {
-    effectTiming,
-    playbackRate,
-    selector,
-  };
-  await executeInContent("Test:SetEffectTimingAndPlayback", options);
-  await waitForSummaryAndDetail(animationInspector);
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, playbackRate, effectTiming],
+    (selectorChild, playbackRateChild, effectTimingChild) => {
+      let selectedAnimation = null;
+
+      for (const animation of content.document.getAnimations()) {
+        if (animation.effect.target.matches(selectorChild)) {
+          selectedAnimation = animation;
+          break;
+        }
+      }
+
+      if (!selectedAnimation) {
+        return;
+      }
+
+      selectedAnimation.playbackRate = playbackRateChild;
+      selectedAnimation.effect.updateTiming(effectTimingChild);
+    }
+  );
 };
 
 /**
@@ -585,7 +576,7 @@ const setEffectTimingAndPlayback = async function(
  *        The instance of InspectorPanel currently loaded in the toolbox
  * @return {Promise} Resolves when the sidebar size changed.
  */
-const setSidebarWidth = async function(width, inspector) {
+const setSidebarWidth = async function (width, inspector) {
   const onUpdated = inspector.toolbox.once("inspector-sidebar-resized");
   inspector.splitBox.setState({ width });
   await onUpdated;
@@ -601,19 +592,24 @@ const setSidebarWidth = async function(width, inspector) {
  * @param {String} propertyValue
  *        e.g. "5.5s"
  */
-const setStyle = async function(
+const setStyle = async function (
   animationInspector,
   selector,
   propertyName,
   propertyValue
 ) {
-  const options = {
-    propertyName,
-    propertyValue,
-    selector,
-  };
-  await executeInContent("devtools:test:setStyle", options);
-  await waitForSummaryAndDetail(animationInspector);
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, propertyName, propertyValue],
+    (selectorChild, propertyNameChild, propertyValueChild) => {
+      const node = content.document.querySelector(selectorChild);
+      if (!node) {
+        return;
+      }
+
+      node.style[propertyNameChild] = propertyValueChild;
+    }
+  );
 };
 
 /**
@@ -627,151 +623,81 @@ const setStyle = async function(
  *               animationTimingFunction: "linear",
  *             }
  */
-const setStyles = async function(animationInspector, selector, properties) {
-  const options = {
-    properties,
-    selector,
-  };
-  await executeInContent("devtools:test:setMultipleStyles", options);
-  await waitForSummaryAndDetail(animationInspector);
-};
+const setStyles = async function (animationInspector, selector, properties) {
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [properties, selector],
+    (propertiesChild, selectorChild) => {
+      const node = content.document.querySelector(selectorChild);
+      if (!node) {
+        return;
+      }
 
-/**
- * Wait for rendering.
- *
- * @param {AnimationInspector} animationInspector
- */
-const waitForRendering = async function(animationInspector) {
-  await Promise.all([
-    waitForAllAnimationTargets(animationInspector),
-    waitForAllSummaryGraph(animationInspector),
-    waitForAnimationDetail(animationInspector),
-  ]);
-};
-
-// Wait until an action of `type` is dispatched. If it's part of an
-// async operation, wait until the `status` field is "done" or "error"
-function _afterDispatchDone(store, type) {
-  return new Promise(resolve => {
-    store.dispatch({
-      // Normally we would use `services.WAIT_UNTIL`, but use the
-      // internal name here so tests aren't forced to always pass it
-      // in
-      type: "@@service/waitUntil",
-      predicate: action => {
-        if (action.type === type) {
-          return true;
-        }
-        return false;
-      },
-      run: (dispatch, getState, action) => {
-        resolve(action);
-      },
-    });
-  });
-}
-
-/**
- * Wait for a specific action type to be dispatch.
- * If an async action, will wait for it to be done.
- * This is a custom waitForDispatch, and rather than having a number to wait on
- * the function has a callback, that returns a number. This allows us to wait for
- * an unknown number of dispatches.
- *
- * @memberof mochitest/waits
- * @param {Object} inspector
- * @param {String} type
- * @param {Function} repeat
- * @return {Promise}
- * @static
- */
-async function waitForDispatch(inspector, type, repeat = () => 1) {
-  let count = 0;
-
-  while (count < repeat()) {
-    await _afterDispatchDone(inspector.store, type);
-    count++;
-  }
-}
-
-/**
- * Wait for rendering of animation keyframes.
- *
- * @param {AnimationInspector} inspector
- */
-
-const waitForAnimationDetail = async function(animationInspector) {
-  if (
-    animationInspector.state.selectedAnimation &&
-    animationInspector.state.detailVisibility
-  ) {
-    await animationInspector.once("animation-keyframes-rendered");
-  }
-};
-
-/**
- * Wait for all AnimationTarget components to be fully loaded
- * (fetched their related actor and rendered).
- *
- * @param {AnimationInspector} animationInspector
- */
-const waitForAllAnimationTargets = async function(animationInspector) {
-  const panel = animationInspector.inspector.panelWin.document.getElementById(
-    "animation-container"
+      for (const propertyName in propertiesChild) {
+        const propertyValue = propertiesChild[propertyName];
+        node.style[propertyName] = propertyValue;
+      }
+    }
   );
-  const objectBoxCount = panel.querySelectorAll(".animation-target .objectBox")
-    .length;
-
-  if (objectBoxCount === animationInspector.state.animations.length) {
-    return;
-  }
-
-  for (
-    let i = 0;
-    i < animationInspector.state.animations.length - objectBoxCount;
-    i++
-  ) {
-    await animationInspector.once("animation-target-rendered");
-  }
 };
 
 /**
- * Wait for all SummaryGraph components to be fully loaded
+ * Wait until current time of animations will be changed to given current time.
  *
- * @param {AnimationInspector} inspector
+ * @param {AnimationInspector} animationInspector
+ * @param {Number} currentTime
  */
-const waitForAllSummaryGraph = async function(animationInspector) {
-  for (let i = 0; i < animationInspector.state.animations.length; i++) {
-    await animationInspector.once("animation-summary-graph-rendered");
-  }
+const waitUntilCurrentTimeChangedAt = async function (
+  animationInspector,
+  currentTime
+) {
+  info(`Wait until current time will be change to ${currentTime}`);
+  await waitUntil(() =>
+    animationInspector.state.animations.every(a => {
+      return a.state.currentTime === currentTime;
+    })
+  );
 };
 
 /**
- * Wait for rendering of all summary graph and detail.
+ * Wait until animations' play state will be changed to given state.
  *
- * @param {AnimationInspector} inspector
+ * @param {Array} animationInspector
+ * @param {String} state
  */
-const waitForSummaryAndDetail = async function(animationInspector) {
-  await Promise.all([
-    waitForAllSummaryGraph(animationInspector),
-    waitForAnimationDetail(animationInspector),
-  ]);
+const waitUntilAnimationsPlayState = async function (
+  animationInspector,
+  state
+) {
+  info(`Wait until play state will be change to ${state}`);
+  await waitUntil(() =>
+    animationInspector.state.animations.every(a => a.state.playState === state)
+  );
 };
 
 /**
- * Check whether current time of all animations and UI are given specified time.
+ * Return count of graph that animation inspector is displaying.
  *
  * @param {AnimationInspector} animationInspector
  * @param {DOMElement} panel
- *        #animation-container element.
- * @param {Number} time
+ * @return {Number} count
  */
-function assertAnimationsCurrentTime(animationInspector, time) {
-  const isTimeEqual = animationInspector.state.animations.every(
-    ({ state }) => state.currentTime === time
-  );
-  ok(isTimeEqual, `Current time of animations should be ${time}`);
-}
+const getDisplayedGraphCount = (animationInspector, panel) => {
+  const animationLength = animationInspector.state.animations.length;
+  if (animationLength === 0) {
+    return 0;
+  }
+
+  const inspectionPanelEl = panel.querySelector(".progress-inspection-panel");
+  const itemEl = panel.querySelector(".animation-item");
+  const listEl = panel.querySelector(".animation-list");
+  const itemHeight = itemEl.offsetHeight;
+  // This calculation should be same as AnimationListContainer.updateDisplayableRange.
+  const count = Math.floor(listEl.offsetHeight / itemHeight) + 1;
+  const index = Math.floor(inspectionPanelEl.scrollTop / itemHeight);
+
+  return animationLength > index + count ? count : animationLength - index;
+};
 
 /**
  * Check whether the animations are pausing.
@@ -847,25 +773,34 @@ function assertLinearGradient(linearGradientEl, offset, expectedColor) {
  *        ]
  */
 function assertPathSegments(pathEl, hasClosePath, expectedValues) {
-  const pathSegList = pathEl.pathSegList;
-  ok(pathSegList, "The tested element should have pathSegList");
+  ok(
+    isExpectedPath(pathEl, hasClosePath, expectedValues),
+    "All of path segments are correct"
+  );
+}
 
-  expectedValues.forEach(expectedValue => {
-    ok(
-      isPassingThrough(pathSegList, expectedValue.x, expectedValue.y),
-      `The path segment of x ${expectedValue.x}, y ${expectedValue.y} ` +
-        `should be passing through`
-    );
-  });
+function isExpectedPath(pathEl, hasClosePath, expectedValues) {
+  const pathSegList = pathEl.pathSegList;
+  if (!pathSegList) {
+    return false;
+  }
+
+  if (
+    !expectedValues.every(value =>
+      isPassingThrough(pathSegList, value.x, value.y)
+    )
+  ) {
+    return false;
+  }
 
   if (hasClosePath) {
     const closePathSeg = pathSegList.getItem(pathSegList.numberOfItems - 1);
-    is(
-      closePathSeg.pathSegType,
-      closePathSeg.PATHSEG_CLOSEPATH,
-      "The last segment should be close path"
-    );
+    if (closePathSeg.pathSegType !== closePathSeg.PATHSEG_CLOSEPATH) {
+      return false;
+    }
   }
+
+  return true;
 }
 
 /**
@@ -904,6 +839,29 @@ function isPassingThrough(pathSegList, x, y) {
 }
 
 /**
+ * Return animation item element by the index.
+ *
+ * @param {DOMElement} panel
+ *        #animation-container element.
+ * @param {Number} index
+ * @return {DOMElement}
+ *        Animation item element.
+ */
+async function findAnimationItemByIndex(panel, index) {
+  const itemEls = [...panel.querySelectorAll(".animation-item")];
+  const itemEl = itemEls[index];
+  itemEl.scrollIntoView(false);
+
+  await waitUntil(
+    () =>
+      itemEl.querySelector(".animation-target .attrName") &&
+      itemEl.querySelector(".animation-computed-timing-path")
+  );
+
+  return itemEl;
+}
+
+/**
  * Return animation item element by target node selector.
  * This function compares betweem animation-target textContent and given selector.
  * Then returns matched first item.
@@ -915,13 +873,20 @@ function isPassingThrough(pathSegList, x, y) {
  * @return {DOMElement}
  *        Animation item element.
  */
-function findAnimationItemElementsByTargetSelector(panel, selector) {
-  const attrNameEls = panel.querySelectorAll(".animation-target .attrName");
-  const regexp = new RegExp(`\\${selector}(\\.|$)`, "gi");
+async function findAnimationItemByTargetSelector(panel, selector) {
+  for (const itemEl of panel.querySelectorAll(".animation-item")) {
+    itemEl.scrollIntoView(false);
 
-  for (const attrNameEl of attrNameEls) {
+    await waitUntil(
+      () =>
+        itemEl.querySelector(".animation-target .attrName") &&
+        itemEl.querySelector(".animation-computed-timing-path")
+    );
+
+    const attrNameEl = itemEl.querySelector(".animation-target .attrName");
+    const regexp = new RegExp(`\\${selector}(\\.|$)`, "gi");
     if (regexp.exec(attrNameEl.textContent)) {
-      return attrNameEl.closest(".animation-item");
+      return itemEl;
     }
   }
 
@@ -960,11 +925,15 @@ async function testKeyframesGraphComputedValuePath(testData) {
 
   for (const { properties, targetClass } of testData) {
     info(`Checking keyframes graph for ${targetClass}`);
+    const onDetailRendered = animationInspector.once(
+      "animation-keyframes-rendered"
+    );
     await clickOnAnimationByTargetSelector(
       animationInspector,
       panel,
       `.${targetClass}`
     );
+    await onDetailRendered;
 
     for (const property of properties) {
       const {
@@ -1002,9 +971,8 @@ async function testKeyframesGraphComputedValuePath(testData) {
       }
 
       info(`Checking linearGradient for ${testTarget}`);
-      const linearGradientEl = computedValuePathEl.querySelector(
-        "linearGradient"
-      );
+      const linearGradientEl =
+        computedValuePathEl.querySelector("linearGradient");
       ok(
         linearGradientEl,
         `The <linearGradientEl> element of ${testTarget} should be existence`
@@ -1029,8 +997,9 @@ function checkAdjustingTheTime(animation1, animation2) {
     animation2.currentTime / animation2.playbackRate -
     animation1.currentTime / animation1.playbackRate;
   const createdTimeDiff = animation1.createdTime - animation2.createdTime;
-  ok(
-    Math.abs(adjustedCurrentTimeDiff - createdTimeDiff) < 0.1,
+  Assert.less(
+    Math.abs(adjustedCurrentTimeDiff - createdTimeDiff),
+    0.1,
     "Adjusted time is correct"
   );
 }

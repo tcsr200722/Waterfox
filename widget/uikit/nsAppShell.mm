@@ -64,8 +64,8 @@ NSMutableArray* nsAppShell::gTopLevelViews = [[NSMutableArray alloc] init];
   // We only create one window, since we can only display one window at
   // a time anyway. Also, iOS 4 fails to display UIWindows if you
   // create them before calling UIApplicationMain, so this makes more sense.
-  nsAppShell::gWindow =
-      [[[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] applicationFrame]] retain];
+  nsAppShell::gWindow = [[[UIWindow alloc]
+      initWithFrame:[[UIScreen mainScreen] applicationFrame]] retain];
   self.window = nsAppShell::gWindow;
 
   self.window.rootViewController = [[ViewController alloc] init];
@@ -92,7 +92,7 @@ NSMutableArray* nsAppShell::gTopLevelViews = [[NSMutableArray alloc] init];
 
 - (void)applicationDidReceiveMemoryWarning:(UIApplication*)application {
   ALOG("[AppShellDelegate applicationDidReceiveMemoryWarning:]");
-  NS_DispatchMemoryPressure(MemPressure_New);
+  NS_NotifyOfMemoryPressure(MemoryPressureState::LowMemory);
 }
 @end
 
@@ -119,7 +119,8 @@ nsAppShell::~nsAppShell() {
 
   if (mCFRunLoop) {
     if (mCFRunLoopSource) {
-      ::CFRunLoopRemoveSource(mCFRunLoop, mCFRunLoopSource, kCFRunLoopCommonModes);
+      ::CFRunLoopRemoveSource(mCFRunLoop, mCFRunLoopSource,
+                              kCFRunLoopCommonModes);
       ::CFRelease(mCFRunLoopSource);
     }
     ::CFRelease(mCFRunLoop);
@@ -212,7 +213,8 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
     if (!currentMode) currentMode = NSDefaultRunLoopMode;
 
     if (aMayWait)
-      eventProcessed = [currentRunLoop runMode:currentMode beforeDate:waitUntil];
+      eventProcessed = [currentRunLoop runMode:currentMode
+                                    beforeDate:waitUntil];
     else
       [currentRunLoop acceptInputForMode:currentMode beforeDate:waitUntil];
   } while (eventProcessed && aMayWait);

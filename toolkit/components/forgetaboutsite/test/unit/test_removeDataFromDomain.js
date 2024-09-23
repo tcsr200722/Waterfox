@@ -11,21 +11,17 @@
 
 // Globals
 
-const { ForgetAboutSite } = ChromeUtils.import(
-  "resource://gre/modules/ForgetAboutSite.jsm"
+const { ForgetAboutSite } = ChromeUtils.importESModule(
+  "resource://gre/modules/ForgetAboutSite.sys.mjs"
 );
 
-const { PlacesUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesUtils.jsm"
+const { PlacesUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesUtils.sys.mjs"
 );
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+});
 
 const COOKIE_EXPIRY = Math.round(Date.now() / 1000) + 60;
 const COOKIE_NAME = "testcookie";
@@ -60,7 +56,8 @@ function add_cookie(aDomain) {
     false,
     COOKIE_EXPIRY,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
   check_cookie_exists(aDomain, true);
 }
@@ -110,8 +107,8 @@ function check_disabled_host(aHost, aIsDisabled) {
  * @param aHost
  *        The host to add the login for.
  */
-function add_login(aHost) {
-  check_login_exists(aHost, false);
+async function add_login(aHost) {
+  await check_login_exists(aHost, false);
   let login = Cc["@mozilla.org/login-manager/loginInfo;1"].createInstance(
     Ci.nsILoginInfo
   );
@@ -124,8 +121,8 @@ function add_login(aHost) {
     LOGIN_USERNAME_FIELD,
     LOGIN_PASSWORD_FIELD
   );
-  Services.logins.addLogin(login);
-  check_login_exists(aHost, true);
+  await Services.logins.addLoginAsync(login);
+  await check_login_exists(aHost, true);
 }
 
 /**
@@ -136,8 +133,8 @@ function add_login(aHost) {
  * @param aExists
  *        True if the login should exist, false otherwise.
  */
-function check_login_exists(aHost, aExists) {
-  let logins = Services.logins.findLogins(aHost, "", null);
+async function check_login_exists(aHost, aExists) {
+  let logins = await Services.logins.searchLoginsAsync({ origin: aHost });
   Assert.equal(logins.length, aExists ? 1 : 0);
 }
 
@@ -249,6 +246,15 @@ async function test_history_not_cleared_with_uri_contains_domain() {
   await PlacesUtils.history.clear();
 }
 
+async function test_history_cleared_base_domain() {
+  const TEST_URI = Services.io.newURI("http://mozilla.org/foo");
+  Assert.equal(false, await PlacesUtils.history.hasVisits(TEST_URI));
+  await PlacesTestUtils.addVisits(TEST_URI);
+  Assert.ok(await PlacesUtils.history.hasVisits(TEST_URI));
+  await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  Assert.equal(false, await PlacesUtils.history.hasVisits(TEST_URI));
+}
+
 // Cookie Service
 async function test_cookie_cleared_with_direct_match() {
   const TEST_DOMAIN = "mozilla.org";
@@ -269,6 +275,13 @@ async function test_cookie_not_cleared_with_uri_contains_domain() {
   add_cookie(TEST_DOMAIN);
   await ForgetAboutSite.removeDataFromDomain("mozilla.org");
   check_cookie_exists(TEST_DOMAIN, true);
+}
+
+async function test_cookie_cleared_base_domain() {
+  const TEST_DOMAIN = "mozilla.org";
+  add_cookie(TEST_DOMAIN);
+  await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  check_cookie_exists(TEST_DOMAIN, false);
 }
 
 // Login Manager
@@ -299,26 +312,33 @@ async function test_login_manager_disabled_hosts_not_cleared_with_uri_contains_d
 
 async function test_login_manager_logins_cleared_with_direct_match() {
   const TEST_HOST = "http://mozilla.org";
-  add_login(TEST_HOST);
+  await add_login(TEST_HOST);
   await ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  check_login_exists(TEST_HOST, false);
+  await check_login_exists(TEST_HOST, true);
 }
 
 async function test_login_manager_logins_cleared_with_subdomain() {
   const TEST_HOST = "http://www.mozilla.org";
-  add_login(TEST_HOST);
+  await add_login(TEST_HOST);
   await ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  check_login_exists(TEST_HOST, false);
+  await check_login_exists(TEST_HOST, true);
 }
 
 async function test_login_manager_logins_not_cleared_with_uri_contains_domain() {
   const TEST_HOST = "http://ilovemozilla.org";
-  add_login(TEST_HOST);
+  await add_login(TEST_HOST);
   await ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  check_login_exists(TEST_HOST, true);
+  await check_login_exists(TEST_HOST, true);
 
-  Services.logins.removeAllLogins();
-  check_login_exists(TEST_HOST, false);
+  Services.logins.removeAllUserFacingLogins();
+  await check_login_exists(TEST_HOST, false);
+}
+
+async function test_login_manager_disabled_hosts_cleared_base_domain() {
+  const TEST_HOST = "http://mozilla.org";
+  add_disabled_host(TEST_HOST);
+  await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  check_disabled_host(TEST_HOST, false);
 }
 
 // Permission Manager
@@ -344,6 +364,13 @@ async function test_permission_manager_not_cleared_with_uri_contains_domain() {
 
   // Reset state
   Services.perms.removeAll();
+  check_permission_exists(TEST_URI, false);
+}
+
+async function test_permission_manager_cleared_base_domain() {
+  const TEST_URI = Services.io.newURI("http://mozilla.org");
+  add_permission(TEST_URI);
+  await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
   check_permission_exists(TEST_URI, false);
 }
 
@@ -379,8 +406,25 @@ async function test_content_preferences_not_cleared_with_uri_contains_domain() {
   Assert.equal(false, await preference_exists(TEST_URI));
 }
 
+async function test_content_preferences_cleared_base_domain() {
+  const TEST_URI = Services.io.newURI("http://mozilla.org");
+  Assert.equal(false, await preference_exists(TEST_URI));
+  await add_preference(TEST_URI);
+  Assert.ok(await preference_exists(TEST_URI));
+  await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  Assert.equal(false, await preference_exists(TEST_URI));
+}
+
 // Push
 async function test_push_cleared() {
+  return helper_push_cleared(false);
+}
+
+async function test_push_cleared_base_domain() {
+  return helper_push_cleared(true);
+}
+
+async function helper_push_cleared(aBaseDomainTest) {
   let ps;
   try {
     ps = Cc["@mozilla.org/push/Service;1"].getService(Ci.nsIPushService);
@@ -403,7 +447,7 @@ async function test_push_cleared() {
   // Otherwise, tear down the old one and replace it with our mock backend,
   // so that we don't have to initialize an entire mock WebSocket only to
   // test clearing data.
-  await pushImpl.service.uninit();
+  await pushImpl.service.uninit?.();
   let wasCleared = false;
   pushImpl.service = {
     async clear({ domain } = {}) {
@@ -417,34 +461,23 @@ async function test_push_cleared() {
   };
   Services.prefs.setBoolPref("dom.push.enabled", true);
 
-  await ForgetAboutSite.removeDataFromDomain("mozilla.org");
+  if (aBaseDomainTest) {
+    await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  } else {
+    await ForgetAboutSite.removeDataFromDomain("mozilla.org");
+  }
+
   Assert.ok(wasCleared, "Should have cleared push data");
 }
 
-// Cache
-async function test_cache_cleared() {
-  // Because this test is asynchronous, it should be the last test
-  Assert.ok(tests[tests.length - 1] == test_cache_cleared);
-
-  // NOTE: We could be more extensive with this test and actually add an entry
-  //       to the cache, and then make sure it is gone.  However, we trust that
-  //       the API is well tested, and that when we get the observer
-  //       notification, we have actually cleared the cache.
-  // This seems to happen asynchronously...
-  let observer = {
-    observe(aSubject, aTopic, aData) {
-      Services.obs.removeObserver(observer, "cacheservice:empty-cache");
-      // Shutdown the download manager.
-      Services.obs.notifyObservers(null, "quit-application");
-      do_test_finished();
-    },
-  };
-  Services.obs.addObserver(observer, "cacheservice:empty-cache");
-  await ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  do_test_pending();
+function test_storage_cleared() {
+  return helper_storage_cleared(false);
+}
+function test_storage_cleared_base_domain() {
+  return helper_storage_cleared(true);
 }
 
-async function test_storage_cleared() {
+async function helper_storage_cleared(aBaseDomainTest) {
   function getStorageForURI(aURI) {
     let principal = Services.scriptSecurityManager.createContentPrincipal(
       aURI,
@@ -475,7 +508,11 @@ async function test_storage_cleared() {
     Assert.equal(storage.getItem("test"), "value" + i);
   }
 
-  await ForgetAboutSite.removeDataFromDomain("mozilla.org");
+  if (aBaseDomainTest) {
+    await ForgetAboutSite.removeDataFromBaseDomain("mozilla.org");
+  } else {
+    await ForgetAboutSite.removeDataFromDomain("mozilla.org");
+  }
 
   Assert.equal(s[0].getItem("test"), null);
   Assert.equal(s[0].length, 0);
@@ -490,11 +527,13 @@ var tests = [
   test_history_cleared_with_direct_match,
   test_history_cleared_with_subdomain,
   test_history_not_cleared_with_uri_contains_domain,
+  test_history_cleared_base_domain,
 
   // Cookie Service
   test_cookie_cleared_with_direct_match,
   test_cookie_cleared_with_subdomain,
   test_cookie_not_cleared_with_uri_contains_domain,
+  test_cookie_cleared_base_domain,
 
   // Login Manager
   test_login_manager_disabled_hosts_cleared_with_direct_match,
@@ -503,34 +542,28 @@ var tests = [
   test_login_manager_logins_cleared_with_direct_match,
   test_login_manager_logins_cleared_with_subdomain,
   test_login_manager_logins_not_cleared_with_uri_contains_domain,
+  test_login_manager_disabled_hosts_cleared_base_domain,
 
   // Permission Manager
   test_permission_manager_cleared_with_direct_match,
   test_permission_manager_cleared_with_subdomain,
   test_permission_manager_not_cleared_with_uri_contains_domain,
+  test_permission_manager_cleared_base_domain,
 
   // Content Preferences
   test_content_preferences_cleared_with_direct_match,
   test_content_preferences_cleared_with_subdomain,
   test_content_preferences_not_cleared_with_uri_contains_domain,
+  test_content_preferences_cleared_base_domain,
 
   // Push
   test_push_cleared,
+  test_push_cleared_base_domain,
 
   // Storage
   test_storage_cleared,
+  test_storage_cleared_base_domain,
 ];
-
-// Cache
-//
-// Due to these prefs being static, setting them doesn't make a difference in time for the test
-// As we are removing AppCache in Bug 1584984 this will just be removed soon.
-if (
-  Services.prefs.getBoolPref("browser.cache.offline.enable") &&
-  Services.prefs.getBoolPref("browser.cache.offline.storage.enable")
-) {
-  tests.push(test_cache_cleared);
-}
 
 function run_test() {
   for (let i = 0; i < tests.length; i++) {

@@ -12,9 +12,9 @@ function createTemporarySaveDirectory() {
 }
 
 function promiseNoCacheEntry(filename) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     Visitor.prototype = {
-      onCacheStorageInfo(num, consumption) {
+      onCacheStorageInfo(num) {
         info("disk storage contains " + num + " entries");
       },
       onCacheEntryInfo(uri) {
@@ -33,18 +33,17 @@ function promiseNoCacheEntry(filename) {
     function Visitor() {}
 
     let storage = Services.cache2.diskCacheStorage(
-      Services.loadContextInfo.default,
-      false
+      Services.loadContextInfo.default
     );
     storage.asyncVisitStorage(new Visitor(), true /* Do walk entries */);
   });
 }
 
 function promiseImageDownloaded() {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     let fileName;
     let MockFilePicker = SpecialPowers.MockFilePicker;
-    MockFilePicker.init(window);
+    MockFilePicker.init(window.browsingContext);
 
     function onTransferComplete(downloadSuccess) {
       ok(
@@ -61,7 +60,7 @@ function promiseImageDownloaded() {
     var destFile = destDir.clone();
 
     MockFilePicker.displayDirectory = destDir;
-    MockFilePicker.showCallback = function(fp) {
+    MockFilePicker.showCallback = function (fp) {
       fileName = fp.defaultString;
       destFile.append(fileName);
       MockFilePicker.setFiles([destFile]);
@@ -71,7 +70,7 @@ function promiseImageDownloaded() {
     mockTransferCallback = onTransferComplete;
     mockTransferRegisterer.register();
 
-    registerCleanupFunction(function() {
+    registerCleanupFunction(function () {
       mockTransferCallback = null;
       mockTransferRegisterer.unregister();
       MockFilePicker.cleanup();
@@ -80,7 +79,7 @@ function promiseImageDownloaded() {
   });
 }
 
-add_task(async function() {
+add_task(async function () {
   let testURI =
     "http://mochi.test:8888/browser/browser/base/content/test/general/bug792517.html";
   let privateWindow = await BrowserTestUtils.openNewBrowserWindow({
@@ -122,7 +121,6 @@ add_task(async function() {
   await BrowserTestUtils.closeWindow(privateWindow);
 });
 
-/* import-globals-from ../../../../../toolkit/content/tests/browser/common/mockTransfer.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/content/tests/browser/common/mockTransfer.js",
   this

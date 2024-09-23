@@ -10,7 +10,7 @@
 # OS_TEST	(from uname -m)
 # OS_RELEASE	(from uname -v and/or -r)
 # OS_TARGET	User defined, or set to OS_ARCH
-# CPU_ARCH  	(from unmame -m or -p, ONLY on WINNT)
+# CPU_ARCH  	(from uname -m or -p, ONLY on WINNT)
 # OS_CONFIG	OS_TARGET + OS_RELEASE
 # OBJDIR_TAG    (uses GCOV_TAG, 64BIT_TAG)
 # OBJDIR_NAME
@@ -33,13 +33,6 @@ else
     OS_RELEASE := $(shell uname -r)
 endif
 
-#
-# Force the IRIX64 machines to use IRIX.
-#
-
-ifeq ($(OS_ARCH),IRIX64)
-    OS_ARCH = IRIX
-endif
 
 #
 # Force the older BSD/OS versions to use the new arch name.
@@ -74,20 +67,6 @@ ifeq ($(OS_ARCH),AIX)
 endif
 
 #
-# Distinguish between OSF1 V4.0B and V4.0D
-#
-
-ifeq ($(OS_ARCH)$(OS_RELEASE),OSF1V4.0)
-    OS_VERSION := $(shell uname -v)
-    ifeq ($(OS_VERSION),564)
-	OS_RELEASE := V4.0B
-    endif
-    ifeq ($(OS_VERSION),878)
-	OS_RELEASE := V4.0D
-    endif
-endif
-
-#
 # SINIX changes name to ReliantUNIX with 5.43
 #
 
@@ -103,10 +82,9 @@ endif
 
 #
 # Handle FreeBSD 2.2-STABLE, Linux 2.0.30-osfmach3, and
-# IRIX 6.5-ALPHA-1289139620.
 #
 
-ifeq (,$(filter-out Linux FreeBSD IRIX,$(OS_ARCH)))
+ifeq (,$(filter-out Linux FreeBSD ,$(OS_ARCH)))
     OS_RELEASE := $(shell echo $(OS_RELEASE) | sed 's/-.*//')
 endif
 
@@ -116,6 +94,7 @@ ifeq ($(OS_ARCH),Linux)
 	OS_RELEASE := $(word 1,$(OS_RELEASE)).$(word 2,$(OS_RELEASE))
     endif
     KERNEL = Linux
+    include $(CORE_DEPTH)/coreconf/Linux.mk
 endif
 
 # Since all uses of OS_ARCH that follow affect only userland, we can
@@ -138,35 +117,6 @@ ifeq ($(OS_ARCH),OS_2)
     OS_ARCH = OS2
     OS_RELEASE := $(shell uname -v)
 endif
-
-#######################################################################
-# Master "Core Components" macros for Hardware features               #
-#######################################################################
-
-ifndef NSS_DISABLE_AVX2
-    ifneq ($(CPU_ARCH),x86_64)
-        # Disable AVX2 entirely on non-Intel platforms
-        NSS_DISABLE_AVX2 = 1
-        $(warning CPU_ARCH is not x86_64, disabling -mavx2)
-    else
-        ifdef CC_IS_CLANG
-            # Clang reports its version as an older gcc, but it's OK
-            NSS_DISABLE_AVX2 = 0
-        else
-            ifneq (,$(filter 4.8 4.9,$(word 1,$(GCC_VERSION)).$(word 2,$(GCC_VERSION))))
-                NSS_DISABLE_AVX2 = 0
-            endif
-            ifeq (,$(filter 0 1 2 3 4,$(word 1,$(GCC_VERSION))))
-                NSS_DISABLE_AVX2 = 0
-            endif
-        endif
-        ifndef NSS_DISABLE_AVX2
-            $(warning Unable to find gcc 4.8 or greater, disabling -Werror)
-            NSS_DISABLE_AVX2 = 1
-        endif
-    endif
-    export NSS_DISABLE_AVX2
-endif #ndef NSS_DISABLE_AVX2
 
 #######################################################################
 # Master "Core Components" macros for getting the OS target           #

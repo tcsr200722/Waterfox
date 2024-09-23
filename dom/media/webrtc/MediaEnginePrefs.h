@@ -7,6 +7,9 @@
 #ifndef MediaEnginePrefs_h
 #define MediaEnginePrefs_h
 
+#include <stdint.h>
+#include <string.h>
+
 namespace mozilla {
 
 /**
@@ -25,38 +28,34 @@ class MediaEnginePrefs {
         mHeight(0),
         mFPS(0),
         mFreq(0),
+        mUsePlatformProcessing(false),
         mAecOn(false),
         mUseAecMobile(false),
         mAgcOn(false),
         mHPFOn(false),
-        mExperimentalInputProcessing(false),
         mNoiseOn(false),
-        mAec(0),
+        mTransientOn(false),
+        mAgc2Forced(false),
+        mExpectDrift(-1),  // auto
         mAgc(0),
-        mRoutingMode(0),
         mNoise(0),
-        mExtendedFilter(false),
-        mDelayAgnostic(false),
-        mFakeDeviceChangeEventOn(false),
         mChannels(0) {}
 
   int32_t mWidth;
   int32_t mHeight;
   int32_t mFPS;
   int32_t mFreq;  // for test tones (fake:true)
+  bool mUsePlatformProcessing;
   bool mAecOn;
   bool mUseAecMobile;
   bool mAgcOn;
   bool mHPFOn;
-  bool mExperimentalInputProcessing;
   bool mNoiseOn;
-  int32_t mAec;
+  bool mTransientOn;
+  bool mAgc2Forced;
+  int32_t mExpectDrift;
   int32_t mAgc;
-  int32_t mRoutingMode;
   int32_t mNoise;
-  bool mExtendedFilter;
-  bool mDelayAgnostic;
-  bool mFakeDeviceChangeEventOn;
   int32_t mChannels;
 
   bool operator==(const MediaEnginePrefs& aRhs) {

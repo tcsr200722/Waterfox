@@ -70,7 +70,10 @@ CSS_NON_INHERITING_ANON_BOX(framesetBlank, ":-moz-frameset-blank")
 CSS_NON_INHERITING_ANON_BOX(tableColGroup, ":-moz-table-column-group")
 CSS_NON_INHERITING_ANON_BOX(tableCol, ":-moz-table-column")
 
-CSS_NON_INHERITING_ANON_BOX(pageBreak, ":-moz-pagebreak")
+CSS_NON_INHERITING_ANON_BOX(page, ":-moz-page")
+CSS_NON_INHERITING_ANON_BOX(pageBreak, ":-moz-page-break")
+CSS_NON_INHERITING_ANON_BOX(pageContent, ":-moz-page-content")
+CSS_NON_INHERITING_ANON_BOX(printedSheet, ":-moz-printed-sheet")
 
 // Applies to blocks that wrap contiguous runs of "column-span: all"
 // elements in multi-column subtrees, or the wrappers themselves, all the
@@ -89,7 +92,6 @@ CSS_ANON_BOX(firstLetterContinuation, ":-moz-first-letter-continuation")
 
 CSS_ANON_BOX(mozBlockInsideInlineWrapper, ":-moz-block-inside-inline-wrapper")
 CSS_WRAPPER_ANON_BOX(mozMathMLAnonymousBlock, ":-moz-mathml-anonymous-block")
-CSS_ANON_BOX(mozXULAnonymousBlock, ":-moz-xul-anonymous-block")
 
 CSS_ANON_BOX(mozLineFrame, ":-moz-line-frame")
 
@@ -97,7 +99,6 @@ CSS_ANON_BOX(buttonContent, ":-moz-button-content")
 CSS_ANON_BOX(cellContent, ":-moz-cell-content")
 CSS_ANON_BOX(dropDownList, ":-moz-dropdown-list")
 CSS_ANON_BOX(fieldsetContent, ":-moz-fieldset-content")
-CSS_ANON_BOX(mozDisplayComboboxControlFrame, ":-moz-display-comboboxcontrol-frame")
 CSS_ANON_BOX(htmlCanvasContent, ":-moz-html-canvas-content")
 
 CSS_WRAPPER_ANON_BOX(inlineTable, ":-moz-inline-table")
@@ -108,12 +109,9 @@ CSS_WRAPPER_ANON_BOX(tableRowGroup, ":-moz-table-row-group")
 CSS_WRAPPER_ANON_BOX(tableRow, ":-moz-table-row")
 
 CSS_ANON_BOX(canvas, ":-moz-canvas")
-CSS_ANON_BOX(page, ":-moz-page")
-CSS_ANON_BOX(pageContent, ":-moz-pagecontent")
 CSS_ANON_BOX(pageSequence, ":-moz-page-sequence")
 CSS_ANON_BOX(scrolledContent, ":-moz-scrolled-content")
 CSS_ANON_BOX(scrolledCanvas, ":-moz-scrolled-canvas")
-CSS_ANON_BOX(scrolledPageSequence, ":-moz-scrolled-page-sequence")
 
 // A column set is a set of columns inside of ColumnSetWrapperFrame, which
 // applies to nsColumnSetFrame. It doesn't contain any column-span elements.
@@ -125,13 +123,9 @@ CSS_ANON_BOX(columnContent, ":-moz-column-content")
 CSS_ANON_BOX(viewport, ":-moz-viewport")
 CSS_ANON_BOX(viewportScroll, ":-moz-viewport-scroll")
 
-// Inside a flex container, a contiguous run of text gets wrapped in
-// an anonymous block, which is then treated as a flex item.
-CSS_WRAPPER_ANON_BOX(anonymousFlexItem, ":-moz-anonymous-flex-item")
-
-// Inside a grid container, a contiguous run of text gets wrapped in
-// an anonymous block, which is then treated as a grid item.
-CSS_WRAPPER_ANON_BOX(anonymousGridItem, ":-moz-anonymous-grid-item")
+// Inside a flex/grid/-moz-box container, a contiguous run of text gets wrapped
+// in an anonymous block, which is then treated as a flex item.
+CSS_WRAPPER_ANON_BOX(anonymousItem, ":-moz-anonymous-item")
 
 CSS_ANON_BOX(blockRubyContent, ":-moz-block-ruby-content")
 CSS_WRAPPER_ANON_BOX(ruby, ":-moz-ruby")
@@ -140,7 +134,6 @@ CSS_WRAPPER_ANON_BOX(rubyBaseContainer, ":-moz-ruby-base-container")
 CSS_WRAPPER_ANON_BOX(rubyText, ":-moz-ruby-text")
 CSS_WRAPPER_ANON_BOX(rubyTextContainer, ":-moz-ruby-text-container")
 
-#ifdef MOZ_XUL
 CSS_ANON_BOX(mozTreeColumn, ":-moz-tree-column")
 CSS_ANON_BOX(mozTreeRow, ":-moz-tree-row")
 CSS_ANON_BOX(mozTreeSeparator, ":-moz-tree-separator")
@@ -152,7 +145,6 @@ CSS_ANON_BOX(mozTreeImage, ":-moz-tree-image")
 CSS_ANON_BOX(mozTreeCellText, ":-moz-tree-cell-text")
 CSS_ANON_BOX(mozTreeCheckbox, ":-moz-tree-checkbox")
 CSS_ANON_BOX(mozTreeDropFeedback, ":-moz-tree-drop-feedback")
-#endif
 
 CSS_ANON_BOX(mozSVGMarkerAnonChild, ":-moz-svg-marker-anon-child")
 CSS_ANON_BOX(mozSVGOuterSVGAnonChild, ":-moz-svg-outer-svg-anon-child")

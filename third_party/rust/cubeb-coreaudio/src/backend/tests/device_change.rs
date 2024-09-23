@@ -15,15 +15,16 @@
 // in the run_tests.sh script and marked by `ignore` by default.
 
 use super::utils::{
-    test_create_device_change_listener, test_device_in_scope, test_get_default_device,
-    test_get_devices_in_scope, test_get_stream_with_default_callbacks_by_type,
-    test_ops_stream_operation, test_set_default_device, Scope, StreamType, TestDevicePlugger,
-    TestDeviceSwitcher,
+    get_devices_info_in_scope, test_create_device_change_listener, test_device_in_scope,
+    test_get_default_device, test_get_devices_in_scope,
+    test_get_stream_with_default_data_callback_by_type, test_ops_stream_operation,
+    test_set_default_device, Scope, StreamType, TestDevicePlugger, TestDeviceSwitcher,
 };
 use super::*;
-use std::fmt::Debug;
-use std::thread;
+use std::sync::{LockResult, WaitTimeoutResult};
 
+// Switch default devices used by the active streams, to test stream reinitialization
+// ================================================================================================
 #[ignore]
 #[test]
 fn test_switch_device() {
@@ -46,22 +47,27 @@ fn test_switch_device_in_scope(scope: Scope) {
 
     let mut device_switcher = TestDeviceSwitcher::new(scope.clone());
 
-    let count = Arc::new(Mutex::new(0));
-    let also_count = Arc::clone(&count);
-    let listener = test_create_device_change_listener(scope.clone(), move |_addresses| {
-        let mut cnt = also_count.lock().unwrap();
-        *cnt += 1;
-        NO_ERR
+    let notifier = Arc::new(Notifier::new(0));
+    let also_notifier = notifier.clone();
+    let listener = run_serially(|| {
+        test_create_device_change_listener(scope.clone(), move |_addresses| {
+            let mut cnt = notifier.lock().unwrap();
+            *cnt += 1;
+            notifier.notify(cnt);
+            NO_ERR
+        })
     });
-    listener.start();
+    run_serially(|| listener.start());
 
-    let mut changed_watcher = Watcher::new(&count);
+    let changed_watcher = Watcher::new(&also_notifier);
     test_get_started_stream_in_scope(scope.clone(), move |_stream| loop {
-        thread::sleep(Duration::from_millis(500));
-        changed_watcher.prepare();
+        let start_cnt = changed_watcher.lock().unwrap().clone();
         device_switcher.next();
-        changed_watcher.wait_for_change();
-        if changed_watcher.current_result() >= devices.len() {
+        let mut guard = changed_watcher.lock().unwrap();
+        guard = changed_watcher
+            .wait_while(guard, |cnt| *cnt == start_cnt)
+            .unwrap();
+        if *guard >= devices.len() {
             break;
         }
     });
@@ -176,6 +182,8 @@ where
     );
 }
 
+// Plug and unplug devices, to test device collection changed callback
+// ================================================================================================
 #[ignore]
 #[test]
 fn test_plug_and_unplug_device() {
@@ -200,77 +208,90 @@ fn test_plug_and_unplug_device_in_scope(scope: Scope) {
     let mut context = AudioUnitContext::new();
 
     // Register the devices-changed callbacks.
-    let input_count = Arc::new(Mutex::new(0u32));
-    let also_input_count = Arc::clone(&input_count);
-    let input_mtx_ptr = also_input_count.as_ref() as *const Mutex<u32>;
+    #[derive(Clone, PartialEq)]
+    struct Counts {
+        input: u32,
+        output: u32,
+    }
+    impl Counts {
+        fn new() -> Self {
+            Self {
+                input: 0,
+                output: 0,
+            }
+        }
+    }
+    let counts = Arc::new(Notifier::new(Counts::new()));
+    let counts_notifier_ptr = counts.as_ref() as *const Notifier<Counts>;
 
     assert!(context
         .register_device_collection_changed(
             DeviceType::INPUT,
             Some(input_changed_callback),
-            input_mtx_ptr as *mut c_void,
+            counts_notifier_ptr as *mut c_void,
         )
         .is_ok());
-
-    let output_count = Arc::new(Mutex::new(0u32));
-    let also_output_count = Arc::clone(&output_count);
-    let output_mtx_ptr = also_output_count.as_ref() as *const Mutex<u32>;
 
     assert!(context
         .register_device_collection_changed(
             DeviceType::OUTPUT,
             Some(output_changed_callback),
-            output_mtx_ptr as *mut c_void,
+            counts_notifier_ptr as *mut c_void,
         )
         .is_ok());
 
-    let mut input_watcher = Watcher::new(&input_count);
-    let mut output_watcher = Watcher::new(&output_count);
+    let counts_watcher = Watcher::new(&counts);
 
     let mut device_plugger = TestDevicePlugger::new(scope).unwrap();
 
-    // Simulate adding devices and monitor the devices-changed callbacks.
-    input_watcher.prepare();
-    output_watcher.prepare();
+    {
+        // Simulate adding devices and monitor the devices-changed callbacks.
+        let mut counts_guard = counts.lock().unwrap();
+        let counts_start = counts_guard.clone();
 
-    assert!(device_plugger.plug().is_ok());
+        assert!(device_plugger.plug().is_ok());
 
-    if is_input {
-        input_watcher.wait_for_change();
-    }
-    if is_output {
-        output_watcher.wait_for_change();
-    }
+        counts_guard = counts_watcher
+            .wait_while(counts_guard, |counts| {
+                (is_input && counts.input == counts_start.input)
+                    || (is_output && counts.output == counts_start.output)
+            })
+            .unwrap();
 
-    // Check changed count.
-    check_result(is_input, (1, 0), &input_watcher);
-    check_result(is_output, (1, 0), &output_watcher);
-
-    // Simulate removing devices and monitor the devices-changed callbacks.
-    input_watcher.prepare();
-    output_watcher.prepare();
-
-    assert!(device_plugger.unplug().is_ok());
-
-    if is_input {
-        input_watcher.wait_for_change();
-    }
-    if is_output {
-        output_watcher.wait_for_change();
+        // Check changed count.
+        assert_eq!(counts_guard.input, if is_input { 1 } else { 0 });
+        assert_eq!(counts_guard.output, if is_output { 1 } else { 0 });
     }
 
-    check_result(is_input, (2, 0), &input_watcher);
-    check_result(is_output, (2, 0), &output_watcher);
+    {
+        // Simulate removing devices and monitor the devices-changed callbacks.
+        let mut counts_guard = counts.lock().unwrap();
+        let counts_start = counts_guard.clone();
+
+        assert!(device_plugger.unplug().is_ok());
+
+        counts_guard = counts_watcher
+            .wait_while(counts_guard, |counts| {
+                (is_input && counts.input == counts_start.input)
+                    || (is_output && counts.output == counts_start.output)
+            })
+            .unwrap();
+
+        // Check changed count.
+        assert_eq!(counts_guard.input, if is_input { 2 } else { 0 });
+        assert_eq!(counts_guard.output, if is_output { 2 } else { 0 });
+    }
 
     extern "C" fn input_changed_callback(context: *mut ffi::cubeb, data: *mut c_void) {
         println!(
             "Input device collection @ {:p} is changed. Data @ {:p}",
             context, data
         );
-        let count = unsafe { &*(data as *const Mutex<u32>) };
+        let notifier = unsafe { &*(data as *const Notifier<Counts>) };
         {
-            let mut guard = count.lock().unwrap();
-            *guard += 1;
+            let mut counts = notifier.lock().unwrap();
+            counts.input += 1;
+            notifier.notify(counts);
         }
     }
 
@@ -279,25 +300,20 @@ fn test_plug_and_unplug_device_in_scope(scope: Scope) {
             "output device collection @ {:p} is changed. Data @ {:p}",
             context, data
         );
-        let count = unsafe { &*(data as *const Mutex<u32>) };
+        let notifier = unsafe { &*(data as *const Notifier<Counts>) };
         {
-            let mut guard = count.lock().unwrap();
-            *guard += 1;
+            let mut counts = notifier.lock().unwrap();
+            counts.output += 1;
+            notifier.notify(counts);
         }
     }
 
-    fn check_result<T: Clone + Debug + PartialEq>(
-        in_scope: bool,
-        expected: (T, T),
-        watcher: &Watcher<T>,
-    ) {
-        assert_eq!(
-            watcher.current_result(),
-            if in_scope { expected.0 } else { expected.1 }
-        );
-    }
+    context.register_device_collection_changed(DeviceType::OUTPUT, None, ptr::null_mut());
+    context.register_device_collection_changed(DeviceType::INPUT, None, ptr::null_mut());
 }
 
+// Switch default devices used by the active streams, to test device changed callback
+// ================================================================================================
 #[ignore]
 #[test]
 fn test_register_device_changed_callback_to_check_default_device_changed_input() {
@@ -319,52 +335,44 @@ fn test_register_device_changed_callback_to_check_default_device_changed_duplex(
 fn test_register_device_changed_callback_to_check_default_device_changed(stm_type: StreamType) {
     println!("NOTICE: The test will hang if the default input or output is an aggregate device.\nWe will fix this later.");
 
-    let input_devices = test_get_devices_in_scope(Scope::Input).len();
-    let output_devices = test_get_devices_in_scope(Scope::Output).len();
-
-    let input_available = input_devices >= 2;
-    let output_available = output_devices >= 2;
-
-    let run_available = match stm_type {
-        StreamType::INPUT => input_available,
-        StreamType::OUTPUT => output_available,
-        StreamType::DUPLEX => input_available | output_available,
-        _ => {
-            println!("Only test input, output, or duplex stream!");
-            return;
+    let inputs = if stm_type.contains(StreamType::INPUT) {
+        let devices = test_get_devices_in_scope(Scope::Input).len();
+        if devices >= 2 {
+            Some(devices)
+        } else {
+            None
         }
+    } else {
+        None
     };
 
-    if !run_available {
+    let outputs = if stm_type.contains(StreamType::OUTPUT) {
+        let devices = test_get_devices_in_scope(Scope::Output).len();
+        if devices >= 2 {
+            Some(devices)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if inputs.is_none() && outputs.is_none() {
         println!("No enough devices to run the test!");
         return;
     }
 
-    let changed_count = Arc::new(Mutex::new(0u32));
-    let also_changed_count = Arc::clone(&changed_count);
-    let mtx_ptr = also_changed_count.as_ref() as *const Mutex<u32>;
-
-    let input_count = if stm_type.contains(StreamType::INPUT) {
-        input_devices
-    } else {
-        0
-    };
-    let output_count = if stm_type.contains(StreamType::OUTPUT) {
-        output_devices
-    } else {
-        0
-    };
-
-    let mut input_device_switcher = TestDeviceSwitcher::new(Scope::Input);
-    let mut output_device_switcher = TestDeviceSwitcher::new(Scope::Output);
+    let changed_count = Arc::new(Notifier::new(0u32));
+    let notifier_ptr = changed_count.as_ref() as *const Notifier<u32>;
 
     test_get_stream_with_device_changed_callback(
         "stream: test callback for default device changed",
         stm_type,
         None, // Use default input device.
         None, // Use default output device.
-        mtx_ptr as *mut c_void,
-        callback,
+        notifier_ptr as *mut c_void,
+        state_callback,
+        device_changed_callback,
         |stream| {
             // If the duplex stream uses different input and output device,
             // an aggregate device will be created and it will work for this duplex stream.
@@ -372,51 +380,111 @@ fn test_register_device_changed_callback_to_check_default_device_changed(stm_typ
             // be assigned to the default device, since the device list for setting
             // default device is cached upon {input, output}_device_switcher is initialized.
 
-            let mut changed_watcher = Watcher::new(&changed_count);
+            let changed_watcher = Watcher::new(&changed_count);
 
-            for _ in 0..input_count {
-                // While the stream is re-initializing for the default device switch,
-                // switching for the default device again will be ignored.
-                while stream.switching_device.load(atomic::Ordering::SeqCst) {}
-                changed_watcher.prepare();
-                input_device_switcher.next();
-                changed_watcher.wait_for_change();
+            if let Some(devices) = inputs {
+                let mut device_switcher = TestDeviceSwitcher::new(Scope::Input);
+                for _ in 0..devices {
+                    // While the stream is re-initializing for the default device switch,
+                    // switching for the default device again will be ignored.
+                    while stream.switching_device.load(atomic::Ordering::SeqCst) {
+                        std::hint::spin_loop()
+                    }
+                    let guard = changed_watcher.lock().unwrap();
+                    let start_cnt = guard.clone();
+                    device_switcher.next();
+                    changed_watcher
+                        .wait_while(guard, |cnt| *cnt == start_cnt)
+                        .unwrap();
+                }
             }
 
-            for _ in 0..output_count {
-                // While the stream is re-initializing for the default device switch,
-                // switching for the default device again will be ignored.
-                while stream.switching_device.load(atomic::Ordering::SeqCst) {}
-                changed_watcher.prepare();
-                output_device_switcher.next();
-                changed_watcher.wait_for_change();
+            if let Some(devices) = outputs {
+                let mut device_switcher = TestDeviceSwitcher::new(Scope::Output);
+                for _ in 0..devices {
+                    // While the stream is re-initializing for the default device switch,
+                    // switching for the default device again will be ignored.
+                    while stream.switching_device.load(atomic::Ordering::SeqCst) {
+                        std::hint::spin_loop()
+                    }
+                    let guard = changed_watcher.lock().unwrap();
+                    let start_cnt = guard.clone();
+                    device_switcher.next();
+                    changed_watcher
+                        .wait_while(guard, |cnt| *cnt == start_cnt)
+                        .unwrap();
+                }
             }
         },
     );
 
-    extern "C" fn callback(data: *mut c_void) {
+    extern "C" fn state_callback(
+        stream: *mut ffi::cubeb_stream,
+        _user_ptr: *mut c_void,
+        state: ffi::cubeb_state,
+    ) {
+        assert!(!stream.is_null());
+        assert_ne!(state, ffi::CUBEB_STATE_ERROR);
+    }
+
+    extern "C" fn device_changed_callback(data: *mut c_void) {
         println!("Device change callback. data @ {:p}", data);
-        let count = unsafe { &*(data as *const Mutex<u32>) };
-        {
-            let mut guard = count.lock().unwrap();
-            *guard += 1;
-        }
+        let notifier = unsafe { &*(data as *const Notifier<u32>) };
+        let mut count_guard = notifier.lock().unwrap();
+        *count_guard += 1;
+        notifier.notify(count_guard);
     }
 }
+
+// Unplug the devices used by the active streams, to test
+// 1) device changed callback, or state callback
+// 2) stream reinitialization that may race with stream destroying
+// ================================================================================================
+
+// Input-only stream
+// -----------------
+
+// Unplug the non-default input device for an input stream
+// ------------------------------------------------------------------------------------------------
 
 #[ignore]
 #[test]
 fn test_destroy_input_stream_after_unplugging_a_nondefault_input_device() {
+    // The stream can be destroyed before running device-changed event handler
     test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, false, 0);
 }
 
 #[ignore]
 #[test]
+fn test_suspend_input_stream_by_unplugging_a_nondefault_input_device() {
+    // Expect to get an error state callback by device-changed event handler
+    test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, false, 2000);
+}
+
+// Unplug the default input device for an input stream
+// ------------------------------------------------------------------------------------------------
+#[ignore]
+#[test]
 fn test_destroy_input_stream_after_unplugging_a_default_input_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes, at the same when
+    // the stream is being destroyed
     test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, true, 0);
 }
 
-// FIXIT: The following test will hang since we don't monitor the alive status of the output device
+#[ignore]
+#[test]
+fn test_reinit_input_stream_by_unplugging_a_default_input_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes
+    test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, true, 2000);
+}
+
+// Output-only stream
+// ------------------
+
+// Unplug the non-default output device for an output stream
+// ------------------------------------------------------------------------------------------------
 #[ignore]
 #[test]
 fn test_destroy_output_stream_after_unplugging_a_nondefault_output_device() {
@@ -425,23 +493,53 @@ fn test_destroy_output_stream_after_unplugging_a_nondefault_output_device() {
 
 #[ignore]
 #[test]
+fn test_suspend_output_stream_by_unplugging_a_nondefault_output_device() {
+    test_unplug_a_device_on_an_active_stream(StreamType::OUTPUT, Scope::Output, false, 2000);
+}
+
+// Unplug the default output device for an output stream
+// ------------------------------------------------------------------------------------------------
+
+#[ignore]
+#[test]
 fn test_destroy_output_stream_after_unplugging_a_default_output_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes, at the same when
+    // the stream is being destroyed
     test_unplug_a_device_on_an_active_stream(StreamType::OUTPUT, Scope::Output, true, 0);
 }
 
 #[ignore]
 #[test]
+fn test_reinit_output_stream_by_unplugging_a_default_output_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes
+    test_unplug_a_device_on_an_active_stream(StreamType::OUTPUT, Scope::Output, true, 2000);
+}
+
+// Duplex stream
+// -------------
+
+// Unplug the non-default input device for a duplex stream
+// ------------------------------------------------------------------------------------------------
+
+#[ignore]
+#[test]
 fn test_destroy_duplex_stream_after_unplugging_a_nondefault_input_device() {
+    // The stream can be destroyed before running device-changed event handler
     test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, false, 0);
 }
 
 #[ignore]
 #[test]
-fn test_destroy_duplex_stream_after_unplugging_a_default_input_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, true, 0);
+fn test_suspend_duplex_stream_by_unplugging_a_nondefault_input_device() {
+    // Expect to get an error state callback by device-changed event handler
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, false, 2000);
 }
 
-// FIXIT: The following test will hang since we don't monitor the alive status of the output device
+// Unplug the non-default output device for a duplex stream
+// ------------------------------------------------------------------------------------------------
+
 #[ignore]
 #[test]
 fn test_destroy_duplex_stream_after_unplugging_a_nondefault_output_device() {
@@ -450,65 +548,59 @@ fn test_destroy_duplex_stream_after_unplugging_a_nondefault_output_device() {
 
 #[ignore]
 #[test]
-fn test_destroy_duplex_stream_after_unplugging_a_default_output_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, true, 0);
+fn test_suspend_duplex_stream_by_unplugging_a_nondefault_output_device() {
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, false, 2000);
 }
+
+// Unplug the non-default in-out device for a duplex stream
+// ------------------------------------------------------------------------------------------------
+// TODO: Implement an in-out TestDevicePlugger
+
+// Unplug the default input device for a duplex stream
+// ------------------------------------------------------------------------------------------------
 
 #[ignore]
 #[test]
-fn test_reinit_input_stream_by_unplugging_a_nondefault_input_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, false, 500);
-}
-
-#[ignore]
-#[test]
-fn test_reinit_input_stream_by_unplugging_a_default_input_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::INPUT, Scope::Input, true, 500);
-}
-
-// FIXIT: The following test will hang since we don't monitor the alive status of the output device
-#[ignore]
-#[test]
-fn test_reinit_output_stream_by_unplugging_a_nondefault_output_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::OUTPUT, Scope::Output, false, 500);
-}
-
-#[ignore]
-#[test]
-fn test_reinit_output_stream_by_unplugging_a_default_output_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::OUTPUT, Scope::Output, true, 500);
-}
-
-#[ignore]
-#[test]
-fn test_reinit_duplex_stream_by_unplugging_a_nondefault_input_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, false, 500);
+fn test_destroy_duplex_stream_after_unplugging_a_default_input_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes, at the same when
+    // the stream is being destroyed
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, true, 0);
 }
 
 #[ignore]
 #[test]
 fn test_reinit_duplex_stream_by_unplugging_a_default_input_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, true, 500);
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Input, true, 2000);
 }
 
-// FIXIT: The following test will hang since we don't monitor the alive status of the output device
+// Unplug the default ouput device for a duplex stream
+// ------------------------------------------------------------------------------------------------
+
 #[ignore]
 #[test]
-fn test_reinit_duplex_stream_by_unplugging_a_nondefault_output_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, false, 500);
+fn test_destroy_duplex_stream_after_unplugging_a_default_output_device() {
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes, at the same when
+    // the stream is being destroyed
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, true, 0);
 }
 
 #[ignore]
 #[test]
 fn test_reinit_duplex_stream_by_unplugging_a_default_output_device() {
-    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, true, 500);
+    // Expect to get an device-changed callback by device-changed event handler,
+    // which will reinitialize the stream behind the scenes
+    test_unplug_a_device_on_an_active_stream(StreamType::DUPLEX, Scope::Output, true, 2000);
 }
 
 fn test_unplug_a_device_on_an_active_stream(
     stream_type: StreamType,
     device_scope: Scope,
     set_device_to_default: bool,
-    wait_for_reinit_millis: u64,
+    wait_up_to_ms: u64,
 ) {
     let has_input = test_get_default_device(Scope::Input).is_some();
     let has_output = test_get_default_device(Scope::Output).is_some();
@@ -519,86 +611,253 @@ fn test_unplug_a_device_on_an_active_stream(
     }
 
     if stream_type.contains(StreamType::OUTPUT) && !has_output {
-        println!("No output device for ouput or duplex stream.");
+        println!("No output device for output or duplex stream.");
         return;
     }
+
+    let default_device_before_plugging = test_get_default_device(device_scope.clone()).unwrap();
+    println!(
+        "Before plugging, default {:?} device is {}",
+        device_scope, default_device_before_plugging
+    );
 
     let mut plugger = TestDevicePlugger::new(device_scope.clone()).unwrap();
     assert!(plugger.plug().is_ok());
     assert_ne!(plugger.get_device_id(), kAudioObjectUnknown);
+    println!(
+        "Create plugger device: {} for {:?}",
+        plugger.get_device_id(),
+        device_scope
+    );
+
+    let default_device_after_plugging = test_get_default_device(device_scope.clone()).unwrap();
+    println!(
+        "After plugging, default {:?} device is {}",
+        device_scope, default_device_after_plugging
+    );
+
+    // The new device, plugger, is possible to be set to the default device.
+    // Before running the test, we need to set the default device to the correct one.
     if set_device_to_default {
-        assert!(test_set_default_device(plugger.get_device_id(), device_scope.clone()).unwrap());
+        // plugger should be the default device for the test.
+        // If it's not, then set it to the default device.
+        if default_device_after_plugging != plugger.get_device_id() {
+            let prev_def_dev =
+                test_set_default_device(plugger.get_device_id(), device_scope.clone()).unwrap();
+            assert_eq!(prev_def_dev, default_device_after_plugging);
+        }
+    } else {
+        // plugger should NOT be the default device for the test.
+        // If it is, reset the default device to another one.
+        if default_device_after_plugging == plugger.get_device_id() {
+            let prev_def_dev =
+                test_set_default_device(default_device_before_plugging, device_scope.clone())
+                    .unwrap();
+            assert_eq!(prev_def_dev, default_device_after_plugging);
+        }
     }
 
+    // Ignore the return devices' info since we only need to print them.
+    let _ = get_devices_info_in_scope(device_scope.clone());
+    println!(
+        "Current default {:?} device is {}",
+        device_scope,
+        test_get_default_device(device_scope.clone()).unwrap()
+    );
+
     let (input_device, output_device) = match device_scope {
-        Scope::Input => (Some(plugger.get_device_id()), None),
-        Scope::Output => (None, Some(plugger.get_device_id())),
+        Scope::Input => (
+            if set_device_to_default {
+                None // default input device.
+            } else {
+                Some(plugger.get_device_id())
+            },
+            None,
+        ),
+        Scope::Output => (
+            None,
+            if set_device_to_default {
+                None // default output device.
+            } else {
+                Some(plugger.get_device_id())
+            },
+        ),
     };
 
-    let changed_count = Arc::new(Mutex::new(0u32));
-    let also_changed_count = Arc::clone(&changed_count);
-    let mtx_ptr = also_changed_count.as_ref() as *const Mutex<u32>;
+    #[derive(Clone, PartialEq)]
+    struct Data {
+        changed_count: u32,
+        states: Vec<ffi::cubeb_state>,
+    }
+
+    impl Data {
+        fn new() -> Self {
+            Self {
+                changed_count: 0,
+                states: vec![],
+            }
+        }
+    }
+
+    let notifier = Arc::new(Notifier::new(Data::new()));
+    let notifier_ptr = notifier.as_ref() as *const Notifier<Data>;
 
     test_get_stream_with_device_changed_callback(
         "stream: test stream reinit/destroy after unplugging a device",
         stream_type,
         input_device,
         output_device,
-        mtx_ptr as *mut c_void,
-        callback,
+        notifier_ptr as *mut c_void,
+        state_callback,
+        device_changed_callback,
         |stream| {
-            let mut changed_watcher = Watcher::new(&changed_count);
-            changed_watcher.prepare();
-            stream.start();
-            // Wait for stream data callback.
-            thread::sleep(Duration::from_millis(200));
+            assert_eq!(stream.start(), Ok(()));
+
+            println!(
+                "Stream runs on the device {} for {:?}",
+                plugger.get_device_id(),
+                device_scope
+            );
+
+            let dev = plugger.get_device_id();
+            let start_changed_count = {
+                let guard = notifier.lock().unwrap();
+                assert_eq!(guard.states.last().unwrap(), &ffi::CUBEB_STATE_STARTED);
+                guard.changed_count.clone()
+            };
+
             assert!(plugger.unplug().is_ok());
-            changed_watcher.wait_for_change();
-            // Wait for stream re-initialization or destroy stream directly.
-            if wait_for_reinit_millis > 0 {
-                thread::sleep(Duration::from_millis(wait_for_reinit_millis));
+
+            let changed_watcher = Watcher::new(&notifier);
+
+            if set_device_to_default {
+                // The stream will be reinitialized if it follows the default input or output device.
+                println!("Waiting for default device to change and reinit");
+                let mut data_guard = notifier.lock().unwrap();
+                data_guard = changed_watcher
+                    .wait_while(data_guard, |data| {
+                        data.changed_count == start_changed_count
+                            || data.states.last().unwrap_or(&ffi::CUBEB_STATE_ERROR)
+                                != &ffi::CUBEB_STATE_STARTED
+                    })
+                    .unwrap();
+            } else if wait_up_to_ms > 0 {
+                // stream can be dropped immediately before device-changed callback
+                // so we only check the states if we wait for it explicitly.
+                println!("Waiting for non-default device to enter error state");
+                let mut data_guard = notifier.lock().unwrap();
+                let (new_guard, timeout_res) = changed_watcher
+                    .wait_timeout_while(data_guard, Duration::from_millis(wait_up_to_ms), |data| {
+                        data.states.last().unwrap_or(&ffi::CUBEB_STATE_STARTED)
+                            != &ffi::CUBEB_STATE_ERROR
+                    })
+                    .unwrap();
+                assert!(!timeout_res.timed_out());
+                data_guard = new_guard;
             }
+
+            println!(
+                "Device {} for {:?} has been unplugged. The default {:?} device now is {}",
+                dev,
+                device_scope,
+                device_scope,
+                test_get_default_device(device_scope.clone()).unwrap()
+            );
+
+            println!("The stream is going to be destroyed soon");
         },
     );
 
-    extern "C" fn callback(data: *mut c_void) {
-        println!("Device change callback. data @ {:p}", data);
-        let count = unsafe { &*(data as *const Mutex<u32>) };
-        {
-            let mut guard = count.lock().unwrap();
-            *guard += 1;
+    extern "C" fn state_callback(
+        stream: *mut ffi::cubeb_stream,
+        user_ptr: *mut c_void,
+        state: ffi::cubeb_state,
+    ) {
+        println!("Device change callback. user_ptr @ {:p}", user_ptr);
+        assert!(!stream.is_null());
+        println!(
+            "state: {}",
+            match state {
+                ffi::CUBEB_STATE_STARTED => "started",
+                ffi::CUBEB_STATE_STOPPED => "stopped",
+                ffi::CUBEB_STATE_DRAINED => "drained",
+                ffi::CUBEB_STATE_ERROR => "error",
+                _ => "unknown",
+            }
+        );
+        let notifier = unsafe { &mut *(user_ptr as *mut Notifier<Data>) };
+        let mut data_guard = notifier.lock().unwrap();
+        data_guard.states.push(state);
+        notifier.notify(data_guard);
+    }
+
+    extern "C" fn device_changed_callback(user_ptr: *mut c_void) {
+        println!("Device change callback. user_ptr @ {:p}", user_ptr);
+        let notifier = unsafe { &mut *(user_ptr as *mut Notifier<Data>) };
+        let mut data_guard = notifier.lock().unwrap();
+        data_guard.changed_count += 1;
+        notifier.notify(data_guard);
+    }
+}
+
+struct Notifier<T> {
+    value: Mutex<T>,
+    cvar: Condvar,
+}
+
+impl<T> Notifier<T> {
+    fn new(value: T) -> Self {
+        Self {
+            value: Mutex::new(value),
+            cvar: Condvar::new(),
         }
+    }
+
+    fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
+        self.value.lock()
+    }
+
+    fn notify(&self, _guard: MutexGuard<'_, T>) {
+        self.cvar.notify_all();
     }
 }
 
 struct Watcher<T: Clone + PartialEq> {
-    watching: Arc<Mutex<T>>,
-    current: Option<T>,
+    notifier: Arc<Notifier<T>>,
 }
 
 impl<T: Clone + PartialEq> Watcher<T> {
-    fn new(value: &Arc<Mutex<T>>) -> Self {
+    fn new(value: &Arc<Notifier<T>>) -> Self {
         Self {
-            watching: Arc::clone(value),
-            current: None,
+            notifier: Arc::clone(value),
         }
     }
 
-    fn prepare(&mut self) {
-        self.current = Some(self.current_result());
+    fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
+        self.notifier.lock()
     }
 
-    fn wait_for_change(&self) {
-        loop {
-            if self.current_result() != self.current.clone().unwrap() {
-                break;
-            }
-        }
+    fn wait_while<'a, F>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        condition: F,
+    ) -> LockResult<MutexGuard<'a, T>>
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        self.notifier.cvar.wait_while(guard, condition)
     }
 
-    fn current_result(&self) -> T {
-        let guard = self.watching.lock().unwrap();
-        guard.clone()
+    fn wait_timeout_while<'a, F>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        dur: Duration,
+        condition: F,
+    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        self.notifier.cvar.wait_timeout_while(guard, dur, condition)
     }
 }
 
@@ -608,20 +867,22 @@ fn test_get_stream_with_device_changed_callback<F>(
     input_device: Option<AudioObjectID>,
     output_device: Option<AudioObjectID>,
     data: *mut c_void,
-    callback: extern "C" fn(*mut c_void),
+    state_callback: extern "C" fn(*mut ffi::cubeb_stream, *mut c_void, ffi::cubeb_state),
+    device_changed_callback: extern "C" fn(*mut c_void),
     operation: F,
 ) where
     F: FnOnce(&mut AudioUnitStream),
 {
-    test_get_stream_with_default_callbacks_by_type(
+    test_get_stream_with_default_data_callback_by_type(
         name,
         stm_type,
         input_device,
         output_device,
+        state_callback,
         data,
         |stream| {
             assert!(stream
-                .register_device_changed_callback(Some(callback))
+                .register_device_changed_callback(Some(device_changed_callback))
                 .is_ok());
             operation(stream);
             assert!(stream.register_device_changed_callback(None).is_ok());

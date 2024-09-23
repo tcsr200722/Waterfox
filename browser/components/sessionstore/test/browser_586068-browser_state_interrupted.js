@@ -8,7 +8,7 @@ requestLongerTimeout(2);
 
 add_task(async function test() {
   Services.prefs.setBoolPref(PREF_RESTORE_ON_DEMAND, false);
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.clearUserPref(PREF_RESTORE_ON_DEMAND);
   });
 
@@ -147,12 +147,7 @@ add_task(async function test() {
 
   let loadCount = 0;
   let promiseRestoringTabs = new Promise(resolve => {
-    gProgressListener.setCallback(function(
-      aBrowser,
-      aNeedRestore,
-      aRestoring,
-      aRestored
-    ) {
+    gProgressListener.setCallback(function (aBrowser, aNeedRestore) {
       loadCount++;
 
       if (
@@ -188,12 +183,12 @@ add_task(async function test() {
   });
 
   // We also want to catch the extra windows (there should be 2), so we need to observe domwindowopened
-  Services.ww.registerNotification(function observer(aSubject, aTopic, aData) {
+  Services.ww.registerNotification(function observer(aSubject, aTopic) {
     if (aTopic == "domwindowopened") {
       let win = aSubject;
       win.addEventListener(
         "load",
-        function() {
+        function () {
           Services.ww.unregisterNotification(observer);
           win.gBrowser.addTabsProgressListener(gProgressListener);
         },

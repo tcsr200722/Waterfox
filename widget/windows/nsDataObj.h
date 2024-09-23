@@ -10,6 +10,7 @@
 #include <shldisp.h>
 
 #include "mozilla/glue/WinUtils.h"
+#include "mozilla/LazyIdleThread.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsIFile.h"
@@ -18,11 +19,16 @@
 #include "nsIChannel.h"
 #include "nsCOMArray.h"
 #include "nsITimer.h"
+#include "nsIURI.h"
+#include "nsString.h"
+#include "nsWindowsHelpers.h"
 
-class nsIThread;
+class nsICookieJarSettings;
 class nsIPrincipal;
-class CEnumFormatEtc;
+class nsIReferrerInfo;
+class nsIThread;
 class nsITransferable;
+class CEnumFormatEtc;
 
 /*
  * This ole registered class is used to facilitate drag-drop of objects which
@@ -30,7 +36,7 @@ class nsITransferable;
  * associated with instances via SetDragDrop().
  */
 class nsDataObj : public IDataObject, public IDataObjectAsyncCapability {
-  nsCOMPtr<nsIThread> mIOThread;
+  RefPtr<mozilla::LazyIdleThread> mIOThread;
 
  public:  // construction, destruction
   explicit nsDataObj(nsIURI* uri = nullptr);
@@ -170,6 +176,7 @@ class nsDataObj : public IDataObject, public IDataObjectAsyncCapability {
 
  private:
   nsCOMPtr<nsIFile> mCachedTempFile;
+  RefPtr<nsDataObj> mKeepAlive;
 
   BOOL mIsAsyncMode;
   BOOL mIsInOperation;
@@ -221,8 +228,10 @@ class nsDataObj : public IDataObject, public IDataObjectAsyncCapability {
 
    public:
     CStream();
-    nsresult Init(nsIURI* pSourceURI, uint32_t aContentPolicyType,
-                  nsIPrincipal* aRequestingPrincipal);
+    nsresult Init(nsIURI* pSourceURI, nsContentPolicyType aContentPolicyType,
+                  nsIPrincipal* aRequestingPrincipal,
+                  nsICookieJarSettings* aCookieJarSettings,
+                  nsIReferrerInfo* aReferrerInfo);
 
     NS_DECL_ISUPPORTS
     NS_DECL_NSIREQUESTOBSERVER

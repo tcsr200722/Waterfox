@@ -1,4 +1,8 @@
-use crate::common::Cookie;
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+use crate::common::{Cookie, CredentialParameters};
 use serde::ser::{Serialize, Serializer};
 use serde_json::Value;
 
@@ -12,6 +16,8 @@ pub enum WebDriverResponse {
     DeleteSession,
     ElementRect(ElementRectResponse),
     Generic(ValueResponse),
+    WebAuthnAddVirtualAuthenticator(u64),
+    WebAuthnGetCredentials(GetCredentialsResponse),
     NewSession(NewSessionResponse),
     Timeouts(TimeoutsResponse),
     Void,
@@ -75,6 +81,9 @@ pub struct ElementRectResponse {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
+pub struct GetCredentialsResponse(pub Vec<CredentialParameters>);
+
+#[derive(Debug, PartialEq, Serialize)]
 pub struct NewSessionResponse {
     #[serde(rename = "sessionId")]
     pub session_id: String,
@@ -84,8 +93,8 @@ pub struct NewSessionResponse {
 impl NewSessionResponse {
     pub fn new(session_id: String, capabilities: Value) -> NewSessionResponse {
         NewSessionResponse {
-            capabilities,
             session_id,
+            capabilities,
         }
     }
 }
@@ -171,6 +180,7 @@ mod tests {
             "secure": true,
             "httpOnly": false,
             "expiry": 123,
+            "sameSite": "Strict",
         }});
         let response = WebDriverResponse::Cookie(CookieResponse(Cookie {
             name: "foo".into(),
@@ -180,6 +190,7 @@ mod tests {
             expiry: Some(Date(123)),
             secure: true,
             http_only: false,
+            same_site: Some("Strict".into()),
         }));
 
         assert_ser(&response, json);
@@ -203,6 +214,7 @@ mod tests {
             expiry: None,
             secure: true,
             http_only: false,
+            same_site: None,
         }));
 
         assert_ser(&response, json);
@@ -217,6 +229,7 @@ mod tests {
             "domain": null,
             "secure": true,
             "httpOnly": false,
+            "sameSite": "None",
         }]});
         let response = WebDriverResponse::Cookies(CookiesResponse(vec![Cookie {
             name: "name".into(),
@@ -226,6 +239,7 @@ mod tests {
             expiry: None,
             secure: true,
             http_only: false,
+            same_site: Some("None".into()),
         }]));
 
         assert_ser(&response, json);

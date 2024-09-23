@@ -72,10 +72,9 @@ void txUnionPattern::toString(nsAString& aDest) {
 #  ifdef DEBUG
   aDest.AppendLiteral("txUnionPattern{");
 #  endif
-  for (uint32_t i = 0; i < mLocPathPatterns.Length(); ++i) {
-    if (i != 0) aDest.AppendLiteral(" | ");
-    mLocPathPatterns[i]->toString(aDest);
-  }
+  StringJoinAppend(
+      aDest, u" | "_ns, mLocPathPatterns,
+      [](nsAString& dest, txPattern* pattern) { pattern->toString(dest); });
 #  ifdef DEBUG
   aDest.Append(char16_t('}'));
 #  endif
@@ -89,14 +88,10 @@ void txUnionPattern::toString(nsAString& aDest) {
  * (dealt with by the parser)
  */
 
-nsresult txLocPathPattern::addStep(txPattern* aPattern, bool isChild) {
+void txLocPathPattern::addStep(txPattern* aPattern, bool isChild) {
   Step* step = mSteps.AppendElement();
-  if (!step) return NS_ERROR_OUT_OF_MEMORY;
-
   step->pattern = WrapUnique(aPattern);
   step->isChild = isChild;
-
-  return NS_OK;
 }
 
 nsresult txLocPathPattern::matches(const txXPathNode& aNode,

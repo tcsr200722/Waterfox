@@ -8,7 +8,7 @@
  * displayed as XML or plain text
  */
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL, {
     requestCount: 1,
   });
@@ -30,11 +30,13 @@ add_task(async function() {
   let wait = waitForNetworkEvents(monitor, REQUESTS.length);
   for (const [fmt] of REQUESTS) {
     const url = CONTENT_TYPE_SJS + "?fmt=" + fmt;
-    await SpecialPowers.spawn(tab.linkedBrowser, [{ url }], async function(
-      args
-    ) {
-      content.wrappedJSObject.performRequests(1, args.url);
-    });
+    await SpecialPowers.spawn(
+      tab.linkedBrowser,
+      [{ url }],
+      async function (args) {
+        content.wrappedJSObject.performRequests(1, args.url);
+      }
+    );
   }
   await wait;
 
@@ -63,10 +65,7 @@ add_task(async function() {
 
   wait = waitForDOM(document, "#response-panel");
   store.dispatch(Actions.toggleNetworkDetails());
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#response-tab")
-  );
+  clickOnSidebarTab(document, "response");
   await wait;
 
   store.dispatch(Actions.selectRequest(null));

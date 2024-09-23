@@ -10,6 +10,7 @@
 #include "ScriptPreloader-inl.h"
 
 #include "mozilla/BinarySearch.h"
+#include "mozilla/Try.h"
 #include "mozilla/ipc/FileDescriptor.h"
 
 using namespace mozilla::loader;
@@ -18,8 +19,7 @@ namespace mozilla {
 
 using namespace ipc;
 
-namespace dom {
-namespace ipc {
+namespace dom::ipc {
 
 static constexpr uint32_t kSharedStringMapMagic = 0x9e3779b9;
 
@@ -73,15 +73,14 @@ bool SharedStringMap::Find(const nsCString& aKey, size_t* aIndex) {
 
   return BinarySearchIf(
       Entries(), 0, EntryCount(),
-      [&](const Entry& aEntry) {
-        return aKey.Compare(keys.GetBare(aEntry.mKey));
-      },
+      [&](const Entry& aEntry) { return Compare(aKey, keys.Get(aEntry.mKey)); },
       aIndex);
 }
 
 void SharedStringMapBuilder::Add(const nsCString& aKey,
                                  const nsString& aValue) {
-  mEntries.Put(aKey, {mKeyTable.Add(aKey), mValueTable.Add(aValue)});
+  mEntries.InsertOrUpdate(aKey,
+                          Entry{mKeyTable.Add(aKey), mValueTable.Add(aValue)});
 }
 
 Result<Ok, nsresult> SharedStringMapBuilder::Finalize(
@@ -90,10 +89,7 @@ Result<Ok, nsresult> SharedStringMapBuilder::Finalize(
 
   MOZ_ASSERT(mEntries.Count() == mKeyTable.Count());
 
-  nsTArray<nsCString> keys(mEntries.Count());
-  for (auto iter = mEntries.Iter(); !iter.Done(); iter.Next()) {
-    keys.AppendElement(iter.Key());
-  }
+  auto keys = ToTArray<nsTArray<nsCString>>(mEntries.Keys());
   keys.Sort();
 
   Header header = {kSharedStringMapMagic, uint32_t(keys.Length())};
@@ -140,6 +136,5 @@ Result<Ok, nsresult> SharedStringMapBuilder::Finalize(
   return mem.Finalize(aMap);
 }
 
-}  // namespace ipc
-}  // namespace dom
+}  // namespace dom::ipc
 }  // namespace mozilla

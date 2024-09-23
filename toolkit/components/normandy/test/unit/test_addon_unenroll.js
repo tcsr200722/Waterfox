@@ -1,37 +1,32 @@
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+const { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
 );
-const { ExtensionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/ExtensionXPCShellUtils.jsm"
+const { ExtensionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ExtensionXPCShellUtils.sys.mjs"
 );
-const { BranchedAddonStudyAction } = ChromeUtils.import(
-  "resource://normandy/actions/BranchedAddonStudyAction.jsm"
+const { BranchedAddonStudyAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BranchedAddonStudyAction.sys.mjs"
 );
-const { BaseAction } = ChromeUtils.import(
-  "resource://normandy/actions/BaseAction.jsm"
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
 );
-const { TelemetryEvents } = ChromeUtils.import(
-  "resource://normandy/lib/TelemetryEvents.jsm"
+const { TelemetryEvents } = ChromeUtils.importESModule(
+  "resource://normandy/lib/TelemetryEvents.sys.mjs"
 );
-const { AddonManager } = ChromeUtils.import(
-  "resource://gre/modules/AddonManager.jsm"
+const { AddonManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
 );
-const { NormandyTestUtils } = ChromeUtils.import(
-  "resource://testing-common/NormandyTestUtils.jsm"
+const { AddonStudies } = ChromeUtils.importESModule(
+  "resource://normandy/lib/AddonStudies.sys.mjs"
 );
-const { AddonStudies } = ChromeUtils.import(
-  "resource://normandy/lib/AddonStudies.jsm"
-);
-const { PromiseUtils } = ChromeUtils.import(
-  "resource://gre/modules/PromiseUtils.jsm"
-);
+
+/* import-globals-from utils.js */
+load("utils.js");
 
 NormandyTestUtils.init({ add_task });
 const { decorate_task } = NormandyTestUtils;
 
 const global = this;
-
-load("utils.js"); /* globals withMockApiServer, CryptoUtils */
 
 add_task(async () => {
   ExtensionTestUtils.init(global);
@@ -49,14 +44,9 @@ add_task(async () => {
 });
 
 decorate_task(
-  withMockApiServer,
+  withMockApiServer(),
   AddonStudies.withStudies([]),
-  async function test_addon_unenroll(
-    _serverUrl,
-    _preferences,
-    apiServer,
-    _studies
-  ) {
+  async function test_addon_unenroll({ server: apiServer }) {
     const ID = "study@tests.mozilla.org";
 
     // Create a test extension that uses webextension experiments to install
@@ -65,7 +55,7 @@ decorate_task(
       manifest: {
         version: "1.0",
 
-        applications: {
+        browser_specific_settings: {
           gecko: { id: ID },
         },
 
@@ -101,11 +91,11 @@ decorate_task(
           // the following two lines avoid false eslint warnings:
           /* globals browser, ExtensionAPI */
           /* eslint-disable-next-line no-shadow */
-          const { AddonStudies } = ChromeUtils.import(
-            "resource://normandy/lib/AddonStudies.jsm"
+          const { AddonStudies } = ChromeUtils.importESModule(
+            "resource://normandy/lib/AddonStudies.sys.mjs"
           );
-          const { ExtensionCommon } = ChromeUtils.import(
-            "resource://gre/modules/ExtensionCommon.jsm"
+          const { ExtensionCommon } = ChromeUtils.importESModule(
+            "resource://gre/modules/ExtensionCommon.sys.mjs"
           );
           this.study = class extends ExtensionAPI {
             getAPI(context) {
@@ -223,14 +213,9 @@ decorate_task(
 
 /* Test that a broken unenroll listener doesn't stop the add-on from being removed */
 decorate_task(
-  withMockApiServer,
+  withMockApiServer(),
   AddonStudies.withStudies([]),
-  async function test_addon_unenroll(
-    _serverUrl,
-    _preferences,
-    apiServer,
-    _studies
-  ) {
+  async function test_addon_unenroll({ server: apiServer }) {
     const ID = "study@tests.mozilla.org";
 
     // Create a dummy webextension
@@ -239,7 +224,7 @@ decorate_task(
       manifest: {
         version: "1.0",
 
-        applications: {
+        browser_specific_settings: {
           gecko: { id: ID },
         },
       },
@@ -301,7 +286,7 @@ decorate_task(
     let addon = await AddonManager.getAddonByID(ID);
     ok(addon, "Extension is installed");
 
-    let listenerDeferred = PromiseUtils.defer();
+    let listenerDeferred = Promise.withResolvers();
 
     AddonStudies.addUnenrollListener(ID, () => {
       listenerDeferred.resolve();

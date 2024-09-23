@@ -46,7 +46,7 @@ var tests = [
       checkPopup(popup, this.notifyObj);
       EventUtils.synthesizeKey("KEY_Escape");
     },
-    onHidden(popup) {
+    onHidden() {
       ok(!this.notifyObj.mainActionClicked, "mainAction was not clicked");
       ok(this.notifyObj.secondaryActionClicked, "secondaryAction was clicked");
       ok(
@@ -69,8 +69,7 @@ var tests = [
   // Test that for non-persistent notifications, the escape key dismisses the notification.
   {
     id: "Test#2",
-    async run() {
-      await waitForWindowReadyForPopupNotifications(window);
+    run() {
       this.notifyObj = new BasicNotification(this.id);
       this.notification = showNotification(this.notifyObj);
     },
@@ -78,7 +77,7 @@ var tests = [
       checkPopup(popup, this.notifyObj);
       EventUtils.synthesizeKey("KEY_Escape");
     },
-    onHidden(popup) {
+    onHidden() {
       ok(!this.notifyObj.mainActionClicked, "mainAction was not clicked");
       ok(
         !this.notifyObj.secondaryActionClicked,
@@ -124,7 +123,7 @@ var tests = [
       is(document.activeElement, popup.children[0].closebutton);
       this.notification.remove();
     },
-    onHidden(popup) {},
+    onHidden() {},
   },
   // Test that you can switch between active notifications with the space key
   // and that the notification is focused on selection.
@@ -235,9 +234,9 @@ var tests = [
       let id = this.id;
       await BrowserTestUtils.withNewTab(
         "data:text/html,<input id='test-input'/>",
-        async function(browser) {
+        async function (browser) {
           let notifyObj = new BasicNotification(id);
-          await SpecialPowers.spawn(browser, [], function() {
+          await SpecialPowers.spawn(browser, [], function () {
             content.document.getElementById("test-input").focus();
           });
 
@@ -258,7 +257,7 @@ var tests = [
           }
 
           // Check that the input field is still focused inside the browser.
-          await SpecialPowers.spawn(browser, [], function() {
+          await SpecialPowers.spawn(browser, [], function () {
             is(
               content.document.activeElement,
               content.document.getElementById("test-input")

@@ -7,13 +7,20 @@
 #ifndef mozilla_dom_XULBroadcastManager_h
 #define mozilla_dom_XULBroadcastManager_h
 
-#include "mozilla/dom/Element.h"
 #include "nsAtom.h"
+#include "nsTArray.h"
 
+class PLDHashTable;
 class nsXULElement;
 
 namespace mozilla {
+
+class ErrorResult;
+
 namespace dom {
+
+class Document;
+class Element;
 
 class XULBroadcastManager final {
  public:
@@ -33,7 +40,8 @@ class XULBroadcastManager final {
   nsresult RemoveListener(Element* aElement);
   void AttributeChanged(Element* aElement, int32_t aNameSpaceID,
                         nsAtom* aAttribute);
-  void MaybeBroadcast();
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void MaybeBroadcast();
   void DropDocumentReference();  // notification that doc is going away
  protected:
   enum HookupAction { eHookupAdd = 0, eHookupRemove };
@@ -45,8 +53,8 @@ class XULBroadcastManager final {
   void AddListenerFor(Element& aBroadcaster, Element& aListener,
                       const nsAString& aAttr, ErrorResult& aRv);
 
-  nsresult ExecuteOnBroadcastHandlerFor(Element* aBroadcaster,
-                                        Element* aListener, nsAtom* aAttr);
+  MOZ_CAN_RUN_SCRIPT nsresult ExecuteOnBroadcastHandlerFor(
+      Element* aBroadcaster, Element* aListener, nsAtom* aAttr);
   // The out params of FindBroadcaster only have values that make sense when
   // the method returns NS_FINDBROADCASTER_FOUND.  In all other cases, the
   // values of the out params should not be relied on (though *aListener and
@@ -67,47 +75,7 @@ class XULBroadcastManager final {
    */
   PLDHashTable* mBroadcasterMap;
 
-  class nsDelayedBroadcastUpdate {
-   public:
-    nsDelayedBroadcastUpdate(Element* aBroadcaster, Element* aListener,
-                             const nsAString& aAttr)
-        : mBroadcaster(aBroadcaster),
-          mListener(aListener),
-          mAttr(aAttr),
-          mSetAttr(false),
-          mNeedsAttrChange(false) {}
-
-    nsDelayedBroadcastUpdate(Element* aBroadcaster, Element* aListener,
-                             nsAtom* aAttrName, const nsAString& aAttr,
-                             bool aSetAttr, bool aNeedsAttrChange)
-        : mBroadcaster(aBroadcaster),
-          mListener(aListener),
-          mAttr(aAttr),
-          mAttrName(aAttrName),
-          mSetAttr(aSetAttr),
-          mNeedsAttrChange(aNeedsAttrChange) {}
-
-    nsDelayedBroadcastUpdate(const nsDelayedBroadcastUpdate& aOther) = delete;
-    nsDelayedBroadcastUpdate(nsDelayedBroadcastUpdate&& aOther) = default;
-
-    nsCOMPtr<Element> mBroadcaster;
-    nsCOMPtr<Element> mListener;
-    // Note if mAttrName isn't used, this is the name of the attr, otherwise
-    // this is the value of the attribute.
-    nsString mAttr;
-    RefPtr<nsAtom> mAttrName;
-    bool mSetAttr;
-    bool mNeedsAttrChange;
-
-    class Comparator {
-     public:
-      static bool Equals(const nsDelayedBroadcastUpdate& a,
-                         const nsDelayedBroadcastUpdate& b) {
-        return a.mBroadcaster == b.mBroadcaster && a.mListener == b.mListener &&
-               a.mAttrName == b.mAttrName;
-      }
-    };
-  };
+  class nsDelayedBroadcastUpdate;
   nsTArray<nsDelayedBroadcastUpdate> mDelayedBroadcasters;
   nsTArray<nsDelayedBroadcastUpdate> mDelayedAttrChangeBroadcasts;
   bool mHandlingDelayedAttrChange;

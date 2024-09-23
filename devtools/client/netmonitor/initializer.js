@@ -9,8 +9,8 @@
  * This script is the entry point of Network monitor panel.
  * See README.md for more information.
  */
-const { BrowserLoader } = ChromeUtils.import(
-  "resource://devtools/client/shared/browser-loader.js"
+const { BrowserLoader } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/browser-loader.sys.mjs"
 );
 
 const require = (window.windowRequire = BrowserLoader({
@@ -18,9 +18,13 @@ const require = (window.windowRequire = BrowserLoader({
   window,
 }).require);
 
-const { NetMonitorAPI } = require("devtools/client/netmonitor/src/api");
-const { NetMonitorApp } = require("devtools/client/netmonitor/src/app");
-const EventEmitter = require("devtools/shared/event-emitter");
+const {
+  NetMonitorAPI,
+} = require("resource://devtools/client/netmonitor/src/api.js");
+const {
+  NetMonitorApp,
+} = require("resource://devtools/client/netmonitor/src/app.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
 // Inject EventEmitter into global window.
 EventEmitter.decorate(window);
@@ -73,17 +77,13 @@ const url = new window.URL(href);
 // is running in standalone.
 if (window.location.protocol === "chrome:" && url.search.length > 1) {
   const {
-    targetFromURL,
-  } = require("devtools/client/framework/target-from-url");
+    commandsFromURL,
+  } = require("resource://devtools/client/framework/commands-from-url.js");
 
-  (async function() {
+  (async function () {
     try {
-      const target = await targetFromURL(url);
-
-      // Start the network event listening as it is done in the toolbox code
-      const consoleFront = await target.getFront("console");
-      await consoleFront.startListeners(["NetworkActivity"]);
-
+      const commands = await commandsFromURL(url);
+      const target = await commands.descriptorFront.getTarget();
       // Create a fake toolbox object
       const toolbox = {
         target,
@@ -92,6 +92,7 @@ if (window.location.protocol === "chrome:" && url.search.length > 1) {
             "toolbox.viewSourceInDebugger is not implement from a tab"
           );
         },
+        commands,
       };
 
       const api = new NetMonitorAPI();

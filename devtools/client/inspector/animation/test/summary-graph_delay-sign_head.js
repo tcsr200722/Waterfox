@@ -58,7 +58,7 @@ async function testSummaryGraphDelaySign() {
   const { panel } = await openAnimationInspector();
 
   for (const { targetClass, expectedResult } of TEST_DATA) {
-    const animationItemEl = findAnimationItemElementsByTargetSelector(
+    const animationItemEl = await findAnimationItemByTargetSelector(
       panel,
       `.${targetClass}`
     );
@@ -72,16 +72,18 @@ async function testSummaryGraphDelaySign() {
         "The delay sign element should be in animation item element"
       );
 
-      is(
-        delaySignEl.style.marginInlineStart,
-        expectedResult.marginInlineStart,
-        `marginInlineStart position should be ${expectedResult.marginInlineStart}`
-      );
-      is(
-        delaySignEl.style.width,
-        expectedResult.width,
-        `Width should be ${expectedResult.width}`
-      );
+      function assertExpected(key) {
+        const actual = parseFloat(delaySignEl.style[key]);
+        const expected = parseFloat(expectedResult[key]);
+        Assert.less(
+          Math.abs(actual - expected),
+          0.01,
+          `${key} should be ${expected} (got ${actual})`
+        );
+      }
+
+      assertExpected(`marginInlineStart`);
+      assertExpected(`width`);
 
       if (expectedResult.additionalClass) {
         ok(

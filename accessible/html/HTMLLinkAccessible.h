@@ -6,19 +6,18 @@
 #ifndef mozilla_a11y_HTMLLinkAccessible_h__
 #define mozilla_a11y_HTMLLinkAccessible_h__
 
-#include "HyperTextAccessibleWrap.h"
+#include "HyperTextAccessible.h"
 
 namespace mozilla {
 namespace a11y {
 
-class HTMLLinkAccessible : public HyperTextAccessibleWrap {
+class HTMLLinkAccessible : public HyperTextAccessible {
  public:
   HTMLLinkAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  NS_INLINE_DECL_REFCOUNTING_INHERITED(HTMLLinkAccessible,
-                                       HyperTextAccessibleWrap)
+  NS_INLINE_DECL_REFCOUNTING_INHERITED(HTMLLinkAccessible, HyperTextAccessible)
 
-  // Accessible
+  // LocalAccessible
   virtual void Value(nsString& aValue) const override;
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
@@ -26,14 +25,11 @@ class HTMLLinkAccessible : public HyperTextAccessibleWrap {
   virtual uint64_t NativeInteractiveState() const override;
 
   // ActionAccessible
-  virtual uint8_t ActionCount() const override;
+  virtual bool HasPrimaryAction() const override;
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t aIndex) const override;
 
   // HyperLinkAccessible
   virtual bool IsLink() const override;
-  virtual already_AddRefed<nsIURI> AnchorURIAt(
-      uint32_t aAnchorIndex) const override;
 
   /**
    * Returns true if the link has href attribute.
@@ -43,10 +39,19 @@ class HTMLLinkAccessible : public HyperTextAccessibleWrap {
  protected:
   virtual ~HTMLLinkAccessible() {}
 
+  virtual bool AttributeChangesState(nsAtom* aAttribute) override;
+
+  virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+                                   int32_t aModType,
+                                   const nsAttrValue* aOldValue,
+                                   uint64_t aOldState) override;
+
+  virtual ENameValueFlag NativeName(nsString& aName) const override;
+
   enum { eAction_Jump = 0 };
 };
 
-inline HTMLLinkAccessible* Accessible::AsHTMLLink() {
+inline HTMLLinkAccessible* LocalAccessible::AsHTMLLink() {
   return IsHTMLLink() ? static_cast<HTMLLinkAccessible*>(this) : nullptr;
 }
 

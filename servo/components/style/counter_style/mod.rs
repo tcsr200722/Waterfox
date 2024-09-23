@@ -11,51 +11,219 @@ use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::str::CssStringWriter;
 use crate::values::specified::Integer;
-use crate::values::CustomIdent;
+use crate::values::{AtomString, CustomIdent};
 use crate::Atom;
-use cssparser::{AtRuleParser, DeclarationListParser, DeclarationParser};
+use cssparser::{
+    AtRuleParser, DeclarationParser, QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser,
+};
 use cssparser::{CowRcStr, Parser, SourceLocation, Token};
 use selectors::parser::SelectorParseErrorKind;
 use std::fmt::{self, Write};
 use std::mem;
 use std::num::Wrapping;
-use style_traits::{Comma, CssWriter, OneOrMoreSeparated, ParseError};
-use style_traits::{StyleParseErrorKind, ToCss};
+use style_traits::{
+    Comma, CssWriter, KeywordsCollectFn, OneOrMoreSeparated, ParseError, SpecifiedValueInfo,
+    StyleParseErrorKind, ToCss,
+};
 
-/// Parse a counter style name reference.
+/// https://drafts.csswg.org/css-counter-styles/#typedef-symbols-type
+#[allow(missing_docs)]
+#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+pub enum SymbolsType {
+    Cyclic,
+    Numeric,
+    Alphabetic,
+    Symbolic,
+    Fixed,
+}
+
+/// <https://drafts.csswg.org/css-counter-styles/#typedef-counter-style>
 ///
-/// This allows the reserved counter style names "decimal" and "disc".
-pub fn parse_counter_style_name<'i, 't>(
-    input: &mut Parser<'i, 't>,
-) -> Result<CustomIdent, ParseError<'i>> {
-    macro_rules! predefined {
-        ($($name: expr,)+) => {
-            {
-                ascii_case_insensitive_phf_map! {
-                    // FIXME: use static atoms https://github.com/rust-lang/rust/issues/33156
-                    predefined -> &'static str = {
-                        $(
-                            $name => $name,
-                        )+
-                    }
-                }
+/// Note that 'none' is not a valid name, but we include this (along with String) for space
+/// efficiency when storing list-style-type.
+#[derive(
+    Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToCss, ToResolvedValue, ToShmem,
+)]
+#[repr(u8)]
+pub enum CounterStyle {
+    /// The 'none' value.
+    None,
+    /// `<counter-style-name>`
+    Name(CustomIdent),
+    /// `symbols()`
+    #[css(function)]
+    Symbols {
+        /// The <symbols-type>, or symbolic if not specified.
+        #[css(skip_if = "is_symbolic")]
+        ty: SymbolsType,
+        /// The actual symbols.
+        symbols: Symbols,
+    },
+    /// A single string value, useful for `<list-style-type>`.
+    String(AtomString),
+}
 
-                let location = input.current_source_location();
-                let ident = input.expect_ident()?;
-                if let Some(&lower_cased) = predefined(&ident) {
-                    Ok(CustomIdent(Atom::from(lower_cased)))
-                } else {
-                    // none is always an invalid <counter-style> value.
-                    CustomIdent::from_ident(location, ident, &["none"])
+#[inline]
+fn is_symbolic(symbols_type: &SymbolsType) -> bool {
+    *symbols_type == SymbolsType::Symbolic
+}
+
+impl CounterStyle {
+    /// disc value
+    pub fn disc() -> Self {
+        CounterStyle::Name(CustomIdent(atom!("disc")))
+    }
+
+    /// decimal value
+    pub fn decimal() -> Self {
+        CounterStyle::Name(CustomIdent(atom!("decimal")))
+    }
+
+    /// Is this a bullet? (i.e. `list-style-type: disc|circle|square|disclosure-closed|disclosure-open`)
+    #[inline]
+    pub fn is_bullet(&self) -> bool {
+        match self {
+            CounterStyle::Name(CustomIdent(ref name)) => {
+                name == &atom!("disc") ||
+                    name == &atom!("circle") ||
+                    name == &atom!("square") ||
+                    name == &atom!("disclosure-closed") ||
+                    name == &atom!("disclosure-open")
+            },
+            _ => false,
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Clone, Copy)]
+    /// Flags to control parsing of counter styles.
+    pub struct CounterStyleParsingFlags: u8 {
+        /// Whether `none` is allowed.
+        const ALLOW_NONE = 1 << 0;
+        /// Whether a bare string is allowed.
+        const ALLOW_STRING = 1 << 1;
+    }
+}
+
+impl CounterStyle {
+    /// Parse a counter style, and optionally none|string (for list-style-type).
+    pub fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        flags: CounterStyleParsingFlags,
+    ) -> Result<Self, ParseError<'i>> {
+        use self::CounterStyleParsingFlags as Flags;
+        let location = input.current_source_location();
+        match input.next()? {
+            Token::QuotedString(ref string) if flags.intersects(Flags::ALLOW_STRING) => {
+                Ok(Self::String(AtomString::from(string.as_ref())))
+            },
+            Token::Ident(ref ident) => {
+                if flags.intersects(Flags::ALLOW_NONE) && ident.eq_ignore_ascii_case("none") {
+                    return Ok(Self::None);
                 }
+                Ok(Self::Name(counter_style_name_from_ident(ident, location)?))
+            },
+            Token::Function(ref name) if name.eq_ignore_ascii_case("symbols") => {
+                input.parse_nested_block(|input| {
+                    let symbols_type = input
+                        .try_parse(SymbolsType::parse)
+                        .unwrap_or(SymbolsType::Symbolic);
+                    let symbols = Symbols::parse(context, input)?;
+                    // There must be at least two symbols for alphabetic or
+                    // numeric system.
+                    if (symbols_type == SymbolsType::Alphabetic ||
+                        symbols_type == SymbolsType::Numeric) &&
+                        symbols.0.len() < 2
+                    {
+                        return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                    }
+                    // Identifier is not allowed in symbols() function.
+                    if symbols.0.iter().any(|sym| !sym.is_allowed_in_symbols()) {
+                        return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                    }
+                    Ok(Self::Symbols {
+                        ty: symbols_type,
+                        symbols,
+                    })
+                })
+            },
+            t => Err(location.new_unexpected_token_error(t.clone())),
+        }
+    }
+}
+
+impl SpecifiedValueInfo for CounterStyle {
+    fn collect_completion_keywords(f: KeywordsCollectFn) {
+        // XXX The best approach for implementing this is probably
+        // having a CounterStyleName type wrapping CustomIdent, and
+        // put the predefined list for that type in counter_style mod.
+        // But that's a non-trivial change itself, so we use a simpler
+        // approach here.
+        macro_rules! predefined {
+            ($($name:expr,)+) => {
+                f(&["symbols", "none", $($name,)+])
             }
         }
+        include!("predefined.rs");
+    }
+}
+
+fn parse_counter_style_name<'i>(input: &mut Parser<'i, '_>) -> Result<CustomIdent, ParseError<'i>> {
+    let location = input.current_source_location();
+    let ident = input.expect_ident()?;
+    counter_style_name_from_ident(ident, location)
+}
+
+/// This allows the reserved counter style names "decimal" and "disc".
+fn counter_style_name_from_ident<'i>(
+    ident: &CowRcStr<'i>,
+    location: SourceLocation,
+) -> Result<CustomIdent, ParseError<'i>> {
+    macro_rules! predefined {
+        ($($name: tt,)+) => {{
+            ascii_case_insensitive_phf_map! {
+                predefined -> Atom = {
+                    $(
+                        $name => atom!($name),
+                    )+
+                }
+            }
+
+            // This effectively performs case normalization only on predefined names.
+            if let Some(lower_case) = predefined::get(&ident) {
+                Ok(CustomIdent(lower_case.clone()))
+            } else {
+                // none is always an invalid <counter-style> value.
+                CustomIdent::from_ident(location, ident, &["none"])
+            }
+        }}
     }
     include!("predefined.rs")
 }
 
 fn is_valid_name_definition(ident: &CustomIdent) -> bool {
-    ident.0 != atom!("decimal") && ident.0 != atom!("disc")
+    ident.0 != atom!("decimal") &&
+        ident.0 != atom!("disc") &&
+        ident.0 != atom!("circle") &&
+        ident.0 != atom!("square") &&
+        ident.0 != atom!("disclosure-closed") &&
+        ident.0 != atom!("disclosure-open")
 }
 
 /// Parse the prelude of an @counter-style rule
@@ -81,11 +249,11 @@ pub fn parse_counter_style_body<'i, 't>(
     let start = input.current_source_location();
     let mut rule = CounterStyleRuleData::empty(name, location);
     {
-        let parser = CounterStyleRuleParser {
-            context: context,
+        let mut parser = CounterStyleRuleParser {
+            context,
             rule: &mut rule,
         };
-        let mut iter = DeclarationListParser::new(input, parser);
+        let mut iter = RuleBodyParser::new(input, &mut parser);
         while let Some(declaration) = iter.next() {
             if let Err((error, slice)) = declaration {
                 let location = error.location;
@@ -108,7 +276,7 @@ pub fn parse_counter_style_body<'i, 't>(
             Some(ContextualParseError::InvalidCounterStyleWithoutSymbols(
                 system,
             ))
-        }
+        },
         ref system @ System::Alphabetic | ref system @ System::Numeric
             if rule.symbols().unwrap().0.len() < 2 =>
         {
@@ -116,7 +284,7 @@ pub fn parse_counter_style_body<'i, 't>(
             Some(ContextualParseError::InvalidCounterStyleNotEnoughSymbols(
                 system,
             ))
-        }
+        },
         System::Additive if rule.additive_symbols.is_none() => {
             Some(ContextualParseError::InvalidCounterStyleWithoutAdditiveSymbols)
         },
@@ -143,10 +311,26 @@ struct CounterStyleRuleParser<'a, 'b: 'a> {
 
 /// Default methods reject all at rules.
 impl<'a, 'b, 'i> AtRuleParser<'i> for CounterStyleRuleParser<'a, 'b> {
-    type PreludeNoBlock = ();
-    type PreludeBlock = ();
+    type Prelude = ();
     type AtRule = ();
     type Error = StyleParseErrorKind<'i>;
+}
+
+impl<'a, 'b, 'i> QualifiedRuleParser<'i> for CounterStyleRuleParser<'a, 'b> {
+    type Prelude = ();
+    type QualifiedRule = ();
+    type Error = StyleParseErrorKind<'i>;
+}
+
+impl<'a, 'b, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind<'i>>
+    for CounterStyleRuleParser<'a, 'b>
+{
+    fn parse_qualified(&self) -> bool {
+        false
+    }
+    fn parse_declarations(&self) -> bool {
+        true
+    }
 }
 
 macro_rules! checker {
@@ -209,15 +393,17 @@ macro_rules! counter_style_descriptors {
             type Declaration = ();
             type Error = StyleParseErrorKind<'i>;
 
-            fn parse_value<'t>(&mut self, name: CowRcStr<'i>, input: &mut Parser<'i, 't>)
-                               -> Result<(), ParseError<'i>> {
+            fn parse_value<'t>(
+                &mut self,
+                name: CowRcStr<'i>,
+                input: &mut Parser<'i, 't>,
+            ) -> Result<(), ParseError<'i>> {
                 match_ignore_ascii_case! { &*name,
                     $(
                         $name => {
-                            // DeclarationParser also calls parse_entirely
-                            // so we’d normally not need to,
-                            // but in this case we do because we set the value as a side effect
-                            // rather than returning it.
+                            // DeclarationParser also calls parse_entirely so we’d normally not
+                            // need to, but in this case we do because we set the value as a side
+                            // effect rather than returning it.
                             let value = input.parse_entirely(|i| Parse::parse(self.context, i))?;
                             self.rule.$ident = Some(value)
                         },
@@ -232,15 +418,15 @@ macro_rules! counter_style_descriptors {
             fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
                 dest.write_str("@counter-style ")?;
                 self.name.to_css(&mut CssWriter::new(dest))?;
-                dest.write_str(" {\n")?;
+                dest.write_str(" { ")?;
                 $(
                     if let Some(ref value) = self.$ident {
-                        dest.write_str(concat!("  ", $name, ": "))?;
+                        dest.write_str(concat!($name, ": "))?;
                         ToCss::to_css(value, &mut CssWriter::new(dest))?;
-                        dest.write_str(";\n")?;
+                        dest.write_str("; ")?;
                     }
                 )+
-                dest.write_str("}")
+                dest.write_char('}')
             }
         }
     }
@@ -369,7 +555,7 @@ impl Parse for System {
             "symbolic" => Ok(System::Symbolic),
             "additive" => Ok(System::Additive),
             "fixed" => {
-                let first_symbol_value = input.try(|i| Integer::parse(context, i)).ok();
+                let first_symbol_value = input.try_parse(|i| Integer::parse(context, i)).ok();
                 Ok(System::Fixed { first_symbol_value })
             },
             "extends" => {
@@ -458,7 +644,7 @@ impl Parse for Negative {
     ) -> Result<Self, ParseError<'i>> {
         Ok(Negative(
             Symbol::parse(context, input)?,
-            input.try(|input| Symbol::parse(context, input)).ok(),
+            input.try_parse(|input| Symbol::parse(context, input)).ok(),
         ))
     }
 }
@@ -494,7 +680,7 @@ impl Parse for CounterRanges {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("auto"))
+            .try_parse(|input| input.expect_ident_matching("auto"))
             .is_ok()
         {
             return Ok(CounterRanges(Default::default()));
@@ -519,7 +705,7 @@ fn parse_bound<'i, 't>(
     context: &ParserContext,
     input: &mut Parser<'i, 't>,
 ) -> Result<CounterBound, ParseError<'i>> {
-    if let Ok(integer) = input.try(|input| Integer::parse(context, input)) {
+    if let Ok(integer) = input.try_parse(|input| Integer::parse(context, input)) {
         return Ok(CounterBound::Integer(integer));
     }
     input.expect_ident_matching("infinite")?;
@@ -535,7 +721,7 @@ impl Parse for Pad {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let pad_with = input.try(|input| Symbol::parse(context, input));
+        let pad_with = input.try_parse(|input| Symbol::parse(context, input));
         let min_length = Integer::parse_non_negative(context, input)?;
         let pad_with = pad_with.or_else(|_| Symbol::parse(context, input))?;
         Ok(Pad(min_length, pad_with))
@@ -560,21 +746,25 @@ impl Parse for Fallback {
     Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToResolvedValue, ToCss, ToShmem,
 )]
 #[repr(C)]
-pub struct Symbols(#[css(iterable)] pub crate::OwnedSlice<Symbol>);
+pub struct Symbols(
+    #[css(iterable)]
+    #[ignore_malloc_size_of = "Arc"]
+    pub crate::ArcSlice<Symbol>,
+);
 
 impl Parse for Symbols {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let mut symbols = Vec::new();
-        while let Ok(s) = input.try(|input| Symbol::parse(context, input)) {
+        let mut symbols = smallvec::SmallVec::<[_; 5]>::new();
+        while let Ok(s) = input.try_parse(|input| Symbol::parse(context, input)) {
             symbols.push(s);
         }
         if symbols.is_empty() {
             return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
-        Ok(Symbols(symbols.into()))
+        Ok(Symbols(crate::ArcSlice::from_iter(symbols.drain(..))))
     }
 }
 
@@ -618,7 +808,7 @@ impl Parse for AdditiveTuple {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let symbol = input.try(|input| Symbol::parse(context, input));
+        let symbol = input.try_parse(|input| Symbol::parse(context, input));
         let weight = Integer::parse_non_negative(context, input)?;
         let symbol = symbol.or_else(|_| Symbol::parse(context, input))?;
         Ok(Self { weight, symbol })
@@ -648,7 +838,7 @@ impl Parse for SpeakAs {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         let mut is_spell_out = false;
-        let result = input.try(|input| {
+        let result = input.try_parse(|input| {
             let ident = input.expect_ident().map_err(|_| ())?;
             match_ignore_ascii_case! { &*ident,
                 "auto" => Ok(SpeakAs::Auto),

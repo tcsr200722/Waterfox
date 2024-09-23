@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-function run_test() {
+async function run_test() {
   setupTestCommon();
 
   debugDump(
@@ -18,21 +18,22 @@ function run_test() {
   writeUpdatesToXMLFile(getLocalUpdatesXMLString(updates), true);
   writeStatusFile(STATE_DOWNLOADING);
 
-  standardInit();
+  await standardInit();
 
+  const history = await gUpdateManager.getHistory();
   Assert.equal(
-    gUpdateManager.updateCount,
+    history.length,
     0,
     "the update manager updateCount attribute" + MSG_SHOULD_EQUAL
   );
   Assert.equal(
-    gUpdateManager.activeUpdate.state,
+    (await gUpdateManager.getDownloadingUpdate()).state,
     STATE_DOWNLOADING,
     "the update manager activeUpdate state attribute" + MSG_SHOULD_EQUAL
   );
 
   // Cancel the download early to prevent it writing the update xml files during
   // shutdown.
-  gAUS.stopDownload();
+  await gAUS.stopDownload();
   executeSoon(doTestFinish);
 }

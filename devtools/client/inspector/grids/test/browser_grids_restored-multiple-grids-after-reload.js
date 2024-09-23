@@ -30,7 +30,7 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await pushPref("devtools.gridinspector.maxHighlighters", 3);
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { gridInspector, inspector } = await openLayoutView();
@@ -120,7 +120,7 @@ add_task(async function() {
   );
   const onStateRestored = waitForNEvents(
     highlighters,
-    "grid-state-restored",
+    "highlighter-restored",
     3
   );
   const onGridListRestored = waitUntilState(
@@ -136,14 +136,13 @@ add_task(async function() {
       !state.grids[3].highlighted &&
       state.grids[3].disabled
   );
-  await refreshTab();
-  const { restored } = await onStateRestored;
+  await reloadBrowser();
+  await onStateRestored;
   await onGridListRestored;
 
   info(
     "Check that the grid highlighters can be displayed after reloading the page"
   );
-  ok(restored, "The highlighter state was restored");
   is(
     highlighters.gridHighlighters.size,
     3,

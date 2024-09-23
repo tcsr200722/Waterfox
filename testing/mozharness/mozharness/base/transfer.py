@@ -8,14 +8,15 @@
 """
 
 import pprint
+
 try:
     from urllib2 import urlopen
 except ImportError:
     from urllib.request import urlopen
 
-from mozharness.base.log import DEBUG
-
 import json
+
+from mozharness.base.log import DEBUG
 
 
 # TransferMixin {{{1
@@ -27,8 +28,9 @@ class TransferMixin(object):
     """
 
     def load_json_from_url(self, url, timeout=30, log_level=DEBUG):
-        self.log("Attempting to download %s; timeout=%i" % (url, timeout),
-                 level=log_level)
+        self.log(
+            "Attempting to download %s; timeout=%i" % (url, timeout), level=log_level
+        )
         try:
             r = urlopen(url, timeout=timeout)
             j = json.load(r)

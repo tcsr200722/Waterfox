@@ -7,9 +7,9 @@
 #include "ServiceWorkerContainerParent.h"
 
 #include "ServiceWorkerContainerProxy.h"
+#include "mozilla/dom/ClientInfo.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::IPCResult;
 
@@ -26,8 +26,8 @@ IPCResult ServiceWorkerContainerParent::RecvTeardown() {
 }
 
 IPCResult ServiceWorkerContainerParent::RecvRegister(
-    const IPCClientInfo& aClientInfo, const nsCString& aScopeURL,
-    const nsCString& aScriptURL,
+    const IPCClientInfo& aClientInfo, const nsACString& aScopeURL,
+    const nsACString& aScriptURL,
     const ServiceWorkerUpdateViaCache& aUpdateViaCache,
     RegisterResolver&& aResolver) {
   if (!mProxy) {
@@ -39,7 +39,7 @@ IPCResult ServiceWorkerContainerParent::RecvRegister(
       ->Register(ClientInfo(aClientInfo), aScopeURL, aScriptURL,
                  aUpdateViaCache)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolver](const ServiceWorkerRegistrationDescriptor& aDescriptor) {
             aResolver(aDescriptor.ToIPC());
           },
@@ -51,7 +51,7 @@ IPCResult ServiceWorkerContainerParent::RecvRegister(
 }
 
 IPCResult ServiceWorkerContainerParent::RecvGetRegistration(
-    const IPCClientInfo& aClientInfo, const nsCString& aURL,
+    const IPCClientInfo& aClientInfo, const nsACString& aURL,
     GetRegistrationResolver&& aResolver) {
   if (!mProxy) {
     aResolver(CopyableErrorResult(NS_ERROR_DOM_INVALID_STATE_ERR));
@@ -60,7 +60,7 @@ IPCResult ServiceWorkerContainerParent::RecvGetRegistration(
 
   mProxy->GetRegistration(ClientInfo(aClientInfo), aURL)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolver](const ServiceWorkerRegistrationDescriptor& aDescriptor) {
             aResolver(aDescriptor.ToIPC());
           },
@@ -80,7 +80,7 @@ IPCResult ServiceWorkerContainerParent::RecvGetRegistrations(
 
   mProxy->GetRegistrations(ClientInfo(aClientInfo))
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolver](
               const nsTArray<ServiceWorkerRegistrationDescriptor>& aList) {
             IPCServiceWorkerRegistrationDescriptorList ipcList;
@@ -105,7 +105,7 @@ IPCResult ServiceWorkerContainerParent::RecvGetReady(
 
   mProxy->GetReady(ClientInfo(aClientInfo))
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolver](const ServiceWorkerRegistrationDescriptor& aDescriptor) {
             aResolver(aDescriptor.ToIPC());
           },
@@ -126,5 +126,4 @@ void ServiceWorkerContainerParent::Init() {
   mProxy = new ServiceWorkerContainerProxy(this);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

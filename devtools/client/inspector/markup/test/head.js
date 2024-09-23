@@ -2,8 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../shared/test/telemetry-test-helpers.js */
-/* import-globals-from ../../test/head.js */
+
 "use strict";
 
 // Import the inspector's head.js first (which itself imports shared-head.js).
@@ -12,16 +11,10 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-// Load the shared Redux helpers into this compartment.
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
-  this
-);
-
 var {
   getInplaceEditorForSpan: inplaceEditor,
-} = require("devtools/client/shared/inplace-editor");
-var clipboard = require("devtools/shared/platform/clipboard");
+} = require("resource://devtools/client/shared/inplace-editor.js");
+var clipboard = require("resource://devtools/shared/platform/clipboard.js");
 
 // If a test times out we want to see the complete log and not just the last few
 // lines.
@@ -56,18 +49,6 @@ function loadHelperScript(filePath) {
 }
 
 /**
- * Reload the current page
- * @return a promise that resolves when the inspector has emitted the event
- * new-root
- */
-function reloadPage(inspector, testActor) {
-  info("Reloading the page");
-  const newRoot = inspector.once("new-root");
-  testActor.reload();
-  return newRoot;
-}
-
-/**
  * Get the MarkupContainer object instance that corresponds to the given
  * NodeFront
  * @param {NodeFront} nodeFront
@@ -88,7 +69,7 @@ function getContainerForNodeFront(nodeFront, { markup }) {
  * @param {Boolean} Set to true in the event that the node shouldn't be found.
  * @return {MarkupContainer}
  */
-var getContainerForSelector = async function(
+var getContainerForSelector = async function (
   selector,
   inspector,
   expectFailure = false
@@ -110,14 +91,16 @@ var getContainerForSelector = async function(
  * Retrieve the nodeValue for the firstChild of a provided selector on the content page.
  *
  * @param {String} selector
- * @param {TestActorFront} testActor The current TestActorFront instance.
  * @return {String} the nodeValue of the first
  */
-async function getFirstChildNodeValue(selector, testActor) {
-  const nodeValue = await testActor.eval(`
-    document.querySelector("${selector}").firstChild.nodeValue;
-  `);
-  return nodeValue;
+function getFirstChildNodeValue(selector) {
+  return SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector],
+    _selector => {
+      return content.document.querySelector(_selector).firstChild.nodeValue;
+    }
+  );
 }
 
 /**
@@ -145,14 +128,14 @@ function waitForChildrenUpdated({ markup }) {
  * loaded in the toolbox
  * @return {Promise} Resolves when the node has been selected.
  */
-var clickContainer = async function(selector, inspector) {
+var clickContainer = async function (selector, inspector) {
   info("Clicking on the markup-container for node " + selector);
 
   const nodeFront = await getNodeFront(selector, inspector);
   const container = getContainerForNodeFront(nodeFront, inspector);
 
   const updated = container.selected
-    ? promise.resolve()
+    ? Promise.resolve()
     : inspector.once("inspector-updated");
   EventUtils.synthesizeMouseAtCenter(
     container.tagLine,
@@ -194,7 +177,7 @@ function setEditableFieldValue(field, value, inspector) {
  * loaded in the toolbox
  * @return a promise that resolves when the node has mutated
  */
-var addNewAttributes = async function(selector, text, inspector) {
+var addNewAttributes = async function (selector, text, inspector) {
   info(`Entering text "${text}" in new attribute field for node ${selector}`);
 
   const container = await focusNode(selector, inspector);
@@ -212,21 +195,19 @@ var addNewAttributes = async function(selector, text, inspector) {
  * @param {String} selector The selector for the node to check.
  * @param {Object} expected An object containing the attributes to check.
  *        e.g. {id: "id1", class: "someclass"}
- * @param {TestActorFront} testActor The current TestActorFront instance.
  *
  * Note that node.getAttribute() returns attribute values provided by the HTML
  * parser. The parser only provides unescaped entities so &amp; will return &.
  */
-var assertAttributes = async function(selector, expected, testActor) {
-  const { attributes: actual } = await testActor.getNodeInfo(selector);
-
+var assertAttributes = async function (selector, expected) {
+  const actualAttributes = await getContentPageElementAttributes(selector);
   is(
-    actual.length,
+    actualAttributes.length,
     Object.keys(expected).length,
     "The node " + selector + " has the expected number of attributes."
   );
   for (const attr in expected) {
-    const foundAttr = actual.find(({ name }) => name === attr);
+    const foundAttr = actualAttributes.find(({ name }) => name === attr);
     const foundValue = foundAttr ? foundAttr.value : undefined;
     ok(foundAttr, "The node " + selector + " has the attribute " + attr);
     is(
@@ -249,7 +230,7 @@ function undoChange(inspector) {
   const canUndo = inspector.markup.undo.canUndo();
   ok(canUndo, "The last change in the markup-view can be undone");
   if (!canUndo) {
-    return promise.reject();
+    return Promise.reject();
   }
 
   const mutated = inspector.once("markupmutation");
@@ -269,7 +250,7 @@ function redoChange(inspector) {
   const canRedo = inspector.markup.undo.canRedo();
   ok(canRedo, "The last change in the markup-view can be redone");
   if (!canRedo) {
-    return promise.reject();
+    return Promise.reject();
   }
 
   const mutated = inspector.once("markupmutation");
@@ -309,7 +290,7 @@ function searchUsingSelectorSearch(selector, inspector) {
  * @return A promise that resolves with a boolean indicating whether
  *         the menu items are disabled once the menu has been checked.
  */
-var isEditingMenuDisabled = async function(
+var isEditingMenuDisabled = async function (
   nodeFront,
   inspector,
   assert = true
@@ -350,7 +331,11 @@ var isEditingMenuDisabled = async function(
  * @return A promise that resolves with a boolean indicating whether
  *         the menu items are enabled once the menu has been checked.
  */
-var isEditingMenuEnabled = async function(nodeFront, inspector, assert = true) {
+var isEditingMenuEnabled = async function (
+  nodeFront,
+  inspector,
+  assert = true
+) {
   // To ensure clipboard contains something to paste.
   clipboard.copyString("<p>test</p>");
 
@@ -466,7 +451,7 @@ function checkFocusedAttribute(attrName, editMode) {
  *         A promise that resolves with an array of attribute names
  *         (e.g. ["id", "class", "href"])
  */
-var getAttributesFromEditor = async function(selector, inspector) {
+var getAttributesFromEditor = async function (selector, inspector) {
   const nodeList = (
     await getContainerForSelector(selector, inspector)
   ).tagLine.querySelectorAll("[data-attr]");
@@ -493,6 +478,7 @@ async function simulateNodeDrag(
     typeof selector === "string"
       ? await getContainerForSelector(selector, inspector)
       : selector;
+  container.elt.scrollIntoView(true);
   const rect = container.tagLine.getBoundingClientRect();
   const scrollX = inspector.markup.doc.documentElement.scrollLeft;
   const scrollY = inspector.markup.doc.documentElement.scrollTop;
@@ -640,176 +626,6 @@ async function checkDeleteAndSelection(
   await undoChange(inspector);
   node = await getNodeFront(selector, inspector);
   ok(node, "The node is back");
-}
-
-/**
- * Assert whether the provided container is slotted.
- */
-function assertContainerSlotted(container) {
-  ok(container.isSlotted(), "Container is a slotted container");
-  ok(
-    container.elt.querySelector(".reveal-link"),
-    "Slotted container has a reveal link element"
-  );
-}
-
-/**
- * Check if the provided text can be matched anywhere in the text content for the provided
- * container.
- */
-function assertContainerHasText(container, expectedText) {
-  const textContent = container.elt.textContent;
-  ok(
-    textContent.includes(expectedText),
-    "Container has expected text: " + expectedText
-  );
-}
-
-/**
- * Assert method to compare the current content of the markupview to a text based tree.
- *
- * @param {String} tree
- *        Multiline string representing the markup view tree, for instance:
- *        `root
- *           child1
- *             subchild1
- *             subchild2
- *           child2
- *             subchild3!slotted`
- *           child3!ignore-children
- *        Each sub level should be indented by 2 spaces.
- *        Each line contains text expected to match with the text of the corresponding
- *        node in the markup view. Some suffixes are supported:
- *        - !slotted -> indicates that the line corresponds to the slotted version
- *        - !ignore-children -> the node might have children but do not assert them
- * @param {String} selector
- *        A CSS selector that will uniquely match the "root" element from the tree
- * @param {Inspector} inspector
- *        The inspector instance.
- */
-async function assertMarkupViewAsTree(tree, selector, inspector) {
-  const { markup } = inspector;
-
-  info(`Find and expand the shadow DOM host matching selector ${selector}.`);
-  const rootFront = await getNodeFront(selector, inspector);
-  const rootContainer = markup.getContainer(rootFront);
-
-  const parsedTree = _parseMarkupViewTree(tree);
-  const treeRoot = parsedTree.children[0];
-  await _checkMarkupViewNode(treeRoot, rootContainer, inspector);
-}
-
-async function _checkMarkupViewNode(treeNode, container, inspector) {
-  const { node, children, path } = treeNode;
-  info("Checking [" + path + "]");
-  info("Checking node: " + node);
-
-  const ignoreChildren = node.includes("!ignore-children");
-  const slotted = node.includes("!slotted");
-
-  // Remove optional suffixes.
-  const nodeText = node.replace("!slotted", "").replace("!ignore-children", "");
-
-  assertContainerHasText(container, nodeText);
-
-  if (slotted) {
-    assertContainerSlotted(container);
-  }
-
-  if (ignoreChildren) {
-    return;
-  }
-
-  if (!children.length) {
-    ok(!container.canExpand, "Container for [" + path + "] has no children");
-    return;
-  }
-
-  // Expand the container if not already done.
-  if (!container.expanded) {
-    await expandContainer(inspector, container);
-  }
-
-  const containers = container.getChildContainers();
-  is(
-    containers.length,
-    children.length,
-    "Node [" + path + "] has the expected number of children"
-  );
-  for (let i = 0; i < children.length; i++) {
-    await _checkMarkupViewNode(children[i], containers[i], inspector);
-  }
-}
-
-/**
- * Helper designed to parse a tree represented as:
- * root
- *   child1
- *     subchild1
- *     subchild2
- *   child2
- *     subchild3!slotted
- *
- * Lines represent a simplified view of the markup, where the trimmed line is supposed to
- * be included in the text content of the actual markupview container.
- * This method returns an object that can be passed to _checkMarkupViewNode() to verify
- * the current markup view displays the expected structure.
- */
-function _parseMarkupViewTree(inputString) {
-  const tree = {
-    level: 0,
-    children: [],
-  };
-  let lines = inputString.split("\n");
-  lines = lines.filter(l => l.trim());
-
-  let currentNode = tree;
-  for (const line of lines) {
-    const nodeString = line.trim();
-    const level = line.split("  ").length;
-
-    let parent;
-    if (level > currentNode.level) {
-      parent = currentNode;
-    } else {
-      parent = currentNode.parent;
-      for (let i = 0; i < currentNode.level - level; i++) {
-        parent = parent.parent;
-      }
-    }
-
-    const node = {
-      node: nodeString,
-      children: [],
-      parent,
-      level,
-      path: parent.path + " " + nodeString,
-    };
-
-    parent.children.push(node);
-    currentNode = node;
-  }
-
-  return tree;
-}
-
-function waitForMutation(inspector, type) {
-  return waitForNMutations(inspector, type, 1);
-}
-
-function waitForNMutations(inspector, type, count) {
-  info(`Expecting ${count} markupmutation of type ${type}`);
-  let receivedMutations = 0;
-  return new Promise(resolve => {
-    inspector.on("markupmutation", function onMutation(mutations) {
-      const validMutations = mutations.filter(m => m.type === type).length;
-      receivedMutations = receivedMutations + validMutations;
-      if (receivedMutations == count) {
-        inspector.off("markupmutation", onMutation);
-        resolve();
-      }
-    });
-  });
 }
 
 /**

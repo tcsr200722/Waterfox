@@ -12,13 +12,14 @@
 
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/IntegerRange.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Selection.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
-#include "mozilla/dom/Document.h"
 #include "nsFrameSelection.h"
 #include "nsRange.h"
-#include "mozilla/dom/Selection.h"
 
 namespace mozilla {
 
@@ -70,28 +71,20 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(SelectionChangeEventDispatcher)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOldRanges);
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(SelectionChangeEventDispatcher, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(SelectionChangeEventDispatcher, Release)
-
 void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
                                                        Selection* aSel,
                                                        int16_t aReason) {
-  Document* doc = aSel->GetParentObject();
-  if (!(doc && doc->NodePrincipal()->IsSystemPrincipal()) &&
-      !StaticPrefs::dom_select_events_enabled()) {
-    return;
-  }
-
   // Check if the ranges have actually changed
   // Don't bother checking this if we are hiding changes.
   if (mOldRanges.Length() == aSel->RangeCount() &&
       !aSel->IsBlockingSelectionChangeEvents()) {
-    bool changed = false;
-
-    for (size_t i = 0; i < mOldRanges.Length(); i++) {
-      if (!mOldRanges[i].Equals(aSel->GetRangeAt(i))) {
-        changed = true;
-        break;
+    bool changed = mOldDirection != aSel->GetDirection();
+    if (!changed) {
+      for (const uint32_t i : IntegerRange(mOldRanges.Length())) {
+        if (!mOldRanges[i].Equals(aSel->GetRangeAt(i))) {
+          changed = true;
+          break;
+        }
       }
     }
 
@@ -102,16 +95,10 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
 
   // The ranges have actually changed, update the mOldRanges array
   mOldRanges.ClearAndRetainStorage();
-  for (size_t i = 0; i < aSel->RangeCount(); i++) {
+  for (const uint32_t i : IntegerRange(aSel->RangeCount())) {
     mOldRanges.AppendElement(RawRangeData(aSel->GetRangeAt(i)));
   }
-
-  if (doc) {
-    nsPIDOMWindowInner* inner = doc->GetInnerWindow();
-    if (inner && !inner->HasSelectionChangeEventListeners()) {
-      return;
-    }
-  }
+  mOldDirection = aSel->GetDirection();
 
   // If we are hiding changes, then don't do anything else. We do this after we
   // update mOldRanges so that changes after the changes stop being hidden don't
@@ -120,54 +107,78 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
     return;
   }
 
+  const Document* doc = aSel->GetParentObject();
+  if (MOZ_UNLIKELY(!doc)) {
+    return;
+  }
+  const nsPIDOMWindowInner* inner = doc->GetInnerWindow();
+  if (MOZ_UNLIKELY(!inner)) {
+    return;
+  }
+  const bool maybeHasSelectionChangeEventListeners =
+      !inner || inner->HasSelectionChangeEventListeners();
+  const bool maybeHasFormSelectEventListeners =
+      !inner || inner->HasFormSelectEventListeners();
+  if (!maybeHasSelectionChangeEventListeners &&
+      !maybeHasFormSelectEventListeners) {
+    return;
+  }
+
+  // Be aware, don't call GetTextControlFromSelectionLimiter once you might
+  // run script because selection limit may have already been changed by it.
+  nsCOMPtr<nsIContent> textControl;
+  if ((maybeHasFormSelectEventListeners &&
+       (aReason & nsISelectionListener::JS_REASON)) ||
+      maybeHasSelectionChangeEventListeners) {
+    if (const nsFrameSelection* fs = aSel->GetFrameSelection()) {
+      if (nsCOMPtr<nsIContent> root = fs->GetLimiter()) {
+        textControl = root->GetClosestNativeAnonymousSubtreeRootParentOrHost();
+        MOZ_ASSERT_IF(textControl,
+                      textControl->IsTextControlElement() &&
+                          !textControl->IsInNativeAnonymousSubtree());
+      }
+    }
+  };
+
+  // Selection changes with non-JS reason only cares about whether the new
+  // selection is collapsed or not. See TextInputListener::OnSelectionChange.
+  if (textControl && maybeHasFormSelectEventListeners &&
+      (aReason & nsISelectionListener::JS_REASON)) {
+    RefPtr<AsyncEventDispatcher> asyncDispatcher =
+        new AsyncEventDispatcher(textControl, eFormSelect, CanBubble::eYes);
+    asyncDispatcher->PostDOMEvent();
+  }
+
+  if (!maybeHasSelectionChangeEventListeners) {
+    return;
+  }
+
   // The spec currently doesn't say that we should dispatch this event on text
   // controls, so for now we only support doing that under a pref, disabled by
   // default.
   // See https://github.com/w3c/selection-api/issues/53.
-  if (StaticPrefs::dom_select_events_textcontrols_enabled()) {
-    nsCOMPtr<nsINode> target;
-
-    // Check if we should be firing this event to a different node than the
-    // document. The limiter of the nsFrameSelection will be within the native
-    // anonymous subtree of the node we want to fire the event on. We need to
-    // climb up the parent chain to escape the native anonymous subtree, and
-    // then fire the event.
-    if (const nsFrameSelection* fs = aSel->GetFrameSelection()) {
-      if (nsCOMPtr<nsIContent> root = fs->GetLimiter()) {
-        while (root && root->IsInNativeAnonymousSubtree()) {
-          root = root->GetParent();
-        }
-
-        target = std::move(root);
-      }
-    }
-
-    // If we didn't get a target before, we can instead fire the event at the
-    // document.
-    if (!target) {
-      target = aDoc;
-    }
-
-    if (target) {
-      RefPtr<AsyncEventDispatcher> asyncDispatcher =
-          new AsyncEventDispatcher(target, eSelectionChange, CanBubble::eNo);
-      asyncDispatcher->PostDOMEvent();
-    }
-  } else {
-    if (const nsFrameSelection* fs = aSel->GetFrameSelection()) {
-      if (nsCOMPtr<nsIContent> root = fs->GetLimiter()) {
-        if (root->IsInNativeAnonymousSubtree()) {
-          return;
-        }
-      }
-    }
-
-    if (aDoc) {
-      RefPtr<AsyncEventDispatcher> asyncDispatcher =
-          new AsyncEventDispatcher(aDoc, eSelectionChange, CanBubble::eNo);
-      asyncDispatcher->PostDOMEvent();
-    }
+  if (textControl &&
+      !StaticPrefs::dom_select_events_textcontrols_selectionchange_enabled()) {
+    return;
   }
+
+  nsINode* target =
+      textControl ? static_cast<nsINode*>(textControl.get()) : aDoc;
+  if (!target) {
+    return;
+  }
+
+  if (target->HasScheduledSelectionChangeEvent()) {
+    return;
+  }
+
+  target->SetHasScheduledSelectionChangeEvent();
+
+  CanBubble canBubble = textControl ? CanBubble::eYes : CanBubble::eNo;
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncSelectionChangeEventDispatcher(target, eSelectionChange,
+                                              canBubble);
+  asyncDispatcher->PostDOMEvent();
 }
 
 }  // namespace mozilla

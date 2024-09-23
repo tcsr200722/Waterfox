@@ -9,12 +9,12 @@
 
 #include <string>
 
-#include "js/TypeDecls.h"         // for JSContext, JSObject
-#include "mozilla/ErrorResult.h"  // for ErrorResult
-#include "mozilla/StaticPtr.h"    // for StaticRefPtr
-#include "nsCOMPtr.h"             // for nsCOMPtr
-#include "nsISupports.h"          // for NS_INLINE_DECL_REFCOUNTING
-#include "nsWrapperCache.h"       // for nsWrapperCache
+#include "js/TypeDecls.h"            // for JSContext, JSObject
+#include "mozilla/StaticPtr.h"       // for StaticRefPtr
+#include "nsCOMPtr.h"                // for nsCOMPtr
+#include "nsISupports.h"             // for NS_INLINE_DECL_REFCOUNTING
+#include "nsTArrayForwardDeclare.h"  // for nsTArray
+#include "nsWrapperCache.h"          // for nsWrapperCache
 
 namespace mozilla {
 
@@ -115,7 +115,7 @@ class CheckerboardReportService : public nsWrapperCache {
   nsISupports* GetParentObject();
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(CheckerboardReportService)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(CheckerboardReportService)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(CheckerboardReportService)
 
  public:
   /*

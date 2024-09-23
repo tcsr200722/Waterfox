@@ -3,17 +3,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 @namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
+@namespace html url("http://www.w3.org/1999/xhtml");
 
 :host {
   padding: 14px;
-}
-
-.wizard-header {
-  -moz-appearance: dialog;
-}
-
-.wizard-header-box-1 {
-  color: #000;
 }
 
 .wizard-header-box-text {
@@ -38,9 +31,8 @@
   height: 48px;
 }
 
-.wizard-page-box {
+html|*.wizard-page-box {
   padding: 15px 23px;
-  -moz-appearance: dialog;
 }
 
 .wizard-buttons-separator {

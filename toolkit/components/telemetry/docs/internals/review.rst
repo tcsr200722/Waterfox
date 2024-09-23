@@ -50,7 +50,7 @@ Considerations for all changes
 
   - Firefox Desktop:
 
-    - `The Mozilla coding style <https://developer.mozilla.org/en-US/docs/Mozilla/Developer_guide/Coding_Style>`_
+    - :ref:`The Mozilla coding style <Coding style>`
     - `The toolkit code review guidelines <https://wiki.mozilla.org/Toolkit/Code_Review>`_
 
   - Mobile:
@@ -67,7 +67,7 @@ Considerations for all changes
 - Does this affect products more broadly than expected?
 
   - Consider all our platforms: Windows, Mac, Linux, Android.
-  - Consider all our products: Firefox, Fennec, GeckoView, Glean.
+  - Consider all our products: Firefox, Fenix, Glean.
 
 - Does this fall afoul of common architectural failures?
 
@@ -80,7 +80,7 @@ Considerations for all changes
 
 - Does this need documentation updates?
 
-  - To the `in-tree docs <https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/>`_?
+  - To the :ref:`in-tree docs <Telemetry>`?
   - To the `firefox-data-docs <https://docs.telemetry.mozilla.org/>`_ (`repository <https://github.com/mozilla/firefox-data-docs>`_)?
   - To the `glean documentation <https://github.com/mozilla-mobile/android-components/tree/master/components/service/glean>`_?
 

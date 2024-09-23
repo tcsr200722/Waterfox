@@ -5,21 +5,14 @@
 
 "use strict";
 
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+var { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "SiteDataManager",
-  "resource:///modules/SiteDataManager.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "DownloadUtils",
-  "resource://gre/modules/DownloadUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  DownloadUtils: "resource://gre/modules/DownloadUtils.sys.mjs",
+  SiteDataManager: "resource:///modules/SiteDataManager.sys.mjs",
+});
 
 let gSiteDataSettings = {
   // Array of metadata of sites. Each array element is object holding:
@@ -35,14 +28,14 @@ let gSiteDataSettings = {
 
   _createSiteListItem(site) {
     let item = document.createXULElement("richlistitem");
-    item.setAttribute("host", site.host);
+    item.setAttribute("host", site.baseDomain);
     let container = document.createXULElement("hbox");
 
     // Creates a new column item with the specified relative width.
     function addColumnItem(l10n, flexWidth, tooltipText) {
       let box = document.createXULElement("hbox");
       box.className = "item-box";
-      box.setAttribute("flex", flexWidth);
+      box.setAttribute("style", `flex: ${flexWidth} ${flexWidth};`);
       let label = document.createXULElement("label");
       label.setAttribute("crop", "end");
       if (l10n) {
@@ -61,8 +54,8 @@ let gSiteDataSettings = {
     }
 
     // Add "Host" column.
-    let hostData = site.host
-      ? { raw: site.host }
+    let hostData = site.baseDomain
+      ? { raw: site.baseDomain }
       : { id: "site-data-local-file-host" };
     addColumnItem(hostData, "4");
 
@@ -140,11 +133,11 @@ let gSiteDataSettings = {
     setEventListener("usageCol", "click", this.onClickTreeCol);
     setEventListener("lastAccessedCol", "click", this.onClickTreeCol);
     setEventListener("cookiesCol", "click", this.onClickTreeCol);
-    setEventListener("cancel", "command", this.close);
-    setEventListener("save", "command", this.saveChanges);
     setEventListener("searchBox", "command", this.onCommandSearch);
     setEventListener("removeAll", "command", this.onClickRemoveAll);
     setEventListener("removeSelected", "command", this.removeSelected);
+
+    document.addEventListener("dialogaccept", e => this.saveChanges(e));
   },
 
   _updateButtonsState() {
@@ -225,8 +218,7 @@ let gSiteDataSettings = {
     let keyword = this._searchBox.value.toLowerCase().trim();
     let fragment = document.createDocumentFragment();
     for (let site of sites) {
-      let host = site.host;
-      if (keyword && !host.includes(keyword)) {
+      if (keyword && !site.baseDomain.includes(keyword)) {
         continue;
       }
 
@@ -244,57 +236,42 @@ let gSiteDataSettings = {
   _removeSiteItems(items) {
     for (let i = items.length - 1; i >= 0; --i) {
       let item = items[i];
-      let host = item.getAttribute("host");
-      let siteForHost = this._sites.find(site => site.host == host);
-      if (siteForHost) {
-        siteForHost.userAction = "remove";
+      let baseDomain = item.getAttribute("host");
+      let siteForBaseDomain = this._sites.find(
+        site => site.baseDomain == baseDomain
+      );
+      if (siteForBaseDomain) {
+        siteForBaseDomain.userAction = "remove";
       }
       item.remove();
     }
     this._updateButtonsState();
   },
 
-  async saveChanges() {
-    // Tracks whether the user confirmed their decision.
-    let allowed = false;
-
+  async saveChanges(event) {
     let removals = this._sites
       .filter(site => site.userAction == "remove")
-      .map(site => site.host);
+      .map(site => site.baseDomain);
 
     if (removals.length) {
-      if (this._sites.length == removals.length) {
-        allowed = SiteDataManager.promptSiteDataRemoval(window);
-        if (allowed) {
-          try {
-            await SiteDataManager.removeAll();
-          } catch (e) {
-            Cu.reportError(e);
-          }
-        }
-      } else {
-        allowed = SiteDataManager.promptSiteDataRemoval(window, removals);
-        if (allowed) {
-          try {
-            await SiteDataManager.remove(removals);
-          } catch (e) {
-            Cu.reportError(e);
-          }
-        }
+      let removeAll = removals.length == this._sites.length;
+      let promptArg = removeAll ? undefined : removals;
+      if (!SiteDataManager.promptSiteDataRemoval(window, promptArg)) {
+        // If the user cancelled the confirm dialog keep the site data window open,
+        // they can still press cancel again to exit.
+        event.preventDefault();
+        return;
       }
-    } else {
-      allowed = true;
+      try {
+        if (removeAll) {
+          await SiteDataManager.removeAll();
+        } else {
+          await SiteDataManager.remove(removals);
+        }
+      } catch (e) {
+        console.error(e);
+      }
     }
-
-    // If the user cancelled the confirm dialog keep the site data window open,
-    // they can still press cancel again to exit.
-    if (allowed) {
-      this.close();
-    }
-  },
-
-  close() {
-    window.close();
   },
 
   removeSelected() {
@@ -334,13 +311,16 @@ let gSiteDataSettings = {
   },
 
   onKeyPress(e) {
-    if (e.keyCode == KeyEvent.DOM_VK_ESCAPE) {
-      this.close();
-    } else if (
+    if (
       e.keyCode == KeyEvent.DOM_VK_DELETE ||
       (AppConstants.platform == "macosx" &&
         e.keyCode == KeyEvent.DOM_VK_BACK_SPACE)
     ) {
+      if (!e.target.closest("#sitesList")) {
+        // The user is typing or has not selected an item from the list to remove
+        return;
+      }
+      // The users intention is to delete site data
       this.removeSelected();
     }
   },

@@ -2,15 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import { getIsPaused } from "../../selectors/index";
 
-import type { ThreadContext } from "../../types";
-import type { ThunkArgs } from "../types";
-import { isValidThreadContext } from "../../utils/context";
-
-export function fetchFrames(cx: ThreadContext) {
-  return async function({ dispatch, client, getState }: ThunkArgs) {
-    const { thread } = cx;
+export function fetchFrames(thread) {
+  return async function ({ dispatch, client, getState }) {
     let frames;
     try {
       frames = await client.getFrames(thread);
@@ -18,10 +13,10 @@ export function fetchFrames(cx: ThreadContext) {
       // getFrames will fail if the thread has resumed. In this case the thread
       // should no longer be valid and the frames we would have fetched would be
       // discarded anyways.
-      if (isValidThreadContext(getState(), cx)) {
+      if (getIsPaused(getState(), thread)) {
         throw e;
       }
     }
-    dispatch({ type: "FETCHED_FRAMES", thread, frames, cx });
+    dispatch({ type: "FETCHED_FRAMES", thread, frames });
   };
 }

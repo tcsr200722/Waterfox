@@ -2,7 +2,7 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Test cookie database migration from version 10 (prerelease Gecko 2.0) to the
-// current version, presently 11.
+// current version, presently 12.
 "use strict";
 
 var test_generator = do_run_test();
@@ -13,7 +13,7 @@ function run_test() {
 }
 
 function finish_test() {
-  executeSoon(function() {
+  executeSoon(function () {
     test_generator.return();
     do_test_finished();
   });
@@ -25,7 +25,7 @@ function* do_run_test() {
 
   // Start the cookieservice, to force creation of a database.
   // Get the sessionCookies to join the initialization in cookie thread
-  Services.cookiemgr.sessionCookies;
+  Services.cookies.sessionCookies;
 
   // Close the profile.
   do_close_profile(test_generator);
@@ -165,15 +165,15 @@ function* do_run_test() {
   do_load_profile();
 
   // 1) All unexpired, unique cookies exist.
-  Assert.equal(Services.cookiemgr.countCookiesFromHost("foo.com"), 20);
+  Assert.equal(Services.cookies.countCookiesFromHost("foo.com"), 20);
 
   // 2) All expired, unique cookies exist.
-  Assert.equal(Services.cookiemgr.countCookiesFromHost("bar.com"), 20);
+  Assert.equal(Services.cookies.countCookiesFromHost("bar.com"), 20);
 
   // 3) Only one cookie remains, and it's the one with the highest expiration
   // time.
-  Assert.equal(Services.cookiemgr.countCookiesFromHost("baz.com"), 1);
-  let cookies = Services.cookiemgr.getCookiesFromHost("baz.com", {});
+  Assert.equal(Services.cookies.countCookiesFromHost("baz.com"), 1);
+  let cookies = Services.cookies.getCookiesFromHost("baz.com", {});
   let cookie = cookies[0];
   Assert.equal(cookie.expiry, futureExpiry + 40);
 

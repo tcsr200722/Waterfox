@@ -11,13 +11,14 @@
 #include "nsLeafFrame.h"
 
 class nsFontMetrics;
+class nsPageContentFrame;
 class nsSharedPageData;
 
 namespace mozilla {
 class PresShell;
 }  // namespace mozilla
 
-// Page frame class used by the simple page sequence frame
+// Page frame class. Represents an individual page, in paginated mode.
 class nsPageFrame final : public nsContainerFrame {
  public:
   NS_DECL_QUERYFRAME
@@ -26,37 +27,63 @@ class nsPageFrame final : public nsContainerFrame {
   friend nsPageFrame* NS_NewPageFrame(mozilla::PresShell* aPresShell,
                                       ComputedStyle* aStyle);
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aReflowOutput,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const override;
 #endif
 
   //////////////////
   // For Printing
   //////////////////
 
-  // Tell the page which page number it is out of how many
-  virtual void SetPageNumInfo(int32_t aPageNumber, int32_t aTotalPages);
+  // Determine this page's page-number, based on its previous continuation
+  // (whose page number is presumed to already be known).
+  void DeterminePageNum();
+  int32_t GetPageNum() const { return mPageNum; }
 
-  virtual void SetSharedPageData(nsSharedPageData* aPD);
-
-  // We must allow Print Preview UI to have a background, no matter what the
-  // user's settings
-  virtual bool HonorPrintBackgroundSettings() override { return false; }
+  void SetSharedPageData(nsSharedPageData* aPD);
+  nsSharedPageData* GetSharedPageData() const { return mPD; }
 
   void PaintHeaderFooter(gfxContext& aRenderingContext, nsPoint aPt,
                          bool aSubpixelAA);
 
-  /**
-   * Return our page content frame.
-   */
-  void AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) override;
+  const nsMargin& GetUsedPageContentMargin() const {
+    return mPageContentMargin;
+  }
+
+  uint32_t IndexOnSheet() const { return mIndexOnSheet; }
+  void SetIndexOnSheet(uint32_t aIndexOnSheet) {
+    mIndexOnSheet = aIndexOnSheet;
+  }
+
+  ComputeTransformFunction GetTransformGetter() const override;
+
+  nsPageContentFrame* PageContentFrame() const;
+
+  nsSize ComputePageSize() const;
+
+  // Computes the scaling factor to fit the page to the sheet in the single
+  // page-per-sheet case. (The multiple pages-per-sheet case is currently
+  // different - see the comment for
+  // PrintedSheetFrame::ComputePagesPerSheetGridMetrics and code in
+  // ComputePagesPerSheetAndPageSizeTransform.) The page and sheet dimensions
+  // may be different due to a CSS page-size that gives the page a size that is
+  // too large to fit on the sheet that we are printing to.
+  float ComputeSinglePPSPageSizeScale(const nsSize aContentPageSize) const;
+
+  // Returns the rotation from CSS `page-orientation` property, if set, and if
+  // it applies. Note: the single page-per-sheet case is special since in that
+  // case we effectively rotate the sheet (as opposed to rotating pages in
+  // their pages-per-sheet grid cell). In this case we return zero if the
+  // output medium does not support changing the dimensions (orientation) of
+  // the sheet (i.e. only print preview and save-to-PDF are supported).
+  double GetPageOrientationRotation(nsSharedPageData* aPD) const;
 
  protected:
   explicit nsPageFrame(ComputedStyle* aStyle, nsPresContext* aPresContext);
@@ -67,6 +94,9 @@ class nsPageFrame final : public nsContainerFrame {
   nscoord GetXPosition(gfxContext& aRenderingContext,
                        nsFontMetrics& aFontMetrics, const nsRect& aRect,
                        int32_t aJust, const nsString& aStr);
+
+  nsReflowStatus ReflowPageContent(nsPresContext*,
+                                   const ReflowInput& aPageReflowInput);
 
   void DrawHeaderFooter(gfxContext& aRenderingContext,
                         nsFontMetrics& aFontMetrics,
@@ -83,10 +113,38 @@ class nsPageFrame final : public nsContainerFrame {
 
   void ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr);
 
-  int32_t mPageNum;
-  int32_t mTotNumPages;
+  static constexpr int32_t kPageNumUnset = -1;
+  // 1-based page-num
+  int32_t mPageNum = kPageNumUnset;
 
-  nsSharedPageData* mPD;
+  // 0-based index on the sheet that we belong to. Unused/meaningless if this
+  // page has frame state bit NS_PAGE_SKIPPED_BY_CUSTOM_RANGE.
+  uint32_t mIndexOnSheet = 0;
+
+  // Note: this will be set before reflow, and it's strongly owned by our
+  // nsPageSequenceFrame, which outlives us.
+  nsSharedPageData* mPD = nullptr;
+
+  // Computed page content margins.
+  //
+  // This is the amount of space from the edges of the content to the edges,
+  // measured in the content coordinate space. This is as opposed to the
+  // coordinate space of the physical paper. This might be different due to
+  // a CSS page-size that is too large to fit on the paper, causing content to
+  // be scaled to fit.
+  //
+  // These margins take into account:
+  //    * CSS-defined margins (content units)
+  //    * User-supplied margins (physical units)
+  //    * Unwriteable-supplied margins (physical units)
+  //
+  // When computing these margins, all physical units have the inverse of the
+  // scaling factor caused by CSS page-size downscaling applied. This ensures
+  // that even if the content will be downscaled, it will respect the (now
+  // upscaled) physical unwriteable margins required by the printer.
+  // For user-supplied margins, it isn't immediately obvious to the user what
+  // the intended page-size of the document is, so we consider these margins to
+  // be in the physical space of the paper.
   nsMargin mPageContentMargin;
 };
 
@@ -96,19 +154,17 @@ class nsPageBreakFrame final : public nsLeafFrame {
   explicit nsPageBreakFrame(ComputedStyle* aStyle, nsPresContext* aPresContext);
   ~nsPageBreakFrame();
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aReflowOutput,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const override;
 #endif
 
  protected:
-  virtual nscoord GetIntrinsicISize() override;
-  virtual nscoord GetIntrinsicBSize() override;
-
-  bool mHaveReflowed;
+  nscoord GetIntrinsicISize() override;
+  nscoord GetIntrinsicBSize() override;
 
   friend nsIFrame* NS_NewPageBreakFrame(mozilla::PresShell* aPresShell,
                                         ComputedStyle* aStyle);

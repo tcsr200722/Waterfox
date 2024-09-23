@@ -60,10 +60,10 @@ const MOVE_EVENTS_DATA = [
   // Mouse initialization for right snapping
   {
     type: "mouse",
-    x: (width, height) => width - 5,
+    x: width => width - 5,
     y: 0,
     expected: {
-      x: (width, height) => width - 5,
+      x: width => width - 5,
       y: 0,
     },
   },
@@ -73,7 +73,7 @@ const MOVE_EVENTS_DATA = [
     key: "VK_RIGHT",
     shift: true,
     expected: {
-      x: (width, height) => width,
+      x: width => width,
       y: 0,
     },
     desc: "Right snapping to x=max window width available",
@@ -101,30 +101,39 @@ const MOVE_EVENTS_DATA = [
   },
 ];
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
     "data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI)
   );
   const helper = await getHighlighterHelperFor(HIGHLIGHTER_TYPE)({
     inspector,
-    testActor,
+    highlighterTestFront,
   });
 
   helper.prefix = ID;
 
   await helper.show("html");
-  await respondsToMoveEvents(helper, testActor);
+  await respondsToMoveEvents(helper);
   await respondsToReturnAndEscape(helper);
 
   helper.finalize();
 });
 
-async function respondsToMoveEvents(helper, testActor) {
+async function respondsToMoveEvents(helper) {
   info(
     "Checking that the eyedropper responds to events from the mouse and keyboard"
   );
   const { mouse } = helper;
-  const { width, height } = await testActor.getBoundingClientRect("html");
+  const { width, height } = await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [],
+    () => {
+      const rect = content.document
+        .querySelector("html")
+        .getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+  );
 
   for (let { type, x, y, key, shift, expected, desc } of MOVE_EVENTS_DATA) {
     x = typeof x === "function" ? x(width, height) : x;

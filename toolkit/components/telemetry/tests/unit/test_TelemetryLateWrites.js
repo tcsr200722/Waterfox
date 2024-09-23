@@ -3,8 +3,6 @@
 */
 /* A testcase to make sure reading late writes stacks works.  */
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-
 // Constants from prio.h for nsIFileOutputStream.init
 const PR_WRONLY = 0x2;
 const PR_CREATE_FILE = 0x8;
@@ -38,7 +36,6 @@ const STACK2 = [
   [2, 10],
   [3, 15],
 ];
-const isFromTerminatorWatchdog = false;
 // XXX The only error checking is for a zero-sized stack.
 const STACK_BOGUS = [];
 
@@ -58,7 +55,7 @@ function write_string_to_file(file, contents) {
   );
   bos.setOutputStream(ostream);
 
-  let utf8 = new TextEncoder("utf-8").encode(contents);
+  let utf8 = new TextEncoder().encode(contents);
   bos.writeByteArray(utf8);
   ostream.QueryInterface(Ci.nsISafeOutputStream).finish();
   ostream.close();
@@ -83,8 +80,6 @@ function write_late_writes_file(stack, suffix) {
     contents += element[0] + " " + element[1].toString(16) + "\n";
   }
 
-  contents += isFromTerminatorWatchdog ? 1 : 0 + "\n";
-
   write_string_to_file(file, contents);
 }
 
@@ -100,11 +95,9 @@ function run_test() {
   Assert.equal(lateWrites.memoryMap.length, 0);
   Assert.ok("stacks" in lateWrites);
   Assert.equal(lateWrites.stacks.length, 0);
-  Assert.ok("isFromTerminatorWatchdog" in lateWrites);
-  Assert.equal(lateWrites.isFromTerminatorWatchdog, false);
 
   do_test_pending();
-  Telemetry.asyncFetchTelemetryData(function() {
+  Telemetry.asyncFetchTelemetryData(function () {
     actual_test();
   });
 }
@@ -119,11 +112,7 @@ function actual_test() {
   Assert.ok("memoryMap" in lateWrites);
   Assert.equal(lateWrites.memoryMap.length, N_MODULES);
   for (let id in LOADED_MODULES) {
-    let matchingLibrary = lateWrites.memoryMap.filter(function(
-      library,
-      idx,
-      array
-    ) {
+    let matchingLibrary = lateWrites.memoryMap.filter(function (library) {
       return library[1] == id;
     });
     Assert.equal(matchingLibrary.length, 1);
@@ -139,13 +128,10 @@ function actual_test() {
   let second_stack = lateWrites.stacks[1];
   function stackChecker(canonicalStack) {
     let unevalCanonicalStack = uneval(canonicalStack);
-    return function(obj, idx, array) {
+    return function (obj) {
       return unevalCanonicalStack == obj;
     };
   }
-  Assert.ok("isFromTerminatorWatchdog" in lateWrites);
-  Assert.equal(lateWrites.isFromTerminatorWatchdog, false);
-
   Assert.equal(uneval_STACKS.filter(stackChecker(first_stack)).length, 1);
   Assert.equal(uneval_STACKS.filter(stackChecker(second_stack)).length, 1);
 

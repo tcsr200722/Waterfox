@@ -11,13 +11,6 @@
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
-class FontListEntry;
-};
-};  // namespace mozilla
-using mozilla::dom::FontListEntry;
-
 class gfxAndroidPlatform final : public gfxPlatform {
  public:
   gfxAndroidPlatform();
@@ -33,28 +26,26 @@ class gfxAndroidPlatform final : public gfxPlatform {
   gfxImageFormat GetOffscreenFormat() override { return mOffscreenFormat; }
 
   // platform implementations of font functions
-  gfxPlatformFontList* CreatePlatformFontList() override;
+  bool CreatePlatformFontList() override;
 
-  void ReadSystemFontList(
-      nsTArray<mozilla::dom::SystemFontListEntry>* aFontList) override;
+  void ReadSystemFontList(mozilla::dom::SystemFontList*) override;
 
-  void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
+                              eFontPresentation aPresentation,
                               nsTArray<const char*>& aFontList) override;
 
   bool FontHintingEnabled() override;
   bool RequiresLinearZoom() override;
 
-  already_AddRefed<mozilla::gfx::VsyncSource> CreateHardwareVsyncSource()
+  already_AddRefed<mozilla::gfx::VsyncSource> CreateGlobalHardwareVsyncSource()
       override;
 
- protected:
-  bool AccelerateLayersByDefault() override { return true; }
+  static bool CheckVariationFontSupport();
 
-  bool CheckVariationFontSupport() override {
-    // We build with in-tree FreeType, so we know it is a new enough
-    // version to support variations.
-    return true;
-  }
+ protected:
+  void InitAcceleration() override;
+
+  bool AccelerateLayersByDefault() override { return true; }
 
  private:
   gfxImageFormat mOffscreenFormat;

@@ -10,11 +10,47 @@
 #include "mozilla/dom/ConstructibleEventTarget.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/WindowProxyHolder.h"
+#include "nsGlobalWindowInner.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsIGlobalObject.h"
+#include "nsPIDOMWindow.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+#ifndef NS_BUILD_REFCNT_LOGGING
+MozExternalRefCountType EventTarget::NonVirtualAddRef() {
+  return mRefCnt.incr(this);
+}
+
+MozExternalRefCountType EventTarget::NonVirtualRelease() {
+  if (mRefCnt.get() == 1) {
+    return Release();
+  }
+  return mRefCnt.decr(this);
+}
+#endif
+
+NS_IMETHODIMP_(MozExternalRefCountType) EventTarget::AddRef() {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::AddRef should not be called");
+  return 0;
+}
+
+NS_IMETHODIMP_(MozExternalRefCountType) EventTarget::Release() {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::Release should not be called");
+  return 0;
+}
+
+NS_IMETHODIMP EventTarget::QueryInterface(REFNSIID aIID, void** aInstancePtr) {
+  MOZ_ASSERT_UNREACHABLE("EventTarget::QueryInterface should not be called");
+  *aInstancePtr = nullptr;
+  return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP_(void) EventTarget::DeleteCycleCollectable() {
+  MOZ_ASSERT_UNREACHABLE(
+      "EventTarget::DeleteCycleCollectable should not be called");
+}
 
 /* static */
 already_AddRefed<EventTarget> EventTarget::Constructor(
@@ -142,7 +178,7 @@ EventHandlerNonNull* EventTarget::GetEventHandler(nsAtom* aType) {
 void EventTarget::SetEventHandler(const nsAString& aType,
                                   EventHandlerNonNull* aHandler,
                                   ErrorResult& aRv) {
-  if (!StringBeginsWith(aType, NS_LITERAL_STRING("on"))) {
+  if (!StringBeginsWith(aType, u"on"_ns)) {
     aRv.Throw(NS_ERROR_INVALID_ARG);
     return;
   }
@@ -193,5 +229,42 @@ Nullable<WindowProxyHolder> EventTarget::GetOwnerGlobalForBindings() {
   return WindowProxyHolder(win->GetBrowsingContext());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+nsPIDOMWindowInner* EventTarget::GetAsInnerWindow() {
+  return IsInnerWindow() ? static_cast<nsGlobalWindowInner*>(this) : nullptr;
+}
+
+const nsPIDOMWindowInner* EventTarget::GetAsInnerWindow() const {
+  return IsInnerWindow() ? static_cast<const nsGlobalWindowInner*>(this)
+                         : nullptr;
+}
+
+nsPIDOMWindowOuter* EventTarget::GetAsOuterWindow() {
+  return IsOuterWindow() ? static_cast<nsGlobalWindowOuter*>(this) : nullptr;
+}
+
+const nsPIDOMWindowOuter* EventTarget::GetAsOuterWindow() const {
+  return IsOuterWindow() ? static_cast<const nsGlobalWindowOuter*>(this)
+                         : nullptr;
+}
+
+nsPIDOMWindowInner* EventTarget::AsInnerWindow() {
+  MOZ_DIAGNOSTIC_ASSERT(IsInnerWindow());
+  return static_cast<nsGlobalWindowInner*>(this);
+}
+
+const nsPIDOMWindowInner* EventTarget::AsInnerWindow() const {
+  MOZ_DIAGNOSTIC_ASSERT(IsInnerWindow());
+  return static_cast<const nsGlobalWindowInner*>(this);
+}
+
+nsPIDOMWindowOuter* EventTarget::AsOuterWindow() {
+  MOZ_DIAGNOSTIC_ASSERT(IsOuterWindow());
+  return static_cast<nsGlobalWindowOuter*>(this);
+}
+
+const nsPIDOMWindowOuter* EventTarget::AsOuterWindow() const {
+  MOZ_DIAGNOSTIC_ASSERT(IsOuterWindow());
+  return static_cast<const nsGlobalWindowOuter*>(this);
+}
+
+}  // namespace mozilla::dom

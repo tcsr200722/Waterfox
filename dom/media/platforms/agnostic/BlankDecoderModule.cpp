@@ -51,7 +51,6 @@ already_AddRefed<MediaData> BlankVideoDataCreator::Create(
   buffer.mPlanes[0].mStride = mFrameWidth;
   buffer.mPlanes[0].mHeight = mFrameHeight;
   buffer.mPlanes[0].mWidth = mFrameWidth;
-  buffer.mPlanes[0].mOffset = 0;
   buffer.mPlanes[0].mSkip = 0;
 
   // Cb plane.
@@ -59,7 +58,6 @@ already_AddRefed<MediaData> BlankVideoDataCreator::Create(
   buffer.mPlanes[1].mStride = (mFrameWidth + 1) / 2;
   buffer.mPlanes[1].mHeight = (mFrameHeight + 1) / 2;
   buffer.mPlanes[1].mWidth = (mFrameWidth + 1) / 2;
-  buffer.mPlanes[1].mOffset = 0;
   buffer.mPlanes[1].mSkip = 0;
 
   // Cr plane.
@@ -67,14 +65,18 @@ already_AddRefed<MediaData> BlankVideoDataCreator::Create(
   buffer.mPlanes[2].mStride = (mFrameWidth + 1) / 2;
   buffer.mPlanes[2].mHeight = (mFrameHeight + 1) / 2;
   buffer.mPlanes[2].mWidth = (mFrameWidth + 1) / 2;
-  buffer.mPlanes[2].mOffset = 0;
   buffer.mPlanes[2].mSkip = 0;
 
+  buffer.mChromaSubsampling = gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT;
   buffer.mYUVColorSpace = gfx::YUVColorSpace::BT601;
+  buffer.mColorPrimaries = gfx::ColorSpace2::BT709;
 
-  return VideoData::CreateAndCopyData(
-      mInfo, mImageContainer, aSample->mOffset, aSample->mTime,
-      aSample->mDuration, buffer, aSample->mKeyframe, aSample->mTime, mPicture);
+  Result<already_AddRefed<VideoData>, MediaResult> result =
+      VideoData::CreateAndCopyData(mInfo, mImageContainer, aSample->mOffset,
+                                   aSample->mTime, aSample->mDuration, buffer,
+                                   aSample->mKeyframe, aSample->mTime, mPicture,
+                                   nullptr);
+  return result.unwrapOr(nullptr);
 }
 
 BlankAudioDataCreator::BlankAudioDataCreator(uint32_t aChannelCount,
@@ -108,7 +110,6 @@ already_AddRefed<MediaData> BlankAudioDataCreator::Create(
   RefPtr<AudioData> data(new AudioData(aSample->mOffset, aSample->mTime,
                                        std::move(samples), mChannelCount,
                                        mSampleRate));
-  MOZ_DIAGNOSTIC_ASSERT(aSample->mDuration == data->mDuration, "must be equal");
   return data.forget();
 }
 
@@ -118,8 +119,7 @@ already_AddRefed<MediaDataDecoder> BlankDecoderModule::CreateVideoDecoder(
   UniquePtr<DummyDataCreator> creator = MakeUnique<BlankVideoDataCreator>(
       config.mDisplay.width, config.mDisplay.height, aParams.mImageContainer);
   RefPtr<MediaDataDecoder> decoder = new DummyMediaDataDecoder(
-      std::move(creator), NS_LITERAL_CSTRING("blank media data decoder"),
-      aParams);
+      std::move(creator), "blank media data decoder"_ns, aParams);
   return decoder.forget();
 }
 
@@ -129,19 +129,18 @@ already_AddRefed<MediaDataDecoder> BlankDecoderModule::CreateAudioDecoder(
   UniquePtr<DummyDataCreator> creator =
       MakeUnique<BlankAudioDataCreator>(config.mChannels, config.mRate);
   RefPtr<MediaDataDecoder> decoder = new DummyMediaDataDecoder(
-      std::move(creator), NS_LITERAL_CSTRING("blank media data decoder"),
-      aParams);
+      std::move(creator), "blank media data decoder"_ns, aParams);
   return decoder.forget();
 }
 
-bool BlankDecoderModule::SupportsMimeType(
+media::DecodeSupportSet BlankDecoderModule::SupportsMimeType(
     const nsACString& aMimeType, DecoderDoctorDiagnostics* aDiagnostics) const {
-  return true;
+  return media::DecodeSupport::SoftwareDecode;
 }
 
-already_AddRefed<PlatformDecoderModule> CreateBlankDecoderModule() {
-  RefPtr<PlatformDecoderModule> pdm = new BlankDecoderModule();
-  return pdm.forget();
+/* static */
+already_AddRefed<PlatformDecoderModule> BlankDecoderModule::Create() {
+  return MakeAndAddRef<BlankDecoderModule>();
 }
 
 }  // namespace mozilla

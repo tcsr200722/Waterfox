@@ -7,11 +7,11 @@
 #ifndef mozilla_dom_cache_TypesUtils_h
 #define mozilla_dom_cache_TypesUtils_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/InternalHeaders.h"
-#include "mozilla/dom/SafeRefPtr.h"
-#include "nsError.h"
+#include "mozilla/AlreadyAddRefed.h"     // for already_AddRefed
+#include "mozilla/UniquePtr.h"           // for UniquePtr
+#include "mozilla/dom/HeadersBinding.h"  // for HeadersGuardEnum, HeadersGua...
+#include "mozilla/dom/SafeRefPtr.h"      // for SafeRefPtr
+#include "nsStringFwd.h"                 // for nsACString, nsAString
 
 class nsIGlobalObject;
 class nsIAsyncInputStream;
@@ -21,17 +21,18 @@ namespace mozilla {
 
 namespace ipc {
 class PBackgroundChild;
-class AutoIPCStream;
 }  // namespace ipc
 
 namespace dom {
 
 struct CacheQueryOptions;
+struct MultiCacheQueryOptions;
+class InternalHeaders;
 class InternalRequest;
 class InternalResponse;
-class OwningRequestOrUSVString;
+class OwningRequestOrUTF8String;
 class Request;
-class RequestOrUSVString;
+class RequestOrUTF8String;
 class Response;
 
 namespace cache {
@@ -63,29 +64,28 @@ class TypeUtils {
   virtual mozilla::ipc::PBackgroundChild* GetIPCManager() = 0;
 
   SafeRefPtr<InternalRequest> ToInternalRequest(JSContext* aCx,
-                                                const RequestOrUSVString& aIn,
+                                                const RequestOrUTF8String& aIn,
                                                 BodyAction aBodyAction,
                                                 ErrorResult& aRv);
 
   SafeRefPtr<InternalRequest> ToInternalRequest(
-      JSContext* aCx, const OwningRequestOrUSVString& aIn,
+      JSContext* aCx, const OwningRequestOrUTF8String& aIn,
       BodyAction aBodyAction, ErrorResult& aRv);
 
-  void ToCacheRequest(
-      CacheRequest& aOut, const InternalRequest& aIn, BodyAction aBodyAction,
-      SchemeAction aSchemeAction,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList,
-      ErrorResult& aRv);
+  void ToCacheRequest(CacheRequest& aOut, const InternalRequest& aIn,
+                      BodyAction aBodyAction, SchemeAction aSchemeAction,
+                      ErrorResult& aRv);
 
   void ToCacheResponseWithoutBody(CacheResponse& aOut, InternalResponse& aIn,
                                   ErrorResult& aRv);
 
-  void ToCacheResponse(
-      JSContext* aCx, CacheResponse& aOut, Response& aIn,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList,
-      ErrorResult& aRv);
+  void ToCacheResponse(JSContext* aCx, CacheResponse& aOut, Response& aIn,
+                       ErrorResult& aRv);
 
   void ToCacheQueryParams(CacheQueryParams& aOut, const CacheQueryOptions& aIn);
+
+  void ToCacheQueryParams(CacheQueryParams& aOut,
+                          const MultiCacheQueryOptions& aIn);
 
   already_AddRefed<Response> ToResponse(const CacheResponse& aIn);
 
@@ -120,13 +120,12 @@ class TypeUtils {
   void CheckAndSetBodyUsed(JSContext* aCx, Request& aRequest,
                            BodyAction aBodyAction, ErrorResult& aRv);
 
-  SafeRefPtr<InternalRequest> ToInternalRequest(const nsAString& aIn,
+  SafeRefPtr<InternalRequest> ToInternalRequest(const nsACString& aIn,
                                                 ErrorResult& aRv);
 
-  void SerializeCacheStream(
-      nsIInputStream* aStream, Maybe<CacheReadStream>* aStreamOut,
-      nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>& aStreamCleanupList,
-      ErrorResult& aRv);
+  void SerializeCacheStream(nsIInputStream* aStream,
+                            Maybe<CacheReadStream>* aStreamOut,
+                            ErrorResult& aRv);
 
   void SerializeSendStream(nsIInputStream* aStream,
                            CacheReadStream& aReadStreamOut, ErrorResult& aRv);

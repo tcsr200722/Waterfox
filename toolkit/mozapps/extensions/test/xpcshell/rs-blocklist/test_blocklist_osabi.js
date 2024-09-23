@@ -3,6 +3,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+// useMLBF=true only supports blocking by version+ID, not by OS/ABI.
+enable_blocklist_v2_instead_of_useMLBF();
+
 const profileDir = gProfD.clone();
 profileDir.append("extensions");
 
@@ -238,7 +241,7 @@ add_task(async function setup() {
       manifest: {
         name: addon.name,
         version: addon.version,
-        applications: { gecko: { id: addon.id } },
+        browser_specific_settings: { gecko: { id: addon.id } },
       },
     });
   }

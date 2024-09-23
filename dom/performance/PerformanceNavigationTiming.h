@@ -7,15 +7,27 @@
 #ifndef mozilla_dom_PerformanceNavigationTiming_h___
 #define mozilla_dom_PerformanceNavigationTiming_h___
 
-#include "nsCOMPtr.h"
-#include "nsITimedChannel.h"
-#include "nsRFPService.h"
-#include "mozilla/dom/PerformanceResourceTiming.h"
+#include <stdint.h>
+#include <utility>
+#include "js/RootingAPI.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/PerformanceNavigationTimingBinding.h"
-#include "nsIHttpChannel.h"
+#include "mozilla/dom/PerformanceResourceTiming.h"
+#include "nsDOMNavigationTiming.h"
+#include "nsISupports.h"
+#include "nsLiteralString.h"
+#include "nsString.h"
+#include "nsTLiteralString.h"
 
-namespace mozilla {
-namespace dom {
+class JSObject;
+class nsIHttpChannel;
+class nsITimedChannel;
+struct JSContext;
+
+namespace mozilla::dom {
+
+class Performance;
+class PerformanceTimingData;
 
 // https://www.w3.org/TR/navigation-timing-2/#sec-PerformanceNavigationTiming
 class PerformanceNavigationTiming final : public PerformanceResourceTiming {
@@ -26,13 +38,14 @@ class PerformanceNavigationTiming final : public PerformanceResourceTiming {
   // so that timestamps are relative to startTime, as opposed to the
   // performance.timing object for which timestamps are absolute and has a
   // zeroTime initialized to navigationStart
+  // aPerformanceTiming and aPerformance must be non-null.
   PerformanceNavigationTiming(
       UniquePtr<PerformanceTimingData>&& aPerformanceTiming,
       Performance* aPerformance, const nsAString& aName)
       : PerformanceResourceTiming(std::move(aPerformanceTiming), aPerformance,
                                   aName) {
-    SetEntryType(NS_LITERAL_STRING("navigation"));
-    SetInitiatorType(NS_LITERAL_STRING("navigation"));
+    SetEntryType(u"navigation"_ns);
+    SetInitiatorType(u"navigation"_ns);
   }
 
   DOMHighResTimeStamp Duration() const override {
@@ -53,6 +66,12 @@ class PerformanceNavigationTiming final : public PerformanceResourceTiming {
   DOMHighResTimeStamp DomComplete() const;
   DOMHighResTimeStamp LoadEventStart() const;
   DOMHighResTimeStamp LoadEventEnd() const;
+
+  DOMHighResTimeStamp RedirectStart(
+      nsIPrincipal& aSubjectPrincipal) const override;
+  DOMHighResTimeStamp RedirectEnd(
+      nsIPrincipal& aSubjectPrincipal) const override;
+
   NavigationType Type() const;
   uint16_t RedirectCount() const;
 
@@ -69,7 +88,6 @@ class PerformanceNavigationTiming final : public PerformanceResourceTiming {
   ~PerformanceNavigationTiming() = default;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PerformanceNavigationTiming_h___

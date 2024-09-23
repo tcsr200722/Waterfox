@@ -12,33 +12,21 @@
 #ifndef gc_Marking_h
 #define gc_Marking_h
 
+#include "gc/Barrier.h"
+#include "gc/Tracer.h"
 #include "js/TypeDecls.h"
-#include "vm/TaggedProto.h"
 
-class JSLinearString;
-class JSRope;
 class JSTracer;
+struct JSClass;
 
 namespace js {
-class BaseShape;
 class GCMarker;
-class NativeObject;
-class ObjectGroup;
 class Shape;
 class WeakMapBase;
-
-namespace jit {
-class JitCode;
-}  // namespace jit
-
-#ifdef DEBUG
-bool IsTracerKind(JSTracer* trc, JS::CallbackTracer::TracerKind kind);
-#endif
 
 namespace gc {
 
 struct Cell;
-class TenuredCell;
 
 /*** Liveness ***/
 
@@ -53,48 +41,43 @@ class TenuredCell;
 // separate implementations.
 
 template <typename T>
-bool IsMarkedInternal(JSRuntime* rt, T** thing);
+bool IsMarkedInternal(JSRuntime* rt, T* thing);
 
 template <typename T>
-bool IsAboutToBeFinalizedInternal(T* thingp);
+bool IsAboutToBeFinalizedInternal(T* thing);
 template <typename T>
-bool IsAboutToBeFinalizedInternal(T** thingp);
-
-// Report whether a GC thing has been marked with any color. Things which are in
-// zones that are not currently being collected or are owned by another runtime
-// are always reported as being marked.
-template <typename T>
-inline bool IsMarkedUnbarriered(JSRuntime* rt, T* thingp) {
-  return IsMarkedInternal(rt, ConvertToBase(thingp));
-}
+bool IsAboutToBeFinalizedInternal(const T& thing);
 
 // Report whether a GC thing has been marked with any color. Things which are in
 // zones that are not currently being collected or are owned by another runtime
 // are always reported as being marked.
 template <typename T>
-inline bool IsMarked(JSRuntime* rt, BarrieredBase<T>* thingp) {
-  return IsMarkedInternal(rt,
-                          ConvertToBase(thingp->unsafeUnbarrieredForTracing()));
+inline bool IsMarked(JSRuntime* rt, const BarrieredBase<T>& thing) {
+  return IsMarkedInternal(rt, *ConvertToBase(thing.unbarrieredAddress()));
+}
+template <typename T>
+inline bool IsMarkedUnbarriered(JSRuntime* rt, T thing) {
+  return IsMarkedInternal(rt, *ConvertToBase(&thing));
 }
 
+// Report whether a GC thing is dead and will be finalized in the current sweep
+// group. This is mainly used in read barriers for incremental sweeping.
+//
+// This no longer updates pointers moved by the GC (tracing should be used for
+// this instead).
 template <typename T>
-inline bool IsAboutToBeFinalizedUnbarriered(T* thingp) {
-  return IsAboutToBeFinalizedInternal(ConvertToBase(thingp));
-}
-
-template <typename T>
-inline bool IsAboutToBeFinalized(const WriteBarriered<T>* thingp) {
+inline bool IsAboutToBeFinalized(const BarrieredBase<T>& thing) {
   return IsAboutToBeFinalizedInternal(
-      ConvertToBase(thingp->unsafeUnbarrieredForTracing()));
+      *ConvertToBase(thing.unbarrieredAddress()));
 }
-
 template <typename T>
-inline bool IsAboutToBeFinalized(ReadBarriered<T>* thingp) {
-  return IsAboutToBeFinalizedInternal(
-      ConvertToBase(thingp->unsafeUnbarrieredForTracing()));
+inline bool IsAboutToBeFinalizedUnbarriered(T* thing) {
+  return IsAboutToBeFinalizedInternal(*ConvertToBase(&thing));
 }
-
-bool IsAboutToBeFinalizedDuringSweep(TenuredCell& tenured);
+template <typename T>
+inline bool IsAboutToBeFinalizedUnbarriered(const T& thing) {
+  return IsAboutToBeFinalizedInternal(thing);
+}
 
 inline bool IsAboutToBeFinalizedDuringMinorSweep(Cell* cell);
 
@@ -107,18 +90,12 @@ inline Cell* ToMarkable(const Value& v) {
 
 inline Cell* ToMarkable(Cell* cell) { return cell; }
 
-bool UnmarkGrayGCThingUnchecked(JSRuntime* rt, JS::GCCellPtr thing);
+bool UnmarkGrayGCThingUnchecked(GCMarker* marker, JS::GCCellPtr thing);
 
 } /* namespace gc */
 
 // The return value indicates if anything was unmarked.
 bool UnmarkGrayShapeRecursively(Shape* shape);
-
-template <typename T>
-void CheckTracedThing(JSTracer* trc, T* thing);
-
-template <typename T>
-void CheckTracedThing(JSTracer* trc, T thing);
 
 namespace gc {
 
@@ -138,7 +115,6 @@ namespace gc {
 
 template <typename T>
 inline bool IsForwarded(const T* t);
-inline bool IsForwarded(const JS::Value& value);
 
 template <typename T>
 inline T* Forwarded(const T* t);
@@ -147,6 +123,17 @@ inline Value Forwarded(const JS::Value& value);
 
 template <typename T>
 inline T MaybeForwarded(T t);
+
+// Helper functions for use in situations where the object's group might be
+// forwarded, for example while marking.
+
+inline const JSClass* MaybeForwardedObjectClass(const JSObject* obj);
+
+template <typename T>
+inline bool MaybeForwardedObjectIs(const JSObject* obj);
+
+template <typename T>
+inline T& MaybeForwardedObjectAs(JSObject* obj);
 
 #ifdef JSGC_HASH_TABLE_CHECKS
 
@@ -159,11 +146,10 @@ inline void CheckGCThingAfterMovingGC(T* t);
 template <typename T>
 inline void CheckGCThingAfterMovingGC(const WeakHeapPtr<T*>& t);
 
-inline void CheckValueAfterMovingGC(const JS::Value& value);
-
 #endif  // JSGC_HASH_TABLE_CHECKS
 
 } /* namespace gc */
+
 } /* namespace js */
 
 #endif /* gc_Marking_h */

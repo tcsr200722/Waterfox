@@ -8,7 +8,7 @@
 // * remove animation
 // * modify animation
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept([
     ".compositor-all",
@@ -16,20 +16,17 @@ add_task(async function() {
     ".no-compositor",
     ".still",
   ]);
-  const {
-    animationInspector,
-    inspector,
-    panel,
-  } = await openAnimationInspector();
+  const { animationInspector, inspector, panel } =
+    await openAnimationInspector();
 
   info("Checking the mutation for add an animation");
   const originalAnimationCount = animationInspector.state.animations.length;
   await setClassAttribute(animationInspector, ".still", "ball no-compositor");
-  is(
-    animationInspector.state.animations.length,
-    originalAnimationCount + 1,
-    "Count of animation should be plus one to original count"
+  await waitUntil(
+    () =>
+      animationInspector.state.animations.length === originalAnimationCount + 1
   );
+  ok(true, "Count of animation should be plus one to original count");
 
   info(
     "Checking added animation existence even the animation name is duplicated"
@@ -46,14 +43,16 @@ add_task(async function() {
     ".compositor-notall",
     "ball still"
   );
-  is(
-    animationInspector.state.animations.length,
-    originalAnimationCount,
+  await waitUntil(
+    () => animationInspector.state.animations.length === originalAnimationCount
+  );
+  ok(
+    true,
     "Count of animation should be same to original count since we remove an animation"
   );
 
   info("Checking the mutation for modify an animation");
-  await selectNodeAndWaitForAnimations(".compositor-all", inspector);
+  await selectNode(".compositor-all", inspector);
   await setStyle(
     animationInspector,
     ".compositor-all",
@@ -70,9 +69,9 @@ add_task(async function() {
     panel,
     "compositor-all"
   );
-  is(
-    summaryGraphPathEl.viewBox.baseVal.width,
-    100000,
+  await waitUntil(() => summaryGraphPathEl.viewBox.baseVal.width === 100000);
+  ok(
+    true,
     "Width of summary graph path should be 100000 " +
       "after modifing the duration and iteration count"
   );
@@ -82,9 +81,9 @@ add_task(async function() {
     "animationDelay",
     "100s"
   );
-  is(
-    summaryGraphPathEl.viewBox.baseVal.width,
-    200000,
+  await waitUntil(() => summaryGraphPathEl.viewBox.baseVal.width === 200000);
+  ok(
+    true,
     "Width of summary graph path should be 200000 after modifing the delay"
   );
   ok(

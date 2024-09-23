@@ -17,7 +17,7 @@ add_test(function test_udp_message_raw_data() {
   socket.init(-1, true, Services.scriptSecurityManager.getSystemPrincipal());
   info("Port assigned : " + socket.port);
   socket.asyncListen({
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIUDPSocketListener]),
+    QueryInterface: ChromeUtils.generateQI(["nsIUDPSocketListener"]),
     onPacketReceived(aSocket, aMessage) {
       let recv_data = String.fromCharCode.apply(null, aMessage.rawData);
       Assert.equal(recv_data, HELLO_WORLD);
@@ -25,7 +25,7 @@ add_test(function test_udp_message_raw_data() {
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let rawData = new Uint8Array(HELLO_WORLD.length);
@@ -45,14 +45,14 @@ add_test(function test_udp_send_stream() {
 
   socket.init(-1, true, Services.scriptSecurityManager.getSystemPrincipal());
   socket.asyncListen({
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIUDPSocketListener]),
+    QueryInterface: ChromeUtils.generateQI(["nsIUDPSocketListener"]),
     onPacketReceived(aSocket, aMessage) {
       let recv_data = String.fromCharCode.apply(null, aMessage.rawData);
       Assert.equal(recv_data, HELLO_WORLD);
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(
@@ -72,7 +72,7 @@ add_test(function test_udp_message_zero_length() {
   socket.init(-1, true, Services.scriptSecurityManager.getSystemPrincipal());
   info("Port assigned : " + socket.port);
   socket.asyncListen({
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIUDPSocketListener]),
+    QueryInterface: ChromeUtils.generateQI(["nsIUDPSocketListener"]),
     onPacketReceived(aSocket, aMessage) {
       let recv_data = String.fromCharCode.apply(null, aMessage.rawData);
       Assert.equal(recv_data, EMPTY_MESSAGE);
@@ -80,7 +80,7 @@ add_test(function test_udp_message_zero_length() {
       socket.close();
       run_next_test();
     },
-    onStopListening(aSocket, aStatus) {},
+    onStopListening() {},
   });
 
   let rawData = new Uint8Array(EMPTY_MESSAGE.length);

@@ -10,8 +10,14 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/DOMJSProxyHandler.h"
 #include "mozilla/dom/RemoteObjectProxy.h"
+#include "js/CallAndConstruct.h"    // JS::Call
+#include "js/friend/WindowProxy.h"  // js::IsWindowProxy
+#include "js/Object.h"              // JS::GetClass
+#include "js/PropertyAndElement.h"  // JS_DefineFunctions, JS_DefineProperties
+#include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnPropertyDescriptorById
 #include "js/Proxy.h"
 #include "js/RootingAPI.h"
+#include "js/WeakMap.h"
 #include "js/Wrapper.h"
 #include "jsfriendapi.h"
 #include "AccessCheck.h"
@@ -19,12 +25,11 @@
 
 #ifdef DEBUG
 static bool IsLocation(JSObject* obj) {
-  return strcmp(js::GetObjectClass(obj)->name, "Location") == 0;
+  return strcmp(JS::GetClass(obj)->name, "Location") == 0;
 }
 #endif  // DEBUG
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* static */
 bool MaybeCrossOriginObjectMixins::IsPlatformObjectSameOrigin(JSContext* cx,
@@ -77,7 +82,7 @@ bool MaybeCrossOriginObjectMixins::IsPlatformObjectSameOrigin(JSContext* cx,
 
 bool MaybeCrossOriginObjectMixins::CrossOriginGetOwnPropertyHelper(
     JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
-    JS::MutableHandle<JS::PropertyDescriptor> desc) const {
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc) const {
   MOZ_ASSERT(!IsPlatformObjectSameOrigin(cx, obj) || IsRemoteObjectProxy(obj),
              "Why did we get called?");
   // First check for an IDL-defined cross-origin property with the given name.
@@ -89,22 +94,14 @@ bool MaybeCrossOriginObjectMixins::CrossOriginGetOwnPropertyHelper(
     return false;
   }
 
-  if (!JS_GetOwnPropertyDescriptorById(cx, holder, id, desc)) {
-    return false;
-  }
-
-  if (desc.object()) {
-    desc.object().set(obj);
-  }
-
-  return true;
+  return JS_GetOwnPropertyDescriptorById(cx, holder, id, desc);
 }
 
 /* static */
 bool MaybeCrossOriginObjectMixins::CrossOriginPropertyFallback(
     JSContext* cx, JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
-    JS::MutableHandle<JS::PropertyDescriptor> desc) {
-  MOZ_ASSERT(!desc.object(), "Why are we being called?");
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> desc) {
+  MOZ_ASSERT(desc.isNothing(), "Why are we being called?");
 
   // Step 1.
   if (xpc::IsCrossOriginWhitelistedProp(cx, id)) {
@@ -112,13 +109,13 @@ bool MaybeCrossOriginObjectMixins::CrossOriginPropertyFallback(
     //   [[Value]]: undefined, [[Writable]]: false, [[Enumerable]]: false,
     //   [[Configurable]]: true
     // }.
-    desc.setDataDescriptor(JS::UndefinedHandleValue, JSPROP_READONLY);
-    desc.object().set(obj);
+    desc.set(Some(JS::PropertyDescriptor::Data(
+        JS::UndefinedValue(), {JS::PropertyAttribute::Configurable})));
     return true;
   }
 
   // Step 2.
-  return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("access"));
+  return ReportCrossOriginDenial(cx, id, "access"_ns);
 }
 
 /* static */
@@ -149,31 +146,31 @@ bool MaybeCrossOriginObjectMixins::CrossOriginGet(
   js::AssertSameCompartment(cx, receiver);
 
   // Step 1.
-  JS::Rooted<JS::PropertyDescriptor> desc(cx);
+  JS::Rooted<Maybe<JS::PropertyDescriptor>> desc(cx);
   if (!js::GetProxyHandler(obj)->getOwnPropertyDescriptor(cx, obj, id, &desc)) {
     return false;
   }
-  desc.assertCompleteIfFound();
 
   // Step 2.
-  MOZ_ASSERT(desc.object(),
+  MOZ_ASSERT(desc.isSome(),
              "Callees should throw in all cases when they are not finding a "
              "property decriptor");
+  desc->assertComplete();
 
   // Step 3.
-  if (desc.isDataDescriptor()) {
-    vp.set(desc.value());
+  if (desc->isDataDescriptor()) {
+    vp.set(desc->value());
     return true;
   }
 
   // Step 4.
-  MOZ_ASSERT(desc.isAccessorDescriptor());
+  MOZ_ASSERT(desc->isAccessorDescriptor());
 
   // Step 5.
   JS::Rooted<JSObject*> getter(cx);
-  if (!desc.hasGetterObject() || !(getter = desc.getterObject())) {
+  if (!desc->hasGetter() || !(getter = desc->getter())) {
     // Step 6.
-    return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("get"));
+    return ReportCrossOriginDenial(cx, id, "get"_ns);
   }
 
   // Step 7.
@@ -204,20 +201,20 @@ bool MaybeCrossOriginObjectMixins::CrossOriginSet(
   js::AssertSameCompartment(cx, v);
 
   // Step 1.
-  JS::Rooted<JS::PropertyDescriptor> desc(cx);
+  JS::Rooted<Maybe<JS::PropertyDescriptor>> desc(cx);
   if (!js::GetProxyHandler(obj)->getOwnPropertyDescriptor(cx, obj, id, &desc)) {
     return false;
   }
-  desc.assertCompleteIfFound();
 
   // Step 2.
-  MOZ_ASSERT(desc.object(),
+  MOZ_ASSERT(desc.isSome(),
              "Callees should throw in all cases when they are not finding a "
              "property decriptor");
+  desc->assertComplete();
 
   // Step 3.
   JS::Rooted<JSObject*> setter(cx);
-  if (desc.hasSetterObject() && (setter = desc.setterObject())) {
+  if (desc->hasSetter() && (setter = desc->setter())) {
     JS::Rooted<JS::Value> ignored(cx);
     // Step 3.1.
     if (!JS::Call(cx, receiver, setter, JS::HandleValueArray(v), &ignored)) {
@@ -229,13 +226,13 @@ bool MaybeCrossOriginObjectMixins::CrossOriginSet(
   }
 
   // Step 4.
-  return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("set"));
+  return ReportCrossOriginDenial(cx, id, "set"_ns);
 }
 
 /* static */
 bool MaybeCrossOriginObjectMixins::EnsureHolder(
     JSContext* cx, JS::Handle<JSObject*> obj, size_t slot,
-    JSPropertySpec* attributes, JSFunctionSpec* methods,
+    const CrossOriginProperties& properties,
     JS::MutableHandle<JSObject*> holder) {
   MOZ_ASSERT(!IsPlatformObjectSameOrigin(cx, obj) || IsRemoteObjectProxy(obj),
              "Why are we calling this at all in same-origin cases?");
@@ -268,13 +265,26 @@ bool MaybeCrossOriginObjectMixins::EnsureHolder(
   // our objects are per-Realm singletons, we are basically using "obj" itself
   // as part of the key.
   //
-  // To represent the current settings, we use the current-Realm
-  // Object.prototype.  We can't use the current global, because we can't get a
-  // useful cross-compartment wrapper for it; such wrappers would always go
+  // To represent the current settings, we use a dedicated key object of the
+  // current-Realm.
+  //
+  // We can't use the current global, because we can't get a useful
+  // cross-compartment wrapper for it; such wrappers would always go
   // through a WindowProxy and would not be guarantee to keep pointing to a
   // single Realm when unwrapped.  We want to grab this key before we start
   // changing Realms.
-  JS::Rooted<JSObject*> key(cx, JS::GetRealmObjectPrototype(cx));
+  //
+  // Also we can't use arbitrary object (e.g.: Object.prototype), because at
+  // this point those compartments are not same-origin, and don't have access to
+  // each other, and the object retrieved here will be wrapped by a security
+  // wrapper below, and the wrapper will be stored into the cache
+  // (see Compartment::wrap).  Those compartments can get access later by
+  // modifying `document.domain`, and wrapping objects after that point
+  // shouldn't result in a security wrapper.  Wrap operation looks up the
+  // existing wrapper in the cache, that contains the security wrapper created
+  // here.  We should use unique/private object here, so that this doesn't
+  // affect later wrap operation.
+  JS::Rooted<JSObject*> key(cx, JS::GetRealmKeyObject(cx));
   if (!key) {
     return false;
   }
@@ -286,7 +296,8 @@ bool MaybeCrossOriginObjectMixins::EnsureHolder(
       return false;
     }
 
-    if (!JS::GetWeakMapEntry(cx, map, key, &holderVal)) {
+    JS::Rooted<JS::Value> keyVal(cx, JS::ObjectValue(*key));
+    if (!JS::GetWeakMapEntry(cx, map, keyVal, &holderVal)) {
       return false;
     }
   }
@@ -311,9 +322,14 @@ bool MaybeCrossOriginObjectMixins::EnsureHolder(
   // cross-compartment references to all the methods it holds, since those
   // methods need to be in our current Realm.  It seems better to allocate the
   // holder in our current Realm.
+  bool isChrome = xpc::AccessCheck::isChrome(js::GetContextRealm(cx));
   holder.set(JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
-  if (!holder || !JS_DefineProperties(cx, holder, attributes) ||
-      !JS_DefineFunctions(cx, holder, methods)) {
+  if (!holder || !JS_DefineProperties(cx, holder, properties.mAttributes) ||
+      !JS_DefineFunctions(cx, holder, properties.mMethods) ||
+      (isChrome && properties.mChromeOnlyAttributes &&
+       !JS_DefineProperties(cx, holder, properties.mChromeOnlyAttributes)) ||
+      (isChrome && properties.mChromeOnlyMethods &&
+       !JS_DefineFunctions(cx, holder, properties.mChromeOnlyMethods))) {
     return false;
   }
 
@@ -326,7 +342,8 @@ bool MaybeCrossOriginObjectMixins::EnsureHolder(
       return false;
     }
 
-    if (!JS::SetWeakMapEntry(cx, map, key, holderVal)) {
+    JS::Rooted<JS::Value> keyVal(cx, JS::ObjectValue(*key));
+    if (!JS::SetWeakMapEntry(cx, map, keyVal, holderVal)) {
       return false;
     }
   }
@@ -427,7 +444,7 @@ bool MaybeCrossOriginObject<Base>::defineProperty(
     JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
     JS::Handle<JS::PropertyDescriptor> desc, JS::ObjectOpResult& result) const {
   if (!IsPlatformObjectSameOrigin(cx, proxy)) {
-    return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("define"));
+    return ReportCrossOriginDenial(cx, id, "define"_ns);
   }
 
   // Enter the Realm of proxy and do the remaining work in there.
@@ -459,51 +476,8 @@ bool MaybeCrossOriginObject<Base>::enumerate(
   return js::GetPropertyKeys(cx, self, 0, props);
 }
 
-template <typename Base>
-bool MaybeCrossOriginObject<Base>::hasInstance(JSContext* cx,
-                                               JS::Handle<JSObject*> proxy,
-                                               JS::MutableHandle<JS::Value> v,
-                                               bool* bp) const {
-  if (!IsPlatformObjectSameOrigin(cx, proxy)) {
-    // In the cross-origin case we never have @@hasInstance, and we're never
-    // callable, so just go ahead and report an error.  If we enter the realm of
-    // "proxy" to do that, our caller won't be able to do anything with the
-    // exception, so instead let's wrap "proxy" into our realm.  We definitely
-    // do NOT want to call JS::InstanceofOperator here after entering "proxy's"
-    // realm, because that would do the wrong thing with @@hasInstance on the
-    // object by seeing any such definitions when we should not.
-    JS::Rooted<JS::Value> val(cx, JS::ObjectValue(*proxy));
-    if (!MaybeWrapValue(cx, &val)) {
-      return false;
-    }
-    return js::ReportIsNotFunction(cx, val);
-  }
-
-  // We need to wrap `proxy` into our compartment or enter proxy's realm
-  // and wrap `v` into proxy's compartment because at this point `v` and `proxy`
-  // might no longer be same-compartment. One solution is to enter the realm of
-  // `proxy` and look up @@hasInstance there. However, that will lead to
-  // incorrect error reporting because the mechanism for reporting the "not a
-  // function" exception only works correctly if we are in the realm of the
-  // script that encountered the instanceof expression. Thus, we don't want to
-  // switch realms and will wrap `proxy` into our current compartment and lookup
-  // @@hasInstance. Note that accesses to get @@hasInstance on `proxy` after it
-  // is wrapped in the `cx` compartment will still work because `cx` and `proxy`
-  // are same-origin.
-  JS::Rooted<JSObject*> proxyWrap(cx, proxy);
-  if (!MaybeWrapObject(cx, &proxyWrap)) {
-    return false;
-  }
-  // We are not calling BaseProxyHandler::hasInstance here because it expects
-  // `proxy` to be passed as the object. However, `proxy`, as a
-  // MaybeCrossOriginObject, may not be in current cx->realm() and we may now
-  // have a cross-compartment wrapper for `proxy`.
-  return JS::InstanceofOperator(cx, proxyWrap, v, bp);
-}
-
 // Force instantiations of the out-of-line template methods we need.
 template class MaybeCrossOriginObject<js::Wrapper>;
 template class MaybeCrossOriginObject<DOMProxyHandler>;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

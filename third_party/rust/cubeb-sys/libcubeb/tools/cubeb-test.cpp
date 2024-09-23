@@ -7,6 +7,7 @@
 #include <cstring>
 #include <inttypes.h>
 #include <iostream>
+#include <vector>
 #ifdef _WIN32
 #include <objbase.h> // Used by CoInitialize()
 #endif
@@ -35,10 +36,37 @@ static const char* state_to_string(cubeb_state state) {
   }
 }
 
+static const char* device_type_to_string(cubeb_device_type type) {
+  switch (type) {
+    case CUBEB_DEVICE_TYPE_INPUT:
+      return "input";
+    case CUBEB_DEVICE_TYPE_OUTPUT:
+      return "output";
+    case CUBEB_DEVICE_TYPE_UNKNOWN:
+      return "unknown";
+    default:
+      assert(false);
+  }
+}
+
+static const char* device_state_to_string(cubeb_device_state state) {
+  switch (state) {
+    case CUBEB_DEVICE_STATE_DISABLED:
+      return "disabled";
+    case CUBEB_DEVICE_STATE_UNPLUGGED:
+      return "unplugged";
+    case CUBEB_DEVICE_STATE_ENABLED:
+      return "enabled";
+    default:
+      assert(false);
+  }
+}
+
 void print_log(const char* msg, ...) {
   va_list args;
   va_start(args, msg);
   vprintf(msg, args);
+  printf("\n");
   va_end(args);
 }
 
@@ -48,6 +76,7 @@ public:
   ~cubeb_client() {}
 
   bool init(char const * backend_name = nullptr);
+  cubeb_devid select_device(cubeb_device_type type) const;
   bool init_stream();
   bool start_stream();
   bool stop_stream();
@@ -57,7 +86,8 @@ public:
   void set_latency_testing(bool on);
   void set_latency_frames(uint32_t latency_frames);
   uint64_t get_stream_position() const;
-  uint32_t get_stream_latency() const;
+  uint32_t get_stream_output_latency() const;
+  uint32_t get_stream_input_latency() const;
   uint32_t get_max_channel_count() const;
 
   long user_data_cb(cubeb_stream* stm, void* user, const void* input_buffer,
@@ -69,7 +99,10 @@ public:
   bool unregister_device_collection_changed(cubeb_device_type devtype) const;
 
   cubeb_stream_params output_params = {};
+  cubeb_devid output_device = nullptr;
+
   cubeb_stream_params input_params = {};
+  cubeb_devid input_device = nullptr;
 
   void force_drain() { _force_drain = true; }
 
@@ -80,8 +113,6 @@ private:
   cubeb* context = nullptr;
 
   cubeb_stream* stream = nullptr;
-  cubeb_devid output_device = nullptr;
-  cubeb_devid input_device = nullptr;
 
   /* Accessed only from client and audio thread. */
   std::atomic<uint32_t> _rate = {0};
@@ -194,11 +225,21 @@ uint64_t cubeb_client::get_stream_position() const {
   return pos;
 }
 
-uint32_t cubeb_client::get_stream_latency() const {
+uint32_t cubeb_client::get_stream_output_latency() const {
   uint32_t latency = 0;
   int rv = cubeb_stream_get_latency(stream, &latency);
   if (rv != CUBEB_OK) {
     fprintf(stderr, "Could not get the latency of the stream\n");
+    return 0;
+  }
+  return latency;
+}
+
+uint32_t cubeb_client::get_stream_input_latency() const {
+  uint32_t latency = 0;
+  int rv = cubeb_stream_get_input_latency(stream, &latency);
+  if (rv != CUBEB_OK) {
+    fprintf(stderr, "Could not get the latency of the input stream\n");
     return 0;
   }
   return latency;
@@ -437,8 +478,17 @@ bool choose_action(cubeb_client& cl, operation_data * op, int c) {
     fprintf(stderr, "max channel count (default output device): %u\n", channel_count);
   } else if (c == 'f') {
     uint64_t pos = cl.get_stream_position();
-    uint64_t latency = cl.get_stream_latency();
-    fprintf(stderr, "stream position %" PRIu64 " (latency %" PRIu64 ")\n", pos, latency);
+    uint32_t latency;
+    fprintf(stderr, "stream position %" PRIu64 ".", pos);
+    if(op->pm == PLAYBACK || op->pm == DUPLEX) {
+      latency = cl.get_stream_output_latency();
+      fprintf(stderr, " (output latency %" PRIu32 ")", latency);
+    }
+    if(op->pm == RECORD || op->pm == DUPLEX) {
+      latency = cl.get_stream_input_latency();
+      fprintf(stderr, " (input latency %" PRIu32 ")", latency);
+    }
+    fprintf(stderr, "\n");
   } else if (c == 'i') {
     op->collection_device_type = CUBEB_DEVICE_TYPE_INPUT;
     fprintf(stderr, "collection device type changed to INPUT\n");
@@ -472,6 +522,56 @@ bool choose_action(cubeb_client& cl, operation_data * op, int c) {
   return true; // Loop up
 }
 
+cubeb_devid cubeb_client::select_device(cubeb_device_type type) const
+{
+  assert(type == CUBEB_DEVICE_TYPE_INPUT || type == CUBEB_DEVICE_TYPE_OUTPUT);
+
+  cubeb_device_collection collection;
+  if (cubeb_enumerate_devices(context, type, &collection) ==
+      CUBEB_ERROR_NOT_SUPPORTED) {
+    fprintf(stderr,
+            "Not support %s device selection. Force to use default device\n",
+            device_type_to_string(type));
+    return nullptr;
+  }
+
+  assert(collection.count);
+  fprintf(stderr, "Found %zu %s devices. Choose one:\n", collection.count,
+          device_type_to_string(type));
+
+  std::vector<cubeb_devid> devices;
+  devices.emplace_back(nullptr);
+  fprintf(stderr, "# 0\n\tname: system default device\n");
+  for (size_t i = 0; i < collection.count; i++) {
+    assert(collection.device[i].type == type);
+    fprintf(stderr,
+            "# %zu %s\n"
+            "\tname: %s\n"
+            "\tdevice id: %s\n"
+            "\tmax channels: %u\n"
+            "\tstate: %s\n",
+            devices.size(),
+            collection.device[i].preferred ? " (PREFERRED)" : "",
+            collection.device[i].friendly_name, collection.device[i].device_id,
+            collection.device[i].max_channels,
+            device_state_to_string(collection.device[i].state));
+    devices.emplace_back(collection.device[i].devid);
+  }
+
+  cubeb_device_collection_destroy(context, &collection);
+
+  size_t number;
+  std::cout << "Enter device number: ";
+  std::cin >> number;
+  while (!std::cin || number >= devices.size()) {
+    std::cin.clear();
+    std::cin.ignore(100, '\n');
+    std::cout << "Error: Please enter a valid numeric input. Enter again: ";
+    std::cin >> number;
+  }
+  return devices[number];
+}
+
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
   CoInitialize(nullptr);
@@ -503,7 +603,7 @@ int main(int argc, char* argv[]) {
 
   bool res = false;
   cubeb_client cl;
-  cl.activate_log(CUBEB_LOG_DISABLED);
+  cl.activate_log(CUBEB_LOG_NORMAL);
   fprintf(stderr, "Log level is DISABLED\n");
   cl.init(/* default backend */);
 
@@ -520,10 +620,12 @@ int main(int argc, char* argv[]) {
     }
   } else {
     if (op.pm == PLAYBACK || op.pm == DUPLEX || op.pm == LATENCY_TESTING) {
+      cl.output_device = cl.select_device(CUBEB_DEVICE_TYPE_OUTPUT);
       cl.output_params = {CUBEB_SAMPLE_FLOAT32NE, op.rate, DEFAULT_OUTPUT_CHANNELS,
                           CUBEB_LAYOUT_STEREO, CUBEB_STREAM_PREF_NONE};
     }
     if (op.pm == RECORD || op.pm == DUPLEX || op.pm == LATENCY_TESTING) {
+      cl.input_device = cl.select_device(CUBEB_DEVICE_TYPE_INPUT);
       cl.input_params = {CUBEB_SAMPLE_FLOAT32NE, op.rate, DEFAULT_INPUT_CHANNELS, CUBEB_LAYOUT_UNDEFINED, CUBEB_STREAM_PREF_NONE};
     }
     if (op.pm == LATENCY_TESTING) {

@@ -8,26 +8,32 @@
 
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/PrecompiledScriptBinding.h"
+#include "mozilla/RefPtr.h"
 
-#include "jsapi.h"
+#include "js/experimental/JSStencil.h"
+#include "js/TypeDecls.h"
 
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
 
+namespace JS {
+class ReadOnlyCompileOptions;
+}
+
 namespace mozilla {
 namespace dom {
 class PrecompiledScript : public nsISupports, public nsWrapperCache {
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SKIPPABLE_SCRIPT_HOLDER_CLASS(PrecompiledScript)
+  NS_DECL_CYCLE_COLLECTION_SKIPPABLE_WRAPPERCACHE_CLASS(PrecompiledScript)
 
-  explicit PrecompiledScript(nsISupports* aParent,
-                             JS::Handle<JSScript*> aScript,
+  explicit PrecompiledScript(nsISupports* aParent, RefPtr<JS::Stencil> aStencil,
                              JS::ReadOnlyCompileOptions& aOptions);
 
-  void ExecuteInGlobal(JSContext* aCx, JS::HandleObject aGlobal,
-                       JS::MutableHandleValue aRval, ErrorResult& aRv);
+  void ExecuteInGlobal(JSContext* aCx, JS::Handle<JSObject*> aGlobal,
+                       const ExecuteInGlobalOptions& aOptions,
+                       JS::MutableHandle<JS::Value> aRval, ErrorResult& aRv);
 
   void GetUrl(nsAString& aUrl);
 
@@ -39,15 +45,15 @@ class PrecompiledScript : public nsISupports, public nsWrapperCache {
                                JS::Handle<JSObject*> aGivenProto) override;
 
  protected:
-  virtual ~PrecompiledScript();
+  virtual ~PrecompiledScript() = default;
 
  private:
   bool IsBlackForCC(bool aTracingNeeded);
 
   nsCOMPtr<nsISupports> mParent;
 
-  JS::Heap<JSScript*> mScript;
-  nsCString mURL;
+  RefPtr<JS::Stencil> mStencil;
+  nsCString mPublicURL;
   const bool mHasReturnValue;
 };
 

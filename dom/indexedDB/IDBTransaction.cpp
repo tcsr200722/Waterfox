@@ -26,6 +26,7 @@
 #include "nsTHashtable.h"
 #include "ProfilerHelpers.h"
 #include "ReportInternalError.h"
+#include "ThreadLocal.h"
 
 // Include this last to avoid path problems on Windows.
 #include "ActorsChild.h"
@@ -66,8 +67,7 @@ ThreadLocal* GetIndexedDBThreadLocal() {
 }
 }  // namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::indexedDB;
 using namespace mozilla::ipc;
@@ -89,8 +89,9 @@ auto IDBTransaction::DoWithTransactionChild(const Func& aFunc) const {
 
 IDBTransaction::IDBTransaction(IDBDatabase* const aDatabase,
                                const nsTArray<nsString>& aObjectStoreNames,
-                               const Mode aMode, nsString aFilename,
-                               const uint32_t aLineNo, const uint32_t aColumn,
+                               const Mode aMode, const Durability aDurability,
+                               nsString aFilename, const uint32_t aLineNo,
+                               const uint32_t aColumn,
                                CreatedFromFactoryFunction /*aDummy*/)
     : DOMEventTargetHelper(aDatabase),
       mDatabase(aDatabase),
@@ -98,12 +99,14 @@ IDBTransaction::IDBTransaction(IDBDatabase* const aDatabase,
       mLoggingSerialNumber(GetIndexedDBThreadLocal()->NextTransactionSN(aMode)),
       mNextObjectStoreId(0),
       mNextIndexId(0),
+      mNextRequestId(0),
       mAbortCode(NS_OK),
       mPendingRequestCount(0),
       mFilename(std::move(aFilename)),
       mLineNo(aLineNo),
       mColumn(aColumn),
       mMode(aMode),
+      mDurability(aDurability),
       mRegistered(false),
       mNotedActiveTransaction(false) {
   MOZ_ASSERT(aDatabase);
@@ -132,7 +135,9 @@ IDBTransaction::IDBTransaction(IDBDatabase* const aDatabase,
 IDBTransaction::~IDBTransaction() {
   AssertIsOnOwningThread();
   MOZ_ASSERT(!mPendingRequestCount);
-  MOZ_ASSERT(mReadyState == ReadyState::Finished);
+  MOZ_ASSERT(mReadyState != ReadyState::Active);
+  MOZ_ASSERT(mReadyState != ReadyState::Inactive);
+  MOZ_ASSERT(mReadyState != ReadyState::Committing);
   MOZ_ASSERT(!mNotedActiveTransaction);
   MOZ_ASSERT(mSentCommitOrAbort);
   MOZ_ASSERT_IF(HasTransactionChild(), mFiredCompleteOrAbort);
@@ -155,7 +160,6 @@ IDBTransaction::~IDBTransaction() {
   MOZ_ASSERT(!HasTransactionChild(),
              "SendDeleteMeInternal should have cleared!");
 
-  ReleaseWrapper(this);
   mozilla::DropJSObjects(this);
 }
 
@@ -163,12 +167,11 @@ IDBTransaction::~IDBTransaction() {
 SafeRefPtr<IDBTransaction> IDBTransaction::CreateVersionChange(
     IDBDatabase* const aDatabase,
     BackgroundVersionChangeTransactionChild* const aActor,
-    IDBOpenDBRequest* const aOpenRequest, const int64_t aNextObjectStoreId,
-    const int64_t aNextIndexId) {
+    const NotNull<IDBOpenDBRequest*> aOpenRequest,
+    const int64_t aNextObjectStoreId, const int64_t aNextIndexId) {
   MOZ_ASSERT(aDatabase);
   aDatabase->AssertIsOnOwningThread();
   MOZ_ASSERT(aActor);
-  MOZ_ASSERT(aOpenRequest);
   MOZ_ASSERT(aNextObjectStoreId > 0);
   MOZ_ASSERT(aNextIndexId > 0);
 
@@ -177,9 +180,11 @@ SafeRefPtr<IDBTransaction> IDBTransaction::CreateVersionChange(
   nsString filename;
   uint32_t lineNo, column;
   aOpenRequest->GetCallerLocation(filename, &lineNo, &column);
+  // XXX: What should we have as durability hint here?
   auto transaction = MakeSafeRefPtr<IDBTransaction>(
       aDatabase, emptyObjectStoreNames, Mode::VersionChange,
-      std::move(filename), lineNo, column, CreatedFromFactoryFunction{});
+      Durability::Default, std::move(filename), lineNo, column,
+      CreatedFromFactoryFunction{});
 
   transaction->NoteActiveTransaction();
 
@@ -196,7 +201,8 @@ SafeRefPtr<IDBTransaction> IDBTransaction::CreateVersionChange(
 // static
 SafeRefPtr<IDBTransaction> IDBTransaction::Create(
     JSContext* const aCx, IDBDatabase* const aDatabase,
-    const nsTArray<nsString>& aObjectStoreNames, const Mode aMode) {
+    const nsTArray<nsString>& aObjectStoreNames, const Mode aMode,
+    const Durability aDurability) {
   MOZ_ASSERT(aDatabase);
   aDatabase->AssertIsOnOwningThread();
   MOZ_ASSERT(!aObjectStoreNames.IsEmpty());
@@ -207,8 +213,8 @@ SafeRefPtr<IDBTransaction> IDBTransaction::Create(
   uint32_t lineNo, column;
   IDBRequest::CaptureCaller(aCx, filename, &lineNo, &column);
   auto transaction = MakeSafeRefPtr<IDBTransaction>(
-      aDatabase, aObjectStoreNames, aMode, std::move(filename), lineNo, column,
-      CreatedFromFactoryFunction{});
+      aDatabase, aObjectStoreNames, aMode, aDurability, std::move(filename),
+      lineNo, column, CreatedFromFactoryFunction{});
 
   if (!NS_IsMainThread()) {
     WorkerPrivate* const workerPrivate = GetCurrentThreadWorkerPrivate();
@@ -227,8 +233,9 @@ SafeRefPtr<IDBTransaction> IDBTransaction::Create(
           }
         });
     if (NS_WARN_IF(!workerRef)) {
-      // Silence the destructor assertion if we never made this object live.
 #ifdef DEBUG
+      // Silence the destructor assertions if we never made this object live.
+      transaction->mReadyState = ReadyState::Finished;
       transaction->mSentCommitOrAbort.Flip();
 #endif
       return nullptr;
@@ -278,19 +285,18 @@ void IDBTransaction::SetBackgroundActor(
 }
 
 BackgroundRequestChild* IDBTransaction::StartRequest(
-    IDBRequest* const aRequest, const RequestParams& aParams) {
+    MovingNotNull<RefPtr<mozilla::dom::IDBRequest> > aRequest,
+    const RequestParams& aParams) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aRequest);
   MOZ_ASSERT(aParams.type() != RequestParams::T__None);
 
-  BackgroundRequestChild* const actor = new BackgroundRequestChild(aRequest);
+  BackgroundRequestChild* const actor =
+      new BackgroundRequestChild(std::move(aRequest));
 
-  DoWithTransactionChild([actor, &aParams](auto& transactionChild) {
-    transactionChild.SendPBackgroundIDBRequestConstructor(actor, aParams);
+  DoWithTransactionChild([this, actor, &aParams](auto& transactionChild) {
+    transactionChild.SendPBackgroundIDBRequestConstructor(
+        actor, NextRequestId(), aParams);
   });
-
-  MOZ_ASSERT(actor->GetActorEventTarget(),
-             "The event target shall be inherited from its manager actor.");
 
   // Balanced in BackgroundRequestChild::Recv__delete__().
   OnNewRequest();
@@ -298,19 +304,15 @@ BackgroundRequestChild* IDBTransaction::StartRequest(
   return actor;
 }
 
-void IDBTransaction::OpenCursor(
-    PBackgroundIDBCursorChild* const aBackgroundActor,
-    const OpenCursorParams& aParams) {
+void IDBTransaction::OpenCursor(PBackgroundIDBCursorChild& aBackgroundActor,
+                                const OpenCursorParams& aParams) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aBackgroundActor);
   MOZ_ASSERT(aParams.type() != OpenCursorParams::T__None);
 
-  DoWithTransactionChild([aBackgroundActor, &aParams](auto& actor) {
-    actor.SendPBackgroundIDBCursorConstructor(aBackgroundActor, aParams);
+  DoWithTransactionChild([this, &aBackgroundActor, &aParams](auto& actor) {
+    actor.SendPBackgroundIDBCursorConstructor(&aBackgroundActor,
+                                              NextRequestId(), aParams);
   });
-
-  MOZ_ASSERT(aBackgroundActor->GetActorEventTarget(),
-             "The event target shall be inherited from its manager actor.");
 
   // Balanced in BackgroundCursorChild::RecvResponse().
   OnNewRequest();
@@ -353,11 +355,11 @@ void IDBTransaction::OnRequestFinished(
       return;
     }
 
-    if (mReadyState == ReadyState::Inactive) {
-      mReadyState = ReadyState::Committing;
-    }
-
     if (aRequestCompletedSuccessfully) {
+      if (mReadyState == ReadyState::Inactive) {
+        mReadyState = ReadyState::Committing;
+      }
+
       if (NS_SUCCEEDED(mAbortCode)) {
         SendCommit(true);
       } else {
@@ -365,7 +367,8 @@ void IDBTransaction::OnRequestFinished(
       }
     } else {
       // Don't try to send any more messages to the parent if the request actor
-      // was killed.
+      // was killed. Set our state accordingly to Finished.
+      mReadyState = ReadyState::Finished;
       mSentCommitOrAbort.Flip();
       IDB_LOG_MARK_CHILD_TRANSACTION(
           "Request actor was killed, transaction will be aborted",
@@ -388,15 +391,16 @@ void IDBTransaction::SendCommit(const bool aAutoCommit) {
       LoggingSerialNumber(), requestSerialNumber,
       aAutoCommit ? "automatically" : "explicitly");
 
-  const auto lastRequestSerialNumber =
-      [this, aAutoCommit,
-       requestSerialNumber]() -> Maybe<decltype(requestSerialNumber)> {
+  const int64_t requestId = NextRequestId();
+
+  const auto lastRequestId = [this, aAutoCommit,
+                              requestId]() -> Maybe<decltype(requestId)> {
     if (aAutoCommit) {
       return Nothing();
     }
 
-    // In case of an explicit commit, we need to note the serial number of the
-    // last request to check if a request submitted before the commit request
+    // In case of an explicit commit, we need to note the id of the last
+    // request to check if a request submitted before the commit request
     // failed. If we are currently in an event handler for a request on this
     // transaction, ignore this request. This is used to synchronize the
     // transaction's committing state with the parent side, to abort the
@@ -410,15 +414,13 @@ void IDBTransaction::SendCommit(const bool aAutoCommit) {
     const bool dispatchingEventForThisTransaction =
         maybeCurrentTransaction && &maybeCurrentTransaction.ref() == this;
 
-    return Some(requestSerialNumber
-                    ? (requestSerialNumber -
-                       (dispatchingEventForThisTransaction ? 0 : 1))
+    return Some(requestId
+                    ? (requestId - (dispatchingEventForThisTransaction ? 0 : 1))
                     : 0);
   }();
 
-  DoWithTransactionChild([lastRequestSerialNumber](auto& actor) {
-    actor.SendCommit(lastRequestSerialNumber);
-  });
+  DoWithTransactionChild(
+      [lastRequestId](auto& actor) { actor.SendCommit(lastRequestId); });
 
   mSentCommitOrAbort.Flip();
 }
@@ -433,8 +435,9 @@ void IDBTransaction::SendAbort(const nsresult aResultCode) {
   const uint64_t requestSerialNumber = IDBRequest::NextSerialNumber();
 
   IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
-      "Aborting transaction with result 0x%x", "IDBTransaction abort (0x%x)",
-      LoggingSerialNumber(), requestSerialNumber, aResultCode);
+      "Aborting transaction with result 0x%" PRIx32,
+      "IDBTransaction abort (0x%" PRIx32 ")", LoggingSerialNumber(),
+      requestSerialNumber, static_cast<uint32_t>(aResultCode));
 
   DoWithTransactionChild(
       [aResultCode](auto& actor) { actor.SendAbort(aResultCode); });
@@ -457,18 +460,6 @@ void IDBTransaction::MaybeNoteInactiveTransaction() {
     mDatabase->NoteInactiveTransaction();
     mNotedActiveTransaction = false;
   }
-}
-
-IDBTransaction::AutoRestoreState<IDBTransaction::ReadyState::Inactive,
-                                 IDBTransaction::ReadyState::Active>
-IDBTransaction::TemporarilyTransitionToActive() {
-  return AutoRestoreState<ReadyState::Inactive, ReadyState::Active>{*this};
-}
-
-IDBTransaction::AutoRestoreState<IDBTransaction::ReadyState::Active,
-                                 IDBTransaction::ReadyState::Inactive>
-IDBTransaction::TemporarilyTransitionToInactive() {
-  return AutoRestoreState<ReadyState::Active, ReadyState::Inactive>{*this};
 }
 
 void IDBTransaction::GetCallerLocation(nsAString& aFilename,
@@ -548,7 +539,7 @@ void IDBTransaction::DeleteObjectStore(const int64_t aObjectStoreId) {
 }
 
 void IDBTransaction::RenameObjectStore(const int64_t aObjectStoreId,
-                                       const nsAString& aName) {
+                                       const nsAString& aName) const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aObjectStoreId);
   MOZ_ASSERT(Mode::VersionChange == mMode);
@@ -560,8 +551,9 @@ void IDBTransaction::RenameObjectStore(const int64_t aObjectStoreId,
           aObjectStoreId, nsString(aName)));
 }
 
-void IDBTransaction::CreateIndex(IDBObjectStore* const aObjectStore,
-                                 const indexedDB::IndexMetadata& aMetadata) {
+void IDBTransaction::CreateIndex(
+    IDBObjectStore* const aObjectStore,
+    const indexedDB::IndexMetadata& aMetadata) const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aObjectStore);
   MOZ_ASSERT(aMetadata.id());
@@ -575,7 +567,7 @@ void IDBTransaction::CreateIndex(IDBObjectStore* const aObjectStore,
 }
 
 void IDBTransaction::DeleteIndex(IDBObjectStore* const aObjectStore,
-                                 const int64_t aIndexId) {
+                                 const int64_t aIndexId) const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aObjectStore);
   MOZ_ASSERT(aIndexId);
@@ -590,7 +582,7 @@ void IDBTransaction::DeleteIndex(IDBObjectStore* const aObjectStore,
 
 void IDBTransaction::RenameIndex(IDBObjectStore* const aObjectStore,
                                  const int64_t aIndexId,
-                                 const nsAString& aName) {
+                                 const nsAString& aName) const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aObjectStore);
   MOZ_ASSERT(aIndexId);
@@ -610,7 +602,7 @@ void IDBTransaction::AbortInternal(const nsresult aAbortCode,
   MOZ_ASSERT(!IsCommittingOrFinished());
 
   const bool isVersionChange = mMode == Mode::VersionChange;
-  const bool needToSendAbort = mReadyState == ReadyState::Inactive && !mStarted;
+  const bool needToSendAbort = !mStarted;
 
   mAbortCode = aAbortCode;
   mReadyState = ReadyState::Finished;
@@ -646,13 +638,13 @@ void IDBTransaction::AbortInternal(const nsresult aAbortCode,
             return static_cast<uint64_t>(objectStoreId);
           });
 
-      mObjectStores.RemoveElementsAt(
+      mObjectStores.RemoveLastElements(
+          mObjectStores.end() -
           std::remove_if(mObjectStores.begin(), mObjectStores.end(),
                          [&validIds](const auto& objectStore) {
                            return !validIds.Contains(
                                uint64_t(objectStore->Id()));
-                         }),
-          mObjectStores.end());
+                         }));
 
       std::copy_if(std::make_move_iterator(mDeletedObjectStores.begin()),
                    std::make_move_iterator(mDeletedObjectStores.end()),
@@ -795,9 +787,10 @@ void IDBTransaction::FireCompleteOrAbortEvents(const nsresult aResult) {
                                    "IDBTransaction 'complete' event",
                                    mLoggingSerialNumber);
   } else {
-    IDB_LOG_MARK_CHILD_TRANSACTION("Firing 'abort' event with error 0x%x",
-                                   "IDBTransaction 'abort' event (0x%x)",
-                                   mLoggingSerialNumber, mAbortCode);
+    IDB_LOG_MARK_CHILD_TRANSACTION(
+        "Firing 'abort' event with error 0x%" PRIx32,
+        "IDBTransaction 'abort' event (0x%" PRIx32 ")", mLoggingSerialNumber,
+        static_cast<uint32_t>(mAbortCode));
   }
 
   IgnoredErrorResult rv;
@@ -831,24 +824,30 @@ int64_t IDBTransaction::NextIndexId() {
   return mNextIndexId++;
 }
 
+int64_t IDBTransaction::NextRequestId() {
+  AssertIsOnOwningThread();
+
+  return mNextRequestId++;
+}
+
 void IDBTransaction::InvalidateCursorCaches() {
   AssertIsOnOwningThread();
 
-  for (auto* const cursor : mCursors) {
+  for (const auto& cursor : mCursors) {
     cursor->InvalidateCachedResponses();
   }
 }
 
-void IDBTransaction::RegisterCursor(IDBCursor* const aCursor) {
+void IDBTransaction::RegisterCursor(IDBCursor& aCursor) {
   AssertIsOnOwningThread();
 
-  mCursors.AppendElement(aCursor);
+  mCursors.AppendElement(WrapNotNullUnchecked(&aCursor));
 }
 
-void IDBTransaction::UnregisterCursor(IDBCursor* const aCursor) {
+void IDBTransaction::UnregisterCursor(IDBCursor& aCursor) {
   AssertIsOnOwningThread();
 
-  DebugOnly<bool> removed = mCursors.RemoveElement(aCursor);
+  DebugOnly<bool> removed = mCursors.RemoveElement(&aCursor);
   MOZ_ASSERT(removed);
 }
 
@@ -878,6 +877,24 @@ IDBTransactionMode IDBTransaction::GetMode(ErrorResult& aRv) const {
       return IDBTransactionMode::Versionchange;
 
     case Mode::Invalid:
+    default:
+      MOZ_CRASH("Bad mode!");
+  }
+}
+
+IDBTransactionDurability IDBTransaction::GetDurability(ErrorResult& aRv) const {
+  AssertIsOnOwningThread();
+
+  switch (mDurability) {
+    case Durability::Default:
+      return IDBTransactionDurability::Default;
+
+    case Durability::Strict:
+      return IDBTransactionDurability::Strict;
+
+    case Durability::Relaxed:
+      return IDBTransactionDurability::Relaxed;
+
     default:
       MOZ_CRASH("Bad mode!");
   }
@@ -1030,5 +1047,4 @@ void IDBTransaction::CommitIfNotStarted() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

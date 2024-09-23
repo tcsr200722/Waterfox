@@ -8,7 +8,7 @@
 const TEST_INPUT = "h1";
 const TEST_URI = "<h1>test filter context menu</h1>";
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { toolbox, inspector, view } = await openRuleView();
   await selectNode("h1", inspector);
@@ -53,7 +53,7 @@ add_task(async function() {
 
   info("Closing context menu");
   let onContextMenuClose = toolbox.once("menu-close");
-  EventUtils.sendKey("ESCAPE", toolbox.win);
+  searchContextMenu.hidePopup();
   await onContextMenuClose;
 
   info("Copy text in search field using the context menu");
@@ -69,7 +69,7 @@ add_task(async function() {
   await waitForClipboardPromise(() => cmdCopy.click(), TEST_INPUT);
 
   onContextMenuClose = toolbox.once("menu-close");
-  EventUtils.sendKey("ESCAPE", toolbox.win);
+  searchContextMenu.hidePopup();
   await onContextMenuClose;
 
   info("Reopen context menu and check command properties");
@@ -86,14 +86,14 @@ add_task(async function() {
   cmdCopy = searchContextMenu.querySelector("#editmenu-copy");
   cmdPaste = searchContextMenu.querySelector("#editmenu-paste");
 
-  is(cmdUndo.getAttribute("disabled"), "", "cmdUndo is enabled");
-  is(cmdDelete.getAttribute("disabled"), "", "cmdDelete is enabled");
-  is(cmdSelectAll.getAttribute("disabled"), "", "cmdSelectAll is enabled");
-  is(cmdCut.getAttribute("disabled"), "", "cmdCut is enabled");
-  is(cmdCopy.getAttribute("disabled"), "", "cmdCopy is enabled");
-  is(cmdPaste.getAttribute("disabled"), "", "cmdPaste is enabled");
+  is(cmdUndo.getAttribute("disabled"), null, "cmdUndo is enabled");
+  is(cmdDelete.getAttribute("disabled"), null, "cmdDelete is enabled");
+  is(cmdSelectAll.getAttribute("disabled"), null, "cmdSelectAll is enabled");
+  is(cmdCut.getAttribute("disabled"), null, "cmdCut is enabled");
+  is(cmdCopy.getAttribute("disabled"), null, "cmdCopy is enabled");
+  is(cmdPaste.getAttribute("disabled"), null, "cmdPaste is enabled");
 
   const onContextMenuHidden = toolbox.once("menu-close");
-  EventUtils.sendKey("ESCAPE", toolbox.win);
+  searchContextMenu.hidePopup();
   await onContextMenuHidden;
 });

@@ -8,10 +8,7 @@
 
 "use strict";
 
-/* import-globals-from ../../../content/contentAreaUtils.js */
-
-/* globals Services */
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
+/* import-globals-from /toolkit/content/contentAreaUtils.js */
 
 const gUpdateElevationDialog = {
   openUpdateURL(event) {
@@ -33,7 +30,7 @@ const gUpdateElevationDialog = {
     button.label = label;
     button.setAttribute("accesskey", this.getAUSString(string + ".accesskey"));
   },
-  onLoad() {
+  async onLoad() {
     this.strings = document.getElementById("updateStrings");
     this.brandName = document
       .getElementById("brandStrings")
@@ -42,7 +39,7 @@ const gUpdateElevationDialog = {
     let um = Cc["@mozilla.org/updates/update-manager;1"].getService(
       Ci.nsIUpdateManager
     );
-    let update = um.activeUpdate;
+    let update = await um.getReadyUpdate();
     let updateFinishedName = document.getElementById("updateFinishedName");
     updateFinishedName.value = update.name;
 
@@ -74,13 +71,13 @@ const gUpdateElevationDialog = {
   onRestartLater() {
     window.close();
   },
-  onNoThanks() {
+  async onNoThanks() {
     Services.obs.notifyObservers(null, "update-canceled");
     let um = Cc["@mozilla.org/updates/update-manager;1"].getService(
       Ci.nsIUpdateManager
     );
-    let update = um.activeUpdate;
-    um.cleanupActiveUpdate();
+    let update = await um.getReadyUpdate();
+    um.cleanupReadyUpdate();
     // Since the user has clicked "No Thanks", we should not prompt them to update to
     // this version again unless they manually select "Check for Updates..."
     // which will clear app.update.elevate.never preference.
@@ -130,10 +127,7 @@ const gUpdateElevationDialog = {
 
     // If already in safe mode restart in safe mode (bug 327119)
     if (Services.appinfo.inSafeMode) {
-      let env = Cc["@mozilla.org/process/environment;1"].getService(
-        Ci.nsIEnvironment
-      );
-      env.set("MOZ_SAFE_MODE_RESTART", "1");
+      Services.env.set("MOZ_SAFE_MODE_RESTART", "1");
     }
 
     // Restart the application

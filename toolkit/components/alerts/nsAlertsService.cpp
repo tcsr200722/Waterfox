@@ -6,6 +6,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_alerts.h"
 #include "mozilla/Telemetry.h"
 #include "nsXULAppAPI.h"
 
@@ -14,6 +15,7 @@
 #include "nsXPCOM.h"
 #include "nsPromiseFlatString.h"
 #include "nsToolkitCompsCID.h"
+#include "nsComponentManagerUtils.h"
 
 #ifdef MOZ_PLACES
 #  include "nsIFaviconService.h"
@@ -171,14 +173,7 @@ bool nsAlertsService::ShouldUseSystemBackend() {
   if (!mBackend) {
     return false;
   }
-  static bool sAlertsUseSystemBackend;
-  static bool sAlertsUseSystemBackendCached = false;
-  if (!sAlertsUseSystemBackendCached) {
-    sAlertsUseSystemBackendCached = true;
-    Preferences::AddBoolVarCache(&sAlertsUseSystemBackend,
-                                 "alerts.useSystemBackend", true);
-  }
-  return sAlertsUseSystemBackend;
+  return StaticPrefs::alerts_useSystemBackend();
 }
 
 NS_IMETHODIMP nsAlertsService::ShowAlertNotification(
@@ -191,17 +186,31 @@ NS_IMETHODIMP nsAlertsService::ShowAlertNotification(
   nsCOMPtr<nsIAlertNotification> alert =
       do_CreateInstance(ALERT_NOTIFICATION_CONTRACTID);
   NS_ENSURE_TRUE(alert, NS_ERROR_FAILURE);
-  nsresult rv =
-      alert->Init(aAlertName, aImageUrl, aAlertTitle, aAlertText,
-                  aAlertTextClickable, aAlertCookie, aBidi, aLang, aData,
-                  aPrincipal, aInPrivateBrowsing, aRequireInteraction);
+  // vibrate is unused
+  nsTArray<uint32_t> vibrate;
+  nsresult rv = alert->Init(aAlertName, aImageUrl, aAlertTitle, aAlertText,
+                            aAlertTextClickable, aAlertCookie, aBidi, aLang,
+                            aData, aPrincipal, aInPrivateBrowsing,
+                            aRequireInteraction, false, vibrate);
   NS_ENSURE_SUCCESS(rv, rv);
   return ShowAlert(alert, aAlertListener);
 }
 
 NS_IMETHODIMP nsAlertsService::ShowAlert(nsIAlertNotification* aAlert,
                                          nsIObserver* aAlertListener) {
-  return ShowPersistentNotification(EmptyString(), aAlert, aAlertListener);
+  return ShowPersistentNotification(u""_ns, aAlert, aAlertListener);
+}
+
+static bool ShouldFallBackToXUL() {
+#if defined(XP_WIN) || defined(XP_MACOSX)
+  // We know we always have system backend on Windows and macOS. Let's not
+  // permanently fall back to XUL just because of temporary failure.
+  return false;
+#else
+  // The system may not have the notification library, we should fall back to
+  // XUL.
+  return true;
+#endif
 }
 
 NS_IMETHODIMP nsAlertsService::ShowPersistentNotification(
@@ -226,7 +235,7 @@ NS_IMETHODIMP nsAlertsService::ShowPersistentNotification(
   // notifications
   if (ShouldUseSystemBackend()) {
     rv = ShowWithBackend(mBackend, aAlert, aAlertListener, aPersistentData);
-    if (NS_SUCCEEDED(rv)) {
+    if (NS_SUCCEEDED(rv) || !ShouldFallBackToXUL()) {
       return rv;
     }
     // If the system backend failed to show the alert, clear the backend and
@@ -248,18 +257,18 @@ NS_IMETHODIMP nsAlertsService::ShowPersistentNotification(
 }
 
 NS_IMETHODIMP nsAlertsService::CloseAlert(const nsAString& aAlertName,
-                                          nsIPrincipal* aPrincipal) {
+                                          bool aContextClosed) {
   if (XRE_IsContentProcess()) {
     ContentChild* cpc = ContentChild::GetSingleton();
-    cpc->SendCloseAlert(nsAutoString(aAlertName), IPC::Principal(aPrincipal));
+    cpc->SendCloseAlert(nsAutoString(aAlertName), aContextClosed);
     return NS_OK;
   }
 
   nsresult rv;
   // Try the system notification service.
   if (ShouldUseSystemBackend()) {
-    rv = mBackend->CloseAlert(aAlertName, aPrincipal);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
+    rv = mBackend->CloseAlert(aAlertName, aContextClosed);
+    if (NS_WARN_IF(NS_FAILED(rv)) && ShouldFallBackToXUL()) {
       // If the system backend failed to close the alert, fall back to XUL for
       // future alerts.
       mBackend = nullptr;
@@ -267,7 +276,7 @@ NS_IMETHODIMP nsAlertsService::CloseAlert(const nsAString& aAlertName,
   } else {
     nsCOMPtr<nsIAlertsService> xulBackend(nsXULAlerts::GetInstance());
     NS_ENSURE_TRUE(xulBackend, NS_ERROR_FAILURE);
-    rv = xulBackend->CloseAlert(aAlertName, aPrincipal);
+    rv = xulBackend->CloseAlert(aAlertName, aContextClosed);
   }
   return rv;
 }

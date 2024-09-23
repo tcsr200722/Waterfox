@@ -7,42 +7,35 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const Types = require("devtools/client/inspector/compatibility/types");
+const Types = require("resource://devtools/client/inspector/compatibility/types.js");
 
 const NodeItem = createFactory(
-  require("devtools/client/inspector/compatibility/components/NodeItem")
+  require("resource://devtools/client/inspector/compatibility/components/NodeItem.js")
 );
 
 class NodeList extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       nodes: PropTypes.arrayOf(Types.node).isRequired,
-      hideBoxModelHighlighter: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
-      showBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
   render() {
-    const {
-      nodes,
-      hideBoxModelHighlighter,
-      setSelectedNode,
-      showBoxModelHighlighterForNode,
-    } = this.props;
+    const { dispatch, nodes, setSelectedNode } = this.props;
 
     return dom.ul(
       { className: "compatibility-node-list" },
       nodes.map(node =>
         NodeItem({
+          dispatch,
           node,
-          hideBoxModelHighlighter,
           setSelectedNode,
-          showBoxModelHighlighterForNode,
         })
       )
     );

@@ -2,8 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+let engine;
+
+add_setup(async function () {
+  engine = await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + "testEngine.xml",
+    setAsDefault: true,
+  });
+});
+
 add_task(async function test() {
-  let engine = await promiseNewEngine("testEngine.xml");
   let histogramKey = "other-" + engine.name + ".contextmenu";
   let numSearchesBefore = 0;
 
@@ -38,12 +46,16 @@ add_task(async function test() {
   BrowserSearch.loadSearchFromContext(
     "mozilla",
     false,
-    Services.scriptSecurityManager.getSystemPrincipal()
+    Services.scriptSecurityManager.getSystemPrincipal(),
+    Services.scriptSecurityManager.getSystemPrincipal().csp,
+    new MouseEvent("click")
   );
   BrowserSearch.loadSearchFromContext(
     "firefox",
     false,
-    Services.scriptSecurityManager.getSystemPrincipal()
+    Services.scriptSecurityManager.getSystemPrincipal(),
+    Services.scriptSecurityManager.getSystemPrincipal().csp,
+    new MouseEvent("click")
   );
 
   // Wait for all the tabs to open.

@@ -7,6 +7,8 @@
 #include "nsCOMPtr.h"
 #include "nsQueryObject.h"
 #include "nsString.h"
+#include "nsPrintfCString.h"
+#include "nsDebug.h"
 
 #if defined(XP_WIN)
 #  include "ProfileUnlockerWin.h"
@@ -15,6 +17,10 @@
 #if defined(XP_MACOSX)
 #  include <Carbon/Carbon.h>
 #  include <CoreFoundation/CoreFoundation.h>
+#endif
+
+#if defined(MOZ_WIDGET_ANDROID)
+#  include "ProfileUnlockerAndroid.h"
 #endif
 
 #ifdef XP_UNIX
@@ -182,7 +188,8 @@ void nsProfileLock::FatalSignalHandler(int signo
   _exit(signo);
 }
 
-nsresult nsProfileLock::LockWithFcntl(nsIFile* aLockFile) {
+nsresult nsProfileLock::LockWithFcntl(nsIFile* aLockFile,
+                                      nsIProfileUnlocker** aUnlocker) {
   nsresult rv = NS_OK;
 
   nsAutoCString lockFilePath;
@@ -211,6 +218,14 @@ nsresult nsProfileLock::LockWithFcntl(nsIFile* aLockFile) {
       mLockFileDesc = -1;
       rv = NS_ERROR_FAILURE;
     } else if (fcntl(mLockFileDesc, F_SETLK, &lock) == -1) {
+#  ifdef MOZ_WIDGET_ANDROID
+      MOZ_ASSERT(aUnlocker);
+      RefPtr<mozilla::ProfileUnlockerAndroid> unlocker(
+          new mozilla::ProfileUnlockerAndroid(testlock.l_pid));
+      nsCOMPtr<nsIProfileUnlocker> unlockerInterface(do_QueryObject(unlocker));
+      unlockerInterface.forget(aUnlocker);
+#  endif
+
       close(mLockFileDesc);
       mLockFileDesc = -1;
 
@@ -292,6 +307,16 @@ nsresult nsProfileLock::LockWithSymlink(nsIFile* aLockFile,
   struct in_addr inaddr;
   inaddr.s_addr = htonl(INADDR_LOOPBACK);
 
+  // We still have not loaded the profile, so we may not have proxy information.
+  // Avoiding a DNS lookup in this stage makes sure any proxy is not bypassed.
+  // By default, the lookup is enabled, but when it is not, we use 127.0.0.1
+  // for the IP address portion of the lock signature.
+  // However, this may cause the browser to refuse to start in the rare case
+  // that all of the following conditions are met:
+  //   1. The browser profile is on a network file system.
+  //   2. The file system does not support fcntl() locking.
+  //   3. The browser is run from two different computers at the same time.
+#  ifndef MOZ_PROXY_BYPASS_PROTECTION
   char hostname[256];
   PRStatus status = PR_GetSystemInfo(PR_SI_HOSTNAME, hostname, sizeof hostname);
   if (status == PR_SUCCESS) {
@@ -300,6 +325,7 @@ nsresult nsProfileLock::LockWithSymlink(nsIFile* aLockFile,
     status = PR_GetHostByName(hostname, netdbbuf, sizeof netdbbuf, &hostent);
     if (status == PR_SUCCESS) memcpy(&inaddr, hostent.h_addr, sizeof inaddr);
   }
+#  endif
 
   mozilla::SmprintfPointer signature =
       mozilla::Smprintf("%s:%s%lu", inet_ntoa(inaddr),
@@ -384,18 +410,29 @@ nsresult nsProfileLock::GetReplacedLockTime(PRTime* aResult) {
   return NS_OK;
 }
 
-nsresult nsProfileLock::Lock(nsIFile* aProfileDir,
-                             nsIProfileUnlocker** aUnlocker) {
 #if defined(XP_MACOSX)
-  NS_NAMED_LITERAL_STRING(LOCKFILE_NAME, ".parentlock");
-  NS_NAMED_LITERAL_STRING(OLD_LOCKFILE_NAME, "parent.lock");
+constexpr auto LOCKFILE_NAME = u".parentlock"_ns;
+constexpr auto OLD_LOCKFILE_NAME = u"parent.lock"_ns;
 #elif defined(XP_UNIX)
-  NS_NAMED_LITERAL_STRING(OLD_LOCKFILE_NAME, "lock");
-  NS_NAMED_LITERAL_STRING(LOCKFILE_NAME, ".parentlock");
+constexpr auto OLD_LOCKFILE_NAME = u"lock"_ns;
+constexpr auto LOCKFILE_NAME = u".parentlock"_ns;
 #else
-  NS_NAMED_LITERAL_STRING(LOCKFILE_NAME, "parent.lock");
+constexpr auto LOCKFILE_NAME = u"parent.lock"_ns;
 #endif
 
+bool nsProfileLock::IsMaybeLockFile(nsIFile* aFile) {
+  nsAutoString tmp;
+  if (NS_SUCCEEDED(aFile->GetLeafName(tmp))) {
+    if (tmp.Equals(LOCKFILE_NAME)) return true;
+#if (defined(XP_MACOSX) || defined(XP_UNIX))
+    if (tmp.Equals(OLD_LOCKFILE_NAME)) return true;
+#endif
+  }
+  return false;
+}
+
+nsresult nsProfileLock::Lock(nsIFile* aProfileDir,
+                             nsIProfileUnlocker** aUnlocker) {
   nsresult rv;
   if (aUnlocker) *aUnlocker = nullptr;
 
@@ -427,48 +464,6 @@ nsresult nsProfileLock::Lock(nsIFile* aProfileDir,
     // assume we tried an NFS that does not support it. Now, try with symlink.
     rv = LockWithSymlink(lockFile, false);
   }
-
-  if (NS_SUCCEEDED(rv)) {
-    // Check for the old-style lock used by pre-mozilla 1.3 builds.
-    // Those builds used an earlier check to prevent the application
-    // from launching if another instance was already running. Because
-    // of that, we don't need to create an old-style lock as well.
-    struct LockProcessInfo {
-      ProcessSerialNumber psn;
-      unsigned long launchDate;
-    };
-
-    PRFileDesc* fd = nullptr;
-    int32_t ioBytes;
-    ProcessInfoRec processInfo;
-    LockProcessInfo lockProcessInfo;
-
-    rv = lockFile->SetLeafName(OLD_LOCKFILE_NAME);
-    if (NS_FAILED(rv)) return rv;
-    rv = lockFile->OpenNSPRFileDesc(PR_RDONLY, 0, &fd);
-    if (NS_SUCCEEDED(rv)) {
-      ioBytes = PR_Read(fd, &lockProcessInfo, sizeof(LockProcessInfo));
-      PR_Close(fd);
-
-      if (ioBytes == sizeof(LockProcessInfo)) {
-#  ifdef __LP64__
-        processInfo.processAppRef = nullptr;
-#  else
-        processInfo.processAppSpec = nullptr;
-#  endif
-        processInfo.processName = nullptr;
-        processInfo.processInfoLength = sizeof(ProcessInfoRec);
-        if (::GetProcessInformation(&lockProcessInfo.psn, &processInfo) ==
-                noErr &&
-            processInfo.processLaunchDate == lockProcessInfo.launchDate) {
-          return NS_ERROR_FILE_ACCESS_DENIED;
-        }
-      } else {
-        NS_WARNING("Could not read lock file - ignoring lock");
-      }
-    }
-    rv = NS_OK;  // Don't propagate error from OpenNSPRFileDesc.
-  }
 #elif defined(XP_UNIX)
   // Get the old lockfile name
   nsCOMPtr<nsIFile> oldLockFile;
@@ -479,7 +474,7 @@ nsresult nsProfileLock::Lock(nsIFile* aProfileDir,
 
   // First, try locking using fcntl. It is more reliable on
   // a local machine, but may not be supported by an NFS server.
-  rv = LockWithFcntl(lockFile);
+  rv = LockWithFcntl(lockFile, aUnlocker);
   if (NS_SUCCEEDED(rv)) {
     // Check to see whether there is a symlink lock held by an older
     // Firefox build, and also place our own symlink lock --- but

@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGTRANSFORM_H__
-#define MOZILLA_SVGTRANSFORM_H__
+#ifndef DOM_SVG_SVGTRANSFORM_H_
+#define DOM_SVG_SVGTRANSFORM_H_
 
 #include "gfxMatrix.h"
 #include "mozilla/dom/SVGTransformBinding.h"
@@ -21,9 +21,7 @@ class SVGTransform {
  public:
   // Default ctor initialises to matrix type with identity matrix
   SVGTransform()
-      : mMatrix()  // Initialises to identity
-        ,
-        mAngle(0.f),
+      : mAngle(0.f),
         mOriginX(0.f),
         mOriginY(0.f),
         mType(dom::SVGTransform_Binding::SVG_TRANSFORM_MATRIX) {}
@@ -150,4 +148,4 @@ class SVGTransformSMILData {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGTRANSFORM_H__
+#endif  // DOM_SVG_SVGTRANSFORM_H_

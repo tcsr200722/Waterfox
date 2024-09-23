@@ -4,12 +4,10 @@
 
 /* import-globals-from controller.js */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 /**
  * This returns the key for any node/details object.
  *
- * @param nodeOrDetails
+ * @param {object} nodeOrDetails
  *        A node, or an object containing the following properties:
  *        - uri
  *        - time
@@ -18,7 +16,7 @@ var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
  *        to facilitate easy delete statements which occur due to assignment to items in `this._rows`,
  *        since the item we are deleting may be undefined in the array.
  *
- * @return key or empty string.
+ * @returns {string} key or empty string.
  */
 function makeNodeDetailsKey(nodeOrDetails) {
   if (
@@ -51,9 +49,9 @@ PlacesTreeView.prototype = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsITreeView,
-    Ci.nsINavHistoryResultObserver,
-    Ci.nsISupportsWeakReference,
+    "nsITreeView",
+    "nsINavHistoryResultObserver",
+    "nsISupportsWeakReference",
   ]),
 
   /**
@@ -88,6 +86,10 @@ PlacesTreeView.prototype = {
       }
       delete this._editingObservers;
     }
+    // Break the reference cycle between the PlacesTreeView and result.
+    if (this._result) {
+      this._result.removeObserver(this);
+    }
   },
 
   /**
@@ -99,17 +101,18 @@ PlacesTreeView.prototype = {
    * build these children lazily as the tree asks us for information about each
    * row.  Luckily, the tree doesn't ask about rows outside the visible area.
    *
-   * @see _getNodeForRow and _getRowForNode for the actual magic.
-   *
-   * @note It's guaranteed that all containers are listed in the rows
+   * It's guaranteed that all containers are listed in the rows
    * elements array.  It's also guaranteed that separators (if they're not
    * filtered, see below) are listed in the visible elements array, because
    * bookmark folders are never built lazily, as described above.
    *
-   * @param aContainer
+   * @see {@link PlacesTreeView._getNodeForRow} and
+   * {@link PlacesTreeView._getRowForNode} for the actual magic.
+   *
+   * @param {object} aContainer
    *        A container result node.
    *
-   * @return true if aContainer is a plain container, false otherwise.
+   * @returns {boolean} true if aContainer is a plain container, false otherwise.
    */
   _isPlainContainer: function PTV__isPlainContainer(aContainer) {
     // We don't know enough about non-query containers.
@@ -139,25 +142,26 @@ PlacesTreeView.prototype = {
    * Gets the row number for a given node.  Assumes that the given node is
    * visible (i.e. it's not an obsolete node).
    *
-   * @param aNode
+   * If aParentRow and aNodeIndex are passed and parent is a plain
+   * container, this method will just return a calculated row value, without
+   * making assumptions on existence of the node at that position.
+   *
+   * @param {object} aNode
    *        A result node.  Do not pass an obsolete node, or any
    *        node which isn't supposed to be in the tree (e.g. separators in
    *        sorted trees).
-   * @param [optional] aForceBuild
-   *        @see _isPlainContainer.
+   * @param {boolean} [aForceBuild]
+   *        See {@link _isPlainContainer}.
    *        If true, the row will be computed even if the node still isn't set
    *        in our rows array.
-   * @param [optional] aParentRow
+   * @param {object} [aParentRow]
    *        The row of aNode's parent. Ignored for the root node.
-   * @param [optional] aNodeIndex
+   * @param {number} [aNodeIndex]
    *        The index of aNode in its parent.  Only used if aParentRow is
    *        set too.
    *
    * @throws if aNode is invisible.
-   * @note If aParentRow and aNodeIndex are passed and parent is a plain
-   * container, this method will just return a calculated row value, without
-   * making assumptions on existence of the node at that position.
-   * @return aNode's row if it's in the rows list or if aForceBuild is set, -1
+   * @returns {object} aNode's row if it's in the rows list or if aForceBuild is set, -1
    *         otherwise.
    */
   _getRowForNode: function PTV__getRowForNode(
@@ -233,9 +237,9 @@ PlacesTreeView.prototype = {
   /**
    * Given a row, finds and returns the parent details of the associated node.
    *
-   * @param aChildRow
+   * @param {number} aChildRow
    *        Row number.
-   * @return [parentNode, parentRow]
+   * @returns {Array} [parentNode, parentRow]
    */
   _getParentByChildRow: function PTV__getParentByChildRow(aChildRow) {
     let node = this._getNodeForRow(aChildRow);
@@ -252,6 +256,10 @@ PlacesTreeView.prototype = {
 
   /**
    * Gets the node at a given row.
+   *
+   * @param {number} aRow
+   *   The index of the row to set
+   * @returns {object}
    */
   _getNodeForRow: function PTV__getNodeForRow(aRow) {
     if (aRow < 0) {
@@ -300,15 +308,15 @@ PlacesTreeView.prototype = {
    * contents.  Assumes that the rows arrays has no rows for the given
    * container.
    *
-   * @param [in] aContainer
+   * @param {object} aContainer
    *        A container result node.
-   * @param [in] aFirstChildRow
+   * @param {object} aFirstChildRow
    *        The first row at which nodes may be inserted to the row array.
    *        In other words, that's aContainer's row + 1.
-   * @param [out] aToOpen
-   *        An array of containers to open once the build is done.
+   * @param {Array} aToOpen
+   *        An array of containers to open once the build is done (out param)
    *
-   * @return the number of rows which were inserted.
+   * @returns {number} the number of rows which were inserted.
    */
   _buildVisibleSection: function PTV__buildVisibleSection(
     aContainer,
@@ -374,7 +382,7 @@ PlacesTreeView.prototype = {
         if (uri) {
           let val = Services.xulStore.getValue(
             document.documentURI,
-            uri,
+            PlacesUIUtils.obfuscateUrlForXulStore(uri),
             "open"
           );
           isopen = val == "true";
@@ -394,6 +402,10 @@ PlacesTreeView.prototype = {
   /**
    * This counts how many rows a node takes in the tree.  For containers it
    * will count the node itself plus any child node following it.
+   *
+   * @param {number} aNodeRow
+   *   The row of the node to count
+   * @returns {number}
    */
   _countVisibleRowsForNodeAtRow: function PTV__countVisibleRowsForNodeAtRow(
     aNodeRow
@@ -465,19 +477,13 @@ PlacesTreeView.prototype = {
    * that node was not found, we look for a node that has the same itemId, uri
    * and time values.
    *
-   * @param aUpdatedContainer
-   *        An ancestor of the node which was removed.  It does not have to be
-   *        its direct parent.
-   * @param aOldNode
+   * @param {object} aOldNode
    *        The node which was removed.
    *
-   * @return the row number of an equivalent node for aOldOne, if one was
+   * @returns {number} the row number of an equivalent node for aOldOne, if one was
    *         found, -1 otherwise.
    */
-  _getNewRowForRemovedNode: function PTV__getNewRowForRemovedNode(
-    aUpdatedContainer,
-    aOldNode
-  ) {
+  _getNewRowForRemovedNode: function PTV__getNewRowForRemovedNode(aOldNode) {
     let parent = aOldNode.parent;
     if (parent) {
       // If the node's parent is still set, the node is not obsolete
@@ -512,16 +518,11 @@ PlacesTreeView.prototype = {
    * Restores a given selection state as near as possible to the original
    * selection state.
    *
-   * @param aNodesInfo
+   * @param {Array} aNodesInfo
    *        The persisted selection state as returned by
    *        _getSelectedNodesInRange.
-   * @param aUpdatedContainer
-   *        The container which was updated.
    */
-  _restoreSelection: function PTV__restoreSelection(
-    aNodesInfo,
-    aUpdatedContainer
-  ) {
+  _restoreSelection: function PTV__restoreSelection(aNodesInfo) {
     if (!aNodesInfo.length) {
       return;
     }
@@ -533,7 +534,7 @@ PlacesTreeView.prototype = {
     let scrollToRow = -1;
     for (let i = 0; i < aNodesInfo.length; i++) {
       let nodeInfo = aNodesInfo[i];
-      let row = this._getNewRowForRemovedNode(aUpdatedContainer, nodeInfo.node);
+      let row = this._getNewRowForRemovedNode(nodeInfo.node);
       // Select the found node, if any.
       if (row != -1) {
         selection.rangedSelect(row, row, true);
@@ -758,6 +759,13 @@ PlacesTreeView.prototype = {
    * all collapsees. This function is called sometimes when resorting items.
    * However, we won't do this when sorted by date because dates will never
    * change for visits, and date sorting is the only time things are collapsed.
+   *
+   * @param {object} aParentNode
+   *   The parent node of the node being removed.
+   * @param {object} aNode
+   *   The node to remove from the tree.
+   * @param {number} aOldIndex
+   *   The old index of the node in the parent.
    */
   nodeRemoved: function PTV_nodeRemoved(aParentNode, aNode, aOldIndex) {
     console.assert(this._result, "Got a notification but have no result!");
@@ -879,7 +887,7 @@ PlacesTreeView.prototype = {
 
     // Restore selection.
     if (nodesToReselect.length) {
-      this._restoreSelection(nodesToReselect, aNewParent);
+      this._restoreSelection(nodesToReselect);
       this.selection.selectEventsSuppressed = false;
     }
   },
@@ -919,7 +927,7 @@ PlacesTreeView.prototype = {
     }
   },
 
-  nodeTitleChanged: function PTV_nodeTitleChanged(aNode, aNewTitle) {
+  nodeTitleChanged: function PTV_nodeTitleChanged(aNode) {
     this._invalidateCellValue(aNode, this.COLUMN_TYPE_TITLE);
   },
 
@@ -941,8 +949,7 @@ PlacesTreeView.prototype = {
 
   nodeHistoryDetailsChanged: function PTV_nodeHistoryDetailsChanged(
     aNode,
-    aOldVisitDate,
-    aOldVisitCount
+    aOldVisitDate
   ) {
     this._nodeDetails.delete(
       makeNodeDetailsKey({
@@ -961,24 +968,17 @@ PlacesTreeView.prototype = {
     this._invalidateCellValue(aNode, this.COLUMN_TYPE_TAGS);
   },
 
-  nodeKeywordChanged(aNode, aNewKeyword) {},
+  nodeKeywordChanged() {},
 
-  nodeDateAddedChanged: function PTV_nodeDateAddedChanged(aNode, aNewValue) {
+  nodeDateAddedChanged: function PTV_nodeDateAddedChanged(aNode) {
     this._invalidateCellValue(aNode, this.COLUMN_TYPE_DATEADDED);
   },
 
-  nodeLastModifiedChanged: function PTV_nodeLastModifiedChanged(
-    aNode,
-    aNewValue
-  ) {
+  nodeLastModifiedChanged: function PTV_nodeLastModifiedChanged(aNode) {
     this._invalidateCellValue(aNode, this.COLUMN_TYPE_LASTMODIFIED);
   },
 
-  containerStateChanged: function PTV_containerStateChanged(
-    aNode,
-    aOldState,
-    aNewState
-  ) {
+  containerStateChanged: function PTV_containerStateChanged(aNode) {
     this.invalidateContainer(aNode);
   },
 
@@ -1116,7 +1116,7 @@ PlacesTreeView.prototype = {
     this._tree.endUpdateBatch();
 
     // Restore selection.
-    this._restoreSelection(nodesToReselect, aContainer);
+    this._restoreSelection(nodesToReselect);
     this.selection.selectEventsSuppressed = false;
   },
 
@@ -1163,9 +1163,8 @@ PlacesTreeView.prototype = {
       return;
     }
 
-    let [desiredColumn, desiredIsDescending] = this._sortTypeToColumnType(
-      aSortingMode
-    );
+    let [desiredColumn, desiredIsDescending] =
+      this._sortTypeToColumnType(aSortingMode);
     let column = this._findColumnByType(desiredColumn);
     if (column) {
       let sortDir = desiredIsDescending ? "descending" : "ascending";
@@ -1210,8 +1209,6 @@ PlacesTreeView.prototype = {
     if (this._tree && val) {
       this._finishInit();
     }
-
-    return val;
   },
 
   /**
@@ -1219,7 +1216,7 @@ PlacesTreeView.prototype = {
    * only valid when a tree is attached.
    *
    * @param {Integer} aIndex The index for the node to get.
-   * @return {Ci.nsINavHistoryResultNode} The node.
+   * @returns {Ci.nsINavHistoryResultNode} The node.
    * @throws Cr.NS_ERROR_INVALID_ARG if the index is greater than the number of
    *                                 rows.
    */
@@ -1335,7 +1332,7 @@ PlacesTreeView.prototype = {
     return props + " " + properties;
   },
 
-  getColumnProperties(aColumn) {
+  getColumnProperties() {
     return "";
   },
 
@@ -1446,6 +1443,15 @@ PlacesTreeView.prototype = {
           return null;
         }
 
+        // Don't show an insertion point if the index is contained
+        // within the selection and drag source is the same
+        if (
+          this._element.isDragSource &&
+          this._element.view.selection.isSelected(index)
+        ) {
+          return null;
+        }
+
         // Avoid the potentially expensive call to getChildIndex
         // if we know this container doesn't allow insertion.
         if (this._controller.disallowInsertion(container)) {
@@ -1465,8 +1471,11 @@ PlacesTreeView.prototype = {
           index = -1;
           dropNearNode = lastSelected;
         } else {
-          let lsi = container.getChildIndex(lastSelected);
-          index = orientation == Ci.nsITreeView.DROP_BEFORE ? lsi : lsi + 1;
+          let lastSelectedIndex = container.getChildIndex(lastSelected);
+          index =
+            orientation == Ci.nsITreeView.DROP_BEFORE
+              ? lastSelectedIndex
+              : lastSelectedIndex + 1;
         }
       }
     }
@@ -1480,7 +1489,6 @@ PlacesTreeView.prototype = {
       : null;
 
     return new PlacesInsertionPoint({
-      parentId: PlacesUtils.getConcreteItemId(container),
       parentGuid: PlacesUtils.getConcreteItemGuid(container),
       index,
       orientation,
@@ -1489,7 +1497,7 @@ PlacesTreeView.prototype = {
     });
   },
 
-  drop: function PTV_drop(aRow, aOrientation, aDataTransfer) {
+  async drop(aRow, aOrientation, aDataTransfer) {
     if (this._controller.disableUserActions) {
       return;
     }
@@ -1499,13 +1507,15 @@ PlacesTreeView.prototype = {
     // since this information is specific to the tree view.
     let ip = this._getInsertionPoint(aRow, aOrientation);
     if (ip) {
-      PlacesControllerDragHelper.onDrop(ip, aDataTransfer, this._tree)
-        .catch(Cu.reportError)
-        .then(() => {
-          // We should only clear the drop target once
-          // the onDrop is complete, as it is an async function.
-          PlacesControllerDragHelper.currentDropTarget = null;
-        });
+      try {
+        await PlacesControllerDragHelper.onDrop(ip, aDataTransfer, this._tree);
+      } catch (ex) {
+        console.error(ex);
+      } finally {
+        // We should only clear the drop target once
+        // the onDrop is complete, as it is an async function.
+        PlacesControllerDragHelper.currentDropTarget = null;
+      }
     }
   },
 
@@ -1558,7 +1568,7 @@ PlacesTreeView.prototype = {
     return node.icon;
   },
 
-  getCellValue(aRow, aColumn) {},
+  getCellValue() {},
 
   getCellText: function PTV_getCellText(aRow, aColumn) {
     let node = this._getNodeForRow(aRow);
@@ -1573,7 +1583,7 @@ PlacesTreeView.prototype = {
         }
         return PlacesUIUtils.getBestTitle(node, true);
       case this.COLUMN_TYPE_TAGS:
-        return node.tags;
+        return node.tags?.replace(",", ", ");
       case this.COLUMN_TYPE_URI:
         if (PlacesUtils.nodeIsURI(node)) {
           return node.uri;
@@ -1621,8 +1631,7 @@ PlacesTreeView.prototype = {
         // detach from result when we are detaching from the tree.
         // This breaks the reference cycle between us and the result.
         if (!aTree) {
-          // Balances the addObserver call from the load method in tree.xml
-          this._result.removeObserver(this);
+          // Close the root container to free up memory and stop live updates.
           this._rootNode.containerOpen = false;
         }
       }
@@ -1650,9 +1659,18 @@ PlacesTreeView.prototype = {
       let docURI = document.documentURI;
 
       if (node.containerOpen) {
-        Services.xulStore.removeValue(docURI, uri, "open");
+        Services.xulStore.removeValue(
+          docURI,
+          PlacesUIUtils.obfuscateUrlForXulStore(uri),
+          "open"
+        );
       } else {
-        Services.xulStore.setValue(docURI, uri, "open", "true");
+        Services.xulStore.setValue(
+          docURI,
+          PlacesUIUtils.obfuscateUrlForXulStore(uri),
+          "open",
+          "true"
+        );
       }
     }
 
@@ -1777,7 +1795,7 @@ PlacesTreeView.prototype = {
 
     let node = this._rows[aRow];
     if (!node) {
-      Cu.reportError("isEditable called for an unbuilt row.");
+      console.error("isEditable called for an unbuilt row.");
       return false;
     }
     let itemGuid = node.bookmarkGuid;
@@ -1814,7 +1832,7 @@ PlacesTreeView.prototype = {
     if (node.title != aText) {
       PlacesTransactions.EditTitle({ guid: node.bookmarkGuid, title: aText })
         .transact()
-        .catch(Cu.reportError);
+        .catch(console.error);
     }
   },
 
@@ -1832,5 +1850,5 @@ PlacesTreeView.prototype = {
   },
 
   selectionChanged() {},
-  cycleCell(aRow, aColumn) {},
+  cycleCell() {},
 };

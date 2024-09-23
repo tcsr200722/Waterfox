@@ -4,11 +4,12 @@
 
 interface nsIDocShell;
 interface nsISupports;
+interface nsISessionStoreRestoreData;
 
 /**
  * A callback passed to SessionStoreUtils.forEachNonDynamicChildFrame().
  */
-callback SessionStoreUtilsFrameCallback = void (WindowProxy frame, unsigned long index);
+callback SessionStoreUtilsFrameCallback = undefined (WindowProxy frame, unsigned long index);
 
 /**
  * SessionStore utility functions implemented in C++ for performance reasons.
@@ -20,8 +21,8 @@ namespace SessionStoreUtils {
    * given |window|.
    */
   [Throws]
-  void forEachNonDynamicChildFrame(WindowProxy window,
-                                   SessionStoreUtilsFrameCallback callback);
+  undefined forEachNonDynamicChildFrame(WindowProxy window,
+                                        SessionStoreUtilsFrameCallback callback);
 
   /**
    * Takes the given listener, wraps it in a filter that filters out events from
@@ -51,11 +52,11 @@ namespace SessionStoreUtils {
    * EventListener.
    */
   [Throws]
-  void removeDynamicFrameFilteredListener(EventTarget target,
-                                          DOMString type,
-                                          nsISupports listener,
-                                          boolean useCapture,
-                                          optional boolean mozSystemGroup = false);
+  undefined removeDynamicFrameFilteredListener(EventTarget target,
+                                               DOMString type,
+                                               nsISupports listener,
+                                               boolean useCapture,
+                                               optional boolean mozSystemGroup = false);
 
   /*
    * Save the docShell.allow* properties
@@ -65,8 +66,8 @@ namespace SessionStoreUtils {
   /*
    * Restore the docShell.allow* properties
    */
-  void restoreDocShellCapabilities(nsIDocShell docShell,
-                                   ByteString disallowCapabilities);
+  undefined restoreDocShellCapabilities(nsIDocShell docShell,
+                                        ByteString disallowCapabilities);
 
   /**
    * Collects scroll position data for any given |frame| in the frame hierarchy.
@@ -85,7 +86,7 @@ namespace SessionStoreUtils {
    * @param frame (DOMWindow)
    * @param value (object, see collectScrollPosition())
    */
-  void restoreScrollPosition(Window frame, optional CollectedData data = {});
+  undefined restoreScrollPosition(Window frame, optional CollectedData data = {});
 
   /**
    * Collect form data for a given |frame| *not* including any subframes.
@@ -112,22 +113,27 @@ namespace SessionStoreUtils {
 
   boolean restoreFormData(Document document, optional CollectedData data = {});
 
-  /**
-   * Restores all sessionStorage "super cookies".
-   * @param aDocShell
-   *        A tab's docshell (containing the sessionStorage)
-   * @param aStorageData
-   *        A nested object with storage data to be restored that has hosts as
-   *        keys and per-origin session storage data as strings. For example:
-   *        {"https://example.com^userContextId=1": {"key": "value", "my_number": "123"}}
-   */
-   void restoreSessionStorage(nsIDocShell docShell, record<DOMString, record<DOMString, DOMString>> data);
+   nsISessionStoreRestoreData constructSessionStoreRestoreData();
+
+   [Throws]
+   Promise<undefined> initializeRestore(CanonicalBrowsingContext browsingContext,
+                                        nsISessionStoreRestoreData? data);
+
+   [NewObject]
+   Promise<undefined> restoreDocShellState(
+      CanonicalBrowsingContext browsingContext,
+      UTF8String? url,
+      ByteString? docShellCaps);
+
+   undefined restoreSessionStorageFromParent(
+     CanonicalBrowsingContext browsingContext,
+     record<UTF8String, record<DOMString, DOMString>> sessionStorage);
 };
 
 [GenerateConversionToJS, GenerateInit]
 dictionary CollectedFileListValue
 {
-  required DOMString type;
+  DOMString type = "file";
   required sequence<DOMString> fileList;
 };
 
@@ -138,7 +144,15 @@ dictionary CollectedNonMultipleSelectValue
   required DOMString value;
 };
 
+[GenerateConversionToJS, GenerateInit]
+dictionary CollectedCustomElementValue
+{
+  (File or USVString or FormData)? value = null;
+  (File or USVString or FormData)? state = null;
+};
+
 // object contains either a CollectedFileListValue or a CollectedNonMultipleSelectValue or Sequence<DOMString>
+// or a CollectedCustomElementValue
 typedef (DOMString or boolean or object) CollectedFormDataValue;
 
 dictionary CollectedData
@@ -160,25 +174,4 @@ dictionary InputElementData {
   sequence<DOMString> selectVal;
   sequence<DOMString> strVal;
   sequence<boolean> boolVal;
-};
-
-[GenerateConversionToJS]
-dictionary UpdateSessionStoreData {
-  ByteString docShellCaps;
-  boolean isPrivate;
-  sequence<ByteString> positions;
-  sequence<long> positionDescendants;
-  // The following are for input data
-  InputElementData id;
-  InputElementData xpath;
-  sequence<long> inputDescendants;
-  sequence<long> numId;
-  sequence<long> numXPath;
-  sequence<DOMString> innerHTML;
-  sequence<ByteString> url;
-  // for sessionStorage
-  sequence<ByteString> storageOrigins;
-  sequence<DOMString> storageKeys;
-  sequence<DOMString> storageValues;
-  boolean isFullStorage;
 };

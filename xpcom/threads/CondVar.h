@@ -10,10 +10,11 @@
 #include "mozilla/BlockingResourceBase.h"
 #include "mozilla/PlatformConditionVariable.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/TimeStamp.h"
 
-#ifdef MOZILLA_INTERNAL_API
-#  include "GeckoProfiler.h"
-#endif  // MOZILLA_INTERNAL_API
+#if defined(MOZILLA_INTERNAL_API) && !defined(DEBUG)
+#  include "mozilla/ProfilerThreadSleep.h"
+#endif  // defined( MOZILLA_INTERNAL_API) && !defined(DEBUG)
 
 namespace mozilla {
 
@@ -86,19 +87,21 @@ class OffTheBooksCondVar : BlockingResourceBase {
    * AssertCurrentThreadOwnsMutex
    * @see Mutex::AssertCurrentThreadOwns
    **/
-  void AssertCurrentThreadOwnsMutex() { mLock->AssertCurrentThreadOwns(); }
+  void AssertCurrentThreadOwnsMutex() const MOZ_ASSERT_CAPABILITY(mLock) {
+    mLock->AssertCurrentThreadOwns();
+  }
 
   /**
    * AssertNotCurrentThreadOwnsMutex
    * @see Mutex::AssertNotCurrentThreadOwns
    **/
-  void AssertNotCurrentThreadOwnsMutex() {
+  void AssertNotCurrentThreadOwnsMutex() const MOZ_ASSERT_CAPABILITY(!mLock) {
     mLock->AssertNotCurrentThreadOwns();
   }
 
 #else
-  void AssertCurrentThreadOwnsMutex() {}
-  void AssertNotCurrentThreadOwnsMutex() {}
+  void AssertCurrentThreadOwnsMutex() const MOZ_ASSERT_CAPABILITY(mLock) {}
+  void AssertNotCurrentThreadOwnsMutex() const MOZ_ASSERT_CAPABILITY(!mLock) {}
 
 #endif  // ifdef DEBUG
 

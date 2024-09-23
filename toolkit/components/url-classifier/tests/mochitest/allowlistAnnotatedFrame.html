@@ -134,11 +134,10 @@ fetch("http://tracking.example.com/tests/toolkit/components/url-classifier/tests
         fetchItem = "badresponse";
         loaded("fetch");
     }
- }).catch(function(error) {
+ }).catch(function() {
      fetchItem = "error";
      loaded("fetch");
 });
 </script>
 </body>
 </html>
-

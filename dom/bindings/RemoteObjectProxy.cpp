@@ -7,16 +7,16 @@
 #include "RemoteObjectProxy.h"
 #include "AccessCheck.h"
 #include "jsfriendapi.h"
+#include "js/Object.h"  // JS::GetClass
 #include "xpcprivate.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 bool RemoteObjectProxyBase::getOwnPropertyDescriptor(
     JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
-    JS::MutableHandle<JS::PropertyDescriptor> aDesc) const {
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const {
   bool ok = CrossOriginGetOwnPropertyHelper(aCx, aProxy, aId, aDesc);
-  if (!ok || aDesc.object()) {
+  if (!ok || aDesc.isSome()) {
     return ok;
   }
 
@@ -31,7 +31,7 @@ bool RemoteObjectProxyBase::defineProperty(
   // step 3 and
   // https://html.spec.whatwg.org/multipage/browsers.html#location-defineownproperty
   // step 2
-  return ReportCrossOriginDenial(aCx, aId, NS_LITERAL_CSTRING("define"));
+  return ReportCrossOriginDenial(aCx, aId, "define"_ns);
 }
 
 bool RemoteObjectProxyBase::ownPropertyKeys(
@@ -60,7 +60,7 @@ bool RemoteObjectProxyBase::delete_(JSContext* aCx,
   // https://html.spec.whatwg.org/multipage/browsers.html#windowproxy-delete
   // step 3 and
   // https://html.spec.whatwg.org/multipage/browsers.html#location-delete step 2
-  return ReportCrossOriginDenial(aCx, aId, NS_LITERAL_CSTRING("delete"));
+  return ReportCrossOriginDenial(aCx, aId, "delete"_ns);
 }
 
 bool RemoteObjectProxyBase::getPrototypeIfOrdinary(
@@ -75,6 +75,7 @@ bool RemoteObjectProxyBase::getPrototypeIfOrdinary(
   // We nonetheless can implement it with a static [[Prototype]], because the
   // [[GetPrototypeOf]] trap should always return null.
   *aIsOrdinary = true;
+  aProtop.set(nullptr);
   return true;
 }
 
@@ -122,7 +123,7 @@ const char* RemoteObjectProxyBase::className(
     JSContext* aCx, JS::Handle<JSObject*> aProxy) const {
   MOZ_ASSERT(js::IsProxy(aProxy));
 
-  return "Object";
+  return NamesOfInterfacesWithProtos(mPrototypeID);
 }
 
 void RemoteObjectProxyBase::GetOrCreateProxyObject(
@@ -132,17 +133,16 @@ void RemoteObjectProxyBase::GetOrCreateProxyObject(
   xpc::CompartmentPrivate* priv =
       xpc::CompartmentPrivate::Get(JS::CurrentGlobalOrNull(aCx));
   xpc::CompartmentPrivate::RemoteProxyMap& map = priv->GetRemoteProxyMap();
-  auto result = map.lookupForAdd(aNative);
-  if (result) {
-    MOZ_ASSERT(!aTransplantTo,
-               "No existing value allowed if we're doing a transplant");
+  if (auto result = map.lookup(aNative)) {
+    MOZ_RELEASE_ASSERT(!aTransplantTo,
+                       "GOCPO failed by finding an existing value");
 
     aProxy.set(result->value());
 
     // During a transplant, we put an object that is temporarily not a
     // proxy object into the map. Make sure that we don't return one of
     // these objects in the middle of a transplant.
-    MOZ_RELEASE_ASSERT(js::GetObjectClass(aProxy) == aClasp);
+    MOZ_RELEASE_ASSERT(JS::GetClass(aProxy) == aClasp);
 
     return;
   }
@@ -153,11 +153,14 @@ void RemoteObjectProxyBase::GetOrCreateProxyObject(
   JS::Rooted<JSObject*> obj(
       aCx, js::NewProxyObject(aCx, this, native, nullptr, options));
   if (!obj) {
+    MOZ_RELEASE_ASSERT(!aTransplantTo, "GOCPO failed at NewProxyObject");
     return;
   }
 
   bool success;
   if (!JS_SetImmutablePrototype(aCx, obj, &success)) {
+    MOZ_RELEASE_ASSERT(!aTransplantTo,
+                       "GOCPO failed at JS_SetImmutablePrototype");
     return;
   }
   MOZ_ASSERT(success);
@@ -168,9 +171,11 @@ void RemoteObjectProxyBase::GetOrCreateProxyObject(
   // not have the same class as aClasp to ensure that the release assert earlier
   // in this function will actually fire if we try to return a proxy object in
   // the middle of a transplant.
-  MOZ_ASSERT_IF(aTransplantTo, js::GetObjectClass(aTransplantTo) != aClasp);
+  MOZ_RELEASE_ASSERT(!aTransplantTo || (JS::GetClass(aTransplantTo) != aClasp),
+                     "GOCPO failed by not changing the class");
 
-  if (!map.add(result, aNative, aTransplantTo ? aTransplantTo : obj)) {
+  if (!map.put(aNative, aTransplantTo ? aTransplantTo : obj)) {
+    MOZ_RELEASE_ASSERT(!aTransplantTo, "GOCPO failed at map.put");
     return;
   }
 
@@ -179,5 +184,4 @@ void RemoteObjectProxyBase::GetOrCreateProxyObject(
 
 const char RemoteObjectProxyBase::sCrossOriginProxyFamily = 0;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

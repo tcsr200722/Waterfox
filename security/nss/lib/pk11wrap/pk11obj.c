@@ -5,8 +5,10 @@
  * This file manages object type indepentent functions.
  */
 #include <limits.h>
+#include <stddef.h>
 
 #include "seccomon.h"
+#include "secder.h"
 #include "secmod.h"
 #include "secmodi.h"
 #include "secmodti.h"
@@ -133,7 +135,7 @@ PK11_ReadAttribute(PK11SlotInfo *slot, CK_OBJECT_HANDLE id,
 }
 
 /*
- * Read in a single attribute into As a Ulong.
+ * Read in a single attribute into a Ulong.
  */
 CK_ULONG
 PK11_ReadULongAttribute(PK11SlotInfo *slot, CK_OBJECT_HANDLE id,
@@ -574,7 +576,7 @@ PK11_SignatureLen(SECKEYPrivateKey *key)
                 return length * 2;
             }
             return pk11_backupGetSignLength(key);
-
+        case edKey:
         case ecKey:
             rv = PK11_ReadAttribute(key->pkcs11Slot, key->pkcs11ID, CKA_EC_PARAMS,
                                     NULL, &attributeItem);
@@ -1320,23 +1322,23 @@ PK11_UnwrapPrivKey(PK11SlotInfo *slot, PK11SymKey *wrappingKey,
                                                                 NULL, perm, sensitive);
                 SECKEY_DestroyPrivateKey(privKey);
                 PK11_FreeSlot(int_slot);
+                SECITEM_FreeItem(param_free, PR_TRUE);
                 return newPrivKey;
             }
         }
         if (int_slot)
             PK11_FreeSlot(int_slot);
         PORT_SetError(PK11_MapError(crv));
+        SECITEM_FreeItem(param_free, PR_TRUE);
         return NULL;
     }
+    SECITEM_FreeItem(param_free, PR_TRUE);
     return PK11_MakePrivKey(slot, nullKey, PR_FALSE, privKeyID, wincx);
 
 loser:
-    if (newKey) {
-        PK11_FreeSymKey(newKey);
-    }
-    if (ck_id) {
-        SECITEM_FreeItem(ck_id, PR_TRUE);
-    }
+    PK11_FreeSymKey(newKey);
+    SECITEM_FreeItem(ck_id, PR_TRUE);
+    SECITEM_FreeItem(param_free, PR_TRUE);
     return NULL;
 }
 
@@ -1716,7 +1718,10 @@ PK11_GetObjectHandle(PK11ObjectType objType, void *objSpec,
             slot = ((PK11SymKey *)objSpec)->slot;
             handle = ((PK11SymKey *)objSpec)->objectID;
             break;
-        case PK11_TypeCert: /* don't handle cert case for now */
+        case PK11_TypeCert:
+            handle = PK11_FindObjectForCert((CERTCertificate *)objSpec, NULL,
+                                            &slot);
+            break;
         default:
             PORT_SetError(SEC_ERROR_UNKNOWN_OBJECT_TYPE);
             break;
@@ -1803,11 +1808,60 @@ PK11_ReadRawAttributes(PLArenaPool *arena, PK11ObjectType objType, void *objSpec
     return SECSuccess;
 }
 
+SECStatus
+PK11_ReadDistrustAfterAttribute(PK11SlotInfo *slot,
+                                CK_OBJECT_HANDLE object,
+                                CK_ATTRIBUTE_TYPE type,
+                                /* out */ PRBool *distrusted,
+                                /* out */ PRTime *time)
+{
+    if (!slot || !distrusted || !time) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
+    }
+
+    if (type != CKA_NSS_SERVER_DISTRUST_AFTER && type != CKA_NSS_EMAIL_DISTRUST_AFTER) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return SECFailure;
+    }
+
+    // The CKA_NSS_SERVER_DISTRUST_AFTER and CKA_NSS_EMAIL_DISTRUST_AFTER
+    // attributes have either a 13 byte UTCTime value or a 1 byte value
+    // (equal to 0) indicating that no distrust after date is set.
+    unsigned char buf[13] = { 0 };
+    CK_ATTRIBUTE attr = { .type = type, .pValue = buf, .ulValueLen = sizeof buf };
+    CK_RV crv;
+
+    PK11_EnterSlotMonitor(slot);
+    crv = PK11_GETTAB(slot)->C_GetAttributeValue(slot->session, object, &attr, 1);
+    PK11_ExitSlotMonitor(slot);
+    if (crv != CKR_OK) {
+        PORT_SetError(PK11_MapError(crv));
+        return SECFailure;
+    }
+
+    if (attr.ulValueLen == 1 && buf[0] == 0) {
+        // The distrust after date is not set.
+        *distrusted = PR_FALSE;
+        return SECSuccess;
+    }
+
+    if (attr.ulValueLen != sizeof buf) {
+        // Ensure the date is encoded in the expected 13 byte format.
+        PORT_SetError(SEC_ERROR_INVALID_TIME);
+        return SECFailure;
+    }
+
+    *distrusted = PR_TRUE;
+    SECItem item = { siUTCTime, buf, sizeof buf };
+    return DER_UTCTimeToTime(time, &item);
+}
+
 /*
  * return the object handle that matches the template
  */
 CK_OBJECT_HANDLE
-pk11_FindObjectByTemplate(PK11SlotInfo *slot, CK_ATTRIBUTE *theTemplate, int tsize)
+pk11_FindObjectByTemplate(PK11SlotInfo *slot, CK_ATTRIBUTE *theTemplate, size_t tsize)
 {
     CK_OBJECT_HANDLE object;
     CK_RV crv = CKR_SESSION_HANDLE_INVALID;
@@ -1846,7 +1900,7 @@ pk11_FindObjectByTemplate(PK11SlotInfo *slot, CK_ATTRIBUTE *theTemplate, int tsi
  */
 CK_OBJECT_HANDLE *
 pk11_FindObjectsByTemplate(PK11SlotInfo *slot, CK_ATTRIBUTE *findTemplate,
-                           int templCount, int *object_count)
+                           size_t templCount, int *object_count)
 {
     CK_OBJECT_HANDLE *objID = NULL;
     CK_ULONG returned_count = 0;
@@ -1941,7 +1995,7 @@ PK11_FindRawCertsWithSubject(PK11SlotInfo *slot, SECItem *derSubject,
         { CKA_CLASS, &cko_certificate, sizeof(cko_certificate) },
         { CKA_SUBJECT, derSubject->data, derSubject->len },
     };
-    int templateCount = sizeof(subjectTemplate) / sizeof(subjectTemplate[0]);
+    const size_t templateCount = sizeof(subjectTemplate) / sizeof(subjectTemplate[0]);
     int handleCount = 0;
     CK_OBJECT_HANDLE *handles =
         pk11_FindObjectsByTemplate(slot, subjectTemplate, templateCount,
@@ -2021,7 +2075,7 @@ PK11_MatchItem(PK11SlotInfo *slot, CK_OBJECT_HANDLE searchID,
     };
     /* if you change the array, change the variable below as well */
     CK_ATTRIBUTE *keyclass = &theTemplate[1];
-    int tsize = sizeof(theTemplate) / sizeof(theTemplate[0]);
+    const size_t tsize = sizeof(theTemplate) / sizeof(theTemplate[0]);
     /* if you change the array, change the variable below as well */
     CK_OBJECT_HANDLE peerID;
     PORTCheapArenaPool tmpArena;
@@ -2175,7 +2229,7 @@ PK11_FindObjectsFromNickname(char *nickname, PK11SlotInfo **slotptr,
         { CKA_LABEL, NULL, 0 },
         { CKA_CLASS, NULL, 0 },
     };
-    int findCount = sizeof(findTemplate) / sizeof(findTemplate[0]);
+    const size_t findCount = sizeof(findTemplate) / sizeof(findTemplate[0]);
     SECStatus rv;
     PK11_SETATTRS(&findTemplate[1], CKA_CLASS, &objclass, sizeof(objclass));
 
@@ -2263,4 +2317,19 @@ pk11_GetLowLevelKeyFromHandle(PK11SlotInfo *slot, CK_OBJECT_HANDLE handle)
     item->len = theTemplate[0].ulValueLen;
 
     return item;
+}
+
+PRBool
+PK11_ObjectGetFIPSStatus(PK11ObjectType objType, void *objSpec)
+{
+    PK11SlotInfo *slot = NULL;
+    CK_OBJECT_HANDLE handle = 0;
+
+    handle = PK11_GetObjectHandle(objType, objSpec, &slot);
+    if (handle == CK_INVALID_HANDLE) {
+        PORT_SetError(SEC_ERROR_UNKNOWN_OBJECT_TYPE);
+        return PR_FALSE;
+    }
+    return pk11slot_GetFIPSStatus(slot, slot->session, handle,
+                                  CKT_NSS_OBJECT_CHECK);
 }

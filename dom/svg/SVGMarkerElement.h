@@ -4,11 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGMarkerElement_h
-#define mozilla_dom_SVGMarkerElement_h
+#ifndef DOM_SVG_SVGMARKERELEMENT_H_
+#define DOM_SVG_SVGMARKERELEMENT_H_
 
-#include "DOMSVGAnimatedAngle.h"
-#include "DOMSVGAnimatedEnumeration.h"
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedOrient.h"
@@ -19,24 +17,23 @@
 #include "mozilla/dom/SVGMarkerElementBinding.h"
 #include "mozilla/UniquePtr.h"
 
-class nsSVGMarkerFrame;
-
 nsresult NS_NewSVGMarkerElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
 
 struct SVGMark;
+class SVGMarkerFrame;
 
 namespace dom {
 
-// Non-Exposed Marker Orientation Types
-static const uint16_t SVG_MARKER_ORIENT_AUTO_START_REVERSE = 3;
+class DOMSVGAnimatedAngle;
+class DOMSVGAnimatedEnumeration;
 
-typedef SVGElement SVGMarkerElementBase;
+using SVGMarkerElementBase = SVGElement;
 
-class SVGMarkerElement : public SVGMarkerElementBase {
-  friend class ::nsSVGMarkerFrame;
+class SVGMarkerElement final : public SVGMarkerElementBase {
+  friend class mozilla::SVGMarkerFrame;
 
  protected:
   friend nsresult(::NS_NewSVGMarkerElement(
@@ -44,22 +41,18 @@ class SVGMarkerElement : public SVGMarkerElementBase {
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
   explicit SVGMarkerElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  // nsIContent interface
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* name) const override;
-
-  // nsSVGSVGElement methods:
-  virtual bool HasValidDimensions() const override;
+  // SVGSVGElement methods:
+  bool HasValidDimensions() const override;
 
   // public helpers
   gfx::Matrix GetMarkerTransform(float aStrokeWidth, const SVGMark& aMark);
   SVGViewBox GetViewBox();
   gfx::Matrix GetViewBoxTransform();
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
   // WebIDL
   already_AddRefed<SVGAnimatedRect> ViewBox();
@@ -72,17 +65,16 @@ class SVGMarkerElement : public SVGMarkerElementBase {
   already_AddRefed<DOMSVGAnimatedEnumeration> OrientType();
   already_AddRefed<DOMSVGAnimatedAngle> OrientAngle();
   void SetOrientToAuto();
-  void SetOrientToAngle(DOMSVGAngle& angle, ErrorResult& rv);
+  void SetOrientToAngle(DOMSVGAngle& aAngle);
 
  protected:
   void SetParentCoordCtxProvider(SVGViewportElement* aContext);
 
-  virtual LengthAttributesInfo GetLengthInfo() override;
-  virtual EnumAttributesInfo GetEnumInfo() override;
-  virtual SVGAnimatedOrient* GetAnimatedOrient() override;
-  virtual SVGAnimatedPreserveAspectRatio* GetAnimatedPreserveAspectRatio()
-      override;
-  virtual SVGAnimatedViewBox* GetAnimatedViewBox() override;
+  LengthAttributesInfo GetLengthInfo() override;
+  EnumAttributesInfo GetEnumInfo() override;
+  SVGAnimatedOrient* GetAnimatedOrient() override;
+  SVGAnimatedPreserveAspectRatio* GetAnimatedPreserveAspectRatio() override;
+  SVGAnimatedViewBox* GetAnimatedViewBox() override;
 
   enum { REFX, REFY, MARKERWIDTH, MARKERHEIGHT };
   SVGAnimatedLength mLengthAttributes[4];
@@ -104,4 +96,4 @@ class SVGMarkerElement : public SVGMarkerElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGMarkerElement_h
+#endif  // DOM_SVG_SVGMARKERELEMENT_H_

@@ -5,27 +5,31 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Keep in (case-insensitive) order:
-#include "ComputedStyle.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/dom/SVGFilters.h"
+#include "ComputedStyle.h"
 #include "nsContainerFrame.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 #include "nsGkAtoms.h"
-#include "SVGObserverUtils.h"
-#include "SVGFilters.h"
 
-using namespace mozilla;
+using namespace mozilla::dom;
+
+nsIFrame* NS_NewSVGFELeafFrame(mozilla::PresShell* aPresShell,
+                               mozilla::ComputedStyle* aStyle);
+namespace mozilla {
 
 /*
  * This frame is used by filter primitive elements that don't
  * have special child elements that provide parameters.
  */
-class SVGFELeafFrame final : public nsFrame {
-  friend nsIFrame* NS_NewSVGFELeafFrame(mozilla::PresShell* aPresShell,
-                                        ComputedStyle* aStyle);
+class SVGFELeafFrame final : public nsIFrame {
+  friend nsIFrame* ::NS_NewSVGFELeafFrame(mozilla::PresShell* aPresShell,
+                                          ComputedStyle* aStyle);
 
  protected:
   explicit SVGFELeafFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
-      : nsFrame(aStyle, aPresContext, kClassID) {
+      : nsIFrame(aStyle, aPresContext, kClassID) {
     AddStateBits(NS_FRAME_SVG_LAYOUT | NS_FRAME_IS_NONDISPLAY);
   }
 
@@ -33,60 +37,61 @@ class SVGFELeafFrame final : public nsFrame {
   NS_DECL_FRAMEARENA_HELPERS(SVGFELeafFrame)
 
 #ifdef DEBUG
-  virtual void Init(nsIContent* aContent, nsContainerFrame* aParent,
-                    nsIFrame* aPrevInFlow) override;
+  void Init(nsIContent* aContent, nsContainerFrame* aParent,
+            nsIFrame* aPrevInFlow) override;
 #endif
-
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    if (aFlags & eSupportsContainLayoutAndPaint) {
-      return false;
-    }
-
-    return nsFrame::IsFrameOfType(aFlags & ~(nsIFrame::eSVG));
-  }
 
 #ifdef DEBUG_FRAME_DUMP
-  virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("SVGFELeaf"), aResult);
+  nsresult GetFrameName(nsAString& aResult) const override {
+    return MakeFrameName(u"SVGFELeaf"_ns, aResult);
   }
 #endif
 
-  virtual nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                    int32_t aModType) override;
+  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+                            int32_t aModType) override;
 
-  virtual bool ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas) override {
-    // We don't maintain a visual overflow rect
+  bool ComputeCustomOverflow(OverflowAreas& aOverflowAreas) override {
+    // We don't maintain a ink overflow rect
     return false;
   }
 };
 
-nsIFrame* NS_NewSVGFELeafFrame(PresShell* aPresShell, ComputedStyle* aStyle) {
-  return new (aPresShell) SVGFELeafFrame(aStyle, aPresShell->GetPresContext());
+}  // namespace mozilla
+
+nsIFrame* NS_NewSVGFELeafFrame(mozilla::PresShell* aPresShell,
+                               mozilla::ComputedStyle* aStyle) {
+  return new (aPresShell)
+      mozilla::SVGFELeafFrame(aStyle, aPresShell->GetPresContext());
 }
+
+namespace mozilla {
 
 NS_IMPL_FRAMEARENA_HELPERS(SVGFELeafFrame)
 
 #ifdef DEBUG
 void SVGFELeafFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
                           nsIFrame* aPrevInFlow) {
-  NS_ASSERTION(aContent->IsNodeOfType(nsINode::eFILTER),
+  NS_ASSERTION(aContent->IsSVGFilterPrimitiveElement(),
                "Trying to construct an SVGFELeafFrame for a "
                "content element that doesn't support the right interfaces");
 
-  nsFrame::Init(aContent, aParent, aPrevInFlow);
+  nsIFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
 nsresult SVGFELeafFrame::AttributeChanged(int32_t aNameSpaceID,
                                           nsAtom* aAttribute,
                                           int32_t aModType) {
-  auto* element = static_cast<mozilla::dom::SVGFE*>(GetContent());
+  auto* element =
+      static_cast<mozilla::dom::SVGFilterPrimitiveElement*>(GetContent());
   if (element->AttributeAffectsRendering(aNameSpaceID, aAttribute)) {
     MOZ_ASSERT(
         GetParent()->IsSVGFilterFrame(),
         "Observers observe the filter, so that's what we must invalidate");
-    SVGObserverUtils::InvalidateDirectRenderingObservers(GetParent());
+    SVGObserverUtils::InvalidateRenderingObservers(GetParent());
   }
 
-  return nsFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
+  return nsIFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
 }
+
+}  // namespace mozilla

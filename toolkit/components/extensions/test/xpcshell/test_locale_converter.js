@@ -64,7 +64,7 @@ add_task(async function testAsyncConvert() {
   let listener;
   let awaitResult = new Promise((resolve, reject) => {
     listener = {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIStreamListener]),
+      QueryInterface: ChromeUtils.generateQI(["nsIStreamListener"]),
 
       onDataAvailable(request, inputStream, offset, count) {
         this.resultParts.push(
@@ -117,7 +117,7 @@ add_task(async function testInvalidUUID() {
 
   // Assert.throws raise a TypeError exception when the expected param
   // is an arrow function. (See Bug 1237961 for rationale)
-  let expectInvalidContextException = function(e) {
+  let expectInvalidContextException = function (e) {
     return e.result === Cr.NS_ERROR_INVALID_ARG && /Invalid context/.test(e);
   };
 
@@ -127,7 +127,7 @@ add_task(async function testInvalidUUID() {
 
   Assert.throws(() => {
     let listener = {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIStreamListener]),
+      QueryInterface: ChromeUtils.generateQI(["nsIStreamListener"]),
     };
 
     convService.asyncConvertData(FROM_TYPE, TO_TYPE, listener, uri);

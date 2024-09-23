@@ -9,8 +9,11 @@
  */
 
 add_task(
-  threadFrontTest(async ({ threadFront, debuggee }) => {
-    threadFront.pauseOnExceptions(true, false);
+  threadFrontTest(async ({ threadFront, debuggee, commands }) => {
+    await commands.threadConfigurationCommand.updateConfiguration({
+      pauseOnExceptions: true,
+      ignoreCaughtExceptions: false,
+    });
 
     const packet = await executeOnNextTickAndWaitForPause(
       () => evaluateTestCode(debuggee),
@@ -19,12 +22,13 @@ add_task(
 
     Assert.equal(packet.why.type, "exception");
     Assert.equal(packet.why.exception, 42);
-    threadFront.resume();
+    await threadFront.resume();
   })
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
+  /* eslint-disable no-throw-literal */
+  // prettier-ignore
   debuggee.eval("(" + function () {    // 1
     function stopMe() {                // 2
       throw 42;                        // 3
@@ -33,5 +37,4 @@ function evaluateTestCode(debuggee) {
       stopMe();                        // 6
     } catch (e) {}                     // 7
   } + ")()");
-  /* eslint-enable */
 }

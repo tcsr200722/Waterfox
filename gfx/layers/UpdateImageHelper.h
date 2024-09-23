@@ -7,7 +7,7 @@
 #ifndef GFX_UPDATEIMAGEHELPER_H
 #define GFX_UPDATEIMAGEHELPER_H
 
-#include "Layers.h"
+#include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/ImageClient.h"
 #include "mozilla/layers/TextureClient.h"
 #include "mozilla/layers/TextureClientRecycleAllocator.h"
@@ -65,7 +65,7 @@ class UpdateImageHelper {
     RefPtr<TextureWrapperImage> image = new TextureWrapperImage(
         mTexture, gfx::IntRect(gfx::IntPoint(0, 0), mImageSize));
     mImageContainer->SetCurrentImageInTransaction(image);
-    return mImageClient->UpdateImage(mImageContainer, /* unused */ 0);
+    return mImageClient->UpdateImage(mImageContainer);
   }
 
  private:

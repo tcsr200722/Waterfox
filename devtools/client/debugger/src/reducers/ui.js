@@ -2,8 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-/* eslint complexity: ["error", 35]*/
+/* eslint-disable complexity */
 
 /**
  * UI reducer
@@ -11,58 +10,64 @@
  */
 
 import { prefs, features } from "../utils/prefs";
+import { searchKeys } from "../constants";
 
-import type { Source, SourceLocation, Range } from "../types";
-
-import type { Action, panelPositionType } from "../actions/types";
-
-export type ActiveSearchType = "project" | "file";
-
-export type OrientationType = "horizontal" | "vertical";
-
-export type SelectedPrimaryPaneTabType = "sources" | "outline";
-
-export type UIState = {
-  selectedPrimaryPaneTab: SelectedPrimaryPaneTabType,
-  activeSearch: ?ActiveSearchType,
-  shownSource: ?Source,
-  startPanelCollapsed: boolean,
-  endPanelCollapsed: boolean,
-  frameworkGroupingOn: boolean,
-  orientation: OrientationType,
-  viewport: ?Range,
-  cursorPosition: ?SourceLocation,
-  highlightedLineRange?: {
-    start?: number,
-    end?: number,
-    sourceId?: number,
-  },
-  conditionalPanelLocation: null | SourceLocation,
-  isLogPoint: boolean,
-  inlinePreviewEnabled: boolean,
-  sourceMapsEnabled: boolean,
-  javascriptEnabled: boolean,
-};
-
-export const createUIState = (): UIState => ({
+export const initialUIState = () => ({
   selectedPrimaryPaneTab: "sources",
   activeSearch: null,
-  shownSource: null,
   startPanelCollapsed: prefs.startPanelCollapsed,
   endPanelCollapsed: prefs.endPanelCollapsed,
   frameworkGroupingOn: prefs.frameworkGroupingOn,
-  highlightedLineRange: undefined,
+
+  // This is used from Outline's copy to clipboard context menu
+  // and QuickOpen to highlight lines temporarily.
+  // If defined, it will be an object with following attributes:
+  // - sourceId, String
+  // - start, Number, start line to highlight, 1-based
+  // - end, Number, end line to highlight, 1-based
+  highlightedLineRange: null,
+
   conditionalPanelLocation: null,
   isLogPoint: false,
   orientation: "horizontal",
   viewport: null,
   cursorPosition: null,
   inlinePreviewEnabled: features.inlinePreview,
-  sourceMapsEnabled: prefs.clientSourceMapsEnabled,
+  editorWrappingEnabled: prefs.editorWrapping,
   javascriptEnabled: true,
+  javascriptTracingEnabled: false,
+  javascriptTracingLogMethod: prefs.javascriptTracingLogMethod,
+  javascriptTracingValues: prefs.javascriptTracingValues,
+  javascriptTracingOnNextInteraction: prefs.javascriptTracingOnNextInteraction,
+  javascriptTracingOnNextLoad: prefs.javascriptTracingOnNextLoad,
+  javascriptTracingFunctionReturn: prefs.javascriptTracingFunctionReturn,
+  mutableSearchOptions: prefs.searchOptions || {
+    [searchKeys.FILE_SEARCH]: {
+      regexMatch: false,
+      wholeWord: false,
+      caseSensitive: false,
+      excludePatterns: "",
+    },
+    [searchKeys.PROJECT_SEARCH]: {
+      regexMatch: false,
+      wholeWord: false,
+      caseSensitive: false,
+      excludePatterns: "",
+    },
+    [searchKeys.QUICKOPEN_SEARCH]: {
+      regexMatch: false,
+      wholeWord: false,
+      caseSensitive: false,
+      excludePatterns: "",
+    },
+  },
+  projectSearchQuery: "",
+  hideIgnoredSources: prefs.hideIgnoredSources,
+  sourceMapsEnabled: prefs.clientSourceMapsEnabled,
+  sourceMapIgnoreListEnabled: prefs.sourceMapIgnoreListEnabled,
 });
 
-function update(state: UIState = createUIState(), action: Action): UIState {
+function update(state = initialUIState(), action) {
   switch (action.type) {
     case "TOGGLE_ACTIVE_SEARCH": {
       return { ...state, activeSearch: action.value };
@@ -78,6 +83,11 @@ function update(state: UIState = createUIState(), action: Action): UIState {
       return { ...state, inlinePreviewEnabled: action.value };
     }
 
+    case "TOGGLE_EDITOR_WRAPPING": {
+      prefs.editorWrapping = action.value;
+      return { ...state, editorWrappingEnabled: action.value };
+    }
+
     case "TOGGLE_JAVASCRIPT_ENABLED": {
       return { ...state, javascriptEnabled: action.value };
     }
@@ -91,10 +101,6 @@ function update(state: UIState = createUIState(), action: Action): UIState {
       return { ...state, orientation: action.orientation };
     }
 
-    case "SHOW_SOURCE": {
-      return { ...state, shownSource: action.source };
-    }
-
     case "TOGGLE_PANE": {
       if (action.position == "start") {
         prefs.startPanelCollapsed = action.paneCollapsed;
@@ -105,19 +111,16 @@ function update(state: UIState = createUIState(), action: Action): UIState {
       return { ...state, endPanelCollapsed: action.paneCollapsed };
     }
 
-    case "HIGHLIGHT_LINES":
-      const { start, end, sourceId } = action.location;
-      let lineRange = {};
-
-      if (start && end && sourceId) {
-        lineRange = { start, end, sourceId };
-      }
-
-      return { ...state, highlightedLineRange: lineRange };
+    case "HIGHLIGHT_LINES": {
+      return { ...state, highlightedLineRange: action.location };
+    }
 
     case "CLOSE_QUICK_OPEN":
     case "CLEAR_HIGHLIGHT_LINES":
-      return { ...state, highlightedLineRange: {} };
+      if (!state.highlightedLineRange) {
+        return state;
+      }
+      return { ...state, highlightedLineRange: null };
 
     case "OPEN_CONDITIONAL_PANEL":
       return {
@@ -148,76 +151,104 @@ function update(state: UIState = createUIState(), action: Action): UIState {
     }
 
     case "NAVIGATE": {
-      return { ...state, activeSearch: null, highlightedLineRange: {} };
+      return { ...state, highlightedLineRange: null };
+    }
+
+    case "REMOVE_THREAD": {
+      // Reset the highlighted range if the related source has been removed
+      const sourceId = state.highlightedLineRange?.sourceId;
+      if (sourceId && action.sources.some(s => s.id == sourceId)) {
+        return { ...state, highlightedLineRange: null };
+      }
+      return state;
+    }
+
+    case "TOGGLE_TRACING": {
+      if (action.status === "start") {
+        return { ...state, javascriptTracingEnabled: action.enabled };
+      }
+      return state;
+    }
+
+    case "SET_JAVASCRIPT_TRACING_LOG_METHOD": {
+      prefs.javascriptTracingLogMethod = action.value;
+      return { ...state, javascriptTracingLogMethod: action.value };
+    }
+
+    case "TOGGLE_JAVASCRIPT_TRACING_VALUES": {
+      prefs.javascriptTracingValues = !prefs.javascriptTracingValues;
+      return {
+        ...state,
+        javascriptTracingValues: prefs.javascriptTracingValues,
+      };
+    }
+
+    case "TOGGLE_JAVASCRIPT_TRACING_ON_NEXT_INTERACTION": {
+      prefs.javascriptTracingOnNextInteraction =
+        !prefs.javascriptTracingOnNextInteraction;
+      return {
+        ...state,
+        javascriptTracingOnNextInteraction:
+          prefs.javascriptTracingOnNextInteraction,
+      };
+    }
+
+    case "TOGGLE_JAVASCRIPT_TRACING_ON_NEXT_LOAD": {
+      prefs.javascriptTracingOnNextLoad = !prefs.javascriptTracingOnNextLoad;
+      return {
+        ...state,
+        javascriptTracingOnNextLoad: prefs.javascriptTracingOnNextLoad,
+      };
+    }
+
+    case "TOGGLE_JAVASCRIPT_TRACING_FUNCTION_RETURN": {
+      prefs.javascriptTracingFunctionReturn =
+        !prefs.javascriptTracingFunctionReturn;
+      return {
+        ...state,
+        javascriptTracingFunctionReturn: prefs.javascriptTracingFunctionReturn,
+      };
+    }
+
+    case "SET_SEARCH_OPTIONS": {
+      state.mutableSearchOptions[action.searchKey] = {
+        ...state.mutableSearchOptions[action.searchKey],
+        ...action.searchOptions,
+      };
+      prefs.searchOptions = state.mutableSearchOptions;
+      return { ...state };
+    }
+
+    case "SET_PROJECT_SEARCH_QUERY": {
+      if (action.query != state.projectSearchQuery) {
+        state.projectSearchQuery = action.query;
+        return { ...state };
+      }
+      return state;
+    }
+
+    case "HIDE_IGNORED_SOURCES": {
+      const { shouldHide } = action;
+      if (shouldHide !== state.hideIgnoredSources) {
+        prefs.hideIgnoredSources = shouldHide;
+        return { ...state, hideIgnoredSources: shouldHide };
+      }
+      return state;
+    }
+
+    case "ENABLE_SOURCEMAP_IGNORELIST": {
+      const { shouldEnable } = action;
+      if (shouldEnable !== state.sourceMapIgnoreListEnabled) {
+        prefs.sourceMapIgnoreListEnabled = shouldEnable;
+        return { ...state, sourceMapIgnoreListEnabled: shouldEnable };
+      }
+      return state;
     }
 
     default: {
       return state;
     }
   }
-}
-
-// NOTE: we'd like to have the app state fully typed
-// https://github.com/firefox-devtools/debugger/blob/master/src/reducers/sources.js#L179-L185
-type OuterState = { ui: UIState };
-
-export function getSelectedPrimaryPaneTab(
-  state: OuterState
-): SelectedPrimaryPaneTabType {
-  return state.ui.selectedPrimaryPaneTab;
-}
-
-export function getActiveSearch(state: OuterState): ?ActiveSearchType {
-  return state.ui.activeSearch;
-}
-
-export function getFrameworkGroupingState(state: OuterState): boolean {
-  return state.ui.frameworkGroupingOn;
-}
-
-export function getShownSource(state: OuterState): ?Source {
-  return state.ui.shownSource;
-}
-
-export function getPaneCollapse(
-  state: OuterState,
-  position: panelPositionType
-): boolean {
-  if (position == "start") {
-    return state.ui.startPanelCollapsed;
-  }
-
-  return state.ui.endPanelCollapsed;
-}
-
-export function getHighlightedLineRange(state: OuterState) {
-  return state.ui.highlightedLineRange;
-}
-
-export function getConditionalPanelLocation(
-  state: OuterState
-): null | SourceLocation {
-  return state.ui.conditionalPanelLocation;
-}
-
-export function getLogPointStatus(state: OuterState): boolean {
-  return state.ui.isLogPoint;
-}
-
-export function getOrientation(state: OuterState): OrientationType {
-  return state.ui.orientation;
-}
-
-export function getViewport(state: OuterState) {
-  return state.ui.viewport;
-}
-
-export function getCursorPosition(state: OuterState) {
-  return state.ui.cursorPosition;
-}
-
-export function getInlinePreview(state: OuterState) {
-  return state.ui.inlinePreviewEnabled;
 }
 
 export default update;

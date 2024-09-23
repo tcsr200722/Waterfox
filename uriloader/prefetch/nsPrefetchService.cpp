@@ -27,14 +27,16 @@
 #include "nsStreamUtils.h"
 #include "prtime.h"
 #include "mozilla/Logging.h"
-#include "plstr.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsINode.h"
 #include "mozilla/dom/Document.h"
 #include "nsContentUtils.h"
 #include "mozilla/AsyncEventDispatcher.h"
+#include "nsICachingChannel.h"
+#include "nsHttp.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 //
 // To enable logging (see mozilla/Logging.h for full details):
@@ -104,9 +106,9 @@ nsresult nsPrefetchNode::OpenChannel() {
 
   uint32_t securityFlags;
   if (corsMode == CORS_NONE) {
-    securityFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS;
+    securityFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT;
   } else {
-    securityFlags = nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS;
+    securityFlags = nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT;
     if (corsMode == CORS_USE_CREDENTIALS) {
       securityFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
     }
@@ -128,8 +130,10 @@ nsresult nsPrefetchNode::OpenChannel() {
   if (httpChannel) {
     DebugOnly<nsresult> success = httpChannel->SetReferrerInfo(mReferrerInfo);
     MOZ_ASSERT(NS_SUCCEEDED(success));
-    success = httpChannel->SetRequestHeader(
-        NS_LITERAL_CSTRING("X-Moz"), NS_LITERAL_CSTRING("prefetch"), false);
+
+    // https://fetch.spec.whatwg.org/#http-sec-purpose
+    success =
+        httpChannel->SetRequestHeader("Sec-Purpose"_ns, "prefetch"_ns, false);
     MOZ_ASSERT(NS_SUCCEEDED(success));
   }
 
@@ -208,7 +212,7 @@ nsPrefetchNode::OnStartRequest(nsIRequest* aRequest) {
   //
   uint32_t expTime;
   if (NS_SUCCEEDED(cacheInfoChannel->GetCacheTokenExpirationTime(&expTime))) {
-    if (NowInSeconds() >= expTime) {
+    if (mozilla::net::NowInSeconds() >= expTime) {
       LOG(
           ("document cannot be reused from cache; "
            "canceling prefetch\n"));
@@ -289,8 +293,8 @@ nsPrefetchNode::AsyncOnChannelRedirect(
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(aNewChannel);
   NS_ENSURE_STATE(httpChannel);
 
-  rv = httpChannel->SetRequestHeader(NS_LITERAL_CSTRING("X-Moz"),
-                                     NS_LITERAL_CSTRING("prefetch"), false);
+  // https://fetch.spec.whatwg.org/#http-sec-purpose
+  rv = httpChannel->SetRequestHeader("Sec-Purpose"_ns, "prefetch"_ns, false);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   // Assign to mChannel after we get notification about success of the
@@ -306,8 +310,8 @@ nsPrefetchNode::AsyncOnChannelRedirect(
 //-----------------------------------------------------------------------------
 
 NS_IMETHODIMP
-nsPrefetchNode::OnRedirectResult(bool proceeding) {
-  if (proceeding && mRedirectChannel) mChannel = mRedirectChannel;
+nsPrefetchNode::OnRedirectResult(nsresult status) {
+  if (NS_SUCCEEDED(status) && mRedirectChannel) mChannel = mRedirectChannel;
 
   mRedirectChannel = nullptr;
 
@@ -440,9 +444,7 @@ void nsPrefetchService::DispatchEvent(nsPrefetchNode* node, bool aSuccess) {
       // that we're not allowed to touch. (Our network request happens in the
       // DocGroup of one of the mSources nodes--not necessarily this one).
       RefPtr<AsyncEventDispatcher> dispatcher = new AsyncEventDispatcher(
-          domNode,
-          aSuccess ? NS_LITERAL_STRING("load") : NS_LITERAL_STRING("error"),
-          CanBubble::eNo);
+          domNode, aSuccess ? u"load"_ns : u"error"_ns, CanBubble::eNo);
       dispatcher->RequireNodeInDocument();
       dispatcher->PostDOMEvent();
     }

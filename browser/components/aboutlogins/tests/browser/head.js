@@ -1,20 +1,38 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let { LoginBreaches } = ChromeUtils.import(
-  "resource:///modules/LoginBreaches.jsm"
+let { LoginBreaches } = ChromeUtils.importESModule(
+  "resource:///modules/LoginBreaches.sys.mjs"
 );
-let { RemoteSettings } = ChromeUtils.import(
-  "resource://services-settings/remote-settings.js"
+let { RemoteSettings } = ChromeUtils.importESModule(
+  "resource://services-settings/remote-settings.sys.mjs"
 );
-let { _AboutLogins } = ChromeUtils.import(
-  "resource:///actors/AboutLoginsParent.jsm"
+let { _AboutLogins } = ChromeUtils.importESModule(
+  "resource:///actors/AboutLoginsParent.sys.mjs"
 );
-let { OSKeyStoreTestUtils } = ChromeUtils.import(
-  "resource://testing-common/OSKeyStoreTestUtils.jsm"
+let { OSKeyStoreTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/OSKeyStoreTestUtils.sys.mjs"
 );
-let { LoginTestUtils } = ChromeUtils.import(
-  "resource://testing-common/LoginTestUtils.jsm"
+
+const { OSKeyStore } = ChromeUtils.importESModule(
+  "resource://gre/modules/OSKeyStore.sys.mjs"
+);
+
+let { sinon } = ChromeUtils.importESModule(
+  "resource://testing-common/Sinon.sys.mjs"
+);
+
+// Always pretend OS Auth is enabled in this dir.
+if (OSKeyStoreTestUtils.canTestOSKeyStoreLogin() && OSKeyStore.canReauth()) {
+  // Enable OS reauth so we can test it.
+  sinon.stub(LoginHelper, "getOSAuthEnabled").returns(true);
+  registerCleanupFunction(() => {
+    sinon.restore();
+  });
+}
+
+var { LoginTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/LoginTestUtils.sys.mjs"
 );
 
 let nsLoginInfo = new Components.Constructor(
@@ -53,18 +71,22 @@ let TEST_LOGIN3 = new nsLoginInfo(
 );
 TEST_LOGIN3.QueryInterface(Ci.nsILoginMetaInfo).timePasswordChanged = 123456;
 
+const PASSWORDS_OS_REAUTH_PREF = "signon.management.page.os-auth.optout";
+const CryptoErrors = {
+  USER_CANCELED_PASSWORD: "User canceled primary password entry",
+  ENCRYPTION_FAILURE: "Couldn't encrypt string",
+  INVALID_ARG_ENCRYPT: "Need at least one plaintext to encrypt",
+  INVALID_ARG_DECRYPT: "Need at least one ciphertext to decrypt",
+  DECRYPTION_FAILURE: "Couldn't decrypt string",
+};
+
 async function addLogin(login) {
-  let storageChangedPromised = TestUtils.topicObserved(
-    "passwordmgr-storage-changed",
-    (_, data) => data == "addLogin"
-  );
-  login = Services.logins.addLogin(login);
-  await storageChangedPromised;
+  const result = await Services.logins.addLoginAsync(login);
   registerCleanupFunction(() => {
     let matchData = Cc["@mozilla.org/hash-property-bag;1"].createInstance(
       Ci.nsIWritablePropertyBag2
     );
-    matchData.setPropertyAsAUTF8String("guid", login.guid);
+    matchData.setPropertyAsAUTF8String("guid", result.guid);
 
     let logins = Services.logins.searchLogins(matchData);
     if (!logins.length) {
@@ -76,19 +98,19 @@ async function addLogin(login) {
     // matches the login that it will be removing.
     Services.logins.removeLogin(logins[0]);
   });
-  return login;
+  return result;
 }
 
 let EXPECTED_BREACH = null;
 let EXPECTED_ERROR_MESSAGE = null;
-add_task(async function setup() {
-  const db = await RemoteSettings(LoginBreaches.REMOTE_SETTINGS_COLLECTION).db;
+add_setup(async function setup_head() {
+  const db = RemoteSettings(LoginBreaches.REMOTE_SETTINGS_COLLECTION).db;
   if (EXPECTED_BREACH) {
     await db.create(EXPECTED_BREACH, {
       useRecordId: true,
     });
   }
-  await db.saveLastModified(42);
+  await db.importChanges({}, Date.now());
   if (EXPECTED_BREACH) {
     await RemoteSettings(LoginBreaches.REMOTE_SETTINGS_COLLECTION).emit(
       "sync",
@@ -101,6 +123,12 @@ add_task(async function setup() {
       // Ignore warnings and non-errors.
       return;
     }
+
+    if (msg.errorMessage.includes('Unknown event: ["jsonfile", "load"')) {
+      // Ignore telemetry errors from JSONFile.sys.mjs.
+      return;
+    }
+
     if (
       msg.errorMessage == "Refreshing device list failed." ||
       msg.errorMessage == "Skipping device list refresh; not signed in"
@@ -130,7 +158,7 @@ add_task(async function setup() {
       return;
     }
     if (msg.errorMessage.includes("Can't find profile directory.")) {
-      // Ignore error messages for no profile found in old XULStore.jsm
+      // Ignore error messages for no profile found in old XULStore.sys.mjs
       return;
     }
     if (msg.errorMessage.includes("Error reading typed URL history")) {
@@ -141,40 +169,62 @@ add_task(async function setup() {
     if (msg.errorMessage.includes(EXPECTED_ERROR_MESSAGE)) {
       return;
     }
-    ok(false, msg.message || msg.errorMessage);
+    if (msg.errorMessage == "FILE_FORMAT_ERROR") {
+      // Ignore errors handled by the error message dialog.
+      return;
+    }
+    if (
+      msg.errorMessage ==
+      "NotFoundError: No such JSWindowActor 'MarionetteEvents'"
+    ) {
+      // Ignore MarionetteEvents error (Bug 1730837, Bug 1710079).
+      return;
+    }
+    if (msg.errorMessage.includes(CryptoErrors.DECRYPTION_FAILURE)) {
+      // Ignore decyption errors, we want to test if decryption failed
+      // But we cannot use try / catch in the test to catch this for some reason
+      // Bug 1403081 and Bug 1877720
+      return;
+    }
+    Assert.ok(false, msg.message || msg.errorMessage);
   });
 
   registerCleanupFunction(async () => {
     EXPECTED_ERROR_MESSAGE = null;
     await db.clear();
+    Services.telemetry.clearEvents();
     SpecialPowers.postConsoleSentinel();
   });
 });
 
 /**
- * Waits for the master password prompt and performs an action.
+ * Waits for the primary password prompt and performs an action.
  * @param {string} action Set to "authenticate" to log in or "cancel" to
  *        close the dialog without logging in.
  */
-function waitForMPDialog(action) {
+function waitForMPDialog(action, aWindow = window) {
   const BRAND_BUNDLE = Services.strings.createBundle(
     "chrome://branding/locale/brand.properties"
   );
   const BRAND_FULL_NAME = BRAND_BUNDLE.GetStringFromName("brandFullName");
   let dialogShown = TestUtils.topicObserved("common-dialog-loaded");
-  return dialogShown.then(function([subject]) {
+  return dialogShown.then(function ([subject]) {
     let dialog = subject.Dialog;
     let expected = "Password Required - " + BRAND_FULL_NAME;
-    is(dialog.args.title, expected, "Dialog is the Master Password dialog");
+    Assert.equal(
+      dialog.args.title,
+      expected,
+      "Dialog is the Primary Password dialog"
+    );
     if (action == "authenticate") {
       SpecialPowers.wrap(dialog.ui.password1Textbox).setUserInput(
-        LoginTestUtils.masterPassword.masterPassword
+        LoginTestUtils.primaryPassword.primaryPassword
       );
       dialog.ui.button0.click();
     } else if (action == "cancel") {
       dialog.ui.button1.click();
     }
-    return BrowserTestUtils.waitForEvent(window, "DOMModalDialogClosed");
+    return BrowserTestUtils.waitForEvent(aWindow, "DOMModalDialogClosed");
   });
 }
 
@@ -187,10 +237,10 @@ function waitForMPDialog(action) {
  *        close the dialog without logging in.
  * @returns {Promise} Resolves after the MP dialog has been presented and actioned upon
  */
-function forceAuthTimeoutAndWaitForMPDialog(action) {
-  const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (duplicated from AboutLoginsParent.jsm)
+function forceAuthTimeoutAndWaitForMPDialog(action, aWindow = window) {
+  const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (duplicated from AboutLoginsParent.sys.mjs)
   _AboutLogins._authExpirationTime -= AUTH_TIMEOUT_MS + 1;
-  return waitForMPDialog(action);
+  return waitForMPDialog(action, aWindow);
 }
 
 /**
@@ -202,7 +252,7 @@ function forceAuthTimeoutAndWaitForMPDialog(action) {
  * @returns {Promise} Resolves after the OS auth dialog has been presented
  */
 function forceAuthTimeoutAndWaitForOSKeyStoreLogin({ loginResult }) {
-  const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (duplicated from AboutLoginsParent.jsm)
+  const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (duplicated from AboutLoginsParent.sys.mjs)
   _AboutLogins._authExpirationTime -= AUTH_TIMEOUT_MS + 1;
   return OSKeyStoreTestUtils.waitForOSKeyStoreLogin(loginResult);
 }

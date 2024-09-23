@@ -10,11 +10,11 @@
 #include "FileSystemDirectoryEntry.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
+#include "nsThreadUtils.h"
 
 class nsIGlobalObject;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class FileSystemEntriesCallback;
 
@@ -72,11 +72,11 @@ class GetEntryHelper final : public PromiseNativeHandler {
   void Run();
 
   MOZ_CAN_RUN_SCRIPT
-  virtual void ResolvedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
+  virtual void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
 
-  virtual void RejectedCallback(JSContext* aCx,
-                                JS::Handle<JS::Value> aValue) override;
+  virtual void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                                ErrorResult& aRv) override;
 
  private:
   ~GetEntryHelper();
@@ -113,7 +113,6 @@ class ErrorCallbackHelper {
                    nsresult aError);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_CallbackRunnables_h

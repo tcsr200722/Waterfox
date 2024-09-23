@@ -1,10 +1,10 @@
 #![feature(test)]
-#![deny(warnings, rust_2018_idioms)]
+#![warn(rust_2018_idioms)]
 
 extern crate test;
 
-use test::Bencher;
 use bytes::Bytes;
+use test::Bencher;
 
 #[bench]
 fn deref_unique(b: &mut Bencher) {
@@ -42,7 +42,8 @@ fn deref_static(b: &mut Bencher) {
 
 #[bench]
 fn clone_static(b: &mut Bencher) {
-    let bytes = Bytes::from_static("hello world 1234567890 and have a good byte 0987654321".as_bytes());
+    let bytes =
+        Bytes::from_static("hello world 1234567890 and have a good byte 0987654321".as_bytes());
 
     b.iter(|| {
         for _ in 0..1024 {
@@ -87,6 +88,7 @@ fn from_long_slice(b: &mut Bencher) {
 #[bench]
 fn slice_empty(b: &mut Bencher) {
     b.iter(|| {
+        // `clone` is to convert to ARC
         let b = Bytes::from(vec![17; 1024]).clone();
         for i in 0..1000 {
             test::black_box(b.slice(i % 100..i % 100));

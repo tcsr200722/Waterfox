@@ -7,18 +7,18 @@
 #ifndef ipc_MediaControlIPC_h
 #define ipc_MediaControlIPC_h
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 
-#include "mozilla/dom/ContentMediaController.h"
-#include "mozilla/dom/MediaControlKeysEvent.h"
+#include "mozilla/dom/MediaControllerBinding.h"
+#include "mozilla/dom/MediaControlKeySource.h"
+#include "mozilla/dom/MediaPlaybackStatus.h"
 
 namespace IPC {
 template <>
-struct ParamTraits<mozilla::dom::MediaControlKeysEvent>
+struct ParamTraits<mozilla::dom::MediaControlKey>
     : public ContiguousEnumSerializerInclusive<
-          mozilla::dom::MediaControlKeysEvent,
-          mozilla::dom::MediaControlKeysEvent::ePlay,
-          mozilla::dom::MediaControlKeysEvent::eStop> {};
+          mozilla::dom::MediaControlKey, mozilla::dom::MediaControlKey::Focus,
+          mozilla::dom::MediaControlKey::Stop> {};
 
 template <>
 struct ParamTraits<mozilla::dom::MediaPlaybackState>
@@ -33,6 +33,42 @@ struct ParamTraits<mozilla::dom::MediaAudibleState>
           mozilla::dom::MediaAudibleState,
           mozilla::dom::MediaAudibleState::eInaudible,
           mozilla::dom::MediaAudibleState::eAudible> {};
+
+template <>
+struct ParamTraits<mozilla::dom::SeekDetails> {
+  typedef mozilla::dom::SeekDetails paramType;
+
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mSeekTime);
+    WriteParam(aWriter, aParam.mFastSeek);
+  }
+
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    if (!ReadParam(aReader, &aResult->mSeekTime) ||
+        !ReadParam(aReader, &aResult->mFastSeek)) {
+      return false;
+    }
+    return true;
+  }
+};
+
+template <>
+struct ParamTraits<mozilla::dom::MediaControlAction> {
+  typedef mozilla::dom::MediaControlAction paramType;
+
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mKey);
+    WriteParam(aWriter, aParam.mDetails);
+  }
+
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    if (!ReadParam(aReader, &aResult->mKey) ||
+        !ReadParam(aReader, &aResult->mDetails)) {
+      return false;
+    }
+    return true;
+  }
+};
 
 }  // namespace IPC
 

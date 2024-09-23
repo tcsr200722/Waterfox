@@ -3,6 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Attributes.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/WindowsMessageLoop.h"
 #include "nsAppShell.h"
@@ -20,15 +22,24 @@
 #include "mozilla/Hal.h"
 #include "nsIDOMWakeLockListener.h"
 #include "nsIPowerManagerService.h"
+#include "mozilla/ProfilerLabels.h"
 #include "mozilla/StaticPtr.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
-#include "GeckoProfiler.h"
 #include "nsComponentManagerUtils.h"
 #include "ScreenHelperWin.h"
 #include "HeadlessScreenHelper.h"
 #include "mozilla/widget/ScreenManager.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/NativeNt.h"
+#include "mozilla/WindowsDiagnostics.h"
+#include "mozilla/WindowsProcessMitigations.h"
+
+#include <winternl.h>
+
+#ifdef MOZ_BACKGROUNDTASKS
+#  include "mozilla/BackgroundTasks.h"
+#endif
 
 #if defined(ACCESSIBILITY)
 #  include "mozilla/a11y/Compatibility.h"
@@ -42,56 +53,171 @@ using namespace mozilla::widget;
   MOZ_LOG(gWinWakeLockLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
 static mozilla::LazyLogModule gWinWakeLockLog("WinWakeLock");
 
-// A wake lock listener that disables screen saver when requested by
-// Gecko. For example when we're playing video in a foreground tab we
-// don't want the screen saver to turn on.
+// This wakelock listener is used for Window7 and above.
 class WinWakeLockListener final : public nsIDOMMozWakeLockListener {
  public:
   NS_DECL_ISUPPORTS
+  WinWakeLockListener() { MOZ_ASSERT(XRE_IsParentProcess()); }
 
  private:
-  ~WinWakeLockListener() {}
+  ~WinWakeLockListener() {
+    ReleaseWakelockIfNeeded(PowerRequestDisplayRequired);
+    ReleaseWakelockIfNeeded(PowerRequestExecutionRequired);
+  }
+
+  void SetHandle(HANDLE aHandle, POWER_REQUEST_TYPE aType) {
+    switch (aType) {
+      case PowerRequestDisplayRequired: {
+        if (!aHandle && mDisplayHandle) {
+          CloseHandle(mDisplayHandle);
+        }
+        mDisplayHandle = aHandle;
+        return;
+      }
+      case PowerRequestExecutionRequired: {
+        if (!aHandle && mNonDisplayHandle) {
+          CloseHandle(mNonDisplayHandle);
+        }
+        mNonDisplayHandle = aHandle;
+        return;
+      }
+      default:
+        MOZ_ASSERT_UNREACHABLE("Invalid request type");
+        return;
+    }
+  }
+
+  HANDLE GetHandle(POWER_REQUEST_TYPE aType) const {
+    switch (aType) {
+      case PowerRequestDisplayRequired:
+        return mDisplayHandle;
+      case PowerRequestExecutionRequired:
+        return mNonDisplayHandle;
+      default:
+        MOZ_ASSERT_UNREACHABLE("Invalid request type");
+        return nullptr;
+    }
+  }
+
+  HANDLE CreateHandle(POWER_REQUEST_TYPE aType) {
+    MOZ_ASSERT(!GetHandle(aType));
+    REASON_CONTEXT context = {0};
+    context.Version = POWER_REQUEST_CONTEXT_VERSION;
+    context.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
+    context.Reason.SimpleReasonString = RequestTypeLPWSTR(aType);
+    HANDLE handle = PowerCreateRequest(&context);
+    if (!handle) {
+      WAKE_LOCK_LOG("Failed to create handle for %s, error=%lu",
+                    RequestTypeStr(aType), GetLastError());
+      return nullptr;
+    }
+    SetHandle(handle, aType);
+    return handle;
+  }
+
+  LPWSTR RequestTypeLPWSTR(POWER_REQUEST_TYPE aType) const {
+    switch (aType) {
+      case PowerRequestDisplayRequired:
+        return const_cast<LPWSTR>(L"display request");  // -Wwritable-strings
+      case PowerRequestExecutionRequired:
+        return const_cast<LPWSTR>(
+            L"non-display request");  // -Wwritable-strings
+      default:
+        MOZ_ASSERT_UNREACHABLE("Invalid request type");
+        return const_cast<LPWSTR>(L"unknown");  // -Wwritable-strings
+    }
+  }
+
+  const char* RequestTypeStr(POWER_REQUEST_TYPE aType) const {
+    switch (aType) {
+      case PowerRequestDisplayRequired:
+        return "display request";
+      case PowerRequestExecutionRequired:
+        return "non-display request";
+      default:
+        MOZ_ASSERT_UNREACHABLE("Invalid request type");
+        return "unknown";
+    }
+  }
+
+  void RequestWakelockIfNeeded(POWER_REQUEST_TYPE aType) {
+    if (GetHandle(aType)) {
+      WAKE_LOCK_LOG("Already requested lock for %s", RequestTypeStr(aType));
+      return;
+    }
+
+    WAKE_LOCK_LOG("Prepare a wakelock for %s", RequestTypeStr(aType));
+    HANDLE handle = CreateHandle(aType);
+    if (!handle) {
+      WAKE_LOCK_LOG("Failed due to no handle for %s", RequestTypeStr(aType));
+      return;
+    }
+
+    if (PowerSetRequest(handle, aType)) {
+      WAKE_LOCK_LOG("Requested %s lock", RequestTypeStr(aType));
+    } else {
+      WAKE_LOCK_LOG("Failed to request %s lock, error=%lu",
+                    RequestTypeStr(aType), GetLastError());
+      SetHandle(nullptr, aType);
+    }
+  }
+
+  void ReleaseWakelockIfNeeded(POWER_REQUEST_TYPE aType) {
+    if (!GetHandle(aType)) {
+      WAKE_LOCK_LOG("Already released lock for %s", RequestTypeStr(aType));
+      return;
+    }
+
+    WAKE_LOCK_LOG("Prepare to release wakelock for %s", RequestTypeStr(aType));
+    if (!PowerClearRequest(GetHandle(aType), aType)) {
+      WAKE_LOCK_LOG("Failed to release %s lock, error=%lu",
+                    RequestTypeStr(aType), GetLastError());
+      return;
+    }
+    SetHandle(nullptr, aType);
+    WAKE_LOCK_LOG("Released wakelock for %s", RequestTypeStr(aType));
+  }
 
   NS_IMETHOD Callback(const nsAString& aTopic,
                       const nsAString& aState) override {
-    WAKE_LOCK_LOG("WinWakeLock: topic=%s, state=%s",
-                  NS_ConvertUTF16toUTF8(aTopic).get(),
+    WAKE_LOCK_LOG("topic=%s, state=%s", NS_ConvertUTF16toUTF8(aTopic).get(),
                   NS_ConvertUTF16toUTF8(aState).get());
     if (!aTopic.EqualsASCII("screen") && !aTopic.EqualsASCII("audio-playing") &&
         !aTopic.EqualsASCII("video-playing")) {
       return NS_OK;
     }
 
-    // Check what kind of lock we will require, if both display lock and non
-    // display lock are needed, we would require display lock because it has
-    // higher priority.
-    if (aTopic.EqualsASCII("audio-playing")) {
-      mRequireForNonDisplayLock = aState.EqualsASCII("locked-foreground") ||
-                                  aState.EqualsASCII("locked-background");
-    } else if (aTopic.EqualsASCII("screen") ||
-               aTopic.EqualsASCII("video-playing")) {
-      mRequireForDisplayLock = aState.EqualsASCII("locked-foreground");
+    const bool isNonDisplayLock = aTopic.EqualsASCII("audio-playing");
+    bool requestLock = false;
+    if (isNonDisplayLock) {
+      requestLock = aState.EqualsASCII("locked-foreground") ||
+                    aState.EqualsASCII("locked-background");
+    } else {
+      requestLock = aState.EqualsASCII("locked-foreground");
     }
 
-    if (mRequireForDisplayLock) {
-      WAKE_LOCK_LOG("WinWakeLock: Request display lock");
-      SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_CONTINUOUS);
-    } else if (mRequireForNonDisplayLock) {
-      WAKE_LOCK_LOG("WinWakeLock: Request non-display lock");
-      SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS);
+    if (isNonDisplayLock) {
+      if (requestLock) {
+        RequestWakelockIfNeeded(PowerRequestExecutionRequired);
+      } else {
+        ReleaseWakelockIfNeeded(PowerRequestExecutionRequired);
+      }
     } else {
-      WAKE_LOCK_LOG("WinWakeLock: reset lock");
-      SetThreadExecutionState(ES_CONTINUOUS);
+      if (requestLock) {
+        RequestWakelockIfNeeded(PowerRequestDisplayRequired);
+      } else {
+        ReleaseWakelockIfNeeded(PowerRequestDisplayRequired);
+      }
     }
     return NS_OK;
   }
 
-  bool mRequireForDisplayLock = false;
-  bool mRequireForNonDisplayLock = false;
+  // Handle would only exist when we request wakelock successfully.
+  HANDLE mDisplayHandle = nullptr;
+  HANDLE mNonDisplayHandle = nullptr;
 };
-
 NS_IMPL_ISUPPORTS(WinWakeLockListener, nsIDOMMozWakeLockListener)
-StaticRefPtr<WinWakeLockListener> sWakeLockListener;
+StaticRefPtr<nsIDOMMozWakeLockListener> sWakeLockListener;
 
 static void AddScreenWakeLockListener() {
   nsCOMPtr<nsIPowerManagerService> sPowerManagerService =
@@ -155,10 +281,10 @@ SingleNativeEventPump::AfterProcessNextEvent(nsIThreadInternal* aThread,
 // RegisterWindowMessage values
 // Native event callback message
 const wchar_t* kAppShellGeckoEventId = L"nsAppShell:EventID";
-UINT sAppShellGeckoMsgId;
+UINT sAppShellGeckoMsgId = 0x10001;  // initialize to invalid message ID
 // Taskbar button creation message
 const wchar_t* kTaskbarButtonEventId = L"TaskbarButtonCreated";
-UINT sTaskbarButtonCreatedMsg;
+UINT sTaskbarButtonCreatedMsg = 0x10002;  // initialize to invalid message ID
 
 /* static */
 UINT nsAppShell::GetTaskbarButtonCreatedMessage() {
@@ -182,6 +308,8 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
 /*static*/ LRESULT CALLBACK nsAppShell::EventWindowProc(HWND hwnd, UINT uMsg,
                                                         WPARAM wParam,
                                                         LPARAM lParam) {
+  NativeEventLogger eventLogger("AppShell", hwnd, uMsg, wParam, lParam);
+
   if (uMsg == sAppShellGeckoMsgId) {
     // The app shell might have been destroyed between this message being
     // posted and being executed, so be extra careful.
@@ -194,7 +322,10 @@ static Atomic<size_t, ReleaseAcquire> sOutstandingNativeEventCallbacks;
     --sOutstandingNativeEventCallbacks;
     return TRUE;
   }
-  return DefWindowProc(hwnd, uMsg, wParam, lParam);
+
+  LRESULT ret = DefWindowProc(hwnd, uMsg, wParam, lParam);
+  eventLogger.SetResult(ret, false);
+  return ret;
 }
 
 nsAppShell::~nsAppShell() {
@@ -211,104 +342,12 @@ nsAppShell::~nsAppShell() {
   sOutstandingNativeEventCallbacks = 0;
 }
 
-#if defined(ACCESSIBILITY)
-
-static ULONG gUiaMsg;
-static HHOOK gUiaHook;
-static uint32_t gUiaAttempts;
-static const uint32_t kMaxUiaAttempts = 5;
-
-static void InitUIADetection();
-
-static LRESULT CALLBACK UiaHookProc(int aCode, WPARAM aWParam, LPARAM aLParam) {
-  if (aCode < 0) {
-    return ::CallNextHookEx(nullptr, aCode, aWParam, aLParam);
-  }
-
-  auto cwp = reinterpret_cast<CWPSTRUCT*>(aLParam);
-  if (gUiaMsg && cwp->message == gUiaMsg) {
-    if (gUiaAttempts < kMaxUiaAttempts) {
-      ++gUiaAttempts;
-
-      Maybe<bool> shouldCallNextHook =
-          a11y::Compatibility::OnUIAMessage(cwp->wParam, cwp->lParam);
-      if (shouldCallNextHook.isSome()) {
-        // We've got an instantiator.
-        if (!shouldCallNextHook.value()) {
-          // We're blocking this instantiation. We need to keep this hook set
-          // so that we can catch any future instantiation attempts.
-          return 0;
-        }
-
-        // We're allowing the instantiator to proceed, so this hook is no longer
-        // needed.
-        if (::UnhookWindowsHookEx(gUiaHook)) {
-          gUiaHook = nullptr;
-        }
-      } else {
-        // Our hook might be firing after UIA; let's try reinstalling ourselves.
-        InitUIADetection();
-      }
-    } else {
-      // We've maxed out our attempts. Let's unhook.
-      if (::UnhookWindowsHookEx(gUiaHook)) {
-        gUiaHook = nullptr;
-      }
-    }
-  }
-
-  return ::CallNextHookEx(nullptr, aCode, aWParam, aLParam);
-}
-
-static void InitUIADetection() {
-  if (gUiaHook) {
-    // In this case we want to re-hook so that the hook is always called ahead
-    // of UIA's hook.
-    if (::UnhookWindowsHookEx(gUiaHook)) {
-      gUiaHook = nullptr;
-    }
-  }
-
-  if (!gUiaMsg) {
-    // This is the message that UIA sends to trigger a command. UIA's
-    // CallWndProc looks for this message and then handles the request.
-    // Our hook gets in front of UIA's hook and examines the message first.
-    gUiaMsg = ::RegisterWindowMessageW(L"HOOKUTIL_MSG");
-  }
-
-  if (!gUiaHook) {
-    gUiaHook = ::SetWindowsHookEx(WH_CALLWNDPROC, &UiaHookProc, nullptr,
-                                  ::GetCurrentThreadId());
-  }
-}
-
-#endif  // defined(ACCESSIBILITY)
-
 NS_IMETHODIMP
 nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
                     const char16_t* aData) {
   if (XRE_IsParentProcess()) {
     nsCOMPtr<nsIObserverService> obsServ(
         mozilla::services::GetObserverService());
-
-#if defined(ACCESSIBILITY)
-    if (!strcmp(aTopic, "dll-loaded-main-thread")) {
-      if (a11y::PlatformDisabledState() != a11y::ePlatformIsDisabled &&
-          !gUiaHook) {
-        nsDependentString dllName(aData);
-
-        if (StringEndsWith(dllName, NS_LITERAL_STRING("uiautomationcore.dll"),
-                           nsCaseInsensitiveStringComparator)) {
-          InitUIADetection();
-
-          // Now that we've handled the observer notification, we can remove it
-          obsServ->RemoveObserver(this, "dll-loaded-main-thread");
-        }
-      }
-
-      return NS_OK;
-    }
-#endif  // defined(ACCESSIBILITY)
 
     if (!strcmp(aTopic, "sessionstore-restoring-on-startup")) {
       nsWindow::SetIsRestoringSession(true);
@@ -328,6 +367,215 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
   return nsBaseAppShell::Observe(aSubject, aTopic, aData);
 }
 
+namespace {
+
+// Struct containing information about the user atom table. (See
+// DiagnoseUserAtomTable(), below.)
+struct AtomTableInformation {
+  // Number of atoms in use. (Exactly 0x4000 == 16384, if all are.)
+  UINT in_use = 0;
+  // Number of atoms confirmed not in use.
+  UINT free = 0;
+  // Number of atoms which gave errors when checked.
+  UINT errors = 0;
+
+  // Last atom which gave an unexpected error...
+  UINT lastErrorAtom = ~0u;
+  // ... and the error it gave.
+  WinErrorState lastErrorState;
+};
+
+// Return a summary of the state of the atom table.
+MOZ_NEVER_INLINE static AtomTableInformation DiagnoseUserAtomTable() {
+  // Restore error state on exit, for the sake of automated minidump analyses.
+  auto const _restoreErrState =
+      mozilla::MakeScopeExit([oldErrState = WinErrorState::Get()]() {
+        WinErrorState::Apply(oldErrState);
+      });
+
+  AtomTableInformation retval;
+
+  // Expected error-state on failure-return when the atom is assigned, but not
+  // enough space was provided for the full string.
+  constexpr WinErrorState kBufferTooSmall = {
+      .error = ERROR_INSUFFICIENT_BUFFER,
+      .ntStatus = ((NTSTATUS)0xC0000023),  // == STATUS_BUFFER_TOO_SMALL
+  };
+  // Expected error-state on failure-return when the atom is not assigned.
+  constexpr WinErrorState kInvalidAtom = {
+      .error = ERROR_INVALID_HANDLE,
+      .ntStatus = ((NTSTATUS)STATUS_INVALID_HANDLE),
+  };
+
+  // Iterate over only the dynamic portion of the atom table.
+  for (UINT atom = 0xC000; atom <= 0xFFFF; ++atom) {
+    // The actual atom values are PII. Don't acquire them in their entirety, and
+    // don't keep more information about them than is needed.
+    WCHAR buf[2] = {};
+    // USE OF UNDOCUMENTED BEHAVIOR: The user atom table is shared by message
+    // names, window-class names, and clipboard-format names. Only the last has
+    // a documented getter-mechanism.
+    BOOL const ok = ::GetClipboardFormatNameW(atom, buf, 1);
+    WinErrorState const errState = WinErrorState::Get();
+    if (ok || errState == kBufferTooSmall) {
+      ++retval.in_use;
+    } else if (errState == kInvalidAtom) {
+      ++retval.free;
+    } else {
+      // Unexpected error-state.
+      ++retval.errors;
+      retval.lastErrorAtom = atom;
+      retval.lastErrorState = errState;
+    }
+  }
+
+  return retval;
+}
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+static constexpr int kMaxStepsUser32 = 0x1800;
+static constexpr int kMaxErrorStatesUser32 = 0x200;
+using User32SingleStepData =
+    ModuleSingleStepData<kMaxStepsUser32, kMaxErrorStatesUser32>;
+
+template <typename CallbackToRun, typename PostCollectionCallback>
+WindowsDiagnosticsError CollectUser32SingleStepData(
+    CallbackToRun aCallbackToRun,
+    PostCollectionCallback aPostCollectionCallback) {
+  return CollectModuleSingleStepData<kMaxStepsUser32, kMaxErrorStatesUser32>(
+      L"user32.dll", std::move(aCallbackToRun),
+      std::move(aPostCollectionCallback));
+}
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+}  // namespace
+
+// Collect data for bug 1571516. We don't automatically send up `GetLastError`
+// or `GetLastNtStatus` data for beta/release builds, so extract the relevant
+// error values and store them on the stack, where they can be viewed in
+// minidumps -- in fact, do so after each individual API call. This takes the
+// form of various local variables whose initial character is an underscore,
+// most of which are also marked [[maybe_unused]].
+//
+// We tag this function `[[clang::optnone]]` to prevent the compiler from
+// eliding those values as _actually_ unused, as well as to generally simplify
+// the haruspex's task once the minidumps are in. (As this function should be
+// called at most once per process, the minor performance hit is not a concern.)
+//
+[[clang::optnone]] MOZ_NEVER_INLINE nsresult nsAppShell::InitHiddenWindow() {
+  // note the incoming error-state; this may be relevant to errors we get later
+  auto _initialErr [[maybe_unused]] = WinErrorState::Get();
+  // reset the error-state, to avoid ambiguity below
+  WinErrorState::Clear();
+
+  // Diagnostic variable. Only collected in the event of a failure in one of the
+  // functions that attempts to register an atom.
+  AtomTableInformation _atomTableInfo [[maybe_unused]];
+
+  // Attempt to register the window message. On failure, retain the initial
+  // value of `sAppShellGeckoMsgId`.
+  auto const _msgId = ::RegisterWindowMessageW(kAppShellGeckoEventId);
+  if (_msgId) {
+    sAppShellGeckoMsgId = _msgId;
+  }
+  auto const _sAppShellGeckoMsgId [[maybe_unused]] = sAppShellGeckoMsgId;
+  auto const _rwmErr [[maybe_unused]] = WinErrorState::Get();
+  if (!_msgId) _atomTableInfo = DiagnoseUserAtomTable();
+  NS_ASSERTION(sAppShellGeckoMsgId,
+               "Could not register hidden window event message!");
+
+  mLastNativeEventScheduled = TimeStamp::NowLoRes();
+
+  WNDCLASSW wc;
+  HINSTANCE const module = GetModuleHandle(nullptr);
+
+  constexpr const wchar_t* kWindowClass = L"nsAppShell:EventWindowClass";
+  // (Undocumented behavior note: on success, this will specifically be the
+  // window-class atom. We don't rely on this.)
+  BOOL const _gciwRet = ::GetClassInfoW(module, kWindowClass, &wc);
+  auto const _gciwErr [[maybe_unused]] = WinErrorState::Get();
+  WinErrorState::Clear();
+
+  WinErrorState _rcErr [[maybe_unused]];
+  if (!_gciwRet) {
+    wc.style = 0;
+    wc.lpfnWndProc = EventWindowProc;
+    wc.cbClsExtra = 0;
+    wc.cbWndExtra = 0;
+    wc.hInstance = module;
+    wc.hIcon = nullptr;
+    wc.hCursor = nullptr;
+    wc.hbrBackground = (HBRUSH) nullptr;
+    wc.lpszMenuName = (LPCWSTR) nullptr;
+    wc.lpszClassName = kWindowClass;
+
+    ATOM _windowClassAtom = ::RegisterClassW(&wc);
+    _rcErr = WinErrorState::Get();
+
+    if (!_windowClassAtom) _atomTableInfo = DiagnoseUserAtomTable();
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+    if (!_windowClassAtom) {
+      // Retry with single-step data collection
+      WindowsDiagnosticsError rv = CollectUser32SingleStepData(
+          [&wc, &_windowClassAtom]() {
+            _windowClassAtom = ::RegisterClassW(&wc);
+          },
+          [&_windowClassAtom](const User32SingleStepData& aData) {
+            // Crashing here gives access to the single step data on stack
+            MOZ_DIAGNOSTIC_ASSERT(
+                _windowClassAtom,
+                "RegisterClassW for EventWindowClass failed twice");
+          });
+      auto const _cssdErr [[maybe_unused]] = WinErrorState::Get();
+      MOZ_DIAGNOSTIC_ASSERT(
+          rv == WindowsDiagnosticsError::None,
+          "Failed to collect single step data for RegisterClassW");
+      // If we reach this point then somehow the single-stepped call succeeded
+      // and we can proceed
+    }
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+    MOZ_DIAGNOSTIC_ASSERT(_windowClassAtom,
+                          "RegisterClassW for EventWindowClass failed");
+    WinErrorState::Clear();
+  }
+
+  mEventWnd = CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0,
+                            10, 10, HWND_MESSAGE, nullptr, module, nullptr);
+  auto const _cwErr [[maybe_unused]] = WinErrorState::Get();
+
+#if defined(MOZ_DIAGNOSTIC_ASSERT_ENABLED) && defined(_M_X64)
+  if (!mEventWnd) {
+    // Retry with single-step data collection
+    HWND eventWnd{};
+    WindowsDiagnosticsError rv = CollectUser32SingleStepData(
+        [module, &eventWnd]() {
+          eventWnd =
+              CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0,
+                            10, 10, HWND_MESSAGE, nullptr, module, nullptr);
+        },
+        [&eventWnd](const User32SingleStepData& aData) {
+          // Crashing here gives access to the single step data on stack
+          MOZ_DIAGNOSTIC_ASSERT(eventWnd,
+                                "CreateWindowW for EventWindow failed twice");
+        });
+    auto const _cssdErr [[maybe_unused]] = WinErrorState::Get();
+    MOZ_DIAGNOSTIC_ASSERT(
+        rv == WindowsDiagnosticsError::None,
+        "Failed to collect single step data for CreateWindowW");
+    // If we reach this point then somehow the single-stepped call succeeded and
+    // we can proceed
+    mEventWnd = eventWnd;
+  }
+#endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED && _M_X64
+
+  MOZ_DIAGNOSTIC_ASSERT(mEventWnd, "CreateWindowW for EventWindow failed");
+  NS_ENSURE_STATE(mEventWnd);
+
+  return NS_OK;
+}
+
 nsresult nsAppShell::Init() {
   LSPAnnotate();
 
@@ -344,34 +592,10 @@ nsresult nsAppShell::Init() {
   // we are processing native events. Disabling this is required for win32k
   // syscall lockdown.
   if (XRE_UseNativeEventProcessing()) {
-    sAppShellGeckoMsgId = ::RegisterWindowMessageW(kAppShellGeckoEventId);
-    NS_ASSERTION(sAppShellGeckoMsgId,
-                 "Could not register hidden window event message!");
-
-    mLastNativeEventScheduled = TimeStamp::NowLoRes();
-
-    WNDCLASSW wc;
-    HINSTANCE module = GetModuleHandle(nullptr);
-
-    const wchar_t* const kWindowClass = L"nsAppShell:EventWindowClass";
-    if (!GetClassInfoW(module, kWindowClass, &wc)) {
-      wc.style = 0;
-      wc.lpfnWndProc = EventWindowProc;
-      wc.cbClsExtra = 0;
-      wc.cbWndExtra = 0;
-      wc.hInstance = module;
-      wc.hIcon = nullptr;
-      wc.hCursor = nullptr;
-      wc.hbrBackground = (HBRUSH) nullptr;
-      wc.lpszMenuName = (LPCWSTR) nullptr;
-      wc.lpszClassName = kWindowClass;
-      RegisterClassW(&wc);
+    if (nsresult rv = this->InitHiddenWindow(); NS_FAILED(rv)) {
+      return rv;
     }
-
-    mEventWnd = CreateWindowW(kWindowClass, L"nsAppShell:EventWindow", 0, 0, 0,
-                              10, 10, HWND_MESSAGE, nullptr, module, nullptr);
-    NS_ENSURE_STATE(mEventWnd);
-  } else if (XRE_IsContentProcess()) {
+  } else if (XRE_IsContentProcess() && !IsWin32kLockedDown()) {
     // We're not generally processing native events, but still using GDI and we
     // still have some internal windows, e.g. from calling CoInitializeEx.
     // So we use a class that will do a single event pump where previously we
@@ -399,14 +623,10 @@ nsresult nsAppShell::Init() {
 
     obsServ->AddObserver(this, "sessionstore-restoring-on-startup", false);
     obsServ->AddObserver(this, "sessionstore-windows-restored", false);
+  }
 
-#if defined(ACCESSIBILITY)
-    if (::GetModuleHandleW(L"uiautomationcore.dll")) {
-      InitUIADetection();
-    } else {
-      obsServ->AddObserver(this, "dll-loaded-main-thread", false);
-    }
-#endif  // defined(ACCESSIBILITY)
+  if (!WinUtils::GetTimezoneName(mTimezoneName)) {
+    NS_WARNING("Unable to get system timezone name, timezone may be invalid\n");
   }
 
   return nsBaseAppShell::Init();
@@ -414,41 +634,35 @@ nsresult nsAppShell::Init() {
 
 NS_IMETHODIMP
 nsAppShell::Run(void) {
-  // Content processes initialize audio later through PContent using audio
-  // tray id information pulled from the browser process AudioSession. This
-  // way the two share a single volume control.
-  // Note StopAudioSession() is called from nsAppRunner.cpp after xpcom is torn
-  // down to insure the browser shuts down after child processes.
+  bool wantAudio = true;
   if (XRE_IsParentProcess()) {
-    mozilla::widget::StartAudioSession();
-  }
+#ifdef MOZ_BACKGROUNDTASKS
+    if (BackgroundTasks::IsBackgroundTaskMode()) {
+      wantAudio = false;
+    }
+#endif
+    if (MOZ_LIKELY(wantAudio)) {
+      mozilla::widget::StartAudioSession();
+    }
 
-  // Add an observer that disables the screen saver when requested by Gecko.
-  // For example when we're playing video in the foreground tab.
-  AddScreenWakeLockListener();
+    // Add an observer that disables the screen saver when requested by Gecko.
+    // For example when we're playing video in the foreground tab. Whole firefox
+    // only needs one wakelock instance, so we would only create one listener in
+    // chrome process to prevent requesting unnecessary wakelock.
+    AddScreenWakeLockListener();
+  }
 
   nsresult rv = nsBaseAppShell::Run();
 
-  RemoveScreenWakeLockListener();
-
-  return rv;
-}
-
-NS_IMETHODIMP
-nsAppShell::Exit(void) {
-#if defined(ACCESSIBILITY)
   if (XRE_IsParentProcess()) {
-    nsCOMPtr<nsIObserverService> obsServ(
-        mozilla::services::GetObserverService());
-    obsServ->RemoveObserver(this, "dll-loaded-main-thread");
+    RemoveScreenWakeLockListener();
 
-    if (gUiaHook && ::UnhookWindowsHookEx(gUiaHook)) {
-      gUiaHook = nullptr;
+    if (MOZ_LIKELY(wantAudio)) {
+      mozilla::widget::StopAudioSession();
     }
   }
-#endif  // defined(ACCESSIBILITY)
 
-  return nsBaseAppShell::Exit();
+  return rv;
 }
 
 void nsAppShell::DoProcessMoreGeckoEvents() {
@@ -507,7 +721,6 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
 
   do {
     MSG msg;
-    bool uiMessage = false;
 
     // For avoiding deadlock between our process and plugin process by
     // mouse wheel messages, we're handling actually when we receive one of
@@ -521,15 +734,10 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
                                          MOZ_WM_MOUSEWHEEL_LAST, PM_REMOVE);
       NS_ASSERTION(gotMessage,
                    "waiting internal wheel message, but it has not come");
-      uiMessage = gotMessage;
     }
 
     if (!gotMessage) {
       gotMessage = WinUtils::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE);
-      uiMessage =
-          (msg.message >= WM_KEYFIRST && msg.message <= WM_IME_KEYLAST) ||
-          (msg.message >= NS_WM_IMEFIRST && msg.message <= NS_WM_IMELAST) ||
-          (msg.message >= WM_MOUSEFIRST && msg.message <= WM_MOUSELAST);
     }
 
     if (gotMessage) {
@@ -558,6 +766,24 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
           continue;
         }
 #endif
+
+        // Windows documentation suggets that WM_SETTINGSCHANGE is the message
+        // to watch for timezone changes, but experimentation showed that it
+        // doesn't fire on changing the timezone, but that WM_TIMECHANGE does,
+        // even if there's no immediate effect on the clock (e.g., changing
+        // from Pacific Daylight at UTC-7 to Arizona at UTC-7).
+        if (msg.message == WM_TIMECHANGE) {
+          // The message may not give us sufficient information to determine
+          // if the timezone changed, so keep track of it ourselves.
+          wchar_t systemTimezone[128];
+          bool getSystemTimeSucceeded =
+              WinUtils::GetTimezoneName(systemTimezone);
+          if (getSystemTimeSucceeded && wcscmp(systemTimezone, mTimezoneName)) {
+            nsBaseAppShell::OnSystemTimezoneChange();
+
+            wcscpy_s(mTimezoneName, 128, systemTimezone);
+          }
+        }
 
         ::TranslateMessage(&msg);
         ::DispatchMessageW(&msg);

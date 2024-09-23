@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import mapExpression from "../mapExpression";
 import { format } from "prettier";
 
@@ -89,7 +87,7 @@ describe("mapOriginalExpression", () => {
       }
     );
     expect(generatedExpression).toEqual(
-      "window.thing = function fn() {\n  var a;\n  a;\n  _b;\n};\n\n_a;\n_b;"
+      "window.thing = function fn() {\n  var a;\n  a;\n  _b;\n};\n_a;\n_b;"
     );
   });
 });

@@ -4,12 +4,9 @@
 
 "use strict";
 
-const Services = require("Services");
-
 const {
   AUDIT,
   ENABLE,
-  DISABLE,
   RESET,
   SELECT,
   HIGHLIGHT,
@@ -20,9 +17,10 @@ const {
   UPDATE_DETAILS,
   PREF_KEYS,
   PREFS,
-} = require("devtools/client/accessibility/constants");
+  UPDATE_DISPLAY_TABBING_ORDER,
+} = require("resource://devtools/client/accessibility/constants.js");
 
-const TreeView = require("devtools/client/shared/components/tree/TreeView");
+const TreeView = require("resource://devtools/client/shared/components/tree/TreeView.js");
 
 /**
  * Initial state definition
@@ -39,6 +37,7 @@ function getInitialState() {
       PREF_KEYS[PREFS.SCROLL_INTO_VIEW],
       false
     ),
+    tabbingOrderDisplayed: false,
     supports: {},
   };
 }
@@ -50,8 +49,6 @@ function ui(state = getInitialState(), action) {
   switch (action.type) {
     case ENABLE:
       return onToggle(state, action, true);
-    case DISABLE:
-      return onToggle(state, action, false);
     case UPDATE_CAN_BE_DISABLED:
       return onCanBeDisabledChange(state, action);
     case UPDATE_CAN_BE_ENABLED:
@@ -70,6 +67,8 @@ function ui(state = getInitialState(), action) {
       return onSelect(state, action);
     case RESET:
       return onReset(state, action);
+    case UPDATE_DISPLAY_TABBING_ORDER:
+      return onUpdateDisplayTabbingOrder(state, action);
     default:
       return state;
   }
@@ -204,6 +203,15 @@ function onToggle(state, { error }, enabled) {
   }
 
   return Object.assign({}, state, { enabled });
+}
+
+function onUpdateDisplayTabbingOrder(state, { error, tabbingOrderDisplayed }) {
+  if (error) {
+    console.warn("Error updating displaying tabbing order: ", error);
+    return state;
+  }
+
+  return Object.assign({}, state, { tabbingOrderDisplayed });
 }
 
 exports.ui = ui;

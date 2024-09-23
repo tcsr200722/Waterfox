@@ -1,6 +1,9 @@
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const ReferrerInfo = Components.Constructor(
   "@mozilla.org/referrer-info;1",
@@ -34,8 +37,9 @@ function imageHandler(metadata, response) {
   response.setHeader("Cache-Control", "max-age=10000", false);
   response.setStatusLine(metadata.httpVersion, 200, "OK");
   response.setHeader("Content-Type", "image/png", false);
-  var body =
-    "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAEUlEQVQImWP4z8AAQTAamQkAhpcI+DeMzFcAAAAASUVORK5CYII=";
+  var body = atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAEUlEQVQImWP4z8AAQTAamQkAhpcI+DeMzFcAAAAASUVORK5CYII="
+  );
   response.bodyOutputStream.write(body, body.length);
 }
 
@@ -46,7 +50,7 @@ var gImgPath = "http://localhost:" + server.identity.primaryPort + "/image.png";
 
 function setup_chan(path, isPrivate, callback) {
   var uri = NetUtil.newURI(gImgPath);
-  var securityFlags = Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL;
+  var securityFlags = Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL;
   var principal = Services.scriptSecurityManager.createContentPrincipal(uri, {
     privateBrowsingId: isPrivate ? 1 : 0,
   });
@@ -114,10 +118,10 @@ function run_loadImage_tests() {
   function observer() {
     Services.obs.removeObserver(observer, "cacheservice:empty-cache");
     gHits = 0;
-    loadImage(false, function() {
-      loadImage(false, function() {
-        loadImage(true, function() {
-          loadImage(true, function() {
+    loadImage(false, function () {
+      loadImage(false, function () {
+        loadImage(true, function () {
+          loadImage(true, function () {
             Assert.equal(gHits, 2);
             server.stop(do_test_finished);
           });
@@ -126,6 +130,10 @@ function run_loadImage_tests() {
     });
   }
 
+  for (let loader of [gPublicLoader, gPrivateLoader]) {
+    loader.QueryInterface(Ci.imgICache).clearCache(true);
+    loader.QueryInterface(Ci.imgICache).clearCache(false);
+  }
   Services.obs.addObserver(observer, "cacheservice:empty-cache");
   let cs = Services.cache2;
   cs.clear();
@@ -149,10 +157,10 @@ function run_test() {
   // and load the same image, and do that a second time to ensure a cache
   // read. In total, we should cause two separate http responses to occur,
   // since the private channels shouldn't be able to use the public cache.
-  setup_chan("/image.png", false, function() {
-    setup_chan("/image.png", false, function() {
-      setup_chan("/image.png", true, function() {
-        setup_chan("/image.png", true, function() {
+  setup_chan("/image.png", false, function () {
+    setup_chan("/image.png", false, function () {
+      setup_chan("/image.png", true, function () {
+        setup_chan("/image.png", true, function () {
           Assert.equal(gHits, 2);
           run_loadImage_tests();
         });

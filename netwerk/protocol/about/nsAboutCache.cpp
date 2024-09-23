@@ -21,6 +21,8 @@
 
 #include "nsThreadUtils.h"
 
+#include "mozilla/Components.h"
+
 using namespace mozilla::net;
 
 NS_IMPL_ISUPPORTS(nsAboutCache, nsIAboutModule)
@@ -49,12 +51,11 @@ nsresult nsAboutCache::Channel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
   mCancel = false;
 
   nsCOMPtr<nsIInputStream> inputStream;
-  rv = NS_NewPipe(getter_AddRefs(inputStream), getter_AddRefs(mStream), 16384,
-                  (uint32_t)-1,
-                  true,  // non-blocking input
-                  false  // blocking output
+  NS_NewPipe(getter_AddRefs(inputStream), getter_AddRefs(mStream), 16384,
+             (uint32_t)-1,
+             true,  // non-blocking input
+             false  // blocking output
   );
-  if (NS_FAILED(rv)) return rv;
 
   nsAutoCString storageName;
   rv = ParseURI(aURI, storageName);
@@ -63,9 +64,8 @@ nsresult nsAboutCache::Channel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
   mOverview = storageName.IsEmpty();
   if (mOverview) {
     // ...and visit all we can
-    mStorageList.AppendElement(NS_LITERAL_CSTRING("memory"));
-    mStorageList.AppendElement(NS_LITERAL_CSTRING("disk"));
-    mStorageList.AppendElement(NS_LITERAL_CSTRING("appcache"));
+    mStorageList.AppendElement("memory"_ns);
+    mStorageList.AppendElement("disk"_ns);
   } else {
     // ...and visit just the specified storage, entries will output too
     mStorageList.AppendElement(storageName);
@@ -74,9 +74,9 @@ nsresult nsAboutCache::Channel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
   // The entries header is added on encounter of the first entry
   mEntriesHeaderAdded = false;
 
-  rv = NS_NewInputStreamChannelInternal(
-      getter_AddRefs(mChannel), aURI, inputStream.forget(),
-      NS_LITERAL_CSTRING("text/html"), NS_LITERAL_CSTRING("utf-8"), aLoadInfo);
+  rv = NS_NewInputStreamChannelInternal(getter_AddRefs(mChannel), aURI,
+                                        inputStream.forget(), "text/html"_ns,
+                                        "utf-8"_ns, aLoadInfo);
   if (NS_FAILED(rv)) return rv;
 
   mBuffer.AssignLiteral(
@@ -85,26 +85,24 @@ nsresult nsAboutCache::Channel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
       "<head>\n"
       "  <title>Network Cache Storage Information</title>\n"
       "  <meta charset=\"utf-8\">\n"
+      "  <meta name=\"color-scheme\" content=\"light dark\">\n"
       "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src "
       "chrome:; object-src 'none'\"/>\n"
-      "  <link rel=\"stylesheet\" href=\"chrome://global/skin/about.css\"/>\n"
+      "  <link rel=\"stylesheet\" "
+      "href=\"chrome://global/skin/in-content/info-pages.css\"/>\n"
       "  <link rel=\"stylesheet\" "
       "href=\"chrome://global/skin/aboutCache.css\"/>\n"
       "</head>\n"
       "<body class=\"aboutPageWideContainer\">\n"
       "<h1>Information about the Network Cache Storage Service</h1>\n");
 
-  // Add the context switch controls
-  mBuffer.AppendLiteral(
-      "<label><input id='priv' type='checkbox'/> Private</label>\n"
-      "<label><input id='anon' type='checkbox'/> Anonymous</label>\n");
-  mBuffer.AppendLiteral(
-      "<label><input id='submit' type='button' value='Update'/></label>\n");
-
   if (!mOverview) {
-    mBuffer.AppendLiteral("<a href=\"about:cache?storage=&amp;context=");
-    nsAppendEscapedHTML(mContextString, mBuffer);
-    mBuffer.AppendLiteral("\">Back to overview</a>");
+    mBuffer.AppendLiteral(
+        "<a href=\"about:cache?storage=\">Back to overview</a>\n");
+    mBuffer.AppendLiteral(
+        "<p id=\"explanation-dataSize\">Data sizes refer to the size of the "
+        "response body and do not reflect the amount of disk space that the "
+        "file occupies.</p>\n");
   }
 
   rv = FlushBuffer();
@@ -126,7 +124,7 @@ NS_IMETHODIMP nsAboutCache::Channel::AsyncOpen(nsIStreamListener* aListener) {
   rv = VisitNextStorage();
   if (NS_FAILED(rv)) return rv;
 
-  rv = NS_MaybeOpenChannelUsingAsyncOpen(mChannel, aListener);
+  rv = mChannel->AsyncOpen(aListener);
   if (NS_FAILED(rv)) return rv;
 
   return NS_OK;
@@ -146,8 +144,6 @@ nsresult nsAboutCache::Channel::ParseURI(nsIURI* uri, nsACString& storage) {
   rv = uri->GetPathQueryRef(path);
   if (NS_FAILED(rv)) return rv;
 
-  mContextString.Truncate();
-  mLoadInfo = CacheFileUtils::ParseKey(NS_LITERAL_CSTRING(""));
   storage.Truncate();
 
   nsACString::const_iterator start, valueStart, end;
@@ -155,22 +151,11 @@ nsresult nsAboutCache::Channel::ParseURI(nsIURI* uri, nsACString& storage) {
   path.EndReading(end);
 
   valueStart = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("?storage="), start, valueStart)) {
+  if (!FindInReadable("?storage="_ns, start, valueStart)) {
     return NS_OK;
   }
 
-  nsACString::const_iterator storageNameBegin = valueStart;
-
-  start = valueStart;
-  valueStart = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("&context="), start, valueStart))
-    start = end;
-
-  nsACString::const_iterator storageNameEnd = start;
-
-  mContextString = Substring(valueStart, end);
-  mLoadInfo = CacheFileUtils::ParseKey(mContextString);
-  storage.Assign(Substring(storageNameBegin, storageNameEnd));
+  storage.Assign(Substring(valueStart, end));
 
   return NS_OK;
 }
@@ -195,19 +180,11 @@ void nsAboutCache::Channel::FireVisitStorage() {
 
   rv = VisitStorage(mStorageName);
   if (NS_FAILED(rv)) {
-    if (mLoadInfo) {
-      nsAutoCString escaped;
-      nsAppendEscapedHTML(mStorageName, escaped);
-      mBuffer.Append(nsPrintfCString(
-          "<p>Unrecognized storage name '%s' in about:cache URL</p>",
-          escaped.get()));
-    } else {
-      nsAutoCString escaped;
-      nsAppendEscapedHTML(mContextString, escaped);
-      mBuffer.Append(nsPrintfCString(
-          "<p>Unrecognized context key '%s' in about:cache URL</p>",
-          escaped.get()));
-    }
+    nsAutoCString escaped;
+    nsAppendEscapedHTML(mStorageName, escaped);
+    mBuffer.Append(nsPrintfCString(
+        "<p>Unrecognized storage name '%s' in about:cache URL</p>",
+        escaped.get()));
 
     rv = FlushBuffer();
     if (NS_FAILED(rv)) {
@@ -223,7 +200,7 @@ void nsAboutCache::Channel::FireVisitStorage() {
 nsresult nsAboutCache::Channel::VisitStorage(nsACString const& storageName) {
   nsresult rv;
 
-  rv = GetStorage(storageName, mLoadInfo, getter_AddRefs(mStorage));
+  rv = GetStorage(storageName, nullptr, getter_AddRefs(mStorage));
   if (NS_FAILED(rv)) return rv;
 
   rv = mStorage->AsyncVisitStorage(this, !mOverview);
@@ -238,20 +215,16 @@ nsresult nsAboutCache::GetStorage(nsACString const& storageName,
                                   nsICacheStorage** storage) {
   nsresult rv;
 
-  nsCOMPtr<nsICacheStorageService> cacheService =
-      do_GetService("@mozilla.org/netwerk/cache-storage-service;1", &rv);
+  nsCOMPtr<nsICacheStorageService> cacheService;
+  cacheService = mozilla::components::CacheStorage::Service(&rv);
   if (NS_FAILED(rv)) return rv;
 
   nsCOMPtr<nsICacheStorage> cacheStorage;
   if (storageName == "disk") {
-    rv = cacheService->DiskCacheStorage(loadInfo, false,
-                                        getter_AddRefs(cacheStorage));
+    rv = cacheService->DiskCacheStorage(loadInfo, getter_AddRefs(cacheStorage));
   } else if (storageName == "memory") {
     rv = cacheService->MemoryCacheStorage(loadInfo,
                                           getter_AddRefs(cacheStorage));
-  } else if (storageName == "appcache") {
-    rv = cacheService->AppCacheStorage(loadInfo, nullptr,
-                                       getter_AddRefs(cacheStorage));
   } else {
     rv = NS_ERROR_UNEXPECTED;
   }
@@ -329,12 +302,10 @@ nsAboutCache::Channel::OnCacheStorageInfo(uint32_t aEntryCount,
     if (aEntryCount != 0) {  // Add the "List Cache Entries" link
       mBuffer.AppendLiteral(
           "  <tr>\n"
-          "    <th><a href=\"about:cache?storage=");
+          "    <td colspan=\"2\"><a href=\"about:cache?storage=");
       nsAppendEscapedHTML(mStorageName, mBuffer);
-      mBuffer.AppendLiteral("&amp;context=");
-      nsAppendEscapedHTML(mContextString, mBuffer);
       mBuffer.AppendLiteral(
-          "\">List Cache Entries</a></th>\n"
+          "\">List Cache Entries</a></td>\n"
           "  </tr>\n");
     }
   }
@@ -360,12 +331,10 @@ nsAboutCache::Channel::OnCacheStorageInfo(uint32_t aEntryCount,
 }
 
 NS_IMETHODIMP
-nsAboutCache::Channel::OnCacheEntryInfo(nsIURI* aURI,
-                                        const nsACString& aIdEnhance,
-                                        int64_t aDataSize, int32_t aFetchCount,
-                                        uint32_t aLastModified,
-                                        uint32_t aExpirationTime, bool aPinned,
-                                        nsILoadContextInfo* aInfo) {
+nsAboutCache::Channel::OnCacheEntryInfo(
+    nsIURI* aURI, const nsACString& aIdEnhance, int64_t aDataSize,
+    int64_t aAltDataSize, uint32_t aFetchCount, uint32_t aLastModified,
+    uint32_t aExpirationTime, bool aPinned, nsILoadContextInfo* aInfo) {
   // We need mStream for this
   if (!mStream || mCancel) {
     // Returning a failure from this callback stops the iteration
@@ -379,6 +348,7 @@ nsAboutCache::Channel::OnCacheEntryInfo(nsIURI* aURI,
         "  <colgroup>\n"
         "   <col id=\"col-key\">\n"
         "   <col id=\"col-dataSize\">\n"
+        "   <col id=\"col-altDataSize\">\n"
         "   <col id=\"col-fetchCount\">\n"
         "   <col id=\"col-lastModified\">\n"
         "   <col id=\"col-expires\">\n"
@@ -388,6 +358,7 @@ nsAboutCache::Channel::OnCacheEntryInfo(nsIURI* aURI,
         "    <tr>\n"
         "      <th>Key</th>\n"
         "      <th>Data size</th>\n"
+        "      <th>Alternative Data size</th>\n"
         "      <th>Fetch count</th>\n"
         "      <th>Last Modifed</th>\n"
         "      <th>Expires</th>\n"
@@ -403,8 +374,10 @@ nsAboutCache::Channel::OnCacheEntryInfo(nsIURI* aURI,
   url.AssignLiteral("about:cache-entry?storage=");
   nsAppendEscapedHTML(mStorageName, url);
 
+  nsAutoCString context;
+  CacheFileUtils::AppendKeyPrefix(aInfo, context);
   url.AppendLiteral("&amp;context=");
-  nsAppendEscapedHTML(mContextString, url);
+  nsAppendEscapedHTML(context, url);
 
   url.AppendLiteral("&amp;eid=");
   nsAppendEscapedHTML(aIdEnhance, url);
@@ -428,11 +401,26 @@ nsAboutCache::Channel::OnCacheEntryInfo(nsIURI* aURI,
     mBuffer.Append(':');
   }
   mBuffer.Append(escapedCacheURI);
-  mBuffer.AppendLiteral("</a></td>\n");
+  mBuffer.AppendLiteral("</a>");
+
+  if (!context.IsEmpty()) {
+    mBuffer.AppendLiteral("<br><span title=\"Context separation key\">");
+    nsAutoCString escapedContext;
+    nsAppendEscapedHTML(context, escapedContext);
+    mBuffer.Append(escapedContext);
+    mBuffer.AppendLiteral("</span>");
+  }
+
+  mBuffer.AppendLiteral("</td>\n");
 
   // Content length
   mBuffer.AppendLiteral("    <td>");
   mBuffer.AppendInt(aDataSize);
+  mBuffer.AppendLiteral(" bytes</td>\n");
+
+  // Length of alternative content
+  mBuffer.AppendLiteral("    <td>");
+  mBuffer.AppendInt(aAltDataSize);
   mBuffer.AppendLiteral(" bytes</td>\n");
 
   // Number of accesses
@@ -506,8 +494,6 @@ nsAboutCache::Channel::OnCacheEntryVisitCompleted() {
   // We are done!
   mBuffer.AppendLiteral(
       "</body>\n"
-      "<script src=\"chrome://global/content/aboutCache.js\">"
-      "</script>\n"
       "</html>\n");
   nsresult rv = FlushBuffer();
   if (NS_FAILED(rv)) {
@@ -534,15 +520,20 @@ nsresult nsAboutCache::Channel::FlushBuffer() {
 
 NS_IMETHODIMP
 nsAboutCache::GetURIFlags(nsIURI* aURI, uint32_t* result) {
-  *result = nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT;
+  *result = nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+            nsIAboutModule::IS_SECURE_CHROME_UI;
   return NS_OK;
 }
 
 // static
-nsresult nsAboutCache::Create(nsISupports* aOuter, REFNSIID aIID,
-                              void** aResult) {
+nsresult nsAboutCache::Create(REFNSIID aIID, void** aResult) {
   RefPtr<nsAboutCache> about = new nsAboutCache();
   return about->QueryInterface(aIID, aResult);
+}
+
+NS_IMETHODIMP
+nsAboutCache::GetChromeURI(nsIURI* aURI, nsIURI** chromeURI) {
+  return NS_ERROR_ILLEGAL_VALUE;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

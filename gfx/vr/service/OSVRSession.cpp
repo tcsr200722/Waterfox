@@ -197,8 +197,7 @@ mozilla::gfx::VRFieldOfView SetFromTanRadians(double left, double right,
 }
 
 OSVRSession::OSVRSession()
-    : VRSession(),
-      mRuntimeLoaded(false),
+    : mRuntimeLoaded(false),
       mOSVRInitialized(false),
       mClientContextInitialized(false),
       mDisplayConfigInitialized(false),
@@ -210,8 +209,11 @@ OSVRSession::~OSVRSession() { Shutdown(); }
 
 bool OSVRSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
                              bool aDetectRuntimesOnly) {
-  if (!StaticPrefs::dom_vr_enabled() ||
-      !StaticPrefs::dom_vr_osvr_enabled_AtStartup()) {
+  if (StaticPrefs::dom_vr_puppet_enabled()) {
+    // Ensure that tests using the VR Puppet do not find real hardware
+    return false;
+  }
+  if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_osvr_enabled()) {
     return false;
   }
   if (mOSVRInitialized) {
@@ -345,17 +347,19 @@ void OSVRSession::InitializeDisplay() {
 
 bool OSVRSession::InitState(mozilla::gfx::VRSystemState& aSystemState) {
   VRDisplayState& state = aSystemState.displayState;
-  strncpy(state.displayName, "OSVR HMD", kVRDisplayNameMaxLen);
+  strncpy(state.displayName.data(), "OSVR HMD", kVRDisplayNameMaxLen);
   state.eightCC = GFX_VR_EIGHTCC('O', 'S', 'V', 'R', ' ', ' ', ' ', ' ');
   state.isConnected = true;
   state.isMounted = false;
-  state.capabilityFlags = (VRDisplayCapabilityFlags)(
-      (int)VRDisplayCapabilityFlags::Cap_None |
-      (int)VRDisplayCapabilityFlags::Cap_Orientation |
-      (int)VRDisplayCapabilityFlags::Cap_Position |
-      (int)VRDisplayCapabilityFlags::Cap_External |
-      (int)VRDisplayCapabilityFlags::Cap_Present |
-      (int)VRDisplayCapabilityFlags::Cap_ImmersiveVR);
+  state.capabilityFlags =
+      (VRDisplayCapabilityFlags)((int)VRDisplayCapabilityFlags::Cap_None |
+                                 (int)
+                                     VRDisplayCapabilityFlags::Cap_Orientation |
+                                 (int)VRDisplayCapabilityFlags::Cap_Position |
+                                 (int)VRDisplayCapabilityFlags::Cap_External |
+                                 (int)VRDisplayCapabilityFlags::Cap_Present |
+                                 (int)
+                                     VRDisplayCapabilityFlags::Cap_ImmersiveVR);
   state.blendMode = VRDisplayBlendMode::Opaque;
   state.reportsDroppedFrames = false;
 
@@ -409,9 +413,10 @@ bool OSVRSession::InitState(mozilla::gfx::VRSystemState& aSystemState) {
 
   // default to an identity quaternion
   VRHMDSensorState& sensorState = aSystemState.sensorState;
-  sensorState.flags = (VRDisplayCapabilityFlags)(
-      (int)VRDisplayCapabilityFlags::Cap_Orientation |
-      (int)VRDisplayCapabilityFlags::Cap_Position);
+  sensorState.flags =
+      (VRDisplayCapabilityFlags)((int)
+                                     VRDisplayCapabilityFlags::Cap_Orientation |
+                                 (int)VRDisplayCapabilityFlags::Cap_Position);
   sensorState.pose.orientation[3] = 1.0f;  // Default to an identity quaternion
 
   return true;

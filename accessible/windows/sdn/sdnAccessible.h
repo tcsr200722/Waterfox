@@ -10,6 +10,7 @@
 #include "ISimpleDOM.h"
 #include "AccessibleWrap.h"
 #include "IUnknownImpl.h"
+#include "MsaaAccessible.h"
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
@@ -24,25 +25,39 @@ class sdnAccessible final : public ISimpleDOMNode {
     if (!mNode) MOZ_CRASH();
   }
 
-  explicit sdnAccessible(NotNull<AccessibleWrap*> aAccWrap)
-      : mNode(aAccWrap->GetNode()), mWrap(aAccWrap) {}
+  explicit sdnAccessible(NotNull<MsaaAccessible*> aMsaa) : mMsaa(aMsaa) {
+    Accessible* acc = aMsaa->Acc();
+    MOZ_ASSERT(acc);
+    if (LocalAccessible* localAcc = acc->AsLocal()) {
+      mNode = localAcc->GetNode();
+    }
+  }
 
   ~sdnAccessible();
 
   /**
    * Return if the object is defunct.
    */
-  bool IsDefunct() const { return !GetDocument(); }
+  bool IsDefunct() const {
+    if (mMsaa && !mMsaa->Acc()) {
+      return true;
+    }
+    if (!mNode) {
+      MOZ_ASSERT(mMsaa && mMsaa->Acc()->IsRemote());
+      return false;
+    }
+    return !GetDocument();
+  }
 
   /**
-   * Return a document accessible it belongs to if any.
+   * Return a local document accessible it belongs to if any.
    */
   DocAccessible* GetDocument() const;
 
   /*
-   * Return associated accessible if any.
+   * Return associated MsaaAccessible if any.
    */
-  AccessibleWrap* GetAccessible();
+  MsaaAccessible* GetMsaa();
 
   void SetUniqueID(uint32_t aNewUniqueId) { mUniqueId = Some(aNewUniqueId); }
 
@@ -121,8 +136,10 @@ class sdnAccessible final : public ISimpleDOMNode {
       /* [out][retval] */ BSTR __RPC_FAR* aLanguage);
 
  private:
+  // mNode will be null for a RemoteAccessible. In that case, we only partially
+  // implement this interface using data from the RemoteAccessible cache.
   nsCOMPtr<nsINode> mNode;
-  RefPtr<AccessibleWrap> mWrap;
+  RefPtr<MsaaAccessible> mMsaa;
   Maybe<uint32_t> mUniqueId;
 };
 

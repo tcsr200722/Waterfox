@@ -2,8 +2,29 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
+const ERROR_LINE_NUMBERS = {
+  jsm: 39,
+  "sys.mjs": 36,
+};
+const EXCEPTION_LINE_NUMBERS = {
+  jsm: ERROR_LINE_NUMBERS.jsm + 3,
+  "sys.mjs": ERROR_LINE_NUMBERS["sys.mjs"] + 3,
+};
+const ERROR_COLUMN_NUMBERS = {
+  jsm: 31,
+  "sys.mjs": 31,
+};
+const EXCEPTION_COLUMN_NUMBERS = {
+  jsm: 22,
+  "sys.mjs": 22,
+};
+
 function maybeAsyncStack(offset, column) {
-  if (!Services.prefs.getBoolPref("javascript.options.asyncstack")) {
+  if (
+    Services.prefs.getBoolPref(
+      "javascript.options.asyncstack_capture_debuggee_only"
+    )
+  ) {
     return "";
   }
 
@@ -18,7 +39,7 @@ function maybeAsyncStack(offset, column) {
 }
 
 declTest("sendQuery Error", {
-  async test(browser) {
+  async test(browser, _window, fileExt) {
     let parent = browser.browsingContext.currentWindowGlobal;
     let actorParent = parent.getActor("TestWindow");
 
@@ -31,7 +52,7 @@ declTest("sendQuery Error", {
     is(error.name, "SyntaxError", "Error should have the correct name");
     is(
       error.stack,
-      "receiveMessage@resource://testing-common/TestWindowChild.jsm:33:31\n" +
+      `receiveMessage@resource://testing-common/TestWindowChild.${fileExt}:${ERROR_LINE_NUMBERS[fileExt]}:${ERROR_COLUMN_NUMBERS[fileExt]}\n` +
         asyncStack,
       "Error should have the correct stack"
     );
@@ -39,7 +60,7 @@ declTest("sendQuery Error", {
 });
 
 declTest("sendQuery Exception", {
-  async test(browser) {
+  async test(browser, _window, fileExt) {
     let parent = browser.browsingContext.currentWindowGlobal;
     let actorParent = parent.getActor("TestWindow");
 
@@ -59,7 +80,7 @@ declTest("sendQuery Exception", {
     );
     is(
       error.stack,
-      "receiveMessage@resource://testing-common/TestWindowChild.jsm:36:22\n" +
+      `receiveMessage@resource://testing-common/TestWindowChild.${fileExt}:${EXCEPTION_LINE_NUMBERS[fileExt]}:${EXCEPTION_COLUMN_NUMBERS[fileExt]}\n` +
         asyncStack,
       "Error should have the correct stack"
     );
@@ -88,5 +109,23 @@ declTest("sendQuery in-process early lifetime", {
     let actorChild = wgc.getActor("TestWindow");
     let { result } = await actorChild.sendQuery("asyncMul", { a: 10, b: 20 });
     is(result, 200);
+  },
+});
+
+declTest("sendQuery unserializable reply", {
+  async test(browser) {
+    let parent = browser.browsingContext.currentWindowGlobal;
+    let actorParent = parent.getActor("TestWindow");
+    ok(actorParent, "JSWindowActorParent should have value");
+
+    try {
+      await actorParent.sendQuery("noncloneReply", {});
+      ok(false, "expected noncloneReply to be rejected");
+    } catch (error) {
+      ok(
+        error.message.includes("message reply cannot be cloned"),
+        "Error should have the correct message"
+      );
+    }
   },
 });

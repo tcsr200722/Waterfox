@@ -67,7 +67,14 @@ pub fn derive(mut input: DeriveInput) -> TokenStream {
                 }
             },
             Data::Struct(ref s) => {
-                if !derive_struct_fields(&s.fields, &mut types, &mut values) {
+                if let Some(ref bitflags) = css_attrs.bitflags {
+                    for (_rust_name, css_name) in bitflags.single_flags() {
+                        values.push(css_name)
+                    }
+                    for (_rust_name, css_name) in bitflags.mixed_flags() {
+                        values.push(css_name)
+                    }
+                } else if !derive_struct_fields(&s.fields, &mut types, &mut values) {
                     values.push(input_name());
                 }
             },
@@ -112,6 +119,7 @@ pub fn derive(mut input: DeriveInput) -> TokenStream {
 
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
     quote! {
         impl #impl_generics style_traits::SpecifiedValueInfo for #name #ty_generics
         #where_clause
@@ -151,7 +159,7 @@ fn derive_struct_fields<'a>(
                 .ident
                 .as_ref()
                 .expect("only named field should use represents_keyword");
-            values.push(cg::to_css_identifier(&ident.to_string()));
+            values.push(cg::to_css_identifier(&ident.to_string()).replace("_", "-"));
             return None;
         }
         if let Some(if_empty) = css_attrs.if_empty {
@@ -166,22 +174,22 @@ fn derive_struct_fields<'a>(
     true
 }
 
-#[darling(attributes(value_info), default)]
 #[derive(Default, FromDeriveInput)]
+#[darling(attributes(value_info), default)]
 struct ValueInfoInputAttrs {
     ty: Option<Ident>,
     other_values: Option<String>,
 }
 
-#[darling(attributes(value_info), default)]
 #[derive(Default, FromVariant)]
+#[darling(attributes(value_info), default)]
 struct ValueInfoVariantAttrs {
     starts_with_keyword: bool,
     other_values: Option<String>,
 }
 
-#[darling(attributes(value_info), default)]
 #[derive(Default, FromField)]
+#[darling(attributes(value_info), default)]
 struct ValueInfoFieldAttrs {
     other_values: Option<String>,
 }

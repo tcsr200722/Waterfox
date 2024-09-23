@@ -4,7 +4,6 @@
 
 use crate::context::QuirksMode;
 use crate::error_reporting::{ContextualParseError, ParseErrorReporter};
-use crate::invalidation::media_queries::{MediaListKey, ToMediaListKey};
 use crate::media_queries::{Device, MediaList};
 use crate::parser::ParserContext;
 use crate::shared_lock::{DeepCloneParams, DeepCloneWithLock, Locked};
@@ -16,16 +15,16 @@ use crate::stylesheets::rules_iterator::{NestedRuleIterationCondition, RulesIter
 use crate::stylesheets::{CssRule, CssRules, Origin, UrlExtraData};
 use crate::use_counters::UseCounters;
 use crate::{Namespace, Prefix};
-use cssparser::{Parser, ParserInput, RuleListParser};
-use fallible::FallibleVec;
+use cssparser::{Parser, ParserInput, StyleSheetParser};
 use fxhash::FxHashMap;
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use parking_lot::RwLock;
 use servo_arc::Arc;
-use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use style_traits::ParsingMode;
+
+use super::scope_rule::ImplicitScopeRoot;
 
 /// This structure holds the user-agent and user stylesheets.
 pub struct UserAgentStylesheets {
@@ -66,6 +65,10 @@ pub struct StylesheetContents {
     pub source_map_url: RwLock<Option<String>>,
     /// This stylesheet's source URL.
     pub source_url: RwLock<Option<String>>,
+
+    /// We don't want to allow construction outside of this file, to guarantee
+    /// that all contents are created with Arc<>.
+    _forbid_construction: (),
 }
 
 impl StylesheetContents {
@@ -79,36 +82,33 @@ impl StylesheetContents {
         stylesheet_loader: Option<&dyn StylesheetLoader>,
         error_reporter: Option<&dyn ParseErrorReporter>,
         quirks_mode: QuirksMode,
-        line_number_offset: u32,
         use_counters: Option<&UseCounters>,
         allow_import_rules: AllowImportRules,
         sanitization_data: Option<&mut SanitizationData>,
-    ) -> Self {
-        let namespaces = RwLock::new(Namespaces::default());
-        let (rules, source_map_url, source_url) = Stylesheet::parse_rules(
+    ) -> Arc<Self> {
+        let (namespaces, rules, source_map_url, source_url) = Stylesheet::parse_rules(
             css,
             &url_data,
             origin,
-            &mut *namespaces.write(),
             &shared_lock,
             stylesheet_loader,
             error_reporter,
             quirks_mode,
-            line_number_offset,
             use_counters,
             allow_import_rules,
             sanitization_data,
         );
 
-        Self {
+        Arc::new(Self {
             rules: CssRules::new(rules, &shared_lock),
-            origin: origin,
+            origin,
             url_data: RwLock::new(url_data),
-            namespaces: namespaces,
-            quirks_mode: quirks_mode,
+            namespaces: RwLock::new(namespaces),
+            quirks_mode,
             source_map_url: RwLock::new(source_map_url),
             source_url: RwLock::new(source_url),
-        }
+            _forbid_construction: (),
+        })
     }
 
     /// Creates a new StylesheetContents with the specified pre-parsed rules,
@@ -127,9 +127,9 @@ impl StylesheetContents {
         origin: Origin,
         url_data: UrlExtraData,
         quirks_mode: QuirksMode,
-    ) -> Self {
+    ) -> Arc<Self> {
         debug_assert!(rules.is_static());
-        Self {
+        Arc::new(Self {
             rules,
             origin,
             url_data: RwLock::new(url_data),
@@ -137,7 +137,8 @@ impl StylesheetContents {
             quirks_mode,
             source_map_url: RwLock::new(None),
             source_url: RwLock::new(None),
-        }
+            _forbid_construction: (),
+        })
     }
 
     /// Returns a reference to the list of rules.
@@ -179,6 +180,7 @@ impl DeepCloneWithLock for StylesheetContents {
             namespaces: RwLock::new((*self.namespaces.read()).clone()),
             source_map_url: RwLock::new((*self.source_map_url.read()).clone()),
             source_url: RwLock::new((*self.source_url.read()).clone()),
+            _forbid_construction: (),
         }
     }
 }
@@ -187,7 +189,7 @@ impl DeepCloneWithLock for StylesheetContents {
 #[derive(Debug)]
 pub struct Stylesheet {
     /// The contents of this stylesheet.
-    pub contents: StylesheetContents,
+    pub contents: Arc<StylesheetContents>,
     /// The lock used for objects inside this stylesheet
     pub shared_lock: SharedRwLock,
     /// List of media associated with the Stylesheet.
@@ -196,34 +198,8 @@ pub struct Stylesheet {
     pub disabled: AtomicBool,
 }
 
-macro_rules! rule_filter {
-    ($( $method: ident($variant:ident => $rule_type: ident), )+) => {
-        $(
-            #[allow(missing_docs)]
-            fn $method<F>(&self, device: &Device, guard: &SharedRwLockReadGuard, mut f: F)
-                where F: FnMut(&crate::stylesheets::$rule_type),
-            {
-                use crate::stylesheets::CssRule;
-
-                for rule in self.effective_rules(device, guard) {
-                    if let CssRule::$variant(ref lock) = *rule {
-                        let rule = lock.read_with(guard);
-                        f(&rule)
-                    }
-                }
-            }
-        )+
-    }
-}
-
 /// A trait to represent a given stylesheet in a document.
 pub trait StylesheetInDocument: ::std::fmt::Debug {
-    /// Get the stylesheet origin.
-    fn origin(&self, guard: &SharedRwLockReadGuard) -> Origin;
-
-    /// Get the stylesheet quirks mode.
-    fn quirks_mode(&self, guard: &SharedRwLockReadGuard) -> QuirksMode;
-
     /// Get whether this stylesheet is enabled.
     fn enabled(&self) -> bool;
 
@@ -231,7 +207,12 @@ pub trait StylesheetInDocument: ::std::fmt::Debug {
     fn media<'a>(&'a self, guard: &'a SharedRwLockReadGuard) -> Option<&'a MediaList>;
 
     /// Returns a reference to the list of rules in this stylesheet.
-    fn rules<'a, 'b: 'a>(&'a self, guard: &'b SharedRwLockReadGuard) -> &'a [CssRule];
+    fn rules<'a, 'b: 'a>(&'a self, guard: &'b SharedRwLockReadGuard) -> &'a [CssRule] {
+        self.contents().rules(guard)
+    }
+
+    /// Returns a reference to the contents of the stylesheet.
+    fn contents(&self) -> &StylesheetContents;
 
     /// Return an iterator using the condition `C`.
     #[inline]
@@ -243,13 +224,19 @@ pub trait StylesheetInDocument: ::std::fmt::Debug {
     where
         C: NestedRuleIterationCondition,
     {
-        RulesIterator::new(device, self.quirks_mode(guard), guard, self.rules(guard))
+        let contents = self.contents();
+        RulesIterator::new(
+            device,
+            contents.quirks_mode,
+            guard,
+            contents.rules(guard).iter(),
+        )
     }
 
     /// Returns whether the style-sheet applies for the current device.
     fn is_effective_for_device(&self, device: &Device, guard: &SharedRwLockReadGuard) -> bool {
         match self.media(guard) {
-            Some(medialist) => medialist.evaluate(device, self.quirks_mode(guard)),
+            Some(medialist) => medialist.evaluate(device, self.contents().quirks_mode),
             None => true,
         }
     }
@@ -265,29 +252,11 @@ pub trait StylesheetInDocument: ::std::fmt::Debug {
         self.iter_rules::<EffectiveRules>(device, guard)
     }
 
-    rule_filter! {
-        effective_style_rules(Style => StyleRule),
-        effective_media_rules(Media => MediaRule),
-        effective_font_face_rules(FontFace => FontFaceRule),
-        effective_font_face_feature_values_rules(FontFeatureValues => FontFeatureValuesRule),
-        effective_counter_style_rules(CounterStyle => CounterStyleRule),
-        effective_viewport_rules(Viewport => ViewportRule),
-        effective_keyframes_rules(Keyframes => KeyframesRule),
-        effective_supports_rules(Supports => SupportsRule),
-        effective_page_rules(Page => PageRule),
-        effective_document_rules(Document => DocumentRule),
-    }
+    /// Return the implicit scope root for this stylesheet, if one exists.
+    fn implicit_scope_root(&self) -> Option<ImplicitScopeRoot>;
 }
 
 impl StylesheetInDocument for Stylesheet {
-    fn origin(&self, _guard: &SharedRwLockReadGuard) -> Origin {
-        self.contents.origin
-    }
-
-    fn quirks_mode(&self, _guard: &SharedRwLockReadGuard) -> QuirksMode {
-        self.contents.quirks_mode
-    }
-
     fn media<'a>(&'a self, guard: &'a SharedRwLockReadGuard) -> Option<&'a MediaList> {
         Some(self.media.read_with(guard))
     }
@@ -297,8 +266,12 @@ impl StylesheetInDocument for Stylesheet {
     }
 
     #[inline]
-    fn rules<'a, 'b: 'a>(&'a self, guard: &'b SharedRwLockReadGuard) -> &'a [CssRule] {
-        self.contents.rules(guard)
+    fn contents(&self) -> &StylesheetContents {
+        &self.contents
+    }
+
+    fn implicit_scope_root(&self) -> Option<ImplicitScopeRoot> {
+        None
     }
 }
 
@@ -316,21 +289,7 @@ impl PartialEq for DocumentStyleSheet {
     }
 }
 
-impl ToMediaListKey for DocumentStyleSheet {
-    fn to_media_list_key(&self) -> MediaListKey {
-        self.0.to_media_list_key()
-    }
-}
-
 impl StylesheetInDocument for DocumentStyleSheet {
-    fn origin(&self, guard: &SharedRwLockReadGuard) -> Origin {
-        self.0.origin(guard)
-    }
-
-    fn quirks_mode(&self, guard: &SharedRwLockReadGuard) -> QuirksMode {
-        self.0.quirks_mode(guard)
-    }
-
     fn media<'a>(&'a self, guard: &'a SharedRwLockReadGuard) -> Option<&'a MediaList> {
         self.0.media(guard)
     }
@@ -340,8 +299,12 @@ impl StylesheetInDocument for DocumentStyleSheet {
     }
 
     #[inline]
-    fn rules<'a, 'b: 'a>(&'a self, guard: &'b SharedRwLockReadGuard) -> &'a [CssRule] {
-        self.0.rules(guard)
+    fn contents(&self) -> &StylesheetContents {
+        self.0.contents()
+    }
+
+    fn implicit_scope_root(&self) -> Option<ImplicitScopeRoot> {
+        None
     }
 }
 
@@ -378,14 +341,25 @@ impl SanitizationKind {
             CssRule::Document(..) |
             CssRule::Media(..) |
             CssRule::Supports(..) |
-            CssRule::Import(..) => false,
+            CssRule::Import(..) |
+            CssRule::Container(..) |
+            // TODO(emilio): Perhaps Layer should not be always sanitized? But
+            // we sanitize @media and co, so this seems safer for now.
+            CssRule::LayerStatement(..) |
+            CssRule::LayerBlock(..) |
+            // TODO(dshin): Same comment as Layer applies - shouldn't give away
+            // something like display size - erring on the side of "safe" for now.
+            CssRule::Scope(..) |
+            CssRule::StartingStyle(..) => false,
 
             CssRule::FontFace(..) | CssRule::Namespace(..) | CssRule::Style(..) => true,
 
             CssRule::Keyframes(..) |
             CssRule::Page(..) |
+            CssRule::Margin(..) |
+            CssRule::Property(..) |
             CssRule::FontFeatureValues(..) |
-            CssRule::Viewport(..) |
+            CssRule::FontPaletteValues(..) |
             CssRule::CounterStyle(..) => !is_standard,
         }
     }
@@ -426,32 +400,24 @@ impl Stylesheet {
         url_data: UrlExtraData,
         stylesheet_loader: Option<&dyn StylesheetLoader>,
         error_reporter: Option<&dyn ParseErrorReporter>,
-        line_number_offset: u32,
         allow_import_rules: AllowImportRules,
     ) {
-        let namespaces = RwLock::new(Namespaces::default());
-
         // FIXME: Consider adding use counters to Servo?
-        let (rules, source_map_url, source_url) = Self::parse_rules(
+        let (namespaces, rules, source_map_url, source_url) = Self::parse_rules(
             css,
             &url_data,
             existing.contents.origin,
-            &mut *namespaces.write(),
             &existing.shared_lock,
             stylesheet_loader,
             error_reporter,
             existing.contents.quirks_mode,
-            line_number_offset,
             /* use_counters = */ None,
             allow_import_rules,
             /* sanitization_data = */ None,
         );
 
         *existing.contents.url_data.write() = url_data;
-        mem::swap(
-            &mut *existing.contents.namespaces.write(),
-            &mut *namespaces.write(),
-        );
+        *existing.contents.namespaces.write() = namespaces;
 
         // Acquire the lock *after* parsing, to minimize the exclusive section.
         let mut guard = existing.shared_lock.write();
@@ -464,18 +430,15 @@ impl Stylesheet {
         css: &str,
         url_data: &UrlExtraData,
         origin: Origin,
-        namespaces: &mut Namespaces,
         shared_lock: &SharedRwLock,
         stylesheet_loader: Option<&dyn StylesheetLoader>,
         error_reporter: Option<&dyn ParseErrorReporter>,
         quirks_mode: QuirksMode,
-        line_number_offset: u32,
         use_counters: Option<&UseCounters>,
         allow_import_rules: AllowImportRules,
         mut sanitization_data: Option<&mut SanitizationData>,
-    ) -> (Vec<CssRule>, Option<String>, Option<String>) {
-        let mut rules = Vec::new();
-        let mut input = ParserInput::new_with_line_number_offset(css, line_number_offset);
+    ) -> (Namespaces, Vec<CssRule>, Option<String>, Option<String>) {
+        let mut input = ParserInput::new(css);
         let mut input = Parser::new(&mut input);
 
         let context = ParserContext::new(
@@ -484,44 +447,39 @@ impl Stylesheet {
             None,
             ParsingMode::DEFAULT,
             quirks_mode,
+            /* namespaces = */ Default::default(),
             error_reporter,
             use_counters,
         );
 
-        let rule_parser = TopLevelRuleParser {
+        let mut rule_parser = TopLevelRuleParser {
             shared_lock,
             loader: stylesheet_loader,
             context,
             state: State::Start,
             dom_error: None,
             insert_rule_context: None,
-            namespaces,
             allow_import_rules,
+            declaration_parser_state: Default::default(),
+            error_reporting_state: Default::default(),
+            rules: Vec::new(),
         };
 
         {
-            let mut iter = RuleListParser::new_for_stylesheet(&mut input, rule_parser);
-
-            loop {
-                let rule_start = iter.input.position().byte_index();
-                let result = match iter.next() {
-                    Some(result) => result,
-                    None => break,
-                };
+            let mut iter = StyleSheetParser::new(&mut input, &mut rule_parser);
+            while let Some(result) = iter.next() {
                 match result {
-                    Ok(rule) => {
+                    Ok(rule_start) => {
+                        // TODO(emilio, nesting): sanitize nested CSS rules, probably?
                         if let Some(ref mut data) = sanitization_data {
-                            if !data.kind.allows(&rule) {
-                                continue;
+                            if let Some(ref rule) = iter.parser.rules.last() {
+                                if !data.kind.allows(rule) {
+                                    iter.parser.rules.pop();
+                                    continue;
+                                }
                             }
                             let end = iter.input.position().byte_index();
-                            data.output.push_str(&css[rule_start..end]);
-                        }
-                        // Use a fallible push here, and if it fails, just fall
-                        // out of the loop.  This will cause the page to be
-                        // shown incorrectly, but it's better than OOMing.
-                        if rules.try_push(rule).is_err() {
-                            break;
+                            data.output.push_str(&css[rule_start.byte_index()..end]);
                         }
                     },
                     Err((error, slice)) => {
@@ -535,7 +493,12 @@ impl Stylesheet {
 
         let source_map_url = input.current_source_map_url().map(String::from);
         let source_url = input.current_source_url().map(String::from);
-        (rules, source_map_url, source_url)
+        (
+            rule_parser.context.namespaces.into_owned(),
+            rule_parser.rules,
+            source_map_url,
+            source_url,
+        )
     }
 
     /// Creates an empty stylesheet and parses it with a given base url, origin
@@ -552,7 +515,6 @@ impl Stylesheet {
         stylesheet_loader: Option<&dyn StylesheetLoader>,
         error_reporter: Option<&dyn ParseErrorReporter>,
         quirks_mode: QuirksMode,
-        line_number_offset: u32,
         allow_import_rules: AllowImportRules,
     ) -> Self {
         // FIXME: Consider adding use counters to Servo?
@@ -564,7 +526,6 @@ impl Stylesheet {
             stylesheet_loader,
             error_reporter,
             quirks_mode,
-            line_number_offset,
             /* use_counters = */ None,
             allow_import_rules,
             /* sanitized_output = */ None,
@@ -606,13 +567,15 @@ impl Clone for Stylesheet {
         // Make a deep clone of the media, using the new lock.
         let media = self.media.read_with(&guard).clone();
         let media = Arc::new(lock.wrap(media));
-        let contents = self
-            .contents
-            .deep_clone_with_lock(&lock, &guard, &DeepCloneParams);
+        let contents = Arc::new(self.contents.deep_clone_with_lock(
+            &lock,
+            &guard,
+            &DeepCloneParams,
+        ));
 
         Stylesheet {
             contents,
-            media: media,
+            media,
             shared_lock: lock,
             disabled: AtomicBool::new(self.disabled.load(Ordering::SeqCst)),
         }

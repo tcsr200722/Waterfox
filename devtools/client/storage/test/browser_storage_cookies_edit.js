@@ -6,7 +6,7 @@
 
 "use strict";
 
-add_task(async function() {
+add_task(async function () {
   await openTabAndSetupStorage(MAIN_DOMAIN + "storage-cookies.html");
   showAllColumns(true);
 
@@ -24,6 +24,4 @@ add_task(async function() {
   await editCell(id, "value", "newValue3");
   await editCell(id, "isSecure", "true");
   await editCell(id, "isHttpOnly", "true");
-
-  await finishTests();
 });

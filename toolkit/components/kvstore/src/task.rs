@@ -6,12 +6,15 @@ extern crate xpcom;
 
 use crossbeam_utils::atomic::AtomicCell;
 use error::KeyValueError;
-use manager::Manager;
 use moz_task::Task;
 use nserror::{nsresult, NS_ERROR_FAILURE};
 use nsstring::nsCString;
 use owned_value::owned_to_variant;
-use rkv::{OwnedValue, Rkv, SingleStore, StoreError, StoreOptions, Value};
+use rkv::backend::{
+    BackendEnvironmentBuilder, BackendInfo, RecoveryStrategy, SafeMode, SafeModeDatabase,
+    SafeModeEnvironment,
+};
+use rkv::{OwnedValue, StoreError, StoreOptions, Value};
 use std::{
     path::Path,
     str,
@@ -29,6 +32,10 @@ use KeyValueDatabase;
 use KeyValueEnumerator;
 use KeyValuePairResult;
 
+type Manager = rkv::Manager<SafeModeEnvironment>;
+type Rkv = rkv::Rkv<SafeModeEnvironment>;
+type SingleStore = rkv::SingleStore<SafeModeDatabase>;
+
 /// A macro to generate a done() implementation for a Task.
 /// Takes one argument that specifies the type of the Task's callback function:
 ///   value: a callback function that takes a value
@@ -40,9 +47,9 @@ use KeyValuePairResult;
 macro_rules! task_done {
     (value) => {
         fn done(&self) -> Result<(), nsresult> {
-            // If TaskRunnable.run() calls Task.done() to return a result
-            // on the main thread before TaskRunnable.run() returns on the database
-            // thread, then the Task will get dropped on the database thread.
+            // If TaskRunnable calls Task.done() to return a result on the
+            // main thread before TaskRunnable returns on the database thread,
+            // then the Task will get dropped on the database thread.
             //
             // But the callback is an nsXPCWrappedJS that isn't safe to release
             // on the database thread.  So we move it out of the Task here to ensure
@@ -61,9 +68,9 @@ macro_rules! task_done {
 
     (void) => {
         fn done(&self) -> Result<(), nsresult> {
-            // If TaskRunnable.run() calls Task.done() to return a result
-            // on the main thread before TaskRunnable.run() returns on the database
-            // thread, then the Task will get dropped on the database thread.
+            // If TaskRunnable calls Task.done() to return a result on the
+            // main thread before TaskRunnable returns on the database thread,
+            // then the Task will get dropped on the database thread.
             //
             // But the callback is an nsXPCWrappedJS that isn't safe to release
             // on the database thread.  So we move it out of the Task here to ensure
@@ -98,14 +105,14 @@ const INCREMENTAL_RESIZE_THRESHOLD: usize = 52_428_800;
 /// The incremental resize step (5 MB)
 const INCREMENTAL_RESIZE_STEP: usize = 5_242_880;
 
-/// The LMDB disk page size and mask.
+/// The RKV disk page size and mask.
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE_MASK: usize = 0b_1111_1111_1111;
 
 /// Round the non-zero size to the multiple of page size greater or equal.
 ///
 /// It does not handle the special cases such as size zero and overflow,
-/// because even if that happens (extremely unlikely though), LMDB will
+/// because even if that happens (extremely unlikely though), RKV will
 /// ignore the new size if it's smaller than the current size.
 ///
 /// E.g:
@@ -157,23 +164,26 @@ fn passive_resize(env: &Rkv, wanted: usize) -> Result<(), StoreError> {
     Ok(())
 }
 
-pub struct GetOrCreateTask {
+pub struct GetOrCreateWithOptionsTask {
     callback: AtomicCell<Option<ThreadBoundRefPtr<nsIKeyValueDatabaseCallback>>>,
     path: nsCString,
     name: nsCString,
+    strategy: RecoveryStrategy,
     result: AtomicCell<Option<Result<RkvStoreTuple, KeyValueError>>>,
 }
 
-impl GetOrCreateTask {
+impl GetOrCreateWithOptionsTask {
     pub fn new(
         callback: RefPtr<nsIKeyValueDatabaseCallback>,
         path: nsCString,
         name: nsCString,
-    ) -> GetOrCreateTask {
-        GetOrCreateTask {
+        strategy: RecoveryStrategy,
+    ) -> GetOrCreateWithOptionsTask {
+        GetOrCreateWithOptionsTask {
             callback: AtomicCell::new(Some(ThreadBoundRefPtr::new(callback))),
             path,
             name,
+            strategy,
             result: AtomicCell::default(),
         }
     }
@@ -183,18 +193,27 @@ impl GetOrCreateTask {
     }
 }
 
-impl Task for GetOrCreateTask {
+impl Task for GetOrCreateWithOptionsTask {
     fn run(&self) {
         // We do the work within a closure that returns a Result so we can
         // use the ? operator to simplify the implementation.
         self.result
             .store(Some(|| -> Result<RkvStoreTuple, KeyValueError> {
                 let store;
-                let mut writer = Manager::singleton().write()?;
-                let rkv = writer.get_or_create(Path::new(str::from_utf8(&self.path)?), Rkv::new)?;
+                let mut builder = Rkv::environment_builder::<SafeMode>();
+                builder.set_corruption_recovery_strategy(self.strategy);
+                let mut manager = Manager::singleton().write()?;
+                // Note that path canonicalization is diabled to work around crashes on Fennec:
+                // https://bugzilla.mozilla.org/show_bug.cgi?id=1531887
+                let path = Path::new(str::from_utf8(&self.path)?);
+                let rkv = manager.get_or_create_from_builder(
+                    path,
+                    builder,
+                    Rkv::from_builder::<SafeMode>,
+                )?;
                 {
                     let env = rkv.read()?;
-                    let load_ratio = env.load_ratio()?;
+                    let load_ratio = env.load_ratio()?.unwrap_or(0.0);
                     if load_ratio > RESIZE_RATIO {
                         active_resize(&env)?;
                     }
@@ -246,7 +265,7 @@ impl Task for PutTask {
             let mut resized = false;
 
             // Use a loop here in case we want to retry from a recoverable
-            // error such as `lmdb::Error::MapFull`.
+            // error such as `StoreError::MapFull`.
             loop {
                 let mut writer = env.write()?;
 
@@ -255,7 +274,7 @@ impl Task for PutTask {
 
                     // Only handle the first MapFull error via passive resizing.
                     // Propogate the subsequent MapFull error.
-                    Err(StoreError::LmdbError(lmdb::Error::MapFull)) if !resized => {
+                    Err(StoreError::MapFull) if !resized => {
                         // abort the failed transaction for resizing.
                         writer.abort();
 
@@ -271,7 +290,15 @@ impl Task for PutTask {
                     Err(err) => return Err(KeyValueError::StoreError(err)),
                 }
 
-                writer.commit()?;
+                // Ignore errors caused by simultaneous access.
+                // We intend to investigate/revert this in bug 1810212.
+                match writer.commit() {
+                    Err(StoreError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Explicitly ignore errors from simultaneous access.
+                    }
+                    Err(e) => return Err(From::from(e)),
+                    _ => (),
+                };
                 break;
             }
 
@@ -331,7 +358,7 @@ impl Task for WriteManyTask {
             let mut resized = false;
 
             // Use a loop here in case we want to retry from a recoverable
-            // error such as `lmdb::Error::MapFull`.
+            // error such as `StoreError::MapFull`.
             'outer: loop {
                 let mut writer = env.write()?;
 
@@ -345,7 +372,7 @@ impl Task for WriteManyTask {
 
                                 // Only handle the first MapFull error via passive resizing.
                                 // Propogate the subsequent MapFull error.
-                                Err(StoreError::LmdbError(lmdb::Error::MapFull)) if !resized => {
+                                Err(StoreError::MapFull) if !resized => {
                                     // Abort the failed transaction for resizing.
                                     writer.abort();
 
@@ -365,10 +392,10 @@ impl Task for WriteManyTask {
                             match self.store.delete(&mut writer, key) {
                                 Ok(_) => (),
 
-                                // LMDB fails with an error if the key to delete wasn't found,
+                                // RKV fails with an error if the key to delete wasn't found,
                                 // and Rkv returns that error, but we ignore it, as we expect most
                                 // of our consumers to want this behavior.
-                                Err(StoreError::LmdbError(lmdb::Error::NotFound)) => (),
+                                Err(StoreError::KeyValuePairNotFound) => (),
 
                                 Err(err) => return Err(KeyValueError::StoreError(err)),
                             };
@@ -376,7 +403,15 @@ impl Task for WriteManyTask {
                     }
                 }
 
-                writer.commit()?;
+                // Ignore errors caused by simultaneous access.
+                // We intend to investigate/revert this in bug 1810212.
+                match writer.commit() {
+                    Err(StoreError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Explicitly ignore errors from simultaneous access.
+                    }
+                    Err(e) => return Err(From::from(e)),
+                    _ => (),
+                };
                 break; // 'outer: loop
             }
 
@@ -528,15 +563,23 @@ impl Task for DeleteTask {
             match self.store.delete(&mut writer, key) {
                 Ok(_) => (),
 
-                // LMDB fails with an error if the key to delete wasn't found,
+                // RKV fails with an error if the key to delete wasn't found,
                 // and Rkv returns that error, but we ignore it, as we expect most
                 // of our consumers to want this behavior.
-                Err(StoreError::LmdbError(lmdb::Error::NotFound)) => (),
+                Err(StoreError::KeyValuePairNotFound) => (),
 
                 Err(err) => return Err(KeyValueError::StoreError(err)),
             };
 
-            writer.commit()?;
+            // Ignore errors caused by simultaneous access.
+            // We intend to investigate/revert this in bug 1810212.
+            match writer.commit() {
+                Err(StoreError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Explicitly ignore errors from simultaneous access.
+                }
+                Err(e) => return Err(From::from(e)),
+                _ => (),
+            };
 
             Ok(())
         }()));
@@ -575,7 +618,15 @@ impl Task for ClearTask {
             let env = self.rkv.read()?;
             let mut writer = env.write()?;
             self.store.clear(&mut writer)?;
-            writer.commit()?;
+            // Ignore errors caused by simultaneous access.
+            // We intend to investigate/revert this in bug 1810212.
+            match writer.commit() {
+                Err(StoreError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Explicitly ignore errors from simultaneous access.
+                }
+                Err(e) => return Err(From::from(e)),
+                _ => (),
+            };
 
             Ok(())
         }()));
@@ -672,9 +723,8 @@ impl Task for EnumerateTask {
                     // Convert the key/value pair to owned.
                     .map(|result| match result {
                         Ok((key, val)) => match (key, val) {
-                            (Ok(key), Some(val)) => Ok((key.to_owned(), OwnedValue::from(&val))),
+                            (Ok(key), val) => Ok((key.to_owned(), OwnedValue::from(&val))),
                             (Err(err), _) => Err(err.into()),
-                            (_, None) => Err(KeyValueError::UnexpectedValue),
                         },
                         Err(err) => Err(KeyValueError::StoreError(err)),
                     })

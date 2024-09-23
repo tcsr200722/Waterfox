@@ -1,4 +1,3 @@
-
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
@@ -8,15 +7,18 @@
 #ifndef mozilla_dom_workers_workerprivate_h__
 #define mozilla_dom_workers_workerprivate_h__
 
+#include <bitset>
 #include "MainThreadUtils.h"
 #include "ScriptLoader.h"
 #include "js/ContextOptions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/AutoRestore.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/CondVar.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
-#include "mozilla/PerformanceCounter.h"
+#include "mozilla/OriginTrials.h"
 #include "mozilla/RelativeTimeline.h"
 #include "mozilla/Result.h"
 #include "mozilla/StorageAccess.h"
@@ -25,30 +27,48 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/UseCounter.h"
 #include "mozilla/dom/ClientSource.h"
-#include "mozilla/dom/RemoteWorkerChild.h"
+#include "mozilla/dom/FlippedOnce.h"
+#include "mozilla/dom/Timeout.h"
+#include "mozilla/dom/quota/CheckedUnsafePtr.h"
 #include "mozilla/dom/Worker.h"
+#include "mozilla/dom/WorkerBinding.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerLoadInfo.h"
-#include "mozilla/dom/WorkerScope.h"
 #include "mozilla/dom/WorkerStatus.h"
 #include "mozilla/dom/workerinternals/JSSettings.h"
 #include "mozilla/dom/workerinternals/Queue.h"
+#include "mozilla/dom/JSExecutionManager.h"
+#include "mozilla/net/NeckoChannelParams.h"
+#include "mozilla/StaticPrefs_extensions.h"
 #include "nsContentUtils.h"
+#include "nsIChannel.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIEventTarget.h"
 #include "nsILoadInfo.h"
+#include "nsRFPService.h"
 #include "nsTObserverArray.h"
+#include "stdint.h"
 
 class nsIThreadInternal;
+
+namespace JS {
+struct RuntimeStats;
+}
 
 namespace mozilla {
 class ThrottledEventQueue;
 namespace dom {
 
+class RemoteWorkerChild;
+
 // If you change this, the corresponding list in nsIWorkerDebugger.idl needs
 // to be updated too. And histograms enum for worker use counters uses the same
-// order of worker type. Please also update dom/base/usecounters.py.
-enum WorkerType { WorkerTypeDedicated, WorkerTypeShared, WorkerTypeService };
+// order of worker kind. Please also update dom/base/usecounters.py.
+enum WorkerKind : uint8_t {
+  WorkerKindDedicated,
+  WorkerKindShared,
+  WorkerKindService
+};
 
 class ClientInfo;
 class ClientSource;
@@ -65,18 +85,20 @@ class WorkerDebuggerGlobalScope;
 class WorkerErrorReport;
 class WorkerEventTarget;
 class WorkerGlobalScope;
+class WorkerParentRef;
 class WorkerRef;
 class WorkerRunnable;
 class WorkerDebuggeeRunnable;
 class WorkerThread;
+class WorkerThreadRunnable;
 
 // SharedMutex is a small wrapper around an (internal) reference-counted Mutex
 // object. It exists to avoid changing a lot of code to use Mutex* instead of
 // Mutex&.
-class SharedMutex {
-  typedef mozilla::Mutex Mutex;
+class MOZ_CAPABILITY("mutex") SharedMutex {
+  using Mutex = mozilla::Mutex;
 
-  class RefCountedMutex final : public Mutex {
+  class MOZ_CAPABILITY("mutex") RefCountedMutex final : public Mutex {
    public:
     explicit RefCountedMutex(const char* aName) : Mutex(aName) {}
 
@@ -94,17 +116,99 @@ class SharedMutex {
 
   SharedMutex(const SharedMutex& aOther) = default;
 
-  operator Mutex&() { return *mMutex; }
+  operator Mutex&() MOZ_RETURN_CAPABILITY(this) { return *mMutex; }
 
-  operator const Mutex&() const { return *mMutex; }
+  operator const Mutex&() const MOZ_RETURN_CAPABILITY(this) { return *mMutex; }
 
-  void AssertCurrentThreadOwns() const { mMutex->AssertCurrentThreadOwns(); }
+  // We need these to make thread-safety analysis work
+  void Lock() MOZ_CAPABILITY_ACQUIRE() { mMutex->Lock(); }
+  void Unlock() MOZ_CAPABILITY_RELEASE() { mMutex->Unlock(); }
+
+  // We can assert we own 'this', but we can't assert we hold mMutex
+  void AssertCurrentThreadOwns() const
+      MOZ_ASSERT_CAPABILITY(this) MOZ_NO_THREAD_SAFETY_ANALYSIS {
+    mMutex->AssertCurrentThreadOwns();
+  }
 };
 
 nsString ComputeWorkerPrivateId();
 
-class WorkerPrivate : public RelativeTimeline {
+class WorkerPrivate final
+    : public RelativeTimeline,
+      public SupportsCheckedUnsafePtr<CheckIf<DiagnosticAssertEnabled>> {
  public:
+  // Callback invoked on the parent thread when the worker's cancellation is
+  // about to be requested.  This covers both calls to
+  // WorkerPrivate::Cancel() by the owner as well as self-initiated cancellation
+  // due to top-level script evaluation failing or close() being invoked on the
+  // global scope for Dedicated and Shared workers, but not Service Workers as
+  // they do not expose a close() method.
+  //
+  // ### Parent-Initiated Cancellation
+  //
+  // When WorkerPrivate::Cancel is invoked on the parent thread (by the binding
+  // exposed Worker::Terminate), this callback is invoked synchronously inside
+  // that call.
+  //
+  // ### Worker Self-Cancellation
+  //
+  // When a worker initiates self-cancellation, the worker's notification to the
+  // parent thread is a non-blocking, async mechanism triggered by
+  // `WorkerPrivate::DispatchCancelingRunnable`.
+  //
+  // Self-cancellation races a normally scheduled runnable against a timer that
+  // is scheduled against the parent.  The 2 paths initiated by
+  // DispatchCancelingRunnable are:
+  //
+  // 1. A CancelingRunnable is dispatched at the worker's normal event target to
+  //    wait for the event loop to be clear of runnables.  When the
+  //    CancelingRunnable runs it will dispatch a CancelingOnParentRunnable to
+  //    its parent which is a normal, non-control WorkerDebuggeeRunnable to
+  //    ensure that any postMessages to the parent or similar events get a
+  //    chance to be processed prior to cancellation.  The timer scheduled in
+  //    the next bullet will not be canceled unless
+  //
+  // 2. A CancelingWithTimeoutOnParentRunnable control runnable is dispatched
+  //    to the parent to schedule a timer which will (also) fire on the parent
+  //    thread.  This handles the case where the worker does not yield
+  //    control-flow, and so the normal runnable scheduled above does not get to
+  //    run in a timely fashion.  Because this is a control runnable, if the
+  //    parent is a worker then the runnable will be processed with urgency.
+  //    However, if the worker is top-level, then the control-like throttled
+  //    WorkerPrivate::mMainThreadEventTarget will end up getting used which is
+  //    nsIRunnablePriority::PRIORITY_MEDIUMHIGH and distinct from the
+  //    mMainThreadDebuggeeEventTarget which most runnables (like postMessage)
+  //    use.
+  //
+  //    The timer will explicitly use the control event target if the parent is
+  //    a worker and the implicit event target (via `NS_NewTimer()`) otherwise.
+  //    The callback is CancelingTimerCallback which just calls
+  //    WorkerPrivate::Cancel.
+  using CancellationCallback = std::function<void(bool aEverRan)>;
+
+  // Callback invoked on the parent just prior to dropping the worker thread's
+  // strong reference that keeps the WorkerPrivate alive while the worker thread
+  // is running.  This does not provide a guarantee that the underlying thread
+  // has fully shutdown, just that the worker logic has fully shutdown.
+  //
+  // ### Details
+  //
+  // The last thing the worker thread's WorkerThreadPrimaryRunnable does before
+  // initiating the shutdown of the underlying thread is call ScheduleDeletion.
+  // ScheduleDeletion dispatches a runnable to the parent to notify it that the
+  // worker has completed its work and will never touch the WorkerPrivate again
+  // and that the strong self-reference can be dropped.
+  //
+  // For parents that are themselves workers, this will be done by
+  // WorkerFinishedRunnable which is a WorkerControlRunnable, ensuring that this
+  // is processed in a timely fashion.  For main-thread parents,
+  // TopLevelWorkerFinishedRunnable will be used and sent via
+  // mMainThreadEventTargetForMessaging which is a weird ThrottledEventQueue
+  // which does not provide any ordering guarantees relative to
+  // mMainThreadDebuggeeEventTarget, so if you want those, you need to enhance
+  // things.
+  using TerminationCallback = std::function<void(void)>;
+
   struct LocationInfo {
     nsCString mHref;
     nsCString mProtocol;
@@ -121,24 +225,33 @@ class WorkerPrivate : public RelativeTimeline {
 
   static already_AddRefed<WorkerPrivate> Constructor(
       JSContext* aCx, const nsAString& aScriptURL, bool aIsChromeWorker,
-      WorkerType aWorkerType, const nsAString& aWorkerName,
+      WorkerKind aWorkerKind, RequestCredentials aRequestCredentials,
+      const WorkerType aWorkerType, const nsAString& aWorkerName,
       const nsACString& aServiceWorkerScope, WorkerLoadInfo* aLoadInfo,
-      ErrorResult& aRv, nsString aId = EmptyString());
+      ErrorResult& aRv, nsString aId = u""_ns,
+      CancellationCallback&& aCancellationCallback = {},
+      TerminationCallback&& aTerminationCallback = {});
 
   enum LoadGroupBehavior { InheritLoadGroup, OverrideLoadGroup };
 
-  static nsresult GetLoadInfo(JSContext* aCx, nsPIDOMWindowInner* aWindow,
-                              WorkerPrivate* aParent,
-                              const nsAString& aScriptURL, bool aIsChromeWorker,
-                              LoadGroupBehavior aLoadGroupBehavior,
-                              WorkerType aWorkerType,
-                              WorkerLoadInfo* aLoadInfo);
+  static nsresult GetLoadInfo(
+      JSContext* aCx, nsPIDOMWindowInner* aWindow, WorkerPrivate* aParent,
+      const nsAString& aScriptURL, const enum WorkerType& aWorkerType,
+      const RequestCredentials& aCredentials, bool aIsChromeWorker,
+      LoadGroupBehavior aLoadGroupBehavior, WorkerKind aWorkerKind,
+      WorkerLoadInfo* aLoadInfo);
 
   void Traverse(nsCycleCollectionTraversalCallback& aCb);
 
   void ClearSelfAndParentEventTargetRef() {
     AssertIsOnParentThread();
     MOZ_ASSERT(mSelfRef);
+
+    if (mTerminationCallback) {
+      mTerminationCallback();
+      mTerminationCallback = nullptr;
+    }
+
     mParentEventTargetRef = nullptr;
     mSelfRef = nullptr;
   }
@@ -151,18 +264,24 @@ class WorkerPrivate : public RelativeTimeline {
 
   bool Cancel() { return Notify(Canceling); }
 
-  bool Close();
+  bool Close() MOZ_REQUIRES(mMutex);
 
   // The passed principal must be the Worker principal in case of a
   // ServiceWorker and the loading principal for any other type.
   static void OverrideLoadInfoLoadGroup(WorkerLoadInfo& aLoadInfo,
                                         nsIPrincipal* aPrincipal);
 
-  bool IsDebuggerRegistered() {
+  bool IsDebuggerRegistered() MOZ_NO_THREAD_SAFETY_ANALYSIS {
     AssertIsOnMainThread();
 
     // No need to lock here since this is only ever modified by the same thread.
-    return mDebuggerRegistered;
+    return mDebuggerRegistered;  // would give a thread-safety warning
+  }
+
+  bool ExtensionAPIAllowed() {
+    return (
+        StaticPrefs::extensions_backgroundServiceWorker_enabled_AtStartup() &&
+        mExtensionAPIAllowed);
   }
 
   void SetIsDebuggerRegistered(bool aDebuggerRegistered) {
@@ -200,6 +319,8 @@ class WorkerPrivate : public RelativeTimeline {
     return mDebugger;
   }
 
+  const OriginTrials& Trials() const { return mLoadInfo.mTrials; }
+
   void SetDebugger(WorkerDebugger* aDebugger) {
     AssertIsOnMainThread();
 
@@ -233,7 +354,9 @@ class WorkerPrivate : public RelativeTimeline {
   MOZ_CAN_RUN_SCRIPT
   void DoRunLoop(JSContext* aCx);
 
-  bool InterruptCallback(JSContext* aCx);
+  void UnrootGlobalScopes();
+
+  MOZ_CAN_RUN_SCRIPT bool InterruptCallback(JSContext* aCx);
 
   bool IsOnCurrentThread();
 
@@ -243,17 +366,15 @@ class WorkerPrivate : public RelativeTimeline {
 
   bool ThawInternal();
 
-  void PropagateFirstPartyStorageAccessGrantedInternal();
+  void PropagateStorageAccessPermissionGrantedInternal();
 
   void TraverseTimeouts(nsCycleCollectionTraversalCallback& aCallback);
 
   void UnlinkTimeouts();
 
-  bool ModifyBusyCountFromWorker(bool aIncrease);
+  bool AddChildWorker(WorkerPrivate& aChildWorker);
 
-  bool AddChildWorker(WorkerPrivate* aChildWorker);
-
-  void RemoveChildWorker(WorkerPrivate* aChildWorker);
+  void RemoveChildWorker(WorkerPrivate& aChildWorker);
 
   void PostMessageToParent(JSContext* aCx, JS::Handle<JS::Value> aMessage,
                            const Sequence<JSObject*>& aTransferable,
@@ -286,9 +407,10 @@ class WorkerPrivate : public RelativeTimeline {
                                    const nsTArray<nsString>& aParams);
 
   int32_t SetTimeout(JSContext* aCx, TimeoutHandler* aHandler, int32_t aTimeout,
-                     bool aIsInterval, ErrorResult& aRv);
+                     bool aIsInterval, Timeout::Reason aReason,
+                     ErrorResult& aRv);
 
-  void ClearTimeout(int32_t aId);
+  void ClearTimeout(int32_t aId, Timeout::Reason aReason);
 
   MOZ_CAN_RUN_SCRIPT bool RunExpiredTimeouts(JSContext* aCx);
 
@@ -324,6 +446,9 @@ class WorkerPrivate : public RelativeTimeline {
 
   void MemoryPressureInternal();
 
+  typedef MozPromise<uint64_t, nsresult, true> JSMemoryUsagePromise;
+  RefPtr<JSMemoryUsagePromise> GetJSMemoryUsage();
+
   void SetFetchHandlerWasAdded() {
     MOZ_ASSERT(IsServiceWorker());
     AssertIsOnWorkerThread();
@@ -336,18 +461,20 @@ class WorkerPrivate : public RelativeTimeline {
     return mFetchHandlerWasAdded;
   }
 
-  JSContext* GetJSContext() const {
+  JSContext* GetJSContext() const MOZ_NO_THREAD_SAFETY_ANALYSIS {
+    // mJSContext is only modified on the worker thread, so workerthread code
+    // can safely read it without a lock
     AssertIsOnWorkerThread();
     return mJSContext;
   }
 
   WorkerGlobalScope* GlobalScope() const {
-    MOZ_ACCESS_THREAD_BOUND(mWorkerThreadAccessible, data);
+    auto data = mWorkerThreadAccessible.Access();
     return data->mScope;
   }
 
   WorkerDebuggerGlobalScope* DebuggerGlobalScope() const {
-    MOZ_ACCESS_THREAD_BOUND(mWorkerThreadAccessible, data);
+    auto data = mWorkerThreadAccessible.Access();
     return data->mDebuggerScope;
   }
 
@@ -355,7 +482,7 @@ class WorkerPrivate : public RelativeTimeline {
   // null if we're not in a nested event loop or that nested event loop does not
   // have an associated global.
   nsIGlobalObject* GetCurrentEventLoopGlobal() const {
-    MOZ_ACCESS_THREAD_BOUND(mWorkerThreadAccessible, data);
+    auto data = mWorkerThreadAccessible.Access();
     return data->mCurrentEventLoopGlobal;
   }
 
@@ -398,18 +525,19 @@ class WorkerPrivate : public RelativeTimeline {
   bool RegisterDebuggerBindings(JSContext* aCx, JS::Handle<JSObject*> aGlobal);
 
   bool OnLine() const {
-    MOZ_ACCESS_THREAD_BOUND(mWorkerThreadAccessible, data);
+    auto data = mWorkerThreadAccessible.Access();
     return data->mOnLine;
   }
 
-  void StopSyncLoop(nsIEventTarget* aSyncLoopTarget, bool aResult);
+  void StopSyncLoop(nsIEventTarget* aSyncLoopTarget, nsresult aResult);
 
-  bool AllPendingRunnablesShouldBeCanceled() const {
-    return mCancelAllPendingRunnables;
-  }
+  bool MaybeStopSyncLoop(nsIEventTarget* aSyncLoopTarget, nsresult aResult);
 
-  void ClearMainEventQueue(WorkerRanOrNot aRanOrNot);
+  void ShutdownModuleLoader();
 
+  void ClearPreStartRunnables();
+
+  MOZ_CAN_RUN_SCRIPT void ProcessSingleDebuggerRunnable();
   void ClearDebuggerEventQueue();
 
   void OnProcessNextEvent();
@@ -423,6 +551,13 @@ class WorkerPrivate : public RelativeTimeline {
   {
   }
 #endif
+
+  void AssertIsNotPotentiallyLastGCCCRunning() {
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+    auto data = mWorkerThreadAccessible.Access();
+    MOZ_DIAGNOSTIC_ASSERT(!data->mIsPotentiallyLastGCCCRunning);
+#endif
+  }
 
   void SetWorkerScriptExecutedSuccessfully() {
     AssertIsOnWorkerThread();
@@ -440,7 +575,7 @@ class WorkerPrivate : public RelativeTimeline {
   // Get the event target to use when dispatching to the main thread
   // from this Worker thread.  This may be the main thread itself or
   // a ThrottledEventQueue to the main thread.
-  nsIEventTarget* MainThreadEventTargetForMessaging();
+  nsISerialEventTarget* MainThreadEventTargetForMessaging();
 
   nsresult DispatchToMainThreadForMessaging(
       nsIRunnable* aRunnable, uint32_t aFlags = NS_DISPATCH_NORMAL);
@@ -449,7 +584,7 @@ class WorkerPrivate : public RelativeTimeline {
       already_AddRefed<nsIRunnable> aRunnable,
       uint32_t aFlags = NS_DISPATCH_NORMAL);
 
-  nsIEventTarget* MainThreadEventTarget();
+  nsISerialEventTarget* MainThreadEventTarget();
 
   nsresult DispatchToMainThread(nsIRunnable* aRunnable,
                                 uint32_t aFlags = NS_DISPATCH_NORMAL);
@@ -458,7 +593,7 @@ class WorkerPrivate : public RelativeTimeline {
                                 uint32_t aFlags = NS_DISPATCH_NORMAL);
 
   nsresult DispatchDebuggeeToMainThread(
-      already_AddRefed<WorkerDebuggeeRunnable> aRunnable,
+      already_AddRefed<WorkerRunnable> aRunnable,
       uint32_t aFlags = NS_DISPATCH_NORMAL);
 
   // Get an event target that will dispatch runnables as control runnables on
@@ -478,8 +613,6 @@ class WorkerPrivate : public RelativeTimeline {
 
   void EnsurePerformanceStorage();
 
-  void EnsurePerformanceCounter();
-
   bool GetExecutionGranted() const;
   void SetExecutionGranted(bool aGranted);
 
@@ -493,13 +626,18 @@ class WorkerPrivate : public RelativeTimeline {
 
   PerformanceStorage* GetPerformanceStorage();
 
-  PerformanceCounter* GetPerformanceCounter();
-
-  bool IsAcceptingEvents() {
+  bool IsAcceptingEvents() MOZ_EXCLUDES(mMutex) {
     AssertIsOnParentThread();
 
     MutexAutoLock lock(mMutex);
     return mParentStatus < Canceling;
+  }
+
+  // This method helps know if the Worker is already at Dead status.
+  // Note that it is racy. The status may change after the function returns.
+  bool IsDead() MOZ_EXCLUDES(mMutex) {
+    MutexAutoLock lock(mMutex);
+    return mStatus == Dead;
   }
 
   WorkerStatus ParentStatusProtected() {
@@ -508,7 +646,7 @@ class WorkerPrivate : public RelativeTimeline {
     return mParentStatus;
   }
 
-  WorkerStatus ParentStatus() const {
+  WorkerStatus ParentStatus() const MOZ_REQUIRES(mMutex) {
     mMutex.AssertCurrentThreadOwns();
     return mParentStatus;
   }
@@ -524,12 +662,6 @@ class WorkerPrivate : public RelativeTimeline {
     mParentEventTargetRef = aParentEventTargetRef;
   }
 
-  bool ModifyBusyCount(bool aIncrease);
-
-  // This method is used by RuntimeService to know what is going wrong the
-  // shutting down.
-  uint32_t BusyCount() { return mBusyCount; }
-
   // Check whether this worker is a secure context.  For use from the parent
   // thread only; the canonical "is secure context" boolean is stored on the
   // compartment of the worker global.  The only reason we don't
@@ -539,6 +671,8 @@ class WorkerPrivate : public RelativeTimeline {
 
   // Check whether we're running in automation.
   bool IsInAutomation() const { return mIsInAutomation; }
+
+  bool IsPrivilegedAddonGlobal() const { return mIsPrivilegedAddonGlobal; }
 
   TimeStamp CreationTimeStamp() const { return mCreationTimeStamp; }
 
@@ -559,14 +693,17 @@ class WorkerPrivate : public RelativeTimeline {
 
   void CopyJSRealmOptions(JS::RealmOptions& aOptions) {
     mozilla::MutexAutoLock lock(mMutex);
-    aOptions = IsChromeWorker() ? mJSSettings.chrome.realmOptions
-                                : mJSSettings.content.realmOptions;
+    aOptions = IsChromeWorker() ? mJSSettings.chromeRealmOptions
+                                : mJSSettings.contentRealmOptions;
   }
 
   // The ability to be a chrome worker is orthogonal to the type of
   // worker [Dedicated|Shared|Service].
   bool IsChromeWorker() const { return mIsChromeWorker; }
 
+  // TODO: Invariants require that the parent worker out-live any child
+  // worker, so WorkerPrivate* should be safe in the moment of calling.
+  // We would like to have stronger type-system annotated/enforced handling.
   WorkerPrivate* GetParent() const { return mParent; }
 
   bool IsFrozen() const {
@@ -589,26 +726,28 @@ class WorkerPrivate : public RelativeTimeline {
   const nsString& ScriptURL() const { return mScriptURL; }
 
   const nsString& WorkerName() const { return mWorkerName; }
+  RequestCredentials WorkerCredentials() const { return mCredentialsMode; }
+  enum WorkerType WorkerType() const { return mWorkerType; }
 
-  WorkerType Type() const { return mWorkerType; }
+  WorkerKind Kind() const { return mWorkerKind; }
 
-  bool IsDedicatedWorker() const { return mWorkerType == WorkerTypeDedicated; }
+  bool IsDedicatedWorker() const { return mWorkerKind == WorkerKindDedicated; }
 
-  bool IsSharedWorker() const { return mWorkerType == WorkerTypeShared; }
+  bool IsSharedWorker() const { return mWorkerKind == WorkerKindShared; }
 
-  bool IsServiceWorker() const { return mWorkerType == WorkerTypeService; }
+  bool IsServiceWorker() const { return mWorkerKind == WorkerKindService; }
 
   nsContentPolicyType ContentPolicyType() const {
-    return ContentPolicyType(mWorkerType);
+    return ContentPolicyType(mWorkerKind);
   }
 
-  static nsContentPolicyType ContentPolicyType(WorkerType aWorkerType) {
-    switch (aWorkerType) {
-      case WorkerTypeDedicated:
+  static nsContentPolicyType ContentPolicyType(WorkerKind aWorkerKind) {
+    switch (aWorkerKind) {
+      case WorkerKindDedicated:
         return nsIContentPolicy::TYPE_INTERNAL_WORKER;
-      case WorkerTypeShared:
+      case WorkerKindShared:
         return nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER;
-      case WorkerTypeService:
+      case WorkerKindService:
         return nsIContentPolicy::TYPE_INTERNAL_SERVICE_WORKER;
       default:
         MOZ_ASSERT_UNREACHABLE("Invalid worker type");
@@ -628,6 +767,10 @@ class WorkerPrivate : public RelativeTimeline {
   nsLoadFlags GetLoadFlags() const { return mLoadInfo.mLoadFlags; }
 
   uint64_t WindowID() const { return mLoadInfo.mWindowID; }
+
+  uint64_t AssociatedBrowsingContextID() const {
+    return mLoadInfo.mAssociatedBrowsingContextID;
+  }
 
   uint64_t ServiceWorkerID() const { return GetServiceWorkerDescriptor().Id(); }
 
@@ -690,40 +833,39 @@ class WorkerPrivate : public RelativeTimeline {
     mLoadInfo.mChannelInfo = aChannelInfo;
   }
 
-  nsIPrincipal* GetPrincipal() const {
-    AssertIsOnMainThread();
-    return mLoadInfo.mPrincipal;
-  }
-
-  nsIPrincipal* GetEffectiveStoragePrincipal() const {
-    AssertIsOnMainThread();
-    return mLoadInfo.mStoragePrincipal;
-  }
+  nsIPrincipal* GetPrincipal() const { return mLoadInfo.mPrincipal; }
 
   nsIPrincipal* GetLoadingPrincipal() const {
-    AssertIsOnMainThread();
     return mLoadInfo.mLoadingPrincipal;
   }
 
-  const nsAString& Origin() const { return mLoadInfo.mOrigin; }
+  nsIPrincipal* GetPartitionedPrincipal() const {
+    return mLoadInfo.mPartitionedPrincipal;
+  }
+
+  nsIPrincipal* GetEffectiveStoragePrincipal() const;
 
   nsILoadGroup* GetLoadGroup() const {
     AssertIsOnMainThread();
     return mLoadInfo.mLoadGroup;
   }
 
-  bool UsesSystemPrincipal() const { return mLoadInfo.mPrincipalIsSystem; }
+  bool UsesSystemPrincipal() const {
+    return GetPrincipal()->IsSystemPrincipal();
+  }
   bool UsesAddonOrExpandedAddonPrincipal() const {
-    return mLoadInfo.mPrincipalIsAddonOrExpandedAddon;
+    return GetPrincipal()->GetIsAddonOrExpandedAddonPrincipal();
   }
 
   const mozilla::ipc::PrincipalInfo& GetPrincipalInfo() const {
     return *mLoadInfo.mPrincipalInfo;
   }
 
-  const mozilla::ipc::PrincipalInfo& GetEffectiveStoragePrincipalInfo() const {
-    return *mLoadInfo.mStoragePrincipalInfo;
+  const mozilla::ipc::PrincipalInfo& GetPartitionedPrincipalInfo() const {
+    return *mLoadInfo.mPartitionedPrincipalInfo;
   }
+
+  const mozilla::ipc::PrincipalInfo& GetEffectiveStoragePrincipalInfo() const;
 
   already_AddRefed<nsIChannel> ForgetWorkerChannel() {
     AssertIsOnMainThread();
@@ -735,12 +877,16 @@ class WorkerPrivate : public RelativeTimeline {
     return mLoadInfo.mWindow;
   }
 
-  nsIContentSecurityPolicy* GetCSP() const {
+  nsPIDOMWindowInner* GetAncestorWindow() const;
+
+  void EvictFromBFCache();
+
+  nsIContentSecurityPolicy* GetCsp() const {
     AssertIsOnMainThread();
     return mLoadInfo.mCSP;
   }
 
-  void SetCSP(nsIContentSecurityPolicy* aCSP);
+  void SetCsp(nsIContentSecurityPolicy* aCSP);
 
   nsresult SetCSPFromHeaderValues(const nsACString& aCSPHeaderValue,
                                   const nsACString& aCSPReportOnlyHeaderValue);
@@ -766,14 +912,28 @@ class WorkerPrivate : public RelativeTimeline {
 
   bool IsEvalAllowed() const { return mLoadInfo.mEvalAllowed; }
 
-  void SetEvalAllowed(bool aEvalAllowed) {
-    mLoadInfo.mEvalAllowed = aEvalAllowed;
+  void SetEvalAllowed(bool aAllowed) { mLoadInfo.mEvalAllowed = aAllowed; }
+
+  bool GetReportEvalCSPViolations() const {
+    return mLoadInfo.mReportEvalCSPViolations;
   }
 
-  bool GetReportCSPViolations() const { return mLoadInfo.mReportCSPViolations; }
+  void SetReportEvalCSPViolations(bool aReport) {
+    mLoadInfo.mReportEvalCSPViolations = aReport;
+  }
 
-  void SetReportCSPViolations(bool aReport) {
-    mLoadInfo.mReportCSPViolations = aReport;
+  bool IsWasmEvalAllowed() const { return mLoadInfo.mWasmEvalAllowed; }
+
+  void SetWasmEvalAllowed(bool aAllowed) {
+    mLoadInfo.mWasmEvalAllowed = aAllowed;
+  }
+
+  bool GetReportWasmEvalCSPViolations() const {
+    return mLoadInfo.mReportWasmEvalCSPViolations;
+  }
+
+  void SetReportWasmEvalCSPViolations(bool aReport) {
+    mLoadInfo.mReportWasmEvalCSPViolations = aReport;
   }
 
   bool XHRParamsAllowed() const { return mLoadInfo.mXHRParamsAllowed; }
@@ -784,17 +944,32 @@ class WorkerPrivate : public RelativeTimeline {
 
   mozilla::StorageAccess StorageAccess() const {
     AssertIsOnWorkerThread();
-    if (mLoadInfo.mFirstPartyStorageAccessGranted) {
+    if (mLoadInfo.mUsingStorageAccess) {
       return mozilla::StorageAccess::eAllow;
     }
 
     return mLoadInfo.mStorageAccess;
   }
 
+  bool UseRegularPrincipal() const {
+    AssertIsOnWorkerThread();
+    return mLoadInfo.mUseRegularPrincipal;
+  }
+
+  bool UsingStorageAccess() const {
+    AssertIsOnWorkerThread();
+    return mLoadInfo.mUsingStorageAccess;
+  }
+
   nsICookieJarSettings* CookieJarSettings() const {
     // Any thread.
     MOZ_ASSERT(mLoadInfo.mCookieJarSettings);
     return mLoadInfo.mCookieJarSettings;
+  }
+
+  const net::CookieJarSettingsArgs& CookieJarSettingsArgs() const {
+    MOZ_ASSERT(mLoadInfo.mCookieJarSettings);
+    return mLoadInfo.mCookieJarSettingsArgs;
   }
 
   const OriginAttributes& GetOriginAttributes() const {
@@ -806,36 +981,32 @@ class WorkerPrivate : public RelativeTimeline {
     return mLoadInfo.mServiceWorkersTestingInWindow;
   }
 
+  // Determine if the worker was created under a third-party context.
+  bool IsThirdPartyContext() const { return mLoadInfo.mIsThirdPartyContext; }
+
   bool IsWatchedByDevTools() const { return mLoadInfo.mWatchedByDevTools; }
 
-  // Determine if the worker is currently loading its top level script.
-  bool IsLoadingWorkerScript() const { return mLoadingWorkerScript; }
+  bool ShouldResistFingerprinting(RFPTarget aTarget) const;
 
-  // Called by ScriptLoader to track when this worker is loading its
-  // top level script.
-  void SetLoadingWorkerScript(bool aLoadingWorkerScript) {
-    // any thread
-    mLoadingWorkerScript = aLoadingWorkerScript;
+  const Maybe<RFPTarget>& GetOverriddenFingerprintingSettings() const {
+    return mLoadInfo.mOverriddenFingerprintingSettings;
   }
 
   RemoteWorkerChild* GetRemoteWorkerController();
 
   void SetRemoteWorkerController(RemoteWorkerChild* aController);
 
-  void SetRemoteWorkerControllerWeakRef(
-      ThreadSafeWeakPtr<RemoteWorkerChild> aWeakRef);
-
-  ThreadSafeWeakPtr<RemoteWorkerChild> GetRemoteWorkerControllerWeakRef();
-
   RefPtr<GenericPromise> SetServiceWorkerSkipWaitingFlag();
 
   // We can assume that an nsPIDOMWindow will be available for Freeze, Thaw
   // as these are only used for globals going in and out of the bfcache.
-  bool Freeze(nsPIDOMWindowInner* aWindow);
+  bool Freeze(const nsPIDOMWindowInner* aWindow);
 
-  bool Thaw(nsPIDOMWindowInner* aWindow);
+  bool Thaw(const nsPIDOMWindowInner* aWindow);
 
-  void PropagateFirstPartyStorageAccessGranted();
+  void PropagateStorageAccessPermissionGranted();
+
+  void NotifyStorageKeyUsed();
 
   void EnableDebugger();
 
@@ -850,10 +1021,10 @@ class WorkerPrivate : public RelativeTimeline {
 
   void GarbageCollect(bool aShrinking);
 
-  void CycleCollect(bool aDummy);
+  void CycleCollect();
 
   nsresult SetPrincipalsAndCSPOnMainThread(nsIPrincipal* aPrincipal,
-                                           nsIPrincipal* aStoragePrincipal,
+                                           nsIPrincipal* aPartitionedPrincipal,
                                            nsILoadGroup* aLoadGroup,
                                            nsIContentSecurityPolicy* aCsp);
 
@@ -871,7 +1042,7 @@ class WorkerPrivate : public RelativeTimeline {
 
   Document* GetDocument() const;
 
-  void MemoryPressure(bool aDummy);
+  void MemoryPressure();
 
   void UpdateContextOptions(const JS::ContextOptions& aContextOptions);
 
@@ -889,10 +1060,15 @@ class WorkerPrivate : public RelativeTimeline {
                     nsIEventTarget* aSyncLoopTarget = nullptr);
 
   nsresult DispatchControlRunnable(
-      already_AddRefed<WorkerControlRunnable> aWorkerControlRunnable);
+      already_AddRefed<WorkerRunnable> aWorkerRunnable);
 
   nsresult DispatchDebuggerRunnable(
       already_AddRefed<WorkerRunnable> aDebuggerRunnable);
+
+  nsresult DispatchToParent(already_AddRefed<WorkerRunnable> aRunnable);
+
+  bool IsOnParentThread() const;
+  void DebuggerInterruptRequest();
 
 #ifdef DEBUG
   void AssertIsOnParentThread() const;
@@ -955,15 +1131,82 @@ class WorkerPrivate : public RelativeTimeline {
 
   nsILoadInfo::CrossOriginEmbedderPolicy GetOwnerEmbedderPolicy() const;
 
+  void SetCCCollectedAnything(bool collectedAnything);
+  bool isLastCCCollectedAnything();
+
+  uint32_t GetCurrentTimerNestingLevel() const {
+    auto data = mWorkerThreadAccessible.Access();
+    return data->mCurrentTimerNestingLevel;
+  }
+
+  void IncreaseTopLevelWorkerFinishedRunnableCount() {
+    ++mTopLevelWorkerFinishedRunnableCount;
+  }
+  void DecreaseTopLevelWorkerFinishedRunnableCount() {
+    --mTopLevelWorkerFinishedRunnableCount;
+  }
+  void IncreaseWorkerFinishedRunnableCount() { ++mWorkerFinishedRunnableCount; }
+  void DecreaseWorkerFinishedRunnableCount() { --mWorkerFinishedRunnableCount; }
+
+  void RunShutdownTasks();
+
+  bool CancelBeforeWorkerScopeConstructed() const {
+    auto data = mWorkerThreadAccessible.Access();
+    return data->mCancelBeforeWorkerScopeConstructed;
+  }
+
+  enum class CCFlag : uint8_t {
+    EligibleForWorkerRef,
+    IneligibleForWorkerRef,
+    EligibleForChildWorker,
+    IneligibleForChildWorker,
+    EligibleForTimeout,
+    IneligibleForTimeout,
+    CheckBackgroundActors,
+  };
+
+  // When create/release a StrongWorkerRef, child worker, and timeout, this
+  // method is used to setup if mParentEventTargetRef can get into
+  // cycle-collection.
+  // When this method is called, it will also checks if any background actor
+  // should block the mParentEventTargetRef cycle-collection when there is no
+  // StrongWorkerRef/ChildWorker/Timeout.
+  // Worker thread only.
+  void UpdateCCFlag(const CCFlag);
+
+  // This is used in WorkerPrivate::Traverse() to checking if
+  // mParentEventTargetRef should get into cycle-collection.
+  // Parent thread only method.
+  bool IsEligibleForCC();
+
+  // A method which adjusts the count of background actors which should not
+  // block WorkerPrivate::mParentEventTargetRef cycle-collection.
+  // Worker thread only.
+  void AdjustNonblockingCCBackgroundActorCount(int32_t aCount);
+
+  RefPtr<WorkerParentRef> GetWorkerParentRef() const;
+
  private:
   WorkerPrivate(
       WorkerPrivate* aParent, const nsAString& aScriptURL, bool aIsChromeWorker,
-      WorkerType aWorkerType, const nsAString& aWorkerName,
+      WorkerKind aWorkerKind, RequestCredentials aRequestCredentials,
+      enum WorkerType aWorkerType, const nsAString& aWorkerName,
       const nsACString& aServiceWorkerScope, WorkerLoadInfo& aLoadInfo,
       nsString&& aId, const nsID& aAgentClusterId,
-      const nsILoadInfo::CrossOriginOpenerPolicy aAgentClusterOpenerPolicy);
+      const nsILoadInfo::CrossOriginOpenerPolicy aAgentClusterOpenerPolicy,
+      CancellationCallback&& aCancellationCallback,
+      TerminationCallback&& aTerminationCallback);
 
   ~WorkerPrivate();
+
+  struct AgentClusterIdAndCoop {
+    nsID mId;
+    nsILoadInfo::CrossOriginOpenerPolicy mCoop;
+  };
+
+  static AgentClusterIdAndCoop ComputeAgentClusterIdAndCoop(
+      WorkerPrivate* aParent, WorkerKind aWorkerKind,
+      WorkerLoadInfo* aLoadInfo);
 
   bool MayContinueRunning() {
     AssertIsOnWorkerThread();
@@ -998,22 +1241,24 @@ class WorkerPrivate : public RelativeTimeline {
     return ProcessAllControlRunnablesLocked();
   }
 
-  ProcessAllControlRunnablesResult ProcessAllControlRunnablesLocked();
+  ProcessAllControlRunnablesResult ProcessAllControlRunnablesLocked()
+      MOZ_REQUIRES(mMutex);
 
   void EnableMemoryReporter();
 
   void DisableMemoryReporter();
 
-  void WaitForWorkerEvents();
+  void WaitForWorkerEvents() MOZ_REQUIRES(mMutex);
 
   // If the worker shutdown status is equal or greater then aFailStatus, this
   // operation will fail and nullptr will be returned. See WorkerStatus.h for
   // more information about the correct value to use.
-  already_AddRefed<nsIEventTarget> CreateNewSyncLoop(WorkerStatus aFailStatus);
+  already_AddRefed<nsISerialEventTarget> CreateNewSyncLoop(
+      WorkerStatus aFailStatus);
 
-  bool RunCurrentSyncLoop();
+  nsresult RunCurrentSyncLoop();
 
-  bool DestroySyncLoop(uint32_t aLoopIndex);
+  nsresult DestroySyncLoop(uint32_t aLoopIndex);
 
   void InitializeGCTimers();
 
@@ -1021,6 +1266,10 @@ class WorkerPrivate : public RelativeTimeline {
 
   void SetGCTimerMode(GCTimerMode aMode);
 
+ public:
+  void CancelGCTimers() { SetGCTimerMode(NoTimer); }
+
+ private:
   void ShutdownGCTimers();
 
   friend class WorkerRef;
@@ -1032,16 +1281,23 @@ class WorkerPrivate : public RelativeTimeline {
   void NotifyWorkerRefs(WorkerStatus aStatus);
 
   bool HasActiveWorkerRefs() {
-    MOZ_ACCESS_THREAD_BOUND(mWorkerThreadAccessible, data);
+    auto data = mWorkerThreadAccessible.Access();
     return !(data->mChildWorkers.IsEmpty() && data->mTimeouts.IsEmpty() &&
              data->mWorkerRefs.IsEmpty());
   }
+
+  friend class WorkerEventTarget;
+
+  nsresult RegisterShutdownTask(nsITargetShutdownTask* aTask);
+
+  nsresult UnregisterShutdownTask(nsITargetShutdownTask* aTask);
 
   // Internal logic to dispatch a runnable. This is separate from Dispatch()
   // to allow runnables to be atomically dispatched in bulk.
   nsresult DispatchLockHeld(already_AddRefed<WorkerRunnable> aRunnable,
                             nsIEventTarget* aSyncLoopTarget,
-                            const MutexAutoLock& aProofOfLock);
+                            const MutexAutoLock& aProofOfLock)
+      MOZ_REQUIRES(mMutex);
 
   // This method dispatches a simple runnable that starts the shutdown procedure
   // after a self.close(). This method is called after a ClearMainEventQueue()
@@ -1080,20 +1336,24 @@ class WorkerPrivate : public RelativeTimeline {
   friend class mozilla::dom::WorkerThread;
 
   SharedMutex mMutex;
-  mozilla::CondVar mCondVar;
+  mozilla::CondVar mCondVar MOZ_GUARDED_BY(mMutex);
 
-  WorkerPrivate* const mParent;
+  // We cannot make this CheckedUnsafePtr<WorkerPrivate> as this would violate
+  // our static assert
+  MOZ_NON_OWNING_REF WorkerPrivate* const mParent;
 
   const nsString mScriptURL;
 
   // This is the worker name for shared workers and dedicated workers.
-  nsString mWorkerName;
+  const nsString mWorkerName;
+  const RequestCredentials mCredentialsMode;
+  enum WorkerType mWorkerType;
 
-  const WorkerType mWorkerType;
+  const WorkerKind mWorkerKind;
 
   // The worker is owned by its thread, which is represented here.  This is set
   // in Constructor() and emptied by WorkerFinishedRunnable, and conditionally
-  // traversed by the cycle collector if the busy count is zero.
+  // traversed by the cycle collector if no other things preventing shutdown.
   //
   // There are 4 ways a worker can be terminated:
   // 1. GC/CC - When the worker is in idle state (busycount == 0), it allows to
@@ -1106,22 +1366,35 @@ class WorkerPrivate : public RelativeTimeline {
   RefPtr<Worker> mParentEventTargetRef;
   RefPtr<WorkerPrivate> mSelfRef;
 
+  CancellationCallback mCancellationCallback;
+
+  // The termination callback is passed into the constructor on the parent
+  // thread and invoked by `ClearSelfAndParentEventTargetRef` just before it
+  // drops its self-ref.
+  TerminationCallback mTerminationCallback;
+
   // The lifetime of these objects within LoadInfo is managed explicitly;
   // they do not need to be cycle collected.
   WorkerLoadInfo mLoadInfo;
   LocationInfo mLocationInfo;
 
   // Protected by mMutex.
-  workerinternals::JSSettings mJSSettings;
+  workerinternals::JSSettings mJSSettings MOZ_GUARDED_BY(mMutex);
 
   WorkerDebugger* mDebugger;
 
-  workerinternals::Queue<WorkerControlRunnable*, 4> mControlQueue;
-  workerinternals::Queue<WorkerRunnable*, 4> mDebuggerQueue;
+  workerinternals::Queue<WorkerRunnable*, 4> mControlQueue;
+  workerinternals::Queue<WorkerRunnable*, 4> mDebuggerQueue
+      MOZ_GUARDED_BY(mMutex);
 
-  // Touched on multiple threads, protected with mMutex.
-  JSContext* mJSContext;
-  RefPtr<WorkerThread> mThread;
+  // Touched on multiple threads, protected with mMutex. Only modified on the
+  // worker thread
+  JSContext* mJSContext MOZ_GUARDED_BY(mMutex);
+  // mThread is only modified on the Worker thread, before calling DoRunLoop
+  RefPtr<WorkerThread> mThread MOZ_GUARDED_BY(mMutex);
+  // mPRThread is only modified on another thread in ScheduleWorker(), and is
+  // constant for the duration of DoRunLoop.  Static mutex analysis doesn't help
+  // here
   PRThread* mPRThread;
 
   // Accessed from main thread
@@ -1140,8 +1413,8 @@ class WorkerPrivate : public RelativeTimeline {
     explicit SyncLoopInfo(EventTarget* aEventTarget);
 
     RefPtr<EventTarget> mEventTarget;
+    nsresult mResult;
     bool mCompleted;
-    bool mResult;
 #ifdef DEBUG
     bool mHasRun;
 #endif
@@ -1162,24 +1435,17 @@ class WorkerPrivate : public RelativeTimeline {
   RefPtr<WorkerCSPEventListener> mCSPEventListener;
 
   // Protected by mMutex.
-  nsTArray<RefPtr<WorkerRunnable>> mPreStartRunnables;
+  nsTArray<RefPtr<WorkerThreadRunnable>> mPreStartRunnables
+      MOZ_GUARDED_BY(mMutex);
 
-  // Only touched on the parent thread. This is set only if IsSharedWorker().
+  // Only touched on the parent thread.  Used for both SharedWorker and
+  // ServiceWorker RemoteWorkers.
   RefPtr<RemoteWorkerChild> mRemoteWorkerController;
-
-  // This is set only if IsServiceWorker().
-  ThreadSafeWeakPtr<RemoteWorkerChild> mRemoteWorkerControllerWeakRef;
 
   JS::UniqueChars mDefaultLocale;  // nulled during worker JSContext init
   TimeStamp mKillTime;
-  WorkerStatus mParentStatus;
-  WorkerStatus mStatus;
-
-  // This is touched on parent thread only, but it can be read on a different
-  // thread before crashing because hanging.
-  Atomic<uint64_t> mBusyCount;
-
-  Atomic<bool> mLoadingWorkerScript;
+  WorkerStatus mParentStatus MOZ_GUARDED_BY(mMutex);
+  WorkerStatus mStatus MOZ_GUARDED_BY(mMutex);
 
   TimeStamp mCreationTimeStamp;
   DOMHighResTimeStamp mCreationTimeHighRes;
@@ -1202,6 +1468,8 @@ class WorkerPrivate : public RelativeTimeline {
 
     RefPtr<WorkerGlobalScope> mScope;
     RefPtr<WorkerDebuggerGlobalScope> mDebuggerScope;
+    // We cannot make this CheckedUnsafePtr<WorkerPrivate> as this would violate
+    // our static assert
     nsTArray<WorkerPrivate*> mChildWorkers;
     nsTObserverArray<WorkerRef*> mWorkerRefs;
     nsTArray<UniquePtr<TimeoutInfo>> mTimeouts;
@@ -1209,7 +1477,8 @@ class WorkerPrivate : public RelativeTimeline {
     nsCOMPtr<nsITimer> mTimer;
     nsCOMPtr<nsITimerCallback> mTimerRunnable;
 
-    nsCOMPtr<nsITimer> mGCTimer;
+    nsCOMPtr<nsITimer> mPeriodicGCTimer;
+    nsCOMPtr<nsITimer> mIdleGCTimer;
 
     RefPtr<MemoryReporter> mMemoryReporter;
 
@@ -1238,16 +1507,48 @@ class WorkerPrivate : public RelativeTimeline {
     uint32_t mNumWorkerRefsPreventingShutdownStart;
     uint32_t mDebuggerEventLoopLevel;
 
+    // This is the count of background actors that binding with IPCWorkerRefs.
+    // This count would be used in WorkerPrivate::UpdateCCFlag for checking if
+    // CC should be blocked by background actors.
+    uint32_t mNonblockingCCBackgroundActorCount;
+
     uint32_t mErrorHandlerRecursionCount;
-    uint32_t mNextTimeoutId;
+    int32_t mNextTimeoutId;
+
+    // Tracks the current setTimeout/setInterval nesting level.
+    // When there isn't a TimeoutHandler on the stack, this will be 0.
+    // Whenever setTimeout/setInterval are called, a new TimeoutInfo will be
+    // created with a nesting level one more than the current nesting level,
+    // saturating at the kClampTimeoutNestingLevel.
+    //
+    // When RunExpiredTimeouts is run, it sets this value to the
+    // TimeoutInfo::mNestingLevel for the duration of
+    // the WorkerScriptTimeoutHandler::Call which will explicitly trigger a
+    // microtask checkpoint so that any immediately-resolved promises will
+    // still see the nesting level.
+    uint32_t mCurrentTimerNestingLevel;
 
     bool mFrozen;
+
+    // This flag is set by the debugger interrupt control runnable to indicate
+    // that we want to process debugger runnables as part of control runnable
+    // processing, which is something we don't normally want to do. The flag is
+    // cleared after processing the debugger runnables.
+    bool mDebuggerInterruptRequested;
+
     bool mTimerRunning;
     bool mRunningExpiredTimeouts;
     bool mPeriodicGCTimerRunning;
     bool mIdleGCTimerRunning;
     bool mOnLine;
     bool mJSThreadExecutionGranted;
+    bool mCCCollectedAnything;
+    FlippedOnce<false> mDeletionScheduled;
+    FlippedOnce<false> mCancelBeforeWorkerScopeConstructed;
+    FlippedOnce<false> mPerformedShutdownAfterLastContentTaskExecuted;
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+    bool mIsPotentiallyLastGCCCRunning = false;
+#endif
   };
   ThreadBound<WorkerThreadAccessible> mWorkerThreadAccessible;
 
@@ -1257,7 +1558,9 @@ class WorkerPrivate : public RelativeTimeline {
     ~AutoPushEventLoopGlobal();
 
    private:
-    WorkerPrivate* mWorkerPrivate;
+    // We cannot make this CheckedUnsafePtr<WorkerPrivate> as this would violate
+    // our static assert
+    MOZ_NON_OWNING_REF WorkerPrivate* mWorkerPrivate;
     nsCOMPtr<nsIGlobalObject> mOldEventLoopGlobal;
   };
   friend class AutoPushEventLoopGlobal;
@@ -1266,18 +1569,26 @@ class WorkerPrivate : public RelativeTimeline {
 
   // List of operations to do at the end of the last sync event loop.
   enum {
-    ePendingEventQueueClearing = 0x01,
     eDispatchCancelingRunnable = 0x02,
   };
 
   bool mParentWindowPaused;
 
-  bool mCancelAllPendingRunnables;
   bool mWorkerScriptExecutedSuccessfully;
   bool mFetchHandlerWasAdded;
   bool mMainThreadObjectsForgotten;
   bool mIsChromeWorker;
   bool mParentFrozen;
+
+  // In order to ensure that the debugger can interrupt a busy worker,
+  // including when atomics are used, we reuse the worker's existing
+  // JS Interrupt facility used by control runnables.
+  // Rather that triggering an interrupt immediately when a debugger runnable
+  // is dispatched, we instead start a timer that will fire if we haven't
+  // already processed the runnable, targeting the timer's callback at the
+  // control event target. This allows existing runnables that were going to
+  // finish in a timely fashion to finish.
+  nsCOMPtr<nsITimer> mDebuggerInterruptTimer MOZ_GUARDED_BY(mMutex);
 
   // mIsSecureContext is set once in our constructor; after that it can be read
   // from various threads.
@@ -1287,7 +1598,7 @@ class WorkerPrivate : public RelativeTimeline {
   // use our global object's secure state there.
   const bool mIsSecureContext;
 
-  bool mDebuggerRegistered;
+  bool mDebuggerRegistered MOZ_GUARDED_BY(mMutex);
 
   // During registration, this worker may be marked as not being ready to
   // execute debuggee runnables or content.
@@ -1296,11 +1607,17 @@ class WorkerPrivate : public RelativeTimeline {
   bool mDebuggerReady;
   nsTArray<RefPtr<WorkerRunnable>> mDelayedDebuggeeRunnables;
 
+  // Whether this worker should have access to the WebExtension API bindings
+  // (currently only the Extension Background ServiceWorker declared in the
+  // extension manifest is allowed to access any WebExtension API bindings).
+  // This default to false, and it is eventually set to true by
+  // RemoteWorkerChild::ExecWorkerOnMainThread if the needed conditions
+  // are met.
+  bool mExtensionAPIAllowed;
+
   // mIsInAutomation is true when we're running in test automation.
   // We expose some extra testing functions in that case.
   bool mIsInAutomation;
-
-  RefPtr<mozilla::PerformanceCounter> mPerformanceCounter;
 
   nsString mId;
 
@@ -1316,11 +1633,38 @@ class WorkerPrivate : public RelativeTimeline {
   // better consistency with the COEP spec.
   Maybe<nsILoadInfo::CrossOriginEmbedderPolicy> mEmbedderPolicy;
   Maybe<nsILoadInfo::CrossOriginEmbedderPolicy> mOwnerEmbedderPolicy;
+
+  /* Privileged add-on flag extracted from the AddonPolicy on the nsIPrincipal
+   * on the main thread when constructing a top-level worker. The flag is
+   * propagated to nested workers. The flag is only allowed to take effect in
+   * extension processes and is forbidden in content scripts in content
+   * processes. The flag may be read on either the parent/owner thread as well
+   * as on the worker thread itself. When bug 1443925 is fixed allowing
+   * nsIPrincipal to be used OMT, it may be possible to remove this flag. */
+  bool mIsPrivilegedAddonGlobal;
+
+  Atomic<uint32_t> mTopLevelWorkerFinishedRunnableCount;
+  Atomic<uint32_t> mWorkerFinishedRunnableCount;
+
+  nsTArray<nsCOMPtr<nsITargetShutdownTask>> mShutdownTasks
+      MOZ_GUARDED_BY(mMutex);
+  bool mShutdownTasksRun MOZ_GUARDED_BY(mMutex) = false;
+
+  bool mCCFlagSaysEligible MOZ_GUARDED_BY(mMutex){true};
+
+  // The flag indicates if the worke is idle for events in the main event loop.
+  bool mWorkerLoopIsIdle MOZ_GUARDED_BY(mMutex){false};
+
+  // This flag is used to ensure we only call NotifyStorageKeyUsed once per
+  // global.
+  bool hasNotifiedStorageKeyUsed{false};
+
+  RefPtr<WorkerParentRef> mParentRef;
 };
 
 class AutoSyncLoopHolder {
-  WorkerPrivate* mWorkerPrivate;
-  nsCOMPtr<nsIEventTarget> mTarget;
+  CheckedUnsafePtr<WorkerPrivate> mWorkerPrivate;
+  nsCOMPtr<nsISerialEventTarget> mTarget;
   uint32_t mIndex;
 
  public:
@@ -1336,13 +1680,13 @@ class AutoSyncLoopHolder {
   ~AutoSyncLoopHolder() {
     if (mWorkerPrivate && mTarget) {
       mWorkerPrivate->AssertIsOnWorkerThread();
-      mWorkerPrivate->StopSyncLoop(mTarget, false);
+      mWorkerPrivate->StopSyncLoop(mTarget, NS_ERROR_FAILURE);
       mWorkerPrivate->DestroySyncLoop(mIndex);
     }
   }
 
-  bool Run() {
-    WorkerPrivate* workerPrivate = mWorkerPrivate;
+  nsresult Run() {
+    CheckedUnsafePtr<WorkerPrivate> workerPrivate = mWorkerPrivate;
     mWorkerPrivate = nullptr;
 
     workerPrivate->AssertIsOnWorkerThread();
@@ -1350,10 +1694,46 @@ class AutoSyncLoopHolder {
     return workerPrivate->RunCurrentSyncLoop();
   }
 
-  nsIEventTarget* GetEventTarget() const {
+  nsISerialEventTarget* GetSerialEventTarget() const {
     // This can be null if CreateNewSyncLoop() fails.
     return mTarget;
   }
+};
+
+/**
+ * WorkerParentRef is a RefPtr<WorkerPrivate> wrapper for cross-thread access.
+ * WorkerPrivate needs to be accessed in multiple threads; for example,
+ * in WorkerParentThreadRunnable, the associated WorkerPrivate must be accessed
+ * in the worker thread when creating/dispatching and in the parent thread when
+ * executing. Unfortunately, RefPtr can not be used on this WorkerPrivate since
+ * it is not a thread-safe ref-counted object.
+ *
+ * Instead of using a raw pointer and a complicated mechanism to ensure the
+ * WorkerPrivate's accessibility. WorkerParentRef is used to resolve the
+ * problem. WorkerParentRef has a RefPtr<WorkerPrivate> mWorkerPrivate
+ * initialized on the parent thread when WorkerPrivate::Constructor().
+ * WorkerParentRef is a thread-safe ref-counted object that can be copied at
+ * any thread by WorkerPrivate::GetWorkerParentRef() and propagated to other
+ * threads. In the target thread, call WorkerParentRef::Private() to get the
+ * reference for WorkerPrivate or get a nullptr if the Worker has shut down.
+ *
+ * Since currently usage cases, WorkerParentRef::Private() will assert to be on
+ * the parent thread.
+ */
+class WorkerParentRef final {
+ public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerParentRef);
+
+  explicit WorkerParentRef(RefPtr<WorkerPrivate>& aWorkerPrivate);
+
+  const RefPtr<WorkerPrivate>& Private() const;
+
+  void DropWorkerPrivate();
+
+ private:
+  ~WorkerParentRef();
+
+  RefPtr<WorkerPrivate> mWorkerPrivate;
 };
 
 }  // namespace dom

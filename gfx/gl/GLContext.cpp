@@ -16,6 +16,11 @@
 #ifdef MOZ_WIDGET_ANDROID
 #  include <sys/mman.h>
 #endif
+#if defined(XP_LINUX) && !defined(ANDROID)
+// For MesaMemoryLeakWorkaround
+#  include <dlfcn.h>
+#  include <link.h>
+#endif
 
 #include "GLBlitHelper.h"
 #include "GLReadTexImageHelper.h"
@@ -25,6 +30,7 @@
 #include "gfxEnv.h"
 #include "gfxUtils.h"
 #include "GLContextProvider.h"
+#include "GLLibraryLoader.h"
 #include "GLTextureImage.h"
 #include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
@@ -38,18 +44,16 @@
 #include "mozilla/StaticPrefs_gl.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/layers/BuildConstants.h"
 #include "mozilla/layers/TextureForwarder.h"  // for LayersIPCChannel
 
 #include "OGLShaderProgram.h"  // for ShaderProgramType
 
 #include "mozilla/DebugOnly.h"
+#include "mozilla/Maybe.h"
 
 #ifdef XP_MACOSX
 #  include <CoreServices/CoreServices.h>
-#endif
-
-#if defined(MOZ_WIDGET_COCOA)
-#  include "nsCocoaFeatures.h"
 #endif
 
 #ifdef MOZ_WIDGET_ANDROID
@@ -62,7 +66,8 @@ namespace gl {
 using namespace mozilla::gfx;
 using namespace mozilla::layers;
 
-MOZ_THREAD_LOCAL(uintptr_t) GLContext::sCurrentContext;
+// Zero-initialized after init().
+MOZ_THREAD_LOCAL(const GLContext*) GLContext::sCurrentContext;
 
 // If adding defines, don't forget to undefine symbols. See #undef block below.
 // clang-format off
@@ -82,6 +87,7 @@ static const char* const sExtensionNames[] = {
     "GL_ANGLE_framebuffer_multisample",
     "GL_ANGLE_instanced_arrays",
     "GL_ANGLE_multiview",
+    "GL_ANGLE_provoking_vertex",
     "GL_ANGLE_texture_compression_dxt3",
     "GL_ANGLE_texture_compression_dxt5",
     "GL_ANGLE_timer_query",
@@ -109,6 +115,7 @@ static const char* const sExtensionNames[] = {
     "GL_ARB_map_buffer_range",
     "GL_ARB_occlusion_query2",
     "GL_ARB_pixel_buffer_object",
+    "GL_ARB_provoking_vertex",
     "GL_ARB_robust_buffer_access_behavior",
     "GL_ARB_robustness",
     "GL_ARB_sampler_objects",
@@ -150,12 +157,12 @@ static const char* const sExtensionNames[] = {
     "GL_EXT_multisampled_render_to_texture",
     "GL_EXT_occlusion_query_boolean",
     "GL_EXT_packed_depth_stencil",
+    "GL_EXT_provoking_vertex",
     "GL_EXT_read_format_bgra",
     "GL_EXT_robustness",
     "GL_EXT_sRGB",
     "GL_EXT_sRGB_write_control",
     "GL_EXT_shader_texture_lod",
-    "GL_EXT_texture3D",
     "GL_EXT_texture_compression_bptc",
     "GL_EXT_texture_compression_dxt1",
     "GL_EXT_texture_compression_rgtc",
@@ -163,6 +170,7 @@ static const char* const sExtensionNames[] = {
     "GL_EXT_texture_compression_s3tc_srgb",
     "GL_EXT_texture_filter_anisotropic",
     "GL_EXT_texture_format_BGRA8888",
+    "GL_EXT_texture_norm16",
     "GL_EXT_texture_sRGB",
     "GL_EXT_texture_storage",
     "GL_EXT_timer_query",
@@ -172,6 +180,7 @@ static const char* const sExtensionNames[] = {
     "GL_IMG_texture_compression_pvrtc",
     "GL_IMG_texture_npot",
     "GL_KHR_debug",
+    "GL_KHR_parallel_shader_compile",
     "GL_KHR_robust_buffer_access_behavior",
     "GL_KHR_robustness",
     "GL_KHR_texture_compression_astc_hdr",
@@ -193,6 +202,7 @@ static const char* const sExtensionNames[] = {
     "GL_OES_depth24",
     "GL_OES_depth32",
     "GL_OES_depth_texture",
+    "GL_OES_draw_buffers_indexed",
     "GL_OES_element_index_uint",
     "GL_OES_fbo_render_mipmap",
     "GL_OES_framebuffer_object",
@@ -234,15 +244,15 @@ static bool ParseVersion(const std::string& versionStr,
 uint8_t GLContext::ChooseDebugFlags(const CreateContextFlags createFlags) {
   uint8_t debugFlags = 0;
 
-#ifdef MOZ_GL_DEBUG
-  if (gfxEnv::GlDebug()) {
+#ifdef MOZ_GL_DEBUG_BUILD
+  if (gfxEnv::MOZ_GL_DEBUG()) {
     debugFlags |= GLContext::DebugFlagEnabled;
   }
 
   // Enables extra verbose output, informing of the start and finish of every GL
   // call. Useful e.g. to record information to investigate graphics system
   // crashes/lockups
-  if (gfxEnv::GlDebugVerbose()) {
+  if (gfxEnv::MOZ_GL_DEBUG_VERBOSE()) {
     debugFlags |= GLContext::DebugFlagTrace;
   }
 
@@ -253,12 +263,8 @@ uint8_t GLContext::ChooseDebugFlags(const CreateContextFlags createFlags) {
   if (createFlags & CreateContextFlags::NO_VALIDATION) {
     abortOnError = true;
 
-    const auto fnStringsMatch = [](const char* a, const char* b) {
-      return strcmp(a, b) == 0;
-    };
-
-    const char* envAbortOnError = PR_GetEnv("MOZ_GL_DEBUG_ABORT_ON_ERROR");
-    if (envAbortOnError && fnStringsMatch(envAbortOnError, "0")) {
+    const auto& env = gfxEnv::MOZ_GL_DEBUG_ABORT_ON_ERROR();
+    if (env.as_str == "0") {
       abortOnError = false;
     }
   }
@@ -271,26 +277,21 @@ uint8_t GLContext::ChooseDebugFlags(const CreateContextFlags createFlags) {
   return debugFlags;
 }
 
-GLContext::GLContext(CreateContextFlags flags, const SurfaceCaps& caps,
-                     GLContext* sharedContext, bool isOffscreen,
+GLContext::GLContext(const GLContextDesc& desc, GLContext* sharedContext,
                      bool useTLSIsCurrent)
-    : mUseTLSIsCurrent(ShouldUseTLSIsCurrent(useTLSIsCurrent)),
-      mIsOffscreen(isOffscreen),
-      mDebugFlags(ChooseDebugFlags(flags)),
+    : mDesc(desc),
+      mUseTLSIsCurrent(ShouldUseTLSIsCurrent(useTLSIsCurrent)),
+      mDebugFlags(ChooseDebugFlags(mDesc.flags)),
       mSharedContext(sharedContext),
-      mCaps(caps),
+      mOwningThreadId(Some(PlatformThread::CurrentId())),
       mWorkAroundDriverBugs(
-          StaticPrefs::gfx_work_around_driver_bugs_AtStartup()) {
-  mOwningThreadId = PlatformThread::CurrentId();
-  MOZ_ALWAYS_TRUE(sCurrentContext.init());
-  sCurrentContext.set(0);
-}
+          StaticPrefs::gfx_work_around_driver_bugs_AtStartup()) {}
 
 GLContext::~GLContext() {
   NS_ASSERTION(
       IsDestroyed(),
       "GLContext implementation must call MarkDestroyed in destructor!");
-#ifdef MOZ_GL_DEBUG
+#ifdef MOZ_GL_DEBUG_BUILD
   if (mSharedContext) {
     GLContext* tip = mSharedContext;
     while (tip->mSharedContext) tip = tip->mSharedContext;
@@ -300,6 +301,18 @@ GLContext::~GLContext() {
     ReportOutstandingNames();
   }
 #endif
+  // Ensure we clear sCurrentContext if we were the last context set and avoid
+  // the memory getting reused.
+  if (sCurrentContext.init() && sCurrentContext.get() == this) {
+    sCurrentContext.set(nullptr);
+  }
+}
+
+/*static*/
+void GLContext::InvalidateCurrentContext() {
+  if (sCurrentContext.init()) {
+    sCurrentContext.set(nullptr);
+  }
 }
 
 /*static*/
@@ -516,7 +529,10 @@ bool GLContext::InitImpl() {
         END_SYMBOLS};
     (void)fnLoadSymbols(symbols, nullptr);
 
-    auto err = fGetError();
+    // We need to call the fGetError symbol directly here because if there is an
+    // unflushed reset status, we don't want to mark the context as lost. That
+    // would prevent us from recovering.
+    auto err = mSymbols.fGetError();
     if (err == LOCAL_GL_CONTEXT_LOST) {
       MOZ_ASSERT(mSymbols.fGetGraphicsResetStatus);
       const auto status = fGetGraphicsResetStatus();
@@ -534,7 +550,14 @@ bool GLContext::InitImpl() {
 
   ////////////////
 
-  const std::string versionStr = (const char*)fGetString(LOCAL_GL_VERSION);
+  const auto* const versionRawStr = (const char*)fGetString(LOCAL_GL_VERSION);
+  if (!versionRawStr || !*versionRawStr) {
+    // This can happen with Pernosco.
+    NS_WARNING("Empty GL version string");
+    return false;
+  }
+
+  const std::string versionStr = versionRawStr;
   if (versionStr.find("OpenGL ES") == 0) {
     mProfile = ContextProfile::OpenGLES;
   }
@@ -632,6 +655,7 @@ bool GLContext::InitImpl() {
       "Adreno (TM) 420",
       "Mali-400 MP",
       "Mali-450 MP",
+      "Mali-T",
       "PowerVR SGX 530",
       "PowerVR SGX 540",
       "PowerVR SGX 544MP",
@@ -640,6 +664,7 @@ bool GLContext::InitImpl() {
       "Gallium 0.4 on llvmpipe",
       "Intel HD Graphics 3000 OpenGL Engine",
       "Microsoft Basic Render Driver",
+      "Samsung Xclipse",
       "Unknown"};
 
   mRenderer = GLRenderer::Other;
@@ -650,11 +675,28 @@ bool GLContext::InitImpl() {
     }
   }
 
-  if (ShouldSpew()) {
+  {
+    const auto versionStr = (const char*)fGetString(LOCAL_GL_VERSION);
+    if (strstr(versionStr, "Mesa")) {
+      mIsMesa = true;
+    }
+  }
+
+  const auto Once = []() {
+    static bool did = false;
+    if (did) return false;
+    did = true;
+    return true;
+  };
+
+  bool printRenderer = ShouldSpew();
+  printRenderer |= (kIsDebug && Once());
+  if (printRenderer) {
     printf_stderr("GL_VENDOR: %s\n", glVendorString);
     printf_stderr("mVendor: %s\n", vendorMatchStrings[size_t(mVendor)]);
     printf_stderr("GL_RENDERER: %s\n", glRendererString);
     printf_stderr("mRenderer: %s\n", rendererMatchStrings[size_t(mRenderer)]);
+    printf_stderr("mIsMesa: %i\n", int(mIsMesa));
   }
 
   ////////////////
@@ -699,6 +741,11 @@ bool GLContext::InitImpl() {
       MarkUnsupported(GLFeature::standard_derivatives);
     }
 
+    if (Renderer() == GLRenderer::AndroidEmulator) {
+      // Bug 1665300
+      mSymbols.fGetGraphicsResetStatus = 0;
+    }
+
     if (Vendor() == GLVendor::Vivante) {
       // bug 958256
       MarkUnsupported(GLFeature::standard_derivatives);
@@ -711,10 +758,13 @@ bool GLContext::InitImpl() {
       MarkUnsupported(GLFeature::framebuffer_multisample);
     }
 
-    const auto versionStr = (const char*)fGetString(LOCAL_GL_VERSION);
-    if (strstr(versionStr, "Mesa")) {
+    if (IsMesa()) {
       // DrawElementsInstanced hangs the driver.
       MarkUnsupported(GLFeature::robust_buffer_access_behavior);
+    }
+
+    if (Renderer() == GLRenderer::SamsungXclipse) {
+      MarkUnsupported(GLFeature::invalidate_framebuffer);
     }
   }
 
@@ -835,23 +885,12 @@ bool GLContext::InitImpl() {
     int maxTexSize = INT32_MAX;
     int maxCubeSize = INT32_MAX;
 #ifdef XP_MACOSX
-    if (!nsCocoaFeatures::IsAtLeastVersion(10, 12)) {
-      if (mVendor == GLVendor::Intel) {
-        // see bug 737182 for 2D textures, bug 684882 for cube map textures.
-        maxTexSize = 4096;
-        maxCubeSize = 512;
-      } else if (mVendor == GLVendor::NVIDIA) {
-        // See bug 879656.  8192 fails, 8191 works.
-        maxTexSize = 8191;
-      }
-    } else {
-      // https://bugzilla.mozilla.org/show_bug.cgi?id=1544446
-      // Mojave exposes 16k textures, but gives FRAMEBUFFER_UNSUPPORTED for any
-      // 16k*16k FB except rgba8 without depth/stencil.
-      // The max supported sizes changes based on involved formats.
-      // (RGBA32F more restrictive than RGBA16F)
-      maxTexSize = 8192;
-    }
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1544446
+    // Mojave exposes 16k textures, but gives FRAMEBUFFER_UNSUPPORTED for any
+    // 16k*16k FB except rgba8 without depth/stencil.
+    // The max supported sizes changes based on involved formats.
+    // (RGBA32F more restrictive than RGBA16F)
+    maxTexSize = 8192;
 #endif
 #ifdef MOZ_X11
     if (mVendor == GLVendor::Nouveau) {
@@ -875,25 +914,6 @@ bool GLContext::InitImpl() {
       // prevents occasional driver crash.
       mNeedsFlushBeforeDeleteFB = true;
     }
-#ifdef MOZ_WIDGET_ANDROID
-    if ((Renderer() == GLRenderer::AdrenoTM305 ||
-         Renderer() == GLRenderer::AdrenoTM320 ||
-         Renderer() == GLRenderer::AdrenoTM330) &&
-        jni::GetAPIVersion() < 21) {
-      // Bug 1164027. Driver crashes when functions such as
-      // glTexImage2D fail due to virtual memory exhaustion.
-      mTextureAllocCrashesOnMapFailure = true;
-    }
-#endif
-#if MOZ_WIDGET_ANDROID
-    if (Renderer() == GLRenderer::SGX540 && jni::GetAPIVersion() <= 15) {
-      // Bug 1288446. Driver sometimes crashes when uploading data to a
-      // texture if the render target has changed since the texture was
-      // rendered from. Calling glCheckFramebufferStatus after
-      // glFramebufferTexture2D prevents the crash.
-      mNeedsCheckAfterAttachTextureToFb = true;
-    }
-#endif
 
     // -
 
@@ -921,14 +941,6 @@ bool GLContext::InitImpl() {
 
   // We're ready for final setup.
   fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, 0);
-
-  // TODO: Remove SurfaceCaps::any.
-  if (mCaps.any) {
-    mCaps.any = false;
-    mCaps.color = true;
-    mCaps.alpha = false;
-  }
-
   MOZ_GL_ASSERT(this, IsCurrent());
 
   if (ShouldSpew() && IsExtensionSupported(KHR_debug)) {
@@ -1121,7 +1133,7 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
             { (PRFuncPtr*) &mSymbols.fResumeTransformFeedback, {{ "glResumeTransformFeedbackNV" }} },
             END_SYMBOLS
         };
-        if (!fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::texture_storage)) {
+        if (!fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::transform_feedback2)) {
             // Also mark bind_buffer_offset as unsupported.
             MarkUnsupported(GLFeature::bind_buffer_offset);
         }
@@ -1242,6 +1254,26 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
         fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::draw_buffers);
     }
 
+    if (IsSupported(GLFeature::draw_buffers_indexed)) {
+        const SymLoadStruct coreSymbols[] = {
+            { (PRFuncPtr*) &mSymbols.fBlendEquationSeparatei, {{ "glBlendEquationSeparatei" }} },
+            { (PRFuncPtr*) &mSymbols.fBlendFuncSeparatei, {{ "glBlendFuncSeparatei" }} },
+            { (PRFuncPtr*) &mSymbols.fColorMaski, {{ "glColorMaski" }} },
+            { (PRFuncPtr*) &mSymbols.fDisablei, {{ "glDisablei" }} },
+            { (PRFuncPtr*) &mSymbols.fEnablei, {{ "glEnablei" }} },
+            END_SYMBOLS
+        };
+        const SymLoadStruct extSymbols[] = {
+            { (PRFuncPtr*) &mSymbols.fBlendEquationSeparatei, {{ "glBlendEquationSeparateiOES" }} },
+            { (PRFuncPtr*) &mSymbols.fBlendFuncSeparatei, {{ "glBlendFuncSeparateiOES" }} },
+            { (PRFuncPtr*) &mSymbols.fColorMaski, {{ "glColorMaskiOES" }} },
+            { (PRFuncPtr*) &mSymbols.fDisablei, {{ "glDisableiOES" }} },
+            { (PRFuncPtr*) &mSymbols.fEnablei, {{ "glEnableiOES" }} },
+            END_SYMBOLS
+        };
+        fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::draw_buffers_indexed);
+    }
+
     if (IsSupported(GLFeature::get_integer_indexed)) {
         const SymLoadStruct coreSymbols[] = {
             { (PRFuncPtr*) &mSymbols.fGetIntegeri_v, {{ "glGetIntegeri_v" }} },
@@ -1303,7 +1335,8 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
             END_SYMBOLS
         };
         const SymLoadStruct extSymbols[] = {
-            { (PRFuncPtr*) &mSymbols.fTexSubImage3D, {{ "glTexSubImage3DEXT", "glTexSubImage3DOES" }} },
+            { (PRFuncPtr*) &mSymbols.fTexImage3D, {{ "glTexImage3DOES" }} },
+            { (PRFuncPtr*) &mSymbols.fTexSubImage3D, {{ "glTexSubImage3DOES" }} },
             END_SYMBOLS
         };
         fnLoadFeatureByCore(coreSymbols, extSymbols, GLFeature::texture_3D);
@@ -1451,6 +1484,17 @@ void GLContext::LoadMoreSymbols(const SymbolLoader& loader) {
     fnLoadForExt(symbols, APPLE_framebuffer_multisample);
   }
 
+  if (IsSupported(GLFeature::provoking_vertex)) {
+    const SymLoadStruct symbols[] = {{(PRFuncPtr*)&mSymbols.fProvokingVertex,
+                                      {{
+                                          "glProvokingVertex",
+                                          "glProvokingVertexANGLE",
+                                          "glProvokingVertexEXT",
+                                      }}},
+                                     END_SYMBOLS};
+    fnLoadForFeature(symbols, GLFeature::provoking_vertex);
+  }
+
   // Load developer symbols, don't fail if we can't find them.
   const SymLoadStruct devSymbols[] = {CORE_SYMBOL(GetTexImage),
                                       CORE_SYMBOL(GetTexLevelParameteriv),
@@ -1471,22 +1515,22 @@ void GLContext::DebugCallback(GLenum source, GLenum type, GLuint id,
   nsAutoCString sourceStr;
   switch (source) {
     case LOCAL_GL_DEBUG_SOURCE_API:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_API");
+      sourceStr = "SOURCE_API"_ns;
       break;
     case LOCAL_GL_DEBUG_SOURCE_WINDOW_SYSTEM:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_WINDOW_SYSTEM");
+      sourceStr = "SOURCE_WINDOW_SYSTEM"_ns;
       break;
     case LOCAL_GL_DEBUG_SOURCE_SHADER_COMPILER:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_SHADER_COMPILER");
+      sourceStr = "SOURCE_SHADER_COMPILER"_ns;
       break;
     case LOCAL_GL_DEBUG_SOURCE_THIRD_PARTY:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_THIRD_PARTY");
+      sourceStr = "SOURCE_THIRD_PARTY"_ns;
       break;
     case LOCAL_GL_DEBUG_SOURCE_APPLICATION:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_APPLICATION");
+      sourceStr = "SOURCE_APPLICATION"_ns;
       break;
     case LOCAL_GL_DEBUG_SOURCE_OTHER:
-      sourceStr = NS_LITERAL_CSTRING("SOURCE_OTHER");
+      sourceStr = "SOURCE_OTHER"_ns;
       break;
     default:
       sourceStr = nsPrintfCString("<source 0x%04x>", source);
@@ -1496,25 +1540,25 @@ void GLContext::DebugCallback(GLenum source, GLenum type, GLuint id,
   nsAutoCString typeStr;
   switch (type) {
     case LOCAL_GL_DEBUG_TYPE_ERROR:
-      typeStr = NS_LITERAL_CSTRING("TYPE_ERROR");
+      typeStr = "TYPE_ERROR"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
-      typeStr = NS_LITERAL_CSTRING("TYPE_DEPRECATED_BEHAVIOR");
+      typeStr = "TYPE_DEPRECATED_BEHAVIOR"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
-      typeStr = NS_LITERAL_CSTRING("TYPE_UNDEFINED_BEHAVIOR");
+      typeStr = "TYPE_UNDEFINED_BEHAVIOR"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_PORTABILITY:
-      typeStr = NS_LITERAL_CSTRING("TYPE_PORTABILITY");
+      typeStr = "TYPE_PORTABILITY"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_PERFORMANCE:
-      typeStr = NS_LITERAL_CSTRING("TYPE_PERFORMANCE");
+      typeStr = "TYPE_PERFORMANCE"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_OTHER:
-      typeStr = NS_LITERAL_CSTRING("TYPE_OTHER");
+      typeStr = "TYPE_OTHER"_ns;
       break;
     case LOCAL_GL_DEBUG_TYPE_MARKER:
-      typeStr = NS_LITERAL_CSTRING("TYPE_MARKER");
+      typeStr = "TYPE_MARKER"_ns;
       break;
     default:
       typeStr = nsPrintfCString("<type 0x%04x>", type);
@@ -1524,16 +1568,16 @@ void GLContext::DebugCallback(GLenum source, GLenum type, GLuint id,
   nsAutoCString sevStr;
   switch (severity) {
     case LOCAL_GL_DEBUG_SEVERITY_HIGH:
-      sevStr = NS_LITERAL_CSTRING("SEVERITY_HIGH");
+      sevStr = "SEVERITY_HIGH"_ns;
       break;
     case LOCAL_GL_DEBUG_SEVERITY_MEDIUM:
-      sevStr = NS_LITERAL_CSTRING("SEVERITY_MEDIUM");
+      sevStr = "SEVERITY_MEDIUM"_ns;
       break;
     case LOCAL_GL_DEBUG_SEVERITY_LOW:
-      sevStr = NS_LITERAL_CSTRING("SEVERITY_LOW");
+      sevStr = "SEVERITY_LOW"_ns;
       break;
     case LOCAL_GL_DEBUG_SEVERITY_NOTIFICATION:
-      sevStr = NS_LITERAL_CSTRING("SEVERITY_NOTIFICATION");
+      sevStr = "SEVERITY_NOTIFICATION"_ns;
       break;
     default:
       sevStr = nsPrintfCString("<severity 0x%04x>", severity);
@@ -1604,15 +1648,6 @@ void GLContext::InitExtensions() {
       // Bug 980048
       MarkExtensionUnsupported(OES_EGL_sync);
     }
-
-#ifdef MOZ_WIDGET_ANDROID
-    if (Vendor() == GLVendor::Imagination &&
-        Renderer() == GLRenderer::SGX544MP && jni::GetAPIVersion() < 21) {
-      // Bug 1026404
-      MarkExtensionUnsupported(OES_EGL_image);
-      MarkExtensionUnsupported(OES_EGL_image_external);
-    }
-#endif
 
     if (Vendor() == GLVendor::ARM && (Renderer() == GLRenderer::Mali400MP ||
                                       Renderer() == GLRenderer::Mali450MP)) {
@@ -1710,71 +1745,6 @@ bool GLContext::ListHasExtension(const GLubyte* extensions,
   return false;
 }
 
-GLFormats GLContext::ChooseGLFormats(const SurfaceCaps& caps) const {
-  GLFormats formats;
-
-  // If we're on ES2 hardware and we have an explicit request for 16 bits of
-  // color or less OR we don't support full 8-bit color, return a 4444 or 565
-  // format.
-  bool bpp16 = caps.bpp16;
-  if (IsGLES()) {
-    if (!IsExtensionSupported(OES_rgb8_rgba8)) bpp16 = true;
-  } else {
-    // RGB565 is uncommon on desktop, requiring ARB_ES2_compatibility.
-    // Since it's also vanishingly useless there, let's not support it.
-    bpp16 = false;
-  }
-
-  if (bpp16) {
-    MOZ_ASSERT(IsGLES());
-    if (caps.alpha) {
-      formats.color_texInternalFormat = LOCAL_GL_RGBA;
-      formats.color_texFormat = LOCAL_GL_RGBA;
-      formats.color_texType = LOCAL_GL_UNSIGNED_SHORT_4_4_4_4;
-      formats.color_rbFormat = LOCAL_GL_RGBA4;
-    } else {
-      formats.color_texInternalFormat = LOCAL_GL_RGB;
-      formats.color_texFormat = LOCAL_GL_RGB;
-      formats.color_texType = LOCAL_GL_UNSIGNED_SHORT_5_6_5;
-      formats.color_rbFormat = LOCAL_GL_RGB565;
-    }
-  } else {
-    formats.color_texType = LOCAL_GL_UNSIGNED_BYTE;
-
-    if (caps.alpha) {
-      formats.color_texInternalFormat =
-          IsGLES() ? LOCAL_GL_RGBA : LOCAL_GL_RGBA8;
-      formats.color_texFormat = LOCAL_GL_RGBA;
-      formats.color_rbFormat = LOCAL_GL_RGBA8;
-    } else {
-      formats.color_texInternalFormat = IsGLES() ? LOCAL_GL_RGB : LOCAL_GL_RGB8;
-      formats.color_texFormat = LOCAL_GL_RGB;
-      formats.color_rbFormat = LOCAL_GL_RGB8;
-    }
-  }
-
-  // Be clear that these are 0 if unavailable.
-  formats.depthStencil = 0;
-  if (IsSupported(GLFeature::packed_depth_stencil)) {
-    formats.depthStencil = LOCAL_GL_DEPTH24_STENCIL8;
-  }
-
-  formats.depth = 0;
-  if (IsGLES()) {
-    if (IsExtensionSupported(OES_depth24)) {
-      formats.depth = LOCAL_GL_DEPTH_COMPONENT24;
-    } else {
-      formats.depth = LOCAL_GL_DEPTH_COMPONENT16;
-    }
-  } else {
-    formats.depth = LOCAL_GL_DEPTH_COMPONENT24;
-  }
-
-  formats.stencil = LOCAL_GL_STENCIL_INDEX8;
-
-  return formats;
-}
-
 bool GLContext::IsFramebufferComplete(GLuint fb, GLenum* pStatus) {
   MOZ_ASSERT(fb);
 
@@ -1861,7 +1831,7 @@ bool GLContext::AssembleOffscreenFBs(const GLuint colorMSRB,
   } else {
     drawFB = readFB;
   }
-  MOZ_ASSERT(GetFB() == drawFB);
+  MOZ_ASSERT(GetIntAs<GLuint>(LOCAL_GL_FRAMEBUFFER_BINDING) == drawFB);
 
   if (depthRB) {
     fFramebufferRenderbuffer(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_DEPTH_ATTACHMENT,
@@ -1879,7 +1849,7 @@ bool GLContext::AssembleOffscreenFBs(const GLuint colorMSRB,
 
   if (!IsFramebufferComplete(drawFB, &status)) {
     NS_WARNING("DrawFBO: Incomplete");
-#ifdef MOZ_GL_DEBUG
+#ifdef MOZ_GL_DEBUG_BUILD
     if (ShouldSpew()) {
       printf_stderr("Framebuffer status: %X\n", status);
     }
@@ -1889,7 +1859,7 @@ bool GLContext::AssembleOffscreenFBs(const GLuint colorMSRB,
 
   if (!IsFramebufferComplete(readFB, &status)) {
     NS_WARNING("ReadFBO: Incomplete");
-#ifdef MOZ_GL_DEBUG
+#ifdef MOZ_GL_DEBUG_BUILD
     if (ShouldSpew()) {
       printf_stderr("Framebuffer status: %X\n", status);
     }
@@ -1919,7 +1889,6 @@ void GLContext::MarkDestroyed() {
 
   // Null these before they're naturally nulled after dtor, as we want GLContext
   // to still be alive in *their* dtors.
-  mScreen = nullptr;
   mBlitHelper = nullptr;
   mReadTexImageHelper = nullptr;
 
@@ -1929,7 +1898,7 @@ void GLContext::MarkDestroyed() {
 
 // -
 
-#ifdef MOZ_GL_DEBUG
+#ifdef MOZ_GL_DEBUG_BUILD
 /* static */
 void GLContext::AssertNotPassingStackBufferToTheGL(const void* ptr) {
   int somethingOnTheStack;
@@ -2080,17 +2049,24 @@ static void ReportArrayContents(
   nsTArray<GLContext::NamedResource> copy(aArray.Clone());
   copy.Sort();
 
+  // Accumulate the output in a buffer to avoid interleaved output.
+  nsCString line;
+
   GLContext* lastContext = nullptr;
   for (uint32_t i = 0; i < copy.Length(); ++i) {
     if (lastContext != copy[i].origin) {
-      if (lastContext) printf_stderr("\n");
-      printf_stderr("  [%p - %s] ", copy[i].origin,
-                    copy[i].originDeleted ? "deleted" : "live");
+      if (lastContext) {
+        printf_stderr("%s\n", line.BeginReading());
+        line.Assign("");
+      }
+      line.Append(nsPrintfCString("  [%p - %s] ", copy[i].origin,
+                                  copy[i].originDeleted ? "deleted" : "live"));
       lastContext = copy[i].origin;
     }
-    printf_stderr("%d ", copy[i].name);
+    line.AppendInt(copy[i].name);
+    line.Append(' ');
   }
-  printf_stderr("\n");
+  printf_stderr("%s\n", line.BeginReading());
 }
 
 void GLContext::ReportOutstandingNames() {
@@ -2107,55 +2083,7 @@ void GLContext::ReportOutstandingNames() {
   ReportArrayContents("Outstanding Renderbuffers", mTrackedRenderbuffers);
 }
 
-#endif /* DEBUG */
-
-void GLContext::GuaranteeResolve() { fFinish(); }
-
-const gfx::IntSize& GLContext::OffscreenSize() const {
-  MOZ_ASSERT(IsOffscreen());
-  return mScreen->Size();
-}
-
-bool GLContext::CreateScreenBufferImpl(const IntSize& size,
-                                       const SurfaceCaps& caps) {
-  UniquePtr<GLScreenBuffer> newScreen =
-      GLScreenBuffer::Create(this, size, caps);
-  if (!newScreen) return false;
-
-  if (!newScreen->Resize(size)) {
-    return false;
-  }
-
-  // This will rebind to 0 (Screen) if needed when
-  // it falls out of scope.
-  ScopedBindFramebuffer autoFB(this);
-
-  mScreen = std::move(newScreen);
-
-  return true;
-}
-
-bool GLContext::ResizeScreenBuffer(const IntSize& size) {
-  if (!IsOffscreenSizeAllowed(size)) return false;
-
-  return mScreen->Resize(size);
-}
-
-void GLContext::ForceDirtyScreen() {
-  ScopedBindFramebuffer autoFB(0);
-
-  BeforeGLDrawCall();
-  // no-op; just pretend we did something
-  AfterGLDrawCall();
-}
-
-void GLContext::CleanDirtyScreen() {
-  ScopedBindFramebuffer autoFB(0);
-
-  BeforeGLReadCall();
-  // no-op; we just want to make sure the Read FBO is updated if it needs to be
-  AfterGLReadCall();
-}
+#endif  // ifdef MOZ_GL_DEBUG_BUILD
 
 bool GLContext::IsOffscreenSizeAllowed(const IntSize& aSize) const {
   int32_t biggerDimension = std::max(aSize.width, aSize.height);
@@ -2163,8 +2091,9 @@ bool GLContext::IsOffscreenSizeAllowed(const IntSize& aSize) const {
   return biggerDimension <= maxAllowed;
 }
 
-bool GLContext::IsOwningThreadCurrent() {
-  return PlatformThread::CurrentId() == mOwningThreadId;
+bool GLContext::IsValidOwningThread() const {
+  if (!mOwningThreadId) return true;  // Free for all!
+  return PlatformThread::CurrentId() == *mOwningThreadId;
 }
 
 GLBlitHelper* GLContext::BlitHelper() {
@@ -2193,7 +2122,7 @@ void GLContext::FlushIfHeavyGLCallsSinceLastFlush() {
 }
 
 /*static*/
-bool GLContext::ShouldDumpExts() { return gfxEnv::GlDumpExtensions(); }
+bool GLContext::ShouldDumpExts() { return gfxEnv::MOZ_GL_DUMP_EXTS(); }
 
 bool DoesStringMatch(const char* aString, const char* aWantedString) {
   if (!aString || !aWantedString) return false;
@@ -2214,7 +2143,7 @@ bool DoesStringMatch(const char* aString, const char* aWantedString) {
 }
 
 /*static*/
-bool GLContext::ShouldSpew() { return gfxEnv::GlSpew(); }
+bool GLContext::ShouldSpew() { return gfxEnv::MOZ_GL_SPEW(); }
 
 void SplitByChar(const nsACString& str, const char delim,
                  std::vector<nsCString>* const out) {
@@ -2234,119 +2163,6 @@ void SplitByChar(const nsACString& str, const char delim,
   out->push_back(nsCString(substr));
 }
 
-bool GLContext::Readback(SharedSurface* src, gfx::DataSourceSurface* dest) {
-  MOZ_ASSERT(src && dest);
-  MOZ_ASSERT(dest->GetSize() == src->mSize);
-
-  if (!MakeCurrent()) {
-    return false;
-  }
-
-  SharedSurface* prev = GetLockedSurface();
-
-  const bool needsSwap = src != prev;
-  if (needsSwap) {
-    if (prev) prev->UnlockProd();
-    src->LockProd();
-  }
-
-  GLuint tempFB = 0;
-  GLuint tempTex = 0;
-
-  {
-    ScopedBindFramebuffer autoFB(this);
-
-    // We're consuming from the producer side, so which do we use?
-    // Really, we just want a read-only lock, so ConsumerAcquire is the best
-    // match.
-    src->ProducerReadAcquire();
-
-    if (src->mAttachType == AttachmentType::Screen) {
-      fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, 0);
-    } else {
-      fGenFramebuffers(1, &tempFB);
-      fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, tempFB);
-
-      switch (src->mAttachType) {
-        case AttachmentType::GLTexture:
-          fFramebufferTexture2D(
-              LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
-              src->ProdTextureTarget(), src->ProdTexture(), 0);
-          break;
-        case AttachmentType::GLRenderbuffer:
-          fFramebufferRenderbuffer(
-              LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
-              LOCAL_GL_RENDERBUFFER, src->ProdRenderbuffer());
-          break;
-        default:
-          MOZ_CRASH("GFX: bad `src->mAttachType`.");
-      }
-
-      DebugOnly<GLenum> status = fCheckFramebufferStatus(LOCAL_GL_FRAMEBUFFER);
-      MOZ_GL_ASSERT(this, status == LOCAL_GL_FRAMEBUFFER_COMPLETE);
-    }
-
-    if (src->NeedsIndirectReads()) {
-      fGenTextures(1, &tempTex);
-      {
-        ScopedBindTexture autoTex(this, tempTex);
-
-        GLenum format = src->mHasAlpha ? LOCAL_GL_RGBA : LOCAL_GL_RGB;
-        auto width = src->mSize.width;
-        auto height = src->mSize.height;
-        fCopyTexImage2D(LOCAL_GL_TEXTURE_2D, 0, format, 0, 0, width, height, 0);
-      }
-
-      fFramebufferTexture2D(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
-                            LOCAL_GL_TEXTURE_2D, tempTex, 0);
-    }
-
-    ReadPixelsIntoDataSurface(this, dest);
-
-    src->ProducerReadRelease();
-  }
-
-  if (tempFB) fDeleteFramebuffers(1, &tempFB);
-
-  if (tempTex) {
-    fDeleteTextures(1, &tempTex);
-  }
-
-  if (needsSwap) {
-    src->UnlockProd();
-    if (prev) prev->LockProd();
-  }
-
-  return true;
-}
-
-void GLContext::fBindFramebuffer(GLenum target, GLuint framebuffer) {
-  if (!mScreen) {
-    raw_fBindFramebuffer(target, framebuffer);
-    return;
-  }
-
-  switch (target) {
-    case LOCAL_GL_DRAW_FRAMEBUFFER_EXT:
-      mScreen->BindDrawFB(framebuffer);
-      return;
-
-    case LOCAL_GL_READ_FRAMEBUFFER_EXT:
-      mScreen->BindReadFB(framebuffer);
-      return;
-
-    case LOCAL_GL_FRAMEBUFFER:
-      mScreen->BindFB(framebuffer);
-      return;
-
-    default:
-      // Nothing we care about, likely an error.
-      break;
-  }
-
-  raw_fBindFramebuffer(target, framebuffer);
-}
-
 void GLContext::fCopyTexImage2D(GLenum target, GLint level,
                                 GLenum internalformat, GLint x, GLint y,
                                 GLsizei width, GLsizei height, GLint border) {
@@ -2360,87 +2176,83 @@ void GLContext::fCopyTexImage2D(GLenum target, GLint level,
   }
 
   BeforeGLReadCall();
-  bool didCopyTexImage2D = false;
-  if (mScreen) {
-    didCopyTexImage2D = mScreen->CopyTexImage2D(target, level, internalformat,
-                                                x, y, width, height, border);
-  }
-
-  if (!didCopyTexImage2D) {
-    raw_fCopyTexImage2D(target, level, internalformat, x, y, width, height,
-                        border);
-  }
+  raw_fCopyTexImage2D(target, level, internalformat, x, y, width, height,
+                      border);
   AfterGLReadCall();
 }
 
-void GLContext::fGetIntegerv(GLenum pname, GLint* params) {
+void GLContext::fGetIntegerv(const GLenum pname, GLint* const params) const {
+  const auto AssertBinding = [&](const char* const name, const GLenum binding,
+                                 const GLuint expected) {
+    if (MOZ_LIKELY(!mDebugFlags)) return;
+    GLuint actual = 0;
+    raw_fGetIntegerv(binding, (GLint*)&actual);
+    if (actual != expected) {
+      gfxCriticalError() << "Misprediction: " << name << " expected "
+                         << expected << ", was " << actual;
+    }
+  };
+
   switch (pname) {
-    // LOCAL_GL_FRAMEBUFFER_BINDING is equal to
-    // LOCAL_GL_DRAW_FRAMEBUFFER_BINDING_EXT,
-    // so we don't need two cases.
-    case LOCAL_GL_DRAW_FRAMEBUFFER_BINDING_EXT:
-      if (mScreen) {
-        *params = mScreen->GetDrawFB();
-      } else {
-        raw_fGetIntegerv(pname, params);
-      }
-      break;
-
-    case LOCAL_GL_READ_FRAMEBUFFER_BINDING_EXT:
-      if (mScreen) {
-        *params = mScreen->GetReadFB();
-      } else {
-        raw_fGetIntegerv(pname, params);
-      }
-      break;
-
     case LOCAL_GL_MAX_TEXTURE_SIZE:
       MOZ_ASSERT(mMaxTextureSize > 0);
       *params = mMaxTextureSize;
-      break;
+      return;
 
     case LOCAL_GL_MAX_CUBE_MAP_TEXTURE_SIZE:
       MOZ_ASSERT(mMaxCubeMapTextureSize > 0);
       *params = mMaxCubeMapTextureSize;
-      break;
+      return;
 
     case LOCAL_GL_MAX_RENDERBUFFER_SIZE:
       MOZ_ASSERT(mMaxRenderbufferSize > 0);
       *params = mMaxRenderbufferSize;
-      break;
+      return;
 
     case LOCAL_GL_VIEWPORT:
       for (size_t i = 0; i < 4; i++) {
         params[i] = mViewportRect[i];
       }
-      break;
+      return;
 
     case LOCAL_GL_SCISSOR_BOX:
       for (size_t i = 0; i < 4; i++) {
         params[i] = mScissorRect[i];
       }
+      return;
+
+    case LOCAL_GL_DRAW_FRAMEBUFFER_BINDING:
+      if (mElideDuplicateBindFramebuffers) {
+        static_assert(LOCAL_GL_DRAW_FRAMEBUFFER_BINDING ==
+                      LOCAL_GL_FRAMEBUFFER_BINDING);
+        AssertBinding("GL_DRAW_FRAMEBUFFER_BINDING",
+                      LOCAL_GL_DRAW_FRAMEBUFFER_BINDING, mCachedDrawFb);
+        *params = static_cast<GLint>(mCachedDrawFb);
+        return;
+      }
+      break;
+
+    case LOCAL_GL_READ_FRAMEBUFFER_BINDING:
+      if (mElideDuplicateBindFramebuffers) {
+        if (IsSupported(GLFeature::framebuffer_blit)) {
+          AssertBinding("GL_READ_FRAMEBUFFER_BINDING",
+                        LOCAL_GL_READ_FRAMEBUFFER_BINDING, mCachedReadFb);
+        }
+        *params = static_cast<GLint>(mCachedReadFb);
+        return;
+      }
       break;
 
     default:
-      raw_fGetIntegerv(pname, params);
       break;
   }
+  raw_fGetIntegerv(pname, params);
 }
 
 void GLContext::fReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                             GLenum format, GLenum type, GLvoid* pixels) {
   BeforeGLReadCall();
-
-  bool didReadPixels = false;
-  if (mScreen) {
-    didReadPixels =
-        mScreen->ReadPixels(x, y, width, height, format, type, pixels);
-  }
-
-  if (!didReadPixels) {
-    raw_fReadPixels(x, y, width, height, format, type, pixels);
-  }
-
+  raw_fReadPixels(x, y, width, height, format, type, pixels);
   AfterGLReadCall();
 
   // Check if GL is giving back 1.0 alpha for
@@ -2471,14 +2283,6 @@ void GLContext::fReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
 }
 
 void GLContext::fDeleteFramebuffers(GLsizei n, const GLuint* names) {
-  if (mScreen) {
-    // Notify mScreen which framebuffers we're deleting.
-    // Otherwise, we will get framebuffer binding mispredictions.
-    for (int i = 0; i < n; i++) {
-      mScreen->DeletingFB(names[i]);
-    }
-  }
-
   // Avoid crash by flushing before glDeleteFramebuffers. See bug 1194923.
   if (mNeedsFlushBeforeDeleteFB) {
     fFlush();
@@ -2540,95 +2344,22 @@ void GLContext::fTexImage2D(GLenum target, GLint level, GLint internalformat,
                   type, pixels);
 }
 
-GLuint GLContext::GetDrawFB() {
-  if (mScreen) return mScreen->GetDrawFB();
+UniquePtr<Texture> CreateTexture(GLContext& gl, const gfx::IntSize& size) {
+  const GLenum target = LOCAL_GL_TEXTURE_2D;
+  const GLenum format = LOCAL_GL_RGBA;
 
-  GLuint ret = 0;
-  GetUIntegerv(LOCAL_GL_DRAW_FRAMEBUFFER_BINDING_EXT, &ret);
-  return ret;
-}
+  auto tex = MakeUnique<Texture>(gl);
+  ScopedBindTexture autoTex(&gl, tex->name, target);
 
-GLuint GLContext::GetReadFB() {
-  if (mScreen) return mScreen->GetReadFB();
+  gl.fTexParameteri(target, LOCAL_GL_TEXTURE_MIN_FILTER, LOCAL_GL_LINEAR);
+  gl.fTexParameteri(target, LOCAL_GL_TEXTURE_MAG_FILTER, LOCAL_GL_LINEAR);
+  gl.fTexParameteri(target, LOCAL_GL_TEXTURE_WRAP_S, LOCAL_GL_CLAMP_TO_EDGE);
+  gl.fTexParameteri(target, LOCAL_GL_TEXTURE_WRAP_T, LOCAL_GL_CLAMP_TO_EDGE);
 
-  GLenum bindEnum = IsSupported(GLFeature::split_framebuffer)
-                        ? LOCAL_GL_READ_FRAMEBUFFER_BINDING_EXT
-                        : LOCAL_GL_FRAMEBUFFER_BINDING;
-
-  GLuint ret = 0;
-  GetUIntegerv(bindEnum, &ret);
-  return ret;
-}
-
-GLuint GLContext::GetFB() {
-  if (mScreen) {
-    // This has a very important extra assert that checks that we're
-    // not accidentally ignoring a situation where the draw and read
-    // FBs differ.
-    return mScreen->GetFB();
-  }
-
-  GLuint ret = 0;
-  GetUIntegerv(LOCAL_GL_FRAMEBUFFER_BINDING, &ret);
-  return ret;
-}
-
-bool GLContext::InitOffscreen(const gfx::IntSize& size,
-                              const SurfaceCaps& caps) {
-  if (!CreateScreenBuffer(size, caps)) return false;
-
-  if (!MakeCurrent()) {
-    return false;
-  }
-  fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, 0);
-  fScissor(0, 0, size.width, size.height);
-  fViewport(0, 0, size.width, size.height);
-
-  mCaps = mScreen->mCaps;
-  MOZ_ASSERT(!mCaps.any);
-
-  return true;
-}
-
-GLuint CreateTexture(GLContext* aGL, GLenum aInternalFormat, GLenum aFormat,
-                     GLenum aType, const gfx::IntSize& aSize, bool linear) {
-  GLuint tex = 0;
-  aGL->fGenTextures(1, &tex);
-  ScopedBindTexture autoTex(aGL, tex);
-
-  aGL->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
-                      linear ? LOCAL_GL_LINEAR : LOCAL_GL_NEAREST);
-  aGL->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
-                      linear ? LOCAL_GL_LINEAR : LOCAL_GL_NEAREST);
-  aGL->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_S,
-                      LOCAL_GL_CLAMP_TO_EDGE);
-  aGL->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_T,
-                      LOCAL_GL_CLAMP_TO_EDGE);
-
-  aGL->fTexImage2D(LOCAL_GL_TEXTURE_2D, 0, aInternalFormat, aSize.width,
-                   aSize.height, 0, aFormat, aType, nullptr);
+  gl.fTexImage2D(target, 0, format, size.width, size.height, 0, format,
+                 LOCAL_GL_UNSIGNED_BYTE, nullptr);
 
   return tex;
-}
-
-GLuint CreateTextureForOffscreen(GLContext* aGL, const GLFormats& aFormats,
-                                 const gfx::IntSize& aSize) {
-  MOZ_ASSERT(aFormats.color_texInternalFormat);
-  MOZ_ASSERT(aFormats.color_texFormat);
-  MOZ_ASSERT(aFormats.color_texType);
-
-  GLenum internalFormat = aFormats.color_texInternalFormat;
-  GLenum unpackFormat = aFormats.color_texFormat;
-  GLenum unpackType = aFormats.color_texType;
-  if (aGL->IsANGLE()) {
-    MOZ_ASSERT(internalFormat == LOCAL_GL_RGBA);
-    MOZ_ASSERT(unpackFormat == LOCAL_GL_RGBA);
-    MOZ_ASSERT(unpackType == LOCAL_GL_UNSIGNED_BYTE);
-    internalFormat = LOCAL_GL_BGRA_EXT;
-    unpackFormat = LOCAL_GL_BGRA_EXT;
-  }
-
-  return CreateTexture(aGL, internalFormat, unpackFormat, unpackType, aSize);
 }
 
 uint32_t GetBytesPerTexel(GLenum format, GLenum type) {
@@ -2652,8 +2383,10 @@ uint32_t GetBytesPerTexel(GLenum format, GLenum type) {
     switch (format) {
       case LOCAL_GL_ALPHA:
       case LOCAL_GL_LUMINANCE:
+      case LOCAL_GL_R8:
         return 1 * multiplier;
       case LOCAL_GL_LUMINANCE_ALPHA:
+      case LOCAL_GL_R16:
         return 2 * multiplier;
       case LOCAL_GL_RGB:
         return 3 * multiplier;
@@ -2675,26 +2408,40 @@ uint32_t GetBytesPerTexel(GLenum format, GLenum type) {
   return 0;
 }
 
+void GLContext::ResetTLSCurrentContext() {
+  if (sCurrentContext.init()) {
+    sCurrentContext.set(nullptr);
+  }
+}
+
 bool GLContext::MakeCurrent(bool aForce) const {
   if (MOZ_UNLIKELY(IsContextLost())) return false;
 
   if (MOZ_LIKELY(!aForce)) {
     bool isCurrent;
-    if (mUseTLSIsCurrent) {
-      isCurrent = (sCurrentContext.get() == reinterpret_cast<uintptr_t>(this));
+    if (mUseTLSIsCurrent && sCurrentContext.init()) {
+      isCurrent = (sCurrentContext.get() == this);
     } else {
       isCurrent = IsCurrentImpl();
     }
     if (MOZ_LIKELY(isCurrent)) {
       MOZ_ASSERT(IsCurrentImpl() ||
-                 !MakeCurrentImpl());  // Might have lost context.
+                 MakeCurrentImpl());  // Might have lost context.
       return true;
     }
   }
-
+  if (!IsValidOwningThread()) {
+    gfxCriticalError() << "MakeCurrent called on a thread other than the"
+                       << " creating thread!";
+    if (gfxEnv::MOZ_GL_RELEASE_ASSERT_CONTEXT_OWNERSHIP()) {
+      MOZ_CRASH("MOZ_GL_RELEASE_ASSERT_CONTEXT_OWNERSHIP");
+    }
+  }
   if (!MakeCurrentImpl()) return false;
 
-  sCurrentContext.set(reinterpret_cast<uintptr_t>(this));
+  if (sCurrentContext.init()) {
+    sCurrentContext.set(this);
+  }
   return true;
 }
 
@@ -2872,14 +2619,41 @@ void GLContext::OnImplicitMakeCurrentFailure(const char* const funcName) {
                      << " mImplicitMakeCurrent.";
 }
 
-// -
+bool GLContext::CreateOffscreenDefaultFb(const gfx::IntSize& size) {
+  mOffscreenDefaultFb = MozFramebuffer::Create(this, size, 0, true);
+  return bool(mOffscreenDefaultFb);
+}
 
-// These are defined out of line so that we don't need to include
-// ISurfaceAllocator.h in SurfaceTypes.h.
-SurfaceCaps::SurfaceCaps() = default;
-SurfaceCaps::SurfaceCaps(const SurfaceCaps& other) = default;
-SurfaceCaps& SurfaceCaps::operator=(const SurfaceCaps& other) = default;
-SurfaceCaps::~SurfaceCaps() = default;
+// Some of Mesa's drivers allocate heap memory when loaded and don't
+// free it when unloaded; this causes Leak Sanitizer to detect leaks and
+// fail to unwind the stack, so suppressions don't work.  This
+// workaround leaks a reference to the driver library so that it's never
+// unloaded.  Because the leak isn't significant for real usage, only
+// ASan runs in CI, this is applied only to the software renderer.
+//
+// See bug 1702394 for more details.
+void MesaMemoryLeakWorkaround() {
+#if defined(XP_LINUX) && !defined(ANDROID)
+  Maybe<nsAutoCString> foundPath;
+
+  dl_iterate_phdr(
+      [](dl_phdr_info* info, size_t size, void* data) {
+        auto& foundPath = *reinterpret_cast<Maybe<nsAutoCString>*>(data);
+        nsDependentCString thisPath(info->dlpi_name);
+        if (StringEndsWith(thisPath, "/swrast_dri.so"_ns)) {
+          foundPath.emplace(thisPath);
+          return 1;
+        }
+        return 0;
+      },
+      &foundPath);
+
+  if (foundPath) {
+    // Deliberately leak to prevent unload
+    Unused << dlopen(foundPath->get(), RTLD_LAZY);
+  }
+#endif  // XP_LINUX but not ANDROID
+}
 
 } /* namespace gl */
 } /* namespace mozilla */

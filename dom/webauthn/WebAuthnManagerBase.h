@@ -7,24 +7,24 @@
 #ifndef mozilla_dom_WebAuthnManagerBase_h
 #define mozilla_dom_WebAuthnManagerBase_h
 
-#include "nsIDOMEventListener.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsCOMPtr.h"
 
 /*
  * A base class used by WebAuthn and U2F implementations, providing shared
  * functionality and requiring an interface used by the IPC child actors.
  */
 
-namespace mozilla {
-namespace dom {
+class nsPIDOMWindowInner;
+
+namespace mozilla::dom {
 
 class WebAuthnTransactionChild;
 class WebAuthnMakeCredentialResult;
 class WebAuthnGetAssertionResult;
 
-class WebAuthnManagerBase : public nsIDOMEventListener {
+class WebAuthnManagerBase : public nsISupports {
  public:
-  NS_DECL_NSIDOMEVENTLISTENER
-
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(WebAuthnManagerBase)
 
@@ -49,13 +49,6 @@ class WebAuthnManagerBase : public nsIDOMEventListener {
  protected:
   MOZ_CAN_RUN_SCRIPT virtual ~WebAuthnManagerBase();
 
-  // Needed by HandleEvent() to track visibilty changes.
-  MOZ_CAN_RUN_SCRIPT virtual void HandleVisibilityChange() = 0;
-
-  // Visibility event handling.
-  void ListenForVisibilityEvents();
-  void StopListeningForVisibilityEvents();
-
   bool MaybeCreateBackgroundActor();
 
   // The parent window.
@@ -65,7 +58,6 @@ class WebAuthnManagerBase : public nsIDOMEventListener {
   RefPtr<WebAuthnTransactionChild> mChild;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_WebAuthnManagerBase_h

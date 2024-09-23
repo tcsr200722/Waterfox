@@ -6,11 +6,10 @@
 #ifndef _include_dom_media_ipc_RDDChild_h_
 #define _include_dom_media_ipc_RDDChild_h_
 #include "mozilla/PRDDChild.h"
-
-#include "mozilla/ipc/CrashReporterHelper.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/gfx/gfxVarReceiver.h"
 #include "mozilla/gfx/GPUProcessListener.h"
+#include "mozilla/gfx/gfxVarReceiver.h"
+#include "mozilla/ipc/CrashReporterHelper.h"
 
 namespace mozilla {
 
@@ -31,8 +30,9 @@ class RDDChild final : public PRDDChild,
   typedef mozilla::dom::MemoryReportRequestHost MemoryReportRequestHost;
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(RDDChild, final)
+
   explicit RDDChild(RDDProcessHost* aHost);
-  ~RDDChild();
 
   bool Init();
 
@@ -42,19 +42,38 @@ class RDDChild final : public PRDDChild,
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   mozilla::ipc::IPCResult RecvAddMemoryReport(const MemoryReport& aReport);
-  mozilla::ipc::IPCResult RecvFinishMemoryReport(const uint32_t& aGeneration);
+#if defined(XP_WIN)
   mozilla::ipc::IPCResult RecvGetModulesTrust(
       ModulePaths&& aModPaths, bool aRunAtNormalPriority,
       GetModulesTrustResolver&& aResolver);
+#endif  // defined(XP_WIN)
+  mozilla::ipc::IPCResult RecvUpdateMediaCodecsSupported(
+      const media::MediaCodecsSupported& aSupported);
+  mozilla::ipc::IPCResult RecvFOGData(ByteBuf&& aBuf);
+
+  mozilla::ipc::IPCResult RecvAccumulateChildHistograms(
+      nsTArray<HistogramAccumulation>&& aAccumulations);
+  mozilla::ipc::IPCResult RecvAccumulateChildKeyedHistograms(
+      nsTArray<KeyedHistogramAccumulation>&& aAccumulations);
+  mozilla::ipc::IPCResult RecvUpdateChildScalars(
+      nsTArray<ScalarAction>&& aScalarActions);
+  mozilla::ipc::IPCResult RecvUpdateChildKeyedScalars(
+      nsTArray<KeyedScalarAction>&& aScalarActions);
+  mozilla::ipc::IPCResult RecvRecordChildEvents(
+      nsTArray<ChildEventData>&& events);
+  mozilla::ipc::IPCResult RecvRecordDiscardedData(
+      const DiscardedData& aDiscardedData);
 
   bool SendRequestMemoryReport(const uint32_t& aGeneration,
                                const bool& aAnonymize,
                                const bool& aMinimizeMemoryUsage,
                                const Maybe<ipc::FileDescriptor>& aDMDFile);
 
-  static void Destroy(UniquePtr<RDDChild>&& aChild);
+  static void Destroy(RefPtr<RDDChild>&& aChild);
 
  private:
+  ~RDDChild();
+
   RDDProcessHost* mHost;
   UniquePtr<MemoryReportRequestHost> mMemoryReportRequest;
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)

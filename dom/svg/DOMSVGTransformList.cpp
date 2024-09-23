@@ -6,7 +6,6 @@
 
 #include "DOMSVGTransformList.h"
 
-#include "mozAutoDocUpdate.h"
 #include "mozilla/dom/SVGElement.h"
 #include "mozilla/dom/SVGMatrix.h"
 #include "mozilla/dom/SVGTransformListBinding.h"
@@ -32,8 +31,7 @@ void UpdateListIndicesFromIndex(
 
 }  // namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // We could use NS_IMPL_CYCLE_COLLECTION(, except that in Unlink() we need to
 // clear our SVGAnimatedTransformList's weak ref to us to be safe. (The other
@@ -74,35 +72,6 @@ JSObject* DOMSVGTransformList::WrapObject(JSContext* cx,
                                           JS::Handle<JSObject*> aGivenProto) {
   return mozilla::dom::SVGTransformList_Binding::Wrap(cx, this, aGivenProto);
 }
-
-//----------------------------------------------------------------------
-// Helper class: AutoChangeTransformListNotifier
-// Stack-based helper class to pair calls to WillChangeTransformList and
-// DidChangeTransformList.
-class MOZ_RAII AutoChangeTransformListNotifier : public mozAutoDocUpdate {
- public:
-  explicit AutoChangeTransformListNotifier(
-      DOMSVGTransformList* aTransformList MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mozAutoDocUpdate(aTransformList->Element()->GetComposedDoc(), true),
-        mTransformList(aTransformList) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    MOZ_ASSERT(mTransformList, "Expecting non-null transformList");
-    mEmptyOrOldValue =
-        mTransformList->Element()->WillChangeTransformList(*this);
-  }
-
-  ~AutoChangeTransformListNotifier() {
-    mTransformList->Element()->DidChangeTransformList(mEmptyOrOldValue, *this);
-    if (mTransformList->IsAnimating()) {
-      mTransformList->Element()->AnimationNeedsResample();
-    }
-  }
-
- private:
-  DOMSVGTransformList* const mTransformList;
-  nsAttrValue mEmptyOrOldValue;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-};
 
 void DOMSVGTransformList::InternalListLengthWillChange(uint32_t aNewLength) {
   uint32_t oldLength = mItems.Length();
@@ -161,7 +130,9 @@ void DOMSVGTransformList::Clear(ErrorResult& error) {
     mAList->InternalBaseValListWillChangeLengthTo(0);
 
     mItems.Clear();
-    InternalList().Clear();
+    auto* alist = Element()->GetAnimatedTransformList();
+    alist->mBaseVal.Clear();
+    alist->mIsBaseSet = false;
   }
 }
 
@@ -329,8 +300,9 @@ already_AddRefed<DOMSVGTransform> DOMSVGTransformList::RemoveItem(
 }
 
 already_AddRefed<DOMSVGTransform>
-DOMSVGTransformList::CreateSVGTransformFromMatrix(dom::SVGMatrix& matrix) {
-  RefPtr<DOMSVGTransform> result = new DOMSVGTransform(matrix.GetMatrix());
+DOMSVGTransformList::CreateSVGTransformFromMatrix(const DOMMatrix2DInit& matrix,
+                                                  ErrorResult& rv) {
+  RefPtr<DOMSVGTransform> result = new DOMSVGTransform(matrix, rv);
   return result.forget();
 }
 
@@ -416,5 +388,4 @@ void DOMSVGTransformList::MaybeRemoveItemFromAnimValListAt(uint32_t aIndex) {
   UpdateListIndicesFromIndex(animVal->mItems, aIndex);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

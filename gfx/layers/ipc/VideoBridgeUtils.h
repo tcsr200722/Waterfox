@@ -7,7 +7,7 @@
 #ifndef IPC_VideoBridgeUtils_h
 #define IPC_VideoBridgeUtils_h
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 
 namespace mozilla {
 namespace layers {
@@ -15,6 +15,7 @@ namespace layers {
 enum class VideoBridgeSource : uint8_t {
   RddProcess,
   GpuProcess,
+  MFMediaEngineCDMProcess,
   _Count,
 };
 

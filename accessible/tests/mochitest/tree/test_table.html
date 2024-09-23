@@ -166,17 +166,15 @@
       testAccessibleTree("table4", accTree);
 
       // ///////////////////////////////////////////////////////////////////////
-      // table5 (intermediate accessible for tbody)
+      // table5 (tbody with display: block should not get accessible)
       accTree =
         { TABLE: [
-          { GROUPING: [
-            { ROW: [
-              { CELL: [
-                { TEXT_LEAF: [ ] },
-              ] },
+          { ROW: [
+            { CELL: [
+              { TEXT_LEAF: [ ] },
             ] },
-          ] } ],
-        };
+          ] },
+        ] };
       testAccessibleTree("table5", accTree);
 
       // ///////////////////////////////////////////////////////////////////////
@@ -254,10 +252,38 @@
       // ///////////////////////////////////////////////////////////////////////
       // A table with all elements being display:block, including a row group.
       // This makes us fall back to the ARIAGridRowAccessible.
-      // Crazy example from Gmail.
+      // Strange example from Gmail.
       accTree =
         { TABLE: [
-          { GROUPING: [
+          { ROW: [
+            { CELL: [
+              { TEXT_LEAF: [ ] },
+            ] },
+          ] },
+        ] };
+        testAccessibleTree("table_all_display_block", accTree);
+
+      // ///////////////////////////////////////////////////////////////////////
+      // A table with a display:block tbody that has an aria role
+      // The tbody should get an accessible with the desired role.
+      accTree =
+        { TABLE: [
+          { DIALOG: [
+            { TEXT_CONTAINER: [
+              { TEXT_CONTAINER: [
+                { TEXT_LEAF: [ ] },
+              ] },
+            ] },
+          ] },
+        ] };
+        testAccessibleTree("table_with_block_tbody_and_role", accTree);
+
+      // ///////////////////////////////////////////////////////////////////////
+      // A table with a display:block tbody that is focusable
+      // The tbody should get a grouping accessible.
+      accTree =
+        { TABLE: [
+          { ROWGROUP: [
             { ROW: [
               { CELL: [
                 { TEXT_LEAF: [ ] },
@@ -265,7 +291,34 @@
             ] },
           ] },
         ] };
-        testAccessibleTree("table_all_display_block", accTree);
+        testAccessibleTree("table_with_focusable_block_tbody", accTree);
+
+      // ///////////////////////////////////////////////////////////////////////
+      // Test that the CSS position property doesn't stop th elements from
+      // reporting the proper columnheader, rowheader roles.
+      accTree =
+        { TABLE: [
+          { ROW: [
+            { COLUMNHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { COLUMNHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { COLUMNHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { COLUMNHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { COLUMNHEADER: [ { TEXT_LEAF: [ ] } ] },
+          ] },
+          { ROW: [
+            { ROWHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { CELL: [ ] },
+            { ROWHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { CELL: [ ] },
+            { ROWHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { CELL: [ ] },
+            { ROWHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { CELL: [ ] },
+            { ROWHEADER: [ { TEXT_LEAF: [ ] } ] },
+            { CELL: [ ] },
+          ] },
+        ] };
+      testAccessibleTree("table_containing_pos_styled_th", accTree);
 
       SimpleTest.finish();
     }
@@ -369,7 +422,7 @@
   </table>
 
   <table id="table5">
-    <tbody style="display:block;overflow:auto;">
+    <tbody style="display:block;">
       <tr>
         <td>bla</td>
       </tr>
@@ -411,6 +464,44 @@
         <td style="display:block;">text</td>
       </tr>
     </tbody>
+  </table>
+
+  <table id="table_with_block_tbody_and_role">
+    <tbody style="display:block;" role="dialog">
+      <tr>
+        <td>text</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <table id="table_with_focusable_block_tbody">
+    <tbody style="display:block;" tabindex="0">
+      <tr>
+        <td>text</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <table id="table_containing_pos_styled_th">
+    <tr>
+      <th style="position: static">static colheader</th>
+      <th style="position: relative">relative colheader</th>
+      <th style="position: absolute">absolute colheader</th>
+      <th style="position: fixed">fixed colheader</th>
+      <th style="position: sticky">sticky colheader</th>
+    </tr>
+    <tr>
+      <th style="position: static">static rowheader</th>
+      <td/>
+      <th style="position: relative">relative rowheader</th>
+      <td/>
+      <th style="position: absolute">absolute rowheader</th>
+      <td/>
+      <th style="position: fixed">fixed rowheader</th>
+      <td/>
+      <th style="position: sticky">sticky rowheader</th>
+      <td/>
+    </tr>
   </table>
 </body>
 </html>

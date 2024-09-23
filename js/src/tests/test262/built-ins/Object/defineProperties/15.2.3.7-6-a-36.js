@@ -7,8 +7,7 @@ description: >
     Object.defineProperties - 'P' doesn't exist in 'O', test
     [[Configurable]] of 'P' is set as false value if absent in
     accessor descriptor 'desc' (8.12.9 step 4.b.i)
-includes:
-    - propertyHelper.js
+includes: [propertyHelper.js]
 ---*/
 
 var obj = {};
@@ -31,8 +30,9 @@ verifyEqualTo(obj, "prop", 10);
 
 verifyWritable(obj, "prop", "setVerifyHelpProp");
 
-verifyEnumerable(obj, "prop");
-
-verifyNotConfigurable(obj, "prop");
+verifyProperty(obj, "prop", {
+  enumerable: true,
+  configurable: false,
+});
 
 reportCompare(0, 0);

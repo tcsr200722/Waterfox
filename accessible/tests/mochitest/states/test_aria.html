@@ -117,67 +117,67 @@
       // aria-readonly
       testStates("aria_readonly_textbox", STATE_READONLY);
 
-      // readonly/editable on grid and gridcell
-      testStates("aria_grid_default", 0, EXT_STATE_EDITABLE,
+      // readonly on grid and gridcell
+      testStates("aria_grid_default", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_default_colheader_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_default_colheader_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_default_colheader_inherited", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_default_rowheader_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_default_rowheader_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_default_rowheader_inherited", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_default_cell_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_default_cell_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_default_cell_inherited", 0, 0,
                  STATE_READONLY, 0);
 
       testStates("aria_grid_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_readonly_colheader_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_readonly_colheader_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_readonly_colheader_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_readonly_rowheader_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_readonly_rowheader_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_readonly_rowheader_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_grid_readonly_cell_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_grid_readonly_cell_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_grid_readonly_cell_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
+                 0, 0);
 
-      // readonly/editable on treegrid and gridcell
-      testStates("aria_treegrid_default", 0, EXT_STATE_EDITABLE,
+      // readonly on treegrid and gridcell
+      testStates("aria_treegrid_default", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_default_colheader_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_default_colheader_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_default_colheader_inherited", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_default_rowheader_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_default_rowheader_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_default_rowheader_inherited", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_default_cell_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_default_cell_inherited", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_default_cell_inherited", 0, 0,
                  STATE_READONLY, 0);
 
       testStates("aria_treegrid_readonly", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_readonly_colheader_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_readonly_colheader_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_readonly_colheader_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_readonly_rowheader_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_readonly_rowheader_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_readonly_rowheader_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
-      testStates("aria_treegrid_readonly_cell_editable", 0, EXT_STATE_EDITABLE,
+                 0, 0);
+      testStates("aria_treegrid_readonly_cell_editable", 0, 0,
                  STATE_READONLY, 0);
       testStates("aria_treegrid_readonly_cell_inherited", STATE_READONLY, 0,
-                 0, EXT_STATE_EDITABLE);
+                 0, 0);
 
       // aria-readonly on directory
       testStates("aria_directory", STATE_READONLY);
@@ -190,10 +190,9 @@
       testStates("as_item2", 0, 0, 0, EXT_STATE_ACTIVE);
 
       // universal ARIA properties inherited from file input control
-      var fileBrowseButton = getAccessible("fileinput").firstChild;
+      var fileBrowseButton = getAccessible("fileinput");
       testStates(fileBrowseButton,
                  STATE_BUSY | STATE_UNAVAILABLE | STATE_REQUIRED | STATE_HASPOPUP | STATE_INVALID);
-      // No states on the label.
 
       // offscreen test
       testStates("aria_offscreen_textbox", STATE_OFFSCREEN);
@@ -214,7 +213,6 @@
 
       // strange cases
       testStates("aria_link_link", STATE_LINKED);
-      testStates("aria_link_anchor", STATE_SELECTABLE);
 
       // some landmarks that break accessibility for these native elements
       // Note that these are illegal uses by web authors as per WAI-ARIA in HTML
@@ -553,7 +551,6 @@
 
   <!-- strange edge case: please don't do this in the wild -->
   <a id="aria_link_link" role="link" href="foo">link</a>
-  <a id="aria_link_anchor" role="link" name="link_anchor">link</a>
 
   <!-- landmarks: links -->
   <a id="aria_application_link" role="application" href="foo">app</a>

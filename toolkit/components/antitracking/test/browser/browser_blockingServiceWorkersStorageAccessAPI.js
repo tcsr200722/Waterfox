@@ -23,13 +23,19 @@ AntiTracking.runTest(
     /* import-globals-from storageAccessAPIHelpers.js */
     await callRequestStorageAccess();
 
+    let effectiveCookieBehavior = SpecialPowers.isContentWindowPrivate(window)
+      ? SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior.pbmode"
+        )
+      : SpecialPowers.Services.prefs.getIntPref(
+          "network.cookie.cookieBehavior"
+        );
+
     if (
       [
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT,
         SpecialPowers.Ci.nsICookieService.BEHAVIOR_REJECT_FOREIGN,
-      ].includes(
-        SpecialPowers.Services.prefs.getIntPref("network.cookie.cookieBehavior")
-      )
+      ].includes(effectiveCookieBehavior)
     ) {
       await navigator.serviceWorker
         .register("empty.js")
@@ -65,11 +71,7 @@ AntiTracking.runTest(
   },
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     await navigator.serviceWorker
       .register("empty.js")
@@ -115,7 +117,7 @@ AntiTracking.runTest(
   },
   async _ => {
     await new Promise(resolve => {
-      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
         resolve()
       );
     });

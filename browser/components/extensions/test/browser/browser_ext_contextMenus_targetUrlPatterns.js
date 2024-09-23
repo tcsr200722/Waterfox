@@ -64,9 +64,15 @@ add_task(async function unsupportedSchemes() {
         "moz-extension://uuid/not/manifest.json*",
       ],
     },
+    {
+      // While the scheme is supported, the URL is invalid.
+      testUrl: "http://",
+      matchingPatterns: [],
+      nonmatchingPatterns: ["http://*/*", "<all_urls>"],
+    },
   ];
 
-  async function testScript(testcases) {
+  async function testScript() {
     let testcase;
 
     browser.contextMenus.onShown.addListener(({ menuIds, linkUrl }) => {
@@ -149,19 +155,13 @@ add_task(async function unsupportedSchemes() {
   await extension.unload();
 });
 
-// Tests that a menu item is shown on links with an unsupported scheme if
-// targetUrlPatterns is not set.
-add_task(async function unsupportedSchemeWithoutPattern() {
-  function background() {
+async function testLinkMenuWithoutTargetUrlPatterns(linkUrl) {
+  function background(expectedLinkUrl) {
     let menuId;
     browser.contextMenus.onShown.addListener(({ menuIds, linkUrl }) => {
       browser.test.assertEq(1, menuIds.length, "Expected number of menus");
       browser.test.assertEq(menuId, menuIds[0], "Expected menu ID");
-      browser.test.assertEq(
-        "unsupported-scheme:data",
-        linkUrl,
-        "Expected linkUrl"
-      );
+      browser.test.assertEq(expectedLinkUrl, linkUrl, "Expected linkUrl");
       browser.test.sendMessage("done");
     });
     menuId = browser.contextMenus.create(
@@ -179,12 +179,12 @@ add_task(async function unsupportedSchemeWithoutPattern() {
     manifest: {
       permissions: ["contextMenus"],
     },
-    background,
+    background: `(${background})("${linkUrl}")`,
     files: {
       "testpage.js": `browser.test.sendMessage("ready")`,
       "testpage.html": `
         <!DOCTYPE html><meta charset="utf-8">
-        <a id="test_link_element" href="unsupported-scheme:data">Test link</a>
+        <a id="test_link_element" href="${linkUrl}">Test link</a>
         <script src="testpage.js"></script>
       `,
     },
@@ -192,11 +192,27 @@ add_task(async function unsupportedSchemeWithoutPattern() {
 
   await extension.startup();
   await extension.awaitMessage("ready");
+  // Wait for the browser window chrome document to be flushed before
+  // trying to trigger the context menu in the newly created tab,
+  // to prevent intermittent failures (e.g. Bug 1775558).
+  await gBrowser.ownerGlobal.promiseDocumentFlushed(() => {});
   await openExtensionContextMenu("#test_link_element");
   await extension.awaitMessage("done");
   await closeContextMenu();
 
   await extension.unload();
+}
+
+// Tests that a menu item is shown on links with an unsupported scheme if
+// targetUrlPatterns is not set.
+add_task(async function unsupportedSchemeWithoutPattern() {
+  await testLinkMenuWithoutTargetUrlPatterns("unsupported-scheme:data");
+});
+
+// Tests that a menu item is shown on links with an invalid http:-URL if
+// targetUrlPatterns is not set.
+add_task(async function invalidHttpUrlWithoutPattern() {
+  await testLinkMenuWithoutTargetUrlPatterns("http://");
 });
 
 add_task(async function privileged_are_allowed_to_use_restrictedSchemes() {
@@ -205,7 +221,7 @@ add_task(async function privileged_are_allowed_to_use_restrictedSchemes() {
     manifest: {
       permissions: ["tabs", "contextMenus", "mozillaAddons"],
     },
-    async background() {
+    background() {
       browser.contextMenus.create({
         id: "privileged-extension",
         title: "Privileged Extension",
@@ -213,12 +229,16 @@ add_task(async function privileged_are_allowed_to_use_restrictedSchemes() {
         documentUrlPatterns: ["about:reader*"],
       });
 
+      let articleReady = Promise.withResolvers();
       browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (
           changeInfo.status === "complete" &&
           tab.url.startsWith("about:reader")
         ) {
           browser.test.sendMessage("readerModeEntered");
+        }
+        if (tab.isArticle && tab.url.includes("/readerModeArticle.html")) {
+          articleReady.resolve();
         }
       });
 
@@ -228,8 +248,20 @@ add_task(async function privileged_are_allowed_to_use_restrictedSchemes() {
           return;
         }
 
+        browser.test.log("Waiting for tab.isArticle to be true");
+        await articleReady.promise;
+        browser.test.log("Toggling reader mode");
         browser.tabs.toggleReaderMode();
       });
+
+      browser.tabs.query(
+        { url: "*://example.com/*/readerModeArticle.html" },
+        tabs => {
+          if (tabs[0].isArticle) {
+            articleReady.resolve();
+          }
+        }
+      );
     },
   });
 

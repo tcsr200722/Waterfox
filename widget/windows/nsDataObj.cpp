@@ -9,12 +9,15 @@
 #include <ole2.h>
 #include <shlobj.h>
 
+#include "nsComponentManagerUtils.h"
 #include "nsDataObj.h"
 #include "nsArrayUtils.h"
 #include "nsClipboard.h"
 #include "nsReadableUtils.h"
-#include "nsITransferable.h"
+#include "nsICookieJarSettings.h"
+#include "nsIHttpChannel.h"
 #include "nsISupportsPrimitives.h"
+#include "nsITransferable.h"
 #include "IEnumFE.h"
 #include "nsPrimitiveHelpers.h"
 #include "nsString.h"
@@ -24,8 +27,11 @@
 #include "nsEscape.h"
 #include "nsIURL.h"
 #include "nsNetUtil.h"
-#include "mozilla/Services.h"
+#include "mozilla/Components.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
+#include "nsProxyRelease.h"
+#include "nsIObserverService.h"
 #include "nsIOutputStream.h"
 #include "nscore.h"
 #include "nsDirectoryServiceDefs.h"
@@ -36,8 +42,11 @@
 #include "nsIPrincipal.h"
 #include "nsNativeCharsetUtils.h"
 #include "nsMimeTypes.h"
+#include "nsIMIMEService.h"
 #include "imgIEncoder.h"
 #include "imgITools.h"
+#include "WinUtils.h"
+#include "nsLocalFile.h"
 
 #include "mozilla/LazyIdleThread.h"
 #include <algorithm>
@@ -68,23 +77,29 @@ nsDataObj::CStream::~CStream() {}
 //-----------------------------------------------------------------------------
 // helper - initializes the stream
 nsresult nsDataObj::CStream::Init(nsIURI* pSourceURI,
-                                  uint32_t aContentPolicyType,
-                                  nsIPrincipal* aRequestingPrincipal) {
+                                  nsContentPolicyType aContentPolicyType,
+                                  nsIPrincipal* aRequestingPrincipal,
+                                  nsICookieJarSettings* aCookieJarSettings,
+                                  nsIReferrerInfo* aReferrerInfo) {
   // we can not create a channel without a requestingPrincipal
   if (!aRequestingPrincipal) {
     return NS_ERROR_FAILURE;
   }
   nsresult rv;
   rv = NS_NewChannel(getter_AddRefs(mChannel), pSourceURI, aRequestingPrincipal,
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
-                     aContentPolicyType,
-                     nullptr,  // nsICookieJarSettings
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT,
+                     aContentPolicyType, aCookieJarSettings,
                      nullptr,  // PerformanceStorage
                      nullptr,  // loadGroup
                      nullptr,  // aCallbacks
                      nsIRequest::LOAD_FROM_CACHE);
-
   NS_ENSURE_SUCCESS(rv, rv);
+
+  if (nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel)) {
+    rv = httpChannel->SetReferrerInfo(aReferrerInfo);
+    Unused << NS_WARN_IF(NS_FAILED(rv));
+  }
+
   rv = mChannel->AsyncOpen(this);
   NS_ENSURE_SUCCESS(rv, rv);
   return NS_OK;
@@ -117,25 +132,49 @@ nsDataObj::CStream::OnDataAvailable(
     uint64_t aOffset,  // offset within the stream
     uint32_t aCount)   // bytes available on this call
 {
+  // If we've been asked to read zero bytes, call `Read` once, just to ensure
+  // any side-effects take place, and return immediately.
+  if (aCount == 0) {
+    char buffer[1] = {0};
+    uint32_t bytesReadByCall = 0;
+    nsresult rv = aInputStream->Read(buffer, 0, &bytesReadByCall);
+    MOZ_ASSERT(bytesReadByCall == 0);
+    return rv;
+  }
+
   // Extend the write buffer for the incoming data.
-  uint8_t* buffer = mChannelData.AppendElements(aCount, fallible);
+  size_t oldLength = mChannelData.Length();
+  char* buffer =
+      reinterpret_cast<char*>(mChannelData.AppendElements(aCount, fallible));
   if (!buffer) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
-  NS_ASSERTION((mChannelData.Length() == (aOffset + aCount)),
-               "stream length mismatch w/write buffer");
+  MOZ_ASSERT(mChannelData.Length() == (aOffset + aCount),
+             "stream length mismatch w/write buffer");
 
   // Read() may not return aCount on a single call, so loop until we've
   // accumulated all the data OnDataAvailable has promised.
-  nsresult rv;
-  uint32_t odaBytesReadTotal = 0;
-  do {
+  uint32_t bytesRead = 0;
+  while (bytesRead < aCount) {
     uint32_t bytesReadByCall = 0;
-    rv = aInputStream->Read((char*)(buffer + odaBytesReadTotal), aCount,
-                            &bytesReadByCall);
-    odaBytesReadTotal += bytesReadByCall;
-  } while (aCount < odaBytesReadTotal && NS_SUCCEEDED(rv));
-  return rv;
+    nsresult rv = aInputStream->Read(buffer + bytesRead, aCount - bytesRead,
+                                     &bytesReadByCall);
+    bytesRead += bytesReadByCall;
+
+    if (bytesReadByCall == 0) {
+      // A `bytesReadByCall` of zero indicates EOF without failure... but we
+      // were promised `aCount` elements and haven't gotten them. Return a
+      // generic failure.
+      rv = NS_ERROR_FAILURE;
+    }
+
+    if (NS_FAILED(rv)) {
+      // Drop any trailing uninitialized elements before erroring out.
+      mChannelData.RemoveElementsAt(oldLength + bytesRead, aCount - bytesRead);
+      return rv;
+    }
+  }
+  return NS_OK;
 }
 
 NS_IMETHODIMP nsDataObj::CStream::OnStartRequest(nsIRequest* aRequest) {
@@ -155,7 +194,8 @@ NS_IMETHODIMP nsDataObj::CStream::OnStopRequest(nsIRequest* aRequest,
 // and cancel the operation.
 nsresult nsDataObj::CStream::WaitForCompletion() {
   // We are guaranteed OnStopRequest will get called, so this should be ok.
-  SpinEventLoopUntil([&]() { return mChannelRead; });
+  SpinEventLoopUntil("widget:nsDataObj::CStream::WaitForCompletion"_ns,
+                     [&]() { return mChannelRead; });
 
   if (!mChannelData.Length()) mChannelResult = NS_ERROR_FAILURE;
 
@@ -306,14 +346,23 @@ HRESULT nsDataObj::CreateStream(IStream** outStream) {
 
   pStream->AddRef();
 
-  // query the requestingPrincipal from the transferable and add it to the new
-  // channel
+  // query the dataPrincipal from the transferable and add it to the new
+  // channel.
   nsCOMPtr<nsIPrincipal> requestingPrincipal =
-      mTransferable->GetRequestingPrincipal();
+      mTransferable->GetDataPrincipal();
   MOZ_ASSERT(requestingPrincipal, "can not create channel without a principal");
 
-  uint32_t contentPolicyType = mTransferable->GetContentPolicyType();
-  rv = pStream->Init(sourceURI, contentPolicyType, requestingPrincipal);
+  // Note that the cookieJarSettings could be null if the data object is for the
+  // image copy. We will fix this in Bug 1690532.
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+      mTransferable->GetCookieJarSettings();
+
+  // The referrer is optional.
+  nsCOMPtr<nsIReferrerInfo> referrerInfo = mTransferable->GetReferrerInfo();
+
+  nsContentPolicyType contentPolicyType = mTransferable->GetContentPolicyType();
+  rv = pStream->Init(sourceURI, contentPolicyType, requestingPrincipal,
+                     cookieJarSettings, referrerInfo);
   if (NS_FAILED(rv)) {
     pStream->Release();
     return E_FAIL;
@@ -430,14 +479,11 @@ STDMETHODIMP nsDataObj::CMemStream::Stat(STATSTG* statstg, DWORD dwFlags) {
   memset((void*)statstg, 0, sizeof(STATSTG));
 
   if (dwFlags != STATFLAG_NONAME) {
-    const nsString& wideFileName = EmptyString();
-
-    uint32_t nMaxNameLength = (wideFileName.Length() * 2) + 2;
-    void* retBuf = CoTaskMemAlloc(nMaxNameLength);  // freed by caller
+    constexpr size_t kMaxNameLength = sizeof(wchar_t);
+    void* retBuf = CoTaskMemAlloc(kMaxNameLength);  // freed by caller
     if (!retBuf) return STG_E_INSUFFICIENTMEMORY;
 
-    ZeroMemory(retBuf, nMaxNameLength);
-    memcpy(retBuf, wideFileName.get(), wideFileName.Length() * 2);
+    ZeroMemory(retBuf, kMaxNameLength);
     statstg->pwcsName = (LPOLESTR)retBuf;
   }
 
@@ -458,14 +504,6 @@ STDMETHODIMP nsDataObj::CMemStream::Stat(STATSTG* statstg, DWORD dwFlags) {
 }
 
 /*
- * deliberately not using MAX_PATH. This is because on platforms < XP
- * a file created with a long filename may be mishandled by the shell
- * resulting in it not being able to be deleted or moved.
- * See bug 250392 for more details.
- */
-#define NS_MAX_FILEDESCRIPTOR 128 + 1
-
-/*
  * Class nsDataObj
  */
 
@@ -477,8 +515,7 @@ nsDataObj::nsDataObj(nsIURI* uri)
       mTransferable(nullptr),
       mIsAsyncMode(FALSE),
       mIsInOperation(FALSE) {
-  mIOThread = new LazyIdleThread(DEFAULT_THREAD_TIMEOUT_MS,
-                                 NS_LITERAL_CSTRING("nsDataObj"),
+  mIOThread = new LazyIdleThread(DEFAULT_THREAD_TIMEOUT_MS, "nsDataObj",
                                  LazyIdleThread::ManualShutdown);
   m_enumFE = new CEnumFormatEtc();
   m_enumFE->AddRef();
@@ -530,11 +567,17 @@ STDMETHODIMP nsDataObj::QueryInterface(REFIID riid, void** ppv) {
 STDMETHODIMP_(ULONG) nsDataObj::AddRef() {
   ++m_cRef;
   NS_LOG_ADDREF(this, m_cRef, "nsDataObj", sizeof(*this));
+
+  // When the first reference is taken, hold our own internal reference.
+  if (m_cRef == 1) {
+    mKeepAlive = this;
+  }
+
   return m_cRef;
 }
 
 namespace {
-class RemoveTempFileHelper final : public nsIObserver {
+class RemoveTempFileHelper final : public nsIObserver, public nsINamed {
  public:
   explicit RemoveTempFileHelper(nsIFile* aTempFile) : mTempFile(aTempFile) {
     MOZ_ASSERT(mTempFile);
@@ -564,6 +607,7 @@ class RemoveTempFileHelper final : public nsIObserver {
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSINAMED
 
  private:
   ~RemoveTempFileHelper() {
@@ -576,7 +620,7 @@ class RemoveTempFileHelper final : public nsIObserver {
   nsCOMPtr<nsITimer> mTimer;
 };
 
-NS_IMPL_ISUPPORTS(RemoveTempFileHelper, nsIObserver);
+NS_IMPL_ISUPPORTS(RemoveTempFileHelper, nsIObserver, nsINamed);
 
 NS_IMETHODIMP
 RemoveTempFileHelper::Observe(nsISupports* aSubject, const char* aTopic,
@@ -603,6 +647,12 @@ RemoveTempFileHelper::Observe(nsISupports* aSubject, const char* aTopic,
   }
   return NS_OK;
 }
+
+NS_IMETHODIMP
+RemoveTempFileHelper::GetName(nsACString& aName) {
+  aName.AssignLiteral("RemoveTempFileHelper");
+  return NS_OK;
+}
 }  // namespace
 
 //-----------------------------------------------------
@@ -610,6 +660,12 @@ STDMETHODIMP_(ULONG) nsDataObj::Release() {
   --m_cRef;
 
   NS_LOG_RELEASE(this, m_cRef, "nsDataObj");
+
+  // If we hold the last reference, submit release of it to the main thread.
+  if (m_cRef == 1 && mKeepAlive) {
+    NS_ReleaseOnMainThread("nsDataObj release", mKeepAlive.forget(), true);
+  }
+
   if (0 != m_cRef) return m_cRef;
 
   // We have released our last ref on this object and need to delete the
@@ -622,6 +678,10 @@ STDMETHODIMP_(ULONG) nsDataObj::Release() {
     mCachedTempFile = nullptr;
     helper->Attach();
   }
+
+  // In case the destructor ever AddRef/Releases, ensure we don't delete twice
+  // or take mKeepAlive as another reference.
+  m_cRef = 1;
 
   delete this;
 
@@ -644,6 +704,9 @@ BOOL nsDataObj::FormatsMatch(const FORMATETC& source,
 //-----------------------------------------------------
 STDMETHODIMP nsDataObj::GetData(LPFORMATETC aFormat, LPSTGMEDIUM pSTM) {
   if (!mTransferable) return DV_E_FORMATETC;
+
+  // Hold an extra reference in case we end up spinning the event loop.
+  RefPtr<nsDataObj> keepAliveDuringGetData(this);
 
   uint32_t dfInx = 0;
 
@@ -958,7 +1021,7 @@ nsDataObj::GetDib(const nsACString& inFlavor, FORMATETC& aFormat,
   nsCOMPtr<imgITools> imgTools =
       do_CreateInstance("@mozilla.org/image/tools;1");
 
-  nsAutoString options(NS_LITERAL_STRING("bpp=32;"));
+  nsAutoString options(u"bpp=32;"_ns);
   if (aFormat.cfFormat == CF_DIBV5) {
     options.AppendLiteral("version=5");
   } else {
@@ -966,7 +1029,7 @@ nsDataObj::GetDib(const nsACString& inFlavor, FORMATETC& aFormat,
   }
 
   nsCOMPtr<nsIInputStream> inputStream;
-  nsresult rv = imgTools->EncodeImage(image, NS_LITERAL_CSTRING(IMAGE_BMP),
+  nsresult rv = imgTools->EncodeImage(image, nsLiteralCString(IMAGE_BMP),
                                       options, getter_AddRefs(inputStream));
   if (NS_FAILED(rv) || !inputStream) {
     return E_FAIL;
@@ -1052,88 +1115,65 @@ nsDataObj ::GetFileContents(FORMATETC& aFE, STGMEDIUM& aSTG) {
 
 }  // GetFileContents
 
-//
-// Given a unicode string, we ensure that it contains only characters which are
-// valid within the file system. Remove all forbidden characters from the name,
-// and completely disallow any title that starts with a forbidden name and
-// extension (e.g. "nul" is invalid, but "nul." and "nul.txt" are also invalid
-// and will cause problems).
-//
-// It would seem that this is more functionality suited to being in nsIFile.
-//
-static void MangleTextToValidFilename(nsString& aText) {
-  static const char* forbiddenNames[] = {
-      "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",  "COM8",
-      "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",  "LPT7",
-      "LPT8", "LPT9", "CON",  "PRN",  "AUX",  "NUL",  "CLOCK$"};
-
-  aText.StripChars(FILE_PATH_SEPARATOR FILE_ILLEGAL_CHARACTERS);
-  aText.CompressWhitespace(true, true);
-  uint32_t nameLen;
-  for (size_t n = 0; n < ArrayLength(forbiddenNames); ++n) {
-    nameLen = (uint32_t)strlen(forbiddenNames[n]);
-    if (aText.EqualsIgnoreCase(forbiddenNames[n], nameLen)) {
-      // invalid name is either the entire string, or a prefix with a period
-      if (aText.Length() == nameLen || aText.CharAt(nameLen) == char16_t('.')) {
-        aText.Truncate();
-        break;
-      }
-    }
+// Ensure that the supplied name doesn't have invalid characters.
+static void ValidateFilename(nsString& aFilename, bool isShortcut) {
+  nsCOMPtr<nsIMIMEService> mimeService = do_GetService("@mozilla.org/mime;1");
+  if (NS_WARN_IF(!mimeService)) {
+    aFilename.Truncate();
+    return;
   }
+
+  uint32_t flags = nsIMIMEService::VALIDATE_SANITIZE_ONLY;
+  if (isShortcut) {
+    flags |= nsIMIMEService::VALIDATE_ALLOW_INVALID_FILENAMES;
+  }
+
+  nsAutoString outFilename;
+  mimeService->ValidateFileNameForSaving(aFilename, EmptyCString(), flags,
+                                         outFilename);
+  aFilename = outFilename;
 }
 
 //
-// Given a unicode string, convert it down to a valid local charset filename
-// with the supplied extension. This ensures that we do not cut MBCS characters
-// in the middle.
+// Given a unicode string, convert it to a valid local charset filename
+// and append the .url extension to be used for a shortcut file.
+// This ensures that we do not cut MBCS characters in the middle.
 //
 // It would seem that this is more functionality suited to being in nsIFile.
 //
-static bool CreateFilenameFromTextA(nsString& aText, const char* aExtension,
-                                    char* aFilename, uint32_t aFilenameLen) {
-  // ensure that the supplied name doesn't have invalid characters. If
-  // a valid mangled filename couldn't be created then it will leave the
-  // text empty.
-  MangleTextToValidFilename(aText);
-  if (aText.IsEmpty()) return false;
-
-  // repeatably call WideCharToMultiByte as long as the title doesn't fit in the
-  // buffer available to us. Continually reduce the length of the source title
-  // until the MBCS version will fit in the buffer with room for the supplied
-  // extension. Doing it this way ensures that even in MBCS environments there
-  // will be a valid MBCS filename of the correct length.
-  int maxUsableFilenameLen =
-      aFilenameLen - strlen(aExtension) - 1;  // space for ext + null byte
-  int currLen, textLen = (int)std::min(aText.Length(), aFilenameLen);
-  char defaultChar = '_';
-  do {
-    currLen = WideCharToMultiByte(CP_ACP, WC_COMPOSITECHECK | WC_DEFAULTCHAR,
-                                  aText.get(), textLen--, aFilename,
-                                  maxUsableFilenameLen, &defaultChar, nullptr);
-  } while (currLen == 0 && textLen > 0 &&
-           GetLastError() == ERROR_INSUFFICIENT_BUFFER);
-  if (currLen > 0 && textLen > 0) {
-    strcpy(&aFilename[currLen], aExtension);
-    return true;
-  } else {
-    // empty names aren't permitted
+static bool CreateURLFilenameFromTextA(nsAutoString& aText, char* aFilename) {
+  if (aText.IsEmpty()) {
     return false;
   }
+  aText.AppendLiteral(".url");
+  ValidateFilename(aText, true);
+  if (aText.IsEmpty()) {
+    return false;
+  }
+
+  // ValidateFilename should already be checking the filename length, but do
+  // an extra check to verify for the local code page that the converted text
+  // doesn't go over MAX_PATH and just return false if it does.
+  char defaultChar = '_';
+  int currLen = WideCharToMultiByte(CP_ACP, WC_COMPOSITECHECK | WC_DEFAULTCHAR,
+                                    aText.get(), -1, aFilename, MAX_PATH,
+                                    &defaultChar, nullptr);
+  return currLen != 0;
 }
 
-static bool CreateFilenameFromTextW(nsString& aText, const wchar_t* aExtension,
-                                    wchar_t* aFilename, uint32_t aFilenameLen) {
-  // ensure that the supplied name doesn't have invalid characters. If
-  // a valid mangled filename couldn't be created then it will leave the
-  // text empty.
-  MangleTextToValidFilename(aText);
-  if (aText.IsEmpty()) return false;
+// Wide character version of CreateURLFilenameFromTextA
+static bool CreateURLFilenameFromTextW(nsAutoString& aText,
+                                       wchar_t* aFilename) {
+  if (aText.IsEmpty()) {
+    return false;
+  }
+  aText.AppendLiteral(".url");
+  ValidateFilename(aText, true);
+  if (aText.IsEmpty() || aText.Length() >= MAX_PATH) {
+    return false;
+  }
 
-  const int extensionLen = wcslen(aExtension);
-  if (aText.Length() + extensionLen + 1 > aFilenameLen)
-    aText.Truncate(aFilenameLen - extensionLen - 1);
   wcscpy(&aFilename[0], aText.get());
-  wcscpy(&aFilename[aText.Length()], aExtension);
   return true;
 }
 
@@ -1141,7 +1181,7 @@ static bool CreateFilenameFromTextW(nsString& aText, const wchar_t* aExtension,
 
 static bool GetLocalizedString(const char* aName, nsAString& aString) {
   nsCOMPtr<nsIStringBundleService> stringService =
-      mozilla::services::GetStringBundleService();
+      mozilla::components::StringBundle::Service();
   if (!stringService) return false;
 
   nsCOMPtr<nsIStringBundle> stringBundle;
@@ -1179,15 +1219,13 @@ nsDataObj ::GetFileDescriptorInternetShortcutA(FORMATETC& aFE,
   }
 
   // get a valid filename in the following order: 1) from the page title,
-  // 2) localized string for an untitled page, 3) just use "Untitled.URL"
-  if (!CreateFilenameFromTextA(title, ".URL", fileGroupDescA->fgd[0].cFileName,
-                               NS_MAX_FILEDESCRIPTOR)) {
+  // 2) localized string for an untitled page, 3) just use "Untitled.url"
+  if (!CreateURLFilenameFromTextA(title, fileGroupDescA->fgd[0].cFileName)) {
     nsAutoString untitled;
     if (!GetLocalizedString("noPageTitle", untitled) ||
-        !CreateFilenameFromTextA(untitled, ".URL",
-                                 fileGroupDescA->fgd[0].cFileName,
-                                 NS_MAX_FILEDESCRIPTOR)) {
-      strcpy(fileGroupDescA->fgd[0].cFileName, "Untitled.URL");
+        !CreateURLFilenameFromTextA(untitled,
+                                    fileGroupDescA->fgd[0].cFileName)) {
+      strcpy(fileGroupDescA->fgd[0].cFileName, "Untitled.url");
     }
   }
 
@@ -1222,15 +1260,13 @@ nsDataObj ::GetFileDescriptorInternetShortcutW(FORMATETC& aFE,
   }
 
   // get a valid filename in the following order: 1) from the page title,
-  // 2) localized string for an untitled page, 3) just use "Untitled.URL"
-  if (!CreateFilenameFromTextW(title, L".URL", fileGroupDescW->fgd[0].cFileName,
-                               NS_MAX_FILEDESCRIPTOR)) {
+  // 2) localized string for an untitled page, 3) just use "Untitled.url"
+  if (!CreateURLFilenameFromTextW(title, fileGroupDescW->fgd[0].cFileName)) {
     nsAutoString untitled;
     if (!GetLocalizedString("noPageTitle", untitled) ||
-        !CreateFilenameFromTextW(untitled, L".URL",
-                                 fileGroupDescW->fgd[0].cFileName,
-                                 NS_MAX_FILEDESCRIPTOR)) {
-      wcscpy(fileGroupDescW->fgd[0].cFileName, L"Untitled.URL");
+        !CreateURLFilenameFromTextW(untitled,
+                                    fileGroupDescW->fgd[0].cFileName)) {
+      wcscpy(fileGroupDescW->fgd[0].cFileName, L"Untitled.url");
     }
   }
 
@@ -1430,26 +1466,19 @@ HRESULT nsDataObj::GetText(const nsACString& aDataFlavor, FORMATETC& aFE,
                            STGMEDIUM& aSTG) {
   void* data = nullptr;
 
-  // if someone asks for text/plain, look up text/unicode instead in the
-  // transferable.
-  const char* flavorStr;
-  const nsPromiseFlatCString& flat = PromiseFlatCString(aDataFlavor);
-  if (aDataFlavor.EqualsLiteral("text/plain"))
-    flavorStr = kUnicodeMime;
-  else
-    flavorStr = flat.get();
+  const nsPromiseFlatCString& flavorStr = PromiseFlatCString(aDataFlavor);
 
   // NOTE: CreateDataFromPrimitive creates new memory, that needs to be deleted
   nsCOMPtr<nsISupports> genericDataWrapper;
   nsresult rv = mTransferable->GetTransferData(
-      flavorStr, getter_AddRefs(genericDataWrapper));
+      flavorStr.get(), getter_AddRefs(genericDataWrapper));
   if (NS_FAILED(rv) || !genericDataWrapper) {
     return E_FAIL;
   }
 
   uint32_t len;
-  nsPrimitiveHelpers::CreateDataFromPrimitive(nsDependentCString(flavorStr),
-                                              genericDataWrapper, &data, &len);
+  nsPrimitiveHelpers::CreateDataFromPrimitive(
+      nsDependentCString(flavorStr.get()), genericDataWrapper, &data, &len);
   if (!data) return E_FAIL;
 
   HGLOBAL hGlobalMemory = nullptr;
@@ -1486,7 +1515,7 @@ HRESULT nsDataObj::GetText(const nsACString& aDataFlavor, FORMATETC& aFE,
       NS_WARNING("Oh no, couldn't convert unicode to plain text");
       return S_OK;
     }
-  } else if (aFE.cfFormat == nsClipboard::CF_HTML) {
+  } else if (aFE.cfFormat == nsClipboard::GetHtmlClipboardFormat()) {
     // Someone is asking for win32's HTML flavor. Convert our html fragment
     // from unicode to UTF-8 then put it into a format specified by msft.
     NS_ConvertUTF16toUTF8 converter(reinterpret_cast<char16_t*>(data));
@@ -1503,7 +1532,7 @@ HRESULT nsDataObj::GetText(const nsACString& aDataFlavor, FORMATETC& aFE,
       NS_WARNING("Oh no, couldn't convert to HTML");
       return S_OK;
     }
-  } else if (aFE.cfFormat != nsClipboard::CF_CUSTOMTYPES) {
+  } else if (aFE.cfFormat != nsClipboard::GetCustomClipboardFormat()) {
     // we assume that any data that isn't caught above is unicode. This may
     // be an erroneous assumption, but is true so far.
     allocLen += sizeof(char16_t);
@@ -1612,8 +1641,8 @@ HRESULT nsDataObj::DropImage(FORMATETC& aFE, STGMEDIUM& aSTG) {
     nsCOMPtr<imgITools> imgTools =
         do_CreateInstance("@mozilla.org/image/tools;1");
     nsCOMPtr<nsIInputStream> inputStream;
-    rv = imgTools->EncodeImage(image, NS_LITERAL_CSTRING(IMAGE_BMP),
-                               NS_LITERAL_STRING("bpp=32;version=3"),
+    rv = imgTools->EncodeImage(image, nsLiteralCString(IMAGE_BMP),
+                               u"bpp=32;version=3"_ns,
                                getter_AddRefs(inputStream));
     if (NS_FAILED(rv) || !inputStream) {
       return E_FAIL;
@@ -1936,8 +1965,8 @@ nsresult nsDataObj ::ExtractShortcutTitle(nsString& outTitle) {
 // BuildPlatformHTML
 //
 // Munge our HTML data to win32's CF_HTML spec. Basically, put the requisite
-// header information on it. This will null terminate |outPlatformHTML|. See
-//  http://msdn.microsoft.com/workshop/networking/clipboard/htmlclipboard.asp
+// header information on it. This will null-terminate |outPlatformHTML|. See
+//  https://docs.microsoft.com/en-us/windows/win32/dataxchg/html-clipboard-format
 // for details.
 //
 // We assume that |inOurHTML| is already a fragment (ie, doesn't have <HTML>
@@ -1947,15 +1976,7 @@ nsresult nsDataObj ::ExtractShortcutTitle(nsString& outTitle) {
 nsresult nsDataObj ::BuildPlatformHTML(const char* inOurHTML,
                                        char** outPlatformHTML) {
   *outPlatformHTML = nullptr;
-
   nsDependentCString inHTMLString(inOurHTML);
-  const char* const numPlaceholder = "00000000";
-  const char* const startHTMLPrefix = "Version:0.9\r\nStartHTML:";
-  const char* const endHTMLPrefix = "\r\nEndHTML:";
-  const char* const startFragPrefix = "\r\nStartFragment:";
-  const char* const endFragPrefix = "\r\nEndFragment:";
-  const char* const startSourceURLPrefix = "\r\nSourceURL:";
-  const char* const endFragTrailer = "\r\n";
 
   // Do we already have mSourceURL from a drag?
   if (mSourceURL.IsEmpty()) {
@@ -1965,60 +1986,90 @@ nsresult nsDataObj ::BuildPlatformHTML(const char* inOurHTML,
     AppendUTF16toUTF8(url, mSourceURL);
   }
 
-  const int32_t kSourceURLLength = mSourceURL.Length();
-  const int32_t kNumberLength = strlen(numPlaceholder);
+  constexpr auto kStartHTMLPrefix = "Version:0.9\r\nStartHTML:"_ns;
+  constexpr auto kEndHTMLPrefix = "\r\nEndHTML:"_ns;
+  constexpr auto kStartFragPrefix = "\r\nStartFragment:"_ns;
+  constexpr auto kEndFragPrefix = "\r\nEndFragment:"_ns;
+  constexpr auto kStartSourceURLPrefix = "\r\nSourceURL:"_ns;
+  constexpr auto kEndFragTrailer = "\r\n"_ns;
 
-  const int32_t kTotalHeaderLen =
-      strlen(startHTMLPrefix) + strlen(endHTMLPrefix) +
-      strlen(startFragPrefix) + strlen(endFragPrefix) + strlen(endFragTrailer) +
-      (kSourceURLLength > 0 ? strlen(startSourceURLPrefix) : 0) +
-      kSourceURLLength + (4 * kNumberLength);
+  // The CF_HTML's size is embedded in the fragment, in such a way that the
+  // number of digits in the size is part of the size itself. While it _is_
+  // technically possible to compute the necessary size of the size-field
+  // precisely -- by trial and error, if nothing else -- it's simpler just to
+  // pick a rough but generous estimate and zero-pad it. (Zero-padding is
+  // explicitly permitted by the format definition.)
+  //
+  // Originally, in 2001, the "rough but generous estimate" was 8 digits. While
+  // a maximum size of (10**9 - 1) bytes probably would have covered all
+  // possible use-cases at the time, it's somewhat more likely to overflow
+  // nowadays. Nonetheless, for the sake of backwards compatibility with any
+  // misbehaving consumers of our existing CF_HTML output, we retain exactly
+  // that padding for (most) fragments where it suffices. (No such misbehaving
+  // consumers are actually known, so this is arguably paranoia.)
+  //
+  // It is now 2022. A padding size of 16 will cover up to about 8.8 petabytes,
+  // which should be enough for at least the next few years or so.
+  const size_t numberLength = inHTMLString.Length() < 9999'0000 ? 8 : 16;
 
-  NS_NAMED_LITERAL_CSTRING(htmlHeaderString, "<html><body>\r\n");
+  const size_t sourceURLLength = mSourceURL.Length();
 
-  NS_NAMED_LITERAL_CSTRING(fragmentHeaderString, "<!--StartFragment-->");
+  const size_t fixedHeaderLen =
+      kStartHTMLPrefix.Length() + kEndHTMLPrefix.Length() +
+      kStartFragPrefix.Length() + kEndFragPrefix.Length() +
+      kEndFragTrailer.Length() + (4 * numberLength);
 
-  nsDependentCString trailingString(
+  const size_t totalHeaderLen =
+      fixedHeaderLen + (sourceURLLength > 0
+                            ? kStartSourceURLPrefix.Length() + sourceURLLength
+                            : 0);
+
+  constexpr auto kHeaderString = "<html><body>\r\n<!--StartFragment-->"_ns;
+  constexpr auto kTrailingString =
       "<!--EndFragment-->\r\n"
       "</body>\r\n"
-      "</html>");
+      "</html>"_ns;
 
   // calculate the offsets
-  int32_t startHTMLOffset = kTotalHeaderLen;
-  int32_t startFragOffset = startHTMLOffset + htmlHeaderString.Length() +
-                            fragmentHeaderString.Length();
+  size_t startHTMLOffset = totalHeaderLen;
+  size_t startFragOffset = startHTMLOffset + kHeaderString.Length();
 
-  int32_t endFragOffset = startFragOffset + inHTMLString.Length();
-
-  int32_t endHTMLOffset = endFragOffset + trailingString.Length();
+  size_t endFragOffset = startFragOffset + inHTMLString.Length();
+  size_t endHTMLOffset = endFragOffset + kTrailingString.Length();
 
   // now build the final version
   nsCString clipboardString;
   clipboardString.SetCapacity(endHTMLOffset);
 
-  clipboardString.Append(startHTMLPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", startHTMLOffset));
+  const int numberLengthInt = static_cast<int>(numberLength);
+  clipboardString.Append(kStartHTMLPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, startHTMLOffset);
 
-  clipboardString.Append(endHTMLPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", endHTMLOffset));
+  clipboardString.Append(kEndHTMLPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, endHTMLOffset);
 
-  clipboardString.Append(startFragPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", startFragOffset));
+  clipboardString.Append(kStartFragPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, startFragOffset);
 
-  clipboardString.Append(endFragPrefix);
-  clipboardString.Append(nsPrintfCString("%08u", endFragOffset));
+  clipboardString.Append(kEndFragPrefix);
+  clipboardString.AppendPrintf("%0*zu", numberLengthInt, endFragOffset);
 
-  if (kSourceURLLength > 0) {
-    clipboardString.Append(startSourceURLPrefix);
+  if (sourceURLLength > 0) {
+    clipboardString.Append(kStartSourceURLPrefix);
     clipboardString.Append(mSourceURL);
   }
 
-  clipboardString.Append(endFragTrailer);
+  clipboardString.Append(kEndFragTrailer);
 
-  clipboardString.Append(htmlHeaderString);
-  clipboardString.Append(fragmentHeaderString);
+  // Assert that the positional values were correct as we pass by their
+  // corresponding positions.
+  MOZ_ASSERT(clipboardString.Length() == startHTMLOffset);
+  clipboardString.Append(kHeaderString);
+  MOZ_ASSERT(clipboardString.Length() == startFragOffset);
   clipboardString.Append(inHTMLString);
-  clipboardString.Append(trailingString);
+  MOZ_ASSERT(clipboardString.Length() == endFragOffset);
+  clipboardString.Append(kTrailingString);
+  MOZ_ASSERT(clipboardString.Length() == endHTMLOffset);
 
   *outPlatformHTML = ToNewCString(clipboardString, mozilla::fallible);
   if (!*outPlatformHTML) return NS_ERROR_OUT_OF_MEMORY;
@@ -2129,10 +2180,10 @@ HRESULT nsDataObj::GetDownloadDetails(nsIURI** aSourceURI,
     NS_UnescapeURL(urlFileName);
     CopyUTF8toUTF16(urlFileName, srcFileName);
   }
-  if (srcFileName.IsEmpty()) return E_FAIL;
 
   // make the name safe for the filesystem
-  MangleTextToValidFilename(srcFileName);
+  ValidateFilename(srcFileName, false);
+  if (srcFileName.IsEmpty()) return E_FAIL;
 
   sourceURI.swap(*aSourceURI);
   aFilename = srcFileName;
@@ -2163,9 +2214,8 @@ HRESULT nsDataObj::GetFileDescriptor_IStreamA(FORMATETC& aFE, STGMEDIUM& aSTG) {
   nsAutoCString nativeFileName;
   NS_CopyUnicodeToNative(wideFileName, nativeFileName);
 
-  strncpy(fileGroupDescA->fgd[0].cFileName, nativeFileName.get(),
-          NS_MAX_FILEDESCRIPTOR - 1);
-  fileGroupDescA->fgd[0].cFileName[NS_MAX_FILEDESCRIPTOR - 1] = '\0';
+  strncpy(fileGroupDescA->fgd[0].cFileName, nativeFileName.get(), MAX_PATH - 1);
+  fileGroupDescA->fgd[0].cFileName[MAX_PATH - 1] = '\0';
 
   // one file in the file block
   fileGroupDescA->cItems = 1;
@@ -2199,9 +2249,8 @@ HRESULT nsDataObj::GetFileDescriptor_IStreamW(FORMATETC& aFE, STGMEDIUM& aSTG) {
     return res;
   }
 
-  wcsncpy(fileGroupDescW->fgd[0].cFileName, wideFileName.get(),
-          NS_MAX_FILEDESCRIPTOR - 1);
-  fileGroupDescW->fgd[0].cFileName[NS_MAX_FILEDESCRIPTOR - 1] = '\0';
+  wcsncpy(fileGroupDescW->fgd[0].cFileName, wideFileName.get(), MAX_PATH - 1);
+  fileGroupDescW->fgd[0].cFileName[MAX_PATH - 1] = '\0';
   // one file in the file block
   fileGroupDescW->cItems = 1;
   fileGroupDescW->fgd[0].dwFlags = FD_PROGRESSUI;

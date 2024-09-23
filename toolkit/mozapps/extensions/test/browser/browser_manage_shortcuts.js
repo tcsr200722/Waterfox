@@ -1,9 +1,11 @@
 "use strict";
 
-const { PromiseTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm"
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/Message manager disconnected/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Message manager disconnected/
+);
 
 function extensionShortcutsReady(id) {
   let extension = WebExtensionPolicy.getByID(id).extension;
@@ -16,7 +18,7 @@ async function loadShortcutsView() {
   // Load the theme view initially so we can verify that the category is switched
   // to "extension" when the shortcuts view is loaded.
   let win = await loadInitialView("theme");
-  let categoryUtils = new CategoryUtilities(win.managerWindow);
+  let categoryUtils = new CategoryUtilities(win);
 
   is(
     categoryUtils.getSelectedViewId(),
@@ -84,11 +86,24 @@ add_task(async function testUpdatingCommands() {
     );
   }
 
+  // Load the about:addons shortcut view before verify that emitting
+  // the key events does trigger the expected extension commands.
+  // There is apparently a race (more likely to be triggered on an
+  // optimized build) between:
+  // - the new opened browser window to be ready to listen for the
+  //   keyboard events that are expected to triggered one of the key
+  //   in the extension keyset
+  // - and the test calling EventUtils.syntesizeKey to test that
+  //   the expected extension command listener is notified.
+  //
+  // Loading the shortcut view before calling checkShortcut seems to be
+  // enough to consistently avoid that race condition.
+  let win = await loadShortcutsView();
+
   // Check that the original shortcuts work.
   await checkShortcut("commandOne", "7", { shiftKey: true, altKey: true });
   await checkShortcut("commandTwo", "4", { altKey: true });
 
-  let win = await loadShortcutsView();
   let doc = win.document;
 
   let card = doc.querySelector(`.card[addon-id="${extension.id}"]`);
@@ -157,7 +172,7 @@ add_task(async function testUpdatingCommands() {
   // Escape should clear the focus and hide the error.
   is(doc.activeElement, input, "The input is focused");
   EventUtils.synthesizeKey("Escape", {});
-  ok(doc.activeElement != input, "The input is no longer focused");
+  Assert.notEqual(doc.activeElement, input, "The input is no longer focused");
   is(error.style.visibility, "hidden", "The error is hidden");
 
   // Check if assigning already assigned shortcut is prevented.
@@ -227,8 +242,9 @@ add_task(async function testExpanding() {
     for (let i = 0; i < shortcutRows.length; i++) {
       let row = shortcutRows[i];
       if (i < visibleCommands) {
-        ok(
-          getComputedStyle(row).display != "none",
+        Assert.notEqual(
+          getComputedStyle(row).display,
+          "none",
           `The first ${visibleCommands} rows are visible`
         );
       } else {
@@ -256,7 +272,11 @@ add_task(async function testExpanding() {
   is(card.getAttribute("expanded"), "true", "The card is now expanded");
 
   for (let row of shortcutRows) {
-    ok(getComputedStyle(row).display != "none", "All the rows are visible");
+    Assert.notEqual(
+      getComputedStyle(row).display,
+      "none",
+      "All the rows are visible"
+    );
   }
 
   // The collapse text is now shown.
@@ -299,7 +319,11 @@ add_task(async function testOneExtraCommandIsNotCollapsed() {
 
   // All of the rows are visible, to avoid a "Show 1 More" button.
   for (let row of shortcutRows) {
-    ok(getComputedStyle(row).display != "none", "All the rows are visible");
+    Assert.notEqual(
+      getComputedStyle(row).display,
+      "none",
+      "All the rows are visible"
+    );
   }
 
   await closeView(win);

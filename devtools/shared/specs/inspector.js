@@ -3,7 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Arg, RetVal, generateActorSpec } = require("devtools/shared/protocol");
+const {
+  Arg,
+  RetVal,
+  generateActorSpec,
+} = require("resource://devtools/shared/protocol.js");
 
 const inspectorSpec = generateActorSpec({
   typeName: "inspector",
@@ -33,12 +37,10 @@ const inspectorSpec = generateActorSpec({
         pageStyle: RetVal("pagestyle"),
       },
     },
-    getHighlighter: {
-      request: {
-        autohide: Arg(0, "boolean"),
-      },
+    getCompatibility: {
+      request: {},
       response: {
-        highligter: RetVal("highlighter"),
+        compatibility: RetVal("compatibility"),
       },
     },
     getHighlighterByType: {

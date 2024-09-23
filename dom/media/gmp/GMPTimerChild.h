@@ -8,13 +8,12 @@
 
 #include "mozilla/gmp/PGMPTimerChild.h"
 #include "mozilla/Monitor.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "gmp-errors.h"
 #include "gmp-platform.h"
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
 
 class GMPChild;
 
@@ -35,13 +34,12 @@ class GMPTimerChild : public PGMPTimerChild {
  private:
   ~GMPTimerChild();
 
-  nsDataHashtable<nsUint32HashKey, GMPTask*> mTimers;
+  nsTHashMap<nsUint32HashKey, GMPTask*> mTimers;
   uint32_t mTimerCount;
 
   GMPChild* mPlugin;
 };
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp
 
 #endif  // GMPTimerChild_h_

@@ -13,6 +13,8 @@
 
   <!-- test code goes here -->
   <script type="application/javascript"><![CDATA[
+    /* globals SimpleTest, is, isnot, ok, snapshotWindow, compareSnapshots,
+               onerror */
     var imports = [ "SimpleTest", "is", "isnot", "ok", "snapshotWindow",
                     "compareSnapshots", "onerror" ];
     for (var name of imports) {
@@ -30,15 +32,15 @@
       is(type == "chrome" || type == "content", true, "Unexpected type");
       b.setAttribute("type", type);
       b.setAttribute("id", id);
-      b.setAttribute("width", width);
-      b.setAttribute("height", height);
+      b.style.width = width + "px";
+      b.style.height = height + "px";
       $(parent).appendChild(b);
     }
     addBrowser("box1", "f1", 300, 200);
     addBrowser("box1", "f2", 300, 200);
     addBrowser("box2", "f3", 30, 200);
 
-    /** Test for Bug 113934 **/
+    /** Test for Bug 113934 */
     var doc1 =
     "data:text/html,<html><body onbeforeunload='document.documentElement.textContent = \"\"' onunload='document.documentElement.textContent = \"\"' onpagehide='document.documentElement.textContent = \"\"'>This is a test</body></html>";
     var doc2 = "data:text/html,<html><head></head><body>This is a second test</body></html>";
@@ -49,9 +51,8 @@
     $("f3").setAttribute("src", doc2);
 
     async function doTheTest() {
-      var s1 = await snapshotWindow($("f1").contentWindow);
       var s2 = await snapshotWindow($("f2").contentWindow);
-      var s3 = await snapshotWindow($("f3").contentWindow);
+      // var s3 = await snapshotWindow($("f3").contentWindow);
 
       // This test is broken - see bug 1090274
       //ok(!compareSnapshots(s2, s3, true)[0],
@@ -84,22 +85,21 @@
       // which are a result of swapping the docshells.
       var DOMLinkListener = {
         _afterFirst: false,
-        _removedDispatched: false,
         _addedDispatched: false,
-        handleEvent: async function(aEvent) {
+        async handleEvent(aEvent) {
           if (!this._afterFirst) {
             is(aEvent.type, "DOMLinkAdded");
 
             var strs = { "f1": "", "f3" : "" };
             function attachListener(node, type) {
-              var listener = function(e) {
+              var listener = function() {
                 if (strs[node.id]) strs[node.id] += " ";
                 strs[node.id] += node.id + ".page" + type;
               }
-              node.addEventListener("page" + type, listener, false);
+              node.addEventListener("page" + type, listener);
 
               listener.detach = function() {
-                node.removeEventListener("page" + type, listener, false);
+                node.removeEventListener("page" + type, listener);
               }
               return listener;
             }
@@ -124,8 +124,8 @@
             var [same, first, second] = compareSnapshots(s1_new, s2, true);
             ok(same, "Should reflow on swap. Expected " + second + " but got " + first);
 
-            is(strs["f1"], "f1.pagehide f1.pageshow");
-            is(strs["f3"], "f3.pagehide f3.pageshow");
+            is(strs.f1, "f1.pagehide f1.pageshow");
+            is(strs.f3, "f3.pagehide f3.pageshow");
             this._afterFirst = true;
             return;
           }
@@ -133,26 +133,18 @@
             is(this._addedDispatched, false);
             this._addedDispatched = true;
           }
-          else {
-            is(this._removedDispatched, false);
-            this._removedDispatched = true;
-          }
 
-          if (this._addedDispatched && this._removedDispatched) {
-            $("f1").removeEventListener("DOMLinkAdded", this, false);
-            $("f1").removeEventListener("DOMLinkRemoved", this, false);
-            $("f3").removeEventListener("DOMLinkAdded", this, false);
-            $("f3").removeEventListener("DOMLinkRemoved", this, false);
+          if (this._addedDispatched) {
+            $("f1").removeEventListener("DOMLinkAdded", this);
+            $("f3").removeEventListener("DOMLinkAdded", this);
             window.close();
             SimpleTest.finish();
           }
         }
       };
 
-      $("f1").addEventListener("DOMLinkAdded", DOMLinkListener, false);
-      $("f1").addEventListener("DOMLinkRemoved", DOMLinkListener, false);
-      $("f3").addEventListener("DOMLinkAdded", DOMLinkListener, false);
-      $("f3").addEventListener("DOMLinkRemoved", DOMLinkListener, false);
+      $("f1").addEventListener("DOMLinkAdded", DOMLinkListener);
+      $("f3").addEventListener("DOMLinkAdded", DOMLinkListener);
 
       var linkElement = $("f1").contentDocument.createElement("link");
       linkElement.setAttribute("rel", "alternate");

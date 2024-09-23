@@ -20,16 +20,18 @@ add_task(async function test_frametree() {
   is(await countNonDynamicFrames(browser), 0, "no child frames");
 
   // Navigate to a frameset.
-  BrowserTestUtils.loadURI(browser, URL_FRAMESET);
+  BrowserTestUtils.startLoadingURIString(browser, URL_FRAMESET);
   await promiseBrowserLoaded(browser);
 
   // The frameset has two frames.
   is(await countNonDynamicFrames(browser), 2, "two non-dynamic child frames");
 
   // Go back in history.
-  let pageShowPromise = ContentTask.spawn(browser, null, async () => {
-    await ContentTaskUtils.waitForEvent(this, "pageshow", true);
-  });
+  let pageShowPromise = BrowserTestUtils.waitForContentEvent(
+    browser,
+    "pageshow",
+    true
+  );
   browser.goBack();
   await pageShowPromise;
 
@@ -96,7 +98,7 @@ add_task(async function test_frametree_dynamic() {
   is(await enumerateIndexes(browser), "0,1", "correct indexes 0 and 1");
 
   // Remopve a non-dynamic iframe.
-  await SpecialPowers.spawn(browser, [URL], async ([url]) => {
+  await SpecialPowers.spawn(browser, [URL], async () => {
     // Remove the first iframe, which should be a non-dynamic iframe.
     content.document.body.removeChild(
       content.document.getElementsByTagName("iframe")[0]

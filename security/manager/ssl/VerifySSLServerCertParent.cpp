@@ -11,15 +11,13 @@
 #include "nsNSSComponent.h"
 #include "secerr.h"
 #include "SharedCertVerifier.h"
+#include "NSSCertDBTrustDomain.h"
 #include "SSLServerCertVerification.h"
 #include "nsNSSIOLayer.h"
-#include "mozilla/ipc/BackgroundParent.h"
+#include "nsISocketProvider.h"
 #include "mozilla/Unused.h"
 
 extern mozilla::LazyLogModule gPIPNSSLog;
-
-using mozilla::ipc::AssertIsOnBackgroundThread;
-using mozilla::ipc::IsOnBackgroundThread;
 
 using namespace mozilla::pkix;
 
@@ -30,23 +28,21 @@ VerifySSLServerCertParent::VerifySSLServerCertParent() {}
 
 void VerifySSLServerCertParent::OnVerifiedSSLServerCert(
     const nsTArray<ByteArray>& aBuiltCertChain,
-    uint16_t aCertificateTransparencyStatus, uint8_t aEVStatus, bool aSucceeded,
-    PRErrorCode aFinalError, uint32_t aCollectedErrors,
-    bool aIsBuiltCertChainRootBuiltInRoot) {
-  AssertIsOnBackgroundThread();
-
+    uint16_t aCertificateTransparencyStatus, EVStatus aEVStatus,
+    bool aSucceeded, PRErrorCode aFinalError,
+    nsITransportSecurityInfo::OverridableErrorCategory
+        aOverridableErrorCategory,
+    bool aIsBuiltCertChainRootBuiltInRoot, bool aMadeOCSPRequests) {
   if (!CanSend()) {
     return;
   }
 
-  if (aSucceeded) {
-    Unused << SendOnVerifiedSSLServerCertSuccess(
-        aBuiltCertChain, aCertificateTransparencyStatus, aEVStatus,
-        aIsBuiltCertChainRootBuiltInRoot);
-  } else {
-    Unused << SendOnVerifiedSSLServerCertFailure(aFinalError, aCollectedErrors);
-  }
-  Unused << Send__delete__(this);
+  Unused << SendOnVerifySSLServerCertFinished(
+      aBuiltCertChain, aCertificateTransparencyStatus, aEVStatus, aSucceeded,
+      aFinalError, aOverridableErrorCategory, aIsBuiltCertChainRootBuiltInRoot,
+      aMadeOCSPRequests);
+
+  Close();
 }
 
 namespace {
@@ -61,13 +57,15 @@ class IPCServerCertVerificationResult final
                                   VerifySSLServerCertParent* aParent)
       : mTarget(aTarget), mParent(aParent) {}
 
-  void Dispatch(nsNSSCertificate* aCert,
-                nsTArray<nsTArray<uint8_t>>&& aBuiltChain,
-                nsTArray<nsTArray<uint8_t>>&& aPeerCertChain,
-                uint16_t aCertificateTransparencyStatus, EVStatus aEVStatus,
-                bool aSucceeded, PRErrorCode aFinalError,
-                uint32_t aCollectedErrors,
-                bool aIsBuiltCertChainRootBuiltInRoot) override;
+  [[nodiscard]] nsresult Dispatch(
+      nsTArray<nsTArray<uint8_t>>&& aBuiltChain,
+      nsTArray<nsTArray<uint8_t>>&& aPeerCertChain,
+      uint16_t aCertificateTransparencyStatus, EVStatus aEVStatus,
+      bool aSucceeded, PRErrorCode aFinalError,
+      nsITransportSecurityInfo::OverridableErrorCategory
+          aOverridableErrorCategory,
+      bool aIsBuiltCertChainRootBuiltInRoot, uint32_t aProviderFlags,
+      bool aMadeOCSPRequests) override;
 
  private:
   ~IPCServerCertVerificationResult() = default;
@@ -76,12 +74,15 @@ class IPCServerCertVerificationResult final
   RefPtr<VerifySSLServerCertParent> mParent;
 };
 
-void IPCServerCertVerificationResult::Dispatch(
-    nsNSSCertificate* aCert, nsTArray<nsTArray<uint8_t>>&& aBuiltChain,
+nsresult IPCServerCertVerificationResult::Dispatch(
+    nsTArray<nsTArray<uint8_t>>&& aBuiltChain,
     nsTArray<nsTArray<uint8_t>>&& aPeerCertChain,
     uint16_t aCertificateTransparencyStatus, EVStatus aEVStatus,
-    bool aSucceeded, PRErrorCode aFinalError, uint32_t aCollectedErrors,
-    bool aIsBuiltCertChainRootBuiltInRoot) {
+    bool aSucceeded, PRErrorCode aFinalError,
+    nsITransportSecurityInfo::OverridableErrorCategory
+        aOverridableErrorCategory,
+    bool aIsBuiltCertChainRootBuiltInRoot, uint32_t aProviderFlags,
+    bool aMadeOCSPRequests) {
   nsTArray<ByteArray> builtCertChain;
   if (aSucceeded) {
     for (auto& cert : aBuiltChain) {
@@ -89,49 +90,45 @@ void IPCServerCertVerificationResult::Dispatch(
     }
   }
 
-  nsresult nrv = mTarget->Dispatch(
+  nsresult rv = mTarget->Dispatch(
       NS_NewRunnableFunction(
           "psm::VerifySSLServerCertParent::OnVerifiedSSLServerCert",
           [parent(mParent), builtCertChain{std::move(builtCertChain)},
            aCertificateTransparencyStatus, aEVStatus, aSucceeded, aFinalError,
-           aCollectedErrors, aIsBuiltCertChainRootBuiltInRoot]() {
+           aOverridableErrorCategory, aIsBuiltCertChainRootBuiltInRoot,
+           aMadeOCSPRequests, aProviderFlags]() {
+            if (aSucceeded &&
+                !(aProviderFlags & nsISocketProvider::NO_PERMANENT_STORAGE)) {
+              nsTArray<nsTArray<uint8_t>> certBytesArray;
+              for (const auto& cert : builtCertChain) {
+                certBytesArray.AppendElement(cert.data().Clone());
+              }
+              // This dispatches an event that will run when the socket thread
+              // is idle.
+              SaveIntermediateCerts(certBytesArray);
+            }
             parent->OnVerifiedSSLServerCert(
-                builtCertChain, aCertificateTransparencyStatus,
-                static_cast<uint8_t>(aEVStatus), aSucceeded, aFinalError,
-                aCollectedErrors, aIsBuiltCertChainRootBuiltInRoot);
+                builtCertChain, aCertificateTransparencyStatus, aEVStatus,
+                aSucceeded, aFinalError, aOverridableErrorCategory,
+                aIsBuiltCertChainRootBuiltInRoot, aMadeOCSPRequests);
           }),
       NS_DISPATCH_NORMAL);
-  MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(nrv));
-  Unused << nrv;
+  MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(rv));
+  return rv;
 }
 
 }  // anonymous namespace
 
 bool VerifySSLServerCertParent::Dispatch(
-    const ByteArray& aServerCert, nsTArray<ByteArray>&& aPeerCertChain,
-    const nsCString& aHostName, const int32_t& aPort,
-    const OriginAttributes& aOriginAttributes,
+    nsTArray<ByteArray>&& aPeerCertChain, const nsACString& aHostName,
+    const int32_t& aPort, const OriginAttributes& aOriginAttributes,
     const Maybe<ByteArray>& aStapledOCSPResponse,
     const Maybe<ByteArray>& aSctsFromTLSExtension,
     const Maybe<DelegatedCredentialInfoArg>& aDcInfo,
     const uint32_t& aProviderFlags, const uint32_t& aCertVerifierFlags) {
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("VerifySSLServerCertParent::Dispatch"));
-  AssertIsOnBackgroundThread();
 
-  mBackgroundThread = NS_GetCurrentThread();
-
-  SECItem serverCertItem = {
-      siBuffer, const_cast<uint8_t*>(aServerCert.data().Elements()),
-      static_cast<unsigned int>(aServerCert.data().Length())};
-  UniqueCERTCertificate serverCert(CERT_NewTempCertificate(
-      CERT_GetDefaultCertDB(), &serverCertItem, nullptr, false, true));
-  if (!serverCert) {
-    MOZ_LOG(
-        gPIPNSSLog, LogLevel::Debug,
-        ("VerifySSLServerCertParent::Dispatch - CERT_NewTempCertificate cert "
-         "failed."));
-    return false;
-  }
+  mBackgroundThread = GetCurrentSerialEventTarget();
 
   nsTArray<nsTArray<uint8_t>> peerCertBytes;
   for (auto& certBytes : aPeerCertChain) {
@@ -159,9 +156,9 @@ bool VerifySSLServerCertParent::Dispatch(
   RefPtr<IPCServerCertVerificationResult> resultTask =
       new IPCServerCertVerificationResult(mBackgroundThread, this);
   SECStatus status = SSLServerCertVerificationJob::Dispatch(
-      0, nullptr, serverCert, std::move(peerCertBytes), aHostName, aPort,
-      aOriginAttributes, stapledOCSPResponse, sctsFromTLSExtension, dcInfo,
-      aProviderFlags, Now(), PR_Now(), aCertVerifierFlags, resultTask);
+      0, nullptr, std::move(peerCertBytes), aHostName, aPort, aOriginAttributes,
+      stapledOCSPResponse, sctsFromTLSExtension, dcInfo, aProviderFlags, Now(),
+      aCertVerifierFlags, resultTask);
 
   if (status != SECWouldBlock) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,

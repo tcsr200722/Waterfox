@@ -12,8 +12,8 @@ add_task(async function elevation_dialog() {
   // won't restart the application.
   let { startup } = Services;
   let appStartup = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIAppStartup]),
-    quit(mode) {
+    QueryInterface: ChromeUtils.generateQI(["nsIAppStartup"]),
+    quit(_mode) {
       if (elevationDialog) {
         elevationDialog.close();
         elevationDialog = null;
@@ -44,11 +44,12 @@ add_task(async function elevation_dialog() {
     () => !Services.wm.getMostRecentWindow("Update:Elevation"),
     "The Update Elevation dialog should have closed"
   );
-  ok(!!gUpdateManager.activeUpdate, "There should be an active update");
+  let readyUpdate = await gUpdateManager.getReadyUpdate();
+  ok(!!readyUpdate, "There should be a ready update");
   is(
-    gUpdateManager.activeUpdate.state,
+    readyUpdate.state,
     STATE_PENDING_ELEVATE,
-    "The active update state should equal " + STATE_PENDING_ELEVATE
+    "The ready update state should equal " + STATE_PENDING_ELEVATE
   );
   is(
     readStatusFile(),
@@ -64,7 +65,8 @@ add_task(async function elevation_dialog() {
     () => !Services.wm.getMostRecentWindow("Update:Elevation"),
     "The Update Elevation dialog should have closed"
   );
-  ok(!gUpdateManager.activeUpdate, "There should not be an active update");
+  readyUpdate = await gUpdateManager.getReadyUpdate();
+  ok(!readyUpdate, "There should not be a ready update");
   is(
     readStatusFile(),
     STATE_NONE,
@@ -79,9 +81,10 @@ add_task(async function elevation_dialog() {
     () => !Services.wm.getMostRecentWindow("Update:Elevation"),
     "The Update Elevation dialog should have closed"
   );
-  ok(!!gUpdateManager.activeUpdate, "There should be an active update");
+  readyUpdate = await gUpdateManager.getReadyUpdate();
+  ok(!!readyUpdate, "There should be a ready update");
   is(
-    gUpdateManager.activeUpdate.state,
+    readyUpdate.state,
     STATE_PENDING_ELEVATE,
     "The active update state should equal " + STATE_PENDING_ELEVATE
   );
@@ -98,8 +101,8 @@ add_task(async function elevation_dialog() {
  * @return A promise that returns the domWindow for the Update Elevation Dialog
  *         and resolves when the Update Elevation Dialog loads.
  */
-function waitForElevationDialog() {
-  return new Promise(resolve => {
+async function waitForElevationDialog() {
+  let elevationDialogLoadedPromise = new Promise(resolve => {
     var listener = {
       onOpenWindow: aXULWindow => {
         debugDump("Update Elevation dialog shown...");
@@ -120,20 +123,22 @@ function waitForElevationDialog() {
         var domwindow = aXULWindow.docShell.domWindow;
         domwindow.addEventListener("load", elevationDialogOnLoad, true);
       },
-      onCloseWindow: aXULWindow => {},
+      onCloseWindow: _aXULWindow => {},
     };
 
     Services.wm.addListener(listener);
-    // Add the active-update.xml and update.status files used for these tests,
-    // reload the update manager, and then simulate startup so the Update
-    // Elevation Dialog is opened.
-    let patchProps = { state: STATE_PENDING_ELEVATE };
-    let patches = getLocalPatchString(patchProps);
-    let updateProps = { checkInterval: "1" };
-    let updates = getLocalUpdateString(updateProps, patches);
-    writeUpdatesToXMLFile(getLocalUpdatesXMLString(updates), true);
-    writeStatusFile(STATE_PENDING_ELEVATE);
-    reloadUpdateManagerData();
-    testPostUpdateProcessing();
   });
+  // Add the active-update.xml and update.status files used for these tests,
+  // reload the update manager, and then simulate startup so the Update
+  // Elevation Dialog is opened.
+  let patchProps = { state: STATE_PENDING_ELEVATE };
+  let patches = getLocalPatchString(patchProps);
+  let updateProps = { checkInterval: "1" };
+  let updates = getLocalUpdateString(updateProps, patches);
+  writeUpdatesToXMLFile(getLocalUpdatesXMLString(updates), true);
+  writeStatusFile(STATE_PENDING_ELEVATE);
+  reloadUpdateManagerData();
+  await testPostUpdateProcessing();
+
+  return elevationDialogLoadedPromise;
 }

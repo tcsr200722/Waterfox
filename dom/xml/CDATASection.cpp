@@ -8,8 +8,7 @@
 #include "mozilla/dom/CDATASectionBinding.h"
 #include "mozilla/IntegerPrintfMacros.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 CDATASection::~CDATASection() = default;
 
@@ -17,8 +16,6 @@ JSObject* CDATASection::WrapNode(JSContext* aCx,
                                  JS::Handle<JSObject*> aGivenProto) {
   return CDATASection_Binding::Wrap(aCx, this, aGivenProto);
 }
-
-bool CDATASection::IsNodeOfType(uint32_t aFlags) const { return false; }
 
 already_AddRefed<CharacterData> CDATASection::CloneDataNode(
     mozilla::dom::NodeInfo* aNodeInfo, bool aCloneText) const {
@@ -32,7 +29,7 @@ already_AddRefed<CharacterData> CDATASection::CloneDataNode(
   return it.forget();
 }
 
-#ifdef DEBUG
+#ifdef MOZ_DOM_LIST
 void CDATASection::List(FILE* out, int32_t aIndent) const {
   int32_t index;
   for (index = aIndent; --index >= 0;) fputs("  ", out);
@@ -50,5 +47,4 @@ void CDATASection::DumpContent(FILE* out, int32_t aIndent,
                                bool aDumpAll) const {}
 #endif
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

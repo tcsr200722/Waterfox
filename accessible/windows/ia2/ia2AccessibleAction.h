@@ -10,6 +10,7 @@
 
 #include "nsISupports.h"
 
+#include "mozilla/a11y/Accessible.h"
 #include "AccessibleAction.h"
 
 namespace mozilla {
@@ -44,6 +45,9 @@ class ia2AccessibleAction : public IAccessibleAction {
   virtual /* [propget] */ HRESULT STDMETHODCALLTYPE get_localizedName(
       /* [in] */ long actionIndex,
       /* [retval][out] */ BSTR* localizedName);
+
+ private:
+  Accessible* Acc();
 };
 
 }  // namespace a11y

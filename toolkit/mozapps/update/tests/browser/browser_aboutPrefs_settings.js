@@ -3,62 +3,75 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-ChromeUtils.import("resource://gre/modules/osfile.jsm", this);
-
 // Changes, then verifies the value of app.update.auto via the about:preferences
 // UI. Requires a tab with about:preferences open to be passed in.
 async function changeAndVerifyPref(tab, newConfigValue) {
   await SpecialPowers.spawn(
     tab.linkedBrowser,
     [{ newConfigValue }],
-    async function({ newConfigValue }) {
+    async function ({ newConfigValue }) {
       let radioId = newConfigValue ? "autoDesktop" : "manualDesktop";
       let radioElement = content.document.getElementById(radioId);
+      let updateRadioGroup = radioElement.radioGroup;
+      let promise = ContentTaskUtils.waitForEvent(
+        updateRadioGroup,
+        "ProcessedUpdatePrefChange"
+      );
       radioElement.click();
+      await promise;
+
+      is(
+        updateRadioGroup.value,
+        `${newConfigValue}`,
+        "Update preference should match expected"
+      );
+      is(
+        updateRadioGroup.disabled,
+        false,
+        "Update preferences should no longer be disabled"
+      );
     }
   );
 
-  // On Windows, we really need to wait for the change to finish being
-  // written to the disk before we go to verify anything. Unfortunately, it
-  // would be difficult to check for quick changes to the attributes of the
-  // about:preferences controls (to wait for the controls to be disabled and
-  // re-enabled). So instead, just start the verification by asking the
-  // Application Update Service for the value of app.update.auto. It already
-  // serializes reads and writes to the app update config file, so this will not
-  // resolve until the file write is complete.
   let configValueRead = await UpdateUtils.getAppUpdateAutoEnabled();
   is(
     configValueRead,
     newConfigValue,
     "Value returned should have matched the expected value"
   );
+}
 
-  // Only Windows currently has the update configuration JSON file.
-  if (AppConstants.platform == "win") {
-    let configFile = getUpdateDirFile(FILE_UPDATE_CONFIG_JSON);
-    let decoder = new TextDecoder();
-    let fileContents = await OS.File.read(configFile.path);
-    let saveObject = JSON.parse(decoder.decode(fileContents));
-    is(
-      saveObject["app.update.auto"],
-      newConfigValue,
-      "Value in file should match expected"
-    );
-  }
-
-  await SpecialPowers.spawn(
-    tab.linkedBrowser,
-    [{ newConfigValue }],
-    async function({ newConfigValue }) {
-      let updateRadioGroup = content.document.getElementById(
-        "updateRadioGroup"
-      );
-      is(
-        updateRadioGroup.value,
-        `${newConfigValue}`,
-        "Update preference should match expected"
-      );
-    }
+async function changeAndVerifyUpdateWrites({
+  tab,
+  newConfigValue,
+  discardUpdate,
+  expectPrompt,
+  expectRemainingUpdate,
+}) {
+  // A value of 1 will keep the update and a value of 0 will discard the update
+  // when the prompt service is called when the value of app.update.auto is
+  // changed to false.
+  let confirmExReply = discardUpdate ? 0 : 1;
+  let didPrompt = false;
+  let promptService = {
+    QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
+    confirmEx(...args) {
+      promptService._confirmExArgs = args;
+      didPrompt = true;
+      return confirmExReply;
+    },
+  };
+  Services.prompt = promptService;
+  await changeAndVerifyPref(tab, newConfigValue);
+  is(
+    didPrompt,
+    expectPrompt,
+    `We should ${expectPrompt ? "" : "not "}be prompted`
+  );
+  is(
+    !!(await gUpdateManager.getReadyUpdate()),
+    expectRemainingUpdate,
+    `There should ${expectRemainingUpdate ? "" : "not "}be a ready update`
   );
 }
 
@@ -68,11 +81,32 @@ add_task(async function testUpdateAutoPrefUI() {
     "about:preferences"
   );
 
-  await changeAndVerifyPref(tab, true);
-  ok(!gUpdateManager.activeUpdate, "There should not be an active update");
+  // Hack: make the test run faster:
+  await SpecialPowers.spawn(tab.linkedBrowser, [], () => {
+    content.gMainPane._minUpdatePrefDisableTime = 10;
+  });
 
+  info("Enable automatic updates and check that works.");
+  await changeAndVerifyPref(tab, true);
+  ok(
+    !(await gUpdateManager.getDownloadingUpdate()),
+    "There should not be a downloading update"
+  );
+  ok(
+    !(await gUpdateManager.getReadyUpdate()),
+    "There should not be a ready update"
+  );
+
+  info("Disable automatic updates and check that works.");
   await changeAndVerifyPref(tab, false);
-  ok(!gUpdateManager.activeUpdate, "There should not be an active update");
+  ok(
+    !(await gUpdateManager.getDownloadingUpdate()),
+    "There should not be a downloading update"
+  );
+  ok(
+    !(await gUpdateManager.getReadyUpdate()),
+    "There should not be a ready update"
+  );
 
   let patchProps = { state: STATE_PENDING };
   let patches = getLocalPatchString(patchProps);
@@ -81,45 +115,46 @@ add_task(async function testUpdateAutoPrefUI() {
   writeUpdatesToXMLFile(getLocalUpdatesXMLString(updates), true);
   writeStatusFile(STATE_PENDING);
   reloadUpdateManagerData();
-  ok(!!gUpdateManager.activeUpdate, "There should be an active update");
+  ok(
+    !!(await gUpdateManager.getReadyUpdate()),
+    "There should be a ready update"
+  );
 
-  // A value of 0 will keep the update and a value of 1 will discard the update
-  // when the prompt service is called when the value of app.update.auto is
-  // changed to false.
-  let discardUpdate = 0;
   let { prompt } = Services;
-  let promptService = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIPromptService]),
-    confirmEx(...args) {
-      promptService._confirmExArgs = args;
-      return discardUpdate;
-    },
-  };
-  Services.prompt = promptService;
   registerCleanupFunction(() => {
     Services.prompt = prompt;
   });
 
-  // Setting the value to false will call the prompt service and with 1 for
-  // discardUpdate the update won't be discarded so there should still be an
-  // active update.
-  discardUpdate = 1;
-  await changeAndVerifyPref(tab, false);
-  ok(!!gUpdateManager.activeUpdate, "There should be an active update");
+  // Setting the value to false will call the prompt service and when we
+  // don't discard the update there should still be an active update afterwards.
+  await changeAndVerifyUpdateWrites({
+    tab,
+    newConfigValue: false,
+    discardUpdate: false,
+    expectPrompt: true,
+    expectRemainingUpdate: true,
+  });
 
   // Setting the value to true should not call the prompt service so there
-  // should still be an active update even with a value of 0 for
-  // discardUpdate.
-  discardUpdate = 0;
-  await changeAndVerifyPref(tab, true);
-  ok(!!gUpdateManager.activeUpdate, "There should be an active update");
+  // should still be an active update, even if we indicate we can discard
+  // the update in a hypothetical prompt.
+  await changeAndVerifyUpdateWrites({
+    tab,
+    newConfigValue: true,
+    discardUpdate: true,
+    expectPrompt: false,
+    expectRemainingUpdate: true,
+  });
 
-  // Setting the value to false will call the prompt service and with 0 for
-  // discardUpdate the update should be discarded so there should not be an
-  // active update.
-  discardUpdate = 0;
-  await changeAndVerifyPref(tab, false);
-  ok(!gUpdateManager.activeUpdate, "There should not be an active update");
+  // Setting the value to false will call the prompt service, and we do
+  // discard the update, so there should not be an active update.
+  await changeAndVerifyUpdateWrites({
+    tab,
+    newConfigValue: false,
+    discardUpdate: true,
+    expectPrompt: true,
+    expectRemainingUpdate: false,
+  });
 
   await BrowserTestUtils.removeTab(tab);
 });

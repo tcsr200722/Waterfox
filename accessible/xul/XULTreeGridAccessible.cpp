@@ -3,23 +3,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "XULTreeGridAccessibleWrap.h"
+#include "XULTreeGridAccessible.h"
 
+#include <stdint.h>
+#include "AccAttributes.h"
+#include "LocalAccessible-inl.h"
 #include "nsAccCache.h"
 #include "nsAccessibilityService.h"
 #include "nsAccUtils.h"
 #include "DocAccessible.h"
 #include "nsEventShell.h"
 #include "Relation.h"
-#include "Role.h"
+#include "mozilla/a11y/Role.h"
 #include "States.h"
 #include "nsQueryObject.h"
 #include "nsTreeColumns.h"
 
-#include "nsPersistentProperties.h"
 #include "nsITreeSelection.h"
 #include "nsComponentManagerUtils.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/a11y/TableAccessible.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/TreeColumnBinding.h"
 #include "mozilla/dom/XULTreeElementBinding.h"
@@ -67,7 +70,7 @@ void XULTreeGridAccessible::SelectedCells(nsTArray<Accessible*>* aCells) {
   for (uint32_t rowIdx = 0; rowIdx < rowCount; rowIdx++) {
     if (IsRowSelected(rowIdx)) {
       for (uint32_t colIdx = 0; colIdx < colCount; colIdx++) {
-        Accessible* cell = CellAt(rowIdx, colIdx);
+        LocalAccessible* cell = CellAt(rowIdx, colIdx);
         aCells->AppendElement(cell);
       }
     }
@@ -77,10 +80,13 @@ void XULTreeGridAccessible::SelectedCells(nsTArray<Accessible*>* aCells) {
 void XULTreeGridAccessible::SelectedCellIndices(nsTArray<uint32_t>* aCells) {
   uint32_t colCount = ColCount(), rowCount = RowCount();
 
-  for (uint32_t rowIdx = 0; rowIdx < rowCount; rowIdx++)
-    if (IsRowSelected(rowIdx))
-      for (uint32_t colIdx = 0; colIdx < colCount; colIdx++)
+  for (uint32_t rowIdx = 0; rowIdx < rowCount; rowIdx++) {
+    if (IsRowSelected(rowIdx)) {
+      for (uint32_t colIdx = 0; colIdx < colCount; colIdx++) {
         aCells->AppendElement(rowIdx * colCount + colIdx);
+      }
+    }
+  }
 }
 
 void XULTreeGridAccessible::SelectedColIndices(nsTArray<uint32_t>* aCols) {
@@ -88,27 +94,26 @@ void XULTreeGridAccessible::SelectedColIndices(nsTArray<uint32_t>* aCols) {
 
   uint32_t colCount = ColCount();
   aCols->SetCapacity(colCount);
-  for (uint32_t colIdx = 0; colIdx < colCount; colIdx++)
+  for (uint32_t colIdx = 0; colIdx < colCount; colIdx++) {
     aCols->AppendElement(colIdx);
+  }
 }
 
 void XULTreeGridAccessible::SelectedRowIndices(nsTArray<uint32_t>* aRows) {
   uint32_t rowCount = RowCount();
-  for (uint32_t rowIdx = 0; rowIdx < rowCount; rowIdx++)
+  for (uint32_t rowIdx = 0; rowIdx < rowCount; rowIdx++) {
     if (IsRowSelected(rowIdx)) aRows->AppendElement(rowIdx);
+  }
 }
 
-Accessible* XULTreeGridAccessible::CellAt(uint32_t aRowIndex,
-                                          uint32_t aColumnIndex) {
-  Accessible* row = GetTreeItemAccessible(aRowIndex);
-  if (!row) return nullptr;
+LocalAccessible* XULTreeGridAccessible::CellAt(uint32_t aRowIndex,
+                                               uint32_t aColumnIndex) {
+  XULTreeItemAccessibleBase* rowAcc = GetTreeItemAccessible(aRowIndex);
+  if (!rowAcc) return nullptr;
 
   RefPtr<nsTreeColumn> column =
       nsCoreUtils::GetSensibleColumnAt(mTree, aColumnIndex);
   if (!column) return nullptr;
-
-  RefPtr<XULTreeItemAccessibleBase> rowAcc = do_QueryObject(row);
-  if (!rowAcc) return nullptr;
 
   return rowAcc->GetCellAccessible(column);
 }
@@ -117,9 +122,9 @@ void XULTreeGridAccessible::ColDescription(uint32_t aColIdx,
                                            nsString& aDescription) {
   aDescription.Truncate();
 
-  Accessible* treeColumns = Accessible::GetChildAt(0);
+  LocalAccessible* treeColumns = LocalAccessible::LocalChildAt(0);
   if (treeColumns) {
-    Accessible* treeColumnItem = treeColumns->GetChildAt(aColIdx);
+    LocalAccessible* treeColumnItem = treeColumns->LocalChildAt(aColIdx);
     if (treeColumnItem) treeColumnItem->Name(aDescription);
   }
 }
@@ -146,30 +151,43 @@ bool XULTreeGridAccessible::IsCellSelected(uint32_t aRowIdx, uint32_t aColIdx) {
   return IsRowSelected(aRowIdx);
 }
 
-void XULTreeGridAccessible::SelectRow(uint32_t aRowIdx) {
-  if (!mTreeView) return;
+int32_t XULTreeGridAccessible::ColIndexAt(uint32_t aCellIdx) {
+  uint32_t colCount = ColCount();
+  if (colCount < 1 || aCellIdx >= colCount * RowCount()) {
+    return -1;  // Error: column count is 0 or index out of bounds.
+  }
 
-  nsCOMPtr<nsITreeSelection> selection;
-  mTreeView->GetSelection(getter_AddRefs(selection));
-  NS_ASSERTION(selection, "GetSelection() Shouldn't fail!");
-
-  selection->Select(aRowIdx);
+  return static_cast<int32_t>(aCellIdx % colCount);
 }
 
-void XULTreeGridAccessible::UnselectRow(uint32_t aRowIdx) {
-  if (!mTreeView) return;
+int32_t XULTreeGridAccessible::RowIndexAt(uint32_t aCellIdx) {
+  uint32_t colCount = ColCount();
+  if (colCount < 1 || aCellIdx >= colCount * RowCount()) {
+    return -1;  // Error: column count is 0 or index out of bounds.
+  }
 
-  nsCOMPtr<nsITreeSelection> selection;
-  mTreeView->GetSelection(getter_AddRefs(selection));
+  return static_cast<int32_t>(aCellIdx / colCount);
+}
 
-  if (selection) selection->ClearRange(aRowIdx, aRowIdx);
+void XULTreeGridAccessible::RowAndColIndicesAt(uint32_t aCellIdx,
+                                               int32_t* aRowIdx,
+                                               int32_t* aColIdx) {
+  uint32_t colCount = ColCount();
+  if (colCount < 1 || aCellIdx >= colCount * RowCount()) {
+    *aRowIdx = -1;
+    *aColIdx = -1;
+    return;  // Error: column count is 0 or index out of bounds.
+  }
+
+  *aRowIdx = static_cast<int32_t>(aCellIdx / colCount);
+  *aColIdx = static_cast<int32_t>(aCellIdx % colCount);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTreeGridAccessible: Accessible implementation
+// XULTreeGridAccessible: LocalAccessible implementation
 
 role XULTreeGridAccessible::NativeRole() const {
-  RefPtr<nsTreeColumns> treeColumns = mTree->GetColumns();
+  RefPtr<nsTreeColumns> treeColumns = mTree->GetColumns(FlushType::None);
   if (!treeColumns) {
     NS_ERROR("No treecolumns object for tree!");
     return roles::NOTHING;
@@ -183,9 +201,9 @@ role XULTreeGridAccessible::NativeRole() const {
 ////////////////////////////////////////////////////////////////////////////////
 // XULTreeGridAccessible: XULTreeAccessible implementation
 
-already_AddRefed<Accessible> XULTreeGridAccessible::CreateTreeItemAccessible(
-    int32_t aRow) const {
-  RefPtr<Accessible> accessible = new XULTreeGridRowAccessible(
+already_AddRefed<XULTreeItemAccessibleBase>
+XULTreeGridAccessible::CreateTreeItemAccessible(int32_t aRow) const {
+  RefPtr<XULTreeItemAccessibleBase> accessible = new XULTreeGridRowAccessible(
       mContent, mDoc, const_cast<XULTreeGridAccessible*>(this), mTree,
       mTreeView, aRow);
 
@@ -197,7 +215,7 @@ already_AddRefed<Accessible> XULTreeGridAccessible::CreateTreeItemAccessible(
 ////////////////////////////////////////////////////////////////////////////////
 
 XULTreeGridRowAccessible::XULTreeGridRowAccessible(
-    nsIContent* aContent, DocAccessible* aDoc, Accessible* aTreeAcc,
+    nsIContent* aContent, DocAccessible* aDoc, LocalAccessible* aTreeAcc,
     dom::XULTreeElement* aTree, nsITreeView* aTreeView, int32_t aRow)
     : XULTreeItemAccessibleBase(aContent, aDoc, aTreeAcc, aTree, aTreeView,
                                 aRow),
@@ -221,7 +239,7 @@ NS_IMPL_ADDREF_INHERITED(XULTreeGridRowAccessible, XULTreeItemAccessibleBase)
 NS_IMPL_RELEASE_INHERITED(XULTreeGridRowAccessible, XULTreeItemAccessibleBase)
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTreeGridRowAccessible: Accessible implementation
+// XULTreeGridRowAccessible: LocalAccessible implementation
 
 void XULTreeGridRowAccessible::Shutdown() {
   if (mDoc && !mDoc->IsDefunct()) {
@@ -251,7 +269,7 @@ ENameValueFlag XULTreeGridRowAccessible::Name(nsString& aName) const {
   return eNameOK;
 }
 
-Accessible* XULTreeGridRowAccessible::ChildAtPoint(
+LocalAccessible* XULTreeGridRowAccessible::LocalChildAtPoint(
     int32_t aX, int32_t aY, EWhichChildAtPoint aWhichChild) {
   nsIFrame* frame = GetFrame();
   if (!frame) return nullptr;
@@ -277,7 +295,7 @@ Accessible* XULTreeGridRowAccessible::ChildAtPoint(
   return GetCellAccessible(cellInfo.mCol);
 }
 
-Accessible* XULTreeGridRowAccessible::GetChildAt(uint32_t aIndex) const {
+LocalAccessible* XULTreeGridRowAccessible::LocalChildAt(uint32_t aIndex) const {
   if (IsDefunct()) return nullptr;
 
   RefPtr<nsTreeColumn> column = nsCoreUtils::GetSensibleColumnAt(mTree, aIndex);
@@ -301,17 +319,17 @@ XULTreeGridCellAccessible* XULTreeGridRowAccessible::GetCellAccessible(
   XULTreeGridCellAccessible* cachedCell = mAccessibleCache.GetWeak(key);
   if (cachedCell) return cachedCell;
 
-  RefPtr<XULTreeGridCellAccessible> cell = new XULTreeGridCellAccessibleWrap(
+  RefPtr<XULTreeGridCellAccessible> cell = new XULTreeGridCellAccessible(
       mContent, mDoc, const_cast<XULTreeGridRowAccessible*>(this), mTree,
       mTreeView, mRow, aColumn);
-  mAccessibleCache.Put(key, RefPtr{cell});
+  mAccessibleCache.InsertOrUpdate(key, RefPtr{cell});
   Document()->BindToDocument(cell, nullptr);
   return cell;
 }
 
 void XULTreeGridRowAccessible::RowInvalidated(int32_t aStartColIdx,
                                               int32_t aEndColIdx) {
-  RefPtr<nsTreeColumns> treeColumns = mTree->GetColumns();
+  RefPtr<nsTreeColumns> treeColumns = mTree->GetColumns(FlushType::None);
   if (!treeColumns) return;
 
   bool nameChanged = false;
@@ -323,8 +341,9 @@ void XULTreeGridRowAccessible::RowInvalidated(int32_t aStartColIdx,
     }
   }
 
-  if (nameChanged)
+  if (nameChanged) {
     nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_NAME_CHANGE, this);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -346,10 +365,11 @@ XULTreeGridCellAccessible::XULTreeGridCellAccessible(
 
   NS_ASSERTION(mTreeView, "mTreeView is null");
 
-  if (mColumn->Type() == dom::TreeColumn_Binding::TYPE_CHECKBOX)
+  if (mColumn->Type() == dom::TreeColumn_Binding::TYPE_CHECKBOX) {
     mTreeView->GetCellValue(mRow, mColumn, mCachedTextEquiv);
-  else
+  } else {
     mTreeView->GetCellText(mRow, mColumn, mCachedTextEquiv);
+  }
 }
 
 XULTreeGridCellAccessible::~XULTreeGridCellAccessible() {}
@@ -366,7 +386,7 @@ NS_IMPL_ADDREF_INHERITED(XULTreeGridCellAccessible, LeafAccessible)
 NS_IMPL_RELEASE_INHERITED(XULTreeGridCellAccessible, LeafAccessible)
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTreeGridCellAccessible: Accessible
+// XULTreeGridCellAccessible: LocalAccessible
 
 void XULTreeGridCellAccessible::Shutdown() {
   mTree = nullptr;
@@ -402,8 +422,7 @@ nsIntRect XULTreeGridCellAccessible::BoundsInCSSPixels() const {
   // Get bounds for tree cell and add x and y of treechildren element to
   // x and y of the cell.
   nsresult rv;
-  nsIntRect rect =
-      mTree->GetCoordsForCellItem(mRow, mColumn, NS_LITERAL_STRING("cell"), rv);
+  nsIntRect rect = mTree->GetCoordsForCellItem(mRow, mColumn, u"cell"_ns, rv);
   if (NS_FAILED(rv)) {
     return nsIntRect();
   }
@@ -433,13 +452,10 @@ nsRect XULTreeGridCellAccessible::BoundsInAppUnits() const {
                 presContext->CSSPixelsToAppUnits(bounds.Height()));
 }
 
-uint8_t XULTreeGridCellAccessible::ActionCount() const {
-  if (mColumn->Cycler()) return 1;
-
-  if (mColumn->Type() == dom::TreeColumn_Binding::TYPE_CHECKBOX && IsEditable())
-    return 1;
-
-  return 0;
+bool XULTreeGridCellAccessible::HasPrimaryAction() const {
+  return mColumn->Cycler() ||
+         (mColumn->Type() == dom::TreeColumn_Binding::TYPE_CHECKBOX &&
+          IsEditable());
 }
 
 void XULTreeGridCellAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
@@ -456,35 +472,19 @@ void XULTreeGridCellAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
       IsEditable()) {
     nsAutoString value;
     mTreeView->GetCellValue(mRow, mColumn, value);
-    if (value.EqualsLiteral("true"))
+    if (value.EqualsLiteral("true")) {
       aName.AssignLiteral("uncheck");
-    else
+    } else {
       aName.AssignLiteral("check");
+    }
   }
-}
-
-bool XULTreeGridCellAccessible::DoAction(uint8_t aIndex) const {
-  if (aIndex != eAction_Click) return false;
-
-  if (mColumn->Cycler()) {
-    DoCommand();
-    return true;
-  }
-
-  if (mColumn->Type() == dom::TreeColumn_Binding::TYPE_CHECKBOX &&
-      IsEditable()) {
-    DoCommand();
-    return true;
-  }
-
-  return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // XULTreeGridCellAccessible: TableCell
 
 TableAccessible* XULTreeGridCellAccessible::Table() const {
-  Accessible* grandParent = mParent->Parent();
+  LocalAccessible* grandParent = mParent->LocalParent();
   if (grandParent) return grandParent->AsTable();
 
   return nullptr;
@@ -504,7 +504,7 @@ void XULTreeGridCellAccessible::ColHeaderCells(
     nsTArray<Accessible*>* aHeaderCells) {
   dom::Element* columnElm = mColumn->Element();
 
-  Accessible* headerCell = mDoc->GetAccessible(columnElm);
+  LocalAccessible* headerCell = mDoc->GetAccessible(columnElm);
   if (headerCell) aHeaderCells->AppendElement(headerCell);
 }
 
@@ -519,24 +519,22 @@ bool XULTreeGridCellAccessible::Selected() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTreeGridCellAccessible: Accessible public implementation
+// XULTreeGridCellAccessible: LocalAccessible public implementation
 
-already_AddRefed<nsIPersistentProperties>
-XULTreeGridCellAccessible::NativeAttributes() {
-  RefPtr<nsPersistentProperties> attributes = new nsPersistentProperties();
+already_AddRefed<AccAttributes> XULTreeGridCellAccessible::NativeAttributes() {
+  RefPtr<AccAttributes> attributes = new AccAttributes();
 
   // "table-cell-index" attribute
   TableAccessible* table = Table();
   if (!table) return attributes.forget();
 
-  nsAutoString stringIdx;
-  stringIdx.AppendInt(table->CellIndexAt(mRow, ColIdx()));
-  nsAccUtils::SetAccAttr(attributes, nsGkAtoms::tableCellIndex, stringIdx);
+  attributes->SetAttribute(nsGkAtoms::tableCellIndex,
+                           table->CellIndexAt(mRow, ColIdx()));
 
   // "cycles" attribute
-  if (mColumn->Cycler())
-    nsAccUtils::SetAccAttr(attributes, nsGkAtoms::cycles,
-                           NS_LITERAL_STRING("true"));
+  if (mColumn->Cycler()) {
+    attributes->SetAttribute(nsGkAtoms::cycles, true);
+  }
 
   return attributes.forget();
 }
@@ -611,9 +609,9 @@ bool XULTreeGridCellAccessible::CellInvalidated() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTreeGridCellAccessible: Accessible protected implementation
+// XULTreeGridCellAccessible: LocalAccessible protected implementation
 
-Accessible* XULTreeGridCellAccessible::GetSiblingAtOffset(
+LocalAccessible* XULTreeGridCellAccessible::GetSiblingAtOffset(
     int32_t aOffset, nsresult* aError) const {
   if (aError) *aError = NS_OK;  // fail peacefully
 
@@ -632,7 +630,8 @@ Accessible* XULTreeGridCellAccessible::GetSiblingAtOffset(
 
   if (!columnAtOffset) return nullptr;
 
-  RefPtr<XULTreeItemAccessibleBase> rowAcc = do_QueryObject(Parent());
+  XULTreeItemAccessibleBase* rowAcc =
+      static_cast<XULTreeItemAccessibleBase*>(LocalParent());
   return rowAcc->GetCellAccessible(columnAtOffset);
 }
 
@@ -658,8 +657,9 @@ bool XULTreeGridCellAccessible::IsEditable() const {
   dom::Element* columnElm = mColumn->Element();
 
   if (!columnElm->AttrValueIs(kNameSpaceID_None, nsGkAtoms::editable,
-                              nsGkAtoms::_true, eCaseMatters))
+                              nsGkAtoms::_true, eCaseMatters)) {
     return false;
+  }
 
   return mContent->AsElement()->AttrValueIs(
       kNameSpaceID_None, nsGkAtoms::editable, nsGkAtoms::_true, eCaseMatters);

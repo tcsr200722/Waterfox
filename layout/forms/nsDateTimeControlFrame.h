@@ -43,14 +43,9 @@ class nsDateTimeControlFrame final : public nsContainerFrame {
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("DateTimeControl"), aResult);
+    return MakeFrameName(u"DateTimeControl"_ns, aResult);
   }
 #endif
-
-  bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock));
-  }
 
   // Reflow
   nscoord GetMinISize(gfxContext* aRenderingContext) override;
@@ -60,6 +55,12 @@ class nsDateTimeControlFrame final : public nsContainerFrame {
   void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
               const ReflowInput& aReflowInput,
               nsReflowStatus& aStatus) override;
+
+  Maybe<nscoord> GetNaturalBaselineBOffset(
+      mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+      BaselineExportContext) const override;
+
+  nscoord mFirstBaseline = NS_INTRINSIC_ISIZE_UNKNOWN;
 };
 
 #endif  // nsDateTimeControlFrame_h__

@@ -12,12 +12,10 @@
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "Units.h"
-#include "nsSVGIntegrationUtils.h"  // for WrFiltersHolder
-
-class nsDisplayTransform;
 
 namespace mozilla {
 
+class nsDisplayTransform;
 struct ActiveScrolledRoot;
 
 namespace layers {
@@ -46,7 +44,7 @@ class MOZ_RAII StackingContextHelper {
   ~StackingContextHelper();
 
   // Export the inherited scale
-  gfx::Size GetInheritedScale() const { return mScale; }
+  gfx::MatrixScales GetInheritedScale() const { return mScale; }
 
   const gfx::Matrix& GetInheritedTransform() const {
     return mInheritedTransform;
@@ -56,8 +54,14 @@ class MOZ_RAII StackingContextHelper {
     return mSnappingSurfaceTransform;
   }
 
-  const Maybe<nsDisplayTransform*>& GetDeferredTransformItem() const;
+  nsDisplayTransform* GetDeferredTransformItem() const;
   Maybe<gfx::Matrix4x4> GetDeferredTransformMatrix() const;
+  // Functions for temporarily clearing and restoring the deferred
+  // transform item during WebRender display list building. These are
+  // used to ensure deferred transforms are not applied in duplicate
+  // to nested nodes in the WebRenderScrollData tree.
+  void ClearDeferredTransformItem() const;
+  void RestoreDeferredTransformItem(nsDisplayTransform* aItem) const;
 
   bool AffectsClipPositioning() const { return mAffectsClipPositioning; }
   Maybe<wr::WrSpatialId> ReferenceFrameId() const { return mReferenceFrameId; }
@@ -66,7 +70,7 @@ class MOZ_RAII StackingContextHelper {
 
  private:
   wr::DisplayListBuilder* mBuilder;
-  gfx::Size mScale;
+  gfx::MatrixScales mScale;
   gfx::Matrix mInheritedTransform;
   LayoutDevicePoint mOrigin;
 
@@ -107,19 +111,19 @@ class MOZ_RAII StackingContextHelper {
   // item (i.e. the closest ancestor nsDisplayTransform item of the item that
   // created this StackingContextHelper). And then we use
   // mDeferredAncestorTransform to store the product of all the other transforms
-  // that were deferred. As a result, there is an invariant here that if
-  // mDeferredTransformItem is Nothing(), mDeferredAncestorTransform will also
-  // be Nothing(). Note that we can only do this if the nsDisplayTransform items
-  // share the same ASR. If we are processing an nsDisplayTransform item with a
-  // different ASR than the previously-deferred item, we assume that the
-  // previously-deferred transform will get sent to APZ as part of a separate
-  // WebRenderLayerScrollData item, and so we don't need to bother with any
-  // merging. (The merging probably wouldn't even make sense because the
-  // coordinate spaces might be different in the face of async scrolling). This
-  // behaviour of forcing a WebRenderLayerScrollData item to be generated when
-  // the ASR changes is implemented in
+  // that were deferred. Note that this means we only need to look at
+  // mDeferredAncestorTransform if mDeferredTransformItem is set. Note that we
+  // can only do this if the nsDisplayTransform items share the same ASR. If we
+  // are processing an nsDisplayTransform item with a different ASR than the
+  // previously-deferred item, we assume that the previously-deferred transform
+  // will get sent to APZ as part of a separate WebRenderLayerScrollData item,
+  // and so we don't need to bother with any merging. (The merging probably
+  // wouldn't even make sense because the coordinate spaces might be different
+  // in the face of async scrolling). This behaviour of forcing a
+  // WebRenderLayerScrollData item to be generated when the ASR changes is
+  // implemented in
   // WebRenderCommandBuilder::CreateWebRenderCommandsFromDisplayList.
-  Maybe<nsDisplayTransform*> mDeferredTransformItem;
+  mutable nsDisplayTransform* mDeferredTransformItem;
   Maybe<gfx::Matrix4x4> mDeferredAncestorTransform;
 
   bool mRasterizeLocally;

@@ -2,14 +2,12 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Preferences",
-  "resource://gre/modules/Preferences.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  Preferences: "resource://gre/modules/Preferences.sys.mjs",
+});
 
-const { ExtensionPermissions } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionPermissions.jsm"
+const { ExtensionPermissions } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionPermissions.sys.mjs"
 );
 
 AddonTestUtils.init(this);
@@ -22,12 +20,16 @@ AddonTestUtils.createAppInfo(
   "42"
 );
 
-Services.prefs.setBoolPref(
-  "extensions.webextensions.background-delayed-startup",
-  false
-);
+// Start a server for `pac.example.com` to intercept attempts to connect to it
+// to load a PAC URL. We won't serve anything, but this prevents attempts at
+// non-local connections if this domain is registered.
+AddonTestUtils.createHttpServer({ hosts: ["pac.example.com"] });
 
-add_task(async function setup() {
+add_setup(async function () {
+  // Bug 1646182: Force ExtensionPermissions to run in rkv mode, the legacy
+  // storage mode will run in xpcshell-legacy-ep.toml
+  await ExtensionPermissions._uninit();
+
   Services.prefs.setBoolPref(
     "extensions.webextOptionalPermissionPrompts",
     false
@@ -40,6 +42,12 @@ add_task(async function setup() {
 });
 
 add_task(async function test_browser_settings() {
+  // TODO bug 1725981: proxy.settings is not supported on Android.
+  if (AppConstants.platform === "android") {
+    info("proxy.settings not supported on Android; skipping");
+    return;
+  }
+
   const proxySvc = Ci.nsIProtocolProxyService;
 
   // Create an object to hold the values to which we will initialize the prefs.
@@ -48,14 +56,13 @@ add_task(async function test_browser_settings() {
     "network.proxy.http": "",
     "network.proxy.http_port": 0,
     "network.proxy.share_proxy_settings": false,
-    "network.proxy.ftp": "",
-    "network.proxy.ftp_port": 0,
     "network.proxy.ssl": "",
     "network.proxy.ssl_port": 0,
     "network.proxy.socks": "",
     "network.proxy.socks_port": 0,
     "network.proxy.socks_version": 5,
     "network.proxy.socks_remote_dns": false,
+    "network.proxy.socks5_remote_dns": true,
     "network.proxy.no_proxies_on": "",
     "network.proxy.autoconfig_url": "",
     "signon.autologin.proxy": false,
@@ -117,21 +124,15 @@ add_task(async function test_browser_settings() {
   }
 
   async function testProxy(config, expectedPrefs, expectedConfig = config) {
-    // proxy.settings is not supported on Android.
-    if (AppConstants.platform === "android") {
-      return Promise.resolve();
-    }
-
     let proxyConfig = {
       proxyType: "none",
       autoConfigUrl: "",
       autoLogin: false,
-      proxyDNS: false,
+      proxyDNS: true,
       httpProxyAll: false,
       socksVersion: 5,
       passthrough: "",
       http: "",
-      ftp: "",
       ssl: "",
       socks: "",
       respectBeConservative: true,
@@ -161,6 +162,7 @@ add_task(async function test_browser_settings() {
       "network.proxy.type": proxySvc.PROXYCONFIG_WPAD,
       "signon.autologin.proxy": true,
       "network.proxy.socks_remote_dns": true,
+      "network.proxy.socks5_remote_dns": true,
     }
   );
 
@@ -174,6 +176,7 @@ add_task(async function test_browser_settings() {
       "network.proxy.type": proxySvc.PROXYCONFIG_SYSTEM,
       "signon.autologin.proxy": false,
       "network.proxy.socks_remote_dns": false,
+      "network.proxy.socks5_remote_dns": false,
     }
   );
 
@@ -187,6 +190,7 @@ add_task(async function test_browser_settings() {
       "network.proxy.type": proxySvc.PROXYCONFIG_SYSTEM,
       "signon.autologin.proxy": false,
       "network.proxy.socks_remote_dns": false,
+      "network.proxy.socks5_remote_dns": false,
       "network.http.proxy.respect-be-conservative": true,
     }
   );
@@ -194,11 +198,11 @@ add_task(async function test_browser_settings() {
   await testProxy(
     {
       proxyType: "autoConfig",
-      autoConfigUrl: "http://mozilla.org",
+      autoConfigUrl: "http://pac.example.com",
     },
     {
       "network.proxy.type": proxySvc.PROXYCONFIG_PAC,
-      "network.proxy.autoconfig_url": "http://mozilla.org",
+      "network.proxy.autoconfig_url": "http://pac.example.com",
       "network.http.proxy.respect-be-conservative": true,
     }
   );
@@ -228,15 +232,12 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "manual",
       http: "http://www.mozilla.org:8080",
-      ftp: "http://www.mozilla.org:1234",
       httpProxyAll: true,
     },
     {
       "network.proxy.type": proxySvc.PROXYCONFIG_MANUAL,
       "network.proxy.http": "www.mozilla.org",
       "network.proxy.http_port": 8080,
-      "network.proxy.ftp": "www.mozilla.org",
-      "network.proxy.ftp_port": 8080,
       "network.proxy.ssl": "www.mozilla.org",
       "network.proxy.ssl_port": 8080,
       "network.proxy.share_proxy_settings": true,
@@ -244,7 +245,6 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "manual",
       http: "www.mozilla.org:8080",
-      ftp: "www.mozilla.org:8080",
       ssl: "www.mozilla.org:8080",
       socks: "",
       httpProxyAll: true,
@@ -268,8 +268,6 @@ add_task(async function test_browser_settings() {
       "network.proxy.http": "www.mozilla.org",
       "network.proxy.http_port": 8080,
       "network.proxy.share_proxy_settings": false,
-      "network.proxy.ftp": "www.mozilla.org",
-      "network.proxy.ftp_port": 8081,
       "network.proxy.ssl": "www.mozilla.org",
       "network.proxy.ssl_port": 8082,
       "network.proxy.socks": "mozilla.org",
@@ -277,6 +275,18 @@ add_task(async function test_browser_settings() {
       "network.proxy.socks_version": 4,
       "network.proxy.no_proxies_on": ".mozilla.org",
       "network.http.proxy.respect-be-conservative": true,
+    },
+    {
+      proxyType: "manual",
+      http: "www.mozilla.org:8080",
+      httpProxyAll: false,
+      // ftp: "www.mozilla.org:8081", // This line should not be sent back
+      ssl: "www.mozilla.org:8082",
+      socks: "mozilla.org:8083",
+      socksVersion: 4,
+      proxyDNS: false,
+      passthrough: ".mozilla.org",
+      respectBeConservative: true,
     }
   );
 
@@ -284,7 +294,6 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "manual",
       http: "http://www.mozilla.org",
-      ftp: "ftp://www.mozilla.org",
       ssl: "https://www.mozilla.org",
       socks: "mozilla.org",
       socksVersion: 4,
@@ -296,8 +305,6 @@ add_task(async function test_browser_settings() {
       "network.proxy.http": "www.mozilla.org",
       "network.proxy.http_port": 80,
       "network.proxy.share_proxy_settings": false,
-      "network.proxy.ftp": "www.mozilla.org",
-      "network.proxy.ftp_port": 21,
       "network.proxy.ssl": "www.mozilla.org",
       "network.proxy.ssl_port": 443,
       "network.proxy.socks": "mozilla.org",
@@ -310,10 +317,10 @@ add_task(async function test_browser_settings() {
       proxyType: "manual",
       http: "www.mozilla.org:80",
       httpProxyAll: false,
-      ftp: "www.mozilla.org:21",
       ssl: "www.mozilla.org:443",
       socks: "mozilla.org:1080",
       socksVersion: 4,
+      proxyDNS: false,
       passthrough: ".mozilla.org",
       respectBeConservative: false,
     }
@@ -323,7 +330,6 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "manual",
       http: "http://www.mozilla.org:80",
-      ftp: "ftp://www.mozilla.org:21",
       ssl: "https://www.mozilla.org:443",
       socks: "mozilla.org:1080",
       socksVersion: 4,
@@ -335,8 +341,6 @@ add_task(async function test_browser_settings() {
       "network.proxy.http": "www.mozilla.org",
       "network.proxy.http_port": 80,
       "network.proxy.share_proxy_settings": false,
-      "network.proxy.ftp": "www.mozilla.org",
-      "network.proxy.ftp_port": 21,
       "network.proxy.ssl": "www.mozilla.org",
       "network.proxy.ssl_port": 443,
       "network.proxy.socks": "mozilla.org",
@@ -349,10 +353,10 @@ add_task(async function test_browser_settings() {
       proxyType: "manual",
       http: "www.mozilla.org:80",
       httpProxyAll: false,
-      ftp: "www.mozilla.org:21",
       ssl: "www.mozilla.org:443",
       socks: "mozilla.org:1080",
       socksVersion: 4,
+      proxyDNS: false,
       passthrough: ".mozilla.org",
       respectBeConservative: true,
     }
@@ -362,7 +366,6 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "manual",
       http: "http://www.mozilla.org:80",
-      ftp: "ftp://www.mozilla.org:80",
       ssl: "https://www.mozilla.org:80",
       socks: "mozilla.org:80",
       socksVersion: 4,
@@ -374,8 +377,6 @@ add_task(async function test_browser_settings() {
       "network.proxy.http": "www.mozilla.org",
       "network.proxy.http_port": 80,
       "network.proxy.share_proxy_settings": false,
-      "network.proxy.ftp": "www.mozilla.org",
-      "network.proxy.ftp_port": 80,
       "network.proxy.ssl": "www.mozilla.org",
       "network.proxy.ssl_port": 80,
       "network.proxy.socks": "mozilla.org",
@@ -388,10 +389,10 @@ add_task(async function test_browser_settings() {
       proxyType: "manual",
       http: "www.mozilla.org:80",
       httpProxyAll: false,
-      ftp: "www.mozilla.org:80",
       ssl: "www.mozilla.org:80",
       socks: "mozilla.org:80",
       socksVersion: 4,
+      proxyDNS: false,
       passthrough: ".mozilla.org",
       respectBeConservative: false,
     }
@@ -402,7 +403,6 @@ add_task(async function test_browser_settings() {
     {
       proxyType: "none",
       http: "",
-      ftp: "",
       ssl: "",
       socks: "",
       socksVersion: 5,
@@ -413,8 +413,6 @@ add_task(async function test_browser_settings() {
       "network.proxy.type": proxySvc.PROXYCONFIG_DIRECT,
       "network.proxy.http": "",
       "network.proxy.http_port": 0,
-      "network.proxy.ftp": "",
-      "network.proxy.ftp_port": 0,
       "network.proxy.ssl": "",
       "network.proxy.ssl_port": 0,
       "network.proxy.socks": "",
@@ -528,6 +526,11 @@ add_task(async function test_bad_value_proxy_config() {
 
 // Verify proxy prefs are unset on permission removal.
 add_task(async function test_proxy_settings_permissions() {
+  // TODO bug 1725981: proxy.settings is not supported on Android.
+  if (AppConstants.platform === "android") {
+    info("proxy.settings not supported on Android; skipping");
+    return;
+  }
   async function background() {
     const permObj = { permissions: ["proxy"] };
     browser.test.onMessage.addListener(async (msg, value) => {
@@ -548,8 +551,6 @@ add_task(async function test_proxy_settings_permissions() {
     "network.proxy.type",
     "network.proxy.http",
     "network.proxy.http_port",
-    "network.proxy.ftp",
-    "network.proxy.ftp_port",
     "network.proxy.ssl",
     "network.proxy.ssl_port",
     "network.proxy.socks",
@@ -585,7 +586,6 @@ add_task(async function test_proxy_settings_permissions() {
       proxyType: "manual",
       http: "www.mozilla.org:8080",
       httpProxyAll: false,
-      ftp: "www.mozilla.org:8081",
       ssl: "www.mozilla.org:8082",
       socks: "mozilla.org:8083",
       socksVersion: 4,
@@ -603,7 +603,6 @@ add_task(async function test_proxy_settings_permissions() {
       proxyType: "manual",
       http: "www.mozilla.org:8080",
       httpProxyAll: false,
-      ftp: "www.mozilla.org:8081",
       ssl: "www.mozilla.org:8082",
       socks: "mozilla.org:8083",
       socksVersion: 4,
@@ -617,13 +616,91 @@ add_task(async function test_proxy_settings_permissions() {
   await ExtensionPermissions._uninit();
   resetHandlingUserInput();
   await AddonTestUtils.promiseRestartManager();
-  await extension.awaitStartup();
+  await extension.awaitBackgroundStarted();
 
   await withHandlingUserInput(extension, async () => {
     extension.sendMessage("remove");
     await extension.awaitMessage("removed");
     checkSettings("setting is reset after remove");
   });
+
+  await extension.unload();
+});
+
+add_task(async function test_proxy_socks_remote_dns() {
+  // TODO bug 1725981: proxy.settings is not supported on Android.
+  if (AppConstants.platform === "android") {
+    info("proxy.settings not supported on Android; skipping");
+    return;
+  }
+  async function background() {
+    browser.test.onMessage.addListener(async msg => {
+      if (msg === "get-proxy-settings") {
+        let proxySettings = await browser.proxy.settings.get({});
+        browser.test.sendMessage("return-proxy-settings", proxySettings.value);
+      }
+    });
+  }
+
+  let extension = ExtensionTestUtils.loadExtension({
+    background,
+    manifest: {
+      permissions: ["proxy"],
+    },
+    incognitoOverride: "spanning",
+    useAddonManager: "temporary",
+  });
+  await extension.startup();
+
+  registerCleanupFunction(() => {
+    // Reset the prefs.
+    Preferences.reset("network.proxy.socks_version");
+    Preferences.reset("network.proxy.socks_remote_dns");
+    Preferences.reset("network.proxy.socks5_remote_dns");
+  });
+
+  async function check_proxy_setting(
+    socksVersion,
+    socks4RemoteDNS,
+    socks5RemoteDNS,
+    expectedProxyDNS
+  ) {
+    Preferences.set("network.proxy.socks_version", socksVersion);
+    Preferences.set("network.proxy.socks_remote_dns", socks4RemoteDNS);
+    Preferences.set("network.proxy.socks5_remote_dns", socks5RemoteDNS);
+    extension.sendMessage("get-proxy-settings");
+    let settings = await extension.awaitMessage("return-proxy-settings");
+    Assert.equal(
+      expectedProxyDNS,
+      settings.proxyDNS,
+      `SOCKS${socksVersion}: remote4: ${socks4RemoteDNS}, remote5: ${socks5RemoteDNS}.`
+    );
+  }
+  // run tests
+  await check_proxy_setting(
+    Ci.nsIProxyInfo.SOCKS_V4, // socksVersion
+    true, // socks4RemoteDNS
+    false, // socks5RemoteDNS
+    true // expectedProxyDNS
+  );
+  await check_proxy_setting(
+    Ci.nsIProxyInfo.SOCKS_V5, // socksVersion
+    true, // socks4RemoteDNS
+    false, // socks5RemoteDNS
+    false // expectedProxyDNS
+  );
+  await check_proxy_setting(
+    Ci.nsIProxyInfo.SOCKS_V4, // socksVersion
+    false, // socks4RemoteDNS
+    true, // socks5RemoteDNS
+    false // expectedProxyDNS
+  );
+  await check_proxy_setting(
+    Ci.nsIProxyInfo.SOCKS_V5, // socksVersion
+    false, // socks4RemoteDNS
+    true, // socks5RemoteDNS
+    true // expectedProxyDNS
+  );
 
   await extension.unload();
 });

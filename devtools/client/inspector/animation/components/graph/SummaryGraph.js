@@ -7,21 +7,21 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const AnimationName = createFactory(
-  require("devtools/client/inspector/animation/components/graph/AnimationName")
+  require("resource://devtools/client/inspector/animation/components/graph/AnimationName.js")
 );
 const DelaySign = createFactory(
-  require("devtools/client/inspector/animation/components/graph/DelaySign")
+  require("resource://devtools/client/inspector/animation/components/graph/DelaySign.js")
 );
 const EndDelaySign = createFactory(
-  require("devtools/client/inspector/animation/components/graph/EndDelaySign")
+  require("resource://devtools/client/inspector/animation/components/graph/EndDelaySign.js")
 );
 const SummaryGraphPath = createFactory(
-  require("devtools/client/inspector/animation/components/graph/SummaryGraphPath")
+  require("resource://devtools/client/inspector/animation/components/graph/SummaryGraphPath.js")
 );
 
 const {
@@ -29,13 +29,12 @@ const {
   getFormatStr,
   getStr,
   numberWithDecimals,
-} = require("devtools/client/inspector/animation/utils/l10n");
+} = require("resource://devtools/client/inspector/animation/utils/l10n.js");
 
 class SummaryGraph extends PureComponent {
   static get propTypes() {
     return {
       animation: PropTypes.object.isRequired,
-      emitEventForTest: PropTypes.func.isRequired,
       getAnimatedPropertyMap: PropTypes.func.isRequired,
       selectAnimation: PropTypes.func.isRequired,
       simulateAnimation: PropTypes.func.isRequired,
@@ -162,13 +161,8 @@ class SummaryGraph extends PureComponent {
   }
 
   render() {
-    const {
-      animation,
-      emitEventForTest,
-      getAnimatedPropertyMap,
-      simulateAnimation,
-      timeScale,
-    } = this.props;
+    const { animation, getAnimatedPropertyMap, simulateAnimation, timeScale } =
+      this.props;
 
     const { iterationCount } = animation.state;
     const { delay, endDelay } = animation.state.absoluteValues;
@@ -183,7 +177,6 @@ class SummaryGraph extends PureComponent {
       },
       SummaryGraphPath({
         animation,
-        emitEventForTest,
         getAnimatedPropertyMap,
         simulateAnimation,
         timeScale,

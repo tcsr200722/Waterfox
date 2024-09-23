@@ -3,10 +3,12 @@
 
 "use strict";
 
-const { AddonsEngine } = ChromeUtils.import(
-  "resource://services-sync/engines/addons.js"
+const { AddonsEngine } = ChromeUtils.importESModule(
+  "resource://services-sync/engines/addons.sys.mjs"
 );
-const { Service } = ChromeUtils.import("resource://services-sync/service.js");
+const { Service } = ChromeUtils.importESModule(
+  "resource://services-sync/service.sys.mjs"
+);
 
 AddonTestUtils.init(this);
 AddonTestUtils.createAppInfo(
@@ -17,16 +19,11 @@ AddonTestUtils.createAppInfo(
 );
 AddonTestUtils.overrideCertDB();
 
-Services.prefs.setCharPref("extensions.minCompatibleAppVersion", "0");
-Services.prefs.setCharPref("extensions.minCompatiblePlatformVersion", "0");
 Services.prefs.setBoolPref("extensions.experiments.enabled", true);
 
-AddonTestUtils.awaitPromise(AddonTestUtils.promiseStartupManager());
-Svc.Prefs.set("engine.addons", true);
+Svc.PrefBranch.setBoolPref("engine.addons", true);
 
-let engine;
 let reconciler;
-let store;
 let tracker;
 
 const addon1ID = "addon1@tests.mozilla.org";
@@ -34,15 +31,12 @@ const addon1ID = "addon1@tests.mozilla.org";
 const ADDONS = {
   test_addon1: {
     manifest: {
-      applications: { gecko: { id: addon1ID } },
+      browser_specific_settings: { gecko: { id: addon1ID } },
     },
   },
 };
 
 const XPIS = {};
-for (let [name, data] of Object.entries(ADDONS)) {
-  XPIS[name] = AddonTestUtils.createTempWebExtensionFile(data);
-}
 
 async function cleanup() {
   tracker.stop();
@@ -56,10 +50,13 @@ async function cleanup() {
 }
 
 add_task(async function setup() {
+  await AddonTestUtils.promiseStartupManager();
+  for (let [name, data] of Object.entries(ADDONS)) {
+    XPIS[name] = AddonTestUtils.createTempWebExtensionFile(data);
+  }
   await Service.engineManager.register(AddonsEngine);
-  engine = Service.engineManager.get("addons");
+  let engine = Service.engineManager.get("addons");
   reconciler = engine._reconciler;
-  store = engine._store;
   tracker = engine._tracker;
 
   await cleanup();

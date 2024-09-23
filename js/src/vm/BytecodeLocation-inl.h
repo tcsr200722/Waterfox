@@ -27,6 +27,16 @@ inline JSAtom* BytecodeLocation::getAtom(const JSScript* script) const {
   return script->getAtom(this->rawBytecode_);
 }
 
+inline JSString* BytecodeLocation::getString(const JSScript* script) const {
+  MOZ_ASSERT(this->isValid());
+  return script->getString(this->rawBytecode_);
+}
+
+inline bool BytecodeLocation::atomizeString(JSContext* cx, JSScript* script) {
+  MOZ_ASSERT(this->isValid());
+  return script->atomizeString(cx, this->rawBytecode_);
+}
+
 inline PropertyName* BytecodeLocation::getPropertyName(
     const JSScript* script) const {
   MOZ_ASSERT(this->isValid());
@@ -41,15 +51,13 @@ inline JS::BigInt* BytecodeLocation::getBigInt(const JSScript* script) const {
 
 inline JSObject* BytecodeLocation::getObject(const JSScript* script) const {
   MOZ_ASSERT(this->isValid());
-  MOZ_ASSERT(is(JSOp::CallSiteObj) || is(JSOp::Object) ||
-             is(JSOp::NewArrayCopyOnWrite));
+  MOZ_ASSERT(is(JSOp::CallSiteObj) || is(JSOp::Object));
   return script->getObject(this->rawBytecode_);
 }
 
 inline JSFunction* BytecodeLocation::getFunction(const JSScript* script) const {
   MOZ_ASSERT(this->isValid());
-  MOZ_ASSERT(is(JSOp::Lambda) || is(JSOp::LambdaArrow) ||
-             is(JSOp::FunWithProto));
+  MOZ_ASSERT(is(JSOp::Lambda) || is(JSOp::FunWithProto));
   return script->getFunction(this->rawBytecode_);
 }
 

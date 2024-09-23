@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { ContextualIdentityService } = ChromeUtils.import(
-  "resource://gre/modules/ContextualIdentityService.jsm"
+const { ContextualIdentityService } = ChromeUtils.importESModule(
+  "resource://gre/modules/ContextualIdentityService.sys.mjs"
 );
 
 /**
@@ -14,11 +14,11 @@ function setTitle() {
 
   let winElem = document.documentElement;
   if (params.userContextId) {
-    document.l10n.setAttributes(winElem, "containers-window-update", {
+    document.l10n.setAttributes(winElem, "containers-window-update-settings2", {
       name: params.identity.name,
     });
   } else {
-    document.l10n.setAttributes(winElem, "containers-window-new");
+    document.l10n.setAttributes(winElem, "containers-window-new2");
   }
 }
 setTitle();
@@ -58,6 +58,7 @@ let gContainersManager = {
   },
 
   init(aParams) {
+    this._dialog = document.querySelector("dialog");
     this.userContextId = aParams.userContextId || null;
     this.identity = aParams.identity;
 
@@ -73,6 +74,8 @@ let gContainersManager = {
       this.checkForm();
     }
 
+    document.addEventListener("dialogaccept", () => this.onApplyChanges());
+
     // This is to prevent layout jank caused by the svgs and outlines rendering at different times
     document.getElementById("containers-content").removeAttribute("hidden");
   },
@@ -82,15 +85,10 @@ let gContainersManager = {
   // Check if name is provided to determine if the form can be submitted
   checkForm() {
     const name = document.getElementById("name");
-    let btnApplyChanges = document.getElementById("btnApplyChanges");
-    if (!name.value) {
-      btnApplyChanges.setAttribute("disabled", true);
-    } else {
-      btnApplyChanges.removeAttribute("disabled");
-    }
+    this._dialog.setAttribute("buttondisabledaccept", !name.value.trim());
   },
 
-  createIconButtons(defaultIcon) {
+  createIconButtons() {
     let radiogroup = document.createXULElement("radiogroup");
     radiogroup.setAttribute("id", "icon");
     radiogroup.className = "icon-buttons radio-buttons";
@@ -118,7 +116,7 @@ let gContainersManager = {
     return radiogroup;
   },
 
-  createColorSwatches(defaultColor) {
+  createColorSwatches() {
     let radiogroup = document.createXULElement("radiogroup");
     radiogroup.setAttribute("id", "color");
     radiogroup.className = "radio-buttons";
@@ -165,11 +163,5 @@ let gContainersManager = {
       ContextualIdentityService.create(name, icon, color);
     }
     window.parent.location.reload();
-  },
-
-  onWindowKeyPress(aEvent) {
-    if (aEvent.keyCode == KeyEvent.DOM_VK_ESCAPE) {
-      window.close();
-    }
   },
 };

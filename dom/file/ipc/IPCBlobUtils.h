@@ -48,7 +48,7 @@
  * the parent process).
  *
  * DocumentLoadListener uses blobs to serialize the POST data back to the
- * content process (for insertion into session history). This lets it correclty
+ * content process (for insertion into session history). This lets it correctly
  * handle OS files by reference, and avoid copying the underlying buffer data
  * unless it is read. This can hopefully be removed once SessionHistory is
  * handled in the parent process.
@@ -66,11 +66,10 @@
  * and its size is lower than 1Mb, we are able to recreate the stream completely
  * on the parent side. This happens, basically with any kind of child-to-parent
  * stream except for huge memory streams. In this case we end up using
- * PChildToParentStream. See more information in IPCStreamUtils.h.
+ * DataPipe. See more information in IPCStreamUtils.h.
  *
- * In order to populate IPCStream correctly, we use AutoIPCStream as documented
- * in IPCStreamUtils.h. Note that we use the 'delayed start' feature because,
- * often, the stream doesn't need to be read on the parent side.
+ * In order to populate IPCStream correctly, we use SerializeIPCStream as
+ * documented in IPCStreamUtils.h.
  *
  * Parent to Child Blob Serialization
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -89,34 +88,34 @@
  * in order to do some networking, or whatever.
  *
  * For this reason, IPCBlobUtils uses a particular protocol for serializing
- * nsIInputStream parent to child: PIPCBlobInputStream. This protocol keeps the
- * original nsIInputStream alive on the parent side, and gives its size and a
- * UUID to the child side. The child side creates a IPCBlobInputStream and that
- * is incapsulated into a StreamBlobImpl.
+ * nsIInputStream parent to child: PRemoteLazyInputStream. This protocol keeps
+ * the original nsIInputStream alive on the parent side, and gives its size and
+ * a UUID to the child side. The child side creates a RemoteLazyInputStream and
+ * that is incapsulated into a StreamBlobImpl.
  *
  * The UUID is useful when the content process sends the same nsIInputStream
  * back to the parent process because, the only information it has to share is
- * the UUID. Each nsIInputStream sent via PIPCBlobInputStream, is registered
- * into the IPCBlobInputStreamStorage.
+ * the UUID. Each nsIInputStream sent via PRemoteLazyInputStream, is registered
+ * into the RemoteLazyInputStreamStorage.
  *
- * On the content process side, IPCBlobInputStream is a special inputStream:
+ * On the content process side, RemoteLazyInputStream is a special inputStream:
  * the only reliable methods are:
- * - nsIInputStream.available() - the size is shared by PIPCBlobInputStream
+ * - nsIInputStream.available() - the size is shared by PRemoteLazyInputStream
  *   actor.
  * - nsIIPCSerializableInputStream.serialize() - we can give back this stream to
  *   the parent because we know its UUID.
  * - nsICloneableInputStream.cloneable() and nsICloneableInputStream.clone() -
  *   this stream can be cloned. We just need to have a reference of the
- *   PIPCBlobInputStream actor and its UUID.
+ *   PRemoteLazyInputStream actor and its UUID.
  * - nsIAsyncInputStream.asyncWait() - see next section.
  *
  * Any other method (read, readSegment and so on) will fail if asyncWait() is
  * not previously called (see the next section). Basically, this inputStream
  * cannot be used synchronously for any 'real' reading operation.
  *
- * When the parent receives the serialization of a IPCBlobInputStream, it is
+ * When the parent receives the serialization of a RemoteLazyInputStream, it is
  * able to retrieve the correct nsIInputStream using the UUID and
- * IPCBlobInputStreamStorage.
+ * RemoteLazyInputStreamStorage.
  *
  * Parent to Child Streams, FileReader and BlobURL
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -124,30 +123,30 @@
  * The FileReader and BlobURL scenarios are described here.
  *
  * When content process needs to read data from a Blob sent from the parent
- * process, it must do it asynchronously using IPCBlobInputStream as a
+ * process, it must do it asynchronously using RemoteLazyInputStream as a
  * nsIAsyncInputStream stream. This happens calling
- * IPCBlobInputStream.asyncWait(). At that point, the child actor will send a
+ * RemoteLazyInputStream.asyncWait(). At that point, the child actor will send a
  * StreamNeeded() IPC message to the parent side. When this is received, the
- * parent retrieves the 'real' stream from IPCBlobInputStreamStorage using the
- * UUID, it will serialize the 'real' stream, and it will send it to the child
- * side.
+ * parent retrieves the 'real' stream from RemoteLazyInputStreamStorage using
+ * the UUID, it will serialize the 'real' stream, and it will send it to the
+ * child side.
  *
  * When the 'real' stream is received (RecvStreamReady()), the asyncWait
- * callback will be executed and, from that moment, any IPCBlobInputStream
+ * callback will be executed and, from that moment, any RemoteLazyInputStream
  * method will be forwarded to the 'real' stream ones. This means that the
  * reading will be available.
  *
- * DOM-File Thread
- * ~~~~~~~~~~~~~~~
+ * RemoteLazyInputStream Thread
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
- * IPCBlobInputStreamChild actor can be created in any thread (sort of) and
+ * RemoteLazyInputStreamChild actor can be created in any thread (sort of) and
  * their top-level IPDL protocol is PBackground. These actors are wrapped by 1
- * or more IPCBlobInputStream objects in order to expose nsIInputStream
+ * or more RemoteLazyInputStream objects in order to expose nsIInputStream
  * interface and be thread-safe.
  *
  * But IPDL actors are not thread-safe and any SendFoo() method must be executed
  * on the owning thread. This means that this thread must be kept alive for the
- * life-time of the IPCBlobInputStream.
+ * life-time of the RemoteLazyInputStream.
  *
  * In doing this, there are 2 main issues:
  * a. if a remote Blob is created on a worker (because of a
@@ -158,27 +157,27 @@
  *    used on another thread (note that nsIInputStream could do I/O and usually
  *    they are used on special I/O threads).
  *
- * In order to avoid this, IPCBlobInputStreamChild are 'migrated' to a DOM-File
- * thread. This is done in this way:
+ * In order to avoid this, RemoteLazyInputStreamChild are 'migrated' to a
+ * DOM-File thread. This is done in this way:
  *
- * 1. If IPCBlobInputStreamChild actor is not already owned by DOM-File thread,
- *    it calls Send__delete__ in order to inform the parent side that we don't
- *    need this IPC channel on the current thread.
- * 2. A new IPCBlobInputStreamChild is created. IPCBlobInputStreamThread is
- *    used to assign this actor to the DOM-File thread.
- *    IPCBlobInputStreamThread::GetOrCreate() creates the DOM-File thread if it
- *    doesn't exist yet. Pending operations and IPCBlobInputStreams are moved
- *    onto the new actor.
- * 3. IPCBlobInputStreamParent::Recv__delete__ is called on the parent side and
- *    the parent actor is deleted. Doing this we don't remove the UUID from
- *    IPCBlobInputStreamStorage.
- * 4. The IPCBlobInputStream constructor is sent with the new
- *    IPCBlobInputStreamChild actor, with the DOM-File thread's PBackground as
- *    its manager.
- * 5. When the new IPCBlobInputStreamParent actor is created, it will receive
+ * 1. If RemoteLazyInputStreamChild actor is not already owned by DOM-File
+ *    thread, it calls Send__delete__ in order to inform the parent side that we
+ *    don't need this IPC channel on the current thread.
+ * 2. A new RemoteLazyInputStreamChild is created. RemoteLazyInputStreamThread
+ *    is used to assign this actor to the DOM-File thread.
+ *    RemoteLazyInputStreamThread::GetOrCreate() creates the DOM-File thread if
+ *    it doesn't exist yet. Pending operations and RemoteLazyInputStreams are
+ *    moved onto the new actor.
+ * 3. RemoteLazyInputStreamParent::Recv__delete__ is called on the parent side
+ *    and the parent actor is deleted. Doing this we don't remove the UUID from
+ *    RemoteLazyInputStreamStorage.
+ * 4. The RemoteLazyInputStream constructor is sent with the new
+ *    RemoteLazyInputStreamChild actor, with the DOM-File thread's PBackground
+ *    as its manager.
+ * 5. When the new RemoteLazyInputStreamParent actor is created, it will receive
  *    the same UUID of the previous parent actor. The nsIInputStream will be
- *    retrieved from IPCBlobInputStreamStorage.
- * 6. In order to avoid leaks, IPCBlobInputStreamStorage will monitor child
+ *    retrieved from RemoteLazyInputStreamStorage.
+ * 6. In order to avoid leaks, RemoteLazyInputStreamStorage will monitor child
  *    processes and in case one of them dies, it will release the
  *    nsIInputStream objects belonging to that process.
  *
@@ -189,9 +188,9 @@
  * IPCBlob and nsIAsyncInputStream
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *
- * IPCBlobInputStream is always async. If the remote inputStream is not async,
- * IPCBlobInputStream will create a pipe stream around it in order to be
- * consistently async.
+ * RemoteLazyInputStream is always async. If the remote inputStream is not
+ * async, RemoteLazyInputStream will create a pipe stream around it in order to
+ * be consistently async.
  *
  * Slicing IPCBlob
  * ~~~~~~~~~~~~~~~
@@ -204,82 +203,66 @@
  * inputStream is seekable, the pipe will not be, and in order to reach the
  * starting point, SlicedInputStream will do consecutive read()s.
  *
- * This problem is fixed implmenting nsICloneableWithRange in IPCBlobInputStream
- * and using cloneWithRange() when a StreamBlobImpl is sliced. When the remote
- * stream is received, it will be sliced directly.
+ * This problem is fixed implmenting nsICloneableWithRange in
+ * RemoteLazyInputStream and using cloneWithRange() when a StreamBlobImpl is
+ * sliced. When the remote stream is received, it will be sliced directly.
  *
  * If we want to represent the hierarchy of the InputStream classes, instead
- * of having: |SlicedInputStream(IPCBlobInputStream(Async Pipe(RemoteStream)))|,
- * we have: |IPCBlobInputStream(Async Pipe(SlicedInputStream(RemoteStream)))|.
+ * of having: |SlicedInputStream(RemoteLazyInputStream(Async
+ * Pipe(RemoteStream)))|, we have: |RemoteLazyInputStream(Async
+ * Pipe(SlicedInputStream(RemoteStream)))|.
  *
- * When IPCBlobInputStream is serialized and sent to the parent process, start
- * and range are sent too and SlicedInputStream is used in the parent side as
- * well.
+ * When RemoteLazyInputStream is serialized and sent to the parent process,
+ * start and range are sent too and SlicedInputStream is used in the parent side
+ * as well.
+ *
+ * Socket Process
+ * ~~~~~~~~~~~~~~
+ *
+ * The socket process is a separate process used to do networking operations.
+ * When a website sends a blob as the body of a POST/PUT request, we need to
+ * send the corresponding RemoteLazyInputStream to the socket process.
+ *
+ * This is the only serialization of RemoteLazyInputStream from parent to child
+ * process and it works _only_ for the socket process. Do not expose this
+ * serialization to PContent or PBackground or any other top-level IPDL protocol
+ * without a DOM File peer review!
+ *
+ * The main difference between Socket Process is that DOM-File thread is not
+ * used. Here is a list of reasons:
+ * - DOM-File moves the ownership of the RemoteLazyInputStream actors to
+ *   PBackground, but in the Socket Process we don't have PBackground (yet?)
+ * - Socket Process is a stable process with a simple life-time configuration:
+ *   we can keep the actors on the main-thread because no Workers are involved.
  */
 
-namespace mozilla {
-
-namespace ipc {
-class IProtocol;
-class PBackgroundChild;
-class PBackgroundParent;
-}  // namespace ipc
-
-namespace dom {
+namespace mozilla::dom {
 
 class IPCBlob;
-class ContentChild;
-class ContentParent;
-class PIPCBlobInputStreamParent;
 
 namespace IPCBlobUtils {
 
 already_AddRefed<BlobImpl> Deserialize(const IPCBlob& aIPCBlob);
 
-// These 4 methods serialize aBlobImpl into aIPCBlob using the right manager.
-
-nsresult Serialize(BlobImpl* aBlobImpl, ContentChild* aManager,
-                   IPCBlob& aIPCBlob);
-
-nsresult Serialize(BlobImpl* aBlobImpl,
-                   mozilla::ipc::PBackgroundChild* aManager, IPCBlob& aIPCBlob);
-
-nsresult Serialize(BlobImpl* aBlobImpl, ContentParent* aManager,
-                   IPCBlob& aIPCBlob);
-
-nsresult Serialize(BlobImpl* aBlobImpl,
-                   mozilla::ipc::PBackgroundParent* aManager,
-                   IPCBlob& aIPCBlob);
-
-nsresult SerializeInputStream(nsIInputStream* aInputStream, uint64_t aSize,
-                              PIPCBlobInputStreamParent*& aActorParent,
-                              ContentParent* aManager);
-
-nsresult SerializeInputStream(nsIInputStream* aInputStream, uint64_t aSize,
-                              PIPCBlobInputStreamParent*& aActorParent,
-                              mozilla::ipc::PBackgroundParent* aManager);
-
-// WARNING: If you pass any actor which does not have P{Content,Background} as
-// its toplevel protocol, this method will MOZ_CRASH.
-nsresult SerializeUntyped(BlobImpl* aBlobImpl, mozilla::ipc::IProtocol* aActor,
-                          IPCBlob& aIPCBlob);
+nsresult Serialize(BlobImpl* aBlobImpl, IPCBlob& aIPCBlob);
 
 }  // namespace IPCBlobUtils
-}  // namespace dom
+}  // namespace mozilla::dom
 
-namespace ipc {
+namespace IPC {
+
 // ParamTraits implementation for BlobImpl. N.B: If the original BlobImpl cannot
 // be successfully serialized, a warning will be produced and a nullptr will be
 // sent over the wire. When Read()-ing a BlobImpl,
 // __always make sure to handle null!__
 template <>
-struct IPDLParamTraits<mozilla::dom::BlobImpl*> {
-  static void Write(IPC::Message* aMsg, IProtocol* aActor,
+struct ParamTraits<mozilla::dom::BlobImpl*> {
+  static void Write(IPC::MessageWriter* aWriter,
                     mozilla::dom::BlobImpl* aParam);
-  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
-                   IProtocol* aActor, RefPtr<mozilla::dom::BlobImpl>* aResult);
+  static bool Read(IPC::MessageReader* aReader,
+                   RefPtr<mozilla::dom::BlobImpl>* aResult);
 };
-}  // namespace ipc
-}  // namespace mozilla
+
+}  // namespace IPC
 
 #endif  // mozilla_dom_IPCBlobUtils_h

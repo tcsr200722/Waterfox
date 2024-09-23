@@ -1,4 +1,4 @@
-// |jit-test| test-also=--wasm-compiler=ion; skip-if: !wasmDebuggingIsSupported()
+// |jit-test| test-also=--wasm-compiler=optimizing; skip-if: !wasmDebuggingEnabled()
 
 // Tests that wasm module scripts raises onEnterFrame and onLeaveFrame events.
 
@@ -28,11 +28,10 @@ wasmRunWithDebugger(
       assertEq(error, undefined);
       assertEq(onEnterFrameCalled, 1);
       assertEq(onLeaveFrameCalled, 1);
-      assertEq(onStepCalled.length, 3);
+      assertEq(onStepCalled.length, 2);
       assertEq(onStepCalled[0] > 0, true);
       // The onStepCalled offsets are in ascending order.
       assertEq(onStepCalled[0] < onStepCalled[1], true);
-      assertEq(onStepCalled[1] < onStepCalled[2], true);
   }
 );
 

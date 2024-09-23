@@ -1,95 +1,134 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SessionStorageService.h"
 
-#include "mozilla/Services.h"
-#include "mozilla/Unused.h"
-#include "nsIObserverService.h"
-#include "nsXULAppAPI.h"
+#include "MainThreadUtils.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Components.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/ipc/BackgroundChild.h"
+#include "mozilla/ipc/PBackgroundChild.h"
 
-#include <cstring>
+namespace mozilla::dom {
 
-namespace mozilla {
-namespace dom {
+using namespace mozilla::ipc;
 
 namespace {
 
-const char* const kContentProcessShutdownTopic = "content-child-will-shutdown";
+StaticRefPtr<SessionStorageService> gSessionStorageService;
 
-}
+bool gShutdown(false);
 
-RefPtr<SessionStorageService> SessionStorageService::sService = nullptr;
-bool SessionStorageService::sShutdown = false;
+}  // namespace
 
-NS_IMPL_ISUPPORTS(SessionStorageService, nsIObserver)
+NS_IMPL_ISUPPORTS(SessionStorageService, nsISessionStorageService)
 
-SessionStorageService::SessionStorageService() {
-  if (const nsCOMPtr<nsIObserverService> observerService =
-          services::GetObserverService()) {
-    Unused << observerService->AddObserver(this, kContentProcessShutdownTopic,
-                                           false);
-  }
-}
+NS_IMETHODIMP
+SessionStorageService::ClearStoragesForOrigin(nsIPrincipal* aPrincipal) {
+  AssertIsOnMainThread();
+  MOZ_ASSERT(aPrincipal);
 
-SessionStorageService::~SessionStorageService() {
-  if (const nsCOMPtr<nsIObserverService> observerService =
-          services::GetObserverService()) {
-    Unused << observerService->RemoveObserver(this,
-                                              kContentProcessShutdownTopic);
-  }
-}
+  QM_TRY_INSPECT(const auto& originAttrs,
+                 MOZ_TO_RESULT_INVOKE_MEMBER_TYPED(nsCString, aPrincipal,
+                                                   GetOriginSuffix));
 
-SessionStorageService* SessionStorageService::Get() {
-  if (sShutdown) {
-    return nullptr;
-  }
+  QM_TRY_INSPECT(const auto& originKey,
+                 MOZ_TO_RESULT_INVOKE_MEMBER_TYPED(nsCString, aPrincipal,
+                                                   GetStorageOriginKey));
 
-  if (XRE_IsParentProcess()) {
-    ShutDown();
-    return nullptr;
-  }
+  QM_TRY(OkIf(SendClearStoragesForOrigin(originAttrs, originKey)),
+         NS_ERROR_FAILURE);
 
-  if (!sService) {
-    sService = new SessionStorageService();
-  }
-
-  return sService;
-}
-
-NS_IMETHODIMP SessionStorageService::Observe(nsISupports* const aSubject,
-                                             const char* const aTopic,
-                                             const char16_t* const aData) {
-  if (std::strcmp(aTopic, kContentProcessShutdownTopic) == 0) {
-    SendSessionStorageDataToParentProcess();
-    ShutDown();
-  }
   return NS_OK;
 }
 
-void SessionStorageService::RegisterSessionStorageManager(
-    SessionStorageManager* aManager) {
-  mManagers.PutEntry(aManager);
+SessionStorageService::SessionStorageService() { AssertIsOnMainThread(); }
+
+SessionStorageService::~SessionStorageService() {
+  AssertIsOnMainThread();
+  MOZ_ASSERT_IF(mInitialized, mActorDestroyed);
 }
 
-void SessionStorageService::UnregisterSessionStorageManager(
-    SessionStorageManager* aManager) {
-  if (const auto entry = mManagers.GetEntry(aManager)) {
-    mManagers.RemoveEntry(entry);
+// static
+Result<RefPtr<SessionStorageService>, nsresult> SessionStorageService::Acquire(
+    const CreateIfNonExistent&) {
+  AssertIsOnMainThread();
+
+  QM_TRY(OkIf(!gShutdown), Err(NS_ERROR_ILLEGAL_DURING_SHUTDOWN));
+
+  if (gSessionStorageService) {
+    return RefPtr<SessionStorageService>(gSessionStorageService);
+  }
+
+  auto sessionStorageService = MakeRefPtr<SessionStorageService>();
+
+  QM_TRY(sessionStorageService->Init());
+
+  gSessionStorageService = sessionStorageService;
+
+  RunOnShutdown(
+      [] {
+        gShutdown = true;
+
+        gSessionStorageService->Shutdown();
+
+        gSessionStorageService = nullptr;
+      },
+      ShutdownPhase::XPCOMShutdown);
+
+  return sessionStorageService;
+}
+
+// static
+RefPtr<SessionStorageService> SessionStorageService::Acquire() {
+  AssertIsOnMainThread();
+
+  return gSessionStorageService;
+}
+
+Result<Ok, nsresult> SessionStorageService::Init() {
+  AssertIsOnMainThread();
+
+  PBackgroundChild* backgroundActor =
+      BackgroundChild::GetOrCreateForCurrentThread();
+  QM_TRY(OkIf(backgroundActor), Err(NS_ERROR_FAILURE));
+
+  QM_TRY(OkIf(backgroundActor->SendPBackgroundSessionStorageServiceConstructor(
+             this)),
+         Err(NS_ERROR_FAILURE));
+
+  mInitialized.Flip();
+
+  return Ok{};
+}
+
+void SessionStorageService::Shutdown() {
+  AssertIsOnMainThread();
+
+  if (!mActorDestroyed) {
+    QM_WARNONLY_TRY(OkIf(Send__delete__(this)));
   }
 }
 
-void SessionStorageService::SendSessionStorageDataToParentProcess() {
-  for (auto iter = mManagers.Iter(); !iter.Done(); iter.Next()) {
-    iter.Get()->GetKey()->SendSessionStorageDataToParentProcess();
-  }
+void SessionStorageService::ActorDestroy(ActorDestroyReason /* aWhy */) {
+  AssertIsOnMainThread();
+
+  mActorDestroyed.Flip();
 }
 
-void SessionStorageService::ShutDown() {
-  sShutdown = true;
-  sService = nullptr;
-}
+}  // namespace mozilla::dom
 
-}  // namespace dom
-}  // namespace mozilla
+NS_IMPL_COMPONENT_FACTORY(nsISessionStorageService) {
+  mozilla::AssertIsOnMainThread();
+
+  QM_TRY_UNWRAP(auto sessionStorageService,
+                mozilla::dom::SessionStorageService::Acquire(
+                    mozilla::CreateIfNonExistent{}),
+                nullptr);
+
+  return sessionStorageService.forget().downcast<nsISupports>();
+}

@@ -2,51 +2,48 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, print_function, unicode_literals
-
 import hashlib
 import os
-import six
+from pathlib import Path
+from urllib.request import urlopen
+
+import certifi
+from mach.site import PythonVirtualenv
+from mach.util import get_state_dir
+
+MINIMUM_RUST_VERSION = "1.76.0"
 
 
-here = os.path.join(os.path.dirname(__file__))
+def get_tools_dir(srcdir=False):
+    if os.environ.get("MOZ_AUTOMATION") and "MOZ_FETCHES_DIR" in os.environ:
+        return os.environ["MOZ_FETCHES_DIR"]
+    return get_state_dir(srcdir)
 
 
-def get_state_dir(srcdir=False):
-    """Obtain path to a directory to hold state.
+def get_mach_virtualenv_root():
+    return Path(get_state_dir(specific_to_topsrcdir=True)) / "_virtualenvs" / "mach"
 
-    Args:
-        srcdir (bool): If True, return a state dir specific to the current
-            srcdir instead of the global state dir (default: False)
 
-    Returns:
-        A path to the state dir (str)
-    """
-    state_dir = os.environ.get('MOZBUILD_STATE_PATH', os.path.expanduser('~/.mozbuild'))
-    if not srcdir:
-        return state_dir
+def get_mach_virtualenv_binary():
+    root = get_mach_virtualenv_root()
+    return Path(PythonVirtualenv(str(root)).python_path)
 
-    # This function can be called without the build virutualenv, and in that
-    # case srcdir is supposed to be False. Import mozbuild here to avoid
-    # breaking that usage.
-    from mozbuild.base import MozbuildObject
 
-    srcdir = os.path.abspath(MozbuildObject.from_environment(cwd=here).topsrcdir)
-    # Shortening to 12 characters makes these directories a bit more manageable
-    # in a terminal and is more than good enough for this purpose.
-    srcdir_hash = hashlib.sha256(six.ensure_binary(srcdir)).hexdigest()[:12]
-
-    state_dir = os.path.join(state_dir, 'srcdirs', '{}-{}'.format(
-        os.path.basename(srcdir), srcdir_hash))
-
-    if not os.path.isdir(state_dir):
-        # We create the srcdir here rather than 'mach_bootstrap.py' so direct
-        # consumers of this function don't create the directory inconsistently.
-        print('Creating local state directory: %s' % state_dir)
-        os.makedirs(state_dir, mode=0o770)
-        # Save the topsrcdir that this state dir corresponds to so we can clean
-        # it up in the event its srcdir was deleted.
-        with open(os.path.join(state_dir, 'topsrcdir.txt'), 'w') as fh:
-            fh.write(srcdir)
-
-    return state_dir
+def http_download_and_save(url, dest: Path, hexhash, digest="sha256"):
+    """Download the given url and save it to dest.  hexhash is a checksum
+    that will be used to validate the downloaded file using the given
+    digest algorithm.  The value of digest can be any value accepted by
+    hashlib.new.  The default digest used is 'sha256'."""
+    f = urlopen(url, cafile=certifi.where())
+    h = hashlib.new(digest)
+    with open(dest, "wb") as out:
+        while True:
+            data = f.read(4096)
+            if data:
+                out.write(data)
+                h.update(data)
+            else:
+                break
+    if h.hexdigest() != hexhash:
+        dest.unlink()
+        raise ValueError("Hash of downloaded file does not match expected hash")

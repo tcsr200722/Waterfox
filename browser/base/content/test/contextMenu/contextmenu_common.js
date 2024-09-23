@@ -26,9 +26,8 @@ function openContextMenuFor(element, shiftkey, waitForSpellCheck) {
   }
 
   if (waitForSpellCheck) {
-    var { onSpellCheck } = SpecialPowers.Cu.import(
-      "resource://testing-common/AsyncSpellCheckTestHelper.jsm",
-      {}
+    var { onSpellCheck } = SpecialPowers.ChromeUtils.importESModule(
+      "resource://testing-common/AsyncSpellCheckTestHelper.sys.mjs"
     );
     onSpellCheck(element, actuallyOpenContextMenuFor);
   } else {
@@ -40,7 +39,7 @@ function closeContextMenu() {
   contextMenu.hidePopup();
 }
 
-function getVisibleMenuItems(aMenu, aData) {
+function getVisibleMenuItems(aMenu) {
   var items = [];
   var accessKeys = {};
   for (var i = 0; i < aMenu.children.length; i++) {
@@ -54,43 +53,30 @@ function getVisibleMenuItems(aMenu, aData) {
       key = key.toLowerCase();
     }
 
-    var isPageMenuItem = item.hasAttribute("generateditemid");
-
     if (item.nodeName == "menuitem") {
       var isGenerated =
         item.classList.contains("spell-suggestion") ||
         item.classList.contains("sendtab-target");
       if (isGenerated) {
         is(item.id, "", "child menuitem #" + i + " is generated");
-      } else if (isPageMenuItem) {
-        is(
-          item.id,
-          "",
-          "child menuitem #" + i + " is a generated page menu item"
-        );
       } else {
         ok(item.id, "child menuitem #" + i + " has an ID");
       }
       var label = item.getAttribute("label");
       ok(label.length, "menuitem " + item.id + " has a label");
       if (isGenerated) {
-        is(key, "", "Generated items shouldn't have an access key");
+        is(key, null, "Generated items shouldn't have an access key");
         items.push("*" + label);
-      } else if (isPageMenuItem) {
-        items.push("+" + label);
       } else if (
         item.id.indexOf("spell-check-dictionary-") != 0 &&
         item.id != "spell-no-suggestions" &&
         item.id != "spell-add-dictionaries-main" &&
         item.id != "context-savelinktopocket" &&
-        item.id != "fill-login-saved-passwords" &&
         item.id != "fill-login-no-logins" &&
-        // XXX Screenshots doesn't have an access key. This needs
-        // at least bug 1320462 fixing first.
-        item.id != "screenshots_mozilla_org-menuitem-_create-screenshot" &&
         // Inspect accessibility properties does not have an access key. See
         // bug 1630717 for more details.
-        item.id != "context-inspect-a11y"
+        item.id != "context-inspect-a11y" &&
+        !item.id.includes("context-media-playbackrate")
       ) {
         if (item.id != FRAME_OS_PID) {
           ok(key, "menuitem " + item.id + " has an access key");
@@ -104,38 +90,24 @@ function getVisibleMenuItems(aMenu, aData) {
           accessKeys[key] = item.id;
         }
       }
-      if (!isGenerated && !isPageMenuItem) {
+      if (!isGenerated) {
         items.push(item.id);
       }
-      if (isPageMenuItem) {
-        var p = {};
-        p.type = item.getAttribute("type");
-        p.icon = item.getAttribute("image");
-        p.checked = item.hasAttribute("checked");
-        p.disabled = item.hasAttribute("disabled");
-        items.push(p);
-      } else {
-        items.push(!item.disabled);
-      }
+      items.push(!item.disabled);
     } else if (item.nodeName == "menuseparator") {
       ok(true, "--- seperator id is " + item.id);
       items.push("---");
       items.push(null);
     } else if (item.nodeName == "menu") {
-      if (isPageMenuItem) {
-        item.id = "generated-submenu-" + aData.generatedSubmenuId++;
-      }
       ok(item.id, "child menu #" + i + " has an ID");
-      if (!isPageMenuItem) {
-        ok(key, "menu has an access key");
-        if (accessKeys[key]) {
-          ok(
-            false,
-            "menu " + item.id + " has same accesskey as " + accessKeys[key]
-          );
-        } else {
-          accessKeys[key] = item.id;
-        }
+      ok(key, "menu has an access key");
+      if (accessKeys[key]) {
+        ok(
+          false,
+          "menu " + item.id + " has same accesskey as " + accessKeys[key]
+        );
+      } else {
+        accessKeys[key] = item.id;
       }
       items.push(item.id);
       items.push(!item.disabled);
@@ -187,7 +159,7 @@ function checkMenuItem(
   index
 ) {
   is(
-    actualItem,
+    `${actualItem}`,
     expectedItem,
     "checking item #" + index / 2 + " (" + expectedItem + ") name"
   );
@@ -346,9 +318,6 @@ let lastElementSelector = null;
  *                  to true if offsetX and offsetY are not provided
  *        waitForSpellCheck: wait until spellcheck is initialized before
  *                           starting test
- *        maybeScreenshotsPresent: if true, the screenshots menu entry is
- *                                 expected to be present in the menu if
- *                                 screenshots is enabled, optional
  *        preCheckContextMenuFn: callback to run before opening menu
  *        onContextMenuShown: callback to run when the context menu is shown
  *        postCheckContextMenuFn: callback to run after opening menu
@@ -369,7 +338,7 @@ async function test_contextmenu(selector, menuItems, options = {}) {
     await SpecialPowers.spawn(
       gBrowser.selectedBrowser,
       [[lastElementSelector, selector]],
-      async function([contentLastElementSelector, contentSelector]) {
+      async function ([contentLastElementSelector, contentSelector]) {
         if (contentLastElementSelector) {
           let contentLastElement = content.document.querySelector(
             contentLastElementSelector
@@ -394,9 +363,9 @@ async function test_contextmenu(selector, menuItems, options = {}) {
     await SpecialPowers.spawn(
       gBrowser.selectedBrowser,
       [selector],
-      async function(contentSelector) {
-        let { onSpellCheck } = ChromeUtils.import(
-          "resource://testing-common/AsyncSpellCheckTestHelper.jsm"
+      async function (contentSelector) {
+        let { onSpellCheck } = ChromeUtils.importESModule(
+          "resource://testing-common/AsyncSpellCheckTestHelper.sys.mjs"
         );
         let element = content.document.querySelector(contentSelector);
         await new Promise(resolve => onSpellCheck(element, resolve));
@@ -431,34 +400,21 @@ async function test_contextmenu(selector, menuItems, options = {}) {
 
   if (menuItems) {
     if (Services.prefs.getBoolPref("devtools.inspector.enabled", true)) {
-      const inspectItems = ["---", null];
+      const inspectItems =
+        menuItems.includes("context-viewsource") ||
+        menuItems.includes("context-viewpartialsource-selection")
+          ? []
+          : ["---", null];
       if (
         Services.prefs.getBoolPref("devtools.accessibility.enabled", true) &&
-        (Services.appinfo.accessibilityEnabled ||
-          Services.prefs.getBoolPref(
-            "devtools.accessibility.auto-init.enabled",
-            false
-          ))
+        (Services.prefs.getBoolPref("devtools.everOpened", false) ||
+          Services.prefs.getIntPref("devtools.selfxss.count", 0) > 0)
       ) {
         inspectItems.push("context-inspect-a11y", true);
       }
-
       inspectItems.push("context-inspect", true);
+
       menuItems = menuItems.concat(inspectItems);
-    }
-
-    if (
-      options.maybeScreenshotsPresent &&
-      !Services.prefs.getBoolPref("extensions.screenshots.disabled", false)
-    ) {
-      let screenshotItems = [
-        "---",
-        null,
-        "screenshots_mozilla_org-menuitem-_create-screenshot",
-        true,
-      ];
-
-      menuItems = menuItems.concat(screenshotItems);
     }
 
     checkContextMenu(menuItems);

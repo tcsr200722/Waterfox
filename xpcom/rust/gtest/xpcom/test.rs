@@ -13,17 +13,16 @@ use nserror::{nsresult, NS_OK};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
-use xpcom::interfaces;
+use xpcom::{interfaces, RefPtr};
 
 #[no_mangle]
 pub unsafe extern "C" fn Rust_ObserveFromRust() -> *const interfaces::nsIObserverService {
-    let obssvc = xpcom::services::get_ObserverService().unwrap();
+    let obssvc: RefPtr<interfaces::nsIObserverService> =
+        xpcom::components::Observer::service().unwrap();
 
     // Define an observer
-    #[derive(xpcom)]
-    #[xpimplements(nsIObserver)]
-    #[refcnt = "nonatomic"]
-    struct InitObserver {
+    #[xpcom(implement(nsIObserver), nonatomic)]
+    struct Observer {
         run: *mut bool,
     }
     impl Observer {
@@ -31,7 +30,7 @@ pub unsafe extern "C" fn Rust_ObserveFromRust() -> *const interfaces::nsIObserve
             &self,
             _subject: *const interfaces::nsISupports,
             topic: *const c_char,
-            _data: *const i16,
+            _data: *const u16,
         ) -> nsresult {
             *self.run = true;
             assert!(CStr::from_ptr(topic).to_str() == Ok("test-rust-observe"));
@@ -73,26 +72,60 @@ pub unsafe extern "C" fn Rust_ImplementRunnableInRust(
     runnable: *mut *const interfaces::nsIRunnable,
 ) {
     // Define a type which implements nsIRunnable in rust.
-    #[derive(xpcom)]
-    #[xpimplements(nsIRunnable)]
-    #[refcnt = "atomic"]
-    struct InitMyRunnable {
-        it_worked: *mut bool,
+    #[xpcom(implement(nsIRunnable), atomic)]
+    struct RunnableFn<F: Fn() + 'static> {
+        run: F,
     }
 
-    impl MyRunnable {
+    impl<F: Fn() + 'static> RunnableFn<F> {
         unsafe fn Run(&self) -> nsresult {
-            *self.it_worked = true;
+            (self.run)();
             NS_OK
         }
     }
 
-    // Create my runnable type, and forget it into the outparameter!
-    let my_runnable = MyRunnable::allocate(InitMyRunnable {
-        it_worked: it_worked,
+    let my_runnable = RunnableFn::allocate(InitRunnableFn {
+        run: move || {
+            *it_worked = true;
+        },
     });
     my_runnable
         .query_interface::<interfaces::nsIRunnable>()
         .unwrap()
         .forget(&mut *runnable);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Rust_GetMultipleInterfaces(
+    runnable: *mut *const interfaces::nsIRunnable,
+    observer: *mut *const interfaces::nsIObserver,
+) {
+    // Define a type which implements nsIRunnable and nsIObserver in rust, and
+    // hand both references back to c++
+    #[xpcom(implement(nsIRunnable, nsIObserver), atomic)]
+    struct MultipleInterfaces {}
+
+    impl MultipleInterfaces {
+        unsafe fn Run(&self) -> nsresult {
+            NS_OK
+        }
+        unsafe fn Observe(
+            &self,
+            _subject: *const interfaces::nsISupports,
+            _topic: *const c_char,
+            _data: *const u16,
+        ) -> nsresult {
+            NS_OK
+        }
+    }
+
+    let instance = MultipleInterfaces::allocate(InitMultipleInterfaces {});
+    instance
+        .query_interface::<interfaces::nsIRunnable>()
+        .unwrap()
+        .forget(&mut *runnable);
+    instance
+        .query_interface::<interfaces::nsIObserver>()
+        .unwrap()
+        .forget(&mut *observer);
 }

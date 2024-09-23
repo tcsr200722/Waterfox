@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -11,50 +12,53 @@ info: |
   2. If Type(P) is String, then
     a. Let numericIndex be ! CanonicalNumericIndexString(P).
     b. If numericIndex is not undefined, then
-      i. Return ? IntegerIndexedElementSet(O, numericIndex, V).
+      i. Perform ? IntegerIndexedElementSet(O, numericIndex, V).
+      ii. Return true.
   ...
 
-  9.4.5.9 IntegerIndexedElementSet ( O, index, value )
+  IntegerIndexedElementSet ( O, index, value )
 
-  ...
-  3. Let numValue be ? ToNumber(value).
+  Assert: O is an Integer-Indexed exotic object.
+  Assert: Type(index) is Number.
+  If O.[[ContentType]] is BigInt, let numValue be ? ToBigInt(value).
+  Otherwise, let numValue be ? ToNumber(value).
   ...
 includes: [testTypedArray.js]
-features: [TypedArray]
+features: [align-detached-buffer-semantics-with-web-reality, TypedArray]
 ---*/
 
 testWithTypedArrayConstructors(function(TA) {
-  var sample = new TA([42]);
+  let sample = new TA([42]);
 
-  var obj = {
-    valueOf: function() {
+  let obj = {
+    valueOf() {
       throw new Test262Error();
     }
   };
 
   assert.throws(Test262Error, function() {
     sample["0"] = obj;
-  }, "ToNumber check with a valid index");
+  });
 
   assert.throws(Test262Error, function() {
     sample["1.1"] = obj;
-  }, "ToNumber runs before ToInteger(index)");
+  });
 
   assert.throws(Test262Error, function() {
     sample["-0"] = obj;
-  }, "ToNumber runs before -0 check");
+  });
 
   assert.throws(Test262Error, function() {
     sample["-1"] = obj;
-  }, "ToNumber runs before < 0 check");
+  });
 
   assert.throws(Test262Error, function() {
     sample["1"] = obj;
-  }, "ToNumber runs before index == length check");
+  });
 
   assert.throws(Test262Error, function() {
     sample["2"] = obj;
-  }, "ToNumber runs before index > length check");
+  });
 });
 
 reportCompare(0, 0);

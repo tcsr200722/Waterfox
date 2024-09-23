@@ -10,8 +10,6 @@
  * liability, trademark and document use rules apply.
  */
 
-interface SVGViewSpec;
-
 [Exposed=Window]
 interface SVGSVGElement : SVGGraphicsElement {
 
@@ -23,9 +21,6 @@ interface SVGSVGElement : SVGGraphicsElement {
   readonly attribute SVGAnimatedLength width;
   [Constant]
   readonly attribute SVGAnimatedLength height;
-  // readonly attribute SVGRect viewport;
-  readonly attribute boolean useCurrentView;
-  // readonly attribute SVGViewSpec currentView;
   [UseCounter]
            attribute float currentScale;
   readonly attribute SVGPoint currentTranslate;
@@ -33,22 +28,23 @@ interface SVGSVGElement : SVGGraphicsElement {
   [DependsOn=Nothing, Affects=Nothing]
   unsigned long suspendRedraw(unsigned long maxWaitMilliseconds);
   [DependsOn=Nothing, Affects=Nothing]
-  void unsuspendRedraw(unsigned long suspendHandleID);
+  undefined unsuspendRedraw(unsigned long suspendHandleID);
   [DependsOn=Nothing, Affects=Nothing]
-  void unsuspendRedrawAll();
+  undefined unsuspendRedrawAll();
   [DependsOn=Nothing, Affects=Nothing]
-  void forceRedraw();
-  void pauseAnimations();
-  void unpauseAnimations();
+  undefined forceRedraw();
+  undefined pauseAnimations();
+  undefined unpauseAnimations();
   boolean animationsPaused();
   [BinaryName="getCurrentTimeAsFloat"]
   float getCurrentTime();
-  void setCurrentTime(float seconds);
+  undefined setCurrentTime(float seconds);
   // NodeList getIntersectionList(SVGRect rect, SVGElement referenceElement);
   // NodeList getEnclosureList(SVGRect rect, SVGElement referenceElement);
   // boolean checkIntersection(SVGElement element, SVGRect rect);
   // boolean checkEnclosure(SVGElement element, SVGRect rect);
-  void deselectAll();
+  [Deprecated="SVGDeselectAll"]
+  undefined deselectAll();
   [NewObject]
   SVGNumber createSVGNumber();
   [NewObject]
@@ -63,12 +59,11 @@ interface SVGSVGElement : SVGGraphicsElement {
   SVGRect createSVGRect();
   [NewObject]
   SVGTransform createSVGTransform();
-  [NewObject]
-  SVGTransform createSVGTransformFromMatrix(SVGMatrix matrix);
+  [NewObject, Throws]
+  SVGTransform createSVGTransformFromMatrix(optional DOMMatrix2DInit matrix = {});
   [UseCounter]
   Element? getElementById(DOMString elementId);
 };
 
 SVGSVGElement includes SVGFitToViewBox;
 SVGSVGElement includes SVGZoomAndPan;
-

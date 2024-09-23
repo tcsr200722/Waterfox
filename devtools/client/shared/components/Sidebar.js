@@ -7,14 +7,14 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const SidebarToggle = createFactory(
-  require("devtools/client/shared/components/SidebarToggle")
+  require("resource://devtools/client/shared/components/SidebarToggle.js")
 );
 const Tabs = createFactory(
-  require("devtools/client/shared/components/tabs/Tabs").Tabs
+  require("resource://devtools/client/shared/components/tabs/Tabs.js").Tabs
 );
 
 class Sidebar extends PureComponent {
@@ -26,6 +26,7 @@ class Sidebar extends PureComponent {
       onAllTabsMenuClick: PropTypes.func,
       renderOnlySelected: PropTypes.bool,
       showAllTabsMenu: PropTypes.bool,
+      allTabsMenuButtonTooltip: PropTypes.string,
       sidebarToggleButton: PropTypes.shape({
         collapsed: PropTypes.bool.isRequired,
         collapsePaneTitle: PropTypes.string.isRequired,
@@ -75,6 +76,7 @@ class Sidebar extends PureComponent {
       onAllTabsMenuClick,
       renderOnlySelected,
       showAllTabsMenu,
+      allTabsMenuButtonTooltip,
       activeTab,
     } = this.props;
 
@@ -85,6 +87,7 @@ class Sidebar extends PureComponent {
         renderOnlySelected,
         renderSidebarToggle,
         showAllTabsMenu,
+        allTabsMenuButtonTooltip,
         activeTab,
       },
       children

@@ -8,47 +8,48 @@
 #define mozilla_dom_Animation_h
 
 #include "X11UndefineNone.h"
-#include "nsWrapperCache.h"
 #include "nsCycleCollectionParticipant.h"
+#include "mozilla/AnimatedPropertyIDSet.h"
 #include "mozilla/AnimationPerformanceWarning.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EffectCompositor.h"  // For EffectCompositor::CascadeLevel
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PostRestyleMode.h"
+#include "mozilla/StickyTimeDuration.h"
 #include "mozilla/TimeStamp.h"             // for TimeStamp, TimeDuration
 #include "mozilla/dom/AnimationBinding.h"  // for AnimationPlayState
-#include "mozilla/dom/AnimationEffect.h"
 #include "mozilla/dom/AnimationTimeline.h"
-#include "mozilla/dom/Promise.h"
-#include "nsCSSPropertyID.h"
-#include "nsIGlobalObject.h"
 
 struct JSContext;
 class nsCSSPropertyIDSet;
 class nsIFrame;
+class nsIGlobalObject;
+class nsAtom;
 
 namespace mozilla {
 
 struct AnimationRule;
+class MicroTaskRunnable;
 
 namespace dom {
 
+class AnimationEffect;
 class AsyncFinishNotification;
 class CSSAnimation;
 class CSSTransition;
 class Document;
+class Promise;
 
 class Animation : public DOMEventTargetHelper,
                   public LinkedListElement<Animation> {
  protected:
-  virtual ~Animation() = default;
+  virtual ~Animation();
 
  public:
-  explicit Animation(nsIGlobalObject* aGlobal)
-      : DOMEventTargetHelper(aGlobal), mAnimationIndex(sNextAnimationIndex++) {}
+  explicit Animation(nsIGlobalObject* aGlobal);
 
   // Constructs a copy of |aOther| with a new effect and timeline.
   // This is only intended to be used while making a static clone of a document
@@ -97,14 +98,28 @@ class Animation : public DOMEventTargetHelper,
   virtual void SetEffect(AnimationEffect* aEffect);
   void SetEffectNoUpdate(AnimationEffect* aEffect);
 
+  // FIXME: Bug 1676794. This is a tentative solution before we implement
+  // ScrollTimeline interface. If the timeline is scroll/view timeline, we
+  // return null. Once we implement ScrollTimeline interface, we can drop this.
+  already_AddRefed<AnimationTimeline> GetTimelineFromJS() const {
+    return mTimeline && mTimeline->IsScrollTimeline() ? nullptr
+                                                      : do_AddRef(mTimeline);
+  }
+  void SetTimelineFromJS(AnimationTimeline* aTimeline) {
+    SetTimeline(aTimeline);
+  }
+
   AnimationTimeline* GetTimeline() const { return mTimeline; }
-  // Animation.timeline setter is supported only on Nightly.
   void SetTimeline(AnimationTimeline* aTimeline);
   void SetTimelineNoUpdate(AnimationTimeline* aTimeline);
 
   Nullable<TimeDuration> GetStartTime() const { return mStartTime; }
   Nullable<double> GetStartTimeAsDouble() const;
   void SetStartTime(const Nullable<TimeDuration>& aNewStartTime);
+  const TimeStamp& GetPendingReadyTime() const { return mPendingReadyTime; }
+  void SetPendingReadyTime(const TimeStamp& aReadyTime) {
+    mPendingReadyTime = aReadyTime;
+  }
   virtual void SetStartTimeAsDouble(const Nullable<double>& aStartTime);
 
   // This is deliberately _not_ called GetCurrentTime since that would clash
@@ -113,7 +128,8 @@ class Animation : public DOMEventTargetHelper,
     return GetCurrentTimeForHoldTime(mHoldTime);
   }
   Nullable<double> GetCurrentTimeAsDouble() const;
-  void SetCurrentTime(const TimeDuration& aNewCurrentTime);
+  void SetCurrentTime(const TimeDuration& aSeekTime);
+  void SetCurrentTimeNoUpdate(const TimeDuration& aSeekTime);
   void SetCurrentTimeAsDouble(const Nullable<double>& aCurrentTime,
                               ErrorResult& aRv);
 
@@ -154,7 +170,8 @@ class Animation : public DOMEventTargetHelper,
 
   bool IsRunningOnCompositor() const;
 
-  virtual void Tick();
+  using TickState = AnimationTimeline::TickState;
+  virtual void Tick(TickState&);
   bool NeedsTicks() const {
     return Pending() ||
            (PlayState() == AnimationPlayState::Running &&
@@ -166,93 +183,22 @@ class Animation : public DOMEventTargetHelper,
             // won't be relevant and hence won't be returned by GetAnimations().
             // We don't want its timeline to keep it alive (which would happen
             // if we return true) since otherwise it will effectively be leaked.
-            PlaybackRate() != 0.0);
+            PlaybackRate() != 0.0) ||
+           // Always return true for not idle animations attached to not
+           // monotonically increasing timelines even if the animation is
+           // finished. This is required to accommodate cases where timeline
+           // ticks back in time.
+           (mTimeline && !mTimeline->IsMonotonicallyIncreasing() &&
+            PlayState() != AnimationPlayState::Idle);
   }
-
   /**
-   * Set the time to use for starting or pausing a pending animation.
-   *
-   * Typically, when an animation is played, it does not start immediately but
-   * is added to a table of pending animations on the document of its effect.
-   * In the meantime it sets its hold time to the time from which playback
-   * should begin.
-   *
-   * When the document finishes painting, any pending animations in its table
-   * are marked as being ready to start by calling TriggerOnNextTick.
-   * The moment when the paint completed is also recorded, converted to a
-   * timeline time, and passed to StartOnTick. This is so that when these
-   * animations do start, they can be timed from the point when painting
-   * completed.
-   *
-   * After calling TriggerOnNextTick, animations remain in the pending state
-   * until the next refresh driver tick. At that time they transition out of
-   * the pending state using the time passed to TriggerOnNextTick as the
-   * effective time at which they resumed.
-   *
-   * This approach means that any setup time required for performing the
-   * initial paint of an animation such as layerization is not deducted from
-   * the running time of the animation. Without this we can easily drop the
-   * first few frames of an animation, or, on slower devices, the whole
-   * animation.
-   *
-   * Furthermore:
-   *
-   * - Starting the animation immediately when painting finishes is problematic
-   *   because the start time of the animation will be ahead of its timeline
-   *   (since the timeline time is based on the refresh driver time).
-   *   That's a problem because the animation is playing but its timing
-   *   suggests it starts in the future. We could update the timeline to match
-   *   the start time of the animation but then we'd also have to update the
-   *   timing and style of all animations connected to that timeline or else be
-   *   stuck in an inconsistent state until the next refresh driver tick.
-   *
-   * - If we simply use the refresh driver time on its next tick, the lag
-   *   between triggering an animation and its effective start is unacceptably
-   *   long.
-   *
-   * For pausing, we apply the same asynchronous approach. This is so that we
-   * synchronize with animations that are running on the compositor. Otherwise
-   * if the main thread lags behind the compositor there will be a noticeable
-   * jump backwards when the main thread takes over. Even though main thread
-   * animations could be paused immediately, we do it asynchronously for
-   * consistency and so that animations paused together end up in step.
-   *
-   * Note that the caller of this method is responsible for removing the
-   * animation from any PendingAnimationTracker it may have been added to.
+   * For the monotonically increasing timeline, we use this only for testing:
+   * Start or pause a pending animation using the current timeline time. This
+   * is used to support existing tests that expect animations to begin
+   * immediately. Ideally we would rewrite the those tests and get rid of this
+   * method, but there are a lot of them.
    */
-  void TriggerOnNextTick(const Nullable<TimeDuration>& aReadyTime);
-  /**
-   * Testing only: Start or pause a pending animation using the current
-   * timeline time. This is used to support existing tests that expect
-   * animations to begin immediately. Ideally we would rewrite the those tests
-   * and get rid of this method, but there are a lot of them.
-   *
-   * As with TriggerOnNextTick, the caller of this method is responsible for
-   * removing the animation from any PendingAnimationTracker it may have been
-   * added to.
-   */
-  void TriggerNow();
-  /**
-   * When TriggerOnNextTick is called, we store the ready time but we don't
-   * apply it until the next tick. In the meantime, GetStartTime() will return
-   * null.
-   *
-   * However, if we build layer animations again before the next tick, we
-   * should initialize them with the start time that GetStartTime() will return
-   * on the next tick.
-   *
-   * If we were to simply set the start time of layer animations to null, their
-   * start time would be updated to the current wallclock time when rendering
-   * finishes, thus making them out of sync with the start time stored here.
-   * This, in turn, will make the animation jump backwards when we build
-   * animations on the next tick and apply the start time stored here.
-   *
-   * This method returns the start time, if resolved. Otherwise, if we have
-   * a pending ready time, it returns the corresponding start time. If neither
-   * of those are available, it returns null.
-   */
-  Nullable<TimeDuration> GetCurrentOrPendingStartTime() const;
-
+  bool TryTriggerNow();
   /**
    * As with the start time, we should use the pending playback rate when
    * producing layer animations.
@@ -316,10 +262,8 @@ class Animation : public DOMEventTargetHelper,
     return PlayState() == AnimationPlayState::Paused;
   }
 
-  bool HasCurrentEffect() const {
-    return GetEffect() && GetEffect()->IsCurrent();
-  }
-  bool IsInEffect() const { return GetEffect() && GetEffect()->IsInEffect(); }
+  bool HasCurrentEffect() const;
+  bool IsInEffect() const;
 
   bool IsPlaying() const {
     return mPlaybackRate != 0.0 && mTimeline &&
@@ -386,28 +330,12 @@ class Animation : public DOMEventTargetHelper,
    * Any properties contained in |aPropertiesToSkip| will not be added or
    * updated in |aComposeResult|.
    */
-  void ComposeStyle(RawServoAnimationValueMap& aComposeResult,
-                    const nsCSSPropertyIDSet& aPropertiesToSkip);
+  void ComposeStyle(StyleAnimationValueMap& aComposeResult,
+                    const InvertibleAnimatedPropertyIDSet& aPropertiesToSkip);
 
   void NotifyEffectTimingUpdated();
   void NotifyEffectPropertiesUpdated();
   void NotifyEffectTargetUpdated();
-  void NotifyGeometricAnimationsStartingThisFrame();
-
-  /**
-   * Reschedule pending pause or pending play tasks when updating the target
-   * effect.
-   *
-   * If we are pending, we will either be registered in the pending animation
-   * tracker and have a null pending ready time, or, after our effect has been
-   * painted, we will be removed from the tracker and assigned a pending ready
-   * time.
-   *
-   * When the target effect is updated, we'll typically need to repaint so for
-   * the latter case where we already have a pending ready time, clear it and
-   * put ourselves back in the pending animation tracker.
-   */
-  void ReschedulePendingTasks();
 
   /**
    * Used by subclasses to synchronously queue a cancel event in situations
@@ -417,9 +345,68 @@ class Animation : public DOMEventTargetHelper,
    * is canceled, it will be released by its owning element and may not still
    * exist when we would normally go to queue events on the next tick.
    */
-  virtual void MaybeQueueCancelEvent(const StickyTimeDuration& aActiveTime){};
+  virtual void MaybeQueueCancelEvent(const StickyTimeDuration& aActiveTime) {};
 
-  int32_t& CachedChildIndexRef() { return mCachedChildIndex; }
+  Maybe<uint32_t>& CachedChildIndexRef() { return mCachedChildIndex; }
+
+  void SetPartialPrerendered(uint64_t aIdOnCompositor) {
+    mIdOnCompositor = aIdOnCompositor;
+    mIsPartialPrerendered = true;
+  }
+  bool IsPartialPrerendered() const { return mIsPartialPrerendered; }
+  uint64_t IdOnCompositor() const { return mIdOnCompositor; }
+  /**
+   * Needs to be called when the pre-rendered animation is going to no longer
+   * run on the compositor.
+   */
+  void ResetPartialPrerendered() {
+    MOZ_ASSERT(mIsPartialPrerendered);
+    mIsPartialPrerendered = false;
+    mIdOnCompositor = 0;
+  }
+  /**
+   * Called via NotifyJankedAnimations IPC call from the compositor to update
+   * pre-rendered area on the main-thread.
+   */
+  void UpdatePartialPrerendered() {
+    ResetPartialPrerendered();
+    PostUpdate();
+  }
+
+  bool UsingScrollTimeline() const {
+    return mTimeline && mTimeline->IsScrollTimeline();
+  }
+
+  /**
+   * Returns true if this is at the progress timeline boundary.
+   * https://drafts.csswg.org/web-animations-2/#at-progress-timeline-boundary
+   */
+  enum class ProgressTimelinePosition : uint8_t { Boundary, NotBoundary };
+  static ProgressTimelinePosition AtProgressTimelineBoundary(
+      const Nullable<TimeDuration>& aTimelineDuration,
+      const Nullable<TimeDuration>& aCurrentTime,
+      const TimeDuration& aEffectStartTime, const double aPlaybackRate);
+  ProgressTimelinePosition AtProgressTimelineBoundary() const {
+    Nullable<TimeDuration> currentTime = GetUnconstrainedCurrentTime();
+    return AtProgressTimelineBoundary(
+        mTimeline ? mTimeline->TimelineDuration() : nullptr,
+        // Set unlimited current time based on the first matching condition:
+        // 1. start time is resolved:
+        //    (timeline time - start time) × playback rate
+        // 2. Otherwise:
+        //    animation’s current time
+        !currentTime.IsNull() ? currentTime : GetCurrentTimeAsDuration(),
+        mStartTime.IsNull() ? TimeDuration() : mStartTime.Value(),
+        mPlaybackRate);
+  }
+
+  void SetHiddenByContentVisibility(bool hidden);
+  bool IsHiddenByContentVisibility() const {
+    return mHiddenByContentVisibility;
+  }
+  void UpdateHiddenByContentVisibility();
+
+  DocGroup* GetDocGroup();
 
  protected:
   void SilentlySetCurrentTime(const TimeDuration& aNewCurrentTime);
@@ -439,8 +426,7 @@ class Animation : public DOMEventTargetHelper,
   }
   void ApplyPendingPlaybackRate() {
     if (mPendingPlaybackRate) {
-      mPlaybackRate = *mPendingPlaybackRate;
-      mPendingPlaybackRate.reset();
+      mPlaybackRate = mPendingPlaybackRate.extract();
     }
   }
 
@@ -466,8 +452,7 @@ class Animation : public DOMEventTargetHelper,
   void DoFinishNotification(SyncNotifyFlag aSyncNotifyFlag);
   friend class AsyncFinishNotification;
   void DoFinishNotificationImmediately(MicroTaskRunnable* aAsync = nullptr);
-  void QueuePlaybackEvent(const nsAString& aName,
-                          TimeStamp&& aScheduledEventTime);
+  void QueuePlaybackEvent(nsAtom* aOnEvent, TimeStamp&& aScheduledEventTime);
 
   /**
    * Remove this animation from the pending animation tracker and reset
@@ -481,24 +466,6 @@ class Animation : public DOMEventTargetHelper,
    * recreates the ready promise if the animation was pending.
    */
   void ResetPendingTasks();
-
-  /**
-   * Returns true if this animation is not only play-pending, but has
-   * yet to be given a pending ready time. This roughly corresponds to
-   * animations that are waiting to be painted (since we set the pending
-   * ready time at the end of painting). Identifying such animations is
-   * useful because in some cases animations that are painted together
-   * may need to be synchronized.
-   *
-   * We don't, however, want to include animations with a fixed start time such
-   * as animations that are simply having their playbackRate updated or which
-   * are resuming from an aborted pause.
-   */
-  bool IsNewlyStarted() const {
-    return mPendingState == PendingState::PlayPending &&
-           mPendingReadyTime.IsNull() && mStartTime.IsNull();
-  }
-  bool IsPossiblyOrphanedPendingAnimation() const;
   StickyTimeDuration EffectEnd() const;
 
   Nullable<TimeDuration> GetCurrentTimeForHoldTime(
@@ -516,15 +483,7 @@ class Animation : public DOMEventTargetHelper,
   // https://drafts.csswg.org/css-animations-2/#interval-start
   // https://drafts.csswg.org/css-transitions-2/#interval-start
   StickyTimeDuration IntervalStartTime(
-      const StickyTimeDuration& aActiveDuration) const {
-    MOZ_ASSERT(AsCSSTransition() || AsCSSAnimation(),
-               "Should be called for CSS animations or transitions");
-    static constexpr StickyTimeDuration zeroDuration = StickyTimeDuration();
-    return std::max(
-        std::min(StickyTimeDuration(-mEffect->SpecifiedTiming().Delay()),
-                 aActiveDuration),
-        zeroDuration);
-  }
+      const StickyTimeDuration& aActiveDuration) const;
 
   // Later side of the elapsed time range reported in CSS Animations and CSS
   // Transitions events.
@@ -532,15 +491,7 @@ class Animation : public DOMEventTargetHelper,
   // https://drafts.csswg.org/css-animations-2/#interval-end
   // https://drafts.csswg.org/css-transitions-2/#interval-end
   StickyTimeDuration IntervalEndTime(
-      const StickyTimeDuration& aActiveDuration) const {
-    MOZ_ASSERT(AsCSSTransition() || AsCSSAnimation(),
-               "Should be called for CSS animations or transitions");
-
-    static constexpr StickyTimeDuration zeroDuration = StickyTimeDuration();
-    return std::max(std::min((EffectEnd() - mEffect->SpecifiedTiming().Delay()),
-                             aActiveDuration),
-                    zeroDuration);
-  }
+      const StickyTimeDuration& aActiveDuration) const;
 
   TimeStamp GetTimelineCurrentTimeAsTimeStamp() const {
     return mTimeline ? mTimeline->GetCurrentTimeAsTimeStamp() : TimeStamp();
@@ -549,12 +500,18 @@ class Animation : public DOMEventTargetHelper,
   Document* GetRenderedDocument() const;
   Document* GetTimelineDocument() const;
 
+  bool HasFiniteTimeline() const {
+    return mTimeline && !mTimeline->IsMonotonicallyIncreasing();
+  }
+
+  void UpdateScrollTimelineAnimationTracker(AnimationTimeline* aOldTimeline,
+                                            AnimationTimeline* aNewTimeline);
+
   RefPtr<AnimationTimeline> mTimeline;
   RefPtr<AnimationEffect> mEffect;
   // The beginning of the delay period.
   Nullable<TimeDuration> mStartTime;            // Timeline timescale
   Nullable<TimeDuration> mHoldTime;             // Animation timescale
-  Nullable<TimeDuration> mPendingReadyTime;     // Timeline timescale
   Nullable<TimeDuration> mPreviousCurrentTime;  // Animation timescale
   double mPlaybackRate = 1.0;
   Maybe<double> mPendingPlaybackRate;
@@ -583,14 +540,10 @@ class Animation : public DOMEventTargetHelper,
 
   // While ordering Animation objects for event dispatch, the index of the
   // target node in its parent may be cached in mCachedChildIndex.
-  int32_t mCachedChildIndex = -1;
+  Maybe<uint32_t> mCachedChildIndex;
 
   // Indicates if the animation is in the pending state (and what state it is
-  // waiting to enter when it finished pending). We use this rather than
-  // checking if this animation is tracked by a PendingAnimationTracker because
-  // the animation will continue to be pending even after it has been removed
-  // from the PendingAnimationTracker while it is waiting for the next tick
-  // (see TriggerOnNextTick for details).
+  // waiting to enter when it finished pending).
   enum class PendingState : uint8_t { NotPending, PlayPending, PausePending };
   PendingState mPendingState = PendingState::NotPending;
 
@@ -599,6 +552,8 @@ class Animation : public DOMEventTargetHelper,
 
   bool mFinishedAtLastComposeStyle = false;
   bool mWasReplaceableAtLastTick = false;
+
+  bool mHiddenByContentVisibility = false;
 
   // Indicates that the animation should be exposed in an element's
   // getAnimations() list.
@@ -610,14 +565,22 @@ class Animation : public DOMEventTargetHelper,
   // finished promise.
   bool mFinishedIsResolved = false;
 
-  // True if this animation was triggered at the same time as one or more
-  // geometric animations and hence we should run any transform animations on
-  // the main thread.
-  bool mSyncWithGeometricAnimations = false;
-
   RefPtr<MicroTaskRunnable> mFinishNotificationTask;
 
   nsString mId;
+
+  bool mResetCurrentTimeOnResume = false;
+
+  // Whether the Animation is System, ResistFingerprinting, or neither
+  RTPCallerType mRTPCallerType;
+
+  // The time at which our animation should be ready.
+  TimeStamp mPendingReadyTime;
+
+ private:
+  // The id for this animation on the compositor.
+  uint64_t mIdOnCompositor = 0;
+  bool mIsPartialPrerendered = false;
 };
 
 }  // namespace dom

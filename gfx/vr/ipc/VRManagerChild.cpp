@@ -5,11 +5,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRManagerChild.h"
+
 #include "VRLayerChild.h"
 #include "VRManagerParent.h"
 #include "VRThread.h"
 #include "VRDisplayClient.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/layers/CompositorThread.h"  // for CompositorThread
 #include "mozilla/dom/Navigator.h"
@@ -21,6 +23,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "nsContentUtils.h"
 #include "mozilla/dom/GamepadManager.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/SyncObject.h"
 #include "mozilla/layers/TextureForwarder.h"
 
@@ -50,7 +53,6 @@ VRManagerChild::VRManagerChild()
   MOZ_ASSERT(NS_IsMainThread());
 
   mStartTimeStamp = TimeStamp::Now();
-  AddRef();
 }
 
 VRManagerChild::~VRManagerChild() { MOZ_ASSERT(NS_IsMainThread()); }
@@ -60,9 +62,6 @@ void VRManagerChild::IdentifyTextureHost(
     const TextureFactoryIdentifier& aIdentifier) {
   if (sVRManagerChildSingleton) {
     sVRManagerChildSingleton->mBackend = aIdentifier.mParentBackend;
-    sVRManagerChildSingleton->mSyncObject =
-        layers::SyncObjectClient::CreateSyncObjectClient(
-            aIdentifier.mSyncHandle);
   }
 }
 
@@ -124,8 +123,8 @@ void VRManagerChild::InitSameProcess() {
 
   sVRManagerChildSingleton = new VRManagerChild();
   sVRManagerParentSingleton = VRManagerParent::CreateSameProcess();
-  sVRManagerChildSingleton->Open(sVRManagerParentSingleton->GetIPCChannel(),
-                                 CompositorThread(), mozilla::ipc::ChildSide);
+  sVRManagerChildSingleton->Open(sVRManagerParentSingleton, CompositorThread(),
+                                 mozilla::ipc::ChildSide);
 }
 
 /* static */
@@ -148,8 +147,6 @@ void VRManagerChild::ShutDown() {
   sVRManagerChildSingleton->Close();
   sVRManagerChildSingleton = nullptr;
 }
-
-void VRManagerChild::ActorDealloc() { Release(); }
 
 void VRManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   if (sVRManagerChildSingleton == this) {
@@ -369,14 +366,8 @@ bool VRManagerChild::EnumerateVRDisplays() {
 void VRManagerChild::DetectRuntimes() { Unused << SendDetectRuntimes(); }
 
 PVRLayerChild* VRManagerChild::CreateVRLayer(uint32_t aDisplayID,
-                                             nsIEventTarget* aTarget,
                                              uint32_t aGroup) {
   PVRLayerChild* vrLayerChild = AllocPVRLayerChild(aDisplayID, aGroup);
-  // Do the DOM labeling.
-  if (aTarget) {
-    SetEventTargetForActor(vrLayerChild, aTarget);
-    MOZ_ASSERT(vrLayerChild->GetActorEventTarget());
-  }
   return SendPVRLayerConstructor(vrLayerChild, aDisplayID, aGroup);
 }
 
@@ -598,13 +589,13 @@ void VRManagerChild::StopActivity() {
   Unused << SendStopActivity();
 }
 
-void VRManagerChild::HandleFatalError(const char* aMsg) const {
+void VRManagerChild::HandleFatalError(const char* aMsg) {
   dom::ContentChild::FatalErrorIfNotUsingGPUProcess(aMsg, OtherPid());
 }
 
 void VRManagerChild::AddPromise(const uint32_t& aID, dom::Promise* aPromise) {
-  MOZ_ASSERT(!mGamepadPromiseList.Get(aID, nullptr));
-  mGamepadPromiseList.Put(aID, RefPtr{aPromise});
+  MOZ_ASSERT(!mGamepadPromiseList.Contains(aID));
+  mGamepadPromiseList.InsertOrUpdate(aID, RefPtr{aPromise});
 }
 
 gfx::VRAPIMode VRManagerChild::GetVRAPIMode(uint32_t aDisplayID) const {

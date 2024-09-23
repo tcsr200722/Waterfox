@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
+"use strict";
+
 /**
  * NOTE: This file does not apply to builds in MC. This config is used for
  * our Jest tests and for webpack bundle builds.
@@ -17,6 +19,7 @@ module.exports = {
         /[/\\]node_modules[/\\]devtools-/,
         /[/\\]node_modules[/\\]react-aria-components[/\\]/,
         "../../shared",
+        "../shared/worker-utils.js",
       ],
       presets: [
         "@babel/preset-react",
@@ -31,10 +34,13 @@ module.exports = {
         ],
       ],
       plugins: [
-        "@babel/plugin-transform-flow-strip-types",
+        "@babel/plugin-proposal-class-static-block",
         "@babel/plugin-proposal-class-properties",
         "@babel/plugin-proposal-optional-chaining",
         "@babel/plugin-proposal-nullish-coalescing-operator",
+        "@babel/plugin-proposal-private-methods",
+        "@babel/plugin-proposal-private-property-in-object",
+        "@babel/plugin-proposal-unicode-sets-regex",
         [
           "module-resolver",
           {
@@ -46,6 +52,7 @@ module.exports = {
               "devtools/client/shared/vendor/react-prop-types": "prop-types",
               // Map all require("devtools/...") to the real devtools root.
               "^devtools\\/(.*)": `${__dirname}/../../\\1`,
+              "^resource://devtools/(.*)": `${__dirname}/../../\\1`,
             },
           },
         ],
@@ -65,6 +72,18 @@ module.exports = {
           ],
         },
       },
+    },
+    {
+      test: ["../shared/components"],
+      plugins: [
+        "@babel/plugin-proposal-class-static-block",
+        "@babel/plugin-proposal-class-properties",
+        "@babel/plugin-proposal-optional-chaining",
+        "@babel/plugin-proposal-nullish-coalescing-operator",
+        "@babel/plugin-proposal-private-methods",
+        "@babel/plugin-proposal-private-property-in-object",
+        "transform-amd-to-commonjs",
+      ],
     },
   ],
 };

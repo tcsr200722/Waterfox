@@ -11,70 +11,104 @@ const TEST_URL =
   "<div style='position:absolute;left: 0; top: 0; " +
   "width: 20px; height: 50px'></div>";
 
-const ID = "rulers-highlighter-";
+const ID = "viewport-size-highlighter-";
 
-var { Toolbox } = require("devtools/client/framework/toolbox");
+var { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_URL);
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
+    TEST_URL
+  );
   const front = inspector.inspectorFront;
 
-  const highlighter = await front.getHighlighterByType("RulersHighlighter");
+  const highlighter = await front.getHighlighterByType(
+    "ViewportSizeHighlighter"
+  );
 
-  await isVisibleAfterShow(highlighter, inspector, testActor);
-  await hasRightLabelsContent(highlighter, inspector, testActor);
-  await resizeInspector(highlighter, inspector, testActor);
-  await hasRightLabelsContent(highlighter, inspector, testActor);
-  await isHiddenAfterHide(highlighter, inspector, testActor);
+  await isVisibleAfterShow(highlighter, inspector, highlighterTestFront);
+  await hasRightLabelsContent(highlighter, highlighterTestFront);
+  await resizeInspector(inspector);
+  await hasRightLabelsContent(highlighter, highlighterTestFront);
+  await isHiddenAfterHide(highlighter, inspector, highlighterTestFront);
 
   await highlighter.finalize();
 });
 
-async function isVisibleAfterShow(highlighterFront, inspector, testActor) {
+async function isVisibleAfterShow(
+  highlighterFront,
+  inspector,
+  highlighterTestFront
+) {
   info("Checking that the viewport infobar is displayed");
   // the rulers doesn't need any node, but as highligher it seems mandatory
   // ones, so the body is given
   const body = await getNodeFront("body", inspector);
   await highlighterFront.show(body);
 
-  const hidden = await isViewportInfobarHidden(highlighterFront, testActor);
+  const hidden = await isViewportInfobarHidden(
+    highlighterFront,
+    highlighterTestFront
+  );
   ok(!hidden, "viewport infobar is visible after show");
 }
 
-async function isHiddenAfterHide(highlighterFront, inspector, testActor) {
+async function isHiddenAfterHide(
+  highlighterFront,
+  inspector,
+  highlighterTestFront
+) {
   info("Checking that the viewport infobar is hidden after disabling");
   await highlighterFront.hide();
 
-  const hidden = await isViewportInfobarHidden(highlighterFront, testActor);
+  const hidden = await isViewportInfobarHidden(
+    highlighterFront,
+    highlighterTestFront
+  );
   ok(hidden, "viewport infobar is hidden after hide");
 }
 
-async function hasRightLabelsContent(highlighterFront, inspector, testActor) {
-  info("Checking the rulers dimension tooltip have the proper text");
-
-  const dimensionText = await testActor.getHighlighterNodeTextContent(
-    `${ID}viewport-infobar-container`,
-    highlighterFront
+async function hasRightLabelsContent(highlighterFront, highlighterTestFront) {
+  const windowDimensions = await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [],
+    () => {
+      const { require } = ChromeUtils.importESModule(
+        "resource://devtools/shared/loader/Loader.sys.mjs"
+      );
+      const {
+        getWindowDimensions,
+      } = require("resource://devtools/shared/layout/utils.js");
+      return getWindowDimensions(content);
+    }
   );
-
-  const windowDimensions = await testActor.getWindowDimensions();
   const windowHeight = Math.round(windowDimensions.height);
   const windowWidth = Math.round(windowDimensions.width);
   const windowText = windowWidth + "px \u00D7 " + windowHeight + "px";
 
-  is(dimensionText, windowText, "Dimension text was created successfully");
+  info("Wait until the rulers dimension tooltip have the proper text");
+  await asyncWaitUntil(async () => {
+    const dimensionText =
+      await highlighterTestFront.getHighlighterNodeTextContent(
+        `${ID}viewport-infobar-container`,
+        highlighterFront
+      );
+    return dimensionText == windowText;
+  }, 100);
 }
 
-async function resizeInspector(highlighterFront, inspector, testActor) {
+async function resizeInspector(inspector) {
   info(
     "Docking the toolbox to the side of the browser to change the window size"
   );
   const toolbox = inspector.toolbox;
   await toolbox.switchHost(Toolbox.HostType.RIGHT);
+
+  // Wait for some time to avoid measuring outdated window dimensions.
+  await wait(100);
 }
 
-async function isViewportInfobarHidden(highlighterFront, testActor) {
-  const hidden = await testActor.getHighlighterNodeAttribute(
+async function isViewportInfobarHidden(highlighterFront, highlighterTestFront) {
+  const hidden = await highlighterTestFront.getHighlighterNodeAttribute(
     `${ID}viewport-infobar-container`,
     "hidden",
     highlighterFront

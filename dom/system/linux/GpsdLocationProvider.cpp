@@ -15,6 +15,7 @@
 #include "GeolocationPosition.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
+#include "prtime.h"
 
 namespace mozilla {
 namespace dom {
@@ -82,7 +83,9 @@ class GpsdLocationProvider::UpdateRunnable final : public Runnable {
   UpdateRunnable(
       const nsMainThreadPtrHandle<GpsdLocationProvider>& aLocationProvider,
       nsIDOMGeoPosition* aPosition)
-      : mLocationProvider(aLocationProvider), mPosition(aPosition) {
+      : Runnable("GpsdU"),
+        mLocationProvider(aLocationProvider),
+        mPosition(aPosition) {
     MOZ_ASSERT(mLocationProvider);
     MOZ_ASSERT(mPosition);
   }
@@ -109,7 +112,9 @@ class GpsdLocationProvider::NotifyErrorRunnable final : public Runnable {
   NotifyErrorRunnable(
       const nsMainThreadPtrHandle<GpsdLocationProvider>& aLocationProvider,
       int aError)
-      : mLocationProvider(aLocationProvider), mError(aError) {
+      : Runnable("GpsdNE"),
+        mLocationProvider(aLocationProvider),
+        mError(aError) {
     MOZ_ASSERT(mLocationProvider);
   }
 
@@ -141,11 +146,15 @@ class GpsdLocationProvider::PollRunnable final : public Runnable {
  public:
   PollRunnable(
       const nsMainThreadPtrHandle<GpsdLocationProvider>& aLocationProvider)
-      : mLocationProvider(aLocationProvider), mRunning(true) {
+      : Runnable("GpsdP"),
+        mLocationProvider(aLocationProvider),
+        mRunning(true) {
     MOZ_ASSERT(mLocationProvider);
   }
 
-  static bool IsSupported() { return GPSD_API_MAJOR_VERSION == 5; }
+  static bool IsSupported() {
+    return GPSD_API_MAJOR_VERSION >= 5 && GPSD_API_MAJOR_VERSION <= 12;
+  }
 
   bool IsRunning() const { return mRunning; }
 
@@ -158,7 +167,7 @@ class GpsdLocationProvider::PollRunnable final : public Runnable {
     int err;
 
     switch (GPSD_API_MAJOR_VERSION) {
-      case 5:
+      case 5 ... 12:
         err = PollLoop5();
         break;
       default:
@@ -178,7 +187,7 @@ class GpsdLocationProvider::PollRunnable final : public Runnable {
 
  protected:
   int PollLoop5() {
-#if GPSD_API_MAJOR_VERSION == 5
+#if GPSD_API_MAJOR_VERSION >= 5 && GPSD_API_MAJOR_VERSION <= 12
     static const int GPSD_WAIT_TIMEOUT_US =
         1000000; /* us to wait for GPS data */
 
@@ -216,7 +225,12 @@ class GpsdLocationProvider::PollRunnable final : public Runnable {
         continue; /* woke up from timeout */
       }
 
+#  if GPSD_API_MAJOR_VERSION >= 7
+      res = gps_read(&gpsData, nullptr, 0);
+#  else
+
       res = gps_read(&gpsData);
+#  endif
 
       if (res < 0) {
         err = ErrnoToError(errno);
@@ -225,40 +239,46 @@ class GpsdLocationProvider::PollRunnable final : public Runnable {
         continue; /* no data available */
       }
 
+#  if GPSD_API_MAJOR_VERSION < 10
       if (gpsData.status == STATUS_NO_FIX) {
         continue;
       }
+#  endif
 
       switch (gpsData.fix.mode) {
         case MODE_3D:
-          if (!IsNaN(gpsData.fix.altitude)) {
-            alt = gpsData.fix.altitude;
+          double galt;
+
+#  if GPSD_API_MAJOR_VERSION >= 9
+          galt = gpsData.fix.altMSL;
+#  else
+          galt = gpsData.fix.altitude;
+#  endif
+          if (!std::isnan(galt)) {
+            alt = galt;
           }
           [[fallthrough]];
         case MODE_2D:
-          if (!IsNaN(gpsData.fix.latitude)) {
+          if (!std::isnan(gpsData.fix.latitude)) {
             lat = gpsData.fix.latitude;
           }
-          if (!IsNaN(gpsData.fix.longitude)) {
+          if (!std::isnan(gpsData.fix.longitude)) {
             lon = gpsData.fix.longitude;
           }
-          if (!IsNaN(gpsData.fix.epx) && !IsNaN(gpsData.fix.epy)) {
+          if (!std::isnan(gpsData.fix.epx) && !std::isnan(gpsData.fix.epy)) {
             hError = std::max(gpsData.fix.epx, gpsData.fix.epy);
-          } else if (!IsNaN(gpsData.fix.epx)) {
+          } else if (!std::isnan(gpsData.fix.epx)) {
             hError = gpsData.fix.epx;
-          } else if (!IsNaN(gpsData.fix.epy)) {
+          } else if (!std::isnan(gpsData.fix.epy)) {
             hError = gpsData.fix.epy;
           }
-          if (!IsNaN(gpsData.fix.altitude)) {
-            alt = gpsData.fix.altitude;
-          }
-          if (!IsNaN(gpsData.fix.epv)) {
+          if (!std::isnan(gpsData.fix.epv)) {
             vError = gpsData.fix.epv;
           }
-          if (!IsNaN(gpsData.fix.track)) {
+          if (!std::isnan(gpsData.fix.track)) {
             heading = gpsData.fix.track;
           }
-          if (!IsNaN(gpsData.fix.speed)) {
+          if (!std::isnan(gpsData.fix.speed)) {
             speed = gpsData.fix.speed;
           }
           break;
@@ -320,7 +340,7 @@ void GpsdLocationProvider::Update(nsIDOMGeoPosition* aPosition) {
 
   if (mMLSProvider) {
     /* We got a location from gpsd, so let's cancel our MLS fallback. */
-    mMLSProvider->Shutdown();
+    mMLSProvider->Shutdown(MLSFallback::ShutdownReason::ProviderResponded);
     mMLSProvider = nullptr;
   }
 
@@ -363,16 +383,16 @@ GpsdLocationProvider::Startup() {
 
   RefPtr<PollRunnable> pollRunnable =
       MakeAndAddRef<PollRunnable>(nsMainThreadPtrHandle<GpsdLocationProvider>(
-          new nsMainThreadPtrHolder<GpsdLocationProvider>(this)));
+          new nsMainThreadPtrHolder<GpsdLocationProvider>("GpsdLP", this)));
 
   // Use existing poll thread...
   RefPtr<LazyIdleThread> pollThread = mPollThread;
 
   // ... or create a new one.
   if (!pollThread) {
-    pollThread = MakeAndAddRef<LazyIdleThread>(
-        GPSD_POLL_THREAD_TIMEOUT_MS, NS_LITERAL_CSTRING("Gpsd poll thread"),
-        LazyIdleThread::ManualShutdown);
+    pollThread = MakeAndAddRef<LazyIdleThread>(GPSD_POLL_THREAD_TIMEOUT_MS,
+                                               "Gpsd poll thread",
+                                               LazyIdleThread::ManualShutdown);
   }
 
   auto rv = pollThread->Dispatch(pollRunnable, NS_DISPATCH_NORMAL);
@@ -405,7 +425,7 @@ GpsdLocationProvider::Watch(nsIGeolocationUpdate* aCallback) {
 NS_IMETHODIMP
 GpsdLocationProvider::Shutdown() {
   if (mMLSProvider) {
-    mMLSProvider->Shutdown();
+    mMLSProvider->Shutdown(MLSFallback::ShutdownReason::ProviderShutdown);
     mMLSProvider = nullptr;
   }
 

@@ -14,7 +14,7 @@ namespace mozilla {
 namespace gfx {
 
 class VRGPUParent final : public PVRGPUParent {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRGPUParent)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VRGPUParent, final)
 
   friend class PVRGPUParent;
 
@@ -27,6 +27,9 @@ class VRGPUParent final : public PVRGPUParent {
   void Bind(Endpoint<PVRGPUParent>&& aEndpoint);
   mozilla::ipc::IPCResult RecvStartVRService();
   mozilla::ipc::IPCResult RecvStopVRService();
+  mozilla::ipc::IPCResult RecvPuppetReset();
+  mozilla::ipc::IPCResult RecvPuppetSubmit(const nsTArray<uint64_t>& aBuffer);
+  mozilla::ipc::IPCResult RecvPuppetCheckForCompletion();
 
  private:
   explicit VRGPUParent(ProcessId aChildProcessId);
@@ -34,7 +37,6 @@ class VRGPUParent final : public PVRGPUParent {
 
   void DeferredDestroy();
 
-  RefPtr<VRGPUParent> mSelfRef;
 #if !defined(MOZ_WIDGET_ANDROID)
   RefPtr<VRService> mVRService;
 #endif

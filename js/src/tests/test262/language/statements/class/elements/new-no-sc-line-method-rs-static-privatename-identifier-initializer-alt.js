@@ -1,4 +1,3 @@
-// |reftest| skip -- class-static-fields-private is not supported
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-static-privatename-identifier-initializer-alt.case
 // - src/class-elements/productions/cls-decl-new-no-sc-line-method.template
@@ -84,7 +83,10 @@ var c = new C();
 
 assert.sameValue(c.m(), 42);
 assert.sameValue(c.m, C.prototype.m);
-assert.sameValue(Object.hasOwnProperty.call(c, "m"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m"),
+  "m doesn't appear as an own property on the C instance"
+);
 
 verifyProperty(C.prototype, "m", {
   enumerable: false,

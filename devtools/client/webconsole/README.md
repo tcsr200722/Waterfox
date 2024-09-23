@@ -3,13 +3,13 @@
 The WebConsole (webconsole) shows you all the console API calls made by scripts and alerts
 you when javascript errors are thrown by a script.
 It can also display network logs, and you can evaluate expressions using the console
-input, a.k.a. JsTerm. You can read more about it on [MDN](https://developer.mozilla.org/en-US/docs/Tools/Web_Console)
+input, a.k.a. JsTerm. You can read [more](https://firefox-source-docs.mozilla.org/devtools-user/web_console/) about it
 to learn all the features and how to use the tool.
 
 ## Run WebConsole
 
 If you want to build the WebConsole inside of the DevTools toolbox (Firefox Devtools Panels),
-follow the [simple Firefox build](http://docs.firefox-dev.tools/getting-started/build.html)
+follow the [simple Firefox build](https://firefox-source-docs.mozilla.org/devtools/getting-started/build.html)
 documentation. Start your compiled firefox and open the Firefox developer tool, you can
 then see the WebConsole tab.
 
@@ -23,7 +23,7 @@ The main files used to run the WebConsole are:
 
 ### UI
 
-The WebConsole UI is built using [React](http://docs.firefox-dev.tools/frontend/react.html)
+The WebConsole UI is built using [React](https://firefox-source-docs.mozilla.org/devtools/frontend/react.html)
 components (in `components/`).
 
 The React application is rendered from `webconsole-wrapper.js`.

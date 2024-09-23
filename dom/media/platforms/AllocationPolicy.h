@@ -8,6 +8,7 @@
 #define AllocationPolicy_h_
 
 #include <queue>
+
 #include "MediaInfo.h"
 #include "PlatformDecoderModule.h"
 #include "TimeUnits.h"
@@ -56,7 +57,7 @@ class GlobalAllocPolicy {
 
  private:
   // Protect access to Instance().
-  static StaticMutex sMutex;
+  static StaticMutex sMutex MOZ_UNANNOTATED;
 };
 
 /** This the actual base implementation underneath all AllocPolicy objects and
@@ -85,7 +86,7 @@ class AllocPolicyImpl : public AllocPolicy {
   void ResolvePromise(ReentrantMonitorAutoEnter& aProofOfLock);
 
   const int mMaxDecoderLimit;
-  ReentrantMonitor mMonitor;
+  ReentrantMonitor mMonitor MOZ_UNANNOTATED;
   // The number of decoders available for creation.
   int mDecoderLimit;
   // Requests to acquire tokens.
@@ -119,17 +120,23 @@ class SingleAllocPolicy : public AllocPolicyImpl {
   MozPromiseRequestHolder<Promise> mTokenRequest;
 };
 
-class AllocationWrapper : public MediaDataDecoder {
+class AllocationWrapper final : public MediaDataDecoder {
   using Token = AllocPolicy::Token;
 
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AllocationWrapper, final);
+
   AllocationWrapper(already_AddRefed<MediaDataDecoder> aDecoder,
                     already_AddRefed<Token> aToken);
-  ~AllocationWrapper();
 
   RefPtr<InitPromise> Init() override { return mDecoder->Init(); }
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override {
     return mDecoder->Decode(aSample);
+  }
+  bool CanDecodeBatch() const override { return mDecoder->CanDecodeBatch(); }
+  RefPtr<DecodePromise> DecodeBatch(
+      nsTArray<RefPtr<MediaRawData>>&& aSamples) override {
+    return mDecoder->DecodeBatch(std::move(aSamples));
   }
   RefPtr<DecodePromise> Drain() override { return mDecoder->Drain(); }
   RefPtr<FlushPromise> Flush() override { return mDecoder->Flush(); }
@@ -139,6 +146,10 @@ class AllocationWrapper : public MediaDataDecoder {
   nsCString GetDescriptionName() const override {
     return mDecoder->GetDescriptionName();
   }
+  nsCString GetProcessName() const override {
+    return mDecoder->GetProcessName();
+  }
+  nsCString GetCodecName() const override { return mDecoder->GetCodecName(); }
   void SetSeekThreshold(const media::TimeUnit& aTime) override {
     mDecoder->SetSeekThreshold(aTime);
   }
@@ -146,6 +157,9 @@ class AllocationWrapper : public MediaDataDecoder {
     return mDecoder->SupportDecoderRecycling();
   }
   RefPtr<ShutdownPromise> Shutdown() override;
+  ConversionRequired NeedsConversion() const override {
+    return mDecoder->NeedsConversion();
+  }
 
   typedef MozPromise<RefPtr<MediaDataDecoder>, MediaResult,
                      /* IsExclusive = */ true>
@@ -158,6 +172,8 @@ class AllocationWrapper : public MediaDataDecoder {
       const CreateDecoderParams& aParams, AllocPolicy* aPolicy = nullptr);
 
  private:
+  ~AllocationWrapper();
+
   RefPtr<MediaDataDecoder> mDecoder;
   RefPtr<Token> mToken;
 };

@@ -11,13 +11,14 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/MediaSessionBinding.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
 class nsIGlobalObject;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class MediaMetadataBase {
@@ -41,7 +42,7 @@ class MediaMetadata final : public nsISupports,
  public:
   // Ref counting and cycle collection
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaMetadata)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MediaMetadata)
 
   // WebIDL methods
   nsIGlobalObject* GetParentObject() const;

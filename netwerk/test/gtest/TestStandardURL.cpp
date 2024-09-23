@@ -11,73 +11,73 @@
 #include "nsIURIMutator.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "mozilla/Unused.h"
+#include "nsSerializationHelper.h"
+#include "mozilla/Base64.h"
+#include "nsEscape.h"
+#include "nsURLHelper.h"
+
+using namespace mozilla;
 
 // In nsStandardURL.cpp
 extern nsresult Test_NormalizeIPv4(const nsACString& host, nsCString& result);
-
+extern nsresult Test_ParseIPv4Number(const nsACString& input, int32_t base,
+                                     uint32_t& number, uint32_t maxNumber);
+extern int32_t Test_ValidateIPv4Number(const nsACString& host, int32_t bases[4],
+                                       int32_t dotIndex[3], bool& onlyBase10,
+                                       int32_t length);
 TEST(TestStandardURL, Simple)
 {
   nsCOMPtr<nsIURI> url;
   ASSERT_EQ(NS_MutateURI(NS_STANDARDURLMUTATOR_CONTRACTID)
-                .SetSpec(NS_LITERAL_CSTRING("http://example.com"))
+                .SetSpec("http://example.com"_ns)
                 .Finalize(url),
             NS_OK);
   ASSERT_TRUE(url);
 
-  ASSERT_EQ(NS_MutateURI(url)
-                .SetSpec(NS_LITERAL_CSTRING("http://example.com"))
-                .Finalize(url),
+  ASSERT_EQ(NS_MutateURI(url).SetSpec("http://example.com"_ns).Finalize(url),
             NS_OK);
 
   nsAutoCString out;
 
   ASSERT_EQ(url->GetSpec(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("http://example.com/"));
+  ASSERT_TRUE(out == "http://example.com/"_ns);
 
-  ASSERT_EQ(url->Resolve(NS_LITERAL_CSTRING("foo.html?q=45"), out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("http://example.com/foo.html?q=45"));
+  ASSERT_EQ(url->Resolve("foo.html?q=45"_ns, out), NS_OK);
+  ASSERT_TRUE(out == "http://example.com/foo.html?q=45"_ns);
 
-  ASSERT_EQ(
-      NS_MutateURI(url).SetScheme(NS_LITERAL_CSTRING("foo")).Finalize(url),
-      NS_OK);
+  ASSERT_EQ(NS_MutateURI(url).SetScheme("foo"_ns).Finalize(url), NS_OK);
 
   ASSERT_EQ(url->GetScheme(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("foo"));
+  ASSERT_TRUE(out == "foo"_ns);
 
   ASSERT_EQ(url->GetHost(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("example.com"));
-  ASSERT_EQ(NS_MutateURI(url)
-                .SetHost(NS_LITERAL_CSTRING("www.yahoo.com"))
-                .Finalize(url),
-            NS_OK);
+  ASSERT_TRUE(out == "example.com"_ns);
+  ASSERT_EQ(NS_MutateURI(url).SetHost("www.yahoo.com"_ns).Finalize(url), NS_OK);
   ASSERT_EQ(url->GetHost(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("www.yahoo.com"));
+  ASSERT_TRUE(out == "www.yahoo.com"_ns);
 
   ASSERT_EQ(NS_MutateURI(url)
-                .SetPathQueryRef(NS_LITERAL_CSTRING(
+                .SetPathQueryRef(nsLiteralCString(
                     "/some-path/one-the-net/about.html?with-a-query#for-you"))
                 .Finalize(url),
             NS_OK);
   ASSERT_EQ(url->GetPathQueryRef(out), NS_OK);
   ASSERT_TRUE(out ==
-              NS_LITERAL_CSTRING(
+              nsLiteralCString(
                   "/some-path/one-the-net/about.html?with-a-query#for-you"));
 
   ASSERT_EQ(NS_MutateURI(url)
-                .SetQuery(NS_LITERAL_CSTRING(
+                .SetQuery(nsLiteralCString(
                     "a=b&d=c&what-ever-you-want-to-be-called=45"))
                 .Finalize(url),
             NS_OK);
   ASSERT_EQ(url->GetQuery(out), NS_OK);
-  ASSERT_TRUE(out ==
-              NS_LITERAL_CSTRING("a=b&d=c&what-ever-you-want-to-be-called=45"));
+  ASSERT_TRUE(out == "a=b&d=c&what-ever-you-want-to-be-called=45"_ns);
 
-  ASSERT_EQ(NS_MutateURI(url)
-                .SetRef(NS_LITERAL_CSTRING("#some-book-mark"))
-                .Finalize(url),
+  ASSERT_EQ(NS_MutateURI(url).SetRef("#some-book-mark"_ns).Finalize(url),
             NS_OK);
   ASSERT_EQ(url->GetRef(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("some-book-mark"));
+  ASSERT_TRUE(out == "some-book-mark"_ns);
 }
 
 TEST(TestStandardURL, NormalizeGood)
@@ -190,17 +190,16 @@ TEST(TestStandardURL, NormalizeBad)
 {
   nsAutoCString result;
   const char* manual[] = {
-      "x22.232.12.32", "122..12.32",    "122.12.32.12.32", "122.12.32..",
-      "122.12.xx.22",  "122.12.0xx.22", "0xx.12.01.22",    "0x.12.01.22",
-      "12.12.02x.22",  "1q.12.2.22",    "122.01f.02.22",   "12a.01.02.22",
-      "12.01.02.20x1", "10x2.01.02.20", "0xx.01.02.20",    "10.x.02.20",
-      "10.00x2.02.20", "10.13.02x2.20", "10.x13.02.20",    "10.0x134def.02.20",
-      "\0.2.2.2",      "256.2.2.2",     "2.256.2.2",       "2.2.256.2",
-      "2.2.2.256",     "2.2.-2.3",      "+2.2.2.3",        "13.0x2x2.2.3",
-      "0x2x2.13.2.3"};
+      "x22.232.12.32", "122..12.32",    "122.12.32.12.32",   "122.12.32..",
+      "122.12.xx.22",  "122.12.0xx.22", "0xx.12.01.22",      "12.12.02x.22",
+      "1q.12.2.22",    "122.01f.02.22", "12a.01.02.22",      "12.01.02.20x1",
+      "10x2.01.02.20", "0xx.01.02.20",  "10.x.02.20",        "10.00x2.02.20",
+      "10.13.02x2.20", "10.x13.02.20",  "10.0x134def.02.20", "\0.2.2.2",
+      "256.2.2.2",     "2.256.2.2",     "2.2.256.2",         "2.2.2.256",
+      "2.2.-2.3",      "+2.2.2.3",      "13.0x2x2.2.3",      "0x2x2.13.2.3"};
 
-  for (uint32_t i = 0; i < sizeof(manual) / sizeof(manual[0]); i++) {
-    nsCString encHost(manual[i]);
+  for (auto& i : manual) {
+    nsCString encHost(i);
     ASSERT_EQ(NS_ERROR_FAILURE, Test_NormalizeIPv4(encHost, result));
   }
 }
@@ -233,8 +232,8 @@ TEST(TestStandardURL, From_test_standardurldotjs)
       "0X7F000001",
       "0X007F.0X0000.0X0000.0X0001",
       "000177.0.00000.0X0001"};
-  for (uint32_t i = 0; i < sizeof(localIPv4s) / sizeof(localIPv4s[0]); i++) {
-    nsCString encHost(localIPv4s[i]);
+  for (auto& localIPv4 : localIPv4s) {
+    nsCString encHost(localIPv4);
     ASSERT_EQ(NS_OK, Test_NormalizeIPv4(encHost, result));
     ASSERT_TRUE(result.EqualsLiteral("127.0.0.1"));
   }
@@ -246,50 +245,52 @@ TEST(TestStandardURL, From_test_standardurldotjs)
                             "1.2.3.4.5",   "010000000000000000",
                             "2+3",         "0.0.0.-1",
                             "1.2.3.4..",   "1..2",
-                            ".1.2.3.4"};
-  for (uint32_t i = 0; i < sizeof(nonIPv4s) / sizeof(nonIPv4s[0]); i++) {
-    nsCString encHost(nonIPv4s[i]);
+                            ".1.2.3.4",    ".127"};
+  for (auto& nonIPv4 : nonIPv4s) {
+    nsCString encHost(nonIPv4);
     ASSERT_EQ(NS_ERROR_FAILURE, Test_NormalizeIPv4(encHost, result));
+  }
+
+  const char* oneOrNoDotsIPv4s[] = {"127", "127."};
+  for (auto& localIPv4 : oneOrNoDotsIPv4s) {
+    nsCString encHost(localIPv4);
+    ASSERT_EQ(NS_OK, Test_NormalizeIPv4(encHost, result));
+    ASSERT_TRUE(result.EqualsLiteral("0.0.0.127"));
   }
 }
 
-#define COUNT 10000
+#define TEST_COUNT 10000
 
 MOZ_GTEST_BENCH(TestStandardURL, DISABLED_Perf, [] {
   nsCOMPtr<nsIURI> url;
   ASSERT_EQ(NS_OK, NS_MutateURI(NS_STANDARDURLMUTATOR_CONTRACTID)
-                       .SetSpec(NS_LITERAL_CSTRING("http://example.com"))
+                       .SetSpec("http://example.com"_ns)
                        .Finalize(url));
 
   nsAutoCString out;
-  for (int i = COUNT; i; --i) {
-    ASSERT_EQ(NS_MutateURI(url)
-                  .SetSpec(NS_LITERAL_CSTRING("http://example.com"))
-                  .Finalize(url),
+  for (int i = TEST_COUNT; i; --i) {
+    ASSERT_EQ(NS_MutateURI(url).SetSpec("http://example.com"_ns).Finalize(url),
               NS_OK);
     ASSERT_EQ(url->GetSpec(out), NS_OK);
-    url->Resolve(NS_LITERAL_CSTRING("foo.html?q=45"), out);
-    mozilla::Unused
-        << NS_MutateURI(url).SetScheme(NS_LITERAL_CSTRING("foo")).Finalize(url);
+    url->Resolve("foo.html?q=45"_ns, out);
+    mozilla::Unused << NS_MutateURI(url).SetScheme("foo"_ns).Finalize(url);
     url->GetScheme(out);
-    mozilla::Unused << NS_MutateURI(url)
-                           .SetHost(NS_LITERAL_CSTRING("www.yahoo.com"))
-                           .Finalize(url);
+    mozilla::Unused
+        << NS_MutateURI(url).SetHost("www.yahoo.com"_ns).Finalize(url);
     url->GetHost(out);
     mozilla::Unused
         << NS_MutateURI(url)
-               .SetPathQueryRef(NS_LITERAL_CSTRING(
+               .SetPathQueryRef(nsLiteralCString(
                    "/some-path/one-the-net/about.html?with-a-query#for-you"))
                .Finalize(url);
     url->GetPathQueryRef(out);
     mozilla::Unused << NS_MutateURI(url)
-                           .SetQuery(NS_LITERAL_CSTRING(
+                           .SetQuery(nsLiteralCString(
                                "a=b&d=c&what-ever-you-want-to-be-called=45"))
                            .Finalize(url);
     url->GetQuery(out);
-    mozilla::Unused << NS_MutateURI(url)
-                           .SetRef(NS_LITERAL_CSTRING("#some-book-mark"))
-                           .Finalize(url);
+    mozilla::Unused
+        << NS_MutateURI(url).SetRef("#some-book-mark"_ns).Finalize(url);
     url->GetRef(out);
   }
 });
@@ -336,34 +337,34 @@ TEST(TestStandardURL, Mutator)
   nsAutoCString out;
   nsCOMPtr<nsIURI> uri;
   nsresult rv = NS_MutateURI(NS_STANDARDURLMUTATOR_CONTRACTID)
-                    .SetSpec(NS_LITERAL_CSTRING("http://example.com"))
+                    .SetSpec("http://example.com"_ns)
                     .Finalize(uri);
   ASSERT_EQ(rv, NS_OK);
 
   ASSERT_EQ(uri->GetSpec(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("http://example.com/"));
+  ASSERT_TRUE(out == "http://example.com/"_ns);
 
   rv = NS_MutateURI(uri)
-           .SetScheme(NS_LITERAL_CSTRING("ftp"))
-           .SetHost(NS_LITERAL_CSTRING("mozilla.org"))
-           .SetPathQueryRef(NS_LITERAL_CSTRING("/path?query#ref"))
+           .SetScheme("ftp"_ns)
+           .SetHost("mozilla.org"_ns)
+           .SetPathQueryRef("/path?query#ref"_ns)
            .Finalize(uri);
   ASSERT_EQ(rv, NS_OK);
   ASSERT_EQ(uri->GetSpec(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("ftp://mozilla.org/path?query#ref"));
+  ASSERT_TRUE(out == "ftp://mozilla.org/path?query#ref"_ns);
 
   nsCOMPtr<nsIURL> url;
-  rv = NS_MutateURI(uri).SetScheme(NS_LITERAL_CSTRING("https")).Finalize(url);
+  rv = NS_MutateURI(uri).SetScheme("https"_ns).Finalize(url);
   ASSERT_EQ(rv, NS_OK);
   ASSERT_EQ(url->GetSpec(out), NS_OK);
-  ASSERT_TRUE(out == NS_LITERAL_CSTRING("https://mozilla.org/path?query#ref"));
+  ASSERT_TRUE(out == "https://mozilla.org/path?query#ref"_ns);
 }
 
 TEST(TestStandardURL, Deserialize_Bug1392739)
 {
   mozilla::ipc::StandardURLParams standard_params;
   standard_params.urlType() = nsIStandardURL::URLTYPE_STANDARD;
-  standard_params.spec() = NS_LITERAL_CSTRING("");
+  standard_params.spec().Truncate();
   standard_params.host() = mozilla::ipc::StandardURLSegment(4294967295, 1);
 
   mozilla::ipc::URIParams params(standard_params);
@@ -371,4 +372,98 @@ TEST(TestStandardURL, Deserialize_Bug1392739)
   nsCOMPtr<nsIURIMutator> mutator =
       do_CreateInstance(NS_STANDARDURLMUTATOR_CID);
   ASSERT_EQ(mutator->Deserialize(params), NS_ERROR_FAILURE);
+}
+
+TEST(TestStandardURL, CorruptSerialization)
+{
+  auto spec = "http://user:pass@example.com/path/to/file.ext?query#hash"_ns;
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = NS_MutateURI(NS_STANDARDURLMUTATOR_CONTRACTID)
+                    .SetSpec(spec)
+                    .Finalize(uri);
+  ASSERT_EQ(rv, NS_OK);
+
+  nsAutoCString serialization;
+  nsCOMPtr<nsISerializable> serializable = do_QueryInterface(uri);
+  ASSERT_TRUE(serializable);
+
+  // Check that the URL is normally serializable.
+  ASSERT_EQ(NS_OK, NS_SerializeToString(serializable, serialization));
+  nsCOMPtr<nsISupports> deserializedObject;
+  ASSERT_EQ(NS_OK, NS_DeserializeObject(serialization,
+                                        getter_AddRefs(deserializedObject)));
+
+  nsAutoCString canonicalBin;
+  Unused << Base64Decode(serialization, canonicalBin);
+
+// The spec serialization begins at byte 49
+// If the implementation of nsStandardURL::Write changes, this test will need
+// to be adjusted.
+#define SPEC_OFFSET 49
+
+  ASSERT_EQ(Substring(canonicalBin, SPEC_OFFSET, 7), "http://"_ns);
+
+  nsAutoCString corruptedBin = canonicalBin;
+  // change mScheme.mPos
+  corruptedBin.BeginWriting()[SPEC_OFFSET + spec.Length()] = 1;
+  Unused << Base64Encode(corruptedBin, serialization);
+  ASSERT_EQ(
+      NS_ERROR_MALFORMED_URI,
+      NS_DeserializeObject(serialization, getter_AddRefs(deserializedObject)));
+
+  corruptedBin = canonicalBin;
+  // change mScheme.mLen
+  corruptedBin.BeginWriting()[SPEC_OFFSET + spec.Length() + 4] = 127;
+  Unused << Base64Encode(corruptedBin, serialization);
+  ASSERT_EQ(
+      NS_ERROR_MALFORMED_URI,
+      NS_DeserializeObject(serialization, getter_AddRefs(deserializedObject)));
+}
+
+TEST(TestStandardURL, ParseIPv4Num)
+{
+  auto host = "0x.0x.0"_ns;
+
+  int32_t bases[4] = {10, 10, 10, 10};
+  bool onlyBase10 = true;  // Track this as a special case
+  int32_t dotIndex[3];     // The positions of the dots in the string
+  int32_t length = static_cast<int32_t>(host.Length());
+
+  ASSERT_EQ(2,
+            Test_ValidateIPv4Number(host, bases, dotIndex, onlyBase10, length));
+
+  nsCString result;
+  ASSERT_EQ(NS_OK, Test_NormalizeIPv4("0x.0x.0"_ns, result));
+
+  uint32_t number;
+  Test_ParseIPv4Number("0x10"_ns, 16, number, 255);
+  ASSERT_EQ(number, (uint32_t)16);
+}
+
+TEST(TestStandardURL, CoalescePath)
+{
+  auto testCoalescing = [](const char* input, const char* expected) {
+    nsAutoCString buf(input);
+    net_CoalesceDirs(NET_COALESCE_NORMAL, buf.BeginWriting());
+    ASSERT_EQ(nsCString(buf.get()), nsCString(expected));
+  };
+
+  testCoalescing("/.", "/");
+  testCoalescing("/..", "/");
+  testCoalescing("/foo/foo1/.", "/foo/foo1/");
+  testCoalescing("/foo/../foo1", "/foo1");
+  testCoalescing("/foo/./foo1", "/foo/foo1");
+  testCoalescing("/foo/foo1/..", "/foo/");
+
+  // Bug 1890346
+  testCoalescing("/..?/..", "/?/..");
+
+  testCoalescing("/.?/..", "/?/..");
+  testCoalescing("/./../?", "/?");
+  testCoalescing("/.abc", "/.abc");
+  testCoalescing("//", "//");
+  testCoalescing("/../", "/");
+  testCoalescing("/./", "/");
+  testCoalescing("/.../", "/.../");
 }

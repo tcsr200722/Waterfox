@@ -2,42 +2,39 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+const { throttle } = require("resource://devtools/shared/throttle.js");
 
-import { throttle } from "lodash";
-import type { QueuedSourceData } from "../types";
-
-let newQueuedSources;
-let queuedSources;
+// This SourceQueue module is now only used for source mapped sources
+let newOriginalQueuedSources;
+let queuedOriginalSources;
 let currentWork;
 
-async function dispatchNewSources(): Promise<void> {
-  const sources = queuedSources;
-  queuedSources = [];
-  currentWork = await newQueuedSources(sources);
+async function dispatchNewSources() {
+  const sources = queuedOriginalSources;
+  if (!sources.length) {
+    return;
+  }
+  queuedOriginalSources = [];
+  currentWork = await newOriginalQueuedSources(sources);
 }
 
 const queue = throttle(dispatchNewSources, 100);
 
 export default {
-  initialize: (actions: Object) => {
-    newQueuedSources = actions.newQueuedSources;
-    queuedSources = [];
+  initialize: actions => {
+    newOriginalQueuedSources = actions.newOriginalSources;
+    queuedOriginalSources = [];
   },
-  queue: (source: QueuedSourceData) => {
-    queuedSources.push(source);
-    queue();
-  },
-  queueSources: (sources: QueuedSourceData[]) => {
-    if (sources.length > 0) {
-      queuedSources = queuedSources.concat(sources);
+  queueOriginalSources: sources => {
+    if (sources.length) {
+      queuedOriginalSources.push(...sources);
       queue();
     }
   },
 
   flush: () => Promise.all([queue.flush(), currentWork]),
   clear: () => {
-    queuedSources = [];
+    queuedOriginalSources = [];
     queue.cancel();
   },
 };

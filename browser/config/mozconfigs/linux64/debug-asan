@@ -3,14 +3,24 @@
 ac_add_options --enable-debug
 ac_add_options --enable-optimize="-O1"
 
-. $topsrcdir/build/mozconfig.stylo
-. $topsrcdir/build/mozconfig.wasm-sandboxing
-
 # ASan specific options on Linux
 ac_add_options --enable-valgrind
 
 . $topsrcdir/build/unix/mozconfig.asan
-ac_add_options --disable-elf-hack
+
+ac_add_options --enable-gczeal
+
+# Build with fuzzing support, so this build can also be used
+# to analyze fuzzing bugs with rr.
+ac_add_options --enable-fuzzing
+
+# Enable ASan for rust code. This is done for specific build tasks rather than
+# globally in mozconfig.asan because it requires an unstable -Z flag.
+export RUSTFLAGS="$RUSTFLAGS -Zsanitizer=address"
+
+# Include 'SourceRepository' in application.ini which
+# is used by Pernosco to locate source
+export MOZ_INCLUDE_SOURCE_INFO=1
 
 # Package js shell.
 export MOZ_PACKAGE_JSSHELL=1

@@ -4,8 +4,6 @@
 
 "use strict";
 
-const Services = require("Services");
-
 const {
   openToolbox,
   closeToolbox,
@@ -13,9 +11,9 @@ const {
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 
-module.exports = async function() {
+module.exports = async function () {
   let tab = await testSetup(SIMPLE_URL);
   let messageManager = tab.linkedBrowser.messageManager;
 

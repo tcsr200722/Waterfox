@@ -25,7 +25,7 @@ impl<I, P> Filter<I, P>
 where
     I: ParallelIterator,
 {
-    /// Create a new `Filter` iterator.
+    /// Creates a new `Filter` iterator.
     pub(super) fn new(base: I, filter_op: P) -> Self {
         Filter { base, filter_op }
     }
@@ -50,7 +50,7 @@ where
 /// ////////////////////////////////////////////////////////////////////////
 /// Consumer implementation
 
-struct FilterConsumer<'p, C, P: 'p> {
+struct FilterConsumer<'p, C, P> {
     base: C,
     filter_op: &'p P,
 }
@@ -97,7 +97,7 @@ where
     P: Fn(&T) -> bool + Sync,
 {
     fn split_off_left(&self) -> Self {
-        FilterConsumer::new(self.base.split_off_left(), &self.filter_op)
+        FilterConsumer::new(self.base.split_off_left(), self.filter_op)
     }
 
     fn to_reducer(&self) -> Self::Reducer {
@@ -105,7 +105,7 @@ where
     }
 }
 
-struct FilterFolder<'p, C, P: 'p> {
+struct FilterFolder<'p, C, P> {
     base: C,
     filter_op: &'p P,
 }

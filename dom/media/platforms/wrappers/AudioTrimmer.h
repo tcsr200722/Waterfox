@@ -14,33 +14,39 @@ namespace mozilla {
 
 DDLoggedTypeDeclNameAndBase(AudioTrimmer, MediaDataDecoder);
 
-class AudioTrimmer : public MediaDataDecoder {
+class AudioTrimmer final : public MediaDataDecoder {
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AudioTrimmer, final);
+
   AudioTrimmer(already_AddRefed<MediaDataDecoder> aDecoder,
                const CreateDecoderParams& aParams)
-      : mDecoder(aDecoder), mTaskQueue(aParams.mTaskQueue) {}
+      : mDecoder(aDecoder) {}
 
   RefPtr<InitPromise> Init() override;
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override;
-  bool CanDecodeBatch() override { return mDecoder->CanDecodeBatch(); }
+  bool CanDecodeBatch() const override { return mDecoder->CanDecodeBatch(); }
   RefPtr<DecodePromise> DecodeBatch(
-      nsTArray<RefPtr<MediaRawData>>&& aSamples) override {
-    return mDecoder->DecodeBatch(std::move(aSamples));
-  }
+      nsTArray<RefPtr<MediaRawData>>&& aSamples) override;
   RefPtr<DecodePromise> Drain() override;
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override;
+  nsCString GetProcessName() const override;
+  nsCString GetCodecName() const override;
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
   void SetSeekThreshold(const media::TimeUnit& aTime) override;
   bool SupportDecoderRecycling() const override;
   ConversionRequired NeedsConversion() const override;
 
  private:
+  ~AudioTrimmer() = default;
+
+  // Apply trimming information on decoded data.
   RefPtr<DecodePromise> HandleDecodedResult(
-      DecodePromise::ResolveOrRejectValue&& aValue, MediaRawData* aRaw);
-  RefPtr<MediaDataDecoder> mDecoder;
-  RefPtr<AbstractThread> mTaskQueue;
+      DecodePromise::ResolveOrRejectValue&& aValue);
+  void PrepareTrimmers(MediaRawData* aRaw);
+  const RefPtr<MediaDataDecoder> mDecoder;
+  nsCOMPtr<nsISerialEventTarget> mThread;
   AutoTArray<Maybe<media::TimeInterval>, 2> mTrimmers;
 };
 

@@ -7,12 +7,15 @@
 
 #include "mozilla/StaticPrefs_image.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "mozilla/layers/SharedSurfacesChild.h"
+#include "mozilla/layers/SourceSurfaceSharedData.h"
 #include "nsProxyRelease.h"
 
 #include "DecodePool.h"
 #include "Decoder.h"
 
 using namespace mozilla::gfx;
+using namespace mozilla::layers;
 
 namespace mozilla {
 namespace image {
@@ -25,7 +28,9 @@ AnimationSurfaceProvider::AnimationSurfaceProvider(
       mImage(aImage.get()),
       mDecodingMutex("AnimationSurfaceProvider::mDecoder"),
       mDecoder(aDecoder.get()),
-      mFramesMutex("AnimationSurfaceProvider::mFrames") {
+      mFramesMutex("AnimationSurfaceProvider::mFrames"),
+      mCompositedFrameRequested(false),
+      mSharedAnimation(MakeRefPtr<SharedSurfacesAnimation>()) {
   MOZ_ASSERT(!mDecoder->IsMetadataDecode(),
              "Use MetadataDecodingTask for metadata decodes");
   MOZ_ASSERT(!mDecoder->IsFirstFrameDecode(),
@@ -47,6 +52,7 @@ AnimationSurfaceProvider::AnimationSurfaceProvider(
 AnimationSurfaceProvider::~AnimationSurfaceProvider() {
   DropImageReference();
 
+  mSharedAnimation->Destroy();
   if (mDecoder) {
     mDecoder->SetFrameRecycler(nullptr);
   }
@@ -58,7 +64,7 @@ void AnimationSurfaceProvider::DropImageReference() {
   }
 
   // RasterImage objects need to be destroyed on the main thread.
-  NS_ReleaseOnMainThread("AnimationSurfaceProvider::mImage", mImage.forget());
+  SurfaceCache::ReleaseImageOnMainThread(mImage.forget());
 }
 
 void AnimationSurfaceProvider::Reset() {
@@ -115,15 +121,32 @@ void AnimationSurfaceProvider::Reset() {
 void AnimationSurfaceProvider::Advance(size_t aFrame) {
   bool restartDecoder;
 
+  RefPtr<SourceSurface> surface;
+  IntRect dirtyRect;
   {
     // Typical advancement of a frame.
     MutexAutoLock lock(mFramesMutex);
     restartDecoder = mFrames->AdvanceTo(aFrame);
+
+    imgFrame* frame = mFrames->Get(aFrame, /* aForDisplay */ true);
+    MOZ_ASSERT(frame);
+    if (aFrame != 0) {
+      dirtyRect = frame->GetDirtyRect();
+    } else {
+      MOZ_ASSERT(mFrames->SizeKnown());
+      dirtyRect = mFrames->FirstFrameRefreshArea();
+    }
+    surface = frame->GetSourceSurface();
+    MOZ_ASSERT(surface);
   }
 
   if (restartDecoder) {
     DecodePool::Singleton()->AsyncRun(this);
   }
+
+  mCompositedFrameRequested = false;
+  auto* sharedSurface = static_cast<SourceSurfaceSharedData*>(surface.get());
+  mSharedAnimation->SetCurrentFrame(sharedSurface, dirtyRect);
 }
 
 DrawableFrameRef AnimationSurfaceProvider::DrawableRef(size_t aFrame) {
@@ -222,8 +245,7 @@ void AnimationSurfaceProvider::Run() {
       // release the thread as soon as possible. The animation may advance even
       // during shutdown, which keeps us decoding, and thus blocking the decode
       // pool during teardown.
-      if (!mDecoder || !continueDecoding ||
-          DecodePool::Singleton()->IsShuttingDown()) {
+      if (!mDecoder || !continueDecoding || DecodePool::IsShuttingDown()) {
         return;
       }
 
@@ -259,8 +281,7 @@ void AnimationSurfaceProvider::Run() {
     // animation may advance even during shutdown, which keeps us decoding, and
     // thus blocking the decode pool during teardown.
     MOZ_ASSERT(result == LexerResult(Yield::OUTPUT_AVAILABLE));
-    if (!checkForNewFrameAtYieldResult ||
-        DecodePool::Singleton()->IsShuttingDown()) {
+    if (!checkForNewFrameAtYieldResult || DecodePool::IsShuttingDown()) {
       return;
     }
   }
@@ -483,6 +504,28 @@ RawAccessFrameRef AnimationSurfaceProvider::RecycleFrame(
   MutexAutoLock lock(mFramesMutex);
   MOZ_ASSERT(mFrames->IsRecycling());
   return mFrames->RecycleFrame(aRecycleRect);
+}
+
+nsresult AnimationSurfaceProvider::UpdateKey(
+    layers::RenderRootStateManager* aManager,
+    wr::IpcResourceUpdateQueue& aResources, wr::ImageKey& aKey) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  RefPtr<SourceSurface> surface;
+  {
+    MutexAutoLock lock(mFramesMutex);
+    imgFrame* frame =
+        mFrames->Get(mFrames->Displayed(), /* aForDisplay */ true);
+    if (!frame) {
+      return NS_ERROR_NOT_AVAILABLE;
+    }
+
+    surface = frame->GetSourceSurface();
+  }
+
+  mCompositedFrameRequested = true;
+  auto* sharedSurface = static_cast<SourceSurfaceSharedData*>(surface.get());
+  return mSharedAnimation->UpdateKey(sharedSurface, aManager, aResources, aKey);
 }
 
 }  // namespace image

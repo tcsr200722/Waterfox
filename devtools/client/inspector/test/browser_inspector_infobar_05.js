@@ -6,20 +6,24 @@
 
 // Bug 1521188 - Indicate grid/flex container/item in infobar
 // Check the text content of the highlighter nodeinfo bar.
-const STRINGS_URI = "devtools/shared/locales/highlighters.properties";
-const L10N = new LocalizationHelper(STRINGS_URI);
+const HighlightersBundle = new Localization(
+  ["devtools/shared/highlighters.ftl"],
+  true
+);
 
 const TEST_URI = URL_ROOT + "doc_inspector_infobar_04.html";
 
 const CLASS_GRID_TYPE = "box-model-infobar-grid-type";
 const CLASS_FLEX_TYPE = "box-model-infobar-flex-type";
 
-const FLEX_CONTAINER_TEXT = L10N.getStr("flexType.container");
-const FLEX_ITEM_TEXT = L10N.getStr("flexType.item");
-const FLEX_DUAL_TEXT = L10N.getStr("flexType.dual");
-const GRID_CONTAINER_TEXT = L10N.getStr("gridType.container");
-const GRID_ITEM_TEXT = L10N.getStr("gridType.item");
-const GRID_DUAL_TEXT = L10N.getStr("gridType.dual");
+const FLEX_CONTAINER_TEXT =
+  HighlightersBundle.formatValueSync("flextype-container");
+const FLEX_ITEM_TEXT = HighlightersBundle.formatValueSync("flextype-item");
+const FLEX_DUAL_TEXT = HighlightersBundle.formatValueSync("flextype-dual");
+const GRID_CONTAINER_TEXT =
+  HighlightersBundle.formatValueSync("gridtype-container");
+const GRID_ITEM_TEXT = HighlightersBundle.formatValueSync("gridtype-item");
+const GRID_DUAL_TEXT = HighlightersBundle.formatValueSync("gridtype-dual");
 
 const TEST_DATA = [
   {
@@ -72,31 +76,33 @@ const TEST_TEXT_DATA = [
   },
 ];
 
-add_task(async function() {
-  const { inspector, testActor } = await openInspectorForURL(TEST_URI);
+add_task(async function () {
+  const { inspector, highlighterTestFront } = await openInspectorForURL(
+    TEST_URI
+  );
 
   for (const currentTest of TEST_DATA) {
     info("Testing " + currentTest.selector);
-    await testTextContent(currentTest, inspector, testActor);
+    await testTextContent(currentTest, inspector, highlighterTestFront);
   }
 
   for (const currentTest of TEST_TEXT_DATA) {
     info("Testing " + currentTest.selector);
-    await testTextNodeTextContent(currentTest, inspector, testActor);
+    await testTextNodeTextContent(currentTest, inspector, highlighterTestFront);
   }
 });
 
 async function testTextContent(
   { selector, gridText, flexText },
   inspector,
-  testActor
+  highlighterTestFront
 ) {
   await selectAndHighlightNode(selector, inspector);
 
-  const gridType = await testActor.getHighlighterNodeTextContent(
+  const gridType = await highlighterTestFront.getHighlighterNodeTextContent(
     CLASS_GRID_TYPE
   );
-  const flexType = await testActor.getHighlighterNodeTextContent(
+  const flexType = await highlighterTestFront.getHighlighterNodeTextContent(
     CLASS_FLEX_TYPE
   );
 
@@ -104,10 +110,10 @@ async function testTextContent(
   is(flexType, flexText, "node " + selector + ": flex type matches.");
 }
 
-async function testTextNodeTextContent(test, inspector, testActor) {
+async function testTextNodeTextContent(test, inspector, highlighterTestFront) {
   const { walker } = inspector;
   const div = await walker.querySelector(walker.rootNode, test.selector);
   const { nodes } = await walker.children(div);
   test.selector = nodes[0];
-  await testTextContent(test, inspector, testActor);
+  await testTextContent(test, inspector, highlighterTestFront);
 }

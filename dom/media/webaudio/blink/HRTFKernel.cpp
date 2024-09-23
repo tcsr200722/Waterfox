@@ -38,7 +38,7 @@ static float extractAverageGroupDelay(float* impulseP, size_t length) {
   // Check for power-of-2.
   MOZ_ASSERT(length && (length & (length - 1)) == 0);
 
-  FFTBlock estimationFrame(length);
+  FFTBlock estimationFrame(length, 1.f / length);
   estimationFrame.PerformFFT(impulseP);
 
   float frameDelay =
@@ -79,7 +79,7 @@ HRTFKernel::HRTFKernel(float* impulseResponse, size_t length, float sampleRate)
     }
   }
 
-  m_fftFrame = MakeUnique<FFTBlock>(fftSize);
+  m_fftFrame = mozilla::MakeUnique<FFTBlock>(fftSize);
   m_fftFrame->PadAndMakeScaledDFT(impulseResponse, length);
 }
 

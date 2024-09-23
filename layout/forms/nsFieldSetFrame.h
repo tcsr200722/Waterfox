@@ -11,6 +11,10 @@
 #include "ImgDrawResult.h"
 #include "nsContainerFrame.h"
 
+namespace mozilla {
+class ScrollContainerFrame;
+}  // namespace mozilla
+
 class nsFieldSetFrame final : public nsContainerFrame {
   typedef mozilla::image::ImgDrawResult ImgDrawResult;
 
@@ -21,52 +25,47 @@ class nsFieldSetFrame final : public nsContainerFrame {
   explicit nsFieldSetFrame(ComputedStyle* aStyle, nsPresContext* aPresContext);
 
   nscoord GetIntrinsicISize(gfxContext* aRenderingContext,
-                            nsLayoutUtils::IntrinsicISizeType);
-  virtual nscoord GetMinISize(gfxContext* aRenderingContext) override;
-  virtual nscoord GetPrefISize(gfxContext* aRenderingContext) override;
+                            mozilla::IntrinsicISizeType);
+  nscoord GetMinISize(gfxContext* aRenderingContext) override;
+  nscoord GetPrefISize(gfxContext* aRenderingContext) override;
 
   /**
    * The area to paint box-shadows around.  It's the border rect except
    * when there's a <legend> we offset the y-position to the center of it.
    */
-  virtual nsRect VisualBorderRectRelativeToSelf() const override;
+  nsRect VisualBorderRectRelativeToSelf() const override;
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
-  nscoord GetLogicalBaseline(mozilla::WritingMode aWM) const override;
-  bool GetVerticalAlignBaseline(mozilla::WritingMode aWM,
-                                nscoord* aBaseline) const override;
-  bool GetNaturalBaselineBOffset(mozilla::WritingMode aWM,
-                                 BaselineSharingGroup aBaselineGroup,
-                                 nscoord* aBaseline) const override;
+  nscoord SynthesizeFallbackBaseline(
+      mozilla::WritingMode aWM,
+      BaselineSharingGroup aBaselineGroup) const override;
+  BaselineSharingGroup GetDefaultBaselineSharingGroup() const override;
+  Maybe<nscoord> GetNaturalBaselineBOffset(
+      mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+      BaselineExportContext aExportContext) const override;
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
   ImgDrawResult PaintBorder(nsDisplayListBuilder* aBuilder,
                             gfxContext& aRenderingContext, nsPoint aPt,
                             const nsRect& aDirtyRect);
 
+  void SetInitialChildList(ChildListID aListID,
+                           nsFrameList&& aChildList) override;
+  void AppendFrames(ChildListID aListID, nsFrameList&& aFrameList) override;
+  void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
+                    const nsLineList::iterator* aPrevFrameLine,
+                    nsFrameList&& aFrameList) override;
 #ifdef DEBUG
-  virtual void SetInitialChildList(ChildListID aListID,
-                                   nsFrameList& aChildList) override;
-  virtual void AppendFrames(ChildListID aListID,
-                            nsFrameList& aFrameList) override;
-  virtual void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
-                            const nsLineList::iterator* aPrevFrameLine,
-                            nsFrameList& aFrameList) override;
-  virtual void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame) override;
+  void RemoveFrame(DestroyContext&, ChildListID aListID,
+                   nsIFrame* aOldFrame) override;
 #endif
 
-  virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsContainerFrame::IsFrameOfType(
-        aFlags & ~nsIFrame::eCanContainOverflowContainers);
-  }
-  virtual nsIScrollableFrame* GetScrollTargetFrame() override {
-    return do_QueryFrame(GetInner());
-  }
+  mozilla::ScrollContainerFrame* GetScrollTargetFrame() const override;
 
   // Return the block wrapper around our kids.
   void AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) override;
@@ -77,7 +76,7 @@ class nsFieldSetFrame final : public nsContainerFrame {
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("FieldSet"), aResult);
+    return MakeFrameName(u"FieldSet"_ns, aResult);
   }
 #endif
 
@@ -92,9 +91,8 @@ class nsFieldSetFrame final : public nsContainerFrame {
   nsContainerFrame* GetInner() const;
 
   /**
-   * Return the frame that represents the legend if any.  This may be
-   * a nsLegendFrame or a nsHTMLScrollFrame with the nsLegendFrame as the
-   * scrolled frame (aka content insertion frame).
+   * Return the frame that represents the rendered legend if any.
+   * https://html.spec.whatwg.org/multipage/rendering.html#rendered-legend
    */
   nsIFrame* GetLegend() const;
 

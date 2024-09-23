@@ -6,7 +6,6 @@
 
 const kInterfaceName = "wifi";
 
-var server;
 var step = 0;
 var loginFinished = false;
 
@@ -22,7 +21,7 @@ function xhr_handler(metadata, response) {
 }
 
 function fakeUIResponse() {
-  Services.obs.addObserver(function observe(subject, topic, data) {
+  Services.obs.addObserver(function observe(subject, topic) {
     if (topic === "captive-portal-login") {
       do_throw("should not receive captive-portal-login event");
     }
@@ -33,12 +32,12 @@ function test_abort() {
   do_test_pending();
 
   let callback = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalCallback"]),
     prepare: function prepare() {
       Assert.equal(++step, 1);
       gCaptivePortalDetector.finishPreparation(kInterfaceName);
     },
-    complete: function complete(success) {
+    complete: function complete() {
       do_throw("should not execute |complete| callback");
     },
   };

@@ -6,12 +6,15 @@
 #include "nsReadConfig.h"
 #include "nsJSConfigTriggers.h"
 
+#include "mozilla/Logging.h"
 #include "mozilla/Components.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsIAppStartup.h"
+#include "nsIChannel.h"
 #include "nsContentUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsIFile.h"
+#include "nsIInputStream.h"
 #include "nsIObserverService.h"
 #include "nsIPrefBranch.h"
 #include "nsIPrefService.h"
@@ -22,6 +25,10 @@
 #include "nsCRT.h"
 #include "nspr.h"
 #include "nsXULAppAPI.h"
+
+#if defined(MOZ_WIDGET_GTK)
+#  include "mozilla/WidgetUtilsGtk.h"
+#endif  // defined(MOZ_WIDGET_GTK)
 
 using namespace mozilla;
 
@@ -36,7 +43,7 @@ static nsresult DisplayError(void) {
   nsresult rv;
 
   nsCOMPtr<nsIPromptService> promptService =
-      do_GetService("@mozilla.org/embedcomp/prompt-service;1");
+      do_GetService("@mozilla.org/prompter;1");
   if (!promptService) return NS_ERROR_FAILURE;
 
   nsCOMPtr<nsIStringBundleService> bundleService =
@@ -92,17 +99,19 @@ NS_IMETHODIMP nsReadConfig::Observe(nsISupports* aSubject, const char* aTopic,
     if (NS_FAILED(rv)) {
       if (sandboxEnabled) {
         nsContentUtils::ReportToConsoleNonLocalized(
-            NS_LITERAL_STRING("Autoconfig is sandboxed by default. See "
-                              "https://support.mozilla.org/products/"
-                              "firefox-enterprise for more information."),
-            nsIScriptError::warningFlag, NS_LITERAL_CSTRING("autoconfig"),
-            nullptr);
+            u"Autoconfig is sandboxed by default. See "
+            "https://support.mozilla.org/products/"
+            "firefox-enterprise for more information."_ns,
+            nsIScriptError::warningFlag, "autoconfig"_ns, nullptr);
       } else {
         rv = DisplayError();
         if (NS_FAILED(rv)) {
           nsCOMPtr<nsIAppStartup> appStartup =
               components::AppStartup::Service();
-          if (appStartup) appStartup->Quit(nsIAppStartup::eAttemptQuit);
+          if (appStartup) {
+            bool userAllowedQuit = true;
+            appStartup->Quit(nsIAppStartup::eAttemptQuit, 0, &userAllowedQuit);
+          }
         }
       }
     }
@@ -130,7 +139,7 @@ nsresult nsReadConfig::readConfigFile() {
       prefService->GetDefaultBranch(nullptr, getter_AddRefs(defaultPrefBranch));
   if (NS_FAILED(rv)) return rv;
 
-  NS_NAMED_LITERAL_CSTRING(channel, MOZ_STRINGIFY(MOZ_UPDATE_CHANNEL));
+  constexpr auto channel = nsLiteralCString{MOZ_STRINGIFY(MOZ_UPDATE_CHANNEL)};
 
   bool sandboxEnabled =
       channel.EqualsLiteral("beta") || channel.EqualsLiteral("release");
@@ -207,8 +216,9 @@ nsresult nsReadConfig::readConfigFile() {
     // .cfg to the filename by checking this post reading of the cfg file
     // this value can be set within the cfg file adding a level of security.
 
-    if (PL_strncmp(lockFileName.get(), lockVendor.get(), fileNameLen - 4) != 0)
+    if (strncmp(lockFileName.get(), lockVendor.get(), fileNameLen - 4) != 0) {
       return NS_ERROR_FAILURE;
+    }
   }
 
   // get the value of the autoconfig url
@@ -237,7 +247,16 @@ nsresult nsReadConfig::openAndEvaluateJSFile(const char* aFileName,
   nsCOMPtr<nsIInputStream> inStr;
   if (isBinDir) {
     nsCOMPtr<nsIFile> jsFile;
-    rv = NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(jsFile));
+#if defined(MOZ_WIDGET_GTK)
+    if (!mozilla::widget::IsRunningUnderFlatpakOrSnap()) {
+#endif  // defined(MOZ_WIDGET_GTK)
+      rv = NS_GetSpecialDirectory(NS_GRE_DIR, getter_AddRefs(jsFile));
+#if defined(MOZ_WIDGET_GTK)
+    } else {
+      rv = NS_GetSpecialDirectory(NS_OS_SYSTEM_CONFIG_DIR,
+                                  getter_AddRefs(jsFile));
+    }
+#endif  // defined(MOZ_WIDGET_GTK)
     if (NS_FAILED(rv)) return rv;
 
     rv = jsFile->AppendNative(nsDependentCString(aFileName));
@@ -257,7 +276,7 @@ nsresult nsReadConfig::openAndEvaluateJSFile(const char* aFileName,
     nsCOMPtr<nsIChannel> channel;
     rv = NS_NewChannel(getter_AddRefs(channel), uri,
                        nsContentUtils::GetSystemPrincipal(),
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER);
     NS_ENSURE_SUCCESS(rv, rv);
 

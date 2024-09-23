@@ -6,15 +6,22 @@
 
 #include "Client.h"
 
-namespace mozilla {
-namespace dom {
-namespace quota {
+// Global includes
+#include "mozilla/ipc/BackgroundParent.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/dom/quota/QuotaManager.h"
+
+namespace mozilla::dom::quota {
+
+using mozilla::ipc::AssertIsOnBackgroundThread;
+using mozilla::ipc::IsOnBackgroundThread;
 
 namespace {
 
 const char kIDBPrefix = 'I';
 const char kDOMCachePrefix = 'C';
 const char kSDBPrefix = 'S';
+const char kFILESYSTEMPrefix = 'F';
 const char kLSPrefix = 'L';
 
 template <Client::Type type>
@@ -72,6 +79,23 @@ struct ClientTypeTraits<Client::Type::SDB> {
 };
 
 template <>
+struct ClientTypeTraits<Client::Type::FILESYSTEM> {
+  template <typename T>
+  static void To(T& aData) {
+    aData.AssignLiteral(FILESYSTEM_DIRECTORY_NAME);
+  }
+
+  static void To(char& aData) { aData = kFILESYSTEMPrefix; }
+
+  template <typename T>
+  static bool From(const T& aData) {
+    return aData.EqualsLiteral(FILESYSTEM_DIRECTORY_NAME);
+  }
+
+  static bool From(char aData) { return aData == kFILESYSTEMPrefix; }
+};
+
+template <>
 struct ClientTypeTraits<Client::Type::LS> {
   template <typename T>
   static void To(T& aData) {
@@ -101,6 +125,10 @@ bool TypeTo_impl(Client::Type aType, T& aData) {
 
     case Client::SDB:
       ClientTypeTraits<Client::Type::SDB>::To(aData);
+      return true;
+
+    case Client::FILESYSTEM:
+      ClientTypeTraits<Client::Type::FILESYSTEM>::To(aData);
       return true;
 
     case Client::LS:
@@ -135,6 +163,11 @@ bool TypeFrom_impl(const T& aData, Client::Type& aType) {
     return true;
   }
 
+  if (ClientTypeTraits<Client::Type::FILESYSTEM>::From(aData)) {
+    aType = Client::FILESYSTEM;
+    return true;
+  }
+
   if (CachedNextGenLocalStorageEnabled() &&
       ClientTypeTraits<Client::Type::LS>::From(aData)) {
     aType = Client::LS;
@@ -154,6 +187,7 @@ bool Client::IsValidType(Type aType) {
     case Client::IDB:
     case Client::DOMCACHE:
     case Client::SDB:
+    case Client::FILESYSTEM:
       return true;
 
     case Client::LS:
@@ -178,17 +212,21 @@ bool Client::TypeToText(Type aType, nsAString& aText, const fallible_t&) {
 }
 
 // static
-void Client::TypeToText(Type aType, nsAString& aText) {
-  if (!TypeTo_impl(aType, aText)) {
+nsAutoString Client::TypeToString(Type aType) {
+  nsAutoString res;
+  if (!TypeTo_impl(aType, res)) {
     BadType();
   }
+  return res;
 }
 
 // static
-void Client::TypeToText(Type aType, nsACString& aText) {
-  if (!TypeTo_impl(aType, aText)) {
+nsAutoCString Client::TypeToText(Type aType) {
+  nsAutoCString res;
+  if (!TypeTo_impl(aType, res)) {
     BadType();
   }
+  return res;
 }
 
 // static
@@ -230,6 +268,32 @@ bool Client::TypeFromPrefix(char aPrefix, Type& aType, const fallible_t&) {
   return true;
 }
 
-}  // namespace quota
-}  // namespace dom
-}  // namespace mozilla
+bool Client::InitiateShutdownWorkThreads() {
+  AssertIsOnBackgroundThread();
+
+  QuotaManager::MaybeRecordQuotaClientShutdownStep(GetType(), "starting"_ns);
+
+  InitiateShutdown();
+
+  return IsShutdownCompleted();
+}
+
+void Client::FinalizeShutdownWorkThreads() {
+  QuotaManager::MaybeRecordQuotaClientShutdownStep(GetType(), "completed"_ns);
+
+  FinalizeShutdown();
+}
+
+// static
+bool Client::IsShuttingDownOnBackgroundThread() {
+  MOZ_ASSERT(IsOnBackgroundThread());
+  return QuotaManager::IsShuttingDown();
+}
+
+// static
+bool Client::IsShuttingDownOnNonBackgroundThread() {
+  MOZ_ASSERT(!IsOnBackgroundThread());
+  return QuotaManager::IsShuttingDown();
+}
+
+}  // namespace mozilla::dom::quota

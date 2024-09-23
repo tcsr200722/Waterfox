@@ -8,7 +8,7 @@
 #include "ARIAMap.h"
 #include "nsAccUtils.h"
 #include "Relation.h"
-#include "Role.h"
+#include "mozilla/a11y/Role.h"
 #include "States.h"
 
 // NOTE: alphabetically ordered
@@ -26,12 +26,12 @@ using namespace mozilla::a11y;
 ////////////////////////////////////////////////////////////////////////////////
 
 XULTabAccessible::XULTabAccessible(nsIContent* aContent, DocAccessible* aDoc)
-    : HyperTextAccessibleWrap(aContent, aDoc) {}
+    : HyperTextAccessible(aContent, aDoc) {}
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTabAccessible: Accessible
+// XULTabAccessible: LocalAccessible
 
-uint8_t XULTabAccessible::ActionCount() const { return 1; }
+bool XULTabAccessible::HasPrimaryAction() const { return true; }
 
 void XULTabAccessible::ActionNameAt(uint8_t aIndex, nsAString& aName) {
   if (aIndex == eAction_Switch) aName.AssignLiteral("switch");
@@ -50,7 +50,7 @@ bool XULTabAccessible::DoAction(uint8_t index) const {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULTabAccessible: Accessible
+// XULTabAccessible: LocalAccessible
 
 role XULTabAccessible::NativeRole() const { return roles::PAGETAB; }
 
@@ -65,19 +65,20 @@ uint64_t XULTabAccessible::NativeState() const {
       Elm()->AsXULSelectControlItem();
   if (tab) {
     bool selected = false;
-    if (NS_SUCCEEDED(tab->GetSelected(&selected)) && selected)
+    if (NS_SUCCEEDED(tab->GetSelected(&selected)) && selected) {
       state |= states::SELECTED;
+    }
 
-    if (mContent->AsElement()->AttrValueIs(kNameSpaceID_None, nsGkAtoms::pinned,
-                                           nsGkAtoms::_true, eCaseMatters))
+    if (mContent->AsElement()->HasAttr(kNameSpaceID_None, nsGkAtoms::pinned)) {
       state |= states::PINNED;
+    }
   }
 
   return state;
 }
 
 uint64_t XULTabAccessible::NativeInteractiveState() const {
-  uint64_t state = Accessible::NativeInteractiveState();
+  uint64_t state = LocalAccessible::NativeInteractiveState();
   return (state & states::UNAVAILABLE) ? state : state | states::SELECTABLE;
 }
 
@@ -87,8 +88,7 @@ Relation XULTabAccessible::RelationByType(RelationType aType) const {
 
   // Expose 'LABEL_FOR' relation on tab accessible for tabpanel accessible.
   ErrorResult rv;
-  nsIContent* parent =
-      mContent->AsElement()->Closest(NS_LITERAL_STRING("tabs"), rv);
+  nsIContent* parent = mContent->AsElement()->Closest("tabs"_ns, rv);
   if (!parent) return rel;
 
   nsCOMPtr<nsIDOMXULRelatedElement> tabsElm =
@@ -104,7 +104,7 @@ Relation XULTabAccessible::RelationByType(RelationType aType) const {
 }
 
 void XULTabAccessible::ApplyARIAState(uint64_t* aState) const {
-  HyperTextAccessibleWrap::ApplyARIAState(aState);
+  HyperTextAccessible::ApplyARIAState(aState);
   // XUL tab has an implicit ARIA role of tab, so support aria-selected.
   // Don't use aria::MapToState because that will set the SELECTABLE state
   // even if the tab is disabled.
@@ -122,7 +122,7 @@ XULTabsAccessible::XULTabsAccessible(nsIContent* aContent, DocAccessible* aDoc)
 
 role XULTabsAccessible::NativeRole() const { return roles::PAGETABLIST; }
 
-uint8_t XULTabsAccessible::ActionCount() const { return 0; }
+bool XULTabsAccessible::HasPrimaryAction() const { return false; }
 
 void XULTabsAccessible::Value(nsString& aValue) const { aValue.Truncate(); }
 

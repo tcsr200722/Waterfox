@@ -53,7 +53,7 @@ const DATA = [
 
 addRDMTask(
   null,
-  async function() {
+  async function () {
     // Let's reset the counts.
     Services.telemetry.clearEvents();
 
@@ -62,14 +62,13 @@ addRDMTask(
     ok(!snapshot.parent, "No events have been logged for the main process");
 
     const tab = await addTab(URL);
-    const target = await TargetFactory.forTab(tab);
 
     await openCloseRDM(tab);
-    await gDevTools.showToolbox(target, "inspector");
+    await gDevTools.showToolboxForTab(tab, { toolId: "inspector" });
     await openCloseRDM(tab);
     await checkResults();
   },
-  { usingBrowserUI: true, onlyPrefAndTask: true }
+  { onlyPrefAndTask: true }
 );
 
 async function openCloseRDM(tab) {
@@ -104,7 +103,7 @@ async function checkResults() {
     const expected = DATA[i];
 
     // ignore timestamp
-    ok(timestamp > 0, "timestamp is greater than 0");
+    Assert.greater(timestamp, 0, "timestamp is greater than 0");
     is(category, expected.category, "category is correct");
     is(method, expected.method, "method is correct");
     is(object, expected.object, "object is correct");
@@ -112,6 +111,6 @@ async function checkResults() {
 
     // extras
     is(extra.host, expected.extra.host, "host is correct");
-    ok(extra.width > 0, "width is greater than 0");
+    Assert.greater(Number(extra.width), 0, "width is greater than 0");
   }
 }

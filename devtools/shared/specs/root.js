@@ -9,23 +9,14 @@ const {
   RetVal,
   Arg,
   Option,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 types.addDictType("root.listWorkers", {
-  workers: "array:workerTarget",
+  workers: "array:workerDescriptor",
 });
 types.addDictType("root.listServiceWorkerRegistrations", {
   registrations: "array:serviceWorkerRegistration",
 });
-// TODO: This can be removed once FF77 is the release
-// This is only kept to support older version. FF77+ uses watchTargets.
-types.addDictType("root.listRemoteFrames", {
-  frames: "array:frameDescriptor",
-});
-types.addPolymorphicType("root.browsingContextDescriptor", [
-  "frameDescriptor",
-  "processDescriptor",
-]);
 
 const rootSpecPrototype = {
   typeName: "root",
@@ -37,11 +28,7 @@ const rootSpecPrototype = {
     },
 
     listTabs: {
-      request: {
-        // Backward compatibility: this is only used for FF75 or older.
-        // The argument can be dropped when FF76 hits the release channel.
-        favicons: Option(0, "boolean"),
-      },
+      request: {},
       response: {
         tabs: RetVal("array:tabDescriptor"),
       },
@@ -49,20 +36,10 @@ const rootSpecPrototype = {
 
     getTab: {
       request: {
-        outerWindowID: Option(0, "number"),
-        tabId: Option(0, "number"),
+        browserId: Option(0, "number"),
       },
       response: {
         tab: RetVal("tabDescriptor"),
-      },
-    },
-
-    getWindow: {
-      request: {
-        outerWindowID: Option(0, "number"),
-      },
-      response: {
-        window: RetVal("browsingContextTarget"),
       },
     },
 
@@ -101,35 +78,31 @@ const rootSpecPrototype = {
       },
     },
 
-    // TODO: This can be removed once FF77 is the release
-    // This is only kept to support older version. FF77+ uses watchTargets.
-    listRemoteFrames: {
+    watchResources: {
       request: {
-        id: Arg(0, "number"),
+        resourceTypes: Arg(0, "array:string"),
       },
-      response: RetVal("root.listRemoteFrames"),
+      response: {},
     },
 
-    // Can be removed when FF77 reach release channel
-    getBrowsingContextDescriptor: {
+    unwatchResources: {
       request: {
-        id: Arg(0, "number"),
+        resourceTypes: Arg(0, "array:string"),
       },
-      response: RetVal("root.browsingContextDescriptor"),
+      oneway: true,
     },
 
-    protocolDescription: {
-      request: {},
-      response: RetVal("json"),
+    clearResources: {
+      request: {
+        resourceTypes: Arg(0, "array:string"),
+      },
+      oneway: true,
     },
 
     requestTypes: {
       request: {},
       response: RetVal("json"),
     },
-
-    // Note that RootFront also implements 'echo' requests
-    // that can't be described via protocol.js specs.
   },
 
   events: {
@@ -147,6 +120,15 @@ const rootSpecPrototype = {
     },
     processListChanged: {
       type: "processListChanged",
+    },
+
+    "resource-available-form": {
+      type: "resource-available-form",
+      resources: Arg(0, "array:json"),
+    },
+    "resource-destroyed-form": {
+      type: "resource-destroyed-form",
+      resources: Arg(0, "array:json"),
     },
   },
 };

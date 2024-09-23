@@ -2,6 +2,9 @@
 var gNewTab;
 
 function test() {
+  // This test depends on InstallTrigger.install availability.
+  setInstallTriggerPrefs();
+
   // Turn off the authentication dialog blocking for this test.
   Services.prefs.setBoolPref(
     "network.auth.non-web-content-triggered-resources-http-auth-allow",
@@ -27,7 +30,7 @@ function test() {
     })
   );
   gNewTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser.getBrowserForTab(gNewTab),
     TESTROOT + "installtrigger.html?" + triggers
   );
@@ -42,7 +45,7 @@ function get_auth_info() {
   return ["testuser", "testpass"];
 }
 
-function download_failed(install) {
+function download_failed() {
   ok(false, "Install should not have failed");
 }
 

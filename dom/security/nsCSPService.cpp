@@ -19,7 +19,10 @@
 #include "nsContentUtils.h"
 #include "nsContentPolicyUtils.h"
 #include "nsNetUtil.h"
+#include "nsIProtocolHandler.h"
+#include "nsQueryObject.h"
 #include "mozilla/net/DocumentLoadListener.h"
+#include "mozilla/net/DocumentChannel.h"
 
 using namespace mozilla;
 
@@ -33,16 +36,14 @@ NS_IMPL_ISUPPORTS(CSPService, nsIContentPolicy, nsIChannelEventSink)
 
 // Helper function to identify protocols and content types not subject to CSP.
 bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
-  nsContentPolicyType contentType =
+  ExtContentPolicyType contentType =
       nsContentUtils::InternalContentPolicyTypeToExternal(aContentType);
 
   // These content types are not subject to CSP content policy checks:
   // TYPE_CSP_REPORT -- csp can't block csp reports
-  // TYPE_REFRESH    -- never passed to ShouldLoad (see nsIContentPolicy.idl)
   // TYPE_DOCUMENT   -- used for frame-ancestors
-  if (contentType == nsIContentPolicy::TYPE_CSP_REPORT ||
-      contentType == nsIContentPolicy::TYPE_REFRESH ||
-      contentType == nsIContentPolicy::TYPE_DOCUMENT) {
+  if (contentType == ExtContentPolicy::TYPE_CSP_REPORT ||
+      contentType == ExtContentPolicy::TYPE_DOCUMENT) {
     return false;
   }
 
@@ -57,7 +58,7 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
     return true;
   }
 
-  // Finally we have to whitelist "about:" which does not fall into
+  // Finally we have to allowlist "about:" which does not fall into
   // the category underneath and also "javascript:" which is not
   // subject to CSP content loading rules.
   if (aURI->SchemeIs("about") || aURI->SchemeIs("javascript")) {
@@ -65,20 +66,20 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
   }
 
   // Please note that it should be possible for websites to
-  // whitelist their own protocol handlers with respect to CSP,
+  // allowlist their own protocol handlers with respect to CSP,
   // hence we use protocol flags to accomplish that, but we also
   // want resource:, chrome: and moz-icon to be subject to CSP
   // (which also use URI_IS_LOCAL_RESOURCE).
   // Exception to the rule are images, styles, and localization
   // DTDs using a scheme of resource: or chrome:
-  bool isImgOrStyleOrDTD = contentType == nsIContentPolicy::TYPE_IMAGE ||
-                           contentType == nsIContentPolicy::TYPE_STYLESHEET ||
-                           contentType == nsIContentPolicy::TYPE_DTD;
+  bool isImgOrStyleOrDTD = contentType == ExtContentPolicy::TYPE_IMAGE ||
+                           contentType == ExtContentPolicy::TYPE_STYLESHEET ||
+                           contentType == ExtContentPolicy::TYPE_DTD;
   if (aURI->SchemeIs("resource")) {
     nsAutoCString uriSpec;
     aURI->GetSpec(uriSpec);
     // Exempt pdf.js from being subject to a page's CSP.
-    if (StringBeginsWith(uriSpec, NS_LITERAL_CSTRING("resource://pdf.js/"))) {
+    if (StringBeginsWith(uriSpec, "resource://pdf.js/"_ns)) {
       return false;
     }
     if (!isImgOrStyleOrDTD) {
@@ -103,14 +104,12 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
 
 /* static */ nsresult CSPService::ConsultCSP(nsIURI* aContentLocation,
                                              nsILoadInfo* aLoadInfo,
-                                             const nsACString& aMimeTypeGuess,
                                              int16_t* aDecision) {
   if (!aContentLocation) {
     return NS_ERROR_FAILURE;
   }
 
-  uint32_t contentType = aLoadInfo->InternalContentPolicyType();
-  bool parserCreatedScript = aLoadInfo->GetParserCreatedScript();
+  nsContentPolicyType contentType = aLoadInfo->InternalContentPolicyType();
 
   nsCOMPtr<nsICSPEventListener> cspEventListener;
   nsresult rv =
@@ -130,15 +129,10 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
   // or type is *not* subject to CSP.
   // Please note, the correct way to opt-out of CSP using a custom
   // protocolHandler is to set one of the nsIProtocolHandler flags
-  // that are whitelistet in subjectToCSP()
-  if (!StaticPrefs::security_csp_enable() ||
-      !subjectToCSP(aContentLocation, contentType)) {
+  // that are allowlistet in subjectToCSP()
+  if (!subjectToCSP(aContentLocation, contentType)) {
     return NS_OK;
   }
-
-  nsAutoString cspNonce;
-  rv = aLoadInfo->GetCspNonce(cspNonce);
-  NS_ENSURE_SUCCESS(rv, rv);
 
   // 1) Apply speculate CSP for preloads
   bool isPreload = nsContentUtils::IsPreloadType(contentType);
@@ -148,10 +142,9 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
     if (preloadCsp) {
       // obtain the enforcement decision
       rv = preloadCsp->ShouldLoad(
-          contentType, cspEventListener, aContentLocation, aMimeTypeGuess,
+          contentType, cspEventListener, aLoadInfo, aContentLocation,
           nullptr,  // no redirect, aOriginal URL is null.
-          aLoadInfo->GetSendCSPViolationEvents(), cspNonce, parserCreatedScript,
-          aDecision);
+          false, aDecision);
       NS_ENSURE_SUCCESS(rv, rv);
 
       // if the preload policy already denied the load, then there
@@ -167,17 +160,35 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
 
   // 2) Apply actual CSP to all loads. Please note that in case
   // the csp should be overruled (e.g. by an ExpandedPrincipal)
-  // then loadinfo->GetCSP() returns that CSP instead of the
+  // then loadinfo->GetCsp() returns that CSP instead of the
   // document's CSP.
   nsCOMPtr<nsIContentSecurityPolicy> csp = aLoadInfo->GetCsp();
 
   if (csp) {
+    // Generally aOriginalURI denotes the URI before a redirect and hence
+    // will always be a nullptr here. Only exception are frame navigations
+    // which we want to treat as a redirect for the purpose of CSP reporting
+    // and in particular the `blocked-uri` in the CSP report where we want
+    // to report the prePath information.
+    nsCOMPtr<nsIURI> originalURI = nullptr;
+    ExtContentPolicyType extType =
+        nsContentUtils::InternalContentPolicyTypeToExternal(contentType);
+    if (extType == ExtContentPolicy::TYPE_SUBDOCUMENT &&
+        !aLoadInfo->GetOriginalFrameSrcLoad() &&
+        mozilla::StaticPrefs::
+            security_csp_truncate_blocked_uri_for_frame_navigations()) {
+      nsAutoCString prePathStr;
+      nsresult rv = aContentLocation->GetPrePath(prePathStr);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = NS_NewURI(getter_AddRefs(originalURI), prePathStr);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
     // obtain the enforcement decision
-    rv = csp->ShouldLoad(contentType, cspEventListener, aContentLocation,
-                         aMimeTypeGuess,
-                         nullptr,  // no redirect, aOriginal URL is null.
-                         aLoadInfo->GetSendCSPViolationEvents(), cspNonce,
-                         parserCreatedScript, aDecision);
+    rv = csp->ShouldLoad(
+        contentType, cspEventListener, aLoadInfo, aContentLocation,
+        originalURI,  // no redirect, unless it's a frame navigation.
+        !isPreload && aLoadInfo->GetSendCSPViolationEvents(), aDecision);
 
     if (NS_CP_REJECTED(*aDecision)) {
       NS_SetRequestBlockingReason(
@@ -192,18 +203,17 @@ bool subjectToCSP(nsIURI* aURI, nsContentPolicyType aContentType) {
 /* nsIContentPolicy implementation */
 NS_IMETHODIMP
 CSPService::ShouldLoad(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
-                       const nsACString& aMimeTypeGuess, int16_t* aDecision) {
-  return ConsultCSP(aContentLocation, aLoadInfo, aMimeTypeGuess, aDecision);
+                       int16_t* aDecision) {
+  return ConsultCSP(aContentLocation, aLoadInfo, aDecision);
 }
 
 NS_IMETHODIMP
 CSPService::ShouldProcess(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
-                          const nsACString& aMimeTypeGuess,
                           int16_t* aDecision) {
   if (!aContentLocation) {
     return NS_ERROR_FAILURE;
   }
-  uint32_t contentType = aLoadInfo->InternalContentPolicyType();
+  nsContentPolicyType contentType = aLoadInfo->InternalContentPolicyType();
 
   if (MOZ_LOG_TEST(gCspPRLog, LogLevel::Debug)) {
     MOZ_LOG(gCspPRLog, LogLevel::Debug,
@@ -216,15 +226,15 @@ CSPService::ShouldProcess(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
   // If it is not TYPE_OBJECT, we can return at this point.
   // Note that we should still pass the internal contentPolicyType
   // (contentType) to ShouldLoad().
-  uint32_t policyType =
+  ExtContentPolicyType policyType =
       nsContentUtils::InternalContentPolicyTypeToExternal(contentType);
 
-  if (policyType != nsIContentPolicy::TYPE_OBJECT) {
+  if (policyType != ExtContentPolicy::TYPE_OBJECT) {
     *aDecision = nsIContentPolicy::ACCEPT;
     return NS_OK;
   }
 
-  return ShouldLoad(aContentLocation, aLoadInfo, aMimeTypeGuess, aDecision);
+  return ShouldLoad(aContentLocation, aLoadInfo, aDecision);
 }
 
 /* nsIChannelEventSink implementation */
@@ -249,6 +259,16 @@ CSPService::AsyncOnChannelRedirect(nsIChannel* oldChannel,
     if (parentChannel && !docListener) {
       return NS_OK;
     }
+  }
+
+  // Don't do these checks if we're switching from DocumentChannel
+  // to a real channel. In that case, we should already have done
+  // the checks in the parent process. AsyncOnChannelRedirect
+  // isn't called in the content process if we switch process,
+  // so checking here would just hide bugs in the process switch
+  // cases.
+  if (RefPtr<net::DocumentChannel> docChannel = do_QueryObject(oldChannel)) {
+    return NS_OK;
   }
 
   nsCOMPtr<nsIURI> newUri;
@@ -288,33 +308,13 @@ nsresult CSPService::ConsultCSPForRedirect(nsIURI* aOriginalURI,
                                            nsIURI* aNewURI,
                                            nsILoadInfo* aLoadInfo,
                                            Maybe<nsresult>& aCancelCode) {
-  // Check CSP navigate-to
-  // We need to enforce the CSP of the document that initiated the load,
-  // which is the CSP to inherit.
-  nsCOMPtr<nsIContentSecurityPolicy> cspToInherit =
-      aLoadInfo->GetCspToInherit();
-  if (cspToInherit) {
-    bool allowsNavigateTo = false;
-    nsresult rv = cspToInherit->GetAllowsNavigateTo(
-        aNewURI, aLoadInfo->GetIsFormSubmission(), true, /* aWasRedirected */
-        false,                                           /* aEnforceWhitelist */
-        &allowsNavigateTo);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    if (!allowsNavigateTo) {
-      aCancelCode = Some(NS_ERROR_CSP_NAVIGATE_TO_VIOLATION);
-      return NS_OK;
-    }
-  }
-
   // No need to continue processing if CSP is disabled or if the protocol
   // is *not* subject to CSP.
   // Please note, the correct way to opt-out of CSP using a custom
   // protocolHandler is to set one of the nsIProtocolHandler flags
-  // that are whitelistet in subjectToCSP()
+  // that are allowlistet in subjectToCSP()
   nsContentPolicyType policyType = aLoadInfo->InternalContentPolicyType();
-  if (!StaticPrefs::security_csp_enable() ||
-      !subjectToCSP(aNewURI, policyType)) {
+  if (!subjectToCSP(aNewURI, policyType)) {
     return NS_OK;
   }
 
@@ -323,21 +323,14 @@ nsresult CSPService::ConsultCSPForRedirect(nsIURI* aOriginalURI,
       aLoadInfo->GetCspEventListener(getter_AddRefs(cspEventListener));
   MOZ_ALWAYS_SUCCEEDS(rv);
 
-  nsAutoString cspNonce;
-  rv = aLoadInfo->GetCspNonce(cspNonce);
-  MOZ_ALWAYS_SUCCEEDS(rv);
-
   bool isPreload = nsContentUtils::IsPreloadType(policyType);
 
   /* On redirect, if the content policy is a preload type, rejecting the
-   * preload results in the load silently failing, so we convert preloads to
-   * the actual type. See Bug 1219453.
+   * preload results in the load silently failing, so we pass true to
+   * the aSendViolationReports parameter. See Bug 1219453.
    */
-  policyType =
-      nsContentUtils::InternalContentPolicyTypeToExternalOrWorker(policyType);
 
   int16_t decision = nsIContentPolicy::ACCEPT;
-  bool parserCreatedScript = aLoadInfo->GetParserCreatedScript();
 
   // 1) Apply speculative CSP for preloads
   if (isPreload) {
@@ -346,13 +339,11 @@ nsresult CSPService::ConsultCSPForRedirect(nsIURI* aOriginalURI,
       // Pass  originalURI to indicate the redirect
       preloadCsp->ShouldLoad(
           policyType,  // load type per nsIContentPolicy (uint32_t)
-          cspEventListener,
-          aNewURI,         // nsIURI
-          EmptyCString(),  // ACString - MIME guess
-          aOriginalURI,    // Original nsIURI
-          true,            // aSendViolationReports
-          cspNonce,        // nonce
-          parserCreatedScript, &decision);
+          cspEventListener, aLoadInfo,
+          aNewURI,       // nsIURI
+          aOriginalURI,  // Original nsIURI
+          true,          // aSendViolationReports
+          &decision);
 
       // if the preload policy already denied the load, then there
       // is no point in checking the real policy
@@ -368,13 +359,11 @@ nsresult CSPService::ConsultCSPForRedirect(nsIURI* aOriginalURI,
   if (csp) {
     // Pass  originalURI to indicate the redirect
     csp->ShouldLoad(policyType,  // load type per nsIContentPolicy (uint32_t)
-                    cspEventListener,
-                    aNewURI,         // nsIURI
-                    EmptyCString(),  // ACString - MIME guess
-                    aOriginalURI,    // Original nsIURI
-                    true,            // aSendViolationReports
-                    cspNonce,        // nonce
-                    parserCreatedScript, &decision);
+                    cspEventListener, aLoadInfo,
+                    aNewURI,       // nsIURI
+                    aOriginalURI,  // Original nsIURI
+                    true,          // aSendViolationReports
+                    &decision);
     if (NS_CP_REJECTED(decision)) {
       aCancelCode = Some(NS_ERROR_DOM_BAD_URI);
       return NS_BINDING_FAILED;

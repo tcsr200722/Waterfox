@@ -12,6 +12,7 @@
 #include "jit/Bailouts.h"
 #include "jit/BaselineFrame.h"
 #include "jit/JitFrames.h"
+#include "jit/ScriptFromCalleeToken.h"
 
 namespace js {
 namespace jit {
@@ -31,11 +32,6 @@ inline ExitFrameLayout* JSJitFrameIter::exitFrame() const {
   return (ExitFrameLayout*)fp();
 }
 
-inline size_t JSJitFrameIter::prevFrameLocalSize() const {
-  CommonFrameLayout* current = (CommonFrameLayout*)current_;
-  return current->prevFrameLocalSize();
-}
-
 inline JitFrameLayout* JSJitProfilingFrameIterator::framePtr() const {
   MOZ_ASSERT(!done());
   return (JitFrameLayout*)fp_;
@@ -47,8 +43,7 @@ inline JSScript* JSJitProfilingFrameIterator::frameScript() const {
 
 inline BaselineFrame* JSJitFrameIter::baselineFrame() const {
   MOZ_ASSERT(isBaselineJS());
-  return (BaselineFrame*)(fp() - BaselineFrame::FramePointerOffset -
-                          BaselineFrame::Size());
+  return (BaselineFrame*)(fp() - BaselineFrame::Size());
 }
 
 inline uint32_t JSJitFrameIter::baselineFrameNumValueSlots() const {

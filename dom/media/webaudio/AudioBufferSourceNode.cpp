@@ -18,9 +18,9 @@
 #include "AudioParamTimeline.h"
 #include <limits>
 #include <algorithm>
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(AudioBufferSourceNode,
                                    AudioScheduledSourceNode, mBuffer,
@@ -35,8 +35,8 @@ NS_IMPL_RELEASE_INHERITED(AudioBufferSourceNode, AudioScheduledSourceNode)
 /**
  * Media-thread playback engine for AudioBufferSourceNode.
  * Nothing is played until a non-null buffer has been set (via
- * AudioNodeTrack::SetBuffer) and a non-zero mBufferEnd has been set (via
- * AudioNodeTrack::SetInt32Parameter).
+ * AudioNodeTrack::SetBuffer) and a non-zero mBufferSampleRate has been set
+ * (via AudioNodeTrack::SetInt32Parameter)
  */
 class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
  public:
@@ -48,7 +48,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         mStop(TRACK_TIME_MAX),
         mResampler(nullptr),
         mRemainingResamplerTail(0),
-        mBufferEnd(0),
+        mRemainingFrames(TRACK_TICKS_MAX),
         mLoopStart(0),
         mLoopEnd(0),
         mBufferPosition(0),
@@ -68,10 +68,10 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
 
   void SetSourceTrack(AudioNodeTrack* aSource) { mSource = aSource; }
 
-  void RecvTimelineEvent(uint32_t aIndex,
-                         dom::AudioTimelineEvent& aEvent) override {
+  void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
     MOZ_ASSERT(mDestination);
-    WebAudioUtils::ConvertAudioTimelineEventToTicks(aEvent, mDestination);
+    aEvent.ConvertToTicks(mDestination);
+    mRecomputeOutRate = true;
 
     switch (aIndex) {
       case AudioBufferSourceNode::PLAYBACKRATE:
@@ -99,7 +99,11 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         MOZ_ASSERT(!mStart, "Another START?");
         mStart = aParam * mDestination->mSampleRate;
         // Round to nearest
-        mBeginProcessing = mStart + 0.5;
+        mBeginProcessing = llround(mStart);
+        break;
+      case AudioBufferSourceNode::DURATION:
+        MOZ_ASSERT(aParam >= 0);
+        mRemainingFrames = llround(aParam * mBufferSampleRate);
         break;
       default:
         NS_ERROR("Bad AudioBufferSourceNodeEngine double parameter.");
@@ -109,6 +113,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     switch (aIndex) {
       case AudioBufferSourceNode::SAMPLE_RATE:
         MOZ_ASSERT(aParam > 0);
+        MOZ_ASSERT(mRecomputeOutRate);
         mBufferSampleRate = aParam;
         mSource->SetActive();
         break;
@@ -117,10 +122,6 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         if (mBufferPosition == 0) {
           mBufferPosition = aParam;
         }
-        break;
-      case AudioBufferSourceNode::BUFFEREND:
-        MOZ_ASSERT(aParam >= 0);
-        mBufferEnd = aParam;
         break;
       case AudioBufferSourceNode::LOOP:
         mLoop = !!aParam;
@@ -152,7 +153,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       speex_resampler_destroy(mResampler);
       mResampler = nullptr;
       mRemainingResamplerTail = 0;
-      mBeginProcessing = mStart + 0.5;
+      mBeginProcessing = llround(mStart);
     }
 
     if (aChannels == 0 || (aOutRate == mBufferSampleRate && !mResampler)) {
@@ -186,7 +187,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
       speex_resampler_get_ratio(mResampler, &ratioNum, &ratioDen);
       // The output subsample resolution supported in aligning the resampler
       // is ratioNum.  First round the start time to the nearest subsample.
-      int64_t subsample = mStart * ratioNum + 0.5;
+      int64_t subsample = llround(mStart * ratioNum);
       // Now include the leading effects of the filter, and round *up* to the
       // next whole tick, because there is no effect on samples outside the
       // filter width.
@@ -262,7 +263,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         if (leadTicks > 0.0) {
           // Round to nearest output subsample supported by the resampler at
           // these rates.
-          int64_t leadSubsamples = leadTicks * ratioNum + 0.5;
+          int64_t leadSubsamples = llround(leadTicks * ratioNum);
           MOZ_ASSERT(leadSubsamples <= skipFracNum,
                      "mBeginProcessing is wrong?");
           skipFracNum -= leadSubsamples;
@@ -296,10 +297,13 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         }
         if (++i == aChannels) {
           mBufferPosition += inSamples;
-          MOZ_ASSERT(mBufferPosition <= mBufferEnd || mLoop);
+          mRemainingFrames -= inSamples;
+          MOZ_ASSERT(mBufferPosition <= mBuffer.GetDuration());
+          MOZ_ASSERT(mRemainingFrames >= 0);
           *aOffsetWithinBlock += outSamples;
           *aCurrentPosition += outSamples;
-          if (inSamples == availableInInputBuffer && !mLoop) {
+          if ((!mLoop && inSamples == availableInInputBuffer) ||
+              mRemainingFrames == 0) {
             // We'll feed in enough zeros to empty out the resampler's memory.
             // This handles the output latency as well as capturing the low
             // pass effects of the resample filter.
@@ -347,7 +351,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     uint32_t numFrames = std::min<TrackTime>(
         WEBAUDIO_BLOCK_SIZE - *aOffsetWithinBlock, aMaxPos - *aCurrentPosition);
     if (numFrames == WEBAUDIO_BLOCK_SIZE || !aChannels) {
-      aOutput->SetNull(numFrames);
+      aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
     } else {
       if (*aOffsetWithinBlock == 0) {
         aOutput->AllocateChannels(aChannels);
@@ -433,10 +437,11 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     *aOffsetWithinBlock += numFrames;
     *aCurrentPosition += numFrames;
     mBufferPosition += numFrames;
+    mRemainingFrames -= numFrames;
   }
 
   int32_t ComputeFinalOutSampleRate(float aPlaybackRate, float aDetune) {
-    float computedPlaybackRate = aPlaybackRate * exp2(aDetune / 1200.f);
+    float computedPlaybackRate = aPlaybackRate * fdlibm_exp2f(aDetune / 1200.f);
     // Make sure the playback rate is something our resampler can work with.
     int32_t rate = WebAudioUtils::TruncateFloatToInt<int32_t>(
         mSource->mSampleRate / computedPlaybackRate);
@@ -444,24 +449,30 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   }
 
   void UpdateSampleRateIfNeeded(uint32_t aChannels, TrackTime aTrackPosition) {
+    bool simplePlaybackRate = mPlaybackRateTimeline.HasSimpleValue();
+    bool simpleDetune = mDetuneTimeline.HasSimpleValue();
+
+    if (simplePlaybackRate && simpleDetune && !mRecomputeOutRate) {
+      return;  // skipping the slow exp2f() for the detune
+    }
+    mRecomputeOutRate = false;
+
     float playbackRate;
     float detune;
-
-    if (mPlaybackRateTimeline.HasSimpleValue()) {
+    if (simplePlaybackRate) {
       playbackRate = mPlaybackRateTimeline.GetValue();
     } else {
-      playbackRate = mPlaybackRateTimeline.GetValueAtTime(aTrackPosition);
+      playbackRate =
+          mPlaybackRateTimeline.GetComplexValueAtTime(aTrackPosition);
     }
-    if (mDetuneTimeline.HasSimpleValue()) {
+    if (simpleDetune) {
       detune = mDetuneTimeline.GetValue();
     } else {
-      detune = mDetuneTimeline.GetValueAtTime(aTrackPosition);
+      detune = mDetuneTimeline.GetComplexValueAtTime(aTrackPosition);
     }
-    if (playbackRate <= 0 || mozilla::IsNaN(playbackRate)) {
+    if (playbackRate <= 0 || std::isnan(playbackRate)) {
       playbackRate = 1.0f;
     }
-
-    detune = std::min(std::max(-1200.f, detune), 1200.f);
 
     int32_t outRate = ComputeFinalOutSampleRate(playbackRate, detune);
     UpdateResampler(outRate, aChannels);
@@ -470,6 +481,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
+    TRACE("AudioBufferSourceNodeEngine::ProcessBlock");
     if (mBufferSampleRate == 0) {
       // start() has not yet been called or no buffer has yet been set
       aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
@@ -482,17 +494,28 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
     UpdateSampleRateIfNeeded(channels, streamPosition);
 
     uint32_t written = 0;
-    while (written < WEBAUDIO_BLOCK_SIZE) {
-      if (mStop != TRACK_TIME_MAX && streamPosition >= mStop) {
-        FillWithZeroes(aOutput, channels, &written, &streamPosition,
-                       TRACK_TIME_MAX);
-        continue;
+    while (true) {
+      if ((mStop != TRACK_TIME_MAX && streamPosition >= mStop) ||
+          (!mRemainingResamplerTail &&
+           ((mBufferPosition >= mBuffer.GetDuration() && !mLoop) ||
+            mRemainingFrames <= 0))) {
+        if (written != WEBAUDIO_BLOCK_SIZE) {
+          FillWithZeroes(aOutput, channels, &written, &streamPosition,
+                         TRACK_TIME_MAX);
+        }
+        *aFinished = true;
+        break;
+      }
+      if (written == WEBAUDIO_BLOCK_SIZE) {
+        break;
       }
       if (streamPosition < mBeginProcessing) {
         FillWithZeroes(aOutput, channels, &written, &streamPosition,
                        mBeginProcessing);
         continue;
       }
+
+      TrackTicks bufferLeft;
       if (mLoop) {
         // mLoopEnd can become less than mBufferPosition when a LOOPEND engine
         // parameter is received after "loopend" is changed on the node or a
@@ -500,23 +523,15 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
         if (mBufferPosition >= mLoopEnd) {
           mBufferPosition = mLoopStart;
         }
-        CopyFromBuffer(aOutput, channels, &written, &streamPosition, mLoopEnd);
+        bufferLeft =
+            std::min<TrackTicks>(mRemainingFrames, mLoopEnd - mBufferPosition);
       } else {
-        if (mBufferPosition < mBufferEnd || mRemainingResamplerTail) {
-          CopyFromBuffer(aOutput, channels, &written, &streamPosition,
-                         mBufferEnd);
-        } else {
-          FillWithZeroes(aOutput, channels, &written, &streamPosition,
-                         TRACK_TIME_MAX);
-        }
+        bufferLeft =
+            std::min(mRemainingFrames, mBuffer.GetDuration() - mBufferPosition);
       }
-    }
 
-    // We've finished if we've gone past mStop, or if we're past mDuration when
-    // looping is disabled.
-    if (streamPosition >= mStop ||
-        (!mLoop && mBufferPosition >= mBufferEnd && !mRemainingResamplerTail)) {
-      *aFinished = true;
+      CopyFromBuffer(aOutput, channels, &written, &streamPosition,
+                     bufferLeft + mBufferPosition);
     }
   }
 
@@ -558,10 +573,10 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   TrackTime mStop;
   AudioChunk mBuffer;
   SpeexResamplerState* mResampler;
-  // mRemainingResamplerTail, like mBufferPosition, and
-  // mBufferEnd, is measured in input buffer samples.
+  // mRemainingResamplerTail, like mBufferPosition
+  // is measured in input buffer samples.
   uint32_t mRemainingResamplerTail;
-  uint32_t mBufferEnd;
+  TrackTicks mRemainingFrames;
   uint32_t mLoopStart;
   uint32_t mLoopEnd;
   uint32_t mBufferPosition;
@@ -575,6 +590,7 @@ class AudioBufferSourceNodeEngine final : public AudioNodeEngine {
   AudioParamTimeline mPlaybackRateTimeline;
   AudioParamTimeline mDetuneTimeline;
   bool mLoop;
+  bool mRecomputeOutRate = true;
 };
 
 AudioBufferSourceNode::AudioBufferSourceNode(AudioContext* aContext)
@@ -586,8 +602,8 @@ AudioBufferSourceNode::AudioBufferSourceNode(AudioContext* aContext)
       mLoop(false),
       mStartCalled(false),
       mBufferSet(false) {
-  CreateAudioParam(mPlaybackRate, PLAYBACKRATE, u"playbackRate", 1.0f);
-  CreateAudioParam(mDetune, DETUNE, u"detune", 0.0f);
+  mPlaybackRate = CreateAudioParam(PLAYBACKRATE, u"playbackRate"_ns, 1.0f);
+  mDetune = CreateAudioParam(DETUNE, u"detune"_ns, 0.0f);
   AudioBufferSourceNodeEngine* engine =
       new AudioBufferSourceNodeEngine(this, aContext->Destination());
   mTrack = AudioNodeTrack::Create(aContext, engine,
@@ -610,11 +626,11 @@ already_AddRefed<AudioBufferSourceNode> AudioBufferSourceNode::Create(
     audioNode->SetBuffer(aCx, aOptions.mBuffer.Value(), ignored);
   }
 
-  audioNode->Detune()->SetValue(aOptions.mDetune);
+  audioNode->Detune()->SetInitialValue(aOptions.mDetune);
   audioNode->SetLoop(aOptions.mLoop);
   audioNode->SetLoopEnd(aOptions.mLoopEnd);
   audioNode->SetLoopStart(aOptions.mLoopStart);
-  audioNode->PlaybackRate()->SetValue(aOptions.mPlaybackRate);
+  audioNode->PlaybackRate()->SetInitialValue(aOptions.mPlaybackRate);
 
   return audioNode.forget();
 }
@@ -716,7 +732,6 @@ void AudioBufferSourceNode::SendBufferParameterToTrack(JSContext* aCx) {
       SendOffsetAndDurationParametersToTrack(ns);
     }
   } else {
-    ns->SetInt32Parameter(BUFFEREND, 0);
     ns->SetBuffer(AudioChunk());
 
     MarkInactive();
@@ -732,7 +747,6 @@ void AudioBufferSourceNode::SendOffsetAndDurationParametersToTrack(
   float rate = mBuffer->SampleRate();
   aTrack->SetInt32Parameter(SAMPLE_RATE, rate);
 
-  int32_t bufferEnd = mBuffer->Length();
   int32_t offsetSamples = std::max(0, NS_lround(mOffset * rate));
 
   // Don't set parameter unnecessarily
@@ -743,15 +757,8 @@ void AudioBufferSourceNode::SendOffsetAndDurationParametersToTrack(
   if (mDuration != std::numeric_limits<double>::min()) {
     MOZ_ASSERT(mDuration >= 0.0);  // provided by Start()
     MOZ_ASSERT(rate >= 0.0f);      // provided by AudioBuffer::Create()
-    static_assert(std::numeric_limits<double>::digits >=
-                      std::numeric_limits<decltype(bufferEnd)>::digits,
-                  "bufferEnd should be represented exactly by double");
-    // + 0.5 rounds mDuration to nearest sample when assigned to bufferEnd.
-    bufferEnd =
-        std::min<double>(bufferEnd, offsetSamples + mDuration * rate + 0.5);
+    aTrack->SetDoubleParameter(DURATION, mDuration);
   }
-  aTrack->SetInt32Parameter(BUFFEREND, bufferEnd);
-
   MarkActive();
 }
 
@@ -793,7 +800,7 @@ void AudioBufferSourceNode::NotifyMainThreadTrackEnded() {
         return NS_OK;
       }
 
-      mNode->DispatchTrustedEvent(NS_LITERAL_STRING("ended"));
+      mNode->DispatchTrustedEvent(u"ended"_ns);
       // Release track resources.
       mNode->DestroyMediaTrack();
       return NS_OK;
@@ -843,5 +850,4 @@ void AudioBufferSourceNode::SendLoopParametersToTrack() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

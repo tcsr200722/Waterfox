@@ -14,7 +14,7 @@ const TEST_DATA = [
   { expectedTextContent: "div.ball.long" },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept([".animated", ".long"]);
   const { animationInspector, panel } = await openAnimationInspector();
@@ -32,9 +32,11 @@ add_task(async function() {
 
   for (let i = 0; i < animationItemEls.length; i++) {
     const animationItemEl = animationItemEls[i];
-    const animationTargetEl = animationItemEl.querySelector(
-      ".animation-target"
-    );
+    animationItemEl.scrollIntoView(false);
+    await waitUntil(() => animationItemEl.querySelector(".animation-target"));
+
+    const animationTargetEl =
+      animationItemEl.querySelector(".animation-target");
     ok(
       animationTargetEl,
       "The animation target element should be in each animation item element"
@@ -52,7 +54,7 @@ add_task(async function() {
       "objectBox is in the page exists"
     );
     ok(
-      animationTargetEl.querySelector(".open-inspector").title,
+      animationTargetEl.querySelector(".highlight-node").title,
       INSPECTOR_L10N.getStr("inspector.nodePreview.highlightNodeLabel")
     );
   }

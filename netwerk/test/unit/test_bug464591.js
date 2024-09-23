@@ -26,10 +26,6 @@ let prefData = [
     name: "network.IDN_show_punycode",
     newVal: false,
   },
-  {
-    name: "network.IDN.whitelist.org",
-    newVal: true,
-  },
 ];
 
 let prefIdnBlackList = {
@@ -47,9 +43,7 @@ function stringToURL(str) {
 
 function run_test() {
   // Make sure our prefs are set such that this test actually means something
-  let prefs = Cc["@mozilla.org/preferences-service;1"].getService(
-    Ci.nsIPrefBranch
-  );
+  let prefs = Services.prefs;
   for (let pref of prefData) {
     prefs.setBoolPref(pref.name, pref.newVal);
   }
@@ -67,7 +61,7 @@ function run_test() {
     prefIdnBlackList.set = true;
   } catch (e) {}
 
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     for (let pref of prefData) {
       prefs.clearUserPref(pref.name);
     }
@@ -91,7 +85,7 @@ function run_test() {
   for (let i = 0; i < badURIs.length; ++i) {
     Assert.throws(
       () => {
-        let result = stringToURL("http://" + badURIs[i][0]).host;
+        stringToURL("http://" + badURIs[i][0]).host;
       },
       /NS_ERROR_MALFORMED_URI/,
       "bad escaped character"

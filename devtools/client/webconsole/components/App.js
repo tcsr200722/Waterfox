@@ -3,90 +3,97 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const Services = require("Services");
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
+} = require("resource://devtools/client/shared/vendor/react.js");
 loader.lazyRequireGetter(
   this,
   "PropTypes",
-  "devtools/client/shared/vendor/react-prop-types"
+  "resource://devtools/client/shared/vendor/react-prop-types.js"
 );
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const {
   connect,
-} = require("devtools/client/shared/redux/visibility-handler-connect");
+} = require("resource://devtools/client/shared/redux/visibility-handler-connect.js");
 
-const actions = require("devtools/client/webconsole/actions/index");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
 const {
   FILTERBAR_DISPLAY_MODES,
-} = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/constants.js");
 
 // We directly require Components that we know are going to be used right away
 const ConsoleOutput = createFactory(
-  require("devtools/client/webconsole/components/Output/ConsoleOutput")
+  require("resource://devtools/client/webconsole/components/Output/ConsoleOutput.js")
 );
 const FilterBar = createFactory(
-  require("devtools/client/webconsole/components/FilterBar/FilterBar")
+  require("resource://devtools/client/webconsole/components/FilterBar/FilterBar.js")
 );
 const ReverseSearchInput = createFactory(
-  require("devtools/client/webconsole/components/Input/ReverseSearchInput")
+  require("resource://devtools/client/webconsole/components/Input/ReverseSearchInput.js")
 );
 const JSTerm = createFactory(
-  require("devtools/client/webconsole/components/Input/JSTerm")
+  require("resource://devtools/client/webconsole/components/Input/JSTerm.js")
 );
 const ConfirmDialog = createFactory(
-  require("devtools/client/webconsole/components/Input/ConfirmDialog")
+  require("resource://devtools/client/webconsole/components/Input/ConfirmDialog.js")
 );
 const EagerEvaluation = createFactory(
-  require("devtools/client/webconsole/components/Input/EagerEvaluation")
+  require("resource://devtools/client/webconsole/components/Input/EagerEvaluation.js")
+);
+const EvaluationNotification = createFactory(
+  require("resource://devtools/client/webconsole/components/Input/EvaluationNotification.js")
 );
 
 // And lazy load the ones that may not be used.
 loader.lazyGetter(this, "SideBar", () =>
-  createFactory(require("devtools/client/webconsole/components/SideBar"))
+  createFactory(
+    require("resource://devtools/client/webconsole/components/SideBar.js")
+  )
 );
 
 loader.lazyGetter(this, "EditorToolbar", () =>
   createFactory(
-    require("devtools/client/webconsole/components/Input/EditorToolbar")
+    require("resource://devtools/client/webconsole/components/Input/EditorToolbar.js")
   )
 );
 
 loader.lazyGetter(this, "NotificationBox", () =>
   createFactory(
-    require("devtools/client/shared/components/NotificationBox").NotificationBox
+    require("resource://devtools/client/shared/components/NotificationBox.js")
+      .NotificationBox
   )
 );
 loader.lazyRequireGetter(
   this,
-  "getNotificationWithValue",
-  "devtools/client/shared/components/NotificationBox",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "PriorityLevels",
-  "devtools/client/shared/components/NotificationBox",
+  ["getNotificationWithValue", "PriorityLevels"],
+  "resource://devtools/client/shared/components/NotificationBox.js",
   true
 );
 
 loader.lazyGetter(this, "GridElementWidthResizer", () =>
   createFactory(
-    require("devtools/client/shared/components/splitter/GridElementWidthResizer")
+    require("resource://devtools/client/shared/components/splitter/GridElementWidthResizer.js")
   )
 );
 
-const l10n = require("devtools/client/webconsole/utils/l10n");
-const { Utils: WebConsoleUtils } = require("devtools/client/webconsole/utils");
+loader.lazyGetter(this, "ChromeDebugToolbar", () =>
+  createFactory(
+    require("resource://devtools/client/framework/components/ChromeDebugToolbar.js")
+  )
+);
+
+const l10n = require("resource://devtools/client/webconsole/utils/l10n.js");
+const {
+  Utils: WebConsoleUtils,
+} = require("resource://devtools/client/webconsole/utils.js");
 
 const SELF_XSS_OK = l10n.getStr("selfxss.okstring");
 const SELF_XSS_MSG = l10n.getFormatStr("selfxss.msg", [SELF_XSS_OK]);
 
 const {
   getAllNotifications,
-} = require("devtools/client/webconsole/selectors/notifications");
+} = require("resource://devtools/client/webconsole/selectors/notifications.js");
 const { div } = dom;
 const isMacOS = Services.appinfo.OS === "Darwin";
 
@@ -108,8 +115,6 @@ class App extends Component {
       reverseSearchInitialValue: PropTypes.string,
       editorMode: PropTypes.bool,
       editorWidth: PropTypes.number,
-      hidePersistLogsCheckbox: PropTypes.bool,
-      hideShowContentMessagesCheckbox: PropTypes.bool,
       inputEnabled: PropTypes.bool,
       sidebarVisible: PropTypes.bool.isRequired,
       eagerEvaluationEnabled: PropTypes.bool.isRequired,
@@ -151,6 +156,8 @@ class App extends Component {
         actions.reverseSearchInputToggle({ initialValue, access: "keyboard" })
       );
       event.stopPropagation();
+      // Prevent Reader Mode to be enabled (See Bug 1682340)
+      event.preventDefault();
     }
 
     if (
@@ -271,19 +278,23 @@ class App extends Component {
     input.addEventListener("keyup", pasteKeyUpHandler);
   }
 
+  renderChromeDebugToolbar() {
+    const { webConsoleUI } = this.props;
+    if (!webConsoleUI.isBrowserConsole) {
+      return null;
+    }
+    return ChromeDebugToolbar({
+      // This should always be true at this point
+      isBrowserConsole: webConsoleUI.isBrowserConsole,
+    });
+  }
+
   renderFilterBar() {
-    const {
-      closeSplitConsole,
-      filterBarDisplayMode,
-      hidePersistLogsCheckbox,
-      hideShowContentMessagesCheckbox,
-      webConsoleUI,
-    } = this.props;
+    const { closeSplitConsole, filterBarDisplayMode, webConsoleUI } =
+      this.props;
 
     return FilterBar({
       key: "filterbar",
-      hidePersistLogsCheckbox,
-      hideShowContentMessagesCheckbox,
       closeSplitConsole,
       displayMode: filterBarDisplayMode,
       webConsoleUI,
@@ -319,12 +330,13 @@ class App extends Component {
   }
 
   renderConsoleOutput() {
-    const { onFirstMeaningfulPaint, serviceContainer } = this.props;
+    const { onFirstMeaningfulPaint, serviceContainer, editorMode } = this.props;
 
     return ConsoleOutput({
       key: "console-output",
       serviceContainer,
       onFirstMeaningfulPaint,
+      editorMode,
     });
   }
 
@@ -351,11 +363,8 @@ class App extends Component {
   }
 
   renderEagerEvaluation() {
-    const {
-      eagerEvaluationEnabled,
-      serviceContainer,
-      inputEnabled,
-    } = this.props;
+    const { eagerEvaluationEnabled, serviceContainer, inputEnabled } =
+      this.props;
 
     if (!eagerEvaluationEnabled || !inputEnabled) {
       return null;
@@ -412,12 +421,8 @@ class App extends Component {
   }
 
   renderRootElement(children) {
-    const {
-      editorMode,
-      sidebarVisible,
-      inputEnabled,
-      eagerEvaluationEnabled,
-    } = this.props;
+    const { editorMode, sidebarVisible, inputEnabled, eagerEvaluationEnabled } =
+      this.props;
 
     const classNames = ["webconsole-app"];
     if (sidebarVisible) {
@@ -447,17 +452,20 @@ class App extends Component {
   render() {
     const { webConsoleUI, editorMode, dispatch, inputEnabled } = this.props;
 
+    const chromeDebugToolbar = this.renderChromeDebugToolbar();
     const filterBar = this.renderFilterBar();
     const editorToolbar = this.renderEditorToolbar();
     const consoleOutput = this.renderConsoleOutput();
     const notificationBox = this.renderNotificationBox();
     const jsterm = this.renderJsTerm();
     const eager = this.renderEagerEvaluation();
+    const evaluationNotification = EvaluationNotification();
     const reverseSearch = this.renderReverseSearch();
     const sidebar = this.renderSideBar();
     const confirmDialog = this.renderConfirmDialog();
 
     return this.renderRootElement([
+      chromeDebugToolbar,
       filterBar,
       editorToolbar,
       dom.div(
@@ -465,7 +473,8 @@ class App extends Component {
         consoleOutput,
         notificationBox,
         jsterm,
-        eager
+        eager,
+        evaluationNotification
       ),
       editorMode && inputEnabled
         ? GridElementWidthResizer({

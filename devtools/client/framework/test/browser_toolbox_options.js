@@ -10,20 +10,18 @@ var doc = null,
   toolbox = null,
   panelWin = null,
   modifiedPrefs = [];
-const { LocalizationHelper } = require("devtools/shared/l10n");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
 );
-const { PrefObserver } = require("devtools/client/shared/prefs");
+const { PrefObserver } = require("resource://devtools/client/shared/prefs.js");
 
-add_task(async function() {
+add_task(async function () {
   const URL =
     "data:text/html;charset=utf8,test for dynamically registering " +
     "and unregistering tools";
   registerNewTool();
   const tab = await addTab(URL);
-  const target = await TargetFactory.forTab(tab);
-  toolbox = await gDevTools.showToolbox(target);
+  toolbox = await gDevTools.showToolboxForTab(tab);
 
   doc = toolbox.doc;
   await registerNewPerToolboxTool();
@@ -44,7 +42,7 @@ add_task(async function() {
 function registerNewTool() {
   const toolDefinition = {
     id: "testTool",
-    isTargetSupported: () => true,
+    isToolSupported: () => true,
     visibilityswitch: "devtools.test-tool.enabled",
     url: "about:blank",
     label: "someLabel",
@@ -82,7 +80,7 @@ function registerNewWebExtensions() {
 function registerNewPerToolboxTool() {
   const toolDefinition = {
     id: "test-pertoolbox-tool",
-    isTargetSupported: () => true,
+    isToolSupported: () => true,
     visibilityswitch: "devtools.test-pertoolbox-tool.enabled",
     url: "about:blank",
     label: "perToolboxSomeLabel",
@@ -169,8 +167,8 @@ async function testSelect(select) {
   info("Checking select for: " + pref);
 
   is(
-    select.options[select.selectedIndex].value,
-    GetPref(pref),
+    `${select.options[select.selectedIndex].value}`,
+    `${GetPref(pref)}`,
     "select starts out selected"
   );
 
@@ -185,7 +183,11 @@ async function testSelect(select) {
     const changeSeenPromise = new Promise(resolve => {
       observer.once(pref, () => {
         changeSeen = true;
-        is(GetPref(pref), option.value, "Preference been switched for " + pref);
+        is(
+          `${GetPref(pref)}`,
+          `${option.value}`,
+          "Preference been switched for " + pref
+        );
         resolve();
       });
     });
@@ -218,7 +220,7 @@ async function testMouseClick(node, prefValue) {
 
   // We use executeSoon here to ensure that the element is in view and
   // clickable.
-  executeSoon(function() {
+  executeSoon(function () {
     info("Click event synthesized for pref " + pref);
     EventUtils.synthesizeMouseAtCenter(node, {}, panelWin);
   });
@@ -346,7 +348,7 @@ async function testToggleWebExtensions() {
   // ones have been unregistered, and the remaining onea are still listed.
   for (const ext of toggleableWebExtensions) {
     ok(
-      toolbox.listWebExtensions().length > 0,
+      !!toolbox.listWebExtensions().length,
       "There should still be extensions registered"
     );
     toolbox.unregisterWebExtension(ext.uuid);

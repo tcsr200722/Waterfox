@@ -8,13 +8,12 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/PreloadHashKey.h"
 #include "mozilla/WeakPtr.h"
-#include "nsIChannelEventSink.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIRedirectResultListener.h"
+#include "nsCOMPtr.h"
+#include "nsISupports.h"
+#include "nsITimer.h"
 #include "nsIURI.h"
+#include "nsIWeakReferenceUtils.h"
 #include "nsTArray.h"
-#include "nsProxyRelease.h"
-#include "nsWeakReference.h"
 
 class nsIChannel;
 class nsINode;
@@ -38,19 +37,18 @@ class Document;
  *
  * This class is designed to be used only on the main thread.
  */
-class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
-                      public nsISupports {
+class PreloaderBase : public SupportsWeakPtr, public nsISupports {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(PreloaderBase)
   PreloaderBase() = default;
 
   // Called by resource loaders to register this preload in the document's
   // preload service to provide coalescing, and access to the preload when it
   // should be used for an actual load.
-  void NotifyOpen(PreloadHashKey* aKey, dom::Document* aDocument,
-                  bool aIsPreload);
-  void NotifyOpen(PreloadHashKey* aKey, nsIChannel* aChannel,
-                  dom::Document* aDocument, bool aIsPreload);
+  void NotifyOpen(const PreloadHashKey& aKey, dom::Document* aDocument,
+                  bool aIsPreload, bool aIsModule = false);
+  void NotifyOpen(const PreloadHashKey& aKey, nsIChannel* aChannel,
+                  dom::Document* aDocument, bool aIsPreload,
+                  bool aIsModule = false);
 
   // Called when the load is about to be started all over again and thus this
   // PreloaderBase will be registered again with the same key.  This method
@@ -68,14 +66,6 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
   // channel.
   void NotifyStop(nsresult aStatus);
 
-  // Called when this currently existing load has to be asynchronously
-  // revalidated before it can be used.  This prevents link preload DOM nodes
-  // being notified until the validation is resolved.
-  void NotifyValidating();
-  // Called when the validation process has been done.  This will notify
-  // associated link DOM nodes.
-  void NotifyValidated(nsresult aStatus);
-
   // Called by resource loaders or any suitable component to notify the preload
   // has been used for an actual load.  This is intended to stop any usage
   // timers.
@@ -83,7 +73,8 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
   // progress, will not be removed the LOAD_BACKGROUND flag, for instance XHR is
   // the user here.
   enum class LoadBackground { Keep, Drop };
-  void NotifyUsage(LoadBackground aLoadBackground = LoadBackground::Drop);
+  void NotifyUsage(dom::Document* aDocument,
+                   LoadBackground aLoadBackground = LoadBackground::Drop);
   // Whether this preloader has been used for a regular/actual load or not.
   bool IsUsed() const { return mIsUsed; }
 
@@ -100,11 +91,6 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
 
   // Accessor to the resource loading channel.
   nsIChannel* Channel() const { return mChannel; }
-
-  // May change priority of the resource loading channel so that it's treated as
-  // preload when this was initially representing a normal speculative load but
-  // later <link rel="preload"> was found for this resource.
-  virtual void PrioritizeAsPreload() = 0;
 
   // Helper function to set the LOAD_BACKGROUND flag on channel initiated by
   // <link rel=preload>.  This MUST be used before the channel is AsyncOpen'ed.
@@ -133,11 +119,19 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
 
   const nsTArray<RedirectRecord>& Redirects() { return mRedirectRecords; }
 
+  void SetForEarlyHints() { mIsEarlyHintsPreload = true; }
+
  protected:
   virtual ~PreloaderBase();
 
+  // The loading channel.  This will update when a redirect occurs.
+  nsCOMPtr<nsIChannel> mChannel;
+
  private:
   void NotifyNodeEvent(nsINode* aNode);
+  void CancelUsageTimer();
+
+  void ReportUsageTelemetry();
 
   // A helper class that will update the PreloaderBase.mChannel member when a
   // redirect happens, so that we can reprioritize or cancel when needed.
@@ -145,24 +139,21 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
   // directly is to keep PreloaderBase as simple as possible so that derived
   // classes don't have to deal with calling super when implementing these
   // interfaces from some reason as well.
-  class RedirectSink final : public nsIInterfaceRequestor,
-                             public nsIChannelEventSink,
-                             public nsIRedirectResultListener {
-    RedirectSink() = delete;
-    virtual ~RedirectSink() = default;
+  class RedirectSink;
 
-   public:
-    NS_DECL_THREADSAFE_ISUPPORTS
-    NS_DECL_NSIINTERFACEREQUESTOR
-    NS_DECL_NSICHANNELEVENTSINK
-    NS_DECL_NSIREDIRECTRESULTLISTENER
+  // A timer callback to trigger the unuse warning for this preload
+  class UsageTimer final : public nsITimerCallback, public nsINamed {
+    NS_DECL_ISUPPORTS
+    NS_DECL_NSITIMERCALLBACK
+    NS_DECL_NSINAMED
 
-    RedirectSink(PreloaderBase* aPreloader, nsIInterfaceRequestor* aCallbacks);
+    UsageTimer(PreloaderBase* aPreload, dom::Document* aDocument);
 
    private:
-    nsMainThreadPtrHandle<PreloaderBase> mPreloader;
-    nsCOMPtr<nsIInterfaceRequestor> mCallbacks;
-    nsCOMPtr<nsIChannel> mRedirectChannel;
+    ~UsageTimer() = default;
+
+    WeakPtr<dom::Document> mDocument;
+    WeakPtr<PreloaderBase> mPreload;
   };
 
  private:
@@ -173,8 +164,9 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
   // History of redirects.
   nsTArray<RedirectRecord> mRedirectRecords;
 
-  // The loading channel.  This will update when a redirect occurs.
-  nsCOMPtr<nsIChannel> mChannel;
+  // Usage timer, emits warning when the preload is not used in time.  Started
+  // in NotifyOpen and stopped in NotifyUsage.
+  nsCOMPtr<nsITimer> mUsageTimer;
 
   // The key this preload has been registered under.  We want to remember it to
   // be able to deregister itself from the document's preloads.
@@ -186,6 +178,12 @@ class PreloaderBase : public SupportsWeakPtr<PreloaderBase>,
 
   // True after call to NotifyUsage.
   bool mIsUsed = false;
+
+  // True after we have reported the usage telemetry.  Prevent duplicates.
+  bool mUsageTelementryReported = false;
+
+  // True when this is used to Early Hints preload.
+  bool mIsEarlyHintsPreload = false;
 
   // Emplaced when the data delivery has finished, in NotifyStop, holds the
   // result of the load.

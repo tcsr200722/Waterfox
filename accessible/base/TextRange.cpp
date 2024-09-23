@@ -6,11 +6,42 @@
 
 #include "TextRange-inl.h"
 
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
+#include "HyperTextAccessible-inl.h"
+#include "mozilla/IntegerRange.h"
+#include "mozilla/dom/Selection.h"
 #include "nsAccUtils.h"
 
 namespace mozilla {
 namespace a11y {
+
+/**
+ * Returns a text point for aAcc within aContainer.
+ */
+static void ToTextPoint(Accessible* aAcc, Accessible** aContainer,
+                        int32_t* aOffset, bool aIsBefore = true) {
+  if (aAcc->IsHyperText()) {
+    *aContainer = aAcc;
+    *aOffset =
+        aIsBefore
+            ? 0
+            : static_cast<int32_t>(aAcc->AsHyperTextBase()->CharacterCount());
+    return;
+  }
+
+  Accessible* child = nullptr;
+  Accessible* parent = aAcc;
+  do {
+    child = parent;
+    parent = parent->Parent();
+  } while (parent && !parent->IsHyperText());
+
+  if (parent) {
+    *aContainer = parent;
+    *aOffset = parent->AsHyperTextBase()->GetChildOffset(
+        child->IndexInParent() + static_cast<int32_t>(!aIsBefore));
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // TextPoint
@@ -36,8 +67,29 @@ bool TextPoint::operator<(const TextPoint& aPoint) const {
   for (uint32_t len = std::min(pos1, pos2); len > 0; --len) {
     Accessible* child1 = parents1.ElementAt(--pos1);
     Accessible* child2 = parents2.ElementAt(--pos2);
-    if (child1 != child2)
+    if (child1 != child2) {
       return child1->IndexInParent() < child2->IndexInParent();
+    }
+  }
+
+  if (pos1 != 0) {
+    // If parents1 is a superset of parents2 then mContainer is a
+    // descendant of aPoint.mContainer. The next element down in parents1
+    // is mContainer's ancestor that is the child of aPoint.mContainer.
+    // We compare its end offset in aPoint.mContainer with aPoint.mOffset.
+    Accessible* child = parents1.ElementAt(pos1 - 1);
+    MOZ_ASSERT(child->Parent() == aPoint.mContainer);
+    return child->EndOffset() < static_cast<uint32_t>(aPoint.mOffset);
+  }
+
+  if (pos2 != 0) {
+    // If parents2 is a superset of parents1 then aPoint.mContainer is a
+    // descendant of mContainer. The next element down in parents2
+    // is aPoint.mContainer's ancestor that is the child of mContainer.
+    // We compare its start offset in mContainer with mOffset.
+    Accessible* child = parents2.ElementAt(pos2 - 1);
+    MOZ_ASSERT(child->Parent() == mContainer);
+    return static_cast<uint32_t>(mOffset) < child->StartOffset();
   }
 
   NS_ERROR("Broken tree?!");
@@ -47,90 +99,14 @@ bool TextPoint::operator<(const TextPoint& aPoint) const {
 ////////////////////////////////////////////////////////////////////////////////
 // TextRange
 
-TextRange::TextRange(HyperTextAccessible* aRoot,
-                     HyperTextAccessible* aStartContainer, int32_t aStartOffset,
-                     HyperTextAccessible* aEndContainer, int32_t aEndOffset)
+TextRange::TextRange(Accessible* aRoot, Accessible* aStartContainer,
+                     int32_t aStartOffset, Accessible* aEndContainer,
+                     int32_t aEndOffset)
     : mRoot(aRoot),
       mStartContainer(aStartContainer),
       mEndContainer(aEndContainer),
       mStartOffset(aStartOffset),
       mEndOffset(aEndOffset) {}
-
-void TextRange::EmbeddedChildren(nsTArray<Accessible*>* aChildren) const {
-  if (mStartContainer == mEndContainer) {
-    int32_t startIdx = mStartContainer->GetChildIndexAtOffset(mStartOffset);
-    int32_t endIdx = mStartContainer->GetChildIndexAtOffset(mEndOffset);
-    for (int32_t idx = startIdx; idx <= endIdx; idx++) {
-      Accessible* child = mStartContainer->GetChildAt(idx);
-      if (!child->IsText()) {
-        aChildren->AppendElement(child);
-      }
-    }
-    return;
-  }
-
-  Accessible* p1 = mStartContainer->GetChildAtOffset(mStartOffset);
-  Accessible* p2 = mEndContainer->GetChildAtOffset(mEndOffset);
-
-  uint32_t pos1 = 0, pos2 = 0;
-  AutoTArray<Accessible*, 30> parents1, parents2;
-  Accessible* container =
-      CommonParent(p1, p2, &parents1, &pos1, &parents2, &pos2);
-
-  // Traverse the tree up to the container and collect embedded objects.
-  for (uint32_t idx = 0; idx < pos1 - 1; idx++) {
-    Accessible* parent = parents1[idx + 1];
-    Accessible* child = parents1[idx];
-    uint32_t childCount = parent->ChildCount();
-    for (uint32_t childIdx = child->IndexInParent(); childIdx < childCount;
-         childIdx++) {
-      Accessible* next = parent->GetChildAt(childIdx);
-      if (!next->IsText()) {
-        aChildren->AppendElement(next);
-      }
-    }
-  }
-
-  // Traverse through direct children in the container.
-  int32_t endIdx = parents2[pos2 - 1]->IndexInParent();
-  int32_t childIdx = parents1[pos1 - 1]->IndexInParent() + 1;
-  for (; childIdx < endIdx; childIdx++) {
-    Accessible* next = container->GetChildAt(childIdx);
-    if (!next->IsText()) {
-      aChildren->AppendElement(next);
-    }
-  }
-
-  // Traverse down from the container to end point.
-  for (int32_t idx = pos2 - 2; idx > 0; idx--) {
-    Accessible* parent = parents2[idx];
-    Accessible* child = parents2[idx - 1];
-    int32_t endIdx = child->IndexInParent();
-    for (int32_t childIdx = 0; childIdx < endIdx; childIdx++) {
-      Accessible* next = parent->GetChildAt(childIdx);
-      if (!next->IsText()) {
-        aChildren->AppendElement(next);
-      }
-    }
-  }
-}
-
-void TextRange::Text(nsAString& aText) const {
-  Accessible* current = mStartContainer->GetChildAtOffset(mStartOffset);
-  uint32_t startIntlOffset =
-      mStartOffset - mStartContainer->GetChildOffset(current);
-
-  while (current && TextInternal(aText, current, startIntlOffset)) {
-    current = current->Parent();
-    if (!current) break;
-
-    current = current->NextSibling();
-  }
-}
-
-void TextRange::Bounds(nsTArray<nsIntRect> aRects) const {}
-
-void TextRange::Normalize(ETextUnit aUnit) {}
 
 bool TextRange::Crop(Accessible* aContainer) {
   uint32_t boundaryPos = 0, containerPos = 0;
@@ -138,7 +114,8 @@ bool TextRange::Crop(Accessible* aContainer) {
 
   // Crop the start boundary.
   Accessible* container = nullptr;
-  Accessible* boundary = mStartContainer->GetChildAtOffset(mStartOffset);
+  HyperTextAccessibleBase* startHyper = mStartContainer->AsHyperTextBase();
+  Accessible* boundary = startHyper->GetChildAtOffset(mStartOffset);
   if (boundary != aContainer) {
     CommonParent(boundary, aContainer, &boundaryParents, &boundaryPos,
                  &containerParents, &containerPos);
@@ -147,14 +124,12 @@ bool TextRange::Crop(Accessible* aContainer) {
       if (containerPos != 0) {
         // The container is contained by the start boundary, reduce the range to
         // the point starting at the container.
-        aContainer->ToTextPoint(mStartContainer.StartAssignment(),
-                                &mStartOffset);
-        static_cast<Accessible*>(mStartContainer)->AddRef();
+        ToTextPoint(aContainer, &mStartContainer, &mStartOffset);
       } else {
         // The start boundary and the container are siblings.
         container = aContainer;
       }
-    } else if (containerPos != 0) {
+    } else {
       // The container does not contain the start boundary.
       boundary = boundaryParents[boundaryPos];
       container = containerParents[containerPos];
@@ -169,9 +144,7 @@ bool TextRange::Crop(Accessible* aContainer) {
       // If the range starts before the container, then reduce the range to
       // the point starting at the container.
       if (boundary->IndexInParent() < container->IndexInParent()) {
-        container->ToTextPoint(mStartContainer.StartAssignment(),
-                               &mStartOffset);
-        mStartContainer.get()->AddRef();
+        ToTextPoint(container, &mStartContainer, &mStartOffset);
       }
     }
 
@@ -179,7 +152,8 @@ bool TextRange::Crop(Accessible* aContainer) {
     containerParents.SetLengthAndRetainStorage(0);
   }
 
-  boundary = mEndContainer->GetChildAtOffset(mEndOffset);
+  HyperTextAccessibleBase* endHyper = mEndContainer->AsHyperTextBase();
+  boundary = endHyper->GetChildAtOffset(mEndOffset);
   if (boundary == aContainer) {
     return true;
   }
@@ -191,13 +165,11 @@ bool TextRange::Crop(Accessible* aContainer) {
 
   if (boundaryPos == 0) {
     if (containerPos != 0) {
-      aContainer->ToTextPoint(mEndContainer.StartAssignment(), &mEndOffset,
-                              false);
-      static_cast<Accessible*>(mEndContainer)->AddRef();
+      ToTextPoint(aContainer, &mEndContainer, &mEndOffset, false);
     } else {
       container = aContainer;
     }
-  } else if (containerPos != 0) {
+  } else {
     boundary = boundaryParents[boundaryPos];
     container = containerParents[containerPos];
   }
@@ -211,77 +183,154 @@ bool TextRange::Crop(Accessible* aContainer) {
   }
 
   if (boundary->IndexInParent() > container->IndexInParent()) {
-    container->ToTextPoint(mEndContainer.StartAssignment(), &mEndOffset, false);
-    static_cast<Accessible*>(mEndContainer)->AddRef();
+    ToTextPoint(container, &mEndContainer, &mEndOffset, false);
   }
 
   return true;
 }
 
-void TextRange::FindText(const nsAString& aText, EDirection aDirection,
-                         nsCaseTreatment aCaseSensitive,
-                         TextRange* aFoundRange) const {}
+/**
+ * Convert the given DOM point to a DOM point in non-generated contents.
+ *
+ * If aDOMPoint is in ::before, the result is immediately after it.
+ * If aDOMPoint is in ::after, the result is immediately before it.
+ */
+static DOMPoint ClosestNotGeneratedDOMPoint(const DOMPoint& aDOMPoint,
+                                            nsIContent* aElementContent) {
+  MOZ_ASSERT(aDOMPoint.node, "The node must not be null");
 
-void TextRange::FindAttr(EAttr aAttr, nsIVariant* aValue, EDirection aDirection,
-                         TextRange* aFoundRange) const {}
+  // ::before pseudo element
+  if (aElementContent &&
+      aElementContent->IsGeneratedContentContainerForBefore()) {
+    MOZ_ASSERT(aElementContent->GetParent(),
+               "::before must have parent element");
+    // The first child of its parent (i.e., immediately after the ::before) is
+    // good point for a DOM range.
+    return DOMPoint(aElementContent->GetParent(), 0);
+  }
 
-void TextRange::AddToSelection() const {}
+  // ::after pseudo element
+  if (aElementContent &&
+      aElementContent->IsGeneratedContentContainerForAfter()) {
+    MOZ_ASSERT(aElementContent->GetParent(),
+               "::after must have parent element");
+    // The end of its parent (i.e., immediately before the ::after) is good
+    // point for a DOM range.
+    return DOMPoint(aElementContent->GetParent(),
+                    aElementContent->GetParent()->GetChildCount());
+  }
 
-void TextRange::RemoveFromSelection() const {}
+  return aDOMPoint;
+}
 
-void TextRange::Select() const {}
+/**
+ * GetElementAsContentOf() returns a content representing an element which is
+ * or includes aNode.
+ *
+ * XXX This method is enough to retrieve ::before or ::after pseudo element.
+ *     So, if you want to use this for other purpose, you might need to check
+ *     ancestors too.
+ */
+static nsIContent* GetElementAsContentOf(nsINode* aNode) {
+  if (auto* element = dom::Element::FromNode(aNode)) {
+    return element;
+  }
+  return aNode->GetParentElement();
+}
 
-void TextRange::ScrollIntoView(EHowToAlign aHow) const {}
+bool TextRange::AssignDOMRange(nsRange* aRange, bool* aReversed) const {
+  MOZ_ASSERT(mRoot->IsLocal(), "Not supported for RemoteAccessible");
+  bool reversed = EndPoint() < StartPoint();
+  if (aReversed) {
+    *aReversed = reversed;
+  }
+
+  HyperTextAccessible* startHyper = mStartContainer->AsLocal()->AsHyperText();
+  HyperTextAccessible* endHyper = mEndContainer->AsLocal()->AsHyperText();
+  DOMPoint startPoint = reversed ? endHyper->OffsetToDOMPoint(mEndOffset)
+                                 : startHyper->OffsetToDOMPoint(mStartOffset);
+  if (!startPoint.node) {
+    return false;
+  }
+
+  // HyperTextAccessible manages pseudo elements generated by ::before or
+  // ::after.  However, contents of them are not in the DOM tree normally.
+  // Therefore, they are not selectable and editable.  So, when this creates
+  // a DOM range, it should not start from nor end in any pseudo contents.
+
+  nsIContent* container = GetElementAsContentOf(startPoint.node);
+  DOMPoint startPointForDOMRange =
+      ClosestNotGeneratedDOMPoint(startPoint, container);
+  aRange->SetStart(startPointForDOMRange.node, startPointForDOMRange.idx);
+
+  // If the caller wants collapsed range, let's collapse the range to its start.
+  if (mEndContainer == mStartContainer && mEndOffset == mStartOffset) {
+    aRange->Collapse(true);
+    return true;
+  }
+
+  DOMPoint endPoint = reversed ? startHyper->OffsetToDOMPoint(mStartOffset)
+                               : endHyper->OffsetToDOMPoint(mEndOffset);
+  if (!endPoint.node) {
+    return false;
+  }
+
+  if (startPoint.node != endPoint.node) {
+    container = GetElementAsContentOf(endPoint.node);
+  }
+
+  DOMPoint endPointForDOMRange =
+      ClosestNotGeneratedDOMPoint(endPoint, container);
+  aRange->SetEnd(endPointForDOMRange.node, endPointForDOMRange.idx);
+  return true;
+}
+
+void TextRange::TextRangesFromSelection(dom::Selection* aSelection,
+                                        nsTArray<TextRange>* aRanges) {
+  MOZ_ASSERT(aRanges->Length() == 0, "TextRange array supposed to be empty");
+
+  aRanges->SetCapacity(aSelection->RangeCount());
+
+  const uint32_t rangeCount = aSelection->RangeCount();
+  for (const uint32_t idx : IntegerRange(rangeCount)) {
+    MOZ_ASSERT(aSelection->RangeCount() == rangeCount);
+    const nsRange* DOMRange = aSelection->GetRangeAt(idx);
+    MOZ_ASSERT(DOMRange);
+    HyperTextAccessible* startContainer =
+        nsAccUtils::GetTextContainer(DOMRange->GetStartContainer());
+    HyperTextAccessible* endContainer =
+        nsAccUtils::GetTextContainer(DOMRange->GetEndContainer());
+    HyperTextAccessible* commonAncestor = nsAccUtils::GetTextContainer(
+        DOMRange->GetClosestCommonInclusiveAncestor());
+    if (!startContainer || !endContainer) {
+      continue;
+    }
+
+    int32_t startOffset = startContainer->DOMPointToOffset(
+        DOMRange->GetStartContainer(), DOMRange->StartOffset(), false);
+    int32_t endOffset = endContainer->DOMPointToOffset(
+        DOMRange->GetEndContainer(), DOMRange->EndOffset(), true);
+
+    TextRange tr(commonAncestor && commonAncestor->IsTextField()
+                     ? commonAncestor
+                     : startContainer->Document(),
+                 startContainer, startOffset, endContainer, endOffset);
+    *(aRanges->AppendElement()) = std::move(tr);
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // pivate
 
-void TextRange::Set(HyperTextAccessible* aRoot,
-                    HyperTextAccessible* aStartContainer, int32_t aStartOffset,
-                    HyperTextAccessible* aEndContainer, int32_t aEndOffset) {
+void TextRange::Set(Accessible* aRoot, Accessible* aStartContainer,
+                    int32_t aStartOffset, Accessible* aEndContainer,
+                    int32_t aEndOffset) {
   mRoot = aRoot;
   mStartContainer = aStartContainer;
   mEndContainer = aEndContainer;
   mStartOffset = aStartOffset;
   mEndOffset = aEndOffset;
 }
-
-bool TextRange::TextInternal(nsAString& aText, Accessible* aCurrent,
-                             uint32_t aStartIntlOffset) const {
-  bool moveNext = true;
-  int32_t endIntlOffset = -1;
-  if (aCurrent->Parent() == mEndContainer &&
-      mEndContainer->GetChildAtOffset(mEndOffset) == aCurrent) {
-    uint32_t currentStartOffset = mEndContainer->GetChildOffset(aCurrent);
-    endIntlOffset = mEndOffset - currentStartOffset;
-    if (endIntlOffset == 0) return false;
-
-    moveNext = false;
-  }
-
-  if (aCurrent->IsTextLeaf()) {
-    aCurrent->AppendTextTo(aText, aStartIntlOffset,
-                           endIntlOffset - aStartIntlOffset);
-    if (!moveNext) return false;
-  }
-
-  Accessible* next = aCurrent->FirstChild();
-  if (next) {
-    if (!TextInternal(aText, next, 0)) return false;
-  }
-
-  next = aCurrent->NextSibling();
-  if (next) {
-    if (!TextInternal(aText, next, 0)) return false;
-  }
-
-  return moveNext;
-}
-
-void TextRange::MoveInternal(ETextUnit aUnit, int32_t aCount,
-                             HyperTextAccessible& aContainer, int32_t aOffset,
-                             HyperTextAccessible* aStopContainer,
-                             int32_t aStopOffset) {}
 
 Accessible* TextRange::CommonParent(Accessible* aAcc1, Accessible* aAcc2,
                                     nsTArray<Accessible*>* aParents1,

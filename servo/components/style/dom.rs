@@ -8,21 +8,21 @@
 #![deny(missing_docs)]
 
 use crate::applicable_declarations::ApplicableDeclarationBlock;
+use crate::context::SharedStyleContext;
 #[cfg(feature = "gecko")]
-use crate::context::PostAnimationTasks;
-#[cfg(feature = "gecko")]
-use crate::context::UpdateAnimationsTasks;
+use crate::context::{PostAnimationTasks, UpdateAnimationsTasks};
 use crate::data::ElementData;
-use crate::element_state::ElementState;
-use crate::font_metrics::FontMetricsProvider;
 use crate::media_queries::Device;
-use crate::properties::{AnimationRules, ComputedValues, PropertyDeclarationBlock};
+use crate::properties::{AnimationDeclarations, ComputedValues, PropertyDeclarationBlock};
 use crate::selector_parser::{AttrValue, Lang, PseudoElement, SelectorImpl};
-use crate::shared_lock::Locked;
+use crate::shared_lock::{Locked, SharedRwLock};
+use crate::stylesheets::scope_rule::ImplicitScopeRoot;
 use crate::stylist::CascadeData;
-use crate::traversal_flags::TraversalFlags;
-use crate::{Atom, LocalName, Namespace, WeakAtom};
+use crate::values::computed::Display;
+use crate::values::AtomIdent;
+use crate::{LocalName, WeakAtom};
 use atomic_refcell::{AtomicRef, AtomicRefMut};
+use dom::ElementState;
 use selectors::matching::{ElementSelectorFlags, QuirksMode, VisitedHandlingMode};
 use selectors::sink::Push;
 use selectors::Element as SelectorsElement;
@@ -96,7 +96,7 @@ where
     #[inline]
     fn next(&mut self) -> Option<N> {
         let prev = self.previous.take()?;
-        self.previous = prev.next_in_preorder(Some(self.scope));
+        self.previous = prev.next_in_preorder(self.scope);
         self.previous
     }
 }
@@ -122,13 +122,16 @@ pub trait TDocument: Sized + Copy + Clone {
     /// return an empty slice.
     fn elements_with_id<'a>(
         &self,
-        _id: &Atom,
+        _id: &AtomIdent,
     ) -> Result<&'a [<Self::ConcreteNode as TNode>::ConcreteElement], ()>
     where
         Self: 'a,
     {
         Err(())
     }
+
+    /// This document's shared lock.
+    fn shared_lock(&self) -> &SharedRwLock;
 }
 
 /// The `TNode` trait. This is the main generic trait over which the style
@@ -149,7 +152,7 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
     /// Get this node's first child.
     fn first_child(&self) -> Option<Self>;
 
-    /// Get this node's first child.
+    /// Get this node's last child.
     fn last_child(&self) -> Option<Self>;
 
     /// Get this node's previous sibling.
@@ -162,6 +165,7 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
     fn owner_doc(&self) -> Self::ConcreteDocument;
 
     /// Iterate over the DOM children of a node.
+    #[inline(always)]
     fn dom_children(&self) -> DomChildren<Self> {
         DomChildren(self.first_child())
     }
@@ -170,6 +174,7 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
     fn is_in_document(&self) -> bool;
 
     /// Iterate over the DOM children of a node, in preorder.
+    #[inline(always)]
     fn dom_descendants(&self) -> DomDescendants<Self> {
         DomDescendants {
             previous: Some(*self),
@@ -177,31 +182,41 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
         }
     }
 
-    /// Returns the next children in pre-order, optionally scoped to a subtree
-    /// root.
+    /// Returns the next node after this one, in a pre-order tree-traversal of
+    /// the subtree rooted at scoped_to.
     #[inline]
-    fn next_in_preorder(&self, scoped_to: Option<Self>) -> Option<Self> {
+    fn next_in_preorder(&self, scoped_to: Self) -> Option<Self> {
         if let Some(c) = self.first_child() {
             return Some(c);
         }
 
-        if Some(*self) == scoped_to {
-            return None;
-        }
-
         let mut current = *self;
         loop {
+            if current == scoped_to {
+                return None;
+            }
+
             if let Some(s) = current.next_sibling() {
                 return Some(s);
             }
 
-            let parent = current.parent_node();
-            if parent == scoped_to {
-                return None;
-            }
-
-            current = parent.expect("Not a descendant of the scope?");
+            debug_assert!(
+                current.parent_node().is_some(),
+                "Not a descendant of the scope?"
+            );
+            current = current.parent_node()?;
         }
+    }
+
+    /// Returns the depth of this node in the DOM.
+    fn depth(&self) -> usize {
+        let mut depth = 0;
+        let mut curr = *self;
+        while let Some(parent) = curr.traversal_parent() {
+            depth += 1;
+            curr = parent.as_node();
+        }
+        depth
     }
 
     /// Get this node's parent element from the perspective of a restyle
@@ -211,6 +226,18 @@ pub trait TNode: Sized + Copy + Clone + Debug + NodeInfo + PartialEq {
     /// Get this node's parent element if present.
     fn parent_element(&self) -> Option<Self::ConcreteElement> {
         self.parent_node().and_then(|n| n.as_element())
+    }
+
+    /// Get this node's parent element, or shadow host if it's a shadow root.
+    fn parent_element_or_host(&self) -> Option<Self::ConcreteElement> {
+        let parent = self.parent_node()?;
+        if let Some(e) = parent.as_element() {
+            return Some(e);
+        }
+        if let Some(root) = parent.as_shadow_root() {
+            return Some(root.host());
+        }
+        None
     }
 
     /// Converts self into an `OpaqueNode`.
@@ -342,12 +369,17 @@ pub trait TShadowRoot: Sized + Copy + Clone + Debug + PartialEq {
     /// return an empty slice.
     fn elements_with_id<'a>(
         &self,
-        _id: &Atom,
+        _id: &AtomIdent,
     ) -> Result<&'a [<Self::ConcreteNode as TNode>::ConcreteElement], ()>
     where
         Self: 'a,
     {
         Err(())
+    }
+
+    /// Get the implicit scope for a stylesheet in given index.
+    fn implicit_scope_for_sheet(&self, _sheet_index: usize) -> Option<ImplicitScopeRoot> {
+        None
     }
 }
 
@@ -364,12 +396,6 @@ pub trait TElement:
     /// syntax.
     type TraversalChildrenIterator: Iterator<Item = Self::ConcreteNode>;
 
-    /// Type of the font metrics provider
-    ///
-    /// XXXManishearth It would be better to make this a type parameter on
-    /// ThreadLocalStyleContext and StyleContext
-    type FontMetricsProvider: FontMetricsProvider + Send;
-
     /// Get this element as a node.
     fn as_node(&self) -> Self::ConcreteNode;
 
@@ -382,23 +408,11 @@ pub trait TElement:
         true
     }
 
-    /// Whether this element should match user and author rules.
+    /// Whether this element should match user and content rules.
     ///
     /// We use this for Native Anonymous Content in Gecko.
-    fn matches_user_and_author_rules(&self) -> bool {
+    fn matches_user_and_content_rules(&self) -> bool {
         true
-    }
-
-    /// Returns the depth of this element in the DOM.
-    fn depth(&self) -> usize {
-        let mut depth = 0;
-        let mut curr = *self;
-        while let Some(parent) = curr.traversal_parent() {
-            depth += 1;
-            curr = parent;
-        }
-
-        depth
     }
 
     /// Get this node's parent element from the perspective of a restyle
@@ -477,29 +491,31 @@ pub trait TElement:
     /// Get the combined animation and transition rules.
     ///
     /// FIXME(emilio): Is this really useful?
-    fn animation_rules(&self) -> AnimationRules {
+    fn animation_declarations(&self, context: &SharedStyleContext) -> AnimationDeclarations {
         if !self.may_have_animations() {
-            return AnimationRules(None, None);
+            return Default::default();
         }
 
-        AnimationRules(self.animation_rule(), self.transition_rule())
+        AnimationDeclarations {
+            animations: self.animation_rule(context),
+            transitions: self.transition_rule(context),
+        }
     }
 
     /// Get this element's animation rule.
-    fn animation_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        None
-    }
+    fn animation_rule(
+        &self,
+        _: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>>;
 
     /// Get this element's transition rule.
-    fn transition_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        None
-    }
+    fn transition_rule(
+        &self,
+        context: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>>;
 
     /// Get this element's state, for non-tree-structural pseudos.
     fn state(&self) -> ElementState;
-
-    /// Whether this element has an attribute with a given namespace.
-    fn has_attr(&self, namespace: &Namespace, attr: &LocalName) -> bool;
 
     /// Returns whether this element has a `part` attribute.
     fn has_part_attr(&self) -> bool;
@@ -513,20 +529,30 @@ pub trait TElement:
     /// Internal iterator for the classes of this element.
     fn each_class<F>(&self, callback: F)
     where
-        F: FnMut(&Atom);
+        F: FnMut(&AtomIdent);
+
+    /// Internal iterator for the classes of this element.
+    fn each_custom_state<F>(&self, callback: F)
+    where
+        F: FnMut(&AtomIdent);
 
     /// Internal iterator for the part names of this element.
     fn each_part<F>(&self, _callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
     }
 
+    /// Internal iterator for the attribute names of this element.
+    fn each_attr_name<F>(&self, callback: F)
+    where
+        F: FnMut(&LocalName);
+
     /// Internal iterator for the part names that this element exports for a
     /// given part name.
-    fn each_exported_part<F>(&self, _name: &Atom, _callback: F)
+    fn each_exported_part<F>(&self, _name: &AtomIdent, _callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
     }
 
@@ -569,30 +595,6 @@ pub trait TElement:
 
     /// Flags this element as having handled already its snapshot.
     unsafe fn set_handled_snapshot(&self);
-
-    /// Returns whether the element's styles are up-to-date for |traversal_flags|.
-    fn has_current_styles_for_traversal(
-        &self,
-        data: &ElementData,
-        traversal_flags: TraversalFlags,
-    ) -> bool {
-        if traversal_flags.for_animation_only() {
-            // In animation-only restyle we never touch snapshots and don't
-            // care about them. But we can't assert '!self.handled_snapshot()'
-            // here since there are some cases that a second animation-only
-            // restyle which is a result of normal restyle (e.g. setting
-            // animation-name in normal restyle and creating a new CSS
-            // animation in a SequentialTask) is processed after the normal
-            // traversal in that we had elements that handled snapshot.
-            return data.has_styles() && !data.hint.has_animation_hint_or_recascade();
-        }
-
-        if self.has_snapshot() && !self.handled_snapshot() {
-            return false;
-        }
-
-        data.has_styles() && !data.hint.has_non_animation_invalidations()
-    }
 
     /// Returns whether the element's styles are up-to-date after traversal
     /// (i.e. in post traversal).
@@ -659,11 +661,6 @@ pub trait TElement:
         false
     }
 
-    /// Returns true if this element is in a native anonymous subtree.
-    fn is_in_native_anonymous_subtree(&self) -> bool {
-        false
-    }
-
     /// Returns the pseudo-element implemented by this element, if any.
     ///
     /// Gecko traverses pseudo-elements during the style traversal, and we need
@@ -711,25 +708,10 @@ pub trait TElement:
     /// native anonymous content can opt out of this style fixup.)
     fn skip_item_display_fixup(&self) -> bool;
 
-    /// Sets selector flags, which indicate what kinds of selectors may have
-    /// matched on this element and therefore what kind of work may need to
-    /// be performed when DOM state changes.
-    ///
-    /// This is unsafe, like all the flag-setting methods, because it's only safe
-    /// to call with exclusive access to the element. When setting flags on the
-    /// parent during parallel traversal, we use SequentialTask to queue up the
-    /// set to run after the threads join.
-    unsafe fn set_selector_flags(&self, flags: ElementSelectorFlags);
-
-    /// Returns true if the element has all the specified selector flags.
-    fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool;
-
     /// In Gecko, element has a flag that represents the element may have
     /// any type of animations or not to bail out animation stuff early.
     /// Whereas Servo doesn't have such flag.
-    fn may_have_animations(&self) -> bool {
-        false
-    }
+    fn may_have_animations(&self) -> bool;
 
     /// Creates a task to update various animation state on a given (pseudo-)element.
     #[cfg(feature = "gecko")]
@@ -746,14 +728,25 @@ pub trait TElement:
     /// Returns true if the element has relevant animations. Relevant
     /// animations are those animations that are affecting the element's style
     /// or are scheduled to do so in the future.
-    fn has_animations(&self) -> bool;
+    fn has_animations(&self, context: &SharedStyleContext) -> bool;
 
-    /// Returns true if the element has a CSS animation.
-    fn has_css_animations(&self) -> bool;
+    /// Returns true if the element has a CSS animation. The `context` and `pseudo_element`
+    /// arguments are only used by Servo, since it stores animations globally and pseudo-elements
+    /// are not in the DOM.
+    fn has_css_animations(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has a CSS transition (including running transitions and
-    /// completed transitions).
-    fn has_css_transitions(&self) -> bool;
+    /// completed transitions). The `context` and `pseudo_element` arguments are only used
+    /// by Servo, since it stores animations globally and pseudo-elements are not in the DOM.
+    fn has_css_transitions(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has animation restyle hints.
     fn has_animation_restyle_hints(&self) -> bool {
@@ -800,14 +793,11 @@ pub trait TElement:
         Self: 'a,
         F: FnMut(&'a CascadeData, Self),
     {
-        use rule_collector::containing_shadow_ignoring_svg_use;
+        use crate::rule_collector::containing_shadow_ignoring_svg_use;
 
         let target = self.rule_hash_target();
-        if !target.matches_user_and_author_rules() {
-            return false;
-        }
-
-        let mut doc_rules_apply = true;
+        let matches_user_and_content_rules = target.matches_user_and_content_rules();
+        let mut doc_rules_apply = matches_user_and_content_rules;
 
         // Use the same rules to look for the containing host as we do for rule
         // collection.
@@ -848,16 +838,16 @@ pub trait TElement:
                                 }
                             }
                             // TODO: Could be more granular.
-                            if !shadow.host().exports_any_part() {
+                            if !inner_shadow_host.exports_any_part() {
                                 break;
                             }
                             inner_shadow = shadow;
                         },
                         None => {
                             // TODO(emilio): Should probably distinguish with
-                            // MatchesDocumentRules::{No,Yes,IfPart} or
-                            // something so that we could skip some work.
-                            doc_rules_apply = true;
+                            // MatchesDocumentRules::{No,Yes,IfPart} or something so that we could
+                            // skip some work.
+                            doc_rules_apply = matches_user_and_content_rules;
                             break;
                         },
                     }
@@ -867,18 +857,6 @@ pub trait TElement:
 
         doc_rules_apply
     }
-
-    /// Does a rough (and cheap) check for whether or not transitions might need to be updated that
-    /// will quickly return false for the common case of no transitions specified or running. If
-    /// this returns false, we definitely don't need to update transitions but if it returns true
-    /// we can perform the more thoroughgoing check, needs_transitions_update, to further
-    /// reduce the possibility of false positives.
-    #[cfg(feature = "gecko")]
-    fn might_need_transitions_update(
-        &self,
-        old_values: Option<&ComputedValues>,
-        new_values: &ComputedValues,
-    ) -> bool;
 
     /// Returns true if one of the transitions needs to be updated on this element. We check all
     /// the transition properties to make sure that updating transitions is necessary.
@@ -921,6 +899,20 @@ pub trait TElement:
     /// Returns element's namespace.
     fn namespace(&self)
         -> &<SelectorImpl as selectors::parser::SelectorImpl>::BorrowedNamespaceUrl;
+
+    /// Returns the size of the element to be used in container size queries.
+    /// This will usually be the size of the content area of the primary box,
+    /// but can be None if there is no box or if some axis lacks size containment.
+    fn query_container_size(
+        &self,
+        display: &Display,
+    ) -> euclid::default::Size2D<Option<app_units::Au>>;
+
+    /// Returns true if the element has all of specified selector flags.
+    fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool;
+
+    /// Returns the search direction for relative selector invalidation, if it is on the search path.
+    fn relative_selector_search_direction(&self) -> ElementSelectorFlags;
 }
 
 /// TNode and TElement aren't Send because we want to be careful and explicit

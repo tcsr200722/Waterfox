@@ -5,9 +5,8 @@
 //! Generic types for CSS handling of specified and computed values of
 //! [`position`](https://drafts.csswg.org/css-backgrounds-3/#position)
 
-use crate::One;
-use std::fmt::{self, Write};
-use style_traits::{CssWriter, ToCss};
+use crate::values::animated::ToAnimatedZero;
+use crate::values::generics::ratio::Ratio;
 
 /// A generic type for representing a CSS [position](https://drafts.csswg.org/css-values/#position).
 #[derive(
@@ -68,7 +67,6 @@ pub trait PositionComponent {
 /// A generic type for representing an `Auto | <position>`.
 /// This is used by <offset-anchor> for now.
 /// https://drafts.fxtf.org/motion-1/#offset-anchor-property
-/// cbindgen:private-default-tagged-enum-constructor=false
 #[derive(
     Animate,
     Clone,
@@ -82,6 +80,7 @@ pub trait PositionComponent {
     Serialize,
     SpecifiedValueInfo,
     ToAnimatedZero,
+    ToAnimatedValue,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
@@ -102,6 +101,12 @@ impl<Pos> PositionOrAuto<Pos> {
     #[inline]
     pub fn auto() -> Self {
         PositionOrAuto::Auto
+    }
+
+    /// Return true if it is 'auto'.
+    #[inline]
+    pub fn is_auto(&self) -> bool {
+        matches!(self, PositionOrAuto::Auto)
     }
 }
 
@@ -155,42 +160,6 @@ impl<Integer> ZIndex<Integer> {
     }
 }
 
-/// A generic value for the `<ratio>` value.
-#[derive(
-    Animate,
-    Clone,
-    ComputeSquaredDistance,
-    Copy,
-    Debug,
-    MallocSizeOf,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToAnimatedZero,
-    ToComputedValue,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(C)]
-pub struct Ratio<N>(pub N, pub N);
-
-impl<N> ToCss for Ratio<N>
-where
-    N: ToCss + One + std::cmp::PartialEq,
-{
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        self.0.to_css(dest)?;
-        // The second defaults to 1. So if it is one, we omit it in serialization.
-        if !self.1.is_one() {
-            dest.write_str(" / ")?;
-            self.1.to_css(dest)?;
-        }
-        Ok(())
-    }
-}
-
 /// Ratio or None.
 #[derive(
     Animate,
@@ -201,7 +170,6 @@ where
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
-    ToAnimatedZero,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
@@ -213,7 +181,12 @@ pub enum PreferredRatio<N> {
     #[css(skip)]
     None,
     /// With specified ratio
-    Ratio(#[css(field_bound)] Ratio<N>),
+    Ratio(
+        #[animation(field_bound)]
+        #[css(field_bound)]
+        #[distance(field_bound)]
+        Ratio<N>,
+    ),
 }
 
 /// A generic value for the `aspect-ratio` property, the value is `auto || <ratio>`.
@@ -226,7 +199,6 @@ pub enum PreferredRatio<N> {
     MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
-    ToAnimatedZero,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
@@ -239,7 +211,9 @@ pub struct GenericAspectRatio<N> {
     #[css(represents_keyword)]
     pub auto: bool,
     /// The preferred aspect-ratio value.
+    #[animation(field_bound)]
     #[css(field_bound)]
+    #[distance(field_bound)]
     pub ratio: PreferredRatio<N>,
 }
 
@@ -253,5 +227,12 @@ impl<N> AspectRatio<N> {
             auto: true,
             ratio: PreferredRatio::None,
         }
+    }
+}
+
+impl<N> ToAnimatedZero for AspectRatio<N> {
+    #[inline]
+    fn to_animated_zero(&self) -> Result<Self, ()> {
+        Err(())
     }
 }

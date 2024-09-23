@@ -7,15 +7,20 @@
 #ifndef nsFrameLoaderOwner_h_
 #define nsFrameLoaderOwner_h_
 
+#include <functional>
+#include "nsFrameLoader.h"
 #include "nsISupports.h"
 
-class nsFrameLoader;
 namespace mozilla {
 class ErrorResult;
 namespace dom {
 class BrowsingContext;
+class BrowsingContextGroup;
 class BrowserBridgeChild;
+class ContentParent;
+class Element;
 struct RemotenessOptions;
+struct NavigationIsolationOptions;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -43,49 +48,87 @@ class nsFrameLoaderOwner : public nsISupports {
   void SetFrameLoader(nsFrameLoader* aNewFrameLoader);
 
   mozilla::dom::BrowsingContext* GetBrowsingContext();
+  mozilla::dom::BrowsingContext* GetExtantBrowsingContext();
 
   // Destroy (if it exists) and recreate our frameloader, based on new
-  // remoteness requirements. This should follow the same path as
-  // tabbrowser.js's updateBrowserRemoteness, including running the same logic
-  // and firing the same events as unbinding a XULBrowserElement from the tree.
-  // However, this method is available from backend and does not manipulate the
-  // DOM.
+  // remoteness requirements.
+  //
+  // This method is called by frontend code when it wants to perform a
+  // remoteness update, and allows for behaviour such as preserving
+  // BrowsingContexts across process switches during navigation.
+  //
+  // See the WebIDL definition for more details.
   void ChangeRemoteness(const mozilla::dom::RemotenessOptions& aOptions,
                         mozilla::ErrorResult& rv);
 
+  // Like `ChangeRemoteness` but switches to an already-created
+  // `BrowserBridgeChild`. This method is used when performing remote subframe
+  // process switches.
   void ChangeRemotenessWithBridge(mozilla::dom::BrowserBridgeChild* aBridge,
                                   mozilla::ErrorResult& rv);
 
+  // Like `ChangeRemoteness`, but switches into an already-created
+  // `ContentParent`. This method is used when performing toplevel process
+  // switches. If `aContentParent` is nullptr, switches into the parent process.
+  //
+  // If `aReplaceBrowsingContext` is set, BrowsingContext preservation will be
+  // disabled for this process switch.
+  void ChangeRemotenessToProcess(
+      mozilla::dom::ContentParent* aContentParent,
+      const mozilla::dom::NavigationIsolationOptions& aOptions,
+      mozilla::dom::BrowsingContextGroup* aGroup, mozilla::ErrorResult& rv);
+
   void SubframeCrashed();
+
+  void RestoreFrameLoaderFromBFCache(nsFrameLoader* aNewFrameLoader);
+
+  void UpdateFocusAndMouseEnterStateAfterFrameLoaderChange();
+
+  void AttachFrameLoader(nsFrameLoader* aFrameLoader);
+  void DetachFrameLoader(nsFrameLoader* aFrameLoader);
+  // If aDestroyBFCached is true and aFrameLoader is the current frameloader
+  // (mFrameLoader) then this will also call nsFrameLoader::Destroy on all the
+  // other frame loaders in mFrameLoaderList and remove them from the list.
+  void FrameLoaderDestroying(nsFrameLoader* aFrameLoader,
+                             bool aDestroyBFCached);
 
  private:
   bool UseRemoteSubframes();
-  bool ShouldPreserveBrowsingContext(
-      const mozilla::dom::RemotenessOptions& aOptions);
 
   // The enum class for determine how to handle previous BrowsingContext during
   // the change remoteness. It could be followings
   // 1. DONT_PRESERVE
   //    Create a whole new BrowsingContext.
-  // 2. DONT_PRESERVE_BUT_PROPAGETE
-  //    Create a whole new BrowsingContext, but propagate necessary feilds from
-  //    previous BrowsingContext, i.e. COEP.
-  // 3. PRESERVE
+  // 2. PRESERVE
   //    Preserve the previous BrowsingContext.
   enum class ChangeRemotenessContextType {
     DONT_PRESERVE = 0,
-    DONT_PRESERVE_BUT_PROPAGATE = 1,
-    PRESERVE = 2,
+    PRESERVE = 1,
   };
-  void ChangeRemotenessCommon(const ChangeRemotenessContextType& aContextType,
-                              bool aSwitchingInProgressLoad,
-                              const nsAString& aRemoteType,
-                              std::function<void()>& aFrameLoaderInit,
-                              mozilla::ErrorResult& aRv);
+  ChangeRemotenessContextType ShouldPreserveBrowsingContext(
+      bool aIsRemote, bool aReplaceBrowsingContext);
+
+  void ChangeRemotenessCommon(
+      const ChangeRemotenessContextType& aContextType,
+      const mozilla::dom::NavigationIsolationOptions& aOptions,
+      bool aSwitchingInProgressLoad, bool aIsRemote,
+      mozilla::dom::BrowsingContextGroup* aGroup,
+      std::function<void()>& aFrameLoaderInit, mozilla::ErrorResult& aRv);
+
+  void ChangeFrameLoaderCommon(mozilla::dom::Element* aOwner,
+                               bool aRetainPaint);
+
+  void UpdateFocusAndMouseEnterStateAfterFrameLoaderChange(
+      mozilla::dom::Element* aOwner);
 
  protected:
   virtual ~nsFrameLoaderOwner() = default;
   RefPtr<nsFrameLoader> mFrameLoader;
+
+  // The list contains all the nsFrameLoaders created for this owner or moved
+  // from another nsFrameLoaderOwner which haven't been destroyed yet.
+  // In particular it contains all the nsFrameLoaders which are in bfcache.
+  mozilla::LinkedList<nsFrameLoader> mFrameLoaderList;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsFrameLoaderOwner, NS_FRAMELOADEROWNER_IID)

@@ -7,7 +7,7 @@ interface URI;
 interface WindowProxy;
 
 typedef (MatchPatternSet or sequence<DOMString>) MatchPatternSetOrStringSequence;
-typedef (MatchGlob or DOMString) MatchGlobOrString;
+typedef (MatchGlob or UTF8String) MatchGlobOrString;
 
 [ChromeOnly, Exposed=Window]
 interface MozDocumentMatcher {
@@ -21,17 +21,12 @@ interface MozDocumentMatcher {
   boolean matchesURI(URI uri);
 
   /**
-   * Returns true if the the given URI and LoadInfo objects match.
-   * This should be used to determine whether to begin pre-loading a content
-   * script based on network events.
+   * Returns true if the given window matches. This should be used to
+   * determine whether to run a script in a window at load time. Use
+   * ignorePermissions to match without origin permissions in MV3.
    */
-  boolean matchesLoadInfo(URI uri, LoadInfo loadInfo);
-
-  /**
-   * Returns true if the given window matches. This should be used
-   * to determine whether to run a script in a window at load time.
-   */
-  boolean matchesWindow(WindowProxy window);
+  boolean matchesWindowGlobal(WindowGlobalChild windowGlobal,
+                              optional boolean ignorePermissions = false);
 
   /**
    * If true, match all frames. If false, match only top-level frames.
@@ -40,13 +35,32 @@ interface MozDocumentMatcher {
   readonly attribute boolean allFrames;
 
   /**
-   * If true, this (misleadingly-named, but inherited from Chrome) attribute
-   * causes us to match frames with URLs which inherit a principal that
-   * matches one of the match patterns, such as about:blank or about:srcdoc.
+   * If we can't check extension has permissions to access the URI upfront,
+   * set the flag to perform the origin check at runtime, upon matching.
+   * This is always true in MV3, where host permissions are optional.
+   */
+  [Constant]
+  readonly attribute boolean checkPermissions;
+
+  /**
+   * If true, this causes us to match about:blank and about:srcdoc documents by
+   * the URL of the inherit principal, usually the initial URL of the document
+   * that triggered the navigation.
    * If false, we only match frames with an explicit matching URL.
    */
   [Constant]
   readonly attribute boolean matchAboutBlank;
+
+  /**
+   * If true, this causes us to match documents with opaque URLs (such as
+   * about:blank, about:srcdoc, data:, blob:, and sandboxed versions thereof)
+   * by the document principal's origin URI. In case of null principals, their
+   * precursor is used for matching.
+   * When true, matchAboutBlank is implicitly true.
+   * If false, we only match frames with an explicit matching URL.
+   */
+  [Constant]
+  readonly attribute boolean matchOriginAsFallback;
 
   /**
    * The outer window ID of the frame in which to run the script, or 0 if it
@@ -72,19 +86,10 @@ interface MozDocumentMatcher {
   readonly attribute MatchPatternSet? excludeMatches;
 
   /**
-   * A set of glob matchers for URLs in which this script should run. If this
-   * list is present, the script will only run in URLs which match the
-   * `matches` pattern as well as one of these globs.
+   * The originAttributesPattern for which this script should be enabled for.
    */
-  [Cached, Constant, Frozen]
-  readonly attribute sequence<MatchGlob>? includeGlobs;
-
-  /**
-   * A set of glob matchers for URLs in which this script should not run, even
-   * if they match other include patterns or globs.
-   */
-  [Cached, Constant, Frozen]
-  readonly attribute sequence<MatchGlob>? excludeGlobs;
+  [Constant, Throws]
+  readonly attribute any originAttributesPatterns;
 
   /**
    * The policy object for the extension that this matcher belongs to.
@@ -96,7 +101,13 @@ interface MozDocumentMatcher {
 dictionary MozDocumentMatcherInit {
   boolean allFrames = false;
 
+  boolean checkPermissions = false;
+
+  sequence<OriginAttributesPatternDictionary>? originAttributesPatterns = null;
+
   boolean matchAboutBlank = false;
+
+  boolean matchOriginAsFallback = false;
 
   unsigned long long? frameID = null;
 
@@ -135,11 +146,28 @@ enum ContentScriptRunAt {
   "document_idle",
 };
 
+/**
+ * Describes the world where a script should run.
+ */
+enum ContentScriptExecutionWorld {
+  /**
+   * The default execution environment of content scripts.
+   * The name refers to "isolated world", which is a concept from Chromium and
+   * WebKit, used to enforce isolation of the JavaScript execution environments
+   * of content scripts and web pages.
+   */
+  "ISOLATED",
+  /**
+   * The execution environment of the web page.
+   */
+  "MAIN",
+};
+
 [ChromeOnly, Exposed=Window]
 interface WebExtensionContentScript : MozDocumentMatcher {
   [Throws]
   constructor(WebExtensionPolicy extension,
-	      WebExtensionContentScriptInit options);
+              WebExtensionContentScriptInit options);
 
   /**
    * The earliest point in the load cycle at which this script should run. For
@@ -151,6 +179,12 @@ interface WebExtensionContentScript : MozDocumentMatcher {
    */
   [Constant]
   readonly attribute ContentScriptRunAt runAt;
+
+  /**
+   * The world where the script should run.
+   */
+  [Constant]
+  readonly attribute ContentScriptExecutionWorld world;
 
   /**
    * A set of paths, relative to the extension root, of CSS sheets to inject
@@ -169,6 +203,8 @@ interface WebExtensionContentScript : MozDocumentMatcher {
 
 dictionary WebExtensionContentScriptInit : MozDocumentMatcherInit {
   ContentScriptRunAt runAt = "document_idle";
+
+  ContentScriptExecutionWorld world = "ISOLATED";
 
   sequence<DOMString> cssPaths = [];
 

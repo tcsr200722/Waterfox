@@ -1,7 +1,7 @@
-//! `feature = "csvtab"` CSV Virtual Table.
+//! CSV Virtual Table.
 //!
 //! Port of [csv](http://www.sqlite.org/cgi/src/finfo?name=ext/misc/csv.c) C
-//! extension: https://www.sqlite.org/csv.html
+//! extension: `https://www.sqlite.org/csv.html`
 //!
 //! # Example
 //!
@@ -11,7 +11,7 @@
 //!     // Note: This should be done once (usually when opening the DB).
 //!     let db = Connection::open_in_memory()?;
 //!     rusqlite::vtab::csvtab::load_module(&db)?;
-//!     // Assum3e my_csv.csv
+//!     // Assume my_csv.csv
 //!     let schema = "
 //!         CREATE VIRTUAL TABLE my_csv_data
 //!         USING csv(filename = 'my_csv.csv')
@@ -22,6 +22,7 @@
 //! }
 //! ```
 use std::fs::File;
+use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::str;
@@ -29,12 +30,12 @@ use std::str;
 use crate::ffi;
 use crate::types::Null;
 use crate::vtab::{
-    dequote, escape_double_quote, parse_boolean, read_only_module, Context, CreateVTab, IndexInfo,
-    VTab, VTabConnection, VTabCursor, Values,
+    escape_double_quote, parse_boolean, read_only_module, Context, CreateVTab, IndexInfo, VTab,
+    VTabConfig, VTabConnection, VTabCursor, VTabKind, Values,
 };
 use crate::{Connection, Error, Result};
 
-/// `feature = "csvtab"` Register the "csv" module.
+/// Register the "csv" module.
 /// ```sql
 /// CREATE VIRTUAL TABLE vtab USING csv(
 ///   filename=FILENAME -- Name of file containing CSV content
@@ -47,12 +48,12 @@ use crate::{Connection, Error, Result};
 /// ```
 pub fn load_module(conn: &Connection) -> Result<()> {
     let aux: Option<()> = None;
-    conn.create_module("csv", read_only_module::<CSVTab>(), aux)
+    conn.create_module("csv", read_only_module::<CsvTab>(), aux)
 }
 
 /// An instance of the CSV virtual table
 #[repr(C)]
-struct CSVTab {
+struct CsvTab {
     /// Base class. Must be first
     base: ffi::sqlite3_vtab,
     /// Name of the CSV file
@@ -64,26 +65,13 @@ struct CSVTab {
     offset_first_row: csv::Position,
 }
 
-impl CSVTab {
+impl CsvTab {
     fn reader(&self) -> Result<csv::Reader<File>, csv::Error> {
         csv::ReaderBuilder::new()
             .has_headers(self.has_headers)
             .delimiter(self.delimiter)
             .quote(self.quote)
             .from_path(&self.filename)
-    }
-
-    fn parameter(c_slice: &[u8]) -> Result<(&str, &str)> {
-        let arg = str::from_utf8(c_slice)?.trim();
-        let mut split = arg.split('=');
-        if let Some(key) = split.next() {
-            if let Some(value) = split.next() {
-                let param = key.trim();
-                let value = dequote(value);
-                return Ok((param, value));
-            }
-        }
-        Err(Error::ModuleError(format!("illegal argument: '{}'", arg)))
     }
 
     fn parse_byte(arg: &str) -> Option<u8> {
@@ -95,20 +83,20 @@ impl CSVTab {
     }
 }
 
-unsafe impl VTab for CSVTab {
+unsafe impl<'vtab> VTab<'vtab> for CsvTab {
     type Aux = ();
-    type Cursor = CSVTabCursor;
+    type Cursor = CsvTabCursor<'vtab>;
 
     fn connect(
-        _: &mut VTabConnection,
+        db: &mut VTabConnection,
         _aux: Option<&()>,
         args: &[&[u8]],
-    ) -> Result<(String, CSVTab)> {
+    ) -> Result<(String, CsvTab)> {
         if args.len() < 4 {
             return Err(Error::ModuleError("no CSV file specified".to_owned()));
         }
 
-        let mut vtab = CSVTab {
+        let mut vtab = CsvTab {
             base: ffi::sqlite3_vtab::default(),
             filename: "".to_owned(),
             has_headers: false,
@@ -121,14 +109,11 @@ unsafe impl VTab for CSVTab {
 
         let args = &args[3..];
         for c_slice in args {
-            let (param, value) = CSVTab::parameter(c_slice)?;
+            let (param, value) = super::parameter(c_slice)?;
             match param {
                 "filename" => {
                     if !Path::new(value).exists() {
-                        return Err(Error::ModuleError(format!(
-                            "file '{}' does not exist",
-                            value
-                        )));
+                        return Err(Error::ModuleError(format!("file '{value}' does not exist")));
                     }
                     vtab.filename = value.to_owned();
                 }
@@ -149,8 +134,7 @@ unsafe impl VTab for CSVTab {
                         n_col = Some(n);
                     } else {
                         return Err(Error::ModuleError(format!(
-                            "unrecognized argument to 'columns': {}",
-                            value
+                            "unrecognized argument to 'columns': {value}"
                         )));
                     }
                 }
@@ -159,23 +143,21 @@ unsafe impl VTab for CSVTab {
                         vtab.has_headers = b;
                     } else {
                         return Err(Error::ModuleError(format!(
-                            "unrecognized argument to 'header': {}",
-                            value
+                            "unrecognized argument to 'header': {value}"
                         )));
                     }
                 }
                 "delimiter" => {
-                    if let Some(b) = CSVTab::parse_byte(value) {
+                    if let Some(b) = CsvTab::parse_byte(value) {
                         vtab.delimiter = b;
                     } else {
                         return Err(Error::ModuleError(format!(
-                            "unrecognized argument to 'delimiter': {}",
-                            value
+                            "unrecognized argument to 'delimiter': {value}"
                         )));
                     }
                 }
                 "quote" => {
-                    if let Some(b) = CSVTab::parse_byte(value) {
+                    if let Some(b) = CsvTab::parse_byte(value) {
                         if b == b'0' {
                             vtab.quote = 0;
                         } else {
@@ -183,15 +165,13 @@ unsafe impl VTab for CSVTab {
                         }
                     } else {
                         return Err(Error::ModuleError(format!(
-                            "unrecognized argument to 'quote': {}",
-                            value
+                            "unrecognized argument to 'quote': {value}"
                         )));
                     }
                 }
                 _ => {
                     return Err(Error::ModuleError(format!(
-                        "unrecognized parameter '{}'",
-                        param
+                        "unrecognized parameter '{param}'"
                     )));
                 }
             }
@@ -211,7 +191,7 @@ unsafe impl VTab for CSVTab {
                     if n_col.is_none() && schema.is_none() {
                         cols = headers
                             .into_iter()
-                            .map(|header| escape_double_quote(&header).into_owned())
+                            .map(|header| escape_double_quote(header).into_owned())
                             .collect();
                     }
                 }
@@ -220,13 +200,13 @@ unsafe impl VTab for CSVTab {
                 let mut record = csv::ByteRecord::new();
                 if reader.read_byte_record(&mut record)? {
                     for (i, _) in record.iter().enumerate() {
-                        cols.push(format!("c{}", i));
+                        cols.push(format!("c{i}"));
                     }
                 }
             }
         } else if let Some(n_col) = n_col {
             for i in 0..n_col {
-                cols.push(format!("c{}", i));
+                cols.push(format!("c{i}"));
             }
         }
 
@@ -248,7 +228,7 @@ unsafe impl VTab for CSVTab {
             }
             schema = Some(sql);
         }
-
+        db.config(VTabConfig::DirectOnly)?;
         Ok((schema.unwrap(), vtab))
     }
 
@@ -258,16 +238,18 @@ unsafe impl VTab for CSVTab {
         Ok(())
     }
 
-    fn open(&self) -> Result<CSVTabCursor> {
-        Ok(CSVTabCursor::new(self.reader()?))
+    fn open(&mut self) -> Result<CsvTabCursor<'_>> {
+        Ok(CsvTabCursor::new(self.reader()?))
     }
 }
 
-impl CreateVTab for CSVTab {}
+impl CreateVTab<'_> for CsvTab {
+    const KIND: VTabKind = VTabKind::Default;
+}
 
 /// A cursor for the CSV virtual table
 #[repr(C)]
-struct CSVTabCursor {
+struct CsvTabCursor<'vtab> {
     /// Base class. Must be first
     base: ffi::sqlite3_vtab_cursor,
     /// The CSV reader object
@@ -277,26 +259,28 @@ struct CSVTabCursor {
     /// Values of the current row
     cols: csv::StringRecord,
     eof: bool,
+    phantom: PhantomData<&'vtab CsvTab>,
 }
 
-impl CSVTabCursor {
-    fn new(reader: csv::Reader<File>) -> CSVTabCursor {
-        CSVTabCursor {
+impl CsvTabCursor<'_> {
+    fn new<'vtab>(reader: csv::Reader<File>) -> CsvTabCursor<'vtab> {
+        CsvTabCursor {
             base: ffi::sqlite3_vtab_cursor::default(),
             reader,
             row_number: 0,
             cols: csv::StringRecord::new(),
             eof: false,
+            phantom: PhantomData,
         }
     }
 
     /// Accessor to the associated virtual table.
-    fn vtab(&self) -> &CSVTab {
-        unsafe { &*(self.base.pVtab as *const CSVTab) }
+    fn vtab(&self) -> &CsvTab {
+        unsafe { &*(self.base.pVtab as *const CsvTab) }
     }
 }
 
-unsafe impl VTabCursor for CSVTabCursor {
+unsafe impl VTabCursor for CsvTabCursor<'_> {
     // Only a full table scan is supported.  So `filter` simply rewinds to
     // the beginning.
     fn filter(
@@ -334,8 +318,7 @@ unsafe impl VTabCursor for CSVTabCursor {
     fn column(&self, ctx: &mut Context, col: c_int) -> Result<()> {
         if col < 0 || col as usize >= self.cols.len() {
             return Err(Error::ModuleError(format!(
-                "column index out of bounds: {}",
-                col
+                "column index out of bounds: {col}"
             )));
         }
         if self.cols.is_empty() {
@@ -351,6 +334,7 @@ unsafe impl VTabCursor for CSVTabCursor {
 }
 
 impl From<csv::Error> for Error {
+    #[cold]
     fn from(err: csv::Error) -> Error {
         Error::ModuleError(err.to_string())
     }
@@ -359,53 +343,45 @@ impl From<csv::Error> for Error {
 #[cfg(test)]
 mod test {
     use crate::vtab::csvtab;
-    use crate::{Connection, Result, NO_PARAMS};
+    use crate::{Connection, Result};
     use fallible_iterator::FallibleIterator;
 
     #[test]
-    fn test_csv_module() {
-        let db = Connection::open_in_memory().unwrap();
-        csvtab::load_module(&db).unwrap();
-        db.execute_batch("CREATE VIRTUAL TABLE vtab USING csv(filename='test.csv', header=yes)")
-            .unwrap();
+    fn test_csv_module() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        csvtab::load_module(&db)?;
+        db.execute_batch("CREATE VIRTUAL TABLE vtab USING csv(filename='test.csv', header=yes)")?;
 
         {
-            let mut s = db.prepare("SELECT rowid, * FROM vtab").unwrap();
+            let mut s = db.prepare("SELECT rowid, * FROM vtab")?;
             {
                 let headers = s.column_names();
                 assert_eq!(vec!["rowid", "colA", "colB", "colC"], headers);
             }
 
-            let ids: Result<Vec<i32>> = s
-                .query(NO_PARAMS)
-                .unwrap()
-                .map(|row| row.get::<_, i32>(0))
-                .collect();
-            let sum = ids.unwrap().iter().sum::<i32>();
+            let ids: Result<Vec<i32>> = s.query([])?.map(|row| row.get::<_, i32>(0)).collect();
+            let sum = ids?.iter().sum::<i32>();
             assert_eq!(sum, 15);
         }
-        db.execute_batch("DROP TABLE vtab").unwrap();
+        db.execute_batch("DROP TABLE vtab")
     }
 
     #[test]
-    fn test_csv_cursor() {
-        let db = Connection::open_in_memory().unwrap();
-        csvtab::load_module(&db).unwrap();
-        db.execute_batch("CREATE VIRTUAL TABLE vtab USING csv(filename='test.csv', header=yes)")
-            .unwrap();
+    fn test_csv_cursor() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        csvtab::load_module(&db)?;
+        db.execute_batch("CREATE VIRTUAL TABLE vtab USING csv(filename='test.csv', header=yes)")?;
 
         {
-            let mut s = db
-                .prepare(
-                    "SELECT v1.rowid, v1.* FROM vtab v1 NATURAL JOIN vtab v2 WHERE \
+            let mut s = db.prepare(
+                "SELECT v1.rowid, v1.* FROM vtab v1 NATURAL JOIN vtab v2 WHERE \
                      v1.rowid < v2.rowid",
-                )
-                .unwrap();
+            )?;
 
-            let mut rows = s.query(NO_PARAMS).unwrap();
-            let row = rows.next().unwrap().unwrap();
+            let mut rows = s.query([])?;
+            let row = rows.next()?.unwrap();
             assert_eq!(row.get_unwrap::<_, i32>(0), 2);
         }
-        db.execute_batch("DROP TABLE vtab").unwrap();
+        db.execute_batch("DROP TABLE vtab")
     }
 }

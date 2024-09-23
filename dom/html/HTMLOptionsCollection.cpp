@@ -5,30 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/HTMLOptionsCollection.h"
-
-#include "HTMLOptGroupElement.h"
-#include "mozAutoDocUpdate.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/MappedDeclarations.h"
-#include "mozilla/dom/HTMLFormSubmission.h"
-#include "mozilla/dom/HTMLOptionElement.h"
 #include "mozilla/dom/HTMLOptionsCollectionBinding.h"
-#include "mozilla/dom/HTMLSelectElement.h"
-#include "nsContentCreatorFunctions.h"
-#include "nsError.h"
-#include "nsGkAtoms.h"
-#include "mozilla/dom/Document.h"
-#include "nsIFormControlFrame.h"
-#include "nsIForm.h"
-#include "nsLayoutUtils.h"
-#include "nsMappedAttributes.h"
-#include "nsServiceManagerUtils.h"
-#include "nsStyleConsts.h"
-#include "jsfriendapi.h"
 
-namespace mozilla {
-namespace dom {
+#include "mozilla/dom/HTMLOptionElement.h"
+#include "mozilla/dom/HTMLSelectElement.h"
+
+namespace mozilla::dom {
 
 HTMLOptionsCollection::HTMLOptionsCollection(HTMLSelectElement* aSelect)
     : mSelect(aSelect) {}
@@ -206,5 +188,4 @@ void HTMLOptionsCollection::Add(const HTMLOptionOrOptGroupElement& aElement,
 
 void HTMLOptionsCollection::Remove(int32_t aIndex) { mSelect->Remove(aIndex); }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

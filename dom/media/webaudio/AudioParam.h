@@ -15,22 +15,20 @@
 #include "WebAudioUtils.h"
 #include "js/TypeDecls.h"
 
-namespace mozilla {
-
-namespace dom {
+namespace mozilla::dom {
 
 class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   virtual ~AudioParam();
 
  public:
-  AudioParam(AudioNode* aNode, uint32_t aIndex, const char16_t* aName,
+  AudioParam(AudioNode* aNode, uint32_t aIndex, const nsAString& aName,
              float aDefaultValue,
              float aMinValue = std::numeric_limits<float>::lowest(),
              float aMaxValue = std::numeric_limits<float>::max());
 
   NS_IMETHOD_(MozExternalRefCountType) AddRef(void);
   NS_IMETHOD_(MozExternalRefCountType) Release(void);
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(AudioParam)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(AudioParam)
 
   AudioContext* GetParentObject() const { return mNode->Context(); }
 
@@ -52,21 +50,29 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
       return this;
     }
     aStartTime = std::max(aStartTime, GetParentObject()->CurrentTime());
-    EventInsertionHelper(aRv, AudioTimelineEvent::SetValueCurve, aStartTime,
-                         0.0f, 0.0f, aDuration, aValues.Elements(),
-                         aValues.Length());
-
+    AudioParamEvent event(AudioTimelineEvent::SetValueCurve, aValues,
+                          aStartTime, aDuration);
+    ValidateAndInsertEvent(event, aRv);
     return this;
   }
 
-  void SetValue(float aValue) {
-    AudioTimelineEvent event(AudioTimelineEvent::SetValue, 0.0f, aValue);
+  // Intended for use in AudioNode creation, when the setter should not throw.
+  void SetInitialValue(float aValue) {
+    MOZ_ASSERT(HasSimpleValue(), "Existing events unexpected");
+    AudioParamEvent event(AudioTimelineEvent::SetValue, 0.0f, aValue);
 
-    ErrorResult rv;
-    if (!ValidateEvent(event, rv)) {
-      MOZ_ASSERT(false,
-                 "This should not happen, "
-                 "setting the value should always work");
+    DebugOnly<ErrorResult> rv;
+    MOZ_ASSERT(ValidateEvent(event, rv), "This event should be valid");
+
+    AudioParamTimeline::SetValue(aValue);
+
+    SendEventToEngine(event);
+  }
+
+  void SetValue(float aValue, ErrorResult& aRv) {
+    AudioParamEvent event(AudioTimelineEvent::SetValue, 0.0f, aValue);
+
+    if (!ValidateEvent(event, aRv)) {
       return;
     }
 
@@ -82,9 +88,9 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
       return this;
     }
     aStartTime = std::max(aStartTime, GetParentObject()->CurrentTime());
-    EventInsertionHelper(aRv, AudioTimelineEvent::SetValueAtTime, aStartTime,
-                         aValue);
-
+    AudioParamEvent event(AudioTimelineEvent::SetValueAtTime, aStartTime,
+                          aValue);
+    ValidateAndInsertEvent(event, aRv);
     return this;
   }
 
@@ -95,7 +101,8 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
       return this;
     }
     aEndTime = std::max(aEndTime, GetParentObject()->CurrentTime());
-    EventInsertionHelper(aRv, AudioTimelineEvent::LinearRamp, aEndTime, aValue);
+    AudioParamEvent event(AudioTimelineEvent::LinearRamp, aEndTime, aValue);
+    ValidateAndInsertEvent(event, aRv);
     return this;
   }
 
@@ -106,8 +113,9 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
       return this;
     }
     aEndTime = std::max(aEndTime, GetParentObject()->CurrentTime());
-    EventInsertionHelper(aRv, AudioTimelineEvent::ExponentialRamp, aEndTime,
-                         aValue);
+    AudioParamEvent event(AudioTimelineEvent::ExponentialRamp, aEndTime,
+                          aValue);
+    ValidateAndInsertEvent(event, aRv);
     return this;
   }
 
@@ -119,9 +127,9 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
       return this;
     }
     aStartTime = std::max(aStartTime, GetParentObject()->CurrentTime());
-    EventInsertionHelper(aRv, AudioTimelineEvent::SetTarget, aStartTime,
-                         aTarget, aTimeConstant);
-
+    AudioParamEvent event(AudioTimelineEvent::SetTarget, aStartTime, aTarget,
+                          aTimeConstant);
+    ValidateAndInsertEvent(event, aRv);
     return this;
   }
 
@@ -136,7 +144,7 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
     // Remove some events on the main thread copy.
     AudioEventTimeline::CancelScheduledValues(aStartTime);
 
-    AudioTimelineEvent event(AudioTimelineEvent::Cancel, aStartTime, 0.0f);
+    AudioParamEvent event(AudioTimelineEvent::Cancel, aStartTime, 0.0f);
 
     SendEventToEngine(event);
 
@@ -193,28 +201,21 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   }
 
  private:
-  void EventInsertionHelper(ErrorResult& aRv, AudioTimelineEvent::Type aType,
-                            double aTime, float aValue,
-                            double aTimeConstant = 0.0, double aDuration = 0.0,
-                            const float* aCurve = nullptr,
-                            uint32_t aCurveLength = 0) {
-    AudioTimelineEvent event(aType, aTime, aValue, aTimeConstant, aDuration,
-                             aCurve, aCurveLength);
-
-    if (!ValidateEvent(event, aRv)) {
+  void ValidateAndInsertEvent(const AudioParamEvent& aEvent, ErrorResult& aRv) {
+    if (!ValidateEvent(aEvent, aRv)) {
       return;
     }
 
-    AudioEventTimeline::InsertEvent<double>(event);
+    AudioEventTimeline::InsertEvent<double>(aEvent);
 
-    SendEventToEngine(event);
+    SendEventToEngine(aEvent);
 
     CleanupOldEvents();
   }
 
   void CleanupOldEvents();
 
-  void SendEventToEngine(const AudioTimelineEvent& aEvent);
+  void SendEventToEngine(const AudioParamEvent& aEvent);
 
   void DisconnectFromGraphAndDestroyTrack();
 
@@ -224,7 +225,7 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   // For every InputNode, there is a corresponding entry in mOutputParams of the
   // InputNode's mInputNode.
   nsTArray<AudioNode::InputNode> mInputNodes;
-  const char16_t* mName;
+  const nsString mName;
   // The input port used to connect the AudioParam's track to its node's track
   RefPtr<MediaInputPort> mNodeTrackPort;
   const uint32_t mIndex;
@@ -233,7 +234,6 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   const float mMaxValue;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

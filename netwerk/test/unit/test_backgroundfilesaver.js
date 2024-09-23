@@ -12,21 +12,9 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "FileUtils",
-  "resource://gre/modules/FileUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "NetUtil",
-  "resource://gre/modules/NetUtil.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "FileTestUtils",
-  "resource://testing-common/FileTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  FileTestUtils: "resource://testing-common/FileTestUtils.sys.mjs",
+});
 
 const BackgroundFileSaverOutputStream = Components.Constructor(
   "@mozilla.org/network/background-file-saver;1?mode=outputstream",
@@ -63,8 +51,6 @@ const EXPECTED_HASHES = {
   // TEST_DATA_LONG + TEST_DATA_LONG
   9437184: "693e4f8c6855a6fed4f5f9370d12cc53105672f3ff69783581e7d925984c41d3",
 };
-
-const gTextDecoder = new TextDecoder();
 
 // Generate a long string of data in a moderately fast way.
 const TEST_256_CHARS = new Array(257).join("-");
@@ -114,7 +100,7 @@ function promiseVerifyContents(aFile, aExpectedContents) {
         uri: NetUtil.newURI(aFile),
         loadUsingSystemPrincipal: true,
       },
-      function(aInputStream, aStatus) {
+      function (aInputStream, aStatus) {
         Assert.ok(Components.isSuccessCode(aStatus));
         let contents = NetUtil.readInputStreamToString(
           aInputStream,
@@ -148,12 +134,12 @@ function promiseVerifyContents(aFile, aExpectedContents) {
 function promiseSaverComplete(aSaver, aOnTargetChangeFn) {
   return new Promise((resolve, reject) => {
     aSaver.observer = {
-      onTargetChange: function BFSO_onSaveComplete(aSaver, aTarget) {
+      onTargetChange: function BFSO_onSaveComplete(saver, aTarget) {
         if (aOnTargetChangeFn) {
           aOnTargetChangeFn(aTarget);
         }
       },
-      onSaveComplete: function BFSO_onSaveComplete(aSaver, aStatus) {
+      onSaveComplete: function BFSO_onSaveComplete(saver, aStatus) {
         if (Components.isSuccessCode(aStatus)) {
           resolve();
         } else {
@@ -227,11 +213,7 @@ function promiseCopyToSaver(aSourceString, aSaverOutputStream, aCloseWhenDone) {
  * @resolves When the operation completes with a success code.
  * @rejects With an exception, if the operation fails.
  */
-function promisePumpToSaver(
-  aSourceString,
-  aSaverStreamListener,
-  aCloseWhenDone
-) {
+function promisePumpToSaver(aSourceString, aSaverStreamListener) {
   return new Promise((resolve, reject) => {
     aSaverStreamListener.QueryInterface(Ci.nsIStreamListener);
     let inputStream = new StringInputStream(
@@ -242,35 +224,32 @@ function promisePumpToSaver(
       Ci.nsIInputStreamPump
     );
     pump.init(inputStream, 0, 0, true);
-    pump.asyncRead(
-      {
-        onStartRequest: function PPTS_onStartRequest(aRequest) {
-          aSaverStreamListener.onStartRequest(aRequest);
-        },
-        onStopRequest: function PPTS_onStopRequest(aRequest, aStatusCode) {
-          aSaverStreamListener.onStopRequest(aRequest, aStatusCode);
-          if (Components.isSuccessCode(aStatusCode)) {
-            resolve();
-          } else {
-            reject(new Components.Exception(aStatusCode));
-          }
-        },
-        onDataAvailable: function PPTS_onDataAvailable(
+    pump.asyncRead({
+      onStartRequest: function PPTS_onStartRequest(aRequest) {
+        aSaverStreamListener.onStartRequest(aRequest);
+      },
+      onStopRequest: function PPTS_onStopRequest(aRequest, aStatusCode) {
+        aSaverStreamListener.onStopRequest(aRequest, aStatusCode);
+        if (Components.isSuccessCode(aStatusCode)) {
+          resolve();
+        } else {
+          reject(new Components.Exception(aStatusCode));
+        }
+      },
+      onDataAvailable: function PPTS_onDataAvailable(
+        aRequest,
+        aInputStream,
+        aOffset,
+        aCount
+      ) {
+        aSaverStreamListener.onDataAvailable(
           aRequest,
           aInputStream,
           aOffset,
           aCount
-        ) {
-          aSaverStreamListener.onDataAvailable(
-            aRequest,
-            aInputStream,
-            aOffset,
-            aCount
-          );
-        },
+        );
       },
-      null
-    );
+    });
   });
 }
 
@@ -281,7 +260,7 @@ var gStillRunning = true;
 
 add_task(function test_setup() {
   // Wait 10 minutes, that is half of the external xpcshell timeout.
-  do_timeout(10 * 60 * 1000, function() {
+  do_timeout(10 * 60 * 1000, function () {
     if (gStillRunning) {
       do_throw("Test timed out.");
     }
@@ -619,9 +598,8 @@ add_task(async function test_enableAppend_hash() {
 
 add_task(async function test_finish_only() {
   // This test checks creating the object and doing nothing.
-  let destFile = getTempFile(TEST_FILE_NAME_1);
   let saver = new BackgroundFileSaverOutputStream();
-  function onTargetChange(aTarget) {
+  function onTargetChange() {
     do_throw("Should not receive the onTargetChange notification.");
   }
   let completionPromise = promiseSaverComplete(saver, onTargetChange);
@@ -683,7 +661,7 @@ add_task(async function test_invalid_hash() {
   let completionPromise = promiseSaverComplete(saver);
   // We shouldn't be able to get the hash if hashing hasn't been enabled
   try {
-    let hash = saver.sha256Hash;
+    saver.sha256Hash;
     do_throw("Shouldn't be able to get hash if hashing not enabled");
   } catch (ex) {
     if (ex.result != Cr.NS_ERROR_NOT_AVAILABLE) {
@@ -700,7 +678,7 @@ add_task(async function test_invalid_hash() {
   // successfully.
   saver.finish(Cr.NS_ERROR_FAILURE);
   try {
-    let hash = saver.sha256Hash;
+    saver.sha256Hash;
     do_throw("Shouldn't be able to get hash if save did not succeed");
   } catch (ex) {
     if (ex.result != Cr.NS_ERROR_NOT_AVAILABLE) {
@@ -727,7 +705,7 @@ add_task(async function test_signature() {
   let completionPromise = promiseSaverComplete(saver);
 
   try {
-    let signatureInfo = saver.signatureInfo;
+    saver.signatureInfo;
     do_throw("Can't get signature if saver is not complete");
   } catch (ex) {
     if (ex.result != Cr.NS_ERROR_NOT_AVAILABLE) {
@@ -762,7 +740,7 @@ add_task(async function test_signature_not_enabled() {
   saver.finish(Cr.NS_OK);
   await completionPromise;
   try {
-    let signatureInfo = saver.signatureInfo;
+    saver.signatureInfo;
     do_throw("Can't get signature if not enabled");
   } catch (ex) {
     if (ex.result != Cr.NS_ERROR_NOT_AVAILABLE) {

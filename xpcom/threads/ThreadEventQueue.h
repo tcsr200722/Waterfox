@@ -7,7 +7,7 @@
 #ifndef mozilla_ThreadEventQueue_h
 #define mozilla_ThreadEventQueue_h
 
-#include "mozilla/AbstractEventQueue.h"
+#include "mozilla/EventQueue.h"
 #include "mozilla/CondVar.h"
 #include "mozilla/SynchronizedEventQueue.h"
 #include "nsCOMPtr.h"
@@ -20,37 +20,32 @@ class nsIThreadObserver;
 namespace mozilla {
 
 class EventQueue;
-class PrioritizedEventQueue;
 class ThreadEventTarget;
 
 // A ThreadEventQueue implements normal monitor-style synchronization over the
-// InnerQueueT AbstractEventQueue. It also implements PushEventQueue and
-// PopEventQueue for workers (see the documentation below for an explanation of
-// those). All threads use a ThreadEventQueue as their event queue. InnerQueueT
-// is a template parameter to avoid virtual dispatch overhead.
-template <class InnerQueueT>
+// EventQueue. It also implements PushEventQueue and PopEventQueue for workers
+// (see the documentation below for an explanation of those). All threads use a
+// ThreadEventQueue as their event queue. Although for the main thread this
+// simply forwards events to the TaskController.
 class ThreadEventQueue final : public SynchronizedEventQueue {
  public:
-  explicit ThreadEventQueue(UniquePtr<InnerQueueT> aQueue);
+  explicit ThreadEventQueue(UniquePtr<EventQueue> aQueue,
+                            bool aIsMainThread = false);
 
   bool PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
                 EventQueuePriority aPriority) final;
 
   already_AddRefed<nsIRunnable> GetEvent(
-      bool aMayWait, EventQueuePriority* aPriority,
-      mozilla::TimeDuration* aLastEventDelay = nullptr) final;
-  void DidRunEvent() final;
+      bool aMayWait, mozilla::TimeDuration* aLastEventDelay = nullptr) final;
   bool HasPendingEvent() final;
-  bool HasPendingHighPriorityEvents() final;
 
   bool ShutdownIfNoPendingEvents() final;
 
   void Disconnect(const MutexAutoLock& aProofOfLock) final {}
 
-  void EnableInputEventPrioritization() final;
-  void FlushInputEventPrioritization() final;
-  void SuspendInputEventPrioritization() final;
-  void ResumeInputEventPrioritization() final;
+  nsresult RegisterShutdownTask(nsITargetShutdownTask* aTask) final;
+  nsresult UnregisterShutdownTask(nsITargetShutdownTask* aTask) final;
+  void RunShutdownTasks() final;
 
   already_AddRefed<nsISerialEventTarget> PushEventQueue() final;
   void PopEventQueue(nsIEventTarget* aTarget) final;
@@ -61,8 +56,7 @@ class ThreadEventQueue final : public SynchronizedEventQueue {
 
   Mutex& MutexRef() { return mLock; }
 
-  size_t SizeOfExcludingThis(
-      mozilla::MallocSizeOf aMallocSizeOf) const override;
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) override;
 
  private:
   class NestedSink;
@@ -72,29 +66,30 @@ class ThreadEventQueue final : public SynchronizedEventQueue {
   bool PutEventInternal(already_AddRefed<nsIRunnable>&& aEvent,
                         EventQueuePriority aPriority, NestedSink* aQueue);
 
-  UniquePtr<InnerQueueT> mBaseQueue;
+  const UniquePtr<EventQueue> mBaseQueue MOZ_GUARDED_BY(mLock);
 
   struct NestedQueueItem {
     UniquePtr<EventQueue> mQueue;
     RefPtr<ThreadEventTarget> mEventTarget;
 
     NestedQueueItem(UniquePtr<EventQueue> aQueue,
-                    ThreadEventTarget* aEventTarget)
-        : mQueue(std::move(aQueue)), mEventTarget(aEventTarget) {}
+                    ThreadEventTarget* aEventTarget);
   };
 
-  nsTArray<NestedQueueItem> mNestedQueues;
+  nsTArray<NestedQueueItem> mNestedQueues MOZ_GUARDED_BY(mLock);
 
   Mutex mLock;
-  CondVar mEventsAvailable;
+  CondVar mEventsAvailable MOZ_GUARDED_BY(mLock);
 
-  bool mEventsAreDoomed = false;
-  nsCOMPtr<nsIThreadObserver> mObserver;
+  bool mEventsAreDoomed MOZ_GUARDED_BY(mLock) = false;
+  nsCOMPtr<nsIThreadObserver> mObserver MOZ_GUARDED_BY(mLock);
+  nsTArray<nsCOMPtr<nsITargetShutdownTask>> mShutdownTasks
+      MOZ_GUARDED_BY(mLock);
+  bool mShutdownTasksRun MOZ_GUARDED_BY(mLock) = false;
+
+  const bool mIsMainThread;
 };
 
-extern template class ThreadEventQueue<EventQueue>;
-extern template class ThreadEventQueue<PrioritizedEventQueue>;
-
-};  // namespace mozilla
+}  // namespace mozilla
 
 #endif  // mozilla_ThreadEventQueue_h

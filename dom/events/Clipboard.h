@@ -8,19 +8,18 @@
 #define mozilla_dom_Clipboard_h_
 
 #include "nsString.h"
+#include "nsStringFwd.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/Logging.h"
-#include "mozilla/dom/DataTransfer.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 
-namespace mozilla {
-namespace dom {
+class nsIAsyncGetClipboardData;
 
-enum ClipboardReadType {
-  eRead,
-  eReadText,
-};
+namespace mozilla::dom {
 
 class Promise;
+class ClipboardItem;
 
 // https://www.w3.org/TR/clipboard-apis/#clipboard-interface
 class Clipboard : public DOMEventTargetHelper {
@@ -36,9 +35,9 @@ class Clipboard : public DOMEventTargetHelper {
                                  ErrorResult& aRv);
   already_AddRefed<Promise> ReadText(nsIPrincipal& aSubjectPrincipal,
                                      ErrorResult& aRv);
-  already_AddRefed<Promise> Write(DataTransfer& aData,
-                                  nsIPrincipal& aSubjectPrincipal,
-                                  ErrorResult& aRv);
+  already_AddRefed<Promise> Write(
+      const Sequence<OwningNonNull<ClipboardItem>>& aData,
+      nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv);
   already_AddRefed<Promise> WriteText(const nsAString& aData,
                                       nsIPrincipal& aSubjectPrincipal,
                                       ErrorResult& aRv);
@@ -52,23 +51,38 @@ class Clipboard : public DOMEventTargetHelper {
   // testing purposes.
   static bool ReadTextEnabled(JSContext* aCx, JSObject* aGlobal);
 
+  static Span<const nsLiteralCString> MandatoryDataTypes();
+
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
  private:
+  enum class ReadRequestType {
+    eRead,
+    eReadText,
+  };
+
   // Checks if dom.events.testing.asyncClipboard pref is enabled.
   // The aforementioned pref allows automated tests to bypass the security
   // checks when writing to
   //  or reading from the clipboard.
   static bool IsTestingPrefEnabled();
 
+  static bool IsTestingPrefEnabledOrHasReadPermission(
+      nsIPrincipal& aSubjectPrincipal);
+
   already_AddRefed<Promise> ReadHelper(nsIPrincipal& aSubjectPrincipal,
-                                       ClipboardReadType aClipboardReadType,
-                                       ErrorResult& aRv);
+                                       ReadRequestType aType, ErrorResult& aRv);
 
   ~Clipboard();
+
+  void RequestRead(Promise* aPromise, ReadRequestType aType,
+                   nsPIDOMWindowInner* aOwner, nsIPrincipal& aPrincipal);
+
+  void RequestRead(Promise& aPromise, const ReadRequestType& aType,
+                   nsPIDOMWindowInner& aOwner, nsIPrincipal& aSubjectPrincipal,
+                   nsIAsyncGetClipboardData& aRequest);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 #endif  // mozilla_dom_Clipboard_h_

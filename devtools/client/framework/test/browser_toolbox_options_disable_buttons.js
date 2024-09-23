@@ -10,130 +10,62 @@ let TEST_URL =
 // The frames button is only shown if the page has at least one iframe so we
 // need to add one to the test page.
 TEST_URL += '<iframe src="data:text/plain,iframe"></iframe>';
+// The error count button is only shown if there are errors on the page
+TEST_URL += '<script>console.error("err")</script>';
 
-var doc = null,
-  toolbox = null,
-  panelWin = null,
-  modifiedPrefs = [];
-
-function test() {
-  addTab(TEST_URL).then(async tab => {
-    const target = await TargetFactory.forTab(tab);
-    gDevTools
-      .showToolbox(target)
-      .then(testSelectTool)
-      .then(testToggleToolboxButtons)
-      .then(testPrefsAreRespectedWhenReopeningToolbox)
-      .then(testButtonStateOnClick)
-      .then(cleanup, errorHandler);
-  });
-}
-
-async function testPrefsAreRespectedWhenReopeningToolbox() {
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-
-  return new Promise(resolve => {
-    info("Closing toolbox to test after reopening");
-    gDevTools.closeToolbox(target).then(async () => {
-      const tabTarget = await TargetFactory.forTab(gBrowser.selectedTab);
-      gDevTools
-        .showToolbox(tabTarget)
-        .then(testSelectTool)
-        .then(() => {
-          info("Toolbox has been reopened.  Checking UI state.");
-          testPreferenceAndUIStateIsConsistent();
-          resolve();
-        });
-    });
-  });
-}
-
-function testSelectTool(devtoolsToolbox) {
-  return new Promise(resolve => {
-    info("Selecting the options panel");
-
-    toolbox = devtoolsToolbox;
-    doc = toolbox.doc;
-
-    toolbox.selectTool("options");
-    toolbox.once("options-selected", tool => {
-      ok(true, "Options panel selected via selectTool method");
-      panelWin = tool.panelWin;
-      resolve();
-    });
-  });
-}
-
-function testPreferenceAndUIStateIsConsistent() {
-  const checkNodes = [
-    ...panelWin.document.querySelectorAll(
-      "#enabled-toolbox-buttons-box input[type=checkbox]"
-    ),
-  ];
-  const toolboxButtonNodes = [...doc.querySelectorAll(".command-button")];
-
-  for (const tool of toolbox.toolbarButtons) {
-    const isVisible = getBoolPref(tool.visibilityswitch);
-
-    const button = toolboxButtonNodes.find(
-      toolboxButton => toolboxButton.id === tool.id
-    );
-    is(!!button, isVisible, "Button visibility matches pref for " + tool.id);
-
-    const check = checkNodes.filter(node => node.id === tool.id)[0];
-    if (check) {
-      is(
-        check.checked,
-        isVisible,
-        "Checkbox should be selected based on current pref for " + tool.id
-      );
-    }
+var modifiedPrefs = [];
+registerCleanupFunction(() => {
+  for (const pref of modifiedPrefs) {
+    Services.prefs.clearUserPref(pref);
   }
+});
+
+const TOGGLE_BUTTONS = [
+  "command-button-measure",
+  "command-button-rulers",
+  "command-button-responsive",
+  "command-button-pick",
+];
+
+add_task(async function test() {
+  const tab = await addTab(TEST_URL);
+  let toolbox = await gDevTools.showToolboxForTab(tab);
+  const optionsPanelWin = await selectOptionsPanel(toolbox);
+  await testToggleToolboxButtons(toolbox, optionsPanelWin);
+  toolbox = await testPrefsAreRespectedWhenReopeningToolbox();
+  await testButtonStateOnClick(toolbox);
+
+  await toolbox.destroy();
+});
+
+async function selectOptionsPanel(toolbox) {
+  info("Selecting the options panel");
+
+  const onOptionsSelected = toolbox.once("options-selected");
+  toolbox.selectTool("options");
+  const optionsPanel = await onOptionsSelected;
+  ok(true, "Options panel selected via selectTool method");
+  return optionsPanel.panelWin;
 }
 
-async function testButtonStateOnClick() {
-  const toolboxButtons = ["#command-button-rulers", "#command-button-measure"];
-  for (const toolboxButton of toolboxButtons) {
-    const button = doc.querySelector(toolboxButton);
-    if (button) {
-      const isChecked = waitUntil(() => button.classList.contains("checked"));
-
-      button.click();
-      await isChecked;
-      ok(
-        button.classList.contains("checked"),
-        `Button for ${toolboxButton} can be toggled on`
-      );
-
-      const isUnchecked = waitUntil(
-        () => !button.classList.contains("checked")
-      );
-      button.click();
-      await isUnchecked;
-      ok(
-        !button.classList.contains("checked"),
-        `Button for ${toolboxButton} can be toggled off`
-      );
-    }
-  }
-}
-async function testToggleToolboxButtons() {
+async function testToggleToolboxButtons(toolbox, optionsPanelWin) {
   const checkNodes = [
-    ...panelWin.document.querySelectorAll(
+    ...optionsPanelWin.document.querySelectorAll(
       "#enabled-toolbox-buttons-box input[type=checkbox]"
     ),
   ];
 
   // Filter out all the buttons which are not supported on the current target.
-  // (DevTools Fission Preferences etc...)
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
+  // (DevTools Experimental Preferences etc...)
   const toolbarButtons = toolbox.toolbarButtons.filter(tool =>
-    tool.isTargetSupported(target)
+    tool.isToolSupported(toolbox)
   );
 
   const visibleToolbarButtons = toolbarButtons.filter(tool => tool.isVisible);
 
-  const toolbarButtonNodes = [...doc.querySelectorAll(".command-button")];
+  const toolbarButtonNodes = [
+    ...toolbox.doc.querySelectorAll(".command-button"),
+  ];
 
   is(
     checkNodes.length,
@@ -168,11 +100,29 @@ async function testToggleToolboxButtons() {
         1,
         "There should be a DOM button for the visible: " + id
       );
-      is(
-        matchedButtons[0].getAttribute("title"),
-        tool.description,
-        "The tooltip for button matches the tool definition."
-      );
+
+      // The error count button title isn't its description
+      if (id !== "command-button-errorcount") {
+        is(
+          matchedButtons[0].getAttribute("title"),
+          tool.description,
+          "The tooltip for button matches the tool definition."
+        );
+      }
+
+      if (TOGGLE_BUTTONS.includes(id)) {
+        is(
+          matchedButtons[0].getAttribute("aria-pressed"),
+          "false",
+          `The aria-pressed attribute is set to false for ${id} button`
+        );
+      } else {
+        is(
+          matchedButtons[0].getAttribute("aria-pressed"),
+          null,
+          `The ${id} button does not have the aria-pressed attribute`
+        );
+      }
     } else {
       is(
         matchedButtons.length,
@@ -195,9 +145,9 @@ async function testToggleToolboxButtons() {
     )[0];
     const isVisible = getBoolPref(tool.visibilityswitch);
 
-    testPreferenceAndUIStateIsConsistent();
+    testPreferenceAndUIStateIsConsistent(toolbox, optionsPanelWin);
     node.click();
-    testPreferenceAndUIStateIsConsistent();
+    testPreferenceAndUIStateIsConsistent(toolbox, optionsPanelWin);
 
     const isVisibleAfterClick = getBoolPref(tool.visibilityswitch);
 
@@ -207,9 +157,108 @@ async function testToggleToolboxButtons() {
       "Clicking on the node should have toggled visibility preference for " +
         tool.visibilityswitch
     );
-  }
 
-  return promise.resolve();
+    if (isVisibleAfterClick) {
+      const matchedButton = toolbox.doc.getElementById(tool.id);
+      if (TOGGLE_BUTTONS.includes(tool.id)) {
+        is(
+          matchedButton.getAttribute("aria-pressed"),
+          "false",
+          `The aria-pressed attribute is set to false for ${tool.id} button`
+        );
+      } else {
+        is(
+          matchedButton.getAttribute("aria-pressed"),
+          null,
+          `The ${tool.id} button does not have the aria-pressed attribute`
+        );
+      }
+    }
+  }
+}
+
+async function testPrefsAreRespectedWhenReopeningToolbox() {
+  info("Closing toolbox to test after reopening");
+  await gDevTools.closeToolboxForTab(gBrowser.selectedTab);
+
+  const toolbox = await gDevTools.showToolboxForTab(gBrowser.selectedTab);
+  const optionsPanelWin = await selectOptionsPanel(toolbox);
+
+  info("Toolbox has been reopened.  Checking UI state.");
+  await testPreferenceAndUIStateIsConsistent(toolbox, optionsPanelWin);
+  return toolbox;
+}
+
+function testPreferenceAndUIStateIsConsistent(toolbox, optionsPanelWin) {
+  const checkNodes = [
+    ...optionsPanelWin.document.querySelectorAll(
+      "#enabled-toolbox-buttons-box input[type=checkbox]"
+    ),
+  ];
+  const toolboxButtonNodes = [
+    ...toolbox.doc.querySelectorAll(".command-button"),
+  ];
+
+  for (const tool of toolbox.toolbarButtons) {
+    const isVisible = getBoolPref(tool.visibilityswitch);
+
+    const button = toolboxButtonNodes.find(
+      toolboxButton => toolboxButton.id === tool.id
+    );
+    is(!!button, isVisible, "Button visibility matches pref for " + tool.id);
+
+    const check = checkNodes.filter(node => node.id === tool.id)[0];
+    if (check) {
+      is(
+        check.checked,
+        isVisible,
+        "Checkbox should be selected based on current pref for " + tool.id
+      );
+    }
+  }
+}
+
+async function testButtonStateOnClick(toolbox) {
+  const toolboxButtons = ["#command-button-rulers", "#command-button-measure"];
+  for (const toolboxButton of toolboxButtons) {
+    const button = toolbox.doc.querySelector(toolboxButton);
+    if (!button) {
+      ok(false, `Couldn't find ${toolboxButton}`);
+      continue;
+    }
+
+    const isChecked = waitUntil(() => button.classList.contains("checked"));
+    is(
+      button.getAttribute("aria-pressed"),
+      "false",
+      `${toolboxButton} has aria-pressed set to false when it's off`
+    );
+
+    button.click();
+    await isChecked;
+    ok(
+      button.classList.contains("checked"),
+      `Button for ${toolboxButton} can be toggled on`
+    );
+    is(
+      button.getAttribute("aria-pressed"),
+      "true",
+      `${toolboxButton} has aria-pressed set to true when it's on`
+    );
+
+    const isUnchecked = waitUntil(() => !button.classList.contains("checked"));
+    button.click();
+    await isUnchecked;
+    ok(
+      !button.classList.contains("checked"),
+      `Button for ${toolboxButton} can be toggled off`
+    );
+    is(
+      button.getAttribute("aria-pressed"),
+      "false",
+      `aria-pressed is set back to false on ${toolboxButton} after it has been toggled off`
+    );
+  }
 }
 
 function getBoolPref(key) {
@@ -218,20 +267,4 @@ function getBoolPref(key) {
   } catch (e) {
     return false;
   }
-}
-
-function cleanup() {
-  toolbox.destroy().then(function() {
-    gBrowser.removeCurrentTab();
-    for (const pref of modifiedPrefs) {
-      Services.prefs.clearUserPref(pref);
-    }
-    toolbox = doc = panelWin = modifiedPrefs = null;
-    finish();
-  });
-}
-
-function errorHandler(error) {
-  ok(false, "Unexpected error: " + error);
-  cleanup();
 }

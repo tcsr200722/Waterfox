@@ -4,12 +4,12 @@
 "use strict";
 
 // A test to ensure Style Editor only issues 1 request for each stylesheet (instead of 2)
-// by using the network monitor's request history (bug 1306892).
+// by using the cache on the platform.
 
-const EMPTY_TEST_URL = TEST_BASE_HTTP + "doc_empty.html";
-const TEST_URL = TEST_BASE_HTTP + "doc_fetch_from_netmonitor.html";
+const EMPTY_TEST_URL = TEST_BASE_HTTPS + "doc_empty.html";
+const TEST_URL = TEST_BASE_HTTPS + "doc_fetch_from_netmonitor.html";
 
-add_task(async function() {
+add_task(async function () {
   info("Opening netmonitor");
   // Navigate first to an empty document in order to:
   // * avoid introducing a cross process navigation when calling navigateTo()
@@ -18,8 +18,9 @@ add_task(async function() {
   //   in the tab, we might have pending updates in the netmonitor which won't be
   //   awaited for by showToolbox)
   const tab = await addTab(EMPTY_TEST_URL);
-  const target = await TargetFactory.forTab(tab);
-  const toolbox = await gDevTools.showToolbox(target, "netmonitor");
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: "netmonitor",
+  });
   const monitor = toolbox.getPanel("netmonitor");
   const { store, windowRequire } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
@@ -41,9 +42,8 @@ add_task(async function() {
   await ui.selectStyleSheet(ui.editors[1].styleSheet);
   await ui.editors[1].getSourceEditor();
 
-  // Wait till there is 5 requests in Netmonitor store.
-  // (i.e. the Styleeditor panel performed one request).
-  await waitUntil(() => getSortedRequests(store.getState()).length == 5);
+  // Wait till there is 4 requests in Netmonitor store.
+  await waitUntil(() => getSortedRequests(store.getState()).length == 4);
 
   info("Checking Netmonitor contents.");
   const shortRequests = [];
@@ -72,11 +72,9 @@ add_task(async function() {
     "Got one request for doc_long_string.css after Style Editor was loaded."
   );
 
-  // Requests with a response body size greater than 1MB cannot be fetched from the
-  // netmonitor, the style editor should perform a separate request.
   is(
     hugeRequests.length,
-    2,
-    "Got two requests for sjs_huge-css-server.sjs after Style Editor was loaded."
+    1,
+    "Got one requests for sjs_huge-css-server.sjs after Style Editor was loaded."
   );
 });

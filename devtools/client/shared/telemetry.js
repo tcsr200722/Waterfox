@@ -10,13 +10,14 @@
 
 "use strict";
 
-const Services = require("Services");
 const TelemetryStopwatch = require("TelemetryStopwatch");
-const { getNthPathExcluding } = require("devtools/shared/platform/stack");
 const {
-  TelemetryEnvironment,
-} = require("resource://gre/modules/TelemetryEnvironment.jsm");
-const WeakMapMap = require("devtools/client/shared/WeakMapMap");
+  getNthPathExcluding,
+} = require("resource://devtools/shared/platform/stack.js");
+const { TelemetryEnvironment } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryEnvironment.sys.mjs"
+);
+const WeakMapMap = require("resource://devtools/client/shared/WeakMapMap.js");
 
 const CATEGORY = "devtools.main";
 
@@ -24,8 +25,22 @@ const CATEGORY = "devtools.main";
 const PENDING_EVENT_PROPERTIES = new WeakMapMap();
 const PENDING_EVENTS = new WeakMapMap();
 
+/**
+ * Instantiate a new Telemetry helper class.
+ *
+ * @param {Object} options [optional]
+ * @param {Boolean} options.useSessionId [optional]
+ *        If true, this instance will automatically generate a unique "sessionId"
+ *        and use it to aggregate all records against this unique session.
+ *        This helps aggregate all data coming from a single toolbox instance for ex.
+ */
 class Telemetry {
-  constructor() {
+  constructor({ useSessionId = false } = {}) {
+    // Note that native telemetry APIs expect a string
+    this.sessionId = String(
+      useSessionId ? parseInt(this.msSinceProcessStart(), 10) : -1
+    );
+
     // Bind pretty much all functions so that callers do not need to.
     this.msSystemNow = this.msSystemNow.bind(this);
     this.getHistogramById = this.getHistogramById.bind(this);
@@ -91,10 +106,13 @@ class Telemetry {
    *        milliseconds. Defaults to false.
    * @returns {Boolean}
    *          True if the timer was successfully started, false otherwise. If a
-   *          timer already exists, it can't be started again, and the existing
-   *          one will be cleared in order to avoid measurements errors.
+   *          timer already exists, it can't be started again.
    */
   start(histogramId, obj, { inSeconds } = {}) {
+    if (TelemetryStopwatch.running(histogramId, obj)) {
+      return false;
+    }
+
     return TelemetryStopwatch.start(histogramId, obj, { inSeconds });
   }
 
@@ -607,6 +625,15 @@ class Telemetry {
         extra[name] = val;
       }
     }
+    // Automatically flag the record with the session ID
+    // if the current Telemetry instance relates to a toolbox
+    // so that data can be aggregated per toolbox instance.
+    // Note that we also aggregate data per about:debugging instance.
+    if (!extra) {
+      extra = {};
+    }
+    extra.session_id = this.sessionId;
+
     Services.telemetry.recordEvent(CATEGORY, method, object, value, extra);
   }
 
@@ -615,9 +642,6 @@ class Telemetry {
    *
    * @param {String} id
    *        The ID of the tool opened.
-   * @param {String} sessionId
-   *        Toolbox session id used when we need to ensure a tool really has a
-   *        timer before calculating a delta.
    * @param {Object} obj
    *        The telemetry event or ping is associated with this object, meaning
    *        that multiple events or pings for the same histogram may be run
@@ -627,11 +651,7 @@ class Telemetry {
    *       one of those probes being a counter and the other a timer. If you
    *       only have one probe you should be using another method.
    */
-  toolOpened(id, sessionId, obj) {
-    if (typeof sessionId === "undefined") {
-      throw new Error(`toolOpened called without a sessionId parameter.`);
-    }
-
+  toolOpened(id, obj) {
     const charts = getChartsFromToolId(id);
 
     if (!charts) {
@@ -642,7 +662,6 @@ class Telemetry {
       this.preparePendingEvent(obj, "tool_timer", id, null, [
         "os",
         "time_open",
-        "session_id",
       ]);
       this.addEventProperty(
         obj,
@@ -669,8 +688,6 @@ class Telemetry {
    *
    * @param {String} id
    *        The ID of the tool opened.
-   * @param {String} sessionId
-   *        Toolbox session id.
    * @param {Object} obj
    *        The telemetry event or ping is associated with this object, meaning
    *        that multiple events or pings for the same histogram may be run
@@ -680,11 +697,7 @@ class Telemetry {
    *       one of those probes being a counter and the other a timer. If you
    *       only have one probe you should be using another method.
    */
-  toolClosed(id, sessionId, obj) {
-    if (typeof sessionId === "undefined") {
-      throw new Error(`toolClosed called without a sessionId parameter.`);
-    }
-
+  toolClosed(id, obj) {
     const charts = getChartsFromToolId(id);
 
     if (!charts) {
@@ -699,7 +712,6 @@ class Telemetry {
       this.addEventProperties(obj, "tool_timer", id, null, {
         time_open: time,
         os: this.osNameAndVersion,
-        session_id: sessionId,
       });
     }
 
@@ -746,7 +758,6 @@ function getChartsFromToolId(id) {
     case "MEMORY":
     case "NETMONITOR":
     case "OPTIONS":
-    case "PAINTFLASHING":
     case "RESPONSIVE":
     case "STORAGE":
     case "STYLEEDITOR":
@@ -789,10 +800,10 @@ function getChartsFromToolId(id) {
   }
 
   return {
-    useTimedEvent: useTimedEvent,
-    timerHist: timerHist,
-    countHist: countHist,
-    countScalar: countScalar,
+    useTimedEvent,
+    timerHist,
+    countHist,
+    countScalar,
   };
 }
 

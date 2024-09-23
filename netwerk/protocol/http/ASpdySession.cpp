@@ -19,6 +19,7 @@
 #include "Http2Push.h"
 #include "Http2Session.h"
 
+#include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Telemetry.h"
 
 namespace mozilla {
@@ -36,35 +37,15 @@ ASpdySession* ASpdySession::NewSpdySession(net::SpdyVersion version,
   // from a list provided in the SERVER HELLO filtered by our acceptable
   // versions, so there is no risk of the server ignoring our prefs.
 
-  return new Http2Session(aTransport, version, attemptingEarlyData);
+  return Http2Session::CreateSession(aTransport, version, attemptingEarlyData);
 }
 
 SpdyInformation::SpdyInformation() {
   // highest index of enabled protocols is the
   // most preferred for ALPN negotiaton
-  Version[0] = SpdyVersion::HTTP_2;
-  VersionString[0] = NS_LITERAL_CSTRING("h2");
-  ALPNCallbacks[0] = Http2Session::ALPNCallback;
-}
-
-bool SpdyInformation::ProtocolEnabled(uint32_t index) const {
-  MOZ_ASSERT(index < kCount, "index out of range");
-
-  return gHttpHandler->IsHttp2Enabled();
-}
-
-nsresult SpdyInformation::GetNPNIndex(const nsACString& npnString,
-                                      uint32_t* result) const {
-  if (npnString.IsEmpty()) return NS_ERROR_FAILURE;
-
-  for (uint32_t index = 0; index < kCount; ++index) {
-    if (npnString.Equals(VersionString[index])) {
-      *result = index;
-      return NS_OK;
-    }
-  }
-
-  return NS_ERROR_FAILURE;
+  Version = SpdyVersion::HTTP_2;
+  VersionString = "h2"_ns;
+  ALPNCallbacks = Http2Session::ALPNCallback;
 }
 
 //////////////////////////////////////////
@@ -82,7 +63,7 @@ bool SpdyPushCache::RegisterPushedStreamHttp2(const nsCString& key,
           key.get(), stream->StreamID()));
     return false;
   }
-  mHashHttp2.Put(key, stream);
+  mHashHttp2.InsertOrUpdate(key, stream);
   return true;
 }
 

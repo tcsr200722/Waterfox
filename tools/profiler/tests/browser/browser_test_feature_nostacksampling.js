@@ -6,15 +6,12 @@
  * Test the No Stack Sampling feature.
  */
 add_task(async function test_profile_feature_nostacksampling() {
-  if (!AppConstants.MOZ_GECKO_PROFILER) {
-    return;
-  }
   Assert.ok(
     !Services.profiler.IsActive(),
     "The profiler is not currently active"
   );
 
-  startProfiler({ features: ["threads", "js", "nostacksampling"] });
+  await startProfiler({ features: ["js", "nostacksampling"] });
 
   const url = BASE_URL + "do_work_500ms.html";
   await BrowserTestUtils.withNewTab(url, async contentBrowser => {
@@ -29,10 +26,8 @@ add_task(async function test_profile_feature_nostacksampling() {
 
     // Check that we can get no stacks when the feature is turned on.
     {
-      const {
-        parentThread,
-        contentThread,
-      } = await stopProfilerNowAndGetThreads(contentPid);
+      const { parentThread, contentThread } =
+        await stopProfilerNowAndGetThreads(contentPid);
       Assert.equal(
         parentThread.samples.data.length,
         0,
@@ -49,7 +44,7 @@ add_task(async function test_profile_feature_nostacksampling() {
 
     // Flush out any straggling allocation markers that may have not been collected
     // yet by starting and stopping the profiler once.
-    startProfiler({ features: ["threads", "js"] });
+    await startProfiler({ features: ["js"] });
 
     // Now reload the tab with a clean run.
     gBrowser.reload();
@@ -57,9 +52,8 @@ add_task(async function test_profile_feature_nostacksampling() {
 
     // Check that stack samples were recorded.
     {
-      const { parentThread, contentThread } = await stopProfilerAndGetThreads(
-        contentPid
-      );
+      const { parentThread, contentThread } =
+        await waitSamplingAndStopProfilerAndGetThreads(contentPid);
       Assert.greater(
         parentThread.samples.data.length,
         0,

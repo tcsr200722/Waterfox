@@ -4,7 +4,6 @@
 {
   'sources': [
     'aeskeywrap.c',
-    'alg2268.c',
     'cmac.c',
     'alghmac.c',
     'arcfive.c',
@@ -22,25 +21,18 @@
     'dsa.c',
     'ec.c',
     'ecdecode.c',
-    'ecl/ec_naf.c',
-    'ecl/ecl.c',
-    'ecl/ecl_gf.c',
-    'ecl/ecl_mult.c',
     'ecl/ecp_25519.c',
-    'ecl/ecp_256.c',
-    'ecl/ecp_256_32.c',
-    'ecl/ecp_384.c',
-    'ecl/ecp_521.c',
-    'ecl/ecp_aff.c',
-    'ecl/ecp_jac.c',
-    'ecl/ecp_jm.c',
-    'ecl/ecp_mont.c',
+    'ecl/ecp_secp256r1.c',
+    'ecl/ecp_secp384r1.c',
+    'ecl/ecp_secp521r1.c',
     'fipsfreebl.c',
     'blinit.c',
     'freeblver.c',
     'gcm.c',
     'hmacct.c',
     'jpake.c',
+    'kyber.c',
+    'kyber-pqcrystals-ref.c',
     'ldvector.c',
     'md2.c',
     'md5.c',
@@ -54,11 +46,27 @@
     'rawhash.c',
     'rijndael.c',
     'rsa.c',
+    'rsa_blind.c',
     'rsapkcs.c',
     'sha_fast.c',
     'shvfy.c',
     'sysrand.c',
     'tlsprfalg.c',
+    'secmpi.c',
+    'verified/Hacl_Hash_SHA3.c',
+    'verified/Hacl_P256.c',
+    'verified/Hacl_P384.c',
+    'verified/Hacl_P521.c',
+    'sha3.c',
+    'shake.c',
+    'verified/Hacl_Curve25519_51.c',
+    'verified/Hacl_Ed25519.c',
+  ],
+  'defines': [
+    # For kyber-pqcrystals-ref.c. If we ever decide to support Kyber512 or
+    # Kyber1024, we'll need to build separate static libraries with different
+    # values of KYBER_K.
+    'KYBER_K=3',
   ],
   'conditions': [
     [ 'OS=="linux" or OS=="android"', {
@@ -67,11 +75,11 @@
           'sources': [
             'arcfour-amd64-gas.s',
             'mpi/mpi_amd64.c',
-            'mpi/mpi_amd64_gas.s',
+            'mpi/mpi_amd64_common.S',
             'mpi/mp_comba.c',
           ],
           'conditions': [
-            [ 'cc_is_clang==1 and fuzz!=1 and coverage!=1', {
+            [ 'cc_is_clang==1 and fuzz!=1 and coverage!=1 and force_integrated_as!=1', {
               'cflags': [
                 '-no-integrated-as',
               ],
@@ -94,6 +102,12 @@
             'mpi/mpi_arm.c',
           ],
         }],
+        [ 'target_arch=="ppc64le"', {
+          'sources': [
+            'chacha20poly1305-ppc.c',
+            'chacha20-ppc64le.S',
+          ],
+        }]
       ],
     }],
     [ 'OS=="win"', {
@@ -131,8 +145,7 @@
         }],
       ],
     }],
-    ['have_int128_support==1 and \
-      (target_arch=="x64" or target_arch=="arm64" or target_arch=="aarch64")', {
+    ['have_int128_support==1', {
       'sources': [
         # All intel x64 and 64-bit ARM architectures get the 64 bit version.
         'ecl/curve25519_64.c',
@@ -166,6 +179,11 @@
         'deprecated/seed.c',
       ],
     }],
+    [ 'disable_deprecated_rc2==0', {
+      'sources': [
+        'deprecated/alg2268.c',
+      ],
+    }],
     [ 'fuzz==1', {
       'sources!': [ 'drbg.c' ],
       'sources': [ 'det_rng.c' ],
@@ -196,6 +214,18 @@
             'MP_ASSEMBLY_MULTIPLY',
             'MP_ASSEMBLY_SQUARE',
             'MP_ASSEMBLY_DIV_2DX1D',
+          ],
+        }, 'target_arch=="x64"', {
+          'sources': [
+            'mpi/mpi_amd64.c',
+            'mpi/mpi_amd64_common.S',
+            'mpi/mp_comba.c',
+          ],
+          'defines': [
+            'MP_IS_LITTLE_ENDIAN',
+            'MPI_AMD64',
+            'MP_ASSEMBLY_MULTIPLY',
+            'NSS_USE_COMBA',
           ],
         }],
       ],

@@ -33,19 +33,9 @@ NS_EVENT_MESSAGE(eVoidEvent)
 // EventListenerManager.
 NS_EVENT_MESSAGE(eAllEvents)
 
-// Widget may be destroyed
-NS_EVENT_MESSAGE(eWindowClose)
-
 NS_EVENT_MESSAGE(eKeyPress)
 NS_EVENT_MESSAGE(eKeyUp)
 NS_EVENT_MESSAGE(eKeyDown)
-
-// These messages are dispatched when PluginInstaceChild receives native
-// keyboard events directly and it posts the information to the widget.
-// These messages shouldn't be handled by content and non-reserved chrome
-// event handlers.
-NS_EVENT_MESSAGE(eKeyDownOnPlugin)
-NS_EVENT_MESSAGE(eKeyUpOnPlugin)
 
 // This message is sent after a content process handles a key event or accesskey
 // to indicate that an potential accesskey was not found. The parent process may
@@ -57,17 +47,6 @@ NS_EVENT_MESSAGE(eResize)
 NS_EVENT_MESSAGE(eScroll)
 NS_EVENT_MESSAGE(eMozVisualResize)
 NS_EVENT_MESSAGE(eMozVisualScroll)
-
-// Application installation
-NS_EVENT_MESSAGE(eInstall)
-NS_EVENT_MESSAGE(eAppInstalled)
-
-// A plugin was clicked or otherwise focused. ePluginActivate should be
-// used when the window is not active. ePluginFocus should be used when
-// the window is active. In the latter case, the dispatcher of the event
-// is expected to ensure that the plugin's widget is focused beforehand.
-NS_EVENT_MESSAGE(ePluginActivate)
-NS_EVENT_MESSAGE(ePluginFocus)
 
 NS_EVENT_MESSAGE(eOffline)
 NS_EVENT_MESSAGE(eOnline)
@@ -91,7 +70,8 @@ NS_EVENT_MESSAGE(eMouseEnter)
 NS_EVENT_MESSAGE(eMouseLeave)
 NS_EVENT_MESSAGE(eMouseTouchDrag)
 NS_EVENT_MESSAGE(eMouseLongTap)
-NS_EVENT_MESSAGE_FIRST_LAST(eMouseEvent, eMouseMove, eMouseLongTap)
+NS_EVENT_MESSAGE(eMouseExploreByTouch)
+NS_EVENT_MESSAGE_FIRST_LAST(eMouseEvent, eMouseMove, eMouseExploreByTouch)
 
 // Pointer spec events
 NS_EVENT_MESSAGE(ePointerMove)
@@ -109,6 +89,8 @@ NS_EVENT_MESSAGE_FIRST_LAST(ePointerEvent, ePointerMove, ePointerLostCapture)
 NS_EVENT_MESSAGE(eContextMenu)
 
 NS_EVENT_MESSAGE(eCueChange)
+
+NS_EVENT_MESSAGE(eBeforeToggle)
 
 NS_EVENT_MESSAGE(eLoad)
 NS_EVENT_MESSAGE(eUnload)
@@ -151,11 +133,11 @@ NS_EVENT_MESSAGE_FIRST_LAST(eDragDropEvent, eDragEnter, eDragLeave)
 // XUL specific events
 NS_EVENT_MESSAGE(eXULPopupShowing)
 NS_EVENT_MESSAGE(eXULPopupShown)
-NS_EVENT_MESSAGE(eXULPopupPositioned)
 NS_EVENT_MESSAGE(eXULPopupHiding)
 NS_EVENT_MESSAGE(eXULPopupHidden)
 NS_EVENT_MESSAGE(eXULBroadcast)
 NS_EVENT_MESSAGE(eXULCommandUpdate)
+NS_EVENT_MESSAGE(eXULSystemStatusBarClick)
 
 // Legacy mouse scroll (wheel) events
 NS_EVENT_MESSAGE(eLegacyMouseLineOrPageScroll)
@@ -227,14 +209,13 @@ NS_EVENT_MESSAGE(eLegacyDOMFocusOut)
 NS_EVENT_MESSAGE(ePageShow)
 NS_EVENT_MESSAGE(ePageHide)
 
+// Canvas events
+NS_EVENT_MESSAGE(eContextLost)
+NS_EVENT_MESSAGE(eContextRestored)
+
 // SVG events
 NS_EVENT_MESSAGE(eSVGLoad)
-NS_EVENT_MESSAGE(eSVGUnload)
-NS_EVENT_MESSAGE(eSVGResize)
 NS_EVENT_MESSAGE(eSVGScroll)
-
-// SVG Zoom events
-NS_EVENT_MESSAGE(eSVGZoom)
 
 // XUL command events
 NS_EVENT_MESSAGE(eXULCommand)
@@ -321,9 +302,6 @@ NS_EVENT_MESSAGE(eEdgeUIStarted)
 NS_EVENT_MESSAGE(eEdgeUICanceled)
 NS_EVENT_MESSAGE(eEdgeUICompleted)
 
-// These are used to send native events to plugins.
-NS_EVENT_MESSAGE(ePluginInputEvent)
-
 // Events to manipulate selection (WidgetSelectionEvent)
 // Clear any previous selection and set the given range as the selection
 NS_EVENT_MESSAGE(eSetSelection)
@@ -335,6 +313,9 @@ NS_EVENT_MESSAGE(eContentCommandPaste)
 NS_EVENT_MESSAGE(eContentCommandDelete)
 NS_EVENT_MESSAGE(eContentCommandUndo)
 NS_EVENT_MESSAGE(eContentCommandRedo)
+// eContentCommandInsertText tries to insert text with replacing selection
+// in focused editor.
+NS_EVENT_MESSAGE(eContentCommandInsertText)
 NS_EVENT_MESSAGE(eContentCommandPasteTransferable)
 NS_EVENT_MESSAGE(eContentCommandLookUpDictionary)
 // eContentCommandScroll scrolls the nearest scrollable element to the
@@ -382,15 +363,15 @@ NS_EVENT_MESSAGE(eAfterPrint)
 
 NS_EVENT_MESSAGE(eMessage)
 NS_EVENT_MESSAGE(eMessageError)
+NS_EVENT_MESSAGE(eRTCTransform)
 
 // Menu open event
 NS_EVENT_MESSAGE(eOpen)
 
 // Device motion and orientation
 NS_EVENT_MESSAGE(eDeviceOrientation)
-NS_EVENT_MESSAGE(eAbsoluteDeviceOrientation)
+NS_EVENT_MESSAGE(eDeviceOrientationAbsolute)
 NS_EVENT_MESSAGE(eDeviceMotion)
-NS_EVENT_MESSAGE(eDeviceProximity)
 NS_EVENT_MESSAGE(eUserProximity)
 NS_EVENT_MESSAGE(eDeviceLight)
 #if defined(MOZ_WIDGET_ANDROID)
@@ -403,8 +384,6 @@ NS_EVENT_MESSAGE(eVRDisplayDeactivate)
 NS_EVENT_MESSAGE(eVRDisplayConnect)
 NS_EVENT_MESSAGE(eVRDisplayDisconnect)
 NS_EVENT_MESSAGE(eVRDisplayPresentChange)
-
-NS_EVENT_MESSAGE(eShow)
 
 // Fullscreen DOM API
 NS_EVENT_MESSAGE(eFullscreenChange)
@@ -435,13 +414,6 @@ NS_EVENT_MESSAGE(eWheelOperationStart)
 // corresponding native event.
 NS_EVENT_MESSAGE(eWheelOperationEnd)
 
-// System time is changed
-NS_EVENT_MESSAGE(eTimeChange)
-
-// Network packet events.
-NS_EVENT_MESSAGE(eNetworkUpload)
-NS_EVENT_MESSAGE(eNetworkDownload)
-
 // MediaRecorder events.
 NS_EVENT_MESSAGE(eMediaRecorderDataAvailable)
 NS_EVENT_MESSAGE(eMediaRecorderWarning)
@@ -460,23 +432,28 @@ NS_EVENT_MESSAGE_FIRST_LAST(eGamepadEvent, eGamepadButtonDown,
 NS_EVENT_MESSAGE(eEditorInput)
 NS_EVENT_MESSAGE(eEditorBeforeInput)
 
+// textInput event which is a default action of beforeinput
+NS_EVENT_MESSAGE(eLegacyTextInput)
+
 // selection events
 NS_EVENT_MESSAGE(eSelectStart)
 NS_EVENT_MESSAGE(eSelectionChange)
+NS_EVENT_MESSAGE(eSlotChange)
 
 // visibility change
 NS_EVENT_MESSAGE(eVisibilityChange)
+
+// security policy events
+NS_EVENT_MESSAGE(eSecurityPolicyViolation)
 
 // Details element events.
 NS_EVENT_MESSAGE(eToggle)
 
 // Dialog element events.
 NS_EVENT_MESSAGE(eClose)
+NS_EVENT_MESSAGE(eCancel)
 
-// Marquee element events.
-NS_EVENT_MESSAGE(eMarqueeBounce)
-NS_EVENT_MESSAGE(eMarqueeStart)
-NS_EVENT_MESSAGE(eMarqueeFinish)
+NS_EVENT_MESSAGE(eScrollend)
 
 #ifdef UNDEF_NS_EVENT_MESSAGE_FIRST_LAST
 #  undef UNDEF_NS_EVENT_MESSAGE_FIRST_LAST

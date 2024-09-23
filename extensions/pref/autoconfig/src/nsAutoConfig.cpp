@@ -16,6 +16,8 @@
 #include "nsIPromptService.h"
 #include "nsIInputStream.h"
 #include "nsIOutputStream.h"
+#include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsIStringBundle.h"
 #include "nsContentUtils.h"
 #include "nsCRT.h"
@@ -26,6 +28,8 @@
 
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Logging.h"
+#include "mozilla/SpinEventLoopUntil.h"
+#include "mozilla/Try.h"
 
 using mozilla::LogLevel;
 
@@ -243,7 +247,7 @@ nsresult nsAutoConfig::downloadAutoConfig() {
   // open a channel for the url
   rv = NS_NewChannel(
       getter_AddRefs(channel), url, nsContentUtils::GetSystemPrincipal(),
-      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
       nsIContentPolicy::TYPE_OTHER,
       nullptr,  // nsICookieJarSettings
       nullptr,  // PerformanceStorage
@@ -274,7 +278,8 @@ nsresult nsAutoConfig::downloadAutoConfig() {
        that mLoaded will be set to true in any case (success/failure)
     */
 
-    if (!mozilla::SpinEventLoopUntil([&]() { return mLoaded; })) {
+    if (!mozilla::SpinEventLoopUntil("nsAutoConfig::downloadAutoConfig"_ns,
+                                     [&]() { return mLoaded; })) {
       return NS_ERROR_FAILURE;
     }
 
@@ -337,7 +342,7 @@ nsresult nsAutoConfig::readOfflineFile() {
                               getter_AddRefs(failoverFile));
   if (NS_FAILED(rv)) return rv;
 
-  failoverFile->AppendNative(NS_LITERAL_CSTRING("failover.jsc"));
+  failoverFile->AppendNative("failover.jsc"_ns);
   rv = evaluateLocalFile(failoverFile);
   if (NS_FAILED(rv))
     NS_WARNING("Couldn't open failover.jsc, going back to default prefs");
@@ -377,7 +382,7 @@ nsresult nsAutoConfig::writeFailoverFile() {
                               getter_AddRefs(failoverFile));
   if (NS_FAILED(rv)) return rv;
 
-  failoverFile->AppendNative(NS_LITERAL_CSTRING("failover.jsc"));
+  failoverFile->AppendNative("failover.jsc"_ns);
 
   rv = NS_NewLocalFileOutputStream(getter_AddRefs(outStr), failoverFile);
   if (NS_FAILED(rv)) return rv;
@@ -400,16 +405,14 @@ nsresult nsAutoConfig::getEmailAddr(nsACString& emailAddr) {
   rv =
       mPrefBranch->GetCharPref("mail.accountmanager.defaultaccount", prefValue);
   if (NS_SUCCEEDED(rv) && !prefValue.IsEmpty()) {
-    emailAddr = NS_LITERAL_CSTRING("mail.account.") + prefValue +
-                NS_LITERAL_CSTRING(".identities");
+    emailAddr = "mail.account."_ns + prefValue + ".identities"_ns;
     rv = mPrefBranch->GetCharPref(PromiseFlatCString(emailAddr).get(),
                                   prefValue);
     if (NS_FAILED(rv) || prefValue.IsEmpty())
       return PromptForEMailAddress(emailAddr);
     int32_t commandIndex = prefValue.FindChar(',');
     if (commandIndex != kNotFound) prefValue.Truncate(commandIndex);
-    emailAddr = NS_LITERAL_CSTRING("mail.identity.") + prefValue +
-                NS_LITERAL_CSTRING(".useremail");
+    emailAddr = "mail.identity."_ns + prefValue + ".useremail"_ns;
     rv = mPrefBranch->GetCharPref(PromiseFlatCString(emailAddr).get(),
                                   prefValue);
     if (NS_FAILED(rv) || prefValue.IsEmpty())
@@ -430,7 +433,7 @@ nsresult nsAutoConfig::getEmailAddr(nsACString& emailAddr) {
 nsresult nsAutoConfig::PromptForEMailAddress(nsACString& emailAddress) {
   nsresult rv;
   nsCOMPtr<nsIPromptService> promptService =
-      do_GetService("@mozilla.org/embedcomp/prompt-service;1", &rv);
+      do_GetService("@mozilla.org/prompter;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIStringBundleService> bundleService =
       do_GetService(NS_STRINGBUNDLE_CONTRACTID, &rv);

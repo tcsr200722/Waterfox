@@ -5,6 +5,9 @@
 var gWindowWatcher = null;
 
 function test() {
+  // This test depends on InstallTrigger.install availability.
+  setInstallTriggerPrefs();
+
   Harness.installConfirmCallback = confirm_install;
   Harness.installCancelledCallback = cancelled_install;
   Harness.installEndedCallback = complete_install;
@@ -27,13 +30,13 @@ function test() {
     })
   );
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser,
     TESTROOT + "installtrigger.html?" + triggers
   );
 }
 
-function confirm_install(panel) {
+function confirm_install() {
   ok(false, "Should not see the install dialog");
   return false;
 }

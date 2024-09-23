@@ -5,20 +5,18 @@
 
 // Test adjusting the created time with different current times of animation.
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_custom_playback_rate.html");
-  const {
-    animationInspector,
-    inspector,
-    panel,
-  } = await openAnimationInspector();
+  const { animationInspector, inspector, panel } =
+    await openAnimationInspector();
 
   info(
     "Pause the all animation and set current time to middle time in order to " +
       "check the adjusting time"
   );
-  await clickOnPauseResumeButton(animationInspector, panel);
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
+  clickOnPauseResumeButton(animationInspector, panel);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
 
   info("Check the created times of all animation are same");
   checkAdjustingTheTime(
@@ -27,11 +25,13 @@ add_task(async function() {
   );
 
   info("Change the current time to 75% after selecting '.div2'");
-  await selectNodeAndWaitForAnimations(".div2", inspector);
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0.75);
+  await selectNode(".div2", inspector);
+  await waitUntil(() => panel.querySelectorAll(".animation-item").length === 1);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0.75);
 
   info("Check each adjusted result of animations after selecting 'body' again");
-  await selectNodeAndWaitForAnimations("body", inspector);
+  await selectNode("body", inspector);
+  await waitUntil(() => panel.querySelectorAll(".animation-item").length === 2);
 
   checkAdjustingTheTime(
     animationInspector.state.animations[0].state,

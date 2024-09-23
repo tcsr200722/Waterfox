@@ -7,8 +7,9 @@
 #include "DDMediaLogs.h"
 
 #include "DDLogUtils.h"
+#include "nsIThread.h"
 #include "nsIThreadManager.h"
-#include "mozilla/JSONWriter.h"
+#include "mozilla/JSONStringWriteFuncs.h"
 
 namespace mozilla {
 
@@ -16,7 +17,7 @@ namespace mozilla {
   nsCOMPtr<nsIThread> mThread;
   nsresult rv =
       NS_NewNamedThread("DDMediaLogs", getter_AddRefs(mThread), nullptr,
-                        nsIThreadManager::kThreadPoolStackSize);
+                        {.stackSize = nsIThreadManager::kThreadPoolStackSize});
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return {rv, nullptr};
   }
@@ -374,15 +375,6 @@ void DDMediaLogs::ProcessBuffer() {
   });
 }
 
-struct StringWriteFunc : public JSONWriteFunc {
-  nsCString& mCString;
-  explicit StringWriteFunc(nsCString& aCString) : mCString(aCString) {}
-  void Write(const char* aStr) override { mCString.Append(aStr); }
-  void Write(const char* aStr, size_t aLen) override {
-    mCString.Append(aStr, aLen);
-  }
-};
-
 void DDMediaLogs::FulfillPromises() {
   MOZ_ASSERT(!mThread || mThread.get() == NS_GetCurrentThread());
 
@@ -417,8 +409,8 @@ void DDMediaLogs::FulfillPromises() {
       continue;
     }
 
-    nsCString json;
-    JSONWriter jw{MakeUnique<StringWriteFunc>(json)};
+    JSONStringWriteFunc<nsCString> json;
+    JSONWriter jw{json};
     jw.Start();
     jw.StartArrayProperty("messages");
     for (const DDLogMessage& message : log->mMessages) {
@@ -432,12 +424,12 @@ void DDMediaLogs::FulfillPromises() {
       } else {
         jw.StringProperty(
             "ob", nsPrintfCString(R"("%s[%p]")", message.mObject.TypeName(),
-                                  message.mObject.Pointer())
-                      .get());
+                                  message.mObject.Pointer()));
       }
-      jw.StringProperty("cat", ToShortString(message.mCategory));
+      jw.StringProperty("cat",
+                        MakeStringSpan(ToShortString(message.mCategory)));
       if (message.mLabel && message.mLabel[0] != '\0') {
-        jw.StringProperty("lbl", message.mLabel);
+        jw.StringProperty("lbl", MakeStringSpan(message.mLabel));
       }
       if (!message.mValue.is<DDNoValue>()) {
         if (message.mValue.is<DDLogObject>()) {
@@ -459,13 +451,12 @@ void DDMediaLogs::FulfillPromises() {
     mLifetimes.Visit(
         mediaElement,
         [&](const DDLifetime& lifetime) {
-          jw.StartObjectProperty(
-              nsPrintfCString("%" PRIi32, lifetime.mTag).get(),
-              JSONWriter::SingleLineStyle);
+          jw.StartObjectProperty(nsPrintfCString("%" PRIi32, lifetime.mTag),
+                                 JSONWriter::SingleLineStyle);
           jw.IntProperty("tag", lifetime.mTag);
-          jw.StringProperty("cls", lifetime.mObject.TypeName());
-          jw.StringProperty(
-              "ptr", nsPrintfCString("%p", lifetime.mObject.Pointer()).get());
+          jw.StringProperty("cls", MakeStringSpan(lifetime.mObject.TypeName()));
+          jw.StringProperty("ptr",
+                            nsPrintfCString("%p", lifetime.mObject.Pointer()));
           jw.IntProperty("con", lifetime.mConstructionIndex.Value());
           jw.DoubleProperty("con_ts",
                             ToSeconds(lifetime.mConstructionTimeStamp));
@@ -488,7 +479,8 @@ void DDMediaLogs::FulfillPromises() {
         log->mMessages.IsEmpty());
     jw.EndObject();
     jw.End();
-    DDL_DEBUG("RetrieveMessages(%p) ->\n%s", mediaElement, json.get());
+    DDL_DEBUG("RetrieveMessages(%p) ->\n%s", mediaElement,
+              json.StringCRef().get());
 
     // This log exists (new messages or not) -> Resolve this promise.
     DDL_INFO("Resolving promise for HTMLMediaElement[%p] with messages %" PRImi
@@ -498,7 +490,7 @@ void DDMediaLogs::FulfillPromises() {
              log->mMessages.IsEmpty()
                  ? 0
                  : log->mMessages[log->mMessages.Length() - 1].mIndex.Value());
-    promiseHolder.Resolve(std::move(json), __func__);
+    promiseHolder.Resolve(std::move(json).StringRRef(), __func__);
 
     // Remove exported messages.
     log->mMessages.Clear();

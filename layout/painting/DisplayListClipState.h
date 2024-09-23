@@ -13,10 +13,10 @@
 #include "mozilla/DebugOnly.h"
 
 class nsIFrame;
-class nsIScrollableFrame;
-class nsDisplayListBuilder;
 
 namespace mozilla {
+
+class nsDisplayListBuilder;
 
 /**
  * All clip coordinates are in appunits relative to the reference frame
@@ -257,7 +257,7 @@ class DisplayListClipState::AutoClipContainingBlockDescendantsToContentBox
 };
 
 /**
- * Do not use this outside of nsFrame::BuildDisplayListForChild, use
+ * Do not use this outside of nsIFrame::BuildDisplayListForChild, use
  * multiple AutoSaveRestores instead. We provide this class just to ensure
  * BuildDisplayListForChild is as efficient as possible.
  */

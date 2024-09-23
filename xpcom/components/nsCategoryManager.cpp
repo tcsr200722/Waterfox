@@ -22,15 +22,15 @@
 #include "nsReadableUtils.h"
 #include "nsCRT.h"
 #include "nsPrintfCString.h"
-#include "nsQuickSort.h"
 #include "nsEnumeratorUtils.h"
 #include "nsThreadUtils.h"
 #include "mozilla/ArenaAllocatorExtensions.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/ProfilerLabels.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/Services.h"
 #include "mozilla/SimpleEnumerator.h"
 
-#include "GeckoProfiler.h"
 #include "ManifestParser.h"
 #include "nsSimpleEnumerator.h"
 
@@ -134,11 +134,11 @@ CategoryEnumerator* CategoryEnumerator::Create(
     return nullptr;
   }
 
-  for (auto iter = aTable.Iter(); !iter.Done(); iter.Next()) {
+  for (const auto& entry : aTable) {
     // if a category has no entries, we pretend it doesn't exist
-    CategoryNode* aNode = iter.UserData();
+    CategoryNode* aNode = entry.GetWeak();
     if (aNode->Count()) {
-      enumObj->mArray[enumObj->mCount++] = iter.Key();
+      enumObj->mArray[enumObj->mCount++] = entry.GetKey();
     }
   }
 
@@ -209,12 +209,10 @@ static nsresult CreateEntryEnumerator(nsTHashtable<CategoryLeaf>& aTable,
     }
   }
 
-  entries.Sort(
-      [](nsICategoryEntry* aA, nsICategoryEntry* aB, void*) {
-        return strcmp(CategoryEntry::Cast(aA)->Key(),
-                      CategoryEntry::Cast(aB)->Key());
-      },
-      nullptr);
+  entries.Sort([](nsICategoryEntry* aA, nsICategoryEntry* aB) {
+    return strcmp(CategoryEntry::Cast(aA)->Key(),
+                  CategoryEntry::Cast(aB)->Key());
+  });
 
   return NS_NewArrayEnumerator(aResult, entries, NS_GET_IID(nsICategoryEntry));
 }
@@ -302,6 +300,7 @@ nsresult CategoryNode::Enumerate(nsISimpleEnumerator** aResult) {
 size_t CategoryNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) {
   // We don't measure the strings pointed to by the entries because the
   // pointers are non-owning.
+  MutexAutoLock lock(mLock);
   return mTable.ShallowSizeOfExcludingThis(aMallocSizeOf);
 }
 
@@ -340,20 +339,12 @@ void nsCategoryManager::Destroy() {
   gCategoryManager = nullptr;
 }
 
-nsresult nsCategoryManager::Create(nsISupports* aOuter, REFNSIID aIID,
-                                   void** aResult) {
-  if (aOuter) {
-    return NS_ERROR_NO_AGGREGATION;
-  }
-
+nsresult nsCategoryManager::Create(REFNSIID aIID, void** aResult) {
   return GetSingleton()->QueryInterface(aIID, aResult);
 }
 
 nsCategoryManager::nsCategoryManager()
-    : mArena(),
-      mTable(),
-      mLock("nsCategoryManager"),
-      mSuppressNotifications(false) {}
+    : mLock("nsCategoryManager"), mSuppressNotifications(false) {}
 
 void nsCategoryManager::InitMemoryReporter() {
   RegisterWeakMemoryReporter(this);
@@ -388,14 +379,16 @@ nsCategoryManager::CollectReports(nsIHandleReportCallback* aHandleReport,
 
 size_t nsCategoryManager::SizeOfIncludingThis(
     mozilla::MallocSizeOf aMallocSizeOf) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MutexAutoLock lock(mLock);
   size_t n = aMallocSizeOf(this);
 
   n += mArena.SizeOfExcludingThis(aMallocSizeOf);
 
   n += mTable.ShallowSizeOfExcludingThis(aMallocSizeOf);
-  for (auto iter = mTable.ConstIter(); !iter.Done(); iter.Next()) {
+  for (const auto& data : mTable.Values()) {
     // We don't measure the key string because it's a non-owning pointer.
-    n += iter.Data()->SizeOfExcludingThis(aMallocSizeOf);
+    n += data->SizeOfExcludingThis(aMallocSizeOf);
   }
 
   return n;
@@ -500,6 +493,7 @@ void nsCategoryManager::AddCategoryEntry(const nsACString& aCategoryName,
                                          const nsACString& aEntryName,
                                          const nsACString& aValue,
                                          bool aReplace, nsACString& aOldValue) {
+  MOZ_ASSERT(NS_IsMainThread());
   aOldValue.SetIsVoid(true);
 
   // Before we can insert a new entry, we'll need to
@@ -511,9 +505,11 @@ void nsCategoryManager::AddCategoryEntry(const nsACString& aCategoryName,
 
     if (!category) {
       // That category doesn't exist yet; let's make it.
-      category = CategoryNode::Create(&mArena);
-
-      mTable.Put(MaybeStrdup(aCategoryName, &mArena), category);
+      category = mTable
+                     .InsertOrUpdate(
+                         MaybeStrdup(aCategoryName, &mArena),
+                         UniquePtr<CategoryNode>{CategoryNode::Create(&mArena)})
+                     .get();
     }
   }
 
@@ -674,15 +670,12 @@ void NS_CreateServicesFromCategory(const char* aCategory, nsISupports* aOrigin,
       // try an observer, if it implements it.
       nsCOMPtr<nsIObserver> observer = do_QueryInterface(instance);
       if (observer) {
-#ifdef MOZ_GECKO_PROFILER
         nsPrintfCString profilerStr("%s (%s)", aObserverTopic,
                                     entryString.get());
-        AUTO_PROFILER_TEXT_MARKER_CAUSE("Category observer notification",
-                                        profilerStr, OTHER, Nothing(),
-                                        profiler_get_backtrace());
+        AUTO_PROFILER_MARKER_TEXT("Category observer notification", OTHER,
+                                  MarkerStack::Capture(), profilerStr);
         AUTO_PROFILER_LABEL_DYNAMIC_NSCSTRING_NONSENSITIVE(
             "Category observer notification -", OTHER, profilerStr);
-#endif
 
         observer->Observe(aOrigin, aObserverTopic,
                           aObserverData ? aObserverData : u"");

@@ -2,118 +2,100 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import { isConsole } from "../utils/preview";
-import { findBestMatchExpression } from "../utils/ast";
 import { getGrip, getFront } from "../utils/evaluation-result";
-import { getExpressionFromCoords } from "../utils/editor/get-expression";
-import { isOriginal } from "../utils/source";
-import { isTesting } from "devtools-environment";
 
 import {
-  getPreview,
   isLineInScope,
   isSelectedFrameVisible,
   getSelectedSource,
+  getSelectedLocation,
   getSelectedFrame,
-  getSymbols,
   getCurrentThread,
-  getPreviewCount,
-} from "../selectors";
+  getSelectedException,
+} from "../selectors/index";
 
 import { getMappedExpression } from "./expressions";
 
-import type { Action, ThunkArgs } from "./types";
-import type { Position, Context } from "../types";
-import type { AstLocation } from "../workers/parser";
-
-function findExpressionMatch(state, codeMirror: any, tokenPos: Object) {
-  const source = getSelectedSource(state);
-  if (!source) {
-    return;
+async function findExpressionMatch(state, parserWorker, editor, tokenPos) {
+  const location = getSelectedLocation(state);
+  if (!location) {
+    return null;
   }
 
-  const symbols = getSymbols(state, source);
-
-  let match;
-  if (!symbols || symbols.loading) {
-    match = getExpressionFromCoords(codeMirror, tokenPos);
-  } else {
-    match = findBestMatchExpression(symbols, tokenPos);
+  // Fallback on expression from codemirror cursor if parser worker misses symbols
+  // or is unable to find a match.
+  const match = await parserWorker.findBestMatchExpression(
+    location.source.id,
+    tokenPos
+  );
+  if (match) {
+    return match;
   }
-  return match;
+  return editor.getExpressionFromCoords(tokenPos);
 }
 
-export function updatePreview(
-  cx: Context,
-  target: HTMLElement,
-  tokenPos: Object,
-  codeMirror: any
-) {
-  return ({ dispatch, getState, client, sourceMaps }: ThunkArgs) => {
-    const cursorPos = target.getBoundingClientRect();
-
+export function getPreview(target, tokenPos, editor) {
+  return async thunkArgs => {
+    const { getState, client, parserWorker } = thunkArgs;
     if (
       !isSelectedFrameVisible(getState()) ||
       !isLineInScope(getState(), tokenPos.line)
     ) {
-      return;
-    }
-
-    const match = findExpressionMatch(getState(), codeMirror, tokenPos);
-    if (!match) {
-      return;
-    }
-
-    const { expression, location } = match;
-
-    if (isConsole(expression)) {
-      return;
-    }
-
-    dispatch(setPreview(cx, expression, location, tokenPos, cursorPos, target));
-  };
-}
-
-export function setPreview(
-  cx: Context,
-  expression: string,
-  location: AstLocation,
-  tokenPos: Position,
-  cursorPos: ClientRect,
-  target: HTMLElement
-) {
-  return async ({ dispatch, getState, client, sourceMaps }: ThunkArgs) => {
-    dispatch({ type: "START_PREVIEW" });
-    const previewCount = getPreviewCount(getState());
-    if (getPreview(getState())) {
-      dispatch(clearPreview(cx));
+      return null;
     }
 
     const source = getSelectedSource(getState());
     if (!source) {
-      return;
+      return null;
     }
-
     const thread = getCurrentThread(getState());
     const selectedFrame = getSelectedFrame(getState(), thread);
+    if (!selectedFrame) {
+      return null;
+    }
 
-    if (location && isOriginal(source)) {
-      const mapResult = await dispatch(getMappedExpression(expression));
+    const match = await findExpressionMatch(
+      getState(),
+      parserWorker,
+      editor,
+      tokenPos
+    );
+    if (!match) {
+      return null;
+    }
+
+    let { expression, location } = match;
+
+    if (isConsole(expression)) {
+      return null;
+    }
+
+    if (location && source.isOriginal) {
+      const mapResult = await getMappedExpression(
+        expression,
+        thread,
+        thunkArgs
+      );
       if (mapResult) {
         expression = mapResult.expression;
       }
     }
 
-    if (!selectedFrame) {
-      return;
-    }
+    const { result, hasException, exception } = await client.evaluate(
+      expression,
+      {
+        frameId: selectedFrame.id,
+      }
+    );
 
-    const { result } = await client.evaluateInFrame(expression, {
-      frameId: selectedFrame.id,
-      thread,
-    });
+    // The evaluation shouldn't return an exception.
+    if (hasException) {
+      const errorClass = exception?.getGrip()?.class || "Error";
+      throw new Error(
+        `Debugger internal exception: Preview for <${expression}> threw a ${errorClass}`
+      );
+    }
 
     const resultGrip = getGrip(result);
 
@@ -122,7 +104,7 @@ export function setPreview(
     // Accommodating for null allows us to show preview for falsy values
     // line "", false, null, Nan, and more
     if (resultGrip === null) {
-      return;
+      return null;
     }
 
     // Handle cases where the result is invisible to the debugger
@@ -133,60 +115,55 @@ export function setPreview(
       typeof resultGrip.class === "string" &&
       resultGrip.class.includes("InvisibleToDebugger")
     ) {
-      return;
+      return null;
     }
 
     const root = {
-      name: expression,
       path: expression,
       contents: {
         value: resultGrip,
         front: getFront(result),
       },
     };
-    const properties = await client.loadObjectProperties(root);
 
-    // The first time a popup is rendered, the mouse should be hovered
-    // on the token. If it happens to be hovered on whitespace, it should
-    // not render anything
-    if (!target.matches(":hover") && !isTesting()) {
-      return;
-    }
-
-    // Don't finish dispatching if another setPreview was started
-    if (previewCount != getPreviewCount(getState())) {
-      return;
-    }
-
-    dispatch({
-      type: "SET_PREVIEW",
-      cx,
-      value: {
-        expression,
-        resultGrip,
-        properties,
-        root,
-        location,
-        tokenPos,
-        cursorPos,
-        target,
-      },
-    });
+    return {
+      target,
+      tokenPos,
+      cursorPos: target.getBoundingClientRect(),
+      expression,
+      root,
+      resultGrip,
+    };
   };
 }
 
-export function clearPreview(cx: Context) {
-  return ({ dispatch, getState, client }: ThunkArgs) => {
-    const currentSelection = getPreview(getState());
-    if (!currentSelection) {
-      return;
+export function getExceptionPreview(target, tokenPos, editor) {
+  return async ({ getState, parserWorker }) => {
+    const match = await findExpressionMatch(
+      getState(),
+      parserWorker,
+      editor,
+      tokenPos
+    );
+    if (!match) {
+      return null;
     }
 
-    return dispatch(
-      ({
-        type: "CLEAR_PREVIEW",
-        cx,
-      }: Action)
+    const tokenColumnStart = match.location.start.column + 1;
+    const exception = getSelectedException(
+      getState(),
+      tokenPos.line,
+      tokenColumnStart
     );
+    if (!exception) {
+      return null;
+    }
+
+    return {
+      target,
+      tokenPos,
+      cursorPos: target.getBoundingClientRect(),
+      exception,
+    };
   };
 }

@@ -1,6 +1,7 @@
 /* MIT License
  *
- * Copyright (c) 2016-2020 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2016-2022 INRIA, CMU and Microsoft Corporation
+ * Copyright (c) 2022-2023 HACL* Contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,26 +22,19 @@
  * SOFTWARE.
  */
 
-#include "libintvector.h"
-#include "kremlin/internal/types.h"
-#include "kremlin/lowstar_endianness.h"
-#include <string.h>
-#include <stdbool.h>
-
 #ifndef __Hacl_Poly1305_256_H
 #define __Hacl_Poly1305_256_H
 
-#include "Hacl_Kremlib.h"
+#if defined(__cplusplus)
+extern "C" {
+#endif
 
-void
-Hacl_Impl_Poly1305_Field32xN_256_load_acc4(Lib_IntVector_Intrinsics_vec256 *acc, uint8_t *b);
+#include <string.h>
+#include "krml/internal/types.h"
+#include "krml/lowstar_endianness.h"
+#include "krml/internal/target.h"
 
-void
-Hacl_Impl_Poly1305_Field32xN_256_fmul_r4_normalize(
-    Lib_IntVector_Intrinsics_vec256 *out,
-    Lib_IntVector_Intrinsics_vec256 *p);
-
-extern uint32_t Hacl_Poly1305_256_blocklen;
+#include "libintvector.h"
 
 typedef Lib_IntVector_Intrinsics_vec256 *Hacl_Poly1305_256_poly1305_ctx;
 
@@ -61,6 +55,10 @@ Hacl_Poly1305_256_poly1305_finish(
     Lib_IntVector_Intrinsics_vec256 *ctx);
 
 void Hacl_Poly1305_256_poly1305_mac(uint8_t *tag, uint32_t len, uint8_t *text, uint8_t *key);
+
+#if defined(__cplusplus)
+}
+#endif
 
 #define __Hacl_Poly1305_256_H_DEFINED
 #endif

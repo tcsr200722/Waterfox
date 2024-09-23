@@ -23,14 +23,15 @@
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsDirectoryServiceUtils.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsIDirectoryService.h"
 #include "nsIFile.h"
 #include "nsIObserverService.h"
-#include "nsIServiceManager.h"
 #include "nsXULAppAPI.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include "mozilla/AppShutdown.h"
 
 static uint32_t gFailCount = 0;
 
@@ -77,15 +78,14 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
 
   explicit ScopedXPCOM(const char* testName,
                        nsIDirectoryServiceProvider* dirSvcProvider = nullptr)
-      : mServMgr(nullptr), mDirSvcProvider(dirSvcProvider) {
+      : mDirSvcProvider(dirSvcProvider) {
     mTestName = testName;
     printf("Running %s tests...\n", mTestName);
 
-    nsresult rv = NS_InitXPCOM(&mServMgr, nullptr, this);
-    if (NS_FAILED(rv)) {
+    mInitRv = NS_InitXPCOM(nullptr, nullptr, this);
+    if (NS_FAILED(mInitRv)) {
       fail("NS_InitXPCOM returned failure code 0x%" PRIx32,
-           static_cast<uint32_t>(rv));
-      mServMgr = nullptr;
+           static_cast<uint32_t>(mInitRv));
       return;
     }
   }
@@ -93,19 +93,16 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
   ~ScopedXPCOM() {
     // If we created a profile directory, we need to remove it.
     if (mProfD) {
-      nsCOMPtr<nsIObserverService> os =
-          do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-      MOZ_RELEASE_ASSERT(os);
-      MOZ_ALWAYS_SUCCEEDS(
-          os->NotifyObservers(nullptr, "profile-change-net-teardown", nullptr));
-      MOZ_ALWAYS_SUCCEEDS(
-          os->NotifyObservers(nullptr, "profile-change-teardown", nullptr));
-      MOZ_ALWAYS_SUCCEEDS(
-          os->NotifyObservers(nullptr, "profile-before-change", nullptr));
-      MOZ_ALWAYS_SUCCEEDS(
-          os->NotifyObservers(nullptr, "profile-before-change-qm", nullptr));
-      MOZ_ALWAYS_SUCCEEDS(os->NotifyObservers(
-          nullptr, "profile-before-change-telemetry", nullptr));
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownNetTeardown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownTeardown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdown);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownQM);
+      mozilla::AppShutdown::AdvanceShutdownPhase(
+          mozilla::ShutdownPhase::AppShutdownTelemetry);
 
       if (NS_FAILED(mProfD->Remove(true))) {
         NS_WARNING("Problem removing profile directory");
@@ -114,8 +111,7 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
       mProfD = nullptr;
     }
 
-    if (mServMgr) {
-      NS_RELEASE(mServMgr);
+    if (NS_SUCCEEDED(mInitRv)) {
       nsresult rv = NS_ShutdownXPCOM(nullptr);
       if (NS_FAILED(rv)) {
         fail("XPCOM shutdown failed with code 0x%" PRIx32,
@@ -127,7 +123,7 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
     printf("Finished running %s tests.\n", mTestName);
   }
 
-  bool failed() { return mServMgr == nullptr; }
+  bool failed() { return NS_FAILED(mInitRv); }
 
   already_AddRefed<nsIFile> GetProfileDirectory() {
     if (mProfD) {
@@ -143,7 +139,7 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
                                          getter_AddRefs(profD));
     NS_ENSURE_SUCCESS(rv, nullptr);
 
-    rv = profD->Append(NS_LITERAL_STRING("cpp-unit-profd"));
+    rv = profD->Append(u"cpp-unit-profd"_ns);
     NS_ENSURE_SUCCESS(rv, nullptr);
 
     rv = profD->CreateUnique(nsIFile::DIRECTORY_TYPE, 0755);
@@ -185,7 +181,7 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
     nsAutoCString leafName;
     mGREBinD->GetNativeLeafName(leafName);
     if (leafName.EqualsLiteral("Resources")) {
-      mGREBinD->SetNativeLeafName(NS_LITERAL_CSTRING("MacOS"));
+      mGREBinD->SetNativeLeafName("MacOS"_ns);
     }
 #endif
 
@@ -254,7 +250,7 @@ class ScopedXPCOM : public nsIDirectoryServiceProvider2 {
 
  private:
   const char* mTestName;
-  nsIServiceManager* mServMgr;
+  nsresult mInitRv = NS_ERROR_NOT_INITIALIZED;
   nsCOMPtr<nsIDirectoryServiceProvider> mDirSvcProvider;
   nsCOMPtr<nsIFile> mProfD;
   nsCOMPtr<nsIFile> mGRED;

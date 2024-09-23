@@ -7,26 +7,37 @@
 #ifndef builtin_TestingFunctions_h
 #define builtin_TestingFunctions_h
 
-#include "NamespaceImports.h"
+#include "NamespaceImports.h"  // JSContext, JSFunction, HandleObject, HandleValue, Value
 
 namespace js {
 
-MOZ_MUST_USE bool DefineTestingFunctions(JSContext* cx, HandleObject obj,
-                                         bool fuzzingSafe,
-                                         bool disableOOMFunctions);
+[[nodiscard]] bool InitTestingFunctions();
 
-MOZ_MUST_USE bool testingFunc_assertFloat32(JSContext* cx, unsigned argc,
-                                            Value* vp);
+[[nodiscard]] bool DefineTestingFunctions(JSContext* cx, HandleObject obj,
+                                          bool fuzzingSafe,
+                                          bool disableOOMFunctions);
 
-MOZ_MUST_USE bool testingFunc_assertRecoveredOnBailout(JSContext* cx,
-                                                       unsigned argc,
-                                                       Value* vp);
+[[nodiscard]] bool testingFunc_assertFloat32(JSContext* cx, unsigned argc,
+                                             Value* vp);
 
-MOZ_MUST_USE bool testingFunc_serialize(JSContext* cx, unsigned argc,
-                                        Value* vp);
+[[nodiscard]] bool testingFunc_assertRecoveredOnBailout(JSContext* cx,
+                                                        unsigned argc,
+                                                        Value* vp);
+
+[[nodiscard]] bool testingFunc_serialize(JSContext* cx, unsigned argc,
+                                         Value* vp);
 
 extern JSScript* TestingFunctionArgumentToScript(JSContext* cx, HandleValue v,
                                                  JSFunction** funp = nullptr);
+
+#ifdef FUZZING_JS_FUZZILLI
+uint32_t FuzzilliHashDouble(double value);
+
+uint32_t FuzzilliHashBigInt(BigInt* bigInt);
+
+void FuzzilliHashObjectInl(JSContext* cx, JSObject* obj, uint32_t* out);
+void FuzzilliHashObject(JSContext* cx, JSObject* obj);
+#endif
 
 } /* namespace js */
 

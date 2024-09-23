@@ -4,21 +4,37 @@
 
 "use strict";
 
-const { DevToolsServer } = require("devtools/server/devtools-server");
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
+const DevToolsUtils = require("resource://devtools/shared/DevToolsUtils.js");
 const { assert } = DevToolsUtils;
 
 loader.lazyRequireGetter(
   this,
   "LongStringActor",
-  "devtools/server/actors/string",
+  "resource://devtools/server/actors/string.js",
   true
 );
 
 loader.lazyRequireGetter(
   this,
   "symbolGrip",
-  "devtools/server/actors/object/symbol",
+  "resource://devtools/server/actors/object/symbol.js",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "ObjectActor",
+  "resource://devtools/server/actors/object.js",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "EnvironmentActor",
+  "resource://devtools/server/actors/environment.js",
   true
 );
 
@@ -49,14 +65,20 @@ function getPromiseState(obj) {
 }
 
 /**
- * Returns true if value is an object or function
+ * Returns true if value is an object or function.
  *
  * @param value
  * @returns {boolean}
  */
 
 function isObjectOrFunction(value) {
-  return value && (typeof value == "object" || typeof value == "function");
+  // Handle null, whose typeof is object
+  if (!value) {
+    return false;
+  }
+
+  const type = typeof value;
+  return type == "object" || type == "function";
 }
 
 /**
@@ -103,18 +125,7 @@ function createValueGrip(value, pool, makeObjectGrip) {
       return value;
 
     case "string":
-      if (stringIsLong(value)) {
-        for (const child of pool.poolChildren()) {
-          if (child instanceof LongStringActor && child.str == value) {
-            return child.form();
-          }
-        }
-
-        const actor = new LongStringActor(pool.conn, value);
-        pool.manage(actor);
-        return actor.form();
-      }
-      return value;
+      return createStringGrip(pool, value);
 
     case "number":
       if (value === Infinity) {
@@ -134,6 +145,16 @@ function createValueGrip(value, pool, makeObjectGrip) {
         text: value.toString(),
       };
 
+    // TODO(bug 1772157)
+    // Record/tuple grips aren't fully implemented yet.
+    case "record":
+      return {
+        class: "Record",
+      };
+    case "tuple":
+      return {
+        class: "Tuple",
+      };
     case "undefined":
       return { type: "undefined" };
 
@@ -312,29 +333,53 @@ function getPropsForEvent(className) {
  *
  * @param obj
  * @param rawObj
- * @returns {Array}
+ * @returns {Array|Iterable} If rawObj is localStorage/sessionStorage, we don't return an
+ *          array but an iterable object (with the proper `length` property) to avoid
+ *          performance issues.
  */
 function getPropNamesFromObject(obj, rawObj) {
-  let names = [];
-
   try {
     if (isStorage(obj)) {
       // local and session storage cannot be iterated over using
       // Object.getOwnPropertyNames() because it skips keys that are duplicated
       // on the prototype e.g. "key", "getKeys" so we need to gather the real
       // keys using the storage.key() function.
-      for (let j = 0; j < rawObj.length; j++) {
-        names.push(rawObj.key(j));
-      }
-    } else {
-      names = obj.getOwnPropertyNames();
+      // As the method is pretty slow, we return an iterator here, so we don't consume
+      // more than we need, especially since we're calling this from previewers in which
+      // we only need the first 10 entries for the preview (See Bug 1741804).
+
+      // Still return the proper number of entries.
+      const length = rawObj.length;
+      const iterable = { length };
+      iterable[Symbol.iterator] = function*() {
+        for (let j = 0; j < length; j++) {
+          yield rawObj.key(j);
+        }
+      };
+      return iterable;
     }
+
+    return obj.getOwnPropertyNames();
   } catch (ex) {
     // Calling getOwnPropertyNames() on some wrapped native prototypes is not
     // allowed: "cannot modify properties of a WrappedNative". See bug 952093.
   }
 
-  return names;
+  return [];
+}
+
+/**
+ * Returns an array of private properties of an object
+ *
+ * @param obj
+ * @returns {Array}
+ */
+function getSafePrivatePropertiesSymbols(obj) {
+  try {
+    return obj.getOwnPrivateProperties();
+  } catch (ex) {
+    return [];
+  }
 }
 
 /**
@@ -375,6 +420,177 @@ function getModifiersForEvent(rawObj) {
   return modifiers;
 }
 
+/**
+ * Make a debuggee value for the given value.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param mixed value
+ *        The value you want to get a debuggee value for.
+ * @return object
+ *         Debuggee value for |value|.
+ */
+function makeDebuggeeValue(targetActor, value) {
+  // Primitive types are debuggee values and Debugger.Object.makeDebuggeeValue
+  // would return them unchanged. So avoid the expense of:
+  // getGlobalForObject+makeGlobalObjectReference+makeDebugeeValue for them.
+  //
+  // It is actually easier to identify non primitive which can only be object or function.
+  if (!isObjectOrFunction(value)) {
+    return value;
+  }
+
+  // `value` may come from various globals.
+  // And Debugger.Object.makeDebuggeeValue only works for objects
+  // related to the same global. So fetch the global first,
+  // in order to instantiate a Debugger.Object for it.
+  //
+  // In the worker thread, we don't have access to Cu,
+  // but at the same time, there is only one global, the worker one.
+  const valueGlobal = isWorker ? targetActor.workerGlobal : Cu.getGlobalForObject(value);
+  let dbgGlobal;
+  try {
+    dbgGlobal = targetActor.dbg.makeGlobalObjectReference(
+      valueGlobal
+    );
+  } catch(e) {
+    // makeGlobalObjectReference will throw if the global is invisible to Debugger,
+    // in this case instantiate a Debugger.Object for the top level global
+    // of the target. Even if value will come from another global, it will "work",
+    // but the Debugger.Object created via dbgGlobal.makeDebuggeeValue will throw
+    // on most methods as the object will also be invisible to Debuggee...
+    if (e.message.includes("object in compartment marked as invisible to Debugger")) {
+      dbgGlobal = targetActor.dbg.makeGlobalObjectReference(
+        targetActor.window 
+      );
+
+    } else {
+      throw e;
+    }
+  }
+
+  return dbgGlobal.makeDebuggeeValue(value);
+}
+
+/**
+ * Create a grip for the given string.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ */
+function createStringGrip(targetActor, string) {
+  if (string && stringIsLong(string)) {
+    const actor = new LongStringActor(targetActor.conn, string);
+    targetActor.manage(actor);
+    return actor.form();
+  }
+  return string;
+}
+
+/**
+ * Create a grip for the given value.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param mixed value
+ *        The value you want to get a debuggee value for.
+ * @param Number depth
+ *        Depth of the object compared to the top level object,
+ *        when we are inspecting nested attributes.
+ * @param Object [objectActorAttributes]
+ *        An optional object whose properties will be assigned to the ObjectActor if one
+ *        is created.
+ * @return object
+ */
+function createValueGripForTarget(
+  targetActor,
+  value,
+  depth = 0,
+  objectActorAttributes = {}
+) {
+  const makeObjectGrip = (objectActorValue, pool) =>
+    createObjectGrip(
+      targetActor,
+      depth,
+      objectActorValue,
+      pool,
+      objectActorAttributes
+    );
+  return createValueGrip(value, targetActor, makeObjectGrip);
+}
+
+/**
+ * Create and return an environment actor that corresponds to the provided
+ * Debugger.Environment. This is a straightforward clone of the ThreadActor's
+ * method except that it stores the environment actor in the web console
+ * actor's pool.
+ *
+ * @param Debugger.Environment environment
+ *        The lexical environment we want to extract.
+ * @param TargetActor targetActor
+ *        The Target Actor to use as parent actor.
+ * @return The EnvironmentActor for |environment| or |undefined| for host
+ *         functions or functions scoped to a non-debuggee global.
+ */
+function createEnvironmentActor(environment, targetActor) {
+  if (!environment) {
+    return undefined;
+  }
+
+  if (environment.actor) {
+    return environment.actor;
+  }
+
+  const actor = new EnvironmentActor(environment, targetActor);
+  targetActor.manage(actor);
+  environment.actor = actor;
+
+  return actor;
+}
+
+/**
+ * Create a grip for the given object.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param Number depth
+ *        Depth of the object compared to the top level object,
+ *        when we are inspecting nested attributes.
+ * @param object object
+ *        The object you want.
+ * @param object pool
+ *        A Pool where the new actor instance is added.
+ * @param object [objectActorAttributes]
+ *        An optional object whose properties will be assigned to the ObjectActor being created.
+ * @param object
+ *        The object grip.
+ */
+function createObjectGrip(
+  targetActor,
+  depth,
+  object,
+  pool,
+  objectActorAttributes = {}
+) {
+  let gripDepth = depth;
+  const actor = new ObjectActor(
+    object,
+    {
+      ...objectActorAttributes,
+      thread: targetActor.threadActor,
+      getGripDepth: () => gripDepth,
+      incrementGripDepth: () => gripDepth++,
+      decrementGripDepth: () => gripDepth--,
+      createValueGrip: v => createValueGripForTarget(targetActor, v, gripDepth),
+      createEnvironmentActor: env => createEnvironmentActor(env, targetActor),
+    },
+    targetActor.conn
+  );
+  pool.manage(actor);
+
+  return actor.form();
+}
+
 module.exports = {
   getPromiseState,
   makeDebuggeeValueIfNeeded,
@@ -390,6 +606,10 @@ module.exports = {
   getPropsForEvent,
   getPropNamesFromObject,
   getSafeOwnPropertySymbols,
+  getSafePrivatePropertiesSymbols,
   getModifiersForEvent,
   isObjectOrFunction,
+  createStringGrip,
+  makeDebuggeeValue,
+  createValueGripForTarget,
 };

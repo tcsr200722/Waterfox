@@ -32,19 +32,6 @@ function IsCSSPropertyPrefEnabled(prefName) {
   return false;
 }
 
-// Returns true if WebRender is enabled. Otherwise, returns false
-function IsWebRenderEnabled() {
-  try {
-    return SpecialPowers.Cc["@mozilla.org/gfx/info;1"].getService(
-      SpecialPowers.Ci.nsIGfxInfo
-    ).WebRenderEnabled;
-  } catch (ex) {
-    ok(false, "Failed to check WebRender's enabled state");
-  }
-
-  return false;
-}
-
 // True longhand properties.
 const CSS_TYPE_LONGHAND = 0;
 
@@ -110,7 +97,7 @@ function initial_font_family_is_sans_serif() {
 var gInitialFontFamilyIsSansSerif = initial_font_family_is_sans_serif();
 
 // shared by background-image and border-image-source
-var validGradientAndElementValues = [
+var validNonUrlImageValues = [
   "-moz-element(#a)",
   "-moz-element(  #a  )",
   "-moz-element(#a-1)",
@@ -253,10 +240,6 @@ var validGradientAndElementValues = [
   // When that happens this should be moved to the `invalid` list.
   "repeating-radial-gradient(circle closest-side at left 0px bottom 7in, hsl(2,2%,5%), rgb(1,6,0))",
 
-  "-moz-image-rect(url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), 2, 10, 10, 2)",
-  "-moz-image-rect(url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), 10%, 50%, 30%, 0%)",
-  "-moz-image-rect(url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), 10, 50%, 30%, 0)",
-
   "radial-gradient(at calc(25%) top, red, blue)",
   "radial-gradient(at left calc(25%), red, blue)",
   "radial-gradient(at calc(25px) top, red, blue)",
@@ -270,90 +253,115 @@ var validGradientAndElementValues = [
   "radial-gradient(at calc(100px + -25px) top, red, blue)",
   "radial-gradient(at left calc(100px + -25px), red, blue)",
 
-  ...(IsCSSPropertyPrefEnabled("layout.css.conic-gradient.enabled")
+  "image-set(linear-gradient(green, green) 1x, url(foobar.png) 2x)",
+  "image-set(linear-gradient(red, red), url(foobar.png) 2x)",
+  "image-set(url(foobar.png) 2x)",
+  "image-set(url(foobar.png) 1x, url(bar.png) 2x, url(baz.png) 3x)",
+  "image-set('foobar.png', 'bar.png' 2x, url(baz.png) 3x)",
+  "image-set(url(foobar.png) type('image/png'))",
+  "image-set(url(foobar.png) 1x type('image/png'))",
+  "image-set(url(foobar.png) type('image/png') 1x)",
+
+  ...(IsCSSPropertyPrefEnabled("layout.css.cross-fade.enabled")
     ? [
-        // Conic gradient
-        "conic-gradient(red, blue)",
-        "conic-gradient(red,blue,yellow)",
-        "conic-gradient(  red  ,  blue,   yellow)",
-        "conic-gradient(red 0, blue 50deg)",
-        "conic-gradient(red 10%, blue 50%)",
-        "conic-gradient(red -50deg, blue 50deg)",
-        "conic-gradient(red 50deg, blue 0.3turn, yellow 200grad, orange 60%, 5rad)",
+        "cross-fade(red, blue)",
+        "cross-fade(red)",
+        "cross-fade(red 50%)",
+        // see: <https://github.com/w3c/csswg-drafts/issues/5333>. This
+        // may become invalid depending on how discussion on that issue
+        // goes.
+        "cross-fade(red -50%, blue 150%)",
+        "cross-fade(red -50%, url(www.example.com))",
 
-        "conic-gradient(red 0 100%)",
-        "conic-gradient(red 0 50%, blue 50%)",
-        "conic-gradient(red 0 50deg, blue 50% 100%)",
-        "conic-gradient(red 0 50%, 0deg, blue 50%)",
-        "conic-gradient(red 0deg 50%, 0%, blue 50% 100%)",
+        "cross-fade(url(http://placekitten.com/200/300), 55% linear-gradient(red, blue))",
+        "cross-fade(cross-fade(red, white), cross-fade(blue))",
+        "cross-fade(gold 77%, 60% blue)",
 
-        "conic-gradient(from 0, red, blue)",
-        "conic-gradient(from 40deg, red, blue)",
-        "conic-gradient(from 0.4turn, red, blue)",
-        "conic-gradient(from 200grad, red, blue)",
-        "conic-gradient(from 5rad, red, blue)",
-
-        "conic-gradient(at top, red, blue)",
-        "conic-gradient(at top left, red, blue)",
-        "conic-gradient(at left top, red, blue)",
-        "conic-gradient(at center center, red, blue)",
-        "conic-gradient(at 20% bottom, red, blue)",
-        "conic-gradient(at center 20%, red, blue)",
-        "conic-gradient(at left 35px, red, blue)",
-        "conic-gradient(at 10% 10em, red, blue)",
-        "conic-gradient(at 44px top, red, blue)",
-        "conic-gradient(at 0 0, red, blue)",
-        "conic-gradient(at 10px, red, blue)",
-
-        "conic-gradient(at calc(25%) top, red, blue)",
-        "conic-gradient(at left calc(25%), red, blue)",
-        "conic-gradient(at calc(25px) top, red, blue)",
-        "conic-gradient(at left calc(25px), red, blue)",
-        "conic-gradient(at calc(-25%) top, red, blue)",
-        "conic-gradient(at left calc(-25%), red, blue)",
-        "conic-gradient(at calc(-25px) top, red, blue)",
-        "conic-gradient(at left calc(-25px), red, blue)",
-        "conic-gradient(at calc(100px + -25%) top, red, blue)",
-        "conic-gradient(at left calc(100px + -25%), red, blue)",
-        "conic-gradient(at calc(100px + -25px) top, red, blue)",
-        "conic-gradient(at left calc(100px + -25px), red, blue)",
-
-        "conic-gradient(from 0 at 0 0, red, blue)",
-        "conic-gradient(from 40deg at 50%, red, blue)",
-        "conic-gradient(from 0.4turn at left 30%, red, blue)",
-        "conic-gradient(from 200grad at calc(100px + -25%) top, red, blue)",
-        "conic-gradient(from 5rad at 10px, red, blue)",
-
-        "repeating-conic-gradient(red, blue)",
-        "repeating-conic-gradient(red, yellow, blue)",
-        "repeating-conic-gradient(red 1deg, yellow 20%, blue 24em, green)",
-        "repeating-conic-gradient(red, yellow, green, blue 50%)",
-        "repeating-conic-gradient(red -50%, yellow -25%, green, blue)",
-        "repeating-conic-gradient(red -99deg, yellow, green, blue 120%)",
-        "repeating-conic-gradient(#ffff00, #ef3, rgba(10, 20, 30, 0.4))",
-        "repeating-conic-gradient(rgba(10, 20, 30, 0.4), #ffff00, #ef3)",
-
-        "repeating-conic-gradient(from 0, red, blue)",
-        "repeating-conic-gradient(from 40deg, red, blue)",
-        "repeating-conic-gradient(from 0.4turn, red, blue)",
-        "repeating-conic-gradient(from 200grad, red, blue)",
-        "repeating-conic-gradient(from 5rad, red, blue)",
-
-        "repeating-conic-gradient(at top left, red, blue)",
-        "repeating-conic-gradient(at 0 0, red, blue)",
-        "repeating-conic-gradient(at 20% bottom, red, blue)",
-        "repeating-conic-gradient(at center 20%, red, blue)",
-        "repeating-conic-gradient(at left 35px, red, blue)",
-        "repeating-conic-gradient(at 10% 10em, red, blue)",
-        "repeating-conic-gradient(at 44px top, red, blue)",
-
-        "repeating-conic-gradient(from 0 at 0 0, red, blue)",
-        "repeating-conic-gradient(from 40deg at 50%, red, blue)",
-        "repeating-conic-gradient(from 0.4turn at left 30%, red, blue)",
-        "repeating-conic-gradient(from 200grad at calc(100px + -25%) top, red, blue)",
-        "repeating-conic-gradient(from 5rad at 10px, red, blue)",
+        "cross-fade(url(http://placekitten.com/200/300), url(http://placekitten.com/200/300))",
+        "cross-fade(#F0F8FF, rgb(0, 0, 0), rgba(0, 255, 0, 1) 25%)",
       ]
     : []),
+
+  // Conic gradient
+  "conic-gradient(red, blue)",
+  "conic-gradient(red,blue,yellow)",
+  "conic-gradient(  red  ,  blue,   yellow)",
+  "conic-gradient(red 0, blue 50deg)",
+  "conic-gradient(red 10%, blue 50%)",
+  "conic-gradient(red -50deg, blue 50deg)",
+  "conic-gradient(red 50deg, blue 0.3turn, yellow 200grad, orange 60% 5rad)",
+
+  "conic-gradient(red 0 100%)",
+  "conic-gradient(red 0 50%, blue 50%)",
+  "conic-gradient(red 0 50deg, blue 50% 100%)",
+  "conic-gradient(red 0 50%, 0deg, blue 50%)",
+  "conic-gradient(red 0deg 50%, 0%, blue 50% 100%)",
+
+  "conic-gradient(from 0, red, blue)",
+  "conic-gradient(from 40deg, red, blue)",
+  "conic-gradient(from 0.4turn, red, blue)",
+  "conic-gradient(from 200grad, red, blue)",
+  "conic-gradient(from 5rad, red, blue)",
+
+  "conic-gradient(at top, red, blue)",
+  "conic-gradient(at top left, red, blue)",
+  "conic-gradient(at left top, red, blue)",
+  "conic-gradient(at center center, red, blue)",
+  "conic-gradient(at 20% bottom, red, blue)",
+  "conic-gradient(at center 20%, red, blue)",
+  "conic-gradient(at left 35px, red, blue)",
+  "conic-gradient(at 10% 10em, red, blue)",
+  "conic-gradient(at 44px top, red, blue)",
+  "conic-gradient(at 0 0, red, blue)",
+  "conic-gradient(at 10px, red, blue)",
+
+  "conic-gradient(at calc(25%) top, red, blue)",
+  "conic-gradient(at left calc(25%), red, blue)",
+  "conic-gradient(at calc(25px) top, red, blue)",
+  "conic-gradient(at left calc(25px), red, blue)",
+  "conic-gradient(at calc(-25%) top, red, blue)",
+  "conic-gradient(at left calc(-25%), red, blue)",
+  "conic-gradient(at calc(-25px) top, red, blue)",
+  "conic-gradient(at left calc(-25px), red, blue)",
+  "conic-gradient(at calc(100px + -25%) top, red, blue)",
+  "conic-gradient(at left calc(100px + -25%), red, blue)",
+  "conic-gradient(at calc(100px + -25px) top, red, blue)",
+  "conic-gradient(at left calc(100px + -25px), red, blue)",
+
+  "conic-gradient(from 0 at 0 0, red, blue)",
+  "conic-gradient(from 40deg at 50%, red, blue)",
+  "conic-gradient(from 0.4turn at left 30%, red, blue)",
+  "conic-gradient(from 200grad at calc(100px + -25%) top, red, blue)",
+  "conic-gradient(from 5rad at 10px, red, blue)",
+
+  "repeating-conic-gradient(red, blue)",
+  "repeating-conic-gradient(red, yellow, blue)",
+  "repeating-conic-gradient(red 1deg, yellow 20%, blue 5rad, green)",
+  "repeating-conic-gradient(red, yellow, green, blue 50%)",
+  "repeating-conic-gradient(red -50%, yellow -25%, green, blue)",
+  "repeating-conic-gradient(red -99deg, yellow, green, blue 120%)",
+  "repeating-conic-gradient(#ffff00, #ef3, rgba(10, 20, 30, 0.4))",
+  "repeating-conic-gradient(rgba(10, 20, 30, 0.4), #ffff00, #ef3)",
+
+  "repeating-conic-gradient(from 0, red, blue)",
+  "repeating-conic-gradient(from 40deg, red, blue)",
+  "repeating-conic-gradient(from 0.4turn, red, blue)",
+  "repeating-conic-gradient(from 200grad, red, blue)",
+  "repeating-conic-gradient(from 5rad, red, blue)",
+
+  "repeating-conic-gradient(at top left, red, blue)",
+  "repeating-conic-gradient(at 0 0, red, blue)",
+  "repeating-conic-gradient(at 20% bottom, red, blue)",
+  "repeating-conic-gradient(at center 20%, red, blue)",
+  "repeating-conic-gradient(at left 35px, red, blue)",
+  "repeating-conic-gradient(at 10% 10em, red, blue)",
+  "repeating-conic-gradient(at 44px top, red, blue)",
+
+  "repeating-conic-gradient(from 0 at 0 0, red, blue)",
+  "repeating-conic-gradient(from 40deg at 50%, red, blue)",
+  "repeating-conic-gradient(from 0.4turn at left 30%, red, blue)",
+  "repeating-conic-gradient(from 200grad at calc(100px + -25%) top, red, blue)",
+  "repeating-conic-gradient(from 5rad at 10px, red, blue)",
 
   // 2008 GRADIENTS: -webkit-gradient()
   // ----------------------------------
@@ -495,7 +503,7 @@ var validGradientAndElementValues = [
   "-webkit-repeating-radial-gradient(circle farthest-corner, gray 10px, yellow 20px)",
   "-webkit-repeating-radial-gradient(top left, circle, red, blue 4%, red 8%)",
 ];
-var invalidGradientAndElementValues = [
+var invalidNonUrlImageValues = [
   "-moz-element(#a:1)",
   "-moz-element(a#a)",
   "-moz-element(#a a)",
@@ -513,7 +521,7 @@ var invalidGradientAndElementValues = [
   "linear-gradient(30deg red, blue)",
   "linear-gradient(to top left red, blue)",
   "linear-gradient(to right red, blue)",
-  /* Invalid color, calc() or -moz-image-rect() function */
+  /* Invalid color or calc() function */
   "linear-gradient(red, rgb(0, rubbish, 0) 50%, red)",
   "linear-gradient(red, red calc(50% + rubbish), red)",
   "linear-gradient(to top calc(50% + rubbish), red, blue)",
@@ -528,6 +536,7 @@ var invalidGradientAndElementValues = [
 
   /* Invalid units */
   "conic-gradient(red, blue 50px, yellow 30px)",
+  "repeating-conic-gradient(red 1deg, yellow 20%, blue 24em, green)",
   "conic-gradient(from 0%, black, white)",
   "conic-gradient(from 60%, black, white)",
   "conic-gradient(from 40px, black, white)",
@@ -616,6 +625,9 @@ var invalidGradientAndElementValues = [
   "conic-gradient(red 0% 50% 75%, blue 75%)",
   "conic-gradient(center, red 0% 50% 100%)",
   "conic-gradient(center, red 0% 50% 75%, blue 75%)",
+
+  // missing color in color stop
+  "conic-gradient(red 50deg, blue 0.3turn, yellow 200grad, orange 60%, 5rad)",
 
   "-moz-linear-gradient(unset, 10px 10px, from(blue))",
   "-moz-linear-gradient(unset, 10px 10px, blue 0)",
@@ -727,18 +739,16 @@ var invalidGradientAndElementValues = [
   "-webkit-linear-gradient(top right red, blue)",
   "-webkit-linear-gradient(bottom red, blue)",
 
-  // Linear-gradient with calc expression containing mixed units or division
-  // by zero (bug 1363349)
+  // Linear-gradient with calc expression containing mixed units
+  // (bug 1363349)
   "-webkit-gradient(linear, calc(5 + 5%) top, calc(10 + 10) top, from(blue), to(lime))",
   "-webkit-gradient(linear, left calc(25 - 10%), right calc(75% + 10%), from(blue), to(lime))",
-  "-webkit-gradient(linear, calc(1 / 0) 2, 3 4)",
 
-  // Radial-gradient with calc expression containing mixed units, division
-  // by zero, or a percentage in the radius (bug 1363349)
+  // Radial-gradient with calc expression containing mixed units, or a
+  // percentage in the radius (bug 1363349)
   "-webkit-gradient(radial, 1 2, 0, 3 4, calc(1% + 5%), from(blue), to(lime))",
   "-webkit-gradient(radial, 1 2, calc(1 + 2), 3 4, calc(1 + 5%), from(blue), to(lime))",
   "-webkit-gradient(radial, calc(0 + 1) calc(1 + 1), calc(1% + 2%), calc(1 + 2) 4, calc(1 + 5), from(blue), to(lime))",
-  "-webkit-gradient(radial, 1 2, calc(8 / 0), 3 4, 9)",
 
   // Linear syntax that's invalid for both -webkit & unprefixed, but valid
   // for -moz:
@@ -786,6 +796,39 @@ var invalidGradientAndElementValues = [
   "-moz-conic-gradient(red, blue)",
   "-webkit-repeating-conic-gradient(red, blue)",
   "-moz-repeating-conic-gradient(red, blue)",
+
+  "image-set(url(foobar.png) 1x, none)",
+  "image-set(garbage)",
+  "image-set(image-set('foobar.png', 'bar.png' 2x) 1x, url(baz.png) 3x)", // Nested image-sets should fail to parse
+  "image-set(image-set(garbage))",
+  "image-set()",
+  "image-set(type('image/png') url(foobar.png) 1x)",
+  "image-set(url(foobar.png) type('image/png') 1x type('image/png'))",
+  "image-set(url(foobar.png) type('image/png') type('image/png'))",
+  "image-set(url(foobar.png) type(image/png))",
+  "image-set(url(foobar.png) epyt('image/png'))",
+
+  ...(IsCSSPropertyPrefEnabled("layout.css.cross-fade.enabled")
+    ? [
+        "cross-fade(red blue)",
+        "cross-fade()",
+        "cross-fade(50%, blue 50%)",
+        // Old syntax
+        "cross-fade(red, white, 50%)",
+        // see: <https://github.com/w3c/csswg-drafts/issues/5333>. This
+        // may become invalid depending on how discussion on that issue
+        // goes.
+        "cross-fade(red, 150%, blue)",
+        "cross-fade(red auto, blue 10%)",
+
+        // nested invalidity should propagate.
+        "cross-fade(url(http://placekitten.com/200/300), 55% linear-gradient(center, red, blue))",
+        "cross-fade(cross-fade(red, white, 50%), cross-fade(blue))",
+
+        "cross-fade(url(http://placekitten.com/200/300) url(http://placekitten.com/200/300))",
+        "cross-fade(#F0F8FF, rgb(0, 0, 0), rgba(0, 255, 0, 1), 25%)",
+      ]
+    : []),
 ];
 var unbalancedGradientAndElementValues = ["-moz-element(#a()"];
 
@@ -807,21 +850,14 @@ var basicShapeOtherValues = [
   "polygon(20cm 20mm)",
   "polygon(20px 20px, 30px 30px)",
   "polygon(20px 20px, 30% 30%, 30px 30px)",
-  "polygon(nonzero, 20px 20px, 30% 30%, 30px 30px)",
-  "polygon(evenodd, 20px 20px, 30% 30%, 30px 30px)",
 
   "content-box",
   "padding-box",
   "border-box",
-  "margin-box",
 
   "polygon(0 0) content-box",
   "border-box polygon(0 0)",
   "padding-box    polygon(   0  20px ,  30px    20% )  ",
-  "polygon(evenodd, 20% 20em) content-box",
-  "polygon(evenodd, 20vh 20em) padding-box",
-  "polygon(evenodd, 20vh calc(20% + 20em)) border-box",
-  "polygon(evenodd, 20vh 20vw) margin-box",
 
   "circle()",
   "circle(at center)",
@@ -864,6 +900,15 @@ var basicShapeOtherValues = [
   "inset(1px 2px round 3px / 3px)",
   "inset(1px 2px 3px round 3px 2em / 20%)",
   "inset(1px 2px 3px 4px round 3px 2vw 20% / 20px 3em 2vh 20%)",
+];
+
+var basicShapeOtherValuesWithFillRule = [
+  "polygon(nonzero, 20px 20px, 30% 30%, 30px 30px)",
+  "polygon(evenodd, 20px 20px, 30% 30%, 30px 30px)",
+  "polygon(evenodd, 20% 20em) content-box",
+  "polygon(evenodd, 20vh 20em) padding-box",
+  "polygon(evenodd, 20vh calc(20% + 20em)) border-box",
+  "polygon(evenodd, 20vh 20vw) margin-box",
 ];
 
 var basicShapeInvalidValues = [
@@ -968,10 +1013,62 @@ var basicShapeUnbalancedValues = [
   "inset(1px 2px 3px 4px round 5px / 6px",
 ];
 
+var basicShapeXywhRectValues = [];
+if (IsCSSPropertyPrefEnabled("layout.css.basic-shape-xywh.enabled")) {
+  basicShapeXywhRectValues.push(
+    "xywh(1px 2% 3px 4em)",
+    "xywh(1px 2% 3px 4em round 0px)",
+    "xywh(1px 2% 3px 4em round 0px 1%)",
+    "xywh(1px 2% 3px 4em round 0px 1% 2px)",
+    "xywh(1px 2% 3px 4em round 0px 1% 2px 3em)"
+  );
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.basic-shape-rect.enabled")) {
+  basicShapeXywhRectValues.push(
+    "rect(auto auto auto auto)",
+    "rect(1px 2% auto 4em)",
+    "rect(1px 2% auto 4em round 0px)",
+    "rect(1px 2% auto 4em round 0px 1%)",
+    "rect(1px 2% auto 4em round 0px 1% 2px)",
+    "rect(1px 2% auto 4em round 0px 1% 2px 3em)"
+  );
+}
+
+var basicShapeShapeValues = [];
+var basicShapeShapeValuesWithFillRule = [];
+if (IsCSSPropertyPrefEnabled("layout.css.basic-shape-shape.enabled")) {
+  basicShapeShapeValuesWithFillRule.push(
+    "shape(evenodd from 0px 0px, line to 10px 10px)",
+    "shape(nonzero from 0px 0px, line to 10px 10px)"
+  );
+
+  basicShapeShapeValues.push(
+    "shape(from 0px 0%, line to 10px 10%)",
+    "shape(from 10px 10px, move by 10px 5px, line by 20px 40%, close)",
+    "shape(from 10px 10px, hline by 10px, vline to 5rem)",
+    "shape(from 10px 10px, vline by 5%, hline to 1vw)",
+    "shape(from 10px 10px, curve to 50px 20px via 10rem 1%)",
+    "shape(from 10px 10px, smooth to 50px 20px via 10rem 1%)",
+    "shape(from 10% 1rem, arc to 50px 1pt of 20% cw large rotate 25deg)"
+  );
+
+  // It's fine to include this for properties which don't support shape(),
+  // e.g. shape-outside, because they must reject these values.
+  basicShapeInvalidValues.push(
+    "shape()",
+    "shape(evenodd, from 0px 0px)",
+    "shape(from 0px 0px line to 10px 10px)",
+    "shape(from 0px 0px)",
+    "shape(close)",
+    "shape(nonzero, close)"
+  );
+}
+
 if (/* mozGradientsEnabled */ true) {
   // Maybe one day :(
   // Extend gradient lists with valid/invalid moz-prefixed expressions:
-  validGradientAndElementValues.push(
+  validNonUrlImageValues.push(
     "-moz-linear-gradient(red, blue)",
     "-moz-linear-gradient(red, yellow, blue)",
     "-moz-linear-gradient(red 1px, yellow 20%, blue 24em, green)",
@@ -1093,7 +1190,7 @@ if (/* mozGradientsEnabled */ true) {
     "-moz-radial-gradient(left calc(100px + -25px), red, blue)"
   );
 
-  invalidGradientAndElementValues.push(
+  invalidNonUrlImageValues.push(
     // The entries in this block used to be valid with the older more-complex
     // -moz prefixed gradient syntax, but we've since simplified the syntax for
     // consistency with -webkit prefixed gradients, in a way that makes these
@@ -1333,11 +1430,33 @@ if (/* mozGradientsEnabled */ true) {
   );
 }
 
+const pathValues = {
+  other_values: [
+    "path('M 10 10 20 20 H 90 V 90 Z')",
+    "path('M10 10 20,20H90V90Z')",
+    "path('M 10 10 C 20 20, 40 20, 50 10')",
+    "path('M 10 80 C 40 10, 65 10, 95 80 S 1.5e2 150, 180 80')",
+    "path('M 10 80 Q 95 10 180 80')",
+    "path('M 10 80 Q 52.5 10, 95 80 T 180 80')",
+    "path('M 80 80 A 45 45, 0, 0, 0, 1.25e2 1.25e2 L 125 80 Z')",
+    "path('M100-200h20z')",
+    "path('M10,10L20.6.5z')",
+  ],
+  invalid_values: [
+    "path()",
+    "path(a)",
+    "path('M 10 Z')",
+    "path('M 10-10 20')",
+    "path('M 10 10 C 20 20 40 20')",
+  ],
+};
+
 var gCSSProperties = {
   animation: {
     domProp: "animation",
     inherited: false,
     type: CSS_TYPE_TRUE_SHORTHAND,
+    applies_to_marker: true,
     subproperties: [
       "animation-name",
       "animation-duration",
@@ -1432,6 +1551,7 @@ var gCSSProperties = {
     domProp: "animationDelay",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["0s", "0ms"],
     other_values: [
       "1s",
@@ -1447,6 +1567,7 @@ var gCSSProperties = {
     domProp: "animationDirection",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["normal"],
     other_values: [
       "alternate",
@@ -1471,6 +1592,7 @@ var gCSSProperties = {
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["0s", "0ms"],
+    applies_to_marker: true,
     other_values: ["1s", "250ms", "1s, 250ms, 2.3s", "calc(1s + 2ms)"],
     invalid_values: ["0", "0px", "-1ms", "-2s"],
   },
@@ -1478,6 +1600,7 @@ var gCSSProperties = {
     domProp: "animationFillMode",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["none"],
     other_values: [
       "forwards",
@@ -1494,6 +1617,7 @@ var gCSSProperties = {
     domProp: "animationIterationCount",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["1"],
     other_values: [
       "infinite",
@@ -1514,6 +1638,7 @@ var gCSSProperties = {
     domProp: "animationName",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["none"],
     other_values: [
       "all",
@@ -1544,6 +1669,7 @@ var gCSSProperties = {
     domProp: "animationPlayState",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["running"],
     other_values: [
       "paused",
@@ -1559,6 +1685,7 @@ var gCSSProperties = {
     domProp: "animationTimingFunction",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["ease"],
     other_values: [
       "cubic-bezier(0.25, 0.1, 0.25, 1.0)",
@@ -1576,6 +1703,10 @@ var gCSSProperties = {
       "steps(386)",
       "steps(3, end)",
       "steps(calc(2 + 1))",
+      "steps(1, jump-start)",
+      "steps(1, jump-end)",
+      "steps(2, jump-none)",
+      "steps(1, jump-both)",
     ],
     invalid_values: [
       "none",
@@ -1590,22 +1721,52 @@ var gCSSProperties = {
       "steps(0)",
       "steps(-2)",
       "steps(0, step-end, 1)",
+      "steps(0, jump-start)",
+      "steps(0, jump-end)",
+      "steps(1, jump-none)",
+      "steps(0, jump-both)",
     ],
+  },
+  appearance: {
+    domProp: "appearance",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["auto", "radio", "menulist"],
+    invalid_values: [],
   },
   "-moz-appearance": {
     domProp: "MozAppearance",
     inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["none"],
-    other_values: ["radio", "menulist"],
-    invalid_values: [],
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    alias_for: "appearance",
+    subproperties: ["appearance"],
   },
   "-webkit-appearance": {
     domProp: "webkitAppearance",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "-moz-appearance",
-    subproperties: ["-moz-appearance"],
+    alias_for: "appearance",
+    subproperties: ["appearance"],
+  },
+  "aspect-ratio": {
+    domProp: "aspectRatio",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: [
+      "1",
+      "1.0",
+      "1 / 2",
+      "1/2",
+      "16.2 / 9.5",
+      "1/0",
+      "0/1",
+      "0 / 0",
+      "auto 1",
+      "0 auto",
+    ],
+    invalid_values: ["none", "1 test", "1 / auto", "auto / 1"],
   },
   "border-inline": {
     domProp: "borderInline",
@@ -1823,9 +1984,9 @@ var gCSSProperties = {
     type: CSS_TYPE_LONGHAND,
     applies_to_first_letter: true,
     initial_values: ["none"],
-    other_values: ["url('border.png')"].concat(validGradientAndElementValues),
+    other_values: ["url('border.png')"].concat(validNonUrlImageValues),
     invalid_values: ["url('border.png') url('border.png')"].concat(
-      invalidGradientAndElementValues
+      invalidNonUrlImageValues
     ),
     unbalanced_values: [].concat(unbalancedGradientAndElementValues),
   },
@@ -2465,13 +2626,38 @@ var gCSSProperties = {
     alias_for: "box-sizing",
     subproperties: ["box-sizing"],
   },
-  "color-adjust": {
-    domProp: "colorAdjust",
+  "print-color-adjust": {
+    domProp: "printColorAdjust",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["economy"],
     other_values: ["exact"],
     invalid_values: [],
+  },
+  "color-adjust": {
+    domProp: "colorAdjust",
+    inherited: true,
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    alias_for: "print-color-adjust",
+    subproperties: ["print-color-adjust"],
+  },
+  "color-scheme": {
+    domProp: "colorScheme",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: [
+      "light",
+      "dark",
+      "light dark",
+      "light dark purple",
+      "light light dark",
+      "only light",
+      "only light dark",
+      "only light dark purple",
+      "light only",
+    ],
+    invalid_values: ["only normal", "normal only", "only light only"],
   },
   columns: {
     domProp: "columns",
@@ -2692,7 +2878,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       "calc(5 + 5)",
       "calc(5 * 5)",
       "calc(5em * 5em)",
@@ -2768,6 +2953,51 @@ var gCSSProperties = {
     ],
     invalid_values: ["20", "-1px", "50%"],
   },
+  "container-type": {
+    domProp: "containerType",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: ["inline-size", "size"],
+    invalid_values: [
+      "none style",
+      "none inline-size",
+      "inline-size none",
+      "style none",
+      "style style",
+      "inline-size style inline-size",
+      "inline-size block-size",
+      "block-size",
+      "block-size style",
+      "size inline-size",
+      "size block-size",
+    ],
+  },
+  "container-name": {
+    domProp: "containerName",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["foo bar", "foo", "baz bazz", "foo foo"],
+    invalid_values: ["foo unset", "none bar", "foo initial", "initial foo"],
+  },
+  container: {
+    domProp: "container",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["container-type", "container-name"],
+    initial_values: ["none"],
+    other_values: ["foo / size", "foo bar / size", "foo / inline-size", "foo"],
+    invalid_values: ["size / foo", "size / foo bar"],
+  },
+  d: {
+    domProp: "d",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["path('')", "path(' ')"].concat(pathValues.other_values),
+    invalid_values: pathValues.invalid_values,
+  },
   "-moz-float-edge": {
     domProp: "MozFloatEdge",
     inherited: false,
@@ -2783,14 +3013,6 @@ var gCSSProperties = {
     initial_values: ["0"],
     other_values: ["1"],
     invalid_values: [],
-  },
-  "-moz-image-region": {
-    domProp: "MozImageRegion",
-    inherited: true,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: ["rect(3px 20px 15px 4px)", "rect(17px, 21px, 33px, 2px)"],
-    invalid_values: ["rect(17px, 21px, 33, 2px)"],
   },
   "margin-inline": {
     domProp: "marginInline",
@@ -3066,8 +3288,8 @@ var gCSSProperties = {
       "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), none",
       "none, url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), none",
       "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==)",
-    ].concat(validGradientAndElementValues),
-    invalid_values: [].concat(invalidGradientAndElementValues),
+    ].concat(validNonUrlImageValues),
+    invalid_values: [].concat(invalidNonUrlImageValues),
     unbalanced_values: [].concat(unbalancedGradientAndElementValues),
   },
   "mask-mode": {
@@ -3369,213 +3591,6 @@ var gCSSProperties = {
     other_values: ["alpha"],
     invalid_values: [],
   },
-  "-moz-outline-radius": {
-    domProp: "MozOutlineRadius",
-    inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    prerequisites: { width: "200px", height: "100px", display: "inline-block" },
-    subproperties: [
-      "-moz-outline-radius-bottomleft",
-      "-moz-outline-radius-bottomright",
-      "-moz-outline-radius-topleft",
-      "-moz-outline-radius-topright",
-    ],
-    initial_values: [
-      "0",
-      "0px",
-      "calc(-2px)",
-      "calc(0px) calc(0pt)",
-      "calc(0px) calc(0em)",
-    ],
-    other_values: [
-      "0%",
-      "3%",
-      "1px",
-      "2em",
-      "3em 2px",
-      "2pt 3% 4em",
-      "2px 2px 2px 2px", // circular
-      "3% / 2%",
-      "1px / 4px",
-      "2em / 1em",
-      "3em 2px / 2px 3em",
-      "2pt 3% 4em / 4pt 1% 5em",
-      "2px 2px 2px 2px / 4px 4px 4px 4px",
-      "1pt / 2pt 3pt",
-      "4pt 5pt / 3pt", // elliptical
-      "calc(-1%)",
-      "calc(2px)",
-      "calc(50%)",
-      "calc(3*25px)",
-      "calc(3*25px) 5px",
-      "5px calc(3*25px)",
-      "calc(20%) calc(3*25px)",
-      "calc(25px*3)",
-      "calc(3*25px + 50%)",
-      "2px 2px calc(2px + 1%) 2px",
-      "1px 2px 2px 2px / 2px 2px calc(2px + 1%) 2px",
-    ],
-    invalid_values: [
-      "2px -2px",
-      "inherit 2px",
-      "inherit / 2px",
-      "2px inherit",
-      "2px / inherit",
-      "2px 2px 2px 2px 2px",
-      "1px / 2px 2px 2px 2px 2px",
-      "2",
-      "2 2",
-      "2px 2px 2px 2px / 2px 2px 2 2px",
-      "unset 2px",
-      "unset / 2px",
-      "2px unset",
-      "2px / unset",
-    ],
-  },
-  "-moz-outline-radius-bottomleft": {
-    domProp: "MozOutlineRadiusBottomleft",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    prerequisites: { width: "200px", height: "100px", display: "inline-block" },
-    initial_values: ["0", "0px", "calc(-2px)", "calc(0px)"],
-    other_values: [
-      "0%",
-      "3%",
-      "1px",
-      "2em", // circular
-      "3% 2%",
-      "1px 4px",
-      "2em 2pt", // elliptical
-      "calc(-1%)",
-      "calc(2px)",
-      "calc(50%)",
-      "calc(3*25px)",
-      "calc(3*25px) 5px",
-      "5px calc(3*25px)",
-      "calc(20%) calc(3*25px)",
-      "calc(25px*3)",
-      "calc(3*25px + 50%)",
-    ],
-    invalid_values: [
-      "-1px",
-      "4px -2px",
-      "inherit 2px",
-      "2px inherit",
-      "2",
-      "2px 2",
-      "2 2px",
-      "unset 2px",
-      "2px unset",
-    ],
-  },
-  "-moz-outline-radius-bottomright": {
-    domProp: "MozOutlineRadiusBottomright",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    prerequisites: { width: "200px", height: "100px", display: "inline-block" },
-    initial_values: ["0", "0px", "calc(-2px)", "calc(0px)"],
-    other_values: [
-      "0%",
-      "3%",
-      "1px",
-      "2em", // circular
-      "3% 2%",
-      "1px 4px",
-      "2em 2pt", // elliptical
-      "calc(-1%)",
-      "calc(2px)",
-      "calc(50%)",
-      "calc(3*25px)",
-      "calc(3*25px) 5px",
-      "5px calc(3*25px)",
-      "calc(20%) calc(3*25px)",
-      "calc(25px*3)",
-      "calc(3*25px + 50%)",
-    ],
-    invalid_values: [
-      "-1px",
-      "4px -2px",
-      "inherit 2px",
-      "2px inherit",
-      "2",
-      "2px 2",
-      "2 2px",
-      "unset 2px",
-      "2px unset",
-    ],
-  },
-  "-moz-outline-radius-topleft": {
-    domProp: "MozOutlineRadiusTopleft",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    prerequisites: { width: "200px", height: "100px", display: "inline-block" },
-    initial_values: ["0", "0px", "calc(-2px)", "calc(0px)"],
-    other_values: [
-      "0%",
-      "3%",
-      "1px",
-      "2em", // circular
-      "3% 2%",
-      "1px 4px",
-      "2em 2pt", // elliptical
-      "calc(-1%)",
-      "calc(2px)",
-      "calc(50%)",
-      "calc(3*25px)",
-      "calc(3*25px) 5px",
-      "5px calc(3*25px)",
-      "calc(20%) calc(3*25px)",
-      "calc(25px*3)",
-      "calc(3*25px + 50%)",
-    ],
-    invalid_values: [
-      "-1px",
-      "4px -2px",
-      "inherit 2px",
-      "2px inherit",
-      "2",
-      "2px 2",
-      "2 2px",
-      "unset 2px",
-      "2px unset",
-    ],
-  },
-  "-moz-outline-radius-topright": {
-    domProp: "MozOutlineRadiusTopright",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    prerequisites: { width: "200px", height: "100px", display: "inline-block" },
-    initial_values: ["0", "0px", "calc(-2px)", "calc(0px)"],
-    other_values: [
-      "0%",
-      "3%",
-      "1px",
-      "2em", // circular
-      "3% 2%",
-      "1px 4px",
-      "2em 2pt", // elliptical
-      "calc(-1%)",
-      "calc(2px)",
-      "calc(50%)",
-      "calc(3*25px)",
-      "calc(3*25px) 5px",
-      "5px calc(3*25px)",
-      "calc(20%) calc(3*25px)",
-      "calc(25px*3)",
-      "calc(3*25px + 50%)",
-    ],
-    invalid_values: [
-      "-1px",
-      "4px -2px",
-      "inherit 2px",
-      "2px inherit",
-      "2",
-      "2px 2",
-      "2 2px",
-      "unset 2px",
-      "2px unset",
-    ],
-  },
   "padding-inline-end": {
     domProp: "paddingInlineEnd",
     inherited: false,
@@ -3648,8 +3663,8 @@ var gCSSProperties = {
     other_values: ["both", "horizontal", "vertical", "inline", "block"],
     invalid_values: [],
   },
-  "-moz-tab-size": {
-    domProp: "MozTabSize",
+  "tab-size": {
+    domProp: "tabSize",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["8"],
@@ -3817,6 +3832,14 @@ var gCSSProperties = {
       "matrix3d(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20%, 10%, 15, 16)",
     ],
   },
+  "transform-box": {
+    domProp: "transformBox",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["view-box"],
+    other_values: ["fill-box", "border-box"],
+    invalid_values: ["padding-box", "margin-box"],
+  },
   "transform-origin": {
     domProp: "transformOrigin",
     inherited: false,
@@ -3947,22 +3970,6 @@ var gCSSProperties = {
     type: CSS_TYPE_LONGHAND,
     initial_values: ["flat"],
     other_values: ["preserve-3d"],
-    invalid_values: [],
-  },
-  "-moz-user-focus": {
-    domProp: "MozUserFocus",
-    inherited: true,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["none"],
-    other_values: [
-      "normal",
-      "ignore",
-      "select-all",
-      "select-before",
-      "select-after",
-      "select-same",
-      "select-menu",
-    ],
     invalid_values: [],
   },
   "-moz-user-input": {
@@ -4119,7 +4126,6 @@ var gCSSProperties = {
       "url(404.png) rgba(0, 0, 0, 0) rgb(255, 0, 0), url(404.png) rgba(0, 0, 0, 0) rgb(255, 0, 0)",
       "url(404.png) rgb(255, 0, 0), url(404.png) rgb(255, 0, 0)",
       /* error inside functions */
-      "-moz-image-rect(url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), rubbish, 50%, 30%, 0) transparent",
       "-moz-element(#a rubbish) black",
       "content-box text text",
       "padding-box text url(404.png) text",
@@ -4170,7 +4176,7 @@ var gCSSProperties = {
       "color",
       "luminosity",
     ],
-    invalid_values: ["none", "10px", "multiply multiply"],
+    invalid_values: ["none", "10px", "multiply multiply", "plus-lighter"],
   },
   "background-clip": {
     /*
@@ -4257,8 +4263,8 @@ var gCSSProperties = {
       "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), none",
       "none, url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), none",
       "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==), url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==)",
-    ].concat(validGradientAndElementValues),
-    invalid_values: [].concat(invalidGradientAndElementValues),
+    ].concat(validNonUrlImageValues),
+    invalid_values: [].concat(invalidNonUrlImageValues),
     unbalanced_values: [].concat(unbalancedGradientAndElementValues),
   },
   "background-origin": {
@@ -4708,7 +4714,7 @@ var gCSSProperties = {
       "calc(3*25px + 5em)",
     ],
     invalid_values: ["5%"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "border-collapse": {
     domProp: "borderCollapse",
@@ -4839,7 +4845,7 @@ var gCSSProperties = {
       "calc(3*25px + 5em)",
     ],
     invalid_values: ["5%"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "border-right": {
     domProp: "borderRight",
@@ -4920,7 +4926,7 @@ var gCSSProperties = {
       "calc(3*25px + 5em)",
     ],
     invalid_values: ["5%"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "border-spacing": {
     domProp: "borderSpacing",
@@ -4963,7 +4969,7 @@ var gCSSProperties = {
     ],
     quirks_values: {
       "2px 5": "2px 5px",
-      "7": "7px",
+      7: "7px",
       "3 4px": "3px 4px",
     },
   },
@@ -5078,7 +5084,7 @@ var gCSSProperties = {
       "calc(3*25px + 5em)",
     ],
     invalid_values: ["5%"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "border-width": {
     domProp: "borderWidth",
@@ -5102,7 +5108,7 @@ var gCSSProperties = {
     other_values: ["thin", "thick", "1px", "2em", "2px 0 0px 1em", "calc(2em)"],
     invalid_values: ["5%", "1px calc(nonsense)", "1px red"],
     unbalanced_values: ["1px calc("],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   bottom: {
     domProp: "bottom",
@@ -5124,7 +5130,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "box-shadow": {
     domProp: "boxShadow",
@@ -5190,8 +5196,8 @@ var gCSSProperties = {
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["top"],
-    other_values: ["bottom", "left", "right", "top-outside", "bottom-outside"],
-    invalid_values: [],
+    other_values: ["bottom"],
+    invalid_values: ["right", "left", "top-outside", "bottom-outside"],
   },
   "caret-color": {
     domProp: "caretColor",
@@ -5293,7 +5299,7 @@ var gCSSProperties = {
       "#fed292",
       "rgba(45,300,12,2)",
       "transparent",
-      "-moz-nativehyperlinktext",
+      "LinkText",
       "rgba(255,128,0,0.5)",
       "#e0fc",
       "#10fcee72",
@@ -5317,13 +5323,19 @@ var gCSSProperties = {
       "buttonface",
       "field",
       "highlight",
-      "highlighttext",
       "graytext",
       /* Preserve previously available specially prefixed colors */
       "-moz-activehyperlinktext",
       "-moz-default-background-color",
       "-moz-hyperlinktext",
       "-moz-visitedhyperlinktext",
+      /* color-mix */
+      "color-mix(in srgb, red, blue)",
+      "color-mix(in srgb, highlight, rgba(0, 0, 0, .5))",
+      "color-mix(in srgb, color-mix(in srgb, red 10%, blue), green)",
+      "color-mix(in srgb, blue, red 80%)",
+      "color-mix(in srgb, rgba(0, 200, 32, .5) 90%, red 50%)",
+      "color-mix(in srgb, currentColor, red)",
     ],
     invalid_values: [
       "#f",
@@ -5355,6 +5367,11 @@ var gCSSProperties = {
       "rgb(0, 0, 0 /)",
       "hsl(0 0% 0% /)",
       "hsl(0, 0%, 0% /)",
+      /* color-mix */
+      "color-mix(red, blue)",
+      "color-mix(red blue)",
+      "color-mix(in srgb, red blue)",
+      "color-mix(in srgb, red 10% blue)",
     ],
     quirks_values: {
       "000000": "#000000",
@@ -5392,6 +5409,9 @@ var gCSSProperties = {
       "attr(\\2)",
       "attr(-\\2)",
       "attr(-\\32)",
+      'attr(title, "fallback")',
+      'attr(\\32, "fallback")',
+      'attr(-\\32, "fallback")',
       "counter(\\2)",
       "counters(\\32, '.')",
       "counter(-\\32, upper-roman)",
@@ -5399,12 +5419,12 @@ var gCSSProperties = {
       "counter(\\()",
       "counters(a\\+b, '.')",
       "counter(\\}, upper-alpha)",
-      "-moz-alt-content",
       "counter(foo, symbols('*'))",
       "counter(foo, symbols(numeric '0' '1'))",
       "counters(foo, '.', symbols('*'))",
       "counters(foo, '.', symbols(numeric '0' '1'))",
-    ],
+      "image-set(url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==))",
+    ].concat(validNonUrlImageValues),
     invalid_values: [
       "counter(foo, none)",
       "counters(bar, '.', none)",
@@ -5416,10 +5436,11 @@ var gCSSProperties = {
       "attr(-2)",
       "counter(2)",
       "counters(-2, '.')",
+      "-moz-alt-content",
       "-moz-alt-content 'foo'",
       "'foo' -moz-alt-content",
       "counter(one, two, three) 'foo'",
-    ],
+    ].concat(invalidNonUrlImageValues),
   },
   "counter-increment": {
     domProp: "counterIncrement",
@@ -5542,8 +5563,15 @@ var gCSSProperties = {
       "url(foo.png), url(bar.png) 7 2, wait",
       "url(foo.png) 3 2, url(bar.png) 7 9, pointer",
       "url(foo.png) calc(1 + 2) calc(3), pointer",
+      "image-set(url(foo.png)), auto",
     ],
-    invalid_values: ["url(foo.png)", "url(foo.png) 5 5"],
+    invalid_values: [
+      "url(foo.png)",
+      "url(foo.png) 5 5",
+      "image-set(linear-gradient(red, blue)), auto",
+      // Gradients are supported per spec, but we don't have support for it yet
+      "linear-gradient(red, blue), auto",
+    ],
   },
   direction: {
     domProp: "direction",
@@ -5648,17 +5676,6 @@ var gCSSProperties = {
       "message-box",
       "small-caption",
       "status-bar",
-      // Gecko-specific system fonts
-      "-moz-window",
-      "-moz-document",
-      "-moz-desktop",
-      "-moz-info",
-      "-moz-dialog",
-      "-moz-button",
-      "-moz-pull-down-menu",
-      "-moz-list",
-      "-moz-field",
-      "-moz-workspace",
       // line-height with calc()
       "condensed bold italic small-caps 24px/calc(2px) Times New Roman, serif",
       "condensed bold italic small-caps 24px/calc(50%) Times New Roman, serif",
@@ -5815,7 +5832,7 @@ var gCSSProperties = {
       "calc(-1px)",
     ],
     invalid_values: ["-2em", "-50%", "-1px"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "font-size-adjust": {
     domProp: "fontSizeAdjust",
@@ -5827,8 +5844,30 @@ var gCSSProperties = {
     applies_to_placeholder: true,
     applies_to_cue: true,
     initial_values: ["none"],
-    other_values: ["0.3", "0.5", "0.7", "0.0", "0", "3"],
-    invalid_values: ["-0.3", "-1"],
+    other_values: [
+      "0.7",
+      "0.0",
+      "0",
+      "3",
+      "from-font",
+      "cap-height 0.8",
+      "ch-width 0.4",
+      "ic-width 0.4",
+      "ic-height 0.9",
+      "ch-width from-font",
+    ],
+    invalid_values: [
+      "-0.3",
+      "-1",
+      "normal",
+      "none none",
+      "cap-height none",
+      "none from-font",
+      "from-font none",
+      "0.5 from-font",
+      "0.5 cap-height",
+      "cap-height, 0.8",
+    ],
   },
   "font-stretch": {
     domProp: "fontStretch",
@@ -5868,22 +5907,117 @@ var gCSSProperties = {
   "font-synthesis": {
     domProp: "fontSynthesis",
     inherited: true,
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    subproperties: [
+      "font-synthesis-weight",
+      "font-synthesis-style",
+      "font-synthesis-small-caps",
+      "font-synthesis-position",
+    ],
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    initial_values: [
+      "weight style small-caps position",
+      "weight small-caps style position",
+      "small-caps weight position style",
+      "small-caps style position weight",
+      "style position weight small-caps",
+      "style position small-caps weight",
+    ],
+    other_values: [
+      "none",
+      "weight",
+      "style",
+      "small-caps",
+      "position",
+      "weight style",
+      "style weight",
+      "weight small-caps",
+      "small-caps weight",
+      "weight position",
+      "position weight",
+      "style small-caps",
+      "small-caps style",
+      "style position",
+      "position style",
+      "small-caps position",
+      "position small-caps",
+      "weight style small-caps",
+      "small-caps weight style",
+      "weight style position",
+      "position weight style",
+      "weight small-caps position",
+      "position weight small-caps",
+    ],
+    invalid_values: [
+      "10px",
+      "weight none",
+      "style none",
+      "none style",
+      "none 10px",
+      "weight 10px",
+      "weight weight",
+      "style style",
+      "small-caps none",
+      "small-caps small-caps",
+      "position none",
+      "position position",
+    ],
+  },
+  "font-synthesis-weight": {
+    domProp: "fontSynthesisWeight",
+    inherited: true,
     type: CSS_TYPE_LONGHAND,
     applies_to_first_letter: true,
     applies_to_first_line: true,
     applies_to_marker: true,
     applies_to_placeholder: true,
     applies_to_cue: true,
-    initial_values: ["weight style"],
-    other_values: ["none", "weight", "style"],
-    invalid_values: [
-      "weight none",
-      "style none",
-      "none style",
-      "weight 10px",
-      "weight weight",
-      "style style",
-    ],
+    initial_values: ["auto"],
+    other_values: ["none"],
+    invalid_values: ["auto none", "weight", "normal", "0"],
+  },
+  "font-synthesis-style": {
+    domProp: "fontSynthesisStyle",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    initial_values: ["auto"],
+    other_values: ["none"],
+    invalid_values: ["auto none", "style", "normal", "0"],
+  },
+  "font-synthesis-small-caps": {
+    domProp: "fontSynthesisSmallCaps",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    initial_values: ["auto"],
+    other_values: ["none"],
+    invalid_values: ["auto none", "small-caps", "normal", "0"],
+  },
+  "font-synthesis-position": {
+    domProp: "fontSynthesisPosition",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    initial_values: ["auto"],
+    other_values: ["none"],
+    invalid_values: ["auto none", "position", "normal", "0"],
   },
   "font-variant": {
     domProp: "fontVariant",
@@ -6150,6 +6284,7 @@ var gCSSProperties = {
       "15%",
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -6160,9 +6295,12 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "ime-mode": {
     domProp: "imeMode",
@@ -6192,7 +6330,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "letter-spacing": {
     domProp: "letterSpacing",
@@ -6213,7 +6351,7 @@ var gCSSProperties = {
       "calc(-3px)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "line-break": {
     domProp: "lineBreak",
@@ -6227,6 +6365,7 @@ var gCSSProperties = {
     domProp: "lineHeight",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     applies_to_first_letter: true,
     applies_to_first_line: true,
     applies_to_placeholder: true,
@@ -6355,8 +6494,11 @@ var gCSSProperties = {
       "url('data:text/plain,\\\"')",
       'url("data:text/plain,\\\'")',
       "url(data:text/plain,\\\\)",
-    ],
-    invalid_values: [],
+    ].concat(validNonUrlImageValues),
+    invalid_values: ["url('border.png') url('border.png')"].concat(
+      invalidNonUrlImageValues
+    ),
+    unbalanced_values: [].concat(unbalancedGradientAndElementValues),
   },
   "list-style-position": {
     domProp: "listStylePosition",
@@ -6466,7 +6608,7 @@ var gCSSProperties = {
     ],
     invalid_values: ["1px calc(nonsense)", "1px red"],
     unbalanced_values: ["1px calc("],
-    quirks_values: { "5": "5px", "3px 6px 2 5px": "3px 6px 2px 5px" },
+    quirks_values: { 5: "5px", "3px 6px 2 5px": "3px 6px 2px 5px" },
   },
   "margin-bottom": {
     domProp: "marginBottom",
@@ -6487,7 +6629,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "margin-left": {
     domProp: "marginLeft",
@@ -6532,7 +6674,7 @@ var gCSSProperties = {
       "++.7px",
       "--.4px",
     ],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "margin-right": {
     domProp: "marginRight",
@@ -6553,7 +6695,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "margin-top": {
     domProp: "marginTop",
@@ -6574,7 +6716,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "max-height": {
     domProp: "maxHeight",
@@ -6588,6 +6730,7 @@ var gCSSProperties = {
       "0",
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -6600,9 +6743,12 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["auto"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "max-width": {
     domProp: "maxWidth",
@@ -6619,6 +6765,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -6631,9 +6778,12 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["auto"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "min-height": {
     domProp: "minHeight",
@@ -6646,6 +6796,7 @@ var gCSSProperties = {
       "50%",
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -6657,9 +6808,12 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "min-width": {
     domProp: "minWidth",
@@ -6675,6 +6829,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -6686,9 +6841,12 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none"],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "object-fit": {
     domProp: "objectFit",
@@ -6749,6 +6907,130 @@ var gCSSProperties = {
       "left top 15px",
       "left 10px top",
     ],
+  },
+  offset: {
+    domProp: "offset",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: [
+      "offset-path",
+      "offset-distance",
+      "offset-rotate",
+      "offset-anchor",
+      "offset-position",
+    ],
+    initial_values: ["none"],
+    other_values: [
+      "none 30deg reverse",
+      "none 50px reverse 30deg",
+      "none calc(10px + 20%) auto",
+      "none reverse",
+      "none / left center",
+      "path('M 0 0 H 1') -200% auto",
+      "path('M 0 0 H 1') -200%",
+      "path('M 0 0 H 1') 50px",
+      "path('M 0 0 H 1') auto",
+      "path('M 0 0 H 1') reverse 30deg 50px",
+      "path('M 0 0 H 1')",
+      "path('m 20 0 h 100') -7rad 8px / auto",
+      "path('m 0 30 v 100') -7rad 8px / left top",
+      "path('m 0 0 h 100') -7rad 8px",
+      "path('M 0 0 H 100') 100px 0deg",
+      "top right / top left",
+      "top right ray(45deg closest-side)",
+      "50% 50% ray(0rad farthest-side)",
+    ],
+    invalid_values: [
+      "100px 0deg path('m 0 0 h 100')",
+      "30deg",
+      "auto 30deg 100px",
+      "auto / none",
+      "none /",
+      "none / 100px 20px 30deg",
+      "path('M 20 30 A 60 70 80') bottom",
+      "path('M 20 30 A 60 70 80') bottom top",
+      "path('M 20 30 A 60 70 80') 100px 200px",
+      "path('M 20 30 A 60 70 80') reverse auto",
+      "path('M 20 30 A 60 70 80') reverse 10px 30deg",
+      "path('M 20 30 A 60 70 80') /",
+    ],
+  },
+  "offset-anchor": {
+    domProp: "offsetAnchor",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: [
+      "left bottom",
+      "center center",
+      "calc(20% + 10px) center",
+      "right 30em",
+      "10px 20%",
+      "left -10px top -20%",
+      "right 10% bottom 20em",
+    ],
+    invalid_values: ["none", "10deg", "left 10% top"],
+  },
+  "offset-distance": {
+    domProp: "offsetDistance",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["0"],
+    other_values: ["10px", "10%", "190%", "-280%", "calc(30px + 40%)"],
+    invalid_values: ["none", "45deg"],
+  },
+  "offset-path": {
+    domProp: "offsetPath",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "ray(0deg)",
+      "ray(45deg closest-side)",
+      "ray(0rad farthest-side)",
+      "ray(0.5turn closest-corner contain)",
+      "ray(200grad farthest-corner)",
+      "ray(sides 180deg)",
+      "ray(contain farthest-side 180deg)",
+      "ray(calc(180deg - 45deg) farthest-side)",
+      "ray(0deg at center center)",
+      "ray(at 10% 10% 1rad)",
+    ]
+      .concat(pathValues.other_values)
+      .concat(basicShapeOtherValues)
+      .concat(basicShapeXywhRectValues)
+      .concat(basicShapeShapeValues),
+    invalid_values: [
+      "path('')",
+      "ray(closest-side)",
+      "ray(0deg, closest-side)",
+      "ray(contain 0deg closest-side contain)",
+    ].concat(pathValues.invalid_values),
+  },
+  "offset-position": {
+    domProp: "offsetPosition",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: [
+      "auto",
+      "left bottom",
+      "center center",
+      "calc(20% + 10px) center",
+      "right 30em",
+      "10px 20%",
+      "left -10px top -20%",
+      "right 10% bottom 20em",
+    ],
+    invalid_values: ["none", "10deg", "left 10% top"],
+  },
+  "offset-rotate": {
+    domProp: "offsetRotate",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: ["reverse", "0deg", "0rad reverse", "-45deg", "5turn auto"],
+    invalid_values: ["none", "10px", "reverse 0deg reverse", "reverse auto"],
   },
   opacity: {
     domProp: "opacity",
@@ -6896,15 +7178,17 @@ var gCSSProperties = {
       "auto",
       "scroll",
       "hidden",
-      "-moz-hidden-unscrollable",
+      "clip",
       "auto auto",
       "auto scroll",
       "hidden scroll",
       "auto hidden",
-      "-moz-hidden-unscrollable -moz-hidden-unscrollable",
+      "clip clip",
+      "overlay",
+      "overlay overlay",
     ],
     invalid_values: [
-      "-moz-hidden-unscrollable -moz-scrollbars-none",
+      "clip -moz-scrollbars-none",
       "-moz-scrollbars-none",
       "-moz-scrollbars-horizontal",
       "-moz-scrollbars-vertical",
@@ -6921,7 +7205,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip", "overlay"],
     invalid_values: [],
   },
   "overflow-y": {
@@ -6935,7 +7219,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip", "overlay"],
     invalid_values: [],
   },
   "overflow-inline": {
@@ -6950,7 +7234,7 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
   },
   "overflow-block": {
@@ -6965,8 +7249,16 @@ var gCSSProperties = {
       contain: "none",
     },
     initial_values: ["visible"],
-    other_values: ["auto", "scroll", "hidden", "-moz-hidden-unscrollable"],
+    other_values: ["auto", "scroll", "hidden", "clip"],
     invalid_values: [],
+  },
+  "overflow-clip-margin": {
+    domProp: "overflowClipMargin",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["0px"],
+    other_values: ["1px", "2em", "calc(10px + 1vh)"],
+    invalid_values: ["-10px"],
   },
   padding: {
     domProp: "padding",
@@ -6987,7 +7279,7 @@ var gCSSProperties = {
     other_values: ["3px 0", "2em 4px 2pt", "1em 2em 3px 4px"],
     invalid_values: ["1px calc(nonsense)", "1px red", "-1px"],
     unbalanced_values: ["1px calc("],
-    quirks_values: { "5": "5px", "3px 6px 2 5px": "3px 6px 2px 5px" },
+    quirks_values: { 5: "5px", "3px 6px 2 5px": "3px 6px 2px 5px" },
   },
   "padding-block": {
     domProp: "paddingBlock",
@@ -7035,7 +7327,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "padding-left": {
     domProp: "paddingLeft",
@@ -7063,7 +7355,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "padding-right": {
     domProp: "paddingRight",
@@ -7091,7 +7383,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "padding-top": {
     domProp: "paddingTop",
@@ -7119,7 +7411,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "page-break-after": {
     domProp: "pageBreakAfter",
@@ -7168,20 +7460,25 @@ var gCSSProperties = {
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["auto"],
-    other_values: ["avoid"],
+    other_values: ["avoid", "avoid-page", "avoid-column"],
     invalid_values: ["left", "right", "always"],
   },
   "page-break-inside": {
     domProp: "pageBreakInside",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    type: CSS_TYPE_LEGACY_SHORTHAND,
     alias_for: "break-inside",
     subproperties: ["break-inside"],
+    initial_values: ["auto"],
+    other_values: ["avoid"],
+    invalid_values: ["avoid-page", "avoid-column"],
   },
   "paint-order": {
     domProp: "paintOrder",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["normal"],
     other_values: [
       "fill",
@@ -7252,7 +7549,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "ruby-align": {
     domProp: "rubyAlign",
@@ -7267,8 +7564,8 @@ var gCSSProperties = {
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     applies_to_cue: true,
-    initial_values: ["over"],
-    other_values: ["under"],
+    initial_values: ["alternate", "alternate over", "over alternate"],
+    other_values: ["over", "under", "alternate under", "under alternate"],
     invalid_values: [
       "left",
       "right",
@@ -7277,6 +7574,8 @@ var gCSSProperties = {
       "not_a_position",
       "over left",
       "right under",
+      "over under",
+      "alternate alternate",
       "0",
       "100px",
       "50%",
@@ -7289,6 +7588,14 @@ var gCSSProperties = {
     initial_values: ["auto"],
     other_values: ["smooth"],
     invalid_values: ["none", "1px"],
+  },
+  "scroll-snap-stop": {
+    domProp: "scrollSnapStop",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: ["always"],
+    invalid_values: ["auto", "none", "1px"],
   },
   "scroll-snap-type": {
     domProp: "scrollSnapType",
@@ -7635,7 +7942,19 @@ var gCSSProperties = {
     applies_to_placeholder: true,
     // don't know whether left and right are same as start
     initial_values: ["start"],
-    other_values: ["center", "justify", "end", "match-parent"],
+    other_values: [
+      "center",
+      "justify",
+      "end",
+      "match-parent",
+      // At least -webkit-center is needed for compat, see bug 1899042.
+      "-moz-center",
+      "-webkit-center",
+      "-moz-left",
+      "-webkit-left",
+      "-moz-right",
+      "-webkit-right",
+    ],
     invalid_values: [
       "true",
       "true true",
@@ -7944,7 +8263,7 @@ var gCSSProperties = {
     domProp: "textEmphasisPosition",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
-    initial_values: ["over right", "right over"],
+    initial_values: ["over right", "right over", "over"],
     other_values: [
       "over left",
       "left over",
@@ -7952,6 +8271,7 @@ var gCSSProperties = {
       "left under",
       "under right",
       "right under",
+      "under",
     ],
     invalid_values: [
       "over over",
@@ -8025,7 +8345,7 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "text-overflow": {
     domProp: "textOverflow",
@@ -8121,6 +8441,7 @@ var gCSSProperties = {
     applies_to_first_letter: true,
     applies_to_first_line: true,
     applies_to_placeholder: true,
+    applies_to_marker: true,
     initial_values: ["none"],
     other_values: [
       "capitalize",
@@ -8140,6 +8461,29 @@ var gCSSProperties = {
       "full-width capitalize full-width",
       "uppercase full-width lowercase",
     ],
+  },
+  "text-wrap": {
+    domProp: "textWrap",
+    inherited: true,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["text-wrap-mode"],
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    applies_to_marker: true,
+    initial_values: ["wrap"],
+    other_values: ["nowrap"],
+    invalid_values: [],
+  },
+  "text-wrap-mode": {
+    domProp: "textWrapMode",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_cue: true,
+    applies_to_placeholder: true,
+    applies_to_marker: true,
+    initial_values: ["wrap"],
+    other_values: ["nowrap"],
+    invalid_values: ["none", "normal", "on", "off", "wrap nowrap"],
   },
   top: {
     domProp: "top",
@@ -8161,12 +8505,13 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   transition: {
     domProp: "transition",
     inherited: false,
     type: CSS_TYPE_TRUE_SHORTHAND,
+    applies_to_marker: true,
     subproperties: [
       "transition-property",
       "transition-duration",
@@ -8252,6 +8597,7 @@ var gCSSProperties = {
     domProp: "transitionDelay",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["0s", "0ms"],
     other_values: ["1s", "250ms", "-100ms", "-1s", "1s, 250ms, 2.3s"],
     invalid_values: ["0", "0px"],
@@ -8260,6 +8606,7 @@ var gCSSProperties = {
     domProp: "transitionDuration",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["0s", "0ms"],
     other_values: ["1s", "250ms", "1s, 250ms, 2.3s"],
     invalid_values: ["0", "0px", "-1ms", "-2s"],
@@ -8268,6 +8615,7 @@ var gCSSProperties = {
     domProp: "transitionProperty",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["all"],
     other_values: [
       "none",
@@ -8307,6 +8655,7 @@ var gCSSProperties = {
     domProp: "transitionTimingFunction",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
     initial_values: ["ease"],
     other_values: [
       "cubic-bezier(0.25, 0.1, 0.25, 1.0)",
@@ -8323,6 +8672,10 @@ var gCSSProperties = {
       "steps(2, start)",
       "steps(386)",
       "steps(3, end)",
+      "steps(1, jump-start)",
+      "steps(1, jump-end)",
+      "steps(2, jump-none)",
+      "steps(1, jump-both)",
     ],
     invalid_values: [
       "none",
@@ -8337,6 +8690,10 @@ var gCSSProperties = {
       "steps(0)",
       "steps(-2)",
       "steps(0, step-end, 1)",
+      "steps(0, jump-start)",
+      "steps(0, jump-end)",
+      "steps(1, jump-none)",
+      "steps(0, jump-both)",
     ],
   },
   "unicode-bidi": {
@@ -8390,7 +8747,18 @@ var gCSSProperties = {
       "calc(3*25px + 50%)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
+  },
+  "baseline-source": {
+    domProp: "baselineSource",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_placeholder: true,
+    initial_values: ["auto"],
+    other_values: ["first", "last"],
+    invalid_values: [],
   },
   visibility: {
     domProp: "visibility",
@@ -8404,9 +8772,11 @@ var gCSSProperties = {
   "white-space": {
     domProp: "whiteSpace",
     inherited: true,
-    type: CSS_TYPE_LONGHAND,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["white-space-collapse", "text-wrap-mode"],
     applies_to_placeholder: true,
     applies_to_cue: true,
+    applies_to_marker: true,
     initial_values: ["normal"],
     other_values: [
       "pre",
@@ -8417,6 +8787,22 @@ var gCSSProperties = {
       "break-spaces",
     ],
     invalid_values: [],
+  },
+  "white-space-collapse": {
+    domProp: "whiteSpaceCollapse",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    applies_to_marker: true,
+    initial_values: ["collapse"],
+    other_values: [
+      "preserve",
+      "preserve-breaks",
+      "preserve-spaces",
+      "break-spaces",
+    ],
+    invalid_values: ["normal", "auto"],
   },
   width: {
     domProp: "width",
@@ -8440,6 +8826,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       // these two keywords are the aliases of above first two.
       "-moz-max-content",
@@ -8506,6 +8893,9 @@ var gCSSProperties = {
       "min(5px,2em)",
       "max(5px)",
       "max(5px,2em)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: [
       "none",
@@ -8523,7 +8913,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       /* If we ever support division by values, which is
        * complicated for the reasons described in
        * http://lists.w3.org/Archives/Public/www-style/2010Jan/0007.html
@@ -8535,7 +8924,7 @@ var gCSSProperties = {
       "calc(3em * (3em / 100%))",
       "calc(3em * 3em / 100%)",
     ],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "will-change": {
     domProp: "willChange",
@@ -8597,7 +8986,7 @@ var gCSSProperties = {
       "calc(-10%/2 - 1em)",
     ],
     invalid_values: [],
-    quirks_values: { "5": "5px" },
+    quirks_values: { 5: "5px" },
   },
   "overflow-wrap": {
     domProp: "overflowWrap",
@@ -8630,13 +9019,26 @@ var gCSSProperties = {
     type: CSS_TYPE_LONGHAND,
     initial_values: ["none"],
     other_values: [
+      "path(nonzero, 'M 10 10 h 100 v 100 h-100 v-100 z')",
+      "path(evenodd, 'M 10 10 h 100 v 100 h-100 v-100 z')",
+      "path('M10,30A20,20 0,0,1 50,30A20,20 0,0,1 90,30Q90,60 50,90Q10,60 10,30z')",
       "url(#mypath)",
       "url('404.svg#mypath')",
       "url(#my-clip-path)",
+      "margin-box",
     ]
       .concat(basicShapeSVGBoxValues)
-      .concat(basicShapeOtherValues),
-    invalid_values: basicShapeInvalidValues,
+      .concat(basicShapeOtherValues)
+      .concat(basicShapeOtherValuesWithFillRule)
+      .concat(basicShapeXywhRectValues)
+      .concat(basicShapeShapeValues)
+      .concat(basicShapeShapeValuesWithFillRule),
+    invalid_values: [
+      "path(nonzero)",
+      "path(abs, 'M 10 10 L 10 10 z')",
+      "path(evenodd, '')",
+      "path('')",
+    ].concat(basicShapeInvalidValues),
     unbalanced_values: basicShapeUnbalancedValues,
   },
   "clip-rule": {
@@ -8684,6 +9086,8 @@ var gCSSProperties = {
     domProp: "fill",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     prerequisites: { color: "blue" },
     initial_values: ["black", "#000", "#000000", "rgb(0,0,0)", "rgba(0,0,0,1)"],
     other_values: [
@@ -8703,6 +9107,8 @@ var gCSSProperties = {
     domProp: "fillOpacity",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["1", "2.8", "1.000", "300%"],
     other_values: [
       "0",
@@ -8719,6 +9125,8 @@ var gCSSProperties = {
     domProp: "fillRule",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["nonzero"],
     other_values: ["evenodd"],
     invalid_values: [],
@@ -8993,7 +9401,14 @@ var gCSSProperties = {
     inherited: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["auto"],
-    other_values: ["optimizeSpeed", "optimizeQuality", "-moz-crisp-edges"],
+    other_values: [
+      "optimizeSpeed",
+      "optimizeQuality",
+      "-moz-crisp-edges",
+      "crisp-edges",
+      "smooth",
+      "pixelated",
+    ],
     invalid_values: [],
   },
   isolation: {
@@ -9085,6 +9500,7 @@ var gCSSProperties = {
       "saturation",
       "color",
       "luminosity",
+      "plus-lighter",
     ],
     invalid_values: [],
   },
@@ -9125,14 +9541,15 @@ var gCSSProperties = {
     type: CSS_TYPE_LONGHAND,
     applies_to_first_letter: true,
     initial_values: ["none"],
-    other_values: ["url(#my-shape-outside)"].concat(
+    other_values: ["url(#my-shape-outside)", "margin-box"].concat(
       basicShapeOtherValues,
-      validGradientAndElementValues
+      basicShapeOtherValuesWithFillRule,
+      validNonUrlImageValues
     ),
     invalid_values: [].concat(
       basicShapeSVGBoxValues,
       basicShapeInvalidValues,
-      invalidGradientAndElementValues
+      invalidNonUrlImageValues
     ),
     unbalanced_values: [].concat(
       basicShapeUnbalancedValues,
@@ -9174,6 +9591,8 @@ var gCSSProperties = {
     domProp: "stroke",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["none"],
     other_values: [
       "black",
@@ -9196,6 +9615,8 @@ var gCSSProperties = {
     domProp: "strokeDasharray",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["none"],
     other_values: [
       "5px,3px,2px",
@@ -9212,6 +9633,8 @@ var gCSSProperties = {
   "stroke-dashoffset": {
     domProp: "strokeDashoffset",
     inherited: true,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["0", "-0px", "0em"],
     other_values: ["3px", "3%", "1em", "0.0002", "context-value"],
@@ -9221,6 +9644,8 @@ var gCSSProperties = {
     domProp: "strokeLinecap",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["butt"],
     other_values: ["round", "square"],
     invalid_values: [],
@@ -9229,6 +9654,8 @@ var gCSSProperties = {
     domProp: "strokeLinejoin",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["miter"],
     other_values: ["round", "bevel"],
     invalid_values: [],
@@ -9237,6 +9664,8 @@ var gCSSProperties = {
     domProp: "strokeMiterlimit",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["4"],
     other_values: ["0", "0.9", "1", "7", "5000", "1.1"],
     invalid_values: ["-1", "3px", "-0.3"],
@@ -9245,6 +9674,8 @@ var gCSSProperties = {
     domProp: "strokeOpacity",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["1", "2.8", "1.000", "300%"],
     other_values: [
       "0",
@@ -9261,6 +9692,8 @@ var gCSSProperties = {
     domProp: "strokeWidth",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["1px"],
     other_values: [
       "0",
@@ -9341,6 +9774,8 @@ var gCSSProperties = {
     domProp: "textRendering",
     inherited: true,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["auto"],
     other_values: ["optimizeSpeed", "optimizeLegibility", "geometricPrecision"],
     invalid_values: [],
@@ -9349,6 +9784,8 @@ var gCSSProperties = {
     domProp: "vectorEffect",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
     initial_values: ["none"],
     other_values: ["non-scaling-stroke"],
     invalid_values: [],
@@ -9360,6 +9797,22 @@ var gCSSProperties = {
     initial_values: ["default"],
     other_values: ["drag", "no-drag"],
     invalid_values: ["none"],
+  },
+  "accent-color": {
+    domProp: "accentColor",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    prerequisites: { color: "black" },
+    initial_values: ["auto"],
+    other_values: [
+      "currentcolor",
+      "black",
+      "green",
+      "transparent",
+      "rgba(128,128,128,.5)",
+      "#123",
+    ],
+    invalid_values: ["#0", "#00", "#00000", "cc00ff"],
   },
   "align-content": {
     domProp: "alignContent",
@@ -9404,6 +9857,8 @@ var gCSSProperties = {
       "auto",
       "first",
       "last",
+      "left",
+      "right",
     ],
   },
   "align-items": {
@@ -9440,6 +9895,8 @@ var gCSSProperties = {
       "safe stretch",
       "end end",
       "auto",
+      "left",
+      "right",
     ],
   },
   "align-self": {
@@ -9461,7 +9918,15 @@ var gCSSProperties = {
       "self-start",
       "safe self-end",
     ],
-    invalid_values: ["space-between", "abc", "30px", "stretch safe", "safe"],
+    invalid_values: [
+      "space-between",
+      "abc",
+      "30px",
+      "stretch safe",
+      "safe",
+      "left",
+      "right",
+    ],
   },
   "justify-content": {
     domProp: "justifyContent",
@@ -9611,7 +10076,15 @@ var gCSSProperties = {
       "baseline",
       "last baseline",
     ],
-    invalid_values: ["none", "center safe", "right / end"],
+    invalid_values: [
+      "none",
+      "center safe",
+      "right / end",
+      "left",
+      "right",
+      "left left",
+      "right right",
+    ],
   },
   "place-items": {
     domProp: "placeItems",
@@ -9637,6 +10110,10 @@ var gCSSProperties = {
       "end/end",
       "center safe",
       "auto start",
+      "left",
+      "right",
+      "left left",
+      "right right",
     ],
   },
   "place-self": {
@@ -9666,6 +10143,10 @@ var gCSSProperties = {
       "auto legacy left",
       "legacy left",
       "auto/auto",
+      "left",
+      "right",
+      "left left",
+      "right right",
     ],
   },
   flex: {
@@ -9722,6 +10203,7 @@ var gCSSProperties = {
       "15%",
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-max-content",
       "-moz-min-content",
       "-moz-fit-content",
@@ -9776,7 +10258,6 @@ var gCSSProperties = {
       "-moz-max(5px)",
       "-moz-min(5px,2em)",
       "-moz-max(5px,2em)",
-      "calc(50px/(2 - 2))",
       // If we ever support division by values, which is
       // complicated for the reasons described in
       // http://lists.w3.org/Archives/Public/www-style/2010Jan/0007.html
@@ -9877,47 +10358,12 @@ var gCSSProperties = {
     alias_for: "overflow-wrap",
     subproperties: ["overflow-wrap"],
   },
-  "-moz-transform": {
-    domProp: "MozTransform",
-    inherited: false,
+  "-moz-tab-size": {
+    domProp: "MozTabSize",
+    inherited: true,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transform",
-    subproperties: ["transform"],
-  },
-  "-moz-transform-origin": {
-    domProp: "MozTransformOrigin",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transform-origin",
-    subproperties: ["transform-origin"],
-  },
-  "-moz-perspective-origin": {
-    domProp: "MozPerspectiveOrigin",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "perspective-origin",
-    subproperties: ["perspective-origin"],
-  },
-  "-moz-perspective": {
-    domProp: "MozPerspective",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "perspective",
-    subproperties: ["perspective"],
-  },
-  "-moz-backface-visibility": {
-    domProp: "MozBackfaceVisibility",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "backface-visibility",
-    subproperties: ["backface-visibility"],
-  },
-  "-moz-transform-style": {
-    domProp: "MozTransformStyle",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transform-style",
-    subproperties: ["transform-style"],
+    alias_for: "tab-size",
+    subproperties: ["tab-size"],
   },
   "-moz-border-image": {
     domProp: "MozBorderImage",
@@ -9931,118 +10377,6 @@ var gCSSProperties = {
       "border-image-outset",
       "border-image-repeat",
     ],
-  },
-  "-moz-transition": {
-    domProp: "MozTransition",
-    inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    alias_for: "transition",
-    subproperties: [
-      "transition-property",
-      "transition-duration",
-      "transition-timing-function",
-      "transition-delay",
-    ],
-  },
-  "-moz-transition-delay": {
-    domProp: "MozTransitionDelay",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transition-delay",
-    subproperties: ["transition-delay"],
-  },
-  "-moz-transition-duration": {
-    domProp: "MozTransitionDuration",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transition-duration",
-    subproperties: ["transition-duration"],
-  },
-  "-moz-transition-property": {
-    domProp: "MozTransitionProperty",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transition-property",
-    subproperties: ["transition-property"],
-  },
-  "-moz-transition-timing-function": {
-    domProp: "MozTransitionTimingFunction",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "transition-timing-function",
-    subproperties: ["transition-timing-function"],
-  },
-  "-moz-animation": {
-    domProp: "MozAnimation",
-    inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    alias_for: "animation",
-    subproperties: [
-      "animation-name",
-      "animation-duration",
-      "animation-timing-function",
-      "animation-delay",
-      "animation-direction",
-      "animation-fill-mode",
-      "animation-iteration-count",
-      "animation-play-state",
-    ],
-  },
-  "-moz-animation-delay": {
-    domProp: "MozAnimationDelay",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-delay",
-    subproperties: ["animation-delay"],
-  },
-  "-moz-animation-direction": {
-    domProp: "MozAnimationDirection",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-direction",
-    subproperties: ["animation-direction"],
-  },
-  "-moz-animation-duration": {
-    domProp: "MozAnimationDuration",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-duration",
-    subproperties: ["animation-duration"],
-  },
-  "-moz-animation-fill-mode": {
-    domProp: "MozAnimationFillMode",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-fill-mode",
-    subproperties: ["animation-fill-mode"],
-  },
-  "-moz-animation-iteration-count": {
-    domProp: "MozAnimationIterationCount",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-iteration-count",
-    subproperties: ["animation-iteration-count"],
-  },
-  "-moz-animation-name": {
-    domProp: "MozAnimationName",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-name",
-    subproperties: ["animation-name"],
-  },
-  "-moz-animation-play-state": {
-    domProp: "MozAnimationPlayState",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-play-state",
-    subproperties: ["animation-play-state"],
-  },
-  "-moz-animation-timing-function": {
-    domProp: "MozAnimationTimingFunction",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "animation-timing-function",
-    subproperties: ["animation-timing-function"],
   },
   "-moz-font-feature-settings": {
     domProp: "MozFontFeatureSettings",
@@ -10123,6 +10457,7 @@ var gCSSProperties = {
       // These keywords are treated as initial value.
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       "-moz-max-content",
@@ -10132,6 +10467,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none"],
   },
@@ -10472,6 +10810,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       // these two keywords are the aliases of above first two.
       "-moz-max-content",
@@ -10485,6 +10824,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none"],
   },
@@ -10619,6 +10961,7 @@ var gCSSProperties = {
       // These keywords are treated as initial value.
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       "-moz-max-content",
@@ -10628,6 +10971,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["auto", "5"],
   },
@@ -10647,6 +10993,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -10657,6 +11004,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["auto", "5"],
   },
@@ -10674,6 +11024,7 @@ var gCSSProperties = {
       // These keywords are treated as initial value.
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       "-moz-max-content",
@@ -10684,6 +11035,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none", "5"],
   },
@@ -10703,6 +11057,7 @@ var gCSSProperties = {
       // writing mode
       "max-content",
       "min-content",
+      "fit-content",
       "-moz-fit-content",
       "-moz-available",
       // these two keywords are the aliases of above first two.
@@ -10714,6 +11069,9 @@ var gCSSProperties = {
       "calc(3*25px)",
       "calc(25px*3)",
       "calc(3*25px + 50%)",
+      "fit-content(100px)",
+      "fit-content(10%)",
+      "fit-content(calc(3*25px + 50%))",
     ],
     invalid_values: ["none", "5"],
   },
@@ -10958,6 +11316,7 @@ var gCSSProperties = {
     domProp: "webkitAnimation",
     inherited: false,
     type: CSS_TYPE_TRUE_SHORTHAND,
+    applies_to_marker: true,
     alias_for: "animation",
     subproperties: [
       "animation-name",
@@ -10974,6 +11333,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationDelay",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-delay",
     subproperties: ["animation-delay"],
   },
@@ -10981,6 +11341,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationDirection",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-direction",
     subproperties: ["animation-direction"],
   },
@@ -10988,6 +11349,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationDuration",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-duration",
     subproperties: ["animation-duration"],
   },
@@ -10995,6 +11357,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationFillMode",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-fill-mode",
     subproperties: ["animation-fill-mode"],
   },
@@ -11002,6 +11365,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationIterationCount",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-iteration-count",
     subproperties: ["animation-iteration-count"],
   },
@@ -11009,6 +11373,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationName",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-name",
     subproperties: ["animation-name"],
   },
@@ -11016,6 +11381,7 @@ var gCSSProperties = {
     domProp: "webkitAnimationPlayState",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-play-state",
     subproperties: ["animation-play-state"],
   },
@@ -11023,8 +11389,16 @@ var gCSSProperties = {
     domProp: "webkitAnimationTimingFunction",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "animation-timing-function",
     subproperties: ["animation-timing-function"],
+  },
+  "-webkit-clip-path": {
+    domProp: "webkitClipPath",
+    inherited: false,
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    alias_for: "clip-path",
+    subproperties: ["clip-path"],
   },
   "-webkit-filter": {
     domProp: "webkitFilter",
@@ -11032,6 +11406,17 @@ var gCSSProperties = {
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
     alias_for: "filter",
     subproperties: ["filter"],
+  },
+  "-webkit-text-security": {
+    domProp: "webkitTextSecurity",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_placeholder: true,
+    initial_values: ["none"],
+    other_values: ["circle", "disc", "square"],
+    invalid_values: ["0", "auto", "true", "'*'"],
   },
   "-webkit-text-fill-color": {
     domProp: "webkitTextFillColor",
@@ -11179,6 +11564,7 @@ var gCSSProperties = {
     domProp: "webkitTransition",
     inherited: false,
     type: CSS_TYPE_TRUE_SHORTHAND,
+    applies_to_marker: true,
     alias_for: "transition",
     subproperties: [
       "transition-property",
@@ -11191,6 +11577,7 @@ var gCSSProperties = {
     domProp: "webkitTransitionDelay",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "transition-delay",
     subproperties: ["transition-delay"],
   },
@@ -11198,6 +11585,7 @@ var gCSSProperties = {
     domProp: "webkitTransitionDuration",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "transition-duration",
     subproperties: ["transition-duration"],
   },
@@ -11205,6 +11593,7 @@ var gCSSProperties = {
     domProp: "webkitTransitionProperty",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "transition-property",
     subproperties: ["transition-property"],
   },
@@ -11212,6 +11601,7 @@ var gCSSProperties = {
     domProp: "webkitTransitionTimingFunction",
     inherited: false,
     type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_marker: true,
     alias_for: "transition-timing-function",
     subproperties: ["transition-timing-function"],
   },
@@ -11382,6 +11772,14 @@ var gCSSProperties = {
     type: CSS_TYPE_TRUE_SHORTHAND,
     alias_for: "flex-flow",
     subproperties: ["flex-direction", "flex-wrap"],
+  },
+  "-webkit-line-clamp": {
+    domProp: "webkitLineClamp",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1", "2"],
+    invalid_values: ["auto", "0", "-1"],
   },
   "-webkit-order": {
     domProp: "webkitOrder",
@@ -11556,208 +11954,335 @@ function get_computed_value(cs, property) {
   return cs.getPropertyValue(property);
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.individual-transform.enabled")) {
-  gCSSProperties.rotate = {
-    domProp: "rotate",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["none"],
-    other_values: [
-      "45deg",
-      "45grad",
-      "72rad",
-      "0.25turn",
-      ".57rad",
-      "0 0 0 0rad",
-      "0 0 1 45deg",
-      "0 0 1 0rad",
-      "0rad 0 0 1",
-      "10rad 10 20 30",
-      "x 10rad",
-      "y 10rad",
-      "z 10rad",
-      "10rad x",
-      "10rad y",
-      "10rad z",
-      /* valid calc() values */
-      "calc(1) 0 0 calc(45deg + 5rad)",
-      "0 1 0 calc(400grad + 1rad)",
-      "calc(0.5turn + 10deg)",
-    ],
-    invalid_values: [
-      "0",
-      "7",
-      "0, 0, 1, 45deg",
-      "0 0 45deg",
-      "0 0 20rad",
-      "0 0 0 0",
-      "x x 10rad",
-      "x y 10rad",
-      "0 0 1 10rad z",
-      "0 0 1 z 10rad",
-      "z 0 0 1 10rad",
-      "0 0 z 1 10rad",
-      /* invalid calc() values */
-      "0.5 1 0 calc(45deg + 10)",
-      "calc(0.5turn + 10%)",
-    ],
-  };
-
-  gCSSProperties.translate = {
-    domProp: "translate",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    prerequisites: { width: "10px", height: "10px", display: "block" },
-    initial_values: ["none"],
-    other_values: [
-      "-4px",
-      "3px",
-      "4em",
-      "50%",
-      "4px 5px 6px",
-      "4px 5px",
-      "50% 5px 6px",
-      "50% 10% 6em",
-      /* valid calc() values */
-      "calc(5px + 10%)",
-      "calc(0.25 * 5px + 10% / 3)",
-      "calc(5px - 10% * 3)",
-      "calc(5px - 3 * 10%) 50px",
-      "-50px calc(5px - 10% * 3)",
-      "10px calc(min(5px,10%))",
-    ],
-    invalid_values: [
-      "1",
-      "-moz-min(5px,10%)",
-      "4px, 5px, 6px",
-      "3px 4px 1px 7px",
-      "4px 5px 10%",
-      /* invalid calc() values */
-      "calc(max(5px,10%) 10%)",
-      "calc(nonsense)",
-    ],
-  };
-  gCSSProperties.scale = {
-    domProp: "scale",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["none"],
-    other_values: [
-      "10",
-      "10%",
-      "10 20",
-      "10% 20%",
-      "10 20 30",
-      "10% 20% 30%",
-      "10 20% 30",
-      "-10",
-      "-10%",
-      "-10 20",
-      "-10% 20%",
-      "-10 20 -30",
-      "-10% 20% -30%",
-      "-10 20% -30",
-      "0 2.0",
-      /* valid calc() values */
-      "calc(1 + 2)",
-      "calc(10) calc(20) 30",
-    ],
-    invalid_values: [
-      "10px",
-      "10deg",
-      "10, 20, 30",
-      /* invalid calc() values */
-      "calc(1 + 20%)",
-      "10 calc(1 + 10px)",
-    ],
-  };
+{
+  const mozHiddenUnscrollableEnabled = IsCSSPropertyPrefEnabled(
+    "layout.css.overflow-moz-hidden-unscrollable.enabled"
+  );
+  for (let p of ["overflow", "overflow-x", "overflow-y"]) {
+    let prop = gCSSProperties[p];
+    let mozHiddenUnscrollableValues = mozHiddenUnscrollableEnabled
+      ? prop.other_values
+      : prop.invalid_values;
+    mozHiddenUnscrollableValues.push("-moz-hidden-unscrollable");
+    if (p == "overflow") {
+      mozHiddenUnscrollableValues.push(
+        "-moz-hidden-unscrollable -moz-hidden-unscrollable"
+      );
+    }
+  }
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.touch_action.enabled")) {
-  gCSSProperties["touch-action"] = {
-    domProp: "touchAction",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: [
-      "none",
-      "pan-x",
-      "pan-y",
-      "pan-x pan-y",
-      "pan-y pan-x",
-      "manipulation",
-    ],
-    invalid_values: [
-      "zoom",
-      "pinch",
-      "tap",
-      "10px",
-      "2",
-      "auto pan-x",
-      "pan-x auto",
-      "none pan-x",
-      "pan-x none",
-      "auto pan-y",
-      "pan-y auto",
-      "none pan-y",
-      "pan-y none",
-      "pan-x pan-x",
-      "pan-y pan-y",
-      "pan-x pan-y none",
-      "pan-x none pan-y",
-      "none pan-x pan-y",
-      "pan-y pan-x none",
-      "pan-y none pan-x",
-      "none pan-y pan-x",
-      "pan-x pan-y auto",
-      "pan-x auto pan-y",
-      "auto pan-x pan-y",
-      "pan-y pan-x auto",
-      "pan-y auto pan-x",
-      "auto pan-y pan-x",
-      "pan-x pan-y zoom",
-      "pan-x zoom pan-y",
-      "zoom pan-x pan-y",
-      "pan-y pan-x zoom",
-      "pan-y zoom pan-x",
-      "zoom pan-y pan-x",
-      "pan-x pan-y pan-x",
-      "pan-x pan-x pan-y",
-      "pan-y pan-x pan-x",
-      "pan-y pan-x pan-y",
-      "pan-y pan-y pan-x",
-      "pan-x pan-y pan-y",
-      "manipulation none",
-      "none manipulation",
-      "manipulation auto",
-      "auto manipulation",
-      "manipulation zoom",
-      "zoom manipulation",
-      "manipulation manipulation",
-      "manipulation pan-x",
-      "pan-x manipulation",
-      "manipulation pan-y",
-      "pan-y manipulation",
-      "manipulation pan-x pan-y",
-      "pan-x manipulation pan-y",
-      "pan-x pan-y manipulation",
-      "manipulation pan-y pan-x",
-      "pan-y manipulation pan-x",
-      "pan-y pan-x manipulation",
-    ],
-  };
+gCSSProperties.rotate = {
+  domProp: "rotate",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["none"],
+  other_values: [
+    "45deg",
+    "45grad",
+    "72rad",
+    "0.25turn",
+    ".57rad",
+    "0 0 0 0rad",
+    "0 0 1 45deg",
+    "0 0 1 0rad",
+    "0rad 0 0 1",
+    "10rad 10 20 30",
+    "x 10rad",
+    "y 10rad",
+    "z 10rad",
+    "10rad x",
+    "10rad y",
+    "10rad z",
+    /* valid calc() values */
+    "calc(1) 0 0 calc(45deg + 5rad)",
+    "0 1 0 calc(400grad + 1rad)",
+    "calc(0.5turn + 10deg)",
+  ],
+  invalid_values: [
+    "0",
+    "7",
+    "0, 0, 1, 45deg",
+    "0 0 45deg",
+    "0 0 20rad",
+    "0 0 0 0",
+    "x x 10rad",
+    "x y 10rad",
+    "0 0 1 10rad z",
+    "0 0 1 z 10rad",
+    "z 0 0 1 10rad",
+    "0 0 z 1 10rad",
+    /* invalid calc() values */
+    "0.5 1 0 calc(45deg + 10)",
+    "calc(0.5turn + 10%)",
+  ],
+};
+
+gCSSProperties.translate = {
+  domProp: "translate",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  prerequisites: { width: "10px", height: "10px", display: "block" },
+  initial_values: ["none"],
+  other_values: [
+    "-4px",
+    "3px",
+    "4em",
+    "50%",
+    "4px 5px 6px",
+    "4px 5px",
+    "50% 5px 6px",
+    "50% 10% 6em",
+    /* valid calc() values */
+    "calc(5px + 10%)",
+    "calc(0.25 * 5px + 10% / 3)",
+    "calc(5px - 10% * 3)",
+    "calc(5px - 3 * 10%) 50px",
+    "-50px calc(5px - 10% * 3)",
+    "10px calc(min(5px,10%))",
+  ],
+  invalid_values: [
+    "1",
+    "-moz-min(5px,10%)",
+    "4px, 5px, 6px",
+    "3px 4px 1px 7px",
+    "4px 5px 10%",
+    /* invalid calc() values */
+    "calc(max(5px,10%) 10%)",
+    "calc(nonsense)",
+  ],
+};
+gCSSProperties.scale = {
+  domProp: "scale",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["none"],
+  other_values: [
+    "10",
+    "10%",
+    "10 20",
+    "10% 20%",
+    "10 20 30",
+    "10% 20% 30%",
+    "10 20% 30",
+    "-10",
+    "-10%",
+    "-10 20",
+    "-10% 20%",
+    "-10 20 -30",
+    "-10% 20% -30%",
+    "-10 20% -30",
+    "0 2.0",
+    /* valid calc() values */
+    "calc(1 + 2)",
+    "calc(10) calc(20) 30",
+  ],
+  invalid_values: [
+    "10px",
+    "10deg",
+    "10, 20, 30",
+    /* invalid calc() values */
+    "calc(1 + 20%)",
+    "10 calc(1 + 10px)",
+  ],
+};
+
+if (
+  IsCSSPropertyPrefEnabled("layout.css.transform-box-content-stroke.enabled")
+) {
+  gCSSProperties["transform-box"]["other_values"].push(
+    "content-box",
+    "stroke-box"
+  );
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.text-justify.enabled")) {
-  gCSSProperties["text-justify"] = {
-    domProp: "textJustify",
-    inherited: true,
-    type: CSS_TYPE_LONGHAND,
-    applies_to_placeholder: true,
-    initial_values: ["auto"],
-    other_values: ["none", "inter-word", "inter-character", "distribute"],
-    invalid_values: [],
-  };
+gCSSProperties["touch-action"] = {
+  domProp: "touchAction",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: [
+    "none",
+    "pan-x",
+    "pan-y",
+    "pinch-zoom",
+    "pan-x pan-y",
+    "pan-y pan-x",
+    "pinch-zoom pan-x",
+    "pinch-zoom pan-y",
+    "pan-x pinch-zoom",
+    "pan-y pinch-zoom",
+    "pinch-zoom pan-x pan-y",
+    "pinch-zoom pan-y pan-x",
+    "pan-x pinch-zoom pan-y",
+    "pan-y pinch-zoom pan-x",
+    "pan-x pan-y pinch-zoom",
+    "pan-y pan-x pinch-zoom",
+    "manipulation",
+  ],
+  invalid_values: [
+    "zoom",
+    "pinch",
+    "tap",
+    "10px",
+    "2",
+    "auto pan-x",
+    "pan-x auto",
+    "none pan-x",
+    "pan-x none",
+    "auto pan-y",
+    "pan-y auto",
+    "none pan-y",
+    "pan-y none",
+    "pan-x pan-x",
+    "pan-y pan-y",
+    "auto pinch-zoom",
+    "pinch-zoom auto",
+    "none pinch-zoom",
+    "pinch-zoom none",
+    "pinch-zoom pinch-zoom",
+    "pan-x pan-y none",
+    "pan-x none pan-y",
+    "none pan-x pan-y",
+    "pan-y pan-x none",
+    "pan-y none pan-x",
+    "none pan-y pan-x",
+    "pan-x pinch-zoom none",
+    "pan-x none pinch-zoom",
+    "none pan-x pinch-zoom",
+    "pinch-zoom pan-x none",
+    "pinch-zoom none pan-x",
+    "none pinch-zoom pan-x",
+    "pinch-zoom pan-y none",
+    "pinch-zoom none pan-y",
+    "none pinch-zoom pan-y",
+    "pan-y pinch-zoom none",
+    "pan-y none pinch-zoom",
+    "none pan-y pinch-zoom",
+    "pan-x pan-y auto",
+    "pan-x auto pan-y",
+    "auto pan-x pan-y",
+    "pan-y pan-x auto",
+    "pan-y auto pan-x",
+    "auto pan-y pan-x",
+    "pan-x pinch-zoom auto",
+    "pan-x auto pinch-zoom",
+    "auto pan-x pinch-zoom",
+    "pinch-zoom pan-x auto",
+    "pinch-zoom auto pan-x",
+    "auto pinch-zoom pan-x",
+    "pinch-zoom pan-y auto",
+    "pinch-zoom auto pan-y",
+    "auto pinch-zoom pan-y",
+    "pan-y pinch-zoom auto",
+    "pan-y auto pinch-zoom",
+    "auto pan-y pinch-zoom",
+    "pan-x pan-y zoom",
+    "pan-x zoom pan-y",
+    "zoom pan-x pan-y",
+    "pan-y pan-x zoom",
+    "pan-y zoom pan-x",
+    "zoom pan-y pan-x",
+    "pinch-zoom pan-y zoom",
+    "pinch-zoom zoom pan-y",
+    "zoom pinch-zoom pan-y",
+    "pan-y pinch-zoom zoom",
+    "pan-y zoom pinch-zoom",
+    "zoom pan-y pinch-zoom",
+    "pan-x pinch-zoom zoom",
+    "pan-x zoom pinch-zoom",
+    "zoom pan-x pinch-zoom",
+    "pinch-zoom pan-x zoom",
+    "pinch-zoom zoom pan-x",
+    "zoom pinch-zoom pan-x",
+    "pan-x pan-y pan-x",
+    "pan-x pan-x pan-y",
+    "pan-y pan-x pan-x",
+    "pan-y pan-x pan-y",
+    "pan-y pan-y pan-x",
+    "pan-x pan-y pan-y",
+    "pan-x pinch-zoom pan-x",
+    "pan-x pan-x pinch-zoom",
+    "pinch-zoom pan-x pan-x",
+    "pinch-zoom pan-x pinch-zoom",
+    "pinch-zoom pinch-zoom pan-x",
+    "pan-x pinch-zoom pinch-zoom",
+    "pinch-zoom pan-y pinch-zoom",
+    "pinch-zoom pinch-zoom pan-y",
+    "pan-y pinch-zoom pinch-zoom",
+    "pan-y pinch-zoom pan-y",
+    "pan-y pan-y pinch-zoom",
+    "pinch-zoom pan-y pan-y",
+    "manipulation none",
+    "none manipulation",
+    "manipulation auto",
+    "auto manipulation",
+    "manipulation zoom",
+    "zoom manipulation",
+    "manipulation manipulation",
+    "manipulation pan-x",
+    "pan-x manipulation",
+    "manipulation pan-y",
+    "pan-y manipulation",
+    "manipulation pinch-zoom",
+    "pinch-zoom manipulation",
+    "manipulation pan-x pan-y",
+    "pan-x manipulation pan-y",
+    "pan-x pan-y manipulation",
+    "manipulation pan-y pan-x",
+    "pan-y manipulation pan-x",
+    "pan-y pan-x manipulation",
+    "manipulation pinch-zoom pan-y",
+    "pinch-zoom manipulation pan-y",
+    "pinch-zoom pan-y manipulation",
+    "manipulation pan-y pinch-zoom",
+    "pan-y manipulation pinch-zoom",
+    "pan-y pinch-zoom manipulation",
+    "manipulation pan-x pinch-zoom",
+    "pan-x manipulation pinch-zoom",
+    "pan-x pinch-zoom manipulation",
+    "manipulation pinch-zoom pan-x",
+    "pinch-zoom manipulation pan-x",
+    "pinch-zoom pan-x manipulation",
+  ],
+};
+
+gCSSProperties["page"] = {
+  domProp: "page",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: ["page", "small_page", "large_page", "A4"],
+  invalid_values: ["page1 page2", "auto page", "1cm"],
+};
+
+gCSSProperties["text-justify"] = {
+  domProp: "textJustify",
+  inherited: true,
+  type: CSS_TYPE_LONGHAND,
+  applies_to_placeholder: true,
+  initial_values: ["auto"],
+  other_values: ["none", "inter-word", "inter-character", "distribute"],
+  invalid_values: [],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.text-indent-keywords.enabled")) {
+  gCSSProperties["text-indent"].other_values.push(
+    "2em hanging",
+    "5% each-line",
+    "-10px hanging each-line",
+    "hanging calc(2px)",
+    "each-line calc(-2px)",
+    "each-line calc(50%) hanging",
+    "hanging calc(3*25px) each-line",
+    "each-line hanging calc(25px*3)"
+  );
+  gCSSProperties["text-indent"].invalid_values.push(
+    "hanging",
+    "each-line",
+    "-10px hanging hanging",
+    "each-line calc(2px) each-line"
+  );
 }
 
 if (IsCSSPropertyPrefEnabled("layout.css.font-variations.enabled")) {
@@ -11818,20 +12343,44 @@ if (IsCSSPropertyPrefEnabled("layout.css.font-variations.enabled")) {
   );
 }
 
-if (IsCSSPropertyPrefEnabled("svg.transform-box.enabled")) {
-  gCSSProperties["transform-box"] = {
-    domProp: "transformBox",
-    inherited: false,
+if (IsCSSPropertyPrefEnabled("layout.css.font-palette.enabled")) {
+  gCSSProperties["font-palette"] = {
+    domProp: "fontPalette",
+    inherited: true,
     type: CSS_TYPE_LONGHAND,
-    initial_values: ["border-box"],
-    other_values: ["fill-box", "view-box"],
-    invalid_values: ["content-box", "padding-box", "stroke-box", "margin-box"],
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    initial_values: ["normal"],
+    other_values: ["light", "dark", "--custom"],
+    invalid_values: ["custom"],
   };
 }
 
-var isGridTemplateSubgridValueEnabled = IsCSSPropertyPrefEnabled(
-  "layout.css.grid-template-subgrid-value.enabled"
-);
+if (IsCSSPropertyPrefEnabled("layout.css.font-variant-emoji.enabled")) {
+  gCSSProperties["font"].subproperties.push("font-variant-emoji");
+  gCSSProperties["font-variant"].subproperties.push("font-variant-emoji");
+  gCSSProperties["font-variant-emoji"] = {
+    domProp: "fontVariantEmoji",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_marker: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    initial_values: ["normal"],
+    other_values: ["text", "emoji", "unicode"],
+    invalid_values: [
+      "none",
+      "auto",
+      "text emoji",
+      "auto text",
+      "normal, unicode",
+    ],
+  };
+}
 
 var isGridTemplateMasonryValueEnabled = IsCSSPropertyPrefEnabled(
   "layout.css.grid-template-masonry-value.enabled"
@@ -11846,14 +12395,6 @@ if (isGridTemplateMasonryValueEnabled) {
     other_values: ["pack ordered", "ordered next", "next definite-first"],
     invalid_values: ["auto", "none", "10px", "row", "dense"],
   };
-
-  let alignTracks = { ...gCSSProperties["align-content"] };
-  alignTracks.domProp = "alignTracks";
-  gCSSProperties["align-tracks"] = alignTracks;
-
-  let justifyTracks = { ...gCSSProperties["justify-content"] };
-  justifyTracks.domProp = "justifyTracks";
-  gCSSProperties["justify-tracks"] = justifyTracks;
 }
 
 gCSSProperties["display"].other_values.push("grid", "inline-grid");
@@ -11969,6 +12510,22 @@ gCSSProperties["grid-template-columns"] = {
     "fit-content(1px) 1fr",
     "[a] fit-content(calc(1px - 99%)) [b]",
     "[a] fit-content(10%) [b c] fit-content(1em)",
+    // See https://bugzilla.mozilla.org/show_bug.cgi?id=981300
+    "[none subgrid min-content max-content foo] 40px",
+    "subgrid",
+    "subgrid [] [foo bar]",
+    "subgrid repeat(1, [])",
+    "subgrid Repeat(4, [a] [b c] [] [d])",
+    "subgrid repeat(auto-fill, [])",
+    "subgrid repeat(Auto-fill, [a b c]) [a] []",
+    "subgrid [x] repeat( Auto-fill, [a b c]) []",
+    "subgrid [x] repeat( auto-fill , [a b] [c]) [y]",
+    "subgrid repeat(auto-fill, [a] [b] [c]) [d]",
+    "subgrid repeat(Auto-fill, [a] [b c] [] [d])",
+    "subgrid [x y] [x] repeat(auto-fill, [a b] [c] [d] [d]) [x] [x]",
+    "subgrid [x] repeat(auto-fill, []) [y z]",
+    "subgrid [x] repeat(auto-fill, [y]) [z] [] repeat(2, [a] [b]) [y] []",
+    "subgrid [x] repeat(auto-fill, []) [x y] [z] [] []",
   ],
   invalid_values: [
     "",
@@ -12033,30 +12590,6 @@ gCSSProperties["grid-template-columns"] = {
     "fit-content(min-content)",
     "fit-content(1px) repeat(auto-fit, 1px)",
     "fit-content(1px) repeat(auto-fill, 1px)",
-  ],
-  unbalanced_values: ["(foo] 40px"],
-};
-if (isGridTemplateSubgridValueEnabled) {
-  gCSSProperties["grid-template-columns"].other_values.push(
-    // See https://bugzilla.mozilla.org/show_bug.cgi?id=981300
-    "[none subgrid min-content max-content foo] 40px",
-
-    "subgrid",
-    "subgrid [] [foo bar]",
-    "subgrid repeat(1, [])",
-    "subgrid Repeat(4, [a] [b c] [] [d])",
-    "subgrid repeat(auto-fill, [])",
-    "subgrid repeat(Auto-fill, [a b c]) [a] []",
-    "subgrid [x] repeat( Auto-fill, [a b c]) []",
-    "subgrid [x] repeat( auto-fill , [a b] [c]) [y]",
-    "subgrid repeat(auto-fill, [a] [b] [c]) [d]",
-    "subgrid repeat(Auto-fill, [a] [b c] [] [d])",
-    "subgrid [x y] [x] repeat(auto-fill, [a b] [c] [d] [d]) [x] [x]",
-    "subgrid [x] repeat(auto-fill, []) [y z]",
-    "subgrid [x] repeat(auto-fill, [y]) [z] [] repeat(2, [a] [b]) [y] []",
-    "subgrid [x] repeat(auto-fill, []) [x y] [z] [] []"
-  );
-  gCSSProperties["grid-template-columns"].invalid_values.push(
     "subgrid [inherit]",
     "subgrid [initial]",
     "subgrid [unset]",
@@ -12090,9 +12623,10 @@ if (isGridTemplateSubgridValueEnabled) {
     "subgrid [a] repeat(auto-fit,[])",
     "subgrid repeat(auto-fill, 1px)",
     "subgrid repeat(auto-fill, 1px [])",
-    "subgrid repeat(auto-fill, []) repeat(auto-fill, [])"
-  );
-}
+    "subgrid repeat(auto-fill, []) repeat(auto-fill, [])",
+  ],
+  unbalanced_values: ["(foo] 40px"],
+};
 if (isGridTemplateMasonryValueEnabled) {
   gCSSProperties["grid-template-columns"].other_values.push("masonry");
   gCSSProperties["grid-template-columns"].invalid_values.push(
@@ -12121,8 +12655,6 @@ gCSSProperties["grid-template-areas"] = {
   type: CSS_TYPE_LONGHAND,
   initial_values: ["none"],
   other_values: [
-    "''",
-    "'' ''",
     "'1a-é_ .' \"b .\"",
     "' Z\t\\aZ' 'Z Z'",
     " '. . a b'  '. .a b' ",
@@ -12133,6 +12665,9 @@ gCSSProperties["grid-template-areas"] = {
     "'.. ..' '.. ...'",
   ],
   invalid_values: [
+    "''",
+    "' '",
+    "'' ''",
     "'a b' 'a/b'",
     "'a . a'",
     "'. a a' 'a a a'",
@@ -12167,6 +12702,13 @@ gCSSProperties["grid-template"] = {
     "[bar] 'fizz' 100px / [foo] 40px",
     "[bar] 'fizz' 100px [buzz] / [foo] 40px",
     "[bar] 'fizz' 100px [buzz] \n [a] '.' 200px [b] / [foo] 40px",
+    "subgrid / subgrid",
+    "subgrid/40px 20px",
+    "subgrid [foo] [] [bar baz] / 40px 20px",
+    "40px 20px/subgrid",
+    "40px 20px/subgrid  [foo] [] repeat(3, [a] [b]) [bar baz]",
+    "subgrid/subgrid",
+    "subgrid [foo] [] [bar baz]/subgrid [foo] [] [bar baz]",
   ],
   invalid_values: [
     "'fizz' / repeat(1, 100px)",
@@ -12175,25 +12717,12 @@ gCSSProperties["grid-template"] = {
     "[fizz] [buzz] 100px / 40px",
     "[fizz] [buzz] 'foo' / 40px",
     "'foo' / none",
-  ],
-};
-if (isGridTemplateSubgridValueEnabled) {
-  gCSSProperties["grid-template"].other_values.push(
-    "subgrid / subgrid",
-    "subgrid/40px 20px",
-    "subgrid [foo] [] [bar baz] / 40px 20px",
-    "40px 20px/subgrid",
-    "40px 20px/subgrid  [foo] [] repeat(3, [a] [b]) [bar baz]",
-    "subgrid/subgrid",
-    "subgrid [foo] [] [bar baz]/subgrid [foo] [] [bar baz]"
-  );
-  gCSSProperties["grid-template"].invalid_values.push(
     "subgrid",
     "subgrid []",
     "subgrid [] / 'fizz'",
-    "subgrid / 'fizz'"
-  );
-}
+    "subgrid / 'fizz'",
+  ],
+};
 if (isGridTemplateMasonryValueEnabled) {
   gCSSProperties["grid-template"].other_values.push(
     "masonry / subgrid",
@@ -12331,14 +12860,14 @@ gCSSProperties["grid-row-end"] = {
 // The grid-column and grid-row shorthands take values of the form
 //   <grid-line> [ / <grid-line> ]?
 var gridColumnRowOtherValues = [].concat(gridLineOtherValues);
-gridLineOtherValues.concat(["auto"]).forEach(function(val) {
+gridLineOtherValues.concat(["auto"]).forEach(function (val) {
   gridColumnRowOtherValues.push(" foo / " + val);
   gridColumnRowOtherValues.push(val + "/2");
 });
 var gridColumnRowInvalidValues = ["foo, bar", "foo / bar / baz"].concat(
   gridLineInvalidValues
 );
-gridLineInvalidValues.forEach(function(val) {
+gridLineInvalidValues.forEach(function (val) {
   gridColumnRowInvalidValues.push("span 3 / " + val);
   gridColumnRowInvalidValues.push(val + " / foo");
 });
@@ -12362,7 +12891,7 @@ gCSSProperties["grid-row"] = {
 };
 
 var gridAreaOtherValues = gridLineOtherValues.slice();
-gridLineOtherValues.forEach(function(val) {
+gridLineOtherValues.forEach(function (val) {
   gridAreaOtherValues.push("foo / " + val);
   gridAreaOtherValues.push(val + "/2/3");
   gridAreaOtherValues.push("foo / bar / " + val + " / baz");
@@ -12375,7 +12904,7 @@ var gridAreaInvalidValues = [
   "foo / bar / inherit / baz",
   "foo / bar / baz / unset",
 ].concat(gridLineInvalidValues);
-gridLineInvalidValues.forEach(function(val) {
+gridLineInvalidValues.forEach(function (val) {
   gridAreaInvalidValues.push("foo / " + val);
   gridAreaInvalidValues.push("foo / bar / " + val);
   gridAreaInvalidValues.push("foo / 4 / bar / " + val);
@@ -12553,8 +13082,21 @@ if (IsCSSPropertyPrefEnabled("layout.css.osx-font-smoothing.enabled")) {
     applies_to_cue: true,
     applies_to_marker: true,
     initial_values: ["auto"],
-    other_values: ["grayscale"],
-    invalid_values: ["none", "subpixel-antialiased", "antialiased"],
+    other_values: ["grayscale", "subpixel-antialiased", "antialiased"],
+    invalid_values: ["none"],
+  };
+
+  gCSSProperties["-webkit-font-smoothing"] = {
+    domProp: "webkitFontSmoothing",
+    inherited: true,
+    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+    applies_to_first_letter: true,
+    applies_to_first_line: true,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    applies_to_marker: true,
+    alias_for: "-moz-osx-font-smoothing",
+    subproperties: ["-moz-osx-font-smoothing"],
   };
 }
 
@@ -12663,41 +13205,6 @@ if (IsCSSPropertyPrefEnabled("layout.css.overscroll-behavior.enabled")) {
   };
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.offset-logical-properties.enabled")) {
-  gCSSProperties["offset-block-start"] = {
-    domProp: "offsetBlockStart",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    logical: true,
-    alias_for: "inset-block-start",
-    subproperties: ["inset-block-start"],
-  };
-  gCSSProperties["offset-block-end"] = {
-    domProp: "offsetBlockEnd",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    logical: true,
-    alias_for: "inset-block-end",
-    subproperties: ["inset-block-end"],
-  };
-  gCSSProperties["offset-inline-start"] = {
-    domProp: "offsetInlineStart",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    logical: true,
-    alias_for: "inset-inline-start",
-    subproperties: ["inset-inline-start"],
-  };
-  gCSSProperties["offset-inline-end"] = {
-    domProp: "offsetInlineEnd",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    logical: true,
-    alias_for: "inset-inline-end",
-    subproperties: ["inset-inline-end"],
-  };
-}
-
 {
   const patterns = {
     background: [
@@ -12715,12 +13222,12 @@ if (IsCSSPropertyPrefEnabled("layout.css.offset-logical-properties.enabled")) {
   for (const prop of ["background", "mask"]) {
     let i = 0;
     const p = patterns[prop];
-    for (const v of invalidGradientAndElementValues) {
+    for (const v of invalidNonUrlImageValues) {
       gCSSProperties[prop].invalid_values.push(
         p[i++ % p.length].replace("{}", v)
       );
     }
-    for (const v of validGradientAndElementValues) {
+    for (const v of validNonUrlImageValues) {
       gCSSProperties[prop].other_values.push(
         p[i++ % p.length].replace("{}", v)
       );
@@ -12730,14 +13237,263 @@ if (IsCSSPropertyPrefEnabled("layout.css.offset-logical-properties.enabled")) {
 
 gCSSProperties["display"].other_values.push("flow-root");
 
-if (IsCSSPropertyPrefEnabled("layout.css.webkit-line-clamp.enabled")) {
-  gCSSProperties["-webkit-line-clamp"] = {
-    domProp: "webkitLineClamp",
+gCSSProperties["hyphenate-character"] = {
+  domProp: "hyphenateCharacter",
+  inherited: true,
+  type: CSS_TYPE_LONGHAND,
+  applies_to_first_letter: true,
+  applies_to_first_line: true,
+  applies_to_placeholder: true,
+  initial_values: ["auto"],
+  other_values: ['"="', '"/-/"', '"\1400"', '""'],
+  invalid_values: ["none", "auto auto", "1400", "U+1400"],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.content-visibility.enabled")) {
+  gCSSProperties["content-visibility"] = {
+    domProp: "contentVisibility",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["visible"],
+    other_values: ["auto", "hidden"],
+    invalid_values: [
+      "invisible",
+      "partially-visible",
+      "auto auto",
+      "visible hidden",
+    ],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.contain-intrinsic-size.enabled")) {
+  gCSSProperties["contain-intrinsic-width"] = {
+    domProp: "containIntrinsicWidth",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["none"],
-    other_values: ["1", "2"],
-    invalid_values: ["auto", "0", "-1"],
+    other_values: ["1em", "1px", "auto 1px", "auto none"],
+    invalid_values: ["auto auto", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-height"] = {
+    domProp: "containIntrinsicHeight",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px", "auto none"],
+    invalid_values: ["auto auto", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-block-size"] = {
+    domProp: "containIntrinsicBlockSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px", "auto none"],
+    invalid_values: ["auto auto", "auto", "-1px"],
+  };
+  gCSSProperties["contain-intrinsic-inline-size"] = {
+    domProp: "containIntrinsicInlineSize",
+    inherited: false,
+    logical: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["1em", "1px", "auto 1px", "auto none"],
+    invalid_values: ["auto auto", "auto", "-1px"],
+  };
+
+  gCSSProperties["contain-intrinsic-size"] = {
+    domProp: "containIntrinsicSize",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["contain-intrinsic-width", "contain-intrinsic-height"],
+    initial_values: ["none"],
+    other_values: ["1em 1em", "1px 1px", "auto 1px auto 1px", "1px auto 1px"],
+    invalid_values: ["auto auto", "-1px -1px", "1px, auto none"],
+  };
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.anchor-positioning.enabled")) {
+  gCSSProperties["anchor-name"] = {
+    domProp: "anchorName",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: ["--foo", "--foo, --baz", "--foo,--baz", "--foo ,--baz"],
+    invalid_values: [
+      "--foo --bar",
+      "foo",
+      "none bar",
+      "none --baz",
+      "--foo bar",
+      ",--foo",
+      "--foo,",
+    ],
+  };
+
+  gCSSProperties["anchor-scope"] = {
+    domProp: "anchorScope",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "all",
+      "--foo",
+      "--foo, --baz",
+      "--foo,--baz",
+      "--foo ,--baz",
+    ],
+    invalid_values: [
+      "all, --foo",
+      "--foo, all",
+      "--foo --bar",
+      "foo",
+      "none bar",
+      "none --baz",
+      "--foo bar",
+      ",--foo",
+      "--foo,",
+    ],
+  };
+
+  gCSSProperties["inset-area"] = {
+    domProp: "insetArea",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "center",
+      "span-all",
+      "left",
+      "right",
+      "span-left",
+      "span-right",
+      "x-start",
+      "x-end",
+      "span-x-start",
+      "span-x-end",
+      "x-self-start",
+      "x-self-end",
+      "span-x-self-start",
+      "span-x-self-end",
+      "top",
+      "bottom",
+      "span-top",
+      "span-bottom",
+      "y-start",
+      "y-end",
+      "span-y-start",
+      "span-y-end",
+      "y-self-start",
+      "y-self-end",
+      "span-y-self-start",
+      "span-y-self-end",
+      "block-start",
+      "block-end",
+      "span-block-start",
+      "span-block-end",
+      "inline-start",
+      "inline-end",
+      "span-inline-start",
+      "span-inline-end",
+      "self-block-start",
+      "self-block-end",
+      "span-self-block-start",
+      "span-self-block-end",
+      "self-inline-start",
+      "self-inline-end",
+      "span-self-inline-start",
+      "span-self-inline-end",
+      "start",
+      "end",
+      "span-start",
+      "span-end",
+      "self-start",
+      "self-end",
+      "span-self-start",
+      "span-self-end",
+      "center span-all",
+      "left center",
+      "span-left bottom",
+      "span-block-end inline-start",
+      "span-inline-start block-end",
+      "self-block-end span-self-inline-start",
+      "start center",
+      "span-start span-end",
+      "self-end span-self-start",
+    ],
+    invalid_values: [
+      "auto",
+      "none left",
+      "left self-top",
+      "right block-end",
+      "top self-end",
+      "y-self-end x-end",
+      "inline-start self-block-end",
+      "span-self-inline-start start",
+      "end span-self-start",
+    ],
+  };
+
+  gCSSProperties["position-anchor"] = {
+    domProp: "positionAnchor",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: ["--foo"],
+    invalid_values: ["none", "--foo, auto", "auto, --bar", "foo"],
+  };
+
+  gCSSProperties["position-try-options"] = {
+    domProp: "positionTryOptions",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "--foo",
+      "flip-block",
+      "flip-inline",
+      "flip-start",
+      "left",
+      "span-y-start",
+      "span-block-start inline-end",
+      "span-all self-block-end",
+      "end span-start",
+      "center span-all",
+    ],
+    invalid_values: [
+      "foo",
+      "none none",
+      "span-y-start self-block-end",
+      "flip-block flip-start",
+    ],
+  };
+
+  gCSSProperties["position-try-order"] = {
+    domProp: "positionTryOrder",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["normal"],
+    other_values: [
+      "most-width",
+      "most-heigh",
+      "most-block-size",
+      "most-inline-size",
+    ],
+    invalid_values: ["auto", "none", "foo"],
+  };
+
+  gCSSProperties["position-visibility"] = {
+    domProp: "positionVisibility",
+    inherited: false,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["always"],
+    other_values: ["anchors-valid", "anchors-visible", "no-overflow"],
+    invalid_values: [
+      "none",
+      "auto",
+      "always anchors-valid",
+      "anchors-visible always",
+    ],
   };
 }
 
@@ -12749,7 +13505,7 @@ if (false) {
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["default"],
-    other_values: ["none", "menu", "tooltip", "sheet"],
+    other_values: ["none", "menu", "tooltip", "sheet", "cliprounded"],
     invalid_values: [],
   };
 
@@ -12986,204 +13742,63 @@ if (false) {
       "2px",
     ],
   };
-
-  gCSSProperties["-moz-font-smoothing-background-color"] = {
-    // domProp: "MozFontSmoothingBackgroundColor",
-    inherited: true,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["transparent"],
-    other_values: ["green", "#fc3"],
-    invalid_values: ["000000", "ff00ff"],
-  };
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.scrollbar-color.enabled")) {
-  gCSSProperties["scrollbar-color"] = {
-    domProp: "scrollbarColor",
-    inherited: true,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: ["red green", "blue yellow", "#ffff00 white"],
-    invalid_values: ["ffff00 red", "auto red", "red auto", "green"],
-  };
+gCSSProperties["scrollbar-color"] = {
+  domProp: "scrollbarColor",
+  inherited: true,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: ["red green", "blue yellow", "#ffff00 white"],
+  invalid_values: ["ffff00 red", "auto red", "red auto", "green"],
+};
+
+gCSSProperties["scrollbar-width"] = {
+  domProp: "scrollbarWidth",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: ["none", "thin"],
+  invalid_values: ["1px"],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.motion-path-url.enabled")) {
+  gCSSProperties["offset-path"]["other_values"].push("url(#svgPath)");
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.scrollbar-width.enabled")) {
-  gCSSProperties["scrollbar-width"] = {
-    domProp: "scrollbarWidth",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: ["none", "thin"],
-    invalid_values: ["1px"],
-  };
-}
+{
+  let linear_function_other_values = [
+    "linear(0, 1)",
+    "linear(0 0% 50%, 1 50% 100%)",
+  ];
 
-if (IsCSSPropertyPrefEnabled("layout.css.motion-path.enabled")) {
-  gCSSProperties["offset"] = {
-    domProp: "offset",
-    inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    subproperties: [
-      "offset-path",
-      "offset-distance",
-      "offset-rotate",
-      "offset-anchor",
-    ],
-    initial_values: ["none"],
-    other_values: [
-      "none 30deg reverse",
-      "none 50px reverse 30deg",
-      "none calc(10px + 20%) auto",
-      "none reverse",
-      "none / left center",
-      "path('M 0 0 H 1') -200% auto",
-      "path('M 0 0 H 1') -200%",
-      "path('M 0 0 H 1') 50px",
-      "path('M 0 0 H 1') auto",
-      "path('M 0 0 H 1') reverse 30deg 50px",
-      "path('M 0 0 H 1')",
-      "path('m 20 0 h 100') -7rad 8px / auto",
-      "path('m 0 30 v 100') -7rad 8px / left top",
-      "path('m 0 0 h 100') -7rad 8px",
-      "path('M 0 0 H 100') 100px 0deg",
-    ],
-    invalid_values: [
-      "100px 0deg path('m 0 0 h 100')",
-      "30deg",
-      "auto 30deg 100px",
-      "auto / none",
-      "none /",
-      "none / 100px 20px 30deg",
-      "path('M 20 30 A 60 70 80') bottom",
-      "path('M 20 30 A 60 70 80') bottom top",
-      "path('M 20 30 A 60 70 80') 100px 200px",
-      "path('M 20 30 A 60 70 80') reverse auto",
-      "path('M 20 30 A 60 70 80') reverse 10px 30deg",
-      "path('M 20 30 A 60 70 80') /",
-    ],
-  };
-
-  gCSSProperties["offset-path"] = {
-    domProp: "offsetPath",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["none"],
-    other_values: [
-      "path('')",
-      "path(' ')",
-      "path('M 10 10 20 20 H 90 V 90 Z')",
-      "path('M10 10 20,20H90V90Z')",
-      "path('M 10 10 C 20 20, 40 20, 50 10')",
-      "path('M 10 80 C 40 10, 65 10, 95 80 S 1.5e2 150, 180 80')",
-      "path('M 10 80 Q 95 10 180 80')",
-      "path('M 10 80 Q 52.5 10, 95 80 T 180 80')",
-      "path('M 80 80 A 45 45, 0, 0, 0, 1.25e2 1.25e2 L 125 80 Z')",
-      "path('M100-200h20z')",
-      "path('M10,10L20.6.5z')",
-      "ray(45deg closest-side)",
-      "ray(0rad farthest-side)",
-      "ray(0.5turn closest-corner contain)",
-      "ray(200grad farthest-corner)",
-      "ray(sides 180deg)",
-      "ray(contain farthest-side 180deg)",
-      "ray(calc(180deg - 45deg) farthest-side)",
-    ],
-    invalid_values: [
-      "path()",
-      "path(a)",
-      "path('M 10 Z')",
-      "path('M 10-10 20')",
-      "path('M 10 10 C 20 20 40 20')",
-      "ray(0deg)",
-      "ray(closest-side)",
-      "ray(0deg, closest-side)",
-      "ray(contain 0deg closest-side contain)",
-    ],
-  };
-
-  gCSSProperties["offset-distance"] = {
-    domProp: "offsetDistance",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["0"],
-    other_values: ["10px", "10%", "190%", "-280%", "calc(30px + 40%)"],
-    invalid_values: ["none", "45deg"],
-  };
-
-  gCSSProperties["offset-rotate"] = {
-    domProp: "offsetRotate",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: ["reverse", "0deg", "0rad reverse", "-45deg", "5turn auto"],
-    invalid_values: ["none", "10px", "reverse 0deg reverse", "reverse auto"],
-  };
-
-  gCSSProperties["offset-anchor"] = {
-    domProp: "offsetAnchor",
-    inherited: false,
-    type: CSS_TYPE_LONGHAND,
-    initial_values: ["auto"],
-    other_values: [
-      "left bottom",
-      "center center",
-      "calc(20% + 10px) center",
-      "right 30em",
-      "10px 20%",
-      "left -10px top -20%",
-      "right 10% bottom 20em",
-    ],
-    invalid_values: ["none", "10deg", "left 10% top"],
-  };
-}
-
-if (IsCSSPropertyPrefEnabled("layout.css.clip-path-path.enabled")) {
-  gCSSProperties["clip-path"].other_values.push(
-    "path(evenodd, '')",
-    "path(nonzero, 'M 10 10 h 100 v 100 h-100 v-100 z')",
-    "path(evenodd, 'M 10 10 h 100 v 100 h-100 v-100 z')",
-    "path('M10,30A20,20 0,0,1 50,30A20,20 0,0,1 90,30Q90,60 50,90Q10,60 10,30z')"
-  );
-
-  gCSSProperties["clip-path"].invalid_values.push(
-    "path(nonzero)",
-    "path(abs, 'M 10 10 L 10 10 z')"
-  );
-}
-
-if (IsCSSPropertyPrefEnabled("layout.css.step-position-jump.enabled")) {
+  let linear_function_invalid_values = [
+    "linear()",
+    "linear(0.5)",
+    "linear(0% 0 100%)",
+    "linear(0,)",
+  ];
   gCSSProperties["animation-timing-function"].other_values.push(
-    "steps(1, jump-start)",
-    "steps(1, jump-end)",
-    "steps(2, jump-none)",
-    "steps(1, jump-both)"
+    ...linear_function_other_values
   );
   gCSSProperties["animation-timing-function"].invalid_values.push(
-    "steps(0, jump-start)",
-    "steps(0, jump-end)",
-    "steps(1, jump-none)",
-    "steps(0, jump-both)"
+    ...linear_function_invalid_values
   );
 
   gCSSProperties["transition-timing-function"].other_values.push(
-    "steps(1, jump-start)",
-    "steps(1, jump-end)",
-    "steps(2, jump-none)",
-    "steps(1, jump-both)"
+    ...linear_function_other_values
   );
   gCSSProperties["transition-timing-function"].invalid_values.push(
-    "steps(0, jump-start)",
-    "steps(0, jump-end)",
-    "steps(1, jump-none)",
-    "steps(0, jump-both)"
+    ...linear_function_invalid_values
+  );
+
+  gCSSProperties["animation"].other_values.push(
+    "1s 2s linear(0, 1) bounce",
+    "4s linear(0, 0.5 25% 75%, 1 100% 100%)"
   );
 }
 
-if (
-  IsCSSPropertyPrefEnabled("layout.css.backdrop-filter.enabled") &&
-  IsWebRenderEnabled()
-) {
+if (IsCSSPropertyPrefEnabled("layout.css.backdrop-filter.enabled")) {
   gCSSProperties["backdrop-filter"] = {
     domProp: "backdropFilter",
     inherited: false,
@@ -13194,131 +13809,514 @@ if (
   };
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.zoom-transform-hack.enabled")) {
-  gCSSProperties["zoom"] = {
-    domProp: "zoom",
-    inherited: false,
-    type: CSS_TYPE_LEGACY_SHORTHAND,
-    subproperties: ["transform", "transform-origin"],
-    initial_values: ["normal", "1.0", "0", "0%", "100%"],
-    other_values: ["10%", "2", "2.5"],
-    invalid_values: ["0 0", "foo", "10px"],
+gCSSProperties["math-depth"] = {
+  domProp: "mathDepth",
+  inherited: true,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["0"],
+  other_values: [
+    // auto-add cannot be tested here because it has no effect when the
+    // inherited math-style is equal to the default (normal).
+    "123",
+    "-123",
+    "add(123)",
+    "add(-123)",
+    "calc(1 + 2*3)",
+    "add(calc(4 - 2/3))",
+  ],
+  invalid_values: ["auto", "1,23", "1.23", "add(1,23)", "add(1.23)"],
+};
+
+gCSSProperties["math-style"] = {
+  domProp: "mathStyle",
+  inherited: true,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["normal"],
+  other_values: ["compact"],
+  invalid_values: [],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.forced-color-adjust.enabled")) {
+  gCSSProperties["forced-color-adjust"] = {
+    domProp: "forcedColorAdjust",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["auto"],
+    other_values: ["none"],
+    invalid_values: [],
   };
 }
 
-if (IsCSSPropertyPrefEnabled("layout.css.prefixes.columns")) {
-  gCSSProperties["-moz-columns"] = {
-    domProp: "MozColumns",
+if (IsCSSPropertyPrefEnabled("layout.css.animation-composition.enabled")) {
+  gCSSProperties["animation-composition"] = {
+    domProp: "animationComposition",
     inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    alias_for: "columns",
-    subproperties: ["column-count", "column-width"],
+    type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
+    initial_values: ["replace"],
+    other_values: [
+      "add",
+      "accumulate",
+      "replace, add",
+      "add, accumulate",
+      "replace, add, accumulate",
+    ],
+    invalid_values: ["all", "none"],
   };
+}
 
-  gCSSProperties["-moz-column-count"] = {
-    domProp: "MozColumnCount",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-count",
-    subproperties: ["column-count"],
-  };
+if (IsCSSPropertyPrefEnabled("layout.css.prefixes.animations")) {
+  Object.assign(gCSSProperties, {
+    "-moz-animation": {
+      domProp: "MozAnimation",
+      inherited: false,
+      type: CSS_TYPE_TRUE_SHORTHAND,
+      applies_to_marker: true,
+      alias_for: "animation",
+      subproperties: [
+        "animation-name",
+        "animation-duration",
+        "animation-timing-function",
+        "animation-delay",
+        "animation-direction",
+        "animation-fill-mode",
+        "animation-iteration-count",
+        "animation-play-state",
+      ],
+    },
+    "-moz-animation-delay": {
+      domProp: "MozAnimationDelay",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-delay",
+      subproperties: ["animation-delay"],
+    },
+    "-moz-animation-direction": {
+      domProp: "MozAnimationDirection",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-direction",
+      subproperties: ["animation-direction"],
+    },
+    "-moz-animation-duration": {
+      domProp: "MozAnimationDuration",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-duration",
+      subproperties: ["animation-duration"],
+    },
+    "-moz-animation-fill-mode": {
+      domProp: "MozAnimationFillMode",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-fill-mode",
+      subproperties: ["animation-fill-mode"],
+    },
+    "-moz-animation-iteration-count": {
+      domProp: "MozAnimationIterationCount",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-iteration-count",
+      subproperties: ["animation-iteration-count"],
+    },
+    "-moz-animation-name": {
+      domProp: "MozAnimationName",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-name",
+      subproperties: ["animation-name"],
+    },
+    "-moz-animation-play-state": {
+      domProp: "MozAnimationPlayState",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-play-state",
+      subproperties: ["animation-play-state"],
+    },
+    "-moz-animation-timing-function": {
+      domProp: "MozAnimationTimingFunction",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "animation-timing-function",
+      subproperties: ["animation-timing-function"],
+    },
+  });
+}
 
-  gCSSProperties["-moz-column-fill"] = {
-    domProp: "MozColumnFill",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-fill",
-    subproperties: ["column-fill"],
-  };
+if (IsCSSPropertyPrefEnabled("layout.css.scroll-driven-animations.enabled")) {
+  // Basically, web-platform-tests should cover most cases, so here we only
+  // put some basic test cases.
+  gCSSProperties["animation"].subproperties.push("animation-timeline");
+  gCSSProperties["animation"].initial_values.push(
+    "none none 0s 0s ease normal running 1.0 auto",
+    "none none auto"
+  );
+  gCSSProperties["animation"].other_values.push(
+    "none none 0s 0s cubic-bezier(0.25, 0.1, 0.25, 1.0) normal running 1.0 auto",
+    "bounce 1s linear 2s timeline",
+    "bounce 1s 2s linear none",
+    "bounce timeline",
+    "2s, 1s bounce timeline",
+    "1s bounce timeline, 2s",
+    "1s bounce none, 2s none auto"
+  );
 
-  gCSSProperties["-moz-column-gap"] = {
-    domProp: "MozColumnGap",
-    inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-gap",
-    subproperties: ["column-gap"],
-  };
+  gCSSProperties["-moz-animation"].subproperties.push("animation-timeline");
+  gCSSProperties["-webkit-animation"].subproperties.push("animation-timeline");
 
-  gCSSProperties["-moz-column-rule"] = {
-    domProp: "MozColumnRule",
+  gCSSProperties["animation-timeline"] = {
+    domProp: "animationTimeline",
     inherited: false,
-    type: CSS_TYPE_TRUE_SHORTHAND,
-    alias_for: "column-rule",
-    subproperties: [
-      "column-rule-width",
-      "column-rule-style",
-      "column-rule-color",
+    type: CSS_TYPE_LONGHAND,
+    applies_to_marker: true,
+    initial_values: ["auto"],
+    other_values: [
+      "none",
+      "all",
+      "ball",
+      "mall",
+      "color",
+      "bounce, bubble, opacity",
+      "foobar",
+      "\\32bounce",
+      "-bounce",
+      "-\\32bounce",
+      "\\32 0bounce",
+      "-\\32 0bounce",
+      "\\2bounce",
+      "-\\2bounce",
+      "scroll()",
+      "scroll(block)",
+      "scroll(inline)",
+      "scroll(horizontal)",
+      "scroll(vertical)",
+      "scroll(root)",
+      "scroll(nearest)",
+      "scroll(inline nearest)",
+      "scroll(vertical root)",
+      "scroll(root horizontal)",
+      "view()",
+      "view(inline)",
+      "view(auto)",
+      "view(auto 1px)",
+      "view(inline auto)",
+      "view(vertical auto auto)",
+      "view(horizontal 1px 1%)",
+      "view(1px 1% block)",
+    ],
+    invalid_values: [
+      "bounce, initial",
+      "initial, bounce",
+      "bounce, inherit",
+      "inherit, bounce",
+      "bounce, unset",
+      "unset, bounce",
     ],
   };
 
-  gCSSProperties["-moz-column-rule-width"] = {
-    domProp: "MozColumnRuleWidth",
+  gCSSProperties["scroll-timeline-name"] = {
+    domProp: "scrollTimelineName",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-rule-width",
-    subproperties: ["column-rule-width"],
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "all",
+      "auto",
+      "ball",
+      "mall",
+      "color",
+      "foobar",
+      "\\32bounce",
+      "-bounce",
+      "-\\32bounce",
+      "\\32 0bounce",
+      "-\\32 0bounce",
+      "\\2bounce",
+      "-\\2bounce",
+    ],
+    invalid_values: ["abc bounce", "10px", "rgb(1, 2, 3)"],
   };
 
-  gCSSProperties["-moz-column-rule-style"] = {
-    domProp: "MozColumnRuleStyle",
+  gCSSProperties["scroll-timeline-axis"] = {
+    domProp: "scrollTimelineAxis",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-rule-style",
-    subproperties: ["column-rule-style"],
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["block"],
+    other_values: ["inline", "vertical", "horizontal"],
+    invalid_values: ["auto", "none", "abc"],
   };
 
-  gCSSProperties["-moz-column-rule-color"] = {
-    domProp: "MozColumnRuleColor",
+  gCSSProperties["scroll-timeline"] = {
+    domProp: "scrollTimeline",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-rule-color",
-    subproperties: ["column-rule-color"],
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["scroll-timeline-name", "scroll-timeline-axis"],
+    initial_values: ["none block", "none"],
+    other_values: [
+      "auto inline",
+      "bounce inline",
+      "bounce vertical",
+      "\\32bounce inline",
+      "-bounce block",
+      "\\32 0bounce vertical",
+      "-\\32 0bounce horizontal",
+      "a, b, c",
+      "a block, b inline, c vertical",
+    ],
+    invalid_values: ["", "bounce bounce", "horizontal a", "block abc"],
   };
 
-  gCSSProperties["-moz-column-span"] = {
-    domProp: "MozColumnSpan",
+  gCSSProperties["view-timeline-name"] = {
+    domProp: "viewTimelineName",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-span",
-    subproperties: ["column-span"],
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["none"],
+    other_values: [
+      "all",
+      "auto",
+      "ball",
+      "mall",
+      "color",
+      "foobar",
+      "\\32bounce",
+      "-bounce",
+      "-\\32bounce",
+      "\\32 0bounce",
+      "-\\32 0bounce",
+      "\\2bounce",
+      "-\\2bounce",
+      "bounce, abc",
+      "none, none",
+    ],
+    invalid_values: ["abc bounce", "10px", "rgb(1, 2, 3)"],
   };
 
-  gCSSProperties["-moz-column-width"] = {
-    domProp: "MozColumnWidth",
+  gCSSProperties["view-timeline-axis"] = {
+    domProp: "viewTimelineAxis",
     inherited: false,
-    type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
-    alias_for: "column-width",
-    subproperties: ["column-width"],
+    type: CSS_TYPE_LONGHAND,
+    initial_values: ["block"],
+    other_values: ["inline", "vertical", "horizontal", "inline, block"],
+    invalid_values: ["auto", "none", "abc", "inline block"],
   };
-}
 
-if (
-  !IsCSSPropertyPrefEnabled("layout.css.image-orientation.initial-from-image")
-) {
-  gCSSProperties["image-orientation"].initial_values = ["none"];
-  gCSSProperties["image-orientation"].other_values = ["from-image"];
-}
-
-if (IsCSSPropertyPrefEnabled("layout.css.aspect-ratio.enabled")) {
-  gCSSProperties["aspect-ratio"] = {
-    domProp: "aspectRatio",
+  gCSSProperties["view-timeline-inset"] = {
+    domProp: "viewTimelineInset",
     inherited: false,
     type: CSS_TYPE_LONGHAND,
     initial_values: ["auto"],
-    other_values: [
-      "1",
-      "1.0",
-      "1 / 2",
-      "1/2",
-      "16.2 / 9.5",
-      "1/0",
-      "0/1",
-      "0 / 0",
-      "auto 1",
-      "0 auto",
-    ],
-    invalid_values: ["none", "1 test", "1 / auto", "auto / 1"],
+    other_values: ["0px", "1%", "1px 1%", "0px 0%", "calc(0px) auto"],
+    invalid_values: ["none", "rgb(1, 2, 3)", "foo bar", "1px 2px 3px"],
   };
+
+  gCSSProperties["view-timeline"] = {
+    domProp: "viewTimeline",
+    inherited: false,
+    type: CSS_TYPE_TRUE_SHORTHAND,
+    subproperties: ["view-timeline-name", "view-timeline-axis"],
+    initial_values: ["none block", "none"],
+    other_values: [
+      "auto inline",
+      "bounce inline",
+      "bounce vertical",
+      "\\32bounce inline",
+      "-bounce block",
+      "\\32 0bounce vertical",
+      "-\\32 0bounce horizontal",
+      "a, b, c",
+      "a block, b inline, c vertical",
+    ],
+    invalid_values: ["", ",", "abc abc", "horizontal a", "block abc"],
+  };
+}
+
+gCSSProperties["scrollbar-gutter"] = {
+  domProp: "scrollbarGutter",
+  inherited: false,
+  type: CSS_TYPE_LONGHAND,
+  initial_values: ["auto"],
+  other_values: ["stable", "stable both-edges", "both-edges stable"],
+  invalid_values: [
+    "auto stable",
+    "auto both-edges",
+    "both-edges",
+    "stable mirror",
+    // The following values are from scrollbar-gutter extension in CSS
+    // Overflow 4 https://drafts.csswg.org/css-overflow-4/#sbg-ext.
+    "always",
+    "always both-edges",
+    "always force",
+    "always both-edges force",
+    "stable both-edges force",
+    "match-parent",
+  ],
+};
+
+if (IsCSSPropertyPrefEnabled("layout.css.text-wrap-balance.enabled")) {
+  gCSSProperties["text-wrap-style"] = {
+    domProp: "textWrapStyle",
+    inherited: true,
+    type: CSS_TYPE_LONGHAND,
+    applies_to_placeholder: true,
+    applies_to_cue: true,
+    applies_to_marker: true,
+    initial_values: ["auto"],
+    other_values: ["stable", "balance"],
+    invalid_values: ["wrap", "nowrap", "normal"],
+  };
+  gCSSProperties["text-wrap"].subproperties.push("text-wrap-style");
+  gCSSProperties["text-wrap"].other_values.push("stable");
+  gCSSProperties["text-wrap"].other_values.push("balance");
+  gCSSProperties["text-wrap"].other_values.push("wrap stable");
+  gCSSProperties["text-wrap"].other_values.push("nowrap balance");
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.prefixes.transforms")) {
+  Object.assign(gCSSProperties, {
+    "-moz-transform": {
+      domProp: "MozTransform",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "transform",
+      subproperties: ["transform"],
+    },
+    "-moz-transform-origin": {
+      domProp: "MozTransformOrigin",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "transform-origin",
+      subproperties: ["transform-origin"],
+    },
+    "-moz-perspective-origin": {
+      domProp: "MozPerspectiveOrigin",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "perspective-origin",
+      subproperties: ["perspective-origin"],
+    },
+    "-moz-perspective": {
+      domProp: "MozPerspective",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "perspective",
+      subproperties: ["perspective"],
+    },
+    "-moz-backface-visibility": {
+      domProp: "MozBackfaceVisibility",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "backface-visibility",
+      subproperties: ["backface-visibility"],
+    },
+    "-moz-transform-style": {
+      domProp: "MozTransformStyle",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      alias_for: "transform-style",
+      subproperties: ["transform-style"],
+    },
+  });
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.zoom.enabled")) {
+  Object.assign(gCSSProperties, {
+    zoom: {
+      domProp: "zoom",
+      inherited: false,
+      type: CSS_TYPE_LONGHAND,
+      initial_values: ["normal", "1", "100%", "0", "0%"],
+      other_values: ["1.5", "2", "150%", "200%"],
+      invalid_values: ["-1", "-40%"],
+    },
+  });
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.prefixes.transitions")) {
+  Object.assign(gCSSProperties, {
+    "-moz-transition": {
+      domProp: "MozTransition",
+      inherited: false,
+      type: CSS_TYPE_TRUE_SHORTHAND,
+      applies_to_marker: true,
+      alias_for: "transition",
+      subproperties: [
+        "transition-property",
+        "transition-duration",
+        "transition-timing-function",
+        "transition-delay",
+      ],
+    },
+    "-moz-transition-delay": {
+      domProp: "MozTransitionDelay",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "transition-delay",
+      subproperties: ["transition-delay"],
+    },
+    "-moz-transition-duration": {
+      domProp: "MozTransitionDuration",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "transition-duration",
+      subproperties: ["transition-duration"],
+    },
+    "-moz-transition-property": {
+      domProp: "MozTransitionProperty",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "transition-property",
+      subproperties: ["transition-property"],
+    },
+    "-moz-transition-timing-function": {
+      domProp: "MozTransitionTimingFunction",
+      inherited: false,
+      type: CSS_TYPE_SHORTHAND_AND_LONGHAND,
+      applies_to_marker: true,
+      alias_for: "transition-timing-function",
+      subproperties: ["transition-timing-function"],
+    },
+  });
+}
+
+if (IsCSSPropertyPrefEnabled("layout.css.transition-behavior.enabled")) {
+  Object.assign(gCSSProperties, {
+    "transition-behavior": {
+      domProp: "transitionBehavior",
+      inherited: false,
+      type: CSS_TYPE_LONGHAND,
+      applies_to_marker: true,
+      initial_values: ["normal"],
+      other_values: ["allow-discrete"],
+      invalid_values: ["none", "auto", "discrete"],
+    },
+  });
+
+  gCSSProperties["transition"].subproperties.push("transition-behavior");
+  gCSSProperties["transition"].initial_values.push("normal");
+  gCSSProperties["transition"].other_values.push(
+    "allow-discrete",
+    "width allow-discrete",
+    "1s allow-discrete",
+    "linear allow-discrete"
+  );
+  gCSSProperties["-webkit-transition"].subproperties.push(
+    "transition-behavior"
+  );
+
+  if (IsCSSPropertyPrefEnabled("layout.css.prefixes.transitions")) {
+    gCSSProperties["-moz-transition"].subproperties.push("transition-behavior");
+  }
 }
 
 // Copy aliased properties' fields from their alias targets. Keep this logic
@@ -13349,7 +14347,7 @@ for (var prop in gCSSProperties) {
         "prerequisites",
       ];
 
-      fieldsToCopy.forEach(function(fieldName) {
+      fieldsToCopy.forEach(function (fieldName) {
         // (Don't copy the field if the alias already has something there,
         // or if the aliased property doesn't have anything to copy.)
         if (!(fieldName in entry) && fieldName in aliasTargetEntry) {

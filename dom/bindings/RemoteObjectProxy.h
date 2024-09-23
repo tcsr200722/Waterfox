@@ -8,12 +8,12 @@
 #define mozilla_dom_RemoteObjectProxy_h
 
 #include "js/Proxy.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/dom/MaybeCrossOriginObject.h"
 #include "mozilla/dom/PrototypeList.h"
 #include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class BrowsingContext;
 
@@ -35,7 +35,7 @@ class RemoteObjectProxyBase : public js::BaseProxyHandler,
   // Standard internal methods
   bool getOwnPropertyDescriptor(
       JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
-      JS::MutableHandle<JS::PropertyDescriptor> aDesc) const override;
+      JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const override;
   bool ownPropertyKeys(JSContext* aCx, JS::Handle<JSObject*> aProxy,
                        JS::MutableHandleVector<jsid> aProps) const override;
   bool defineProperty(JSContext* aCx, JS::Handle<JSObject*> aProxy,
@@ -67,6 +67,10 @@ class RemoteObjectProxyBase : public js::BaseProxyHandler,
       JS::MutableHandleVector<jsid> aProps) const override;
   const char* className(JSContext* aCx,
                         JS::Handle<JSObject*> aProxy) const final;
+
+  // Cross origin objects like RemoteWindowProxy should not participate in
+  // private fields.
+  virtual bool throwOnPrivateField() const override { return true; }
 
   bool isCallable(JSObject* aObj) const final { return false; }
   bool isConstructor(JSObject* aObj) const final { return false; }
@@ -107,6 +111,9 @@ class RemoteObjectProxyBase : public js::BaseProxyHandler,
    * object was created, callers probably need to addref the native in that
    * case. aNewObjectCreated can be true even if aProxy is null, if something
    * failed after creating the object.
+   *
+   * If aTransplantTo is non-null, failure is assumed to be unrecoverable, so
+   * this will crash.
    */
   void GetOrCreateProxyObject(JSContext* aCx, void* aNative,
                               const JSClass* aClasp,
@@ -134,10 +141,10 @@ class RemoteObjectProxyBase : public js::BaseProxyHandler,
  * hash map in the JS compartment's private (@see
  * xpc::CompartmentPrivate::GetRemoteProxyMap).
  */
-template <class Native, JSPropertySpec* P, JSFunctionSpec* F>
+template <class Native, const CrossOriginProperties& P>
 class RemoteObjectProxy : public RemoteObjectProxyBase {
  public:
-  void finalize(JSFreeOp* aFop, JSObject* aProxy) const final {
+  void finalize(JS::GCContext* aGcx, JSObject* aProxy) const final {
     auto native = static_cast<Native*>(GetNative(aProxy));
     RefPtr<Native> self(dont_AddRef(native));
   }
@@ -160,7 +167,7 @@ class RemoteObjectProxy : public RemoteObjectProxyBase {
   bool EnsureHolder(JSContext* aCx, JS::Handle<JSObject*> aProxy,
                     JS::MutableHandle<JSObject*> aHolder) const final {
     return MaybeCrossOriginObjectMixins::EnsureHolder(
-        aCx, aProxy, /* slot = */ 0, P, F, aHolder);
+        aCx, aProxy, /* slot = */ 0, P, aHolder);
   }
 
   static const JSClass sClass;
@@ -195,7 +202,6 @@ inline bool IsRemoteObjectProxy(JSObject* aObj) {
  */
 BrowsingContext* GetBrowsingContext(JSObject* aProxy);
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_RemoteObjectProxy_h */

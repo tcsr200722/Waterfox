@@ -9,10 +9,13 @@
 
 #include "mozilla/HalTypes.h"
 
+class nsFrameLoader;
+
 namespace mozilla {
 namespace dom {
-class ContentParent;
 class BrowserParent;
+class CanonicalBrowsingContext;
+class ContentParent;
 }  // namespace dom
 
 /**
@@ -68,12 +71,21 @@ class ProcessPriorityManager final {
    */
   static bool CurrentProcessIsForeground();
 
-  static void TabActivityChanged(dom::BrowserParent* aBrowserParent,
-                                 bool aIsActive);
+  /**
+   * Updates the contents of mHighPriorityBrowserParents to keep track of
+   * the list of TabIds for this process that are high priority.
+   */
+  static void BrowserPriorityChanged(dom::CanonicalBrowsingContext* aBC,
+                                     bool aPriority);
+  static void BrowserPriorityChanged(dom::BrowserParent* aBrowserParent,
+                                     bool aPriority);
 
  private:
   ProcessPriorityManager();
-  DISALLOW_EVIL_CONSTRUCTORS(ProcessPriorityManager);
+  ProcessPriorityManager(const ProcessPriorityManager&) = delete;
+
+  const ProcessPriorityManager& operator=(const ProcessPriorityManager&) =
+      delete;
 };
 
 }  // namespace mozilla

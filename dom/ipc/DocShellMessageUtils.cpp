@@ -5,23 +5,22 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/DocShellMessageUtils.h"
+#include "mozilla/dom/DOMTypes.h"
+#include "mozilla/ipc/IPDLParamTraits.h"
 #include "nsSerializationHelper.h"
 
-namespace mozilla {
-namespace ipc {
+namespace IPC {
 
-void IPDLParamTraits<nsDocShellLoadState*>::Write(IPC::Message* aMsg,
-                                                  IProtocol* aActor,
-                                                  nsDocShellLoadState* aParam) {
+void ParamTraits<nsDocShellLoadState*>::Write(IPC::MessageWriter* aWriter,
+                                              nsDocShellLoadState* aParam) {
   MOZ_RELEASE_ASSERT(aParam);
-  WriteIPDLParam(aMsg, aActor, aParam->Serialize());
+  WriteParam(aWriter, aParam->Serialize(aWriter->GetActor()));
 }
 
-bool IPDLParamTraits<nsDocShellLoadState*>::Read(
-    const IPC::Message* aMsg, PickleIterator* aIter, IProtocol* aActor,
-    RefPtr<nsDocShellLoadState>* aResult) {
-  DocShellLoadStateInit loadState;
-  if (!ReadIPDLParam(aMsg, aIter, aActor, &loadState)) {
+bool ParamTraits<nsDocShellLoadState*>::Read(
+    IPC::MessageReader* aReader, RefPtr<nsDocShellLoadState>* aResult) {
+  mozilla::dom::DocShellLoadStateInit loadState;
+  if (!ReadParam(aReader, &loadState)) {
     return false;
   }
 
@@ -30,11 +29,18 @@ bool IPDLParamTraits<nsDocShellLoadState*>::Read(
   // for nsDocShellLoadState, but makes it clearer that the
   // DocShellLoadStateInit IPC object can't be clearly converted into a
   // nsDocShellLoadState.
-  MOZ_ASSERT(loadState.URI());
+  if (!loadState.URI()) {
+    MOZ_ASSERT_UNREACHABLE("no URI in load state from IPC");
+    return false;
+  }
 
-  *aResult = new nsDocShellLoadState(loadState);
-  return true;
+  bool readSuccess = false;
+  RefPtr result =
+      new nsDocShellLoadState(loadState, aReader->GetActor(), &readSuccess);
+  if (readSuccess) {
+    *aResult = result.forget();
+  }
+  return readSuccess;
 }
 
-}  // namespace ipc
-}  // namespace mozilla
+}  // namespace IPC

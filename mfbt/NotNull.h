@@ -75,7 +75,12 @@ namespace detail {
 template <typename T>
 struct CopyablePtr {
   T mPtr;
-  explicit CopyablePtr(T aPtr) : mPtr{std::move(aPtr)} {}
+
+  template <typename U>
+  explicit CopyablePtr(U&& aPtr) : mPtr{std::forward<U>(aPtr)} {}
+
+  template <typename U>
+  explicit CopyablePtr(CopyablePtr<U> aPtr) : mPtr{std::move(aPtr.mPtr)} {}
 };
 }  // namespace detail
 
@@ -88,6 +93,7 @@ class MovingNotNull;
 // - NotNull<char*>
 // - NotNull<RefPtr<Event>>
 // - NotNull<nsCOMPtr<Event>>
+// - NotNull<UniquePtr<Pointee>>
 //
 // NotNull has the following notable properties.
 //
@@ -110,8 +116,9 @@ class MovingNotNull;
 //   boolean context, which eliminates the possibility of unnecessary null
 //   checks.
 //
-// NotNull currently doesn't work with UniquePtr. See
-// https://github.com/Microsoft/GSL/issues/89 for some discussion.
+// - It is not movable, but copyable if the base pointer type is copyable. It
+//   may be used together with MovingNotNull to avoid unnecessary copies or when
+//   the base pointer type is not copyable (such as UniquePtr<T>).
 //
 template <typename T>
 class NotNull {
@@ -140,13 +147,15 @@ class NotNull {
   NotNull() = delete;
 
   // Construct/assign from another NotNull with a compatible base pointer type.
-  template <typename U>
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<const U&, T>>>
   constexpr MOZ_IMPLICIT NotNull(const NotNull<U>& aOther)
       : mBasePtr(aOther.mBasePtr) {}
 
-  template <typename U>
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<U&&, T>>>
   constexpr MOZ_IMPLICIT NotNull(MovingNotNull<U>&& aOther)
-      : mBasePtr(std::move(aOther)) {}
+      : mBasePtr(std::move(aOther).unwrapBasePtr()) {}
 
   // Disallow null checks, which are unnecessary for this type.
   explicit operator bool() const = delete;
@@ -157,6 +166,24 @@ class NotNull {
 
   // Implicit conversion to a base pointer. Preferable to get().
   constexpr operator const T&() const { return get(); }
+
+  // Implicit conversion to a raw pointer from const lvalue-reference if
+  // supported by the base pointer (for RefPtr<T> -> T* compatibility).
+  template <typename U,
+            std::enable_if_t<!std::is_pointer_v<T> &&
+                                 std::is_convertible_v<const T&, U*>,
+                             int> = 0>
+  constexpr operator U*() const& {
+    return get();
+  }
+
+  // Don't allow implicit conversions to raw pointers from rvalue-references.
+  template <typename U,
+            std::enable_if_t<!std::is_pointer_v<T> &&
+                                 std::is_convertible_v<const T&, U*> &&
+                                 !std::is_convertible_v<const T&&, U*>,
+                             int> = 0>
+  constexpr operator U*() const&& = delete;
 
   // Dereference operators.
   constexpr auto* operator->() const MOZ_NONNULL_RETURN {
@@ -197,7 +224,8 @@ class NotNull<T*> {
   NotNull() = delete;
 
   // Construct/assign from another NotNull with a compatible base pointer type.
-  template <typename U>
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<const U&, T*>>>
   constexpr MOZ_IMPLICIT NotNull(const NotNull<U>& aOther)
       : mBasePtr(aOther.get()) {
     static_assert(sizeof(T*) == sizeof(NotNull<T*>),
@@ -206,7 +234,8 @@ class NotNull<T*> {
                   "mBasePtr must have zero offset.");
   }
 
-  template <typename U>
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<U&&, T*>>>
   constexpr MOZ_IMPLICIT NotNull(MovingNotNull<U>&& aOther)
       : mBasePtr(NotNull{std::move(aOther)}) {}
 
@@ -289,10 +318,16 @@ class MOZ_NON_AUTOABLE MovingNotNull {
  public:
   MovingNotNull() = delete;
 
-  MOZ_IMPLICIT MovingNotNull(const NotNull<T>& aSrc) : mBasePtr(aSrc) {}
+  MOZ_IMPLICIT MovingNotNull(const NotNull<T>& aSrc) : mBasePtr(aSrc.get()) {}
 
-  template <typename U>
-  MOZ_IMPLICIT MovingNotNull(const NotNull<U>& aSrc) : mBasePtr(aSrc) {}
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<U, T>>>
+  MOZ_IMPLICIT MovingNotNull(const NotNull<U>& aSrc) : mBasePtr(aSrc.get()) {}
+
+  template <typename U,
+            typename = std::enable_if_t<std::is_convertible_v<U, T>>>
+  MOZ_IMPLICIT MovingNotNull(MovingNotNull<U>&& aSrc)
+      : mBasePtr(std::move(aSrc).unwrapBasePtr()) {}
 
   MOZ_IMPLICIT operator T() && { return std::move(*this).unwrapBasePtr(); }
 

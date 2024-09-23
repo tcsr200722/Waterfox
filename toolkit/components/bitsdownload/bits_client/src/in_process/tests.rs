@@ -115,7 +115,7 @@ fn mock_http_server(name: &'static str, responses: HttpServerResponses) -> MockH
     let caller_shutdown = shutdown.clone();
 
     let (listener, port) = loop {
-        let port = thread_rng().gen_range(1024, 0x1_0000u32) as u16;
+        let port = thread_rng().gen_range(1024..0x1_0000u32) as u16;
         match TcpListener::bind(SocketAddr::from((SERVER_ADDRESS, port))) {
             Ok(listener) => {
                 break (listener, port);
@@ -364,10 +364,10 @@ test! {
                         completed = true;
                     }
                     _ => {
-                        panic!(format!("{:?}", status));
+                        panic!("{:?}", status);
                     }
                 }
-                Ok(Err(e)) => panic!(format!("{:?}", e)),
+                Ok(Err(e)) => panic!("{:?}", e),
             }
 
             // Timeout to prevent waiting forever

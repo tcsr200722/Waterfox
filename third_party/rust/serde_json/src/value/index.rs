@@ -1,8 +1,9 @@
-use std::fmt;
-use std::ops;
-
 use super::Value;
-use map::Map;
+use crate::map::Map;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use core::fmt::{self, Display};
+use core::ops;
 
 /// A type that can be used to index into a `serde_json::Value`.
 ///
@@ -20,7 +21,7 @@ use map::Map;
 ///
 /// # Examples
 ///
-/// ```edition2018
+/// ```
 /// # use serde_json::json;
 /// #
 /// let data = json!({ "inner": [1, 2, 3] });
@@ -52,20 +53,20 @@ pub trait Index: private::Sealed {
 
 impl Index for usize {
     fn index_into<'v>(&self, v: &'v Value) -> Option<&'v Value> {
-        match *v {
-            Value::Array(ref vec) => vec.get(*self),
+        match v {
+            Value::Array(vec) => vec.get(*self),
             _ => None,
         }
     }
     fn index_into_mut<'v>(&self, v: &'v mut Value) -> Option<&'v mut Value> {
-        match *v {
-            Value::Array(ref mut vec) => vec.get_mut(*self),
+        match v {
+            Value::Array(vec) => vec.get_mut(*self),
             _ => None,
         }
     }
     fn index_or_insert<'v>(&self, v: &'v mut Value) -> &'v mut Value {
-        match *v {
-            Value::Array(ref mut vec) => {
+        match v {
+            Value::Array(vec) => {
                 let len = vec.len();
                 vec.get_mut(*self).unwrap_or_else(|| {
                     panic!(
@@ -81,23 +82,23 @@ impl Index for usize {
 
 impl Index for str {
     fn index_into<'v>(&self, v: &'v Value) -> Option<&'v Value> {
-        match *v {
-            Value::Object(ref map) => map.get(self),
+        match v {
+            Value::Object(map) => map.get(self),
             _ => None,
         }
     }
     fn index_into_mut<'v>(&self, v: &'v mut Value) -> Option<&'v mut Value> {
-        match *v {
-            Value::Object(ref mut map) => map.get_mut(self),
+        match v {
+            Value::Object(map) => map.get_mut(self),
             _ => None,
         }
     }
     fn index_or_insert<'v>(&self, v: &'v mut Value) -> &'v mut Value {
-        if let Value::Null = *v {
+        if let Value::Null = v {
             *v = Value::Object(Map::new());
         }
-        match *v {
-            Value::Object(ref mut map) => map.entry(self.to_owned()).or_insert(Value::Null),
+        match v {
+            Value::Object(map) => map.entry(self.to_owned()).or_insert(Value::Null),
             _ => panic!("cannot access key {:?} in JSON {}", self, Type(v)),
         }
     }
@@ -115,9 +116,9 @@ impl Index for String {
     }
 }
 
-impl<'a, T: ?Sized> Index for &'a T
+impl<T> Index for &T
 where
-    T: Index,
+    T: ?Sized + Index,
 {
     fn index_into<'v>(&self, v: &'v Value) -> Option<&'v Value> {
         (**self).index_into(v)
@@ -135,14 +136,14 @@ mod private {
     pub trait Sealed {}
     impl Sealed for usize {}
     impl Sealed for str {}
-    impl Sealed for String {}
-    impl<'a, T: ?Sized> Sealed for &'a T where T: Sealed {}
+    impl Sealed for alloc::string::String {}
+    impl<'a, T> Sealed for &'a T where T: ?Sized + Sealed {}
 }
 
 /// Used in panic messages.
 struct Type<'a>(&'a Value);
 
-impl<'a> fmt::Display for Type<'a> {
+impl<'a> Display for Type<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match *self.0 {
             Value::Null => formatter.write_str("null"),
@@ -193,7 +194,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let data = json!({
@@ -232,7 +233,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```edition2018
+    /// ```
     /// # use serde_json::json;
     /// #
     /// let mut data = json!({ "x": 0 });

@@ -1,16 +1,16 @@
 /**
- * Tests PhoneNumber.jsm and PhoneNumberNormalizer.jsm.
+ * Tests PhoneNumber.sys.mjs and PhoneNumberNormalizer.sys.mjs.
  */
 
 "use strict";
 
 var PhoneNumber, PhoneNumberNormalizer;
-add_task(async function setup() {
-  ({ PhoneNumber } = ChromeUtils.import(
-    "resource://formautofill/phonenumberutils/PhoneNumber.jsm"
+add_setup(async () => {
+  ({ PhoneNumber } = ChromeUtils.importESModule(
+    "resource://gre/modules/shared/PhoneNumber.sys.mjs"
   ));
-  ({ PhoneNumberNormalizer } = ChromeUtils.import(
-    "resource://formautofill/phonenumberutils/PhoneNumberNormalizer.jsm"
+  ({ PhoneNumberNormalizer } = ChromeUtils.importESModule(
+    "resource://gre/modules/shared/PhoneNumberNormalizer.sys.mjs"
   ));
 });
 

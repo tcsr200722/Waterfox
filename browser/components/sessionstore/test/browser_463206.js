@@ -4,65 +4,117 @@
 
 "use strict";
 
-const TEST_URL =
-  "http://mochi.test:8888/browser/" +
-  "browser/components/sessionstore/test/browser_463206_sample.html";
+const MOCHI_ROOT = ROOT.replace(
+  "chrome://mochitests/content/",
+  "http://mochi.test:8888/"
+);
+if (gFissionBrowser) {
+  addCoopTask(
+    "browser_463206_sample.html",
+    test_restore_text_data_subframes,
+    HTTPSROOT
+  );
+}
+addNonCoopTask(
+  "browser_463206_sample.html",
+  test_restore_text_data_subframes,
+  HTTPSROOT
+);
+addNonCoopTask(
+  "browser_463206_sample.html",
+  test_restore_text_data_subframes,
+  HTTPROOT
+);
+addNonCoopTask(
+  "browser_463206_sample.html",
+  test_restore_text_data_subframes,
+  MOCHI_ROOT
+);
 
-add_task(async function() {
+async function test_restore_text_data_subframes(aURL) {
   // Add a new tab.
-  let tab = BrowserTestUtils.addTab(gBrowser, TEST_URL);
-  await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, aURL);
 
-  // "Type in" some random values.
-  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
-    function typeText(aTextField, aValue) {
-      aTextField.value = aValue;
+  await setPropertyOfFormField(
+    tab.linkedBrowser,
+    "#out1",
+    "value",
+    Date.now().toString(16)
+  );
 
-      let event = aTextField.ownerDocument.createEvent("UIEvents");
-      event.initUIEvent("input", true, true, aTextField.ownerGlobal, 0);
-      aTextField.dispatchEvent(event);
-    }
+  await setPropertyOfFormField(
+    tab.linkedBrowser,
+    "input[name='1|#out2']",
+    "value",
+    Math.random()
+  );
 
-    typeText(content.document.getElementById("out1"), Date.now().toString(16));
-    typeText(content.document.getElementsByName("1|#out2")[0], Math.random());
-    typeText(
-      content.frames[0].frames[1].document.getElementById("in1"),
-      new Date()
-    );
-  });
+  await setPropertyOfFormField(
+    tab.linkedBrowser.browsingContext.children[0].children[1],
+    "#in1",
+    "value",
+    new Date()
+  );
 
   // Duplicate the tab.
   let tab2 = gBrowser.duplicateTab(tab);
+  let browser2 = tab2.linkedBrowser;
   await promiseTabRestored(tab2);
 
+  isnot(
+    await getPropertyOfFormField(browser2, "#out1", "value"),
+    await getPropertyOfFormField(
+      browser2.browsingContext.children[1],
+      "#out1",
+      "value"
+    ),
+    "text isn't reused for frames"
+  );
+
+  isnot(
+    await getPropertyOfFormField(browser2, "input[name='1|#out2']", "value"),
+    "",
+    "text containing | and # is correctly restored"
+  );
+
+  is(
+    await getPropertyOfFormField(
+      browser2.browsingContext.children[1],
+      "#out2",
+      "value"
+    ),
+    "",
+    "id prefixes can't be faked"
+  );
+
   // Query a few values from the top and its child frames.
-  await SpecialPowers.spawn(tab2.linkedBrowser, [], async function() {
-    Assert.notEqual(
-      content.document.getElementById("out1").value,
-      content.frames[1].document.getElementById("out1").value,
-      "text isn't reused for frames"
+  await SpecialPowers.spawn(tab2.linkedBrowser, [], async function () {
+    // Bug 588077
+    // XXX(farre): disabling this, because it started passing more heavily on Windows.
+    /*
+    let in1ValFrame0_1 = await SpecialPowers.spawn(
+      content.frames[0],
+      [],
+      async function() {
+        return SpecialPowers.spawn(content.frames[1], [], async function() {
+          return content.document.getElementById("in1").value;
+        });
+      }
     );
-    Assert.notEqual(
-      content.document.getElementsByName("1|#out2")[0].value,
-      "",
-      "text containing | and # is correctly restored"
-    );
-    Assert.equal(
-      content.frames[1].document.getElementById("out2").value,
-      "",
-      "id prefixes can't be faked"
-    );
-    // Disabled for now, Bug 588077
-    // Assert.equal(content.frames[0].frames[1].document.getElementById("in1").value,
-    //  "", "id prefixes aren't mixed up");
-    Assert.equal(
-      content.frames[1].frames[0].document.getElementById("in1").value,
-      "",
-      "id prefixes aren't mixed up"
-    );
+    todo_is(in1ValFrame0_1, "", "id prefixes aren't mixed up");
+    */
   });
 
+  is(
+    await getPropertyOfFormField(
+      browser2.browsingContext.children[1].children[0],
+      "#in1",
+      "value"
+    ),
+    "",
+    "id prefixes aren't mixed up"
+  );
   // Cleanup.
   gBrowser.removeTab(tab2);
   gBrowser.removeTab(tab);
-});
+}

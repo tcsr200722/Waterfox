@@ -3,8 +3,8 @@
 // recognized in your jurisdiction.
 // See file LICENSE for detail or copy at http://jsoncpp.sourceforge.net/LICENSE
 
-#ifndef CPPTL_JSON_READER_H_INCLUDED
-#define CPPTL_JSON_READER_H_INCLUDED
+#ifndef JSON_READER_H_INCLUDED
+#define JSON_READER_H_INCLUDED
 
 #if !defined(JSON_IS_AMALGAMATION)
 #include "json_features.h"
@@ -33,11 +33,10 @@ namespace Json {
  * \deprecated Use CharReader and CharReaderBuilder.
  */
 
-class JSONCPP_DEPRECATED(
-    "Use CharReader and CharReaderBuilder instead.") JSON_API Reader {
+class JSON_API Reader {
 public:
-  typedef char Char;
-  typedef const Char* Location;
+  using Char = char;
+  using Location = const Char*;
 
   /** \brief An error tagged with where in the JSON text it was encountered.
    *
@@ -51,13 +50,13 @@ public:
   };
 
   /** \brief Constructs a Reader allowing all features for parsing.
+    * \deprecated Use CharReader and CharReaderBuilder.
    */
-  JSONCPP_DEPRECATED("Use CharReader and CharReaderBuilder instead")
   Reader();
 
   /** \brief Constructs a Reader allowing the specified feature set for parsing.
+    * \deprecated Use CharReader and CharReaderBuilder.
    */
-  JSONCPP_DEPRECATED("Use CharReader and CharReaderBuilder instead")
   Reader(const Features& features);
 
   /** \brief Read a Value from a <a HREF="http://www.json.org">JSON</a>
@@ -187,7 +186,7 @@ private:
     Location extra_;
   };
 
-  typedef std::deque<ErrorInfo> Errors;
+  using Errors = std::deque<ErrorInfo>;
 
   bool readToken(Token& token);
   void skipSpaces();
@@ -226,7 +225,7 @@ private:
   static bool containsNewLine(Location begin, Location end);
   static String normalizeEOL(Location begin, Location end);
 
-  typedef std::stack<Value*> Nodes;
+  using Nodes = std::stack<Value*>;
   Nodes nodes_;
   Errors errors_;
   String document_;
@@ -299,6 +298,8 @@ public:
    *     if allowComments is false.
    * - `"allowComments": false or true`
    *   - true if comments are allowed.
+   * - `"allowTrailingCommas": false or true`
+   *   - true if trailing commas in objects and arrays are allowed.
    * - `"strictRoot": false or true`
    *   - true if root must be either an array or an object value
    * - `"allowDroppedNullPlaceholders": false or true`
@@ -322,6 +323,9 @@ public:
    * - `"allowSpecialFloats": false or true`
    *   - If true, special float values (NaNs and infinities) are allowed and
    *     their values are lossfree restorable.
+   * - `"skipBom": false or true`
+   *   - If true, if the input starts with the Unicode byte order mark (BOM),
+   *     it is skipped.
    *
    * You can examine 'settings_` yourself to see the defaults. You can also
    * write and read them just like any JSON Value.
@@ -398,4 +402,4 @@ JSON_API IStream& operator>>(IStream&, Value&);
 #pragma warning(pop)
 #endif // if defined(JSONCPP_DISABLE_DLL_INTERFACE_WARNING)
 
-#endif // CPPTL_JSON_READER_H_INCLUDED
+#endif // JSON_READER_H_INCLUDED

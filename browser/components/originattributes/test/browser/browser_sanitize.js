@@ -8,12 +8,10 @@ if (SpecialPowers.useRemoteSubframes) {
 
 const CC = Components.Constructor;
 
-const TEST_DOMAIN = "http://example.net/";
-
-const { Sanitizer } = ChromeUtils.import("resource:///modules/Sanitizer.jsm");
+const TEST_DOMAIN = "https://example.net/";
 
 async function setCookies(aBrowser) {
-  await SpecialPowers.spawn(aBrowser, [], function() {
+  await SpecialPowers.spawn(aBrowser, [], function () {
     content.document.cookie = "key=value";
   });
 }
@@ -22,8 +20,8 @@ function cacheDataForContext(loadContextInfo) {
   return new Promise(resolve => {
     let cachedURIs = [];
     let cacheVisitor = {
-      onCacheStorageInfo(num, consumption) {},
-      onCacheEntryInfo(uri, idEnhance) {
+      onCacheStorageInfo() {},
+      onCacheEntryInfo(uri) {
         cachedURIs.push(uri.asciiSpec);
       },
       onCacheEntryVisitCompleted() {
@@ -33,13 +31,13 @@ function cacheDataForContext(loadContextInfo) {
     };
     // Visiting the disk cache also visits memory storage so we do not
     // need to use Services.cache2.memoryCacheStorage() here.
-    let storage = Services.cache2.diskCacheStorage(loadContextInfo, false);
+    let storage = Services.cache2.diskCacheStorage(loadContextInfo);
     storage.asyncVisitStorage(cacheVisitor, true);
   });
 }
 
 async function checkCookiesSanitized(aBrowser) {
-  await SpecialPowers.spawn(aBrowser, [], function() {
+  await SpecialPowers.spawn(aBrowser, [], function () {
     Assert.equal(
       content.document.cookie,
       "",
@@ -49,7 +47,7 @@ async function checkCookiesSanitized(aBrowser) {
 }
 
 function checkCacheExists(aShouldExist) {
-  return async function() {
+  return async function () {
     let loadContextInfos = [
       Services.loadContextInfo.default,
       Services.loadContextInfo.custom(false, { userContextId: 1 }),
@@ -77,7 +75,7 @@ function checkCacheExists(aShouldExist) {
   };
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   Services.cache2.clear();
 });
 

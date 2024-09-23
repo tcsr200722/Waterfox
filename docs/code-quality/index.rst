@@ -10,7 +10,7 @@ In this document, we try to list these all tools.
   :maxdepth: 1
   :glob:
 
-  static-analysis.rst
+  static-analysis/index.rst
   lint/index.rst
   coding-style/index.rst
 
@@ -30,34 +30,39 @@ In this document, we try to list these all tools.
      -
    * - Clang-Tidy
      - Yes
-     - `bug 712350 <https://bugzilla.mozilla.org/show_bug.cgi?id=712350>`_
-     - :ref:`Static analysis <Mach static analysis>`
+     - `bug 712350 <https://bugzilla.mozilla.org/show_bug.cgi?id=712350>`__
+     - :ref:`Static analysis <Static Analysis>`
      - https://clang.llvm.org/extra/clang-tidy/checks/list.html
    * - Clang analyzer
      -
-     - `bug 712350 <https://bugzilla.mozilla.org/show_bug.cgi?id=712350>`_
+     - `bug 712350 <https://bugzilla.mozilla.org/show_bug.cgi?id=712350>`__
      -
      - https://clang-analyzer.llvm.org/
-   * - Coverity
-     -
-     - `bug 1230156 <https://bugzilla.mozilla.org/show_bug.cgi?id=1230156>`_
-     -
-     -
    * - cpp virtual final
      -
      -
      - :ref:`cpp virtual final`
      -
-   * - Semmle/LGTM
-     -
-     - `bug 1458117 <https://bugzilla.mozilla.org/show_bug.cgi?id=1458117>`_
-     -
-     -
    * - clang-format
      - Yes
-     - `bug 1188202 <https://bugzilla.mozilla.org/show_bug.cgi?id=1188202>`_
+     - `bug 1188202 <https://bugzilla.mozilla.org/show_bug.cgi?id=1188202>`__
      - :ref:`Formatting C++ Code With clang-format`
      - https://clang.llvm.org/docs/ClangFormat.html
+
+.. list-table:: CSS
+   :widths: 20 20 20 20 20
+   :header-rows: 1
+
+   * - Tools
+     - Has autofixes
+     - Meta bug
+     - More info
+     - Upstream
+   * - Stylelint
+     - Yes
+     - `bug 1762027 <https://bugzilla.mozilla.org/show_bug.cgi?id=1762027>`__
+     - :ref:`Stylelint`
+     - https://stylelint.io/
 
 .. list-table:: JavaScript
    :widths: 20 20 20 20 20
@@ -70,21 +75,19 @@ In this document, we try to list these all tools.
      - Upstream
    * - Eslint
      - Yes
-     - `bug 1229856 <https://bugzilla.mozilla.org/show_bug.cgi?id=1229856>`_
+     - `bug 1229856 <https://bugzilla.mozilla.org/show_bug.cgi?id=1229856>`__
      - :ref:`ESLint`
      - https://eslint.org/
    * - Mozilla ESLint
      -
-     - `bug 1229856 <https://bugzilla.mozilla.org/show_bug.cgi?id=1229856>`_
+     - `bug 1229856 <https://bugzilla.mozilla.org/show_bug.cgi?id=1229856>`__
      - :ref:`Mozilla ESLint Plugin`
      -
    * - Prettier
      - Yes
-     - `bug 1558517 <https://bugzilla.mozilla.org/show_bug.cgi?id=1558517>`_
+     - `bug 1558517 <https://bugzilla.mozilla.org/show_bug.cgi?id=1558517>`__
      - :ref:`JavaScript Coding style`
      - https://prettier.io/
-
-
 
 .. list-table:: Python
    :widths: 20 20 20 20 20
@@ -95,17 +98,16 @@ In this document, we try to list these all tools.
      - Meta bug
      - More info
      - Upstream
-   * - Flake8
-     - Yes (with `autopep8 <https://github.com/hhatto/autopep8>`_)
-     - `bug 1155970 <https://bugzilla.mozilla.org/show_bug.cgi?id=1155970>`_
-     - :ref:`Flake8`
-     - http://flake8.pycqa.org/
-   * - Python 2/3 compatibility check
-     -
-     - `bug 1496527 <https://bugzilla.mozilla.org/show_bug.cgi?id=1496527>`_
-     - :ref:`Python 2/3 compatibility check`
-     -
-
+   * - ruff
+     - Yes
+     - `bug 1811850 <https://bugzilla.mozilla.org/show_bug.cgi?id=1811850>`__
+     - :ref:`ruff`
+     - https://github.com/charliermarsh/ruff
+   * - black
+     - Yes
+     - `bug 1555560 <https://bugzilla.mozilla.org/show_bug.cgi?id=1555560>`__
+     - :ref:`black`
+     - https://black.readthedocs.io/en/stable
 
 .. list-table:: Rust
    :widths: 20 20 20 20 20
@@ -118,16 +120,16 @@ In this document, we try to list these all tools.
      - Upstream
    * - Rustfmt
      - Yes
-     - `bug 1454764 <https://bugzilla.mozilla.org/show_bug.cgi?id=1454764>`_
+     - `bug 1454764 <https://bugzilla.mozilla.org/show_bug.cgi?id=1454764>`__
      - :ref:`Rustfmt`
      - https://github.com/rust-lang/rustfmt
    * - Clippy
      -
-     - `bug 1361342 <https://bugzilla.mozilla.org/show_bug.cgi?id=1361342>`_
+     - `bug 1361342 <https://bugzilla.mozilla.org/show_bug.cgi?id=1361342>`__
      - :ref:`clippy`
      - https://github.com/rust-lang/rust-clippy
 
-.. list-table:: Java
+.. list-table:: Java/Kotlin
    :widths: 20 20 20 20 20
    :header-rows: 1
 
@@ -136,11 +138,11 @@ In this document, we try to list these all tools.
      - Meta bug
      - More info
      - Upstream
-   * - Infer
-     -
-     - `bug 1175203 <https://bugzilla.mozilla.org/show_bug.cgi?id=1175203>`_
-     -
-     - https://github.com/facebook/infer
+   * - Spotless
+     - Yes
+     - `bug 1571899 <https://bugzilla.mozilla.org/show_bug.cgi?id=1571899>`__
+     - :ref:`Spotless`
+     - https://github.com/diffplug/spotless
 
 .. list-table:: Others
    :widths: 20 20 20 20 20
@@ -166,9 +168,13 @@ In this document, we try to list these all tools.
      -
      - :ref:`Codespell`
      - https://github.com/codespell-project/codespell
+   * - Fluent Lint
+     - No
+     -
+     - :ref:`Fluent Lint`
+     -
    * - YAML linter
+     - No
      -
-     -
-     -
+     - :ref:`yamllint`
      - https://github.com/adrienverge/yamllint
-

@@ -8,7 +8,7 @@ const {
   RetVal,
   generateActorSpec,
   types,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 /**
  * Sent with the 'mutations' event as part of an array of changes, used to
@@ -37,12 +37,6 @@ const animationPlayerSpec = generateActorSpec({
       request: {},
       response: {
         data: RetVal("json"),
-      },
-    },
-    getProperties: {
-      request: {},
-      response: {
-        properties: RetVal("array:json"),
       },
     },
     getAnimationTypes: {

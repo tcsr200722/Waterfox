@@ -104,10 +104,10 @@ The same prompt as above, but called async:
 C++ Sync
 ~~~~~~~~
 
-.. code-block:: c++
+.. code-block:: cpp
 
       nsCOMPtr<nsIPromptService> promptSvc =
-        do_GetService("@mozilla.org/embedcomp/prompt-service;1");
+        do_GetService("@mozilla.org/prompter;1");
 
       if(!promptSvc) {
         // Error handling
@@ -123,9 +123,9 @@ C++ Sync
 
       nsresult rv = promptSvc->confirmCheck(mBrowsingContext,
                                             nsIPromptService::MODAL_TYPE_TAB,
-                                            NS_LITERAL_CSTRING("My Title")
-                                            NS_LITERAL_CSTRING("Hello, World!"),
-                                            NS_LITERAL_CSTRING("Check this box if you agree"),
+                                            "My Title"_ns
+                                            "Hello, World!"_ns,
+                                            "Check this box if you agree"_ns,
                                             &checked, &ok);
 
       // ok is the boolean indicating if the user clicked "ok" (true) or
@@ -135,10 +135,10 @@ C++ Sync
 C++ Async
 ~~~~~~~~~
 
-.. code-block:: c++
+.. code-block:: cpp
 
       nsCOMPtr<nsIPromptService> promptSvc =
-        do_GetService("@mozilla.org/embedcomp/prompt-service;1");
+        do_GetService("@mozilla.org/prompter;1");
 
       if(!promptSvc) {
         // Error handling
@@ -154,9 +154,9 @@ C++ Async
 
       // As opposed to the sync case, here we pass the checked flag by value
       nsresult rv = promptSvc->confirmCheckAsync(mBrowsingContext,
-                                                 nsIPromptService::MODAL_TYPE_TAB, NS_LITERAL_CSTRING("My Title"),
-                                                 NS_LITERAL_CSTRING("Hello, World!"),
-                                                 NS_LITERAL_CSTRING("Check this box if you agree"),
+                                                 nsIPromptService::MODAL_TYPE_TAB, "My Title"_ns,
+                                                 "Hello, World!"_ns,
+                                                 "Check this box if you agree"_ns,
                                                  checked, promise);
 
       // Attach a promise handler
@@ -165,7 +165,7 @@ C++ Async
 
 Then, in your promise handler callback function:
 
-.. code-block:: c++
+.. code-block:: cpp
 
       void PromptHandler::ResolvedCallback(JSContext* aCx,
                                        JS::Handle<JS::Value> aValue) {
@@ -179,8 +179,8 @@ Then, in your promise handler callback function:
 
         bool ok;
         bool checked;
-        propBag->GetPropertyAsBool(NS_LITERAL_STRING("ok"), &ok);
-        propBag->GetPropertyAsBool(NS_LITERAL_STRING("checked"), &checked);
+        propBag->GetPropertyAsBool(u"ok"_ns, &ok);
+        propBag->GetPropertyAsBool(u"checked"_ns, &checked);
 
         // ok is the boolean indicating if the user clicked "ok" (true) or
         // "cancel" (false).

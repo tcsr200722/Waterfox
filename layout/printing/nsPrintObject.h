@@ -22,38 +22,35 @@ namespace mozilla {
 class PresShell;
 }  // namespace mozilla
 
-// nsPrintObject Document Type
-enum PrintObjectType { eDoc = 0, eFrame = 1, eIFrame = 2, eFrameSet = 3 };
-
 //---------------------------------------------------
 //-- nsPrintObject Class
 //---------------------------------------------------
-class nsPrintObject {
+class nsPrintObject final {
  public:
-  nsPrintObject();
-  ~nsPrintObject();  // non-virtual
-
-  nsresult InitAsRootObject(nsIDocShell* aDocShell,
-                            mozilla::dom::Document* aDoc,
-                            bool aForPrintPreview);
-  nsresult InitAsNestedObject(nsIDocShell* aDocShell,
-                              mozilla::dom::Document* aDoc,
-                              nsPrintObject* aParent);
-
-  bool IsPrintable() { return !mDontPrint; }
-  void DestroyPresentation();
-
   /**
-   * Recursively sets the PO items to be printed "As Is"
-   * from the given item down into the treei
+   * If aParent is nullptr (default), then this instance will be initialized as
+   * a "root" nsPrintObject.  Otherwise, this will be a "nested" nsPrintObject.
    */
-  void SetPrintAsIs(bool aAsIs);
+  nsPrintObject(nsIDocShell& aDocShell, mozilla::dom::Document& aDoc,
+                nsPrintObject* aParent = nullptr);
+  ~nsPrintObject();
+
+  void DestroyPresentation();
 
   /**
    * Recursively sets all the PO items to be printed
    * from the given item down into the tree
    */
   void EnablePrinting(bool aEnable);
+
+  /**
+   * Recursively sets all the PO items to be printed if they have a selection.
+   */
+  void EnablePrintingSelectionOnly();
+
+  bool PrintingIsEnabled() const { return mPrintingIsEnabled; }
+
+  bool HasSelection() const;
 
   // Data Members
   nsCOMPtr<nsIDocShell> mDocShell;
@@ -65,20 +62,27 @@ class nsPrintObject {
   RefPtr<nsViewManager> mViewManager;
 
   nsCOMPtr<nsIContent> mContent;
-  PrintObjectType mFrameType;
 
   nsTArray<mozilla::UniquePtr<nsPrintObject>> mKids;
-  nsPrintObject* mParent;  // This is a non-owning pointer.
-  bool mHasBeenPrinted;
-  bool mDontPrint;
-  bool mPrintAsIs;
-  bool mInvisible;  // Indicates PO is set to not visible by CSS
-  bool mDidCreateDocShell;
-  float mShrinkRatio;
-  float mZoomRatio;
+  const nsPrintObject* mParent;  // This is a non-owning pointer.
+  bool mHasBeenPrinted = false;
+  bool mInvisible = false;  // Indicates PO is set to not visible by CSS
+
+  // The scale factor that sheets should be scaled by. This is either the
+  // explicit scale chosen by the user or else the shrink-to-fit scale factor
+  // if the user selects shrink-to-fit. Only set on the top-level nsPrintObject
+  // since this is only used by nsPageFrame (via nsPresContext::GetPageScale()).
+  float mZoomRatio = 1.0;
+
+  // If the user selects the shrink-to-fit option, the shrink-to-fit scale
+  // factor is calculated and stored here. Only set on the top-level
+  // nsPrintObject.
+  float mShrinkRatio = 1.0;
 
  private:
   nsPrintObject& operator=(const nsPrintObject& aOther) = delete;
+
+  bool mPrintingIsEnabled = false;
 };
 
 #endif /* nsPrintObject_h___ */

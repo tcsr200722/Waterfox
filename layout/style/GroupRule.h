@@ -13,7 +13,6 @@
 #define mozilla_css_GroupRule_h__
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ServoCSSRuleList.h"
 #include "mozilla/css/Rule.h"
@@ -21,6 +20,7 @@
 
 namespace mozilla {
 
+class ErrorResult;
 class StyleSheet;
 
 namespace dom {
@@ -29,30 +29,34 @@ class CSSRuleList;
 
 namespace css {
 
-// inherits from Rule so it can be shared between
-// MediaRule and DocumentRule
+// Inherits from Rule so it can be shared between MediaRule and DocumentRule
 class GroupRule : public Rule {
  protected:
-  GroupRule(already_AddRefed<ServoCssRules> aRules, StyleSheet* aSheet,
-            Rule* aParentRule, uint32_t aLineNumber, uint32_t aColumnNumber);
-  GroupRule(const GroupRule& aCopy) = delete;
+  GroupRule(StyleSheet* aSheet, Rule* aParentRule, uint32_t aLineNumber,
+            uint32_t aColumnNumber);
   virtual ~GroupRule();
+  virtual already_AddRefed<StyleLockedCssRules> GetOrCreateRawRules() = 0;
 
  public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(GroupRule, Rule)
   NS_DECL_ISUPPORTS_INHERITED
-  virtual bool IsCCLeaf() const override;
+
+  GroupRule(const GroupRule&) = delete;
+  bool IsCCLeaf() const override;
+
+  bool IsGroupRule() const final { return true; }
 
 #ifdef DEBUG
   void List(FILE* out = stdout, int32_t aIndent = 0) const override;
 #endif
   void DropSheetReference() override;
+  uint32_t StyleRuleCount() { return CssRules()->Length(); }
+  Rule* GetStyleRuleAt(int32_t aIndex) { return CssRules()->GetRule(aIndex); }
 
- public:
-  int32_t StyleRuleCount() const { return mRuleList->Length(); }
-
-  Rule* GetStyleRuleAt(int32_t aIndex) const {
-    return mRuleList->GetRule(aIndex);
+  void DidSetRawAfterClone() {
+    if (mRuleList) {
+      mRuleList->SetRawAfterClone(GetOrCreateRawRules());
+    }
   }
 
   /*
@@ -60,7 +64,7 @@ class GroupRule : public Rule {
    * WillDirty() on the parent stylesheet.
    */
   nsresult DeleteStyleRuleAt(uint32_t aIndex) {
-    return mRuleList->DeleteRule(aIndex);
+    return CssRules()->DeleteRule(aIndex);
   }
 
   // non-virtual -- it is only called by subclasses
@@ -68,8 +72,8 @@ class GroupRule : public Rule {
   size_t SizeOfIncludingThis(MallocSizeOf) const override = 0;
 
   // WebIDL API
-  dom::CSSRuleList* CssRules() { return mRuleList; }
-  uint32_t InsertRule(const nsAString& aRule, uint32_t aIndex,
+  ServoCSSRuleList* CssRules();
+  uint32_t InsertRule(const nsACString& aRule, uint32_t aIndex,
                       ErrorResult& aRv);
   void DeleteRule(uint32_t aIndex, ErrorResult& aRv);
 
@@ -83,9 +87,7 @@ class ConditionRule : public GroupRule {
   using GroupRule::GroupRule;
 
  public:
-  virtual void GetConditionText(nsAString& aConditionText) = 0;
-  virtual void SetConditionText(const nsAString& aConditionText,
-                                ErrorResult& aRv) = 0;
+  virtual void GetConditionText(nsACString& aConditionText) = 0;
 };
 
 }  // namespace css

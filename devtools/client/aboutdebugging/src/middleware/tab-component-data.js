@@ -7,13 +7,13 @@
 const {
   DEBUG_TARGETS,
   REQUEST_TABS_SUCCESS,
-} = require("devtools/client/aboutdebugging/src/constants");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
 
 /**
  * This middleware converts tabs object that get from DevToolsClient.listTabs() to data
  * which is used in DebugTargetItem.
  */
-const tabComponentDataMiddleware = store => next => action => {
+const tabComponentDataMiddleware = () => next => action => {
   switch (action.type) {
     case REQUEST_TABS_SUCCESS: {
       action.tabs = toComponentData(action.tabs);
@@ -27,20 +27,21 @@ const tabComponentDataMiddleware = store => next => action => {
 function toComponentData(tabs) {
   return tabs.map(tab => {
     const type = DEBUG_TARGETS.TAB;
-    const id = tab.outerWindowID;
+    const id = tab.browserId;
     const icon = tab.favicon
       ? `data:image/png;base64,${btoa(
           String.fromCharCode.apply(String, tab.favicon)
         )}`
       : "chrome://devtools/skin/images/globe.svg";
     const name = tab.title || tab.url;
-    const url = tab.url;
+    const { url, isZombieTab } = tab;
     return {
       name,
       icon,
       id,
       type,
       details: {
+        isZombieTab,
         url,
       },
     };

@@ -5,6 +5,7 @@
 
 #include "mozilla/devtools/DominatorTree.h"
 #include "mozilla/dom/DominatorTreeBinding.h"
+#include "mozilla/ErrorResult.h"
 
 namespace mozilla {
 namespace devtools {
@@ -124,7 +125,7 @@ NS_INTERFACE_MAP_END
 
 /* virtual */
 JSObject* DominatorTree::WrapObject(JSContext* aCx,
-                                    JS::HandleObject aGivenProto) {
+                                    JS::Handle<JSObject*> aGivenProto) {
   return dom::DominatorTree_Binding::Wrap(aCx, this, aGivenProto);
 }
 

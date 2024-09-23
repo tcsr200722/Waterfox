@@ -13,6 +13,7 @@
 #include "sandbox/win/src/registry_interception.h"
 #include "sandbox/win/src/sandbox_nt_types.h"
 #include "sandbox/win/src/sandbox_types.h"
+#include "sandbox/win/src/signed_interception.h"
 #include "sandbox/win/src/sync_interception.h"
 #include "sandbox/win/src/target_interceptions.h"
 
@@ -48,6 +49,14 @@ NTSTATUS WINAPI TargetNtUnmapViewOfSection64(HANDLE process, PVOID base) {
 }
 
 // -----------------------------------------------------------------------
+
+NTSTATUS WINAPI
+TargetNtImpersonateAnonymousToken64(HANDLE thread) {
+  NtImpersonateAnonymousTokenFunction orig_fn =
+      reinterpret_cast<NtImpersonateAnonymousTokenFunction>(
+          g_originals[IMPERSONATE_ANONYMOUS_TOKEN_ID]);
+  return TargetNtImpersonateAnonymousToken(orig_fn, thread);
+}
 
 NTSTATUS WINAPI
 TargetNtSetInformationThread64(HANDLE thread,
@@ -510,6 +519,21 @@ SANDBOX_INTERCEPT NTSTATUS WINAPI TargetConfigureOPMProtectedOutput64(
   return TargetConfigureOPMProtectedOutput(
       orig_fn, protected_output, parameters, additional_parameters_size,
       additional_parameters);
+}
+
+SANDBOX_INTERCEPT NTSTATUS WINAPI
+TargetNtCreateSection64(PHANDLE section_handle,
+                        ACCESS_MASK desired_access,
+                        POBJECT_ATTRIBUTES object_attributes,
+                        PLARGE_INTEGER maximum_size,
+                        ULONG section_page_protection,
+                        ULONG allocation_attributes,
+                        HANDLE file_handle) {
+  NtCreateSectionFunction orig_fn =
+      reinterpret_cast<NtCreateSectionFunction>(g_originals[CREATE_SECTION_ID]);
+  return TargetNtCreateSection(
+      orig_fn, section_handle, desired_access, object_attributes, maximum_size,
+      section_page_protection, allocation_attributes, file_handle);
 }
 
 }  // namespace sandbox

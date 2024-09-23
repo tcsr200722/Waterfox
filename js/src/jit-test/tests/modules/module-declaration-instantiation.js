@@ -1,7 +1,5 @@
 // Exercise ModuleDeclarationInstantiation() operation.
 
-load(libdir + "dummyModuleResolveHook.js");
-
 function testModuleEnvironment(module, expected) {
     var actual = getModuleEnvironmentNames(module).sort();
     assertEq(actual.length, expected.length);
@@ -12,14 +10,14 @@ function testModuleEnvironment(module, expected) {
 
 // Check the environment of an empty module.
 let m = parseModule("");
-m.declarationInstantiation();
+moduleLink(m);
 testModuleEnvironment(m, []);
 
-let a = moduleRepo['a'] = parseModule("var x = 1; export { x };");
-let b = moduleRepo['b'] = parseModule("import { x as y } from 'a';");
+let a = registerModule('a', parseModule("var x = 1; export { x };"));
+let b = registerModule('b', parseModule("import { x as y } from 'a';"));
 
-a.declarationInstantiation();
-b.declarationInstantiation();
+moduleLink(a);
+moduleLink(b);
 
 testModuleEnvironment(a, ['x']);
 testModuleEnvironment(b, ['y']);
@@ -32,7 +30,7 @@ let c = parseModule(`function a(x) { return x; }
 const names = ['a', 'b', 'c', 'd'];
 testModuleEnvironment(c, names);
 names.forEach((n) => assertEq(typeof getModuleEnvironmentValue(c, n), "undefined"));
-c.declarationInstantiation();
+moduleLink(c);
 for (let i = 0; i < names.length; i++) {
     let f = getModuleEnvironmentValue(c, names[i]);
     assertEq(f(21), 21 + i);

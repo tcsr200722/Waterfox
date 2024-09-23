@@ -62,12 +62,14 @@ function resume_timeouts() {
 // The buggy code calls this handler from the resumeTimeouts call, before the
 // main thread returns to the event loop. The correct code calls this only once
 // the JavaScript invocation that called resumeTimeouts has run to completion.
-function handle_echo({ data }) {
+function handle_echo() {
   ok(
     resumeTimeouts_has_returned,
     "worker message delivered from main event loop"
   );
 
   // Finish the mochitest.
+  // This function is set and defined by test_suspendTimeouts.js
+  // eslint-disable-next-line no-undef
   finish();
 }

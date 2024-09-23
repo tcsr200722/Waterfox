@@ -30,18 +30,18 @@ try {
     }
   });
 
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
   verifyWritable(arg, "genericProperty", "genericPropertyString");
 
-  verifyNotEnumerable(arg, "genericProperty");
-
-  verifyNotConfigurable(arg, "genericProperty");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(arg, "genericProperty", {
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

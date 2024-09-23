@@ -7,15 +7,19 @@
 #ifndef mozilla_dom_simpledb_SDBRequest_h
 #define mozilla_dom_simpledb_SDBRequest_h
 
+#include <cstdint>
+#include "ErrorList.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISDBRequest.h"
-#include "nsIVariant.h"
+#include "nsISupports.h"
 
 class nsISDBCallback;
+class nsIVariant;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SDBConnection;
 
@@ -53,7 +57,6 @@ class SDBRequest final : public nsISDBRequest {
   NS_DECL_CYCLE_COLLECTION_CLASS(SDBRequest)
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_simpledb_SDBRequest_h

@@ -14,6 +14,9 @@
 #include "mozilla/ProfileBufferChunkManagerSingle.h"
 #include "mozilla/ProfileChunkedBuffer.h"
 
+class ProcessStreamingContext;
+class RunningTimes;
+
 // Class storing most profiling data in a ProfileChunkedBuffer.
 //
 // This class is used as a queue of entries which, after construction, never
@@ -25,7 +28,9 @@ class ProfileBuffer final {
   // manager.
   explicit ProfileBuffer(mozilla::ProfileChunkedBuffer& aBuffer);
 
-  ~ProfileBuffer();
+  mozilla::ProfileChunkedBuffer& UnderlyingChunkedBuffer() const {
+    return mEntries;
+  }
 
   bool IsThreadSafe() const { return mEntries.IsThreadSafe(); }
 
@@ -34,7 +39,7 @@ class ProfileBuffer final {
 
   // Add to the buffer a sample start (ThreadId) entry for aThreadId.
   // Returns the position of the entry.
-  uint64_t AddThreadIdEntry(int aThreadId);
+  uint64_t AddThreadIdEntry(ProfilerThreadId aThreadId);
 
   void CollectCodeLocation(
       const char* aLabel, const char* aStr, uint32_t aFrameFlags,
@@ -48,42 +53,56 @@ class ProfileBuffer final {
   // Add JIT frame information to aJITFrameInfo for any JitReturnAddr entries
   // that are currently in the buffer at or after aRangeStart, in samples
   // for the given thread.
-  void AddJITInfoForRange(uint64_t aRangeStart, int aThreadId,
-                          JSContext* aContext,
-                          JITFrameInfo& aJITFrameInfo) const;
+  void AddJITInfoForRange(uint64_t aRangeStart, ProfilerThreadId aThreadId,
+                          JSContext* aContext, JITFrameInfo& aJITFrameInfo,
+                          mozilla::ProgressLogger aProgressLogger) const;
 
   // Stream JSON for samples in the buffer to aWriter, using the supplied
   // UniqueStacks object.
   // Only streams samples for the given thread ID and which were taken at or
-  // after aSinceTime.
+  // after aSinceTime. If ID is 0, ignore the stored thread ID; this should only
+  // be used when the buffer contains only one sample.
   // aUniqueStacks needs to contain information about any JIT frames that we
   // might encounter in the buffer, before this method is called. In other
   // words, you need to have called AddJITInfoForRange for every range that
   // might contain JIT frame information before calling this method.
-  void StreamSamplesToJSON(SpliceableJSONWriter& aWriter, int aThreadId,
-                           double aSinceTime,
-                           UniqueStacks& aUniqueStacks) const;
+  // Return the thread ID of the streamed sample(s), or 0.
+  ProfilerThreadId StreamSamplesToJSON(
+      SpliceableJSONWriter& aWriter, ProfilerThreadId aThreadId,
+      double aSinceTime, UniqueStacks& aUniqueStacks,
+      mozilla::ProgressLogger aProgressLogger) const;
 
-  void StreamMarkersToJSON(SpliceableJSONWriter& aWriter, int aThreadId,
+  void StreamMarkersToJSON(SpliceableJSONWriter& aWriter,
+                           ProfilerThreadId aThreadId,
                            const mozilla::TimeStamp& aProcessStartTime,
-                           double aSinceTime,
-                           UniqueStacks& aUniqueStacks) const;
+                           double aSinceTime, UniqueStacks& aUniqueStacks,
+                           mozilla::ProgressLogger aProgressLogger) const;
+
+  // Stream samples and markers from all threads that `aProcessStreamingContext`
+  // accepts.
+  void StreamSamplesAndMarkersToJSON(
+      ProcessStreamingContext& aProcessStreamingContext,
+      mozilla::ProgressLogger aProgressLogger) const;
+
   void StreamPausedRangesToJSON(SpliceableJSONWriter& aWriter,
-                                double aSinceTime) const;
-  void StreamProfilerOverheadToJSON(SpliceableJSONWriter& aWriter,
-                                    const mozilla::TimeStamp& aProcessStartTime,
-                                    double aSinceTime) const;
+                                double aSinceTime,
+                                mozilla::ProgressLogger aProgressLogger) const;
+  void StreamProfilerOverheadToJSON(
+      SpliceableJSONWriter& aWriter,
+      const mozilla::TimeStamp& aProcessStartTime, double aSinceTime,
+      mozilla::ProgressLogger aProgressLogger) const;
   void StreamCountersToJSON(SpliceableJSONWriter& aWriter,
                             const mozilla::TimeStamp& aProcessStartTime,
-                            double aSinceTime) const;
+                            double aSinceTime,
+                            mozilla::ProgressLogger aProgressLogger) const;
 
   // Find (via |aLastSample|) the most recent sample for the thread denoted by
   // |aThreadId| and clone it, patching in the current time as appropriate.
   // Mutate |aLastSample| to point to the newly inserted sample.
   // Returns whether duplication was successful.
-  bool DuplicateLastSample(int aThreadId,
-                           const mozilla::TimeStamp& aProcessStartTime,
-                           mozilla::Maybe<uint64_t>& aLastSample);
+  bool DuplicateLastSample(ProfilerThreadId aThreadId, double aSampleTimeMs,
+                           mozilla::Maybe<uint64_t>& aLastSample,
+                           const RunningTimes& aRunningTimes);
 
   void DiscardSamplesBeforeTime(double aTime);
 
@@ -113,7 +132,7 @@ class ProfileBuffer final {
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
-  void CollectOverheadStats(mozilla::TimeDuration aSamplingTime,
+  void CollectOverheadStats(double aSamplingTimeMs,
                             mozilla::TimeDuration aLocking,
                             mozilla::TimeDuration aCleaning,
                             mozilla::TimeDuration aCounters,
@@ -134,7 +153,8 @@ class ProfileBuffer final {
   // `static` because it may be used to add an entry to a `ProfileChunkedBuffer`
   // that is not attached to a `ProfileBuffer`.
   static mozilla::ProfileBufferBlockIndex AddThreadIdEntry(
-      mozilla::ProfileChunkedBuffer& aProfileChunkedBuffer, int aThreadId);
+      mozilla::ProfileChunkedBuffer& aProfileChunkedBuffer,
+      ProfilerThreadId aThreadId);
 
   // The storage in which this ProfileBuffer stores its entries.
   mozilla::ProfileChunkedBuffer& mEntries;
@@ -157,27 +177,42 @@ class ProfileBuffer final {
   uint64_t BufferRangeEnd() const { return mEntries.GetState().mRangeEnd; }
 
  private:
-  // 65536 bytes should be plenty for a single backtrace.
-  static constexpr auto WorkerBufferBytes = mozilla::MakePowerOfTwo32<65536>();
-
   // Single pre-allocated chunk (to avoid spurious mallocs), used when:
-  // - Duplicating sleeping stacks.
+  // - Duplicating sleeping stacks (hence scExpectedMaximumStackSize).
   // - Adding JIT info.
   // - Streaming stacks to JSON.
   // Mutable because it's accessed from non-multithreaded const methods.
-  mutable mozilla::ProfileBufferChunkManagerSingle mWorkerChunkManager{
-      mozilla::ProfileBufferChunk::Create(
+  mutable mozilla::Maybe<mozilla::ProfileBufferChunkManagerSingle>
+      mMaybeWorkerChunkManager;
+  mozilla::ProfileBufferChunkManagerSingle& WorkerChunkManager() const {
+    if (mMaybeWorkerChunkManager.isNothing()) {
+      // Only actually allocate it on first use. (Some ProfileBuffers are
+      // temporary and don't actually need this.)
+      mMaybeWorkerChunkManager.emplace(
           mozilla::ProfileBufferChunk::SizeofChunkMetadata() +
-          WorkerBufferBytes.Value())};
+          mozilla::ProfileBufferChunkManager::scExpectedMaximumStackSize);
+    }
+    return *mMaybeWorkerChunkManager;
+  }
 
-  double mFirstSamplingTimeNs = 0.0;
-  double mLastSamplingTimeNs = 0.0;
-  ProfilerStats mIntervalsNs;
-  ProfilerStats mOverheadsNs;
-  ProfilerStats mLockingsNs;
-  ProfilerStats mCleaningsNs;
-  ProfilerStats mCountersNs;
-  ProfilerStats mThreadsNs;
+  // GetStreamingParametersForThreadCallback:
+  //   (ProfilerThreadId) -> Maybe<StreamingParametersForThread>
+  template <typename GetStreamingParametersForThreadCallback>
+  ProfilerThreadId DoStreamSamplesAndMarkersToJSON(
+      mozilla::FailureLatch& aFailureLatch,
+      GetStreamingParametersForThreadCallback&&
+          aGetStreamingParametersForThreadCallback,
+      double aSinceTime, ProcessStreamingContext* aStreamingContextForMarkers,
+      mozilla::ProgressLogger aProgressLogger) const;
+
+  double mFirstSamplingTimeUs = 0.0;
+  double mLastSamplingTimeUs = 0.0;
+  ProfilerStats mIntervalsUs;
+  ProfilerStats mOverheadsUs;
+  ProfilerStats mLockingsUs;
+  ProfilerStats mCleaningsUs;
+  ProfilerStats mCountersUs;
+  ProfilerStats mThreadsUs;
 };
 
 /**
@@ -188,26 +223,39 @@ class ProfileBuffer final {
  */
 class ProfileBufferCollector final : public ProfilerStackCollector {
  public:
-  ProfileBufferCollector(ProfileBuffer& aBuf, uint64_t aSamplePos)
-      : mBuf(aBuf), mSamplePositionInBuffer(aSamplePos) {}
+  ProfileBufferCollector(ProfileBuffer& aBuf, uint64_t aSamplePos,
+                         uint64_t aBufferRangeStart)
+      : mBuf(aBuf),
+        mSamplePositionInBuffer(aSamplePos),
+        mBufferRangeStart(aBufferRangeStart) {
+    MOZ_ASSERT(
+        mSamplePositionInBuffer >= mBufferRangeStart,
+        "The sample position should always be after the buffer range start");
+  }
 
+  // Position at which the sample starts in the profiler buffer (which may be
+  // different from the buffer in which the sample data is collected here).
   mozilla::Maybe<uint64_t> SamplePositionInBuffer() override {
     return mozilla::Some(mSamplePositionInBuffer);
   }
 
+  // Profiler buffer's range start (which may be different from the buffer in
+  // which the sample data is collected here).
   mozilla::Maybe<uint64_t> BufferRangeStart() override {
-    return mozilla::Some(mBuf.BufferRangeStart());
+    return mozilla::Some(mBufferRangeStart);
   }
 
   virtual void CollectNativeLeafAddr(void* aAddr) override;
   virtual void CollectJitReturnAddr(void* aAddr) override;
-  virtual void CollectWasmFrame(const char* aLabel) override;
+  virtual void CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
+                                const char* aLabel) override;
   virtual void CollectProfilingStackFrame(
       const js::ProfilingStackFrame& aFrame) override;
 
  private:
   ProfileBuffer& mBuf;
   uint64_t mSamplePositionInBuffer;
+  uint64_t mBufferRangeStart;
 };
 
 #endif

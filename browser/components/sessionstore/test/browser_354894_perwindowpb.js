@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+"use strict";
+
 /**
  * Checks that restoring the last browser window in session is actually
  * working.
@@ -19,20 +21,21 @@
  * not enabled on that platform (platform shim; the application is kept running
  * although there are no windows left)
  * @note There is a difference when closing a browser window with
- * BrowserTryToCloseWindow() as opposed to close(). The former will make
+ * BrowserCommands.tryToCloseWindow() as opposed to close(). The former will make
  * nsSessionStore restore a window next time it gets a chance and will post
  * notifications. The latter won't.
  */
 
-ChromeUtils.import("resource:///modules/sessionstore/SessionStartup.jsm", this);
 // The rejection "BrowserWindowTracker.getTopWindow(...) is null" is left
 // unhandled in some cases. This bug should be fixed, but for the moment this
-// file is whitelisted.
+// file allows a class of rejections.
 //
-// NOTE: Whitelisting a class of rejections should be limited. Normally you
+// NOTE: Allowing a whole class of rejections should be avoided. Normally you
 //       should use "expectUncaughtRejection" to flag individual failures.
-ChromeUtils.import("resource://testing-common/PromiseTestUtils.jsm", this);
-PromiseTestUtils.whitelistRejectionsGlobally(/getTopWindow/);
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
+);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/getTopWindow/);
 
 // Some urls that might be opened in tabs and/or popups
 // Do not use about:blank:
@@ -71,7 +74,7 @@ function getBrowserWindowsCount() {
   return { open, winstates };
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // Make sure we've only got one browser window to start with
   let { open, winstates } = getBrowserWindowsCount();
   is(open, 1, "Should only be one open window");
@@ -111,7 +114,7 @@ add_task(async function setup() {
  * @returns Promise
  *        Resolves once the test has been cleaned up.
  */
-let setupTest = async function(options, testFunction) {
+let setupTest = async function (options, testFunction) {
   await pushPrefs(
     ["browser.startup.page", 3],
     ["browser.tabs.warnOnClose", false]
@@ -130,7 +133,7 @@ let setupTest = async function(options, testFunction) {
    * Helper: Will observe and handle the notifications for us
    */
   let hitCount = 0;
-  function observer(aCancel, aTopic, aData) {
+  function observer(aCancel, aTopic) {
     // count so that we later may compare
     observing[aTopic]++;
 
@@ -144,8 +147,9 @@ let setupTest = async function(options, testFunction) {
     Services.obs.addObserver(observer, o);
   }
 
-  let private = options.private || false;
-  let newWin = await promiseNewWindowLoaded({ private });
+  let newWin = await promiseNewWindowLoaded({
+    private: options.private || false,
+  });
 
   await injectTestTabs(newWin);
 
@@ -178,7 +182,7 @@ function injectTestTabs(win) {
 }
 
 /**
- * Attempts to close a window via BrowserTryToCloseWindow so that
+ * Attempts to close a window via BrowserCommands.tryToCloseWindow so that
  * we get the browser-lastwindow-close-requested and
  * browser-lastwindow-close-granted observer notifications.
  *
@@ -191,7 +195,7 @@ function injectTestTabs(win) {
 function closeWindowForRestoration(win) {
   return new Promise(resolve => {
     let closePromise = BrowserTestUtils.windowClosed(win);
-    win.BrowserTryToCloseWindow();
+    win.BrowserCommands.tryToCloseWindow();
     if (!win.closed) {
       resolve(false);
       return;
@@ -220,7 +224,7 @@ add_task(async function test_open_close_normal() {
     return;
   }
 
-  await setupTest({ denyFirst: true }, async function(newWin, obs) {
+  await setupTest({ denyFirst: true }, async function (newWin, obs) {
     let closed = await closeWindowForRestoration(newWin);
     ok(!closed, "First close request should have been denied");
 
@@ -273,7 +277,7 @@ add_task(async function test_open_close_private_browsing() {
     return;
   }
 
-  await setupTest({}, async function(newWin, obs) {
+  await setupTest({}, async function (newWin, obs) {
     let closed = await closeWindowForRestoration(newWin);
     ok(closed, "Should be able to close the window");
 
@@ -334,7 +338,7 @@ add_task(async function test_open_close_only_popup() {
     return;
   }
 
-  await setupTest({}, async function(newWin, obs) {
+  await setupTest({}, async function (newWin, obs) {
     // We actually don't care about the initial window in this test.
     await BrowserTestUtils.closeWindow(newWin);
 
@@ -411,7 +415,7 @@ add_task(async function test_open_close_restore_from_popup() {
     return;
   }
 
-  await setupTest({}, async function(newWin, obs) {
+  await setupTest({}, async function (newWin) {
     let newWin2 = await promiseNewWindowLoaded();
     await injectTestTabs(newWin2);
 
@@ -463,7 +467,7 @@ add_task(async function test_mac_notifications() {
     return;
   }
 
-  await setupTest({ denyFirst: true }, async function(newWin, obs) {
+  await setupTest({ denyFirst: true }, async function (newWin, obs) {
     let closed = await closeWindowForRestoration(newWin);
     ok(!closed, "First close attempt should be denied");
     closed = await closeWindowForRestoration(newWin);

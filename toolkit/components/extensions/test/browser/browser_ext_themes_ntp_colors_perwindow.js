@@ -2,10 +2,22 @@
 
 // This test checks whether the new tab page color properties work per-window.
 
+function waitForAboutNewTabReady(browser, url) {
+  // Stop-gap fix for https://bugzilla.mozilla.org/show_bug.cgi?id=1697196#c24
+  return SpecialPowers.spawn(browser, [url], async url => {
+    let doc = content.document;
+    await ContentTaskUtils.waitForCondition(
+      () => doc.querySelector(".outer-wrapper"),
+      `Waiting for page wrapper to be initialized at ${url}`
+    );
+  });
+}
+
 /**
  * Test whether a given browser has the new tab page theme applied
- * @param {Object} browser to test against
- * @param {Object} theme that is applied
+ *
+ * @param {object} browser to test against
+ * @param {object} theme that is applied
  * @param {boolean} isBrightText whether the brighttext attribute should be set
  * @returns {Promise} The task as a promise
  */
@@ -17,17 +29,22 @@ function test_ntp_theme(browser, theme, isBrightText) {
       {
         isBrightText,
         background: hexToCSS(theme.colors.ntp_background),
+        card_background: hexToCSS(theme.colors.ntp_card_background),
         color: hexToCSS(theme.colors.ntp_text),
       },
     ],
-    function({ isBrightText, background, color }) {
+    function ({ isBrightText, background, card_background, color }) {
       let doc = content.document;
       ok(
-        doc.body.hasAttribute("lwt-newtab"),
+        doc.documentElement.hasAttribute("lwt-newtab"),
         "New tab page should have lwt-newtab attribute"
       );
+      ok(
+        doc.documentElement.hasAttribute("lwtheme"),
+        "New tab page should have lwtheme attribute"
+      );
       is(
-        doc.body.hasAttribute("lwt-newtab-brighttext"),
+        doc.documentElement.hasAttribute("lwt-newtab-brighttext"),
         isBrightText,
         `New tab page should${
           !isBrightText ? " not" : ""
@@ -40,6 +57,12 @@ function test_ntp_theme(browser, theme, isBrightText) {
         "New tab page background should be set."
       );
       is(
+        content.getComputedStyle(doc.querySelector(".top-site-outer .tile"))
+          .backgroundColor,
+        card_background,
+        "New tab page card background should be set."
+      );
+      is(
         content.getComputedStyle(doc.querySelector(".outer-wrapper")).color,
         color,
         "New tab page text color should be set."
@@ -50,61 +73,32 @@ function test_ntp_theme(browser, theme, isBrightText) {
 
 /**
  * Test whether a given browser has the default theme applied
- * @param {Object} browser to test against
- * @param {string} url being tested
+ *
+ * @param {object} browser to test against
  * @returns {Promise} The task as a promise
  */
-function test_ntp_default_theme(browser, url) {
+function test_ntp_default_theme(browser) {
   Services.ppmm.sharedData.flush();
-  if (url === "about:welcome") {
-    return SpecialPowers.spawn(
-      browser,
-      [
-        {
-          background: hexToCSS("#EDEDF0"),
-          color: hexToCSS("#0C0C0D"),
-        },
-      ],
-      function({ background, color }) {
-        let doc = content.document;
-        ok(
-          !doc.body.hasAttribute("lwt-newtab"),
-          "About:welcome page should not have lwt-newtab attribute"
-        );
-        ok(
-          !doc.body.hasAttribute("lwt-newtab-brighttext"),
-          `About:welcome page should not have lwt-newtab-brighttext attribute`
-        );
-
-        is(
-          content.getComputedStyle(doc.body).backgroundColor,
-          background,
-          "About:welcome page background should be reset."
-        );
-        is(
-          content.getComputedStyle(doc.querySelector(".outer-wrapper")).color,
-          color,
-          "About:welcome page text color should be reset."
-        );
-      }
-    );
-  }
   return SpecialPowers.spawn(
     browser,
     [
       {
-        background: hexToCSS("#F9F9FA"),
-        color: hexToCSS("#0C0C0D"),
+        background: hexToCSS("#F9F9FB"),
+        color: hexToCSS("#15141A"),
       },
     ],
-    function({ background, color }) {
+    function ({ background, color }) {
       let doc = content.document;
       ok(
-        !doc.body.hasAttribute("lwt-newtab"),
+        !doc.documentElement.hasAttribute("lwt-newtab"),
         "New tab page should not have lwt-newtab attribute"
       );
       ok(
-        !doc.body.hasAttribute("lwt-newtab-brighttext"),
+        !doc.documentElement.hasAttribute("lwtheme"),
+        "New tab page should not have lwtheme attribute"
+      );
+      ok(
+        !doc.documentElement.hasAttribute("lwt-newtab-brighttext"),
         `New tab page should not have lwt-newtab-brighttext attribute`
       );
 
@@ -168,6 +162,7 @@ add_task(async function test_per_window_ntp_theme() {
           frame: "#add8e6",
           tab_background_text: "#000",
           ntp_background: "#add8e6",
+          ntp_card_background: "#ff0000",
           ntp_text: "#000",
         },
       };
@@ -177,6 +172,7 @@ add_task(async function test_per_window_ntp_theme() {
           frame: "#00008b",
           tab_background_text: "#add8e6",
           ntp_background: "#00008b",
+          ntp_card_background: "#00ff00",
           ntp_text: "#add8e6",
         },
       };
@@ -185,6 +181,9 @@ add_task(async function test_per_window_ntp_theme() {
       // We are opening about:blank instead of the default homepage,
       // because using the default homepage results in intermittent
       // test failures on debug builds due to browser window leaks.
+      // A side effect of testing on about:blank is that
+      // test_ntp_default_theme cannot test properties used only on
+      // about:newtab, like ntp_card_background.
       let { id: secondWinId } = await browser.windows.create({
         url: "about:blank",
       });
@@ -215,13 +214,14 @@ add_task(async function test_per_window_ntp_theme() {
     async ({ theme, isBrightText, winId }) => {
       let win = Services.wm.getOuterWindowWithId(winId);
       win.NewTabPagePreloading.removePreloadedBrowser(win);
-      // These pages were initially chosen because LightweightThemeChild.jsm
+      // These pages were initially chosen because LightweightThemeChild.sys.mjs
       // treats them specially.
-      for (let url of ["about:newtab", "about:home", "about:welcome"]) {
+      for (let url of ["about:newtab", "about:home"]) {
         info("Opening url: " + url);
         await BrowserTestUtils.withNewTab(
           { gBrowser: win.gBrowser, url },
           async browser => {
+            await waitForAboutNewTabReady(browser, url);
             if (theme) {
               await test_ntp_theme(browser, theme, isBrightText);
             } else {
@@ -237,10 +237,8 @@ add_task(async function test_per_window_ntp_theme() {
   // BrowserTestUtils.withNewTab waits for about:newtab to load
   // so we disable preloading before running the test.
   await SpecialPowers.setBoolPref("browser.newtab.preload", false);
-  await SpecialPowers.setBoolPref("browser.aboutwelcome.enabled", true);
   registerCleanupFunction(() => {
     SpecialPowers.clearUserPref("browser.newtab.preload");
-    SpecialPowers.clearUserPref("browser.aboutwelcome.enabled");
   });
 
   await extension.startup();

@@ -9,8 +9,12 @@
 
 #include <windows.h>
 
+#include "mozilla/MozPromise.h"
+#include "mozilla/dom/BlobImpl.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/GetFilesHelper.h"
+#include "nsIContentAnalysis.h"
 #include "nsIFile.h"
-#include "nsITimer.h"
 #include "nsISimpleEnumerator.h"
 #include "nsCOMArray.h"
 #include "nsBaseFilePicker.h"
@@ -21,6 +25,12 @@
 #undef LogSeverity  // SetupAPI.h #defines this as DWORD
 
 class nsILoadContext;
+
+namespace mozilla::widget::filedialog {
+class Command;
+class Results;
+enum class FileDialogType : uint8_t;
+}  // namespace mozilla::widget::filedialog
 
 class nsBaseWinFilePicker : public nsBaseFilePicker {
  public:
@@ -39,19 +49,25 @@ class nsBaseWinFilePicker : public nsBaseFilePicker {
  * Native Windows FileSelector wrapper
  */
 
-class nsFilePicker : public IFileDialogEvents, public nsBaseWinFilePicker {
-  virtual ~nsFilePicker();
+class nsFilePicker final : public nsBaseWinFilePicker {
+  virtual ~nsFilePicker() = default;
+
+  template <typename T>
+  using Maybe = mozilla::Maybe<T>;
+  template <typename T>
+  using Result = mozilla::Result<T, HRESULT>;
+
+  using Command = mozilla::widget::filedialog::Command;
+  using Results = mozilla::widget::filedialog::Results;
+  using FileDialogType = mozilla::widget::filedialog::FileDialogType;
 
  public:
   nsFilePicker();
 
-  NS_IMETHOD Init(mozIDOMWindowProxy* aParent, const nsAString& aTitle,
-                  int16_t aMode) override;
+  NS_IMETHOD Init(mozilla::dom::BrowsingContext* aBrowsingContext,
+                  const nsAString& aTitle, nsIFilePicker::Mode aMode) override;
 
   NS_DECL_ISUPPORTS
-
-  // IUnknown's QueryInterface
-  STDMETHODIMP QueryInterface(REFIID refiid, void** ppvResult);
 
   // nsIFilePicker (less what's in nsBaseFilePicker and nsBaseWinFilePicker)
   NS_IMETHOD GetFilterIndex(int32_t* aFilterIndex) override;
@@ -62,67 +78,48 @@ class nsFilePicker : public IFileDialogEvents, public nsBaseWinFilePicker {
   NS_IMETHOD AppendFilter(const nsAString& aTitle,
                           const nsAString& aFilter) override;
 
-  // IFileDialogEvents
-  HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog* pfd);
-  HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog* pfd,
-                                             IShellItem* psiFolder);
-  HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog* pfd);
-  HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog* pfd);
-  HRESULT STDMETHODCALLTYPE
-  OnShareViolation(IFileDialog* pfd, IShellItem* psi,
-                   FDE_SHAREVIOLATION_RESPONSE* pResponse);
-  HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog* pfd);
-  HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog* pfd, IShellItem* psi,
-                                        FDE_OVERWRITE_RESPONSE* pResponse);
-
  protected:
   /* method from nsBaseFilePicker */
   virtual void InitNative(nsIWidget* aParent, const nsAString& aTitle) override;
-  nsresult Show(int16_t* aReturnVal) override;
-  nsresult ShowW(int16_t* aReturnVal);
+  nsresult Show(nsIFilePicker::ResultCode* aReturnVal) override;
   void GetFilterListArray(nsString& aFilterList);
-  bool ShowFolderPicker(const nsString& aInitialDir);
-  bool ShowFilePicker(const nsString& aInitialDir);
+
+  NS_IMETHOD Open(nsIFilePickerShownCallback* aCallback) override;
+
+ private:
+  using Unit = mozilla::Ok;
+  RefPtr<mozilla::MozPromise<bool, Unit, true>> ShowFolderPicker(
+      const nsString& aInitialDir);
+  RefPtr<mozilla::MozPromise<bool, Unit, true>> ShowFilePicker(
+      const nsString& aInitialDir);
+
+  void ClearFiles();
+  using ContentAnalysisResponse = mozilla::MozPromise<bool, nsresult, true>;
+  RefPtr<ContentAnalysisResponse> CheckContentAnalysisService();
+
+ protected:
   void RememberLastUsedDirectory();
   bool IsPrivacyModeEnabled();
   bool IsDefaultPathLink();
   bool IsDefaultPathHtml();
-  void SetDialogHandle(HWND aWnd);
-  bool ClosePickerIfNeeded();
-  static void PickerCallbackTimerFunc(nsITimer* aTimer, void* aPicker);
 
-  nsCOMPtr<nsILoadContext> mLoadContext;
   nsCOMPtr<nsIWidget> mParentWidget;
   nsString mTitle;
   nsCString mFile;
-  nsString mFilterList;
-  int16_t mSelectedType;
+  int32_t mSelectedType;
   nsCOMArray<nsIFile> mFiles;
-  static char mLastUsedDirectory[];
   nsString mUnicodeFile;
-  static char16_t* mLastUsedUnicodeDirectory;
-  HWND mDlgWnd;
 
-  class ComDlgFilterSpec {
-   public:
-    ComDlgFilterSpec() {}
-    ~ComDlgFilterSpec() {}
-
-    const uint32_t Length() { return mSpecList.Length(); }
-
-    const bool IsEmpty() { return (mSpecList.Length() == 0); }
-
-    const COMDLG_FILTERSPEC* get() { return mSpecList.Elements(); }
-
-    void Append(const nsAString& aTitle, const nsAString& aFilter);
-
-   private:
-    AutoTArray<COMDLG_FILTERSPEC, 1> mSpecList;
-    AutoTArray<nsString, 2> mStrings;
+  struct FreeDeleter {
+    void operator()(void* aPtr) { ::free(aPtr); }
   };
+  static mozilla::UniquePtr<char16_t[], FreeDeleter> sLastUsedUnicodeDirectory;
 
-  ComDlgFilterSpec mComFilterList;
-  DWORD mFDECookie;
+  struct Filter {
+    nsString title;
+    nsString filter;
+  };
+  AutoTArray<Filter, 1> mFilterList;
 };
 
 #endif  // nsFilePicker_h__

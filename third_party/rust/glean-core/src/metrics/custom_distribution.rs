@@ -2,7 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::error_recording::{record_error, ErrorType};
+use std::sync::Arc;
+
+use crate::common_metric_data::CommonMetricDataInternal;
+use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorType};
 use crate::histogram::{Bucketing, Histogram, HistogramType};
 use crate::metrics::{DistributionData, Metric, MetricType};
 use crate::storage::StorageManager;
@@ -12,9 +15,9 @@ use crate::Glean;
 /// A custom distribution metric.
 ///
 /// Memory distributions are used to accumulate and store memory sizes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CustomDistributionMetric {
-    meta: CommonMetricData,
+    meta: Arc<CommonMetricDataInternal>,
     range_min: u64,
     range_max: u64,
     bucket_count: u64,
@@ -26,35 +29,40 @@ pub struct CustomDistributionMetric {
 /// The snapshot can be serialized into the payload format.
 pub(crate) fn snapshot<B: Bucketing>(hist: &Histogram<B>) -> DistributionData {
     DistributionData {
-        values: hist.snapshot_values(),
-        sum: hist.sum(),
+        values: hist
+            .snapshot_values()
+            .into_iter()
+            .map(|(k, v)| (k as i64, v as i64))
+            .collect(),
+        sum: hist.sum() as i64,
+        count: hist.count() as i64,
     }
 }
 
 impl MetricType for CustomDistributionMetric {
-    fn meta(&self) -> &CommonMetricData {
+    fn meta(&self) -> &CommonMetricDataInternal {
         &self.meta
-    }
-
-    fn meta_mut(&mut self) -> &mut CommonMetricData {
-        &mut self.meta
     }
 }
 
+// IMPORTANT:
+//
+// When changing this implementation, make sure all the operations are
+// also declared in the related trait in `../traits/`.
 impl CustomDistributionMetric {
-    /// Create a new memory distribution metric.
+    /// Creates a new memory distribution metric.
     pub fn new(
         meta: CommonMetricData,
-        range_min: u64,
-        range_max: u64,
-        bucket_count: u64,
+        range_min: i64,
+        range_max: i64,
+        bucket_count: i64,
         histogram_type: HistogramType,
     ) -> Self {
         Self {
-            meta,
-            range_min,
-            range_max,
-            bucket_count,
+            meta: Arc::new(meta.into()),
+            range_min: range_min as u64,
+            range_max: range_max as u64,
+            bucket_count: bucket_count as u64,
             histogram_type,
         }
     }
@@ -66,15 +74,47 @@ impl CustomDistributionMetric {
     /// will take care of filtering and reporting errors for any provided negative
     /// sample.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// - `samples` - The vector holding the samples to be recorded by the metric.
     ///
     /// ## Notes
     ///
-    /// Discards any negative value in `samples` and report an `ErrorType::InvalidValue`
+    /// Discards any negative value in `samples` and report an [`ErrorType::InvalidValue`]
     /// for each of them.
-    pub fn accumulate_samples_signed(&self, glean: &Glean, samples: Vec<i64>) {
+    pub fn accumulate_samples(&self, samples: Vec<i64>) {
+        let metric = self.clone();
+        crate::launch_with_glean(move |glean| metric.accumulate_samples_sync(glean, &samples))
+    }
+
+    /// Accumulates precisely one signed sample and appends it to the metric.
+    ///
+    /// Signed is required so that the platform-specific code can provide us with a
+    /// 64 bit signed integer if no `u64` comparable type is available. This
+    /// will take care of filtering and reporting errors.
+    ///
+    /// # Arguments
+    ///
+    /// - `sample` - The singular sample to be recorded by the metric.
+    ///
+    /// ## Notes
+    ///
+    /// Discards any negative value of `sample` and reports an
+    /// [`ErrorType::InvalidValue`](crate::ErrorType::InvalidValue).
+    pub fn accumulate_single_sample(&self, sample: i64) {
+        let metric = self.clone();
+        crate::launch_with_glean(move |glean| metric.accumulate_samples_sync(glean, &[sample]))
+    }
+
+    /// Accumulates the provided sample in the metric synchronously.
+    ///
+    /// See [`accumulate_samples`](Self::accumulate_samples) for details.
+    #[doc(hidden)]
+    pub fn accumulate_samples_sync(&self, glean: &Glean, samples: &[i64]) {
+        if !self.should_record(glean) {
+            return;
+        }
+
         let mut num_negative_samples = 0;
 
         // Generic accumulation function to handle the different histogram types and count negative
@@ -111,7 +151,7 @@ impl CustomDistributionMetric {
                             self.bucket_count as usize,
                         )
                     };
-                    accumulate(&samples, hist, Metric::CustomDistributionLinear)
+                    accumulate(samples, hist, Metric::CustomDistributionLinear)
                 }
                 HistogramType::Exponential => {
                     let hist = if let Some(Metric::CustomDistributionExponential(hist)) = old_value
@@ -124,7 +164,7 @@ impl CustomDistributionMetric {
                             self.bucket_count as usize,
                         )
                     };
-                    accumulate(&samples, hist, Metric::CustomDistributionExponential)
+                    accumulate(samples, hist, Metric::CustomDistributionExponential)
                 }
             };
 
@@ -144,16 +184,22 @@ impl CustomDistributionMetric {
         }
     }
 
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Get the currently stored histogram.
-    ///
-    /// This doesn't clear the stored value.
-    pub fn test_get_value(&self, glean: &Glean, storage_name: &str) -> Option<DistributionData> {
-        match StorageManager.snapshot_metric(
+    /// Gets the currently stored histogram.
+    #[doc(hidden)]
+    pub fn get_value<'a, S: Into<Option<&'a str>>>(
+        &self,
+        glean: &Glean,
+        ping_name: S,
+    ) -> Option<DistributionData> {
+        let queried_ping_name = ping_name
+            .into()
+            .unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
+
+        match StorageManager.snapshot_metric_for_test(
             glean.storage(),
-            storage_name,
+            queried_ping_name,
             &self.meta.identifier(glean),
+            self.meta.inner.lifetime,
         ) {
             // Boxing the value, in order to return either of the possible buckets
             Some(Metric::CustomDistributionExponential(hist)) => Some(snapshot(&hist)),
@@ -164,15 +210,39 @@ impl CustomDistributionMetric {
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently stored histogram as a JSON String of the serialized value.
+    /// Gets the currently stored value as an integer.
     ///
     /// This doesn't clear the stored value.
-    pub fn test_get_value_as_json_string(
-        &self,
-        glean: &Glean,
-        storage_name: &str,
-    ) -> Option<String> {
-        self.test_get_value(glean, storage_name)
-            .map(|snapshot| serde_json::to_string(&snapshot).unwrap())
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
+    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<DistributionData> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| self.get_value(glean, ping_name.as_deref()))
+    }
+
+    /// **Exported for test purposes.**
+    ///
+    /// Gets the number of recorded errors for the given metric and error type.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The type of error
+    ///
+    /// # Returns
+    ///
+    /// The number of errors reported.
+    pub fn test_get_num_recorded_errors(&self, error: ErrorType) -> i32 {
+        crate::block_on_dispatcher();
+
+        crate::core::with_glean(|glean| {
+            test_get_num_recorded_errors(glean, self.meta(), error).unwrap_or(0)
+        })
     }
 }

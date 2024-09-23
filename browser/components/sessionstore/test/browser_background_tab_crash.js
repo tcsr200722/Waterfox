@@ -26,14 +26,19 @@
  */
 async function setupBackgroundTabs(testFn) {
   const REMOTE_PAGE = "http://www.example.com";
-  const NON_REMOTE_PAGE = "about:robots";
+  const NON_REMOTE_PAGE = "about:mozilla";
 
   // Browse the initial tab to a non-remote page, which we'll have in the
   // foreground.
   let initialTab = gBrowser.selectedTab;
   let initialBrowser = initialTab.linkedBrowser;
-  BrowserTestUtils.loadURI(initialBrowser, NON_REMOTE_PAGE);
+  BrowserTestUtils.startLoadingURIString(initialBrowser, NON_REMOTE_PAGE);
   await BrowserTestUtils.browserLoaded(initialBrowser);
+  // Quick sanity check - the browser should be non remote.
+  Assert.ok(
+    !initialBrowser.isRemoteBrowser,
+    "Initial browser should not be remote."
+  );
 
   // Open some tabs that should be running in the content process.
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, REMOTE_PAGE);
@@ -106,10 +111,15 @@ async function crashBackgroundTabs(tabs) {
   }
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // We'll simplify by making sure we only ever one content process for this
   // test.
-  await SpecialPowers.pushPrefEnv({ set: [["dom.ipc.processCount", 1]] });
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["dom.ipc.processCount", 1],
+      ["dom.ipc.processCount.webIsolated", 1],
+    ],
+  });
 
   // On debug builds, crashing tabs results in much thinking, which
   // slows down the test and results in intermittent test timeouts,
@@ -124,7 +134,7 @@ add_task(async function setup() {
  * on demand.
  */
 add_task(async function test_background_crash_simple() {
-  await setupBackgroundTabs(async function([tab1, tab2]) {
+  await setupBackgroundTabs(async function ([tab1, tab2]) {
     // Let's crash one of those background tabs now...
     await crashBackgroundTabs([tab1, tab2]);
 
@@ -157,7 +167,7 @@ add_task(async function test_background_crash_autosubmit_backlogged() {
     set: [["browser.crashReports.unsubmittedCheck.autoSubmit2", true]],
   });
 
-  await setupBackgroundTabs(async function([tab1, tab2]) {
+  await setupBackgroundTabs(async function ([tab1, tab2]) {
     // Let's crash one of those background tabs now...
     await crashBackgroundTabs([tab1, tab2]);
 
@@ -188,7 +198,7 @@ add_task(async function test_background_crash_autosubmit_backlogged() {
 add_task(async function test_background_crash_multiple() {
   let initialTab = gBrowser.selectedTab;
 
-  await setupBackgroundTabs(async function([tab1, tab2]) {
+  await setupBackgroundTabs(async function ([tab1, tab2]) {
     // Let's crash one of those background tabs now...
     await crashBackgroundTabs([tab1, tab2]);
 
@@ -206,7 +216,7 @@ add_task(async function test_background_crash_multiple() {
     // Now switch back to the original non-remote tab...
     await BrowserTestUtils.switchTab(gBrowser, initialTab);
 
-    await setupBackgroundTabs(async function([tab3, tab4]) {
+    await setupBackgroundTabs(async function ([tab3, tab4]) {
       await crashBackgroundTabs([tab3, tab4]);
 
       // Selecting the second tab should restore it.

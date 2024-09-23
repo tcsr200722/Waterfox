@@ -11,28 +11,30 @@
 
 /**
  * An array of tree items corresponding to TEST_CASES.
- * @type nsICertTreeItem[]
+ *
+ * @type {nsICertTreeItem[]}
  */
 var gCertArray = [];
 
 const FAKE_HOST_PORT = "Fake host and port";
 
 /**
- * @typedef {TestCase}
- * @type Object
- * @property {String} certFilename
+ * @typedef TestCase
+ * @type {object}
+ * @property {string} certFilename
  *           Filename of the cert, or null if we don't want to import a cert for
  *           this test case (i.e. we expect the hostPort attribute of
  *           nsICertTreeItem to be used).
- * @property {String} expectedDisplayString
+ * @property {string} expectedDisplayString
  *           The string we expect the UI to display to represent the given cert.
- * @property {String} expectedSerialNumber
+ * @property {string} expectedSerialNumber
  *           The serial number we expect the UI to display if it exists.
  */
 
 /**
  * A list of test cases representing certs that get "deleted".
- * @type TestCase[]
+ *
+ * @type {TestCase[]}
  */
 const TEST_CASES = [
   {
@@ -70,7 +72,7 @@ const TEST_CASES = [
 /**
  * Opens the cert delete confirmation dialog.
  *
- * @param {String} tabID
+ * @param {string} tabID
  *        The ID of the cert category tab the certs to delete belong to.
  * @returns {Promise}
  *          A promise that resolves when the dialog has finished loading, with
@@ -90,10 +92,10 @@ function openDeleteCertConfirmDialog(tabID) {
     gCertArray,
     retVals
   );
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     win.addEventListener(
       "load",
-      function() {
+      function () {
         executeSoon(() => resolve([win, retVals]));
       },
       { once: true }
@@ -101,7 +103,7 @@ function openDeleteCertConfirmDialog(tabID) {
   });
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   for (let testCase of TEST_CASES) {
     let cert = null;
     if (testCase.certFilename) {
@@ -119,13 +121,13 @@ add_task(async function setup() {
 /**
  * Test helper for the below test cases.
  *
- * @param {String} tabID
+ * @param {string} tabID
  *        ID of the cert category tab the certs to delete belong to.
- * @param {String} expectedTitleL10nId
+ * @param {string} expectedTitleL10nId
  *        The L10nId of title the dialog is expected to have.
- * @param {String} expectedConfirmL10nId
+ * @param {string} expectedConfirmL10nId
  *        The l10n id of confirmation message the dialog expected to show.
- * @param {String} expectedImpactL10nId
+ * @param {string} expectedImpactL10nId
  *        The l10n id of impact the dialog expected to show.
  */
 async function testHelper(
@@ -207,19 +209,6 @@ add_task(async function testDeleteOtherPeopleCerts() {
   const expectedImpactL10nId = { id: "delete-email-cert-impact", args: null };
   await testHelper(
     "others_tab",
-    expectedTitleL10nId,
-    expectedConfirmL10nId,
-    expectedImpactL10nId
-  );
-});
-
-// Test deleting certs from the "Servers" tab.
-add_task(async function testDeleteServerCerts() {
-  const expectedTitleL10nId = { id: "delete-ssl-cert-title", args: null };
-  const expectedConfirmL10nId = { id: "delete-ssl-cert-confirm", args: null };
-  const expectedImpactL10nId = { id: "delete-ssl-cert-impact", args: null };
-  await testHelper(
-    "websites_tab",
     expectedTitleL10nId,
     expectedConfirmL10nId,
     expectedImpactL10nId

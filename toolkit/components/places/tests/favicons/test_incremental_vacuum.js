@@ -3,11 +3,11 @@
 
 // Tests incremental vacuum of the favicons database.
 
-const { PlacesDBUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesDBUtils.jsm"
+const { PlacesDBUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PlacesDBUtils.sys.mjs"
 );
 
-add_task(async function() {
+add_task(async function () {
   let icon = {
     file: do_get_file("noise.png"),
     mimetype: "image/png",
@@ -16,10 +16,9 @@ add_task(async function() {
   let url = "http://foo.bar/";
   await PlacesTestUtils.addVisits(url);
   for (let i = 0; i < 10; ++i) {
-    let iconUri = NetUtil.newURI("http://mozilla.org/" + i);
-    let data = readFileData(icon.file);
-    PlacesUtils.favicons.replaceFaviconData(iconUri, data, icon.mimetype);
-    await setFaviconForPage(url, iconUri);
+    let iconUri = "http://mozilla.org/" + i;
+    let dataURL = await readFileDataAsDataURL(icon.file, icon.mimetype);
+    await PlacesTestUtils.setFaviconForPage(url, iconUri, dataURL);
   }
 
   let promise = TestUtils.topicObserved("places-favicons-expired");

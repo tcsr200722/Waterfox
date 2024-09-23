@@ -28,18 +28,19 @@ Object.defineProperty(obj, "prop", {
   enumerable: false,
   configurable: false
 });
-var desc1 = Object.getOwnPropertyDescriptor(obj, "prop");
 
 try {
   Object.defineProperty(obj, "prop", {
     configurable: true
   });
 
-  $ERROR("Expected TypeError");
+  throw new Test262Error("Expected TypeError");
 } catch (e) {
   assert(e instanceof TypeError);
-  assert.sameValue(desc1.configurable, false);
-  verifyNotConfigurable(obj, "prop");
 }
+
+verifyProperty(obj, "prop", {
+  configurable: false,
+});
 
 reportCompare(0, 0);

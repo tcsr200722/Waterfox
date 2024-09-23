@@ -3,20 +3,19 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
 import textwrap
 
 from marionette_harness.marionette_test import MarionetteTestCase
 
 
 class TestEnginesOnRestart(MarionetteTestCase):
-
     def setUp(self):
         super(TestEnginesOnRestart, self).setUp()
-        self.marionette.enforce_gecko_prefs({
-            'browser.search.log': True,
-            'browser.search.geoSpecificDefaults': False
-        })
+        self.marionette.enforce_gecko_prefs(
+            {
+                "browser.search.log": True,
+            }
+        )
 
     def get_default_search_engine(self):
         """Retrieve the identifier of the default search engine."""

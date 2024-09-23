@@ -6,14 +6,35 @@
 
 "use strict";
 
-/* exported registerContentScript, unregisterContentScript */
-/* global registerContentScript, unregisterContentScript */
-
-var { ExtensionUtils } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionUtils.jsm"
+var { ExtensionUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionUtils.sys.mjs"
 );
 
 var { ExtensionError, getUniqueId } = ExtensionUtils;
+
+function getOriginAttributesPatternForCookieStoreId(cookieStoreId) {
+  if (isDefaultCookieStoreId(cookieStoreId)) {
+    return {
+      userContextId: Ci.nsIScriptSecurityManager.DEFAULT_USER_CONTEXT_ID,
+      privateBrowsingId:
+        Ci.nsIScriptSecurityManager.DEFAULT_PRIVATE_BROWSING_ID,
+    };
+  }
+  if (isPrivateCookieStoreId(cookieStoreId)) {
+    return {
+      userContextId: Ci.nsIScriptSecurityManager.DEFAULT_USER_CONTEXT_ID,
+      privateBrowsingId: 1,
+    };
+  }
+  if (isContainerCookieStoreId(cookieStoreId)) {
+    let userContextId = getContainerForCookieStoreId(cookieStoreId);
+    if (userContextId !== null) {
+      return { userContextId };
+    }
+  }
+
+  throw new ExtensionError("Invalid cookieStoreId");
+}
 
 /**
  * Represents (in the main browser process) a content script registered
@@ -71,10 +92,22 @@ class ContentScriptParent {
       excludeGlobs: details.excludeGlobs,
       allFrames: details.allFrames,
       matchAboutBlank: details.matchAboutBlank,
+      matchOriginAsFallback: details.matchOriginAsFallback,
       runAt: details.runAt || "document_idle",
+      world: details.world || "ISOLATED",
       jsPaths: [],
       cssPaths: [],
+      originAttributesPatterns: null,
     };
+
+    if (details.cookieStoreId != null) {
+      const cookieStoreIds = Array.isArray(details.cookieStoreId)
+        ? details.cookieStoreId
+        : [details.cookieStoreId];
+      options.originAttributesPatterns = cookieStoreIds.map(cookieStoreId =>
+        getOriginAttributesPatternForCookieStoreId(cookieStoreId)
+      );
+    }
 
     const convertCodeToURL = (data, mime) => {
       const blob = new context.cloneScope.Blob(data, { type: mime });
@@ -147,9 +180,7 @@ this.contentScripts = class extends ExtensionAPI {
       contentScripts: {
         async register(details) {
           for (let origin of details.matches) {
-            if (
-              !extension.whiteListedHosts.subsumes(new MatchPattern(origin))
-            ) {
+            if (!extension.allowedOrigins.subsumes(new MatchPattern(origin))) {
               throw new ExtensionError(
                 `Permission denied to register a content script for ${origin}`
               );
@@ -163,14 +194,13 @@ this.contentScripts = class extends ExtensionAPI {
 
           const scriptOptions = contentScript.serialize();
 
-          await extension.broadcast("Extension:RegisterContentScript", {
-            id: extension.id,
-            options: scriptOptions,
-            scriptId,
-          });
-
           extension.registeredContentScripts.set(scriptId, scriptOptions);
           extension.updateContentScripts();
+
+          await extension.broadcast("Extension:RegisterContentScripts", {
+            id: extension.id,
+            scripts: [{ scriptId, options: scriptOptions }],
+          });
 
           return scriptId;
         },

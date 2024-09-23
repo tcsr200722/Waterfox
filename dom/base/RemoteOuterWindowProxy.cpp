@@ -6,13 +6,15 @@
 
 #include "AccessCheck.h"
 #include "js/Proxy.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/ProxyHandlerUtils.h"
 #include "mozilla/dom/RemoteObjectProxy.h"
 #include "mozilla/dom/WindowBinding.h"
+#include "mozilla/dom/WindowProxyHolder.h"
 #include "xpcprivate.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * RemoteOuterWindowProxy is the proxy handler for the WindowProxy objects for
@@ -24,10 +26,9 @@ namespace dom {
 
 class RemoteOuterWindowProxy
     : public RemoteObjectProxy<BrowsingContext,
-                               Window_Binding::sCrossOriginAttributes,
-                               Window_Binding::sCrossOriginMethods> {
+                               Window_Binding::sCrossOriginProperties> {
  public:
-  typedef RemoteObjectProxy Base;
+  using Base = RemoteObjectProxy;
 
   constexpr RemoteOuterWindowProxy()
       : RemoteObjectProxy(prototypes::id::Window) {}
@@ -35,7 +36,7 @@ class RemoteOuterWindowProxy
   // Standard internal methods
   bool getOwnPropertyDescriptor(
       JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
-      JS::MutableHandle<JS::PropertyDescriptor> aDesc) const final;
+      JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const final;
   bool ownPropertyKeys(JSContext* aCx, JS::Handle<JSObject*> aProxy,
                        JS::MutableHandleVector<jsid> aProps) const final;
 
@@ -48,7 +49,7 @@ class RemoteOuterWindowProxy
                     nsCycleCollectionTraversalCallback& aCb) const override {
     CycleCollectionNoteChild(aCb,
                              static_cast<BrowsingContext*>(GetNative(aProxy)),
-                             "js::GetObjectPrivate(obj)");
+                             "JS::GetPrivate(obj)");
   }
 };
 
@@ -77,34 +78,36 @@ BrowsingContext* GetBrowsingContext(JSObject* aProxy) {
       RemoteObjectProxyBase::GetNative(aProxy));
 }
 
-bool WrapResult(JSContext* aCx, JS::Handle<JSObject*> aProxy,
-                BrowsingContext* aResult, unsigned attrs,
-                JS::MutableHandle<JS::PropertyDescriptor> aDesc) {
+static bool WrapResult(JSContext* aCx, JS::Handle<JSObject*> aProxy,
+                       BrowsingContext* aResult, JS::PropertyAttributes attrs,
+                       JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) {
   JS::Rooted<JS::Value> v(aCx);
   if (!ToJSValue(aCx, WindowProxyHolder(aResult), &v)) {
     return false;
   }
-  aDesc.setDataDescriptor(v, attrs);
-  aDesc.object().set(aProxy);
+
+  aDesc.set(Some(JS::PropertyDescriptor::Data(v, attrs)));
   return true;
 }
 
 bool RemoteOuterWindowProxy::getOwnPropertyDescriptor(
     JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
-    JS::MutableHandle<JS::PropertyDescriptor> aDesc) const {
+    JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const {
   BrowsingContext* bc = GetBrowsingContext(aProxy);
   uint32_t index = GetArrayIndexFromId(aId);
   if (IsArrayIndex(index)) {
     Span<RefPtr<BrowsingContext>> children = bc->Children();
     if (index < children.Length()) {
       return WrapResult(aCx, aProxy, children[index],
-                        JSPROP_READONLY | JSPROP_ENUMERATE, aDesc);
+                        {JS::PropertyAttribute::Configurable,
+                         JS::PropertyAttribute::Enumerable},
+                        aDesc);
     }
-    return ReportCrossOriginDenial(aCx, aId, NS_LITERAL_CSTRING("access"));
+    return ReportCrossOriginDenial(aCx, aId, "access"_ns);
   }
 
   bool ok = CrossOriginGetOwnPropertyHelper(aCx, aProxy, aId, aDesc);
-  if (!ok || aDesc.object()) {
+  if (!ok || aDesc.isSome()) {
     return ok;
   }
 
@@ -114,15 +117,16 @@ bool RemoteOuterWindowProxy::getOwnPropertyDescriptor(
   // that are same-origin with their original principal and won't reach this
   // code in the cases when "print" should be accessible.
 
-  if (JSID_IS_STRING(aId)) {
+  if (aId.isString()) {
     nsAutoJSString str;
-    if (!str.init(aCx, JSID_TO_STRING(aId))) {
+    if (!str.init(aCx, aId.toString())) {
       return false;
     }
 
     for (BrowsingContext* child : bc->Children()) {
       if (child->NameEquals(str)) {
-        return WrapResult(aCx, aProxy, child, JSPROP_READONLY, aDesc);
+        return WrapResult(aCx, aProxy, child,
+                          {JS::PropertyAttribute::Configurable}, aDesc);
       }
     }
   }
@@ -138,7 +142,7 @@ bool AppendIndexedPropertyNames(JSContext* aCx, BrowsingContext* aContext,
   }
 
   for (int32_t i = 0; i < length; ++i) {
-    aIndexedProps.infallibleAppend(INT_TO_JSID(i));
+    aIndexedProps.infallibleAppend(JS::PropertyKey::Int(i));
   }
   return true;
 }
@@ -165,5 +169,4 @@ bool RemoteOuterWindowProxy::getOwnEnumerablePropertyKeys(
   return AppendIndexedPropertyNames(aCx, GetBrowsingContext(aProxy), aProps);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

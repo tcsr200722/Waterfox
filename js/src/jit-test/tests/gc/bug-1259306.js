@@ -1,5 +1,3 @@
-// |jit-test| skip-if: !('oomTest' in this)
-
 let runCount = 0;
 oomTest(() => {
     if (runCount < 5) {
@@ -11,8 +9,9 @@ oomTest(() => {
             } catch (x) {}
             gczeal(0);
         `;
-        lfGlobal.offThreadCompileScript(lfVarx);
-        lfGlobal.runOffThreadScript();
+        lfGlobal.offThreadCompileToStencil(lfVarx);
+        var stencil = lfGlobal.finishOffThreadStencil();
+        lfGlobal.evalStencil(stencil);
         runCount++;
     }
 });

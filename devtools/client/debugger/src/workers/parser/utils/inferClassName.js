@@ -2,14 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
 import * as t from "@babel/types";
-import type { SimplePath } from "./simple-path";
 
 // the function class is inferred from a call like
 // createClass or extend
-function fromCallExpression(callExpression: SimplePath) {
-  const whitelist = ["extend", "createClass"];
+function fromCallExpression(callExpression) {
+  const allowlist = ["extend", "createClass"];
   const { callee } = callExpression.node;
   if (!callee) {
     return null;
@@ -19,7 +17,7 @@ function fromCallExpression(callExpression: SimplePath) {
     ? callee.property.name
     : callee.name;
 
-  if (!whitelist.includes(name)) {
+  if (!allowlist.includes(name)) {
     return null;
   }
 
@@ -75,7 +73,7 @@ function fromPrototype(assignment) {
 // that are defined inside of a class like thing.
 // e.g. `class Foo`, `TodoClass.prototype.foo`,
 //      `Todo = createClass({ foo: () => {}})`
-export function inferClassName(path: SimplePath): string | null {
+export function inferClassName(path) {
   const classDeclaration = path.findParent(p => t.isClassDeclaration(p.node));
   if (classDeclaration) {
     return classDeclaration.node.id.name;

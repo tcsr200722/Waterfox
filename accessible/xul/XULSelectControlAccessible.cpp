@@ -30,7 +30,7 @@ XULSelectControlAccessible::XULSelectControlAccessible(nsIContent* aContent,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// XULSelectControlAccessible: Accessible
+// XULSelectControlAccessible: LocalAccessible
 
 void XULSelectControlAccessible::Shutdown() {
   mSelectControl = nullptr;
@@ -50,7 +50,7 @@ void XULSelectControlAccessible::SelectedItems(nsTArray<Accessible*>* aItems) {
     for (int32_t index = 0; index < length; index++) {
       RefPtr<dom::Element> element;
       xulMultiSelect->MultiGetSelectedItem(index, getter_AddRefs(element));
-      Accessible* item = mDoc->GetAccessible(element);
+      LocalAccessible* item = mDoc->GetAccessible(element);
       if (item) aItems->AppendElement(item);
     }
   } else {  // Single select?
@@ -59,7 +59,7 @@ void XULSelectControlAccessible::SelectedItems(nsTArray<Accessible*>* aItems) {
     RefPtr<dom::Element> element;
     selectControl->GetSelectedItem(getter_AddRefs(element));
     if (element) {
-      Accessible* item = mDoc->GetAccessible(element);
+      LocalAccessible* item = mDoc->GetAccessible(element);
       if (item) aItems->AppendElement(item);
     }
   }
@@ -106,7 +106,7 @@ uint32_t XULSelectControlAccessible::SelectedItemCount() {
 }
 
 bool XULSelectControlAccessible::AddItemToSelection(uint32_t aIndex) {
-  Accessible* item = GetChildAt(aIndex);
+  LocalAccessible* item = LocalChildAt(aIndex);
   if (!item || !item->GetContent()) return false;
 
   nsCOMPtr<nsIDOMXULSelectControlItemElement> itemElm =
@@ -134,7 +134,7 @@ bool XULSelectControlAccessible::AddItemToSelection(uint32_t aIndex) {
 }
 
 bool XULSelectControlAccessible::RemoveItemFromSelection(uint32_t aIndex) {
-  Accessible* item = GetChildAt(aIndex);
+  LocalAccessible* item = LocalChildAt(aIndex);
   if (!item || !item->GetContent()) return false;
 
   nsCOMPtr<nsIDOMXULSelectControlItemElement> itemElm =
@@ -162,7 +162,7 @@ bool XULSelectControlAccessible::RemoveItemFromSelection(uint32_t aIndex) {
 }
 
 bool XULSelectControlAccessible::IsItemSelected(uint32_t aIndex) {
-  Accessible* item = GetChildAt(aIndex);
+  LocalAccessible* item = LocalChildAt(aIndex);
   if (!item || !item->GetContent()) return false;
 
   nsCOMPtr<nsIDOMXULSelectControlItemElement> itemElm =
@@ -205,9 +205,9 @@ bool XULSelectControlAccessible::SelectAll() {
 ////////////////////////////////////////////////////////////////////////////////
 // XULSelectControlAccessible: Widgets
 
-Accessible* XULSelectControlAccessible::CurrentItem() const {
+LocalAccessible* XULSelectControlAccessible::CurrentItem() const {
   // aria-activedescendant should override.
-  Accessible* current = AccessibleWrap::CurrentItem();
+  LocalAccessible* current = AccessibleWrap::CurrentItem();
   if (current) {
     return current;
   }
@@ -235,7 +235,7 @@ Accessible* XULSelectControlAccessible::CurrentItem() const {
   return nullptr;
 }
 
-void XULSelectControlAccessible::SetCurrentItem(const Accessible* aItem) {
+void XULSelectControlAccessible::SetCurrentItem(const LocalAccessible* aItem) {
   if (!mSelectControl) return;
 
   nsCOMPtr<dom::Element> itemElm = aItem->Elm();

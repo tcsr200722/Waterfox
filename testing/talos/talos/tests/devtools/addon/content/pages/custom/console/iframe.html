@@ -8,16 +8,17 @@
 <script>
 // These query parameters are set in damp.js:customConsole and define the number
 // of console API calls we do in this test.
-let searchParams = new URLSearchParams(location.search);
-let sync = searchParams.get("sync");
-let stream = searchParams.get("stream");
-let async = searchParams.get("async");
+const searchParams = new URLSearchParams(location.search);
+const sync = searchParams.get("sync");
+const stream = searchParams.get("stream");
+const batch = searchParams.get("batch");
+const batchSize = searchParams.get("batchSize");
 
 // We log complex objects:
 // * a complex js object (window)
 // * a DOM node (body)
 // * a large array
-let bigArray = Array.from({length: 10000}, (_, i) => i);
+const bigArray = Array.from({length: 10000}, (_, i) => i);
 
 // Fill up the console with many logs synchronously during page load.
 for (let i = 0; i < sync; i++) {
@@ -31,22 +32,31 @@ function streamLogs() {
   if (n < stream) {
     requestAnimationFrame(streamLogs);
   } else {
-    requestIdleCallback(asyncLogs);
+    requestIdleCallback(batchLogs);
   }
 }
 requestIdleCallback(streamLogs);
 
-// Finally, we log by small bulk asynchronously slightly more slowly thanks to idle callback
+// We batch log by small bulk asynchronously slightly more slowly thanks to idle callback
 let x = 0;
-function asyncLogs() {
-  let asyncBulk = 10;
-  for (let i = 0; i < asyncBulk; i++) {
-    console.log("async log", x++, window, document.body, bigArray);
+function batchLogs() {
+  for (let i = 0; i < batchSize; i++) {
+    // Alternate between simple logs and trace to trigger more edgecases
+    if (i % 2 == 0) {
+      console.log("batch log", (x * batchSize) + i, window, document.body, bigArray);
+    } else {
+      console.trace("batch log", (x * batchSize) + i, window, document.body, bigArray);
+    }
   }
-  if (x < async) {
-    requestIdleCallback(asyncLogs);
+  if (x < batch - 1) {
+    requestIdleCallback(batchLogs);
+  } else {
+    // We are done logging all messages
+    console.log("very last message");
   }
+  x++;
 }
+
 </script>
 </body>
 </html>

@@ -94,7 +94,7 @@ nsresult txXSLTNumber::getValueList(Expr* aValueExpr, txPattern* aCountPattern,
 
     double value = result->numberValue();
 
-    if (mozilla::IsInfinite(value) || mozilla::IsNaN(value) || value < 0.5) {
+    if (std::isinf(value) || std::isnan(value) || value < 0.5) {
       txDouble::toString(value, aValueString);
       return NS_OK;
     }
@@ -335,8 +335,8 @@ nsresult txXSLTNumber::getCounters(Expr* aGroupSize, Expr* aGroupSeparator,
   // If there are no formatting tokens we need to create a default one.
   if (formatPos == formatLen) {
     txFormattedCounter* defaultCounter;
-    rv = txFormattedCounter::getCounterFor(NS_LITERAL_STRING("1"), groupSize,
-                                           groupSeparator, defaultCounter);
+    rv = txFormattedCounter::getCounterFor(u"1"_ns, groupSize, groupSeparator,
+                                           defaultCounter);
     NS_ENSURE_SUCCESS(rv, rv);
 
     defaultCounter->mSeparator.Assign('.');

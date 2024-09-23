@@ -7,12 +7,12 @@
 #include <limits>
 #include "mozilla/Hal.h"
 #include "ConnectionWorker.h"
+#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
+#include "mozilla/dom/WorkerScope.h"
 
-namespace mozilla {
-namespace dom {
-namespace network {
+namespace mozilla::dom::network {
 
 class ConnectionProxy final : public hal::NetworkObserver {
  public:
@@ -71,9 +71,8 @@ class InitializeRunnable : public WorkerMainThreadRunnable {
  public:
   InitializeRunnable(WorkerPrivate* aWorkerPrivate, ConnectionProxy* aProxy,
                      hal::NetworkInformation& aNetworkInfo)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate,
-            NS_LITERAL_CSTRING("ConnectionWorker :: Initialize")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "ConnectionWorker :: Initialize"_ns),
         mProxy(aProxy),
         mNetworkInfo(aNetworkInfo) {
     MOZ_ASSERT(aProxy);
@@ -96,8 +95,8 @@ class ShutdownRunnable : public WorkerMainThreadRunnable {
 
  public:
   ShutdownRunnable(WorkerPrivate* aWorkerPrivate, ConnectionProxy* aProxy)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate, NS_LITERAL_CSTRING("ConnectionWorker :: Shutdown")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "ConnectionWorker :: Shutdown"_ns),
         mProxy(aProxy) {
     MOZ_ASSERT(aProxy);
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -110,7 +109,7 @@ class ShutdownRunnable : public WorkerMainThreadRunnable {
   }
 };
 
-class NotifyRunnable : public WorkerRunnable {
+class NotifyRunnable final : public WorkerThreadRunnable {
  private:
   RefPtr<ConnectionProxy> mProxy;
 
@@ -121,7 +120,7 @@ class NotifyRunnable : public WorkerRunnable {
  public:
   NotifyRunnable(WorkerPrivate* aWorkerPrivate, ConnectionProxy* aProxy,
                  ConnectionType aType, bool aIsWifi, uint32_t aDHCPGateway)
-      : WorkerRunnable(aWorkerPrivate),
+      : WorkerThreadRunnable("NotifyRunnable"),
         mProxy(aProxy),
         mConnectionType(aType),
         mIsWifi(aIsWifi),
@@ -142,7 +141,9 @@ class NotifyRunnable : public WorkerRunnable {
 /* static */
 already_AddRefed<ConnectionWorker> ConnectionWorker::Create(
     WorkerPrivate* aWorkerPrivate, ErrorResult& aRv) {
-  RefPtr<ConnectionWorker> c = new ConnectionWorker();
+  bool shouldResistFingerprinting = aWorkerPrivate->ShouldResistFingerprinting(
+      RFPTarget::NavigatorConnection);
+  RefPtr<ConnectionWorker> c = new ConnectionWorker(shouldResistFingerprinting);
   c->mProxy = ConnectionProxy::Create(aWorkerPrivate, c);
   if (!c->mProxy) {
     aRv.ThrowTypeError("The Worker thread is shutting down.");
@@ -163,7 +164,8 @@ already_AddRefed<ConnectionWorker> ConnectionWorker::Create(
   return c.forget();
 }
 
-ConnectionWorker::ConnectionWorker() : Connection(nullptr) {
+ConnectionWorker::ConnectionWorker(bool aShouldResistFingerprinting)
+    : Connection(nullptr, aShouldResistFingerprinting) {
   MOZ_ASSERT(IsCurrentThreadRunningWorker());
 }
 
@@ -181,7 +183,7 @@ void ConnectionProxy::Notify(const hal::NetworkInformation& aNetworkInfo) {
       new NotifyRunnable(mWorkerRef->Private(), this,
                          static_cast<ConnectionType>(aNetworkInfo.type()),
                          aNetworkInfo.isWifi(), aNetworkInfo.dhcpGateway());
-  runnable->Dispatch();
+  runnable->Dispatch(mWorkerRef->Private());
 }
 
 void ConnectionProxy::Shutdown() {
@@ -207,6 +209,4 @@ void ConnectionProxy::Shutdown() {
   mWorkerRef = nullptr;
 }
 
-}  // namespace network
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::network

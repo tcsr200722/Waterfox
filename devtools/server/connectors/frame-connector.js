@@ -4,24 +4,27 @@
 
 "use strict";
 
-var Services = require("Services");
 var DevToolsUtils = require("devtools/shared/DevToolsUtils");
 var { dumpn } = DevToolsUtils;
 
 loader.lazyRequireGetter(
   this,
   "DevToolsServer",
-  "devtools/server/devtools-server",
+  "resource://devtools/server/devtools-server.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "ChildDebuggerTransport",
-  "devtools/shared/transport/child-transport",
+  "resource://devtools/shared/transport/child-transport.js",
   true
 );
 
-loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
+loader.lazyRequireGetter(
+  this,
+  "EventEmitter",
+  "resource://devtools/shared/event-emitter.js"
+);
 
 /**
  * Start a DevTools server in a remote frame's process and add it as a child server for
@@ -37,37 +40,28 @@ loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
  * @return object
  *         A promise object that is resolved once the connection is established.
  */
-function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
+function connectToFrame(
+  connection,
+  frame,
+  onDestroy,
+  { addonId, addonBrowsingContextGroupId } = {}
+) {
   return new Promise(resolve => {
     // Get messageManager from XUL browser (which might be a specialized tunnel for RDM)
     // or else fallback to asking the frameLoader itself.
-    let mm = frame.messageManager || frame.frameLoader.messageManager;
+    const mm = frame.messageManager || frame.frameLoader.messageManager;
     mm.loadFrameScript("resource://devtools/server/startup/frame.js", false);
 
     const trackMessageManager = () => {
-      frame.addEventListener("DevTools:BrowserSwap", onBrowserSwap);
-      mm.addMessageListener("debug:setup-in-parent", onSetupInParent);
-      mm.addMessageListener(
-        "debug:spawn-actor-in-parent",
-        onSpawnActorInParent
-      );
       if (!actor) {
         mm.addMessageListener("debug:actor", onActorCreated);
       }
-      DevToolsServer._childMessageManagers.add(mm);
     };
 
     const untrackMessageManager = () => {
-      frame.removeEventListener("DevTools:BrowserSwap", onBrowserSwap);
-      mm.removeMessageListener("debug:setup-in-parent", onSetupInParent);
-      mm.removeMessageListener(
-        "debug:spawn-actor-in-parent",
-        onSpawnActorInParent
-      );
       if (!actor) {
         mm.removeMessageListener("debug:actor", onActorCreated);
       }
-      DevToolsServer._childMessageManagers.delete(mm);
     };
 
     let actor, childTransport;
@@ -75,98 +69,7 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
     // Compute the same prefix that's used by DevToolsServerConnection
     const connPrefix = prefix + "/";
 
-    // provides hook to actor modules that need to exchange messages
-    // between e10s parent and child processes
-    const parentModules = [];
-    const onSetupInParent = function(msg) {
-      // We may have multiple connectToFrame instance running for the same frame and
-      // need to filter the messages.
-      if (msg.json.prefix != connPrefix) {
-        return false;
-      }
-
-      const { module, setupParent } = msg.json;
-      let m;
-
-      try {
-        m = require(module);
-
-        if (!(setupParent in m)) {
-          dumpn(`ERROR: module '${module}' does not export '${setupParent}'`);
-          return false;
-        }
-
-        parentModules.push(m[setupParent]({ mm, prefix: connPrefix }));
-
-        return true;
-      } catch (e) {
-        const errorMessage =
-          "Exception during actor module setup running in the parent process: ";
-        DevToolsUtils.reportException(errorMessage + e);
-        dumpn(
-          `ERROR: ${errorMessage}\n\t module: '${module}'\n\t ` +
-            `setupParent: '${setupParent}'\n${DevToolsUtils.safeErrorString(e)}`
-        );
-        return false;
-      }
-    };
-
-    const parentActors = [];
-    const onSpawnActorInParent = function(msg) {
-      // We may have multiple connectToFrame instance running for the same tab
-      // and need to filter the messages.
-      if (msg.json.prefix != connPrefix) {
-        return;
-      }
-
-      const { module, constructor, args, spawnedByActorID } = msg.json;
-      let m;
-
-      try {
-        m = require(module);
-
-        if (!(constructor in m)) {
-          dump(`ERROR: module '${module}' does not export '${constructor}'`);
-          return;
-        }
-
-        const Constructor = m[constructor];
-        // Bind the actor to parent process connection so that these actors
-        // directly communicates with the client as regular actors instanciated from
-        // parent process
-        const instance = new Constructor(connection, ...args, mm);
-        instance.conn = connection;
-        instance.parentID = spawnedByActorID;
-
-        // Manually set the actor ID in order to insert parent actorID as prefix
-        // in order to help identifying actor hiearchy via actor IDs.
-        // Remove `/` as it may confuse message forwarding between processes.
-        const contentPrefix = spawnedByActorID
-          .replace(connection.prefix, "")
-          .replace("/", "-");
-        instance.actorID = connection.allocID(
-          contentPrefix + "/" + instance.typeName
-        );
-        connection.addActor(instance);
-
-        mm.sendAsyncMessage("debug:spawn-actor-in-parent:actor", {
-          prefix: connPrefix,
-          actorID: instance.actorID,
-        });
-
-        parentActors.push(instance);
-      } catch (e) {
-        const errorMessage =
-          "Exception during actor module setup running in the parent process: ";
-        DevToolsUtils.reportException(errorMessage + e + "\n" + e.stack);
-        dumpn(
-          `ERROR: ${errorMessage}\n\t module: '${module}'\n\t ` +
-            `constructor: '${constructor}'\n${DevToolsUtils.safeErrorString(e)}`
-        );
-      }
-    };
-
-    const onActorCreated = DevToolsUtils.makeInfallible(function(msg) {
+    const onActorCreated = DevToolsUtils.makeInfallible(function (msg) {
       if (msg.json.prefix != prefix) {
         return;
       }
@@ -178,7 +81,6 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
         // Pipe all the messages from content process actors back to the client
         // through the parent process connection.
         onPacket: connection.send.bind(connection),
-        onClosed() {},
       };
       childTransport.ready();
 
@@ -190,57 +92,32 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
       resolve(actor);
     });
 
-    // Listen for browser frame swap
-    const onBrowserSwap = ({ detail: newFrame }) => {
-      // Remove listeners from old frame and mm
-      untrackMessageManager();
-      // Update frame and mm to point to the new browser frame
-      frame = newFrame;
-      // Get messageManager from XUL browser (which might be a specialized tunnel for
-      // RDM) or else fallback to asking the frameLoader itself.
-      mm = frame.messageManager || frame.frameLoader.messageManager;
-      // Add listeners to new frame and mm
-      trackMessageManager();
-
-      // provides hook to actor modules that need to exchange messages
-      // between e10s parent and child processes
-      parentModules.forEach(mod => {
-        if (mod.onBrowserSwap) {
-          mod.onBrowserSwap(mm);
-        }
-      });
-
-      // Also notify actors spawned in the parent process about the new message manager.
-      parentActors.forEach(parentActor => {
-        if (parentActor.onBrowserSwap) {
-          parentActor.onBrowserSwap(mm);
-        }
-      });
-
-      if (childTransport) {
-        childTransport.swapBrowser(mm);
-      }
-    };
-
-    const destroy = DevToolsUtils.makeInfallible(function() {
+    const destroy = DevToolsUtils.makeInfallible(function () {
       EventEmitter.off(connection, "closed", destroy);
       Services.obs.removeObserver(
         onMessageManagerClose,
         "message-manager-close"
       );
 
-      // provides hook to actor modules that need to exchange messages
-      // between e10s parent and child processes
-      parentModules.forEach(mod => {
-        if (mod.onDisconnected) {
-          mod.onDisconnected();
-        }
-      });
       // TODO: Remove this deprecated path once it's no longer needed by add-ons.
       DevToolsServer.emit("disconnected-from-child:" + connPrefix, {
         mm,
         prefix: connPrefix,
       });
+
+      if (actor) {
+        actor = null;
+      }
+
+      // Notify the tab descriptor about the destruction before the call to
+      // `cancelForwarding`, so that we notify about the target destruction
+      // *before* we purge all request for this prefix.
+      // When we purge the requests, we also destroy all related fronts,
+      // including the target front. This clears all event listeners
+      // and ultimately prevent target-destroyed from firing.
+      if (onDestroy) {
+        onDestroy(mm);
+      }
 
       if (childTransport) {
         // If we have a child transport, the actor has already
@@ -263,17 +140,6 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
         // the actor.
         resolve(null);
       }
-      if (actor) {
-        // The FrameTargetActor within the child process doesn't necessary
-        // have time to uninitialize itself when the frame is closed/killed.
-        // So ensure telling the client that the related actor is detached.
-        connection.send({ from: actor.actor, type: "tabDetached" });
-        actor = null;
-      }
-
-      if (onDestroy) {
-        onDestroy(mm);
-      }
 
       // Cleanup all listeners
       untrackMessageManager();
@@ -283,7 +149,7 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
     trackMessageManager();
 
     // Listen for app process exit
-    const onMessageManagerClose = function(subject, topic, data) {
+    const onMessageManagerClose = function (subject) {
       if (subject == mm) {
         destroy();
       }
@@ -294,7 +160,11 @@ function connectToFrame(connection, frame, onDestroy, { addonId } = {}) {
     // when user unplug the device or we lose the connection somehow.
     EventEmitter.on(connection, "closed", destroy);
 
-    mm.sendAsyncMessage("debug:connect", { prefix, addonId });
+    mm.sendAsyncMessage("debug:connect", {
+      prefix,
+      addonId,
+      addonBrowsingContextGroupId,
+    });
   });
 }
 

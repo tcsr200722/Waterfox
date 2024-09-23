@@ -1,31 +1,67 @@
+use crate::RandomState;
 use std::collections::{hash_set, HashSet};
 use std::fmt::{self, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::iter::FromIterator;
 use std::ops::{BitAnd, BitOr, BitXor, Deref, DerefMut, Sub};
 
-/// A [`HashSet`](std::collections::HashSet) using [`RandomState`](crate::RandomState) to hash the items.
-/// Requires the `std` feature to be enabled.
-#[derive(Clone)]
-pub struct AHashSet<T, S = crate::RandomState>(HashSet<T, S>);
+#[cfg(feature = "serde")]
+use serde::{
+    de::{Deserialize, Deserializer},
+    ser::{Serialize, Serializer},
+};
 
-impl<T, S> AHashSet<T, S>
+/// A [`HashSet`](std::collections::HashSet) using [`RandomState`](crate::RandomState) to hash the items.
+/// (Requires the `std` feature to be enabled.)
+#[derive(Clone)]
+pub struct AHashSet<T, S = RandomState>(HashSet<T, S>);
+
+impl<T> From<HashSet<T, RandomState>> for AHashSet<T> {
+    fn from(item: HashSet<T, RandomState>) -> Self {
+        AHashSet(item)
+    }
+}
+
+impl<T, const N: usize> From<[T; N]> for AHashSet<T>
 where
-    T: Hash + Eq,
-    S: BuildHasher + Default,
+    T: Eq + Hash,
 {
+    /// # Examples
+    ///
+    /// ```
+    /// use ahash::AHashSet;
+    ///
+    /// let set1 = AHashSet::from([1, 2, 3, 4]);
+    /// let set2: AHashSet<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(set1, set2);
+    /// ```
+    fn from(arr: [T; N]) -> Self {
+        Self::from_iter(arr)
+    }
+}
+
+impl<T> Into<HashSet<T, RandomState>> for AHashSet<T> {
+    fn into(self) -> HashSet<T, RandomState> {
+        self.0
+    }
+}
+
+impl<T> AHashSet<T, RandomState> {
+    /// This crates a hashset using [RandomState::new].
+    /// See the documentation in [RandomSource] for notes about key strength.
     pub fn new() -> Self {
-        AHashSet(HashSet::with_hasher(S::default()))
+        AHashSet(HashSet::with_hasher(RandomState::new()))
     }
 
+    /// This crates a hashset with the specified capacity using [RandomState::new].
+    /// See the documentation in [RandomSource] for notes about key strength.
     pub fn with_capacity(capacity: usize) -> Self {
-        AHashSet(HashSet::with_capacity_and_hasher(capacity, S::default()))
+        AHashSet(HashSet::with_capacity_and_hasher(capacity, RandomState::new()))
     }
 }
 
 impl<T, S> AHashSet<T, S>
 where
-    T: Hash + Eq,
     S: BuildHasher,
 {
     pub fn with_hasher(hash_builder: S) -> Self {
@@ -197,7 +233,7 @@ where
 
 impl<T, S> Debug for AHashSet<T, S>
 where
-    T: Eq + Hash + Debug,
+    T: Debug,
     S: BuildHasher,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -205,14 +241,17 @@ where
     }
 }
 
-impl<T, S> FromIterator<T> for AHashSet<T, S>
+impl<T> FromIterator<T> for AHashSet<T, RandomState>
 where
     T: Eq + Hash,
-    S: BuildHasher + Default,
 {
+    /// This crates a hashset from the provided iterator using [RandomState::new].
+    /// See the documentation in [RandomSource] for notes about key strength.
     #[inline]
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> AHashSet<T, S> {
-        AHashSet(HashSet::from_iter(iter))
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> AHashSet<T> {
+        let mut inner = HashSet::with_hasher(RandomState::new());
+        inner.extend(iter);
+        AHashSet(inner)
     }
 }
 
@@ -254,14 +293,60 @@ where
     }
 }
 
-impl<T, S> Default for AHashSet<T, S>
-where
-    T: Eq + Hash,
-    S: BuildHasher + Default,
-{
+/// NOTE: For safety this trait impl is only available available if either of the flags `runtime-rng` (on by default) or
+/// `compile-time-rng` are enabled. This is to prevent weakly keyed maps from being accidentally created. Instead one of
+/// constructors for [RandomState] must be used.
+#[cfg(any(feature = "compile-time-rng", feature = "runtime-rng", feature = "no-rng"))]
+impl<T> Default for AHashSet<T, RandomState> {
     /// Creates an empty `AHashSet<T, S>` with the `Default` value for the hasher.
     #[inline]
-    fn default() -> AHashSet<T, S> {
+    fn default() -> AHashSet<T, RandomState> {
         AHashSet(HashSet::default())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<T> Serialize for AHashSet<T>
+where
+    T: Serialize + Eq + Hash,
+{
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.deref().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T> Deserialize<'de> for AHashSet<T>
+where
+    T: Deserialize<'de> + Eq + Hash,
+{
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let hash_set = HashSet::deserialize(deserializer);
+        hash_set.map(|hash_set| Self(hash_set))
+    }
+
+    fn deserialize_in_place<D: Deserializer<'de>>(deserializer: D, place: &mut Self) -> Result<(), D::Error> {
+        HashSet::deserialize_in_place(deserializer, place)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_serde() {
+        let mut set = AHashSet::new();
+        set.insert("for".to_string());
+        set.insert("bar".to_string());
+        let mut serialization = serde_json::to_string(&set).unwrap();
+        let mut deserialization: AHashSet<String> = serde_json::from_str(&serialization).unwrap();
+        assert_eq!(deserialization, set);
+
+        set.insert("baz".to_string());
+        serialization = serde_json::to_string(&set).unwrap();
+        let mut deserializer = serde_json::Deserializer::from_str(&serialization);
+        AHashSet::deserialize_in_place(&mut deserializer, &mut deserialization).unwrap();
+        assert_eq!(deserialization, set);
     }
 }

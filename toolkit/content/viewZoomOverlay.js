@@ -10,44 +10,36 @@
  * or use the methods that accept a browser to be modified.
  **/
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 var ZoomManager = {
-  get MIN() {
-    delete this.MIN;
-    return (this.MIN = Services.prefs.getIntPref("zoom.minPercent") / 100);
-  },
-
-  get MAX() {
-    delete this.MAX;
-    return (this.MAX = Services.prefs.getIntPref("zoom.maxPercent") / 100);
-  },
-
-  get useFullZoom() {
-    return Services.prefs.getBoolPref("browser.zoom.full");
-  },
-
   set useFullZoom(aVal) {
     Services.prefs.setBoolPref("browser.zoom.full", aVal);
-    return aVal;
   },
 
   get zoom() {
     return this.getZoomForBrowser(gBrowser);
   },
 
+  useFullZoomForBrowser: function ZoomManager_useFullZoomForBrowser(aBrowser) {
+    return this.useFullZoom || aBrowser.isSyntheticDocument;
+  },
+
+  getFullZoomForBrowser: function ZoomManager_getFullZoomForBrowser(aBrowser) {
+    if (!this.useFullZoomForBrowser(aBrowser)) {
+      return 1.0;
+    }
+    return this.getZoomForBrowser(aBrowser);
+  },
+
   getZoomForBrowser: function ZoomManager_getZoomForBrowser(aBrowser) {
-    let zoom =
-      this.useFullZoom || aBrowser.isSyntheticDocument
-        ? aBrowser.fullZoom
-        : aBrowser.textZoom;
+    let zoom = this.useFullZoomForBrowser(aBrowser)
+      ? aBrowser.fullZoom
+      : aBrowser.textZoom;
     // Round to remove any floating-point error.
     return Number(zoom ? zoom.toFixed(2) : 1);
   },
 
   set zoom(aVal) {
     this.setZoomForBrowser(gBrowser, aVal);
-    return aVal;
   },
 
   setZoomForBrowser: function ZoomManager_setZoomForBrowser(aBrowser, aVal) {
@@ -55,32 +47,13 @@ var ZoomManager = {
       throw Components.Exception("", Cr.NS_ERROR_INVALID_ARG);
     }
 
-    if (this.useFullZoom || aBrowser.isSyntheticDocument) {
+    if (this.useFullZoomForBrowser(aBrowser)) {
       aBrowser.textZoom = 1;
       aBrowser.fullZoom = aVal;
     } else {
       aBrowser.textZoom = aVal;
       aBrowser.fullZoom = 1;
     }
-  },
-
-  get zoomValues() {
-    var zoomValues = Services.prefs
-      .getCharPref("toolkit.zoomManager.zoomValues")
-      .split(",")
-      .map(parseFloat);
-    zoomValues.sort((a, b) => a - b);
-
-    while (zoomValues[0] < this.MIN) {
-      zoomValues.shift();
-    }
-
-    while (zoomValues[zoomValues.length - 1] > this.MAX) {
-      zoomValues.pop();
-    }
-
-    delete this.zoomValues;
-    return (this.zoomValues = zoomValues);
   },
 
   enlarge: function ZoomManager_enlarge() {
@@ -121,3 +94,48 @@ var ZoomManager = {
     return values[i - 1];
   },
 };
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  ZoomManager,
+  "MIN",
+  "zoom.minPercent",
+  30,
+  null,
+  v => v / 100
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  ZoomManager,
+  "MAX",
+  "zoom.maxPercent",
+  500,
+  null,
+  v => v / 100
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  ZoomManager,
+  "zoomValues",
+  "toolkit.zoomManager.zoomValues",
+  ".3,.5,.67,.8,.9,1,1.1,1.2,1.33,1.5,1.7,2,2.4,3,4,5",
+  null,
+  zoomValues => {
+    zoomValues = zoomValues.split(",").map(parseFloat);
+    zoomValues.sort((a, b) => a - b);
+
+    while (zoomValues[0] < this.MIN) {
+      zoomValues.shift();
+    }
+
+    while (zoomValues[zoomValues.length - 1] > this.MAX) {
+      zoomValues.pop();
+    }
+
+    return zoomValues;
+  }
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  ZoomManager,
+  "useFullZoom",
+  "browser.zoom.full"
+);

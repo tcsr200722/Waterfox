@@ -12,10 +12,15 @@
 
 #include "jsfriendapi.h"
 #include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject, JS::NewArrayObject
+#include "js/friend/StackLimits.h"  // js::AutoCheckRecursionLimit
+#include "js/friend/WindowProxy.h"  // js::ToWindowIfWindowProxy
+#include "js/PropertyAndElement.h"  // JS_GetElement
 #include "js/Wrapper.h"
+#include "mozilla/HoldDropJSObjects.h"
 
 using namespace JS;
 using namespace mozilla;
+using namespace xpc;
 
 NS_IMPL_CLASSINFO(XPCVariant, nullptr, 0, XPCVARIANT_CID)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(XPCVariant)
@@ -45,69 +50,51 @@ XPCVariant::XPCVariant(JSContext* cx, const Value& aJSVal) : mJSVal(aJSVal) {
 
     JSObject* unwrapped =
         js::CheckedUnwrapDynamic(obj, cx, /* stopAtWindowProxy = */ false);
-    mReturnRawObject = !(unwrapped && IS_WN_REFLECTOR(unwrapped));
+    mReturnRawObject = !(unwrapped && IsWrappedNativeReflector(unwrapped));
   } else {
     mReturnRawObject = false;
   }
-}
 
-XPCTraceableVariant::~XPCTraceableVariant() {
-  Value val = GetJSValPreserveColor();
-
-  MOZ_ASSERT(val.isGCThing() || val.isNull(), "Must be traceable or unlinked");
-
-  mData.Cleanup();
-
-  if (!val.isNull()) {
-    RemoveFromRootSet();
+  if (aJSVal.isGCThing()) {
+    mozilla::HoldJSObjects(this);
   }
 }
 
-void XPCTraceableVariant::TraceJS(JSTracer* trc) {
-  MOZ_ASSERT(GetJSValPreserveColor().isGCThing());
-  JS::TraceEdge(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
-}
+XPCVariant::~XPCVariant() { Cleanup(); }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XPCVariant)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(XPCVariant)
-  JS::Value val = tmp->GetJSValPreserveColor();
-  if (val.isObject()) {
-    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mJSVal");
-    cb.NoteJSChild(JS::GCCellPtr(val));
-  }
-
   tmp->mData.Traverse(cb);
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(XPCVariant)
-  JS::Value val = tmp->GetJSValPreserveColor();
-
-  tmp->mData.Cleanup();
-
-  if (val.isGCThing()) {
-    XPCTraceableVariant* v = static_cast<XPCTraceableVariant*>(tmp);
-    v->RemoveFromRootSet();
-  }
-  tmp->mJSVal = JS::NullValue();
+  tmp->Cleanup();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(XPCVariant)
+  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mJSVal)
+NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 // static
 already_AddRefed<XPCVariant> XPCVariant::newVariant(JSContext* cx,
                                                     const Value& aJSVal) {
-  RefPtr<XPCVariant> variant;
-
-  if (!aJSVal.isGCThing()) {
-    variant = new XPCVariant(cx, aJSVal);
-  } else {
-    variant = new XPCTraceableVariant(cx, aJSVal);
-  }
-
+  RefPtr<XPCVariant> variant = new XPCVariant(cx, aJSVal);
   if (!variant->InitializeData(cx)) {
     return nullptr;
   }
 
   return variant.forget();
+}
+
+void XPCVariant::Cleanup() {
+  mData.Cleanup();
+
+  if (!GetJSValPreserveColor().isGCThing()) {
+    return;
+  }
+  mJSVal = JS::NullValue();
+  mozilla::DropJSObjects(this);
 }
 
 // Helper class to give us a namespace for the table based code below.
@@ -257,7 +244,8 @@ bool XPCArrayHomogenizer::GetTypeForArray(JSContext* cx, HandleObject array,
 }
 
 bool XPCVariant::InitializeData(JSContext* cx) {
-  if (!js::CheckRecursionLimit(cx)) {
+  js::AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
 
@@ -433,7 +421,7 @@ bool XPCVariant::VariantDataToJS(JSContext* cx, nsIVariant* variant,
       if (NS_FAILED(variant->GetAsDouble(&d))) {
         return false;
       }
-      pJSVal.setNumber(d);
+      pJSVal.set(JS_NumberValue(d));
       return true;
     }
     case nsIDataType::VTYPE_BOOL: {

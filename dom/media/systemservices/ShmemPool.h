@@ -9,6 +9,7 @@
 
 #include "mozilla/Mutex.h"
 #include "mozilla/ipc/Shmem.h"
+#include "nsTArray.h"
 
 extern mozilla::LazyLogModule sShmemPoolLog;
 #define SHMEMPOOL_LOG(args) \
@@ -161,14 +162,12 @@ class ShmemPool final {
   bool AllocateShmem(T* aInstance, size_t aSize, ShmemBuffer& aRes,
                      AllocationPolicy aPolicy) {
     return (aPolicy == AllocationPolicy::Default &&
-            aInstance->AllocShmem(aSize, ipc::SharedMemory::TYPE_BASIC,
-                                  &aRes.mShmem)) ||
+            aInstance->AllocShmem(aSize, &aRes.mShmem)) ||
            (aPolicy == AllocationPolicy::Unsafe &&
-            aInstance->AllocUnsafeShmem(aSize, ipc::SharedMemory::TYPE_BASIC,
-                                        &aRes.mShmem));
+            aInstance->AllocUnsafeShmem(aSize, &aRes.mShmem));
   }
   const PoolType mPoolType;
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
   size_t mPoolFree;
   bool mErrorLogged;
 #ifdef DEBUG

@@ -6,17 +6,17 @@
 
 const {
   accessibility: { SIMULATION_TYPE },
-} = require("devtools/shared/constants");
-const { SIMULATE } = require("devtools/client/accessibility/constants");
+} = require("resource://devtools/shared/constants.js");
+const {
+  SIMULATE,
+} = require("resource://devtools/client/accessibility/constants.js");
 
 /**
  * Initial state definition
  */
 function getInitialState() {
   return {
-    [SIMULATION_TYPE.PROTANOMALY]: false,
-    [SIMULATION_TYPE.DEUTERANOMALY]: false,
-    [SIMULATION_TYPE.TRITANOMALY]: false,
+    [SIMULATION_TYPE.ACHROMATOPSIA]: false,
     [SIMULATION_TYPE.PROTANOPIA]: false,
     [SIMULATION_TYPE.DEUTERANOPIA]: false,
     [SIMULATION_TYPE.TRITANOPIA]: false,

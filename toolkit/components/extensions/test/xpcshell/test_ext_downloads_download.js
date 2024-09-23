@@ -2,9 +2,8 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { Downloads } = ChromeUtils.import(
-  "resource://gre/modules/Downloads.jsm"
+const { Downloads } = ChromeUtils.importESModule(
+  "resource://gre/modules/Downloads.sys.mjs"
 );
 
 const gServer = createHttpServer();
@@ -22,6 +21,12 @@ const FILE_NAME_UNIQUE = "file_download(1).txt";
 const FILE_LEN = 46;
 
 let downloadDir;
+
+function joinPath(...components) {
+  const separator = WINDOWS ? "\\" : "/";
+
+  return components.join(separator);
+}
 
 function setup() {
   downloadDir = FileUtils.getDir("TmpD", ["downloads"]);
@@ -187,6 +192,17 @@ add_task(async function test_downloads() {
     "source and filename with existing subdirs"
   );
 
+  // Regression test for https://bugzilla.mozilla.org/show_bug.cgi?id=1903780
+  await testDownload(
+    {
+      url: FILE_URL,
+      filename: "sub/1. organized/file2",
+    },
+    ["sub", "1. organized", "file2"],
+    FILE_LEN,
+    "Directory containing invalid file name"
+  );
+
   // Only run Windows path separator test on Windows.
   if (WINDOWS) {
     // Call download() with a filename with Windows path separator.
@@ -267,8 +283,8 @@ add_task(async function test_downloads() {
   });
 
   // Try to download to an absolute path.
-  const absolutePath = OS.Path.join(
-    WINDOWS ? "\\tmp" : "/tmp",
+  const absolutePath = PathUtils.join(
+    WINDOWS ? "C:\\tmp" : "/tmp",
     "file_download.txt"
   );
   await download({
@@ -308,7 +324,7 @@ add_task(async function test_downloads() {
   // Try to download to a relative path containing ..
   await download({
     url: FILE_URL,
-    filename: OS.Path.join("..", "file_download.txt"),
+    filename: joinPath("..", "file_download.txt"),
   }).then(msg => {
     equal(
       msg.status,
@@ -325,7 +341,7 @@ add_task(async function test_downloads() {
   // Try to download to a long relative path containing ..
   await download({
     url: FILE_URL,
-    filename: OS.Path.join("foo", "..", "..", "file_download.txt"),
+    filename: joinPath("foo", "..", "..", "file_download.txt"),
   }).then(msg => {
     equal(
       msg.status,
@@ -448,7 +464,7 @@ async function testHttpErrors(allowHttpErrors) {
     response.write(content);
   });
 
-  function background(code) {
+  function background() {
     let dlid = 0;
     let expectedState;
     browser.test.onMessage.addListener(async options => {
@@ -597,7 +613,7 @@ add_task(async function test_download_http_details() {
 
   // Test that site cookies are sent with download requests,
   // and "incognito" downloads use a separate cookie jar.
-  let testDownloadCookie = async function(incognito) {
+  let testDownloadCookie = async function (incognito) {
     let result = await download({ incognito });
     ok(result.ok, `preflight to set cookies with incognito=${incognito}`);
     ok(!received.hasHeader("cookie"), "first request has no cookies");
@@ -649,7 +665,7 @@ add_task(async function test_download_http_details() {
   confirm("GET", { "X-Custom": "13" });
 
   // Test Referer header.
-  const referer = "http://example.org";
+  const referer = "http://example.org/test";
   result = await download({ headers: [{ name: "Referer", value: referer }] });
   ok(result.ok, "download works with Referer header");
   confirm("GET", { Referer: referer });

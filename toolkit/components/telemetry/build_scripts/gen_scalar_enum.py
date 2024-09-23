@@ -7,12 +7,11 @@
 #
 # The scalars are defined in files provided as command-line arguments.
 
-from __future__ import print_function
-from mozparsers.shared_telemetry_utils import ParserError
-from mozparsers import parse_scalars
-
 import sys
+
 import buildconfig
+from mozparsers import parse_scalars
+from mozparsers.shared_telemetry_utils import ParserError
 
 banner = """/* This file is auto-generated, see gen_scalar_enum.py.  */
 """
@@ -57,5 +56,5 @@ def main(output, *filenames):
     print(file_footer, file=output)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main(sys.stdout, *sys.argv[1:])

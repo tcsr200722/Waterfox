@@ -36,7 +36,7 @@
 #define nsPlaceholderFrame_h___
 
 #include "mozilla/Attributes.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 #include "nsGkAtoms.h"
 
 namespace mozilla {
@@ -50,13 +50,13 @@ nsPlaceholderFrame* NS_NewPlaceholderFrame(mozilla::PresShell* aPresShell,
 
 #define PLACEHOLDER_TYPE_MASK                                                  \
   (PLACEHOLDER_FOR_FLOAT | PLACEHOLDER_FOR_ABSPOS | PLACEHOLDER_FOR_FIXEDPOS | \
-   PLACEHOLDER_FOR_POPUP | PLACEHOLDER_FOR_TOPLAYER)
+   PLACEHOLDER_FOR_TOPLAYER)
 
 /**
  * Implementation of a frame that's used as a placeholder for a frame that
  * has been moved out of the flow.
  */
-class nsPlaceholderFrame final : public nsFrame {
+class nsPlaceholderFrame final : public nsIFrame {
  public:
   NS_DECL_FRAMEARENA_HELPERS(nsPlaceholderFrame)
 #ifdef DEBUG
@@ -73,12 +73,11 @@ class nsPlaceholderFrame final : public nsFrame {
 
   nsPlaceholderFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                      nsFrameState aTypeBits)
-      : nsFrame(aStyle, aPresContext, kClassID), mOutOfFlowFrame(nullptr) {
+      : nsIFrame(aStyle, aPresContext, kClassID), mOutOfFlowFrame(nullptr) {
     MOZ_ASSERT(
         aTypeBits == PLACEHOLDER_FOR_FLOAT ||
             aTypeBits == PLACEHOLDER_FOR_ABSPOS ||
             aTypeBits == PLACEHOLDER_FOR_FIXEDPOS ||
-            aTypeBits == PLACEHOLDER_FOR_POPUP ||
             aTypeBits == (PLACEHOLDER_FOR_TOPLAYER | PLACEHOLDER_FOR_ABSPOS) ||
             aTypeBits == (PLACEHOLDER_FOR_TOPLAYER | PLACEHOLDER_FOR_FIXEDPOS),
         "Unexpected type bit");
@@ -94,38 +93,32 @@ class nsPlaceholderFrame final : public nsFrame {
   }
 
   // nsIFrame overrides
-  // We need to override GetXULMinSize and GetXULPrefSize because XUL uses
-  // placeholders not within lines.
-  virtual void AddInlineMinISize(gfxContext* aRenderingContext,
-                                 InlineMinISizeData* aData) override;
-  virtual void AddInlinePrefISize(gfxContext* aRenderingContext,
-                                  InlinePrefISizeData* aData) override;
-  virtual nsSize GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) override;
-  virtual nsSize GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) override;
-  virtual nsSize GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) override;
+  void AddInlineMinISize(gfxContext* aRenderingContext,
+                         InlineMinISizeData* aData) override;
+  void AddInlinePrefISize(gfxContext* aRenderingContext,
+                          InlinePrefISizeData* aData) override;
 
-  virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
-                      const ReflowInput& aReflowInput,
-                      nsReflowStatus& aStatus) override;
+  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
+              const ReflowInput& aReflowInput,
+              nsReflowStatus& aStatus) override;
 
-  virtual void DestroyFrom(nsIFrame* aDestructRoot,
-                           PostDestroyData& aPostDestroyData) override;
+  void Destroy(DestroyContext&) override;
 
 #if defined(DEBUG) || (defined(MOZ_REFLOW_PERF_DSP) && defined(MOZ_REFLOW_PERF))
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 #endif  // DEBUG || (MOZ_REFLOW_PERF_DSP && MOZ_REFLOW_PERF)
 
 #ifdef DEBUG_FRAME_DUMP
   void List(FILE* out = stderr, const char* aPrefix = "",
             ListFlags aFlags = ListFlags()) const override;
-  virtual nsresult GetFrameName(nsAString& aResult) const override;
+  nsresult GetFrameName(nsAString& aResult) const override;
 #endif  // DEBUG
 
-  virtual bool IsEmpty() override { return true; }
-  virtual bool IsSelfEmpty() override { return true; }
+  bool IsEmpty() override { return true; }
+  bool IsSelfEmpty() override { return true; }
 
-  virtual bool CanContinueTextRun() const override;
+  bool CanContinueTextRun() const override;
 
   void SetLineIsEmptySoFar(bool aValue) {
     AddOrRemoveStateBits(PLACEHOLDER_LINE_IS_EMPTY_SO_FAR, aValue);
@@ -143,9 +136,9 @@ class nsPlaceholderFrame final : public nsFrame {
   }
 
 #ifdef ACCESSIBILITY
-  virtual mozilla::a11y::AccType AccessibleType() override {
+  mozilla::a11y::AccType AccessibleType() override {
     nsIFrame* realFrame = GetRealFrameForPlaceholder(this);
-    return realFrame ? realFrame->AccessibleType() : nsFrame::AccessibleType();
+    return realFrame ? realFrame->AccessibleType() : nsIFrame::AccessibleType();
   }
 #endif
 

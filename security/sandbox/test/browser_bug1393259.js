@@ -16,12 +16,11 @@
 const kPageURL =
   "http://example.com/browser/security/sandbox/test/bug1393259.html";
 
-const environment = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
-);
-
 // Parameters for running the python script that registers/unregisters fonts.
-const kPythonPath = "/usr/bin/python";
+let kPythonPath = "/usr/bin/python";
+if (AppConstants.isPlatformAndVersionAtLeast("macosx", 23.0)) {
+  kPythonPath = "/usr/local/bin/python3";
+}
 const kFontInstallerPath = "browser/security/sandbox/test/mac_register_font.py";
 const kUninstallFlag = "-u";
 const kVerboseFlag = "-v";
@@ -37,7 +36,7 @@ const kTestFontName = "Fira Sans";
 // a font at a location not readable by content processes.
 const kPrivateFontSubPath = "/FiraSans-Regular.otf";
 
-add_task(async function() {
+add_task(async function () {
   await new Promise(resolve => waitForFocus(resolve, window));
 
   await BrowserTestUtils.withNewTab(
@@ -45,7 +44,7 @@ add_task(async function() {
       gBrowser,
       url: kPageURL,
     },
-    async function(aBrowser) {
+    async function (aBrowser) {
       function runProcess(aCmd, aArgs, blocking = true) {
         let cmdFile = Cc["@mozilla.org/file/local;1"].createInstance(
           Ci.nsIFile
@@ -61,7 +60,7 @@ add_task(async function() {
       }
 
       // Register the font at path |fontPath| and wait
-      // for the brower to detect the change.
+      // for the browser to detect the change.
       async function registerFont(fontPath) {
         let fontRegistered = getFontNotificationPromise();
         let exitCode = runProcess(kPythonPath, [
@@ -97,28 +96,22 @@ add_task(async function() {
         }
       }
 
-      // Pref "font.internaluseonly.changed" is updated when system
-      // fonts change. We use it to wait for changes to be detected
-      // in the browser.
-      let prefBranch = Services.prefs.getBranch("font.internaluseonly.");
-
-      // Returns a promise that resolves when the pref is changed
+      // Returns a promise that resolves when font info is changed.
       let getFontNotificationPromise = () =>
         new Promise(resolve => {
-          let prefObserver = {
-            QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
-            observe() {
-              prefBranch.removeObserver("changed", prefObserver);
-              resolve();
-            },
-          };
-          prefBranch.addObserver("changed", prefObserver);
+          const kTopic = "font-info-updated";
+          function observe() {
+            Services.obs.removeObserver(observe, kTopic);
+            resolve();
+          }
+
+          Services.obs.addObserver(observe, kTopic);
         });
 
       let homeDir = Services.dirsvc.get("Home", Ci.nsIFile);
       let privateFontPath = homeDir.path + kPrivateFontSubPath;
 
-      registerCleanupFunction(function() {
+      registerCleanupFunction(function () {
         unregisterFont(privateFontPath, /* waitForUnreg = */ false);
         runProcess("/bin/rm", [privateFontPath], /* blocking = */ false);
       });
@@ -130,17 +123,21 @@ add_task(async function() {
       unregisterFont(privateFontPath, /* waitForUnreg = */ false);
 
       // Get the original width, using the fallback monospaced font
-      let origWidth = await SpecialPowers.spawn(aBrowser, [], async function() {
-        let window = content.window.wrappedJSObject;
-        let contentDiv = window.document.getElementById("content");
-        return contentDiv.offsetWidth;
-      });
+      let origWidth = await SpecialPowers.spawn(
+        aBrowser,
+        [],
+        async function () {
+          let window = content.window.wrappedJSObject;
+          let contentDiv = window.document.getElementById("content");
+          return contentDiv.offsetWidth;
+        }
+      );
 
       // Activate the font we want to test at a non-standard path.
       await registerFont(privateFontPath);
 
       // Assign the new font to the content.
-      await SpecialPowers.spawn(aBrowser, [], async function() {
+      await SpecialPowers.spawn(aBrowser, [], async function () {
         let window = content.window.wrappedJSObject;
         let contentDiv = window.document.getElementById("content");
         contentDiv.style.fontFamily = "'Fira Sans', monospace";
@@ -149,7 +146,7 @@ add_task(async function() {
       // Wait until the width has changed, indicating the content process
       // has recognized the newly-activated font.
       while (true) {
-        let width = await SpecialPowers.spawn(aBrowser, [], async function() {
+        let width = await SpecialPowers.spawn(aBrowser, [], async function () {
           let window = content.window.wrappedJSObject;
           let contentDiv = window.document.getElementById("content");
           return contentDiv.offsetWidth;
@@ -163,7 +160,7 @@ add_task(async function() {
       }
 
       // Get a list of fonts now being used to display the web content.
-      let fontList = await SpecialPowers.spawn(aBrowser, [], async function() {
+      let fontList = await SpecialPowers.spawn(aBrowser, [], async function () {
         let window = content.window.wrappedJSObject;
         let range = window.document.createRange();
         let contentDiv = window.document.getElementById("content");

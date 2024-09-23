@@ -5,16 +5,16 @@
 
 const {
   adbAddon,
-} = require("devtools/client/shared/remote-debugging/adb/adb-addon");
+} = require("resource://devtools/client/shared/remote-debugging/adb/adb-addon.js");
 
-const ABD_ADDON_NAME = "ADB binary provider";
+const ABD_ADDON_NAME = "Firefox DevTools ADB Extension";
 
 /* import-globals-from helper-adb.js */
 Services.scriptloader.loadSubScript(CHROME_URL_ROOT + "helper-adb.js", this);
 
 // Test that manifest URLs for addon targets show the manifest correctly in a new tab.
 // This test reuses the ADB extension to be sure to have a valid manifest URL to open.
-add_task(async function() {
+add_task(async function () {
   await pushPref(
     "devtools.remote.adb.extensionURL",
     CHROME_URL_ROOT + "resources/test-adb-extension/adb-extension-#OS#.xpi"
@@ -47,7 +47,7 @@ add_task(async function() {
   const textContent = await SpecialPowers.spawn(
     target.linkedBrowser,
     [],
-    function() {
+    function () {
       return content.wrappedJSObject.document.body.textContent;
     }
   );
@@ -68,6 +68,6 @@ add_task(async function() {
   await waitUntil(() => usbStatusElement.textContent.includes("USB disabled"));
   await stopAdbProcess();
 
-  await waitForRequestsToSettle(window.AboutDebugging.store);
+  await waitForAboutDebuggingRequests(window.AboutDebugging.store);
   await removeTab(tab);
 });

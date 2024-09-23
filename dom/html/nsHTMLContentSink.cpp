@@ -50,9 +50,8 @@
 
 #include "nsError.h"
 #include "nsContentPolicyUtils.h"
+#include "nsIDocShell.h"
 #include "nsIScriptContext.h"
-
-#include "nsLayoutCID.h"
 
 #include "nsEscape.h"
 #include "nsNodeInfoManager.h"
@@ -107,12 +106,13 @@ class HTMLContentSink : public nsContentSink, public nsIHTMLContentSink {
   NS_IMETHOD WillBuildModel(nsDTDMode aDTDMode) override;
   NS_IMETHOD DidBuildModel(bool aTerminated) override;
   NS_IMETHOD WillInterrupt(void) override;
-  NS_IMETHOD WillResume(void) override;
+  void WillResume() override;
   NS_IMETHOD SetParser(nsParserBase* aParser) override;
   virtual void FlushPendingNotifications(FlushType aType) override;
   virtual void SetDocumentCharset(NotNull<const Encoding*> aEncoding) override;
   virtual nsISupports* GetTarget() override;
   virtual bool IsScriptExecuting() override;
+  virtual bool WaitForPendingSheets() override;
   virtual void ContinueInterruptedParsingAsync() override;
 
   // nsIHTMLContentSink
@@ -176,7 +176,7 @@ class SinkContext {
   nsresult GrowStack();
   nsresult FlushTags();
 
-  bool IsCurrentContainer(nsHTMLTag mType);
+  bool IsCurrentContainer(nsHTMLTag aTag) const;
 
   void DidAddContent(nsIContent* aContent);
   void UpdateChildCounts();
@@ -277,12 +277,8 @@ nsresult SinkContext::Begin(nsHTMLTag aNodeType, nsGenericHTMLElement* aRoot,
   return NS_OK;
 }
 
-bool SinkContext::IsCurrentContainer(nsHTMLTag aTag) {
-  if (aTag == mStack[mStackPos - 1].mType) {
-    return true;
-  }
-
-  return false;
+bool SinkContext::IsCurrentContainer(nsHTMLTag aTag) const {
+  return aTag == mStack[mStackPos - 1].mType;
 }
 
 void SinkContext::DidAddContent(nsIContent* aContent) {
@@ -358,9 +354,10 @@ nsIContent* SinkContext::Node::Add(nsIContent* child) {
                  "Inserting multiple children without flushing.");
     nsCOMPtr<nsIContent> nodeToInsertBefore =
         mContent->GetChildAt_Deprecated(mInsertionPoint++);
-    mContent->InsertChildBefore(child, nodeToInsertBefore, false);
+    mContent->InsertChildBefore(child, nodeToInsertBefore, false,
+                                IgnoreErrors());
   } else {
-    mContent->AppendChildTo(child, false);
+    mContent->AppendChildTo(child, false, IgnoreErrors());
   }
   return child;
 }
@@ -551,15 +548,13 @@ HTMLContentSink::~HTMLContentSink() {
     mNotificationTimer->Cancel();
   }
 
-  int32_t numContexts = mContextStack.Length();
-
-  if (mCurrentContext == mHeadContext && numContexts > 0) {
+  if (mCurrentContext == mHeadContext && !mContextStack.IsEmpty()) {
     // Pop off the second html context if it's not done earlier
-    mContextStack.RemoveElementAt(--numContexts);
+    mContextStack.RemoveLastElement();
   }
 
-  int32_t i;
-  for (i = 0; i < numContexts; i++) {
+  for (int32_t i = 0, numContexts = mContextStack.Length(); i < numContexts;
+       i++) {
     SinkContext* sc = mContextStack.ElementAt(i);
     if (sc) {
       sc->End();
@@ -617,8 +612,11 @@ nsresult HTMLContentSink::Init(Document* aDoc, nsIURI* aURI,
 
   NS_ASSERTION(mDocument->GetChildCount() == 0,
                "Document should have no kids here!");
-  rv = mDocument->AppendChildTo(mRoot, false);
-  NS_ENSURE_SUCCESS(rv, rv);
+  ErrorResult error;
+  mDocument->AppendChildTo(mRoot, false, error);
+  if (error.Failed()) {
+    return error.StealNSResult();
+  }
 
   // Make head part
   nodeInfo = mNodeInfoManager->GetNodeInfo(
@@ -629,7 +627,7 @@ nsresult HTMLContentSink::Init(Document* aDoc, nsIURI* aURI,
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  mRoot->AppendChildTo(mHead, false);
+  mRoot->AppendChildTo(mHead, false, IgnoreErrors());
 
   mCurrentContext = new SinkContext(this);
   mCurrentContext->Begin(eHTMLTag_html, mRoot, 0, -1);
@@ -645,18 +643,9 @@ NS_IMETHODIMP
 HTMLContentSink::WillBuildModel(nsDTDMode aDTDMode) {
   WillBuildModelImpl();
 
-  nsCompatibility mode = eCompatibility_NavQuirks;
-  switch (aDTDMode) {
-    case eDTDMode_full_standards:
-      mode = eCompatibility_FullStandards;
-      break;
-    case eDTDMode_almost_standards:
-      mode = eCompatibility_AlmostStandards;
-      break;
-    default:
-      break;
-  }
-  mDocument->SetCompatibilityMode(mode);
+  mDocument->SetCompatibilityMode(aDTDMode == eDTDMode_full_standards
+                                      ? eCompatibility_FullStandards
+                                      : eCompatibility_NavQuirks);
 
   // Notify document that the load is beginning
   mDocument->BeginLoad();
@@ -716,11 +705,8 @@ HTMLContentSink::SetParser(nsParserBase* aParser) {
 nsresult HTMLContentSink::CloseHTML() {
   if (mHeadContext) {
     if (mCurrentContext == mHeadContext) {
-      uint32_t numContexts = mContextStack.Length();
-
       // Pop off the second html context if it's not done earlier
-      mCurrentContext = mContextStack.ElementAt(--numContexts);
-      mContextStack.RemoveElementAt(numContexts);
+      mCurrentContext = mContextStack.PopLastElement();
     }
 
     mHeadContext->End();
@@ -804,7 +790,6 @@ HTMLContentSink::OpenContainer(ElementType aElementType) {
         if (!mNotifiedRootInsertion) {
           NotifyRootInsertion();
         }
-        ProcessOfflineManifest(mRoot);
       }
       break;
   }
@@ -831,8 +816,7 @@ HTMLContentSink::CloseContainer(const ElementType aTag) {
 NS_IMETHODIMP
 HTMLContentSink::WillInterrupt() { return WillInterruptImpl(); }
 
-NS_IMETHODIMP
-HTMLContentSink::WillResume() { return WillResumeImpl(); }
+void HTMLContentSink::WillResume() { WillResumeImpl(); }
 
 void HTMLContentSink::CloseHeadContext() {
   if (mCurrentContext) {
@@ -842,9 +826,7 @@ void HTMLContentSink::CloseHeadContext() {
   }
 
   if (!mContextStack.IsEmpty()) {
-    uint32_t n = mContextStack.Length() - 1;
-    mCurrentContext = mContextStack.ElementAt(n);
-    mContextStack.RemoveElementAt(n);
+    mCurrentContext = mContextStack.PopLastElement();
   }
 }
 
@@ -941,11 +923,13 @@ void HTMLContentSink::ContinueInterruptedParsingIfEnabled() {
   }
 }
 
+bool HTMLContentSink::WaitForPendingSheets() {
+  return nsContentSink::WaitForPendingSheets();
+}
+
 void HTMLContentSink::ContinueInterruptedParsingAsync() {
   nsCOMPtr<nsIRunnable> ev = NewRunnableMethod(
       "HTMLContentSink::ContinueInterruptedParsingIfEnabled", this,
       &HTMLContentSink::ContinueInterruptedParsingIfEnabled);
-
-  RefPtr<Document> doc = mHTMLDocument;
-  doc->Dispatch(mozilla::TaskCategory::Other, ev.forget());
+  mHTMLDocument->Dispatch(ev.forget());
 }

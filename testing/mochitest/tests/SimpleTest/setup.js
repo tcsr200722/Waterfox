@@ -31,7 +31,7 @@ if (!("SpecialPowers" in window)) {
 function parseQueryString(encodedString, useArrays) {
   // strip a leading '?' from the encoded string
   var qstr =
-    encodedString.length > 0 && encodedString[0] == "?"
+    encodedString.length && encodedString[0] == "?"
       ? encodedString.substring(1)
       : encodedString;
   var pairs = qstr.replace(/\+/g, "%20").split(/(\&amp\;|\&\#38\;|\&#x26;|\&)/);
@@ -68,6 +68,41 @@ function parseQueryString(encodedString, useArrays) {
   return o;
 }
 
+/* helper function, specifically for prefs to ignore */
+function loadFile(url, callback) {
+  let req = new XMLHttpRequest();
+  req.open("GET", url);
+  req.onload = function () {
+    if (req.readyState == 4) {
+      if (req.status == 200) {
+        try {
+          let prefs = JSON.parse(req.responseText);
+          callback(prefs);
+        } catch (e) {
+          dump(
+            "TEST-UNEXPECTED-FAIL: setup.js | error parsing " +
+              url +
+              " (" +
+              e +
+              ")\n"
+          );
+          throw e;
+        }
+      } else {
+        dump(
+          "TEST-UNEXPECTED-FAIL: setup.js | error loading " +
+            url +
+            " (HTTP " +
+            req.status +
+            ")\n"
+        );
+        callback({});
+      }
+    }
+  };
+  req.send();
+}
+
 // Check the query string for arguments
 var params = parseQueryString(location.search.substring(1), true);
 
@@ -90,6 +125,8 @@ if (config.testRoot == "chrome" || config.testRoot == "a11y") {
   }
   params = config;
   params.baseurl = "chrome://mochitests/content";
+} else if (params.xOriginTests) {
+  params.baseurl = "http://mochi.test:8888/tests/";
 } else {
   params.baseurl = "";
 }
@@ -100,6 +137,9 @@ if (params.testRoot == "browser") {
   params.testPrefix = "chrome://mochitests/content/chrome/";
 } else if (params.testRoot == "a11y") {
   params.testPrefix = "chrome://mochitests/content/a11y/";
+} else if (params.xOriginTests) {
+  params.testPrefix = "http://mochi.test:8888/tests/";
+  params.httpsBaseUrl = "https://example.org:443/tests/";
 } else {
   params.testPrefix = "/tests/";
 }
@@ -159,7 +199,10 @@ if (params.dumpDMDAfterTest) {
   TestRunner.dumpDMDAfterTest = true;
 }
 
-if (params.interactiveDebugger) {
+// We need to check several things here because mochitest-chrome passes
+// `jsdebugger` and `debugger` directly, but in other tests we're reliant
+// on the `interactiveDebugger` flag being passed along.
+if (params.interactiveDebugger || params.jsdebugger || params.debugger) {
   TestRunner.interactiveDebugger = true;
 }
 
@@ -175,30 +218,54 @@ if (params.cleanupCrashes) {
   TestRunner.cleanupCrashes = true;
 }
 
+if (params.xOriginTests) {
+  TestRunner.xOriginTests = true;
+  TestRunner.setXOriginEventHandler();
+}
+
+if (params.timeoutAsPass) {
+  TestRunner.timeoutAsPass = true;
+}
+
+if (params.conditionedProfile) {
+  TestRunner.conditionedProfile = true;
+}
+
+if (params.comparePrefs) {
+  TestRunner.comparePrefs = true;
+}
+
 // Log things to the console if appropriate.
-TestRunner.logger.addListener("dumpListener", consoleLevel + "", function(msg) {
-  dump(msg.info.join(" ") + "\n");
-});
+TestRunner.logger.addListener(
+  "dumpListener",
+  consoleLevel + "",
+  function (msg) {
+    dump(msg.info.join(" ") + "\n");
+  }
+);
 
 var gTestList = [];
 var RunSet = {};
-RunSet.runall = function(e) {
+
+RunSet.runall = function () {
   // Filter tests to include|exclude tests based on data in params.filter.
   // This allows for including or excluding tests from the gTestList
   // TODO Only used by ipc tests, remove once those are implemented sanely
   if (params.testManifest) {
-    getTestManifest(getTestManifestURL(params.testManifest), params, function(
-      filter
-    ) {
-      gTestList = filterTests(filter, gTestList, params.runOnly);
-      RunSet.runtests();
-    });
+    getTestManifest(
+      getTestManifestURL(params.testManifest),
+      params,
+      function (filter) {
+        gTestList = filterTests(filter, gTestList, params.runOnly);
+        RunSet.runtests();
+      }
+    );
   } else {
     RunSet.runtests();
   }
 };
 
-RunSet.runtests = function(e) {
+RunSet.runtests = function () {
   // Which tests we're going to run
   var my_tests = gTestList;
 
@@ -218,7 +285,7 @@ RunSet.runtests = function(e) {
   TestRunner.runTests(my_tests);
 };
 
-RunSet.reloadAndRunAll = function(e) {
+RunSet.reloadAndRunAll = function (e) {
   e.preventDefault();
   //window.location.hash = "";
   if (params.autorun) {
@@ -277,8 +344,19 @@ function hookup() {
   }
 }
 
+function getPrefList() {
+  if (params.ignorePrefsFile) {
+    loadFile(getTestManifestURL(params.ignorePrefsFile), function (prefs) {
+      TestRunner.ignorePrefs = prefs;
+      RunSet.runall();
+    });
+  } else {
+    RunSet.runall();
+  }
+}
+
 function hookupTests(testList) {
-  if (testList.length > 0) {
+  if (testList.length) {
     gTestList = testList;
   } else {
     gTestList = [];
@@ -291,7 +369,7 @@ function hookupTests(testList) {
   document.getElementById("toggleNonTests").onclick = toggleNonTests;
   // run automatically if autorun specified
   if (params.autorun) {
-    RunSet.runall();
+    getPrefList();
   }
 }
 

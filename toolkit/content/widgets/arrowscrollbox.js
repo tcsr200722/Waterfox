@@ -7,14 +7,11 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-
   class MozArrowScrollbox extends MozElements.BaseControl {
     static get inheritedAttributes() {
       return {
         "#scrollbutton-up": "disabled=scrolledtostart",
+        ".scrollbox-clip": "orient",
         scrollbox: "orient,align,pack,dir,smoothscroll",
         "#scrollbutton-down": "disabled=scrolledtoend",
       };
@@ -24,13 +21,15 @@
       return `
       <html:link rel="stylesheet" href="chrome://global/skin/toolbarbutton.css"/>
       <html:link rel="stylesheet" href="chrome://global/skin/arrowscrollbox.css"/>
-      <toolbarbutton id="scrollbutton-up" part="scrollbutton-up"/>
+      <toolbarbutton id="scrollbutton-up" part="scrollbutton-up" keyNav="false" data-l10n-id="overflow-scroll-button-backwards"/>
       <spacer part="overflow-start-indicator"/>
-      <scrollbox part="scrollbox" flex="1">
-        <html:slot/>
-      </scrollbox>
+      <box class="scrollbox-clip" part="scrollbox-clip" flex="1">
+        <scrollbox part="scrollbox" flex="1">
+          <html:slot/>
+        </scrollbox>
+      </box>
       <spacer part="overflow-end-indicator"/>
-      <toolbarbutton id="scrollbutton-down" part="scrollbutton-down"/>
+      <toolbarbutton id="scrollbutton-down" part="scrollbutton-down" keyNav="false" data-l10n-id="overflow-scroll-button-forwards"/>
     `;
     }
 
@@ -41,9 +40,10 @@
 
       this.scrollbox = this.shadowRoot.querySelector("scrollbox");
       this._scrollButtonUp = this.shadowRoot.getElementById("scrollbutton-up");
-      this._scrollButtonDown = this.shadowRoot.getElementById(
-        "scrollbutton-down"
-      );
+      this._scrollButtonDown =
+        this.shadowRoot.getElementById("scrollbutton-down");
+
+      MozXULElement.insertFTLIfNeeded("toolkit/global/arrowscrollbox.ftl");
 
       this._arrowScrollAnim = {
         scrollbox: this,
@@ -136,6 +136,8 @@
       }
       this.hasConnected = true;
 
+      document.l10n.connectRoot(this.shadowRoot);
+
       if (!this.hasAttribute("smoothscroll")) {
         this.smoothScroll = Services.prefs.getBoolPref(
           "toolkit.scrollbox.smoothScroll",
@@ -185,7 +187,6 @@
 
     set smoothScroll(val) {
       this.setAttribute("smoothscroll", !!val);
-      return val;
     }
 
     get smoothScroll() {
@@ -212,7 +213,7 @@
       // line scroll amout should be the width (at horizontal scrollbox) or
       // the height (at vertical scrollbox) of the scrolled elements.
       // However, the elements may have different width or height.  So,
-      // for consistent speed, let's use avalage with of the elements.
+      // for consistent speed, let's use average width of the elements.
       var elements = this._getScrollableElements();
       return elements.length && this.scrollSize / elements.length;
     }
@@ -586,37 +587,38 @@
             scrolledToStart = true;
             scrolledToEnd = true;
           } else {
-            let [leftOrTop, rightOrBottom] = this.startEndProps;
-            let leftOrTopEdge = ele =>
-              Math.round(this._boundsWithoutFlushing(ele)[leftOrTop]);
-            let rightOrBottomEdge = ele =>
-              Math.round(this._boundsWithoutFlushing(ele)[rightOrBottom]);
+            let isAtEdge = (element, start) => {
+              let edge = start ? this.startEndProps[0] : this.startEndProps[1];
+              let scrollEdge = this._boundsWithoutFlushing(this.scrollbox)[
+                edge
+              ];
+              let elementEdge = this._boundsWithoutFlushing(element)[edge];
+              // This is enough slop (>2/3) so that no subpixel value should
+              // get us confused about whether we reached the end.
+              const EPSILON = 0.7;
+              if (start) {
+                return scrollEdge <= elementEdge + EPSILON;
+              }
+              return elementEdge <= scrollEdge + EPSILON;
+            };
 
             let elements = this._getScrollableElements();
-            let [leftOrTopElement, rightOrBottomElement] = [
+            let [startElement, endElement] = [
               elements[0],
               elements[elements.length - 1],
             ];
             if (this.isRTLScrollbox) {
-              [leftOrTopElement, rightOrBottomElement] = [
-                rightOrBottomElement,
-                leftOrTopElement,
-              ];
+              [startElement, endElement] = [endElement, startElement];
             }
-
-            if (
-              leftOrTopElement &&
-              leftOrTopEdge(leftOrTopElement) >= leftOrTopEdge(this.scrollbox)
-            ) {
-              scrolledToStart = !this.isRTLScrollbox;
-              scrolledToEnd = this.isRTLScrollbox;
-            } else if (
-              rightOrBottomElement &&
-              rightOrBottomEdge(rightOrBottomElement) <=
-                rightOrBottomEdge(this.scrollbox)
-            ) {
-              scrolledToStart = this.isRTLScrollbox;
-              scrolledToEnd = !this.isRTLScrollbox;
+            scrolledToStart =
+              startElement && isAtEdge(startElement, /* start = */ true);
+            scrolledToEnd =
+              endElement && isAtEdge(endElement, /* start = */ false);
+            if (this.isRTLScrollbox) {
+              [scrolledToStart, scrolledToEnd] = [
+                scrolledToEnd,
+                scrolledToStart,
+              ];
             }
           }
 
@@ -641,6 +643,7 @@
         this._scrollTimer.cancel();
         this._scrollTimer = null;
       }
+      document.l10n.disconnectRoot(this.shadowRoot);
     }
 
     on_wheel(event) {
@@ -649,18 +652,13 @@
         return;
       }
 
+      const { deltaMode } = event;
       let doScroll = false;
       let instant;
       let scrollAmount = 0;
       if (this.getAttribute("orient") == "vertical") {
         doScroll = true;
-        if (event.deltaMode == event.DOM_DELTA_PIXEL) {
-          scrollAmount = event.deltaY;
-        } else if (event.deltaMode == event.DOM_DELTA_PAGE) {
-          scrollAmount = event.deltaY * this.scrollClientSize;
-        } else {
-          scrollAmount = event.deltaY * this.lineScrollAmount;
-        }
+        scrollAmount = event.deltaY;
       } else {
         // We allow vertical scrolling to scroll a horizontal scrollbox
         // because many users have a vertical scroll wheel but no
@@ -676,13 +674,9 @@
 
         if (this._prevMouseScrolls.every(prev => prev == isVertical)) {
           doScroll = true;
-          if (event.deltaMode == event.DOM_DELTA_PIXEL) {
-            scrollAmount = scrollByDelta;
+          scrollAmount = scrollByDelta;
+          if (deltaMode == event.DOM_DELTA_PIXEL) {
             instant = true;
-          } else if (event.deltaMode == event.DOM_DELTA_PAGE) {
-            scrollAmount = scrollByDelta * this.scrollClientSize;
-          } else {
-            scrollAmount = scrollByDelta * this.lineScrollAmount;
           }
         }
 
@@ -694,6 +688,24 @@
 
       if (doScroll) {
         let direction = scrollAmount < 0 ? -1 : 1;
+
+        if (deltaMode == event.DOM_DELTA_PAGE) {
+          scrollAmount *= this.scrollClientSize;
+        } else if (deltaMode == event.DOM_DELTA_LINE) {
+          // Try to not scroll by more than one page when using line scrolling,
+          // so that all elements are scrollable.
+          let lineAmount = this.lineScrollAmount;
+          let clientSize = this.scrollClientSize;
+          if (Math.abs(scrollAmount * lineAmount) > clientSize) {
+            // NOTE: This still tries to scroll a non-fractional amount of
+            // items per line scrolled.
+            scrollAmount =
+              Math.max(1, Math.floor(clientSize / lineAmount)) * direction;
+          }
+          scrollAmount *= lineAmount;
+        } else {
+          // DOM_DELTA_PIXEL, leave scrollAmount untouched.
+        }
         let startPos = this.scrollPosition;
 
         if (!this._isScrolling || this._direction != direction) {
@@ -742,7 +754,7 @@
       }
     }
 
-    on_touchend(event) {
+    on_touchend() {
       this._touchStart = -1;
     }
 
@@ -797,12 +809,12 @@
       this._updateScrollButtonsDisabledState();
     }
 
-    on_scroll(event) {
+    on_scroll() {
       this._isScrolling = true;
       this._updateScrollButtonsDisabledState();
     }
 
-    on_scrollend(event) {
+    on_scrollend() {
       this._isScrolling = false;
       this._destination = 0;
       this._direction = 0;

@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGLENGTHLIST_H__
-#define MOZILLA_SVGLENGTHLIST_H__
+#ifndef DOM_SVG_SVGLENGTHLIST_H_
+#define DOM_SVG_SVGLENGTHLIST_H_
 
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
@@ -42,6 +42,15 @@ class SVGLengthList {
   SVGLengthList() = default;
   ~SVGLengthList() = default;
 
+  SVGLengthList& operator=(const SVGLengthList& aOther) {
+    mLengths.ClearAndRetainStorage();
+    // Best-effort, really.
+    Unused << mLengths.AppendElements(aOther.mLengths, fallible);
+    return *this;
+  }
+
+  SVGLengthList(const SVGLengthList& aOther) { *this = aOther; }
+
   // Only methods that don't make/permit modification to this list are public.
   // Only our friend classes can access methods that may change us.
 
@@ -76,7 +85,10 @@ class SVGLengthList {
    * This may fail on OOM if the internal capacity needs to be increased, in
    * which case the list will be left unmodified.
    */
-  nsresult CopyFrom(const SVGLengthList& rhs);
+  nsresult CopyFrom(const SVGLengthList&);
+  void SwapWith(SVGLengthList& aOther) {
+    mLengths.SwapElements(aOther.mLengths);
+  }
 
   SVGLength& operator[](uint32_t aIndex) { return mLengths[aIndex]; }
 
@@ -162,8 +174,7 @@ class SVGLengthList {
  */
 class SVGLengthListAndInfo : public SVGLengthList {
  public:
-  SVGLengthListAndInfo()
-      : mElement(nullptr), mAxis(0), mCanZeroPadList(false) {}
+  SVGLengthListAndInfo() : mElement(nullptr), mAxis(0), mCanZeroPadList(true) {}
 
   SVGLengthListAndInfo(dom::SVGElement* aElement, uint8_t aAxis,
                        bool aCanZeroPadList)
@@ -292,7 +303,7 @@ class MOZ_STACK_CLASS SVGUserUnitList {
  public:
   SVGUserUnitList() : mList(nullptr), mElement(nullptr), mAxis(0) {}
 
-  void Init(const SVGLengthList* aList, dom::SVGElement* aElement,
+  void Init(const SVGLengthList* aList, const dom::SVGElement* aElement,
             uint8_t aAxis) {
     mList = aList;
     mElement = aElement;
@@ -307,7 +318,7 @@ class MOZ_STACK_CLASS SVGUserUnitList {
 
   /// This may return a non-finite value
   float operator[](uint32_t aIndex) const {
-    return (*mList)[aIndex].GetValueInUserUnits(mElement, mAxis);
+    return (*mList)[aIndex].GetValueInPixels(mElement, mAxis);
   }
 
   bool HasPercentageValueAt(uint32_t aIndex) const {
@@ -318,10 +329,10 @@ class MOZ_STACK_CLASS SVGUserUnitList {
 
  private:
   const SVGLengthList* mList;
-  dom::SVGElement* mElement;
+  const dom::SVGElement* mElement;
   uint8_t mAxis;
 };
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGLENGTHLIST_H__
+#endif  // DOM_SVG_SVGLENGTHLIST_H_

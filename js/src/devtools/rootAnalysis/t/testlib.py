@@ -2,29 +2,31 @@ import json
 import os
 import re
 import subprocess
+import sys
+from collections import defaultdict, namedtuple
 
 from sixgill import Body
-from collections import defaultdict, namedtuple
 
 scriptdir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-HazardSummary = namedtuple('HazardSummary', [
-    'function',
-    'variable',
-    'type',
-    'GCFunction',
-    'location'])
+HazardSummary = namedtuple(
+    "HazardSummary", ["function", "variable", "type", "GCFunction", "location"]
+)
 
-Callgraph = namedtuple('Callgraph', [
-    'functionNames',
-    'nameToId',
-    'mangledToUnmangled',
-    'unmangledToMangled',
-    'calleesOf',
-    'callersOf',
-    'tags',
-    'calleeGraph',
-    'callerGraph'])
+Callgraph = namedtuple(
+    "Callgraph",
+    [
+        "functionNames",
+        "nameToId",
+        "mangledToUnmangled",
+        "unmangledToMangled",
+        "calleesOf",
+        "callersOf",
+        "tags",
+        "calleeGraph",
+        "callerGraph",
+    ],
+)
 
 
 def equal(got, expected):
@@ -33,7 +35,7 @@ def equal(got, expected):
 
 
 def extract_unmangled(func):
-    return func.split('$')[-1]
+    return func.split("$")[-1]
 
 
 class Test(object):
@@ -49,24 +51,29 @@ class Test(object):
     def binpath(self, prog):
         return os.path.join(self.cfg.sixgill_bin, prog)
 
-    def compile(self, source, options=''):
+    def compile(self, source, options=""):
         env = os.environ
-        env['CCACHE_DISABLE'] = '1'
-        cmd = "{CXX} -c {source} -O3 -std=c++11 -fplugin={sixgill} -fplugin-arg-xgill-mangle=1 {options}".format(  # NOQA: E501
+        env["CCACHE_DISABLE"] = "1"
+        if "-fexceptions" not in options and "-fno-exceptions" not in options:
+            options += " -fno-exceptions"
+        cmd = "{CXX} -c {source} -O3 -std=c++17 -fplugin={sixgill} -fplugin-arg-xgill-mangle=1 {options}".format(  # NOQA: E501
             source=self.infile(source),
-            CXX=self.cfg.cxx, sixgill=self.cfg.sixgill_plugin,
-            options=options, env=env)
-        if self.cfg.verbose:
+            CXX=self.cfg.cxx,
+            sixgill=self.cfg.sixgill_plugin,
+            options=options,
+        )
+        if self.cfg.verbose > 0:
             print("Running %s" % cmd)
         subprocess.check_call(["sh", "-c", cmd])
 
     def load_db_entry(self, dbname, pattern):
-        '''Look up an entry from an XDB database file, 'pattern' may be an exact
-        matching string, or an re pattern object matching a single entry.'''
+        """Look up an entry from an XDB database file, 'pattern' may be an exact
+        matching string, or an re pattern object matching a single entry."""
 
-        if hasattr(pattern, 'match'):
-            output = subprocess.check_output([self.binpath("xdbkeys"), dbname + ".xdb"],
-                                             universal_newlines=True)
+        if hasattr(pattern, "match"):
+            output = subprocess.check_output(
+                [self.binpath("xdbkeys"), dbname + ".xdb"], universal_newlines=True
+            )
             matches = list(filter(lambda _: re.search(pattern, _), output.splitlines()))
             if len(matches) == 0:
                 raise Exception("entry not found")
@@ -74,24 +81,32 @@ class Test(object):
                 raise Exception("multiple entries found")
             pattern = matches[0]
 
-        output = subprocess.check_output([self.binpath("xdbfind"), "-json", dbname + ".xdb",
-                                          pattern],
-                                         universal_newlines=True)
+        output = subprocess.check_output(
+            [self.binpath("xdbfind"), "-json", dbname + ".xdb", pattern],
+            universal_newlines=True,
+        )
         return json.loads(output)
 
-    def run_analysis_script(self, phase, upto=None):
-        open("defaults.py", "w").write('''\
+    def run_analysis_script(self, startPhase="gcTypes", upto=None):
+        open("defaults.py", "w").write(
+            """\
 analysis_scriptdir = '{scriptdir}'
 sixgill_bin = '{bindir}'
-'''.format(scriptdir=scriptdir, bindir=self.cfg.sixgill_bin))
-        cmd = [os.path.join(scriptdir, "analyze.py"), '-v' if self.verbose else '-q', phase]
+""".format(
+                scriptdir=scriptdir, bindir=self.cfg.sixgill_bin
+            )
+        )
+        cmd = [
+            sys.executable,
+            os.path.join(scriptdir, "analyze.py"),
+            ["-q", "", "-v"][min(self.verbose, 2)],
+        ]
+        cmd += ["--first", startPhase]
         if upto:
-            cmd += ["--upto", upto]
+            cmd += ["--last", upto]
         cmd.append("--source=%s" % self.indir)
-        cmd.append("--objdir=%s" % self.outdir)
         cmd.append("--js=%s" % self.cfg.js)
         if self.cfg.verbose:
-            cmd.append("--verbose")
             print("Running " + " ".join(cmd))
         subprocess.check_call(cmd)
 
@@ -106,31 +121,37 @@ sixgill_bin = '{bindir}'
         values = (extract(line.strip()) for line in open(fullpath, "r"))
         return list(filter(lambda _: _ is not None, values))
 
-    def load_suppressed_functions(self):
-        return set(self.load_text_file("limitedFunctions.lst", extract=lambda l: l.split(' ')[1]))
+    def load_json_file(self, filename, reviver=None):
+        fullpath = os.path.join(self.outdir, filename)
+        with open(fullpath) as fh:
+            return json.load(fh, object_hook=reviver)
 
     def load_gcTypes(self):
         def grab_type(line):
-            m = re.match(r'^(GC\w+): (.*)', line)
+            m = re.match(r"^(GC\w+): (.*)", line)
             if m:
-                return (m.group(1) + 's', m.group(2))
+                return (m.group(1) + "s", m.group(2))
             return None
 
         gctypes = defaultdict(list)
-        for collection, typename in self.load_text_file('gcTypes.txt', extract=grab_type):
+        for collection, typename in self.load_text_file(
+            "gcTypes.txt", extract=grab_type
+        ):
             gctypes[collection].append(typename)
         return gctypes
 
     def load_typeInfo(self, filename="typeInfo.txt"):
-        with open(os.path.join(self.outdir, filename)) as fh:
-            return json.load(fh)
+        return self.load_json_file(filename)
+
+    def load_funcInfo(self, filename="limitedFunctions.lst"):
+        return self.load_json_file(filename)
 
     def load_gcFunctions(self):
-        return self.load_text_file('gcFunctions.lst', extract=extract_unmangled)
+        return self.load_text_file("gcFunctions.lst", extract=extract_unmangled)
 
     def load_callgraph(self):
         data = Callgraph(
-            functionNames=['dummy'],
+            functionNames=["dummy"],
             nameToId={},
             mangledToUnmangled={},
             unmangledToMangled={},
@@ -152,14 +173,14 @@ sixgill_bin = '{bindir}'
             data.callerGraph[callee][caller] = True
 
         def process(line):
-            if line.startswith('#'):
+            if line.startswith("#"):
                 name = line.split(" ", 1)[1]
                 data.nameToId[name] = len(data.functionNames)
                 data.functionNames.append(name)
                 return
 
-            if line.startswith('='):
-                m = re.match(r'^= (\d+) (.*)', line)
+            if line.startswith("="):
+                m = re.match(r"^= (\d+) (.*)", line)
                 mangled = data.functionNames[int(m.group(1))]
                 unmangled = m.group(2)
                 data.nameToId[unmangled] = id
@@ -167,33 +188,51 @@ sixgill_bin = '{bindir}'
                 data.unmangledToMangled[unmangled] = mangled
                 return
 
+            # Sample lines:
+            #   D 10 20
+            #   D /3 10 20
+            #   D 3:3 10 20
+            # All of these mean that there is a direct call from function #10
+            # to function #20. The latter two mean that the call is made in a
+            # context where the 0x1 and 0x2 properties (3 == 0x1 | 0x2) are in
+            # effect. The `/n` syntax was the original, which was then expanded
+            # to `m:n` to allow multiple calls to be combined together when not
+            # all calls have the same properties in effect. The `/n` syntax is
+            # deprecated.
+            #
+            # The properties usually refer to "limits", eg "GC is suppressed
+            # in the scope surrounding this call". For testing purposes, the
+            # difference between `m` and `n` in `m:n` is currently ignored.
+            tokens = line.split(" ")
             limit = 0
-            m = re.match(r'^\w (?:/(\d+))? ', line)
-            if m:
-                limit = int(m[1])
+            if tokens[1].startswith("/"):
+                attr_str = tokens.pop(1)
+                limit = int(attr_str[1:])
+            elif ":" in tokens[1]:
+                attr_str = tokens.pop(1)
+                limit = int(attr_str[0 : attr_str.index(":")])
 
-            tokens = line.split(' ')
-            if tokens[0] in ('D', 'R'):
+            if tokens[0] in ("D", "R"):
                 _, caller, callee = tokens
                 add_call(lookup(caller), lookup(callee), limit)
-            elif tokens[0] == 'T':
-                data.tags[tokens[1]].add(line.split(' ', 2)[2])
-            elif tokens[0] in ('F', 'V'):
-                m = re.match(r'^[FV] (\d+) (\d+) CLASS (.*?) FIELD (.*)', line)
-                caller, callee, csu, field = m.groups()
-                add_call(lookup(caller), lookup(callee), limit)
-
-            elif tokens[0] == 'I':
-                m = re.match(r'^I (\d+) VARIABLE ([^\,]*)', line)
+            elif tokens[0] == "T":
+                data.tags[tokens[1]].add(line.split(" ", 2)[2])
+            elif tokens[0] in ("F", "V"):
                 pass
 
-        self.load_text_file('callgraph.txt', extract=process)
+            elif tokens[0] == "I":
+                m = re.match(r"^I (\d+) VARIABLE ([^\,]*)", line)
+                pass
+
+        self.load_text_file("callgraph.txt", extract=process)
         return data
 
     def load_hazards(self):
         def grab_hazard(line):
             m = re.match(
-                r"Function '(.*?)' has unrooted '(.*?)' of type '(.*?)' live across GC call '(.*?)' at (.*)", line)  # NOQA: E501
+                r"Function '(.*?)' has unrooted '(.*?)' of type '(.*?)' live across GC call '(.*?)' at (.*)",  # NOQA: E501
+                line,
+            )
             if m:
                 info = list(m.groups())
                 info[0] = info[0].split("$")[-1]
@@ -201,7 +240,7 @@ sixgill_bin = '{bindir}'
                 return HazardSummary(*info)
             return None
 
-        return self.load_text_file('rootingHazards.txt', extract=grab_hazard)
+        return self.load_text_file("hazards.txt", extract=grab_hazard)
 
     def process_body(self, body):
         return Body(body)

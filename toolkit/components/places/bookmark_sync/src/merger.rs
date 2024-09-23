@@ -11,10 +11,9 @@ use moz_task::{Task, TaskRunnable, ThreadPtrHandle, ThreadPtrHolder};
 use nserror::{nsresult, NS_ERROR_NOT_AVAILABLE, NS_OK};
 use nsstring::nsString;
 use storage::Conn;
-use thin_vec::ThinVec;
 use xpcom::{
     interfaces::{
-        mozIPlacesPendingOperation, mozIServicesLogger, mozIStorageConnection,
+        mozIPlacesPendingOperation, mozIServicesLogSink, mozIStorageConnection,
         mozISyncedBookmarksMirrorCallback, mozISyncedBookmarksMirrorProgressListener,
     },
     RefPtr, XpCom,
@@ -24,12 +23,10 @@ use crate::driver::{AbortController, Driver, Logger};
 use crate::error;
 use crate::store;
 
-#[derive(xpcom)]
-#[xpimplements(mozISyncedBookmarksMerger)]
-#[refcnt = "nonatomic"]
-pub struct InitSyncedBookmarksMerger {
+#[xpcom(implement(mozISyncedBookmarksMerger), nonatomic)]
+pub struct SyncedBookmarksMerger {
     db: RefCell<Option<Conn>>,
-    logger: RefCell<Option<RefPtr<mozIServicesLogger>>>,
+    logger: RefCell<Option<RefPtr<mozIServicesLogSink>>>,
 }
 
 impl SyncedBookmarksMerger {
@@ -56,16 +53,16 @@ impl SyncedBookmarksMerger {
         Ok(())
     }
 
-    xpcom_method!(get_logger => GetLogger() -> *const mozIServicesLogger);
-    fn get_logger(&self) -> Result<RefPtr<mozIServicesLogger>, nsresult> {
+    xpcom_method!(get_logger => GetLogger() -> *const mozIServicesLogSink);
+    fn get_logger(&self) -> Result<RefPtr<mozIServicesLogSink>, nsresult> {
         match *self.logger.borrow() {
             Some(ref logger) => Ok(logger.clone()),
             None => Err(NS_OK),
         }
     }
 
-    xpcom_method!(set_logger => SetLogger(logger: *const mozIServicesLogger));
-    fn set_logger(&self, logger: Option<&mozIServicesLogger>) -> Result<(), nsresult> {
+    xpcom_method!(set_logger => SetLogger(logger: *const mozIServicesLogSink));
+    fn set_logger(&self, logger: Option<&mozIServicesLogSink>) -> Result<(), nsresult> {
         self.logger.replace(logger.map(RefPtr::new));
         Ok(())
     }
@@ -74,7 +71,6 @@ impl SyncedBookmarksMerger {
         merge => Merge(
             local_time_seconds: i64,
             remote_time_seconds: i64,
-            weak_uploads: *const ThinVec<::nsstring::nsString>,
             callback: *const mozISyncedBookmarksMirrorCallback
         ) -> *const mozIPlacesPendingOperation
     );
@@ -82,7 +78,6 @@ impl SyncedBookmarksMerger {
         &self,
         local_time_seconds: i64,
         remote_time_seconds: i64,
-        weak_uploads: Option<&ThinVec<nsString>>,
         callback: &mozISyncedBookmarksMirrorCallback,
     ) -> Result<RefPtr<mozIPlacesPendingOperation>, nsresult> {
         let callback = RefPtr::new(callback);
@@ -99,9 +94,6 @@ impl SyncedBookmarksMerger {
             logger.as_ref().cloned(),
             local_time_seconds,
             remote_time_seconds,
-            weak_uploads
-                .map(|w| w.as_slice().to_vec())
-                .unwrap_or_default(),
             callback,
         )?;
         let runnable = TaskRunnable::new(
@@ -125,10 +117,9 @@ struct MergeTask {
     db: Conn,
     controller: Arc<AbortController>,
     max_log_level: LevelFilter,
-    logger: Option<ThreadPtrHandle<mozIServicesLogger>>,
+    logger: Option<ThreadPtrHandle<mozIServicesLogSink>>,
     local_time_millis: i64,
     remote_time_millis: i64,
-    weak_uploads: Vec<nsString>,
     progress: Option<ThreadPtrHandle<mozISyncedBookmarksMirrorProgressListener>>,
     callback: ThreadPtrHandle<mozISyncedBookmarksMirrorCallback>,
     result: AtomicRefCell<error::Result<store::ApplyStatus>>,
@@ -138,10 +129,9 @@ impl MergeTask {
     fn new(
         db: &Conn,
         controller: Arc<AbortController>,
-        logger: Option<RefPtr<mozIServicesLogger>>,
+        logger: Option<RefPtr<mozIServicesLogSink>>,
         local_time_seconds: i64,
         remote_time_seconds: i64,
-        weak_uploads: Vec<nsString>,
         callback: RefPtr<mozISyncedBookmarksMirrorCallback>,
     ) -> Result<MergeTask, nsresult> {
         let max_log_level = logger
@@ -151,16 +141,16 @@ impl MergeTask {
                 unsafe { logger.GetMaxLevel(&mut level) }.to_result().ok()?;
                 Some(level)
             })
-            .map(|level| match level as i64 {
-                mozIServicesLogger::LEVEL_ERROR => LevelFilter::Error,
-                mozIServicesLogger::LEVEL_WARN => LevelFilter::Warn,
-                mozIServicesLogger::LEVEL_DEBUG => LevelFilter::Debug,
-                mozIServicesLogger::LEVEL_TRACE => LevelFilter::Trace,
+            .map(|level| match level {
+                mozIServicesLogSink::LEVEL_ERROR => LevelFilter::Error,
+                mozIServicesLogSink::LEVEL_WARN => LevelFilter::Warn,
+                mozIServicesLogSink::LEVEL_DEBUG => LevelFilter::Debug,
+                mozIServicesLogSink::LEVEL_TRACE => LevelFilter::Trace,
                 _ => LevelFilter::Off,
             })
             .unwrap_or(LevelFilter::Off);
         let logger = match logger {
-            Some(logger) => Some(ThreadPtrHolder::new(cstr!("mozIServicesLogger"), logger)?),
+            Some(logger) => Some(ThreadPtrHolder::new(cstr!("mozIServicesLogSink"), logger)?),
             None => None,
         };
         let progress = callback
@@ -175,7 +165,6 @@ impl MergeTask {
             logger,
             local_time_millis: local_time_seconds * 1000,
             remote_time_millis: remote_time_seconds * 1000,
-            weak_uploads,
             progress,
             callback: ThreadPtrHolder::new(cstr!("mozISyncedBookmarksMirrorCallback"), callback)?,
             result: AtomicRefCell::new(Err(error::Error::DidNotRun)),
@@ -189,7 +178,7 @@ impl MergeTask {
             // merge, since we won't be able to apply the merged tree back to
             // Places. This is common, especially if the user makes lots of
             // changes at once. In that case, our merge task might run in the
-            // middle of a `Sqlite.jsm` transaction, and fail when we try to
+            // middle of a `Sqlite.sys.mjs` transaction, and fail when we try to
             // open our own transaction in `Store::apply`. Since the local
             // tree might be in an inconsistent state, we can't safely update
             // Places.
@@ -203,7 +192,6 @@ impl MergeTask {
             &self.controller,
             self.local_time_millis,
             self.remote_time_millis,
-            &self.weak_uploads,
         );
         store.validate()?;
         store.prepare()?;
@@ -231,10 +219,8 @@ impl Task for MergeTask {
     }
 }
 
-#[derive(xpcom)]
-#[xpimplements(mozIPlacesPendingOperation)]
-#[refcnt = "atomic"]
-pub struct InitMergeOp {
+#[xpcom(implement(mozIPlacesPendingOperation), atomic)]
+pub struct MergeOp {
     controller: Arc<AbortController>,
 }
 

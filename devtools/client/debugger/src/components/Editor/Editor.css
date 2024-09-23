@@ -7,12 +7,14 @@
   --debug-expression-background: rgba(202, 227, 255, 0.5);
   --debug-line-error-border: rgb(255, 0, 0);
   --debug-expression-error-background: rgba(231, 116, 113, 0.3);
+  --line-exception-background: hsl(344, 73%, 97%);
   --highlight-line-duration: 5000ms;
 }
 
 .theme-dark .editor-wrapper {
   --debug-expression-background: rgba(202, 227, 255, 0.3);
   --debug-line-border: #7786a2;
+  --line-exception-background: hsl(345, 23%, 24%);
 }
 
 .editor-wrapper .CodeMirror-linewidget {
@@ -40,23 +42,13 @@
  * BUG https://github.com/firefox-devtools/debugger/issues/63
  */
 .editor-wrapper {
-  position: absolute;
   width: calc(100% - 1px);
-  top: var(--editor-header-height);
-  bottom: var(--editor-footer-height);
-  left: 0px;
+  overflow-y: auto;
+  grid-area: editor;
 }
 
 html[dir="rtl"] .editor-mount {
   direction: ltr;
-}
-
-.theme-light .cm-s-mozilla .empty-line .CodeMirror-linenumber {
-  color: var(--grey-40);
-}
-
-.theme-dark .cm-s-mozilla .empty-line .CodeMirror-linenumber {
-  color: var(--grey-50);
 }
 
 .function-search {
@@ -86,19 +78,6 @@ html[dir="rtl"] .editor-mount {
   background-color: var(--theme-body-background);
   font-size: var(--theme-code-font-size);
   line-height: var(--theme-code-line-height);
-}
-
-/* set the linenumber white when there is a breakpoint */
-.editor-wrapper:not(.skip-pausing)
-  .new-breakpoint
-  .CodeMirror-gutter-wrapper
-  .CodeMirror-linenumber {
-  color: white;
-}
-
-/* move the breakpoint below the other gutter elements */
-.new-breakpoint .CodeMirror-gutter-elt:nth-child(2) {
-  z-index: 0;
 }
 
 .theme-dark .editor-wrapper .CodeMirror-line .cm-comment {
@@ -142,7 +121,9 @@ html[dir="rtl"] .editor-mount {
   background-color: var(--debug-expression-error-background);
 }
 
-.new-debug-line > .CodeMirror-line {
+.new-debug-line > .CodeMirror-line,
+/* For CM6 */
+.cm-editor .cm-line.new-debug-line {
   background-color: transparent !important;
   outline: var(--debug-line-border) solid 1px;
 }
@@ -153,7 +134,9 @@ html[dir="rtl"] .editor-mount {
   display: none;
 }
 
-.new-debug-line-error > .CodeMirror-line {
+.new-debug-line-error > .CodeMirror-line,
+/* For CM6 */
+.cm-editor .cm-line.new-debug-line-error {
   background-color: var(--debug-expression-error-background) !important;
   outline: var(--debug-line-error-border) solid 1px;
 }
@@ -163,19 +146,19 @@ html[dir="rtl"] .editor-mount {
 .new-debug-line-error .CodeMirror-activeline-background {
   display: none;
 }
-.highlight-line .CodeMirror-line {
+.highlight-line .CodeMirror-line,
+/* For CM6 */
+.cm-editor .cm-line.highlight-line {
   animation-name: fade-highlight-out;
   animation-duration: var(--highlight-line-duration);
   animation-timing-function: ease-out;
-  animation-direction: forwards;
+  animation-fill-mode: forwards;
 }
 
 @keyframes fade-highlight-out {
-  0% {
-    background-color: var(--theme-contrast-background);
-  }
-  30% {
-    background-color: var(--theme-contrast-background);
+  0%, 30% {
+    /* We want to use a color with some transparency so text selection is visible through it */
+    background-color: var(--theme-contrast-background-alpha);
   }
   100% {
     background-color: transparent;
@@ -206,11 +189,17 @@ html[dir="rtl"] .editor-mount {
   border-left: none;
 }
 
-.editor-wrapper .CodeMirror-foldgutter .CodeMirror-guttermarker-subtle {
-  visibility: visible;
-}
-
 .editor-wrapper .CodeMirror-foldgutter .CodeMirror-linenumber {
   text-align: left;
   padding: 0 0 0 2px;
+}
+
+/* Exception line */
+.line-exception {
+  background-color: var(--line-exception-background);
+}
+
+.mark-text-exception {
+  text-decoration: var(--red-50) wavy underline;
+  text-decoration-skip-ink: none;
 }

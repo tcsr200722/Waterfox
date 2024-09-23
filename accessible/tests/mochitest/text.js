@@ -8,6 +8,8 @@ const BOUNDARY_WORD_START = nsIAccessibleText.BOUNDARY_WORD_START;
 const BOUNDARY_WORD_END = nsIAccessibleText.BOUNDARY_WORD_END;
 const BOUNDARY_LINE_START = nsIAccessibleText.BOUNDARY_LINE_START;
 const BOUNDARY_LINE_END = nsIAccessibleText.BOUNDARY_LINE_END;
+const BOUNDARY_PARAGRAPH = nsIAccessibleText.BOUNDARY_PARAGRAPH;
+const BOUNDARY_CLUSTER = nsIAccessibleText.BOUNDARY_CLUSTER;
 
 const kTextEndOffset = nsIAccessibleText.TEXT_OFFSET_END_OF_TEXT;
 const kCaretOffset = nsIAccessibleText.TEXT_OFFSET_CARET;
@@ -196,9 +198,17 @@ function testTextAfterOffset(
   aBoundaryType,
   aText,
   aStartOffset,
-  aEndOffset
+  aEndOffset,
+  ...aArgs
 ) {
-  testTextSuperHelper("getTextAfterOffset", arguments);
+  testTextSuperHelper("getTextAfterOffset", [
+    aOffset,
+    aBoundaryType,
+    aText,
+    aStartOffset,
+    aEndOffset,
+    ...aArgs,
+  ]);
 }
 
 /**
@@ -260,9 +270,17 @@ function testTextBeforeOffset(
   aBoundaryType,
   aText,
   aStartOffset,
-  aEndOffset
+  aEndOffset,
+  ...aArgs
 ) {
-  testTextSuperHelper("getTextBeforeOffset", arguments);
+  testTextSuperHelper("getTextBeforeOffset", [
+    aOffset,
+    aBoundaryType,
+    aText,
+    aStartOffset,
+    aEndOffset,
+    ...aArgs,
+  ]);
 }
 
 /**
@@ -806,6 +824,10 @@ function boundaryToString(aBoundaryType) {
       return "line start";
     case BOUNDARY_LINE_END:
       return "line end";
+    case BOUNDARY_PARAGRAPH:
+      return "paragraph";
+    case BOUNDARY_CLUSTER:
+      return "cluster";
   }
   return "unknown";
 }

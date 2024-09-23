@@ -7,31 +7,33 @@
 const {
   createFactory,
   createElement,
-} = require("devtools/client/shared/vendor/react");
-const { Provider } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const {
+  Provider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 loader.lazyRequireGetter(
   this,
   "ChangesContextMenu",
-  "devtools/client/inspector/changes/ChangesContextMenu"
+  "resource://devtools/client/inspector/changes/ChangesContextMenu.js"
 );
 loader.lazyRequireGetter(
   this,
   "clipboardHelper",
-  "devtools/shared/platform/clipboard"
+  "resource://devtools/shared/platform/clipboard.js"
 );
 
-const changesReducer = require("devtools/client/inspector/changes/reducers/changes");
+const changesReducer = require("resource://devtools/client/inspector/changes/reducers/changes.js");
 const {
   getChangesStylesheet,
-} = require("devtools/client/inspector/changes/selectors/changes");
+} = require("resource://devtools/client/inspector/changes/selectors/changes.js");
 const {
   resetChanges,
   trackChange,
-} = require("devtools/client/inspector/changes/actions/changes");
+} = require("resource://devtools/client/inspector/changes/actions/changes.js");
 
 const ChangesApp = createFactory(
-  require("devtools/client/inspector/changes/components/ChangesApp")
+  require("resource://devtools/client/inspector/changes/components/ChangesApp.js")
 );
 
 class ChangesView {
@@ -45,8 +47,6 @@ class ChangesView {
     this.store.injectReducer("changes", changesReducer);
 
     this.onAddChange = this.onAddChange.bind(this);
-    this.onChangesFrontAvailable = this.onChangesFrontAvailable.bind(this);
-    this.onChangesFrontDestroyed = this.onChangesFrontDestroyed.bind(this);
     this.onContextMenu = this.onContextMenu.bind(this);
     this.onCopy = this.onCopy.bind(this);
     this.onCopyAllChanges = this.copyAllChanges.bind(this);
@@ -54,8 +54,7 @@ class ChangesView {
     this.onCopyRule = this.copyRule.bind(this);
     this.onClearChanges = this.onClearChanges.bind(this);
     this.onSelectAll = this.onSelectAll.bind(this);
-    this.onTargetAvailable = this.onTargetAvailable.bind(this);
-    this.onTargetDestroyed = this.onTargetDestroyed.bind(this);
+    this.onResourceAvailable = this.onResourceAvailable.bind(this);
 
     this.destroy = this.destroy.bind(this);
 
@@ -78,6 +77,10 @@ class ChangesView {
     return this._contextMenu;
   }
 
+  get resourceCommand() {
+    return this.inspector.toolbox.resourceCommand;
+  }
+
   init() {
     const changesApp = ChangesApp({
       onContextMenu: this.onContextMenu,
@@ -96,57 +99,44 @@ class ChangesView {
       changesApp
     );
 
-    this.inspector.toolbox.targetList.watchTargets(
-      [this.inspector.toolbox.targetList.TYPES.FRAME],
-      this.onTargetAvailable,
-      this.onTargetDestroyed
+    this.watchResources();
+  }
+
+  async watchResources() {
+    await this.resourceCommand.watchResources(
+      [this.resourceCommand.TYPES.DOCUMENT_EVENT],
+      {
+        onAvailable: this.onResourceAvailable,
+        // Ignore any DOCUMENT_EVENT resources that have occured in the past
+        // and are cached by the resource command, otherwise the Changes panel will
+        // react to them erroneously and interpret that the document is reloading *now*
+        // which leads to clearing all stored changes.
+        ignoreExistingResources: true,
+      }
+    );
+
+    await this.resourceCommand.watchResources(
+      [this.resourceCommand.TYPES.CSS_CHANGE],
+      { onAvailable: this.onResourceAvailable }
     );
   }
 
-  async onChangesFrontAvailable(changesFront) {
-    changesFront.on("add-change", this.onAddChange);
-    changesFront.on("clear-changes", this.onClearChanges);
-    try {
-      // Get all changes collected up to this point by the ChangesActor on the server,
-      // then push them to the Redux store here on the client.
-      const changes = await changesFront.allChanges();
-      changes.forEach(change => {
-        this.onAddChange(change);
-      });
-    } catch (e) {
-      // The connection to the server may have been cut, for
-      // example during test
-      // teardown. Here we just catch the error and silently
-      // ignore it.
-    }
-  }
+  onResourceAvailable(resources) {
+    for (const resource of resources) {
+      if (resource.resourceType === this.resourceCommand.TYPES.CSS_CHANGE) {
+        this.onAddChange(resource);
+        continue;
+      }
 
-  async onChangesFrontDestroyed(changesFront) {
-    changesFront.off("add-change", this.onAddChange);
-    changesFront.off("clear-changes", this.onClearChanges);
-  }
-
-  async onTargetAvailable({ targetFront }) {
-    targetFront.watchFronts(
-      "changes",
-      this.onChangesFrontAvailable,
-      this.onChangesFrontDestroyed
-    );
-
-    if (targetFront.isTopLevel) {
-      targetFront.on("will-navigate", this.onClearChanges);
-    }
-  }
-
-  async onTargetDestroyed({ targetFront }) {
-    targetFront.unwatchFronts(
-      "changes",
-      this.onChangesFrontAvailable,
-      this.onChangesFrontDestroyed
-    );
-
-    if (targetFront.isTopLevel) {
-      targetFront.off("will-navigate", this.onClearChanges);
+      if (resource.name === "dom-loading" && resource.targetFront.isTopLevel) {
+        // will-navigate doesn't work when we navigate to a new process,
+        // and for now, onTargetAvailable/onTargetDestroyed doesn't fire on navigation and
+        // only when navigating to another process.
+        // So we fallback on DOCUMENT_EVENTS to be notified when we navigate. When we
+        // navigate within the same process as well as when we navigate to a new process.
+        // (We would probably revisit that in bug 1632141)
+        this.onClearChanges();
+      }
     }
   }
 
@@ -198,10 +188,12 @@ class ChangesView {
    *        Host element of a CSS declaration rendered the Changes panel.
    */
   copyDeclaration(element) {
-    const name = element.querySelector(".changes__declaration-name")
-      .textContent;
-    const value = element.querySelector(".changes__declaration-value")
-      .textContent;
+    const name = element.querySelector(
+      ".changes__declaration-name"
+    ).textContent;
+    const value = element.querySelector(
+      ".changes__declaration-value"
+    ).textContent;
     const isRemoved = element.classList.contains("diff-remove");
     const text = isRemoved ? `/* ${name}: ${value}; */` : `${name}: ${value};`;
     clipboardHelper.copyString(text);
@@ -268,6 +260,14 @@ class ChangesView {
    * Destruction function called when the inspector is destroyed.
    */
   destroy() {
+    this.resourceCommand.unwatchResources(
+      [
+        this.resourceCommand.TYPES.CSS_CHANGE,
+        this.resourceCommand.TYPES.DOCUMENT_EVENT,
+      ],
+      { onAvailable: this.onResourceAvailable }
+    );
+
     this.store.dispatch(resetChanges());
 
     this.document = null;

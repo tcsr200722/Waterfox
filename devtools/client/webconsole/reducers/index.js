@@ -5,18 +5,23 @@
 
 const {
   autocomplete,
-} = require("devtools/client/webconsole/reducers/autocomplete");
-const { filters } = require("devtools/client/webconsole/reducers/filters");
-const { messages } = require("devtools/client/webconsole/reducers/messages");
-const { prefs } = require("devtools/client/webconsole/reducers/prefs");
-const { ui } = require("devtools/client/webconsole/reducers/ui");
+} = require("resource://devtools/client/webconsole/reducers/autocomplete.js");
+const {
+  filters,
+} = require("resource://devtools/client/webconsole/reducers/filters.js");
+const {
+  messages,
+} = require("resource://devtools/client/webconsole/reducers/messages.js");
+const {
+  prefs,
+} = require("resource://devtools/client/webconsole/reducers/prefs.js");
+const { ui } = require("resource://devtools/client/webconsole/reducers/ui.js");
 const {
   notifications,
-} = require("devtools/client/webconsole/reducers/notifications");
-const { history } = require("devtools/client/webconsole/reducers/history");
+} = require("resource://devtools/client/webconsole/reducers/notifications.js");
 const {
-  default: objectInspector,
-} = require("devtools/client/debugger/packages/devtools-reps/src/object-inspector/reducer");
+  history,
+} = require("resource://devtools/client/webconsole/reducers/history.js");
 
 exports.reducers = {
   autocomplete,
@@ -26,5 +31,4 @@ exports.reducers = {
   ui,
   notifications,
   history,
-  objectInspector,
 };

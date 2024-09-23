@@ -4,6 +4,9 @@
 /*
  * Deal with PKCS #11 Slots.
  */
+
+#include <stddef.h>
+
 #include "seccomon.h"
 #include "secmod.h"
 #include "nssilock.h"
@@ -33,6 +36,7 @@ const PK11DefaultArrayEntry PK11_DefaultArray[] = {
     { "RSA", SECMOD_RSA_FLAG, CKM_RSA_PKCS },
     { "DSA", SECMOD_DSA_FLAG, CKM_DSA },
     { "ECC", SECMOD_ECC_FLAG, CKM_ECDSA },
+    { "EDDSA", SECMOD_ECC_FLAG, CKM_EDDSA },
     { "DH", SECMOD_DH_FLAG, CKM_DH_PKCS_DERIVE },
     { "RC2", SECMOD_RC2_FLAG, CKM_RC2_CBC },
     { "RC4", SECMOD_RC4_FLAG, CKM_RC4 },
@@ -195,8 +199,7 @@ PK11_AddSlotToList(PK11SlotList *list, PK11SlotInfo *slot, PRBool sorted)
     PZ_Lock(list->lock);
     element = list->head;
     /* Insertion sort, with higher cipherOrders are sorted first in the list */
-    while (element && sorted && (element->slot->module->cipherOrder >
-                                 le->slot->module->cipherOrder)) {
+    while (element && sorted && (element->slot->module->cipherOrder > le->slot->module->cipherOrder)) {
         element = element->next;
     }
     if (element) {
@@ -359,19 +362,24 @@ PK11_NewSlotInfo(SECMODModule *mod)
     PK11SlotInfo *slot;
 
     slot = (PK11SlotInfo *)PORT_Alloc(sizeof(PK11SlotInfo));
-    if (slot == NULL)
+    if (slot == NULL) {
         return slot;
-
-    slot->sessionLock = mod->isThreadSafe ? PZ_NewLock(nssILockSession) : mod->refLock;
-    if (slot->sessionLock == NULL) {
-        PORT_Free(slot);
-        return NULL;
     }
     slot->freeListLock = PZ_NewLock(nssILockFreelist);
     if (slot->freeListLock == NULL) {
-        if (mod->isThreadSafe) {
-            PZ_DestroyLock(slot->sessionLock);
-        }
+        PORT_Free(slot);
+        return NULL;
+    }
+    slot->nssTokenLock = PZ_NewLock(nssILockOther);
+    if (slot->nssTokenLock == NULL) {
+        PZ_DestroyLock(slot->freeListLock);
+        PORT_Free(slot);
+        return NULL;
+    }
+    slot->sessionLock = mod->isThreadSafe ? PZ_NewLock(nssILockSession) : mod->refLock;
+    if (slot->sessionLock == NULL) {
+        PZ_DestroyLock(slot->nssTokenLock);
+        PZ_DestroyLock(slot->freeListLock);
         PORT_Free(slot);
         return NULL;
     }
@@ -387,6 +395,8 @@ PK11_NewSlotInfo(SECMODModule *mod)
     slot->isThreadSafe = PR_FALSE;
     slot->disabled = PR_FALSE;
     slot->series = 1;
+    slot->flagSeries = 0;
+    slot->flagState = PR_FALSE;
     slot->wrapKey = 0;
     slot->wrapMechanism = CKM_INVALID_MECHANISM;
     slot->refKeys[0] = CK_INVALID_HANDLE;
@@ -458,6 +468,10 @@ PK11_DestroySlot(PK11SlotInfo *slot)
     if (slot->freeListLock) {
         PZ_DestroyLock(slot->freeListLock);
         slot->freeListLock = NULL;
+    }
+    if (slot->nssTokenLock) {
+        PZ_DestroyLock(slot->nssTokenLock);
+        slot->nssTokenLock = NULL;
     }
 
     /* finally Tell our parent module that we've gone away so it can unload */
@@ -900,9 +914,13 @@ PK11_GetSlotList(CK_MECHANISM_TYPE type)
             return &pk11_sha1SlotList;
         case CKM_SHA224:
         case CKM_SHA256:
+        case CKM_SHA3_224:
+        case CKM_SHA3_256:
             return &pk11_sha256SlotList;
         case CKM_SHA384:
         case CKM_SHA512:
+        case CKM_SHA3_384:
+        case CKM_SHA3_512:
             return &pk11_sha512SlotList;
         case CKM_MD5:
             return &pk11_md5SlotList;
@@ -920,10 +938,14 @@ PK11_GetSlotList(CK_MECHANISM_TYPE type)
         case CKM_DH_PKCS_KEY_PAIR_GEN:
         case CKM_DH_PKCS_DERIVE:
             return &pk11_dhSlotList;
+        case CKM_EDDSA:
+        case CKM_EC_EDWARDS_KEY_PAIR_GEN:
         case CKM_ECDSA:
         case CKM_ECDSA_SHA1:
         case CKM_EC_KEY_PAIR_GEN: /* aka CKM_ECDSA_KEY_PAIR_GEN */
         case CKM_ECDH1_DERIVE:
+        case CKM_NSS_KYBER_KEY_PAIR_GEN: /* Bug 1893029 */
+        case CKM_NSS_KYBER:
             return &pk11_ecSlotList;
         case CKM_SSL3_PRE_MASTER_KEY_GEN:
         case CKM_SSL3_MASTER_KEY_DERIVE:
@@ -1102,16 +1124,16 @@ PK11_MakeString(PLArenaPool *arena, char *space,
  */
 PRBool
 pk11_MatchString(const char *string,
-                 const char *staticString, int staticStringLen)
+                 const char *staticString, size_t staticStringLen)
 {
-    int i;
+    size_t i = staticStringLen;
 
-    for (i = (staticStringLen - 1); i >= 0; i--) {
-        if (staticString[i] != ' ')
-            break;
-    }
     /* move i to point to the last space */
-    i++;
+    while (i > 0) {
+        if (staticString[i - 1] != ' ')
+            break;
+        i--;
+    }
 
     if (strlen(string) == i && memcmp(string, staticString, i) == 0) {
         return PR_TRUE;
@@ -1182,7 +1204,7 @@ pk11_ReadProfileList(PK11SlotInfo *slot)
     CK_ATTRIBUTE *attrs;
     CK_BBOOL cktrue = CK_TRUE;
     CK_OBJECT_CLASS oclass = CKO_PROFILE;
-    int tsize;
+    size_t tsize;
     int objCount;
     CK_OBJECT_HANDLE *handles = NULL;
     int i;
@@ -1257,6 +1279,7 @@ PK11_InitToken(PK11SlotInfo *slot, PRBool loadCerts)
     CK_RV crv;
     SECStatus rv;
     PRStatus status;
+    NSSToken *nssToken;
 
     /* set the slot flags to the current token values */
     if (!slot->isThreadSafe)
@@ -1294,7 +1317,9 @@ PK11_InitToken(PK11SlotInfo *slot, PRBool loadCerts)
     slot->maxPassword = slot->tokenInfo.ulMaxPinLen;
     PORT_Memcpy(slot->serial, slot->tokenInfo.serialNumber, sizeof(slot->serial));
 
-    nssToken_UpdateName(slot->nssToken);
+    nssToken = PK11Slot_GetNSSToken(slot);
+    nssToken_UpdateName(nssToken); /* null token is OK */
+    (void)nssToken_Destroy(nssToken);
 
     slot->defRWSession = (PRBool)((!slot->readOnly) &&
                                   (slot->tokenInfo.ulMaxSessionCount == 1));
@@ -1362,14 +1387,15 @@ PK11_InitToken(PK11SlotInfo *slot, PRBool loadCerts)
             PK11_ExitSlotMonitor(slot);
     }
 
-    status = nssToken_Refresh(slot->nssToken);
+    nssToken = PK11Slot_GetNSSToken(slot);
+    status = nssToken_Refresh(nssToken); /* null token is OK */
+    (void)nssToken_Destroy(nssToken);
     if (status != PR_SUCCESS)
         return SECFailure;
 
-    rv = pk11_ReadProfileList(slot);
-    if (rv != SECSuccess) {
-        return SECFailure;
-    }
+    /* Not all tokens have profile objects or even recognize what profile
+     * objects are it's OK for pk11_ReadProfileList to fail */
+    (void)pk11_ReadProfileList(slot);
 
     if (!(slot->isInternal) && (slot->hasRandom)) {
         /* if this slot has a random number generater, use it to add entropy
@@ -1484,7 +1510,7 @@ pk11_isRootSlot(PK11SlotInfo *slot)
     CK_ATTRIBUTE findTemp[1];
     CK_ATTRIBUTE *attrs;
     CK_OBJECT_CLASS oclass = CKO_NSS_BUILTIN_ROOT_LIST;
-    int tsize;
+    size_t tsize;
     CK_OBJECT_HANDLE handle;
 
     attrs = findTemp;
@@ -1525,7 +1551,7 @@ PK11_InitSlot(SECMODModule *mod, CK_SLOT_ID slotID, PK11SlotInfo *slot)
                          * from their slots, and won't unload and disappear
                          * until all their slots have been freed */
 
-    if (PK11_GETTAB(slot)->C_GetSlotInfo(slotID, &slotInfo) != CKR_OK) {
+    if (PK11_GetSlotInfo(slot, &slotInfo) != SECSuccess) {
         slot->disabled = PR_TRUE;
         slot->reason = PK11_DIS_COULD_NOT_INIT_TOKEN;
         return;
@@ -1596,46 +1622,50 @@ pk11_IsPresentCertLoad(PK11SlotInfo *slot, PRBool loadCerts)
         return PR_TRUE;
     }
 
-    if (slot->nssToken) {
-        return nssToken_IsPresent(slot->nssToken);
+    NSSToken *nssToken = PK11Slot_GetNSSToken(slot);
+    if (nssToken) {
+        PRBool present = nssToken_IsPresent(nssToken);
+        (void)nssToken_Destroy(nssToken);
+        return present;
     }
 
     /* removable slots have a flag that says they are present */
-    if (!slot->isThreadSafe)
-        PK11_EnterSlotMonitor(slot);
-    if (PK11_GETTAB(slot)->C_GetSlotInfo(slot->slotID, &slotInfo) != CKR_OK) {
-        if (!slot->isThreadSafe)
-            PK11_ExitSlotMonitor(slot);
+    if (PK11_GetSlotInfo(slot, &slotInfo) != SECSuccess) {
         return PR_FALSE;
     }
+
     if ((slotInfo.flags & CKF_TOKEN_PRESENT) == 0) {
         /* if the slot is no longer present, close the session */
         if (slot->session != CK_INVALID_HANDLE) {
+            if (!slot->isThreadSafe) {
+                PK11_EnterSlotMonitor(slot);
+            }
             PK11_GETTAB(slot)
                 ->C_CloseSession(slot->session);
             slot->session = CK_INVALID_HANDLE;
+            if (!slot->isThreadSafe) {
+                PK11_ExitSlotMonitor(slot);
+            }
         }
-        if (!slot->isThreadSafe)
-            PK11_ExitSlotMonitor(slot);
         return PR_FALSE;
     }
 
     /* use the session Info to determine if the card has been removed and then
      * re-inserted */
     if (slot->session != CK_INVALID_HANDLE) {
-        if (slot->isThreadSafe)
+        if (slot->isThreadSafe) {
             PK11_EnterSlotMonitor(slot);
+        }
         crv = PK11_GETTAB(slot)->C_GetSessionInfo(slot->session, &sessionInfo);
         if (crv != CKR_OK) {
             PK11_GETTAB(slot)
                 ->C_CloseSession(slot->session);
             slot->session = CK_INVALID_HANDLE;
         }
-        if (slot->isThreadSafe)
+        if (slot->isThreadSafe) {
             PK11_ExitSlotMonitor(slot);
+        }
     }
-    if (!slot->isThreadSafe)
-        PK11_ExitSlotMonitor(slot);
 
     /* card has not been removed, current token info is correct */
     if (slot->session != CK_INVALID_HANDLE)
@@ -2613,7 +2643,7 @@ SECStatus
 PK11_ResetToken(PK11SlotInfo *slot, char *sso_pwd)
 {
     unsigned char tokenName[32];
-    int tokenNameLen;
+    size_t tokenNameLen;
     CK_RV crv;
 
     /* reconstruct the token name */
@@ -2647,20 +2677,77 @@ PK11_ResetToken(PK11SlotInfo *slot, char *sso_pwd)
         PORT_SetError(PK11_MapError(crv));
         return SECFailure;
     }
-    nssTrustDomain_UpdateCachedTokenCerts(slot->nssToken->trustDomain,
-                                          slot->nssToken);
+    NSSToken *token = PK11Slot_GetNSSToken(slot);
+    if (token) {
+        nssTrustDomain_UpdateCachedTokenCerts(token->trustDomain, token);
+        (void)nssToken_Destroy(token);
+    }
     return SECSuccess;
 }
+
 void
 PK11Slot_SetNSSToken(PK11SlotInfo *sl, NSSToken *nsst)
 {
+    NSSToken *old;
+    if (nsst) {
+        nsst = nssToken_AddRef(nsst);
+    }
+
+    PZ_Lock(sl->nssTokenLock);
+    old = sl->nssToken;
     sl->nssToken = nsst;
+    PZ_Unlock(sl->nssTokenLock);
+
+    if (old) {
+        (void)nssToken_Destroy(old);
+    }
 }
 
 NSSToken *
 PK11Slot_GetNSSToken(PK11SlotInfo *sl)
 {
-    return sl->nssToken;
+    NSSToken *rv = NULL;
+
+    PZ_Lock(sl->nssTokenLock);
+    if (sl->nssToken) {
+        rv = nssToken_AddRef(sl->nssToken);
+    }
+    PZ_Unlock(sl->nssTokenLock);
+
+    return rv;
+}
+
+PRBool
+pk11slot_GetFIPSStatus(PK11SlotInfo *slot, CK_SESSION_HANDLE session,
+                       CK_OBJECT_HANDLE object, CK_ULONG operationType)
+{
+    SECMODModule *mod = slot->module;
+    CK_RV crv;
+    CK_ULONG fipsState = CKS_NSS_FIPS_NOT_OK;
+
+    /* handle the obvious conditions:
+     * 1) the module doesn't have a fipsIndicator - fips state must be false */
+    if (mod->fipsIndicator == NULL) {
+        return PR_FALSE;
+    }
+    /* 2) the session doesn't exist - fips state must be false */
+    if (session == CK_INVALID_HANDLE) {
+        return PR_FALSE;
+    }
+
+    /* go fetch the state */
+    crv = mod->fipsIndicator(session, object, operationType, &fipsState);
+    if (crv != CKR_OK) {
+        return PR_FALSE;
+    }
+    return (fipsState == CKS_NSS_FIPS_OK) ? PR_TRUE : PR_FALSE;
+}
+
+PRBool
+PK11_SlotGetLastFIPSStatus(PK11SlotInfo *slot)
+{
+    return pk11slot_GetFIPSStatus(slot, slot->session, CK_INVALID_HANDLE,
+                                  CKT_NSS_SESSION_LAST_CHECK);
 }
 
 /*

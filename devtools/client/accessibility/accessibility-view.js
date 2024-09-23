@@ -5,34 +5,45 @@
 
 /* global EVENTS */
 
-const nodeConstants = require("devtools/shared/dom-node-constants");
+const nodeConstants = require("resource://devtools/shared/dom-node-constants.js");
 
 // React & Redux
 const {
   createFactory,
   createElement,
-} = require("devtools/client/shared/vendor/react");
-const ReactDOM = require("devtools/client/shared/vendor/react-dom");
-const { Provider } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const ReactDOM = require("resource://devtools/client/shared/vendor/react-dom.js");
+const {
+  Provider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 // Accessibility Panel
 const MainFrame = createFactory(
-  require("devtools/client/accessibility/components/MainFrame")
+  require("resource://devtools/client/accessibility/components/MainFrame.js")
 );
 
 // Store
-const createStore = require("devtools/client/shared/redux/create-store");
+const createStore = require("resource://devtools/client/shared/redux/create-store.js");
 
 // Reducers
-const { reducers } = require("devtools/client/accessibility/reducers/index");
-const store = createStore(reducers);
+const {
+  reducers,
+} = require("resource://devtools/client/accessibility/reducers/index.js");
+const thunkOptions = { options: {} };
+const store = createStore(reducers, {
+  // Thunk options will be updated, when we [re]initialize the accessibility
+  // view.
+  thunkOptions,
+});
 
 // Actions
-const { reset } = require("devtools/client/accessibility/actions/ui");
+const {
+  reset,
+} = require("resource://devtools/client/accessibility/actions/ui.js");
 const {
   select,
   highlight,
-} = require("devtools/client/accessibility/actions/accessibles");
+} = require("resource://devtools/client/accessibility/actions/accessibles.js");
 
 /**
  * This object represents view of the Accessibility panel and is responsible
@@ -79,10 +90,12 @@ AccessibilityView.prototype = {
    *                                          Apply simulation of a given type
    *                                          (by setting color matrices in
    *                                          docShell).
+   * - toggleDisplayTabbingOrder              {Function}
+   *                                          Toggle the highlight of focusable
+   *                                          elements along with their tabbing
+   *                                          index.
    * - enableAccessibility                    {Function}
    *                                          Enable accessibility services.
-   * - disableAccessibility                   {Function}
-   *                                          Disable accessibility services.
    * - resetAccessiblity                      {Function}
    *                                          Reset the state of the
    *                                          accessibility services.
@@ -114,8 +127,8 @@ AccessibilityView.prototype = {
     stopListeningForAccessibilityEvents,
     audit,
     simulate,
+    toggleDisplayTabbingOrder,
     enableAccessibility,
-    disableAccessibility,
     resetAccessiblity,
     startListeningForLifecycleEvents,
     stopListeningForLifecycleEvents,
@@ -136,7 +149,6 @@ AccessibilityView.prototype = {
       audit,
       simulate,
       enableAccessibility,
-      disableAccessibility,
       resetAccessiblity,
       startListeningForLifecycleEvents,
       stopListeningForLifecycleEvents,
@@ -145,8 +157,12 @@ AccessibilityView.prototype = {
       highlightAccessible,
       unhighlightAccessible,
     });
+    thunkOptions.options.toggleDisplayTabbingOrder = toggleDisplayTabbingOrder;
     // Render top level component
     const provider = createElement(Provider, { store: this.store }, mainFrame);
+    window.once(EVENTS.PROPERTIES_UPDATED).then(() => {
+      window.emit(EVENTS.INITIALIZED);
+    });
     this.mainFrame = ReactDOM.render(provider, container);
   },
 

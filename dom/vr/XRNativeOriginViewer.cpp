@@ -5,11 +5,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XRNativeOriginViewer.h"
+#include "VRDisplayClient.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-XRNativeOriginViewer::XRNativeOriginViewer(VRDisplayClient* aDisplay)
+XRNativeOriginViewer::XRNativeOriginViewer(gfx::VRDisplayClient* aDisplay)
     : mDisplay(aDisplay) {
   MOZ_ASSERT(aDisplay);
 }
@@ -28,5 +28,4 @@ gfx::QuaternionDouble XRNativeOriginViewer::GetOrientation() {
       sensorState.pose.orientation[2], sensorState.pose.orientation[3]);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

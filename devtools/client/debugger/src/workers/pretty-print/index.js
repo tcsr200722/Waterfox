@@ -2,42 +2,29 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import { WorkerDispatcher } from "devtools/client/shared/worker-utils";
 
-import { prefs } from "../../utils/prefs";
-import { workerUtils } from "devtools-utils";
-const { WorkerDispatcher } = workerUtils;
+const WORKER_URL =
+  "resource://devtools/client/debugger/dist/pretty-print-worker.js";
 
-import type { URL } from "../../types";
-
-let dispatcher;
-let workerPath;
-
-export const start = (path: string) => {
-  workerPath = path;
-};
-export const stop = () => {
-  if (dispatcher) {
-    dispatcher.stop();
-    dispatcher = null;
-    workerPath = null;
-  }
-};
-
-type PrettyPrintOpts = {
-  text: string,
-  url: URL,
-};
-
-export async function prettyPrint({ text, url }: PrettyPrintOpts) {
-  if (!dispatcher) {
-    dispatcher = new WorkerDispatcher();
-    dispatcher.start(workerPath);
+export class PrettyPrintDispatcher extends WorkerDispatcher {
+  constructor(jestUrl) {
+    super(jestUrl || WORKER_URL);
   }
 
-  return dispatcher.invoke("prettyPrint", {
-    url,
-    indent: prefs.indentSize,
-    sourceText: text,
-  });
+  #prettyPrintTask = this.task("prettyPrint");
+  #prettyPrintInlineScriptTask = this.task("prettyPrintInlineScript");
+  #getSourceMapForTask = this.task("getSourceMapForTask");
+
+  prettyPrint(options) {
+    return this.#prettyPrintTask(options);
+  }
+
+  prettyPrintInlineScript(options) {
+    return this.#prettyPrintInlineScriptTask(options);
+  }
+
+  getSourceMap(taskId) {
+    return this.#getSourceMapForTask(taskId);
+  }
 }

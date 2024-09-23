@@ -12,6 +12,7 @@
 #include "jstypes.h"
 
 #include "jit/JitCode.h"
+#include "jit/MachineState.h"
 #include "jit/Snapshots.h"
 #include "js/ProfilingFrameIterator.h"
 #include "vm/JSFunction.h"
@@ -22,8 +23,6 @@ namespace js {
 class ArgumentsObject;
 
 namespace jit {
-
-using CalleeToken = void*;
 
 enum class FrameType {
   // A JS frame is analogous to a js::InterpreterFrame, representing one
@@ -41,6 +40,11 @@ enum class FrameType {
   // The entry frame is the initial prologue block transitioning from the VM
   // into the Ion world.
   CppToJSJit,
+
+  // This entry frame sits right before the baseline interpreter
+  // so that external profilers can identify which function is being
+  // interpreted. Only used under the --emit-interpreter-entry option.
+  BaselineInterpreterEntry,
 
   // A rectifier frame sits in between two JS frames, adapting argc != nargs
   // mismatches in calls.
@@ -69,17 +73,19 @@ enum class FrameType {
   // wasm, and is a special kind of exit frame that doesn't have the exit
   // footer. From the point of view of the jit, it can be skipped as an exit.
   JSJitToWasm,
+
+  // Frame for a TrampolineNative, a JS builtin implemented with a JIT
+  // trampoline. See jit/TrampolineNatives.h.
+  TrampolineNative,
 };
 
-enum ReadFrameArgsBehavior {
-  // Only read formals (i.e. [0 ... callee()->nargs]
-  ReadFrame_Formals,
+enum class ReadFrameArgsBehavior {
+  // Read all actual arguments. Will invoke the callback numActualArgs times.
+  Actuals,
 
-  // Only read overflown args (i.e. [callee()->nargs ... numActuals()]
-  ReadFrame_Overflown,
-
-  // Read all args (i.e. [0 ... numActuals()])
-  ReadFrame_Actuals
+  // Read all argument values in the stack frame. Will invoke the callback
+  // max(numFormalArgs, numActualArgs) times.
+  ActualsAndFormals,
 };
 
 class CommonFrameLayout;
@@ -109,15 +115,14 @@ class JSJitFrameIter {
  protected:
   uint8_t* current_;
   FrameType type_;
-  uint8_t* resumePCinCurrentFrame_;
-  size_t frameSize_;
+  uint8_t* resumePCinCurrentFrame_ = nullptr;
 
   // Size of the current Baseline frame. Equivalent to
   // BaselineFrame::debugFrameSize_ in debug builds.
   mozilla::Maybe<uint32_t> baselineFrameSize_;
 
  private:
-  mutable const SafepointIndex* cachedSafepointIndex_;
+  mutable const SafepointIndex* cachedSafepointIndex_ = nullptr;
   const JitActivation* activation_;
 
   void dumpBaseline() const;
@@ -168,8 +173,15 @@ class JSJitFrameIter {
   bool isIonICCall() const { return type_ == FrameType::IonICCall; }
   bool isBailoutJS() const { return type_ == FrameType::Bailout; }
   bool isBaselineStub() const { return type_ == FrameType::BaselineStub; }
+  bool isBaselineInterpreterEntry() const {
+    return type_ == FrameType::BaselineInterpreterEntry;
+  }
   bool isRectifier() const { return type_ == FrameType::Rectifier; }
+  bool isTrampolineNative() const {
+    return type_ == FrameType::TrampolineNative;
+  }
   bool isBareExit() const;
+  bool isUnwoundJitExit() const;
   template <typename T>
   bool isExitFrameLayout() const;
 
@@ -196,16 +208,8 @@ class JSJitFrameIter {
   uint8_t* resumePCinCurrentFrame() const { return resumePCinCurrentFrame_; }
 
   // Previous frame information extracted from the current frame.
-  inline size_t prevFrameLocalSize() const;
   inline FrameType prevType() const;
   uint8_t* prevFp() const;
-
-  // Returns the stack space used by the current frame, in bytes. This does
-  // not include the size of its fixed header.
-  size_t frameSize() const {
-    MOZ_ASSERT(!isExitFrame());
-    return frameSize_;
-  }
 
   // Functions used to iterate on frames. When prevType is an entry,
   // the current frame is the last JS Jit frame.
@@ -235,27 +239,12 @@ class JSJitFrameIter {
   MachineState machineState() const;
 
   template <class Op>
-  void unaliasedForEachActual(Op op, ReadFrameArgsBehavior behavior) const {
+  void unaliasedForEachActual(Op op) const {
     MOZ_ASSERT(isBaselineJS());
 
     unsigned nactual = numActualArgs();
-    unsigned start, end;
-    switch (behavior) {
-      case ReadFrame_Formals:
-        start = 0;
-        end = callee()->nargs();
-        break;
-      case ReadFrame_Overflown:
-        start = callee()->nargs();
-        end = nactual;
-        break;
-      case ReadFrame_Actuals:
-        start = 0;
-        end = nactual;
-    }
-
     Value* argv = actualArgs();
-    for (unsigned i = start; i < end; i++) {
+    for (unsigned i = 0; i < nactual; i++) {
       op(argv[i]);
     }
   }
@@ -281,21 +270,21 @@ class JitcodeGlobalTable;
 
 class JSJitProfilingFrameIterator {
   uint8_t* fp_;
+  uint8_t* wasmCallerFP_ = nullptr;
+  // See JS::ProfilingFrameIterator::endStackAddress_ comment.
+  void* endStackAddress_ = nullptr;
   FrameType type_;
   void* resumePCinCurrentFrame_;
 
-  inline JitFrameLayout* framePtr() const;
   inline JSScript* frameScript() const;
-  MOZ_MUST_USE bool tryInitWithPC(void* pc);
-  MOZ_MUST_USE bool tryInitWithTable(JitcodeGlobalTable* table, void* pc,
-                                     bool forLastCallSite);
+  [[nodiscard]] bool tryInitWithPC(void* pc);
+  [[nodiscard]] bool tryInitWithTable(JitcodeGlobalTable* table, void* pc,
+                                      bool forLastCallSite);
 
-  void moveToCppEntryFrame();
-  void moveToWasmFrame(CommonFrameLayout* frame);
   void moveToNextFrame(CommonFrameLayout* frame);
 
  public:
-  JSJitProfilingFrameIterator(JSContext* cx, void* pc);
+  JSJitProfilingFrameIterator(JSContext* cx, void* pc, void* sp);
   explicit JSJitProfilingFrameIterator(CommonFrameLayout* exitFP);
 
   void operator++();
@@ -309,6 +298,12 @@ class JSJitProfilingFrameIterator {
     MOZ_ASSERT(!done());
     return fp_;
   }
+  void* wasmCallerFP() const {
+    MOZ_ASSERT(done());
+    MOZ_ASSERT(bool(wasmCallerFP_) == (type_ == FrameType::WasmToJSJit));
+    return wasmCallerFP_;
+  }
+  inline JitFrameLayout* framePtr() const;
   void* stackAddress() const { return fp(); }
   FrameType frameType() const {
     MOZ_ASSERT(!done());
@@ -318,6 +313,8 @@ class JSJitProfilingFrameIterator {
     MOZ_ASSERT(!done());
     return resumePCinCurrentFrame_;
   }
+
+  void* endStackAddress() const { return endStackAddress_; }
 };
 
 class RInstructionResults {
@@ -342,7 +339,7 @@ class RInstructionResults {
 
   ~RInstructionResults();
 
-  MOZ_MUST_USE bool init(JSContext* cx, uint32_t numResults);
+  [[nodiscard]] bool init(JSContext* cx, uint32_t numResults);
   bool isInitialized() const;
   size_t length() const;
 
@@ -354,22 +351,14 @@ class RInstructionResults {
 };
 
 struct MaybeReadFallback {
-  enum NoGCValue { NoGC_UndefinedValue, NoGC_MagicOptimizedOut };
-
   enum FallbackConsequence { Fallback_Invalidate, Fallback_DoNothing };
 
-  JSContext* maybeCx;
-  JitActivation* activation;
-  const JSJitFrameIter* frame;
-  const NoGCValue unreadablePlaceholder_;
-  const FallbackConsequence consequence;
+  JSContext* maybeCx = nullptr;
+  JitActivation* activation = nullptr;
+  const JSJitFrameIter* frame = nullptr;
+  const FallbackConsequence consequence = Fallback_Invalidate;
 
-  explicit MaybeReadFallback(const Value& placeholder = UndefinedValue())
-      : maybeCx(nullptr),
-        activation(nullptr),
-        frame(nullptr),
-        unreadablePlaceholder_(noGCPlaceholder(placeholder)),
-        consequence(Fallback_Invalidate) {}
+  MaybeReadFallback() = default;
 
   MaybeReadFallback(JSContext* cx, JitActivation* activation,
                     const JSJitFrameIter* frame,
@@ -377,24 +366,9 @@ struct MaybeReadFallback {
       : maybeCx(cx),
         activation(activation),
         frame(frame),
-        unreadablePlaceholder_(NoGC_UndefinedValue),
         consequence(consequence) {}
 
   bool canRecoverResults() { return maybeCx; }
-
-  Value unreadablePlaceholder() const {
-    if (unreadablePlaceholder_ == NoGC_MagicOptimizedOut) {
-      return MagicValue(JS_OPTIMIZED_OUT);
-    }
-    return UndefinedValue();
-  }
-
-  NoGCValue noGCPlaceholder(const Value& v) const {
-    if (v.isMagic(JS_OPTIMIZED_OUT)) {
-      return NoGC_MagicOptimizedOut;
-    }
-    return NoGC_UndefinedValue;
-  }
 };
 
 class RResumePoint;
@@ -410,16 +384,12 @@ class SnapshotIterator {
   IonScript* ionScript_;
   RInstructionResults* instructionResults_;
 
-  enum ReadMethod {
+  enum class ReadMethod : bool {
     // Read the normal value.
-    RM_Normal = 1 << 0,
+    Normal,
 
     // Read the default value, or the normal value if there is no default.
-    RM_AlwaysDefault = 1 << 1,
-
-    // Try to read the normal value if it is readable, otherwise default to
-    // the Default value.
-    RM_NormalOrDefault = RM_Normal | RM_AlwaysDefault,
+    AlwaysDefault,
   };
 
  private:
@@ -428,7 +398,10 @@ class SnapshotIterator {
   uintptr_t fromRegister(Register reg) const { return machine_->read(reg); }
 
   bool hasRegister(FloatRegister reg) const { return machine_->has(reg); }
-  double fromRegister(FloatRegister reg) const { return machine_->read(reg); }
+  template <typename T>
+  T fromRegister(FloatRegister reg) const {
+    return machine_->read<T>(reg);
+  }
 
   // Read an uintptr_t from the stack.
   bool hasStack(int32_t offset) const { return true; }
@@ -440,15 +413,12 @@ class SnapshotIterator {
   bool hasInstructionResults() const { return instructionResults_; }
   Value fromInstructionResult(uint32_t index) const;
 
-  Value allocationValue(const RValueAllocation& a, ReadMethod rm = RM_Normal);
-  MOZ_MUST_USE bool allocationReadable(const RValueAllocation& a,
-                                       ReadMethod rm = RM_Normal);
+  Value allocationValue(const RValueAllocation& a,
+                        ReadMethod rm = ReadMethod::Normal);
+  [[nodiscard]] bool allocationReadable(const RValueAllocation& a,
+                                        ReadMethod rm = ReadMethod::Normal);
   void writeAllocationValuePayload(const RValueAllocation& a, const Value& v);
   void warnUnreadableAllocation();
-
- private:
-  const FloatRegisters::RegisterContent* floatAllocationPointer(
-      const RValueAllocation& a) const;
 
  public:
   // Handle iterating over RValueAllocations of the snapshots.
@@ -456,10 +426,7 @@ class SnapshotIterator {
     MOZ_ASSERT(moreAllocations());
     return snapshot_.readAllocation();
   }
-  Value skip() {
-    snapshot_.skipAllocation();
-    return UndefinedValue();
-  }
+  void skip() { snapshot_.skipAllocation(); }
 
   const RResumePoint* resumePoint() const;
   const RInstruction* instruction() const { return recover_.instruction(); }
@@ -469,7 +436,7 @@ class SnapshotIterator {
     return snapshot_.numAllocationsRead() < numAllocations();
   }
 
-  int32_t readOuterNumActualArgs() const;
+  JitFrameLayout* frame() { return fp_; };
 
   // Used by recover instruction to store the value back into the instruction
   // results array.
@@ -478,16 +445,16 @@ class SnapshotIterator {
  public:
   // Exhibits frame properties contained in the snapshot.
   uint32_t pcOffset() const;
-  inline MOZ_MUST_USE bool resumeAfter() const {
-    // Inline frames are inlined on calls, which are considered as being
-    // resumed on the Call as baseline will push the pc once we return from
-    // the call.
-    if (moreFrames()) {
-      return false;
-    }
-    return recover_.resumeAfter();
+  ResumeMode resumeMode() const;
+
+  bool resumeAfter() const {
+    // Calls in outer frames are never considered resume-after.
+    MOZ_ASSERT_IF(moreFrames(), !IsResumeAfter(resumeMode()));
+    return IsResumeAfter(resumeMode());
   }
   inline BailoutKind bailoutKind() const { return snapshot_.bailoutKind(); }
+
+  IonScript* ionScript() const { return ionScript_; }
 
  public:
   // Read the next instruction available and get ready to either skip it or
@@ -508,12 +475,12 @@ class SnapshotIterator {
   // recover instructions. This vector should be registered before the
   // beginning of the iteration. This function is in charge of allocating
   // enough space for all instructions results, and return false iff it fails.
-  MOZ_MUST_USE bool initInstructionResults(MaybeReadFallback& fallback);
+  [[nodiscard]] bool initInstructionResults(MaybeReadFallback& fallback);
 
  protected:
   // This function is used internally for computing the result of the recover
   // instructions.
-  MOZ_MUST_USE bool computeInstructionResults(
+  [[nodiscard]] bool computeInstructionResults(
       JSContext* cx, RInstructionResults* results) const;
 
  public:
@@ -537,6 +504,42 @@ class SnapshotIterator {
 
   Value read() { return allocationValue(readAllocation()); }
 
+  int32_t readInt32() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isInt32());
+    return val.toInt32();
+  }
+
+  double readNumber() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isNumber());
+    return val.toNumber();
+  }
+
+  JSString* readString() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isString());
+    return val.toString();
+  }
+
+  JS::BigInt* readBigInt() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isBigInt());
+    return val.toBigInt();
+  }
+
+  JSObject* readObject() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isObject());
+    return &val.toObject();
+  }
+
+  JS::GCCellPtr readGCCellPtr() {
+    Value val = read();
+    MOZ_RELEASE_ASSERT(val.isGCThing());
+    return val.toGCCellPtr();
+  }
+
   // Read the |Normal| value unless it is not available and that the snapshot
   // provides a |Default| value. This is useful to avoid invalidations of the
   // frame while we are only interested in a few properties which are provided
@@ -549,7 +552,7 @@ class SnapshotIterator {
     }
 
     *alloc = a;
-    return allocationValue(a, RM_AlwaysDefault);
+    return allocationValue(a, ReadMethod::AlwaysDefault);
   }
 
   Value maybeRead(const RValueAllocation& a, MaybeReadFallback& fallback);
@@ -558,6 +561,8 @@ class SnapshotIterator {
     return maybeRead(a, fallback);
   }
 
+  bool tryRead(Value* result);
+
   void traceAllocation(JSTracer* trc);
 
   template <class Op>
@@ -565,9 +570,9 @@ class SnapshotIterator {
                              unsigned start, unsigned end, JSScript* script,
                              MaybeReadFallback& fallback) {
     // Assumes that the common frame arguments have already been read.
-    if (script->argumentsHasVarBinding()) {
+    if (script->needsArgsObj()) {
       if (argsObj) {
-        Value v = read();
+        Value v = maybeRead(fallback);
         if (v.isObject()) {
           *argsObj = &v.toObject().as<ArgumentsObject>();
         }
@@ -671,11 +676,10 @@ class InlineFrameIterator {
   JSFunction* callee(MaybeReadFallback& fallback) const;
 
   unsigned numActualArgs() const {
-    // The number of actual arguments of inline frames is recovered by the
-    // iteration process. It is recovered from the bytecode because this
-    // property still hold since the for inlined frames. This property does not
-    // hold for the parent frame because it can have optimize a call to
-    // js_fun_call or js_fun_apply.
+    // The number of actual arguments for inline frames is determined by this
+    // iterator based on the caller's bytecode instruction (Call, FunCall,
+    // GetProp/SetProp, etc). For the outer function it's stored in the stack
+    // frame.
     if (more()) {
       return numActualArgs_;
     }
@@ -687,8 +691,7 @@ class InlineFrameIterator {
   void readFrameArgsAndLocals(JSContext* cx, ArgOp& argOp, LocalOp& localOp,
                               JSObject** envChain, bool* hasInitialEnv,
                               Value* rval, ArgumentsObject** argsObj,
-                              Value* thisv, Value* newTarget,
-                              ReadFrameArgsBehavior behavior,
+                              Value* thisv, ReadFrameArgsBehavior behavior,
                               MaybeReadFallback& fallback) const {
     SnapshotIterator s(si_);
 
@@ -708,27 +711,29 @@ class InlineFrameIterator {
       s.skip();
     }
 
-    if (newTarget) {
-      // For now, only support reading new.target when we are reading
-      // overflown arguments.
-      MOZ_ASSERT(behavior != ReadFrame_Formals);
-      newTarget->setUndefined();
-    }
-
     // Read arguments, which only function frames have.
     if (isFunctionFrame()) {
       unsigned nactual = numActualArgs();
       unsigned nformal = calleeTemplate()->nargs();
 
-      // Get the non overflown arguments, which are taken from the inlined
-      // frame, because it will have the updated value when JSOp::SetArg is
-      // done.
-      if (behavior != ReadFrame_Overflown) {
-        s.readFunctionFrameArgs(argOp, argsObj, thisv, 0, nformal, script(),
-                                fallback);
+      // Read the formal arguments, which are taken from the inlined frame,
+      // because it will have the updated value when JSOp::SetArg is used.
+      unsigned numFormalsToRead;
+      if (behavior == ReadFrameArgsBehavior::Actuals) {
+        numFormalsToRead = std::min(nactual, nformal);
+      } else {
+        MOZ_ASSERT(behavior == ReadFrameArgsBehavior::ActualsAndFormals);
+        numFormalsToRead = nformal;
+      }
+      s.readFunctionFrameArgs(argOp, argsObj, thisv, 0, numFormalsToRead,
+                              script(), fallback);
+
+      // Skip formals we didn't read.
+      for (unsigned i = numFormalsToRead; i < nformal; i++) {
+        s.skip();
       }
 
-      if (behavior != ReadFrame_Formals) {
+      if (nactual > nformal) {
         if (more()) {
           // There is still a parent frame of this inlined frame.  All
           // arguments (also the overflown) are the last pushed values
@@ -740,7 +745,7 @@ class InlineFrameIterator {
           // this inlined frame.
           InlineFrameIterator it(cx, this);
           ++it;
-          unsigned argsObjAdj = it.script()->argumentsHasVarBinding() ? 1 : 0;
+          unsigned argsObjAdj = it.script()->needsArgsObj() ? 1 : 0;
           bool hasNewTarget = isConstructing();
           SnapshotIterator parent_s(it.snapshotIterator());
 
@@ -756,23 +761,16 @@ class InlineFrameIterator {
           }
 
           // Get the overflown arguments
-          MaybeReadFallback unusedFallback;
           parent_s.skip();  // env chain
           parent_s.skip();  // return value
           parent_s.readFunctionFrameArgs(argOp, nullptr, nullptr, nformal,
                                          nactual, it.script(), fallback);
-          if (newTarget && isConstructing()) {
-            *newTarget = parent_s.maybeRead(fallback);
-          }
         } else {
           // There is no parent frame to this inlined frame, we can read
           // from the frame's Value vector directly.
           Value* argv = frame_->actualArgs();
           for (unsigned i = nformal; i < nactual; i++) {
             argOp(argv[i]);
-          }
-          if (newTarget && isConstructing()) {
-            *newTarget = argv[nactual];
           }
         }
       }
@@ -787,11 +785,10 @@ class InlineFrameIterator {
 
   template <class Op>
   void unaliasedForEachActual(JSContext* cx, Op op,
-                              ReadFrameArgsBehavior behavior,
                               MaybeReadFallback& fallback) const {
     Nop nop;
     readFrameArgsAndLocals(cx, op, nop, nullptr, nullptr, nullptr, nullptr,
-                           nullptr, nullptr, behavior, fallback);
+                           nullptr, ReadFrameArgsBehavior::Actuals, fallback);
   }
 
   JSScript* script() const { return script_; }
@@ -820,7 +817,7 @@ class InlineFrameIterator {
     s.skip();
 
     // Arguments object.
-    if (script()->argumentsHasVarBinding()) {
+    if (script()->needsArgsObj()) {
       s.skip();
     }
 

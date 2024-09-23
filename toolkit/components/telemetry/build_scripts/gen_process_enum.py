@@ -5,11 +5,10 @@
 # Write out processes data for C++. The processes are defined
 # in a file provided as a command-line argument.
 
-from __future__ import print_function
-from mozparsers.shared_telemetry_utils import ParserError, load_yaml_file
-
-import sys
 import collections
+import sys
+
+from mozparsers.shared_telemetry_utils import ParserError, load_yaml_file
 
 # The banner/text at the top of the generated file.
 banner = """/* This file is auto-generated from Telemetry build scripts,
@@ -19,6 +18,8 @@ banner = """/* This file is auto-generated from Telemetry build scripts,
 file_header = """\
 #ifndef mozilla_TelemetryProcessEnums_h
 #define mozilla_TelemetryProcessEnums_h
+
+#include <cstdint>
 
 namespace mozilla {
 namespace Telemetry {
@@ -31,12 +32,13 @@ file_footer = """
 
 
 def to_enum_label(name):
-    return name.title().replace('_', '')
+    return name.title().replace("_", "")
 
 
 def write_processes_enum(processes, output):
     def p(line):
         print(line, file=output)
+
     processes = collections.OrderedDict(processes)
 
     p("enum class ProcessID : uint32_t {")
@@ -48,7 +50,7 @@ def write_processes_enum(processes, output):
 
 def main(output, *filenames):
     if len(filenames) > 1:
-        raise Exception('We don\'t support loading from more than one file.')
+        raise Exception("We don't support loading from more than one file.")
 
     try:
         processes = load_yaml_file(filenames[0])
@@ -63,5 +65,5 @@ def main(output, *filenames):
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main(sys.stdout, *sys.argv[1:])

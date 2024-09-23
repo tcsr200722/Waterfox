@@ -4,17 +4,16 @@
 
 #include "xpctest_private.h"
 #include "xpctest_interfaces.h"
+#include "mozilla/Casting.h"
 #include "js/Value.h"
 
 #include "nsCOMPtr.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIURI.h"
 
+using namespace mozilla;
+
 NS_IMPL_ISUPPORTS(nsXPCTestParams, nsIXPCTestParams)
-
-nsXPCTestParams::nsXPCTestParams() = default;
-
-nsXPCTestParams::~nsXPCTestParams() = default;
 
 #define GENERIC_METHOD_IMPL \
   {                         \
@@ -32,7 +31,7 @@ nsXPCTestParams::~nsXPCTestParams() = default;
 
 #define SEQUENCE_METHOD_IMPL(TAKE_OWNERSHIP)                        \
   {                                                                 \
-    _retval.SwapElements(b);                                        \
+    _retval = std::move(b);                                         \
     b = a.Clone();                                                  \
     for (uint32_t i = 0; i < b.Length(); ++i) TAKE_OWNERSHIP(b[i]); \
     return NS_OK;                                                   \
@@ -200,6 +199,13 @@ NS_IMETHODIMP nsXPCTestParams::TestDoubleArray(uint32_t aLength, double* a,
                                                uint32_t* rvLength,
                                                double** rv) {
   BUFFER_METHOD_IMPL(double, 0, TAKE_OWNERSHIP_NOOP);
+}
+
+NS_IMETHODIMP nsXPCTestParams::TestByteArrayOptionalLength(uint8_t* a,
+                                                           uint32_t aLength,
+                                                           uint32_t* rv) {
+  *rv = aLength;
+  return NS_OK;
 }
 
 NS_IMETHODIMP nsXPCTestParams::TestStringArray(uint32_t aLength, const char** a,
@@ -377,20 +383,18 @@ nsXPCTestParams::TestOptionalSequence(const nsTArray<uint8_t>& aInArr,
 }
 
 NS_IMETHODIMP
-nsXPCTestParams::TestOmittedOptionalOut(nsIURI** aOut) {
+nsXPCTestParams::TestOmittedOptionalOut(nsIXPCTestParams* aJSObj,
+                                        nsIURI** aOut) {
   MOZ_ASSERT(!(*aOut), "Unexpected value received");
   // Call the js component, to check XPConnect won't crash when passing nullptr
   // as the optional out parameter, and that the out object is built regardless.
   nsresult rv;
-  nsCOMPtr<nsIXPCTestParams> jsComponent =
-      do_CreateInstance("@mozilla.org/js/xpc/test/js/Params;1", &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
   // Invoke it directly passing nullptr.
-  rv = jsComponent->TestOmittedOptionalOut(nullptr);
+  rv = aJSObj->TestOmittedOptionalOut(nullptr, nullptr);
   NS_ENSURE_SUCCESS(rv, rv);
   // Also invoke it with a ref pointer.
   nsCOMPtr<nsIURI> someURI;
-  rv = jsComponent->TestOmittedOptionalOut(getter_AddRefs(someURI));
+  rv = aJSObj->TestOmittedOptionalOut(nullptr, getter_AddRefs(someURI));
   NS_ENSURE_SUCCESS(rv, rv);
   nsAutoCString spec;
   rv = someURI->GetSpec(spec);
@@ -398,5 +402,12 @@ nsXPCTestParams::TestOmittedOptionalOut(nsIURI** aOut) {
     return NS_ERROR_UNEXPECTED;
   }
   someURI.forget(aOut);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXPCTestParams::GetTestNaN(double* aResult) {
+  *aResult =
+      BitwiseCast<double>((uint64_t(JSVAL_TAG_OBJECT) << JSVAL_TAG_SHIFT) + 1);
   return NS_OK;
 }

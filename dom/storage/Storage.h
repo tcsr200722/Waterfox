@@ -14,17 +14,18 @@
 #include "nsCOMPtr.h"
 #include "nsWrapperCache.h"
 #include "nsISupports.h"
+#include "nsTArrayForwardDeclare.h"
+#include "nsString.h"
 
 class nsIPrincipal;
 class nsPIDOMWindowInner;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Storage : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Storage)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Storage)
 
   Storage(nsPIDOMWindowInner* aWindow, nsIPrincipal* aPrincipal,
           nsIPrincipal* aStoragePrincipal);
@@ -43,9 +44,15 @@ class Storage : public nsISupports, public nsWrapperCache {
 
   virtual int64_t GetOriginQuotaUsage() const = 0;
 
+  virtual void Disconnect() {}
+
   nsIPrincipal* Principal() const { return mPrincipal; }
 
   nsIPrincipal* StoragePrincipal() const { return mStoragePrincipal; }
+
+  bool IsPrivateBrowsing() const { return mPrivateBrowsing; }
+
+  bool IsPrivateBrowsingOrLess() const { return mPrivateBrowsingOrLess; }
 
   // WebIDL
   JSObject* WrapObject(JSContext* aCx,
@@ -91,8 +98,6 @@ class Storage : public nsISupports, public nsWrapperCache {
 
   virtual void Clear(nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) = 0;
 
-  bool IsSessionOnly() const { return mIsSessionOnly; }
-
   //////////////////////////////////////////////////////////////////////////////
   // Testing Methods:
   //
@@ -107,13 +112,19 @@ class Storage : public nsISupports, public nsWrapperCache {
   virtual void BeginExplicitSnapshot(nsIPrincipal& aSubjectPrincipal,
                                      ErrorResult& aRv) {}
 
+  virtual void CheckpointExplicitSnapshot(nsIPrincipal& aSubjectPrincipal,
+                                          ErrorResult& aRv) {}
+
   virtual void EndExplicitSnapshot(nsIPrincipal& aSubjectPrincipal,
                                    ErrorResult& aRv) {}
 
-  virtual bool GetHasActiveSnapshot(nsIPrincipal& aSubjectPrincipal,
-                                    ErrorResult& aRv) {
+  virtual bool GetHasSnapshot(nsIPrincipal& aSubjectPrincipal,
+                              ErrorResult& aRv) {
     return false;
   }
+
+  virtual int64_t GetSnapshotUsage(nsIPrincipal& aSubjectPrincipal,
+                                   ErrorResult& aRv);
 
   //////////////////////////////////////////////////////////////////////////////
 
@@ -151,13 +162,14 @@ class Storage : public nsISupports, public nsWrapperCache {
   nsCOMPtr<nsIPrincipal> mPrincipal;
   nsCOMPtr<nsIPrincipal> mStoragePrincipal;
 
+  bool mPrivateBrowsing : 1;
+
   // Whether storage is set to persist data only per session, may change
   // dynamically and is set by CanUseStorage function that is called
   // before any operation on the storage.
-  bool mIsSessionOnly : 1;
+  bool mPrivateBrowsingOrLess : 1;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_Storage_h

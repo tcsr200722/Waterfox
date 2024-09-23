@@ -70,7 +70,7 @@ DWORD CreateRestrictedToken(HANDLE effective_token,
                                        GRANT_ACCESS, READ_CONTROL);
   }
 
-  std::vector<base::string16> privilege_exceptions;
+  std::vector<std::wstring> privilege_exceptions;
   std::vector<Sid> sid_exceptions;
 
   bool deny_sids = true;
@@ -101,6 +101,23 @@ DWORD CreateRestrictedToken(HANDLE effective_token,
       sid_exceptions.push_back(WinInteractiveSid);
       sid_exceptions.push_back(WinAuthenticatedUserSid);
       privilege_exceptions.push_back(SE_CHANGE_NOTIFY_NAME);
+      break;
+    }
+    case USER_RESTRICTED_NON_ADMIN: {
+      sid_exceptions.push_back(WinBuiltinUsersSid);
+      sid_exceptions.push_back(WinWorldSid);
+      sid_exceptions.push_back(WinInteractiveSid);
+      sid_exceptions.push_back(WinAuthenticatedUserSid);
+      privilege_exceptions.push_back(SE_CHANGE_NOTIFY_NAME);
+      if (use_restricting_sids) {
+        restricted_token.AddRestrictingSid(WinBuiltinUsersSid);
+        restricted_token.AddRestrictingSid(WinWorldSid);
+        restricted_token.AddRestrictingSid(WinInteractiveSid);
+        restricted_token.AddRestrictingSid(WinAuthenticatedUserSid);
+        restricted_token.AddRestrictingSid(WinRestrictedCodeSid);
+        restricted_token.AddRestrictingSidCurrentUser();
+        restricted_token.AddRestrictingSidLogonSession();
+      }
       break;
     }
     case USER_INTERACTIVE: {
@@ -203,7 +220,7 @@ DWORD SetObjectIntegrityLabel(HANDLE handle,
                               const wchar_t* ace_access,
                               const wchar_t* integrity_level_sid) {
   // Build the SDDL string for the label.
-  base::string16 sddl = L"S:(";  // SDDL for a SACL.
+  std::wstring sddl = L"S:(";    // SDDL for a SACL.
   sddl += SDDL_MANDATORY_LABEL;  // Ace Type is "Mandatory Label".
   sddl += L";;";                 // No Ace Flags.
   sddl += ace_access;            // Add the ACE access.
@@ -290,6 +307,14 @@ DWORD SetProcessIntegrityLevel(IntegrityLevel integrity_level) {
     return ERROR_SUCCESS;
   }
 
+  // Set integrity level for our process ACL, so we retain access to it.
+  // We ignore failures because this is not a security measure, but some
+  // functionality may fail later in the process.
+  DWORD rv =
+      SetObjectIntegrityLabel(::GetCurrentProcess(), SE_KERNEL_OBJECT, L"",
+                              GetIntegrityLevelString(integrity_level));
+  DCHECK(rv == ERROR_SUCCESS);
+
   HANDLE token_handle;
   if (!::OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_DEFAULT,
                           &token_handle))
@@ -355,7 +380,7 @@ DWORD CreateLowBoxToken(HANDLE base_token,
   NtCreateLowBoxToken CreateLowBoxToken = nullptr;
   ResolveNTFunctionPtr("NtCreateLowBoxToken", &CreateLowBoxToken);
 
-  if (base::win::GetVersion() < base::win::VERSION_WIN8)
+  if (base::win::GetVersion() < base::win::Version::WIN8)
     return ERROR_CALL_NOT_IMPLEMENTED;
 
   if (token_type != PRIMARY && token_type != IMPERSONATION)
@@ -382,7 +407,8 @@ DWORD CreateLowBoxToken(HANDLE base_token,
       &token_lowbox, base_token, TOKEN_ALL_ACCESS, &obj_attr,
       security_capabilities->AppContainerSid,
       security_capabilities->CapabilityCount,
-      security_capabilities->Capabilities, saved_handles_count, saved_handles);
+      security_capabilities->Capabilities, saved_handles_count,
+      saved_handles_count > 0 ? saved_handles : nullptr);
   if (!NT_SUCCESS(status))
     return GetLastErrorFromNtStatus(status);
 
@@ -435,7 +461,7 @@ DWORD CreateLowBoxObjectDirectory(PSID lowbox_sid,
     return ::GetLastError();
 
   std::unique_ptr<wchar_t, LocalFreeDeleter> sid_string_ptr(sid_string);
-  base::string16 directory_path = base::StringPrintf(
+  std::wstring directory_path = base::StringPrintf(
       L"\\Sessions\\%d\\AppContainerNamedObjects\\%ls", session_id, sid_string);
 
   NtCreateDirectoryObjectFunction CreateObjectDirectory = nullptr;

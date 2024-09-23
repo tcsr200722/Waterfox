@@ -10,8 +10,11 @@
 
 #include "GreekCasing.h"
 #include "IrishCasing.h"
+#include "MathMLTextRunFactory.h"
 #include "mozilla/ComputedStyleInlines.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/StaticPrefs_mathml.h"
 #include "mozilla/TextEditor.h"
 #include "mozilla/gfx/2D.h"
 #include "nsGkAtoms.h"
@@ -29,8 +32,7 @@ using namespace mozilla::gfx;
 #define LATIN_SMALL_LETTER_DOTLESS_I 0x0131
 
 // Greek sigma needs custom handling for the lowercase transform; for details
-// see comments under "case NS_STYLE_TEXT_TRANSFORM_LOWERCASE" within
-// nsCaseTransformTextRunFactory::RebuildTextRun(), and bug 740120.
+// see bug 740120.
 #define GREEK_CAPITAL_LETTER_SIGMA 0x03A3
 #define GREEK_SMALL_LETTER_FINAL_SIGMA 0x03C2
 #define GREEK_SMALL_LETTER_SIGMA 0x03C3
@@ -78,6 +80,26 @@ bool nsTransformedTextRun::SetPotentialLineBreaks(Range aRange,
   return changed;
 }
 
+void nsTransformedTextRun::SetEmergencyWrapPositions() {
+  // This parallels part of what gfxShapedText::SetupClusterBoundaries() does
+  // for normal textruns.
+  bool prevWasHyphen = false;
+  for (uint32_t pos : IntegerRange(mString.Length())) {
+    const char16_t ch = mString[pos];
+    if (prevWasHyphen) {
+      if (nsContentUtils::IsAlphanumeric(ch)) {
+        mCharacterGlyphs[pos].SetCanBreakBefore(
+            CompressedGlyph::FLAG_BREAK_TYPE_EMERGENCY_WRAP);
+      }
+      prevWasHyphen = false;
+    }
+    if (nsContentUtils::IsHyphen(ch) && pos &&
+        nsContentUtils::IsAlphanumeric(mString[pos - 1])) {
+      prevWasHyphen = true;
+    }
+  }
+}
+
 size_t nsTransformedTextRun::SizeOfExcludingThis(
     mozilla::MallocSizeOf aMallocSizeOf) {
   size_t total = gfxTextRun::SizeOfExcludingThis(aMallocSizeOf);
@@ -123,24 +145,25 @@ nsTransformingTextRunFactory::MakeTextRun(
 void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
                               const bool* aCharsToMerge,
                               const bool* aDeletedChars) {
-  aDest->ResetGlyphRuns();
-
-  gfxTextRun::GlyphRunIterator iter(aSrc, gfxTextRun::Range(aSrc));
+  MOZ_ASSERT(!aDest->TrailingGlyphRun(), "unexpected glyphRuns in aDest!");
   uint32_t offset = 0;
   AutoTArray<gfxTextRun::DetailedGlyph, 2> glyphs;
   const gfxTextRun::CompressedGlyph continuationGlyph =
-      gfxTextRun::CompressedGlyph::MakeComplex(false, false, 0);
-  while (iter.NextRun()) {
-    const gfxTextRun::GlyphRun* run = iter.GetGlyphRun();
+      gfxTextRun::CompressedGlyph::MakeComplex(false, false);
+  const gfxTextRun::CompressedGlyph* srcGlyphs = aSrc->GetCharacterGlyphs();
+  gfxTextRun::CompressedGlyph* destGlyphs = aDest->GetCharacterGlyphs();
+  for (gfxTextRun::GlyphRunIterator iter(aSrc, gfxTextRun::Range(aSrc));
+       !iter.AtEnd(); iter.NextRun()) {
+    const gfxTextRun::GlyphRun* run = iter.GlyphRun();
     aDest->AddGlyphRun(run->mFont, run->mMatchType, offset, false,
                        run->mOrientation, run->mIsCJK);
 
     bool anyMissing = false;
-    uint32_t mergeRunStart = iter.GetStringStart();
-    const gfxTextRun::CompressedGlyph* srcGlyphs = aSrc->GetCharacterGlyphs();
+    uint32_t mergeRunStart = iter.StringStart();
+    // Initialize to a copy of the first source glyph in the merge run.
     gfxTextRun::CompressedGlyph mergedGlyph = srcGlyphs[mergeRunStart];
-    uint32_t stringEnd = iter.GetStringEnd();
-    for (uint32_t k = iter.GetStringStart(); k < stringEnd; ++k) {
+    uint32_t stringEnd = iter.StringEnd();
+    for (uint32_t k = iter.StringStart(); k < stringEnd; ++k) {
       const gfxTextRun::CompressedGlyph g = srcGlyphs[k];
       if (g.IsSimpleGlyph()) {
         if (!anyMissing) {
@@ -159,7 +182,7 @@ void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
         }
       }
 
-      if (k + 1 < iter.GetStringEnd() && aCharsToMerge[k + 1]) {
+      if (k + 1 < iter.StringEnd() && aCharsToMerge[k + 1]) {
         // next char is supposed to merge with current, so loop without
         // writing current merged glyph to the destination
         continue;
@@ -175,18 +198,23 @@ void MergeCharactersInTextRun(gfxTextRun* aDest, gfxTextRun* aSrc,
           !aCharsToMerge[mergeRunStart],
           "unable to merge across a glyph run boundary, glyph(s) discarded");
       if (!aCharsToMerge[mergeRunStart]) {
-        if (anyMissing) {
-          mergedGlyph.SetMissing(glyphs.Length());
+        // Determine if we can just copy the existing simple glyph record.
+        if (mergedGlyph.IsSimpleGlyph() && glyphs.Length() == 1) {
+          destGlyphs[offset] = mergedGlyph;
         } else {
+          // Otherwise set up complex glyph record and store detailed glyphs.
           mergedGlyph.SetComplex(mergedGlyph.IsClusterStart(),
-                                 mergedGlyph.IsLigatureGroupStart(),
-                                 glyphs.Length());
+                                 mergedGlyph.IsLigatureGroupStart());
+          destGlyphs[offset] = mergedGlyph;
+          aDest->SetDetailedGlyphs(offset, glyphs.Length(), glyphs.Elements());
+          if (anyMissing) {
+            destGlyphs[offset].SetMissing();
+          }
         }
-        aDest->SetGlyphs(offset, mergedGlyph, glyphs.Elements());
-        ++offset;
+        offset++;
 
         while (offset < aDest->GetLength() && aDeletedChars[offset]) {
-          aDest->SetGlyphs(offset++, continuationGlyph, nullptr);
+          destGlyphs[offset++] = continuationGlyph;
         }
       }
 
@@ -263,7 +291,8 @@ static LanguageSpecificCasingBehavior GetCasingFor(const nsAtom* aLang) {
 }
 
 bool nsCaseTransformTextRunFactory::TransformString(
-    const nsAString& aString, nsString& aConvertedString, bool aAllUppercase,
+    const nsAString& aString, nsString& aConvertedString,
+    const Maybe<StyleTextTransform>& aGlobalTransform, char16_t aMaskChar,
     bool aCaseTransformsOnly, const nsAtom* aLanguage,
     nsTArray<bool>& aCharsToMergeArray, nsTArray<bool>& aDeletedCharsArray,
     const nsTransformedTextRun* aTextRun, uint32_t aOffsetInTextRun,
@@ -275,7 +304,9 @@ bool nsCaseTransformTextRunFactory::TransformString(
 
   uint32_t length = aString.Length();
   const char16_t* str = aString.BeginReading();
-  const char16_t kPasswordMask = TextEditor::PasswordMask();
+  // If an unconditional mask character was passed, we'll use it; if not, any
+  // masking called for by the textrun styles will use TextEditor's mask char.
+  const char16_t mask = aMaskChar ? aMaskChar : TextEditor::PasswordMask();
 
   bool mergeNeeded = false;
 
@@ -288,10 +319,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
   uint32_t sigmaIndex = uint32_t(-1);
   nsUGenCategory cat;
 
-  StyleTextTransform style =
-      aAllUppercase ? StyleTextTransform{StyleTextTransformCase::Uppercase,
-                                         StyleTextTransformOther()}
-                    : StyleTextTransform::None();
+  StyleTextTransform style = aGlobalTransform.valueOr(StyleTextTransform::NONE);
   bool forceNonFullWidth = false;
   const nsAtom* lang = aLanguage;
 
@@ -313,10 +341,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
     RefPtr<nsTransformedCharStyle> charStyle;
     if (aTextRun) {
       charStyle = aTextRun->mStyles[aOffsetInTextRun];
-      style = aAllUppercase
-                  ? StyleTextTransform{StyleTextTransformCase::Uppercase,
-                                       StyleTextTransformOther()}
-                  : charStyle->mTextTransform;
+      style = aGlobalTransform.valueOr(charStyle->mTextTransform);
       forceNonFullWidth = charStyle->mForceNonFullWidth;
 
       nsAtom* newLang =
@@ -332,7 +357,13 @@ bool nsCaseTransformTextRunFactory::TransformString(
       }
     }
 
-    bool maskPassword = charStyle && charStyle->mMaskPassword;
+    // These should be mutually exclusive: mMaskPassword is set if we are
+    // handling <input type=password>, where the TextEditor code controls
+    // masking and we use its PasswordMask() character, in which case
+    // aMaskChar (from -webkit-text-security) is not used.
+    MOZ_ASSERT_IF(aMaskChar, !(charStyle && charStyle->mMaskPassword));
+
+    bool maskPassword = (charStyle && charStyle->mMaskPassword) || aMaskChar;
     int extraChars = 0;
     const mozilla::unicode::MultiCharMapping* mcm;
     bool inhibitBreakBefore = false;  // have we just deleted preceding hyphen?
@@ -340,14 +371,14 @@ bool nsCaseTransformTextRunFactory::TransformString(
     if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
       ch = SURROGATE_TO_UCS4(ch, str[i + 1]);
     }
+    const uint32_t originalCh = ch;
 
     // Skip case transform if we're masking current character.
     if (!maskPassword) {
-      switch (style.case_) {
-        case StyleTextTransformCase::None:
+      switch ((style & StyleTextTransform::CASE_TRANSFORMS)._0) {
+        case StyleTextTransform::NONE._0:
           break;
-
-        case StyleTextTransformCase::Lowercase:
+        case StyleTextTransform::LOWERCASE._0:
           if (languageSpecificCasing == eLSCB_Turkish) {
             if (ch == 'I') {
               ch = LATIN_SMALL_LETTER_DOTLESS_I;
@@ -512,7 +543,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           ch = ToLowerCase(ch);
           break;
 
-        case StyleTextTransformCase::Uppercase:
+        case StyleTextTransform::UPPERCASE._0:
           if (languageSpecificCasing == eLSCB_Turkish && ch == 'i') {
             ch = LATIN_CAPITAL_LETTER_I_WITH_DOT_ABOVE;
             break;
@@ -570,8 +601,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
               switch (action) {
                 case 1:
                   // lowercase a single prefix letter
-                  NS_ASSERTION(str.Length() > 0 && irishMark < str.Length(),
-                               "bad irishMark!");
+                  MOZ_ASSERT(str.Length() > 0 && irishMark < str.Length(),
+                             "bad irishMark!");
                   str.SetCharAt(ToLowerCase(str[irishMark]), irishMark);
                   irishMark = uint32_t(-1);
                   irishMarkSrc = uint32_t(-1);
@@ -579,9 +610,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
                 case 2:
                   // lowercase two prefix letters (immediately before current
                   // pos)
-                  NS_ASSERTION(
-                      str.Length() >= 2 && irishMark == str.Length() - 2,
-                      "bad irishMark!");
+                  MOZ_ASSERT(str.Length() >= 2 && irishMark == str.Length() - 2,
+                             "bad irishMark!");
                   str.SetCharAt(ToLowerCase(str[irishMark]), irishMark);
                   str.SetCharAt(ToLowerCase(str[irishMark + 1]), irishMark + 1);
                   irishMark = uint32_t(-1);
@@ -590,9 +620,8 @@ bool nsCaseTransformTextRunFactory::TransformString(
                 case 3:
                   // lowercase one prefix letter, and delete following hyphen
                   // (which must be the immediately-preceding char)
-                  NS_ASSERTION(
-                      str.Length() >= 2 && irishMark == str.Length() - 2,
-                      "bad irishMark!");
+                  MOZ_ASSERT(str.Length() >= 2 && irishMark == str.Length() - 2,
+                             "bad irishMark!");
                   MOZ_ASSERT(
                       irishMark != uint32_t(-1) && irishMarkSrc != uint32_t(-1),
                       "failed to set irishMarks");
@@ -600,11 +629,14 @@ bool nsCaseTransformTextRunFactory::TransformString(
                   aDeletedCharsArray[irishMarkSrc + 1] = true;
                   // Remove the trailing entries (corresponding to the deleted
                   // hyphen) from the auxiliary arrays.
-                  aCharsToMergeArray.SetLength(aCharsToMergeArray.Length() - 1);
+                  uint32_t len = aCharsToMergeArray.Length();
+                  MOZ_ASSERT(len >= 2);
+                  aCharsToMergeArray.TruncateLength(len - 1);
                   if (auxiliaryOutputArrays) {
-                    aStyleArray->SetLength(aStyleArray->Length() - 1);
-                    aCanBreakBeforeArray->SetLength(
-                        aCanBreakBeforeArray->Length() - 1);
+                    MOZ_ASSERT(aStyleArray->Length() == len);
+                    MOZ_ASSERT(aCanBreakBeforeArray->Length() == len);
+                    aStyleArray->TruncateLength(len - 1);
+                    aCanBreakBeforeArray->TruncateLength(len - 1);
                     inhibitBreakBefore = true;
                   }
                   mergeNeeded = true;
@@ -620,6 +652,16 @@ bool nsCaseTransformTextRunFactory::TransformString(
             }
             // If we didn't have any special action to perform, fall through
             // to check for special uppercase (ß)
+          }
+
+          // Updated mapping for German eszett, not currently reflected in the
+          // Unicode data files. This is behind a pref, as it may not work well
+          // with many (esp. older) fonts.
+          if (ch == 0x00DF &&
+              StaticPrefs::
+                  layout_css_text_transform_uppercase_eszett_enabled()) {
+            ch = 0x1E9E;
+            break;
           }
 
           mcm = mozilla::unicode::SpecialUpper(ch);
@@ -644,7 +686,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
           }
           break;
 
-        case StyleTextTransformCase::Capitalize:
+        case StyleTextTransform::CAPITALIZE._0:
           if (aTextRun) {
             if (capitalizeDutchIJ && ch == 'j') {
               ch = 'J';
@@ -700,20 +742,43 @@ bool nsCaseTransformTextRunFactory::TransformString(
           }
           break;
 
+        case StyleTextTransform::MATH_AUTO._0:
+          // text-transform: math-auto is used for automatic italicization of
+          // single-char <mi> elements. However, some legacy cases (italic style
+          // fallback and <mi> with leading/trailing whitespace) are still
+          // handled in MathMLTextRunFactory.
+          if (length == 1) {
+            uint32_t ch2 =
+                MathMLTextRunFactory::MathVariant(ch, StyleMathVariant::Italic);
+            if (StaticPrefs::mathml_mathvariant_styling_fallback_disabled()) {
+              ch = ch2;
+            } else if (ch2 != ch) {
+              // Bug 930504. Some platforms do not have fonts for Mathematical
+              // Alphanumeric Symbols. Hence we only perform the transform if a
+              // character is actually available.
+              FontMatchType matchType;
+              RefPtr<gfxFont> mathFont =
+                  aTextRun->GetFontGroup()->FindFontForChar(
+                      ch2, 0, 0, intl::Script::COMMON, nullptr, &matchType);
+              if (mathFont) {
+                ch = ch2;
+              }
+            }
+          }
+          break;
         default:
           MOZ_ASSERT_UNREACHABLE("all cases should be handled");
           break;
       }
 
       if (!aCaseTransformsOnly) {
-        if (!forceNonFullWidth &&
-            (style.other_ & StyleTextTransformOther::FULL_WIDTH)) {
+        if (!forceNonFullWidth && (style & StyleTextTransform::FULL_WIDTH)) {
           ch = mozilla::unicode::GetFullWidth(ch);
         }
 
-        if (style.other_ & StyleTextTransformOther::FULL_SIZE_KANA) {
+        if (style & StyleTextTransform::FULL_SIZE_KANA) {
           // clang-format off
-          static const uint16_t kSmallKanas[] = {
+          static const uint32_t kSmallKanas[] = {
               // ぁ   ぃ      ぅ      ぇ      ぉ      っ      ゃ      ゅ      ょ
               0x3041, 0x3043, 0x3045, 0x3047, 0x3049, 0x3063, 0x3083, 0x3085, 0x3087,
               // ゎ   ゕ      ゖ
@@ -727,7 +792,11 @@ bool nsCaseTransformTextRunFactory::TransformString(
               // ㇿ
               0x31FF,
               // ｧ    ｨ       ｩ       ｪ       ｫ       ｬ       ｭ       ｮ       ｯ
-              0xFF67, 0xFF68, 0xFF69, 0xFF6A, 0xFF6B, 0xFF6C, 0xFF6D, 0xFF6E, 0xFF6F};
+              0xFF67, 0xFF68, 0xFF69, 0xFF6A, 0xFF6B, 0xFF6C, 0xFF6D, 0xFF6E, 0xFF6F,
+              // 𛄲    𛅐       𛅑       𛅒       𛅕       𛅤       𛅥       𛅦
+              0x1B132, 0x1B150, 0x1B151, 0x1B152, 0x1B155, 0x1B164, 0x1B165, 0x1B166,
+              // 𛅧
+              0x1B167};
           static const uint16_t kFullSizeKanas[] = {
               // あ   い      う      え      お      つ      や      ゆ      よ
               0x3042, 0x3044, 0x3046, 0x3048, 0x304A, 0x3064, 0x3084, 0x3086, 0x3088,
@@ -742,7 +811,9 @@ bool nsCaseTransformTextRunFactory::TransformString(
               // ロ
               0x30ED,
               // ｱ    ｲ       ｳ       ｴ       ｵ       ﾔ       ﾕ       ﾖ        ﾂ
-              0xFF71, 0xFF72, 0xFF73, 0xFF74, 0xFF75, 0xFF94, 0xFF95, 0xFF96, 0xFF82};
+              0xFF71, 0xFF72, 0xFF73, 0xFF74, 0xFF75, 0xFF94, 0xFF95, 0xFF96, 0xFF82,
+              // こ   ゐ       ゑ      を      コ       ヰ      ヱ      ヲ       ン
+              0x3053, 0x3090, 0x3091, 0x3092, 0x30B3, 0x30F0, 0x30F1, 0x30F2, 0x30F3};
           // clang-format on
 
           size_t index;
@@ -773,20 +844,22 @@ bool nsCaseTransformTextRunFactory::TransformString(
       }
 
       if (IS_IN_BMP(ch)) {
-        aConvertedString.Append(maskPassword ? kPasswordMask : ch);
+        aConvertedString.Append(maskPassword ? mask : ch);
       } else {
         if (maskPassword) {
-          aConvertedString.Append(kPasswordMask);
+          aConvertedString.Append(mask);
           // TODO: We should show a password mask for a surrogate pair later.
-          aConvertedString.Append(kPasswordMask);
+          aConvertedString.Append(mask);
         } else {
           aConvertedString.Append(H_SURROGATE(ch));
           aConvertedString.Append(L_SURROGATE(ch));
         }
         ++extraChars;
-        ++i;
-        ++aOffsetInTextRun;
+      }
+      if (!IS_IN_BMP(originalCh)) {
         // Skip the trailing surrogate.
+        ++aOffsetInTextRun;
+        ++i;
         aDeletedCharsArray.AppendElement(true);
       }
 
@@ -802,6 +875,13 @@ bool nsCaseTransformTextRunFactory::TransformString(
     }
   }
 
+  // These output arrays, if present, must always have matching lengths:
+  if (auxiliaryOutputArrays) {
+    DebugOnly<uint32_t> len = aCharsToMergeArray.Length();
+    MOZ_ASSERT(aStyleArray->Length() == len);
+    MOZ_ASSERT(aCanBreakBeforeArray->Length() == len);
+  }
+
   return mergeNeeded;
 }
 
@@ -814,8 +894,10 @@ void nsCaseTransformTextRunFactory::RebuildTextRun(
   AutoTArray<uint8_t, 50> canBreakBeforeArray;
   AutoTArray<RefPtr<nsTransformedCharStyle>, 50> styleArray;
 
+  auto globalTransform =
+      mAllUppercase ? Some(StyleTextTransform::UPPERCASE) : Nothing();
   bool mergeNeeded = TransformString(
-      aTextRun->mString, convertedString, mAllUppercase,
+      aTextRun->mString, convertedString, globalTransform, mMaskChar,
       /* aCaseTransformsOnly = */ false, nullptr, charsToMergeArray,
       deletedCharsArray, aTextRun, 0, &canBreakBeforeArray, &styleArray);
 
@@ -853,6 +935,7 @@ void nsCaseTransformTextRunFactory::RebuildTextRun(
     transformedChild->FinishSettingProperties(aRefDrawTarget, aMFR);
   }
 
+  aTextRun->ResetGlyphRuns();
   if (mergeNeeded) {
     // Now merge multiple characters into one multi-glyph character as required
     // and deal with skipping deleted accent chars
@@ -866,7 +949,6 @@ void nsCaseTransformTextRunFactory::RebuildTextRun(
     // No merging to do, so just copy; this produces a more optimized textrun.
     // We can't steal the data because the child may be cached and stealing
     // the data would break the cache.
-    aTextRun->ResetGlyphRuns();
     aTextRun->CopyGlyphDataFrom(child, gfxTextRun::Range(child), 0);
   }
 }

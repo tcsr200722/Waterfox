@@ -6,30 +6,51 @@
 const {
   LazyPool,
   createExtraActors,
-} = require("devtools/shared/protocol/lazy-pool");
-const { RootActor } = require("devtools/server/actors/root");
-const { ThreadActor } = require("devtools/server/actors/thread");
-const { DevToolsServer } = require("devtools/server/devtools-server");
+} = require("resource://devtools/shared/protocol/lazy-pool.js");
+const { RootActor } = require("resource://devtools/server/actors/root.js");
+const {
+  WatcherActor,
+} = require("resource://devtools/server/actors/watcher.js");
+const { ThreadActor } = require("resource://devtools/server/actors/thread.js");
+const {
+  DevToolsServer,
+} = require("resource://devtools/server/devtools-server.js");
 const {
   ActorRegistry,
-} = require("devtools/server/actors/utils/actor-registry");
-const { TabSources } = require("devtools/server/actors/utils/TabSources");
-const makeDebugger = require("devtools/server/actors/utils/make-debugger");
-const protocol = require("devtools/shared/protocol");
+} = require("resource://devtools/server/actors/utils/actor-registry.js");
 const {
-  browsingContextTargetSpec,
-} = require("devtools/shared/specs/targets/browsing-context");
-const { tabDescriptorSpec } = require("devtools/shared/specs/descriptors/tab");
+  SourcesManager,
+} = require("resource://devtools/server/actors/utils/sources-manager.js");
+const makeDebugger = require("resource://devtools/server/actors/utils/make-debugger.js");
+const protocol = require("resource://devtools/shared/protocol.js");
+const {
+  windowGlobalTargetSpec,
+} = require("resource://devtools/shared/specs/targets/window-global.js");
+const {
+  tabDescriptorSpec,
+} = require("resource://devtools/shared/specs/descriptors/tab.js");
+const Targets = require("resource://devtools/server/actors/targets/index.js");
+const {
+  createContentProcessSessionContext,
+} = require("resource://devtools/server/actors/watcher/session-context.js");
+const { TargetActorRegistry } = ChromeUtils.importESModule(
+  "resource://devtools/server/actors/targets/target-actor-registry.sys.mjs",
+  { global: "shared" }
+);
+const {
+  BaseTargetActor,
+} = require("resource://devtools/server/actors/targets/base-target-actor.js");
+const Resources = require("resource://devtools/server/actors/resources/index.js");
 
 var gTestGlobals = new Set();
-DevToolsServer.addTestGlobal = function(global) {
+DevToolsServer.addTestGlobal = function (global) {
   gTestGlobals.add(global);
 };
-DevToolsServer.removeTestGlobal = function(global) {
+DevToolsServer.removeTestGlobal = function (global) {
   gTestGlobals.delete(global);
 };
 
-DevToolsServer.getTestGlobal = function(name) {
+DevToolsServer.getTestGlobal = function (name) {
   for (const g of gTestGlobals) {
     if (g.__name == name) {
       return g;
@@ -40,10 +61,10 @@ DevToolsServer.getTestGlobal = function(name) {
 };
 
 var gAllowNewThreadGlobals = false;
-DevToolsServer.allowNewThreadGlobals = function() {
+DevToolsServer.allowNewThreadGlobals = function () {
   gAllowNewThreadGlobals = true;
 };
-DevToolsServer.disallowNewThreadGlobals = function() {
+DevToolsServer.disallowNewThreadGlobals = function () {
   gAllowNewThreadGlobals = false;
 };
 
@@ -68,6 +89,9 @@ function TestTabList(connection) {
     const actor = new TestTargetActor(connection, global);
     this._descriptorActorPool.manage(actor);
 
+    // Register the target actor, so that the Watcher actor can have access to it.
+    TargetActorRegistry.registerXpcShellTargetActor(actor);
+
     const descriptorActor = new TestDescriptorActor(connection, actor);
     this._descriptorActorPool.manage(descriptorActor);
 
@@ -78,11 +102,11 @@ function TestTabList(connection) {
 TestTabList.prototype = {
   constructor: TestTabList,
   destroy() {},
-  getList: function() {
+  getList() {
     return Promise.resolve([...this._descriptorActors]);
   },
   // Helper method only available for the xpcshell implementation of tablist.
-  getTargetActorForTab: function(title) {
+  getTargetActorForTab(title) {
     const descriptorActor = this._descriptorActors.find(d => d.title === title);
     if (!descriptorActor) {
       return null;
@@ -106,28 +130,26 @@ exports.createRootActor = function createRootActor(connection) {
   return root;
 };
 
-const TestDescriptorActor = protocol.ActorClassWithSpec(tabDescriptorSpec, {
-  initialize: function(conn, targetActor) {
-    protocol.Actor.prototype.initialize.call(this, conn);
-    this.conn = conn;
+class TestDescriptorActor extends protocol.Actor {
+  constructor(conn, targetActor) {
+    super(conn, tabDescriptorSpec);
     this._targetActor = targetActor;
-  },
+  }
 
   // We don't exercise the selected tab in xpcshell tests.
   get selected() {
     return false;
-  },
+  }
 
   get title() {
     return this._targetActor.title;
-  },
+  }
 
   form() {
     const form = {
       actor: this.actorID,
       traits: {
-        getFavicon: true,
-        hasTabInfo: true,
+        watcher: true,
       },
       selected: this.selected,
       title: this._targetActor.title,
@@ -135,68 +157,79 @@ const TestDescriptorActor = protocol.ActorClassWithSpec(tabDescriptorSpec, {
     };
 
     return form;
-  },
+  }
+
+  getWatcher() {
+    const sessionContext = {
+      type: "all",
+      supportedTargets: {},
+      supportedResources: [
+        Resources.TYPES.SOURCE,
+        Resources.TYPES.CONSOLE_MESSAGE,
+        Resources.TYPES.THREAD_STATE,
+      ],
+    };
+    const watcherActor = new WatcherActor(this.conn, sessionContext);
+    return watcherActor;
+  }
 
   getFavicon() {
     return "";
-  },
+  }
 
   getTarget() {
     return this._targetActor.form();
-  },
-});
+  }
+}
 
-const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
-  initialize: function(conn, global) {
-    protocol.Actor.prototype.initialize.call(this, conn);
-    this.conn = conn;
+class TestTargetActor extends BaseTargetActor {
+  constructor(conn, global) {
+    super(conn, Targets.TYPES.FRAME, windowGlobalTargetSpec);
+
+    this.sessionContext = createContentProcessSessionContext();
     this._global = global;
     this._global.wrappedJSObject = global;
     this.threadActor = new ThreadActor(this, this._global);
     this.conn.addActor(this.threadActor);
-    this._attached = false;
     this._extraActors = {};
     // This is a hack in order to enable threadActor to be accessed from getFront
     this._extraActors.threadActor = this.threadActor;
     this.makeDebugger = makeDebugger.bind(null, {
       findDebuggees: () => [this._global],
-      shouldAddNewGlobalAsDebuggee: g => {
-        if (gAllowNewThreadGlobals) {
-          return true;
-        }
-
-        return (
-          g.hostAnnotations &&
-          g.hostAnnotations.type == "document" &&
-          g.hostAnnotations.element === this._global
-        );
-      },
+      shouldAddNewGlobalAsDebuggee: () => gAllowNewThreadGlobals,
     });
     this.dbg = this.makeDebugger();
-  },
+    this.notifyResources = this.notifyResources.bind(this);
+  }
+
+  targetType = Targets.TYPES.FRAME;
 
   get window() {
     return this._global;
-  },
+  }
 
   // Both title and url point to this._global.__name
   get title() {
     return this._global.__name;
-  },
+  }
 
   get url() {
     return this._global.__name;
-  },
+  }
 
-  get sources() {
-    if (!this._sources) {
-      this._sources = new TabSources(this.threadActor);
+  get sourcesManager() {
+    if (!this._sourcesManager) {
+      this._sourcesManager = new SourcesManager(this.threadActor);
     }
-    return this._sources;
-  },
+    return this._sourcesManager;
+  }
 
-  form: function() {
-    const response = { actor: this.actorID, title: this.title };
+  form() {
+    const response = {
+      actor: this.actorID,
+      title: this.title,
+      threadActor: this.threadActor.actorID,
+    };
 
     // Walk over target-scoped actors and add them to a new LazyPool.
     const actorPool = new LazyPool(this.conn);
@@ -205,40 +238,35 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
       actorPool,
       this
     );
-    if (!actorPool.isEmpty()) {
+    if (actorPool?._poolMap.size > 0) {
       this._descriptorActorPool = actorPool;
       this.conn.addActorPool(this._descriptorActorPool);
     }
 
     return { ...response, ...actors };
-  },
+  }
 
-  attach: function(request) {
-    this._attached = true;
-
-    return { threadActor: this.threadActor.actorID };
-  },
-
-  detach: function(request) {
-    if (!this._attached) {
-      return { error: "wrongState" };
-    }
-    this.threadActor.exit();
+  detach() {
+    this.threadActor.destroy();
     return { type: "detached" };
-  },
+  }
 
-  reload: function(request) {
-    this.sources.reset();
+  reload() {
+    this.sourcesManager.reset();
     this.threadActor.clearDebuggees();
     this.threadActor.dbg.addDebuggees();
     return {};
-  },
+  }
 
-  removeActorByName: function(name) {
+  removeActorByName(name) {
     const actor = this._extraActors[name];
     if (this._descriptorActorPool) {
       this._descriptorActorPool.removeActor(actor);
     }
     delete this._extraActors[name];
-  },
-});
+  }
+
+  notifyResources(updateType, resources) {
+    this.emit(`resource-${updateType}-form`, resources);
+  }
+}

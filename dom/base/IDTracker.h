@@ -8,18 +8,20 @@
 #define mozilla_dom_IDTracker_h_
 
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/ShadowRoot.h"
-#include "nsAtom.h"
-#include "mozilla/dom/Document.h"
+#include "nsIObserver.h"
 #include "nsThreadUtils.h"
-#include "plstr.h"
 
+class nsAtom;
+class nsIContent;
+class nsINode;
 class nsIURI;
 class nsIReferrerInfo;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+class Document;
+class DocumentOrShadowRoot;
+class Element;
 
 /**
  * Class to track what element is referenced by a given ID.
@@ -40,11 +42,11 @@ namespace dom {
  */
 class IDTracker {
  public:
-  typedef mozilla::dom::Element Element;
+  using Element = mozilla::dom::Element;
 
-  IDTracker() = default;
+  IDTracker();
 
-  ~IDTracker() { Unlink(); }
+  ~IDTracker();
 
   /**
    * Find which element, if any, is referenced.
@@ -67,6 +69,18 @@ class IDTracker {
   void ResetToURIFragmentID(nsIContent* aFrom, nsIURI* aURI,
                             nsIReferrerInfo* aReferrerInfo, bool aWatch = true,
                             bool aReferenceImage = false);
+
+  /**
+   * A variation on ResetToURIFragmentID() to set up a reference that consists
+   * of a local reference of an element in the same document as aFrom.
+   * @param aFrom the source element for context
+   * @param aLocalRef the local reference of the element
+   * @param aWatch if false, then we do not set up the notifications to track
+   * changes, so ElementChanged won't fire and get() will always return the same
+   * value, the current element for the ID.
+   */
+  void ResetWithLocalRef(Element& aFrom, const nsAString& aLocalRef,
+                         bool aWatch = true);
 
   /**
    * A variation on ResetToURIFragmentID() to set up a reference that consists
@@ -93,7 +107,7 @@ class IDTracker {
    * to call this superclass method to change mElement. This is called
    * at script-runnable time.
    */
-  virtual void ElementChanged(Element* aFrom, Element* aTo) { mElement = aTo; }
+  virtual void ElementChanged(Element* aFrom, Element* aTo);
 
   /**
    * Override this to convert from a single-shot notification to
@@ -126,11 +140,7 @@ class IDTracker {
 
   class ChangeNotification : public mozilla::Runnable, public Notification {
    public:
-    ChangeNotification(IDTracker* aTarget, Element* aFrom, Element* aTo)
-        : mozilla::Runnable("IDTracker::ChangeNotification"),
-          Notification(aTarget),
-          mFrom(aFrom),
-          mTo(aTo) {}
+    ChangeNotification(IDTracker* aTarget, Element* aFrom, Element* aTo);
 
     // We need to actually declare all of nsISupports, because
     // Notification inherits from it but doesn't declare it.
@@ -142,15 +152,11 @@ class IDTracker {
       }
       return NS_OK;
     }
-    virtual void SetTo(Element* aTo) override { mTo = aTo; }
-    virtual void Clear() override {
-      Notification::Clear();
-      mFrom = nullptr;
-      mTo = nullptr;
-    }
+    void SetTo(Element* aTo) override;
+    void Clear() override;
 
    protected:
-    virtual ~ChangeNotification() = default;
+    virtual ~ChangeNotification();
 
     RefPtr<Element> mFrom;
     RefPtr<Element> mTo;
@@ -177,18 +183,7 @@ class IDTracker {
   };
   friend class DocumentLoadNotification;
 
-  DocumentOrShadowRoot* GetWatchDocOrShadowRoot() const {
-    if (!mWatchDocumentOrShadowRoot) {
-      return nullptr;
-    }
-    MOZ_ASSERT(mWatchDocumentOrShadowRoot->IsDocument() ||
-               mWatchDocumentOrShadowRoot->IsShadowRoot());
-    if (ShadowRoot* shadow =
-            ShadowRoot::FromNode(*mWatchDocumentOrShadowRoot)) {
-      return shadow;
-    }
-    return mWatchDocumentOrShadowRoot->AsDocument();
-  }
+  DocumentOrShadowRoot* GetWatchDocOrShadowRoot() const;
 
   RefPtr<nsAtom> mWatchID;
   nsCOMPtr<nsINode>
@@ -206,7 +201,6 @@ inline void ImplCycleCollectionTraverse(
   aField.Traverse(&aCallback);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_IDTracker_h_ */

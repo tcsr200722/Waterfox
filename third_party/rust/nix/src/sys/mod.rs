@@ -1,90 +1,195 @@
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "linux",
-          target_os = "macos",
-          target_os = "netbsd"))]
-pub mod aio;
+//! Mostly platform-specific functionality
+#[cfg(any(
+    freebsdlike,
+    all(target_os = "linux", not(target_env = "uclibc")),
+    apple_targets,
+    target_os = "netbsd"
+))]
+feature! {
+    #![feature = "aio"]
+    pub mod aio;
+}
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
-pub mod epoll;
+feature! {
+    #![feature = "event"]
 
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
-pub mod event;
+    #[cfg(linux_android)]
+    #[allow(missing_docs)]
+    pub mod epoll;
+
+    #[cfg(bsd)]
+    pub mod event;
+
+    #[cfg(any(linux_android, target_os = "freebsd"))]
+    #[allow(missing_docs)]
+    pub mod eventfd;
+}
 
 #[cfg(target_os = "linux")]
-pub mod eventfd;
+feature! {
+    #![feature = "fanotify"]
+    pub mod fanotify;
+}
 
-#[cfg(any(target_os = "android",
-          target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "linux",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
+#[cfg(any(bsd, linux_android, target_os = "redox", solarish))]
+#[cfg(feature = "ioctl")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ioctl")))]
 #[macro_use]
 pub mod ioctl;
 
-#[cfg(target_os = "linux")]
-pub mod memfd;
+#[cfg(any(linux_android, target_os = "freebsd"))]
+feature! {
+    #![feature = "fs"]
+    pub mod memfd;
+}
 
-pub mod mman;
-
-pub mod pthread;
-
-#[cfg(any(target_os = "android",
-          target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "linux",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
-pub mod ptrace;
+#[cfg(not(target_os = "redox"))]
+feature! {
+    #![feature = "mman"]
+    pub mod mman;
+}
 
 #[cfg(target_os = "linux")]
-pub mod quota;
+feature! {
+    #![feature = "personality"]
+    pub mod personality;
+}
 
-#[cfg(any(target_os = "linux"))]
-pub mod reboot;
+#[cfg(target_os = "linux")]
+feature! {
+    #![feature = "process"]
+    pub mod prctl;
+}
 
-pub mod select;
+feature! {
+    #![feature = "pthread"]
+    pub mod pthread;
+}
 
-#[cfg(any(target_os = "android",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "linux",
-          target_os = "macos"))]
-pub mod sendfile;
+#[cfg(any(linux_android, bsd))]
+feature! {
+    #![feature = "ptrace"]
+    #[allow(missing_docs)]
+    pub mod ptrace;
+}
+
+#[cfg(target_os = "linux")]
+feature! {
+    #![feature = "quota"]
+    pub mod quota;
+}
+
+#[cfg(any(target_os = "linux", netbsdlike))]
+feature! {
+    #![feature = "reboot"]
+    pub mod reboot;
+}
+
+#[cfg(not(any(
+    target_os = "redox",
+    target_os = "fuchsia",
+    solarish,
+    target_os = "haiku"
+)))]
+feature! {
+    #![feature = "resource"]
+    pub mod resource;
+}
+
+feature! {
+    #![feature = "poll"]
+    pub mod select;
+}
+
+#[cfg(any(linux_android, freebsdlike, apple_targets, solarish))]
+feature! {
+    #![feature = "zerocopy"]
+    pub mod sendfile;
+}
 
 pub mod signal;
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
-pub mod signalfd;
+#[cfg(linux_android)]
+feature! {
+    #![feature = "signal"]
+    #[allow(missing_docs)]
+    pub mod signalfd;
+}
 
-pub mod socket;
+feature! {
+    #![feature = "socket"]
+    #[allow(missing_docs)]
+    pub mod socket;
+}
 
-pub mod stat;
+feature! {
+    #![feature = "fs"]
+    #[allow(missing_docs)]
+    pub mod stat;
+}
 
-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-pub mod statfs;
+#[cfg(any(linux_android, freebsdlike, apple_targets, target_os = "openbsd"))]
+feature! {
+    #![feature = "fs"]
+    pub mod statfs;
+}
 
-pub mod statvfs;
+feature! {
+    #![feature = "fs"]
+    pub mod statvfs;
+}
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
+#[allow(missing_docs)]
 pub mod sysinfo;
 
-pub mod termios;
+feature! {
+    #![feature = "term"]
+    #[allow(missing_docs)]
+    pub mod termios;
+}
 
+#[allow(missing_docs)]
 pub mod time;
 
-pub mod uio;
+feature! {
+    #![feature = "uio"]
+    pub mod uio;
+}
 
-pub mod utsname;
+feature! {
+    #![feature = "feature"]
+    pub mod utsname;
+}
 
-pub mod wait;
+feature! {
+    #![feature = "process"]
+    pub mod wait;
+}
+
+#[cfg(linux_android)]
+feature! {
+    #![feature = "inotify"]
+    pub mod inotify;
+}
+
+#[cfg(linux_android)]
+feature! {
+    #![feature = "time"]
+    pub mod timerfd;
+}
+
+#[cfg(all(
+    any(
+        target_os = "freebsd",
+        solarish,
+        target_os = "linux",
+        target_os = "netbsd"
+    ),
+    feature = "time",
+    feature = "signal"
+))]
+feature! {
+    #![feature = "time"]
+    pub mod timer;
+}

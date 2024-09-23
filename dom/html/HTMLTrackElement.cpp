@@ -7,14 +7,13 @@
 #include "mozilla/dom/HTMLTrackElement.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLMediaElement.h"
-#include "WebVTTListener.h"
+#include "mozilla/dom/WebVTTListener.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/HTMLTrackElementBinding.h"
-#include "mozilla/dom/HTMLUnknownElement.h"
+#include "mozilla/dom/UnbindContext.h"
 #include "nsAttrValueInlines.h"
 #include "nsCOMPtr.h"
-#include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsGenericHTMLElement.h"
@@ -23,14 +22,13 @@
 #include "mozilla/dom/Document.h"
 #include "nsILoadGroup.h"
 #include "nsIObserver.h"
+#include "nsIObserverService.h"
 #include "nsIScriptError.h"
 #include "nsISupportsImpl.h"
 #include "nsISupportsPrimitives.h"
-#include "nsMappedAttributes.h"
 #include "nsNetUtil.h"
 #include "nsStyleConsts.h"
 #include "nsThreadUtils.h"
-#include "nsVideoFrame.h"
 
 extern mozilla::LazyLogModule gTextTrackLog;
 #define LOG(msg, ...)                       \
@@ -47,8 +45,7 @@ nsGenericHTMLElement* NS_NewHTMLTrackElement(
   return new (nim) mozilla::dom::HTMLTrackElement(nodeInfo.forget());
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Map html attribute string values to TextTrackKind enums.
 static constexpr nsAttrValue::EnumTable kKindTable[] = {
@@ -61,7 +58,7 @@ static constexpr nsAttrValue::EnumTable kKindTable[] = {
 
 // Invalid values are treated as "metadata" in ParseAttribute, but if no value
 // at all is specified, it's treated as "subtitles" in GetKind
-static const nsAttrValue::EnumTable* const kKindTableInvalidValueDefault =
+static constexpr const nsAttrValue::EnumTable* kKindTableInvalidValueDefault =
     &kKindTable[4];
 
 class WindowDestroyObserver final : public nsIObserver {
@@ -170,7 +167,7 @@ void HTMLTrackElement::CreateTextTrack() {
   nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(parentObject);
   if (!parentObject) {
     nsContentUtils::ReportToConsole(
-        nsIScriptError::errorFlag, NS_LITERAL_CSTRING("Media"), OwnerDoc(),
+        nsIScriptError::errorFlag, "Media"_ns, OwnerDoc(),
         nsContentUtils::eDOM_PROPERTIES,
         "Using track element in non-window context");
     return;
@@ -213,7 +210,7 @@ void HTMLTrackElement::SetSrc(const nsAString& aSrc, ErrorResult& aError) {
   LOG("Set src=%s", NS_ConvertUTF16toUTF8(aSrc).get());
 
   nsAutoString src;
-  if (GetAttr(kNameSpaceID_None, nsGkAtoms::src, src) && src == aSrc) {
+  if (GetAttr(nsGkAtoms::src, src) && src == aSrc) {
     LOG("No need to reload for same src url");
     return;
   }
@@ -227,7 +224,8 @@ void HTMLTrackElement::SetSrc(const nsAString& aSrc, ErrorResult& aError) {
   // Stop WebVTTListener.
   mListener = nullptr;
   if (mChannel) {
-    mChannel->Cancel(NS_BINDING_ABORTED);
+    mChannel->CancelWithReason(NS_BINDING_ABORTED,
+                               "HTMLTrackElement::SetSrc"_ns);
     mChannel = nullptr;
   }
 
@@ -285,7 +283,7 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
   mLoadResourceDispatched = false;
 
   nsAutoString src;
-  if (!GetAttr(kNameSpaceID_None, nsGkAtoms::src, src) || src.IsEmpty()) {
+  if (!GetAttr(nsGkAtoms::src, src) || src.IsEmpty()) {
     LOG("Fail to load because no src");
     SetReadyState(TextTrackReadyState::FailedToLoad);
     return;
@@ -314,16 +312,16 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
   nsSecurityFlags secFlags;
   if (CORS_NONE == corsMode) {
     // Same-origin is required for track element.
-    secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS;
+    secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT;
   } else {
-    secFlags = nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS;
+    secFlags = nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT;
     if (CORS_ANONYMOUS == corsMode) {
       secFlags |= nsILoadInfo::SEC_COOKIES_SAME_ORIGIN;
     } else if (CORS_USE_CREDENTIALS == corsMode) {
       secFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
     } else {
       NS_WARNING("Unknown CORS mode.");
-      secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS;
+      secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT;
     }
   }
 
@@ -370,7 +368,7 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
         }
         mChannel = channel;
       });
-  doc->Dispatch(TaskCategory::Other, runnable.forget());
+  doc->Dispatch(runnable.forget());
 }
 
 nsresult HTMLTrackElement::BindToTree(BindContext& aContext, nsINode& aParent) {
@@ -408,8 +406,8 @@ nsresult HTMLTrackElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   return NS_OK;
 }
 
-void HTMLTrackElement::UnbindFromTree(bool aNullParent) {
-  if (mMediaParent && aNullParent) {
+void HTMLTrackElement::UnbindFromTree(UnbindContext& aContext) {
+  if (mMediaParent && aContext.IsUnbindRoot(this)) {
     // mTrack can be null if HTMLTrackElement::LoadResource has never been
     // called.
     if (mTrack) {
@@ -419,7 +417,7 @@ void HTMLTrackElement::UnbindFromTree(bool aNullParent) {
     mMediaParent = nullptr;
   }
 
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 TextTrackReadyState HTMLTrackElement::ReadyState() const {
@@ -439,11 +437,11 @@ void HTMLTrackElement::SetReadyState(TextTrackReadyState aReadyState) {
     switch (aReadyState) {
       case TextTrackReadyState::Loaded:
         LOG("dispatch 'load' event");
-        DispatchTrackRunnable(NS_LITERAL_STRING("load"));
+        DispatchTrackRunnable(u"load"_ns);
         break;
       case TextTrackReadyState::FailedToLoad:
         LOG("dispatch 'error' event");
-        DispatchTrackRunnable(NS_LITERAL_STRING("error"));
+        DispatchTrackRunnable(u"error"_ns);
         break;
       default:
         break;
@@ -460,7 +458,7 @@ void HTMLTrackElement::DispatchTrackRunnable(const nsString& aEventName) {
   nsCOMPtr<nsIRunnable> runnable = NewRunnableMethod<const nsString>(
       "dom::HTMLTrackElement::DispatchTrustedEvent", this,
       &HTMLTrackElement::DispatchTrustedEvent, aEventName);
-  doc->Dispatch(TaskCategory::Other, runnable.forget());
+  doc->Dispatch(runnable.forget());
 }
 
 void HTMLTrackElement::DispatchTrustedEvent(const nsAString& aName) {
@@ -468,13 +466,14 @@ void HTMLTrackElement::DispatchTrustedEvent(const nsAString& aName) {
   if (!doc) {
     return;
   }
-  nsContentUtils::DispatchTrustedEvent(doc, static_cast<nsIContent*>(this),
-                                       aName, CanBubble::eNo, Cancelable::eNo);
+  nsContentUtils::DispatchTrustedEvent(doc, this, aName, CanBubble::eNo,
+                                       Cancelable::eNo);
 }
 
 void HTMLTrackElement::CancelChannelAndListener() {
   if (mChannel) {
-    mChannel->Cancel(NS_BINDING_ABORTED);
+    mChannel->CancelWithReason(NS_BINDING_ABORTED,
+                               "HTMLTrackElement::CancelChannelAndListener"_ns);
     mChannel->SetNotificationCallbacks(nullptr);
     mChannel = nullptr;
   }
@@ -485,11 +484,11 @@ void HTMLTrackElement::CancelChannelAndListener() {
   }
 }
 
-nsresult HTMLTrackElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                                        const nsAttrValue* aValue,
-                                        const nsAttrValue* aOldValue,
-                                        nsIPrincipal* aMaybeScriptedPrincipal,
-                                        bool aNotify) {
+void HTMLTrackElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                                    const nsAttrValue* aValue,
+                                    const nsAttrValue* aOldValue,
+                                    nsIPrincipal* aMaybeScriptedPrincipal,
+                                    bool aNotify) {
   if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::src) {
     MaybeClearAllCues();
     // In spec, `start the track processing model` step10, while fetching is
@@ -511,5 +510,6 @@ void HTMLTrackElement::DispatchTestEvent(const nsAString& aName) {
   DispatchTrustedEvent(aName);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+#undef LOG
+
+}  // namespace mozilla::dom

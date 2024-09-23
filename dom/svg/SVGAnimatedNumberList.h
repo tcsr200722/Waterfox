@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDNUMBERLIST_H__
-#define MOZILLA_SVGANIMATEDNUMBERLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDNUMBERLIST_H_
+#define DOM_SVG_SVGANIMATEDNUMBERLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILAttr.h"
@@ -41,7 +41,16 @@ class SVGAnimatedNumberList {
   friend class dom::DOMSVGNumberList;
 
  public:
-  SVGAnimatedNumberList() : mIsBaseSet(false) {}
+  SVGAnimatedNumberList() = default;
+
+  SVGAnimatedNumberList& operator=(const SVGAnimatedNumberList& aOther) {
+    mIsBaseSet = aOther.mIsBaseSet;
+    mBaseVal = aOther.mBaseVal;
+    if (aOther.mAnimVal) {
+      mAnimVal = MakeUnique<SVGNumberList>(*aOther.mAnimVal);
+    }
+    return *this;
+  }
 
   /**
    * Because it's so important that mBaseVal and its DOMSVGNumberList wrapper
@@ -85,7 +94,7 @@ class SVGAnimatedNumberList {
 
   SVGNumberList mBaseVal;
   UniquePtr<SVGNumberList> mAnimVal;
-  bool mIsBaseSet;
+  bool mIsBaseSet = false;
 
   struct SMILAnimatedNumberList : public SMILAttr {
    public:
@@ -101,15 +110,16 @@ class SVGAnimatedNumberList {
     uint8_t mAttrEnum;
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
-        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aValue) override;
   };
 };
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDNUMBERLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDNUMBERLIST_H_

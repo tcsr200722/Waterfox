@@ -5,11 +5,13 @@
 
 const expect = require("expect");
 
-const actions = require("devtools/client/webconsole/actions/index");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
 const {
   getVisibleMessages,
-} = require("devtools/client/webconsole/selectors/messages");
-const { setupStore } = require("devtools/client/webconsole/test/node/helpers");
+} = require("resource://devtools/client/webconsole/selectors/messages.js");
+const {
+  setupStore,
+} = require("resource://devtools/client/webconsole/test/node/helpers.js");
 
 describe("Searching in grips", () => {
   let store;
@@ -77,7 +79,7 @@ describe("Searching in grips", () => {
 
     it("do not match on full url", () => {
       store.dispatch(
-        actions.filterTextSet("http://example.com/browser/devtools")
+        actions.filterTextSet("https://example.com/browser/devtools")
       );
       expect(getVisibleMessages(store.getState()).length).toEqual(0);
     });
@@ -86,12 +88,12 @@ describe("Searching in grips", () => {
   describe("Reverse search", () => {
     it("reverse matches on value grips", () => {
       store.dispatch(actions.filterTextSet("-red"));
-      expect(getVisibleMessages(store.getState()).length).toEqual(5);
+      expect(getVisibleMessages(store.getState()).length).toEqual(6);
     });
 
     it("reverse matches on file name", () => {
       store.dispatch(actions.filterTextSet("-test-console-api.html:1:35"));
-      expect(getVisibleMessages(store.getState()).length).toEqual(1);
+      expect(getVisibleMessages(store.getState()).length).toEqual(2);
     });
   });
 });
@@ -106,7 +108,7 @@ function prepareBaseStore() {
     "console.log('myregex', /a.b.c/)",
     "console.log('mymap')",
     "console.log('myobject', {red: 'redValue', green: 'greenValue', blue: 'blueValue'});",
-    "GET request",
+    "GET request update",
   ]);
 
   return store;

@@ -6,7 +6,7 @@
 
 "use strict";
 
-add_task(async function() {
+add_task(async function () {
   await openTabAndSetupStorage(MAIN_DOMAIN + "storage-cookies.html");
   showAllColumns(true);
 
@@ -22,6 +22,4 @@ add_task(async function() {
     "test1",
     "We have shift-tabbed to the correct cell."
   );
-
-  await finishTests();
 });

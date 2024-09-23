@@ -28,8 +28,8 @@ class Database;
 
  * PHASE 2 (Modern clients shutdown)
  * Modern clients should instead register as a blocker by passing a promise to
- * nsINavHistoryService::shutdownClient (for example see Sanitizer.jsm), so they
- * block Places shutdown until the promise is resolved.
+ * nsINavHistoryService::shutdownClient (for example see Sanitizer.sys.mjs), so
+ * they block Places shutdown until the promise is resolved.
  * When profile-change-teardown is observed by async shutdown, it calls
  * ClientsShutdownBlocker::BlockShutdown. This class is registered as a teardown
  * phase blocker in Database::Init (see Database::mClientsShutdown).
@@ -64,12 +64,6 @@ class PlacesShutdownBlocker : public nsIAsyncShutdownBlocker,
 
   already_AddRefed<nsIAsyncShutdownClient> GetClient();
 
-  /**
-   * `true` if we have not started shutdown, i.e.  if
-   * `BlockShutdown()` hasn't been called yet, false otherwise.
-   */
-  static bool IsStarted() { return sIsStarted; }
-
   // The current state, used internally and for forensics/debugging purposes.
   // Not all the states make sense for all the derived classes.
   enum States {
@@ -97,6 +91,8 @@ class PlacesShutdownBlocker : public nsIAsyncShutdownBlocker,
   };
   States State() { return mState; }
 
+  static Atomic<bool> sIsStarted;
+
  protected:
   // The blocker name, also used as barrier name.
   nsString mName;
@@ -111,8 +107,6 @@ class PlacesShutdownBlocker : public nsIAsyncShutdownBlocker,
   // give the instances of `PlacesShutdownBlocker` unique names.
   uint16_t mCounter;
   static uint16_t sCounter;
-
-  static Atomic<bool> sIsStarted;
 
   virtual ~PlacesShutdownBlocker() = default;
 };

@@ -2,20 +2,23 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import yaml
-import mozunit
+import os
 import sys
 import unittest
-import os
 from os import path
 
-TELEMETRY_ROOT_PATH = path.abspath(path.join(path.dirname(__file__), path.pardir, path.pardir))
+import mozunit
+import yaml
+
+TELEMETRY_ROOT_PATH = path.abspath(
+    path.join(path.dirname(__file__), path.pardir, path.pardir)
+)
 sys.path.append(TELEMETRY_ROOT_PATH)
 # The parsers live in a subdirectory of "build_scripts", account for that.
 # NOTE: if the parsers are moved, this logic will need to be updated.
 sys.path.append(path.join(TELEMETRY_ROOT_PATH, "build_scripts"))
-from mozparsers.shared_telemetry_utils import ParserError
 from mozparsers import parse_events
+from mozparsers.shared_telemetry_utils import ParserError
 
 
 def load_event(event):
@@ -31,6 +34,7 @@ class TestParser(unittest.TestCase):
     def setUp(self):
         def mockexit(x):
             raise SystemExit(x)
+
         self.oldexit = os._exit
         os._exit = mockexit
 
@@ -49,10 +53,7 @@ expiry_version: never
 """
         name = "test_event"
         event = load_event(SAMPLE_EVENT)
-        evt = parse_events.EventData("CATEGORY",
-                                     name,
-                                     event,
-                                     strict_type_checks=True)
+        evt = parse_events.EventData("CATEGORY", name, event, strict_type_checks=True)
         ParserError.exit_func()
 
         self.assertEqual(evt.methods, [name])
@@ -74,10 +75,7 @@ products: ["firefox"]
 release_channel_collection: none
 """
         event = load_event(SAMPLE_EVENT)
-        parse_events.EventData("CATEGORY",
-                               "test_event",
-                               event,
-                               strict_type_checks=True)
+        parse_events.EventData("CATEGORY", "test_event", event, strict_type_checks=True)
 
         self.assertRaises(SystemExit, ParserError.exit_func)
 
@@ -94,22 +92,19 @@ extra_keys:
   key1: test1
   key2: test2
 products:
-    - geckoview
+    - fennec
 operating_systems:
     - windows
 """
         name = "test_event"
         event = load_event(SAMPLE_EVENT)
-        evt = parse_events.EventData("CATEGORY",
-                                     name,
-                                     event,
-                                     strict_type_checks=True)
+        evt = parse_events.EventData("CATEGORY", name, event, strict_type_checks=True)
         ParserError.exit_func()
 
         self.assertEqual(evt.methods, ["method1", "method2"])
         self.assertEqual(evt.objects, ["object1", "object2"])
         self.assertEqual(evt.record_in_processes, ["content"])
-        self.assertEqual(evt.products, ["geckoview"])
+        self.assertEqual(evt.products, ["fennec"])
         self.assertEqual(evt.operating_systems, ["windows"])
         self.assertEqual(sorted(evt.extra_keys), ["key1", "key2"])
 
@@ -124,10 +119,12 @@ description: This is a test entry for Telemetry.
 expiry_version: never
 """
         event = load_event(SAMPLE_EVENT)
-        self.assertRaises(SystemExit, lambda: parse_events.EventData("CATEGORY",
-                                                                     "test_event",
-                                                                     event,
-                                                                     strict_type_checks=True))
+        self.assertRaises(
+            SystemExit,
+            lambda: parse_events.EventData(
+                "CATEGORY", "test_event", event, strict_type_checks=True
+            ),
+        )
 
     def test_empty_products(self):
         SAMPLE_EVENT = """
@@ -141,30 +138,13 @@ products: []
 expiry_version: never
 """
         event = load_event(SAMPLE_EVENT)
-        self.assertRaises(SystemExit, lambda: parse_events.EventData("CATEGORY",
-                                                                     "test_event",
-                                                                     event,
-                                                                     strict_type_checks=True))
-
-    def test_geckoview_streaming_product(self):
-        SAMPLE_EVENT = """
-methods: ["method1", "method2"]
-objects: ["object1", "object2"]
-bug_numbers: [12345]
-notification_emails: ["test01@mozilla.com", "test02@mozilla.com"]
-record_in_processes: ["content"]
-description: This is a test entry for Telemetry.
-products: ["geckoview_streaming"]
-expiry_version: never
-"""
-        event = load_event(SAMPLE_EVENT)
-        parse_events.EventData("CATEGORY",
-                               "test_event",
-                               event,
-                               strict_type_checks=True)
-
-        self.assertRaises(SystemExit, ParserError.exit_func)
+        self.assertRaises(
+            SystemExit,
+            lambda: parse_events.EventData(
+                "CATEGORY", "test_event", event, strict_type_checks=True
+            ),
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

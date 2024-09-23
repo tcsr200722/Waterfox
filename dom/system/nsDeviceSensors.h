@@ -14,21 +14,18 @@
 #include "mozilla/dom/DeviceMotionEvent.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/HalSensor.h"
-#include "nsDataHashtable.h"
 
 class nsIDOMWindow;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Document;
 class EventTarget;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 class nsDeviceSensors : public nsIDeviceSensors,
                         public mozilla::hal::ISensorObserver {
-  typedef mozilla::dom::DeviceAccelerationInit DeviceAccelerationInit;
-  typedef mozilla::dom::DeviceRotationRateInit DeviceRotationRateInit;
+  using DeviceAccelerationInit = mozilla::dom::DeviceAccelerationInit;
+  using DeviceRotationRateInit = mozilla::dom::DeviceRotationRateInit;
 
  public:
   NS_DECL_ISUPPORTS
@@ -46,8 +43,8 @@ class nsDeviceSensors : public nsIDeviceSensors,
 
   void FireDOMLightEvent(mozilla::dom::EventTarget* aTarget, double value);
 
-  void FireDOMProximityEvent(mozilla::dom::EventTarget* aTarget, double aValue,
-                             double aMin, double aMax);
+  void MaybeFireDOMUserProximityEvent(mozilla::dom::EventTarget* aTarget,
+                                      double aValue, double aMax);
 
   void FireDOMUserProximityEvent(mozilla::dom::EventTarget* aTarget,
                                  bool aNear);

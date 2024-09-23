@@ -11,8 +11,7 @@ with compiled code (see "Restrictions" below). Artifacts are typically
 fetched from `mozilla-central <https://hg.mozilla.org/mozilla-central/>`__.
 
 To automatically download and use pre-built binary artifacts, add the
-following lines into your
-`mozconfig <https://developer.mozilla.org/docs/Mozilla/Developer_guide/Build_Instructions/Configuring_Build_Options#Using_a_.mozconfig_Configuration_File>`__
+following lines into your :ref:`mozconfig <Configuring Build Options>`
 file:
 
 .. code-block:: shell
@@ -35,6 +34,9 @@ artifacts), add ``ac_add_options --enable-debug`` to your mozconfig file
 
    # Automatically download and use compiled C++ components:
    ac_add_options --enable-artifact-builds
+
+   # Download debug info so that stack traces refers to file and columns rather than library and Hex address
+   ac_add_options --enable-artifact-build-symbols
 
    # Write build artifacts to:
    mk_add_options MOZ_OBJDIR=./objdir-frontend-debug-artifact
@@ -100,6 +102,26 @@ override the default behavior of finding a recent candidate build with
 the required artifacts, and will cause builds to fail if the specified
 revision does not contain the required artifacts.
 
+Pulling artifacts from local build / remote URL
+-----------------------------------------------
+
+If you need to do an artifact build against a local build or one hosted
+somewhere, you need to make use of respectively ``MOZ_ARTIFACT_FILE`` or
+``MOZ_ARTIFACT_URL``. In case of a local build, you will have to make sure you
+
+- produce a package using ``./mach package``
+- point to it via ``MOZ_ARTIFACT_FILE=path/to/firefox.tar.bz2`` on your
+  ``./mach build`` command line. The path needs to be absolute, and the package
+  is under your object directory within ``dist/``.
+
+Using ``MOZ_ARTIFACT_URL`` will download the package at the given URL and then
+follow the same process as the local build case.
+
+``MOZ_ARTIFACT_FILE`` and ``MOZ_ARTIFACT_URL`` only provide the package, they
+do not provide sibling artifacts including the test artifacts, extra archives
+such as XPT data, etc.  In general, prefer ``MOZ_ARTIFACT_REVISION``, which
+will can provide these sibling artifacts.
+
 Restrictions
 ------------
 
@@ -113,7 +135,7 @@ Things that are supported
 -------------------------
 
 -  Modifying JavaScript, (X)HTML, and CSS resources; and string
-   properties and DTD and FTL files.
+   properties and FTL files.
 -  Modifying Android Java code, resources, and strings.
 -  Running mochitests and xpcshell tests.
 -  Modifying ``Scalars.yaml`` to add Scalar Telemetry (since {{
@@ -127,8 +149,11 @@ artifact builds.
 Things that are not supported
 -----------------------------
 
--  Products other than Firefox for Desktop and Firefox for Android are
-   not supported and are unlikely to ever be supported.
+-  Support for products other than Firefox for Desktop and
+   Android are not supported and are unlikely to ever be supported.
+   Other projects like Thunderbird may provide
+   `their own support <https://developer.thunderbird.net/thunderbird-development/building-thunderbird/artifact-builds>`__
+   for artifact builds.
 -  You cannot modify C, C++, or Rust source code anywhere in the tree.
    If it’s compiled to machine code, it can't be changed.
 -  You cannot modify ``histograms.json`` to add Telemetry histogram
@@ -166,4 +191,3 @@ Discussion is best started on the `dev-builds mailing
 list <https://lists.mozilla.org/listinfo/dev-builds>`__. Questions are
 best raised in `#build <https://chat.mozilla.org/#/room/#build:mozilla.org>`__ on `Matrix <https://chat.mozilla.org/>`__. Please
 file bugs in *Firefox Build System :: General*, blocking  `Bug 901840 <https://bugzilla.mozilla.org/show_bug.cgi?id=901840>`__
-

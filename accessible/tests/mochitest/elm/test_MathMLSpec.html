@@ -140,11 +140,10 @@
       testElm("mroot", obj);
 
       // ////////////////////////////////////////////////////////////////////////
-      // mfenced
+      // Deprecated mfenced element (treated as an mrow).
 
       obj = {
-        role: ROLE_MATHML_FENCED,
-        attributes: { open: "]", close: "[", separators: "." },
+        role: ROLE_MATHML_ROW,
       };
       testElm("mfenced", obj);
 
@@ -351,7 +350,6 @@
 
     SimpleTest.waitForExplicitFinish();
     addA11yLoadEvent(doTest);
-    setTestPluginEnabledState(SpecialPowers.Ci.nsIPluginTag.STATE_ENABLED);
 
     </script>
 </head>

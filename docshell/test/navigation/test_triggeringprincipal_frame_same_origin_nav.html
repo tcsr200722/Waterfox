@@ -38,9 +38,9 @@ const TRIGGERING_PRINCIPAL_URI =
 const LOADING_PRINCIPAL_URI = TRIGGERING_PRINCIPAL_URI;
 
 function receiveMessage(event) {
-  is(event.data.triggeringPrincipalURI, TRIGGERING_PRINCIPAL_URI,
+  is(event.data.triggeringPrincipalURI.split("?")[0], TRIGGERING_PRINCIPAL_URI,
      "TriggeringPrincipal should be the parent iframe");
-  is(event.data.loadingPrincipalURI, TRIGGERING_PRINCIPAL_URI,
+  is(event.data.loadingPrincipalURI.split("?")[0], TRIGGERING_PRINCIPAL_URI,
      "LoadingPrincipal should be the parent iframe");
 
   window.removeEventListener("message", receiveMessage);
@@ -49,6 +49,7 @@ function receiveMessage(event) {
 
 function performNavigation() {
   testframe.removeEventListener("load", performNavigation);
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   testframe.setAttribute("src", "http://example.com/tests/docshell/test/navigation/file_triggeringprincipal_subframe_same_origin_nav.html");
 }
 

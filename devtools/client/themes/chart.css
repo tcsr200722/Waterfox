@@ -69,8 +69,8 @@
   transition: all 0.1s ease-out;
 }
 
-.pie-chart-slice:not(:hover):not([focused]),
-.pie-chart-slice:not(:hover):not([focused]) + .pie-chart-label {
+.pie-chart-slice:not(:hover, [focused]),
+.pie-chart-slice:not(:hover, [focused]) + .pie-chart-label {
   transform: none !important;
 }
 
@@ -87,16 +87,16 @@
   cursor: pointer;
 }
 
-.table-chart-grid:hover > .table-chart-row {
+.table-chart-grid:hover .table-chart-row {
   transition: opacity 0.1s ease-in-out;
 }
 
-.table-chart-grid:not(:hover) > .table-chart-row {
+.table-chart-grid:not(:hover) .table-chart-row {
   transition: opacity 0.2s ease-in-out;
 }
 
-.generic-chart-container:hover > .table-chart-grid:hover > .table-chart-row:not(:hover),
-.generic-chart-container:hover ~ .table-chart-container > .table-chart-grid > .table-chart-row:not([focused]) {
+.generic-chart-container:hover > .table-chart-grid:hover .table-chart-row:not(:hover),
+.generic-chart-container:hover ~ .table-chart-container > .table-chart-grid .table-chart-row:not([focused]) {
   opacity: 0.4;
 }
 
@@ -118,7 +118,7 @@
 }
 
 .table-chart-totals {
-  border-top: 1px solid var(--theme-text-color-alt); /* Grey foreground text */
+  border-top: 1px solid var(--theme-splitter-color);
 }
 
 .table-chart-summary-label {

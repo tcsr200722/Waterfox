@@ -7,17 +7,14 @@
 #ifndef mozilla_dom_indexeddb_actorsparent_h__
 #define mozilla_dom_indexeddb_actorsparent_h__
 
-#include "nscore.h"
-
-#include <stdint.h>
-
-#include "mozilla/dom/indexedDB/PermissionRequestBase.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/dom/PBrowserParent.h"
+#include "mozilla/RefPtr.h"
+#include "nsIPermissionManager.h"
 
 class nsIPrincipal;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Element;
 class FileHandleThreadPool;
@@ -30,16 +27,22 @@ class Client;
 
 namespace indexedDB {
 
-class FileManager;
+enum class PermissionValue {
+  kPermissionAllowed = nsIPermissionManager::ALLOW_ACTION,
+  kPermissionDenied = nsIPermissionManager::DENY_ACTION,
+  kPermissionPrompt = nsIPermissionManager::PROMPT_ACTION
+};
+
 class LoggingInfo;
 class PBackgroundIDBFactoryParent;
 class PBackgroundIndexedDBUtilsParent;
 
 already_AddRefed<PBackgroundIDBFactoryParent> AllocPBackgroundIDBFactoryParent(
-    const LoggingInfo& aLoggingInfo);
+    const LoggingInfo& aLoggingInfo, const nsACString& aSystemLocale);
 
 bool RecvPBackgroundIDBFactoryConstructor(PBackgroundIDBFactoryParent* aActor,
-                                          const LoggingInfo& aLoggingInfo);
+                                          const LoggingInfo& aLoggingInfo,
+                                          const nsACString& aSystemLocale);
 
 bool DeallocPBackgroundIDBFactoryParent(PBackgroundIDBFactoryParent* aActor);
 
@@ -54,25 +57,7 @@ RefPtr<mozilla::dom::quota::Client> CreateQuotaClient();
 
 FileHandleThreadPool* GetFileHandleThreadPool();
 
-class PermissionRequestHelper final : public PermissionRequestBase {
- public:
-  PermissionRequestHelper(
-      Element* aOwnerElement, nsIPrincipal* aPrincipal,
-      PBrowserParent::IndexedDBPermissionRequestResolver& aResolver)
-      : PermissionRequestBase(aOwnerElement, aPrincipal),
-        mResolver(aResolver) {}
-
- protected:
-  ~PermissionRequestHelper() override = default;
-
- private:
-  PBrowserParent::IndexedDBPermissionRequestResolver mResolver;
-
-  void OnPromptComplete(PermissionValue aPermissionValue) override;
-};
-
 }  // namespace indexedDB
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_indexeddb_actorsparent_h__

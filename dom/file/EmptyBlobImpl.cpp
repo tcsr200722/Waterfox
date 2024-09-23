@@ -7,30 +7,28 @@
 #include "EmptyBlobImpl.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 already_AddRefed<BlobImpl> EmptyBlobImpl::CreateSlice(
     uint64_t aStart, uint64_t aLength, const nsAString& aContentType,
-    ErrorResult& aRv) {
+    ErrorResult& aRv) const {
   MOZ_ASSERT(!aStart && !aLength);
   RefPtr<BlobImpl> impl = new EmptyBlobImpl(aContentType);
   return impl.forget();
 }
 
 void EmptyBlobImpl::CreateInputStream(nsIInputStream** aStream,
-                                      ErrorResult& aRv) {
+                                      ErrorResult& aRv) const {
   if (NS_WARN_IF(!aStream)) {
     aRv.Throw(NS_ERROR_FAILURE);
     return;
   }
 
-  nsresult rv = NS_NewCStringInputStream(aStream, EmptyCString());
+  nsresult rv = NS_NewCStringInputStream(aStream, ""_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     aRv.Throw(rv);
     return;
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

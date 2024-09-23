@@ -10,7 +10,7 @@
 #include "mozilla/dom/ClientOpPromise.h"
 #include "mozilla/dom/ClientThing.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
-#include "mozilla/Result.h"
+#include "mozilla/ResultVariant.h"
 #include "mozilla/Variant.h"
 
 #ifdef XP_WIN
@@ -24,9 +24,10 @@ class nsISerialEventTarget;
 class nsPIDOMWindowInner;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
-class ClientClaimArgs;
 class ClientControlledArgs;
 class ClientFocusArgs;
 class ClientGetInfoAndStateArgs;
@@ -60,6 +61,7 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
 
   ClientInfo mClientInfo;
   Maybe<ServiceWorkerDescriptor> mController;
+  Maybe<nsCOMPtr<nsIPrincipal>> mPrincipal;
 
   // Contained a de-duplicated list of ServiceWorker scope strings
   // for which this client has called navigator.serviceWorker.register().
@@ -77,7 +79,7 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
 
   nsIGlobalObject* GetGlobal() const;
 
-  void MaybeCreateInitialDocument();
+  Result<bool, ErrorResult> MaybeCreateInitialDocument();
 
   Result<ClientState, ErrorResult> SnapshotWindowState();
 
@@ -101,6 +103,10 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
   void Freeze();
 
   void Thaw();
+
+  void EvictFromBFCache();
+
+  RefPtr<ClientOpPromise> EvictFromBFCacheOp();
 
   const ClientInfo& Info() const;
 
@@ -137,11 +143,11 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
   // clients.
   void NoteDOMContentLoaded();
 
-  RefPtr<ClientOpPromise> Focus(const ClientFocusArgs& aArgs);
+  // TODO: Convert Focus() to MOZ_CAN_RUN_SCRIPT
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY RefPtr<ClientOpPromise> Focus(
+      const ClientFocusArgs& aArgs);
 
   RefPtr<ClientOpPromise> PostMessage(const ClientPostMessageArgs& aArgs);
-
-  RefPtr<ClientOpPromise> Claim(const ClientClaimArgs& aArgs);
 
   RefPtr<ClientOpPromise> GetInfoAndState(
       const ClientGetInfoAndStateArgs& aArgs);
@@ -165,6 +171,8 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
   void NoteCalledRegisterForServiceWorkerScope(const nsACString& aScope);
 
   bool CalledRegisterForServiceWorkerScope(const nsACString& aScope);
+
+  nsIPrincipal* GetPrincipal();
 };
 
 inline void ImplCycleCollectionUnlink(UniquePtr<ClientSource>& aField) {

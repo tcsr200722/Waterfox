@@ -9,11 +9,10 @@
 #include <algorithm>
 
 #include "debugger/DebugAPI.h"
-#include "jit/BaselineJIT.h"
-#include "jit/Ion.h"
 #include "vm/EnvironmentObject.h"
+#include "vm/JSContext.h"
 
-#include "jit/JitFrames-inl.h"
+#include "jit/JSJitFrameIter-inl.h"
 #include "vm/Stack-inl.h"
 
 using namespace js;
@@ -49,10 +48,6 @@ void BaselineFrame::trace(JSTracer* trc, const JSJitFrameIter& frameIterator) {
     TraceRoot(trc, returnValue().address(), "baseline-rval");
   }
 
-  if (isEvalFrame() && script()->isDirectEvalInFunction()) {
-    TraceRoot(trc, evalNewTargetAddress(), "baseline-evalNewTarget");
-  }
-
   if (hasArgsObj()) {
     TraceRoot(trc, &argsObj_, "baseline-args-obj");
   }
@@ -73,26 +68,24 @@ void BaselineFrame::trace(JSTracer* trc, const JSJitFrameIter& frameIterator) {
   // NB: It is possible that numValueSlots could be zero, even if nfixed is
   // nonzero.  This is the case when we're initializing the environment chain or
   // failed the prologue stack check.
-  if (numValueSlots == 0) {
-    return;
-  }
+  if (numValueSlots > 0) {
+    MOZ_ASSERT(nfixed <= numValueSlots);
 
-  MOZ_ASSERT(nfixed <= numValueSlots);
+    if (nfixed == nlivefixed) {
+      // All locals are live.
+      TraceLocals(this, trc, 0, numValueSlots);
+    } else {
+      // Trace operand stack.
+      TraceLocals(this, trc, nfixed, numValueSlots);
 
-  if (nfixed == nlivefixed) {
-    // All locals are live.
-    TraceLocals(this, trc, 0, numValueSlots);
-  } else {
-    // Trace operand stack.
-    TraceLocals(this, trc, nfixed, numValueSlots);
+      // Clear dead block-scoped locals.
+      while (nfixed > nlivefixed) {
+        unaliasedLocal(--nfixed).setUndefined();
+      }
 
-    // Clear dead block-scoped locals.
-    while (nfixed > nlivefixed) {
-      unaliasedLocal(--nfixed).setUndefined();
+      // Trace live locals.
+      TraceLocals(this, trc, 0, nlivefixed);
     }
-
-    // Trace live locals.
-    TraceLocals(this, trc, 0, nlivefixed);
   }
 
   if (auto* debugEnvs = script->realm()->debugEnvs()) {
@@ -100,28 +93,31 @@ void BaselineFrame::trace(JSTracer* trc, const JSJitFrameIter& frameIterator) {
   }
 }
 
+bool BaselineFrame::uninlineIsProfilerSamplingEnabled(JSContext* cx) {
+  return cx->isProfilerSamplingEnabled();
+}
+
 bool BaselineFrame::initFunctionEnvironmentObjects(JSContext* cx) {
   return js::InitFunctionEnvironmentObjects(cx, this);
 }
 
-bool BaselineFrame::pushVarEnvironment(JSContext* cx, HandleScope scope) {
+bool BaselineFrame::pushVarEnvironment(JSContext* cx, Handle<Scope*> scope) {
   return js::PushVarEnvironmentObject(cx, scope, this);
 }
 
 void BaselineFrame::setInterpreterFields(JSScript* script, jsbytecode* pc) {
   uint32_t pcOffset = script->pcToOffset(pc);
-  JitScript* jitScript = script->jitScript();
   interpreterScript_ = script;
   interpreterPC_ = pc;
-  interpreterICEntry_ = jitScript->interpreterICEntryFromPCOffset(pcOffset);
+  MOZ_ASSERT(icScript_);
+  interpreterICEntry_ = icScript_->interpreterICEntryFromPCOffset(pcOffset);
 }
 
 void BaselineFrame::setInterpreterFieldsForPrologue(JSScript* script) {
-  JitScript* jitScript = script->jitScript();
   interpreterScript_ = script;
   interpreterPC_ = script->code();
-  if (jitScript->numICEntries() > 0) {
-    interpreterICEntry_ = &jitScript->icEntry(0);
+  if (icScript_->numICEntries() > 0) {
+    interpreterICEntry_ = &icScript_->icEntry(0);
   } else {
     // If the script does not have any ICEntries (possible for non-function
     // scripts) the interpreterICEntry_ field won't be used. Just set it to
@@ -147,6 +143,8 @@ bool BaselineFrame::initForOsr(InterpreterFrame* fp, uint32_t numStackValues) {
   if (fp->hasReturnValue()) {
     setReturnValue(fp->returnValue());
   }
+
+  icScript_ = fp->script()->jitScript()->icScript();
 
   JSContext* cx =
       fp->script()->runtimeFromMainThread()->mainContextFromOwnThread();

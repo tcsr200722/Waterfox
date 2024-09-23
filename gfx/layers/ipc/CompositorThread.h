@@ -7,24 +7,39 @@
 #define mozilla_layers_CompositorThread_h
 
 #include "nsISupportsImpl.h"
-#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
+#include "nsIThread.h"
 
-class nsISerialEventTarget;
+namespace mozilla::baseprofiler {
+class BaseProfilerThreadId;
+}
+using ProfilerThreadId = mozilla::baseprofiler::BaseProfilerThreadId;
 class nsIThread;
 
 namespace mozilla {
-class AbstractThread;
 namespace layers {
 
 class CompositorThreadHolder final {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_MAIN_THREAD_DESTRUCTION(
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
       CompositorThreadHolder)
 
  public:
   CompositorThreadHolder();
 
-  nsISerialEventTarget* GetCompositorThread() const {
-    return mCompositorThread;
+  nsIThread* GetCompositorThread() const { return mCompositorThread; }
+
+  /**
+   * Returns true if the calling thread is the compositor thread. This works
+   * even if the CompositorThread has begun to shutdown.
+   */
+  bool IsInThread() {
+    bool rv = false;
+    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mCompositorThread->IsOnCurrentThread(&rv)));
+    return rv;
+  }
+
+  nsresult Dispatch(already_AddRefed<nsIRunnable> event,
+                    uint32_t flags = nsIEventTarget::DISPATCH_NORMAL) {
+    return mCompositorThread->Dispatch(std::move(event), flags);
   }
 
   static CompositorThreadHolder* GetSingleton();
@@ -45,18 +60,20 @@ class CompositorThreadHolder final {
   // Returns true if the calling thread is the compositor thread.
   static bool IsInCompositorThread();
 
+  // Thread id to use as a MarkerThreadId option for profiler markers.
+  static ProfilerThreadId GetThreadId();
+
  private:
   ~CompositorThreadHolder();
 
   const nsCOMPtr<nsIThread> mCompositorThread;
-  const RefPtr<AbstractThread> mCompositorAbstractThread;
 
   static already_AddRefed<nsIThread> CreateCompositorThread();
 
   friend class CompositorBridgeParent;
 };
 
-nsISerialEventTarget* CompositorThread();
+nsIThread* CompositorThread();
 
 }  // namespace layers
 }  // namespace mozilla

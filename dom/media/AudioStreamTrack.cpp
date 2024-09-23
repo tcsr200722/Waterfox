@@ -8,20 +8,23 @@
 #include "MediaTrackGraph.h"
 #include "nsContentUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-void AudioStreamTrack::AddAudioOutput(void* aKey) {
+RefPtr<GenericPromise> AudioStreamTrack::AddAudioOutput(
+    void* aKey, AudioDeviceInfo* aSink) {
   if (Ended()) {
-    return;
+    return GenericPromise::CreateAndResolve(true, __func__);
   }
-  mTrack->AddAudioOutput(aKey);
+
+  mTrack->AddAudioOutput(aKey, aSink);
+  return mTrack->Graph()->NotifyWhenDeviceStarted(aSink);
 }
 
 void AudioStreamTrack::RemoveAudioOutput(void* aKey) {
   if (Ended()) {
     return;
   }
+
   mTrack->RemoveAudioOutput(aKey);
 }
 
@@ -29,11 +32,15 @@ void AudioStreamTrack::SetAudioOutputVolume(void* aKey, float aVolume) {
   if (Ended()) {
     return;
   }
+
   mTrack->SetAudioOutputVolume(aKey, aVolume);
 }
 
 void AudioStreamTrack::GetLabel(nsAString& aLabel, CallerType aCallerType) {
-  if (nsContentUtils::ResistFingerprinting(aCallerType)) {
+  nsIGlobalObject* global =
+      GetParentObject() ? GetParentObject()->AsGlobal() : nullptr;
+  if (nsContentUtils::ShouldResistFingerprinting(aCallerType, global,
+                                                 RFPTarget::StreamTrackLabel)) {
     aLabel.AssignLiteral("Internal Microphone");
     return;
   }
@@ -45,5 +52,4 @@ already_AddRefed<MediaStreamTrack> AudioStreamTrack::CloneInternal() {
                                         ReadyState(), Muted(), mConstraints));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

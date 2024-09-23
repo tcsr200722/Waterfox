@@ -17,7 +17,6 @@
 #include "mozilla/EventForwards.h"  // for Modifiers
 #include "mozilla/layers/APZThreadUtils.h"
 #include "mozilla/layers/MatrixMessage.h"        // for MatrixMessage
-#include "mozilla/layers/RepaintRequest.h"       // for RepaintRequest
 #include "mozilla/layers/ScrollableLayerGuid.h"  // for ScrollableLayerGuid, etc
 #include "nsISupportsImpl.h"
 
@@ -26,6 +25,9 @@ namespace mozilla {
 class Runnable;
 
 namespace layers {
+
+struct DoubleTapToZoomMetrics;
+struct RepaintRequest;
 
 class GeckoContentController {
  public:
@@ -39,8 +41,7 @@ class GeckoContentController {
    *  MatrixMessage for each layers id in the current APZ tree, along with the
    * corresponding transform.
    */
-  virtual void NotifyLayerTransforms(
-      const nsTArray<MatrixMessage>& aTransforms) = 0;
+  virtual void NotifyLayerTransforms(nsTArray<MatrixMessage>&& aTransforms) = 0;
 
   /**
    * Requests a paint of the given RepaintRequest |aRequest| from Gecko.
@@ -58,9 +59,10 @@ class GeckoContentController {
    * current scroll offset.
    */
   MOZ_CAN_RUN_SCRIPT
-  virtual void HandleTap(TapType aType, const LayoutDevicePoint& aPoint,
-                         Modifiers aModifiers, const ScrollableLayerGuid& aGuid,
-                         uint64_t aInputBlockId) = 0;
+  virtual void HandleTap(
+      TapType aType, const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+      const ScrollableLayerGuid& aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapTooZoomMetrics) = 0;
 
   /**
    * When the apz.allow_zooming pref is set to false, the APZ will not
@@ -74,6 +76,7 @@ class GeckoContentController {
    *        of the pinch.
    * @param aGuid The guid of the APZ that is detecting the pinch. This is
    *        generally the root APZC for the layers id.
+   * @param aFocusPoint The focus point of the pinch event.
    * @param aSpanChange For the START or END event, this is always 0.
    *        For a SCALE event, this is the difference in span between the
    *        previous state and the new state.
@@ -81,6 +84,7 @@ class GeckoContentController {
    */
   virtual void NotifyPinchGesture(PinchGestureInput::PinchGestureType aType,
                                   const ScrollableLayerGuid& aGuid,
+                                  const LayoutDevicePoint& aFocusPoint,
                                   LayoutDeviceCoord aSpanChange,
                                   Modifiers aModifiers) = 0;
 
@@ -111,9 +115,14 @@ class GeckoContentController {
    * |aChange| identifies the type of state change
    * |aArg| is used by some state changes to pass extra information (see
    *        the documentation for each state change above)
+   * |aInputBlockId| is populated for the |eStartTouch| and |eEndTouch|
+   *                 state changes and identifies the input block of the
+   *                 gesture that triggers the state change.
    */
   virtual void NotifyAPZStateChange(const ScrollableLayerGuid& aGuid,
-                                    APZStateChange aChange, int aArg = 0) {}
+                                    APZStateChange aChange, int aArg = 0,
+                                    Maybe<uint64_t> aInputBlockId = Nothing()) {
+  }
 
   /**
    * Notify content of a MozMouseScrollFailed event.
@@ -145,9 +154,14 @@ class GeckoContentController {
 
   virtual void CancelAutoscroll(const ScrollableLayerGuid& aGuid) = 0;
 
-  virtual void UpdateOverscrollVelocity(float aX, float aY,
+  virtual void NotifyScaleGestureComplete(const ScrollableLayerGuid& aGuid,
+                                          float aScale) = 0;
+
+  virtual void UpdateOverscrollVelocity(const ScrollableLayerGuid& aGuid,
+                                        float aX, float aY,
                                         bool aIsRootContent) {}
-  virtual void UpdateOverscrollOffset(float aX, float aY, bool aIsRootContent) {
+  virtual void UpdateOverscrollOffset(const ScrollableLayerGuid& aGuid,
+                                      float aX, float aY, bool aIsRootContent) {
   }
 
   GeckoContentController() = default;
@@ -161,6 +175,8 @@ class GeckoContentController {
    * Whether this is RemoteContentController.
    */
   virtual bool IsRemote() { return false; }
+
+  virtual PresShell* GetTopLevelPresShell() const { return nullptr; };
 
  protected:
   // Protected destructor, to discourage deletion outside of Release():

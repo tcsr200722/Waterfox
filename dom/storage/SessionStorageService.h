@@ -1,47 +1,55 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SessionStorageService_h
-#define mozilla_dom_SessionStorageService_h
+#ifndef DOM_STORAGE_SESSIONSTORAGESERVICE_H_
+#define DOM_STORAGE_SESSIONSTORAGESERVICE_H_
 
-#include "mozilla/UniquePtr.h"
-#include "nsIObserver.h"
-#include "nsISupportsImpl.h"
-#include "nsPointerHashKeys.h"
-#include "nsTHashtable.h"
+#include "nsISessionStorageService.h"
+#include "mozilla/Result.h"
+#include "mozilla/dom/FlippedOnce.h"
+#include "mozilla/dom/PBackgroundSessionStorageServiceChild.h"
 
 namespace mozilla {
+
+struct CreateIfNonExistent;
+
 namespace dom {
 
-class SessionStorageManager;
-
-class SessionStorageService final : public nsIObserver {
+class SessionStorageService final
+    : public nsISessionStorageService,
+      public PBackgroundSessionStorageServiceChild {
  public:
+  NS_DECL_ISUPPORTS
+  NS_DECL_NSISESSIONSTORAGESERVICE
+
   SessionStorageService();
 
-  static SessionStorageService* Get();
+  // Singleton Boilerplate
+  static mozilla::Result<RefPtr<SessionStorageService>, nsresult> Acquire(
+      const CreateIfNonExistent&);
 
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSIOBSERVER
-
-  void RegisterSessionStorageManager(SessionStorageManager* aManager);
-  void UnregisterSessionStorageManager(SessionStorageManager* aManager);
+  // Can return null if the service hasn't be created yet or after
+  // XPCOMShutdown.
+  static RefPtr<SessionStorageService> Acquire();
 
  private:
   ~SessionStorageService();
 
-  static void ShutDown();
+  mozilla::Result<Ok, nsresult> Init();
 
-  void SendSessionStorageDataToParentProcess();
+  void Shutdown();
 
-  static RefPtr<SessionStorageService> sService;
-  static bool sShutdown;
+  // IPDL methods are only called by IPDL.
+  void ActorDestroy(ActorDestroyReason aWhy) override;
 
-  nsTHashtable<nsPtrHashKey<SessionStorageManager>> mManagers;
+  FlippedOnce<false> mInitialized;
+  FlippedOnce<false> mActorDestroyed;
 };
 
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SessionStorageService_h
+#endif /* DOM_STORAGE_SESSIONSTORAGESERVICE_H_ */

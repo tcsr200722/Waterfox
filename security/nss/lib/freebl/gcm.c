@@ -491,9 +491,12 @@ gcmHash_Reset(gcmHashContext *ghash, const unsigned char *AAD,
     SECStatus rv;
 
     // Limit AADLen in accordance with SP800-38D
-    if (sizeof(AADLen) >= 8 && AADLen > (1ULL << 61) - 1) {
-        PORT_SetError(SEC_ERROR_INPUT_LEN);
-        return SECFailure;
+    if (sizeof(AADLen) >= 8) {
+        unsigned long long AADLen_ull = AADLen;
+        if (AADLen_ull > (1ULL << 61) - 1) {
+            PORT_SetError(SEC_ERROR_INPUT_LEN);
+            return SECFailure;
+        }
     }
 
     ghash->cLen = 0;
@@ -593,15 +596,19 @@ GCM_CreateContext(void *context, freeblCipherFunc cipher,
     if (rv != SECSuccess) {
         goto loser;
     }
+    PORT_Memset(H, 0, AES_BLOCK_SIZE);
     gcm->ctr_context_init = PR_TRUE;
     return gcm;
 
 loser:
+    PORT_Memset(H, 0, AES_BLOCK_SIZE);
     if (ghash && ghash->mem) {
-        PORT_Free(ghash->mem);
+        void *mem = ghash->mem;
+        PORT_Memset(ghash, 0, sizeof(gcmHashContext));
+        PORT_Free(mem);
     }
     if (gcm) {
-        PORT_Free(gcm);
+        PORT_ZFree(gcm, sizeof(GCMContext));
     }
     return NULL;
 }
@@ -675,9 +682,11 @@ gcm_InitCounter(GCMContext *gcm, const unsigned char *iv, unsigned int ivLen,
         goto loser;
     }
 
+    PORT_Memset(&ctrParams, 0, sizeof ctrParams);
     return SECSuccess;
 
 loser:
+    PORT_Memset(&ctrParams, 0, sizeof ctrParams);
     if (freeCtr) {
         CTR_DestroyContext(&gcm->ctr_context, PR_FALSE);
     }
@@ -687,13 +696,15 @@ loser:
 void
 GCM_DestroyContext(GCMContext *gcm, PRBool freeit)
 {
-    /* these two are statically allocated and will be freed when we free
+    void *mem = gcm->ghash_context->mem;
+    /* ctr_context is statically allocated and will be freed when we free
      * gcm. call their destroy functions to free up any locally
      * allocated data (like mp_int's) */
     if (gcm->ctr_context_init) {
         CTR_DestroyContext(&gcm->ctr_context, PR_FALSE);
     }
-    PORT_Free(gcm->ghash_context->mem);
+    PORT_Memset(gcm->ghash_context, 0, sizeof(gcmHashContext));
+    PORT_Free(mem);
     PORT_Memset(&gcm->tagBits, 0, sizeof(gcm->tagBits));
     PORT_Memset(gcm->tagKey, 0, sizeof(gcm->tagKey));
     if (freeit) {

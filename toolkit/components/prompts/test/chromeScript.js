@@ -1,8 +1,11 @@
-/* eslint-env mozilla/frame-script */
+/* eslint-env mozilla/chrome-script */
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { clearInterval, setInterval } = ChromeUtils.import(
-  "resource://gre/modules/Timer.jsm"
+const { clearInterval, setInterval, setTimeout } = ChromeUtils.importESModule(
+  "resource://gre/modules/Timer.sys.mjs"
+);
+
+const { BrowserTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/BrowserTestUtils.sys.mjs"
 );
 
 // Define these to make EventUtils happy.
@@ -16,89 +19,37 @@ Services.scriptloader.loadSubScript(
 );
 
 addMessageListener("handlePrompt", msg => {
-  handlePromptWhenItAppears(msg.action, msg.isTabModal, msg.isSelect);
+  handlePromptWhenItAppears(msg.action, msg.modalType, msg.isSelect);
 });
 
-function handlePromptWhenItAppears(action, isTabModal, isSelect) {
-  let interval = setInterval(() => {
-    if (handlePrompt(action, isTabModal, isSelect)) {
-      clearInterval(interval);
-    }
-  }, 100);
-}
-
-function checkTabModal(prompt, browser) {
-  let doc = browser.ownerDocument;
-
-  let { bottom: toolboxBottom } = doc
-    .getElementById("navigator-toolbox")
-    .getBoundingClientRect();
-
-  let { mainContainer } = prompt.ui;
-
-  let { x, y } = mainContainer.getBoundingClientRect();
-  ok(y > 0, "Container should have y > 0");
-  // Inset by 1px since the corner point doesn't return the frame due to the
-  // border-radius.
-  is(
-    doc.elementFromPoint(x + 1, y + 1).parentNode,
-    mainContainer,
-    "Check tabmodalprompt is visible"
-  );
-
-  info("Click to the left of the dialog over the content area");
-  isnot(
-    doc.elementFromPoint(x - 10, y + 50),
-    browser,
-    "Check clicks on the content area don't go to the browser"
-  );
-  is(
-    doc.elementFromPoint(x - 10, y + 50).parentNode,
-    prompt.element,
-    "Check clicks on the content area go to the prompt dialog background"
-  );
-
-  if (prompt.args.modalType == Ci.nsIPrompt.MODAL_TYPE_TAB) {
-    ok(
-      y <= toolboxBottom - 5,
-      "Dialog should overlap the toolbox by at least 5px"
+async function handlePromptWhenItAppears(action, modalType, isSelect) {
+  if (!(await handlePrompt(action, modalType, isSelect))) {
+    setTimeout(
+      () => this.handlePromptWhenItAppears(action, modalType, isSelect),
+      100
     );
-  } else {
-    ok(y >= toolboxBottom, "Dialog must not overlap with toolbox.");
   }
-
-  ok(
-    browser.hasAttribute("tabmodalPromptShowing"),
-    "Check browser has @tabmodalPromptShowing"
-  );
 }
 
-function handlePrompt(action, isTabModal, isSelect) {
+async function handlePrompt(action, modalType, isSelect) {
   let ui;
+  let browserWin = Services.wm.getMostRecentWindow("navigator:browser");
 
-  if (isTabModal) {
-    let browserWin = Services.wm.getMostRecentWindow("navigator:browser");
-    let gBrowser = browserWin.gBrowser;
-    let promptManager = gBrowser.getTabModalPromptBox(gBrowser.selectedBrowser);
-    let prompts = promptManager.listPrompts();
-    if (!prompts.length) {
-      return false; // try again in a bit
-    }
-
-    ui = prompts[0].Dialog.ui;
-    checkTabModal(prompts[0], gBrowser.selectedBrowser);
-  } else {
-    let doc = getDialogDoc();
-    if (!doc) {
-      return false; // try again in a bit
-    }
-
-    if (isSelect) {
-      ui = doc;
-    } else {
-      ui = doc.defaultView.Dialog.ui;
-    }
+  let doc = getDialogDoc();
+  if (!doc) {
+    return false; // try again in a bit
   }
+
+  if (isSelect) {
+    ui = doc;
+  } else {
+    ui = doc.defaultView.Dialog.ui;
+  }
+
+  let dialogClosed = BrowserTestUtils.waitForEvent(
+    browserWin,
+    "DOMModalDialogClosed"
+  );
 
   let promptState;
   if (isSelect) {
@@ -108,6 +59,13 @@ function handlePrompt(action, isTabModal, isSelect) {
     promptState = getPromptState(ui);
     dismissPrompt(ui, action);
   }
+
+  // Wait until the prompt has been closed before sending callback msg.
+  // Unless the test explicitly doesn't request a button click.
+  if (action.buttonClick !== "none") {
+    await dialogClosed;
+  }
+
   sendAsyncMessage("promptHandled", { promptState });
   return true;
 }
@@ -116,7 +74,7 @@ function getSelectState(ui) {
   let listbox = ui.getElementById("list");
 
   let state = {};
-  state.msg = ui.getElementById("info.txt").value;
+  state.msg = ui.getElementById("info.txt").firstChild.textContent;
   state.selectedIndex = listbox.selectedIndex;
   state.items = [];
 
@@ -131,14 +89,14 @@ function getSelectState(ui) {
 function getPromptState(ui) {
   let state = {};
   state.msg = ui.infoBody.textContent;
-  state.titleHidden = ui.infoTitle.getAttribute("hidden") == "true";
+  state.infoRowHidden = ui.infoRow?.hidden || false;
+  state.titleHidden = ui.infoTitle.hidden;
   state.textHidden = ui.loginContainer.hidden;
   state.passHidden = ui.password1Container.hidden;
   state.checkHidden = ui.checkboxContainer.hidden;
   state.checkMsg = state.checkHidden ? "" : ui.checkbox.label;
   state.checked = state.checkHidden ? false : ui.checkbox.checked;
-  // tab-modal prompts don't have an infoIcon
-  state.iconClass = ui.infoIcon ? ui.infoIcon.className : null;
+  state.iconClass = ui.infoIcon.className;
   state.textValue = ui.loginTextbox.value;
   state.passValue = ui.password1Textbox.value;
 
@@ -193,6 +151,13 @@ function getPromptState(ui) {
     let wbc = treeOwner.getInterface(Ci.nsIWebBrowserChrome);
     state.isWindowModal = wbc.isWindowModal();
   }
+
+  // Check the dialog is a common dialog document and has been embedded.
+  let isEmbedded = !!ui.prompt?.docShell?.chromeEventHandler;
+  let isCommonDialogDoc =
+    getDialogDoc()?.location.href.includes("commonDialog.xhtml");
+  state.isSubDialogPrompt = isCommonDialogDoc && isEmbedded;
+  state.showCallerOrigin = ui.prompt.args.showCallerOrigin;
 
   return state;
 }
@@ -279,7 +244,7 @@ function getDialogDoc() {
       if (childDocShell.busyFlags != Ci.nsIDocShell.BUSY_FLAGS_NONE) {
         continue;
       }
-      var childDoc = childDocShell.contentViewer.DOMDocument;
+      var childDoc = childDocShell.docViewer.DOMDocument;
 
       if (
         childDoc.location.href !=

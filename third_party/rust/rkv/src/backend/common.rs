@@ -27,9 +27,10 @@ pub enum DatabaseFlags {
     REVERSE_KEY,
     #[cfg(feature = "db-dup-sort")]
     DUP_SORT,
+    #[cfg(feature = "db-dup-sort")]
+    DUP_FIXED,
     #[cfg(feature = "db-int-key")]
     INTEGER_KEY,
-    DUP_FIXED,
     INTEGER_DUP,
     REVERSE_DUP,
 }
@@ -40,4 +41,17 @@ pub enum WriteFlags {
     CURRENT,
     APPEND,
     APPEND_DUP,
+}
+
+/// Strategy to use when corrupted data is detected while opening a database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStrategy {
+    /// Bubble up the error on detecting a corrupted data file. The default.
+    Error,
+
+    /// Discard the corrupted data and start with an empty database.
+    Discard,
+
+    /// Move the corrupted data file to `$file.corrupt` and start with an empty database.
+    Rename,
 }

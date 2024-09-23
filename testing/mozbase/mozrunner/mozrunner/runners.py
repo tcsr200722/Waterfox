@@ -8,10 +8,8 @@ This module contains a set of shortcut methods that create runners for commonly
 used Mozilla applications, such as Firefox, Firefox for Android or Thunderbird.
 """
 
-from __future__ import absolute_import
-
 from .application import get_app_context
-from .base import GeckoRuntimeRunner, FennecRunner, BlinkRuntimeRunner
+from .base import BlinkRuntimeRunner, FennecRunner, GeckoRuntimeRunner
 from .devices import EmulatorAVD
 
 
@@ -50,7 +48,7 @@ def FirefoxRunner(*args, **kwargs):
         Defaults to False.
     :returns: A GeckoRuntimeRunner for Firefox.
     """
-    kwargs['app_ctx'] = get_app_context('firefox')()
+    kwargs["app_ctx"] = get_app_context("firefox")()
     return GeckoRuntimeRunner(*args, **kwargs)
 
 
@@ -70,7 +68,7 @@ def ThunderbirdRunner(*args, **kwargs):
         Defaults to False.
     :returns: A GeckoRuntimeRunner for Thunderbird.
     """
-    kwargs['app_ctx'] = get_app_context('thunderbird')()
+    kwargs["app_ctx"] = get_app_context("thunderbird")()
     return GeckoRuntimeRunner(*args, **kwargs)
 
 
@@ -81,7 +79,7 @@ def ChromeRunner(*args, **kwargs):
     :param binary: Path to Chrome binary.
     :param cmdargs: Arguments to pass into the binary.
     """
-    kwargs['app_ctx'] = get_app_context('chrome')()
+    kwargs["app_ctx"] = get_app_context("chrome")()
     return BlinkRuntimeRunner(*args, **kwargs)
 
 
@@ -92,18 +90,20 @@ def ChromiumRunner(*args, **kwargs):
     :param binary: Path to Chromium binary.
     :param cmdargs: Arguments to pass into the binary.
     """
-    kwargs['app_ctx'] = get_app_context('chromium')()
+    kwargs["app_ctx"] = get_app_context("chromium")()
     return BlinkRuntimeRunner(*args, **kwargs)
 
 
-def FennecEmulatorRunner(avd='mozemulator-4.3',
-                         adb_path=None,
-                         avd_home=None,
-                         logdir=None,
-                         serial=None,
-                         binary=None,
-                         app='org.mozilla.fennec',
-                         **kwargs):
+def FennecEmulatorRunner(
+    avd="mozemulator-arm",
+    adb_path=None,
+    avd_home=None,
+    logdir=None,
+    serial=None,
+    binary=None,
+    app="org.mozilla.fennec",
+    **kwargs
+):
     """
     Create a Fennec emulator runner. This can either start a new emulator
     (which will use an avd), or connect to  an already-running emulator.
@@ -122,23 +122,23 @@ def FennecEmulatorRunner(avd='mozemulator-4.3',
     :param cmdargs: Arguments to pass into binary.
     :returns: A DeviceRunner for Android emulators.
     """
-    kwargs['app_ctx'] = get_app_context('fennec')(app, adb_path=adb_path,
-                                                  avd_home=avd_home,
-                                                  device_serial=serial)
-    device_args = {'app_ctx': kwargs['app_ctx'],
-                   'avd': avd,
-                   'binary': binary,
-                   'logdir': logdir}
-    return FennecRunner(device_class=EmulatorAVD,
-                        device_args=device_args,
-                        **kwargs)
+    kwargs["app_ctx"] = get_app_context("fennec")(
+        app, adb_path=adb_path, avd_home=avd_home, device_serial=serial
+    )
+    device_args = {
+        "app_ctx": kwargs["app_ctx"],
+        "avd": avd,
+        "binary": binary,
+        "logdir": logdir,
+    }
+    return FennecRunner(device_class=EmulatorAVD, device_args=device_args, **kwargs)
 
 
 runners = {
-    'chrome': ChromeRunner,
-    'chromium': ChromiumRunner,
-    'default': Runner,
-    'firefox': FirefoxRunner,
-    'fennec': FennecEmulatorRunner,
-    'thunderbird': ThunderbirdRunner,
+    "chrome": ChromeRunner,
+    "chromium": ChromiumRunner,
+    "default": Runner,
+    "firefox": FirefoxRunner,
+    "fennec": FennecEmulatorRunner,
+    "thunderbird": ThunderbirdRunner,
 }

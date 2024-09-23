@@ -1,3 +1,10 @@
+#![allow(
+    clippy::derive_partial_eq_without_eq,
+    // Clippy bug: https://github.com/rust-lang/rust-clippy/issues/7422
+    clippy::nonstandard_macro_braces,
+    clippy::wildcard_imports,
+)]
+
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 mod small_prime {

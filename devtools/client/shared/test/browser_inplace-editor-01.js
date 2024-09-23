@@ -8,7 +8,7 @@ loadHelperScript("helper_inplace_editor.js");
 
 // Test the inplace-editor behavior.
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8,inline editor tests");
   const { host, doc } = await createHost();
 
@@ -18,6 +18,7 @@ add_task(async function() {
   await testAdvanceCharCommit(doc);
   await testAdvanceCharsFunction(doc);
   await testEscapeCancel(doc);
+  await testInputAriaLabel(doc);
 
   host.destroy();
   gBrowser.removeCurrentTab();
@@ -51,124 +52,151 @@ function testMultipleInitialization(doc) {
 
 function testReturnCommit(doc) {
   info("Testing that pressing return commits the new value");
-  const def = defer();
-
-  createInplaceEditorAndClick(
-    {
-      initial: "explicit initial",
-      start: function(editor) {
-        is(
-          editor.input.value,
-          "explicit initial",
-          "Explicit initial value should be used."
-        );
-        editor.input.value = "Test Value";
-        EventUtils.sendKey("return");
+  return new Promise(resolve => {
+    createInplaceEditorAndClick(
+      {
+        initial: "explicit initial",
+        start(editor) {
+          is(
+            editor.input.value,
+            "explicit initial",
+            "Explicit initial value should be used."
+          );
+          editor.input.value = "Test Value";
+          EventUtils.sendKey("return");
+        },
+        done: onDone("Test Value", true, resolve),
       },
-      done: onDone("Test Value", true, def),
-    },
-    doc
-  );
-
-  return def.promise;
+      doc
+    );
+  });
 }
 
 function testBlurCommit(doc) {
   info("Testing that bluring the field commits the new value");
-  const def = defer();
-
-  createInplaceEditorAndClick(
-    {
-      start: function(editor) {
-        is(editor.input.value, "Edit Me!", "textContent of the span used.");
-        editor.input.value = "Test Value";
-        editor.input.blur();
+  return new Promise(resolve => {
+    createInplaceEditorAndClick(
+      {
+        start(editor) {
+          is(editor.input.value, "Edit Me!", "textContent of the span used.");
+          editor.input.value = "Test Value";
+          editor.input.blur();
+        },
+        done: onDone("Test Value", true, resolve),
       },
-      done: onDone("Test Value", true, def),
-    },
-    doc,
-    "Edit Me!"
-  );
-
-  return def.promise;
+      doc,
+      "Edit Me!"
+    );
+  });
 }
 
 function testAdvanceCharCommit(doc) {
   info("Testing that configured advanceChars commit the new value");
-  const def = defer();
-
-  createInplaceEditorAndClick(
-    {
-      advanceChars: ":",
-      start: function(editor) {
-        EventUtils.sendString("Test:");
+  return new Promise(resolve => {
+    createInplaceEditorAndClick(
+      {
+        advanceChars: ":",
+        start() {
+          EventUtils.sendString("Test:");
+        },
+        done: onDone("Test", true, resolve),
       },
-      done: onDone("Test", true, def),
-    },
-    doc
-  );
-
-  return def.promise;
+      doc
+    );
+  });
 }
 
 function testAdvanceCharsFunction(doc) {
   info("Testing advanceChars as a function");
-  const def = defer();
+  return new Promise(resolve => {
+    let firstTime = true;
 
-  let firstTime = true;
+    createInplaceEditorAndClick(
+      {
+        initial: "",
+        advanceChars(charCode, text) {
+          if (charCode !== KeyboardEvent.DOM_VK_COLON) {
+            return false;
+          }
+          if (firstTime) {
+            firstTime = false;
+            return false;
+          }
 
-  createInplaceEditorAndClick(
-    {
-      initial: "",
-      advanceChars: function(charCode, text, insertionPoint) {
-        if (charCode !== KeyboardEvent.DOM_VK_COLON) {
-          return false;
-        }
-        if (firstTime) {
-          firstTime = false;
-          return false;
-        }
-
-        // Just to make sure we check it somehow.
-        return text.length > 0;
+          // Just to make sure we check it somehow.
+          return !!text.length;
+        },
+        start() {
+          for (const ch of ":Test:") {
+            EventUtils.sendChar(ch);
+          }
+        },
+        done: onDone(":Test", true, resolve),
       },
-      start: function(editor) {
-        for (const ch of ":Test:") {
-          EventUtils.sendChar(ch);
-        }
-      },
-      done: onDone(":Test", true, def),
-    },
-    doc
-  );
-
-  return def.promise;
+      doc
+    );
+  });
 }
 
 function testEscapeCancel(doc) {
   info("Testing that escape cancels the new value");
-  const def = defer();
-
-  createInplaceEditorAndClick(
-    {
-      initial: "initial text",
-      start: function(editor) {
-        editor.input.value = "Test Value";
-        EventUtils.sendKey("escape");
+  return new Promise(resolve => {
+    createInplaceEditorAndClick(
+      {
+        initial: "initial text",
+        start(editor) {
+          editor.input.value = "Test Value";
+          EventUtils.sendKey("escape");
+        },
+        done: onDone("initial text", false, resolve),
       },
-      done: onDone("initial text", false, def),
-    },
-    doc
-  );
-
-  return def.promise;
+      doc
+    );
+  });
 }
 
-function onDone(value, isCommit, def) {
-  return function(actualValue, actualCommit) {
+function testInputAriaLabel(doc) {
+  info("Testing that inputAriaLabel works as expected");
+  doc.body.innerHTML = "";
+
+  let element = createSpan(doc);
+  editableField({
+    element,
+    inputAriaLabel: "TEST_ARIA_LABEL",
+  });
+
+  info("Clicking on the inplace-editor field to turn to edit mode");
+  element.click();
+  let input = doc.querySelector("input");
+  is(
+    input.getAttribute("aria-label"),
+    "TEST_ARIA_LABEL",
+    "Input has expected aria-label"
+  );
+
+  info("Testing that inputAriaLabelledBy works as expected");
+  doc.body.innerHTML = "";
+  element = createSpan(doc);
+  editableField({
+    element,
+    inputAriaLabelledBy: "TEST_ARIA_LABELLED_BY",
+  });
+
+  info("Clicking on the inplace-editor field to turn to edit mode");
+  element.click();
+  input = doc.querySelector("input");
+  is(
+    input.getAttribute("aria-labelledby"),
+    "TEST_ARIA_LABELLED_BY",
+    "Input has expected aria-labelledby"
+  );
+}
+
+function onDone(value, isCommit, resolve) {
+  return function (actualValue, actualCommit) {
     info("Inplace-editor's done callback executed, checking its state");
     is(actualValue, value, "The value is correct");
     is(actualCommit, isCommit, "The commit boolean is correct");
-    def.resolve();
+    resolve();
   };
 }

@@ -13,11 +13,12 @@
 
 NS_IMPL_ISUPPORTS(nsConsoleMessage, nsIConsoleMessage)
 
-nsConsoleMessage::nsConsoleMessage() : mTimeStamp(0), mMessage() {}
+nsConsoleMessage::nsConsoleMessage() : mMicroSecondTimeStamp(0) {}
 
-nsConsoleMessage::nsConsoleMessage(const char16_t* aMessage) {
-  mTimeStamp = JS_Now() / 1000;
+nsConsoleMessage::nsConsoleMessage(const nsAString& aMessage) {
+  mMicroSecondTimeStamp = JS_Now();
   mMessage.Assign(aMessage);
+  mIsForwardedFromContentProcess = false;
 }
 
 NS_IMETHODIMP
@@ -34,7 +35,13 @@ nsConsoleMessage::GetLogLevel(uint32_t* aLogLevel) {
 
 NS_IMETHODIMP
 nsConsoleMessage::GetTimeStamp(int64_t* aTimeStamp) {
-  *aTimeStamp = mTimeStamp;
+  *aTimeStamp = mMicroSecondTimeStamp / 1000;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsConsoleMessage::GetMicroSecondTimeStamp(int64_t* aTimeStamp) {
+  *aTimeStamp = mMicroSecondTimeStamp;
   return NS_OK;
 }
 
@@ -42,5 +49,19 @@ NS_IMETHODIMP
 nsConsoleMessage::ToString(nsACString& /*UTF8*/ aResult) {
   CopyUTF16toUTF8(mMessage, aResult);
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsConsoleMessage::GetIsForwardedFromContentProcess(
+    bool* aIsForwardedFromContentProcess) {
+  *aIsForwardedFromContentProcess = mIsForwardedFromContentProcess;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsConsoleMessage::SetIsForwardedFromContentProcess(
+    bool aIsForwardedFromContentProcess) {
+  mIsForwardedFromContentProcess = aIsForwardedFromContentProcess;
   return NS_OK;
 }

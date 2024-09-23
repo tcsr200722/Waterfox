@@ -7,11 +7,13 @@
 #ifndef MOZILLA_LAYERS_COMPOSITORTYPES_H
 #define MOZILLA_LAYERS_COMPOSITORTYPES_H
 
+#include <iosfwd>
 #include <stdint.h>       // for uint32_t
 #include <sys/types.h>    // for int32_t
 #include "LayersTypes.h"  // for LayersBackend, etc
 #include "nsXULAppAPI.h"  // for GeckoProcessType, etc
 #include "mozilla/gfx/Types.h"
+#include "mozilla/layers/SyncObject.h"
 #include "mozilla/EnumSet.h"
 
 #include "mozilla/TypedEnumBits.h"
@@ -55,7 +57,6 @@ enum class TextureFlags : uint32_t {
   // The default behaviour is to deallocate on the host side.
   DEALLOCATE_CLIENT = 1 << 6,
   DEALLOCATE_SYNC = 1 << 6,  // XXX - make it a separate flag.
-  DEALLOCATE_MAIN_THREAD = 1 << 8,
   // After being shared ith the compositor side, an immutable texture is never
   // modified, it can only be read. It is safe to not Lock/Unlock immutable
   // textures.
@@ -83,19 +84,36 @@ enum class TextureFlags : uint32_t {
   // have trouble with RGBX/BGRX formats, so we use RGBA/BGRA but set this
   // hint when we know alpha is opaque (eg. WebGL)
   IS_OPAQUE = 1 << 18,
+  // The ExternalImageId bound to the texture is borrowed and should not be
+  // explicitly released when the texture is freed. This is meant to be used
+  // with WebRenderTextureHost wrapping another TextureHost which was
+  // initialized with its own external image ID.
+  BORROWED_EXTERNAL_ID = 1 << 19,
+  // The texture is used for remote texture.
+  REMOTE_TEXTURE = 1 << 20,
+  // The texture is from a DRM source.
+  DRM_SOURCE = 1 << 21,
+  // The texture is dummy texture
+  DUMMY_TEXTURE = 1 << 22,
+  // Software decoded video
+  SOFTWARE_DECODED_VIDEO = 1 << 23,
+  // Whether the remote texture must wait for its owner to be created.
+  WAIT_FOR_REMOTE_TEXTURE_OWNER = 1 << 24,
 
   // OR union of all valid bits
-  ALL_BITS = (1 << 19) - 1,
+  ALL_BITS = (1 << 25) - 1,
   // the default flags
   DEFAULT = NO_FLAGS
 };
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(TextureFlags)
 
+std::ostream& operator<<(std::ostream& aStream, const TextureFlags& aFlags);
+
 static inline bool TextureRequiresLocking(TextureFlags aFlags) {
   // If we're not double buffered, or uploading
   // within a transaction, then we need to support
   // locking correctly.
-  return !(aFlags & (TextureFlags::IMMEDIATE_UPLOAD | TextureFlags::IMMUTABLE));
+  return !(aFlags & TextureFlags::IMMUTABLE);
 }
 
 /**
@@ -111,41 +129,13 @@ enum class DiagnosticTypes : uint8_t {
 };
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(DiagnosticTypes)
 
-#define DIAGNOSTIC_FLASH_COUNTER_MAX 100
-
-/**
- * Information about the object that is being diagnosed.
- */
-enum class DiagnosticFlags : uint16_t {
-  NO_DIAGNOSTIC = 0,
-  IMAGE = 1 << 0,
-  CONTENT = 1 << 1,
-  CANVAS = 1 << 2,
-  COLOR = 1 << 3,
-  CONTAINER = 1 << 4,
-  TILE = 1 << 5,
-  BIGIMAGE = 1 << 6,
-  COMPONENT_ALPHA = 1 << 7,
-  REGION_RECT = 1 << 8,
-  NV12 = 1 << 9,
-  YCBCR = 1 << 10
-};
-MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(DiagnosticFlags)
-
 /**
  * See gfx/layers/Effects.h
  */
 enum class EffectTypes : uint8_t {
-  MASK,
-  BLEND_MODE,
-  COLOR_MATRIX,
-  MAX_SECONDARY,  // sentinel for the count of secondary effect types
   RGB,
   YCBCR,
   NV12,
-  COMPONENT_ALPHA,
-  SOLID_COLOR,
-  RENDER_TARGET,
   MAX  // sentinel for the count of all effect types
 };
 
@@ -154,19 +144,23 @@ enum class EffectTypes : uint8_t {
  */
 enum class CompositableType : uint8_t {
   UNKNOWN,
-  CONTENT_TILED,   // tiled painted layer
-  IMAGE,           // image with single buffering
-  IMAGE_BRIDGE,    // ImageBridge protocol
-  CONTENT_SINGLE,  // painted layer interface, single buffering
-  CONTENT_DOUBLE,  // painted layer interface, double buffering
+  IMAGE,  // image with single buffering
   COUNT
 };
 
-#ifdef XP_WIN
-typedef void* SyncHandle;
-#else
-typedef uintptr_t SyncHandle;
-#endif  // XP_WIN
+enum class ImageUsageType : uint8_t {
+  UNKNOWN,
+  WebRenderImageData,
+  WebRenderFallbackData,
+  Canvas,
+  OffscreenCanvas,
+  VideoFrameContainer,
+  RemoteVideoDecoder,
+  BlackImage,
+  Webrtc,
+  WebCodecs,
+  COUNT
+};
 
 /**
  * Sent from the compositor to the content-side LayerManager, includes
@@ -175,55 +169,63 @@ typedef uintptr_t SyncHandle;
  */
 struct TextureFactoryIdentifier {
   LayersBackend mParentBackend;
+  WebRenderBackend mWebRenderBackend;
+  WebRenderCompositor mWebRenderCompositor;
   GeckoProcessType mParentProcessType;
   int32_t mMaxTextureSize;
-  bool mSupportsTextureDirectMapping;
   bool mCompositorUseANGLE;
   bool mCompositorUseDComp;
   bool mUseCompositorWnd;
   bool mSupportsTextureBlitting;
   bool mSupportsPartialUploads;
   bool mSupportsComponentAlpha;
-  bool mUsingAdvancedLayers;
+  bool mSupportsD3D11NV12;
   SyncHandle mSyncHandle;
 
   explicit TextureFactoryIdentifier(
       LayersBackend aLayersBackend = LayersBackend::LAYERS_NONE,
       GeckoProcessType aParentProcessType = GeckoProcessType_Default,
-      int32_t aMaxTextureSize = 4096,
-      bool aSupportsTextureDirectMapping = false,
-      bool aCompositorUseANGLE = false, bool aCompositorUseDComp = false,
-      bool aUseCompositorWnd = false, bool aSupportsTextureBlitting = false,
+      int32_t aMaxTextureSize = 4096, bool aCompositorUseANGLE = false,
+      bool aCompositorUseDComp = false, bool aUseCompositorWnd = false,
+      bool aSupportsTextureBlitting = false,
       bool aSupportsPartialUploads = false, bool aSupportsComponentAlpha = true,
-      SyncHandle aSyncHandle = 0)
+      bool aSupportsD3D11NV12 = false, SyncHandle aSyncHandle = {})
       : mParentBackend(aLayersBackend),
+        mWebRenderBackend(WebRenderBackend::HARDWARE),
+        mWebRenderCompositor(WebRenderCompositor::DRAW),
         mParentProcessType(aParentProcessType),
         mMaxTextureSize(aMaxTextureSize),
-        mSupportsTextureDirectMapping(aSupportsTextureDirectMapping),
         mCompositorUseANGLE(aCompositorUseANGLE),
         mCompositorUseDComp(aCompositorUseDComp),
         mUseCompositorWnd(aUseCompositorWnd),
         mSupportsTextureBlitting(aSupportsTextureBlitting),
         mSupportsPartialUploads(aSupportsPartialUploads),
         mSupportsComponentAlpha(aSupportsComponentAlpha),
-        mUsingAdvancedLayers(false),
+        mSupportsD3D11NV12(aSupportsD3D11NV12),
         mSyncHandle(aSyncHandle) {}
 
-  bool operator==(const TextureFactoryIdentifier& aOther) const {
-    return mParentBackend == aOther.mParentBackend &&
-           mParentProcessType == aOther.mParentProcessType &&
-           mMaxTextureSize == aOther.mMaxTextureSize &&
-           mSupportsTextureDirectMapping ==
-               aOther.mSupportsTextureDirectMapping &&
-           mCompositorUseANGLE == aOther.mCompositorUseANGLE &&
-           mCompositorUseDComp == aOther.mCompositorUseDComp &&
-           mUseCompositorWnd == aOther.mUseCompositorWnd &&
-           mSupportsTextureBlitting == aOther.mSupportsTextureBlitting &&
-           mSupportsPartialUploads == aOther.mSupportsPartialUploads &&
-           mSupportsComponentAlpha == aOther.mSupportsComponentAlpha &&
-           mUsingAdvancedLayers == aOther.mUsingAdvancedLayers &&
-           mSyncHandle == aOther.mSyncHandle;
-  }
+  explicit TextureFactoryIdentifier(
+      WebRenderBackend aWebRenderBackend,
+      WebRenderCompositor aWebRenderCompositor,
+      GeckoProcessType aParentProcessType = GeckoProcessType_Default,
+      int32_t aMaxTextureSize = 4096, bool aCompositorUseANGLE = false,
+      bool aCompositorUseDComp = false, bool aUseCompositorWnd = false,
+      bool aSupportsTextureBlitting = false,
+      bool aSupportsPartialUploads = false, bool aSupportsComponentAlpha = true,
+      bool aSupportsD3D11NV12 = false, SyncHandle aSyncHandle = {})
+      : mParentBackend(LayersBackend::LAYERS_WR),
+        mWebRenderBackend(aWebRenderBackend),
+        mWebRenderCompositor(aWebRenderCompositor),
+        mParentProcessType(aParentProcessType),
+        mMaxTextureSize(aMaxTextureSize),
+        mCompositorUseANGLE(aCompositorUseANGLE),
+        mCompositorUseDComp(aCompositorUseDComp),
+        mUseCompositorWnd(aUseCompositorWnd),
+        mSupportsTextureBlitting(aSupportsTextureBlitting),
+        mSupportsPartialUploads(aSupportsPartialUploads),
+        mSupportsComponentAlpha(aSupportsComponentAlpha),
+        mSupportsD3D11NV12(aSupportsD3D11NV12),
+        mSyncHandle(aSyncHandle) {}
 };
 
 /**
@@ -235,15 +237,19 @@ struct TextureFactoryIdentifier {
  */
 struct TextureInfo {
   CompositableType mCompositableType;
+  ImageUsageType mUsageType;
   TextureFlags mTextureFlags;
 
   TextureInfo()
       : mCompositableType(CompositableType::UNKNOWN),
+        mUsageType(ImageUsageType::UNKNOWN),
         mTextureFlags(TextureFlags::NO_FLAGS) {}
 
-  explicit TextureInfo(CompositableType aType,
-                       TextureFlags aTextureFlags = TextureFlags::DEFAULT)
-      : mCompositableType(aType), mTextureFlags(aTextureFlags) {}
+  TextureInfo(CompositableType aType, ImageUsageType aUsageType,
+              TextureFlags aTextureFlags)
+      : mCompositableType(aType),
+        mUsageType(aUsageType),
+        mTextureFlags(aTextureFlags) {}
 
   bool operator==(const TextureInfo& aOther) const {
     return mCompositableType == aOther.mCompositableType &&

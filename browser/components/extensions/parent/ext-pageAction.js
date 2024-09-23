@@ -6,26 +6,20 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionTelemetry",
-  "resource://gre/modules/ExtensionTelemetry.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PageActions",
-  "resource:///modules/PageActions.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PanelPopup",
-  "resource:///modules/ExtensionPopups.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.sys.mjs",
+  ExtensionTelemetry: "resource://gre/modules/ExtensionTelemetry.sys.mjs",
+  PageActions: "resource:///modules/PageActions.sys.mjs",
+  PanelPopup: "resource:///modules/ExtensionPopups.sys.mjs",
+});
 
 var { DefaultWeakMap } = ExtensionUtils;
 
-var { PageActionBase } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionActions.jsm"
+var { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
+);
+var { PageActionBase } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionActions.sys.mjs"
 );
 
 // WeakMap[Extension -> PageAction]
@@ -33,13 +27,17 @@ let pageActionMap = new WeakMap();
 
 class PageAction extends PageActionBase {
   constructor(extension, buttonDelegate) {
-    let tabContext = new TabContext(tab => this.getContextData(null));
+    let tabContext = new TabContext(() => this.getContextData(null));
     super(tabContext, extension);
     this.buttonDelegate = buttonDelegate;
   }
 
   updateOnChange(target) {
     this.buttonDelegate.updateButton(target.ownerGlobal);
+  }
+
+  dispatchClick(tab, clickInfo) {
+    this.buttonDelegate.emit("click", tab, clickInfo);
   }
 
   getTab(tabId) {
@@ -50,12 +48,31 @@ class PageAction extends PageActionBase {
   }
 }
 
-this.pageAction = class extends ExtensionAPI {
+this.pageAction = class extends ExtensionAPIPersistent {
   static for(extension) {
     return pageActionMap.get(extension);
   }
 
-  async onManifestEntry(entryName) {
+  static onUpdate(id, manifest) {
+    if (!("page_action" in manifest)) {
+      // If the new version has no page action then mark this widget as hidden
+      // in the telemetry. If it is already marked hidden then this will do
+      // nothing.
+      BrowserUsageTelemetry.recordWidgetChange(makeWidgetId(id), null, "addon");
+    }
+  }
+
+  static onDisable(id) {
+    BrowserUsageTelemetry.recordWidgetChange(makeWidgetId(id), null, "addon");
+  }
+
+  static onUninstall(id) {
+    // If the telemetry already has this widget as hidden then this will not
+    // record anything.
+    BrowserUsageTelemetry.recordWidgetChange(makeWidgetId(id), null, "addon");
+  }
+
+  async onManifestEntry() {
     let { extension } = this;
     let options = extension.manifest.page_action;
 
@@ -81,18 +98,17 @@ this.pageAction = class extends ExtensionAPI {
             return;
           }
 
-          this.lastClickInfo = {
-            button: event.button,
-            modifiers: clickModifiersFromEvent(event),
-          };
-
           // The panel is not automatically closed when middle-clicked.
           if (isPanel) {
             buttonNode.closest("#pageActionPanel").hidePopup();
           }
           let window = event.target.ownerGlobal;
           let tab = window.gBrowser.selectedTab;
-          this.emit("click", tab);
+          this.tabManager.addActiveTabPermission(tab);
+          this.action.dispatchClick(tab, {
+            button: event.button,
+            modifiers: clickModifiersFromEvent(event),
+          });
         });
       };
 
@@ -101,15 +117,14 @@ this.pageAction = class extends ExtensionAPI {
           id: widgetId,
           extensionID: extension.id,
           title: this.action.getProperty(null, "title"),
-          iconURL: this.action.getProperty(null, "title"),
+          iconURL: this.action.getProperty(null, "icon"),
           pinnedToUrlbar: this.action.getPinned(),
           disabled: !this.action.getProperty(null, "enabled"),
-          onCommand: (event, buttonNode) => {
-            this.lastClickInfo = {
+          onCommand: event => {
+            this.handleClick(event.target.ownerGlobal, {
               button: event.button || 0,
               modifiers: clickModifiersFromEvent(event),
-            };
-            this.handleClick(event.target.ownerGlobal);
+            });
           },
           onBeforePlacedInWindow: browserWindow => {
             if (
@@ -126,6 +141,20 @@ this.pageAction = class extends ExtensionAPI {
           },
         })
       );
+
+      if (this.extension.startupReason != "APP_STARTUP") {
+        // Make sure the browser telemetry has the correct state for this widget.
+        // Defer loading BrowserUsageTelemetry until after startup is complete.
+        ExtensionParent.browserStartupPromise.then(() => {
+          BrowserUsageTelemetry.recordWidgetChange(
+            widgetId,
+            this.browserPageAction.pinnedToUrlbar
+              ? "page-action-buttons"
+              : null,
+            "addon"
+          );
+        });
+      }
 
       // If the page action is only enabled in some URLs, do pattern matching in
       // the active tabs and update the button if necessary.
@@ -202,10 +231,7 @@ this.pageAction = class extends ExtensionAPI {
    * @param {Window} window
    */
   triggerAction(window) {
-    if (this.action.isShownForTab(window.gBrowser.selectedTab)) {
-      this.lastClickInfo = { button: 0, modifiers: [] };
-      this.handleClick(window);
-    }
+    this.handleClick(window, { button: 0, modifiers: [] });
   }
 
   handleEvent(event) {
@@ -213,11 +239,30 @@ this.pageAction = class extends ExtensionAPI {
       case "popupshowing":
         const menu = event.target;
         const trigger = menu.triggerNode;
-
+        const getActionId = () => {
+          let actionId = trigger.getAttribute("actionid");
+          if (actionId) {
+            return actionId;
+          }
+          // When a page action is clicked, triggerNode will be an ancestor of
+          // a node corresponding to an action. triggerNode will be the page
+          // action node itself when a page action is selected with the
+          // keyboard. That's because the semantic meaning of page action is on
+          // an hbox that contains an <image>.
+          for (let n = trigger; n && !actionId; n = n.parentElement) {
+            if (n.id == "page-action-buttons" || n.localName == "panelview") {
+              // We reached the page-action-buttons or panelview container.
+              // Stop looking; no action was found.
+              break;
+            }
+            actionId = n.getAttribute("actionid");
+          }
+          return actionId;
+        };
         if (
           menu.id === "pageActionContextMenu" &&
           trigger &&
-          trigger.getAttribute("actionid") === this.browserPageAction.id &&
+          getActionId() === this.browserPageAction.id &&
           !this.browserPageAction.getDisabled(trigger.ownerGlobal)
         ) {
           global.actionContextMenu({
@@ -235,14 +280,12 @@ this.pageAction = class extends ExtensionAPI {
   // If the page action has a |popup| property, a panel is opened to
   // that URL. Otherwise, a "click" event is emitted, and dispatched to
   // the any click listeners in the add-on.
-  async handleClick(window) {
+  async handleClick(window, clickInfo) {
     const { extension } = this;
 
     ExtensionTelemetry.pageActionPopupOpen.stopwatchStart(extension, this);
     let tab = window.gBrowser.selectedTab;
-    let popupURL = this.action.getProperty(tab, "popup");
-
-    this.tabManager.addActiveTabPermission(tab);
+    let popupURL = this.action.triggerClickOrPopup(tab, clickInfo);
 
     // If the widget has a popup URL defined, we open a popup, but do not
     // dispatch a click event to the extension.
@@ -281,13 +324,39 @@ this.pageAction = class extends ExtensionAPI {
       ExtensionTelemetry.pageActionPopupOpen.stopwatchFinish(extension, this);
     } else {
       ExtensionTelemetry.pageActionPopupOpen.stopwatchCancel(extension, this);
-      this.emit("click", tab);
     }
   }
 
+  PERSISTENT_EVENTS = {
+    onClicked({ context, fire }) {
+      const { extension } = this;
+      const { tabManager } = extension;
+
+      let listener = async (_event, tab, clickInfo) => {
+        if (fire.wakeup) {
+          await fire.wakeup();
+        }
+        // TODO: we should double-check if the tab is already being closed by the time
+        // the background script got started and we converted the primed listener.
+        context?.withPendingBrowser(tab.linkedBrowser, () =>
+          fire.sync(tabManager.convert(tab), clickInfo)
+        );
+      };
+
+      this.on("click", listener);
+      return {
+        unregister: () => {
+          this.off("click", listener);
+        },
+        convert(newFire, extContext) {
+          fire = newFire;
+          context = extContext;
+        },
+      };
+    },
+  };
+
   getAPI(context) {
-    const { extension } = context;
-    const { tabManager } = extension;
     const { action } = this;
 
     return {
@@ -296,20 +365,10 @@ this.pageAction = class extends ExtensionAPI {
 
         onClicked: new EventManager({
           context,
-          name: "pageAction.onClicked",
+          module: "pageAction",
+          event: "onClicked",
           inputHandling: true,
-          register: fire => {
-            let listener = (evt, tab) => {
-              context.withPendingBrowser(tab.linkedBrowser, () =>
-                fire.sync(tabManager.convert(tab), this.lastClickInfo)
-              );
-            };
-
-            this.on("click", listener);
-            return () => {
-              this.off("click", listener);
-            };
-          },
+          extensionApi: this,
         }).api(),
 
         openPopup: () => {

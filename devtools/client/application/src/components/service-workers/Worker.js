@@ -4,36 +4,45 @@
 
 "use strict";
 
-const { Ci } = require("chrome");
-
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
+} = require("resource://devtools/client/shared/vendor/react.js");
 
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 const {
-  dd,
-  dl,
-  dt,
+  a,
+  img,
+  p,
   section,
   span,
-} = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
-const { getUnicodeUrlPath } = require("devtools/client/shared/unicode-url");
+const {
+  getUnicodeUrlPath,
+} = require("resource://devtools/client/shared/unicode-url.js");
 
-const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const Localized = createFactory(FluentReact.Localized);
-const { l10n } = require("devtools/client/application/src/modules/l10n");
+const {
+  l10n,
+} = require("resource://devtools/client/application/src/modules/l10n.js");
 
 const {
   services,
-} = require("devtools/client/application/src/modules/application-services");
-const Types = require("devtools/client/application/src/types/index");
+} = require("resource://devtools/client/application/src/modules/application-services.js");
+const Types = require("resource://devtools/client/application/src/types/index.js");
+
+const {
+  startWorker,
+} = require("resource://devtools/client/application/src/actions/workers.js");
 
 const UIButton = createFactory(
-  require("devtools/client/application/src/components/ui/UIButton")
+  require("resource://devtools/client/application/src/components/ui/UIButton.js")
 );
 
 /**
@@ -47,6 +56,8 @@ class Worker extends PureComponent {
     return {
       isDebugEnabled: PropTypes.bool.isRequired,
       worker: PropTypes.shape(Types.worker).isRequired,
+      // this prop get automatically injected via `connect`
+      dispatch: PropTypes.func.isRequired,
     };
   }
 
@@ -54,6 +65,7 @@ class Worker extends PureComponent {
     super(props);
 
     this.debug = this.debug.bind(this);
+    this.viewSource = this.viewSource.bind(this);
     this.start = this.start.bind(this);
   }
 
@@ -63,27 +75,32 @@ class Worker extends PureComponent {
       return;
     }
 
-    services.openWorkerInDebugger(this.props.worker.workerTargetFront);
+    services.openWorkerInDebugger(this.props.worker.workerDescriptorFront);
   }
 
-  start() {
-    if (!this.props.isDebugEnabled) {
-      console.log("Service workers cannot be started in multi-e10s");
+  viewSource() {
+    if (!this.isRunning()) {
+      console.log(
+        "Service workers cannot be inspected if they are not running"
+      );
       return;
     }
 
+    services.viewWorkerSource(this.props.worker.workerDescriptorFront);
+  }
+
+  start() {
     if (!this.isActive() || this.isRunning()) {
       console.log("Running or inactive service workers cannot be started");
       return;
     }
 
-    const { registrationFront } = this.props.worker;
-    registrationFront.start();
+    this.props.dispatch(startWorker(this.props.worker));
   }
 
   isRunning() {
     // We know the worker is running if it has a worker actor.
-    return !!this.props.worker.workerTargetFront;
+    return !!this.props.worker.workerDescriptorFront;
   }
 
   isActive() {
@@ -101,7 +118,7 @@ class Worker extends PureComponent {
     return this.props.worker.stateText;
   }
 
-  getClassNameForStatus(baseClass) {
+  getClassNameForStatus() {
     const { state } = this.props.worker;
 
     switch (state) {
@@ -123,54 +140,54 @@ class Worker extends PureComponent {
     return getUnicodeUrlPath(parts[parts.length - 1]);
   }
 
-  renderDebugButton() {
-    const { isDebugEnabled } = this.props;
+  renderInspectLink(url) {
+    // avoid rendering the inspect link if sw is not running
+    const isDisabled = !this.isRunning();
+    // view source instead of debugging when debugging sw is not available
+    const callbackFn = this.props.isDebugEnabled ? this.debug : this.viewSource;
 
-    const isDisabled = !this.isRunning() || !isDebugEnabled;
-
-    const localizationId = isDebugEnabled
-      ? "serviceworker-worker-debug"
-      : "serviceworker-worker-debug-forbidden";
-
-    return Localized(
-      {
-        id: localizationId,
-        // The localized title is only displayed if the debug link is disabled.
-        attrs: {
-          title: isDisabled,
-        },
-      },
-      UIButton({
-        onClick: this.debug,
-        className: `js-debug-button`,
-        disabled: isDisabled,
-        size: "micro",
-      })
+    const sourceUrl = span(
+      { className: "js-source-url" },
+      this.formatSource(url)
     );
+
+    return isDisabled
+      ? sourceUrl
+      : a(
+          {
+            onClick: callbackFn,
+            title: url,
+            href: "#",
+            className: "js-inspect-link",
+          },
+          sourceUrl,
+          "\u00A0", // &nbsp;
+          Localized(
+            {
+              id: "serviceworker-worker-inspect-icon",
+              attrs: {
+                alt: true,
+              },
+            },
+            img({
+              src: "chrome://devtools/skin/images/application-debug.svg",
+            })
+          )
+        );
   }
 
   renderStartButton() {
-    const { isDebugEnabled } = this.props;
-
     // avoid rendering the button at all for workers that are either running,
     // or in a state that prevents them from starting (like waiting)
     if (this.isRunning() || !this.isActive()) {
       return null;
     }
 
-    const isDisabled = !isDebugEnabled;
     return Localized(
-      {
-        id: "serviceworker-worker-start2",
-        // The localized title is only displayed if the debug link is disabled.
-        attrs: {
-          title: !isDisabled,
-        },
-      },
+      { id: "serviceworker-worker-start3" },
       UIButton({
         onClick: this.start,
         className: `js-start-button`,
-        disabled: isDisabled,
         size: "micro",
       })
     );
@@ -183,40 +200,26 @@ class Worker extends PureComponent {
 
     return section(
       { className: "worker js-sw-worker" },
-      dl(
-        { className: "worker__data" },
-        Localized(
-          { id: "serviceworker-worker-source" },
-          dt({ className: "worker__meta-name" })
+      p(
+        { className: "worker__icon" },
+        img({
+          className: "worker__icon-image",
+          src: "chrome://devtools/skin/images/debugging-workers.svg",
+        })
+      ),
+      p({ className: "worker__source" }, this.renderInspectLink(worker.url)),
+      p(
+        { className: "worker__misc" },
+        span(
+          { className: `js-worker-status worker__status ${statusClassName}` },
+          statusText
         ),
-        dd(
-          {},
-          span(
-            {
-              title: worker.url,
-              className: "worker__source-url js-source-url",
-            },
-            this.formatSource(worker.url)
-          ),
-          " ",
-          this.renderDebugButton()
-        ),
-        Localized(
-          { id: "serviceworker-worker-status" },
-          dt({ className: "worker__meta-name" })
-        ),
-        dd(
-          {},
-          span(
-            { className: `js-worker-status worker__status ${statusClassName}` },
-            statusText
-          ),
-          " ",
-          this.renderStartButton()
-        )
+        " ",
+        this.renderStartButton()
       )
     );
   }
 }
 
-module.exports = Worker;
+const mapDispatchToProps = dispatch => ({ dispatch });
+module.exports = connect(mapDispatchToProps)(Worker);

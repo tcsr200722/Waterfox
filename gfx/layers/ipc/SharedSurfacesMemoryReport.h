@@ -9,7 +9,10 @@
 
 #include <cstdint>  // for uint32_t
 #include <unordered_map>
+#include "base/process.h"
 #include "ipc/IPCMessageUtils.h"
+#include "ipc/IPCMessageUtilsSpecializations.h"
+#include "mozilla/dom/WebGLIpdl.h"
 #include "mozilla/gfx/Point.h"  // for IntSize
 
 namespace mozilla {
@@ -24,7 +27,15 @@ class SharedSurfacesMemoryReport final {
     int32_t mStride;
     uint32_t mConsumers;
     bool mCreatorRef;
+    PaddingField<bool, 3> _padding;
+
+    auto MutTiedFields() {
+      return std::tie(mCreatorPid, mSize, mStride, mConsumers, mCreatorRef,
+                      _padding);
+    }
   };
+
+  auto MutTiedFields() { return std::tie(mSurfaces); }
 
   std::unordered_map<uint64_t, SurfaceEntry> mSurfaces;
 };
@@ -35,53 +46,14 @@ class SharedSurfacesMemoryReport final {
 namespace IPC {
 
 template <>
-struct ParamTraits<mozilla::layers::SharedSurfacesMemoryReport> {
-  typedef mozilla::layers::SharedSurfacesMemoryReport paramType;
-
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mSurfaces);
-  }
-
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mSurfaces);
-  }
-};
+struct ParamTraits<mozilla::layers::SharedSurfacesMemoryReport>
+    : public ParamTraits_TiedFields<
+          mozilla::layers::SharedSurfacesMemoryReport> {};
 
 template <>
 struct ParamTraits<mozilla::layers::SharedSurfacesMemoryReport::SurfaceEntry>
-    : public PlainOldDataSerializer<
+    : public ParamTraits_TiedFields<
           mozilla::layers::SharedSurfacesMemoryReport::SurfaceEntry> {};
-
-template <class KeyType, class DataType>
-struct ParamTraits<std::unordered_map<KeyType, DataType>> {
-  typedef std::unordered_map<KeyType, DataType> paramType;
-
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.size());
-    for (auto i = aParam.begin(); i != aParam.end(); ++i) {
-      WriteParam(aMsg, i->first);
-      WriteParam(aMsg, i->second);
-    }
-  }
-
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    size_t count;
-    if (!ReadParam(aMsg, aIter, &count)) {
-      return false;
-    }
-    for (; count > 0; --count) {
-      KeyType k;
-      DataType v;
-      if (!ReadParam(aMsg, aIter, &k) || !ReadParam(aMsg, aIter, &v)) {
-        return false;
-      }
-      aResult->insert(std::make_pair(std::move(k), std::move(v)));
-    }
-    return true;
-  }
-};
 
 }  // namespace IPC
 

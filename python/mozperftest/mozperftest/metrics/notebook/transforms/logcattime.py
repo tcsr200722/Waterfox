@@ -1,14 +1,13 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
-from datetime import datetime, timedelta
 import re
+from datetime import datetime, timedelta
 
 from mozperftest.metrics.exceptions import (
-    NotebookTransformOptionsError,
     NotebookTransformError,
+    NotebookTransformOptionsError,
 )
-
 
 TIME_MATCHER = re.compile(r"(\s+[\d.:]+\s+)")
 
@@ -102,10 +101,11 @@ class LogCatTimeTransformer:
             second_ts=kwargs.get("second-timestamp"),
             processor=kwargs.get("processor"),
         )
+        subtest = kwargs.get("transform-subtest-name")
         return [
             {
                 "data": [{"value": val, "xaxis": c} for c, val in enumerate(alltimes)],
-                "subtest": kwargs.get("transform-subtest-name", "logcat-metric"),
+                "subtest": subtest if subtest else "logcat-metric",
             }
         ]
 

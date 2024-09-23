@@ -7,11 +7,13 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
+  const { LoginHelper } = ChromeUtils.importESModule(
+    "resource://gre/modules/LoginHelper.sys.mjs"
   );
 
-  MozElements.MozAutocompleteRichlistitem = class MozAutocompleteRichlistitem extends MozElements.MozRichlistitem {
+  MozElements.MozAutocompleteRichlistitem = class MozAutocompleteRichlistitem extends (
+    MozElements.MozRichlistitem
+  ) {
     constructor() {
       super();
 
@@ -19,7 +21,7 @@
        * This overrides listitem's mousedown handler because we want to set the
        * selected item even when the shift or accel keys are pressed.
        */
-      this.addEventListener("mousedown", event => {
+      this.addEventListener("mousedown", () => {
         // Call this.control only once since it's not a simple getter.
         let control = this.control;
         if (!control || control.disabled) {
@@ -396,7 +398,7 @@
 
     _adjustAcItem() {
       let originalUrl = this.getAttribute("ac-value");
-      let title = this.getAttribute("ac-comment");
+      let title = this.getAttribute("ac-label");
       this.setAttribute("url", originalUrl);
       this.setAttribute("image", this.getAttribute("ac-image"));
       this.setAttribute("title", title);
@@ -520,6 +522,11 @@
           return;
         }
 
+        let comment = this.getAttribute("ac-comment");
+        if (comment && JSON.parse(comment)?.noLearnMore) {
+          return;
+        }
+
         let baseURL = Services.urlFormatter.formatURLPref(
           "app.support.baseURL"
         );
@@ -585,37 +592,42 @@
     /**
      * Override _getSearchTokens to have the Learn More text emphasized
      */
-    _getSearchTokens(aSearch) {
+    _getSearchTokens() {
       return [this._learnMoreString.toLowerCase()];
     }
   }
 
-  class MozAutocompleteRichlistitemLoginsFooter extends MozElements.MozAutocompleteRichlistitem {
+  class MozAutocompleteRichlistitemLoginsFooter extends MozElements.MozAutocompleteRichlistitem {}
+
+  class MozAutocompleteImportableLearnMoreRichlistitem extends MozElements.MozAutocompleteRichlistitem {
     constructor() {
       super();
-
-      function handleEvent(event) {
-        if (event.button != 0) {
-          return;
-        }
-
-        const { LoginHelper } = ChromeUtils.import(
-          "resource://gre/modules/LoginHelper.jsm"
-        );
-
-        LoginHelper.openPasswordManager(this.ownerGlobal, {
-          entryPoint: "autocomplete",
-        });
-        Services.telemetry.recordEvent(
-          "exp_import",
-          "event",
-          "click",
-          "loginsFooter"
-        );
-      }
-
-      this.addEventListener("click", handleEvent);
+      MozXULElement.insertFTLIfNeeded("toolkit/main-window/autocomplete.ftl");
     }
+
+    static get markup() {
+      return `
+      <image class="ac-type-icon"/>
+      <image class="ac-site-icon"/>
+      <vbox class="ac-title" align="left">
+        <description class="ac-text-overflow-container">
+          <description class="ac-title-text"
+                       data-l10n-id="autocomplete-import-learn-more"/>
+        </description>
+      </vbox>
+      <hbox class="ac-separator" align="center">
+        <description class="ac-separator-text" value="—"/>
+      </hbox>
+      <hbox class="ac-url" align="center">
+        <description class="ac-text-overflow-container">
+          <description class="ac-url-text"/>
+        </description>
+      </hbox>
+    `;
+    }
+
+    // Override to avoid clearing out fluent description.
+    _setUpDescription() {}
   }
 
   class MozAutocompleteTwoLineRichlistitem extends MozElements.MozRichlistitem {
@@ -627,15 +639,28 @@
       this.textContent = "";
       this.appendChild(this.constructor.fragment);
       this.initializeAttributeInheritance();
+      this.initializeSecondaryAction();
       this._adjustAcItem();
+    }
+
+    initializeSecondaryAction() {
+      const button = this.querySelector(".ac-secondary-action");
+
+      if (this.onSecondaryAction) {
+        button.addEventListener("mousedown", event => {
+          event.stopPropagation();
+          this.onSecondaryAction();
+        });
+      } else {
+        button?.remove();
+      }
     }
 
     static get inheritedAttributes() {
       return {
         // getLabelAt:
-        ".line1-label": "text=ac-value",
-        // getCommentAt:
-        ".line2-label": "text=ac-label",
+        ".line1-label": "text=ac-label",
+        ".ac-site-icon": "src=ac-image",
       };
     }
 
@@ -649,18 +674,17 @@
           <div class="label-row line1-label"></div>
           <div class="label-row line2-label"></div>
         </div>
+        <button class="ac-secondary-action"></button>
       </div>
     `;
     }
 
     _adjustAcItem() {
-      const popup = this.parentNode.parentNode;
-      const minWidth = getComputedStyle(popup).minWidth.replace("px", "");
-      // Make item fit in popup as XUL box could not constrain
-      // item's width
-      // popup.width is equal to the input field's width from the content process
-      this.firstElementChild.style.width =
-        Math.max(minWidth, popup.width) + "px";
+      let comment = JSON.parse(this.getAttribute("ac-comment"));
+      this.querySelector(".line2-label").textContent = comment?.secondary || "";
+
+      this.querySelector(".ac-site-icon").collapsed =
+        this.getAttribute("ac-image") == "";
     }
 
     _onOverflow() {}
@@ -671,19 +695,134 @@
   }
 
   class MozAutocompleteLoginRichlistitem extends MozAutocompleteTwoLineRichlistitem {
+    connectedCallback() {
+      super.connectedCallback();
+      this.firstChild.classList.add("ac-login-item");
+    }
+
+    onSecondaryAction() {
+      const comment = JSON.parse(this.getAttribute("ac-comment"));
+      LoginHelper.openPasswordManager(window, {
+        loginGuid: comment?.guid,
+      });
+    }
+
     static get inheritedAttributes() {
       return {
         // getLabelAt:
-        ".line1-label": "text=ac-value",
-        // Don't inherit ac-label with getCommentAt since the label is JSON.
+        ".line1-label": "text=ac-label",
+        ".ac-site-icon": "src=ac-image",
       };
+    }
+  }
+
+  // This type has an action that is triggered when activated. The comment
+  // for that result should contain a fillMessageName which is the message to send.
+  class MozAutocompleteActionRichlistitem extends MozAutocompleteTwoLineRichlistitem {
+    constructor() {
+      super();
+      this.selectedByMouseOver = true;
+    }
+  }
+
+  // A row that conveys status information assigned from the status field
+  // within the comment associated with the selected item in the list.
+  class MozAutocompleteStatusRichlistitem extends MozAutocompleteTwoLineRichlistitem {
+    static get markup() {
+      return `<div class="ac-status" xmlns="http://www.w3.org/1999/xhtml"></div>`;
+    }
+
+    connectedCallback() {
+      super.connectedCallback();
+      this.parentNode.addEventListener("select", this);
+      this.eventListenerParentNode = this.parentNode;
+    }
+
+    disconnectedCallback() {
+      this.eventListenerParentNode?.removeEventListener("select", this);
+      this.eventListenerParentNode = null;
+    }
+
+    handleEvent(event) {
+      if (event.type == "select") {
+        let selectedItem = event.target.selectedItem;
+        if (selectedItem) {
+          this.#setStatus(selectedItem);
+        }
+      }
+    }
+
+    #setStatus(item) {
+      // For normal rows, use that row's comment, otherwise use the status's
+      // comment which serves as the default label.
+      let target =
+        !item || item instanceof MozAutocompleteActionRichlistitem
+          ? this
+          : item;
+
+      let comment = JSON.parse(target.getAttribute("ac-comment"));
+
+      let statusBox = this.querySelector(".ac-status");
+      statusBox.textContent = comment?.status || "";
     }
 
     _adjustAcItem() {
-      super._adjustAcItem();
+      this.#setStatus(this);
+      this.setAttribute("disabled", "true");
+    }
+  }
 
-      let details = JSON.parse(this.getAttribute("ac-label"));
-      this.querySelector(".line2-label").textContent = details.comment;
+  class MozAutocompleteAutoFillRichlistitem extends MozAutocompleteTwoLineRichlistitem {
+    constructor() {
+      super();
+      this.selectedByMouseOver = true;
+    }
+
+    _adjustAcItem() {
+      let label = this.getAttribute("ac-label");
+      this.querySelector(".line1-label").textContent = label;
+
+      let { secondary, ariaLabel } = JSON.parse(
+        this.getAttribute("ac-comment")
+      );
+
+      let line2Label = this.querySelector(".line2-label");
+      line2Label.textContent = secondary ?? "";
+
+      if (ariaLabel) {
+        this.setAttribute("aria-label", ariaLabel);
+      }
+
+      this.querySelector(".ac-site-icon").collapsed =
+        this.getAttribute("ac-image") == "";
+    }
+
+    set selected(val) {
+      if (val) {
+        this.setAttribute("selected", "true");
+      } else {
+        this.removeAttribute("selected");
+      }
+
+      let { AutoCompleteParent } = ChromeUtils.importESModule(
+        "resource://gre/actors/AutoCompleteParent.sys.mjs"
+      );
+
+      let actor = AutoCompleteParent.getCurrentActor();
+      if (!actor) {
+        return;
+      }
+
+      let popup = actor.openedPopup;
+
+      setTimeout(() => {
+        let selectedIndex = popup ? popup.selectedIndex : -1;
+        actor.previewEntry(selectedIndex);
+      }, 0);
+    }
+
+    get selected() {
+      return this.getAttribute("selected") == "true";
     }
   }
 
@@ -718,7 +857,7 @@
 
     _adjustAcItem() {
       let { generatedPassword, willAutoSaveGeneratedPassword } = JSON.parse(
-        this.getAttribute("ac-label")
+        this.getAttribute("ac-comment")
       );
       let line2Label = this.querySelector(".line2-label");
       line2Label.textContent = "";
@@ -740,51 +879,13 @@
     constructor() {
       super();
       MozXULElement.insertFTLIfNeeded("toolkit/main-window/autocomplete.ftl");
+    }
 
-      ChromeUtils.defineModuleGetter(
-        this,
-        "MigrationUtils",
-        "resource:///modules/MigrationUtils.jsm"
-      );
-
-      this.addEventListener("click", event => {
-        const browserId = this.getAttribute("ac-value");
-
-        // Handle clicks on the info icon to show support article.
-        if (event.target.classList.contains("ac-info-icon")) {
-          window.openTrustedLinkIn(
-            Services.urlFormatter.formatURLPref("app.support.baseURL") +
-              "password-import",
-            "tab",
-            {
-              relatedToCurrent: true,
-            }
-          );
-          Services.telemetry.recordEvent(
-            "exp_import",
-            "event",
-            "info",
-            browserId
-          );
-          return;
-        }
-
-        if (event.button != 0) {
-          return;
-        }
-
-        // Open the migration wizard pre-selecting the appropriate browser.
-        this.MigrationUtils.showMigrationWizard(window, [
-          this.MigrationUtils.MIGRATION_ENTRYPOINT_PASSWORDS,
-          browserId,
-        ]);
-        Services.telemetry.recordEvent(
-          "exp_import",
-          "event",
-          "click",
-          browserId
-        );
-      });
+    static get inheritedAttributes() {
+      return {
+        // getLabelAt:
+        ".line1-label": "text=ac-label",
+      };
     }
 
     static get markup() {
@@ -797,24 +898,22 @@
           <div class="label-row line1-label" data-l10n-name="line1" />
           <div class="label-row line2-label" data-l10n-name="line2" />
         </div>
-        <xul:image class="ac-info-icon"
-                   data-l10n-id="autocomplete-import-logins-info" />
       </div>
     `;
     }
 
     _adjustAcItem() {
+      super._adjustAcItem();
       document.l10n.setAttributes(
         this.querySelector(".labels-wrapper"),
-        "autocomplete-import-logins",
+        `autocomplete-import-logins-${this.getAttribute("ac-value")}`,
         {
-          browser: this.MigrationUtils.getBrowserName(
-            this.getAttribute("ac-value")
+          host: JSON.parse(this.getAttribute("ac-comment")).hostname.replace(
+            /^www\./,
+            ""
           ),
-          host: this.getAttribute("ac-label").replace(/^www\./, ""),
         }
       );
-      super._adjustAcItem();
     }
   }
 
@@ -851,6 +950,14 @@
   );
 
   customElements.define(
+    "autocomplete-autofill-richlistitem",
+    MozAutocompleteAutoFillRichlistitem,
+    {
+      extends: "richlistitem",
+    }
+  );
+
+  customElements.define(
     "autocomplete-login-richlistitem",
     MozAutocompleteLoginRichlistitem,
     {
@@ -859,8 +966,32 @@
   );
 
   customElements.define(
+    "autocomplete-action-richlistitem",
+    MozAutocompleteActionRichlistitem,
+    {
+      extends: "richlistitem",
+    }
+  );
+
+  customElements.define(
+    "autocomplete-status-richlistitem",
+    MozAutocompleteStatusRichlistitem,
+    {
+      extends: "richlistitem",
+    }
+  );
+
+  customElements.define(
     "autocomplete-generated-password-richlistitem",
     MozAutocompleteGeneratedPasswordRichlistitem,
+    {
+      extends: "richlistitem",
+    }
+  );
+
+  customElements.define(
+    "autocomplete-importable-learn-more-richlistitem",
+    MozAutocompleteImportableLearnMoreRichlistitem,
     {
       extends: "richlistitem",
     }

@@ -6,10 +6,9 @@
 // Tests that the view results are cleared and the view is closed, when an empty
 // result set arrives after a non-empty one.
 
-add_task(async function() {
+add_task(async function () {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   Assert.ok(
@@ -24,14 +23,13 @@ add_task(async function() {
     priority: 999,
   });
   UrlbarProvidersManager.registerProvider(provider);
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     UrlbarProvidersManager.unregisterProvider(provider);
     await PlacesUtils.history.clear();
   });
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   Assert.ok(

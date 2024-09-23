@@ -4,9 +4,16 @@
 
 "use strict";
 
-const Services = require("Services");
-
-function generalEvent(groupID, eventType) {
+/**
+ *
+ * @param {String} groupID
+ * @param {String} eventType
+ * @param {Function} condition: Optional function that takes a Window as parameter. When
+ *                   passed, the event will only be included if the result of the function
+ *                   call is `true` (See `getAvailableEventBreakpoints`).
+ * @returns {Object}
+ */
+function generalEvent(groupID, eventType, condition) {
   return {
     id: `event.${groupID}.${eventType}`,
     type: "event",
@@ -14,6 +21,7 @@ function generalEvent(groupID, eventType) {
     message: `DOM '${eventType}' event`,
     eventType,
     filter: "general",
+    condition,
   };
 }
 function nodeEvent(groupID, eventType) {
@@ -79,6 +87,13 @@ function animationEvent(operation, name, notificationType) {
   };
 }
 
+const SCRIPT_FIRST_STATEMENT_BREAKPOINT = {
+  id: "script.source.firstStatement",
+  type: "script",
+  name: "Script First Statement",
+  message: "Script First Statement",
+};
+
 const AVAILABLE_BREAKPOINTS = [
   {
     name: "Animation",
@@ -114,15 +129,30 @@ const AVAILABLE_BREAKPOINTS = [
   {
     name: "Control",
     items: [
+      // The condition should be removed when "dom.element.popover.enabled" is removed
+      generalEvent("control", "beforetoggle", () =>
+        // Services.prefs isn't available on worker targets
+        Services.prefs?.getBoolPref("dom.element.popover.enabled")
+      ),
+      generalEvent("control", "blur"),
+      generalEvent("control", "change"),
+      generalEvent("control", "focus"),
+      generalEvent("control", "focusin"),
+      generalEvent("control", "focusout"),
+      // The condition should be removed when "dom.element.invokers.enabled" is removed
+      generalEvent(
+        "control",
+        "invoke",
+        global => global && "InvokeEvent" in global
+      ),
+      generalEvent("control", "reset"),
       generalEvent("control", "resize"),
       generalEvent("control", "scroll"),
-      generalEvent("control", "zoom"),
-      generalEvent("control", "focus"),
-      generalEvent("control", "blur"),
+      generalEvent("control", "scrollend"),
       generalEvent("control", "select"),
-      generalEvent("control", "change"),
+      generalEvent("control", "toggle"),
       generalEvent("control", "submit"),
-      generalEvent("control", "reset"),
+      generalEvent("control", "zoom"),
     ],
   },
   {
@@ -168,23 +198,26 @@ const AVAILABLE_BREAKPOINTS = [
   {
     name: "Keyboard",
     items: [
-      Services.prefs &&
-      Services.prefs.getBoolPref("dom.input_events.beforeinput.enabled")
-        ? generalEvent("keyboard", "beforeinput")
-        : null,
+      generalEvent("keyboard", "beforeinput"),
       generalEvent("keyboard", "input"),
+      generalEvent("keyboard", "textInput", () =>
+        // Services.prefs isn't available on worker targets
+        Services.prefs?.getBoolPref("dom.events.textevent.enabled")
+      ),
       generalEvent("keyboard", "keydown"),
       generalEvent("keyboard", "keyup"),
       generalEvent("keyboard", "keypress"),
+      generalEvent("keyboard", "compositionstart"),
+      generalEvent("keyboard", "compositionupdate"),
+      generalEvent("keyboard", "compositionend"),
     ].filter(Boolean),
   },
   {
     name: "Load",
     items: [
       globalEvent("load", "load"),
-      // TODO: Disabled pending fixes for bug 1569775.
-      // globalEvent("load", "beforeunload"),
-      // globalEvent("load", "unload"),
+      globalEvent("load", "beforeunload"),
+      globalEvent("load", "unload"),
       globalEvent("load", "abort"),
       globalEvent("load", "error"),
       globalEvent("load", "hashchange"),
@@ -250,6 +283,10 @@ const AVAILABLE_BREAKPOINTS = [
       generalEvent("pointer", "gotpointercapture"),
       generalEvent("pointer", "lostpointercapture"),
     ],
+  },
+  {
+    name: "Script",
+    items: [SCRIPT_FIRST_STATEMENT_BREAKPOINT],
   },
   {
     name: "Timer",
@@ -365,6 +402,8 @@ for (const eventBP of FLAT_EVENTS) {
       }
       byEventType[eventType] = eventBP.id;
     }
+  } else if (eventBP.type === "script") {
+    // Nothing to do.
   } else {
     throw new Error("Unknown type: " + eventBP.type);
   }
@@ -430,17 +469,49 @@ function makeEventBreakpointMessage(id) {
   return EVENTS_BY_ID[id].message;
 }
 
+exports.firstStatementBreakpointId = firstStatementBreakpointId;
+function firstStatementBreakpointId() {
+  return SCRIPT_FIRST_STATEMENT_BREAKPOINT.id;
+}
+
+exports.eventsRequireNotifications = eventsRequireNotifications;
+function eventsRequireNotifications(ids) {
+  for (const id of ids) {
+    const eventBreakpoint = EVENTS_BY_ID[id];
+
+    // Script events are implemented directly in the server and do not require
+    // notifications from Gecko, so there is no need to watch for them.
+    if (eventBreakpoint && eventBreakpoint.type !== "script") {
+      return true;
+    }
+  }
+  return false;
+}
+
 exports.getAvailableEventBreakpoints = getAvailableEventBreakpoints;
-function getAvailableEventBreakpoints() {
+/**
+ * Get all available event breakpoints
+ *
+ * @param {Window|WorkerGlobalScope} global
+ * @returns {Array<Object>} An array containing object with 2 properties, an id and a name,
+ *          representing the event.
+ */
+function getAvailableEventBreakpoints(global) {
   const available = [];
   for (const { name, items } of AVAILABLE_BREAKPOINTS) {
     available.push({
       name,
-      events: items.map(item => ({
-        id: item.id,
-        name: item.name,
-      })),
+      events: items
+        .filter(item => !item.condition || item.condition(global))
+        .map(item => ({
+          id: item.id,
+          name: item.name,
+        })),
     });
   }
   return available;
+}
+exports.validateEventBreakpoint = validateEventBreakpoint;
+function validateEventBreakpoint(id) {
+  return !!EVENTS_BY_ID[id];
 }

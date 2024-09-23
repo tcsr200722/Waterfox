@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from six.moves.urllib.parse import quote
 
 from marionette_driver.by import By
@@ -13,6 +11,7 @@ from marionette_harness import MarionetteTestCase
 
 def inline(doc):
     return "data:text/html;charset=utf-8,{}".format(quote(doc))
+
 
 class TestPosition(MarionetteTestCase):
     def test_should_get_element_position_back(self):
@@ -43,5 +42,5 @@ class TestPosition(MarionetteTestCase):
 
         r2 = self.marionette.find_element(By.ID, "r")
         location = r2.rect
-        self.assertEqual(11, location['x'])
-        self.assertEqual(10, location['y'])
+        self.assertEqual(11, location["x"])
+        self.assertEqual(10, location["y"])

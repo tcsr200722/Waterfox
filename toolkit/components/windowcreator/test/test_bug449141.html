@@ -19,7 +19,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=449141
 </div>
 <pre id="test">
 <script class="testbody" type="text/javascript">
-/** Test for Bug 449141 **/
+/** Test for Bug 449141 */
 
 const Cc = SpecialPowers.Cc;
 const Ci = SpecialPowers.Ci;
@@ -35,7 +35,7 @@ var progressListener = {
   onProgressChange() {
     /* Ignore progress callback */
   },
-  onStateChange(aProgress, aRequest, aStateFlag, aStatus) {
+  onStateChange(aProgress, aRequest, aStateFlag) {
     if (aStateFlag & STATE_STOP) {
       var dirExists = false;
       var videoExists = false;
@@ -43,7 +43,7 @@ var progressListener = {
       var videoFile = getTempDir();
       videoFile.append(this.dirName);
       dirExists = videoFile.exists();
-      videoFile.append("320x240.ogv");
+      videoFile.append("320x240.webm");
       videoExists = videoFile.exists();
       this.folder.remove(true);
       this.file.remove(false);

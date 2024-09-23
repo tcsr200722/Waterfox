@@ -6,6 +6,9 @@
 
 #include "mozilla/dom/VRServiceTest.h"
 #include "mozilla/dom/VRServiceTestBinding.h"
+#include "mozilla/dom/GamepadPoseState.h"
+#include "mozilla/dom/Promise.h"
+#include "VRManagerChild.h"
 #include "VRPuppetCommandBuffer.h"
 #include <type_traits>
 
@@ -13,37 +16,22 @@ namespace mozilla {
 using namespace gfx;
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(VRMockDisplay)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(VRMockDisplay, DOMEventTargetHelper,
+                                   mVRServiceTest)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(VRMockDisplay,
-                                                  DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(VRMockDisplay,
-                                                DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(VRMockDisplay)
-NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
-
-NS_IMPL_ADDREF_INHERITED(VRMockDisplay, DOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(VRMockDisplay, DOMEventTargetHelper)
+NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(VRMockDisplay,
+                                               DOMEventTargetHelper)
 
 namespace {
 template <class T>
-bool ReadFloat32Array(T& aDestination, const Float32Array& aSource,
+bool ReadFloat32Array(T* aDestination, const Float32Array& aSource,
                       ErrorResult& aRv) {
-  constexpr size_t length = std::extent<T>::value;
-  aSource.ComputeState();
-  if (aSource.Length() != length) {
+  if (!aSource.CopyDataTo(aDestination)) {
     aRv.Throw(NS_ERROR_INVALID_ARG);
     // We don't want to MOZ_ASSERT here, as that would cause the
     // browser to crash, making it difficult to debug the problem
     // in JS code calling this API.
     return false;
-  }
-  for (size_t i = 0; i < length; i++) {
-    aDestination[i] = aSource.Data()[i];
   }
   return true;
 }
@@ -77,7 +65,7 @@ void VRMockDisplay::Create() {
   Clear();
   VRDisplayState& state = DisplayState();
 
-  strncpy(state.displayName, "Puppet HMD", kVRDisplayNameMaxLen);
+  strncpy(state.displayName.data(), "Puppet HMD", kVRDisplayNameMaxLen);
   state.eightCC = GFX_VR_EIGHTCC('P', 'u', 'p', 'p', 'e', 't', ' ', ' ');
   state.isConnected = true;
   state.isMounted = false;
@@ -283,7 +271,7 @@ void VRMockDisplay::SetStageSize(double aWidth, double aHeight) {
 
 void VRMockDisplay::SetSittingToStandingTransform(
     const Float32Array& aTransform, ErrorResult& aRv) {
-  Unused << ReadFloat32Array(DisplayState().sittingToStandingTransform,
+  Unused << ReadFloat32Array(&DisplayState().sittingToStandingTransform,
                              aTransform, aRv);
 }
 
@@ -301,41 +289,41 @@ void VRMockDisplay::SetPose(const Nullable<Float32Array>& aPosition,
   // puppet script execution
 
   if (!aOrientation.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.orientation, aOrientation.Value(),
+    if (!ReadFloat32Array(&sensorState.pose.orientation, aOrientation.Value(),
                           aRv)) {
       return;
     }
     sensorState.flags |= VRDisplayCapabilityFlags::Cap_Orientation;
   }
   if (!aAngularVelocity.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.angularVelocity,
+    if (!ReadFloat32Array(&sensorState.pose.angularVelocity,
                           aAngularVelocity.Value(), aRv)) {
       return;
     }
     sensorState.flags |= VRDisplayCapabilityFlags::Cap_AngularAcceleration;
   }
   if (!aAngularAcceleration.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.angularAcceleration,
+    if (!ReadFloat32Array(&sensorState.pose.angularAcceleration,
                           aAngularAcceleration.Value(), aRv)) {
       return;
     }
     sensorState.flags |= VRDisplayCapabilityFlags::Cap_AngularAcceleration;
   }
   if (!aPosition.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.position, aPosition.Value(), aRv)) {
+    if (!ReadFloat32Array(&sensorState.pose.position, aPosition.Value(), aRv)) {
       return;
     }
     sensorState.flags |= VRDisplayCapabilityFlags::Cap_Position;
   }
   if (!aLinearVelocity.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.linearVelocity,
+    if (!ReadFloat32Array(&sensorState.pose.linearVelocity,
                           aLinearVelocity.Value(), aRv)) {
       return;
     }
     sensorState.flags |= VRDisplayCapabilityFlags::Cap_LinearAcceleration;
   }
   if (!aLinearAcceleration.IsNull()) {
-    if (!ReadFloat32Array(sensorState.pose.linearAcceleration,
+    if (!ReadFloat32Array(&sensorState.pose.linearAcceleration,
                           aLinearAcceleration.Value(), aRv)) {
       return;
     }
@@ -343,25 +331,16 @@ void VRMockDisplay::SetPose(const Nullable<Float32Array>& aPosition,
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(VRMockController)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(VRMockController, DOMEventTargetHelper,
+                                   mVRServiceTest)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(VRMockController,
-                                                  DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(VRMockController,
-                                                DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(VRMockController)
-NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
-
-NS_IMPL_ADDREF_INHERITED(VRMockController, DOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(VRMockController, DOMEventTargetHelper)
+NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(VRMockController,
+                                               DOMEventTargetHelper)
 
 VRMockController::VRMockController(VRServiceTest* aVRServiceTest,
                                    uint32_t aControllerIdx)
     : DOMEventTargetHelper(aVRServiceTest->GetOwner()),
+      mVRServiceTest(aVRServiceTest),
       mControllerIdx(aControllerIdx) {
   MOZ_ASSERT(aControllerIdx < kVRControllerMaxCount);
 }
@@ -381,7 +360,8 @@ void VRMockController::Create() {
   // puppet.
   Clear();
   VRControllerState& state = ControllerState();
-  strncpy(state.controllerName, "Puppet Gamepad", kVRControllerNameMaxLen);
+  strncpy(state.controllerName.data(), "Puppet Gamepad",
+          kVRControllerNameMaxLen);
   state.hand = GamepadHand::Left;
   state.flags = GamepadCapabilityFlags::Cap_Position |
                 GamepadCapabilityFlags::Cap_Orientation;
@@ -509,42 +489,42 @@ void VRMockController::SetPose(
   controllerState.flags = GamepadCapabilityFlags::Cap_None;
 
   if (!aOrientation.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.orientation,
+    if (!ReadFloat32Array(&controllerState.pose.orientation,
                           aOrientation.Value(), aRv)) {
       return;
     }
     controllerState.flags |= GamepadCapabilityFlags::Cap_Orientation;
   }
   if (!aAngularVelocity.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.angularVelocity,
+    if (!ReadFloat32Array(&controllerState.pose.angularVelocity,
                           aAngularVelocity.Value(), aRv)) {
       return;
     }
     controllerState.flags |= GamepadCapabilityFlags::Cap_AngularAcceleration;
   }
   if (!aAngularAcceleration.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.angularAcceleration,
+    if (!ReadFloat32Array(&controllerState.pose.angularAcceleration,
                           aAngularAcceleration.Value(), aRv)) {
       return;
     }
     controllerState.flags |= GamepadCapabilityFlags::Cap_AngularAcceleration;
   }
   if (!aPosition.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.position, aPosition.Value(),
+    if (!ReadFloat32Array(&controllerState.pose.position, aPosition.Value(),
                           aRv)) {
       return;
     }
     controllerState.flags |= GamepadCapabilityFlags::Cap_Position;
   }
   if (!aLinearVelocity.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.linearVelocity,
+    if (!ReadFloat32Array(&controllerState.pose.linearVelocity,
                           aLinearVelocity.Value(), aRv)) {
       return;
     }
     controllerState.flags |= GamepadCapabilityFlags::Cap_LinearAcceleration;
   }
   if (!aLinearAcceleration.IsNull()) {
-    if (!ReadFloat32Array(controllerState.pose.linearAcceleration,
+    if (!ReadFloat32Array(&controllerState.pose.linearAcceleration,
                           aLinearAcceleration.Value(), aRv)) {
       return;
     }
@@ -552,21 +532,11 @@ void VRMockController::SetPose(
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(VRServiceTest)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(VRServiceTest, DOMEventTargetHelper,
+                                   mDisplay, mControllers, mWindow)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(VRServiceTest,
-                                                  DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(VRServiceTest,
-                                                DOMEventTargetHelper)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(VRServiceTest)
-NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
-
-NS_IMPL_ADDREF_INHERITED(VRServiceTest, DOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(VRServiceTest, DOMEventTargetHelper)
+NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(VRServiceTest,
+                                               DOMEventTargetHelper)
 
 JSObject* VRServiceTest::WrapObject(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {

@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -71,13 +70,12 @@ add_task(
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
-      Cu.evalInSandbox("var line0 = Error().lineNumber;\n" +
-                       "debugger;\n" +                      // line0 + 1
-                       "var a, i = 0;\n" +                  // line0 + 2
-                       "for (i = 1; i <= 2; i++) {\n" +     // line0 + 3
-                       "  a = i;\n" +                       // line0 + 4
-                       "}\n",                               // line0 + 5
-                       debuggee);
-      /* eslint-enable */
+  // prettier-ignore
+  Cu.evalInSandbox("var line0 = Error().lineNumber;\n" +
+                   "debugger;\n" +                      // line0 + 1
+                   "var a, i = 0;\n" +                  // line0 + 2
+                   "for (i = 1; i <= 2; i++) {\n" +     // line0 + 3
+                   "  a = i;\n" +                       // line0 + 4
+                   "}\n",                               // line0 + 5
+                   debuggee);
 }

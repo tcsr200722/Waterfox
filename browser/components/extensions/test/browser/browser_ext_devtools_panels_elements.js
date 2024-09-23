@@ -13,10 +13,8 @@ add_task(async function test_devtools_panels_elements_onSelectionChanged() {
   function devtools_page() {
     browser.devtools.panels.elements.onSelectionChanged.addListener(
       async () => {
-        const [
-          evalResult,
-          exceptionInfo,
-        ] = await browser.devtools.inspectedWindow.eval("$0 && $0.tagName");
+        const [evalResult, exceptionInfo] =
+          await browser.devtools.inspectedWindow.eval("$0 && $0.tagName");
 
         if (exceptionInfo) {
           browser.test.fail(
@@ -67,7 +65,7 @@ add_task(async function test_devtools_panels_elements_onSelectionChanged() {
 
   await extension.startup();
 
-  const { toolbox } = await openToolboxForTab(tab);
+  const toolbox = await openToolboxForTab(tab);
 
   await extension.awaitMessage("devtools_page_loaded");
 

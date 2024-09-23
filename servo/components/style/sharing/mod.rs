@@ -66,26 +66,24 @@
 
 use crate::applicable_declarations::ApplicableDeclarationBlock;
 use crate::bloom::StyleBloom;
-use crate::context::{SelectorFlagsMap, SharedStyleContext, StyleContext};
+use crate::computed_value_flags::ComputedValueFlags;
+use crate::context::{SharedStyleContext, StyleContext};
 use crate::dom::{SendElement, TElement};
-use crate::matching::MatchMethods;
 use crate::properties::ComputedValues;
 use crate::rule_tree::StrongRuleNode;
+use crate::selector_map::RelevantAttributes;
 use crate::style_resolver::{PrimaryStyle, ResolvedElementStyles};
 use crate::stylist::Stylist;
-use crate::Atom;
+use crate::values::AtomIdent;
 use atomic_refcell::{AtomicRefCell, AtomicRefMut};
-use owning_ref::OwningHandle;
-use selectors::matching::{ElementSelectorFlags, VisitedHandlingMode};
-use selectors::NthIndexCache;
-use servo_arc::Arc;
+use selectors::matching::{NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode};
 use smallbitvec::SmallBitVec;
 use smallvec::SmallVec;
 use std::marker::PhantomData;
-use std::mem::{self, ManuallyDrop};
+use std::mem;
 use std::ops::Deref;
 use std::ptr::NonNull;
-use uluru::{Entry, LRUCache};
+use uluru::LRUCache;
 
 mod checks;
 
@@ -118,6 +116,44 @@ impl OpaqueComputedValues {
     }
 }
 
+/// The results from the revalidation step.
+///
+/// Rather than either:
+///
+///  * Plainly rejecting sharing for elements with different attributes (which would be unfortunate
+///    because a lot of elements have different attributes yet those attributes are not
+///    style-relevant).
+///
+///  * Having to give up on per-attribute bucketing, which would be unfortunate because it
+///    increases the cost of revalidation for pages with lots of global attribute selectors (see
+///    bug 1868316).
+///
+///  * We also store the style-relevant attributes for these elements, in order to guarantee that
+///    we end up looking at the same selectors.
+///
+#[derive(Debug, Default)]
+pub struct RevalidationResult {
+    /// A bit for each selector matched. This is sound because we guarantee we look up into the
+    /// same buckets via the pre-revalidation checks and relevant_attributes.
+    pub selectors_matched: SmallBitVec,
+    /// The set of attributes of this element that were relevant for its style.
+    pub relevant_attributes: RelevantAttributes,
+}
+
+impl PartialEq for RevalidationResult {
+    fn eq(&self, other: &Self) -> bool {
+        if self.relevant_attributes != other.relevant_attributes {
+            return false;
+        }
+
+        // This assert "ensures", to some extent, that the two candidates have matched the
+        // same rulehash buckets, and as such, that the bits we're comparing represent the
+        // same set of selectors.
+        debug_assert_eq!(self.selectors_matched.len(), other.selectors_matched.len());
+        self.selectors_matched == other.selectors_matched
+    }
+}
+
 /// Some data we want to avoid recomputing all the time while trying to share
 /// style.
 #[derive(Debug, Default)]
@@ -126,13 +162,13 @@ pub struct ValidationData {
     ///
     /// TODO(emilio): Maybe check whether rules for these classes apply to the
     /// element?
-    class_list: Option<SmallVec<[Atom; 5]>>,
+    class_list: Option<SmallVec<[AtomIdent; 5]>>,
 
     /// The part list of this element.
     ///
     /// TODO(emilio): Maybe check whether rules with these part names apply to
     /// the element?
-    part_list: Option<SmallVec<[Atom; 5]>>,
+    part_list: Option<SmallVec<[AtomIdent; 5]>>,
 
     /// The list of presentational attributes of the element.
     pres_hints: Option<SmallVec<[ApplicableDeclarationBlock; 5]>>,
@@ -142,7 +178,7 @@ pub struct ValidationData {
 
     /// The cached result of matching this entry against the revalidation
     /// selectors.
-    revalidation_match_results: Option<SmallBitVec>,
+    revalidation_match_results: Option<RevalidationResult>,
 }
 
 impl ValidationData {
@@ -168,7 +204,7 @@ impl ValidationData {
     }
 
     /// Get or compute the part-list associated with this element.
-    pub fn part_list<E>(&mut self, element: E) -> &[Atom]
+    pub fn part_list<E>(&mut self, element: E) -> &[AtomIdent]
     where
         E: TElement,
     {
@@ -176,7 +212,7 @@ impl ValidationData {
             return &[];
         }
         self.part_list.get_or_insert_with(|| {
-            let mut list = SmallVec::<[Atom; 5]>::new();
+            let mut list = SmallVec::<[_; 5]>::new();
             element.each_part(|p| list.push(p.clone()));
             // See below for the reasoning.
             if !list.spilled() {
@@ -187,12 +223,12 @@ impl ValidationData {
     }
 
     /// Get or compute the class-list associated with this element.
-    pub fn class_list<E>(&mut self, element: E) -> &[Atom]
+    pub fn class_list<E>(&mut self, element: E) -> &[AtomIdent]
     where
         E: TElement,
     {
         self.class_list.get_or_insert_with(|| {
-            let mut list = SmallVec::<[Atom; 5]>::new();
+            let mut list = SmallVec::<[_; 5]>::new();
             element.each_class(|c| list.push(c.clone()));
             // Assuming there are a reasonable number of classes (we use the
             // inline capacity as "reasonable number"), sort them to so that
@@ -223,18 +259,17 @@ impl ValidationData {
     /// Computes the revalidation results if needed, and returns it.
     /// Inline so we know at compile time what bloom_known_valid is.
     #[inline]
-    fn revalidation_match_results<E, F>(
+    fn revalidation_match_results<E>(
         &mut self,
         element: E,
         stylist: &Stylist,
         bloom: &StyleBloom<E>,
-        nth_index_cache: &mut NthIndexCache,
+        selector_caches: &mut SelectorCaches,
         bloom_known_valid: bool,
-        flags_setter: &mut F,
-    ) -> &SmallBitVec
+        needs_selector_flags: NeedsSelectorFlags,
+    ) -> &RevalidationResult
     where
         E: TElement,
-        F: FnMut(&E, ElementSelectorFlags),
     {
         self.revalidation_match_results.get_or_insert_with(|| {
             // The bloom filter may already be set up for our element.
@@ -256,8 +291,8 @@ impl ValidationData {
             stylist.match_revalidation_selectors(
                 element,
                 bloom_to_use,
-                nth_index_cache,
-                flags_setter,
+                selector_caches,
+                needs_selector_flags,
             )
         })
     }
@@ -294,12 +329,12 @@ impl<E: TElement> Deref for StyleSharingCandidate<E> {
 
 impl<E: TElement> StyleSharingCandidate<E> {
     /// Get the classlist of this candidate.
-    fn class_list(&mut self) -> &[Atom] {
+    fn class_list(&mut self) -> &[AtomIdent] {
         self.validation_data.class_list(self.element)
     }
 
     /// Get the part list of this candidate.
-    fn part_list(&mut self) -> &[Atom] {
+    fn part_list(&mut self) -> &[AtomIdent] {
         self.validation_data.part_list(self.element)
     }
 
@@ -319,15 +354,17 @@ impl<E: TElement> StyleSharingCandidate<E> {
         &mut self,
         stylist: &Stylist,
         bloom: &StyleBloom<E>,
-        nth_index_cache: &mut NthIndexCache,
-    ) -> &SmallBitVec {
+        selector_caches: &mut SelectorCaches,
+    ) -> &RevalidationResult {
         self.validation_data.revalidation_match_results(
             self.element,
             stylist,
             bloom,
-            nth_index_cache,
+            selector_caches,
             /* bloom_known_valid = */ false,
-            &mut |_, _| {},
+            // The candidate must already have the right bits already, if
+            // needed.
+            NeedsSelectorFlags::No,
         )
     }
 }
@@ -361,11 +398,11 @@ impl<E: TElement> StyleSharingTarget<E> {
         }
     }
 
-    fn class_list(&mut self) -> &[Atom] {
+    fn class_list(&mut self) -> &[AtomIdent] {
         self.validation_data.class_list(self.element)
     }
 
-    fn part_list(&mut self) -> &[Atom] {
+    fn part_list(&mut self) -> &[AtomIdent] {
         self.validation_data.part_list(self.element)
     }
 
@@ -383,9 +420,8 @@ impl<E: TElement> StyleSharingTarget<E> {
         &mut self,
         stylist: &Stylist,
         bloom: &StyleBloom<E>,
-        nth_index_cache: &mut NthIndexCache,
-        selector_flags_map: &mut SelectorFlagsMap<E>,
-    ) -> &SmallBitVec {
+        selector_caches: &mut SelectorCaches,
+    ) -> &RevalidationResult {
         // It's important to set the selector flags. Otherwise, if we succeed in
         // sharing the style, we may not set the slow selector flags for the
         // right elements (which may not necessarily be |element|), causing
@@ -401,18 +437,13 @@ impl<E: TElement> StyleSharingTarget<E> {
         // The style sharing cache will get a hit for the second span. When the
         // child span is subsequently removed from the DOM, missing selector
         // flags would cause us to miss the restyle on the second span.
-        let element = self.element;
-        let mut set_selector_flags = |el: &E, flags: ElementSelectorFlags| {
-            element.apply_selector_flags(selector_flags_map, el, flags);
-        };
-
         self.validation_data.revalidation_match_results(
             self.element,
             stylist,
             bloom,
-            nth_index_cache,
+            selector_caches,
             /* bloom_known_valid = */ true,
-            &mut set_selector_flags,
+            NeedsSelectorFlags::Yes,
         )
     }
 
@@ -423,9 +454,8 @@ impl<E: TElement> StyleSharingTarget<E> {
     ) -> Option<ResolvedElementStyles> {
         let cache = &mut context.thread_local.sharing_cache;
         let shared_context = &context.shared;
-        let selector_flags_map = &mut context.thread_local.selector_flags;
         let bloom_filter = &context.thread_local.bloom_filter;
-        let nth_index_cache = &mut context.thread_local.nth_index_cache;
+        let selector_caches = &mut context.thread_local.selector_caches;
 
         if cache.dom_depth != bloom_filter.matching_depth() {
             debug!(
@@ -441,13 +471,7 @@ impl<E: TElement> StyleSharingTarget<E> {
             self.element.traversal_parent()
         );
 
-        cache.share_style_if_possible(
-            shared_context,
-            selector_flags_map,
-            bloom_filter,
-            nth_index_cache,
-            self,
-        )
+        cache.share_style_if_possible(shared_context, bloom_filter, selector_caches, self)
     }
 
     /// Gets the validation data used to match against this target, if any.
@@ -457,7 +481,7 @@ impl<E: TElement> StyleSharingTarget<E> {
 }
 
 struct SharingCacheBase<Candidate> {
-    entries: LRUCache<[Entry<Candidate>; SHARING_CACHE_SIZE]>,
+    entries: LRUCache<Candidate, SHARING_CACHE_SIZE>,
 }
 
 impl<Candidate> Default for SharingCacheBase<Candidate> {
@@ -470,11 +494,11 @@ impl<Candidate> Default for SharingCacheBase<Candidate> {
 
 impl<Candidate> SharingCacheBase<Candidate> {
     fn clear(&mut self) {
-        self.entries.evict_all();
+        self.entries.clear();
     }
 
     fn is_empty(&self) -> bool {
-        self.entries.num_entries() == 0
+        self.entries.len() == 0
     }
 }
 
@@ -505,12 +529,11 @@ impl<E: TElement> SharingCache<E> {
 /// [2] https://github.com/rust-lang/rust/issues/13707
 type SharingCache<E> = SharingCacheBase<StyleSharingCandidate<E>>;
 type TypelessSharingCache = SharingCacheBase<FakeCandidate>;
-type StoredSharingCache = Arc<AtomicRefCell<TypelessSharingCache>>;
 
 thread_local! {
     // See the comment on bloom.rs about why do we leak this.
-    static SHARING_CACHE_KEY: ManuallyDrop<StoredSharingCache> =
-        ManuallyDrop::new(Arc::new_leaked(Default::default()));
+    static SHARING_CACHE_KEY: &'static AtomicRefCell<TypelessSharingCache> =
+        Box::leak(Default::default());
 }
 
 /// An LRU cache of the last few nodes seen, so that we can aggressively try to
@@ -520,7 +543,7 @@ thread_local! {
 /// storing nodes here temporarily is safe.
 pub struct StyleSharingCache<E: TElement> {
     /// The LRU cache, with the type cast away to allow persisting the allocation.
-    cache_typeless: OwningHandle<StoredSharingCache, AtomicRefMut<'static, TypelessSharingCache>>,
+    cache_typeless: AtomicRefMut<'static, TypelessSharingCache>,
     /// Bind this structure to the lifetime of E, since that's what we effectively store.
     marker: PhantomData<SendElement<E>>,
     /// The DOM depth we're currently at.  This is used as an optimization to
@@ -563,9 +586,7 @@ impl<E: TElement> StyleSharingCache<E> {
             mem::align_of::<SharingCache<E>>(),
             mem::align_of::<TypelessSharingCache>()
         );
-        let cache_arc = SHARING_CACHE_KEY.with(|c| Arc::clone(&*c));
-        let cache =
-            OwningHandle::new_with_fn(cache_arc, |x| unsafe { x.as_ref() }.unwrap().borrow_mut());
+        let cache = SHARING_CACHE_KEY.with(|c| c.borrow_mut());
         debug_assert!(cache.is_empty());
 
         StyleSharingCache {
@@ -587,6 +608,7 @@ impl<E: TElement> StyleSharingCache<E> {
         style: &PrimaryStyle,
         validation_data_holder: Option<&mut StyleSharingTarget<E>>,
         dom_depth: usize,
+        shared_context: &SharedStyleContext,
     ) {
         let parent = match element.traversal_parent() {
             Some(element) => element,
@@ -596,8 +618,8 @@ impl<E: TElement> StyleSharingCache<E> {
             },
         };
 
-        if element.is_in_native_anonymous_subtree() {
-            debug!("Failing to insert into the cache: NAC");
+        if !element.matches_user_and_content_rules() {
+            debug!("Failing to insert into the cache: no tree rules:");
             return;
         }
 
@@ -619,7 +641,7 @@ impl<E: TElement> StyleSharingCache<E> {
         //   * Our computed style can still be affected by animations after we no
         //     longer match any animation rules, since removing animations involves
         //     a sequential task and an additional traversal.
-        if element.has_animations() {
+        if element.has_animations(shared_context) {
             debug!("Failing to insert to the cache: running animations");
             return;
         }
@@ -630,13 +652,13 @@ impl<E: TElement> StyleSharingCache<E> {
         //
         // These are things we don't check in the candidate match because they
         // are either uncommon or expensive.
-        let box_style = style.style().get_box();
-        if box_style.specifies_transitions() {
+        let ui_style = style.style().get_ui();
+        if ui_style.specifies_transitions() {
             debug!("Failing to insert to the cache: transitions");
             return;
         }
 
-        if box_style.specifies_animations() {
+        if ui_style.specifies_animations() {
             debug!("Failing to insert to the cache: animations");
             return;
         }
@@ -666,9 +688,8 @@ impl<E: TElement> StyleSharingCache<E> {
     fn share_style_if_possible(
         &mut self,
         shared_context: &SharedStyleContext,
-        selector_flags_map: &mut SelectorFlagsMap<E>,
         bloom_filter: &StyleBloom<E>,
-        nth_index_cache: &mut NthIndexCache,
+        selector_caches: &mut SelectorCaches,
         target: &mut StyleSharingTarget<E>,
     ) -> Option<ResolvedElementStyles> {
         if shared_context.options.disable_style_sharing_cache {
@@ -687,8 +708,8 @@ impl<E: TElement> StyleSharingCache<E> {
             return None;
         }
 
-        if target.is_in_native_anonymous_subtree() {
-            debug!("{:?} Cannot share style: NAC", target.element);
+        if !target.matches_user_and_content_rules() {
+            debug!("{:?} Cannot share style: content rules", target.element);
             return None;
         }
 
@@ -698,8 +719,8 @@ impl<E: TElement> StyleSharingCache<E> {
                 candidate,
                 &shared_context,
                 bloom_filter,
-                nth_index_cache,
-                selector_flags_map,
+                selector_caches,
+                shared_context,
             )
         })
     }
@@ -709,10 +730,10 @@ impl<E: TElement> StyleSharingCache<E> {
         candidate: &mut StyleSharingCandidate<E>,
         shared: &SharedStyleContext,
         bloom: &StyleBloom<E>,
-        nth_index_cache: &mut NthIndexCache,
-        selector_flags_map: &mut SelectorFlagsMap<E>,
+        selector_caches: &mut SelectorCaches,
+        shared_context: &SharedStyleContext,
     ) -> Option<ResolvedElementStyles> {
-        debug_assert!(!target.is_in_native_anonymous_subtree());
+        debug_assert!(target.matches_user_and_content_rules());
 
         // Check that we have the same parent, or at least that the parents
         // share styles and permit sharing across their children. The latter
@@ -770,23 +791,20 @@ impl<E: TElement> StyleSharingCache<E> {
             return None;
         }
 
-        if target.element.has_animations() {
+        if target.element.has_animations(shared_context) {
             trace!("Miss: Has Animations");
             return None;
         }
 
-        if target.matches_user_and_author_rules() !=
-            candidate.element.matches_user_and_author_rules()
+        if target.matches_user_and_content_rules() !=
+            candidate.element.matches_user_and_content_rules()
         {
             trace!("Miss: User and Author Rules");
             return None;
         }
 
         // It's possible that there are no styles for either id.
-        let may_match_different_id_rules =
-            checks::may_match_different_id_rules(shared, target.element, candidate.element);
-
-        if may_match_different_id_rules {
+        if checks::may_match_different_id_rules(shared, target.element, candidate.element) {
             trace!("Miss: ID Attr");
             return None;
         }
@@ -811,22 +829,10 @@ impl<E: TElement> StyleSharingCache<E> {
             return None;
         }
 
-        if !checks::revalidate(
-            target,
-            candidate,
-            shared,
-            bloom,
-            nth_index_cache,
-            selector_flags_map,
-        ) {
+        if !checks::revalidate(target, candidate, shared, bloom, selector_caches) {
             trace!("Miss: Revalidation");
             return None;
         }
-
-        debug_assert!(target.has_current_styles_for_traversal(
-            &candidate.element.borrow_data().unwrap(),
-            shared.traversal_flags,
-        ));
 
         debug!(
             "Sharing allowed between {:?} and {:?}",
@@ -868,25 +874,29 @@ impl<E: TElement> StyleSharingCache<E> {
             // NOTE(emilio): We only need to check name / namespace because we
             // do name-dependent style adjustments, like the display: contents
             // to display: none adjustment.
-            if target.namespace() != candidate.element.namespace() {
+            if target.namespace() != candidate.element.namespace() ||
+                target.local_name() != candidate.element.local_name()
+            {
                 return None;
             }
-            if target.local_name() != candidate.element.local_name() {
+            // When using container units, inherited style + rules matched aren't enough to
+            // determine whether the style is the same. We could actually do a full container
+            // lookup but for now we just check that our actual traversal parent matches.
+            if data
+                .styles
+                .primary()
+                .flags
+                .intersects(ComputedValueFlags::USES_CONTAINER_UNITS) &&
+                candidate.element.traversal_parent() != target.traversal_parent()
+            {
                 return None;
             }
-            // Rule nodes and styles are computed independent of the element's
-            // actual visitedness, but at the end of the cascade (in
-            // `adjust_for_visited`) we do store the visitedness as a flag in
-            // style.  (This is a subtle change from initial visited work that
-            // landed when computed values were fused, see
-            // https://bugzilla.mozilla.org/show_bug.cgi?id=1381635.)
-            // So at the moment, we need to additionally compare visitedness,
-            // since that is not accounted for by rule nodes alone.
-            // FIXME(jryans): This seems like it breaks the constant time
-            // requirements of visited, assuming we get a cache hit on only one
-            // of unvisited vs. visited.
-            // TODO(emilio): We no longer have such a flag, remove this check.
-            if target.is_visited_link() != candidate.element.is_visited_link() {
+            // Rule nodes and styles are computed independent of the element's actual visitedness,
+            // but at the end of the cascade (in `adjust_for_visited`) we do store the
+            // RELEVANT_LINK_VISITED flag, so we can't share by rule node between visited and
+            // unvisited styles. We don't check for visitedness and just refuse to share for links
+            // entirely, so that visitedness doesn't affect timing.
+            if target.is_link() || candidate.element.is_link() {
                 return None;
             }
 

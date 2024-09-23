@@ -13,11 +13,16 @@ crashes-id = Report ID
 crashes-send-date = Submitted
 crashes-all-reports = All Crash Reports
 crashes-no-config = This application has not been configured to display crash reports.
-extensions-title = Extensions
-extensions-name = Name
-extensions-enabled = Enabled
-extensions-version = Version
-extensions-id = ID
+support-addons-title = Add-ons
+support-addons-name = Name
+support-addons-type = Type
+support-addons-enabled = Enabled
+support-addons-version = Version
+support-addons-id = ID
+legacy-user-stylesheets-title = Legacy User Stylesheets
+legacy-user-stylesheets-enabled = Active
+legacy-user-stylesheets-stylesheet-types = Stylesheets
+legacy-user-stylesheets-no-stylesheets-found = No stylesheets found
 security-software-title = Security Software
 security-software-type = Type
 security-software-name = Name
@@ -53,28 +58,48 @@ app-basics-profile-dir =
         [linux] Profile Directory
        *[other] Profile Folder
     }
-app-basics-enabled-plugins = Enabled Plugins
 app-basics-build-config = Build Configuration
 app-basics-user-agent = User Agent
 app-basics-os = OS
+app-basics-os-theme = OS Theme
+# Rosetta is Apple's translation process to run apps containing x86_64
+# instructions on Apple Silicon. This should remain in English.
+app-basics-rosetta = Rosetta Translated
 app-basics-memory-use = Memory Use
 app-basics-performance = Performance
 app-basics-service-workers = Registered Service Workers
+app-basics-third-party = Third-party Modules
 app-basics-profiles = Profiles
 app-basics-launcher-process-status = Launcher Process
 app-basics-multi-process-support = Multiprocess Windows
+app-basics-fission-support = Fission Windows
 app-basics-remote-processes-count = Remote Processes
 app-basics-enterprise-policies = Enterprise Policies
 app-basics-location-service-key-google = Google Location Service Key
 app-basics-safebrowsing-key-google = Google Safebrowsing Key
 app-basics-key-mozilla = Mozilla Location Service Key
 app-basics-safe-mode = Safe Mode
+app-basics-memory-size = Memory Size (RAM)
+app-basics-disk-available = Disk Space Available
+app-basics-pointing-devices = Pointing Devices
+
+# Variables:
+#   $value (number) - Amount of data being stored
+#   $unit (string) - The unit of data being stored (e.g. MB)
+app-basics-data-size = { $value } { $unit }
+
 show-dir-label =
     { PLATFORM() ->
         [macos] Show in Finder
         [windows] Open Folder
        *[other] Open Directory
     }
+environment-variables-title = Environment Variables
+environment-variables-name = Name
+environment-variables-value = Value
+experimental-features-title = Experimental Features
+experimental-features-name = Name
+experimental-features-value = Value
 modified-key-prefs-title = Important Modified Preferences
 modified-prefs-name = Name
 modified-prefs-value = Value
@@ -92,11 +117,21 @@ graphics-gpu2-title = GPU #2
 graphics-decision-log-title = Decision Log
 graphics-crash-guards-title = Crash Guard Disabled Features
 graphics-workarounds-title = Workarounds
+graphics-device-pixel-ratios = Window Device Pixel Ratios
 # Windowing system in use on Linux (e.g. X11, Wayland).
 graphics-window-protocol = Window Protocol
 # Desktop environment in use on Linux (e.g. GNOME, KDE, XFCE, etc).
 graphics-desktop-environment = Desktop Environment
 place-database-title = Places Database
+place-database-stats = Statistics
+place-database-stats-show = Show Statistics
+place-database-stats-hide = Hide Statistics
+place-database-stats-entity = Entity
+place-database-stats-count = Count
+place-database-stats-size-kib = Size (KiB)
+place-database-stats-size-perc = Size (%)
+place-database-stats-efficiency-perc = Efficiency (%)
+place-database-stats-sequentiality-perc = Sequentiality (%)
 place-database-integrity = Integrity
 place-database-verify-integrity = Verify Integrity
 a11y-title = Accessibility
@@ -116,8 +151,13 @@ sandbox-sys-call-tid = TID
 sandbox-sys-call-proc-type = Process Type
 sandbox-sys-call-number = Syscall
 sandbox-sys-call-args = Arguments
-safe-mode-title = Try Safe Mode
-restart-in-safe-mode-label = Restart with Add-ons Disabled…
+troubleshoot-mode-title = Diagnose issues
+restart-in-troubleshoot-mode-label = Troubleshoot Mode…
+clear-startup-cache-title = Try clearing the startup cache
+clear-startup-cache-label = Clear startup cache…
+startup-cache-dialog-title2 = Restart { -brand-short-name } to clear startup cache?
+startup-cache-dialog-body2 = This will not change your settings or remove extensions.
+restart-button-label = Restart
 
 ## Media titles
 
@@ -138,8 +178,37 @@ media-device-channels = Channels
 media-device-rate = Rate
 media-device-latency = Latency
 media-capabilities-title = Media Capabilities
+media-codec-support-info = Codec Support Information
 # List all the entries of the database.
 media-capabilities-enumerate = Enumerate database
+
+## Codec support table
+
+media-codec-support-sw-decoding = Software Decoding
+media-codec-support-hw-decoding = Hardware Decoding
+media-codec-support-codec-name = Codec Name
+media-codec-support-supported = Supported
+media-codec-support-unsupported = Unsupported
+media-codec-support-error = Codec support information unavailable. Try again after playing back a media file.
+media-codec-support-lack-of-extension = Install extension
+
+## Media Content Decryption Modules (CDM)
+## See EME Spec for more explanation for following technical terms
+## https://w3c.github.io/encrypted-media/
+
+media-content-decryption-modules-title = Content Decryption Modules Information
+media-key-system-name = Key System Name
+media-video-robustness = Video Robustness
+media-audio-robustness = Audio Robustness
+media-cdm-capabilities = Capabilities
+# Clear Lead isn't defined in the spec, which means the the first few seconds
+# are not encrypted. It allows playback to start without having to wait for
+# license response, improving video start time and user experience.
+media-cdm-clear-lead = Clear Lead
+# We choose 2.2 as this is the version which the video provider usually want to have in order to stream 4K video securely
+# HDCP version https://w3c.github.io/encrypted-media/#idl-def-hdcpversion
+media-hdcp-22-compatible = HDCP 2.2 Compatible
+
 ##
 
 intl-title = Internationalization & Localization
@@ -164,6 +233,7 @@ intl-regional-prefs = Regional Preferences
 remote-debugging-title = Remote Debugging (Chromium Protocol)
 remote-debugging-accepting-connections = Accepting Connections
 remote-debugging-url = URL
+
 ##
 
 # Variables
@@ -210,6 +280,7 @@ raw-data-copied = Raw data copied to clipboard
 text-copied = Text copied to clipboard
 
 ## The verb "blocked" here refers to a graphics feature such as "Direct2D" or "OpenGL layers".
+
 blocked-driver = Blocked for your graphics driver version.
 blocked-gfx-card = Blocked for your graphics card because of unresolved driver issues.
 blocked-os-version = Blocked for your operating system version.
@@ -223,6 +294,7 @@ try-newer-driver = Blocked for your graphics driver version. Try updating your g
 clear-type-parameters = ClearType Parameters
 
 compositing = Compositing
+support-font-determination = Font Visibility Debug Info
 hardware-h264 = Hardware H264 Decoding
 main-thread-no-omtc = main thread, no OMTC
 yes = Yes
@@ -233,6 +305,7 @@ virtual-monitor-disp = Virtual Monitor Display
 ## The following strings indicate if an API key has been found.
 ## In some development versions, it's expected for some API keys that they are
 ## not found.
+
 found = Found
 missing = Missing
 
@@ -258,19 +331,18 @@ webgl2-renderer = WebGL 2 Driver Renderer
 webgl2-version = WebGL 2 Driver Version
 webgl2-driver-extensions = WebGL 2 Driver Extensions
 webgl2-extensions = WebGL 2 Extensions
-blocklisted-bug = Blocklisted due to known issues
+webgpu-default-adapter = WebGPU Default Adapter
+webgpu-fallback-adapter = WebGPU Fallback Adapter
 
 # Variables
-# $bugNumber (string) - String of bug number from Bugzilla
-bug-link = bug { $bugNumber }
+#   $bugNumber (string) - Bug number on Bugzilla
+support-blocklisted-bug = Blocklisted due to known issues: <a data-l10n-name="bug-link">bug { $bugNumber }</a>
 
 # Variables
 # $failureCode (string) - String that can be searched in the source tree.
 unknown-failure = Blocklisted; failure code { $failureCode }
 
 d3d11layers-crash-guard = D3D11 Compositor
-d3d11video-crash-guard = D3D11 Video Decoder
-d3d9video-crash-guard = D3D9 Video Decoder
 glcontext-crash-guard = OpenGL
 wmfvpxvideo-crash-guard = WMF VPX Video Decoder
 
@@ -295,6 +367,8 @@ can-sandbox-content = Content Process Sandboxing
 can-sandbox-media = Media Plugin Sandboxing
 content-sandbox-level = Content Process Sandbox Level
 effective-content-sandbox-level = Effective Content Process Sandbox Level
+content-win32k-lockdown-state = Win32k Lockdown State for Content Process
+support-sandbox-gpu-level = GPU Process Sandbox Level
 sandbox-proc-type-content = content
 sandbox-proc-type-file = file content
 sandbox-proc-type-media-plugin = media plugin
@@ -315,14 +389,21 @@ launcher-process-status-unknown = Unknown status
 # $remoteWindows (integer) - Number of remote windows
 # $totalWindows (integer) - Number of total windows
 multi-process-windows = { $remoteWindows }/{ $totalWindows }
-multi-process-status-0 = Enabled by user
-multi-process-status-1 = Enabled by default
-multi-process-status-2 = Disabled
-multi-process-status-4 = Disabled by accessibility tools
-multi-process-status-6 = Disabled by unsupported text input
-multi-process-status-7 = Disabled by add-ons
-multi-process-status-8 = Disabled forcibly
-multi-process-status-unknown = Unknown status
+# Variables
+# $fissionWindows (integer) - Number of remote windows
+# $totalWindows (integer) - Number of total windows
+fission-windows = { $fissionWindows }/{ $totalWindows }
+fission-status-experiment-control = Disabled by experiment
+fission-status-experiment-treatment = Enabled by experiment
+fission-status-disabled-by-e10s-env = Disabled by environment
+fission-status-enabled-by-env = Enabled by environment
+fission-status-disabled-by-env = Disabled by environment
+fission-status-enabled-by-default = Enabled by default
+fission-status-disabled-by-default = Disabled by default
+fission-status-enabled-by-user-pref = Enabled by user
+fission-status-disabled-by-user-pref = Disabled by user
+fission-status-disabled-by-e10s-other = E10s disabled
+fission-status-enabled-by-rollout = Enabled by phased rollout
 
 async-pan-zoom = Asynchronous Pan/Zoom
 apz-none = none
@@ -335,10 +416,65 @@ zooming-enabled = smooth pinch-zoom enabled
 
 ## Variables
 ## $preferenceKey (string) - String ID of preference
+
 wheel-warning = async wheel input disabled due to unsupported pref: { $preferenceKey }
 touch-warning = async touch input disabled due to unsupported pref: { $preferenceKey }
 
 ## Strings representing the status of the Enterprise Policies engine.
+
 policies-inactive = Inactive
 policies-active = Active
 policies-error = Error
+
+## Printing section
+
+support-printing-title = Printing
+support-printing-troubleshoot = Troubleshooting
+support-printing-clear-settings-button = Clear saved print settings
+support-printing-modified-settings = Modified print settings
+support-printing-prefs-name = Name
+support-printing-prefs-value = Value
+
+## Remote Settings sections
+
+support-remote-settings-title = Remote Settings
+support-remote-settings-status = Status
+support-remote-settings-status-ok = OK
+# Status when synchronization is not working.
+support-remote-settings-status-broken = Not working
+support-remote-settings-last-check = Last check
+support-remote-settings-local-timestamp = Local timestamp
+support-remote-settings-sync-history = History
+support-remote-settings-sync-history-status = Status
+support-remote-settings-sync-history-datetime = Date
+support-remote-settings-sync-history-infos = Infos
+
+## Normandy sections
+
+support-remote-experiments-title = Remote Experiments
+support-remote-experiments-name = Name
+support-remote-experiments-branch = Experiment Branch
+support-remote-experiments-see-about-studies = See <a data-l10n-name="support-about-studies-link">about:studies</a> for more information, including how to disable individual experiments or to disable { -brand-short-name } from running this type of experiment in the future.
+
+support-remote-features-title = Remote Features
+support-remote-features-name = Name
+support-remote-features-status = Status
+
+## Pointing devices
+
+pointing-device-mouse = Mouse
+pointing-device-touchscreen = Touchscreen
+pointing-device-pen-digitizer = Pen Digitizer
+pointing-device-none = No pointing devices
+
+## Content Analysis (DLP)
+
+# DLP stands for Data Loss Prevention, an industry term for external software
+# that enterprises can set up to prevent sensitive data from being transferred
+# to external websites.
+content-analysis-title = Content Analysis (DLP)
+content-analysis-active = Active
+content-analysis-connected-to-agent = Connected to Agent
+content-analysis-agent-path = Agent Path
+content-analysis-agent-failed-signature-verification = Agent Failed Signature Verification
+content-analysis-request-count = Request Count

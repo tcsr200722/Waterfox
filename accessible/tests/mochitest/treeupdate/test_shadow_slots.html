@@ -55,7 +55,7 @@
 
     async function changeSlotFlat() {
       await _dynamicShadowTest("changeSlotFlat",
-        (container, host) => {
+        (container) => {
           container.querySelector('.red').removeAttribute('slot');
           container.querySelector('.green').setAttribute('slot', 'myslot');
         }, { SECTION: [{ SECTION: [{ name: "green"} ] }] });
@@ -63,7 +63,7 @@
 
     async function changeSlotOneDeep() {
       await _dynamicShadowTest("changeSlotOneDeep",
-        (container, host) => {
+        (container) => {
           container.querySelector('.red').removeAttribute('slot');
           container.querySelector('.green').setAttribute('slot', 'myslot');
         }, { SECTION: [{ SECTION: [{ SECTION: [{ name: "green"} ] }] }] }, ["shadowdiv"]);
@@ -72,12 +72,31 @@
     // Nested roots and slots
     async function changeSlotNested() {
       await _dynamicShadowTest("changeSlotNested",
-        (container, host) => {
+        (container) => {
           testAccessibleTree(getNode("changeSlotNested"),
             { SECTION: [{ SECTION: [{ SECTION: [{ name: "red"} ] }] }] });
           container.querySelector('.red').removeAttribute('slot');
           container.querySelector('.green').setAttribute('slot', 'myslot');
         }, { SECTION: [{ SECTION: [{ SECTION: [{ name: "green"} ] }] }] }, ["shadowdiv"]);
+    }
+
+    async function changeSlotSingleChild() {
+      await _dynamicShadowTest("changeSlotSingleChild",
+        (container) => {
+          container.querySelector('.red').setAttribute('slot', 'invalid');
+        }, { SECTION: [{ SECTION: [] }] });
+    }
+
+    async function changeSlotNoShadow() {
+      await _dynamicShadowTest("changeSlotNoShadow",
+        (container) => {
+          // Make sure changing the slot attribute doesn't remove an element
+          // even when it remains in the flat tree.
+          container.querySelector('.red').setAttribute('slot', 'invalid');
+          // We need a reorder to know when we're done here, so remove another
+          // child.
+          container.querySelector('.green').remove();
+        }, { SECTION: [{ SECTION: [{ name: "red"} ] }] });
     }
 
     // Dynamic mutations to both shadow root and shadow host subtrees
@@ -168,7 +187,25 @@
         (container, host) => {
           host.shadowRoot.getElementById("slot").remove();
       }, { SECTION: [{ SECTION: [{ name: "green"} ] }] });
+    }
 
+    function shadowProcessInvalidation() {
+      testAccessibleTree("shadowProcessInvalidation",
+      { SECTION: [{
+          SECTION: [{
+            SECTION: [{ TEXT_LEAF: { name: "Hello "} },
+                      { TEXT: [{ TEXT_LEAF: { name: "World"} }] },
+                      { PUSHBUTTON: { name: "World"} }]
+          }]
+        }]
+      });
+    }
+
+    async function justAttachShadow() {
+      await _dynamicShadowTest("justAttachShadow",
+        (container, host) => {
+          host.attachShadow({ mode: "open" });
+        }, { SECTION: [{ SECTION: [] }] });
     }
 
     async function doTest() {
@@ -181,6 +218,10 @@
       await changeSlotOneDeep();
 
       await changeSlotNested();
+
+      await changeSlotSingleChild();
+
+      await changeSlotNoShadow();
 
       await assignSlotDynamic();
 
@@ -201,6 +242,10 @@
       await shadowReassignDynamic_3();
 
       await shadowReassignDynamic_4();
+
+      shadowProcessInvalidation();
+
+      await justAttachShadow();
 
       SimpleTest.finish();
     }
@@ -273,7 +318,7 @@
     </script>
   </div>
 
-    <div id="changeSlotNested">
+  <div id="changeSlotNested">
     <template class="shadowtree outer">
       <div id="shadowdiv">
         <slot name="myslot">FAIL</slot>
@@ -303,6 +348,28 @@
             content.cloneNode(true));
       })();
     </script>
+  </div>
+
+  <div id="changeSlotSingleChild">
+    <template class="shadowtree">
+      <style>::slotted(div) { width: 100px; height: 100px }</style>
+      <slot></slot>
+    </template>
+    <section class="host">
+      <div class="red" style="background: red" aria-label="red"></div>
+    </section>
+    <script>
+      document.querySelector("#changeSlotSingleChild > .host")
+        .attachShadow({ mode: "open" })
+        .appendChild(document.querySelector("#changeSlotSingleChild > .shadowtree").content.cloneNode(true));
+    </script>
+  </div>
+
+  <div id="changeSlotNoShadow">
+    <section class="host">
+      <div class="red" style="background: red; width: 100px; height: 100px;" aria-label="red"></div>
+      <div class="green" style="background: green; width: 100px; height: 100px;" aria-label="green"></div>
+    </section>
   </div>
 
   <div id="assignSlotDynamic">
@@ -460,6 +527,26 @@
         .attachShadow({ mode: "open" })
         .appendChild(document.querySelector("#shadowReassignDynamic_4 > .shadowtree").content.cloneNode(true));
     </script>
+  </div>
+
+  <div id="shadowProcessInvalidation">
+    <template class="shadowtree">
+      <div id="shadowdiv">
+        <slot></slot>
+      </div>
+    </template>
+    <section class="host">Hello <span id="c">World</span><button aria-labelledby="c"></button></section>
+    <script>
+      document.querySelector("#shadowProcessInvalidation > .host")
+        .attachShadow({ mode: "open" })
+        .appendChild(document.querySelector("#shadowProcessInvalidation > .shadowtree").content.cloneNode(true));
+    </script>
+  </div>
+
+  <div id="justAttachShadow">
+    <section class="host">
+      <button></button>
+    </section>
   </div>
 
   <div id="eventdump"></div>

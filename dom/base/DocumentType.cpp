@@ -33,8 +33,7 @@ already_AddRefed<mozilla::dom::DocumentType> NS_NewDOMDocumentType(
   return docType.forget();
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* DocumentType::WrapNode(JSContext* cx,
                                  JS::Handle<JSObject*> aGivenProto) {
@@ -55,8 +54,6 @@ DocumentType::DocumentType(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
 }
 
 DocumentType::~DocumentType() = default;
-
-bool DocumentType::IsNodeOfType(uint32_t aFlags) const { return false; }
 
 const nsTextFragment* DocumentType::GetText() { return nullptr; }
 
@@ -80,5 +77,4 @@ already_AddRefed<CharacterData> DocumentType::CloneDataNode(
       do_AddRef(aNodeInfo), mPublicId, mSystemId, mInternalSubset));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

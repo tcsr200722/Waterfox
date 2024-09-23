@@ -10,11 +10,12 @@ const {
   runTest,
   testSetup,
   testTeardown,
-} = require("../head");
+  waitForTick,
+} = require("damp-test/tests/head");
 
 const TEST_NAME = "console.autocomplete";
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(`data:text/html,<meta charset=utf8><script>
     /*
      * Create an object with a null prototype in order to not have the autocomplete
@@ -59,6 +60,7 @@ async function triggerAutocompletePopupAndUpdate(jsterm) {
   const onPopupUpdated = jsterm.once("autocomplete-updated");
   setJsTermValueForCompletion(jsterm, "window.autocompleteTest.item9");
   await onPopupUpdated;
+  await waitForTick();
 }
 
 const LONG_INPUT_PREFIX = `var data = [ ${"{ hello : 'world', foo: [ 1, 2, 3] }, ".repeat(
@@ -76,10 +78,11 @@ async function triggerAutocompletePopup(jsterm, withLongPrefix = false) {
   await onPopupOpened;
 }
 
-function hideAutocompletePopup(jsterm) {
+async function hideAutocompletePopup(jsterm) {
   let onPopUpClosed = jsterm.autocompletePopup.once("popup-closed");
   setJsTermValueForCompletion(jsterm, "");
-  return onPopUpClosed;
+  await onPopUpClosed;
+  await waitForTick();
 }
 
 function setJsTermValueForCompletion(jsterm, value) {

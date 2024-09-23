@@ -1,9 +1,8 @@
-// |reftest| skip -- Intl.DateTimeFormat-datetimestyle is not supported
 // Copyright 2018 Igalia, S.L. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: Checks the propagation of exceptions from the options for the DateTimeFormat constructor.
 features: [Intl.DateTimeFormat-datetimestyle]
 ---*/
@@ -13,9 +12,9 @@ features: [Intl.DateTimeFormat-datetimestyle]
 function CustomError() {}
 
 const options = [
-  // InitializeDateTimeFormat step 28
+  // CreateDateTimeFormat step 39 
   "dateStyle",
-  // InitializeDateTimeFormat step 30
+  // CreateDateTimeFormat step 41 
   "timeStyle",
 ];
 

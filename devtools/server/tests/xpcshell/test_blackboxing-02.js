@@ -3,8 +3,6 @@
 
 "use strict";
 
-/* eslint-disable no-shadow */
-
 /**
  * Test that we don't hit breakpoints in black boxed sources, and that when we
  * unblack box the source again, the breakpoint hasn't disappeared and we will
@@ -23,7 +21,7 @@ add_task(
     );
 
     threadFront.setBreakpoint({ sourceUrl: BLACK_BOXED_URL, line: 2 }, {});
-    threadFront.resume();
+    await threadFront.resume();
 
     // Test the breakpoint in the black boxed source
     const { error, sources } = await threadFront.getSources();
@@ -45,7 +43,7 @@ add_task(
       "We should pass over the breakpoint since the source is black boxed."
     );
 
-    threadFront.resume();
+    await threadFront.resume();
 
     // Test the breakpoint in the unblack boxed source
     await unBlackBox(sourceFront);
@@ -82,7 +80,7 @@ function evalCode(debuggee) {
   Cu.evalInSandbox(
     "" + function runTest() { // line 1
       doStuff(                // line 2
-        function(n) {         // line 3
+        function() {         // line 3
           debugger;           // line 5
         }                     // line 6
       );                      // line 7

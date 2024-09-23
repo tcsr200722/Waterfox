@@ -6,22 +6,20 @@
 
 #include "PerformanceTiming.h"
 #include "mozilla/BasePrincipal.h"
-#include "mozilla/dom/PerformanceTimingBinding.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/dom/PerformanceResourceTimingBinding.h"
+#include "mozilla/dom/PerformanceTimingBinding.h"
+#include "mozilla/glean/GleanMetrics.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeItem.h"
+#include "nsIHttpChannel.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Document.h"
 #include "nsITimedChannel.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PerformanceTiming, mPerformance)
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(PerformanceTiming, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(PerformanceTiming, Release)
 
 /* static */
 PerformanceTimingData* PerformanceTimingData::Create(
@@ -51,7 +49,7 @@ PerformanceTimingData* PerformanceTimingData::Create(
   // If the initiator type had no valid value, then set it to the default
   // ("other") value.
   if (aInitiatorType.IsEmpty()) {
-    aInitiatorType = NS_LITERAL_STRING("other");
+    aInitiatorType = u"other"_ns;
   }
 
   // According to the spec, "The name attribute must return the resolved URL
@@ -62,7 +60,7 @@ PerformanceTimingData* PerformanceTimingData::Create(
 
   nsAutoCString name;
   originalURI->GetSpec(name);
-  aEntryName = NS_ConvertUTF8toUTF16(name);
+  CopyUTF8toUTF16(name, aEntryName);
 
   // The nsITimedChannel argument will be used to gather all the timings.
   // The nsIHttpChannel argument will be used to check if any cross-origin
@@ -84,16 +82,16 @@ PerformanceTiming::PerformanceTiming(Performance* aPerformance,
       aChannel, aHttpChannel,
       nsRFPService::ReduceTimePrecisionAsMSecs(
           aZeroTime, aPerformance->GetRandomTimelineSeed(),
-          aPerformance->IsSystemPrincipal(),
-          aPerformance->CrossOriginIsolated())));
+          aPerformance->GetRTPCallerType())));
 
   // Non-null aHttpChannel implies that this PerformanceTiming object is being
   // used for subresources, which is irrelevant to this probe.
   if (!aHttpChannel && StaticPrefs::dom_enable_performance() &&
       IsTopLevelContentDocument()) {
-    Telemetry::Accumulate(Telemetry::TIME_TO_RESPONSE_START_MS,
-                          mTimingData->ResponseStartHighRes(aPerformance) -
-                              mTimingData->ZeroTime());
+    glean::performance_time::response_start.AccumulateRawDuration(
+        TimeDuration::FromMilliseconds(
+            mTimingData->ResponseStartHighRes(aPerformance) -
+            mTimingData->ZeroTime()));
   }
 }
 
@@ -109,15 +107,14 @@ PerformanceTimingData::PerformanceTimingData(nsITimedChannel* aChannel,
       mDecodedBodySize(0),
       mRedirectCount(0),
       mAllRedirectsSameOrigin(true),
-      mReportCrossOriginRedirect(true),
+      mAllRedirectsPassTAO(true),
       mSecureConnection(false),
       mTimingAllowed(true),
       mInitialized(false) {
   mInitialized = !!aChannel;
   mZeroTime = aZeroTime;
 
-  if (!StaticPrefs::dom_enable_performance() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance()) {
     mZeroTime = 0;
   }
 
@@ -138,6 +135,7 @@ PerformanceTimingData::PerformanceTimingData(nsITimedChannel* aChannel,
   if (aChannel) {
     aChannel->GetAsyncOpen(&mAsyncOpen);
     aChannel->GetAllRedirectsSameOrigin(&mAllRedirectsSameOrigin);
+    aChannel->GetAllRedirectsPassTimingAllowCheck(&mAllRedirectsPassTAO);
     aChannel->GetRedirectCount(&mRedirectCount);
     aChannel->GetRedirectStart(&mRedirectStart);
     aChannel->GetRedirectEnd(&mRedirectEnd);
@@ -203,6 +201,80 @@ PerformanceTimingData::PerformanceTimingData(nsITimedChannel* aChannel,
   if (aHttpChannel) {
     SetPropertiesFromHttpChannel(aHttpChannel, aChannel);
   }
+
+  bool renderBlocking = false;
+  if (aChannel) {
+    aChannel->GetRenderBlocking(&renderBlocking);
+  }
+  mRenderBlockingStatus = renderBlocking
+                              ? RenderBlockingStatusType::Blocking
+                              : RenderBlockingStatusType::Non_blocking;
+}
+
+PerformanceTimingData::PerformanceTimingData(
+    const IPCPerformanceTimingData& aIPCData)
+    : mNextHopProtocol(aIPCData.nextHopProtocol()),
+      mAsyncOpen(aIPCData.asyncOpen()),
+      mRedirectStart(aIPCData.redirectStart()),
+      mRedirectEnd(aIPCData.redirectEnd()),
+      mDomainLookupStart(aIPCData.domainLookupStart()),
+      mDomainLookupEnd(aIPCData.domainLookupEnd()),
+      mConnectStart(aIPCData.connectStart()),
+      mSecureConnectionStart(aIPCData.secureConnectionStart()),
+      mConnectEnd(aIPCData.connectEnd()),
+      mRequestStart(aIPCData.requestStart()),
+      mResponseStart(aIPCData.responseStart()),
+      mCacheReadStart(aIPCData.cacheReadStart()),
+      mResponseEnd(aIPCData.responseEnd()),
+      mCacheReadEnd(aIPCData.cacheReadEnd()),
+      mWorkerStart(aIPCData.workerStart()),
+      mWorkerRequestStart(aIPCData.workerRequestStart()),
+      mWorkerResponseEnd(aIPCData.workerResponseEnd()),
+      mZeroTime(aIPCData.zeroTime()),
+      mFetchStart(aIPCData.fetchStart()),
+      mEncodedBodySize(aIPCData.encodedBodySize()),
+      mTransferSize(aIPCData.transferSize()),
+      mDecodedBodySize(aIPCData.decodedBodySize()),
+      mRedirectCount(aIPCData.redirectCount()),
+      mRenderBlockingStatus(aIPCData.renderBlocking()
+                                ? RenderBlockingStatusType::Blocking
+                                : RenderBlockingStatusType::Non_blocking),
+      mAllRedirectsSameOrigin(aIPCData.allRedirectsSameOrigin()),
+      mAllRedirectsPassTAO(aIPCData.allRedirectsPassTAO()),
+      mSecureConnection(aIPCData.secureConnection()),
+      mTimingAllowed(aIPCData.timingAllowed()),
+      mInitialized(aIPCData.initialized()) {
+  for (const auto& serverTimingData : aIPCData.serverTiming()) {
+    RefPtr<nsServerTiming> timing = new nsServerTiming();
+    timing->SetName(serverTimingData.name());
+    timing->SetDuration(serverTimingData.duration());
+    timing->SetDescription(serverTimingData.description());
+    mServerTiming.AppendElement(timing);
+  }
+}
+
+IPCPerformanceTimingData PerformanceTimingData::ToIPC() {
+  nsTArray<IPCServerTiming> ipcServerTiming;
+  for (auto& serverTimingData : mServerTiming) {
+    nsAutoCString name;
+    Unused << serverTimingData->GetName(name);
+    double duration = 0;
+    Unused << serverTimingData->GetDuration(&duration);
+    nsAutoCString description;
+    Unused << serverTimingData->GetDescription(description);
+    ipcServerTiming.AppendElement(IPCServerTiming(name, duration, description));
+  }
+  bool renderBlocking =
+      mRenderBlockingStatus == RenderBlockingStatusType::Blocking;
+  return IPCPerformanceTimingData(
+      ipcServerTiming, mNextHopProtocol, mAsyncOpen, mRedirectStart,
+      mRedirectEnd, mDomainLookupStart, mDomainLookupEnd, mConnectStart,
+      mSecureConnectionStart, mConnectEnd, mRequestStart, mResponseStart,
+      mCacheReadStart, mResponseEnd, mCacheReadEnd, mWorkerStart,
+      mWorkerRequestStart, mWorkerResponseEnd, mZeroTime, mFetchStart,
+      mEncodedBodySize, mTransferSize, mDecodedBodySize, mRedirectCount,
+      renderBlocking, mAllRedirectsSameOrigin, mAllRedirectsPassTAO,
+      mSecureConnection, mTimingAllowed, mInitialized);
 }
 
 void PerformanceTimingData::SetPropertiesFromHttpChannel(
@@ -211,7 +283,7 @@ void PerformanceTimingData::SetPropertiesFromHttpChannel(
 
   nsAutoCString protocol;
   Unused << aHttpChannel->GetProtocolVersion(protocol);
-  mNextHopProtocol = NS_ConvertUTF8toUTF16(protocol);
+  CopyUTF8toUTF16(protocol, mNextHopProtocol);
 
   Unused << aHttpChannel->GetEncodedBodySize(&mEncodedBodySize);
   Unused << aHttpChannel->GetTransferSize(&mTransferSize);
@@ -221,9 +293,7 @@ void PerformanceTimingData::SetPropertiesFromHttpChannel(
   }
 
   mTimingAllowed = CheckAllowedOrigin(aHttpChannel, aChannel);
-  bool redirectsPassCheck = false;
-  aChannel->GetAllRedirectsPassTimingAllowCheck(&redirectsPassCheck);
-  mReportCrossOriginRedirect = mTimingAllowed && redirectsPassCheck;
+  aChannel->GetAllRedirectsPassTimingAllowCheck(&mAllRedirectsPassTAO);
 
   aChannel->GetNativeServerTiming(mServerTiming);
 }
@@ -235,8 +305,7 @@ DOMHighResTimeStamp PerformanceTimingData::FetchStartHighRes(
   MOZ_ASSERT(aPerformance);
 
   if (!mFetchStart) {
-    if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-        nsContentUtils::ShouldResistFingerprinting()) {
+    if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
       return mZeroTime;
     }
     MOZ_ASSERT(!mAsyncOpen.IsNull(),
@@ -252,7 +321,7 @@ DOMHighResTimeStamp PerformanceTimingData::FetchStartHighRes(
   }
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       mFetchStart, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::FetchStart() {
@@ -270,7 +339,7 @@ bool PerformanceTimingData::CheckAllowedOrigin(nsIHttpChannel* aResourceChannel,
 
   // TYPE_DOCUMENT loads have no loadingPrincipal.
   if (loadInfo->GetExternalContentPolicyType() ==
-      nsIContentPolicy::TYPE_DOCUMENT) {
+      ExtContentPolicy::TYPE_DOCUMENT) {
     return true;
   }
 
@@ -283,8 +352,7 @@ bool PerformanceTimingData::CheckAllowedOrigin(nsIHttpChannel* aResourceChannel,
 }
 
 uint8_t PerformanceTimingData::GetRedirectCount() const {
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return 0;
   }
   if (!mAllRedirectsSameOrigin) {
@@ -293,16 +361,21 @@ uint8_t PerformanceTimingData::GetRedirectCount() const {
   return mRedirectCount;
 }
 
-bool PerformanceTimingData::ShouldReportCrossOriginRedirect() const {
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+bool PerformanceTimingData::ShouldReportCrossOriginRedirect(
+    bool aEnsureSameOriginAndIgnoreTAO) const {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
+    return false;
+  }
+
+  if (!mTimingAllowed || mRedirectCount == 0) {
     return false;
   }
 
   // If the redirect count is 0, or if one of the cross-origin
   // redirects doesn't have the proper Timing-Allow-Origin header,
   // then RedirectStart and RedirectEnd will be set to zero
-  return (mRedirectCount != 0) && mReportCrossOriginRedirect;
+  return aEnsureSameOriginAndIgnoreTAO ? mAllRedirectsSameOrigin
+                                       : mAllRedirectsPassTAO;
 }
 
 DOMHighResTimeStamp PerformanceTimingData::AsyncOpenHighRes(
@@ -310,14 +383,14 @@ DOMHighResTimeStamp PerformanceTimingData::AsyncOpenHighRes(
   MOZ_ASSERT(aPerformance);
 
   if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting() || mAsyncOpen.IsNull()) {
+      mAsyncOpen.IsNull()) {
     return mZeroTime;
   }
   DOMHighResTimeStamp rawValue =
       TimeStampToDOMHighRes(aPerformance, mAsyncOpen);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMHighResTimeStamp PerformanceTimingData::WorkerStartHighRes(
@@ -325,14 +398,14 @@ DOMHighResTimeStamp PerformanceTimingData::WorkerStartHighRes(
   MOZ_ASSERT(aPerformance);
 
   if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting() || mWorkerStart.IsNull()) {
+      mWorkerStart.IsNull()) {
     return mZeroTime;
   }
   DOMHighResTimeStamp rawValue =
       TimeStampToDOMHighRes(aPerformance, mWorkerStart);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 /**
@@ -349,8 +422,7 @@ DOMHighResTimeStamp PerformanceTimingData::RedirectStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   return TimeStampToReducedDOMHighResOrFetchStart(aPerformance, mRedirectStart);
@@ -384,8 +456,7 @@ DOMHighResTimeStamp PerformanceTimingData::RedirectEndHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   return TimeStampToReducedDOMHighResOrFetchStart(aPerformance, mRedirectEnd);
@@ -408,9 +479,12 @@ DOMHighResTimeStamp PerformanceTimingData::DomainLookupStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
+  }
+  // Bug 1637985 - DomainLookup information may be useful for fingerprinting.
+  if (aPerformance->ShouldResistFingerprinting()) {
+    return FetchStartHighRes(aPerformance);
   }
   return TimeStampToReducedDOMHighResOrFetchStart(aPerformance,
                                                   mDomainLookupStart);
@@ -425,9 +499,12 @@ DOMHighResTimeStamp PerformanceTimingData::DomainLookupEndHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
+  }
+  // Bug 1637985 - DomainLookup information may be useful for fingerprinting.
+  if (aPerformance->ShouldResistFingerprinting()) {
+    return FetchStartHighRes(aPerformance);
   }
   // Bug 1155008 - nsHttpTransaction is racy. Return DomainLookupStart when null
   if (mDomainLookupEnd.IsNull()) {
@@ -437,7 +514,7 @@ DOMHighResTimeStamp PerformanceTimingData::DomainLookupEndHighRes(
       TimeStampToDOMHighRes(aPerformance, mDomainLookupEnd);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::DomainLookupEnd() {
@@ -449,8 +526,7 @@ DOMHighResTimeStamp PerformanceTimingData::ConnectStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   if (mConnectStart.IsNull()) {
@@ -460,7 +536,7 @@ DOMHighResTimeStamp PerformanceTimingData::ConnectStartHighRes(
       TimeStampToDOMHighRes(aPerformance, mConnectStart);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::ConnectStart() {
@@ -471,8 +547,7 @@ DOMHighResTimeStamp PerformanceTimingData::SecureConnectionStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   if (!mSecureConnection) {
@@ -480,13 +555,13 @@ DOMHighResTimeStamp PerformanceTimingData::SecureConnectionStartHighRes(
                // navigation start time.
   }
   if (mSecureConnectionStart.IsNull()) {
-    return mZeroTime;
+    return ConnectStartHighRes(aPerformance);
   }
   DOMHighResTimeStamp rawValue =
       TimeStampToDOMHighRes(aPerformance, mSecureConnectionStart);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::SecureConnectionStart() {
@@ -498,8 +573,7 @@ DOMHighResTimeStamp PerformanceTimingData::ConnectEndHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   // Bug 1155008 - nsHttpTransaction is racy. Return ConnectStart when null
@@ -510,7 +584,7 @@ DOMHighResTimeStamp PerformanceTimingData::ConnectEndHighRes(
       TimeStampToDOMHighRes(aPerformance, mConnectEnd);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::ConnectEnd() {
@@ -521,8 +595,7 @@ DOMHighResTimeStamp PerformanceTimingData::RequestStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
 
@@ -541,8 +614,7 @@ DOMHighResTimeStamp PerformanceTimingData::ResponseStartHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   if (mResponseStart.IsNull() ||
@@ -565,8 +637,7 @@ DOMHighResTimeStamp PerformanceTimingData::ResponseEndHighRes(
     Performance* aPerformance) {
   MOZ_ASSERT(aPerformance);
 
-  if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      nsContentUtils::ShouldResistFingerprinting()) {
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
   if (mResponseEnd.IsNull() ||
@@ -584,7 +655,7 @@ DOMHighResTimeStamp PerformanceTimingData::ResponseEndHighRes(
       TimeStampToDOMHighRes(aPerformance, mResponseEnd);
   return nsRFPService::ReduceTimePrecisionAsMSecs(
       rawValue, aPerformance->GetRandomTimelineSeed(),
-      aPerformance->IsSystemPrincipal(), aPerformance->CrossOriginIsolated());
+      aPerformance->GetRTPCallerType());
 }
 
 DOMTimeMilliSec PerformanceTiming::ResponseEnd() {
@@ -610,12 +681,11 @@ bool PerformanceTiming::IsTopLevelContentDocument() const {
 
 nsTArray<nsCOMPtr<nsIServerTiming>> PerformanceTimingData::GetServerTiming() {
   if (!StaticPrefs::dom_enable_performance() || !IsInitialized() ||
-      !TimingAllowed() || nsContentUtils::ShouldResistFingerprinting()) {
+      !TimingAllowed()) {
     return nsTArray<nsCOMPtr<nsIServerTiming>>();
   }
 
   return mServerTiming.Clone();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -20,23 +20,30 @@ class TRRServiceParent : public TRRServiceBase,
                          public nsSupportsWeakReference,
                          public PTRRServiceParent {
  public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSIPROXYCONFIGCHANGEDCALLBACK
 
-  explicit TRRServiceParent() : mTRRBLStorageInited(false) {}
+  TRRServiceParent() = default;
   void Init();
   void UpdateParentalControlEnabled();
   static void PrefsChanged(const char* aName, void* aSelf);
   void SetDetectedTrrURI(const nsACString& aURI);
   bool MaybeSetPrivateURI(const nsACString& aURI) override;
-  void GetTrrURI(nsACString& aURI);
+  void GetURI(nsACString& result) override;
+  mozilla::ipc::IPCResult RecvNotifyNetworkConnectivityServiceObservers(
+      const nsCString& aTopic);
+  mozilla::ipc::IPCResult RecvInitTRRConnectionInfo();
+  mozilla::ipc::IPCResult RecvSetConfirmationState(uint32_t aNewState);
+  uint32_t GetConfirmationState() { return mConfirmationState; }
+  virtual void ReadEtcHostsFile() override;
 
  private:
-  virtual ~TRRServiceParent() = default;
+  virtual ~TRRServiceParent();
   virtual void ActorDestroy(ActorDestroyReason why) override;
   void prefsChanged(const char* aName);
-
-  bool mTRRBLStorageInited;
+  void SetDefaultTRRConnectionInfo(nsHttpConnectionInfo* aConnInfo) override;
+  uint32_t mConfirmationState = 0;
 };
 
 }  // namespace net

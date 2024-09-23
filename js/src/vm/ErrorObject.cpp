@@ -10,40 +10,39 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/Maybe.h"
 
 #include <utility>
 
-#include "jsapi.h"
 #include "jsexn.h"
-#include "jsfriendapi.h"
-#include "jsnum.h"
 #include "jspubtd.h"
 #include "NamespaceImports.h"
 
-#include "builtin/Array.h"
 #include "gc/AllocKind.h"
-#include "gc/FreeOp.h"
-#include "gc/Rooting.h"
+#include "gc/GCContext.h"
 #include "js/CallArgs.h"
 #include "js/CallNonGenericMethod.h"
-#include "js/CharacterEncoding.h"
+#include "js/CharacterEncoding.h"  // JS::ConstUTF8CharsZ
 #include "js/Class.h"
+#include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"
-#include "js/ForOfIterator.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
 #include "js/PropertySpec.h"
 #include "js/RootingAPI.h"
+#include "js/Stack.h"
 #include "js/TypeDecls.h"
 #include "js/Utility.h"
 #include "js/Value.h"
 #include "js/Wrapper.h"
 #include "util/StringBuffer.h"
 #include "vm/GlobalObject.h"
-#include "vm/JSAtom.h"
+#include "vm/Iteration.h"
+#include "vm/JSAtomUtils.h"  // ClassName
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
 #include "vm/NativeObject.h"
-#include "vm/ObjectGroup.h"
 #include "vm/ObjectOperations.h"
 #include "vm/SavedStacks.h"
 #include "vm/SelfHosting.h"
@@ -52,21 +51,19 @@
 #include "vm/StringType.h"
 #include "vm/ToSource.h"  // js::ValueToSource
 
-#include "vm/ArrayObject-inl.h"
 #include "vm/JSContext-inl.h"
 #include "vm/JSObject-inl.h"
-#include "vm/NativeObject-inl.h"
 #include "vm/ObjectOperations-inl.h"
 #include "vm/SavedStacks-inl.h"
 #include "vm/Shape-inl.h"
 
 using namespace js;
 
-#define IMPLEMENT_ERROR_PROTO_CLASS(name)                        \
-  {                                                              \
-    js_Object_str, JSCLASS_HAS_CACHED_PROTO(JSProto_##name),     \
-        JS_NULL_CLASS_OPS,                                       \
-        &ErrorObject::classSpecs[JSProto_##name - JSProto_Error] \
+#define IMPLEMENT_ERROR_PROTO_CLASS(name)                         \
+  {                                                               \
+    #name ".prototype", JSCLASS_HAS_CACHED_PROTO(JSProto_##name), \
+        JS_NULL_CLASS_OPS,                                        \
+        &ErrorObject::classSpecs[JSProto_##name - JSProto_Error]  \
   }
 
 const JSClass ErrorObject::protoClasses[JSEXN_ERROR_LIMIT] = {
@@ -89,8 +86,8 @@ const JSClass ErrorObject::protoClasses[JSEXN_ERROR_LIMIT] = {
 static bool exn_toSource(JSContext* cx, unsigned argc, Value* vp);
 
 static const JSFunctionSpec error_methods[] = {
-    JS_FN(js_toSource_str, exn_toSource, 0, 0),
-    JS_SELF_HOSTED_FN(js_toString_str, "ErrorToString", 0, 0), JS_FS_END};
+    JS_FN("toSource", exn_toSource, 0, 0),
+    JS_SELF_HOSTED_FN("toString", "ErrorToString", 0, 0), JS_FS_END};
 
 // Error.prototype and NativeError.prototype have own .message and .name
 // properties.
@@ -103,16 +100,12 @@ static const JSPropertySpec error_properties[] = {
     JS_PSGS("stack", ErrorObject::getStack, ErrorObject::setStack, 0),
     JS_PS_END};
 
-static const JSPropertySpec AggregateError_properties[] = {
-    COMMON_ERROR_PROPERTIES(AggregateError),
-    // Only AggregateError.prototype has .errors!
-    JS_PSG("errors", AggregateErrorObject::getErrors, 0), JS_PS_END};
-
 #define IMPLEMENT_NATIVE_ERROR_PROPERTIES(name)       \
   static const JSPropertySpec name##_properties[] = { \
       COMMON_ERROR_PROPERTIES(name), JS_PS_END};
 
 IMPLEMENT_NATIVE_ERROR_PROPERTIES(InternalError)
+IMPLEMENT_NATIVE_ERROR_PROPERTIES(AggregateError)
 IMPLEMENT_NATIVE_ERROR_PROPERTIES(EvalError)
 IMPLEMENT_NATIVE_ERROR_PROPERTIES(RangeError)
 IMPLEMENT_NATIVE_ERROR_PROPERTIES(ReferenceError)
@@ -155,20 +148,26 @@ const ClassSpec ErrorObject::classSpecs[JSEXN_ERROR_LIMIT] = {
     IMPLEMENT_NONGLOBAL_ERROR_SPEC(LinkError),
     IMPLEMENT_NONGLOBAL_ERROR_SPEC(RuntimeError)};
 
-#define IMPLEMENT_ERROR_CLASS_FROM(clazz, name)                  \
+#define IMPLEMENT_ERROR_CLASS_CORE(name, reserved_slots)         \
   {                                                              \
-    js_Error_str, /* yes, really */                              \
+    #name,                                                       \
         JSCLASS_HAS_CACHED_PROTO(JSProto_##name) |               \
-            JSCLASS_HAS_RESERVED_SLOTS(clazz::RESERVED_SLOTS) |  \
+            JSCLASS_HAS_RESERVED_SLOTS(reserved_slots) |         \
             JSCLASS_BACKGROUND_FINALIZE,                         \
         &ErrorObjectClassOps,                                    \
         &ErrorObject::classSpecs[JSProto_##name - JSProto_Error] \
   }
 
 #define IMPLEMENT_ERROR_CLASS(name) \
-  IMPLEMENT_ERROR_CLASS_FROM(ErrorObject, name)
+  IMPLEMENT_ERROR_CLASS_CORE(name, ErrorObject::RESERVED_SLOTS)
 
-static void exn_finalize(JSFreeOp* fop, JSObject* obj);
+// Only used for classes that could be a Wasm trap. Classes that use this
+// macro should be kept in sync with the exception types that mightBeWasmTrap()
+// will return true for.
+#define IMPLEMENT_ERROR_CLASS_MAYBE_WASM_TRAP(name) \
+  IMPLEMENT_ERROR_CLASS_CORE(name, ErrorObject::RESERVED_SLOTS_MAYBE_WASM_TRAP)
+
+static void exn_finalize(JS::GCContext* gcx, JSObject* obj);
 
 static const JSClassOps ErrorObjectClassOps = {
     nullptr,       // addProperty
@@ -179,27 +178,26 @@ static const JSClassOps ErrorObjectClassOps = {
     nullptr,       // mayResolve
     exn_finalize,  // finalize
     nullptr,       // call
-    nullptr,       // hasInstance
     nullptr,       // construct
     nullptr,       // trace
 };
 
 const JSClass ErrorObject::classes[JSEXN_ERROR_LIMIT] = {
-    IMPLEMENT_ERROR_CLASS(Error), IMPLEMENT_ERROR_CLASS(InternalError),
-    IMPLEMENT_ERROR_CLASS_FROM(AggregateErrorObject, AggregateError),
-    IMPLEMENT_ERROR_CLASS(EvalError), IMPLEMENT_ERROR_CLASS(RangeError),
-    IMPLEMENT_ERROR_CLASS(ReferenceError), IMPLEMENT_ERROR_CLASS(SyntaxError),
-    IMPLEMENT_ERROR_CLASS(TypeError), IMPLEMENT_ERROR_CLASS(URIError),
+    IMPLEMENT_ERROR_CLASS(Error),
+    IMPLEMENT_ERROR_CLASS_MAYBE_WASM_TRAP(InternalError),
+    IMPLEMENT_ERROR_CLASS(AggregateError), IMPLEMENT_ERROR_CLASS(EvalError),
+    IMPLEMENT_ERROR_CLASS(RangeError), IMPLEMENT_ERROR_CLASS(ReferenceError),
+    IMPLEMENT_ERROR_CLASS(SyntaxError), IMPLEMENT_ERROR_CLASS(TypeError),
+    IMPLEMENT_ERROR_CLASS(URIError),
     // These Error subclasses are not accessible via the global object:
     IMPLEMENT_ERROR_CLASS(DebuggeeWouldRun),
     IMPLEMENT_ERROR_CLASS(CompileError), IMPLEMENT_ERROR_CLASS(LinkError),
-    IMPLEMENT_ERROR_CLASS(RuntimeError)};
+    IMPLEMENT_ERROR_CLASS_MAYBE_WASM_TRAP(RuntimeError)};
 
-static void exn_finalize(JSFreeOp* fop, JSObject* obj) {
-  MOZ_ASSERT(fop->maybeOnHelperThread());
+static void exn_finalize(JS::GCContext* gcx, JSObject* obj) {
   if (JSErrorReport* report = obj->as<ErrorObject>().getErrorReport()) {
     // Bug 1560019: This allocation is not currently tracked.
-    fop->deleteUntracked(report);
+    gcx->deleteUntracked(report);
   }
 }
 
@@ -215,18 +213,42 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
     }
   }
 
+  // Don't interpret the two parameters following the message parameter as the
+  // non-standard fileName and lineNumber arguments when we have an options
+  // object argument.
+  bool hasOptions = args.get(messageArg + 1).isObject();
+
+  Rooted<mozilla::Maybe<Value>> cause(cx, mozilla::Nothing());
+  if (hasOptions) {
+    RootedObject options(cx, &args[messageArg + 1].toObject());
+
+    bool hasCause = false;
+    if (!HasProperty(cx, options, cx->names().cause, &hasCause)) {
+      return nullptr;
+    }
+
+    if (hasCause) {
+      RootedValue causeValue(cx);
+      if (!GetProperty(cx, options, options, cx->names().cause, &causeValue)) {
+        return nullptr;
+      }
+      cause = mozilla::Some(causeValue.get());
+    }
+  }
+
   // Find the scripted caller, but only ones we're allowed to know about.
   NonBuiltinFrameIter iter(cx, cx->realm()->principals());
 
   RootedString fileName(cx);
   uint32_t sourceId = 0;
-  if (args.length() > messageArg + 1) {
+  if (!hasOptions && args.length() > messageArg + 1) {
     fileName = ToString<CanGC>(cx, args[messageArg + 1]);
   } else {
     fileName = cx->runtime()->emptyString;
     if (!iter.done()) {
       if (const char* cfilename = iter.filename()) {
-        fileName = JS_NewStringCopyZ(cx, cfilename);
+        fileName = JS_NewStringCopyUTF8Z(
+            cx, JS::ConstUTF8CharsZ(cfilename, strlen(cfilename)));
       }
       if (iter.hasScript()) {
         sourceId = iter.script()->scriptSource()->id();
@@ -237,14 +259,16 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
     return nullptr;
   }
 
-  uint32_t lineNumber, columnNumber = 0;
-  if (args.length() > messageArg + 2) {
+  uint32_t lineNumber;
+  JS::ColumnNumberOneOrigin columnNumber;
+  if (!hasOptions && args.length() > messageArg + 2) {
     if (!ToUint32(cx, args[messageArg + 2], &lineNumber)) {
       return nullptr;
     }
   } else {
-    lineNumber = iter.done() ? 0 : iter.computeLine(&columnNumber);
-    columnNumber = FixupColumnForDisplay(columnNumber);
+    JS::TaggedColumnNumberOneOrigin tmp;
+    lineNumber = iter.done() ? 0 : iter.computeLine(&tmp);
+    columnNumber = JS::ColumnNumberOneOrigin(tmp.oneOriginValue());
   }
 
   RootedObject stack(cx);
@@ -253,7 +277,7 @@ static ErrorObject* CreateErrorObject(JSContext* cx, const CallArgs& args,
   }
 
   return ErrorObject::create(cx, exnType, stack, fileName, sourceId, lineNumber,
-                             columnNumber, nullptr, message, proto);
+                             columnNumber, nullptr, message, cause, proto);
 }
 
 static bool Error(JSContext* cx, unsigned argc, Value* vp) {
@@ -287,30 +311,6 @@ static bool Error(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-static ArrayObject* IterableToArray(JSContext* cx, HandleValue iterable) {
-  JS::ForOfIterator iterator(cx);
-  if (!iterator.init(iterable, JS::ForOfIterator::ThrowOnNonIterable)) {
-    return nullptr;
-  }
-
-  RootedArrayObject array(cx, NewDenseEmptyArray(cx));
-
-  RootedValue nextValue(cx);
-  while (true) {
-    bool done;
-    if (!iterator.next(&nextValue, &done)) {
-      return nullptr;
-    }
-    if (done) {
-      return array;
-    }
-
-    if (!NewbornArrayPush(cx, array, nextValue)) {
-      return nullptr;
-    }
-  }
-}
-
 // AggregateError ( errors, message )
 static bool AggregateError(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -327,26 +327,31 @@ static bool AggregateError(JSContext* cx, unsigned argc, Value* vp) {
     return false;
   }
 
-  // Step 3 (Inlined IterableToList).
-
+  // TypeError anyway, but this gives a better error message.
   if (!args.requireAtLeast(cx, "AggregateError", 1)) {
     return false;
   }
 
-  RootedArrayObject errorsList(cx, IterableToArray(cx, args.get(0)));
-  if (!errorsList) {
-    return false;
-  }
-
   // 9.1.13 OrdinaryCreateFromConstructor, step 3.
-  // Step 5.
-  auto* obj = CreateErrorObject(cx, args, 1, JSEXN_AGGREGATEERR, proto);
+  // Step 3.
+  Rooted<ErrorObject*> obj(
+      cx, CreateErrorObject(cx, args, 1, JSEXN_AGGREGATEERR, proto));
   if (!obj) {
     return false;
   }
 
   // Step 4.
-  obj->as<AggregateErrorObject>().setAggregateErrors(errorsList);
+
+  Rooted<ArrayObject*> errorsList(cx);
+  if (!IterableToArray(cx, args.get(0), &errorsList)) {
+    return false;
+  }
+
+  // Step 5.
+  RootedValue errorsVal(cx, JS::ObjectValue(*errorsList));
+  if (!NativeDefineDataProperty(cx, obj, cx->names().errors, errorsVal, 0)) {
+    return false;
+  }
 
   // Step 6.
   args.rval().setObject(*obj);
@@ -400,7 +405,7 @@ JSObject* ErrorObject::createConstructor(JSContext* cx, JSProtoKey key) {
     ctor =
         NewFunctionWithProto(cx, native, nargs, FunctionFlags::NATIVE_CTOR,
                              nullptr, ClassName(key, cx), proto,
-                             gc::AllocKind::FUNCTION_EXTENDED, SingletonObject);
+                             gc::AllocKind::FUNCTION_EXTENDED, TenuredObject);
   }
 
   if (!ctor) {
@@ -412,20 +417,29 @@ JSObject* ErrorObject::createConstructor(JSContext* cx, JSProtoKey key) {
 }
 
 /* static */
-Shape* js::ErrorObject::assignInitialShape(JSContext* cx,
-                                           Handle<ErrorObject*> obj) {
+SharedShape* js::ErrorObject::assignInitialShape(JSContext* cx,
+                                                 Handle<ErrorObject*> obj) {
   MOZ_ASSERT(obj->empty());
 
-  if (!NativeObject::addDataProperty(cx, obj, cx->names().fileName,
-                                     FILENAME_SLOT, 0)) {
+  constexpr PropertyFlags propFlags = {PropertyFlag::Configurable,
+                                       PropertyFlag::Writable};
+
+  if (!NativeObject::addPropertyInReservedSlot(cx, obj, cx->names().fileName,
+                                               FILENAME_SLOT, propFlags)) {
     return nullptr;
   }
-  if (!NativeObject::addDataProperty(cx, obj, cx->names().lineNumber,
-                                     LINENUMBER_SLOT, 0)) {
+
+  if (!NativeObject::addPropertyInReservedSlot(cx, obj, cx->names().lineNumber,
+                                               LINENUMBER_SLOT, propFlags)) {
     return nullptr;
   }
-  return NativeObject::addDataProperty(cx, obj, cx->names().columnNumber,
-                                       COLUMNNUMBER_SLOT, 0);
+
+  if (!NativeObject::addPropertyInReservedSlot(
+          cx, obj, cx->names().columnNumber, COLUMNNUMBER_SLOT, propFlags)) {
+    return nullptr;
+  }
+
+  return obj->sharedShape();
 }
 
 /* static */
@@ -433,14 +447,17 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
                            JSExnType type, UniquePtr<JSErrorReport> errorReport,
                            HandleString fileName, HandleObject stack,
                            uint32_t sourceId, uint32_t lineNumber,
-                           uint32_t columnNumber, HandleString message) {
+                           JS::ColumnNumberOneOrigin columnNumber,
+                           HandleString message,
+                           Handle<mozilla::Maybe<JS::Value>> cause) {
+  MOZ_ASSERT(JSEXN_ERR <= type && type < JSEXN_ERROR_LIMIT);
   AssertObjectIsSavedFrameOrWrapper(cx, stack);
   cx->check(obj, stack);
 
   // Null out early in case of error, for exn_finalize's sake.
   obj->initReservedSlot(ERROR_REPORT_SLOT, PrivateValue(nullptr));
 
-  if (!EmptyShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
+  if (!SharedShape::ensureInitialCustomShape<ErrorObject>(cx, obj)) {
     return false;
   }
 
@@ -448,14 +465,25 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   // present in some error objects -- |Error.prototype|, |new Error("f")|,
   // |new Error("")| -- but not in others -- |new Error(undefined)|,
   // |new Error()|.
-  RootedShape messageShape(cx);
   if (message) {
-    messageShape = NativeObject::addDataProperty(cx, obj, cx->names().message,
-                                                 MESSAGE_SLOT, 0);
-    if (!messageShape) {
+    constexpr PropertyFlags propFlags = {PropertyFlag::Configurable,
+                                         PropertyFlag::Writable};
+    if (!NativeObject::addPropertyInReservedSlot(cx, obj, cx->names().message,
+                                                 MESSAGE_SLOT, propFlags)) {
       return false;
     }
-    MOZ_ASSERT(messageShape->slot() == MESSAGE_SLOT);
+  }
+
+  // Similar to the .message property, .cause is present only in some error
+  // objects -- |new Error("f", {cause: cause})| -- but not in other --
+  // |Error.prototype|, |new Error()|, |new Error("f")|.
+  if (cause.isSome()) {
+    constexpr PropertyFlags propFlags = {PropertyFlag::Configurable,
+                                         PropertyFlag::Writable};
+    if (!NativeObject::addPropertyInReservedSlot(cx, obj, cx->names().cause,
+                                                 CAUSE_SLOT, propFlags)) {
+      return false;
+    }
   }
 
   MOZ_ASSERT(obj->lookupPure(NameToId(cx->names().fileName))->slot() ==
@@ -467,20 +495,30 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
   MOZ_ASSERT_IF(
       message,
       obj->lookupPure(NameToId(cx->names().message))->slot() == MESSAGE_SLOT);
-
-  MOZ_ASSERT(JSEXN_ERR <= type && type < JSEXN_LIMIT);
+  MOZ_ASSERT_IF(
+      cause.isSome(),
+      obj->lookupPure(NameToId(cx->names().cause))->slot() == CAUSE_SLOT);
 
   JSErrorReport* report = errorReport.release();
-  obj->initReservedSlot(EXNTYPE_SLOT, Int32Value(type));
   obj->initReservedSlot(STACK_SLOT, ObjectOrNullValue(stack));
   obj->setReservedSlot(ERROR_REPORT_SLOT, PrivateValue(report));
   obj->initReservedSlot(FILENAME_SLOT, StringValue(fileName));
   obj->initReservedSlot(LINENUMBER_SLOT, Int32Value(lineNumber));
-  obj->initReservedSlot(COLUMNNUMBER_SLOT, Int32Value(columnNumber));
+  obj->initReservedSlot(COLUMNNUMBER_SLOT,
+                        Int32Value(columnNumber.oneOriginValue()));
   if (message) {
-    obj->setSlotWithType(cx, messageShape, StringValue(message));
+    obj->initReservedSlot(MESSAGE_SLOT, StringValue(message));
+  }
+  if (cause.isSome()) {
+    obj->initReservedSlot(CAUSE_SLOT, *cause.get());
+  } else {
+    obj->initReservedSlot(CAUSE_SLOT, MagicValue(JS_ERROR_WITHOUT_CAUSE));
   }
   obj->initReservedSlot(SOURCEID_SLOT, Int32Value(sourceId));
+  if (obj->mightBeWasmTrap()) {
+    MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(obj->getClass()) > WASM_TRAP_SLOT);
+    obj->initReservedSlot(WASM_TRAP_SLOT, BooleanValue(false));
+  }
 
   return true;
 }
@@ -489,9 +527,10 @@ bool js::ErrorObject::init(JSContext* cx, Handle<ErrorObject*> obj,
 ErrorObject* js::ErrorObject::create(JSContext* cx, JSExnType errorType,
                                      HandleObject stack, HandleString fileName,
                                      uint32_t sourceId, uint32_t lineNumber,
-                                     uint32_t columnNumber,
+                                     JS::ColumnNumberOneOrigin columnNumber,
                                      UniquePtr<JSErrorReport> report,
                                      HandleString message,
+                                     Handle<mozilla::Maybe<JS::Value>> cause,
                                      HandleObject protoArg /* = nullptr */) {
   AssertObjectIsSavedFrameOrWrapper(cx, stack);
 
@@ -515,7 +554,8 @@ ErrorObject* js::ErrorObject::create(JSContext* cx, JSExnType errorType,
   }
 
   if (!ErrorObject::init(cx, errObject, errorType, std::move(report), fileName,
-                         stack, sourceId, lineNumber, columnNumber, message)) {
+                         stack, sourceId, lineNumber, columnNumber, message,
+                         cause)) {
     return nullptr;
   }
 
@@ -536,11 +576,12 @@ JSErrorReport* js::ErrorObject::getOrCreateErrorReport(JSContext* cx) {
   report.exnType = type_;
 
   // Filename.
-  UniqueChars filenameStr = JS_EncodeStringToLatin1(cx, fileName(cx));
+  RootedString filename(cx, fileName(cx));
+  UniqueChars filenameStr = JS_EncodeStringToUTF8(cx, filename);
   if (!filenameStr) {
     return nullptr;
   }
-  report.filename = filenameStr.get();
+  report.filename = JS::ConstUTF8CharsZ(filenameStr.get());
 
   // Coordinates.
   report.sourceId = sourceId();
@@ -580,36 +621,30 @@ static bool FindErrorInstanceOrPrototype(JSContext* cx, HandleObject obj,
   //   (new NYI).stack
   // to continue returning stacks that are useless, but at least don't throw.
 
-  RootedObject target(cx, CheckedUnwrapStatic(obj));
-  if (!target) {
-    ReportAccessDenied(cx);
-    return false;
-  }
-
-  RootedObject proto(cx);
-  while (!IsErrorProtoKey(StandardProtoKeyOrNull(target))) {
-    if (!GetPrototype(cx, target, &proto)) {
-      return false;
-    }
-
-    if (!proto) {
-      // We walked the whole prototype chain and did not find an Error
-      // object.
-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                                JSMSG_INCOMPATIBLE_PROTO, js_Error_str,
-                                "(get stack)", obj->getClass()->name);
-      return false;
-    }
-
-    target = CheckedUnwrapStatic(proto);
+  RootedObject curr(cx, obj);
+  RootedObject target(cx);
+  do {
+    target = CheckedUnwrapStatic(curr);
     if (!target) {
       ReportAccessDenied(cx);
       return false;
     }
-  }
+    if (IsErrorProtoKey(StandardProtoKeyOrNull(target))) {
+      result.set(target);
+      return true;
+    }
 
-  result.set(target);
-  return true;
+    if (!GetPrototype(cx, curr, &curr)) {
+      return false;
+    }
+  } while (curr);
+
+  // We walked the whole prototype chain and did not find an Error
+  // object.
+  JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                            JSMSG_INCOMPATIBLE_PROTO, "Error", "(get stack)",
+                            obj->getClass()->name);
+  return false;
 }
 
 static MOZ_ALWAYS_INLINE bool IsObject(HandleValue v) { return v.isObject(); }
@@ -648,7 +683,7 @@ bool js::ErrorObject::getStack_impl(JSContext* cx, const CallArgs& args) {
   if (cx->runtime()->stackFormat() == js::StackFormat::V8) {
     // When emulating V8 stack frames, we also need to prepend the
     // stringified Error to the stack string.
-    HandlePropertyName name = cx->names().ErrorToStringWithTrailingNewline;
+    Handle<PropertyName*> name = cx->names().ErrorToStringWithTrailingNewline;
     FixedInvokeArgs<0> args2(cx);
     RootedValue rval(cx);
     if (!CallSelfHostedFunction(cx, name, args.thisv(), args2, &rval)) {
@@ -685,6 +720,12 @@ bool js::ErrorObject::setStack_impl(JSContext* cx, const CallArgs& args) {
   RootedValue val(cx, args[0]);
 
   return DefineDataProperty(cx, thisObj, cx->names().stack, val);
+}
+
+void js::ErrorObject::setFromWasmTrap() {
+  MOZ_ASSERT(mightBeWasmTrap());
+  MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(getClass()) > WASM_TRAP_SLOT);
+  setReservedSlot(WASM_TRAP_SLOT, BooleanValue(true));
 }
 
 JSString* js::ErrorToSource(JSContext* cx, HandleObject obj) {
@@ -756,7 +797,8 @@ JSString* js::ErrorToSource(JSContext* cx, HandleObject obj) {
  * Return a string that may eval to something similar to the original object.
  */
 static bool exn_toSource(JSContext* cx, unsigned argc, Value* vp) {
-  if (!CheckRecursionLimit(cx)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.check(cx)) {
     return false;
   }
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -772,73 +814,5 @@ static bool exn_toSource(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   args.rval().setString(str);
-  return true;
-}
-
-ArrayObject* js::AggregateErrorObject::aggregateErrors() const {
-  const Value& val = getReservedSlot(AGGREGATE_ERRORS_SLOT);
-  if (val.isUndefined()) {
-    return nullptr;
-  }
-  return &val.toObject().as<ArrayObject>();
-}
-
-void js::AggregateErrorObject::setAggregateErrors(ArrayObject* errors) {
-  MOZ_ASSERT(!aggregateErrors(),
-             "aggregated errors mustn't be modified once set");
-  setReservedSlot(AGGREGATE_ERRORS_SLOT, ObjectValue(*errors));
-}
-
-static inline bool IsAggregateError(HandleValue v) {
-  return v.isObject() && v.toObject().is<AggregateErrorObject>();
-}
-
-// get AggregateError.prototype.errors
-bool js::AggregateErrorObject::getErrors(JSContext* cx, unsigned argc,
-                                         Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-
-  // Steps 1-4.
-  return CallNonGenericMethod<IsAggregateError, getErrors_impl>(cx, args);
-}
-
-// get AggregateError.prototype.errors
-bool js::AggregateErrorObject::getErrors_impl(JSContext* cx,
-                                              const CallArgs& args) {
-  MOZ_ASSERT(IsAggregateError(args.thisv()));
-
-  auto* obj = &args.thisv().toObject().as<AggregateErrorObject>();
-
-  // Step 5.
-  // Create a copy of the [[AggregateErrors]] list.
-
-  RootedArrayObject errorsList(cx, obj->aggregateErrors());
-
-  // [[AggregateErrors]] may be absent when this error was created through
-  // JS_ReportError.
-  if (!errorsList) {
-    ArrayObject* result = NewDenseEmptyArray(cx);
-    if (!result) {
-      return false;
-    }
-
-    args.rval().setObject(*result);
-    return true;
-  }
-
-  uint32_t length = errorsList->length();
-
-  ArrayObject* result = NewDenseFullyAllocatedArray(cx, length);
-  if (!result) {
-    return false;
-  }
-
-  result->setLength(cx, length);
-
-  if (length > 0) {
-    result->initDenseElements(errorsList, 0, length);
-  }
-
-  args.rval().setObject(*result);
   return true;
 }

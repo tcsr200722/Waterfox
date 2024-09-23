@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CheckerboardEvent.h"
+#include "mozilla/Logging.h"
 
 #include <algorithm>  // for std::sort
 
@@ -20,14 +21,16 @@ namespace layers {
 
 const char* CheckerboardEvent::sDescriptions[] = {
     "page",
-    "painted critical displayport",
     "painted displayport",
     "requested displayport",
     "viewport",
 };
 
 const char* CheckerboardEvent::sColors[] = {
-    "brown", "darkgreen", "lightgreen", "yellow", "red",
+    "brown",
+    "lightgreen",
+    "yellow",
+    "red",
 };
 
 CheckerboardEvent::CheckerboardEvent(bool aRecordTrace)
@@ -81,17 +84,14 @@ void CheckerboardEvent::LogInfo(RendertraceProperty aProperty,
     // append a truncation message when this event ends.
     return;
   }
-  // The log is consumed by the page at
-  // http://people.mozilla.org/~kgupta/rendertrace.html and will move to
-  // about:checkerboard in bug 1238042. The format is not formally specced, but
-  // an informal description can be found at
-  // https://github.com/staktrace/rendertrace/blob/master/index.html#L30
+  // The log is consumed by the page at about:checkerboard. The format is not
+  // formally specced, but an informal description can be found at
+  // https://searchfox.org/mozilla-central/rev/d866b96d74ec2a63f09ee418f048d23f4fd379a2/toolkit/components/aboutcheckerboard/content/aboutCheckerboard.js#86
   mRendertraceInfo << "RENDERTRACE "
                    << (aTimestamp - mOriginTime).ToMilliseconds() << " rect "
                    << sColors[aProperty] << " " << aRect.X() << " " << aRect.Y()
                    << " " << aRect.Width() << " " << aRect.Height() << " "
-                   << "// " << sDescriptions[aProperty] << aExtraInfo
-                   << std::endl;
+                   << "// " << sDescriptions[aProperty] << aExtraInfo << '\n';
 }
 
 bool CheckerboardEvent::RecordFrameInfo(uint32_t aCssPixelsCheckerboarded) {
@@ -139,7 +139,7 @@ void CheckerboardEvent::StartEvent() {
   for (const PropertyValue& p : history) {
     LogInfo(p.mProperty, p.mTimeStamp, p.mRect, p.mExtraInfo, lock);
   }
-  mRendertraceInfo << " -- checkerboarding starts below --" << std::endl;
+  mRendertraceInfo << " -- checkerboarding starts below --\n";
 }
 
 void CheckerboardEvent::StopEvent() {
@@ -157,7 +157,7 @@ void CheckerboardEvent::StopEvent() {
   mRendertraceInfo << "Checkerboarded for " << mFrameCount << " frames ("
                    << (mEndTime - mStartTime).ToMilliseconds() << " ms), "
                    << mPeakPixels << " peak, " << GetSeverity() << " severity."
-                   << std::endl;
+                   << '\n';
 }
 
 bool CheckerboardEvent::PropertyValue::operator<(

@@ -32,9 +32,12 @@ dictionary MozXMLHttpRequestParameters
 {
   /**
    * If true, the request will be sent without cookie and authentication
-   * headers.
+   * headers. Defaults to true for system/privileged/chrome requests,
+   * and to false otherwise.
+   * Note that even if set to true, for system/privileged/chrome requests,
+   * manually-set 'Cookie' headers are not removed.
    */
-  boolean mozAnon = false;
+  boolean mozAnon;
 
   /**
    * If true, the same origin policy will not be enforced on the request.
@@ -67,12 +70,12 @@ interface XMLHttpRequest : XMLHttpRequestEventTarget {
 
   // request
   [Throws]
-  void open(ByteString method, USVString url);
+  undefined open(ByteString method, USVString url);
   [Throws]
-  void open(ByteString method, USVString url, boolean async,
+  undefined open(ByteString method, USVString url, boolean async,
             optional USVString? user=null, optional USVString? password=null);
   [Throws]
-  void setRequestHeader(ByteString header, ByteString value);
+  undefined setRequestHeader(ByteString header, ByteString value);
 
   [SetterThrows]
   attribute unsigned long timeout;
@@ -84,10 +87,10 @@ interface XMLHttpRequest : XMLHttpRequestEventTarget {
   readonly attribute XMLHttpRequestUpload upload;
 
   [Throws]
-  void send(optional (Document or BodyInit)? body = null);
+  undefined send(optional (Document or XMLHttpRequestBodyInit)? body = null);
 
   [Throws]
-  void abort();
+  undefined abort();
 
   // response
   readonly attribute USVString responseURL;
@@ -105,7 +108,7 @@ interface XMLHttpRequest : XMLHttpRequestEventTarget {
   ByteString getAllResponseHeaders();
 
   [Throws]
-  void overrideMimeType(DOMString mime);
+  undefined overrideMimeType(DOMString mime);
 
   [SetterThrows]
   attribute XMLHttpRequestResponseType responseType;
@@ -129,10 +132,10 @@ interface XMLHttpRequest : XMLHttpRequestEventTarget {
   any getInterface(any iid);
 
   [ChromeOnly, Exposed=Window]
-  void setOriginAttributes(optional OriginAttributesDictionary originAttributes = {});
+  undefined setOriginAttributes(optional OriginAttributesDictionary originAttributes = {});
 
   [ChromeOnly, Throws]
-  void sendInputStream(InputStream body);
+  undefined sendInputStream(InputStream body);
 
   // Only works on MainThread.
   // Its permanence is to be evaluated in bug 1368540 for Firefox 60.

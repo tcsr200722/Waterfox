@@ -4,8 +4,8 @@
 
 "use strict";
 
-const { LoginManagerContextMenu } = ChromeUtils.import(
-  "resource://gre/modules/LoginManagerContextMenu.jsm"
+const { LoginManagerContextMenu } = ChromeUtils.importESModule(
+  "resource://gre/modules/LoginManagerContextMenu.sys.mjs"
 );
 
 const dateAndTimeFormatter = new Services.intl.DateTimeFormat(undefined, {
@@ -53,7 +53,7 @@ const HTTP_LOGIN_HTTPS_EXAMPLE_ORG_U1_P1 = authLogin({
   origin: ORIGIN_HTTPS_EXAMPLE_ORG,
 });
 
-XPCOMUtils.defineLazyGetter(this, "_stringBundle", function() {
+ChromeUtils.defineLazyGetter(this, "_stringBundle", function () {
   return Services.strings.createBundle(
     "chrome://passwordmgr/locale/passwordmgr.properties"
   );
@@ -252,9 +252,7 @@ function authLogin(modifications = {}) {
 async function runTestcase({ formOrigin, savedLogins, expectedItems }) {
   const DOCUMENT_CONTENT = "<form><input id='pw' type=password></form>";
 
-  for (let login of savedLogins) {
-    Services.logins.addLogin(login);
-  }
+  await Services.logins.addLogins(savedLogins);
 
   // Create the logins menuitems fragment.
   let { fragment, document } = createLoginsFragment(
@@ -281,7 +279,7 @@ async function runTestcase({ formOrigin, savedLogins, expectedItems }) {
     "All items correctly cleared."
   );
 
-  Services.logins.removeAllLogins();
+  Services.logins.removeAllUserFacingLogins();
 }
 
 /**
@@ -291,10 +289,14 @@ function createLoginsFragment(url, content) {
   const CHROME_URL = "chrome://mock-chrome/content/";
 
   // Create a mock document.
-  let document = MockDocument.createTestDocument(CHROME_URL, content);
+  let document = MockDocument.createTestDocument(
+    CHROME_URL,
+    content,
+    undefined,
+    true
+  );
 
   // We also need a simple mock Browser object for this test.
-  document.createXULElement = document.createElement.bind(document);
   let browser = {
     ownerDocument: document,
   };
@@ -328,7 +330,11 @@ function checkLoginItems(actualItems, expectedDetails) {
         ) +
         ")";
     }
-    Assert.equal(actualElement.label, expectedLabel, `Check label ${i}`);
+    Assert.equal(
+      actualElement.getAttribute("label"),
+      expectedLabel,
+      `Check label ${i}`
+    );
   }
 
   Assert.equal(

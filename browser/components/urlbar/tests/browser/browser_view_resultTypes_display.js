@@ -3,8 +3,8 @@
 
 "use strict";
 
-const { SyncedTabs } = ChromeUtils.import(
-  "resource://services-sync/SyncedTabs.jsm"
+const { SyncedTabs } = ChromeUtils.importESModule(
+  "resource://services-sync/SyncedTabs.sys.mjs"
 );
 
 const TEST_ENGINE_BASENAME = "searchSuggestionEngine.xml";
@@ -30,7 +30,7 @@ function assertElementsDisplayed(details, expected) {
   );
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.urlbar.suggest.searches", false],
@@ -39,29 +39,24 @@ add_task(async function setup() {
       // Clear historical search suggestions to avoid interference from previous
       // tests.
       ["browser.urlbar.maxHistoricalSearchSuggestions", 0],
-      // Use the default matching bucket configuration.
-      ["browser.urlbar.matchBuckets", "general:5,suggestion:4"],
       // Turn autofill off.
       ["browser.urlbar.autoFill", false],
-      // Special prefs for remote tabs.
-      ["services.sync.username", "fake"],
-      ["services.sync.syncedTabs.showRemoteTabs", true],
     ],
   });
 
-  let engine = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME
-  );
-  let oldDefaultEngine = await Services.search.getDefault();
-  await Services.search.setDefault(engine);
-
-  registerCleanupFunction(async () => {
-    await Services.search.setDefault(oldDefaultEngine);
+  await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME,
+    setAsDefault: true,
   });
 
   // Move the mouse away from the results panel, because hovering a result may
   // change its aspect (e.g. by showing a " - search with Engine" suffix).
-  await EventUtils.synthesizeNativeMouseMove(gURLBar.inputField);
+  await EventUtils.promiseNativeMouseEvent({
+    type: "mousemove",
+    target: gURLBar.inputField,
+    offsetX: 0,
+    offsetY: 0,
+  });
 });
 
 add_task(async function test_tab_switch_result() {
@@ -73,7 +68,6 @@ add_task(async function test_tab_switch_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "about:mozilla",
       fireInputEvent: true,
     });
@@ -96,7 +90,6 @@ add_task(async function test_search_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "foo",
       fireInputEvent: true,
     });
@@ -140,7 +133,6 @@ add_task(async function test_url_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });
@@ -168,7 +160,6 @@ add_task(async function test_keyword_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get ",
       fireInputEvent: true,
     });
@@ -178,13 +169,12 @@ add_task(async function test_keyword_result() {
     // Because only the keyword is typed, we show the bookmark url.
     assertElementsDisplayed(details, {
       separator: true,
-      title: TEST_URL + "?q=",
+      title: TEST_URL.substring("https://".length) + "?q=",
       type: UrlbarUtils.RESULT_TYPE.KEYWORD,
     });
 
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get test",
       fireInputEvent: true,
     });
@@ -205,18 +195,18 @@ add_task(async function test_omnibox_result() {
       omnibox: {
         keyword: "omniboxtest",
       },
+    },
 
-      background() {
-        /* global browser */
-        browser.omnibox.setDefaultSuggestion({
-          description: "doit",
-        });
-        // Just do nothing for this test.
-        browser.omnibox.onInputEntered.addListener(() => {});
-        browser.omnibox.onInputChanged.addListener((text, suggest) => {
-          suggest([]);
-        });
-      },
+    background() {
+      /* global browser */
+      browser.omnibox.setDefaultSuggestion({
+        description: "doit",
+      });
+      // Just do nothing for this test.
+      browser.omnibox.onInputEntered.addListener(() => {});
+      browser.omnibox.onInputChanged.addListener((text, suggest) => {
+        suggest([]);
+      });
     },
   });
 
@@ -225,7 +215,6 @@ add_task(async function test_omnibox_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "omniboxtest ",
       fireInputEvent: true,
     });
@@ -234,7 +223,7 @@ add_task(async function test_omnibox_result() {
 
     assertElementsDisplayed(details, {
       separator: true,
-      title: "Generated extension",
+      title: "doit",
       type: UrlbarUtils.RESULT_TYPE.OMNIBOX,
     });
   });
@@ -243,6 +232,12 @@ add_task(async function test_omnibox_result() {
 });
 
 add_task(async function test_remote_tab_result() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["services.sync.username", "fake"],
+      ["services.sync.syncedTabs.showRemoteTabs", true],
+    ],
+  });
   // Clear history so that history added by previous tests doesn't mess up this
   // test when it selects results in the urlbar.
   await PlacesUtils.history.clear();
@@ -261,7 +256,7 @@ add_task(async function test_remote_tab_result() {
         url: "http://example.com",
         icon: UrlbarUtils.ICON.DEFAULT,
         client: "7cqCr77ptzX3",
-        lastUsed: parseInt(Date.now() / 1000),
+        lastUsed: Math.floor(Date.now() / 1000),
       },
     ],
   };
@@ -291,10 +286,10 @@ add_task(async function test_remote_tab_result() {
     .stub(SyncedTabs._internal, "getTabClients")
     .callsFake(() => Promise.resolve(Cu.cloneInto([REMOTE_TAB], {})));
 
-  // Reset internal cache in PlacesRemoteTabsAutocompleteProvider.
+  // Reset internal cache in UrlbarProviderRemoteTabs.
   Services.obs.notifyObservers(null, "weave:engine:sync:finish", "tabs");
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     sandbox.restore();
     weaveXPCService.ready = oldWeaveServiceReady;
     SyncedTabs._internal = originalSyncedTabsInternal;
@@ -306,7 +301,6 @@ add_task(async function test_remote_tab_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });
@@ -319,4 +313,5 @@ add_task(async function test_remote_tab_result() {
       type: UrlbarUtils.RESULT_TYPE.REMOTE_TAB,
     });
   });
+  await SpecialPowers.popPrefEnv();
 });

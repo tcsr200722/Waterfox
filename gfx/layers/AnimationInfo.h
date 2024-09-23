@@ -18,11 +18,11 @@
 struct RawServoAnimationValue;
 class nsIContent;
 class nsIFrame;
-class nsDisplayListBuilder;
-class nsDisplayItem;
 
 namespace mozilla {
 
+class nsDisplayItem;
+class nsDisplayListBuilder;
 class EffectSet;
 struct AnimationProperty;
 
@@ -39,10 +39,9 @@ namespace layers {
 class Animation;
 class CompositorAnimations;
 class Layer;
-class LayerManager;
+class WebRenderLayerManager;
 struct CompositorAnimationData;
 struct PropertyAnimationGroup;
-enum class LayersBackend : int8_t;
 
 class AnimationInfo final {
   typedef nsTArray<Animation> AnimationArray;
@@ -76,11 +75,6 @@ class AnimationInfo final {
   // ClearAnimations clears animations on this layer.
   void ClearAnimations();
   void ClearAnimationsForNextTransaction();
-  void SetCompositorAnimations(
-      const CompositorAnimations& aCompositorAnimations);
-  bool StartPendingAnimations(const TimeStamp& aReadyTime);
-  void TransferMutatedFlagToLayer(Layer* aLayer);
-
   uint64_t GetCompositorAnimationsId() { return mCompositorAnimationsId; }
   // Note: We don't set mAnimations on the compositor thread, so this will
   // always return an empty array on the compositor thread.
@@ -91,6 +85,7 @@ class AnimationInfo final {
   const Maybe<TransformData>& GetTransformData() const {
     return mStorageData.mTransformData;
   }
+  const LayersId& GetLayersId() const { return mStorageData.mLayersId; }
   bool ApplyPendingUpdatesForThisTransaction();
   bool HasTransformAnimation() const;
 
@@ -115,10 +110,10 @@ class AnimationInfo final {
       const CompositorAnimatableDisplayItemTypes& aDisplayItemTypes,
       AnimationGenerationCallback);
 
-  void AddAnimationsForDisplayItem(nsIFrame* aFrame,
-                                   nsDisplayListBuilder* aBuilder,
-                                   nsDisplayItem* aItem, DisplayItemType aType,
-                                   LayersBackend aLayersBackend);
+  void AddAnimationsForDisplayItem(
+      nsIFrame* aFrame, nsDisplayListBuilder* aBuilder, nsDisplayItem* aItem,
+      DisplayItemType aType, WebRenderLayerManager* aLayerManager,
+      const Maybe<LayoutDevicePoint>& aPosition = Nothing());
 
  private:
   enum class Send {
@@ -135,13 +130,14 @@ class AnimationInfo final {
       nsIFrame* aFrame, const EffectSet* aEffects,
       const nsTArray<RefPtr<dom::Animation>>& aCompositorAnimations,
       const Maybe<TransformData>& aTransformData, nsCSSPropertyID aProperty,
-      Send aSendFlag);
+      Send aSendFlag, WebRenderLayerManager* aLayerManager);
 
   void AddNonAnimatingTransformLikePropertiesStyles(
       const nsCSSPropertyIDSet& aNonAnimatingProperties, nsIFrame* aFrame,
       Send aSendFlag);
 
- protected:
+  void MaybeStartPendingAnimation(Animation&, const TimeStamp& aReadyTime);
+
   // mAnimations (and mPendingAnimations) are only set on the main thread.
   //
   // Once the animations are received on the compositor thread/process we

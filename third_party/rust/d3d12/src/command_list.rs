@@ -1,14 +1,12 @@
 //! Graphics command list
 
-use com::WeakPtr;
-use resource::DiscardRegion;
+use crate::{
+    com::ComPtr, resource::DiscardRegion, CommandAllocator, CpuDescriptor, DescriptorHeap, Format,
+    GpuAddress, GpuDescriptor, IndexCount, InstanceCount, PipelineState, Rect, Resource, RootIndex,
+    RootSignature, Subresource, VertexCount, VertexOffset, WorkGroupCount, HRESULT,
+};
 use std::{mem, ptr};
 use winapi::um::d3d12;
-use {
-    CommandAllocator, CpuDescriptor, DescriptorHeap, Format, GpuAddress, GpuDescriptor, IndexCount,
-    InstanceCount, PipelineState, Rect, Resource, RootSignature, VertexCount, VertexOffset,
-    WorkGroupCount, HRESULT,
-};
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -21,7 +19,8 @@ pub enum CmdListType {
     // VideoProcess = d3d12::D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS,
 }
 
-bitflags! {
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct ClearFlags: u32 {
         const DEPTH = d3d12::D3D12_CLEAR_FLAG_DEPTH;
         const STENCIL = d3d12::D3D12_CLEAR_FLAG_STENCIL;
@@ -53,7 +52,64 @@ impl IndirectArgument {
         })
     }
 
-    // TODO: missing variants
+    pub fn vertex_buffer(slot: u32) -> Self {
+        let mut desc = d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW,
+            ..unsafe { mem::zeroed() }
+        };
+        *unsafe { desc.u.VertexBuffer_mut() } =
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC_VertexBuffer { Slot: slot };
+        IndirectArgument(desc)
+    }
+
+    pub fn constant(root_index: RootIndex, dest_offset_words: u32, count: u32) -> Self {
+        let mut desc = d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+            ..unsafe { mem::zeroed() }
+        };
+        *unsafe { desc.u.Constant_mut() } = d3d12::D3D12_INDIRECT_ARGUMENT_DESC_Constant {
+            RootParameterIndex: root_index,
+            DestOffsetIn32BitValues: dest_offset_words,
+            Num32BitValuesToSet: count,
+        };
+        IndirectArgument(desc)
+    }
+
+    pub fn constant_buffer_view(root_index: RootIndex) -> Self {
+        let mut desc = d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW,
+            ..unsafe { mem::zeroed() }
+        };
+        *unsafe { desc.u.ConstantBufferView_mut() } =
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC_ConstantBufferView {
+                RootParameterIndex: root_index,
+            };
+        IndirectArgument(desc)
+    }
+
+    pub fn shader_resource_view(root_index: RootIndex) -> Self {
+        let mut desc = d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW,
+            ..unsafe { mem::zeroed() }
+        };
+        *unsafe { desc.u.ShaderResourceView_mut() } =
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC_ShaderResourceView {
+                RootParameterIndex: root_index,
+            };
+        IndirectArgument(desc)
+    }
+
+    pub fn unordered_access_view(root_index: RootIndex) -> Self {
+        let mut desc = d3d12::D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: d3d12::D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW,
+            ..unsafe { mem::zeroed() }
+        };
+        *unsafe { desc.u.UnorderedAccessView_mut() } =
+            d3d12::D3D12_INDIRECT_ARGUMENT_DESC_UnorderedAccessView {
+                RootParameterIndex: root_index,
+            };
+        IndirectArgument(desc)
+    }
 }
 
 #[repr(transparent)]
@@ -62,7 +118,7 @@ pub struct ResourceBarrier(d3d12::D3D12_RESOURCE_BARRIER);
 impl ResourceBarrier {
     pub fn transition(
         resource: Resource,
-        subresource: u32,
+        subresource: Subresource,
         state_before: d3d12::D3D12_RESOURCE_STATES,
         state_after: d3d12::D3D12_RESOURCE_STATES,
         flags: d3d12::D3D12_RESOURCE_BARRIER_FLAGS,
@@ -84,9 +140,9 @@ impl ResourceBarrier {
     }
 }
 
-pub type CommandSignature = WeakPtr<d3d12::ID3D12CommandSignature>;
-pub type CommandList = WeakPtr<d3d12::ID3D12CommandList>;
-pub type GraphicsCommandList = WeakPtr<d3d12::ID3D12GraphicsCommandList>;
+pub type CommandSignature = ComPtr<d3d12::ID3D12CommandSignature>;
+pub type CommandList = ComPtr<d3d12::ID3D12CommandList>;
+pub type GraphicsCommandList = ComPtr<d3d12::ID3D12GraphicsCommandList>;
 
 impl GraphicsCommandList {
     pub fn as_list(&self) -> CommandList {
@@ -97,7 +153,7 @@ impl GraphicsCommandList {
         unsafe { self.Close() }
     }
 
-    pub fn reset(&self, allocator: CommandAllocator, initial_pso: PipelineState) -> HRESULT {
+    pub fn reset(&self, allocator: &CommandAllocator, initial_pso: PipelineState) -> HRESULT {
         unsafe { self.Reset(allocator.as_mut_ptr(), initial_pso.as_mut_ptr()) }
     }
 
@@ -157,11 +213,11 @@ impl GraphicsCommandList {
         &self,
         num_vertices: VertexCount,
         num_instances: InstanceCount,
-        start_vertex: VertexCount,
-        start_instance: InstanceCount,
+        first_vertex: VertexCount,
+        first_instance: InstanceCount,
     ) {
         unsafe {
-            self.DrawInstanced(num_vertices, num_instances, start_vertex, start_instance);
+            self.DrawInstanced(num_vertices, num_instances, first_vertex, first_instance);
         }
     }
 
@@ -169,29 +225,29 @@ impl GraphicsCommandList {
         &self,
         num_indices: IndexCount,
         num_instances: InstanceCount,
-        start_index: IndexCount,
+        first_index: IndexCount,
         base_vertex: VertexOffset,
-        start_instance: InstanceCount,
+        first_instance: InstanceCount,
     ) {
         unsafe {
             self.DrawIndexedInstanced(
                 num_indices,
                 num_instances,
-                start_index,
+                first_index,
                 base_vertex,
-                start_instance,
+                first_instance,
             );
         }
     }
 
     pub fn set_index_buffer(&self, gpu_address: GpuAddress, size: u32, format: Format) {
-        let mut ibv = d3d12::D3D12_INDEX_BUFFER_VIEW {
+        let ibv = d3d12::D3D12_INDEX_BUFFER_VIEW {
             BufferLocation: gpu_address,
             SizeInBytes: size,
             Format: format,
         };
         unsafe {
-            self.IASetIndexBuffer(&mut ibv);
+            self.IASetIndexBuffer(&ibv);
         }
     }
 
@@ -207,7 +263,7 @@ impl GraphicsCommandList {
         }
     }
 
-    pub fn set_pipeline_state(&self, pso: PipelineState) {
+    pub fn set_pipeline_state(&self, pso: &PipelineState) {
         unsafe {
             self.SetPipelineState(pso.as_mut_ptr());
         }
@@ -228,13 +284,13 @@ impl GraphicsCommandList {
         }
     }
 
-    pub fn set_compute_root_signature(&self, signature: RootSignature) {
+    pub fn set_compute_root_signature(&self, signature: &RootSignature) {
         unsafe {
             self.SetComputeRootSignature(signature.as_mut_ptr());
         }
     }
 
-    pub fn set_graphics_root_signature(&self, signature: RootSignature) {
+    pub fn set_graphics_root_signature(&self, signature: &RootSignature) {
         unsafe {
             self.SetGraphicsRootSignature(signature.as_mut_ptr());
         }
@@ -242,7 +298,7 @@ impl GraphicsCommandList {
 
     pub fn set_compute_root_descriptor_table(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         base_descriptor: GpuDescriptor,
     ) {
         unsafe {
@@ -252,7 +308,7 @@ impl GraphicsCommandList {
 
     pub fn set_compute_root_constant_buffer_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
@@ -262,7 +318,7 @@ impl GraphicsCommandList {
 
     pub fn set_compute_root_shader_resource_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
@@ -272,7 +328,7 @@ impl GraphicsCommandList {
 
     pub fn set_compute_root_unordered_access_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
@@ -280,9 +336,20 @@ impl GraphicsCommandList {
         }
     }
 
+    pub fn set_compute_root_constant(
+        &self,
+        root_index: RootIndex,
+        value: u32,
+        dest_offset_words: u32,
+    ) {
+        unsafe {
+            self.SetComputeRoot32BitConstant(root_index, value, dest_offset_words);
+        }
+    }
+
     pub fn set_graphics_root_descriptor_table(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         base_descriptor: GpuDescriptor,
     ) {
         unsafe {
@@ -292,7 +359,7 @@ impl GraphicsCommandList {
 
     pub fn set_graphics_root_constant_buffer_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
@@ -302,7 +369,7 @@ impl GraphicsCommandList {
 
     pub fn set_graphics_root_shader_resource_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
@@ -312,11 +379,22 @@ impl GraphicsCommandList {
 
     pub fn set_graphics_root_unordered_access_view(
         &self,
-        root_index: u32,
+        root_index: RootIndex,
         buffer_location: GpuAddress,
     ) {
         unsafe {
             self.SetGraphicsRootUnorderedAccessView(root_index, buffer_location);
+        }
+    }
+
+    pub fn set_graphics_root_constant(
+        &self,
+        root_index: RootIndex,
+        value: u32,
+        dest_offset_words: u32,
+    ) {
+        unsafe {
+            self.SetGraphicsRoot32BitConstant(root_index, value, dest_offset_words);
         }
     }
 

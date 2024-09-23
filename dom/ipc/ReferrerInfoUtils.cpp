@@ -5,14 +5,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/ReferrerInfoUtils.h"
+
+#include "ipc/IPCMessageUtilsSpecializations.h"
 #include "nsSerializationHelper.h"
+#include "nsString.h"
 
 namespace IPC {
 
-void ParamTraits<nsIReferrerInfo*>::Write(Message* aMsg,
+void ParamTraits<nsIReferrerInfo*>::Write(MessageWriter* aWriter,
                                           nsIReferrerInfo* aParam) {
   bool isNull = !aParam;
-  WriteParam(aMsg, isNull);
+  WriteParam(aWriter, isNull);
   if (isNull) {
     return;
   }
@@ -22,14 +25,13 @@ void ParamTraits<nsIReferrerInfo*>::Write(Message* aMsg,
     MOZ_CRASH("Unable to serialize referrer info.");
     return;
   }
-  WriteParam(aMsg, infoString);
+  WriteParam(aWriter, infoString);
 }
 
-bool ParamTraits<nsIReferrerInfo*>::Read(const Message* aMsg,
-                                         PickleIterator* aIter,
+bool ParamTraits<nsIReferrerInfo*>::Read(MessageReader* aReader,
                                          RefPtr<nsIReferrerInfo>* aResult) {
   bool isNull;
-  if (!ReadParam(aMsg, aIter, &isNull)) {
+  if (!ReadParam(aReader, &isNull)) {
     return false;
   }
   if (isNull) {
@@ -37,7 +39,7 @@ bool ParamTraits<nsIReferrerInfo*>::Read(const Message* aMsg,
     return true;
   }
   nsAutoCString infoString;
-  if (!ReadParam(aMsg, aIter, &infoString)) {
+  if (!ReadParam(aReader, &infoString)) {
     return false;
   }
   nsCOMPtr<nsISupports> iSupports;

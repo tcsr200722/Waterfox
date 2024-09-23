@@ -7,26 +7,36 @@
 #ifndef MOZILLA_DOM_DOMMATRIX_H_
 #define MOZILLA_DOM_DOMMATRIX_H_
 
-#include "js/StructuredClone.h"
-#include "nsWrapperCache.h"
-#include "nsISupports.h"
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
+#include <cstring>
+#include <utility>
+#include "js/RootingAPI.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/UniquePtr.h"
-#include "nsCOMPtr.h"
-#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/TypedArray.h"
-#include "mozilla/gfx/Matrix.h"  // for Matrix4x4Double
+#include "mozilla/gfx/Matrix.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsWrapperCache.h"
 
+class JSObject;
 class nsIGlobalObject;
+struct JSContext;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class GlobalObject;
 class DOMMatrix;
 class DOMPoint;
+template <typename T>
+class Optional;
 class UTF8StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly;
 struct DOMPointInit;
 struct DOMMatrixInit;
@@ -57,7 +67,7 @@ class DOMMatrixReadOnly : public nsWrapperCache {
   }
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMMatrixReadOnly)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(DOMMatrixReadOnly)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(DOMMatrixReadOnly)
 
   nsISupports* GetParentObject() const { return mParent; }
   virtual JSObject* WrapObject(JSContext* cx,
@@ -244,7 +254,10 @@ class DOMMatrixReadOnly : public nsWrapperCache {
   DOMMatrixReadOnly* SetMatrixValue(const nsACString&, ErrorResult&);
   void Ensure3DMatrix();
 
-  DOMMatrixReadOnly(nsISupports* aParent, bool is2D) : mParent(aParent) {
+  DOMMatrixReadOnly(nsISupports* aParent, bool is2D)
+      : DOMMatrixReadOnly(do_AddRef(aParent), is2D) {}
+  DOMMatrixReadOnly(already_AddRefed<nsISupports>&& aParent, bool is2D)
+      : mParent(std::move(aParent)) {
     if (is2D) {
       mMatrix2D = MakeUnique<gfx::MatrixDouble>();
     } else {
@@ -325,6 +338,8 @@ class DOMMatrix : public DOMMatrixReadOnly {
  private:
   DOMMatrix(nsISupports* aParent, bool is2D)
       : DOMMatrixReadOnly(aParent, is2D) {}
+  DOMMatrix(already_AddRefed<nsISupports>&& aParent, bool is2D)
+      : DOMMatrixReadOnly(std::move(aParent), is2D) {}
 };
 
 }  // namespace dom

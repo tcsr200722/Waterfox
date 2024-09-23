@@ -8,13 +8,14 @@
  * Tests that the seizePower API works correctly.
  */
 
-XPCOMUtils.defineLazyGetter(this, "PORT", function() {
+ChromeUtils.defineLazyGetter(this, "PORT", function () {
   return srv.identity.primaryPort;
 });
 
 var srv;
 
 function run_test() {
+  Services.prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
   srv = createServer();
 
   srv.registerPathHandler("/raw-data", handleRawData);
@@ -25,7 +26,10 @@ function run_test() {
 
   srv.start(-1);
 
-  runRawTests(tests, testComplete(srv));
+  runRawTests(tests, function () {
+    Services.prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
+    testComplete(srv)();
+  });
 }
 
 function checkException(fun, err, msg) {
@@ -38,14 +42,6 @@ function checkException(fun, err, msg) {
     return;
   }
   do_throw(msg);
-}
-
-function callASAPLater(fun) {
-  gThreadManager.dispatchToMainThread({
-    run() {
-      fun();
-    },
-  });
 }
 
 /** ***************
@@ -75,21 +71,21 @@ function handleTooLate(request, response) {
 function handleExceptions(request, response) {
   response.seizePower();
   checkException(
-    function() {
+    function () {
       response.setStatusLine("1.0", 500, "ISE");
     },
     Cr.NS_ERROR_NOT_AVAILABLE,
     "setStatusLine should throw not-available after seizePower"
   );
   checkException(
-    function() {
+    function () {
       response.setHeader("X-Fail", "FAIL", false);
     },
     Cr.NS_ERROR_NOT_AVAILABLE,
     "setHeader should throw not-available after seizePower"
   );
   checkException(
-    function() {
+    function () {
       response.processAsync();
     },
     Cr.NS_ERROR_NOT_AVAILABLE,
@@ -102,7 +98,7 @@ function handleExceptions(request, response) {
   response.finish();
   response.finish(); // idempotency test of finish after seizePower
   checkException(
-    function() {
+    function () {
       response.seizePower();
     },
     Cr.NS_ERROR_UNEXPECTED,
@@ -112,10 +108,10 @@ function handleExceptions(request, response) {
 
 function handleAsyncSeizure(request, response) {
   response.seizePower();
-  callLater(1, function() {
+  callLater(1, function () {
     response.write("async seizure passed");
     response.bodyOutputStream.close();
-    callLater(1, function() {
+    callLater(1, function () {
       response.finish();
     });
   });
@@ -125,13 +121,13 @@ function handleSeizeAfterAsync(request, response) {
   response.setStatusLine(request.httpVersion, 200, "async seizure pass");
   response.processAsync();
   checkException(
-    function() {
+    function () {
       response.seizePower();
     },
     Cr.NS_ERROR_NOT_AVAILABLE,
     "seizePower should throw not-available after processAsync"
   );
-  callLater(1, function() {
+  callLater(1, function () {
     response.finish();
   });
 }
@@ -140,7 +136,7 @@ function handleSeizeAfterAsync(request, response) {
  * BEGIN TESTS *
  ***************/
 
-XPCOMUtils.defineLazyGetter(this, "tests", function() {
+ChromeUtils.defineLazyGetter(this, "tests", function () {
   return [
     new RawTest("localhost", PORT, data0, checkRawData),
     new RawTest("localhost", PORT, data1, checkTooLate),

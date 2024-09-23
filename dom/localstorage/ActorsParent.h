@@ -7,6 +7,9 @@
 #ifndef mozilla_dom_localstorage_ActorsParent_h
 #define mozilla_dom_localstorage_ActorsParent_h
 
+#include <cstdint>
+#include "mozilla/AlreadyAddRefed.h"
+
 namespace mozilla {
 
 namespace ipc {
@@ -33,9 +36,7 @@ class Client;
 
 void InitializeLocalStorage();
 
-bool GetCurrentNextGenPrefValue();
-
-PBackgroundLSDatabaseParent* AllocPBackgroundLSDatabaseParent(
+already_AddRefed<PBackgroundLSDatabaseParent> AllocPBackgroundLSDatabaseParent(
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     const uint32_t& aPrivateBrowsingId, const uint64_t& aDatastoreId);
 
@@ -43,8 +44,6 @@ bool RecvPBackgroundLSDatabaseConstructor(
     PBackgroundLSDatabaseParent* aActor,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     const uint32_t& aPrivateBrowsingId, const uint64_t& aDatastoreId);
-
-bool DeallocPBackgroundLSDatabaseParent(PBackgroundLSDatabaseParent* aActor);
 
 PBackgroundLSObserverParent* AllocPBackgroundLSObserverParent(
     const uint64_t& aObserverId);
@@ -73,8 +72,6 @@ bool RecvPBackgroundLSSimpleRequestConstructor(
 
 bool DeallocPBackgroundLSSimpleRequestParent(
     PBackgroundLSSimpleRequestParent* aActor);
-
-bool RecvLSClearPrivateBrowsing();
 
 namespace localstorage {
 

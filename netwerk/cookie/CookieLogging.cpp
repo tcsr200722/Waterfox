@@ -5,6 +5,7 @@
 
 #include "CookieLogging.h"
 #include "Cookie.h"
+#include "nsIConsoleReportCollector.h"
 
 constexpr auto TIME_STRING_LENGTH = 40;
 
@@ -131,6 +132,13 @@ void CookieLogging::LogCookie(Cookie* aCookie) {
             ("sameSite: %s - rawSameSite: %s\n",
              SameSiteToString(aCookie->SameSite()),
              SameSiteToString(aCookie->RawSameSite())));
+    MOZ_LOG(
+        gCookieLog, LogLevel::Debug,
+        ("schemeMap %d (http: %s | https: %s | file: %s)\n",
+         aCookie->SchemeMap(),
+         (aCookie->SchemeMap() & nsICookie::SCHEME_HTTP ? "true" : "false"),
+         (aCookie->SchemeMap() & nsICookie::SCHEME_HTTPS ? "true" : "false"),
+         (aCookie->SchemeMap() & nsICookie::SCHEME_FILE ? "true" : "false")));
 
     nsAutoCString suffix;
     aCookie->OriginAttributesRef().CreateSuffix(suffix);
@@ -148,6 +156,29 @@ void CookieLogging::LogEvicted(Cookie* aCookie, const char* details) {
   LogCookie(aCookie);
 
   MOZ_LOG(gCookieLog, LogLevel::Debug, ("\n"));
+}
+
+// static
+void CookieLogging::LogMessageToConsole(nsIConsoleReportCollector* aCRC,
+                                        nsIURI* aURI, uint32_t aErrorFlags,
+                                        const nsACString& aCategory,
+                                        const nsACString& aMsg,
+                                        const nsTArray<nsString>& aParams) {
+  if (!aCRC) {
+    return;
+  }
+
+  nsAutoCString uri;
+  if (aURI) {
+    nsresult rv = aURI->GetSpec(uri);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return;
+    }
+  }
+
+  aCRC->AddConsoleReport(aErrorFlags, aCategory,
+                         nsContentUtils::eNECKO_PROPERTIES, uri, 0, 0, aMsg,
+                         aParams);
 }
 
 }  // namespace net

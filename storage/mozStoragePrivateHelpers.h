@@ -12,6 +12,7 @@
  */
 
 #include "sqlite3.h"
+#include "nsISerialEventTarget.h"
 #include "nsIVariant.h"
 #include "nsError.h"
 #include "js/TypeDecls.h"
@@ -31,6 +32,15 @@ namespace storage {
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Functions
+
+/**
+ * Returns true if the given SQLite result is an error of come kind.
+ *
+ * @param aSQLiteResultCode
+ *        The SQLite return code to check.
+ * @returns true if the result represents an error.
+ */
+bool isErrorCode(int aSQLiteResultCode);
 
 /**
  * Converts a SQLite return code to an nsresult return code.
@@ -128,6 +138,14 @@ nsresult DoBindStringAsBlobByIndex(T* aThis, uint32_t aIndex, const V& aValue) {
   return aThis->BindBlobByIndex(
       aIndex, reinterpret_cast<const uint8_t*>(aValue.BeginReading()),
       aValue.Length() * sizeof(char_type));
+}
+
+/**
+ * Utility function to check if a serial event target may run runnables
+ * on the current thread.
+ */
+inline bool IsOnCurrentSerialEventTarget(nsISerialEventTarget* aTarget) {
+  return aTarget->IsOnCurrentThread();
 }
 
 }  // namespace storage

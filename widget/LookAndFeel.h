@@ -12,79 +12,88 @@
 
 #include "nsDebug.h"
 #include "nsColor.h"
+#include "nsString.h"
 #include "nsTArray.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/widget/ThemeChangeKind.h"
+#include "mozilla/ColorScheme.h"
 
 struct gfxFontStyle;
 
-struct LookAndFeelInt {
-  int32_t id;
-  int32_t value;
-};
+class nsIFrame;
 
 namespace mozilla {
 
+using Modifiers = uint16_t;
+struct StyleColorSchemeFlags;
+
+namespace dom {
+class Document;
+}
+
+namespace widget {
+class FullLookAndFeel;
+}  // namespace widget
+
 enum class StyleSystemColor : uint8_t;
+enum class StyleSystemColorScheme : uint8_t;
+enum class StyleSystemFont : uint8_t;
 
 class LookAndFeel {
  public:
   using ColorID = StyleSystemColor;
+  using ColorScheme = mozilla::ColorScheme;
 
   // When modifying this list, also modify nsXPLookAndFeel::sIntPrefs
   // in widget/xpwidgts/nsXPLookAndFeel.cpp.
-  enum IntID {
+  enum class IntID {
     // default, may be overriden by OS
-    eIntID_CaretBlinkTime,
+    CaretBlinkTime,
+    // Amount of blinks that happen before the caret stops blinking.
+    CaretBlinkCount,
     // pixel width of caret
-    eIntID_CaretWidth,
-    // show the caret when text is selected?
-    eIntID_ShowCaretDuringSelection,
+    CaretWidth,
     // select textfields when focused via tab/accesskey?
-    eIntID_SelectTextfieldsOnKeyFocus,
+    SelectTextfieldsOnKeyFocus,
     // delay before submenus open
-    eIntID_SubmenuDelay,
+    SubmenuDelay,
     // can popups overlap menu/task bar?
-    eIntID_MenusCanOverlapOSBar,
+    MenusCanOverlapOSBar,
     // should overlay scrollbars be used?
-    eIntID_UseOverlayScrollbars,
+    UseOverlayScrollbars,
     // allow H and V overlay scrollbars to overlap?
-    eIntID_AllowOverlayScrollbarsOverlap,
-    // show/hide scrollbars based on activity
-    eIntID_ShowHideScrollbars,
+    AllowOverlayScrollbarsOverlap,
     // skip navigating to disabled menu item?
-    eIntID_SkipNavigatingDisabledMenuItem,
+    SkipNavigatingDisabledMenuItem,
     // begin a drag if the mouse is moved further than the threshold while the
     // button is down
-    eIntID_DragThresholdX,
-    eIntID_DragThresholdY,
+    DragThresholdX,
+    DragThresholdY,
     // Accessibility theme being used?
-    eIntID_UseAccessibilityTheme,
+    UseAccessibilityTheme,
 
     // position of scroll arrows in a scrollbar
-    eIntID_ScrollArrowStyle,
-    // is scroll thumb proportional or fixed?
-    eIntID_ScrollSliderStyle,
+    ScrollArrowStyle,
 
     // each button can take one of four values:
-    eIntID_ScrollButtonLeftMouseButtonAction,
+    ScrollButtonLeftMouseButtonAction,
     // 0 - scrolls one  line, 1 - scrolls one page
-    eIntID_ScrollButtonMiddleMouseButtonAction,
+    ScrollButtonMiddleMouseButtonAction,
     // 2 - scrolls to end, 3 - button ignored
-    eIntID_ScrollButtonRightMouseButtonAction,
+    ScrollButtonRightMouseButtonAction,
 
     // delay for opening spring loaded folders
-    eIntID_TreeOpenDelay,
+    TreeOpenDelay,
     // delay for closing spring loaded folders
-    eIntID_TreeCloseDelay,
+    TreeCloseDelay,
     // delay for triggering the tree scrolling
-    eIntID_TreeLazyScrollDelay,
+    TreeLazyScrollDelay,
     // delay for scrolling the tree
-    eIntID_TreeScrollDelay,
+    TreeScrollDelay,
     // the maximum number of lines to be scrolled at ones
-    eIntID_TreeScrollLinesMax,
-    // What type of tab-order to use
-    eIntID_TabFocusModel,
+    TreeScrollLinesMax,
     // Should menu items blink when they're chosen?
-    eIntID_ChosenMenuItemsShouldBlink,
+    ChosenMenuItemsShouldBlink,
 
     /*
      * A Boolean value to determine whether the Windows accent color
@@ -93,73 +102,24 @@ class LookAndFeel {
      * The value of this metric is not used on other platforms. These platforms
      * should return NS_ERROR_NOT_IMPLEMENTED when queried for this metric.
      */
-    eIntID_WindowsAccentColorInTitlebar,
+    WindowsAccentColorInTitlebar,
 
     /*
-     * A Boolean value to determine whether the Windows default theme is
-     * being used.
-     *
-     * The value of this metric is not used on other platforms. These platforms
-     * should return NS_ERROR_NOT_IMPLEMENTED when queried for this metric.
-     */
-    eIntID_WindowsDefaultTheme,
-
-    /*
-     * A Boolean value to determine whether the DWM compositor is being used
-     *
-     * This metric is not used on non-Windows platforms. These platforms
-     * should return NS_ERROR_NOT_IMPLEMENTED when queried for this metric.
-     */
-    eIntID_DWMCompositor,
-
-    /*
-     * A Boolean value to determine whether Windows is themed (Classic vs.
-     * uxtheme)
-     *
-     * This is Windows-specific and is not implemented on other platforms
-     * (will return the default of NS_ERROR_FAILURE).
-     */
-    eIntID_WindowsClassic,
-
-    /*
-     * A Boolean value to determine whether the current Windows desktop theme
-     * supports Aero Glass.
-     *
-     * This is Windows-specific and is not implemented on other platforms
-     * (will return the default of NS_ERROR_FAILURE).
-     */
-    eIntID_WindowsGlass,
-
-    /*
-     * A Boolean value to determine whether the device is a touch enabled
-     * device. Currently this is only supported by the Windows 7 Touch API.
-     *
-     * Platforms that do not support this metric should return
-     * NS_ERROR_NOT_IMPLEMENTED when queried for this metric.
-     */
-    eIntID_TouchEnabled,
-
-    /*
-     * A Boolean value to determine whether the Mac graphite theme is
-     * being used.
-     *
-     * The value of this metric is not used on other platforms. These platforms
-     * should return NS_ERROR_NOT_IMPLEMENTED when queried for this metric.
-     */
-    eIntID_MacGraphiteTheme,
-
-    /*
-     * A Boolean value to determine whether the Mac OS X Yosemite-specific
+     * A Boolean value to determine whether the macOS Big Sur-specific
      * theming should be used.
-     *
-     * The value of this metric is not used on non-Mac platforms. These
-     * platforms should return NS_ERROR_NOT_IMPLEMENTED when queried for this
-     * metric.
      */
-    eIntID_MacYosemiteTheme,
+    MacBigSurTheme,
 
     /*
-     * eIntID_AlertNotificationOrigin indicates from which corner of the
+     * A Boolean value to determine whether macOS is in RTL mode or not.
+     */
+    MacRTL,
+
+    /* Native macOS titlebar height. */
+    MacTitlebarHeight,
+
+    /*
+     * AlertNotificationOrigin indicates from which corner of the
      * screen alerts slide in, and from which direction (horizontal/vertical).
      * 0, the default, represents bottom right, sliding vertically.
      * Use any bitwise combination of the following constants:
@@ -173,7 +133,7 @@ class LookAndFeel {
      *     +-----------+
      *       2       0
      */
-    eIntID_AlertNotificationOrigin,
+    AlertNotificationOrigin,
 
     /**
      * If true, clicking on a scrollbar (not as in dragging the thumb) defaults
@@ -181,111 +141,105 @@ class LookAndFeel {
      * only do so if the scrollbar is clicked using the middle mouse button or
      * if shift is pressed when the scrollbar is clicked.
      */
-    eIntID_ScrollToClick,
+    ScrollToClick,
 
     /**
      * IME and spell checker underline styles, the values should be
      * NS_DECORATION_LINE_STYLE_*.  They are defined below.
      */
-    eIntID_IMERawInputUnderlineStyle,
-    eIntID_IMESelectedRawTextUnderlineStyle,
-    eIntID_IMEConvertedTextUnderlineStyle,
-    eIntID_IMESelectedConvertedTextUnderline,
-    eIntID_SpellCheckerUnderlineStyle,
+    IMERawInputUnderlineStyle,
+    IMESelectedRawTextUnderlineStyle,
+    IMEConvertedTextUnderlineStyle,
+    IMESelectedConvertedTextUnderline,
+    SpellCheckerUnderlineStyle,
 
     /**
      * If this metric != 0, support window dragging on the menubar.
      */
-    eIntID_MenuBarDrag,
-    /**
-     * Return the appropriate WindowsThemeIdentifier for the current theme.
-     */
-    eIntID_WindowsThemeIdentifier,
-    /**
-     * Return an appropriate os version identifier.
-     */
-    eIntID_OperatingSystemVersionIdentifier,
+    MenuBarDrag,
     /**
      * 0: scrollbar button repeats to scroll only when cursor is on the button.
      * 1: scrollbar button repeats to scroll even if cursor is outside of it.
      */
-    eIntID_ScrollbarButtonAutoRepeatBehavior,
-    /**
-     * Delay before showing a tooltip.
-     */
-    eIntID_TooltipDelay,
+    ScrollbarButtonAutoRepeatBehavior,
     /*
-     * A Boolean value to determine whether Mac OS X Lion style swipe animations
-     * should be used.
+     * A Boolean value to determine whether swipe animations should be used.
      */
-    eIntID_SwipeAnimationEnabled,
+    SwipeAnimationEnabled,
 
     /*
      * Controls whether overlay scrollbars display when the user moves
      * the mouse in a scrollable frame.
      */
-    eIntID_ScrollbarDisplayOnMouseMove,
+    ScrollbarDisplayOnMouseMove,
 
     /*
      * Overlay scrollbar animation constants.
      */
-    eIntID_ScrollbarFadeBeginDelay,
-    eIntID_ScrollbarFadeDuration,
+    ScrollbarFadeBeginDelay,
+    ScrollbarFadeDuration,
 
     /**
      * Distance in pixels to offset the context menu from the cursor
      * on open.
      */
-    eIntID_ContextMenuOffsetVertical,
-    eIntID_ContextMenuOffsetHorizontal,
+    ContextMenuOffsetVertical,
+    ContextMenuOffsetHorizontal,
+    TooltipOffsetVertical,
 
     /*
      * A boolean value indicating whether client-side decorations are
      * supported by the user's GTK version.
      */
-    eIntID_GTKCSDAvailable,
-
-    /*
-     * A boolean value indicating whether GTK+ system titlebar should be
-     * disabled by default.
-     */
-    eIntID_GTKCSDHideTitlebarByDefault,
-
-    /*
-     * A boolean value indicating whether client-side decorations should
-     * have transparent background.
-     */
-    eIntID_GTKCSDTransparentBackground,
+    GTKCSDAvailable,
 
     /*
      * A boolean value indicating whether client-side decorations should
      * contain a minimize button.
      */
-    eIntID_GTKCSDMinimizeButton,
+    GTKCSDMinimizeButton,
 
     /*
      * A boolean value indicating whether client-side decorations should
      * contain a maximize button.
      */
-    eIntID_GTKCSDMaximizeButton,
+    GTKCSDMaximizeButton,
 
     /*
      * A boolean value indicating whether client-side decorations should
      * contain a close button.
      */
-    eIntID_GTKCSDCloseButton,
+    GTKCSDCloseButton,
+
+    /**
+     * An Integer value that will represent the position of the Minimize button
+     * in GTK Client side decoration header.
+     */
+    GTKCSDMinimizeButtonPosition,
+
+    /**
+     * An Integer value that will represent the position of the Maximize button
+     * in GTK Client side decoration header.
+     */
+    GTKCSDMaximizeButtonPosition,
+
+    /**
+     * An Integer value that will represent the position of the Close button
+     * in GTK Client side decoration header.
+     */
+    GTKCSDCloseButtonPosition,
 
     /*
      * A boolean value indicating whether titlebar buttons are located
      * in left titlebar corner.
      */
-    eIntID_GTKCSDReversedPlacement,
+    GTKCSDReversedPlacement,
 
     /*
      * A boolean value indicating whether or not the OS is using a dark theme,
      * which we may want to switch to as well if not overridden by the user.
      */
-    eIntID_SystemUsesDarkTheme,
+    SystemUsesDarkTheme,
 
     /**
      * Corresponding to prefers-reduced-motion.
@@ -293,8 +247,24 @@ class LookAndFeel {
      * 0: no-preference
      * 1: reduce
      */
+    PrefersReducedMotion,
 
-    eIntID_PrefersReducedMotion,
+    /**
+     * Corresponding to prefers-reduced-transparency.
+     * https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-transparency
+     * 0: no-preference
+     * 1: reduce
+     */
+    PrefersReducedTransparency,
+
+    /**
+     * Corresponding to inverted-colors.
+     * https://drafts.csswg.org/mediaqueries-5/#inverted
+     * 0: none
+     * 1: inverted
+     */
+    InvertedColors,
+
     /**
      * Corresponding to PointerCapabilities in ServoTypes.h
      * 0: None
@@ -302,62 +272,67 @@ class LookAndFeel {
      * 2: Fine
      * 4: Hover
      */
-    eIntID_PrimaryPointerCapabilities,
+    PrimaryPointerCapabilities,
     /**
      * Corresponding to union of PointerCapabilities values in ServoTypes.h
      * E.g. if there is a mouse and a digitizer, the value will be
      * 'Coarse | Fine | Hover'.
      */
-    eIntID_AllPointerCapabilities,
-    /**
-     * An Integer value that will represent the position of the Close button
-     * in GTK Client side decoration header. Its value will be between 0 and 2
-     * if it is on the left side of the tabbar, otherwise it will be between
-     * 3 and 5.
-     */
-    eLookAndFeel_GTKCSDCloseButtonPosition,
+    AllPointerCapabilities,
+
+    /** The scrollbar size, in CSS pixels. */
+    SystemScrollbarSize,
+
+    /** A boolean value to determine whether a touch device is present */
+    TouchDeviceSupportPresent,
+
+    /** GTK titlebar radius */
+    TitlebarRadius,
+
+    /** GTK button-to-button spacing in the inline axis */
+    TitlebarButtonSpacing,
 
     /**
-     * An Integer value that will represent the position of the Minimize button
-     * in GTK Client side decoration header. Its value will be between 0 and 2
-     * if it is on the left side of the tabbar, otherwise it will be between
-     * 3 and 5.
+     * Corresponding to dynamic-range.
+     * https://drafts.csswg.org/mediaqueries-5/#dynamic-range
+     * 0: Standard
+     * 1: High
      */
-    eLookAndFeel_GTKCSDMinimizeButtonPosition,
+    DynamicRange,
 
-    /**
-     * An Integer value that will represent the position of the Maximize button
-     * in GTK Client side decoration header. Its value will be between 0 and 2
-     * if it is on the left side of the tabbar, otherwise it will be between
-     * 3 and 5.
+    /** Whether XUL panel animations are enabled. */
+    PanelAnimations,
+
+    /* Whether we should hide the cursor while typing */
+    HideCursorWhileTyping,
+
+    /* The StyleGtkThemeFamily of the current GTK theme. */
+    GTKThemeFamily,
+
+    /* Whether macOS' full keyboard access is enabled */
+    FullKeyboardAccess,
+
+    /*
+     * Not an ID; used to define the range of valid IDs.  Must be last.
      */
-    eLookAndFeel_GTKCSDMaximizeButtonPosition,
+    End,
   };
 
-  /**
-   * Windows themes we currently detect.
-   */
-  enum WindowsTheme {
-    eWindowsTheme_Generic = 0,  // unrecognized theme
-    eWindowsTheme_Classic,
-    eWindowsTheme_Aero,
-    eWindowsTheme_LunaBlue,
-    eWindowsTheme_LunaOlive,
-    eWindowsTheme_LunaSilver,
-    eWindowsTheme_Royale,
-    eWindowsTheme_Zune,
-    eWindowsTheme_AeroLite
-  };
+  // This is a common enough integer that seems worth the shortcut.
+  static bool UseOverlayScrollbars() {
+    return GetInt(IntID::UseOverlayScrollbars);
+  }
 
-  /**
-   * Operating system versions.
-   */
-  enum OperatingSystemVersion {
-    eOperatingSystemVersion_Windows7 = 2,
-    eOperatingSystemVersion_Windows8,
-    eOperatingSystemVersion_Windows10,
-    eOperatingSystemVersion_Unknown
-  };
+  static constexpr int32_t kDefaultTooltipOffset = 21;
+  static int32_t TooltipOffsetVertical() {
+    return GetInt(IntID::TooltipOffsetVertical, kDefaultTooltipOffset);
+  }
+
+  // Returns keyCode value of a modifier key which is used for accesskey.
+  // Returns 0 if the platform doesn't support access key.
+  static uint32_t GetMenuAccessKey();
+  // Modifier mask for the menu accesskey.
+  static Modifiers GetMenuAccessKeyModifiers();
 
   enum {
     eScrollArrow_None = 0,
@@ -383,71 +358,88 @@ class LookAndFeel {
         eScrollArrow_StartBackward | eScrollArrow_StartForward
   };
 
-  enum { eScrollThumbStyle_Normal, eScrollThumbStyle_Proportional };
-
   // When modifying this list, also modify nsXPLookAndFeel::sFloatPrefs
   // in widget/nsXPLookAndFeel.cpp.
-  enum FloatID {
-    eFloatID_IMEUnderlineRelativeSize,
-    eFloatID_SpellCheckerUnderlineRelativeSize,
+  enum class FloatID {
+    IMEUnderlineRelativeSize,
+    SpellCheckerUnderlineRelativeSize,
 
     // The width/height ratio of the cursor. If used, the CaretWidth int metric
     // should be added to the calculated caret width.
-    eFloatID_CaretAspectRatio
+    CaretAspectRatio,
+
+    // GTK text scale factor.
+    TextScaleFactor,
+
+    // Mouse pointer scaling factor.
+    CursorScale,
+
+    // Not an ID; used to define the range of valid IDs.  Must be last.
+    End,
   };
 
-  // These constants must be kept in 1:1 correspondence with the
-  // NS_STYLE_FONT_* system font constants.
-  enum FontID {
-    eFont_Caption = 1,  // css2
-    FontID_MINIMUM = eFont_Caption,
-    eFont_Icon,
-    eFont_Menu,
-    eFont_MessageBox,
-    eFont_SmallCaption,
-    eFont_StatusBar,
+  using FontID = mozilla::StyleSystemFont;
 
-    eFont_Window,  // css3
-    eFont_Document,
-    eFont_Workspace,
-    eFont_Desktop,
-    eFont_Info,
-    eFont_Dialog,
-    eFont_Button,
-    eFont_PullDownMenu,
-    eFont_List,
-    eFont_Field,
+  static ColorScheme SystemColorScheme() {
+    return GetInt(IntID::SystemUsesDarkTheme) ? ColorScheme::Dark
+                                              : ColorScheme::Light;
+  }
 
-    eFont_Tooltips,  // moz
-    eFont_Widget,
-    FontID_MAXIMUM = eFont_Widget
+  static bool IsDarkColor(nscolor);
+
+  static ColorScheme ColorSchemeForStyle(
+      const dom::Document&, const StyleColorSchemeFlags&,
+      ColorSchemeMode = ColorSchemeMode::Used);
+  static ColorScheme ColorSchemeForFrame(
+      const nsIFrame*, ColorSchemeMode = ColorSchemeMode::Used);
+
+  // Whether standins for native colors should be used (that is, colors faked,
+  // taken from win7, mostly). This forces light appearance, effectively.
+  enum class UseStandins : bool { No, Yes };
+  static UseStandins ShouldUseStandins(const dom::Document&, ColorID);
+
+  // Returns a native color value (might be overwritten by prefs) for a given
+  // color id.
+  //
+  // NOTE:
+  //   ColorID::TextSelectForeground might return NS_SAME_AS_FOREGROUND_COLOR.
+  //   ColorID::IME* might return NS_TRANSPARENT, NS_SAME_AS_FOREGROUND_COLOR or
+  //   NS_40PERCENT_FOREGROUND_COLOR.
+  //   These values have particular meaning.  Then, they are not an actual
+  //   color value.
+  static Maybe<nscolor> GetColor(ColorID, ColorScheme, UseStandins);
+
+  // Gets the color with appropriate defaults for UseStandins, ColorScheme etc
+  // for a given frame.
+  static Maybe<nscolor> GetColor(ColorID, const nsIFrame*);
+
+  // Versions of the above which returns the color if found, or a default (which
+  // defaults to opaque black) otherwise.
+  static nscolor Color(ColorID aId, ColorScheme aScheme,
+                       UseStandins aUseStandins,
+                       nscolor aDefault = NS_RGB(0, 0, 0)) {
+    return GetColor(aId, aScheme, aUseStandins).valueOr(aDefault);
+  }
+
+  static nscolor Color(ColorID aId, nsIFrame* aFrame,
+                       nscolor aDefault = NS_RGB(0, 0, 0)) {
+    return GetColor(aId, aFrame).valueOr(aDefault);
+  }
+
+  static float GetTextScaleFactor() {
+    float f = GetFloat(FloatID::TextScaleFactor, 1.0f);
+    if (MOZ_UNLIKELY(f <= 0.0f)) {
+      return 1.0f;
+    }
+    return f;
+  }
+
+  struct ZoomSettings {
+    float mFullZoom = 1.0f;
+    float mTextZoom = 1.0f;
   };
 
-  /**
-   * GetColor() return a native color value (might be overwritten by prefs) for
-   * aID.  Some platforms don't return an error even if the index doesn't
-   * match any system colors.  And also some platforms may initialize the
-   * return value even when it returns an error.  Therefore, if you want to
-   * use a color for the default value, you should use the other GetColor()
-   * which returns nscolor directly.
-   *
-   * NOTE:
-   *   ColorID::TextSelectForeground might return NS_DONT_CHANGE_COLOR.
-   *   ColorID::IME* might return NS_TRANSPARENT, NS_SAME_AS_FOREGROUND_COLOR or
-   *   NS_40PERCENT_FOREGROUND_COLOR.
-   *   These values have particular meaning.  Then, they are not an actual
-   *   color value.
-   */
-  static nsresult GetColor(ColorID aID, nscolor* aResult);
-
-  /**
-   * This variant of GetColor() takes an extra Boolean parameter that allows
-   * the caller to ask that hard-coded color values be substituted for
-   * native colors (used when it is desireable to hide system colors to
-   * avoid system fingerprinting).
-   */
-  static nsresult GetColor(ColorID aID, bool aUseStandinsForNativeColors,
-                           nscolor* aResult);
+  static ZoomSettings SystemZoomSettings();
 
   /**
    * GetInt() and GetFloat() return a int or float value for aID.  The result
@@ -457,27 +449,8 @@ class LookAndFeel {
    * use a value for the default value, you should use the other method which
    * returns int or float directly.
    */
-  static nsresult GetInt(IntID aID, int32_t* aResult);
+  static nsresult GetInt(IntID, int32_t* aResult);
   static nsresult GetFloat(FloatID aID, float* aResult);
-
-  static nscolor GetColor(ColorID aID, nscolor aDefault = NS_RGB(0, 0, 0)) {
-    nscolor result = NS_RGB(0, 0, 0);
-    if (NS_FAILED(GetColor(aID, &result))) {
-      return aDefault;
-    }
-    return result;
-  }
-
-  static nscolor GetColorUsingStandins(ColorID aID,
-                                       nscolor aDefault = NS_RGB(0, 0, 0)) {
-    nscolor result = NS_RGB(0, 0, 0);
-    if (NS_FAILED(GetColor(aID,
-                           true,  // aUseStandinsForNativeColors
-                           &result))) {
-      return aDefault;
-    }
-    return result;
-  }
 
   static int32_t GetInt(IntID aID, int32_t aDefault = 0) {
     int32_t result;
@@ -522,10 +495,40 @@ class LookAndFeel {
   static bool GetEchoPassword();
 
   /**
+   * Whether we should be drawing in the titlebar by default.
+   */
+  static bool DrawInTitlebar();
+
+  enum class TitlebarAction {
+    None,
+    WindowLower,
+    WindowMenu,
+    WindowMinimize,
+    WindowMaximize,
+    WindowMaximizeToggle,
+    // We don't support more actions (maximize-horizontal, maximize-vertical,..)
+    // as they're implemented as part of Wayland gtk_surface1 protocol
+    // which is not accessible to us.
+  };
+
+  enum class TitlebarEvent {
+    Double_Click,
+    Middle_Click,
+  };
+
+  /**
+   * Get system defined action for titlebar events.
+   */
+  static TitlebarAction GetTitlebarAction(TitlebarEvent aEvent);
+
+  /**
    * The millisecond to mask password value.
    * This value is only valid when GetEchoPassword() returns true.
    */
   static uint32_t GetPasswordMaskDelay();
+
+  /** Gets theme information for about:support */
+  static void GetThemeInfo(nsACString&);
 
   /**
    * When system look and feel is changed, Refresh() must be called.  Then,
@@ -543,45 +546,42 @@ class LookAndFeel {
    */
   static void NativeInit();
 
-  /**
-   * If the implementation is caching values, these accessors allow the
-   * cache to be exported and imported.
-   */
-  static nsTArray<LookAndFeelInt> GetIntCache();
-  static void SetIntCache(const nsTArray<LookAndFeelInt>& aLookAndFeelIntCache);
-  static void NotifyChangedAllWindows();
+  static void SetData(widget::FullLookAndFeel&& aTables);
+  static void NotifyChangedAllWindows(widget::ThemeChangeKind);
+  static bool HasPendingGlobalThemeChange() { return sGlobalThemeChanged; }
+  static void HandleGlobalThemeChange() {
+    if (MOZ_UNLIKELY(HasPendingGlobalThemeChange())) {
+      DoHandleGlobalThemeChange();
+    }
+  }
+
+ protected:
+  static void DoHandleGlobalThemeChange();
+  // Set to true when ThemeChanged needs to be called on mTheme (and other
+  // global LookAndFeel.  This is used because mTheme is a service, so there's
+  // no need to notify it from more than one prescontext.
+  static bool sGlobalThemeChanged;
 };
 
 }  // namespace mozilla
-
-// On the Mac, GetColor(ColorID::TextSelectForeground, color) returns this
-// constant to specify that the foreground color should not be changed
-// (ie. a colored text keeps its colors  when selected).
-// Of course if other plaforms work like the Mac, they can use it too.
-#define NS_DONT_CHANGE_COLOR NS_RGB(0x01, 0x01, 0x01)
-
-// Similar with NS_DONT_CHANGE_COLOR, except NS_DONT_CHANGE_COLOR would returns
-// complementary color if fg color is same as bg color.
-// NS_CHANGE_COLOR_IF_SAME_AS_BG would returns
-// ColorID::TextSelectForegroundCustom if fg and bg color are the same.
-#define NS_CHANGE_COLOR_IF_SAME_AS_BG NS_RGB(0x02, 0x02, 0x02)
 
 // ---------------------------------------------------------------------
 //  Special colors for ColorID::IME* and ColorID::SpellCheckerUnderline
 // ---------------------------------------------------------------------
 
 // For background color only.
-#define NS_TRANSPARENT NS_RGBA(0x01, 0x00, 0x00, 0x00)
+constexpr nscolor NS_TRANSPARENT = NS_RGBA(0x01, 0x00, 0x00, 0x00);
 // For foreground color only.
-#define NS_SAME_AS_FOREGROUND_COLOR NS_RGBA(0x02, 0x00, 0x00, 0x00)
-#define NS_40PERCENT_FOREGROUND_COLOR NS_RGBA(0x03, 0x00, 0x00, 0x00)
+constexpr nscolor NS_SAME_AS_FOREGROUND_COLOR = NS_RGBA(0x02, 0x00, 0x00, 0x00);
+constexpr nscolor NS_40PERCENT_FOREGROUND_COLOR =
+    NS_RGBA(0x03, 0x00, 0x00, 0x00);
 
 #define NS_IS_SELECTION_SPECIAL_COLOR(c)                          \
   ((c) == NS_TRANSPARENT || (c) == NS_SAME_AS_FOREGROUND_COLOR || \
    (c) == NS_40PERCENT_FOREGROUND_COLOR)
 
 // ------------------------------------------
-//  Bits for eIntID_AlertNotificationOrigin
+//  Bits for IntID::AlertNotificationOrigin
 // ------------------------------------------
 
 #define NS_ALERT_HORIZONTAL 1

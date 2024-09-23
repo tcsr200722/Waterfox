@@ -24,7 +24,7 @@ const WIDTH = 160;
 const HEIGHT = 100;
 const HYPOTENUSE = Math.hypot(WIDTH, HEIGHT).toFixed(2);
 
-add_task(async function() {
+add_task(async function () {
   const helper = await openInspectorForURL(TEST_URL).then(
     getHighlighterHelperFor(HIGHLIGHTER_TYPE)
   );
@@ -130,5 +130,9 @@ async function hasCorrectSizeLabelValue({ getElementTextContent }) {
 
   is(parseFloat(width), WIDTH, "width on label's size is correct");
   is(parseFloat(height), HEIGHT, "height on label's size is correct");
-  is(parseFloat(hypot), HYPOTENUSE, "hypotenuse on label's size is correct");
+  is(
+    parseFloat(hypot),
+    parseFloat(HYPOTENUSE),
+    "hypotenuse on label's size is correct"
+  );
 }

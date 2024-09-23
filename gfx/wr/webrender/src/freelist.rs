@@ -44,6 +44,7 @@ impl Epoch {
 
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
+#[derive(MallocSizeOf)]
 pub struct FreeListHandle<M> {
     index: u32,
     epoch: Epoch,
@@ -75,6 +76,13 @@ impl<M> FreeListHandle<M> {
             epoch: Epoch::invalid(),
             _marker: PhantomData,
         }
+    }
+
+    /// Returns true if this handle and the supplied weak handle reference
+    /// the same underlying location in the freelist.
+    pub fn matches(&self, weak_handle: &WeakFreeListHandle<M>) -> bool {
+        self.index == weak_handle.index &&
+        self.epoch == weak_handle.epoch
     }
 }
 
@@ -124,7 +132,7 @@ impl<M> WeakFreeListHandle<M> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, MallocSizeOf)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 struct Slot<T> {
@@ -133,7 +141,7 @@ struct Slot<T> {
     value: Option<T>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, MallocSizeOf)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct FreeList<T, M> {
@@ -141,11 +149,6 @@ pub struct FreeList<T, M> {
     free_list_head: Option<u32>,
     active_count: usize,
     _marker: PhantomData<M>,
-}
-
-pub enum UpsertResult<T, M> {
-    Updated(T),
-    Inserted(FreeListHandle<M>),
 }
 
 impl<T, M> FreeList<T, M> {
@@ -205,21 +208,6 @@ impl<T, M> FreeList<T, M> {
             slot.value.as_mut()
         } else {
             None
-        }
-    }
-
-    // Perform a database style UPSERT operation. If the provided
-    // handle is a valid entry, update the value and return the
-    // previous data. If the provided handle is invalid, then
-    // insert the data into a new slot and return the new handle.
-    pub fn upsert(&mut self, id: &WeakFreeListHandle<M>, data: T) -> UpsertResult<T, M> {
-        if self.slots[id.index as usize].epoch == id.epoch {
-            let slot = &mut self.slots[id.index as usize];
-            let result = UpsertResult::Updated(slot.value.take().unwrap());
-            slot.value = Some(data);
-            result
-        } else {
-            UpsertResult::Inserted(self.insert(data))
         }
     }
 

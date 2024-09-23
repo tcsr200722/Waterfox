@@ -47,25 +47,25 @@ add_task(async function test_open_iframe() {
   );
 
   // Open frame submenu
-  const menuPopup = contextMenu.querySelector("#frame").menupopup;
+  const frameItem = contextMenu.querySelector("#frame");
+  const menuPopup = frameItem.menupopup;
   const menuPopupPromise = BrowserTestUtils.waitForEvent(
     menuPopup,
     "popupshown"
   );
-  menuPopup.openPopup();
+  frameItem.openMenu(true);
   await menuPopupPromise;
 
   let domItem = contextMenu.querySelector("#context-openframeintab");
   info("Going to click item " + domItem.id);
   ok(
-    BrowserTestUtils.is_visible(domItem),
+    BrowserTestUtils.isVisible(domItem),
     "DOM context menu item tab should be visible"
   );
   ok(!domItem.disabled, "DOM context menu item tab shouldn't be disabled");
-  domItem.click();
+  contextMenu.activateItem(domItem);
 
   let openedTab = await openPromise;
-  contextMenu.hidePopup();
   await awaitPopupHidden;
   await BrowserTestUtils.removeTab(openedTab);
 

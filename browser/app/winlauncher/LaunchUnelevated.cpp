@@ -12,9 +12,14 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/ShellHeaderOnlyUtils.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
+#include "../BrowserDefines.h"
 #include "nsWindowsHelpers.h"
 
 #include <windows.h>
+
+#if !defined(RRF_SUBKEY_WOW6464KEY)
+#  define RRF_SUBKEY_WOW6464KEY 0x00010000
+#endif  // !defined(RRF_SUBKEY_WOW6464KEY)
 
 static mozilla::LauncherResult<bool> IsHighIntegrity(
     const nsAutoHandle& aToken) {
@@ -71,6 +76,48 @@ static mozilla::LauncherResult<HANDLE> GetMediumIntegrityToken(
   return result.disown();
 }
 
+static mozilla::LauncherResult<bool> IsAdminByAppCompat(
+    HKEY aRootKey, const wchar_t* aExecutablePath) {
+  static const wchar_t kPathToLayers[] =
+      L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\"
+      L"AppCompatFlags\\Layers";
+
+  DWORD dataLength = 0;
+  LSTATUS status = ::RegGetValueW(aRootKey, kPathToLayers, aExecutablePath,
+                                  RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+                                  nullptr, nullptr, &dataLength);
+  if (status == ERROR_FILE_NOT_FOUND) {
+    return false;
+  } else if (status != ERROR_SUCCESS) {
+    return LAUNCHER_ERROR_FROM_WIN32(status);
+  }
+
+  auto valueData = mozilla::MakeUnique<wchar_t[]>(dataLength);
+  if (!valueData) {
+    return LAUNCHER_ERROR_FROM_WIN32(ERROR_OUTOFMEMORY);
+  }
+
+  status = ::RegGetValueW(aRootKey, kPathToLayers, aExecutablePath,
+                          RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr,
+                          valueData.get(), &dataLength);
+  if (status != ERROR_SUCCESS) {
+    return LAUNCHER_ERROR_FROM_WIN32(status);
+  }
+
+  const wchar_t kRunAsAdmin[] = L"RUNASADMIN";
+  const wchar_t kDelimiters[] = L" ";
+  wchar_t* tokenContext = nullptr;
+  const wchar_t* token = wcstok_s(valueData.get(), kDelimiters, &tokenContext);
+  while (token) {
+    if (!_wcsnicmp(token, kRunAsAdmin, mozilla::ArrayLength(kRunAsAdmin))) {
+      return true;
+    }
+    token = wcstok_s(nullptr, kDelimiters, &tokenContext);
+  }
+
+  return false;
+}
+
 namespace mozilla {
 
 // If we're running at an elevated integrity level, re-run ourselves at the
@@ -79,32 +126,77 @@ namespace mozilla {
 // way to ensure that the child process runs as the original user in the active
 // session; an elevated process could be running with different credentials than
 // those of the session.
-// See https://blogs.msdn.microsoft.com/oldnewthing/20131118-00/?p=2643
+// See https://devblogs.microsoft.com/oldnewthing/20131118-00/?p=2643
 
 LauncherVoidResult LaunchUnelevated(int aArgc, wchar_t* aArgv[]) {
   // We need COM to talk to Explorer. Using ProcessRuntime so that
   // process-global COM configuration is done correctly
-  mozilla::mscom::ProcessRuntime mscom(GeckoProcessType_Default);
+  mozilla::mscom::ProcessRuntime mscom(
+      mozilla::mscom::ProcessRuntime::ProcessCategory::Launcher);
   if (!mscom) {
     return LAUNCHER_ERROR_FROM_HRESULT(mscom.GetHResult());
   }
 
-  // Omit argv[0] because ShellExecute doesn't need it in params
-  UniquePtr<wchar_t[]> cmdLine(MakeCommandLine(aArgc - 1, aArgv + 1));
+  // Omit the original argv[0] because ShellExecute doesn't need it. Insert
+  // ATTEMPTING_DEELEVATION_FLAG so that we know not to attempt to restart
+  // ourselves if deelevation fails.
+  UniquePtr<wchar_t[]> cmdLine = [&]() {
+    constexpr wchar_t const* kTagArg = L"--" ATTEMPTING_DEELEVATION_FLAG;
+
+    // This should have already been checked, but just in case...
+    EnsureBrowserCommandlineSafe(aArgc, aArgv);
+
+    if (mozilla::CheckArg(aArgc, aArgv, "osint", nullptr, CheckArgFlag::None)) {
+      // If the command line contains -osint, we have to arrange things in a
+      // particular order.
+      //
+      // (We can't just replace -osint with kTagArg, unfortunately: there is
+      // code in the browser which behaves differently in the presence of an
+      // `-osint` tag, but which will not have had a chance to react to this.
+      // See, _e.g._, bug 1243603.)
+      auto const aArgvCopy = MakeUnique<wchar_t const*[]>(aArgc + 1);
+      aArgvCopy[0] = aArgv[1];
+      aArgvCopy[1] = kTagArg;
+      for (int i = 2; i < aArgc; ++i) {
+        aArgvCopy[i] = aArgv[i];
+      }
+      aArgvCopy[aArgc] = nullptr;  // because argv[argc] is NULL
+      return MakeCommandLine(aArgc, aArgvCopy.get(), 0, nullptr);
+    } else {
+      // Otherwise, just tack it on at the end.
+      constexpr wchar_t const* const kTagArgArray[] = {kTagArg};
+      return MakeCommandLine(aArgc - 1, aArgv + 1, 1, kTagArgArray);
+    }
+  }();
   if (!cmdLine) {
     return LAUNCHER_ERROR_GENERIC();
   }
 
-  _bstr_t exe(aArgv[0]);
+  _bstr_t cmd;
+
+  UniquePtr<wchar_t[]> packageFamilyName = mozilla::GetPackageFamilyName();
+  if (packageFamilyName) {
+    int cmdLen =
+        // 22 for the prefix + suffix + null terminator below
+        22 + wcslen(packageFamilyName.get());
+    wchar_t appCmd[cmdLen];
+    swprintf(appCmd, cmdLen, L"shell:appsFolder\\%s!App",
+             packageFamilyName.get());
+    cmd = appCmd;
+  } else {
+    cmd = aArgv[0];
+  }
+
   _variant_t args(cmdLine.get());
   _variant_t operation(L"open");
   _variant_t directory;
   _variant_t showCmd(SW_SHOWNORMAL);
-  return ShellExecuteByExplorer(exe, args, operation, directory, showCmd);
+  return ShellExecuteByExplorer(cmd, args, operation, directory, showCmd);
 }
 
 LauncherResult<ElevationState> GetElevationState(
-    mozilla::LauncherFlags aFlags, nsAutoHandle& aOutMediumIlToken) {
+    const wchar_t* aExecutablePath, mozilla::LauncherFlags aFlags,
+    nsAutoHandle& aOutMediumIlToken) {
   aOutMediumIlToken.reset();
 
   const DWORD tokenFlags = TOKEN_QUERY | TOKEN_DUPLICATE |
@@ -118,58 +210,81 @@ LauncherResult<ElevationState> GetElevationState(
 
   LauncherResult<TOKEN_ELEVATION_TYPE> elevationType = GetElevationType(token);
   if (elevationType.isErr()) {
-    return LAUNCHER_ERROR_FROM_RESULT(elevationType);
+    return elevationType.propagateErr();
   }
 
+  Maybe<ElevationState> elevationState;
   switch (elevationType.unwrap()) {
     case TokenElevationTypeLimited:
       return ElevationState::eNormalUser;
     case TokenElevationTypeFull:
-      // If we want to start a non-elevated browser process and wait on it,
-      // we're going to need a medium IL token.
-      if ((aFlags & (mozilla::LauncherFlags::eWaitForBrowser |
-                     mozilla::LauncherFlags::eNoDeelevate)) ==
-          mozilla::LauncherFlags::eWaitForBrowser) {
-        LauncherResult<HANDLE> tokenResult = GetMediumIntegrityToken(token);
-        if (tokenResult.isOk()) {
-          aOutMediumIlToken.own(tokenResult.unwrap());
-        } else {
-          return LAUNCHER_ERROR_FROM_RESULT(tokenResult);
-        }
+      elevationState = Some(ElevationState::eElevated);
+      break;
+    case TokenElevationTypeDefault: {
+      // In this case, UAC is disabled. We do not yet know whether or not we
+      // are running at high integrity. If we are at high integrity, we can't
+      // relaunch ourselves in a non-elevated state via Explorer, as we would
+      // just end up in an infinite loop of launcher processes re-launching
+      // themselves.
+      LauncherResult<bool> isHighIntegrity = IsHighIntegrity(token);
+      if (isHighIntegrity.isErr()) {
+        return isHighIntegrity.propagateErr();
       }
 
-      return ElevationState::eElevated;
-    case TokenElevationTypeDefault:
+      if (!isHighIntegrity.unwrap()) {
+        return ElevationState::eNormalUser;
+      }
+
+      elevationState = Some(ElevationState::eHighIntegrityNoUAC);
       break;
+    }
     default:
       MOZ_ASSERT_UNREACHABLE("Was a new value added to the enumeration?");
       return LAUNCHER_ERROR_GENERIC();
   }
 
-  // In this case, UAC is disabled. We do not yet know whether or not we are
-  // running at high integrity. If we are at high integrity, we can't relaunch
-  // ourselves in a non-elevated state via Explorer, as we would just end up in
-  // an infinite loop of launcher processes re-launching themselves.
+  MOZ_ASSERT(elevationState.isSome() &&
+                 elevationState.value() != ElevationState::eNormalUser,
+             "Should have returned earlier for the eNormalUser case.");
 
-  LauncherResult<bool> isHighIntegrity = IsHighIntegrity(token);
-  if (isHighIntegrity.isErr()) {
-    return LAUNCHER_ERROR_FROM_RESULT(isHighIntegrity);
+  LauncherResult<bool> isAdminByAppCompat =
+      IsAdminByAppCompat(HKEY_CURRENT_USER, aExecutablePath);
+  if (isAdminByAppCompat.isErr()) {
+    return isAdminByAppCompat.propagateErr();
   }
 
-  if (!isHighIntegrity.unwrap()) {
-    return ElevationState::eNormalUser;
-  }
+  if (isAdminByAppCompat.unwrap()) {
+    elevationState = Some(ElevationState::eHighIntegrityByAppCompat);
+  } else {
+    isAdminByAppCompat =
+        IsAdminByAppCompat(HKEY_LOCAL_MACHINE, aExecutablePath);
+    if (isAdminByAppCompat.isErr()) {
+      return isAdminByAppCompat.propagateErr();
+    }
 
-  if (!(aFlags & mozilla::LauncherFlags::eNoDeelevate)) {
-    LauncherResult<HANDLE> tokenResult = GetMediumIntegrityToken(token);
-    if (tokenResult.isOk()) {
-      aOutMediumIlToken.own(tokenResult.unwrap());
-    } else {
-      return LAUNCHER_ERROR_FROM_RESULT(tokenResult);
+    if (isAdminByAppCompat.unwrap()) {
+      elevationState = Some(ElevationState::eHighIntegrityByAppCompat);
     }
   }
 
-  return ElevationState::eHighIntegrityNoUAC;
+  // A medium IL token is not needed in the following cases.
+  // 1) We keep the process elevated (= LauncherFlags::eNoDeelevate)
+  // 2) The process was elevated by UAC (= ElevationState::eElevated)
+  //    AND the launcher process doesn't wait for the browser process
+  if ((aFlags & mozilla::LauncherFlags::eNoDeelevate) ||
+      (elevationState.value() == ElevationState::eElevated &&
+       !(aFlags & mozilla::LauncherFlags::eWaitForBrowser))) {
+    return elevationState.value();
+  }
+
+  LauncherResult<HANDLE> tokenResult = GetMediumIntegrityToken(token);
+  if (tokenResult.isOk()) {
+    aOutMediumIlToken.own(tokenResult.unwrap());
+  } else {
+    return tokenResult.propagateErr();
+  }
+
+  return elevationState.value();
 }
 
 }  // namespace mozilla

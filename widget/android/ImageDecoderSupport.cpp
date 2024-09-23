@@ -12,6 +12,10 @@
 #include "JavaExceptions.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/gfx/Swizzle.h"
+#include "mozilla/java/ImageWrappers.h"
+#include "nsNetUtil.h"
+
+using namespace mozilla::gfx;
 
 namespace mozilla {
 namespace widget {
@@ -28,9 +32,10 @@ class ImageCallbackHelper : public imgIContainerCallback,
  public:
   NS_DECL_ISUPPORTS
 
-  void CompleteExceptionally(const char* aMessage) {
+  void CompleteExceptionally(nsresult aRv) {
+    nsPrintfCString error("Could not process image: 0x%08X", uint32_t(aRv));
     mResult->CompleteExceptionally(
-        java::sdk::IllegalArgumentException::New(aMessage)
+        java::Image::ImageProcessingException::New(error.get())
             .Cast<jni::Throwable>());
     gDecodeRequests.remove(this);
   }
@@ -41,7 +46,7 @@ class ImageCallbackHelper : public imgIContainerCallback,
         reinterpret_cast<int8_t*>(aSourceSurface.GetData()),
         aSourceSurface.GetStride() * height);
     auto bitmap = java::sdk::Bitmap::CreateBitmap(
-        width, height, java::sdk::Config::ARGB_8888());
+        width, height, java::sdk::Bitmap::Config::ARGB_8888());
     bitmap->CopyPixelsFromBuffer(pixels);
     mResult->Complete(bitmap);
     gDecodeRequests.remove(this);
@@ -58,7 +63,7 @@ class ImageCallbackHelper : public imgIContainerCallback,
     MOZ_ALWAYS_TRUE(gDecodeRequests.putNew(this));
 
     if (NS_FAILED(aStatus)) {
-      CompleteExceptionally("Could not process image.");
+      CompleteExceptionally(aStatus);
       return aStatus;
     }
 
@@ -72,6 +77,7 @@ class ImageCallbackHelper : public imgIContainerCallback,
   nsresult SendBitmap() {
     RefPtr<gfx::SourceSurface> surface;
 
+    NS_ENSURE_TRUE(mImage, NS_ERROR_FAILURE);
     if (mDesiredLength > 0) {
       surface = mImage->GetFrameAtSize(
           gfx::IntSize(mDesiredLength, mDesiredLength),
@@ -83,10 +89,10 @@ class ImageCallbackHelper : public imgIContainerCallback,
           imgIContainer::FLAG_SYNC_DECODE | imgIContainer::FLAG_ASYNC_NOTIFY);
     }
 
+    NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
     RefPtr<DataSourceSurface> dataSurface = surface->GetDataSurface();
 
     NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
-
     int32_t width = dataSurface->GetSize().width;
     int32_t height = dataSurface->GetSize().height;
 
@@ -116,7 +122,11 @@ class ImageCallbackHelper : public imgIContainerCallback,
   void Notify(imgIRequest* aRequest, int32_t aType,
               const nsIntRect* aData) override {
     if (aType == imgINotificationObserver::DECODE_COMPLETE) {
-      SendBitmap();
+      nsresult status = SendBitmap();
+      if (NS_FAILED(status)) {
+        CompleteExceptionally(status);
+      }
+
       // Breack the cyclic reference between `ImageDecoderListener` (which is a
       // `imgIContainer`) and `ImageCallbackHelper`.
       mImage = nullptr;
@@ -163,7 +173,7 @@ NS_IMPL_ISUPPORTS(ImageCallbackHelper, imgIContainerCallback,
   nsCOMPtr<nsIChannel> channel;
   rv = NS_NewChannel(getter_AddRefs(channel), uri,
                      nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                      nsIContentPolicy::TYPE_IMAGE);
   NS_ENSURE_SUCCESS(rv, rv);
 

@@ -36,27 +36,25 @@ try {
     }
   });
 
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
-  verifyEqualTo(obj, "property", 1002);
-
-  verifyNotWritable(obj, "property");
-
-  verifyNotEnumerable(obj, "property");
-
-  verifyConfigurable(obj, "property");
-  verifyEqualTo(obj, "property1", 1003);
-
-  verifyNotWritable(obj, "property1");
-
-  verifyNotEnumerable(obj, "property1");
-
-  verifyNotConfigurable(obj, "property1");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(obj, "property", {
+  value: 1002,
+  writable: false,
+  enumerable: false,
+  configurable: true,
+});
+
+verifyProperty(obj, "property1", {
+  value: 1003,
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 
 reportCompare(0, 0);

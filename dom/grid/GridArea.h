@@ -10,8 +10,9 @@
 #include "mozilla/dom/GridBinding.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+class nsAtom;
+
+namespace mozilla::dom {
 
 class Grid;
 
@@ -26,7 +27,7 @@ class GridArea : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(GridArea)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(GridArea)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -49,7 +50,6 @@ class GridArea : public nsISupports, public nsWrapperCache {
   const uint32_t mColumnEnd;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_GridTrack_h */

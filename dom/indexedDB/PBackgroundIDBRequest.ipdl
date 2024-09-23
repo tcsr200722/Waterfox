@@ -4,18 +4,13 @@
 
 include protocol PBackgroundIDBTransaction;
 include protocol PBackgroundIDBVersionChangeTransaction;
-include protocol PBackgroundMutableFile;
-include protocol PChildToParentStream; // FIXME: bug 792908
-include protocol PFileDescriptorSet; // FIXME: bug 792908
-include protocol PIPCBlobInputStream; // FIXME: bug 792908
-include protocol PParentToChildStream; // FIXME: bug 792908
 
 include PBackgroundIDBSharedTypes;
 
 include "mozilla/dom/indexedDB/SerializationHelpers.h";
+include "mozilla/dom/indexedDB/ActorsChild.h";
 
-using struct mozilla::void_t
-  from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
 
 using class mozilla::dom::indexedDB::Key
   from "mozilla/dom/indexedDB/Key.h";
@@ -147,6 +142,7 @@ union PreprocessResponse
   ObjectStoreGetAllPreprocessResponse;
 };
 
+[ManualDealloc, ChildImpl="indexedDB::BackgroundRequestChild", ParentImpl=virtual]
 protocol PBackgroundIDBRequest
 {
   manager PBackgroundIDBTransaction or PBackgroundIDBVersionChangeTransaction;

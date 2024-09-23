@@ -10,6 +10,7 @@
 
 #  include "mozilla/Sprintf.h"
 
+#  include "util/GetPidProvider.h"  // getpid()
 #  include "util/Text.h"
 #  include "vm/JSContext.h"
 #  include "vm/JSScript.h"
@@ -17,7 +18,7 @@
 using namespace js;
 
 const StructuredSpewer::NameArray StructuredSpewer::names_ = {
-#  define STRUCTURED_CHANNEL(name) #  name,
+#  define STRUCTURED_CHANNEL(name) #name,
     STRUCTURED_CHANNEL_LIST(STRUCTURED_CHANNEL)
 #  undef STRUCTURED_CHANNEL
 };
@@ -66,14 +67,14 @@ void StructuredSpewer::tryToInitializeOutput(const char* path) {
   if (!output_.init(suffix_path)) {
     // Returning here before we've emplaced the JSONPrinter
     // means this is effectively disabled, but fail earlier
-    // we also disable all the bits
-    selectedChannels_.disableAllChannels();
+    // we also disable the channel.
+    selectedChannel_.disableAllChannels();
     return;
   }
 
   // These logs are structured as a JSON array.
-  output_.put("[");
   json_.emplace(output_);
+  json_->beginList();
 }
 
 // Treat pattern like a glob, and return true if pattern exists
@@ -87,7 +88,7 @@ static bool MatchJSScript(JSScript* script, const char* pattern) {
 
   char signature[2048] = {0};
   SprintfLiteral(signature, "%s:%u:%u", script->filename(), script->lineno(),
-                 script->column());
+                 script->column().oneOriginValue());
 
   // Trivial containment match.
   char* result = strstr(signature, pattern);
@@ -96,7 +97,7 @@ static bool MatchJSScript(JSScript* script, const char* pattern) {
 }
 
 bool StructuredSpewer::enabled(JSScript* script) {
-  if (!spewingEnabled_) {
+  if (spewingEnabled_ == 0) {
     return false;
   }
 
@@ -130,7 +131,7 @@ void StructuredSpewer::startObject(JSContext* cx, const JSScript* script,
     json.beginObjectProperty("location");
     json.property("filename", script->filename());
     json.property("line", script->lineno());
-    json.property("column", script->column());
+    json.property("column", script->column().oneOriginValue());
     json.endObject();
   }
 }
@@ -157,7 +158,7 @@ void StructuredSpewer::spew(JSContext* cx, SpewChannel channel, const char* fmt,
 
   json.beginObject();
   json.property("channel", getName(channel));
-  json.formatProperty("message", fmt, ap);
+  json.formatPropertyVA("message", fmt, ap);
   json.endObject();
 
   va_end(ap);
@@ -165,14 +166,15 @@ void StructuredSpewer::spew(JSContext* cx, SpewChannel channel, const char* fmt,
 
 // Currently uses the exact spew flag representation as text.
 void StructuredSpewer::parseSpewFlags(const char* flags) {
-  // If '*' or 'all' are in the list, enable all spew.
-  bool star = ContainsFlag(flags, "*") || ContainsFlag(flags, "all");
-#  define CHECK_CHANNEL(name)                             \
-    if (ContainsFlag(flags, #name) || star) {             \
-      selectedChannels_.enableChannel(SpewChannel::name); \
+#  define CHECK_CHANNEL(name)                            \
+    if (ContainsFlag(flags, #name)) {                    \
+      selectedChannel_.enableChannel(SpewChannel::name); \
+      break;                                             \
     }
 
-  STRUCTURED_CHANNEL_LIST(CHECK_CHANNEL)
+  do {
+    STRUCTURED_CHANNEL_LIST(CHECK_CHANNEL)
+  } while (false);
 
 #  undef CHECK_CHANNEL
 
@@ -181,44 +183,46 @@ void StructuredSpewer::parseSpewFlags(const char* flags) {
   }
 
   if (ContainsFlag(flags, "help")) {
+    // clang-format off
     printf(
-        "\n"
-        "usage: SPEW=option,option,option,... where options can be:\n"
-        "\n"
-        "  help               Dump this help message\n"
-        "  all|*              Enable all the below channels\n"
-        "  channel[,channel]  Enable the selected channels from below\n"
-        "  AtStartup          Enable spewing at browser startup instead\n"
-        "                     of when gecko profiling starts."
-        "\n"
-        " Channels: \n"
-        "\n"
-        // List Channels
-        "  BaselineICStats    Dump the IC Entry counters during Ion analysis\n"
-        "  ScriptStats        Dump statistics collected by tracelogger that\n"
-        "                     is aggregated by script. Requires\n"
-        "                     JS_TRACE_LOGGING=1\n"
-        // End Channel list
-        "\n\n"
-        "By default output goes to a file called spew_output.$PID.$THREAD\n"
-        "\n"
-        "Further control of the sepewer can be accomplished with the below\n"
-        "environment variables:\n"
-        "\n"
-        "   SPEW_FILE: Selects the file to write to. An absolute path.\n"
-        "\n"
-        "   SPEW_FILTER: A string which is matched against 'signature'\n"
-        "        constructed from a JSScript, currently connsisting of \n"
-        "        filename:line:col.\n"
-        "\n"
-        "        A JSScript matches the filter string is found in the\n"
-        "        signature\n"
-        "\n"
-        "   SPEW_UPLOAD: If this variable is set as well as MOZ_UPLOAD_DIR,\n"
-        "        output goes to $MOZ_UPLOAD_DIR/spew_output* to ease usage\n"
-        "        with Treeherder.\n"
+      "\n"
+      "usage: SPEW=option,option,... where options can be:\n"
+      "\n"
+      "  help                     Dump this help message\n"
+      "  channel                  Enable the selected channel from below, if\n"
+      "                           more than one channel is specified, then the\n"
+      "                           channel will be set whichever specified filter\n"
+      "                           comes first in STRUCTURED_CHANNEL_LIST.\n"
+      "  AtStartup                Enable spewing at browser startup instead\n"
+      "                           of when gecko profiling starts."
+      "\n"
+      " Channels: \n"
+      "\n"
+      // List Channels
+      "  BaselineICStats          Dump the IC Entry counters during Ion analysis\n"
+      "  CacheIRHealthReport      Dump the CacheIR information and associated rating\n"
+      // End Channel list
+      "\n\n"
+      "By default output goes to a file called spew_output.$PID.$THREAD\n"
+      "\n"
+      "Further control of the spewer can be accomplished with the below\n"
+      "environment variables:\n"
+      "\n"
+      "   SPEW_FILE: Selects the file to write to. An absolute path.\n"
+      "\n"
+      "   SPEW_FILTER: A string which is matched against 'signature'\n"
+      "        constructed from a JSScript, currently connsisting of \n"
+      "        filename:line:col.\n"
+      "\n"
+      "        A JSScript matches the filter string is found in the\n"
+      "        signature\n"
+      "\n"
+      "   SPEW_UPLOAD: If this variable is set as well as MOZ_UPLOAD_DIR,\n"
+      "        output goes to $MOZ_UPLOAD_DIR/spew_output* to ease usage\n"
+      "        with Treeherder.\n"
 
     );
+    // clang-format on
     exit(0);
   }
 }
@@ -236,6 +240,20 @@ AutoStructuredSpewer::AutoStructuredSpewer(JSContext* cx, SpewChannel channel,
 
   cx->spewer().startObject(cx, script, channel);
   printer_.emplace(&cx->spewer().json_.ref());
+}
+
+AutoSpewChannel::AutoSpewChannel(JSContext* cx, SpewChannel channel,
+                                 JSScript* script)
+    : cx_(cx) {
+  if (!cx->spewer().enabled(cx, script, channel)) {
+    wasChannelAutoSet = cx->spewer().selectedChannel_.enableChannel(channel);
+  }
+}
+
+AutoSpewChannel::~AutoSpewChannel() {
+  if (wasChannelAutoSet) {
+    cx_->spewer().selectedChannel_.disableAllChannels();
+  }
 }
 
 #endif

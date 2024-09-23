@@ -1,31 +1,12 @@
 /* import-globals-from ../../../common/tests/unit/head_helpers.js */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { RemoteSettings } = ChromeUtils.import(
-  "resource://services-settings/remote-settings.js"
-);
-const { RemoteSettingsClient } = ChromeUtils.import(
-  "resource://services-settings/RemoteSettingsClient.jsm"
-);
-const { UptakeTelemetry } = ChromeUtils.import(
-  "resource://services-common/uptake-telemetry.js"
-);
-const { TelemetryTestUtils } = ChromeUtils.import(
-  "resource://testing-common/TelemetryTestUtils.jsm"
-);
-
 const PREF_SETTINGS_SERVER = "services.settings.server";
-const PREF_SIGNATURE_ROOT = "security.content.signature.root_hash";
 const SIGNER_NAME = "onecrl.content-signature.mozilla.org";
+const TELEMETRY_COMPONENT = "remotesettings";
 
 const CERT_DIR = "test_remote_settings_signatures/";
-const CHAIN_FILES = [
-  "collection_signing_ee.pem",
-  "collection_signing_int.pem",
-  "collection_signing_root.pem",
-];
+const CHAIN_FILES = ["collection_signing_ee.pem", "collection_signing_int.pem"];
 
 function getFileData(file) {
   const stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(
@@ -35,21 +16,6 @@ function getFileData(file) {
   const data = NetUtil.readInputStreamToString(stream, stream.available());
   stream.close();
   return data;
-}
-
-function setRoot() {
-  const filename = CERT_DIR + CHAIN_FILES[0];
-
-  const certFile = do_get_file(filename, false);
-  const b64cert = getFileData(certFile)
-    .replace(/-----BEGIN CERTIFICATE-----/, "")
-    .replace(/-----END CERTIFICATE-----/, "")
-    .replace(/[\r\n]/g, "");
-  const certdb = Cc["@mozilla.org/security/x509certdb;1"].getService(
-    Ci.nsIX509CertDB
-  );
-  const cert = certdb.constructX509FromBase64(b64cert);
-  Services.prefs.setCharPref(PREF_SIGNATURE_ROOT, cert.sha256Fingerprint);
 }
 
 function getCertChain() {
@@ -63,24 +29,26 @@ function getCertChain() {
 let server;
 let client;
 
-function run_test() {
+add_setup(() => {
   // Signature verification is enabled by default. We use a custom signer
   // because these tests were originally written for OneCRL.
   client = RemoteSettings("signed", { signerName: SIGNER_NAME });
 
-  Services.prefs.setCharPref("services.settings.loglevel", "debug");
-
-  // set the content signing root to our test root
-  setRoot();
+  Services.prefs.setStringPref("services.settings.loglevel", "debug");
 
   // Set up an HTTP Server
   server = new HttpServer();
   server.start(-1);
 
-  run_next_test();
+  // Pretend we are in nightly channel to make sure all telemetry events are sent.
+  let oldGetChannel = Policy.getChannel;
+  Policy.getChannel = () => "nightly";
 
-  registerCleanupFunction(() => server.stop(() => {}));
-}
+  registerCleanupFunction(() => {
+    Policy.getChannel = oldGetChannel;
+    server.stop(() => {});
+  });
+});
 
 add_task(async function test_check_signatures() {
   // First, perform a signature verification with known data and signature
@@ -98,7 +66,8 @@ add_task(async function test_check_signatures() {
       emptyData,
       emptySignature,
       getCertChain(),
-      SIGNER_NAME
+      SIGNER_NAME,
+      Ci.nsIX509CertDB.AppXPCShellRoot
     )
   );
 
@@ -112,7 +81,8 @@ add_task(async function test_check_signatures() {
       collectionData,
       collectionSignature,
       getCertChain(),
-      SIGNER_NAME
+      SIGNER_NAME,
+      Ci.nsIX509CertDB.AppXPCShellRoot
     )
   );
 });
@@ -123,7 +93,7 @@ add_task(async function test_check_synchronization_with_signatures() {
   const x5u = `http://localhost:${port}/test_remote_settings_signatures/test_cert_chain.pem`;
 
   // Telemetry reports.
-  const TELEMETRY_HISTOGRAM_KEY = client.identifier;
+  const TELEMETRY_SOURCE = client.identifier;
 
   function registerHandlers(responses) {
     function handleResponse(serverTimeMillis, request, response) {
@@ -163,7 +133,7 @@ add_task(async function test_check_synchronization_with_signatures() {
   }
 
   // set up prefs so the kinto updater talks to the test server
-  Services.prefs.setCharPref(
+  Services.prefs.setStringPref(
     PREF_SETTINGS_SERVER,
     `http://localhost:${server.identity.primaryPort}/v1`
   );
@@ -302,7 +272,10 @@ add_task(async function test_check_synchronization_with_signatures() {
   // .. and use this map to register handlers for each path
   registerHandlers(emptyCollectionResponses);
 
-  let startHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  let startSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
 
   // With all of this set up, we attempt a sync. This will resolve if all is
   // well and throw if something goes wrong.
@@ -310,11 +283,14 @@ add_task(async function test_check_synchronization_with_signatures() {
 
   equal((await client.get()).length, 0);
 
-  let endHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  let endSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
 
   // ensure that a success histogram is tracked when a succesful sync occurs.
   let expectedIncrements = { [UptakeTelemetry.STATUS.SUCCESS]: 1 };
-  checkUptakeTelemetry(startHistogram, endHistogram, expectedIncrements);
+  checkUptakeTelemetry(startSnapshot, endSnapshot, expectedIncrements);
 
   //
   // 2.
@@ -346,9 +322,8 @@ add_task(async function test_check_synchronization_with_signatures() {
   };
 
   const twoItemsResponses = {
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=3000&_since=%221000%22": [
-      RESPONSE_TWO_ADDED,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=3000&_since=%221000%22":
+      [RESPONSE_TWO_ADDED],
   };
   registerHandlers(twoItemsResponses);
   await client.maybeSync(3000);
@@ -386,9 +361,8 @@ add_task(async function test_check_synchronization_with_signatures() {
   };
 
   const oneAddedOneRemovedResponses = {
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=4000&_since=%223000%22": [
-      RESPONSE_ONE_ADDED_ONE_REMOVED,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=4000&_since=%223000%22":
+      [RESPONSE_ONE_ADDED_ONE_REMOVED],
   };
   registerHandlers(oneAddedOneRemovedResponses);
   await client.maybeSync(4000);
@@ -423,9 +397,8 @@ add_task(async function test_check_synchronization_with_signatures() {
   };
 
   const noOpResponses = {
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=4100&_since=%224000%22": [
-      RESPONSE_EMPTY_NO_UPDATE,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=4100&_since=%224000%22":
+      [RESPONSE_EMPTY_NO_UPDATE],
   };
   registerHandlers(noOpResponses);
   await client.maybeSync(4100);
@@ -482,9 +455,8 @@ add_task(async function test_check_synchronization_with_signatures() {
     // The first collection state is the three item collection (since
     // there was sync with no updates before) - but, since the signature is wrong,
     // another request will be made...
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=5000&_since=%224000%22": [
-      RESPONSE_EMPTY_NO_UPDATE_BAD_SIG,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=5000&_since=%224000%22":
+      [RESPONSE_EMPTY_NO_UPDATE_BAD_SIG],
     // Subsequent signature returned is a valid one for the three item
     // collection.
     "GET:/v1/buckets/main/collections/signed/changeset?_expected=5000": [
@@ -494,10 +466,13 @@ add_task(async function test_check_synchronization_with_signatures() {
 
   registerHandlers(badSigGoodSigResponses);
 
-  startHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  startSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
 
   let syncEventSent = false;
-  client.on("sync", ({ data }) => {
+  client.on("sync", () => {
     syncEventSent = true;
   });
 
@@ -505,7 +480,10 @@ add_task(async function test_check_synchronization_with_signatures() {
 
   equal((await client.get()).length, 2);
 
-  endHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  endSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
 
   // since we only fixed the signature, and no data was changed, the sync event
   // was not sent.
@@ -515,7 +493,7 @@ add_task(async function test_check_synchronization_with_signatures() {
   // (initial) bad signature - only SERVICES_SETTINGS_SYNC_SIG_FAIL should
   // increment.
   expectedIncrements = { [UptakeTelemetry.STATUS.SIGNATURE_ERROR]: 1 };
-  checkUptakeTelemetry(startHistogram, endHistogram, expectedIncrements);
+  checkUptakeTelemetry(startSnapshot, endSnapshot, expectedIncrements);
 
   //
   // 6.
@@ -532,9 +510,8 @@ add_task(async function test_check_synchronization_with_signatures() {
   const badSigGoodOldResponses = {
     // The first collection state is the current state (since there's no update
     // - but, since the signature is wrong, another request will be made)
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=5000&_since=%224000%22": [
-      RESPONSE_EMPTY_NO_UPDATE_BAD_SIG,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=5000&_since=%224000%22":
+      [RESPONSE_EMPTY_NO_UPDATE_BAD_SIG],
     // The next request is for the full collection. This will be
     // checked against the valid signature and last_modified times will be
     // compared. Sync should be a no-op, even though the signature is good,
@@ -545,12 +522,12 @@ add_task(async function test_check_synchronization_with_signatures() {
   };
 
   // ensure our collection hasn't been replaced with an older, empty one
-  equal((await client.get()).length, 2);
+  equal((await client.get()).length, 2, "collection was restored");
 
   registerHandlers(badSigGoodOldResponses);
 
   syncEventSent = false;
-  client.on("sync", ({ data }) => {
+  client.on("sync", () => {
     syncEventSent = true;
   });
 
@@ -558,7 +535,7 @@ add_task(async function test_check_synchronization_with_signatures() {
 
   // Local data was unchanged, since it was never than the one returned by the server,
   // thus the sync event is not sent.
-  equal(syncEventSent, false);
+  equal(syncEventSent, false, "event was not sent");
 
   //
   // 7.
@@ -595,14 +572,18 @@ add_task(async function test_check_synchronization_with_signatures() {
   // properly contains created, updated, and deleted records.
   // the local DB contains same id as RECORD2 and a fake record.
   // the final server collection contains RECORD2 and RECORD3
-  await client.db.clear();
-  await client.db.saveMetadata({ signature: { x5u, signature: "abc" } });
-  await client.db.create(
-    { ...RECORD2, last_modified: 1234567890, serialNumber: "abc" },
-    { synced: true, useRecordId: true }
-  );
   const localId = "0602b1b2-12ab-4d3a-b6fb-593244e7b035";
-  await client.db.create({ id: localId }, { synced: true, useRecordId: true });
+  await client.db.importChanges(
+    { signature: { x5u, signature: "abc" } },
+    null,
+    [
+      { ...RECORD2, last_modified: 1234567890, serialNumber: "abc" },
+      { id: localId },
+    ],
+    {
+      clear: true,
+    }
+  );
 
   let syncData = null;
   client.on("sync", ({ data }) => {
@@ -612,12 +593,17 @@ add_task(async function test_check_synchronization_with_signatures() {
   // Clear events snapshot.
   TelemetryTestUtils.assertEvents([], {}, { process: "dummy" });
 
-  await withFakeChannel("nightly", async () => {
-    // Events telemetry is sampled on released, use fake channel.
-    await client.maybeSync(5000);
+  const TELEMETRY_EVENTS_FILTERS = {
+    category: "uptake.remotecontent.result",
+    method: "uptake",
+  };
 
-    // We should report a corruption_error.
-    TelemetryTestUtils.assertEvents([
+  // Events telemetry is sampled on released, use fake channel.
+  await client.maybeSync(5000);
+
+  // We should report a corruption_error.
+  TelemetryTestUtils.assertEvents(
+    [
       [
         "uptake.remotecontent.result",
         "uptake",
@@ -629,8 +615,9 @@ add_task(async function test_check_synchronization_with_signatures() {
           trigger: "manual",
         },
       ],
-    ]);
-  });
+    ],
+    TELEMETRY_EVENTS_FILTERS
+  );
 
   // The local data was corrupted, and the Telemetry status reflects it.
   // But the sync overwrote the bad data and was eventually a success.
@@ -691,15 +678,17 @@ add_task(async function test_check_synchronization_with_signatures() {
     }),
   };
   const allBadSigResponses = {
-    "GET:/v1/buckets/main/collections/signed/changeset?_expected=6000&_since=%224000%22": [
-      RESPONSE_EMPTY_NO_UPDATE_BAD_SIG_6000,
-    ],
+    "GET:/v1/buckets/main/collections/signed/changeset?_expected=6000&_since=%224000%22":
+      [RESPONSE_EMPTY_NO_UPDATE_BAD_SIG_6000],
     "GET:/v1/buckets/main/collections/signed/changeset?_expected=6000": [
       RESPONSE_ONLY_RECORD4_BAD_SIG,
     ],
   };
 
-  startHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  startSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
   registerHandlers(allBadSigResponses);
   await Assert.rejects(
     client.maybeSync(6000),
@@ -708,9 +697,12 @@ add_task(async function test_check_synchronization_with_signatures() {
   );
 
   // Ensure that the failure is reflected in the accumulated telemetry:
-  endHistogram = getUptakeTelemetrySnapshot(TELEMETRY_HISTOGRAM_KEY);
+  endSnapshot = getUptakeTelemetrySnapshot(
+    TELEMETRY_COMPONENT,
+    TELEMETRY_SOURCE
+  );
   expectedIncrements = { [UptakeTelemetry.STATUS.SIGNATURE_RETRY_ERROR]: 1 };
-  checkUptakeTelemetry(startHistogram, endHistogram, expectedIncrements);
+  checkUptakeTelemetry(startSnapshot, endSnapshot, expectedIncrements);
 
   // When signature fails after retry, the local data present before sync
   // should be maintained (if its signature is valid).
@@ -776,7 +768,7 @@ add_task(async function test_check_synchronization_with_signatures() {
   const sigCalls = [];
   let i = 0;
   client._verifier = {
-    async asyncVerifyContentSignature(serialized, signature) {
+    async asyncVerifyContentSignature(serialized) {
       sigCalls.push(serialized);
       console.log(`verify call ${i}`);
       return [
@@ -787,15 +779,21 @@ add_task(async function test_check_synchronization_with_signatures() {
       ][i++];
     },
   };
-  // Pull changes from above tests.
-  await client.db.saveLastModified(4000);
-  await client.db.saveMetadata({ signature: { x5u, signature: "aa" } });
   // Create an extra record. It will have a valid signature locally
   // thanks to the verifier mock.
-  await client.db.create({
-    id: "extraId",
-    last_modified: 42,
-  });
+  await client.db.importChanges(
+    {
+      signature: { x5u, signature: "aa" },
+    },
+    4000,
+    [
+      {
+        id: "extraId",
+        last_modified: 42,
+      },
+    ]
+  );
+
   equal((await client.get()).length, 1);
 
   // Now sync, but importing changes will have failing signature,

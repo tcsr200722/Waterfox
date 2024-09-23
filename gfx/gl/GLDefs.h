@@ -51,6 +51,7 @@ bool CheckContextLost(const GLContext* gl);
 #define LOCAL_EGL_PLATFORM_ANGLE_MAX_VERSION_MAJOR_ANGLE    0x3204
 #define LOCAL_EGL_PLATFORM_ANGLE_MAX_VERSION_MINOR_ANGLE    0x3205
 #define LOCAL_EGL_PLATFORM_ANGLE_TYPE_DEFAULT_ANGLE         0x3206
+#define LOCAL_EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE 0x3451
 
 // EGL_ANGLE_keyed_mutex
 #define LOCAL_EGL_DXGI_KEYED_MUTEX_ANGLE                     0x33A2
@@ -81,6 +82,9 @@ bool CheckContextLost(const GLContext* gl);
 // EGL_ANGLE_direct3d_display
 #define LOCAL_EGL_D3D11_ELSE_D3D9_DISPLAY_ANGLE         ((EGLNativeDisplayType)-2)
 #define LOCAL_EGL_D3D11_ONLY_DISPLAY_ANGLE              ((EGLNativeDisplayType)-3)
+
+// EGL_ANGLE_feature_control
+#define LOCAL_EGL_FEATURE_OVERRIDES_ENABLED_ANGLE       0x3466
 
 // WGL_NV_DX_interop
 #define LOCAL_WGL_ACCESS_READ_ONLY                      0x0000

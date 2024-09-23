@@ -2,33 +2,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import React, { Component } from "devtools/client/shared/vendor/react";
+import { div } from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 
-import React, { Component } from "react";
-import { connect } from "../../utils/connect";
-
-import { getAllThreads } from "../../selectors";
+import { getAllThreads } from "../../selectors/index";
 import Thread from "./Thread";
 
-import type { Thread as ThreadType } from "../../types";
+export class Threads extends Component {
+  static get propTypes() {
+    return {
+      threads: PropTypes.array.isRequired,
+    };
+  }
 
-import "./Threads.css";
-
-type OwnProps = {||};
-type Props = {
-  threads: ThreadType[],
-};
-
-export class Threads extends Component<Props> {
   render() {
     const { threads } = this.props;
-
-    return (
-      <div className="pane threads-list">
-        {threads.map(thread => (
-          <Thread thread={thread} key={thread.actor} />
-        ))}
-      </div>
+    return div(
+      {
+        className: "pane threads-list",
+      },
+      threads.map(thread =>
+        React.createElement(Thread, {
+          thread,
+          key: thread.actor,
+        })
+      )
     );
   }
 }
@@ -37,4 +37,4 @@ const mapStateToProps = state => ({
   threads: getAllThreads(state),
 });
 
-export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps)(Threads);
+export default connect(mapStateToProps)(Threads);

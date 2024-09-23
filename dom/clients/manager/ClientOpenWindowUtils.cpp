@@ -10,12 +10,15 @@
 #include "ClientManager.h"
 #include "ClientState.h"
 #include "mozilla/ResultExtensions.h"
+#include "mozilla/dom/ContentParent.h"
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
+#include "nsDocShellLoadState.h"
 #include "nsFocusManager.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsIBrowserDOMWindow.h"
 #include "nsIDocShell.h"
-#include "nsIDOMChromeWindow.h"
+#include "nsIDocShellTreeOwner.h"
 #include "nsIURI.h"
 #include "nsIBrowser.h"
 #include "nsIWebProgress.h"
@@ -40,8 +43,7 @@
 #  include "mozilla/java/GeckoRuntimeWrappers.h"
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -53,9 +55,9 @@ class WebProgressListener final : public nsIWebProgressListener,
   WebProgressListener(BrowsingContext* aBrowsingContext, nsIURI* aBaseURI,
                       already_AddRefed<ClientOpPromise::Private> aPromise)
       : mPromise(aPromise),
-        mBrowsingContext(aBrowsingContext),
-        mBaseURI(aBaseURI) {
-    MOZ_ASSERT(aBrowsingContext);
+        mBaseURI(aBaseURI),
+        mBrowserId(aBrowsingContext->GetBrowserId()) {
+    MOZ_ASSERT(mBrowserId != 0);
     MOZ_ASSERT(aBaseURI);
     MOZ_ASSERT(NS_IsMainThread());
   }
@@ -63,20 +65,17 @@ class WebProgressListener final : public nsIWebProgressListener,
   NS_IMETHOD
   OnStateChange(nsIWebProgress* aWebProgress, nsIRequest* aRequest,
                 uint32_t aStateFlags, nsresult aStatus) override {
-    MOZ_ASSERT(mBrowsingContext);
-
     if (!(aStateFlags & STATE_IS_WINDOW) ||
         !(aStateFlags & (STATE_STOP | STATE_TRANSFERRING))) {
       return NS_OK;
     }
 
-    // Our caller keeps a strong reference, so it is safe to remove the listener
-    // from ServiceWorkerPrivate.
-    aWebProgress->RemoveProgressListener(this);
-
     // Our browsing context may have been discarded before finishing the load,
     // this is a navigation error.
-    if (mBrowsingContext->IsDiscarded()) {
+    RefPtr<CanonicalBrowsingContext> browsingContext =
+        CanonicalBrowsingContext::Cast(
+            BrowsingContext::GetCurrentTopByBrowserId(mBrowserId));
+    if (!browsingContext || browsingContext->IsDiscarded()) {
       CopyableErrorResult rv;
       rv.ThrowInvalidStateError("Unable to open window");
       mPromise->Reject(rv, __func__);
@@ -84,15 +83,31 @@ class WebProgressListener final : public nsIWebProgressListener,
       return NS_OK;
     }
 
+    // Our caller keeps a strong reference, so it is safe to remove the listener
+    // from the BrowsingContext's nsIWebProgress.
+    auto RemoveListener = [&] {
+      nsCOMPtr<nsIWebProgress> webProgress = browsingContext->GetWebProgress();
+      webProgress->RemoveProgressListener(this);
+    };
+
     RefPtr<dom::WindowGlobalParent> wgp =
-        mBrowsingContext->Canonical()->GetCurrentWindowGlobal();
+        browsingContext->GetCurrentWindowGlobal();
     if (NS_WARN_IF(!wgp)) {
       CopyableErrorResult rv;
       rv.ThrowInvalidStateError("Unable to open window");
       mPromise->Reject(rv, __func__);
       mPromise = nullptr;
+      RemoveListener();
       return NS_OK;
     }
+
+    if (NS_WARN_IF(wgp->IsInitialDocument())) {
+      // This is the load of the initial document, which is not the document we
+      // care about for the purposes of checking same-originness of the URL.
+      return NS_OK;
+    }
+
+    RemoveListener();
 
     // Check same origin. If the origins do not match, resolve with null (per
     // step 7.2.7.1 of the openWindow spec).
@@ -102,7 +117,7 @@ class WebProgressListener final : public nsIWebProgressListener,
         wgp->DocumentPrincipal()->OriginAttributesRef().mPrivateBrowsingId > 0;
     nsresult rv = securityManager->CheckSameOriginURI(
         wgp->GetDocumentURI(), mBaseURI, false, isPrivateWin);
-    if (NS_FAILED(rv)) {
+    if (NS_WARN_IF(NS_FAILED(rv))) {
       mPromise->Resolve(CopyableErrorResult(), __func__);
       mPromise = nullptr;
       return NS_OK;
@@ -120,7 +135,7 @@ class WebProgressListener final : public nsIWebProgressListener,
     const nsID& id = info.ref().Id();
     const mozilla::ipc::PrincipalInfo& principal = info.ref().PrincipalInfo();
     ClientManager::GetInfoAndState(ClientGetInfoAndStateArgs(id, principal),
-                                   GetCurrentThreadSerialEventTarget())
+                                   GetCurrentSerialEventTarget())
         ->ChainTo(mPromise.forget(), __func__);
 
     return NS_OK;
@@ -174,8 +189,8 @@ class WebProgressListener final : public nsIWebProgressListener,
   }
 
   RefPtr<ClientOpPromise::Private> mPromise;
-  RefPtr<BrowsingContext> mBrowsingContext;
   nsCOMPtr<nsIURI> mBaseURI;
+  uint64_t mBrowserId;
 };
 
 NS_IMPL_ISUPPORTS(WebProgressListener, nsIWebProgressListener,
@@ -186,6 +201,7 @@ struct ClientOpenWindowArgsParsed {
   nsCOMPtr<nsIURI> baseURI;
   nsCOMPtr<nsIPrincipal> principal;
   nsCOMPtr<nsIContentSecurityPolicy> csp;
+  RefPtr<ThreadsafeContentParentHandle> originContent;
 };
 
 void OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
@@ -206,15 +222,14 @@ void OpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
     return;
   }
 
-  nsCOMPtr<nsIDOMChromeWindow> chromeWin = do_QueryInterface(browserWindow);
-  if (NS_WARN_IF(!chromeWin)) {
+  if (NS_WARN_IF(!nsGlobalWindowOuter::Cast(browserWindow)->IsChromeWindow())) {
     // XXXbz Can this actually happen?  Seems unlikely.
     aRv.ThrowTypeError("Unable to open window");
     return;
   }
 
-  nsCOMPtr<nsIBrowserDOMWindow> bwin;
-  chromeWin->GetBrowserDOMWindow(getter_AddRefs(bwin));
+  nsCOMPtr<nsIBrowserDOMWindow> bwin =
+      nsGlobalWindowOuter::Cast(browserWindow)->GetBrowserDOMWindow();
 
   if (NS_WARN_IF(!bwin)) {
     aRv.ThrowTypeError("Unable to open window");
@@ -236,51 +251,26 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
   MOZ_DIAGNOSTIC_ASSERT(aBrowsingContext);
 
   RefPtr<ClientOpPromise::Private> promise = aPromise;
-  nsresult rv;
-  nsCOMPtr<nsIWebProgress> webProgress;
-  if (nsIDocShell* docShell = aBrowsingContext->GetDocShell()) {
-    // We're dealing with a non-remote frame. We have access to an nsDocShell,
-    // so we can just pull the nsIWebProgress off of that.
-    webProgress = nsDocShell::Cast(docShell);
-    nsFocusManager::FocusWindow(aBrowsingContext->GetDOMWindow(),
-                                CallerType::NonSystem);
-  } else {
-    // We're dealing with a remote frame. We can get a RemoteWebProgress off of
-    // the <xul:browser> that embeds |aBrowsingContext| to listen for content
-    // events. Note that RemoteWebProgress filters out events which don't have
-    // STATE_IS_NETWORK or STATE_IS_REDIRECTED_DOCUMENT set on them, and so this
-    // listener will only see some web progress events.
-    nsCOMPtr<Element> element = aBrowsingContext->GetEmbedderElement();
-    if (NS_WARN_IF(!element)) {
-      CopyableErrorResult result;
-      result.ThrowInvalidStateError("Unable to watch window for navigation");
-      promise->Reject(result, __func__);
-      return;
-    }
-
-    nsCOMPtr<nsIBrowser> browser = element->AsBrowser();
-    if (NS_WARN_IF(!browser)) {
-      CopyableErrorResult result;
-      result.ThrowInvalidStateError("Unable to watch window for navigation");
-      promise->Reject(result, __func__);
-      return;
-    }
-
-    rv = browser->GetRemoteWebProgressManager(getter_AddRefs(webProgress));
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      CopyableErrorResult result;
-      result.ThrowInvalidStateError("Unable to watch window for navigation");
-      promise->Reject(result, __func__);
-      return;
-    }
+  // We can get a WebProgress off of
+  // the BrowsingContext for the <xul:browser> to listen for content
+  // events. Note that this WebProgress filters out events which don't have
+  // STATE_IS_NETWORK or STATE_IS_REDIRECTED_DOCUMENT set on them, and so this
+  // listener will only see some web progress events.
+  nsCOMPtr<nsIWebProgress> webProgress =
+      aBrowsingContext->Canonical()->GetWebProgress();
+  if (NS_WARN_IF(!webProgress)) {
+    CopyableErrorResult result;
+    result.ThrowInvalidStateError("Unable to watch window for navigation");
+    promise->Reject(result, __func__);
+    return;
   }
 
   // Add a progress listener before we start the load of the service worker URI
   RefPtr<WebProgressListener> listener = new WebProgressListener(
       aBrowsingContext, aArgsValidated.baseURI, do_AddRef(promise));
 
-  rv = webProgress->AddProgressListener(listener,
-                                        nsIWebProgress::NOTIFY_STATE_WINDOW);
+  nsresult rv = webProgress->AddProgressListener(
+      listener, nsIWebProgress::NOTIFY_STATE_WINDOW);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     CopyableErrorResult result;
     // XXXbz Can we throw something better here?
@@ -296,6 +286,10 @@ void WaitForLoad(const ClientOpenWindowArgsParsed& aArgsValidated,
   loadState->SetFirstParty(true);
   loadState->SetLoadFlags(
       nsIWebNavigation::LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL);
+  loadState->SetTriggeringRemoteType(
+      aArgsValidated.originContent
+          ? aArgsValidated.originContent->GetRemoteType()
+          : NOT_REMOTE_TYPE);
 
   rv = aBrowsingContext->LoadURI(loadState, true);
   if (NS_FAILED(rv)) {
@@ -333,23 +327,31 @@ void GeckoViewOpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
   promiseResult->Then(
       GetMainThreadSerialEventTarget(), __func__,
       [aArgsValidated, promise](nsString sessionId) {
-        nsresult rv;
-        nsCOMPtr<nsIWindowWatcher> wwatch =
-            do_GetService(NS_WINDOWWATCHER_CONTRACTID, &rv);
+        // Retrieve the primary content BrowsingContext using the GeckoSession
+        // ID. The chrome window is named the same as the ID of the GeckoSession
+        // it is associated with.
+        RefPtr<BrowsingContext> browsingContext;
+        nsresult rv = [&sessionId, &browsingContext]() -> nsresult {
+          nsresult rv;
+          nsCOMPtr<nsIWindowWatcher> wwatch =
+              do_GetService(NS_WINDOWWATCHER_CONTRACTID, &rv);
+          NS_ENSURE_SUCCESS(rv, rv);
+          nsCOMPtr<mozIDOMWindowProxy> chromeWindow;
+          rv = wwatch->GetWindowByName(sessionId, getter_AddRefs(chromeWindow));
+          NS_ENSURE_SUCCESS(rv, rv);
+          NS_ENSURE_TRUE(chromeWindow, NS_ERROR_FAILURE);
+          nsCOMPtr<nsIDocShellTreeOwner> treeOwner =
+              nsPIDOMWindowOuter::From(chromeWindow)->GetTreeOwner();
+          NS_ENSURE_TRUE(treeOwner, NS_ERROR_FAILURE);
+          rv = treeOwner->GetPrimaryContentBrowsingContext(
+              getter_AddRefs(browsingContext));
+          NS_ENSURE_SUCCESS(rv, rv);
+          NS_ENSURE_TRUE(browsingContext, NS_ERROR_FAILURE);
+          return NS_OK;
+        }();
         if (NS_WARN_IF(NS_FAILED(rv))) {
           promise->Reject(rv, __func__);
           return rv;
-        }
-
-        // Retrieve the browsing context by using the GeckoSession ID. The
-        // window is named the same as the ID of the GeckoSession it is
-        // associated with.
-        RefPtr<BrowsingContext> browsingContext =
-            static_cast<nsWindowWatcher*>(wwatch.get())
-                ->GetBrowsingContextByName(sessionId, false, nullptr);
-        if (NS_WARN_IF(!browsingContext)) {
-          promise->Reject(NS_ERROR_FAILURE, __func__);
-          return NS_ERROR_FAILURE;
         }
 
         WaitForLoad(aArgsValidated, browsingContext, promise);
@@ -364,7 +366,9 @@ void GeckoViewOpenWindow(const ClientOpenWindowArgsParsed& aArgsValidated,
 
 }  // anonymous namespace
 
-RefPtr<ClientOpPromise> ClientOpenWindow(const ClientOpenWindowArgs& aArgs) {
+RefPtr<ClientOpPromise> ClientOpenWindow(
+    ThreadsafeContentParentHandle* aOriginContent,
+    const ClientOpenWindowArgs& aArgs) {
   MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess());
 
   RefPtr<ClientOpPromise::Private> promise =
@@ -406,11 +410,13 @@ RefPtr<ClientOpPromise> ClientOpenWindow(const ClientOpenWindowArgs& aArgs) {
   if (aArgs.cspInfo().isSome()) {
     csp = CSPInfoToCSP(aArgs.cspInfo().ref(), nullptr);
   }
-  ClientOpenWindowArgsParsed argsValidated;
-  argsValidated.uri = uri;
-  argsValidated.baseURI = baseURI;
-  argsValidated.principal = principal;
-  argsValidated.csp = csp;
+  ClientOpenWindowArgsParsed argsValidated{
+      .uri = uri,
+      .baseURI = baseURI,
+      .principal = principal,
+      .csp = csp,
+      .originContent = aOriginContent,
+  };
 
 #ifdef MOZ_WIDGET_ANDROID
   // If we are on Android we are GeckoView.
@@ -438,7 +444,7 @@ RefPtr<ClientOpPromise> ClientOpenWindow(const ClientOpenWindowArgs& aArgs) {
   }
 
   browsingContextReadyPromise->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [argsValidated, promise](const RefPtr<BrowsingContext>& aBC) {
         WaitForLoad(argsValidated, aBC, promise);
       },
@@ -454,5 +460,4 @@ RefPtr<ClientOpPromise> ClientOpenWindow(const ClientOpenWindowArgs& aArgs) {
   return promise;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

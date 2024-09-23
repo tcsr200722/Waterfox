@@ -3,3 +3,6 @@
 [include]
 path:tools/lint/eslint/
 path:testing/performance
+path:testing/condprofile
+path:python/mozbuild/mozbuild/action/tooltool.py
+glob:**/perftest_*.js

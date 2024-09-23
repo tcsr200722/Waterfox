@@ -6,7 +6,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf8,<script>
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html><script>
     x = Object.create(null, Object.getOwnPropertyDescriptors({
       dog: "woof",
       dos: "-",
@@ -16,7 +16,7 @@ const TEST_URI = `data:text/html;charset=utf8,<script>
     }))
   </script>`;
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
   const { jsterm } = hud;
   const { autocompletePopup: popup } = jsterm;
@@ -33,10 +33,11 @@ add_task(async function() {
   ok(popup.isOpen, "popup is opened");
 
   info("Add a property on the object");
-  // Using the console front directly as we don't want to impact the UI state.
-  let { result } = await hud.evaluateJSAsync(
-    `x.docfoobar = "added"; x.docfoobar`
-  );
+  let result = await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+    content.wrappedJSObject.x.docfoobar = "added";
+    return content.wrappedJSObject.x.docfoobar;
+  });
+
   is(result, "added", "The property was added on the window object");
 
   info("Test typing d (i.e. input is now 'x.d')");
@@ -66,9 +67,12 @@ add_task(async function() {
     "autocomplete cached results do not contain docfoobar. list has not been updated"
   );
 
-  // Using the console front directly as we don't want to impact the UI state.
-  ({ result } = await hud.evaluateJSAsync(`delete x.docfoobar; x.docfoobar`));
-  is(result.type, "undefined", "The property was removed");
+  result = await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+    content.wrappedJSObject.x.docfoobar = "added";
+    delete content.wrappedJSObject.x.docfoobar;
+    return typeof content.wrappedJSObject.x.docfoobar;
+  });
+  is(result, "undefined", "The property was removed");
 
   // Test if 'window.getC' gives 'getComputedStyle'
   await jstermComplete("window.");
@@ -80,7 +84,7 @@ add_task(async function() {
 
   // Test if 'dump(d' gives non-zero results
   await jstermComplete("dump(d");
-  ok(popup.getItems().length > 0, "'dump(d' gives non-zero results");
+  ok(!!popup.getItems().length, "'dump(d' gives non-zero results");
 
   // Test that 'dump(x.)' works.
   await jstermComplete("dump(x)", -1);
@@ -93,10 +97,10 @@ add_task(async function() {
   );
 
   info("Add a property on the x object");
-  // Using the console front directly as we don't want to impact the UI state.
-  ({ result } = await hud.evaluateJSAsync(
-    `x.docfoobar = "added"; x.docfoobar`
-  ));
+  result = await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+    content.wrappedJSObject.x.docfoobar = "added";
+    return content.wrappedJSObject.x.docfoobar;
+  });
   is(result, "added", "The property was added on the x object again");
 
   // Make sure 'dump(x.d)' does not contain 'docfoobar'.

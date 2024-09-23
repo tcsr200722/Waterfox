@@ -7,12 +7,15 @@
 #include "FeaturePolicyUtils.h"
 #include "nsIOService.h"
 
-#include "mozilla/dom/DOMTypes.h"
 #include "mozilla/ipc/IPDLParamTraits.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/dom/FeaturePolicyViolationReportBody.h"
 #include "mozilla/dom/ReportingUtils.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/Document.h"
+#include "nsContentUtils.h"
+#include "nsJSUtils.h"
 
 namespace mozilla {
 namespace dom {
@@ -32,6 +35,15 @@ static FeatureMap sSupportedFeatures[] = {
     {"microphone", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
     {"display-capture", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
     {"fullscreen", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
+    {"web-share", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
+    {"gamepad", FeaturePolicyUtils::FeaturePolicyValue::eAll},
+    {"publickey-credentials-create",
+     FeaturePolicyUtils::FeaturePolicyValue::eSelf},
+    {"publickey-credentials-get",
+     FeaturePolicyUtils::FeaturePolicyValue::eSelf},
+    {"speaker-selection", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
+    {"storage-access", FeaturePolicyUtils::FeaturePolicyValue::eAll},
+    {"screen-wake-lock", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
 };
 
 /*
@@ -48,8 +60,6 @@ static FeatureMap sExperimentalFeatures[] = {
     {"midi", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
     {"payment", FeaturePolicyUtils::FeaturePolicyValue::eAll},
     {"document-domain", FeaturePolicyUtils::FeaturePolicyValue::eAll},
-    // TODO: not supported yet!!!
-    {"speaker", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
     {"vr", FeaturePolicyUtils::FeaturePolicyValue::eAll},
     // https://immersive-web.github.io/webxr/#feature-policy
     {"xr-spatial-tracking", FeaturePolicyUtils::FeaturePolicyValue::eSelf},
@@ -153,10 +163,6 @@ bool FeaturePolicyUtils::IsFeatureUnsafeAllowedAll(
     Document* aDocument, const nsAString& aFeatureName) {
   MOZ_ASSERT(aDocument);
 
-  if (!StaticPrefs::dom_security_featurePolicy_enabled()) {
-    return false;
-  }
-
   if (!aDocument->IsHTMLDocument()) {
     return false;
   }
@@ -176,17 +182,9 @@ bool FeaturePolicyUtils::IsFeatureAllowed(Document* aDocument,
                                           const nsAString& aFeatureName) {
   MOZ_ASSERT(aDocument);
 
-  if (!StaticPrefs::dom_security_featurePolicy_enabled()) {
-    return true;
-  }
-
-  // Skip apply features in experimental pharse
+  // Skip apply features in experimental phase
   if (!StaticPrefs::dom_security_featurePolicy_experimental_enabled() &&
       IsExperimentalFeature(aFeatureName)) {
-    return true;
-  }
-
-  if (!aDocument->IsHTMLDocument()) {
     return true;
   }
 
@@ -242,70 +240,55 @@ void FeaturePolicyUtils::ReportViolation(Document* aDocument,
   RefPtr<FeaturePolicyViolationReportBody> body =
       new FeaturePolicyViolationReportBody(window->AsGlobal(), aFeatureName,
                                            fileName, lineNumber, columnNumber,
-                                           NS_LITERAL_STRING("enforce"));
+                                           u"enforce"_ns);
 
   ReportingUtils::Report(window->AsGlobal(), nsGkAtoms::featurePolicyViolation,
-                         NS_LITERAL_STRING("default"),
-                         NS_ConvertUTF8toUTF16(spec), body);
+                         u"default"_ns, NS_ConvertUTF8toUTF16(spec), body);
 }
 
 }  // namespace dom
 
 namespace ipc {
-void IPDLParamTraits<dom::FeaturePolicy*>::Write(IPC::Message* aMsg,
-                                                 IProtocol* aActor,
-                                                 dom::FeaturePolicy* aParam) {
-  if (!aParam) {
-    WriteIPDLParam(aMsg, aActor, false);
-    return;
-  }
 
-  WriteIPDLParam(aMsg, aActor, true);
-
-  dom::FeaturePolicyInfo info;
-  info.defaultOrigin() = aParam->DefaultOrigin();
-  info.selfOrigin() = aParam->GetSelfOrigin();
-  info.srcOrigin() = aParam->GetSrcOrigin();
-
-  aParam->GetDeclaredString(info.declaredString());
-  aParam->GetInheritedDeniedFeatureNames(info.inheritedDeniedFeatureNames());
-
-  WriteIPDLParam(aMsg, aActor, info);
+void IPDLParamTraits<dom::FeaturePolicyInfo>::Write(
+    IPC::MessageWriter* aWriter, IProtocol* aActor,
+    const dom::FeaturePolicyInfo& aParam) {
+  WriteIPDLParam(aWriter, aActor, aParam.mInheritedDeniedFeatureNames);
+  WriteIPDLParam(aWriter, aActor, aParam.mAttributeEnabledFeatureNames);
+  WriteIPDLParam(aWriter, aActor, aParam.mDeclaredString);
+  WriteIPDLParam(aWriter, aActor, aParam.mDefaultOrigin);
+  WriteIPDLParam(aWriter, aActor, aParam.mSelfOrigin);
+  WriteIPDLParam(aWriter, aActor, aParam.mSrcOrigin);
 }
 
-bool IPDLParamTraits<dom::FeaturePolicy*>::Read(
-    const IPC::Message* aMsg, PickleIterator* aIter, IProtocol* aActor,
-    RefPtr<dom::FeaturePolicy>* aResult) {
-  *aResult = nullptr;
-  bool notnull = false;
-  if (!ReadIPDLParam(aMsg, aIter, aActor, &notnull)) {
+bool IPDLParamTraits<dom::FeaturePolicyInfo>::Read(
+    IPC::MessageReader* aReader, IProtocol* aActor,
+    dom::FeaturePolicyInfo* aResult) {
+  if (!ReadIPDLParam(aReader, aActor, &aResult->mInheritedDeniedFeatureNames)) {
     return false;
   }
 
-  if (!notnull) {
-    return true;
-  }
-
-  dom::FeaturePolicyInfo info;
-  if (!ReadIPDLParam(aMsg, aIter, aActor, &info)) {
+  if (!ReadIPDLParam(aReader, aActor,
+                     &aResult->mAttributeEnabledFeatureNames)) {
     return false;
   }
 
-  // Note that we only do IPC for feature policy to inherit poicy from parent
-  // to child document. That does not need to bind feature policy with a node.
-  RefPtr<dom::FeaturePolicy> featurePolicy = new dom::FeaturePolicy(nullptr);
-  featurePolicy->SetDefaultOrigin(info.defaultOrigin());
-  featurePolicy->SetInheritedDeniedFeatureNames(
-      info.inheritedDeniedFeatureNames());
-
-  nsString declaredString = info.declaredString();
-  if (declaredString.IsEmpty() || !info.selfOrigin()) {
-    *aResult = std::move(featurePolicy);
-    return true;
+  if (!ReadIPDLParam(aReader, aActor, &aResult->mDeclaredString)) {
+    return false;
   }
-  featurePolicy->SetDeclaredPolicy(nullptr, declaredString, info.selfOrigin(),
-                                   info.srcOrigin());
-  *aResult = std::move(featurePolicy);
+
+  if (!ReadIPDLParam(aReader, aActor, &aResult->mDefaultOrigin)) {
+    return false;
+  }
+
+  if (!ReadIPDLParam(aReader, aActor, &aResult->mSelfOrigin)) {
+    return false;
+  }
+
+  if (!ReadIPDLParam(aReader, aActor, &aResult->mSrcOrigin)) {
+    return false;
+  }
+
   return true;
 }
 }  // namespace ipc

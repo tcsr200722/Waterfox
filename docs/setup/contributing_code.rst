@@ -1,14 +1,28 @@
 How To Contribute Code To Firefox
 =================================
 
-The whole process is a bit long, and it will take time to get things right.
+The whole process can be a bit long, and it might take time to get things right.
 If at any point you are stuck, please don't hesitate to ask at `https://chat.mozilla.org <https://chat.mozilla.org>`_
 in the `#introduction <https://chat.mozilla.org/#/room/#introduction:mozilla.org>`_ channel.
+Additionally, here are some etiquette tips to help when reaching out:
+
+* Please don't ask to ask a question, post your question with the relevant context and someone will be able to help when they have time.
+* Use public facing channels to ask your questions instead of direct messaging folks.
+
+  * Other people get to learn from your question and there's a higher chance your question will get answered quickly since there are many people in the #introduction room.
+
+* Your question may not be answered immediately, this is expected! If you are not getting feedback after an hour or so, feel free to repost the question.
+
+  * Sometimes messages get skimmed over or notifications are lost in the sea of other things, so it's normal to repost your question in this case.
+
+* Please search through the recent scrollback of your relevant channels to see if your question has been asked and/or answered already.
+
+  * Most issues with setup have been experienced before, so there's a good possibility that your question has already been answered recently.
 
 We make changes to Firefox by writing patches, testing them and pushing them into "the tree", the
 term we use for all the code in Mozilla-Central. Let's get started.
 
-Please see the :ref:`Firefox Contributors’ Quick Reference` for simple check list.
+Please see the :ref:`Firefox Contributors Quick Reference <Firefox Contributors' Quick Reference>` for simple check list.
 
 Finding something to work on
 ----------------------------
@@ -40,8 +54,6 @@ involved a little easier:
    few lines, but they're a great way to learn about setting up your
    development environment, navigating Bugzilla, and making
    contributions to the Mozilla codebase.
--  Visit `firefox-dev.tools <http://firefox-dev.tools>`_ - we list
-   Firefox Developer Tools bugs for new contributors.
 -  `Student Projects <https://bugzil.la/kw:student-project>`_ - are
    larger projects, such as might be suitable for a university student
    for credit. Of course, if you are not a student, feel free to fix one
@@ -57,8 +69,7 @@ start. There are a number of ways to do this:
 
 -  `Search bugzilla <https://bugzilla.mozilla.org/query.cgi>`_ for
    relevant keywords. See pages on
-   `Bugzilla <https://developer.mozilla.org/docs/Mozilla/Bugzilla>`_ and `Searching
-   Bugzilla <https://developer.mozilla.org/docs/Mozilla/QA/Searching_Bugzilla>`_ for further
+   `Bugzilla and Searching Bugzilla <https://bmo.readthedocs.io/en/latest/using/finding.html>`_ for further
    help
 -  Learn the `bugzilla
    component <https://bugzilla.mozilla.org/describecomponents.cgi>`_,
@@ -71,15 +82,11 @@ Fixing your bug
 We leave this in your hands. Here are some further resources to help:
 
 -  Check out
-   `https://developer.mozilla.org/docs/Developer_Guide <https://developer.mozilla.org/docs/Developer_Guide>`_
-   and its parent document,
-   https://developer.mozilla.org/docs/Mozilla
--  Our `reviewer
-   checklist <https://developer.mozilla.org/docs/Developer_Guide/Reviewer_Checklist>`_ is very
+   :ref:`Our Developer Guide and its parent document <Working on Firefox>`
+-  Our :ref:`reviewer checklist <Reviewer Checklist>` is very
    useful, if you have a patch near completion, and seek a favorable
    review
--  Utilize our build tool
-   `Mach <https://developer.mozilla.org/docs/Mozilla/Developer_guide/mach>`_, its linting,
+-  Utilize our build tool :ref:`mach`, its linting,
    static analysis, and other code checking features
 
 Getting your code reviewed
@@ -95,16 +102,15 @@ Who is the right person to ask for a review?
 
 -  If you have a mentored bug: ask your mentor. They will help, or can
    easily find out. It might be them!
--  Run ``hg blame`` on the file and look for the people who have touched
+-  Run ``{hg, git} blame`` on the file and look for the people who have touched
    the functions you're working on. They too are good candidates.
-   Running ``hg log`` and looking for regular reviewers might be a
+   Running ``{hg, git} log`` and looking for regular reviewers might be a
    solution too.
 -  The bug itself may contain a clear indication of the best person to
    ask for a review
 -  Are there related bugs on similar topics? The reviewer in those bugs
    might be another good choice
--  We have an out of date `list of
-   modules <https://wiki.mozilla.org/Modules>`_, which lists peers and
+-  We have a :ref:`list of modules <Governance>`, which lists peers and
    owners for the module. Some of these will be good reviewers. In a
    worst case scenario, set the module owner as the reviewer, asking
    them in the comments to pick someone more suitable
@@ -124,9 +130,7 @@ for help on Matrix in the
 `#introduction:mozilla.org <https://riot.im/app/#/room/#introduction:mozilla.org>`_
 or
 `#developers:mozilla.org <https://chat.mozilla.org/#/room/#developers:mozilla.org>`_
-channels, or contact `Mike
-Hoye <mailto:mhoye@mozilla.com?subject=Code%20Review%20Request%20&body=URL%3A%20%20%5Bplease%20paste%20a%20link%20to%20your%20patch%20here.%5D>`_
-directly.
+channels.
 
 Don't hesitate to contact your mentor as well if this isn't moving.
 
@@ -150,24 +154,14 @@ Getting code into Firefox
 
 Once your patch has been accepted, it is ready to go. Before it can be
 merged into the tree, your patch will need to complete a successful run
-through our `try
-server <https://wiki.mozilla.org/ReleaseEngineering/TryServer>`_,
+through our :ref:`try server <Pushing to Try>`,
 making sure there are no unexpected regressions. If you don't have try
 server access already, your mentor, or the person who reviewed your
 patch, will be able to help.
 
-Once you have a **green** try server run, mark that your patch is ready
-to commit by
+Ask the reviewer to land the patch for you.
+For more details, see :ref:`push_a_change`
 
-#. opening the Phabricator page for your patch
-#. clicking the 'Edit Revision' link in the sidebar on the right
-#. then into the 'Tags' field and
-#. typing 'Check-In Needed' to get the tag added.
-
-A friendly Mozillian, with commit access, will be along shortly to push
-your patch to the repository, and update the bug as required. If your
-patch passes all Mozilla's automated testing, it will soon be merged
-into the main branch, and become a part of the Nightly build.
 
 Do it all again!
 ----------------
@@ -177,7 +171,7 @@ stronger for it. But don't stop now.
 
 Go back to step 3, as there is plenty more to do. Your mentor might
 suggest a new bug for you to work on, or `find one that interests
-you <http://www.whatcanidoformozilla.org/>`_. Now that you've got your
+you <https://moztw.org/~petercpg/asknot/>`_. Now that you've got your
 first bug fixed you should request level 1 access to the repository to
 push to the try server and get automated feedback about your changes on
 multiple platforms. After fixing a nontrivial number of bugs you should
@@ -192,11 +186,5 @@ to the project. We'll be integrating some information from these pages
 soon, but until then you may find them interesting in their current
 form:
 
--  `A guide to learning the Firefox 
-   codebase <http://www.joshmatthews.net/blog/2010/03/getting-involve-with-mozilla/>`_
 -  `A beginner's guide to SpiderMonkey, Mozilla's Javascript
    engine <https://wiki.mozilla.org/JavaScript:New_to_SpiderMonkey>`_
--  `Mozilla platform development
-   cheatsheet <https://web.archive.org/web/20160813112326/http://www.codefirefox.com:80/cheatsheet>`_
-   (archive.org)
-

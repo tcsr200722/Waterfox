@@ -7,11 +7,7 @@
  * Test that WS connection is established successfully and filtered messages using the dropdown menu are correct.
  */
 
-add_task(async function() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["devtools.netmonitor.features.webSockets", true]],
-  });
-
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(WS_PAGE_URL, {
     requestCount: 1,
   });
@@ -23,10 +19,12 @@ add_task(async function() {
   store.dispatch(Actions.batchEnable(false));
 
   // Wait for WS connection to be established + send messages
+  const onNetworkEvents = waitForNetworkEvents(monitor, 2);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
     await content.wrappedJSObject.openConnection(2);
     await content.wrappedJSObject.openConnection(3);
   });
+  await onNetworkEvents;
 
   const requests = document.querySelectorAll(".request-list-item");
   is(requests.length, 2, "There should be two requests");
@@ -34,23 +32,20 @@ add_task(async function() {
   // Wait for all sent/received messages to be displayed in DevTools
   let wait = waitForDOM(
     document,
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item",
+    "#messages-view .message-list-table .message-list-item",
     4
   );
 
   // Select the first request
   EventUtils.sendMouseEvent({ type: "mousedown" }, requests[0]);
 
-  // Click on the "Messages" panel
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#messages-tab")
-  );
+  // Click on the "Response" panel
+  clickOnSidebarTab(document, "response");
   await wait;
 
-  // Get all messages present in the "Messages" panel
+  // Get all messages present in the "Response" panel
   const frames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
 
   // Check expected results
@@ -63,14 +58,10 @@ add_task(async function() {
   );
 
   // Click on "sent" option and check
-  const sentOption = getContextMenuItem(
-    monitor,
-    "ws-frame-list-context-filter-sent"
-  );
-  sentOption.click();
+  await selectContextMenuItem(monitor, "message-list-context-filter-sent");
 
   const sentFrames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
   is(sentFrames.length, 2, "There should be two frames");
   is(
@@ -84,15 +75,17 @@ add_task(async function() {
     "The payload type is 'Sent'"
   );
 
-  // Click on "received" option and check
-  const receivedOption = getContextMenuItem(
-    monitor,
-    "ws-frame-list-context-filter-received"
+  // Click on filter menu
+  EventUtils.sendMouseEvent(
+    { type: "click" },
+    document.querySelector("#frame-filter-menu")
   );
-  receivedOption.click();
+
+  // Click on "received" option and check
+  await selectContextMenuItem(monitor, "message-list-context-filter-received");
 
   const receivedFrames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
   is(receivedFrames.length, 2, "There should be two frames");
   is(
@@ -107,15 +100,15 @@ add_task(async function() {
   );
 
   // Select the second request and check that the filter option is the same
-  EventUtils.sendMouseEvent({ type: "mousedown" }, requests[1]);
   wait = waitForDOM(
     document,
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item",
+    "#messages-view .message-list-table .message-list-item",
     3
   );
+  EventUtils.sendMouseEvent({ type: "mousedown" }, requests[1]);
   await wait;
   const secondRequestFrames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
   is(secondRequestFrames.length, 3, "There should be three frames");
   is(

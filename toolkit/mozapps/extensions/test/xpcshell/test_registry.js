@@ -2,12 +2,6 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-// Make Cu.isInAutomation true.
-Services.prefs.setBoolPref(
-  "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
-  true
-);
-
 // Tests that extensions installed through the registry work as expected
 createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
 
@@ -29,11 +23,11 @@ let registry;
 
 add_task(async function setup() {
   xpi1 = await createTempWebExtensionFile({
-    manifest: { applications: { gecko: { id: ID1 } } },
+    manifest: { browser_specific_settings: { gecko: { id: ID1 } } },
   });
 
   xpi2 = await createTempWebExtensionFile({
-    manifest: { applications: { gecko: { id: ID2 } } },
+    manifest: { browser_specific_settings: { gecko: { id: ID2 } } },
   });
 
   registry = new MockRegistry();
@@ -46,13 +40,13 @@ add_task(async function setup() {
 add_task(async function test_1() {
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     xpi1.path
   );
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID2,
     xpi2.path
   );
@@ -75,13 +69,13 @@ add_task(async function test_1() {
 add_task(async function test_2() {
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     null
   );
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID2,
     null
   );
@@ -97,13 +91,13 @@ add_task(async function test_2() {
 add_task(async function test_3() {
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     xpi2.path
   );
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID2,
     xpi1.path
   );
@@ -122,13 +116,13 @@ add_task(async function test_4() {
 
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     null
   );
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID2,
     null
   );
@@ -137,7 +131,7 @@ add_task(async function test_4() {
 
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     xpi1.path
   );
@@ -146,13 +140,13 @@ add_task(async function test_4() {
 
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID1,
     null
   );
   registry.setValue(
     Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
-    "SOFTWARE\\Mozilla\\XPCShell\\Extensions",
+    "SOFTWARE\\BrowserWorks\\XPCShell\\Extensions",
     ID2,
     xpi1.path
   );

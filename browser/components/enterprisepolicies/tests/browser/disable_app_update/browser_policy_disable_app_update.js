@@ -2,6 +2,11 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
+
+ChromeUtils.defineESModuleGetters(this, {
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+});
+
 var updateService = Cc["@mozilla.org/updates/update-service;1"].getService(
   Ci.nsIApplicationUpdateService
 );
@@ -26,7 +31,7 @@ add_task(async function test_update_preferences_ui() {
     "about:preferences"
   );
 
-  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
     let setting = content.document.getElementById("updateSettingsContainer");
     is(
       setting.hidden,
@@ -43,16 +48,22 @@ add_task(async function test_update_about_ui() {
   let panelId = "policyDisabled";
 
   await BrowserTestUtils.waitForCondition(
-    () =>
-      aboutDialog.document.getElementById("updateDeck").selectedPanel &&
-      aboutDialog.document.getElementById("updateDeck").selectedPanel.id ==
-        panelId,
+    () => aboutDialog.gAppUpdater?.selectedPanel?.id == panelId,
     'Waiting for expected panel ID - expected "' + panelId + '"'
   );
   is(
-    aboutDialog.document.getElementById("updateDeck").selectedPanel.id,
+    aboutDialog.gAppUpdater.selectedPanel.id,
     panelId,
     "The About Dialog panel Id should equal " + panelId
+  );
+
+  // Make sure that we still remain on the "disabled by policy" panel after
+  // `AppUpdater.stop()` is called.
+  aboutDialog.gAppUpdater._appUpdater.stop();
+  is(
+    aboutDialog.gAppUpdater.selectedPanel.id,
+    panelId,
+    "The About Dialog panel Id should still equal " + panelId
   );
 
   aboutDialog.close();
@@ -61,8 +72,9 @@ add_task(async function test_update_about_ui() {
 /**
  * Waits for the About Dialog to load.
  *
- * @return A promise that returns the domWindow for the About Dialog and
- *         resolves when the About Dialog loads.
+ * @returns {Promise}
+ *   A promise that returns the domWindow for the About Dialog and resolves when
+ *   the About Dialog loads.
  */
 function waitForAboutDialog() {
   return new Promise(resolve => {
@@ -84,10 +96,27 @@ function waitForAboutDialog() {
         var domwindow = aXULWindow.docShell.domWindow;
         domwindow.addEventListener("load", aboutDialogOnLoad, true);
       },
-      onCloseWindow: aXULWindow => {},
+      onCloseWindow: () => {},
     };
 
     Services.wm.addListener(listener);
     openAboutDialog();
   });
 }
+
+add_task(async function test_no_update_intervention() {
+  await BrowserTestUtils.withNewTab("about:blank", async () => {
+    let context = await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "update firefox",
+      waitForFocus,
+      fireInputEvent: true,
+    });
+    for (let result of context.results) {
+      Assert.notEqual(result.type, UrlbarUtils.RESULT_TYPE.TIP);
+    }
+    await UrlbarTestUtils.promisePopupClose(window, () =>
+      window.gURLBar.blur()
+    );
+  });
+});

@@ -15,11 +15,10 @@ function goUpdateGlobalEditMenuItems(force) {
     return;
   }
 
-  goUpdateCommand("cmd_undo");
-  goUpdateCommand("cmd_redo");
+  goUpdateUndoEditMenuItems();
   goUpdateCommand("cmd_cut");
   goUpdateCommand("cmd_copy");
-  goUpdateCommand("cmd_paste");
+  goUpdatePasteMenuItems();
   goUpdateCommand("cmd_selectAll");
   goUpdateCommand("cmd_delete");
   goUpdateCommand("cmd_switchTextDirection");
@@ -34,15 +33,13 @@ function goUpdateUndoEditMenuItems() {
 // update menu items that depend on clipboard contents
 function goUpdatePasteMenuItems() {
   goUpdateCommand("cmd_paste");
+  goUpdateCommand("cmd_pasteNoFormatting");
 }
 
 // Inject the commandset here instead of relying on preprocessor to share this across documents.
 window.addEventListener(
   "DOMContentLoaded",
   () => {
-    // Bug 371900: Remove useless oncommand attribute once bug 371900 is fixed
-    // If you remove/update the oncommand attribute for any of the cmd_*, please
-    // also remove/update the sha512 hash in the CSP within about:downloads
     let container =
       document.querySelector("commandset") || document.documentElement;
     let fragment = MozXULElement.parseXULToFragment(`
@@ -50,35 +47,36 @@ window.addEventListener(
         <commandset id="editMenuCommandSetAll" commandupdater="true" events="focus,select" />
         <commandset id="editMenuCommandSetUndo" commandupdater="true" events="undo" />
         <commandset id="editMenuCommandSetPaste" commandupdater="true" events="clipboard" />
-        <command id="cmd_undo" oncommand=";" />
-        <command id="cmd_redo" oncommand=";" />
-        <command id="cmd_cut" oncommand=";" />
-        <command id="cmd_copy" oncommand=";" />
-        <command id="cmd_paste" oncommand=";" />
-        <command id="cmd_delete" oncommand=";" />
-        <command id="cmd_selectAll" oncommand=";" />
-        <command id="cmd_switchTextDirection" oncommand=";" />
+        <command id="cmd_undo" internal="true"/>
+        <command id="cmd_redo" internal="true" />
+        <command id="cmd_cut" internal="true" />
+        <command id="cmd_copy" internal="true" />
+        <command id="cmd_paste" internal="true" />
+        <command id="cmd_pasteNoFormatting" internal="true" />
+        <command id="cmd_delete" />
+        <command id="cmd_selectAll" internal="true" />
+        <command id="cmd_switchTextDirection" />
       </commandset>
     `);
 
     let editMenuCommandSetAll = fragment.querySelector(
       "#editMenuCommandSetAll"
     );
-    editMenuCommandSetAll.addEventListener("commandupdate", function() {
+    editMenuCommandSetAll.addEventListener("commandupdate", function () {
       goUpdateGlobalEditMenuItems();
     });
 
     let editMenuCommandSetUndo = fragment.querySelector(
       "#editMenuCommandSetUndo"
     );
-    editMenuCommandSetUndo.addEventListener("commandupdate", function() {
+    editMenuCommandSetUndo.addEventListener("commandupdate", function () {
       goUpdateUndoEditMenuItems();
     });
 
     let editMenuCommandSetPaste = fragment.querySelector(
       "#editMenuCommandSetPaste"
     );
-    editMenuCommandSetPaste.addEventListener("commandupdate", function() {
+    editMenuCommandSetPaste.addEventListener("commandupdate", function () {
       goUpdatePasteMenuItems();
     });
 
@@ -114,12 +112,12 @@ window.addEventListener("contextmenu", e => {
       MozXULElement.parseXULToFragment(`
       <menupopup id="textbox-contextmenu" class="textbox-contextmenu">
         <menuitem data-l10n-id="text-action-undo" command="cmd_undo"></menuitem>
+        <menuitem data-l10n-id="text-action-redo" command="cmd_redo"></menuitem>
         <menuseparator></menuseparator>
         <menuitem data-l10n-id="text-action-cut" command="cmd_cut"></menuitem>
         <menuitem data-l10n-id="text-action-copy" command="cmd_copy"></menuitem>
         <menuitem data-l10n-id="text-action-paste" command="cmd_paste"></menuitem>
         <menuitem data-l10n-id="text-action-delete" command="cmd_delete"></menuitem>
-        <menuseparator></menuseparator>
         <menuitem data-l10n-id="text-action-select-all" command="cmd_selectAll"></menuitem>
       </menupopup>
     `)
@@ -128,7 +126,7 @@ window.addEventListener("contextmenu", e => {
   }
 
   goUpdateGlobalEditMenuItems(true);
-  popup.openPopupAtScreen(e.screenX, e.screenY, true);
+  popup.openPopupAtScreen(e.screenX, e.screenY, true, e);
   // Don't show any other context menu at the same time. There can be a
   // context menu from an ancestor too but we only want to show this one.
   e.preventDefault();

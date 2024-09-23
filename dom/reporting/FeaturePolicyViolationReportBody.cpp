@@ -5,10 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/FeaturePolicyViolationReportBody.h"
+
+#include "mozilla/JSONWriter.h"
 #include "mozilla/dom/FeaturePolicyBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 FeaturePolicyViolationReportBody::FeaturePolicyViolationReportBody(
     nsIGlobalObject* aGlobal, const nsAString& aFeatureId,
@@ -52,13 +53,12 @@ void FeaturePolicyViolationReportBody::GetDisposition(
 }
 
 void FeaturePolicyViolationReportBody::ToJSON(JSONWriter& aWriter) const {
-  aWriter.StringProperty("featureId", NS_ConvertUTF16toUTF8(mFeatureId).get());
+  aWriter.StringProperty("featureId", NS_ConvertUTF16toUTF8(mFeatureId));
 
   if (mSourceFile.IsEmpty()) {
     aWriter.NullProperty("sourceFile");
   } else {
-    aWriter.StringProperty("sourceFile",
-                           NS_ConvertUTF16toUTF8(mSourceFile).get());
+    aWriter.StringProperty("sourceFile", NS_ConvertUTF16toUTF8(mSourceFile));
   }
 
   if (mLineNumber.IsNull()) {
@@ -73,9 +73,7 @@ void FeaturePolicyViolationReportBody::ToJSON(JSONWriter& aWriter) const {
     aWriter.IntProperty("columnNumber", mColumnNumber.Value());
   }
 
-  aWriter.StringProperty("disposition",
-                         NS_ConvertUTF16toUTF8(mDisposition).get());
+  aWriter.StringProperty("disposition", NS_ConvertUTF16toUTF8(mDisposition));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

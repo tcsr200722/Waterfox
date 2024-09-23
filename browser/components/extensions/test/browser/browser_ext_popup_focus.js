@@ -19,10 +19,11 @@ add_task(async function testPageActionFocus() {
         </head><body>
         </body></html>
       `,
-      "popup.js": function() {
+      "popup.js": function () {
         window.addEventListener(
           "focus",
-          event => {
+          () => {
+            browser.test.log("extension popup received focus event");
             browser.test.assertEq(
               true,
               document.hasFocus(),
@@ -32,18 +33,19 @@ add_task(async function testPageActionFocus() {
           },
           { once: true }
         );
+        browser.test.log(`extension popup loaded`);
       },
     },
   });
-  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, DUMMY_PAGE);
 
   await extension.startup();
-  let finish = extension.awaitFinish("focused");
-  await clickPageAction(extension);
-  await finish;
-  await closePageAction(extension);
 
-  BrowserTestUtils.removeTab(tab);
+  await BrowserTestUtils.withNewTab(DUMMY_PAGE, async () => {
+    await clickPageAction(extension);
+    await extension.awaitFinish("focused");
+    await closePageAction(extension);
+  });
+
   await extension.unload();
 });
 
@@ -58,10 +60,11 @@ add_task(async function testBrowserActionFocus() {
         </head><body>
         </body></html>
       `,
-      "popup.js": function() {
+      "popup.js": function () {
         window.addEventListener(
           "focus",
-          event => {
+          () => {
+            browser.test.log("extension popup received focus event");
             browser.test.assertEq(
               true,
               document.hasFocus(),
@@ -71,18 +74,15 @@ add_task(async function testBrowserActionFocus() {
           },
           { once: true }
         );
+        browser.test.log(`extension popup loaded`);
       },
     },
   });
   await extension.startup();
 
-  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, DUMMY_PAGE);
-  let finish = extension.awaitFinish("focused");
   await clickBrowserAction(extension);
-  await finish;
-
+  await extension.awaitFinish("focused");
   await closeBrowserAction(extension);
 
-  BrowserTestUtils.removeTab(tab);
   await extension.unload();
 });

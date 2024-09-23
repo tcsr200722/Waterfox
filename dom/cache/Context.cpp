@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/cache/Context.h"
+#include "CacheCommon.h"
 
 #include "mozilla/AutoRestore.h"
 #include "mozilla/dom/SafeRefPtr.h"
@@ -12,23 +13,32 @@
 #include "mozilla/dom/cache/FileUtils.h"
 #include "mozilla/dom/cache/Manager.h"
 #include "mozilla/dom/cache/ManagerId.h"
+#include "mozilla/dom/quota/Assertions.h"
+#include "mozilla/dom/quota/DirectoryLock.h"
 #include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/Maybe.h"
 #include "mozIStorageConnection.h"
 #include "nsIPrincipal.h"
 #include "nsIRunnable.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
+#include "QuotaClientImpl.h"
 
 namespace {
 
 using mozilla::dom::cache::Action;
-using mozilla::dom::cache::QuotaInfo;
+using mozilla::dom::cache::CacheDirectoryMetadata;
 
 class NullAction final : public Action {
  public:
   NullAction() = default;
 
-  virtual void RunOnTarget(Resolver* aResolver, const QuotaInfo&,
-                           Data*) override {
+  virtual void RunOnTarget(mozilla::SafeRefPtr<Resolver> aResolver,
+                           const mozilla::Maybe<CacheDirectoryMetadata>&, Data*,
+                           const mozilla::Maybe<mozilla::dom::cache::CipherKey>&
+                           /* aMaybeCipherKey */) override {
     // Resolve success immediately.  This Action does no actual work.
     MOZ_DIAGNOSTIC_ASSERT(aResolver);
     aResolver->Resolve(NS_OK);
@@ -37,12 +47,10 @@ class NullAction final : public Action {
 
 }  // namespace
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 using mozilla::dom::quota::AssertIsOnIOThread;
-using mozilla::dom::quota::OpenDirectoryListener;
+using mozilla::dom::quota::DirectoryLock;
 using mozilla::dom::quota::PERSISTENCE_TYPE_DEFAULT;
 using mozilla::dom::quota::PersistenceType;
 using mozilla::dom::quota::QuotaManager;
@@ -85,19 +93,18 @@ class Context::Data final : public Action::Data {
 // Executed to perform the complicated dance of steps necessary to initialize
 // the QuotaManager.  This must be performed for each origin before any disk
 // IO occurrs.
-class Context::QuotaInitRunnable final : public nsIRunnable,
-                                         public OpenDirectoryListener {
+class Context::QuotaInitRunnable final : public nsIRunnable {
  public:
   QuotaInitRunnable(SafeRefPtr<Context> aContext, SafeRefPtr<Manager> aManager,
                     Data* aData, nsISerialEventTarget* aTarget,
-                    Action* aInitAction)
+                    SafeRefPtr<Action> aInitAction)
       : mContext(std::move(aContext)),
         mThreadsafeHandle(mContext->CreateThreadsafeHandle()),
         mManager(std::move(aManager)),
         mData(aData),
         mTarget(aTarget),
-        mInitAction(aInitAction),
-        mInitiatingEventTarget(GetCurrentThreadEventTarget()),
+        mInitAction(std::move(aInitAction)),
+        mInitiatingEventTarget(GetCurrentSerialEventTarget()),
         mResult(NS_OK),
         mState(STATE_INIT),
         mCanceled(false) {
@@ -107,6 +114,12 @@ class Context::QuotaInitRunnable final : public nsIRunnable,
     MOZ_DIAGNOSTIC_ASSERT(mTarget);
     MOZ_DIAGNOSTIC_ASSERT(mInitiatingEventTarget);
     MOZ_DIAGNOSTIC_ASSERT(mInitAction);
+  }
+
+  Maybe<DirectoryLock&> MaybeDirectoryLockRef() const {
+    NS_ASSERT_OWNINGTHREAD(QuotaInitRunnable);
+
+    return ToMaybeRef(mDirectoryLock.get());
   }
 
   nsresult Dispatch() {
@@ -129,12 +142,9 @@ class Context::QuotaInitRunnable final : public nsIRunnable,
     mInitAction->CancelOnInitiatingThread();
   }
 
-  void OpenDirectory();
+  void DirectoryLockAcquired(DirectoryLock* aLock);
 
-  // OpenDirectoryListener methods
-  virtual void DirectoryLockAcquired(DirectoryLock* aLock) override;
-
-  virtual void DirectoryLockFailed() override;
+  void DirectoryLockFailed();
 
  private:
   class SyncResolver final : public Action::Resolver {
@@ -170,7 +180,6 @@ class Context::QuotaInitRunnable final : public nsIRunnable,
     STATE_INIT,
     STATE_GET_INFO,
     STATE_CREATE_QUOTA_MANAGER,
-    STATE_OPEN_DIRECTORY,
     STATE_WAIT_FOR_DIRECTORY_LOCK,
     STATE_ENSURE_ORIGIN_INITIALIZED,
     STATE_RUN_ON_TARGET,
@@ -203,11 +212,13 @@ class Context::QuotaInitRunnable final : public nsIRunnable,
   SafeRefPtr<Manager> mManager;
   RefPtr<Data> mData;
   nsCOMPtr<nsISerialEventTarget> mTarget;
-  RefPtr<Action> mInitAction;
+  SafeRefPtr<Action> mInitAction;
   nsCOMPtr<nsIEventTarget> mInitiatingEventTarget;
   nsresult mResult;
-  QuotaInfo mQuotaInfo;
+  Maybe<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
+  Maybe<CacheDirectoryMetadata> mDirectoryMetadata;
   RefPtr<DirectoryLock> mDirectoryLock;
+  RefPtr<CipherKeyManager> mCipherKeyManager;
   State mState;
   Atomic<bool> mCanceled;
 
@@ -215,23 +226,6 @@ class Context::QuotaInitRunnable final : public nsIRunnable,
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
 };
-
-void Context::QuotaInitRunnable::OpenDirectory() {
-  NS_ASSERT_OWNINGTHREAD(QuotaInitRunnable);
-  MOZ_DIAGNOSTIC_ASSERT(mState == STATE_CREATE_QUOTA_MANAGER ||
-                        mState == STATE_OPEN_DIRECTORY);
-  MOZ_DIAGNOSTIC_ASSERT(QuotaManager::Get());
-
-  // QuotaManager::OpenDirectory() will hold a reference to us as
-  // a listener.  We will then get DirectoryLockAcquired() on the owning
-  // thread when it is safe to access our storage directory.
-  mState = STATE_WAIT_FOR_DIRECTORY_LOCK;
-  RefPtr<DirectoryLock> pendingDirectoryLock =
-      QuotaManager::Get()->OpenDirectory(PERSISTENCE_TYPE_DEFAULT,
-                                         mQuotaInfo.mGroup, mQuotaInfo.mOrigin,
-                                         quota::Client::DOMCACHE,
-                                         /* aExclusive */ false, this);
-}
 
 void Context::QuotaInitRunnable::DirectoryLockAcquired(DirectoryLock* aLock) {
   NS_ASSERT_OWNINGTHREAD(QuotaInitRunnable);
@@ -242,7 +236,7 @@ void Context::QuotaInitRunnable::DirectoryLockAcquired(DirectoryLock* aLock) {
   mDirectoryLock = aLock;
 
   MOZ_DIAGNOSTIC_ASSERT(mDirectoryLock->Id() >= 0);
-  mQuotaInfo.mDirectoryLockId = mDirectoryLock->Id();
+  mDirectoryMetadata->mDirectoryLockId = mDirectoryLock->Id();
 
   if (mCanceled) {
     Complete(NS_ERROR_ABORT);
@@ -290,11 +284,6 @@ NS_IMPL_ISUPPORTS(mozilla::dom::cache::Context::QuotaInitRunnable, nsIRunnable);
 // +----------+-----------+                 |
 //            |                             |
 // +----------v-----------+                 |
-// |    OpenDirectory     |  Resolve(error) |
-// |    (Orig Thread)     +-----------------+
-// +----------+-----------+                 |
-//            |                             |
-// +----------v-----------+                 |
 // | WaitForDirectoryLock |  Resolve(error) |
 // |    (Orig Thread)     +-----------------+
 // +----------+-----------+                 |
@@ -325,30 +314,38 @@ Context::QuotaInitRunnable::Run() {
   // May run on different threads depending on the state.  See individual
   // state cases for thread assertions.
 
-  RefPtr<SyncResolver> resolver = new SyncResolver();
+  SafeRefPtr<SyncResolver> resolver = MakeSafeRefPtr<SyncResolver>();
 
   switch (mState) {
     // -----------------------------------
     case STATE_GET_INFO: {
       MOZ_ASSERT(NS_IsMainThread());
 
-      if (mCanceled) {
-        resolver->Resolve(NS_ERROR_ABORT);
-        break;
+      auto res = [this]() -> Result<Ok, nsresult> {
+        if (mCanceled) {
+          return Err(NS_ERROR_ABORT);
+        }
+
+        nsCOMPtr<nsIPrincipal> principal = mManager->GetManagerId().Principal();
+
+        mozilla::ipc::PrincipalInfo principalInfo;
+        QM_TRY(
+            MOZ_TO_RESULT(PrincipalToPrincipalInfo(principal, &principalInfo)));
+
+        mPrincipalInfo.emplace(std::move(principalInfo));
+
+        mState = STATE_CREATE_QUOTA_MANAGER;
+
+        MOZ_ALWAYS_SUCCEEDS(
+            mInitiatingEventTarget->Dispatch(this, nsIThread::DISPATCH_NORMAL));
+
+        return Ok{};
+      }();
+
+      if (res.isErr()) {
+        resolver->Resolve(res.inspectErr());
       }
 
-      nsCOMPtr<nsIPrincipal> principal = mManager->GetManagerId().Principal();
-      nsresult rv = QuotaManager::GetInfoFromPrincipal(
-          principal, &mQuotaInfo.mSuffix, &mQuotaInfo.mGroup,
-          &mQuotaInfo.mOrigin);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        resolver->Resolve(rv);
-        break;
-      }
-
-      mState = STATE_CREATE_QUOTA_MANAGER;
-      MOZ_ALWAYS_SUCCEEDS(
-          mInitiatingEventTarget->Dispatch(this, nsIThread::DISPATCH_NORMAL));
       break;
     }
     // ----------------------------------
@@ -360,50 +357,76 @@ Context::QuotaInitRunnable::Run() {
         break;
       }
 
-      if (QuotaManager::Get()) {
-        OpenDirectory();
-        return NS_OK;
-      }
+      QM_TRY(QuotaManager::EnsureCreated(), QM_PROPAGATE,
+             [&resolver](const auto rv) { resolver->Resolve(rv); });
 
-      mState = STATE_OPEN_DIRECTORY;
-      QuotaManager::GetOrCreate(this);
-      break;
-    }
-    // ----------------------------------
-    case STATE_OPEN_DIRECTORY: {
-      NS_ASSERT_OWNINGTHREAD(QuotaInitRunnable);
+      auto* const quotaManager = QuotaManager::Get();
+      MOZ_DIAGNOSTIC_ASSERT(quotaManager);
 
-      if (NS_WARN_IF(!QuotaManager::Get())) {
-        resolver->Resolve(NS_ERROR_FAILURE);
-        break;
-      }
+      QM_TRY_UNWRAP(
+          auto principalMetadata,
+          quotaManager->GetInfoFromValidatedPrincipalInfo(*mPrincipalInfo));
 
-      OpenDirectory();
+      mDirectoryMetadata.emplace(std::move(principalMetadata));
+
+      mState = STATE_WAIT_FOR_DIRECTORY_LOCK;
+
+      quotaManager
+          ->OpenClientDirectory({*mDirectoryMetadata, quota::Client::DOMCACHE})
+          ->Then(
+              GetCurrentSerialEventTarget(), __func__,
+              [self = RefPtr(this)](
+                  const quota::ClientDirectoryLockPromise::ResolveOrRejectValue&
+                      aValue) {
+                if (aValue.IsResolve()) {
+                  self->DirectoryLockAcquired(aValue.ResolveValue());
+                } else {
+                  self->DirectoryLockFailed();
+                }
+              });
+
       break;
     }
     // ----------------------------------
     case STATE_ENSURE_ORIGIN_INITIALIZED: {
       AssertIsOnIOThread();
 
-      if (mCanceled) {
-        resolver->Resolve(NS_ERROR_ABORT);
-        break;
+      auto res = [this]() -> Result<Ok, nsresult> {
+        if (mCanceled) {
+          return Err(NS_ERROR_ABORT);
+        }
+
+        QuotaManager* quotaManager = QuotaManager::Get();
+        MOZ_DIAGNOSTIC_ASSERT(quotaManager);
+
+        QM_TRY(MOZ_TO_RESULT(
+            quotaManager->EnsureTemporaryStorageIsInitializedInternal()));
+
+        QM_TRY_UNWRAP(
+            mDirectoryMetadata->mDir,
+            quotaManager
+                ->EnsureTemporaryOriginIsInitialized(
+                    mDirectoryMetadata->mPersistenceType, *mDirectoryMetadata)
+                .map([](const auto& res) { return res.first; }));
+
+        auto* cacheQuotaClient = CacheQuotaClient::Get();
+        MOZ_DIAGNOSTIC_ASSERT(cacheQuotaClient);
+
+        mCipherKeyManager =
+            cacheQuotaClient->GetOrCreateCipherKeyManager(*mDirectoryMetadata);
+
+        mState = STATE_RUN_ON_TARGET;
+
+        MOZ_ALWAYS_SUCCEEDS(
+            mTarget->Dispatch(this, nsIThread::DISPATCH_NORMAL));
+
+        return Ok{};
+      }();
+
+      if (res.isErr()) {
+        resolver->Resolve(res.inspectErr());
       }
 
-      QuotaManager* qm = QuotaManager::Get();
-      MOZ_DIAGNOSTIC_ASSERT(qm);
-      nsresult rv = qm->EnsureStorageAndOriginIsInitialized(
-          PERSISTENCE_TYPE_DEFAULT, mQuotaInfo.mSuffix, mQuotaInfo.mGroup,
-          mQuotaInfo.mOrigin, quota::Client::DOMCACHE,
-          getter_AddRefs(mQuotaInfo.mDir));
-      if (NS_FAILED(rv)) {
-        resolver->Resolve(rv);
-        break;
-      }
-
-      mState = STATE_RUN_ON_TARGET;
-
-      MOZ_ALWAYS_SUCCEEDS(mTarget->Dispatch(this, nsIThread::DISPATCH_NORMAL));
       break;
     }
     // -------------------
@@ -414,7 +437,11 @@ Context::QuotaInitRunnable::Run() {
 
       // Execute the provided initialization Action.  The Action must Resolve()
       // before returning.
-      mInitAction->RunOnTarget(resolver, mQuotaInfo, mData);
+
+      mInitAction->RunOnTarget(
+          resolver.clonePtr(), mDirectoryMetadata, mData,
+          mCipherKeyManager ? Some(mCipherKeyManager->Ensure()) : Nothing{});
+
       MOZ_DIAGNOSTIC_ASSERT(resolver->Resolved());
 
       mData = nullptr;
@@ -423,7 +450,7 @@ Context::QuotaInitRunnable::Run() {
       // the marker file.  If it wasn't opened successfully, then no need to
       // create a marker file anyway.
       if (NS_SUCCEEDED(resolver->Result())) {
-        MOZ_ALWAYS_SUCCEEDS(CreateMarkerFile(mQuotaInfo));
+        MOZ_ALWAYS_SUCCEEDS(CreateMarkerFile(*mDirectoryMetadata));
       }
 
       break;
@@ -432,7 +459,11 @@ Context::QuotaInitRunnable::Run() {
     case STATE_COMPLETING: {
       NS_ASSERT_OWNINGTHREAD(QuotaInitRunnable);
       mInitAction->CompleteOnInitiatingThread(mResult);
-      mContext->OnQuotaInit(mResult, mQuotaInfo, mDirectoryLock.forget());
+
+      mContext->OnQuotaInit(mResult, mDirectoryMetadata,
+                            std::move(mDirectoryLock),
+                            std::move(mCipherKeyManager));
+
       mState = STATE_COMPLETE;
 
       // Explicitly cleanup here as the destructor could fire on any of
@@ -462,14 +493,16 @@ class Context::ActionRunnable final : public nsIRunnable,
                                       public Context::Activity {
  public:
   ActionRunnable(SafeRefPtr<Context> aContext, Data* aData,
-                 nsISerialEventTarget* aTarget, Action* aAction,
-                 const QuotaInfo& aQuotaInfo)
+                 nsISerialEventTarget* aTarget, SafeRefPtr<Action> aAction,
+                 const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata,
+                 RefPtr<CipherKeyManager> aCipherKeyManager)
       : mContext(std::move(aContext)),
         mData(aData),
         mTarget(aTarget),
-        mAction(aAction),
-        mQuotaInfo(aQuotaInfo),
-        mInitiatingThread(GetCurrentThreadEventTarget()),
+        mAction(std::move(aAction)),
+        mDirectoryMetadata(aDirectoryMetadata),
+        mCipherKeyManager(std::move(aCipherKeyManager)),
+        mInitiatingThread(GetCurrentSerialEventTarget()),
         mState(STATE_INIT),
         mResult(NS_OK),
         mExecutingRunOnTarget(false) {
@@ -477,7 +510,7 @@ class Context::ActionRunnable final : public nsIRunnable,
     // mData may be nullptr
     MOZ_DIAGNOSTIC_ASSERT(mTarget);
     MOZ_DIAGNOSTIC_ASSERT(mAction);
-    // mQuotaInfo.mDir may be nullptr if QuotaInitRunnable failed
+    // mDirectoryMetadata.mDir may be nullptr if QuotaInitRunnable failed
     MOZ_DIAGNOSTIC_ASSERT(mInitiatingThread);
   }
 
@@ -535,11 +568,27 @@ class Context::ActionRunnable final : public nsIRunnable,
     MOZ_DIAGNOSTIC_ASSERT(!mAction);
   }
 
+  void DoStringify(nsACString& aData) override {
+    aData.Append("ActionRunnable ("_ns +
+                 //
+                 "State:"_ns + IntToCString(mState) + kStringifyDelimiter +
+                 //
+                 "Action:"_ns + IntToCString(static_cast<bool>(mAction)) +
+                 kStringifyDelimiter +
+                 // TODO: We might want to have Action::Stringify, too.
+                 //
+                 "Context:"_ns + IntToCString(static_cast<bool>(mContext)) +
+                 kStringifyDelimiter +
+                 // We do not print out mContext as we most probably were called
+                 // by its Stringify.
+                 ")"_ns);
+  }
+
   void Clear() {
     NS_ASSERT_OWNINGTHREAD(ActionRunnable);
     MOZ_DIAGNOSTIC_ASSERT(mContext);
     MOZ_DIAGNOSTIC_ASSERT(mAction);
-    mContext->RemoveActivity(this);
+    mContext->RemoveActivity(*this);
     mContext = nullptr;
     mAction = nullptr;
   }
@@ -556,8 +605,9 @@ class Context::ActionRunnable final : public nsIRunnable,
   SafeRefPtr<Context> mContext;
   RefPtr<Data> mData;
   nsCOMPtr<nsISerialEventTarget> mTarget;
-  RefPtr<Action> mAction;
-  const QuotaInfo mQuotaInfo;
+  SafeRefPtr<Action> mAction;
+  const Maybe<CacheDirectoryMetadata> mDirectoryMetadata;
+  RefPtr<CipherKeyManager> mCipherKeyManager;
   nsCOMPtr<nsIEventTarget> mInitiatingThread;
   State mState;
   nsresult mResult;
@@ -619,7 +669,9 @@ Context::ActionRunnable::Run() {
       mExecutingRunOnTarget = true;
 
       mState = STATE_RUNNING;
-      mAction->RunOnTarget(this, mQuotaInfo, mData);
+      mAction->RunOnTarget(
+          SafeRefPtrFromThis(), mDirectoryMetadata, mData,
+          mCipherKeyManager ? Some(mCipherKeyManager->Ensure()) : Nothing{});
 
       mData = nullptr;
 
@@ -700,7 +752,7 @@ void Context::ThreadsafeHandle::InvalidateAndAllowToClose() {
 Context::ThreadsafeHandle::ThreadsafeHandle(SafeRefPtr<Context> aContext)
     : mStrongRef(std::move(aContext)),
       mWeakRef(mStrongRef.unsafeGetRawPtr()),
-      mOwningEventTarget(GetCurrentThreadSerialEventTarget()) {}
+      mOwningEventTarget(GetCurrentSerialEventTarget()) {}
 
 Context::ThreadsafeHandle::~ThreadsafeHandle() {
   // Normally we only touch mStrongRef on the owning thread.  This is safe,
@@ -711,10 +763,11 @@ Context::ThreadsafeHandle::~ThreadsafeHandle() {
     return;
   }
 
-  // Dispatch is guaranteed to succeed here because we block shutdown until
-  // all Contexts have been destroyed.
-  NS_ProxyRelease("Context::ThreadsafeHandle::mStrongRef", mOwningEventTarget,
-                  mStrongRef.forget());
+  // Dispatch in NS_ProxyRelease is guaranteed to succeed here because we block
+  // shutdown until all Contexts have been destroyed. Therefore it is ok to have
+  // MOZ_ALWAYS_SUCCEED here.
+  MOZ_ALWAYS_SUCCEEDS(NS_ProxyRelease("Context::ThreadsafeHandle::mStrongRef",
+                                      mOwningEventTarget, mStrongRef.forget()));
 }
 
 void Context::ThreadsafeHandle::AllowToCloseOnOwningThread() {
@@ -762,41 +815,75 @@ void Context::ThreadsafeHandle::ContextDestroyed(Context& aContext) {
 // static
 SafeRefPtr<Context> Context::Create(SafeRefPtr<Manager> aManager,
                                     nsISerialEventTarget* aTarget,
-                                    Action* aInitAction,
+                                    SafeRefPtr<Action> aInitAction,
                                     Maybe<Context&> aOldContext) {
-  auto context =
-      MakeSafeRefPtr<Context>(std::move(aManager), aTarget, aInitAction);
+  auto context = MakeSafeRefPtr<Context>(std::move(aManager), aTarget,
+                                         std::move(aInitAction));
   context->Init(aOldContext);
   return context;
 }
 
 Context::Context(SafeRefPtr<Manager> aManager, nsISerialEventTarget* aTarget,
-                 Action* aInitAction)
+                 SafeRefPtr<Action> aInitAction)
     : mManager(std::move(aManager)),
       mTarget(aTarget),
       mData(new Data(aTarget)),
       mState(STATE_CONTEXT_PREINIT),
       mOrphanedData(false),
-      mInitAction(aInitAction) {
+      mInitAction(std::move(aInitAction)) {
   MOZ_DIAGNOSTIC_ASSERT(mManager);
   MOZ_DIAGNOSTIC_ASSERT(mTarget);
 }
 
-void Context::Dispatch(Action* aAction) {
+void Context::Dispatch(SafeRefPtr<Action> aAction) {
   NS_ASSERT_OWNINGTHREAD(Context);
   MOZ_DIAGNOSTIC_ASSERT(aAction);
-
   MOZ_DIAGNOSTIC_ASSERT(mState != STATE_CONTEXT_CANCELED);
+
   if (mState == STATE_CONTEXT_CANCELED) {
     return;
-  } else if (mState == STATE_CONTEXT_INIT || mState == STATE_CONTEXT_PREINIT) {
+  }
+
+  if (mState == STATE_CONTEXT_INIT || mState == STATE_CONTEXT_PREINIT) {
     PendingAction* pending = mPendingActions.AppendElement();
-    pending->mAction = aAction;
+    pending->mAction = std::move(aAction);
     return;
   }
 
   MOZ_DIAGNOSTIC_ASSERT(mState == STATE_CONTEXT_READY);
-  DispatchAction(aAction);
+  DispatchAction(std::move(aAction));
+}
+
+Maybe<DirectoryLock&> Context::MaybeDirectoryLockRef() const {
+  NS_ASSERT_OWNINGTHREAD(Context);
+
+  if (mState == STATE_CONTEXT_PREINIT) {
+    MOZ_DIAGNOSTIC_ASSERT(!mInitRunnable);
+    MOZ_DIAGNOSTIC_ASSERT(!mDirectoryLock);
+
+    return Nothing();
+  }
+
+  if (mState == STATE_CONTEXT_INIT) {
+    MOZ_DIAGNOSTIC_ASSERT(!mDirectoryLock);
+
+    return mInitRunnable->MaybeDirectoryLockRef();
+  }
+
+  return ToMaybeRef(mDirectoryLock.get());
+}
+
+CipherKeyManager& Context::MutableCipherKeyManagerRef() {
+  MOZ_ASSERT(mTarget->IsOnCurrentThread());
+  MOZ_DIAGNOSTIC_ASSERT(mCipherKeyManager);
+
+  return *mCipherKeyManager;
+}
+
+const Maybe<CacheDirectoryMetadata>& Context::MaybeCacheDirectoryMetadataRef()
+    const {
+  MOZ_ASSERT(mTarget->IsOnCurrentThread());
+  return mDirectoryMetadata;
 }
 
 void Context::CancelAll() {
@@ -817,11 +904,8 @@ void Context::CancelAll() {
 
   mState = STATE_CONTEXT_CANCELED;
   mPendingActions.Clear();
-  {
-    ActivityList::ForwardIterator iter(mActivityList);
-    while (iter.HasMore()) {
-      iter.GetNext()->Cancel();
-    }
+  for (const auto& activity : mActivityList.ForwardRange()) {
+    activity->Cancel();
   }
   AllowToClose();
 }
@@ -848,16 +932,12 @@ void Context::CancelForCacheId(CacheId aCacheId) {
   NS_ASSERT_OWNINGTHREAD(Context);
 
   // Remove matching pending actions
-  for (int32_t i = mPendingActions.Length() - 1; i >= 0; --i) {
-    if (mPendingActions[i].mAction->MatchesCacheId(aCacheId)) {
-      mPendingActions.RemoveElementAt(i);
-    }
-  }
+  mPendingActions.RemoveElementsBy([aCacheId](const auto& pendingAction) {
+    return pendingAction.mAction->MatchesCacheId(aCacheId);
+  });
 
   // Cancel activities and let them remove themselves
-  ActivityList::ForwardIterator iter(mActivityList);
-  while (iter.HasMore()) {
-    Activity* activity = iter.GetNext();
+  for (const auto& activity : mActivityList.ForwardRange()) {
     if (activity->MatchesCacheId(aCacheId)) {
       activity->Cancel();
     }
@@ -876,8 +956,8 @@ Context::~Context() {
   // Note, this may set the mOrphanedData flag.
   mManager->RemoveContext(*this);
 
-  if (mQuotaInfo.mDir && !mOrphanedData) {
-    MOZ_ALWAYS_SUCCEEDS(DeleteMarkerFile(mQuotaInfo));
+  if (mDirectoryMetadata && mDirectoryMetadata->mDir && !mOrphanedData) {
+    MOZ_ALWAYS_SUCCEEDS(DeleteMarkerFile(*mDirectoryMetadata));
   }
 
   if (mNextContext) {
@@ -915,10 +995,9 @@ void Context::Start() {
   MOZ_DIAGNOSTIC_ASSERT(mState == STATE_CONTEXT_PREINIT);
   MOZ_DIAGNOSTIC_ASSERT(!mInitRunnable);
 
-  mInitRunnable = new QuotaInitRunnable(
-      SafeRefPtrFromThis(), mManager.clonePtr(), mData, mTarget, mInitAction);
-  mInitAction = nullptr;
-
+  mInitRunnable =
+      new QuotaInitRunnable(SafeRefPtrFromThis(), mManager.clonePtr(), mData,
+                            mTarget, std::move(mInitAction));
   mState = STATE_CONTEXT_INIT;
 
   nsresult rv = mInitRunnable->Dispatch();
@@ -930,11 +1009,12 @@ void Context::Start() {
   }
 }
 
-void Context::DispatchAction(Action* aAction, bool aDoomData) {
+void Context::DispatchAction(SafeRefPtr<Action> aAction, bool aDoomData) {
   NS_ASSERT_OWNINGTHREAD(Context);
 
-  RefPtr<ActionRunnable> runnable = new ActionRunnable(
-      SafeRefPtrFromThis(), mData, mTarget, aAction, mQuotaInfo);
+  auto runnable = MakeSafeRefPtr<ActionRunnable>(
+      SafeRefPtrFromThis(), mData, mTarget, std::move(aAction),
+      mDirectoryMetadata, mCipherKeyManager);
 
   if (aDoomData) {
     mData = nullptr;
@@ -946,22 +1026,28 @@ void Context::DispatchAction(Action* aAction, bool aDoomData) {
     // for this invariant violation.
     MOZ_CRASH("Failed to dispatch ActionRunnable to target thread.");
   }
-  AddActivity(runnable);
+  AddActivity(*runnable);
 }
 
-void Context::OnQuotaInit(nsresult aRv, const QuotaInfo& aQuotaInfo,
-                          already_AddRefed<DirectoryLock> aDirectoryLock) {
+void Context::OnQuotaInit(
+    nsresult aRv, const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata,
+    RefPtr<DirectoryLock> aDirectoryLock,
+    RefPtr<CipherKeyManager> aCipherKeyManager) {
   NS_ASSERT_OWNINGTHREAD(Context);
 
   MOZ_DIAGNOSTIC_ASSERT(mInitRunnable);
   mInitRunnable = nullptr;
 
-  mQuotaInfo = aQuotaInfo;
+  MOZ_DIAGNOSTIC_ASSERT(!mDirectoryMetadata);
+  mDirectoryMetadata = aDirectoryMetadata;
 
   // Always save the directory lock to ensure QuotaManager does not shutdown
   // before the Context has gone away.
   MOZ_DIAGNOSTIC_ASSERT(!mDirectoryLock);
-  mDirectoryLock = aDirectoryLock;
+  mDirectoryLock = std::move(aDirectoryLock);
+
+  MOZ_DIAGNOSTIC_ASSERT(!mCipherKeyManager);
+  mCipherKeyManager = std::move(aCipherKeyManager);
 
   // If we opening the context failed, but we were not explicitly canceled,
   // still treat the entire context as canceled.  We don't want to allow
@@ -981,27 +1067,31 @@ void Context::OnQuotaInit(nsresult aRv, const QuotaInfo& aQuotaInfo,
     return;
   }
 
+  // We could only assert below if quota initialization was a success which
+  // is ensured by NS_FAILED(aRv) above
+  MOZ_DIAGNOSTIC_ASSERT(mDirectoryMetadata);
+  MOZ_DIAGNOSTIC_ASSERT(mDirectoryLock);
+  MOZ_DIAGNOSTIC_ASSERT_IF(mDirectoryMetadata->mIsPrivate, mCipherKeyManager);
+
   MOZ_DIAGNOSTIC_ASSERT(mState == STATE_CONTEXT_INIT);
   mState = STATE_CONTEXT_READY;
 
   for (uint32_t i = 0; i < mPendingActions.Length(); ++i) {
-    DispatchAction(mPendingActions[i].mAction);
+    DispatchAction(std::move(mPendingActions[i].mAction));
   }
   mPendingActions.Clear();
 }
 
-void Context::AddActivity(Activity* aActivity) {
+void Context::AddActivity(Activity& aActivity) {
   NS_ASSERT_OWNINGTHREAD(Context);
-  MOZ_DIAGNOSTIC_ASSERT(aActivity);
-  MOZ_ASSERT(!mActivityList.Contains(aActivity));
-  mActivityList.AppendElement(aActivity);
+  MOZ_ASSERT(!mActivityList.Contains(&aActivity));
+  mActivityList.AppendElement(WrapNotNullUnchecked(&aActivity));
 }
 
-void Context::RemoveActivity(Activity* aActivity) {
+void Context::RemoveActivity(Activity& aActivity) {
   NS_ASSERT_OWNINGTHREAD(Context);
-  MOZ_DIAGNOSTIC_ASSERT(aActivity);
-  MOZ_ALWAYS_TRUE(mActivityList.RemoveElement(aActivity));
-  MOZ_ASSERT(!mActivityList.Contains(aActivity));
+  MOZ_ALWAYS_TRUE(mActivityList.RemoveElement(&aActivity));
+  MOZ_ASSERT(!mActivityList.Contains(&aActivity));
 }
 
 void Context::NoteOrphanedData() {
@@ -1037,12 +1127,59 @@ void Context::DoomTargetData() {
   // roundtrip to the target thread and back to the owning thread.  The
   // ref to the Data object is cleared on the owning thread after creating
   // the ActionRunnable, but before dispatching it.
-  RefPtr<Action> action = new NullAction();
-  DispatchAction(action, true /* doomed data */);
+  DispatchAction(MakeSafeRefPtr<NullAction>(), true /* doomed data */);
 
   MOZ_DIAGNOSTIC_ASSERT(!mData);
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+void Context::DoStringify(nsACString& aData) {
+  NS_ASSERT_OWNINGTHREAD(Context);
+
+  aData.Append(
+      "Context "_ns + kStringifyStartInstance +
+      //
+      "State:"_ns + IntToCString(mState) + kStringifyDelimiter +
+      //
+      "OrphanedData:"_ns + IntToCString(mOrphanedData) + kStringifyDelimiter +
+      //
+      "InitRunnable:"_ns + IntToCString(static_cast<bool>(mInitRunnable)) +
+      kStringifyDelimiter +
+      //
+      "InitAction:"_ns + IntToCString(static_cast<bool>(mInitAction)) +
+      kStringifyDelimiter +
+      //
+      "PendingActions:"_ns +
+      IntToCString(static_cast<uint64_t>(mPendingActions.Length())) +
+      kStringifyDelimiter +
+      //
+      "ActivityList:"_ns +
+      IntToCString(static_cast<uint64_t>(mActivityList.Length())));
+
+  if (mActivityList.Length() > 0) {
+    aData.Append(kStringifyStartSet);
+    for (auto activity : mActivityList.ForwardRange()) {
+      activity->Stringify(aData);
+      aData.Append(kStringifyDelimiter);
+    }
+    aData.Append(kStringifyEndSet);
+  };
+
+  aData.Append(
+      kStringifyDelimiter +
+      //
+      "DirectoryLock:"_ns + IntToCString(static_cast<bool>(mDirectoryLock)) +
+      kStringifyDelimiter +
+      //
+      "NextContext:"_ns + IntToCString(static_cast<bool>(mNextContext)) +
+      //
+      kStringifyEndInstance);
+
+  if (mNextContext) {
+    aData.Append(kStringifyDelimiter);
+    mNextContext->Stringify(aData);
+  };
+
+  aData.Append(kStringifyEndInstance);
+}
+
+}  // namespace mozilla::dom::cache

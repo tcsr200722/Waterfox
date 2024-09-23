@@ -17,9 +17,9 @@ const TEST_URI = `
   <div id="shape"></div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { inspector, view, testActor } = await openRuleView();
+  const { inspector, view } = await openRuleView();
   const highlighters = view.highlighters;
 
   info("Select a node with a shape value");
@@ -35,9 +35,9 @@ add_task(async function() {
 
   const onHighlighterHidden = highlighters.once("shapes-highlighter-hidden");
   info("Remove the #shapes container in the content page");
-  testActor.eval(`
-    document.querySelector("#shape").remove();
-  `);
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () =>
+    content.document.querySelector("#shape").remove()
+  );
   await onHighlighterHidden;
   ok(!highlighters.shapesHighlighterShown, "CSS shapes highlighter is hidden.");
 });

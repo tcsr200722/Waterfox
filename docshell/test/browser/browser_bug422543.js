@@ -8,7 +8,7 @@ let getActor = browser => {
 };
 
 add_task(async function runTests() {
-  if (!Services.prefs.getBoolPref("fission.sessionHistoryInParent")) {
+  if (!SpecialPowers.Services.appinfo.sessionHistoryInParent) {
     await setupAsync();
     let browser = gBrowser.selectedBrowser;
     // Now that we're set up, initialize our frame script.
@@ -17,7 +17,8 @@ add_task(async function runTests() {
     // Check if all history listeners are always notified.
     info("# part 1");
     await whenPageShown(browser, () =>
-      BrowserTestUtils.loadURI(browser, "http://www.example.com/")
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      BrowserTestUtils.startLoadingURIString(browser, "http://www.example.com/")
     );
     await checkListenersAsync("newentry", "shistory has a new entry");
     ok(browser.canGoBack, "we can go back");
@@ -95,7 +96,7 @@ add_task(async function runTests() {
       let base = getRootDirectory(gTestPath).slice(0, -1);
       ChromeUtils.registerWindowActor(ACTOR, {
         child: {
-          moduleURI: `${base}/Bug422543Child.jsm`,
+          esModuleURI: `${base}/Bug422543Child.sys.mjs`,
         },
       });
 
@@ -119,7 +120,8 @@ add_task(async function runTests() {
   // Check if all history listeners are always notified.
   info("# part 1");
   await whenPageShown(browser, () =>
-    BrowserTestUtils.loadURI(browser, "http://www.example.com/")
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    BrowserTestUtils.startLoadingURIString(browser, "http://www.example.com/")
   );
   checkListeners("newentry", "shistory has a new entry");
   ok(browser.canGoBack, "we can go back");
@@ -170,7 +172,7 @@ class SHistoryListener {
     this.last = "initial";
   }
 
-  OnHistoryNewEntry(aNewURI) {
+  OnHistoryNewEntry() {
     this.last = "newentry";
   }
 
@@ -190,8 +192,8 @@ class SHistoryListener {
   OnHistoryReplaceEntry() {}
 }
 SHistoryListener.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsISHistoryListener,
-  Ci.nsISupportsWeakReference,
+  "nsISHistoryListener",
+  "nsISupportsWeakReference",
 ]);
 
 let listeners = [new SHistoryListener(), new SHistoryListener()];
@@ -222,7 +224,7 @@ async function setup() {
   );
 
   let browser = tab.linkedBrowser;
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     for (let listener of listeners) {
       browser.browsingContext.sessionHistory.removeSHistoryListener(listener);
     }

@@ -23,7 +23,7 @@
 
 class ArrayBufferInputStream : public nsIArrayBufferInputStream {
  public:
-  ArrayBufferInputStream();
+  ArrayBufferInputStream() = default;
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIARRAYBUFFERINPUTSTREAM
@@ -31,10 +31,10 @@ class ArrayBufferInputStream : public nsIArrayBufferInputStream {
 
  private:
   virtual ~ArrayBufferInputStream() = default;
-  mozilla::UniquePtr<char[]> mArrayBuffer;
-  uint32_t mBufferLength;
-  uint32_t mPos;
-  bool mClosed;
+  mozilla::UniquePtr<uint8_t[]> mArrayBuffer;
+  uint32_t mBufferLength{0};
+  uint32_t mPos{0};
+  bool mClosed{false};
 };
 
 #endif  // ArrayBufferInputStream_h

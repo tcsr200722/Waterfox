@@ -6,7 +6,7 @@
 // Test whether the animation can rewind if the current time is over end time when
 // the resume button clicked.
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept([
     ".animated",
@@ -18,9 +18,10 @@ add_task(async function() {
 
   info("Check animations state after resuming with infinite animation");
   info("Make the current time of animation to be over its end time");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 1);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 1);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
   info("Resume animations");
-  await clickOnPauseResumeButton(animationInspector, panel);
+  clickOnPauseResumeButton(animationInspector, panel);
   await wait(1000);
   assertPlayState(animationInspector.state.animations, [
     "running",
@@ -28,21 +29,21 @@ add_task(async function() {
     "finished",
     "finished",
   ]);
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
 
   info("Check animations state after resuming without infinite animation");
   info("Remove infinite animation");
   await setClassAttribute(animationInspector, ".animated", "ball still");
+  await waitUntil(() => panel.querySelectorAll(".animation-item").length === 3);
+
   info("Make the current time of animation to be over its end time");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 1);
-  await clickOnPlaybackRateSelector(animationInspector, panel, 0.1);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 1.1);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
+  await changePlaybackRateSelector(animationInspector, panel, 0.1);
   info("Resume animations");
-  await clickOnPauseResumeButton(animationInspector, panel);
-  assertPlayState(animationInspector.state.animations, [
-    "running",
-    "running",
-    "running",
-  ]);
+  clickOnPauseResumeButton(animationInspector, panel);
+  await waitUntilAnimationsPlayState(animationInspector, "running");
   assertCurrentTimeLessThanDuration(animationInspector.state.animations);
   assertScrubberPosition(panel);
 });
@@ -59,8 +60,9 @@ function assertPlayState(animations, expectedState) {
 
 function assertCurrentTimeLessThanDuration(animations) {
   animations.forEach((animation, index) => {
-    ok(
-      animation.state.currentTime < animation.state.duration,
+    Assert.less(
+      animation.state.currentTime,
+      animation.state.duration,
       `The current time of animation[${index}] should be less than its duration`
     );
   });
@@ -69,8 +71,9 @@ function assertCurrentTimeLessThanDuration(animations) {
 function assertScrubberPosition(panel) {
   const scrubberEl = panel.querySelector(".current-time-scrubber");
   const marginInlineStart = parseFloat(scrubberEl.style.marginInlineStart);
-  ok(
-    marginInlineStart >= 0,
+  Assert.greaterOrEqual(
+    marginInlineStart,
+    0,
     "The translateX of scrubber position should be zero or more"
   );
 }

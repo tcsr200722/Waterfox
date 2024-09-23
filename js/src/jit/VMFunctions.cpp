@@ -8,39 +8,308 @@
 
 #include "mozilla/FloatingPoint.h"
 
+#include "builtin/MapObject.h"
 #include "builtin/String.h"
-#include "builtin/TypedObject.h"
-#include "frontend/BytecodeCompiler.h"
+#include "ds/OrderedHashTable.h"
+#include "gc/Cell.h"
+#include "gc/GC.h"
 #include "jit/arm/Simulator-arm.h"
+#include "jit/AtomicOperations.h"
 #include "jit/BaselineIC.h"
+#include "jit/CalleeToken.h"
 #include "jit/JitFrames.h"
-#include "jit/JitRealm.h"
+#include "jit/JitRuntime.h"
 #include "jit/mips32/Simulator-mips32.h"
 #include "jit/mips64/Simulator-mips64.h"
+#include "jit/Simulator.h"
+#include "js/experimental/JitInfo.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/friend/StackLimits.h"    // js::AutoCheckRecursionLimit
+#include "js/friend/WindowProxy.h"    // js::IsWindow
+#include "js/Printf.h"
+#include "js/TraceKind.h"
+#include "proxy/ScriptedProxyHandler.h"
+#include "util/Unicode.h"
 #include "vm/ArrayObject.h"
-#include "vm/EqualityOperations.h"  // js::StrictlyEqual
+#include "vm/Compartment.h"
 #include "vm/Interpreter.h"
+#include "vm/JSAtomUtils.h"  // AtomizeString
 #include "vm/PlainObject.h"  // js::PlainObject
 #include "vm/SelfHosting.h"
-#include "vm/TraceLogging.h"
+#include "vm/StaticStrings.h"
 #include "vm/TypedArrayObject.h"
+#include "vm/TypeofEqOperand.h"  // TypeofEqOperand
+#include "vm/Watchtower.h"
+#include "wasm/WasmGcObject.h"
 
 #include "debugger/DebugAPI-inl.h"
 #include "jit/BaselineFrame-inl.h"
-#include "jit/JitFrames-inl.h"
 #include "jit/VMFunctionList-inl.h"
 #include "vm/Interpreter-inl.h"
+#include "vm/JSAtomUtils-inl.h"  // TypeName
+#include "vm/JSContext-inl.h"
 #include "vm/JSScript-inl.h"
 #include "vm/NativeObject-inl.h"
 #include "vm/PlainObject-inl.h"  // js::CreateThis
 #include "vm/StringObject-inl.h"
-#include "vm/TypeInference-inl.h"
 
 using namespace js;
 using namespace js::jit;
 
 namespace js {
+
+class ArgumentsObject;
+class NamedLambdaObject;
+class AsyncFunctionGeneratorObject;
+class RegExpObject;
+
 namespace jit {
+
+struct IonOsrTempData;
+
+struct PopValues {
+  uint8_t numValues;
+  explicit constexpr PopValues(uint8_t numValues = 0) : numValues(numValues) {}
+};
+
+template <class>
+struct ReturnTypeToDataType { /* Unexpected return type for a VMFunction. */
+};
+template <>
+struct ReturnTypeToDataType<void> {
+  static const DataType result = Type_Void;
+};
+template <>
+struct ReturnTypeToDataType<bool> {
+  static const DataType result = Type_Bool;
+};
+template <class T>
+struct ReturnTypeToDataType<T*> {
+  // Assume by default that any pointer return types are cells.
+  static_assert(std::is_base_of_v<gc::Cell, T>);
+
+  static const DataType result = Type_Cell;
+};
+
+// Convert argument types to properties of the argument known by the jit.
+template <class T>
+struct TypeToArgProperties {
+  static const uint32_t result =
+      (sizeof(T) <= sizeof(void*) ? VMFunctionData::Word
+                                  : VMFunctionData::Double);
+};
+template <>
+struct TypeToArgProperties<const Value&> {
+  static const uint32_t result =
+      TypeToArgProperties<Value>::result | VMFunctionData::ByRef;
+};
+template <>
+struct TypeToArgProperties<HandleValue> {
+  static const uint32_t result =
+      TypeToArgProperties<Value>::result | VMFunctionData::ByRef;
+};
+template <>
+struct TypeToArgProperties<MutableHandleValue> {
+  static const uint32_t result =
+      TypeToArgProperties<Value>::result | VMFunctionData::ByRef;
+};
+template <>
+struct TypeToArgProperties<HandleId> {
+  static const uint32_t result =
+      TypeToArgProperties<jsid>::result | VMFunctionData::ByRef;
+};
+template <class T>
+struct TypeToArgProperties<Handle<T*>> {
+  // Assume by default that any pointer handle types are cells.
+  static_assert(std::is_base_of_v<gc::Cell, T>);
+
+  static const uint32_t result =
+      TypeToArgProperties<T*>::result | VMFunctionData::ByRef;
+};
+template <class T>
+struct TypeToArgProperties<Handle<T>> {
+  // Fail for Handle types that aren't specialized above.
+};
+
+// Convert argument type to whether or not it should be passed in a float
+// register on platforms that have them, like x64.
+template <class T>
+struct TypeToPassInFloatReg {
+  static const uint32_t result = 0;
+};
+template <>
+struct TypeToPassInFloatReg<double> {
+  static const uint32_t result = 1;
+};
+
+// Convert argument types to root types used by the gc, see TraceJitExitFrame.
+template <class T>
+struct TypeToRootType {
+  static const uint32_t result = VMFunctionData::RootNone;
+};
+template <>
+struct TypeToRootType<HandleValue> {
+  static const uint32_t result = VMFunctionData::RootValue;
+};
+template <>
+struct TypeToRootType<MutableHandleValue> {
+  static const uint32_t result = VMFunctionData::RootValue;
+};
+template <>
+struct TypeToRootType<HandleId> {
+  static const uint32_t result = VMFunctionData::RootId;
+};
+template <class T>
+struct TypeToRootType<Handle<T*>> {
+  // Assume by default that any pointer types are cells.
+  static_assert(std::is_base_of_v<gc::Cell, T>);
+
+  static constexpr uint32_t rootType() {
+    using JS::TraceKind;
+
+    switch (JS::MapTypeToTraceKind<T>::kind) {
+      case TraceKind::Object:
+        return VMFunctionData::RootObject;
+      case TraceKind::BigInt:
+        return VMFunctionData::RootBigInt;
+      case TraceKind::String:
+        return VMFunctionData::RootString;
+      case TraceKind::Shape:
+      case TraceKind::Script:
+      case TraceKind::Scope:
+        return VMFunctionData::RootCell;
+      case TraceKind::Symbol:
+      case TraceKind::BaseShape:
+      case TraceKind::Null:
+      case TraceKind::JitCode:
+      case TraceKind::RegExpShared:
+      case TraceKind::GetterSetter:
+      case TraceKind::PropMap:
+        MOZ_CRASH("Unexpected trace kind");
+    }
+  }
+
+  static constexpr uint32_t result = rootType();
+};
+template <class T>
+struct TypeToRootType<Handle<T>> {
+  // Fail for Handle types that aren't specialized above.
+};
+
+template <class>
+struct OutParamToDataType {
+  static const DataType result = Type_Void;
+};
+template <class T>
+struct OutParamToDataType<const T*> {
+  // Const pointers can't be output parameters.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<uint64_t*> {
+  // Already used as an input type, so it can't be used as an output param.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<JSObject*> {
+  // Already used as an input type, so it can't be used as an output param.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<JSString*> {
+  // Already used as an input type, so it can't be used as an output param.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<BaselineFrame*> {
+  // Already used as an input type, so it can't be used as an output param.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<gc::AllocSite*> {
+  // Already used as an input type, so it can't be used as an output param.
+  static const DataType result = Type_Void;
+};
+template <>
+struct OutParamToDataType<Value*> {
+  static const DataType result = Type_Value;
+};
+template <>
+struct OutParamToDataType<int*> {
+  static const DataType result = Type_Int32;
+};
+template <>
+struct OutParamToDataType<uint32_t*> {
+  static const DataType result = Type_Int32;
+};
+template <>
+struct OutParamToDataType<bool*> {
+  static const DataType result = Type_Bool;
+};
+template <>
+struct OutParamToDataType<double*> {
+  static const DataType result = Type_Double;
+};
+template <class T>
+struct OutParamToDataType<T*> {
+  // Fail for pointer types that aren't specialized above.
+};
+template <class T>
+struct OutParamToDataType<T**> {
+  static const DataType result = Type_Pointer;
+};
+template <class T>
+struct OutParamToDataType<MutableHandle<T>> {
+  static const DataType result = Type_Handle;
+};
+
+template <class>
+struct OutParamToRootType {
+  static const VMFunctionData::RootType result = VMFunctionData::RootNone;
+};
+template <>
+struct OutParamToRootType<MutableHandleValue> {
+  static const VMFunctionData::RootType result = VMFunctionData::RootValue;
+};
+template <>
+struct OutParamToRootType<MutableHandleObject> {
+  static const VMFunctionData::RootType result = VMFunctionData::RootObject;
+};
+template <>
+struct OutParamToRootType<MutableHandleString> {
+  static const VMFunctionData::RootType result = VMFunctionData::RootString;
+};
+template <>
+struct OutParamToRootType<MutableHandleBigInt> {
+  static const VMFunctionData::RootType result = VMFunctionData::RootBigInt;
+};
+
+// Construct a bit mask from a list of types.  The mask is constructed as an OR
+// of the mask produced for each argument. The result of each argument is
+// shifted by its index, such that the result of the first argument is on the
+// low bits of the mask, and the result of the last argument in part of the
+// high bits of the mask.
+template <template <typename> class Each, typename ResultType, size_t Shift,
+          typename... Args>
+struct BitMask;
+
+template <template <typename> class Each, typename ResultType, size_t Shift>
+struct BitMask<Each, ResultType, Shift> {
+  static constexpr ResultType result = ResultType();
+};
+
+template <template <typename> class Each, typename ResultType, size_t Shift,
+          typename HeadType, typename... TailTypes>
+struct BitMask<Each, ResultType, Shift, HeadType, TailTypes...> {
+  static_assert(ResultType(Each<HeadType>::result) < (1 << Shift),
+                "not enough bits reserved by the shift for individual results");
+  static_assert(sizeof...(TailTypes) < (8 * sizeof(ResultType) / Shift),
+                "not enough bits in the result type to store all bit masks");
+
+  static constexpr ResultType result =
+      ResultType(Each<HeadType>::result) |
+      (BitMask<Each, ResultType, Shift, TailTypes...>::result << Shift);
+};
 
 // Helper template to build the VMFunctionData for a function.
 template <typename... Args>
@@ -51,14 +320,16 @@ struct VMFunctionDataHelper<R (*)(JSContext*, Args...)>
     : public VMFunctionData {
   using Fun = R (*)(JSContext*, Args...);
 
-  static constexpr DataType returnType() { return TypeToDataType<R>::result; }
+  static constexpr DataType returnType() {
+    return ReturnTypeToDataType<R>::result;
+  }
   static constexpr DataType outParam() {
     return OutParamToDataType<typename LastArg<Args...>::Type>::result;
   }
   static constexpr RootType outParamRootType() {
     return OutParamToRootType<typename LastArg<Args...>::Type>::result;
   }
-  static constexpr size_t NbArgs() { return LastArg<Args...>::nbArgs; }
+  static constexpr size_t NbArgs() { return sizeof...(Args); }
   static constexpr size_t explicitArgs() {
     return NbArgs() - (outParam() != Type_Void ? 1 : 0);
   }
@@ -75,18 +346,17 @@ struct VMFunctionDataHelper<R (*)(JSContext*, Args...)>
       : VMFunctionData(name, explicitArgs(), argumentProperties(),
                        argumentPassedInFloatRegs(), argumentRootTypes(),
                        outParam(), outParamRootType(), returnType(),
-                       /* extraValuesToPop = */ 0, NonTailCall) {}
+                       /* extraValuesToPop = */ 0) {}
   constexpr explicit VMFunctionDataHelper(const char* name,
-                                          MaybeTailCall expectTailCall,
                                           PopValues extraValuesToPop)
       : VMFunctionData(name, explicitArgs(), argumentProperties(),
                        argumentPassedInFloatRegs(), argumentRootTypes(),
                        outParam(), outParamRootType(), returnType(),
-                       extraValuesToPop.numValues, expectTailCall) {}
+                       extraValuesToPop.numValues) {}
 };
 
 // GCC warns when the signature does not have matching attributes (for example
-// MOZ_MUST_USE). Squelch this warning to avoid a GCC-only footgun.
+// [[nodiscard]]). Squelch this warning to avoid a GCC-only footgun.
 #if MOZ_IS_GCC
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wignored-attributes"
@@ -94,15 +364,9 @@ struct VMFunctionDataHelper<R (*)(JSContext*, Args...)>
 
 // Generate VMFunctionData array.
 static constexpr VMFunctionData vmFunctions[] = {
-#define DEF_VMFUNCTION(name, fp) VMFunctionDataHelper<decltype(&(::fp))>(#name),
+#define DEF_VMFUNCTION(name, fp, valuesToPop...) \
+  VMFunctionDataHelper<decltype(&(::fp))>(#name, PopValues(valuesToPop)),
     VMFUNCTION_LIST(DEF_VMFUNCTION)
-#undef DEF_VMFUNCTION
-};
-static constexpr VMFunctionData tailCallVMFunctions[] = {
-#define DEF_VMFUNCTION(name, fp, valuesToPop)              \
-  VMFunctionDataHelper<decltype(&(::fp))>(#name, TailCall, \
-                                          PopValues(valuesToPop)),
-    TAIL_CALL_VMFUNCTION_LIST(DEF_VMFUNCTION)
 #undef DEF_VMFUNCTION
 };
 
@@ -116,33 +380,63 @@ static constexpr VMFunctionData tailCallVMFunctions[] = {
 // constexpr.
 #define DEF_VMFUNCTION(name, fp, ...) (void*)(::fp),
 static void* const vmFunctionTargets[] = {VMFUNCTION_LIST(DEF_VMFUNCTION)};
-static void* const tailCallVMFunctionTargets[] = {
-    TAIL_CALL_VMFUNCTION_LIST(DEF_VMFUNCTION)};
 #undef DEF_VMFUNCTION
 
 const VMFunctionData& GetVMFunction(VMFunctionId id) {
   return vmFunctions[size_t(id)];
 }
-const VMFunctionData& GetVMFunction(TailCallVMFunctionId id) {
-  return tailCallVMFunctions[size_t(id)];
+
+static DynFn GetVMFunctionTarget(VMFunctionId id) {
+  return DynFn{vmFunctionTargets[size_t(id)]};
 }
 
-static void* GetVMFunctionTarget(VMFunctionId id) {
-  return vmFunctionTargets[size_t(id)];
+size_t NumVMFunctions() { return size_t(VMFunctionId::Count); }
+
+size_t VMFunctionData::sizeOfOutParamStackSlot() const {
+  switch (outParam) {
+    case Type_Value:
+      return sizeof(Value);
+
+    case Type_Pointer:
+    case Type_Int32:
+    case Type_Bool:
+      return sizeof(uintptr_t);
+
+    case Type_Double:
+      return sizeof(double);
+
+    case Type_Handle:
+      switch (outParamRootType) {
+        case RootNone:
+          MOZ_CRASH("Handle must have root type");
+        case RootObject:
+        case RootString:
+        case RootCell:
+        case RootBigInt:
+        case RootId:
+          return sizeof(uintptr_t);
+        case RootValue:
+          return sizeof(Value);
+      }
+      MOZ_CRASH("Invalid type");
+
+    case Type_Void:
+      return 0;
+
+    case Type_Cell:
+      MOZ_CRASH("Unexpected outparam type");
+  }
+
+  MOZ_CRASH("Invalid type");
 }
 
-static void* GetVMFunctionTarget(TailCallVMFunctionId id) {
-  return tailCallVMFunctionTargets[size_t(id)];
-}
-
-template <typename IdT>
 bool JitRuntime::generateVMWrappers(JSContext* cx, MacroAssembler& masm,
-                                    VMWrapperOffsets& offsets) {
+                                    PerfSpewerRangeRecorder& rangeRecorder) {
   // Generate all VM function wrappers.
 
-  static constexpr size_t NumVMFunctions = size_t(IdT::Count);
+  static constexpr size_t NumVMFunctions = size_t(VMFunctionId::Count);
 
-  if (!offsets.reserve(NumVMFunctions)) {
+  if (!functionWrapperOffsets_.reserve(NumVMFunctions)) {
     return false;
   }
 
@@ -151,7 +445,7 @@ bool JitRuntime::generateVMWrappers(JSContext* cx, MacroAssembler& masm,
 #endif
 
   for (size_t i = 0; i < NumVMFunctions; i++) {
-    IdT id = IdT(i);
+    VMFunctionId id = VMFunctionId(i);
     const VMFunctionData& fun = GetVMFunction(id);
 
 #ifdef DEBUG
@@ -166,43 +460,26 @@ bool JitRuntime::generateVMWrappers(JSContext* cx, MacroAssembler& masm,
     JitSpew(JitSpew_Codegen, "# VM function wrapper (%s)", fun.name());
 
     uint32_t offset;
-    if (!generateVMWrapper(cx, masm, fun, GetVMFunctionTarget(id), &offset)) {
+    if (!generateVMWrapper(cx, masm, id, fun, GetVMFunctionTarget(id),
+                           &offset)) {
       return false;
     }
+#if defined(JS_ION_PERF)
+    rangeRecorder.recordVMWrapperOffset(fun.name());
+#else
+    rangeRecorder.recordOffset("Trampoline: VMWrapper");
+#endif
 
-    MOZ_ASSERT(offsets.length() == size_t(id));
-    offsets.infallibleAppend(offset);
+    MOZ_ASSERT(functionWrapperOffsets_.length() == size_t(id));
+    functionWrapperOffsets_.infallibleAppend(offset);
   }
 
   return true;
 };
 
-bool JitRuntime::generateVMWrappers(JSContext* cx, MacroAssembler& masm) {
-  if (!generateVMWrappers<VMFunctionId>(cx, masm, functionWrapperOffsets_)) {
-    return false;
-  }
-
-  if (!generateVMWrappers<TailCallVMFunctionId>(
-          cx, masm, tailCallFunctionWrapperOffsets_)) {
-    return false;
-  }
-
-  return true;
-}
-
-AutoDetectInvalidation::AutoDetectInvalidation(JSContext* cx,
-                                               MutableHandleValue rval)
-    : cx_(cx),
-      ionScript_(GetTopJitJSScript(cx)->ionScript()),
-      rval_(rval),
-      disabled_(false) {}
-
 bool InvokeFunction(JSContext* cx, HandleObject obj, bool constructing,
                     bool ignoresReturnValue, uint32_t argc, Value* argv,
                     MutableHandleValue rval) {
-  TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-  TraceLogStartEvent(logger, TraceLogger_Call);
-
   RootedExternalValueArray argvRoot(cx, argc + 1 + constructing, argv);
 
   // Data in the argument vector is arranged for a JIT -> JIT call.
@@ -269,12 +546,16 @@ bool InvokeFunction(JSContext* cx, HandleObject obj, bool constructing,
   return Call(cx, fval, thisv, args, rval);
 }
 
+void* GetContextSensitiveInterpreterStub() {
+  return TlsContext.get()->runtime()->jitRuntime()->interpreterStub().value;
+}
+
 bool InvokeFromInterpreterStub(JSContext* cx,
                                InterpreterStubExitFrameLayout* frame) {
   JitFrameLayout* jsFrame = frame->jsFrame();
   CalleeToken token = jsFrame->calleeToken();
 
-  Value* argv = jsFrame->argv();
+  Value* argv = jsFrame->thisAndActualArgs();
   uint32_t numActualArgs = jsFrame->numActualArgs();
   bool constructing = CalleeTokenIsConstructing(token);
   RootedFunction fun(cx, CalleeTokenToFunction(token));
@@ -300,8 +581,9 @@ bool InvokeFromInterpreterStub(JSContext* cx,
 static bool CheckOverRecursedImpl(JSContext* cx, size_t extra) {
   // We just failed the jitStackLimit check. There are two possible reasons:
   //  1) jitStackLimit was the real stack limit and we're over-recursed
-  //  2) jitStackLimit was set to UINTPTR_MAX by JSContext::requestInterrupt
-  //     and we need to call JSContext::handleInterrupt.
+  //  2) jitStackLimit was set to JS::NativeStackLimitMin by
+  //     JSContext::requestInterrupt and we need to call
+  //     JSContext::handleInterrupt.
 
   // This handles 1).
 #ifdef JS_SIMULATOR
@@ -310,7 +592,8 @@ static bool CheckOverRecursedImpl(JSContext* cx, size_t extra) {
     return false;
   }
 #else
-  if (!CheckRecursionLimitWithExtra(cx, extra)) {
+  AutoCheckRecursionLimit recursion(cx);
+  if (!recursion.checkWithExtra(cx, extra)) {
     return false;
   }
 #endif
@@ -329,7 +612,8 @@ bool CheckOverRecursedBaseline(JSContext* cx, BaselineFrame* frame) {
   return CheckOverRecursedImpl(cx, extra);
 }
 
-bool MutatePrototype(JSContext* cx, HandlePlainObject obj, HandleValue value) {
+bool MutatePrototype(JSContext* cx, Handle<PlainObject*> obj,
+                     HandleValue value) {
   if (!value.isObjectOrNull()) {
     return true;
   }
@@ -339,54 +623,20 @@ bool MutatePrototype(JSContext* cx, HandlePlainObject obj, HandleValue value) {
 }
 
 template <EqualityKind Kind>
-bool LooselyEqual(JSContext* cx, MutableHandleValue lhs, MutableHandleValue rhs,
-                  bool* res) {
-  if (!js::LooselyEqual(cx, lhs, rhs, res)) {
-    return false;
-  }
-  if (Kind != EqualityKind::Equal) {
-    *res = !*res;
-  }
-  return true;
-}
-
-template bool LooselyEqual<EqualityKind::Equal>(JSContext* cx,
-                                                MutableHandleValue lhs,
-                                                MutableHandleValue rhs,
-                                                bool* res);
-template bool LooselyEqual<EqualityKind::NotEqual>(JSContext* cx,
-                                                   MutableHandleValue lhs,
-                                                   MutableHandleValue rhs,
-                                                   bool* res);
-
-template <EqualityKind Kind>
-bool StrictlyEqual(JSContext* cx, MutableHandleValue lhs,
-                   MutableHandleValue rhs, bool* res) {
-  if (!js::StrictlyEqual(cx, lhs, rhs, res)) {
-    return false;
-  }
-  if (Kind != EqualityKind::Equal) {
-    *res = !*res;
-  }
-  return true;
-}
-
-template bool StrictlyEqual<EqualityKind::Equal>(JSContext* cx,
-                                                 MutableHandleValue lhs,
-                                                 MutableHandleValue rhs,
-                                                 bool* res);
-template bool StrictlyEqual<EqualityKind::NotEqual>(JSContext* cx,
-                                                    MutableHandleValue lhs,
-                                                    MutableHandleValue rhs,
-                                                    bool* res);
-
-template <EqualityKind Kind>
 bool StringsEqual(JSContext* cx, HandleString lhs, HandleString rhs,
                   bool* res) {
-  if (!js::EqualStrings(cx, lhs, rhs, res)) {
+  JSLinearString* linearLhs = lhs->ensureLinear(cx);
+  if (!linearLhs) {
     return false;
   }
-  if (Kind != EqualityKind::Equal) {
+  JSLinearString* linearRhs = rhs->ensureLinear(cx);
+  if (!linearRhs) {
+    return false;
+  }
+
+  *res = EqualChars(linearLhs, linearRhs);
+
+  if constexpr (Kind == EqualityKind::NotEqual) {
     *res = !*res;
   }
   return true;
@@ -420,99 +670,6 @@ template bool StringsCompare<ComparisonKind::LessThan>(JSContext* cx,
 template bool StringsCompare<ComparisonKind::GreaterThanOrEqual>(
     JSContext* cx, HandleString lhs, HandleString rhs, bool* res);
 
-bool ArrayPopDense(JSContext* cx, HandleObject obj, MutableHandleValue rval) {
-  MOZ_ASSERT(obj->is<ArrayObject>());
-
-  AutoDetectInvalidation adi(cx, rval);
-
-  JS::RootedValueArray<2> argv(cx);
-  argv[0].setUndefined();
-  argv[1].setObject(*obj);
-  if (!js::array_pop(cx, 0, argv.begin())) {
-    return false;
-  }
-
-  // If the result is |undefined|, the array was probably empty and we
-  // have to monitor the return value.
-  rval.set(argv[0]);
-  if (rval.isUndefined()) {
-    jsbytecode* pc;
-    JSScript* script = cx->currentScript(&pc);
-    JitScript::MonitorBytecodeType(cx, script, pc, rval);
-  }
-  return true;
-}
-
-bool ArrayPushDense(JSContext* cx, HandleArrayObject arr, HandleValue v,
-                    uint32_t* length) {
-  *length = arr->length();
-  DenseElementResult result = arr->setOrExtendDenseElements(
-      cx, *length, v.address(), 1, ShouldUpdateTypes::DontUpdate);
-  if (result != DenseElementResult::Incomplete) {
-    (*length)++;
-    return result == DenseElementResult::Success;
-  }
-
-  // AutoDetectInvalidation uses GetTopJitJSScript(cx)->ionScript(), but it's
-  // possible the setOrExtendDenseElements call already invalidated the
-  // IonScript. JSJitFrameIter::ionScript works when the script is invalidated
-  // so we use that instead.
-  JSJitFrameIter frame(cx->activation()->asJit());
-  MOZ_ASSERT(frame.type() == FrameType::Exit);
-  ++frame;
-  IonScript* ionScript = frame.ionScript();
-
-  JS::RootedValueArray<3> argv(cx);
-  AutoDetectInvalidation adi(cx, argv[0], ionScript);
-  argv[0].setUndefined();
-  argv[1].setObject(*arr);
-  argv[2].set(v);
-  if (!js::array_push(cx, 1, argv.begin())) {
-    return false;
-  }
-
-  if (argv[0].isInt32()) {
-    *length = argv[0].toInt32();
-    return true;
-  }
-
-  // Without TI this should not happen, we should have bailed out before
-  // calling the VM function if we are about to overflow.
-  MOZ_ASSERT(IsTypeInferenceEnabled());
-
-  // array_push changed the length to be larger than INT32_MAX. In this case
-  // OBJECT_FLAG_LENGTH_OVERFLOW was set, TI invalidated the script, and the
-  // AutoDetectInvalidation instance on the stack will replace *length with
-  // the actual return value during bailout.
-  MOZ_ASSERT(adi.shouldSetReturnOverride());
-  MOZ_ASSERT(argv[0].toDouble() == double(INT32_MAX) + 1);
-  *length = 0;
-  return true;
-}
-
-bool ArrayShiftDense(JSContext* cx, HandleObject obj, MutableHandleValue rval) {
-  MOZ_ASSERT(obj->is<ArrayObject>());
-
-  AutoDetectInvalidation adi(cx, rval);
-
-  JS::RootedValueArray<2> argv(cx);
-  argv[0].setUndefined();
-  argv[1].setObject(*obj);
-  if (!js::array_shift(cx, 0, argv.begin())) {
-    return false;
-  }
-
-  // If the result is |undefined|, the array was probably empty and we
-  // have to monitor the return value.
-  rval.set(argv[0]);
-  if (rval.isUndefined()) {
-    jsbytecode* pc;
-    JSScript* script = cx->currentScript(&pc);
-    JitScript::MonitorBytecodeType(cx, script, pc, rval);
-  }
-  return true;
-}
-
 JSString* ArrayJoin(JSContext* cx, HandleObject array, HandleString sep) {
   JS::RootedValueArray<3> argv(cx);
   argv[0].setUndefined();
@@ -542,7 +699,9 @@ bool SetArrayLength(JSContext* cx, HandleObject obj, HandleValue value,
   //
   // So, perform ArraySetLength if and only if "length" is writable.
   if (array->lengthIsWritable()) {
-    if (!ArraySetLength(cx, array, id, JSPROP_PERMANENT, value, result)) {
+    Rooted<PropertyDescriptor> desc(
+        cx, PropertyDescriptor::Data(value, JS::PropertyAttribute::Writable));
+    if (!ArraySetLength(cx, array, id, desc, result)) {
       return false;
     }
   } else {
@@ -562,43 +721,124 @@ bool CharCodeAt(JSContext* cx, HandleString str, int32_t index,
   return true;
 }
 
-JSLinearString* StringFromCharCode(JSContext* cx, int32_t code) {
+bool CodePointAt(JSContext* cx, HandleString str, int32_t index,
+                 uint32_t* code) {
+  char32_t codePoint;
+  if (!str->getCodePoint(cx, size_t(index), &codePoint)) {
+    return false;
+  }
+  *code = codePoint;
+  return true;
+}
+
+JSLinearString* StringFromCharCodeNoGC(JSContext* cx, int32_t code) {
+  AutoUnsafeCallWithABI unsafe;
+
   char16_t c = char16_t(code);
 
   if (StaticStrings::hasUnit(c)) {
     return cx->staticStrings().getUnit(c);
   }
 
-  return NewStringCopyNDontDeflate<CanGC>(cx, &c, 1);
+  return NewInlineString<NoGC>(cx, {c}, 1);
 }
 
-JSString* StringFromCodePoint(JSContext* cx, int32_t codePoint) {
-  RootedValue rval(cx, Int32Value(codePoint));
-  if (!str_fromCodePoint_one_arg(cx, rval, &rval)) {
+JSLinearString* LinearizeForCharAccessPure(JSString* str) {
+  AutoUnsafeCallWithABI unsafe;
+
+  // Should only be called on ropes.
+  MOZ_ASSERT(str->isRope());
+
+  // ensureLinear is intentionally called with a nullptr to avoid OOM reporting.
+  return str->ensureLinear(nullptr);
+}
+
+JSLinearString* LinearizeForCharAccess(JSContext* cx, JSString* str) {
+  // Should only be called on ropes.
+  MOZ_ASSERT(str->isRope());
+
+  return str->ensureLinear(cx);
+}
+
+template <typename CharT>
+static size_t StringTrimStartIndex(mozilla::Range<CharT> chars) {
+  size_t begin = 0;
+  while (begin < chars.length() && unicode::IsSpace(chars[begin])) {
+    ++begin;
+  }
+  return begin;
+}
+
+template <typename CharT>
+static size_t StringTrimEndIndex(mozilla::Range<CharT> chars, size_t begin) {
+  size_t end = chars.length();
+  while (end > begin && unicode::IsSpace(chars[end - 1])) {
+    --end;
+  }
+  return end;
+}
+
+int32_t StringTrimStartIndex(const JSString* str) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(str->isLinear());
+
+  const auto* linear = &str->asLinear();
+
+  size_t begin;
+  if (linear->hasLatin1Chars()) {
+    JS::AutoCheckCannotGC nogc;
+    begin = StringTrimStartIndex(linear->latin1Range(nogc));
+  } else {
+    JS::AutoCheckCannotGC nogc;
+    begin = StringTrimStartIndex(linear->twoByteRange(nogc));
+  }
+  return int32_t(begin);
+}
+
+int32_t StringTrimEndIndex(const JSString* str, int32_t start) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(str->isLinear());
+  MOZ_ASSERT(start >= 0 && size_t(start) <= str->length());
+
+  const auto* linear = &str->asLinear();
+
+  size_t end;
+  if (linear->hasLatin1Chars()) {
+    JS::AutoCheckCannotGC nogc;
+    end = StringTrimEndIndex(linear->latin1Range(nogc), size_t(start));
+  } else {
+    JS::AutoCheckCannotGC nogc;
+    end = StringTrimEndIndex(linear->twoByteRange(nogc), size_t(start));
+  }
+  return int32_t(end);
+}
+
+JSString* CharCodeToLowerCase(JSContext* cx, int32_t code) {
+  RootedString str(cx, StringFromCharCode(cx, code));
+  if (!str) {
     return nullptr;
   }
-
-  return rval.toString();
+  return js::StringToLowerCase(cx, str);
 }
 
-bool SetProperty(JSContext* cx, HandleObject obj, HandlePropertyName name,
+JSString* CharCodeToUpperCase(JSContext* cx, int32_t code) {
+  RootedString str(cx, StringFromCharCode(cx, code));
+  if (!str) {
+    return nullptr;
+  }
+  return js::StringToUpperCase(cx, str);
+}
+
+bool SetProperty(JSContext* cx, HandleObject obj, Handle<PropertyName*> name,
                  HandleValue value, bool strict, jsbytecode* pc) {
   RootedId id(cx, NameToId(name));
-
-  JSOp op = JSOp(*pc);
-
-  if (op == JSOp::SetAliasedVar || op == JSOp::InitAliasedLexical) {
-    // Aliased var assigns ignore readonly attributes on the property, as
-    // required for initializing 'const' closure variables.
-    Shape* shape = obj->as<NativeObject>().lookup(cx, name);
-    MOZ_ASSERT(shape && shape->isDataProperty());
-    obj->as<NativeObject>().setSlotWithType(cx, shape, value);
-    return true;
-  }
 
   RootedValue receiver(cx, ObjectValue(*obj));
   ObjectOpResult result;
   if (MOZ_LIKELY(!obj->getOpsSetProperty())) {
+    JSOp op = JSOp(*pc);
     if (op == JSOp::SetName || op == JSOp::StrictSetName ||
         op == JSOp::SetGName || op == JSOp::StrictSetGName) {
       if (!NativeSetProperty<Unqualified>(cx, obj.as<NativeObject>(), id, value,
@@ -625,23 +865,6 @@ bool InterruptCheck(JSContext* cx) {
   return CheckForInterrupt(cx);
 }
 
-JSObject* NewCallObject(JSContext* cx, HandleShape shape,
-                        HandleObjectGroup group) {
-  JSObject* obj = CallObject::create(cx, shape, group);
-  if (!obj) {
-    return nullptr;
-  }
-
-  // The JIT creates call objects in the nursery, so elides barriers for
-  // the initializing writes. The interpreter, however, may have allocated
-  // the call object tenured, so barrier as needed before re-entering.
-  if (!IsInsideNursery(obj)) {
-    cx->runtime()->gc.storeBuffer().putWholeCell(obj);
-  }
-
-  return obj;
-}
-
 JSObject* NewStringObject(JSContext* cx, HandleString str) {
   return StringObject::create(cx, str);
 }
@@ -651,29 +874,9 @@ bool OperatorIn(JSContext* cx, HandleValue key, HandleObject obj, bool* out) {
   return ToPropertyKey(cx, key, &id) && HasProperty(cx, obj, id, out);
 }
 
-bool OperatorInI(JSContext* cx, uint32_t index, HandleObject obj, bool* out) {
-  RootedValue key(cx, Int32Value(index));
-  return OperatorIn(cx, key, obj, out);
-}
-
-bool GetIntrinsicValue(JSContext* cx, HandlePropertyName name,
+bool GetIntrinsicValue(JSContext* cx, Handle<PropertyName*> name,
                        MutableHandleValue rval) {
-  if (!GlobalObject::getIntrinsicValue(cx, cx->global(), name, rval)) {
-    return false;
-  }
-
-  // This function is called when we try to compile a cold getintrinsic
-  // op. MCallGetIntrinsicValue has an AliasSet of None for optimization
-  // purposes, as its side effect is not observable from JS. We are
-  // guaranteed to bail out after this function, but because of its AliasSet,
-  // type info will not be reflowed. Manually monitor here.
-  if (!JitOptions.warpBuilder) {
-    jsbytecode* pc;
-    JSScript* script = cx->currentScript(&pc);
-    JitScript::MonitorBytecodeType(cx, script, pc, rval);
-  }
-
-  return true;
+  return GlobalObject::getIntrinsicValue(cx, cx->global(), name, rval);
 }
 
 bool CreateThisFromIC(JSContext* cx, HandleObject callee,
@@ -681,6 +884,8 @@ bool CreateThisFromIC(JSContext* cx, HandleObject callee,
   HandleFunction fun = callee.as<JSFunction>();
   MOZ_ASSERT(fun->isInterpreted());
   MOZ_ASSERT(fun->isConstructor());
+  MOZ_ASSERT(cx->realm() == fun->realm(),
+             "Realm switching happens before creating this");
 
   // CreateThis expects rval to be this magic value.
   rval.set(MagicValue(JS_IS_CONSTRUCTING));
@@ -725,6 +930,7 @@ bool CreateThisFromIon(JSContext* cx, HandleObject callee,
     }
   }
 
+  AutoRealm ar(cx, fun);
   if (!js::CreateThis(cx, fun, newTarget, GenericObject, rval)) {
     return false;
   }
@@ -733,66 +939,23 @@ bool CreateThisFromIon(JSContext* cx, HandleObject callee,
   return true;
 }
 
-bool GetDynamicNamePure(JSContext* cx, JSObject* envChain, JSString* str,
-                        Value* vp) {
-  // Lookup a string on the env chain, returning the value found through rval.
-  // This function is infallible, and cannot GC or invalidate.
-  // Returns false if the lookup could not be completed without GC.
-
-  AutoUnsafeCallWithABI unsafe;
-
-  JSAtom* atom;
-  if (str->isAtom()) {
-    atom = &str->asAtom();
-  } else {
-    atom = AtomizeString(cx, str);
-    if (!atom) {
-      cx->recoverFromOutOfMemory();
-      return false;
-    }
-  }
-
-  if (!frontend::IsIdentifier(atom) || frontend::IsKeyword(atom)) {
-    return false;
-  }
-
-  PropertyResult prop;
-  JSObject* scope = nullptr;
-  JSObject* pobj = nullptr;
-  if (LookupNameNoGC(cx, atom->asPropertyName(), envChain, &scope, &pobj,
-                     &prop)) {
-    return FetchNameNoGC(pobj, prop, vp);
-  }
-  return false;
-}
-
 void PostWriteBarrier(JSRuntime* rt, js::gc::Cell* cell) {
   AutoUnsafeCallWithABI unsafe;
-  MOZ_ASSERT(!IsInsideNursery(cell));
-  rt->gc.storeBuffer().putWholeCell(cell);
+  rt->gc.storeBuffer().putWholeCellDontCheckLast(cell);
 }
 
 static const size_t MAX_WHOLE_CELL_BUFFER_SIZE = 4096;
 
-template <IndexInBounds InBounds>
 void PostWriteElementBarrier(JSRuntime* rt, JSObject* obj, int32_t index) {
   AutoUnsafeCallWithABI unsafe;
 
   MOZ_ASSERT(!IsInsideNursery(obj));
 
-  if (InBounds == IndexInBounds::Yes) {
-    MOZ_ASSERT(uint32_t(index) <
-               obj->as<NativeObject>().getDenseInitializedLength());
-  } else {
-    if (MOZ_UNLIKELY(!obj->is<NativeObject>() || index < 0 ||
-                     uint32_t(index) >=
-                         NativeObject::MAX_DENSE_ELEMENTS_COUNT)) {
-      rt->gc.storeBuffer().putWholeCell(obj);
-      return;
-    }
-  }
-
   NativeObject* nobj = &obj->as<NativeObject>();
+
+  MOZ_ASSERT(index >= 0);
+  MOZ_ASSERT(uint32_t(index) < nobj->getDenseInitializedLength());
+
   if (nobj->isInWholeCellBuffer()) {
     return;
   }
@@ -810,19 +973,12 @@ void PostWriteElementBarrier(JSRuntime* rt, JSObject* obj, int32_t index) {
   rt->gc.storeBuffer().putWholeCell(obj);
 }
 
-template void PostWriteElementBarrier<IndexInBounds::Yes>(JSRuntime* rt,
-                                                          JSObject* obj,
-                                                          int32_t index);
-
-template void PostWriteElementBarrier<IndexInBounds::Maybe>(JSRuntime* rt,
-                                                            JSObject* obj,
-                                                            int32_t index);
-
 void PostGlobalWriteBarrier(JSRuntime* rt, GlobalObject* obj) {
   MOZ_ASSERT(obj->JSObject::is<GlobalObject>());
 
   if (!obj->realm()->globalWriteBarriered) {
-    PostWriteBarrier(rt, obj);
+    AutoUnsafeCallWithABI unsafe;
+    rt->gc.storeBuffer().putWholeCell(obj);
     obj->realm()->globalWriteBarriered = 1;
   }
 }
@@ -847,7 +1003,7 @@ int32_t GetIndexFromString(JSString* str) {
     return -1;
   }
 
-  uint32_t index = UINT32_MAX;
+  uint32_t index = UINT32_MAX;  // Initialize this to appease Valgrind.
   if (!str->asLinear().isIndex(&index) || index > INT32_MAX) {
     return -1;
   }
@@ -893,20 +1049,15 @@ bool DebugPrologue(JSContext* cx, BaselineFrame* frame) {
 }
 
 bool DebugEpilogueOnBaselineReturn(JSContext* cx, BaselineFrame* frame,
-                                   jsbytecode* pc) {
+                                   const jsbytecode* pc) {
   if (!DebugEpilogue(cx, frame, pc, true)) {
-    // DebugEpilogue popped the frame by updating packedExitFP, so run the
-    // stop event here before we enter the exception handler.
-    TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
-    TraceLogStopEvent(logger, TraceLogger_Baseline);
-    TraceLogStopEvent(logger, TraceLogger_Scripts);
     return false;
   }
 
   return true;
 }
 
-bool DebugEpilogue(JSContext* cx, BaselineFrame* frame, jsbytecode* pc,
+bool DebugEpilogue(JSContext* cx, BaselineFrame* frame, const jsbytecode* pc,
                    bool ok) {
   // If DebugAPI::onLeaveFrame returns |true| we have to return the frame's
   // return value. If it returns |false|, the debugger threw an exception.
@@ -921,7 +1072,7 @@ bool DebugEpilogue(JSContext* cx, BaselineFrame* frame, jsbytecode* pc,
     // Pop this frame by updating packedExitFP, so that the exception
     // handling code will start at the previous frame.
     JitFrameLayout* prefix = frame->framePrefix();
-    EnsureBareExitFrame(cx->activation()->asJit(), prefix);
+    EnsureUnwoundJitExitFrame(cx->activation()->asJit(), prefix);
     return false;
   }
 
@@ -935,44 +1086,33 @@ void FrameIsDebuggeeCheck(BaselineFrame* frame) {
   }
 }
 
-JSObject* CreateGenerator(JSContext* cx, BaselineFrame* frame) {
-  return AbstractGeneratorObject::create(cx, frame);
+JSObject* CreateGeneratorFromFrame(JSContext* cx, BaselineFrame* frame) {
+  return AbstractGeneratorObject::createFromFrame(cx, frame);
+}
+
+JSObject* CreateGenerator(JSContext* cx, HandleFunction callee,
+                          HandleScript script, HandleObject environmentChain,
+                          HandleObject args) {
+  Rooted<ArgumentsObject*> argsObj(
+      cx, args ? &args->as<ArgumentsObject>() : nullptr);
+  return AbstractGeneratorObject::create(cx, callee, script, environmentChain,
+                                         argsObj);
 }
 
 bool NormalSuspend(JSContext* cx, HandleObject obj, BaselineFrame* frame,
-                   uint32_t frameSize, jsbytecode* pc) {
-  MOZ_ASSERT(JSOp(*pc) == JSOp::Yield || JSOp(*pc) == JSOp::Await);
+                   uint32_t frameSize, const jsbytecode* pc) {
+  MOZ_ASSERT(JSOp(*pc) == JSOp::InitialYield || JSOp(*pc) == JSOp::Yield ||
+             JSOp(*pc) == JSOp::Await);
 
-  uint32_t numValueSlots = frame->numValueSlots(frameSize);
-
-  MOZ_ASSERT(numValueSlots > frame->script()->nfixed());
-  uint32_t stackDepth = numValueSlots - frame->script()->nfixed();
-
-  // Return value is still on the stack.
-  MOZ_ASSERT(stackDepth >= 1);
-
-  // The expression stack slots are stored on the stack in reverse order, so
-  // we copy them to a Vector and pass a pointer to that instead. We use
-  // stackDepth - 1 because we don't want to include the return value.
-  RootedValueVector exprStack(cx);
-  if (!exprStack.reserve(stackDepth - 1)) {
-    return false;
-  }
-
-  size_t firstSlot = numValueSlots - stackDepth;
-  for (size_t i = 0; i < stackDepth - 1; i++) {
-    exprStack.infallibleAppend(*frame->valueSlot(firstSlot + i));
-  }
-
-  MOZ_ASSERT(exprStack.length() == stackDepth - 1);
-
-  return AbstractGeneratorObject::normalSuspend(
-      cx, obj, frame, pc, exprStack.begin(), stackDepth - 1);
+  // Minus one because we don't want to include the return value.
+  uint32_t numSlots = frame->numValueSlots(frameSize) - 1;
+  MOZ_ASSERT(numSlots >= frame->script()->nfixed());
+  return AbstractGeneratorObject::suspend(cx, obj, frame, pc, numSlots);
 }
 
-bool FinalSuspend(JSContext* cx, HandleObject obj, jsbytecode* pc) {
+bool FinalSuspend(JSContext* cx, HandleObject obj, const jsbytecode* pc) {
   MOZ_ASSERT(JSOp(*pc) == JSOp::FinalYieldRval);
-  AbstractGeneratorObject::finalSuspend(obj);
+  AbstractGeneratorObject::finalSuspend(cx, obj);
   return true;
 }
 
@@ -1023,11 +1163,14 @@ bool GeneratorThrowOrReturn(JSContext* cx, BaselineFrame* frame,
   return false;
 }
 
-bool GlobalNameConflictsCheckFromIon(JSContext* cx, HandleScript script) {
-  Rooted<LexicalEnvironmentObject*> globalLexical(
-      cx, &cx->global()->lexicalEnvironment());
-  return CheckGlobalDeclarationConflicts(cx, script, globalLexical,
-                                         cx->global());
+bool GlobalDeclInstantiationFromIon(JSContext* cx, HandleScript script,
+                                    const jsbytecode* pc) {
+  MOZ_ASSERT(!script->hasNonSyntacticScope());
+
+  RootedObject envChain(cx, &cx->global()->lexicalEnvironment());
+  GCThingIndex lastFun = GET_GCTHING_INDEX(pc);
+
+  return GlobalOrEvalDeclInstantiation(cx, envChain, script, lastFun);
 }
 
 bool InitFunctionEnvironmentObjects(JSContext* cx, BaselineFrame* frame) {
@@ -1044,52 +1187,42 @@ bool NewArgumentsObject(JSContext* cx, BaselineFrame* frame,
   return true;
 }
 
-JSObject* CopyLexicalEnvironmentObject(JSContext* cx, HandleObject env,
-                                       bool copySlots) {
-  Handle<LexicalEnvironmentObject*> lexicalEnv =
-      env.as<LexicalEnvironmentObject>();
+ArrayObject* NewArrayObjectEnsureDenseInitLength(JSContext* cx, int32_t count) {
+  MOZ_ASSERT(count >= 0);
 
-  if (copySlots) {
-    return LexicalEnvironmentObject::clone(cx, lexicalEnv);
+  auto* array = NewDenseFullyAllocatedArray(cx, count);
+  if (!array) {
+    return nullptr;
   }
+  array->ensureDenseInitializedLength(0, count);
 
-  return LexicalEnvironmentObject::recreate(cx, lexicalEnv);
+  return array;
 }
 
-JSObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest,
-                            HandleObject templateObj, HandleObject objRes) {
-  if (objRes) {
-    Rooted<ArrayObject*> arrRes(cx, &objRes->as<ArrayObject>());
-
-    MOZ_ASSERT(!arrRes->getDenseInitializedLength());
-    MOZ_ASSERT(arrRes->group() == templateObj->group());
-
+ArrayObject* InitRestParameter(JSContext* cx, uint32_t length, Value* rest,
+                               Handle<ArrayObject*> arrRes) {
+  if (arrRes) {
     // Fast path: we managed to allocate the array inline; initialize the
-    // slots.
-    if (length > 0) {
-      if (!arrRes->ensureElements(cx, length)) {
-        return nullptr;
-      }
-      arrRes->initDenseElements(rest, length);
-      arrRes->setLengthInt32(length);
+    // elements.
+    MOZ_ASSERT(arrRes->getDenseInitializedLength() == 0);
+
+    // We don't call this function if we can initialize the elements in JIT
+    // code.
+    MOZ_ASSERT(length > arrRes->getDenseCapacity());
+
+    if (!arrRes->growElements(cx, length)) {
+      return nullptr;
     }
+    arrRes->initDenseElements(rest, length);
+    arrRes->setLength(length);
     return arrRes;
   }
 
-  NewObjectKind newKind;
-  {
-    AutoSweepObjectGroup sweep(templateObj->group());
-    newKind = templateObj->group()->shouldPreTenure(sweep) ? TenuredObject
-                                                           : GenericObject;
-  }
-  ArrayObject* arrRes = NewDenseCopiedArray(cx, length, rest, nullptr, newKind);
-  if (arrRes) {
-    arrRes->setGroup(templateObj->group());
-  }
-  return arrRes;
+  return NewDenseCopiedArray(cx, length, rest);
 }
 
-bool HandleDebugTrap(JSContext* cx, BaselineFrame* frame, uint8_t* retAddr) {
+bool HandleDebugTrap(JSContext* cx, BaselineFrame* frame,
+                     const uint8_t* retAddr) {
   RootedScript script(cx, frame->script());
   jsbytecode* pc;
   if (frame->runningInInterpreter()) {
@@ -1154,39 +1287,33 @@ bool PushLexicalEnv(JSContext* cx, BaselineFrame* frame,
   return frame->pushLexicalEnvironment(cx, scope);
 }
 
-bool PopLexicalEnv(JSContext* cx, BaselineFrame* frame) {
-  frame->popOffEnvironmentChain<LexicalEnvironmentObject>();
-  return true;
-}
-
 bool DebugLeaveThenPopLexicalEnv(JSContext* cx, BaselineFrame* frame,
-                                 jsbytecode* pc) {
+                                 const jsbytecode* pc) {
   MOZ_ALWAYS_TRUE(DebugLeaveLexicalEnv(cx, frame, pc));
-  frame->popOffEnvironmentChain<LexicalEnvironmentObject>();
+  frame->popOffEnvironmentChain<ScopedLexicalEnvironmentObject>();
   return true;
 }
 
 bool FreshenLexicalEnv(JSContext* cx, BaselineFrame* frame) {
-  return frame->freshenLexicalEnvironment(cx);
+  return frame->freshenLexicalEnvironment<false>(cx);
 }
 
-bool DebugLeaveThenFreshenLexicalEnv(JSContext* cx, BaselineFrame* frame,
-                                     jsbytecode* pc) {
-  MOZ_ALWAYS_TRUE(DebugLeaveLexicalEnv(cx, frame, pc));
-  return frame->freshenLexicalEnvironment(cx);
+bool DebuggeeFreshenLexicalEnv(JSContext* cx, BaselineFrame* frame,
+                               const jsbytecode* pc) {
+  return frame->freshenLexicalEnvironment<true>(cx, pc);
 }
 
 bool RecreateLexicalEnv(JSContext* cx, BaselineFrame* frame) {
-  return frame->recreateLexicalEnvironment(cx);
+  return frame->recreateLexicalEnvironment<false>(cx);
 }
 
-bool DebugLeaveThenRecreateLexicalEnv(JSContext* cx, BaselineFrame* frame,
-                                      jsbytecode* pc) {
-  MOZ_ALWAYS_TRUE(DebugLeaveLexicalEnv(cx, frame, pc));
-  return frame->recreateLexicalEnvironment(cx);
+bool DebuggeeRecreateLexicalEnv(JSContext* cx, BaselineFrame* frame,
+                                const jsbytecode* pc) {
+  return frame->recreateLexicalEnvironment<true>(cx, pc);
 }
 
-bool DebugLeaveLexicalEnv(JSContext* cx, BaselineFrame* frame, jsbytecode* pc) {
+bool DebugLeaveLexicalEnv(JSContext* cx, BaselineFrame* frame,
+                          const jsbytecode* pc) {
   MOZ_ASSERT_IF(!frame->runningInInterpreter(),
                 frame->script()->baselineScript()->hasDebugInstrumentation());
   if (cx->realm()->isDebuggee()) {
@@ -1195,7 +1322,12 @@ bool DebugLeaveLexicalEnv(JSContext* cx, BaselineFrame* frame, jsbytecode* pc) {
   return true;
 }
 
-bool PushVarEnv(JSContext* cx, BaselineFrame* frame, HandleScope scope) {
+bool PushClassBodyEnv(JSContext* cx, BaselineFrame* frame,
+                      Handle<ClassBodyScope*> scope) {
+  return frame->pushClassBodyEnvironment(cx, scope);
+}
+
+bool PushVarEnv(JSContext* cx, BaselineFrame* frame, Handle<Scope*> scope) {
   return frame->pushVarEnvironment(cx, scope);
 }
 
@@ -1227,76 +1359,12 @@ JSString* StringReplace(JSContext* cx, HandleString string,
   return str_replace_string_raw(cx, string, pattern, repl);
 }
 
-bool RecompileImpl(JSContext* cx, bool force) {
-  MOZ_ASSERT(cx->currentlyRunningInJit());
-  JitActivationIterator activations(cx);
-  JSJitFrameIter frame(activations->asJit());
-
-  MOZ_ASSERT(frame.type() == FrameType::Exit);
-  ++frame;
-
-  RootedScript script(cx, frame.script());
-  MOZ_ASSERT(script->hasIonScript());
-
-  if (!IsIonEnabled(cx)) {
-    return true;
-  }
-
-  MethodStatus status = Recompile(cx, script, force);
-  if (status == Method_Error) {
-    return false;
-  }
-
-  return true;
-}
-
-bool IonForcedRecompile(JSContext* cx) {
-  return RecompileImpl(cx, /* force = */ true);
-}
-
-bool IonRecompile(JSContext* cx) {
-  return RecompileImpl(cx, /* force = */ false);
-}
-
-bool IonForcedInvalidation(JSContext* cx) {
-  MOZ_ASSERT(cx->currentlyRunningInJit());
-  JitActivationIterator activations(cx);
-  JSJitFrameIter frame(activations->asJit());
-
-  MOZ_ASSERT(frame.type() == FrameType::Exit);
-  ++frame;
-
-  RootedScript script(cx, frame.script());
-  MOZ_ASSERT(script->hasIonScript());
-
-  if (script->baselineScript()->hasPendingIonCompileTask()) {
-    LinkIonScript(cx, script);
-    return true;
-  }
-
-  Invalidate(cx, script, /* resetUses = */ false,
-             /* cancelOffThread = */ false);
-  return true;
-}
-
-bool SetDenseElement(JSContext* cx, HandleNativeObject obj, int32_t index,
-                     HandleValue value, bool strict) {
-  // This function is called from Ion code for StoreElementHole's OOL path.
-  // In this case we know the object is native and that no type changes are
-  // needed.
-
-  DenseElementResult result = obj->setOrExtendDenseElements(
-      cx, index, value.address(), 1, ShouldUpdateTypes::DontUpdate);
-  if (result != DenseElementResult::Incomplete) {
-    return result == DenseElementResult::Success;
-  }
-
-  RootedValue indexVal(cx, Int32Value(index));
-  return SetObjectElement(cx, obj, indexVal, value, strict);
-}
-
-void AutoDetectInvalidation::setReturnOverride() {
-  cx_->setIonReturnOverride(rval_.get());
+void AssertValidBigIntPtr(JSContext* cx, JS::BigInt* bi) {
+  AutoUnsafeCallWithABI unsafe;
+  // FIXME: check runtime?
+  MOZ_ASSERT(cx->zone() == bi->zone());
+  MOZ_ASSERT(bi->isAligned());
+  MOZ_ASSERT(bi->getAllocKind() == gc::AllocKind::BIGINT);
 }
 
 void AssertValidObjectPtr(JSContext* cx, JSObject* obj) {
@@ -1308,22 +1376,12 @@ void AssertValidObjectPtr(JSContext* cx, JSObject* obj) {
   MOZ_ASSERT(obj->zoneFromAnyThread() == cx->zone());
   MOZ_ASSERT(obj->runtimeFromMainThread() == cx->runtime());
 
-  MOZ_ASSERT_IF(!obj->hasLazyGroup(),
-                obj->group()->clasp() == obj->shape()->getObjectClass());
-
   if (obj->isTenured()) {
     MOZ_ASSERT(obj->isAligned());
     gc::AllocKind kind = obj->asTenured().getAllocKind();
     MOZ_ASSERT(gc::IsObjectAllocKind(kind));
   }
 #endif
-}
-
-void AssertValidObjectOrNullPtr(JSContext* cx, JSObject* obj) {
-  AutoUnsafeCallWithABI unsafe;
-  if (obj) {
-    AssertValidObjectPtr(cx, obj);
-  }
 }
 
 void AssertValidStringPtr(JSContext* cx, JSString* str) {
@@ -1346,8 +1404,11 @@ void AssertValidStringPtr(JSContext* cx, JSString* str) {
 
   gc::AllocKind kind = str->getAllocKind();
   if (str->isFatInline()) {
-    MOZ_ASSERT(kind == gc::AllocKind::FAT_INLINE_STRING ||
-               kind == gc::AllocKind::FAT_INLINE_ATOM);
+    if (str->isAtom()) {
+      MOZ_ASSERT(kind == gc::AllocKind::FAT_INLINE_ATOM);
+    } else {
+      MOZ_ASSERT(kind == gc::AllocKind::FAT_INLINE_STRING);
+    }
   } else if (str->isExternal()) {
     MOZ_ASSERT(kind == gc::AllocKind::EXTERNAL_STRING);
   } else if (str->isAtom()) {
@@ -1379,14 +1440,6 @@ void AssertValidSymbolPtr(JSContext* cx, JS::Symbol* sym) {
   MOZ_ASSERT(sym->getAllocKind() == gc::AllocKind::SYMBOL);
 }
 
-void AssertValidBigIntPtr(JSContext* cx, JS::BigInt* bi) {
-  AutoUnsafeCallWithABI unsafe;
-  // FIXME: check runtime?
-  MOZ_ASSERT(cx->zone() == bi->zone());
-  MOZ_ASSERT(bi->isAligned());
-  MOZ_ASSERT(bi->getAllocKind() == gc::AllocKind::BIGINT);
-}
-
 void AssertValidValue(JSContext* cx, Value* v) {
   AutoUnsafeCallWithABI unsafe;
   if (v->isObject()) {
@@ -1410,31 +1463,54 @@ bool ObjectIsConstructor(JSObject* obj) {
   return obj->isConstructor();
 }
 
-void MarkValueFromJit(JSRuntime* rt, Value* vp) {
-  AutoUnsafeCallWithABI unsafe;
-  TraceManuallyBarrieredEdge(&rt->gc.marker, vp, "write barrier");
+JSObject* ObjectKeys(JSContext* cx, HandleObject obj) {
+  JS::RootedValueArray<3> argv(cx);
+  argv[0].setUndefined();   // rval
+  argv[1].setUndefined();   // this
+  argv[2].setObject(*obj);  // arg0
+  if (!js::obj_keys(cx, 1, argv.begin())) {
+    return nullptr;
+  }
+  return argv[0].toObjectOrNull();
 }
 
-void MarkStringFromJit(JSRuntime* rt, JSString** stringp) {
+bool ObjectKeysLength(JSContext* cx, HandleObject obj, int32_t* length) {
+  MOZ_ASSERT(!obj->is<ProxyObject>());
+  return js::obj_keys_length(cx, obj, *length);
+}
+
+void JitValuePreWriteBarrier(JSRuntime* rt, Value* vp) {
+  AutoUnsafeCallWithABI unsafe;
+  MOZ_ASSERT(vp->isGCThing());
+  MOZ_ASSERT(!vp->toGCThing()->isMarkedBlack());
+  gc::ValuePreWriteBarrier(*vp);
+}
+
+void JitStringPreWriteBarrier(JSRuntime* rt, JSString** stringp) {
   AutoUnsafeCallWithABI unsafe;
   MOZ_ASSERT(*stringp);
-  TraceManuallyBarrieredEdge(&rt->gc.marker, stringp, "write barrier");
+  MOZ_ASSERT(!(*stringp)->isMarkedBlack());
+  gc::PreWriteBarrier(*stringp);
 }
 
-void MarkObjectFromJit(JSRuntime* rt, JSObject** objp) {
+void JitObjectPreWriteBarrier(JSRuntime* rt, JSObject** objp) {
   AutoUnsafeCallWithABI unsafe;
   MOZ_ASSERT(*objp);
-  TraceManuallyBarrieredEdge(&rt->gc.marker, objp, "write barrier");
+  MOZ_ASSERT(!(*objp)->isMarkedBlack());
+  gc::PreWriteBarrier(*objp);
 }
 
-void MarkShapeFromJit(JSRuntime* rt, Shape** shapep) {
+void JitShapePreWriteBarrier(JSRuntime* rt, Shape** shapep) {
   AutoUnsafeCallWithABI unsafe;
-  TraceManuallyBarrieredEdge(&rt->gc.marker, shapep, "write barrier");
+  MOZ_ASSERT(!(*shapep)->isMarkedBlack());
+  gc::PreWriteBarrier(*shapep);
 }
 
-void MarkObjectGroupFromJit(JSRuntime* rt, ObjectGroup** groupp) {
+void JitWasmAnyRefPreWriteBarrier(JSRuntime* rt, wasm::AnyRef* refp) {
   AutoUnsafeCallWithABI unsafe;
-  TraceManuallyBarrieredEdge(&rt->gc.marker, groupp, "write barrier");
+  MOZ_ASSERT(refp->isGCThing());
+  MOZ_ASSERT(!(*refp).toGCThing()->isMarkedBlack());
+  gc::WasmAnyRefPreWriteBarrier(*refp);
 }
 
 bool ThrowRuntimeLexicalError(JSContext* cx, unsigned errorNumber) {
@@ -1444,19 +1520,15 @@ bool ThrowRuntimeLexicalError(JSContext* cx, unsigned errorNumber) {
   return false;
 }
 
-bool ThrowBadDerivedReturn(JSContext* cx, HandleValue v) {
-  MOZ_ASSERT(!v.isObject() && !v.isUndefined());
-  ReportValueError(cx, JSMSG_BAD_DERIVED_RETURN, JSDVG_IGNORE_STACK, v,
-                   nullptr);
-  return false;
-}
-
 bool ThrowBadDerivedReturnOrUninitializedThis(JSContext* cx, HandleValue v) {
   MOZ_ASSERT(!v.isObject());
   if (v.isUndefined()) {
     return js::ThrowUninitializedThis(cx);
   }
-  return ThrowBadDerivedReturn(cx, v);
+
+  ReportValueError(cx, JSMSG_BAD_DERIVED_RETURN, JSDVG_IGNORE_STACK, v,
+                   nullptr);
+  return false;
 }
 
 bool BaselineGetFunctionThis(JSContext* cx, BaselineFrame* frame,
@@ -1464,30 +1536,11 @@ bool BaselineGetFunctionThis(JSContext* cx, BaselineFrame* frame,
   return GetFunctionThis(cx, frame, res);
 }
 
-bool CallNativeGetter(JSContext* cx, HandleFunction callee, HandleObject obj,
-                      MutableHandleValue result) {
+bool CallNativeGetter(JSContext* cx, HandleFunction callee,
+                      HandleValue receiver, MutableHandleValue result) {
   AutoRealm ar(cx, callee);
 
-  MOZ_ASSERT(callee->isNative());
-  JSNative natfun = callee->native();
-
-  JS::RootedValueArray<2> vp(cx);
-  vp[0].setObject(*callee.get());
-  vp[1].setObject(*obj.get());
-
-  if (!natfun(cx, 0, vp.begin())) {
-    return false;
-  }
-
-  result.set(vp[0]);
-  return true;
-}
-
-bool CallNativeGetterByValue(JSContext* cx, HandleFunction callee,
-                             HandleValue receiver, MutableHandleValue result) {
-  AutoRealm ar(cx, callee);
-
-  MOZ_ASSERT(callee->isNative());
+  MOZ_ASSERT(callee->isNativeFun());
   JSNative natfun = callee->native();
 
   JS::RootedValueArray<2> vp(cx);
@@ -1502,11 +1555,30 @@ bool CallNativeGetterByValue(JSContext* cx, HandleFunction callee,
   return true;
 }
 
+bool CallDOMGetter(JSContext* cx, const JSJitInfo* info, HandleObject obj,
+                   MutableHandleValue result) {
+  MOZ_ASSERT(info->type() == JSJitInfo::Getter);
+  MOZ_ASSERT(obj->is<NativeObject>());
+  MOZ_ASSERT(obj->getClass()->isDOMClass());
+  MOZ_ASSERT(obj->as<NativeObject>().numFixedSlots() > 0);
+
+#ifdef DEBUG
+  DOMInstanceClassHasProtoAtDepth instanceChecker =
+      cx->runtime()->DOMcallbacks->instanceClassMatchesProto;
+  MOZ_ASSERT(instanceChecker(obj->getClass(), info->protoID, info->depth));
+#endif
+
+  // Loading DOM_OBJECT_SLOT, which must be the first slot.
+  JS::Value val = JS::GetReservedSlot(obj, 0);
+  JSJitGetterOp getter = info->getter;
+  return getter(cx, obj, val.toPrivate(), JSJitGetterCallArgs(result));
+}
+
 bool CallNativeSetter(JSContext* cx, HandleFunction callee, HandleObject obj,
                       HandleValue rhs) {
   AutoRealm ar(cx, callee);
 
-  MOZ_ASSERT(callee->isNative());
+  MOZ_ASSERT(callee->isNativeFun());
   JSNative natfun = callee->native();
 
   JS::RootedValueArray<3> vp(cx);
@@ -1515,6 +1587,27 @@ bool CallNativeSetter(JSContext* cx, HandleFunction callee, HandleObject obj,
   vp[2].set(rhs);
 
   return natfun(cx, 1, vp.begin());
+}
+
+bool CallDOMSetter(JSContext* cx, const JSJitInfo* info, HandleObject obj,
+                   HandleValue value) {
+  MOZ_ASSERT(info->type() == JSJitInfo::Setter);
+  MOZ_ASSERT(obj->is<NativeObject>());
+  MOZ_ASSERT(obj->getClass()->isDOMClass());
+  MOZ_ASSERT(obj->as<NativeObject>().numFixedSlots() > 0);
+
+#ifdef DEBUG
+  DOMInstanceClassHasProtoAtDepth instanceChecker =
+      cx->runtime()->DOMcallbacks->instanceClassMatchesProto;
+  MOZ_ASSERT(instanceChecker(obj->getClass(), info->protoID, info->depth));
+#endif
+
+  // Loading DOM_OBJECT_SLOT, which must be the first slot.
+  JS::Value val = JS::GetReservedSlot(obj, 0);
+  JSJitSetterOp setter = info->setter;
+
+  RootedValue v(cx, value);
+  return setter(cx, obj, val.toPrivate(), JSJitSetterCallArgs(&v));
 }
 
 bool EqualStringsHelperPure(JSString* str1, JSString* str2) {
@@ -1536,10 +1629,10 @@ bool EqualStringsHelperPure(JSString* str1, JSString* str2) {
 }
 
 static bool MaybeTypedArrayIndexString(jsid id) {
-  MOZ_ASSERT(JSID_IS_ATOM(id) || JSID_IS_SYMBOL(id));
+  MOZ_ASSERT(id.isAtom() || id.isSymbol());
 
-  if (MOZ_LIKELY(JSID_IS_ATOM(id))) {
-    JSAtom* str = JSID_TO_ATOM(id);
+  if (MOZ_LIKELY(id.isAtom())) {
+    JSAtom* str = id.toAtom();
     if (str->length() > 0) {
       // Only check the first character because we want this function to be
       // fast.
@@ -1549,75 +1642,154 @@ static bool MaybeTypedArrayIndexString(jsid id) {
   return false;
 }
 
-template <bool HandleMissing>
-static MOZ_ALWAYS_INLINE bool GetNativeDataPropertyPure(JSContext* cx,
-                                                        NativeObject* obj,
-                                                        jsid id, Value* vp) {
-  // Fast path used by megamorphic IC stubs. Unlike our other property
-  // lookup paths, this is optimized to be as fast as possible for simple
-  // data property lookups.
+static void VerifyCacheEntry(JSContext* cx, NativeObject* obj, PropertyKey key,
+                             const MegamorphicCacheEntry& entry) {
+#ifdef DEBUG
+  if (entry.isMissingProperty()) {
+    NativeObject* pobj;
+    PropertyResult prop;
+    MOZ_ASSERT(LookupPropertyPure(cx, obj, key, &pobj, &prop));
+    MOZ_ASSERT(prop.isNotFound());
+    return;
+  }
+  if (entry.isMissingOwnProperty()) {
+    MOZ_ASSERT(!obj->containsPure(key));
+    return;
+  }
+  MOZ_ASSERT(entry.isDataProperty());
+  for (size_t i = 0, numHops = entry.numHops(); i < numHops; i++) {
+    MOZ_ASSERT(!obj->containsPure(key));
+    obj = &obj->staticPrototype()->as<NativeObject>();
+  }
+  mozilla::Maybe<PropertyInfo> prop = obj->lookupPure(key);
+  MOZ_ASSERT(prop.isSome());
+  MOZ_ASSERT(prop->isDataProperty());
+  MOZ_ASSERT(obj->getTaggedSlotOffset(prop->slot()) == entry.slotOffset());
+#endif
+}
 
-  AutoUnsafeCallWithABI unsafe;
+static MOZ_ALWAYS_INLINE bool GetNativeDataPropertyPureImpl(
+    JSContext* cx, JSObject* obj, jsid id, MegamorphicCacheEntry* entry,
+    Value* vp) {
+  MOZ_ASSERT(obj->is<NativeObject>());
+  NativeObject* nobj = &obj->as<NativeObject>();
+  Shape* receiverShape = obj->shape();
+  MegamorphicCache& cache = cx->caches().megamorphicCache;
 
-  MOZ_ASSERT(JSID_IS_ATOM(id) || JSID_IS_SYMBOL(id));
+  MOZ_ASSERT(entry);
 
+  size_t numHops = 0;
   while (true) {
-    if (Shape* shape = obj->lastProperty()->search(cx, id)) {
-      if (!shape->isDataProperty()) {
+    MOZ_ASSERT(!nobj->getOpsLookupProperty());
+
+    uint32_t index;
+    if (PropMap* map = nobj->shape()->lookup(cx, id, &index)) {
+      PropertyInfo prop = map->getPropertyInfo(index);
+      if (!prop.isDataProperty()) {
         return false;
       }
-
-      *vp = obj->getSlot(shape->slot());
+      TaggedSlotOffset offset = nobj->getTaggedSlotOffset(prop.slot());
+      cache.initEntryForDataProperty(entry, receiverShape, id, numHops, offset);
+      *vp = nobj->getSlot(prop.slot());
       return true;
     }
 
     // Property not found. Watch out for Class hooks and TypedArrays.
-    if (MOZ_UNLIKELY(!obj->is<PlainObject>())) {
-      if (ClassMayResolveId(cx->names(), obj->getClass(), id, obj)) {
+    if (MOZ_UNLIKELY(!nobj->is<PlainObject>())) {
+      if (ClassMayResolveId(cx->names(), nobj->getClass(), id, nobj)) {
         return false;
       }
 
       // Don't skip past TypedArrayObjects if the id can be a TypedArray index.
-      if (obj->is<TypedArrayObject>()) {
+      if (nobj->is<TypedArrayObject>()) {
         if (MaybeTypedArrayIndexString(id)) {
           return false;
         }
       }
     }
 
-    JSObject* proto = obj->staticPrototype();
+    JSObject* proto = nobj->staticPrototype();
     if (!proto) {
-      if (HandleMissing) {
-        vp->setUndefined();
-        return true;
-      }
-      return false;
+      cache.initEntryForMissingProperty(entry, receiverShape, id);
+      vp->setUndefined();
+      return true;
     }
 
-    if (!proto->isNative()) {
+    if (!proto->is<NativeObject>()) {
       return false;
     }
-    obj = &proto->as<NativeObject>();
+    nobj = &proto->as<NativeObject>();
+    numHops++;
   }
 }
 
-template <bool HandleMissing>
-bool GetNativeDataPropertyPure(JSContext* cx, JSObject* obj, PropertyName* name,
-                               Value* vp) {
-  // Condition checked by caller.
-  MOZ_ASSERT(obj->isNative());
-  return GetNativeDataPropertyPure<HandleMissing>(cx, &obj->as<NativeObject>(),
-                                                  NameToId(name), vp);
+bool GetNativeDataPropertyPureWithCacheLookup(JSContext* cx, JSObject* obj,
+                                              PropertyKey id,
+                                              MegamorphicCacheEntry* entry,
+                                              Value* vp) {
+  AutoUnsafeCallWithABI unsafe;
+
+  // If we're on x86, we didn't have enough registers to populate this
+  // directly in Baseline JITted code, so we do the lookup here.
+  Shape* receiverShape = obj->shape();
+  MegamorphicCache& cache = cx->caches().megamorphicCache;
+
+  if (cache.lookup(receiverShape, id, &entry)) {
+    NativeObject* nobj = &obj->as<NativeObject>();
+    VerifyCacheEntry(cx, nobj, id, *entry);
+    if (entry->isDataProperty()) {
+      for (size_t i = 0, numHops = entry->numHops(); i < numHops; i++) {
+        nobj = &nobj->staticPrototype()->as<NativeObject>();
+      }
+      uint32_t offset = entry->slotOffset().offset();
+      if (entry->slotOffset().isFixedSlot()) {
+        size_t index = NativeObject::getFixedSlotIndexFromOffset(offset);
+        *vp = nobj->getFixedSlot(index);
+      } else {
+        size_t index = NativeObject::getDynamicSlotIndexFromOffset(offset);
+        *vp = nobj->getDynamicSlot(index);
+      }
+      return true;
+    }
+    if (entry->isMissingProperty()) {
+      vp->setUndefined();
+      return true;
+    }
+    MOZ_ASSERT(entry->isMissingOwnProperty());
+  }
+
+  return GetNativeDataPropertyPureImpl(cx, obj, id, entry, vp);
 }
 
-template bool GetNativeDataPropertyPure<true>(JSContext* cx, JSObject* obj,
-                                              PropertyName* name, Value* vp);
+bool CheckProxyGetByValueResult(JSContext* cx, HandleObject obj,
+                                HandleValue idVal, HandleValue value,
+                                MutableHandleValue result) {
+  MOZ_ASSERT(idVal.isString() || idVal.isSymbol());
+  RootedId rootedId(cx);
+  if (!PrimitiveValueToId<CanGC>(cx, idVal, &rootedId)) {
+    return false;
+  }
 
-template bool GetNativeDataPropertyPure<false>(JSContext* cx, JSObject* obj,
-                                               PropertyName* name, Value* vp);
+  auto validation =
+      ScriptedProxyHandler::checkGetTrapResult(cx, obj, rootedId, value);
+  if (validation != ScriptedProxyHandler::GetTrapValidationResult::OK) {
+    ScriptedProxyHandler::reportGetTrapValidationError(cx, rootedId,
+                                                       validation);
+    return false;
+  }
+  result.set(value);
+  return true;
+}
+
+bool GetNativeDataPropertyPure(JSContext* cx, JSObject* obj, PropertyKey id,
+                               MegamorphicCacheEntry* entry, Value* vp) {
+  AutoUnsafeCallWithABI unsafe;
+  return GetNativeDataPropertyPureImpl(cx, obj, id, entry, vp);
+}
 
 static MOZ_ALWAYS_INLINE bool ValueToAtomOrSymbolPure(JSContext* cx,
-                                                      Value& idVal, jsid* id) {
+                                                      const Value& idVal,
+                                                      jsid* id) {
   if (MOZ_LIKELY(idVal.isString())) {
     JSString* s = idVal.toString();
     JSAtom* atom;
@@ -1630,31 +1802,41 @@ static MOZ_ALWAYS_INLINE bool ValueToAtomOrSymbolPure(JSContext* cx,
         return false;
       }
     }
-    *id = AtomToId(atom);
-  } else if (idVal.isSymbol()) {
-    *id = SYMBOL_TO_JSID(idVal.toSymbol());
-  } else {
-    if (!ValueToIdPure(idVal, id)) {
+
+    // Watch out for integer ids because they may be stored in dense elements.
+    static_assert(PropertyKey::IntMin == 0);
+    static_assert(NativeObject::MAX_DENSE_ELEMENTS_COUNT < PropertyKey::IntMax,
+                  "All dense elements must have integer jsids");
+    uint32_t index;
+    if (MOZ_UNLIKELY(atom->isIndex(&index) && index <= PropertyKey::IntMax)) {
       return false;
     }
+
+    *id = PropertyKey::NonIntAtom(atom);
+    return true;
   }
 
-  // Watch out for ids that may be stored in dense elements.
-  static_assert(NativeObject::MAX_DENSE_ELEMENTS_COUNT < JSID_INT_MAX,
-                "All dense elements must have integer jsids");
-  if (MOZ_UNLIKELY(JSID_IS_INT(*id))) {
-    return false;
+  if (idVal.isSymbol()) {
+    *id = PropertyKey::Symbol(idVal.toSymbol());
+    return true;
   }
 
-  return true;
+  if (idVal.isNull()) {
+    *id = PropertyKey::NonIntAtom(cx->names().null);
+    return true;
+  }
+
+  if (idVal.isUndefined()) {
+    *id = PropertyKey::NonIntAtom(cx->names().undefined);
+    return true;
+  }
+
+  return false;
 }
 
-template <bool HandleMissing>
-bool GetNativeDataPropertyByValuePure(JSContext* cx, JSObject* obj, Value* vp) {
+bool GetNativeDataPropertyByValuePure(JSContext* cx, JSObject* obj,
+                                      MegamorphicCacheEntry* entry, Value* vp) {
   AutoUnsafeCallWithABI unsafe;
-
-  // Condition checked by caller.
-  MOZ_ASSERT(obj->isNative());
 
   // vp[0] contains the id, result will be stored in vp[1].
   Value idVal = vp[0];
@@ -1663,72 +1845,41 @@ bool GetNativeDataPropertyByValuePure(JSContext* cx, JSObject* obj, Value* vp) {
     return false;
   }
 
+  Shape* receiverShape = obj->shape();
+  MegamorphicCache& cache = cx->caches().megamorphicCache;
+  if (!entry) {
+    cache.lookup(receiverShape, id, &entry);
+  }
+
   Value* res = vp + 1;
-  return GetNativeDataPropertyPure<HandleMissing>(cx, &obj->as<NativeObject>(),
-                                                  id, res);
+  return GetNativeDataPropertyPureImpl(cx, obj, id, entry, res);
 }
 
-template bool GetNativeDataPropertyByValuePure<true>(JSContext* cx,
-                                                     JSObject* obj, Value* vp);
-
-template bool GetNativeDataPropertyByValuePure<false>(JSContext* cx,
-                                                      JSObject* obj, Value* vp);
-
-template <bool NeedsTypeBarrier>
-bool SetNativeDataPropertyPure(JSContext* cx, JSObject* obj, PropertyName* name,
-                               Value* val) {
+bool ObjectHasGetterSetterPure(JSContext* cx, JSObject* objArg, jsid id,
+                               GetterSetter* getterSetter) {
   AutoUnsafeCallWithABI unsafe;
-
-  if (MOZ_UNLIKELY(!obj->isNative())) {
-    return false;
-  }
-
-  NativeObject* nobj = &obj->as<NativeObject>();
-  Shape* shape = nobj->lastProperty()->search(cx, NameToId(name));
-  if (!shape || !shape->isDataProperty() || !shape->writable()) {
-    return false;
-  }
-
-  if (NeedsTypeBarrier && IsTypeInferenceEnabled() &&
-      !HasTypePropertyId(nobj, NameToId(name), *val)) {
-    return false;
-  }
-
-  nobj->setSlot(shape->slot(), *val);
-  return true;
-}
-
-template bool SetNativeDataPropertyPure<true>(JSContext* cx, JSObject* obj,
-                                              PropertyName* name, Value* val);
-
-template bool SetNativeDataPropertyPure<false>(JSContext* cx, JSObject* obj,
-                                               PropertyName* name, Value* val);
-
-bool ObjectHasGetterSetterPure(JSContext* cx, JSObject* objArg,
-                               Shape* propShape) {
-  AutoUnsafeCallWithABI unsafe;
-
-  MOZ_ASSERT(propShape->hasGetterObject() || propShape->hasSetterObject());
 
   // Window objects may require outerizing (passing the WindowProxy to the
   // getter/setter), so we don't support them here.
-  if (MOZ_UNLIKELY(!objArg->isNative() || IsWindow(objArg))) {
+  if (MOZ_UNLIKELY(!objArg->is<NativeObject>() || IsWindow(objArg))) {
     return false;
   }
 
   NativeObject* nobj = &objArg->as<NativeObject>();
-  jsid id = propShape->propid();
 
   while (true) {
-    if (Shape* shape = nobj->lastProperty()->search(cx, id)) {
-      if (shape == propShape) {
+    uint32_t index;
+    if (PropMap* map = nobj->shape()->lookup(cx, id, &index)) {
+      PropertyInfo prop = map->getPropertyInfo(index);
+      if (!prop.isAccessorProperty()) {
+        return false;
+      }
+      GetterSetter* actualGetterSetter = nobj->getGetterSetter(prop);
+      if (actualGetterSetter == getterSetter) {
         return true;
       }
-      if (shape->getterOrUndefined() == propShape->getterOrUndefined() &&
-          shape->setterOrUndefined() == propShape->setterOrUndefined()) {
-        return true;
-      }
-      return false;
+      return (actualGetterSetter->getter() == getterSetter->getter() &&
+              actualGetterSetter->setter() == getterSetter->setter());
     }
 
     // Property not found. Watch out for Class hooks.
@@ -1743,7 +1894,7 @@ bool ObjectHasGetterSetterPure(JSContext* cx, JSObject* objArg,
       return false;
     }
 
-    if (!proto->isNative()) {
+    if (!proto->is<NativeObject>()) {
       return false;
     }
     nobj = &proto->as<NativeObject>();
@@ -1751,7 +1902,8 @@ bool ObjectHasGetterSetterPure(JSContext* cx, JSObject* objArg,
 }
 
 template <bool HasOwn>
-bool HasNativeDataPropertyPure(JSContext* cx, JSObject* obj, Value* vp) {
+bool HasNativeDataPropertyPure(JSContext* cx, JSObject* obj,
+                               MegamorphicCacheEntry* entry, Value* vp) {
   AutoUnsafeCallWithABI unsafe;
 
   // vp[0] contains the id, result will be stored in vp[1].
@@ -1761,64 +1913,88 @@ bool HasNativeDataPropertyPure(JSContext* cx, JSObject* obj, Value* vp) {
     return false;
   }
 
+  MegamorphicCache& cache = cx->caches().megamorphicCache;
+  Shape* receiverShape = obj->shape();
+  if (!entry) {
+    if (cache.lookup(receiverShape, id, &entry)) {
+      VerifyCacheEntry(cx, &obj->as<NativeObject>(), id, *entry);
+    }
+  }
+
+  size_t numHops = 0;
   do {
-    if (obj->isNative()) {
-      if (obj->as<NativeObject>().lastProperty()->search(cx, id)) {
-        vp[1].setBoolean(true);
-        return true;
-      }
-
-      // Property not found. Watch out for Class hooks and TypedArrays.
-      if (MOZ_UNLIKELY(!obj->is<PlainObject>())) {
-        // Fail if there's a resolve hook, unless the mayResolve hook tells us
-        // the resolve hook won't define a property with this id.
-        if (ClassMayResolveId(cx->names(), obj->getClass(), id, obj)) {
-          return false;
-        }
-
-        // Don't skip past TypedArrayObjects if the id can be a TypedArray
-        // index.
-        if (obj->is<TypedArrayObject>()) {
-          if (MaybeTypedArrayIndexString(id)) {
-            return false;
-          }
-        }
-      }
-    } else if (obj->is<TypedObject>()) {
-      if (obj->as<TypedObject>().typeDescr().hasProperty(cx->names(), id)) {
-        vp[1].setBoolean(true);
-        return true;
-      }
-    } else {
+    if (MOZ_UNLIKELY(!obj->is<NativeObject>())) {
       return false;
     }
 
+    MOZ_ASSERT(!obj->getOpsLookupProperty());
+
+    NativeObject* nobj = &obj->as<NativeObject>();
+    uint32_t index;
+    if (PropMap* map = nobj->shape()->lookup(cx, id, &index)) {
+      PropertyInfo prop = map->getPropertyInfo(index);
+      if (prop.isDataProperty()) {
+        TaggedSlotOffset offset = nobj->getTaggedSlotOffset(prop.slot());
+        cache.initEntryForDataProperty(entry, receiverShape, id, numHops,
+                                       offset);
+      }
+      vp[1].setBoolean(true);
+      return true;
+    }
+
+    // Property not found. Watch out for Class hooks and TypedArrays.
+    if (MOZ_UNLIKELY(!obj->is<PlainObject>())) {
+      // Fail if there's a resolve hook, unless the mayResolve hook tells us
+      // the resolve hook won't define a property with this id.
+      if (ClassMayResolveId(cx->names(), obj->getClass(), id, obj)) {
+        return false;
+      }
+
+      // Don't skip past TypedArrayObjects if the id can be a TypedArray
+      // index.
+      if (obj->is<TypedArrayObject>()) {
+        if (MaybeTypedArrayIndexString(id)) {
+          return false;
+        }
+      }
+    }
+
     // If implementing Object.hasOwnProperty, don't follow protochain.
-    if (HasOwn) {
+    if constexpr (HasOwn) {
       break;
     }
 
     // Get prototype. Objects that may allow dynamic prototypes are already
     // filtered out above.
     obj = obj->staticPrototype();
+    numHops++;
   } while (obj);
 
   // Missing property.
+  if (entry) {
+    if constexpr (HasOwn) {
+      cache.initEntryForMissingOwnProperty(entry, receiverShape, id);
+    } else {
+      cache.initEntryForMissingProperty(entry, receiverShape, id);
+    }
+  }
   vp[1].setBoolean(false);
   return true;
 }
 
 template bool HasNativeDataPropertyPure<true>(JSContext* cx, JSObject* obj,
+                                              MegamorphicCacheEntry* entry,
                                               Value* vp);
 
 template bool HasNativeDataPropertyPure<false>(JSContext* cx, JSObject* obj,
+                                               MegamorphicCacheEntry* entry,
                                                Value* vp);
 
 bool HasNativeElementPure(JSContext* cx, NativeObject* obj, int32_t index,
                           Value* vp) {
   AutoUnsafeCallWithABI unsafe;
 
-  MOZ_ASSERT(obj->getClass()->isNative());
+  MOZ_ASSERT(obj->is<NativeObject>());
   MOZ_ASSERT(!obj->getOpsHasProperty());
   MOZ_ASSERT(!obj->getOpsLookupProperty());
   MOZ_ASSERT(!obj->getOpsGetOwnPropertyDescriptor());
@@ -1832,8 +2008,9 @@ bool HasNativeElementPure(JSContext* cx, NativeObject* obj, int32_t index,
     return true;
   }
 
-  jsid id = INT_TO_JSID(index);
-  if (obj->lastProperty()->search(cx, id)) {
+  jsid id = PropertyKey::Int(index);
+  uint32_t unused;
+  if (obj->shape()->lookup(cx, id, &unused)) {
     vp[0].setBoolean(true);
     return true;
   }
@@ -1845,13 +2022,189 @@ bool HasNativeElementPure(JSContext* cx, NativeObject* obj, int32_t index,
   }
   // TypedArrayObject are also native and contain indexed properties.
   if (MOZ_UNLIKELY(obj->is<TypedArrayObject>())) {
-    vp[0].setBoolean(uint32_t(index) < obj->as<TypedArrayObject>().length());
+    size_t length = obj->as<TypedArrayObject>().length().valueOr(0);
+    vp[0].setBoolean(uint32_t(index) < length);
     return true;
   }
 
   vp[0].setBoolean(false);
   return true;
 }
+
+// Fast path for setting/adding a plain object property. This is the common case
+// for megamorphic SetProp/SetElem.
+template <bool UseCache>
+static bool TryAddOrSetPlainObjectProperty(JSContext* cx,
+                                           Handle<PlainObject*> obj,
+                                           PropertyKey key, HandleValue value,
+                                           bool* optimized) {
+  MOZ_ASSERT(!*optimized);
+
+  Shape* receiverShape = obj->shape();
+  MegamorphicSetPropCache& cache = *cx->caches().megamorphicSetPropCache;
+
+#ifdef DEBUG
+  if constexpr (UseCache) {
+    MegamorphicSetPropCache::Entry* entry;
+    if (cache.lookup(receiverShape, key, &entry)) {
+      if (entry->afterShape() != nullptr) {  // AddProp
+        NativeObject* holder = nullptr;
+        PropertyResult prop;
+        MOZ_ASSERT(LookupPropertyPure(cx, obj, key, &holder, &prop));
+        MOZ_ASSERT(obj != holder);
+        MOZ_ASSERT_IF(prop.isFound(),
+                      prop.isNativeProperty() &&
+                          prop.propertyInfo().isDataProperty() &&
+                          prop.propertyInfo().writable());
+      } else {  // SetProp
+        mozilla::Maybe<PropertyInfo> prop = obj->lookupPure(key);
+        MOZ_ASSERT(prop.isSome());
+        MOZ_ASSERT(prop->isDataProperty());
+        MOZ_ASSERT(obj->getTaggedSlotOffset(prop->slot()) ==
+                   entry->slotOffset());
+      }
+    }
+  }
+#endif
+
+  // Fast path for changing a data property.
+  uint32_t index;
+  if (PropMap* map = obj->shape()->lookup(cx, key, &index)) {
+    PropertyInfo prop = map->getPropertyInfo(index);
+    if (!prop.isDataProperty() || !prop.writable()) {
+      return true;
+    }
+    obj->setSlot(prop.slot(), value);
+    if (!Watchtower::watchPropertyModification<AllowGC::NoGC>(cx, obj, key)) {
+      return false;
+    }
+    *optimized = true;
+
+    if constexpr (UseCache) {
+      TaggedSlotOffset offset = obj->getTaggedSlotOffset(prop.slot());
+      cache.set(receiverShape, nullptr, key, offset, 0);
+    }
+    return true;
+  }
+
+  // Don't support "__proto__". This lets us take advantage of the
+  // hasNonWritableOrAccessorPropExclProto optimization below.
+  if (MOZ_UNLIKELY(!obj->isExtensible() || key.isAtom(cx->names().proto_))) {
+    return true;
+  }
+
+  // Ensure the proto chain contains only plain objects. Deoptimize for accessor
+  // properties and non-writable data properties (we can't shadow non-writable
+  // properties).
+  JSObject* proto = obj->staticPrototype();
+  while (proto) {
+    if (!proto->is<PlainObject>()) {
+      return true;
+    }
+    PlainObject* plainProto = &proto->as<PlainObject>();
+    if (plainProto->hasNonWritableOrAccessorPropExclProto()) {
+      uint32_t index;
+      if (PropMap* map = plainProto->shape()->lookup(cx, key, &index)) {
+        PropertyInfo prop = map->getPropertyInfo(index);
+        if (!prop.isDataProperty() || !prop.writable()) {
+          return true;
+        }
+        break;
+      }
+    }
+    proto = plainProto->staticPrototype();
+  }
+
+#ifdef DEBUG
+  // At this point either the property is missing or it's a writable data
+  // property on the proto chain that we can shadow.
+  {
+    NativeObject* holder = nullptr;
+    PropertyResult prop;
+    MOZ_ASSERT(LookupPropertyPure(cx, obj, key, &holder, &prop));
+    MOZ_ASSERT(obj != holder);
+    MOZ_ASSERT_IF(prop.isFound(), prop.isNativeProperty() &&
+                                      prop.propertyInfo().isDataProperty() &&
+                                      prop.propertyInfo().writable());
+  }
+#endif
+
+  *optimized = true;
+  Rooted<PropertyKey> keyRoot(cx, key);
+  Rooted<Shape*> receiverShapeRoot(cx, receiverShape);
+  uint32_t resultSlot = 0;
+  size_t numDynamic = obj->numDynamicSlots();
+  bool res = AddDataPropertyToPlainObject(cx, obj, keyRoot, value, &resultSlot);
+
+  if constexpr (UseCache) {
+    if (res && obj->shape()->isShared() &&
+        resultSlot < SharedPropMap::MaxPropsForNonDictionary &&
+        !Watchtower::watchesPropertyAdd(obj)) {
+      TaggedSlotOffset offset = obj->getTaggedSlotOffset(resultSlot);
+      uint32_t newCapacity = 0;
+      if (!(resultSlot < obj->numFixedSlots() ||
+            (resultSlot - obj->numFixedSlots()) < numDynamic)) {
+        newCapacity = obj->numDynamicSlots();
+      }
+      cache.set(receiverShapeRoot, obj->shape(), keyRoot, offset, newCapacity);
+    }
+  }
+
+  return res;
+}
+
+template <bool Cached>
+bool SetElementMegamorphic(JSContext* cx, HandleObject obj, HandleValue index,
+                           HandleValue value, bool strict) {
+  if (obj->is<PlainObject>()) {
+    PropertyKey key;
+    if (ValueToAtomOrSymbolPure(cx, index, &key)) {
+      bool optimized = false;
+      if (!TryAddOrSetPlainObjectProperty<Cached>(cx, obj.as<PlainObject>(),
+                                                  key, value, &optimized)) {
+        return false;
+      }
+      if (optimized) {
+        return true;
+      }
+    }
+  }
+  Rooted<Value> receiver(cx, ObjectValue(*obj));
+  return SetObjectElementWithReceiver(cx, obj, index, value, receiver, strict);
+}
+
+template bool SetElementMegamorphic<false>(JSContext* cx, HandleObject obj,
+                                           HandleValue index, HandleValue value,
+                                           bool strict);
+template bool SetElementMegamorphic<true>(JSContext* cx, HandleObject obj,
+                                          HandleValue index, HandleValue value,
+                                          bool strict);
+
+template <bool Cached>
+bool SetPropertyMegamorphic(JSContext* cx, HandleObject obj, HandleId id,
+                            HandleValue value, bool strict) {
+  if (obj->is<PlainObject>()) {
+    bool optimized = false;
+    if (!TryAddOrSetPlainObjectProperty<Cached>(cx, obj.as<PlainObject>(), id,
+                                                value, &optimized)) {
+      return false;
+    }
+    if (optimized) {
+      return true;
+    }
+  }
+  Rooted<Value> receiver(cx, ObjectValue(*obj));
+  ObjectOpResult result;
+  return SetProperty(cx, obj, id, value, receiver, result) &&
+         result.checkStrictModeError(cx, obj, id, strict);
+}
+
+template bool SetPropertyMegamorphic<false>(JSContext* cx, HandleObject obj,
+                                            HandleId id, HandleValue value,
+                                            bool strict);
+template bool SetPropertyMegamorphic<true>(JSContext* cx, HandleObject obj,
+                                           HandleId id, HandleValue value,
+                                           bool strict);
 
 void HandleCodeCoverageAtPC(BaselineFrame* frame, jsbytecode* pc) {
   AutoUnsafeCallWithABI unsafe(UnsafeABIStrictness::AllowPendingExceptions);
@@ -1889,10 +2242,19 @@ void HandleCodeCoverageAtPrologue(BaselineFrame* frame) {
   }
 }
 
-JSString* TypeOfObject(JSObject* obj, JSRuntime* rt) {
+JSString* TypeOfNameObject(JSObject* obj, JSRuntime* rt) {
   AutoUnsafeCallWithABI unsafe;
   JSType type = js::TypeOfObject(obj);
   return TypeName(type, *rt->commonNames);
+}
+
+bool TypeOfEqObject(JSObject* obj, TypeofEqOperand operand) {
+  AutoUnsafeCallWithABI unsafe;
+  bool result = js::TypeOfObject(obj) == operand.type();
+  if (operand.compareOp() == JSOp::Ne) {
+    result = !result;
+  }
+  return result;
 }
 
 bool GetPrototypeOf(JSContext* cx, HandleObject target,
@@ -1953,24 +2315,7 @@ bool DoConcatStringObject(JSContext* cx, HandleValue lhs, HandleValue rhs,
     }
   }
 
-  // Note: we don't have to call JitScript::MonitorBytecodeType because we
-  // monitored the string-type when attaching the IC stub.
-
   res.setString(str);
-  return true;
-}
-
-MOZ_MUST_USE bool TrySkipAwait(JSContext* cx, HandleValue val,
-                               MutableHandleValue resolved) {
-  bool canSkip;
-  if (!TrySkipAwait(cx, val, &canSkip, resolved)) {
-    return false;
-  }
-
-  if (!canSkip) {
-    resolved.setMagic(JS_CANNOT_SKIP_AWAIT);
-  }
-
   return true;
 }
 
@@ -1985,15 +2330,65 @@ bool IsPossiblyWrappedTypedArray(JSContext* cx, JSObject* obj, bool* result) {
   return true;
 }
 
+// Called from CreateDependentString::generateFallback.
+void* AllocateDependentString(JSContext* cx) {
+  AutoUnsafeCallWithABI unsafe;
+  return cx->newCell<JSDependentString, NoGC>(js::gc::Heap::Default);
+}
+void* AllocateFatInlineString(JSContext* cx) {
+  AutoUnsafeCallWithABI unsafe;
+  return cx->newCell<JSFatInlineString, NoGC>(js::gc::Heap::Default);
+}
+
+// Called to allocate a BigInt if inline allocation failed.
 void* AllocateBigIntNoGC(JSContext* cx, bool requestMinorGC) {
   AutoUnsafeCallWithABI unsafe;
 
-  if (requestMinorGC) {
+  if (requestMinorGC && cx->nursery().isEnabled()) {
     cx->nursery().requestMinorGC(JS::GCReason::OUT_OF_NURSERY);
   }
 
-  return js::AllocateBigInt<NoGC>(cx, gc::TenuredHeap);
+  return cx->newCell<JS::BigInt, NoGC>(js::gc::Heap::Tenured);
 }
+
+void AllocateAndInitTypedArrayBuffer(JSContext* cx, TypedArrayObject* obj,
+                                     int32_t count) {
+  AutoUnsafeCallWithABI unsafe;
+
+  // Initialize the data slot to UndefinedValue to signal to our JIT caller that
+  // the allocation failed if the slot isn't overwritten below.
+  obj->initFixedSlot(TypedArrayObject::DATA_SLOT, UndefinedValue());
+
+  // Negative numbers or zero will bail out to the slow path, which in turn will
+  // raise an invalid argument exception or create a correct object with zero
+  // elements.
+  constexpr size_t byteLengthLimit = TypedArrayObject::ByteLengthLimit;
+  if (count <= 0 || size_t(count) > byteLengthLimit / obj->bytesPerElement()) {
+    obj->setFixedSlot(TypedArrayObject::LENGTH_SLOT, PrivateValue(size_t(0)));
+    return;
+  }
+
+  obj->setFixedSlot(TypedArrayObject::LENGTH_SLOT, PrivateValue(count));
+
+  size_t nbytes = size_t(count) * obj->bytesPerElement();
+  MOZ_ASSERT(nbytes <= byteLengthLimit);
+  nbytes = RoundUp(nbytes, sizeof(Value));
+
+  MOZ_ASSERT(!obj->isTenured());
+  void* buf = cx->nursery().allocateZeroedBuffer(obj, nbytes,
+                                                 js::ArrayBufferContentsArena);
+  if (buf) {
+    InitReservedSlot(obj, TypedArrayObject::DATA_SLOT, buf, nbytes,
+                     MemoryUse::TypedArrayElements);
+  }
+}
+
+#ifdef JS_GC_PROBES
+void TraceCreateObject(JSObject* obj) {
+  AutoUnsafeCallWithABI unsafe;
+  js::gc::gcprobes::CreateObject(obj);
+}
+#endif
 
 #if JS_BITS_PER_WORD == 32
 BigInt* CreateBigIntFromInt64(JSContext* cx, uint32_t low, uint32_t high) {
@@ -2160,6 +2555,457 @@ template bool StringBigIntCompare<ComparisonKind::LessThan>(JSContext* cx,
                                                             bool* res);
 template bool StringBigIntCompare<ComparisonKind::GreaterThanOrEqual>(
     JSContext* cx, HandleString x, HandleBigInt y, bool* res);
+
+BigInt* BigIntAsIntN(JSContext* cx, HandleBigInt x, int32_t bits) {
+  MOZ_ASSERT(bits >= 0);
+  return BigInt::asIntN(cx, x, uint64_t(bits));
+}
+
+BigInt* BigIntAsUintN(JSContext* cx, HandleBigInt x, int32_t bits) {
+  MOZ_ASSERT(bits >= 0);
+  return BigInt::asUintN(cx, x, uint64_t(bits));
+}
+
+template <typename T>
+static int32_t AtomicsCompareExchange(TypedArrayObject* typedArray,
+                                      size_t index, int32_t expected,
+                                      int32_t replacement) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::compareExchangeSeqCst(addr + index, T(expected),
+                                                      T(replacement));
+}
+
+AtomicsCompareExchangeFn AtomicsCompareExchange(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsCompareExchange<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsCompareExchange<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsCompareExchange<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsCompareExchange<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsCompareExchange<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsCompareExchange<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsExchange(TypedArrayObject* typedArray, size_t index,
+                               int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::exchangeSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsExchange(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsExchange<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsExchange<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsExchange<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsExchange<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsExchange<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsExchange<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsAdd(TypedArrayObject* typedArray, size_t index,
+                          int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::fetchAddSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsAdd(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsAdd<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsAdd<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsAdd<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsAdd<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsAdd<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsAdd<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsSub(TypedArrayObject* typedArray, size_t index,
+                          int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::fetchSubSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsSub(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsSub<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsSub<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsSub<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsSub<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsSub<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsSub<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsAnd(TypedArrayObject* typedArray, size_t index,
+                          int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::fetchAndSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsAnd(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsAnd<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsAnd<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsAnd<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsAnd<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsAnd<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsAnd<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsOr(TypedArrayObject* typedArray, size_t index,
+                         int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::fetchOrSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsOr(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsOr<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsOr<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsOr<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsOr<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsOr<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsOr<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename T>
+static int32_t AtomicsXor(TypedArrayObject* typedArray, size_t index,
+                          int32_t value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  SharedMem<T*> addr = typedArray->dataPointerEither().cast<T*>();
+  return jit::AtomicOperations::fetchXorSeqCst(addr + index, T(value));
+}
+
+AtomicsReadWriteModifyFn AtomicsXor(Scalar::Type elementType) {
+  switch (elementType) {
+    case Scalar::Int8:
+      return AtomicsXor<int8_t>;
+    case Scalar::Uint8:
+      return AtomicsXor<uint8_t>;
+    case Scalar::Int16:
+      return AtomicsXor<int16_t>;
+    case Scalar::Uint16:
+      return AtomicsXor<uint16_t>;
+    case Scalar::Int32:
+      return AtomicsXor<int32_t>;
+    case Scalar::Uint32:
+      return AtomicsXor<uint32_t>;
+    default:
+      MOZ_CRASH("Unexpected TypedArray type");
+  }
+}
+
+template <typename AtomicOp, typename... Args>
+static BigInt* AtomicAccess64(JSContext* cx, TypedArrayObject* typedArray,
+                              size_t index, AtomicOp op, Args... args) {
+  MOZ_ASSERT(Scalar::isBigIntType(typedArray->type()));
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  if (typedArray->type() == Scalar::BigInt64) {
+    SharedMem<int64_t*> addr = typedArray->dataPointerEither().cast<int64_t*>();
+    int64_t v = op(addr + index, BigInt::toInt64(args)...);
+    return BigInt::createFromInt64(cx, v);
+  }
+
+  SharedMem<uint64_t*> addr = typedArray->dataPointerEither().cast<uint64_t*>();
+  uint64_t v = op(addr + index, BigInt::toUint64(args)...);
+  return BigInt::createFromUint64(cx, v);
+}
+
+template <typename AtomicOp, typename... Args>
+static auto AtomicAccess64(TypedArrayObject* typedArray, size_t index,
+                           AtomicOp op, Args... args) {
+  MOZ_ASSERT(Scalar::isBigIntType(typedArray->type()));
+  MOZ_ASSERT(!typedArray->hasDetachedBuffer());
+  MOZ_ASSERT_IF(typedArray->hasResizableBuffer(), !typedArray->isOutOfBounds());
+  MOZ_ASSERT(index < typedArray->length().valueOr(0));
+
+  if (typedArray->type() == Scalar::BigInt64) {
+    SharedMem<int64_t*> addr = typedArray->dataPointerEither().cast<int64_t*>();
+    return op(addr + index, BigInt::toInt64(args)...);
+  }
+
+  SharedMem<uint64_t*> addr = typedArray->dataPointerEither().cast<uint64_t*>();
+  return op(addr + index, BigInt::toUint64(args)...);
+}
+
+BigInt* AtomicsLoad64(JSContext* cx, TypedArrayObject* typedArray,
+                      size_t index) {
+  return AtomicAccess64(cx, typedArray, index, [](auto addr) {
+    return jit::AtomicOperations::loadSeqCst(addr);
+  });
+}
+
+void AtomicsStore64(TypedArrayObject* typedArray, size_t index,
+                    const BigInt* value) {
+  AutoUnsafeCallWithABI unsafe;
+
+  AtomicAccess64(
+      typedArray, index,
+      [](auto addr, auto val) {
+        jit::AtomicOperations::storeSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsCompareExchange64(JSContext* cx, TypedArrayObject* typedArray,
+                                 size_t index, const BigInt* expected,
+                                 const BigInt* replacement) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto oldval, auto newval) {
+        return jit::AtomicOperations::compareExchangeSeqCst(addr, oldval,
+                                                            newval);
+      },
+      expected, replacement);
+}
+
+BigInt* AtomicsExchange64(JSContext* cx, TypedArrayObject* typedArray,
+                          size_t index, const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::exchangeSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsAdd64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
+                     const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::fetchAddSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsAnd64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
+                     const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::fetchAndSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsOr64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
+                    const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::fetchOrSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsSub64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
+                     const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::fetchSubSeqCst(addr, val);
+      },
+      value);
+}
+
+BigInt* AtomicsXor64(JSContext* cx, TypedArrayObject* typedArray, size_t index,
+                     const BigInt* value) {
+  return AtomicAccess64(
+      cx, typedArray, index,
+      [](auto addr, auto val) {
+        return jit::AtomicOperations::fetchXorSeqCst(addr, val);
+      },
+      value);
+}
+
+JSAtom* AtomizeStringNoGC(JSContext* cx, JSString* str) {
+  // IC code calls this directly so we shouldn't GC.
+  AutoUnsafeCallWithABI unsafe;
+
+  JSAtom* atom = AtomizeString(cx, str);
+  if (!atom) {
+    cx->recoverFromOutOfMemory();
+    return nullptr;
+  }
+
+  return atom;
+}
+
+bool SetObjectHas(JSContext* cx, HandleObject obj, HandleValue key,
+                  bool* rval) {
+  return SetObject::has(cx, obj, key, rval);
+}
+
+bool MapObjectHas(JSContext* cx, HandleObject obj, HandleValue key,
+                  bool* rval) {
+  return MapObject::has(cx, obj, key, rval);
+}
+
+bool MapObjectGet(JSContext* cx, HandleObject obj, HandleValue key,
+                  MutableHandleValue rval) {
+  return MapObject::get(cx, obj, key, rval);
+}
+
+#ifdef DEBUG
+template <class OrderedHashTable>
+static mozilla::HashNumber HashValue(JSContext* cx, OrderedHashTable* hashTable,
+                                     const Value* value) {
+  RootedValue rootedValue(cx, *value);
+  HashableValue hashable;
+  MOZ_ALWAYS_TRUE(hashable.setValue(cx, rootedValue));
+
+  return hashTable->hash(hashable);
+}
+#endif
+
+void AssertSetObjectHash(JSContext* cx, SetObject* obj, const Value* value,
+                         mozilla::HashNumber actualHash) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(actualHash == HashValue(cx, obj->getData(), value));
+}
+
+void AssertMapObjectHash(JSContext* cx, MapObject* obj, const Value* value,
+                         mozilla::HashNumber actualHash) {
+  AutoUnsafeCallWithABI unsafe;
+
+  MOZ_ASSERT(actualHash == HashValue(cx, obj->getData(), value));
+}
+
+void AssertPropertyLookup(NativeObject* obj, PropertyKey id, uint32_t slot) {
+  AutoUnsafeCallWithABI unsafe;
+#ifdef DEBUG
+  mozilla::Maybe<PropertyInfo> prop = obj->lookupPure(id);
+  MOZ_ASSERT(prop.isSome());
+  MOZ_ASSERT(prop->slot() == slot);
+#else
+  MOZ_CRASH("This should only be called in debug builds.");
+#endif
+}
+
+void AssumeUnreachable(const char* output) {
+  MOZ_ReportAssertionFailure(output, __FILE__, __LINE__);
+}
+
+void Printf0(const char* output) {
+  AutoUnsafeCallWithABI unsafe;
+
+  // Use stderr instead of stdout because this is only used for debug
+  // output. stderr is less likely to interfere with the program's normal
+  // output, and it's always unbuffered.
+  fprintf(stderr, "%s", output);
+}
+
+void Printf1(const char* output, uintptr_t value) {
+  AutoUnsafeCallWithABI unsafe;
+  AutoEnterOOMUnsafeRegion oomUnsafe;
+  js::UniqueChars line = JS_sprintf_append(nullptr, output, value);
+  if (!line) {
+    oomUnsafe.crash("OOM at masm.printf");
+  }
+  fprintf(stderr, "%s", line.get());
+}
 
 }  // namespace jit
 }  // namespace js

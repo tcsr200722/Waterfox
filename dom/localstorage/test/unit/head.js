@@ -8,8 +8,6 @@
 
 const NS_ERROR_DOM_QUOTA_EXCEEDED_ERR = 22;
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function is(a, b, msg) {
   Assert.equal(a, b, msg);
 }
@@ -18,44 +16,22 @@ function ok(cond, msg) {
   Assert.ok(!!cond, msg);
 }
 
-function run_test() {
-  runTest();
-}
+add_setup(function () {
+  do_get_profile();
 
-if (!this.runTest) {
-  this.runTest = function() {
-    do_get_profile();
+  enableTesting();
 
-    enableTesting();
-
-    Cu.importGlobalProperties(["crypto"]);
-
-    Assert.ok(
-      typeof testSteps === "function",
-      "There should be a testSteps function"
-    );
-    Assert.ok(
-      testSteps.constructor.name === "AsyncFunction",
-      "testSteps should be an async function"
-    );
-
-    registerCleanupFunction(resetTesting);
-
-    add_task(testSteps);
-
-    // Since we defined run_test, we must invoke run_next_test() to start the
-    // async test.
-    run_next_test();
-  };
-}
+  registerCleanupFunction(resetTesting);
+});
 
 function returnToEventLoop() {
-  return new Promise(function(resolve) {
+  return new Promise(function (resolve) {
     executeSoon(resolve);
   });
 }
 
 function enableTesting() {
+  Services.prefs.setBoolPref("dom.simpleDB.enabled", true);
   Services.prefs.setBoolPref("dom.storage.testing", true);
 
   // xpcshell globals don't have associated clients in the Clients API sense, so
@@ -70,6 +46,7 @@ function resetTesting() {
   Services.prefs.clearUserPref("dom.quotaManager.testing");
   Services.prefs.clearUserPref("dom.storage.client_validation");
   Services.prefs.clearUserPref("dom.storage.testing");
+  Services.prefs.clearUserPref("dom.simpleDB.enabled");
 }
 
 function setGlobalLimit(globalLimit) {
@@ -107,22 +84,26 @@ function setTimeout(callback, timeout) {
   return timer;
 }
 
-function init() {
-  let request = Services.qms.init();
-
-  return request;
+function initStorage() {
+  return Services.qms.init();
 }
 
-function initStorageAndOrigin(principal, persistence) {
-  let request = Services.qms.initStorageAndOrigin(principal, persistence, "ls");
+function initTemporaryStorage() {
+  return Services.qms.initTemporaryStorage();
+}
 
-  return request;
+function initPersistentOrigin(principal) {
+  return Services.qms.initializePersistentOrigin(principal);
+}
+
+function initTemporaryOrigin(persistence, principal) {
+  return Services.qms.initializeTemporaryOrigin(persistence, principal);
 }
 
 function getOriginUsage(principal, fromMemory = false) {
   let request = Services.qms.getUsageForPrincipal(
     principal,
-    function() {},
+    function () {},
     fromMemory
   );
 
@@ -142,11 +123,9 @@ function clearOriginsByPattern(pattern) {
 }
 
 function clearOriginsByPrefix(principal, persistence) {
-  let request = Services.qms.clearStoragesForPrincipal(
+  let request = Services.qms.clearStoragesForOriginPrefix(
     principal,
-    persistence,
-    null,
-    true
+    persistence
   );
 
   return request;
@@ -236,7 +215,7 @@ function getRelativeFile(relativePath) {
   let profileDir = getProfileDir();
 
   let file = profileDir.clone();
-  relativePath.split("/").forEach(function(component) {
+  relativePath.split("/").forEach(function (component) {
     file.append(component);
   });
 
@@ -276,6 +255,20 @@ function getDefaultPrincipal() {
   return getPrincipal("http://example.com");
 }
 
+function getSimpleDatabase(principal, persistence) {
+  let connection = Cc["@mozilla.org/dom/sdb-connection;1"].createInstance(
+    Ci.nsISDBConnection
+  );
+
+  if (!principal) {
+    principal = getDefaultPrincipal();
+  }
+
+  connection.init(principal, persistence);
+
+  return connection;
+}
+
 function getLocalStorage(principal) {
   if (!principal) {
     principal = getDefaultPrincipal();
@@ -289,16 +282,27 @@ function getLocalStorage(principal) {
   );
 }
 
-function requestFinished(request) {
-  return new Promise(function(resolve, reject) {
-    request.callback = function(requestInner) {
-      if (requestInner.resultCode == Cr.NS_OK) {
-        resolve(requestInner.result);
-      } else {
-        reject(requestInner.resultCode);
-      }
+class RequestError extends Error {
+  constructor(resultCode, resultName) {
+    super(`Request failed (code: ${resultCode}, name: ${resultName})`);
+    this.name = "RequestError";
+    this.resultCode = resultCode;
+    this.resultName = resultName;
+  }
+}
+
+async function requestFinished(request) {
+  await new Promise(function (resolve) {
+    request.callback = function () {
+      resolve();
     };
   });
+
+  if (request.resultCode !== Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
 }
 
 function loadSubscript(path) {

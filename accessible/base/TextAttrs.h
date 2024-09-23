@@ -13,14 +13,14 @@
 #include "nsStyleConsts.h"
 
 class nsIFrame;
-class nsIPersistentProperties;
 class nsIContent;
 class nsDeviceContext;
 
 namespace mozilla {
 namespace a11y {
 
-class Accessible;
+class AccAttributes;
+class LocalAccessible;
 class HyperTextAccessible;
 
 /**
@@ -54,7 +54,7 @@ class TextAttrsMgr {
    * @param oOffsetAccIdx    [optional] index in parent of offset accessible
    */
   TextAttrsMgr(HyperTextAccessible* aHyperTextAcc, bool aIncludeDefAttrs,
-               Accessible* aOffsetAcc, int32_t aOffsetAccIdx)
+               LocalAccessible* aOffsetAcc, int32_t aOffsetAccIdx)
       : mOffsetAcc(aOffsetAcc),
         mHyperTextAcc(aHyperTextAcc),
         mOffsetAccIdx(aOffsetAccIdx),
@@ -71,7 +71,7 @@ class TextAttrsMgr {
    * @param aStartHTOffset [out, optional] start hyper text offset
    * @param aEndHTOffset   [out, optional] end hyper text offset
    */
-  void GetAttributes(nsIPersistentProperties* aAttributes,
+  void GetAttributes(AccAttributes* aAttributes,
                      uint32_t* aStartHTOffset = nullptr,
                      uint32_t* aEndHTOffset = nullptr);
 
@@ -91,7 +91,7 @@ class TextAttrsMgr {
                 uint32_t* aStartOffset, uint32_t* aEndOffset);
 
  private:
-  Accessible* mOffsetAcc;
+  LocalAccessible* mOffsetAcc;
   HyperTextAccessible* mHyperTextAcc;
   int32_t mOffsetAccIdx;
   bool mIncludeDefAttrs;
@@ -109,14 +109,14 @@ class TextAttrsMgr {
      * @param aIncludeDefAttrValue  [in] if true then attribute is exposed even
      *                               if its value is the same as default one
      */
-    virtual void Expose(nsIPersistentProperties* aAttributes,
+    virtual void Expose(AccAttributes* aAttributes,
                         bool aIncludeDefAttrValue) = 0;
 
     /**
      * Return true if the text attribute value on the given element equals with
      * predefined attribute value.
      */
-    virtual bool Equal(Accessible* aAccessible) = 0;
+    virtual bool Equal(LocalAccessible* aAccessible) = 0;
   };
 
   /**
@@ -128,7 +128,7 @@ class TextAttrsMgr {
     explicit TTextAttr(bool aGetRootValue) : mGetRootValue(aGetRootValue) {}
 
     // TextAttr
-    virtual void Expose(nsIPersistentProperties* aAttributes,
+    virtual void Expose(AccAttributes* aAttributes,
                         bool aIncludeDefAttrValue) override {
       if (mGetRootValue) {
         if (mIsRootDefined) ExposeValue(aAttributes, mRootNativeValue);
@@ -136,16 +136,18 @@ class TextAttrsMgr {
       }
 
       if (mIsDefined) {
-        if (aIncludeDefAttrValue || mRootNativeValue != mNativeValue)
+        if (aIncludeDefAttrValue || mRootNativeValue != mNativeValue) {
           ExposeValue(aAttributes, mNativeValue);
+        }
         return;
       }
 
-      if (aIncludeDefAttrValue && mIsRootDefined)
+      if (aIncludeDefAttrValue && mIsRootDefined) {
         ExposeValue(aAttributes, mRootNativeValue);
+      }
     }
 
-    virtual bool Equal(Accessible* aAccessible) override {
+    virtual bool Equal(LocalAccessible* aAccessible) override {
       T nativeValue;
       bool isDefined = GetValueFor(aAccessible, &nativeValue);
 
@@ -160,11 +162,10 @@ class TextAttrsMgr {
 
    protected:
     // Expose the text attribute with the given value to attribute set.
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
-                             const T& aValue) = 0;
+    virtual void ExposeValue(AccAttributes* aAttributes, const T& aValue) = 0;
 
     // Return native value for the given DOM element.
-    virtual bool GetValueFor(Accessible* aAccessible, T* aValue) = 0;
+    virtual bool GetValueFor(LocalAccessible* aAccessible, T* aValue) = 0;
 
     // Indicates if root value should be exposed.
     bool mGetRootValue;
@@ -192,9 +193,9 @@ class TextAttrsMgr {
 
    protected:
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
                              nsString* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const nsString& aValue) override;
 
    private:
@@ -216,9 +217,9 @@ class TextAttrsMgr {
     enum { eFalse, eGrammar, eSpelling, eTrue };
 
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
                              uint32_t* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const uint32_t& aValue) override;
 
    private:
@@ -236,8 +237,9 @@ class TextAttrsMgr {
 
    protected:
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible, nscolor* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
+                             nscolor* aValue) override;
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const nscolor& aValue) override;
 
    private:
@@ -255,8 +257,9 @@ class TextAttrsMgr {
 
    protected:
     // TTextAttr
-    virtual bool GetValueFor(Accessible* aAccessible, nscolor* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
+                             nscolor* aValue) override;
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const nscolor& aValue) override;
   };
 
@@ -270,9 +273,9 @@ class TextAttrsMgr {
 
    protected:
     // TTextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
                              nsString* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const nsString& aValue) override;
 
    private:
@@ -289,8 +292,9 @@ class TextAttrsMgr {
 
    protected:
     // TTextAttr
-    virtual bool GetValueFor(Accessible* aAccessible, nscoord* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
+                             nscoord* aValue) override;
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const nscoord& aValue) override;
 
    private:
@@ -307,9 +311,9 @@ class TextAttrsMgr {
 
    protected:
     // TTextAttr
-    virtual bool GetValueFor(Accessible* aContent,
+    virtual bool GetValueFor(LocalAccessible* aContent,
                              mozilla::FontSlantStyle* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const mozilla::FontSlantStyle& aValue) override;
   };
 
@@ -323,9 +327,9 @@ class TextAttrsMgr {
 
    protected:
     // TTextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
                              mozilla::FontWeight* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const mozilla::FontWeight& aValue) override;
 
    private:
@@ -338,13 +342,14 @@ class TextAttrsMgr {
   class AutoGeneratedTextAttr : public TTextAttr<bool> {
    public:
     AutoGeneratedTextAttr(HyperTextAccessible* aHyperTextAcc,
-                          Accessible* aAccessible);
+                          LocalAccessible* aAccessible);
     virtual ~AutoGeneratedTextAttr() {}
 
    protected:
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible, bool* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
+                             bool* aValue) override;
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const bool& aValue) override;
   };
 
@@ -359,11 +364,11 @@ class TextAttrsMgr {
     TextDecorValue()
         : mColor{0},
           mLine{StyleTextDecorationLine::NONE},
-          mStyle{NS_STYLE_TEXT_DECORATION_STYLE_NONE} {}
+          mStyle{StyleTextDecorationStyle::None} {}
     explicit TextDecorValue(nsIFrame* aFrame);
 
     nscolor Color() const { return mColor; }
-    uint8_t Style() const { return mStyle; }
+    mozilla::StyleTextDecorationStyle Style() const { return mStyle; }
 
     bool IsDefined() const { return IsUnderline() || IsLineThrough(); }
     bool IsUnderline() const {
@@ -373,16 +378,18 @@ class TextAttrsMgr {
       return bool(mLine & mozilla::StyleTextDecorationLine::LINE_THROUGH);
     }
 
-    bool operator==(const TextDecorValue& aValue) {
+    bool operator==(const TextDecorValue& aValue) const {
       return mColor == aValue.mColor && mLine == aValue.mLine &&
              mStyle == aValue.mStyle;
     }
-    bool operator!=(const TextDecorValue& aValue) { return !(*this == aValue); }
+    bool operator!=(const TextDecorValue& aValue) const {
+      return !(*this == aValue);
+    }
 
    private:
     nscolor mColor;
     mozilla::StyleTextDecorationLine mLine;
-    uint8_t mStyle;
+    mozilla::StyleTextDecorationStyle mStyle;
   };
 
   class TextDecorTextAttr : public TTextAttr<TextDecorValue> {
@@ -392,9 +399,9 @@ class TextAttrsMgr {
 
    protected:
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
                              TextDecorValue* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
+    virtual void ExposeValue(AccAttributes* aAttributes,
                              const TextDecorValue& aValue) override;
   };
 
@@ -402,27 +409,27 @@ class TextAttrsMgr {
    * Class is used for the work with "text-position" text attribute.
    */
 
-  enum TextPosValue {
-    eTextPosNone = 0,
-    eTextPosBaseline,
-    eTextPosSub,
-    eTextPosSuper
-  };
+  enum TextPosValue { eTextPosBaseline, eTextPosSub, eTextPosSuper };
 
-  class TextPosTextAttr : public TTextAttr<TextPosValue> {
+  class TextPosTextAttr : public TTextAttr<Maybe<TextPosValue>> {
    public:
-    TextPosTextAttr(nsIFrame* aRootFrame, nsIFrame* aFrame);
+    TextPosTextAttr(nsIFrame* aRootFrame, nsIFrame* aFrame,
+                    nsIContent* aRootElm, nsIContent* aElm);
     virtual ~TextPosTextAttr() {}
 
    protected:
     // TextAttr
-    virtual bool GetValueFor(Accessible* aAccessible,
-                             TextPosValue* aValue) override;
-    virtual void ExposeValue(nsIPersistentProperties* aAttributes,
-                             const TextPosValue& aValue) override;
+    virtual bool GetValueFor(LocalAccessible* aAccessible,
+                             Maybe<TextPosValue>* aValue) override;
+    virtual void ExposeValue(AccAttributes* aAttributes,
+                             const Maybe<TextPosValue>& aValue) override;
 
    private:
-    TextPosValue GetTextPosValue(nsIFrame* aFrame) const;
+    Maybe<TextPosValue> GetAriaTextPosValue(nsIContent* aElm) const;
+    Maybe<TextPosValue> GetAriaTextPosValue(nsIContent* aElm,
+                                            nsIFrame*& ariaFrame) const;
+    Maybe<TextPosValue> GetLayoutTextPosValue(nsIFrame* aFrame) const;
+    nsIContent* mRootElm;
   };
 
 };  // TextAttrMgr

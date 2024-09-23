@@ -12,8 +12,8 @@
 
 [Exposed=Window]
 interface SVGStyleElement : SVGElement {
-  [SetterThrows]
-  attribute DOMString xmlspace; // Spec claims this should be on SVGElement
+  [Pure]
+  attribute boolean disabled;
   [SetterThrows]
   attribute DOMString type;
   [SetterThrows]
@@ -22,4 +22,3 @@ interface SVGStyleElement : SVGElement {
   attribute DOMString title;
 };
 SVGStyleElement includes LinkStyle;
-

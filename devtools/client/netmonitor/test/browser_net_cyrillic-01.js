@@ -7,7 +7,7 @@
  * Tests if cyrillic text is rendered correctly in the source editor.
  */
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(CYRILLIC_URL, {
     requestCount: 1,
   });
@@ -50,10 +50,7 @@ add_task(async function() {
   );
   await wait;
   wait = waitForDOM(document, "#response-panel .CodeMirror-code");
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#response-tab")
-  );
+  clickOnSidebarTab(document, "response");
   await wait;
 
   ok(

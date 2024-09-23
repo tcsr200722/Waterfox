@@ -10,8 +10,6 @@
 
 var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 if (!("self" in this)) {
   this.self = this;
 }
@@ -30,7 +28,7 @@ function isnot(a, b, msg) {
   Assert.notEqual(a, b, msg);
 }
 
-function todo(condition, name, diag) {
+function todo(condition) {
   todo_check_true(condition);
 }
 
@@ -39,7 +37,7 @@ function run_test() {
 }
 
 if (!this.runTest) {
-  this.runTest = function() {
+  this.runTest = function () {
     if (SpecialPowers.isMainProcess()) {
       // XPCShell does not get a profile by default.
       do_get_profile();
@@ -47,8 +45,6 @@ if (!this.runTest) {
       enableTesting();
       enableExperimental();
     }
-
-    Cu.importGlobalProperties(["indexedDB"]);
 
     // In order to support converting tests to using async functions from using
     // generator functions, we detect async functions by checking the name of
@@ -60,7 +56,11 @@ if (!this.runTest) {
     if (testSteps.constructor.name === "AsyncFunction") {
       // Do run our existing cleanup function that would normally be called by
       // the generator's call to finishTest().
-      registerCleanupFunction(resetTesting);
+      registerCleanupFunction(function () {
+        if (SpecialPowers.isMainProcess()) {
+          resetTesting();
+        }
+      });
 
       add_task(testSteps);
 
@@ -87,7 +87,7 @@ function finishTest() {
 
   SpecialPowers.removeFiles();
 
-  executeSoon(function() {
+  executeSoon(function () {
     do_test_finished();
   });
 }
@@ -97,7 +97,7 @@ function grabEventAndContinueHandler(event) {
 }
 
 function continueToNextStep() {
-  executeSoon(function() {
+  executeSoon(function () {
     testGenerator.next();
   });
 }
@@ -118,7 +118,7 @@ function unexpectedSuccessHandler() {
 }
 
 function expectedErrorHandler(name) {
-  return function(event) {
+  return function (event) {
     Assert.equal(event.type, "error");
     Assert.equal(event.target.error.name, name);
     event.preventDefault();
@@ -126,7 +126,7 @@ function expectedErrorHandler(name) {
   };
 }
 
-function expectUncaughtException(expecting) {
+function expectUncaughtException() {
   // This is dummy for xpcshell test.
 }
 
@@ -200,19 +200,19 @@ function compareKeys(k1, k2) {
   return false;
 }
 
-function addPermission(permission, url) {
+function addPermission() {
   throw new Error("addPermission");
 }
 
-function removePermission(permission, url) {
+function removePermission() {
   throw new Error("removePermission");
 }
 
-function allowIndexedDB(url) {
+function allowIndexedDB() {
   throw new Error("allowIndexedDB");
 }
 
-function disallowIndexedDB(url) {
+function disallowIndexedDB() {
   throw new Error("disallowIndexedDB");
 }
 
@@ -244,7 +244,7 @@ function scheduleGC() {
 function setTimeout(fun, timeout) {
   let timer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
   var event = {
-    notify(timer) {
+    notify() {
       fun();
     },
   };
@@ -252,11 +252,12 @@ function setTimeout(fun, timeout) {
   return timer;
 }
 
-function initStorageAndChromeOrigin(persistence) {
-  let principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
-    Ci.nsIPrincipal
-  );
-  return Services.qms.initStorageAndOrigin(principal, persistence, "idb");
+function initStorage() {
+  return Services.qms.init();
+}
+
+function initPersistentOrigin(principal) {
+  return Services.qms.initializePersistentOrigin(principal);
 }
 
 function resetOrClearAllDatabases(callback, clear) {
@@ -432,10 +433,10 @@ function verifyBuffers(buffer1, buffer2) {
 
 function verifyBlob(blob1, blob2) {
   is(Blob.isInstance(blob1), true, "Instance of nsIDOMBlob");
-  is(blob1 instanceof File, blob2 instanceof File, "Instance of DOM File");
+  is(File.isInstance(blob1), File.isInstance(blob2), "Instance of DOM File");
   is(blob1.size, blob2.size, "Correct size");
   is(blob1.type, blob2.type, "Correct type");
-  if (blob2 instanceof File) {
+  if (File.isInstance(blob2)) {
     is(blob1.name, blob2.name, "Correct name");
   }
 
@@ -452,7 +453,7 @@ function verifyBlob(blob1, blob2) {
   if (!buffer2) {
     let reader = new FileReader();
     reader.readAsArrayBuffer(blob2);
-    reader.onload = function(event) {
+    reader.onload = function (event) {
       buffer2 = event.target.result;
       bufferCache.push({ blob: blob2, buffer: buffer2 });
       if (buffer1) {
@@ -464,24 +465,13 @@ function verifyBlob(blob1, blob2) {
 
   let reader = new FileReader();
   reader.readAsArrayBuffer(blob1);
-  reader.onload = function(event) {
+  reader.onload = function (event) {
     buffer1 = event.target.result;
     if (buffer2) {
       verifyBuffers(buffer1, buffer2);
       testGenerator.next();
     }
   };
-}
-
-function verifyMutableFile(mutableFile1, file2) {
-  is(
-    mutableFile1 instanceof IDBMutableFile,
-    true,
-    "Instance of IDBMutableFile"
-  );
-  is(mutableFile1.name, file2.name, "Correct name");
-  is(mutableFile1.type, file2.type, "Correct type");
-  continueToNextStep();
 }
 
 function verifyView(view1, view2) {
@@ -537,34 +527,49 @@ function resetPreprocessing() {
   SpecialPowers.clearUserPref("dom.indexedDB.preprocessing");
 }
 
+function getSystemPrincipal() {
+  return Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal);
+}
+
 function getPrincipal(url) {
   let uri = Services.io.newURI(url);
   return Services.scriptSecurityManager.createContentPrincipal(uri, {});
 }
 
-function requestFinished(request) {
-  return new Promise(function(resolve, reject) {
-    request.callback = function(req) {
-      if (req.resultCode == Cr.NS_OK) {
-        resolve(req.result);
-      } else {
-        reject(req.resultCode);
-      }
+class RequestError extends Error {
+  constructor(resultCode, resultName) {
+    super(`Request failed (code: ${resultCode}, name: ${resultName})`);
+    this.name = "RequestError";
+    this.resultCode = resultCode;
+    this.resultName = resultName;
+  }
+}
+
+async function requestFinished(request) {
+  await new Promise(function (resolve) {
+    request.callback = function () {
+      resolve();
     };
   });
+
+  if (request.resultCode !== Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
 }
 
 // TODO: Rename to openDBRequestSucceeded ?
 function expectingSuccess(request) {
-  return new Promise(function(resolve, reject) {
-    request.onerror = function(event) {
+  return new Promise(function (resolve, reject) {
+    request.onerror = function (event) {
       ok(false, "indexedDB error, '" + event.target.error.name + "'");
       reject(event);
     };
-    request.onsuccess = function(event) {
+    request.onsuccess = function (event) {
       resolve(event);
     };
-    request.onupgradeneeded = function(event) {
+    request.onupgradeneeded = function (event) {
       ok(false, "Got upgrade, but did not expect it!");
       reject(event);
     };
@@ -573,15 +578,15 @@ function expectingSuccess(request) {
 
 // TODO: Rename to openDBRequestUpgradeNeeded ?
 function expectingUpgrade(request) {
-  return new Promise(function(resolve, reject) {
-    request.onerror = function(event) {
+  return new Promise(function (resolve, reject) {
+    request.onerror = function (event) {
       ok(false, "indexedDB error, '" + event.target.error.name + "'");
       reject(event);
     };
-    request.onupgradeneeded = function(event) {
+    request.onupgradeneeded = function (event) {
       resolve(event);
     };
-    request.onsuccess = function(event) {
+    request.onsuccess = function (event) {
       ok(false, "Got success, but did not expect it!");
       reject(event);
     };
@@ -589,12 +594,12 @@ function expectingUpgrade(request) {
 }
 
 function requestSucceeded(request) {
-  return new Promise(function(resolve, reject) {
-    request.onerror = function(event) {
+  return new Promise(function (resolve, reject) {
+    request.onerror = function (event) {
       ok(false, "indexedDB error, '" + event.target.error.name + "'");
       reject(event);
     };
-    request.onsuccess = function(event) {
+    request.onsuccess = function (event) {
       resolve(event);
     };
   });
@@ -609,7 +614,7 @@ function getRelativeFile(relativePath) {
   let profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
 
   let file = profileDir.clone();
-  relativePath.split("/").forEach(function(component) {
+  relativePath.split("/").forEach(function (component) {
     file.append(component);
   });
 
@@ -643,7 +648,7 @@ var SpecialPowers = {
   clearUserPref(prefName) {
     Services.prefs.clearUserPref(prefName);
   },
-  // Copied (and slightly adjusted) from testing/specialpowers/content/SpecialPowersAPI.jsm
+  // Copied (and slightly adjusted) from testing/specialpowers/api.js
   exactGC(callback) {
     let count = 0;
 
@@ -684,7 +689,7 @@ var SpecialPowers = {
     }
     let createdFiles = this._createdFiles;
     let promises = [];
-    requests.forEach(function(request) {
+    requests.forEach(function (request) {
       const filePerms = 0o666;
       let testFile = Services.dirsvc.get("ProfD", Ci.nsIFile);
       if (request.name) {
@@ -706,7 +711,7 @@ var SpecialPowers = {
         outStream.close();
       }
       promises.push(
-        File.createFromFileName(testFile.path, request.options).then(function(
+        File.createFromFileName(testFile.path, request.options).then(function (
           file
         ) {
           filePaths.push(file);
@@ -715,8 +720,8 @@ var SpecialPowers = {
       createdFiles.push(testFile);
     });
 
-    Promise.all(promises).then(function() {
-      setTimeout(function() {
+    Promise.all(promises).then(function () {
+      setTimeout(function () {
         callback(filePaths);
       }, 0);
     });
@@ -724,7 +729,7 @@ var SpecialPowers = {
 
   removeFiles() {
     if (this._createdFiles) {
-      this._createdFiles.forEach(function(testFile) {
+      this._createdFiles.forEach(function (testFile) {
         try {
           testFile.remove(false);
         } catch (e) {}

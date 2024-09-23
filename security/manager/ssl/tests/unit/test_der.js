@@ -3,42 +3,19 @@
 
 "use strict";
 
-// Tests DER.jsm functionality.
+// Tests DER.sys.mjs functionality.
 
-// Until DER.jsm is actually used in production code, this is where we have to
+// Until DER.sys.mjs is actually used in production code, this is where we have to
 // import it from.
-var { DER } = ChromeUtils.import("resource://gre/modules/psm/DER.jsm");
+var { DER } = ChromeUtils.importESModule(
+  "resource://gre/modules/psm/DER.sys.mjs"
+);
 
 function run_simple_tests() {
   throws(
     () => new DER.DERDecoder("this is not an array"),
     /invalid input/,
     "should throw given non-array input"
-  );
-  throws(
-    () => new DER.DERDecoder([0, "invalid input", 1]),
-    /invalid input/,
-    "should throw given non-byte data (string case)"
-  );
-  throws(
-    () => new DER.DERDecoder([31, 1, {}]),
-    /invalid input/,
-    "should throw given non-byte data (object case)"
-  );
-  throws(
-    () => new DER.DERDecoder([0.1, 3, 1]),
-    /invalid input/,
-    "should throw given non-byte data (non-integer case)"
-  );
-  throws(
-    () => new DER.DERDecoder([1, 3, -1]),
-    /invalid input/,
-    "should throw given non-byte data (negative integer case)"
-  );
-  throws(
-    () => new DER.DERDecoder([1, 300, 79]),
-    /invalid input/,
-    "should throw given non-byte data (large integer case)"
   );
 
   let testReadByte = new DER.DERDecoder([0x0a, 0x0b]);
@@ -119,11 +96,7 @@ function run_simple_tests() {
 
   // Similarly, 0x82 0x00 0x01 could be encoded as just 0x01, which is shorter.
   let invalidLengthSEQUENCE2 = new DER.DERDecoder([
-    0x30,
-    0x82,
-    0x00,
-    0x01,
-    0x00,
+    0x30, 0x82, 0x00, 0x01, 0x00,
   ]);
   throws(
     () => invalidLengthSEQUENCE2.readTagAndGetContents(DER.SEQUENCE),
@@ -133,11 +106,7 @@ function run_simple_tests() {
 
   // Lengths requiring 4 bytes to encode are not supported.
   let unsupportedLengthSEQUENCE = new DER.DERDecoder([
-    0x30,
-    0x83,
-    0x01,
-    0x01,
-    0x01,
+    0x30, 0x83, 0x01, 0x01, 0x01,
   ]);
   throws(
     () => unsupportedLengthSEQUENCE.readTagAndGetContents(DER.SEQUENCE),
@@ -147,11 +116,7 @@ function run_simple_tests() {
 
   // Indefinite lengths are not supported (and aren't DER anyway).
   let unsupportedASN1SEQUENCE = new DER.DERDecoder([
-    0x30,
-    0x80,
-    0x01,
-    0x00,
-    0x00,
+    0x30, 0x80, 0x01, 0x00, 0x00,
   ]);
   throws(
     () => unsupportedASN1SEQUENCE.readTagAndGetContents(DER.SEQUENCE),

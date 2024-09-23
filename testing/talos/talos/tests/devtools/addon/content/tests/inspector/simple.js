@@ -4,16 +4,18 @@
 
 "use strict";
 
-const { reloadInspectorAndLog } = require("./inspector-helpers");
+const {
+  reloadInspectorAndLog,
+} = require("damp-test/tests/inspector/inspector-helpers");
 const {
   openToolboxAndLog,
   closeToolboxAndLog,
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(SIMPLE_URL);
 
   let toolbox = await openToolboxAndLog("simple.inspector", "inspector");

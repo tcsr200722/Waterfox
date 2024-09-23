@@ -19,7 +19,7 @@ const SCREEN_SHARING_HEADER_ID = "sharing-warning-screen-panel-header";
 // The number of milliseconds we're willing to wait for the
 // warning panel before we decide that it's not coming.
 const WARNING_PANEL_TIMEOUT_MS = 1000;
-const CTRL_TAB_RUO_PREF = "browser.ctrlTab.recentlyUsedOrder";
+const CTRL_TAB_RUO_PREF = "browser.ctrlTab.sortByRecentlyUsed";
 
 /**
  * Common helper function that pretendToShareWindow and pretendToShareScreen
@@ -188,7 +188,11 @@ async function ensureWarning(tab) {
   );
 }
 
-add_task(async function setup() {
+add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["privacy.webrtc.sharedTabWarning", true]],
+  });
+
   // Loads up NEW_BACKGROUND_TABS_TO_OPEN background tabs at about:blank,
   // and waits until they're fully open.
   let uris = new Array(NEW_BACKGROUND_TABS_TO_OPEN).fill("about:blank");
@@ -424,11 +428,11 @@ add_task(async function testWindowVsScreenLabel() {
   let windowHeader = document.getElementById(WINDOW_SHARING_HEADER_ID);
   let screenHeader = document.getElementById(SCREEN_SHARING_HEADER_ID);
   Assert.ok(
-    !BrowserTestUtils.is_hidden(windowHeader),
+    !BrowserTestUtils.isHidden(windowHeader),
     "Should be showing window sharing header"
   );
   Assert.ok(
-    BrowserTestUtils.is_hidden(screenHeader),
+    BrowserTestUtils.isHidden(screenHeader),
     "Should not be showing screen sharing header"
   );
 
@@ -442,11 +446,11 @@ add_task(async function testWindowVsScreenLabel() {
   await warningPromise;
 
   Assert.ok(
-    BrowserTestUtils.is_hidden(windowHeader),
+    BrowserTestUtils.isHidden(windowHeader),
     "Should not be showing window sharing header"
   );
   Assert.ok(
-    !BrowserTestUtils.is_hidden(screenHeader),
+    !BrowserTestUtils.isHidden(screenHeader),
     "Should be showing screen sharing header"
   );
   await resetDisplaySharingState();

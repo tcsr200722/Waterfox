@@ -19,16 +19,16 @@ class mock_Link : public mozilla::dom::Link {
  public:
   NS_DECL_ISUPPORTS
 
-  typedef void (*Handler)(nsLinkState);
+  typedef void (*Handler)(State);
 
   explicit mock_Link(Handler aHandlerFunction, bool aRunNextTest = true)
-      : mozilla::dom::Link(), mRunNextTest(aRunNextTest) {
+      : mRunNextTest(aRunNextTest) {
     AwaitNewNotification(aHandlerFunction);
   }
 
   void VisitedQueryFinished(bool aVisited) final {
     // Notify our callback function.
-    mHandler(aVisited ? eLinkState_Visited : eLinkState_Unvisited);
+    mHandler(aVisited ? State::Visited : State::Unvisited);
 
     // Break the cycle so the object can be destroyed.
     mDeathGrip = nullptr;
@@ -43,9 +43,7 @@ class mock_Link : public mozilla::dom::Link {
   bool GotNotified() const { return !mDeathGrip; }
 
   void AwaitNewNotification(Handler aNewHandler) {
-    MOZ_ASSERT(
-        !mDeathGrip || !mozilla::StaticPrefs::layout_css_notify_of_unvisited(),
-        "Still waiting for a notification");
+    MOZ_ASSERT(!mDeathGrip, "Still waiting for a notification");
     // Create a cyclic ownership, so that the link will be released only
     // after its status has been updated.  This will ensure that, when it should
     // run the next test, it will happen at the end of the test function, if

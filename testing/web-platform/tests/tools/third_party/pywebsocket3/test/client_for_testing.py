@@ -33,8 +33,8 @@
 This module contains helper methods for performing handshake, frame
 sending/receiving as a WebSocket client.
 
-This is code for testing mod_pywebsocket. Keep this code independent from
-mod_pywebsocket. Don't import e.g. Stream class for generating frame for
+This is code for testing pywebsocket3. Keep this code independent from
+pywebsocket3. Don't import e.g. Stream class for generating frame for
 testing. Using util.hexify, etc. that are not related to protocol processing
 is allowed.
 
@@ -43,22 +43,20 @@ This code is far from robust, e.g., we cut corners in handshake.
 """
 
 from __future__ import absolute_import
+
 import base64
 import errno
-import logging
 import os
-import random
 import re
 import socket
 import struct
 import time
 from hashlib import sha1
-from six import iterbytes
-from six import indexbytes
 
-from mod_pywebsocket import common
-from mod_pywebsocket import util
-from mod_pywebsocket.handshake import HandshakeException
+from six import indexbytes, iterbytes
+
+from pywebsocket3 import common, util
+from pywebsocket3.handshake import HandshakeException
 
 DEFAULT_PORT = 80
 DEFAULT_SECURE_PORT = 443
@@ -303,7 +301,7 @@ class WebSocketHandshake(object):
                                 self._options.server_port,
                                 self._options.use_tls))
 
-        if self._options.version is 8:
+        if self._options.version == 8:
             fields.append(_sec_origin_header(self._options.origin))
         else:
             fields.append(_origin_header(self._options.origin))
@@ -315,6 +313,11 @@ class WebSocketHandshake(object):
         fields.append(u'Sec-WebSocket-Key: %s\r\n' % key.decode('UTF-8'))
 
         fields.append(u'Sec-WebSocket-Version: %d\r\n' % self._options.version)
+
+        if self._options.use_basic_auth:
+            credential = 'Basic ' + base64.b64encode(
+                self._options.basic_auth_credential.encode('UTF-8')).decode()
+            fields.append(u'Authorization: %s\r\n' % credential)
 
         # Setting up extensions.
         if len(self._options.extensions) > 0:
@@ -609,6 +612,8 @@ class ClientOptions(object):
         self.server_port = -1
         self.socket_timeout = 1000
         self.use_tls = False
+        self.use_basic_auth = False
+        self.basic_auth_credential = 'test:test'
         self.extensions = []
 
 
@@ -695,15 +700,15 @@ class Client(object):
         try:
             read_data = receive_bytes(self._socket, 1)
         except Exception as e:
-            if str(e).find(
-                    'Connection closed before receiving requested length '
-            ) == 0:
+            if str(e).find('Connection closed before receiving requested length ') == 0:
                 return
+
             try:
-                error_number, message = e
                 for error_name in ['ECONNRESET', 'WSAECONNRESET']:
-                    if (error_name in dir(errno)
-                            and error_number == getattr(errno, error_name)):
+                    if (
+                        error_name in dir(errno) and
+                        e.errno == getattr(errno, error_name)
+                    ):
                         return
             except:
                 raise e

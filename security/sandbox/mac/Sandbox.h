@@ -7,14 +7,15 @@
 #define mozilla_Sandbox_h
 
 #include <string>
+#include "mozilla/ipc/UtilityProcessSandboxing.h"
 
 enum MacSandboxType {
   MacSandboxType_Default = 0,
   MacSandboxType_Content,
-  MacSandboxType_Flash,
   MacSandboxType_GMP,
-  MacSandboxType_Utility,
+  MacSandboxType_RDD,
   MacSandboxType_Socket,
+  MacSandboxType_Utility,
   MacSandboxType_Invalid
 };
 
@@ -48,6 +49,7 @@ typedef struct _MacSandboxInfo {
 
  public:
   MacSandboxType type;
+  mozilla::ipc::SandboxingKind utilityKind;
   int32_t level;
   bool hasFilePrivileges;
   bool hasSandboxedProfile;

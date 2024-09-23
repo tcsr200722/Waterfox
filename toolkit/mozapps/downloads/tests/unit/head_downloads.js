@@ -1,5 +1,5 @@
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-registerCleanupFunction(function() {
-  Services.obs.notifyObservers(null, "quit-application");
+registerCleanupFunction(function () {
+  Services.startup.advanceShutdownPhase(
+    Services.startup.SHUTDOWN_PHASE_APPSHUTDOWNCONFIRMED
+  );
 });

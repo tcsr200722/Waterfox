@@ -1,4 +1,3 @@
-# %ARG DOCKER_IMAGE_PARENT
 FROM $DOCKER_IMAGE_PARENT
 MAINTAINER Joel Maher <jmaher@mozilla.com>
 
@@ -14,9 +13,10 @@ RUN apt-get update && \
       curl \
       libbz2-dev \
       libglib2.0-dev \
-      lsb-core \
+      libtinfo5 \
       pkg-config \
       tar \
       unzip \
       wget \
-      zip
+      zip \
+      procps

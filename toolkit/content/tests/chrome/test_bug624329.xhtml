@@ -11,7 +11,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=624329
 
   <!-- test results are displayed in the html:body -->
   <body xmlns="http://www.w3.org/1999/xhtml"
-        onload="openTestWindow()">
+        onload="beginTest()">
   <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=624329"
      target="_blank">Mozilla Bug 624329</a>
   </body>
@@ -27,8 +27,23 @@ var win;
 var timeoutID;
 var menu;
 
+const {AppConstants} = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
+function beginTest() {
+    if (AppConstants.platform == "macosx" && SpecialPowers.getBoolPref("widget.macos.native-context-menus", false)) {
+        // This test does not apply with native context menus.
+        ok(true, "macOS positions native menus, so we don't need to test this behaviour.");
+        SimpleTest.finish();
+        return;
+    }
+
+    openTestWindow();
+}
+
 function openTestWindow() {
-    win = docShell.rootTreeItem.domWindow.openDialog("bug624329_window.xhtml", "_blank", "width=300,resizable=yes,chrome", window);
+    win = window.browsingContext.topChromeWindow.openDialog("bug624329_window.xhtml", "_blank", "width=300,resizable=yes,chrome", window);
     // Close our window if the test times out so that it doesn't interfere
     // with later tests.
     timeoutID = setTimeout(function () {
@@ -40,9 +55,8 @@ function openTestWindow() {
 
 function listenOnce(event, callback) {
     win.addEventListener(event, function listener() {
-        win.removeEventListener(event, listener, false);
         callback();
-    }, false);
+    }, { once: true});
 }
 
 function childFocused() {
@@ -97,8 +111,8 @@ function openContextMenu() {
         var rootElement = win.document.documentElement;
         var platformIsMac = navigator.userAgent.indexOf("Mac") > -1;
 
-        var x = menu.screenX - rootElement.screenX;
-        var y = menu.screenY - rootElement.screenY;
+        var x = menu.screenX - rootElement.screenX - parseFloat(getComputedStyle(menu).marginLeft);
+        var y = menu.screenY - rootElement.screenY - parseFloat(getComputedStyle(menu).marginTop);
 
         if (platformIsMac)
         {

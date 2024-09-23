@@ -3,10 +3,6 @@
 
 "use strict";
 
-const { BrowserTestUtils } = ChromeUtils.import(
-  "resource://testing-common/BrowserTestUtils.jsm"
-);
-
 // This test tends to trigger a race in the fullscreen time telemetry,
 // where the fullscreen enter and fullscreen exit events (which use the
 // same histogram ID) overlap. That causes TelemetryStopwatch to log an
@@ -18,27 +14,30 @@ add_task(async function test_identityPopupCausesFSExit() {
 
   await BrowserTestUtils.withNewTab("about:blank", async browser => {
     let loaded = BrowserTestUtils.browserLoaded(browser, false, url);
-    BrowserTestUtils.loadURI(browser, url);
+    BrowserTestUtils.startLoadingURIString(browser, url);
     await loaded;
 
-    let identityBox = document.getElementById("identity-box");
-    let identityPopup = document.getElementById("identity-popup");
+    let identityPermissionBox = document.getElementById(
+      "identity-permission-box"
+    );
 
     info("Entering DOM fullscreen");
     await changeFullscreen(browser, true);
 
     let popupShown = BrowserTestUtils.waitForEvent(
-      identityPopup,
+      window,
       "popupshown",
-      true
+      true,
+      event => event.target == document.getElementById("permission-popup")
     );
     let fsExit = waitForFullScreenState(browser, false);
 
-    identityBox.click();
+    identityPermissionBox.click();
 
-    info("Waiting for fullscreen exit and identity popup to show");
+    info("Waiting for fullscreen exit and permission popup to show");
     await Promise.all([fsExit, popupShown]);
 
+    let identityPopup = document.getElementById("permission-popup");
     ok(
       identityPopup.hasAttribute("panelopen"),
       "Identity popup should be open"

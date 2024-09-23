@@ -20,7 +20,7 @@ namespace mozilla {
 
 namespace dom {
 struct ThreeDPoint;
-struct AudioTimelineEvent;
+struct AudioParamEvent;
 class AudioContext;
 }  // namespace dom
 
@@ -96,11 +96,10 @@ class AudioNodeTrack : public ProcessedMediaTrack {
   void SetBuffer(AudioChunk&& aBuffer);
   void SetReverb(WebCore::Reverb* aReverb, uint32_t aImpulseChannelCount);
   // This sends a single event to the timeline on the MTG thread side.
-  void SendTimelineEvent(uint32_t aIndex,
-                         const dom::AudioTimelineEvent& aEvent);
+  void SendTimelineEvent(uint32_t aIndex, const dom::AudioParamEvent& aEvent);
   // This consumes the contents of aData.  aData will be emptied after this
   // returns.
-  void SetRawArrayData(nsTArray<float>& aData);
+  void SetRawArrayData(nsTArray<float>&& aData);
   void SetChannelMixingParameters(uint32_t aNumberOfChannels,
                                   ChannelCountMode aChannelCountMoe,
                                   ChannelInterpretation aChannelInterpretation);
@@ -115,7 +114,7 @@ class AudioNodeTrack : public ProcessedMediaTrack {
     mAudioParamTrack = true;
   }
   // The value for channelCount on an AudioNode, but on the audio thread side.
-  uint32_t NumberOfChannels() const;
+  uint32_t NumberOfChannels() const override;
 
   /*
    * Resume track after updating its concept of current time by aAdvance.
@@ -175,10 +174,7 @@ class AudioNodeTrack : public ProcessedMediaTrack {
   void ScheduleCheckForInactive();
 
  protected:
-  class AdvanceAndResumeMessage;
-  class CheckForInactiveMessage;
-
-  void NotifyForcedShutdown() override;
+  void OnGraphThreadDone() override;
   void DestroyImpl() override;
 
   /*

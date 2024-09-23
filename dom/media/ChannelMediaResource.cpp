@@ -5,10 +5,13 @@
 
 #include "ChannelMediaResource.h"
 
+#include "mozilla/Preferences.h"
 #include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/net/OpaqueResponseUtils.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsICachingChannel.h"
 #include "nsIClassOfService.h"
+#include "nsIHttpChannel.h"
 #include "nsIInputStream.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsITimedChannel.h"
@@ -55,14 +58,14 @@ NS_IMPL_ISUPPORTS(ChannelMediaResource::Listener, nsIRequestObserver,
                   nsIThreadRetargetableStreamListener)
 
 nsresult ChannelMediaResource::Listener::OnStartRequest(nsIRequest* aRequest) {
-  MOZ_ASSERT(NS_IsMainThread());
+  mMutex.AssertOnWritingThread();  // Writing thread is MainThread
   if (!mResource) return NS_OK;
   return mResource->OnStartRequest(aRequest, mOffset);
 }
 
 nsresult ChannelMediaResource::Listener::OnStopRequest(nsIRequest* aRequest,
                                                        nsresult aStatus) {
-  MOZ_ASSERT(NS_IsMainThread());
+  mMutex.AssertOnWritingThread();
   if (!mResource) return NS_OK;
   return mResource->OnStopRequest(aRequest, aStatus);
 }
@@ -73,7 +76,7 @@ nsresult ChannelMediaResource::Listener::OnDataAvailable(
   // This might happen off the main thread.
   RefPtr<ChannelMediaResource> res;
   {
-    MutexAutoLock lock(mMutex);
+    MutexSingleWriterAutoLock lock(mMutex);
     res = mResource;
   }
   // Note Rekove() might happen at the same time to reset mResource. We check
@@ -84,7 +87,7 @@ nsresult ChannelMediaResource::Listener::OnDataAvailable(
 nsresult ChannelMediaResource::Listener::AsyncOnChannelRedirect(
     nsIChannel* aOld, nsIChannel* aNew, uint32_t aFlags,
     nsIAsyncVerifyRedirectCallback* cb) {
-  MOZ_ASSERT(NS_IsMainThread());
+  mMutex.AssertOnWritingThread();
 
   nsresult rv = NS_OK;
   if (mResource) {
@@ -101,6 +104,9 @@ nsresult ChannelMediaResource::Listener::AsyncOnChannelRedirect(
 
 nsresult ChannelMediaResource::Listener::CheckListenerChain() { return NS_OK; }
 
+NS_IMETHODIMP
+ChannelMediaResource::Listener::OnDataFinished(nsresult) { return NS_OK; }
+
 nsresult ChannelMediaResource::Listener::GetInterface(const nsIID& aIID,
                                                       void** aResult) {
   return QueryInterface(aIID, aResult);
@@ -108,14 +114,13 @@ nsresult ChannelMediaResource::Listener::GetInterface(const nsIID& aIID,
 
 void ChannelMediaResource::Listener::Revoke() {
   MOZ_ASSERT(NS_IsMainThread());
-  MutexAutoLock lock(mMutex);
+  MutexSingleWriterAutoLock lock(mMutex);
   mResource = nullptr;
 }
 
 static bool IsPayloadCompressed(nsIHttpChannel* aChannel) {
   nsAutoCString encoding;
-  Unused << aChannel->GetResponseHeader(NS_LITERAL_CSTRING("Content-Encoding"),
-                                        encoding);
+  Unused << aChannel->GetResponseHeader("Content-Encoding"_ns, encoding);
   return encoding.Length() > 0;
 }
 
@@ -191,8 +196,7 @@ nsresult ChannelMediaResource::OnStartRequest(nsIRequest* aRequest,
     }
 
     nsAutoCString ranges;
-    Unused << hc->GetResponseHeader(NS_LITERAL_CSTRING("Accept-Ranges"),
-                                    ranges);
+    Unused << hc->GetResponseHeader("Accept-Ranges"_ns, ranges);
     bool acceptsRanges =
         net::nsHttp::FindToken(ranges.get(), "bytes", HTTP_HEADER_VALUE_SEPS);
 
@@ -223,7 +227,7 @@ nsresult ChannelMediaResource::OnStartRequest(nsIRequest* aRequest,
         // at this stage.
         //       For now, tell the decoder that the stream is infinite.
         if (rangeTotal != -1) {
-          contentLength = std::max(contentLength, rangeTotal);
+          length = std::max(contentLength, rangeTotal);
         }
       }
       acceptsRanges = gotRangeHeader;
@@ -236,11 +240,9 @@ nsresult ChannelMediaResource::OnStartRequest(nsIRequest* aRequest,
         // to assume seeking doesn't work.
         acceptsRanges = false;
       }
-    }
-    if (aRequestOffset == 0 && contentLength >= 0 &&
-        (responseStatus == HTTP_OK_CODE ||
-         responseStatus == HTTP_PARTIAL_RESPONSE_CODE)) {
-      length = contentLength;
+      if (contentLength >= 0) {
+        length = contentLength;
+      }
     }
     // XXX we probably should examine the Content-Range header in case
     // the server gave us a range which is not quite what we asked for
@@ -276,8 +278,7 @@ nsresult ChannelMediaResource::OnStartRequest(nsIRequest* aRequest,
   owner->DownloadProgressed();
 
   nsCOMPtr<nsIThreadRetargetableRequest> retarget;
-  if (Preferences::GetBool("media.omt_data_delivery.enabled", false) &&
-      (retarget = do_QueryInterface(aRequest))) {
+  if ((retarget = do_QueryInterface(aRequest))) {
     // Note this will not always succeed. We need to handle the case where
     // all resources sharing the same cache might run their data callbacks
     // on different threads.
@@ -305,37 +306,16 @@ nsresult ChannelMediaResource::ParseContentRangeHeader(
   NS_ENSURE_ARG(aHttpChan);
 
   nsAutoCString rangeStr;
-  nsresult rv = aHttpChan->GetResponseHeader(
-      NS_LITERAL_CSTRING("Content-Range"), rangeStr);
+  nsresult rv = aHttpChan->GetResponseHeader("Content-Range"_ns, rangeStr);
   NS_ENSURE_SUCCESS(rv, rv);
   NS_ENSURE_FALSE(rangeStr.IsEmpty(), NS_ERROR_ILLEGAL_VALUE);
 
-  // Parse the range header: e.g. Content-Range: bytes 7000-7999/8000.
-  int32_t spacePos = rangeStr.Find(NS_LITERAL_CSTRING(" "));
-  int32_t dashPos = rangeStr.Find(NS_LITERAL_CSTRING("-"), true, spacePos);
-  int32_t slashPos = rangeStr.Find(NS_LITERAL_CSTRING("/"), true, dashPos);
+  auto rangeOrErr = net::ParseContentRangeHeaderString(rangeStr);
+  NS_ENSURE_FALSE(rangeOrErr.isErr(), rangeOrErr.unwrapErr());
 
-  nsAutoCString aRangeStartText;
-  rangeStr.Mid(aRangeStartText, spacePos + 1, dashPos - (spacePos + 1));
-  aRangeStart = aRangeStartText.ToInteger64(&rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(0 <= aRangeStart, NS_ERROR_ILLEGAL_VALUE);
-
-  nsAutoCString aRangeEndText;
-  rangeStr.Mid(aRangeEndText, dashPos + 1, slashPos - (dashPos + 1));
-  aRangeEnd = aRangeEndText.ToInteger64(&rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(aRangeStart < aRangeEnd, NS_ERROR_ILLEGAL_VALUE);
-
-  nsAutoCString aRangeTotalText;
-  rangeStr.Right(aRangeTotalText, rangeStr.Length() - (slashPos + 1));
-  if (aRangeTotalText[0] == '*') {
-    aRangeTotal = -1;
-  } else {
-    aRangeTotal = aRangeTotalText.ToInteger64(&rv);
-    NS_ENSURE_TRUE(aRangeEnd < aRangeTotal, NS_ERROR_ILLEGAL_VALUE);
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
+  aRangeStart = std::get<0>(rangeOrErr.inspect());
+  aRangeEnd = std::get<1>(rangeOrErr.inspect());
+  aRangeTotal = std::get<2>(rangeOrErr.inspect());
 
   LOG("Received bytes [%" PRId64 "] to [%" PRId64 "] of [%" PRId64
       "] for decoder[%p]",
@@ -359,7 +339,8 @@ nsresult ChannelMediaResource::OnStopRequest(nsIRequest* aRequest,
   NS_ASSERTION(NS_SUCCEEDED(rv), "GetLoadFlags() failed!");
 
   if (loadFlags & nsIRequest::LOAD_BACKGROUND) {
-    ModifyLoadFlags(loadFlags & ~nsIRequest::LOAD_BACKGROUND);
+    Unused << NS_WARN_IF(
+        NS_FAILED(ModifyLoadFlags(loadFlags & ~nsIRequest::LOAD_BACKGROUND)));
   }
 
   // Note that aStatus might have succeeded --- this might be a normal close
@@ -505,9 +486,9 @@ int64_t ChannelMediaResource::CalculateStreamLength() const {
   bool gotRangeHeader = NS_SUCCEEDED(
       ParseContentRangeHeader(hc, rangeStart, rangeEnd, rangeTotal));
   if (gotRangeHeader && rangeTotal != -1) {
-    contentLength = std::max(contentLength, rangeTotal);
+    return std::max(contentLength, rangeTotal);
   }
-  return contentLength;
+  return -1;
 }
 
 nsresult ChannelMediaResource::Open(nsIStreamListener** aStreamListener) {
@@ -532,6 +513,15 @@ nsresult ChannelMediaResource::Open(nsIStreamListener** aStreamListener) {
   return NS_OK;
 }
 
+dom::HTMLMediaElement* ChannelMediaResource::MediaElement() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  MediaDecoderOwner* owner = mCallback->GetMediaOwner();
+  MOZ_DIAGNOSTIC_ASSERT(owner);
+  dom::HTMLMediaElement* element = owner->GetMediaElement();
+  MOZ_DIAGNOSTIC_ASSERT(element);
+  return element;
+}
+
 nsresult ChannelMediaResource::OpenChannel(int64_t aOffset) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_DIAGNOSTIC_ASSERT(!mClosed);
@@ -549,11 +539,7 @@ nsresult ChannelMediaResource::OpenChannel(int64_t aOffset) {
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Tell the media element that we are fetching data from a channel.
-  MediaDecoderOwner* owner = mCallback->GetMediaOwner();
-  MOZ_DIAGNOSTIC_ASSERT(owner);
-  dom::HTMLMediaElement* element = owner->GetMediaElement();
-  MOZ_DIAGNOSTIC_ASSERT(element);
-  element->DownloadResumed();
+  MediaElement()->DownloadResumed();
 
   return NS_OK;
 }
@@ -572,16 +558,11 @@ nsresult ChannelMediaResource::SetupChannelHeaders(int64_t aOffset) {
     nsAutoCString rangeString("bytes=");
     rangeString.AppendInt(aOffset);
     rangeString.Append('-');
-    nsresult rv =
-        hc->SetRequestHeader(NS_LITERAL_CSTRING("Range"), rangeString, false);
+    nsresult rv = hc->SetRequestHeader("Range"_ns, rangeString, false);
     NS_ENSURE_SUCCESS(rv, rv);
 
     // Send Accept header for video and audio types only (Bug 489071)
-    MediaDecoderOwner* owner = mCallback->GetMediaOwner();
-    MOZ_DIAGNOSTIC_ASSERT(owner);
-    dom::HTMLMediaElement* element = owner->GetMediaElement();
-    MOZ_DIAGNOSTIC_ASSERT(element);
-    element->SetRequestHeaders(hc);
+    MediaElement()->SetRequestHeaders(hc);
   } else {
     NS_ASSERTION(aOffset == 0, "Don't know how to seek on this channel type");
     return NS_ERROR_FAILURE;
@@ -640,6 +621,15 @@ already_AddRefed<BaseMediaResource> ChannelMediaResource::CloneData(
 void ChannelMediaResource::CloseChannel() {
   NS_ASSERTION(NS_IsMainThread(), "Only call on main thread");
 
+  // Revoking listener should be done before canceling the channel, because
+  // canceling the channel might cause the input stream to release its buffer.
+  // If we don't do revoke first, it's possible that `OnDataAvailable` would be
+  // called later and then incorrectly access that released buffer.
+  if (mListener) {
+    mListener->Revoke();
+    mListener = nullptr;
+  }
+
   if (mChannel) {
     mSuspendAgent.Revoke();
     // The status we use here won't be passed to the decoder, since
@@ -651,11 +641,6 @@ void ChannelMediaResource::CloseChannel() {
     // at the moment.
     mChannel->Cancel(NS_ERROR_PARSED_DATA_CACHED);
     mChannel = nullptr;
-  }
-
-  if (mListener) {
-    mListener->Revoke();
-    mListener = nullptr;
   }
 }
 
@@ -686,10 +671,7 @@ void ChannelMediaResource::Suspend(bool aCloseImmediately) {
     return;
   }
 
-  MediaDecoderOwner* owner = mCallback->GetMediaOwner();
-  MOZ_DIAGNOSTIC_ASSERT(owner);
-  dom::HTMLMediaElement* element = owner->GetMediaElement();
-  MOZ_DIAGNOSTIC_ASSERT(element);
+  dom::HTMLMediaElement* element = MediaElement();
 
   if (mChannel && aCloseImmediately && mIsTransportSeekable) {
     CloseChannel();
@@ -708,10 +690,7 @@ void ChannelMediaResource::Resume() {
     return;
   }
 
-  MediaDecoderOwner* owner = mCallback->GetMediaOwner();
-  MOZ_DIAGNOSTIC_ASSERT(owner);
-  dom::HTMLMediaElement* element = owner->GetMediaElement();
-  MOZ_DIAGNOSTIC_ASSERT(element);
+  dom::HTMLMediaElement* element = MediaElement();
 
   if (mSuspendAgent.Resume()) {
     if (mChannel) {
@@ -729,18 +708,15 @@ nsresult ChannelMediaResource::RecreateChannel() {
   nsLoadFlags loadFlags = nsICachingChannel::LOAD_BYPASS_LOCAL_CACHE_IF_BUSY |
                           (mLoadInBackground ? nsIRequest::LOAD_BACKGROUND : 0);
 
-  MediaDecoderOwner* owner = mCallback->GetMediaOwner();
-  MOZ_DIAGNOSTIC_ASSERT(owner);
-  dom::HTMLMediaElement* element = owner->GetMediaElement();
-  MOZ_DIAGNOSTIC_ASSERT(element);
+  dom::HTMLMediaElement* element = MediaElement();
 
   nsCOMPtr<nsILoadGroup> loadGroup = element->GetDocumentLoadGroup();
   NS_ENSURE_TRUE(loadGroup, NS_ERROR_NULL_POINTER);
 
   nsSecurityFlags securityFlags =
       element->ShouldCheckAllowOrigin()
-          ? nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS
-          : nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS;
+          ? nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT
+          : nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT;
 
   if (element->GetCORSMode() == CORS_USE_CREDENTIALS) {
     securityFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
@@ -771,12 +747,14 @@ nsresult ChannelMediaResource::RecreateChannel() {
       loadFlags);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
   if (setAttrs) {
-    nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
     // The function simply returns NS_OK, so we ignore the return value.
     Unused << loadInfo->SetOriginAttributes(
         triggeringPrincipal->OriginAttributesRef());
   }
+
+  Unused << loadInfo->SetIsMediaRequest(true);
 
   nsCOMPtr<nsIClassOfService> cos(do_QueryInterface(mChannel));
   if (cos) {
@@ -818,15 +796,73 @@ void ChannelMediaResource::UpdatePrincipal() {
   if (!secMan) {
     return;
   }
+  bool hadData = mSharedInfo->mPrincipal != nullptr;
+  // Channels created from a media element (in RecreateChannel() or
+  // HTMLMediaElement::ChannelLoader) do not have SANDBOXED_ORIGIN set in the
+  // LoadInfo.  Document loads for a sandboxed iframe, however, may have
+  // SANDBOXED_ORIGIN set.  Ignore sandboxing so that on such loads the result
+  // principal is not replaced with a null principal but describes the source
+  // of the data and is the same as would be obtained from a load from the
+  // media host element.
   nsCOMPtr<nsIPrincipal> principal;
-  secMan->GetChannelResultPrincipal(mChannel, getter_AddRefs(principal));
+  secMan->GetChannelResultPrincipalIfNotSandboxed(mChannel,
+                                                  getter_AddRefs(principal));
   if (nsContentUtils::CombineResourcePrincipals(&mSharedInfo->mPrincipal,
                                                 principal)) {
     for (auto* r : mSharedInfo->mResources) {
       r->CacheClientNotifyPrincipalChanged();
     }
+    if (!mChannel) {  // Sometimes cleared during NotifyPrincipalChanged()
+      return;
+    }
   }
-
+  nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
+  auto mode = loadInfo->GetSecurityMode();
+  if (mode != nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT) {
+    MOZ_ASSERT(
+        mode == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT ||
+            mode == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+        "no-cors request");
+    MOZ_ASSERT(!hadData || !mChannel->IsDocument(),
+               "Only the initial load may be a document load");
+    bool finalResponseIsOpaque =
+        // NS_GetFinalChannelURI() and GetChannelResultPrincipal() return the
+        // original request URI for null-origin Responses from ServiceWorker,
+        // in which case the URI does not necessarily indicate the real source
+        // of data.  Such null-origin Responses have Basic LoadTainting, and
+        // so can be distinguished from true cross-origin responses when the
+        // channel is not a document load.
+        //
+        // When the channel is a document load, LoadTainting indicates opacity
+        // wrt the parent document and so does not indicate whether the
+        // response is cross-origin wrt to the media element.  However,
+        // ServiceWorkers for document loads are always same-origin with the
+        // channel URI and so there is no need to distinguish null-origin
+        // ServiceWorker responses to document loads.
+        //
+        // CORS filtered Responses from ServiceWorker also cannot be mixed
+        // with no-cors cross-origin responses.
+        (mChannel->IsDocument() ||
+         loadInfo->GetTainting() == LoadTainting::Opaque) &&
+        // Although intermediate cross-origin redirects back to URIs with
+        // loadingPrincipal will have LoadTainting::Opaque and will taint the
+        // media element, they are not considered opaque when verifying
+        // network responses; they can be mixed with non-opaque responses from
+        // subsequent loads on the same-origin finalURI.
+        !nsContentUtils::CheckMayLoad(MediaElement()->NodePrincipal(), mChannel,
+                                      /*allowIfInheritsPrincipal*/ true);
+    if (!hadData) {  // First response with data
+      mSharedInfo->mFinalResponsesAreOpaque = finalResponseIsOpaque;
+    } else if (mSharedInfo->mFinalResponsesAreOpaque != finalResponseIsOpaque) {
+      for (auto* r : mSharedInfo->mResources) {
+        r->mCallback->NotifyNetworkError(MediaResult(
+            NS_ERROR_CONTENT_BLOCKED, "opaque and non-opaque responses"));
+      }
+      // Our caller, OnStartRequest() will CloseChannel() on discovering the
+      // error, so no data will be read from the channel.
+      return;
+    }
+  }
   // ChannelMediaResource can recreate the channel. When this happens, we don't
   // want to overwrite mHadCrossOriginRedirects because the new channel could
   // skip intermediate redirects.
@@ -1015,3 +1051,5 @@ bool ChannelSuspendAgent::IsSuspended() {
 }
 
 }  // namespace mozilla
+
+#undef LOG

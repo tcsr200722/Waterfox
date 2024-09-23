@@ -7,22 +7,28 @@
 #include "mozilla/dom/MIDIManagerParent.h"
 #include "mozilla/dom/MIDIPlatformService.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-void MIDIManagerParent::ActorDestroy(ActorDestroyReason aWhy) {}
-
-void MIDIManagerParent::Teardown() {
+void MIDIManagerParent::ActorDestroy(ActorDestroyReason aWhy) {
   if (MIDIPlatformService::IsRunning()) {
     MIDIPlatformService::Get()->RemoveManager(this);
   }
 }
 
-mozilla::ipc::IPCResult MIDIManagerParent::RecvShutdown() {
-  Teardown();
-  Unused << Send__delete__(this);
+mozilla::ipc::IPCResult MIDIManagerParent::RecvRefresh() {
+  MIDIPlatformService::Get()->Refresh();
   return IPC_OK();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+mozilla::ipc::IPCResult MIDIManagerParent::RecvShutdown() {
+  // The two-step shutdown process here is the standard way to ensure that the
+  // child receives any messages sent by the server (since either sending or
+  // receiving __delete__ prevents any further messages from being received).
+  // This was necessary before bug 1547085 when discarded messages would
+  // trigger a crash, and is probably unnecessary now, but we leave it in place
+  // just in case.
+  Close();
+  return IPC_OK();
+}
+
+}  // namespace mozilla::dom

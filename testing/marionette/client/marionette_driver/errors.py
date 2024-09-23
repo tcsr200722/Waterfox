@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import traceback
 
 import six
@@ -35,29 +33,33 @@ class MarionetteException(Exception):
         self._message = six.text_type(message)
 
     def __str__(self):
+        # pylint: disable=W1645
         msg = self.message
         tb = None
 
         if self.cause:
             if type(self.cause) is tuple:
-                msg += u", caused by {0!r}".format(self.cause[0])
+                msg += ", caused by {0!r}".format(self.cause[0])
                 tb = self.cause[2]
             else:
-                msg += u", caused by {}".format(self.cause)
+                msg += ", caused by {}".format(self.cause)
 
         if self.stacktrace:
-            st = u"".join(["\t{}\n".format(x)
-                           for x in self.stacktrace.splitlines()])
-            msg += u"\nstacktrace:\n{}".format(st)
+            st = "".join(["\t{}\n".format(x) for x in self.stacktrace.splitlines()])
+            msg += "\nstacktrace:\n{}".format(st)
 
         if tb:
-            msg += u": " + u"".join(traceback.format_tb(tb))
+            msg += ": " + "".join(traceback.format_tb(tb))
 
         return six.text_type(msg)
 
     @property
     def message(self):
         return self._message
+
+
+class DetachedShadowRootException(MarionetteException):
+    status = "detached shadow root"
 
 
 class ElementNotSelectableException(MarionetteException):
@@ -92,6 +94,10 @@ class NoSuchElementException(MarionetteException):
     status = "no such element"
 
 
+class NoSuchShadowRootException(MarionetteException):
+    status = "no such shadow root"
+
+
 class NoSuchWindowException(MarionetteException):
     status = "no such window"
 
@@ -109,11 +115,15 @@ class ElementNotVisibleException(MarionetteException):
 
     status = "element not visible"
 
-    def __init__(self,
-                 message="Element is not currently visible and may not be manipulated",
-                 stacktrace=None, cause=None):
+    def __init__(
+        self,
+        message="Element is not currently visible and may not be manipulated",
+        stacktrace=None,
+        cause=None,
+    ):
         super(ElementNotVisibleException, self).__init__(
-            message, cause=cause, stacktrace=stacktrace)
+            message, cause=cause, stacktrace=stacktrace
+        )
 
 
 class ElementNotAccessibleException(MarionetteException):
@@ -180,7 +190,11 @@ class UnresponsiveInstanceException(Exception):
     pass
 
 
-es_ = [e for e in locals().values() if type(e) == type and issubclass(e, MarionetteException)]
+es_ = [
+    e
+    for e in locals().values()
+    if type(e) == type and issubclass(e, MarionetteException)
+]
 by_string = {e.status: e for e in es_}
 
 

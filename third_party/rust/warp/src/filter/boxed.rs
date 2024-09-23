@@ -3,12 +3,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::TryFutureExt;
+use futures_util::TryFutureExt;
 
 use super::{Filter, FilterBase, Internal, Tuple};
 use crate::reject::Rejection;
 
-/// A type representing a boxed `Filter` trait object.
+/// A type representing a boxed [`Filter`](crate::Filter) trait object.
 ///
 /// The filter inside is a dynamic trait object. The purpose of this type is
 /// to ease returning `Filter`s from other functions.
@@ -61,7 +61,7 @@ impl<T: Tuple> Clone for BoxedFilter<T> {
 }
 
 impl<T: Tuple> fmt::Debug for BoxedFilter<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoxedFilter").finish()
     }
 }

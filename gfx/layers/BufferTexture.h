@@ -7,18 +7,14 @@
 #ifndef MOZILLA_LAYERS_BUFFERETEXTURE
 #define MOZILLA_LAYERS_BUFFERETEXTURE
 
-#include "mozilla/layers/TextureClient.h"
-#include "mozilla/ipc/SharedMemory.h"
-#include "mozilla/gfx/Types.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Types.h"
+#include "mozilla/ipc/SharedMemory.h"
+#include "mozilla/layers/TextureClient.h"
 
 namespace mozilla {
 namespace layers {
-
-bool ComputeHasIntermediateBuffer(gfx::SurfaceFormat aFormat,
-                                  LayersBackend aLayersBackend,
-                                  bool aSupportsTextureDirectMapping);
 
 class BufferTextureData : public TextureData {
  public:
@@ -34,10 +30,12 @@ class BufferTextureData : public TextureData {
                                    ShmemAllocator aAllocator);
 
   static BufferTextureData* CreateForYCbCr(
-      KnowsCompositor* aAllocator, gfx::IntSize aYSize, uint32_t aYStride,
-      gfx::IntSize aCbCrSize, uint32_t aCbCrStride, StereoMode aStereoMode,
-      gfx::ColorDepth aColorDepth, gfx::YUVColorSpace aYUVColorSpace,
-      gfx::ColorRange aColorRange, TextureFlags aTextureFlags);
+      KnowsCompositor* aAllocator, const gfx::IntRect& aDisplay,
+      const gfx::IntSize& aYSize, uint32_t aYStride,
+      const gfx::IntSize& aCbCrSize, uint32_t aCbCrStride,
+      StereoMode aStereoMode, gfx::ColorDepth aColorDepth,
+      gfx::YUVColorSpace aYUVColorSpace, gfx::ColorRange aColorRange,
+      gfx::ChromaSubsampling aSubsampling, TextureFlags aTextureFlags);
 
   bool Lock(OpenMode aMode) override { return true; }
 
@@ -56,8 +54,7 @@ class BufferTextureData : public TextureData {
 
   BufferTextureData* AsBufferTextureData() override { return this; }
 
-  // Don't use this.
-  void SetDescriptor(BufferDescriptor&& aDesc);
+  Maybe<gfx::IntSize> GetYSize() const;
 
   Maybe<gfx::IntSize> GetCbCrSize() const;
 
@@ -71,11 +68,17 @@ class BufferTextureData : public TextureData {
 
   Maybe<StereoMode> GetStereoMode() const;
 
- protected:
+  Maybe<gfx::ChromaSubsampling> GetChromaSubsampling() const;
+
+  gfx::IntRect GetPictureRect() const;
+
   gfx::IntSize GetSize() const;
 
   gfx::SurfaceFormat GetFormat() const;
 
+  virtual size_t GetBufferSize() = 0;
+
+ protected:
   static BufferTextureData* Create(
       gfx::IntSize aSize, gfx::SurfaceFormat aFormat,
       gfx::BackendType aMoz2DBackend, LayersBackend aLayersBackend,
@@ -89,11 +92,12 @@ class BufferTextureData : public TextureData {
                                            TextureFlags aTextureFlags);
 
   virtual uint8_t* GetBuffer() = 0;
-  virtual size_t GetBufferSize() = 0;
 
   BufferTextureData(const BufferDescriptor& aDescriptor,
                     gfx::BackendType aMoz2DBackend)
       : mDescriptor(aDescriptor), mMoz2DBackend(aMoz2DBackend) {}
+
+  ~BufferTextureData() override = default;
 
   BufferDescriptor mDescriptor;
   gfx::BackendType mMoz2DBackend;

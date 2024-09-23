@@ -44,6 +44,8 @@ enum MozUrlClassificationFlags {
   "fingerprinting_content",
   "cryptomining",
   "cryptomining_content",
+  "emailtracking",
+  "emailtracking_content",
   "tracking",
   "tracking_ad",
   "tracking_analytics",
@@ -99,7 +101,7 @@ interface ChannelWrapper : EventTarget {
    * constants from nsILoadInfo.idl
    */
   [Throws]
-  void cancel(unsigned long result, optional unsigned long reason = 0);
+  undefined cancel(unsigned long result, optional unsigned long reason = 0);
 
   /**
    * Redirects the wrapped HTTP channel to the given URI. For other channel
@@ -107,7 +109,7 @@ interface ChannelWrapper : EventTarget {
    * the behavior is the same as nsIHttpChannel.redirectTo.
    */
   [Throws]
-  void redirectTo(URI url);
+  undefined redirectTo(URI url);
 
   /**
    * Requests an upgrade of the HTTP channel to a secure request. For other channel
@@ -119,20 +121,20 @@ interface ChannelWrapper : EventTarget {
    * results in the redirect happening rather than the upgrade request.
    */
   [Throws]
-  void upgradeToSecure();
+  undefined upgradeToSecure();
 
   /**
-   * Suspends the underlying channel.
+   * Suspends the underlying channel.  The profilerText parameter is only used
+   * to annotate profiles.
    */
   [Throws]
-  void suspend();
+  undefined suspend(ByteString profileMarkerText);
 
   /**
-   * Resumes (un-suspends) the underlying channel.  The profilerText parameter
-   * is only used to annotate profiles.
+   * Resumes (un-suspends) the underlying channel.
    */
   [Throws]
-  void resume(ByteString profileText);
+  undefined resume();
 
   /**
    * The content type of the request, usually as read from the Content-Type
@@ -170,13 +172,14 @@ interface ChannelWrapper : EventTarget {
   /**
    * The final URI of the channel (as returned by NS_GetFinalChannelURI) after
    * any redirects have been processed.
+   *
+   * Never null, unless the underlying channel is null.
    */
   [Cached, Pure]
-  readonly attribute URI finalURI;
+  readonly attribute URI? finalURI;
 
   /**
-   * The string version of finalURI (but cheaper to access than
-   * finalURI.spec).
+   * The string version of finalURI (but cheaper to access than finalURI.spec).
    */
   [Cached, Pure]
   readonly attribute DOMString finalURL;
@@ -195,7 +198,7 @@ interface ChannelWrapper : EventTarget {
    * Register's this channel as traceable by the given add-on when accessed
    * via the process of the given RemoteTab.
    */
-  void registerTraceableChannel(WebExtensionPolicy extension, RemoteTab? remoteTab);
+  undefined registerTraceableChannel(WebExtensionPolicy extension, RemoteTab? remoteTab);
 
   /**
    * The current HTTP status code of the request. This will be 0 if a response
@@ -238,7 +241,7 @@ interface ChannelWrapper : EventTarget {
    * Checks the request's current status and dispatches an error event if the
    * request has failed and one has not already been dispatched.
    */
-  void errorCheck();
+  undefined errorCheck();
 
 
   /**
@@ -273,6 +276,12 @@ interface ChannelWrapper : EventTarget {
    */
   [Cached, Pure]
   readonly attribute LoadInfo? loadInfo;
+
+  /**
+   * True if this load for a service worker script (either a main script or import scripts).
+   */
+  [Cached, Pure]
+  readonly attribute boolean isServiceWorkerScript;
 
   /**
    * True if this load was triggered by a system caller. This currently always
@@ -321,19 +330,19 @@ interface ChannelWrapper : EventTarget {
 
 
   /**
-   * The outer window ID of the frame that the request belongs to, or 0 if it
+   * The BrowsingContext ID of the frame that the request belongs to, or 0 if it
    * is a top-level load or does not belong to a document.
    */
   [Cached, Constant]
-  readonly attribute long long windowId;
+  readonly attribute long long frameId;
 
   /**
-   * The outer window ID of the parent frame of the window that the request
+   * The BrowsingContext ID of the parent frame of the window that the request
    * belongs to, 0 if that parent frame is the top-level frame, and -1 if the
    * request belongs to a top-level frame.
    */
   [Cached, Constant]
-  readonly attribute long long parentWindowId;
+  readonly attribute long long parentFrameId;
 
   /**
    * For cross-process requests, the <browser> or <iframe> element to which the
@@ -369,6 +378,14 @@ interface ChannelWrapper : EventTarget {
   sequence<MozHTTPHeader> getRequestHeaders();
 
   /**
+  * For HTTP requests: returns the value of the request header, null if not set.
+  *
+  * For non-HTTP requests, throws NS_ERROR_UNEXPECTED.
+  */
+  [Throws]
+  ByteString? getRequestHeader(ByteString header);
+
+  /**
    * For HTTP requests, returns an array of response headers which were
    * received for this request, in the same format as returned by
    * getRequestHeaders.
@@ -398,7 +415,7 @@ interface ChannelWrapper : EventTarget {
    * For non-HTTP requests, throws NS_ERROR_UNEXPECTED.
    */
   [Throws]
-  void setRequestHeader(ByteString header,
+  undefined setRequestHeader(ByteString header,
                         ByteString value,
                         optional boolean merge = false);
 
@@ -416,7 +433,7 @@ interface ChannelWrapper : EventTarget {
    * getResponseHeaders() for details.
    */
   [Throws]
-  void setResponseHeader(ByteString header,
+  undefined setResponseHeader(ByteString header,
                          ByteString value,
                          optional boolean merge = false);
 

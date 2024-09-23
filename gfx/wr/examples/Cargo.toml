@@ -27,10 +27,6 @@ name = "document"
 path = "document.rs"
 
 [[bin]]
-name = "frame_output"
-path = "frame_output.rs"
-
-[[bin]]
 name = "iframe"
 path = "iframe.rs"
 
@@ -55,17 +51,17 @@ name = "yuv"
 path = "yuv.rs"
 
 [features]
-debug = ["webrender/capture", "webrender/debugger", "webrender/profiler"]
+debug = ["webrender/capture", "webrender/profiler"]
 
 [dependencies]
 app_units = "0.7"
-env_logger = "0.5"
-euclid = "0.20"
-gleam = "0.11"
-glutin = "0.21"
+env_logger = { version = "0.10", default_features = false }
+euclid = "0.22"
+gleam = "0.15"
+glutin = "0.28"
 rayon = "1"
 webrender = { path = "../webrender" }
-winit = "0.19"
+winit = "0.26"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.7"

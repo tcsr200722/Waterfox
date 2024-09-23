@@ -8,8 +8,7 @@
 #include "mozilla/ContentEvents.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 TransitionEvent::TransitionEvent(EventTarget* aOwner,
                                  nsPresContext* aPresContext,
@@ -20,7 +19,6 @@ TransitionEvent::TransitionEvent(EventTarget* aOwner,
     mEventIsInternal = false;
   } else {
     mEventIsInternal = true;
-    mEvent->mTime = PR_Now();
   }
 }
 
@@ -56,8 +54,7 @@ void TransitionEvent::GetPseudoElement(nsAString& aPseudoElement) const {
   aPseudoElement = mEvent->AsTransitionEvent()->mPseudoElement;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

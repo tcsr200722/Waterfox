@@ -5,31 +5,37 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "ia2Accessible.h"
+#include "ia2AccessibleHypertext.h"
 #include "ia2AccessibleText.h"
 
 #include "AccessibleText_i.c"
 
-#include "HyperTextAccessibleWrap.h"
-#include "HyperTextAccessible-inl.h"
-#include "ProxyWrappers.h"
+#include "mozilla/a11y/HyperTextAccessibleBase.h"
 #include "mozilla/ClearOnShutdown.h"
 
 using namespace mozilla::a11y;
 
-StaticRefPtr<HyperTextAccessibleWrap> ia2AccessibleText::sLastTextChangeAcc;
-StaticAutoPtr<nsString> ia2AccessibleText::sLastTextChangeString;
+HyperTextAccessibleBase* ia2AccessibleText::sLastTextChangeAcc = nullptr;
+mozilla::StaticAutoPtr<nsString> ia2AccessibleText::sLastTextChangeString;
 uint32_t ia2AccessibleText::sLastTextChangeStart = 0;
 uint32_t ia2AccessibleText::sLastTextChangeEnd = 0;
 bool ia2AccessibleText::sLastTextChangeWasInsert = false;
+
+HyperTextAccessibleBase* ia2AccessibleText::TextAcc() {
+  auto hyp = static_cast<ia2AccessibleHypertext*>(this);
+  Accessible* acc = hyp->Acc();
+  return acc ? acc->AsHyperTextBase() : nullptr;
+}
 
 // IAccessibleText
 
 STDMETHODIMP
 ia2AccessibleText::addSelection(long aStartOffset, long aEndOffset) {
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   return textAcc->AddToSelection(aStartOffset, aEndOffset) ? S_OK
                                                            : E_INVALIDARG;
@@ -45,17 +51,16 @@ ia2AccessibleText::get_attributes(long aOffset, long* aStartOffset,
   *aTextAttributes = nullptr;
 
   int32_t startOffset = 0, endOffset = 0;
-  HRESULT hr;
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
-  nsCOMPtr<nsIPersistentProperties> attributes =
+  RefPtr<AccAttributes> attributes =
       textAcc->TextAttributes(true, aOffset, &startOffset, &endOffset);
 
-  hr = AccessibleWrap::ConvertToIA2Attributes(attributes, aTextAttributes);
+  HRESULT hr =
+      ia2Accessible::ConvertToIA2Attributes(attributes, aTextAttributes);
   if (FAILED(hr)) return hr;
 
   *aStartOffset = startOffset;
@@ -70,9 +75,8 @@ ia2AccessibleText::get_caretOffset(long* aOffset) {
 
   *aOffset = -1;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -93,10 +97,11 @@ ia2AccessibleText::get_characterExtents(long aOffset,
       (aCoordType == IA2_COORDTYPE_SCREEN_RELATIVE)
           ? nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE
           : nsIAccessibleCoordinateType::COORDTYPE_PARENT_RELATIVE;
-  nsIntRect rect;
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  LayoutDeviceIntRect rect;
+  auto textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   rect = textAcc->CharBounds(aOffset, geckoCoordType);
 
@@ -113,9 +118,8 @@ ia2AccessibleText::get_nSelections(long* aNSelections) {
   if (!aNSelections) return E_INVALIDARG;
   *aNSelections = 0;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -136,9 +140,8 @@ ia2AccessibleText::get_offsetAtPoint(long aX, long aY,
           ? nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE
           : nsIAccessibleCoordinateType::COORDTYPE_PARENT_RELATIVE;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -154,9 +157,8 @@ ia2AccessibleText::get_selection(long aSelectionIndex, long* aStartOffset,
   *aStartOffset = *aEndOffset = 0;
 
   int32_t startOffset = 0, endOffset = 0;
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -176,9 +178,8 @@ ia2AccessibleText::get_text(long aStartOffset, long aEndOffset, BSTR* aText) {
   *aText = nullptr;
 
   nsAutoString text;
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -204,8 +205,10 @@ ia2AccessibleText::get_textBeforeOffset(long aOffset,
   *aStartOffset = *aEndOffset = 0;
   *aText = nullptr;
 
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   if (!textAcc->IsValidOffset(aOffset)) return E_INVALIDARG;
 
@@ -244,8 +247,10 @@ ia2AccessibleText::get_textAfterOffset(long aOffset,
   *aEndOffset = 0;
   *aText = nullptr;
 
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   if (!textAcc->IsValidOffset(aOffset)) return E_INVALIDARG;
 
@@ -282,8 +287,8 @@ ia2AccessibleText::get_textAtOffset(long aOffset,
   *aStartOffset = *aEndOffset = 0;
   *aText = nullptr;
 
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) return CO_E_OBJNOTCONNECTED;
 
   if (!textAcc->IsValidOffset(aOffset)) return E_INVALIDARG;
 
@@ -311,20 +316,20 @@ ia2AccessibleText::get_textAtOffset(long aOffset,
 
 STDMETHODIMP
 ia2AccessibleText::removeSelection(long aSelectionIndex) {
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   return textAcc->RemoveFromSelection(aSelectionIndex) ? S_OK : E_INVALIDARG;
 }
 
 STDMETHODIMP
 ia2AccessibleText::setCaretOffset(long aOffset) {
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   if (!textAcc->IsValidOffset(aOffset)) return E_INVALIDARG;
 
@@ -335,10 +340,10 @@ ia2AccessibleText::setCaretOffset(long aOffset) {
 STDMETHODIMP
 ia2AccessibleText::setSelection(long aSelectionIndex, long aStartOffset,
                                 long aEndOffset) {
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   return textAcc->SetSelectionBoundsAt(aSelectionIndex, aStartOffset,
                                        aEndOffset)
@@ -351,10 +356,8 @@ ia2AccessibleText::get_nCharacters(long* aNCharacters) {
   if (!aNCharacters) return E_INVALIDARG;
   *aNCharacters = 0;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) return CO_E_OBJNOTCONNECTED;
 
   *aNCharacters = textAcc->CharacterCount();
   return S_OK;
@@ -363,10 +366,10 @@ ia2AccessibleText::get_nCharacters(long* aNCharacters) {
 STDMETHODIMP
 ia2AccessibleText::scrollSubstringTo(long aStartIndex, long aEndIndex,
                                      enum IA2ScrollType aScrollType) {
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
 
   if (!textAcc->IsValidRange(aStartIndex, aEndIndex)) return E_INVALIDARG;
 
@@ -378,18 +381,17 @@ STDMETHODIMP
 ia2AccessibleText::scrollSubstringToPoint(long aStartIndex, long aEndIndex,
                                           enum IA2CoordinateType aCoordType,
                                           long aX, long aY) {
+  HyperTextAccessibleBase* textAcc = TextAcc();
+  if (!textAcc) {
+    return CO_E_OBJNOTCONNECTED;
+  }
+  if (!textAcc->IsValidRange(aStartIndex, aEndIndex)) {
+    return E_INVALIDARG;
+  }
   uint32_t geckoCoordType =
       (aCoordType == IA2_COORDTYPE_SCREEN_RELATIVE)
           ? nsIAccessibleCoordinateType::COORDTYPE_SCREEN_RELATIVE
           : nsIAccessibleCoordinateType::COORDTYPE_PARENT_RELATIVE;
-
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessible* textAcc = static_cast<HyperTextAccessibleWrap*>(this);
-  if (textAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
-
-  if (!textAcc->IsValidRange(aStartIndex, aEndIndex)) return E_INVALIDARG;
-
   textAcc->ScrollSubstringToPoint(aStartIndex, aEndIndex, geckoCoordType, aX,
                                   aY);
   return S_OK;
@@ -416,7 +418,7 @@ ia2AccessibleText::GetModifiedText(bool aGetInsertedText,
 
   if (aGetInsertedText != sLastTextChangeWasInsert) return S_OK;
 
-  if (sLastTextChangeAcc != this) return S_OK;
+  if (sLastTextChangeAcc != TextAcc()) return S_OK;
 
   aText->start = sLastTextChangeStart;
   aText->end = sLastTextChangeEnd;
@@ -432,13 +434,14 @@ AccessibleTextBoundary ia2AccessibleText::GetGeckoTextBoundary(
     enum IA2TextBoundaryType aBoundaryType) {
   switch (aBoundaryType) {
     case IA2_TEXT_BOUNDARY_CHAR:
-      return nsIAccessibleText::BOUNDARY_CHAR;
+      return nsIAccessibleText::BOUNDARY_CLUSTER;
     case IA2_TEXT_BOUNDARY_WORD:
       return nsIAccessibleText::BOUNDARY_WORD_START;
     case IA2_TEXT_BOUNDARY_LINE:
       return nsIAccessibleText::BOUNDARY_LINE_START;
+    case IA2_TEXT_BOUNDARY_PARAGRAPH:
+      return nsIAccessibleText::BOUNDARY_PARAGRAPH;
     // case IA2_TEXT_BOUNDARY_SENTENCE:
-    // case IA2_TEXT_BOUNDARY_PARAGRAPH:
     // XXX: not implemented
     default:
       return -1;
@@ -446,12 +449,12 @@ AccessibleTextBoundary ia2AccessibleText::GetGeckoTextBoundary(
 }
 
 void ia2AccessibleText::InitTextChangeData() {
-  ClearOnShutdown(&sLastTextChangeAcc);
   ClearOnShutdown(&sLastTextChangeString);
 }
 
-void ia2AccessibleText::UpdateTextChangeData(HyperTextAccessibleWrap* aAcc,
-                                             bool aInsert, const nsString& aStr,
+void ia2AccessibleText::UpdateTextChangeData(HyperTextAccessibleBase* aAcc,
+                                             bool aInsert,
+                                             const nsAString& aStr,
                                              int32_t aStart, uint32_t aLen) {
   if (!sLastTextChangeString) sLastTextChangeString = new nsString();
 

@@ -10,54 +10,30 @@
  */
 
 /**
- * @typedef {import("../../client/performance-new/@types/perf").GetActiveBrowsingContextID} GetActiveBrowsingContextID
+ * @typedef {import("../../client/performance-new/@types/perf").GetActiveBrowserID} GetActiveBrowserID
  */
 
 /**
- * TS-TODO
+ * Gets the ID of active tab from the browser.
  *
- * This function replaces lazyRequireGetter, and TypeScript can understand it. It's
- * currently duplicated until we have consensus that TypeScript is a good idea.
- *
- * @template T
- * @type {(callback: () => T) => () => T}
+ * @type {GetActiveBrowserID}
  */
-function requireLazy(callback) {
-  /** @type {T | undefined} */
-  let cache;
-  return () => {
-    if (cache === undefined) {
-      cache = callback();
-    }
-    return cache;
-  };
-}
-
-const lazyServices = requireLazy(() =>
-  require("resource://gre/modules/Services.jsm")
-);
-
-/**
- * Gets the ID of active BrowsingContext from the browser.
- *
- * @type {GetActiveBrowsingContextID}
- */
-function getActiveBrowsingContextID() {
-  const { Services } = lazyServices();
+function getActiveBrowserID() {
   const win = Services.wm.getMostRecentWindow("navigator:browser");
 
-  if (win?.gBrowser?.selectedBrowser?.browsingContext?.id) {
-    return win.gBrowser.selectedBrowser.browsingContext.id;
+  const browserId = win?.gBrowser?.selectedBrowser?.browsingContext?.browserId;
+  if (browserId) {
+    return browserId;
   }
 
   console.error(
-    "Failed to get the active BrowsingContext ID while starting the profiler."
+    "Failed to get the active browserId while starting the profiler."
   );
-  // `0` mean that we failed to ge the active BrowsingContext ID, and it's
+  // `0` mean that we failed to ge the active browserId, and it's
   // treated as null value in the platform.
   return 0;
 }
 
 module.exports = {
-  getActiveBrowsingContextID,
+  getActiveBrowserID,
 };

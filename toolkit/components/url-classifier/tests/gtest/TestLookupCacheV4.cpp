@@ -5,8 +5,11 @@
 
 #include "Classifier.h"
 #include "LookupCacheV4.h"
+#include "nsAppDirectoryServiceDefs.h"
 
 #include "Common.h"
+
+#define GTEST_SAFEBROWSING_DIR "safebrowsing"_ns
 
 static void TestHasPrefix(const nsCString& aURL, bool aExpectedHas,
                           bool aExpectedComplete) {
@@ -41,13 +44,13 @@ static void TestHasPrefix(const nsCString& aURL, bool aExpectedHas,
 }
 
 TEST(UrlClassifierLookupCacheV4, HasComplete)
-{ TestHasPrefix(NS_LITERAL_CSTRING("bravo.com/"), true, true); }
+{ TestHasPrefix("bravo.com/"_ns, true, true); }
 
 TEST(UrlClassifierLookupCacheV4, HasPrefix)
-{ TestHasPrefix(NS_LITERAL_CSTRING("browsing.com/"), true, false); }
+{ TestHasPrefix("browsing.com/"_ns, true, false); }
 
 TEST(UrlClassifierLookupCacheV4, Nomatch)
-{ TestHasPrefix(NS_LITERAL_CSTRING("nomatch.com/"), false, false); }
+{ TestHasPrefix("nomatch.com/"_ns, false, false); }
 
 // Test an existing .pset should be removed after .vlpset is written
 TEST(UrlClassifierLookupCacheV4, RemoveOldPset)
@@ -55,14 +58,14 @@ TEST(UrlClassifierLookupCacheV4, RemoveOldPset)
   nsCOMPtr<nsIFile> oldPsetFile;
   NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                          getter_AddRefs(oldPsetFile));
-  oldPsetFile->AppendNative(NS_LITERAL_CSTRING("safebrowsing"));
-  oldPsetFile->AppendNative(GTEST_TABLE_V4 + NS_LITERAL_CSTRING(".pset"));
+  oldPsetFile->AppendNative("safebrowsing"_ns);
+  oldPsetFile->AppendNative(GTEST_TABLE_V4 + ".pset"_ns);
 
   nsCOMPtr<nsIFile> newPsetFile;
   NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                          getter_AddRefs(newPsetFile));
-  newPsetFile->AppendNative(NS_LITERAL_CSTRING("safebrowsing"));
-  newPsetFile->AppendNative(GTEST_TABLE_V4 + NS_LITERAL_CSTRING(".vlpset"));
+  newPsetFile->AppendNative("safebrowsing"_ns);
+  newPsetFile->AppendNative(GTEST_TABLE_V4 + ".vlpset"_ns);
 
   // Create the legacy .pset file
   nsresult rv = oldPsetFile->Create(nsIFile::NORMAL_FILE_TYPE, 0666);
@@ -108,8 +111,8 @@ TEST(UrlClassifierLookupCacheV4, LoadOldPset)
   {
     NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                            getter_AddRefs(oldPsetFile));
-    oldPsetFile->AppendNative(NS_LITERAL_CSTRING("safebrowsing"));
-    oldPsetFile->AppendNative(GTEST_TABLE_V4 + NS_LITERAL_CSTRING(".pset"));
+    oldPsetFile->AppendNative("safebrowsing"_ns);
+    oldPsetFile->AppendNative(GTEST_TABLE_V4 + ".pset"_ns);
 
     RefPtr<VariableLengthPrefixSet> pset = new VariableLengthPrefixSet;
     pset->SetPrefixes(map);

@@ -13,9 +13,6 @@ namespace dom {
 
 NS_IMPL_CYCLE_COLLECTION(FontFaceSetIterator, mFontFaceSet)
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(FontFaceSetIterator, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(FontFaceSetIterator, Release)
-
 FontFaceSetIterator::FontFaceSetIterator(FontFaceSet* aFontFaceSet,
                                          bool aIsKeyAndValue)
     : mFontFaceSet(aFontFaceSet),
@@ -42,7 +39,14 @@ void FontFaceSetIterator::Next(JSContext* aCx,
     return;
   }
 
-  FontFace* face = mFontFaceSet->GetFontFaceAt(mNextIndex++);
+  // Skip over non-Author origin fonts (GetFontFaceAt returns nullptr
+  // for those).
+  FontFace* face;
+  while (!(face = mFontFaceSet->GetFontFaceAt(mNextIndex++))) {
+    if (mNextIndex >= mFontFaceSet->SizeIncludingNonAuthorOrigins()) {
+      break;  // this iterator is done
+    }
+  }
 
   if (!face) {
     aResult.mValue.setUndefined();

@@ -479,9 +479,6 @@ cert_add_cert()
 ##########################################################################
 cert_all_CA()
 {
-    echo nss > ${PWFILE}
-    echo > ${EMPTY_FILE}
-
     ALL_CU_SUBJECT="CN=NSS Test CA, O=BOGUS NSS, L=Mountain View, ST=California, C=US"
     cert_CA $CADIR TestCA -x "CTu,CTu,CTu" ${D_CA} "1"
 
@@ -2610,7 +2607,39 @@ cert_cleanup()
   . common/cleanup.sh
 }
 
+CERTCACHE=${TESTDIR}/${HOST}.${TEST_MODE}.cert.cache.tar.gz
+
+cert_make_cache()
+{
+  if [ -n "${NSS_USE_CERT_CACHE}" ] ; then
+    pushd ${HOSTDIR}
+    tar czf "${CERTCACHE}" .
+    popd
+  fi
+}
+
+cert_use_cache()
+{
+  if [ -n "${NSS_USE_CERT_CACHE}" ] ; then
+    pushd ${HOSTDIR}
+    if [ -r "${CERTCACHE}" ]; then
+      tar xzf "${CERTCACHE}"
+      return 1;
+    fi
+    popd
+  fi
+
+  rm "${CERTCACHE}"
+  return 0;
+}
+
 ################## main #################################################
+
+cert_use_cache
+USING_CACHE=$?
+if [[ $USING_CACHE -eq 1 ]]; then
+  return 0;
+fi
 
 cert_init
 cert_all_CA
@@ -2651,3 +2680,4 @@ fi
 cert_iopr_setup
 
 cert_cleanup
+cert_make_cache

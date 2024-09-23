@@ -1,15 +1,27 @@
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://gre/modules/AddonManager.jsm", this);
-ChromeUtils.import("resource://testing-common/AddonTestUtils.jsm", this);
-ChromeUtils.import("resource://normandy/lib/AddonRollouts.jsm", this);
-ChromeUtils.import("resource://normandy/lib/ClientEnvironment.jsm", this);
-ChromeUtils.import("resource://normandy/lib/PreferenceExperiments.jsm", this);
-ChromeUtils.import("resource://normandy/lib/PreferenceRollouts.jsm", this);
-ChromeUtils.import("resource://normandy/lib/RecipeRunner.jsm", this);
-ChromeUtils.import("resource://testing-common/NormandyTestUtils.jsm", this);
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
+);
+
+const { AddonRollouts } = ChromeUtils.importESModule(
+  "resource://normandy/lib/AddonRollouts.sys.mjs"
+);
+const { ClientEnvironment } = ChromeUtils.importESModule(
+  "resource://normandy/lib/ClientEnvironment.sys.mjs"
+);
+const { PreferenceExperiments } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceExperiments.sys.mjs"
+);
+const { PreferenceRollouts } = ChromeUtils.importESModule(
+  "resource://normandy/lib/PreferenceRollouts.sys.mjs"
+);
+const { RecipeRunner } = ChromeUtils.importESModule(
+  "resource://normandy/lib/RecipeRunner.sys.mjs"
+);
+const { NormandyTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NormandyTestUtils.sys.mjs"
+);
 
 add_task(async function testTelemetry() {
   // setup
@@ -50,20 +62,29 @@ add_task(async function testUserId() {
 });
 
 add_task(async function testDistribution() {
-  // distribution id defaults to "default"
+  // distribution id defaults to "default" for most builds, and
+  // "mozilla-MSIX" for MSIX builds.
   is(
     ClientEnvironment.distribution,
-    "default",
+    AppConstants.platform === "win" &&
+      Services.sysinfo.getProperty("hasWinPackageId")
+      ? "mozilla-MSIX"
+      : "default",
     "distribution has a default value"
   );
 
   // distribution id is read from a preference
-  await SpecialPowers.pushPrefEnv({ set: [["distribution.id", "funnelcake"]] });
+  Services.prefs
+    .getDefaultBranch(null)
+    .setStringPref("distribution.id", "funnelcake");
   is(
     ClientEnvironment.distribution,
     "funnelcake",
     "distribution is read from preferences"
   );
+  Services.prefs
+    .getDefaultBranch(null)
+    .setStringPref("distribution.id", "default");
 });
 
 const mockClassify = { country: "FR", request_time: new Date(2017, 1, 1) };
@@ -179,7 +200,10 @@ decorate_task(
       branch: "b-test-branch",
     }),
   ]),
-  async function testStudies([prefExperiment], [addonStudy]) {
+  async function testStudies({
+    prefExperiments: [prefExperiment],
+    addonStudies: [addonStudy],
+  }) {
     Assert.deepEqual(
       await ClientEnvironment.studies,
       {
@@ -208,17 +232,15 @@ decorate_task(
   }
 );
 
-decorate_task(PreferenceRollouts.withTestMock, async function testRollouts() {
+decorate_task(PreferenceRollouts.withTestMock(), async function testRollouts() {
   const prefRollout = {
     slug: "test-rollout",
     preference: [],
-    enrollmentId: "test-enrollment-id-1",
   };
   await PreferenceRollouts.add(prefRollout);
   const addonRollout = {
     slug: "test-rollout-1",
     extension: {},
-    enrollmentId: "test-enrollment-id-2",
   };
   await AddonRollouts.add(addonRollout);
 
@@ -235,13 +257,13 @@ decorate_task(PreferenceRollouts.withTestMock, async function testRollouts() {
     "addon and preference rollouts should be accessible"
   );
   is(
-    (await ClientEnvironment.rollouts).pref[prefRollout.slug].enrollmentId,
-    "test-enrollment-id-1",
+    (await ClientEnvironment.rollouts).pref[prefRollout.slug].slug,
+    prefRollout.slug,
     "A specific preference rollout field should be accessible in the context"
   );
   is(
-    (await ClientEnvironment.rollouts).addon[addonRollout.slug].enrollmentId,
-    "test-enrollment-id-2",
+    (await ClientEnvironment.rollouts).addon[addonRollout.slug].slug,
+    addonRollout.slug,
     "A specific addon rollout field should be accessible in the context"
   );
 

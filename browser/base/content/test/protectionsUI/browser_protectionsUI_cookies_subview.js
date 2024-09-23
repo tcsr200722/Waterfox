@@ -6,13 +6,15 @@
 "use strict";
 
 const COOKIE_PAGE =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://not-tracking.example.com/browser/browser/base/content/test/protectionsUI/cookiePage.html";
 const CONTAINER_PAGE =
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   "http://not-tracking.example.com/browser/browser/base/content/test/protectionsUI/containerPage.html";
 
 const TPC_PREF = "network.cookie.cookieBehavior";
 
-add_task(async function setup() {
+add_setup(async function () {
   await UrlClassifierTestUtils.addTestTrackers();
 
   registerCleanupFunction(() => {
@@ -68,10 +70,10 @@ async function assertSitesListed(testCase) {
 
   // Explicitly waiting for the category item becoming visible.
   await TestUtils.waitForCondition(() => {
-    return BrowserTestUtils.is_visible(categoryItem);
+    return BrowserTestUtils.isVisible(categoryItem);
   });
 
-  ok(BrowserTestUtils.is_visible(categoryItem), "TP category item is visible");
+  ok(BrowserTestUtils.isVisible(categoryItem), "TP category item is visible");
   let cookiesView = document.getElementById("protections-popup-cookiesView");
   let viewShown = BrowserTestUtils.waitForEvent(cookiesView, "ViewShown");
   categoryItem.click();
@@ -89,13 +91,13 @@ async function assertSitesListed(testCase) {
   );
   if (listHeaderCount == 1) {
     ok(
-      !BrowserTestUtils.is_visible(listHeaders[0]),
+      !BrowserTestUtils.isVisible(listHeaders[0]),
       "Only one header, should be hidden"
     );
   } else {
     for (let header of listHeaders) {
       ok(
-        BrowserTestUtils.is_visible(header),
+        BrowserTestUtils.isVisible(header),
         "Multiple list headers - all should be visible."
       );
     }
@@ -117,19 +119,21 @@ async function assertSitesListed(testCase) {
     let trackerTestItem;
     for (let item of listItems) {
       let label = item.querySelector(".protections-popup-list-host-label");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       if (label.value == "http://trackertest.org") {
         trackerTestItem = item;
         break;
       }
     }
     ok(trackerTestItem, "Has an item for trackertest.org");
-    ok(BrowserTestUtils.is_visible(trackerTestItem), "List item is visible");
+    ok(BrowserTestUtils.isVisible(trackerTestItem), "List item is visible");
   }
 
   if (firstPartyBlocked) {
     let notTrackingExampleItem;
     for (let item of listItems) {
       let label = item.querySelector(".protections-popup-list-host-label");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       if (label.value == "http://not-tracking.example.com") {
         notTrackingExampleItem = item;
         break;
@@ -137,7 +141,7 @@ async function assertSitesListed(testCase) {
     }
     ok(notTrackingExampleItem, "Has an item for not-tracking.example.com");
     ok(
-      BrowserTestUtils.is_visible(notTrackingExampleItem),
+      BrowserTestUtils.isVisible(notTrackingExampleItem),
       "List item is visible"
     );
   }
@@ -152,7 +156,7 @@ async function assertSitesListed(testCase) {
   let change = waitForContentBlockingEvent();
   let timeoutPromise = new Promise(resolve => setTimeout(resolve, 1000));
 
-  await SpecialPowers.spawn(browser, [], function() {
+  await SpecialPowers.spawn(browser, [], function () {
     content.postMessage("third-party-cookie", "*");
   });
 
@@ -185,20 +189,21 @@ async function assertSitesListed(testCase) {
       }
     }
     ok(test1ExampleItem, "Has an item for test1.example.org");
-    ok(BrowserTestUtils.is_visible(test1ExampleItem), "List item is visible");
+    ok(BrowserTestUtils.isVisible(test1ExampleItem), "List item is visible");
   }
 
   if (trackersBlocked || thirdPartyBlocked || firstPartyBlocked) {
     let trackerTestItem;
     for (let item of listItems) {
       let label = item.querySelector(".protections-popup-list-host-label");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       if (label.value == "http://trackertest.org") {
         trackerTestItem = item;
         break;
       }
     }
     ok(trackerTestItem, "List item should exist for http://trackertest.org");
-    ok(BrowserTestUtils.is_visible(trackerTestItem), "List item is visible");
+    ok(BrowserTestUtils.isVisible(trackerTestItem), "List item is visible");
   }
 
   viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
@@ -210,7 +215,7 @@ async function assertSitesListed(testCase) {
   change = waitForSecurityChange();
   timeoutPromise = new Promise(resolve => setTimeout(resolve, 1000));
 
-  await SpecialPowers.spawn(browser, [], function() {
+  await SpecialPowers.spawn(browser, [], function () {
     content.postMessage("first-party-cookie", "*");
   });
 
@@ -237,6 +242,7 @@ async function assertSitesListed(testCase) {
     let notTrackingExampleItem;
     for (let item of listItems) {
       let label = item.querySelector(".protections-popup-list-host-label");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       if (label.value == "http://not-tracking.example.com") {
         notTrackingExampleItem = item;
         break;
@@ -244,7 +250,7 @@ async function assertSitesListed(testCase) {
     }
     ok(notTrackingExampleItem, "Has an item for not-tracking.example.com");
     ok(
-      BrowserTestUtils.is_visible(notTrackingExampleItem),
+      BrowserTestUtils.isVisible(notTrackingExampleItem),
       "List item is visible"
     );
   }
@@ -281,9 +287,11 @@ add_task(async function testCookiesSubViewAllowed() {
     TPC_PREF,
     Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER
   );
-  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    "http://trackertest.org/"
-  );
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      "http://trackertest.org/"
+    );
   Services.perms.addFromPrincipal(
     principal,
     "cookie",
@@ -304,10 +312,10 @@ add_task(async function testCookiesSubViewAllowed() {
 
   // Explicitly waiting for the category item becoming visible.
   await TestUtils.waitForCondition(() => {
-    return BrowserTestUtils.is_visible(categoryItem);
+    return BrowserTestUtils.isVisible(categoryItem);
   });
 
-  ok(BrowserTestUtils.is_visible(categoryItem), "TP category item is visible");
+  ok(BrowserTestUtils.isVisible(categoryItem), "TP category item is visible");
   let cookiesView = document.getElementById("protections-popup-cookiesView");
   let viewShown = BrowserTestUtils.waitForEvent(cookiesView, "ViewShown");
   categoryItem.click();
@@ -320,20 +328,29 @@ add_task(async function testCookiesSubViewAllowed() {
 
   let listItem = listItems[0];
   let label = listItem.querySelector(".protections-popup-list-host-label");
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   is(label.value, "http://trackertest.org", "has an item for trackertest.org");
-  ok(BrowserTestUtils.is_visible(listItem), "list item is visible");
+  ok(BrowserTestUtils.isVisible(listItem), "list item is visible");
   ok(
     listItem.classList.contains("allowed"),
     "indicates whether the cookie was blocked or allowed"
   );
 
+  let stateLabel = listItem.querySelector(
+    ".protections-popup-list-state-label"
+  );
+  ok(stateLabel, "List item has a state label");
+  ok(BrowserTestUtils.isVisible(stateLabel), "State label is visible");
+  is(
+    stateLabel.getAttribute("data-l10n-id"),
+    "content-blocking-cookies-view-allowed-label",
+    "State label has correct text"
+  );
+
   let button = listItem.querySelector(
-    ".identity-popup-permission-remove-button"
+    ".permission-popup-permission-remove-button"
   );
-  ok(
-    BrowserTestUtils.is_visible(button),
-    "Permission remove button is visible"
-  );
+  ok(BrowserTestUtils.isVisible(button), "Permission remove button is visible");
   button.click();
   is(
     Services.perms.testExactPermissionFromPrincipal(principal, "cookie"),
@@ -352,14 +369,18 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
     TPC_PREF,
     Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER
   );
-  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    "http://not-tracking.example.com/"
-  );
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      "http://not-tracking.example.com/"
+    );
 
   // Pretend that the tracker has already been interacted with
-  let trackerPrincipal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    "http://trackertest.org/"
-  );
+  let trackerPrincipal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      "http://trackertest.org/"
+    );
   Services.perms.addFromPrincipal(
     trackerPrincipal,
     "storageAccessAPI",
@@ -376,7 +397,7 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
   let popup;
   let windowCreated = TestUtils.topicObserved(
     "chrome-document-global-created",
-    (subject, data) => {
+    subject => {
       popup = subject;
       return true;
     }
@@ -391,7 +412,7 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
     );
   });
 
-  await SpecialPowers.spawn(browser, [], function() {
+  await SpecialPowers.spawn(browser, [], function () {
     content.postMessage("window-open", "*");
   });
   await Promise.all([windowCreated, permChanged]);
@@ -407,10 +428,10 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
 
   // Explicitly waiting for the category item becoming visible.
   await TestUtils.waitForCondition(() => {
-    return BrowserTestUtils.is_visible(categoryItem);
+    return BrowserTestUtils.isVisible(categoryItem);
   });
 
-  ok(BrowserTestUtils.is_visible(categoryItem), "TP category item is visible");
+  ok(BrowserTestUtils.isVisible(categoryItem), "TP category item is visible");
   let cookiesView = document.getElementById("protections-popup-cookiesView");
   let viewShown = BrowserTestUtils.waitForEvent(cookiesView, "ViewShown");
   categoryItem.click();
@@ -423,20 +444,18 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
 
   let listItem = listItems[0];
   let label = listItem.querySelector(".protections-popup-list-host-label");
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   is(label.value, "http://trackertest.org", "has an item for trackertest.org");
-  ok(BrowserTestUtils.is_visible(listItem), "list item is visible");
+  ok(BrowserTestUtils.isVisible(listItem), "list item is visible");
   ok(
     listItem.classList.contains("allowed"),
     "indicates whether the cookie was blocked or allowed"
   );
 
   let button = listItem.querySelector(
-    ".identity-popup-permission-remove-button"
+    ".permission-popup-permission-remove-button"
   );
-  ok(
-    BrowserTestUtils.is_visible(button),
-    "Permission remove button is visible"
-  );
+  ok(BrowserTestUtils.isVisible(button), "Permission remove button is visible");
   button.click();
   is(
     Services.perms.testExactPermissionFromPrincipal(
@@ -448,7 +467,7 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
   );
   ok(!listItem.classList.contains("allowed"), "Has removed the allowed class");
 
-  await SpecialPowers.spawn(browser, [], function() {
+  await SpecialPowers.spawn(browser, [], function () {
     content.postMessage("window-close", "*");
   });
 
@@ -458,6 +477,8 @@ add_task(async function testCookiesSubViewAllowedHeuristic() {
 });
 
 add_task(async function testCookiesSubViewBlockedDoublyNested() {
+  requestLongerTimeout(2);
+
   Services.prefs.setIntPref(
     TPC_PREF,
     Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER
@@ -477,10 +498,10 @@ add_task(async function testCookiesSubViewBlockedDoublyNested() {
 
   // Explicitly waiting for the category item becoming visible.
   await TestUtils.waitForCondition(() => {
-    return BrowserTestUtils.is_visible(categoryItem);
+    return BrowserTestUtils.isVisible(categoryItem);
   });
 
-  ok(BrowserTestUtils.is_visible(categoryItem), "TP category item is visible");
+  ok(BrowserTestUtils.isVisible(categoryItem), "TP category item is visible");
   let cookiesView = document.getElementById("protections-popup-cookiesView");
   let viewShown = BrowserTestUtils.waitForEvent(cookiesView, "ViewShown");
   categoryItem.click();
@@ -493,15 +514,16 @@ add_task(async function testCookiesSubViewBlockedDoublyNested() {
 
   let listItem = listItems[0];
   let label = listItem.querySelector(".protections-popup-list-host-label");
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   is(label.value, "http://trackertest.org", "has an item for trackertest.org");
-  ok(BrowserTestUtils.is_visible(listItem), "list item is visible");
+  ok(BrowserTestUtils.isVisible(listItem), "list item is visible");
   ok(
     !listItem.classList.contains("allowed"),
     "indicates whether the cookie was blocked or allowed"
   );
 
   let button = listItem.querySelector(
-    ".identity-popup-permission-remove-button"
+    ".permission-popup-permission-remove-button"
   );
   ok(!button, "Permission remove button doesn't exist");
 

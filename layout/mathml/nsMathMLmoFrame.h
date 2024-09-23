@@ -26,15 +26,12 @@ class nsMathMLmoFrame final : public nsMathMLTokenFrame {
   friend nsIFrame* NS_NewMathMLmoFrame(mozilla::PresShell* aPresShell,
                                        ComputedStyle* aStyle);
 
-  virtual eMathMLFrameType GetMathMLFrameType() override;
+  eMathMLFrameType GetMathMLFrameType() override;
 
-  virtual void SetAdditionalComputedStyle(
-      int32_t aIndex, ComputedStyle* aComputedStyle) override;
-  virtual ComputedStyle* GetAdditionalComputedStyle(
-      int32_t aIndex) const override;
+  void DidSetComputedStyle(ComputedStyle* aOldStyle) override;
 
-  virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
-                                const nsDisplayListSet& aLists) override;
+  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
+                        const nsDisplayListSet& aLists) override;
 
   NS_IMETHOD
   InheritAutomaticData(nsIFrame* aParent) override;
@@ -42,8 +39,8 @@ class nsMathMLmoFrame final : public nsMathMLTokenFrame {
   NS_IMETHOD
   TransmitAutomaticData() override;
 
-  virtual void SetInitialChildList(ChildListID aListID,
-                                   nsFrameList& aChildList) override;
+  void SetInitialChildList(ChildListID aListID,
+                           nsFrameList&& aChildList) override;
 
   virtual void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
                       const ReflowInput& aReflowInput,

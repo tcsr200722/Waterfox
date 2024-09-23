@@ -1,7 +1,9 @@
 use libc::c_int;
+
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem;
+use std::mem::MaybeUninit;
 use std::os::unix::prelude::*;
 use std::process::Command;
 use std::ptr;
@@ -21,13 +23,24 @@ pub struct Acquired {
 }
 
 impl Client {
-    pub fn new(limit: usize) -> io::Result<Client> {
+    pub fn new(mut limit: usize) -> io::Result<Client> {
         let client = unsafe { Client::mk()? };
+
         // I don't think the character written here matters, but I could be
         // wrong!
-        for _ in 0..limit {
-            (&client.write).write(&[b'|'])?;
+        const BUFFER: [u8; 128] = [b'|'; 128];
+
+        set_nonblocking(client.write.as_raw_fd(), true)?;
+
+        while limit > 0 {
+            let n = limit.min(BUFFER.len());
+
+            (&client.write).write_all(&BUFFER[..n])?;
+            limit -= n;
         }
+
+        set_nonblocking(client.write.as_raw_fd(), false)?;
+
         Ok(client)
     }
 
@@ -122,10 +135,11 @@ impl Client {
         // fds are set to nonblocking and combined with `pselect`
         // internally.
         //
-        // Here we try to be compatible with both strategies. We
-        // unconditionally expect the file descriptor to be in nonblocking
-        // mode and if it happens to be in blocking mode then most of this
-        // won't end up actually being necessary!
+        // Here we try to be compatible with both strategies. We optimistically
+        // try to read from the file descriptor which then may block, return
+        // a token or indicate that polling is needed.
+        // Blocking reads (if possible) allows the kernel to be more selective
+        // about which readers to wake up when a token is written to the pipe.
         //
         // We use `poll` here to block this thread waiting for read
         // readiness, and then afterwards we perform the `read` itself. If
@@ -139,17 +153,6 @@ impl Client {
             fd.fd = self.read.as_raw_fd();
             fd.events = libc::POLLIN;
             loop {
-                fd.revents = 0;
-                if libc::poll(&mut fd, 1, -1) == -1 {
-                    let e = io::Error::last_os_error();
-                    match e.kind() {
-                        io::ErrorKind::Interrupted => return Ok(None),
-                        _ => return Err(e),
-                    }
-                }
-                if fd.revents == 0 {
-                    continue;
-                }
                 let mut buf = [0];
                 match (&self.read).read(&mut buf) {
                     Ok(1) => return Ok(Some(Acquired { byte: buf[0] })),
@@ -160,9 +163,24 @@ impl Client {
                         ))
                     }
                     Err(e) => match e.kind() {
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => return Ok(None),
+                        io::ErrorKind::WouldBlock => { /* fall through to polling */ }
+                        io::ErrorKind::Interrupted => return Ok(None),
                         _ => return Err(e),
                     },
+                }
+
+                loop {
+                    fd.revents = 0;
+                    if libc::poll(&mut fd, 1, -1) == -1 {
+                        let e = io::Error::last_os_error();
+                        return match e.kind() {
+                            io::ErrorKind::Interrupted => Ok(None),
+                            _ => Err(e),
+                        };
+                    }
+                    if fd.revents != 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -184,7 +202,13 @@ impl Client {
     }
 
     pub fn string_arg(&self) -> String {
-        format!("{},{} -j", self.read.as_raw_fd(), self.write.as_raw_fd())
+        format!("{},{}", self.read.as_raw_fd(), self.write.as_raw_fd())
+    }
+
+    pub fn available(&self) -> io::Result<usize> {
+        let mut len = MaybeUninit::<c_int>::uninit();
+        cvt(unsafe { libc::ioctl(self.read.as_raw_fd(), libc::FIONREAD, len.as_mut_ptr()) })?;
+        Ok(unsafe { len.assume_init() } as usize)
     }
 
     pub fn configure(&self, cmd: &mut Command) {
@@ -299,9 +323,7 @@ impl Helper {
 }
 
 fn is_valid_fd(fd: c_int) -> bool {
-    unsafe {
-        return libc::fcntl(fd, libc::F_GETFD) != -1;
-    }
+    unsafe { libc::fcntl(fd, libc::F_GETFD) != -1 }
 }
 
 fn set_cloexec(fd: c_int, set: bool) -> io::Result<()> {
@@ -317,6 +339,16 @@ fn set_cloexec(fd: c_int, set: bool) -> io::Result<()> {
         }
         Ok(())
     }
+}
+
+fn set_nonblocking(fd: c_int, set: bool) -> io::Result<()> {
+    let status_flag = if set { libc::O_NONBLOCK } else { 0 };
+
+    unsafe {
+        cvt(libc::fcntl(fd, libc::F_SETFL, status_flag))?;
+    }
+
+    Ok(())
 }
 
 fn cvt(t: c_int) -> io::Result<c_int> {

@@ -11,12 +11,10 @@
 
 // Globals
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "DownloadStore",
-  "resource://gre/modules/DownloadStore.jsm"
-);
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
+ChromeUtils.defineESModuleGetters(this, {
+  DownloadError: "resource://gre/modules/DownloadCore.sys.mjs",
+  DownloadStore: "resource://gre/modules/DownloadStore.sys.mjs",
+});
 
 /**
  * Returns a new DownloadList object with an associated DownloadStore.
@@ -31,7 +29,7 @@ ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
  * @rejects JavaScript exception.
  */
 function promiseNewListAndStore(aStorePath) {
-  return promiseNewList().then(function(aList) {
+  return promiseNewList().then(function (aList) {
     let path = aStorePath || getTempFile(TEST_STORE_FILE_NAME).path;
     let store = new DownloadStore(aList, path);
     return [aList, store];
@@ -62,14 +60,6 @@ add_task(async function test_save_reload() {
     })
   );
 
-  // This PDF download should not be serialized because it never succeeds.
-  let pdfDownload = await Downloads.createDownload({
-    source: { url: httpUrl("empty.txt"), referrerInfo },
-    target: getTempFile(TEST_TARGET_FILE_NAME),
-    saver: "pdf",
-  });
-  listForSave.add(pdfDownload);
-
   // If we used a callback to adjust the channel, the download should
   // not be serialized because we can't recreate it across sessions.
   let adjustedDownload = await Downloads.createDownload({
@@ -88,9 +78,8 @@ add_task(async function test_save_reload() {
   await storeForSave.save();
   await storeForLoad.load();
 
-  // Remove the PDF and adjusted downloads because they should not appear here.
+  // Remove the adjusted download because it should not appear here.
   listForSave.remove(adjustedDownload);
-  listForSave.remove(pdfDownload);
 
   let itemsForSave = await listForSave.getAll();
   let itemsForLoad = await listForLoad.getAll();
@@ -132,12 +121,19 @@ add_task(async function test_save_reload() {
 add_task(async function test_save_empty() {
   let [, store] = await promiseNewListAndStore();
 
-  let createdFile = await OS.File.open(store.path, { create: true });
-  await createdFile.close();
+  await IOUtils.write(store.path, new Uint8Array());
 
   await store.save();
 
-  Assert.equal(false, await OS.File.exists(store.path));
+  let successful;
+  try {
+    await IOUtils.read(store.path);
+    successful = true;
+  } catch (ex) {
+    successful = ex.name != "NotFoundError";
+  }
+
+  ok(!successful, "File should not exist");
 
   // If the file does not exist, saving should not generate exceptions.
   await store.save();
@@ -149,9 +145,15 @@ add_task(async function test_save_empty() {
 add_task(async function test_load_empty() {
   let [list, store] = await promiseNewListAndStore();
 
-  Assert.equal(false, await OS.File.exists(store.path));
+  let succeesful;
+  try {
+    await IOUtils.read(store.path);
+    succeesful = true;
+  } catch (ex) {
+    succeesful = ex.name != "NotFoundError";
+  }
 
-  await store.load();
+  ok(!succeesful, "File should not exist");
 
   let items = await list.getAll();
   Assert.equal(items.length, 0);
@@ -196,7 +198,7 @@ add_task(async function test_load_string_predefined() {
     filePathLiteral +
     "}]}";
 
-  await OS.File.writeAtomic(store.path, new TextEncoder().encode(string), {
+  await IOUtils.write(store.path, new TextEncoder().encode(string), {
     tmpPath: store.path + ".tmp",
   });
 
@@ -237,7 +239,7 @@ add_task(async function test_load_string_unrecognized() {
     "}," +
     '"saver":{"type":"copy"}}]}';
 
-  await OS.File.writeAtomic(store.path, new TextEncoder().encode(string), {
+  await IOUtils.write(store.path, new TextEncoder().encode(string), {
     tmpPath: store.path + ".tmp",
   });
 
@@ -261,7 +263,7 @@ add_task(async function test_load_string_malformed() {
     '{"list":[{"source":null,"target":null},' +
     '{"source":{"url":"about:blank"}}}';
 
-  await OS.File.writeAtomic(store.path, new TextEncoder().encode(string), {
+  await IOUtils.write(store.path, new TextEncoder().encode(string), {
     tmpPath: store.path + ".tmp",
   });
 
@@ -383,5 +385,74 @@ add_task(async function test_save_reload_unknownProperties() {
   Assert.equal(
     itemsForLoad[2].saver._unknownProperties.saver2,
     "download3saver2"
+  );
+});
+
+/**
+ * Saves insecure downloads to a file, then reloads the file and checks if they
+ * are still there.
+ */
+add_task(async function test_insecure_download_deletion() {
+  let [listForSave, storeForSave] = await promiseNewListAndStore();
+  let [listForLoad, storeForLoad] = await promiseNewListAndStore(
+    storeForSave.path
+  );
+  let referrerInfo = new ReferrerInfo(
+    Ci.nsIReferrerInfo.EMPTY,
+    true,
+    NetUtil.newURI(TEST_REFERRER_URL)
+  );
+
+  const createTestDownload = async startTime => {
+    // Create a valid test download and start it so it creates a file
+    let targetFile = getTempFile(TEST_TARGET_FILE_NAME);
+    let download = await Downloads.createDownload({
+      source: { url: httpUrl("empty.txt"), referrerInfo },
+      target: targetFile.path,
+      startTime: new Date().toISOString(),
+      contentType: "application/zip",
+    });
+    await download.start();
+
+    // Add an "Insecure Download" error and overwrite the start time for
+    // serialization
+    download.hasBlockedData = true;
+    download.error = DownloadError.fromSerializable({
+      becauseBlockedByReputationCheck: true,
+      reputationCheckVerdict: "Insecure",
+    });
+    download.startTime = startTime;
+
+    let targetPath = download.target.path;
+
+    // Add download to store, save, load and retrieve deserialized download list
+    listForSave.add(download);
+    await storeForSave.save();
+    await storeForLoad.load();
+    let loadedDownloadList = await listForLoad.getAll();
+
+    return [loadedDownloadList, targetPath];
+  };
+
+  // Insecure downloads that are older than 5 minutes should get removed from
+  // the download-store and the file should get deleted. (360000 = 6 minutes)
+  let [loadedDownloadList1, targetPath1] = await createTestDownload(
+    new Date(Date.now() - 360000)
+  );
+
+  Assert.equal(loadedDownloadList1.length, 0, "Download should be removed");
+  Assert.ok(
+    !(await IOUtils.exists(targetPath1)),
+    "The file should have been deleted."
+  );
+
+  // Insecure downloads that are newer than 5 minutes should stay in the
+  // download store and the file should remain.
+  let [loadedDownloadList2, targetPath2] = await createTestDownload(new Date());
+
+  Assert.equal(loadedDownloadList2.length, 1, "Download should be kept");
+  Assert.ok(
+    await IOUtils.exists(targetPath2),
+    "The file should have not been deleted."
   );
 });

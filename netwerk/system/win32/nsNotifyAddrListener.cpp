@@ -26,23 +26,25 @@
 #include <netioapi.h>
 #include <netlistmgr.h>
 #include <iprtrmib.h>
-#include "plstr.h"
 #include "mozilla/Logging.h"
 #include "nsComponentManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsIObserverService.h"
 #include "nsIWindowsRegKey.h"
 #include "nsServiceManagerUtils.h"
+#include "nsNetAddr.h"
 #include "nsNotifyAddrListener.h"
 #include "nsString.h"
 #include "nsPrintfCString.h"
 #include "mozilla/Services.h"
 #include "nsCRT.h"
+#include "nsThreadPool.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/SHA1.h"
 #include "mozilla/Base64.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Telemetry.h"
+#include "../LinkServiceCommon.h"
 #include <iptypes.h>
 #include <iphlpapi.h>
 
@@ -116,6 +118,29 @@ nsNotifyAddrListener::GetDnsSuffixList(nsTArray<nsCString>& aDnsSuffixList) {
 }
 
 NS_IMETHODIMP
+nsNotifyAddrListener::GetResolvers(nsTArray<RefPtr<nsINetAddr>>& aResolvers) {
+  nsTArray<mozilla::net::NetAddr> addresses;
+  nsresult rv = GetNativeResolvers(addresses);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  for (const auto& addr : addresses) {
+    aResolvers.AppendElement(MakeRefPtr<nsNetAddr>(&addr));
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsNotifyAddrListener::GetNativeResolvers(
+    nsTArray<mozilla::net::NetAddr>& aResolvers) {
+  aResolvers.Clear();
+  MutexAutoLock lock(mMutex);
+  aResolvers.AppendElements(mDNSResolvers);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsNotifyAddrListener::GetPlatformDNSIndications(
     uint32_t* aPlatformDNSIndications) {
   *aPlatformDNSIndications = mPlatformDNSIndications;
@@ -135,7 +160,7 @@ void nsNotifyAddrListener::HashSortedNetworkIds(std::vector<GUID> nwGUIDS,
     sha1.update(&nwGUID, sizeof(GUID));
 
     if (LOG_ENABLED()) {
-      nsPrintfCString guid("%08lX%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%lX",
+      nsPrintfCString guid("%08lX%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X",
                            nwGUID.Data1, nwGUID.Data2, nwGUID.Data3,
                            nwGUID.Data4[0], nwGUID.Data4[1], nwGUID.Data4[2],
                            nwGUID.Data4[3], nwGUID.Data4[4], nwGUID.Data4[5],
@@ -166,14 +191,14 @@ void nsNotifyAddrListener::calculateNetworkId(void) {
   HRESULT hr = CoCreateInstance(CLSID_NetworkListManager, nullptr, CLSCTX_ALL,
                                 IID_INetworkListManager, getter_AddRefs(nlm));
   if (NS_WARN_IF(FAILED(hr))) {
-    LOG(("CoCreateInstance error: %X", hr));
+    LOG(("CoCreateInstance error: %lX", hr));
     return;
   }
   RefPtr<IEnumNetworks> enumNetworks;
   hr = nlm->GetNetworks(NLM_ENUM_NETWORK_CONNECTED,
                         getter_AddRefs(enumNetworks));
   if (NS_WARN_IF(FAILED(hr))) {
-    LOG(("GetNetworks error: %X", hr));
+    LOG(("GetNetworks error: %lX", hr));
     return;
   }
 
@@ -223,7 +248,7 @@ void nsNotifyAddrListener::calculateNetworkId(void) {
   nsAutoCString output;
   SHA1Sum::Hash digest;
   HashSortedNetworkIds(nwGUIDS, sha1);
-
+  SeedNetworkId(sha1);
   sha1.finish(digest);
   nsCString newString(reinterpret_cast<char*>(digest), SHA1Sum::kHashSize);
   nsresult rv = Base64Encode(newString, output);
@@ -233,7 +258,8 @@ void nsNotifyAddrListener::calculateNetworkId(void) {
       mNetworkId.Truncate();
     }
     Telemetry::Accumulate(Telemetry::NETWORK_ID2, 0);
-    LOG(("calculateNetworkId: no network ID Base64Encode error %X", rv));
+    LOG(("calculateNetworkId: no network ID Base64Encode error %X",
+         uint32_t(rv)));
     return;
   }
 
@@ -325,14 +351,14 @@ nsresult nsNotifyAddrListener::Init(void) {
       observerService->AddObserver(this, "xpcom-shutdown-threads", false);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mCheckEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+  mCheckEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   NS_ENSURE_TRUE(mCheckEvent, NS_ERROR_OUT_OF_MEMORY);
 
   nsCOMPtr<nsIThreadPool> threadPool = new nsThreadPool();
   MOZ_ALWAYS_SUCCEEDS(threadPool->SetThreadLimit(1));
   MOZ_ALWAYS_SUCCEEDS(
       threadPool->SetThreadStackSize(nsIThreadManager::kThreadPoolStackSize));
-  MOZ_ALWAYS_SUCCEEDS(threadPool->SetName(NS_LITERAL_CSTRING("Link Monitor")));
+  MOZ_ALWAYS_SUCCEEDS(threadPool->SetName("Link Monitor"_ns));
   mThread = threadPool.forget();
 
   return mThread->Dispatch(this, NS_DISPATCH_NORMAL);
@@ -419,8 +445,10 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
 
   PIP_ADAPTER_ADDRESSES adapterList = (PIP_ADAPTER_ADDRESSES)moz_xmalloc(len);
 
-  ULONG flags = GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_MULTICAST |
-                GAA_FLAG_SKIP_ANYCAST;
+  ULONG flags = GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_ANYCAST;
+  if (!StaticPrefs::network_notify_resolvers()) {
+    flags |= GAA_FLAG_SKIP_DNS_SERVER;
+  }
 
   DWORD ret =
       GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, adapterList, &len);
@@ -445,6 +473,7 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
   ULONG sumAll = 0;
 
   nsTArray<nsCString> dnsSuffixList;
+  nsTArray<mozilla::net::NetAddr> resolvers;
   uint32_t platformDNSIndications = NONE_DETECTED;
   if (ret == ERROR_SUCCESS) {
     bool linkUp = false;
@@ -458,7 +487,14 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
         continue;
       }
 
-      if (adapter->IfType == IF_TYPE_PPP) {
+      LOG(("Adapter %s type: %lu",
+           NS_ConvertUTF16toUTF8(adapter->FriendlyName).get(),
+           adapter->IfType));
+
+      if (adapter->IfType == IF_TYPE_PPP ||
+          adapter->IfType == IF_TYPE_PROP_VIRTUAL ||
+          nsDependentString(adapter->FriendlyName).Find(u"VPN") != kNotFound ||
+          nsDependentString(adapter->Description).Find(u"VPN") != kNotFound) {
         LOG(("VPN connection found"));
         platformDNSIndications |= VPN_DETECTED;
       }
@@ -476,6 +512,35 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
         for (int i = 0; i < sockAddr->iSockaddrLength; ++i) {
           sum += (reinterpret_cast<unsigned char*>(sockAddr->lpSockaddr))[i];
         }
+      }
+
+      for (IP_ADAPTER_DNS_SERVER_ADDRESS* pDnServer =
+               adapter->FirstDnsServerAddress;
+           pDnServer; pDnServer = pDnServer->Next) {
+        mozilla::net::NetAddr addr;
+        if (pDnServer->Address.lpSockaddr->sa_family == AF_INET) {
+          const struct sockaddr_in* sin =
+              (const struct sockaddr_in*)pDnServer->Address.lpSockaddr;
+          addr.inet.family = AF_INET;
+          addr.inet.ip = sin->sin_addr.s_addr;
+          addr.inet.port = sin->sin_port;
+        } else if (pDnServer->Address.lpSockaddr->sa_family == AF_INET6) {
+          const struct sockaddr_in6* sin6 =
+              (const struct sockaddr_in6*)pDnServer->Address.lpSockaddr;
+          addr.inet6.family = AF_INET6;
+          memcpy(&addr.inet6.ip.u8, &sin6->sin6_addr, sizeof(addr.inet6.ip.u8));
+          addr.inet6.port = sin6->sin6_port;
+        } else {
+          NS_WARNING("Unexpected addr type");
+          continue;
+        }
+
+        if (LOG_ENABLED()) {
+          char buf[100];
+          addr.ToStringBuffer(buf, 100);
+          LOG(("Found DNS resolver=%s", buf));
+        }
+        resolvers.AppendElement(addr);
       }
 
       if (StaticPrefs::network_notify_dnsSuffixList()) {
@@ -523,8 +588,7 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
         return false;
       }
       nsAutoString wideSuffixString;
-      rv = regKey->ReadStringValue(NS_LITERAL_STRING("SearchList"),
-                                   wideSuffixString);
+      rv = regKey->ReadStringValue(u"SearchList"_ns, wideSuffixString);
       if (NS_FAILED(rv)) {
         LOG(("  reading registry string value failed\n"));
         return false;
@@ -536,7 +600,7 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
       list.StripWhitespace();
       for (const nsACString& suffix : list.Split(',')) {
         LOG(("  appending DNS suffix from registry: %s\n",
-             suffix.BeginReading()));
+             PromiseFlatCString(suffix).get()));
         if (!suffix.IsEmpty()) {
           dnsSuffixList.AppendElement(suffix);
         }
@@ -548,10 +612,10 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
     // The Local group policy overrides the user set suffix list, so we must
     // first check the registry key that is sets by gpedit, and if that fails we
     // fall back to the one that is set by the user.
-    if (!checkRegistry(NS_LITERAL_STRING(
-            "SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient"))) {
-      checkRegistry(NS_LITERAL_STRING(
-          "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters"));
+    if (!checkRegistry(nsLiteralString(
+            u"SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient"))) {
+      checkRegistry(nsLiteralString(
+          u"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters"));
     }
   }
 
@@ -580,30 +644,27 @@ nsNotifyAddrListener::CheckAdaptersAddresses(void) {
   };
 
   if (StaticPrefs::network_notify_checkForProxies()) {
-    if (registryChildCount(
-            NS_LITERAL_STRING("SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
-                              "Parameters\\DnsConnections")) > 0 ||
-        registryChildCount(
-            NS_LITERAL_STRING("SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
-                              "Parameters\\DnsConnectionsProxies")) > 0) {
+    if (registryChildCount(u"SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
+                           "Parameters\\DnsConnections"_ns) > 0 ||
+        registryChildCount(u"SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
+                           "Parameters\\DnsConnectionsProxies"_ns) > 0) {
       platformDNSIndications |= PROXY_DETECTED;
     }
   }
 
   if (StaticPrefs::network_notify_checkForNRPT()) {
-    if (registryChildCount(
-            NS_LITERAL_STRING("SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
-                              "Parameters\\DnsPolicyConfig")) > 0 ||
-        registryChildCount(
-            NS_LITERAL_STRING("SOFTWARE\\Policies\\Microsoft\\Windows NT\\"
-                              "DNSClient\\DnsPolicyConfig")) > 0) {
+    if (registryChildCount(u"SYSTEM\\CurrentControlSet\\Services\\Dnscache\\"
+                           "Parameters\\DnsPolicyConfig"_ns) > 0 ||
+        registryChildCount(u"SOFTWARE\\Policies\\Microsoft\\Windows NT\\"
+                           "DNSClient\\DnsPolicyConfig"_ns) > 0) {
       platformDNSIndications |= NRPT_DETECTED;
     }
   }
 
   {
     MutexAutoLock lock(mMutex);
-    mDnsSuffixList.SwapElements(dnsSuffixList);
+    mDnsSuffixList = std::move(dnsSuffixList);
+    mDNSResolvers = std::move(resolvers);
     mPlatformDNSIndications = platformDNSIndications;
   }
 

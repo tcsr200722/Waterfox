@@ -10,6 +10,7 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/Mutex.h"
 #include "nsCOMPtr.h"
+#include "nsString.h"
 #include "prio.h"
 
 class nsIEventTarget;
@@ -88,10 +89,10 @@ class MutableBlobStorage final {
   bool MaybeCreateTemporaryFile(const MutexAutoLock& aProofOfLock);
   void MaybeCreateTemporaryFileOnMainThread(const MutexAutoLock& aProofOfLock);
 
-  MOZ_MUST_USE nsresult
-  DispatchToIOThread(already_AddRefed<nsIRunnable> aRunnable);
+  [[nodiscard]] nsresult DispatchToIOThread(
+      already_AddRefed<nsIRunnable> aRunnable);
 
-  Mutex mMutex;
+  Mutex mMutex MOZ_UNANNOTATED;
 
   // All these variables are touched on the main thread only or in the
   // retargeted thread when used by Append(). They are protected by mMutex.

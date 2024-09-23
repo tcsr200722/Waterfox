@@ -4,20 +4,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFETileElement_h
-#define mozilla_dom_SVGFETileElement_h
+#ifndef DOM_SVG_SVGFETILEELEMENT_H_
+#define DOM_SVG_SVGFETILEELEMENT_H_
 
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFETileElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGFE SVGFETileElementBase;
+using SVGFETileElementBase = SVGFilterPrimitiveElement;
 
-class SVGFETileElement : public SVGFETileElementBase {
+class SVGFETileElement final : public SVGFETileElementBase {
   friend nsresult(::NS_NewSVGFETileElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -26,37 +25,37 @@ class SVGFETileElement : public SVGFETileElementBase {
   explicit SVGFETileElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFETileElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual bool SubregionIsUnionOfRegions() override { return false; }
+  bool SubregionIsUnionOfRegions() override { return false; }
 
-  virtual FilterPrimitiveDescription GetPrimitiveDescription(
-      nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+  FilterPrimitiveDescription GetPrimitiveDescription(
+      SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
       const nsTArray<bool>& aInputsAreTainted,
       nsTArray<RefPtr<SourceSurface>>& aInputImages) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
-  virtual SVGAnimatedString& GetResultImageName() override {
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
+  SVGAnimatedString& GetResultImageName() override {
     return mStringAttributes[RESULT];
   }
-  virtual void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
+  void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+
+  nsresult BindToTree(BindContext& aCtx, nsINode& aParent) override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedString> In1();
 
  protected:
-  virtual StringAttributesInfo GetStringInfo() override;
+  StringAttributesInfo GetStringInfo() override;
 
   enum { RESULT, IN1 };
   SVGAnimatedString mStringAttributes[2];
   static StringInfo sStringInfo[2];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFETileElement_h
+#endif  // DOM_SVG_SVGFETILEELEMENT_H_

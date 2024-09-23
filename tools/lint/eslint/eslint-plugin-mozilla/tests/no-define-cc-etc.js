@@ -10,7 +10,7 @@
 var rule = require("../lib/rules/no-define-cc-etc");
 var RuleTester = require("eslint").RuleTester;
 
-const ruleTester = new RuleTester({ parserOptions: { ecmaVersion: 9 } });
+const ruleTester = new RuleTester({ parserOptions: { ecmaVersion: "latest" } });
 
 // ------------------------------------------------------------------------------
 // Tests
@@ -22,12 +22,13 @@ function invalidCode(code, varNames) {
   }
   return {
     code,
-    errors: varNames.map(name => [
-      {
-        message: `${name} is now defined in global scope, a separate definition is no longer necessary.`,
+    errors: varNames.map(name => {
+      return {
+        messageId: "noSeparateDefinition",
+        data: { name },
         type: "VariableDeclarator",
-      },
-    ]),
+      };
+    }),
   };
 }
 

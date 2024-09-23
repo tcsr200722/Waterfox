@@ -48,14 +48,17 @@ interface nsIInterceptedBodyCallback : nsISupports
  * which do not implement nsIChannel.
  */
 
-[scriptable, uuid(f4b82975-6a86-4cc4-87fe-9a1fd430c86d)]
+[scriptable, builtinclass, uuid(f4b82975-6a86-4cc4-87fe-9a1fd430c86d)]
 interface nsIInterceptedChannel : nsISupports
 {
     /**
      * Instruct a channel that has been intercepted to continue with the original
      * network request.
+     *
+     * For our mitigations, we support this reset triggering "bypass" mode which
+     * results in the resulting client not being controlled.
      */
-    void resetInterception();
+    void resetInterception(in boolean bypass);
 
     /**
      * Set the status and reason for the forthcoming synthesized response.
@@ -94,7 +97,7 @@ interface nsIInterceptedChannel : nsISupports
                                   in nsIInterceptedBodyCallback callback,
                                   in nsICacheInfoChannel channel,
                                   in ACString finalURLSpec,
-                                  in bool responseRedirected);
+                                  in boolean responseRedirected);
 
     /**
      * Instruct a channel that has been intercepted that response synthesis
@@ -135,49 +138,24 @@ interface nsIInterceptedChannel : nsISupports
     [noscript]
     readonly attribute nsIConsoleReportCollector consoleReportCollector;
 
+    [noscript]
+    void SetFetchHandlerStart(in TimeStamp aTimeStamp);
+
+    [noscript]
+    void SetFetchHandlerFinish(in TimeStamp aTimeStamp);
+
+    [noscript]
+    void SetRemoteWorkerLaunchStart(in TimeStamp aTimeStamp);
+
+    [noscript]
+    void SetRemoteWorkerLaunchEnd(in TimeStamp aTimeStamp);
+
     /**
-     * Save the timestamps of various service worker interception phases.
+     * This method indicates if the ServiceWorker Interception is reset to
+     * network or not.
      */
     [noscript]
-    void SetLaunchServiceWorkerStart(in TimeStamp aTimeStamp);
-
-    // A hack to get sw launch start time for telemetry.
-    [noscript]
-    void GetLaunchServiceWorkerStart(out TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetLaunchServiceWorkerEnd(in TimeStamp aTimeStamp);
-
-    // A hack to get sw launch end time for telemetry.
-    [noscript]
-    void GetLaunchServiceWorkerEnd(out TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetDispatchFetchEventStart(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetDispatchFetchEventEnd(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetHandleFetchEventStart(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetHandleFetchEventEnd(in TimeStamp aTimeStamp);
-
-    // Depending on the outcome we measure the time difference between
-    // |FinishResponseStart| and either |FinishSynthesizedResponseEnd| or
-    // |ChannelResetEnd|.
-    [noscript]
-    void SetFinishResponseStart(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetFinishSynthesizedResponseEnd(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SetChannelResetEnd(in TimeStamp aTimeStamp);
-
-    [noscript]
-    void SaveTimeStamps();
+    boolean GetIsReset();
 
 %{C++
     already_AddRefed<nsIConsoleReportCollector>
@@ -199,29 +177,38 @@ interface nsIInterceptedChannel : nsISupports
           case nsIContentPolicy::TYPE_INTERNAL_SCRIPT_PRELOAD:
           case nsIContentPolicy::TYPE_INTERNAL_MODULE:
           case nsIContentPolicy::TYPE_INTERNAL_MODULE_PRELOAD:
-          case nsIContentPolicy::TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS: {
-            aKey = NS_LITERAL_CSTRING("subresource-script");
+          case nsIContentPolicy::TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS:
+          case nsIContentPolicy::TYPE_INTERNAL_WORKER_STATIC_MODULE: {
+            aKey = "subresource-script"_ns;
             break;
           }
           case nsIContentPolicy::TYPE_IMAGE:
           case nsIContentPolicy::TYPE_INTERNAL_IMAGE:
           case nsIContentPolicy::TYPE_INTERNAL_IMAGE_PRELOAD:
           case nsIContentPolicy::TYPE_INTERNAL_IMAGE_FAVICON: {
-            aKey = NS_LITERAL_CSTRING("subresource-image");
+            aKey = "subresource-image"_ns;
             break;
           }
           case nsIContentPolicy::TYPE_STYLESHEET:
           case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET:
           case nsIContentPolicy::TYPE_INTERNAL_STYLESHEET_PRELOAD: {
-            aKey = NS_LITERAL_CSTRING("subresource-stylesheet");
+            aKey = "subresource-stylesheet"_ns;
             break;
           }
           default: {
-            aKey = NS_LITERAL_CSTRING("subresource-other");
+            aKey = "subresource-other"_ns;
             break;
           }
         }
       }
+    }
+
+    bool
+    IsReset()
+    {
+      bool result;
+      GetIsReset(&result);
+      return result;
     }
 %}
 
@@ -252,7 +239,7 @@ interface nsINetworkInterceptController : nsISupports
      * @param aChannel The channel that may be intercepted.  It will
      *                 be in the state prior to calling OnStartRequest().
      */
-    bool shouldPrepareForIntercept(in nsIURI aURI, in nsIChannel aChannel);
+    boolean shouldPrepareForIntercept(in nsIURI aURI, in nsIChannel aChannel);
 
     /**
      * Notification when a given intercepted channel is prepared to accept a synthesized

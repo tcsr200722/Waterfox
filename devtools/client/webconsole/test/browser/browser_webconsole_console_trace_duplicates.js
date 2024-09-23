@@ -10,7 +10,7 @@ const TEST_URI =
 add_task(async function testTraceMessages() {
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const message = await waitFor(() => findMessage(hud, "foo1"));
+  const message = await waitFor(() => findConsoleAPIMessage(hud, "foo1"));
   // Wait until stacktrace is displayed.
   await waitFor(() => !!message.querySelector(".frames"));
 
@@ -33,8 +33,8 @@ add_task(async function testTraceMessages() {
   const [, line, column] = message
     .querySelector(".frame-link-line")
     .textContent.split(":");
-  is(line, 20, "message frame has expected line");
-  is(column, 11, "message frame has expected column");
+  is(line, "20", "message frame has expected line");
+  is(column, "11", "message frame has expected column");
 
   const stack = message.querySelector(".stacktrace");
   ok(!!stack, "There's a stacktrace element");
@@ -94,7 +94,7 @@ function checkStacktraceFrames(frames, expectedFrames) {
     );
     is(
       frameEl.querySelector(".location .line").textContent,
-      expected.line,
+      `${expected.line}`,
       `expected line is displayed for frame #${i}`
     );
   });

@@ -16,13 +16,13 @@
           "nsIURIContentListener",
           "nsISupportsWeakReference",
         ]),
-        doContent(contentType, isContentPreferred, request, contentHandler) {
+        doContent() {
           return false;
         },
-        isPreferred(contentType, desiredContentType) {
+        isPreferred() {
           return false;
         },
-        canHandleContent(contentType, isContentPreferred, desiredContentType) {
+        canHandleContent() {
           return false;
         },
         loadCookie: null,
@@ -50,8 +50,9 @@
           return null;
         }
 
-        let Finder = ChromeUtils.import("resource://gre/modules/Finder.jsm", {})
-          .Finder;
+        let { Finder } = ChromeUtils.importESModule(
+          "resource://gre/modules/Finder.sys.mjs"
+        );
         this._finder = new Finder(this.docShell);
       }
       return this._finder;
@@ -91,10 +92,6 @@
       return this.docShell
         .QueryInterface(Ci.nsIInterfaceRequestor)
         .getInterface(Ci.nsIWebBrowserFind);
-    }
-
-    get markupDocumentViewer() {
-      return this.docShell.contentViewer;
     }
 
     get editingSession() {
@@ -172,12 +169,11 @@
     }
 
     get outerWindowID() {
-      return this.contentWindow.windowUtils.outerWindowID;
+      return this.docShell.outerWindowID;
     }
 
     makeEditable(editortype, waitForUrlLoad) {
       let win = this.contentWindow;
-      let winUtils = win.windowUtils;
       this.editingSession.makeWindowEditable(
         win,
         editortype,
@@ -185,17 +181,12 @@
         true,
         false
       );
-      winUtils.loadSheetUsingURIString(
-        "resource://gre/res/EditorOverride.css",
-        winUtils.AGENT_SHEET
-      );
       this.setAttribute("editortype", editortype);
 
       this.docShell
         .QueryInterface(Ci.nsIInterfaceRequestor)
-        .getInterface(
-          Ci.nsIURIContentListener
-        ).parentContentListener = this._editorContentListener;
+        .getInterface(Ci.nsIURIContentListener).parentContentListener =
+        this._editorContentListener;
     }
 
     getEditor(containingWindow) {

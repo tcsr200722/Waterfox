@@ -15,19 +15,17 @@
  * process as fast as possible, without any cleanup.
  */
 
+#include "mozilla/ShutdownPhase.h"
 #include "nsTerminator.h"
 
 #include "prthread.h"
 #include "prmon.h"
-#include "plstr.h"
 #include "prio.h"
 
 #include "nsString.h"
-#include "nsServiceManagerUtils.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsAppDirectoryServiceDefs.h"
 
-#include "nsIObserverService.h"
 #include "nsExceptionHandler.h"
 #include "GeckoProfiler.h"
 #include "nsThreadUtils.h"
@@ -39,19 +37,19 @@
 #  include <unistd.h>
 #endif
 
+#include "mozilla/AppShutdown.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/IntentionalCrash.h"
 #include "mozilla/MemoryChecking.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Services.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Unused.h"
 #include "mozilla/Telemetry.h"
-#include "mozilla/LateWriteChecks.h"
 
+#include "mozilla/dom/IOUtils.h"
 #include "mozilla/dom/workerinternals/RuntimeService.h"
 
 // Normally, the number of milliseconds that AsyncShutdown waits until
@@ -63,6 +61,8 @@
 // Additional number of milliseconds to wait until we decide to exit
 // forcefully.
 #define ADDITIONAL_WAIT_BEFORE_CRASH_MS 3000
+
+#define HEARTBEAT_INTERVAL_MS 100
 
 namespace mozilla {
 
@@ -76,23 +76,34 @@ namespace {
  * ticks between the time we receive a notification and the next one.
  */
 struct ShutdownStep {
-  char const* const mTopic;
-  int mTicks;
+  mozilla::ShutdownPhase mPhase;
+  Atomic<int> mTicks;
 
-  constexpr explicit ShutdownStep(const char* const topic)
-      : mTopic(topic), mTicks(-1) {}
+  constexpr explicit ShutdownStep(mozilla::ShutdownPhase aPhase)
+      : mPhase(aPhase), mTicks(-1) {}
 };
 
 static ShutdownStep sShutdownSteps[] = {
-    ShutdownStep("quit-application"),
-    ShutdownStep("profile-change-teardown"),
-    ShutdownStep("profile-before-change"),
-    ShutdownStep("xpcom-will-shutdown"),
-    ShutdownStep("xpcom-shutdown"),
+    ShutdownStep(mozilla::ShutdownPhase::AppShutdownConfirmed),
+    ShutdownStep(mozilla::ShutdownPhase::AppShutdownNetTeardown),
+    ShutdownStep(mozilla::ShutdownPhase::AppShutdownTeardown),
+    ShutdownStep(mozilla::ShutdownPhase::AppShutdown),
+    ShutdownStep(mozilla::ShutdownPhase::AppShutdownQM),
+    ShutdownStep(mozilla::ShutdownPhase::XPCOMWillShutdown),
+    ShutdownStep(mozilla::ShutdownPhase::XPCOMShutdown),
+    ShutdownStep(mozilla::ShutdownPhase::XPCOMShutdownThreads),
+    ShutdownStep(mozilla::ShutdownPhase::XPCOMShutdownFinal),
+    ShutdownStep(mozilla::ShutdownPhase::CCPostLastCycleCollection),
 };
 
-Atomic<bool> sShutdownNotified;
-Atomic<bool> sHasTerminatorLateWrite;
+int GetStepForPhase(mozilla::ShutdownPhase aPhase) {
+  for (size_t i = 0; i < std::size(sShutdownSteps); i++) {
+    if (sShutdownSteps[i].mPhase >= aPhase) {
+      return (int)i;
+    }
+  }
+  return -1;
+}
 
 // Utility function: create a thread that is non-joinable,
 // does not prevent the process from terminating, is never
@@ -144,12 +155,6 @@ struct Options {
    * How many ticks before we should crash the process.
    */
   uint32_t crashAfterTicks;
-
-  /**
-   * A reduced number of ticks to crash earlier
-   * in the event we're hung indefinitely.
-   */
-  uint32_t reportWritesAfterTicks;
 };
 
 /**
@@ -162,7 +167,6 @@ void RunWatchdog(void* arg) {
   // about.
   UniquePtr<Options> options((Options*)arg);
   uint32_t crashAfterTicks = options->crashAfterTicks;
-  uint32_t reportWritesAfterTicks = options->reportWritesAfterTicks;
   options = nullptr;
 
   const uint32_t timeToLive = crashAfterTicks;
@@ -178,229 +182,115 @@ void RunWatchdog(void* arg) {
     // more reasonable.
     //
 #if defined(XP_WIN)
-    Sleep(1000 /* ms */);
+    Sleep(HEARTBEAT_INTERVAL_MS /* ms */);
 #else
-    usleep(1000000 /* usec */);
+    usleep(HEARTBEAT_INTERVAL_MS * 1000 /* usec */);
 #endif
+
     if (gHeartbeat++ < timeToLive) {
-#if !defined(MOZ_VALGRIND) || !defined(MOZ_CODE_COVERAGE)
-      // We should not report if we are running on Valgrind because
-      // it is known to be much slower.
-      // We only also want to BeginLateWriteCheck once for the first
-      // time we exceed the reduced number of ticks.
-      if (gHeartbeat >= reportWritesAfterTicks && !sHasTerminatorLateWrite) {
-        sHasTerminatorLateWrite = true;
-        BeginLateWriteChecks();
-      }
-#endif
       continue;
     }
 
+    // Arrived here we know we will crash in a way or another.
     NoteIntentionalCrash(XRE_GetProcessTypeString());
 
-    // The shutdown steps are not completed yet. Let's report the last one.
-    if (!sShutdownNotified) {
-      const char* lastStep = nullptr;
-      for (size_t i = 0; i < ArrayLength(sShutdownSteps); ++i) {
-        if (sShutdownSteps[i].mTicks == -1) {
-          break;
-        }
-        lastStep = sShutdownSteps[i].mTopic;
-      }
+    // Until we have general log output for crash annotations in treeherder
+    // (bug 1728721) we manually spit out our nested event loop stack.
+    // XXX: Remove once bug 1728721 is fixed.
+    nsCString stack;
+    AutoNestedEventLoopAnnotation::CopyCurrentStack(stack);
+    printf_stderr(
+        "RunWatchdog: Mainthread nested event loops during hang: \n --- %s\n",
+        stack.get());
 
-      if (lastStep) {
-        nsCString msg;
-        msg.AppendPrintf(
-            "Shutdown hanging at step %s. "
-            "Something is blocking the main-thread.",
-            lastStep);
-        // This string will be leaked.
-        MOZ_CRASH_UNSAFE(strdup(msg.BeginReading()));
+    // Let's find the last known shutdown phase.
+    mozilla::ShutdownPhase lastPhase = mozilla::ShutdownPhase::NotInShutdown;
+    // Looping inverse here to make the search more robust in case
+    // the observer that triggers UpdateHeartbeat was not called
+    // at all or in the expected order on some step. This should
+    // give us always the last known ShutdownStep.
+    for (int i = ArrayLength(sShutdownSteps) - 1; i >= 0; --i) {
+      if (sShutdownSteps[i].mTicks > -1) {
+        lastPhase = sShutdownSteps[i].mPhase;
+        break;
       }
-
-      MOZ_CRASH("Shutdown hanging before starting.");
     }
 
-    // Maybe some workers are blocking the shutdown.
+    if (lastPhase == mozilla::ShutdownPhase::NotInShutdown) {
+      // This is not something we expect to ever happen, but still.
+      CrashReporter::SetMinidumpAnalysisAllThreads();
+      MOZ_CRASH("Shutdown hanging before starting any known phase.");
+    }
+
+    // First check if worker shutdown started and is incomplete, in case
+    // report running workers.
     mozilla::dom::workerinternals::RuntimeService* runtimeService =
         mozilla::dom::workerinternals::RuntimeService::GetService();
     if (runtimeService) {
+      // CrashIfHanging will check if we actually ever asked for worker
+      // shutdown, so calling it before is a no-op.
       runtimeService->CrashIfHanging();
     }
 
-    // Shutdown is apparently dead. Crash the process.
+    // Otherwise just report our shutdown phase.
+    // This string will be leaked.
+    nsCString msg;
+    msg.AppendPrintf(
+        "Shutdown hanging at step %s. "
+        "Something is blocking the main-thread.",
+        mozilla::AppShutdown::GetShutdownPhaseName(lastPhase));
+
     CrashReporter::SetMinidumpAnalysisAllThreads();
-
-    MOZ_CRASH("Shutdown too long, probably frozen, causing a crash.");
-  }
-}
-
-////////////////////////////////////////////
-//
-// Writer thread
-//
-// This nspr thread is in charge of writing to disk statistics produced by the
-// watchdog thread and collected by the main thread. Note that we use a nspr
-// thread rather than usual XPCOM I/O simply because we outlive XPCOM and its
-// threads.
-//
-
-// Utility class, used by UniquePtr<> to close nspr files.
-class PR_CloseDelete {
- public:
-  constexpr PR_CloseDelete() = default;
-
-  PR_CloseDelete(const PR_CloseDelete& aOther) = default;
-
-  void operator()(PRFileDesc* aPtr) const { PR_Close(aPtr); }
-};
-
-//
-// Communication between the main thread and the writer thread.
-//
-// Main thread:
-//
-// * Whenever a shutdown step has been completed, the main thread
-// obtains the number of ticks from the watchdog threads, builds
-// a string representing all the data gathered so far, places
-// this string in `gWriteData`, and wakes up the writer thread
-// using `gWriteReady`. If `gWriteData` already contained a non-null
-// pointer, this means that the writer thread is lagging behind the
-// main thread, and the main thread cleans up the memory.
-//
-// Writer thread:
-//
-// * When awake, the writer thread swaps `gWriteData` to nullptr. If
-// `gWriteData` contained data to write, the . If so, the writer
-// thread writes the data to a file named "ShutdownDuration.json.tmp",
-// then moves that file to "ShutdownDuration.json" and cleans up the
-// data. If `gWriteData` contains a nullptr, the writer goes to sleep
-// until it is awkened using `gWriteReady`.
-//
-//
-// The data written by the writer thread will be read by another
-// module upon the next restart and fed to Telemetry.
-//
-Atomic<nsCString*> gWriteData(nullptr);
-PRMonitor* gWriteReady = nullptr;
-
-void RunWriter(void* arg) {
-  AUTO_PROFILER_REGISTER_THREAD("Shutdown Statistics Writer");
-  NS_SetCurrentThreadName("Shutdown Statistics Writer");
-
-  MOZ_LSAN_INTENTIONALLY_LEAK_OBJECT(arg);
-  // Shutdown will generally complete before we have a chance to
-  // deallocate. This is not a leak.
-
-  // Setup destinationPath and tmpFilePath
-
-  nsCString destinationPath;
-  destinationPath.Adopt(static_cast<char*>(arg));
-  nsAutoCString tmpFilePath;
-  tmpFilePath.Append(destinationPath);
-  tmpFilePath.AppendLiteral(".tmp");
-
-  // Cleanup any file leftover from a previous run
-  Unused << PR_Delete(tmpFilePath.get());
-  Unused << PR_Delete(destinationPath.get());
-
-  while (true) {
-    //
-    // Check whether we have received data from the main thread.
-    //
-    // We perform the check before waiting on `gWriteReady` as we may
-    // have received data while we were busy writing.
-    //
-    // Also note that gWriteData may have been modified several times
-    // since we last checked. That's ok, we are not losing any important
-    // data (since we keep adding data), and we are not leaking memory
-    // (since the main thread deallocates any data that hasn't been
-    // consumed by the writer thread).
-    //
-    UniquePtr<nsCString> data(gWriteData.exchange(nullptr));
-    if (!data) {
-      // Data is not available yet.
-      // Wait until the main thread provides it.
-      PR_EnterMonitor(gWriteReady);
-      PR_Wait(gWriteReady, PR_INTERVAL_NO_TIMEOUT);
-      PR_ExitMonitor(gWriteReady);
-      continue;
-    }
-
-    MOZ_LSAN_INTENTIONALLY_LEAK_OBJECT(data.get());
-    // Shutdown may complete before we have a chance to deallocate.
-    // This is not a leak.
-
-    //
-    // Write to a temporary file
-    //
-    // In case of any error, we simply give up. Since the data is
-    // hardly critical, we don't want to spend too much effort
-    // salvaging it.
-    //
-    UniquePtr<PRFileDesc, PR_CloseDelete> tmpFileDesc(PR_Open(
-        tmpFilePath.get(), PR_WRONLY | PR_TRUNCATE | PR_CREATE_FILE, 00600));
-
-    // Shutdown may complete before we have a chance to close the file.
-    // This is not a leak.
-    MOZ_LSAN_INTENTIONALLY_LEAK_OBJECT(tmpFileDesc.get());
-
-    if (tmpFileDesc == nullptr) {
-      break;
-    }
-    if (PR_Write(tmpFileDesc.get(), data->get(), data->Length()) == -1) {
-      break;
-    }
-    tmpFileDesc.reset();
-
-    //
-    // Rename on top of destination file.
-    //
-    // This is not sufficient to guarantee that the destination file
-    // will be written correctly, but, again, we don't care enough
-    // about the data to make more efforts.
-    //
-    if (PR_Rename(tmpFilePath.get(), destinationPath.get()) != PR_SUCCESS) {
-      break;
-    }
+    MOZ_CRASH_UNSAFE(strdup(msg.BeginReading()));
   }
 }
 
 }  // namespace
 
-NS_IMPL_ISUPPORTS(nsTerminator, nsIObserver)
+NS_IMPL_ISUPPORTS(nsTerminator, nsIObserver, nsITerminatorTest)
 
 nsTerminator::nsTerminator() : mInitialized(false), mCurrentStep(-1) {}
-
-// During startup, register as an observer for all interesting topics.
-nsresult nsTerminator::SelfInit() {
-  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  if (!os) {
-    return NS_ERROR_UNEXPECTED;
-  }
-
-  for (auto& shutdownStep : sShutdownSteps) {
-    DebugOnly<nsresult> rv = os->AddObserver(this, shutdownStep.mTopic, false);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "AddObserver failed");
-  }
-
-  return NS_OK;
-}
 
 // Actually launch these threads. This takes place at the first sign of
 // shutdown.
 void nsTerminator::Start() {
   MOZ_ASSERT(!mInitialized);
+
   StartWatchdog();
-#if !defined(NS_FREE_PERMANENT_DATA)
-  // Only allow nsTerminator to write on non-leak-checked builds so we don't
-  // get leak warnings on shutdown for intentional leaks (see bug 1242084).
-  // This will be enabled again by bug 1255484 when 1255478 lands.
-  StartWriter();
-#endif  // !defined(NS_FREE_PERMANENT_DATA)
   mInitialized = true;
-  sShutdownNotified = false;
-  sHasTerminatorLateWrite = false;
+}
+
+NS_IMETHODIMP
+nsTerminator::Observe(nsISupports*, const char* aTopic, const char16_t*) {
+  // This Observe is now only used for testing purposes.
+  // XXX: Check if we should change our testing strategy.
+  if (strcmp(aTopic, "terminator-test-quit-application") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdownConfirmed);
+  } else if (strcmp(aTopic, "terminator-test-profile-change-net-teardown") ==
+             0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdownNetTeardown);
+  } else if (strcmp(aTopic, "terminator-test-profile-change-teardown") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdownTeardown);
+  } else if (strcmp(aTopic, "terminator-test-profile-before-change") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdown);
+  } else if (strcmp(aTopic, "terminator-test-profile-before-change-qm") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdownQM);
+  } else if (strcmp(aTopic,
+                    "terminator-test-profile-before-change-telemetry") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::AppShutdownTelemetry);
+  } else if (strcmp(aTopic, "terminator-test-xpcom-will-shutdown") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::XPCOMWillShutdown);
+  } else if (strcmp(aTopic, "terminator-test-xpcom-shutdown") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::XPCOMShutdown);
+  } else if (strcmp(aTopic, "terminator-test-xpcom-shutdown-threads") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::XPCOMShutdownThreads);
+  } else if (strcmp(aTopic, "terminator-test-XPCOMShutdownFinal") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::XPCOMShutdownFinal);
+  } else if (strcmp(aTopic, "terminator-test-CCPostLastCycleCollection") == 0) {
+    AdvancePhase(mozilla::ShutdownPhase::CCPostLastCycleCollection);
+  }
+
+  return NS_OK;
 }
 
 // Prepare, allocate and start the watchdog thread.
@@ -408,10 +298,6 @@ void nsTerminator::Start() {
 void nsTerminator::StartWatchdog() {
   int32_t crashAfterMS =
       Preferences::GetInt("toolkit.asyncshutdown.crash_timeout",
-                          FALLBACK_ASYNCSHUTDOWN_CRASH_AFTER_MS);
-
-  int32_t reducedCrashTimeoutMS =
-      Preferences::GetInt("toolkit.asyncshutdown.report_writes_after",
                           FALLBACK_ASYNCSHUTDOWN_CRASH_AFTER_MS);
   // Ignore negative values
   if (crashAfterMS <= 0) {
@@ -425,7 +311,6 @@ void nsTerminator::StartWatchdog() {
     crashAfterMS = INT32_MAX;
   } else {
     crashAfterMS += ADDITIONAL_WAIT_BEFORE_CRASH_MS;
-    reducedCrashTimeoutMS += ADDITIONAL_WAIT_BEFORE_CRASH_MS;
   }
 
 #ifdef MOZ_VALGRIND
@@ -448,62 +333,32 @@ void nsTerminator::StartWatchdog() {
 #endif
 
   UniquePtr<Options> options(new Options());
-  const PRIntervalTime ticksDuration = PR_MillisecondsToInterval(1000);
-  options->crashAfterTicks = crashAfterMS / ticksDuration;
-  options->reportWritesAfterTicks = reducedCrashTimeoutMS / ticksDuration;
-  // Handle systems where ticksDuration is greater than crashAfterMS.
-  if (options->crashAfterTicks == 0) {
-    options->crashAfterTicks = crashAfterMS / 1000;
-    options->reportWritesAfterTicks = reducedCrashTimeoutMS / 1000;
-  }
+  // crashAfterTicks is guaranteed to be > 0 as
+  // crashAfterMS >= ADDITIONAL_WAIT_BEFORE_CRASH_MS >> HEARTBEAT_INTERVAL_MS
+  options->crashAfterTicks = crashAfterMS / HEARTBEAT_INTERVAL_MS;
 
   DebugOnly<PRThread*> watchdogThread =
       CreateSystemThread(RunWatchdog, options.release());
   MOZ_ASSERT(watchdogThread);
 }
 
-// Prepare, allocate and start the writer thread. By design, it will never
-// finish, nor be deallocated. In case of error, we degrade
-// gracefully to not writing Telemetry data.
-void nsTerminator::StartWriter() {
-  if (!Telemetry::CanRecordExtended()) {
-    return;
+// This helper is here to preserve the existing crash reporting behavior
+// based on observer topic names, using the shutdown phase name only for
+// phases without associated topic.
+const char* GetReadableNameForPhase(mozilla::ShutdownPhase aPhase) {
+  const char* readableName = mozilla::AppShutdown::GetObserverKey(aPhase);
+  if (!readableName) {
+    readableName = mozilla::AppShutdown::GetShutdownPhaseName(aPhase);
   }
-  nsCOMPtr<nsIFile> profLD;
-  nsresult rv = NS_GetSpecialDirectory(NS_APP_USER_PROFILE_LOCAL_50_DIR,
-                                       getter_AddRefs(profLD));
-  if (NS_FAILED(rv)) {
-    return;
-  }
-
-  rv = profLD->Append(NS_LITERAL_STRING("ShutdownDuration.json"));
-  if (NS_FAILED(rv)) {
-    return;
-  }
-
-  nsAutoString path;
-  rv = profLD->GetPath(path);
-  if (NS_FAILED(rv)) {
-    return;
-  }
-
-  gWriteReady = PR_NewMonitor();
-  MOZ_LSAN_INTENTIONALLY_LEAK_OBJECT(
-      gWriteReady);  // We will never deallocate this object
-  PRThread* writerThread = CreateSystemThread(RunWriter, ToNewUTF8String(path));
-
-  if (!writerThread) {
-    return;
-  }
+  return readableName;
 }
 
-NS_IMETHODIMP
-nsTerminator::Observe(nsISupports*, const char* aTopic, const char16_t*) {
-  if (strcmp(aTopic, "profile-after-change") == 0) {
-    return SelfInit();
+void nsTerminator::AdvancePhase(mozilla::ShutdownPhase aPhase) {
+  // If the phase is unknown, just ignore it.
+  auto step = GetStepForPhase(aPhase);
+  if (step < 0) {
+    return;
   }
-
-  // Other notifications are shutdown-related.
 
   // As we have seen examples in the wild of shutdown notifications
   // not being sent (or not being sent in the expected order), we do
@@ -512,105 +367,44 @@ nsTerminator::Observe(nsISupports*, const char* aTopic, const char16_t*) {
     Start();
   }
 
-  UpdateHeartbeat(aTopic);
-#if !defined(NS_FREE_PERMANENT_DATA)
-  // Only allow nsTerminator to write on non-leak checked builds so we don't get
-  // leak warnings on shutdown for intentional leaks (see bug 1242084). This
-  // will be enabled again by bug 1255484 when 1255478 lands.
-  UpdateTelemetry();
-#endif  // !defined(NS_FREE_PERMANENT_DATA)
-  UpdateCrashReport(aTopic);
-
-  // Perform a little cleanup
-  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  MOZ_RELEASE_ASSERT(os);
-  (void)os->RemoveObserver(this, aTopic);
-
-  return NS_OK;
+  UpdateHeartbeat(step);
+  UpdateCrashReport(GetReadableNameForPhase(aPhase));
 }
 
-void nsTerminator::UpdateHeartbeat(const char* aTopic) {
-  // Reset the clock, find out how long the current phase has lasted.
-  uint32_t ticks = gHeartbeat.exchange(0);
-  if (mCurrentStep > 0) {
-    sShutdownSteps[mCurrentStep].mTicks = ticks;
-  }
+void nsTerminator::UpdateHeartbeat(int32_t aStep) {
+  MOZ_ASSERT(aStep >= mCurrentStep);
 
-  // Find out where we now are in the current shutdown.
-  // Don't assume that shutdown takes place in the expected order.
-  int nextStep = -1;
-  for (size_t i = 0; i < ArrayLength(sShutdownSteps); ++i) {
-    if (strcmp(sShutdownSteps[i].mTopic, aTopic) == 0) {
-      nextStep = i;
-      break;
+  if (aStep > mCurrentStep) {
+    // Reset the clock, find out how long the current phase has lasted.
+    uint32_t ticks = gHeartbeat.exchange(0);
+    if (mCurrentStep >= 0) {
+      sShutdownSteps[mCurrentStep].mTicks = ticks;
     }
+    sShutdownSteps[aStep].mTicks = 0;
+
+    mCurrentStep = aStep;
   }
-  MOZ_ASSERT(nextStep != -1);
-  mCurrentStep = nextStep;
-}
-
-void nsTerminator::UpdateTelemetry() {
-  if (!Telemetry::CanRecordExtended() || !gWriteReady) {
-    return;
-  }
-
-  //
-  // We need Telemetry data on the effective duration of each step,
-  // to be able to tune the time-to-crash of each of both the
-  // Terminator and AsyncShutdown. However, at this stage, it is too
-  // late to record such data into Telemetry, so we write it to disk
-  // and read it upon the next startup.
-  //
-
-  // Build JSON.
-  UniquePtr<nsCString> telemetryData(new nsCString());
-  telemetryData->AppendLiteral("{");
-  size_t fields = 0;
-  for (auto& shutdownStep : sShutdownSteps) {
-    if (shutdownStep.mTicks < 0) {
-      // Ignore this field.
-      continue;
-    }
-    if (fields++ > 0) {
-      telemetryData->AppendLiteral(", ");
-    }
-    telemetryData->AppendLiteral(R"(")");
-    telemetryData->Append(shutdownStep.mTopic);
-    telemetryData->AppendLiteral(R"(": )");
-    telemetryData->AppendInt(shutdownStep.mTicks);
-  }
-  telemetryData->AppendLiteral("}");
-
-  if (fields == 0) {
-    // Nothing to write
-    return;
-  }
-
-  //
-  // Send data to the worker thread.
-  //
-  delete gWriteData.exchange(
-      telemetryData.release());  // Clear any data that hasn't been written yet
-
-  // In case the worker thread was sleeping, wake it up.
-  PR_EnterMonitor(gWriteReady);
-  PR_Notify(gWriteReady);
-  PR_ExitMonitor(gWriteReady);
 }
 
 void nsTerminator::UpdateCrashReport(const char* aTopic) {
   // In case of crash, we wish to know where in shutdown we are
-  nsAutoCString report(aTopic);
-
-  Unused << CrashReporter::AnnotateCrashReport(
-      CrashReporter::Annotation::ShutdownProgress, report);
+  CrashReporter::RecordAnnotationCString(
+      CrashReporter::Annotation::ShutdownProgress, aTopic);
 }
 
-bool nsTerminator::IsCheckingLateWrites() { return sHasTerminatorLateWrite; }
+NS_IMETHODIMP
+nsTerminator::GetTicksForShutdownPhases(JSContext* aCx,
+                                        JS::MutableHandle<JS::Value> aRetval) {
+  JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
+  aRetval.setObject(*obj);
 
-void XPCOMShutdownNotified() {
-  MOZ_DIAGNOSTIC_ASSERT(sShutdownNotified == false);
-  sShutdownNotified = true;
-}
+  for (auto& shutdownStep : sShutdownSteps) {
+    if (shutdownStep.mTicks >= 0) {
+      JS_DefineProperty(aCx, obj, GetReadableNameForPhase(shutdownStep.mPhase),
+                        shutdownStep.mTicks, JSPROP_ENUMERATE);
+    }
+  }
 
+  return NS_OK;
+}  // namespace mozilla
 }  // namespace mozilla

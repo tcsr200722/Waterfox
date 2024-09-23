@@ -8,357 +8,272 @@
 
 #include "compiler/translator/tree_ops/RewriteAtomicCounters.h"
 
+#include "compiler/translator/Compiler.h"
 #include "compiler/translator/ImmutableStringBuilder.h"
-#include "compiler/translator/StaticType.h"
 #include "compiler/translator/SymbolTable.h"
 #include "compiler/translator/tree_util/IntermNode_util.h"
 #include "compiler/translator/tree_util/IntermTraverse.h"
+#include "compiler/translator/tree_util/ReplaceVariable.h"
 
 namespace sh
 {
 namespace
 {
-// DeclareAtomicCountersBuffer adds a storage buffer that's used with atomic counters.
-const TVariable *DeclareAtomicCountersBuffer(TIntermBlock *root, TSymbolTable *symbolTable)
+constexpr ImmutableString kAtomicCountersVarName  = ImmutableString("atomicCounters");
+constexpr ImmutableString kAtomicCounterFieldName = ImmutableString("counters");
+
+// DeclareAtomicCountersBuffer adds a storage buffer array that's used with atomic counters.
+const TVariable *DeclareAtomicCountersBuffers(TIntermBlock *root, TSymbolTable *symbolTable)
 {
     // Define `uint counters[];` as the only field in the interface block.
     TFieldList *fieldList = new TFieldList;
-    TType *counterType    = new TType(EbtUInt);
+    TType *counterType    = new TType(EbtUInt, EbpHigh, EvqGlobal);
     counterType->makeArray(0);
 
-    TField *countersField = new TField(counterType, ImmutableString("counters"), TSourceLoc(),
-                                       SymbolType::AngleInternal);
+    TField *countersField =
+        new TField(counterType, kAtomicCounterFieldName, TSourceLoc(), SymbolType::AngleInternal);
 
     fieldList->push_back(countersField);
 
     TMemoryQualifier coherentMemory = TMemoryQualifier::Create();
     coherentMemory.coherent         = true;
 
+    // There are a maximum of 8 atomic counter buffers per IMPLEMENTATION_MAX_ATOMIC_COUNTER_BUFFERS
+    // in libANGLE/Constants.h.
+    constexpr uint32_t kMaxAtomicCounterBuffers = 8;
+
     // Define a storage block "ANGLEAtomicCounters" with instance name "atomicCounters".
-    return DeclareInterfaceBlock(root, symbolTable, fieldList, EvqBuffer, coherentMemory,
-                                 "ANGLEAtomicCounters", "atomicCounters");
+    TLayoutQualifier layoutQualifier = TLayoutQualifier::Create();
+    layoutQualifier.blockStorage     = EbsStd430;
+
+    return DeclareInterfaceBlock(root, symbolTable, fieldList, EvqBuffer, layoutQualifier,
+                                 coherentMemory, kMaxAtomicCounterBuffers,
+                                 ImmutableString(vk::kAtomicCountersBlockName),
+                                 kAtomicCountersVarName);
 }
 
-TIntermBinary *CreateAtomicCounterRef(const TVariable *atomicCounters, TIntermTyped *offset)
+TIntermTyped *CreateUniformBufferOffset(const TIntermTyped *uniformBufferOffsets, int binding)
 {
+    // Each uint in the |acbBufferOffsets| uniform contains offsets for 4 bindings.  Therefore, the
+    // expression to get the uniform offset for the binding is:
+    //
+    //     acbBufferOffsets[binding / 4] >> ((binding % 4) * 8) & 0xFF
+
+    // acbBufferOffsets[binding / 4]
+    TIntermBinary *uniformBufferOffsetUint = new TIntermBinary(
+        EOpIndexDirect, uniformBufferOffsets->deepCopy(), CreateIndexNode(binding / 4));
+
+    // acbBufferOffsets[binding / 4] >> ((binding % 4) * 8)
+    TIntermBinary *uniformBufferOffsetShifted = uniformBufferOffsetUint;
+    if (binding % 4 != 0)
+    {
+        uniformBufferOffsetShifted = new TIntermBinary(EOpBitShiftRight, uniformBufferOffsetUint,
+                                                       CreateUIntNode((binding % 4) * 8));
+    }
+
+    // acbBufferOffsets[binding / 4] >> ((binding % 4) * 8) & 0xFF
+    return new TIntermBinary(EOpBitwiseAnd, uniformBufferOffsetShifted, CreateUIntNode(0xFF));
+}
+
+TIntermBinary *CreateAtomicCounterRef(TIntermTyped *atomicCounterExpression,
+                                      const TVariable *atomicCounters,
+                                      const TIntermTyped *uniformBufferOffsets)
+{
+    // The atomic counters storage buffer declaration looks as such:
+    //
+    // layout(...) buffer ANGLEAtomicCounters
+    // {
+    //     uint counters[];
+    // } atomicCounters[N];
+    //
+    // Where N is large enough to accommodate atomic counter buffer bindings used in the shader.
+    //
+    // This function takes an expression that uses an atomic counter, which can either be:
+    //
+    //  - ac
+    //  - acArray[index]
+    //
+    // Note that RewriteArrayOfArrayOfOpaqueUniforms has already flattened array of array of atomic
+    // counters.
+    //
+    // For the first case (ac), the following code is generated:
+    //
+    //     atomicCounters[binding].counters[offset]
+    //
+    // For the second case (acArray[index]), the following code is generated:
+    //
+    //     atomicCounters[binding].counters[offset + index]
+    //
+    // In either case, an offset given through uniforms is also added to |offset|.  The binding is
+    // necessarily a constant thanks to MonomorphizeUnsupportedFunctions.
+
+    // First determine if there's an index, and extract the atomic counter symbol out of the
+    // expression.
+    TIntermSymbol *atomicCounterSymbol = atomicCounterExpression->getAsSymbolNode();
+    TIntermTyped *atomicCounterIndex   = nullptr;
+    int atomicCounterConstIndex        = 0;
+    TIntermBinary *asBinary            = atomicCounterExpression->getAsBinaryNode();
+    if (asBinary != nullptr)
+    {
+        atomicCounterSymbol = asBinary->getLeft()->getAsSymbolNode();
+
+        switch (asBinary->getOp())
+        {
+            case EOpIndexDirect:
+                atomicCounterConstIndex = asBinary->getRight()->getAsConstantUnion()->getIConst(0);
+                break;
+            case EOpIndexIndirect:
+                atomicCounterIndex = asBinary->getRight();
+                break;
+            default:
+                UNREACHABLE();
+        }
+    }
+
+    // Extract binding and offset information out of the atomic counter symbol.
+    ASSERT(atomicCounterSymbol);
+    const TVariable *atomicCounterVar = &atomicCounterSymbol->variable();
+    const TType &atomicCounterType    = atomicCounterVar->getType();
+
+    const int binding = atomicCounterType.getLayoutQualifier().binding;
+    int offset        = atomicCounterType.getLayoutQualifier().offset / 4;
+
+    // Create the expression:
+    //
+    //     offset + arrayIndex + uniformOffset
+    //
+    // If arrayIndex is a constant, it's added with offset right here.
+
+    offset += atomicCounterConstIndex;
+
+    TIntermTyped *index = CreateUniformBufferOffset(uniformBufferOffsets, binding);
+    if (atomicCounterIndex != nullptr)
+    {
+        index = new TIntermBinary(EOpAdd, index, atomicCounterIndex);
+    }
+    if (offset != 0)
+    {
+        index = new TIntermBinary(EOpAdd, index, CreateIndexNode(offset));
+    }
+
+    // Finally, create the complete expression:
+    //
+    //     atomicCounters[binding].counters[index]
+
     TIntermSymbol *atomicCountersRef = new TIntermSymbol(atomicCounters);
-    TConstantUnion *firstFieldIndex  = new TConstantUnion;
-    firstFieldIndex->setIConst(0);
-    TIntermConstantUnion *firstFieldRef =
-        new TIntermConstantUnion(firstFieldIndex, *StaticType::GetBasic<EbtUInt>());
-    TIntermBinary *firstField =
-        new TIntermBinary(EOpIndexDirectInterfaceBlock, atomicCountersRef, firstFieldRef);
-    return new TIntermBinary(EOpIndexDirect, firstField, offset);
-}
 
-TIntermConstantUnion *CreateUIntConstant(uint32_t value)
-{
-    const TType *constantType     = StaticType::GetBasic<EbtUInt, 1>();
-    TConstantUnion *constantValue = new TConstantUnion;
-    constantValue->setUConst(value);
-    return new TIntermConstantUnion(constantValue, *constantType);
+    // atomicCounters[binding]
+    TIntermBinary *countersBlock =
+        new TIntermBinary(EOpIndexDirect, atomicCountersRef, CreateIndexNode(binding));
+
+    // atomicCounters[binding].counters
+    TIntermBinary *counters =
+        new TIntermBinary(EOpIndexDirectInterfaceBlock, countersBlock, CreateIndexNode(0));
+
+    return new TIntermBinary(EOpIndexIndirect, counters, index);
 }
 
 // Traverser that:
 //
-// 1. Converts the |atomic_uint| types to |uint|.
-// 2. Substitutes the |uniform atomic_uint| declarations with a global declaration that holds the
-//    offset.
-// 3. Substitutes |atomicVar[n]| with |offset + n|.
+// 1. Removes the |uniform atomic_uint| declarations and remembers the binding and offset.
+// 2. Substitutes |atomicVar[n]| with |buffer[binding].counters[offset + n]|.
 class RewriteAtomicCountersTraverser : public TIntermTraverser
 {
   public:
-    RewriteAtomicCountersTraverser(TSymbolTable *symbolTable, const TVariable *atomicCounters)
-        : TIntermTraverser(true, true, true, symbolTable),
+    RewriteAtomicCountersTraverser(TSymbolTable *symbolTable,
+                                   const TVariable *atomicCounters,
+                                   const TIntermTyped *acbBufferOffsets)
+        : TIntermTraverser(true, false, false, symbolTable),
           mAtomicCounters(atomicCounters),
-          mCurrentAtomicCounterOffset(0),
-          mCurrentAtomicCounterDecl(nullptr),
-          mCurrentAtomicCounterDeclParent(nullptr)
+          mAcbBufferOffsets(acbBufferOffsets)
     {}
 
     bool visitDeclaration(Visit visit, TIntermDeclaration *node) override
     {
-        const TIntermSequence &sequence = *(node->getSequence());
-
-        TIntermTyped *variable = sequence.front()->getAsTyped();
-        const TType &type      = variable->getType();
-        bool isAtomicCounter   = type.getQualifier() == EvqUniform && type.isAtomicCounter();
-
-        if (visit == PreVisit || visit == InVisit)
-        {
-            if (isAtomicCounter)
-            {
-                // We only support one atomic counter buffer, so the binding should necessarily be
-                // 0.
-                ASSERT(type.getLayoutQualifier().binding == 0);
-
-                mCurrentAtomicCounterDecl       = node;
-                mCurrentAtomicCounterDeclParent = getParentNode()->getAsBlock();
-                mCurrentAtomicCounterOffset     = type.getLayoutQualifier().offset;
-            }
-        }
-        else if (visit == PostVisit)
-        {
-            mCurrentAtomicCounterDecl       = nullptr;
-            mCurrentAtomicCounterDeclParent = nullptr;
-            mCurrentAtomicCounterOffset     = 0;
-        }
-        return true;
-    }
-
-    void visitFunctionPrototype(TIntermFunctionPrototype *node) override
-    {
-        const TFunction *function = node->getFunction();
-        // Go over the parameters and replace the atomic arguments with a uint type.  If this is
-        // the function definition, keep the replaced variable for future encounters.
-        mAtomicCounterFunctionParams.clear();
-        for (size_t paramIndex = 0; paramIndex < function->getParamCount(); ++paramIndex)
-        {
-            const TVariable *param = function->getParam(paramIndex);
-            TVariable *replacement = convertFunctionParameter(node, param);
-            if (replacement)
-            {
-                mAtomicCounterFunctionParams[param] = replacement;
-            }
-        }
-
-        if (mAtomicCounterFunctionParams.empty())
-        {
-            return;
-        }
-
-        // Create a new function prototype and replace this with it.
-        TFunction *replacementFunction = new TFunction(
-            mSymbolTable, function->name(), SymbolType::UserDefined,
-            new TType(function->getReturnType()), function->isKnownToNotHaveSideEffects());
-        for (size_t paramIndex = 0; paramIndex < function->getParamCount(); ++paramIndex)
-        {
-            const TVariable *param = function->getParam(paramIndex);
-            TVariable *replacement = nullptr;
-            if (param->getType().isAtomicCounter())
-            {
-                ASSERT(mAtomicCounterFunctionParams.count(param) != 0);
-                replacement = mAtomicCounterFunctionParams[param];
-            }
-            else
-            {
-                replacement = new TVariable(mSymbolTable, param->name(),
-                                            new TType(param->getType()), SymbolType::UserDefined);
-            }
-            replacementFunction->addParameter(replacement);
-        }
-
-        TIntermFunctionPrototype *replacementPrototype =
-            new TIntermFunctionPrototype(replacementFunction);
-        queueReplacement(replacementPrototype, OriginalNode::IS_DROPPED);
-
-        mReplacedFunctions[function] = replacementFunction;
-    }
-
-    bool visitAggregate(Visit visit, TIntermAggregate *node) override
-    {
-        if (visit == PreVisit)
-        {
-            mAtomicCounterFunctionCallArgs.clear();
-        }
-
-        if (visit != PostVisit)
+        if (!mInGlobalScope)
         {
             return true;
         }
 
-        if (node->getOp() == EOpCallBuiltInFunction)
+        const TIntermSequence &sequence = *(node->getSequence());
+
+        TIntermTyped *variable = sequence.front()->getAsTyped();
+        const TType &type      = variable->getType();
+        bool isAtomicCounter   = type.isAtomicCounter();
+
+        if (isAtomicCounter)
         {
-            convertBuiltinFunction(node);
-        }
-        else if (node->getOp() == EOpCallFunctionInAST)
-        {
-            convertASTFunction(node);
+            ASSERT(type.getQualifier() == EvqUniform);
+            TIntermSequence emptySequence;
+            mMultiReplacements.emplace_back(getParentNode()->getAsBlock(), node,
+                                            std::move(emptySequence));
+
+            return false;
         }
 
+        return true;
+    }
+
+    bool visitAggregate(Visit visit, TIntermAggregate *node) override
+    {
+        if (BuiltInGroup::IsBuiltIn(node->getOp()))
+        {
+            bool converted = convertBuiltinFunction(node);
+            return !converted;
+        }
+
+        // AST functions don't require modification as atomic counter function parameters are
+        // removed by MonomorphizeUnsupportedFunctions.
         return true;
     }
 
     void visitSymbol(TIntermSymbol *symbol) override
     {
-        const TVariable *symbolVariable = &symbol->variable();
+        // Cannot encounter the atomic counter symbol directly.  It can only be used with functions,
+        // and therefore it's handled by visitAggregate.
+        ASSERT(!symbol->getType().isAtomicCounter());
+    }
 
-        if (mCurrentAtomicCounterDecl)
-        {
-            declareAtomicCounter(symbolVariable);
-            return;
-        }
-
-        if (!symbol->getType().isAtomicCounter())
-        {
-            return;
-        }
-
-        // The symbol is either referencing a global atomic counter, or is a function parameter.  In
-        // either case, it could be an array.  The are the following possibilities:
-        //
-        //     layout(..) uniform atomic_uint ac;
-        //     layout(..) uniform atomic_uint acArray[N];
-        //
-        //     void func(inout atomic_uint c)
-        //     {
-        //         otherFunc(c);
-        //     }
-        //
-        //     void funcArray(inout atomic_uint cArray[N])
-        //     {
-        //         otherFuncArray(cArray);
-        //         otherFunc(cArray[n]);
-        //     }
-        //
-        //     void funcGlobal()
-        //     {
-        //         func(ac);
-        //         func(acArray[n]);
-        //         funcArray(acArray);
-        //         atomicIncrement(ac);
-        //         atomicIncrement(acArray[n]);
-        //     }
-        //
-        // This should translate to:
-        //
-        //     buffer ANGLEAtomicCounters
-        //     {
-        //         uint counters[];
-        //     } atomicCounters;
-        //
-        //     const uint ac = <offset>;
-        //     const uint acArray = <offset>;
-        //
-        //     void func(inout uint c)
-        //     {
-        //         otherFunc(c);
-        //     }
-        //
-        //     void funcArray(inout uint cArray)
-        //     {
-        //         otherFuncArray(cArray);
-        //         otherFunc(cArray + n);
-        //     }
-        //
-        //     void funcGlobal()
-        //     {
-        //         func(ac);
-        //         func(acArray+n);
-        //         funcArray(acArray);
-        //         atomicAdd(atomicCounters.counters[ac]);
-        //         atomicAdd(atomicCounters.counters[ac+n]);
-        //     }
-        //
-        // In all cases, the argument transformation is stored in |mAtomicCounterFunctionCallArgs|.
-        // In the function call's PostVisit, if it's a builtin, the look up in
-        // |atomicCounters.counters| is done as well as the builtin function change.  Otherwise,
-        // the transformed argument is passed on as is.
-        //
-
-        TIntermTyped *offset = nullptr;
-        if (mAtomicCounterOffsets.count(symbolVariable) != 0)
-        {
-            offset = new TIntermSymbol(mAtomicCounterOffsets[symbolVariable]);
-        }
-        else
-        {
-            ASSERT(mAtomicCounterFunctionParams.count(symbolVariable) != 0);
-            offset = new TIntermSymbol(mAtomicCounterFunctionParams[symbolVariable]);
-        }
-
-        TIntermNode *argument = symbol;
-
-        TIntermNode *parent = getParentNode();
-        ASSERT(parent);
-
-        TIntermBinary *arrayExpression = parent->getAsBinaryNode();
-        if (arrayExpression)
-        {
-            ASSERT(arrayExpression->getOp() == EOpIndexDirect ||
-                   arrayExpression->getOp() == EOpIndexIndirect);
-
-            offset   = new TIntermBinary(EOpAdd, offset, arrayExpression->getRight()->deepCopy());
-            argument = arrayExpression;
-        }
-
-        mAtomicCounterFunctionCallArgs[argument] = offset;
+    bool visitBinary(Visit visit, TIntermBinary *node) override
+    {
+        // Cannot encounter an atomic counter expression directly.  It can only be used with
+        // functions, and therefore it's handled by visitAggregate.
+        ASSERT(!node->getType().isAtomicCounter());
+        return true;
     }
 
   private:
-    void declareAtomicCounter(const TVariable *symbolVariable)
+    bool convertBuiltinFunction(TIntermAggregate *node)
     {
-        // Create a global variable that contains the offset of this atomic counter declaration.
-        TType *uintType = new TType(*StaticType::GetBasic<EbtUInt, 1>());
-        uintType->setQualifier(EvqConst);
-        TVariable *offset =
-            new TVariable(mSymbolTable, symbolVariable->name(), uintType, SymbolType::UserDefined);
+        const TOperator op = node->getOp();
 
-        ASSERT(mCurrentAtomicCounterOffset % 4 == 0);
-        TIntermConstantUnion *offsetInitValue = CreateIndexNode(mCurrentAtomicCounterOffset / 4);
-
-        TIntermSymbol *offsetSymbol = new TIntermSymbol(offset);
-        TIntermBinary *offsetInit = new TIntermBinary(EOpInitialize, offsetSymbol, offsetInitValue);
-
-        TIntermDeclaration *offsetDeclaration = new TIntermDeclaration();
-        offsetDeclaration->appendDeclarator(offsetInit);
-
-        // Replace the atomic_uint declaration with the offset declaration.
-        TIntermSequence replacement;
-        replacement.push_back(offsetDeclaration);
-        mMultiReplacements.emplace_back(mCurrentAtomicCounterDeclParent, mCurrentAtomicCounterDecl,
-                                        replacement);
-
-        // Remember the offset variable.
-        mAtomicCounterOffsets[symbolVariable] = offset;
-    }
-
-    TVariable *convertFunctionParameter(TIntermNode *parent, const TVariable *param)
-    {
-        if (!param->getType().isAtomicCounter())
-        {
-            return nullptr;
-        }
-
-        const TType *newType = StaticType::GetBasic<EbtUInt>();
-
-        TVariable *replacementVar =
-            new TVariable(mSymbolTable, param->name(), newType, SymbolType::UserDefined);
-
-        return replacementVar;
-    }
-
-    void convertBuiltinFunction(TIntermAggregate *node)
-    {
         // If the function is |memoryBarrierAtomicCounter|, simply replace it with
         // |memoryBarrierBuffer|.
-        if (node->getFunction()->name() == "memoryBarrierAtomicCounter")
+        if (op == EOpMemoryBarrierAtomicCounter)
         {
+            TIntermSequence emptySequence;
             TIntermTyped *substituteCall = CreateBuiltInFunctionCallNode(
-                "memoryBarrierBuffer", new TIntermSequence, *mSymbolTable, 310);
+                "memoryBarrierBuffer", &emptySequence, *mSymbolTable, 310);
             queueReplacement(substituteCall, OriginalNode::IS_DROPPED);
-            return;
+            return true;
         }
 
         // If it's an |atomicCounter*| function, replace the function with an |atomic*| equivalent.
         if (!node->getFunction()->isAtomicCounterFunction())
         {
-            return;
+            return false;
         }
-
-        const ImmutableString &functionName = node->getFunction()->name();
-        TIntermSequence *arguments          = node->getSequence();
 
         // Note: atomicAdd(0) is used for atomic reads.
         uint32_t valueChange                = 0;
         constexpr char kAtomicAddFunction[] = "atomicAdd";
         bool isDecrement                    = false;
 
-        if (functionName == "atomicCounterIncrement")
+        if (op == EOpAtomicCounterIncrement)
         {
             valueChange = 1;
         }
-        else if (functionName == "atomicCounterDecrement")
+        else if (op == EOpAtomicCounterDecrement)
         {
             // uint values are required to wrap around, so 0xFFFFFFFFu is used as -1.
             valueChange = std::numeric_limits<uint32_t>::max();
@@ -369,94 +284,45 @@ class RewriteAtomicCountersTraverser : public TIntermTraverser
         }
         else
         {
-            ASSERT(functionName == "atomicCounter");
+            ASSERT(op == EOpAtomicCounter);
         }
 
-        const TIntermNode *param = (*arguments)[0];
-        ASSERT(mAtomicCounterFunctionCallArgs.count(param) != 0);
+        TIntermTyped *param = (*node->getSequence())[0]->getAsTyped();
 
-        TIntermTyped *offset = mAtomicCounterFunctionCallArgs[param];
-
-        TIntermSequence *substituteArguments = new TIntermSequence;
-        substituteArguments->push_back(CreateAtomicCounterRef(mAtomicCounters, offset));
-        substituteArguments->push_back(CreateUIntConstant(valueChange));
+        TIntermSequence substituteArguments;
+        substituteArguments.push_back(
+            CreateAtomicCounterRef(param, mAtomicCounters, mAcbBufferOffsets));
+        substituteArguments.push_back(CreateUIntNode(valueChange));
 
         TIntermTyped *substituteCall = CreateBuiltInFunctionCallNode(
-            kAtomicAddFunction, substituteArguments, *mSymbolTable, 310);
+            kAtomicAddFunction, &substituteArguments, *mSymbolTable, 310);
 
         // Note that atomicCounterDecrement returns the *new* value instead of the prior value,
         // unlike atomicAdd.  So we need to do a -1 on the result as well.
         if (isDecrement)
         {
-            substituteCall = new TIntermBinary(EOpSub, substituteCall, CreateUIntConstant(1));
+            substituteCall = new TIntermBinary(EOpSub, substituteCall, CreateUIntNode(1));
         }
 
         queueReplacement(substituteCall, OriginalNode::IS_DROPPED);
+        return true;
     }
 
-    void convertASTFunction(TIntermAggregate *node)
-    {
-        // See if the function needs replacement at all.
-        const TFunction *function = node->getFunction();
-        if (mReplacedFunctions.count(function) == 0)
-        {
-            return;
-        }
-
-        // atomic_uint arguments to this call are staged to be replaced at the same time.
-        TFunction *substituteFunction        = mReplacedFunctions[function];
-        TIntermSequence *substituteArguments = new TIntermSequence;
-
-        for (size_t paramIndex = 0; paramIndex < function->getParamCount(); ++paramIndex)
-        {
-            TIntermNode *param = node->getChildNode(paramIndex);
-
-            TIntermNode *replacement = nullptr;
-            if (param->getAsTyped()->getType().isAtomicCounter())
-            {
-                ASSERT(mAtomicCounterFunctionCallArgs.count(param) != 0);
-                replacement = mAtomicCounterFunctionCallArgs[param];
-            }
-            else
-            {
-                replacement = param->getAsTyped()->deepCopy();
-            }
-            substituteArguments->push_back(replacement);
-        }
-
-        TIntermTyped *substituteCall =
-            TIntermAggregate::CreateFunctionCall(*substituteFunction, substituteArguments);
-
-        queueReplacement(substituteCall, OriginalNode::IS_DROPPED);
-    }
-
-  private:
     const TVariable *mAtomicCounters;
-
-    // A map from the atomic_uint variable to the offset declaration.
-    std::unordered_map<const TVariable *, TVariable *> mAtomicCounterOffsets;
-    // A map from functions with atomic_uint parameters to one where that's replaced with uint.
-    std::unordered_map<const TFunction *, TFunction *> mReplacedFunctions;
-    // A map from atomic_uint function parameters to their replacement uint parameter for the
-    // current function definition.
-    std::unordered_map<const TVariable *, TVariable *> mAtomicCounterFunctionParams;
-    // A map from atomic_uint function call arguments to their replacement for the current
-    // non-builtin function call.
-    std::unordered_map<const TIntermNode *, TIntermTyped *> mAtomicCounterFunctionCallArgs;
-
-    uint32_t mCurrentAtomicCounterOffset;
-    TIntermDeclaration *mCurrentAtomicCounterDecl;
-    TIntermAggregateBase *mCurrentAtomicCounterDeclParent;
+    const TIntermTyped *mAcbBufferOffsets;
 };
 
 }  // anonymous namespace
 
-void RewriteAtomicCounters(TIntermBlock *root, TSymbolTable *symbolTable)
+bool RewriteAtomicCounters(TCompiler *compiler,
+                           TIntermBlock *root,
+                           TSymbolTable *symbolTable,
+                           const TIntermTyped *acbBufferOffsets)
 {
-    const TVariable *atomicCounters = DeclareAtomicCountersBuffer(root, symbolTable);
+    const TVariable *atomicCounters = DeclareAtomicCountersBuffers(root, symbolTable);
 
-    RewriteAtomicCountersTraverser traverser(symbolTable, atomicCounters);
+    RewriteAtomicCountersTraverser traverser(symbolTable, atomicCounters, acbBufferOffsets);
     root->traverse(&traverser);
-    traverser.updateTree();
+    return traverser.updateTree(compiler, root);
 }
 }  // namespace sh

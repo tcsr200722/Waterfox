@@ -8,6 +8,7 @@
 #include "gtest/gtest.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/RefPtr.h"
+#include "nsTHashMap.h"
 
 using namespace mozilla;
 
@@ -487,6 +488,28 @@ TEST(TArray, int_Assign)
   ASSERT_EQ(DummyArray(), array2);
 }
 
+TEST(TArray, int_Assign_FromEmpty_ToNonEmpty)
+{
+  nsTArray<int> array;
+  array.AppendElement(42);
+
+  const nsTArray<int> empty;
+  array.Assign(empty);
+
+  ASSERT_TRUE(array.IsEmpty());
+}
+
+TEST(TArray, int_Assign_FromEmpty_ToNonEmpty_Fallible)
+{
+  nsTArray<int> array;
+  array.AppendElement(42);
+
+  const nsTArray<int> empty;
+  ASSERT_TRUE(array.Assign(empty, fallible));
+
+  ASSERT_TRUE(array.IsEmpty());
+}
+
 TEST(TArray, int_AssignmentOperatorSelfAssignment)
 {
   CopyableTArray<int> array;
@@ -800,11 +823,11 @@ TEST(TArray, RemoveElementAt_ByIterator)
   ASSERT_EQ(expected, array);
 }
 
-TEST(TArray, RemoveElementsAt_ByIterator)
+TEST(TArray, RemoveElementsRange_ByIterator)
 {
   nsTArray<int> array{1, 2, 3, 4};
   const auto it = std::find(array.begin(), array.end(), 3);
-  const auto itAfter = array.RemoveElementsAt(it, array.end());
+  const auto itAfter = array.RemoveElementsRange(it, array.end());
 
   // Based on the implementation of the iterator, we could compare it and
   // itAfter, but we should not rely on such implementation details.
@@ -814,11 +837,44 @@ TEST(TArray, RemoveElementsAt_ByIterator)
   ASSERT_EQ(expected, array);
 }
 
-static_assert(std::is_copy_assignable<decltype(
-                  MakeBackInserter(std::declval<nsTArray<int>&>()))>::value,
+TEST(TArray, RemoveLastElements_None)
+{
+  const nsTArray<int> original{1, 2, 3, 4};
+  nsTArray<int> array = original.Clone();
+  array.RemoveLastElements(0);
+
+  ASSERT_EQ(original, array);
+}
+
+TEST(TArray, RemoveLastElements_Empty_None)
+{
+  nsTArray<int> array;
+  array.RemoveLastElements(0);
+
+  ASSERT_EQ(0u, array.Length());
+}
+
+TEST(TArray, RemoveLastElements_All)
+{
+  nsTArray<int> array{1, 2, 3, 4};
+  array.RemoveLastElements(4);
+
+  ASSERT_EQ(0u, array.Length());
+}
+
+TEST(TArray, RemoveLastElements_One)
+{
+  nsTArray<int> array{1, 2, 3, 4};
+  array.RemoveLastElements(1);
+
+  ASSERT_EQ((nsTArray<int>{1, 2, 3}), array);
+}
+
+static_assert(std::is_copy_assignable<decltype(MakeBackInserter(
+                  std::declval<nsTArray<int>&>()))>::value,
               "output iteraror must be copy-assignable");
-static_assert(std::is_copy_constructible<decltype(
-                  MakeBackInserter(std::declval<nsTArray<int>&>()))>::value,
+static_assert(std::is_copy_constructible<decltype(MakeBackInserter(
+                  std::declval<nsTArray<int>&>()))>::value,
               "output iterator must be copy-constructible");
 
 TEST(TArray, MakeBackInserter)
@@ -881,5 +937,106 @@ class Foo {
 
   const RefCounted* GetFirst() const { return mArray.SafeElementAt(0); }
 };
+
+TEST(TArray, StableSort)
+{
+  const nsTArray<std::pair<int, int>> expected = {
+      std::pair(1, 9), std::pair(1, 8), std::pair(1, 7), std::pair(2, 0),
+      std::pair(3, 0)};
+  nsTArray<std::pair<int, int>> array = {std::pair(1, 9), std::pair(2, 0),
+                                         std::pair(1, 8), std::pair(3, 0),
+                                         std::pair(1, 7)};
+
+  array.StableSort([](std::pair<int, int> left, std::pair<int, int> right) {
+    return left.first - right.first;
+  });
+
+  EXPECT_EQ(expected, array);
+}
+
+TEST(TArray, ToArray)
+{
+  const auto src = std::array{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+
+  nsTArray<int> keys = ToArray(src);
+  keys.Sort();
+
+  EXPECT_EQ((nsTArray<int>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}), keys);
+}
+
+// Test this to make sure this properly uses ADL.
+TEST(TArray, ToArray_HashMap)
+{
+  nsTHashMap<uint32_t, uint64_t> src;
+
+  for (uint32_t i = 0; i < 10; ++i) {
+    src.InsertOrUpdate(i, i);
+  }
+
+  nsTArray<uint32_t> keys = ToArray(src.Keys());
+  keys.Sort();
+
+  EXPECT_EQ((nsTArray<uint32_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}), keys);
+}
+
+TEST(TArray, ToTArray)
+{
+  const auto src = std::array{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+
+  auto keys = ToTArray<AutoTArray<uint64_t, 10>>(src);
+  keys.Sort();
+
+  static_assert(std::is_same_v<decltype(keys), AutoTArray<uint64_t, 10>>);
+
+  EXPECT_EQ((nsTArray<uint64_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}), keys);
+}
+
+TEST(TArray, RemoveElementsBy)
+{
+  // Removing elements returns the correct number of removed elements.
+  {
+    nsTArray<int> array{8, 1, 1, 3, 3, 5, 2, 3};
+    auto removed = array.RemoveElementsBy([](int i) { return i == 3; });
+    EXPECT_EQ(removed, 3u);
+
+    nsTArray<int> goal{8, 1, 1, 5, 2};
+    EXPECT_EQ(array, goal);
+  }
+
+  // The check is called in order.
+  {
+    int index = 0;
+    nsTArray<int> array{0, 1, 2, 3, 4, 5};
+    auto removed = array.RemoveElementsBy([&](int i) {
+      EXPECT_EQ(index, i);
+      index++;
+      return i == 3;
+    });
+    EXPECT_EQ(removed, 1u);
+
+    nsTArray<int> goal{0, 1, 2, 4, 5};
+    EXPECT_EQ(array, goal);
+  }
+
+  // Removing nothing works
+  {
+    nsTArray<int> array{0, 1, 2, 3, 4};
+    auto removed = array.RemoveElementsBy([](int) { return false; });
+    EXPECT_EQ(removed, 0u);
+
+    nsTArray<int> goal{0, 1, 2, 3, 4};
+    EXPECT_EQ(array, goal);
+  }
+
+  // Removing everything works
+  {
+    nsTArray<int> array{0, 1, 2, 3, 4};
+    auto removed = array.RemoveElementsBy([](int) { return true; });
+    EXPECT_EQ(removed, 5u);
+
+    nsTArray<int> goal{};
+    EXPECT_EQ(array, goal);
+  }
+}
 
 }  // namespace TestTArray

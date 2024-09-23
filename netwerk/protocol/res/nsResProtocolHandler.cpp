@@ -5,6 +5,7 @@
 
 #include "mozilla/chrome/RegistryMessageUtils.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Unused.h"
 
 #include "nsResProtocolHandler.h"
@@ -75,7 +76,7 @@ nsresult nsResProtocolHandler::GetApkURI(nsACString& aResult) {
   nsCString::const_iterator start_iter = start;
 
   // This is like jar:jar:file://path/to/apk/base.apk!/path/to/omni.ja!/
-  bool found = FindInReadable(NS_LITERAL_CSTRING("!/"), start_iter, iter);
+  bool found = FindInReadable("!/"_ns, start_iter, iter);
   NS_ENSURE_TRUE(found, NS_ERROR_UNEXPECTED);
 
   // like jar:jar:file://path/to/apk/base.apk!/
@@ -122,21 +123,23 @@ nsResProtocolHandler::AllowContentToAccess(nsIURI* aURI, bool* aResult) {
   return NS_OK;
 }
 
+uint32_t nsResProtocolHandler::GetJARFlags(const nsACString& aRoot) {
+  if (aRoot.Equals(kAndroid)) {
+    return nsISubstitutingProtocolHandler::RESOLVE_JAR_URI;
+  }
+
+  // 0 implies no content access.
+  return 0;
+}
+
 nsresult nsResProtocolHandler::GetSubstitutionInternal(const nsACString& aRoot,
-                                                       nsIURI** aResult,
-                                                       uint32_t* aFlags) {
+                                                       nsIURI** aResult) {
   nsAutoCString uri;
 
-  if (!ResolveSpecialCases(aRoot, NS_LITERAL_CSTRING("/"),
-                           NS_LITERAL_CSTRING("/"), uri)) {
+  if (!ResolveSpecialCases(aRoot, "/"_ns, "/"_ns, uri)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  if (aRoot.Equals(kAndroid)) {
-    *aFlags = nsISubstitutingProtocolHandler::RESOLVE_JAR_URI;
-  } else {
-    *aFlags = 0;  // No content access.
-  }
   return NS_NewURI(aResult, uri);
 }
 

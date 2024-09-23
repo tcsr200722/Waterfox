@@ -1,9 +1,10 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-integer-indexed-exotic-objects-get-p-receiver
 description: >
-  Use OrginaryGet if numeric key is not a CanonicalNumericIndex
+  Use OrdinaryGet if numeric key is not a CanonicalNumericIndex
 info: |
   9.4.5.4 [[Get]] (P, Receiver)
 
@@ -14,7 +15,7 @@ info: |
     ...
   3. Return ? OrdinaryGet(O, P, Receiver).
 includes: [testTypedArray.js]
-features: [TypedArray]
+features: [align-detached-buffer-semantics-with-web-reality, TypedArray]
 ---*/
 
 var keys = [

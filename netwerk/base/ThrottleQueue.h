@@ -11,6 +11,7 @@
 #include "nsINamed.h"
 #include "nsIThrottledInputChannel.h"
 #include "nsITimer.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 namespace net {
@@ -46,17 +47,17 @@ class ThrottleQueue : public nsIInputChannelThrottleQueue,
 
   struct ThrottleEntry {
     TimeStamp mTime;
-    uint32_t mBytesRead;
+    uint32_t mBytesRead = 0;
   };
 
   nsTArray<ThrottleEntry> mReadEvents;
-  uint32_t mMeanBytesPerSecond;
-  uint32_t mMaxBytesPerSecond;
-  uint64_t mBytesProcessed;
+  uint32_t mMeanBytesPerSecond{0};
+  uint32_t mMaxBytesPerSecond{0};
+  uint64_t mBytesProcessed{0};
 
   nsTArray<RefPtr<ThrottleInputStream>> mAsyncEvents;
   nsCOMPtr<nsITimer> mTimer;
-  bool mTimerArmed;
+  bool mTimerArmed{false};
 };
 
 }  // namespace net

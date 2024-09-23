@@ -7,17 +7,22 @@
 #define HTMLEditorEventListener_h
 
 #include "EditorEventListener.h"
+
+#include "EditorForwards.h"
+#include "HTMLEditor.h"
+
 #include "nscore.h"
 
 namespace mozilla {
 
-class EditorBase;
+namespace dom {
+class Element;
+}
 
 class HTMLEditorEventListener final : public EditorEventListener {
  public:
   HTMLEditorEventListener()
-      : EditorEventListener(),
-        mListeningToMouseMoveEventForResizers(false),
+      : mListeningToMouseMoveEventForResizers(false),
         mListeningToMouseMoveEventForGrabber(false),
         mListeningToResizeEvent(false) {}
 
@@ -78,6 +83,11 @@ class HTMLEditorEventListener final : public EditorEventListener {
 
   nsresult ListenToMouseMoveEventForResizersOrGrabber(bool aListen,
                                                       bool aForGrabber);
+
+  MOZ_CAN_RUN_SCRIPT nsresult HandlePrimaryMouseButtonDown(
+      HTMLEditor& aHTMLEditor, dom::MouseEvent& aMouseEvent);
+  MOZ_CAN_RUN_SCRIPT nsresult HandleSecondaryMouseButtonDown(
+      HTMLEditor& aHTMLEditor, dom::MouseEvent& aMouseEvent);
 
   bool mListeningToMouseMoveEventForResizers;
   bool mListeningToMouseMoveEventForGrabber;

@@ -8,9 +8,11 @@
 #define mozilla_PermissionManager_h
 
 #include "nsIPermissionManager.h"
+#include "nsIAsyncShutdown.h"
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
 #include "nsCOMPtr.h"
+#include "nsIURI.h"
 #include "nsTHashtable.h"
 #include "nsTArray.h"
 #include "nsString.h"
@@ -19,6 +21,8 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/OriginAttributes.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/ThreadBound.h"
 #include "mozilla/Variant.h"
 #include "mozilla/Vector.h"
@@ -46,7 +50,8 @@ class ContentChild;
 
 class PermissionManager final : public nsIPermissionManager,
                                 public nsIObserver,
-                                public nsSupportsWeakReference {
+                                public nsSupportsWeakReference,
+                                public nsIAsyncShutdownBlocker {
   friend class dom::ContentChild;
 
  public:
@@ -83,6 +88,7 @@ class PermissionManager final : public nsIPermissionManager,
    public:
     static PermissionKey* CreateFromPrincipal(nsIPrincipal* aPrincipal,
                                               bool aForceStripOA,
+                                              bool aScopeToSite,
                                               nsresult& aResult);
     static PermissionKey* CreateFromURI(nsIURI* aURI, nsresult& aResult);
     static PermissionKey* CreateFromURIAndOriginAttributes(
@@ -133,6 +139,9 @@ class PermissionManager final : public nsIPermissionManager,
     enum { ALLOW_MEMMOVE = false };
 
     inline nsTArray<PermissionEntry>& GetPermissions() { return mPermissions; }
+    inline const nsTArray<PermissionEntry>& GetPermissions() const {
+      return mPermissions;
+    }
 
     inline int32_t GetPermissionIndex(uint32_t aType) const {
       for (uint32_t i = 0; i < mPermissions.Length(); ++i)
@@ -158,6 +167,7 @@ class PermissionManager final : public nsIPermissionManager,
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIPERMISSIONMANAGER
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSIASYNCSHUTDOWNBLOCKER
 
   PermissionManager();
   static already_AddRefed<nsIPermissionManager> GetXPCOMSingleton();
@@ -187,15 +197,6 @@ class PermissionManager final : public nsIPermissionManager,
       nsIURI* aURI, const OriginAttributes* aOriginAttributes,
       const nsACString& aType, uint32_t* aPermission);
 
-  /**
-   * Initialize the permission-manager service.
-   * The permission manager is always initialized at startup because when it
-   * was lazy-initialized on demand, it was possible for it to be created
-   * once shutdown had begun, resulting in the manager failing to correctly
-   * shutdown because it missed its shutdown observer notification.
-   */
-  static void Startup();
-
   nsresult RemovePermissionsWithAttributes(OriginAttributesPattern& aAttrs);
 
   /**
@@ -210,11 +211,17 @@ class PermissionManager final : public nsIPermissionManager,
    * @param aPrincipal  The Principal which the key is to be extracted from.
    * @param aForceStripOA Whether to force stripping the principals origin
    *        attributes prior to generating the key.
+   * @param aSiteScopePermissions  Whether to prepare the key for permissions
+   *        scoped to the Principal's site, rather than origin. These are looked
+   *        up independently. Scoping of a permission is fully determined by its
+   *        type and determined by calls to the function IsSiteScopedPermission.
    * @param aKey  A string which will be filled with the permission
    * key.
    */
-  static void GetKeyForPrincipal(nsIPrincipal* aPrincipal, bool aForceStripOA,
-                                 nsACString& aKey);
+  static nsresult GetKeyForPrincipal(nsIPrincipal* aPrincipal,
+                                     bool aForceStripOA,
+                                     bool aSiteScopePermissions,
+                                     nsACString& aKey);
 
   /**
    * See `nsIPermissionManager::GetPermissionsWithKey` for more info on
@@ -230,11 +237,15 @@ class PermissionManager final : public nsIPermissionManager,
    * @param aOrigin  The origin which the key is to be extracted from.
    * @param aForceStripOA Whether to force stripping the origins attributes
    *        prior to generating the key.
+   * @param aSiteScopePermissions  Whether to prepare the key for permissions
+   *        scoped to the Principal's site, rather than origin. These are looked
+   *        up independently. Scoping of a permission is fully determined by its
+   *        type and determined by calls to the function IsSiteScopedPermission.
    * @param aKey  A string which will be filled with the permission
    * key.
    */
-  static void GetKeyForOrigin(const nsACString& aOrigin, bool aForceStripOA,
-                              nsACString& aKey);
+  static nsresult GetKeyForOrigin(const nsACString& aOrigin, bool aForceStripOA,
+                                  bool aSiteScopePermissions, nsACString& aKey);
 
   /**
    * See `nsIPermissionManager::GetPermissionsWithKey` for more info on
@@ -254,8 +265,9 @@ class PermissionManager final : public nsIPermissionManager,
    * @param aPermissionKey  A string which will be filled with the permission
    * key.
    */
-  static void GetKeyForPermission(nsIPrincipal* aPrincipal,
-                                  const nsACString& aType, nsACString& aKey);
+  static nsresult GetKeyForPermission(nsIPrincipal* aPrincipal,
+                                      const nsACString& aType,
+                                      nsACString& aKey);
 
   /**
    * See `nsIPermissionManager::GetPermissionsWithKey` for more info on
@@ -346,8 +358,19 @@ class PermissionManager final : public nsIPermissionManager,
   void WhenPermissionsAvailable(nsIPrincipal* aPrincipal,
                                 nsIRunnable* aRunnable);
 
+  /**
+   * Strip origin attributes for permissions, depending on permission isolation
+   * pref state.
+   * @param aForceStrip If true, strips user context and private browsing id,
+   * ignoring permission isolation prefs.
+   * @param aOriginAttributes object to strip.
+   */
+  static void MaybeStripOriginAttributes(bool aForceStrip,
+                                         OriginAttributes& aOriginAttributes);
+
  private:
   ~PermissionManager();
+  static StaticMutex sCreationMutex MOZ_UNANNOTATED;
 
   /**
    * Get all permissions for a given principal, which should not be isolated
@@ -355,8 +378,12 @@ class PermissionManager final : public nsIPermissionManager,
    * attributes stripped before perm db lookup. This is currently only affects
    * the "cookie" permission.
    * @param aPrincipal Used for creating the permission key.
+   * @param aSiteScopePermissions Used to specify whether to get strip perms for
+   * site scoped permissions (defined in IsSiteScopedPermission) or all other
+   * permissions. Also used to create the permission key.
    */
   nsresult GetStripPermsForPrincipal(nsIPrincipal* aPrincipal,
+                                     bool aSiteScopePermissions,
                                      nsTArray<PermissionEntry>& aResult);
 
   // Returns -1 on failure
@@ -365,6 +392,20 @@ class PermissionManager final : public nsIPermissionManager,
   // Returns whether the given combination of expire type and expire time are
   // expired. Note that EXPIRE_SESSION only honors expireTime if it is nonzero.
   bool HasExpired(uint32_t aExpireType, int64_t aExpireTime);
+
+  // Appends the permissions associated with this principal to aResult.
+  // If the onlySiteScopePermissions argument is true, the permissions searched
+  // are those for the site of the principal and only the permissions that are
+  // site-scoped are used.
+  nsresult GetAllForPrincipalHelper(nsIPrincipal* aPrincipal,
+                                    bool aSiteScopePermissions,
+                                    nsTArray<RefPtr<nsIPermission>>& aResult);
+
+  // Returns true if the principal can be used for getting / setting
+  // permissions. If the principal can not be used an error code may be
+  // returned.
+  nsresult ShouldHandlePrincipalForPermission(
+      nsIPrincipal* aPrincipal, bool& aIsPermissionPrincipalValid);
 
   // Returns PermissionHashKey for a given { host, isInBrowserElement } tuple.
   // This is not simply using PermissionKey because we will walk-up domains in
@@ -445,8 +486,12 @@ class PermissionManager final : public nsIPermissionManager,
   void NotifyObservers(nsIPermission* aPermission, const char16_t* aData);
 
   // Finalize all statements, close the DB and null it.
-  // if aRebuildOnSuccess, reinitialize database
-  void CloseDB(bool aRebuildOnSuccess = false);
+  enum CloseDBNextOp {
+    eNone,
+    eRebuldOnSuccess,
+    eShutdown,
+  };
+  void CloseDB(CloseDBNextOp aNextOp);
 
   nsresult RemoveAllInternal(bool aNotifyObservers);
   nsresult RemoveAllFromMemory();
@@ -464,6 +509,10 @@ class PermissionManager final : public nsIPermissionManager,
   template <class T>
   nsresult RemovePermissionEntries(T aCondition);
 
+  template <class T>
+  nsresult GetPermissionEntries(T aCondition,
+                                nsTArray<RefPtr<nsIPermission>>& aResult);
+
   // This method must be called before doing any operation to be sure that the
   // DB reading has been completed. This method is also in charge to complete
   // the migrations if needed.
@@ -475,13 +524,18 @@ class PermissionManager final : public nsIPermissionManager,
                        NotifyOperationType aNotifyOperation,
                        DBOperationType aDBOperation,
                        const bool aIgnoreSessionPermissions = false,
-                       const nsACString* aOriginString = nullptr);
+                       const nsACString* aOriginString = nullptr,
+                       const bool aAllowPersistInPrivateBrowsing = false);
 
   void MaybeAddReadEntryFromMigration(const nsACString& aOrigin,
                                       const nsCString& aType,
                                       uint32_t aPermission,
                                       uint32_t aExpireType, int64_t aExpireTime,
                                       int64_t aModificationTime, int64_t aId);
+
+  nsCOMPtr<nsIAsyncShutdownClient> GetAsyncShutdownBarrier() const;
+
+  void MaybeCompleteShutdown();
 
   nsRefPtrHashtable<nsCStringHashKey, GenericNonExclusivePromise::Private>
       mPermissionKeyPromiseMap;
@@ -491,7 +545,7 @@ class PermissionManager final : public nsIPermissionManager,
   // This monitor is used to ensure the database reading before any other
   // operation. The reading of the database happens OMT. See |State| to know the
   // steps of the database reading.
-  Monitor mMonitor;
+  Monitor mMonitor MOZ_UNANNOTATED;
 
   enum State {
     // Initial state. The database has not been read yet.
@@ -548,8 +602,7 @@ class PermissionManager final : public nsIPermissionManager,
           mPermission(0),
           mExpireType(0),
           mExpireTime(0),
-          mModificationTime(0),
-          mIsInBrowserElement(false) {}
+          mModificationTime(0) {}
 
     nsCString mHost;
     nsCString mType;
@@ -558,9 +611,6 @@ class PermissionManager final : public nsIPermissionManager,
     uint32_t mExpireType;
     int64_t mExpireTime;
     int64_t mModificationTime;
-
-    // Legacy, for migration.
-    bool mIsInBrowserElement;
   };
 
   // List of entries read from the database. It will be populated OMT and

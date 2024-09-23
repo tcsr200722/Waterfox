@@ -9,12 +9,14 @@
 #include <utility>
 
 #include "mozilla/Preferences.h"
+#include "VPXDecoder.h"
 #include "mozilla/StaticPrefs_media.h"
 #ifdef MOZ_AV1
 #  include "AOMDecoder.h"
 #endif
 #include "MediaContainerType.h"
 #include "PDMFactory.h"
+#include "PlatformDecoderModule.h"
 #include "VideoUtils.h"
 
 namespace mozilla {
@@ -43,36 +45,31 @@ nsTArray<UniquePtr<TrackInfo>> WebMDecoder::GetTracksInfo(
     if (codec.EqualsLiteral("opus") || codec.EqualsLiteral("vorbis")) {
       tracks.AppendElement(
           CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-              NS_LITERAL_CSTRING("audio/") + NS_ConvertUTF16toUTF8(codec),
-              aType));
+              "audio/"_ns + NS_ConvertUTF16toUTF8(codec), aType));
       continue;
     }
     if (isVideo) {
       UniquePtr<TrackInfo> trackInfo;
       if (IsVP9CodecString(codec)) {
         trackInfo = CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-            NS_LITERAL_CSTRING("video/vp9"), aType);
+            "video/vp9"_ns, aType);
       } else if (IsVP8CodecString(codec)) {
         trackInfo = CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-            NS_LITERAL_CSTRING("video/vp8"), aType);
+            "video/vp8"_ns, aType);
       }
       if (trackInfo) {
-        uint8_t profile = 0;
-        uint8_t level = 0;
-        uint8_t bitDepth = 0;
-        if (ExtractVPXCodecDetails(codec, profile, level, bitDepth)) {
-          trackInfo->GetAsVideoInfo()->mColorDepth =
-              gfx::ColorDepthForBitDepth(bitDepth);
-        }
+        VPXDecoder::SetVideoInfo(trackInfo->GetAsVideoInfo(), codec);
         tracks.AppendElement(std::move(trackInfo));
         continue;
       }
     }
 #ifdef MOZ_AV1
     if (StaticPrefs::media_av1_enabled() && IsAV1CodecString(codec)) {
-      tracks.AppendElement(
+      auto trackInfo =
           CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-              NS_LITERAL_CSTRING("video/av1"), aType));
+              "video/av1"_ns, aType);
+      AOMDecoder::SetVideoInfo(trackInfo->GetAsVideoInfo(), codec);
+      tracks.AppendElement(std::move(trackInfo));
       continue;
     }
 #endif
@@ -107,7 +104,10 @@ bool WebMDecoder::IsSupportedType(const MediaContainerType& aContainerType) {
   // color depth
   RefPtr<PDMFactory> platform = new PDMFactory();
   for (const auto& track : tracks) {
-    if (!track || !platform->Supports(*track, nullptr /* diagnostic */)) {
+    if (!track ||
+        platform
+            ->Supports(SupportDecoderParams(*track), nullptr /* diagnostic */)
+            .isEmpty()) {
       return false;
     }
   }

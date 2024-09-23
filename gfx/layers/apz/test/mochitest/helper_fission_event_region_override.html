@@ -16,8 +16,8 @@ FissionTestHelper.startTestPromise
   .then(waitUntilApzStable)
   .then(loadOOPIFrame("testframe", "helper_fission_empty.html"))
   .then(waitUntilApzStable)
-  .then(runAsyncContinuation(test))
-  .then(FissionTestHelper.subtestDone, FissionTestHelper.subtestDone);
+  .then(test)
+  .then(FissionTestHelper.subtestDone, FissionTestHelper.subtestFailed);
 
 
 // The actual test
@@ -29,7 +29,7 @@ let code_for_oopif_to_run = function() {
     let result = { x: e.clientX, y: e.clientY };
     FissionTestHelper.fireEventInEmbedder("OOPIF:WheelData", result);
   }, { passive: true });
-  document.addEventListener("scroll", function(e) {
+  document.addEventListener("scroll", function() {
     dump(`OOPIF got scroll to ${window.scrollX},${window.scrollY}\n`);
     let result = { x: window.scrollX, y: window.scrollY };
     FissionTestHelper.fireEventInEmbedder("OOPIF:Scrolled", result);
@@ -38,7 +38,7 @@ let code_for_oopif_to_run = function() {
   return true;
 };
 
-async function* test() {
+async function test() {
   let iframeElement = document.getElementById("testframe");
 
   let iframeResponse = await FissionTestHelper.sendToOopif(iframeElement, `(${code_for_oopif_to_run})()`);
@@ -56,7 +56,7 @@ async function* test() {
     scrolled = true;
   });
 
-  synthesizeNativeWheel(iframeElement, 10, 10, 0, -50);
+  await synthesizeNativeWheel(iframeElement, 10, 10, 0, -50);
 
   // Advance a bunch of frames. The only goal here is to ensure enough time
   // passes so that if the OOPIF does scroll, we find out about it via the
@@ -70,7 +70,7 @@ async function* test() {
     utils.advanceTimeAndRefresh(16);
   }
   utils.restoreNormalRefresh();
-  await promiseApzRepaintsFlushed();
+  await promiseOnlyApzControllerFlushed();
 
   ok(!wheeled, "OOPIF correctly did not get wheel event");
   ok(!scrolled, "OOPIF correctly did not scroll");

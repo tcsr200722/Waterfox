@@ -2,10 +2,6 @@
 
 // Make sure that we won't trigger events for a private window.
 add_task(async function test_no_show_hide_for_private_window() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   function background() {
     let events = [];
     browser.menus.onShown.addListener(data => events.push(data));
@@ -27,7 +23,7 @@ add_task(async function test_no_show_hide_for_private_window() {
   let pb_extension = ExtensionTestUtils.loadExtension({
     background,
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: { id: "@private-allowed" },
       },
       permissions: ["menus", "tabs"],
@@ -38,7 +34,7 @@ add_task(async function test_no_show_hide_for_private_window() {
   let extension = ExtensionTestUtils.loadExtension({
     background,
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: { id: "@not-allowed" },
       },
       permissions: ["menus", "tabs"],
@@ -122,7 +118,7 @@ add_task(async function test_no_show_hide_for_private_window() {
   });
 
   // Open and close a menu on the private window.
-  let menu = await openContextMenu("body", privateWindow);
+  let menu = await openContextMenu("body div", privateWindow);
   // We should not see the "not_allowed" extension here.
   ok(
     !privateWindow.document.getElementById(extMenuId),

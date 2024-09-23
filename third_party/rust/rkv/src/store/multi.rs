@@ -10,20 +10,13 @@
 
 use std::marker::PhantomData;
 
-use crate::backend::{
-    BackendDatabase,
-    BackendFlags,
-    BackendIter,
-    BackendRoCursor,
-    BackendRwTransaction,
+use crate::{
+    backend::{BackendDatabase, BackendFlags, BackendIter, BackendRoCursor, BackendRwTransaction},
+    error::StoreError,
+    helpers::read_transform,
+    readwrite::{Readable, Writer},
+    value::Value,
 };
-use crate::error::StoreError;
-use crate::helpers::read_transform;
-use crate::readwrite::{
-    Readable,
-    Writer,
-};
-use crate::value::Value;
 
 type EmptyResult = Result<(), StoreError>;
 
@@ -42,12 +35,11 @@ where
     D: BackendDatabase,
 {
     pub(crate) fn new(db: D) -> MultiStore<D> {
-        MultiStore {
-            db,
-        }
+        MultiStore { db }
     }
 
-    /// Provides a cursor to all of the values for the duplicate entries that match this key
+    /// Provides a cursor to all of the values for the duplicate entries that match this
+    /// key
     pub fn get<'r, R, I, C, K>(&self, reader: &'r R, k: K) -> Result<Iter<'r, I>, StoreError>
     where
         R: Readable<'r, Database = D, RoCursor = C>,
@@ -84,7 +76,13 @@ where
         writer.put(&self.db, &k, v, T::Flags::empty())
     }
 
-    pub fn put_with_flags<T, K>(&self, writer: &mut Writer<T>, k: K, v: &Value, flags: T::Flags) -> EmptyResult
+    pub fn put_with_flags<T, K>(
+        &self,
+        writer: &mut Writer<T>,
+        k: K,
+        v: &Value,
+        flags: T::Flags,
+    ) -> EmptyResult
     where
         T: BackendRwTransaction<Database = D>,
         K: AsRef<[u8]>,
@@ -120,7 +118,7 @@ impl<'i, I> Iterator for Iter<'i, I>
 where
     I: BackendIter<'i>,
 {
-    type Item = Result<(&'i [u8], Option<Value<'i>>), StoreError>;
+    type Item = Result<(&'i [u8], Value<'i>), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {

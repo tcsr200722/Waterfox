@@ -7,16 +7,18 @@
 #include "OGLShaderProgram.h"
 
 #include <stdint.h>  // for uint32_t
-#include <sstream>   // for std::ostringstream
+
+#include <sstream>  // for std::ostringstream
+
+#include "GLContext.h"
 #include "gfxEnv.h"
 #include "gfxRect.h"  // for gfxRect
 #include "gfxUtils.h"
-#include "mozilla/DebugOnly.h"          // for DebugOnly
+#include "mozilla/DebugOnly.h"  // for DebugOnly
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/layers/Compositor.h"  // for BlendOpIsMixBlendMode
 #include "nsAString.h"
 #include "nsString.h"  // for nsAutoCString
-#include "Layers.h"
-#include "GLContext.h"
 
 namespace mozilla {
 namespace layers {
@@ -42,25 +44,14 @@ static void AddUniforms(ProgramProfileOGL& aProfile) {
                                              "uYTexture",
                                              "uCbTexture",
                                              "uCrTexture",
-                                             "uBlackTexture",
-                                             "uWhiteTexture",
-                                             "uMaskTexture",
-                                             "uBackdropTexture",
                                              "uRenderColor",
                                              "uTexCoordMultiplier",
                                              "uCbCrTexCoordMultiplier",
-                                             "uMaskCoordMultiplier",
-                                             "uTexturePass2",
-                                             "uColorMatrix",
-                                             "uColorMatrixVector",
-                                             "uBlurRadius",
-                                             "uBlurOffset",
-                                             "uBlurAlpha",
-                                             "uBlurGaussianKernel",
                                              "uSSEdges",
                                              "uViewportSize",
                                              "uVisibleCenter",
                                              "uYuvColorMatrix",
+                                             "uYuvOffsetVector",
                                              nullptr};
 
   for (int i = 0; sKnownUniformNames[i] != nullptr; ++i) {
@@ -120,7 +111,7 @@ void ShaderConfigOGL::SetColorMultiplier(uint32_t aMultiplier) {
 void ShaderConfigOGL::SetNV12(bool aEnabled) {
   SetFeature(ENABLE_TEXTURE_NV12, aEnabled);
   MOZ_ASSERT(!(mFeatures & ENABLE_TEXTURE_YCBCR));
-#ifdef MOZ_WAYLAND
+#ifdef MOZ_WIDGET_GTK
   SetFeature(ENABLE_TEXTURE_NV12_GA_SWITCH, aEnabled);
 #endif
 }
@@ -403,10 +394,12 @@ ProgramProfileOGL ProgramProfileOGL::GetProfileFor(ShaderConfigOGL aConfig) {
     fs << "uniform " << sampler2D << " uCbTexture;" << endl;
     fs << "uniform " << sampler2D << " uCrTexture;" << endl;
     fs << "uniform mat3 uYuvColorMatrix;" << endl;
+    fs << "uniform vec3 uYuvOffsetVector;" << endl;
   } else if (aConfig.mFeatures & ENABLE_TEXTURE_NV12) {
     fs << "uniform " << sampler2D << " uYTexture;" << endl;
     fs << "uniform " << sampler2D << " uCbTexture;" << endl;
     fs << "uniform mat3 uYuvColorMatrix;" << endl;
+    fs << "uniform vec3 uYuvOffsetVector;" << endl;
   } else if (aConfig.mFeatures & ENABLE_TEXTURE_COMPONENT_ALPHA) {
     fs << "uniform " << sampler2D << " uBlackTexture;" << endl;
     fs << "uniform " << sampler2D << " uWhiteTexture;" << endl;
@@ -487,8 +480,7 @@ ProgramProfileOGL ProgramProfileOGL::GetProfileFor(ShaderConfigOGL aConfig) {
       if (aConfig.mMultiplier != 1) {
         fs << "  yuv *= " << aConfig.mMultiplier << ".0;" << endl;
       }
-      fs << "  vec3 coeff = vec3(0.06275, 0.50196, 0.50196 );" << endl;
-      fs << "  yuv -= coeff;" << endl;
+      fs << "  yuv -= uYuvOffsetVector;" << endl;
       fs << "  color.rgb = uYuvColorMatrix * yuv;" << endl;
       fs << "  color.a = 1.0;" << endl;
     } else if (aConfig.mFeatures & ENABLE_TEXTURE_COMPONENT_ALPHA) {
@@ -906,7 +898,7 @@ GLint ShaderProgramOGL::CreateShader(GLenum aShaderType,
    */
   if (!success
 #ifdef DEBUG
-      || (len > 10 && gfxEnv::DebugShaders())
+      || (len > 10 && gfxEnv::MOZ_DEBUG_SHADERS())
 #endif
   ) {
     nsAutoCString log;
@@ -961,7 +953,7 @@ bool ShaderProgramOGL::CreateProgram(const char* aVertexShaderString,
    */
   if (!success
 #ifdef DEBUG
-      || (len > 10 && gfxEnv::DebugShaders())
+      || (len > 10 && gfxEnv::MOZ_DEBUG_SHADERS())
 #endif
   ) {
     nsAutoCString log;
@@ -1003,30 +995,63 @@ GLuint ShaderProgramOGL::GetProgram() {
   return mProgram;
 }
 
-void ShaderProgramOGL::SetBlurRadius(float aRX, float aRY) {
-  float f[] = {aRX, aRY};
-  SetUniform(KnownUniform::BlurRadius, 2, f);
-
-  float gaussianKernel[GAUSSIAN_KERNEL_HALF_WIDTH];
-  float sum = 0.0f;
-  for (int i = 0; i < GAUSSIAN_KERNEL_HALF_WIDTH; i++) {
-    float x = i * GAUSSIAN_KERNEL_STEP;
-    float sigma = 1.0f;
-    gaussianKernel[i] =
-        exp(-x * x / (2 * sigma * sigma)) / sqrt(2 * M_PI * sigma * sigma);
-    sum += gaussianKernel[i] * (i == 0 ? 1 : 2);
-  }
-  for (int i = 0; i < GAUSSIAN_KERNEL_HALF_WIDTH; i++) {
-    gaussianKernel[i] /= sum;
-  }
-  SetArrayUniform(KnownUniform::BlurGaussianKernel, GAUSSIAN_KERNEL_HALF_WIDTH,
-                  gaussianKernel);
-}
-
 void ShaderProgramOGL::SetYUVColorSpace(gfx::YUVColorSpace aYUVColorSpace) {
   const float* yuvToRgb =
       gfxUtils::YuvToRgbMatrix3x3ColumnMajor(aYUVColorSpace);
   SetMatrix3fvUniform(KnownUniform::YuvColorMatrix, yuvToRgb);
+  if (aYUVColorSpace == gfx::YUVColorSpace::Identity) {
+    const float identity[] = {0.0, 0.0, 0.0};
+    SetVec3fvUniform(KnownUniform::YuvOffsetVector, identity);
+  } else {
+    const float offset[] = {0.06275, 0.50196, 0.50196};
+    SetVec3fvUniform(KnownUniform::YuvOffsetVector, offset);
+  }
+}
+
+ShaderProgramOGLsHolder::ShaderProgramOGLsHolder(gl::GLContext* aGL)
+    : mGL(aGL) {}
+
+ShaderProgramOGLsHolder::~ShaderProgramOGLsHolder() { Clear(); }
+
+ShaderProgramOGL* ShaderProgramOGLsHolder::GetShaderProgramFor(
+    const ShaderConfigOGL& aConfig) {
+  auto iter = mPrograms.find(aConfig);
+  if (iter != mPrograms.end()) {
+    return iter->second.get();
+  }
+
+  ProgramProfileOGL profile = ProgramProfileOGL::GetProfileFor(aConfig);
+  auto shader = MakeUnique<ShaderProgramOGL>(mGL, profile);
+  if (!shader->Initialize()) {
+    gfxCriticalError() << "Shader compilation failure, cfg:"
+                       << " features: " << gfx::hexa(aConfig.mFeatures)
+                       << " multiplier: " << aConfig.mMultiplier
+                       << " op: " << aConfig.mCompositionOp;
+    return nullptr;
+  }
+
+  mPrograms.emplace(aConfig, std::move(shader));
+  return mPrograms[aConfig].get();
+}
+
+void ShaderProgramOGLsHolder::Clear() { mPrograms.clear(); }
+
+ShaderProgramOGL* ShaderProgramOGLsHolder::ActivateProgram(
+    const ShaderConfigOGL& aConfig) {
+  ShaderProgramOGL* program = GetShaderProgramFor(aConfig);
+  MOZ_DIAGNOSTIC_ASSERT(program);
+  if (!program) {
+    return nullptr;
+  }
+  if (mCurrentProgram != program) {
+    mGL->fUseProgram(program->GetProgram());
+    mCurrentProgram = program;
+  }
+  return program;
+}
+
+void ShaderProgramOGLsHolder::ResetCurrentProgram() {
+  mCurrentProgram = nullptr;
 }
 
 }  // namespace layers

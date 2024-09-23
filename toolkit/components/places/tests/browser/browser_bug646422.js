@@ -7,52 +7,37 @@
  * history.pushState, the history service has a title stored for the new URI.
  **/
 
-add_task(async function() {
+add_task(async function () {
   let tab = await BrowserTestUtils.openNewForegroundTab(
     gBrowser,
     "http://example.com"
   );
 
-  let newTitlePromise = new Promise(resolve => {
-    let observer = {
-      onTitleChanged(uri, title) {
-        // If the uri of the page whose title is changing ends with 'new_page',
-        // then it's the result of our pushState.
-        if (/new_page$/.test(uri.spec)) {
-          resolve(title);
-          PlacesUtils.history.removeObserver(observer);
-        }
-      },
+  const newTitlePromise = PlacesTestUtils.waitForNotification(
+    "page-title-changed",
+    events => /new_page$/.test(events[0].url)
+  );
 
-      onBeginUpdateBatch() {},
-      onEndUpdateBatch() {},
-      onDeleteURI() {},
-      onClearHistory() {},
-      onPageChanged() {},
-      onDeleteVisits() {},
-      QueryInterface: ChromeUtils.generateQI([Ci.nsINavHistoryObserver]),
-    };
-
-    PlacesUtils.history.addObserver(observer);
-  });
-
-  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
     let title = content.document.title;
     content.history.pushState("", "", "new_page");
     Assert.ok(title, "Content window should initially have a title.");
   });
 
-  let newtitle = await newTitlePromise;
+  const events = await newTitlePromise;
+  const newtitle = events[0].title;
 
-  await SpecialPowers.spawn(tab.linkedBrowser, [{ newtitle }], async function(
-    args
-  ) {
-    Assert.equal(
-      args.newtitle,
-      content.document.title,
-      "Title after pushstate."
-    );
-  });
+  await SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [{ newtitle }],
+    async function (args) {
+      Assert.equal(
+        args.newtitle,
+        content.document.title,
+        "Title after pushstate."
+      );
+    }
+  );
 
   await PlacesUtils.history.clear();
   gBrowser.removeTab(tab);

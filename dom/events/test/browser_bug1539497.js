@@ -7,10 +7,7 @@ add_task(async function maxTouchPoints() {
   await new Promise(resolve => {
     SpecialPowers.pushPrefEnv(
       {
-        set: [
-          ["dom.w3c_pointer_events.enabled", true],
-          ["dom.maxtouchpoints.testing.value", 5],
-        ],
+        set: [["dom.maxtouchpoints.testing.value", 5]],
       },
       resolve
     );
@@ -20,7 +17,7 @@ add_task(async function maxTouchPoints() {
     gBrowser,
     "data:text/html,Test page for navigator.maxTouchPoints"
   );
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], function () {
     is(content.navigator.maxTouchPoints, 5, "Should have touch points.");
   });
 

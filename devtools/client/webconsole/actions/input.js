@@ -4,16 +4,21 @@
 
 "use strict";
 
-const { Utils: WebConsoleUtils } = require("devtools/client/webconsole/utils");
+const {
+  Utils: WebConsoleUtils,
+} = require("resource://devtools/client/webconsole/utils.js");
 const {
   EVALUATE_EXPRESSION,
   SET_TERMINAL_INPUT,
   SET_TERMINAL_EAGER_RESULT,
-} = require("devtools/client/webconsole/constants");
-const { getAllPrefs } = require("devtools/client/webconsole/selectors/prefs");
+  EDITOR_PRETTY_PRINT,
+  HELP_URL,
+} = require("resource://devtools/client/webconsole/constants.js");
 const {
-  ResourceWatcher,
-} = require("devtools/shared/resources/resource-watcher");
+  getAllPrefs,
+} = require("resource://devtools/client/webconsole/selectors/prefs.js");
+const ResourceCommand = require("resource://devtools/shared/commands/resource/resource-command.js");
+const l10n = require("resource://devtools/client/webconsole/utils/l10n.js");
 
 loader.lazyServiceGetter(
   this,
@@ -23,26 +28,44 @@ loader.lazyServiceGetter(
 );
 loader.lazyRequireGetter(
   this,
-  "saveScreenshot",
-  "devtools/shared/screenshot/save"
-);
-loader.lazyRequireGetter(
-  this,
   "messagesActions",
-  "devtools/client/webconsole/actions/messages"
+  "resource://devtools/client/webconsole/actions/messages.js"
 );
 loader.lazyRequireGetter(
   this,
   "historyActions",
-  "devtools/client/webconsole/actions/history"
+  "resource://devtools/client/webconsole/actions/history.js"
 );
 loader.lazyRequireGetter(
   this,
   "ConsoleCommand",
-  "devtools/client/webconsole/types",
+  "resource://devtools/client/webconsole/types.js",
   true
 );
-const HELP_URL = "https://developer.mozilla.org/docs/Tools/Web_Console/Helpers";
+loader.lazyRequireGetter(
+  this,
+  "netmonitorBlockingActions",
+  "resource://devtools/client/netmonitor/src/actions/request-blocking.js"
+);
+
+loader.lazyRequireGetter(
+  this,
+  ["saveScreenshot", "captureAndSaveScreenshot"],
+  "resource://devtools/client/shared/screenshot.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "createSimpleTableMessage",
+  "resource://devtools/client/webconsole/utils/messages.js",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "getSelectedTarget",
+  "resource://devtools/shared/commands/target/selectors/targets.js",
+  true
+);
 
 async function getMappedExpression(hud, expression) {
   let mapResult;
@@ -60,7 +83,7 @@ async function getMappedExpression(hud, expression) {
 }
 
 function evaluateExpression(expression, from = "input") {
-  return async ({ dispatch, toolbox, webConsoleUI, hud, client }) => {
+  return async ({ dispatch, webConsoleUI, hud, commands }) => {
     if (!expression) {
       expression = hud.getInputSelection() || hud.getInputValue();
     }
@@ -94,22 +117,20 @@ function evaluateExpression(expression, from = "input") {
     // we still need to pass the error response to onExpressionEvaluated.
     const onSettled = res => res;
 
-    const response = await client
-      .evaluateJSAsync(expression, {
-        frameActor: await webConsoleUI.getFrameActor(),
+    const response = await commands.scriptCommand
+      .execute(expression, {
+        frameActor: hud.getSelectedFrameActorID(),
         selectedNodeActor: webConsoleUI.getSelectedNodeActorID(),
-        selectedTargetFront: toolbox && toolbox.getSelectedTargetFront(),
+        selectedTargetFront: getSelectedTarget(
+          webConsoleUI.hud.commands.targetCommand.store.getState()
+        ),
         mapped,
+        // Allow breakpoints to be triggerred and the evaluated source to be shown in debugger UI
+        disableBreaks: false,
       })
       .then(onSettled, onSettled);
 
-    // Before Firefox 77, the response did not have a `startTime` property, so we're using
-    // the `resultID`, which does contain the server time at which the evaluation started
-    // (its shape is `${timestamp}-${someId}`).
-    const serverConsoleCommandTimestamp =
-      response.startTime ||
-      (response.resultID && Number(response.resultID.replace(/\-\d*$/, ""))) ||
-      null;
+    const serverConsoleCommandTimestamp = response.startTime;
 
     // In case of remote debugging, it might happen that the debuggee page does not have
     // the exact same clock time as the client. This could cause some ordering issues
@@ -165,17 +186,51 @@ function onExpressionEvaluated(response) {
 }
 
 function handleHelperResult(response) {
-  return async ({ dispatch, hud, webConsoleUI }) => {
+  // eslint-disable-next-line complexity
+  return async ({ dispatch, hud, toolbox, webConsoleUI, getState }) => {
     const { result, helperResult } = response;
     const helperHasRawOutput = !!helperResult?.rawOutput;
 
     if (helperResult?.type) {
       switch (helperResult.type) {
+        case "exception":
+          dispatch(
+            messagesActions.messagesAdd([
+              {
+                message: {
+                  level: "error",
+                  arguments: [helperResult.message],
+                  chromeContext: true,
+                },
+                resourceType: ResourceCommand.TYPES.CONSOLE_MESSAGE,
+              },
+            ])
+          );
+          break;
         case "clearOutput":
           dispatch(messagesActions.messagesClear());
           break;
         case "clearHistory":
           dispatch(historyActions.clearHistory());
+          break;
+        case "historyOutput":
+          const history = getState().history.entries || [];
+          const columns = new Map([
+            ["_index", "(index)"],
+            ["expression", "Expressions"],
+          ]);
+          dispatch(
+            messagesActions.messagesAdd([
+              {
+                ...createSimpleTableMessage(
+                  columns,
+                  history.map((expression, index) => {
+                    return { _index: index, expression };
+                  })
+                ),
+              },
+            ])
+          );
           break;
         case "inspectObject": {
           const objectActor = helperResult.object;
@@ -191,24 +246,127 @@ function handleHelperResult(response) {
           break;
         case "copyValueToClipboard":
           clipboardHelper.copyString(helperResult.value);
+          dispatch(
+            messagesActions.messagesAdd([
+              {
+                resourceType: ResourceCommand.TYPES.PLATFORM_MESSAGE,
+                message: l10n.getStr(
+                  "webconsole.message.commands.copyValueToClipboard"
+                ),
+              },
+            ])
+          );
           break;
         case "screenshotOutput":
           const { args, value } = helperResult;
-          const screenshotMessages = await saveScreenshot(
-            webConsoleUI.getPanelWindow(),
-            args,
-            value
-          );
+          const targetFront =
+            getSelectedTarget(hud.commands.targetCommand.store.getState()) ||
+            hud.currentTarget;
+          let screenshotMessages;
+
+          // @backward-compat { version 87 } The screenshot-content actor isn't available
+          // in older server.
+          // With an old server, the console actor captures the screenshot when handling
+          // the command, and send it to the client which only needs to save it to a file.
+          // With a new server, the server simply acknowledges the command,
+          // and the client will drive the whole screenshot process (capture and save).
+          if (targetFront.hasActor("screenshotContent")) {
+            screenshotMessages = await captureAndSaveScreenshot(
+              targetFront,
+              webConsoleUI.getPanelWindow(),
+              args
+            );
+          } else {
+            screenshotMessages = await saveScreenshot(
+              webConsoleUI.getPanelWindow(),
+              args,
+              value
+            );
+          }
+
+          if (screenshotMessages && screenshotMessages.length) {
+            dispatch(
+              messagesActions.messagesAdd(
+                screenshotMessages.map(message => ({
+                  message: {
+                    level: message.level || "log",
+                    arguments: [message.text],
+                    chromeContext: true,
+                  },
+                  resourceType: ResourceCommand.TYPES.CONSOLE_MESSAGE,
+                }))
+              )
+            );
+          }
+          break;
+        case "blockURL":
+          const blockURL = helperResult.args.url;
+          // The console actor isn't able to block the request as the console actor runs in the content
+          // process, while the request has to be blocked from the parent process.
+          // Then, calling the Netmonitor action will only update the visual state of the Netmonitor,
+          // but we also have to block the request via the NetworkParentActor.
+          await hud.commands.networkCommand.blockRequestForUrl(blockURL);
+          toolbox
+            .getPanel("netmonitor")
+            ?.panelWin.store.dispatch(
+              netmonitorBlockingActions.addBlockedUrl(blockURL)
+            );
+
           dispatch(
-            messagesActions.messagesAdd(
-              screenshotMessages.map(message => ({
-                message,
-                resourceType: ResourceWatcher.TYPES.PLATFORM_MESSAGE,
-              }))
-            )
+            messagesActions.messagesAdd([
+              {
+                resourceType: ResourceCommand.TYPES.PLATFORM_MESSAGE,
+                message: l10n.getFormatStr(
+                  "webconsole.message.commands.blockedURL",
+                  [blockURL]
+                ),
+              },
+            ])
+          );
+          break;
+        case "unblockURL":
+          const unblockURL = helperResult.args.url;
+          await hud.commands.networkCommand.unblockRequestForUrl(unblockURL);
+          toolbox
+            .getPanel("netmonitor")
+            ?.panelWin.store.dispatch(
+              netmonitorBlockingActions.removeBlockedUrl(unblockURL)
+            );
+
+          dispatch(
+            messagesActions.messagesAdd([
+              {
+                resourceType: ResourceCommand.TYPES.PLATFORM_MESSAGE,
+                message: l10n.getFormatStr(
+                  "webconsole.message.commands.unblockedURL",
+                  [unblockURL]
+                ),
+              },
+            ])
           );
           // early return as we already dispatched necessary messages.
           return;
+
+        // Sent when using ":command --help or :command --usage"
+        // to help discover command arguments.
+        //
+        // The remote runtime will tell us about the usage as it may
+        // be different from the client one.
+        case "usage":
+          dispatch(
+            messagesActions.messagesAdd([
+              {
+                resourceType: ResourceCommand.TYPES.PLATFORM_MESSAGE,
+                message: helperResult.message,
+              },
+            ])
+          );
+          break;
+
+        case "traceOutput":
+          // Nothing in particular to do.
+          // The JSTRACER_STATE resource will report the start/stop of the profiler.
+          break;
       }
     }
 
@@ -247,7 +405,7 @@ function setInputValue(value) {
  *                         the previous evaluation.
  */
 function terminalInputChanged(expression, force = false) {
-  return async ({ dispatch, webConsoleUI, hud, toolbox, client, getState }) => {
+  return async ({ dispatch, webConsoleUI, hud, commands, getState }) => {
     const prefs = getAllPrefs(getState());
     if (!prefs.eagerEvaluation) {
       return null;
@@ -283,10 +441,21 @@ function terminalInputChanged(expression, force = false) {
     let mapped;
     ({ expression, mapped } = await getMappedExpression(hud, expression));
 
-    const response = await client.evaluateJSAsync(expression, {
-      frameActor: await webConsoleUI.getFrameActor(),
+    // We don't want to evaluate top-level await expressions (see Bug 1786805)
+    if (mapped?.await) {
+      return dispatch({
+        type: SET_TERMINAL_EAGER_RESULT,
+        expression,
+        result: null,
+      });
+    }
+
+    const response = await commands.scriptCommand.execute(expression, {
+      frameActor: hud.getSelectedFrameActorID(),
       selectedNodeActor: webConsoleUI.getSelectedNodeActorID(),
-      selectedTargetFront: toolbox && toolbox.getSelectedTargetFront(),
+      selectedTargetFront: getSelectedTarget(
+        hud.commands.targetCommand.store.getState()
+      ),
       mapped,
       eager: true,
     });
@@ -316,10 +485,17 @@ function getEagerEvaluationResult(response) {
   return result;
 }
 
+function prettyPrintEditor() {
+  return {
+    type: EDITOR_PRETTY_PRINT,
+  };
+}
+
 module.exports = {
   evaluateExpression,
   focusInput,
   setInputValue,
   terminalInputChanged,
   updateInstantEvaluationResultForCurrentExpression,
+  prettyPrintEditor,
 };

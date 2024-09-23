@@ -6,7 +6,6 @@
 
 const kInterfaceName = "wifi";
 
-var server;
 var step = 0;
 
 function xhr_handler(metadata, response) {
@@ -33,7 +32,7 @@ function test_cancel() {
   do_test_pending();
 
   let callback = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalCallback"]),
     prepare: function prepare() {
       Assert.equal(++step, 1);
       gCaptivePortalDetector.finishPreparation(kInterfaceName);

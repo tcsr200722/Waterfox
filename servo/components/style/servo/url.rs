@@ -107,11 +107,17 @@ impl CssUrl {
     ///
     /// This is only for shape images and masks in Gecko, thus unimplemented for
     /// now so somebody notices when trying to do so.
-    pub fn parse_with_cors_anonymous<'i, 't>(
-        _context: &ParserContext,
-        _input: &mut Parser<'i, 't>,
+    pub fn parse_with_cors_mode<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        cors_mode: CorsMode,
     ) -> Result<Self, ParseError<'i>> {
-        unimplemented!("Need to record somewhere that the request needs to be CORS-enabled")
+        let url = input.expect_url()?;
+        Ok(Self::parse_from_string(
+            url.as_ref().to_owned(),
+            context,
+            cors_mode,
+        ))
     }
 }
 
@@ -120,12 +126,7 @@ impl Parse for CssUrl {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let url = input.expect_url()?;
-        Ok(Self::parse_from_string(
-            url.as_ref().to_owned(),
-            context,
-            CorsMode::None,
-        ))
+        Self::parse_with_cors_mode(context, input, CorsMode::None)
     }
 }
 
@@ -157,7 +158,7 @@ impl ToCss for CssUrl {
 
         dest.write_str("url(")?;
         string.to_css(dest)?;
-        dest.write_str(")")
+        dest.write_char(')')
     }
 }
 
@@ -229,7 +230,7 @@ impl ToCss for ComputedUrl {
 
         dest.write_str("url(")?;
         string.to_css(dest)?;
-        dest.write_str(")")
+        dest.write_char(')')
     }
 }
 

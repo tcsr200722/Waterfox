@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2007 Henri Sivonen
- * Copyright (c) 2007-2015 Mozilla Foundation
+ * Copyright (c) 2007-2017 Mozilla Foundation
  * Portions of comments Copyright 2004-2008 Apple Computer, Inc., Mozilla
  * Foundation, and Opera Software ASA.
  *
@@ -30,36 +30,9 @@
 
 #define nsHtml5TreeBuilder_cpp__
 
-#include "nsContentUtils.h"
-#include "nsAtom.h"
-#include "nsHtml5AtomTable.h"
-#include "nsHtml5String.h"
-#include "nsNameSpaceManager.h"
-#include "nsIContent.h"
-#include "nsTraceRefcnt.h"
-#include "jArray.h"
-#include "nsHtml5DocumentMode.h"
-#include "nsHtml5ArrayCopy.h"
-#include "nsHtml5Parser.h"
-#include "nsGkAtoms.h"
-#include "nsHtml5TreeOperation.h"
-#include "nsHtml5StateSnapshot.h"
-#include "nsHtml5StackNode.h"
-#include "nsHtml5TreeOpExecutor.h"
-#include "nsHtml5StreamParser.h"
-#include "nsAHtml5TreeBuilderState.h"
-#include "nsHtml5Highlighter.h"
-#include "nsHtml5PlainTextUtils.h"
-#include "nsHtml5ViewSourceUtils.h"
-#include "mozilla/ImportScanner.h"
-#include "mozilla/Likely.h"
-#include "nsIContentHandle.h"
-#include "nsHtml5OplessBuilder.h"
-
 #include "nsHtml5AttributeName.h"
 #include "nsHtml5ElementName.h"
 #include "nsHtml5Tokenizer.h"
-#include "nsHtml5MetaScanner.h"
 #include "nsHtml5StackNode.h"
 #include "nsHtml5UTF16Buffer.h"
 #include "nsHtml5StateSnapshot.h"
@@ -127,6 +100,18 @@ static const char* const QUIRKY_PUBLIC_IDS_DATA[] = {
     "-//webtechs//dtd mozilla html//"};
 staticJArray<const char*, int32_t> nsHtml5TreeBuilder::QUIRKY_PUBLIC_IDS = {
     QUIRKY_PUBLIC_IDS_DATA, MOZ_ARRAY_LENGTH(QUIRKY_PUBLIC_IDS_DATA)};
+void nsHtml5TreeBuilder::setKeepBuffer(bool keepBuffer) {
+  this->keepBuffer = keepBuffer;
+}
+
+bool nsHtml5TreeBuilder::dropBufferIfLongerThan(int32_t length) {
+  if (charBuffer.length > length) {
+    charBuffer = nullptr;
+    return true;
+  }
+  return false;
+}
+
 void nsHtml5TreeBuilder::startTokenization(nsHtml5Tokenizer* self) {
   tokenizer = self;
   stackNodes = jArray<nsHtml5StackNode*, int32_t>::newJArray(64);
@@ -145,7 +130,9 @@ void nsHtml5TreeBuilder::startTokenization(nsHtml5Tokenizer* self) {
   headPointer = nullptr;
   start(fragment);
   charBufferLen = 0;
-  charBuffer = nullptr;
+  if (!keepBuffer) {
+    charBuffer = nullptr;
+  }
   framesetOk = true;
   if (fragment) {
     nsIContentHandle* elt;
@@ -235,15 +222,13 @@ void nsHtml5TreeBuilder::doctype(nsAtom* name, nsHtml5String publicIdentifier,
     emptyString.Release();
     if (isQuirky(name, publicIdentifier, systemIdentifier, forceQuirks)) {
       errQuirkyDoctype();
-      documentModeInternal(QUIRKS_MODE, publicIdentifier, systemIdentifier,
-                           false);
+      documentModeInternal(QUIRKS_MODE, publicIdentifier, systemIdentifier);
     } else if (isAlmostStandards(publicIdentifier, systemIdentifier)) {
       errAlmostStandardsDoctype();
       documentModeInternal(ALMOST_STANDARDS_MODE, publicIdentifier,
-                           systemIdentifier, false);
+                           systemIdentifier);
     } else {
-      documentModeInternal(STANDARDS_MODE, publicIdentifier, systemIdentifier,
-                           false);
+      documentModeInternal(STANDARDS_MODE, publicIdentifier, systemIdentifier);
     }
     mode = BEFORE_HTML;
     return;
@@ -379,7 +364,7 @@ void nsHtml5TreeBuilder::characters(const char16_t* buf, int32_t start,
           default: {
             switch (mode) {
               case INITIAL: {
-                documentModeInternal(QUIRKS_MODE, nullptr, nullptr, false);
+                documentModeInternal(QUIRKS_MODE, nullptr, nullptr);
                 mode = BEFORE_HTML;
                 i--;
                 continue;
@@ -546,12 +531,16 @@ void nsHtml5TreeBuilder::zeroOriginatingReplacementCharacter() {
   }
 }
 
+void nsHtml5TreeBuilder::zeroOrReplacementCharacter() {
+  zeroOriginatingReplacementCharacter();
+}
+
 void nsHtml5TreeBuilder::eof() {
   flushCharacters();
   for (;;) {
     switch (mode) {
       case INITIAL: {
-        documentModeInternal(QUIRKS_MODE, nullptr, nullptr, false);
+        documentModeInternal(QUIRKS_MODE, nullptr, nullptr);
         mode = BEFORE_HTML;
         continue;
       }
@@ -607,7 +596,7 @@ void nsHtml5TreeBuilder::eof() {
           NS_HTML5_BREAK(eofloop);
         }
         if (MOZ_UNLIKELY(mViewSource)) {
-          errUnclosedElements(eltPos, nsGkAtoms::_template);
+          errListUnclosedStartTags(0);
         }
         while (currentPtr >= eltPos) {
           pop();
@@ -677,7 +666,9 @@ void nsHtml5TreeBuilder::endTokenization() {
     stackNodesIdx = 0;
     stackNodes = nullptr;
   }
-  charBuffer = nullptr;
+  if (!keepBuffer) {
+    charBuffer = nullptr;
+  }
   end();
 }
 
@@ -1025,9 +1016,10 @@ starttagloop:
           case TBODY_OR_THEAD_OR_TFOOT:
           case TR:
           case TD_OR_TH: {
-            errStrayStartTag(name);
             eltPos = findLastInTableScope(nsGkAtoms::caption);
             if (eltPos == nsHtml5TreeBuilder::NOT_FOUND_ON_STACK) {
+              MOZ_ASSERT(fragment || isTemplateContents());
+              errStrayStartTag(name);
               NS_HTML5_BREAK(starttagloop);
             }
             generateImpliedEndTags();
@@ -1163,7 +1155,7 @@ starttagloop:
             case P:
             case DIV_OR_BLOCKQUOTE_OR_CENTER_OR_MENU:
             case UL_OR_OL_OR_DL:
-            case ADDRESS_OR_ARTICLE_OR_ASIDE_OR_DETAILS_OR_DIALOG_OR_DIR_OR_FIGCAPTION_OR_FIGURE_OR_FOOTER_OR_HEADER_OR_HGROUP_OR_MAIN_OR_NAV_OR_SECTION_OR_SUMMARY: {
+            case ADDRESS_OR_ARTICLE_OR_ASIDE_OR_DETAILS_OR_DIALOG_OR_DIR_OR_FIGCAPTION_OR_FIGURE_OR_FOOTER_OR_HEADER_OR_HGROUP_OR_MAIN_OR_NAV_OR_SEARCH_OR_SECTION_OR_SUMMARY: {
               implicitlyCloseP();
               appendToCurrentNodeAndPushElementMayFoster(elementName,
                                                          attributes);
@@ -1345,9 +1337,6 @@ starttagloop:
               reconstructTheActiveFormattingElements();
               [[fallthrough]];
             }
-#ifdef ENABLE_VOID_MENUITEM
-            case MENUITEM:
-#endif
             case PARAM_OR_SOURCE_OR_TRACK: {
               appendVoidElementToCurrentMayFoster(elementName, attributes);
               selfClosing = false;
@@ -1655,7 +1644,7 @@ starttagloop:
             NS_HTML5_BREAK(starttagloop);
           }
           default: {
-            errBadStartTagInHead(name);
+            errBadStartTagInNoscriptInHead(name);
             pop();
             mode = IN_HEAD;
             continue;
@@ -1786,6 +1775,18 @@ starttagloop:
             attributes = nullptr;
             NS_HTML5_BREAK(starttagloop);
           }
+          case HR: {
+            if (isCurrent(nsGkAtoms::option)) {
+              pop();
+            }
+            if (isCurrent(nsGkAtoms::optgroup)) {
+              pop();
+            }
+            appendVoidElementToCurrent(elementName, attributes);
+            selfClosing = false;
+            attributes = nullptr;
+            NS_HTML5_BREAK(starttagloop);
+          }
           default: {
             errStrayStartTag(name);
             NS_HTML5_BREAK(starttagloop);
@@ -1853,7 +1854,7 @@ starttagloop:
       }
       case INITIAL: {
         errStartTagWithoutDoctype();
-        documentModeInternal(QUIRKS_MODE, nullptr, nullptr, false);
+        documentModeInternal(QUIRKS_MODE, nullptr, nullptr);
         mode = BEFORE_HTML;
         continue;
       }
@@ -2106,6 +2107,28 @@ bool nsHtml5TreeBuilder::isSpecialParentInForeign(nsHtml5StackNode* stackNode) {
   return (kNameSpaceID_XHTML == ns) || (stackNode->isHtmlIntegrationPoint()) ||
          ((kNameSpaceID_MathML == ns) &&
           (stackNode->getGroup() == MI_MO_MN_MS_MTEXT));
+}
+
+nsIContentHandle* nsHtml5TreeBuilder::getDeclarativeShadowRoot(
+    nsIContentHandle* currentNode, nsIContentHandle* templateNode,
+    nsHtml5HtmlAttributes* attributes) {
+  if (!isAllowDeclarativeShadowRoots()) {
+    return nullptr;
+  }
+  nsHtml5String shadowRootMode =
+      attributes->getValue(nsHtml5AttributeName::ATTR_SHADOWROOTMODE);
+  if (!shadowRootMode) {
+    return nullptr;
+  }
+  bool shadowRootIsClonable =
+      attributes->contains(nsHtml5AttributeName::ATTR_SHADOWROOTCLONABLE);
+  bool shadowRootIsSerializable =
+      attributes->contains(nsHtml5AttributeName::ATTR_SHADOWROOTSERIALIZABLE);
+  bool shadowRootDelegatesFocus =
+      attributes->contains(nsHtml5AttributeName::ATTR_SHADOWROOTDELEGATESFOCUS);
+  return getShadowRootFromHost(currentNode, templateNode, shadowRootMode,
+                               shadowRootIsClonable, shadowRootIsSerializable,
+                               shadowRootDelegatesFocus);
 }
 
 nsHtml5String nsHtml5TreeBuilder::extractCharsetFromContent(
@@ -2534,9 +2557,10 @@ void nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName) {
             NS_HTML5_BREAK(endtagloop);
           }
           case TABLE: {
-            errTableClosedWhileCaptionOpen();
             eltPos = findLastInTableScope(nsGkAtoms::caption);
             if (eltPos == nsHtml5TreeBuilder::NOT_FOUND_ON_STACK) {
+              MOZ_ASSERT(fragment || isTemplateContents());
+              errStrayEndTag(name);
               NS_HTML5_BREAK(endtagloop);
             }
             generateImpliedEndTags();
@@ -2680,7 +2704,7 @@ void nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName) {
           case PRE_OR_LISTING:
           case FIELDSET:
           case BUTTON:
-          case ADDRESS_OR_ARTICLE_OR_ASIDE_OR_DETAILS_OR_DIALOG_OR_DIR_OR_FIGCAPTION_OR_FIGURE_OR_FOOTER_OR_HEADER_OR_HGROUP_OR_MAIN_OR_NAV_OR_SECTION_OR_SUMMARY: {
+          case ADDRESS_OR_ARTICLE_OR_ASIDE_OR_DETAILS_OR_DIALOG_OR_DIR_OR_FIGCAPTION_OR_FIGURE_OR_FOOTER_OR_HEADER_OR_HGROUP_OR_MAIN_OR_NAV_OR_SEARCH_OR_SECTION_OR_SUMMARY: {
             eltPos = findLastInScope(name);
             if (eltPos == nsHtml5TreeBuilder::NOT_FOUND_ON_STACK) {
               errStrayEndTag(name);
@@ -2835,9 +2859,6 @@ void nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName) {
           }
           case AREA_OR_WBR:
           case KEYGEN:
-#ifdef ENABLE_VOID_MENUITEM
-          case MENUITEM:
-#endif
           case PARAM_OR_SOURCE_OR_TRACK:
           case EMBED:
           case IMG:
@@ -3099,7 +3120,7 @@ void nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName) {
       }
       case INITIAL: {
         errEndTagSeenWithoutDoctype();
-        documentModeInternal(QUIRKS_MODE, nullptr, nullptr, false);
+        documentModeInternal(QUIRKS_MODE, nullptr, nullptr);
         mode = BEFORE_HTML;
         continue;
       }
@@ -3183,7 +3204,7 @@ void nsHtml5TreeBuilder::endTagTemplateInHead() {
     errStrayEndTag(nsGkAtoms::_template);
     return;
   }
-  generateImpliedEndTags();
+  generateImpliedEndTagsThoroughly();
   if (!!MOZ_UNLIKELY(mViewSource) && !isCurrent(nsGkAtoms::_template)) {
     errUnclosedElements(eltPos, nsGkAtoms::_template);
   }
@@ -3198,8 +3219,9 @@ void nsHtml5TreeBuilder::endTagTemplateInHead() {
 int32_t
 nsHtml5TreeBuilder::findLastInTableScopeOrRootTemplateTbodyTheadTfoot() {
   for (int32_t i = currentPtr; i > 0; i--) {
-    if (stack[i]->getGroup() == nsHtml5TreeBuilder::TBODY_OR_THEAD_OR_TFOOT ||
-        stack[i]->getGroup() == nsHtml5TreeBuilder::TEMPLATE) {
+    if (stack[i]->ns == kNameSpaceID_XHTML &&
+        (stack[i]->getGroup() == nsHtml5TreeBuilder::TBODY_OR_THEAD_OR_TFOOT ||
+         stack[i]->getGroup() == nsHtml5TreeBuilder::TEMPLATE)) {
       return i;
     }
   }
@@ -3329,14 +3351,39 @@ void nsHtml5TreeBuilder::generateImpliedEndTags() {
   }
 }
 
+void nsHtml5TreeBuilder::generateImpliedEndTagsThoroughly() {
+  for (;;) {
+    switch (stack[currentPtr]->getGroup()) {
+      case CAPTION:
+      case COLGROUP:
+      case DD_OR_DT:
+      case LI:
+      case OPTGROUP:
+      case OPTION:
+      case P:
+      case RB_OR_RTC:
+      case RT_OR_RP:
+      case TBODY_OR_THEAD_OR_TFOOT:
+      case TD_OR_TH:
+      case TR: {
+        pop();
+        continue;
+      }
+      default: {
+        return;
+      }
+    }
+  }
+}
+
 bool nsHtml5TreeBuilder::isSecondOnStackBody() {
   return currentPtr >= 1 && stack[1]->getGroup() == nsHtml5TreeBuilder::BODY;
 }
 
-void nsHtml5TreeBuilder::documentModeInternal(
-    nsHtml5DocumentMode m, nsHtml5String publicIdentifier,
-    nsHtml5String systemIdentifier, bool html4SpecificAdditionalErrorChecks) {
-  if (isSrcdocDocument) {
+void nsHtml5TreeBuilder::documentModeInternal(nsHtml5DocumentMode m,
+                                              nsHtml5String publicIdentifier,
+                                              nsHtml5String systemIdentifier) {
+  if (forceNoQuirks) {
     quirks = false;
     this->documentMode(STANDARDS_MODE);
     return;
@@ -3347,21 +3394,21 @@ void nsHtml5TreeBuilder::documentModeInternal(
 
 bool nsHtml5TreeBuilder::isAlmostStandards(nsHtml5String publicIdentifier,
                                            nsHtml5String systemIdentifier) {
-  if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-          "-//w3c//dtd xhtml 1.0 transitional//en", publicIdentifier)) {
+  if (nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+          "-//w3c//dtd xhtml 1.0 transitional//", publicIdentifier)) {
     return true;
   }
-  if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-          "-//w3c//dtd xhtml 1.0 frameset//en", publicIdentifier)) {
+  if (nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+          "-//w3c//dtd xhtml 1.0 frameset//", publicIdentifier)) {
     return true;
   }
   if (systemIdentifier) {
-    if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-            "-//w3c//dtd html 4.01 transitional//en", publicIdentifier)) {
+    if (nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+            "-//w3c//dtd html 4.01 transitional//", publicIdentifier)) {
       return true;
     }
-    if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-            "-//w3c//dtd html 4.01 frameset//en", publicIdentifier)) {
+    if (nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+            "-//w3c//dtd html 4.01 frameset//", publicIdentifier)) {
       return true;
     }
   }
@@ -3394,11 +3441,12 @@ bool nsHtml5TreeBuilder::isQuirky(nsAtom* name, nsHtml5String publicIdentifier,
     }
   }
   if (!systemIdentifier) {
-    if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-            "-//w3c//dtd html 4.01 transitional//en", publicIdentifier)) {
+    if (nsHtml5Portability::lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+            "-//w3c//dtd html 4.01 transitional//", publicIdentifier)) {
       return true;
-    } else if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
-                   "-//w3c//dtd html 4.01 frameset//en", publicIdentifier)) {
+    } else if (nsHtml5Portability::
+                   lowerCaseLiteralIsPrefixOfIgnoreAsciiCaseString(
+                       "-//w3c//dtd html 4.01 frameset//", publicIdentifier)) {
       return true;
     }
   } else if (nsHtml5Portability::lowerCaseLiteralEqualsIgnoreAsciiCaseString(
@@ -3894,7 +3942,7 @@ int32_t nsHtml5TreeBuilder::findLastOrRoot(nsAtom* name) {
 
 int32_t nsHtml5TreeBuilder::findLastOrRoot(int32_t group) {
   for (int32_t i = currentPtr; i > 0; i--) {
-    if (stack[i]->getGroup() == group) {
+    if (stack[i]->ns == kNameSpaceID_XHTML && stack[i]->getGroup() == group) {
       return i;
     }
   }
@@ -4208,9 +4256,18 @@ void nsHtml5TreeBuilder::appendToCurrentNodeAndPushElement(
   nsIContentHandle* elt =
       createElement(kNameSpaceID_XHTML, elementName->getName(), attributes,
                     currentNode, htmlCreator(elementName->getHtmlCreator()));
-  appendElement(elt, currentNode);
   if (nsHtml5ElementName::ELT_TEMPLATE == elementName) {
-    elt = getDocumentFragmentForTemplate(elt);
+    nsIContentHandle* root =
+        getDeclarativeShadowRoot(currentNode, elt, attributes);
+    if (root) {
+      setDocumentFragmentForTemplate(elt, root);
+      elt = root;
+    } else {
+      appendElement(elt, currentNode);
+      elt = getDocumentFragmentForTemplate(elt);
+    }
+  } else {
+    appendElement(elt, currentNode);
   }
   nsHtml5StackNode* node = createStackNode(elementName, elt);
   push(node);
@@ -4311,6 +4368,18 @@ void nsHtml5TreeBuilder::appendToCurrentNodeAndPushElementMayFoster(
   }
   nsHtml5StackNode* node = createStackNode(elementName, elt);
   push(node);
+}
+
+void nsHtml5TreeBuilder::appendVoidElementToCurrent(
+    nsHtml5ElementName* elementName, nsHtml5HtmlAttributes* attributes) {
+  nsAtom* popName = elementName->getName();
+  nsIContentHandle* currentNode = nodeFromStackWithBlinkCompat(currentPtr);
+  nsIContentHandle* elt =
+      createElement(kNameSpaceID_XHTML, popName, attributes, currentNode,
+                    htmlCreator(elementName->getHtmlCreator()));
+  appendElement(elt, currentNode);
+  elementPushed(kNameSpaceID_XHTML, popName, elt);
+  elementPopped(kNameSpaceID_XHTML, popName, elt);
 }
 
 void nsHtml5TreeBuilder::appendVoidElementToCurrentMayFoster(
@@ -4452,8 +4521,20 @@ void nsHtml5TreeBuilder::setScriptingEnabled(bool scriptingEnabled) {
   this->scriptingEnabled = scriptingEnabled;
 }
 
+void nsHtml5TreeBuilder::setForceNoQuirks(bool forceNoQuirks) {
+  this->forceNoQuirks = forceNoQuirks;
+}
+
 void nsHtml5TreeBuilder::setIsSrcdocDocument(bool isSrcdocDocument) {
-  this->isSrcdocDocument = isSrcdocDocument;
+  this->setForceNoQuirks(isSrcdocDocument);
+}
+
+bool nsHtml5TreeBuilder::isAllowDeclarativeShadowRoots() {
+  return allowDeclarativeShadowRoots;
+}
+
+void nsHtml5TreeBuilder::setAllowDeclarativeShadowRoots(bool allow) {
+  allowDeclarativeShadowRoots = allow;
 }
 
 void nsHtml5TreeBuilder::flushCharacters() {
@@ -4587,7 +4668,7 @@ bool nsHtml5TreeBuilder::snapshotMatches(nsAHtml5TreeBuilderState* snapshot) {
 }
 
 void nsHtml5TreeBuilder::loadState(nsAHtml5TreeBuilderState* snapshot) {
-  mCurrentHtmlScriptIsAsyncOrDefer = false;
+  mCurrentHtmlScriptCannotDocumentWriteOrBlock = false;
   jArray<nsHtml5StackNode*, int32_t> stackCopy = snapshot->getStack();
   int32_t stackLen = snapshot->getStackLength();
   jArray<nsHtml5StackNode*, int32_t> listCopy =

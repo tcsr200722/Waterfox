@@ -1,10 +1,10 @@
 Parser for Rust source code
 ===========================
 
-[![Build Status](https://api.travis-ci.org/dtolnay/syn.svg?branch=master)](https://travis-ci.org/dtolnay/syn)
-[![Latest Version](https://img.shields.io/crates/v/syn.svg)](https://crates.io/crates/syn)
-[![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)](https://docs.rs/syn/1.0/syn/)
-[![Rustc Version 1.31+](https://img.shields.io/badge/rustc-1.31+-lightgray.svg)](https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html)
+[<img alt="github" src="https://img.shields.io/badge/github-dtolnay/syn-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/dtolnay/syn)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/syn.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/syn)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-syn-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/syn)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/dtolnay/syn/ci.yml?branch=master&style=for-the-badge" height="20">](https://github.com/dtolnay/syn/actions?query=branch%3Amaster)
 
 Syn is a parsing library for parsing a stream of Rust tokens into a syntax tree
 of Rust source code.
@@ -39,18 +39,14 @@ contains some APIs that may be useful more generally.
   procedural macros enable only what they need, and do not pay in compile time
   for all the rest.
 
-[`syn::File`]: https://docs.rs/syn/1.0/syn/struct.File.html
-[`syn::Item`]: https://docs.rs/syn/1.0/syn/enum.Item.html
-[`syn::Expr`]: https://docs.rs/syn/1.0/syn/enum.Expr.html
-[`syn::Type`]: https://docs.rs/syn/1.0/syn/enum.Type.html
-[`syn::DeriveInput`]: https://docs.rs/syn/1.0/syn/struct.DeriveInput.html
-[parser functions]: https://docs.rs/syn/1.0/syn/parse/index.html
+[`syn::File`]: https://docs.rs/syn/2.0/syn/struct.File.html
+[`syn::Item`]: https://docs.rs/syn/2.0/syn/enum.Item.html
+[`syn::Expr`]: https://docs.rs/syn/2.0/syn/enum.Expr.html
+[`syn::Type`]: https://docs.rs/syn/2.0/syn/enum.Type.html
+[`syn::DeriveInput`]: https://docs.rs/syn/2.0/syn/struct.DeriveInput.html
+[parser functions]: https://docs.rs/syn/2.0/syn/parse/index.html
 
-If you get stuck with anything involving procedural macros in Rust I am happy to
-provide help even if the issue is not related to Syn. Please file a ticket in
-this repo.
-
-*Version requirement: Syn supports rustc 1.31 and up.*
+*Version requirement: Syn supports rustc 1.56 and up.*
 
 [*Release notes*](https://github.com/dtolnay/syn/releases)
 
@@ -80,7 +76,7 @@ tokens back to the compiler to compile into the user's crate.
 
 ```toml
 [dependencies]
-syn = "1.0"
+syn = "2.0"
 quote = "1.0"
 
 [lib]
@@ -88,8 +84,6 @@ proc-macro = true
 ```
 
 ```rust
-extern crate proc_macro;
-
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
@@ -110,9 +104,8 @@ pub fn my_macro(input: TokenStream) -> TokenStream {
 ```
 
 The [`heapsize`] example directory shows a complete working implementation of a
-derive macro. It works on any Rust compiler 1.31+. The example derives a
-`HeapSize` trait which computes an estimate of the amount of heap memory owned
-by a value.
+derive macro. The example derives a `HeapSize` trait which computes an estimate
+of the amount of heap memory owned by a value.
 
 [`heapsize`]: examples/heapsize
 
@@ -156,7 +149,7 @@ By tracking span information all the way through the expansion of a procedural
 macro as shown in the `heapsize` example, token-based macros in Syn are able to
 trigger errors that directly pinpoint the source of the problem.
 
-```
+```console
 error[E0277]: the trait bound `std::thread::Thread: HeapSize` is not satisfied
  --> src/main.rs:7:5
   |
@@ -177,7 +170,7 @@ Syn's parsing API.
 The example reimplements the popular `lazy_static` crate from crates.io as a
 procedural macro.
 
-```
+```rust
 lazy_static! {
     static ref USERNAME: Regex = Regex::new("^[a-z0-9_-]{3,16}$").unwrap();
 }
@@ -186,7 +179,7 @@ lazy_static! {
 The implementation shows how to trigger custom warnings and error messages on
 the macro input.
 
-```
+```console
 warning: come on, pick a more creative name
   --> src/main.rs:10:16
    |
@@ -271,7 +264,7 @@ points, which are required by the language to use `proc_macro::TokenStream`.
 The proc-macro2 crate will automatically detect and use the compiler's data
 structures when a procedural macro is active.
 
-[proc-macro2]: https://docs.rs/proc-macro2/1.0.0/proc_macro2/
+[proc-macro2]: https://docs.rs/proc-macro2/1.0/proc_macro2/
 
 <br>
 

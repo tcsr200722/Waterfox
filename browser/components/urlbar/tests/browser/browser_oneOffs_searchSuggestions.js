@@ -16,7 +16,10 @@ const serverInfo = {
   port: 20709, // Must be identical to what is in searchSuggestionEngine2.xml
 };
 
-add_task(async function init() {
+var gEngine;
+var gEngine2;
+
+add_setup(async function () {
   await PlacesUtils.history.clear();
   await UrlbarTestUtils.formHistory.clear();
   await SpecialPowers.pushPrefEnv({
@@ -25,18 +28,24 @@ add_task(async function init() {
       ["browser.urlbar.maxHistoricalSearchSuggestions", 2],
     ],
   });
-  let engine = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME
-  );
-  let engine2 = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + TEST_ENGINE2_BASENAME
-  );
+  gEngine = await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + TEST_ENGINE_BASENAME,
+  });
+  gEngine2 = await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + TEST_ENGINE2_BASENAME,
+  });
   let oldDefaultEngine = await Services.search.getDefault();
-  await Services.search.moveEngine(engine2, 0);
-  await Services.search.moveEngine(engine, 0);
-  await Services.search.setDefault(engine);
-  registerCleanupFunction(async function() {
-    await Services.search.setDefault(oldDefaultEngine);
+  await Services.search.moveEngine(gEngine2, 0);
+  await Services.search.moveEngine(gEngine, 0);
+  await Services.search.setDefault(
+    gEngine,
+    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+  );
+  registerCleanupFunction(async function () {
+    await Services.search.setDefault(
+      oldDefaultEngine,
+      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+    );
 
     await PlacesUtils.history.clear();
     await UrlbarTestUtils.formHistory.clear();
@@ -62,7 +71,6 @@ async function withSuggestionOnce(useFormHistory, testFn) {
       window,
       value,
       fireInputEvent: true,
-      waitForFocus: SimpleTest.waitForFocus,
     });
     let index = await UrlbarTestUtils.promiseSuggestionsPresent(window);
     await assertState({
@@ -120,17 +128,18 @@ add_task(async function test_returnAfterSuggestion() {
 
     let heuristicResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
     Assert.ok(
-      !BrowserTestUtils.is_visible(heuristicResult.element.action),
+      !BrowserTestUtils.isVisible(heuristicResult.element.action),
       "The heuristic action should not be visible"
     );
 
-    let resultsPromise = BrowserTestUtils.browserLoaded(
-      gBrowser.selectedBrowser,
-      false,
-      `http://mochi.test:8888/?terms=foobar`
-    );
+    let resultsPromise = UrlbarTestUtils.promiseSearchComplete(window);
     EventUtils.synthesizeKey("KEY_Enter");
     await resultsPromise;
+    await UrlbarTestUtils.assertSearchMode(window, {
+      engineName: gEngine.name,
+      entry: "oneoff",
+    });
+    await UrlbarTestUtils.exitSearchMode(window, { backspace: true });
   });
 });
 
@@ -152,13 +161,14 @@ add_task(async function test_returnAfterSuggestion_nonDefault() {
       },
     });
 
-    let resultsPromise = BrowserTestUtils.browserLoaded(
-      gBrowser.selectedBrowser,
-      false,
-      `http://localhost:20709/?terms=foobar`
-    );
+    let resultsPromise = UrlbarTestUtils.promiseSearchComplete(window);
     EventUtils.synthesizeKey("KEY_Enter");
     await resultsPromise;
+    await UrlbarTestUtils.assertSearchMode(window, {
+      engineName: gEngine2.name,
+      entry: "oneoff",
+    });
+    await UrlbarTestUtils.exitSearchMode(window, { backspace: true });
   });
 });
 
@@ -167,16 +177,16 @@ add_task(async function test_clickAfterSuggestion() {
   await withSuggestions(async (index, usingFormHistory) => {
     await selectSecondSuggestion(index, usingFormHistory);
 
-    let oneOffs = UrlbarTestUtils.getOneOffSearchButtons(
-      window
-    ).getSelectableButtons(true);
-    let resultsPromise = BrowserTestUtils.browserLoaded(
-      gBrowser.selectedBrowser,
-      false,
-      `http://mochi.test:8888/?terms=foobar`
-    );
-    EventUtils.synthesizeMouseAtCenter(oneOffs[0], {});
+    let oneOffs =
+      UrlbarTestUtils.getOneOffSearchButtons(window).getSelectableButtons(true);
+    let resultsPromise = UrlbarTestUtils.promiseSearchComplete(window);
+    EventUtils.synthesizeMouseAtCenter(oneOffs[1], {});
     await resultsPromise;
+    await UrlbarTestUtils.assertSearchMode(window, {
+      engineName: gEngine2.name,
+      entry: "oneoff",
+    });
+    await UrlbarTestUtils.exitSearchMode(window, { backspace: true });
   });
 });
 
@@ -185,16 +195,16 @@ add_task(async function test_clickAfterSuggestion_nonDefault() {
   await withSuggestions(async (index, usingFormHistory) => {
     await selectSecondSuggestion(index, usingFormHistory);
 
-    let oneOffs = UrlbarTestUtils.getOneOffSearchButtons(
-      window
-    ).getSelectableButtons(true);
-    let resultsPromise = BrowserTestUtils.browserLoaded(
-      gBrowser.selectedBrowser,
-      false,
-      `http://localhost:20709/?terms=foobar`
-    );
+    let oneOffs =
+      UrlbarTestUtils.getOneOffSearchButtons(window).getSelectableButtons(true);
+    let resultsPromise = UrlbarTestUtils.promiseSearchComplete(window);
     EventUtils.synthesizeMouseAtCenter(oneOffs[1], {});
     await resultsPromise;
+    await UrlbarTestUtils.assertSearchMode(window, {
+      engineName: gEngine2.name,
+      entry: "oneoff",
+    });
+    await UrlbarTestUtils.exitSearchMode(window, { backspace: true });
   });
 });
 
@@ -212,17 +222,20 @@ add_task(async function test_selectOneOffThenSuggestion() {
 
     let heuristicResult = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
     Assert.ok(
-      BrowserTestUtils.is_visible(heuristicResult.element.action),
+      BrowserTestUtils.isVisible(heuristicResult.element.action),
       "The heuristic action should be visible because the result is selected"
     );
 
     // Now click the second suggestion.
     let result = await UrlbarTestUtils.getDetailsOfResultAt(window, index + 1);
-
+    // Note search history results don't change their engine when the selected
+    // one-off button changes!
     let resultsPromise = BrowserTestUtils.browserLoaded(
       gBrowser.selectedBrowser,
       false,
-      `http://localhost:20709/?terms=foobar`
+      usingFormHistory
+        ? `http://mochi.test:8888/?terms=foobar`
+        : `http://localhost:20709/?terms=foobar`
     );
     EventUtils.synthesizeMouseAtCenter(result.element.row, {});
     await resultsPromise;
@@ -237,7 +250,6 @@ add_task(async function overridden_engine_not_reused() {
     let typedValue = "foo";
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: typedValue,
       fireInputEvent: true,
     });
@@ -272,7 +284,6 @@ add_task(async function overridden_engine_not_reused() {
     await UrlbarTestUtils.promisePopupClose(window);
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: typedValue,
       fireInputEvent: true,
     });

@@ -5,13 +5,15 @@
 
 "use strict";
 
-add_task(async function setup() {
-  registerCleanupFunction(async function() {
+add_setup(async function () {
+  registerCleanupFunction(async function () {
     Services.prefs.clearUserPref("browser.urlbar.autoFill");
+    Services.prefs.clearUserPref("browser.urlbar.suggest.quickactions");
     gURLBar.handleRevert();
     await PlacesUtils.history.clear();
   });
   Services.prefs.setBoolPref("browser.urlbar.autoFill", true);
+  Services.prefs.setBoolPref("browser.urlbar.suggest.quickactions", false);
 
   await PlacesTestUtils.addVisits([
     "http://example.com/",
@@ -23,7 +25,6 @@ add_task(async function test_autofill() {
   let typed = "ex";
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus,
     value: typed,
     fireInputEvent: true,
   });
@@ -43,7 +44,6 @@ add_task(async function test_complete_selection() {
   let typed = "ex";
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus,
     value: typed,
     fireInputEvent: true,
   });
@@ -56,7 +56,7 @@ add_task(async function test_complete_selection() {
   EventUtils.synthesizeKey("KEY_ArrowDown");
   Assert.equal(
     gURLBar.value,
-    "example.com/foo",
+    UrlbarTestUtils.trimURL("http://example.com/foo"),
     "Value should have been completed"
   );
 

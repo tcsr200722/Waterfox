@@ -107,6 +107,10 @@ function convertTask(def) {
   if (def.parents) {
     dependencies = dependencies.concat(def.parents);
   }
+  if (dependencies.length === 0) {
+    // If task has no dependencies, make it depend on the Decision task.
+    dependencies.push(process.env.TASK_ID);
+  }
 
   if (def.tests) {
     env.NSS_TESTS = def.tests;
@@ -157,7 +161,7 @@ function convertTask(def) {
 
   return {
     provisionerId: def.provisioner || `nss-${process.env.MOZ_SCM_LEVEL}`,
-    workerType: def.workerType || "linux",
+    workerType: def.workerType || "linux-gcp",
     schedulerId: process.env.TC_SCHEDULER_ID,
     taskGroupId: process.env.TASK_ID,
 
@@ -277,7 +281,7 @@ export async function submit() {
       }
 
       task.payload.image = {
-        path: "public/image.tar",
+        path: "public/image.tar.zst",
         taskId: data.taskId,
         type: "task-image"
       };

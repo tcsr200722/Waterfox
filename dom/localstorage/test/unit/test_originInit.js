@@ -3,19 +3,35 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-async function testSteps() {
+add_task(async function testSteps() {
+  const storageDirName = "storage";
+  const persistenceTypeDefaultDirName = "default";
+  const persistenceTypePersistentDirName = "permanent";
+
   const principal = getPrincipal("http://example.com");
 
+  const originDirName = "http+++example.com";
+
+  const clientLSDirName = "ls";
+
   const dataFile = getRelativeFile(
-    "storage/default/http+++example.com/ls/data.sqlite"
+    `${storageDirName}/${persistenceTypeDefaultDirName}/${originDirName}/` +
+      `${clientLSDirName}/data.sqlite`
   );
 
   const usageJournalFile = getRelativeFile(
-    "storage/default/http+++example.com/ls/usage-journal"
+    `${storageDirName}/${persistenceTypeDefaultDirName}/${originDirName}/` +
+      `${clientLSDirName}/usage-journal`
   );
 
   const usageFile = getRelativeFile(
-    "storage/default/http+++example.com/ls/usage"
+    `${storageDirName}/${persistenceTypeDefaultDirName}/${originDirName}/` +
+      `${clientLSDirName}/usage`
+  );
+
+  const persistentLSDir = getRelativeFile(
+    `${storageDirName}/${persistenceTypePersistentDirName}/${originDirName}/` +
+      `${clientLSDirName}`
   );
 
   const data = {};
@@ -34,12 +50,26 @@ async function testSteps() {
     await requestFinished(request);
   }
 
+  async function createPersistentTestOrigin() {
+    let database = getSimpleDatabase(principal, "persistent");
+
+    let request = database.open("data");
+    await requestFinished(request);
+
+    request = reset();
+    await requestFinished(request);
+  }
+
   function removeFile(file) {
     file.remove(false);
   }
 
   function createEmptyFile(file) {
-    file.create(Ci.nsIFile.NORMAL_FILE_TYPE, parseInt("0644", 8));
+    file.create(Ci.nsIFile.NORMAL_FILE_TYPE, 0o0644);
+  }
+
+  function createEmptyDirectory(dir) {
+    dir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o0755);
   }
 
   function getBinaryOutputStream(file) {
@@ -57,7 +87,21 @@ async function testSteps() {
   }
 
   async function initTestOrigin() {
-    let request = initStorageAndOrigin(principal, "default");
+    let request = initStorage();
+    await requestFinished(request);
+
+    request = initTemporaryStorage();
+    await requestFinished(request);
+
+    request = initTemporaryOrigin("default", principal);
+    await requestFinished(request);
+  }
+
+  async function initPersistentTestOrigin() {
+    let request = initStorage();
+    await requestFinished(request);
+
+    request = initPersistentOrigin(principal);
     await requestFinished(request);
   }
 
@@ -81,7 +125,7 @@ async function testSteps() {
     }
 
     let usage = await readUsageFromUsageFile(usageFile);
-    ok(usage == data.usage, "Correct usage");
+    Assert.equal(usage, data.usage, "Correct usage");
   }
 
   async function clearTestOrigin() {
@@ -89,9 +133,17 @@ async function testSteps() {
     await requestFinished(request);
   }
 
+  async function clearPersistentTestOrigin() {
+    let request = clearOrigin(principal, "persistent");
+    await requestFinished(request);
+  }
+
   info("Setting prefs");
 
-  Services.prefs.setBoolPref("dom.storage.next_gen", true);
+  Services.prefs.setBoolPref(
+    "dom.storage.enable_unsupported_legacy_implementation",
+    false
+  );
 
   info(
     "Stage 1 - " +
@@ -293,4 +345,28 @@ async function testSteps() {
   await checkFiles(/* wantData */ true, /* wantUsage */ true);
 
   await clearTestOrigin();
-}
+
+  // Verify that InitializeOrigin doesn't fail when a
+  // storage/permanent/${origin}/ls exists.
+  info(
+    "Stage 12 - Testing initialization of ls directory placed in permanent " +
+      "origin directory"
+  );
+
+  await createPersistentTestOrigin();
+
+  createEmptyDirectory(persistentLSDir);
+
+  try {
+    await initPersistentTestOrigin();
+
+    ok(true, "Should not have thrown");
+  } catch (ex) {
+    ok(false, "Should not have thrown");
+  }
+
+  let exists = persistentLSDir.exists();
+  ok(exists, "ls directory in permanent origin directory does exist");
+
+  await clearPersistentTestOrigin();
+});

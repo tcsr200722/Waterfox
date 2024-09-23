@@ -7,7 +7,7 @@
 -->
 <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         class="prefwindow"
-        title="preferences window"
+        title="pw disabled"
         windowtype="test:preferences"
         onload="RunTest(window.arguments)">
 <dialog id="disabled_dialog"
@@ -15,11 +15,14 @@
   <script type="application/javascript" src="chrome://global/content/preferencesBindings.js"/>
   <script type="application/javascript">
   <![CDATA[
+    /* import-globals-from ../../preferencesBindings.js */
     function RunTest(aArgs)
     {
-      aArgs[0](this);
-      let dialog = document.getElementById("disabled_dialog");
-      dialog.cancelDialog();
+      setTimeout(() => {
+        aArgs[0](this);
+        let dialog = document.getElementById("disabled_dialog");
+        dialog.cancelDialog();
+      });
     }
 
     Preferences.addAll([

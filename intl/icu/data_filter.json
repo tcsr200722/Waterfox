@@ -1,4 +1,5 @@
 {
+    "collationUCAData": "implicithan",
     "featureFilters": {
         "brkitr_dictionaries": {
             "filterType": "exclude"
@@ -9,24 +10,34 @@
         "brkitr_tree": {
             "filterType": "exclude"
         },
+        "coll_tree": {
+            "excludelist": [
+                "en_US_POSIX"
+            ]
+        },
         "confusables": {
             "filterType": "exclude"
         },
         "conversion_mappings": {
-            "whitelist": [
+            "includelist": [
                 "ibm-37_P100-1995",
                 "ibm-1047_P100-1995"
             ]
         },
+        "locales_tree": {
+            "excludelist": [
+                "en_US_POSIX"
+            ]
+        },
         "misc": {
-            "blacklist": [
+            "excludelist": [
                 "currencyNumericCodes",
                 "genderList"
             ]
         },
         "rbnf_tree": {
             "filterType": "locale",
-            "whitelist": [ "ja" ]
+            "includelist": [ "ja" ]
         },
         "stringprep": {
             "filterType": "exclude"
@@ -53,6 +64,8 @@
             ],
             "rules": [
                 "-/*",
+                "+/%%ALIAS",
+                "+/%%Parent",
 
                 "+/*/area/acre",
                 "+/*/digital/bit",
@@ -79,6 +92,7 @@
                 "+/*/digital/megabit",
                 "+/*/digital/megabyte",
                 "+/*/length/meter",
+                "+/*/duration/microsecond",
                 "+/*/length/mile",
                 "+/*/length/mile-scandinavian",
                 "+/*/volume/milliliter",
@@ -86,6 +100,7 @@
                 "+/*/duration/millisecond",
                 "+/*/duration/minute",
                 "+/*/duration/month",
+                "+/*/duration/nanosecond",
                 "+/*/mass/ounce",
                 "+/*/concentr/percent",
                 "+/*/digital/petabyte",
@@ -146,7 +161,9 @@
             ],
             "rules": [
                 "-/UCARules",
-                "-/collations/*/Sequence"
+                "-/collations/*/Sequence",
+                "-/collations/big5han",
+                "-/collations/gb2312han"
             ]
         },
         {
@@ -185,7 +202,8 @@
                 "-/fields/sun",
                 "-/fields/sun-narrow",
                 "-/fields/sun-short",
-                "-/measurementSystemNames"
+                "-/measurementSystemNames",
+                "-/personNames"
             ]
         },
         {
@@ -194,6 +212,8 @@
             ],
             "rules": [
                 "-/*",
+                "+/%%ALIAS",
+                "+/%%Parent",
 
                 "+/Languages",
                 "+/Languages%short",
@@ -201,6 +221,8 @@
                 "+/Scripts%short",
                 "+/Scripts%stand-alone",
                 "+/Variants",
+                "+/Types/calendar",
+                "+/Types%short/calendar",
                 "+/localeDisplayPattern"
             ]
         },
@@ -210,6 +232,8 @@
             ],
             "rules": [
                 "-/*",
+                "+/%%ALIAS",
+                "+/%%Parent",
 
                 "+/Countries",
                 "+/Countries%short"

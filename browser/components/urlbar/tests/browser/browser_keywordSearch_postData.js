@@ -1,11 +1,16 @@
 /**
  * Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/
- **/
+ */
 
 var gTests = [
   {
-    name: "normal search (search service)",
+    name: "single word search (search service)",
+    text: "pizza",
+    expectText: "pizza",
+  },
+  {
+    name: "multi word search (search service)",
     text: "test search",
     expectText: "test+search",
   },
@@ -16,18 +21,14 @@ var gTests = [
   },
 ];
 
-add_task(async function setup() {
-  let engine = await SearchTestUtils.promiseNewSearchEngine(
-    getRootDirectory(gTestPath) + "POSTSearchEngine.xml"
-  );
-  let oldDefaultEngine = await Services.search.getDefault();
-  await Services.search.setDefault(engine);
-  registerCleanupFunction(async function() {
-    await Services.search.setDefault(oldDefaultEngine);
+add_setup(async function () {
+  await SearchTestUtils.installOpenSearchEngine({
+    url: getRootDirectory(gTestPath) + "POSTSearchEngine.xml",
+    setAsDefault: true,
   });
 });
 
-add_task(async function() {
+add_task(async function () {
   // Test both directly setting a value and pressing enter, or setting the
   // value through input events, like the user would do.
   const setValueFns = [
@@ -37,7 +38,6 @@ add_task(async function() {
     value => {
       return UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus,
         value,
       });
     },

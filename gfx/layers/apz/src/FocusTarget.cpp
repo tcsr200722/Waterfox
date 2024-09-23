@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/layers/FocusTarget.h"
-
 #include "mozilla/dom/BrowserBridgeChild.h"  // for BrowserBridgeChild
 #include "mozilla/dom/EventTarget.h"         // for EventTarget
 #include "mozilla/dom/RemoteBrowser.h"       // For RemoteBrowser
@@ -43,7 +42,9 @@ static PresShell* GetRetargetEventPresShell(PresShell* aRootPresShell) {
   return retargetEventDoc->GetPresShell();
 }
 
-static bool HasListenersForKeyEvents(nsIContent* aContent) {
+// _BOUNDARY because Dispatch() with `targets` must not handle the event.
+MOZ_CAN_RUN_SCRIPT_BOUNDARY static bool HasListenersForKeyEvents(
+    nsIContent* aContent) {
   if (!aContent) {
     return false;
   }
@@ -61,7 +62,9 @@ static bool HasListenersForKeyEvents(nsIContent* aContent) {
   return false;
 }
 
-static bool HasListenersForNonPassiveKeyEvents(nsIContent* aContent) {
+// _BOUNDARY because Dispatch() with `targets` must not handle the event.
+MOZ_CAN_RUN_SCRIPT_BOUNDARY static bool HasListenersForNonPassiveKeyEvents(
+    nsIContent* aContent) {
   if (!aContent) {
     return false;
   }
@@ -185,20 +188,20 @@ FocusTarget::FocusTarget(PresShell* aRootPresShell,
   nsCOMPtr<nsIContent> selectedContent =
       presShell->GetSelectedContentForScrolling();
 
-  // Gather the scrollable frames that would be scrolled in each direction
+  // Gather the scroll container frames that would be scrolled in each direction
   // for this scroll target
-  nsIScrollableFrame* horizontal =
-      presShell->GetScrollableFrameToScrollForContent(
-          selectedContent.get(), ScrollableDirection::Horizontal);
-  nsIScrollableFrame* vertical =
-      presShell->GetScrollableFrameToScrollForContent(
-          selectedContent.get(), ScrollableDirection::Vertical);
+  ScrollContainerFrame* horizontal =
+      presShell->GetScrollContainerFrameToScrollForContent(
+          selectedContent.get(), HorizontalScrollDirection);
+  ScrollContainerFrame* vertical =
+      presShell->GetScrollContainerFrameToScrollForContent(
+          selectedContent.get(), VerticalScrollDirection);
 
   // We might have the globally focused element for scrolling. Gather a ViewID
   // for the horizontal and vertical scroll targets of this element.
   ScrollTargets target;
-  target.mHorizontal = nsLayoutUtils::FindIDForScrollableFrame(horizontal);
-  target.mVertical = nsLayoutUtils::FindIDForScrollableFrame(vertical);
+  target.mHorizontal = nsLayoutUtils::FindIDForScrollContainerFrame(horizontal);
+  target.mVertical = nsLayoutUtils::FindIDForScrollContainerFrame(vertical);
   mData = AsVariant(target);
 
   FT_LOG("Creating scroll target with seq=%" PRIu64 ", kl=%d, h=%" PRIu64

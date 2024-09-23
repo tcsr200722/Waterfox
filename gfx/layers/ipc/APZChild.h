@@ -8,6 +8,7 @@
 #define mozilla_layers_APZChild_h
 
 #include "mozilla/layers/PAPZChild.h"
+#include "mozilla/layers/APZTaskRunnable.h"
 
 namespace mozilla {
 namespace layers {
@@ -26,23 +27,25 @@ class APZChild final : public PAPZChild {
   virtual ~APZChild();
 
   mozilla::ipc::IPCResult RecvLayerTransforms(
-      const nsTArray<MatrixMessage>& aTransforms);
+      nsTArray<MatrixMessage>&& aTransforms);
 
   mozilla::ipc::IPCResult RecvRequestContentRepaint(
       const RepaintRequest& aRequest);
 
   mozilla::ipc::IPCResult RecvUpdateOverscrollVelocity(
-      const float& aX, const float& aY, const bool& aIsRootContent);
+      const ScrollableLayerGuid& aGuid, const float& aX, const float& aY,
+      const bool& aIsRootContent);
 
   mozilla::ipc::IPCResult RecvUpdateOverscrollOffset(
-      const float& aX, const float& aY, const bool& aIsRootContent);
+      const ScrollableLayerGuid& aGuid, const float& aX, const float& aY,
+      const bool& aIsRootContent);
 
   mozilla::ipc::IPCResult RecvNotifyMozMouseScrollEvent(const ViewID& aScrollId,
                                                         const nsString& aEvent);
 
   mozilla::ipc::IPCResult RecvNotifyAPZStateChange(
       const ScrollableLayerGuid& aGuid, const APZStateChange& aChange,
-      const int& aArg);
+      const int& aArg, Maybe<uint64_t> aInputBlockId);
 
   mozilla::ipc::IPCResult RecvNotifyFlushComplete();
 
@@ -58,7 +61,16 @@ class APZChild final : public PAPZChild {
   mozilla::ipc::IPCResult RecvDestroy();
 
  private:
+  void EnsureAPZTaskRunnable() {
+    if (!mAPZTaskRunnable) {
+      mAPZTaskRunnable = new APZTaskRunnable(mController);
+    }
+  }
+
   RefPtr<GeckoContentController> mController;
+  // A runnable invoked in a nsRefreshDriver's tick to update multiple
+  // RepaintRequests and notify a "apz-repaints-flushed" at the same time.
+  RefPtr<APZTaskRunnable> mAPZTaskRunnable;
 };
 
 }  // namespace layers

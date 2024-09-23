@@ -11,8 +11,7 @@
 #include "ScriptProcessorNode.h"
 #include "mozilla/dom/Event.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AudioProcessingEvent final : public Event {
  public:
@@ -28,8 +27,7 @@ class AudioProcessingEvent final : public Event {
   using Event::InitEvent;
   void InitEvent(AudioBuffer* aInputBuffer, uint32_t aNumberOfInputChannels,
                  double aPlaybackTime) {
-    InitEvent(NS_LITERAL_STRING("audioprocess"), CanBubble::eNo,
-              Cancelable::eNo);
+    InitEvent(u"audioprocess"_ns, CanBubble::eNo, Cancelable::eNo);
     mInputBuffer = aInputBuffer;
     mNumberOfInputChannels = aNumberOfInputChannels;
     mPlaybackTime = aPlaybackTime;
@@ -68,7 +66,6 @@ class AudioProcessingEvent final : public Event {
   uint32_t mNumberOfInputChannels;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

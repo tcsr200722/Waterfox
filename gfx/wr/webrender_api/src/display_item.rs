@@ -2,15 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use euclid::SideOffsets2D;
+use euclid::{SideOffsets2D, Angle};
 use peek_poke::PeekPoke;
 use std::ops::Not;
 // local imports
 use crate::font;
-use crate::api::{PipelineId, PropertyBinding};
+use crate::{APZScrollGeneration, HasScrollLinkedEffect, PipelineId, PropertyBinding};
+use crate::serde::{Serialize, Deserialize};
 use crate::color::ColorF;
 use crate::image::{ColorDepth, ImageKey};
 use crate::units::*;
+use std::hash::{Hash, Hasher};
 
 // ******************************************************************
 // * NOTE: some of these structs have an "IMPLICIT" comment.        *
@@ -33,20 +35,38 @@ pub type ItemTag = (u64, u16);
 /// refers to individual display items, but this may change later.
 pub type ItemKey = u16;
 
+#[repr(C)]
+#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Deserialize, MallocSizeOf, Serialize, PeekPoke)]
+pub struct PrimitiveFlags(u8);
+
 bitflags! {
-    #[repr(C)]
-    #[derive(Deserialize, MallocSizeOf, Serialize, PeekPoke)]
-    pub struct PrimitiveFlags: u8 {
+    impl PrimitiveFlags: u8 {
         /// The CSS backface-visibility property (yes, it can be really granular)
         const IS_BACKFACE_VISIBLE = 1 << 0;
         /// If set, this primitive represents a scroll bar container
         const IS_SCROLLBAR_CONTAINER = 1 << 1;
-        /// If set, this primitive represents a scroll bar thumb
-        const IS_SCROLLBAR_THUMB = 1 << 2;
         /// This is used as a performance hint - this primitive may be promoted to a native
         /// compositor surface under certain (implementation specific) conditions. This
         /// is typically used for large videos, and canvas elements.
-        const PREFER_COMPOSITOR_SURFACE = 1 << 3;
+        const PREFER_COMPOSITOR_SURFACE = 1 << 2;
+        /// If set, this primitive can be passed directly to the compositor via its
+        /// ExternalImageId, and the compositor will use the native image directly.
+        /// Used as a further extension on top of PREFER_COMPOSITOR_SURFACE.
+        const SUPPORTS_EXTERNAL_COMPOSITOR_SURFACE = 1 << 3;
+        /// This flags disables snapping and forces anti-aliasing even if the primitive is axis-aligned.
+        const ANTIALISED = 1 << 4;
+        /// If true, this primitive is used as a background for checkerboarding
+        const CHECKERBOARD_BACKGROUND = 1 << 5;
+    }
+}
+
+impl core::fmt::Debug for PrimitiveFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{:#x}", Self::empty().bits())
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
     }
 }
 
@@ -65,13 +85,9 @@ pub struct CommonItemProperties {
     /// (solid colors, background-images, gradients, etc).
     pub clip_rect: LayoutRect,
     /// Additional clips
-    pub clip_id: ClipId,
+    pub clip_chain_id: ClipChainId,
     /// The coordinate-space the item is in (yes, it can be really granular)
     pub spatial_id: SpatialId,
-    /// Opaque bits for our clients to use for hit-testing. This is the most
-    /// dubious "common" field, but because it's an Option, it usually only
-    /// wastes a single byte (for None).
-    pub hit_info: Option<ItemTag>,
     /// Various flags describing properties of this primitive.
     pub flags: PrimitiveFlags,
 }
@@ -85,8 +101,7 @@ impl CommonItemProperties {
         Self {
             clip_rect,
             spatial_id: space_and_clip.spatial_id,
-            clip_id: space_and_clip.clip_id,
-            hit_info: None,
+            clip_chain_id: space_and_clip.clip_chain_id,
             flags: PrimitiveFlags::default(),
         }
     }
@@ -101,7 +116,7 @@ impl CommonItemProperties {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct SpaceAndClipInfo {
     pub spatial_id: SpatialId,
-    pub clip_id: ClipId,
+    pub clip_chain_id: ClipChainId,
 }
 
 impl SpaceAndClipInfo {
@@ -110,9 +125,38 @@ impl SpaceAndClipInfo {
     pub fn root_scroll(pipeline_id: PipelineId) -> Self {
         SpaceAndClipInfo {
             spatial_id: SpatialId::root_scroll_node(pipeline_id),
-            clip_id: ClipId::root(pipeline_id),
+            clip_chain_id: ClipChainId::INVALID,
         }
     }
+}
+
+/// Defines a caller provided key that is unique for a given spatial node, and is stable across
+/// display lists. WR uses this to determine which spatial nodes are added / removed for a new
+/// display list. The content itself is arbitrary and opaque to WR, the only thing that matters
+/// is that it's unique and stable between display lists.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke, Default, Eq, Hash)]
+pub struct SpatialTreeItemKey {
+    key0: u64,
+    key1: u64,
+}
+
+impl SpatialTreeItemKey {
+    pub fn new(key0: u64, key1: u64) -> Self {
+        SpatialTreeItemKey {
+            key0,
+            key1,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub enum SpatialTreeItem {
+    ScrollFrame(ScrollFrameDescriptor),
+    ReferenceFrame(ReferenceFrameDescriptor),
+    StickyFrame(StickyFrameDescriptor),
+    Invalid,
 }
 
 #[repr(u8)]
@@ -139,12 +183,9 @@ pub enum DisplayItem {
     RectClip(RectClipDisplayItem),
     RoundedRectClip(RoundedRectClipDisplayItem),
     ImageMaskClip(ImageMaskClipDisplayItem),
-    Clip(ClipDisplayItem),
     ClipChain(ClipChainItem),
 
     // Spaces and Frames that content can be scoped under.
-    ScrollFrame(ScrollFrameDisplayItem),
-    StickyFrame(StickyFrameDisplayItem),
     Iframe(IframeDisplayItem),
     PushReferenceFrame(ReferenceFrameDisplayListItem),
     PushStackingContext(PushStackingContextDisplayItem),
@@ -155,6 +196,7 @@ pub enum DisplayItem {
     SetFilterOps,
     SetFilterData,
     SetFilterPrimitives,
+    SetPoints,
 
     // These marker items terminate a scope introduced by a previous item.
     PopReferenceFrame,
@@ -190,11 +232,8 @@ pub enum DebugDisplayItem {
     ImageMaskClip(ImageMaskClipDisplayItem),
     RoundedRectClip(RoundedRectClipDisplayItem),
     RectClip(RectClipDisplayItem),
-    Clip(ClipDisplayItem, Vec<ComplexClipRegion>),
     ClipChain(ClipChainItem, Vec<ClipId>),
 
-    ScrollFrame(ScrollFrameDisplayItem),
-    StickyFrame(StickyFrameDisplayItem),
     Iframe(IframeDisplayItem),
     PushReferenceFrame(ReferenceFrameDisplayListItem),
     PushStackingContext(PushStackingContextDisplayItem),
@@ -203,6 +242,7 @@ pub enum DebugDisplayItem {
     SetFilterOps(Vec<FilterOp>),
     SetFilterData(FilterData),
     SetFilterPrimitives(Vec<FilterPrimitive>),
+    SetPoints(Vec<LayoutPoint>),
 
     PopReferenceFrame,
     PopStackingContext,
@@ -212,30 +252,24 @@ pub enum DebugDisplayItem {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct ImageMaskClipDisplayItem {
     pub id: ClipId,
-    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub spatial_id: SpatialId,
     pub image_mask: ImageMask,
-}
+    pub fill_rule: FillRule,
+} // IMPLICIT points: Vec<LayoutPoint>
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct RectClipDisplayItem {
     pub id: ClipId,
-    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub spatial_id: SpatialId,
     pub clip_rect: LayoutRect,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct RoundedRectClipDisplayItem {
     pub id: ClipId,
-    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub spatial_id: SpatialId,
     pub clip: ComplexClipRegion,
 }
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
-pub struct ClipDisplayItem {
-    pub id: ClipId,
-    pub parent_space_and_clip: SpaceAndClipInfo,
-    pub clip_rect: LayoutRect,
-} // IMPLICIT: complex_clips: Vec<ComplexClipRegion>
 
 /// The minimum and maximum allowable offset for a sticky frame in a single dimension.
 #[repr(C)]
@@ -259,7 +293,7 @@ impl StickyOffsetBounds {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
-pub struct StickyFrameDisplayItem {
+pub struct StickyFrameDescriptor {
     pub id: SpatialId,
     pub parent_spatial_id: SpatialId,
     pub bounds: LayoutRect,
@@ -287,33 +321,36 @@ pub struct StickyFrameDisplayItem {
     /// `previously_applied_offset.y`. A negative y component corresponds to the upward offset
     /// applied due to bottom-stickiness. The x-axis works analogously.
     pub previously_applied_offset: LayoutVector2D,
-}
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
-pub enum ScrollSensitivity {
-    ScriptAndInputEvents,
-    Script,
+    /// A unique (per-pipeline) key for this spatial that is stable across display lists.
+    pub key: SpatialTreeItemKey,
+
+    /// A property binding that we use to store an animation ID for APZ
+    pub transform: Option<PropertyBinding<LayoutTransform>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
-pub struct ScrollFrameDisplayItem {
-    /// The id of the clip this scroll frame creates
-    pub clip_id: ClipId,
+pub struct ScrollFrameDescriptor {
     /// The id of the space this scroll frame creates
     pub scroll_frame_id: SpatialId,
     /// The size of the contents this contains (so the backend knows how far it can scroll).
     // FIXME: this can *probably* just be a size? Origin seems to just get thrown out.
     pub content_rect: LayoutRect,
-    pub clip_rect: LayoutRect,
-    pub parent_space_and_clip: SpaceAndClipInfo,
-    pub external_id: Option<ExternalScrollId>,
-    pub scroll_sensitivity: ScrollSensitivity,
+    pub frame_rect: LayoutRect,
+    pub parent_space: SpatialId,
+    pub external_id: ExternalScrollId,
     /// The amount this scrollframe has already been scrolled by, in the caller.
     /// This means that all the display items that are inside the scrollframe
     /// will have their coordinates shifted by this amount, and this offset
     /// should be added to those display item coordinates in order to get a
     /// normalized value that is consistent across display lists.
     pub external_scroll_offset: LayoutVector2D,
+    /// The generation of the external_scroll_offset.
+    pub scroll_offset_generation: APZScrollGeneration,
+    /// Whether this scrollframe document has any scroll-linked effect or not.
+    pub has_scroll_linked_effect: HasScrollLinkedEffect,
+    /// A unique (per-pipeline) key for this spatial that is stable across display lists.
+    pub key: SpatialTreeItemKey,
 }
 
 /// A solid or an animating color to draw (may not actually be a rectangle due to complex clips)
@@ -337,7 +374,11 @@ pub struct ClearRectangleDisplayItem {
 /// distinct item also makes it easier to inspect/debug display items.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct HitTestDisplayItem {
-    pub common: CommonItemProperties,
+    pub rect: LayoutRect,
+    pub clip_chain_id: ClipChainId,
+    pub spatial_id: SpatialId,
+    pub flags: PrimitiveFlags,
+    pub tag: ItemTag,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -391,6 +432,7 @@ pub struct TextDisplayItem {
     pub font_key: font::FontInstanceKey,
     pub color: ColorF,
     pub glyph_options: Option<font::GlyphOptions>,
+    pub ref_frame_offset: LayoutVector2D,
 } // IMPLICIT: glyphs: Vec<font::GlyphInstance>
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
@@ -462,7 +504,7 @@ pub enum RepeatMode {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub enum NinePatchBorderSource {
-    Image(ImageKey),
+    Image(ImageKey, ImageRendering),
     Gradient(Gradient),
     RadialGradient(RadialGradient),
     ConicGradient(ConicGradient),
@@ -500,10 +542,6 @@ pub struct NinePatchBorder {
     /// Determines what happens if the vertical side parts of the 9-part
     /// image have a different size than the vertical parts of the border.
     pub repeat_vertical: RepeatMode,
-
-    /// The outset for the border.
-    /// TODO(mrobinson): This should be removed and handled by the client.
-    pub outset: LayoutSideOffsets, // TODO: what unit is this in?
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -623,6 +661,15 @@ pub struct Gradient {
     pub extend_mode: ExtendMode,
 } // IMPLICIT: stops: Vec<GradientStop>
 
+impl Gradient {
+    pub fn is_valid(&self) -> bool {
+        self.start_point.x.is_finite() &&
+            self.start_point.y.is_finite() &&
+            self.end_point.x.is_finite() &&
+            self.end_point.y.is_finite()
+    }
+}
+
 /// The area
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct GradientDisplayItem {
@@ -655,6 +702,15 @@ pub struct RadialGradient {
     pub extend_mode: ExtendMode,
 } // IMPLICIT stops: Vec<GradientStop>
 
+impl RadialGradient {
+    pub fn is_valid(&self) -> bool {
+        self.center.x.is_finite() &&
+            self.center.y.is_finite() &&
+            self.start_offset.is_finite() &&
+            self.end_offset.is_finite()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct ConicGradient {
     pub center: LayoutPoint,
@@ -663,6 +719,16 @@ pub struct ConicGradient {
     pub end_offset: f32,
     pub extend_mode: ExtendMode,
 } // IMPLICIT stops: Vec<GradientStop>
+
+impl ConicGradient {
+    pub fn is_valid(&self) -> bool {
+        self.center.x.is_finite() &&
+            self.center.y.is_finite() &&
+            self.angle.is_finite() &&
+            self.start_offset.is_finite() &&
+            self.end_offset.is_finite()
+    }
+}
 
 /// Just an abstraction for bundling up a bunch of clips into a "super clip".
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -704,6 +770,10 @@ pub struct BackdropFilterDisplayItem {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct ReferenceFrameDisplayListItem {
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub struct ReferenceFrameDescriptor {
     pub origin: LayoutPoint,
     pub parent_spatial_id: SpatialId,
     pub reference_frame: ReferenceFrame,
@@ -711,13 +781,86 @@ pub struct ReferenceFrameDisplayListItem {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub enum ReferenceFrameKind {
-    /// Zoom reference frames must be a scale + translation only
-    Zoom,
     /// A normal transform matrix, may contain perspective (the CSS transform property)
-    Transform,
+    Transform {
+        /// Optionally marks the transform as only ever having a simple 2D scale or translation,
+        /// allowing for optimizations.
+        is_2d_scale_translation: bool,
+        /// Marks that the transform should be snapped. Used for transforms which animate in
+        /// response to scrolling, eg for zooming or dynamic toolbar fixed-positioning.
+        should_snap: bool,
+        /// Marks the transform being a part of the CSS stacking context that also has
+        /// a perspective. In this case, backface visibility takes this perspective into
+        /// account.
+        paired_with_perspective: bool,
+    },
     /// A perspective transform, that optionally scrolls relative to a specific scroll node
     Perspective {
         scrolling_relative_to: Option<ExternalScrollId>,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub enum Rotation {
+    Degree0,
+    Degree90,
+    Degree180,
+    Degree270,
+}
+
+impl Rotation {
+    pub fn to_matrix(
+        &self,
+        size: LayoutSize,
+    ) -> LayoutTransform {
+        let (shift_center_to_origin, angle) = match self {
+            Rotation::Degree0 => {
+              (LayoutTransform::translation(-size.width / 2., -size.height / 2., 0.), Angle::degrees(0.))
+            },
+            Rotation::Degree90 => {
+              (LayoutTransform::translation(-size.height / 2., -size.width / 2., 0.), Angle::degrees(90.))
+            },
+            Rotation::Degree180 => {
+              (LayoutTransform::translation(-size.width / 2., -size.height / 2., 0.), Angle::degrees(180.))
+            },
+            Rotation::Degree270 => {
+              (LayoutTransform::translation(-size.height / 2., -size.width / 2., 0.), Angle::degrees(270.))
+            },
+        };
+        let shift_origin_to_center = LayoutTransform::translation(size.width / 2., size.height / 2., 0.);
+
+        shift_center_to_origin
+            .then(&LayoutTransform::rotation(0., 0., 1.0, angle))
+            .then(&shift_origin_to_center)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub enum ReferenceTransformBinding {
+    /// Standard reference frame which contains a precomputed transform.
+    Static {
+        binding: PropertyBinding<LayoutTransform>,
+    },
+    /// Computed reference frame which dynamically calculates the transform
+    /// based on the given parameters. The reference is the content size of
+    /// the parent iframe, which is affected by snapping.
+    ///
+    /// This is used when a transform depends on the layout size of an
+    /// element, otherwise the difference between the unsnapped size
+    /// used in the transform, and the snapped size calculated during scene
+    /// building can cause seaming.
+    Computed {
+        scale_from: Option<LayoutSize>,
+        vertical_flip: bool,
+        rotation: Rotation,
+    },
+}
+
+impl Default for ReferenceTransformBinding {
+    fn default() -> Self {
+        ReferenceTransformBinding::Static {
+            binding: Default::default(),
+        }
     }
 }
 
@@ -727,8 +870,10 @@ pub struct ReferenceFrame {
     pub transform_style: TransformStyle,
     /// The transform matrix, either the perspective matrix or the transform
     /// matrix.
-    pub transform: PropertyBinding<LayoutTransform>,
+    pub transform: ReferenceTransformBinding,
     pub id: SpatialId,
+    /// A unique (per-pipeline) key for this spatial that is stable across display lists.
+    pub key: SpatialTreeItemKey,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -736,6 +881,7 @@ pub struct PushStackingContextDisplayItem {
     pub origin: LayoutPoint,
     pub spatial_id: SpatialId,
     pub prim_flags: PrimitiveFlags,
+    pub ref_frame_offset: LayoutVector2D,
     pub stacking_context: StackingContext,
 }
 
@@ -743,7 +889,7 @@ pub struct PushStackingContextDisplayItem {
 pub struct StackingContext {
     pub transform_style: TransformStyle,
     pub mix_blend_mode: MixBlendMode,
-    pub clip_id: Option<ClipId>,
+    pub clip_chain_id: Option<ClipChainId>,
     pub raster_space: RasterSpace,
     pub flags: StackingContextFlags,
 }
@@ -762,7 +908,7 @@ pub enum TransformStyle {
 /// when we want to cache the output, and performance is
 /// important. Note that this is a performance hint only,
 /// which WR may choose to ignore.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, MallocSizeOf, Serialize, PeekPoke)]
 #[repr(u8)]
 pub enum RasterSpace {
     // Rasterize in local-space, applying supplied scale to primitives.
@@ -785,16 +931,46 @@ impl RasterSpace {
     }
 }
 
+impl Eq for RasterSpace {}
+
+impl Hash for RasterSpace {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            RasterSpace::Screen => {
+                0.hash(state);
+            }
+            RasterSpace::Local(scale) => {
+                // Note: this is inconsistent with the Eq impl for -0.0 (don't care).
+                1.hash(state);
+                scale.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord, Hash, Deserialize, MallocSizeOf, Serialize, PeekPoke)]
+pub struct StackingContextFlags(u8);
+
 bitflags! {
-    #[repr(C)]
-    #[derive(Deserialize, MallocSizeOf, Serialize, PeekPoke)]
-    pub struct StackingContextFlags: u8 {
-        /// If true, this stacking context represents a backdrop root, per the CSS
-        /// filter-effects specification (see https://drafts.fxtf.org/filter-effects-2/#BackdropRoot).
-        const IS_BACKDROP_ROOT = 1 << 0;
+    impl StackingContextFlags: u8 {
         /// If true, this stacking context is a blend container than contains
         /// mix-blend-mode children (and should thus be isolated).
-        const IS_BLEND_CONTAINER = 1 << 1;
+        const IS_BLEND_CONTAINER = 1 << 0;
+        /// If true, this stacking context is a wrapper around a backdrop-filter (e.g. for
+        /// a clip-mask). This is needed to allow the correct selection of a backdrop root
+        /// since a clip-mask stacking context creates a parent surface.
+        const WRAPS_BACKDROP_FILTER = 1 << 1;
+    }
+}
+
+impl core::fmt::Debug for StackingContextFlags {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{:#x}", Self::empty().bits())
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
     }
 }
 
@@ -823,6 +999,7 @@ pub enum MixBlendMode {
     Saturation = 13,
     Color = 14,
     Luminosity = 15,
+    PlusLighter = 16,
 }
 
 #[repr(C)]
@@ -911,7 +1088,8 @@ impl FloodPrimitive {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct BlurPrimitive {
     pub input: FilterPrimitiveInput,
-    pub radius: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 #[repr(C)]
@@ -1031,28 +1209,495 @@ impl FilterPrimitive {
     }
 }
 
-/// CSS filter.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize, PeekPoke)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, PeekPoke)]
+pub enum FilterOpGraphPictureBufferId {
+    #[default]
+    /// empty slot in feMerge inputs
+    None,
+    /// reference to another (earlier) node in filter graph
+    BufferId(i16),
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PeekPoke)]
+pub struct FilterOpGraphPictureReference {
+    /// Id of the picture in question in a namespace unique to this filter DAG
+    pub buffer_id: FilterOpGraphPictureBufferId,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PeekPoke)]
+pub struct FilterOpGraphNode {
+    /// True if color_interpolation_filter == LinearRgb; shader will convert
+    /// sRGB texture pixel colors on load and convert back on store, for correct
+    /// interpolation
+    pub linear: bool,
+    /// virtualized picture input binding 1 (i.e. texture source), typically
+    /// this is used, but certain filters do not use it
+    pub input: FilterOpGraphPictureReference,
+    /// virtualized picture input binding 2 (i.e. texture sources), only certain
+    /// filters use this
+    pub input2: FilterOpGraphPictureReference,
+    /// rect this node will render into, in filter space
+    pub subregion: LayoutRect,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PeekPoke)]
 pub enum FilterOp {
     /// Filter that does no transformation of the colors, needed for
-    /// debug purposes only.
+    /// debug purposes, and is the default value in impl_default_for_enums.
+    /// parameters: none
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Identity,
-    Blur(f32),
+    /// apply blur effect
+    /// parameters: stdDeviationX, stdDeviationY
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
+    Blur(f32, f32),
+    /// apply brightness effect
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Brightness(f32),
+    /// apply contrast effect
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Contrast(f32),
+    /// fade image toward greyscale version of image
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Grayscale(f32),
+    /// fade image toward hue-rotated version of image (rotate RGB around color wheel)
+    /// parameters: angle
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     HueRotate(f32),
+    /// fade image toward inverted image (1 - RGB)
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Invert(f32),
+    /// multiplies color and alpha by opacity
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Opacity(PropertyBinding<f32>, f32),
+    /// multiply saturation of colors
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Saturate(f32),
+    /// fade image toward sepia tone version of image
+    /// parameters: amount
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     Sepia(f32),
+    /// add drop shadow version of image to the image
+    /// parameters: shadow
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     DropShadow(Shadow),
+    /// transform color and alpha in image through 4x5 color matrix (transposed for efficiency)
+    /// parameters: matrix[5][4]
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     ColorMatrix([f32; 20]),
+    /// internal use - convert sRGB input to linear output
+    /// parameters: none
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     SrgbToLinear,
+    /// internal use - convert linear input to sRGB output
+    /// parameters: none
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     LinearToSrgb,
+    /// remap RGBA with color gradients and component swizzle
+    /// parameters: FilterData
+    /// CSS filter semantics - operates on previous picture, uses sRGB space (non-linear)
     ComponentTransfer,
+    /// replace image with a solid color
+    /// NOTE: UNUSED; Gecko never produces this filter
+    /// parameters: color
+    /// CSS filter semantics - operates on previous picture,uses sRGB space (non-linear)
     Flood(ColorF),
+    /// Filter that copies the SourceGraphic image into the specified subregion,
+    /// This is intentionally the only way to get SourceGraphic into the graph,
+    /// as the filter region must be applied before it is used.
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - no inputs, no linear
+    SVGFESourceGraphic{node: FilterOpGraphNode},
+    /// Filter that copies the SourceAlpha image into the specified subregion,
+    /// This is intentionally the only way to get SourceGraphic into the graph,
+    /// as the filter region must be applied before it is used.
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - no inputs, no linear
+    SVGFESourceAlpha{node: FilterOpGraphNode},
+    /// Filter that does no transformation of the colors, used for subregion
+    /// cropping only.
+    SVGFEIdentity{node: FilterOpGraphNode},
+    /// represents CSS opacity property as a graph node like the rest of the SVGFE* filters
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    SVGFEOpacity{node: FilterOpGraphNode, valuebinding: PropertyBinding<f32>, value: f32},
+    /// convert a color image to an alpha channel - internal use; generated by
+    /// SVGFilterInstance::GetOrCreateSourceAlphaIndex().
+    SVGFEToAlpha{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_DARKEN
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feBlendElement
+    SVGFEBlendDarken{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_LIGHTEN
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feBlendElement
+    SVGFEBlendLighten{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_MULTIPLY
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feBlendElement
+    SVGFEBlendMultiply{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_NORMAL
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feBlendElement
+    SVGFEBlendNormal{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_SCREEN
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feBlendElement
+    SVGFEBlendScreen{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_OVERLAY
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendOverlay{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_COLOR_DODGE
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendColorDodge{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_COLOR_BURN
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendColorBurn{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_HARD_LIGHT
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendHardLight{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_SOFT_LIGHT
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendSoftLight{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_DIFFERENCE
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendDifference{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_EXCLUSION
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendExclusion{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_HUE
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendHue{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_SATURATION
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendSaturation{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_COLOR
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendColor{node: FilterOpGraphNode},
+    /// combine 2 images with SVG_FEBLEND_MODE_LUMINOSITY
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Source: https://developer.mozilla.org/en-US/docs/Web/CSS/mix-blend-mode
+    SVGFEBlendLuminosity{node: FilterOpGraphNode},
+    /// transform colors of image through 5x4 color matrix (transposed for efficiency)
+    /// parameters: FilterOpGraphNode, matrix[5][4]
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feColorMatrixElement
+    SVGFEColorMatrix{node: FilterOpGraphNode, values: [f32; 20]},
+    /// transform colors of image through configurable gradients with component swizzle
+    /// parameters: FilterOpGraphNode, FilterData
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feComponentTransferElement
+    SVGFEComponentTransfer{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode, k1, k2, k3, k4
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeArithmetic{node: FilterOpGraphNode, k1: f32, k2: f32, k3: f32,
+        k4: f32},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeATop{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeIn{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Docs: https://developer.mozilla.org/en-US/docs/Web/SVG/Element/feComposite
+    SVGFECompositeLighter{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeOut{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeOver{node: FilterOpGraphNode},
+    /// composite 2 images with chosen composite mode with parameters for that mode
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feCompositeElement
+    SVGFECompositeXOR{node: FilterOpGraphNode},
+    /// transform image through convolution matrix of up to 25 values (spec
+    /// allows more but for performance reasons we do not)
+    /// parameters: FilterOpGraphNode, orderX, orderY, kernelValues[25],
+    ///  divisor, bias, targetX, targetY, kernelUnitLengthX, kernelUnitLengthY,
+    ///  preserveAlpha
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feConvolveMatrixElement
+    SVGFEConvolveMatrixEdgeModeDuplicate{node: FilterOpGraphNode, order_x: i32,
+        order_y: i32, kernel: [f32; 25], divisor: f32, bias: f32, target_x: i32,
+        target_y: i32, kernel_unit_length_x: f32, kernel_unit_length_y: f32,
+        preserve_alpha: i32},
+    /// transform image through convolution matrix of up to 25 values (spec
+    /// allows more but for performance reasons we do not)
+    /// parameters: FilterOpGraphNode, orderX, orderY, kernelValues[25],
+    ///  divisor, bias, targetX, targetY, kernelUnitLengthX, kernelUnitLengthY,
+    ///  preserveAlpha
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feConvolveMatrixElement
+    SVGFEConvolveMatrixEdgeModeNone{node: FilterOpGraphNode, order_x: i32,
+        order_y: i32, kernel: [f32; 25], divisor: f32, bias: f32, target_x: i32,
+        target_y: i32, kernel_unit_length_x: f32, kernel_unit_length_y: f32,
+        preserve_alpha: i32},
+    /// transform image through convolution matrix of up to 25 values (spec
+    /// allows more but for performance reasons we do not)
+    /// parameters: FilterOpGraphNode, orderX, orderY, kernelValues[25],
+    ///  divisor, bias, targetX, targetY, kernelUnitLengthX, kernelUnitLengthY,
+    /// preserveAlpha
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#feConvolveMatrixElement
+    SVGFEConvolveMatrixEdgeModeWrap{node: FilterOpGraphNode, order_x: i32,
+        order_y: i32, kernel: [f32; 25], divisor: f32, bias: f32, target_x: i32,
+        target_y: i32, kernel_unit_length_x: f32, kernel_unit_length_y: f32,
+        preserve_alpha: i32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// distant light source with specified direction
+    /// parameters: FilterOpGraphNode, surfaceScale, diffuseConstant,
+    ///  kernelUnitLengthX, kernelUnitLengthY, azimuth, elevation
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDiffuseLightingElement
+    ///  https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDistantLightElement
+    SVGFEDiffuseLightingDistant{node: FilterOpGraphNode, surface_scale: f32,
+        diffuse_constant: f32, kernel_unit_length_x: f32,
+        kernel_unit_length_y: f32, azimuth: f32, elevation: f32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// point light source at specified location
+    /// parameters: FilterOpGraphNode, surfaceScale, diffuseConstant,
+    ///  kernelUnitLengthX, kernelUnitLengthY, x, y, z
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDiffuseLightingElement
+    ///  https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEPointLightElement
+    SVGFEDiffuseLightingPoint{node: FilterOpGraphNode, surface_scale: f32,
+        diffuse_constant: f32, kernel_unit_length_x: f32,
+        kernel_unit_length_y: f32, x: f32, y: f32, z: f32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// spot light source at specified location pointing at specified target
+    /// location with specified hotspot sharpness and cone angle
+    /// parameters: FilterOpGraphNode, surfaceScale, diffuseConstant,
+    ///  kernelUnitLengthX, kernelUnitLengthY, x, y, z, pointsAtX, pointsAtY,
+    ///  pointsAtZ, specularExponent, limitingConeAngle
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDiffuseLightingElement
+    /// https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFESpotLightElement
+    SVGFEDiffuseLightingSpot{node: FilterOpGraphNode, surface_scale: f32,
+        diffuse_constant: f32, kernel_unit_length_x: f32,
+        kernel_unit_length_y: f32, x: f32, y: f32, z: f32, points_at_x: f32,
+        points_at_y: f32, points_at_z: f32, cone_exponent: f32,
+        limiting_cone_angle: f32},
+    /// calculate a distorted version of first input image using offset values
+    /// from second input image at specified intensity
+    /// parameters: FilterOpGraphNode, scale, xChannelSelector, yChannelSelector
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDisplacementMapElement
+    SVGFEDisplacementMap{node: FilterOpGraphNode, scale: f32,
+        x_channel_selector: u32, y_channel_selector: u32},
+    /// create and merge a dropshadow version of the specified image's alpha
+    /// channel with specified offset and blur radius
+    /// parameters: FilterOpGraphNode, flood_color, flood_opacity, dx, dy,
+    ///  stdDeviationX, stdDeviationY
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDropShadowElement
+    SVGFEDropShadow{node: FilterOpGraphNode, color: ColorF, dx: f32, dy: f32,
+        std_deviation_x: f32, std_deviation_y: f32},
+    /// synthesize a new image of specified size containing a solid color
+    /// parameters: FilterOpGraphNode, color
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEFloodElement
+    SVGFEFlood{node: FilterOpGraphNode, color: ColorF},
+    /// create a blurred version of the input image
+    /// parameters: FilterOpGraphNode, stdDeviationX, stdDeviationY
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEGaussianBlurElement
+    SVGFEGaussianBlur{node: FilterOpGraphNode, std_deviation_x: f32, std_deviation_y: f32},
+    /// synthesize a new image based on a url (i.e. blob image source)
+    /// parameters: FilterOpGraphNode, sampling_filter (see SamplingFilter in Types.h), transform
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEImageElement
+    SVGFEImage{node: FilterOpGraphNode, sampling_filter: u32, matrix: [f32; 6]},
+    /// create a new image based on the input image with the contour stretched
+    /// outward (dilate operator)
+    /// parameters: FilterOpGraphNode, radiusX, radiusY
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEMorphologyElement
+    SVGFEMorphologyDilate{node: FilterOpGraphNode, radius_x: f32, radius_y: f32},
+    /// create a new image based on the input image with the contour shrunken
+    /// inward (erode operator)
+    /// parameters: FilterOpGraphNode, radiusX, radiusY
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEMorphologyElement
+    SVGFEMorphologyErode{node: FilterOpGraphNode, radius_x: f32, radius_y: f32},
+    /// create a new image that is a scrolled version of the input image, this
+    /// is basically a no-op as we support offset in the graph node
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEOffsetElement
+    SVGFEOffset{node: FilterOpGraphNode, offset_x: f32, offset_y: f32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// distant light source with specified direction
+    /// parameters: FilerData, surfaceScale, specularConstant, specularExponent,
+    ///  kernelUnitLengthX, kernelUnitLengthY, azimuth, elevation
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFESpecularLightingElement
+    /// https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEDistantLightElement
+    SVGFESpecularLightingDistant{node: FilterOpGraphNode, surface_scale: f32,
+        specular_constant: f32, specular_exponent: f32,
+        kernel_unit_length_x: f32, kernel_unit_length_y: f32, azimuth: f32,
+        elevation: f32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// point light source at specified location
+    /// parameters: FilterOpGraphNode, surfaceScale, specularConstant,
+    ///  specularExponent, kernelUnitLengthX, kernelUnitLengthY, x, y, z
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFESpecularLightingElement
+    ///  https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFEPointLightElement
+    SVGFESpecularLightingPoint{node: FilterOpGraphNode, surface_scale: f32,
+        specular_constant: f32, specular_exponent: f32,
+        kernel_unit_length_x: f32, kernel_unit_length_y: f32, x: f32, y: f32,
+        z: f32},
+    /// calculate lighting based on heightmap image with provided values for a
+    /// spot light source at specified location pointing at specified target
+    /// location with specified hotspot sharpness and cone angle
+    /// parameters: FilterOpGraphNode, surfaceScale, specularConstant,
+    ///  specularExponent, kernelUnitLengthX, kernelUnitLengthY, x, y, z,
+    ///  pointsAtX, pointsAtY, pointsAtZ, specularExponent, limitingConeAngle
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFESpecularLightingElement
+    ///  https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFESpotLightElement
+    SVGFESpecularLightingSpot{node: FilterOpGraphNode, surface_scale: f32,
+        specular_constant: f32, specular_exponent: f32,
+        kernel_unit_length_x: f32, kernel_unit_length_y: f32, x: f32, y: f32,
+        z: f32, points_at_x: f32, points_at_y: f32, points_at_z: f32,
+        cone_exponent: f32, limiting_cone_angle: f32},
+    /// create a new image based on the input image, repeated throughout the
+    /// output rectangle
+    /// parameters: FilterOpGraphNode
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFETileElement
+    SVGFETile{node: FilterOpGraphNode},
+    /// synthesize a new image based on Fractal Noise (Perlin) with the chosen
+    /// stitching mode
+    /// parameters: FilterOpGraphNode, baseFrequencyX, baseFrequencyY,
+    ///  numOctaves, seed
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFETurbulenceElement
+    SVGFETurbulenceWithFractalNoiseWithNoStitching{node: FilterOpGraphNode,
+        base_frequency_x: f32, base_frequency_y: f32, num_octaves: u32,
+        seed: u32},
+    /// synthesize a new image based on Fractal Noise (Perlin) with the chosen
+    /// stitching mode
+    /// parameters: FilterOpGraphNode, baseFrequencyX, baseFrequencyY,
+    ///  numOctaves, seed
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFETurbulenceElement
+    SVGFETurbulenceWithFractalNoiseWithStitching{node: FilterOpGraphNode,
+        base_frequency_x: f32, base_frequency_y: f32, num_octaves: u32,
+        seed: u32},
+    /// synthesize a new image based on Turbulence Noise (offset vectors)
+    /// parameters: FilterOpGraphNode, baseFrequencyX, baseFrequencyY,
+    ///  numOctaves, seed
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFETurbulenceElement
+    SVGFETurbulenceWithTurbulenceNoiseWithNoStitching{node: FilterOpGraphNode,
+        base_frequency_x: f32, base_frequency_y: f32, num_octaves: u32,
+        seed: u32},
+    /// synthesize a new image based on Turbulence Noise (offset vectors)
+    /// parameters: FilterOpGraphNode, baseFrequencyX, baseFrequencyY,
+    ///  numOctaves, seed
+    /// SVG filter semantics - selectable input(s), selectable between linear
+    /// (default) and sRGB color space for calculations
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#InterfaceSVGFETurbulenceElement
+    SVGFETurbulenceWithTurbulenceNoiseWithStitching{node: FilterOpGraphNode,
+        base_frequency_x: f32, base_frequency_y: f32, num_octaves: u32, seed: u32},
 }
 
 #[repr(u8)]
@@ -1067,6 +1712,7 @@ pub enum ComponentTransferFuncType {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct FilterData {
+    /// ComponentTransfer / SVGFEComponentTransfer
     pub func_r_type: ComponentTransferFuncType,
     pub r_values: Vec<f32>,
     pub func_g_type: ComponentTransferFuncType,
@@ -1230,6 +1876,7 @@ pub enum YuvColorSpace {
     Rec601 = 0,
     Rec709 = 1,
     Rec2020 = 2,
+    Identity = 3, // aka GBR as per ISO/IEC 23091-2:2019
 }
 
 #[repr(u8)]
@@ -1239,9 +1886,48 @@ pub enum ColorRange {
     Full = 1,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
+pub enum YuvRangedColorSpace {
+    Rec601Narrow = 0,
+    Rec601Full = 1,
+    Rec709Narrow = 2,
+    Rec709Full = 3,
+    Rec2020Narrow = 4,
+    Rec2020Full = 5,
+    GbrIdentity = 6,
+}
+
+impl YuvColorSpace {
+    pub fn with_range(self, range: ColorRange) -> YuvRangedColorSpace {
+        match self {
+            YuvColorSpace::Identity => YuvRangedColorSpace::GbrIdentity,
+            YuvColorSpace::Rec601 => {
+                match range {
+                    ColorRange::Limited => YuvRangedColorSpace::Rec601Narrow,
+                    ColorRange::Full => YuvRangedColorSpace::Rec601Full,
+                }
+            }
+            YuvColorSpace::Rec709 => {
+                match range {
+                    ColorRange::Limited => YuvRangedColorSpace::Rec709Narrow,
+                    ColorRange::Full => YuvRangedColorSpace::Rec709Full,
+                }
+            }
+            YuvColorSpace::Rec2020 => {
+                match range {
+                    ColorRange::Limited => YuvRangedColorSpace::Rec2020Narrow,
+                    ColorRange::Full => YuvRangedColorSpace::Rec2020Full,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, PeekPoke)]
 pub enum YuvData {
     NV12(ImageKey, ImageKey), // (Y channel, CbCr interleaved channel)
+    P010(ImageKey, ImageKey), // (Y channel, CbCr interleaved channel)
     PlanarYCbCr(ImageKey, ImageKey, ImageKey), // (Y channel, Cb channel, Cr Channel)
     InterleavedYCbCr(ImageKey), // (YCbCr interleaved channel)
 }
@@ -1250,6 +1936,7 @@ impl YuvData {
     pub fn get_format(&self) -> YuvFormat {
         match *self {
             YuvData::NV12(..) => YuvFormat::NV12,
+            YuvData::P010(..) => YuvFormat::P010,
             YuvData::PlanarYCbCr(..) => YuvFormat::PlanarYCbCr,
             YuvData::InterleavedYCbCr(..) => YuvFormat::InterleavedYCbCr,
         }
@@ -1259,14 +1946,15 @@ impl YuvData {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, PeekPoke)]
 pub enum YuvFormat {
     NV12 = 0,
-    PlanarYCbCr = 1,
-    InterleavedYCbCr = 2,
+    P010 = 1,
+    PlanarYCbCr = 2,
+    InterleavedYCbCr = 3,
 }
 
 impl YuvFormat {
     pub fn get_plane_num(self) -> usize {
         match self {
-            YuvFormat::NV12 => 2,
+            YuvFormat::NV12 | YuvFormat::P010 => 2,
             YuvFormat::PlanarYCbCr => 3,
             YuvFormat::InterleavedYCbCr => 1,
         }
@@ -1278,17 +1966,12 @@ impl YuvFormat {
 pub struct ImageMask {
     pub image: ImageKey,
     pub rect: LayoutRect,
-    pub repeat: bool,
 }
 
 impl ImageMask {
     /// Get a local clipping rect contributed by this mask.
     pub fn get_local_clip_rect(&self) -> Option<LayoutRect> {
-        if self.repeat {
-            None
-        } else {
-            Some(self.rect)
-        }
+        Some(self.rect)
     }
 }
 
@@ -1404,14 +2087,49 @@ impl ComplexClipRegion {
     }
 }
 
+pub const POLYGON_CLIP_VERTEX_MAX: usize = 32;
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize, Eq, Hash, PeekPoke)]
+pub enum FillRule {
+    Nonzero = 0x1, // Behaves as the SVG fill-rule definition for nonzero.
+    Evenodd = 0x2, // Behaves as the SVG fill-rule definition for evenodd.
+}
+
+impl From<u8> for FillRule {
+    fn from(fill_rule: u8) -> Self {
+        match fill_rule {
+            0x1 => FillRule::Nonzero,
+            0x2 => FillRule::Evenodd,
+            _ => panic!("Unexpected FillRule value."),
+        }
+    }
+}
+
+impl From<FillRule> for u8 {
+    fn from(fill_rule: FillRule) -> Self {
+        match fill_rule {
+            FillRule::Nonzero => 0x1,
+            FillRule::Evenodd => 0x2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize, PeekPoke)]
 pub struct ClipChainId(pub u64, pub PipelineId);
 
+impl ClipChainId {
+    pub const INVALID: Self = ClipChainId(!0, PipelineId::INVALID);
+}
+
 /// A reference to a clipping node defining how an item is clipped.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, PeekPoke)]
-pub enum ClipId {
-    Clip(usize, PipelineId),
-    ClipChain(ClipChainId),
+pub struct ClipId(pub usize, pub PipelineId);
+
+impl Default for ClipId {
+    fn default() -> Self {
+        ClipId::invalid()
+    }
 }
 
 const ROOT_CLIP_ID: usize = 0;
@@ -1419,33 +2137,30 @@ const ROOT_CLIP_ID: usize = 0;
 impl ClipId {
     /// Return the root clip ID - effectively doing no clipping.
     pub fn root(pipeline_id: PipelineId) -> Self {
-        ClipId::Clip(ROOT_CLIP_ID, pipeline_id)
+        ClipId(ROOT_CLIP_ID, pipeline_id)
     }
 
     /// Return an invalid clip ID - needed in places where we carry
     /// one but need to not attempt to use it.
     pub fn invalid() -> Self {
-        ClipId::Clip(!0, PipelineId::dummy())
+        ClipId(!0, PipelineId::dummy())
     }
 
     pub fn pipeline_id(&self) -> PipelineId {
         match *self {
-            ClipId::Clip(_, pipeline_id) |
-            ClipId::ClipChain(ClipChainId(_, pipeline_id)) => pipeline_id,
+            ClipId(_, pipeline_id) => pipeline_id,
         }
     }
 
     pub fn is_root(&self) -> bool {
         match *self {
-            ClipId::Clip(id, _) => id == ROOT_CLIP_ID,
-            ClipId::ClipChain(_) => false,
+            ClipId(id, _) => id == ROOT_CLIP_ID,
         }
     }
 
     pub fn is_valid(&self) -> bool {
         match *self {
-            ClipId::Clip(id, _) => id != !0,
-            _ => true,
+            ClipId(id, _) => id != !0,
         }
     }
 }
@@ -1472,14 +2187,6 @@ impl SpatialId {
 
     pub fn pipeline_id(&self) -> PipelineId {
         self.1
-    }
-
-    pub fn is_root_reference_frame(&self) -> bool {
-        self.0 == ROOT_REFERENCE_FRAME_SPATIAL_ID
-    }
-
-    pub fn is_root_scroll_node(&self) -> bool {
-        self.0 == ROOT_SCROLL_NODE_SPATIAL_ID
     }
 }
 
@@ -1514,7 +2221,6 @@ impl DisplayItem {
             DisplayItem::RectClip(..) => "rect_clip",
             DisplayItem::RoundedRectClip(..) => "rounded_rect_clip",
             DisplayItem::ImageMaskClip(..) => "image_mask_clip",
-            DisplayItem::Clip(..) => "clip",
             DisplayItem::ClipChain(..) => "clip_chain",
             DisplayItem::ConicGradient(..) => "conic_gradient",
             DisplayItem::Gradient(..) => "gradient",
@@ -1531,13 +2237,12 @@ impl DisplayItem {
             DisplayItem::SetFilterOps => "set_filter_ops",
             DisplayItem::SetFilterData => "set_filter_data",
             DisplayItem::SetFilterPrimitives => "set_filter_primitives",
+            DisplayItem::SetPoints => "set_points",
             DisplayItem::RadialGradient(..) => "radial_gradient",
             DisplayItem::Rectangle(..) => "rectangle",
-            DisplayItem::ScrollFrame(..) => "scroll_frame",
             DisplayItem::SetGradientStops => "set_gradient_stops",
             DisplayItem::ReuseItems(..) => "reuse_item",
             DisplayItem::RetainedItems(..) => "retained_items",
-            DisplayItem::StickyFrame(..) => "sticky_frame",
             DisplayItem::Text(..) => "text",
             DisplayItem::YuvImage(..) => "yuv_image",
             DisplayItem::BackdropFilter(..) => "backdrop_filter",
@@ -1559,11 +2264,10 @@ macro_rules! impl_default_for_enums {
 
 impl_default_for_enums! {
     DisplayItem => PopStackingContext,
-    ScrollSensitivity => ScriptAndInputEvents,
     LineOrientation => Vertical,
     LineStyle => Solid,
     RepeatMode => Stretch,
-    NinePatchBorderSource => Image(ImageKey::default()),
+    NinePatchBorderSource => Image(ImageKey::default(), ImageRendering::Auto),
     BorderDetails => Normal(NormalBorder::default()),
     BorderRadiusKind => Uniform,
     BorderStyle => None,
@@ -1572,14 +2276,20 @@ impl_default_for_enums! {
     FilterOp => Identity,
     ComponentTransferFuncType => Identity,
     ClipMode => Clip,
-    ClipId => ClipId::invalid(),
-    ReferenceFrameKind => Transform,
+    FillRule => Nonzero,
+    ReferenceFrameKind => Transform {
+        is_2d_scale_translation: false,
+        should_snap: false,
+        paired_with_perspective: false,
+    },
+    Rotation => Degree0,
     TransformStyle => Flat,
     RasterSpace => Local(f32::default()),
     MixBlendMode => Normal,
     ImageRendering => Auto,
     AlphaType => Alpha,
     YuvColorSpace => Rec601,
+    YuvRangedColorSpace => Rec601Narrow,
     ColorRange => Limited,
     YuvData => NV12(ImageKey::default(), ImageKey::default()),
     YuvFormat => NV12,

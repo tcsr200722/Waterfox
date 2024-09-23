@@ -17,7 +17,7 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/dom/Link.h"
 #include "mozilla/dom/PContentChild.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsIMemoryReporter.h"
 #include "nsIObserver.h"
 #include "nsString.h"
@@ -25,8 +25,7 @@
 #include "nsTObserverArray.h"
 #include "nsURIHashKey.h"
 
-namespace mozilla {
-namespace places {
+namespace mozilla::places {
 
 struct VisitData;
 class ConcurrentStatementsHolder;
@@ -39,7 +38,7 @@ class VisitedQuery;
 // ignore any subsequent visits, if they happen before this time has elapsed.
 // A commonly found case is to reload a page every 5 minutes, so we pick a time
 // larger than that.
-#define RECENTLY_VISITED_URIS_MAX_AGE 6 * 60 * PR_USEC_PER_SEC
+#define RECENTLY_VISITED_URIS_MAX_AGE (6 * 60 * PR_USEC_PER_SEC)
 // When notifying the main thread after inserting visits, we chunk the visits
 // into medium-sized groups so that we can amortize the cost of the runnable
 // without janking the main thread by expecting it to process hundreds at once.
@@ -57,11 +56,11 @@ class History final : public BaseHistory,
 
   // IHistory
   NS_IMETHOD VisitURI(nsIWidget*, nsIURI*, nsIURI* aLastVisitedURI,
-                      uint32_t aFlags) final;
+                      uint32_t aFlags, uint64_t aBrowserId) final;
   NS_IMETHOD SetURITitle(nsIURI*, const nsAString&) final;
 
   // BaseHistory
-  void StartPendingVisitedQueries(const PendingVisitedQueries&) final;
+  void StartPendingVisitedQueries(PendingVisitedQueries&&) final;
 
   History();
 
@@ -70,24 +69,18 @@ class History final : public BaseHistory,
   /**
    * Adds an entry in moz_places with the data in aVisitData.
    *
-   * @param aVisitData
+   * @param aPlace
    *        The visit data to use to populate a new row in moz_places.
-   * @param aShouldNotifyFrecencyChanged
-   *        Whether to dispatch OnFrecencyChanged notifications.
-   *        Defaults to true. Set to false if you (the caller) are
-   *        doing many inserts and will dispatch your own
-   *        OnManyFrecenciesChanged notification.
    */
-  nsresult InsertPlace(VisitData& aVisitData,
-                       bool aShouldNotifyFrecencyChanged = true);
+  nsresult InsertPlace(VisitData& aPlace);
 
   /**
    * Updates an entry in moz_places with the data in aVisitData.
    *
-   * @param aVisitData
+   * @param aPlace
    *        The visit data to use to update the existing row in moz_places.
    */
-  nsresult UpdatePlace(const VisitData& aVisitData);
+  nsresult UpdatePlace(const VisitData& aPlace);
 
   /**
    * Loads information about the page into _place from moz_places.
@@ -131,8 +124,10 @@ class History final : public BaseHistory,
     return mDB->GetStatement(aQuery);
   }
 
-  bool IsShuttingDown() const { return mShuttingDown; }
-  Mutex& GetShutdownMutex() { return mShutdownMutex; }
+  bool IsShuttingDown() {
+    MutexAutoLock lockedScope(mShuttingDownMutex);
+    return mShuttingDown;
+  }
 
   /**
    * Helper function to append a new URI to mRecentlyVisitedURIs. See
@@ -176,14 +171,20 @@ class History final : public BaseHistory,
 
   static History* gService;
 
-  // Ensures new tasks aren't started on destruction.
+  // Ensures new tasks aren't started on destruction. Should only be changed on
+  // the main thread.
   bool mShuttingDown;
-  // This mutex guards mShuttingDown. Code running in other threads that might
-  // schedule tasks that use the database should grab it and check the value of
-  // mShuttingDown. If we are already shutting down, the code must gracefully
-  // avoid using the db. If we are not, the lock will prevent shutdown from
-  // starting in an unexpected moment.
-  Mutex mShutdownMutex;
+  // This mutex guards mShuttingDown and should be acquired on the helper
+  // thread.
+  Mutex mShuttingDownMutex MOZ_UNANNOTATED;
+  // Code running in the helper thread can acquire this mutex to block shutdown
+  // from proceeding until done, otherwise it may be impossible to get
+  // statements to execute and an insert operation could be interrupted in the
+  // middle.
+  Mutex mBlockShutdownMutex MOZ_UNANNOTATED;
+
+  // Allow private access from the helper thread to acquire mutexes.
+  friend class InsertVisitedURIs;
 
   /**
    * mRecentlyVisitedURIs remembers URIs which have been recently added to
@@ -194,10 +195,19 @@ class History final : public BaseHistory,
     bool mHidden;
   };
 
-  nsDataHashtable<nsURIHashKey, RecentURIVisit> mRecentlyVisitedURIs;
+  nsTHashMap<nsURIHashKey, RecentURIVisit> mRecentlyVisitedURIs;
+
+  struct OriginFloodingRestriction {
+    TimeStamp mLastVisitTimeStamp;
+    uint32_t mExpireIntervalSeconds;
+    uint32_t mAllowedVisitCount;
+  };
+  nsTHashMap<nsCStringHashKey, OriginFloodingRestriction>
+      mOriginFloodingRestrictions;
+  void UpdateOriginFloodingRestriction(nsACString& aOrigin);
+  bool IsRestrictedOrigin(nsACString& aOrigin);
 };
 
-}  // namespace places
-}  // namespace mozilla
+}  // namespace mozilla::places
 
 #endif  // mozilla_places_History_h_

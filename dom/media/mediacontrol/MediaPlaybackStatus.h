@@ -5,15 +5,41 @@
 #ifndef DOM_MEDIA_MEDIACONTROL_MEDIAPLAYBACKSTATUS_H_
 #define DOM_MEDIA_MEDIACONTROL_MEDIAPLAYBACKSTATUS_H_
 
-#include "ContentMediaController.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
-#include "nsDataHashtable.h"
+#include "mozilla/dom/MediaSession.h"
 #include "nsISupportsImpl.h"
 #include "nsTArray.h"
+#include "nsTHashMap.h"
+#include "nsID.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+/**
+ * This enum is used to update controlled media state to the media controller in
+ * the chrome process.
+ * `eStarted`: media has successfully registered to the content media controller
+ * `ePlayed` : media has started playing
+ * `ePaused` : media has paused playing, but still can be resumed by content
+ *             media controller
+ * `eStopped`: media has unregistered from the content media controller, we can
+ *             not control it anymore
+ */
+enum class MediaPlaybackState : uint32_t {
+  eStarted,
+  ePlayed,
+  ePaused,
+  eStopped,
+};
+
+/**
+ * This enum is used to update controlled media audible audible state to the
+ * media controller in the chrome process.
+ */
+enum class MediaAudibleState : bool {
+  eInaudible = false,
+  eAudible = true,
+};
 
 /**
  * MediaPlaybackStatus is an internal module for the media controller, it
@@ -39,10 +65,14 @@ class MediaPlaybackStatus final {
  public:
   void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState);
   void UpdateMediaAudibleState(uint64_t aContextId, MediaAudibleState aState);
+  void UpdateGuessedPositionState(uint64_t aContextId, const nsID& aElementId,
+                                  const Maybe<PositionState>& aState);
 
   bool IsPlaying() const;
   bool IsAudible() const;
   bool IsAnyMediaBeingControlled() const;
+  Maybe<PositionState> GuessedMediaPositionState(
+      Maybe<uint64_t> aPreferredContextId) const;
 
   Maybe<uint64_t> GetAudioFocusOwnerContextId() const;
 
@@ -57,33 +87,49 @@ class MediaPlaybackStatus final {
     ~ContextMediaInfo() = default;
 
     void IncreaseControlledMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mControlledMediaNum < UINT_MAX);
+#endif
       mControlledMediaNum++;
     }
     void DecreaseControlledMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mControlledMediaNum > 0);
+#endif
       mControlledMediaNum--;
     }
     void IncreasePlayingMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mPlayingMediaNum < mControlledMediaNum);
+#endif
       mPlayingMediaNum++;
     }
     void DecreasePlayingMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mPlayingMediaNum > 0);
+#endif
       mPlayingMediaNum--;
     }
     void IncreaseAudibleMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mAudibleMediaNum < mPlayingMediaNum);
+#endif
       mAudibleMediaNum++;
     }
     void DecreaseAudibleMediaNum() {
+#ifndef FUZZING_SNAPSHOT
       MOZ_DIAGNOSTIC_ASSERT(mAudibleMediaNum > 0);
+#endif
       mAudibleMediaNum--;
     }
     bool IsPlaying() const { return mPlayingMediaNum > 0; }
     bool IsAudible() const { return mAudibleMediaNum > 0; }
     bool IsAnyMediaBeingControlled() const { return mControlledMediaNum > 0; }
     uint64_t Id() const { return mContextId; }
+
+    Maybe<PositionState> GuessedPositionState() const;
+    void UpdateGuessedPositionState(const nsID& aElementId,
+                                    const Maybe<PositionState>& aState);
 
    private:
     /**
@@ -94,6 +140,12 @@ class MediaPlaybackStatus final {
     uint32_t mAudibleMediaNum = 0;
     uint32_t mPlayingMediaNum = 0;
     uint64_t mContextId = 0;
+
+    /**
+     * Contains the guessed position state of all media elements in this
+     * browsing context identified by their ID.
+     */
+    nsTHashMap<nsID, PositionState> mGuessedPositionStateMap;
   };
 
   ContextMediaInfo& GetNotNullContextInfo(uint64_t aContextId);
@@ -106,11 +158,10 @@ class MediaPlaybackStatus final {
   bool ShouldAbandonAudioFocusForInfo(const ContextMediaInfo& aInfo) const;
 
   // This contains all the media status of browsing contexts within a tab.
-  nsDataHashtable<nsUint64HashKey, UniquePtr<ContextMediaInfo>> mContextInfoMap;
+  nsTHashMap<uint64_t, UniquePtr<ContextMediaInfo>> mContextInfoMap;
   Maybe<uint64_t> mOwningAudioFocusContextId;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  //  DOM_MEDIA_MEDIACONTROL_MEDIAPLAYBACKSTATUS_H_

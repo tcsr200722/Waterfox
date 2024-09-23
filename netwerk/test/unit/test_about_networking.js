@@ -5,7 +5,9 @@
 
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const gDashboard = Cc["@mozilla.org/network/dashboard;1"].getService(
   Ci.nsIDashboard
@@ -17,7 +19,7 @@ const gServerSocket = Cc["@mozilla.org/network/server-socket;1"].createInstance(
 const gHttpServer = new HttpServer();
 
 add_test(function test_http() {
-  gDashboard.requestHttpConnections(function(data) {
+  gDashboard.requestHttpConnections(function (data) {
     let found = false;
     for (let i = 0; i < data.connections.length; i++) {
       if (data.connections[i].host == "localhost") {
@@ -32,7 +34,7 @@ add_test(function test_http() {
 });
 
 add_test(function test_dns() {
-  gDashboard.requestDNSInfo(function(data) {
+  gDashboard.requestDNSInfo(function (data) {
     let found = false;
     for (let i = 0; i < data.entries.length; i++) {
       if (data.entries[i].hostname == "localhost") {
@@ -50,6 +52,13 @@ add_test(function test_dns() {
 });
 
 add_test(function test_sockets() {
+  // TODO: enable this test in bug 1581892.
+  if (mozinfo.socketprocess_networking) {
+    info("skip test_sockets");
+    run_next_test();
+    return;
+  }
+
   let sts = Cc["@mozilla.org/network/socket-transport-service;1"].getService(
     Ci.nsISocketTransportService
   );
@@ -59,12 +68,13 @@ add_test(function test_sockets() {
     [],
     "127.0.0.1",
     gServerSocket.port,
+    null,
     null
   );
   let listener = {
-    onTransportStatus(aTransport, aStatus, aProgress, aProgressMax) {
+    onTransportStatus(aTransport, aStatus) {
       if (aStatus == Ci.nsISocketTransport.STATUS_CONNECTED_TO) {
-        gDashboard.requestSockets(function(data) {
+        gDashboard.requestSockets(function (data) {
           gServerSocket.close();
           let found = false;
           for (let i = 0; i < data.sockets.length; i++) {
@@ -91,13 +101,12 @@ function run_test() {
     true
   );
 
-  let ioService = Cc["@mozilla.org/network/io-service;1"].getService(
-    Ci.nsIIOService
-  );
+  // We always resolve localhost as it's hardcoded without the following pref:
+  Services.prefs.setBoolPref("network.proxy.allow_hijacking_localhost", true);
 
   gHttpServer.start(-1);
 
-  let uri = ioService.newURI(
+  let uri = Services.io.newURI(
     "http://localhost:" + gHttpServer.identity.primaryPort
   );
   let channel = NetUtil.newChannel({ uri, loadUsingSystemPrincipal: true });
@@ -105,6 +114,7 @@ function run_test() {
   channel.open();
 
   gServerSocket.init(-1, true, -1);
+  Services.prefs.clearUserPref("network.proxy.allow_hijacking_localhost");
 
   run_next_test();
 }

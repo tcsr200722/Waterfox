@@ -1,9 +1,7 @@
 function test() {
   var isWin7OrHigher = false;
   try {
-    let version = Cc["@mozilla.org/system-info;1"]
-      .getService(Ci.nsIPropertyBag2)
-      .getProperty("version");
+    let version = Services.sysinfo.getProperty("version");
     isWin7OrHigher = parseFloat(version) >= 6.1;
   } catch (ex) {}
 
@@ -18,9 +16,9 @@ function test() {
 
   const ENABLE_PREF_NAME = "browser.taskbar.previews.enable";
 
-  let temp = {};
-  ChromeUtils.import("resource:///modules/WindowsPreviewPerTab.jsm", temp);
-  let AeroPeek = temp.AeroPeek;
+  let { AeroPeek } = ChromeUtils.importESModule(
+    "resource:///modules/WindowsPreviewPerTab.sys.mjs"
+  );
 
   waitForExplicitFinish();
 
@@ -49,7 +47,7 @@ function test() {
     ok(preview.visible, "Preview is shown as expected after re-enabling");
   }
 
-  [1, 2, 3, 4].forEach(function(idx) {
+  [1, 2, 3, 4].forEach(function (idx) {
     gBrowser.selectedTab = gBrowser.tabs[idx];
     ok(checkSelectedTab(), "Current tab is correctly selected");
   });
@@ -60,7 +58,7 @@ function test() {
     3,
     "Expected number of previews after closing selected tab via controller"
   );
-  ok(gBrowser.tabs.length == 3, "Successfully closed a tab");
+  Assert.equal(gBrowser.tabs.length, 3, "Successfully closed a tab");
 
   // Select #1
   ok(

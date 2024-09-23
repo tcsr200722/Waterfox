@@ -7,9 +7,8 @@
 var {
   findPlaceholders,
   getPath,
-  describeTemplate,
-} = require("devtools/shared/protocol/utils");
-var { types } = require("devtools/shared/protocol/types");
+} = require("resource://devtools/shared/protocol/utils.js");
+var { types } = require("resource://devtools/shared/protocol/types.js");
 
 /**
  * Manages a response template.
@@ -18,8 +17,12 @@ var { types } = require("devtools/shared/protocol/types");
  *    The response template.
  * @construcor
  */
-var Response = function(template = {}) {
+var Response = function (template = {}) {
   this.template = template;
+  if (this.template instanceof RetVal && this.template.isArrayType()) {
+    throw Error("Arrays should be wrapped in objects");
+  }
+
   const placeholders = findPlaceholders(template, RetVal);
   if (placeholders.length > 1) {
     throw Error("More than one RetVal specified in response");
@@ -40,7 +43,7 @@ Response.prototype = {
    * @param object ctx
    *    The object writing the response.
    */
-  write: function(ret, ctx) {
+  write(ret, ctx) {
     // Consider that `template` is either directly a `RetVal`,
     // or a dictionary with may be one `RetVal`.
     if (this.template instanceof RetVal) {
@@ -69,16 +72,12 @@ Response.prototype = {
    * @param object ctx
    *    The object reading the response.
    */
-  read: function(packet, ctx) {
+  read(packet, ctx) {
     if (!this.retVal) {
       return undefined;
     }
     const v = getPath(packet, this.path);
     return this.retVal.read(v, ctx);
-  },
-
-  describe: function() {
-    return describeTemplate(this.template);
   },
 };
 
@@ -90,30 +89,31 @@ exports.Response = Response;
  * @param type type
  *    The return value should be marshalled as this type.
  */
-var RetVal = function(type) {
+var RetVal = function (type) {
+  this._type = type;
   // Prevent force loading all RetVal types by accessing it only when needed
-  loader.lazyGetter(this, "type", function() {
+  loader.lazyGetter(this, "type", function () {
     return types.getType(type);
   });
 };
 
 RetVal.prototype = {
-  write: function(v, ctx) {
+  write(v, ctx) {
     return this.type.write(v, ctx);
   },
 
-  read: function(v, ctx) {
+  read(v, ctx) {
     return this.type.read(v, ctx);
   },
 
-  describe: function() {
-    return {
-      _retval: this.type.name,
-    };
+  isArrayType() {
+    // `_type` should always be a string, but a few incorrect RetVal calls
+    // pass `0`. See Bug 1677703.
+    return typeof this._type === "string" && this._type.startsWith("array:");
   },
 };
 
 // Outside of protocol.js, RetVal is called as factory method, without the new keyword.
-exports.RetVal = function(type) {
+exports.RetVal = function (type) {
   return new RetVal(type);
 };

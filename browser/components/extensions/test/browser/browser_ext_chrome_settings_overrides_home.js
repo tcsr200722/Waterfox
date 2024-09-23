@@ -3,20 +3,16 @@
 
 "use strict";
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
+requestLongerTimeout(4);
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AddonManager: "resource://gre/modules/AddonManager.jsm",
-  ExtensionSettingsStore: "resource://gre/modules/ExtensionSettingsStore.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
+  ExtensionControlledPopup:
+    "resource:///modules/ExtensionControlledPopup.sys.mjs",
+  ExtensionSettingsStore:
+    "resource://gre/modules/ExtensionSettingsStore.sys.mjs",
+  HomePage: "resource:///modules/HomePage.sys.mjs",
 });
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionControlledPopup",
-  "resource:///modules/ExtensionControlledPopup.jsm"
-);
 
 // Named this way so they correspond to the extensions
 const HOME_URI_2 = "http://example.com/";
@@ -36,6 +32,32 @@ const getHomePageURL = () => {
 function isConfirmed(id) {
   let item = ExtensionSettingsStore.getSetting("homepageNotification", id);
   return !!(item && item.value);
+}
+
+async function assertPreferencesShown(_spotlight) {
+  await TestUtils.waitForCondition(
+    () => gBrowser.currentURI.spec == "about:preferences#home",
+    "Should open about:preferences."
+  );
+
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [_spotlight],
+    async spotlight => {
+      let doc = content.document;
+      let section = await ContentTaskUtils.waitForCondition(
+        () => doc.querySelector(".spotlight"),
+        "The spotlight should appear."
+      );
+      Assert.equal(
+        section.getAttribute("data-subcategory"),
+        spotlight,
+        "The correct section is spotlighted."
+      );
+    }
+  );
+
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
 }
 
 add_task(async function test_multiple_extensions_overriding_home_page() {
@@ -59,9 +81,8 @@ add_task(async function test_multiple_extensions_overriding_home_page() {
           browser.test.sendMessage("homepageSet");
           break;
         case "tryClear":
-          let clearResult = await browser.browserSettings.homepageOverride.clear(
-            {}
-          );
+          let clearResult =
+            await browser.browserSettings.homepageOverride.clear({});
           browser.test.assertFalse(
             clearResult,
             "Calling homepageOverride.clear returns false."
@@ -250,7 +271,7 @@ add_task(async function test_disable() {
 
   let ext1 = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: ID,
         },
@@ -367,37 +388,54 @@ add_task(async function test_doorhanger_homepage_button() {
   await ext2.startup();
 
   let popupShown = promisePopupShown(panel);
-  BrowserHome();
-  await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+  BrowserCommands.home();
+  await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser, false, () =>
+    gURLBar.value.endsWith("ext2.html")
+  );
   await popupShown;
 
-  ok(gURLBar.value.endsWith("ext2.html"), "ext2 is in control");
-
-  // Click Restore Settings.
+  // Click Manage.
   let popupHidden = promisePopupHidden(panel);
-  let prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
+  // Ensures the preferences tab opens, checks the spotlight, and then closes it
+  let spotlightShown = assertPreferencesShown("homeOverride");
   popupnotification.secondaryButton.click();
-  await prefPromise;
   await popupHidden;
+  await spotlightShown;
+
+  let prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
+  await ext2.unload();
+  await prefPromise;
 
   // Expect a new doorhanger for the next extension.
-  await promisePopupShown(panel);
+  popupShown = promisePopupShown(panel);
+  await BrowserTestUtils.openNewForegroundTab(gBrowser, "about:blank");
+  let openHomepage = TestUtils.topicObserved("browser-open-homepage-start");
+  BrowserCommands.home();
+  await openHomepage;
+  await popupShown;
+  await TestUtils.waitForCondition(
+    () => gURLBar.value.endsWith("ext1.html"),
+    "ext1 is in control"
+  );
 
-  ok(gURLBar.value.endsWith("ext1.html"), "ext1 is in control");
-
-  // Click Restore Settings again.
+  // Click manage again.
   popupHidden = promisePopupHidden(panel);
-  prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
+  // Ensures the preferences tab opens, checks the spotlight, and then closes it
+  spotlightShown = assertPreferencesShown("homeOverride");
   popupnotification.secondaryButton.click();
   await popupHidden;
+  await spotlightShown;
+
+  prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
+  await ext1.unload();
   await prefPromise;
 
-  await BrowserTestUtils.waitForLocationChange(gBrowser, defaultHomePage);
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  openHomepage = TestUtils.topicObserved("browser-open-homepage-start");
+  BrowserCommands.home();
+  await openHomepage;
 
   is(getHomePageURL(), defaultHomePage, "The homepage is set back to default");
-
-  await ext1.unload();
-  await ext2.unload();
 });
 
 add_task(async function test_doorhanger_new_window() {
@@ -407,7 +445,7 @@ add_task(async function test_doorhanger_new_window() {
   let ext1 = ExtensionTestUtils.loadExtension({
     manifest: {
       chrome_settings_overrides: { homepage: "ext1.html" },
-      applications: {
+      browser_specific_settings: {
         gecko: { id: ext1Id },
       },
       name: "Ext1",
@@ -444,25 +482,40 @@ add_task(async function test_doorhanger_new_window() {
     "extension-homepage-notification-description"
   );
 
-  ok(win.gURLBar.value.endsWith("ext2.html"), "ext2 is in control");
+  await TestUtils.waitForCondition(
+    () => win.gURLBar.value.endsWith("ext2.html"),
+    "ext2 is in control"
+  );
+
   is(
     description.textContent,
     "An extension,  Ext2, changed what you see when you open your homepage and new windows.Learn more",
     "The extension name is in the popup"
   );
 
-  // Click Restore Settings.
+  // Click Manage.
   let popupHidden = promisePopupHidden(panel);
-  let prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
   let popupnotification = doc.getElementById("extension-homepage-notification");
   popupnotification.secondaryButton.click();
-  await prefPromise;
   await popupHidden;
 
-  // Expect a new doorhanger for the next extension.
-  await promisePopupShown(panel);
+  let prefPromise = promisePrefChangeObserved(HOMEPAGE_URL_PREF);
+  await ext2.unload();
+  await prefPromise;
 
-  ok(win.gURLBar.value.endsWith("ext1.html"), "ext1 is in control");
+  // Expect a new doorhanger for the next extension.
+  let popupShown = promisePopupShown(panel);
+  await BrowserTestUtils.openNewForegroundTab(win.gBrowser, "about:blank");
+  let openHomepage = TestUtils.topicObserved("browser-open-homepage-start");
+  win.BrowserCommands.home();
+  await openHomepage;
+  await popupShown;
+
+  await TestUtils.waitForCondition(
+    () => win.gURLBar.value.endsWith("ext1.html"),
+    "ext1 is in control"
+  );
+
   is(
     description.textContent,
     "An extension,  Ext1, changed what you see when you open your homepage and new windows.Learn more",
@@ -473,18 +526,47 @@ add_task(async function test_doorhanger_new_window() {
   popupnotification.button.click();
   await TestUtils.waitForCondition(() => isConfirmed(ext1Id));
 
-  ok(getHomePageURL().endsWith("ext1.html"), "The homepage is still the set");
+  ok(
+    getHomePageURL().endsWith("ext1.html"),
+    "The homepage is still the first eextension"
+  );
 
   await BrowserTestUtils.closeWindow(win);
   await ext1.unload();
-  await ext2.unload();
 
   ok(!isConfirmed(ext1Id), "The confirmation is cleaned up on uninstall");
-});
+  // Skipping for window leak in debug builds, follow up bug: 1678412
+}).skip(AppConstants.DEBUG);
+
+async function testHomePageWindow(options = {}) {
+  let windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
+  let win = OpenBrowserWindow(options.options);
+  let openHomepage = TestUtils.topicObserved("browser-open-homepage-start");
+  await windowOpenedPromise;
+  let doc = win.document;
+  let panel = ExtensionControlledPopup._getAndMaybeCreatePanel(doc);
+
+  let popupShown = options.expectPanel && promisePopupShown(panel);
+  win.BrowserCommands.home();
+  await Promise.all([
+    BrowserTestUtils.browserLoaded(win.gBrowser.selectedBrowser),
+    openHomepage,
+    popupShown,
+  ]);
+
+  await options.test(win);
+
+  if (options.expectPanel) {
+    let popupHidden = promisePopupHidden(panel);
+    panel.hidePopup();
+    await popupHidden;
+  }
+  await BrowserTestUtils.closeWindow(win);
+}
 
 add_task(async function test_overriding_home_page_incognito_not_allowed() {
   await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
+    set: [["browser.startup.page", 1]],
   });
 
   let extension = ExtensionTestUtils.loadExtension({
@@ -492,64 +574,63 @@ add_task(async function test_overriding_home_page_incognito_not_allowed() {
       chrome_settings_overrides: { homepage: "home.html" },
       name: "extension",
     },
-    background() {
-      browser.test.sendMessage("url", browser.runtime.getURL("home.html"));
-    },
     files: { "home.html": "<h1>1</h1>" },
     useAddonManager: "temporary",
   });
 
   await extension.startup();
-  let url = await extension.awaitMessage("url");
+  let url = `moz-extension://${extension.uuid}/home.html`;
 
-  let windowOpenedPromise = BrowserTestUtils.waitForNewWindow({ url });
-  let win = OpenBrowserWindow();
-  await windowOpenedPromise;
-  let doc = win.document;
-  let panel = ExtensionControlledPopup._getAndMaybeCreatePanel(doc);
-  await promisePopupShown(panel);
+  await testHomePageWindow({
+    expectPanel: true,
+    test(win) {
+      let doc = win.document;
+      let description = doc.getElementById(
+        "extension-homepage-notification-description"
+      );
+      let popupnotification = description.closest("popupnotification");
+      is(
+        description.textContent,
+        "An extension,  extension, changed what you see when you open your homepage and new windows.Learn more",
+        "The extension name is in the popup"
+      );
+      is(
+        popupnotification.hidden,
+        false,
+        "The expected popup notification is visible"
+      );
 
-  let description = doc.getElementById(
-    "extension-homepage-notification-description"
-  );
-  let popupnotification = description.closest("popupnotification");
-  is(
-    description.textContent,
-    "An extension,  extension, changed what you see when you open your homepage and new windows.Learn more",
-    "The extension name is in the popup"
-  );
-  is(
-    popupnotification.hidden,
-    false,
-    "The expected popup notification is visible"
-  );
+      Assert.equal(HomePage.get(win), url, "The homepage is not set");
+      Assert.equal(
+        win.gURLBar.value,
+        url,
+        "home page not used in private window"
+      );
+    },
+  });
 
-  ok(win.gURLBar.value.endsWith("home.html"), "extension is in control");
-  await BrowserTestUtils.closeWindow(win);
-
-  // Verify a private window does not open the extension page.
-  windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
-  win = OpenBrowserWindow({ private: true });
-  await windowOpenedPromise;
-  win.BrowserHome();
-  await BrowserTestUtils.browserLoaded(win.gBrowser.selectedBrowser);
-
-  is(win.gURLBar.value, "", "home page not used in private window");
+  await testHomePageWindow({
+    expectPanel: false,
+    options: { private: true },
+    test(win) {
+      Assert.notEqual(HomePage.get(win), url, "The homepage is not set");
+      Assert.notEqual(
+        win.gURLBar.value,
+        url,
+        "home page not used in private window"
+      );
+    },
+  });
 
   await extension.unload();
-  await BrowserTestUtils.closeWindow(win);
 });
 
 add_task(async function test_overriding_home_page_incognito_spanning() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       chrome_settings_overrides: { homepage: "home.html" },
       name: "private extension",
-      applications: {
+      browser_specific_settings: {
         gecko: { id: "@spanning-home" },
       },
     },
@@ -560,60 +641,203 @@ add_task(async function test_overriding_home_page_incognito_spanning() {
 
   await extension.startup();
 
-  let windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
-  let win = OpenBrowserWindow({ private: true });
-  await windowOpenedPromise;
-  let doc = win.document;
-  let panel = ExtensionControlledPopup._getAndMaybeCreatePanel(doc);
-
-  let popupShown = promisePopupShown(panel);
-  win.BrowserHome();
-  await BrowserTestUtils.browserLoaded(win.gBrowser.selectedBrowser);
-  await popupShown;
-
-  ok(getHomePageURL().endsWith("home.html"), "The homepage is set");
-  ok(
-    win.gURLBar.value.endsWith("home.html"),
-    "extension is in control in private window"
-  );
-
-  let popupHidden = promisePopupHidden(panel);
-  panel.hidePopup();
-  await popupHidden;
+  // private window uses extension homepage
+  await testHomePageWindow({
+    expectPanel: true,
+    options: { private: true },
+    test(win) {
+      Assert.equal(
+        HomePage.get(win),
+        `moz-extension://${extension.uuid}/home.html`,
+        "The homepage is set"
+      );
+      Assert.equal(
+        win.gURLBar.value,
+        `moz-extension://${extension.uuid}/home.html`,
+        "extension is control in window"
+      );
+    },
+  });
 
   await extension.unload();
-  await BrowserTestUtils.closeWindow(win);
 });
 
 add_task(async function test_overriding_home_page_incognito_external() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      chrome_settings_overrides: { homepage: "https://example.com/home.html" },
+      chrome_settings_overrides: { homepage: "/home.html" },
       name: "extension",
     },
     useAddonManager: "temporary",
+    files: { "home.html": "<h1>non-private home</h1>" },
   });
 
   await extension.startup();
 
-  // Verify a private window does not open the extension page.
-  let windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
-  let win = OpenBrowserWindow({ private: true });
-  await windowOpenedPromise;
-  win.BrowserHome();
-  await BrowserTestUtils.browserLoaded(win.gBrowser.selectedBrowser);
+  // non-private window uses extension homepage
+  await testHomePageWindow({
+    expectPanel: true,
+    test(win) {
+      Assert.equal(
+        HomePage.get(win),
+        `moz-extension://${extension.uuid}/home.html`,
+        "The homepage is set"
+      );
+      Assert.equal(
+        win.gURLBar.value,
+        `moz-extension://${extension.uuid}/home.html`,
+        "extension is control in window"
+      );
+    },
+  });
 
-  is(win.gURLBar.value, "", "home page not used in private window");
-  is(
-    gBrowser.selectedBrowser.currentURI.spec,
-    "about:home",
-    "home page not used in private window"
-  );
+  // private window does not use extension window
+  await testHomePageWindow({
+    expectPanel: false,
+    options: { private: true },
+    test(win) {
+      Assert.notEqual(
+        HomePage.get(win),
+        `moz-extension://${extension.uuid}/home.html`,
+        "The homepage is not set"
+      );
+      Assert.notEqual(
+        win.gURLBar.value,
+        `moz-extension://${extension.uuid}/home.html`,
+        "home page not used in private window"
+      );
+    },
+  });
 
   await extension.unload();
-  await BrowserTestUtils.closeWindow(win);
+});
+
+// This tests that the homepage provided by an extension can be opened by any extension
+// and does not require web_accessible_resource entries.
+async function _test_overriding_home_page_open(manifest_version) {
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      manifest_version,
+      chrome_settings_overrides: { homepage: "home.html" },
+      name: "homepage provider",
+      browser_specific_settings: {
+        gecko: { id: "homepage@mochitest" },
+      },
+    },
+    files: {
+      "home.html": `<h1>Home Page!</h1><pre id="result"></pre><script src="home.js"></script>`,
+      "home.js": () => {
+        document.querySelector("#result").textContent = "homepage loaded";
+      },
+    },
+    useAddonManager: "permanent",
+  });
+
+  await extension.startup();
+
+  // ensure it works and deal with initial panel prompt.
+  await testHomePageWindow({
+    expectPanel: true,
+    async test(win) {
+      Assert.equal(
+        HomePage.get(win),
+        `moz-extension://${extension.uuid}/home.html`,
+        "The homepage is set"
+      );
+      Assert.equal(
+        win.gURLBar.value,
+        `moz-extension://${extension.uuid}/home.html`,
+        "extension is control in window"
+      );
+      const { selectedBrowser } = win.gBrowser;
+      const result = await SpecialPowers.spawn(
+        selectedBrowser,
+        [],
+        async () => {
+          const { document } = this.content;
+          if (document.readyState !== "complete") {
+            await new Promise(resolve => (document.onload = resolve));
+          }
+          return document.querySelector("#result").textContent;
+        }
+      );
+      Assert.equal(
+        result,
+        "homepage loaded",
+        "Overridden homepage loaded successfully"
+      );
+    },
+  });
+
+  // Extension used to open the homepage in a new window.
+  let opener = ExtensionTestUtils.loadExtension({
+    manifest: {
+      permissions: ["tabs"],
+    },
+    async background() {
+      let win;
+      browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+        if (tab.windowId !== win.id || tab.status !== "complete") {
+          return;
+        }
+        browser.test.sendMessage("created", tab.url);
+      });
+      browser.test.onMessage.addListener(async msg => {
+        if (msg == "create") {
+          win = await browser.windows.create({});
+          browser.test.assertTrue(
+            win.id !== browser.windows.WINDOW_ID_NONE,
+            "New window was created."
+          );
+        }
+      });
+    },
+  });
+
+  function listener(msg) {
+    Assert.ok(!/may not load or link to moz-extension/.test(msg.message));
+  }
+  Services.console.registerListener(listener);
+  registerCleanupFunction(() => {
+    Services.console.unregisterListener(listener);
+  });
+
+  await opener.startup();
+  const promiseNewWindow = BrowserTestUtils.waitForNewWindow();
+  await opener.sendMessage("create");
+  let homepageUrl = await opener.awaitMessage("created");
+
+  Assert.equal(
+    homepageUrl,
+    `moz-extension://${extension.uuid}/home.html`,
+    "The homepage is set"
+  );
+
+  const newWin = await promiseNewWindow;
+  Assert.equal(
+    await SpecialPowers.spawn(newWin.gBrowser.selectedBrowser, [], async () => {
+      const { document } = this.content;
+      if (document.readyState !== "complete") {
+        await new Promise(resolve => (document.onload = resolve));
+      }
+      return document.querySelector("#result").textContent;
+    }),
+    "homepage loaded",
+    "Overridden homepage loaded as expected"
+  );
+
+  await BrowserTestUtils.closeWindow(newWin);
+  await opener.unload();
+  await extension.unload();
+}
+
+add_task(async function test_overriding_home_page_open_mv2() {
+  await _test_overriding_home_page_open(2);
+});
+
+add_task(async function test_overriding_home_page_open_mv3() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["extensions.manifestV3.enabled", true]],
+  });
+  await _test_overriding_home_page_open(3);
 });

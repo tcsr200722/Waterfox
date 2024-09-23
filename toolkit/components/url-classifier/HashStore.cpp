@@ -35,7 +35,6 @@
 #include "nsCheckSummedOutputStream.h"
 #include "prio.h"
 #include "mozilla/Logging.h"
-#include "mozilla/IntegerPrintfMacros.h"
 #include "zlib.h"
 #include "Classifier.h"
 #include "nsUrlClassifierDBService.h"
@@ -153,7 +152,7 @@ nsresult TableUpdateV2::NewMissPrefix(const Prefix& aPrefix) {
 void TableUpdateV4::NewPrefixes(int32_t aSize, const nsACString& aPrefixes) {
   NS_ENSURE_TRUE_VOID(aSize >= 4 && aSize <= COMPLETE_SIZE);
   NS_ENSURE_TRUE_VOID(aPrefixes.Length() % aSize == 0);
-  NS_ENSURE_TRUE_VOID(!mPrefixesMap.Get(aSize));
+  NS_ENSURE_TRUE_VOID(!mPrefixesMap.Contains(aSize));
 
   int numOfPrefixes = aPrefixes.Length() / aSize;
 
@@ -182,11 +181,11 @@ void TableUpdateV4::NewPrefixes(int32_t aSize, const nsACString& aPrefixes) {
       LOG(("%.2X%.2X%.2X%.2X", c[0], c[1], c[2], c[3]));
     }
 
-    LOG(("---- %u fixed-length prefixes in total.",
+    LOG(("---- %zu fixed-length prefixes in total.",
          aPrefixes.Length() / aSize));
   }
 
-  mPrefixesMap.Put(aSize, new nsCString(aPrefixes));
+  mPrefixesMap.InsertOrUpdate(aSize, MakeUnique<nsCString>(aPrefixes));
 }
 
 nsresult TableUpdateV4::NewRemovalIndices(const uint32_t* aIndices,
@@ -211,7 +210,7 @@ void TableUpdateV4::SetSHA256(const std::string& aSHA256) {
 nsresult TableUpdateV4::NewFullHashResponse(
     const Prefix& aPrefix, const CachedFullHashResponse& aResponse) {
   CachedFullHashResponse* response =
-      mFullHashResponseMap.LookupOrAdd(aPrefix.ToUint32());
+      mFullHashResponseMap.GetOrInsertNew(aPrefix.ToUint32());
   if (!response) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -252,7 +251,7 @@ nsresult HashStore::Reset() {
   nsresult rv = mStoreDirectory->Clone(getter_AddRefs(storeFile));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = storeFile->AppendNative(mTableName + NS_LITERAL_CSTRING(STORE_SUFFIX));
+  rv = storeFile->AppendNative(mTableName + nsLiteralCString(STORE_SUFFIX));
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = storeFile->Remove(false);
@@ -304,7 +303,7 @@ nsresult HashStore::Open(uint32_t aVersion) {
   nsresult rv = mStoreDirectory->Clone(getter_AddRefs(storeFile));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = storeFile->AppendNative(mTableName + NS_LITERAL_CSTRING(".sbstore"));
+  rv = storeFile->AppendNative(mTableName + ".sbstore"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIInputStream> origStream;
@@ -913,7 +912,7 @@ nsresult HashStore::WriteFile() {
   nsCOMPtr<nsIFile> storeFile;
   nsresult rv = mStoreDirectory->Clone(getter_AddRefs(storeFile));
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = storeFile->AppendNative(mTableName + NS_LITERAL_CSTRING(".sbstore"));
+  rv = storeFile->AppendNative(mTableName + ".sbstore"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIOutputStream> out;
@@ -962,7 +961,7 @@ nsresult HashStore::ReadCompletionsLegacyV3(AddCompleteArray& aCompletes) {
   nsresult rv = mStoreDirectory->Clone(getter_AddRefs(storeFile));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = storeFile->AppendNative(mTableName + NS_LITERAL_CSTRING(STORE_SUFFIX));
+  rv = storeFile->AppendNative(mTableName + nsLiteralCString(STORE_SUFFIX));
   NS_ENSURE_SUCCESS(rv, rv);
 
   uint32_t offset = mFileSize -
@@ -983,14 +982,9 @@ nsresult HashStore::ReadCompletionsLegacyV3(AddCompleteArray& aCompletes) {
 
 template <class T>
 static void Erase(FallibleTArray<T>* array,
-                  typename nsTArray<T>::iterator& iterStart,
-                  typename nsTArray<T>::iterator& iterEnd) {
-  uint32_t start = iterStart - array->begin();
-  uint32_t count = iterEnd - iterStart;
-
-  if (count > 0) {
-    array->RemoveElementsAt(start, count);
-  }
+                  typename FallibleTArray<T>::iterator& iterStart,
+                  typename FallibleTArray<T>::iterator& iterEnd) {
+  array->RemoveElementsRange(iterStart, iterEnd);
 }
 
 // Find items matching between |subs| and |adds|, and remove them,

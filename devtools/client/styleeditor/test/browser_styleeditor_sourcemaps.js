@@ -76,7 +76,7 @@ const origNames = ["sourcemaps.scss", "contained.scss", "test-stylus.styl"];
 
 waitForExplicitFinish();
 
-add_task(async function() {
+add_task(async function () {
   const { ui } = await openStyleEditorForURL(TESTCASE_URI);
 
   is(
@@ -127,12 +127,12 @@ function testEditor(editor, possibleNames) {
 /* Helpers */
 
 function togglePref(UI) {
-  const editorsPromise = UI.once("stylesheets-reset");
+  const editorsPromise = UI.once("stylesheets-refreshed");
   const selectedPromise = UI.once("editor-selected");
 
   Services.prefs.setBoolPref(PREF, false);
 
-  return promise.all([editorsPromise, selectedPromise]);
+  return Promise.all([editorsPromise, selectedPromise]);
 }
 
 function openEditor(editor) {

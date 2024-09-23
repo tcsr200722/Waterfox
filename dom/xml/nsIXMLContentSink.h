@@ -11,11 +11,9 @@
 
 class nsIURI;
 class nsIChannel;
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class Document;
-}
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #define NS_IXMLCONTENT_SINK_IID                      \
   {                                                  \
@@ -50,6 +48,8 @@ class Document;
 class nsIXMLContentSink : public nsIContentSink {
  public:
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_IXMLCONTENT_SINK_IID)
+  virtual bool IsPrettyPrintXML() const { return false; }
+  virtual bool IsPrettyPrintHasSpecialRoot() const { return false; }
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIXMLContentSink, NS_IXMLCONTENT_SINK_IID)

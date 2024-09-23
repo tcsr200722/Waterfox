@@ -1,9 +1,13 @@
-// |jit-test| skip-if: !wasmReftypesEnabled() || !wasmGcEnabled() || wasmCompileMode() != 'baseline'
+// |jit-test| skip-if: !wasmGcEnabled(); test-also=--gc-zeal=2
 
-var conf = getBuildConfiguration();
+// This tests a bunch of wasm struct stuff, but not i8 or i16 fields.
+// See structs2.js for i8/i16 field tests.
 
 var bin = wasmTextToBinary(
     `(module
+      (func $x1 (import "m" "x1") (type $f1))
+      (func $x2 (import "m" "x2") (type $f2))
+
       (table 2 funcref)
       (elem (i32.const 0) $doit $doitagain)
 
@@ -19,7 +23,7 @@ var bin = wasmTextToBinary(
 
       (type $int_node (struct
                        (field $intbox_val (mut i32))
-                       (field $intbox_next (mut anyref))))
+                       (field $intbox_next (mut externref))))
 
       ;; Test all the types.
 
@@ -32,14 +36,11 @@ var bin = wasmTextToBinary(
                    (field $omni_f32m (mut f32))
                    (field $omni_f64 f64)
                    (field $omni_f64m (mut f64))
-                   (field $omni_anyref anyref)
-                   (field $omni_anyrefm (mut anyref))))
+                   (field $omni_externref externref)
+                   (field $omni_externrefm (mut externref))))
 
       ;; Various ways to reference a type in the middle of the
       ;; type array, make sure we get the right one
-
-      (func $x1 (import "m" "x1") (type $f1))
-      (func $x2 (import "m" "x2") (type $f2))
 
       (func (export "hello") (param f64) (param i32) (result f64)
        (call_indirect (type $f2) (local.get 0) (local.get 1)))
@@ -58,13 +59,13 @@ var bin = wasmTextToBinary(
 
       ;; Useful for testing to ensure that the type is not type #0 here.
 
-      (func (export "mk_point") (result anyref)
+      (func (export "mk_point") (result eqref)
        (struct.new $point (i32.const 37) (i32.const 42)))
 
-      (func (export "mk_int_node") (param i32) (param anyref) (result anyref)
+      (func (export "mk_int_node") (param i32) (param externref) (result eqref)
        (struct.new $int_node (local.get 0) (local.get 1)))
 
-      ;; Too big to fit in an InlineTypedObject.
+      ;; Too big to fit in an inline WasmGcObject.
 
       (type $bigger (struct
                      (field $a i32)
@@ -120,7 +121,7 @@ var bin = wasmTextToBinary(
                      (field $ay i32)
                      (field $az i32)))
 
-      (func (export "mk_bigger") (result anyref)
+      (func (export "mk_bigger") (result eqref)
             (struct.new $bigger
                        (i32.const 0)
                        (i32.const 1)
@@ -178,13 +179,13 @@ var bin = wasmTextToBinary(
       (type $withfloats (struct
                          (field $f1 f32)
                          (field $f2 f64)
-                         (field $f3 anyref)
+                         (field $f3 externref)
                          (field $f4 f32)
                          (field $f5 i32)))
 
       (func (export "mk_withfloats")
-            (param f32) (param f64) (param anyref) (param f32) (param i32)
-            (result anyref)
+            (param f32) (param f64) (param externref) (param f32) (param i32)
+            (result eqref)
             (struct.new $withfloats (local.get 0) (local.get 1) (local.get 2) (local.get 3) (local.get 4)))
 
      )`)
@@ -199,34 +200,31 @@ assertEq(ins.x1(12), 36)
 assertEq(ins.x2(8), Math.PI)
 
 var point = ins.mk_point();
-assertEq("_0" in point, true);
-assertEq("_1" in point, true);
-assertEq("_2" in point, false);
-assertEq(point._0, 37);
-assertEq(point._1, 42);
+assertEq(wasmGcReadField(point, 0), 37);
+assertEq(wasmGcReadField(point, 1), 42);
 
 var int_node = ins.mk_int_node(78, point);
-assertEq(int_node._0, 78);
-assertEq(int_node._1, point);
+assertEq(wasmGcReadField(int_node, 0), 78);
+assertEq(wasmGcReadField(int_node, 1), point);
 
 var bigger = ins.mk_bigger();
 for ( let i=0; i < 52; i++ )
-    assertEq(bigger["_" + i], i);
+    assertEq(wasmGcReadField(bigger, i), i);
 
 var withfloats = ins.mk_withfloats(1/3, Math.PI, bigger, 5/6, 0x1337);
-assertEq(withfloats._0, Math.fround(1/3));
-assertEq(withfloats._1, Math.PI);
-assertEq(withfloats._2, bigger);
-assertEq(withfloats._3, Math.fround(5/6));
-assertEq(withfloats._4, 0x1337);
+assertEq(wasmGcReadField(withfloats, 0), Math.fround(1/3));
+assertEq(wasmGcReadField(withfloats, 1), Math.PI);
+assertEq(wasmGcReadField(withfloats, 2), bigger);
+assertEq(wasmGcReadField(withfloats, 3), Math.fround(5/6));
+assertEq(wasmGcReadField(withfloats, 4), 0x1337);
 
 // A simple stress test
 
 var stress = wasmTextToBinary(
     `(module
-      (type $node (struct (field i32) (field (ref opt $node))))
-      (func (export "iota1") (param $n i32) (result anyref)
-       (local $list (ref opt $node))
+      (type $node (struct (field i32) (field (ref null $node))))
+      (func (export "iota1") (param $n i32) (result eqref)
+       (local $list (ref null $node))
        (block $exit
         (loop $loop
          (br_if $exit (i32.eqz (local.get $n)))
@@ -235,11 +233,15 @@ var stress = wasmTextToBinary(
          (br $loop)))
        (local.get $list)))`);
 var stressIns = new WebAssembly.Instance(new WebAssembly.Module(stress)).exports;
-var stressLevel = conf.x64 && !conf.tsan && !conf.asan && !conf.valgrind ? 100000 : 1000;
+var stressLevel =
+    getBuildConfiguration("x64") && !getBuildConfiguration("tsan") &&
+            !getBuildConfiguration("asan") && !getBuildConfiguration("valgrind")
+        ? 100000
+        : 1000;
 var the_list = stressIns.iota1(stressLevel);
 for (let i=1; i <= stressLevel; i++) {
-    assertEq(the_list._0, i);
-    the_list = the_list._1;
+    assertEq(wasmGcReadField(the_list, 0), i);
+    the_list = wasmGcReadField(the_list, 1);
 }
 assertEq(the_list, null);
 
@@ -256,25 +258,25 @@ assertEq(the_list, null);
                       (field (mut i64))
                       (field (mut i32))))
 
-          (func (export "set") (param anyref)
-           (local (ref opt $big))
-           (local.set 1 (struct.narrow anyref (ref opt $big) (local.get 0)))
+          (func (export "set") (param eqref)
+           (local (ref null $big))
+           (local.set 1 (ref.cast (ref null $big) (local.get 0)))
            (struct.set $big 1 (local.get 1) (i64.const 0x3333333376544567)))
 
-          (func (export "set2") (param $p anyref)
+          (func (export "set2") (param $p eqref)
            (struct.set $big 1
-            (struct.narrow anyref (ref opt $big) (local.get $p))
+            (ref.cast (ref null $big) (local.get $p))
             (i64.const 0x3141592653589793)))
 
-          (func (export "low") (param $p anyref) (result i32)
-           (i32.wrap/i64 (struct.get $big 1 (struct.narrow anyref (ref opt $big) (local.get $p)))))
+          (func (export "low") (param $p eqref) (result i32)
+           (i32.wrap_i64 (struct.get $big 1 (ref.cast (ref null $big) (local.get $p)))))
 
-          (func (export "high") (param $p anyref) (result i32)
-           (i32.wrap/i64 (i64.shr_u
-                          (struct.get $big 1 (struct.narrow anyref (ref opt $big) (local.get $p)))
+          (func (export "high") (param $p eqref) (result i32)
+           (i32.wrap_i64 (i64.shr_u
+                          (struct.get $big 1 (ref.cast (ref null $big) (local.get $p)))
                           (i64.const 32))))
 
-          (func (export "mk") (result anyref)
+          (func (export "mk") (result eqref)
            (struct.new $big (i32.const 0x7aaaaaaa) (i64.const 0x4201020337) (i32.const 0x6bbbbbbb)))
 
          )`;
@@ -283,25 +285,19 @@ assertEq(the_list, null);
 
     let v = ins.mk();
     assertEq(typeof v, "object");
-    assertEq(v._0, 0x7aaaaaaa);
-    assertEq(v._1_low, 0x01020337);
-    assertEq(v._1_high, 0x42);
+    assertEq(wasmGcReadField(v, 0), 0x7aaaaaaa);
+    assertEq(wasmGcReadField(v, 1), 0x4201020337n);
     assertEq(ins.low(v), 0x01020337);
     assertEq(ins.high(v), 0x42);
-    assertEq(v._2, 0x6bbbbbbb);
-
-    v._0 = 0x5ccccccc;
-    v._2 = 0x4ddddddd;
-    assertEq(v._1_low, 0x01020337);
+    assertEq(wasmGcReadField(v, 2), 0x6bbbbbbb);
 
     ins.set(v);
-    assertEq(v._0, 0x5ccccccc);
-    assertEq(v._1_low, 0x76544567);
-    assertEq(v._2, 0x4ddddddd);
+    assertEq(wasmGcReadField(v, 0), 0x7aaaaaaa);
+    assertEq(wasmGcReadField(v, 1), 0x3333333376544567n);
+    assertEq(wasmGcReadField(v, 2), 0x6bbbbbbb);
 
     ins.set2(v);
-    assertEq(v._1_low, 0x53589793);
-    assertEq(v._1_high, 0x31415926)
+    assertEq(wasmGcReadField(v, 1), 0x3141592653589793n);
     assertEq(ins.low(v), 0x53589793);
     assertEq(ins.high(v), 0x31415926)
 }
@@ -314,9 +310,9 @@ assertEq(the_list, null);
                       (field (mut i64))
                       (field (mut i32))))
 
-          (global $g (mut (ref opt $big)) (ref.null opt $big))
+          (global $g (mut (ref null $big)) (ref.null $big))
 
-          (func (export "make") (result anyref)
+          (func (export "make") (result eqref)
            (global.set $g
             (struct.new $big (i32.const 0x7aaaaaaa) (i64.const 0x4201020337) (i32.const 0x6bbbbbbb)))
            (global.get $g))
@@ -330,14 +326,14 @@ assertEq(the_list, null);
           (func (export "update1") (param $hi i32) (param $lo i32)
            (struct.set $big 1 (global.get $g)
             (i64.or
-             (i64.shl (i64.extend_u/i32 (local.get $hi)) (i64.const 32))
-             (i64.extend_u/i32 (local.get $lo)))))
+             (i64.shl (i64.extend_i32_u (local.get $hi)) (i64.const 32))
+             (i64.extend_i32_u (local.get $lo)))))
 
           (func (export "get1_low") (result i32)
-           (i32.wrap/i64 (struct.get $big 1 (global.get $g))))
+           (i32.wrap_i64 (struct.get $big 1 (global.get $g))))
 
           (func (export "get1_high") (result i32)
-           (i32.wrap/i64
+           (i32.wrap_i64
             (i64.shr_u (struct.get $big 1 (global.get $g)) (i64.const 32))))
 
           (func (export "update2") (param $x i32)
@@ -351,40 +347,36 @@ assertEq(the_list, null);
     let ins = wasmEvalText(txt).exports;
 
     let v = ins.make();
-    assertEq(v._0, 0x7aaaaaaa);
-    assertEq(v._1_low, 0x01020337);
-    assertEq(v._1_high, 0x42);
-    assertEq(v._2, 0x6bbbbbbb);
+    assertEq(wasmGcReadField(v, 0), 0x7aaaaaaa);
+    assertEq(wasmGcReadField(v, 1), 0x4201020337n);
+    assertEq(wasmGcReadField(v, 2), 0x6bbbbbbb);
 
     ins.update0(0x45367101);
-    assertEq(v._0, 0x45367101);
+    assertEq(wasmGcReadField(v, 0), 0x45367101);
     assertEq(ins.get0(), 0x45367101);
-    assertEq(v._1_low, 0x01020337);
-    assertEq(v._1_high, 0x42);
-    assertEq(v._2, 0x6bbbbbbb);
+    assertEq(wasmGcReadField(v, 1), 0x4201020337n);
+    assertEq(wasmGcReadField(v, 2), 0x6bbbbbbb);
 
     ins.update2(0x62345123);
-    assertEq(v._0, 0x45367101);
-    assertEq(v._1_low, 0x01020337);
-    assertEq(v._1_high, 0x42);
+    assertEq(wasmGcReadField(v, 0), 0x45367101);
+    assertEq(wasmGcReadField(v, 1), 0x4201020337n);
     assertEq(ins.get2(), 0x62345123);
-    assertEq(v._2, 0x62345123);
+    assertEq(wasmGcReadField(v, 2), 0x62345123);
 
     ins.update1(0x77777777, 0x22222222);
-    assertEq(v._0, 0x45367101);
+    assertEq(wasmGcReadField(v, 0), 0x45367101);
     assertEq(ins.get1_low(), 0x22222222);
-    assertEq(v._1_low, 0x22222222);
     assertEq(ins.get1_high(), 0x77777777);
-    assertEq(v._1_high, 0x77777777);
-    assertEq(v._2, 0x62345123);
+    assertEq(wasmGcReadField(v, 1), 0x7777777722222222n);
+    assertEq(wasmGcReadField(v, 2), 0x62345123);
 }
 
 
 var bin = wasmTextToBinary(
     `(module
-      (type $cons (struct (field i32) (field (ref opt $cons))))
+      (type $cons (struct (field i32) (field (ref null $cons))))
 
-      (global $g (mut (ref opt $cons)) (ref.null opt $cons))
+      (global $g (mut (ref null $cons)) (ref.null $cons))
 
       (func (export "push") (param i32)
        (global.set $g (struct.new $cons (local.get 0) (global.get $g))))
@@ -396,7 +388,7 @@ var bin = wasmTextToBinary(
        (global.set $g (struct.get $cons 1 (global.get $g))))
 
       (func (export "is_empty") (result i32)
-       (ref.is_null opt $cons (global.get $g)))
+       (ref.is_null (global.get $g)))
 
       )`);
 
@@ -416,7 +408,7 @@ assertErrorMessage(() => ins.pop(),
                    WebAssembly.RuntimeError,
                    /dereferencing null pointer/);
 
-// Check that a wrapped object cannot be unboxed from anyref even if the wrapper
+// Check that a wrapped object cannot be passed as an eqref even if the wrapper
 // points to the right type.  This is a temporary restriction, until we're able
 // to avoid dealing with wrappers inside the engine.
 
@@ -424,13 +416,13 @@ assertErrorMessage(() => ins.pop(),
     var ins = wasmEvalText(
         `(module
           (type $Node (struct (field i32)))
-          (func (export "mk") (result anyref)
+          (func (export "mk") (result eqref)
            (struct.new $Node (i32.const 37)))
-          (func (export "f") (param $n anyref) (result anyref)
-           (struct.narrow anyref (ref opt $Node) (local.get $n))))`).exports;
+          (func (export "f") (param $n eqref) (result eqref)
+           (ref.cast (ref null $Node) (local.get $n))))`).exports;
     var n = ins.mk();
     assertEq(ins.f(n), n);
-    assertEq(ins.f(wrapWithProto(n, {})), null);
+    assertErrorMessage(() => ins.f(wrapWithProto(n, {})), TypeError, /can only pass a WebAssembly GC object/);
 }
 
 // Field names.
@@ -444,10 +436,10 @@ assertErrorMessage(() => ins.pop(),
                     (field $x i32)
                     (field $y i32)))
 
-          (func $f (param $p (ref opt $s)) (result i32)
+          (func $f (param $p (ref null $s)) (result i32)
            (struct.get $s $x (local.get $p)))
 
-          (func $g (param $p (ref opt $s)) (result i32)
+          (func $g (param $p (ref null $s)) (result i32)
            (struct.get $s $y (local.get $p)))
 
           (func (export "testf") (param $n i32) (result i32)
@@ -462,16 +454,6 @@ assertErrorMessage(() => ins.pop(),
     assertEq(ins.testg(10), 20);
 }
 
-// Test that field names must be unique in the module.
-
-assertErrorMessage(() => wasmTextToBinary(
-    `(module
-      (type $s (struct (field $x i32)))
-      (type $t (struct (field $x i32)))
-     )`),
-                  SyntaxError,
-                  /duplicate identifier for field/);
-
 // negative tests
 
 // Wrong type passed as initializer
@@ -479,7 +461,7 @@ assertErrorMessage(() => wasmTextToBinary(
 assertErrorMessage(() => new WebAssembly.Module(wasmTextToBinary(`
 (module
   (type $r (struct (field i32)))
-  (func $f (param f64) (result anyref)
+  (func $f (param f64) (result eqref)
     (struct.new $r (local.get 0)))
 )`)),
 WebAssembly.CompileError, /type mismatch/);
@@ -489,7 +471,7 @@ WebAssembly.CompileError, /type mismatch/);
 assertErrorMessage(() => new WebAssembly.Module(wasmTextToBinary(`
 (module
   (type $r (struct (field i32) (field i32)))
-  (func $f (result anyref)
+  (func $f (result eqref)
     (struct.new $r (i32.const 0)))
 )`)),
 WebAssembly.CompileError, /popping value from empty stack/);
@@ -499,7 +481,7 @@ WebAssembly.CompileError, /popping value from empty stack/);
 assertErrorMessage(() => new WebAssembly.Module(wasmTextToBinary(`
 (module
   (type $r (struct (field i32) (field i32)))
-  (func $f (result anyref)
+  (func $f (result eqref)
     (i32.const 0)
     (i32.const 1)
     (i32.const 2)
@@ -512,7 +494,7 @@ WebAssembly.CompileError, /unused values/);
 assertErrorMessage(() => new WebAssembly.Module(wasmTextToBinary(`
 (module
   (type (func (param i32) (result i32)))
-  (func $f (result anyref)
+  (func $f (result eqref)
     (struct.new 0))
 )`)),
 WebAssembly.CompileError, /not a struct type/);
@@ -524,7 +506,7 @@ wasmEvalText(`
  (module
    (type $p (struct (field i32)))
    (type $q (struct (field i32)))
-   (func $f (result (ref opt $p))
+   (func $f (result (ref null $p))
     (struct.new $q (i32.const 0))))
 `);
 
@@ -601,18 +583,11 @@ WebAssembly.CompileError, /signature index references non-signature/);
           (type $s (struct
                     (field i32)
                     (field (mut i64))))
-          (func (export "make") (result anyref)
+          (func (export "make") (result eqref)
            (struct.new $s (i32.const 37) (i64.const 42))))`).exports;
     let v = ins.make();
-    assertErrorMessage(() => v._0 = 12,
-                       Error,
-                       /setting immutable field/);
-    assertErrorMessage(() => v._1_low = 12,
-                       Error,
-                       /setting immutable field/);
-    assertErrorMessage(() => v._1_high = 12,
-                       Error,
-                       /setting immutable field/);
+    assertErrorMessage(() => v[0] = 12, TypeError, /can't modify/);
+    assertErrorMessage(() => v[1] = 12, TypeError, /can't modify/);
 }
 
 // Function should not reference struct type: binary test
@@ -641,3 +616,87 @@ var bad = new Uint8Array([0x00, 0x61, 0x73, 0x6d,
 
 assertErrorMessage(() => new WebAssembly.Module(bad),
                    WebAssembly.CompileError, /signature index references non-signature/);
+
+// Exercise alias-analysis code for struct access
+{
+    let txt =
+    `(module
+       (type $meh (struct))
+       (type $hasOOL (struct
+                      ;; In-line storage
+                      (field i64) (field i64)
+                      (field $ILnonref (mut i64)) (field $ILref (mut eqref))
+                      (field i64) (field i64) (field i64) (field i64)
+                      (field i64) (field i64) (field i64) (field i64)
+                      (field i64) (field i64) (field i64) (field i64)
+                      ;; Out-of-line storage (or maybe it starts earlier, but
+                      ;; definitely not after this point).
+                      (field $OOLnonref (mut i64)) (field $OOLref (mut eqref)))
+       )
+       (func (export "create") (result eqref)
+         (struct.new $hasOOL
+           (i64.const 1)    (i64.const 2)
+           (i64.const 9876) (ref.null $meh)
+           (i64.const 3)    (i64.const 4)   (i64.const 5)   (i64.const 6)
+           (i64.const 7)    (i64.const 8)   (i64.const 9)   (i64.const 10)
+           (i64.const 11)   (i64.const 12)  (i64.const 13)  (i64.const 14)
+           (i64.const 4321) (ref.null $meh))
+       )
+       ;; Write to an OOL field, then an IL field, then to an OOL field, so
+       ;; that we can at least check (from inspection of the optimised MIR)
+       ;; that the GVN+alias analysis causes the OOL block pointer not to be
+       ;; reloaded for the second OOL write.  First for non-ref fields ..
+       (func (export "threeSetsNonReffy") (param eqref)
+         (local (ref $hasOOL))
+         (local.set 1 (ref.as_non_null (ref.cast (ref null $hasOOL) (local.get 0))))
+         (struct.set $hasOOL 16 (local.get 1) (i64.const 1337)) ;; set $OOLnonref
+         (struct.set $hasOOL 2  (local.get 1) (i64.const 7331)) ;; set $ILnonref
+         (struct.set $hasOOL 16 (local.get 1) (i64.const 9009)) ;; set $OOLnonref
+       )
+       ;; and the same for ref fields.
+       (func (export "threeSetsReffy") (param eqref)
+         (local (ref $hasOOL))
+         (local.set 1 (ref.as_non_null (ref.cast (ref null $hasOOL) (local.get 0))))
+         (struct.set $hasOOL 17 (local.get 1) (ref.null $meh)) ;; set $OOLref
+         (struct.set $hasOOL 3  (local.get 1) (ref.null $meh)) ;; set $ILref
+         (struct.set $hasOOL 17 (local.get 1) (ref.null $meh)) ;; set $OOLref
+       )
+     )`;
+    let exports = wasmEvalText(txt).exports;
+}
+
+// Exercise stack maps and GC
+{
+  // Zeal will cause us to allocate structs via instance call, requiring live registers
+  // to be spilled, and then GC values traced while on the stack.
+  gczeal(2, 1);
+
+  {
+    const { test } = wasmEvalText(`(module
+      (type $s (struct (field i32)))
+      (func (export "test") (param i32) (result i32)
+        local.get 0
+        (struct.new $s (i32.const 234))
+        (struct.new $s (i32.const 345))
+        drop
+        drop
+      )
+    )`).exports;
+    assertEq(test(123), 123);
+  }
+  {
+    const { test } = wasmEvalText(`(module
+      (type $s (struct (field f32)))
+      (func (export "test") (param f32) (result f32)
+        local.get 0
+        (struct.new $s (f32.const 234))
+        (struct.new $s (f32.const 345))
+        drop
+        drop
+      )
+    )`).exports;
+    assertEq(test(123), 123);
+  }
+
+  gczeal(0);
+}

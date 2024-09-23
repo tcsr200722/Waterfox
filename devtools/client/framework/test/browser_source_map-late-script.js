@@ -5,15 +5,15 @@
 
 "use strict";
 
-const PAGE_URL = `${URL_ROOT}doc_empty-tab-01.html`;
-const JS_URL = URL_ROOT + "code_bundle_late_script.js";
+const PAGE_URL = `${URL_ROOT_SSL}doc_empty-tab-01.html`;
+const JS_URL = URL_ROOT_SSL + "code_bundle_late_script.js";
 
 const ORIGINAL_URL = "webpack:///code_late_script.js";
 
 const GENERATED_LINE = 107;
 const ORIGINAL_LINE = 11;
 
-add_task(async function() {
+add_task(async function () {
   // Start with the empty page, then navigate, so that we can properly
   // listen for new sources arriving.
   const toolbox = await openNewTabAndToolbox(PAGE_URL, "webconsole");
@@ -21,12 +21,19 @@ add_task(async function() {
 
   const scriptMapped = new Promise(resolve => {
     let count = 0;
-    service.subscribe(JS_URL, GENERATED_LINE, undefined, (...args) => {
-      if (count === 0) {
-        resolve(args);
+    service.subscribeByURL(
+      JS_URL,
+      GENERATED_LINE,
+      undefined,
+      originalLocation => {
+        if (count === 0) {
+          resolve(originalLocation);
+        }
+        count += 1;
+
+        return () => {};
       }
-      count += 1;
-    });
+    );
   });
 
   // Inject JS script
@@ -35,8 +42,7 @@ add_task(async function() {
   await sourceSeen;
 
   // Ensure that the URL service fired an event about the location loading.
-  const [isSourceMapped, url, line] = await scriptMapped;
-  is(isSourceMapped, true, "check is mapped");
+  const { url, line } = await scriptMapped;
   is(url, ORIGINAL_URL, "check mapped URL");
   is(line, ORIGINAL_LINE, "check mapped line number");
 

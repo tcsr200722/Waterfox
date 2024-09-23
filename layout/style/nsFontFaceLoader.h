@@ -11,7 +11,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/dom/FontFaceSet.h"
+#include "mozilla/dom/FontFaceSetImpl.h"
 #include "nsCOMPtr.h"
 #include "nsIFontLoadCompleteCallback.h"
 #include "nsIStreamLoader.h"
@@ -22,21 +22,20 @@
 #include "nsTHashtable.h"
 
 class nsIPrincipal;
+class nsITimer;
 
 class nsFontFaceLoader final : public nsIStreamLoaderObserver,
                                public nsIRequestObserver,
                                public nsIFontLoadCompleteCallback {
  public:
-  nsFontFaceLoader(gfxUserFontEntry* aFontToLoad, nsIURI* aFontURI,
-                   mozilla::dom::FontFaceSet* aFontFaceSet,
+  nsFontFaceLoader(gfxUserFontEntry* aUserFontEntry, uint32_t aSrcIndex,
+                   mozilla::dom::FontFaceSetImpl* aFontFaceSet,
                    nsIChannel* aChannel);
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSISTREAMLOADEROBSERVER
   NS_DECL_NSIREQUESTOBSERVER
 
-  // initiate the load
-  nsresult Init();
   // cancel the load and remove its reference to mFontFaceSet
   void Cancel();
 
@@ -62,11 +61,12 @@ class nsFontFaceLoader final : public nsIStreamLoaderObserver,
   RefPtr<gfxUserFontEntry> mUserFontEntry;
   nsCOMPtr<nsIURI> mFontURI;
   // Cleared in FontFaceSet::~FontFaceSet, and on cancelation and such too.
-  mozilla::dom::FontFaceSet* MOZ_NON_OWNING_REF mFontFaceSet;
+  mozilla::dom::FontFaceSetImpl* MOZ_NON_OWNING_REF mFontFaceSet;
   nsCOMPtr<nsIChannel> mChannel;
   nsCOMPtr<nsITimer> mLoadTimer;
   mozilla::TimeStamp mStartTime;
   nsIStreamLoader* mStreamLoader;
+  uint32_t mSrcIndex;
   bool mInStreamComplete = false;
   bool mInLoadTimerCallback = false;
 };

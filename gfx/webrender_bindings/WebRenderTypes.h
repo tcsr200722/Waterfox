@@ -18,14 +18,17 @@
 #include "mozilla/layers/LayersTypes.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/Range.h"
-#include "mozilla/TypeTraits.h"
-#include "mozilla/Variant.h"
+#include "mozilla/ScrollGeneration.h"
 #include "Units.h"
+#include "nsIWidgetListener.h"
+
+#include <tuple>
 
 namespace mozilla {
 
 enum class StyleBorderStyle : uint8_t;
 enum class StyleBorderImageRepeat : uint8_t;
+enum class StyleImageRendering : uint8_t;
 
 namespace ipc {
 class ByteBuf;
@@ -39,13 +42,7 @@ namespace wr {
 typedef uintptr_t usize;
 
 typedef wr::WrWindowId WindowId;
-typedef wr::WrPipelineId PipelineId;
-typedef wr::WrDocumentId DocumentId;
 typedef wr::WrRemovedPipeline RemovedPipeline;
-typedef wr::WrImageKey ImageKey;
-typedef wr::WrFontKey FontKey;
-typedef wr::WrFontInstanceKey FontInstanceKey;
-typedef wr::WrEpoch Epoch;
 
 class RenderedFrameIdType {};
 typedef layers::BaseTransactionId<RenderedFrameIdType> RenderedFrameId;
@@ -60,10 +57,20 @@ typedef Maybe<FontInstancePlatformOptions> MaybeFontInstancePlatformOptions;
 struct ExternalImageKeyPair {
   ImageKey key;
   ExternalImageId id;
+
+  auto MutTiedFields() { return std::tie(key, id); }
 };
 
 /* Generate a brand new window id and return it. */
 WindowId NewWindowId();
+
+inline bool WindowSizeSanityCheck(int32_t aWidth, int32_t aHeight) {
+  if (aWidth < 0 || aWidth > wr::MAX_RENDER_TASK_SIZE || aHeight < 0 ||
+      aHeight > wr::MAX_RENDER_TASK_SIZE) {
+    return false;
+  }
+  return true;
+}
 
 inline DebugFlags NewDebugFlags(uint32_t aFlags) { return {aFlags}; }
 
@@ -108,6 +115,30 @@ inline gfx::SurfaceFormat ImageFormatToSurfaceFormat(ImageFormat aFormat) {
   }
 }
 
+// This extra piece of data is used to differentiate when spatial nodes that are
+// created by Gecko that have the same mFrame and PerFrameKey. This currently
+// only occurs with sticky display list items that are also zoomable, which
+// results in Gecko creating both a sticky spatial node, and then a property
+// animated reference frame for APZ
+enum class SpatialKeyKind : uint32_t {
+  Transform,
+  Perspective,
+  Scroll,
+  Sticky,
+  ImagePipeline,
+  APZ,
+};
+
+// Construct a unique, persistent spatial key based on the frame tree pointer,
+// per-frame key and a spatial key kind. For now, this covers all the ways Gecko
+// creates spatial nodes. In future, we may need to be more clever with the
+// SpatialKeyKind.
+inline wr::SpatialTreeItemKey SpatialKey(uint64_t aFrame, uint32_t aPerFrameKey,
+                                         SpatialKeyKind aKind) {
+  return wr::SpatialTreeItemKey{
+      aFrame, uint64_t(aPerFrameKey) | (uint64_t(aKind) << 32)};
+}
+
 struct ImageDescriptor : public wr::WrImageDescriptor {
   // We need a default constructor for ipdl serialization.
   ImageDescriptor() {
@@ -121,7 +152,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
 
   ImageDescriptor(const gfx::IntSize& aSize, gfx::SurfaceFormat aFormat,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = 0;
@@ -133,7 +164,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
   ImageDescriptor(const gfx::IntSize& aSize, uint32_t aByteStride,
                   gfx::SurfaceFormat aFormat,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = aByteStride;
@@ -145,7 +176,7 @@ struct ImageDescriptor : public wr::WrImageDescriptor {
   ImageDescriptor(const gfx::IntSize& aSize, uint32_t aByteStride,
                   gfx::SurfaceFormat aFormat, OpacityType aOpacity,
                   bool aPreferCompositorSurface = false) {
-    format = wr::SurfaceFormatToImageFormat(aFormat).value();
+    format = wr::SurfaceFormatToImageFormat(aFormat).valueOr((ImageFormat)0);
     width = aSize.width;
     height = aSize.height;
     stride = aByteStride;
@@ -223,10 +254,7 @@ inline PipelineId AsPipelineId(const mozilla::layers::LayersId& aId) {
   return AsPipelineId(uint64_t(aId));
 }
 
-inline ImageRendering ToImageRendering(gfx::SamplingFilter aFilter) {
-  return aFilter == gfx::SamplingFilter::POINT ? ImageRendering::Pixelated
-                                               : ImageRendering::Auto;
-}
+ImageRendering ToImageRendering(StyleImageRendering);
 
 static inline FontRenderMode ToFontRenderMode(gfx::AntialiasMode aMode,
                                               bool aPermitSubpixelAA = true) {
@@ -274,6 +302,8 @@ static inline MixBlendMode ToMixBlendMode(gfx::CompositionOp compositionOp) {
       return MixBlendMode::Color;
     case gfx::CompositionOp::OP_LUMINOSITY:
       return MixBlendMode::Luminosity;
+    case gfx::CompositionOp::OP_ADD:
+      return MixBlendMode::PlusLighter;
     default:
       return MixBlendMode::Normal;
   }
@@ -285,15 +315,6 @@ static inline wr::ColorF ToColorF(const gfx::DeviceColor& color) {
   c.g = color.g;
   c.b = color.b;
   c.a = color.a;
-  return c;
-}
-
-static inline wr::ColorU ToColorU(const gfx::DeviceColor& color) {
-  wr::ColorU c;
-  c.r = uint8_t(color.r * 255.0f);
-  c.g = uint8_t(color.g * 255.0f);
-  c.b = uint8_t(color.b * 255.0f);
-  c.a = uint8_t(color.a * 255.0f);
   return c;
 }
 
@@ -333,29 +354,29 @@ static inline wr::LayoutVector2D ToLayoutVector2D(
 static inline wr::LayoutRect ToLayoutRect(
     const mozilla::LayoutDeviceRect& rect) {
   wr::LayoutRect r;
-  r.origin.x = rect.X();
-  r.origin.y = rect.Y();
-  r.size.width = rect.Width();
-  r.size.height = rect.Height();
+  r.min.x = rect.X();
+  r.min.y = rect.Y();
+  r.max.x = rect.X() + rect.Width();
+  r.max.y = rect.Y() + rect.Height();
   return r;
 }
 
 static inline wr::LayoutRect ToLayoutRect(const gfx::Rect& rect) {
   wr::LayoutRect r;
-  r.origin.x = rect.X();
-  r.origin.y = rect.Y();
-  r.size.width = rect.Width();
-  r.size.height = rect.Height();
+  r.min.x = rect.X();
+  r.min.y = rect.Y();
+  r.max.x = rect.X() + rect.Width();
+  r.max.y = rect.Y() + rect.Height();
   return r;
 }
 
 static inline wr::DeviceIntRect ToDeviceIntRect(
     const mozilla::ImageIntRect& rect) {
   wr::DeviceIntRect r;
-  r.origin.x = rect.X();
-  r.origin.y = rect.Y();
-  r.size.width = rect.Width();
-  r.size.height = rect.Height();
+  r.min.x = rect.X();
+  r.min.y = rect.Y();
+  r.max.x = rect.X() + rect.Width();
+  r.max.y = rect.Y() + rect.Height();
   return r;
 }
 
@@ -363,10 +384,10 @@ static inline wr::DeviceIntRect ToDeviceIntRect(
 static inline wr::LayoutIntRect ToLayoutIntRect(
     const mozilla::ImageIntRect& rect) {
   wr::LayoutIntRect r;
-  r.origin.x = rect.X();
-  r.origin.y = rect.Y();
-  r.size.width = rect.Width();
-  r.size.height = rect.Height();
+  r.min.x = rect.X();
+  r.min.y = rect.Y();
+  r.max.x = rect.X() + rect.Width();
+  r.max.y = rect.Y() + rect.Height();
   return r;
 }
 
@@ -378,17 +399,14 @@ static inline wr::LayoutRect ToLayoutRect(
 static inline wr::LayoutRect IntersectLayoutRect(const wr::LayoutRect& aRect,
                                                  const wr::LayoutRect& aOther) {
   wr::LayoutRect r;
-  r.origin.x = std::max(aRect.origin.x, aOther.origin.x);
-  r.origin.y = std::max(aRect.origin.y, aOther.origin.y);
-  r.size.width = std::min(aRect.origin.x + aRect.size.width,
-                          aOther.origin.x + aOther.size.width) -
-                 r.origin.x;
-  r.size.height = std::min(aRect.origin.y + aRect.size.height,
-                           aOther.origin.y + aOther.size.height) -
-                  r.origin.y;
-  if (r.size.width < 0 || r.size.height < 0) {
-    r.size.width = 0;
-    r.size.height = 0;
+  r.min.x = std::max(aRect.min.x, aOther.min.x);
+  r.min.y = std::max(aRect.min.y, aOther.min.y);
+  r.max.x = std::min(aRect.max.x, aOther.max.x);
+  r.max.y = std::min(aRect.max.y, aOther.max.y);
+
+  if (r.max.x < r.min.x || r.max.y < r.min.y) {
+    r.max.x = r.min.x;
+    r.max.y = r.min.y;
   }
   return r;
 }
@@ -475,16 +493,22 @@ static inline wr::BorderRadius EmptyBorderRadius() {
 }
 
 static inline wr::BorderRadius ToBorderRadius(
-    const mozilla::LayoutDeviceSize& topLeft,
-    const mozilla::LayoutDeviceSize& topRight,
-    const mozilla::LayoutDeviceSize& bottomLeft,
-    const mozilla::LayoutDeviceSize& bottomRight) {
+    const LayoutDeviceSize& topLeft, const LayoutDeviceSize& topRight,
+    const LayoutDeviceSize& bottomLeft, const LayoutDeviceSize& bottomRight) {
   wr::BorderRadius br;
   br.top_left = ToLayoutSize(topLeft);
   br.top_right = ToLayoutSize(topRight);
   br.bottom_left = ToLayoutSize(bottomLeft);
   br.bottom_right = ToLayoutSize(bottomRight);
   return br;
+}
+
+static inline wr::BorderRadius ToBorderRadius(
+    const gfx::RectCornerRadii& aRadii) {
+  return ToBorderRadius(LayoutDeviceSize::FromUnknownSize(aRadii[0]),
+                        LayoutDeviceSize::FromUnknownSize(aRadii[1]),
+                        LayoutDeviceSize::FromUnknownSize(aRadii[3]),
+                        LayoutDeviceSize::FromUnknownSize(aRadii[2]));
 }
 
 static inline wr::ComplexClipRegion ToComplexClipRegion(
@@ -647,6 +671,13 @@ struct Vec<uint8_t> final {
   }
 
   void SetEmpty() {
+    // We need to ensure that (data, capacity, length) always remain valid
+    // to be passed to Vec::from_raw_parts. In particular, this requires that
+    // inner.data is always non-null, even for zero-capacity Vecs.
+
+    // Set inner.data to the equivalent of ptr::NonNull::dangling().as_ptr(),
+    // i.e. a non-null value that is aligned with T's alignment, T being u8
+    // here.
     inner.data = (uint8_t*)1;
     inner.capacity = 0;
     inner.length = 0;
@@ -742,7 +773,9 @@ struct ByteBuffer {
 };
 
 struct BuiltDisplayList {
-  wr::VecU8 dl;
+  wr::VecU8 dl_items;
+  wr::VecU8 dl_cache;
+  wr::VecU8 dl_spatial_tree;
   wr::BuiltDisplayListDescriptor dl_desc;
 };
 
@@ -759,14 +792,20 @@ struct WrClipChainId {
   }
 };
 
-WrSpaceAndClip RootScrollNode();
+WrSpatialId RootScrollNode();
 WrSpaceAndClipChain RootScrollNodeWithChain();
+WrSpaceAndClipChain InvalidScrollNodeWithChain();
 
 enum class WebRenderError : int8_t {
   INITIALIZE = 0,
   MAKE_CURRENT,
   RENDER,
   NEW_SURFACE,
+  BEGIN_DRAW,
+  VIDEO_OVERLAY,
+  VIDEO_HW_OVERLAY,
+  VIDEO_SW_OVERLAY,
+  EXCESSIVE_RESETS,
 
   Sentinel /* this must be last for serialization purposes. */
 };
@@ -780,10 +819,37 @@ static inline wr::WrYuvColorSpace ToWrYuvColorSpace(
       return wr::WrYuvColorSpace::Rec709;
     case gfx::YUVColorSpace::BT2020:
       return wr::WrYuvColorSpace::Rec2020;
+    case gfx::YUVColorSpace::Identity:
+      return wr::WrYuvColorSpace::Identity;
     default:
       MOZ_ASSERT_UNREACHABLE("Tried to convert invalid YUVColorSpace.");
   }
   return wr::WrYuvColorSpace::Rec601;
+}
+
+// TODO: Use YUVRangedColorSpace instead of assuming ColorRange::LIMITED.
+static inline wr::YuvRangedColorSpace ToWrYuvRangedColorSpace(
+    gfx::YUVRangedColorSpace aFrom) {
+  switch (aFrom) {
+    case gfx::YUVRangedColorSpace::BT601_Narrow:
+      return wr::YuvRangedColorSpace::Rec601Narrow;
+    case gfx::YUVRangedColorSpace::BT601_Full:
+      return wr::YuvRangedColorSpace::Rec601Full;
+    case gfx::YUVRangedColorSpace::BT709_Narrow:
+      return wr::YuvRangedColorSpace::Rec709Narrow;
+    case gfx::YUVRangedColorSpace::BT709_Full:
+      return wr::YuvRangedColorSpace::Rec709Full;
+    case gfx::YUVRangedColorSpace::BT2020_Narrow:
+      return wr::YuvRangedColorSpace::Rec2020Narrow;
+    case gfx::YUVRangedColorSpace::BT2020_Full:
+      return wr::YuvRangedColorSpace::Rec2020Full;
+    case gfx::YUVRangedColorSpace::GbrIdentity:
+      break;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Tried to convert invalid YUVColorSpace.");
+      break;
+  }
+  return wr::YuvRangedColorSpace::GbrIdentity;
 }
 
 static inline wr::WrColorDepth ToWrColorDepth(gfx::ColorDepth aColorDepth) {
@@ -820,6 +886,35 @@ static inline wr::SyntheticItalics DegreesToSyntheticItalics(float aDegrees) {
       int16_t(std::min(std::max(aDegrees, -89.0f), 89.0f) * 256.0f);
   return synthetic_italics;
 }
+
+static inline wr::WindowSizeMode ToWrWindowSizeMode(nsSizeMode aSizeMode) {
+  switch (aSizeMode) {
+    case nsSizeMode_Normal:
+      return wr::WindowSizeMode::Normal;
+    case nsSizeMode_Minimized:
+      return wr::WindowSizeMode::Minimized;
+    case nsSizeMode_Maximized:
+      return wr::WindowSizeMode::Maximized;
+    case nsSizeMode_Fullscreen:
+      return wr::WindowSizeMode::Fullscreen;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Tried to convert invalid size mode.");
+      return wr::WindowSizeMode::Invalid;
+  }
+}
+
+static inline wr::APZScrollGeneration ToWrAPZScrollGeneration(
+    const mozilla::APZScrollGeneration& aGeneration) {
+  return wr::APZScrollGeneration(aGeneration.Raw());
+}
+
+static inline wr::HasScrollLinkedEffect ToWrHasScrollLinkedEffect(
+    bool aHasScrollLinkedEffect) {
+  return aHasScrollLinkedEffect ? wr::HasScrollLinkedEffect::Yes
+                                : wr::HasScrollLinkedEffect::No;
+}
+
+enum class ExternalImageSource : uint8_t { Unknown = 0, SharedSurfaces, Last };
 
 }  // namespace wr
 }  // namespace mozilla

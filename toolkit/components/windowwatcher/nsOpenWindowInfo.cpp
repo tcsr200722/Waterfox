@@ -22,8 +22,24 @@ NS_IMETHODIMP nsOpenWindowInfo::GetIsRemote(bool* aIsRemote) {
   return NS_OK;
 }
 
+NS_IMETHODIMP nsOpenWindowInfo::GetIsForWindowDotPrint(bool* aResult) {
+  *aResult = mIsForWindowDotPrint;
+  return NS_OK;
+}
+
+NS_IMETHODIMP nsOpenWindowInfo::GetIsForPrinting(bool* aIsForPrinting) {
+  *aIsForPrinting = mIsForPrinting;
+  return NS_OK;
+}
+
 NS_IMETHODIMP nsOpenWindowInfo::GetForceNoOpener(bool* aForceNoOpener) {
   *aForceNoOpener = mForceNoOpener;
+  return NS_OK;
+}
+
+NS_IMETHODIMP nsOpenWindowInfo::GetIsTopLevelCreatedByWebContent(
+    bool* aIsTopLevelCreatedByWebContent) {
+  *aIsTopLevelCreatedByWebContent = mIsTopLevelCreatedByWebContent;
   return NS_OK;
 }
 
@@ -34,11 +50,11 @@ NS_IMETHODIMP nsOpenWindowInfo::GetScriptableOriginAttributes(
   return NS_OK;
 }
 
-const OriginAttributes& nsOpenWindowInfo::GetOriginAttributes() {
+const mozilla::OriginAttributes& nsOpenWindowInfo::GetOriginAttributes() {
   return mOriginAttributes;
 }
 
-BrowserParent* nsOpenWindowInfo::GetNextRemoteBrowser() {
+mozilla::dom::BrowserParent* nsOpenWindowInfo::GetNextRemoteBrowser() {
   return mNextRemoteBrowser;
 }
 
@@ -47,11 +63,20 @@ nsOpenWindowInfo::BrowsingContextReadyCallback() {
   return mBrowsingContextReadyCallback;
 }
 
+NS_IMETHODIMP nsOpenWindowInfo::Cancel() {
+  if (mBrowsingContextReadyCallback) {
+    mBrowsingContextReadyCallback->BrowsingContextReady(nullptr);
+    mBrowsingContextReadyCallback = nullptr;
+  }
+  return NS_OK;
+}
+
 NS_IMPL_ISUPPORTS(nsBrowsingContextReadyCallback,
                   nsIBrowsingContextReadyCallback)
 
 nsBrowsingContextReadyCallback::nsBrowsingContextReadyCallback(
-    RefPtr<BrowsingContextCallbackReceivedPromise::Private> aPromise)
+    RefPtr<mozilla::dom::BrowsingContextCallbackReceivedPromise::Private>
+        aPromise)
     : mPromise(std::move(aPromise)) {}
 
 nsBrowsingContextReadyCallback::~nsBrowsingContextReadyCallback() {
@@ -62,7 +87,12 @@ nsBrowsingContextReadyCallback::~nsBrowsingContextReadyCallback() {
 }
 
 NS_IMETHODIMP nsBrowsingContextReadyCallback::BrowsingContextReady(
-    BrowsingContext* aBC) {
+    mozilla::dom::BrowsingContext* aBC) {
+  MOZ_DIAGNOSTIC_ASSERT(mPromise,
+                        "The 'browsing context ready' callback is null");
+  if (!mPromise) {
+    return NS_OK;
+  }
   if (aBC) {
     mPromise->Resolve(aBC, __func__);
   } else {

@@ -5,9 +5,9 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRPose.h"
+#include "mozilla/dom/XRRigidTransform.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRPose, mParent, mTransform)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(XRPose)
@@ -37,5 +37,4 @@ XRRigidTransform* XRPose::Transform() { return mTransform; }
 
 bool XRPose::EmulatedPosition() const { return mEmulatedPosition; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

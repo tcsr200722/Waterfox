@@ -118,7 +118,6 @@ TEST(ArenaAllocator, AllocateLargerThanArenaSize)
   EXPECT_EQ(uintptr_t(x) + 8, uintptr_t(y));
 }
 
-#ifndef MOZ_CODE_COVERAGE
 TEST(ArenaAllocator, AllocationsPerChunk)
 {
   // Test that expected number of allocations fit in one chunk.
@@ -192,7 +191,6 @@ TEST(ArenaAllocator, MemoryIsValid)
     EXPECT_EQ(x[i], kMark);
   }
 }
-#endif
 
 MOZ_DEFINE_MALLOC_SIZE_OF(TestSizeOf);
 
@@ -293,11 +291,11 @@ TEST(ArenaAllocator, Extensions)
   EXPECT_TRUE(nsString(dup).Equals(kTestStr));
 
   // Make sure it works with literal strings.
-  NS_NAMED_LITERAL_STRING(wideStr, "A wide string.");
+  constexpr auto wideStr = u"A wide string."_ns;
   nsLiteralString::char_type* wide = mozilla::ArenaStrdup(wideStr, a);
   EXPECT_TRUE(wideStr.Equals(wide));
 
-  NS_NAMED_LITERAL_CSTRING(cStr, "A c-string.");
+  constexpr auto cStr = "A c-string."_ns;
   nsLiteralCString::char_type* cstr = mozilla::ArenaStrdup(cStr, a);
   EXPECT_TRUE(cStr.Equals(cstr));
 

@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 
-load(libdir + "../../tests/non262/shell.js");
+load(libdir + "non262.js");
 
 if (typeof assertWarning === 'undefined') {
     var assertWarning = function assertWarning(f, pattern) {
@@ -55,6 +55,10 @@ if (typeof assertErrorMessage === 'undefined') {
         try {
             f();
         } catch (e) {
+            // Propagate non-specific OOM errors, we never test for these with
+            // assertErrorMessage, as there is no meaningful ctor.
+            if (e === "out of memory")
+                throw e;
             if (!(e instanceof ctor))
                 throw new Error("Assertion failed: expected exception " + ctor.name + ", got " + e);
             if (typeof test == "string") {
@@ -80,4 +84,13 @@ if (typeof assertRangeErrorMessage === 'undefined') {
     var assertRangeErrorMessage = function assertRangeErrorMessage(f, test) {
       assertErrorMessage(f, RangeError, test);
     };
+}
+
+if (typeof assertArrayEq === 'undefined') {
+  var assertArrayEq = function assertArrayEq(a,b) {
+    assertEq(a.length, b.length);
+    for (var i = 0; i < a.length; i++) {
+      assertEq(a[i], b[i]);
+    }
+  };
 }

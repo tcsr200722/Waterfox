@@ -6,7 +6,7 @@ use std::{
 use crate::{
     date::{Date, InfiniteOrNanDate},
     error::{Error, ErrorKind},
-    stream::Event,
+    stream::{Event, OwnedEvent},
     u64_to_usize, Uid,
 };
 
@@ -208,7 +208,7 @@ impl<R: Read + Seek> BinaryReader<R> {
         item
     }
 
-    fn read_next(&mut self) -> Result<Option<Event>, Error> {
+    fn read_next(&mut self) -> Result<Option<OwnedEvent>, Error> {
         let object_ref = if self.ref_size == 0 {
             // Initialise here rather than in new
             self.read_trailer()?;
@@ -268,7 +268,7 @@ impl<R: Read + Seek> BinaryReader<R> {
             (0x4, n) => {
                 // Data
                 let len = self.read_object_len(n)?;
-                Some(Event::Data(self.read_data(len)?))
+                Some(Event::Data(self.read_data(len)?.into()))
             }
             (0x5, n) => {
                 // ASCII string
@@ -276,7 +276,7 @@ impl<R: Read + Seek> BinaryReader<R> {
                 let raw = self.read_data(len)?;
                 let string = String::from_utf8(raw)
                     .map_err(|_| self.with_pos(ErrorKind::InvalidUtf8String))?;
-                Some(Event::String(string))
+                Some(Event::String(string.into()))
             }
             (0x6, n) => {
                 // UTF-16 string
@@ -289,7 +289,7 @@ impl<R: Read + Seek> BinaryReader<R> {
 
                 let string = String::from_utf16(&raw_utf16)
                     .map_err(|_| self.with_pos(ErrorKind::InvalidUtf16String))?;
-                Some(Event::String(string))
+                Some(Event::String(string.into()))
             }
             (0x8, n) if n < 8 => {
                 // Uid
@@ -392,9 +392,9 @@ impl<R: Read + Seek> BinaryReader<R> {
 }
 
 impl<R: Read + Seek> Iterator for BinaryReader<R> {
-    type Item = Result<Event, Error>;
+    type Item = Result<OwnedEvent, Error>;
 
-    fn next(&mut self) -> Option<Result<Event, Error>> {
+    fn next(&mut self) -> Option<Result<OwnedEvent, Error>> {
         match self.read_next() {
             Ok(Some(event)) => Some(Ok(event)),
             Err(err) => {
@@ -409,7 +409,6 @@ impl<R: Read + Seek> Iterator for BinaryReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use humantime::parse_rfc3339_weak;
     use std::{fs::File, path::Path};
 
     use super::*;
@@ -424,22 +423,23 @@ mod tests {
         let events: Vec<Event> = streaming_parser.map(|e| e.unwrap()).collect();
 
         let comparison = &[
-            StartDictionary(Some(11)),
+            StartDictionary(Some(13)),
             String("Author".into()),
             String("William Shakespeare".into()),
-            String("Height".into()),
-            Real(1.6),
-            String("Data".into()),
-            Data(vec![0, 0, 0, 190, 0, 0, 0, 3, 0, 0, 0, 30, 0, 0, 0]),
             String("Birthdate".into()),
-            Date(parse_rfc3339_weak("1981-05-16 11:32:06").unwrap().into()),
-            String("BiggestNumber".into()),
-            Integer(18446744073709551615u64.into()),
-            String("SmallestNumber".into()),
-            Integer((-9223372036854775808i64).into()),
+            Date(super::Date::from_rfc3339("1981-05-16T11:32:06Z").unwrap()),
             String("EmptyArray".into()),
             StartArray(Some(0)),
             EndCollection,
+            String("IsNotFalse".into()),
+            Boolean(false),
+            String("SmallestNumber".into()),
+            Integer((-9223372036854775808i64).into()),
+            String("EmptyDictionary".into()),
+            StartDictionary(Some(0)),
+            EndCollection,
+            String("Height".into()),
+            Real(1.6),
             String("Lines".into()),
             StartArray(Some(2)),
             String("It is a tale told by an idiot,".into()),
@@ -447,15 +447,18 @@ mod tests {
             EndCollection,
             String("Death".into()),
             Integer(1564.into()),
-            String("EmptyDictionary".into()),
-            StartDictionary(Some(0)),
-            EndCollection,
             String("Blank".into()),
             String("".into()),
+            String("BiggestNumber".into()),
+            Integer(18446744073709551615u64.into()),
+            String("IsTrue".into()),
+            Boolean(true),
+            String("Data".into()),
+            Data(vec![0, 0, 0, 190, 0, 0, 0, 3, 0, 0, 0, 30, 0, 0, 0].into()),
             EndCollection,
         ];
 
-        assert_eq!(events, comparison);
+        assert_eq!(events, &comparison[..]);
     }
 
     #[test]
@@ -464,7 +467,7 @@ mod tests {
         let streaming_parser = BinaryReader::new(reader);
         let mut events: Vec<Event> = streaming_parser.map(|e| e.unwrap()).collect();
 
-        assert_eq!(events[2], Event::String("\u{2605} or better".to_owned()));
+        assert_eq!(events[2], Event::String("\u{2605} or better".into()));
 
         let poem = if let Event::String(ref mut poem) = events[4] {
             poem
@@ -472,7 +475,7 @@ mod tests {
             panic!("not a string")
         };
         assert_eq!(poem.len(), 643);
-        assert_eq!(poem.pop().unwrap(), '\u{2605}');
+        assert_eq!(poem.to_mut().pop().unwrap(), '\u{2605}');
     }
 
     #[test]

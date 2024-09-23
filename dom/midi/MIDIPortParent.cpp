@@ -9,8 +9,7 @@
 #include "nsContentUtils.h"
 
 // C++ file contents
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Keep an internal ID that we can use for passing information about specific
 // MIDI ports back and forth to the Rust libraries.
@@ -32,7 +31,8 @@ mozilla::ipc::IPCResult MIDIPortParent::RecvSend(
 }
 
 mozilla::ipc::IPCResult MIDIPortParent::RecvOpen() {
-  if (MIDIPlatformService::IsRunning()) {
+  if (MIDIPlatformService::IsRunning() &&
+      mConnectionState == MIDIPortConnectionState::Closed) {
     MIDIPlatformService::Get()->Open(this);
   }
   return IPC_OK();
@@ -58,20 +58,17 @@ mozilla::ipc::IPCResult MIDIPortParent::RecvShutdown() {
   if (mShuttingDown) {
     return IPC_OK();
   }
-  Teardown();
-  Unused << Send__delete__(this);
+  Close();
   return IPC_OK();
 }
 
-void MIDIPortParent::Teardown() {
+void MIDIPortParent::ActorDestroy(ActorDestroyReason) {
   mMessageQueue.Clear();
   MIDIPortInterface::Shutdown();
   if (MIDIPlatformService::IsRunning()) {
     MIDIPlatformService::Get()->RemovePort(this);
   }
 }
-
-void MIDIPortParent::ActorDestroy(ActorDestroyReason) {}
 
 bool MIDIPortParent::SendUpdateStatus(
     const MIDIPortDeviceState& aDeviceState,
@@ -106,5 +103,4 @@ MIDIPortParent::MIDIPortParent(const MIDIPortInfo& aPortInfo,
   MIDIPlatformService::Get()->AddPort(this);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

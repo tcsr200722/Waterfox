@@ -21,6 +21,9 @@ static const uint32_t SimdMemoryAlignment =
 static const uint32_t WasmStackAlignment = 8;
 static const uint32_t WasmTrapInstructionLength = 0;
 
+// See comments in wasm::GenerateFunctionPrologue.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
+
 class Registers {
  public:
   enum RegisterID {
@@ -65,6 +68,7 @@ class FloatRegisters {
   typedef FPRegisterID Code;
   typedef FPRegisterID Encoding;
   union RegisterContent {
+    float s;
     double d;
   };
 
@@ -153,7 +157,7 @@ struct FloatRegister {
 inline bool hasUnaliasedDouble() { MOZ_CRASH(); }
 inline bool hasMultiAlias() { MOZ_CRASH(); }
 
-static const uint32_t ShadowStackSpace = 0;
+static constexpr uint32_t ShadowStackSpace = 0;
 static const uint32_t JumpImmediateRange = INT32_MAX;
 
 #ifdef JS_NUNBOX32

@@ -7,6 +7,7 @@
 
 #include "updatedefines.h"
 #include <stdio.h>
+#include <time.h>
 #include "mozilla/Attributes.h"
 
 class UpdateLog {
@@ -31,6 +32,7 @@ class UpdateLog {
 };
 
 bool IsValidFullPath(NS_tchar* fullPath);
+bool IsProgramFilesPath(NS_tchar* fullPath);
 
 #define LOG_WARN(args) UpdateLog::GetPrimaryLog().WarnPrintf args
 #define LOG(args) UpdateLog::GetPrimaryLog().Printf args

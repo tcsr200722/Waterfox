@@ -4,17 +4,20 @@
 
 // Test that messages from postMessage calls are not delivered while paused in
 // the debugger.
-add_task(async function() {
+
+"use strict";
+
+add_task(async function () {
   const dbg = await initDebugger("doc-message-run-to-completion.html");
   invokeInTab("test", "doc-message-run-to-completion.html");
   await waitForPaused(dbg);
   let result = await dbg.client.evaluate("event.data");
   is(result.result, "first", "first message delivered in order");
-  resume(dbg);
+  await resume(dbg);
   await waitForPaused(dbg);
   result = await dbg.client.evaluate("event.data");
   is(result.result, "second", "second message delivered in order");
-  resume(dbg);
+  await resume(dbg);
   await waitForPaused(dbg);
   result = await dbg.client.evaluate("event.data");
   is(result.result, "third", "third message delivered in order");

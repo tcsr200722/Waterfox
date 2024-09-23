@@ -4,21 +4,33 @@
 
 "use strict";
 
-var DevToolsUtils = require("devtools/shared/DevToolsUtils");
+var DevToolsUtils = require("resource://devtools/shared/DevToolsUtils.js");
 
 loader.lazyRequireGetter(
   this,
   "MainThreadWorkerDebuggerTransport",
-  "devtools/shared/transport/worker-transport",
+  "resource://devtools/shared/transport/worker-transport.js",
   true
 );
 
 /**
- * Start a DevTools server in a worker and add it as a child server for an active
- * connection.
+ * Start a DevTools server in a worker and add it as a child server for a given active connection.
+ *
+ * @params {DevToolsConnection} connection
+ * @params {WorkerDebugger} dbg: The WorkerDebugger we want to create a target actor for.
+ * @params {String} forwardingPrefix: The prefix that will be used to forward messages
+ *                  to the DevToolsServer on the worker thread.
+ * @params {Object} options: An option object that will be passed with the "connect" packet.
+ * @params {Object} options.sessionData: The sessionData object that will be passed to the
+ *                  worker target actor.
  */
-function connectToWorker(connection, dbg, id, options) {
+function connectToWorker(connection, dbg, forwardingPrefix, options) {
   return new Promise((resolve, reject) => {
+    if (!DevToolsUtils.isWorkerDebuggerAlive(dbg)) {
+      reject("closed");
+      return;
+    }
+
     // Step 1: Ensure the worker debugger is initialized.
     if (!dbg.isInitialized) {
       dbg.initialize("resource://devtools/server/startup/worker.js");
@@ -34,9 +46,9 @@ function connectToWorker(connection, dbg, id, options) {
         onMessage: message => {
           message = JSON.parse(message);
           if (message.type !== "rpc") {
-            if (message.type == "attached") {
-              // The thread actor has finished attaching and can hit installed
-              // breakpoints. Allow content to begin executing in the worker.
+            if (message.type == "session-data-processed") {
+              // The thread actor has finished processing session data, including breakpoints.
+              // Allow content to begin executing in the worker and possibly hit early breakpoints.
               dbg.setDebuggerReady(true);
             }
             return;
@@ -81,12 +93,34 @@ function connectToWorker(connection, dbg, id, options) {
       dbg.addListener(listener);
     }
 
+    if (!DevToolsUtils.isWorkerDebuggerAlive(dbg)) {
+      reject("closed");
+      return;
+    }
+
+    // WorkerDebugger.url isn't always an absolute URL.
+    // Use the related document URL in order to make it absolute.
+    const absoluteURL = dbg.window?.location?.href
+      ? new URL(dbg.url, dbg.window.location.href).href
+      : dbg.url;
+
     // Step 2: Send a connect request to the worker debugger.
     dbg.postMessage(
       JSON.stringify({
         type: "connect",
-        id,
+        forwardingPrefix,
         options,
+        workerDebuggerData: {
+          id: dbg.id,
+          type: dbg.type,
+          url: absoluteURL,
+          // We don't have access to Services.prefs in Worker thread, so pass its value
+          // from here.
+          workerConsoleApiMessagesDispatchedToMainThread:
+            Services.prefs.getBoolPref(
+              "dom.worker.console.dispatch_events_to_main_thread"
+            ),
+        },
       })
     );
 
@@ -102,7 +136,10 @@ function connectToWorker(connection, dbg, id, options) {
 
       onMessage: message => {
         message = JSON.parse(message);
-        if (message.type !== "connected" || message.id !== id) {
+        if (
+          message.type !== "connected" ||
+          message.forwardingPrefix !== forwardingPrefix
+        ) {
           return;
         }
 
@@ -111,23 +148,26 @@ function connectToWorker(connection, dbg, id, options) {
         dbg.removeListener(listener);
 
         // Step 7: Create a transport for the connection to the worker.
-        const transport = new MainThreadWorkerDebuggerTransport(dbg, id);
+        const transport = new MainThreadWorkerDebuggerTransport(
+          dbg,
+          forwardingPrefix
+        );
         transport.ready();
         transport.hooks = {
-          onClosed: () => {
-            if (!dbg.isClosed) {
+          onTransportClosed: () => {
+            if (DevToolsUtils.isWorkerDebuggerAlive(dbg)) {
               // If the worker happens to be shutting down while we are trying
               // to close the connection, there is a small interval during
               // which no more runnables can be dispatched to the worker, but
               // the worker debugger has not yet been closed. In that case,
-              // the call to postMessage below will fail. The onClosed hook on
+              // the call to postMessage below will fail. The onTransportClosed hook on
               // DebuggerTransport is not supposed to throw exceptions, so we
               // need to make sure to catch these early.
               try {
                 dbg.postMessage(
                   JSON.stringify({
                     type: "disconnect",
-                    id,
+                    forwardingPrefix,
                   })
                 );
               } catch (e) {
@@ -139,7 +179,7 @@ function connectToWorker(connection, dbg, id, options) {
               }
             }
 
-            connection.cancelForwarding(id);
+            connection.cancelForwarding(forwardingPrefix);
           },
 
           onPacket: packet => {
@@ -153,12 +193,11 @@ function connectToWorker(connection, dbg, id, options) {
         // Ensure that any packets received from the client on the main thread
         // to actors on the worker thread are forwarded to the server on the
         // worker thread.
-        connection.setForwarding(id, transport);
+        connection.setForwarding(forwardingPrefix, transport);
 
         resolve({
-          threadActor: message.threadActor,
-          consoleActor: message.consoleActor,
-          transport: transport,
+          workerTargetForm: message.workerTargetForm,
+          transport,
         });
       },
     };

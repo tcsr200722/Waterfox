@@ -6,8 +6,13 @@
 
 #include "DocumentL10n.h"
 #include "nsIContentSink.h"
+#include "nsContentUtils.h"
+#include "mozilla/dom/AutoEntryScript.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentL10nBinding.h"
 
+using namespace mozilla;
+using namespace mozilla::intl;
 using namespace mozilla::dom;
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(DocumentL10n)
@@ -30,53 +35,23 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DocumentL10n)
 NS_INTERFACE_MAP_END_INHERITING(DOMLocalization)
 
 /* static */
-RefPtr<DocumentL10n> DocumentL10n::Create(Document* aDocument) {
-  RefPtr<DocumentL10n> l10n = new DocumentL10n(aDocument);
+RefPtr<DocumentL10n> DocumentL10n::Create(Document* aDocument, bool aSync) {
+  RefPtr<DocumentL10n> l10n = new DocumentL10n(aDocument, aSync);
 
-  if (!l10n->Init()) {
+  IgnoredErrorResult rv;
+  l10n->mReady = Promise::Create(l10n->mGlobal, rv);
+  if (NS_WARN_IF(rv.Failed())) {
     return nullptr;
   }
+
   return l10n.forget();
 }
 
-DocumentL10n::DocumentL10n(Document* aDocument)
-    : DOMLocalization(aDocument->GetScopeObject()),
+DocumentL10n::DocumentL10n(Document* aDocument, bool aSync)
+    : DOMLocalization(aDocument->GetScopeObject(), aSync),
       mDocument(aDocument),
-      mState(DocumentL10nState::Uninitialized) {
+      mState(DocumentL10nState::Constructed) {
   mContentSink = do_QueryInterface(aDocument->GetCurrentContentSink());
-}
-
-bool DocumentL10n::Init() {
-  ErrorResult rv;
-  mReady = Promise::Create(mGlobal, rv);
-  if (NS_WARN_IF(rv.Failed())) {
-    return false;
-  }
-  return true;
-}
-
-void DocumentL10n::Activate(const bool aLazy) {
-  if (mState > DocumentL10nState::Uninitialized) {
-    return;
-  }
-
-  Element* elem = mDocument->GetDocumentElement();
-  if (NS_WARN_IF(!elem)) {
-    return;
-  }
-  bool isSync = elem->HasAttr(kNameSpaceID_None, nsGkAtoms::datal10nsync);
-
-  if (aLazy) {
-    if (isSync) {
-      NS_WARNING(
-          "Document localization initialized lazy, data-l10n-sync attribute "
-          "has no effect.");
-    }
-    DOMLocalization::Activate(false, true, {});
-  } else {
-    DOMLocalization::Activate(isSync, true, {});
-  }
-  mState = DocumentL10nState::Activated;
 }
 
 JSObject* DocumentL10n::WrapObject(JSContext* aCx,
@@ -92,14 +67,41 @@ class L10nReadyHandler final : public PromiseNativeHandler {
   explicit L10nReadyHandler(Promise* aPromise, DocumentL10n* aDocumentL10n)
       : mPromise(aPromise), mDocumentL10n(aDocumentL10n) {}
 
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mDocumentL10n->InitialTranslationCompleted(true);
     mPromise->MaybeResolveWithUndefined();
   }
 
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override {
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override {
     mDocumentL10n->InitialTranslationCompleted(false);
-    mPromise->MaybeRejectWithUndefined();
+
+    nsTArray<nsCString> errors{
+        "[dom/l10n] Could not complete initial document translation."_ns,
+    };
+    IgnoredErrorResult rv;
+    MaybeReportErrorsToGecko(errors, rv, mDocumentL10n->GetParentObject());
+
+    /**
+     * We resolve the mReady here even if we encountered failures, because
+     * there is nothing actionable for the user pending on `mReady` to do here
+     * and we don't want to incentivized consumers of this API to plan the
+     * same pending operation for resolve and reject scenario.
+     *
+     * Additionally, without it, the stderr received "uncaught promise
+     * rejection" warning, which is noisy and not-actionable.
+     *
+     * So instead, we just resolve and report errors.
+     *
+     * However, in automated tests we do reject so that errors with missing
+     * messages and resources can be caught.
+     */
+    if (xpc::IsInAutomation()) {
+      mPromise->MaybeRejectWithClone(aCx, aValue);
+    } else {
+      mPromise->MaybeResolveWithUndefined();
+    }
   }
 
  private:
@@ -119,15 +121,25 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(L10nReadyHandler)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(L10nReadyHandler)
 
 void DocumentL10n::TriggerInitialTranslation() {
+  MOZ_ASSERT(nsContentUtils::IsSafeToRunScript());
   if (mState >= DocumentL10nState::InitialTranslationTriggered) {
     return;
   }
+  if (!mReady) {
+    // If we don't have `mReady` it means that we are in shutdown mode.
+    // See bug 1687118 for details.
+    InitialTranslationCompleted(false);
+    return;
+  }
+
+  AutoAllowLegacyScriptExecution exemption;
 
   nsTArray<RefPtr<Promise>> promises;
 
   ErrorResult rv;
   promises.AppendElement(TranslateDocument(rv));
   if (NS_WARN_IF(rv.Failed())) {
+    rv.SuppressException();
     InitialTranslationCompleted(false);
     mReady->MaybeRejectWithUndefined();
     return;
@@ -140,12 +152,7 @@ void DocumentL10n::TriggerInitialTranslation() {
     return;
   }
 
-  DOMLocalization::ConnectRoot(*documentElement, rv);
-  if (NS_WARN_IF(rv.Failed())) {
-    InitialTranslationCompleted(false);
-    mReady->MaybeRejectWithUndefined();
-    return;
-  }
+  DOMLocalization::ConnectRoot(*documentElement);
 
   AutoEntryScript aes(mGlobal, "DocumentL10n InitialTranslation");
   RefPtr<Promise> promise = Promise::All(aes.cx(), promises, rv);
@@ -165,9 +172,12 @@ void DocumentL10n::TriggerInitialTranslation() {
 }
 
 already_AddRefed<Promise> DocumentL10n::TranslateDocument(ErrorResult& aRv) {
-  MOZ_ASSERT(mState == DocumentL10nState::Activated,
-             "This method should be called only from Activated state.");
+  MOZ_ASSERT(mState == DocumentL10nState::Constructed,
+             "This method should be called only from Constructed state.");
   RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
+  if (NS_WARN_IF(aRv.Failed())) {
+    return nullptr;
+  }
 
   Element* elem = mDocument->GetDocumentElement();
   if (!elem) {
@@ -212,6 +222,8 @@ already_AddRefed<Promise> DocumentL10n::TranslateDocument(ErrorResult& aRv) {
     // back to top->bottom one.
     nonProtoElements.Reverse();
 
+    AutoAllowLegacyScriptExecution exemption;
+
     nsTArray<RefPtr<Promise>> promises;
 
     // 2.1.2. If we're not loading from cache, push the elements that
@@ -242,17 +254,18 @@ already_AddRefed<Promise> DocumentL10n::TranslateDocument(ErrorResult& aRv) {
     // 2.1.4. Collect promises with Promise::All (maybe empty).
     AutoEntryScript aes(mGlobal, "DocumentL10n InitialTranslationCompleted");
     promise = Promise::All(aes.cx(), promises, aRv);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return nullptr;
+    }
   } else {
     // 2.2. Handle the case when we don't have proto.
 
     // 2.2.1. Otherwise, translate all available elements,
     //        without attempting to cache them.
     promise = TranslateElements(elements, nullptr, aRv);
-  }
-
-  if (NS_WARN_IF(!promise || aRv.Failed())) {
-    promise->MaybeRejectWithUndefined();
-    return promise.forget();
+    if (NS_WARN_IF(aRv.Failed())) {
+      return nullptr;
+    }
   }
 
   return promise.forget();
@@ -270,20 +283,18 @@ void DocumentL10n::InitialTranslationCompleted(bool aL10nCached) {
 
   mState = DocumentL10nState::Ready;
 
-  mDocument->InitialTranslationCompleted(aL10nCached);
+  RefPtr<Document> doc = mDocument;
+  doc->InitialTranslationCompleted(aL10nCached);
 
   // In XUL scenario contentSink is nullptr.
   if (mContentSink) {
-    mContentSink->InitialTranslationCompleted();
+    nsCOMPtr<nsIContentSink> sink = mContentSink.forget();
+    sink->InitialTranslationCompleted();
   }
 
-  // If sync was true, we want to change the state of
-  // mozILocalization to async now.
-  if (mIsSync) {
-    mIsSync = false;
-
-    mLocalization->SetIsSync(mIsSync);
-  }
+  // From now on, the state of Localization is unconditionally
+  // async.
+  SetAsync();
 }
 
 void DocumentL10n::ConnectRoot(nsINode& aNode, bool aTranslate,
@@ -293,7 +304,7 @@ void DocumentL10n::ConnectRoot(nsINode& aNode, bool aTranslate,
       RefPtr<Promise> promise = TranslateFragment(aNode, aRv);
     }
   }
-  DOMLocalization::ConnectRoot(aNode, aRv);
+  DOMLocalization::ConnectRoot(aNode);
 }
 
 Promise* DocumentL10n::Ready() { return mReady; }

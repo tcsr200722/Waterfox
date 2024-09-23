@@ -8,7 +8,6 @@
 #include <string.h>
 
 #include "nscore.h"
-#include "plstr.h"
 #include "prlink.h"
 
 #include "nsSound.h"
@@ -82,9 +81,10 @@ struct ScopedCanberraFile {
 static ca_context* ca_context_get_default() {
   // This allows us to avoid race conditions with freeing the context by handing
   // that responsibility to Glib, and still use one context at a time
-  static GStaticPrivate ctx_static_private = G_STATIC_PRIVATE_INIT;
+  static GPrivate ctx_private =
+      G_PRIVATE_INIT((GDestroyNotify)ca_context_destroy);
 
-  ca_context* ctx = (ca_context*)g_static_private_get(&ctx_static_private);
+  ca_context* ctx = (ca_context*)g_private_get(&ctx_private);
 
   if (ctx) {
     return ctx;
@@ -95,8 +95,7 @@ static ca_context* ca_context_get_default() {
     return nullptr;
   }
 
-  g_static_private_set(&ctx_static_private, ctx,
-                       (GDestroyNotify)ca_context_destroy);
+  g_private_set(&ctx_private, ctx);
 
   GtkSettings* settings = gtk_settings_get_default();
   if (g_object_class_find_property(G_OBJECT_GET_CLASS(settings),
@@ -269,7 +268,7 @@ NS_IMETHODIMP nsSound::OnStreamComplete(nsIStreamLoader* aLoader,
 
   mozilla::AutoFDClose fd;
   rv = canberraFile->OpenNSPRFileDesc(PR_WRONLY, PR_IRUSR | PR_IWUSR,
-                                      &fd.rwget());
+                                      getter_Transfers(fd));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -277,7 +276,7 @@ NS_IMETHODIMP nsSound::OnStreamComplete(nsIStreamLoader* aLoader,
   // XXX: Should we do this on another thread?
   uint32_t length = dataLen;
   while (length > 0) {
-    int32_t amount = PR_Write(fd, data, length);
+    int32_t amount = PR_Write(fd.get(), data, length);
     if (amount < 0) {
       return NS_ERROR_FAILURE;
     }
@@ -343,11 +342,12 @@ NS_IMETHODIMP nsSound::Play(nsIURL* aURL) {
     g_free(path);
   } else {
     nsCOMPtr<nsIStreamLoader> loader;
-    rv = NS_NewStreamLoader(getter_AddRefs(loader), aURL,
-                            this,  // aObserver
-                            nsContentUtils::GetSystemPrincipal(),
-                            nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                            nsIContentPolicy::TYPE_OTHER);
+    rv = NS_NewStreamLoader(
+        getter_AddRefs(loader), aURL,
+        this,  // aObserver
+        nsContentUtils::GetSystemPrincipal(),
+        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+        nsIContentPolicy::TYPE_OTHER);
   }
 
   return rv;

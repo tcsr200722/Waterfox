@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from six.moves.urllib.parse import quote
 
 from marionette_driver import expected
@@ -15,11 +13,11 @@ from marionette_harness import marionette_test
 def inline(doc):
     return "data:text/html;charset=utf-8,{}".format(quote(doc))
 
+
 static_element = inline("""<p>foo</p>""")
 static_elements = static_element + static_element
 
-remove_element_by_tag_name = \
-    """var el = document.getElementsByTagName('{}')[0];
+remove_element_by_tag_name = """var el = document.getElementsByTagName('{}')[0];
     document.getElementsByTagName("body")[0].remove(el);"""
 
 hidden_element = inline("<p style='display: none'>hidden</p>")
@@ -30,17 +28,22 @@ unselected_element = inline("<option>unselected</option>")
 enabled_element = inline("<input>")
 disabled_element = inline("<input disabled>")
 
+
 def no_such_element(marionette):
     return marionette.find_element(By.ID, "nosuchelement")
+
 
 def no_such_elements(marionette):
     return marionette.find_elements(By.ID, "nosuchelement")
 
+
 def p(marionette):
     return marionette.find_element(By.TAG_NAME, "p")
 
+
 def ps(marionette):
     return marionette.find_elements(By.TAG_NAME, "p")
+
 
 class TestExpected(marionette_test.MarionetteTestCase):
     def test_element_present_func(self):
@@ -148,7 +151,7 @@ class TestExpected(marionette_test.MarionetteTestCase):
     def test_element_displayed_when_stale_element(self):
         self.marionette.navigate(static_element)
         el = self.marionette.find_element(By.TAG_NAME, "p")
-        self.marionette.navigate("about:blank")
+        self.marionette.execute_script("arguments[0].remove()", [el])
         missing = expected.element_displayed(el)(self.marionette)
         self.assertFalse(missing)
 
@@ -177,7 +180,7 @@ class TestExpected(marionette_test.MarionetteTestCase):
     def test_element_not_displayed_when_stale_element(self):
         self.marionette.navigate(static_element)
         el = self.marionette.find_element(By.TAG_NAME, "p")
-        self.marionette.navigate("about:blank")
+        self.marionette.execute_script("arguments[0].remove()", [el])
         missing = expected.element_not_displayed(el)(self.marionette)
         self.assertTrue(missing)
 

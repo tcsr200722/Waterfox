@@ -22,10 +22,11 @@ class nsSyncStreamListener final : public nsISyncStreamListener,
   NS_DECL_NSISYNCSTREAMLISTENER
   NS_DECL_NSIINPUTSTREAM
 
-  static already_AddRefed<nsISyncStreamListener> Create();
-
  private:
-  nsSyncStreamListener() : mStatus(NS_OK), mKeepWaiting(false), mDone(false) {}
+  // Factory method:
+  friend nsresult NS_NewSyncStreamListener(nsIStreamListener** result,
+                                           nsIInputStream** stream);
+  nsSyncStreamListener();
   ~nsSyncStreamListener() = default;
 
   nsresult Init();
@@ -34,9 +35,9 @@ class nsSyncStreamListener final : public nsISyncStreamListener,
 
   nsCOMPtr<nsIInputStream> mPipeIn;
   nsCOMPtr<nsIOutputStream> mPipeOut;
-  nsresult mStatus;
-  bool mKeepWaiting;
-  bool mDone;
+  nsresult mStatus{NS_OK};
+  bool mKeepWaiting{false};
+  bool mDone{false};
 };
 
 #endif  // nsSyncStreamListener_h__

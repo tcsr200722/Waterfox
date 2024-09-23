@@ -18,7 +18,7 @@
  *             whatever means are available.
  *
  *            These functions are part of the ICU internal implementation, and
- *            are not inteded to be used directly by applications.
+ *            are not intended to be used directly by applications.
  *
  *----------------------------------------------------------------------------------*/
 
@@ -29,7 +29,7 @@
 #include "unicode/udata.h"
 #include "putilimp.h"
 
-U_CFUNC UBool uprv_mapFile(UDataMemory *pdm, const char *path, UErrorCode *status);
+U_CAPI  UBool U_EXPORT2 uprv_mapFile(UDataMemory *pdm, const char *path, UErrorCode *status);
 U_CFUNC void  uprv_unmapFile(UDataMemory *pData);
 
 /* MAP_NONE: no memory mapping, no file access at all */
@@ -41,6 +41,8 @@ U_CFUNC void  uprv_unmapFile(UDataMemory *pData);
 
 #if UCONFIG_NO_FILE_IO
 #   define MAP_IMPLEMENTATION MAP_NONE
+#elif defined(__wasi__)
+#   define MAP_IMPLEMENTATION MAP_STDIO
 #elif U_PLATFORM_USES_ONLY_WIN32_API
 #   define MAP_IMPLEMENTATION MAP_WIN32
 #elif U_HAVE_MMAP || U_PLATFORM == U_PF_OS390

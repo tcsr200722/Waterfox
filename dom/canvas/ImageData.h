@@ -7,32 +7,46 @@
 #ifndef mozilla_dom_ImageData_h
 #define mozilla_dom_ImageData_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/TypedArray.h"
-#include <stdint.h>
-
-#include "nsCycleCollectionParticipant.h"
-#include "nsISupportsImpl.h"
+#include <cstdint>
+#include <utility>
 #include "js/RootingAPI.h"
-#include "js/StructuredClone.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/dom/TypedArray.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
 
+class JSObject;
 class nsIGlobalObject;
+struct JSContext;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
+class GlobalObject;
+template <typename T>
+class Optional;
+
 class ImageData final : public nsISupports {
-  ~ImageData() { DropData(); }
+ public:
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ImageData)
+
+  const uint32_t mWidth;
+  const uint32_t mHeight;
+
+ private:
+  JS::Heap<JSObject*> mData;
 
  public:
   ImageData(uint32_t aWidth, uint32_t aHeight, JSObject& aData)
       : mWidth(aWidth), mHeight(aHeight), mData(&aData) {
     HoldData();
   }
-
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ImageData)
 
   static already_AddRefed<ImageData> Constructor(const GlobalObject& aGlobal,
                                                  const uint32_t aWidth,
@@ -66,9 +80,7 @@ class ImageData final : public nsISupports {
   void DropData();
 
   ImageData() = delete;
-
-  uint32_t mWidth, mHeight;
-  JS::Heap<JSObject*> mData;
+  ~ImageData() { DropData(); }
 };
 
 }  // namespace dom

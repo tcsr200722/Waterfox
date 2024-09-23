@@ -9,6 +9,7 @@
 #include "mozilla/dom/WebGL2RenderingContextBinding.h"
 #include "mozilla/IntegerRange.h"
 #include "WebGL2Context.h"
+#include "WebGLBuffer.h"
 #include "WebGLProgram.h"
 
 namespace mozilla {
@@ -16,7 +17,7 @@ namespace mozilla {
 WebGLTransformFeedback::WebGLTransformFeedback(WebGLContext* webgl, GLuint tf)
     : WebGLContextBoundObject(webgl),
       mGLName(tf),
-      mIndexedBindings(webgl->Limits().maxTransformFeedbackSeparateAttribs),
+      mIndexedBindings(webgl::kMaxTransformFeedbackSeparateAttribs),
       mIsPaused(false),
       mIsActive(false) {}
 

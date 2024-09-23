@@ -8,15 +8,28 @@
 
 #include "GridArea.h"
 #include "GridDimension.h"
+#include "mozilla/dom/Element.h"
 #include "mozilla/dom/GridBinding.h"
 #include "nsGridContainerFrame.h"
+#include "nsTHashSet.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Grid, mParent, mRows, mCols, mAreas)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Grid)
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(Grid)
+  tmp->ForgetFrame();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mParent, mRows, mCols, mAreas)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Grid)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mParent, mRows, mCols, mAreas)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Grid)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Grid)
+
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Grid)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsISupports)
@@ -24,23 +37,26 @@ NS_INTERFACE_MAP_END
 
 Grid::Grid(nsISupports* aParent, nsGridContainerFrame* aFrame)
     : mParent(do_QueryInterface(aParent)),
+      mFrame(aFrame),
       mRows(new GridDimension(this)),
       mCols(new GridDimension(this)) {
   MOZ_ASSERT(aFrame,
              "Should never be instantiated with a null nsGridContainerFrame");
+
+  aFrame->SetProperty(nsGridContainerFrame::GridFragmentInfo(), this);
 
   // Construct areas first, because lines may need to reference them
   // to extract additional names for boundary lines.
 
   // Add implicit areas first. Track the names that we add here, because
   // we will ignore future explicit areas with the same name.
-  nsTHashtable<nsRefPtrHashKey<nsAtom>> namesSeen;
+  nsTHashSet<RefPtr<nsAtom>> namesSeen;
   nsGridContainerFrame::ImplicitNamedAreas* implicitAreas =
       aFrame->GetImplicitNamedAreas();
   if (implicitAreas) {
     for (auto iter = implicitAreas->iter(); !iter.done(); iter.next()) {
       auto& areaInfo = iter.get().value();
-      namesSeen.PutEntry(areaInfo.name.AsAtom());
+      namesSeen.Insert(areaInfo.name.AsAtom());
       GridArea* area =
           new GridArea(this, areaInfo.name.AsAtom(), GridDeclaration::Implicit,
                        areaInfo.rows.start, areaInfo.rows.end,
@@ -85,6 +101,13 @@ JSObject* Grid::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
   return Grid_Binding::Wrap(aCx, this, aGivenProto);
 }
 
+void Grid::ForgetFrame() {
+  if (mFrame.IsAlive()) {
+    mFrame->RemoveProperty(nsGridContainerFrame::GridFragmentInfo());
+    mFrame.Clear(mFrame->PresContext()->GetPresShell());
+  }
+}
+
 GridDimension* Grid::Rows() const { return mRows; }
 
 GridDimension* Grid::Cols() const { return mCols; }
@@ -93,5 +116,4 @@ void Grid::GetAreas(nsTArray<RefPtr<GridArea>>& aAreas) const {
   aAreas = mAreas.Clone();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

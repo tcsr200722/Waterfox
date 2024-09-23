@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import {
   actions,
   createStore,
@@ -13,7 +11,7 @@ import {
 import {
   getShouldPauseOnExceptions,
   getShouldPauseOnCaughtExceptions,
-} from "../../../reducers/pause";
+} from "../../../selectors/pause";
 
 describe("pauseOnExceptions", () => {
   it("should track telemetry for pauseOnException changes", async () => {

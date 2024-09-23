@@ -11,12 +11,12 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/CryptoBuffer.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
+#include "nsCOMPtr.h"
+#include "nsPIDOMWindow.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AuthenticatorResponse : public nsISupports, public nsWrapperCache {
  public:
@@ -29,21 +29,23 @@ class AuthenticatorResponse : public nsISupports, public nsWrapperCache {
   virtual ~AuthenticatorResponse();
 
  public:
-  nsISupports* GetParentObject() const { return mParent; }
+  nsISupports* GetParentObject() const;
 
   void GetFormat(nsString& aRetVal) const;
 
-  void GetClientDataJSON(JSContext* aCx, JS::MutableHandle<JSObject*> aRetVal);
+  void GetClientDataJSON(JSContext* aCx, JS::MutableHandle<JSObject*> aValue,
+                         ErrorResult& aRv);
 
-  nsresult SetClientDataJSON(CryptoBuffer& aBuffer);
+  void SetClientDataJSON(const nsCString& aBuffer);
+
+ protected:
+  nsCString mClientDataJSON;
 
  private:
   nsCOMPtr<nsPIDOMWindowInner> mParent;
-  CryptoBuffer mClientDataJSON;
   JS::Heap<JSObject*> mClientDataJSONCachedObj;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_AuthenticatorResponse_h

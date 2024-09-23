@@ -2,19 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-extern crate encoding_rs;
-
+use crate::{
+    nsACString, nsAString, nsCStringLike, BulkWriteOk, Gecko_FallibleAssignCString,
+    Latin1StringLike,
+};
+use encoding_rs::mem::*;
+use encoding_rs::Encoding;
 use std::slice;
-
-use super::nsACString;
-use super::nsAString;
-use super::nsCStringLike;
-use super::BulkWriteOk;
-use super::Gecko_FallibleAssignCString;
-use super::Latin1StringLike;
-
-use conversions::encoding_rs::mem::*;
-use conversions::encoding_rs::Encoding;
 
 /// Required math stated in the docs of
 /// `convert_utf16_to_utf8()`.
@@ -152,9 +146,9 @@ macro_rules! constant_conversion {
     };
 }
 
-/// An intermediate check for avoiding a copy and having an `nsStringBuffer`
-/// refcount increment instead when both `self` and `other` are `nsACString`s,
-/// `other` is entirely ASCII and all old data in `self` is discarded.
+/// An intermediate check for avoiding a copy and having an `StringBuffer` refcount increment
+/// instead when both `self` and `other` are `nsACString`s, `other` is entirely ASCII and all old
+/// data in `self` is discarded.
 ///
 /// `$name` is the name of the function to generate
 /// `$impl` is the underlying conversion that takes a slice and that is used

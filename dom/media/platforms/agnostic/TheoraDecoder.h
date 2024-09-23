@@ -6,18 +6,20 @@
 #if !defined(TheoraDecoder_h_)
 #  define TheoraDecoder_h_
 
-#  include "PlatformDecoderModule.h"
-#  include "ogg/ogg.h"
-#  include "theora/theoradec.h"
 #  include <stdint.h>
+
+#  include "PlatformDecoderModule.h"
+#  include <theora/theoradec.h>
 
 namespace mozilla {
 
 DDLoggedTypeDeclNameAndBase(TheoraDecoder, MediaDataDecoder);
 
-class TheoraDecoder : public MediaDataDecoder,
-                      public DecoderDoctorLifeLogger<TheoraDecoder> {
+class TheoraDecoder final : public MediaDataDecoder,
+                            public DecoderDoctorLifeLogger<TheoraDecoder> {
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(TheoraDecoder, final);
+
   explicit TheoraDecoder(const CreateDecoderParams& aParams);
 
   RefPtr<InitPromise> Init() override;
@@ -30,8 +32,10 @@ class TheoraDecoder : public MediaDataDecoder,
   static bool IsTheora(const nsACString& aMimeType);
 
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("theora video decoder");
+    return "theora video decoder"_ns;
   }
+
+  nsCString GetCodecName() const override { return "theora"_ns; }
 
  private:
   ~TheoraDecoder();
@@ -39,9 +43,9 @@ class TheoraDecoder : public MediaDataDecoder,
 
   RefPtr<DecodePromise> ProcessDecode(MediaRawData* aSample);
 
-  RefPtr<layers::KnowsCompositor> mImageAllocator;
-  RefPtr<layers::ImageContainer> mImageContainer;
-  RefPtr<TaskQueue> mTaskQueue;
+  const RefPtr<layers::KnowsCompositor> mImageAllocator;
+  const RefPtr<layers::ImageContainer> mImageContainer;
+  const RefPtr<TaskQueue> mTaskQueue;
 
   // Theora header & decoder state
   th_info mTheoraInfo;
@@ -50,7 +54,8 @@ class TheoraDecoder : public MediaDataDecoder,
   th_dec_ctx* mTheoraDecoderContext;
   int mPacketCount;
 
-  const VideoInfo& mInfo;
+  const VideoInfo mInfo;
+  const Maybe<TrackingId> mTrackingId;
 };
 
 }  // namespace mozilla

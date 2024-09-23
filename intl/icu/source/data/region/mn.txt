@@ -1,5 +1,6 @@
 ﻿// © 2016 and later: Unicode, Inc. and others.
-// License & terms of use: http://www.unicode.org/copyright.html#License
+// License & terms of use: http://www.unicode.org/copyright.html
+// Generated using tools/cldr/cldr-to-icu/build-icu-data.xml
 mn{
     Countries{
         001{"Дэлхий"}
@@ -311,8 +312,8 @@ mn{
         CI{"Зааны ясан эрэг"}
         CZ{"Бүгд Найрамдах Чех Улс"}
         FK{"Фолклендийн арлууд (Мальвины арлууд)"}
+        NZ{"Аотеароагийн Шинэ Зеланд"}
         SZ{"Свазиланд"}
         TL{"Зүүн Тимор"}
     }
-    Version{"37"}
 }

@@ -11,16 +11,20 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/dom/DataTransfer.h"
-#include "mozilla/dom/StaticRange.h"
 #include "mozilla/EventForwards.h"  // for KeyNameIndex, temporarily
 #include "mozilla/FontRange.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/NativeKeyBindingsType.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/WritingModes.h"
+#include "mozilla/dom/DataTransfer.h"
 #include "mozilla/dom/KeyboardEventBinding.h"
+#include "mozilla/dom/StaticRange.h"
+#include "mozilla/widget/IMEData.h"
+#include "mozilla/ipc/IPCForwards.h"
 #include "nsCOMPtr.h"
+#include "nsHashtablesFwd.h"
 #include "nsISelectionListener.h"
 #include "nsITransferable.h"
 #include "nsRect.h"
@@ -28,8 +32,6 @@
 #include "nsTArray.h"
 
 class nsStringHashKey;
-template <class, class>
-class nsDataHashtable;
 
 /******************************************************************************
  * virtual keycode values
@@ -78,12 +80,21 @@ enum class AccessKeyType {
  ******************************************************************************/
 
 struct AlternativeCharCode {
-  AlternativeCharCode() : mUnshiftedCharCode(0), mShiftedCharCode(0) {}
+  AlternativeCharCode() = default;
   AlternativeCharCode(uint32_t aUnshiftedCharCode, uint32_t aShiftedCharCode)
       : mUnshiftedCharCode(aUnshiftedCharCode),
         mShiftedCharCode(aShiftedCharCode) {}
-  uint32_t mUnshiftedCharCode;
-  uint32_t mShiftedCharCode;
+
+  uint32_t mUnshiftedCharCode = 0u;
+  uint32_t mShiftedCharCode = 0u;
+
+  bool operator==(const AlternativeCharCode& aOther) const {
+    return mUnshiftedCharCode == aOther.mUnshiftedCharCode &&
+           mShiftedCharCode == aOther.mShiftedCharCode;
+  }
+  bool operator!=(const AlternativeCharCode& aOther) const {
+    return !(*this == aOther);
+  }
 };
 
 /******************************************************************************
@@ -93,14 +104,43 @@ struct AlternativeCharCode {
  ******************************************************************************/
 
 struct ShortcutKeyCandidate {
-  ShortcutKeyCandidate() : mCharCode(0), mIgnoreShift(0) {}
-  ShortcutKeyCandidate(uint32_t aCharCode, bool aIgnoreShift)
-      : mCharCode(aCharCode), mIgnoreShift(aIgnoreShift) {}
+  enum class ShiftState : bool {
+    // Can ignore `Shift` modifier state when comparing the key combination.
+    // E.g., Ctrl + Shift + `:` in the US keyboard layout may match with
+    // Ctrl + `:` shortcut.
+    Ignorable,
+    // `Shift` modifier state should be respected.  I.e., Ctrl + `;` in the US
+    // keyboard layout never matches with Ctrl + Shift + `;` shortcut.
+    MatchExactly,
+  };
+
+  enum class SkipIfEarlierHandlerDisabled : bool {
+    // Even if an earlier handler is disabled, this may match with another
+    // handler for avoiding inaccessible shortcut with the active keyboard
+    // layout.
+    No,
+    // If an earlier handler (i.e., preferred handler) is disabled, this should
+    // not try to match.  E.g., Ctrl + `-` in the French keyboard layout when
+    // the zoom level is the minimum value, it should not match with Ctrl + `6`
+    // shortcut (French keyboard layout introduces `-` when pressing Digit6 key
+    // without Shift, and Shift + Digit6 introduces `6`).
+    Yes,
+  };
+
+  ShortcutKeyCandidate() = default;
+  ShortcutKeyCandidate(
+      uint32_t aCharCode, ShiftState aShiftState,
+      SkipIfEarlierHandlerDisabled aSkipIfEarlierHandlerDisabled)
+      : mCharCode(aCharCode),
+        mShiftState(aShiftState),
+        mSkipIfEarlierHandlerDisabled(aSkipIfEarlierHandlerDisabled) {}
+
   // The mCharCode value which must match keyboard shortcut definition.
-  uint32_t mCharCode;
-  // true if Shift state can be ignored.  Otherwise, Shift key state must
-  // match keyboard shortcut definition.
-  bool mIgnoreShift;
+  uint32_t mCharCode = 0;
+
+  ShiftState mShiftState = ShiftState::MatchExactly;
+  SkipIfEarlierHandlerDisabled mSkipIfEarlierHandlerDisabled =
+      SkipIfEarlierHandlerDisabled::No;
 };
 
 /******************************************************************************
@@ -113,21 +153,22 @@ struct ShortcutKeyCandidate {
 struct IgnoreModifierState {
   // When mShift is true, Shift key state will be ignored.
   bool mShift;
-  // When mOS is true, OS key state will be ignored.
-  bool mOS;
+  // When mMeta is true, Meta key state will be ignored.
+  bool mMeta;
 
-  IgnoreModifierState() : mShift(false), mOS(false) {}
+  IgnoreModifierState() : mShift(false), mMeta(false) {}
 };
 
 /******************************************************************************
  * mozilla::WidgetKeyboardEvent
  ******************************************************************************/
 
-class WidgetKeyboardEvent : public WidgetInputEvent {
+class WidgetKeyboardEvent final : public WidgetInputEvent {
  private:
   friend class dom::PBrowserParent;
   friend class dom::PBrowserChild;
   friend struct IPC::ParamTraits<WidgetKeyboardEvent>;
+  ALLOW_DEPRECATED_READPARAM
 
  protected:
   WidgetKeyboardEvent()
@@ -136,13 +177,7 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
         mCharCode(0),
         mPseudoCharCode(0),
         mLocation(eKeyLocationStandard),
-        mUniqueId(0)
-#ifdef XP_MACOSX
-        ,
-        mNativeModifierFlags(0),
-        mNativeKeyCode(0)
-#endif  // #ifdef XP_MACOSX
-        ,
+        mUniqueId(0),
         mKeyNameIndex(KEY_NAME_INDEX_Unidentified),
         mCodeNameIndex(CODE_NAME_INDEX_UNKNOWN),
         mIsRepeat(false),
@@ -152,28 +187,22 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
         mUseLegacyKeyCodeAndCharCodeValues(false),
         mEditCommandsForSingleLineEditorInitialized(false),
         mEditCommandsForMultiLineEditorInitialized(false),
-        mEditCommandsForRichTextEditorInitialized(false) {
-  }
+        mEditCommandsForRichTextEditorInitialized(false) {}
 
  public:
-  virtual WidgetKeyboardEvent* AsKeyboardEvent() override { return this; }
+  WidgetKeyboardEvent* AsKeyboardEvent() override { return this; }
 
   WidgetKeyboardEvent(bool aIsTrusted, EventMessage aMessage,
                       nsIWidget* aWidget,
-                      EventClassID aEventClassID = eKeyboardEventClass)
-      : WidgetInputEvent(aIsTrusted, aMessage, aWidget, aEventClassID),
+                      EventClassID aEventClassID = eKeyboardEventClass,
+                      const WidgetEventTime* aTime = nullptr)
+      : WidgetInputEvent(aIsTrusted, aMessage, aWidget, aEventClassID, aTime),
         mNativeKeyEvent(nullptr),
         mKeyCode(0),
         mCharCode(0),
         mPseudoCharCode(0),
         mLocation(eKeyLocationStandard),
-        mUniqueId(0)
-#ifdef XP_MACOSX
-        ,
-        mNativeModifierFlags(0),
-        mNativeKeyCode(0)
-#endif  // #ifdef XP_MACOSX
-        ,
+        mUniqueId(0),
         mKeyNameIndex(KEY_NAME_INDEX_Unidentified),
         mCodeNameIndex(CODE_NAME_INDEX_UNKNOWN),
         mIsRepeat(false),
@@ -183,30 +212,7 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
         mUseLegacyKeyCodeAndCharCodeValues(false),
         mEditCommandsForSingleLineEditorInitialized(false),
         mEditCommandsForMultiLineEditorInitialized(false),
-        mEditCommandsForRichTextEditorInitialized(false) {
-    // If this is a keyboard event on a plugin, it shouldn't fired on content.
-    if (IsKeyEventOnPlugin()) {
-      mFlags.mOnlySystemGroupDispatchInContent = true;
-      StopCrossProcessForwarding();
-    }
-  }
-
-  static bool IsKeyDownOrKeyDownOnPlugin(EventMessage aMessage) {
-    return aMessage == eKeyDown || aMessage == eKeyDownOnPlugin;
-  }
-  bool IsKeyDownOrKeyDownOnPlugin() const {
-    return IsKeyDownOrKeyDownOnPlugin(mMessage);
-  }
-  static bool IsKeyUpOrKeyUpOnPlugin(EventMessage aMessage) {
-    return aMessage == eKeyUp || aMessage == eKeyUpOnPlugin;
-  }
-  bool IsKeyUpOrKeyUpOnPlugin() const {
-    return IsKeyUpOrKeyUpOnPlugin(mMessage);
-  }
-  static bool IsKeyEventOnPlugin(EventMessage aMessage) {
-    return aMessage == eKeyDownOnPlugin || aMessage == eKeyUpOnPlugin;
-  }
-  bool IsKeyEventOnPlugin() const { return IsKeyEventOnPlugin(mMessage); }
+        mEditCommandsForRichTextEditorInitialized(false) {}
 
   // IsInputtingText() and IsInputtingLineBreak() are used to check if
   // it should cause eKeyPress events even on web content.
@@ -259,13 +265,12 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
                               // option key is used as AltGraph key on macOS.
                               MODIFIER_ALT |
 #endif  // #ifndef XP_MAXOSX
-                              MODIFIER_CONTROL | MODIFIER_META | MODIFIER_OS));
+                              MODIFIER_CONTROL | MODIFIER_META));
   }
 
   bool IsInputtingLineBreak() const {
     return mMessage == eKeyPress && mKeyNameIndex == KEY_NAME_INDEX_Enter &&
-           !(mModifiers &
-             (MODIFIER_ALT | MODIFIER_CONTROL | MODIFIER_META | MODIFIER_OS));
+           !(mModifiers & (MODIFIER_ALT | MODIFIER_CONTROL | MODIFIER_META));
   }
 
   /**
@@ -283,16 +288,15 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
     // So, for compatibility with them, we should fire keypress event for
     // Ctrl + Enter too.
     return mMessage == eKeyPress && mKeyNameIndex == KEY_NAME_INDEX_Enter &&
-           !(mModifiers &
-             (MODIFIER_ALT | MODIFIER_META | MODIFIER_OS | MODIFIER_SHIFT));
+           !(mModifiers & (MODIFIER_ALT | MODIFIER_META | MODIFIER_SHIFT));
   }
 
-  virtual WidgetEvent* Duplicate() const override {
+  WidgetEvent* Duplicate() const override {
     MOZ_ASSERT(mClass == eKeyboardEventClass,
                "Duplicate() must be overridden by sub class");
     // Not copying widget, it is a weak reference.
-    WidgetKeyboardEvent* result =
-        new WidgetKeyboardEvent(false, mMessage, nullptr);
+    WidgetKeyboardEvent* result = new WidgetKeyboardEvent(
+        false, mMessage, nullptr, eKeyboardEventClass, this);
     result->AssignKeyEventData(*this, true);
     result->mEditCommandsForSingleLineEditor =
         mEditCommandsForSingleLineEditor.Clone();
@@ -313,7 +317,7 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
     // demonstrate user's intent to play media.
     const bool isCombiningWithOperationKeys = (IsControl() && !IsAltGraph()) ||
                                               (IsAlt() && !IsAltGraph()) ||
-                                              IsMeta() || IsOS();
+                                              IsMeta();
     const bool isEnterOrSpaceKey =
         mKeyNameIndex == KEY_NAME_INDEX_Enter || mKeyCode == NS_VK_SPACE;
     return (PseudoCharCode() || isEnterOrSpaceKey) &&
@@ -327,6 +331,38 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
               mKeyCode == dom::KeyboardEvent_Binding::DOM_VK_V ||
               mKeyCode == dom::KeyboardEvent_Binding::DOM_VK_X) &&
              IsAccel()));
+  }
+
+  // Returns true if this event is likely an user activation for a link or
+  // a link-like button, where modifier keys are likely be used for controlling
+  // where the link is opened.
+  //
+  // This returns false if the keyboard event is more likely an user-defined
+  // shortcut key.
+  bool CanReflectModifiersToUserActivation() const {
+    MOZ_ASSERT(CanUserGestureActivateTarget(),
+               "Consumer should check CanUserGestureActivateTarget first");
+    // 'carriage return' and 'space' are supported user gestures for activating
+    // a link or a button.
+    // A button often behaves like a link, by calling window.open inside its
+    // event handler.
+    //
+    // Access keys can also activate links/buttons, but access keys have their
+    // own modifiers, and those modifiers are not appropriate for reflecting to
+    // the user activation nor controlling where the link is opened.
+    return mKeyNameIndex == KEY_NAME_INDEX_Enter || mKeyCode == NS_VK_SPACE;
+  }
+
+  [[nodiscard]] bool ShouldWorkAsSpaceKey() const {
+    if (mKeyCode == NS_VK_SPACE) {
+      return true;
+    }
+    // Additionally, if the code value is "Space" and the key is not mapped to
+    // a function key (i.e., not a printable key), we should treat it as space
+    // key because the active keyboard layout may input different character
+    // from the ASCII white space (U+0020).  For example, NBSP (U+00A0).
+    return mKeyNameIndex == KEY_NAME_INDEX_USE_STRING &&
+           mCodeNameIndex == CODE_NAME_INDEX_Space;
   }
 
   /**
@@ -358,8 +394,6 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
       // legacy modifier keys:
       case KEY_NAME_INDEX_Hyper:
       case KEY_NAME_INDEX_Super:
-      // obsolete modifier key:
-      case KEY_NAME_INDEX_OS:
         return false;
       default:
         return true;
@@ -384,16 +418,8 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
   // CODE_NAME_INDEX_USE_STRING.
   nsString mCodeValue;
 
-#ifdef XP_MACOSX
-  // Values given by a native NSEvent, for use with Cocoa NPAPI plugins.
-  nsString mNativeCharacters;
-  nsString mNativeCharactersIgnoringModifiers;
-  // If this is non-empty, create a text event for plugins instead of a
-  // keyboard event.
-  nsString mPluginTextEventString;
-#endif  // #ifdef XP_MACOSX
-
-  // OS-specific native event can optionally be preserved
+  // OS-specific native event can optionally be preserved.
+  // This is used to retrieve editing shortcut keys in the environment.
   void* mNativeKeyEvent;
   // A DOM keyCode value or 0.  If a keypress event whose mCharCode is 0, this
   // should be 0.
@@ -412,12 +438,6 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
   // Unique id associated with a keydown / keypress event. It's ok if this wraps
   // over long periods.
   uint32_t mUniqueId;
-
-#ifdef XP_MACOSX
-  // Values given by a native NSEvent, for use with Cocoa NPAPI plugins.
-  uint32_t mNativeModifierFlags;
-  uint16_t mNativeKeyCode;
-#endif  // #ifdef XP_MACOSX
 
   // DOM KeyboardEvent.key
   KeyNameIndex mKeyNameIndex;
@@ -458,21 +478,98 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
   }
 
   /**
+   * If the key is an arrow key, and the current selection is in a vertical
+   * content, the caret should be moved to physically.  However, arrow keys
+   * are mapped to logical move commands in horizontal content.  Therefore,
+   * we need to check writing mode if and only if the key is an arrow key, and
+   * need to remap the command to logical command in vertical content if the
+   * writing mode at selection is vertical.  These methods help to convert
+   * arrow keys in horizontal content to correspnding direction arrow keys
+   * in vertical content.
+   */
+  bool NeedsToRemapNavigationKey() const {
+    // TODO: Use mKeyNameIndex instead.
+    return mKeyCode >= NS_VK_LEFT && mKeyCode <= NS_VK_DOWN;
+  }
+
+  uint32_t GetRemappedKeyCode(const WritingMode& aWritingMode) const {
+    if (!aWritingMode.IsVertical()) {
+      return mKeyCode;
+    }
+    switch (mKeyCode) {
+      case NS_VK_LEFT:
+        return aWritingMode.IsVerticalLR() ? NS_VK_UP : NS_VK_DOWN;
+      case NS_VK_RIGHT:
+        return aWritingMode.IsVerticalLR() ? NS_VK_DOWN : NS_VK_UP;
+      case NS_VK_UP:
+        return NS_VK_LEFT;
+      case NS_VK_DOWN:
+        return NS_VK_RIGHT;
+      default:
+        return mKeyCode;
+    }
+  }
+
+  KeyNameIndex GetRemappedKeyNameIndex(const WritingMode& aWritingMode) const {
+    if (!aWritingMode.IsVertical()) {
+      return mKeyNameIndex;
+    }
+    uint32_t remappedKeyCode = GetRemappedKeyCode(aWritingMode);
+    if (remappedKeyCode == mKeyCode) {
+      return mKeyNameIndex;
+    }
+    switch (remappedKeyCode) {
+      case NS_VK_LEFT:
+        return KEY_NAME_INDEX_ArrowLeft;
+      case NS_VK_RIGHT:
+        return KEY_NAME_INDEX_ArrowRight;
+      case NS_VK_UP:
+        return KEY_NAME_INDEX_ArrowUp;
+      case NS_VK_DOWN:
+        return KEY_NAME_INDEX_ArrowDown;
+      default:
+        MOZ_ASSERT_UNREACHABLE("Add a case for the new remapped key");
+        return mKeyNameIndex;
+    }
+  }
+
+  /**
    * Retrieves all edit commands from mWidget.  This shouldn't be called when
    * the instance is an untrusted event, doesn't have widget or in non-chrome
    * process.
+   *
+   * @param aWritingMode
+   *                    When writing mode of focused element is vertical, this
+   *                    will resolve some key's physical direction to logical
+   *                    direction.  For doing it, this must be set to the
+   *                    writing mode at current selection.  However, when there
+   *                    is no focused element and no selection ranges, this
+   *                    should be set to Nothing().  Using the result of
+   *                    `TextEventDispatcher::MaybeQueryWritingModeAtSelection()`
+   *                    is recommended.
    */
-  void InitAllEditCommands();
+  MOZ_CAN_RUN_SCRIPT void InitAllEditCommands(
+      const Maybe<WritingMode>& aWritingMode);
 
   /**
    * Retrieves edit commands from mWidget only for aType.  This shouldn't be
    * called when the instance is an untrusted event or doesn't have widget.
    *
+   * @param aWritingMode
+   *                    When writing mode of focused element is vertical, this
+   *                    will resolve some key's physical direction to logical
+   *                    direction.  For doing it, this must be set to the
+   *                    writing mode at current selection.  However, when there
+   *                    is no focused element and no selection ranges, this
+   *                    should be set to Nothing().  Using the result of
+   *                    `TextEventDispatcher::MaybeQueryWritingModeAtSelection()`
+   *                    is recommended.
    * @return            false if some resource is not available to get
    *                    commands unexpectedly.  Otherwise, true even if
    *                    retrieved command is nothing.
    */
-  bool InitEditCommandsFor(nsIWidget::NativeKeyBindingsType aType);
+  MOZ_CAN_RUN_SCRIPT bool InitEditCommandsFor(
+      NativeKeyBindingsType aType, const Maybe<WritingMode>& aWritingMode);
 
   /**
    * PreventNativeKeyBindings() makes the instance to not cause any edit
@@ -491,7 +588,7 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
    * EditCommandsConstRef() returns reference to edit commands for aType.
    */
   const nsTArray<CommandInt>& EditCommandsConstRef(
-      nsIWidget::NativeKeyBindingsType aType) const {
+      NativeKeyBindingsType aType) const {
     return const_cast<WidgetKeyboardEvent*>(this)->EditCommandsRef(aType);
   }
 
@@ -499,12 +596,11 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
    * IsEditCommandsInitialized() returns true if edit commands for aType
    * was already initialized.  Otherwise, false.
    */
-  bool IsEditCommandsInitialized(nsIWidget::NativeKeyBindingsType aType) const {
+  bool IsEditCommandsInitialized(NativeKeyBindingsType aType) const {
     return const_cast<WidgetKeyboardEvent*>(this)->IsEditCommandsInitializedRef(
         aType);
   }
 
-#ifdef DEBUG
   /**
    * AreAllEditCommandsInitialized() returns true if edit commands for all
    * types were already initialized.  Otherwise, false.
@@ -514,7 +610,6 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
            mEditCommandsForMultiLineEditorInitialized &&
            mEditCommandsForRichTextEditorInitialized;
   }
-#endif  // #ifdef DEBUG
 
   /**
    * Execute edit commands for aType.
@@ -523,8 +618,9 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
    *                false, otherwise.
    */
   typedef void (*DoCommandCallback)(Command, void*);
-  bool ExecuteEditCommands(nsIWidget::NativeKeyBindingsType aType,
-                           DoCommandCallback aCallback, void* aCallbackData);
+  MOZ_CAN_RUN_SCRIPT bool ExecuteEditCommands(NativeKeyBindingsType aType,
+                                              DoCommandCallback aCallback,
+                                              void* aCallbackData);
 
   // If the key should cause keypress events, this returns true.
   // Otherwise, false.
@@ -660,7 +756,6 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
       case KEY_NAME_INDEX_Alt:
       case KEY_NAME_INDEX_Control:
       case KEY_NAME_INDEX_Meta:
-      case KEY_NAME_INDEX_OS:
       case KEY_NAME_INDEX_Shift:
         return true;
       default:
@@ -702,14 +797,6 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
     // is destroyed.
     mNativeKeyEvent = nullptr;
     mUniqueId = aEvent.mUniqueId;
-#ifdef XP_MACOSX
-    mNativeKeyCode = aEvent.mNativeKeyCode;
-    mNativeModifierFlags = aEvent.mNativeModifierFlags;
-    mNativeCharacters.Assign(aEvent.mNativeCharacters);
-    mNativeCharactersIgnoringModifiers.Assign(
-        aEvent.mNativeCharactersIgnoringModifiers);
-    mPluginTextEventString.Assign(aEvent.mPluginTextEventString);
-#endif
     mIsSynthesizedByTIP = aEvent.mIsSynthesizedByTIP;
     mMaybeSkippableInRemoteProcess = aEvent.mMaybeSkippableInRemoteProcess;
     mUseLegacyKeyCodeAndCharCodeValues =
@@ -757,9 +844,8 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
  private:
   static const char16_t* const kKeyNames[];
   static const char16_t* const kCodeNames[];
-  typedef nsDataHashtable<nsStringHashKey, KeyNameIndex> KeyNameIndexHashtable;
-  typedef nsDataHashtable<nsStringHashKey, CodeNameIndex>
-      CodeNameIndexHashtable;
+  typedef nsTHashMap<nsStringHashKey, KeyNameIndex> KeyNameIndexHashtable;
+  typedef nsTHashMap<nsStringHashKey, CodeNameIndex> CodeNameIndexHashtable;
   static KeyNameIndexHashtable* sKeyNameIndexHashtable;
   static CodeNameIndexHashtable* sCodeNameIndexHashtable;
 
@@ -771,14 +857,13 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
   CopyableTArray<CommandInt> mEditCommandsForMultiLineEditor;
   CopyableTArray<CommandInt> mEditCommandsForRichTextEditor;
 
-  nsTArray<CommandInt>& EditCommandsRef(
-      nsIWidget::NativeKeyBindingsType aType) {
+  nsTArray<CommandInt>& EditCommandsRef(NativeKeyBindingsType aType) {
     switch (aType) {
-      case nsIWidget::NativeKeyBindingsForSingleLineEditor:
+      case NativeKeyBindingsType::SingleLineEditor:
         return mEditCommandsForSingleLineEditor;
-      case nsIWidget::NativeKeyBindingsForMultiLineEditor:
+      case NativeKeyBindingsType::MultiLineEditor:
         return mEditCommandsForMultiLineEditor;
-      case nsIWidget::NativeKeyBindingsForRichTextEditor:
+      case NativeKeyBindingsType::RichTextEditor:
         return mEditCommandsForRichTextEditor;
       default:
         MOZ_MAKE_COMPILER_ASSUME_IS_UNREACHABLE(
@@ -792,13 +877,13 @@ class WidgetKeyboardEvent : public WidgetInputEvent {
   bool mEditCommandsForMultiLineEditorInitialized;
   bool mEditCommandsForRichTextEditorInitialized;
 
-  bool& IsEditCommandsInitializedRef(nsIWidget::NativeKeyBindingsType aType) {
+  bool& IsEditCommandsInitializedRef(NativeKeyBindingsType aType) {
     switch (aType) {
-      case nsIWidget::NativeKeyBindingsForSingleLineEditor:
+      case NativeKeyBindingsType::SingleLineEditor:
         return mEditCommandsForSingleLineEditorInitialized;
-      case nsIWidget::NativeKeyBindingsForMultiLineEditor:
+      case NativeKeyBindingsType::MultiLineEditor:
         return mEditCommandsForMultiLineEditorInitialized;
-      case nsIWidget::NativeKeyBindingsForRichTextEditor:
+      case NativeKeyBindingsType::RichTextEditor:
         return mEditCommandsForRichTextEditorInitialized;
       default:
         MOZ_MAKE_COMPILER_ASSUME_IS_UNREACHABLE(
@@ -815,6 +900,7 @@ class WidgetCompositionEvent : public WidgetGUIEvent {
  private:
   friend class mozilla::dom::PBrowserParent;
   friend class mozilla::dom::PBrowserChild;
+  ALLOW_DEPRECATED_READPARAM
 
   WidgetCompositionEvent() : mOriginalMessage(eVoidEvent) {}
 
@@ -822,8 +908,10 @@ class WidgetCompositionEvent : public WidgetGUIEvent {
   virtual WidgetCompositionEvent* AsCompositionEvent() override { return this; }
 
   WidgetCompositionEvent(bool aIsTrusted, EventMessage aMessage,
-                         nsIWidget* aWidget)
-      : WidgetGUIEvent(aIsTrusted, aMessage, aWidget, eCompositionEventClass),
+                         nsIWidget* aWidget,
+                         const WidgetEventTime* aTime = nullptr)
+      : WidgetGUIEvent(aIsTrusted, aMessage, aWidget, eCompositionEventClass,
+                       aTime),
         mNativeIMEContext(aWidget),
         mOriginalMessage(eVoidEvent) {}
 
@@ -832,7 +920,7 @@ class WidgetCompositionEvent : public WidgetGUIEvent {
                "Duplicate() must be overridden by sub class");
     // Not copying widget, it is a weak reference.
     WidgetCompositionEvent* result =
-        new WidgetCompositionEvent(false, mMessage, nullptr);
+        new WidgetCompositionEvent(false, mMessage, nullptr, this);
     result->AssignCompositionEventData(*this, true);
     result->mFlags = mFlags;
     return result;
@@ -852,6 +940,11 @@ class WidgetCompositionEvent : public WidgetGUIEvent {
   // If the instance is a clone of another event, mOriginalMessage stores
   // the another event's mMessage.
   EventMessage mOriginalMessage;
+
+  // Composition ID considered by TextComposition.  If the event has not been
+  // handled by TextComposition yet, this is 0.  And also if the event is for
+  // a composition synthesized in a content process, this is always 0.
+  uint32_t mCompositionId = 0;
 
   void AssignCompositionEventData(const WidgetCompositionEvent& aEvent,
                                   bool aCopyTargets) {
@@ -909,10 +1002,10 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
  private:
   friend class dom::PBrowserParent;
   friend class dom::PBrowserChild;
+  ALLOW_DEPRECATED_READPARAM
 
   WidgetQueryContentEvent()
-      : mSucceeded(false),
-        mUseNativeLineBreak(true),
+      : mUseNativeLineBreak(true),
         mWithFontRanges(false),
         mNeedsToFlushLayout(true) {
     MOZ_CRASH("WidgetQueryContentEvent is created without proper arguments");
@@ -926,7 +1019,6 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
   WidgetQueryContentEvent(bool aIsTrusted, EventMessage aMessage,
                           nsIWidget* aWidget)
       : WidgetGUIEvent(aIsTrusted, aMessage, aWidget, eQueryContentEventClass),
-        mSucceeded(false),
         mUseNativeLineBreak(true),
         mWithFontRanges(false),
         mNeedsToFlushLayout(true) {}
@@ -936,12 +1028,11 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
       : WidgetGUIEvent(aOtherEvent.IsTrusted(), aMessage,
                        const_cast<nsIWidget*>(aOtherEvent.mWidget.get()),
                        eQueryContentEventClass),
-        mSucceeded(false),
         mUseNativeLineBreak(aOtherEvent.mUseNativeLineBreak),
         mWithFontRanges(false),
         mNeedsToFlushLayout(aOtherEvent.mNeedsToFlushLayout) {}
 
-  virtual WidgetEvent* Duplicate() const override {
+  WidgetEvent* Duplicate() const override {
     // This event isn't an internal event of any DOM event.
     NS_ASSERTION(!IsAllowedToDispatchDOMEvent(),
                  "WidgetQueryContentEvent needs to support Duplicate()");
@@ -1016,31 +1107,57 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
     Init(aOptions);
   }
 
-  bool NeedsToFlushLayout() const { return mNeedsToFlushLayout; }
-
   void RequestFontRanges() {
-    NS_ASSERTION(mMessage == eQueryTextContent, "not querying text content");
+    MOZ_ASSERT(mMessage == eQueryTextContent);
     mWithFontRanges = true;
   }
 
-  uint32_t GetSelectionStart(void) const {
-    NS_ASSERTION(mMessage == eQuerySelectedText, "not querying selection");
-    return mReply.mOffset + (mReply.mReversed ? mReply.mString.Length() : 0);
+  bool Succeeded() const {
+    if (mReply.isNothing()) {
+      return false;
+    }
+    switch (mMessage) {
+      case eQueryTextContent:
+      case eQueryTextRect:
+      case eQueryCaretRect:
+        return mReply->mOffsetAndData.isSome();
+      default:
+        return true;
+    }
   }
 
-  uint32_t GetSelectionEnd(void) const {
-    NS_ASSERTION(mMessage == eQuerySelectedText, "not querying selection");
-    return mReply.mOffset + (mReply.mReversed ? 0 : mReply.mString.Length());
+  bool Failed() const { return !Succeeded(); }
+
+  bool FoundSelection() const {
+    MOZ_ASSERT(mMessage == eQuerySelectedText);
+    return Succeeded() && mReply->mOffsetAndData.isSome();
   }
 
-  mozilla::WritingMode GetWritingMode(void) const {
-    NS_ASSERTION(mMessage == eQuerySelectedText ||
-                     mMessage == eQueryCaretRect || mMessage == eQueryTextRect,
-                 "not querying selection or text rect");
-    return mReply.mWritingMode;
+  bool FoundChar() const {
+    MOZ_ASSERT(mMessage == eQueryCharacterAtPoint);
+    return Succeeded() && mReply->mOffsetAndData.isSome();
   }
 
-  bool mSucceeded;
+  bool FoundTentativeCaretOffset() const {
+    MOZ_ASSERT(mMessage == eQueryCharacterAtPoint);
+    return Succeeded() && mReply->mTentativeCaretOffset.isSome();
+  }
+
+  bool DidNotFindSelection() const {
+    MOZ_ASSERT(mMessage == eQuerySelectedText);
+    return Failed() || mReply->mOffsetAndData.isNothing();
+  }
+
+  bool DidNotFindChar() const {
+    MOZ_ASSERT(mMessage == eQueryCharacterAtPoint);
+    return Failed() || mReply->mOffsetAndData.isNothing();
+  }
+
+  bool DidNotFindTentativeCaretOffset() const {
+    MOZ_ASSERT(mMessage == eQueryCharacterAtPoint);
+    return Failed() || mReply->mTentativeCaretOffset.isNothing();
+  }
+
   bool mUseNativeLineBreak;
   bool mWithFontRanges;
   bool mNeedsToFlushLayout;
@@ -1092,8 +1209,7 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
         return true;
       }
       // Otherwise, we don't allow too large offset.
-      CheckedInt<uint32_t> absOffset =
-          CheckedInt<uint32_t>(mOffset) + aInsertionPointOffset;
+      CheckedInt<uint32_t> absOffset(mOffset + aInsertionPointOffset);
       if (NS_WARN_IF(!absOffset.isValid())) {
         mOffset = UINT32_MAX;
         return false;
@@ -1104,12 +1220,12 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
   } mInput;
 
   struct Reply final {
-    void* mContentsRoot;
-    uint32_t mOffset;
+    EventMessage const mEventMessage;
+    void* mContentsRoot = nullptr;
+    Maybe<OffsetAndData<uint32_t>> mOffsetAndData;
     // mTentativeCaretOffset is used by only eQueryCharacterAtPoint.
     // This is the offset where caret would be if user clicked at the mRefPoint.
-    uint32_t mTentativeCaretOffset;
-    nsString mString;
+    Maybe<uint32_t> mTentativeCaretOffset;
     // mRect is used by eQueryTextRect, eQueryCaretRect, eQueryCharacterAtPoint
     // and eQueryEditorRect. The coordinates is system coordinates relative to
     // the top level widget of mFocusedWidget.  E.g., if a <xul:panel> which
@@ -1117,7 +1233,7 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
     // to the owner window, not the <xul:panel>.
     mozilla::LayoutDeviceIntRect mRect;
     // The return widget has the caret. This is set at all query events.
-    nsIWidget* mFocusedWidget;
+    nsIWidget* mFocusedWidget = nullptr;
     // mozilla::WritingMode value at the end (focus) of the selection
     mozilla::WritingMode mWritingMode;
     // Used by eQuerySelectionAsTransferable
@@ -1127,23 +1243,137 @@ class WidgetQueryContentEvent : public WidgetGUIEvent {
     // Used by eQueryTextRectArray
     CopyableTArray<mozilla::LayoutDeviceIntRect> mRectArray;
     // true if selection is reversed (end < start)
-    bool mReversed;
-    // true if the selection exists
-    bool mHasSelection;
+    bool mReversed = false;
     // true if DOM element under mouse belongs to widget
-    bool mWidgetIsHit;
+    bool mWidgetIsHit = false;
+    // true if mContentRoot is focused editable content
+    bool mIsEditableContent = false;
 
-    Reply()
-        : mContentsRoot(nullptr),
-          mOffset(NOT_FOUND),
-          mTentativeCaretOffset(NOT_FOUND),
-          mFocusedWidget(nullptr),
-          mReversed(false),
-          mHasSelection(false),
-          mWidgetIsHit(false) {}
-  } mReply;
+    Reply() = delete;
+    explicit Reply(EventMessage aEventMessage) : mEventMessage(aEventMessage) {}
 
-  enum { NOT_FOUND = UINT32_MAX };
+    // Don't allow to copy/move because of `mEventMessage`.
+    Reply(const Reply& aOther) = delete;
+    Reply(Reply&& aOther) = delete;
+    Reply& operator=(const Reply& aOther) = delete;
+    Reply& operator=(Reply&& aOther) = delete;
+
+    MOZ_NEVER_INLINE_DEBUG uint32_t StartOffset() const {
+      MOZ_ASSERT(mOffsetAndData.isSome());
+      return mOffsetAndData->StartOffset();
+    }
+    MOZ_NEVER_INLINE_DEBUG uint32_t EndOffset() const {
+      MOZ_ASSERT(mOffsetAndData.isSome());
+      return mOffsetAndData->EndOffset();
+    }
+    MOZ_NEVER_INLINE_DEBUG uint32_t DataLength() const {
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mOffsetAndData.isSome() ? mOffsetAndData->Length() : 0;
+    }
+    MOZ_NEVER_INLINE_DEBUG uint32_t AnchorOffset() const {
+      MOZ_ASSERT(mEventMessage == eQuerySelectedText);
+      MOZ_ASSERT(mOffsetAndData.isSome());
+      return StartOffset() + (mReversed ? DataLength() : 0);
+    }
+
+    MOZ_NEVER_INLINE_DEBUG uint32_t FocusOffset() const {
+      MOZ_ASSERT(mEventMessage == eQuerySelectedText);
+      MOZ_ASSERT(mOffsetAndData.isSome());
+      return StartOffset() + (mReversed ? 0 : DataLength());
+    }
+
+    const WritingMode& WritingModeRef() const {
+      MOZ_ASSERT(mEventMessage == eQuerySelectedText ||
+                 mEventMessage == eQueryCaretRect ||
+                 mEventMessage == eQueryTextRect);
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mWritingMode;
+    }
+
+    MOZ_NEVER_INLINE_DEBUG const nsString& DataRef() const {
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mOffsetAndData.isSome() ? mOffsetAndData->DataRef()
+                                     : EmptyString();
+    }
+    MOZ_NEVER_INLINE_DEBUG bool IsDataEmpty() const {
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mOffsetAndData.isSome() ? mOffsetAndData->IsDataEmpty() : true;
+    }
+    MOZ_NEVER_INLINE_DEBUG bool IsOffsetInRange(uint32_t aOffset) const {
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mOffsetAndData.isSome() ? mOffsetAndData->IsOffsetInRange(aOffset)
+                                     : false;
+    }
+    MOZ_NEVER_INLINE_DEBUG bool IsOffsetInRangeOrEndOffset(
+        uint32_t aOffset) const {
+      MOZ_ASSERT(mOffsetAndData.isSome() ||
+                 mEventMessage == eQuerySelectedText);
+      return mOffsetAndData.isSome()
+                 ? mOffsetAndData->IsOffsetInRangeOrEndOffset(aOffset)
+                 : false;
+    }
+    MOZ_NEVER_INLINE_DEBUG void TruncateData(uint32_t aLength = 0) {
+      MOZ_ASSERT(mOffsetAndData.isSome());
+      mOffsetAndData->TruncateData(aLength);
+    }
+
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Reply& aReply) {
+      aStream << "{ ";
+      if (aReply.mEventMessage == eQuerySelectedText ||
+          aReply.mEventMessage == eQueryTextContent ||
+          aReply.mEventMessage == eQueryTextRect ||
+          aReply.mEventMessage == eQueryCaretRect ||
+          aReply.mEventMessage == eQueryCharacterAtPoint) {
+        aStream << "mOffsetAndData=" << ToString(aReply.mOffsetAndData).c_str()
+                << ", ";
+        if (aReply.mEventMessage == eQueryCharacterAtPoint) {
+          aStream << "mTentativeCaretOffset="
+                  << ToString(aReply.mTentativeCaretOffset).c_str() << ", ";
+        }
+      }
+      if (aReply.mOffsetAndData.isSome() && aReply.mOffsetAndData->Length()) {
+        if (aReply.mEventMessage == eQuerySelectedText) {
+          aStream << ", mReversed=" << (aReply.mReversed ? "true" : "false");
+        }
+        if (aReply.mEventMessage == eQuerySelectionAsTransferable) {
+          aStream << ", mTransferable=0x" << aReply.mTransferable;
+        }
+      }
+      if (aReply.mEventMessage == eQuerySelectedText ||
+          aReply.mEventMessage == eQueryTextRect ||
+          aReply.mEventMessage == eQueryCaretRect) {
+        aStream << ", mWritingMode=" << ToString(aReply.mWritingMode).c_str();
+      }
+      aStream << ", mContentsRoot=0x" << aReply.mContentsRoot
+              << ", mIsEditableContent="
+              << (aReply.mIsEditableContent ? "true" : "false")
+              << ", mFocusedWidget=0x" << aReply.mFocusedWidget;
+      if (aReply.mEventMessage == eQueryTextContent) {
+        aStream << ", mFontRanges={ Length()=" << aReply.mFontRanges.Length()
+                << " }";
+      } else if (aReply.mEventMessage == eQueryTextRect ||
+                 aReply.mEventMessage == eQueryCaretRect ||
+                 aReply.mEventMessage == eQueryCharacterAtPoint) {
+        aStream << ", mRect=" << ToString(aReply.mRect).c_str();
+      } else if (aReply.mEventMessage == eQueryTextRectArray) {
+        aStream << ", mRectArray={ Length()=" << aReply.mRectArray.Length()
+                << " }";
+      } else if (aReply.mEventMessage == eQueryDOMWidgetHittest) {
+        aStream << ", mWidgetIsHit="
+                << (aReply.mWidgetIsHit ? "true" : "false");
+      }
+      return aStream << " }";
+    }
+  };
+
+  void EmplaceReply() { mReply.emplace(mMessage); }
+  Maybe<Reply> mReply;
 
   // values of mComputedScrollAction
   enum { SCROLL_ACTION_NONE, SCROLL_ACTION_LINE, SCROLL_ACTION_PAGE };
@@ -1157,6 +1387,7 @@ class WidgetSelectionEvent : public WidgetGUIEvent {
  private:
   friend class mozilla::dom::PBrowserParent;
   friend class mozilla::dom::PBrowserChild;
+  ALLOW_DEPRECATED_READPARAM
 
   WidgetSelectionEvent()
       : mOffset(0),
@@ -1211,41 +1442,36 @@ class WidgetSelectionEvent : public WidgetGUIEvent {
  ******************************************************************************/
 
 class InternalEditorInputEvent : public InternalUIEvent {
- private:
-  InternalEditorInputEvent()
-      : mData(VoidString()),
-        mInputType(EditorInputType::eUnknown),
-        mIsComposing(false) {}
-
  public:
+  InternalEditorInputEvent() = delete;
   virtual InternalEditorInputEvent* AsEditorInputEvent() override {
     return this;
   }
 
   InternalEditorInputEvent(bool aIsTrusted, EventMessage aMessage,
-                           nsIWidget* aWidget = nullptr)
-      : InternalUIEvent(aIsTrusted, aMessage, aWidget, eEditorInputEventClass),
-        mData(VoidString()),
-        mInputType(EditorInputType::eUnknown) {}
+                           nsIWidget* aWidget = nullptr,
+                           const WidgetEventTime* aTime = nullptr)
+      : InternalUIEvent(aIsTrusted, aMessage, aWidget, eEditorInputEventClass,
+                        aTime) {}
 
   virtual WidgetEvent* Duplicate() const override {
     MOZ_ASSERT(mClass == eEditorInputEventClass,
                "Duplicate() must be overridden by sub class");
     // Not copying widget, it is a weak reference.
     InternalEditorInputEvent* result =
-        new InternalEditorInputEvent(false, mMessage, nullptr);
+        new InternalEditorInputEvent(false, mMessage, nullptr, this);
     result->AssignEditorInputEventData(*this, true);
     result->mFlags = mFlags;
     return result;
   }
 
-  nsString mData;
+  nsString mData = VoidString();
   RefPtr<dom::DataTransfer> mDataTransfer;
   OwningNonNullStaticRangeArray mTargetRanges;
 
-  EditorInputType mInputType;
+  EditorInputType mInputType = EditorInputType::eUnknown;
 
-  bool mIsComposing;
+  bool mIsComposing = false;
 
   void AssignEditorInputEventData(const InternalEditorInputEvent& aEvent,
                                   bool aCopyTargets) {
@@ -1269,8 +1495,49 @@ class InternalEditorInputEvent : public InternalUIEvent {
 
  private:
   static const char16_t* const kInputTypeNames[];
-  typedef nsDataHashtable<nsStringHashKey, EditorInputType> InputTypeHashtable;
+  using InputTypeHashtable = nsTHashMap<nsStringHashKey, EditorInputType>;
   static InputTypeHashtable* sInputTypeHashtable;
+};
+
+/******************************************************************************
+ * mozilla::InternalLegacyTextEvent
+ ******************************************************************************/
+
+class InternalLegacyTextEvent : public InternalUIEvent {
+ public:
+  InternalLegacyTextEvent() = delete;
+
+  virtual InternalLegacyTextEvent* AsLegacyTextEvent() override { return this; }
+
+  InternalLegacyTextEvent(bool aIsTrusted, EventMessage aMessage,
+                          nsIWidget* aWidget = nullptr,
+                          const WidgetEventTime* aTime = nullptr)
+      : InternalUIEvent(aIsTrusted, aMessage, aWidget, eLegacyTextEventClass,
+                        aTime) {}
+
+  virtual WidgetEvent* Duplicate() const override {
+    MOZ_ASSERT(mClass == eLegacyTextEventClass,
+               "Duplicate() must be overridden by sub class");
+    // Not copying widget, it is a weak reference.
+    InternalLegacyTextEvent* result =
+        new InternalLegacyTextEvent(false, mMessage, nullptr, this);
+    result->AssignLegacyTextEventData(*this, true);
+    result->mFlags = mFlags;
+    return result;
+  }
+
+  nsString mData;
+  RefPtr<dom::DataTransfer> mDataTransfer;
+  EditorInputType mInputType = EditorInputType::eUnknown;
+
+  void AssignLegacyTextEventData(const InternalLegacyTextEvent& aEvent,
+                                 bool aCopyTargets) {
+    AssignUIEventData(aEvent, aCopyTargets);
+
+    mData = aEvent.mData;
+    mDataTransfer = aEvent.mDataTransfer;
+    mInputType = aEvent.mInputType;
+  }
 };
 
 }  // namespace mozilla

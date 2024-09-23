@@ -8,11 +8,14 @@
 
 #include <cstdint>
 #include <functional>
+#include "mozIThirdPartyUtil.h"
 #include "prtime.h"
 #include "nsString.h"
 #include "nsICookie.h"
+#include "mozilla/net/NeckoChannelParams.h"
 
 class nsIChannel;
+class nsIConsoleReportCollector;
 class nsICookieJarSettings;
 class nsIEffectiveTLDService;
 class nsIPrincipal;
@@ -87,7 +90,7 @@ class CookieCommons final {
 
   static bool CheckName(const CookieStruct& aCookieData);
 
-  static bool CheckHttpValue(const CookieStruct& aCookieData);
+  static bool CheckValue(const CookieStruct& aCookieData);
 
   static bool CheckCookiePermission(nsIChannel* aChannel,
                                     CookieStruct& aCookieData);
@@ -107,7 +110,30 @@ class CookieCommons final {
   static already_AddRefed<nsICookieJarSettings> GetCookieJarSettings(
       nsIChannel* aChannel);
 
-  static bool ShouldIncludeCrossSiteCookieForDocument(Cookie* aCookie);
+  static bool ShouldIncludeCrossSiteCookieForDocument(Cookie* aCookie,
+                                                      dom::Document* aDocument);
+
+  static bool IsSchemeSupported(nsIPrincipal* aPrincipal);
+  static bool IsSchemeSupported(nsIURI* aURI);
+  static bool IsSchemeSupported(const nsACString& aScheme);
+
+  static nsICookie::schemeType URIToSchemeType(nsIURI* aURI);
+
+  static nsICookie::schemeType PrincipalToSchemeType(nsIPrincipal* aPrincipal);
+
+  static nsICookie::schemeType SchemeToSchemeType(const nsACString& aScheme);
+
+  // Returns true if the channel is a safe top-level navigation or if it's a
+  // download request
+  static bool IsSafeTopLevelNav(nsIChannel* aChannel);
+
+  // Returns true if the channel is a foreign with respect to the host-uri.
+  // For loads of TYPE_DOCUMENT, this function returns true if it's a cross
+  // site navigation.
+  // `aHadCrossSiteRedirects` will be true iff the channel had a cross-site
+  // redirect before the final URI.
+  static bool IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI,
+                                bool* aHadCrossSiteRedirects);
 };
 
 }  // namespace net

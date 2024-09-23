@@ -9,49 +9,10 @@
 #include "mozilla/Sprintf.h"
 #include "mozilla/SyncRunnable.h"
 #include "mozilla/Telemetry.h"
+#include "nsServiceManagerUtils.h"
 #include "nsICrashService.h"
 #include "nsXULAppAPI.h"
-
-// Consistency checking for nsICrashService constants.  We depend on the
-// equivalence between nsICrashService values and GeckoProcessType values
-// in the code below.  Making them equal also ensures that if new process
-// types are added, people will know they may need to add crash reporting
-// support in various places because compilation errors will be triggered here.
-static_assert(nsICrashService::PROCESS_TYPE_MAIN ==
-                  (int)GeckoProcessType_Default,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_PLUGIN ==
-                  (int)GeckoProcessType_Plugin,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_CONTENT ==
-                  (int)GeckoProcessType_Content,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_IPDLUNITTEST ==
-                  (int)GeckoProcessType_IPDLUnitTest,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_GMPLUGIN ==
-                  (int)GeckoProcessType_GMPlugin,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_GPU == (int)GeckoProcessType_GPU,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_VR == (int)GeckoProcessType_VR,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_RDD == (int)GeckoProcessType_RDD,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_SOCKET ==
-                  (int)GeckoProcessType_Socket,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_SANDBOX_BROKER ==
-                  (int)GeckoProcessType_RemoteSandboxBroker,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-static_assert(nsICrashService::PROCESS_TYPE_FORKSERVER ==
-                  (int)GeckoProcessType_ForkServer,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
-// Add new static asserts here if you add more process types.
-// Update this static assert as well.
-static_assert(nsICrashService::PROCESS_TYPE_FORKSERVER + 1 ==
-                  (int)GeckoProcessType_End,
-              "GeckoProcessType enum is out of sync with nsICrashService!");
+#include "nsIFile.h"
 
 namespace mozilla {
 namespace ipc {
@@ -64,20 +25,23 @@ CrashReporterHost::CrashReporterHost(GeckoProcessType aProcessType,
       mFinalized(false) {}
 
 bool CrashReporterHost::GenerateCrashReport(base::ProcessId aPid) {
-  if (!TakeCrashedChildMinidump(aPid, nullptr)) {
+  if (!TakeCrashedChildMinidump(aPid)) {
     return false;
   }
-  return FinalizeCrashReport();
+
+  FinalizeCrashReport();
+  RecordCrash(mProcessType, nsICrashService::CRASH_TYPE_CRASH, mDumpID);
+  return true;
 }
 
 RefPtr<nsIFile> CrashReporterHost::TakeCrashedChildMinidump(
-    base::ProcessId aPid, uint32_t* aOutSequence) {
+    base::ProcessId aPid) {
   CrashReporter::AnnotationTable annotations;
   MOZ_ASSERT(!HasMinidump());
 
   RefPtr<nsIFile> crashDump;
   if (!CrashReporter::TakeMinidumpForChild(aPid, getter_AddRefs(crashDump),
-                                           annotations, aOutSequence)) {
+                                           annotations)) {
     return nullptr;
   }
   if (!AdoptMinidump(crashDump, annotations)) {
@@ -96,16 +60,7 @@ bool CrashReporterHost::AdoptMinidump(nsIFile* aFile,
   return true;
 }
 
-int32_t CrashReporterHost::GetCrashType() {
-  if (mExtraAnnotations[CrashReporter::Annotation::PluginHang].EqualsLiteral(
-          "1")) {
-    return nsICrashService::CRASH_TYPE_HANG;
-  }
-
-  return nsICrashService::CRASH_TYPE_CRASH;
-}
-
-bool CrashReporterHost::FinalizeCrashReport() {
+void CrashReporterHost::FinalizeCrashReport() {
   MOZ_ASSERT(!mFinalized);
   MOZ_ASSERT(HasMinidump());
 
@@ -118,11 +73,13 @@ bool CrashReporterHost::FinalizeCrashReport() {
       nsDependentCString(startTime);
 
   CrashReporter::WriteExtraFile(mDumpID, mExtraAnnotations);
-
-  RecordCrash(mProcessType, GetCrashType(), mDumpID);
-
   mFinalized = true;
-  return true;
+}
+
+void CrashReporterHost::DeleteCrashReport() {
+  if (mFinalized && HasMinidump()) {
+    CrashReporter::DeleteMinidumpFilesForID(mDumpID, Some(u"browser"_ns));
+  }
 }
 
 /* static */
@@ -149,22 +106,19 @@ void CrashReporterHost::RecordCrashWithTelemetry(GeckoProcessType aProcessType,
                                                  int32_t aCrashType) {
   nsCString key;
 
-  if (aProcessType == GeckoProcessType_Plugin &&
-      aCrashType == nsICrashService::CRASH_TYPE_HANG) {
-    key.AssignLiteral("pluginhang");
-  } else {
-    switch (aProcessType) {
-#define GECKO_PROCESS_TYPE(enum_name, string_name, xre_name, bin_type) \
-  case GeckoProcessType_##enum_name:                                   \
-    key.AssignLiteral(string_name);                                    \
+  switch (aProcessType) {
+#define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
+                           process_bin_type, procinfo_typename,               \
+                           webidl_typename, allcaps_name)                     \
+  case GeckoProcessType_##enum_name:                                          \
+    key.AssignLiteral(string_name);                                           \
     break;
 #include "mozilla/GeckoProcessTypes.h"
 #undef GECKO_PROCESS_TYPE
-      // We can't really hit this, thanks to the above switch, but having it
-      // here will placate the compiler.
-      default:
-        MOZ_ASSERT_UNREACHABLE("unknown process type");
-    }
+    // We can't really hit this, thanks to the above switch, but having it
+    // here will placate the compiler.
+    default:
+      MOZ_ASSERT_UNREACHABLE("unknown process type");
   }
 
   Telemetry::Accumulate(Telemetry::SUBPROCESS_CRASHES_WITH_DUMP, key, 1);
@@ -194,48 +148,32 @@ void CrashReporterHost::NotifyCrashService(GeckoProcessType aProcessType,
       break;
   }
 
-  RefPtr<Promise> promise;
+  RefPtr<dom::Promise> promise;
   crashService->AddCrash(processType, aCrashType, aChildDumpID,
                          getter_AddRefs(promise));
 }
 
-void CrashReporterHost::AddAnnotation(CrashReporter::Annotation aKey,
-                                      bool aValue) {
-  mExtraAnnotations[aKey] =
-      aValue ? NS_LITERAL_CSTRING("1") : NS_LITERAL_CSTRING("0");
+void CrashReporterHost::AddAnnotationBool(CrashReporter::Annotation aKey,
+                                          bool aValue) {
+  MOZ_ASSERT(TypeOfAnnotation(aKey) == CrashReporter::AnnotationType::Boolean,
+             "Wrong annotation type");
+  mExtraAnnotations[aKey] = aValue ? "1"_ns : "0"_ns;
 }
 
-void CrashReporterHost::AddAnnotation(CrashReporter::Annotation aKey,
-                                      int aValue) {
+void CrashReporterHost::AddAnnotationU32(CrashReporter::Annotation aKey,
+                                         uint32_t aValue) {
+  MOZ_ASSERT(TypeOfAnnotation(aKey) == CrashReporter::AnnotationType::U32,
+             "Wrong annotation type");
   nsAutoCString valueString;
   valueString.AppendInt(aValue);
   mExtraAnnotations[aKey] = valueString;
 }
 
-void CrashReporterHost::AddAnnotation(CrashReporter::Annotation aKey,
-                                      unsigned int aValue) {
-  nsAutoCString valueString;
-  valueString.AppendInt(aValue);
-  mExtraAnnotations[aKey] = valueString;
-}
-
-void CrashReporterHost::AddAnnotation(CrashReporter::Annotation aKey,
-                                      const nsACString& aValue) {
+void CrashReporterHost::AddAnnotationNSCString(CrashReporter::Annotation aKey,
+                                               const nsACString& aValue) {
+  MOZ_ASSERT(TypeOfAnnotation(aKey) == CrashReporter::AnnotationType::String,
+             "Wrong annotation type");
   mExtraAnnotations[aKey] = aValue;
-}
-
-bool CrashReporterHost::IsLikelyOOM() {
-  // The data is only populated during the call to `FinalizeCrashReport()`.
-  MOZ_ASSERT(mFinalized);
-
-  // If `OOMAllocationSize` was set, we know that the crash happened
-  // because an allocation failed (`malloc` returned `nullptr`).
-  //
-  // As Unix systems generally allow `malloc` to return a non-null value
-  // even when no virtual memory is available, this doesn't cover all
-  // cases of OOM under Unix (far from it).
-  return mExtraAnnotations[CrashReporter::Annotation::OOMAllocationSize]
-             .Length() > 0;
 }
 
 }  // namespace ipc

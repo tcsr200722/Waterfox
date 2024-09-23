@@ -14,7 +14,7 @@ const TEST_URI = `
   <div id='testid' class='testclass'>Styled Node</div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   const TESTS = [
     { name: "hex", result: "#0f0" },
     { name: "rgb", result: "rgb(0, 255, 0)" },
@@ -32,8 +32,7 @@ add_task(async function() {
     await selectNode("#testid", inspector);
     await basicTest(view, name, result);
 
-    const target = await TargetFactory.forTab(tab);
-    await gDevTools.closeToolbox(target);
+    await gDevTools.closeToolboxForTab(tab);
     gBrowser.removeCurrentTab();
   }
 });

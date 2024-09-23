@@ -8,9 +8,10 @@
 
 #include "MediaStreamTrack.h"
 #include "DOMMediaStream.h"
+#include "CrossGraphPort.h"
+#include "nsClassHashtable.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AudioStreamTrack : public MediaStreamTrack {
  public:
@@ -26,7 +27,10 @@ class AudioStreamTrack : public MediaStreamTrack {
   AudioStreamTrack* AsAudioStreamTrack() override { return this; }
   const AudioStreamTrack* AsAudioStreamTrack() const override { return this; }
 
-  void AddAudioOutput(void* aKey);
+  // Direct output to aSink, or the default output device if aSink is null.
+  // No more than one output may exist for a single aKey at any one time.
+  // Returns a promise that resolves when the device is processing audio.
+  RefPtr<GenericPromise> AddAudioOutput(void* aKey, AudioDeviceInfo* aSink);
   void RemoveAudioOutput(void* aKey);
   void SetAudioOutputVolume(void* aKey, float aVolume);
 
@@ -39,7 +43,6 @@ class AudioStreamTrack : public MediaStreamTrack {
   already_AddRefed<MediaStreamTrack> CloneInternal() override;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* AUDIOSTREAMTRACK_H_ */

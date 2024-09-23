@@ -8,21 +8,30 @@
 const URL = "about:blank";
 const TEST_URL = "http://test2.example.org/";
 let windowActorOptions = {
-  parent: {
-    moduleURI: "resource://testing-common/TestWindowParent.jsm",
-  },
-  child: {
-    moduleURI: "resource://testing-common/TestWindowChild.jsm",
-
-    events: {
-      mozshowdropdown: {},
+  jsm: {
+    parent: {
+      moduleURI: "resource://testing-common/TestWindowParent.jsm",
     },
-
-    observers: ["test-js-window-actor-child-observer", "audio-playback"],
+    child: {
+      moduleURI: "resource://testing-common/TestWindowChild.jsm",
+    },
+  },
+  "sys.mjs": {
+    parent: {
+      esModuleURI: "resource://testing-common/TestWindowParent.sys.mjs",
+    },
+    child: {
+      esModuleURI: "resource://testing-common/TestWindowChild.sys.mjs",
+    },
   },
 };
 
 function declTest(name, cfg) {
+  declTestWithOptions(name, cfg, "jsm");
+  declTestWithOptions(name, cfg, "sys.mjs");
+}
+
+function declTestWithOptions(name, cfg, fileExt) {
   let {
     url = "about:blank",
     allFrames = false,
@@ -30,14 +39,16 @@ function declTest(name, cfg) {
     matches,
     remoteTypes,
     messageManagerGroups,
-    fission,
+    events,
+    observers,
     test,
   } = cfg;
 
-  // Build the actor options object which will be used to register & unregister our window actor.
+  // Build the actor options object which will be used to register & unregister
+  // our window actor.
   let actorOptions = {
-    parent: Object.assign({}, windowActorOptions.parent),
-    child: Object.assign({}, windowActorOptions.child),
+    parent: { ...windowActorOptions[fileExt].parent },
+    child: { ...windowActorOptions[fileExt].child, events, observers },
   };
   actorOptions.allFrames = allFrames;
   actorOptions.includeChrome = includeChrome;
@@ -52,29 +63,19 @@ function declTest(name, cfg) {
   }
 
   // Add a new task for the actor test declared here.
-  add_task(async function() {
+  add_task(async function () {
     info("Entering test: " + name);
 
-    // Create a fresh window with the correct settings, and register our actor.
-    let win = await BrowserTestUtils.openNewBrowserWindow({
-      remote: true,
-      fission,
-    });
+    // Register our actor, and load a new tab with the relevant URL
     ChromeUtils.registerWindowActor("TestWindow", actorOptions);
-
-    // Wait for the provided URL to load in our browser
-    let browser = win.gBrowser.selectedBrowser;
-    BrowserTestUtils.loadURI(browser, url);
-    await BrowserTestUtils.browserLoaded(browser, false, url);
-
-    // Run the provided test
-    info("browser ready");
     try {
-      await Promise.resolve(test(browser, win));
+      await BrowserTestUtils.withNewTab(url, async browser => {
+        info("browser ready");
+        await Promise.resolve(test(browser, window, fileExt));
+      });
     } finally {
-      // Clean up after we're done.
+      // Unregister the actor after the test is complete.
       ChromeUtils.unregisterWindowActor("TestWindow");
-      await BrowserTestUtils.closeWindow(win);
       info("Exiting test: " + name);
     }
   });

@@ -2,9 +2,23 @@
 ## The modifications done are part of the documentation for enabling core18 snaps.
 ## https://snapcraft.io/docs/t/creating-docker-images-for-snapcraft/11739
 
-FROM ubuntu:bionic
+# /!\ The base image must follow the version of the `coreXX` package
+# https://forum.snapcraft.io/t/issues-dockerizing-a-snapcraft-build-process/30294/5
+FROM ubuntu:focal
 
-# Grab dependencies
+ENV LANG='en_US.UTF-8' \
+    LANGUAGE='en_US:en' \
+    LC_ALL='en_US.UTF-8' \
+    PATH="/snap/bin:$PATH" \
+    SNAP='/snap/snapcraft/current' \
+    SNAP_NAME='snapcraft' \
+    SNAP_ARCH='amd64' \
+    TERM='dumb' \
+    TZ='Etc/UTC'
+
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Grab dependencies. snapd is now required per https://github.com/snapcore/snapcraft/pull/3210
 RUN apt-get update && \
     apt-get dist-upgrade --yes && \
     apt-get install --yes \
@@ -18,52 +32,25 @@ RUN apt-get update && \
       git \
       python3 \
       locales \
-      sudo && \
-    apt-get clean && \
-locale-gen en_US.UTF-8
+      snapd \
+      sudo \
+      && \
+locale-gen "$LANG"
 
-ENV LANG="en_US.UTF-8"
-ENV LANGUAGE="en_US:en"
-ENV LC_ALL="en_US.UTF-8"
-ENV PATH="/snap/bin:$PATH"
-ENV SNAP="/snap/snapcraft/current"
-ENV SNAP_NAME="snapcraft"
-ENV SNAP_ARCH="amd64"
+COPY download_and_install_snap.sh .
 
-# Grab the core snap (for backwards compatibility) from the stable channel and
-# unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/core' | jq '.download_url' -r) --output core.snap && \
-    mkdir -p /snap/core && \
-    unsquashfs -d /snap/core/current core.snap && \
-    rm core.snap
+RUN bash download_and_install_snap.sh 'core20'
+RUN bash download_and_install_snap.sh 'gnome-3-38-2004'
+RUN bash download_and_install_snap.sh 'gnome-3-38-2004-sdk'
+RUN bash download_and_install_snap.sh 'snapcraft'
 
-# Grab the core18 snap (which snapcraft uses as a base) from the stable channel
-# and unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/core18' | jq '.download_url' -r) --output core18.snap
-RUN mkdir -p /snap/core18
-RUN unsquashfs -d /snap/core18/current core18.snap
+# Fix Python3 installation: Make sure we use the interpreter from
+# the snapcraft snap:
+RUN unlink /snap/snapcraft/current/usr/bin/python3 && \
+    ln -s /snap/snapcraft/current/usr/bin/python3.* /snap/snapcraft/current/usr/bin/python3 && \
+    echo /snap/snapcraft/current/lib/python3.*/site-packages >> /snap/snapcraft/current/usr/lib/python3/dist-packages/site-packages.pth
 
-# Grab the gnome-3-34-1804 snap from the stable channel
-# and unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/gnome-3-34-1804?channel=stable' | jq '.download_url' -r) --output gnome-3-34-1804.snap
-RUN mkdir -p /snap/gnome-3-34-1804
-RUN unsquashfs -d /snap/gnome-3-34-1804/current gnome-3-34-1804.snap
-
-# Grab the gnome-3-34-1804-sdk snap from the stable channel
-# and unpack it in the proper place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/gnome-3-34-1804-sdk?channel=stable' | jq '.download_url' -r) --output gnome-3-34-1804-sdk.snap
-RUN mkdir -p /snap/gnome-3-34-1804-sdk
-RUN unsquashfs -d /snap/gnome-3-34-1804-sdk/current gnome-3-34-1804-sdk.snap
-
-# Grab the snapcraft snap from the stable channel and unpack it in the proper
-# place.
-RUN curl -L $(curl -H 'X-Ubuntu-Series: 16' 'https://api.snapcraft.io/api/v1/snaps/details/snapcraft?channel=stable' | jq '.download_url' -r) --output snapcraft.snap && \
-    mkdir -p /snap/snapcraft && \
-    unsquashfs -d /snap/snapcraft/current snapcraft.snap && \
-    rm snapcraft.snap
-
-# Create a snapcraft runner (TODO: move version detection to the core of
-# snapcraft).
+# Create a snapcraft runner (TODO: move version detection to the core of snapcraft).
 RUN mkdir -p /snap/bin
 RUN echo "#!/bin/sh" > /snap/bin/snapcraft
 RUN snap_version="$(awk '/^version:/{print $2}' /snap/snapcraft/current/meta/snap.yaml)" && echo "export SNAP_VERSION=\"$snap_version\"" >> /snap/bin/snapcraft

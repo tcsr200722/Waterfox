@@ -2,26 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import { originalToGeneratedId } from "devtools/client/shared/source-map-loader/index";
+import { getSelectedLocation } from "./sources";
+import { getCurrentThread, getSelectedFrame } from "./pause";
 
-import { originalToGeneratedId, isOriginalId } from "devtools-source-map";
-import { getSelectedFrame, getSelectedLocation, getCurrentThread } from ".";
-import type { State } from "../reducers/types";
-import type { SourceId } from "../types";
-
-function getGeneratedId(sourceId): SourceId {
-  if (isOriginalId(sourceId)) {
-    return originalToGeneratedId(sourceId);
+function getGeneratedId(source) {
+  if (source.isOriginal) {
+    return originalToGeneratedId(source.id);
   }
 
-  return sourceId;
+  return source.id;
 }
 
 /*
  * Checks to if the selected frame's source is currently
  * selected.
  */
-export function isSelectedFrameVisible(state: State): boolean {
+export function isSelectedFrameVisible(state) {
   const thread = getCurrentThread(state);
   const selectedLocation = getSelectedLocation(state);
   const selectedFrame = getSelectedFrame(state, thread);
@@ -30,12 +27,11 @@ export function isSelectedFrameVisible(state: State): boolean {
     return false;
   }
 
-  if (isOriginalId(selectedLocation.sourceId)) {
-    return selectedLocation.sourceId === selectedFrame.location.sourceId;
+  if (selectedLocation.source.isOriginal) {
+    return selectedLocation.source.id === selectedFrame.location.source.id;
   }
 
   return (
-    selectedLocation.sourceId ===
-    getGeneratedId(selectedFrame.location.sourceId)
+    selectedLocation.source.id === getGeneratedId(selectedFrame.location.source)
   );
 }

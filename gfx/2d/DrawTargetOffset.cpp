@@ -23,7 +23,13 @@ bool DrawTargetOffset::Init(DrawTarget* aDrawTarget, IntPoint aOrigin) {
 }
 
 already_AddRefed<SourceSurface> DrawTargetOffset::Snapshot() {
-  return MakeAndAddRef<SourceSurfaceOffset>(mDrawTarget->Snapshot(), mOrigin);
+  RefPtr<SourceSurface> snapshot = mDrawTarget->Snapshot();
+
+  if (!snapshot) {
+    return nullptr;
+  }
+
+  return MakeAndAddRef<SourceSurfaceOffset>(snapshot, mOrigin);
 }
 
 void DrawTargetOffset::DetachAllSnapshots() {}
@@ -174,8 +180,14 @@ void DrawTargetOffset::PushLayer(bool aOpaque, Float aOpacity,
 
 already_AddRefed<SourceSurface> DrawTargetOffset::IntoLuminanceSource(
     LuminanceType aLuminanceType, float aOpacity) {
-  return MakeAndAddRef<SourceSurfaceOffset>(
-      mDrawTarget->IntoLuminanceSource(aLuminanceType, aOpacity), mOrigin);
+  RefPtr<SourceSurface> surface =
+      mDrawTarget->IntoLuminanceSource(aLuminanceType, aOpacity);
+
+  if (!surface) {
+    return nullptr;
+  }
+
+  return MakeAndAddRef<SourceSurfaceOffset>(surface, mOrigin);
 }
 
 void DrawTargetOffset::PushLayerWithBlend(bool aOpaque, Float aOpacity,
@@ -194,6 +206,20 @@ void DrawTargetOffset::PushLayerWithBlend(bool aOpaque, Float aOpacity,
 void DrawTargetOffset::PopLayer() {
   mDrawTarget->PopLayer();
   SetPermitSubpixelAA(mDrawTarget->GetPermitSubpixelAA());
+}
+
+RefPtr<DrawTarget> DrawTargetOffset::CreateClippedDrawTarget(
+    const Rect& aBounds, SurfaceFormat aFormat) {
+  RefPtr<DrawTarget> result;
+  RefPtr<DrawTarget> dt =
+      mDrawTarget->CreateClippedDrawTarget(aBounds, aFormat);
+  if (dt) {
+    result = gfx::Factory::CreateOffsetDrawTarget(dt, mOrigin);
+    if (result) {
+      result->SetTransform(mTransform);
+    }
+  }
+  return result;
 }
 
 }  // namespace gfx

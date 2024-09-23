@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 "use strict";
 
 /* eslint-env webextensions */
@@ -15,7 +19,7 @@ browser.webRequest.onBeforeRequest.addListener(
 
     let filter = browser.webRequest.filterResponseData(details.requestId);
 
-    filter.onstop = event => {
+    filter.onstop = () => {
       filter.close();
     };
     filter.ondata = event => {
@@ -44,7 +48,7 @@ browser.webRequest.onHeadersReceived.addListener(
   ["blocking", "responseHeaders"]
 );
 
-browser.webRequest.onErrorOccurred.addListener(details => {}, {
+browser.webRequest.onErrorOccurred.addListener(() => {}, {
   urls: ["https://*/*", "http://*/*"],
 });
 
@@ -69,7 +73,7 @@ browser.tabs.onUpdated.addListener((tabId, changed, tab) => {
   });
 });
 
-browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
+browser.tabs.onActivated.addListener(({ tabId }) => {
   browser.pageAction.show(tabId);
 });
 
@@ -77,8 +81,8 @@ browser.tabs.onCreated.addListener(tab => {
   browser.pageAction.show(tab.id);
 });
 
-browser.tabs.onRemoved.addListener((tabId, removeInfo) => {});
+browser.tabs.onRemoved.addListener(() => {});
 
-browser.tabs.onAttached.addListener((tabId, attachInfo) => {});
+browser.tabs.onAttached.addListener(() => {});
 
-browser.tabs.onDetached.addListener((tabId, detachInfo) => {});
+browser.tabs.onDetached.addListener(() => {});

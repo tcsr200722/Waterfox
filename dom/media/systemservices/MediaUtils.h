@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et ft=cpp : */
+/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,22 +7,26 @@
 #ifndef mozilla_MediaUtils_h
 #define mozilla_MediaUtils_h
 
+#include <map>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/UniquePtr.h"
+#include "MediaEventSource.h"
 #include "nsCOMPtr.h"
 #include "nsIAsyncShutdown.h"
 #include "nsISupportsImpl.h"
+#include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 
 class nsIEventTarget;
 
-namespace mozilla {
-namespace media {
+namespace mozilla::media {
 
 /* media::NewRunnableFrom() - Create a Runnable from a lambda.
  *
@@ -108,45 +112,57 @@ class RefcountableBase {
 template <typename T>
 class Refcountable : public T, public RefcountableBase {
  public:
-  NS_METHOD_(MozExternalRefCountType) AddRef() {
-    return RefcountableBase::AddRef();
-  }
-
-  NS_METHOD_(MozExternalRefCountType) Release() {
-    return RefcountableBase::Release();
-  }
-
-  Refcountable<T>& operator=(T&& aOther) {
+  Refcountable& operator=(T&& aOther) {
     T::operator=(std::move(aOther));
     return *this;
   }
 
-  Refcountable<T>& operator=(T& aOther) {
+  Refcountable& operator=(T& aOther) {
     T::operator=(aOther);
     return *this;
   }
-
- private:
-  ~Refcountable<T>() = default;
 };
 
 template <typename T>
-class Refcountable<UniquePtr<T>> : public UniquePtr<T> {
+class Refcountable<UniquePtr<T>> : public UniquePtr<T>,
+                                   public RefcountableBase {
  public:
-  explicit Refcountable<UniquePtr<T>>(T* aPtr) : UniquePtr<T>(aPtr) {}
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Refcountable<T>)
- private:
-  ~Refcountable<UniquePtr<T>>() = default;
+  explicit Refcountable(T* aPtr) : UniquePtr<T>(aPtr) {}
 };
 
-/* Async shutdown helpers
+template <>
+class Refcountable<bool> : public RefcountableBase {
+ public:
+  explicit Refcountable(bool aValue) : mValue(aValue) {}
+
+  Refcountable& operator=(bool aOther) {
+    mValue = aOther;
+    return *this;
+  }
+
+  Refcountable& operator=(const Refcountable& aOther) {
+    mValue = aOther.mValue;
+    return *this;
+  }
+
+  explicit operator bool() const { return mValue; }
+
+ private:
+  bool mValue;
+};
+
+/*
+ * Async shutdown helpers
  */
 
-RefPtr<nsIAsyncShutdownClient> GetShutdownBarrier();
+nsCOMPtr<nsIAsyncShutdownClient> GetShutdownBarrier();
+
+// Like GetShutdownBarrier but will release assert that the result is not null.
+nsCOMPtr<nsIAsyncShutdownClient> MustGetShutdownBarrier();
 
 class ShutdownBlocker : public nsIAsyncShutdownBlocker {
  public:
-  ShutdownBlocker(const nsString& aName) : mName(aName) {}
+  ShutdownBlocker(const nsAString& aName) : mName(aName) {}
 
   NS_IMETHOD
   BlockShutdown(nsIAsyncShutdownClient* aProfileBeforeChange) override = 0;
@@ -158,7 +174,7 @@ class ShutdownBlocker : public nsIAsyncShutdownBlocker {
 
   NS_IMETHOD GetState(nsIPropertyBag**) override { return NS_OK; }
 
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
  protected:
   virtual ~ShutdownBlocker() = default;
 
@@ -166,15 +182,34 @@ class ShutdownBlocker : public nsIAsyncShutdownBlocker {
   const nsString mName;
 };
 
-class ShutdownTicket final {
+/**
+ * A convenience class representing a "ticket" that keeps the process from
+ * shutting down until it is destructed. It does this by blocking
+ * xpcom-will-shutdown. Constructed and destroyed on any thread.
+ */
+class ShutdownBlockingTicket {
  public:
-  explicit ShutdownTicket(nsIAsyncShutdownBlocker* aBlocker)
-      : mBlocker(aBlocker) {}
-  NS_INLINE_DECL_REFCOUNTING(ShutdownTicket)
- private:
-  ~ShutdownTicket() { GetShutdownBarrier()->RemoveBlocker(mBlocker); }
+  using ShutdownMozPromise = MozPromise<bool, bool, false>;
 
-  nsCOMPtr<nsIAsyncShutdownBlocker> mBlocker;
+  /**
+   * Construct with an arbitrary name, __FILE__ and __LINE__.
+   * Note that __FILE__ needs to be made wide, typically through
+   * NS_LITERAL_STRING_FROM_CSTRING(__FILE__).
+   * Returns nullptr if we are too far in the shutdown sequence to add a
+   * blocker. Any thread.
+   */
+  static UniquePtr<ShutdownBlockingTicket> Create(const nsAString& aName,
+                                                  const nsAString& aFileName,
+                                                  int32_t aLineNr);
+
+  virtual ~ShutdownBlockingTicket() = default;
+
+  /**
+   * MozPromise that gets resolved upon xpcom-will-shutdown.
+   * Should the ticket get destroyed before the MozPromise has been resolved,
+   * the MozPromise will get rejected.
+   */
+  virtual ShutdownMozPromise* ShutdownPromise() = 0;
 };
 
 /**
@@ -194,8 +229,8 @@ void Await(already_AddRefed<nsIEventTarget> aPool,
            ResolveFunction&& aResolveFunction,
            RejectFunction&& aRejectFunction) {
   RefPtr<TaskQueue> taskQueue =
-      new TaskQueue(std::move(aPool), "MozPromiseAwait");
-  Monitor mon(__func__);
+      TaskQueue::Create(std::move(aPool), "MozPromiseAwait");
+  Monitor mon MOZ_UNANNOTATED(__func__);
   bool done = false;
 
   aPromise->Then(
@@ -225,8 +260,8 @@ typename MozPromise<ResolveValueType, RejectValueType,
 Await(already_AddRefed<nsIEventTarget> aPool,
       RefPtr<MozPromise<ResolveValueType, RejectValueType, Excl>> aPromise) {
   RefPtr<TaskQueue> taskQueue =
-      new TaskQueue(std::move(aPool), "MozPromiseAwait");
-  Monitor mon(__func__);
+      TaskQueue::Create(std::move(aPool), "MozPromiseAwait");
+  Monitor mon MOZ_UNANNOTATED(__func__);
   bool done = false;
 
   typename MozPromise<ResolveValueType, RejectValueType,
@@ -268,7 +303,7 @@ void AwaitAll(
   typedef MozPromise<ResolveValueType, RejectValueType, true> Promise;
   RefPtr<nsIEventTarget> pool = aPool;
   RefPtr<TaskQueue> taskQueue =
-      new TaskQueue(do_AddRef(pool), "MozPromiseAwaitAll");
+      TaskQueue::Create(do_AddRef(pool), "MozPromiseAwaitAll");
   RefPtr<typename Promise::AllPromiseType> p =
       Promise::All(taskQueue, aPromises);
   Await(pool.forget(), p, std::move(aResolveFunction),
@@ -286,13 +321,12 @@ AwaitAll(already_AddRefed<nsIEventTarget> aPool,
   typedef MozPromise<ResolveValueType, RejectValueType, true> Promise;
   RefPtr<nsIEventTarget> pool = aPool;
   RefPtr<TaskQueue> taskQueue =
-      new TaskQueue(do_AddRef(pool), "MozPromiseAwaitAll");
+      TaskQueue::Create(do_AddRef(pool), "MozPromiseAwaitAll");
   RefPtr<typename Promise::AllPromiseType> p =
       Promise::All(taskQueue, aPromises);
   return Await(pool.forget(), p);
 }
 
-}  // namespace media
-}  // namespace mozilla
+}  // namespace mozilla::media
 
 #endif  // mozilla_MediaUtils_h

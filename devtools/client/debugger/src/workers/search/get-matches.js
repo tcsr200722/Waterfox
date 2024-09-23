@@ -2,22 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import assert from "../../utils/assert";
 import buildQuery from "../../utils/build-query";
 
-import type { SearchModifiers } from "../../types";
-
-export default function getMatches(
-  query: string,
-  text: string,
-  modifiers: SearchModifiers
-): Object[] {
-  if (!query || !text || !modifiers) {
+export default function getMatches(query, text, options) {
+  if (!query || !text || !options) {
     return [];
   }
-  const regexQuery = buildQuery(query, modifiers, {
+  const regexQuery = buildQuery(query, options, {
     isGlobal: true,
   });
   const matchedLocations = [];
@@ -31,7 +23,11 @@ export default function getMatches(
         throw new Error("no singleMatch");
       }
 
-      matchedLocations.push({ line: i, ch: singleMatch.index });
+      matchedLocations.push({
+        line: i,
+        ch: singleMatch.index,
+        match: singleMatch[0],
+      });
 
       // When the match is an empty string the regexQuery.lastIndex will not
       // change resulting in an infinite loop so we need to check for this and

@@ -17,8 +17,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Summary)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLSummaryElement::~HTMLSummaryElement() = default;
 
@@ -63,44 +62,17 @@ nsresult HTMLSummaryElement::PostHandleEvent(EventChainPostVisitor& aVisitor) {
     }
   }  // event->HasMouseEventMessage()
 
-  if (event->HasKeyEventMessage()) {
-    WidgetKeyboardEvent* keyboardEvent = event->AsKeyboardEvent();
-    bool dispatchClick = false;
-
-    switch (event->mMessage) {
-      case eKeyPress:
-        if (keyboardEvent->mCharCode == ' ') {
-          // Consume 'space' key to prevent scrolling the page down.
-          aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
-        }
-
-        dispatchClick = keyboardEvent->mKeyCode == NS_VK_RETURN;
-        break;
-
-      case eKeyUp:
-        dispatchClick = keyboardEvent->mKeyCode == NS_VK_SPACE;
-        break;
-
-      default:
-        break;
-    }
-
-    if (dispatchClick) {
-      rv = DispatchSimulatedClick(this, event->mFlags.mIsTrusted,
-                                  aVisitor.mPresContext);
-      if (NS_SUCCEEDED(rv)) {
-        aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
-      }
-    }
-  }  // event->HasKeyEventMessage()
-
+  if (event->HasKeyEventMessage() && event->IsTrusted()) {
+    HandleKeyboardActivation(aVisitor);
+  }
   return rv;
 }
 
-bool HTMLSummaryElement::IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
+bool HTMLSummaryElement::IsHTMLFocusable(IsFocusableFlags aFlags,
+                                         bool* aIsFocusable,
                                          int32_t* aTabIndex) {
-  bool disallowOverridingFocusability = nsGenericHTMLElement::IsHTMLFocusable(
-      aWithMouse, aIsFocusable, aTabIndex);
+  bool disallowOverridingFocusability =
+      nsGenericHTMLElement::IsHTMLFocusable(aFlags, aIsFocusable, aTabIndex);
 
   if (disallowOverridingFocusability || !IsMainSummary()) {
     return disallowOverridingFocusability;
@@ -125,11 +97,18 @@ bool HTMLSummaryElement::IsMainSummary() const {
     return false;
   }
 
-  return details->GetFirstSummary() == this || IsRootOfNativeAnonymousSubtree();
+  return details->GetFirstSummary() == this ||
+         GetContainingShadow() == details->GetShadowRoot();
 }
 
 HTMLDetailsElement* HTMLSummaryElement::GetDetails() const {
-  return HTMLDetailsElement::FromNodeOrNull(GetParent());
+  if (auto* details = HTMLDetailsElement::FromNodeOrNull(GetParent())) {
+    return details;
+  }
+  if (!HasBeenInUAWidget()) {
+    return nullptr;
+  }
+  return HTMLDetailsElement::FromNodeOrNull(GetContainingShadowHost());
 }
 
 JSObject* HTMLSummaryElement::WrapNode(JSContext* aCx,
@@ -137,5 +116,4 @@ JSObject* HTMLSummaryElement::WrapNode(JSContext* aCx,
   return HTMLElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

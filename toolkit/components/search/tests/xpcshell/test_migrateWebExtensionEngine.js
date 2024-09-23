@@ -3,46 +3,89 @@
 
 "use strict";
 
-const kSearchEngineID = "addEngineWithDetails_test_engine";
-const kExtensionID = "test@example.com";
+const kExtensionID = "simple@tests.mozilla.org";
 
-const kSearchEngineDetails = {
-  template: "http://example.com/?search={searchTerms}",
-  description: "Test Description",
-  iconURL:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-  suggestURL: "http://example.com/?suggest={searchTerms}",
-  alias: "alias_foo",
-  extensionID: kExtensionID,
-};
-
-add_task(async function setup() {
+add_setup(async function () {
+  useHttpServer("opensearch");
   await AddonTestUtils.promiseStartupManager();
+  await SearchTestUtils.useTestEngines("data1");
+  await Services.search.init();
 });
 
 add_task(async function test_migrateLegacyEngine() {
-  Assert.ok(!Services.search.isInitialized);
+  let engine = await SearchTestUtils.installOpenSearchEngine({
+    url: gDataUrl + "simple.xml",
+  });
 
-  await Services.search.addEngineWithDetails(
-    kSearchEngineID,
-    kSearchEngineDetails
-  );
-
-  // Modify the loadpath so it looks like an legacy plugin loadpath
-  let engine = Services.search.getEngineByName(kSearchEngineID);
-  engine.wrappedJSObject._loadPath = `jar:[profile]/extensions/${kExtensionID}.xpi!/engine.xml`;
+  // Modify the loadpath so it looks like a legacy plugin loadpath
+  engine.wrappedJSObject._loadPath = `jar:[profile]/extensions/${kExtensionID}.xpi!/simple.xml`;
   engine.wrappedJSObject._extensionID = null;
 
-  // This should replace the existing engine
-  await Services.search.addEngineWithDetails(
-    kSearchEngineID,
-    kSearchEngineDetails
+  await Services.search.setDefault(
+    engine,
+    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
   );
 
-  engine = Services.search.getEngineByName(kSearchEngineID);
-  Assert.equal(
-    engine.wrappedJSObject._loadPath,
-    "[other]addEngineWithDetails:" + kExtensionID
+  // This should replace the existing engine
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      id: "simple",
+      name: "simple",
+      search_url: "https://example.com/",
+    },
+    { skipUnload: true }
   );
+
+  engine = Services.search.getEngineByName("simple");
+  Assert.equal(engine.wrappedJSObject._loadPath, "[addon]" + kExtensionID);
   Assert.equal(engine.wrappedJSObject._extensionID, kExtensionID);
+
+  Assert.equal(
+    (await Services.search.getDefault()).name,
+    "simple",
+    "Should have kept the default engine the same"
+  );
+
+  await extension.unload();
+});
+
+add_task(async function test_migrateLegacyEngineDifferentName() {
+  let engine = await SearchTestUtils.installOpenSearchEngine({
+    url: gDataUrl + "simple.xml",
+  });
+
+  // Modify the loadpath so it looks like an legacy plugin loadpath
+  engine.wrappedJSObject._loadPath = `jar:[profile]/extensions/${kExtensionID}.xpi!/simple.xml`;
+  engine.wrappedJSObject._extensionID = null;
+
+  await Services.search.setDefault(
+    engine,
+    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+  );
+
+  // This should replace the existing engine - it has the same id, but a different name.
+  let extension = await SearchTestUtils.installSearchExtension(
+    {
+      id: "simple",
+      name: "simple search",
+      search_url: "https://example.com/",
+    },
+    { skipUnload: true }
+  );
+
+  engine = Services.search.getEngineByName("simple");
+  Assert.equal(engine, null, "Should have removed the old engine");
+
+  // The engine should have changed its name.
+  engine = Services.search.getEngineByName("simple search");
+  Assert.equal(engine.wrappedJSObject._loadPath, "[addon]" + kExtensionID);
+  Assert.equal(engine.wrappedJSObject._extensionID, kExtensionID);
+
+  Assert.equal(
+    (await Services.search.getDefault()).name,
+    "simple search",
+    "Should have made the new engine default"
+  );
+
+  await extension.unload();
 });

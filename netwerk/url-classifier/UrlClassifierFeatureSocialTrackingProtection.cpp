@@ -6,11 +6,15 @@
 
 #include "UrlClassifierFeatureSocialTrackingProtection.h"
 
+#include "mozilla/AntiTrackingUtils.h"
 #include "mozilla/net/UrlClassifierCommon.h"
 #include "ChannelClassifierService.h"
 #include "mozilla/StaticPrefs_privacy.h"
-#include "nsContentUtils.h"
 #include "nsNetUtil.h"
+#include "mozilla/StaticPtr.h"
+#include "nsIWebProgressListener.h"
+#include "nsIHttpChannelInternal.h"
+#include "nsIChannel.h"
 
 namespace mozilla {
 namespace net {
@@ -19,18 +23,18 @@ namespace {
 
 #define SOCIALTRACKING_FEATURE_NAME "socialtracking-protection"
 
-#define URLCLASSIFIER_SOCIALTRACKING_BLACKLIST \
+#define URLCLASSIFIER_SOCIALTRACKING_BLOCKLIST \
   "urlclassifier.features.socialtracking.blacklistTables"
-#define URLCLASSIFIER_SOCIALTRACKING_BLACKLIST_TEST_ENTRIES \
+#define URLCLASSIFIER_SOCIALTRACKING_BLOCKLIST_TEST_ENTRIES \
   "urlclassifier.features.socialtracking.blacklistHosts"
-#define URLCLASSIFIER_SOCIALTRACKING_WHITELIST \
+#define URLCLASSIFIER_SOCIALTRACKING_ENTITYLIST \
   "urlclassifier.features.socialtracking.whitelistTables"
-#define URLCLASSIFIER_SOCIALTRACKING_WHITELIST_TEST_ENTRIES \
+#define URLCLASSIFIER_SOCIALTRACKING_ENTITYLIST_TEST_ENTRIES \
   "urlclassifier.features.socialtracking.whitelistHosts"
-#define URLCLASSIFIER_SOCIALTRACKING_SKIP_URLS \
+#define URLCLASSIFIER_SOCIALTRACKING_EXCEPTION_URLS \
   "urlclassifier.features.socialtracking.skipURLs"
-#define TABLE_SOCIALTRACKING_BLACKLIST_PREF "socialtracking-blacklist-pref"
-#define TABLE_SOCIALTRACKING_WHITELIST_PREF "socialtracking-whitelist-pref"
+#define TABLE_SOCIALTRACKING_BLOCKLIST_PREF "socialtracking-blocklist-pref"
+#define TABLE_SOCIALTRACKING_ENTITYLIST_PREF "socialtracking-entitylist-pref"
 
 StaticRefPtr<UrlClassifierFeatureSocialTrackingProtection>
     gFeatureSocialTrackingProtection;
@@ -39,17 +43,16 @@ StaticRefPtr<UrlClassifierFeatureSocialTrackingProtection>
 
 UrlClassifierFeatureSocialTrackingProtection::
     UrlClassifierFeatureSocialTrackingProtection()
-    : UrlClassifierFeatureBase(
-          NS_LITERAL_CSTRING(SOCIALTRACKING_FEATURE_NAME),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_SOCIALTRACKING_BLACKLIST),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_SOCIALTRACKING_WHITELIST),
-          NS_LITERAL_CSTRING(
-              URLCLASSIFIER_SOCIALTRACKING_BLACKLIST_TEST_ENTRIES),
-          NS_LITERAL_CSTRING(
-              URLCLASSIFIER_SOCIALTRACKING_WHITELIST_TEST_ENTRIES),
-          NS_LITERAL_CSTRING(TABLE_SOCIALTRACKING_BLACKLIST_PREF),
-          NS_LITERAL_CSTRING(TABLE_SOCIALTRACKING_WHITELIST_PREF),
-          NS_LITERAL_CSTRING(URLCLASSIFIER_SOCIALTRACKING_SKIP_URLS)) {}
+    : UrlClassifierFeatureAntiTrackingBase(
+          nsLiteralCString(SOCIALTRACKING_FEATURE_NAME),
+          nsLiteralCString(URLCLASSIFIER_SOCIALTRACKING_BLOCKLIST),
+          nsLiteralCString(URLCLASSIFIER_SOCIALTRACKING_ENTITYLIST),
+          nsLiteralCString(URLCLASSIFIER_SOCIALTRACKING_BLOCKLIST_TEST_ENTRIES),
+          nsLiteralCString(
+              URLCLASSIFIER_SOCIALTRACKING_ENTITYLIST_TEST_ENTRIES),
+          nsLiteralCString(TABLE_SOCIALTRACKING_BLOCKLIST_PREF),
+          nsLiteralCString(TABLE_SOCIALTRACKING_ENTITYLIST_PREF),
+          nsLiteralCString(URLCLASSIFIER_SOCIALTRACKING_EXCEPTION_URLS)) {}
 
 /* static */ const char* UrlClassifierFeatureSocialTrackingProtection::Name() {
   return SOCIALTRACKING_FEATURE_NAME;
@@ -57,7 +60,8 @@ UrlClassifierFeatureSocialTrackingProtection::
 
 /* static */
 void UrlClassifierFeatureSocialTrackingProtection::MaybeInitialize() {
-  UC_LOG(("UrlClassifierFeatureSocialTrackingProtection: MaybeInitialize"));
+  UC_LOG_LEAK(
+      ("UrlClassifierFeatureSocialTrackingProtection::MaybeInitialize"));
 
   if (!gFeatureSocialTrackingProtection) {
     gFeatureSocialTrackingProtection =
@@ -68,7 +72,7 @@ void UrlClassifierFeatureSocialTrackingProtection::MaybeInitialize() {
 
 /* static */
 void UrlClassifierFeatureSocialTrackingProtection::MaybeShutdown() {
-  UC_LOG(("UrlClassifierFeatureSocialTrackingProtection: MaybeShutdown"));
+  UC_LOG_LEAK(("UrlClassifierFeatureSocialTrackingProtection::MaybeShutdown"));
 
   if (gFeatureSocialTrackingProtection) {
     gFeatureSocialTrackingProtection->ShutdownPreferences();
@@ -82,40 +86,24 @@ UrlClassifierFeatureSocialTrackingProtection::MaybeCreate(
     nsIChannel* aChannel) {
   MOZ_ASSERT(aChannel);
 
-  UC_LOG(
-      ("UrlClassifierFeatureSocialTrackingProtection: MaybeCreate for channel "
-       "%p",
+  UC_LOG_LEAK(
+      ("UrlClassifierFeatureSocialTrackingProtection::MaybeCreate - channel %p",
        aChannel));
 
   if (!StaticPrefs::privacy_trackingprotection_socialtracking_enabled()) {
     return nullptr;
   }
 
-  nsCOMPtr<nsIURI> chanURI;
-  nsresult rv = aChannel->GetURI(getter_AddRefs(chanURI));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return nullptr;
-  }
-
-  bool isThirdParty =
-      nsContentUtils::IsThirdPartyWindowOrChannel(nullptr, aChannel, chanURI);
+  bool isThirdParty = AntiTrackingUtils::IsThirdPartyChannel(aChannel);
   if (!isThirdParty) {
-    if (UC_LOG_ENABLED()) {
-      nsCString spec = chanURI->GetSpecOrDefault();
-      spec.Truncate(
-          std::min(spec.Length(), UrlClassifierCommon::sMaxSpecLength));
-      UC_LOG(
-          ("UrlClassifierFeatureSocialTrackingProtection: Skipping "
-           "socialtracking checks "
-           "for first party or top-level load channel[%p] "
-           "with uri %s",
-           aChannel, spec.get()));
-    }
-
+    UC_LOG(
+        ("UrlClassifierFeatureSocialTrackingProtection::MaybeCreate - "
+         "skipping first party or top-level load for channel %p",
+         aChannel));
     return nullptr;
   }
 
-  if (!UrlClassifierCommon::ShouldEnableClassifier(aChannel)) {
+  if (!UrlClassifierCommon::ShouldEnableProtectionForChannel(aChannel)) {
     return nullptr;
   }
 
@@ -162,18 +150,34 @@ UrlClassifierFeatureSocialTrackingProtection::ProcessChannel(
   nsAutoCString list;
   UrlClassifierCommon::TablesToString(aList, list);
 
-  if (ChannelClassifierService::OnBeforeBlockChannel(aChannel, mName, list) ==
-      ChannelBlockDecision::Unblocked) {
+  ChannelBlockDecision decision =
+      ChannelClassifierService::OnBeforeBlockChannel(aChannel, mName, list);
+  if (decision != ChannelBlockDecision::Blocked) {
+    uint32_t event =
+        decision == ChannelBlockDecision::Replaced
+            ? nsIWebProgressListener::STATE_REPLACED_TRACKING_CONTENT
+            : nsIWebProgressListener::STATE_ALLOWED_TRACKING_CONTENT;
+
+    // Need to set aBlocked to True if we replace the Social Tracker
+    //  with a shim, since the shim is treated as a blocked event
+    // Note: If we need to account for which kind of tracker was replaced,
+    //  we need to create a new event type in nsIWebProgressListener
+    if (event == nsIWebProgressListener::STATE_REPLACED_TRACKING_CONTENT) {
+      ContentBlockingNotifier::OnEvent(aChannel, event, true);
+    } else {
+      ContentBlockingNotifier::OnEvent(aChannel, event, false);
+    }
+
+    *aShouldContinue = true;
     return NS_OK;
   }
 
   UrlClassifierCommon::SetBlockedContent(aChannel, NS_ERROR_SOCIALTRACKING_URI,
-                                         list, EmptyCString(), EmptyCString());
+                                         list, ""_ns, ""_ns);
 
   UC_LOG(
-      ("UrlClassifierFeatureSocialTrackingProtection::ProcessChannel, "
-       "cancelling "
-       "channel[%p]",
+      ("UrlClassifierFeatureSocialTrackingProtection::ProcessChannel - "
+       "cancelling channel %p",
        aChannel));
   nsCOMPtr<nsIHttpChannelInternal> httpChannel = do_QueryInterface(aChannel);
 
@@ -194,15 +198,15 @@ UrlClassifierFeatureSocialTrackingProtection::GetURIByListType(
   NS_ENSURE_ARG_POINTER(aURIType);
   NS_ENSURE_ARG_POINTER(aURI);
 
-  if (aListType == nsIUrlClassifierFeature::blacklist) {
-    *aURIType = nsIUrlClassifierFeature::blacklistURI;
+  if (aListType == nsIUrlClassifierFeature::blocklist) {
+    *aURIType = nsIUrlClassifierFeature::blocklistURI;
     return aChannel->GetURI(aURI);
   }
 
-  MOZ_ASSERT(aListType == nsIUrlClassifierFeature::whitelist);
+  MOZ_ASSERT(aListType == nsIUrlClassifierFeature::entitylist);
 
-  *aURIType = nsIUrlClassifierFeature::pairwiseWhitelistURI;
-  return UrlClassifierCommon::CreatePairwiseWhiteListURI(aChannel, aURI);
+  *aURIType = nsIUrlClassifierFeature::pairwiseEntitylistURI;
+  return UrlClassifierCommon::CreatePairwiseEntityListURI(aChannel, aURI);
 }
 
 }  // namespace net

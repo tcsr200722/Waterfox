@@ -29,11 +29,36 @@ const URI_EXTENSION_BLOCKLIST_DIALOG =
 // Allow insecure updates
 Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
 
-Services.prefs.setBoolPref("extensions.webextPermissionPrompts", false);
+// TODO bug 1649906: strip blocklist v2-specific parts of this test.
+// All specific logic is already covered by other test files, but the tests
+// here trigger the logic via higher-level methods, so it may make sense to
+// keep this file even after the removal of blocklist v2.
+const useMLBF = Services.prefs.getBoolPref(
+  "extensions.blocklist.useMLBF",
+  true
+);
 
 var testserver = createHttpServer({ hosts: ["example.com"] });
-// Needed for updates:
-testserver.registerDirectory("/data/", do_get_file("../data"));
+
+function permissionPromptHandler(subject) {
+  ok(
+    subject?.wrappedJSObject?.info?.resolve,
+    "Got a permission prompt notification as expected"
+  );
+  subject.wrappedJSObject.info.resolve();
+}
+
+Services.obs.addObserver(
+  permissionPromptHandler,
+  "webextension-permission-prompt"
+);
+
+registerCleanupFunction(() => {
+  Services.obs.removeObserver(
+    permissionPromptHandler,
+    "webextension-permission-prompt"
+  );
+});
 
 const XPIS = {};
 
@@ -53,6 +78,8 @@ const BLOCK_APP = [
     minVersion: "2",
   },
 ];
+// JEXL filter expression that matches BLOCK_APP.
+const BLOCK_APP_FILTER_EXPRESSION = `env.appinfo.ID == "xpcshell@tests.mozilla.org" && env.appinfo.version >= "2" && env.appinfo.version < "3"`;
 
 function softBlockApp(id) {
   return {
@@ -100,12 +127,12 @@ function softBlockManual(id) {
 }
 
 const BLOCKLIST_DATA = {
+  empty_blocklist: [],
   app_update: [
     softBlockApp("softblock1"),
     softBlockApp("softblock2"),
     softBlockApp("softblock3"),
     softBlockApp("softblock4"),
-    softBlockApp("softblock5"),
     {
       guid: "hardblock@tests.mozilla.org",
       versionRange: [
@@ -137,7 +164,6 @@ const BLOCKLIST_DATA = {
     softBlockAddonChange("softblock2"),
     softBlockAddonChange("softblock3"),
     softBlockAddonChange("softblock4"),
-    softBlockAddonChange("softblock5"),
     {
       guid: "hardblock@tests.mozilla.org",
       versionRange: [
@@ -175,7 +201,6 @@ const BLOCKLIST_DATA = {
     softBlockUpdate2("softblock2"),
     softBlockUpdate2("softblock3"),
     softBlockUpdate2("softblock4"),
-    softBlockUpdate2("softblock5"),
     {
       guid: "hardblock@tests.mozilla.org",
       versionRange: [],
@@ -194,7 +219,6 @@ const BLOCKLIST_DATA = {
     softBlockManual("softblock2"),
     softBlockManual("softblock3"),
     softBlockManual("softblock4"),
-    softBlockManual("softblock5"),
     {
       guid: "hardblock@tests.mozilla.org",
       versionRange: [
@@ -216,8 +240,47 @@ const BLOCKLIST_DATA = {
   ],
 };
 
+// Blocklist v3 (useMLBF) only supports hard blocks by guid+version. Version
+// ranges, regexps and soft blocks are not supported. So adjust expectations to
+// ensure that the test passes even if useMLBF=true, by:
+// - soft blocks are converted to hard blocks.
+// - hard blocks are accepted as-is.
+// - regexps blocks are converted to hard blocks.
+// - Version ranges are expanded to cover all known versions.
+if (useMLBF) {
+  for (let [key, blocks] of Object.entries(BLOCKLIST_DATA)) {
+    BLOCKLIST_DATA[key] = [];
+    for (let block of blocks) {
+      let { guid } = block;
+      if (guid.includes("RegExp")) {
+        guid = "regexpblock@tests.mozilla.org";
+      } else if (!guid.startsWith("soft") && !guid.startsWith("hard")) {
+        throw new Error(`Unexpected mock addon ID: ${guid}`);
+      }
+
+      const {
+        minVersion = "1",
+        maxVersion = "3",
+        targetApplication,
+      } = block.versionRange?.[0] || {};
+
+      for (let v = minVersion; v <= maxVersion; ++v) {
+        BLOCKLIST_DATA[key].push({
+          // Assume that IF targetApplication is set, that it is BLOCK_APP.
+          filter_expression: targetApplication && BLOCK_APP_FILTER_EXPRESSION,
+          stash: {
+            // XPI files use version `${v}.0`, update manifests use `${v}`.
+            blocked: [`${guid}:${v}.0`, `${guid}:${v}`],
+            unblocked: [],
+          },
+        });
+      }
+    }
+  }
+}
+
 // XXXgijs: according to https://bugzilla.mozilla.org/show_bug.cgi?id=1257565#c111
-// this code and the related code in Blocklist.jsm (specific to XML blocklist) is
+// this code and the related code in Blocklist.sys.mjs (specific to XML blocklist) is
 // dead code and can be removed. See https://bugzilla.mozilla.org/show_bug.cgi?id=1549550 .
 //
 // Don't need the full interface, attempts to call other methods will just
@@ -229,7 +292,7 @@ var WindowWatcher = {
 
     // Simulate auto-disabling any softblocks
     var list = openArgs.wrappedJSObject.list;
-    list.forEach(function(aItem) {
+    list.forEach(function (aItem) {
       if (!aItem.blocked) {
         aItem.disable = true;
       }
@@ -249,7 +312,7 @@ MockRegistrar.register(
 
 var InstallConfirm = {
   confirm(aWindow, aUrl, aInstalls) {
-    aInstalls.forEach(function(aInstall) {
+    aInstalls.forEach(function (aInstall) {
       aInstall.install();
     });
   },
@@ -258,10 +321,7 @@ var InstallConfirm = {
 };
 
 var InstallConfirmFactory = {
-  createInstance: function createInstance(outer, iid) {
-    if (outer != null) {
-      throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-    }
+  createInstance: function createInstance(iid) {
     return InstallConfirm.QueryInterface(iid);
   },
 };
@@ -276,23 +336,23 @@ registrar.registerFactory(
 
 function Pload_blocklist(aId) {
   return AddonTestUtils.loadBlocklistRawData({
-    extensions: BLOCKLIST_DATA[aId],
+    [useMLBF ? "extensionsMLBF" : "extensions"]: BLOCKLIST_DATA[aId],
   });
 }
 
 // Does a background update check for add-ons and returns a promise that
 // resolves when any started installs complete
 function Pbackground_update() {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     let installCount = 0;
     let backgroundCheckCompleted = false;
 
     AddonManager.addInstallListener({
-      onNewInstall(aInstall) {
+      onNewInstall() {
         installCount++;
       },
 
-      onInstallEnded(aInstall) {
+      onInstallEnded() {
         installCount--;
         // Wait until all started installs have completed
         if (installCount) {
@@ -362,6 +422,20 @@ function check_addon(
   aExpectedSoftDisabled,
   aExpectedState
 ) {
+  if (useMLBF) {
+    if (aAddon.id.startsWith("soft")) {
+      if (aExpectedState === Ci.nsIBlocklistService.STATE_SOFTBLOCKED) {
+        // The whole test file assumes that an add-on is "user-disabled" after
+        // an explicit disable(), or after a soft block (without enable()).
+        // With useMLBF, soft blocks are not supported, so the "user-disabled"
+        // state matches the usual behavior of "userDisabled" (=disable()).
+        aExpectedUserDisabled = aAddon.userDisabled;
+        aExpectedSoftDisabled = false;
+        aExpectedState = Ci.nsIBlocklistService.STATE_BLOCKED;
+      }
+    }
+  }
+
   Assert.notEqual(aAddon, null);
   info(
     "Testing " +
@@ -424,31 +498,111 @@ function check_addon(
   }
 }
 
+async function promiseRestartManagerWithAppChange(version) {
+  await promiseShutdownManager();
+  await promiseStartupManagerWithAppChange(version);
+}
+
+async function promiseStartupManagerWithAppChange(version) {
+  if (version) {
+    AddonTestUtils.appInfo.version = version;
+  }
+  if (useMLBF) {
+    // The old ExtensionBlocklist enforced the app version/ID part of the block
+    // when the blocklist entry is checked.
+    // The new ExtensionBlocklist (with useMLBF=true) does not separately check
+    // the app version/ID, but the underlying data source (Remote Settings)
+    // does offer the ability to filter entries with `filter_expression`.
+    // Force a reload to ensure that the BLOCK_APP_FILTER_EXPRESSION filter in
+    // this test file is checked again against the new version.
+    await Blocklist.ExtensionBlocklist._updateMLBF();
+  }
+  await promiseStartupManager();
+}
+
 add_task(async function setup() {
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1");
+  if (useMLBF) {
+    const { ClientEnvironmentBase } = ChromeUtils.importESModule(
+      "resource://gre/modules/components-utils/ClientEnvironment.sys.mjs"
+    );
+    Object.defineProperty(ClientEnvironmentBase, "appinfo", {
+      configurable: true,
+      get() {
+        return gAppInfo;
+      },
+    });
+  }
 
-  // pattern used to map ids like softblock1 to soft1
-  let pattern = /^(soft|hard|regexp)block([1-9]*)@/;
+  function getxpibasename(id, version) {
+    // pattern used to map ids like softblock1 to soft1
+    let pattern = /^(soft|hard|regexp)block([1-9]*)@/;
+    let match = id.match(pattern);
+    return `blocklist_${match[1]}${match[2]}_${version}`;
+  }
   for (let id of ADDON_IDS) {
-    for (let version of [1, 2, 3]) {
-      let match = id.match(pattern);
-      let name = `blocklist_${match[1]}${match[2]}_${version}`;
+    for (let version of [1, 2, 3, 4]) {
+      let name = getxpibasename(id, version);
 
-      XPIS[name] = createTempWebExtensionFile({
+      let xpi = createTempWebExtensionFile({
         manifest: {
           name: "Test",
           version: `${version}.0`,
-          applications: {
+          browser_specific_settings: {
             gecko: {
               id,
-              update_url: `http://example.com/data/blocklistchange/addon_update${version}.json`,
+              // This file is generated below, as updateJson.
+              update_url: `http://example.com/addon_update${version}.json`,
             },
           },
         },
       });
 
-      testserver.registerFile(`/addons/${name}.xpi`, XPIS[name]);
+      // To test updates, individual tasks in this test file start the test by
+      // installing a set of add-ons with version |version| and trigger an
+      // update check, from XPIS.${nameprefix}${version} (version = 1, 2, 3)
+      if (version != 4) {
+        XPIS[name] = xpi;
+      }
+
+      // update_url above points to a test manifest that references the next
+      // version. The xpi is made available on the server, so that the test
+      // can verify that the blocklist works as intended (i.e. update to newer
+      // version is blocked).
+      // There is nothing that updates to version 1, only to versions 2, 3, 4.
+      if (version != 1) {
+        testserver.registerFile(`/addons/${name}.xpi`, xpi);
+      }
     }
+  }
+
+  // For each version that this test file uses, create a test manifest that
+  // references the next version for each id in ADDON_IDS.
+  for (let version of [1, 2, 3]) {
+    let updateJson = { addons: {} };
+    for (let id of ADDON_IDS) {
+      let nextversion = version + 1;
+      let name = getxpibasename(id, nextversion);
+      updateJson.addons[id] = {
+        updates: [
+          {
+            applications: {
+              gecko: {
+                strict_min_version: "0",
+                advisory_max_version: "*",
+              },
+            },
+            version: `${nextversion}.0`,
+            update_link: `http://example.com/addons/${name}.xpi`,
+          },
+        ],
+      };
+    }
+    AddonTestUtils.registerJSON(
+      testserver,
+      `/addon_update${version}.json`,
+      updateJson
+    );
   }
 
   await promiseStartupManager();
@@ -499,7 +653,7 @@ add_task(async function run_app_update_test() {
 });
 
 add_task(async function app_update_step_2() {
-  await promiseRestartManager("2");
+  await promiseRestartManagerWithAppChange("2");
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -526,7 +680,7 @@ add_task(async function app_update_step_2() {
 add_task(async function app_update_step_3() {
   await promiseRestartManager();
 
-  await promiseRestartManager("2.5");
+  await promiseRestartManagerWithAppChange("2.5");
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -545,7 +699,7 @@ add_task(async function app_update_step_3() {
 });
 
 add_task(async function app_update_step_4() {
-  await promiseRestartManager("1");
+  await promiseRestartManagerWithAppChange("1");
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -611,7 +765,7 @@ add_task(async function update_schema_2() {
 
   await changeXPIDBVersion(100);
   gAppInfo.version = "2";
-  await promiseStartupManager();
+  await promiseStartupManagerWithAppChange();
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -641,7 +795,7 @@ add_task(async function update_schema_3() {
   await promiseShutdownManager();
   await changeXPIDBVersion(100);
   gAppInfo.version = "2.5";
-  await promiseStartupManager();
+  await promiseStartupManagerWithAppChange();
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -686,7 +840,7 @@ add_task(async function update_schema_5() {
 
   await changeXPIDBVersion(100);
   gAppInfo.version = "1";
-  await promiseStartupManager();
+  await promiseStartupManagerWithAppChange();
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
@@ -716,7 +870,7 @@ add_task(async function update_schema_5() {
 // Starts with add-ons unblocked and then loads new blocklists to change add-ons
 // to blocked and back again.
 add_task(async function run_blocklist_update_test() {
-  await AddonTestUtils.loadBlocklistRawData({ extensions: [] });
+  await Pload_blocklist("empty_blocklist");
   await promiseRestartManager();
 
   let [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
@@ -790,7 +944,7 @@ add_task(async function run_blocklist_update_test() {
   check_addon(h, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);
   check_addon(r, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);
 
-  await AddonTestUtils.loadBlocklistRawData({ extensions: [] });
+  await Pload_blocklist("empty_blocklist");
   await promiseRestartManager();
 
   [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
@@ -1038,25 +1192,36 @@ add_task(async function run_background_update_2_test() {
 
   check_addon(
     s1,
-    "1.0",
+    "4.0",
     false,
     false,
     Ci.nsIBlocklistService.STATE_NOT_BLOCKED
   );
-  check_addon(s2, "1.0", true, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
+  check_addon(s2, "4.0", true, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
   check_addon(
     s3,
-    "1.0",
+    "4.0",
     false,
     false,
     Ci.nsIBlocklistService.STATE_NOT_BLOCKED
   );
-  check_addon(h, "1.0", false, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
-  check_addon(r, "1.0", false, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
+  check_addon(h, "4.0", false, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
+  check_addon(r, "4.0", false, false, Ci.nsIBlocklistService.STATE_NOT_BLOCKED);
 
   await s1.enable();
   await s2.enable();
   await s4.disable();
+});
+
+// The next test task (run_manual_update_test) was written to expect version 1,
+// but after the previous test, version 4 of the add-ons were installed.
+add_task(async function reset_addons_to_version_1_instead_of_4() {
+  await promiseInstallFile(XPIS.blocklist_soft1_1);
+  await promiseInstallFile(XPIS.blocklist_soft2_1);
+  await promiseInstallFile(XPIS.blocklist_soft3_1);
+  await promiseInstallFile(XPIS.blocklist_soft4_1);
+  await promiseInstallFile(XPIS.blocklist_hard_1);
+  await promiseInstallFile(XPIS.blocklist_regexp_1);
 });
 
 // Starts with add-ons blocked and then simulates the user upgrading them to
@@ -1089,16 +1254,12 @@ add_task(async function run_manual_update_test() {
 
   [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
-  check_addon(s1, "2.0", true, true, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
-  check_addon(s2, "2.0", true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
-  check_addon(
-    s3,
-    "2.0",
-    false,
-    false,
-    Ci.nsIBlocklistService.STATE_SOFTBLOCKED
-  );
-  check_addon(s4, "2.0", true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  // With useMLBF, s1/s2/s3 are hard blocks, so they cannot update.
+  const sv2 = useMLBF ? "1.0" : "2.0";
+  check_addon(s1, sv2, true, true, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  check_addon(s2, sv2, true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  check_addon(s3, sv2, false, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  check_addon(s4, sv2, true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
   // Can't manually update to a hardblocked add-on
   check_addon(h, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);
   check_addon(r, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);
@@ -1164,15 +1325,11 @@ add_task(async function run_manual_update_2_test() {
 
   [s1, s2, s3, s4, h, r] = await promiseAddonsByIDs(ADDON_IDS);
 
-  check_addon(s1, "2.0", true, true, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
-  check_addon(s2, "2.0", true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
-  check_addon(
-    s3,
-    "2.0",
-    false,
-    false,
-    Ci.nsIBlocklistService.STATE_SOFTBLOCKED
-  );
+  // With useMLBF, s1/s2/s3 are hard blocks, so they cannot update.
+  const sv2 = useMLBF ? "1.0" : "2.0";
+  check_addon(s1, sv2, true, true, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  check_addon(s2, sv2, true, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
+  check_addon(s3, sv2, false, false, Ci.nsIBlocklistService.STATE_SOFTBLOCKED);
   // Can't manually update to a hardblocked add-on
   check_addon(h, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);
   check_addon(r, "1.0", false, false, Ci.nsIBlocklistService.STATE_BLOCKED);

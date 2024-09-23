@@ -17,19 +17,25 @@ async function run_test() {
   }
 
   gfxInfo.QueryInterface(Ci.nsIGfxInfoDebug);
-  gfxInfo.fireTestProcess();
 
   // Set the vendor/device ID, etc, to match the test file.
   switch (Services.appinfo.OS) {
     case "WINNT":
       gfxInfo.spoofVendorID("0xdcdc");
       gfxInfo.spoofDeviceID("0x1234");
+      // test_gfxBlacklist.json has several entries targeting "os": "All"
+      // ("All" meaning "All Windows"), with several combinations of
+      // "driverVersion" / "driverVersionMax" / "driverVersionComparator".
       gfxInfo.spoofDriverVersion("8.52.322.1112");
       // Windows 7
       gfxInfo.spoofOSVersion(0x60001);
       break;
     case "Linux":
       // We don't support driver versions on Linux.
+      // XXX don't we? Seems like we do since bug 1294232 with the change in
+      // https://hg.mozilla.org/mozilla-central/diff/8962b8d9b7a6/widget/GfxInfoBase.cpp
+      // To update this test, we'd have to update test_gfxBlacklist.json in a
+      // way similar to how bug 1714673 was resolved for Android.
       do_test_finished();
       return;
     case "Darwin":
@@ -85,9 +91,6 @@ async function run_test() {
     );
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
 
-    status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_MSAA);
-    Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DRIVER_VERSION);
-
     status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_ANGLE);
     Assert.equal(status, Ci.nsIGfxInfo.FEATURE_STATUS_OK);
 
@@ -99,7 +102,7 @@ async function run_test() {
     do_test_finished();
   }
 
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
+  Services.obs.addObserver(function () {
     // If we wait until after we go through the event loop, gfxInfo is sure to
     // have processed the gfxItems event.
     executeSoon(checkBlacklist);

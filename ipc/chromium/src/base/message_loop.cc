@@ -8,20 +8,26 @@
 
 #include <algorithm>
 
-#include "mozilla/Atomics.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/message_pump_default.h"
 #include "base/string_util.h"
 #include "base/thread_local.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/ProfilerRunnable.h"
+#include "nsIEventTarget.h"
+#include "nsITargetShutdownTask.h"
+#include "nsThreadUtils.h"
 
-#if defined(OS_MACOSX)
+#if defined(XP_DARWIN)
 #  include "base/message_pump_mac.h"
 #endif
-#if defined(OS_POSIX)
+#if defined(XP_UNIX)
 #  include "base/message_pump_libevent.h"
 #endif
-#if defined(OS_LINUX) || defined(OS_BSD)
+#if defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+    defined(XP_NETBSD) || defined(XP_OPENBSD)
 #  if defined(MOZ_WIDGET_GTK)
 #    include "base/message_pump_glib.h"
 #  endif
@@ -30,12 +36,9 @@
 #  include "base/message_pump_android.h"
 #endif
 #include "nsISerialEventTarget.h"
-#ifdef MOZ_TASK_TRACER
-#  include "GeckoTaskTracer.h"
-#  include "TracedTaskCommon.h"
-#endif
 
-#include "MessagePump.h"
+#include "mozilla/ipc/MessagePump.h"
+#include "nsThreadUtils.h"
 
 using base::Time;
 using base::TimeDelta;
@@ -50,19 +53,7 @@ static base::ThreadLocalPointer<MessageLoop>& get_tls_ptr() {
 
 //------------------------------------------------------------------------------
 
-// Logical events for Histogram profiling. Run with -message-loop-histogrammer
-// to get an accounting of messages and actions taken on each thread.
-static const int kTaskRunEvent = 0x1;
-static const int kTimerEvent = 0x2;
-
-// Provide range of message IDs for use in histogramming and debug display.
-static const int kLeastNonZeroMessageId = 1;
-static const int kMaxMessageId = 1099;
-static const int kNumberOfDistinctMessagesDisplayed = 1100;
-
-//------------------------------------------------------------------------------
-
-#if defined(OS_WIN)
+#if defined(XP_WIN)
 
 // Upon a SEH exception in this thread, it restores the original unhandled
 // exception filter.
@@ -80,17 +71,36 @@ static LPTOP_LEVEL_EXCEPTION_FILTER GetTopSEHFilter() {
   return top_filter;
 }
 
-#endif  // defined(OS_WIN)
+#endif  // defined(XP_WIN)
 
 //------------------------------------------------------------------------------
 
 class MessageLoop::EventTarget : public nsISerialEventTarget,
+                                 public nsITargetShutdownTask,
                                  public MessageLoop::DestructionObserver {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIEVENTTARGET_FULL
 
-  explicit EventTarget(MessageLoop* aLoop) : mLoop(aLoop) {
+  void TargetShutdown() override {
+    nsTArray<nsCOMPtr<nsITargetShutdownTask>> shutdownTasks;
+    {
+      mozilla::MutexAutoLock lock(mMutex);
+      if (mShutdownTasksRun) {
+        return;
+      }
+      mShutdownTasksRun = true;
+      shutdownTasks = std::move(mShutdownTasks);
+      mShutdownTasks.Clear();
+    }
+
+    for (auto& task : shutdownTasks) {
+      task->TargetShutdown();
+    }
+  }
+
+  explicit EventTarget(MessageLoop* aLoop)
+      : mMutex("MessageLoop::EventTarget"), mLoop(aLoop) {
     aLoop->AddDestructionObserver(this);
   }
 
@@ -99,14 +109,27 @@ class MessageLoop::EventTarget : public nsISerialEventTarget,
     if (mLoop) {
       mLoop->RemoveDestructionObserver(this);
     }
+    MOZ_ASSERT(mShutdownTasks.IsEmpty());
   }
 
   void WillDestroyCurrentMessageLoop() override {
-    mLoop->RemoveDestructionObserver(this);
-    mLoop = nullptr;
+    {
+      mozilla::MutexAutoLock lock(mMutex);
+      // The MessageLoop is being destroyed and we are called from its
+      // destructor There's no real need to remove ourselves from the
+      // destruction observer list. But it makes things look tidier.
+      mLoop->RemoveDestructionObserver(this);
+      mLoop = nullptr;
+    }
+
+    TargetShutdown();
   }
 
-  MessageLoop* mLoop;
+  mozilla::Mutex mMutex;
+  bool mShutdownTasksRun MOZ_GUARDED_BY(mMutex) = false;
+  nsTArray<nsCOMPtr<nsITargetShutdownTask>> mShutdownTasks
+      MOZ_GUARDED_BY(mMutex);
+  MessageLoop* mLoop MOZ_GUARDED_BY(mMutex);
 };
 
 NS_IMPL_ISUPPORTS(MessageLoop::EventTarget, nsIEventTarget,
@@ -114,6 +137,7 @@ NS_IMPL_ISUPPORTS(MessageLoop::EventTarget, nsIEventTarget,
 
 NS_IMETHODIMP_(bool)
 MessageLoop::EventTarget::IsOnCurrentThreadInfallible() {
+  mozilla::MutexAutoLock lock(mMutex);
   return mLoop == MessageLoop::current();
 }
 
@@ -133,6 +157,7 @@ MessageLoop::EventTarget::DispatchFromScript(nsIRunnable* aEvent,
 NS_IMETHODIMP
 MessageLoop::EventTarget::Dispatch(already_AddRefed<nsIRunnable> aEvent,
                                    uint32_t aFlags) {
+  mozilla::MutexAutoLock lock(mMutex);
   if (!mLoop) {
     return NS_ERROR_NOT_INITIALIZED;
   }
@@ -148,12 +173,33 @@ MessageLoop::EventTarget::Dispatch(already_AddRefed<nsIRunnable> aEvent,
 NS_IMETHODIMP
 MessageLoop::EventTarget::DelayedDispatch(already_AddRefed<nsIRunnable> aEvent,
                                           uint32_t aDelayMs) {
+  mozilla::MutexAutoLock lock(mMutex);
   if (!mLoop) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
   mLoop->PostDelayedTask(std::move(aEvent), aDelayMs);
   return NS_OK;
+}
+
+NS_IMETHODIMP
+MessageLoop::EventTarget::RegisterShutdownTask(nsITargetShutdownTask* aTask) {
+  mozilla::MutexAutoLock lock(mMutex);
+  if (!mLoop || mShutdownTasksRun) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  MOZ_ASSERT(!mShutdownTasks.Contains(aTask));
+  mShutdownTasks.AppendElement(aTask);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+MessageLoop::EventTarget::UnregisterShutdownTask(nsITargetShutdownTask* aTask) {
+  mozilla::MutexAutoLock lock(mMutex);
+  if (!mLoop || mShutdownTasksRun) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  return mShutdownTasks.RemoveElement(aTask) ? NS_OK : NS_ERROR_UNEXPECTED;
 }
 
 //------------------------------------------------------------------------------
@@ -166,7 +212,7 @@ void MessageLoop::set_current(MessageLoop* loop) { get_tls_ptr().Set(loop); }
 
 static mozilla::Atomic<int32_t> message_loop_id_seq(0);
 
-MessageLoop::MessageLoop(Type type, nsIEventTarget* aEventTarget)
+MessageLoop::MessageLoop(Type type, nsISerialEventTarget* aEventTarget)
     : type_(type),
       id_(++message_loop_id_seq),
       nestable_tasks_allowed_(true),
@@ -175,9 +221,9 @@ MessageLoop::MessageLoop(Type type, nsIEventTarget* aEventTarget)
       state_(NULL),
       run_depth_base_(1),
       shutting_down_(false),
-#ifdef OS_WIN
+#ifdef XP_WIN
       os_modal_loop_(false),
-#endif  // OS_WIN
+#endif  // XP_WIN
       transient_hang_timeout_(0),
       permanent_hang_timeout_(0),
       next_sequence_num_(0) {
@@ -205,12 +251,11 @@ MessageLoop::MessageLoop(Type type, nsIEventTarget* aEventTarget)
     case TYPE_MOZILLA_NONMAINTHREAD:
       pump_ = new mozilla::ipc::MessagePumpForNonMainThreads(aEventTarget);
       return;
-#if defined(OS_WIN)
+#if defined(XP_WIN) || defined(XP_DARWIN)
     case TYPE_MOZILLA_NONMAINUITHREAD:
       pump_ = new mozilla::ipc::MessagePumpForNonMainUIThreads(aEventTarget);
       return;
-#endif
-#if defined(MOZ_WIDGET_ANDROID)
+#elif defined(MOZ_WIDGET_ANDROID)
     case TYPE_MOZILLA_ANDROID_UI:
       MOZ_RELEASE_ASSERT(aEventTarget);
       pump_ = new mozilla::ipc::MessagePumpForAndroidUI(aEventTarget);
@@ -221,7 +266,7 @@ MessageLoop::MessageLoop(Type type, nsIEventTarget* aEventTarget)
       break;
   }
 
-#if defined(OS_WIN)
+#if defined(XP_WIN)
   // TODO(rvargas): Get rid of the OS guards.
   if (type_ == TYPE_DEFAULT) {
     pump_ = new base::MessagePumpDefault();
@@ -231,19 +276,29 @@ MessageLoop::MessageLoop(Type type, nsIEventTarget* aEventTarget)
     DCHECK(type_ == TYPE_UI);
     pump_ = new base::MessagePumpForUI();
   }
-#elif defined(OS_POSIX)
+#else
   if (type_ == TYPE_UI) {
-#  if defined(OS_MACOSX)
+#  if defined(XP_DARWIN)
     pump_ = base::MessagePumpMac::Create();
-#  elif defined(OS_LINUX) || defined(OS_BSD)
+#  elif defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+      defined(XP_NETBSD) || defined(XP_OPENBSD)
     pump_ = new base::MessagePumpForUI();
-#  endif  // OS_LINUX
+#  endif  // XP_LINUX
   } else if (type_ == TYPE_IO) {
     pump_ = new base::MessagePumpLibevent();
   } else {
     pump_ = new base::MessagePumpDefault();
   }
-#endif    // OS_POSIX
+#endif
+
+  // We want GetCurrentSerialEventTarget() to return the real nsThread if it
+  // will be used to dispatch tasks. However, under all other cases; we'll want
+  // it to return this MessageLoop's EventTarget.
+  if (nsISerialEventTarget* thread = pump_->GetXPCOMThread()) {
+    MOZ_ALWAYS_SUCCEEDS(thread->RegisterShutdownTask(mEventTarget));
+  } else {
+    mozilla::SerialEventTargetGuard::Set(mEventTarget);
+  }
 }
 
 MessageLoop::~MessageLoop() {
@@ -296,7 +351,7 @@ void MessageLoop::Run() {
 // enable_SEH_restoration_ = true : any unhandled exception goes to the filter
 // that was existed before the loop was run.
 void MessageLoop::RunHandler() {
-#if defined(OS_WIN)
+#if defined(XP_WIN)
   if (exception_restoration_) {
     LPTOP_LEVEL_EXCEPTION_FILTER current_filter = GetTopSEHFilter();
     MOZ_SEH_TRY { RunInternal(); }
@@ -356,13 +411,14 @@ void MessageLoop::PostIdleTask(already_AddRefed<nsIRunnable> task) {
   MOZ_ASSERT(NS_IsMainThread());
 
   PendingTask pending_task(std::move(task), false);
+  mozilla::LogRunnable::LogDispatch(pending_task.task.get());
   deferred_non_nestable_work_queue_.push(std::move(pending_task));
 }
 
 // Possibly called on a background thread!
 void MessageLoop::PostTask_Helper(already_AddRefed<nsIRunnable> task,
                                   int delay_ms) {
-  if (nsIEventTarget* target = pump_->GetXPCOMThread()) {
+  if (nsISerialEventTarget* target = pump_->GetXPCOMThread()) {
     nsresult rv;
     if (delay_ms) {
       rv = target->DelayedDispatch(std::move(task), delay_ms);
@@ -376,17 +432,7 @@ void MessageLoop::PostTask_Helper(already_AddRefed<nsIRunnable> task,
   // Tasks should only be queued before or during the Run loop, not after.
   MOZ_ASSERT(!shutting_down_);
 
-#ifdef MOZ_TASK_TRACER
-  nsCOMPtr<nsIRunnable> tracedTask = task;
-  if (mozilla::tasktracer::IsStartLogging()) {
-    tracedTask = mozilla::tasktracer::CreateTracedRunnable(tracedTask.forget());
-    (static_cast<mozilla::tasktracer::TracedRunnable*>(tracedTask.get()))
-        ->DispatchTask();
-  }
-  PendingTask pending_task(tracedTask.forget(), true);
-#else
   PendingTask pending_task(std::move(task), true);
-#endif
 
   if (delay_ms > 0) {
     pending_task.delayed_run_time =
@@ -402,6 +448,7 @@ void MessageLoop::PostTask_Helper(already_AddRefed<nsIRunnable> task,
   RefPtr<base::MessagePump> pump;
   {
     mozilla::MutexAutoLock locked(incoming_queue_lock_);
+    mozilla::LogRunnable::LogDispatch(pending_task.task.get());
     incoming_queue_.push(std::move(pending_task));
     pump = pump_;
   }
@@ -439,8 +486,13 @@ void MessageLoop::RunTask(already_AddRefed<nsIRunnable> aTask) {
   nestable_tasks_allowed_ = false;
 
   nsCOMPtr<nsIRunnable> task = aTask;
-  task->Run();
-  task = nullptr;
+
+  {
+    mozilla::LogRunnable::Run log(task.get());
+    AUTO_PROFILE_FOLLOWING_RUNNABLE(task);
+    task->Run();
+    task = nullptr;
+  }
 
   nestable_tasks_allowed_ = true;
 }
@@ -455,6 +507,7 @@ bool MessageLoop::DeferOrRunPendingTask(PendingTask&& pending_task) {
 
   // We couldn't run the task now because we're in a nested message loop
   // and the task isn't nestable.
+  mozilla::LogRunnable::LogDispatch(pending_task.task.get());
   deferred_non_nestable_work_queue_.push(std::move(pending_task));
   return false;
 }
@@ -466,6 +519,7 @@ void MessageLoop::AddToDelayedWorkQueue(const PendingTask& pending_task) {
   // delayed_run_time value.
   PendingTask new_pending_task(pending_task);
   new_pending_task.sequence_num = next_sequence_num_++;
+  mozilla::LogRunnable::LogDispatch(new_pending_task.task.get());
   delayed_work_queue_.push(std::move(new_pending_task));
 }
 
@@ -575,7 +629,7 @@ MessageLoop::AutoRunState::AutoRunState(MessageLoop* loop) : loop_(loop) {
 
   // Initialize the other fields:
   quit_received = false;
-#if defined(OS_WIN)
+#if defined(XP_WIN)
   dispatcher = NULL;
 #endif
 }
@@ -612,7 +666,7 @@ nsISerialEventTarget* MessageLoop::SerialEventTarget() { return mEventTarget; }
 //------------------------------------------------------------------------------
 // MessageLoopForUI
 
-#if defined(OS_WIN)
+#if defined(XP_WIN)
 
 void MessageLoopForUI::Run(Dispatcher* dispatcher) {
   AutoRunState save_state(this);
@@ -638,12 +692,12 @@ void MessageLoopForUI::PumpOutPendingPaintMessages() {
   pump_ui()->PumpOutPendingPaintMessages();
 }
 
-#endif  // defined(OS_WIN)
+#endif  // defined(XP_WIN)
 
 //------------------------------------------------------------------------------
 // MessageLoopForIO
 
-#if defined(OS_WIN)
+#if defined(XP_WIN)
 
 void MessageLoopForIO::RegisterIOHandler(HANDLE file, IOHandler* handler) {
   pump_io()->RegisterIOHandler(file, handler);
@@ -653,7 +707,7 @@ bool MessageLoopForIO::WaitForIOCompletion(DWORD timeout, IOHandler* filter) {
   return pump_io()->WaitForIOCompletion(timeout, filter);
 }
 
-#elif defined(OS_POSIX)
+#else
 
 bool MessageLoopForIO::WatchFileDescriptor(int fd, bool persistent, Mode mode,
                                            FileDescriptorWatcher* controller,

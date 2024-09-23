@@ -6,11 +6,13 @@
 
 #include "nsIThreadManager.h"
 #include "nsCOMPtr.h"
+#include "nsIThread.h"
 #include "nsXPCOM.h"
 #include "nsThreadUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "mozilla/Atomics.h"
 #include "gtest/gtest.h"
+#include "mozilla/gtest/MozAssertions.h"
 
 using mozilla::Atomic;
 using mozilla::Runnable;
@@ -44,7 +46,9 @@ class SpinRunnable final : public Runnable {
   NS_IMETHODIMP Run() {
     nsCOMPtr<nsIThreadManager> threadMan =
         do_GetService("@mozilla.org/thread-manager;1");
-    mResult = threadMan->SpinEventLoopUntil(mCondition);
+
+    mResult = threadMan->SpinEventLoopUntil(
+        "xpcom:TestThreadManager.cpp:SpinRunnable->Run()"_ns, mCondition);
     return NS_OK;
   }
 
@@ -82,17 +86,17 @@ TEST(ThreadManager, SpinEventLoopUntilSuccess)
   RefPtr<SpinRunnable> spinner = new SpinRunnable(condition);
   nsCOMPtr<nsIThread> thread;
   rv = NS_NewNamedThread("SpinEventLoop", getter_AddRefs(thread), spinner);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   nsCOMPtr<nsIRunnable> counter = new CountRunnable(count);
   for (uint32_t i = 0; i < kRunnablesToDispatch; ++i) {
     rv = thread->Dispatch(counter, NS_DISPATCH_NORMAL);
-    ASSERT_TRUE(NS_SUCCEEDED(rv));
+    ASSERT_NS_SUCCEEDED(rv);
   }
 
   rv = thread->Shutdown();
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_TRUE(NS_SUCCEEDED(spinner->SpinLoopResult()));
+  ASSERT_NS_SUCCEEDED(rv);
+  ASSERT_NS_SUCCEEDED(spinner->SpinLoopResult());
 }
 
 class ErrorCondition final : public nsINestedEventLoopCondition {
@@ -129,15 +133,15 @@ TEST(ThreadManager, SpinEventLoopUntilError)
   RefPtr<SpinRunnable> spinner = new SpinRunnable(condition);
   nsCOMPtr<nsIThread> thread;
   rv = NS_NewNamedThread("SpinEventLoop", getter_AddRefs(thread), spinner);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   nsCOMPtr<nsIRunnable> counter = new CountRunnable(count);
   for (uint32_t i = 0; i < kRunnablesToDispatch; ++i) {
     rv = thread->Dispatch(counter, NS_DISPATCH_NORMAL);
-    ASSERT_TRUE(NS_SUCCEEDED(rv));
+    ASSERT_NS_SUCCEEDED(rv);
   }
 
   rv = thread->Shutdown();
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
-  ASSERT_TRUE(NS_FAILED(spinner->SpinLoopResult()));
+  ASSERT_NS_SUCCEEDED(rv);
+  ASSERT_NS_FAILED(spinner->SpinLoopResult());
 }

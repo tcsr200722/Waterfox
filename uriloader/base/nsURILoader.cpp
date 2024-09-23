@@ -5,12 +5,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsURILoader.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIURIContentListener.h"
 #include "nsIContentHandler.h"
 #include "nsILoadGroup.h"
 #include "nsIDocumentLoader.h"
 #include "nsIStreamListener.h"
-#include "nsIURI.h"
+#include "nsIURL.h"
 #include "nsIChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -42,7 +43,9 @@
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Unused.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_general.h"
 #include "nsContentUtils.h"
 
 mozilla::LazyLogModule nsURILoader::mLog("URILoader");
@@ -51,14 +54,6 @@ mozilla::LazyLogModule nsURILoader::mLog("URILoader");
 #define LOG_ERROR(args) \
   MOZ_LOG(nsURILoader::mLog, mozilla::LogLevel::Error, args)
 #define LOG_ENABLED() MOZ_LOG_TEST(nsURILoader::mLog, mozilla::LogLevel::Debug)
-
-static uint32_t sConvertDataLimit = 20;
-
-static bool InitPreferences() {
-  mozilla::Preferences::AddUintVarCache(
-      &sConvertDataLimit, "general.document_open_conversion_depth_limit", 20);
-  return true;
-}
 
 NS_IMPL_ADDREF(nsDocumentOpenInfo)
 NS_IMPL_RELEASE(nsDocumentOpenInfo)
@@ -75,14 +70,17 @@ nsDocumentOpenInfo::nsDocumentOpenInfo(nsIInterfaceRequestor* aWindowContext,
     : m_originalContext(aWindowContext),
       mFlags(aFlags),
       mURILoader(aURILoader),
-      mDataConversionDepthLimit(sConvertDataLimit) {}
+      mDataConversionDepthLimit(
+          mozilla::StaticPrefs::
+              general_document_open_conversion_depth_limit()) {}
 
 nsDocumentOpenInfo::nsDocumentOpenInfo(uint32_t aFlags,
                                        bool aAllowListenerConversions)
     : m_originalContext(nullptr),
       mFlags(aFlags),
       mURILoader(nullptr),
-      mDataConversionDepthLimit(sConvertDataLimit),
+      mDataConversionDepthLimit(
+          mozilla::StaticPrefs::general_document_open_conversion_depth_limit()),
       mAllowListenerConversions(aAllowListenerConversions) {}
 
 nsDocumentOpenInfo::~nsDocumentOpenInfo() {}
@@ -133,37 +131,6 @@ NS_IMETHODIMP nsDocumentOpenInfo::OnStartRequest(nsIRequest* request) {
     if (204 == responseCode || 205 == responseCode) {
       return NS_BINDING_ABORTED;
     }
-
-    static bool sLargeAllocationHeaderEnabled = false;
-    static bool sCachedLargeAllocationPref = false;
-    if (!sCachedLargeAllocationPref) {
-      sCachedLargeAllocationPref = true;
-      mozilla::Preferences::AddBoolVarCache(
-          &sLargeAllocationHeaderEnabled, "dom.largeAllocationHeader.enabled");
-    }
-
-    if (sLargeAllocationHeaderEnabled) {
-      if (StaticPrefs::dom_largeAllocation_testing_allHttpLoads()) {
-        nsCOMPtr<nsIURI> uri;
-        rv = httpChannel->GetURI(getter_AddRefs(uri));
-        if (NS_SUCCEEDED(rv) && uri) {
-          if ((uri->SchemeIs("http") || uri->SchemeIs("https")) &&
-              nsContentUtils::AttemptLargeAllocationLoad(httpChannel)) {
-            return NS_BINDING_ABORTED;
-          }
-        }
-      }
-
-      // If we have a Large-Allocation header, let's check if we should perform
-      // a process switch.
-      nsAutoCString largeAllocationHeader;
-      rv = httpChannel->GetResponseHeader(
-          NS_LITERAL_CSTRING("Large-Allocation"), largeAllocationHeader);
-      if (NS_SUCCEEDED(rv) &&
-          nsContentUtils::AttemptLargeAllocationLoad(httpChannel)) {
-        return NS_BINDING_ABORTED;
-      }
-    }
   }
 
   //
@@ -187,7 +154,7 @@ NS_IMETHODIMP nsDocumentOpenInfo::OnStartRequest(nsIRequest* request) {
     return NS_OK;
   }
 
-  rv = DispatchContent(request, nullptr);
+  rv = DispatchContent(request);
 
   LOG(("  After dispatch, m_targetStreamListener: 0x%p, rv: 0x%08" PRIX32,
        m_targetStreamListener.get(), static_cast<uint32_t>(rv)));
@@ -237,6 +204,20 @@ nsDocumentOpenInfo::OnDataAvailable(nsIRequest* request, nsIInputStream* inStr,
   return rv;
 }
 
+NS_IMETHODIMP
+nsDocumentOpenInfo::OnDataFinished(nsresult aStatus) {
+  if (!m_targetStreamListener) {
+    return NS_ERROR_FAILURE;
+  }
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetableListener =
+      do_QueryInterface(m_targetStreamListener);
+  if (retargetableListener) {
+    return retargetableListener->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
+}
+
 NS_IMETHODIMP nsDocumentOpenInfo::OnStopRequest(nsIRequest* request,
                                                 nsresult aStatus) {
   LOG(("[0x%p] nsDocumentOpenInfo::OnStopRequest", this));
@@ -259,8 +240,7 @@ NS_IMETHODIMP nsDocumentOpenInfo::OnStopRequest(nsIRequest* request,
   return NS_OK;
 }
 
-nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
-                                             nsISupports* aCtxt) {
+nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request) {
   LOG(("[0x%p] nsDocumentOpenInfo::DispatchContent for type '%s'", this,
        mContentType.get()));
 
@@ -274,7 +254,7 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
     return NS_ERROR_FAILURE;
   }
 
-  NS_NAMED_LITERAL_CSTRING(anyType, "*/*");
+  constexpr auto anyType = "*/*"_ns;
   if (mContentType.IsEmpty() || mContentType == anyType) {
     rv = aChannel->GetContentType(mContentType);
     if (NS_FAILED(rv)) return rv;
@@ -287,22 +267,81 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
     // Reset to application/octet-stream for now; no one other than the
     // external helper app service should see APPLICATION_GUESS_FROM_EXT.
     mContentType = APPLICATION_OCTET_STREAM;
-    aChannel->SetContentType(NS_LITERAL_CSTRING(APPLICATION_OCTET_STREAM));
+    aChannel->SetContentType(nsLiteralCString(APPLICATION_OCTET_STREAM));
   }
 
   // Check whether the data should be forced to be handled externally.  This
   // could happen because the Content-Disposition header is set so, or, in the
   // future, because the user has specified external handling for the MIME
   // type.
+  //
+  // If we're not going to be able to retarget to an external handler, ignore
+  // content-disposition, and unconditionally try to display the content.
+  // This is used for object/embed tags, which expect to display subresources
+  // marked with an attachment disposition.
   bool forceExternalHandling = false;
-  uint32_t disposition;
-  rv = aChannel->GetContentDisposition(&disposition);
+  if (!(mFlags & nsIURILoader::DONT_RETARGET)) {
+    uint32_t disposition;
+    rv = aChannel->GetContentDisposition(&disposition);
 
-  if (NS_SUCCEEDED(rv) && disposition == nsIChannel::DISPOSITION_ATTACHMENT) {
-    forceExternalHandling = true;
+    if (NS_SUCCEEDED(rv) && disposition == nsIChannel::DISPOSITION_ATTACHMENT) {
+      forceExternalHandling = true;
+    }
   }
 
   LOG(("  forceExternalHandling: %s", forceExternalHandling ? "yes" : "no"));
+
+  if (forceExternalHandling &&
+      mozilla::StaticPrefs::browser_download_open_pdf_attachments_inline()) {
+    // Check if this is a PDF which should be opened internally. We also handle
+    // octet-streams that look like they might be PDFs based on their extension.
+    bool isPDF = mContentType.LowerCaseEqualsASCII(APPLICATION_PDF);
+    if (!isPDF &&
+        (mContentType.LowerCaseEqualsASCII(APPLICATION_OCTET_STREAM) ||
+         mContentType.IsEmpty())) {
+      nsAutoString flname;
+      aChannel->GetContentDispositionFilename(flname);
+      isPDF = StringEndsWith(flname, u".pdf"_ns);
+      if (!isPDF) {
+        nsCOMPtr<nsIURI> uri;
+        aChannel->GetURI(getter_AddRefs(uri));
+        nsCOMPtr<nsIURL> url(do_QueryInterface(uri));
+        if (url) {
+          nsAutoCString ext;
+          url->GetFileExtension(ext);
+          isPDF = ext.EqualsLiteral("pdf");
+        }
+      }
+    }
+
+    // For a PDF, check if the preference is set that forces attachments to be
+    // opened inline. If so, treat it as a non-attachment by clearing
+    // 'forceExternalHandling' again. This allows it open a PDF directly
+    // instead of downloading it first. It may still end up being handled by
+    // a helper app depending anyway on the later checks.
+    if (isPDF) {
+      nsCOMPtr<nsILoadInfo> loadInfo;
+      aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
+
+      nsCOMPtr<nsIMIMEInfo> mimeInfo;
+
+      nsCOMPtr<nsIMIMEService> mimeSvc(
+          do_GetService(NS_MIMESERVICE_CONTRACTID));
+      NS_ENSURE_TRUE(mimeSvc, NS_ERROR_FAILURE);
+      mimeSvc->GetFromTypeAndExtension(nsLiteralCString(APPLICATION_PDF), ""_ns,
+                                       getter_AddRefs(mimeInfo));
+
+      if (mimeInfo) {
+        int32_t action = nsIMIMEInfo::saveToDisk;
+        mimeInfo->GetPreferredAction(&action);
+
+        bool alwaysAsk = true;
+        mimeInfo->GetAlwaysAskBeforeHandling(&alwaysAsk);
+        forceExternalHandling =
+            alwaysAsk || action != nsIMIMEInfo::handleInternally;
+      }
+    }
+  }
 
   if (!forceExternalHandling) {
     //
@@ -339,32 +378,7 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
       }
 
       //
-      // Third step: Try to find a content listener that has not yet had
-      // the chance to register, as it is contained in a not-yet-loaded
-      // module, but which has registered a contract ID.
-      //
-      nsCOMPtr<nsICategoryManager> catman =
-          do_GetService(NS_CATEGORYMANAGER_CONTRACTID);
-      if (catman) {
-        nsCString contractidString;
-        rv = catman->GetCategoryEntry(NS_CONTENT_LISTENER_CATEGORYMANAGER_ENTRY,
-                                      mContentType, contractidString);
-        if (NS_SUCCEEDED(rv) && !contractidString.IsEmpty()) {
-          LOG(("  Listener contractid for '%s' is '%s'", mContentType.get(),
-               contractidString.get()));
-
-          listener = do_CreateInstance(contractidString.get());
-          LOG(("  Listener from category manager: 0x%p", listener.get()));
-
-          if (listener && TryContentListener(listener, aChannel)) {
-            LOG(("  Listener from category manager likes this type"));
-            return NS_OK;
-          }
-        }
-      }
-
-      //
-      // Fourth step: try to find an nsIContentHandler for our type.
+      // Third step: Try to find an nsIContentHandler for our type.
       //
       nsAutoCString handlerContractID(NS_CONTENT_HANDLER_CONTRACTID_PREFIX);
       handlerContractID += mContentType;
@@ -402,7 +416,7 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
     }
 
     //
-    // Fifth step:  If no listener prefers this type, see if any stream
+    // Fourth step: If no listener prefers this type, see if any stream
     //              converters exist to transform this content type into
     //              some other.
     //
@@ -421,13 +435,6 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
   NS_ASSERTION(!m_targetStreamListener,
                "If we found a listener, why are we not using it?");
 
-  if (mFlags & nsIURILoader::DONT_RETARGET) {
-    LOG(
-        ("  External handling forced or (listener not interested and no "
-         "stream converter exists), and retargeting disallowed -> aborting"));
-    return NS_ERROR_WONT_HANDLE_CONTENT;
-  }
-
   // Before dispatching to the external helper app service, check for an HTTP
   // error page.  If we got one, we don't want to handle it with a helper app,
   // really.
@@ -436,12 +443,21 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
     bool requestSucceeded;
     rv = httpChannel->GetRequestSucceeded(&requestSucceeded);
     if (NS_FAILED(rv) || !requestSucceeded) {
-      // returning error from OnStartRequest will cancel the channel
+      LOG(
+          ("  Returning NS_ERROR_FILE_NOT_FOUND from "
+           "nsDocumentOpenInfo::DispatchContent due to failed HTTP response"));
       return NS_ERROR_FILE_NOT_FOUND;
     }
   }
 
-  // Sixth step:
+  if (mFlags & nsIURILoader::DONT_RETARGET) {
+    LOG(
+        ("  External handling forced or (listener not interested and no "
+         "stream converter exists), and retargeting disallowed -> aborting"));
+    return NS_ERROR_WONT_HANDLE_CONTENT;
+  }
+
+  // Fifth step:
   //
   // All attempts to dispatch this content have failed.  Just pass it off to
   // the helper app service.
@@ -459,9 +475,9 @@ nsresult nsDocumentOpenInfo::DispatchContent(nsIRequest* request,
     request->SetLoadFlags(loadFlags | nsIChannel::LOAD_RETARGETED_DOCUMENT_URI |
                           nsIChannel::LOAD_TARGETED);
 
-    if (isGuessFromExt) {
+    if (isGuessFromExt || mContentType.IsEmpty()) {
       mContentType = APPLICATION_GUESS_FROM_EXT;
-      aChannel->SetContentType(NS_LITERAL_CSTRING(APPLICATION_GUESS_FROM_EXT));
+      aChannel->SetContentType(nsLiteralCString(APPLICATION_GUESS_FROM_EXT));
     }
 
     rv = TryExternalHelperApp(helperAppService, aChannel);
@@ -551,8 +567,16 @@ nsresult nsDocumentOpenInfo::ConvertData(nsIRequest* request,
 }
 
 nsresult nsDocumentOpenInfo::TryStreamConversion(nsIChannel* aChannel) {
-  NS_NAMED_LITERAL_CSTRING(anyType, "*/*");
-  nsresult rv = ConvertData(aChannel, m_contentListener, mContentType, anyType);
+  constexpr auto anyType = "*/*"_ns;
+
+  // A empty content type should be treated like the unknown content type.
+  nsCString srcContentType(mContentType);
+  if (srcContentType.IsEmpty()) {
+    srcContentType.AssignLiteral(UNKNOWN_CONTENT_TYPE);
+  }
+
+  nsresult rv =
+      ConvertData(aChannel, m_contentListener, srcContentType, anyType);
   if (NS_FAILED(rv)) {
     m_targetStreamListener = nullptr;
   } else if (m_targetStreamListener) {
@@ -721,19 +745,6 @@ NS_IMETHODIMP nsURILoader::OpenURI(nsIChannel* channel, uint32_t aFlags,
     }
   }
 
-  if (aFlags & nsIURILoader::REDIRECTED_CHANNEL) {
-    // Our channel was redirected from another process, so doesn't need to
-    // be opened again. However, it does need its listener hooked up
-    // correctly.
-    if (nsCOMPtr<nsIChildChannel> childChannel = do_QueryInterface(channel)) {
-      return childChannel->CompleteRedirectSetup(loader);
-    }
-
-    // It's possible for the redirected channel to not implement
-    // nsIChildChannel and be entirely local (like srcdoc). In that case we
-    // can just open the local instance and it will work.
-  }
-
   // This method is not complete. Eventually, we should first go
   // to the content listener and ask them for a protocol handler...
   // if they don't give us one, we need to go to the registry and get
@@ -764,9 +775,6 @@ nsresult nsURILoader::OpenChannel(nsIChannel* channel, uint32_t aFlags,
     uri->GetAsciiSpec(spec);
     LOG(("nsURILoader::OpenChannel for %s", spec.get()));
   }
-
-  static bool once = InitPreferences();
-  mozilla::Unused << once;
 
   // we need to create a DocumentOpenInfo object which will go ahead and open
   // the url and discover the content type....

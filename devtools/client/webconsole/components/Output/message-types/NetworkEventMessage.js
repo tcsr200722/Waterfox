@@ -8,26 +8,38 @@
 const {
   createFactory,
   createElement,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const Message = createFactory(
-  require("devtools/client/webconsole/components/Output/Message")
+  require("resource://devtools/client/webconsole/components/Output/Message.js")
 );
-const actions = require("devtools/client/webconsole/actions/index");
-const { l10n } = require("devtools/client/webconsole/utils/messages");
+const actions = require("resource://devtools/client/webconsole/actions/index.js");
+const {
+  isMessageNetworkError,
+  l10n,
+} = require("resource://devtools/client/webconsole/utils/messages.js");
 
 loader.lazyRequireGetter(
   this,
   "TabboxPanel",
-  "devtools/client/netmonitor/src/components/TabboxPanel"
+  "resource://devtools/client/netmonitor/src/components/TabboxPanel.js"
 );
 const {
   getHTTPStatusCodeURL,
-} = require("devtools/client/netmonitor/src/utils/mdn-utils");
+} = require("resource://devtools/client/netmonitor/src/utils/doc-utils.js");
+const {
+  getUnicodeUrl,
+} = require("resource://devtools/client/shared/unicode-url.js");
+loader.lazyRequireGetter(
+  this,
+  "getBlockedReasonString",
+  "resource://devtools/client/netmonitor/src/utils/l10n.js",
+  true
+);
+
 const LEARN_MORE = l10n.getStr("webConsoleMoreInfoLabel");
 
-const Services = require("Services");
 const isMacOS = Services.appinfo.OS === "Darwin";
 
 NetworkEventMessage.displayName = "NetworkEventMessage";
@@ -63,6 +75,7 @@ function NetworkEventMessage({
   networkMessageActiveTabId,
   dispatch,
   open,
+  disabled,
 }) {
   const {
     id,
@@ -70,16 +83,23 @@ function NetworkEventMessage({
     source,
     type,
     level,
-    request,
+    url,
+    method,
     isXHR,
     timeStamp,
+    blockedReason,
+    blockingExtension,
+    httpVersion,
+    status,
+    statusText,
+    totalTime,
   } = message;
 
-  const { response = {}, totalTime } = networkMessageUpdate;
-
-  const { httpVersion, status, statusText } = response;
-
   const topLevelClasses = ["cm-s-mozilla"];
+  if (isMessageNetworkError(message)) {
+    topLevelClasses.push("error");
+  }
+
   let statusCode, statusInfo;
 
   if (
@@ -113,48 +133,57 @@ function NetworkEventMessage({
     );
   }
 
-  const onToggle = (messageId, e) => {
-    const shouldOpenLink = (isMacOS && e.metaKey) || (!isMacOS && e.ctrlKey);
-    if (shouldOpenLink) {
-      serviceContainer.openLink(request.url, e);
-      e.stopPropagation();
-    } else if (open) {
-      dispatch(actions.messageClose(messageId));
-    } else {
-      dispatch(actions.messageOpen(messageId));
-    }
-  };
+  if (blockedReason) {
+    statusInfo = dom.span(
+      { className: "status-info" },
+      getBlockedReasonString(blockedReason, blockingExtension)
+    );
+    topLevelClasses.push("network-message-blocked");
+  }
 
   // Message body components.
-  const method = dom.span({ className: "method" }, request.method);
+  const requestMethod = dom.span({ className: "method" }, method);
   const xhr = isXHR
     ? dom.span({ className: "xhr" }, l10n.getStr("webConsoleXhrIndicator"))
     : null;
-  const requestUrl = dom.span(
-    { className: "url", title: request.url },
-    request.url
+  const unicodeURL = getUnicodeUrl(url);
+  const requestUrl = dom.a(
+    {
+      className: "url",
+      title: unicodeURL,
+      href: url,
+      onClick: e => {
+        // The href of the <a> is the actual URL, so we need to prevent the navigation
+        // within the console panel.
+        // We only want to handle Ctrl/Cmd + click to open the link in a new tab.
+        e.preventDefault();
+        const shouldOpenLink =
+          (isMacOS && e.metaKey) || (!isMacOS && e.ctrlKey);
+        if (shouldOpenLink) {
+          e.stopPropagation();
+          serviceContainer.openLink(url, e);
+        }
+      },
+    },
+    unicodeURL
   );
   const statusBody = statusInfo
     ? dom.a({ className: "status" }, statusInfo)
     : null;
 
-  const messageBody = [xhr, method, requestUrl, statusBody];
+  const messageBody = [xhr, requestMethod, requestUrl, statusBody];
 
   // API consumed by Net monitor UI components. Most of the method
   // are not needed in context of the Console panel (atm) and thus
   // let's just provide empty implementation.
   // Individual methods might be implemented step by step as needed.
   const connector = {
-    viewSourceInDebugger: (url, line, column) => {
-      serviceContainer.onViewSourceInDebugger({ url, line, column });
+    viewSourceInDebugger: (srcUrl, line, column) => {
+      serviceContainer.onViewSourceInDebugger({ url: srcUrl, line, column });
     },
     getLongString: grip => {
       return serviceContainer.getLongString(grip);
     },
-    getTabTarget: () => {},
-    getNetworkRequest: () => {},
-    sendHTTPRequest: () => {},
-    setPreferences: () => {},
     triggerActivity: () => {},
     requestData: (requestId, dataType) => {
       return serviceContainer.requestData(requestId, dataType);
@@ -162,9 +191,10 @@ function NetworkEventMessage({
   };
 
   // Only render the attachment if the network-event is
-  // actually opened (performance optimization).
+  // actually opened (performance optimization) and its not disabled.
   const attachment =
     open &&
+    !disabled &&
     dom.div(
       {
         className: "network-info network-monitor",
@@ -173,7 +203,7 @@ function NetworkEventMessage({
         connector,
         activeTabId: networkMessageActiveTabId,
         request: networkMessageUpdate,
-        sourceMapService: serviceContainer.sourceMapService,
+        sourceMapURLService: serviceContainer.sourceMapURLService,
         openLink: serviceContainer.openLink,
         selectTab: tabId => {
           dispatch(actions.selectNetworkMessageTab(tabId));
@@ -184,10 +214,11 @@ function NetworkEventMessage({
           }
         },
         hideToggleButton: true,
-        showWebSocketsTab: false,
+        showMessagesView: false,
       })
     );
 
+  const request = { url, method };
   return Message({
     dispatch,
     messageId: id,
@@ -197,7 +228,7 @@ function NetworkEventMessage({
     indent,
     collapsible: true,
     open,
-    onToggle,
+    disabled,
     attachment,
     topLevelClasses,
     timeStamp,
@@ -205,6 +236,7 @@ function NetworkEventMessage({
     serviceContainer,
     request,
     timestampsVisible,
+    isBlockedNetworkMessage: !!blockedReason,
     message,
   });
 }

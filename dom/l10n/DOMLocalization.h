@@ -7,31 +7,42 @@
 #ifndef mozilla_dom_l10n_DOMLocalization_h
 #define mozilla_dom_l10n_DOMLocalization_h
 
+#include "nsTHashSet.h"
 #include "nsXULPrototypeDocument.h"
 #include "mozilla/intl/Localization.h"
 #include "mozilla/dom/DOMLocalizationBinding.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/L10nMutations.h"
 #include "mozilla/dom/L10nOverlaysBinding.h"
 #include "mozilla/dom/LocalizationBinding.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
+#include "mozilla/intl/L10nRegistry.h"
 
-namespace mozilla {
-namespace dom {
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "nsINode.h"
+
+namespace mozilla::dom {
+
+class Element;
+class L10nMutations;
 
 class DOMLocalization : public intl::Localization {
  public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DOMLocalization, Localization)
 
-  explicit DOMLocalization(nsIGlobalObject* aGlobal);
+  void Destroy();
 
   static already_AddRefed<DOMLocalization> Constructor(
-      const GlobalObject& aGlobal, const Sequence<nsString>& aResourceIds,
-      const bool aSync, const BundleGenerator& aBundleGenerator,
+      const dom::GlobalObject& aGlobal,
+      const dom::Sequence<dom::OwningUTF8StringOrResourceId>& aResourceIds,
+      bool aIsSync,
+      const dom::Optional<dom::NonNull<intl::L10nRegistry>>& aRegistry,
+      const dom::Optional<dom::Sequence<nsCString>>& aLocales,
       ErrorResult& aRv);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
+
+  bool HasPendingMutations() const;
 
   /**
    * DOMLocalization API
@@ -39,23 +50,26 @@ class DOMLocalization : public intl::Localization {
    * Methods documentation in DOMLocalization.webidl
    */
 
-  void ConnectRoot(nsINode& aNode, ErrorResult& aRv);
-  void DisconnectRoot(nsINode& aNode, ErrorResult& aRv);
+  void ConnectRoot(nsINode& aNode);
+  void DisconnectRoot(nsINode& aNode);
 
-  void PauseObserving(ErrorResult& aRv);
-  void ResumeObserving(ErrorResult& aRv);
+  void PauseObserving();
+  void ResumeObserving();
 
   void SetAttributes(JSContext* aCx, Element& aElement, const nsAString& aId,
                      const Optional<JS::Handle<JSObject*>>& aArgs,
                      ErrorResult& aRv);
-  void GetAttributes(Element& aElement, L10nKey& aResult, ErrorResult& aRv);
+  void GetAttributes(Element& aElement, L10nIdArgs& aResult, ErrorResult& aRv);
+
+  void SetArgs(JSContext* aCx, Element& aElement,
+               const Optional<JS::Handle<JSObject*>>& aArgs, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateFragment(nsINode& aNode, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateElements(
-      const Sequence<OwningNonNull<Element>>& aElements, ErrorResult& aRv);
+      const nsTArray<OwningNonNull<Element>>& aElements, ErrorResult& aRv);
   already_AddRefed<Promise> TranslateElements(
-      const Sequence<OwningNonNull<Element>>& aElements,
+      const nsTArray<OwningNonNull<Element>>& aElements,
       nsXULPrototypeDocument* aProto, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateRoots(ErrorResult& aRv);
@@ -92,14 +106,18 @@ class DOMLocalization : public intl::Localization {
                          nsXULPrototypeDocument* aProto, ErrorResult& aRv);
 
   bool SubtreeRootInRoots(nsINode* aSubtreeRoot) {
-    for (auto iter = mRoots.Iter(); !iter.Done(); iter.Next()) {
-      nsINode* subtreeRoot = iter.Get()->GetKey()->SubtreeRoot();
+    for (const auto* key : mRoots) {
+      nsINode* subtreeRoot = key->SubtreeRoot();
       if (subtreeRoot == aSubtreeRoot) {
         return true;
       }
     }
     return false;
   }
+
+  DOMLocalization(nsIGlobalObject* aGlobal, bool aSync);
+  DOMLocalization(nsIGlobalObject* aGlobal, bool aIsSync,
+                  const intl::ffi::LocalizationRc* aRaw);
 
  protected:
   virtual ~DOMLocalization();
@@ -111,10 +129,9 @@ class DOMLocalization : public intl::Localization {
                                ErrorResult& aRv);
 
   RefPtr<L10nMutations> mMutations;
-  nsTHashtable<nsRefPtrHashKey<nsINode>> mRoots;
+  nsTHashSet<RefPtr<nsINode>> mRoots;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

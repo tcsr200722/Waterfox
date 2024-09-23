@@ -9,7 +9,7 @@
 #include "nsIAccessibleEvent.h"
 #include "nsIGSettingsService.h"
 #include "nsMai.h"
-#include "AtkSocketAccessible.h"
+#include "nsServiceManagerUtils.h"
 #include "prenv.h"
 #include "prlink.h"
 
@@ -17,11 +17,6 @@
 #  include <dbus/dbus.h>
 #endif
 #include <gtk/gtk.h>
-
-#ifdef MOZ_WIDGET_GTK
-extern "C" __attribute__((weak, visibility("default"))) int
-atk_bridge_adaptor_init(int*, char**[]);
-#endif
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -32,8 +27,7 @@ GType (*gAtkTableCellGetTypeFunc)();
 
 extern "C" {
 typedef GType (*AtkGetTypeType)(void);
-typedef void (*GnomeAccessibilityInit)(void);
-typedef void (*GnomeAccessibilityShutdown)(void);
+typedef void (*AtkBridgeAdaptorInit)(int*, char**[]);
 }
 
 static PRLibrary* sATKLib = nullptr;
@@ -49,61 +43,26 @@ static gulong sToplevel_hide_hook = 0;
 
 GType g_atk_hyperlink_impl_type = G_TYPE_INVALID;
 
-struct GnomeAccessibilityModule {
+struct AtkBridgeModule {
   const char* libName;
   PRLibrary* lib;
   const char* initName;
-  GnomeAccessibilityInit init;
-  const char* shutdownName;
-  GnomeAccessibilityShutdown shutdown;
+  AtkBridgeAdaptorInit init;
 };
 
-static GnomeAccessibilityModule sAtkBridge = {
-#ifdef AIX
-    "libatk-bridge.a(libatk-bridge.so.0)", nullptr,
-#else
-    "libatk-bridge.so", nullptr,
-#endif
-    "gnome_accessibility_module_init",     nullptr,
-    "gnome_accessibility_module_shutdown", nullptr};
+static AtkBridgeModule sAtkBridge = {"libatk-bridge-2.0.so.0", nullptr,
+                                     "atk_bridge_adaptor_init", nullptr};
 
-static nsresult LoadGtkModule(GnomeAccessibilityModule& aModule) {
+static nsresult LoadGtkModule(AtkBridgeModule& aModule) {
   NS_ENSURE_ARG(aModule.libName);
 
   if (!(aModule.lib = PR_LoadLibrary(aModule.libName))) {
-    // try to load the module with "gtk-2.0/modules" appended
-    char* curLibPath = PR_GetLibraryPath();
-    nsAutoCString libPath(curLibPath);
-#if defined(LINUX) && defined(__x86_64__)
-    libPath.AppendLiteral(":/usr/lib64:/usr/lib");
-#else
-    libPath.AppendLiteral(":/usr/lib");
-#endif
-    PR_FreeLibraryName(curLibPath);
-
-    int16_t loc1 = 0, loc2 = 0;
-    int16_t subLen = 0;
-    while (loc2 >= 0) {
-      loc2 = libPath.FindChar(':', loc1);
-      if (loc2 < 0)
-        subLen = libPath.Length() - loc1;
-      else
-        subLen = loc2 - loc1;
-      nsAutoCString sub(Substring(libPath, loc1, subLen));
-      sub.AppendLiteral("/gtk-3.0/modules/");
-      sub.Append(aModule.libName);
-      aModule.lib = PR_LoadLibrary(sub.get());
-      if (aModule.lib) break;
-
-      loc1 = loc2 + 1;
-    }
-    if (!aModule.lib) return NS_ERROR_FAILURE;
+    return NS_ERROR_FAILURE;
   }
 
   // we have loaded the library, try to get the function ptrs
-  if (!(aModule.init = PR_FindFunctionSymbol(aModule.lib, aModule.initName)) ||
-      !(aModule.shutdown =
-            PR_FindFunctionSymbol(aModule.lib, aModule.shutdownName))) {
+  if (!(aModule.init = (AtkBridgeAdaptorInit)PR_FindFunctionSymbol(
+            aModule.lib, aModule.initName))) {
     // fail, :(
     PR_UnloadLibrary(aModule.lib);
     aModule.lib = nullptr;
@@ -121,20 +80,8 @@ void a11y::PlatformInit() {
   AtkGetTypeType pfn_atk_hyperlink_impl_get_type =
       (AtkGetTypeType)PR_FindFunctionSymbol(sATKLib,
                                             sATKHyperlinkImplGetTypeSymbol);
-  if (pfn_atk_hyperlink_impl_get_type)
+  if (pfn_atk_hyperlink_impl_get_type) {
     g_atk_hyperlink_impl_type = pfn_atk_hyperlink_impl_get_type();
-
-  AtkGetTypeType pfn_atk_socket_get_type =
-      (AtkGetTypeType)PR_FindFunctionSymbol(
-          sATKLib, AtkSocketAccessible::sATKSocketGetTypeSymbol);
-  if (pfn_atk_socket_get_type) {
-    AtkSocketAccessible::g_atk_socket_type = pfn_atk_socket_get_type();
-    AtkSocketAccessible::g_atk_socket_embed =
-        (AtkSocketEmbedType)PR_FindFunctionSymbol(
-            sATKLib, AtkSocketAccessible ::sATKSocketEmbedSymbol);
-    AtkSocketAccessible::gCanEmbed =
-        AtkSocketAccessible::g_atk_socket_type != G_TYPE_INVALID &&
-        AtkSocketAccessible::g_atk_socket_embed;
   }
 
   gAtkTableCellGetTypeFunc =
@@ -149,8 +96,9 @@ void a11y::PlatformInit() {
       atkMajorVersion = strtol(version, &endPtr, 10);
       if (atkMajorVersion != 0L) {
         atkMinorVersion = strtol(endPtr + 1, &endPtr, 10);
-        if (atkMinorVersion != 0L)
+        if (atkMinorVersion != 0L) {
           atkMicroVersion = strtol(endPtr + 1, &endPtr, 10);
+        }
       }
     }
   }
@@ -160,16 +108,9 @@ void a11y::PlatformInit() {
 
   // Init atk-bridge now
   PR_SetEnv("NO_AT_BRIDGE=0");
-#ifdef MOZ_WIDGET_GTK
-  if (atk_bridge_adaptor_init) {
-    atk_bridge_adaptor_init(nullptr, nullptr);
-  } else
-#endif
-  {
-    nsresult rv = LoadGtkModule(sAtkBridge);
-    if (NS_SUCCEEDED(rv)) {
-      (*sAtkBridge.init)();
-    }
+  nsresult rv = LoadGtkModule(sAtkBridge);
+  if (NS_SUCCEEDED(rv)) {
+    (*sAtkBridge.init)(nullptr, nullptr);
   }
 
   if (!sToplevel_event_hook_added) {
@@ -195,12 +136,9 @@ void a11y::PlatformShutdown() {
   if (sAtkBridge.lib) {
     // Do not shutdown/unload atk-bridge,
     // an exit function registered will take care of it
-    // if (sAtkBridge.shutdown)
-    //     (*sAtkBridge.shutdown)();
     // PR_UnloadLibrary(sAtkBridge.lib);
     sAtkBridge.lib = nullptr;
     sAtkBridge.init = nullptr;
-    sAtkBridge.shutdown = nullptr;
   }
   // if (sATKLib) {
   //     PR_UnloadLibrary(sATKLib);
@@ -256,7 +194,12 @@ bool a11y::ShouldA11yBeEnabled() {
   sChecked = true;
 
   EPlatformDisabledState disabledState = PlatformDisabledState();
-  if (disabledState == ePlatformIsDisabled) return sShouldEnable = false;
+  if (disabledState == ePlatformIsDisabled) {
+    return sShouldEnable = false;
+  }
+  if (disabledState == ePlatformIsForceEnabled) {
+    return sShouldEnable = true;
+  }
 
   // check if accessibility enabled/disabled by environment variable
   const char* envValue = PR_GetEnv(sAccEnv);
@@ -274,8 +217,9 @@ bool a11y::ShouldA11yBeEnabled() {
   sPendingCall = nullptr;
   if (!reply ||
       dbus_message_get_type(reply) != DBUS_MESSAGE_TYPE_METHOD_RETURN ||
-      strcmp(dbus_message_get_signature(reply), DBUS_TYPE_VARIANT_AS_STRING))
+      strcmp(dbus_message_get_signature(reply), DBUS_TYPE_VARIANT_AS_STRING)) {
     goto dbus_done;
+  }
 
   DBusMessageIter iter, iter_variant, iter_struct;
   dbus_bool_t dResult;
@@ -315,11 +259,10 @@ dbus_done:
   nsCOMPtr<nsIGSettingsCollection> a11y_settings;
 
   if (gsettings) {
-    gsettings->GetCollectionForSchema(
-        NS_LITERAL_CSTRING(GSETINGS_A11Y_INTERFACE),
-        getter_AddRefs(a11y_settings));
+    gsettings->GetCollectionForSchema(nsLiteralCString(GSETINGS_A11Y_INTERFACE),
+                                      getter_AddRefs(a11y_settings));
     if (a11y_settings) {
-      a11y_settings->GetBoolean(NS_LITERAL_CSTRING(GSETINGS_A11Y_KEY),
+      a11y_settings->GetBoolean(nsLiteralCString(GSETINGS_A11Y_KEY),
                                 &sShouldEnable);
     }
   }

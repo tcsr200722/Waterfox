@@ -10,24 +10,21 @@ async function installFile(filename) {
   file.leafName = filename;
 
   let MockFilePicker = SpecialPowers.MockFilePicker;
-  MockFilePicker.init(window);
+  MockFilePicker.init(window.browsingContext);
   MockFilePicker.setFiles([file]);
   MockFilePicker.afterOpenCallback = MockFilePicker.cleanup;
 
-  let managerWin = await BrowserOpenAddonsMgr("addons://list/extension");
+  let { document } = await BrowserAddonUI.openAddonsMgr(
+    "addons://list/extension"
+  );
 
   // Do the install...
-  await BrowserTestUtils.waitForEvent(managerWin.document, "ViewChanged");
-  let installButton = managerWin
-    .getHtmlBrowser()
-    .contentDocument.querySelector('[action="install-from-file"]');
+  await waitAboutAddonsViewLoaded(document);
+  let installButton = document.querySelector('[action="install-from-file"]');
   installButton.click();
 }
 
 add_task(async function test_install_extension_from_local_file() {
-  // Clear any telemetry data that might be from a separate test.
-  Services.telemetry.clearEvents();
-
   // Listen for the first installId so we can check it later.
   let firstInstallId = null;
   AddonManager.addInstallListener({
@@ -37,51 +34,25 @@ add_task(async function test_install_extension_from_local_file() {
     },
   });
 
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      // This test asserts that the extension icon is in the install dialog
+      // and so it requires the signature checks to be enabled (otherwise the
+      // extension icon is expected to be replaced by a warning icon) and the
+      // two test extension used by this test (browser_webext_nopermissions.xpi
+      // and browser_webext_permissions.xpi) are signed using AMO stage signatures.
+      ["xpinstall.signatures.dev-root", true],
+    ],
+  });
+
   // Install the add-ons.
   await testInstallMethod(installFile, "installLocal");
+
+  await SpecialPowers.popPrefEnv();
 
   // Check we got an installId.
   ok(
     firstInstallId != null && !isNaN(firstInstallId),
     "There was an installId found"
-  );
-
-  // Check the telemetry.
-  let snapshot = Services.telemetry.snapshotEvents(
-    Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
-    true
-  );
-
-  // Make sure we got some data.
-  ok(
-    snapshot.parent && !!snapshot.parent.length,
-    "Got parent telemetry events in the snapshot"
-  );
-
-  // Only look at the related events after stripping the timestamp and category.
-  let relatedEvents = snapshot.parent
-    .filter(
-      ([timestamp, category, method, object]) =>
-        category == "addonsManager" &&
-        method == "action" &&
-        object == "aboutAddons"
-    )
-    .map(relatedEvent => relatedEvent.slice(4, 6));
-
-  // testInstallMethod installs the extension three times.
-  Assert.deepEqual(
-    relatedEvents,
-    [
-      [firstInstallId.toString(), { action: "installFromFile", view: "list" }],
-      [
-        (++firstInstallId).toString(),
-        { action: "installFromFile", view: "list" },
-      ],
-      [
-        (++firstInstallId).toString(),
-        { action: "installFromFile", view: "list" },
-      ],
-    ],
-    "The telemetry is recorded correctly"
   );
 });

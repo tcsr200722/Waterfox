@@ -24,11 +24,11 @@ RenderSharedSurfaceTextureHost::~RenderSharedSurfaceTextureHost() {
   MOZ_COUNT_DTOR_INHERITED(RenderSharedSurfaceTextureHost, RenderTextureHost);
 }
 
-wr::WrExternalImage RenderSharedSurfaceTextureHost::Lock(
-    uint8_t aChannelIndex, gl::GLContext* aGL, wr::ImageRendering aRendering) {
+wr::WrExternalImage RenderSharedSurfaceTextureHost::Lock(uint8_t aChannelIndex,
+                                                         gl::GLContext* aGL) {
   if (!mLocked) {
-    if (NS_WARN_IF(!mSurface->Map(gfx::DataSourceSurface::MapType::READ_WRITE,
-                                  &mMap))) {
+    if (NS_WARN_IF(
+            !mSurface->Map(gfx::DataSourceSurface::MapType::READ, &mMap))) {
       return InvalidToWrExternalImage();
     }
     mLocked = true;
@@ -44,6 +44,35 @@ void RenderSharedSurfaceTextureHost::Unlock() {
     mLocked = false;
   }
 }
+
+size_t RenderSharedSurfaceTextureHost::Bytes() {
+  return mSurface->Stride() * mSurface->GetSize().height;
+}
+
+size_t RenderSharedSurfaceTextureHost::GetPlaneCount() const { return 1; }
+
+gfx::SurfaceFormat RenderSharedSurfaceTextureHost::GetFormat() const {
+  return mSurface->GetFormat();
+}
+
+gfx::ColorDepth RenderSharedSurfaceTextureHost::GetColorDepth() const {
+  return gfx::ColorDepth::COLOR_8;
+}
+
+bool RenderSharedSurfaceTextureHost::MapPlane(RenderCompositor* aCompositor,
+                                              uint8_t aChannelIndex,
+                                              PlaneInfo& aPlaneInfo) {
+  if (NS_WARN_IF(
+          !mSurface->Map(gfx::DataSourceSurface::MapType::READ, &mMap))) {
+    return false;
+  }
+  aPlaneInfo.mData = mMap.mData;
+  aPlaneInfo.mStride = mMap.mStride;
+  aPlaneInfo.mSize = mSurface->GetSize();
+  return true;
+}
+
+void RenderSharedSurfaceTextureHost::UnmapPlanes() { mSurface->Unmap(); }
 
 }  // namespace wr
 }  // namespace mozilla

@@ -11,8 +11,7 @@
 #include "mozilla/EMEUtils.h"
 #include "GMPUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(MediaKeyStatusMap)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(MediaKeyStatusMap)
@@ -36,40 +35,36 @@ nsPIDOMWindowInner* MediaKeyStatusMap::GetParentObject() const {
   return mParent;
 }
 
-void MediaKeyStatusMap::Get(JSContext* aCx,
-                            const ArrayBufferViewOrArrayBuffer& aKey,
-                            JS::MutableHandle<JS::Value> aOutValue,
+const MediaKeyStatusMap::KeyStatus* MediaKeyStatusMap::FindKey(
+    const ArrayBufferViewOrArrayBuffer& aKey) const {
+  MOZ_ASSERT(aKey.IsArrayBuffer() || aKey.IsArrayBufferView());
+
+  return ProcessTypedArrays(aKey,
+                            [&](const Span<const uint8_t>& aData,
+                                JS::AutoCheckCannotGC&&) -> const KeyStatus* {
+                              for (const KeyStatus& status : mStatuses) {
+                                if (aData == Span(status.mKeyId)) {
+                                  return &status;
+                                }
+                              }
+                              return nullptr;
+                            });
+}
+
+void MediaKeyStatusMap::Get(const ArrayBufferViewOrArrayBuffer& aKey,
+                            OwningMediaKeyStatusOrUndefined& aOutValue,
                             ErrorResult& aOutRv) const {
-  ArrayData keyId = GetArrayBufferViewOrArrayBufferData(aKey);
-  if (!keyId.IsValid()) {
-    aOutValue.setUndefined();
+  const KeyStatus* status = FindKey(aKey);
+  if (!status) {
+    aOutValue.SetUndefined();
     return;
   }
-  for (const KeyStatus& status : mStatuses) {
-    if (keyId == status.mKeyId) {
-      bool ok = ToJSValue(aCx, status.mStatus, aOutValue);
-      if (!ok) {
-        aOutRv.NoteJSContextException(aCx);
-      }
-      return;
-    }
-  }
-  aOutValue.setUndefined();
+
+  aOutValue.SetAsMediaKeyStatus() = status->mStatus;
 }
 
 bool MediaKeyStatusMap::Has(const ArrayBufferViewOrArrayBuffer& aKey) const {
-  ArrayData keyId = GetArrayBufferViewOrArrayBufferData(aKey);
-  if (!keyId.IsValid()) {
-    return false;
-  }
-
-  for (const KeyStatus& status : mStatuses) {
-    if (keyId == status.mKeyId) {
-      return true;
-    }
-  }
-
-  return false;
+  return FindKey(aKey);
 }
 
 uint32_t MediaKeyStatusMap::GetIterableLength() const {
@@ -101,5 +96,4 @@ void MediaKeyStatusMap::Update(const nsTArray<CDMCaps::KeyStatus>& aKeys) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

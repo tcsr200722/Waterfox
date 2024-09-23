@@ -21,9 +21,7 @@ add_task(async function test_initialize() {
     Services.prefs.clearUserPref("signon.autofillForms");
     Services.prefs.clearUserPref("signon.schemeUpgrades");
   });
-  for (let login of loginList()) {
-    Services.logins.addLogin(login);
-  }
+  await Services.logins.addLogins(loginList());
 });
 
 /**
@@ -35,12 +33,13 @@ add_task(async function test_context_menu_iframe_fill() {
       gBrowser,
       url: TEST_ORIGIN + IFRAME_PAGE_PATH,
     },
-    async function(browser) {
+    async function (browser) {
       await openPasswordContextMenu(
         browser,
         "#form-basic-password",
         () => true,
-        browser.browsingContext.children[0]
+        browser.browsingContext.children[0],
+        true
       );
 
       let popupMenu = document.getElementById("fill-login-popup");
@@ -50,7 +49,7 @@ add_task(async function test_context_menu_iframe_fill() {
         return SpecialPowers.spawn(
           browser.browsingContext.children[0],
           [name],
-          function(inputname) {
+          function (inputname) {
             return content.document.getElementById(inputname).value;
           }
         );
@@ -60,22 +59,20 @@ add_task(async function test_context_menu_iframe_fill() {
       );
 
       // Execute the command of the first login menuitem found at the context menu.
-      let firstLoginItem = popupMenu.getElementsByClassName(
-        "context-login-item"
-      )[0];
-      ok(firstLoginItem, "Found the first login item");
+      let firstLoginItem =
+        popupMenu.getElementsByClassName("context-login-item")[0];
+      Assert.ok(firstLoginItem, "Found the first login item");
 
       await TestUtils.waitForTick();
 
-      ok(
-        BrowserTestUtils.is_visible(firstLoginItem),
+      Assert.ok(
+        BrowserTestUtils.isVisible(firstLoginItem),
         "First login menuitem is visible"
       );
 
       info("Clicking on the firstLoginItem");
-      // click on the login item to fill the password field, and send tab to trigger a change event
-      await EventUtils.synthesizeMouseAtCenter(firstLoginItem, {});
-      await EventUtils.synthesizeKey("KEY_Tab");
+      // click on the login item to fill the password field, triggering an "input" event
+      popupMenu.activateItem(firstLoginItem);
 
       let passwordValue = await TestUtils.waitForCondition(async () => {
         let value = await promiseFrameInputValue("form-basic-password");
@@ -84,12 +81,16 @@ add_task(async function test_context_menu_iframe_fill() {
 
       // Find the used login by it's username.
       let login = getLoginFromUsername(firstLoginItem.label);
-      is(login.password, passwordValue, "Password filled and correct.");
+      Assert.equal(
+        login.password,
+        passwordValue,
+        "Password filled and correct."
+      );
 
       let usernameNewValue = await promiseFrameInputValue(
         "form-basic-username"
       );
-      is(
+      Assert.equal(
         usernameOriginalValue,
         usernameNewValue,
         "Username value was not changed."
@@ -113,7 +114,7 @@ add_task(async function test_context_menu_iframe_sandbox() {
       gBrowser,
       url: TEST_ORIGIN + IFRAME_PAGE_PATH,
     },
-    async function(browser) {
+    async function (browser) {
       info("Opening context menu for test_context_menu_iframe_sandbox");
       await openPasswordContextMenu(
         browser,
@@ -121,7 +122,7 @@ add_task(async function test_context_menu_iframe_sandbox() {
         function checkDisabled() {
           info("checkDisabled for test_context_menu_iframe_sandbox");
           let popupHeader = document.getElementById("fill-login");
-          ok(
+          Assert.ok(
             popupHeader.hidden,
             "Check that the Fill Login menu item is hidden"
           );
@@ -144,17 +145,17 @@ add_task(async function test_context_menu_iframe_sandbox_same_origin() {
       gBrowser,
       url: TEST_ORIGIN + IFRAME_PAGE_PATH,
     },
-    async function(browser) {
+    async function (browser) {
       await openPasswordContextMenu(
         browser,
         "#form-basic-password",
         function checkDisabled() {
           let popupHeader = document.getElementById("fill-login");
-          ok(
+          Assert.ok(
             !popupHeader.hidden,
             "Check that the Fill Login menu item is visible"
           );
-          ok(
+          Assert.ok(
             !popupHeader.disabled,
             "Check that the Fill Login menu item is disabled"
           );

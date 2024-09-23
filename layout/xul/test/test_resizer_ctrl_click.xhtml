@@ -15,8 +15,6 @@
 <!-- test code goes here -->
 <script type="application/javascript"><![CDATA[
 
-const { AppConstants } = SpecialPowers.Cu.import("resource://gre/modules/AppConstants.jsm", {});
-
 SimpleTest.waitForExplicitFinish();
 
 function test_resizer_ctrl_click()
@@ -27,8 +25,7 @@ function test_resizer_ctrl_click()
   resizer.addEventListener("click", function(aEvent) {
     // Delay check for command event, because it is fired after click event.
     setTimeout(() => {
-      is(isCommandFired, AppConstants.platform != "macosx",
-         "Check if command event is fired");
+      ok(isCommandFired, "Check if command event is fired");
       SimpleTest.finish();
     }, 0);
   });

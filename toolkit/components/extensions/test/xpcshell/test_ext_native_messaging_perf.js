@@ -10,16 +10,19 @@ const ECHO_BODY = String.raw`
   import struct
   import sys
 
+  stdin = getattr(sys.stdin, 'buffer', sys.stdin)
+  stdout = getattr(sys.stdout, 'buffer', sys.stdout)
+
   while True:
-      rawlen = sys.stdin.read(4)
-      if len(rawlen) == 0:
-          sys.exit(0)
+    rawlen = stdin.read(4)
+    if len(rawlen) == 0:
+      sys.exit(0)
 
-      msglen = struct.unpack('@I', rawlen)[0]
-      msg = sys.stdin.read(msglen)
+    msglen = struct.unpack('@I', rawlen)[0]
+    msg = stdin.read(msglen)
 
-      sys.stdout.write(struct.pack('@I', msglen))
-      sys.stdout.write(msg)
+    stdout.write(struct.pack('@I', msglen))
+    stdout.write(msg)
 `;
 
 const SCRIPTS = [
@@ -101,7 +104,7 @@ add_task(async function test_round_trip_perf() {
       });
     },
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       permissions: ["nativeMessaging"],
     },
   });
@@ -120,8 +123,9 @@ add_task(async function test_round_trip_perf() {
 
   await extension.unload();
 
-  ok(
-    roundTripTime <= MAX_ROUND_TRIP_TIME_MS,
+  Assert.lessOrEqual(
+    roundTripTime,
+    MAX_ROUND_TRIP_TIME_MS,
     `Expected round trip time (${roundTripTime}ms) to be less than ${MAX_ROUND_TRIP_TIME_MS}ms`
   );
 });

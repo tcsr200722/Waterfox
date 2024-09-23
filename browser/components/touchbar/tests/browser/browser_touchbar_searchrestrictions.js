@@ -2,13 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.sys.mjs",
+});
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
-  UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.jsm",
+ChromeUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
+  const { UrlbarTestUtils: module } = ChromeUtils.importESModule(
+    "resource://testing-common/UrlbarTestUtils.sys.mjs"
+  );
+  module.init(this);
+  return module;
 });
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -18,45 +22,64 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsITouchBarHelper"
 );
 
+/**
+ * Tests the search restriction buttons in the Touch Bar.
+ */
+
+/**
+ * @param {object} options
+ * @param {string} options.input
+ *   The value to be inserted in the Urlbar.
+ * @param {UrlbarTokenizer.RESTRICT} options.token
+ *   A restriction token corresponding to a Touch Bar button.
+ */
+async function searchAndCheckState({ input, token }) {
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: input,
+  });
+  input = input.trimStart();
+  if (Object.values(UrlbarTokenizer.RESTRICT).includes(input[0])) {
+    input = input.slice(1).trimStart();
+  }
+  let searchMode = UrlbarUtils.searchModeForToken(token);
+  let expectedValue = searchMode ? input : `${token} ${input}`;
+  TouchBarHelper.insertRestrictionInUrlbar(token);
+
+  if (searchMode) {
+    searchMode.entry = "touchbar";
+    await UrlbarTestUtils.assertSearchMode(window, searchMode);
+  }
+  Assert.equal(
+    gURLBar.value,
+    expectedValue,
+    "The search restriction token should have been entered."
+  );
+
+  await UrlbarTestUtils.promisePopupClose(window);
+}
+
 add_task(async function insertTokens() {
   const tests = [
     {
       input: "mozilla",
       token: UrlbarTokenizer.RESTRICT.HISTORY,
-      expected: "^ mozilla",
     },
     {
       input: "mozilla",
       token: UrlbarTokenizer.RESTRICT.BOOKMARK,
-      expected: "* mozilla",
     },
     {
       input: "mozilla",
       token: UrlbarTokenizer.RESTRICT.TAG,
-      expected: "+ mozilla",
     },
     {
       input: "mozilla",
       token: UrlbarTokenizer.RESTRICT.OPENPAGE,
-      expected: "% mozilla",
-    },
-    {
-      input: "mozilla",
-      token: UrlbarTokenizer.RESTRICT.TITLE,
-      expected: "# mozilla",
     },
   ];
-  let win = BrowserWindowTracker.getTopWindow();
-  for (let { input, token, expected } of tests) {
-    win.gURLBar.search(input);
-    await UrlbarTestUtils.promiseSearchComplete(win);
-    TouchBarHelper.insertRestrictionInUrlbar(token);
-    Assert.equal(
-      win.gURLBar.value,
-      expected,
-      "The search restriction token should have been entered."
-    );
-    await UrlbarTestUtils.promisePopupClose(win);
+  for (let test of tests) {
+    await searchAndCheckState(test);
   }
 });
 
@@ -65,35 +88,22 @@ add_task(async function existingTokens() {
     {
       input: "* mozilla",
       token: UrlbarTokenizer.RESTRICT.HISTORY,
-      expected: "^ mozilla",
     },
     {
       input: "+ mozilla",
       token: UrlbarTokenizer.RESTRICT.BOOKMARK,
-      expected: "* mozilla",
     },
     {
       input: "( $ ^ mozilla",
       token: UrlbarTokenizer.RESTRICT.TAG,
-      expected: "+ ( $ ^ mozilla",
     },
     {
       input: "^*+%?#$ mozilla",
       token: UrlbarTokenizer.RESTRICT.TAG,
-      expected: "+ *+%?#$ mozilla",
     },
   ];
-  let win = BrowserWindowTracker.getTopWindow();
-  for (let { input, token, expected } of tests) {
-    win.gURLBar.search(input);
-    await UrlbarTestUtils.promiseSearchComplete(win);
-    TouchBarHelper.insertRestrictionInUrlbar(token);
-    Assert.equal(
-      win.gURLBar.value,
-      expected,
-      "The search restriction token should have been replaced."
-    );
-    await UrlbarTestUtils.promisePopupClose(win);
+  for (let test of tests) {
+    await searchAndCheckState(test);
   }
 });
 
@@ -102,31 +112,18 @@ add_task(async function stripSpaces() {
     {
       input: "     ^     mozilla",
       token: UrlbarTokenizer.RESTRICT.HISTORY,
-      expected: "^ mozilla",
     },
     {
       input: "     +         mozilla   ",
       token: UrlbarTokenizer.RESTRICT.BOOKMARK,
-      expected: "* mozilla   ",
     },
     {
       input: "  moz    illa  ",
       token: UrlbarTokenizer.RESTRICT.TAG,
-      expected: "+ moz    illa  ",
     },
   ];
-  let win = BrowserWindowTracker.getTopWindow();
-  for (let { input, token, expected } of tests) {
-    win.gURLBar.search(input);
-    await UrlbarTestUtils.promiseSearchComplete(win);
-    TouchBarHelper.insertRestrictionInUrlbar(token);
-    Assert.equal(
-      win.gURLBar.value,
-      expected,
-      "The search restriction token should have been entered " +
-        "with stripped whitespace."
-    );
-    await UrlbarTestUtils.promisePopupClose(win);
+  for (let test of tests) {
+    await searchAndCheckState(test);
   }
 });
 
@@ -135,29 +132,24 @@ add_task(async function clearURLs() {
     {
       loadUrl: "http://example.com/",
       token: UrlbarTokenizer.RESTRICT.HISTORY,
-      expected: "^ ",
     },
     {
       loadUrl: "about:mozilla",
       token: UrlbarTokenizer.RESTRICT.BOOKMARK,
-      expected: "* ",
     },
   ];
   let win = BrowserWindowTracker.getTopWindow();
   await UrlbarTestUtils.promisePopupClose(win);
-  for (let { loadUrl, token, expected } of tests) {
+  for (let { loadUrl, token } of tests) {
     let browser = win.gBrowser.selectedBrowser;
     let loadedPromise = BrowserTestUtils.browserLoaded(browser, false, loadUrl);
-    BrowserTestUtils.loadURI(browser, loadUrl);
+    BrowserTestUtils.startLoadingURIString(browser, loadUrl);
     await loadedPromise;
-    await TestUtils.waitForCondition(
-      () => win.gURLBar.getAttribute("pageproxystate") == "valid"
-    );
-    TouchBarHelper.insertRestrictionInUrlbar(token);
-    Assert.equal(
-      win.gURLBar.value,
-      expected,
-      "The search restriction token should have cleared out the URL."
-    );
+    if (win.gURLBar.getAttribute("pageproxystate") != "valid") {
+      await TestUtils.waitForCondition(
+        () => win.gURLBar.getAttribute("pageproxystate") == "valid"
+      );
+    }
+    await searchAndCheckState({ input: "", token });
   }
 });

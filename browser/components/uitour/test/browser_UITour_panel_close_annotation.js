@@ -9,7 +9,6 @@
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 var highlight = UITour.getHighlightContainerAndMaybeCreate(document);
 var tooltip = UITour.getTooltipAndMaybeCreate(document);
 
@@ -27,7 +26,7 @@ function test() {
 var tests = [
   function test_highlight_move_outside_panel(done) {
     gContentAPI.showInfo("urlbar", "test title", "test text");
-    gContentAPI.showHighlight("customize");
+    gContentAPI.showHighlight("addons");
     waitForElementToBeVisible(
       highlight,
       function checkPanelIsOpen() {
@@ -58,7 +57,7 @@ var tests = [
   },
 
   function test_highlight_panel_hideMenu(done) {
-    gContentAPI.showHighlight("customize");
+    gContentAPI.showHighlight("addons");
     gContentAPI.showInfo("search", "test title", "test text");
     waitForElementToBeVisible(
       highlight,
@@ -122,7 +121,7 @@ var tests = [
 
   function test_highlight_info_panel_click_find(done) {
     gContentAPI.showHighlight("help");
-    gContentAPI.showInfo("customize", "customize me!", "awesome!");
+    gContentAPI.showInfo("addons", "Add addons!", "awesome!");
     waitForElementToBeVisible(
       highlight,
       function checkPanelIsOpen() {
@@ -160,7 +159,7 @@ var tests = [
   },
 
   function test_highlight_panel_open_subview(done) {
-    gContentAPI.showHighlight("customize");
+    gContentAPI.showHighlight("addons");
     gContentAPI.showInfo("backForward", "test title", "test text");
     waitForElementToBeVisible(
       highlight,
@@ -194,7 +193,7 @@ var tests = [
 
   function test_info_panel_open_subview(done) {
     gContentAPI.showHighlight("urlbar");
-    gContentAPI.showInfo("customize", "customize me!", "Open a subview");
+    gContentAPI.showInfo("addons", "Add addons!", "Open a subview");
     waitForElementToBeVisible(
       tooltip,
       function checkPanelIsOpen() {
@@ -223,41 +222,6 @@ var tests = [
         );
       },
       "Highlight should be shown after showHighlight() for fixed panel items"
-    );
-  },
-
-  function test_info_move_outside_panel(done) {
-    gContentAPI.showInfo("addons", "test title", "test text");
-    gContentAPI.showHighlight("urlbar");
-    let addonsButton = document.getElementById("add-ons-button");
-    waitForPopupAtAnchor(
-      tooltip,
-      addonsButton,
-      function checkPanelIsOpen() {
-        isnot(PanelUI.panel.state, "closed", "Panel should have opened");
-
-        // Move the info panel outside which should close the app menu.
-        gContentAPI.showInfo("appMenu", "Cool menu button", "It's three lines");
-        waitForPopupAtAnchor(
-          tooltip,
-          document.getElementById("PanelUI-button"),
-          () => {
-            isnot(
-              PanelUI.panel.state,
-              "open",
-              "Menu should have closed after the highlight moved elsewhere."
-            );
-            is(
-              highlight.parentElement.state,
-              "open",
-              "The highlight should have remained visible"
-            );
-            done();
-          },
-          "Tooltip should move to the appMenu button and still be visible"
-        );
-      },
-      "Tooltip should be shown after showInfo() for a panel item"
     );
   },
 ];

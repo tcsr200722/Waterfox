@@ -12,7 +12,7 @@ loader.lazyServiceGetter(
 );
 
 function storeAsGlobal(actor) {
-  return async ({ client, hud }) => {
+  return async ({ commands, hud }) => {
     const evalString = `{ let i = 0;
       while (this.hasOwnProperty("temp" + i) && i < 1000) {
         i++;
@@ -21,13 +21,17 @@ function storeAsGlobal(actor) {
       "temp" + i;
     }`;
 
-    const res = await client.evaluateJSAsync(evalString, {
+    const res = await commands.scriptCommand.execute(evalString, {
       selectedObjectActor: actor,
+      // Prevent any type of breakpoint when evaluating this code
+      disableBreaks: true,
+      // Ensure always overriding "$0" and "_self" console command, even if the page implements a variable with the same name.
+      preferConsoleCommandsOverLocalSymbols: true,
     });
 
     // Select the adhoc target in the console.
     if (hud.toolbox) {
-      const objectFront = client.getFrontByID(actor);
+      const objectFront = commands.client.getFrontByID(actor);
       if (objectFront) {
         const targetActorID = objectFront.targetFront?.actorID;
         if (targetActorID) {
@@ -42,12 +46,16 @@ function storeAsGlobal(actor) {
 }
 
 function copyMessageObject(actor, variableText) {
-  return async ({ client }) => {
+  return async ({ commands }) => {
     if (actor) {
       // The Debugger.Object of the OA will be bound to |_self| during evaluation.
       // See server/actors/webconsole/eval-with-debugger.js `evalWithDebugger`.
-      const res = await client.evaluateJSAsync("copy(_self)", {
+      const res = await commands.scriptCommand.execute("copy(_self)", {
         selectedObjectActor: actor,
+        // Prevent any type of breakpoint when evaluating this code
+        disableBreaks: true,
+        // ensure always overriding "$0" and "_self" console command, even if the page implements a variable with the same name.
+        preferConsoleCommandsOverLocalSymbols: true,
       });
 
       clipboardHelper.copyString(res.helperResult.value);

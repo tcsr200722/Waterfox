@@ -3,11 +3,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-/* global Debugger */
+const { Actor } = require("resource://devtools/shared/protocol.js");
+const {
+  environmentSpec,
+} = require("resource://devtools/shared/specs/environment.js");
 
-const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
-const { createValueGrip } = require("devtools/server/actors/object/utils");
-const { environmentSpec } = require("devtools/shared/specs/environment");
+const {
+  createValueGrip,
+} = require("resource://devtools/server/actors/object/utils.js");
 
 /**
  * Creates an EnvironmentActor. EnvironmentActors are responsible for listing
@@ -19,33 +22,33 @@ const { environmentSpec } = require("devtools/shared/specs/environment");
  * @param ThreadActor aThreadActor
  *        The parent thread actor that contains this environment.
  */
-const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
-  initialize: function(environment, threadActor) {
-    Actor.prototype.initialize.call(this, threadActor.conn);
+class EnvironmentActor extends Actor {
+  constructor(environment, threadActor) {
+    super(threadActor.conn, environmentSpec);
 
     this.obj = environment;
     this.threadActor = threadActor;
-  },
+  }
 
   /**
    * When the Environment Actor is destroyed it removes the
    * Debugger.Environment.actor field so that environment does not
    * reference a destroyed actor.
    */
-  destroy: function() {
+  destroy() {
     this.obj.actor = null;
-    Actor.prototype.destroy.call(this);
-  },
+    super.destroy();
+  }
 
   /**
    * Return an environment form for use in a protocol message.
    */
-  form: function() {
+  form() {
     const form = { actor: this.actorID };
 
     // What is this environment's type?
     if (this.obj.type == "declarative") {
-      form.type = this.obj.callee ? "function" : "block";
+      form.type = this.obj.calleeScript ? "function" : "block";
     } else {
       form.type = this.obj.type;
     }
@@ -69,12 +72,12 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     // Is this the environment created for a function call?
-    if (this.obj.callee) {
-      form.function = createValueGrip(
-        this.obj.callee,
-        this.getParent(),
-        this.threadActor.objectGrip
-      );
+    if (this.obj.calleeScript) {
+      // Client only uses "displayName" for "function".
+      // Create a fake object actor containing only "displayName" as replacement
+      // for the no longer available obj.callee (see bug 1663847).
+      // See bug 1664218 for cleanup.
+      form.function = { displayName: this.obj.calleeScript.displayName };
     }
 
     // Shall we list this environment's bindings?
@@ -83,49 +86,13 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     return form;
-  },
-
-  /**
-   * Handle a protocol request to change the value of a variable bound in this
-   * lexical environment.
-   *
-   * @param string name
-   *        The name of the variable to be changed.
-   * @param any value
-   *        The value to be assigned.
-   */
-  assign: function(name, value) {
-    // TODO: enable the commented-out part when getVariableDescriptor lands
-    // (bug 725815).
-    /* let desc = this.obj.getVariableDescriptor(name);
-
-    if (!desc.writable) {
-      return { error: "immutableBinding",
-               message: "Changing the value of an immutable binding is not " +
-                        "allowed" };
-    }*/
-
-    try {
-      this.obj.setVariable(name, value);
-    } catch (e) {
-      if (e instanceof Debugger.DebuggeeWouldRun) {
-        const errorObject = {
-          error: "threadWouldRun",
-          message: "Assigning a value would cause the debuggee to run",
-        };
-        throw errorObject;
-      } else {
-        throw e;
-      }
-    }
-    return { from: this.actorID };
-  },
+  }
 
   /**
    * Handle a protocol request to fully enumerate the bindings introduced by the
    * lexical environment.
    */
-  bindings: function() {
+  bindings() {
     const bindings = { arguments: [], variables: {} };
 
     // TODO: this part should be removed in favor of the commented-out part
@@ -136,8 +103,8 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     let parameterNames;
-    if (this.obj.callee) {
-      parameterNames = this.obj.callee.parameterNames;
+    if (this.obj.calleeScript) {
+      parameterNames = this.obj.calleeScript.parameterNames;
     } else {
       parameterNames = [];
     }
@@ -148,7 +115,7 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
       // TODO: this part should be removed in favor of the commented-out part
       // below when getVariableDescriptor lands (bug 725815).
       const desc = {
-        value: value,
+        value,
         configurable: false,
         writable: !value?.optimizedOut,
         enumerable: true,
@@ -196,7 +163,7 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
       // TODO: this part should be removed in favor of the commented-out part
       // below when getVariableDescriptor lands.
       const desc = {
-        value: value,
+        value,
         configurable: false,
         writable: !(
           value &&
@@ -233,7 +200,7 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     return bindings;
-  },
-});
+  }
+}
 
 exports.EnvironmentActor = EnvironmentActor;

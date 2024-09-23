@@ -183,18 +183,7 @@ interface nsIURI : nsISupports
      * to GetScheme, thereby saving extra allocating and freeing. Returns true if
      * the schemes match (case ignored).
      */
-    boolean schemeIs(in string scheme);
-
-    /*
-     * Infallible version of SchemeIs for C++ callers.
-     */
-    %{C++
-     bool SchemeIs(const char* aScheme) {
-       bool ret;
-       mozilla::Unused << SchemeIs(aScheme, &ret);
-       return ret;
-     }
-    %}
+    [infallible] boolean schemeIs(in string scheme);
 
     /**
      * This method resolves a relative string into an absolute URI string,
@@ -261,6 +250,11 @@ interface nsIURI : nsISupports
      */
     readonly attribute boolean hasRef;
 
+    /**
+     * Returns if there is user and pass in the URI.
+     */
+    readonly attribute boolean hasUserPass;
+
     /************************************************************************
      * Additional attributes added for .query support:
      */
@@ -281,6 +275,11 @@ interface nsIURI : nsISupports
      * Some characters may be escaped.
      */
     readonly attribute AUTF8String query;
+
+    /**
+     * Returns if there is a query portion (the part after the "?") of the URI.
+     */
+    readonly attribute boolean hasQuery;
 
     /**
      * If the URI has a punycode encoded hostname, this will hold the UTF8

@@ -7,13 +7,11 @@
 #ifndef mozilla_dom_PaymentMethodChangeEvent_h
 #define mozilla_dom_PaymentMethodChangeEvent_h
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/PaymentMethodChangeEventBinding.h"
 #include "mozilla/dom/PaymentRequestUpdateEvent.h"
 #include "mozilla/dom/PaymentRequest.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 class PaymentRequestUpdateEvent;
 struct PaymentMethodChangeEventInit;
 class PaymentMethodChangeEvent final : public PaymentRequestUpdateEvent {
@@ -53,7 +51,6 @@ class PaymentMethodChangeEvent final : public PaymentRequestUpdateEvent {
   nsString mMethodName;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_PaymentMethodChangeEvent_h

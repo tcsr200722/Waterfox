@@ -2,11 +2,10 @@
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 
 add_task(setup_UITourTest);
 
-add_UITour_task(async function() {
+add_UITour_task(async function () {
   ok(
     !gBrowser.selectedBrowser.currentURI.spec.startsWith("about:reader"),
     "Should not be in reader mode at start of test."

@@ -9,6 +9,7 @@
 #include "mozilla/layers/ScrollableLayerGuid.h"
 
 class nsIFrame;
+class nsPresContext;
 
 namespace mozilla {
 
@@ -51,6 +52,38 @@ class ViewportUtils {
   static nsRect VisualToLayout(const nsRect& aRect, PresShell* aContext);
   static nsPoint LayoutToVisual(const nsPoint& aPt, PresShell* aContext);
 
+  /*
+   * These functions convert the point/rect from layout to visual space
+   * by applying the inverse of GetLayoutToVisualTransform() of the root
+   * scrollframe of provided presShell.
+   */
+  static LayoutDevicePoint DocumentRelativeLayoutToVisual(
+      const LayoutDevicePoint& aPoint, PresShell* aShell);
+  static LayoutDeviceRect DocumentRelativeLayoutToVisual(
+      const LayoutDeviceRect& aRect, PresShell* aShell);
+  static LayoutDeviceRect DocumentRelativeLayoutToVisual(
+      const LayoutDeviceIntRect& aRect, PresShell* aShell);
+  static CSSRect DocumentRelativeLayoutToVisual(const CSSRect& aRect,
+                                                PresShell* aShell);
+
+  /*
+   * These convert aPt/aRect, which is the layout space of aCtx, into a
+   * screen-relative visual-space quantity. Formally, we can think of the input
+   * as being in RelativeTo{aCtx->PresShell()->GetRootFrame(),
+   * ViewportType::Layout} space. And then the function iterates up the chain of
+   * presContexts, transforming the point along, until it gets to the
+   * RelativeTo{aCtx->GetRootPresContext()->PresShell()->GetRootFrame(),
+   * ViewportType::Visual} space. Then it further transforms it into a
+   * screen-relative space. Unlike the GetTransformToAncestor family of helper
+   * methods, this transformation does NOT include CSS transforms. Also, unlike
+   * other ViewportUtils methods, the input is relative to `aCtx` which might be
+   * a sub-shell of the presShell with the resolution.
+   */
+  static LayoutDevicePoint ToScreenRelativeVisual(const LayoutDevicePoint& aPt,
+                                                  nsPresContext* aCtx);
+  static LayoutDeviceRect ToScreenRelativeVisual(const LayoutDeviceRect& aRect,
+                                                 nsPresContext* aCtx);
+
   /**
    * Returns non-null if |aFrame| is inside the async zoom container but its
    * parent frame is not, thereby making |aFrame| a root of a subtree of
@@ -61,6 +94,21 @@ class ViewportUtils {
    * visual-to-layout transform needs to be applied.
    */
   static const nsIFrame* IsZoomedContentRoot(const nsIFrame* aFrame);
+
+  /**
+   * If |aShell| is in a nested content process, try to infer the resolution
+   * at which the enclosing root content
+   * document has been painted.
+   *
+   * Otherwise (if |aShell| is in the chrome or top-level content process),
+   * this function returns 1.0.
+   *
+   * |aShell| must be the root pres shell in its process.
+   *
+   * This function may not return an accurate answer if there is also
+   * a CSS transform enclosing the iframe.
+   */
+  static Scale2D TryInferEnclosingResolution(PresShell* aShell);
 };
 
 // Forward declare explicit instantiations of GetVisualToLayoutTransform() for

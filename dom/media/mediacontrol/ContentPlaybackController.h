@@ -5,12 +5,11 @@
 #ifndef DOM_MEDIA_MEDIACONTROL_CONTENTPLAYBACKCONTROLLER_H_
 #define DOM_MEDIA_MEDIACONTROL_CONTENTPLAYBACKCONTROLLER_H_
 
-#include "MediaControlKeysEvent.h"
+#include "MediaControlKeySource.h"
 #include "nsPIDOMWindow.h"
 #include "mozilla/dom/BrowsingContext.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class MediaSession;
 
@@ -39,7 +38,8 @@ class MOZ_STACK_CLASS ContentPlaybackController {
   explicit ContentPlaybackController(BrowsingContext* aContext);
   ~ContentPlaybackController() = default;
 
-  void Focus();
+  // TODO: Convert Focus() to MOZ_CAN_RUN_SCRIPT
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void Focus();
   void Play();
   void Pause();
   void SeekBackward();
@@ -48,25 +48,26 @@ class MOZ_STACK_CLASS ContentPlaybackController {
   void NextTrack();
   void SkipAd();
   void Stop();
-  void SeekTo();
+  void SeekTo(double aSeekTime, bool aFastSeek);
 
  private:
-  void NotifyContentControlKeyEventReceiver(MediaControlKeysEvent aEvent);
+  void NotifyContentMediaControlKeyReceiver(MediaControlKey aKey);
   void NotifyMediaSession(MediaSessionAction aAction);
+  void NotifyMediaSession(const MediaSessionActionDetails& aDetails);
   void NotifyMediaSessionWhenActionIsSupported(MediaSessionAction aAction);
   bool IsMediaSessionActionSupported(MediaSessionAction aAction) const;
+  Maybe<uint64_t> GetActiveMediaSessionId() const;
   MediaSession* GetMediaSession() const;
 
   RefPtr<BrowsingContext> mBC;
 };
 
-class ContentMediaActionHandler {
+class ContentMediaControlKeyHandler {
  public:
-  static void HandleMediaControlKeysEvent(BrowsingContext* aContext,
-                                          MediaControlKeysEvent aEvent);
+  static void HandleMediaControlAction(BrowsingContext* aContext,
+                                       const MediaControlAction& aAction);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

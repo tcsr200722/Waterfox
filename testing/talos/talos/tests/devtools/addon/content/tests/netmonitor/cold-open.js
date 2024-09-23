@@ -10,9 +10,9 @@ const {
   testSetup,
   testTeardown,
   SIMPLE_URL,
-} = require("../head");
+} = require("damp-test/tests/head");
 
-module.exports = async function() {
+module.exports = async function () {
   await testSetup(SIMPLE_URL);
   await openToolboxAndLog("cold.netmonitor", "netmonitor");
   await closeToolbox();

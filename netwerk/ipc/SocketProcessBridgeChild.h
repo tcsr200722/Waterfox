@@ -23,27 +23,24 @@ class SocketProcessBridgeChild final : public PSocketProcessBridgeChild,
   NS_DECL_NSIOBSERVER
 
   static already_AddRefed<SocketProcessBridgeChild> GetSingleton();
-  typedef MozPromise<RefPtr<SocketProcessBridgeChild>, nsCString, false>
-      GetPromise;
+  using GetPromise =
+      MozPromise<RefPtr<SocketProcessBridgeChild>, nsCString, false>;
   static RefPtr<GetPromise> GetSocketProcessBridge();
 
   mozilla::ipc::IPCResult RecvTest();
   void ActorDestroy(ActorDestroyReason aWhy) override;
   void DeferredDestroy();
   bool IsShuttingDown() const { return mShuttingDown; };
-  bool Inited() const { return mInited; };
   ProcessId SocketProcessPid() const { return mSocketProcessPid; };
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SocketProcessBridgeChild);
   static bool Create(Endpoint<PSocketProcessBridgeChild>&& aEndpoint);
-  explicit SocketProcessBridgeChild(
-      Endpoint<PSocketProcessBridgeChild>&& aEndpoint);
+  explicit SocketProcessBridgeChild();
   virtual ~SocketProcessBridgeChild();
 
   static StaticRefPtr<SocketProcessBridgeChild> sSocketProcessBridgeChild;
   bool mShuttingDown;
-  bool mInited = false;
   ProcessId mSocketProcessPid;
 };
 

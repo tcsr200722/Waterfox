@@ -31,17 +31,10 @@ assertEq('bytes' in census, true);
 // list to the object classes we're pretty sure are going to stick around for
 // the forseeable future.
 Pattern({
-          Function:       { count: Pattern.NATURAL },
-          Object:         { count: Pattern.NATURAL },
-          Debugger:       { count: Pattern.NATURAL },
-          global:         { count: Pattern.NATURAL },
-
-          // The below are all Debugger prototype objects.
-          Source:         { count: Pattern.NATURAL },
-          Environment:    { count: Pattern.NATURAL },
-          Script:         { count: Pattern.NATURAL },
-          Memory:         { count: Pattern.NATURAL },
-          Frame:          { count: Pattern.NATURAL }
+          Function:          { count: Pattern.NATURAL },
+          Object:            { count: Pattern.NATURAL },
+          DebuggerPrototype: { count: Pattern.NATURAL },
+          global:            { count: Pattern.NATURAL },
         })
   .assert(dbg.memory.takeCensus({ breakdown: { by: 'objectClass' } }));
 
@@ -84,11 +77,11 @@ Pattern({
   }));
 
 Pattern({
-          Function:       { count: Pattern.NATURAL },
-          Object:         { count: Pattern.NATURAL },
-          Debugger:       { count: Pattern.NATURAL },
-          global:         { count: Pattern.NATURAL },
-          other:          coarse_type_pattern
+          Function:          { count: Pattern.NATURAL },
+          Object:            { count: Pattern.NATURAL },
+          DebuggerPrototype: { count: Pattern.NATURAL },
+          global:            { count: Pattern.NATURAL },
+          other:             coarse_type_pattern
         })
   .assert(dbg.memory.takeCensus({
     breakdown: {
@@ -113,3 +106,29 @@ Pattern({
       other:   { by: 'count', label: 'other' }
     }
   }));
+
+try {
+  const breakdown = { by: "objectClass" };
+  breakdown.then = breakdown;
+  dbg.memory.takeCensus({ breakdown });
+  assertEq(true, false, "should not reach here");
+} catch (e) {
+  assertEq(e.message, "takeCensus breakdown 'by' value nested within itself: \"objectClass\"");
+}
+
+try {
+  const breakdown = { by: "objectClass", then: { by: "objectClass" } };
+  dbg.memory.takeCensus({ breakdown });
+  assertEq(true, false, "should not reach here");
+} catch (e) {
+  assertEq(e.message, "takeCensus breakdown 'by' value nested within itself: \"objectClass\"");
+}
+
+try {
+  const breakdown = { by: "coarseType", scripts: { by: "filename" } };
+  breakdown.scripts.noFilename = breakdown;
+  dbg.memory.takeCensus({ breakdown });
+  assertEq(true, false, "should not reach here");
+} catch (e) {
+  assertEq(e.message, "takeCensus breakdown 'by' value nested within itself: \"coarseType\"");
+}

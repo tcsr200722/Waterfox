@@ -2,8 +2,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+#include ../ext/lib.symbols
 sqlite3_aggregate_context
 sqlite3_auto_extension
+sqlite3_backup_finish
+sqlite3_backup_init
+sqlite3_backup_step
 sqlite3_bind_blob
 sqlite3_bind_double
 sqlite3_bind_int
@@ -19,6 +23,7 @@ sqlite3_bind_zeroblob
 sqlite3_busy_handler
 sqlite3_busy_timeout
 sqlite3_changes
+sqlite3_changes64
 sqlite3_clear_bindings
 sqlite3_close
 sqlite3_collation_needed
@@ -38,9 +43,13 @@ sqlite3_column_text16
 sqlite3_column_type
 sqlite3_column_value
 sqlite3_commit_hook
+#ifdef DEBUG
+sqlite3_compileoption_used
+#endif
 sqlite3_complete
 sqlite3_complete16
 sqlite3_config
+sqlite3_context_db_handle
 sqlite3_create_collation
 sqlite3_create_collation16
 sqlite3_create_function
@@ -48,10 +57,13 @@ sqlite3_create_function16
 sqlite3_create_function_v2
 sqlite3_create_module
 sqlite3_data_count
+sqlite3_database_file_object
+sqlite3_db_cacheflush
 sqlite3_db_config
 sqlite3_db_filename
 sqlite3_db_handle
 sqlite3_db_mutex
+sqlite3_db_readonly
 sqlite3_db_status
 sqlite3_declare_vtab
 sqlite3_enable_load_extension
@@ -59,8 +71,10 @@ sqlite3_enable_shared_cache
 sqlite3_errcode
 sqlite3_errmsg
 sqlite3_errmsg16
+sqlite3_error_offset
 sqlite3_exec
 sqlite3_expanded_sql
+sqlite3_extended_errcode
 sqlite3_extended_result_codes
 sqlite3_file_control
 sqlite3_finalize
@@ -76,7 +90,9 @@ sqlite3_libversion
 sqlite3_libversion_number
 sqlite3_limit
 sqlite3_load_extension
+sqlite3_log
 sqlite3_malloc
+sqlite3_malloc64
 sqlite3_memory_highwater
 sqlite3_memory_used
 sqlite3_mutex_alloc
@@ -94,7 +110,9 @@ sqlite3_prepare
 sqlite3_prepare16
 sqlite3_prepare16_v2
 sqlite3_prepare_v2
+sqlite3_prepare_v3
 sqlite3_progress_handler
+sqlite3_randomness
 sqlite3_realloc
 sqlite3_release_memory
 sqlite3_reset
@@ -109,6 +127,7 @@ sqlite3_result_error_toobig
 sqlite3_result_int
 sqlite3_result_int64
 sqlite3_result_null
+sqlite3_result_subtype
 sqlite3_result_text
 sqlite3_result_text16
 sqlite3_result_text16be
@@ -125,14 +144,17 @@ sqlite3_sql
 sqlite3_status
 sqlite3_step
 sqlite3_stmt_busy
+sqlite3_stmt_isexplain
 sqlite3_stmt_readonly
 sqlite3_stmt_status
+sqlite3_stricmp
 #ifdef XP_UNIX
 sqlite3_temp_directory
 #endif
 sqlite3_threadsafe
 sqlite3_total_changes
 sqlite3_trace_v2
+sqlite3_txn_state
 sqlite3_unlock_notify
 sqlite3_update_hook
 sqlite3_uri_parameter
@@ -144,6 +166,7 @@ sqlite3_value_double
 sqlite3_value_int
 sqlite3_value_int64
 sqlite3_value_numeric_type
+sqlite3_value_subtype
 sqlite3_value_text
 sqlite3_value_text16
 sqlite3_value_text16be

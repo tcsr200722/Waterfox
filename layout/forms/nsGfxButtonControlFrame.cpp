@@ -26,15 +26,14 @@ nsContainerFrame* NS_NewGfxButtonControlFrame(PresShell* aPresShell,
 
 NS_IMPL_FRAMEARENA_HELPERS(nsGfxButtonControlFrame)
 
-void nsGfxButtonControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                          PostDestroyData& aPostDestroyData) {
-  aPostDestroyData.AddAnonymousContent(mTextContent.forget());
-  nsHTMLButtonControlFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+void nsGfxButtonControlFrame::Destroy(DestroyContext& aContext) {
+  aContext.AddAnonymousContent(mTextContent.forget());
+  nsHTMLButtonControlFrame::Destroy(aContext);
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsGfxButtonControlFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("ButtonControl"), aResult);
+  return MakeFrameName(u"ButtonControl"_ns, aResult);
 }
 #endif
 
@@ -78,11 +77,11 @@ nsresult nsGfxButtonControlFrame::GetDefaultLabel(nsAString& aString) const {
   nsCOMPtr<nsIFormControl> form = do_QueryInterface(mContent);
   NS_ENSURE_TRUE(form, NS_ERROR_UNEXPECTED);
 
-  int32_t type = form->ControlType();
+  auto type = form->ControlType();
   const char* prop;
-  if (type == NS_FORM_INPUT_RESET) {
+  if (type == FormControlType::InputReset) {
     prop = "Reset";
-  } else if (type == NS_FORM_INPUT_SUBMIT) {
+  } else if (type == FormControlType::InputSubmit) {
     prop = "Submit";
   } else {
     aString.Truncate();
@@ -161,19 +160,15 @@ nsresult nsGfxButtonControlFrame::AttributeChanged(int32_t aNameSpaceID,
   return rv;
 }
 
-nsContainerFrame* nsGfxButtonControlFrame::GetContentInsertionFrame() {
-  return this;
-}
-
 nsresult nsGfxButtonControlFrame::HandleEvent(nsPresContext* aPresContext,
                                               WidgetGUIEvent* aEvent,
                                               nsEventStatus* aEventStatus) {
-  // Override the HandleEvent to prevent the nsFrame::HandleEvent
-  // from being called. The nsFrame::HandleEvent causes the button label
+  // Override the HandleEvent to prevent the nsIFrame::HandleEvent
+  // from being called. The nsIFrame::HandleEvent causes the button label
   // to be selected (Drawn with an XOR rectangle over the label)
 
   if (IsContentDisabled()) {
-    return nsFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+    return nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
   }
   return NS_OK;
 }

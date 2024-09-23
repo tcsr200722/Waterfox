@@ -11,9 +11,9 @@ const TEST_URI = `
   <p id='id2' style='width:100px;'>element 2</p>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { inspector, view, testActor } = await openRuleView();
+  const { inspector, view } = await openRuleView();
 
   await selectNode("#id1", inspector);
   await modifyRuleViewWidth("300px", view, inspector);
@@ -24,7 +24,19 @@ add_task(async function() {
   await modifyRuleViewWidth("50px", view, inspector);
   await assertRuleAndMarkupViewWidth("id2", "50px", view, inspector);
 
-  await reloadPage(inspector, testActor);
+  is(
+    view.store.userProperties.map.size,
+    2,
+    "The modifications are stored as expected"
+  );
+
+  await reloadBrowser();
+
+  is(
+    view.store.userProperties.map.size,
+    0,
+    "Properties storing user modifications is cleared after a reload"
+  );
 
   await selectNode("#id1", inspector);
   await assertRuleAndMarkupViewWidth("id1", "200px", view, inspector);
@@ -58,18 +70,6 @@ async function modifyRuleViewWidth(value, ruleView, inspector) {
   EventUtils.sendKey("return");
   await onBlur;
   await onStyleChanged;
-
-  info(
-    "Escaping out of the new property field that has been created after " +
-      "the value was edited"
-  );
-  const onNewFieldBlur = once(
-    ruleView.styleDocument.activeElement,
-    "blur",
-    true
-  );
-  EventUtils.sendKey("escape");
-  await onNewFieldBlur;
 }
 
 async function getContainerStyleAttrValue(id, { walker, markup }) {

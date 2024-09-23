@@ -5,8 +5,8 @@
 
 const {
   ConsoleAPIListener,
-} = require("devtools/server/actors/webconsole/listeners/console-api");
-const EventEmitter = require("devtools/shared/event-emitter");
+} = require("resource://devtools/server/actors/webconsole/listeners/console-api.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 const hasMethod = (target, method) =>
   method in target && typeof target[method] === "function";
 
@@ -28,8 +28,8 @@ const TESTS = {
       hasMethod(emitter, "on") &&
         hasMethod(emitter, "off") &&
         hasMethod(emitter, "once") &&
-        !hasMethod(emitter, "decorate") &&
-        !hasMethod(emitter, "count"),
+        hasMethod(emitter, "count") &&
+        !hasMethod(emitter, "decorate"),
       `Event Emitter ${
         isAnEmitter ? "instance" : "mixin"
       } has the expected methods.`
@@ -73,15 +73,13 @@ const TESTS = {
 
   testThrowingExceptionInListener(done) {
     const emitter = getEventEmitter();
-    const listener = new ConsoleAPIListener(null, {
-      onConsoleAPICall(message) {
-        equal(message.level, "error");
-        const [arg] = message.arguments;
-        equal(arg.message, "foo");
-        equal(arg.stack, "bar");
-        listener.destroy();
-        done();
-      },
+    const listener = new ConsoleAPIListener(null, message => {
+      equal(message.level, "error");
+      const [arg] = message.arguments;
+      equal(arg.message, "foo");
+      equal(arg.stack, "bar");
+      listener.destroy();
+      done();
     });
 
     listener.init();
@@ -168,7 +166,7 @@ const TESTS = {
     const pbar = emitter.once("bar");
 
     const check3 = pfoo.then(arg => {
-      ok(arg === undefined, "no arg for foo event");
+      Assert.strictEqual(arg, undefined, "no arg for foo event");
       return "rval from c3";
     });
 
@@ -185,52 +183,6 @@ const TESTS = {
       equal(args[1], "rval from c2", "callback 2 done good");
       equal(args[2], "rval from c3", "callback 3 done good");
     });
-  },
-
-  // This API is only provided for backward compatibility reasons with the old SDK
-  // event-emitter.
-  // !!! This API will be removed by Bug 1391261.
-  testWildcard() {
-    const emitter = getEventEmitter();
-
-    const received = [];
-    const listener = (...args) => received.push(args);
-
-    emitter.on("*", listener);
-
-    emitter.emit("a", 1);
-
-    equal(received.length, 1, "the listener was triggered once");
-    equal(received[0].length, 2, "the listener was called with 2 arguments");
-    equal(received[0][0], "a", "first argument is the event name");
-    equal(received[0][1], 1, "additional arguments are forwarded");
-
-    emitter.emit("*", "wildcard");
-
-    equal(received.length, 2, "the listener was only triggered once");
-    equal(
-      received[1].length,
-      1,
-      "the listener was called with only 1 argument"
-    );
-    equal(received[1][0], "wildcard", "first argument is the actual argument");
-
-    emitter.emit("other", "arg1", "arg2");
-
-    equal(received.length, 3, "the listener was triggered once");
-    equal(
-      received[2].length,
-      3,
-      "the listener was called with only 1 argument"
-    );
-    equal(received[2][0], "other", "first argument is the event name");
-    equal(received[2][1], "arg1", "additional arguments are forwarded");
-    equal(received[2][2], "arg2", "additional arguments are forwarded");
-
-    emitter.off("*", listener);
-    emitter.emit("a");
-    emitter.emit("*");
-    equal(received.length, 3, "the listener was not called anymore");
   },
 
   testClearEvents() {
@@ -321,23 +273,41 @@ const TESTS = {
     await new Promise(r => Services.tm.dispatchToMainThread(r));
     ok(resolved, "once we resolve all the listeners, emitAsync is resolved");
   },
+
+  testCount() {
+    const emitter = getEventEmitter();
+
+    equal(emitter.count("foo"), 0, "no listeners for 'foo' events");
+    emitter.on("foo", () => {});
+    equal(emitter.count("foo"), 1, "listener registered");
+    emitter.on("foo", () => {});
+    equal(emitter.count("foo"), 2, "another listener registered");
+    emitter.off("foo");
+    equal(emitter.count("foo"), 0, "listeners unregistered");
+  },
 };
 
 // Wait for the next call to console.warn which includes
 // the text passed as argument
 function onConsoleWarningLogged(warningMessage) {
   return new Promise(resolve => {
-    const observer = {
-      observe(subject) {
-        // This is the first argument passed to console.warn()
-        const message = subject.wrappedJSObject.arguments[0];
-        if (message.includes(warningMessage)) {
-          Services.obs.removeObserver(observer, "console-api-log-event");
-          resolve();
-        }
-      },
+    const ConsoleAPIStorage = Cc[
+      "@mozilla.org/consoleAPI-storage;1"
+    ].getService(Ci.nsIConsoleAPIStorage);
+
+    const observer = subject => {
+      // This is the first argument passed to console.warn()
+      const message = subject.wrappedJSObject.arguments[0];
+      if (message.includes(warningMessage)) {
+        ConsoleAPIStorage.removeLogEventListener(observer);
+        resolve();
+      }
     };
-    Services.obs.addObserver(observer, "console-api-log-event");
+
+    ConsoleAPIStorage.addLogEventListener(
+      observer,
+      Cc["@mozilla.org/systemprincipal;1"].createInstance(Ci.nsIPrincipal)
+    );
   });
 }
 
@@ -348,7 +318,7 @@ function onConsoleWarningLogged(warningMessage) {
  *  The tests descriptor object, contains the tests to run.
  */
 const runnable = tests =>
-  async function() {
+  async function () {
     for (const name of Object.keys(tests)) {
       info(name);
       if (tests[name].length === 1) {

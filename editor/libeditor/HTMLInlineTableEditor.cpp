@@ -36,7 +36,9 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     return NS_OK;
   }
 
-  if (NS_WARN_IF(!IsDescendantOfEditorRoot(&aCellElement))) {
+  const RefPtr<Element> editingHost = ComputeEditingHost();
+  if (NS_WARN_IF(!editingHost) ||
+      NS_WARN_IF(!aCellElement.IsInclusiveDescendantOf(editingHost))) {
     return NS_ERROR_FAILURE;
   }
 
@@ -65,8 +67,7 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     // If buttons are just created again for same element, we hit the former
     // check.
     ManualNACPtr addColumnBeforeButton = CreateAnonymousElement(
-        nsGkAtoms::a, *rootElement,
-        NS_LITERAL_STRING("mozTableAddColumnBefore"), false);
+        nsGkAtoms::a, *rootElement, u"mozTableAddColumnBefore"_ns, false);
     if (NS_WARN_IF(!addColumnBeforeButton)) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -80,8 +81,7 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     mAddColumnBeforeButton = std::move(addColumnBeforeButton);
 
     ManualNACPtr removeColumnButton = CreateAnonymousElement(
-        nsGkAtoms::a, *rootElement, NS_LITERAL_STRING("mozTableRemoveColumn"),
-        false);
+        nsGkAtoms::a, *rootElement, u"mozTableRemoveColumn"_ns, false);
     if (!removeColumnButton) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -95,8 +95,7 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     mRemoveColumnButton = std::move(removeColumnButton);
 
     ManualNACPtr addColumnAfterButton = CreateAnonymousElement(
-        nsGkAtoms::a, *rootElement, NS_LITERAL_STRING("mozTableAddColumnAfter"),
-        false);
+        nsGkAtoms::a, *rootElement, u"mozTableAddColumnAfter"_ns, false);
     if (!addColumnAfterButton) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -110,8 +109,7 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     mAddColumnAfterButton = std::move(addColumnAfterButton);
 
     ManualNACPtr addRowBeforeButton = CreateAnonymousElement(
-        nsGkAtoms::a, *rootElement, NS_LITERAL_STRING("mozTableAddRowBefore"),
-        false);
+        nsGkAtoms::a, *rootElement, u"mozTableAddRowBefore"_ns, false);
     if (!addRowBeforeButton) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -124,9 +122,8 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     }
     mAddRowBeforeButton = std::move(addRowBeforeButton);
 
-    ManualNACPtr removeRowButton =
-        CreateAnonymousElement(nsGkAtoms::a, *rootElement,
-                               NS_LITERAL_STRING("mozTableRemoveRow"), false);
+    ManualNACPtr removeRowButton = CreateAnonymousElement(
+        nsGkAtoms::a, *rootElement, u"mozTableRemoveRow"_ns, false);
     if (!removeRowButton) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -139,9 +136,8 @@ nsresult HTMLEditor::ShowInlineTableEditingUIInternal(Element& aCellElement) {
     }
     mRemoveRowButton = std::move(removeRowButton);
 
-    ManualNACPtr addRowAfterButton =
-        CreateAnonymousElement(nsGkAtoms::a, *rootElement,
-                               NS_LITERAL_STRING("mozTableAddRowAfter"), false);
+    ManualNACPtr addRowAfterButton = CreateAnonymousElement(
+        nsGkAtoms::a, *rootElement, u"mozTableAddRowAfter"_ns, false);
     if (!addRowAfterButton) {
       NS_WARNING(
           "HTMLEditor::CreateAnonymousElement(nsGkAtoms::a, "
@@ -209,13 +205,16 @@ void HTMLEditor::HideInlineTableEditingUIInternal() {
 
 nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
   nsAutoString anonclass;
-  aElement.GetAttr(kNameSpaceID_None, nsGkAtoms::_moz_anonclass, anonclass);
+  aElement.GetAttr(nsGkAtoms::_moz_anonclass, anonclass);
 
-  if (!StringBeginsWith(anonclass, NS_LITERAL_STRING("mozTable"))) {
+  if (!StringBeginsWith(anonclass, u"mozTable"_ns)) {
     return NS_OK;
   }
 
-  if (NS_WARN_IF(!mInlineEditedCell)) {
+  if (NS_WARN_IF(!mInlineEditedCell) ||
+      NS_WARN_IF(!mInlineEditedCell->IsInComposedDoc()) ||
+      NS_WARN_IF(
+          !HTMLEditUtils::IsTableRow(mInlineEditedCell->GetParentNode()))) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
@@ -250,12 +249,13 @@ nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
           "CanHandleAndMaybeDispatchBeforeInputEvent(), failed");
       return EditorBase::ToGenericNSResult(rv);
     }
-    DebugOnly<nsresult> rvIgnored = InsertTableColumnsWithTransaction(
-        1, InsertPosition::eBeforeSelectedCell);
+
+    DebugOnly<nsresult> rvIgnored =
+        InsertTableColumnsWithTransaction(EditorDOMPoint(mInlineEditedCell), 1);
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rvIgnored),
-        "HTMLEditor::InsertTableColumnsWithTransaction(1, "
-        "InsertPosition::eBeforeSelectedCell) failed, but ignored");
+        "HTMLEditor::InsertTableColumnsWithTransaction("
+        "EditorDOMPoint(mInlineEditedCell), 1) failed, but ignored");
   } else if (anonclass.EqualsLiteral("mozTableAddColumnAfter")) {
     AutoEditActionDataSetter editActionData(*this,
                                             EditAction::eInsertTableColumn);
@@ -266,12 +266,24 @@ nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
           "CanHandleAndMaybeDispatchBeforeInputEvent(), failed");
       return EditorBase::ToGenericNSResult(rv);
     }
+    Element* nextCellElement = nullptr;
+    for (nsIContent* maybeNextCellElement = mInlineEditedCell->GetNextSibling();
+         maybeNextCellElement;
+         maybeNextCellElement = maybeNextCellElement->GetNextSibling()) {
+      if (HTMLEditUtils::IsTableCell(maybeNextCellElement)) {
+        nextCellElement = maybeNextCellElement->AsElement();
+        break;
+      }
+    }
     DebugOnly<nsresult> rvIgnored = InsertTableColumnsWithTransaction(
-        1, InsertPosition::eAfterSelectedCell);
+        nextCellElement
+            ? EditorDOMPoint(nextCellElement)
+            : EditorDOMPoint::AtEndOf(*mInlineEditedCell->GetParentElement()),
+        1);
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rvIgnored),
-        "HTMLEditor::InsertTableColumnsWithTransaction(1, "
-        "InsertPosition::eAfterSelectedCell) failed, but ignored");
+        "HTMLEditor::InsertTableColumnsWithTransaction("
+        "EditorDOMPoint(nextCellElement), 1) failed, but ignored");
   } else if (anonclass.EqualsLiteral("mozTableAddRowBefore")) {
     AutoEditActionDataSetter editActionData(*this,
                                             EditAction::eInsertTableRowElement);
@@ -282,11 +294,12 @@ nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
           "CanHandleAndMaybeDispatchBeforeInputEvent(), failed");
       return EditorBase::ToGenericNSResult(rv);
     }
-    DebugOnly<nsresult> rvIgnored =
-        InsertTableRowsWithTransaction(1, InsertPosition::eBeforeSelectedCell);
+    OwningNonNull<Element> targetCellElement(*mInlineEditedCell);
+    DebugOnly<nsresult> rvIgnored = InsertTableRowsWithTransaction(
+        targetCellElement, 1, InsertPosition::eBeforeSelectedCell);
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rvIgnored),
-        "HTMLEditor::InsertTableRowsWithTransaction(1, "
+        "HTMLEditor::InsertTableRowsWithTransaction(targetCellElement, 1, "
         "InsertPosition::eBeforeSelectedCell) failed, but ignored");
   } else if (anonclass.EqualsLiteral("mozTableAddRowAfter")) {
     AutoEditActionDataSetter editActionData(*this,
@@ -298,11 +311,12 @@ nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
           "CanHandleAndMaybeDispatchBeforeInputEvent(), failed");
       return EditorBase::ToGenericNSResult(rv);
     }
-    DebugOnly<nsresult> rvIgnored =
-        InsertTableRowsWithTransaction(1, InsertPosition::eAfterSelectedCell);
+    OwningNonNull<Element> targetCellElement(*mInlineEditedCell);
+    DebugOnly<nsresult> rvIgnored = InsertTableRowsWithTransaction(
+        targetCellElement, 1, InsertPosition::eAfterSelectedCell);
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rvIgnored),
-        "HTMLEditor::InsertTableRowsWithTransaction(1, "
+        "HTMLEditor::InsertTableRowsWithTransaction(targetCellElement, 1, "
         "InsertPosition::eAfterSelectedCell) failed, but ignored");
   } else if (anonclass.EqualsLiteral("mozTableRemoveColumn")) {
     AutoEditActionDataSetter editActionData(*this,
@@ -340,7 +354,6 @@ nsresult HTMLEditor::DoInlineTableEditingAction(const Element& aElement) {
     return NS_OK;
   }
 
-  // InsertTableRowsWithTransaction() might causes reframe.
   if (NS_WARN_IF(Destroyed())) {
     return NS_OK;
   }
@@ -362,8 +375,8 @@ void HTMLEditor::AddMouseClickListener(Element* aElement) {
   if (NS_WARN_IF(!aElement)) {
     return;
   }
-  DebugOnly<nsresult> rvIgnored = aElement->AddEventListener(
-      NS_LITERAL_STRING("click"), mEventListener, true);
+  DebugOnly<nsresult> rvIgnored =
+      aElement->AddEventListener(u"click"_ns, mEventListener, true);
   NS_WARNING_ASSERTION(
       NS_SUCCEEDED(rvIgnored),
       "EventTarget::AddEventListener(click) failed, but ignored");
@@ -373,24 +386,12 @@ void HTMLEditor::RemoveMouseClickListener(Element* aElement) {
   if (NS_WARN_IF(!aElement)) {
     return;
   }
-  aElement->RemoveEventListener(NS_LITERAL_STRING("click"), mEventListener,
-                                true);
-}
-
-NS_IMETHODIMP HTMLEditor::RefreshInlineTableEditingUI() {
-  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  nsresult rv = RefreshInlineTableEditingUIInternal();
-  NS_WARNING_ASSERTION(
-      NS_SUCCEEDED(rv),
-      "HTMLEditor::RefreshInlineTableEditingUIInternal() failed");
-  return EditorBase::ToGenericNSResult(rv);
+  aElement->RemoveEventListener(u"click"_ns, mEventListener, true);
 }
 
 nsresult HTMLEditor::RefreshInlineTableEditingUIInternal() {
+  MOZ_ASSERT(IsEditActionDataAvailable());
+
   if (!mInlineEditedCell) {
     return NS_OK;
   }
@@ -426,46 +427,67 @@ nsresult HTMLEditor::RefreshInlineTableEditingUIInternal() {
     return rv;
   }
 
-  RefPtr<Element> addColumunBeforeButton = mAddColumnBeforeButton.get();
-  SetAnonymousElementPosition(centerOfCellX - 10, cellY - 7,
-                              addColumunBeforeButton);
-  if (NS_WARN_IF(addColumunBeforeButton != mAddColumnBeforeButton.get())) {
-    return NS_ERROR_FAILURE;
-  }
+  auto setInlineTableEditButtonPosition =
+      [this](ManualNACPtr& aButtonElement, int32_t aNewX, int32_t aNewY)
+          MOZ_CAN_RUN_SCRIPT_FOR_DEFINITION -> nsresult {
+    RefPtr<nsStyledElement> buttonStyledElement =
+        nsStyledElement::FromNodeOrNull(aButtonElement.get());
+    if (!buttonStyledElement) {
+      return NS_OK;
+    }
+    nsresult rv = SetAnonymousElementPositionWithoutTransaction(
+        *buttonStyledElement, aNewX, aNewY);
+    if (NS_FAILED(rv)) {
+      NS_WARNING(
+          "HTMLEditor::SetAnonymousElementPositionWithoutTransaction() "
+          "failed");
+      return rv;
+    }
+    return NS_WARN_IF(buttonStyledElement != aButtonElement.get())
+               ? NS_ERROR_FAILURE
+               : NS_OK;
+  };
 
-  RefPtr<Element> removeColumnButton = mRemoveColumnButton.get();
-  SetAnonymousElementPosition(centerOfCellX - 4, cellY - 7, removeColumnButton);
-  if (NS_WARN_IF(removeColumnButton != mRemoveColumnButton.get())) {
-    return NS_ERROR_FAILURE;
+  // clang-format off
+  rv = setInlineTableEditButtonPosition(mAddColumnBeforeButton,
+                                        centerOfCellX - 10, cellY - 7);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for add-column-before");
+    return rv;
   }
-
-  RefPtr<Element> addColumnAfterButton = mAddColumnAfterButton.get();
-  SetAnonymousElementPosition(centerOfCellX + 6, cellY - 7,
-                              addColumnAfterButton);
-  if (NS_WARN_IF(addColumnAfterButton != mAddColumnAfterButton.get())) {
-    return NS_ERROR_FAILURE;
+  rv = setInlineTableEditButtonPosition(mRemoveColumnButton,
+                                        centerOfCellX - 4, cellY - 7);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for remove-column");
+    return rv;
   }
-
-  RefPtr<Element> addRowBeforeButton = mAddRowBeforeButton.get();
-  SetAnonymousElementPosition(cellX - 7, centerOfCellY - 10,
-                              addRowBeforeButton);
-  if (NS_WARN_IF(addRowBeforeButton != mAddRowBeforeButton.get())) {
-    return NS_ERROR_FAILURE;
+  rv = setInlineTableEditButtonPosition(mAddColumnAfterButton,
+                                        centerOfCellX + 6, cellY - 7);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for add-column-after");
+    return rv;
   }
-
-  RefPtr<Element> removeRowButton = mRemoveRowButton.get();
-  SetAnonymousElementPosition(cellX - 7, centerOfCellY - 4, removeRowButton);
-  if (NS_WARN_IF(removeRowButton != mRemoveRowButton.get())) {
-    return NS_ERROR_FAILURE;
+  rv = setInlineTableEditButtonPosition(mAddRowBeforeButton,
+                                        cellX - 7, centerOfCellY - 10);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for add-row-before");
+    return rv;
   }
-
-  RefPtr<Element> addRowAfterButton = mAddRowAfterButton.get();
-  SetAnonymousElementPosition(cellX - 7, centerOfCellY + 6, addRowAfterButton);
-  if (NS_WARN_IF(addRowAfterButton != mAddRowAfterButton.get())) {
-    return NS_ERROR_FAILURE;
+  rv = setInlineTableEditButtonPosition(mRemoveRowButton,
+                                        cellX - 7, centerOfCellY - 4);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for remove-row");
+    return rv;
   }
+  rv = setInlineTableEditButtonPosition(mAddRowAfterButton,
+                                        cellX - 7, centerOfCellY + 6);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to move button for add-row-after");
+    return rv;
+  }
+  // clang-format on
 
-  return NS_OK;
+  return NS_WARN_IF(Destroyed()) ? NS_ERROR_EDITOR_DESTROYED : NS_OK;
 }
 
 }  // namespace mozilla

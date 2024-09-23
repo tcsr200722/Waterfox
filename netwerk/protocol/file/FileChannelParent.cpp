@@ -6,18 +6,27 @@
 
 #include "FileChannelParent.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/net/NeckoParent.h"
 #include "nsNetUtil.h"
 #include "nsIChannel.h"
+
+#ifdef FUZZING_SNAPSHOT
+#  define MOZ_ALWAYS_SUCCEEDS_FUZZING(...) (void)__VA_ARGS__
+#else
+#  define MOZ_ALWAYS_SUCCEEDS_FUZZING(...) MOZ_ALWAYS_SUCCEEDS(__VA_ARGS__)
+#endif
 
 namespace mozilla {
 namespace net {
 
 NS_IMPL_ISUPPORTS(FileChannelParent, nsIParentChannel, nsIStreamListener)
 
-bool FileChannelParent::Init(const uint32_t& channelId) {
+bool FileChannelParent::Init(const uint64_t& aChannelId) {
   nsCOMPtr<nsIChannel> channel;
-  MOZ_ALWAYS_SUCCEEDS(
-      NS_LinkRedirectChannels(channelId, this, getter_AddRefs(channel)));
+
+  MOZ_ALWAYS_SUCCEEDS_FUZZING(
+      NS_LinkRedirectChannels(aChannelId, this, getter_AddRefs(channel)));
 
   return true;
 }
@@ -31,13 +40,6 @@ FileChannelParent::SetParentListener(ParentChannelListener* aListener) {
 NS_IMETHODIMP
 FileChannelParent::NotifyClassificationFlags(uint32_t aClassificationFlags,
                                              bool aIsThirdParty) {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-FileChannelParent::NotifyFlashPluginStateChanged(
-    nsIHttpChannel::FlashPluginState aState) {
   // Nothing to do.
   return NS_OK;
 }
@@ -60,6 +62,17 @@ FileChannelParent::SetClassifierMatchedTrackingInfo(
 NS_IMETHODIMP
 FileChannelParent::Delete() {
   // Nothing to do.
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+FileChannelParent::GetRemoteType(nsACString& aRemoteType) {
+  if (!CanSend()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  dom::PContentParent* pcp = Manager()->Manager();
+  aRemoteType = static_cast<dom::ContentParent*>(pcp)->GetRemoteType();
   return NS_OK;
 }
 

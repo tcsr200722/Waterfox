@@ -4,13 +4,13 @@
 
 addEventListener(
   "frames-loaded",
-  e => sendAsyncMessage("test:frames-loaded"),
+  () => sendAsyncMessage("test:frames-loaded"),
   true,
   true
 );
 
 let requestObserver = {
-  observe(subject, topic, data) {
+  observe(subject, topic) {
     if (topic == "http-on-opening-request") {
       // Get DOMWindow on all child docshells to force about:blank
       // content viewers being created.
@@ -21,7 +21,7 @@ let requestObserver = {
       });
     }
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 };
 Services.obs.addObserver(requestObserver, "http-on-opening-request");
 addEventListener("unload", e => {

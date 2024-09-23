@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-extern crate nsstring;
-
 use nsstring::{nsACString, nsCString};
 use std::error::Error;
 use std::fmt;
@@ -75,7 +73,7 @@ extern "C" {
 }
 
 mod error_list {
-    include!(concat!(env!("MOZ_TOPOBJDIR"), "/xpcom/base/error_list.rs"));
+    include!(mozbuild::objdir_path!("xpcom/base/error_list.rs"));
 }
 
 pub use error_list::*;

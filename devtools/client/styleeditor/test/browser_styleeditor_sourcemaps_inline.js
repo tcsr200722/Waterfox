@@ -30,7 +30,7 @@ body > h1 {
   "4gICAgY29sb3I6IHdoaXRlO1xuICB9XG59XG4iXSwKIm5hbWVzIjogW10sCiJmaWxlIjogInRlc" +
   "3QuY3NzIgp9Cg== */";
 
-add_task(async function() {
+add_task(async function () {
   const { ui } = await openStyleEditorForURL(TESTCASE_URI);
 
   is(
@@ -64,12 +64,12 @@ async function testEditor(editor, expectedName, expectedText) {
 /* Helpers */
 
 function togglePref(UI) {
-  const editorsPromise = UI.once("stylesheets-reset");
+  const editorsPromise = UI.once("stylesheets-refreshed");
   const selectedPromise = UI.once("editor-selected");
 
   Services.prefs.setBoolPref(PREF, false);
 
-  return promise.all([editorsPromise, selectedPromise]);
+  return Promise.all([editorsPromise, selectedPromise]);
 }
 
 function openEditor(editor) {

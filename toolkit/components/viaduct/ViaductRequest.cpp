@@ -4,11 +4,14 @@
 
 #include "mozilla/ViaductRequest.h"
 
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
+#include "mozilla/Try.h"
 
+#include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIHttpChannel.h"
@@ -17,8 +20,10 @@
 #include "nsIUploadChannel2.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
+#include "nsPrintfCString.h"
 #include "nsString.h"
 #include "nsStringStream.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla {
 
@@ -93,12 +98,16 @@ ViaductByteBuffer ViaductRequest::MakeRequest(ViaductByteBuffer reqBuf) {
 
 nsresult ViaductRequest::LaunchRequest(
     appservices::httpconfig::protobuf::Request& request) {
+  if (PastShutdownPhase(ShutdownPhase::AppShutdownNetTeardown)) {
+    return NS_ERROR_FAILURE;
+  }
   nsCOMPtr<nsIURI> uri;
   nsresult rv = NS_NewURI(getter_AddRefs(uri), request.url().c_str());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsSecurityFlags secFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL |
-                             nsILoadInfo::SEC_COOKIES_OMIT;
+  nsSecurityFlags secFlags =
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL |
+      nsILoadInfo::SEC_COOKIES_OMIT;
   uint32_t loadFlags = 0;
 
   if (!request.use_caches()) {
@@ -162,23 +171,25 @@ nsCString ConvertMethod(
   using appservices::httpconfig::protobuf::Request_Method;
   switch (method) {
     case Request_Method::Request_Method_GET:
-      return NS_LITERAL_CSTRING("GET");
+      return "GET"_ns;
     case Request_Method::Request_Method_HEAD:
-      return NS_LITERAL_CSTRING("HEAD");
+      return "HEAD"_ns;
     case Request_Method::Request_Method_POST:
-      return NS_LITERAL_CSTRING("POST");
+      return "POST"_ns;
     case Request_Method::Request_Method_PUT:
-      return NS_LITERAL_CSTRING("PUT");
+      return "PUT"_ns;
     case Request_Method::Request_Method_DELETE:
-      return NS_LITERAL_CSTRING("DELETE");
+      return "DELETE"_ns;
     case Request_Method::Request_Method_CONNECT:
-      return NS_LITERAL_CSTRING("CONNECT");
+      return "CONNECT"_ns;
     case Request_Method::Request_Method_OPTIONS:
-      return NS_LITERAL_CSTRING("OPTIONS");
+      return "OPTIONS"_ns;
     case Request_Method::Request_Method_TRACE:
-      return NS_LITERAL_CSTRING("TRACE");
+      return "TRACE"_ns;
+    case Request_Method::Request_Method_PATCH:
+      return "PATCH"_ns;
   }
-  return NS_LITERAL_CSTRING("UNKNOWN");
+  return "UNKNOWN"_ns;
 }
 
 void ViaductRequest::ClearTimers() {
@@ -207,7 +218,7 @@ ViaductRequest::~ViaductRequest() {
   NotifyMonitor();
 }
 
-NS_IMPL_ISUPPORTS(ViaductRequest, nsIStreamListener, nsITimerCallback,
+NS_IMPL_ISUPPORTS(ViaductRequest, nsIStreamListener, nsITimerCallback, nsINamed,
                   nsIChannelEventSink)
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -280,7 +291,7 @@ ViaductRequest::OnStopRequest(nsIRequest* aRequest, nsresult aStatusCode) {
     rv = httpChannel->VisitResponseHeaders(visitor);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    mResponse.set_body(mBodyBuffer.BeginReading());
+    mResponse.set_body(mBodyBuffer.BeginReading(), mBodyBuffer.Length());
   }
 
   return NS_OK;
@@ -309,6 +320,15 @@ ViaductRequest::Notify(nsITimer* timer) {
     mChannel->Cancel(NS_ERROR_ABORT);
     mChannel = nullptr;
   }
+  return NS_OK;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// nsINamed implementation
+
+NS_IMETHODIMP
+ViaductRequest::GetName(nsACString& aName) {
+  aName.AssignLiteral("ViaductRequest");
   return NS_OK;
 }
 

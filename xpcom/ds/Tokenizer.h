@@ -168,6 +168,12 @@ class TokenizerBase {
                              typename TAString::const_char_iterator begin,
                              typename TAString::const_char_iterator end);
 
+#ifdef DEBUG
+  // This is called from inside Tokenizer methods to make sure the token is
+  // valid.
+  void Validate(Token const& aToken);
+#endif
+
   // true iff we have already read the EOF token
   bool mPastEof;
   // true iff the last Check*() call has returned false, reverts to true on
@@ -330,6 +336,16 @@ class TTokenizer : public TokenizerBase<TChar> {
         base::Token::Word(typename base::TDependentString(aWord, N - 1)));
   }
   /**
+   * Helper to check for a string compound of multiple tokens like "foo bar".
+   * The match is binary-exact, a white space or a delimiter character in the
+   * phrase must match exactly the characters in the input.
+   */
+  [[nodiscard]] bool CheckPhrase(const typename base::TAString& aPhrase);
+  template <uint32_t N>
+  [[nodiscard]] bool CheckPhrase(const TChar (&aPhrase)[N]) {
+    return CheckPhrase(typename base::TDependentString(aPhrase, N - 1));
+  }
+  /**
    * Checks \r, \n or \r\n.
    */
   [[nodiscard]] bool CheckEOL() { return Check(base::Token::NewLine()); }
@@ -418,6 +434,66 @@ class TTokenizer : public TokenizerBase<TChar> {
     }
 
     *aValue = checked.value();
+    revert.release();
+    return true;
+  }
+
+  /**
+   * This is an hexadecimal read helper.  It returns false and doesn't move the
+   * read cursor when any of the following happens:
+   *  - the token at the read cursor is not 0, and it's not followed by x
+   *  - the token(s) that follow don't make a valid hexadecimal number
+   *  - the final number doesn't fit the T type
+   * Otherwise true is returned, aValue is filled with the integral number
+   * and the cursor is moved forward.
+   */
+  template <typename T>
+  [[nodiscard]] bool ReadHexadecimal(T* aValue, bool aPrefixed = true) {
+    MOZ_RELEASE_ASSERT(aValue);
+
+    typename base::TAString::const_char_iterator rollback = mRollback;
+    typename base::TAString::const_char_iterator cursor = base::mCursor;
+    auto revert = MakeScopeExit([&] {
+      // Move to a state as if Check() call has failed
+      mRollback = rollback;
+      base::mCursor = cursor;
+      base::mHasFailed = true;
+    });
+
+    if (aPrefixed) {
+      typename base::Token t;
+      if (!Check(base::TOKEN_INTEGER, t) && t.AsInteger() != 0) {
+        return false;
+      }
+
+      if (!CheckChar([](const TChar aChar) { return aChar == 'x'; })) {
+        return false;
+      }
+    }
+
+    TChar c = 'z';
+    mozilla::CheckedInt<T> resultingNumber = 0;
+    while (ReadChar(
+        [](const TChar aChar) {
+          return (aChar >= '0' && aChar <= '9') ||
+                 (aChar >= 'A' && aChar <= 'F') ||
+                 (aChar >= 'a' && aChar <= 'f');
+        },
+        &c)) {
+      resultingNumber *= 16;
+      if (c <= '9') {
+        resultingNumber += static_cast<uint64_t>(c - '0');
+      } else if (c <= 'F') {
+        resultingNumber += static_cast<uint64_t>(c - 'A') + 0xa;
+      } else {
+        resultingNumber += static_cast<uint64_t>(c - 'a') + 0xa;
+      }
+    }
+    if (c == 'z' || !resultingNumber.isValid()) {
+      return false;
+    }
+
+    *aValue = resultingNumber.value();
     revert.release();
     return true;
   }

@@ -10,6 +10,7 @@
 #include "nscore.h"
 #include "nsXPCOMCID.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Atomics.h"
 
 #ifdef __cplusplus
 #  define DECL_CLASS(c) class c
@@ -20,7 +21,6 @@
 #endif
 
 DECL_CLASS(nsISupports);
-DECL_CLASS(nsIModule);
 DECL_CLASS(nsIComponentManager);
 DECL_CLASS(nsIComponentRegistrar);
 DECL_CLASS(nsIServiceManager);
@@ -31,15 +31,11 @@ DECL_CLASS(nsIDebug2);
 
 #ifdef __cplusplus
 extern bool gXPCOMShuttingDown;
-extern bool gXPCOMThreadsShutDown;
 extern bool gXPCOMMainThreadEventsAreDoomed;
 #endif
 
 #ifdef __cplusplus
 #  include "nsStringFwd.h"
-namespace mozilla {
-struct Module;
-}  // namespace mozilla
 #endif
 
 /**
@@ -134,16 +130,6 @@ XPCOM_API(nsresult) NS_GetComponentManager(nsIComponentManager** aResult);
  *         other error codes indicate a failure during initialisation.
  */
 XPCOM_API(nsresult) NS_GetComponentRegistrar(nsIComponentRegistrar** aResult);
-
-/**
- * Public Method to access to the memory manager.  See nsIMemory
- *
- * @param aResult Interface pointer to the memory manager
- *
- * @return NS_OK for success;
- *         other error codes indicate a failure during initialisation.
- */
-XPCOM_API(nsresult) NS_GetMemoryManager(nsIMemory** aResult);
 
 /**
  * Public Method to create an instance of a nsIFile.  This function
@@ -310,12 +296,6 @@ XPCOM_API(void)
 NS_CycleCollectorSuspect3(void* aPtr, nsCycleCollectionParticipant* aCp,
                           nsCycleCollectingAutoRefCnt* aRefCnt,
                           bool* aShouldDelete);
-
-XPCOM_API(void)
-NS_CycleCollectorSuspectUsingNursery(void* aPtr,
-                                     nsCycleCollectionParticipant* aCp,
-                                     nsCycleCollectingAutoRefCnt* aRefCnt,
-                                     bool* aShouldDelete);
 
 #endif
 

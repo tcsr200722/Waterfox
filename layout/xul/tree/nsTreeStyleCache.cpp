@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsTreeStyleCache.h"
+#include "mozilla/ComputedStyleInlines.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/ServoStyleSet.h"
 #include "nsPresContextInlines.h"
@@ -48,7 +49,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
     // We had a miss. Make a new state and add it to our hash.
     currState = mNextState;
     mNextState++;
-    mTransitionTable->Put(transition, currState);
+    mTransitionTable->InsertOrUpdate(transition, currState);
   }
 
   for (uint32_t i = 0; i < count; i++) {
@@ -59,7 +60,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
       // We had a miss. Make a new state and add it to our hash.
       currState = mNextState;
       mNextState++;
-      mTransitionTable->Put(transition, currState);
+      mTransitionTable->InsertOrUpdate(transition, currState);
     }
   }
 
@@ -75,7 +76,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
         aPresContext->StyleSet()->ResolveXULTreePseudoStyle(
             aContent->AsElement(), aPseudoElement, aStyle, aInputWord);
 
-    // Normally we rely on nsFrame::Init / RestyleManager to call this, but
+    // Normally we rely on nsIFrame::Init / RestyleManager to call this, but
     // these are weird and don't use a frame, yet ::-moz-tree-twisty definitely
     // pokes at list-style-image.
     newResult->StartImageLoads(*aPresContext->Document());
@@ -95,7 +96,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
       mCache = MakeUnique<ComputedStyleCache>();
     }
     result = newResult.get();
-    mCache->Put(currState, std::move(newResult));
+    mCache->InsertOrUpdate(currState, std::move(newResult));
   }
 
   return result;

@@ -12,6 +12,7 @@ mod sync_tests;
 use crate::api::{StorageChanges, StorageValueChange};
 use crate::db::StorageDb;
 use crate::error::*;
+use serde::Deserialize;
 use serde_derive::*;
 use sql_support::ConnExt;
 use sync_guid::Guid as SyncGuid;
@@ -23,26 +24,25 @@ type JsonMap = serde_json::Map<String, serde_json::Value>;
 
 pub const STORAGE_VERSION: usize = 1;
 
-/// For use with `#[serde(skip_serializing_if = )]`
-#[inline]
-pub fn is_default<T: PartialEq + Default>(v: &T) -> bool {
-    *v == T::default()
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Record {
+pub struct WebextRecord {
     #[serde(rename = "id")]
     guid: SyncGuid,
+    #[serde(rename = "extId")]
     ext_id: String,
-    #[serde(default, skip_serializing_if = "is_default")]
-    data: Option<String>,
+    data: String,
 }
 
-// Perform a 2-way or 3-way merge, where the incoming value wins on confict.
-fn merge(mut other: JsonMap, mut ours: JsonMap, parent: Option<JsonMap>) -> IncomingAction {
+// Perform a 2-way or 3-way merge, where the incoming value wins on conflict.
+fn merge(
+    ext_id: String,
+    mut other: JsonMap,
+    mut ours: JsonMap,
+    parent: Option<JsonMap>,
+) -> IncomingAction {
     if other == ours {
-        return IncomingAction::Same;
+        return IncomingAction::Same { ext_id };
     }
     let old_incoming = other.clone();
     // worst case is keys in each are unique.
@@ -121,20 +121,22 @@ fn merge(mut other: JsonMap, mut ours: JsonMap, parent: Option<JsonMap>) -> Inco
 
     if ours == old_incoming {
         IncomingAction::TakeRemote {
+            ext_id,
             data: old_incoming,
             changes,
         }
     } else {
         IncomingAction::Merge {
+            ext_id,
             data: ours,
             changes,
         }
     }
 }
 
-fn remove_matching_keys(mut ours: JsonMap, blacklist: &JsonMap) -> (JsonMap, StorageChanges) {
-    let mut changes = StorageChanges::with_capacity(blacklist.len());
-    for key in blacklist.keys() {
+fn remove_matching_keys(mut ours: JsonMap, keys_to_remove: &JsonMap) -> (JsonMap, StorageChanges) {
+    let mut changes = StorageChanges::with_capacity(keys_to_remove.len());
+    for key in keys_to_remove.keys() {
         if let Some(old_value) = ours.remove(key) {
             changes.push(StorageValueChange {
                 key: key.clone(),
@@ -159,16 +161,15 @@ pub struct SyncedExtensionChange {
 
 // Fetches the applied changes we stashed in the storage_sync_applied table.
 pub fn get_synced_changes(db: &StorageDb) -> Result<Vec<SyncedExtensionChange>> {
-    let signal = db.begin_interrupt_scope();
+    let signal = db.begin_interrupt_scope()?;
     let sql = "SELECT ext_id, changes FROM temp.storage_sync_applied";
-    db.conn()
-        .query_rows_and_then_named(sql, &[], |row| -> Result<_> {
-            signal.err_if_interrupted()?;
-            Ok(SyncedExtensionChange {
-                ext_id: row.get("ext_id")?,
-                changes: row.get("changes")?,
-            })
+    db.conn().query_rows_and_then(sql, [], |row| -> Result<_> {
+        signal.err_if_interrupted()?;
+        Ok(SyncedExtensionChange {
+            ext_id: row.get("ext_id")?,
+            changes: row.get("changes")?,
         })
+    })
 }
 
 // Helpers for tests
@@ -191,6 +192,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn test_serde_record_ser() {
+        assert_eq!(
+            serde_json::to_string(&WebextRecord {
+                guid: "guid".into(),
+                ext_id: "ext_id".to_string(),
+                data: "data".to_string()
+            })
+            .unwrap(),
+            r#"{"id":"guid","extId":"ext_id","data":"data"}"#
+        );
+    }
+
     // a macro for these tests - constructs a serde_json::Value::Object
     macro_rules! map {
         ($($map:tt)+) => {
@@ -211,21 +225,21 @@ mod tests {
                 key: $key.to_string(),
                 old_value: Some(json!($old)),
                 new_value: None,
-            };
+            }
         };
         ($key:literal, None, $new:tt) => {
             StorageValueChange {
                 key: $key.to_string(),
                 old_value: None,
                 new_value: Some(json!($new)),
-            };
+            }
         };
         ($key:literal, $old:tt, $new:tt) => {
             StorageValueChange {
                 key: $key.to_string(),
                 old_value: Some(json!($old)),
                 new_value: Some(json!($new)),
-            };
+            }
         };
     }
     macro_rules! changes {
@@ -244,23 +258,28 @@ mod tests {
     }
 
     #[test]
-    fn test_3way_merging() -> Result<()> {
+    fn test_3way_merging() {
         // No conflict - identical local and remote.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"one": "one", "two": "two"}),
                 map!({"two": "two", "one": "one"}),
                 Some(map!({"parent_only": "parent"})),
             ),
-            IncomingAction::Same
+            IncomingAction::Same {
+                ext_id: "ext-id".to_string()
+            }
         );
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"other_only": "other", "common": "common"}),
                 map!({"ours_only": "ours", "common": "common"}),
                 Some(map!({"parent_only": "parent", "common": "old_common"})),
             ),
             IncomingAction::Merge {
+                ext_id: "ext-id".to_string(),
                 data: map!({"other_only": "other", "ours_only": "ours", "common": "common"}),
                 changes: changes![change!("other_only", None, "other")],
             }
@@ -268,11 +287,13 @@ mod tests {
         // Simple conflict - parent value is neither local nor incoming. incoming wins.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"other_only": "other", "common": "incoming"}),
                 map!({"ours_only": "ours", "common": "local"}),
                 Some(map!({"parent_only": "parent", "common": "parent"})),
             ),
             IncomingAction::Merge {
+                ext_id: "ext-id".to_string(),
                 data: map!({"other_only": "other", "ours_only": "ours", "common": "incoming"}),
                 changes: changes![
                     change!("common", "local", "incoming"),
@@ -283,11 +304,13 @@ mod tests {
         // Local change, no conflict.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"other_only": "other", "common": "old_value"}),
                 map!({"ours_only": "ours", "common": "new_value"}),
                 Some(map!({"parent_only": "parent", "common": "old_value"})),
             ),
             IncomingAction::Merge {
+                ext_id: "ext-id".to_string(),
                 data: map!({"other_only": "other", "ours_only": "ours", "common": "new_value"}),
                 changes: changes![change!("other_only", None, "other")],
             }
@@ -295,11 +318,13 @@ mod tests {
         // Field was removed remotely.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"other_only": "other"}),
                 map!({"common": "old_value"}),
                 Some(map!({"common": "old_value"})),
             ),
             IncomingAction::TakeRemote {
+                ext_id: "ext-id".to_string(),
                 data: map!({"other_only": "other"}),
                 changes: changes![
                     change!("common", "old_value", None),
@@ -310,11 +335,13 @@ mod tests {
         // Field was removed remotely but we added another one.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({"other_only": "other"}),
                 map!({"common": "old_value", "new_key": "new_value"}),
                 Some(map!({"common": "old_value"})),
             ),
             IncomingAction::Merge {
+                ext_id: "ext-id".to_string(),
                 data: map!({"other_only": "other", "new_key": "new_value"}),
                 changes: changes![
                     change!("common", "old_value", None),
@@ -325,20 +352,21 @@ mod tests {
         // Field was removed both remotely and locally.
         assert_eq!(
             merge(
+                "ext-id".to_string(),
                 map!({}),
                 map!({"new_key": "new_value"}),
                 Some(map!({"common": "old_value"})),
             ),
             IncomingAction::Merge {
+                ext_id: "ext-id".to_string(),
                 data: map!({"new_key": "new_value"}),
                 changes: changes![],
             }
         );
-        Ok(())
     }
 
     #[test]
-    fn test_remove_matching_keys() -> Result<()> {
+    fn test_remove_matching_keys() {
         assert_eq!(
             remove_matching_keys(
                 map!({"key1": "value1", "key2": "value2"}),
@@ -349,7 +377,6 @@ mod tests {
                 changes![change!("key1", "value1", None)]
             )
         );
-        Ok(())
     }
 
     #[test]

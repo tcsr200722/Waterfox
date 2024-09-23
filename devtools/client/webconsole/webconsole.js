@@ -4,38 +4,37 @@
 
 "use strict";
 
-var Services = require("Services");
 loader.lazyRequireGetter(
   this,
   "Utils",
-  "devtools/client/webconsole/utils",
+  "resource://devtools/client/webconsole/utils.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "WebConsoleUI",
-  "devtools/client/webconsole/webconsole-ui",
+  "resource://devtools/client/webconsole/webconsole-ui.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "gDevTools",
-  "devtools/client/framework/devtools",
+  "resource://devtools/client/framework/devtools.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "openDocLink",
-  "devtools/client/shared/link",
+  "resource://devtools/client/shared/link.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "DevToolsUtils",
-  "devtools/shared/DevToolsUtils"
+  "resource://devtools/shared/DevToolsUtils.js"
 );
-const EventEmitter = require("devtools/shared/event-emitter");
-const Telemetry = require("devtools/client/shared/telemetry");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
+const Telemetry = require("resource://devtools/client/shared/telemetry.js");
 
 var gHudId = 0;
 const isMacOS = Services.appinfo.OS === "Darwin";
@@ -54,20 +53,31 @@ class WebConsole {
    * @constructor
    * @param object toolbox
    *        The toolbox where the web console is displayed.
+   * @param object commands
+   *        The commands object with all interfaces defined from devtools/shared/commands/
    * @param nsIDOMWindow iframeWindow
    *        The window where the web console UI is already loaded.
    * @param nsIDOMWindow chromeWindow
    *        The window of the web console owner.
    * @param bool isBrowserConsole
    */
-  constructor(toolbox, iframeWindow, chromeWindow, isBrowserConsole = false) {
+  constructor(
+    toolbox,
+    commands,
+    iframeWindow,
+    chromeWindow,
+    isBrowserConsole = false
+  ) {
     this.toolbox = toolbox;
+    this.commands = commands;
     this.iframeWindow = iframeWindow;
     this.chromeWindow = chromeWindow;
     this.hudId = "hud_" + ++gHudId;
     this.browserWindow = DevToolsUtils.getTopWindow(this.chromeWindow);
     this.isBrowserConsole = isBrowserConsole;
-    this.telemetry = new Telemetry();
+
+    // On the browser console, where we don't have a toolbox, we instantiate a dedicated Telemetry instance.
+    this.telemetry = toolbox?.telemetry || new Telemetry();
 
     const element = this.browserWindow.document.documentElement;
     if (element.getAttribute("windowtype") != gDevTools.chromeWindowType) {
@@ -82,22 +92,15 @@ class WebConsole {
   }
 
   recordEvent(event, extra = {}) {
-    this.telemetry.recordEvent(event, "webconsole", null, {
-      session_id: (this.toolbox && this.toolbox.sessionId) || -1,
-      ...extra,
-    });
+    this.telemetry.recordEvent(event, "webconsole", null, extra);
   }
 
   get currentTarget() {
-    return this.toolbox.target;
+    return this.commands.targetCommand.targetFront;
   }
 
-  get targetList() {
-    return this.toolbox.targetList;
-  }
-
-  get resourceWatcher() {
-    return this.toolbox.resourceWatcher;
+  get resourceCommand() {
+    return this.commands.resourceCommand;
   }
 
   /**
@@ -120,7 +123,7 @@ class WebConsole {
   }
 
   getFrontByID(id) {
-    return this.currentTarget.client.getFrontByID(id);
+    return this.commands.client.getFrontByID(id);
   }
 
   /**
@@ -219,29 +222,8 @@ class WebConsole {
   viewSource(sourceURL, sourceLine) {
     this.gViewSourceUtils.viewSource({
       URL: sourceURL,
-      lineNumber: sourceLine || 0,
+      lineNumber: sourceLine || -1,
     });
-  }
-
-  /**
-   * Tries to open a Stylesheet file related to the web page for the web console
-   * instance in the Style Editor. If the file is not found, it is opened in
-   * source view instead.
-   *
-   * Manually handle the case where toolbox does not exist (Browser Console).
-   *
-   * @param string sourceURL
-   *        The URL of the file.
-   * @param integer sourceLine
-   *        The line number which you want to place the caret.
-   */
-  viewSourceInStyleEditor(sourceURL, sourceLine) {
-    const { toolbox } = this;
-    if (!toolbox) {
-      this.viewSource(sourceURL, sourceLine);
-      return;
-    }
-    toolbox.viewSourceInStyleEditor(sourceURL, sourceLine);
   }
 
   /**
@@ -270,19 +252,15 @@ class WebConsole {
   }
 
   /**
-   * Retrieve information about the JavaScript debugger's stackframes list. This
-   * is used to allow the Web Console to evaluate code in the selected
-   * stackframe.
+   * Retrieve information about the JavaScript debugger's currently selected stackframe.
+   * is used to allow the Web Console to evaluate code in the selected stackframe.
    *
-   * @return object|null
-   *         An object which holds:
-   *         - frames: the active ThreadFront.cachedFrames array.
-   *         - selected: depth/index of the selected stackframe in the debugger
-   *         UI.
+   * @return {String}
+   *         The Frame Actor ID.
    *         If the debugger is not open or if it's not paused, then |null| is
    *         returned.
    */
-  getDebuggerFrames() {
+  getSelectedFrameActorID() {
     const { toolbox } = this;
     if (!toolbox) {
       return null;
@@ -293,7 +271,7 @@ class WebConsole {
       return null;
     }
 
-    return panel.getFrames();
+    return panel.getSelectedFrameActorID();
   }
 
   /**
@@ -322,10 +300,10 @@ class WebConsole {
       return panel.getMappedExpression(expression);
     }
 
-    if (this.parserService && expression.includes("await ")) {
+    if (expression.includes("await ")) {
       const shouldMapBindings = false;
       const shouldMapAwait = true;
-      const res = this.parserService.mapExpression(
+      const res = this.parserWorker.mapExpression(
         expression,
         null,
         null,
@@ -338,21 +316,28 @@ class WebConsole {
     return null;
   }
 
-  get parserService() {
-    if (this._parserService) {
-      return this._parserService;
+  getMappedVariables() {
+    const { toolbox } = this;
+    return toolbox?.getPanel("jsdebugger")?.getMappedVariables();
+  }
+
+  get parserWorker() {
+    // If we have a toolbox, we could reuse the parser already instantiated for the debugger.
+    // Note that we won't have a toolbox when running the Browser Console...
+    if (this.toolbox) {
+      return this.toolbox.parserWorker;
+    }
+
+    if (this._parserWorker) {
+      return this._parserWorker;
     }
 
     const {
       ParserDispatcher,
-    } = require("devtools/client/debugger/src/workers/parser/index");
+    } = require("resource://devtools/client/debugger/src/workers/parser/index.js");
 
-    this._parserService = new ParserDispatcher();
-    this._parserService.start(
-      "resource://devtools/client/debugger/dist/parser-worker.js",
-      this.chromeUtilsWindow
-    );
-    return this._parserService;
+    this._parserWorker = new ParserDispatcher();
+    return this._parserWorker;
   }
 
   /**
@@ -378,29 +363,20 @@ class WebConsole {
     return panel.selection;
   }
 
-  async onViewSourceInDebugger(frame) {
+  async onViewSourceInDebugger({ id, url, line, column }) {
     if (this.toolbox) {
-      await this.toolbox.viewSourceInDebugger(
-        frame.url,
-        frame.line,
-        frame.column,
-        frame.sourceId
-      );
+      await this.toolbox.viewSourceInDebugger(url, line, column, id);
 
       this.recordEvent("jump_to_source");
       this.emitForTests("source-in-debugger-opened");
     }
   }
 
-  async onViewSourceInStyleEditor(frame) {
+  async onViewSourceInStyleEditor({ url, line, column }) {
     if (!this.toolbox) {
       return;
     }
-    await this.toolbox.viewSourceInStyleEditor(
-      frame.url,
-      frame.line,
-      frame.column
-    );
+    await this.toolbox.viewSourceInStyleEditorByURL(url, line, column);
     this.recordEvent("jump_to_source");
   }
 
@@ -462,17 +438,6 @@ class WebConsole {
   }
 
   /**
-   * Evaluate a JavaScript expression asynchronously.
-   *
-   * @param {String} string: The code you want to evaluate.
-   * @param {Object} options: Options for evaluation. See evaluateJSAsync method on
-   *                          devtools/client/fronts/webconsole.js
-   */
-  evaluateJSAsync(expression, options = {}) {
-    return this.ui._commands.evaluateJSAsync(expression, options);
-  }
-
-  /**
    * Destroy the object. Call this method to avoid memory leaks when the Web
    * Console is closed.
    *
@@ -488,9 +453,9 @@ class WebConsole {
       this.ui.destroy();
     }
 
-    if (this._parserService) {
-      this._parserService.stop();
-      this._parserService = null;
+    if (this._parserWorker) {
+      this._parserWorker.stop();
+      this._parserWorker = null;
     }
 
     const id = Utils.supportsString(this.hudId);

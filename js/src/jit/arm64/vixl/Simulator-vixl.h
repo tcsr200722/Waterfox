@@ -1,4 +1,4 @@
-// Copyright 2015, ARM Limited
+// Copyright 2015, VIXL authors
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -27,7 +27,7 @@
 #ifndef VIXL_A64_SIMULATOR_A64_H_
 #define VIXL_A64_SIMULATOR_A64_H_
 
-#include "js-config.h"
+#include "jstypes.h"
 
 #ifdef JS_SIMULATOR_ARM64
 
@@ -503,6 +503,7 @@ class Simulator : public DecoderVisitor {
  public:
 #ifdef JS_CACHE_SIMULATOR_ARM64
   using Decoder = CachingDecoder;
+  mozilla::Atomic<bool> pendingCacheRequests = mozilla::Atomic<bool>{ false };
 #endif
   explicit Simulator(Decoder* decoder, FILE* stream = stdout);
   ~Simulator();
@@ -528,9 +529,6 @@ class Simulator : public DecoderVisitor {
   void VisitCallRedirection(const Instruction* instr);
   static uintptr_t StackLimit() {
     return Simulator::Current()->stackLimit();
-  }
-  static bool supportsAtomics() {
-    return true;
   }
   template<typename T> T Read(uintptr_t address);
   template <typename T> void Write(uintptr_t address_, T value);
@@ -653,8 +651,19 @@ class Simulator : public DecoderVisitor {
   void set_reg(unsigned code, T value,
                RegLogMode log_mode = LogRegWrites,
                Reg31Mode r31mode = Reg31IsZeroRegister) {
-    VIXL_STATIC_ASSERT((sizeof(T) == kWRegSizeInBytes) ||
-                       (sizeof(T) == kXRegSizeInBytes));
+    if (sizeof(T) < kWRegSizeInBytes) {
+      // We use a C-style cast on purpose here.
+      // Since we do not have access to 'constepxr if', the casts in this `if`
+      // must be valid even if we know the code will never be executed, in
+      // particular when `T` is a pointer type.
+      int64_t tmp_64bit = (int64_t)value;
+      int32_t tmp_32bit = static_cast<int32_t>(tmp_64bit);
+      set_reg<int32_t>(code, tmp_32bit, log_mode, r31mode);
+      return;
+    }
+
+    VIXL_ASSERT((sizeof(T) == kWRegSizeInBytes) ||
+                (sizeof(T) == kXRegSizeInBytes));
     VIXL_ASSERT(code < kNumberOfRegisters);
 
     if ((code == 31) && (r31mode == Reg31IsZeroRegister)) {
@@ -990,13 +999,13 @@ class Simulator : public DecoderVisitor {
   void PrintWrittenVRegisters();
 
   // As above, but respect LOG_REG and LOG_VREG.
-  void LogWrittenRegisters() {
+  inline void LogWrittenRegisters() {
     if (trace_parameters() & LOG_REGS) PrintWrittenRegisters();
   }
-  void LogWrittenVRegisters() {
+  inline void LogWrittenVRegisters() {
     if (trace_parameters() & LOG_VREGS) PrintWrittenVRegisters();
   }
-  void LogAllWrittenRegisters() {
+  inline void LogAllWrittenRegisters() {
     LogWrittenRegisters();
     LogWrittenVRegisters();
   }
@@ -1161,6 +1170,16 @@ class Simulator : public DecoderVisitor {
                        int64_t offset,
                        AddrMode addrmode);
   void LoadStorePairHelper(const Instruction* instr, AddrMode addrmode);
+  template <typename T>
+  void CompareAndSwapHelper(const Instruction* instr);
+  template <typename T>
+  void CompareAndSwapPairHelper(const Instruction* instr);
+  template <typename T>
+  void AtomicMemorySimpleHelper(const Instruction* instr);
+  template <typename T>
+  void AtomicMemorySwapHelper(const Instruction* instr);
+  template <typename T>
+  void LoadAcquireRCpcHelper(const Instruction* instr);
   uintptr_t AddressModeHelper(unsigned addr_reg,
                               int64_t offset,
                               AddrMode addrmode);
@@ -1576,6 +1595,9 @@ class Simulator : public DecoderVisitor {
   LogicVRegister dup_immediate(VectorFormat vform,
                                LogicVRegister dst,
                                uint64_t imm);
+  LogicVRegister mov(VectorFormat vform,
+                     LogicVRegister dst,
+                     const LogicVRegister& src);                               
   LogicVRegister movi(VectorFormat vform,
                       LogicVRegister dst,
                       uint64_t imm);
@@ -2507,7 +2529,7 @@ class SimulatorProcess
   {}
 
   // Synchronizes access between main thread and compilation threads.
-  js::Mutex lock_;
+  js::Mutex lock_ MOZ_UNANNOTATED;
   vixl::Redirection* redirection_;
 
 #ifdef JS_CACHE_SIMULATOR_ARM64
@@ -2519,24 +2541,25 @@ class SimulatorProcess
   };
   using ICacheFlushes = mozilla::Vector<ICacheFlush, 2>;
   struct SimFlushes {
-    Simulator* thread;
+    vixl::Simulator* thread;
     ICacheFlushes records;
   };
   mozilla::Vector<SimFlushes, 1> pendingFlushes_;
 
   static void recordICacheFlush(void* start, size_t length);
-  static ICacheFlushes& getICacheFlushes(Simulator* sim);
-  static MOZ_MUST_USE bool registerSimulator(Simulator* sim);
-  static void unregisterSimulator(Simulator* sim);
+  static void membarrier();
+  static ICacheFlushes& getICacheFlushes(vixl::Simulator* sim);
+  [[nodiscard]] static bool registerSimulator(vixl::Simulator* sim);
+  static void unregisterSimulator(vixl::Simulator* sim);
 #endif
 
   static void setRedirection(vixl::Redirection* redirection) {
-    MOZ_ASSERT(singleton_->lock_.ownedByCurrentThread());
+    singleton_->lock_.assertOwnedByCurrentThread();
     singleton_->redirection_ = redirection;
   }
 
   static vixl::Redirection* redirection() {
-    MOZ_ASSERT(singleton_->lock_.ownedByCurrentThread());
+    singleton_->lock_.assertOwnedByCurrentThread();
     return singleton_->redirection_;
   }
 

@@ -140,6 +140,8 @@ class ProfileBufferChunk {
 
 #ifdef DEBUG
   ~ProfileBufferChunk() {
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::InUse);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Full);
     MOZ_ASSERT(mInternalHeader.mState == InternalHeader::State::Created ||
                mInternalHeader.mState == InternalHeader::State::Done ||
                mInternalHeader.mState == InternalHeader::State::Recycled);
@@ -150,12 +152,16 @@ class ProfileBufferChunk {
   // skipped if the reader starts with this ProfileBufferChunk.
   [[nodiscard]] SpanOfBytes ReserveInitialBlockAsTail(Length aTailSize) {
 #ifdef DEBUG
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::InUse);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Full);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Done);
     MOZ_ASSERT(mInternalHeader.mState == InternalHeader::State::Created ||
                mInternalHeader.mState == InternalHeader::State::Recycled);
     mInternalHeader.mState = InternalHeader::State::InUse;
 #endif
     mInternalHeader.mHeader.mOffsetFirstBlock = aTailSize;
     mInternalHeader.mHeader.mOffsetPastLastBlock = aTailSize;
+    mInternalHeader.mHeader.mStartTimeStamp = TimeStamp::Now();
     return SpanOfBytes(&mBuffer, aTailSize);
   }
 
@@ -168,6 +174,10 @@ class ProfileBufferChunk {
   // its starting index. The actual size may be smaller, if the block cannot fit
   // in the remaining space.
   [[nodiscard]] ReserveReturn ReserveBlock(Length aBlockSize) {
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Created);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Full);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Done);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Recycled);
     MOZ_ASSERT(mInternalHeader.mState == InternalHeader::State::InUse);
     MOZ_ASSERT(RangeStart() != 0,
                "Expected valid range start before first Reserve()");
@@ -191,11 +201,14 @@ class ProfileBufferChunk {
   // Access to its content is still allowed.
   void MarkDone() {
 #ifdef DEBUG
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Created);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Done);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Recycled);
     MOZ_ASSERT(mInternalHeader.mState == InternalHeader::State::InUse ||
                mInternalHeader.mState == InternalHeader::State::Full);
     mInternalHeader.mState = InternalHeader::State::Done;
 #endif
-    mInternalHeader.mHeader.mDoneTimeStamp = TimeStamp::NowUnfuzzed();
+    mInternalHeader.mHeader.mDoneTimeStamp = TimeStamp::Now();
   }
 
   // A "Done" chunk may be recycled, to avoid allocating a new one.
@@ -204,6 +217,8 @@ class ProfileBufferChunk {
     // We also allow Created and already-Recycled chunks to be recycled, this
     // way it's easier to recycle chunks when their state is not easily
     // trackable.
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::InUse);
+    MOZ_ASSERT(mInternalHeader.mState != InternalHeader::State::Full);
     MOZ_ASSERT(mInternalHeader.mState == InternalHeader::State::Created ||
                mInternalHeader.mState == InternalHeader::State::Done ||
                mInternalHeader.mState == InternalHeader::State::Recycled);
@@ -223,6 +238,7 @@ class ProfileBufferChunk {
     void Reset() {
       mOffsetFirstBlock = 0;
       mOffsetPastLastBlock = 0;
+      mStartTimeStamp = TimeStamp{};
       mDoneTimeStamp = TimeStamp{};
       mBlockCount = 0;
       mRangeStart = 0;
@@ -241,7 +257,9 @@ class ProfileBufferChunk {
     // ProfileBufferChunk. It may be before mBufferBytes if ProfileBufferChunk
     // is marked "Done" before the end is reached.
     Length mOffsetPastLastBlock = 0;
-    // Timestamp when buffer is "Done" (which happens when the last block is
+    // Timestamp when the buffer becomes in-use, ready to record data.
+    TimeStamp mStartTimeStamp;
+    // Timestamp when the buffer is "Done" (which happens when the last block is
     // written). This will be used to find and discard the oldest
     // ProfileBufferChunk.
     TimeStamp mDoneTimeStamp;

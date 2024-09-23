@@ -5,13 +5,17 @@
 
 /* eslint-env mozilla/browser-window */
 
+ChromeUtils.defineESModuleGetters(this, {
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
+});
+
 let delayedStartupTimeoutId = null;
 
 function OpenBrowserWindowFromDockMenu(options) {
   let win = OpenBrowserWindow(options);
   win.addEventListener(
     "load",
-    function() {
+    function () {
       let dockSupport = Cc["@mozilla.org/widget/macdocksupport;1"].getService(
         Ci.nsIMacDockSupport
       );
@@ -37,14 +41,16 @@ function nonBrowserWindowStartup() {
     "Browser:Reload",
     "viewFullZoomMenu",
     "pageStyleMenu",
-    "charsetMenu",
+    "repair-text-encoding",
     "View:PageSource",
     "View:FullScreen",
+    "enterFullScreenItem",
     "viewHistorySidebar",
     "Browser:AddBookmarkAs",
     "Browser:BookmarkAllTabs",
     "View:PageInfo",
     "History:UndoCloseTab",
+    "menu_openFirefoxView",
   ];
   var element;
 
@@ -83,7 +89,7 @@ function nonBrowserWindowStartup() {
 
     // Also hide the window-list separator.
     element = document.getElementById("sep-window-list");
-    element.setAttribute("hidden", "true");
+    element.hidden = true;
 
     // Setup the dock menu.
     let dockMenuElement = document.getElementById("menu_mac_dockmenu");
@@ -108,6 +114,16 @@ function nonBrowserWindowStartup() {
     }
     if (!PrivateBrowsingUtils.enabled) {
       document.getElementById("macDockMenuNewPrivateWindow").hidden = true;
+    }
+    if (BrowserUIUtils.quitShortcutDisabled) {
+      document.getElementById("key_quitApplication").remove();
+      document.getElementById("menu_FileQuitItem").removeAttribute("key");
+    }
+    if (BrowserUIUtils.closeShortcutDisabled) {
+      document.getElementById("key_close").remove();
+      document.getElementById("menu_close").removeAttribute("key");
+      document.getElementById("key_closeWindow").remove();
+      document.getElementById("menu_closeWindow").removeAttribute("key");
     }
   }
 

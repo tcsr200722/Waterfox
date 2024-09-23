@@ -14,10 +14,10 @@
 namespace mozilla {
 namespace net {
 
-NS_NAMED_LITERAL_CSTRING(kInvalidCategory, "INVALID_CATEGORY");
+constexpr auto kInvalidCategory = "INVALID_CATEGORY"_ns;
 
-#define DEFINE_CATEGORY(_name, _idx) NS_LITERAL_CSTRING("Y" #_idx "_" #_name),
-static const nsCString gKeyName[] = {
+#define DEFINE_CATEGORY(_name, _idx) nsLiteralCString("Y" #_idx "_" #_name),
+static constexpr nsLiteralCString gKeyName[] = {
 #include "HttpTrafficAnalyzer.inc"
     kInvalidCategory,
 };
@@ -186,7 +186,7 @@ void HttpTrafficAnalyzer::IncrementHttpTransaction(
   LOG(("HttpTrafficAnalyzer::IncrementHttpTransaction [%s] [this=%p]\n",
        gKeyName[aCategory].get(), this));
 
-  Telemetry::AccumulateCategoricalKeyed(NS_LITERAL_CSTRING("Transaction"),
+  Telemetry::AccumulateCategoricalKeyed("Transaction"_ns,
                                         gTelemetryLabel[aCategory]);
 }
 
@@ -199,7 +199,7 @@ void HttpTrafficAnalyzer::IncrementHttpConnection(
   LOG(("HttpTrafficAnalyzer::IncrementHttpConnection [%s] [this=%p]\n",
        gKeyName[aCategory].get(), this));
 
-  Telemetry::AccumulateCategoricalKeyed(NS_LITERAL_CSTRING("Connection"),
+  Telemetry::AccumulateCategoricalKeyed("Connection"_ns,
                                         gTelemetryLabel[aCategory]);
 }
 

@@ -12,27 +12,86 @@
  * Firefox View Source is the fallback.
  *
  * @param {Toolbox} toolbox
- * @param {string} sourceURL
- * @param {number} sourceLine
+ * @param {string|Object} stylesheetResourceOrGeneratedURL
+ * @param {number} generatedLine
+ * @param {number} generatedColumn
  *
  * @return {Promise<boolean>}
  */
-exports.viewSourceInStyleEditor = async function(
+exports.viewSourceInStyleEditor = async function (
   toolbox,
-  sourceURL,
-  sourceLine,
-  sourceColumn
+  stylesheetResourceOrGeneratedURL,
+  generatedLine,
+  generatedColumn
 ) {
-  const panel = await toolbox.loadTool("styleeditor");
+  const originalPanelId = toolbox.currentToolId;
 
   try {
-    await panel.selectStyleSheet(sourceURL, sourceLine, sourceColumn);
-    await toolbox.selectTool("styleeditor");
-    return true;
+    const panel = await toolbox.selectTool("styleeditor", "view-source", {
+      // This will be only used in case the styleeditor wasn't loaded yet, to make the
+      // initialization faster in case we already have a stylesheet resource. We still
+      // need the rest of this function to handle subsequent calls and sourcemapped stylesheets.
+      stylesheetToSelect: {
+        stylesheet: stylesheetResourceOrGeneratedURL,
+        line: generatedLine,
+        column: generatedColumn,
+      },
+    });
+
+    let stylesheetResource;
+    if (typeof stylesheetResourceOrGeneratedURL === "string") {
+      stylesheetResource = panel.getStylesheetResourceForGeneratedURL(
+        stylesheetResourceOrGeneratedURL
+      );
+    } else {
+      stylesheetResource = stylesheetResourceOrGeneratedURL;
+    }
+
+    const originalLocation = stylesheetResource
+      ? await getOriginalLocation(
+          toolbox,
+          stylesheetResource.resourceId,
+          generatedLine,
+          generatedColumn
+        )
+      : null;
+
+    if (originalLocation) {
+      await panel.selectOriginalSheet(
+        originalLocation.sourceId,
+        originalLocation.line,
+        originalLocation.column
+      );
+      return true;
+    }
+
+    if (stylesheetResource) {
+      await panel.selectStyleSheet(
+        stylesheetResource,
+        generatedLine,
+        generatedColumn
+      );
+      return true;
+    }
   } catch (e) {
-    exports.viewSource(toolbox, sourceURL, sourceLine);
-    return false;
+    console.error("Failed to view source in style editor", e);
   }
+
+  // If we weren't able to select the stylesheet in the style editor, display it in a
+  // view-source tab
+  exports.viewSource(
+    toolbox,
+    typeof stylesheetResourceOrGeneratedURL === "string"
+      ? stylesheetResourceOrGeneratedURL
+      : stylesheetResourceOrGeneratedURL.href ||
+          stylesheetResourceOrGeneratedURL.nodeHref,
+    generatedLine
+  );
+
+  // As we might have moved to the styleeditor, switch back to the original panel
+  await toolbox.selectTool(originalPanelId);
+
+  return false;
 };
 
 /**
@@ -53,43 +112,65 @@ exports.viewSourceInStyleEditor = async function(
  *
  * @return {Promise<boolean>}
  */
-exports.viewSourceInDebugger = async function(
+exports.viewSourceInDebugger = async function (
   toolbox,
-  sourceURL,
-  sourceLine,
-  sourceColumn,
-  sourceId,
+  generatedURL,
+  generatedLine,
+  generatedColumn,
+  sourceActorId,
   reason = "unknown"
 ) {
+  // Load the debugger in the background
   const dbg = await toolbox.loadTool("jsdebugger");
-  const source = sourceId
-    ? dbg.getSourceByActorId(sourceId)
-    : dbg.getSourceByURL(sourceURL);
-  if (source && dbg.canLoadSource(source.id)) {
-    await toolbox.selectTool("jsdebugger", reason);
-    try {
-      await dbg.selectSource(source.id, sourceLine, sourceColumn);
-    } catch (err) {
-      console.error("Failed to view source in debugger", err);
-      return false;
-    }
-    return true;
-  } else if (await toolbox.sourceMapService.hasOriginalURL(sourceURL)) {
-    // We have seen a source map for the URL but no source. The debugger will
-    // still be able to load the source.
-    await toolbox.selectTool("jsdebugger", reason);
-    try {
-      await dbg.selectSourceURL(sourceURL, sourceLine, sourceColumn);
-    } catch (err) {
-      console.error("Failed to view source in debugger", err);
-      return false;
-    }
+
+  const openedSourceInDebugger = await dbg.openSourceInDebugger({
+    generatedURL,
+    generatedLine,
+    generatedColumn,
+    sourceActorId,
+    reason,
+  });
+
+  if (openedSourceInDebugger) {
     return true;
   }
 
-  exports.viewSource(toolbox, sourceURL, sourceLine, sourceColumn);
+  // Fallback to built-in firefox view-source:
+  exports.viewSource(toolbox, generatedURL, generatedLine, generatedColumn);
   return false;
 };
+
+async function getOriginalLocation(
+  toolbox,
+  generatedID,
+  generatedLine,
+  generatedColumn
+) {
+  // If there is no line number, then there's no chance that we'll get back
+  // a useful original location.
+  if (typeof generatedLine !== "number") {
+    return null;
+  }
+
+  let originalLocation = null;
+  try {
+    originalLocation = await toolbox.sourceMapLoader.getOriginalLocation({
+      sourceId: generatedID,
+      line: generatedLine,
+      column: generatedColumn,
+    });
+    if (originalLocation && originalLocation.sourceId === generatedID) {
+      originalLocation = null;
+    }
+  } catch (err) {
+    console.error(
+      "Failed to resolve sourcemapped location for the given source location",
+      { generatedID, generatedLine, generatedColumn },
+      err
+    );
+  }
+  return originalLocation;
+}
 
 /**
  * Open a link in Firefox's View Source.
@@ -97,13 +178,20 @@ exports.viewSourceInDebugger = async function(
  * @param {Toolbox} toolbox
  * @param {string} sourceURL
  * @param {number} sourceLine
+ * @param {number} sourceColumn
  *
  * @return {Promise}
  */
-exports.viewSource = async function(toolbox, sourceURL, sourceLine) {
+exports.viewSource = async function (
+  toolbox,
+  sourceURL,
+  sourceLine,
+  sourceColumn
+) {
   const utils = toolbox.gViewSourceUtils;
   utils.viewSource({
     URL: sourceURL,
-    lineNumber: sourceLine || 0,
+    lineNumber: sourceLine || -1,
+    columnNumber: sourceColumn || -1,
   });
 };

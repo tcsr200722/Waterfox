@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow */
 
 "use strict";
 
@@ -26,7 +25,7 @@ add_task(
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
+  // prettier-ignore
   Cu.evalInSandbox(
     `                                   // 1
     function f() {                      // 2
@@ -41,5 +40,4 @@ function evaluateTestCode(debuggee) {
     "test_stepping-01-test-code.js",
     1
   );
-  /* eslint-disable */
 }

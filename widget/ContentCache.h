@@ -10,14 +10,19 @@
 
 #include <stdint.h>
 
+#include "mozilla/widget/IMEData.h"
+#include "mozilla/ipc/IPCForwards.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/ToString.h"
 #include "mozilla/WritingModes.h"
-#include "nsIWidget.h"
 #include "nsString.h"
 #include "nsTArray.h"
 #include "Units.h"
+
+class nsIWidget;
 
 namespace mozilla {
 
@@ -35,17 +40,21 @@ class BrowserParent;
 
 class ContentCache {
  public:
-  typedef CopyableTArray<LayoutDeviceIntRect> RectArray;
-  typedef widget::IMENotification IMENotification;
+  using RectArray = CopyableTArray<LayoutDeviceIntRect>;
+  using IMENotification = widget::IMENotification;
 
-  ContentCache();
+  ContentCache() = default;
+
+  [[nodiscard]] bool IsValid() const;
 
  protected:
+  void AssertIfInvalid() const;
+
   // Whole text in the target
-  nsString mText;
+  Maybe<nsString> mText;
 
   // Start offset of the composition string.
-  uint32_t mCompositionStart;
+  Maybe<uint32_t> mCompositionStart;
 
   enum { ePrevCharRect = 1, eNextCharRect = 0 };
 
@@ -55,6 +64,8 @@ class ContentCache {
     uint32_t mFocus;
 
     WritingMode mWritingMode;
+
+    bool mHasRange;
 
     // Character rects at previous and next character of mAnchor and mFocus.
     // The reason why ContentCache needs to store each previous character of
@@ -67,136 +78,176 @@ class ContentCache {
     // Whole rect of selected text. This is empty if the selection is collapsed.
     LayoutDeviceIntRect mRect;
 
-    Selection() : mAnchor(UINT32_MAX), mFocus(UINT32_MAX) {}
+    Selection() : mAnchor(UINT32_MAX), mFocus(UINT32_MAX), mHasRange(false) {
+      ClearRects();
+    };
 
-    void Clear() {
-      mAnchor = mFocus = UINT32_MAX;
-      mWritingMode = WritingMode();
-      ClearAnchorCharRects();
-      ClearFocusCharRects();
+    explicit Selection(
+        const IMENotification::SelectionChangeDataBase& aSelectionChangeData)
+        : mAnchor(UINT32_MAX),
+          mFocus(UINT32_MAX),
+          mWritingMode(aSelectionChangeData.GetWritingMode()),
+          mHasRange(aSelectionChangeData.HasRange()) {
+      if (mHasRange) {
+        mAnchor = aSelectionChangeData.AnchorOffset();
+        mFocus = aSelectionChangeData.FocusOffset();
+      }
+    }
+
+    [[nodiscard]] bool IsValidIn(const nsAString& aText) const {
+      return !mHasRange ||
+             (mAnchor <= aText.Length() && mFocus <= aText.Length());
+    }
+
+    explicit Selection(const WidgetQueryContentEvent& aQuerySelectedTextEvent);
+
+    void ClearRects() {
+      for (auto& rect : mAnchorCharRects) {
+        rect.SetEmpty();
+      }
+      for (auto& rect : mFocusCharRects) {
+        rect.SetEmpty();
+      }
       mRect.SetEmpty();
     }
-
-    void ClearAnchorCharRects() {
-      for (size_t i = 0; i < ArrayLength(mAnchorCharRects); i++) {
-        mAnchorCharRects[i].SetEmpty();
+    bool HasRects() const {
+      for (const auto& rect : mAnchorCharRects) {
+        if (!rect.IsEmpty()) {
+          return true;
+        }
       }
-    }
-    void ClearFocusCharRects() {
-      for (size_t i = 0; i < ArrayLength(mFocusCharRects); i++) {
-        mFocusCharRects[i].SetEmpty();
+      for (const auto& rect : mFocusCharRects) {
+        if (!rect.IsEmpty()) {
+          return true;
+        }
       }
+      return !mRect.IsEmpty();
     }
 
-    bool IsValid() const {
-      return mAnchor != UINT32_MAX && mFocus != UINT32_MAX;
-    }
-    bool Collapsed() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
-      return mFocus == mAnchor;
-    }
+    bool IsCollapsed() const { return !mHasRange || mFocus == mAnchor; }
     bool Reversed() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
+      MOZ_ASSERT(mHasRange);
       return mFocus < mAnchor;
     }
     uint32_t StartOffset() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
+      MOZ_ASSERT(mHasRange);
       return Reversed() ? mFocus : mAnchor;
     }
     uint32_t EndOffset() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
+      MOZ_ASSERT(mHasRange);
       return Reversed() ? mAnchor : mFocus;
     }
     uint32_t Length() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
+      MOZ_ASSERT(mHasRange);
       return Reversed() ? mAnchor - mFocus : mFocus - mAnchor;
     }
     LayoutDeviceIntRect StartCharRect() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
       return Reversed() ? mFocusCharRects[eNextCharRect]
                         : mAnchorCharRects[eNextCharRect];
     }
     LayoutDeviceIntRect EndCharRect() const {
-      NS_ASSERTION(IsValid(),
-                   "The caller should check if the selection is valid");
       return Reversed() ? mAnchorCharRects[eNextCharRect]
                         : mFocusCharRects[eNextCharRect];
     }
-  } mSelection;
 
-  bool IsSelectionValid() const {
-    return mSelection.IsValid() && mSelection.EndOffset() <= mText.Length();
-  }
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Selection& aSelection) {
+      aStream << "{ ";
+      if (!aSelection.mHasRange) {
+        aStream << "HasRange()=false";
+      } else {
+        aStream << "mAnchor=" << aSelection.mAnchor
+                << ", mFocus=" << aSelection.mFocus << ", mWritingMode="
+                << ToString(aSelection.mWritingMode).c_str();
+      }
+      if (aSelection.HasRects()) {
+        if (aSelection.mAnchor > 0) {
+          aStream << ", mAnchorCharRects[ePrevCharRect]="
+                  << aSelection.mAnchorCharRects[ContentCache::ePrevCharRect];
+        }
+        aStream << ", mAnchorCharRects[eNextCharRect]="
+                << aSelection.mAnchorCharRects[ContentCache::eNextCharRect];
+        if (aSelection.mFocus > 0) {
+          aStream << ", mFocusCharRects[ePrevCharRect]="
+                  << aSelection.mFocusCharRects[ContentCache::ePrevCharRect];
+        }
+        aStream << ", mFocusCharRects[eNextCharRect]="
+                << aSelection.mFocusCharRects[ContentCache::eNextCharRect]
+                << ", mRect=" << aSelection.mRect;
+      }
+      if (aSelection.mHasRange) {
+        aStream << ", Reversed()=" << (aSelection.Reversed() ? "true" : "false")
+                << ", StartOffset()=" << aSelection.StartOffset()
+                << ", EndOffset()=" << aSelection.EndOffset()
+                << ", IsCollapsed()="
+                << (aSelection.IsCollapsed() ? "true" : "false")
+                << ", Length()=" << aSelection.Length();
+      }
+      aStream << " }";
+      return aStream;
+    }
+  };
+  Maybe<Selection> mSelection;
 
   // Stores first char rect because Yosemite's Japanese IME sometimes tries
   // to query it.  If there is no text, this is caret rect.
   LayoutDeviceIntRect mFirstCharRect;
 
   struct Caret final {
-    uint32_t mOffset;
+    uint32_t mOffset = 0u;
     LayoutDeviceIntRect mRect;
 
-    Caret() : mOffset(UINT32_MAX) {}
+    explicit Caret(uint32_t aOffset, LayoutDeviceIntRect aCaretRect)
+        : mOffset(aOffset), mRect(aCaretRect) {}
 
-    void Clear() {
-      mOffset = UINT32_MAX;
-      mRect.SetEmpty();
+    uint32_t Offset() const { return mOffset; }
+    bool HasRect() const { return !mRect.IsEmpty(); }
+
+    [[nodiscard]] bool IsValidIn(const nsAString& aText) const {
+      return mOffset <= aText.Length();
     }
 
-    bool IsValid() const { return mOffset != UINT32_MAX; }
-
-    uint32_t Offset() const {
-      NS_ASSERTION(IsValid(), "The caller should check if the caret is valid");
-      return mOffset;
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const Caret& aCaret) {
+      aStream << "{ mOffset=" << aCaret.mOffset;
+      if (aCaret.HasRect()) {
+        aStream << ", mRect=" << aCaret.mRect;
+      }
+      return aStream << " }";
     }
-  } mCaret;
+
+   private:
+    // For ParamTraits<Caret>
+    Caret() = default;
+
+    friend struct IPC::ParamTraits<ContentCache::Caret>;
+    ALLOW_DEPRECATED_READPARAM
+  };
+  Maybe<Caret> mCaret;
 
   struct TextRectArray final {
-    uint32_t mStart;
+    uint32_t mStart = 0u;
     RectArray mRects;
 
-    TextRectArray() : mStart(UINT32_MAX) {}
+    explicit TextRectArray(uint32_t aStartOffset) : mStart(aStartOffset) {}
 
-    void Clear() {
-      mStart = UINT32_MAX;
-      mRects.Clear();
-    }
-
-    bool IsValid() const {
-      if (mStart == UINT32_MAX) {
-        return false;
-      }
+    bool HasRects() const { return Length() > 0; }
+    uint32_t StartOffset() const { return mStart; }
+    uint32_t EndOffset() const {
       CheckedInt<uint32_t> endOffset =
           CheckedInt<uint32_t>(mStart) + mRects.Length();
-      return endOffset.isValid();
+      return endOffset.isValid() ? endOffset.value() : UINT32_MAX;
     }
-    bool HasRects() const { return IsValid() && !mRects.IsEmpty(); }
-    uint32_t StartOffset() const {
-      NS_ASSERTION(IsValid(), "The caller should check if the caret is valid");
-      return mStart;
+    uint32_t Length() const { return EndOffset() - mStart; }
+    bool IsOffsetInRange(uint32_t aOffset) const {
+      return StartOffset() <= aOffset && aOffset < EndOffset();
     }
-    uint32_t EndOffset() const {
-      NS_ASSERTION(IsValid(), "The caller should check if the caret is valid");
-      if (!IsValid()) {
-        return UINT32_MAX;
-      }
-      return mStart + mRects.Length();
-    }
-    bool InRange(uint32_t aOffset) const {
-      return IsValid() && StartOffset() <= aOffset && aOffset < EndOffset();
-    }
-    bool InRange(uint32_t aOffset, uint32_t aLength) const {
+    bool IsRangeCompletelyInRange(uint32_t aOffset, uint32_t aLength) const {
       CheckedInt<uint32_t> endOffset = CheckedInt<uint32_t>(aOffset) + aLength;
       if (NS_WARN_IF(!endOffset.isValid())) {
         return false;
       }
-      return InRange(aOffset) && aOffset + aLength <= EndOffset();
+      return IsOffsetInRange(aOffset) && aOffset + aLength <= EndOffset();
     }
     bool IsOverlappingWith(uint32_t aOffset, uint32_t aLength) const {
       if (!HasRects() || aOffset == UINT32_MAX || !aLength) {
@@ -212,17 +263,65 @@ class ContentCache {
     LayoutDeviceIntRect GetUnionRect(uint32_t aOffset, uint32_t aLength) const;
     LayoutDeviceIntRect GetUnionRectAsFarAsPossible(
         uint32_t aOffset, uint32_t aLength, bool aRoundToExistingOffset) const;
-  } mTextRectArray;
+
+    friend std::ostream& operator<<(std::ostream& aStream,
+                                    const TextRectArray& aTextRectArray) {
+      aStream << "{ mStart=" << aTextRectArray.mStart
+              << ", mRects={ Length()=" << aTextRectArray.Length();
+      if (aTextRectArray.HasRects()) {
+        aStream << ", Elements()=[ ";
+        static constexpr uint32_t kMaxPrintRects = 4;
+        const uint32_t kFirstHalf = aTextRectArray.Length() <= kMaxPrintRects
+                                        ? UINT32_MAX
+                                        : (kMaxPrintRects + 1) / 2;
+        const uint32_t kSecondHalf =
+            aTextRectArray.Length() <= kMaxPrintRects ? 0 : kMaxPrintRects / 2;
+        for (uint32_t i = 0; i < aTextRectArray.Length(); i++) {
+          if (i > 0) {
+            aStream << ", ";
+          }
+          aStream << ToString(aTextRectArray.mRects[i]).c_str();
+          if (i + 1 == kFirstHalf) {
+            aStream << " ...";
+            i = aTextRectArray.Length() - kSecondHalf - 1;
+          }
+        }
+      }
+      return aStream << " ] } }";
+    }
+
+   private:
+    // For ParamTraits<TextRectArray>
+    TextRectArray() = default;
+
+    friend struct IPC::ParamTraits<ContentCache::TextRectArray>;
+    ALLOW_DEPRECATED_READPARAM
+  };
+  Maybe<TextRectArray> mTextRectArray;
+  Maybe<TextRectArray> mLastCommitStringTextRectArray;
 
   LayoutDeviceIntRect mEditorRect;
 
   friend class ContentCacheInParent;
   friend struct IPC::ParamTraits<ContentCache>;
+  friend struct IPC::ParamTraits<ContentCache::Selection>;
+  friend struct IPC::ParamTraits<ContentCache::Caret>;
+  friend struct IPC::ParamTraits<ContentCache::TextRectArray>;
+  friend std::ostream& operator<<(
+      std::ostream& aStream,
+      const Selection& aSelection);  // For e(Prev|Next)CharRect
+  ALLOW_DEPRECATED_READPARAM
 };
 
 class ContentCacheInChild final : public ContentCache {
  public:
-  ContentCacheInChild();
+  ContentCacheInChild() = default;
+
+  /**
+   * Called when composition event will be dispatched in this process from
+   * PuppetWidget.
+   */
+  void OnCompositionEvent(const WidgetCompositionEvent& aCompositionEvent);
 
   /**
    * When IME loses focus, this should be called and making this forget the
@@ -232,13 +331,15 @@ class ContentCacheInChild final : public ContentCache {
 
   /**
    * Cache*() retrieves the latest content information and store them.
-   * Be aware, CacheSelection() calls CacheTextRects(), and also CacheText()
-   * calls CacheSelection().  So, related data is also retrieved automatically.
+   * Be aware, CacheSelection() calls CacheCaretAndTextRects(),
+   * CacheCaretAndTextRects() calls CacheCaret() and CacheTextRects(), and
+   * CacheText() calls CacheSelection().  So, related data is also retrieved
+   * automatically.
    */
   bool CacheEditorRect(nsIWidget* aWidget,
                        const IMENotification* aNotification = nullptr);
-  bool CacheSelection(nsIWidget* aWidget,
-                      const IMENotification* aNotification = nullptr);
+  bool CacheCaretAndTextRects(nsIWidget* aWidget,
+                              const IMENotification* aNotification = nullptr);
   bool CacheText(nsIWidget* aWidget,
                  const IMENotification* aNotification = nullptr);
 
@@ -248,23 +349,35 @@ class ContentCacheInChild final : public ContentCache {
   /**
    * SetSelection() modifies selection with specified raw data. And also this
    * tries to retrieve text rects too.
+   *
+   * @return true if the selection is cached.  Otherwise, false.
    */
-  void SetSelection(nsIWidget* aWidget, uint32_t aStartOffset, uint32_t aLength,
-                    bool aReversed, const WritingMode& aWritingMode);
+  [[nodiscard]] bool SetSelection(
+      nsIWidget* aWidget,
+      const IMENotification::SelectionChangeDataBase& aSelectionChangeData);
 
  private:
   bool QueryCharRect(nsIWidget* aWidget, uint32_t aOffset,
                      LayoutDeviceIntRect& aCharRect) const;
   bool QueryCharRectArray(nsIWidget* aWidget, uint32_t aOffset,
                           uint32_t aLength, RectArray& aCharRectArray) const;
+  bool CacheSelection(nsIWidget* aWidget,
+                      const IMENotification* aNotification = nullptr);
   bool CacheCaret(nsIWidget* aWidget,
                   const IMENotification* aNotification = nullptr);
   bool CacheTextRects(nsIWidget* aWidget,
                       const IMENotification* aNotification = nullptr);
+
+  // Once composition is committed, all of the commit string may be composed
+  // again by Kakutei-Undo of Japanese IME.  Therefore, we need to keep
+  // storing the last composition start to cache all character rects of the
+  // last commit string.
+  Maybe<OffsetAndData<uint32_t>> mLastCommit;
 };
 
 class ContentCacheInParent final : public ContentCache {
  public:
+  ContentCacheInParent() = delete;
   explicit ContentCacheInParent(dom::BrowserParent& aBrowserParent);
 
   /**
@@ -318,7 +431,8 @@ class ContentCacheInParent final : public ContentCache {
    *          BrowserParent or aWidget.  Therefore, the caller must not destroy
    *          this instance during a call of this method.
    */
-  void OnEventNeedingAckHandled(nsIWidget* aWidget, EventMessage aMessage);
+  void OnEventNeedingAckHandled(nsIWidget* aWidget, EventMessage aMessage,
+                                uint32_t aCompositionId);
 
   /**
    * RequestIMEToCommitComposition() requests aWidget to commit or cancel
@@ -328,6 +442,9 @@ class ContentCacheInParent final : public ContentCache {
    *                    the composition.
    * @param aCancel     When the caller tries to cancel the composition, true.
    *                    Otherwise, i.e., tries to commit the composition, false.
+   * @param aCompositionId
+   *                    The composition ID which should be committed or
+   *                    canceled.
    * @param aCommittedString    The committed string (i.e., the last data of
    *                            dispatched composition events during requesting
    *                            IME to commit composition.
@@ -335,6 +452,7 @@ class ContentCacheInParent final : public ContentCache {
    *                    synchronously.
    */
   bool RequestIMEToCommitComposition(nsIWidget* aWidget, bool aCancel,
+                                     uint32_t aCompositionId,
                                      nsAString& aCommittedString);
 
   /**
@@ -345,6 +463,54 @@ class ContentCacheInParent final : public ContentCache {
   void MaybeNotifyIME(nsIWidget* aWidget, const IMENotification& aNotification);
 
  private:
+  struct HandlingCompositionData;
+
+  // Return true when the widget in this process thinks that IME has
+  // composition.  So, this returns true when there is at least one handling
+  // composition data and the last handling composition has not dispatched
+  // composition commit event to the remote process yet.
+  [[nodiscard]] bool WidgetHasComposition() const {
+    return !mHandlingCompositions.IsEmpty() &&
+           !mHandlingCompositions.LastElement().mSentCommitEvent;
+  }
+
+  // Return true if there is a pending composition which has already sent
+  // a commit event to the remote process, but not yet handled by it.
+  [[nodiscard]] bool HasPendingCommit() const {
+    for (const HandlingCompositionData& data : mHandlingCompositions) {
+      if (data.mSentCommitEvent) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Return the number of composition events and set selection events which were
+  // sent to the remote process, but we've not verified that the remote process
+  // finished handling it.
+  [[nodiscard]] uint32_t PendingEventsNeedingAck() const {
+    uint32_t ret = mPendingSetSelectionEventNeedingAck;
+    for (const HandlingCompositionData& data : mHandlingCompositions) {
+      ret += data.mPendingEventsNeedingAck;
+    }
+    return ret;
+  }
+
+  [[nodiscard]] HandlingCompositionData* GetHandlingCompositionData(
+      uint32_t aCompositionId) {
+    for (HandlingCompositionData& data : mHandlingCompositions) {
+      if (data.mCompositionId == aCompositionId) {
+        return &data;
+      }
+    }
+    return nullptr;
+  }
+  [[nodiscard]] const HandlingCompositionData* GetHandlingCompositionData(
+      uint32_t aCompositionId) const {
+    return const_cast<ContentCacheInParent*>(this)->GetHandlingCompositionData(
+        aCompositionId);
+  }
+
   IMENotification mPendingSelectionChange;
   IMENotification mPendingTextChange;
   IMENotification mPendingLayoutChange;
@@ -357,9 +523,11 @@ class ContentCacheInParent final : public ContentCache {
   // Log of RequestIMEToCommitComposition() in the last 2 compositions.
   enum class RequestIMEToCommitCompositionResult : uint8_t {
     eToOldCompositionReceived,
+    eToUnknownCompositionReceived,
     eToCommittedCompositionReceived,
     eReceivedAfterBrowserParentBlur,
     eReceivedButNoTextComposition,
+    eReceivedButForDifferentTextComposition,
     eHandledAsynchronously,
     eHandledSynchronously,
   };
@@ -369,6 +537,9 @@ class ContentCacheInParent final : public ContentCache {
       case RequestIMEToCommitCompositionResult::eToOldCompositionReceived:
         return "Commit request is not handled because it's for "
                "older composition";
+      case RequestIMEToCommitCompositionResult::eToUnknownCompositionReceived:
+        return "Commit request is not handled because it's for "
+               "unknown composition";
       case RequestIMEToCommitCompositionResult::eToCommittedCompositionReceived:
         return "Commit request is not handled because BrowserParent has "
                "already "
@@ -378,12 +549,16 @@ class ContentCacheInParent final : public ContentCache {
                "because BrowserParent has already lost focus";
       case RequestIMEToCommitCompositionResult::eReceivedButNoTextComposition:
         return "Commit request is not handled because there is no "
-               "TextCompsition instance";
+               "TextComposition instance";
+      case RequestIMEToCommitCompositionResult::
+          eReceivedButForDifferentTextComposition:
+        return "Commit request is handled with stored composition string "
+               "because new TextComposition is active";
       case RequestIMEToCommitCompositionResult::eHandledAsynchronously:
         return "Commit request is handled but IME doesn't commit current "
                "composition synchronously";
       case RequestIMEToCommitCompositionResult::eHandledSynchronously:
-        return "Commit reqeust is handled synchronously";
+        return "Commit request is handled synchronously";
       default:
         return "Unknown reason";
     }
@@ -392,45 +567,49 @@ class ContentCacheInParent final : public ContentCache {
       mRequestIMEToCommitCompositionResults;
 #endif  // MOZ_DIAGNOSTIC_ASSERT_ENABLED
 
+  // Stores pending compositions (meaning eCompositionStart was dispatched, but
+  // eCompositionCommit(AsIs) has not been handled by the remote process yet).
+  struct HandlingCompositionData {
+    // The lasted composition string which was sent to the remote process.
+    nsString mCompositionString;
+    // The composition ID of a handling composition with the instance.
+    uint32_t mCompositionId;
+    // Increased when sending composition events and decreased when the
+    // remote process finished handling the events.
+    uint32_t mPendingEventsNeedingAck = 0u;
+    // true if eCompositionCommit(AsIs) has already been sent to the remote
+    // process.
+    bool mSentCommitEvent = false;
+
+    explicit HandlingCompositionData(uint32_t aCompositionId)
+        : mCompositionId(aCompositionId) {}
+  };
+  AutoTArray<HandlingCompositionData, 2> mHandlingCompositions;
+
   // mBrowserParent is owner of the instance.
   dom::BrowserParent& MOZ_NON_OWNING_REF mBrowserParent;
-  // mCompositionString is composition string which were sent to the remote
-  // process but not yet committed in the remote process.
-  nsString mCompositionString;
   // This is not nullptr only while the instance is requesting IME to
   // composition.  Then, data value of dispatched composition events should
   // be stored into the instance.
   nsAString* mCommitStringByRequest;
-  // mPendingEventsNeedingAck is increased before sending a composition event or
-  // a selection event and decreased after they are received in the child
-  // process.
-  uint32_t mPendingEventsNeedingAck;
   // mCompositionStartInChild stores current composition start offset in the
   // remote process.
-  uint32_t mCompositionStartInChild;
+  Maybe<uint32_t> mCompositionStartInChild;
+  // Increased when sending eSetSelection events and decreased when the remote
+  // process finished handling the events.  Note that eSetSelection may be
+  // dispatched without composition.  Therefore, we need to count it with this.
+  uint32_t mPendingSetSelectionEventNeedingAck = 0u;
   // mPendingCommitLength is commit string length of the first pending
   // composition.  This is used by relative offset query events when querying
   // new composition start offset.
-  // Note that when mPendingCompositionCount is not 0, i.e., there are 2 or
-  // more pending compositions, this cache won't be used because in such case,
-  // anyway ContentCacheInParent cannot return proper character rect.
+  // Note that when mHandlingCompositions has 2 or more elements, i.e., there
+  // are 2 or more pending compositions, this cache won't be used because in
+  // such case, anyway ContentCacheInParent cannot return proper character rect.
   uint32_t mPendingCommitLength;
-  // mPendingCompositionCount is number of compositions which started in widget
-  // but not yet handled in the child process.
-  uint8_t mPendingCompositionCount;
-  // mPendingCommitCount is number of eCompositionCommit(AsIs) events which
-  // were sent to the child process but not yet handled in it.
-  uint8_t mPendingCommitCount;
-  // mWidgetHasComposition is true when the widget in this process thinks that
-  // IME has composition.  So, this is set to true when eCompositionStart is
-  // dispatched and set to false when eCompositionCommit(AsIs) is dispatched.
-  bool mWidgetHasComposition;
   // mIsChildIgnoringCompositionEvents is set to true if the child process
   // requests commit composition whose commit has already been sent to it.
   // Then, set to false when the child process ignores the commit event.
   bool mIsChildIgnoringCompositionEvents;
-
-  ContentCacheInParent() = delete;
 
   /**
    * When following methods' aRoundToExistingOffset is true, even if specified

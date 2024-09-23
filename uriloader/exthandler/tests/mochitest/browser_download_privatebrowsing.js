@@ -8,15 +8,23 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Downloads.jsm", this);
-ChromeUtils.import("resource://gre/modules/DownloadPaths.jsm", this);
-ChromeUtils.import("resource://testing-common/FileTestUtils.jsm", this);
-ChromeUtils.import("resource://testing-common/MockRegistrar.jsm", this);
+const { Downloads } = ChromeUtils.importESModule(
+  "resource://gre/modules/Downloads.sys.mjs"
+);
+const { DownloadPaths } = ChromeUtils.importESModule(
+  "resource://gre/modules/DownloadPaths.sys.mjs"
+);
+const { FileTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/FileTestUtils.sys.mjs"
+);
+const { MockRegistrar } = ChromeUtils.importESModule(
+  "resource://testing-common/MockRegistrar.sys.mjs"
+);
 
 add_task(async function test_setup() {
   // Save downloads to disk without showing the dialog.
   let cid = MockRegistrar.register("@mozilla.org/helperapplauncherdialog;1", {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIHelperAppLauncherDialog]),
+    QueryInterface: ChromeUtils.generateQI(["nsIHelperAppLauncherDialog"]),
     show(launcher) {
       launcher.promptForSaveDestination();
     },
@@ -52,7 +60,7 @@ add_task(async function test_download_privatebrowsing() {
       });
     });
 
-    await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
+    await SpecialPowers.spawn(tab.linkedBrowser, [], async function () {
       content.document.querySelector("a").click();
     });
 

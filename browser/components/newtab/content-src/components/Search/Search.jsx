@@ -3,9 +3,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* globals ContentSearchUIController, ContentSearchHandoffUIController */
-"use strict";
 
-import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { connect } from "react-redux";
 import { IS_NEWTAB } from "content-src/lib/constants";
 import React from "react";
@@ -19,9 +18,8 @@ export class _Search extends React.PureComponent {
     this.onSearchHandoffDrop = this.onSearchHandoffDrop.bind(this);
     this.onInputMount = this.onInputMount.bind(this);
     this.onInputMountHandoff = this.onInputMountHandoff.bind(this);
-    this.onSearchHandoffButtonMount = this.onSearchHandoffButtonMount.bind(
-      this
-    );
+    this.onSearchHandoffButtonMount =
+      this.onSearchHandoffButtonMount.bind(this);
   }
 
   handleEvent(event) {
@@ -42,7 +40,7 @@ export class _Search extends React.PureComponent {
     this.props.dispatch({ type: at.FAKE_FOCUS_SEARCH });
     this.props.dispatch(ac.UserEvent({ event: "SEARCH_HANDOFF" }));
     if (text) {
-      this.props.dispatch({ type: at.HIDE_SEARCH });
+      this.props.dispatch({ type: at.DISABLE_SEARCH });
     }
   }
 
@@ -75,7 +73,7 @@ export class _Search extends React.PureComponent {
   onInputMount(input) {
     if (input) {
       // The "healthReportKey" and needs to be "newtab" or "abouthome" so that
-      // BrowserUsageTelemetry.jsm knows to handle events with this name, and
+      // BrowserUsageTelemetry.sys.mjs knows to handle events with this name, and
       // can add the appropriate telemetry probes for search. Without the correct
       // name, certain tests like browser_UsageTelemetry_content.js will fail
       // (See github ticket #2348 for more details)
@@ -106,7 +104,7 @@ export class _Search extends React.PureComponent {
 
   onInputMountHandoff(input) {
     if (input) {
-      // The handoff UI controller helps usset the search icon and reacts to
+      // The handoff UI controller helps us set the search icon and reacts to
       // changes to default engine to keep everything in sync.
       this._handoffSearchController = new ContentSearchHandoffUIController();
     }
@@ -125,7 +123,7 @@ export class _Search extends React.PureComponent {
   render() {
     const wrapperClassName = [
       "search-wrapper",
-      this.props.hide && "search-hidden",
+      this.props.disable && "search-disabled",
       this.props.fakeFocus && "fake-focus",
     ]
       .filter(v => v)
@@ -143,7 +141,7 @@ export class _Search extends React.PureComponent {
           <div className="search-inner-wrapper">
             <input
               id="newtab-search-text"
-              data-l10n-id="newtab-search-box-search-the-web-input"
+              data-l10n-id="newtab-search-box-input"
               maxLength="256"
               ref={this.onInputMount}
               type="search"
@@ -160,15 +158,11 @@ export class _Search extends React.PureComponent {
           <div className="search-inner-wrapper">
             <button
               className="search-handoff-button"
-              data-l10n-id="newtab-search-box-search-the-web-input"
               ref={this.onSearchHandoffButtonMount}
               onClick={this.onSearchHandoffClick}
               tabIndex="-1"
             >
-              <div
-                className="fake-textbox"
-                data-l10n-id="newtab-search-box-search-the-web-text"
-              />
+              <div className="fake-textbox" />
               <input
                 type="search"
                 className="fake-editable"
@@ -187,4 +181,6 @@ export class _Search extends React.PureComponent {
   }
 }
 
-export const Search = connect()(_Search);
+export const Search = connect(state => ({
+  Prefs: state.Prefs,
+}))(_Search);

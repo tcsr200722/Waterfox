@@ -7,25 +7,30 @@
 
 "use strict";
 
-/* import-globals-from dynamicfpi_head.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/toolkit/components/antitracking/test/browser/dynamicfpi_head.js",
   this
 );
 
-/* import-globals-from storageprincipal_head.js */
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/toolkit/components/antitracking/test/browser/storageprincipal_head.js",
-  this
-);
-
 this.PartitionedStorageHelper = {
-  runTestInNormalAndPrivateMode(name, callback, cleanupFunction, extraPrefs) {
+  runTestInNormalAndPrivateMode(
+    name,
+    callback,
+    cleanupFunction,
+    extraPrefs,
+    runInSecure = true
+  ) {
     // Normal mode
-    this.runTest(name, callback, cleanupFunction, extraPrefs, false);
+    this.runTest(name, callback, cleanupFunction, extraPrefs, {
+      runInSecureContext: runInSecure,
+      runInPrivateWindow: false,
+    });
 
     // Private mode
-    this.runTest(name, callback, cleanupFunction, extraPrefs, true);
+    this.runTest(name, callback, cleanupFunction, extraPrefs, {
+      runInSecureContext: runInSecure,
+      runInPrivateWindow: true,
+    });
   },
 
   runTest(
@@ -33,21 +38,15 @@ this.PartitionedStorageHelper = {
     callback,
     cleanupFunction,
     extraPrefs,
-    runInPrivateWindow = false
+    { runInPrivateWindow = false, runInSecureContext = true } = {}
   ) {
     DynamicFPIHelper.runTest(
       name,
       callback,
       cleanupFunction,
       extraPrefs,
-      runInPrivateWindow
-    );
-    StoragePrincipalHelper.runTest(
-      name,
-      callback,
-      cleanupFunction,
-      extraPrefs,
-      runInPrivateWindow
+      runInPrivateWindow,
+      { runInSecureContext }
     );
   },
 
@@ -56,7 +55,8 @@ this.PartitionedStorageHelper = {
     testCategory,
     getDataCallback,
     addDataCallback,
-    cleanupFunction
+    cleanupFunction,
+    expectUnpartition = false
   ) {
     // Normal mode
     this.runPartitioningTest(
@@ -65,6 +65,7 @@ this.PartitionedStorageHelper = {
       getDataCallback,
       addDataCallback,
       cleanupFunction,
+      expectUnpartition,
       false
     );
 
@@ -75,6 +76,7 @@ this.PartitionedStorageHelper = {
       getDataCallback,
       addDataCallback,
       cleanupFunction,
+      expectUnpartition,
       true
     );
   },
@@ -85,6 +87,7 @@ this.PartitionedStorageHelper = {
     getDataCallback,
     addDataCallback,
     cleanupFunction,
+    expectUnpartition,
     runInPrivateWindow = false
   ) {
     for (let variant of ["normal", "initial-aboutblank"]) {
@@ -97,7 +100,8 @@ this.PartitionedStorageHelper = {
           cleanupFunction,
           variant,
           runInPrivateWindow,
-          limitForeignContexts
+          limitForeignContexts,
+          expectUnpartition
         );
       }
     }
@@ -111,7 +115,8 @@ this.PartitionedStorageHelper = {
     cleanupFunction,
     variant,
     runInPrivateWindow,
-    limitForeignContexts
+    limitForeignContexts,
+    expectUnpartition
   ) {
     add_task(async _ => {
       info(
@@ -129,18 +134,24 @@ this.PartitionedStorageHelper = {
       );
 
       await SpecialPowers.flushPrefEnv();
+      await setCookieBehaviorPref(
+        BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+        runInPrivateWindow
+      );
       await SpecialPowers.pushPrefEnv({
         set: [
           ["dom.storage_access.enabled", true],
+          ["network.cookie.cookieBehavior.optInPartitioning", true],
+          ["network.cookie.CHIPS.enabled", true],
           [
-            "network.cookie.cookieBehavior",
-            Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
+            "privacy.partition.always_partition_third_party_non_cookie_storage",
+            true,
           ],
           ["privacy.dynamic_firstparty.limitForeign", limitForeignContexts],
           ["privacy.trackingprotection.enabled", false],
           ["privacy.trackingprotection.pbmode.enabled", false],
           ["privacy.trackingprotection.annotate_channels", true],
-          ["privacy.storagePrincipal.enabledForTrackers", false],
+          ["dom.security.https_first_pbm", false],
           [
             "privacy.restrict3rdpartystorage.userInteractionRequiredForHosts",
             "not-tracking.example.com",
@@ -155,14 +166,14 @@ this.PartitionedStorageHelper = {
       }
 
       info("Creating the first tab");
-      let tab1 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE);
+      let tab1 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE_HTTPS);
       win.gBrowser.selectedTab = tab1;
 
       let browser1 = win.gBrowser.getBrowserForTab(tab1);
       await BrowserTestUtils.browserLoaded(browser1);
 
       info("Creating the second tab");
-      let tab2 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE_6);
+      let tab2 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE_9);
       win.gBrowser.selectedTab = tab2;
 
       let browser2 = win.gBrowser.getBrowserForTab(tab2);
@@ -171,7 +182,7 @@ this.PartitionedStorageHelper = {
       info("Creating the third tab");
       let tab3 = BrowserTestUtils.addTab(
         win.gBrowser,
-        TEST_4TH_PARTY_PARTITIONED_PAGE
+        TEST_4TH_PARTY_PARTITIONED_PAGE_HTTPS
       );
       win.gBrowser.selectedTab = tab3;
 
@@ -180,7 +191,7 @@ this.PartitionedStorageHelper = {
 
       // Use the same URL as first tab to check partitioned data
       info("Creating the forth tab");
-      let tab4 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE);
+      let tab4 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE_HTTPS);
       win.gBrowser.selectedTab = tab4;
 
       let browser4 = win.gBrowser.getBrowserForTab(tab4);
@@ -198,7 +209,8 @@ this.PartitionedStorageHelper = {
           browser,
           [
             {
-              page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
+              page:
+                TEST_4TH_PARTY_PARTITIONED_PAGE_HTTPS + "?variant=" + variant,
               getDataCallback: getDataCallback.toString(),
               result,
             },
@@ -280,7 +292,8 @@ this.PartitionedStorageHelper = {
           browser,
           [
             {
-              page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
+              page:
+                TEST_4TH_PARTY_PARTITIONED_PAGE_HTTPS + "?variant=" + variant,
               addDataCallback: addDataCallback.toString(),
               value,
             },
@@ -370,6 +383,63 @@ this.PartitionedStorageHelper = {
 
       info("Forth tab should still have just 'D'");
       await getDataFromThirdParty(browser4, "D");
+
+      async function setStorageAccessForThirdParty(browser) {
+        info(`Setting permission for ${browser.currentURI.spec}`);
+        let type = "3rdPartyStorage^https://not-tracking.example.com";
+        let permission = Services.perms.ALLOW_ACTION;
+        let expireType = Services.perms.EXPIRE_SESSION;
+        Services.perms.addFromPrincipal(
+          browser.contentPrincipal,
+          type,
+          permission,
+          expireType,
+          0
+        );
+        // Wait for permission to be set successfully
+        let originAttributes = runInPrivateWindow
+          ? { privateBrowsingId: 1 }
+          : {};
+        await new Promise(resolve => {
+          let id = setInterval(async _ => {
+            if (
+              await SpecialPowers.testPermission(type, permission, {
+                url: browser.currentURI.spec,
+                originAttributes,
+              })
+            ) {
+              clearInterval(id);
+              resolve();
+            }
+          }, 0);
+        });
+      }
+
+      if (!expectUnpartition) {
+        info("Setting Storage access for third parties");
+
+        await setStorageAccessForThirdParty(browser1);
+        await setStorageAccessForThirdParty(browser2);
+        await setStorageAccessForThirdParty(browser3);
+        await setStorageAccessForThirdParty(browser4);
+
+        info("Done setting Storage access for third parties");
+
+        // read all tabs
+        info("First tab should still have just 'D'");
+        await getDataFromThirdParty(browser1, "D");
+
+        info("Second tab should still have just 'B'");
+        await getDataFromThirdParty(browser2, "B");
+
+        info("Third tab should still have just 'C'");
+        await getDataFromFirstParty(browser3, "C");
+
+        info("Forth tab should still have just 'D'");
+        await getDataFromThirdParty(browser4, "D");
+      }
+
+      info("Done checking departitioned state");
 
       info("Removing the tabs");
       BrowserTestUtils.removeTab(tab1);

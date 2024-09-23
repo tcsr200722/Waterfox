@@ -12,18 +12,11 @@
 namespace js {
 namespace jit {
 
-// ICStubSpace is an abstraction for allocation policy and storage for stub
-// data. There are two kinds of stubs: optimized stubs and fallback stubs (the
-// latter also includes stubs that can make non-tail calls that can GC).
-//
-// Optimized stubs are allocated per-compartment and are always purged when
-// JIT-code is discarded. Fallback stubs are allocated per BaselineScript and
-// are only destroyed when the BaselineScript is destroyed.
+// ICStubSpace is an abstraction for allocation policy and storage for CacheIR
+// stub data. Each JitZone has a single ICStubSpace.
 class ICStubSpace {
- protected:
-  LifoAlloc allocator_;
-
-  explicit ICStubSpace(size_t chunkSize) : allocator_(chunkSize) {}
+  static constexpr size_t DefaultChunkSize = 4096;
+  LifoAlloc allocator_{DefaultChunkSize};
 
  public:
   inline void* alloc(size_t size) { return allocator_.alloc(size); }
@@ -32,31 +25,13 @@ class ICStubSpace {
 
   void freeAllAfterMinorGC(JS::Zone* zone);
 
-#ifdef DEBUG
-  bool isEmpty() const { return allocator_.isEmpty(); }
-#endif
+  void transferFrom(ICStubSpace& other) {
+    allocator_.transferFrom(&other.allocator_);
+  }
 
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
     return allocator_.sizeOfExcludingThis(mallocSizeOf);
   }
-};
-
-// Space for optimized stubs. Every JitRealm has a single
-// OptimizedICStubSpace.
-struct OptimizedICStubSpace : public ICStubSpace {
-  static const size_t STUB_DEFAULT_CHUNK_SIZE = 4096;
-
- public:
-  OptimizedICStubSpace() : ICStubSpace(STUB_DEFAULT_CHUNK_SIZE) {}
-};
-
-// Space for fallback stubs. Every BaselineScript has a
-// FallbackICStubSpace.
-struct FallbackICStubSpace : public ICStubSpace {
-  static const size_t STUB_DEFAULT_CHUNK_SIZE = 4096;
-
- public:
-  FallbackICStubSpace() : ICStubSpace(STUB_DEFAULT_CHUNK_SIZE) {}
 };
 
 }  // namespace jit

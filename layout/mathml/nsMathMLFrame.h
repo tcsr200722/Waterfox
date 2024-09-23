@@ -11,13 +11,16 @@
 #include "nsFontMetrics.h"
 #include "nsMathMLOperators.h"
 #include "nsIMathMLFrame.h"
-#include "nsLayoutUtils.h"
 #include "nsBoundingMetrics.h"
 #include "nsIFrame.h"
 
 class nsMathMLChar;
 class nsCSSValue;
+
+namespace mozilla {
+class nsDisplayListBuilder;
 class nsDisplayListSet;
+}  // namespace mozilla
 
 // Concrete base class with default methods that derived MathML frames can
 // override
@@ -90,13 +93,6 @@ class nsMathMLFrame : public nsIMathMLFrame {
 
   bool IsMrowLike() override { return false; }
 
-  // helper to give a ComputedStyle suitable for doing the stretching to the
-  // MathMLChar. Frame classes that use this should make the extra ComputedStyle
-  // accessible to the Style System via Get/Set AdditionalmComputedStyle.
-  static void ResolveMathMLCharStyle(
-      nsPresContext* aPresContext, nsIContent* aContent,
-      mozilla::ComputedStyle* aParenComputedStyle, nsMathMLChar* aMathMLChar);
-
   // helper to get the mEmbellishData of a frame
   // The MathML REC precisely defines an "embellished operator" as:
   // - an <mo> element;
@@ -136,9 +132,10 @@ class nsMathMLFrame : public nsIMathMLFrame {
                             float aFontSizeInflation);
 
   static eMathMLFrameType GetMathMLFrameTypeFor(nsIFrame* aFrame) {
-    if (aFrame->IsFrameOfType(nsIFrame::eMathML)) {
-      nsIMathMLFrame* mathMLFrame = do_QueryFrame(aFrame);
-      if (mathMLFrame) return mathMLFrame->GetMathMLFrameType();
+    if (aFrame->IsMathMLFrame()) {
+      if (nsIMathMLFrame* mathMLFrame = do_QueryFrame(aFrame)) {
+        return mathMLFrame->GetMathMLFrameType();
+      }
     }
     return eMathMLFrameType_UNKNOWN;
   }
@@ -168,18 +165,10 @@ class nsMathMLFrame : public nsIMathMLFrame {
 
   // helper methods for getting sup/subdrop's from a child
   static void GetSubDropFromChild(nsIFrame* aChild, nscoord& aSubDrop,
-                                  float aFontSizeInflation) {
-    RefPtr<nsFontMetrics> fm =
-        nsLayoutUtils::GetFontMetricsForFrame(aChild, aFontSizeInflation);
-    GetSubDrop(fm, aSubDrop);
-  }
+                                  float aFontSizeInflation);
 
   static void GetSupDropFromChild(nsIFrame* aChild, nscoord& aSupDrop,
-                                  float aFontSizeInflation) {
-    RefPtr<nsFontMetrics> fm =
-        nsLayoutUtils::GetFontMetricsForFrame(aChild, aFontSizeInflation);
-    GetSupDrop(fm, aSupDrop);
-  }
+                                  float aFontSizeInflation);
 
   static void GetSkewCorrectionFromChild(nsIFrame* aChild,
                                          nscoord& aSkewCorrection) {
@@ -238,7 +227,7 @@ class nsMathMLFrame : public nsIMathMLFrame {
     // should switch to this API in order to scale with changes of TextZoom
     emHeight = fm->EmHeight();
 #else
-    emHeight = NSToCoordRound(float(fm->Font().size));
+    emHeight = fm->Font().size.ToAppUnits();
 #endif
   }
 
@@ -280,8 +269,8 @@ class nsMathMLFrame : public nsIMathMLFrame {
 
  protected:
 #if defined(DEBUG) && defined(SHOW_BOUNDING_BOX)
-  void DisplayBoundingMetrics(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                              const nsPoint& aPt,
+  void DisplayBoundingMetrics(mozilla::nsDisplayListBuilder* aBuilder,
+                              nsIFrame* aFrame, const nsPoint& aPt,
                               const nsBoundingMetrics& aMetrics,
                               const nsDisplayListSet& aLists);
 #endif
@@ -290,8 +279,8 @@ class nsMathMLFrame : public nsIMathMLFrame {
    * Display a solid rectangle in the frame's text color. Used for drawing
    * fraction separators and root/sqrt overbars.
    */
-  void DisplayBar(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                  const nsRect& aRect, const nsDisplayListSet& aLists,
+  void DisplayBar(mozilla::nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
+                  const nsRect& aRect, const mozilla::nsDisplayListSet& aLists,
                   uint32_t aIndex = 0);
 
   // information about the presentation policy of the frame

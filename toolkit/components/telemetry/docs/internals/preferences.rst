@@ -1,5 +1,5 @@
-Preferences
-===========
+Preferences and Defines
+=======================
 
 Telemetry behaviour is controlled through the mozconfig defines and preferences listed here.
 
@@ -39,7 +39,7 @@ mozconfig Defines
   When Not Defined:
 
   * Disables ``app.shield.optoutstudies.enabled``
-  * Removes the Data Collection Preferences UI in ``privacy.xhtml``
+  * Removes parts of the Data Collection Preferences UI in ``privacy.xhtml``
 
 ``MOZILLA_OFFICIAL``
 
@@ -106,7 +106,7 @@ Preferences
 
 ``toolkit.telemetry.log.level``
 
-  This sets the Telemetry logging verbosity per ``Log.jsm``. The available levels, in descending order of verbosity, are ``Trace``, ``Debug``, ``Config``, ``Info``, ``Warn``, ``Error`` and ``Fatal`` with the default being ``Warn``.
+  This sets the Telemetry logging verbosity per ``Log.sys.mjs``. The available levels, in descending order of verbosity, are ``Trace``, ``Debug``, ``Config``, ``Info``, ``Warn``, ``Error`` and ``Fatal`` with the default being ``Warn``.
 
   By default logging goes only the console service.
 
@@ -138,21 +138,6 @@ Preferences
 
   Enable the :doc:`../data/update-ping` on browser updates.
 
-``toolkit.telemetry.maxEventSummaryKeys``
-
-  Set the maximum number of keys per process of the :ref:`Event Summary <events.event-summary>`
-  :ref:`keyed scalars <scalars.keyed-scalars>`. Default is 500. Change requires restart.
-
-``toolkit.telemetry.eventping.enabled``
-
-  Whether the :doc:`../data/event-ping` is enabled.
-  Default is true except for GeckoView where it defaults to false. Change requires restart.
-
-``toolkit.telemetry.eventping.eventLimit``
-
-  The maximum number of event records permitted in the :doc:`../data/event-ping`.
-  Default is 1000.
-
 ``toolkit.telemetry.eventping.minimumFrequency``
 
   The minimum frequency at which an :doc:`../data/event-ping` will be sent.
@@ -162,11 +147,6 @@ Preferences
 
   The maximum frequency at which an :doc:`../data/event-ping` will be sent.
   Default is 10 (minutes).
-
-``toolkit.telemetry.ecosystemtelemetry.enabled``
-
-  Whether :doc:`../data/ecosystem-telemetry` is enabled.
-  Default is false. Change requires restart.
 
 ``toolkit.telemetry.overrideUpdateChannel``
 
@@ -182,16 +162,6 @@ Preferences
 ``toolkit.telemetry.pioneerId``
 
   If a user has opted into the Pioneer program, this will contain their Pioneer ID.
-
-``toolkit.telemetry.prioping.enabled``
-
-  Whether the :doc:`../data/prio-ping` is enabled.
-  Defaults to true. Change requires restart.
-
-``toolkit.telemetry.prioping.dataLimit``
-
-  The number of encoded prio payloads which triggers an immediate :doc:`../data/prio-ping` with reason "max".
-  Default is 10 payloads.
 
 Data-choices notification
 -------------------------
@@ -222,7 +192,7 @@ Data-choices notification
 
 ``datareporting.policy.currentPolicyVersion``
 
-  Stores the current policy version, overrides the default value defined in TelemetryReportingPolicy.jsm.
+  Stores the current policy version, overrides the default value defined in TelemetryReportingPolicy.sys.mjs.
 
 ``datareporting.policy.minimumPolicyVersion``
 
@@ -231,34 +201,6 @@ Data-choices notification
 ``datareporting.policy.minimumPolicyVersion.channel-NAME``
 
   This is the only channel-specific version that we currently use for the minimum policy version.
-
-GeckoView
----------
-
-``toolkit.telemetry.isGeckoViewMode``
-
-   Whether or not Telemetry needs to run in :doc:`GeckoView <../internals/geckoview>` mode. If true, and ``toolkit.telemetry.geckoview.streaming`` is false,  measurements persistence is enabled. Defaults to false on all products except GeckoView.
-
-``toolkit.telemetry.geckoPersistenceTimeout``
-
-   The interval that governs how frequently measurements are saved to disk, in milliseconds. Defaults to 60000 (60 seconds).
-
-``toolkit.telemetry.geckoview.streaming``
-
-   Whether the GeckoView mode we're running in is the variety that uses the :doc:`GeckoView Streaming Telemetry API <../internals/geckoview-streaming>` or not.
-   Defaults to false.
-
-``toolkit.telemetry.geckoview.batchDurationMS``
-
-   The duration in milliseconds over which :doc:`GeckoView Streaming Telemetry <../internals/geckoview-streaming>` will batch accumulations before passing it on to its delegate.
-   Defaults to 5000.
-
-``toolkit.telemetry.geckoview.maxBatchStalenessMS``
-
-   The maximum time (in milliseconds) between flushes of the
-   :doc:`GeckoView Streaming Telemetry <../internals/geckoview-streaming>`
-   batch to its delegate.
-   Defaults to 60000.
 
 Testing
 -------

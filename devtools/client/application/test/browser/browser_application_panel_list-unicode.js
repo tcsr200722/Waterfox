@@ -12,10 +12,10 @@ const TAB_URL = (
  * Unicode characters, and not encoded URI's or punycode.
  */
 
-add_task(async function() {
+add_task(async function () {
   await enableApplicationPanel();
 
-  const { panel, target, tab } = await openNewTabAndApplicationPanel(TAB_URL);
+  const { panel, tab, commands } = await openNewTabAndApplicationPanel(TAB_URL);
   const doc = panel.panelWin.document;
 
   selectPage(panel, "service-workers");
@@ -39,7 +39,7 @@ add_task(async function() {
     "Service worker has the expected Unicode url"
   );
 
-  await unregisterAllWorkers(target.client, doc);
+  await unregisterAllWorkers(commands.client, doc);
 
   // close the tab
   info("Closing the tab.");

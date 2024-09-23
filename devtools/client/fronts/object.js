@@ -4,12 +4,29 @@
 
 "use strict";
 
-const { objectSpec } = require("devtools/shared/specs/object");
+const { objectSpec } = require("resource://devtools/shared/specs/object.js");
 const {
   FrontClassWithSpec,
   registerFront,
-} = require("devtools/shared/protocol");
-const { LongStringFront } = require("devtools/client/fronts/string");
+} = require("resource://devtools/shared/protocol.js");
+const {
+  LongStringFront,
+} = require("resource://devtools/client/fronts/string.js");
+
+const SUPPORT_ENUM_ENTRIES_SET = new Set([
+  "CustomStateSet",
+  "FormData",
+  "Headers",
+  "HighlightRegistry",
+  "Map",
+  "MIDIInputMap",
+  "MIDIOutputMap",
+  "Set",
+  "Storage",
+  "URLSearchParams",
+  "WeakMap",
+  "WeakSet",
+]);
 
 /**
  * A ObjectFront is used as a front end for the ObjectActor that is
@@ -53,33 +70,6 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
     return this._grip.extensible;
   }
 
-  getDefinitionSite() {
-    if (this._grip.class != "Function") {
-      console.error("getDefinitionSite is only valid for function grips.");
-      return null;
-    }
-    return super.definitionSite();
-  }
-
-  /**
-   * Request the names of a function's formal parameters.
-   */
-  getParameterNames() {
-    if (this._grip.class !== "Function") {
-      console.error("getParameterNames is only valid for function grips.");
-      return null;
-    }
-    return super.parameterNames();
-  }
-
-  /**
-   * Request the names of the properties defined on the object and not its
-   * prototype.
-   */
-  getOwnPropertyNames() {
-    return super.ownPropertyNames();
-  }
-
   /**
    * Request the prototype and own properties of the object.
    */
@@ -114,9 +104,8 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
         if (descriptor) {
           for (const gripKey of gripKeys) {
             if (descriptor.hasOwnProperty(gripKey)) {
-              result.safeGetterValues[key][
-                gripKey
-              ] = getAdHocFrontOrPrimitiveGrip(descriptor[gripKey], this);
+              result.safeGetterValues[key][gripKey] =
+                getAdHocFrontOrPrimitiveGrip(descriptor[gripKey], this);
             }
           }
         }
@@ -167,13 +156,13 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
    * Map/Set-like object.
    */
   enumEntries() {
-    if (
-      !["Map", "WeakMap", "Set", "WeakSet", "Storage"].includes(
-        this._grip.class
-      )
-    ) {
+    if (!SUPPORT_ENUM_ENTRIES_SET.has(this._grip.class)) {
       console.error(
-        "enumEntries is only valid for Map/Set/Storage-like grips."
+        `enumEntries can't be called for "${
+          this._grip.class
+        }" grips. Supported grips are: ${[...SUPPORT_ENUM_ENTRIES_SET].join(
+          ", "
+        )}.`
       );
       return null;
     }
@@ -226,6 +215,30 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
   }
 
   /**
+   * Get the body of a custom formatted object.
+   */
+  async customFormatterBody() {
+    const result = await super.customFormatterBody();
+
+    if (!result?.customFormatterBody) {
+      return result;
+    }
+
+    const createFrontsInJsonMl = item => {
+      if (Array.isArray(item)) {
+        return item.map(i => createFrontsInJsonMl(i));
+      }
+      return getAdHocFrontOrPrimitiveGrip(item, this);
+    };
+
+    result.customFormatterBody = createFrontsInJsonMl(
+      result.customFormatterBody
+    );
+
+    return result;
+  }
+
+  /**
    * Request the prototype of the object.
    */
   async getPrototype() {
@@ -241,21 +254,40 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
   }
 
   /**
-   * Request the display string of the object.
+   * Request the state of a promise.
    */
-  getDisplayString() {
-    return super.displayString();
-  }
-
-  /**
-   * Request the scope of the object.
-   */
-  getScope() {
-    if (this._grip.class !== "Function") {
-      console.error("scope is only valid for function grips.");
+  async getPromiseState() {
+    if (this._grip.class !== "Promise") {
+      console.error("getPromiseState is only valid for promise grips.");
       return null;
     }
-    return super.scope();
+
+    let response, promiseState;
+    try {
+      response = await super.promiseState();
+      promiseState = response.promiseState;
+    } catch (error) {
+      // @backward-compat { version 85 } On older server, the promiseState request didn't
+      // didn't exist (bug 1552648). The promise state was directly included in the grip.
+      if (error.message.includes("unrecognizedPacketType")) {
+        promiseState = this._grip.promiseState;
+        response = { promiseState };
+      } else {
+        throw error;
+      }
+    }
+
+    const { value, reason } = promiseState;
+
+    if (value) {
+      promiseState.value = getAdHocFrontOrPrimitiveGrip(value, this);
+    }
+
+    if (reason) {
+      promiseState.reason = getAdHocFrontOrPrimitiveGrip(reason, this);
+    }
+
+    return response;
   }
 
   /**
@@ -312,16 +344,26 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
   // actorID, unless:
   // - it's a Symbol (See Bug 1600299)
   // - it's a mapEntry (the preview.key and preview.value properties can hold actors)
+  // - it's a highlightRegistryEntry (the preview.value properties can hold actors)
+  // - or it is already a front (happens when we are using the legacy listeners in the ResourceCommand)
   const isPacketAnObject = packet && typeof packet === "object";
+  const isFront = !!packet?.typeName;
   if (
     !isPacketAnObject ||
     packet.type == "symbol" ||
-    (packet.type !== "mapEntry" && !packet.actor)
+    (packet.type !== "mapEntry" &&
+      packet.type !== "highlightRegistryEntry" &&
+      !packet.actor) ||
+    isFront
   ) {
     return packet;
   }
 
-  const { conn, targetFront } = parentFront;
+  const { conn } = parentFront;
+  // If the parent front is a target, consider it as the target to use for all objects
+  const targetFront = parentFront.isTargetFront
+    ? parentFront
+    : parentFront.targetFront;
 
   // We may have already created a front for this object actor since some actor (e.g. the
   // thread actor) cache the object actors they create.
@@ -339,10 +381,21 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
     return longStringFront;
   }
 
-  if (type === "mapEntry" && packet.preview) {
+  if (
+    (type === "mapEntry" || type === "highlightRegistryEntry") &&
+    packet.preview
+  ) {
     const { key, value } = packet.preview;
-    packet.preview.key = getAdHocFrontOrPrimitiveGrip(key, parentFront);
-    packet.preview.value = getAdHocFrontOrPrimitiveGrip(value, parentFront);
+    packet.preview.key = getAdHocFrontOrPrimitiveGrip(
+      key,
+      parentFront,
+      targetFront
+    );
+    packet.preview.value = getAdHocFrontOrPrimitiveGrip(
+      value,
+      parentFront,
+      targetFront
+    );
     return packet;
   }
 
@@ -360,19 +413,6 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
  * @param {String|Number|Object} packet: The packet returned by the server
  */
 function createChildFronts(objectFront, packet) {
-  // Handle Promise fullfilled value
-  if (
-    packet.class == "Promise" &&
-    packet.promiseState &&
-    packet.promiseState.state == "fulfilled" &&
-    packet.promiseState.value
-  ) {
-    packet.promiseState.value = getAdHocFrontOrPrimitiveGrip(
-      packet.promiseState.value,
-      objectFront
-    );
-  }
-
   if (packet.preview) {
     const { message, entries } = packet.preview;
 
@@ -412,6 +452,18 @@ function createChildFronts(objectFront, packet) {
         }
       }
     }
+  }
+
+  // Handle custom formatters
+  if (packet && packet.useCustomFormatter && Array.isArray(packet.header)) {
+    const createFrontsInJsonMl = item => {
+      if (Array.isArray(item)) {
+        return item.map(i => createFrontsInJsonMl(i));
+      }
+      return getAdHocFrontOrPrimitiveGrip(item, objectFront);
+    };
+
+    packet.header = createFrontsInJsonMl(packet.header);
   }
 }
 

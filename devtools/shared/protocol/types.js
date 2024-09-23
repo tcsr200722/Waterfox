@@ -4,8 +4,11 @@
 
 "use strict";
 
-var { Actor } = require("devtools/shared/protocol/Actor");
-var { lazyLoadSpec, lazyLoadFront } = require("devtools/shared/specs/index");
+var { Actor } = require("resource://devtools/shared/protocol/Actor.js");
+var {
+  lazyLoadSpec,
+  lazyLoadFront,
+} = require("resource://devtools/shared/specs/index.js");
 
 /**
  * Types: named marshallers/demarshallers.
@@ -26,7 +29,6 @@ var types = Object.create(null);
 exports.types = types;
 
 var registeredTypes = (types.registeredTypes = new Map());
-var registeredLifetimes = (types.registeredLifetimes = new Map());
 
 exports.registeredTypes = registeredTypes;
 
@@ -48,7 +50,7 @@ exports.registeredTypes = registeredTypes;
  *
  * @returns a type object.
  */
-types.getType = function(type) {
+types.getType = function (type) {
   if (!type) {
     return types.Primitive;
   }
@@ -73,7 +75,7 @@ types.getType = function(type) {
     }
   }
 
-  // New type, see if it's a collection/lifetime type:
+  // New type, see if it's a collection type:
   const sep = type.indexOf(":");
   if (sep >= 0) {
     const collection = type.substring(0, sep);
@@ -83,10 +85,6 @@ types.getType = function(type) {
       return types.addArrayType(subtype);
     } else if (collection === "nullable") {
       return types.addNullableType(subtype);
-    }
-
-    if (registeredLifetimes.has(collection)) {
-      return types.addLifetimeType(collection, subtype);
     }
 
     throw Error("Unknown collection type: " + collection);
@@ -140,12 +138,10 @@ function identityWrite(v) {
  * @param object typeObject
  *    An object whose properties will be stored in the type, including
  *    the `read` and `write` methods.
- * @param object options
- *    Can specify `thawed` to prevent the type from being frozen.
  *
  * @returns a type object that can be used in protocol definitions.
  */
-types.addType = function(name, typeObject = {}, options = {}) {
+types.addType = function (name, typeObject = {}) {
   if (registeredTypes.has(name)) {
     throw Error("Type '" + name + "' already exists.");
   }
@@ -155,7 +151,7 @@ types.addType = function(name, typeObject = {}, options = {}) {
       toString() {
         return "[protocol type:" + name + "]";
       },
-      name: name,
+      name,
       primitive: !(typeObject.read || typeObject.write),
       read: identityWrite,
       write: identityWrite,
@@ -172,7 +168,7 @@ types.addType = function(name, typeObject = {}, options = {}) {
  * Remove a type previously registered with the system.
  * Primarily useful for types registered by addons.
  */
-types.removeType = function(name) {
+types.removeType = function (name) {
   // This type may still be referenced by other types, make sure
   // those references don't work.
   const type = registeredTypes.get(name);
@@ -180,7 +176,7 @@ types.removeType = function(name) {
   type.name = "DEFUNCT:" + name;
   type.category = "defunct";
   type.primitive = false;
-  type.read = type.write = function() {
+  type.read = type.write = function () {
     throw new Error("Using defunct type: " + name);
   };
 
@@ -196,7 +192,7 @@ types.removeType = function(name) {
  * @param type subtype
  *    The subtype to be held by the array.
  */
-types.addArrayType = function(subtype) {
+types.addArrayType = function (subtype) {
   subtype = types.getType(subtype);
 
   const name = "array:" + subtype.name;
@@ -232,7 +228,7 @@ types.addArrayType = function(subtype) {
  * @param object specializations
  *    A dict of property names => type
  */
-types.addDictType = function(name, specializations) {
+types.addDictType = function (name, specializations) {
   const specTypes = {};
   for (const prop in specializations) {
     try {
@@ -292,7 +288,7 @@ types.addDictType = function(name, specializations) {
  * @param string name
  *    The typestring to register.
  */
-types.addActorType = function(name) {
+types.addActorType = function (name) {
   // We call addActorType from:
   //   FrontClassWithSpec when registering front synchronously,
   //   generateActorSpec when defining specs,
@@ -335,7 +331,9 @@ types.addActorType = function(name) {
         }
 
         const parentFront = ctx.marshallPool();
-        const targetFront = parentFront.targetFront;
+        const targetFront = parentFront.isTargetFront
+          ? parentFront
+          : parentFront.targetFront;
 
         // Use intermediate Class variable to please eslint requiring
         // a capital letter for all constructors.
@@ -354,6 +352,11 @@ types.addActorType = function(name) {
       // If returning a response from the server side, make sure
       // the actor is added to a parent object and return its form.
       if (v instanceof Actor) {
+        if (v.isDestroyed()) {
+          throw new Error(
+            `Attempted to write a response containing a destroyed actor`
+          );
+        }
         if (!v.actorID) {
           ctx.marshallPool().manage(v);
         }
@@ -370,7 +373,7 @@ types.addActorType = function(name) {
   return type;
 };
 
-types.addPolymorphicType = function(name, subtypes) {
+types.addPolymorphicType = function (name, subtypes) {
   // Assert that all subtypes are actors, as the marshalling implementation depends on that.
   for (const subTypeName of subtypes) {
     const subtype = types.getType(subTypeName);
@@ -432,7 +435,7 @@ types.addPolymorphicType = function(name, subtypes) {
     },
   });
 };
-types.addNullableType = function(subtype) {
+types.addNullableType = function (subtype) {
   subtype = types.getType(subtype);
   return types.addType("nullable:" + subtype.name, {
     category: "nullable",
@@ -465,7 +468,7 @@ types.addNullableType = function(subtype) {
  * @param string detail
  *   The detail to pass.
  */
-types.addActorDetail = function(name, actorType, detail) {
+types.addActorDetail = function (name, actorType, detail) {
   actorType = types.getType(actorType);
   if (!actorType._actor) {
     throw Error(
@@ -481,58 +484,6 @@ types.addActorDetail = function(name, actorType, detail) {
   });
 };
 
-/**
- * Register an actor lifetime.  This lets the type system find a parent
- * actor that differs from the actor fulfilling the request.
- *
- * @param string name
- *    The lifetime name to use in typestrings.
- * @param string prop
- *    The property of the actor that holds the parent that should be used.
- */
-types.addLifetime = function(name, prop) {
-  if (registeredLifetimes.has(name)) {
-    throw Error("Lifetime '" + name + "' already registered.");
-  }
-  registeredLifetimes.set(name, prop);
-};
-
-/**
- * Remove a previously-registered lifetime.  Useful for lifetimes registered
- * in addons.
- */
-types.removeLifetime = function(name) {
-  registeredLifetimes.delete(name);
-};
-
-/**
- * Register a lifetime type.  This creates an actor type tied to the given
- * lifetime.
- *
- * This is called by getType() when passed a '<lifetimeType>:<actorType>'
- * typestring.
- *
- * @param string lifetime
- *    A lifetime string previously regisered with addLifetime()
- * @param type subtype
- *    An actor type
- */
-types.addLifetimeType = function(lifetime, subtype) {
-  subtype = types.getType(subtype);
-  if (!subtype._actor) {
-    throw Error(
-      `Lifetimes only apply to actor types, tried to apply ` +
-        `lifetime '${lifetime}' to ${subtype.name}`
-    );
-  }
-  const prop = registeredLifetimes.get(lifetime);
-  return types.addType(lifetime + ":" + subtype.name, {
-    category: "lifetime",
-    read: (value, ctx) => subtype.read(value, ctx[prop]),
-    write: (value, ctx) => subtype.write(value, ctx[prop]),
-  });
-};
-
 // Add a few named primitive types.
 types.Primitive = types.addType("primitive");
 types.String = types.addType("string");
@@ -540,7 +491,7 @@ types.Number = types.addType("number");
 types.Boolean = types.addType("boolean");
 types.JSON = types.addType("json");
 
-exports.registerFront = function(cls) {
+exports.registerFront = function (cls) {
   const { typeName } = cls.prototype;
   if (!registeredTypes.has(typeName)) {
     types.addActorType(typeName);
@@ -594,7 +545,7 @@ async function getFront(client, typeName, form, target = null) {
   if (!formAttributeName) {
     throw new Error(`Can't find the form attribute name for ${typeName}`);
   }
-  // Retrive the actor ID from root or target actor's form
+  // Retrieve the actor ID from root or target actor's form
   front.actorID = form[formAttributeName];
   if (!front.actorID) {
     throw new Error(

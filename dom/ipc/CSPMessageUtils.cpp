@@ -5,31 +5,31 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/CSPMessageUtils.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsSerializationHelper.h"
-#include "BackgroundUtils.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 
 namespace IPC {
 
 using namespace mozilla::ipc;
 
 void ParamTraits<nsIContentSecurityPolicy*>::Write(
-    Message* aMsg, nsIContentSecurityPolicy* aParam) {
+    MessageWriter* aWriter, nsIContentSecurityPolicy* aParam) {
   bool isNull = !aParam;
-  WriteParam(aMsg, isNull);
+  WriteParam(aWriter, isNull);
   if (isNull) {
     return;
   }
 
   CSPInfo csp;
-  Unused << NS_WARN_IF(NS_FAILED(CSPToCSPInfo(aParam, &csp)));
-  IPDLParamTraits<CSPInfo>::Write(aMsg, nullptr, csp);
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(CSPToCSPInfo(aParam, &csp)));
+  WriteParam(aWriter, csp);
 }
 
 bool ParamTraits<nsIContentSecurityPolicy*>::Read(
-    const Message* aMsg, PickleIterator* aIter,
-    RefPtr<nsIContentSecurityPolicy>* aResult) {
+    MessageReader* aReader, RefPtr<nsIContentSecurityPolicy>* aResult) {
   bool isNull;
-  if (!ReadParam(aMsg, aIter, &isNull)) {
+  if (!ReadParam(aReader, &isNull)) {
     return false;
   }
 
@@ -39,7 +39,7 @@ bool ParamTraits<nsIContentSecurityPolicy*>::Read(
   }
 
   CSPInfo csp;
-  if (!IPDLParamTraits<CSPInfo>::Read(aMsg, aIter, nullptr, &csp)) {
+  if (!ReadParam(aReader, &csp)) {
     return false;
   }
 

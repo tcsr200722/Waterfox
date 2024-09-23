@@ -72,7 +72,10 @@ async function promptNoDelegate(aThirdPartyOrgin, audio = true, video = true) {
     `expected camera to be ${video ? "" : "not"} shared`
   );
   await indicator;
-  await checkSharingUI({ audio, video });
+  await checkSharingUI({ audio, video }, undefined, undefined, {
+    video: { scope: SitePermissions.SCOPE_PERSISTENT },
+    audio: { scope: SitePermissions.SCOPE_PERSISTENT },
+  });
 
   // Cleanup.
   await closeStream(false, "frame4");
@@ -92,15 +95,19 @@ async function promptNoDelegateScreenSharing(aThirdPartyOrgin) {
   await promise;
   await observerPromise;
 
-  checkDeviceSelectors(false, false, true);
+  checkDeviceSelectors(["screen"]);
   const notification = PopupNotifications.panel.firstElementChild;
-  const iconclass = notification.getAttribute("iconclass");
-  ok(iconclass.includes("screen-icon"), "panel using screen icon");
 
   // The 'Remember this decision' checkbox is hidden.
   const checkbox = notification.checkbox;
   ok(!!checkbox, "checkbox is present");
-  ok(checkbox.hidden, "checkbox is not visible");
+
+  if (ALLOW_SILENCING_NOTIFICATIONS) {
+    ok(!checkbox.hidden, "Notification silencing checkbox is visible");
+  } else {
+    ok(checkbox.hidden, "checkbox is not visible");
+  }
+
   ok(!checkbox.checked, "checkbox not checked");
 
   // Check the label of the notification should be the first party
@@ -138,7 +145,9 @@ async function promptNoDelegateScreenSharing(aThirdPartyOrgin) {
   );
 
   await indicator;
-  await checkSharingUI({ screen: "Screen" });
+  await checkSharingUI({ screen: "Screen" }, undefined, undefined, {
+    screen: { scope: SitePermissions.SCOPE_PERSISTENT },
+  });
   await closeStream(false, "frame4");
 
   PermissionTestUtils.remove(uri, "screen");
@@ -146,8 +155,7 @@ async function promptNoDelegateScreenSharing(aThirdPartyOrgin) {
 
 var gTests = [
   {
-    desc:
-      "'Always Allow' enabled on third party pages, when origin is explicitly allowed",
+    desc: "'Always Allow' enabled on third party pages, when origin is explicitly allowed",
     run: async function checkNoAlwaysOnThirdParty() {
       // Initially set both permissions to 'prompt'.
       const uri = gBrowser.selectedBrowser.documentURI;
@@ -159,7 +167,7 @@ var gTests = [
       await promiseRequestDevice(true, true, "frame1");
       await promise;
       await observerPromise;
-      checkDeviceSelectors(true, true);
+      checkDeviceSelectors(["microphone", "camera"]);
 
       // The 'Remember this decision' checkbox is visible.
       const notification = PopupNotifications.panel.firstElementChild;
@@ -200,8 +208,7 @@ var gTests = [
     },
   },
   {
-    desc:
-      "'Always Allow' disabled when sharing screen in third party iframes, when origin is explicitly allowed",
+    desc: "'Always Allow' disabled when sharing screen in third party iframes, when origin is explicitly allowed",
     run: async function checkScreenSharing() {
       const observerPromise = expectObserverCalled("getUserMedia:request");
       const promise = promisePopupNotificationShown("webRTC-shareDevices");
@@ -209,10 +216,8 @@ var gTests = [
       await promise;
       await observerPromise;
 
-      checkDeviceSelectors(false, false, true);
+      checkDeviceSelectors(["screen"]);
       const notification = PopupNotifications.panel.firstElementChild;
-      const iconclass = notification.getAttribute("iconclass");
-      ok(iconclass.includes("screen-icon"), "panel using screen icon");
 
       // The 'Remember this decision' checkbox is visible.
       const checkbox = notification.checkbox;
@@ -222,8 +227,9 @@ var gTests = [
 
       const menulist = document.getElementById("webRTC-selectWindow-menulist");
       const count = menulist.itemCount;
-      ok(
-        count >= 4,
+      Assert.greaterOrEqual(
+        count,
+        4,
         "There should be the 'Select Window or Screen' item, a separator and at least one window and one screen"
       );
 
@@ -237,7 +243,7 @@ var gTests = [
         noWindowOrScreenItem,
         "'Select Window or Screen' is the selected item"
       );
-      is(menulist.value, -1, "no window or screen is selected by default");
+      is(menulist.value, "-1", "no window or screen is selected by default");
       ok(
         noWindowOrScreenItem.disabled,
         "'Select Window or Screen' item is disabled"
@@ -359,13 +365,20 @@ var gTests = [
 
           await closeStream(false, aIframeId);
         } else if (aExpect == PromptResult.DENY) {
-          const observerPromise = expectObserverCalled(
-            "recording-window-ended"
+          const promises = [];
+          // frame3 disallows by feature Permissions Policy before request.
+          if (aIframeId != "frame3") {
+            promises.push(
+              expectObserverCalled("getUserMedia:request"),
+              expectObserverCalled("getUserMedia:response:deny")
+            );
+          }
+          promises.push(
+            expectObserverCalled("recording-window-ended"),
+            promiseMessage(permissionError),
+            promiseRequestDevice(audio, video, aIframeId, screen)
           );
-          const promise = promiseMessage(permissionError);
-          await promiseRequestDevice(audio, video, aIframeId, screen);
-          await promise;
-          await observerPromise;
+          await Promise.all(promises);
         }
 
         PermissionTestUtils.remove(uri, aRequestType);
@@ -588,8 +601,7 @@ var gTests = [
     },
   },
   {
-    desc:
-      "Don't reprompt while actively sharing in maybe unsafe permission delegation",
+    desc: "Don't reprompt while actively sharing in maybe unsafe permission delegation",
     run: async function checkNoRepromptNoDelegate() {
       // Change location to ensure that we're treated as potentially unsafe.
       await promiseChangeLocationFrame(
@@ -653,8 +665,7 @@ var gTests = [
     },
   },
   {
-    desc:
-      "Change location, prompt and display both first party and third party origin in maybe unsafe permission delegation",
+    desc: "Change location, prompt and display both first party and third party origin in maybe unsafe permission delegation",
     run: async function checkPromptNoDelegateChangeLoxation() {
       await promiseChangeLocationFrame(
         "frame4",
@@ -663,10 +674,8 @@ var gTests = [
       await promptNoDelegate("test2.example.com");
     },
   },
-
   {
-    desc:
-      "Change location, prompt and display both first party and third party origin when sharing screen in unsafe permission delegation",
+    desc: "Change location, prompt and display both first party and third party origin when sharing screen in unsafe permission delegation",
     run: async function checkPromptNoDelegateScreenSharingChangeLocation() {
       await promiseChangeLocationFrame(
         "frame4",
@@ -675,10 +684,8 @@ var gTests = [
       await promptNoDelegateScreenSharing("test2.example.com");
     },
   },
-
   {
-    desc:
-      "Prompt and display both first party and third party origin and temporary deny in frame does not change permission scope",
+    desc: "Prompt and display both first party and third party origin and temporary deny in frame does not change permission scope",
     skipObserverVerification: true,
     run: async function checkPromptBothOriginsTempDenyFrame() {
       // Change location to ensure that we're treated as potentially unsafe.
@@ -724,7 +731,10 @@ var gTests = [
         "expected camera and microphone to be shared"
       );
       await indicator;
-      await checkSharingUI({ audio: true, video: true });
+      await checkSharingUI({ audio: true, video: true }, undefined, undefined, {
+        audio: { scope: SitePermissions.SCOPE_PERSISTENT },
+        video: { scope: SitePermissions.SCOPE_PERSISTENT },
+      });
       await closeStream(true);
 
       // Check that we get a prompt.
@@ -777,8 +787,6 @@ var gTests = [
 add_task(async function test() {
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["permissions.delegation.enabled", true],
-      ["dom.security.featurePolicy.enabled", true],
       ["dom.security.featurePolicy.header.enabled", true],
       ["dom.security.featurePolicy.webidl.enabled", true],
     ],

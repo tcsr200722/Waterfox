@@ -5,7 +5,7 @@
 
 "use strict";
 
-add_task(async function setup() {
+add_setup(async function () {
   await AddonTestUtils.promiseStartupManager();
 
   Services.prefs.setBoolPref(
@@ -13,13 +13,11 @@ add_task(async function setup() {
     true
   );
 
-  await useTestEngines();
+  await SearchTestUtils.useTestEngines();
+  await Services.search.init();
 });
 
 async function checkOrder(expectedOrder) {
-  await asyncReInit();
-  Assert.ok(Services.search.isInitialized, "search initialized");
-
   const sortedEngines = await Services.search.getEngines();
   Assert.deepEqual(
     sortedEngines.map(s => s.name),

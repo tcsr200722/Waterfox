@@ -8,6 +8,9 @@
 #include "nsCocoaUtils.h"
 #include "NativeKeyBindings.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/NativeKeyBindingsType.h"
+#include "mozilla/WritingModes.h"
 
 namespace mozilla {
 namespace widget {
@@ -21,26 +24,29 @@ HeadlessKeyBindings& HeadlessKeyBindings::GetInstance() {
   return *sInstance;
 }
 
-nsresult HeadlessKeyBindings::AttachNativeKeyEvent(WidgetKeyboardEvent& aEvent) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+nsresult HeadlessKeyBindings::AttachNativeKeyEvent(
+    WidgetKeyboardEvent& aEvent) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  aEvent.mNativeKeyEvent = nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(aEvent, 0, nil);
+  aEvent.mNativeKeyEvent =
+      nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(aEvent, 0, nil);
 
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }
 
-void HeadlessKeyBindings::GetEditCommands(nsIWidget::NativeKeyBindingsType aType,
-                                          const WidgetKeyboardEvent& aEvent,
-                                          nsTArray<CommandInt>& aCommands) {
+void HeadlessKeyBindings::GetEditCommands(
+    NativeKeyBindingsType aType, const WidgetKeyboardEvent& aEvent,
+    const Maybe<WritingMode>& aWritingMode, nsTArray<CommandInt>& aCommands) {
   // Convert the widget keyboard into a cocoa event so it can be translated
   // into commands in the NativeKeyBindings.
   WidgetKeyboardEvent modifiedEvent(aEvent);
-  modifiedEvent.mNativeKeyEvent = nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(aEvent, 0, nil);
+  modifiedEvent.mNativeKeyEvent =
+      nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(aEvent, 0, nil);
 
   NativeKeyBindings* keyBindings = NativeKeyBindings::GetInstance(aType);
-  keyBindings->GetEditCommands(modifiedEvent, aCommands);
+  keyBindings->GetEditCommands(modifiedEvent, aWritingMode, aCommands);
 }
 
 }  // namespace widget

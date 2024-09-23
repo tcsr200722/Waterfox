@@ -5,13 +5,18 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 UNIFIED_SOURCES += [
-    'PerfStats.cpp',
+    "PerfStats.cpp",
 ]
 
 EXPORTS.mozilla += [
-    'PerfStats.h',
+    "Perfetto.h",
+    "PerfStats.h",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+include("/ipc/chromium/chromium-config.mozbuild")
 
-FINAL_LIBRARY = 'xul'
+if CONFIG["MOZ_PERFETTO"]:
+    UNIFIED_SOURCES += ["Perfetto.cpp"]
+    DIRS += ["/third_party/perfetto/"]
+
+FINAL_LIBRARY = "xul"

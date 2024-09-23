@@ -9,7 +9,6 @@
 
 #include "js/TypeDecls.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsCOMPtr.h"
@@ -20,8 +19,7 @@
 class nsIGlobalObject;
 class nsPIDOMWindowInner;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IdleDeadline final : public nsISupports, public nsWrapperCache {
  public:
@@ -40,7 +38,7 @@ class IdleDeadline final : public nsISupports, public nsWrapperCache {
   bool DidTimeout() const;
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(IdleDeadline)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(IdleDeadline)
 
  private:
   ~IdleDeadline();
@@ -51,7 +49,6 @@ class IdleDeadline final : public nsISupports, public nsWrapperCache {
   const DOMHighResTimeStamp mDeadline;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_IdleDeadline_h

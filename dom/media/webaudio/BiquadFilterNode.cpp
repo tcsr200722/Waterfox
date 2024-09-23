@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BiquadFilterNode.h"
+#include <algorithm>
 #include "AlignmentUtils.h"
 #include "AudioNodeEngine.h"
 #include "AudioNodeTrack.h"
@@ -15,9 +16,9 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/ErrorResult.h"
 #include "AudioParamTimeline.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(BiquadFilterNode, AudioNode, mFrequency,
                                    mDetune, mQ, mGain)
@@ -35,7 +36,7 @@ static void SetParamsOnBiquad(WebCore::Biquad& aBiquad, float aSampleRate,
   double normalizedFrequency = aFrequency / nyquist;
 
   if (aDetune) {
-    normalizedFrequency *= std::exp2(aDetune / 1200);
+    normalizedFrequency *= fdlibm_exp2(aDetune / 1200);
   }
 
   switch (aType) {
@@ -95,10 +96,10 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
         NS_ERROR("Bad BiquadFilterNode Int32Parameter");
     }
   }
-  void RecvTimelineEvent(uint32_t aIndex, AudioTimelineEvent& aEvent) override {
+  void RecvTimelineEvent(uint32_t aIndex, AudioParamEvent& aEvent) override {
     MOZ_ASSERT(mDestination);
 
-    WebAudioUtils::ConvertAudioTimelineEventToTicks(aEvent, mDestination);
+    aEvent.ConvertToTicks(mDestination);
 
     switch (aIndex) {
       case FREQUENCY:
@@ -121,6 +122,7 @@ class BiquadFilterNodeEngine final : public AudioNodeEngine {
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
+    TRACE("BiquadFilterNode::ProcessBlock");
     float inputBuffer[WEBAUDIO_BLOCK_SIZE + 4];
     float* alignedInputBuffer = ALIGNED16(inputBuffer);
     ASSERT_ALIGNED16(alignedInputBuffer);
@@ -225,12 +227,12 @@ BiquadFilterNode::BiquadFilterNode(AudioContext* aContext)
     : AudioNode(aContext, 2, ChannelCountMode::Max,
                 ChannelInterpretation::Speakers),
       mType(BiquadFilterType::Lowpass) {
-  CreateAudioParam(mFrequency, BiquadFilterNodeEngine::FREQUENCY, u"frequency",
-                   350.f, -(aContext->SampleRate() / 2),
-                   aContext->SampleRate() / 2);
-  CreateAudioParam(mDetune, BiquadFilterNodeEngine::DETUNE, u"detune", 0.f);
-  CreateAudioParam(mQ, BiquadFilterNodeEngine::Q, u"Q", 1.f);
-  CreateAudioParam(mGain, BiquadFilterNodeEngine::GAIN, u"gain", 0.f);
+  mFrequency = CreateAudioParam(
+      BiquadFilterNodeEngine::FREQUENCY, u"frequency"_ns, 350.f,
+      -(aContext->SampleRate() / 2), aContext->SampleRate() / 2);
+  mDetune = CreateAudioParam(BiquadFilterNodeEngine::DETUNE, u"detune"_ns, 0.f);
+  mQ = CreateAudioParam(BiquadFilterNodeEngine::Q, u"Q"_ns, 1.f);
+  mGain = CreateAudioParam(BiquadFilterNodeEngine::GAIN, u"gain"_ns, 0.f);
 
   uint64_t windowID = 0;
   if (aContext->GetParentObject()) {
@@ -254,10 +256,10 @@ already_AddRefed<BiquadFilterNode> BiquadFilterNode::Create(
   }
 
   audioNode->SetType(aOptions.mType);
-  audioNode->Q()->SetValue(aOptions.mQ);
-  audioNode->Detune()->SetValue(aOptions.mDetune);
-  audioNode->Frequency()->SetValue(aOptions.mFrequency);
-  audioNode->Gain()->SetValue(aOptions.mGain);
+  audioNode->Q()->SetInitialValue(aOptions.mQ);
+  audioNode->Detune()->SetInitialValue(aOptions.mDetune);
+  audioNode->Frequency()->SetInitialValue(aOptions.mFrequency);
+  audioNode->Gain()->SetInitialValue(aOptions.mGain);
 
   return audioNode.forget();
 }
@@ -303,47 +305,54 @@ void BiquadFilterNode::GetFrequencyResponse(const Float32Array& aFrequencyHz,
                                             const Float32Array& aMagResponse,
                                             const Float32Array& aPhaseResponse,
                                             ErrorResult& aRv) {
-  aFrequencyHz.ComputeState();
-  aMagResponse.ComputeState();
-  aPhaseResponse.ComputeState();
-
-  if (!(aFrequencyHz.Length() == aMagResponse.Length() &&
-        aMagResponse.Length() == aPhaseResponse.Length())) {
-    aRv.ThrowInvalidAccessError("Parameter lengths must match");
-    return;
-  }
-
-  uint32_t length = aFrequencyHz.Length();
-  if (!length) {
-    return;
-  }
-
-  auto frequencies = MakeUnique<float[]>(length);
-  float* frequencyHz = aFrequencyHz.Data();
-  const double nyquist = Context()->SampleRate() * 0.5;
-
-  // Normalize the frequencies
-  for (uint32_t i = 0; i < length; ++i) {
-    if (frequencyHz[i] >= 0 && frequencyHz[i] <= nyquist) {
-      frequencies[i] = static_cast<float>(frequencyHz[i] / nyquist);
-    } else {
-      frequencies[i] = std::numeric_limits<float>::quiet_NaN();
-    }
-  }
-
+  UniquePtr<float[]> frequencies;
+  size_t length;
   const double currentTime = Context()->CurrentTime();
+  aFrequencyHz.ProcessData([&](const Span<float>& aFrequencyData,
+                               JS::AutoCheckCannotGC&&) {
+    aMagResponse.ProcessData([&](const Span<float>& aMagData,
+                                 JS::AutoCheckCannotGC&&) {
+      aPhaseResponse.ProcessData([&](const Span<float>& aPhaseData,
+                                     JS::AutoCheckCannotGC&&) {
+        length = aFrequencyData.Length();
+        if (length != aMagData.Length() || length != aPhaseData.Length()) {
+          aRv.ThrowInvalidAccessError("Parameter lengths must match");
+          return;
+        }
 
-  double freq = mFrequency->GetValueAtTime(currentTime);
-  double q = mQ->GetValueAtTime(currentTime);
-  double gain = mGain->GetValueAtTime(currentTime);
-  double detune = mDetune->GetValueAtTime(currentTime);
+        if (length == 0) {
+          return;
+        }
 
-  WebCore::Biquad biquad;
-  SetParamsOnBiquad(biquad, Context()->SampleRate(), mType, freq, q, gain,
-                    detune);
-  biquad.getFrequencyResponse(int(length), frequencies.get(),
-                              aMagResponse.Data(), aPhaseResponse.Data());
+        frequencies = MakeUniqueForOverwriteFallible<float[]>(length);
+        if (!frequencies) {
+          aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+          return;
+        }
+
+        const double nyquist = Context()->SampleRate() * 0.5;
+        std::transform(aFrequencyData.begin(), aFrequencyData.end(),
+                       frequencies.get(), [&](float aFrequency) {
+                         if (aFrequency >= 0 && aFrequency <= nyquist) {
+                           return static_cast<float>(aFrequency / nyquist);
+                         }
+
+                         return std::numeric_limits<float>::quiet_NaN();
+                       });
+
+        double freq = mFrequency->GetValueAtTime(currentTime);
+        double q = mQ->GetValueAtTime(currentTime);
+        double gain = mGain->GetValueAtTime(currentTime);
+        double detune = mDetune->GetValueAtTime(currentTime);
+
+        WebCore::Biquad biquad;
+        SetParamsOnBiquad(biquad, Context()->SampleRate(), mType, freq, q, gain,
+                          detune);
+        biquad.getFrequencyResponse(int(length), frequencies.get(),
+                                    aMagData.Elements(), aPhaseData.Elements());
+      });
+    });
+  });
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

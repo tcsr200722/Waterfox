@@ -9,7 +9,7 @@
 
 #include "mozilla/gfx/RectAbsolute.h"
 #include "nsCoord.h"
-#include "nsPoint.h"
+#include "nsMargin.h"
 #include "nsRect.h"
 
 struct nsRectAbsolute
@@ -19,7 +19,7 @@ struct nsRectAbsolute
                                          nsRect>
       Super;
 
-  nsRectAbsolute() : Super() {}
+  nsRectAbsolute() {}
   nsRectAbsolute(nscoord aX1, nscoord aY1, nscoord aX2, nscoord aY2)
       : Super(aX1, aY1, aX2, aY2) {}
 

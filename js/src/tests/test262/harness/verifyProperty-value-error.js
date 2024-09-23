@@ -29,13 +29,13 @@ try {
     );
   }
 
-  if (err.message !== 'descriptor value should be 2') {
-    $ERROR('The error thrown did not define the specified message.');
+  if (err.message !== 'descriptor value should be 2; object value should be 2') {
+    throw new Error('The error thrown did not define the specified message');
   }
 }
 
 if (threw === false) {
-  $ERROR('Expected a Test262Error, but no error was thrown.');
+  throw new Error('Expected a Test262Error, but no error was thrown.');
 }
 
 reportCompare(0, 0);

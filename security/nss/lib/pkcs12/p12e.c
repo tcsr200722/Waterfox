@@ -14,6 +14,7 @@
 #include "secpkcs7.h"
 #include "secasn1.h"
 #include "secerr.h"
+#include "sechash.h"
 #include "pk11func.h"
 #include "p12plcy.h"
 #include "p12local.h"
@@ -372,22 +373,43 @@ SEC_PKCS12CreatePasswordPrivSafe(SEC_PKCS12ExportContext *p12ctxt,
                                                       sizeof(SEC_PKCS12SafeInfo));
     if (!safeInfo) {
         PORT_SetError(SEC_ERROR_NO_MEMORY);
-        PORT_ArenaRelease(p12ctxt->arena, mark);
-        return NULL;
+        goto loser;
     }
 
     safeInfo->itemCount = 0;
 
     /* create the encrypted safe */
-    if (!SEC_PKCS5IsAlgorithmPBEAlgTag(privAlg) &&
-        PK11_AlgtagToMechanism(privAlg) == CKM_AES_CBC) {
+    if (!SEC_PKCS5IsAlgorithmPBEAlgTag(privAlg)) {
+        SECOidTag prfAlg = SEC_OID_UNKNOWN;
+        /* if we have password integrity set, use that to set the integrity
+         * hash algorithm to set our password PRF. If we haven't set it, just
+         * let the low level code pick it */
+        if (p12ctxt->integrityEnabled && p12ctxt->pwdIntegrity) {
+            SECOidTag integrityAlg = p12ctxt->integrityInfo.pwdInfo.algorithm;
+            prfAlg = integrityAlg;
+            /* verify that integrityAlg is an HMAC */
+            if (HASH_GetHashOidTagByHMACOidTag(integrityAlg) == SEC_OID_UNKNOWN) {
+                /* it's not, find the hmac */
+                prfAlg = HASH_GetHMACOidTagByHashOidTag(integrityAlg);
+                /* if prfAlg is SEC_OID_UNKNOWN at this point we'll
+                 * default to SEC_OID_HMAC_SHA1 in the low level pbe code. */
+            }
+        }
+        if (!SEC_PKCS12CipherAllowed(privAlg, prfAlg)) {
+            PORT_SetError(SEC_ERROR_BAD_EXPORT_ALGORITHM);
+            goto loser;
+        }
         safeInfo->cinfo = SEC_PKCS7CreateEncryptedDataWithPBEV2(SEC_OID_PKCS5_PBES2,
                                                                 privAlg,
-                                                                SEC_OID_UNKNOWN,
+                                                                prfAlg,
                                                                 0,
                                                                 p12ctxt->pwfn,
                                                                 p12ctxt->pwfnarg);
     } else {
+        if (!SEC_PKCS12CipherAllowed(privAlg, SEC_OID_UNKNOWN)) {
+            PORT_SetError(SEC_ERROR_BAD_EXPORT_ALGORITHM);
+            goto loser;
+        }
         safeInfo->cinfo = SEC_PKCS7CreateEncryptedData(privAlg, 0, p12ctxt->pwfn,
                                                        p12ctxt->pwfnarg);
     }
@@ -1213,10 +1235,31 @@ SEC_PKCS12AddKeyForCert(SEC_PKCS12ExportContext *p12ctxt, SEC_PKCS12SafeInfo *sa
         /* extract the key encrypted */
         SECKEYEncryptedPrivateKeyInfo *epki = NULL;
         PK11SlotInfo *slot = NULL;
+        SECOidTag prfAlg = SEC_OID_UNKNOWN;
 
         if (!sec_pkcs12_encode_password(p12ctxt->arena, &uniPwitem, algorithm,
                                         pwitem)) {
             PORT_SetError(SEC_ERROR_NO_MEMORY);
+            goto loser;
+        }
+
+        /* if we have password integrity set, use that to set the integrity
+         * hash algorithm to set our password PRF. If we haven't set it, just
+         * let the low level code pick it */
+        if (p12ctxt->integrityEnabled && p12ctxt->pwdIntegrity) {
+            SECOidTag integrityAlg = p12ctxt->integrityInfo.pwdInfo.algorithm;
+            prfAlg = integrityAlg;
+            /* verify that integrityAlg is an HMAC */
+            if (HASH_GetHashOidTagByHMACOidTag(integrityAlg) == SEC_OID_UNKNOWN) {
+                /* it's not, find the hmac */
+                prfAlg = HASH_GetHMACOidTagByHashOidTag(integrityAlg);
+                /* if prfAlg is SEC_OID_UNKNOWN at this point we'll
+                 * default to SEC_OID_HMAC_SHA1 in the low level pbe code. */
+            }
+        }
+
+        if (!SEC_PKCS12CipherAllowed(algorithm, prfAlg)) {
+            PORT_SetError(SEC_ERROR_BAD_EXPORT_ALGORITHM);
             goto loser;
         }
 
@@ -1227,10 +1270,15 @@ SEC_PKCS12AddKeyForCert(SEC_PKCS12ExportContext *p12ctxt, SEC_PKCS12SafeInfo *sa
             slot = PK11_ReferenceSlot(p12ctxt->slot);
         }
 
-        epki = PK11_ExportEncryptedPrivateKeyInfo(slot, algorithm,
-                                                  &uniPwitem, cert,
-                                                  NSS_PBE_DEFAULT_ITERATION_COUNT,
-                                                  p12ctxt->wincx);
+        /* passing algorithm as the pbe will force the PBE code to
+         * automatically handle the selection between using the algorithm
+         * as a the pbe algorithm, or using the algorithm as a cipher
+         * and building a pkcs5 pbe */
+        epki = PK11_ExportEncryptedPrivateKeyInfoV2(slot, algorithm,
+                                                    SEC_OID_UNKNOWN, prfAlg,
+                                                    &uniPwitem, cert,
+                                                    NSS_PBE_DEFAULT_ITERATION_COUNT,
+                                                    p12ctxt->wincx);
         PK11_FreeSlot(slot);
         if (!epki) {
             PORT_SetError(SEC_ERROR_PKCS12_UNABLE_TO_EXPORT_KEY);
@@ -1490,7 +1538,7 @@ sec_pkcs12_encoder_start_context(SEC_PKCS12ExportContext *p12exp)
     SECItem ignore = { 0 };
     void *mark;
     SECItem *salt = NULL;
-    SECItem *params = NULL;
+    SECItem pwd = { siBuffer, NULL, 0 };
 
     if (!p12exp || !p12exp->safeInfos) {
         return NULL;
@@ -1555,10 +1603,11 @@ sec_pkcs12_encoder_start_context(SEC_PKCS12ExportContext *p12exp)
 
         /* init password pased integrity mode */
         if (p12exp->integrityEnabled) {
-            SECItem pwd = { siBuffer, NULL, 0 };
             PK11SymKey *symKey;
-            CK_MECHANISM_TYPE integrityMechType;
             CK_MECHANISM_TYPE hmacMechType;
+            SECOidTag hmacAlgTag;
+            SECOidTag hashAlgTag;
+
             salt = sec_pkcs12_generate_salt();
 
             /* zero out macData and set values */
@@ -1583,44 +1632,67 @@ sec_pkcs12_encoder_start_context(SEC_PKCS12ExportContext *p12exp)
                                                     PR_TRUE, PR_TRUE)) {
                 goto loser;
             }
-            /*
-             * This code only works with PKCS #12 Mac using PKCS #5 v1
-             * PBA keygens. PKCS #5 v2 support will require a change to
-             * the PKCS #12 spec.
-             */
-            params = PK11_CreatePBEParams(salt, &pwd,
-                                          NSS_PBE_DEFAULT_ITERATION_COUNT);
-            SECITEM_ZfreeItem(salt, PR_TRUE);
-            salt = NULL;
-            SECITEM_ZfreeItem(&pwd, PR_FALSE);
 
-            /* get the PBA Mechanism to generate the key */
-            switch (p12exp->integrityInfo.pwdInfo.algorithm) {
-                case SEC_OID_SHA1:
-                    integrityMechType = CKM_PBA_SHA1_WITH_SHA1_HMAC;
-                    break;
-                case SEC_OID_MD5:
-                    integrityMechType = CKM_NSS_PBE_MD5_HMAC_KEY_GEN;
-                    break;
-                case SEC_OID_MD2:
-                    integrityMechType = CKM_NSS_PBE_MD2_HMAC_KEY_GEN;
-                    break;
-                default:
+            /* create the digest info */
+            hmacAlgTag = p12exp->integrityInfo.pwdInfo.algorithm;
+            hashAlgTag = HASH_GetHashOidTagByHMACOidTag(hmacAlgTag);
+            if (hashAlgTag != SEC_OID_UNKNOWN) {
+                /* if the application asks for hmac explicitly, then use
+                 * pkcs5v2 mac1 encoding */
+                SECAlgorithmID *algID;
+                int keyLength;
+
+                keyLength = HASH_ResultLenByOidTag(hashAlgTag);
+                if (keyLength == 0) {
+                    PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                    return NULL;
+                }
+                /* create PB_MAC1 params */
+                algID = PK11_CreatePBEV2AlgorithmID(SEC_OID_PKCS5_PBMAC1,
+                                                    hmacAlgTag,
+                                                    hmacAlgTag, keyLength,
+                                                    NSS_PBE_DEFAULT_ITERATION_COUNT,
+                                                    &p12enc->mac.macSalt);
+                if (algID == NULL) {
                     goto loser;
+                }
+                rv = SECOID_CopyAlgorithmID(p12enc->arena,
+                                            &p12enc->mac.safeMac.digestAlgorithm,
+                                            algID);
+                SECOID_DestroyAlgorithmID(algID, PR_TRUE);
+                if (rv != SECSuccess) {
+                    PORT_SetError(SEC_ERROR_NO_MEMORY);
+                    goto loser;
+                }
+            } else if (HASH_GetHashTypeByOidTag(hmacAlgTag) != HASH_AlgNULL) {
+                /* encode the algid now for sec_pkcs12_integrity_key to use */
+                /* this must be a valid hash function, SECOID_SetAlgorithmID
+                 * knows to encode the hash algid with an explicit
+                 * null parameter */
+                rv = SECOID_SetAlgorithmID(p12enc->arena,
+                                           &p12enc->mac.safeMac.digestAlgorithm,
+                                           hmacAlgTag, NULL);
+                if (rv != SECSuccess) {
+                    goto loser;
+                }
+            } else {
+                PORT_SetError(SEC_ERROR_INVALID_ALGORITHM);
+                goto loser;
             }
 
-            /* generate the key */
-            symKey = PK11_KeyGen(NULL, integrityMechType, params, 20, NULL);
-            PK11_DestroyPBEParams(params);
+            /* generate HMAC key */
+            SECITEM_ZfreeItem(salt, PR_TRUE);
+            salt = NULL;
+            symKey = sec_pkcs12_integrity_key(p12exp->slot, &p12enc->mac,
+                                              &pwd, &hmacMechType, PR_FALSE,
+                                              p12exp->wincx);
+            SECITEM_ZfreeItem(&pwd, PR_FALSE);
+
             if (!symKey) {
                 goto loser;
             }
 
             /* initialize HMAC */
-            /* Get the HMAC mechanism from the hash OID */
-            hmacMechType = sec_pkcs12_algtag_to_mech(
-                p12exp->integrityInfo.pwdInfo.algorithm);
-
             p12enc->hmacCx = PK11_CreateContextBySymKey(hmacMechType,
                                                         CKA_SIGN, symKey, &ignore);
 
@@ -1645,13 +1717,14 @@ sec_pkcs12_encoder_start_context(SEC_PKCS12ExportContext *p12exp)
 
 loser:
     sec_pkcs12_encoder_destroy_context(p12enc);
-    if (p12exp->arena != NULL)
+    if (p12exp->arena != NULL) {
         PORT_ArenaRelease(p12exp->arena, mark);
+    }
     if (salt) {
         SECITEM_ZfreeItem(salt, PR_TRUE);
     }
-    if (params) {
-        PK11_DestroyPBEParams(params);
+    if (pwd.data) {
+        SECITEM_ZfreeItem(&pwd, PR_FALSE);
     }
 
     return NULL;
@@ -1837,7 +1910,8 @@ loser:
 static SECStatus
 sec_Pkcs12FinishMac(sec_PKCS12EncoderContext *p12ecx)
 {
-    SECItem hmac = { siBuffer, NULL, 0 };
+    unsigned char hmacData[HASH_LENGTH_MAX];
+    unsigned int hmacLen;
     SECStatus rv;
     SGNDigestInfo *di = NULL;
     void *dummy;
@@ -1856,31 +1930,18 @@ sec_Pkcs12FinishMac(sec_PKCS12EncoderContext *p12ecx)
     }
 
     /* finish the hmac */
-    hmac.data = (unsigned char *)PORT_ZAlloc(SHA1_LENGTH);
-    if (!hmac.data) {
-        PORT_SetError(SEC_ERROR_NO_MEMORY);
-        return SECFailure;
-    }
 
-    rv = PK11_DigestFinal(p12ecx->hmacCx, hmac.data, &hmac.len, SHA1_LENGTH);
+    rv = PK11_DigestFinal(p12ecx->hmacCx, hmacData, &hmacLen, HASH_LENGTH_MAX);
 
     if (rv != SECSuccess) {
         PORT_SetError(SEC_ERROR_NO_MEMORY);
         goto loser;
     }
 
-    /* create the digest info */
-    di = SGN_CreateDigestInfo(p12ecx->p12exp->integrityInfo.pwdInfo.algorithm,
-                              hmac.data, hmac.len);
-    if (!di) {
-        PORT_SetError(SEC_ERROR_NO_MEMORY);
-        rv = SECFailure;
-        goto loser;
-    }
-
-    rv = SGN_CopyDigestInfo(p12ecx->arena, &p12ecx->mac.safeMac, di);
+    /* finish the digest info, algorithm ID is already set */
+    rv = SECITEM_MakeItem(p12ecx->arena, &p12ecx->mac.safeMac.digest,
+                          hmacData, hmacLen);
     if (rv != SECSuccess) {
-        PORT_SetError(SEC_ERROR_NO_MEMORY);
         goto loser;
     }
 
@@ -1896,11 +1957,9 @@ loser:
     if (di) {
         SGN_DestroyDigestInfo(di);
     }
-    if (hmac.data) {
-        SECITEM_ZfreeItem(&hmac, PR_FALSE);
-    }
     PK11_DestroyContext(p12ecx->hmacCx, PR_TRUE);
     p12ecx->hmacCx = NULL;
+    PORT_Memset(hmacData, 0, hmacLen);
 
     return rv;
 }

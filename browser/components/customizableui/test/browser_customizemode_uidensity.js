@@ -161,10 +161,6 @@ async function testModeMenuitem(mode, modePref) {
   await endCustomizing();
 }
 
-add_task(async function test_compact_mode_menuitem() {
-  await testModeMenuitem("compact", window.gUIDensity.MODE_COMPACT);
-});
-
 add_task(async function test_touch_mode_menuitem() {
   // OSX doesn't get touch mode for now.
   if (AppConstants.platform == "macosx") {
@@ -179,8 +175,8 @@ add_task(async function test_touch_mode_menuitem() {
   await testModeMenuitem("touch", window.gUIDensity.MODE_TOUCH);
 
   // Test the checkbox for automatic Touch Mode transition
-  // in Windows 10 Tablet Mode.
-  if (AppConstants.isPlatformAndVersionAtLeast("win", "10")) {
+  // in Windows Tablet Mode.
+  if (AppConstants.platform == "win") {
     await startCustomizing();
 
     let popupButton = document.getElementById("customization-uidensity-button");

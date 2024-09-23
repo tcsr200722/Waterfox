@@ -1,7 +1,5 @@
-// |jit-test| skip-if: !('stackTest' in this)
-
 let a = parseModule(`throw new Error`);
-a.declarationInstantiation();
+moduleLink(a);
 stackTest(function() {
-    a.evaluation();
+    moduleEvaluate(a);
 });

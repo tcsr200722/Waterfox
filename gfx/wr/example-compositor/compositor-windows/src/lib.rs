@@ -259,3 +259,7 @@ pub fn swap_buffers(window: *mut Window) {
         com_dc_swap_buffers(window);
     }
 }
+
+pub fn deinit(_window: *mut Window) {
+    todo!()
+}

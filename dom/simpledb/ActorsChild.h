@@ -7,8 +7,14 @@
 #ifndef mozilla_dom_simpledb_ActorsChild_h
 #define mozilla_dom_simpledb_ActorsChild_h
 
+#include <cstdint>
+#include "ErrorList.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/PBackgroundSDBConnectionChild.h"
 #include "mozilla/dom/PBackgroundSDBRequestChild.h"
+#include "mozilla/ipc/ProtocolUtils.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
 
 namespace mozilla {
 namespace ipc {
@@ -28,7 +34,7 @@ class SDBConnectionChild final : public PBackgroundSDBConnectionChild {
 
   SDBConnection* mConnection;
 
-  NS_DECL_OWNINGTHREAD
+  NS_INLINE_DECL_REFCOUNTING(SDBConnectionChild, override)
 
  public:
   void AssertIsOnOwningThread() const {
@@ -39,7 +45,6 @@ class SDBConnectionChild final : public PBackgroundSDBConnectionChild {
   // Only created by SDBConnection.
   explicit SDBConnectionChild(SDBConnection* aConnection);
 
-  // Only destroyed by mozilla::ipc::BackgroundChildImpl.
   ~SDBConnectionChild();
 
   void SendDeleteMeInternal();

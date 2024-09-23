@@ -36,10 +36,11 @@ var tabs = [
 
 async function initTab(tabX, startToolbox) {
   tabX.tab = await addTab(TEST_URI);
-  tabX.target = await TargetFactory.forTab(tabX.tab);
 
   if (startToolbox) {
-    tabX.toolbox = await gDevTools.showToolbox(tabX.target, "options");
+    tabX.toolbox = await gDevTools.showToolboxForTab(tabX.tab, {
+      toolId: "options",
+    });
   }
 }
 
@@ -58,7 +59,7 @@ async function checkCacheEnabled(tabX, expected) {
   const oldGuid = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
-    function() {
+    function () {
       const doc = content.document;
       const h1 = doc.querySelector("h1");
       return h1.textContent;
@@ -70,7 +71,7 @@ async function checkCacheEnabled(tabX, expected) {
   const guid = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
     [],
-    function() {
+    function () {
       const doc = content.document;
       const h1 = doc.querySelector("h1");
       return h1.textContent;
@@ -92,7 +93,7 @@ async function setDisableCacheCheckboxChecked(tabX, state) {
 
   if (cbx.checked !== state) {
     info("Setting disable cache checkbox to " + state + " for " + tabX.title);
-    const onReconfigured = tabX.toolbox.once("cache-reconfigured");
+    const onReconfigured = tabX.toolbox.once("new-configuration-applied");
     cbx.click();
 
     // We have to wait for the reconfigure request to be finished before reloading
@@ -105,22 +106,23 @@ function reloadTab(tabX) {
   const browser = gBrowser.selectedBrowser;
 
   const reloadTabPromise = BrowserTestUtils.browserLoaded(browser).then(
-    function() {
+    function () {
       info("Reloaded tab " + tabX.title);
     }
   );
 
   info("Reloading tab " + tabX.title);
-  const mm = loadFrameScriptUtils();
-  mm.sendAsyncMessage("devtools:test:reload");
+  SpecialPowers.spawn(browser, [], () => {
+    content.location.reload(false);
+  });
 
   return reloadTabPromise;
 }
 
 async function destroyTab(tabX) {
-  const toolbox = gDevTools.getToolbox(tabX.target);
+  const toolbox = gDevTools.getToolboxForTab(tabX.tab);
 
-  let onceDestroyed = promise.resolve();
+  let onceDestroyed;
   if (toolbox) {
     onceDestroyed = gDevTools.once("toolbox-destroyed");
   }

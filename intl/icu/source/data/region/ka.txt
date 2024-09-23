@@ -1,5 +1,6 @@
 ﻿// © 2016 and later: Unicode, Inc. and others.
-// License & terms of use: http://www.unicode.org/copyright.html#License
+// License & terms of use: http://www.unicode.org/copyright.html
+// Generated using tools/cldr/cldr-to-icu/build-icu-data.xml
 ka{
     Countries{
         001{"მსოფლიო"}
@@ -310,8 +311,7 @@ ka{
         CI{"სპილოს ძვლის სანაპირო"}
         CZ{"ჩეხეთის რესპუბლიკა"}
         FK{"ფოლკლენდის კუნძულები (მალვინის კუნძულები)"}
-        SZ{"სვაზილანდი"}
+        NZ{"აოტეროა (ახალი ზელანდია)"}
         TL{"აღმოსავლეთ ტიმორი"}
     }
-    Version{"37"}
 }

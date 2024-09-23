@@ -2,15 +2,14 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, print_function
 
-import os
 import json
+import os
 from datetime import datetime, timedelta
 
-TASK_DURATION_CACHE = 'task_duration_history.json'
-GRAPH_QUANTILE_CACHE = 'graph_quantile_cache.csv'
-TASK_DURATION_TAG_FILE = 'task_duration_tag.json'
+TASK_DURATION_CACHE = "task_duration_history.json"
+GRAPH_QUANTILE_CACHE = "graph_quantile_cache.csv"
+TASK_DURATION_TAG_FILE = "task_duration_tag.json"
 
 
 def find_all_dependencies(graph, tasklist):
@@ -39,15 +38,13 @@ def find_all_dependencies(graph, tasklist):
 
 
 def find_longest_path(graph, tasklist, duration_data):
-
     dep_durations = dict()
 
     def find_dependency_durations(task):
         if task in dep_durations:
             return dep_durations[task]
 
-        durations = [find_dependency_durations(dep)
-                     for dep in graph.get(task, list())]
+        durations = [find_dependency_durations(dep) for dep in graph.get(task, list())]
         durations.append(0.0)
         md = max(durations) + duration_data.get(task, 0.0)
         dep_durations[task] = md
@@ -61,19 +58,18 @@ def find_longest_path(graph, tasklist, duration_data):
         return 0
 
 
-def determine_quantile(quantiles_file, duration):
-
+def determine_percentile(quantiles_file, duration):
     duration = duration.total_seconds()
 
     with open(quantiles_file) as f:
         f.readline()  # skip header
         boundaries = [float(l.strip()) for l in f.readlines()]
-        boundaries.sort()
 
+    boundaries.sort()
     for i, v in enumerate(boundaries):
         if duration < v:
             break
-    # In case we weren't given 100 elements
+    # Estimate percentile from len(boundaries)-quantile
     return int(100 * i / len(boundaries))
 
 
@@ -109,17 +105,20 @@ def duration_summary(graph_cache_file, tasklist, cache_dir):
     output["dependency_count"] = len(dependencies)
     output["selected_count"] = len(tasklist)
 
-    quantile = None
+    percentile = None
     graph_quantile_cache = os.path.join(cache_dir, GRAPH_QUANTILE_CACHE)
     if os.path.isfile(graph_quantile_cache):
-        quantile = 100 - determine_quantile(graph_quantile_cache,
-                                            total_dependency_duration + total_requested_duration)
-    if quantile:
-        output['quantile'] = quantile
+        percentile = determine_percentile(
+            graph_quantile_cache, total_dependency_duration + total_requested_duration
+        )
+    if percentile:
+        output["percentile"] = percentile
 
     output["wall_duration_seconds"] = timedelta(seconds=int(longest_path))
-    output["eta_datetime"] = datetime.now()+timedelta(seconds=longest_path)
+    output["eta_datetime"] = datetime.now() + timedelta(seconds=longest_path)
 
-    output["task_durations"] = {task: int(durations.get(task, 0.0)) for task in tasklist}
+    output["task_durations"] = {
+        task: int(durations.get(task, 0.0)) for task in tasklist
+    }
 
     return output

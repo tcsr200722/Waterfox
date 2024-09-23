@@ -8,16 +8,13 @@
 #include "nsISupports.idl"
 
 /**
- *   For use by consumers in scripted languages (JavaScript, Java, Python,
- *   Perl, ...).
- *
  *   @note C/C++ consumers who are planning to use the nsIDebug2 interface with
  *   the "@mozilla.org/xpcom;1" contract should use NS_DebugBreak from xpcom
  *   glue instead.
  *
  */
 
-[scriptable, uuid(9641dc15-10fb-42e3-a285-18be90a5c10b)]
+[builtinclass, scriptable, uuid(9641dc15-10fb-42e3-a285-18be90a5c10b)]
 interface nsIDebug2 : nsISupports
 {
     /**
@@ -36,7 +33,7 @@ interface nsIDebug2 : nsISupports
      * Whether a debugger is currently attached.
      * Supports Windows + Mac
      */
-    readonly attribute bool isDebuggerAttached;
+    readonly attribute boolean isDebuggerAttached;
 
     /**
      * Show an assertion and trigger nsIDebug2.break().
@@ -86,6 +83,15 @@ interface nsIDebug2 : nsISupports
      * @param aMessage the string to pass to panic!().
      */
     void rustPanic(in string aMessage);
+
+    /**
+     * Request the process to log a message for a target and level from Rust code.
+     *
+     * @param aTarget the string representing the log target.
+     * @param aMessage the string representing the log message.
+     */
+    void rustLog(in string aTarget,
+                 in string aMessage);
 
     /**
      * Cause an Out of Memory Crash.

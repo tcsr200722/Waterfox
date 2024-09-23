@@ -40,7 +40,7 @@
 #include "common/windows/guid_string.h"
 
 #ifdef MOZ_PHC
-#include "replace_malloc_bridge.h"
+#include "PHC.h"
 #endif
 
 namespace google_breakpad {
@@ -162,6 +162,7 @@ void ExceptionHandler::Initialize(
   previous_iph_ = NULL;
 #endif  // _MSC_VER >= 1400
   previous_pch_ = NULL;
+  heap_corruption_veh_ = NULL;
   handler_thread_ = NULL;
   is_shutdown_ = false;
   handler_start_semaphore_ = NULL;
@@ -287,6 +288,18 @@ void ExceptionHandler::Initialize(
     if (handler_types & HANDLER_PURECALL)
       previous_pch_ = _set_purecall_handler(HandlePureVirtualCall);
 
+    if (handler_types & HANDLER_HEAP_CORRUPTION) {
+      // Under ASan we need to let the ASan runtime's ShadowExceptionHandler stay
+      // in the first handler position.
+#ifdef MOZ_ASAN
+      const bool first = false;
+#else
+      const bool first = true;
+#endif // MOZ_ASAN
+      heap_corruption_veh_ =
+          AddVectoredExceptionHandler(first, HandleHeapCorruption);
+    }
+
     LeaveCriticalSection(&handler_stack_critical_section_);
   }
 
@@ -294,14 +307,6 @@ void ExceptionHandler::Initialize(
 }
 
 ExceptionHandler::~ExceptionHandler() {
-  if (dbghelp_module_) {
-    FreeLibrary(dbghelp_module_);
-  }
-
-  if (rpcrt4_module_) {
-    FreeLibrary(rpcrt4_module_);
-  }
-
   if (handler_types_ != HANDLER_NONE) {
     EnterCriticalSection(&handler_stack_critical_section_);
 
@@ -315,6 +320,9 @@ ExceptionHandler::~ExceptionHandler() {
 
     if (handler_types_ & HANDLER_PURECALL)
       _set_purecall_handler(previous_pch_);
+
+    if (handler_types_ & HANDLER_HEAP_CORRUPTION)
+      RemoveVectoredExceptionHandler(heap_corruption_veh_);
 
     if (handler_stack_->back() == this) {
       handler_stack_->pop_back();
@@ -376,14 +384,39 @@ ExceptionHandler::~ExceptionHandler() {
   if (InterlockedDecrement(&instance_count_) == 0) {
     DeleteCriticalSection(&handler_stack_critical_section_);
   }
+
+  // The exception handler is not set anymore and the handler thread which
+  // could call MiniDumpWriteDump() has been shut down; it is now safe to
+  // unload these modules.
+  if (dbghelp_module_) {
+    FreeLibrary(dbghelp_module_);
+  }
+
+  if (rpcrt4_module_) {
+    FreeLibrary(rpcrt4_module_);
+  }
 }
 
 bool ExceptionHandler::RequestUpload(DWORD crash_id) {
   return crash_generation_client_->RequestUpload(crash_id);
 }
 
+// The SetThreadDescription API was brought in version 1607 of Windows 10.
+typedef HRESULT(WINAPI* SetThreadDescriptionPtr)(HANDLE hThread,
+                                                 PCWSTR lpThreadDescription);
+
 // static
 DWORD ExceptionHandler::ExceptionHandlerThreadMain(void* lpParameter) {
+  HMODULE handle = ::GetModuleHandle(L"Kernel32.dll");
+  if (handle) {
+    if (FARPROC address = ::GetProcAddress(handle, "SetThreadDescription")) {
+      auto SetThreadDescriptionFunc =
+        reinterpret_cast<SetThreadDescriptionPtr>(address);
+      SetThreadDescriptionFunc(::GetCurrentThread(),
+                               L"Breakpad ExceptionHandler");
+    }
+  }
+
   ExceptionHandler* self = reinterpret_cast<ExceptionHandler *>(lpParameter);
   assert(self);
   assert(self->handler_start_semaphore_ != NULL);
@@ -701,6 +734,29 @@ void ExceptionHandler::HandlePureVirtualCall() {
   exit(0);
 }
 
+// static
+LONG ExceptionHandler::HandleHeapCorruption(EXCEPTION_POINTERS* exinfo) {
+  if (exinfo->ExceptionRecord->ExceptionCode != STATUS_HEAP_CORRUPTION) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  AutoExceptionHandler auto_exception_handler;
+  ExceptionHandler* current_handler = auto_exception_handler.get_handler();
+
+  bool result = false;
+
+  // In case of out-of-process dump generation, directly call
+  // WriteMinidumpWithException since there is no separate thread running.
+  if (current_handler->IsOutOfProcess()) {
+    result = current_handler->WriteMinidumpWithException(
+                 GetCurrentThreadId(), exinfo, NULL) == MinidumpResult::Success;
+  } else {
+    result = current_handler->WriteMinidumpOnHandlerThread(exinfo, NULL);
+  }
+
+  return result ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+}
+
 bool ExceptionHandler::WriteMinidumpOnHandlerThread(
     EXCEPTION_POINTERS* exinfo, MDRawAssertionInfo* assertion) {
   EnterCriticalSection(&handler_critical_section_);
@@ -847,18 +903,18 @@ static void GetPHCAddrInfo(EXCEPTION_POINTERS* exinfo,
     // operation it what, and rec->ExceptionInformation[1] contains the
     // virtual address of the inaccessible data.
     char* crashAddr = reinterpret_cast<char*>(rec->ExceptionInformation[1]);
-    ReplaceMalloc::IsPHCAllocation(crashAddr, addr_info);
+    mozilla::phc::IsPHCAllocation(crashAddr, addr_info);
   }
 }
 #endif
 
 ExceptionHandler::MinidumpResult ExceptionHandler::WriteMinidumpWithException(
-    DWORD requesting_thread_id,
-    EXCEPTION_POINTERS* exinfo,
+    DWORD requesting_thread_id, EXCEPTION_POINTERS* exinfo,
     MDRawAssertionInfo* assertion) {
-    mozilla::phc::AddrInfo addr_info;
+  mozilla::phc::AddrInfo* addr_info = nullptr;
 #ifdef MOZ_PHC
-    GetPHCAddrInfo(exinfo, &addr_info);
+  addr_info = &mozilla::phc::gAddrInfo;
+  GetPHCAddrInfo(exinfo, addr_info);
 #endif
 
   // Give user code a chance to approve or prevent writing a minidump.  If the
@@ -893,7 +949,7 @@ ExceptionHandler::MinidumpResult ExceptionHandler::WriteMinidumpWithException(
     // scenario, the server process ends up creating the dump path and dump
     // id so they are not known to the client.
     success = callback_(dump_path_c_, next_minidump_id_c_, callback_context_,
-                        exinfo, assertion, &addr_info, success);
+                        exinfo, assertion, addr_info, success);
   }
 
   return success ? MinidumpResult::Success : MinidumpResult::Failure;

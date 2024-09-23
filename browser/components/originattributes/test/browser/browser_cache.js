@@ -28,7 +28,7 @@ let suffixes = [
   "xhr.html",
   "worker.xhr.html",
   "audio.ogg",
-  "video.ogv",
+  "video.webm",
   "track.vtt",
   "fetch.html",
   "worker.fetch.html",
@@ -37,6 +37,7 @@ let suffixes = [
   "import.js",
   "worker.js",
   "sharedworker.js",
+  "font.woff",
 ];
 
 // A random value for isolating video/audio elements across different tests.
@@ -55,7 +56,7 @@ function cacheDataForContext(loadContextInfo) {
   return new Promise(resolve => {
     let cacheEntries = [];
     let cacheVisitor = {
-      onCacheStorageInfo(num, consumption) {},
+      onCacheStorageInfo() {},
       onCacheEntryInfo(uri, idEnhance) {
         cacheEntries.push({ uri, idEnhance });
       },
@@ -66,12 +67,12 @@ function cacheDataForContext(loadContextInfo) {
     };
     // Visiting the disk cache also visits memory storage so we do not
     // need to use Services.cache2.memoryCacheStorage() here.
-    let storage = Services.cache2.diskCacheStorage(loadContextInfo, false);
+    let storage = Services.cache2.diskCacheStorage(loadContextInfo);
     storage.asyncVisitStorage(cacheVisitor, true);
   });
 }
 
-let countMatchingCacheEntries = function(cacheEntries, domain, fileSuffix) {
+let countMatchingCacheEntries = function (cacheEntries, domain, fileSuffix) {
   return cacheEntries
     .map(entry => entry.uri.asciiSpec)
     .filter(spec => spec.includes(domain))
@@ -95,7 +96,7 @@ function observeChannels(onChannel) {
 }
 
 function startObservingChannels(aMode) {
-  let stopObservingChannels = observeChannels(function(channel) {
+  let stopObservingChannels = observeChannels(function (channel) {
     let originalURISpec = channel.originalURI.spec;
     if (originalURISpec.includes("example.net")) {
       let loadInfo = channel.loadInfo;
@@ -152,6 +153,7 @@ async function doInit(aMode) {
       ["network.predictor.enabled", false],
       ["network.predictor.enable-prefetch", false],
       ["privacy.partition.network_state", false],
+      ["dom.security.https_first", false],
     ],
   });
   clearAllImageCaches();
@@ -171,8 +173,10 @@ async function doTest(aBrowser) {
     urlPrefix: TEST_DOMAIN + TEST_PATH,
   };
 
-  await SpecialPowers.spawn(aBrowser, [argObj], async function(arg) {
-    let videoURL = arg.urlPrefix + "file_thirdPartyChild.video.ogv";
+  await SpecialPowers.spawn(aBrowser, [argObj], async function (arg) {
+    content.windowUtils.clearSharedStyleSheetCache();
+
+    let videoURL = arg.urlPrefix + "file_thirdPartyChild.video.webm";
     let audioURL = arg.urlPrefix + "file_thirdPartyChild.audio.ogg";
     let trackURL = arg.urlPrefix + "file_thirdPartyChild.track.vtt";
     let URLSuffix = "?r=" + arg.randomSuffix;
@@ -253,7 +257,7 @@ async function doTest(aBrowser) {
 }
 
 // The check function, which checks the number of cache entries.
-async function doCheck(aShouldIsolate, aInputA, aInputB) {
+async function doCheck(aShouldIsolate) {
   let expectedEntryCount = 1;
   let data = [];
   data = data.concat(

@@ -16,24 +16,43 @@
 namespace mozilla {
 namespace gfx {
 
-#define GFX_FEATURE_MAP(_)                                           \
-  /* Name,                        Type,         Description */       \
-  _(HW_COMPOSITING, Feature, "Compositing")                          \
-  _(D3D11_COMPOSITING, Feature, "Direct3D11 Compositing")            \
-  _(OPENGL_COMPOSITING, Feature, "OpenGL Compositing")               \
-  _(DIRECT2D, Feature, "Direct2D")                                   \
-  _(D3D11_HW_ANGLE, Feature, "Direct3D11 hardware ANGLE")            \
-  _(DIRECT_DRAW, Feature, "DirectDraw")                              \
-  _(GPU_PROCESS, Feature, "GPU Process")                             \
-  _(WEBRENDER, Feature, "WebRender")                                 \
-  _(WEBRENDER_QUALIFIED, Feature, "WebRender qualified")             \
-  _(WEBRENDER_COMPOSITOR, Feature, "WebRender native compositor")    \
-  _(WEBRENDER_PARTIAL, Feature, "WebRender partial present")         \
-  _(WEBRENDER_ANGLE, Feature, "WebRender ANGLE")                     \
-  _(WEBRENDER_DCOMP_PRESENT, Feature, "WebRender DirectComposition") \
-  _(OMTP, Feature, "Off Main Thread Painting")                       \
-  _(ADVANCED_LAYERS, Feature, "Advanced Layers")                     \
-  _(WEBGPU, Feature, "WebGPU")                                       \
+#define GFX_FEATURE_MAP(_)                                                   \
+  /* Name,                        Type,         Description */               \
+  _(HW_COMPOSITING, Feature, "Compositing")                                  \
+  _(D3D11_COMPOSITING, Feature, "Direct3D11 Compositing")                    \
+  _(OPENGL_COMPOSITING, Feature, "OpenGL Compositing")                       \
+  _(DIRECT2D, Feature, "Direct2D")                                           \
+  _(D3D11_HW_ANGLE, Feature, "Direct3D11 hardware ANGLE")                    \
+  _(DIRECT_DRAW, Feature, "DirectDraw")                                      \
+  _(GPU_PROCESS, Feature, "GPU Process")                                     \
+  _(WEBRENDER, Feature, "WebRender")                                         \
+  _(WEBRENDER_COMPOSITOR, Feature, "WebRender native compositor")            \
+  _(WEBRENDER_PARTIAL, Feature, "WebRender partial present")                 \
+  _(WEBRENDER_SHADER_CACHE, Feature, "WebRender shader disk cache")          \
+  _(WEBRENDER_OPTIMIZED_SHADERS, Feature, "WebRender optimized shaders")     \
+  _(WEBRENDER_ANGLE, Feature, "WebRender ANGLE")                             \
+  _(WEBRENDER_DCOMP_PRESENT, Feature, "WebRender DirectComposition")         \
+  _(WEBRENDER_SCISSORED_CACHE_CLEARS, Feature,                               \
+    "WebRender scissored cache clears")                                      \
+  _(OMTP, Feature, "Off Main Thread Painting")                               \
+  _(WEBGPU, Feature, "WebGPU")                                               \
+  _(X11_EGL, Feature, "X11 EGL")                                             \
+  _(DMABUF, Feature, "DMABUF")                                               \
+  _(WINDOW_OCCLUSION, Feature, "WINDOW_OCCLUSION")                           \
+  _(HARDWARE_VIDEO_DECODING, Feature, "Hardware video decoding")             \
+  _(VIDEO_HARDWARE_OVERLAY, Feature, "hardware decoded video overlay")       \
+  _(VIDEO_SOFTWARE_OVERLAY, Feature, "software decoded video overlay")       \
+  _(HW_DECODED_VIDEO_ZERO_COPY, Feature, "Hardware decoded video zero copy") \
+  _(VP8_HW_DECODE, Feature, "VP8 hardware decoding")                         \
+  _(VP9_HW_DECODE, Feature, "VP9 hardware decoding")                         \
+  _(DMABUF_SURFACE_EXPORT, Feature, "WebGL DMABuf surface export")           \
+  _(REUSE_DECODER_DEVICE, Feature, "Reuse decoder device")                   \
+  _(BACKDROP_FILTER, Feature, "Backdrop filter")                             \
+  _(CANVAS_RENDERER_THREAD, Feature, "canvas renderer thread")               \
+  _(ACCELERATED_CANVAS2D, Feature, "Accelerated Canvas2D")                   \
+  _(H264_HW_DECODE, Feature, "H.264 hardware decoding")                      \
+  _(AV1_HW_DECODE, Feature, "AV1 hardware decoding")                         \
+  _(REMOTE_CANVAS, Feature, "Remote canvas")                                 \
   /* Add new entries above this comment */
 
 enum class Feature : uint32_t {
@@ -83,36 +102,41 @@ class FeatureState {
   // aType is "base", "user", "env", or "runtime".
   // aMessage may be null.
   typedef std::function<void(const char* aType, FeatureStatus aStatus,
-                             const char* aMessage)>
+                             const char* aMessage, const nsCString& aFailureId)>
       StatusIterCallback;
   void ForEachStatusChange(const StatusIterCallback& aCallback) const;
 
   const char* GetFailureMessage() const;
   const nsCString& GetFailureId() const;
+  nsCString GetStatusAndFailureIdString() const;
 
   bool DisabledByDefault() const;
 
+  // Clear all state.
+  void Reset();
+
  private:
-  void SetUser(FeatureStatus aStatus, const char* aMessage);
-  void SetEnvironment(FeatureStatus aStatus, const char* aMessage);
-  void SetRuntime(FeatureStatus aStatus, const char* aMessage);
+  void SetUser(FeatureStatus aStatus, const char* aMessage,
+               const nsACString& aFailureId);
+  void SetEnvironment(FeatureStatus aStatus, const char* aMessage,
+                      const nsACString& aFailureId);
+  void SetRuntime(FeatureStatus aStatus, const char* aMessage,
+                  const nsACString& aFailureId);
   bool IsForcedOnByUser() const;
   const char* GetRuntimeMessage() const;
   bool IsInitialized() const { return mDefault.IsInitialized(); }
 
   void AssertInitialized() const { MOZ_ASSERT(IsInitialized()); }
 
-  // Clear all state.
-  void Reset();
-
  private:
-  void SetFailureId(const nsACString& aFailureId);
-
   struct Instance {
     char mMessage[64];
     FeatureStatus mStatus;
+    nsCString mFailureId;
 
-    void Set(FeatureStatus aStatus, const char* aMessage = nullptr);
+    void Set(FeatureStatus aStatus);
+    void Set(FeatureStatus aStatus, const char* aMessage,
+             const nsACString& aFailureId);
     bool IsInitialized() const { return mStatus != FeatureStatus::Unused; }
     const char* MessageOrNull() const {
       return mMessage[0] != '\0' ? mMessage : nullptr;
@@ -121,6 +145,7 @@ class FeatureState {
       MOZ_ASSERT(MessageOrNull());
       return mMessage;
     }
+    const nsCString& FailureId() const { return mFailureId; }
   };
 
   // The default state is the state we decide on startup, based on the operating
@@ -129,17 +154,13 @@ class FeatureState {
   // The user state factors in any changes to preferences that the user made.
   //
   // The environment state factors in any additional decisions made, such as
-  // availability or blacklisting.
+  // availability or blocklisting.
   //
   // The runtime state factors in any problems discovered at runtime.
   Instance mDefault;
   Instance mUser;
   Instance mEnvironment;
   Instance mRuntime;
-
-  // Store the first reported failureId for now but we might want to track this
-  // by instance later if we need a specific breakdown.
-  nsCString mFailureId;
 };
 
 }  // namespace gfx

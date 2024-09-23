@@ -2,15 +2,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from setuptools import setup
 
-PACKAGE_VERSION = "1.2.1"
+PACKAGE_VERSION = "1.2.3"
 
 # dependencies
 deps = [
-    "distro == 1.4.0",
+    "distro >= 1.4.0",
     "mozfile >= 0.12",
 ]
 

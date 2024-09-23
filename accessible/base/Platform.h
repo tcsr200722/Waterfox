@@ -9,16 +9,23 @@
 
 #include <stdint.h>
 #include "nsStringFwd.h"
+#include "Units.h"
 
 #if defined(ANDROID)
 #  include "nsTArray.h"
 #  include "nsRect.h"
 #endif
 
+#ifdef MOZ_WIDGET_COCOA
+#  include "mozilla/a11y/Role.h"
+#  include "nsTArray.h"
+#endif
+
 namespace mozilla {
 namespace a11y {
 
-class ProxyAccessible;
+class Accessible;
+class RemoteAccessible;
 
 enum EPlatformDisabledState {
   ePlatformIsForceEnabled = -1,
@@ -40,20 +47,15 @@ EPlatformDisabledState PlatformDisabledState();
 void PreInit();
 #endif
 
-#if defined(MOZ_ACCESSIBILITY_ATK) || defined(XP_MACOSX)
+#if defined(MOZ_ACCESSIBILITY_ATK) || defined(XP_DARWIN)
 /**
  * Is platform accessibility enabled.
- * Only used on linux with atk and MacOS for now.
+ * Only used on Linux, MacOS and iOS for now.
  */
 bool ShouldA11yBeEnabled();
 #endif
 
 #if defined(XP_WIN)
-/*
- * Do we have AccessibleHandler.dll registered.
- */
-bool IsHandlerRegistered();
-
 /*
  * Name of platform service that instantiated accessibility
  */
@@ -74,67 +76,58 @@ void PlatformInit();
 void PlatformShutdown();
 
 /**
- * called when a new ProxyAccessible is created, so the platform may setup a
+ * called when a new RemoteAccessible is created, so the platform may setup a
  * wrapper for it, or take other action.
  */
-void ProxyCreated(ProxyAccessible* aProxy, uint32_t aInterfaces);
+void ProxyCreated(RemoteAccessible* aProxy);
 
 /**
- * Called just before a ProxyAccessible is destroyed so its wrapper can be
+ * Called just before a RemoteAccessible is destroyed so its wrapper can be
  * disposed of and other action taken.
  */
-void ProxyDestroyed(ProxyAccessible*);
+void ProxyDestroyed(RemoteAccessible*);
 
 /**
- * Callied when an event is fired on a proxied accessible.
+ * Called when an event is fired on an Accessible so that platforms may fire
+ * events if appropriate.
  */
-void ProxyEvent(ProxyAccessible* aTarget, uint32_t aEventType);
-void ProxyStateChangeEvent(ProxyAccessible* aTarget, uint64_t aState,
-                           bool aEnabled);
+void PlatformEvent(Accessible* aTarget, uint32_t aEventType);
+void PlatformStateChangeEvent(Accessible* aTarget, uint64_t aState,
+                              bool aEnabled);
 
-#if defined(XP_WIN)
-void ProxyFocusEvent(ProxyAccessible* aTarget,
-                     const LayoutDeviceIntRect& aCaretRect);
-void ProxyCaretMoveEvent(ProxyAccessible* aTarget,
-                         const LayoutDeviceIntRect& aCaretRect);
-#else
-void ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset);
-#endif
-void ProxyTextChangeEvent(ProxyAccessible* aTarget, const nsString& aStr,
-                          int32_t aStart, uint32_t aLen, bool aIsInsert,
-                          bool aFromUser);
-void ProxyShowHideEvent(ProxyAccessible* aTarget, ProxyAccessible* aParent,
-                        bool aInsert, bool aFromUser);
-void ProxySelectionEvent(ProxyAccessible* aTarget, ProxyAccessible* aWidget,
-                         uint32_t aType);
+void PlatformFocusEvent(Accessible* aTarget,
+                        const LayoutDeviceIntRect& aCaretRect);
+void PlatformCaretMoveEvent(Accessible* aTarget, int32_t aOffset,
+                            bool aIsSelectionCollapsed, int32_t aGranularity,
+                            const LayoutDeviceIntRect& aCaretRect,
+                            bool aFromUser);
+void PlatformTextChangeEvent(Accessible* aTarget, const nsAString& aStr,
+                             int32_t aStart, uint32_t aLen, bool aIsInsert,
+                             bool aFromUser);
+void PlatformShowHideEvent(Accessible* aTarget, Accessible* aParent,
+                           bool aInsert, bool aFromUser);
+void PlatformSelectionEvent(Accessible* aTarget, Accessible* aWidget,
+                            uint32_t aType);
 
 #if defined(ANDROID)
-MOZ_CAN_RUN_SCRIPT
-void ProxyVirtualCursorChangeEvent(ProxyAccessible* aTarget,
-                                   ProxyAccessible* aOldPosition,
-                                   int32_t aOldStartOffset,
-                                   int32_t aOldEndOffset,
-                                   ProxyAccessible* aNewPosition,
-                                   int32_t aNewStartOffset,
-                                   int32_t aNewEndOffset, int16_t aReason,
-                                   int16_t aBoundaryType, bool aFromUser);
+void PlatformScrollingEvent(Accessible* aTarget, uint32_t aEventType,
+                            uint32_t aScrollX, uint32_t aScrollY,
+                            uint32_t aMaxScrollX, uint32_t aMaxScrollY);
 
-void ProxyScrollingEvent(ProxyAccessible* aTarget, uint32_t aEventType,
-                         uint32_t aScrollX, uint32_t aScrollY,
-                         uint32_t aMaxScrollX, uint32_t aMaxScrollY);
+void PlatformAnnouncementEvent(Accessible* aTarget,
+                               const nsAString& aAnnouncement,
+                               uint16_t aPriority);
 
-void ProxyAnnouncementEvent(ProxyAccessible* aTarget,
-                            const nsString& aAnnouncement, uint16_t aPriority);
+bool LocalizeString(const nsAString& aToken, nsAString& aLocalized);
+#endif
 
-class BatchData;
+#ifdef MOZ_WIDGET_COCOA
+class TextRange;
+void PlatformTextSelectionChangeEvent(Accessible* aTarget,
+                                      const nsTArray<TextRange>& aSelection);
 
-void ProxyBatch(ProxyAccessible* aDocument, const uint64_t aBatchType,
-                const nsTArray<ProxyAccessible*>& aAccessibles,
-                const nsTArray<BatchData>& aData);
-
-bool LocalizeString(
-    const char* aToken, nsAString& aLocalized,
-    const nsTArray<nsString>& aFormatString = nsTArray<nsString>());
+void PlatformRoleChangedEvent(Accessible* aTarget, const a11y::role& aRole,
+                              uint8_t aRoleMapEntryIndex);
 #endif
 
 }  // namespace a11y

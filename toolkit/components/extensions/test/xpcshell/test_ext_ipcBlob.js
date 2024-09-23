@@ -5,7 +5,7 @@ server.registerDirectory("/data/", do_get_file("data"));
 
 const BASE_URL = `http://localhost:${server.identity.primaryPort}/data`;
 
-// ExtensionContent.jsm needs to know when it's running from xpcshell,
+// ExtensionContent.sys.mjs needs to know when it's running from xpcshell,
 // to use the right timeout for content scripts executed at document_idle.
 ExtensionTestUtils.mockAppInfo();
 
@@ -139,11 +139,6 @@ add_task(async function test_parent_to_child() {
 
   await extension.awaitMessage("bg-ready");
 
-  Services.prefs.setBoolPref(
-    "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
-    true
-  );
-  Services.prefs.setBoolPref("security.allow_unsafe_parent_loads", true);
   let contentPage = await ExtensionTestUtils.loadContentPage(
     `${BASE_URL}/file_sample.html`
   );

@@ -6,15 +6,13 @@
 #include "HostWebGLContext.h"
 
 #include "CompositableHost.h"
-#include "mozilla/layers/LayerTransactionChild.h"
-#include "mozilla/layers/TextureClientSharedSurface.h"
+#include "mozilla/layers/LayersSurfaces.h"
 
 #include "MozFramebuffer.h"
 #include "TexUnpackBlob.h"
 #include "WebGL2Context.h"
 #include "WebGLBuffer.h"
 #include "WebGLContext.h"
-#include "WebGLCrossProcessCommandQueue.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLMemoryTracker.h"
 #include "WebGLParent.h"
@@ -32,11 +30,9 @@
 
 namespace mozilla {
 
-LazyLogModule gWebGLBridgeLog("webglbridge");
-
 // -
 
-static StaticMutex sContextSetLock;
+static StaticMutex sContextSetLock MOZ_UNANNOTATED;
 
 static std::unordered_set<HostWebGLContext*>& DeferredStaticContextSet() {
   static std::unordered_set<HostWebGLContext*> sContextSet;
@@ -56,30 +52,19 @@ LockedOutstandingContexts::~LockedOutstandingContexts() {
 
 /*static*/
 UniquePtr<HostWebGLContext> HostWebGLContext::Create(
-    OwnerData&& ownerData, const webgl::InitContextDesc& desc,
+    const OwnerData& ownerData, const webgl::InitContextDesc& desc,
     webgl::InitContextResult* const out) {
-  auto host = WrapUnique(new HostWebGLContext(std::move(ownerData)));
-  auto webgl = WebGLContext::Create(*host, desc, out);
+  auto host = WrapUnique(new HostWebGLContext(ownerData));
+  auto webgl = WebGLContext::Create(host.get(), desc, out);
   if (!webgl) return nullptr;
   return host;
 }
 
-HostWebGLContext::HostWebGLContext(OwnerData&& ownerData)
-    : mOwnerData(std::move(ownerData)) {
-  if (mOwnerData.outOfProcess) {
-    if (mOwnerData.outOfProcess->mCommandSinkP) {
-      mOwnerData.outOfProcess->mCommandSinkP->mHostContext = this;
-    }
-    if (mOwnerData.outOfProcess->mCommandSinkI) {
-      mOwnerData.outOfProcess->mCommandSinkI->mHostContext = this;
-    }
-  }
-
-  {
-    StaticMutexAutoLock lock(sContextSetLock);
-    auto& contexts = DeferredStaticContextSet();
-    (void)contexts.insert(this);
-  }
+HostWebGLContext::HostWebGLContext(const OwnerData& ownerData)
+    : mOwnerData(ownerData) {
+  StaticMutexAutoLock lock(sContextSetLock);
+  auto& contexts = DeferredStaticContextSet();
+  (void)contexts.insert(this);
 }
 
 HostWebGLContext::~HostWebGLContext() {
@@ -92,23 +77,23 @@ HostWebGLContext::~HostWebGLContext() {
 
 void HostWebGLContext::OnContextLoss(const webgl::ContextLossReason reason) {
   if (mOwnerData.inProcess) {
-    (*mOwnerData.inProcess)->OnContextLoss(reason);
+    mOwnerData.inProcess->OnContextLoss(reason);
   } else {
-    (void)mOwnerData.outOfProcess->mParent.SendOnContextLoss(reason);
+    (void)mOwnerData.outOfProcess->SendOnContextLoss(reason);
   }
 }
 
 void HostWebGLContext::JsWarning(const std::string& text) const {
   if (mOwnerData.inProcess) {
-    (*mOwnerData.inProcess)->JsWarning(text);
+    mOwnerData.inProcess->JsWarning(text);
     return;
   }
-  (void)mOwnerData.outOfProcess->mParent.SendJsWarning(text);
+  (void)mOwnerData.outOfProcess->SendJsWarning(text);
 }
 
-RefPtr<layers::SharedSurfaceTextureClient> HostWebGLContext::GetVRFrame(
-    ObjectId id) const {
-  return mContext->GetVRFrame(AutoResolve(id));
+Maybe<layers::SurfaceDescriptor> HostWebGLContext::GetFrontBuffer(
+    const ObjectId xrFb, const bool webvr) const {
+  return mContext->GetFrontBuffer(AutoResolve(xrFb), webvr);
 }
 
 //////////////////////////////////////////////
@@ -195,6 +180,17 @@ void HostWebGLContext::CreateSync(const ObjectId id) {
     return;
   }
   slot = GetWebGL2Context()->FenceSync(LOCAL_GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+  if (!slot) return;
+
+  slot->OnCompleteTaskAdd([host = WeakPtr{this}, id]() {
+    if (!host) return;
+    if (host->mOwnerData.inProcess) {
+      host->mOwnerData.inProcess->OnSyncComplete(id);
+    } else if (host->mOwnerData.outOfProcess) {
+      (void)host->mOwnerData.outOfProcess->SendOnSyncComplete(id);
+    }
+  });
 }
 
 void HostWebGLContext::CreateTexture(const ObjectId id) {

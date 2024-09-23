@@ -8,12 +8,14 @@
 
 #include "nsCOMPtr.h"
 #include "nsIDeviceContextSpec.h"
-#include "nsIPrinterEnumerator.h"
+#include "nsPrinterListBase.h"
 #include "nsIPrintSettings.h"
 #include <windows.h>
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/gfx/PrintPromise.h"
 
+class nsIFile;
 class nsIWidget;
 
 class nsDeviceContextSpecWin : public nsIDeviceContextSpec {
@@ -28,17 +30,11 @@ class nsDeviceContextSpecWin : public nsIDeviceContextSpec {
                            int32_t aStartPage, int32_t aEndPage) override {
     return NS_OK;
   }
-  NS_IMETHOD EndDocument() override { return NS_OK; }
-  NS_IMETHOD BeginPage() override { return NS_OK; }
+  RefPtr<mozilla::gfx::PrintEndDocumentPromise> EndDocument() override;
+  NS_IMETHOD BeginPage(const IntSize& aSizeInPoints) override { return NS_OK; }
   NS_IMETHOD EndPage() override { return NS_OK; }
 
-  NS_IMETHOD Init(nsIWidget* aWidget, nsIPrintSettings* aPS,
-                  bool aIsPrintPreview) override;
-
-  float GetDPI() final;
-
-  float GetPrintingScale() final;
-  gfxPoint GetPrintingTranslate() final;
+  NS_IMETHOD Init(nsIPrintSettings* aPS, bool aIsPrintPreview) override;
 
   void GetDriverName(nsAString& aDriverName) const {
     aDriverName = mDriverName;
@@ -66,30 +62,37 @@ class nsDeviceContextSpecWin : public nsIDeviceContextSpec {
 
   nsString mDriverName;
   nsString mDeviceName;
-  LPDEVMODEW mDevMode;
+  LPDEVMODEW mDevMode = nullptr;
 
-  nsCOMPtr<nsIPrintSettings> mPrintSettings;
   int16_t mOutputFormat = nsIPrintSettings::kOutputFormatNative;
 
-#ifdef MOZ_ENABLE_SKIA_PDF
-
-  // This variable is independant of nsIPrintSettings::kOutputFormatPDF.
-  // It controls both whether normal printing is done via PDF using Skia and
-  // whether print-to-PDF uses Skia.
-  bool mPrintViaSkPDF;
-#endif
+  // A temporary file to create an "anonymous" print target. See bug 1664253,
+  // this should ideally not be needed.
+  nsCOMPtr<nsIFile> mTempFile;
 };
 
 //-------------------------------------------------------------------------
-// Printer Enumerator
+// Printer List
 //-------------------------------------------------------------------------
-class nsPrinterEnumeratorWin final : public nsIPrinterEnumerator {
-  ~nsPrinterEnumeratorWin();
-
+class nsPrinterListWin final : public nsPrinterListBase {
  public:
-  nsPrinterEnumeratorWin();
-  NS_DECL_ISUPPORTS
-  NS_DECL_NSIPRINTERENUMERATOR
+  NS_IMETHOD InitPrintSettingsFromPrinter(const nsAString&,
+                                          nsIPrintSettings*) final;
+
+  nsTArray<PrinterInfo> Printers() const final;
+  RefPtr<nsIPrinter> CreatePrinter(PrinterInfo) const final;
+
+  nsPrinterListWin() = default;
+
+ protected:
+  nsresult SystemDefaultPrinterName(nsAString&) const final;
+
+  mozilla::Maybe<PrinterInfo> PrinterByName(nsString) const final;
+  mozilla::Maybe<PrinterInfo> PrinterBySystemName(
+      nsString aPrinterName) const final;
+
+ private:
+  ~nsPrinterListWin();
 };
 
 #endif

@@ -6,23 +6,16 @@
 
 "use strict";
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-ChromeUtils.defineModuleGetter(
-  this,
-  "PrivateBrowsingUtils",
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  ExtensionMenus: "resource://gre/modules/ExtensionMenus.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+});
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Bookmarks",
-  "resource://gre/modules/Bookmarks.jsm"
-);
+var { DefaultMap, ExtensionError, parseMatchPatterns } = ExtensionUtils;
 
-var { DefaultMap, ExtensionError } = ExtensionUtils;
-
-var { ExtensionParent } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionParent.jsm"
+var { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
 );
 
 var { IconDetails } = ExtensionParent;
@@ -138,7 +131,11 @@ var gMenuBuilder = {
     if (!this.canAccessContext(root.extension, contextData)) {
       return;
     }
-    if (contextData.onBrowserAction || contextData.onPageAction) {
+    if (
+      contextData.onAction ||
+      contextData.onBrowserAction ||
+      contextData.onPageAction
+    ) {
       if (contextData.extension.id !== root.extension.id) {
         return;
       }
@@ -157,11 +154,8 @@ var gMenuBuilder = {
         );
       }
     } else if (contextData.webExtContextData) {
-      let {
-        extensionId,
-        showDefaults,
-        overrideContext,
-      } = contextData.webExtContextData;
+      let { extensionId, showDefaults, overrideContext } =
+        contextData.webExtContextData;
       if (extensionId === root.extension.id) {
         rootElements = this.buildTopLevelElements(
           root,
@@ -169,10 +163,18 @@ var gMenuBuilder = {
           Infinity,
           false
         );
-        // The extension menu should be rendered at the top, but after the navigation buttons.
-        nextSibling =
-          nextSibling ||
-          this.xulMenu.querySelector(":scope > #context-sep-navigation + *");
+        if (!nextSibling) {
+          // The extension menu should be rendered at the top. If we use
+          // a navigation group (on non-macOS), the extension menu should
+          // come after that to avoid styling issues.
+          if (AppConstants.platform == "macosx") {
+            nextSibling = this.xulMenu.firstElementChild;
+          } else {
+            nextSibling = this.xulMenu.querySelector(
+              ":scope > #context-sep-navigation + *"
+            );
+          }
+        }
         if (
           rootElements.length &&
           showDefaults &&
@@ -273,7 +275,10 @@ var gMenuBuilder = {
     if (forceManifestIcons) {
       for (let rootElement of children) {
         // Display the extension icon on the root element.
-        if (root.extension.manifest.icons) {
+        if (
+          root.extension.manifest.icons &&
+          rootElement.getAttribute("type") !== "checkbox"
+        ) {
           this.setMenuItemIcon(
             rootElement,
             root.extension,
@@ -286,29 +291,6 @@ var gMenuBuilder = {
       }
     }
     return children;
-  },
-
-  removeSeparatorIfNoTopLevelItems() {
-    // Extension menu items always have have a non-empty ID.
-    let isNonExtensionSeparator = item =>
-      item.nodeName === "menuseparator" && !item.id;
-
-    // itemsToCleanUp contains all top-level menu items. A separator should
-    // only be kept if it is next to an extension menu item.
-    let isExtensionMenuItemSibling = item =>
-      item && this.itemsToCleanUp.has(item) && !isNonExtensionSeparator(item);
-
-    for (let item of this.itemsToCleanUp) {
-      if (isNonExtensionSeparator(item)) {
-        if (
-          !isExtensionMenuItemSibling(item.previousElementSibling) &&
-          !isExtensionMenuItemSibling(item.nextElementSibling)
-        ) {
-          item.remove();
-          this.itemsToCleanUp.delete(item);
-        }
-      }
-    }
   },
 
   buildSingleElement(item, contextData) {
@@ -325,7 +307,7 @@ var gMenuBuilder = {
     return this.customizeElement(element, item, contextData);
   },
 
-  createMenuElement(doc, item) {
+  createMenuElement(doc) {
     let element = doc.createXULElement("menu");
     // Menu elements need to have a menupopup child for its menu items.
     let menupopup = doc.createXULElement("menupopup");
@@ -413,8 +395,6 @@ var gMenuBuilder = {
       element.setAttribute("disabled", "true");
     }
 
-    let button;
-
     element.addEventListener(
       "command",
       event => {
@@ -449,18 +429,24 @@ var gMenuBuilder = {
         let info = item.getClickInfo(contextData, wasChecked);
         info.modifiers = clickModifiersFromEvent(event);
 
-        info.button = button;
+        info.button = event.button;
+
+        let _execute_action =
+          item.extension.manifestVersion < 3
+            ? "_execute_browser_action"
+            : "_execute_action";
 
         // Allow menus to open various actions supported in webext prior
         // to notifying onclicked.
         let actionFor = {
+          [_execute_action]: global.browserActionFor,
           _execute_page_action: global.pageActionFor,
-          _execute_browser_action: global.browserActionFor,
           _execute_sidebar_action: global.sidebarActionFor,
         }[item.command];
         if (actionFor) {
           let win = event.target.ownerGlobal;
           actionFor(item.extension).triggerAction(win);
+          return;
         }
 
         item.extension.emit(
@@ -471,25 +457,6 @@ var gMenuBuilder = {
       },
       { once: true }
     );
-
-    // eslint-disable-next-line mozilla/balanced-listeners
-    element.addEventListener("click", event => {
-      if (
-        event.target !== event.currentTarget ||
-        // Ignore menu items that are usually not clickeable,
-        // such as separators and parents of submenus and disabled items.
-        element.localName !== "menuitem" ||
-        element.disabled
-      ) {
-        return;
-      }
-
-      button = event.button;
-      if (event.button) {
-        element.doCommand();
-        contextData.menu.hidePopup();
-      }
-    });
 
     // Don't publish the ID of the root because the root element is
     // auto-generated.
@@ -552,7 +519,8 @@ var gMenuBuilder = {
     if (root) {
       this.createAndInsertTopLevelElements(root, contextData, nextSibling);
     }
-    this.removeSeparatorIfNoTopLevelItems();
+
+    this.xulMenu.showHideSeparators?.();
   },
 
   // This should be called once, after constructing the top-level menus, if any.
@@ -570,7 +538,11 @@ var gMenuBuilder = {
       extension.emit("webext-menu-shown", menuIds, contextData);
     };
 
-    if (contextData.onBrowserAction || contextData.onPageAction) {
+    if (
+      contextData.onAction ||
+      contextData.onBrowserAction ||
+      contextData.onPageAction
+    ) {
       dispatchOnShownEvent(contextData.extension);
     } else {
       for (const extension of gOnShownSubscribers.keys()) {
@@ -586,6 +558,10 @@ var gMenuBuilder = {
       if (!this.itemsToCleanUp.has(item)) {
         item.hidden = true;
       }
+    }
+
+    if (this.xulMenu.showHideSeparators) {
+      this.xulMenu.showHideSeparators();
     }
   },
 
@@ -613,7 +589,7 @@ var gMenuBuilder = {
 };
 
 // Called from pageAction or browserAction popup.
-global.actionContextMenu = function(contextData) {
+global.actionContextMenu = function (contextData) {
   contextData.tab = tabTracker.activeTab;
   contextData.pageUrl = contextData.tab.linkedBrowser.currentURI.spec;
   gMenuBuilder.build(contextData);
@@ -630,6 +606,7 @@ const contextsMap = {
   onVideo: "video",
 
   onBookmark: "bookmark",
+  onAction: "action",
   onBrowserAction: "browser_action",
   onPageAction: "page_action",
   onTab: "tab",
@@ -725,41 +702,31 @@ function addMenuEventInfo(info, contextData, extension, includeSensitiveData) {
   }
 }
 
-function MenuItem(extension, createProperties, isRoot = false) {
-  this.extension = extension;
-  this.children = [];
-  this.parent = null;
-  this.tabManager = extension.tabManager;
+class MenuItem {
+  constructor(extension, createProperties, isRoot = false) {
+    this.extension = extension;
+    this.children = [];
+    this.parent = null;
+    this.tabManager = extension.tabManager;
 
-  this.setDefaults();
-  this.setProps(createProperties);
+    this.setDefaults();
+    this.setProps(createProperties);
 
-  if (!this.hasOwnProperty("_id")) {
-    this.id = gNextMenuItemID++;
+    if (!this.hasOwnProperty("_id")) {
+      this.id = gNextMenuItemID++;
+    }
+    // If the item is not the root and has no parent
+    // it must be a child of the root.
+    if (!isRoot && !this.parent) {
+      this.root.addChild(this);
+    }
   }
-  // If the item is not the root and has no parent
-  // it must be a child of the root.
-  if (!isRoot && !this.parent) {
-    this.root.addChild(this);
-  }
-}
 
-MenuItem.prototype = {
   setProps(createProperties) {
-    for (let propName in createProperties) {
-      if (createProperties[propName] === null) {
-        // Omitted optional argument.
-        continue;
-      }
-      this[propName] = createProperties[propName];
-    }
-
-    if ("icons" in createProperties && createProperties.icons === null) {
-      this.icons = null;
-    }
+    ExtensionMenus.mergeMenuProperties(this, createProperties);
 
     if (createProperties.documentUrlPatterns != null) {
-      this.documentUrlMatchPattern = new MatchPatternSet(
+      this.documentUrlMatchPattern = parseMatchPatterns(
         this.documentUrlPatterns,
         {
           restrictSchemes: this.extension.restrictSchemes,
@@ -768,7 +735,7 @@ MenuItem.prototype = {
     }
 
     if (createProperties.targetUrlPatterns != null) {
-      this.targetUrlMatchPattern = new MatchPatternSet(this.targetUrlPatterns, {
+      this.targetUrlMatchPattern = parseMatchPatterns(this.targetUrlPatterns, {
         // restrictSchemes default to false when matching links instead of pages
         // (see Bug 1280370 for a rationale).
         restrictSchemes: false,
@@ -780,7 +747,7 @@ MenuItem.prototype = {
     if (createProperties.parentId && !createProperties.contexts) {
       this.contexts = this.parent.contexts;
     }
-  },
+  }
 
   setDefaults() {
     this.setProps({
@@ -790,7 +757,7 @@ MenuItem.prototype = {
       enabled: true,
       visible: true,
     });
-  },
+  }
 
   set id(id) {
     if (this.hasOwnProperty("_id")) {
@@ -801,11 +768,11 @@ MenuItem.prototype = {
       throw new ExtensionError(`ID already exists: ${id}`);
     }
     this._id = id;
-  },
+  }
 
   get id() {
     return this._id;
-  },
+  }
 
   get elementId() {
     let id = this.id;
@@ -817,7 +784,7 @@ MenuItem.prototype = {
       id = `_${id}`;
     }
     return `${makeWidgetId(this.extension.id)}-menuitem-${id}`;
-  },
+  }
 
   ensureValidParentId(parentId) {
     if (parentId === undefined) {
@@ -836,7 +803,7 @@ MenuItem.prototype = {
         );
       }
     }
-  },
+  }
 
   set parentId(parentId) {
     this.ensureValidParentId(parentId);
@@ -851,11 +818,11 @@ MenuItem.prototype = {
       let menuMap = gMenuMap.get(this.extension);
       menuMap.get(parentId).addChild(this);
     }
-  },
+  }
 
   get parentId() {
     return this.parent ? this.parent.id : undefined;
-  },
+  }
 
   addChild(child) {
     if (child.parent) {
@@ -863,7 +830,7 @@ MenuItem.prototype = {
     }
     this.children.push(child);
     child.parent = this;
-  },
+  }
 
   detachChild(child) {
     let idx = this.children.indexOf(child);
@@ -872,7 +839,7 @@ MenuItem.prototype = {
     }
     this.children.splice(idx, 1);
     child.parent = null;
-  },
+  }
 
   get root() {
     let extension = this.extension;
@@ -886,7 +853,13 @@ MenuItem.prototype = {
     }
 
     return gRootItems.get(extension);
-  },
+  }
+
+  get descendantIds() {
+    return this.children
+      ? this.children.flatMap(m => [m.id, ...m.descendantIds])
+      : [];
+  }
 
   remove() {
     if (this.parent) {
@@ -902,7 +875,7 @@ MenuItem.prototype = {
     if (this.root == this) {
       gRootItems.delete(this.extension);
     }
-  },
+  }
 
   getClickInfo(contextData, wasChecked) {
     let info = {
@@ -920,7 +893,7 @@ MenuItem.prototype = {
     }
 
     return info;
-  },
+  }
 
   enabledForContext(contextData) {
     if (!this.visible) {
@@ -966,26 +939,24 @@ MenuItem.prototype = {
 
     let targetPattern = this.targetUrlMatchPattern;
     if (targetPattern) {
-      let targetUrls = [];
+      let targetURIs = [];
       if (contextData.onImage || contextData.onAudio || contextData.onVideo) {
         // TODO: double check if srcUrl is always set when we need it
-        targetUrls.push(contextData.srcUrl);
+        targetURIs.push(Services.io.newURI(contextData.srcUrl));
       }
-      if (contextData.onLink) {
-        targetUrls.push(contextData.linkUrl);
+      // contextData.linkURI may be null despite contextData.onLink, when
+      // contextData.linkUrl is an invalid URL.
+      if (contextData.onLink && contextData.linkURI) {
+        targetURIs.push(contextData.linkURI);
       }
-      if (
-        !targetUrls.some(targetUrl =>
-          targetPattern.matches(Services.io.newURI(targetUrl))
-        )
-      ) {
+      if (!targetURIs.some(targetURI => targetPattern.matches(targetURI))) {
         return false;
       }
     }
 
     return true;
-  },
-};
+  }
+}
 
 // windowTracker only looks as browser windows, but we're also interested in
 // the Library window.  Helper for menuTracker below.
@@ -1078,7 +1049,7 @@ const menuTracker = {
     libraryTracker.uninit(this.cleanupLibrary);
   },
 
-  observe(subject, topic, data) {
+  observe(subject) {
     subject = subject.wrappedJSObject;
     gMenuBuilder.build(subject);
   },
@@ -1094,11 +1065,11 @@ const menuTracker = {
     );
     sidebarHeader.addEventListener("SidebarShown", menuTracker.onSidebarShown);
 
-    await window.SidebarUI.promiseInitialized;
+    await window.SidebarController.promiseInitialized;
 
     if (
       !window.closed &&
-      window.SidebarUI.currentID === "viewBookmarksSidebar"
+      window.SidebarController.currentID === "viewBookmarksSidebar"
     ) {
       menuTracker.onSidebarShown({ currentTarget: sidebarHeader });
     }
@@ -1115,12 +1086,11 @@ const menuTracker = {
     );
     sidebarHeader.removeEventListener("SidebarShown", this.onSidebarShown);
 
-    if (window.SidebarUI.currentID === "viewBookmarksSidebar") {
-      let sidebarBrowser = window.SidebarUI.browser;
+    if (window.SidebarController.currentID === "viewBookmarksSidebar") {
+      let sidebarBrowser = window.SidebarController.browser;
       sidebarBrowser.removeEventListener("load", this.onSidebarShown);
-      const menu = sidebarBrowser.contentDocument.getElementById(
-        "placesContext"
-      );
+      const menu =
+        sidebarBrowser.contentDocument.getElementById("placesContext");
       menu.removeEventListener("popupshowing", this.onBookmarksContextMenu);
     }
   },
@@ -1129,10 +1099,10 @@ const menuTracker = {
     // The event target is an element in a browser window, so |window| will be
     // the browser window that contains the sidebar.
     const window = event.currentTarget.ownerGlobal;
-    if (window.SidebarUI.currentID === "viewBookmarksSidebar") {
-      let sidebarBrowser = window.SidebarUI.browser;
+    if (window.SidebarController.currentID === "viewBookmarksSidebar") {
+      let sidebarBrowser = window.SidebarController.browser;
       if (sidebarBrowser.contentDocument.readyState !== "complete") {
-        // SidebarUI.currentID may be updated before the bookmark sidebar's
+        // SidebarController.currentID may be updated before the bookmark sidebar's
         // document has finished loading. This sometimes happens when the
         // sidebar is automatically shown when a new window is opened.
         sidebarBrowser.addEventListener("load", menuTracker.onSidebarShown, {
@@ -1140,9 +1110,8 @@ const menuTracker = {
         });
         return;
       }
-      const menu = sidebarBrowser.contentDocument.getElementById(
-        "placesContext"
-      );
+      const menu =
+        sidebarBrowser.contentDocument.getElementById("placesContext");
       menu.addEventListener("popupshowing", menuTracker.onBookmarksContextMenu);
     }
   },
@@ -1165,7 +1134,7 @@ const menuTracker = {
 
     if (menu.id === "placesContext") {
       const trigger = menu.triggerNode;
-      if (!trigger._placesNode) {
+      if (!trigger._placesNode?.bookmarkGuid) {
         return;
       }
 
@@ -1192,20 +1161,19 @@ const menuTracker = {
     const tree = menu.triggerNode.parentElement;
     const cell = tree.getCellAt(event.x, event.y);
     const node = tree.view.nodeForTreeIndex(cell.row);
+    const bookmarkId = node && PlacesUtils.getConcreteItemGuid(node);
 
-    if (!node.bookmarkGuid || Bookmarks.isVirtualRootItem(node.bookmarkGuid)) {
+    if (!bookmarkId || PlacesUtils.isVirtualLeftPaneItem(bookmarkId)) {
       return;
     }
 
-    gMenuBuilder.build({
-      menu,
-      bookmarkId: node.bookmarkGuid,
-      onBookmark: true,
-    });
+    gMenuBuilder.build({ menu, bookmarkId, onBookmark: true });
   },
 };
 
-this.menusInternal = class extends ExtensionAPI {
+this.menusInternal = class extends ExtensionAPIPersistent {
+  #promiseInitialized = null;
+
   constructor(extension) {
     super(extension);
 
@@ -1213,6 +1181,59 @@ this.menusInternal = class extends ExtensionAPI {
       menuTracker.register();
     }
     gMenuMap.set(extension, new Map());
+  }
+
+  async initExtensionMenus() {
+    let { extension } = this;
+
+    await ExtensionMenus.asyncInitForExtension(extension);
+
+    if (
+      extension.hasShutdown ||
+      !ExtensionMenus.shouldPersistMenus(extension)
+    ) {
+      return;
+    }
+
+    // Used for testing
+    const notifyMenusCreated = () =>
+      extension.emit("webext-menus-created", gMenuMap.get(extension));
+
+    const menus = ExtensionMenus.getMenus(extension);
+    if (!menus.size) {
+      notifyMenusCreated();
+      return;
+    }
+
+    let createErrorMenuIds = [];
+    for (let createProperties of menus.values()) {
+      // The order of menu creation is significant:
+      // When creating and reparenting the menu we ensure parents exist
+      // in the persisted menus map before children.  That allows the
+      // menus to be recreated in the correct sequence on startup.
+      //
+      // For details, see ExtensionMenusManager's updateMenus in
+      // ExtensionMenus.sys.mjs
+      try {
+        let menuItem = new MenuItem(extension, createProperties);
+        gMenuMap.get(extension).set(menuItem.id, menuItem);
+      } catch (err) {
+        Cu.reportError(
+          `Unexpected error on recreating persisted menu ${createProperties?.id} for ${extension.id}: ${err}`
+        );
+        createErrorMenuIds.push(createProperties.id);
+      }
+    }
+
+    if (createErrorMenuIds.length) {
+      ExtensionMenus.deleteMenus(extension, createErrorMenuIds);
+    }
+
+    notifyMenusCreated();
+  }
+
+  onStartup() {
+    this.#promiseInitialized = this.initExtensionMenus();
   }
 
   onShutdown() {
@@ -1229,6 +1250,98 @@ this.menusInternal = class extends ExtensionAPI {
     }
   }
 
+  PERSISTENT_EVENTS = {
+    onShown({ fire }) {
+      let { extension } = this;
+      let listener = (event, menuIds, contextData) => {
+        let info = {
+          menuIds,
+          contexts: Array.from(getMenuContexts(contextData)),
+        };
+
+        let nativeTab = contextData.tab;
+
+        // The menus.onShown event is fired before the user has consciously
+        // interacted with an extension, so we require permissions before
+        // exposing sensitive contextual data.
+        let contextUrl = contextData.inFrame
+          ? contextData.frameUrl
+          : contextData.pageUrl;
+        let includeSensitiveData =
+          (nativeTab &&
+            extension.tabManager.hasActiveTabPermission(nativeTab)) ||
+          (contextUrl && extension.allowedOrigins.matches(contextUrl));
+
+        addMenuEventInfo(info, contextData, extension, includeSensitiveData);
+
+        let tab = nativeTab && extension.tabManager.convert(nativeTab);
+        fire.sync(info, tab);
+      };
+      gOnShownSubscribers.get(extension).add(listener);
+      extension.on("webext-menu-shown", listener);
+      return {
+        unregister() {
+          const listeners = gOnShownSubscribers.get(extension);
+          listeners.delete(listener);
+          if (listeners.size === 0) {
+            gOnShownSubscribers.delete(extension);
+          }
+          extension.off("webext-menu-shown", listener);
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+    onHidden({ fire }) {
+      let { extension } = this;
+      let listener = () => {
+        fire.sync();
+      };
+      extension.on("webext-menu-hidden", listener);
+      return {
+        unregister() {
+          extension.off("webext-menu-hidden", listener);
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+    onClicked({ context, fire }) {
+      let { extension } = this;
+      let listener = async (event, info, nativeTab) => {
+        let { linkedBrowser } = nativeTab || tabTracker.activeTab;
+        let tab = nativeTab && extension.tabManager.convert(nativeTab);
+        if (fire.wakeup) {
+          // force the wakeup, thus the call to convert to get the context.
+          await fire.wakeup();
+          // If while waiting the tab disappeared we bail out.
+          if (
+            !linkedBrowser.ownerGlobal.gBrowser.getTabForBrowser(linkedBrowser)
+          ) {
+            Cu.reportError(
+              `menus.onClicked: target tab closed during background startup.`
+            );
+            return;
+          }
+        }
+        context.withPendingBrowser(linkedBrowser, () => fire.sync(info, tab));
+      };
+
+      extension.on("webext-menu-menuitem-click", listener);
+      return {
+        unregister() {
+          extension.off("webext-menu-menuitem-click", listener);
+        },
+        convert(_fire, _context) {
+          fire = _fire;
+          context = _context;
+        },
+      };
+    },
+  };
+
   getAPI(context) {
     let { extension } = context;
 
@@ -1239,61 +1352,17 @@ this.menusInternal = class extends ExtensionAPI {
 
       onShown: new EventManager({
         context,
+        module: "menusInternal",
+        event: "onShown",
         name: "menus.onShown",
-        register: fire => {
-          let listener = (event, menuIds, contextData) => {
-            let info = {
-              menuIds,
-              contexts: Array.from(getMenuContexts(contextData)),
-            };
-
-            let nativeTab = contextData.tab;
-
-            // The menus.onShown event is fired before the user has consciously
-            // interacted with an extension, so we require permissions before
-            // exposing sensitive contextual data.
-            let contextUrl = contextData.inFrame
-              ? contextData.frameUrl
-              : contextData.pageUrl;
-            let includeSensitiveData =
-              (nativeTab &&
-                extension.tabManager.hasActiveTabPermission(nativeTab)) ||
-              (contextUrl && extension.whiteListedHosts.matches(contextUrl));
-
-            addMenuEventInfo(
-              info,
-              contextData,
-              extension,
-              includeSensitiveData
-            );
-
-            let tab = nativeTab && extension.tabManager.convert(nativeTab);
-            fire.sync(info, tab);
-          };
-          gOnShownSubscribers.get(extension).add(context);
-          extension.on("webext-menu-shown", listener);
-          return () => {
-            const contexts = gOnShownSubscribers.get(extension);
-            contexts.delete(context);
-            if (contexts.size === 0) {
-              gOnShownSubscribers.delete(extension);
-            }
-            extension.off("webext-menu-shown", listener);
-          };
-        },
+        extensionApi: this,
       }).api(),
       onHidden: new EventManager({
         context,
+        module: "menusInternal",
+        event: "onHidden",
         name: "menus.onHidden",
-        register: fire => {
-          let listener = () => {
-            fire.sync();
-          };
-          extension.on("webext-menu-hidden", listener);
-          return () => {
-            extension.off("webext-menu-hidden", listener);
-          };
-        },
+        extensionApi: this,
       }).api(),
     };
 
@@ -1301,52 +1370,83 @@ this.menusInternal = class extends ExtensionAPI {
       contextMenus: menus,
       menus,
       menusInternal: {
-        create: function(createProperties) {
+        create: async createProperties => {
+          await this.#promiseInitialized;
+          if (extension.hasShutdown) {
+            return;
+          }
+
+          // event pages require id
+          if (ExtensionMenus.shouldPersistMenus(extension)) {
+            if (!createProperties.id) {
+              throw new ExtensionError(
+                "menus.create requires an id for non-persistent background scripts."
+              );
+            }
+            if (gMenuMap.get(extension).has(createProperties.id)) {
+              throw new ExtensionError(
+                `The menu id ${createProperties.id} already exists in menus.create.`
+              );
+            }
+          }
+
           // Note that the id is required by the schema. If the addon did not set
-          // it, the implementation of menus.create in the child should
-          // have added it.
+          // it, the implementation of menus.create in the child will add it for
+          // extensions with persistent backgrounds, but not otherwise.
+
           let menuItem = new MenuItem(extension, createProperties);
+          ExtensionMenus.addMenu(extension, createProperties);
           gMenuMap.get(extension).set(menuItem.id, menuItem);
         },
 
-        update: function(id, updateProperties) {
-          let menuItem = gMenuMap.get(extension).get(id);
-          if (menuItem) {
-            menuItem.setProps(updateProperties);
+        update: async (id, updateProperties) => {
+          await this.#promiseInitialized;
+          if (extension.hasShutdown) {
+            return;
           }
+
+          let menuItem = gMenuMap.get(extension).get(id);
+          if (!menuItem) {
+            return;
+          }
+
+          menuItem.setProps(updateProperties);
+          ExtensionMenus.updateMenu(extension, id, updateProperties);
         },
 
-        remove: function(id) {
+        remove: async id => {
+          await this.#promiseInitialized;
+          if (extension.hasShutdown) {
+            return;
+          }
+
           let menuItem = gMenuMap.get(extension).get(id);
           if (menuItem) {
+            const menuIds = [menuItem.id, ...menuItem.descendantIds];
             menuItem.remove();
+            ExtensionMenus.deleteMenus(extension, menuIds);
           }
         },
 
-        removeAll: function() {
+        removeAll: async () => {
+          await this.#promiseInitialized;
+          if (extension.hasShutdown) {
+            return;
+          }
+
           let root = gRootItems.get(extension);
           if (root) {
             root.remove();
           }
+          ExtensionMenus.deleteAllMenus(extension);
         },
 
         onClicked: new EventManager({
           context,
-          name: "menusInternal.onClicked",
-          register: fire => {
-            let listener = (event, info, nativeTab) => {
-              let { linkedBrowser } = nativeTab || tabTracker.activeTab;
-              let tab = nativeTab && extension.tabManager.convert(nativeTab);
-              context.withPendingBrowser(linkedBrowser, () =>
-                fire.sync(info, tab)
-              );
-            };
-
-            extension.on("webext-menu-menuitem-click", listener);
-            return () => {
-              extension.off("webext-menu-menuitem-click", listener);
-            };
-          },
+          module: "menusInternal",
+          event: "onClicked",
+          name: "menus.onClicked",
+          extensionApi: this,
         }).api(),
       },
     };

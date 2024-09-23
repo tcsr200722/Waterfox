@@ -8,10 +8,10 @@
 #include "CacheFile.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include <algorithm>
 
-namespace mozilla {
-namespace net {
+namespace mozilla::net {
 
 NS_IMPL_ADDREF(CacheFileInputStream)
 NS_IMETHODIMP_(MozExternalRefCountType)
@@ -115,6 +115,21 @@ CacheFileInputStream::Available(uint64_t* _retval) {
        this, *_retval, static_cast<uint32_t>(rv)));
 
   return rv;
+}
+
+NS_IMETHODIMP
+CacheFileInputStream::StreamStatus() {
+  CacheFileAutoLock lock(mFile);
+
+  if (mClosed) {
+    LOG(
+        ("CacheFileInputStream::StreamStatus() - Stream is closed. [this=%p, "
+         "status=0x%08" PRIx32 "]",
+         this, static_cast<uint32_t>(mStatus)));
+    return NS_FAILED(mStatus) ? mStatus : NS_BASE_STREAM_CLOSED;
+  }
+
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -343,6 +358,7 @@ CacheFileInputStream::AsyncWait(nsIInputStreamCallback* aCallback,
 NS_IMETHODIMP
 CacheFileInputStream::Seek(int32_t whence, int64_t offset) {
   CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
 
   LOG(("CacheFileInputStream::Seek() [this=%p, whence=%d, offset=%" PRId64 "]",
        this, whence, offset));
@@ -397,6 +413,7 @@ CacheFileInputStream::SetEOF() {
 NS_IMETHODIMP
 CacheFileInputStream::Tell(int64_t* _retval) {
   CacheFileAutoLock lock(mFile);
+  mFile->AssertOwnsLock();  // For thread-safety analysis
 
   if (mClosed) {
     LOG(("CacheFileInputStream::Tell() - Stream is closed. [this=%p]", this));
@@ -634,7 +651,7 @@ void CacheFileInputStream::NotifyListener() {
       LOG(
           ("CacheFileInputStream::NotifyListener() - Cannot get Cache I/O "
            "thread! Using main thread for callback."));
-      mCallbackTarget = GetMainThreadEventTarget();
+      mCallbackTarget = GetMainThreadSerialEventTarget();
     }
   }
 
@@ -715,5 +732,4 @@ size_t CacheFileInputStream::SizeOfIncludingThis(
   return mallocSizeOf(this);
 }
 
-}  // namespace net
-}  // namespace mozilla
+}  // namespace mozilla::net

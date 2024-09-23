@@ -8,13 +8,16 @@
 
 #include "CookieKey.h"
 
+#include "nsICookieNotification.h"
 #include "nsIObserver.h"
 #include "nsTHashtable.h"
 #include "nsWeakReference.h"
 #include <functional>
+#include "CookieCommons.h"
 
 class nsIArray;
 class nsICookie;
+class nsICookieTransactionCallback;
 class nsIPrefBranch;
 
 namespace mozilla {
@@ -27,8 +30,8 @@ class Cookie;
 class CookieEntry : public CookieKey {
  public:
   // Hash methods
-  typedef nsTArray<RefPtr<Cookie>> ArrayType;
-  typedef ArrayType::index_type IndexType;
+  using ArrayType = nsTArray<RefPtr<Cookie>>;
+  using IndexType = ArrayType::index_type;
 
   explicit CookieEntry(KeyTypePointer aKey) : CookieKey(aKey) {}
 
@@ -41,8 +44,11 @@ class CookieEntry : public CookieKey {
   ~CookieEntry() = default;
 
   inline ArrayType& GetCookies() { return mCookies; }
+  inline const ArrayType& GetCookies() const { return mCookies; }
 
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const;
+
+  bool IsPartitioned() const;
 
  private:
   ArrayType mCookies;
@@ -88,8 +94,9 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   void GetAll(nsTArray<RefPtr<nsICookie>>& aResult) const;
 
-  const nsTArray<RefPtr<Cookie>>* GetCookiesFromHost(
-      const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes);
+  void GetCookiesFromHost(const nsACString& aBaseDomain,
+                          const OriginAttributes& aOriginAttributes,
+                          nsTArray<RefPtr<Cookie>>& aCookies);
 
   void GetCookiesWithOriginAttributes(const OriginAttributesPattern& aPattern,
                                       const nsACString& aBaseDomain,
@@ -109,25 +116,34 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   void RemoveAll();
 
-  void NotifyChanged(nsISupports* aSubject, const char16_t* aData,
+  void NotifyChanged(nsISupports* aSubject,
+                     nsICookieNotification::Action aAction,
+                     const nsACString& aBaseDomain,
+                     dom::BrowsingContext* aBrowsingContext = nullptr,
                      bool aOldCookieIsSession = false);
 
-  void AddCookie(const nsACString& aBaseDomain,
+  void AddCookie(nsIConsoleReportCollector* aCRC, const nsACString& aBaseDomain,
                  const OriginAttributes& aOriginAttributes, Cookie* aCookie,
                  int64_t aCurrentTimeInUsec, nsIURI* aHostURI,
-                 const nsACString& aCookieHeader, bool aFromHttp);
+                 const nsACString& aCookieHeader, bool aFromHttp,
+                 dom::BrowsingContext* aBrowsingContext);
 
-  static void CreateOrUpdatePurgeList(nsIArray** aPurgedList,
+  static void CreateOrUpdatePurgeList(nsCOMPtr<nsIArray>& aPurgedList,
                                       nsICookie* aCookie);
 
-  virtual void StaleCookies(const nsTArray<Cookie*>& aCookieList,
+  virtual void StaleCookies(const nsTArray<RefPtr<Cookie>>& aCookieList,
                             int64_t aCurrentTimeInUsec) = 0;
 
   virtual void Close() = 0;
 
+  virtual void EnsureInitialized() = 0;
+
+  virtual nsresult RunInTransaction(
+      nsICookieTransactionCallback* aCallback) = 0;
+
  protected:
-  CookieStorage();
-  virtual ~CookieStorage();
+  CookieStorage() = default;
+  virtual ~CookieStorage() = default;
 
   void Init();
 
@@ -141,8 +157,7 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   virtual const char* NotificationTopic() const = 0;
 
-  virtual void NotifyChangedInternal(nsISupports* aSubject,
-                                     const char16_t* aData,
+  virtual void NotifyChangedInternal(nsICookieNotification* aSubject,
                                      bool aOldCookieIsSession) = 0;
 
   virtual void RemoveAllInternal() = 0;
@@ -152,7 +167,7 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   void RemoveCookieFromListInternal(const CookieListIter& aIter);
 
-  virtual void RemoveCookieFromDB(const CookieListIter& aIter) = 0;
+  virtual void RemoveCookieFromDB(const Cookie& aCookie) = 0;
 
   already_AddRefed<nsIArray> PurgeCookiesWithCallbacks(
       int64_t aCurrentTimeInUsec, uint16_t aMaxNumberOfCookies,
@@ -162,7 +177,7 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   nsTHashtable<CookieEntry> mHostTable;
 
-  uint32_t mCookieCount;
+  uint32_t mCookieCount{0};
 
  private:
   void PrefChanged(nsIPrefBranch* aPrefBranch);
@@ -178,18 +193,30 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
 
   void UpdateCookieOldestTime(Cookie* aCookie);
 
+  void MergeCookieSchemeMap(Cookie* aOldCookie, Cookie* aNewCookie);
+
   static already_AddRefed<nsIArray> CreatePurgeList(nsICookie* aCookie);
 
   virtual already_AddRefed<nsIArray> PurgeCookies(int64_t aCurrentTimeInUsec,
                                                   uint16_t aMaxNumberOfCookies,
                                                   int64_t aCookiePurgeAge) = 0;
 
-  int64_t mCookieOldestTime;
+  // This method returns true if aBaseDomain contains any colons since only
+  // IPv6 baseDomains may contain colons.
+  static bool isIPv6BaseDomain(const nsACString& aBaseDomain);
 
-  uint16_t mMaxNumberOfCookies;
-  uint16_t mMaxCookiesPerHost;
-  uint16_t mCookieQuotaPerHost;
-  int64_t mCookiePurgeAge;
+  // Serialize aBaseDomain e.g. apply "zero abbreveation" (::), use single
+  // zeros and remove brackets to match principal base domain representation.
+  static bool SerializeIPv6BaseDomain(nsACString& aBaseDomain);
+
+  virtual void CollectCookieJarSizeData() = 0;
+
+  int64_t mCookieOldestTime{INT64_MAX};
+
+  uint16_t mMaxNumberOfCookies{kMaxNumberOfCookies};
+  uint16_t mMaxCookiesPerHost{kMaxCookiesPerHost};
+  uint16_t mCookieQuotaPerHost{kCookieQuotaPerHost};
+  int64_t mCookiePurgeAge{kCookiePurgeAge};
 };
 
 }  // namespace net

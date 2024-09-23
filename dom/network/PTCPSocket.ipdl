@@ -8,12 +8,15 @@
 include protocol PNecko;
 
 include "mozilla/net/NeckoMessageUtils.h";
+include "mozilla/dom/network/TCPSocketParent.h";
+include "mozilla/dom/network/TCPSocketChild.h";
 
-using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
 
 struct TCPError {
   nsString name;
   nsString message;
+  nsresult errorCode;
 };
 
 union SendableData {
@@ -31,6 +34,7 @@ namespace mozilla {
 namespace net {
 
 //-------------------------------------------------------------------
+[ManualDealloc, ChildImpl="mozilla::dom::TCPSocketChild", ParentImpl="mozilla::dom::TCPSocketParent"]
 protocol PTCPSocket
 {
   manager PNecko;

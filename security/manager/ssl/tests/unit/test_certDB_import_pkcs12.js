@@ -18,10 +18,6 @@ const PKCS12_FILE_NO_PASS = "test_certDB_import/cert_from_windows_nopass.pfx";
 const CERT_COMMON_NAME = "test_cert_from_windows";
 const TEST_CERT_PASSWORD = "黒い";
 
-// Has getPKCS12FilePassword been called since we last reset this?
-let gGetPKCS12FilePasswordCalled = false;
-let gCurrentTestcase = null;
-
 let gTestcases = [
   // Test that importing a PKCS12 file with the wrong password fails.
   {
@@ -31,6 +27,7 @@ let gTestcases = [
     successExpected: false,
     errorCode: Ci.nsIX509CertDB.ERROR_BAD_PASSWORD,
     checkCertExist: true,
+    certCommonName: CERT_COMMON_NAME,
   },
   // Test that importing something that isn't a PKCS12 file fails.
   {
@@ -40,6 +37,7 @@ let gTestcases = [
     successExpected: false,
     errorCode: Ci.nsIX509CertDB.ERROR_DECODE_ERROR,
     checkCertExist: true,
+    certCommonName: CERT_COMMON_NAME,
   },
   // Test that importing a PKCS12 file with the correct password succeeds.
   // This needs to be last because currently there isn't a way to delete the
@@ -52,6 +50,7 @@ let gTestcases = [
     successExpected: true,
     errorCode: Ci.nsIX509CertDB.Success,
     checkCertExist: true,
+    certCommonName: CERT_COMMON_NAME,
   },
   // Same cert file protected with empty string password
   {
@@ -61,6 +60,7 @@ let gTestcases = [
     successExpected: true,
     errorCode: Ci.nsIX509CertDB.Success,
     checkCertExist: false,
+    certCommonName: CERT_COMMON_NAME,
   },
   // Same cert file protected with no password
   {
@@ -70,15 +70,23 @@ let gTestcases = [
     successExpected: true,
     errorCode: Ci.nsIX509CertDB.Success,
     checkCertExist: false,
+    certCommonName: CERT_COMMON_NAME,
+  },
+  // Test a PKCS12 file encrypted using AES
+  {
+    name: "import PKCS12 file using AES",
+    filename: "test_certDB_import/encrypted_with_aes.p12",
+    passwordToUse: "password",
+    successExpected: true,
+    errorCode: Ci.nsIX509CertDB.Success,
+    checkCertExist: true,
+    certCommonName: "John Doe",
   },
 ];
 
 function doesCertExist(commonName) {
   let allCerts = gCertDB.getCerts();
   for (let cert of allCerts) {
-    if (cert.isBuiltInRoot) {
-      continue;
-    }
     if (cert.commonName == commonName) {
       return true;
     }
@@ -91,7 +99,7 @@ function runOneTestcase(testcase) {
   info(`running ${testcase.name}`);
   if (testcase.checkCertExist) {
     ok(
-      !doesCertExist(CERT_COMMON_NAME),
+      !doesCertExist(testcase.certCommonName),
       "cert should not be in the database before import"
     );
   }
@@ -99,12 +107,10 @@ function runOneTestcase(testcase) {
   // Import and check for failure.
   let certFile = do_get_file(testcase.filename);
   ok(certFile, `${testcase.filename} should exist`);
-  gGetPKCS12FilePasswordCalled = false;
-  gCurrentTestcase = testcase;
   let errorCode = gCertDB.importPKCS12File(certFile, testcase.passwordToUse);
   equal(errorCode, testcase.errorCode, `verifying error code`);
   equal(
-    doesCertExist(CERT_COMMON_NAME),
+    doesCertExist(testcase.certCommonName),
     testcase.successExpected,
     `cert should${testcase.successExpected ? "" : " not"} be found now`
   );

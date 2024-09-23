@@ -5,9 +5,7 @@
 
 const Cm = Components.manager;
 
-const uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(
-  Ci.nsIUUIDGenerator
-);
+const uuidGenerator = Services.uuid;
 
 const mockUpdateManager = {
   contractId: "@mozilla.org/updates/update-manager;1",
@@ -16,12 +14,9 @@ const mockUpdateManager = {
 
   _originalClassId: "",
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIUpdateManager]),
+  QueryInterface: ChromeUtils.generateQI(["nsIUpdateManager"]),
 
-  createInstance(outer, iiD) {
-    if (outer) {
-      throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
-    }
+  createInstance(iiD) {
     return this.QueryInterface(iiD);
   },
 
@@ -44,12 +39,8 @@ const mockUpdateManager = {
     registrar.registerFactory(this._originalClassId, "", this.contractId, null);
   },
 
-  get updateCount() {
-    return this._updates.length;
-  },
-
-  getUpdateAt(index) {
-    return this._updates[index];
+  async getHistory() {
+    return [...this._updates];
   },
 
   _updates: [
@@ -90,7 +81,7 @@ function formatInstallDate(sec) {
   return date.toLocaleString(undefined, dtOptions);
 }
 
-add_task(async function() {
+add_task(async function () {
   await openPreferencesViaOpenPreferencesAPI("general", { leaveOpen: true });
   let doc = gBrowser.selectedBrowser.contentDocument;
 
@@ -105,31 +96,31 @@ add_task(async function() {
   mockUpdateManager.register();
 
   // Test the dialog window opens
-  is(dialogOverlay.style.visibility, "", "The dialog should be invisible");
+  ok(
+    BrowserTestUtils.isHidden(dialogOverlay),
+    "The dialog should be invisible"
+  );
   let promiseSubDialogLoaded = promiseLoadSubDialog(
     "chrome://mozapps/content/update/history.xhtml"
   );
   showBtn.doCommand();
   await promiseSubDialogLoaded;
-  is(dialogOverlay.style.visibility, "visible", "The dialog should be visible");
+  ok(!BrowserTestUtils.isHidden(dialogOverlay), "The dialog should be visible");
 
   let dialogFrame = dialogOverlay.querySelector(".dialogFrame");
   let frameDoc = dialogFrame.contentDocument;
   let updates = frameDoc.querySelectorAll("richlistitem.update");
+  const history = await mockUpdateManager.getHistory();
 
   // Test the update history numbers are correct
-  is(
-    updates.length,
-    mockUpdateManager.updateCount,
-    "The update count is incorrect."
-  );
+  is(updates.length, history.length, "The update count is incorrect.");
 
   // Test the updates are displayed correctly
   let update = null;
   let updateData = null;
   for (let i = 0; i < updates.length; ++i) {
     update = updates[i];
-    updateData = mockUpdateManager.getUpdateAt(i);
+    updateData = history[i];
 
     let testcases = [
       {
@@ -174,7 +165,10 @@ add_task(async function() {
   // Test the dialog window closes
   let closeBtn = dialogOverlay.querySelector(".dialogClose");
   closeBtn.doCommand();
-  is(dialogOverlay.style.visibility, "", "The dialog should be invisible");
+  ok(
+    BrowserTestUtils.isHidden(dialogOverlay),
+    "The dialog should be invisible"
+  );
 
   mockUpdateManager.unregister();
   gBrowser.removeCurrentTab();

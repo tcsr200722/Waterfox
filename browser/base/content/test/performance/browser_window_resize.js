@@ -4,12 +4,11 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
- * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
+ * See https://firefox-source-docs.mozilla.org/performance/bestpractices.html
  * for tips on how to do that.
  */
 const EXPECTED_REFLOWS = [
@@ -67,7 +66,7 @@ async function resizeWindow(win, width, height) {
  * This test ensures that there are no unexpected
  * uninterruptible reflows when resizing windows.
  */
-add_task(async function() {
+add_task(async function () {
   const BOOKMARKS_COUNT = 150;
   const STARTING_WIDTH = 600;
   const STARTING_HEIGHT = 400;
@@ -81,7 +80,8 @@ add_task(async function() {
     guid: PlacesUtils.bookmarks.toolbarGuid,
     children: Array(BOOKMARKS_COUNT)
       .fill("")
-      .map((_, i) => ({ url: `http://test.places.${i}/` })),
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      .map((_, i) => ({ url: `http://test.places.${i}.x/` })),
   });
 
   let wasCollapsed = gToolbar.collapsed;
@@ -120,7 +120,7 @@ add_task(async function() {
   await resizeWindow(win, STARTING_WIDTH, STARTING_HEIGHT);
 
   await withPerfObserver(
-    async function() {
+    async function () {
       await resizeWindow(win, SMALL_WIDTH, SMALL_HEIGHT);
       await resizeWindow(win, STARTING_WIDTH, STARTING_HEIGHT);
     },

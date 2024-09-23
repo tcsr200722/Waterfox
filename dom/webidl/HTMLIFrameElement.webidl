@@ -28,13 +28,13 @@ interface HTMLIFrameElement : HTMLElement {
   [CEReactions, SetterThrows, Pure]
            attribute boolean allowFullscreen;
   [CEReactions, SetterThrows, Pure]
-           attribute boolean allowPaymentRequest;
-  [CEReactions, SetterThrows, Pure]
            attribute DOMString width;
   [CEReactions, SetterThrows, Pure]
            attribute DOMString height;
   [CEReactions, SetterThrows, Pure]
            attribute DOMString referrerPolicy;
+  [CEReactions, SetterThrows, Pure, Pref="dom.iframe-lazy-loading.enabled"]
+           attribute DOMString loading;
   [NeedsSubjectPrincipal]
   readonly attribute Document? contentDocument;
   readonly attribute WindowProxy? contentWindow;
@@ -52,9 +52,9 @@ partial interface HTMLIFrameElement {
            attribute DOMString longDesc;
 
   [CEReactions, SetterThrows, Pure]
-           attribute [TreatNullAs=EmptyString] DOMString marginHeight;
+           attribute [LegacyNullToEmptyString] DOMString marginHeight;
   [CEReactions, SetterThrows, Pure]
-           attribute [TreatNullAs=EmptyString] DOMString marginWidth;
+           attribute [LegacyNullToEmptyString] DOMString marginWidth;
 };
 
 partial interface HTMLIFrameElement {
@@ -70,6 +70,6 @@ partial interface HTMLIFrameElement {
   [SameObject, Pref="dom.security.featurePolicy.webidl.enabled"]
   readonly attribute FeaturePolicy featurePolicy;
 
-  [CEReactions, SetterThrows, Pure, Pref="dom.security.featurePolicy.enabled"]
+  [CEReactions, SetterThrows, Pure]
            attribute DOMString allow;
 };

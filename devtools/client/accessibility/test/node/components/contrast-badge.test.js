@@ -6,22 +6,24 @@
 
 const { shallow, mount } = require("enzyme");
 
-const { createFactory } = require("devtools/client/shared/vendor/react");
+const {
+  createFactory,
+} = require("resource://devtools/client/shared/vendor/react.js");
 
 const Provider = createFactory(
-  require("devtools/client/shared/vendor/react-redux").Provider
+  require("resource://devtools/client/shared/vendor/react-redux.js").Provider
 );
 const {
   setupStore,
-} = require("devtools/client/accessibility/test/node/helpers");
+} = require("resource://devtools/client/accessibility/test/node/helpers.js");
 
-const Badge = require("devtools/client/accessibility/components/Badge");
-const ContrastBadgeClass = require("devtools/client/accessibility/components/ContrastBadge");
+const Badge = require("resource://devtools/client/accessibility/components/Badge.js");
+const ContrastBadgeClass = require("resource://devtools/client/accessibility/components/ContrastBadge.js");
 const ContrastBadge = createFactory(ContrastBadgeClass);
 
 const {
   accessibility: { SCORES },
-} = require("devtools/shared/constants");
+} = require("resource://devtools/shared/constants.js");
 
 describe("ContrastBadge component:", () => {
   const store = setupStore();
@@ -87,8 +89,8 @@ describe("ContrastBadge component:", () => {
     const badge = contrastBadge.childAt(0);
     expect(badge.type()).toBe(Badge);
     expect(badge.props()).toMatchObject({
-      label: "accessibility.badge.contrast",
-      tooltip: "accessibility.badge.contrast.tooltip",
+      label: "contrast",
+      tooltip: "Does not meet WCAG standards for accessible text.",
     });
   });
 });

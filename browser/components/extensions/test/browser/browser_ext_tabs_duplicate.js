@@ -10,29 +10,31 @@ add_task(async function testDuplicateTab() {
       permissions: ["tabs"],
     },
 
-    background: function() {
-      browser.tabs.query(
-        {
-          lastFocusedWindow: true,
-        },
-        function(tabs) {
-          let source = tabs[1];
-          // By moving it 0, we check that the new tab is created next
-          // to the existing one.
-          browser.tabs.move(source.id, { index: 0 }, () => {
-            browser.tabs.duplicate(source.id, tab => {
-              browser.test.assertEq("http://example.net/", tab.url);
-              // Should be the second tab, next to the one duplicated.
-              browser.test.assertEq(1, tab.index);
-              // Should be active by default.
-              browser.test.assertTrue(tab.active);
+    background: async function () {
+      let [source] = await browser.tabs.query({
+        lastFocusedWindow: true,
+        active: true,
+      });
 
-              browser.tabs.remove([tab.id, source.id]);
-              browser.test.notifyPass("tabs.duplicate");
-            });
-          });
-        }
+      let tab = await browser.tabs.duplicate(source.id);
+
+      browser.test.assertEq(
+        "http://example.net/",
+        tab.url,
+        "duplicated tab should have the same URL as the source tab"
       );
+      browser.test.assertEq(
+        source.index + 1,
+        tab.index,
+        "duplicated tab should open next to the source tab"
+      );
+      browser.test.assertTrue(
+        tab.active,
+        "duplicated tab should be active by default"
+      );
+
+      await browser.tabs.remove([source.id, tab.id]);
+      browser.test.notifyPass("tabs.duplicate");
     },
   });
 
@@ -44,7 +46,7 @@ add_task(async function testDuplicateTab() {
 add_task(async function testDuplicateTabLazily() {
   async function background() {
     let tabLoadComplete = new Promise(resolve => {
-      browser.test.onMessage.addListener((message, tabId, result) => {
+      browser.test.onMessage.addListener((message, tabId) => {
         if (message == "duplicate-tab-done") {
           resolve(tabId);
         }
@@ -53,11 +55,7 @@ add_task(async function testDuplicateTabLazily() {
 
     function awaitLoad(tabId) {
       return new Promise(resolve => {
-        browser.tabs.onUpdated.addListener(function listener(
-          tabId_,
-          changed,
-          tab
-        ) {
+        browser.tabs.onUpdated.addListener(function listener(tabId_, changed) {
           if (tabId == tabId_ && changed.status == "complete") {
             browser.tabs.onUpdated.removeListener(listener);
             resolve();
@@ -112,15 +110,15 @@ add_task(async function testDuplicateTabLazily() {
   });
 
   extension.onMessage("duplicate-tab", tabId => {
-    let {
+    const {
       Management: {
         global: { tabTracker },
       },
-    } = ChromeUtils.import("resource://gre/modules/Extension.jsm", null);
+    } = ChromeUtils.importESModule("resource://gre/modules/Extension.sys.mjs");
 
     let tab = tabTracker.getTab(tabId);
     // This is a bit of a hack to load a tab in the background.
-    let newTab = gBrowser.duplicateTab(tab, true);
+    let newTab = gBrowser.duplicateTab(tab, true, { skipLoad: true });
 
     BrowserTestUtils.waitForEvent(newTab, "SSTabRestored", () => true).then(
       () => {
@@ -146,25 +144,25 @@ add_task(async function testDuplicatePinnedTab() {
       permissions: ["tabs"],
     },
 
-    background: function() {
-      browser.tabs.query(
-        {
-          lastFocusedWindow: true,
-        },
-        function(tabs) {
-          // Duplicate the pinned tab, example.net.
-          browser.tabs.duplicate(tabs[0].id, tab => {
-            browser.test.assertEq("http://example.net/", tab.url);
-            // Should be the second tab, next to the original.
-            browser.test.assertEq(1, tab.index);
-            // Duplicated tab is not pinned, even if the original tab is.
-            browser.test.assertFalse(tab.pinned);
+    background: async function () {
+      let [source] = await browser.tabs.query({
+        lastFocusedWindow: true,
+        active: true,
+      });
+      let tab = await browser.tabs.duplicate(source.id);
 
-            browser.tabs.remove([tabs[0].id, tab.id]);
-            browser.test.notifyPass("tabs.duplicate.pinned");
-          });
-        }
+      browser.test.assertEq(
+        source.index + 1,
+        tab.index,
+        "duplicated tab should open next to the source tab"
       );
+      browser.test.assertFalse(
+        tab.pinned,
+        "duplicated tab should not be pinned by default, even if source tab is"
+      );
+
+      await browser.tabs.remove([source.id, tab.id]);
+      browser.test.notifyPass("tabs.duplicate.pinned");
     },
   });
 
@@ -181,7 +179,7 @@ add_task(async function testDuplicateTabInBackground() {
       permissions: ["tabs"],
     },
 
-    background: async function() {
+    background: async function () {
       let tabs = await browser.tabs.query({
         lastFocusedWindow: true,
         active: true,
@@ -208,7 +206,7 @@ add_task(async function testDuplicateTabAtIndex() {
       permissions: ["tabs"],
     },
 
-    background: async function() {
+    background: async function () {
       let tabs = await browser.tabs.query({
         lastFocusedWindow: true,
         active: true,
@@ -238,7 +236,7 @@ add_task(async function testDuplicatePinnedTabAtIncorrectIndex() {
       permissions: ["tabs"],
     },
 
-    background: async function() {
+    background: async function () {
       let tabs = await browser.tabs.query({
         lastFocusedWindow: true,
         active: true,
@@ -261,11 +259,10 @@ add_task(async function testDuplicatePinnedTabAtIncorrectIndex() {
 });
 
 add_task(async function testDuplicateResolvePromiseRightAway() {
-  const BASE =
-    "http://mochi.test:8888/browser/browser/components/extensions/test/browser/";
-  const URL = BASE + "file_slowed_document.sjs";
-
-  await BrowserTestUtils.openNewForegroundTab(gBrowser, URL);
+  await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "http://mochi.test:8888/browser/browser/components/extensions/test/browser/file_slowed_document.sjs"
+  );
 
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
@@ -273,44 +270,39 @@ add_task(async function testDuplicateResolvePromiseRightAway() {
       permissions: ["tabs", "http://mochi.test/"],
     },
 
-    background: async function() {
-      browser.tabs.query(
-        {
-          lastFocusedWindow: true,
+    background: async function () {
+      let [source] = await browser.tabs.query({
+        lastFocusedWindow: true,
+        active: true,
+      });
+
+      let resolvedRightAway = true;
+      browser.tabs.onUpdated.addListener(
+        () => {
+          resolvedRightAway = false;
         },
-        async tabs => {
-          let resolvedRightAway = null;
-          browser.tabs.onUpdated.addListener(
-            (tabId, changeInfo, tab) => {
-              if (resolvedRightAway === null) {
-                resolvedRightAway = false;
-              }
-            },
-            { urls: [tabs[1].url] }
-          );
-
-          browser.tabs.duplicate(tabs[1].id, async tab => {
-            // if the promise is resolved before any onUpdated event has been fired,
-            // then the promise has been resolved before waiting for the tab to load
-            if (resolvedRightAway === null) {
-              resolvedRightAway = true;
-            }
-
-            // Regression test for bug 1559216: APIs such as tabs.executeScript
-            // should be queued until tabs.duplicate has restored the tab.
-            let code = "document.URL";
-            let [result] = await browser.tabs.executeScript(tab.id, { code });
-            browser.test.assertEq(tab.url, result, "executeScript result");
-
-            await browser.tabs.remove([tabs[1].id, tab.id]);
-            if (resolvedRightAway) {
-              browser.test.notifyPass("tabs.duplicate.resolvePromiseRightAway");
-            } else {
-              browser.test.notifyFail("tabs.duplicate.resolvePromiseRightAway");
-            }
-          });
-        }
+        { urls: [source.url] }
       );
+
+      let tab = await browser.tabs.duplicate(source.id);
+      // if the promise is resolved before any onUpdated event has been fired,
+      // then the promise has been resolved before waiting for the tab to load
+      browser.test.assertTrue(
+        resolvedRightAway,
+        "tabs.duplicate() should resolve as soon as possible"
+      );
+
+      // Regression test for bug 1559216
+      let code = "document.URL";
+      let [result] = await browser.tabs.executeScript(tab.id, { code });
+      browser.test.assertEq(
+        source.url,
+        result,
+        "APIs such as tabs.executeScript should be queued until tabs.duplicate has restored the tab"
+      );
+
+      await browser.tabs.remove([source.id, tab.id]);
+      browser.test.notifyPass("tabs.duplicate.resolvePromiseRightAway");
     },
   });
 

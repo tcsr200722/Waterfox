@@ -40,9 +40,11 @@
 
 #include "jit/AtomicOperations.h"
 #include "jit/mips64/Assembler-mips64.h"
+#include "js/Conversions.h"
 #include "js/UniquePtr.h"
 #include "js/Utility.h"
 #include "threading/LockGuard.h"
+#include "vm/JSContext.h"
 #include "vm/Runtime.h"
 #include "wasm/WasmInstance.h"
 #include "wasm/WasmSignalHandlers.h"
@@ -409,6 +411,7 @@ SimInstruction::Type SimInstruction::instructionType() const {
         case ff_dextm:
         case ff_dextu:
         case ff_bshfl:
+        case ff_dbshfl:
           return kRegisterType;
         default:
           return kUnsupported;
@@ -1514,6 +1517,16 @@ JS::ProfilingFrameIterator::RegisterState Simulator::registerState() {
   return state;
 }
 
+static bool AllowUnaligned() {
+  static bool hasReadFlag = false;
+  static bool unalignedAllowedFlag = false;
+  if (!hasReadFlag) {
+    unalignedAllowedFlag = !!getenv("MIPS_UNALIGNED");
+    hasReadFlag = true;
+  }
+  return unalignedAllowedFlag;
+}
+
 // MIPS memory instructions (except lw(d)l/r , sw(d)l/r) trap on unaligned
 // memory access enabling the OS to handle them via trap-and-emulate. Note that
 // simulator runs have the runtime system running directly on the host system
@@ -1565,7 +1578,7 @@ uint16_t Simulator::readHU(uint64_t addr, SimInstruction* instr) {
     return 0xffff;
   }
 
-  if ((addr & 1) == 0 ||
+  if (AllowUnaligned() || (addr & 1) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
     return *ptr;
@@ -1582,7 +1595,7 @@ int16_t Simulator::readH(uint64_t addr, SimInstruction* instr) {
     return -1;
   }
 
-  if ((addr & 1) == 0 ||
+  if (AllowUnaligned() || (addr & 1) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     int16_t* ptr = reinterpret_cast<int16_t*>(addr);
     return *ptr;
@@ -1599,7 +1612,7 @@ void Simulator::writeH(uint64_t addr, uint16_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 1) == 0 ||
+  if (AllowUnaligned() || (addr & 1) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
     LLBit_ = false;
@@ -1617,7 +1630,7 @@ void Simulator::writeH(uint64_t addr, int16_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 1) == 0 ||
+  if (AllowUnaligned() || (addr & 1) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     int16_t* ptr = reinterpret_cast<int16_t*>(addr);
     LLBit_ = false;
@@ -1634,7 +1647,7 @@ uint32_t Simulator::readWU(uint64_t addr, SimInstruction* instr) {
     return -1;
   }
 
-  if ((addr & 3) == 0 ||
+  if (AllowUnaligned() || (addr & 3) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     uint32_t* ptr = reinterpret_cast<uint32_t*>(addr);
     return *ptr;
@@ -1650,7 +1663,7 @@ int32_t Simulator::readW(uint64_t addr, SimInstruction* instr) {
     return -1;
   }
 
-  if ((addr & 3) == 0 ||
+  if (AllowUnaligned() || (addr & 3) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     int32_t* ptr = reinterpret_cast<int32_t*>(addr);
     return *ptr;
@@ -1666,7 +1679,7 @@ void Simulator::writeW(uint64_t addr, uint32_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 3) == 0 ||
+  if (AllowUnaligned() || (addr & 3) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     uint32_t* ptr = reinterpret_cast<uint32_t*>(addr);
     LLBit_ = false;
@@ -1683,7 +1696,7 @@ void Simulator::writeW(uint64_t addr, int32_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & 3) == 0 ||
+  if (AllowUnaligned() || (addr & 3) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     int32_t* ptr = reinterpret_cast<int32_t*>(addr);
     LLBit_ = false;
@@ -1700,7 +1713,7 @@ int64_t Simulator::readDW(uint64_t addr, SimInstruction* instr) {
     return -1;
   }
 
-  if ((addr & kPointerAlignmentMask) == 0 ||
+  if (AllowUnaligned() || (addr & kPointerAlignmentMask) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
     return *ptr;
@@ -1716,7 +1729,7 @@ void Simulator::writeDW(uint64_t addr, int64_t value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & kPointerAlignmentMask) == 0 ||
+  if (AllowUnaligned() || (addr & kPointerAlignmentMask) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     int64_t* ptr = reinterpret_cast<int64_t*>(addr);
     LLBit_ = false;
@@ -1733,7 +1746,7 @@ double Simulator::readD(uint64_t addr, SimInstruction* instr) {
     return NAN;
   }
 
-  if ((addr & kDoubleAlignmentMask) == 0 ||
+  if (AllowUnaligned() || (addr & kDoubleAlignmentMask) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     double* ptr = reinterpret_cast<double*>(addr);
     return *ptr;
@@ -1749,7 +1762,7 @@ void Simulator::writeD(uint64_t addr, double value, SimInstruction* instr) {
     return;
   }
 
-  if ((addr & kDoubleAlignmentMask) == 0 ||
+  if (AllowUnaligned() || (addr & kDoubleAlignmentMask) == 0 ||
       wasm::InCompiledCode(reinterpret_cast<void*>(get_pc()))) {
     double* ptr = reinterpret_cast<double*>(addr);
     LLBit_ = false;
@@ -1895,53 +1908,7 @@ void Simulator::format(SimInstruction* instr, const char* format) {
 // Note: With the code below we assume that all runtime calls return a 64 bits
 // result. If they don't, the v1 result register contains a bogus value, which
 // is fine because it is caller-saved.
-typedef int64_t (*Prototype_General0)();
-typedef int64_t (*Prototype_General1)(int64_t arg0);
-typedef int64_t (*Prototype_General2)(int64_t arg0, int64_t arg1);
-typedef int64_t (*Prototype_General3)(int64_t arg0, int64_t arg1, int64_t arg2);
-typedef int64_t (*Prototype_General4)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3);
-typedef int64_t (*Prototype_General5)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4);
-typedef int64_t (*Prototype_General6)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5);
-typedef int64_t (*Prototype_General7)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5,
-                                      int64_t arg6);
-typedef int64_t (*Prototype_General8)(int64_t arg0, int64_t arg1, int64_t arg2,
-                                      int64_t arg3, int64_t arg4, int64_t arg5,
-                                      int64_t arg6, int64_t arg7);
-typedef int32_t (*Prototype_Int_GeneralGeneralGeneralInt64)(int64_t arg0,
-                                                            int64_t arg1,
-                                                            int64_t arg2,
-                                                            int64_t arg3);
-typedef int32_t (*Prototype_Int_GeneralGeneralInt64Int64)(int64_t arg0,
-                                                          int64_t arg1,
-                                                          int64_t arg2,
-                                                          int64_t arg3);
-typedef double (*Prototype_Double_None)();
-typedef double (*Prototype_Double_Double)(double arg0);
-typedef double (*Prototype_Double_Int)(int64_t arg0);
-typedef int64_t (*Prototype_Int_Double)(double arg0);
-typedef int64_t (*Prototype_Int_DoubleIntInt)(double arg0, int64_t arg1,
-                                              int64_t arg2);
-typedef int64_t (*Prototype_Int_IntDoubleIntInt)(int64_t arg0, double arg1,
-                                                 int64_t arg2, int64_t arg3);
-typedef float (*Prototype_Float32_Float32)(float arg0);
-typedef float (*Prototype_Float32_Float32Float32)(float arg0, float arg1);
-typedef float (*Prototype_Float32_IntInt)(int64_t arg0, int64_t arg1);
-
-typedef double (*Prototype_Double_DoubleInt)(double arg0, int64_t arg1);
-typedef double (*Prototype_Double_IntDouble)(int64_t arg0, double arg1);
-typedef double (*Prototype_Double_DoubleDouble)(double arg0, double arg1);
-typedef int64_t (*Prototype_Int_IntDouble)(int64_t arg0, double arg1);
-
-typedef double (*Prototype_Double_DoubleDoubleDouble)(double arg0, double arg1,
-                                                      double arg2);
-typedef double (*Prototype_Double_DoubleDoubleDoubleDouble)(double arg0,
-                                                            double arg1,
-                                                            double arg2,
-                                                            double arg3);
+ABI_FUNCTION_TYPE_SIM_PROTOTYPES
 
 // Software interrupt instructions are used by the simulator to call into C++.
 void Simulator::softwareInterrupt(SimInstruction* instr) {
@@ -1954,19 +1921,36 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
     MOZ_CRASH("Only N64 ABI supported.");
 #else
     Redirection* redirection = Redirection::FromSwiInstruction(instr);
-    int64_t arg0 = getRegister(a0);
-    int64_t arg1 = getRegister(a1);
-    int64_t arg2 = getRegister(a2);
-    int64_t arg3 = getRegister(a3);
-    int64_t arg4 = getRegister(a4);
-    int64_t arg5 = getRegister(a5);
+    uintptr_t nativeFn =
+        reinterpret_cast<uintptr_t>(redirection->nativeFunction());
+
+    // Get the SP for reading stack arguments
+    int64_t* sp_ = reinterpret_cast<int64_t*>(getRegister(sp));
+
+    // Store argument register values in local variables for ease of use below.
+    int64_t a0_ = getRegister(a0);
+    int64_t a1_ = getRegister(a1);
+    int64_t a2_ = getRegister(a2);
+    int64_t a3_ = getRegister(a3);
+    int64_t a4_ = getRegister(a4);
+    int64_t a5_ = getRegister(a5);
+    int64_t a6_ = getRegister(a6);
+    int64_t a7_ = getRegister(a7);
+    float f12_s = getFpuRegisterFloat(f12);
+    float f13_s = getFpuRegisterFloat(f13);
+    float f14_s = getFpuRegisterFloat(f14);
+    float f15_s = getFpuRegisterFloat(f15);
+    float f16_s = getFpuRegisterFloat(f16);
+    float f17_s = getFpuRegisterFloat(f17);
+    float f18_s = getFpuRegisterFloat(f18);
+    double f12_d = getFpuRegisterDouble(f12);
+    double f13_d = getFpuRegisterDouble(f13);
+    double f14_d = getFpuRegisterDouble(f14);
+    double f15_d = getFpuRegisterDouble(f15);
 
     // This is dodgy but it works because the C entry stubs are never moved.
     // See comment in codegen-arm.cc and bug 1242173.
     int64_t saved_ra = getRegister(ra);
-
-    intptr_t external =
-        reinterpret_cast<intptr_t>(redirection->nativeFunction());
 
     bool stack_aligned = (getRegister(sp) & (ABIStackAlignment - 1)) == 0;
     if (!stack_aligned) {
@@ -1979,229 +1963,10 @@ void Simulator::softwareInterrupt(SimInstruction* instr) {
     }
 
     switch (redirection->type()) {
-      case Args_General0: {
-        Prototype_General0 target =
-            reinterpret_cast<Prototype_General0>(external);
-        int64_t result = target();
-        setCallResult(result);
-        break;
-      }
-      case Args_General1: {
-        Prototype_General1 target =
-            reinterpret_cast<Prototype_General1>(external);
-        int64_t result = target(arg0);
-        setCallResult(result);
-        break;
-      }
-      case Args_General2: {
-        Prototype_General2 target =
-            reinterpret_cast<Prototype_General2>(external);
-        int64_t result = target(arg0, arg1);
-        setCallResult(result);
-        break;
-      }
-      case Args_General3: {
-        Prototype_General3 target =
-            reinterpret_cast<Prototype_General3>(external);
-        int64_t result = target(arg0, arg1, arg2);
-        if (external == intptr_t(&js::wasm::Instance::wake)) {
-          result = int32_t(result);
-        }
-        setCallResult(result);
-        break;
-      }
-      case Args_General4: {
-        Prototype_General4 target =
-            reinterpret_cast<Prototype_General4>(external);
-        int64_t result = target(arg0, arg1, arg2, arg3);
-        setCallResult(result);
-        break;
-      }
-      case Args_General5: {
-        Prototype_General5 target =
-            reinterpret_cast<Prototype_General5>(external);
-        int64_t result = target(arg0, arg1, arg2, arg3, arg4);
-        setCallResult(result);
-        break;
-      }
-      case Args_General6: {
-        Prototype_General6 target =
-            reinterpret_cast<Prototype_General6>(external);
-        int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5);
-        setCallResult(result);
-        break;
-      }
-      case Args_General7: {
-        Prototype_General7 target =
-            reinterpret_cast<Prototype_General7>(external);
-        int64_t arg6 = getRegister(a6);
-        int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6);
-        setCallResult(result);
-        break;
-      }
-      case Args_General8: {
-        Prototype_General8 target =
-            reinterpret_cast<Prototype_General8>(external);
-        int64_t arg6 = getRegister(a6);
-        int64_t arg7 = getRegister(a7);
-        int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
-        setCallResult(result);
-        break;
-      }
-      case Args_Double_None: {
-        Prototype_Double_None target =
-            reinterpret_cast<Prototype_Double_None>(external);
-        double dresult = target();
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Int_Double: {
-        double dval0 = getFpuRegisterDouble(12);
-        Prototype_Int_Double target =
-            reinterpret_cast<Prototype_Int_Double>(external);
-        int64_t result = target(dval0);
-        if (external == intptr_t((int32_t(*)(double))JS::ToInt32)) {
-          result = int32_t(result);
-        }
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Int_GeneralGeneralGeneralInt64: {
-        Prototype_Int_GeneralGeneralGeneralInt64 target =
-            reinterpret_cast<Prototype_Int_GeneralGeneralGeneralInt64>(
-                external);
-        int64_t result = target(arg0, arg1, arg2, arg3);
-        if (external == intptr_t(&js::wasm::Instance::wait_i32)) {
-          result = int32_t(result);
-        }
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Int_GeneralGeneralInt64Int64: {
-        Prototype_Int_GeneralGeneralInt64Int64 target =
-            reinterpret_cast<Prototype_Int_GeneralGeneralInt64Int64>(external);
-        int64_t result = target(arg0, arg1, arg2, arg3);
-        if (external == intptr_t(&js::wasm::Instance::wait_i64)) {
-          result = int32_t(result);
-        }
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Int_DoubleIntInt: {
-        double dval = getFpuRegisterDouble(12);
-        Prototype_Int_DoubleIntInt target =
-            reinterpret_cast<Prototype_Int_DoubleIntInt>(external);
-        int64_t result = target(dval, arg1, arg2);
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Int_IntDoubleIntInt: {
-        double dval = getFpuRegisterDouble(13);
-        Prototype_Int_IntDoubleIntInt target =
-            reinterpret_cast<Prototype_Int_IntDoubleIntInt>(external);
-        int64_t result = target(arg0, dval, arg2, arg3);
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Double_Double: {
-        double dval0 = getFpuRegisterDouble(12);
-        Prototype_Double_Double target =
-            reinterpret_cast<Prototype_Double_Double>(external);
-        double dresult = target(dval0);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Float32_Float32: {
-        float fval0;
-        fval0 = getFpuRegisterFloat(12);
-        Prototype_Float32_Float32 target =
-            reinterpret_cast<Prototype_Float32_Float32>(external);
-        float fresult = target(fval0);
-        setCallResultFloat(fresult);
-        break;
-      }
-      case Args_Float32_Float32Float32: {
-        float fval0;
-        float fval1;
-        fval0 = getFpuRegisterFloat(12);
-        fval1 = getFpuRegisterFloat(13);
-        Prototype_Float32_Float32Float32 target =
-            reinterpret_cast<Prototype_Float32_Float32Float32>(external);
-        float fresult = target(fval0, fval1);
-        setCallResultFloat(fresult);
-        break;
-      }
-      case Args_Float32_IntInt: {
-        Prototype_Float32_IntInt target =
-            reinterpret_cast<Prototype_Float32_IntInt>(external);
-        float fresult = target(arg0, arg1);
-        setCallResultFloat(fresult);
-        break;
-      }
-      case Args_Double_Int: {
-        Prototype_Double_Int target =
-            reinterpret_cast<Prototype_Double_Int>(external);
-        double dresult = target(arg0);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Double_DoubleInt: {
-        double dval0 = getFpuRegisterDouble(12);
-        Prototype_Double_DoubleInt target =
-            reinterpret_cast<Prototype_Double_DoubleInt>(external);
-        double dresult = target(dval0, arg1);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Double_DoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
-        Prototype_Double_DoubleDouble target =
-            reinterpret_cast<Prototype_Double_DoubleDouble>(external);
-        double dresult = target(dval0, dval1);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Double_IntDouble: {
-        double dval1 = getFpuRegisterDouble(13);
-        Prototype_Double_IntDouble target =
-            reinterpret_cast<Prototype_Double_IntDouble>(external);
-        double dresult = target(arg0, dval1);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Int_IntDouble: {
-        double dval1 = getFpuRegisterDouble(13);
-        Prototype_Int_IntDouble target =
-            reinterpret_cast<Prototype_Int_IntDouble>(external);
-        int64_t result = target(arg0, dval1);
-        setRegister(v0, result);
-        break;
-      }
-      case Args_Double_DoubleDoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
-        double dval2 = getFpuRegisterDouble(14);
-        Prototype_Double_DoubleDoubleDouble target =
-            reinterpret_cast<Prototype_Double_DoubleDoubleDouble>(external);
-        double dresult = target(dval0, dval1, dval2);
-        setCallResultDouble(dresult);
-        break;
-      }
-      case Args_Double_DoubleDoubleDoubleDouble: {
-        double dval0 = getFpuRegisterDouble(12);
-        double dval1 = getFpuRegisterDouble(13);
-        double dval2 = getFpuRegisterDouble(14);
-        double dval3 = getFpuRegisterDouble(15);
-        Prototype_Double_DoubleDoubleDoubleDouble target =
-            reinterpret_cast<Prototype_Double_DoubleDoubleDoubleDouble>(
-                external);
-        double dresult = target(dval0, dval1, dval2, dval3);
-        setCallResultDouble(dresult);
-        break;
-      }
+      ABI_FUNCTION_TYPE_MIPS64_SIM_DISPATCH
+
       default:
-        MOZ_CRASH("call");
+        MOZ_CRASH("Unknown function type.");
     }
 
     if (single_stepping_) {
@@ -2666,8 +2431,8 @@ void Simulator::configureTypeRegister(SimInstruction* instr, int64_t& alu_out,
           if (lsb > msb) {
             alu_out = Unpredictable;
           } else {
-            alu_out = (U32(I32_CHECK(rt)) & ~(mask << lsb)) |
-                      ((U32(I32_CHECK(rs)) & mask) << lsb);
+            alu_out = I32((U32(I32_CHECK(rt)) & ~(mask << lsb)) |
+                          ((U32(I32_CHECK(rs)) & mask) << lsb));
           }
           break;
         }
@@ -2766,7 +2531,63 @@ void Simulator::configureTypeRegister(SimInstruction* instr, int64_t& alu_out,
             alu_out = I64(I8(I32_CHECK(rt)));
           } else if (24 == sa) {  // seh
             alu_out = I64(I16(I32_CHECK(rt)));
+          } else if (2 == sa) {  // wsbh
+            uint32_t input = U32(I32_CHECK(rt));
+            uint64_t output = 0;
+
+            uint32_t mask = 0xFF000000;
+            for (int i = 0; i < 4; i++) {
+              uint32_t tmp = mask & input;
+              if (i % 2 == 0) {
+                tmp = tmp >> 8;
+              } else {
+                tmp = tmp << 8;
+              }
+              output = output | tmp;
+              mask = mask >> 8;
+            }
+            alu_out = I64(I32(output));
+          } else {
+            MOZ_CRASH();
           }
+          break;
+        }
+        case ff_dbshfl: {  // Mips64r2 instruction.
+          uint64_t input = U64(rt);
+          uint64_t output = 0;
+
+          if (2 == sa) {  // dsbh
+            uint64_t mask = 0xFF00000000000000;
+            for (int i = 0; i < 8; i++) {
+              uint64_t tmp = mask & input;
+              if (i % 2 == 0)
+                tmp = tmp >> 8;
+              else
+                tmp = tmp << 8;
+
+              output = output | tmp;
+              mask = mask >> 8;
+            }
+          } else if (5 == sa) {  // dshd
+            uint64_t mask = 0xFFFF000000000000;
+            for (int i = 0; i < 4; i++) {
+              uint64_t tmp = mask & input;
+              if (i == 0)
+                tmp = tmp >> 48;
+              else if (i == 1)
+                tmp = tmp >> 16;
+              else if (i == 2)
+                tmp = tmp << 16;
+              else
+                tmp = tmp << 48;
+              output = output | tmp;
+              mask = mask >> 16;
+            }
+          } else {
+            MOZ_CRASH();
+          }
+
+          alu_out = I64(output);
           break;
         }
         default:
@@ -2884,32 +2705,31 @@ void Simulator::decodeTypeRegister(SimInstruction* instr) {
               setFpuRegisterFloat(fd_reg, sqrtf(fs_value));
               break;
             case ff_c_un_fmt:
-              setFCSRBit(fcsr_cc,
-                         mozilla::IsNaN(fs_value) || mozilla::IsNaN(ft_value));
+              setFCSRBit(fcsr_cc, std::isnan(fs_value) || std::isnan(ft_value));
               break;
             case ff_c_eq_fmt:
               setFCSRBit(fcsr_cc, (fs_value == ft_value));
               break;
             case ff_c_ueq_fmt:
               setFCSRBit(fcsr_cc,
-                         (fs_value == ft_value) || (mozilla::IsNaN(fs_value) ||
-                                                    mozilla::IsNaN(ft_value)));
+                         (fs_value == ft_value) ||
+                             (std::isnan(fs_value) || std::isnan(ft_value)));
               break;
             case ff_c_olt_fmt:
               setFCSRBit(fcsr_cc, (fs_value < ft_value));
               break;
             case ff_c_ult_fmt:
               setFCSRBit(fcsr_cc,
-                         (fs_value < ft_value) || (mozilla::IsNaN(fs_value) ||
-                                                   mozilla::IsNaN(ft_value)));
+                         (fs_value < ft_value) ||
+                             (std::isnan(fs_value) || std::isnan(ft_value)));
               break;
             case ff_c_ole_fmt:
               setFCSRBit(fcsr_cc, (fs_value <= ft_value));
               break;
             case ff_c_ule_fmt:
               setFCSRBit(fcsr_cc,
-                         (fs_value <= ft_value) || (mozilla::IsNaN(fs_value) ||
-                                                    mozilla::IsNaN(ft_value)));
+                         (fs_value <= ft_value) ||
+                             (std::isnan(fs_value) || std::isnan(ft_value)));
               break;
             case ff_cvt_d_fmt:
               f = getFpuRegisterFloat(fs_reg);
@@ -3061,32 +2881,31 @@ void Simulator::decodeTypeRegister(SimInstruction* instr) {
               setFpuRegisterDouble(fd_reg, sqrt(ds_value));
               break;
             case ff_c_un_fmt:
-              setFCSRBit(fcsr_cc,
-                         mozilla::IsNaN(ds_value) || mozilla::IsNaN(dt_value));
+              setFCSRBit(fcsr_cc, std::isnan(ds_value) || std::isnan(dt_value));
               break;
             case ff_c_eq_fmt:
               setFCSRBit(fcsr_cc, (ds_value == dt_value));
               break;
             case ff_c_ueq_fmt:
               setFCSRBit(fcsr_cc,
-                         (ds_value == dt_value) || (mozilla::IsNaN(ds_value) ||
-                                                    mozilla::IsNaN(dt_value)));
+                         (ds_value == dt_value) ||
+                             (std::isnan(ds_value) || std::isnan(dt_value)));
               break;
             case ff_c_olt_fmt:
               setFCSRBit(fcsr_cc, (ds_value < dt_value));
               break;
             case ff_c_ult_fmt:
               setFCSRBit(fcsr_cc,
-                         (ds_value < dt_value) || (mozilla::IsNaN(ds_value) ||
-                                                   mozilla::IsNaN(dt_value)));
+                         (ds_value < dt_value) ||
+                             (std::isnan(ds_value) || std::isnan(dt_value)));
               break;
             case ff_c_ole_fmt:
               setFCSRBit(fcsr_cc, (ds_value <= dt_value));
               break;
             case ff_c_ule_fmt:
               setFCSRBit(fcsr_cc,
-                         (ds_value <= dt_value) || (mozilla::IsNaN(ds_value) ||
-                                                    mozilla::IsNaN(dt_value)));
+                         (ds_value <= dt_value) ||
+                             (std::isnan(ds_value) || std::isnan(dt_value)));
               break;
             case ff_cvt_w_fmt:  // Convert double to word.
               // Rounding modes are not yet supported.
@@ -3395,6 +3214,9 @@ void Simulator::decodeTypeRegister(SimInstruction* instr) {
         case ff_bshfl:
           setRegister(rd_reg, alu_out);
           break;
+        case ff_dbshfl:
+          setRegister(rd_reg, alu_out);
+          break;
         default:
           MOZ_CRASH();
       };
@@ -3604,6 +3426,7 @@ void Simulator::decodeTypeImmediate(SimInstruction* instr) {
       alu_out = readW(addr, instr);
       alu_out = U32(alu_out) >> al_offset * 8;
       alu_out |= rt & mask;
+      alu_out = I32(alu_out);
       break;
     }
     case op_ll:

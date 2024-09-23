@@ -6,12 +6,13 @@
 
 "use strict";
 
-add_task(async function init() {
+add_setup(async function () {
   await cleanUp();
 });
 
 add_task(async function origin() {
   await PlacesTestUtils.addVisits(["http://example.com/"]);
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   // all lowercase
   await typeAndCheck([
     ["e", "example.com/"],
@@ -48,6 +49,7 @@ add_task(async function origin() {
 
 add_task(async function url() {
   await PlacesTestUtils.addVisits(["http://example.com/foo/bar"]);
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
   // all lowercase
   await typeAndCheck([
     ["e", "example.com/"],
@@ -99,14 +101,7 @@ add_task(async function url() {
 add_task(async function tokenAlias() {
   // We have built-in engine aliases that may conflict with the one we choose
   // here in terms of autofill, so be careful and choose a weird alias.
-  await Services.search.addEngineWithDetails("Test", {
-    alias: "@__example",
-    template: "http://example.com/?search={searchTerms}",
-  });
-  registerCleanupFunction(async function() {
-    let engine = Services.search.getEngineByName("Test");
-    await Services.search.removeEngine(engine);
-  });
+  await SearchTestUtils.installSearchExtension({ keyword: "@__example" });
   // all lowercase
   await typeAndCheck([
     ["@", "@"],

@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import {
   addHighlightToTargetSiblings,
   removeHighlightForTargetSiblings,
@@ -13,7 +11,7 @@ describe("addHighlightToTargetSiblings", () => {
   it("should add preview highlight class to related target siblings", async () => {
     const div = document.createElement("div");
     const divChildren = ["a", "divided", "token"];
-    divChildren.forEach(function(span) {
+    divChildren.forEach(function (span) {
       const child = document.createElement("span");
       const text = document.createTextNode(span);
       child.appendChild(text);
@@ -31,14 +29,10 @@ describe("addHighlightToTargetSiblings", () => {
     addHighlightToTargetSiblings(target, props);
 
     const previous = target.previousElementSibling;
-    if (previous && previous.className) {
-      expect(previous.className.includes("preview-token")).toEqual(true);
-    }
+    expect(previous.className.includes("preview-token")).toEqual(true);
 
     const next = target.nextElementSibling;
-    if (next && next.className) {
-      expect(next.className.includes("preview-token")).toEqual(true);
-    }
+    expect(next.className.includes("preview-token")).toEqual(true);
   });
 
   it("should not add preview highlight class to target's related siblings after non-element nodes", () => {
@@ -85,7 +79,7 @@ describe("removeHighlightForTargetSiblings", () => {
   it("should remove preview highlight class from target's related siblings", async () => {
     const div = document.createElement("div");
     const divChildren = ["a", "divided", "token"];
-    divChildren.forEach(function(span) {
+    divChildren.forEach(function (span) {
       const child = document.createElement("span");
       const text = document.createTextNode(span);
       child.appendChild(text);
@@ -97,13 +91,9 @@ describe("removeHighlightForTargetSiblings", () => {
     removeHighlightForTargetSiblings(target);
 
     const previous = target.previousElementSibling;
-    if (previous && previous.className) {
-      expect(previous.className.includes("preview-token")).toEqual(false);
-    }
+    expect(previous.className.includes("preview-token")).toEqual(false);
 
     const next = target.nextElementSibling;
-    if (next && next.className) {
-      expect(next.className.includes("preview-token")).toEqual(false);
-    }
+    expect(next.className.includes("preview-token")).toEqual(false);
   });
 });

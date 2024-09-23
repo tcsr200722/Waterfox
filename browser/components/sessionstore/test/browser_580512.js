@@ -32,10 +32,10 @@ function closeFirstWin(win) {
   win.gBrowser.pinTab(win.gBrowser.tabs[1]);
 
   let winClosed = BrowserTestUtils.windowClosed(win);
-  // We need to call BrowserTryToCloseWindow in order to trigger
+  // We need to call BrowserCommands.tryToCloseWindow in order to trigger
   // the machinery that chooses whether or not to save the session
   // for the last window.
-  win.BrowserTryToCloseWindow();
+  win.BrowserCommands.tryToCloseWindow();
   ok(win.closed, "window closed");
 
   winClosed.then(() => {
@@ -82,13 +82,13 @@ function openWinWithCb(cb, argURIs, expectedURIs) {
 
   win.addEventListener(
     "load",
-    function() {
+    function () {
       info("the window loaded");
 
       var expectedLoads = expectedURIs.length;
 
       win.gBrowser.addTabsProgressListener({
-        onStateChange(aBrowser, aWebProgress, aRequest, aStateFlags, aStatus) {
+        onStateChange(aBrowser, aWebProgress, aRequest, aStateFlags, _aStatus) {
           if (
             aRequest &&
             aStateFlags & Ci.nsIWebProgressListener.STATE_STOP &&
@@ -105,7 +105,7 @@ function openWinWithCb(cb, argURIs, expectedURIs) {
               expectedURIs.length,
               "didn't load any unexpected tabs"
             );
-            executeSoon(function() {
+            executeSoon(function () {
               cb(win);
             });
           }

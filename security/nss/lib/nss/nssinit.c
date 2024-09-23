@@ -261,7 +261,7 @@ static const char *dllname =
     "libnssckbi.sl";
 #elif defined(DARWIN)
     "libnssckbi.dylib";
-#elif defined(XP_UNIX) || defined(XP_BEOS)
+#elif defined(XP_UNIX)
     "libnssckbi.so";
 #else
 #error "Uh! Oh! I don't know about this platform."
@@ -764,9 +764,9 @@ nss_Init(const char *configdir, const char *certPrefix, const char *keyPrefix,
         if (pkixError != NULL) {
             goto loser;
         } else {
-            char *ev = PR_GetEnvSecure("NSS_ENABLE_PKIX_VERIFY");
+            char *ev = PR_GetEnvSecure("NSS_DISABLE_PKIX_VERIFY");
             if (ev && ev[0]) {
-                CERT_SetUsePKIXForValidation(PR_TRUE);
+                CERT_SetUsePKIXForValidation(PR_FALSE);
             }
         }
 #endif /* NSS_DISABLE_LIBPKIX */

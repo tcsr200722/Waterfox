@@ -2,17 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-disable mozilla/reject-some-requires */
-
 "use strict";
 
 const {
   getUnicodeUrl,
   getUnicodeUrlPath,
   getUnicodeHostname,
-} = require("devtools/client/shared/unicode-url");
+} = require("resource://devtools/client/shared/unicode-url.js");
 
-const { UPDATE_PROPS } = require("devtools/client/netmonitor/src/constants");
+const {
+  UPDATE_PROPS,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 const CONTENT_MIME_TYPE_ABBREVIATIONS = {
   ecmascript: "js",
@@ -51,11 +51,11 @@ async function getFormDataSections(
 
   const contentType = await getLongString(contentTypeLongString);
 
-  if (contentType.includes("x-www-form-urlencoded")) {
+  if (contentType && contentType.includes("x-www-form-urlencoded")) {
     const postDataLongString = postData.postData.text;
     const text = await getLongString(postDataLongString);
 
-    for (const section of text.split(/\r\n|\r|\n/)) {
+    for (const section of text.trim().split(/\r\n|\r|\n/)) {
       // Before displaying it, make sure this section of the POST data
       // isn't a line containing upload stream headers.
       if (payloadHeaders.every(header => !section.startsWith(header.name))) {
@@ -90,19 +90,21 @@ async function fetchHeaders(headers, getLongString) {
  */
 function fetchNetworkUpdatePacket(requestData, request, updateTypes) {
   const promises = [];
-  updateTypes.forEach(updateType => {
-    // Only stackTrace will be handled differently
-    if (updateType === "stackTrace") {
-      if (request.cause.stacktraceAvailable && !request.stacktrace) {
+  if (request) {
+    updateTypes.forEach(updateType => {
+      // Only stackTrace will be handled differently
+      if (updateType === "stackTrace") {
+        if (request.cause.stacktraceAvailable && !request.stacktrace) {
+          promises.push(requestData(request.id, updateType));
+        }
+        return;
+      }
+
+      if (request[`${updateType}Available`] && !request[updateType]) {
         promises.push(requestData(request.id, updateType));
       }
-      return;
-    }
-
-    if (request[`${updateType}Available`] && !request[updateType]) {
-      promises.push(requestData(request.id, updateType));
-    }
-  });
+    });
+  }
 
   return Promise.all(promises);
 }
@@ -340,12 +342,7 @@ function parseQueryString(query) {
       return {
         name: param[0] ? getUnicodeUrlPath(param[0].replace(/\+/g, " ")) : "",
         value: param[1]
-          ? getUnicodeUrlPath(
-              param
-                .slice(1)
-                .join("=")
-                .replace(/\+/g, " ")
-            )
+          ? getUnicodeUrlPath(param.slice(1).join("=").replace(/\+/g, " "))
           : "",
       };
     });
@@ -359,17 +356,21 @@ function parseQueryString(query) {
  */
 function parseFormData(sections) {
   if (!sections) {
-    return null;
+    return [];
   }
 
   return sections
     .replace(/^&/, "")
     .split("&")
     .map(e => {
-      const param = e.split("=");
+      const firstEqualSignIndex = e.indexOf("=");
+      const paramName =
+        firstEqualSignIndex !== -1 ? e.slice(0, firstEqualSignIndex) : e;
+      const paramValue =
+        firstEqualSignIndex !== -1 ? e.slice(firstEqualSignIndex + 1) : "";
       return {
-        name: param[0] ? getUnicodeUrlPath(param[0]) : "",
-        value: param[1] ? getUnicodeUrlPath(param[1]) : "",
+        name: paramName ? getUnicodeUrlPath(paramName) : "",
+        value: paramValue ? getUnicodeUrlPath(paramValue) : "",
       };
     });
 }
@@ -478,7 +479,7 @@ function getFormattedProtocol(item) {
        *
        * @see https://bugzilla.mozilla.org/show_bug.cgi?id=1501357
        */
-      if (h.value !== undefined && h.value.length > 0) {
+      if (h.value !== undefined && h.value.length) {
         if (
           h.value.toLowerCase() !== "http/1.1" ||
           protocol[0].toLowerCase() !== "http/1.1"
@@ -575,42 +576,35 @@ async function updateFormDataSections(props) {
 }
 
 /**
- * This helper function helps to resolve the full payload of a WebSocket frame
+ * This helper function helps to resolve the full payload of a message
  * that is wrapped in a LongStringActor object.
  */
-async function getFramePayload(payload, getLongString) {
+async function getMessagePayload(payload, getLongString) {
   const result = await getLongString(payload);
   return result;
 }
 
 /**
  * This helper function is used for additional processing of
- * incoming network update packets. It's used by Network and
- * Console panel reducers.
+ * incoming network update packets. It makes sure the only valid
+ * update properties and the values are correct.
+ * It's used by Network and Console panel reducers.
+ * @param {object} update
+ *        The new update payload
+ * @param {object} request
+ *        The current request in the state
  */
-function processNetworkUpdates(update, request) {
-  const result = {};
+function processNetworkUpdates(update) {
+  const newRequest = {};
   for (const [key, value] of Object.entries(update)) {
     if (UPDATE_PROPS.includes(key)) {
-      result[key] = value;
-
-      switch (key) {
-        case "securityInfo":
-          result.securityState = value.state;
-          break;
-        case "securityState":
-          result.securityState = update.securityState || request.securityState;
-          break;
-        case "totalTime":
-          result.totalTime = update.totalTime;
-          break;
-        case "requestPostData":
-          result.requestHeadersFromUploadStream = value.uploadHeaders;
-          break;
+      newRequest[key] = value;
+      if (key == "requestPostData") {
+        newRequest.requestHeadersFromUploadStream = value.uploadHeaders;
       }
     }
   }
-  return result;
+  return newRequest;
 }
 
 /**
@@ -632,9 +626,29 @@ function isBase64(payload) {
 
 /**
  * Checks if the payload is of JSON type.
+ * This function also handles JSON with XSSI-escaping characters by stripping them
+ * and returning the stripped chars in the strippedChars property
+ * This function also handles Base64 encoded JSON.
+ * @returns {Object} shape:
+ *  {Object} json: parsed JSON object
+ *  {Error} error: JSON parsing error
+ *  {string} strippedChars: XSSI stripped chars removed from JSON payload
  */
-function isJSON(payload) {
-  let json, error;
+function parseJSON(payloadUnclean) {
+  let json;
+  const jsonpRegex = /^\s*([\w$]+)\s*\(\s*([^]*)\s*\)\s*;?\s*$/;
+  const [, jsonpCallback, jsonp] = payloadUnclean.match(jsonpRegex) || [];
+  if (jsonpCallback && jsonp) {
+    let error;
+    try {
+      json = parseJSON(jsonp).json;
+    } catch (err) {
+      error = err;
+    }
+    return { json, error, jsonpCallback };
+  }
+
+  let { payload, strippedChars, error } = removeXSSIString(payloadUnclean);
 
   try {
     json = JSON.parse(payload);
@@ -643,7 +657,7 @@ function isJSON(payload) {
       try {
         json = JSON.parse(atob(payload));
       } catch (err64) {
-        error = err;
+        error = err64;
       }
     } else {
       error = err;
@@ -657,11 +671,72 @@ function isJSON(payload) {
       return {};
     }
   }
-
   return {
     json,
     error,
+    strippedChars,
   };
+}
+
+/**
+ * Removes XSSI prevention sequences from JSON payloads
+ * @param {string} payloadUnclean: JSON payload that may or may have a
+ *                                 XSSI prevention sequence
+ * @returns {Object} Shape:
+ *   {string} payload: the JSON witht the XSSI prevention sequence removed
+ *   {string} strippedChars: XSSI string that was removed, null if no XSSI
+ *                           prevention sequence was found
+ *   {Error} error: error attempting to strip XSSI prevention sequence
+ */
+function removeXSSIString(payloadUnclean) {
+  // Regex that finds the XSSI protection sequences )]}'\n for(;;); and while(1);
+  const xssiRegex = /(^\)\]\}',?\n)|(^for ?\(;;\);?)|(^while ?\(1\);?)/;
+  let payload, strippedChars, error;
+  const xssiRegexMatch = payloadUnclean.match(xssiRegex);
+
+  // Remove XSSI string if there was one found
+  if (xssiRegexMatch?.length > 0) {
+    const xssiLen = xssiRegexMatch[0].length;
+    try {
+      // substring the payload by the length of the XSSI match to remove it
+      // and save the match to report
+      payload = payloadUnclean.substring(xssiLen);
+      strippedChars = xssiRegexMatch[0];
+    } catch (err) {
+      error = err;
+      payload = payloadUnclean;
+    }
+  } else {
+    // if there was no XSSI match just return the raw payload
+    payload = payloadUnclean;
+  }
+  return {
+    payload,
+    strippedChars,
+    error,
+  };
+}
+
+/**
+ * Computes the request headers of an HTTP request
+ *
+ * @param {string} method: request method
+ * @param {string} httpVersion: request http version
+ * @param {object} requestHeaders: request headers
+ * @param {object} urlDetails: request url details
+ *
+ * @return {string} the request headers
+ */
+function getRequestHeadersRawText(
+  method,
+  httpVersion,
+  requestHeaders,
+  urlDetails
+) {
+  const url = new URL(urlDetails.url);
+  const path = url ? `${url.pathname}${url.search}` : "<unknown>";
+  const preHeaderText = `${method} ${path} ${httpVersion}`;
+  return writeHeaderText(requestHeaders.headers, preHeaderText).trim();
 }
 
 module.exports = {
@@ -675,7 +750,7 @@ module.exports = {
   getFileName,
   getEndTime,
   getFormattedProtocol,
-  getFramePayload,
+  getMessagePayload,
   getRequestHeader,
   getResponseHeader,
   getResponseTime,
@@ -693,5 +768,6 @@ module.exports = {
   processNetworkUpdates,
   propertiesEqual,
   ipToLong,
-  isJSON,
+  parseJSON,
+  getRequestHeadersRawText,
 };

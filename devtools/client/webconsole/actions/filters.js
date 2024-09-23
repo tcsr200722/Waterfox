@@ -6,7 +6,7 @@
 
 const {
   getAllFilters,
-} = require("devtools/client/webconsole/selectors/filters");
+} = require("resource://devtools/client/webconsole/selectors/filters.js");
 
 const {
   FILTER_TEXT_SET,
@@ -14,7 +14,7 @@ const {
   FILTERS_CLEAR,
   PREFS,
   FILTERS,
-} = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/constants.js");
 
 function filterTextSet(text) {
   return {
@@ -24,12 +24,18 @@ function filterTextSet(text) {
 }
 
 function filterToggle(filter) {
-  return ({ dispatch, getState, prefsService }) => {
+  return async ({ dispatch, getState, webConsoleUI, prefsService }) => {
+    // When enabling CSS Warning message, we have to start listening for it
+    let filterState = getAllFilters(getState());
+    if (filter == FILTERS.CSS && !filterState[FILTERS.CSS]) {
+      await webConsoleUI.watchCssMessages();
+    }
+
     dispatch({
       type: FILTER_TOGGLE,
       filter,
     });
-    const filterState = getAllFilters(getState());
+    filterState = getAllFilters(getState());
     prefsService.setBoolPref(
       PREFS.FILTER[filter.toUpperCase()],
       filterState[filter]

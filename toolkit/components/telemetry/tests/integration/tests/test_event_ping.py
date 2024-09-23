@@ -2,7 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import mozunit
-
 from telemetry_harness.ping_filters import EVENT_PING
 
 
@@ -26,7 +25,11 @@ def test_event_ping(browser, helpers):
 
 def find_event(events):
     """Return the first event that has the expected timestamp, category method and object"""
-    for [timestamp, category, method, object_id, value, extra] in events:
+
+    for event in events:
+        # The event may optionally contain additonal fields
+        [timestamp, category, method, object_id] = event[:4]
+
         assert timestamp > 0
 
         if category != "navigation":

@@ -14,7 +14,7 @@ var gTests = [
       await promiseRequestDevice(true, true);
       await promise;
       await observerPromise;
-      checkDeviceSelectors(true, true);
+      checkDeviceSelectors(["microphone", "camera"]);
 
       let indicator = promiseIndicatorWindow();
       let observerPromise1 = expectObserverCalled(
@@ -48,21 +48,23 @@ var gTests = [
 
       // Clicking the global sharing indicator should open the control center in
       // the second window.
-      ok(
-        win.gIdentityHandler._identityPopup.hidden,
-        "control center should be hidden"
-      );
+      ok(permissionPopupHidden(win), "control center should be hidden");
       let activeStreams = webrtcUI.getActiveStreams(true, false, false);
-      webrtcUI.showSharingDoorhanger(activeStreams[0], "Devices");
+      webrtcUI.showSharingDoorhanger(activeStreams[0]);
+      // If the popup gets hidden before being shown, by stray focus/activate
+      // events, don't bother failing the test. It's enough to know that we
+      // started showing the popup.
+      let popup = win.gPermissionPanel._permissionPopup;
+      let hiddenEvent = BrowserTestUtils.waitForEvent(popup, "popuphidden");
+      let shownEvent = BrowserTestUtils.waitForEvent(popup, "popupshown");
+      let ev = await Promise.race([hiddenEvent, shownEvent]);
+      ok(ev.type, "Tried to show popup");
+      win.gPermissionPanel._permissionPopup.hidePopup();
+
       ok(
-        !win.gIdentityHandler._identityPopup.hidden,
-        "control center should be open in the second window"
-      );
-      ok(
-        gIdentityHandler._identityPopup.hidden,
+        permissionPopupHidden(window),
         "control center should be hidden in the first window"
       );
-      win.gIdentityHandler._identityPopup.hidden = true;
 
       await disableObserverVerification();
 

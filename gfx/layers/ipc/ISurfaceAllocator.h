@@ -10,13 +10,13 @@
 #include <stddef.h>  // for size_t
 #include <stdint.h>  // for uint32_t
 #include "gfxTypes.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/gfx/Point.h"         // for IntSize
 #include "mozilla/ipc/SharedMemory.h"  // for SharedMemory, etc
 #include "mozilla/RefPtr.h"
 #include "nsIMemoryReporter.h"              // for nsIMemoryReporter
 #include "mozilla/Atomics.h"                // for Atomic
 #include "mozilla/layers/LayersMessages.h"  // for ShmemSection
-#include "LayersTypes.h"
 
 namespace mozilla {
 namespace ipc {
@@ -52,8 +52,6 @@ enum BufferCapabilities {
 };
 
 class SurfaceDescriptor;
-
-mozilla::ipc::SharedMemory::SharedMemoryType OptimalShmemType();
 
 /**
  * An interface used to create and destroy surfaces that are shared with the
@@ -103,6 +101,8 @@ class ISurfaceAllocator {
   virtual bool UsesImageBridge() const { return false; }
 
   virtual bool UsesWebRenderBridge() const { return false; }
+
+  virtual dom::ContentParentId GetContentId() { return dom::ContentParentId(); }
 
  protected:
   void Finalize() {}
@@ -155,6 +155,23 @@ class HostIPCAllocator : public ISurfaceAllocator {
   bool mAboutToSendAsyncMessages = false;
 };
 
+class ShmemSection {
+ public:
+  static Maybe<ShmemSection> FromUntrusted(
+      const UntrustedShmemSection& aUntrusted);
+  bool Init(const mozilla::ipc::Shmem& aShm, uint32_t offset, uint32_t size);
+  UntrustedShmemSection AsUntrusted();
+
+  uint32_t size() const { return mSize; }
+  uint32_t offset() const { return mOffset; }
+  const mozilla::ipc::Shmem& shmem() { return mShmem; }
+
+ private:
+  mozilla::ipc::Shmem mShmem;
+  uint32_t mOffset;
+  uint32_t mSize;
+};
+
 /// An allocator that can group allocations in bigger chunks of shared memory.
 ///
 /// The allocated shmem sections can only be deallocated by the same allocator
@@ -187,9 +204,6 @@ class LegacySurfaceDescriptorAllocator {
 };
 
 bool IsSurfaceDescriptorValid(const SurfaceDescriptor& aSurface);
-
-already_AddRefed<gfx::DrawTarget> GetDrawTargetForDescriptor(
-    const SurfaceDescriptor& aDescriptor, gfx::BackendType aBackend);
 
 already_AddRefed<gfx::DataSourceSurface> GetSurfaceForDescriptor(
     const SurfaceDescriptor& aDescriptor);
@@ -248,6 +262,8 @@ class GfxMemoryImageReporter final : public nsIMemoryReporter {
 /// copy-on-write locks for now).
 class FixedSizeSmallShmemSectionAllocator final : public ShmemSectionAllocator {
  public:
+  NS_DECL_OWNINGTHREAD
+
   enum AllocationStatus { STATUS_ALLOCATED, STATUS_FREED };
 
   struct ShmemSectionHeapHeader {

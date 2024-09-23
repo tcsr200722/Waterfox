@@ -6,8 +6,10 @@
 
 #include "RegistryMessageUtils.h"
 #include "nsChromeRegistryContent.h"
+#include "nsISubstitutingProtocolHandler.h"
 #include "nsString.h"
 #include "nsNetUtil.h"
+#include "mozilla/UniquePtr.h"
 
 nsChromeRegistryContent::nsChromeRegistryContent() {}
 
@@ -60,13 +62,13 @@ void nsChromeRegistryContent::RegisterPackage(const ChromePackage& aPackage) {
     if (NS_FAILED(rv)) return;
   }
 
-  PackageEntry* entry = new PackageEntry;
+  mozilla::UniquePtr<PackageEntry> entry = mozilla::MakeUnique<PackageEntry>();
   entry->flags = aPackage.flags;
   entry->contentBaseURI = content;
   entry->localeBaseURI = locale;
   entry->skinBaseURI = skin;
 
-  mPackagesHash.Put(aPackage.package, entry);
+  mPackagesHash.InsertOrUpdate(aPackage.package, std::move(entry));
 }
 
 void nsChromeRegistryContent::RegisterSubstitution(
@@ -103,7 +105,7 @@ void nsChromeRegistryContent::RegisterOverride(
   rv = NS_NewURI(getter_AddRefs(overrideURI), aOverride.overrideURI.spec);
   if (NS_FAILED(rv)) return;
 
-  mOverrideTable.Put(chromeURI, overrideURI);
+  mOverrideTable.InsertOrUpdate(chromeURI, overrideURI);
 }
 
 nsIURI* nsChromeRegistryContent::GetBaseURIFromPackage(
@@ -116,11 +118,16 @@ nsIURI* nsChromeRegistryContent::GetBaseURIFromPackage(
 
   if (aProvider.EqualsLiteral("locale")) {
     return entry->localeBaseURI;
-  } else if (aProvider.EqualsLiteral("skin")) {
+  }
+
+  if (aProvider.EqualsLiteral("skin")) {
     return entry->skinBaseURI;
-  } else if (aProvider.EqualsLiteral("content")) {
+  }
+
+  if (aProvider.EqualsLiteral("content")) {
     return entry->contentBaseURI;
   }
+
   return nullptr;
 }
 

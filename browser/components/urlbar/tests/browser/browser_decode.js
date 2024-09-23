@@ -29,16 +29,16 @@ add_task(async function injectJSON() {
 
 add_task(function losslessDecode() {
   let urlNoScheme = "example.com/\u30a2\u30a4\u30a6\u30a8\u30aa";
-  let url = "http://" + urlNoScheme;
+  let url = UrlbarTestUtils.getTrimmedProtocolWithSlashes() + urlNoScheme;
   const result = new UrlbarResult(
     UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
     UrlbarUtils.RESULT_SOURCE.TABS,
     { url }
   );
-  gURLBar.setValueFromResult(result);
+  gURLBar.setValueFromResult({ result });
   // Since this is directly setting textValue, it is expected to be trimmed.
   Assert.equal(
-    gURLBar.inputField.value,
+    gURLBar.value,
     urlNoScheme,
     "The string displayed in the textbox should not be escaped"
   );
@@ -49,10 +49,9 @@ add_task(function losslessDecode() {
 
 add_task(async function actionURILosslessDecode() {
   let urlNoScheme = "example.com/\u30a2\u30a4\u30a6\u30a8\u30aa";
-  let url = "http://" + urlNoScheme;
+  let url = UrlbarTestUtils.getTrimmedProtocolWithSlashes() + urlNoScheme;
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: url,
   });
 
@@ -72,7 +71,7 @@ add_task(async function actionURILosslessDecode() {
   );
 
   Assert.equal(
-    gURLBar.inputField.value,
+    gURLBar.value,
     urlNoScheme,
     "The string displayed in the textbox should not be escaped"
   );
@@ -90,7 +89,6 @@ add_task(async function test_resultsDisplayDecoded() {
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "example",
   });
 
@@ -105,7 +103,6 @@ add_task(async function test_resultsDisplayDecoded() {
 async function checkInput(inputStr) {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: inputStr,
   });
 
@@ -136,9 +133,12 @@ async function checkInput(inputStr) {
     inputStr.replace("\\", "/"),
     "Should be displaying the correct text"
   );
+  let [action] = await document.l10n.formatValues([
+    { id: "urlbar-result-action-visit" },
+  ]);
   Assert.equal(
     result.displayed.action,
-    UrlbarUtils.strings.GetStringFromName("visit"),
+    action,
     "Should be displaying the correct action text"
   );
 }

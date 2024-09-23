@@ -9,15 +9,16 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/EnumSet.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TextControlElement.h"
-#include "mozilla/TextEditor.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLInputElementBinding.h"
 #include "mozilla/dom/Nullable.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsITextControlFrame.h"
+#include "nsITimer.h"
 
 class nsTextControlFrame;
 class nsISelectionController;
@@ -28,12 +29,66 @@ namespace mozilla {
 
 class AutoTextControlHandlingState;
 class ErrorResult;
+class IMEContentObserver;
+class TextEditor;
 class TextInputListener;
 class TextInputSelectionController;
 
 namespace dom {
+class Element;
 class HTMLInputElement;
 }  // namespace dom
+
+/**
+ * PasswordMaskData stores making information and necessary timer for
+ * `TextEditor` instances.
+ */
+struct PasswordMaskData final {
+  // Timer to mask unmasked characters automatically.  Used only when it's
+  // a password field.
+  nsCOMPtr<nsITimer> mTimer;
+
+  // Unmasked character range.  Used only when it's a password field.
+  // If mUnmaskedLength is 0, it means there is no unmasked characters.
+  uint32_t mUnmaskedStart = UINT32_MAX;
+  uint32_t mUnmaskedLength = 0;
+
+  // Set to true if all characters are masked or waiting notification from
+  // `mTimer`.  Otherwise, i.e., part of or all of password is unmasked
+  // without setting `mTimer`, set to false.
+  bool mIsMaskingPassword = true;
+
+  // Set to true if a manager of the instance wants to disable echoing
+  // password temporarily.
+  bool mEchoingPasswordPrevented = false;
+
+  MOZ_ALWAYS_INLINE bool IsAllMasked() const {
+    return mUnmaskedStart == UINT32_MAX && mUnmaskedLength == 0;
+  }
+  MOZ_ALWAYS_INLINE uint32_t UnmaskedEnd() const {
+    return mUnmaskedStart + mUnmaskedLength;
+  }
+  MOZ_ALWAYS_INLINE void MaskAll() {
+    mUnmaskedStart = UINT32_MAX;
+    mUnmaskedLength = 0;
+  }
+  MOZ_ALWAYS_INLINE void Reset() {
+    MaskAll();
+    mIsMaskingPassword = true;
+  }
+  enum class ReleaseTimer { No, Yes };
+  MOZ_ALWAYS_INLINE void CancelTimer(ReleaseTimer aReleaseTimer) {
+    if (mTimer) {
+      mTimer->Cancel();
+      if (aReleaseTimer == ReleaseTimer::Yes) {
+        mTimer = nullptr;
+      }
+    }
+    if (mIsMaskingPassword) {
+      MaskAll();
+    }
+  }
+};
 
 /**
  * TextControlState is a class which is responsible for managing the state of
@@ -131,12 +186,11 @@ class HTMLInputElement;
 
 class RestoreSelectionState;
 
-class TextControlState final : public SupportsWeakPtr<TextControlState> {
+class TextControlState final : public SupportsWeakPtr {
  public:
-  typedef dom::Element Element;
-  typedef dom::HTMLInputElement HTMLInputElement;
-
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(TextControlState)
+  using Element = dom::Element;
+  using HTMLInputElement = dom::HTMLInputElement;
+  using SelectionDirection = nsITextControlFrame::SelectionDirection;
 
   static TextControlState* Construct(TextControlElement* aOwningElement);
 
@@ -162,7 +216,7 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   bool IsBusy() const { return !!mHandlingState || mValueTransferInProgress; }
 
   MOZ_CAN_RUN_SCRIPT TextEditor* GetTextEditor();
-  TextEditor* GetTextEditorWithoutCreation();
+  TextEditor* GetTextEditorWithoutCreation() const;
   nsISelectionController* GetSelectionController() const;
   nsFrameSelection* GetConstFrameSelection();
   nsresult BindToFrame(nsTextControlFrame* aFrame);
@@ -174,40 +228,45 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
    * OnEditActionHandled() is called when mTextEditor handles something
    * and immediately before dispatching "input" event.
    */
-  MOZ_CAN_RUN_SCRIPT MOZ_MUST_USE nsresult OnEditActionHandled();
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult OnEditActionHandled();
 
-  enum SetValueFlags {
-    // The call is for internal processing.
-    eSetValue_Internal = 1 << 0,
-    // The value is changed by a call of setUserInput() from chrome.
-    eSetValue_BySetUserInput = 1 << 1,
+  enum class ValueSetterOption {
+    // The call is for setting value to initial one, computed one, etc.
+    ByInternalAPI,
+    // The value is changed by a call of setUserInput() API from chrome.
+    BySetUserInputAPI,
     // The value is changed by changing value attribute of the element or
     // something like setRangeText().
-    eSetValue_ByContent = 1 << 2,
-    // Whether the value change should be notified to the frame/contet nor not.
-    eSetValue_Notify = 1 << 3,
+    ByContentAPI,
+    // The value is changed by setRangeText(). Intended to prevent silent
+    // selection range change.
+    BySetRangeTextAPI,
+    // Whether SetValueChanged should be called as a result of this value
+    // change.
+    SetValueChanged,
     // Whether to move the cursor to end of the value (in the case when we have
     // cached selection offsets), in the case when the value has changed.  If
-    // this is not set and
-    // eSetValue_MoveCursorToBeginSetSelectionDirectionForward
+    // this is not set and MoveCursorToBeginSetSelectionDirectionForward
     // is not set, the cached selection offsets will simply be clamped to
     // be within the length of the new value. In either case, if the value has
     // not changed the cursor won't move.
     // TODO(mbrodesser): update comment and enumerator identifier to reflect
     // that also the direction is set to forward.
-    eSetValue_MoveCursorToEndIfValueChanged = 1 << 4,
-    // The value is changed for a XUL text control as opposed to for an HTML
-    // text control.  Such value changes are different in that they preserve the
-    // undo history.
-    eSetValue_ForXUL = 1 << 5,
+    MoveCursorToEndIfValueChanged,
+
+    // The value change should preserve undo history.
+    PreserveUndoHistory,
+
     // Whether it should be tried to move the cursor to the beginning of the
     // text control and set the selection direction to "forward".
     // TODO(mbrodesser): As soon as "none" is supported
     // (https://bugzilla.mozilla.org/show_bug.cgi?id=1541454), it should be set
     // to "none" and only fall back to "forward" if the platform doesn't support
     // it.
-    eSetValue_MoveCursorToBeginSetSelectionDirectionForward = 1 << 6,
+    MoveCursorToBeginSetSelectionDirectionForward,
   };
+  using ValueSetterOptions = EnumSet<ValueSetterOption, uint32_t>;
+
   /**
    * SetValue() sets the value to aValue with replacing \r\n and \r with \n.
    *
@@ -215,37 +274,45 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
    * @param aOldValue   Optional.  If you have already know current value,
    *                    set this to it.  However, this must not contain \r
    *                    for the performance.
-   * @param aFlags      See SetValueFlags.
+   * @param aOptions    See ValueSetterOption.
    */
-  MOZ_CAN_RUN_SCRIPT MOZ_MUST_USE bool SetValue(const nsAString& aValue,
-                                                const nsAString* aOldValue,
-                                                uint32_t aFlags);
-  MOZ_CAN_RUN_SCRIPT MOZ_MUST_USE bool SetValue(const nsAString& aValue,
-                                                uint32_t aFlags) {
-    return SetValue(aValue, nullptr, aFlags);
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT bool SetValue(
+      const nsAString& aValue, const nsAString* aOldValue,
+      const ValueSetterOptions& aOptions);
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT bool SetValue(
+      const nsAString& aValue, const ValueSetterOptions& aOptions) {
+    return SetValue(aValue, nullptr, aOptions);
   }
+
   /**
    * GetValue() returns current value either with or without TextEditor.
    * The result never includes \r.
    */
-  void GetValue(nsAString& aValue, bool aIgnoreWrap) const;
+  void GetValue(nsAString& aValue, bool aIgnoreWrap, bool aForDisplay) const;
+
   /**
    * ValueEquals() is designed for internal use so that aValue shouldn't
    * include \r character.  It should be handled before calling this with
    * nsContentUtils::PlatformToDOMLineBreaks().
    */
   bool ValueEquals(const nsAString& aValue) const;
-  bool HasNonEmptyValue();
   // The following methods are for textarea element to use whether default
   // value or not.
   // XXX We might have to add assertion when it is into editable,
   // or reconsider fixing bug 597525 to remove these.
   void EmptyValue() {
-    if (mValue) {
-      mValue->Truncate();
+    if (!mValue.IsVoid()) {
+      mValue.Truncate();
     }
   }
-  bool IsEmpty() const { return mValue ? mValue->IsEmpty() : true; }
+  bool IsEmpty() const { return mValue.IsEmpty(); }
+
+  const nsAString& LastInteractiveValueIfLastChangeWasNonInteractive() const {
+    return mLastInteractiveValue;
+  }
+  // When an interactive value change happens, we clear mLastInteractiveValue
+  // because it's not needed (mValue is the new interactive value).
+  void ClearLastInteractiveValue() { mLastInteractiveValue.SetIsVoid(true); }
 
   Element* GetRootNode();
   Element* GetPreviewNode();
@@ -257,7 +324,7 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   bool IsPasswordTextControl() const {
     return mTextCtrlElement->IsPasswordTextControl();
   }
-  int32_t GetCols() { return mTextCtrlElement->GetCols(); }
+  int32_t GetColsOrDefault() { return mTextCtrlElement->GetColsOrDefault(); }
   int32_t GetWrapCols() {
     int32_t wrapCols = mTextCtrlElement->GetWrapCols();
     MOZ_ASSERT(wrapCols >= 0);
@@ -265,50 +332,58 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   }
   int32_t GetRows() { return mTextCtrlElement->GetRows(); }
 
-  void UpdateOverlayTextVisibility(bool aNotify);
-
-  // placeholder methods
-  bool GetPlaceholderVisibility() { return mPlaceholderVisibility; }
-
   // preview methods
   void SetPreviewText(const nsAString& aValue, bool aNotify);
   void GetPreviewText(nsAString& aValue);
-  bool GetPreviewVisibility() { return mPreviewVisibility; }
 
   struct SelectionProperties {
    public:
-    SelectionProperties()
-        : mStart(0), mEnd(0), mDirection(nsITextControlFrame::eForward) {}
     bool IsDefault() const {
       return mStart == 0 && mEnd == 0 &&
-             mDirection == nsITextControlFrame::eForward;
+             mDirection == SelectionDirection::Forward;
     }
     uint32_t GetStart() const { return mStart; }
-    void SetStart(uint32_t value) {
-      mIsDirty = true;
-      mStart = value;
+    bool SetStart(uint32_t value) {
+      uint32_t newValue = std::min(value, *mMaxLength);
+      bool changed = mStart != newValue;
+      mStart = newValue;
+      mIsDirty |= changed;
+      return changed;
     }
     uint32_t GetEnd() const { return mEnd; }
-    void SetEnd(uint32_t value) {
-      mIsDirty = true;
-      mEnd = value;
+    bool SetEnd(uint32_t value) {
+      uint32_t newValue = std::min(value, *mMaxLength);
+      bool changed = mEnd != newValue;
+      mEnd = newValue;
+      mIsDirty |= changed;
+      return changed;
     }
-    nsITextControlFrame::SelectionDirection GetDirection() const {
-      return mDirection;
-    }
-    void SetDirection(nsITextControlFrame::SelectionDirection value) {
-      mIsDirty = true;
+    SelectionDirection GetDirection() const { return mDirection; }
+    bool SetDirection(SelectionDirection value) {
+      bool changed = mDirection != value;
       mDirection = value;
+      mIsDirty |= changed;
+      return changed;
     }
+    void SetMaxLength(uint32_t aMax) {
+      mMaxLength = Some(aMax);
+      // recompute against the new max length
+      SetStart(GetStart());
+      SetEnd(GetEnd());
+    }
+    bool HasMaxLength() { return mMaxLength.isSome(); }
+
     // return true only if mStart, mEnd, or mDirection have been modified,
     // or if SetIsDirty() was explicitly called.
     bool IsDirty() const { return mIsDirty; }
     void SetIsDirty() { mIsDirty = true; }
 
    private:
-    uint32_t mStart, mEnd;
+    uint32_t mStart = 0;
+    uint32_t mEnd = 0;
+    Maybe<uint32_t> mMaxLength;
     bool mIsDirty = false;
-    nsITextControlFrame::SelectionDirection mDirection;
+    SelectionDirection mDirection = SelectionDirection::Forward;
   };
 
   bool IsSelectionCached() const { return mSelectionCached; }
@@ -328,6 +403,8 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   nsITextControlFrame::SelectionDirection GetSelectionDirection(
       ErrorResult& aRv);
 
+  enum class ScrollAfterSelection { No, Yes };
+
   // Set the selection range (start, end, direction).  aEnd is allowed to be
   // smaller than aStart; in that case aStart will be reset to the same value as
   // aEnd.  This basically implements
@@ -337,19 +414,18 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   // SelectionDirection.
   //
   // If we have a frame, this method will scroll the selection into view.
-  //
-  // XXXbz This should really take uint32_t, but none of our guts (either the
-  // frame or our cached selection state) work with uint32_t at the moment...
   MOZ_CAN_RUN_SCRIPT void SetSelectionRange(
       uint32_t aStart, uint32_t aEnd,
-      nsITextControlFrame::SelectionDirection aDirection, ErrorResult& aRv);
+      nsITextControlFrame::SelectionDirection aDirection, ErrorResult& aRv,
+      ScrollAfterSelection aScroll = ScrollAfterSelection::Yes);
 
   // Set the selection range, but with an optional string for the direction.
   // This will convert aDirection to an nsITextControlFrame::SelectionDirection
   // and then call our other SetSelectionRange overload.
   MOZ_CAN_RUN_SCRIPT void SetSelectionRange(
       uint32_t aSelectionStart, uint32_t aSelectionEnd,
-      const dom::Optional<nsAString>& aDirection, ErrorResult& aRv);
+      const dom::Optional<nsAString>& aDirection, ErrorResult& aRv,
+      ScrollAfterSelection aScroll = ScrollAfterSelection::Yes);
 
   // Set the selection start.  This basically implements the
   // https://html.spec.whatwg.org/multipage/forms.html#dom-textarea/input-selectionstart
@@ -397,8 +473,6 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
 
   MOZ_CAN_RUN_SCRIPT void UnlinkInternal();
 
-  void ValueWasChanged();
-
   MOZ_CAN_RUN_SCRIPT void DestroyEditor();
   MOZ_CAN_RUN_SCRIPT void Clear();
 
@@ -414,24 +488,26 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
    * itself.  Must be called when both mTextEditor and mBoundFrame are not
    * nullptr.
    *
-   * @param aHandlingState      Must be inner-most handling state for SetValue.
+   * @param aHandlingSetValue   Must be inner-most handling state for SetValue.
    * @return                    false if fallible allocation failed.  Otherwise,
    *                            true.
    */
   MOZ_CAN_RUN_SCRIPT bool SetValueWithTextEditor(
-      AutoTextControlHandlingState& aHandlingState);
+      AutoTextControlHandlingState& aHandlingSetValue);
 
   /**
    * SetValueWithoutTextEditor() modifies the value without editor.  I.e.,
    * modifying the value in this instance and mBoundFrame.  Must be called
    * when at least mTextEditor or mBoundFrame is nullptr.
    *
-   * @param aHandlingState      Must be inner-most handling state for SetValue.
+   * @param aHandlingSetValue   Must be inner-most handling state for SetValue.
    * @return                    false if fallible allocation failed.  Otherwise,
    *                            true.
    */
   MOZ_CAN_RUN_SCRIPT bool SetValueWithoutTextEditor(
-      AutoTextControlHandlingState& aHandlingState);
+      AutoTextControlHandlingState& aHandlingSetValue);
+
+  IMEContentObserver* GetIMEContentObserver() const;
 
   // When this class handles something which may run script, this should be
   // set to non-nullptr.  If so, this class claims that it's busy and that
@@ -445,30 +521,24 @@ class TextControlState final : public SupportsWeakPtr<TextControlState> {
   RefPtr<TextInputSelectionController> mSelCon;
   RefPtr<RestoreSelectionState> mRestoringSelection;
   RefPtr<TextEditor> mTextEditor;
-  nsTextControlFrame* mBoundFrame;
+  nsTextControlFrame* mBoundFrame = nullptr;
   RefPtr<TextInputListener> mTextListener;
-  Maybe<nsString> mValue;
-  SelectionProperties mSelectionProperties;
-  bool mEverInited;  // Have we ever been initialized?
-  bool mEditorInitialized;
-  bool mValueTransferInProgress;  // Whether a value is being transferred to the
-                                  // frame
-  bool mSelectionCached;          // Whether mSelectionProperties is valid
-  bool mPlaceholderVisibility;
-  bool mPreviewVisibility;
+  UniquePtr<PasswordMaskData> mPasswordMaskData;
 
-  /**
-   * For avoiding allocation cost of the instance, we should reuse instances
-   * as far as possible.
-   *
-   * FYI: `25` is just a magic number considered without enough investigation,
-   *      but at least, this value must not make damage for footprint.
-   *      Feel free to change it if you find better number.
-   */
-  static const size_t kMaxCountOfCacheToReuse = 25;
-  static AutoTArray<TextControlState*, kMaxCountOfCacheToReuse>*
-      sReleasedInstances;
-  static bool sHasShutDown;
+  nsString mValue{VoidString()};  // Void if there's no value.
+
+  // If our input's last value change was not interactive (as in, the value
+  // change was caused by a ValueChangeKind::UserInteraction), this is the value
+  // that the last interaction had.
+  nsString mLastInteractiveValue{VoidString()};
+
+  SelectionProperties mSelectionProperties;
+
+  bool mEverInited : 1;  // Have we ever been initialized?
+  bool mEditorInitialized : 1;
+  bool mValueTransferInProgress : 1;  // Whether a value is being transferred to
+                                      // the frame
+  bool mSelectionCached : 1;          // Whether mSelectionProperties is valid
 
   friend class AutoTextControlHandlingState;
   friend class PrepareEditorEvent;

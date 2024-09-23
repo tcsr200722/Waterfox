@@ -8,29 +8,15 @@
 #include "mozilla/dom/DOMPoint.h"
 #include "mozilla/dom/Pose.h"
 #include "mozilla/dom/DOMPointBinding.h"
+#include "mozilla/HoldDropJSObjects.h"
+#include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(XRRigidTransform)
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(XRRigidTransform)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mParent, mPosition, mOrientation, mInverse)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
-  tmp->mMatrixArray = nullptr;
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(XRRigidTransform)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mParent, mPosition, mOrientation, mInverse)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(XRRigidTransform)
-  NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
-  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mMatrixArray)
-NS_IMPL_CYCLE_COLLECTION_TRACE_END
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(XRRigidTransform, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(XRRigidTransform, Release)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WITH_JS_MEMBERS(XRRigidTransform,
+                                                      (mParent, mPosition,
+                                                       mOrientation, mInverse),
+                                                      (mMatrixArray))
 
 XRRigidTransform::XRRigidTransform(nsISupports* aParent,
                                    const gfx::PointDouble3D& aPosition,
@@ -60,10 +46,6 @@ XRRigidTransform::XRRigidTransform(nsISupports* aParent,
   gfx::PointDouble3D scale;
   mRawTransformMatrix = aTransform;
   mRawTransformMatrix.Decompose(mRawPosition, mRawOrientation, scale);
-  // TODO: Investigate why we need to do this invert after getting orientation
-  // from the transform matrix. It looks like we have a bug at
-  // Matrix4x4Typed.SetFromRotationMatrix() (Bug 1635363).
-  mRawOrientation.Invert();
 }
 
 XRRigidTransform::~XRRigidTransform() { mozilla::DropJSObjects(this); }
@@ -128,10 +110,6 @@ void XRRigidTransform::Update(const gfx::Matrix4x4Double& aTransform) {
   mRawTransformMatrix = aTransform;
   gfx::PointDouble3D scale;
   mRawTransformMatrix.Decompose(mRawPosition, mRawOrientation, scale);
-  // TODO: Investigate why we need to do this invert after getting orientation
-  // from the transform matrix. It looks like we have a bug at
-  // Matrix4x4Typed.SetFromRotationMatrix() (Bug 1635363).
-  mRawOrientation.Invert();
   UpdateInternal();
 }
 
@@ -148,11 +126,9 @@ void XRRigidTransform::UpdateInternal() {
     mOrientation->SetW(mRawOrientation.w);
   }
   if (mInverse) {
-    gfx::QuaternionDouble q(mRawOrientation);
-    gfx::PointDouble3D p = -mRawPosition;
-    p = q.RotatePoint(p);
-    q.Invert();
-    mInverse->Update(p, q);
+    gfx::Matrix4x4Double inverseMatrix = mRawTransformMatrix;
+    Unused << inverseMatrix.Invert();
+    mInverse->Update(inverseMatrix);
   }
 }
 
@@ -183,16 +159,13 @@ void XRRigidTransform::GetMatrix(JSContext* aCx,
 
 already_AddRefed<XRRigidTransform> XRRigidTransform::Inverse() {
   if (!mInverse) {
-    gfx::QuaternionDouble q(mRawOrientation);
-    gfx::PointDouble3D p = -mRawPosition;
-    p = q.RotatePoint(p);
-    q.Invert();
-    mInverse = new XRRigidTransform(mParent, p, q);
+    gfx::Matrix4x4Double inverseMatrix = mRawTransformMatrix;
+    Unused << inverseMatrix.Invert();
+    mInverse = new XRRigidTransform(mParent, inverseMatrix);
   }
 
   RefPtr<XRRigidTransform> inverse = mInverse;
   return inverse.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

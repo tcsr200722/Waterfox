@@ -12,8 +12,7 @@
 #include "nsThreadUtils.h"
 #include "ServiceWorkerManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 ServiceWorkerJob::Type ServiceWorkerJob::GetType() const { return mType; }
 
@@ -50,8 +49,8 @@ void ServiceWorkerJob::StealResultCallbacksFrom(ServiceWorkerJob* aJob) {
 
   // Take the callbacks from the other job immediately to avoid the
   // any possibility of them existing on both jobs at once.
-  nsTArray<RefPtr<Callback>> callbackList;
-  callbackList.SwapElements(aJob->mResultCallbackList);
+  nsTArray<RefPtr<Callback>> callbackList =
+      std::move(aJob->mResultCallbackList);
 
   for (RefPtr<Callback>& callback : callbackList) {
     // Use AppendResultCallback() so that assertion checking is performed on
@@ -138,8 +137,7 @@ void ServiceWorkerJob::InvokeResultCallbacks(ErrorResult& aRv) {
   MOZ_DIAGNOSTIC_ASSERT(!mResultCallbacksInvoked);
   mResultCallbacksInvoked = true;
 
-  nsTArray<RefPtr<Callback>> callbackList;
-  callbackList.SwapElements(mResultCallbackList);
+  nsTArray<RefPtr<Callback>> callbackList = std::move(mResultCallbackList);
 
   for (RefPtr<Callback>& callback : callbackList) {
     // The callback might consume an exception on the ErrorResult, so we need
@@ -219,5 +217,4 @@ void ServiceWorkerJob::Finish(nsresult aRv) {
   Finish(converted);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -10,7 +10,7 @@ const NEW_URI = TEST_BASE_HTTPS + "media.html";
 const LINE_NO = 5;
 const COL_NO = 3;
 
-add_task(async function() {
+add_task(async function () {
   const { ui } = await openStyleEditorForURL(TESTCASE_URI);
 
   is(ui.editors.length, 2, "Two sheets present after load.");
@@ -18,7 +18,7 @@ add_task(async function() {
   info("Selecting the second editor");
   await ui.selectStyleSheet(ui.editors[1].styleSheet, LINE_NO, COL_NO);
 
-  await navigateToAndWaitForStyleSheets(NEW_URI, ui);
+  await navigateToAndWaitForStyleSheets(NEW_URI, ui, 2);
 
   info("Waiting for source editor to be ready.");
   await ui.editors[0].getSourceEditor();

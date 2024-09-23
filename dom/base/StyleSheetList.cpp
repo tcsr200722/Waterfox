@@ -9,8 +9,7 @@
 #include "mozilla/dom/StyleSheetListBinding.h"
 #include "nsINode.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(StyleSheetList)
 
@@ -29,12 +28,13 @@ JSObject* StyleSheetList::WrapObject(JSContext* aCx,
   return StyleSheetList_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-void StyleSheetList::NodeWillBeDestroyed(const nsINode* aNode) {
+void StyleSheetList::NodeWillBeDestroyed(nsINode* aNode) {
   mDocumentOrShadowRoot = nullptr;
 }
 
 StyleSheetList::StyleSheetList(DocumentOrShadowRoot& aScope)
     : mDocumentOrShadowRoot(&aScope) {
+  SetEnabledCallbacks(nsIMutationObserver::kNodeWillBeDestroyed);
   mDocumentOrShadowRoot->AsNode().AddMutationObserver(this);
 }
 
@@ -44,5 +44,4 @@ StyleSheetList::~StyleSheetList() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

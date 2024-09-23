@@ -8,21 +8,16 @@
 // It basically displays a magnifier that tracks mouse moves and shows a magnified version
 // of the page. On click, it samples the color at the pixel being hovered.
 
-const { Ci, Cc } = require("chrome");
 const {
   CanvasFrameAnonymousContentHelper,
-  createNode,
-} = require("devtools/server/actors/highlighters/utils/markup");
-const Services = require("Services");
-const EventEmitter = require("devtools/shared/event-emitter");
-const {
-  rgbToHsl,
-  rgbToColorName,
-} = require("devtools/shared/css/color").colorUtils;
+} = require("resource://devtools/server/actors/highlighters/utils/markup.js");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
+const { rgbToHsl } =
+  require("resource://devtools/shared/css/color.js").colorUtils;
 const {
   getCurrentZoom,
   getFrameOffsets,
-} = require("devtools/shared/layout/utils");
+} = require("resource://devtools/shared/layout/utils.js");
 
 loader.lazyGetter(this, "clipboardHelper", () =>
   Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper)
@@ -47,40 +42,40 @@ const DEFAULT_START_POS_Y = 100;
 const CLOSE_DELAY = 750;
 
 /**
- * The EyeDropper is the class that draws the gradient line and
- * color stops as an overlay on top of a linear-gradient background-image.
+ * The EyeDropper allows the user to select a color of a pixel within the content page,
+ * showing a magnified circle and color preview while the user hover the page.
  */
-function EyeDropper(highlighterEnv) {
-  EventEmitter.decorate(this);
+class EyeDropper {
+  #pageEventListenersAbortController;
+  constructor(highlighterEnv) {
+    EventEmitter.decorate(this);
 
-  this.highlighterEnv = highlighterEnv;
-  this.markup = new CanvasFrameAnonymousContentHelper(
-    this.highlighterEnv,
-    this._buildMarkup.bind(this)
-  );
+    this.highlighterEnv = highlighterEnv;
+    this.markup = new CanvasFrameAnonymousContentHelper(
+      this.highlighterEnv,
+      this._buildMarkup.bind(this)
+    );
+    this.isReady = this.markup.initialize();
 
-  // Get a couple of settings from prefs.
-  this.format = Services.prefs.getCharPref(FORMAT_PREF);
-  this.eyeDropperZoomLevel = Services.prefs.getIntPref(ZOOM_LEVEL_PREF);
-}
+    // Get a couple of settings from prefs.
+    this.format = Services.prefs.getCharPref(FORMAT_PREF);
+    this.eyeDropperZoomLevel = Services.prefs.getIntPref(ZOOM_LEVEL_PREF);
+  }
 
-EyeDropper.prototype = {
-  typeName: "EyeDropper",
-
-  ID_CLASS_PREFIX: "eye-dropper-",
+  ID_CLASS_PREFIX = "eye-dropper-";
 
   get win() {
     return this.highlighterEnv.window;
-  },
+  }
 
   _buildMarkup() {
     // Highlighter main container.
-    const container = createNode(this.win, {
+    const container = this.markup.createNode({
       attributes: { class: "highlighter-container" },
     });
 
     // Wrapper element.
-    const wrapper = createNode(this.win, {
+    const wrapper = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
@@ -91,7 +86,7 @@ EyeDropper.prototype = {
     });
 
     // The magnifier canvas element.
-    createNode(this.win, {
+    this.markup.createNode({
       parent: wrapper,
       nodeType: "canvas",
       attributes: {
@@ -104,18 +99,18 @@ EyeDropper.prototype = {
     });
 
     // The color label element.
-    const colorLabelContainer = createNode(this.win, {
+    const colorLabelContainer = this.markup.createNode({
       parent: wrapper,
       attributes: { class: "color-container" },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "div",
       parent: colorLabelContainer,
       attributes: { id: "color-preview", class: "color-preview" },
       prefix: this.ID_CLASS_PREFIX,
     });
-    createNode(this.win, {
+    this.markup.createNode({
       nodeType: "div",
       parent: colorLabelContainer,
       attributes: { id: "color-value", class: "color-value" },
@@ -123,22 +118,26 @@ EyeDropper.prototype = {
     });
 
     return container;
-  },
+  }
 
   destroy() {
     this.hide();
     this.markup.destroy();
-  },
+  }
 
   getElement(id) {
     return this.markup.getElement(this.ID_CLASS_PREFIX + id);
-  },
+  }
 
   /**
    * Show the eye-dropper highlighter.
+   *
    * @param {DOMNode} node The node which document the highlighter should be inserted in.
    * @param {Object} options The options object may contain the following properties:
-   * - {Boolean} copyOnSelect Whether selecting a color should copy it to the clipboard.
+   * - {Boolean} copyOnSelect: Whether selecting a color should copy it to the clipboard.
+   * - {String|null} screenshot: a dataURL representation of the page screenshot. If null,
+   *                 the eyedropper will use `drawWindow` to get the the screenshot
+   *                 (⚠️ but it won't handle remote frames).
    */
   show(node, options = {}) {
     if (this.highlighterEnv.isXUL) {
@@ -154,15 +153,20 @@ EyeDropper.prototype = {
     // eyedropper UI will appear in the screenshot itself (since the UI is injected as
     // native anonymous content in the page).
     // Once the screenshot is ready, the magnified area will be drawn.
-    this.prepareImageCapture();
+    this.prepareImageCapture(options.screenshot);
 
     // Start listening for user events.
     const { pageListenerTarget } = this.highlighterEnv;
-    pageListenerTarget.addEventListener("mousemove", this);
-    pageListenerTarget.addEventListener("click", this, true);
-    pageListenerTarget.addEventListener("keydown", this);
-    pageListenerTarget.addEventListener("DOMMouseScroll", this);
-    pageListenerTarget.addEventListener("FullZoomChange", this);
+    this.#pageEventListenersAbortController = new AbortController();
+    const signal = this.#pageEventListenersAbortController.signal;
+    pageListenerTarget.addEventListener("mousemove", this, { signal });
+    pageListenerTarget.addEventListener("click", this, {
+      signal,
+      useCapture: true,
+    });
+    pageListenerTarget.addEventListener("keydown", this, { signal });
+    pageListenerTarget.addEventListener("DOMMouseScroll", this, { signal });
+    pageListenerTarget.addEventListener("FullZoomChange", this, { signal });
 
     // Show the eye-dropper.
     this.getElement("root").removeAttribute("hidden");
@@ -188,53 +192,74 @@ EyeDropper.prototype = {
     this.win.document.setSuppressedEventListener(this);
 
     return true;
-  },
+  }
 
   /**
    * Hide the eye-dropper highlighter.
    */
   hide() {
-    if (this.highlighterEnv.isXUL) {
-      return;
-    }
-
     this.pageImage = null;
 
-    const { pageListenerTarget } = this.highlighterEnv;
+    if (this.#pageEventListenersAbortController) {
+      this.#pageEventListenersAbortController.abort();
+      this.#pageEventListenersAbortController = null;
 
-    if (pageListenerTarget) {
-      pageListenerTarget.removeEventListener("mousemove", this);
-      pageListenerTarget.removeEventListener("click", this, true);
-      pageListenerTarget.removeEventListener("keydown", this);
-      pageListenerTarget.removeEventListener("DOMMouseScroll", this);
-      pageListenerTarget.removeEventListener("FullZoomChange", this);
+      const rootElement = this.getElement("root");
+      rootElement.setAttribute("hidden", "true");
+      rootElement.removeAttribute("drawn");
+
+      this.emit("hidden");
+
+      this.win.document.setSuppressedEventListener(null);
+    }
+  }
+
+  /**
+   * Convert a base64 png data-uri to raw binary data.
+   */
+  #dataURItoBlob(dataURI) {
+    const byteString = atob(dataURI.split(",")[1]);
+
+    // write the bytes of the string to an ArrayBuffer
+    const buffer = new ArrayBuffer(byteString.length);
+    // Update the buffer through a typed array.
+    const typedArray = new Uint8Array(buffer);
+    for (let i = 0; i < byteString.length; i++) {
+      typedArray[i] = byteString.charCodeAt(i);
     }
 
-    this.getElement("root").setAttribute("hidden", "true");
-    this.getElement("root").removeAttribute("drawn");
+    return new Blob([buffer], { type: "image/png" });
+  }
 
-    this.emit("hidden");
+  /**
+   * Create an image bitmap from the page screenshot, draw the eyedropper and set the
+   * "drawn" attribute on the "root" element once it's done.
+   *
+   * @params {String|null} screenshot: a dataURL representation of the page screenshot.
+   *                       If null, we'll use `drawWindow` to get the the page screenshot
+   *                       (⚠️ but it won't handle remote frames).
+   */
+  async prepareImageCapture(screenshot) {
+    let imageSource;
+    if (screenshot) {
+      imageSource = this.#dataURItoBlob(screenshot);
+    } else {
+      imageSource = getWindowAsImageData(this.win);
+    }
 
-    this.win.document.setSuppressedEventListener(null);
-  },
+    // We need to transform the blob/imageData to something drawWindow will consume.
+    // An ImageBitmap works well. We could have used an Image, but doing so results
+    // in errors if the page defines CSP headers.
+    const image = await this.win.createImageBitmap(imageSource);
 
-  prepareImageCapture() {
-    // Get the image data from the content window.
-    const imageData = getWindowAsImageData(this.win);
+    this.pageImage = image;
+    // We likely haven't drawn anything yet (no mousemove events yet), so start now.
+    this.draw();
 
-    // We need to transform imageData to something drawWindow will consume. An ImageBitmap
-    // works well. We could have used an Image, but doing so results in errors if the page
-    // defines CSP headers.
-    this.win.createImageBitmap(imageData).then(image => {
-      this.pageImage = image;
-      // We likely haven't drawn anything yet (no mousemove events yet), so start now.
-      this.draw();
-
-      // Set an attribute on the root element to be able to run tests after the first draw
-      // was done.
-      this.getElement("root").setAttribute("drawn", "true");
-    });
-  },
+    // Set an attribute on the root element to be able to run tests after the first draw
+    // was done.
+    this.getElement("root").setAttribute("drawn", "true");
+  }
 
   /**
    * Get the number of cells (blown-up pixels) per direction in the grid.
@@ -248,21 +273,21 @@ EyeDropper.prototype = {
     cellsWide += cellsWide % 2;
 
     return cellsWide;
-  },
+  }
 
   /**
    * Get the size of each cell (blown-up pixel) in the grid.
    */
   get cellSize() {
     return this.magnifiedArea.width / this.cellsWide;
-  },
+  }
 
   /**
    * Get index of cell in the center of the grid.
    */
   get centerCell() {
     return Math.floor(this.cellsWide / 2);
-  },
+  }
 
   /**
    * Get color of center cell in the grid.
@@ -271,7 +296,7 @@ EyeDropper.prototype = {
     const pos = this.centerCell * this.cellSize + this.cellSize / 2;
     const rgb = this.ctx.getImageData(pos, pos, 1, 1).data;
     return rgb;
-  },
+  }
 
   draw() {
     // If the image of the page isn't ready yet, bail out, we'll draw later on mousemove.
@@ -307,7 +332,7 @@ EyeDropper.prototype = {
     this.getElement("color-value").setTextContent(
       toColorString(rgb, this.format)
     );
-  },
+  }
 
   /**
    * Draw a grid on the canvas representing pixel boundaries.
@@ -329,7 +354,7 @@ EyeDropper.prototype = {
       this.ctx.lineTo(width, i - 0.5);
       this.ctx.stroke();
     }
-  },
+  }
 
   /**
    * Draw a box on the canvas to highlight the center cell.
@@ -349,7 +374,7 @@ EyeDropper.prototype = {
 
     this.ctx.strokeStyle = "rgba(255, 255, 255, 1)";
     this.ctx.strokeRect(pos - 0.5, pos - 0.5, this.cellSize, this.cellSize);
-  },
+  }
 
   handleEvent(e) {
     switch (e.type) {
@@ -387,7 +412,7 @@ EyeDropper.prototype = {
         this.show();
         break;
     }
-  },
+  }
 
   moveTo(x, y) {
     const root = this.getElement("root");
@@ -409,7 +434,7 @@ EyeDropper.prototype = {
     } else if (x >= this.win.innerWidth - MAGNIFIER_WIDTH) {
       root.setAttribute("left", "");
     }
-  },
+  }
 
   /**
    * Select the current color that's being previewed. Depending on the current options,
@@ -423,7 +448,7 @@ EyeDropper.prototype = {
 
     this.emit("selected", toColorString(this.centerColor, this.format));
     onColorSelected.then(() => this.hide(), console.error);
-  },
+  }
 
   /**
    * Handler for the keydown event. Either select the color or move the panel in a
@@ -491,7 +516,7 @@ EyeDropper.prototype = {
 
       e.preventDefault();
     }
-  },
+  }
 
   /**
    * Copy the currently inspected color to the clipboard.
@@ -513,8 +538,8 @@ EyeDropper.prototype = {
     return new Promise(resolve => {
       this._copyTimeout = setTimeout(resolve, CLOSE_DELAY);
     });
-  },
-};
+  }
+}
 
 exports.EyeDropper = EyeDropper;
 
@@ -561,7 +586,7 @@ function toColorString(rgb, format) {
       const [h, s, l] = rgbToHsl(rgb);
       return "hsl(" + h + ", " + s + "%, " + l + "%)";
     case "name":
-      const str = rgbToColorName(r, g, b) || hexString(rgb);
+      const str = InspectorUtils.rgbToColorName(r, g, b) || hexString(rgb);
       return str;
     default:
       return hexString(rgb);

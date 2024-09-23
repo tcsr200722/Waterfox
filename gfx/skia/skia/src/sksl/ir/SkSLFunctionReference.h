@@ -8,6 +8,7 @@
 #ifndef SKSL_FUNCTIONREFERENCE
 #define SKSL_FUNCTIONREFERENCE
 
+#include "src/sksl/SkSLBuiltinTypes.h"
 #include "src/sksl/SkSLContext.h"
 #include "src/sksl/ir/SkSLExpression.h"
 #include "src/sksl/ir/SkSLFunctionDeclaration.h"
@@ -18,34 +19,38 @@ namespace SkSL {
  * An identifier referring to a function name. This is an intermediate value: FunctionReferences are
  * always eventually replaced by FunctionCalls in valid programs.
  */
-struct FunctionReference : public Expression {
-    FunctionReference(const Context& context, int offset,
-                      std::vector<const FunctionDeclaration*> function)
-    : INHERITED(offset, kFunctionReference_Kind, *context.fInvalid_Type)
-    , fFunctions(function) {}
+class FunctionReference final : public Expression {
+public:
+    inline static constexpr Kind kIRNodeKind = Kind::kFunctionReference;
 
-    bool hasSideEffects() const override {
-        return false;
+    FunctionReference(const Context& context, Position pos,
+                      const FunctionDeclaration* overloadChain)
+        : INHERITED(pos, kIRNodeKind, context.fTypes.fInvalid.get())
+        , fOverloadChain(overloadChain) {}
+
+    const FunctionDeclaration* overloadChain() const {
+        return fOverloadChain;
     }
 
-    std::unique_ptr<Expression> clone() const override {
-        return std::unique_ptr<Expression>(new FunctionReference(fOffset, fFunctions, &fType));
+    std::unique_ptr<Expression> clone(Position pos) const override {
+        return std::unique_ptr<Expression>(new FunctionReference(pos, this->overloadChain(),
+                                                                 &this->type()));
     }
 
-    String description() const override {
-        return String("<function>");
+    std::string description(OperatorPrecedence) const override {
+        return "<function>";
     }
-
-    const std::vector<const FunctionDeclaration*> fFunctions;
-
-    typedef Expression INHERITED;
 
 private:
-    FunctionReference(int offset, std::vector<const FunctionDeclaration*> function,
-                      const Type* type)
-    : INHERITED(offset, kFunctionReference_Kind, *type)
-    , fFunctions(function) {}};
+    FunctionReference(Position pos, const FunctionDeclaration* overloadChain, const Type* type)
+            : INHERITED(pos, kIRNodeKind, type)
+            , fOverloadChain(overloadChain) {}
 
-} // namespace
+    const FunctionDeclaration* fOverloadChain;
+
+    using INHERITED = Expression;
+};
+
+}  // namespace SkSL
 
 #endif

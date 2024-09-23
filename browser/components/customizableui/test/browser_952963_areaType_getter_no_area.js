@@ -9,9 +9,19 @@ const kUnregisterAreaTestWidget = "test-widget-for-unregisterArea-areaType";
 const kTestWidget = "test-widget-no-area-areaType";
 registerCleanupFunction(removeCustomToolbars);
 
+registerCleanupFunction(() => {
+  try {
+    CustomizableUI.destroyWidget(kTestWidget);
+    CustomizableUI.destroyWidget(kUnregisterAreaTestWidget);
+  } catch (ex) {
+    console.error(ex);
+  }
+});
+
 function checkAreaType(widget) {
   try {
-    is(widget.areaType, null, "areaType should be null");
+    // widget.areaType returns either null or undefined
+    ok(!widget.areaType, "areaType should be null");
   } catch (ex) {
     info("Fetching areaType threw: " + ex);
     ok(false, "areaType getter shouldn't throw.");
@@ -19,7 +29,7 @@ function checkAreaType(widget) {
 }
 
 // widget wrappers in unregisterArea'd areas and nowhere shouldn't throw when checking areaTypes.
-add_task(async function() {
+add_task(async function () {
   // Using the ID before it's been created will imply a XUL wrapper; we'll test
   // an API-based wrapper below
   let toolbarNode = createToolbarWithPlacements(kToolbarName, [

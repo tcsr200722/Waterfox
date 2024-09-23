@@ -197,7 +197,7 @@ inline void LossyAppendUTF16toASCII(mozilla::Span<const char16_t> aSource,
 // Latin1 to UTF-8
 // Interpret each incoming unsigned byte value as a Unicode scalar value (not
 // windows-1252!).
-// If the input is ASCII, the heap-allocated nsStringBuffer is shared if
+// If the input is ASCII, the heap-allocated mozilla::StringBuffer is shared if
 // possible.
 
 [[nodiscard]] inline bool CopyLatin1toUTF8(const nsACString& aSource,
@@ -231,7 +231,7 @@ inline void AppendLatin1toUTF8(const nsACString& aSource, nsACString& aDest) {
 // points above U+00FF, memory-safely produces garbage in release builds and
 // asserts in debug builds. The nature of the garbage may differ
 // based on CPU architecture and must not be relied upon.
-// If the input is ASCII, the heap-allocated nsStringBuffer is shared if
+// If the input is ASCII, the heap-allocated mozilla::StringBuffer is shared if
 // possible.
 
 [[nodiscard]] inline bool LossyCopyUTF8toLatin1(const nsACString& aSource,
@@ -411,8 +411,8 @@ char16_t* CopyUnicodeTo(const nsAString& aSource, uint32_t aSrcOffset,
  * buffer only if there are unpaired surrogates.
  */
 [[nodiscard]] inline bool EnsureUTF16Validity(nsAString& aString) {
-  uint32_t upTo = mozilla::Utf16ValidUpTo(aString);
-  uint32_t len = aString.Length();
+  size_t upTo = mozilla::Utf16ValidUpTo(aString);
+  size_t len = aString.Length();
   if (upTo == len) {
     return true;
   }
@@ -420,7 +420,7 @@ char16_t* CopyUnicodeTo(const nsAString& aSource, uint32_t aSrcOffset,
   if (!ptr) {
     return false;
   }
-  auto span = mozilla::MakeSpan(ptr, len);
+  auto span = mozilla::Span(ptr, len);
   span[upTo] = 0xFFFD;
   mozilla::EnsureUtf16ValiditySpan(span.From(upTo + 1));
   return true;
@@ -428,6 +428,62 @@ char16_t* CopyUnicodeTo(const nsAString& aSource, uint32_t aSrcOffset,
 
 void ParseString(const nsACString& aSource, char aDelimiter,
                  nsTArray<nsCString>& aArray);
+
+namespace mozilla::detail {
+
+constexpr auto kStringJoinAppendDefault =
+    [](auto& aResult, const auto& aValue) { aResult.Append(aValue); };
+
+}  // namespace mozilla::detail
+
+/**
+ * Join a sequence of items, each optionally transformed to a string, with a
+ * given separator, appending to a given string.
+ *
+ * \tparam CharType char or char16_t
+ * \tparam InputRange a range usable with range-based for
+ * \tparam Func optionally, a functor accepting a nsTSubstring<CharType>& and
+ *   an item of InputRange which appends the latter to the former
+ */
+template <
+    typename CharType, typename InputRange,
+    typename Func = const decltype(mozilla::detail::kStringJoinAppendDefault)&>
+void StringJoinAppend(
+    nsTSubstring<CharType>& aOutput,
+    const nsTLiteralString<CharType>& aSeparator, const InputRange& aInputRange,
+    Func&& aFunc = mozilla::detail::kStringJoinAppendDefault) {
+  bool first = true;
+  for (const auto& item : aInputRange) {
+    if (first) {
+      first = false;
+    } else {
+      aOutput.Append(aSeparator);
+    }
+
+    aFunc(aOutput, item);
+  }
+}
+
+/**
+ * Join a sequence of items, each optionally transformed to a string, with a
+ * given separator, returning a new string.
+ *
+ * \tparam CharType char or char16_t
+ * \tparam InputRange a range usable with range-based for
+ * \tparam Func optionally, a functor accepting a nsTSubstring<CharType>& and
+ *   an item of InputRange which appends the latter to the former
+
+ */
+template <
+    typename CharType, typename InputRange,
+    typename Func = const decltype(mozilla::detail::kStringJoinAppendDefault)&>
+auto StringJoin(const nsTLiteralString<CharType>& aSeparator,
+                const InputRange& aInputRange,
+                Func&& aFunc = mozilla::detail::kStringJoinAppendDefault) {
+  nsTAutoString<CharType> res;
+  StringJoinAppend(res, aSeparator, aInputRange, std::forward<Func>(aFunc));
+  return res;
+}
 
 /**
  * Converts case in place in the argument string.

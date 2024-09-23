@@ -6,12 +6,12 @@
     "message": "Amazon.ca Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.ca/exec/obidos/external-search/"
+    "message": "https://www.amazon.ca/s"
   },
   "searchForm": {
-    "message": "https://www.amazon.ca/exec/obidos/external-search/?field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "https://www.amazon.ca/"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "k={searchTerms}"
   }
 }

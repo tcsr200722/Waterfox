@@ -4,12 +4,11 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
- * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
+ * See  https://firefox-source-docs.mozilla.org/performance/bestpractices.html
  * for tips on how to do that.
  */
 const EXPECTED_REFLOWS = [
@@ -23,9 +22,21 @@ const EXPECTED_REFLOWS = [
  * uninterruptible reflows when switching between two
  * tabs that are both fully visible.
  */
-add_task(async function() {
+add_task(async function () {
+  // TODO (bug 1702653): Disable tab shadows for tests since the shadow
+  // can extend outside of the boundingClientRect. The tabRect will need
+  // to grow to include the shadow size.
+  gBrowser.tabContainer.setAttribute("noshadowfortests", "true");
+
   await ensureNoPreloadedBrowser();
   await disableFxaBadge();
+
+  // The test starts on about:blank and opens an about:blank
+  // tab which triggers opening the toolbar since
+  // ensureNoPreloadedBrowser sets AboutNewTab.newTabURL to about:blank.
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.toolbars.bookmarks.visibility", "never"]],
+  });
 
   // At the time of writing, there are no reflows on simple tab switching.
   // Mochitest will fail if we have no assertions, so we add one here
@@ -41,12 +52,26 @@ add_task(async function() {
   let otherTab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
   await firstSwitchDone;
 
-  let tabStripRect = gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
+  let tabStripRect =
+    gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
   let firstTabRect = origTab.getBoundingClientRect();
+  let tabPaddingStart = parseFloat(
+    getComputedStyle(gBrowser.selectedTab).paddingInlineStart
+  );
+  let minTabWidth = firstTabRect.width - 2 * tabPaddingStart;
+  if (AppConstants.platform == "macosx") {
+    // On macOS, after bug 1886729, gecko screenshots like the ones for this
+    // test can't screenshot the native titlebar. That, plus the fact that
+    // there's no border or shadow (see bug 1702653) means that we only end up
+    // with the tab text color changing, which is smaller than the tab
+    // background size.
+    minTabWidth = 0;
+  }
+  let maxTabWidth = firstTabRect.width;
   let inRange = (val, min, max) => min <= val && val <= max;
 
   await withPerfObserver(
-    async function() {
+    async function () {
       let switchDone = BrowserTestUtils.waitForEvent(window, "TabSwitchDone");
       gBrowser.selectedTab = origTab;
       await switchDone;
@@ -67,11 +92,7 @@ add_task(async function() {
                   // The tab selection changes between 2 adjacent tabs, so we expect
                   // both to change color at once: this should be a single rect of the
                   // width of 2 tabs.
-                  inRange(
-                    r.w,
-                    (origTab.clientWidth - 1) * 2, // -1 for the border on Win7
-                    origTab.clientWidth * 2
-                  )
+                  inRange(r.w, minTabWidth, maxTabWidth * 2)
                 )
               )
           ),

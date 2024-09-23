@@ -2,27 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-import React, { cloneElement, Component } from "react";
-import AccessibleImage from "./AccessibleImage";
+import { cloneElement, Component } from "devtools/client/shared/vendor/react";
+import {
+  aside,
+  button,
+  div,
+  h2,
+} from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
-import "./Accordion.css";
+class Accordion extends Component {
+  static get propTypes() {
+    return {
+      items: PropTypes.array.isRequired,
+    };
+  }
 
-type AccordionItem = {
-  buttons?: Array<Object>,
-  component: React$Element<any>,
-  componentProps: Object,
-  header: string,
-  className: string,
-  opened: boolean,
-  onToggle?: () => void,
-  shouldOpen?: () => void,
-};
-
-type Props = { items: Array<Object> };
-
-class Accordion extends Component<Props> {
-  handleHeaderClick(i: number) {
+  handleHeaderClick(i) {
     const item = this.props.items[i];
     const opened = !item.opened;
     item.opened = opened;
@@ -36,47 +32,56 @@ class Accordion extends Component<Props> {
     this.forceUpdate();
   }
 
-  onHandleHeaderKeyDown(
-    e: SyntheticKeyboardEvent<HTMLHeadingElement>,
-    i: number
-  ) {
-    if (e && (e.key === " " || e.key === "Enter")) {
-      this.handleHeaderClick(i);
-    }
-  }
-
-  renderContainer = (item: AccordionItem, i: number) => {
+  renderContainer = (item, i) => {
     const { opened } = item;
+    const contentElementId = `${item.id}-content`;
 
-    return (
-      <li className={item.className} key={i}>
-        <h2
-          className="_header"
-          tabIndex="0"
-          onKeyDown={e => this.onHandleHeaderKeyDown(e, i)}
-          onClick={() => this.handleHeaderClick(i)}
-        >
-          <AccessibleImage className={`arrow ${opened ? "expanded" : ""}`} />
-          <span className="header-label">{item.header}</span>
-          {item.buttons ? (
-            <div className="header-buttons" tabIndex="-1">
-              {item.buttons}
-            </div>
-          ) : null}
-        </h2>
-        {opened && (
-          <div className="_content">
-            {cloneElement(item.component, item.componentProps || {})}
-          </div>
-        )}
-      </li>
+    return aside(
+      {
+        className: item.className,
+        key: item.id,
+        "aria-labelledby": item.id,
+        role: item.role,
+      },
+      h2(
+        {
+          className: "_header",
+        },
+        button(
+          {
+            id: item.id,
+            className: "header-label",
+            "aria-expanded": `${opened ? "true" : "false"}`,
+            "aria-controls": opened ? contentElementId : undefined,
+            onClick: () => this.handleHeaderClick(i),
+          },
+          item.header
+        ),
+        item.buttons
+          ? div(
+              {
+                className: "header-buttons",
+              },
+              item.buttons
+            )
+          : null
+      ),
+      opened &&
+        div(
+          {
+            className: "_content",
+            id: contentElementId,
+          },
+          cloneElement(item.component, item.componentProps || {})
+        )
     );
   };
   render() {
-    return (
-      <ul className="accordion">
-        {this.props.items.map(this.renderContainer)}
-      </ul>
+    return div(
+      {
+        className: "accordion",
+      },
+      this.props.items.map(this.renderContainer)
     );
   }
 }

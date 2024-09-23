@@ -10,7 +10,8 @@
 #include "nsILocalFileMac.h"
 #include "nsIURI.h"
 
-// We override this to make sure app bundles display their pretty name (without .app suffix)
+// We override this to make sure app bundles display their pretty name (without
+// .app suffix)
 NS_IMETHODIMP nsLocalHandlerAppMac::GetName(nsAString& aName) {
   if (mExecutable) {
     nsCOMPtr<nsILocalFileMac> macFile = do_QueryInterface(mExecutable);
@@ -30,8 +31,9 @@ NS_IMETHODIMP nsLocalHandlerAppMac::GetName(nsAString& aName) {
  * somewhere more central (see bug 389922).
  */
 NS_IMETHODIMP
-nsLocalHandlerAppMac::LaunchWithURI(nsIURI* aURI, mozilla::dom::BrowsingContext* aBrowsingContext) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+nsLocalHandlerAppMac::LaunchWithURI(
+    nsIURI* aURI, mozilla::dom::BrowsingContext* aBrowsingContext) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   nsresult rv;
   nsCOMPtr<nsILocalFileMac> lfm(do_QueryInterface(mExecutable, &rv));
@@ -45,14 +47,15 @@ nsLocalHandlerAppMac::LaunchWithURI(nsIURI* aURI, mozilla::dom::BrowsingContext*
   aURI->GetAsciiSpec(uriSpec);
 
   const UInt8* uriString = reinterpret_cast<const UInt8*>(uriSpec.get());
-  CFURLRef uri =
-      ::CFURLCreateWithBytes(NULL, uriString, uriSpec.Length(), kCFStringEncodingUTF8, NULL);
+  CFURLRef uri = ::CFURLCreateWithBytes(NULL, uriString, uriSpec.Length(),
+                                        kCFStringEncodingUTF8, NULL);
   if (!uri) {
     ::CFRelease(appURL);
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  CFArrayRef uris = ::CFArrayCreate(NULL, reinterpret_cast<const void**>(&uri), 1, NULL);
+  CFArrayRef uris =
+      ::CFArrayCreate(NULL, reinterpret_cast<const void**>(&uri), 1, NULL);
   if (!uris) {
     ::CFRelease(uri);
     ::CFRelease(appURL);
@@ -74,5 +77,5 @@ nsLocalHandlerAppMac::LaunchWithURI(nsIURI* aURI, mozilla::dom::BrowsingContext*
 
   return err != noErr ? NS_ERROR_FAILURE : NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }

@@ -8,11 +8,49 @@
 #include "ia2AccessibleHypertext.h"
 
 #include "AccessibleHypertext_i.c"
+#include "AccessibleHypertext2_i.c"
 
-#include "HyperTextAccessibleWrap.h"
+#include "mozilla/a11y/HyperTextAccessibleBase.h"
+
 #include "IUnknownImpl.h"
 
 using namespace mozilla::a11y;
+
+HyperTextAccessibleBase* ia2AccessibleHypertext::TextAcc() {
+  Accessible* acc = Acc();
+  return acc ? acc->AsHyperTextBase() : nullptr;
+}
+
+// IUnknown
+STDMETHODIMP
+ia2AccessibleHypertext::QueryInterface(REFIID aIID, void** aInstancePtr) {
+  if (!aInstancePtr) return E_FAIL;
+
+  *aInstancePtr = nullptr;
+
+  Accessible* acc = Acc();
+  if (acc && acc->IsTextRole()) {
+    if (aIID == IID_IAccessibleText) {
+      *aInstancePtr =
+          static_cast<IAccessibleText*>(static_cast<ia2AccessibleText*>(this));
+    } else if (aIID == IID_IAccessibleHypertext) {
+      *aInstancePtr = static_cast<IAccessibleHypertext*>(this);
+    } else if (aIID == IID_IAccessibleHypertext2) {
+      *aInstancePtr = static_cast<IAccessibleHypertext2*>(this);
+    } else if (aIID == IID_IAccessibleEditableText) {
+      *aInstancePtr = static_cast<IAccessibleEditableText*>(this);
+    } else if (aIID == IID_IAccessibleTextSelectionContainer) {
+      *aInstancePtr = static_cast<IAccessibleTextSelectionContainer*>(this);
+    }
+
+    if (*aInstancePtr) {
+      AddRef();
+      return S_OK;
+    }
+  }
+
+  return MsaaAccessible::QueryInterface(aIID, aInstancePtr);
+}
 
 // IAccessibleHypertext
 
@@ -22,11 +60,8 @@ ia2AccessibleHypertext::get_nHyperlinks(long* aHyperlinkCount) {
 
   *aHyperlinkCount = 0;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessibleWrap* hyperText =
-      static_cast<HyperTextAccessibleWrap*>(this);
-  if (hyperText->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* hyperText = TextAcc();
+  if (!hyperText) return CO_E_OBJNOTCONNECTED;
 
   *aHyperlinkCount = hyperText->LinkCount();
   return S_OK;
@@ -39,20 +74,17 @@ ia2AccessibleHypertext::get_hyperlink(long aLinkIndex,
 
   *aHyperlink = nullptr;
 
-  AccessibleWrap* hyperLink;
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-  HyperTextAccessibleWrap* hyperText =
-      static_cast<HyperTextAccessibleWrap*>(this);
-  if (hyperText->IsDefunct()) {
+  HyperTextAccessibleBase* hyperText = TextAcc();
+  if (!hyperText) {
     return CO_E_OBJNOTCONNECTED;
   }
 
-  hyperLink = static_cast<AccessibleWrap*>(hyperText->LinkAt(aLinkIndex));
+  Accessible* hyperLink = hyperText->LinkAt(aLinkIndex);
 
   if (!hyperLink) return E_FAIL;
 
-  *aHyperlink = static_cast<IAccessibleHyperlink*>(hyperLink);
-  (*aHyperlink)->AddRef();
+  RefPtr<IAccessibleHyperlink> result = MsaaAccessible::GetFrom(hyperLink);
+  result.forget(aHyperlink);
   return S_OK;
 }
 
@@ -63,11 +95,8 @@ ia2AccessibleHypertext::get_hyperlinkIndex(long aCharIndex,
 
   *aHyperlinkIndex = 0;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessibleWrap* hyperAcc =
-      static_cast<HyperTextAccessibleWrap*>(this);
-  if (hyperAcc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  HyperTextAccessibleBase* hyperAcc = TextAcc();
+  if (!hyperAcc) return CO_E_OBJNOTCONNECTED;
 
   *aHyperlinkIndex = hyperAcc->LinkIndexAtOffset(aCharIndex);
   return S_OK;
@@ -83,11 +112,8 @@ ia2AccessibleHypertext::get_hyperlinks(IAccessibleHyperlink*** aHyperlinks,
   *aHyperlinks = nullptr;
   *aNHyperlinks = 0;
 
-  MOZ_ASSERT(!HyperTextProxyFor(this));
-
-  HyperTextAccessibleWrap* hyperText =
-      static_cast<HyperTextAccessibleWrap*>(this);
-  if (hyperText->IsDefunct()) {
+  HyperTextAccessibleBase* hyperText = TextAcc();
+  if (!hyperText) {
     return CO_E_OBJNOTCONNECTED;
   }
 
@@ -106,11 +132,10 @@ ia2AccessibleHypertext::get_hyperlinks(IAccessibleHyperlink*** aHyperlinks,
   }
 
   for (uint32_t i = 0; i < count; ++i) {
-    AccessibleWrap* hyperLink =
-        static_cast<AccessibleWrap*>(hyperText->LinkAt(i));
+    Accessible* hyperLink = hyperText->LinkAt(i);
     MOZ_ASSERT(hyperLink);
-    (*aHyperlinks)[i] = static_cast<IAccessibleHyperlink*>(hyperLink);
-    (*aHyperlinks)[i]->AddRef();
+    RefPtr<IAccessibleHyperlink> iaHyper = MsaaAccessible::GetFrom(hyperLink);
+    iaHyper.forget(&(*aHyperlinks)[i]);
   }
 
   return S_OK;

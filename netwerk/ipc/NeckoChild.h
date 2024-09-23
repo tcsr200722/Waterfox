@@ -19,12 +19,15 @@ class NeckoChild : public PNeckoChild {
   friend class PNeckoChild;
 
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NeckoChild, override)
+
   NeckoChild() = default;
-  virtual ~NeckoChild();
 
   static void InitNeckoChild();
 
  protected:
+  virtual ~NeckoChild();
+
   PStunAddrsRequestChild* AllocPStunAddrsRequestChild();
   bool DeallocPStunAddrsRequestChild(PStunAddrsRequestChild* aActor);
 
@@ -32,21 +35,23 @@ class NeckoChild : public PNeckoChild {
   bool DeallocPWebrtcTCPSocketChild(PWebrtcTCPSocketChild* aActor);
 
   PAltDataOutputStreamChild* AllocPAltDataOutputStreamChild(
-      const nsCString& type, const int64_t& predictedSize,
+      const nsACString& type, const int64_t& predictedSize,
       PHttpChannelChild* channel);
   bool DeallocPAltDataOutputStreamChild(PAltDataOutputStreamChild* aActor);
 
   PCookieServiceChild* AllocPCookieServiceChild();
   bool DeallocPCookieServiceChild(PCookieServiceChild*);
-  PFTPChannelChild* AllocPFTPChannelChild(
+#ifdef MOZ_WIDGET_GTK
+  PGIOChannelChild* AllocPGIOChannelChild(
       PBrowserChild* aBrowser, const SerializedLoadContext& aSerialized,
-      const FTPChannelCreationArgs& aOpenArgs);
-  bool DeallocPFTPChannelChild(PFTPChannelChild*);
+      const GIOChannelCreationArgs& aOpenArgs);
+  bool DeallocPGIOChannelChild(PGIOChannelChild*);
+#endif
   PWebSocketChild* AllocPWebSocketChild(PBrowserChild*,
                                         const SerializedLoadContext&,
                                         const uint32_t&);
   bool DeallocPWebSocketChild(PWebSocketChild*);
-  PTCPSocketChild* AllocPTCPSocketChild(const nsString& host,
+  PTCPSocketChild* AllocPTCPSocketChild(const nsAString& host,
                                         const uint16_t& port);
   bool DeallocPTCPSocketChild(PTCPSocketChild*);
   PTCPServerSocketChild* AllocPTCPServerSocketChild(
@@ -54,18 +59,12 @@ class NeckoChild : public PNeckoChild {
       const bool& aUseArrayBuffers);
   bool DeallocPTCPServerSocketChild(PTCPServerSocketChild*);
   PUDPSocketChild* AllocPUDPSocketChild(nsIPrincipal* aPrincipal,
-                                        const nsCString& aFilter);
+                                        const nsACString& aFilter);
   bool DeallocPUDPSocketChild(PUDPSocketChild*);
   PSimpleChannelChild* AllocPSimpleChannelChild(const uint32_t& channelId);
   bool DeallocPSimpleChannelChild(PSimpleChannelChild* child);
-  PChannelDiverterChild* AllocPChannelDiverterChild(
-      const ChannelDiverterArgs& channel);
-  bool DeallocPChannelDiverterChild(PChannelDiverterChild* actor);
   PTransportProviderChild* AllocPTransportProviderChild();
   bool DeallocPTransportProviderChild(PTransportProviderChild* aActor);
-  mozilla::ipc::IPCResult RecvAsyncAuthPromptForNestedFrame(
-      const TabId& aNestedFrameId, const nsCString& aUri,
-      const nsString& aRealm, const uint64_t& aCallbackId);
   PWebSocketEventListenerChild* AllocPWebSocketEventListenerChild(
       const uint64_t& aInnerWindowID);
   bool DeallocPWebSocketEventListenerChild(PWebSocketEventListenerChild*);
@@ -79,12 +78,7 @@ class NeckoChild : public PNeckoChild {
   mozilla::ipc::IPCResult RecvSpeculativeConnectRequest();
   mozilla::ipc::IPCResult RecvNetworkChangeNotification(nsCString const& type);
 
-  PClassifierDummyChannelChild* AllocPClassifierDummyChannelChild(
-      nsIURI* aURI, nsIURI* aTopWindowURI, const nsresult& aTopWindowURIResult,
-      const Maybe<LoadInfoArgs>& aLoadInfo);
-
-  bool DeallocPClassifierDummyChannelChild(
-      PClassifierDummyChannelChild* aChannel);
+  mozilla::ipc::IPCResult RecvSetTRRDomain(const nsCString& domain);
 };
 
 /**

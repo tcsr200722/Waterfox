@@ -17,11 +17,9 @@
 
 #include <stdint.h>  // uint32_t
 
-#include "jsapi.h"  // JSPROP_ENUMERATE, JS::PropertyDescriptor
-
 #include "js/Class.h"  // js::{Delete,Get,Has}PropertyOp, JSMayResolveOp, JS::ObjectOpResult
 #include "js/GCAPI.h"         // JS::AutoSuppressGCAnalysis
-#include "js/Id.h"            // INT_TO_JSID, jsid, JSID_INT_MAX, SYMBOL_TO_JSID
+#include "js/Id.h"            // JS::PropertyKey, jsid
 #include "js/RootingAPI.h"    // JS::Handle, JS::MutableHandle, JS::Rooted
 #include "js/Value.h"         // JS::ObjectValue, JS::Value
 #include "proxy/Proxy.h"      // js::Proxy
@@ -32,8 +30,7 @@
 #include "vm/StringType.h"    // js::NameToId
 #include "vm/SymbolType.h"    // JS::Symbol
 
-#include "vm/JSAtom-inl.h"         // js::IndexToId
-#include "vm/TypeInference-inl.h"  // js::MarkTypePropertyNonData
+#include "vm/JSAtomUtils-inl.h"  // js::PrimitiveValueToId, js::IndexToId
 
 namespace js {
 
@@ -53,7 +50,7 @@ inline bool GetPrototype(JSContext* cx, JS::Handle<JSObject*> obj,
     return Proxy::getPrototype(cx, obj, protop);
   }
 
-  protop.set(obj->taggedProto().toObjectOrNull());
+  protop.set(obj->staticPrototype());
   return true;
 }
 
@@ -65,7 +62,6 @@ inline bool GetPrototype(JSContext* cx, JS::Handle<JSObject*> obj,
 inline bool IsExtensible(JSContext* cx, JS::Handle<JSObject*> obj,
                          bool* extensible) {
   if (obj->is<ProxyObject>()) {
-    MOZ_ASSERT(!cx->isHelperThreadContext());
     return Proxy::isExtensible(cx, obj, extensible);
   }
 
@@ -74,7 +70,7 @@ inline bool IsExtensible(JSContext* cx, JS::Handle<JSObject*> obj,
   // If the following assertion fails, there's somewhere else a missing
   // call to shrinkCapacityToInitializedLength() which needs to be found and
   // fixed.
-  MOZ_ASSERT_IF(obj->isNative() && !*extensible,
+  MOZ_ASSERT_IF(obj->is<NativeObject>() && !*extensible,
                 obj->as<NativeObject>().getDenseInitializedLength() ==
                     obj->as<NativeObject>().getDenseCapacity());
   return true;
@@ -110,6 +106,10 @@ inline bool HasProperty(JSContext* cx, JS::Handle<JSObject*> obj,
 inline bool GetProperty(JSContext* cx, JS::Handle<JSObject*> obj,
                         JS::Handle<JS::Value> receiver, JS::Handle<jsid> id,
                         JS::MutableHandle<JS::Value> vp) {
+#ifdef ENABLE_RECORD_TUPLE
+  MOZ_ASSERT(!IsExtendedPrimitive(*obj));
+#endif
+
   if (GetPropertyOp op = obj->getOpsGetProperty()) {
     return op(cx, obj, receiver, id, vp);
   }
@@ -156,8 +156,30 @@ inline bool GetElement(JSContext* cx, JS::Handle<JSObject*> obj,
   return GetElement(cx, obj, receiverValue, index, vp);
 }
 
+inline bool GetElementLargeIndex(JSContext* cx, JS::Handle<JSObject*> obj,
+                                 JS::Handle<JSObject*> receiver, uint64_t index,
+                                 JS::MutableHandle<JS::Value> vp) {
+  MOZ_ASSERT(index < uint64_t(DOUBLE_INTEGRAL_PRECISION_LIMIT));
+
+  if (MOZ_LIKELY(index <= UINT32_MAX)) {
+    return GetElement(cx, obj, receiver, uint32_t(index), vp);
+  }
+
+  RootedValue tmp(cx, DoubleValue(index));
+  RootedId id(cx);
+  if (!PrimitiveValueToId<CanGC>(cx, tmp, &id)) {
+    return false;
+  }
+
+  return GetProperty(cx, obj, obj, id, vp);
+}
+
 inline bool GetPropertyNoGC(JSContext* cx, JSObject* obj,
                             const JS::Value& receiver, jsid id, JS::Value* vp) {
+#ifdef ENABLE_RECORD_TUPLE
+  MOZ_ASSERT(!IsExtendedPrimitive(*obj));
+#endif
+
   if (obj->getOpsGetProperty()) {
     return false;
   }
@@ -178,11 +200,11 @@ inline bool GetElementNoGC(JSContext* cx, JSObject* obj,
     return false;
   }
 
-  if (index > JSID_INT_MAX) {
+  if (index > PropertyKey::IntMax) {
     return false;
   }
 
-  return GetPropertyNoGC(cx, obj, receiver, INT_TO_JSID(index), vp);
+  return GetPropertyNoGC(cx, obj, receiver, PropertyKey::Int(index), vp);
 }
 
 static MOZ_ALWAYS_INLINE bool ClassMayResolveId(const JSAtomState& names,
@@ -217,7 +239,7 @@ MOZ_ALWAYS_INLINE bool MaybeHasInterestingSymbolProperty(
     JSObject** holder /* = nullptr */) {
   MOZ_ASSERT(symbol->isInterestingSymbol());
 
-  jsid id = SYMBOL_TO_JSID(symbol);
+  jsid id = PropertyKey::Symbol(symbol);
   do {
     if (obj->maybeHasInterestingSymbolProperty() ||
         MOZ_UNLIKELY(
@@ -242,7 +264,7 @@ MOZ_ALWAYS_INLINE bool GetInterestingSymbolProperty(
   if (!MaybeHasInterestingSymbolProperty(cx, obj, sym, &holder)) {
 #ifdef DEBUG
     JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
-    JS::Rooted<jsid> id(cx, SYMBOL_TO_JSID(sym));
+    JS::Rooted<jsid> id(cx, PropertyKey::Symbol(sym));
     if (!GetProperty(cx, obj, receiver, id, vp)) {
       return false;
     }
@@ -255,7 +277,7 @@ MOZ_ALWAYS_INLINE bool GetInterestingSymbolProperty(
 
   JS::Rooted<JSObject*> holderRoot(cx, holder);
   JS::Rooted<JS::Value> receiver(cx, JS::ObjectValue(*obj));
-  JS::Rooted<jsid> id(cx, SYMBOL_TO_JSID(sym));
+  JS::Rooted<jsid> id(cx, PropertyKey::Symbol(sym));
   return GetProperty(cx, holderRoot, receiver, id, vp);
 }
 
@@ -339,7 +361,10 @@ inline bool PutProperty(JSContext* cx, JS::Handle<JSObject*> obj,
  */
 inline bool DeleteProperty(JSContext* cx, JS::Handle<JSObject*> obj,
                            JS::Handle<jsid> id, JS::ObjectOpResult& result) {
-  MarkTypePropertyNonData(cx, obj, id);
+#ifdef ENABLE_RECORD_TUPLE
+  MOZ_ASSERT(!IsExtendedPrimitive(*obj));
+#endif
+
   if (DeletePropertyOp op = obj->getOpsDeleteProperty()) {
     return op(cx, obj, id, result);
   }

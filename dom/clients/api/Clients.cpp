@@ -6,6 +6,7 @@
 
 #include "Clients.h"
 
+#include "Client.h"
 #include "ClientDOMUtil.h"
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/ClientManager.h"
@@ -13,15 +14,16 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
-#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerScope.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StorageAccess.h"
 #include "nsIGlobalObject.h"
 #include "nsString.h"
+#include "nsReadableUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::CSPInfo;
 using mozilla::ipc::PrincipalInfo;
@@ -72,9 +74,7 @@ already_AddRefed<Promise> Clients::Get(const nsAString& aClientID,
   }
 
   const PrincipalInfo& principalInfo = workerPrivate->GetPrincipalInfo();
-  nsCOMPtr<nsISerialEventTarget> target =
-      mGlobal->EventTargetFor(TaskCategory::Other);
-
+  nsCOMPtr<nsISerialEventTarget> target = mGlobal->SerialEventTarget();
   RefPtr<ClientOpPromise> innerPromise = ClientManager::GetInfoAndState(
       ClientGetInfoAndStateArgs(id, principalInfo), target);
 
@@ -90,7 +90,9 @@ already_AddRefed<Promise> Clients::Get(const nsAString& aClientID,
             NS_ENSURE_TRUE_VOID(holder->GetParentObject());
             RefPtr<Client> client = new Client(
                 holder->GetParentObject(), aResult.get_ClientInfoAndState());
-            if (client->GetStorageAccess() == StorageAccess::eAllow) {
+            if (client->GetStorageAccess() == StorageAccess::eAllow ||
+                (StaticPrefs::privacy_partition_serviceWorkers() &&
+                 ShouldPartitionStorage(client->GetStorageAccess()))) {
               outerPromise->MaybeResolve(std::move(client));
               return;
             }
@@ -100,7 +102,7 @@ already_AddRefed<Promise> Clients::Get(const nsAString& aClientID,
                       scope, "ServiceWorkerGetClientStorageError",
                       nsTArray<nsString>());
                 });
-            SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+            SchedulerGroup::Dispatch(r.forget());
             outerPromise->MaybeResolveWithUndefined();
           },
           [outerPromise, holder](const CopyableErrorResult& aResult) {
@@ -170,7 +172,9 @@ already_AddRefed<Promise> Clients::MatchAll(const ClientQueryOptions& aOptions,
         for (const ClientInfoAndState& value :
              aResult.get_ClientList().values()) {
           RefPtr<Client> client = new Client(global, value);
-          if (client->GetStorageAccess() != StorageAccess::eAllow) {
+          if (client->GetStorageAccess() != StorageAccess::eAllow &&
+              (!StaticPrefs::privacy_partition_serviceWorkers() ||
+               !ShouldPartitionStorage(client->GetStorageAccess()))) {
             storageDenied = true;
             continue;
           }
@@ -183,7 +187,7 @@ already_AddRefed<Promise> Clients::MatchAll(const ClientQueryOptions& aOptions,
                     scope, "ServiceWorkerGetClientStorageError",
                     nsTArray<nsString>());
               });
-          SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+          SchedulerGroup::Dispatch(r.forget());
         }
         clientList.Sort(MatchAllComparator());
         outerPromise->MaybeResolve(clientList);
@@ -209,7 +213,9 @@ already_AddRefed<Promise> Clients::OpenWindow(const nsAString& aURL,
     return outerPromise.forget();
   }
 
-  if (aURL.EqualsLiteral("about:blank")) {
+  if (aURL.EqualsLiteral(u"about:blank") ||
+      StringBeginsWith(aURL, u"about:blank?"_ns) ||
+      StringBeginsWith(aURL, u"about:blank#"_ns)) {
     CopyableErrorResult rv;
     rv.ThrowTypeError(
         "Passing \"about:blank\" to Clients.openWindow is not allowed");
@@ -284,5 +290,4 @@ already_AddRefed<Promise> Clients::Claim(ErrorResult& aRv) {
   return outerPromise.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

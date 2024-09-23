@@ -2,39 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import { WorkerDispatcher } from "devtools/client/shared/worker-utils";
 
-import { workerUtils } from "devtools-utils";
-const { WorkerDispatcher } = workerUtils;
+const WORKER_URL = "resource://devtools/client/debugger/dist/search-worker.js";
 
-let startArgs;
-let dispatcher;
-
-function getDispatcher() {
-  if (!dispatcher) {
-    dispatcher = new WorkerDispatcher();
-    dispatcher.start(...startArgs);
+export class SearchDispatcher extends WorkerDispatcher {
+  constructor(jestUrl) {
+    super(jestUrl || WORKER_URL);
   }
 
-  return dispatcher;
+  getMatches = this.task("getMatches");
+
+  findSourceMatches = this.task("findSourceMatches");
 }
-
-export const start = (...args: any[]) => {
-  startArgs = args;
-};
-
-export const stop = () => {
-  if (dispatcher) {
-    dispatcher.stop();
-    dispatcher = null;
-    startArgs = null;
-  }
-};
-
-export const getMatches = (...args: any[]) => {
-  return getDispatcher().invoke("getMatches", ...args);
-};
-
-export const findSourceMatches = (...args: any[]) => {
-  return getDispatcher().invoke("findSourceMatches", ...args);
-};

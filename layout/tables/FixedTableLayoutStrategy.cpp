@@ -10,6 +10,8 @@
  */
 
 #include "FixedTableLayoutStrategy.h"
+
+#include "nsLayoutUtils.h"
 #include "nsStyleConsts.h"
 #include "nsTableFrame.h"
 #include "nsTableColFrame.h"
@@ -30,7 +32,6 @@ FixedTableLayoutStrategy::~FixedTableLayoutStrategy() = default;
 
 /* virtual */
 nscoord FixedTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
-  DISPLAY_MIN_INLINE_SIZE(mTableFrame, mMinISize);
   if (mMinISize != NS_INTRINSIC_ISIZE_UNKNOWN) {
     return mMinISize;
   }
@@ -69,15 +70,10 @@ nscoord FixedTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
     nscoord spacing = mTableFrame->GetColSpacing(col);
     const auto* styleISize = &colFrame->StylePosition()->ISize(wm);
     if (styleISize->ConvertsToLength()) {
-      result +=
-          colFrame->ComputeISizeValue(aRenderingContext, 0, 0, 0, *styleISize);
+      result += styleISize->ToLength();
     } else if (styleISize->ConvertsToPercentage()) {
       // do nothing
     } else {
-      NS_ASSERTION(styleISize->IsAuto() || styleISize->IsExtremumLength() ||
-                       styleISize->HasLengthAndPercentage(),
-                   "bad inline size");
-
       // The 'table-layout: fixed' algorithm considers only cells in the
       // first row.
       bool originates;
@@ -86,14 +82,10 @@ nscoord FixedTableLayoutStrategy::GetMinISize(gfxContext* aRenderingContext) {
           cellMap->GetCellInfoAt(0, col, &originates, &colSpan);
       if (cellFrame) {
         styleISize = &cellFrame->StylePosition()->ISize(wm);
-        if (styleISize->ConvertsToLength() ||
-            (styleISize->IsExtremumLength() &&
-             (styleISize->AsExtremumLength() ==
-                  StyleExtremumLength::MaxContent ||
-              styleISize->AsExtremumLength() ==
-                  StyleExtremumLength::MinContent))) {
+        if (styleISize->ConvertsToLength() || styleISize->IsMinContent() ||
+            styleISize->IsMaxContent()) {
           nscoord cellISize = nsLayoutUtils::IntrinsicForContainer(
-              aRenderingContext, cellFrame, nsLayoutUtils::MIN_ISIZE);
+              aRenderingContext, cellFrame, IntrinsicISizeType::MinISize);
           if (colSpan > 1) {
             // If a column-spanning cell is in the first row, split up
             // the space evenly.  (XXX This isn't quite right if some of
@@ -126,9 +118,7 @@ nscoord FixedTableLayoutStrategy::GetPrefISize(gfxContext* aRenderingContext,
   // algorithm to find the narrowest inline size that would hold all of
   // those intrinsic inline sizes), but it wouldn't be compatible with
   // other browsers.
-  nscoord result = nscoord_MAX;
-  DISPLAY_PREF_INLINE_SIZE(mTableFrame, result);
-  return result;
+  return nscoord_MAX;
 }
 
 /* virtual */
@@ -209,8 +199,7 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
     const auto* styleISize = &colFrame->StylePosition()->ISize(wm);
     nscoord colISize;
     if (styleISize->ConvertsToLength()) {
-      colISize = colFrame->ComputeISizeValue(aReflowInput.mRenderingContext, 0,
-                                             0, 0, *styleISize);
+      colISize = styleISize->ToLength();
       specTotal += colISize;
     } else if (styleISize->ConvertsToPercentage()) {
       float pct = styleISize->ToPercentage();
@@ -218,11 +207,6 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
       colFrame->AddPrefPercent(pct);
       pctTotal += pct;
     } else {
-      NS_ASSERTION(styleISize->IsAuto() || styleISize->IsExtremumLength() ||
-                       (styleISize->IsLengthPercentage() &&
-                        !styleISize->ConvertsToLength()),
-                   "bad inline size");
-
       // The 'table-layout: fixed' algorithm considers only cells in the
       // first row.
       bool originates;
@@ -232,20 +216,16 @@ void FixedTableLayoutStrategy::ComputeColumnISizes(
       if (cellFrame) {
         const nsStylePosition* cellStylePos = cellFrame->StylePosition();
         styleISize = &cellStylePos->ISize(wm);
-        if (styleISize->ConvertsToLength() ||
-            (styleISize->IsExtremumLength() &&
-             (styleISize->AsExtremumLength() ==
-                  StyleExtremumLength::MaxContent ||
-              styleISize->AsExtremumLength() ==
-                  StyleExtremumLength::MinContent))) {
+        if (styleISize->ConvertsToLength() || styleISize->IsMaxContent() ||
+            styleISize->IsMinContent()) {
           // XXX This should use real percentage padding
-          // Note that the difference between MIN_ISIZE and PREF_ISIZE
+          // Note that the difference between MinISize and PrefISize
           // shouldn't matter for any of these values of styleISize; use
           // MIN_ISIZE for symmetry with GetMinISize above, just in case
           // there is a difference.
           colISize = nsLayoutUtils::IntrinsicForContainer(
               aReflowInput.mRenderingContext, cellFrame,
-              nsLayoutUtils::MIN_ISIZE);
+              IntrinsicISizeType::MinISize);
         } else if (styleISize->ConvertsToPercentage()) {
           // XXX This should use real percentage padding
           float pct = styleISize->ToPercentage();

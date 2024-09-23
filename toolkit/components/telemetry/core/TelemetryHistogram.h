@@ -12,11 +12,6 @@
 #include "nsXULAppAPI.h"
 #include "TelemetryCommon.h"
 
-namespace mozilla {
-// This is only used for the GeckoView persistence.
-class JSONWriter;
-}  // namespace mozilla
-
 // This module is internal to Telemetry.  It encapsulates Telemetry's
 // histogram accumulation and storage logic.  It should only be used by
 // Telemetry.cpp.  These functions should not be used anywhere else.
@@ -84,6 +79,9 @@ void AccumulateChildKeyed(
  */
 nsresult GetAllStores(mozilla::Telemetry::Common::StringHashSet& set);
 
+nsresult GetCategoricalHistogramLabels(JSContext* aCx,
+                                       JS::MutableHandle<JS::Value> aResult);
+
 nsresult GetHistogramById(const nsACString& name, JSContext* cx,
                           JS::MutableHandle<JS::Value> ret);
 
@@ -93,24 +91,19 @@ nsresult GetKeyedHistogramById(const nsACString& name, JSContext* cx,
 const char* GetHistogramName(mozilla::Telemetry::HistogramID id);
 
 nsresult CreateHistogramSnapshots(JSContext* aCx,
-                                  JS::MutableHandleValue aResult,
+                                  JS::MutableHandle<JS::Value> aResult,
                                   const nsACString& aStore,
                                   unsigned int aDataset, bool aClearSubsession,
                                   bool aFilterTest = false);
 
-nsresult GetKeyedHistogramSnapshots(
-    JSContext* aCx, JS::MutableHandleValue aResult, const nsACString& aStore,
-    unsigned int aDataset, bool aClearSubsession, bool aFilterTest = false);
+nsresult GetKeyedHistogramSnapshots(JSContext* aCx,
+                                    JS::MutableHandle<JS::Value> aResult,
+                                    const nsACString& aStore,
+                                    unsigned int aDataset,
+                                    bool aClearSubsession,
+                                    bool aFilterTest = false);
 
 size_t GetHistogramSizesOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
-
-// These functions are only meant to be used for GeckoView persistence.
-// They are responsible for updating in-memory probes with the data persisted
-// on the disk and vice-versa.
-nsresult SerializeHistograms(mozilla::JSONWriter& aWriter);
-nsresult SerializeKeyedHistograms(mozilla::JSONWriter& aWriter);
-nsresult DeserializeHistograms(JSContext* aCx, JS::HandleValue aData);
-nsresult DeserializeKeyedHistograms(JSContext* aCx, JS::HandleValue aData);
 
 }  // namespace TelemetryHistogram
 

@@ -4,12 +4,27 @@ const REFERRER1 = "http://example.org/?" + Date.now();
 const REFERRER2 = "http://example.org/?" + Math.random();
 const REFERRER3 = "http://example.org/?" + Math.random();
 
-add_task(async function() {
+add_task(async function () {
+  function getExpectedReferrer(referrer) {
+    let defaultPolicy = Services.prefs.getIntPref(
+      "network.http.referer.defaultPolicy"
+    );
+    Assert.greater(
+      [2, 3].indexOf(defaultPolicy),
+      -1,
+      "default referrer policy should be either strict-origin-when-cross-origin(2) or no-referrer-when-downgrade(3)"
+    );
+    if (defaultPolicy == 2) {
+      return referrer.match(/https?:\/\/[^\/]+\/?/i)[0];
+    }
+    return referrer;
+  }
+
   async function checkDocumentReferrer(referrer, msg) {
     await SpecialPowers.spawn(
       gBrowser.selectedBrowser,
       [{ referrer, msg }],
-      async function(args) {
+      async function (args) {
         Assert.equal(content.document.referrer, args.referrer, args.msg);
       }
     );
@@ -34,7 +49,7 @@ add_task(async function() {
     true,
     Services.io.newURI(REFERRER1)
   );
-  browser.loadURI("http://example.org", {
+  browser.loadURI(Services.io.newURI("http://example.org"), {
     referrerInfo: referrerInfo1,
     triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
   });
@@ -57,13 +72,12 @@ add_task(async function() {
     Services.io.newURI(REFERRER2)
   );
 
-  tabState.entries[0].referrerInfo = E10SUtils.serializeReferrerInfo(
-    referrerInfo2
-  );
+  tabState.entries[0].referrerInfo =
+    E10SUtils.serializeReferrerInfo(referrerInfo2);
   await promiseTabState(tab, tabState);
 
   await checkDocumentReferrer(
-    REFERRER2,
+    getExpectedReferrer(REFERRER2),
     "document.referrer matches referrer set via setTabState using referrerInfo."
   );
   gBrowser.removeCurrentTab();
@@ -73,7 +87,7 @@ add_task(async function() {
   await promiseTabRestored(tab);
 
   await checkDocumentReferrer(
-    REFERRER2,
+    getExpectedReferrer(REFERRER2),
     "document.referrer is still correct after closing and reopening the tab."
   );
 
@@ -82,7 +96,7 @@ add_task(async function() {
   await promiseTabState(tab, tabState);
 
   await checkDocumentReferrer(
-    REFERRER3,
+    getExpectedReferrer(REFERRER3),
     "document.referrer matches referrer set via setTabState using referrer."
   );
   gBrowser.removeCurrentTab();
@@ -92,7 +106,7 @@ add_task(async function() {
   await promiseTabRestored(tab);
 
   await checkDocumentReferrer(
-    REFERRER3,
+    getExpectedReferrer(REFERRER3),
     "document.referrer is still correct after closing and reopening the tab."
   );
   gBrowser.removeCurrentTab();

@@ -2,15 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
-
 from functools import partial
 
-from mach.decorators import (
-    CommandArgument,
-    CommandProvider,
-    Command,
-)
+from mach.decorators import Command, CommandArgument
 
 
 def is_foo(cls):
@@ -23,24 +17,17 @@ def is_bar(val, cls):
     return cls.bar == val
 
 
-@CommandProvider
-class MachCommands(object):
-    foo = True
-    bar = False
+@Command("cmd_foo", category="testing")
+@CommandArgument("--arg", default=None, help="Argument help.")
+def run_foo(command_context):
+    pass
 
-    @Command('cmd_foo', category='testing')
-    @CommandArgument(
-        '--arg', default=None,
-        help="Argument help.")
-    def run_foo(self):
-        pass
 
-    @Command('cmd_bar', category='testing',
-             conditions=[partial(is_bar, False)])
-    def run_bar(self):
-        pass
+@Command("cmd_bar", category="testing", conditions=[partial(is_bar, False)])
+def run_bar(command_context):
+    pass
 
-    @Command('cmd_foobar', category='testing',
-             conditions=[is_foo, partial(is_bar, True)])
-    def run_foobar(self):
-        pass
+
+@Command("cmd_foobar", category="testing", conditions=[is_foo, partial(is_bar, True)])
+def run_foobar(command_context):
+    pass

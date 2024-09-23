@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Tests for `History.insert` as implemented in History.jsm
+// Tests for `History.insert` as implemented in History.sys.mjs
 
 "use strict";
 
@@ -104,7 +104,7 @@ add_task(async function test_insert_error_cases() {
 add_task(async function test_history_insert() {
   const TEST_URL = "http://mozilla.com/";
 
-  let inserter = async function(name, filter, referrer, date, transition) {
+  let inserter = async function (name, filter, referrer, date, transition) {
     info(name);
     info(
       `filter: ${filter}, referrer: ${referrer}, date: ${date}, transition: ${transition}`
@@ -182,7 +182,7 @@ add_task(async function test_history_insert() {
           );
           await inserter(
             "Testing History.insert() with a URL object",
-            x => new URL(x.spec),
+            x => URL.fromURI(x),
             referrer,
             date,
             transition

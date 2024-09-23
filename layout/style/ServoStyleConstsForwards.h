@@ -30,10 +30,10 @@
 #  include "nsCSSPropertyID.h"
 #  include "nsCompatibility.h"
 #  include "nsIURI.h"
+#  include "mozilla/image/Resolution.h"
 #  include <atomic>
 
 struct RawServoAnimationValueTable;
-struct RawServoAnimationValueMap;
 
 class nsAtom;
 class nsIFrame;
@@ -44,10 +44,10 @@ class nsPresContext;
 class nsSimpleContentList;
 class imgRequestProxy;
 struct nsCSSValueSharedList;
-struct nsTimingFunction;
 
 class gfxFontFeatureValueSet;
 struct gfxFontFeature;
+struct GeckoFontMetrics;
 namespace mozilla {
 namespace gfx {
 struct FontVariation;
@@ -83,25 +83,28 @@ struct PropertyStyleAnimationValuePair;
 using ComputedKeyframeValues = nsTArray<PropertyStyleAnimationValuePair>;
 
 class ComputedStyle;
-enum LogicalAxis : uint8_t;
+enum class LogicalAxis : uint8_t;
 class SeenPtrs;
 class SharedFontList;
 class StyleSheet;
 class WritingMode;
 class ServoElementSnapshotTable;
+class StyleParserState;
 
 template <typename T>
 struct StyleForgottenArcSlicePtr;
 
+struct AnimatedPropertyID;
 struct AnimationPropertySegment;
 struct AspectRatio;
 struct ComputedTiming;
 struct URLExtraData;
 
 enum HalfCorner : uint8_t;
-enum LogicalSide : uint8_t;
+enum class LogicalSide : uint8_t;
 enum class PseudoStyleType : uint8_t;
 enum class OriginFlags : uint8_t;
+enum class UseBoxSizing : uint8_t;
 
 namespace css {
 class Loader;
@@ -198,15 +201,30 @@ using StyleIterationCompositeOperation = dom::IterationCompositeOperation;
 using StyleMatrixTransformOperator =
     nsStyleTransformMatrix::MatrixTransformOperator;
 
-#  define SERVO_ARC_TYPE(name_, type_) using Style##type_ = type_;
-#  include "mozilla/ServoArcTypeList.h"
-#  undef SERVO_ARC_TYPE
+#  define SERVO_LOCKED_ARC_TYPE(name_) struct StyleLocked##type_;
+#  include "mozilla/ServoLockedArcTypeList.h"
+#  undef SERVO_LOCKED_ARC_TYPE
 
-#  define SERVO_BOXED_TYPE(name_, type_) using Style##type_ = type_;
+#  define SERVO_BOXED_TYPE(name_, type_) struct Style##type_;
 #  include "mozilla/ServoBoxedTypeList.h"
 #  undef SERVO_BOXED_TYPE
 
 using StyleAtomicUsize = std::atomic<size_t>;
+
+#  define SERVO_FIXED_POINT_HELPERS(T, RawT, FractionBits)                     \
+    static constexpr RawT kPointFive = 1 << (FractionBits - 1);                \
+    static constexpr uint16_t kScale = 1 << FractionBits;                      \
+    static constexpr float kInverseScale = 1.0f / kScale;                      \
+    static T FromRaw(RawT aRaw) { return {{aRaw}}; }                           \
+    static T FromFloat(float aFloat) {                                         \
+      return FromRaw(RawT(aFloat * kScale));                                   \
+    }                                                                          \
+    static T FromInt(RawT aInt) { return FromRaw(RawT(aInt * kScale)); }       \
+    RawT Raw() const { return _0.value; }                                      \
+    uint16_t UnsignedRaw() const { return uint16_t(Raw()); }                   \
+    float ToFloat() const { return Raw() * kInverseScale; }                    \
+    RawT ToIntRounded() const { return (Raw() + kPointFive) >> FractionBits; } \
+    inline void ToString(nsACString&) const;
 
 }  // namespace mozilla
 

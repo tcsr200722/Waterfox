@@ -89,7 +89,7 @@ class nsHTMLFramesetBorderFrame final : public nsLeafFrame {
                                WidgetGUIEvent* aEvent,
                                nsEventStatus* aEventStatus) override;
 
-  Maybe<Cursor> GetCursor(const nsPoint&) override;
+  Cursor GetCursor(const nsPoint&) override;
 
   virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                 const nsDisplayListSet& aLists) override;
@@ -133,7 +133,7 @@ class nsHTMLFramesetBlankFrame final : public nsLeafFrame {
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("FramesetBlank"), aResult);
+    return MakeFrameName(u"FramesetBlank"_ns, aResult);
   }
 #endif
 
@@ -315,8 +315,7 @@ void nsHTMLFramesetFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
   mNonBlankChildCount = mChildCount;
   // add blank frames for frameset cells that had no content provided
   for (int blankX = mChildCount; blankX < numCells; blankX++) {
-    RefPtr<ComputedStyle> pseudoComputedStyle;
-    pseudoComputedStyle =
+    RefPtr<ComputedStyle> pseudoComputedStyle =
         presShell->StyleSet()->ResolveNonInheritingAnonymousBoxStyle(
             PseudoStyleType::framesetBlank);
 
@@ -337,16 +336,16 @@ void nsHTMLFramesetFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
 }
 
 void nsHTMLFramesetFrame::SetInitialChildList(ChildListID aListID,
-                                              nsFrameList& aChildList) {
+                                              nsFrameList&& aChildList) {
   // We do this weirdness where we create our child frames in Init().  On the
   // other hand, we're going to get a SetInitialChildList() with an empty list
   // and null list name after the frame constructor is done creating us.  So
   // just ignore that call.
-  if (aListID == kPrincipalList && aChildList.IsEmpty()) {
+  if (aListID == FrameChildListID::Principal && aChildList.IsEmpty()) {
     return;
   }
 
-  nsContainerFrame::SetInitialChildList(aListID, aChildList);
+  nsContainerFrame::SetInitialChildList(aListID, std::move(aChildList));
 }
 
 // XXX should this try to allocate twips based on an even pixel boundary?
@@ -617,7 +616,7 @@ nsresult nsHTMLFramesetFrame::HandleEvent(nsPresContext* aPresContext,
         MouseDrag(aPresContext, aEvent);
         break;
       case eMouseUp:
-        if (aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+        if (aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
           EndMouseDrag(aPresContext);
         }
         break;
@@ -631,13 +630,13 @@ nsresult nsHTMLFramesetFrame::HandleEvent(nsPresContext* aPresContext,
   return NS_OK;
 }
 
-Maybe<nsIFrame::Cursor> nsHTMLFramesetFrame::GetCursor(const nsPoint&) {
+nsIFrame::Cursor nsHTMLFramesetFrame::GetCursor(const nsPoint&) {
   auto kind = StyleCursorKind::Default;
   if (mDragger) {
     kind = mDragger->mVertical ? StyleCursorKind::EwResize
                                : StyleCursorKind::NsResize;
   }
-  return Some(Cursor{kind, AllowCustomCursorImage::No});
+  return Cursor{kind, AllowCustomCursorImage::No};
 }
 
 void nsHTMLFramesetFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
@@ -683,13 +682,13 @@ static nsFrameborder GetFrameBorderHelper(nsGenericHTMLElement* aContent) {
   if (nullptr != aContent) {
     const nsAttrValue* attr = aContent->GetParsedAttr(nsGkAtoms::frameborder);
     if (attr && attr->Type() == nsAttrValue::eEnum) {
-      switch (attr->GetEnumValue()) {
-        case NS_STYLE_FRAME_YES:
-        case NS_STYLE_FRAME_1:
+      switch (static_cast<FrameBorderProperty>(attr->GetEnumValue())) {
+        case FrameBorderProperty::Yes:
+        case FrameBorderProperty::One:
           return eFrameborder_Yes;
 
-        case NS_STYLE_FRAME_NO:
-        case NS_STYLE_FRAME_0:
+        case FrameBorderProperty::No:
+        case FrameBorderProperty::Zero:
           return eFrameborder_No;
       }
     }
@@ -761,7 +760,6 @@ void nsHTMLFramesetFrame::Reflow(nsPresContext* aPresContext,
                                  nsReflowStatus& aStatus) {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsHTMLFramesetFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
   mozilla::PresShell* presShell = aPresContext->PresShell();
@@ -812,7 +810,6 @@ void nsHTMLFramesetFrame::Reflow(nsPresContext* aPresContext,
   // will be re-created.
   if (mNumRows != rows || mNumCols != cols) {
     mDrag.UnSet();
-    NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
     return;
   }
 
@@ -1051,13 +1048,11 @@ void nsHTMLFramesetFrame::Reflow(nsPresContext* aPresContext,
 
   aDesiredSize.SetOverflowAreasToDesiredBounds();
   FinishAndStoreOverflow(&aDesiredSize);
-
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsHTMLFramesetFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Frameset"), aResult);
+  return MakeFrameName(u"Frameset"_ns, aResult);
 }
 #endif
 
@@ -1087,7 +1082,7 @@ bool nsHTMLFramesetFrame::GetNoResize(nsIFrame* aChildFrame) {
   nsIContent* content = aChildFrame->GetContent();
 
   return content && content->IsElement() &&
-         content->AsElement()->HasAttr(kNameSpaceID_None, nsGkAtoms::noresize);
+         content->AsElement()->HasAttr(nsGkAtoms::noresize);
 }
 
 bool nsHTMLFramesetFrame::CanChildResize(bool aVertical, bool aLeft,
@@ -1316,7 +1311,6 @@ void nsHTMLFramesetBorderFrame::Reflow(nsPresContext* aPresContext,
                                        const ReflowInput& aReflowInput,
                                        nsReflowStatus& aStatus) {
   DO_GLOBAL_REFLOW_COUNT("nsHTMLFramesetBorderFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
   // Override Reflow(), since we don't want to deal with what our
@@ -1364,17 +1358,17 @@ void nsHTMLFramesetBorderFrame::PaintBorder(DrawTarget* aDrawTarget,
 
   if (widthInPixels <= 0) return;
 
-  ColorPattern bgColor(ToDeviceColor(LookAndFeel::GetColor(
-      LookAndFeel::ColorID::WidgetBackground, NS_RGB(200, 200, 200))));
+  ColorPattern bgColor(ToDeviceColor(LookAndFeel::Color(
+      LookAndFeel::ColorID::Window, this, NS_RGB(200, 200, 200))));
 
-  ColorPattern fgColor(ToDeviceColor(LookAndFeel::GetColor(
-      LookAndFeel::ColorID::WidgetForeground, NS_RGB(0, 0, 0))));
+  ColorPattern fgColor(ToDeviceColor(LookAndFeel::Color(
+      LookAndFeel::ColorID::Windowtext, this, NS_RGB(0, 0, 0))));
 
-  ColorPattern hltColor(ToDeviceColor(LookAndFeel::GetColor(
-      LookAndFeel::ColorID::Widget3DHighlight, NS_RGB(255, 255, 255))));
+  ColorPattern hltColor(ToDeviceColor(LookAndFeel::Color(
+      LookAndFeel::ColorID::Threedhighlight, this, NS_RGB(255, 255, 255))));
 
-  ColorPattern sdwColor(ToDeviceColor(LookAndFeel::GetColor(
-      LookAndFeel::ColorID::Widget3DShadow, NS_RGB(128, 128, 128))));
+  ColorPattern sdwColor(ToDeviceColor(LookAndFeel::Color(
+      LookAndFeel::ColorID::Threedshadow, this, NS_RGB(128, 128, 128))));
 
   ColorPattern color(ToDeviceColor(NS_RGB(255, 255, 255)));  // default to white
   if (mVisibility) {
@@ -1448,7 +1442,7 @@ nsresult nsHTMLFramesetBorderFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
   if (aEvent->mMessage == eMouseDown &&
-      aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+      aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
     nsHTMLFramesetFrame* parentFrame = do_QueryFrame(GetParent());
     if (parentFrame) {
       parentFrame->StartMouseDrag(aPresContext, this, aEvent);
@@ -1458,17 +1452,17 @@ nsresult nsHTMLFramesetBorderFrame::HandleEvent(nsPresContext* aPresContext,
   return NS_OK;
 }
 
-Maybe<nsIFrame::Cursor> nsHTMLFramesetBorderFrame::GetCursor(const nsPoint&) {
+nsIFrame::Cursor nsHTMLFramesetBorderFrame::GetCursor(const nsPoint&) {
   auto kind = StyleCursorKind::Default;
   if (mCanResize) {
     kind = mVertical ? StyleCursorKind::EwResize : StyleCursorKind::NsResize;
   }
-  return Some(Cursor{kind, AllowCustomCursorImage::No});
+  return Cursor{kind, AllowCustomCursorImage::No};
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsHTMLFramesetBorderFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("FramesetBorder"), aResult);
+  return MakeFrameName(u"FramesetBorder"_ns, aResult);
 }
 #endif
 
@@ -1526,8 +1520,8 @@ void nsDisplayFramesetBlank::Paint(nsDisplayListBuilder* aBuilder,
                                    gfxContext* aCtx) {
   DrawTarget* drawTarget = aCtx->GetDrawTarget();
   int32_t appUnitsPerDevPixel = mFrame->PresContext()->AppUnitsPerDevPixel();
-  Rect rect =
-      NSRectToSnappedRect(GetPaintRect(), appUnitsPerDevPixel, *drawTarget);
+  Rect rect = NSRectToSnappedRect(GetPaintRect(aBuilder, aCtx),
+                                  appUnitsPerDevPixel, *drawTarget);
   ColorPattern white(ToDeviceColor(sRGBColor::OpaqueWhite()));
   drawTarget->FillRect(rect, white);
 }

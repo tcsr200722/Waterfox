@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 
 #include "mozilla/InputStreamLengthHelper.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "nsCOMPtr.h"
 #include "nsIInputStream.h"
 #include "nsStreamUtils.h"
@@ -22,11 +23,13 @@ TEST(TestInputStreamLengthHelper, NonLengthStream)
 
   bool called = false;
   InputStreamLengthHelper::GetAsyncLength(stream, [&](int64_t aLength) {
-    ASSERT_EQ(buf.Length(), aLength);
+    ASSERT_EQ(int64_t(buf.Length()), aLength);
     called = true;
   });
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return called; }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(TestInputStreamLengthHelper, NonLengthStream)"_ns,
+      [&]() { return called; }));
 }
 
 class LengthStream final : public nsIInputStreamLength,
@@ -61,7 +64,9 @@ class LengthStream final : public nsIInputStreamLength,
 
   NS_IMETHOD AsyncLengthWait(nsIInputStreamLengthCallback* aCallback,
                              nsIEventTarget* aEventTarget) override {
-    aCallback->OnInputStreamLengthReady(this, mLength);
+    if (aCallback) {
+      aCallback->OnInputStreamLengthReady(this, mLength);
+    }
     return NS_OK;
   }
 
@@ -69,6 +74,8 @@ class LengthStream final : public nsIInputStreamLength,
     *aAvailable = mAvailable;
     return NS_OK;
   }
+
+  NS_IMETHOD StreamStatus() override { return NS_OK; }
 
  private:
   ~LengthStream() = default;
@@ -100,7 +107,9 @@ TEST(TestInputStreamLengthHelper, LengthStream)
     called = true;
   });
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return called; }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(TestInputStreamLengthHelper, LengthStream)"_ns,
+      [&]() { return called; }));
 }
 
 TEST(TestInputStreamLengthHelper, InvalidLengthStream)
@@ -114,7 +123,9 @@ TEST(TestInputStreamLengthHelper, InvalidLengthStream)
     called = true;
   });
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return called; }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(TestInputStreamLengthHelper, InvalidLengthStream)"_ns,
+      [&]() { return called; }));
 }
 
 TEST(TestInputStreamLengthHelper, AsyncLengthStream)
@@ -128,7 +139,9 @@ TEST(TestInputStreamLengthHelper, AsyncLengthStream)
     called = true;
   });
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return called; }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(TestInputStreamLengthHelper, AsyncLengthStream)"_ns,
+      [&]() { return called; }));
 }
 
 TEST(TestInputStreamLengthHelper, FallbackLengthStream)
@@ -142,5 +155,7 @@ TEST(TestInputStreamLengthHelper, FallbackLengthStream)
     called = true;
   });
 
-  MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return called; }));
+  MOZ_ALWAYS_TRUE(SpinEventLoopUntil(
+      "xpcom:TEST(TestInputStreamLengthHelper, FallbackLengthStream)"_ns,
+      [&]() { return called; }));
 }

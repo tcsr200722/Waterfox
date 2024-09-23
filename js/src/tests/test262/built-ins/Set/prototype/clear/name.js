@@ -1,7 +1,7 @@
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
-es6id: 23.2.3.2
+esid: sec-set.prototype.clear
 description: >
     Set.prototype.clear ( )
 
@@ -10,10 +10,11 @@ description: >
 includes: [propertyHelper.js]
 ---*/
 
-assert.sameValue(Set.prototype.clear.name, "clear", "The value of `Set.prototype.clear.name` is `'clear'`");
-
-verifyNotEnumerable(Set.prototype.clear, "name");
-verifyNotWritable(Set.prototype.clear, "name");
-verifyConfigurable(Set.prototype.clear, "name");
+verifyProperty(Set.prototype.clear, "name", {
+  value: "clear",
+  writable: false,
+  enumerable: false,
+  configurable: true
+});
 
 reportCompare(0, 0);

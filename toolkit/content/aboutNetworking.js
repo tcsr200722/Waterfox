@@ -4,12 +4,9 @@
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const FileUtils = ChromeUtils.import("resource://gre/modules/FileUtils.jsm")
-  .FileUtils;
-const gEnv = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
-);
+const FileUtils = ChromeUtils.importESModule(
+  "resource://gre/modules/FileUtils.sys.mjs"
+).FileUtils;
 const gDashboard = Cc["@mozilla.org/network/dashboard;1"].getService(
   Ci.nsIDashboard
 );
@@ -28,7 +25,6 @@ const gRequestNetworkingData = {
   dns: gDashboard.requestDNSInfo,
   websockets: gDashboard.requestWebsocketConnections,
   dnslookuptool: () => {},
-  logging: () => {},
   rcwn: gDashboard.requestRcwnStats,
   networkid: displayNetworkID,
 };
@@ -79,7 +75,7 @@ function displaySockets(data) {
     let row = document.createElement("tr");
     row.appendChild(col(data.sockets[i].host));
     row.appendChild(col(data.sockets[i].port));
-    row.appendChild(col(data.sockets[i].tcp));
+    row.appendChild(col(data.sockets[i].type));
     row.appendChild(col(data.sockets[i].active));
     row.appendChild(col(data.sockets[i].sent));
     row.appendChild(col(data.sockets[i].received));
@@ -105,6 +101,15 @@ function displayDns(data) {
   }
   suffixParent.replaceChild(suffix_tbody, suffixContent);
 
+  let trr_url_tbody = document.createElement("tbody");
+  trr_url_tbody.id = "dns_trr_url";
+  let trr_url = document.createElement("tr");
+  trr_url.appendChild(col(Services.dns.currentTrrURI));
+  trr_url.appendChild(col(Services.dns.currentTrrMode));
+  trr_url_tbody.appendChild(trr_url);
+  let prevURL = document.getElementById("dns_trr_url");
+  prevURL.parentNode.replaceChild(trr_url_tbody, prevURL);
+
   let cont = document.getElementById("dns_content");
   let parent = cont.parentNode;
   let new_cont = document.createElement("tbody");
@@ -125,6 +130,7 @@ function displayDns(data) {
     row.appendChild(column);
     row.appendChild(col(data.entries[i].expiration));
     row.appendChild(col(data.entries[i].originAttributesSuffix));
+    row.appendChild(col(data.entries[i].flags));
     new_cont.appendChild(row);
   }
 
@@ -206,9 +212,8 @@ function displayNetworkID() {
     let networkID = gNetLinkSvc.networkID;
 
     document.getElementById("networkid_isUp").innerText = linkIsUp;
-    document.getElementById(
-      "networkid_statusKnown"
-    ).innerText = linkStatusKnown;
+    document.getElementById("networkid_statusKnown").innerText =
+      linkStatusKnown;
     document.getElementById("networkid_id").innerText = networkID;
   } catch (e) {
     document.getElementById("networkid_isUp").innerText = "<unknown>";
@@ -233,7 +238,6 @@ function init() {
     return;
   }
   gInited = true;
-  gDashboard.enableLogging = true;
 
   requestAllNetworkingData();
 
@@ -242,7 +246,7 @@ function init() {
     setAutoRefreshInterval(autoRefresh);
   }
 
-  autoRefresh.addEventListener("click", function() {
+  autoRefresh.addEventListener("click", function () {
     let refrButton = document.getElementById("refreshButton");
     if (this.checked) {
       setAutoRefreshInterval(this);
@@ -267,43 +271,20 @@ function init() {
     }
   });
 
+  let clearHTTPCache = document.getElementById("clearHTTPCache");
+  clearHTTPCache.addEventListener("click", async function () {
+    Services.cache2.clear();
+  });
+
   let dnsLookupButton = document.getElementById("dnsLookupButton");
-  dnsLookupButton.addEventListener("click", function() {
+  dnsLookupButton.addEventListener("click", function () {
     doLookup();
   });
 
-  let setLogButton = document.getElementById("set-log-file-button");
-  setLogButton.addEventListener("click", setLogFile);
-
-  let setModulesButton = document.getElementById("set-log-modules-button");
-  setModulesButton.addEventListener("click", setLogModules);
-
-  let startLoggingButton = document.getElementById("start-logging-button");
-  startLoggingButton.addEventListener("click", startLogging);
-
-  let stopLoggingButton = document.getElementById("stop-logging-button");
-  stopLoggingButton.addEventListener("click", stopLogging);
-
-  try {
-    let file = gDirServ.getFile("TmpD", {});
-    file.append("log.txt");
-    document.getElementById("log-file").value = file.path;
-  } catch (e) {
-    console.error(e);
-  }
-
-  // Update the value of the log file.
-  updateLogFile();
-
-  // Update the active log modules
-  updateLogModules();
-
-  // If we can't set the file and the modules at runtime,
-  // the start and stop buttons wouldn't really do anything.
-  if (setLogButton.disabled && setModulesButton.disabled) {
-    startLoggingButton.disabled = true;
-    stopLoggingButton.disabled = true;
-  }
+  let clearDNSCache = document.getElementById("clearDNSCache");
+  clearDNSCache.addEventListener("click", function () {
+    Services.dns.clearCache(true);
+  });
 
   if (location.hash) {
     let sectionButton = document.getElementById(
@@ -313,141 +294,6 @@ function init() {
       sectionButton.click();
     }
   }
-}
-
-function updateLogFile() {
-  let logPath = "";
-
-  // Try to get the environment variable for the log file
-  logPath = gEnv.get("MOZ_LOG_FILE") || gEnv.get("NSPR_LOG_FILE");
-  let currentLogFile = document.getElementById("current-log-file");
-  let setLogFileButton = document.getElementById("set-log-file-button");
-
-  // If the log file was set from an env var, we disable the ability to set it
-  // at runtime.
-  if (logPath.length) {
-    currentLogFile.innerText = logPath;
-    setLogFileButton.disabled = true;
-  } else {
-    // There may be a value set by a pref.
-    currentLogFile.innerText = gDashboard.getLogPath();
-  }
-}
-
-function updateLogModules() {
-  // Try to get the environment variable for the log file
-  let logModules =
-    gEnv.get("MOZ_LOG") ||
-    gEnv.get("MOZ_LOG_MODULES") ||
-    gEnv.get("NSPR_LOG_MODULES");
-  let currentLogModules = document.getElementById("current-log-modules");
-  let setLogModulesButton = document.getElementById("set-log-modules-button");
-  if (logModules.length) {
-    currentLogModules.innerText = logModules;
-    // If the log modules are set by an environment variable at startup, do not
-    // allow changing them throught a pref. It would be difficult to figure out
-    // which ones are enabled and which ones are not. The user probably knows
-    // what he they are doing.
-    setLogModulesButton.disabled = true;
-  } else {
-    let activeLogModules = [];
-    try {
-      if (Services.prefs.getBoolPref("logging.config.add_timestamp")) {
-        activeLogModules.push("timestamp");
-      }
-    } catch (e) {}
-    try {
-      if (Services.prefs.getBoolPref("logging.config.sync")) {
-        activeLogModules.push("sync");
-      }
-    } catch (e) {}
-
-    let children = Services.prefs.getBranch("logging.").getChildList("");
-
-    for (let pref of children) {
-      if (pref.startsWith("config.")) {
-        continue;
-      }
-
-      try {
-        let value = Services.prefs.getIntPref(`logging.${pref}`);
-        activeLogModules.push(`${pref}:${value}`);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    currentLogModules.innerText = activeLogModules.join(",");
-  }
-}
-
-function setLogFile() {
-  let setLogButton = document.getElementById("set-log-file-button");
-  if (setLogButton.disabled) {
-    // There's no point trying since it wouldn't work anyway.
-    return;
-  }
-  let logFile = document.getElementById("log-file").value.trim();
-  Services.prefs.setCharPref("logging.config.LOG_FILE", logFile);
-  updateLogFile();
-}
-
-function clearLogModules() {
-  // Turn off all the modules.
-  let children = Services.prefs.getBranch("logging.").getChildList("");
-  for (let pref of children) {
-    if (!pref.startsWith("config.")) {
-      Services.prefs.clearUserPref(`logging.${pref}`);
-    }
-  }
-  Services.prefs.clearUserPref("logging.config.add_timestamp");
-  Services.prefs.clearUserPref("logging.config.sync");
-  updateLogModules();
-}
-
-function setLogModules() {
-  let setLogModulesButton = document.getElementById("set-log-modules-button");
-  if (setLogModulesButton.disabled) {
-    // The modules were set via env var, so we shouldn't try to change them.
-    return;
-  }
-
-  let modules = document.getElementById("log-modules").value.trim();
-
-  // Clear previously set log modules.
-  clearLogModules();
-
-  let logModules = modules.split(",");
-  for (let module of logModules) {
-    if (module == "timestamp") {
-      Services.prefs.setBoolPref("logging.config.add_timestamp", true);
-    } else if (module == "rotate") {
-      // XXX: rotate is not yet supported.
-    } else if (module == "append") {
-      // XXX: append is not yet supported.
-    } else if (module == "sync") {
-      Services.prefs.setBoolPref("logging.config.sync", true);
-    } else {
-      let lastColon = module.lastIndexOf(":");
-      let key = module.slice(0, lastColon);
-      let value = parseInt(module.slice(lastColon + 1), 10);
-      Services.prefs.setIntPref(`logging.${key}`, value);
-    }
-  }
-
-  updateLogModules();
-}
-
-function startLogging() {
-  setLogFile();
-  setLogModules();
-}
-
-function stopLogging() {
-  clearLogModules();
-  // clear the log file as well
-  Services.prefs.clearUserPref("logging.config.LOG_FILE");
-  updateLogFile();
 }
 
 function show(button) {
@@ -479,7 +325,7 @@ function show(button) {
 
 function setAutoRefreshInterval(checkBox) {
   let active_tab = document.querySelector(".active");
-  checkBox.interval = setInterval(function() {
+  checkBox.interval = setInterval(function () {
     requestNetworkingDataForTab(active_tab.id);
   }, REFRESH_INTERVAL_MS);
 }
@@ -488,14 +334,19 @@ function setAutoRefreshInterval(checkBox) {
 // the page is loaded via session-restore/bfcache. In such cases we need to call
 // init() to keep the page behaviour consistent with the ticked checkboxes.
 // Mostly the issue is with the autorefresh checkbox.
-window.addEventListener("pageshow", function() {
+window.addEventListener("pageshow", function () {
   init();
 });
 
 function doLookup() {
   let host = document.getElementById("host").value;
   if (host) {
-    gDashboard.requestDNSLookup(host, displayDNSLookup);
+    try {
+      gDashboard.requestDNSLookup(host, displayDNSLookup);
+    } catch (e) {}
+    try {
+      gDashboard.requestDNSHTTPSRRLookup(host, displayHTTPSRRLookup);
+    } catch (e) {}
   }
 }
 
@@ -509,6 +360,59 @@ function displayDNSLookup(data) {
     for (let address of data.address) {
       let row = document.createElement("tr");
       row.appendChild(col(address));
+      new_cont.appendChild(row);
+    }
+  } else {
+    new_cont.appendChild(col(data.error));
+  }
+
+  parent.replaceChild(new_cont, cont);
+}
+
+function displayHTTPSRRLookup(data) {
+  let cont = document.getElementById("https_rr_content");
+  let parent = cont.parentNode;
+  let new_cont = document.createElement("tbody");
+  new_cont.setAttribute("id", "https_rr_content");
+
+  if (data.answer) {
+    for (let record of data.records) {
+      let row = document.createElement("tr");
+      let alpn = record.alpn ? `alpn="${record.alpn.alpn}" ` : "";
+      let noDefaultAlpn = record.noDefaultAlpn ? "noDefaultAlpn " : "";
+      let port = record.port ? `port="${record.port.port}" ` : "";
+      let echConfig = record.echConfig
+        ? `echConfig="${record.echConfig.echConfig}" `
+        : "";
+      let ODoHConfig = record.ODoHConfig
+        ? `odoh="${record.ODoHConfig.ODoHConfig}" `
+        : "";
+      let ipv4hint = "";
+      let ipv6hint = "";
+      if (record.ipv4Hint) {
+        let ipv4Str = "";
+        for (let addr of record.ipv4Hint.address) {
+          ipv4Str += `${addr}, `;
+        }
+        // Remove ", " at the end.
+        ipv4Str = ipv4Str.slice(0, -2);
+        ipv4hint = `ipv4hint="${ipv4Str}" `;
+      }
+      if (record.ipv6Hint) {
+        let ipv6Str = "";
+        for (let addr of record.ipv6Hint.address) {
+          ipv6Str += `${addr}, `;
+        }
+        // Remove ", " at the end.
+        ipv6Str = ipv6Str.slice(0, -2);
+        ipv6hint = `ipv6hint="${ipv6Str}" `;
+      }
+
+      let str = `${record.priority} ${record.targetName} `;
+      str += `(${alpn}${noDefaultAlpn}${port}`;
+      str += `${ipv4hint}${echConfig}${ipv6hint}`;
+      str += `${ODoHConfig})`;
+      row.appendChild(col(str));
       new_cont.appendChild(row);
     }
   } else {

@@ -31,18 +31,18 @@ use lock_api;
 ///
 /// A typical unfair lock can often end up in a situation where a single thread
 /// quickly acquires and releases the same lock in succession, which can starve
-/// other threads waiting to acquire the rwlock. While this improves performance
+/// other threads waiting to acquire the rwlock. While this improves throughput
 /// because it doesn't force a context switch when a thread tries to re-acquire
 /// a rwlock it has just released, this can starve other threads.
 ///
 /// This rwlock uses [eventual fairness](https://trac.webkit.org/changeset/203350)
 /// to ensure that the lock will be fair on average without sacrificing
-/// performance. This is done by forcing a fair unlock on average every 0.5ms,
+/// throughput. This is done by forcing a fair unlock on average every 0.5ms,
 /// which will force the lock to go to the next thread waiting for the rwlock.
 ///
 /// Additionally, any critical section longer than 1ms will always use a fair
-/// unlock, which has a negligible performance impact compared to the length of
-/// the critical section.
+/// unlock, which has a negligible impact on throughput considering the length
+/// of the critical section.
 ///
 /// You can also force a fair unlock by calling `RwLockReadGuard::unlock_fair`
 /// or `RwLockWriteGuard::unlock_fair` when unlocking a mutex instead of simply
@@ -55,7 +55,7 @@ use lock_api;
 /// - No poisoning, the lock is released normally on panic.
 /// - Only requires 1 word of space, whereas the standard library boxes the
 ///   `RwLock` due to platform limitations.
-/// - Can be statically constructed (requires the `const_fn` nightly feature).
+/// - Can be statically constructed.
 /// - Does not require any drop glue when dropped.
 /// - Inline fast path for the uncontended case.
 /// - Efficient handling of micro-contention using adaptive spinning.
@@ -408,6 +408,8 @@ mod tests {
                 write_result.is_none(),
                 "try_write should fail while read_guard is in scope"
             );
+            assert!(lock.is_locked());
+            assert!(!lock.is_locked_exclusive());
 
             drop(read_guard);
         }
@@ -419,6 +421,8 @@ mod tests {
                 write_result.is_none(),
                 "try_write should fail while upgrade_guard is in scope"
             );
+            assert!(lock.is_locked());
+            assert!(!lock.is_locked_exclusive());
 
             drop(upgrade_guard);
         }
@@ -430,6 +434,8 @@ mod tests {
                 write_result.is_none(),
                 "try_write should fail while write_guard is in scope"
             );
+            assert!(lock.is_locked());
+            assert!(lock.is_locked_exclusive());
 
             drop(write_guard);
         }
@@ -539,8 +545,8 @@ mod tests {
     fn test_rwlock_recursive() {
         let arc = Arc::new(RwLock::new(1));
         let arc2 = arc.clone();
-        let _lock1 = arc.read();
-        thread::spawn(move || {
+        let lock1 = arc.read();
+        let t = thread::spawn(move || {
             let _lock = arc2.write();
         });
 
@@ -554,7 +560,12 @@ mod tests {
         }
 
         // A normal read would block here since there is a pending writer
-        let _lock2 = arc.read_recursive();
+        let lock2 = arc.read_recursive();
+
+        // Unblock the thread and join it.
+        drop(lock1);
+        drop(lock2);
+        t.join().unwrap();
     }
 
     #[test]
@@ -609,5 +620,23 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn test_rw_write_is_locked() {
+        let lock = RwLock::new(0isize);
+        {
+            let _read_guard = lock.read();
+
+            assert!(lock.is_locked());
+            assert!(!lock.is_locked_exclusive());
+        }
+
+        {
+            let _write_guard = lock.write();
+
+            assert!(lock.is_locked());
+            assert!(lock.is_locked_exclusive());
+        }
     }
 }

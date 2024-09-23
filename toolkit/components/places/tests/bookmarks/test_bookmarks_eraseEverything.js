@@ -1,19 +1,6 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-function promiseManyFrecenciesChanged() {
-  return new Promise(resolve => {
-    let obs = new NavHistoryObserver();
-    obs.onManyFrecenciesChanged = () => {
-      Assert.ok(true, "onManyFrecenciesChanged is triggered.");
-      PlacesUtils.history.removeObserver(obs);
-      resolve();
-    };
-
-    PlacesUtils.history.addObserver(obs);
-  });
-}
-
 add_task(async function test_eraseEverything() {
   await PlacesTestUtils.addVisits({
     uri: NetUtil.newURI("http://example.com/"),
@@ -21,8 +8,16 @@ add_task(async function test_eraseEverything() {
   await PlacesTestUtils.addVisits({
     uri: NetUtil.newURI("http://mozilla.org/"),
   });
-  let frecencyForExample = frecencyForUrl("http://example.com/");
-  let frecencyForMozilla = frecencyForUrl("http://example.com/");
+  let frecencyForExample = await PlacesTestUtils.getDatabaseValue(
+    "moz_places",
+    "frecency",
+    { url: "http://example.com/" }
+  );
+  let frecencyForMozilla = await PlacesTestUtils.getDatabaseValue(
+    "moz_places",
+    "frecency",
+    { url: "http://mozilla.org/" }
+  );
   Assert.ok(frecencyForExample > 0);
   Assert.ok(frecencyForMozilla > 0);
   let unfiledFolder = await PlacesUtils.bookmarks.insert({
@@ -42,11 +37,6 @@ add_task(async function test_eraseEverything() {
     url: "http://mozilla.org/",
   });
   checkBookmarkObject(unfiledBookmarkInFolder);
-  await setItemAnnotation(
-    unfiledBookmarkInFolder.guid,
-    "testanno1",
-    "testvalue1"
-  );
 
   let menuFolder = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.menuGuid,
@@ -65,7 +55,6 @@ add_task(async function test_eraseEverything() {
     url: "http://mozilla.org/",
   });
   checkBookmarkObject(menuBookmarkInFolder);
-  await setItemAnnotation(menuBookmarkInFolder.guid, "testanno1", "testvalue1");
 
   let toolbarFolder = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.toolbarGuid,
@@ -84,36 +73,34 @@ add_task(async function test_eraseEverything() {
     url: "http://mozilla.org/",
   });
   checkBookmarkObject(toolbarBookmarkInFolder);
-  await setItemAnnotation(
-    toolbarBookmarkInFolder.guid,
-    "testanno1",
-    "testvalue1"
+
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
+  Assert.ok(
+    (await PlacesTestUtils.getDatabaseValue("moz_places", "frecency", {
+      url: "http://example.com/",
+    })) > frecencyForExample
   );
-
-  await PlacesTestUtils.promiseAsyncUpdates();
-  Assert.ok(frecencyForUrl("http://example.com/") > frecencyForExample);
-  Assert.ok(frecencyForUrl("http://example.com/") > frecencyForMozilla);
-
-  let manyFrecenciesPromise = promiseManyFrecenciesChanged();
+  Assert.ok(
+    (await PlacesTestUtils.getDatabaseValue("moz_places", "frecency", {
+      url: "http://example.com/",
+    })) > frecencyForMozilla
+  );
 
   await PlacesUtils.bookmarks.eraseEverything();
 
-  // Ensure we get an onManyFrecenciesChanged notification.
-  await manyFrecenciesPromise;
-
-  Assert.equal(frecencyForUrl("http://example.com/"), frecencyForExample);
-  Assert.equal(frecencyForUrl("http://example.com/"), frecencyForMozilla);
-
-  // Check there are no orphan annotations.
-  let conn = await PlacesUtils.promiseDBConnection();
-  let annoAttrs = await conn.execute(
-    `SELECT id, name FROM moz_anno_attributes`
+  await PlacesFrecencyRecalculator.recalculateAnyOutdatedFrecencies();
+  Assert.equal(
+    await PlacesTestUtils.getDatabaseValue("moz_places", "frecency", {
+      url: "http://example.com/",
+    }),
+    frecencyForExample
   );
-  Assert.equal(annoAttrs.length, 0);
-  let annos = await conn.execute(
-    `SELECT item_id, anno_attribute_id FROM moz_items_annos`
+  Assert.equal(
+    await PlacesTestUtils.getDatabaseValue("moz_places", "frecency", {
+      url: "http://example.com/",
+    }),
+    frecencyForMozilla
   );
-  Assert.equal(annos.length, 0);
 });
 
 add_task(async function test_eraseEverything_roots() {
@@ -153,14 +140,6 @@ add_task(async function test_eraseEverything_reparented() {
 
   // Erase everything.
   await PlacesUtils.bookmarks.eraseEverything();
-
-  // All the above items should no longer be in the GUIDHelper cache.
-  for (let guid of [folder1.guid, bookmark1.guid, folder2.guid]) {
-    await Assert.rejects(
-      PlacesUtils.promiseItemId(guid),
-      /no item found for the given GUID/
-    );
-  }
 });
 
 add_task(async function test_notifications() {

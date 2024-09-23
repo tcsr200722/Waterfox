@@ -2,13 +2,11 @@
 
 const profileDir = do_get_profile();
 
-const { ContextualIdentityService } = ChromeUtils.import(
-  "resource://gre/modules/ContextualIdentityService.jsm"
+const { ContextualIdentityService } = ChromeUtils.importESModule(
+  "resource://gre/modules/ContextualIdentityService.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 
-const TEST_STORE_FILE_PATH = OS.Path.join(
+const TEST_STORE_FILE_PATH = PathUtils.join(
   profileDir.path,
   "test-containers.json"
 );
@@ -37,7 +35,8 @@ function createCookie(userContextId) {
     COOKIE.isSession,
     COOKIE.expiry,
     { userContextId },
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTP
   );
 }
 
@@ -90,19 +89,24 @@ add_task(async function corruptedFile() {
   );
 
   // Let's create a corrupted file.
-  await OS.File.writeAtomic(TEST_STORE_FILE_PATH, "{ vers", {
+  await IOUtils.writeUTF8(TEST_STORE_FILE_PATH, "{ vers", {
     tmpPath: TEST_STORE_FILE_PATH + ".tmp",
   });
 
-  let cis = ContextualIdentityService.createNewInstanceForTesting(
-    TEST_STORE_FILE_PATH
-  );
+  let cis =
+    ContextualIdentityService.createNewInstanceForTesting(TEST_STORE_FILE_PATH);
   ok(!!cis, "We have our instance of ContextualIdentityService");
 
   equal(
     cis.getPublicIdentities().length,
     4,
     "We should have the default public identities"
+  );
+
+  Assert.deepEqual(
+    cis.getPublicUserContextIds(),
+    cis.getPublicIdentities().map(identity => identity.userContextId),
+    "getPublicUserContextIds has matching user context IDs"
   );
 
   // Verify that when the containers.json file is being rebuilt, the computed lastUserContextId
@@ -156,9 +160,7 @@ add_task(async function corruptedFile() {
 
   // Verify the version of the newly created containers.json file.
   cis.save();
-  const stateFileText = await OS.File.read(TEST_STORE_FILE_PATH, {
-    encoding: "utf-8",
-  });
+  const stateFileText = await IOUtils.readUTF8(TEST_STORE_FILE_PATH);
   equal(
     JSON.parse(stateFileText).version,
     cis.LAST_CONTAINERS_JSON_VERSION,

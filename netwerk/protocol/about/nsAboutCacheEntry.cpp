@@ -3,22 +3,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <algorithm>
+
 #include "nsAboutCacheEntry.h"
 
-#include "mozilla/Sprintf.h"
-
-#include "nsAboutCache.h"
-#include "nsICacheStorage.h"
+#include "CacheFileUtils.h"
 #include "CacheObserver.h"
-#include "nsNetUtil.h"
+#include "mozilla/Sprintf.h"
+#include "nsAboutCache.h"
+#include "nsAboutProtocolUtils.h"
+#include "nsContentUtils.h"
 #include "nsEscape.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIAsyncOutputStream.h"
-#include "nsAboutProtocolUtils.h"
-#include "nsContentUtils.h"
+#include "nsICacheStorage.h"
+#include "nsIPipe.h"
+#include "nsITransportSecurityInfo.h"
 #include "nsInputStreamPump.h"
-#include "CacheFileUtils.h"
-#include <algorithm>
+#include "nsNetUtil.h"
 
 using namespace mozilla::net;
 
@@ -109,6 +111,11 @@ nsAboutCacheEntry::GetURIFlags(nsIURI* aURI, uint32_t* result) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsAboutCacheEntry::GetChromeURI(nsIURI* aURI, nsIURI** chromeURI) {
+  return NS_ERROR_ILLEGAL_VALUE;
+}
+
 //-----------------------------------------------------------------------------
 // nsAboutCacheEntry::Channel
 
@@ -119,9 +126,9 @@ nsresult nsAboutCacheEntry::Channel::Init(nsIURI* uri, nsILoadInfo* aLoadInfo) {
   rv = GetContentStream(uri, getter_AddRefs(stream));
   if (NS_FAILED(rv)) return rv;
 
-  rv = NS_NewInputStreamChannelInternal(
-      getter_AddRefs(mChannel), uri, stream.forget(),
-      NS_LITERAL_CSTRING("text/html"), NS_LITERAL_CSTRING("utf-8"), aLoadInfo);
+  rv = NS_NewInputStreamChannelInternal(getter_AddRefs(mChannel), uri,
+                                        stream.forget(), "text/html"_ns,
+                                        "utf-8"_ns, aLoadInfo);
   if (NS_FAILED(rv)) return rv;
 
   return NS_OK;
@@ -133,25 +140,25 @@ nsresult nsAboutCacheEntry::Channel::GetContentStream(nsIURI* uri,
 
   // Init: (block size, maximum length)
   nsCOMPtr<nsIAsyncInputStream> inputStream;
-  rv = NS_NewPipe2(getter_AddRefs(inputStream), getter_AddRefs(mOutputStream),
-                   true, false, 256, UINT32_MAX);
-  if (NS_FAILED(rv)) return rv;
+  NS_NewPipe2(getter_AddRefs(inputStream), getter_AddRefs(mOutputStream), true,
+              false, 256, UINT32_MAX);
 
-  NS_NAMED_LITERAL_CSTRING(
-      buffer,
+  constexpr auto buffer =
       "<!DOCTYPE html>\n"
       "<html>\n"
       "<head>\n"
       "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src "
       "chrome:; object-src 'none'\" />\n"
+      "  <meta name=\"color-scheme\" content=\"light dark\" />\n"
       "  <title>Cache entry information</title>\n"
       "  <link rel=\"stylesheet\" "
-      "href=\"chrome://global/skin/about.css\" type=\"text/css\"/>\n"
+      "href=\"chrome://global/skin/in-content/info-pages.css\" "
+      "type=\"text/css\"/>\n"
       "  <link rel=\"stylesheet\" "
       "href=\"chrome://global/skin/aboutCacheEntry.css\" type=\"text/css\"/>\n"
       "</head>\n"
       "<body>\n"
-      "<h1>Cache entry information</h1>\n");
+      "<h1>Cache entry information</h1>\n"_ns;
   uint32_t n;
   rv = mOutputStream->Write(buffer.get(), buffer.Length(), &n);
   if (NS_FAILED(rv)) return rv;
@@ -211,31 +218,31 @@ nsresult nsAboutCacheEntry::Channel::ParseURI(nsIURI* uri,
 
   keyBegin = begin;
   keyEnd = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("?storage="), keyBegin, keyEnd))
+  if (!FindInReadable("?storage="_ns, keyBegin, keyEnd)) {
     return NS_ERROR_FAILURE;
+  }
 
   valBegin = keyEnd;  // the value of the storage key starts after the key
 
   keyBegin = keyEnd;
   keyEnd = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("&context="), keyBegin, keyEnd))
+  if (!FindInReadable("&context="_ns, keyBegin, keyEnd)) {
     return NS_ERROR_FAILURE;
+  }
 
   storageName.Assign(Substring(valBegin, keyBegin));
   valBegin = keyEnd;  // the value of the context key starts after the key
 
   keyBegin = keyEnd;
   keyEnd = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("&eid="), keyBegin, keyEnd))
-    return NS_ERROR_FAILURE;
+  if (!FindInReadable("&eid="_ns, keyBegin, keyEnd)) return NS_ERROR_FAILURE;
 
   nsAutoCString contextKey(Substring(valBegin, keyBegin));
   valBegin = keyEnd;  // the value of the eid key starts after the key
 
   keyBegin = keyEnd;
   keyEnd = end;
-  if (!FindInReadable(NS_LITERAL_CSTRING("&uri="), keyBegin, keyEnd))
-    return NS_ERROR_FAILURE;
+  if (!FindInReadable("&uri="_ns, keyBegin, keyEnd)) return NS_ERROR_FAILURE;
 
   enahnceID.Assign(Substring(valBegin, keyBegin));
 
@@ -259,17 +266,15 @@ nsresult nsAboutCacheEntry::Channel::ParseURI(nsIURI* uri,
 //-----------------------------------------------------------------------------
 
 NS_IMETHODIMP
-nsAboutCacheEntry::Channel::OnCacheEntryCheck(
-    nsICacheEntry* aEntry, nsIApplicationCache* aApplicationCache,
-    uint32_t* result) {
+nsAboutCacheEntry::Channel::OnCacheEntryCheck(nsICacheEntry* aEntry,
+                                              uint32_t* result) {
   *result = nsICacheEntryOpenCallback::ENTRY_WANTED;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsAboutCacheEntry::Channel::OnCacheEntryAvailable(
-    nsICacheEntry* entry, bool isNew, nsIApplicationCache* aApplicationCache,
-    nsresult status) {
+nsAboutCacheEntry::Channel::OnCacheEntryAvailable(nsICacheEntry* entry,
+                                                  bool isNew, nsresult status) {
   nsresult rv;
 
   mWaitingForData = false;
@@ -354,13 +359,12 @@ nsresult nsAboutCacheEntry::Channel::WriteCacheEntryDescription(
   // temp vars for reporting
   char timeBuf[255];
   uint32_t u = 0;
-  int32_t i = 0;
   nsAutoCString s;
 
   // Fetch Count
   s.Truncate();
-  entry->GetFetchCount(&i);
-  s.AppendInt(i);
+  entry->GetFetchCount(&u);
+  s.AppendInt(u);
   APPEND_ROW("fetch count", s);
 
   // Last Fetched
@@ -415,7 +419,7 @@ nsresult nsAboutCacheEntry::Channel::WriteCacheEntryDescription(
   // A new bug(s) should be filed here.
 
   // Security Info
-  nsCOMPtr<nsISupports> securityInfo;
+  nsCOMPtr<nsITransportSecurityInfo> securityInfo;
   entry->GetSecurityInfo(getter_AddRefs(securityInfo));
   if (securityInfo) {
     APPEND_ROW("Security", "This is a secure document.");
@@ -455,7 +459,7 @@ nsresult nsAboutCacheEntry::Channel::WriteCacheEntryDescription(
     return NS_OK;  // just ignore
   }
 
-  rv = pump->AsyncRead(this, nullptr);
+  rv = pump->AsyncRead(this);
   if (NS_FAILED(rv)) {
     return NS_OK;  // just ignore
   }
@@ -466,8 +470,7 @@ nsresult nsAboutCacheEntry::Channel::WriteCacheEntryDescription(
 
 nsresult nsAboutCacheEntry::Channel::WriteCacheEntryUnavailable() {
   uint32_t n;
-  NS_NAMED_LITERAL_CSTRING(buffer,
-                           "The cache entry you selected is not available.");
+  constexpr auto buffer = "The cache entry you selected is not available."_ns;
   mOutputStream->Write(buffer.get(), buffer.Length(), &n);
   return NS_OK;
 }
@@ -502,7 +505,7 @@ NS_IMETHODIMP
 nsAboutCacheEntry::Channel::OnStartRequest(nsIRequest* request) {
   mHexDumpState = 0;
 
-  NS_NAMED_LITERAL_CSTRING(buffer, "<hr/>\n<pre>");
+  constexpr auto buffer = "<hr/>\n<pre>"_ns;
   uint32_t n;
   return mOutputStream->Write(buffer.get(), buffer.Length(), &n);
 }
@@ -537,7 +540,7 @@ nsresult nsAboutCacheEntry::Channel::PrintCacheData(
 NS_IMETHODIMP
 nsAboutCacheEntry::Channel::OnStopRequest(nsIRequest* request,
                                           nsresult result) {
-  NS_NAMED_LITERAL_CSTRING(buffer, "</pre>\n");
+  constexpr auto buffer = "</pre>\n"_ns;
   uint32_t n;
   mOutputStream->Write(buffer.get(), buffer.Length(), &n);
 
@@ -547,7 +550,7 @@ nsAboutCacheEntry::Channel::OnStopRequest(nsIRequest* request,
 }
 
 void nsAboutCacheEntry::Channel::CloseContent() {
-  NS_NAMED_LITERAL_CSTRING(buffer, "</body>\n</html>\n");
+  constexpr auto buffer = "</body>\n</html>\n"_ns;
   uint32_t n;
   mOutputStream->Write(buffer.get(), buffer.Length(), &n);
 

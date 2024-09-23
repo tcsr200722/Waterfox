@@ -6,26 +6,23 @@
 // copied, modified, or distributed except according to those terms.
 
 use super::*;
+use std::ffi::CStr;
 
+/// See <https://developer.apple.com/documentation/metal/mtlcapturescope>
 pub enum MTLCaptureScope {}
 
 foreign_obj_type! {
     type CType = MTLCaptureScope;
     pub struct CaptureScope;
-    pub struct CaptureScopeRef;
 }
 
 impl CaptureScopeRef {
     pub fn begin_scope(&self) {
-        unsafe {
-            msg_send![self, beginScope]
-        }
+        unsafe { msg_send![self, beginScope] }
     }
 
     pub fn end_scope(&self) {
-        unsafe {
-            msg_send![self, endScope]
-        }
+        unsafe { msg_send![self, endScope] }
     }
 
     pub fn label(&self) -> &str {
@@ -36,12 +33,12 @@ impl CaptureScopeRef {
     }
 }
 
+/// See <https://developer.apple.com/documentation/metal/mtlcapturemanager>
 pub enum MTLCaptureManager {}
 
 foreign_obj_type! {
     type CType = MTLCaptureManager;
     pub struct CaptureManager;
-    pub struct CaptureManagerRef;
 }
 
 impl CaptureManager {
@@ -73,31 +70,44 @@ impl CaptureManagerRef {
         unsafe { msg_send![self, setDefaultCaptureScope: scope] }
     }
 
-    pub fn start_capture_with_device(&self, device: &DeviceRef) {
+    /// Starts capturing with the capture session defined by a descriptor object.
+    ///
+    /// This function will panic if Metal capture is not enabled.  Capture can be enabled by
+    /// either:
+    ///   1. Running from Xcode
+    ///   2. Setting the environment variable `METAL_CAPTURE_ENABLED=1`
+    ///   3. Adding an info.plist file containing the `MetalCaptureEnabled` key set to `YES`
+    pub fn start_capture(&self, descriptor: &CaptureDescriptorRef) -> Result<(), String> {
         unsafe {
-            msg_send![self, startCaptureWithDevice: device]
+            Ok(try_objc! { err =>
+                msg_send![self, startCaptureWithDescriptor: descriptor
+                                error: &mut err]
+            })
         }
+    }
+
+    pub fn start_capture_with_device(&self, device: &DeviceRef) {
+        unsafe { msg_send![self, startCaptureWithDevice: device] }
     }
 
     pub fn start_capture_with_command_queue(&self, command_queue: &CommandQueueRef) {
-        unsafe {
-            msg_send![self, startCaptureWithCommandQueue: command_queue]
-        }
+        unsafe { msg_send![self, startCaptureWithCommandQueue: command_queue] }
     }
 
     pub fn start_capture_with_scope(&self, scope: &CaptureScopeRef) {
-        unsafe {
-            msg_send![self, startCaptureWithScope: scope]
-        }
+        unsafe { msg_send![self, startCaptureWithScope: scope] }
     }
 
     pub fn stop_capture(&self) {
-        unsafe {
-            msg_send![self, stopCapture]
-        }
+        unsafe { msg_send![self, stopCapture] }
     }
 
     pub fn is_capturing(&self) -> bool {
         unsafe { msg_send![self, isCapturing] }
+    }
+
+    /// See <https://developer.apple.com/documentation/metal/mtlcapturemanager/3237260-supportsdestination?language=objc>
+    pub fn supports_destination(&self, destination: MTLCaptureDestination) -> bool {
+        unsafe { msg_send![self, supportsDestination: destination] }
     }
 }

@@ -4,8 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozIThirdPartyUtil.h"
 #include "mozilla/AntiTrackingUtils.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Components.h"
 #include "mozilla/ContentBlockingAllowList.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/net/CookieJarSettings.h"
@@ -14,18 +17,27 @@
 #include "mozilla/PermissionManager.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/Unused.h"
-#include "nsGlobalWindowInner.h"
 #include "nsIPrincipal.h"
 #if defined(MOZ_THUNDERBIRD) || defined(MOZ_SUITE)
 #  include "nsIProtocolHandler.h"
 #endif
+#include "nsIClassInfoImpl.h"
+#include "nsIChannel.h"
 #include "nsICookieManager.h"
 #include "nsICookieService.h"
+#include "nsIObjectInputStream.h"
+#include "nsIObjectOutputStream.h"
 #include "nsNetUtil.h"
 
 namespace mozilla {
 namespace net {
+
+NS_IMPL_CLASSINFO(CookieJarSettings, nullptr, nsIClassInfo::THREADSAFE,
+                  COOKIEJARSETTINGS_CID)
+
+NS_IMPL_ISUPPORTS_CI(CookieJarSettings, nsICookieJarSettings, nsISerializable)
 
 static StaticRefPtr<CookieJarSettings> sBlockinAll;
 
@@ -58,10 +70,8 @@ class PermissionComparator {
 
 class ReleaseCookiePermissions final : public Runnable {
  public:
-  explicit ReleaseCookiePermissions(nsTArray<RefPtr<nsIPermission>>& aArray)
-      : Runnable("ReleaseCookiePermissions") {
-    mArray.SwapElements(aArray);
-  }
+  explicit ReleaseCookiePermissions(nsTArray<RefPtr<nsIPermission>>&& aArray)
+      : Runnable("ReleaseCookiePermissions"), mArray(std::move(aArray)) {}
 
   NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
@@ -76,51 +86,97 @@ class ReleaseCookiePermissions final : public Runnable {
 }  // namespace
 
 // static
-already_AddRefed<nsICookieJarSettings> CookieJarSettings::GetBlockingAll() {
+already_AddRefed<nsICookieJarSettings> CookieJarSettings::GetBlockingAll(
+    bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (sBlockinAll) {
     return do_AddRef(sBlockinAll);
   }
 
-  sBlockinAll =
-      new CookieJarSettings(nsICookieService::BEHAVIOR_REJECT,
-                            OriginAttributes::IsFirstPartyEnabled(), eFixed);
+  sBlockinAll = new CookieJarSettings(nsICookieService::BEHAVIOR_REJECT,
+                                      OriginAttributes::IsFirstPartyEnabled(),
+                                      aShouldResistFingerprinting, eFixed);
   ClearOnShutdown(&sBlockinAll);
 
   return do_AddRef(sBlockinAll);
 }
 
 // static
-already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create() {
+already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
+    CreateMode aMode, bool aShouldResistFingerprinting) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<CookieJarSettings> cookieJarSettings = new CookieJarSettings(
-      nsICookieManager::GetCookieBehavior(),
-      OriginAttributes::IsFirstPartyEnabled(), eProgressive);
+  RefPtr<CookieJarSettings> cookieJarSettings;
+
+  switch (aMode) {
+    case eRegular:
+    case ePrivate:
+      cookieJarSettings = new CookieJarSettings(
+          nsICookieManager::GetCookieBehavior(aMode == ePrivate),
+          OriginAttributes::IsFirstPartyEnabled(), aShouldResistFingerprinting,
+          eProgressive);
+      break;
+
+    default:
+      MOZ_CRASH("Unexpected create mode.");
+  }
+
   return cookieJarSettings.forget();
 }
 
 // static
 already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
-    uint32_t aCookieBehavior, const nsAString& aFirstPartyDomain,
-    bool aIsFirstPartyIsolated) {
+    nsIPrincipal* aPrincipal) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  RefPtr<CookieJarSettings> cookieJarSettings = new CookieJarSettings(
-      aCookieBehavior, aIsFirstPartyIsolated, eProgressive);
-  cookieJarSettings->mFirstPartyDomain = aFirstPartyDomain;
+  bool shouldResistFingerprinting =
+      nsContentUtils::ShouldResistFingerprinting_dangerous(
+          aPrincipal, "We are constructing CookieJarSettings here.",
+          RFPTarget::IsAlwaysEnabledForPrecompute);
+
+  if (aPrincipal && aPrincipal->OriginAttributesRef().mPrivateBrowsingId > 0) {
+    return Create(ePrivate, shouldResistFingerprinting);
+  }
+
+  return Create(eRegular, shouldResistFingerprinting);
+}
+
+// static
+already_AddRefed<nsICookieJarSettings> CookieJarSettings::Create(
+    uint32_t aCookieBehavior, const nsAString& aPartitionKey,
+    bool aIsFirstPartyIsolated, bool aIsOnContentBlockingAllowList,
+    bool aShouldResistFingerprinting) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  RefPtr<CookieJarSettings> cookieJarSettings =
+      new CookieJarSettings(aCookieBehavior, aIsFirstPartyIsolated,
+                            aShouldResistFingerprinting, eProgressive);
+  cookieJarSettings->mPartitionKey = aPartitionKey;
+  cookieJarSettings->mIsOnContentBlockingAllowList =
+      aIsOnContentBlockingAllowList;
 
   return cookieJarSettings.forget();
 }
 
+// static
+already_AddRefed<nsICookieJarSettings> CookieJarSettings::CreateForXPCOM() {
+  MOZ_ASSERT(NS_IsMainThread());
+  return Create(eRegular, /* shouldResistFingerprinting */ false);
+}
+
 CookieJarSettings::CookieJarSettings(uint32_t aCookieBehavior,
-                                     bool aIsFirstPartyIsolated, State aState)
+                                     bool aIsFirstPartyIsolated,
+                                     bool aShouldResistFingerprinting,
+                                     State aState)
     : mCookieBehavior(aCookieBehavior),
       mIsFirstPartyIsolated(aIsFirstPartyIsolated),
       mIsOnContentBlockingAllowList(false),
+      mIsOnContentBlockingAllowListUpdated(false),
       mState(aState),
-      mToBeMerged(false) {
+      mToBeMerged(false),
+      mShouldResistFingerprinting(aShouldResistFingerprinting),
+      mTopLevelWindowContextId(0) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT_IF(
       mIsFirstPartyIsolated,
@@ -130,11 +186,21 @@ CookieJarSettings::CookieJarSettings(uint32_t aCookieBehavior,
 
 CookieJarSettings::~CookieJarSettings() {
   if (!NS_IsMainThread() && !mCookiePermissions.IsEmpty()) {
-    RefPtr<Runnable> r = new ReleaseCookiePermissions(mCookiePermissions);
+    RefPtr<Runnable> r =
+        new ReleaseCookiePermissions(std::move(mCookiePermissions));
     MOZ_ASSERT(mCookiePermissions.IsEmpty());
-
-    SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+    SchedulerGroup::Dispatch(r.forget());
   }
+}
+
+NS_IMETHODIMP
+CookieJarSettings::InitWithURI(nsIURI* aURI, bool aIsPrivate) {
+  NS_ENSURE_ARG(aURI);
+
+  mCookieBehavior = nsICookieManager::GetCookieBehavior(aIsPrivate);
+
+  SetPartitionKey(aURI, false);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -146,6 +212,13 @@ CookieJarSettings::GetCookieBehavior(uint32_t* aCookieBehavior) {
 NS_IMETHODIMP
 CookieJarSettings::GetIsFirstPartyIsolated(bool* aIsFirstPartyIsolated) {
   *aIsFirstPartyIsolated = mIsFirstPartyIsolated;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetShouldResistFingerprinting(
+    bool* aShouldResistFingerprinting) {
+  *aShouldResistFingerprinting = mShouldResistFingerprinting;
   return NS_OK;
 }
 
@@ -164,6 +237,25 @@ CookieJarSettings::GetLimitForeignContexts(bool* aLimitForeignContexts) {
       (StaticPrefs::privacy_dynamic_firstparty_limitForeign() &&
        mCookieBehavior ==
            nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetBlockingAllThirdPartyContexts(
+    bool* aBlockingAllThirdPartyContexts) {
+  // XXX For non-cookie forms of storage, we handle BEHAVIOR_LIMIT_FOREIGN by
+  // simply rejecting the request to use the storage. In the future, if we
+  // change the meaning of BEHAVIOR_LIMIT_FOREIGN to be one which makes sense
+  // for non-cookie storage types, this may change.
+  *aBlockingAllThirdPartyContexts =
+      mCookieBehavior == nsICookieService::BEHAVIOR_LIMIT_FOREIGN ||
+      mCookieBehavior == nsICookieService::BEHAVIOR_REJECT_FOREIGN;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetBlockingAllContexts(bool* aBlockingAllContexts) {
+  *aBlockingAllContexts = mCookieBehavior == nsICookieService::BEHAVIOR_REJECT;
   return NS_OK;
 }
 
@@ -196,15 +288,26 @@ CookieJarSettings::GetIsOnContentBlockingAllowList(
 }
 
 NS_IMETHODIMP
-CookieJarSettings::GetFirstPartyDomain(nsAString& aFirstPartyDomain) {
-  aFirstPartyDomain = mFirstPartyDomain;
+CookieJarSettings::GetPartitionKey(nsAString& aPartitionKey) {
+  aPartitionKey = mPartitionKey;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+CookieJarSettings::GetFingerprintingRandomizationKey(
+    nsTArray<uint8_t>& aFingerprintingRandomizationKey) {
+  if (!mFingerprintingRandomKey) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  aFingerprintingRandomizationKey = mFingerprintingRandomKey->Clone();
   return NS_OK;
 }
 
 NS_IMETHODIMP
 CookieJarSettings::CookiePermission(nsIPrincipal* aPrincipal,
                                     uint32_t* aCookiePermission) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   NS_ENSURE_ARG_POINTER(aPrincipal);
   NS_ENSURE_ARG_POINTER(aCookiePermission);
 
@@ -214,15 +317,9 @@ CookieJarSettings::CookiePermission(nsIPrincipal* aPrincipal,
 
   // Let's see if we know this permission.
   if (!mCookiePermissions.IsEmpty()) {
-    nsCOMPtr<nsIPrincipal> principal =
-        Permission::ClonePrincipalForPermission(aPrincipal);
-    if (NS_WARN_IF(!principal)) {
-      return NS_ERROR_FAILURE;
-    }
-
     for (const RefPtr<nsIPermission>& permission : mCookiePermissions) {
       bool match = false;
-      rv = permission->MatchesPrincipalForPermission(principal, false, &match);
+      rv = permission->Matches(aPrincipal, false, &match);
       if (NS_WARN_IF(NS_FAILED(rv)) || !match) {
         continue;
       }
@@ -256,8 +353,8 @@ CookieJarSettings::CookiePermission(nsIPrincipal* aPrincipal,
   } else         // Note the tricky `else` which controls the call below.
 #endif
 
-    rv = pm->TestPermissionFromPrincipal(
-        aPrincipal, NS_LITERAL_CSTRING("cookie"), aCookiePermission);
+    rv = pm->TestPermissionFromPrincipal(aPrincipal, "cookie"_ns,
+                                         aCookiePermission);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -265,8 +362,8 @@ CookieJarSettings::CookiePermission(nsIPrincipal* aPrincipal,
   // Let's store the permission, also if the result is UNKNOWN in order to avoid
   // race conditions.
 
-  nsCOMPtr<nsIPermission> permission = Permission::Create(
-      aPrincipal, NS_LITERAL_CSTRING("cookie"), *aCookiePermission, 0, 0, 0);
+  nsCOMPtr<nsIPermission> permission =
+      Permission::Create(aPrincipal, "cookie"_ns, *aCookiePermission, 0, 0, 0);
   if (permission) {
     mCookiePermissions.AppendElement(permission);
   }
@@ -276,13 +373,20 @@ CookieJarSettings::CookiePermission(nsIPrincipal* aPrincipal,
 }
 
 void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   aData.isFixed() = mState == eFixed;
   aData.cookieBehavior() = mCookieBehavior;
   aData.isFirstPartyIsolated() = mIsFirstPartyIsolated;
+  aData.shouldResistFingerprinting() = mShouldResistFingerprinting;
   aData.isOnContentBlockingAllowList() = mIsOnContentBlockingAllowList;
-  aData.firstPartyDomain() = mFirstPartyDomain;
+  aData.partitionKey() = mPartitionKey;
+  if (mFingerprintingRandomKey) {
+    aData.hasFingerprintingRandomizationKey() = true;
+    aData.fingerprintingRandomizationKey() = mFingerprintingRandomKey->Clone();
+  } else {
+    aData.hasFingerprintingRandomizationKey() = false;
+  }
 
   for (const RefPtr<nsIPermission>& permission : mCookiePermissions) {
     nsCOMPtr<nsIPrincipal> principal;
@@ -308,13 +412,15 @@ void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
         CookiePermissionData(principalInfo, cookiePermission));
   }
 
+  aData.topLevelWindowContextId() = mTopLevelWindowContextId;
+
   mToBeMerged = false;
 }
 
 /* static */ void CookieJarSettings::Deserialize(
     const CookieJarSettingsArgs& aData,
     nsICookieJarSettings** aCookieJarSettings) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   CookiePermissionList list;
   for (const CookiePermissionData& data : aData.cookiePermissions()) {
@@ -325,9 +431,8 @@ void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
 
     nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
 
-    nsCOMPtr<nsIPermission> permission =
-        Permission::Create(principal, NS_LITERAL_CSTRING("cookie"),
-                           data.cookiePermission(), 0, 0, 0);
+    nsCOMPtr<nsIPermission> permission = Permission::Create(
+        principal, "cookie"_ns, data.cookiePermission(), 0, 0, 0);
     if (NS_WARN_IF(!permission)) {
       continue;
     }
@@ -337,18 +442,28 @@ void CookieJarSettings::Serialize(CookieJarSettingsArgs& aData) {
 
   RefPtr<CookieJarSettings> cookieJarSettings = new CookieJarSettings(
       aData.cookieBehavior(), aData.isFirstPartyIsolated(),
+      aData.shouldResistFingerprinting(),
       aData.isFixed() ? eFixed : eProgressive);
 
   cookieJarSettings->mIsOnContentBlockingAllowList =
       aData.isOnContentBlockingAllowList();
-  cookieJarSettings->mCookiePermissions.SwapElements(list);
-  cookieJarSettings->mFirstPartyDomain = aData.firstPartyDomain();
+  cookieJarSettings->mCookiePermissions = std::move(list);
+  cookieJarSettings->mPartitionKey = aData.partitionKey();
+  cookieJarSettings->mShouldResistFingerprinting =
+      aData.shouldResistFingerprinting();
+
+  if (aData.hasFingerprintingRandomizationKey()) {
+    cookieJarSettings->mFingerprintingRandomKey.emplace(
+        aData.fingerprintingRandomizationKey().Clone());
+  }
+
+  cookieJarSettings->mTopLevelWindowContextId = aData.topLevelWindowContextId();
 
   cookieJarSettings.forget(aCookieJarSettings);
 }
 
 void CookieJarSettings::Merge(const CookieJarSettingsArgs& aData) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(
       mCookieBehavior == aData.cookieBehavior() ||
       (mCookieBehavior == nsICookieService::BEHAVIOR_REJECT_TRACKER &&
@@ -389,6 +504,10 @@ void CookieJarSettings::Merge(const CookieJarSettingsArgs& aData) {
       mCookieBehavior !=
           nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
 
+  if (aData.shouldResistFingerprinting()) {
+    mShouldResistFingerprinting = true;
+  }
+
   PermissionComparator comparator;
 
   for (const CookiePermissionData& data : aData.cookiePermissions()) {
@@ -398,9 +517,8 @@ void CookieJarSettings::Merge(const CookieJarSettingsArgs& aData) {
     }
 
     nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
-    nsCOMPtr<nsIPermission> permission =
-        Permission::Create(principal, NS_LITERAL_CSTRING("cookie"),
-                           data.cookiePermission(), 0, 0, 0);
+    nsCOMPtr<nsIPermission> permission = Permission::Create(
+        principal, "cookie"_ns, data.cookiePermission(), 0, 0, 0);
     if (NS_WARN_IF(!permission)) {
       continue;
     }
@@ -411,18 +529,36 @@ void CookieJarSettings::Merge(const CookieJarSettingsArgs& aData) {
   }
 }
 
-void CookieJarSettings::SetFirstPartyDomain(nsIURI* aURI) {
+void CookieJarSettings::SetPartitionKey(nsIURI* aURI,
+                                        bool aForeignByAncestorContext) {
   MOZ_ASSERT(aURI);
 
   OriginAttributes attrs;
-  attrs.SetFirstPartyDomain(true, aURI, true);
-  mFirstPartyDomain = std::move(attrs.mFirstPartyDomain);
+  attrs.SetPartitionKey(aURI, aForeignByAncestorContext);
+  mPartitionKey = std::move(attrs.mPartitionKey);
+}
+
+void CookieJarSettings::UpdatePartitionKeyForDocumentLoadedByChannel(
+    nsIChannel* aChannel) {
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+  bool thirdParty = AntiTrackingUtils::IsThirdPartyChannel(aChannel);
+  bool foreignByAncestorContext =
+      thirdParty && !loadInfo->GetIsThirdPartyContextToTopWindow();
+  StoragePrincipalHelper::UpdatePartitionKeyWithForeignAncestorBit(
+      mPartitionKey, foreignByAncestorContext);
 }
 
 void CookieJarSettings::UpdateIsOnContentBlockingAllowList(
     nsIChannel* aChannel) {
   MOZ_DIAGNOSTIC_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(aChannel);
+
+  // Early return if the flag was updated before.
+  if (mIsOnContentBlockingAllowListUpdated) {
+    return;
+  }
+  mIsOnContentBlockingAllowListUpdated = true;
+
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
 
   nsCOMPtr<nsIURI> uri;
@@ -456,18 +592,161 @@ void CookieJarSettings::UpdateIsOnContentBlockingAllowList(
 bool CookieJarSettings::IsRejectThirdPartyContexts(uint32_t aCookieBehavior) {
   return aCookieBehavior == nsICookieService::BEHAVIOR_REJECT_TRACKER ||
          aCookieBehavior ==
-             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN ||
-         IsRejectThirdPartyWithExceptions(aCookieBehavior);
+             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN;
 }
 
-// static
-bool CookieJarSettings::IsRejectThirdPartyWithExceptions(
-    uint32_t aCookieBehavior) {
-  return aCookieBehavior == nsICookieService::BEHAVIOR_REJECT_FOREIGN &&
-         StaticPrefs::network_cookie_rejectForeignWithExceptions_enabled();
+NS_IMETHODIMP
+CookieJarSettings::Read(nsIObjectInputStream* aStream) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  nsresult rv = aStream->Read32(&mCookieBehavior);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->ReadBoolean(&mIsFirstPartyIsolated);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->ReadBoolean(&mShouldResistFingerprinting);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  bool isFixed;
+  aStream->ReadBoolean(&isFixed);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+  mState = isFixed ? eFixed : eProgressive;
+
+  rv = aStream->ReadBoolean(&mIsOnContentBlockingAllowList);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->ReadString(mPartitionKey);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  // Deserializing the cookie permission list.
+  uint32_t cookiePermissionsLength;
+  rv = aStream->Read32(&cookiePermissionsLength);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  if (!cookiePermissionsLength) {
+    // Bailing out early because there is no cookie permission.
+    return NS_OK;
+  }
+
+  CookiePermissionList list;
+  mCookiePermissions.SetCapacity(cookiePermissionsLength);
+  for (uint32_t i = 0; i < cookiePermissionsLength; ++i) {
+    nsAutoCString principalJSON;
+    aStream->ReadCString(principalJSON);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+
+    nsCOMPtr<nsIPrincipal> principal = BasePrincipal::FromJSON(principalJSON);
+
+    if (NS_WARN_IF(!principal)) {
+      continue;
+    }
+
+    uint32_t cookiePermission;
+    aStream->Read32(&cookiePermission);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+
+    nsCOMPtr<nsIPermission> permission =
+        Permission::Create(principal, "cookie"_ns, cookiePermission, 0, 0, 0);
+    if (NS_WARN_IF(!permission)) {
+      continue;
+    }
+
+    list.AppendElement(permission);
+  }
+
+  mCookiePermissions = std::move(list);
+
+  return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS(CookieJarSettings, nsICookieJarSettings)
+NS_IMETHODIMP
+CookieJarSettings::Write(nsIObjectOutputStream* aStream) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  nsresult rv = aStream->Write32(mCookieBehavior);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteBoolean(mIsFirstPartyIsolated);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteBoolean(mShouldResistFingerprinting);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteBoolean(mState == eFixed);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteBoolean(mIsOnContentBlockingAllowList);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  rv = aStream->WriteWStringZ(mPartitionKey.get());
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  // Serializing the cookie permission list. It will first write the length of
+  // the list, and then, write the cookie permission consecutively.
+  uint32_t cookiePermissionsLength = mCookiePermissions.Length();
+  rv = aStream->Write32(cookiePermissionsLength);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  for (const RefPtr<nsIPermission>& permission : mCookiePermissions) {
+    nsCOMPtr<nsIPrincipal> principal;
+    nsresult rv = permission->GetPrincipal(getter_AddRefs(principal));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      continue;
+    }
+
+    nsAutoCString principalJSON;
+    BasePrincipal::Cast(principal)->ToJSON(principalJSON);
+
+    rv = aStream->WriteStringZ(principalJSON.get());
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+
+    uint32_t cookiePermission = 0;
+    rv = permission->GetCapability(&cookiePermission);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      continue;
+    }
+
+    rv = aStream->Write32(cookiePermission);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  }
+
+  return NS_OK;
+}
 
 }  // namespace net
 }  // namespace mozilla

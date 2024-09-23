@@ -9,9 +9,7 @@
 #include "mozilla/dom/cache/DBSchema.h"
 #include "mozStorageHelper.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 using mozilla::dom::quota::QuotaObject;
 
@@ -38,8 +36,8 @@ Connection::Close() {
   mClosed = true;
 
   // If we are closing here, then Cache must not have a transaction
-  // open anywhere else.  This should be guaranteed to succeed.
-  MOZ_ALWAYS_SUCCEEDS(db::IncrementalVacuum(this));
+  // open anywhere else.  This may fail if storage is corrupted.
+  Unused << NS_WARN_IF(NS_FAILED(db::IncrementalVacuum(*this)));
 
   return mBase->Close();
 }
@@ -50,6 +48,12 @@ Connection::Close() {
 // work to wrap properly.
 
 // mozIStorageAsyncConnection methods
+
+NS_IMETHODIMP
+Connection::AsyncVacuum(mozIStorageCompletionCallback*, bool, int32_t) {
+  // async methods are not supported
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 NS_IMETHODIMP
 Connection::AsyncClose(mozIStorageCompletionCallback*) {
@@ -103,14 +107,6 @@ Connection::CreateFunction(const nsACString& aFunctionName,
                            mozIStorageFunction* aFunction) {
   // async methods are not supported
   return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-Connection::CreateAggregateFunction(const nsACString& aFunctionName,
-                                    int32_t aNumArguments,
-                                    mozIStorageAggregateFunction* aFunction) {
-  return mBase->CreateAggregateFunction(aFunctionName, aNumArguments,
-                                        aFunction);
 }
 
 NS_IMETHODIMP
@@ -231,6 +227,11 @@ Connection::GetVariableLimit(int32_t* aResultOut) {
 }
 
 NS_IMETHODIMP
+Connection::SetVariableLimit(int32_t aLimit) {
+  return mBase->SetVariableLimit(aLimit);
+}
+
+NS_IMETHODIMP
 Connection::BeginTransaction() { return mBase->BeginTransaction(); }
 
 NS_IMETHODIMP
@@ -251,6 +252,11 @@ Connection::SetGrowthIncrement(int32_t aIncrement,
 }
 
 NS_IMETHODIMP
+Connection::LoadExtension(const nsACString& aExtensionName,
+                          mozIStorageCompletionCallback* aCallback) {
+  return mBase->LoadExtension(aExtensionName, aCallback);
+}
+NS_IMETHODIMP
 Connection::EnableModule(const nsACString& aModule) {
   return mBase->EnableModule(aModule);
 }
@@ -261,6 +267,31 @@ Connection::GetQuotaObjects(QuotaObject** aDatabaseQuotaObject,
   return mBase->GetQuotaObjects(aDatabaseQuotaObject, aJournalQuotaObject);
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+mozilla::storage::SQLiteMutex& Connection::GetSharedDBMutex() {
+  return mBase->GetSharedDBMutex();
+}
+
+uint32_t Connection::GetTransactionNestingLevel(
+    const mozilla::storage::SQLiteMutexAutoLock& aProofOfLock) {
+  return mBase->GetTransactionNestingLevel(aProofOfLock);
+}
+
+uint32_t Connection::IncreaseTransactionNestingLevel(
+    const mozilla::storage::SQLiteMutexAutoLock& aProofOfLock) {
+  return mBase->IncreaseTransactionNestingLevel(aProofOfLock);
+}
+
+uint32_t Connection::DecreaseTransactionNestingLevel(
+    const mozilla::storage::SQLiteMutexAutoLock& aProofOfLock) {
+  return mBase->DecreaseTransactionNestingLevel(aProofOfLock);
+}
+
+NS_IMETHODIMP
+Connection::BackupToFileAsync(nsIFile* aDestinationFile,
+                              mozIStorageCompletionCallback* aCallback,
+                              uint32_t aPagesPerStep, uint32_t aStepDelayMs) {
+  // async methods are not supported
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+}  // namespace mozilla::dom::cache

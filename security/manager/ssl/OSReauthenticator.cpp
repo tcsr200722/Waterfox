@@ -10,19 +10,24 @@
 #include "nsNetCID.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Preferences.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIBaseWindow.h"
 #include "nsIDocShell.h"
 #include "nsISupportsUtils.h"
 #include "nsIWidget.h"
+#include "nsPIDOMWindow.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
-#include "ipc/IPCMessageUtils.h"
+#include "mozilla/ipc/IPCTypes.h"
 
 NS_IMPL_ISUPPORTS(OSReauthenticator, nsIOSReauthenticator)
 
 extern mozilla::LazyLogModule gCredentialManagerSecretLog;
 
 using mozilla::LogLevel;
+using mozilla::Maybe;
 using mozilla::Preferences;
 using mozilla::WindowsHandle;
 using mozilla::dom::Promise;
@@ -63,8 +68,17 @@ struct BufferFreer {
     CoTaskMemFree(b);
   }
 };
+struct LsaDeregistrator {
+  typedef HANDLE pointer;
+  void operator()(HANDLE h) {
+    if (h != INVALID_HANDLE_VALUE) {
+      LsaDeregisterLogonProcess(h);
+    }
+  }
+};
 typedef std::unique_ptr<HANDLE, HandleCloser> ScopedHANDLE;
 typedef std::unique_ptr<LPVOID, BufferFreer> ScopedBuffer;
+typedef std::unique_ptr<HANDLE, LsaDeregistrator> ScopedLsaHANDLE;
 
 constexpr int64_t Int32Modulo = 2147483648;
 
@@ -139,21 +153,21 @@ bool IsAutoAdminLogonEnabled() {
 
   rv = regKey->Open(
       nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
-      NS_LITERAL_STRING(
-          "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"),
+      nsLiteralString(
+          u"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"),
       nsIWindowsRegKey::ACCESS_READ);
   if (NS_FAILED(rv)) {
     return false;
   }
 
   nsAutoString value;
-  rv = regKey->ReadStringValue(NS_LITERAL_STRING("AutoAdminLogon"), value);
+  rv = regKey->ReadStringValue(u"AutoAdminLogon"_ns, value);
   if (NS_FAILED(rv)) {
     return false;
   }
   regKey->Close();
 
-  return value.Equals(NS_LITERAL_STRING("1"));
+  return value.Equals(u"1"_ns);
 }
 
 bool IsRequireSignonEnabled() {
@@ -165,36 +179,33 @@ bool IsRequireSignonEnabled() {
     return true;
   }
 
-  rv = regKey->Open(
-      nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
-      NS_LITERAL_STRING("System\\CurrentControlSet\\Control\\Power\\User\\Power"
-                        "Schemes"),
-      nsIWindowsRegKey::ACCESS_READ);
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
+                    u"System\\CurrentControlSet\\Control\\Power\\User\\Power"
+                    "Schemes"_ns,
+                    nsIWindowsRegKey::ACCESS_READ);
   if (NS_FAILED(rv)) {
     return true;
   }
 
   nsAutoString activePowerScheme;
-  rv = regKey->ReadStringValue(NS_LITERAL_STRING("ActivePowerScheme"),
-                               activePowerScheme);
+  rv = regKey->ReadStringValue(u"ActivePowerScheme"_ns, activePowerScheme);
   if (NS_FAILED(rv)) {
     return true;
   }
   regKey->Close();
 
-  rv = regKey->Open(
-      nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
-      NS_LITERAL_STRING("System\\CurrentControlSet\\Control\\Power\\User\\Power"
-                        "Schemes\\") +
-          activePowerScheme +
-          NS_LITERAL_STRING("\\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"),
-      nsIWindowsRegKey::ACCESS_READ);
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
+                    u"System\\CurrentControlSet\\Control\\Power\\User\\Power"
+                    "Schemes\\"_ns +
+                        activePowerScheme +
+                        u"\\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"_ns,
+                    nsIWindowsRegKey::ACCESS_READ);
   if (NS_FAILED(rv)) {
     return true;
   }
 
   uint32_t value;
-  rv = regKey->ReadIntValue(NS_LITERAL_STRING("ACSettingIndex"), &value);
+  rv = regKey->ReadIntValue(u"ACSettingIndex"_ns, &value);
   if (NS_FAILED(rv)) {
     return true;
   }
@@ -227,13 +238,7 @@ static nsresult ReauthenticateUserWindows(
     return NS_ERROR_FAILURE;
   }
 
-#  ifdef OS_DOMAINMEMBER
-  bool isDomainMember = IsOS(OS_DOMAINMEMBER);
-#  else
-  // Bug 1633097
-  bool isDomainMember = false;
-#  endif
-  if (!isDomainMember) {
+  if (!IsOS(OS_DOMAINMEMBER)) {
     const WCHAR* usernameNoDomain = username;
     // Don't include the domain portion of the username when calling LogonUser.
     LPCWSTR backslash = wcschr(username, L'\\');
@@ -296,7 +301,7 @@ static nsresult ReauthenticateUserWindows(
   credui.hbmBanner = nullptr;  // ignored
 
   while (!reauthenticated) {
-    HANDLE lsa;
+    HANDLE lsa = INVALID_HANDLE_VALUE;
     // Get authentication handle for future user authentications.
     // https://docs.microsoft.com/en-us/windows/desktop/api/ntsecapi/nf-ntsecapi-lsaconnectuntrusted
     if (LsaConnectUntrusted(&lsa) != ERROR_SUCCESS) {
@@ -304,7 +309,7 @@ static nsresult ReauthenticateUserWindows(
               ("Error acquiring lsa. Authentication attempts will fail."));
       return NS_ERROR_FAILURE;
     }
-    ScopedHANDLE scopedLsa(lsa);
+    ScopedLsaHANDLE scopedLsa(lsa);
 
     if (!userTokenInfo || lsa == INVALID_HANDLE_VALUE) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
@@ -352,7 +357,7 @@ static nsresult ReauthenticateUserWindows(
     ULONG profileBufferLength = 0;
     QUOTA_LIMITS limits = {0};
     LUID luid;
-    HANDLE token;
+    HANDLE token = INVALID_HANDLE_VALUE;
     LSA_STRING name;
     name.Buffer = contextName;
     name.Length = strlen(name.Buffer);
@@ -364,7 +369,6 @@ static nsresult ReauthenticateUserWindows(
         &profileBuffer, &profileBufferLength, &luid, &token, &limits, &substs);
     ScopedHANDLE scopedToken(token);
     LsaFreeReturnBuffer(profileBuffer);
-    LsaDeregisterLogonProcess(scopedLsa.get());
     if (sts == ERROR_SUCCESS) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
               ("User logged in successfully."));
@@ -414,8 +418,9 @@ static nsresult ReauthenticateUser(const nsAString& prompt,
       prefLastChanged, isAutoAdminLogonEnabled, isRequireSignonEnabled);
 #elif defined(XP_MACOSX)
   return ReauthenticateUserMacOS(prompt, reauthenticated, isBlankPassword);
-#endif  // Reauthentication is not implemented for this platform.
+#else
   return NS_OK;
+#endif  // Reauthentication is not implemented for this platform.
 }
 
 static void BackgroundReauthenticateUser(RefPtr<Promise>& aPromise,

@@ -11,36 +11,29 @@
 #include "nsIUploadChannel.h"
 #include "nsIURI.h"
 #include "nsIUrlClassifierDBService.h"
+#include "nsIUrlClassifierRemoteSettingsService.h"
 #include "nsUrlClassifierUtils.h"
 #include "nsNetUtil.h"
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
 #include "nsUrlClassifierStreamUpdater.h"
-#include "nsUrlClassifierUtils.h"
-#include "mozilla/BasePrincipal.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/Logging.h"
-#include "mozilla/ResultExtensions.h"
 #include "nsIInterfaceRequestor.h"
-#include "mozilla/LoadContext.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/Try.h"
 #include "nsContentUtils.h"
 #include "nsIURLFormatter.h"
 #include "Classifier.h"
 #include "UrlClassifierTelemetryUtils.h"
+#include "mozilla/StaticPrefs_urlclassifier.h"
 
 using namespace mozilla::safebrowsing;
 using namespace mozilla;
 
-#define DEFAULT_RESPONSE_TIMEOUT_MS 15 * 1000
-#define DEFAULT_TIMEOUT_MS 60 * 1000
-static_assert(DEFAULT_TIMEOUT_MS > DEFAULT_RESPONSE_TIMEOUT_MS,
-              "General timeout must be greater than reponse timeout");
+#define MIN_TIMEOUT_MS (60 * 1000)
 
 static const char* gQuitApplicationMessage = "quit-application";
-
-static uint32_t sResponseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS;
-static uint32_t sTimeoutMs = DEFAULT_TIMEOUT_MS;
 
 // Limit the list file size to 32mb
 const uint32_t MAX_FILE_SIZE = (32 * 1024 * 1024);
@@ -65,7 +58,7 @@ static MOZ_FORMAT_PRINTF(1, 2) void TrimAndLog(const char* aFmt, ...) {
 
   va_list ap;
   va_start(ap, aFmt);
-  raw.AppendPrintf(aFmt, ap);
+  raw.AppendVprintf(aFmt, ap);
   va_end(ap);
 
   nsCOMPtr<nsIURLFormatter> urlFormatter =
@@ -74,7 +67,7 @@ static MOZ_FORMAT_PRINTF(1, 2) void TrimAndLog(const char* aFmt, ...) {
   nsString trimmed;
   nsresult rv = urlFormatter->TrimSensitiveURLs(raw, trimmed);
   if (NS_FAILED(rv)) {
-    trimmed = EmptyString();
+    trimmed.Truncate();
   }
 
   // Use %s so we aren't exposing random strings to printf interpolation.
@@ -121,112 +114,121 @@ void nsUrlClassifierStreamUpdater::DownloadDone() {
 nsresult nsUrlClassifierStreamUpdater::FetchUpdate(
     nsIURI* aUpdateUrl, const nsACString& aRequestPayload, bool aIsPostRequest,
     const nsACString& aStreamTable) {
-#ifdef DEBUG
-  LOG(("Fetching update %s from %s", aRequestPayload.Data(),
-       aUpdateUrl->GetSpecOrDefault().get()));
-#endif
-
-  // SafeBrowsing update request should never be classified to make sure
-  // we can recover from a bad SafeBrowsing database.
-  nsresult rv;
-  uint32_t loadFlags = nsIChannel::INHIBIT_CACHING |
-                       nsIChannel::LOAD_BYPASS_CACHE |
-                       nsIChannel::LOAD_BYPASS_URL_CLASSIFIER;
-  rv = NS_NewChannel(getter_AddRefs(mChannel), aUpdateUrl,
-                     nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                     nsIContentPolicy::TYPE_OTHER,
-                     nullptr,  // nsICookieJarSettings
-                     nullptr,  // aPerformanceStorage
-                     nullptr,  // aLoadGroup
-                     this,     // aInterfaceRequestor
-                     loadFlags);
-
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
-  mozilla::OriginAttributes attrs;
-  attrs.mFirstPartyDomain.AssignLiteral(NECKO_SAFEBROWSING_FIRST_PARTY_DOMAIN);
-  loadInfo->SetOriginAttributes(attrs);
-  // allow deprecated HTTP request from SystemPrincipal
-  loadInfo->SetAllowDeprecatedSystemRequests(true);
-
   mBeganStream = false;
+  nsresult rv;
+  // moz-sbrs is a customed scheme used by Safe Browsing. When the scheme is
+  // present in the update url, we'll fetch the data from
+  // UrlClassifierRemoteSettingsService.
+  if (aUpdateUrl->SchemeIs("moz-sbrs")) {
+#ifdef DEBUG
+    LOG(("Fetching update %s from RemoteSettings", aRequestPayload.Data()));
+#endif
+    nsCOMPtr<nsIUrlClassifierRemoteSettingsService> rsService =
+        do_GetService("@mozilla.org/url-classifier/list-service;1");
+    if (!rsService) {
+      return NS_ERROR_FAILURE;
+    }
 
-  if (!aIsPostRequest) {
-    // We use POST method to send our request in v2. In v4, the request
-    // needs to be embedded to the URL and use GET method to send.
-    // However, from the Chromium source code, a extended HTTP header has
-    // to be sent along with the request to make the request succeed.
-    // The following description is from Chromium source code:
-    //
-    // "The following header informs the envelope server (which sits in
-    // front of Google's stubby server) that the received GET request should be
-    // interpreted as a POST."
-    //
-    nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    rv = httpChannel->SetRequestHeader(
-        NS_LITERAL_CSTRING("X-HTTP-Method-Override"),
-        NS_LITERAL_CSTRING("POST"), false);
-    NS_ENSURE_SUCCESS(rv, rv);
-  } else if (!aRequestPayload.IsEmpty()) {
-    rv = AddRequestBody(aRequestPayload);
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
-
-  // Set the appropriate content type for file/data URIs, for unit testing
-  // purposes.
-  // This is only used for testing and should be deleted.
-  if (aUpdateUrl->SchemeIs("file") || aUpdateUrl->SchemeIs("data")) {
-    mChannel->SetContentType(
-        NS_LITERAL_CSTRING("application/vnd.google.safebrowsing-update"));
+    rv = rsService->FetchList(aRequestPayload, this);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
   } else {
-    // We assume everything else is an HTTP request.
+#ifdef DEBUG
+    LOG(("Fetching update %s from %s", aRequestPayload.Data(),
+         aUpdateUrl->GetSpecOrDefault().get()));
+#endif
+    uint32_t loadFlags = nsIChannel::INHIBIT_CACHING |
+                         nsIChannel::LOAD_BYPASS_CACHE |
+                         nsIChannel::LOAD_BYPASS_URL_CLASSIFIER;
 
-    // Disable keepalive.
-    nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
+    // SafeBrowsing update request should never be classified to make sure
+    // we can recover from a bad SafeBrowsing database.
+    rv = NS_NewChannel(getter_AddRefs(mChannel), aUpdateUrl,
+                       nsContentUtils::GetSystemPrincipal(),
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+                       nsIContentPolicy::TYPE_OTHER,
+                       nullptr,  // nsICookieJarSettings
+                       nullptr,  // aPerformanceStorage
+                       nullptr,  // aLoadGroup
+                       this,     // aInterfaceRequestor
+                       loadFlags);
+
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = httpChannel->SetRequestHeader(NS_LITERAL_CSTRING("Connection"),
-                                       NS_LITERAL_CSTRING("close"), false);
+
+    nsCOMPtr<nsILoadInfo> loadInfo = mChannel->LoadInfo();
+    mozilla::OriginAttributes attrs;
+    attrs.mFirstPartyDomain.AssignLiteral(
+        NECKO_SAFEBROWSING_FIRST_PARTY_DOMAIN);
+    loadInfo->SetOriginAttributes(attrs);
+    // allow deprecated HTTP request from SystemPrincipal
+    loadInfo->SetAllowDeprecatedSystemRequests(true);
+
+    if (!aIsPostRequest) {
+      // We use POST method to send our request in v2. In v4, the request
+      // needs to be embedded to the URL and use GET method to send.
+      // However, from the Chromium source code, a extended HTTP header has
+      // to be sent along with the request to make the request succeed.
+      // The following description is from Chromium source code:
+      //
+      // "The following header informs the envelope server (which sits in
+      // front of Google's stubby server) that the received GET request should
+      // be interpreted as a POST."
+      //
+      nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
+      NS_ENSURE_SUCCESS(rv, rv);
+
+      rv = httpChannel->SetRequestHeader("X-HTTP-Method-Override"_ns, "POST"_ns,
+                                         false);
+      NS_ENSURE_SUCCESS(rv, rv);
+    } else if (!aRequestPayload.IsEmpty()) {
+      rv = AddRequestBody(aRequestPayload);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
+    // Set the appropriate content type for file/data URIs, for unit testing
+    // purposes.
+    // This is only used for testing and should be deleted.
+    if (aUpdateUrl->SchemeIs("file") || aUpdateUrl->SchemeIs("data")) {
+      mChannel->SetContentType("application/vnd.google.safebrowsing-update"_ns);
+    } else {
+      // We assume everything else is an HTTP request.
+
+      // Disable keepalive.
+      nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = httpChannel->SetRequestHeader("Connection"_ns, "close"_ns, false);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
+    // Make the request.
+    rv = mChannel->AsyncOpen(this);
     NS_ENSURE_SUCCESS(rv, rv);
   }
-
-  // Make the request.
-  rv = mChannel->AsyncOpen(this);
-  NS_ENSURE_SUCCESS(rv, rv);
 
   mTelemetryClockStart = PR_IntervalNow();
   mStreamTable = aStreamTable;
 
-  static bool preferencesInitialized = false;
-
-  if (!preferencesInitialized) {
-    mozilla::Preferences::AddUintVarCache(
-        &sTimeoutMs, "urlclassifier.update.timeout_ms", DEFAULT_TIMEOUT_MS);
-    mozilla::Preferences::AddUintVarCache(
-        &sResponseTimeoutMs, "urlclassifier.update.response_timeout_ms",
-        DEFAULT_RESPONSE_TIMEOUT_MS);
-    preferencesInitialized = true;
-  }
-
-  if (sResponseTimeoutMs > sTimeoutMs) {
+  if (StaticPrefs::urlclassifier_update_response_timeout_ms() >
+      StaticPrefs::urlclassifier_update_timeout_ms()) {
     NS_WARNING(
         "Safe Browsing response timeout is greater than the general "
         "timeout. Disabling these update timeouts.");
     return NS_OK;
   }
   MOZ_TRY_VAR(mResponseTimeoutTimer,
-              NS_NewTimerWithCallback(this, sResponseTimeoutMs,
-                                      nsITimer::TYPE_ONE_SHOT));
+              NS_NewTimerWithCallback(
+                  this, StaticPrefs::urlclassifier_update_response_timeout_ms(),
+                  nsITimer::TYPE_ONE_SHOT));
 
-  MOZ_TRY_VAR(mTimeoutTimer, NS_NewTimerWithCallback(this, sTimeoutMs,
-                                                     nsITimer::TYPE_ONE_SHOT));
+  MOZ_TRY_VAR(mTimeoutTimer,
+              NS_NewTimerWithCallback(
+                  this, StaticPrefs::urlclassifier_update_timeout_ms(),
+                  nsITimer::TYPE_ONE_SHOT));
 
-  if (sTimeoutMs < DEFAULT_TIMEOUT_MS) {
+  if (StaticPrefs::urlclassifier_update_timeout_ms() < MIN_TIMEOUT_MS) {
     LOG(("Download update timeout %d ms (< %d ms) would be too small",
-         sTimeoutMs, DEFAULT_TIMEOUT_MS));
+         StaticPrefs::urlclassifier_update_timeout_ms(), MIN_TIMEOUT_MS));
   }
 
   return NS_OK;
@@ -336,7 +338,7 @@ nsUrlClassifierStreamUpdater::DownloadUpdates(
 
   nsTArray<nsCString> tables;
   mozilla::safebrowsing::Classifier::SplitTables(aRequestTables, tables);
-  urlUtil->GetTelemetryProvider(tables.SafeElementAt(0, EmptyCString()),
+  urlUtil->GetTelemetryProvider(tables.SafeElementAt(0, ""_ns),
                                 mTelemetryProvider);
 
   mCurrentRequest = MakeUnique<UpdateRequest>();
@@ -349,8 +351,7 @@ nsUrlClassifierStreamUpdater::DownloadUpdates(
 
   LOG(("FetchUpdate: %s", mCurrentRequest->mUrl.Data()));
 
-  return FetchUpdate(aUpdateUrl, aRequestPayload, aIsPostRequest,
-                     EmptyCString());
+  return FetchUpdate(aUpdateUrl, aRequestPayload, aIsPostRequest, ""_ns);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -367,17 +368,17 @@ nsUrlClassifierStreamUpdater::UpdateUrlRequested(const nsACString& aUrl,
   }
 
   // Allow data: and file: urls for unit testing purposes, otherwise assume http
-  if (StringBeginsWith(aUrl, NS_LITERAL_CSTRING("data:")) ||
-      StringBeginsWith(aUrl, NS_LITERAL_CSTRING("file:"))) {
+  if (StringBeginsWith(aUrl, "data:"_ns) ||
+      StringBeginsWith(aUrl, "file:"_ns)) {
     update->mUrl = aUrl;
   } else {
     // For unittesting update urls to localhost should use http, not https
     // (otherwise the connection will fail silently, since there will be no
     // cert available).
-    if (!StringBeginsWith(aUrl, NS_LITERAL_CSTRING("localhost"))) {
-      update->mUrl = NS_LITERAL_CSTRING("https://") + aUrl;
+    if (!StringBeginsWith(aUrl, "localhost"_ns)) {
+      update->mUrl = "https://"_ns + aUrl;
     } else {
-      update->mUrl = NS_LITERAL_CSTRING("http://") + aUrl;
+      update->mUrl = "http://"_ns + aUrl;
     }
   }
   update->mTable = aTable;
@@ -393,7 +394,7 @@ nsresult nsUrlClassifierStreamUpdater::FetchNext() {
   PendingUpdate& update = mPendingUpdates[0];
   LOG(("Fetching update url: %s\n", update.mUrl.get()));
   nsresult rv =
-      FetchUpdate(update.mUrl, EmptyCString(),
+      FetchUpdate(update.mUrl, ""_ns,
                   true,  // This method is for v2 and v2 is always a POST.
                   update.mTable);
   if (NS_FAILED(rv)) {
@@ -508,7 +509,7 @@ nsUrlClassifierStreamUpdater::UpdateSuccess(uint32_t requestedTimeout) {
     successCallback->HandleEvent(strTimeout);
   } else if (downloadErrorCallback) {
     downloadErrorCallback->HandleEvent(mDownloadErrorStatusStr);
-    mDownloadErrorStatusStr = EmptyCString();
+    mDownloadErrorStatusStr.Truncate();
     LOG(("Notify download error callback in UpdateSuccess [this=%p]", this));
   }
   // Now fetch the next request
@@ -536,7 +537,7 @@ nsUrlClassifierStreamUpdater::UpdateError(nsresult result) {
   } else if (downloadErrorCallback) {
     LOG(("Notify download error callback in UpdateError [this=%p]", this));
     downloadErrorCallback->HandleEvent(mDownloadErrorStatusStr);
-    mDownloadErrorStatusStr = EmptyCString();
+    mDownloadErrorStatusStr.Truncate();
   }
 
   return NS_OK;
@@ -555,14 +556,13 @@ nsresult nsUrlClassifierStreamUpdater::AddRequestBody(
   nsCOMPtr<nsIUploadChannel> uploadChannel = do_QueryInterface(mChannel, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = uploadChannel->SetUploadStream(strStream,
-                                      NS_LITERAL_CSTRING("text/plain"), -1);
+  rv = uploadChannel->SetUploadStream(strStream, "text/plain"_ns, -1);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = httpChannel->SetRequestMethod(NS_LITERAL_CSTRING("POST"));
+  rv = httpChannel->SetRequestMethod("POST"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -717,6 +717,7 @@ nsUrlClassifierStreamUpdater::OnStopRequest(nsIRequest* request,
     LOG(("OnStopRequest::Canceling update [this=%p]", this));
     // We began this stream and couldn't finish it.  We have to cancel the
     // update, it's not in a consistent state.
+    mDownloadError = true;
     rv = mDBService->CancelUpdate();
   } else {
     LOG(("OnStopRequest::Finishing update [this=%p]", this));
@@ -848,8 +849,10 @@ nsUrlClassifierStreamUpdater::Notify(nsITimer* timer) {
 
   if (updateFailed) {
     // Cancelling the channel will trigger OnStopRequest.
-    mozilla::Unused << mChannel->Cancel(NS_ERROR_ABORT);
-    mChannel = nullptr;
+    if (mChannel) {
+      mozilla::Unused << mChannel->Cancel(NS_ERROR_ABORT);
+      mChannel = nullptr;
+    }
     mTelemetryClockStart = 0;
 
     if (mFetchIndirectUpdatesTimer) {

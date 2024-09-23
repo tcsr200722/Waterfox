@@ -37,7 +37,7 @@ function write_data() {
     "disk",
     Ci.nsICacheStorage.OPEN_NORMALLY,
     null,
-    function(status, entry) {
+    function (status, entry) {
       Assert.equal(status, Cr.NS_OK);
 
       var os = entry.openOutputStream(0, -1);
@@ -52,11 +52,10 @@ function write_data() {
 
 function open_big_altdata_output(entry) {
   try {
-    var os = entry.openAlternativeOutputStream("text/binary", altData.length);
+    entry.openAlternativeOutputStream("text/binary", altData.length);
   } catch (e) {
     Assert.equal(e.result, Cr.NS_ERROR_FILE_TOO_BIG);
   }
-  entry.close();
 
   check_entry(write_big_altdata);
 }
@@ -67,7 +66,7 @@ function write_big_altdata() {
     "disk",
     Ci.nsICacheStorage.OPEN_NORMALLY,
     null,
-    function(status, entry) {
+    function (status, entry) {
       Assert.equal(status, Cr.NS_OK);
 
       var os = entry.openAlternativeOutputStream("text/binary", -1);
@@ -77,7 +76,6 @@ function write_big_altdata() {
         Assert.equal(e.result, Cr.NS_ERROR_FILE_TOO_BIG);
       }
       os.close();
-      entry.close();
 
       check_entry(do_test_finished);
     }
@@ -90,7 +88,7 @@ function check_entry(cb) {
     "disk",
     Ci.nsICacheStorage.OPEN_NORMALLY,
     null,
-    function(status, entry) {
+    function (status, entry) {
       Assert.equal(status, Cr.NS_OK);
 
       var is = null;
@@ -101,10 +99,9 @@ function check_entry(cb) {
       }
 
       is = entry.openInputStream(0);
-      pumpReadStream(is, function(read) {
+      pumpReadStream(is, function (read) {
         Assert.equal(read.length, data.length);
         is.close();
-        entry.close();
 
         executeSoon(cb);
       });

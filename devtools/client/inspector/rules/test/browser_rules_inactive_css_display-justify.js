@@ -16,7 +16,7 @@ const TEST_URI = `
 </style>
 <div>`;
 
-add_task(async function() {
+add_task(async function () {
   await pushPref("devtools.inspector.inactive.css.enabled", true);
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
@@ -29,19 +29,19 @@ add_task(async function() {
   const displayGrid = { display: "grid" };
 
   info("Enable display:flex and check that justify-content becomes active");
-  checkDeclarationIsInactive(view, 1, justifyContent);
+  await checkDeclarationIsInactive(view, 1, justifyContent);
   await toggleDeclaration(view, 1, displayFlex);
-  checkDeclarationIsActive(view, 1, justifyContent);
+  await checkDeclarationIsActive(view, 1, justifyContent);
 
   info(
     "Rename justify-content to justify-items and check that it becomes inactive"
   );
   await updateDeclaration(view, 1, justifyContent, justifyItems);
-  checkDeclarationIsInactive(view, 1, justifyItems);
+  await checkDeclarationIsInactive(view, 1, justifyItems);
 
   info(
     "Rename display:flex to display:grid and check that justify-items becomes active"
   );
   await updateDeclaration(view, 1, displayFlex, displayGrid);
-  checkDeclarationIsActive(view, 1, justifyItems);
+  await checkDeclarationIsActive(view, 1, justifyItems);
 });

@@ -16,7 +16,6 @@
 #include "nsDOMString.h"
 #include "nsWhitespaceTokenizer.h"
 #include "nsWrapperCache.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/DOMTokenListSupportedTokens.h"
 
@@ -24,6 +23,7 @@ namespace mozilla {
 class ErrorResult;
 namespace dom {
 class DocGroup;
+class Element;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -34,14 +34,14 @@ class nsAtom;
 
 class nsDOMTokenList : public nsISupports, public nsWrapperCache {
  protected:
-  typedef mozilla::dom::Element Element;
-  typedef mozilla::dom::DocGroup DocGroup;
-  typedef nsWhitespaceTokenizerTemplate<nsContentUtils::IsHTMLWhitespace>
-      WhitespaceTokenizer;
+  using Element = mozilla::dom::Element;
+  using DocGroup = mozilla::dom::DocGroup;
+  using WhitespaceTokenizer =
+      nsWhitespaceTokenizerTemplate<nsContentUtils::IsHTMLWhitespace>;
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsDOMTokenList)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsDOMTokenList)
 
   nsDOMTokenList(Element* aElement, nsAtom* aAttrAtom,
                  const mozilla::dom::DOMTokenListSupportedTokenArray = nullptr);
@@ -53,7 +53,6 @@ class nsDOMTokenList : public nsISupports, public nsWrapperCache {
 
   DocGroup* GetDocGroup() const;
 
-  void RemoveDuplicates(const nsAttrValue* aAttr);
   uint32_t Length();
   void Item(uint32_t aIndex, nsAString& aResult) {
     bool found;
@@ -81,10 +80,9 @@ class nsDOMTokenList : public nsISupports, public nsWrapperCache {
  protected:
   virtual ~nsDOMTokenList();
 
-  nsresult CheckToken(const nsAString& aStr);
-  nsresult CheckTokens(const nsTArray<nsString>& aStr);
-  void RemoveDuplicatesInternal(nsTArray<RefPtr<nsAtom>>* aArray,
-                                uint32_t aStart);
+  void CheckToken(const nsAString& aToken, mozilla::ErrorResult& aRv);
+  void CheckTokens(const nsTArray<nsString>& aTokens,
+                   mozilla::ErrorResult& aRv);
   void AddInternal(const nsAttrValue* aAttr, const nsTArray<nsString>& aTokens);
   void RemoveInternal(const nsAttrValue* aAttr,
                       const nsTArray<nsString>& aTokens);

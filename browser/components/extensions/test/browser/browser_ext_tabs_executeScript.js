@@ -3,8 +3,8 @@
 "use strict";
 
 add_task(async function testExecuteScript() {
-  let { MessageChannel } = ChromeUtils.import(
-    "resource://gre/modules/MessageChannel.jsm"
+  let { MessageChannel } = ChromeUtils.importESModule(
+    "resource://testing-common/MessageChannel.sys.mjs"
   );
 
   function countMM(messageManagerMap) {
@@ -30,11 +30,29 @@ add_task(async function testExecuteScript() {
 
   async function background() {
     try {
+      // This promise is meant to be resolved when browser.tabs.executeScript({file: "script.js"})
+      // is called and the content script does message back, registering the runtime.onMessage
+      // listener here is meant to prevent intermittent failures due to a race on executing the
+      // array of promises passed to the `await Promise.all(...)` below.
+      const promiseRuntimeOnMessage = new Promise(resolve => {
+        browser.runtime.onMessage.addListener(message => {
+          browser.test.assertEq(
+            "script ran",
+            message,
+            "Expected runtime message"
+          );
+          resolve();
+        });
+      });
+
       let [tab] = await browser.tabs.query({
         active: true,
         currentWindow: true,
       });
       let frames = await browser.webNavigation.getAllFrames({ tabId: tab.id });
+      browser.test.assertEq(3, frames.length, "Expect exactly three frames");
+      browser.test.assertEq(0, frames[0].frameId, "Main frame has frameId:0");
+      browser.test.assertTrue(frames[1].frameId > 0, "Subframe has a valid id");
 
       browser.test.log(
         `FRAMES: ${frames[1].frameId} ${JSON.stringify(frames)}\n`
@@ -59,7 +77,7 @@ add_task(async function testExecuteScript() {
             code: "42",
           })
           .then(
-            result => {
+            () => {
               browser.test.fail(
                 "Expected not to be able to execute a script with both file and code"
               );
@@ -190,7 +208,7 @@ add_task(async function testExecuteScript() {
             code: "window",
           })
           .then(
-            result => {
+            () => {
               browser.test.fail(
                 "Expected error when returning non-structured-clonable object"
               );
@@ -214,7 +232,7 @@ add_task(async function testExecuteScript() {
             code: "Promise.resolve(window)",
           })
           .then(
-            result => {
+            () => {
               browser.test.fail(
                 "Expected error when returning non-structured-clonable object"
               );
@@ -238,13 +256,14 @@ add_task(async function testExecuteScript() {
             file: "script3.js",
           })
           .then(
-            result => {
+            () => {
               browser.test.fail(
                 "Expected error when returning non-structured-clonable object"
               );
             },
             error => {
-              const expected = /Script '.*script3.js' result is non-structured-clonable data/;
+              const expected =
+                /Script '.*script3.js' result is non-structured-clonable data/;
               browser.test.assertTrue(
                 expected.test(error.message),
                 "Got expected error"
@@ -262,14 +281,14 @@ add_task(async function testExecuteScript() {
             code: "42",
           })
           .then(
-            result => {
+            () => {
               browser.test.fail(
                 "Expected error when specifying invalid frame ID"
               );
             },
             error => {
               browser.test.assertEq(
-                `Frame not found, or missing host permission`,
+                `Invalid frame IDs: [${Number.MAX_SAFE_INTEGER}].`,
                 error.message,
                 "Got expected error"
               );
@@ -284,7 +303,7 @@ add_task(async function testExecuteScript() {
                 code: "42",
               })
               .then(
-                result => {
+                () => {
                   browser.test.fail(
                     "Expected error when trying to execute on invalid domain"
                   );
@@ -351,7 +370,7 @@ add_task(async function testExecuteScript() {
             browser.test.assertEq(1, result.length, "Expected one result");
             browser.test.assertTrue(
               /\/file_iframe_document\.html$/.test(result[0]),
-              `Result for frameId[0] is correct: ${result[0]}`
+              `Result for main frame (frameId:0) is correct: ${result[0]}`
             );
           }),
 
@@ -383,16 +402,7 @@ add_task(async function testExecuteScript() {
           await browser.tabs.remove(tab.id);
         }),
 
-        new Promise(resolve => {
-          browser.runtime.onMessage.addListener(message => {
-            browser.test.assertEq(
-              "script ran",
-              message,
-              "Expected runtime message"
-            );
-            resolve();
-          });
-        }),
+        promiseRuntimeOnMessage,
       ]);
 
       browser.test.notifyPass("executeScript");
@@ -414,7 +424,7 @@ add_task(async function testExecuteScript() {
     background,
 
     files: {
-      "script.js": function() {
+      "script.js": function () {
         browser.runtime.sendMessage("script ran");
       },
 

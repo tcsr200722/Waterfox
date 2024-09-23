@@ -1,13 +1,7 @@
 /* eslint max-len: ["error", 80] */
 "use strict";
 
-const { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
-);
-
-const {
-  ExtensionUtils: { promiseEvent, promiseObserved },
-} = ChromeUtils.import("resource://gre/modules/ExtensionUtils.jsm");
+loadTestSubscript("head_disco.js");
 
 // The response to the discovery API, as documented at:
 // https://addons-server.readthedocs.io/en/latest/topics/api/discovery.html
@@ -16,7 +10,14 @@ const {
 // latest AMO API, by replacing API_RESPONSE_FILE's content with latest AMO API
 // response, e.g. from https://addons.allizom.org/api/v4/discovery/?lang=en-US
 // The response must contain at least one theme, and one extension.
-const API_RESPONSE_FILE = RELATIVE_DIR + "discovery/api_response.json";
+
+const API_RESPONSE_FILE = PathUtils.join(
+  Services.dirsvc.get("CurWorkD", Ci.nsIFile).path,
+  // Trim empty component from splitting with trailing slash.
+  ...RELATIVE_DIR.split("/").filter(c => c.length),
+  "discovery",
+  "api_response.json"
+);
 
 const AMO_TEST_HOST = "rewritten-for-testing.addons.allizom.org";
 
@@ -26,15 +27,15 @@ const ArrayBufferInputStream = Components.Constructor(
   "setData"
 );
 
-AddonTestUtils.initMochitest(this);
-
 const amoServer = AddonTestUtils.createHttpServer({ hosts: [AMO_TEST_HOST] });
 
 amoServer.registerFile(
   "/png",
-  FileUtils.getFile(
-    "CurWorkD",
-    `${RELATIVE_DIR}discovery/small-1x1.png`.split("/")
+  new FileUtils.File(
+    PathUtils.join(
+      Services.dirsvc.get("CurWorkD", Ci.nsIFile).path,
+      ...`${RELATIVE_DIR}discovery/small-1x1.png`.split("/")
+    )
   )
 );
 amoServer.registerPathHandler("/dummy", (request, response) => {
@@ -48,31 +49,10 @@ function getTestExpectationFromApiResult(result) {
     typeIsTheme: result.addon.type === "statictheme",
     addonName: result.addon.name,
     authorName: result.addon.authors[0].name,
-    editorialHead: result.heading_text,
     editorialBody: result.description_text,
     dailyUsers: result.addon.average_daily_users,
     rating: result.addon.ratings.average,
   };
-}
-
-// Read the content of API_RESPONSE_FILE, and replaces any embedded URLs with
-// URLs that point to the `amoServer` test server.
-async function readAPIResponseFixture() {
-  let apiText = await OS.File.read(API_RESPONSE_FILE, { encoding: "utf-8" });
-  apiText = apiText.replace(/\bhttps?:\/\/[^"]+(?=")/g, url => {
-    try {
-      url = new URL(url);
-    } catch (e) {
-      // Responses may contain "http://*/*"; ignore it.
-      return url;
-    }
-    // In this test, we only need to distinguish between different file types,
-    // so just use the file extension as path name for amoServer.
-    let ext = url.pathname.split(".").pop();
-    return `http://${AMO_TEST_HOST}/${ext}?${url.pathname}${url.search}`;
-  });
-
-  return apiText;
 }
 
 // A helper to declare a response to discovery API requests.
@@ -96,7 +76,7 @@ class DiscoveryAPIHandler {
     });
   }
 
-  unblockResponses(responseText) {
+  unblockResponses() {
     throw new Error("You need to call blockNextResponses first!");
   }
 
@@ -129,14 +109,6 @@ function getActionName(actionElement) {
   return actionElement.getAttribute("action");
 }
 
-function getDiscoveryElement(win) {
-  return win.document.querySelector("discovery-pane");
-}
-
-function getCardContainer(win) {
-  return getDiscoveryElement(win).querySelector("recommended-addon-list");
-}
-
 function getCardByAddonId(win, addonId) {
   for (let card of win.document.querySelectorAll("recommended-addon-card")) {
     if (card.addonId === addonId) {
@@ -146,21 +118,13 @@ function getCardByAddonId(win, addonId) {
   return null;
 }
 
-// Wait until the current `<discovery-pane>` element has finished loading its
-// cards. This can be used after the cards have been loaded.
-function promiseDiscopaneUpdate(win) {
-  let { cardsReady } = getCardContainer(win);
-  ok(cardsReady, "Discovery cards should have started to initialize");
-  return cardsReady;
-}
-
 // Switch to a different view so we can switch back to the discopane later.
 async function switchToNonDiscoView(win) {
   // Listeners registered while the discopane was the active view continue to be
   // active when the view switches to the extensions list, because both views
   // share the same document.
-  win.managerWindow.gViewController.loadView("addons://list/extension");
-  await wait_for_view_load(win.managerWindow);
+  win.gViewController.loadView("addons://list/extension");
+  await wait_for_view_load(win);
   ok(
     win.document.querySelector("addon-list"),
     "Should be at the extension list view"
@@ -175,8 +139,8 @@ async function switchToDiscoView(win) {
     null,
     "Cannot switch to discopane when the discopane is already shown"
   );
-  win.managerWindow.gViewController.loadView("addons://discover/");
-  await wait_for_view_load(win.managerWindow);
+  win.gViewController.loadView("addons://discover/");
+  await wait_for_view_load(win);
   await promiseDiscopaneUpdate(win);
 }
 
@@ -196,49 +160,6 @@ async function waitForAllImagesLoaded(win) {
     await promiseEvent(win.document, "load", true, areAllImagesLoaded);
   }
   return imgs.length;
-}
-
-// A helper that waits until an installation has been requested from `amoServer`
-// and proceeds with approving the installation.
-async function promiseAddonInstall(amoServer, extensionData) {
-  let description = extensionData.manifest.description;
-  let xpiFile = AddonTestUtils.createTempWebExtensionFile(extensionData);
-  amoServer.registerFile("/xpi", xpiFile);
-
-  let addonId = extensionData.manifest.applications.gecko.id;
-  let installedPromise = waitAppMenuNotificationShown(
-    "addon-installed",
-    addonId,
-    true
-  );
-
-  if (!extensionData.manifest.theme) {
-    info(`${description}: Waiting for permission prompt`);
-    // Extensions have install prompts.
-    let panel = await promisePopupNotificationShown("addon-webext-permissions");
-    panel.button.click();
-  } else {
-    info(`${description}: Waiting for install prompt`);
-    let panel = await promisePopupNotificationShown(
-      "addon-install-confirmation"
-    );
-    panel.button.click();
-  }
-
-  info("Waiting for post-install doorhanger");
-  await installedPromise;
-
-  let addon = await AddonManager.getAddonByID(addonId);
-  Assert.deepEqual(
-    addon.installTelemetryInfo,
-    {
-      // This is the expected source because before the HTML-based discopane,
-      // "disco" was already used to mark installs from the AMO-hosted
-      // discopane.
-      source: "disco",
-    },
-    "The installed add-on should have the expected telemetry info"
-  );
 }
 
 // Install an add-on by clicking on the card.
@@ -287,7 +208,7 @@ async function testAddonUninstall(card) {
   );
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       [
@@ -300,6 +221,8 @@ add_task(async function setup() {
       // Disable the telemetry client ID (and its associated UI warning).
       // browser_html_discover_view_clientid.js covers this functionality.
       ["browser.discovery.enabled", false],
+      // Disable mixed-content upgrading as this test is expecting an HTTP load
+      ["security.mixed_content.upgrade_display_content", false],
     ],
   });
 });
@@ -307,11 +230,14 @@ add_task(async function setup() {
 // Test that the discopane can be loaded and that meaningful results are shown.
 // This relies on response data from the AMO API, stored in API_RESPONSE_FILE.
 add_task(async function discopane_with_real_api_data() {
-  const apiText = await readAPIResponseFixture();
+  const apiText = await readAPIResponseFixture(
+    AMO_TEST_HOST,
+    API_RESPONSE_FILE
+  );
   let apiHandler = new DiscoveryAPIHandler(apiText);
 
   const apiResultArray = JSON.parse(apiText).results;
-  ok(apiResultArray.length, `Mock has ${Array.length} results`);
+  ok(apiResultArray.length, `Mock has ${apiResultArray.length} results`);
 
   apiHandler.blockNextResponses();
   let win = await loadInitialView("discover");
@@ -384,15 +310,14 @@ add_task(async function discopane_with_real_api_data() {
         installButton.matches("[data-l10n-id='install-extension-button'"),
         "Has extension install button"
       );
-      checkContent(".disco-description-intro", expectations.editorialHead);
       checkContent(".disco-description-main", expectations.editorialBody);
 
-      let ratingElem = card.querySelector("five-star-rating");
+      let mozFiveStar = card.querySelector("moz-five-star");
       if (expectations.rating) {
-        is(ratingElem.rating, expectations.rating, "Expected rating value");
-        ok(ratingElem.offsetWidth, "Rating element is visible");
+        is(mozFiveStar.rating, expectations.rating, "Expected rating value");
+        ok(mozFiveStar.offsetWidth, "Rating element is visible");
       } else {
-        is(ratingElem.offsetWidth, 0, "Rating element is not visible");
+        is(mozFiveStar.offsetWidth, 0, "Rating element is not visible");
       }
 
       let userCountElem = card.querySelector(".disco-user-count");
@@ -418,7 +343,10 @@ add_task(async function discopane_with_real_api_data() {
 // and that they are shown at the bottom of the list when the discopane is
 // reopened.
 add_task(async function install_from_discopane() {
-  const apiText = await readAPIResponseFixture();
+  const apiText = await readAPIResponseFixture(
+    AMO_TEST_HOST,
+    API_RESPONSE_FILE
+  );
   const apiResultArray = JSON.parse(apiText).results;
   let getAddonIdByAMOAddonType = type =>
     apiResultArray.find(r => r.addon.type === type).addon.guid;
@@ -431,14 +359,12 @@ add_task(async function install_from_discopane() {
   await promiseDiscopaneUpdate(win);
   await waitForAllImagesLoaded(win);
 
-  Services.telemetry.clearEvents();
-
   // Test extension install.
   let installExtensionPromise = promiseAddonInstall(amoServer, {
     manifest: {
       name: "My Awesome Add-on",
       description: "Test extension install button",
-      applications: { gecko: { id: FIRST_EXTENSION_ID } },
+      browser_specific_settings: { gecko: { id: FIRST_EXTENSION_ID } },
       permissions: ["<all_urls>"],
     },
   });
@@ -450,7 +376,7 @@ add_task(async function install_from_discopane() {
     manifest: {
       name: "My Fancy Theme",
       description: "Test theme install button",
-      applications: { gecko: { id: FIRST_THEME_ID } },
+      browser_specific_settings: { gecko: { id: FIRST_THEME_ID } },
       theme: {
         colors: {
           tab_selected: "red",
@@ -477,33 +403,6 @@ add_task(async function install_from_discopane() {
     "The Install buttons should be replaced with Manage buttons"
   );
 
-  assertAboutAddonsTelemetryEvents([
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      null,
-      {
-        action: "installFromRecommendation",
-        view: "discover",
-        addonId: FIRST_EXTENSION_ID,
-        type: "extension",
-      },
-    ],
-    [
-      "addonsManager",
-      "action",
-      "aboutAddons",
-      null,
-      {
-        action: "installFromRecommendation",
-        view: "discover",
-        addonId: FIRST_THEME_ID,
-        type: "theme",
-      },
-    ],
-  ]);
-
   // End of the testing installation from a card.
 
   // Click on the Manage button to verify that it does something useful,
@@ -521,24 +420,6 @@ add_task(async function install_from_discopane() {
     ok(addonCard.expanded, "The card should have been expanded");
     // TODO bug 1540253: Check that the "recommended" badge is visible.
   }
-
-  assertAboutAddonsTelemetryEvents(
-    [
-      [
-        "addonsManager",
-        "action",
-        "aboutAddons",
-        null,
-        {
-          action: "manage",
-          view: "discover",
-          addonId: FIRST_EXTENSION_ID,
-          type: "extension",
-        },
-      ],
-    ],
-    { methods: ["action"] }
-  );
 
   // Now we are going to force an updated rendering and check that the cards are
   // in the expected order, and then test uninstallation of the above add-ons.
@@ -696,86 +577,13 @@ add_task(async function discopane_no_cookies() {
     false,
     Date.now() / 1000 + 600,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTP
   );
   let win = await loadInitialView("discover");
   let request = await requestPromise;
   ok(!request.hasHeader("Cookie"), "discovery API should not receive cookies");
   await closeView(win);
-});
-
-// Telemetry for interaction that have not been covered by other tests yet.
-// - "Find more addons" button.
-// - Link to add-on listing in recommended add-on card.
-// Other interaction is already covered elsewhere:
-// - Install/Manage buttons have bee tested before in install_from_discopane.
-// - "Learn more" button is checked by browser_html_discover_view_clientid.js.
-add_task(async function discopane_interaction_telemetry() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.getAddons.link.url", `http://${AMO_TEST_HOST}/dummy`]],
-  });
-  // Minimal API response to get the link in recommended-addon-card to render.
-  const DUMMY_EXTENSION_ID = "dummy@extensionid";
-  const apiResponse = {
-    results: [
-      {
-        addon: {
-          guid: DUMMY_EXTENSION_ID,
-          type: "extension",
-          authors: [
-            {
-              name: "Some author",
-            },
-          ],
-          url: `http://${AMO_TEST_HOST}/dummy`,
-          icon_url: `http://${AMO_TEST_HOST}/png`,
-        },
-      },
-    ],
-  };
-  let apiHandler = new DiscoveryAPIHandler(JSON.stringify(apiResponse));
-
-  let expectedAmoUrlFor = where => {
-    // eslint-disable-next-line max-len
-    return `http://${AMO_TEST_HOST}/dummy?utm_source=firefox-browser&utm_medium=firefox-browser&utm_content=${where}`;
-  };
-
-  let testClickInDiscoCard = async (selector, utmContentParam) => {
-    let tabbrowser = win.windowRoot.ownerGlobal.gBrowser;
-    let tabPromise = BrowserTestUtils.waitForNewTab(tabbrowser);
-    getDiscoveryElement(win)
-      .querySelector(selector)
-      .click();
-    let tab = await tabPromise;
-    is(
-      tab.linkedBrowser.currentURI.spec,
-      expectedAmoUrlFor(utmContentParam),
-      "Expected URL of new tab"
-    );
-    BrowserTestUtils.removeTab(tab);
-  };
-
-  let win = await loadInitialView("discover");
-  await promiseDiscopaneUpdate(win);
-  is(await waitForAllImagesLoaded(win), 1, "One recommendation in results");
-
-  Services.telemetry.clearEvents();
-
-  // "Find more add-ons" button.
-  await testClickInDiscoCard("[action='open-amo']", "find-more-link-bottom");
-
-  // Link to AMO listing
-  await testClickInDiscoCard(".disco-addon-author a", "discopane-entry-link");
-
-  assertAboutAddonsTelemetryEvents([
-    ["addonsManager", "link", "aboutAddons", "discomore", { view: "discover" }],
-    ["addonsManager", "link", "aboutAddons", "discohome", { view: "discover" }],
-  ]);
-
-  is(apiHandler.requestCount, 1, "Discovery API should be fetched once");
-
-  await closeView(win);
-  await SpecialPowers.popPrefEnv();
 });
 
 // The CSP of about:addons whitelists http:, but not data:, hence we are
@@ -828,24 +636,37 @@ add_task(async function checkDiscopaneNotice() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.discovery.enabled", true],
+      // Enabling the Data Upload pref may upload data.
+      // Point data reporting services to localhost so the data doesn't escape.
+      ["toolkit.telemetry.server", "https://localhost:1337"],
+      ["telemetry.fog.test.localhost_port", -1],
       ["datareporting.healthreport.uploadEnabled", true],
       ["extensions.htmlaboutaddons.recommendations.enabled", true],
       ["extensions.recommendations.hideNotice", false],
+      // Disable mixed-content upgrading as this test is expecting an HTTP load
+      ["security.mixed_content.upgrade_display_content", false],
     ],
   });
 
   let win = await loadInitialView("extension");
-  let messageBar = win.document.querySelector("message-bar.discopane-notice");
+  let messageBar = win.document.querySelector(
+    "moz-message-bar.discopane-notice"
+  );
   ok(messageBar, "Recommended notice should exist in extensions view");
+  is(
+    messageBar.getAttribute("role"),
+    "alert",
+    "Recommended notice is an alert"
+  );
   await switchToDiscoView(win);
-  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  messageBar = win.document.querySelector("moz-message-bar.discopane-notice");
   ok(messageBar, "Recommended notice should exist in disco view");
 
   messageBar.closeButton.click();
-  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  messageBar = win.document.querySelector("moz-message-bar.discopane-notice");
   ok(!messageBar, "Recommended notice should not exist in disco view");
   await switchToNonDiscoView(win);
-  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  messageBar = win.document.querySelector("moz-message-bar.discopane-notice");
   ok(!messageBar, "Recommended notice should not exist in extensions view");
 
   await closeView(win);

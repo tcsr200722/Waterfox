@@ -4,29 +4,36 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-callback PlacesEventCallback = void (sequence<PlacesEvent> events);
+callback PlacesEventCallback = undefined (sequence<PlacesEvent> events);
 
 [ChromeOnly, Exposed=Window]
 interface PlacesWeakCallbackWrapper {
   constructor(PlacesEventCallback callback);
 };
 
+// Counters for number of events sent in the current session.
+[ChromeOnly, Exposed=Window]
+interface PlacesEventCounts {
+  readonly maplike<DOMString, unsigned long long>;
+};
+
 // Global singleton which should handle all events for places.
 [ChromeOnly, Exposed=Window]
 namespace PlacesObservers {
   [Throws]
-  void addListener(sequence<PlacesEventType> eventTypes,
-                   PlacesEventCallback listener);
+  undefined addListener(sequence<PlacesEventType> eventTypes,
+                        PlacesEventCallback listener);
   [Throws]
-  void addListener(sequence<PlacesEventType> eventTypes,
-                   PlacesWeakCallbackWrapper listener);
+  undefined addListener(sequence<PlacesEventType> eventTypes,
+                        PlacesWeakCallbackWrapper listener);
   [Throws]
-  void removeListener(sequence<PlacesEventType> eventTypes,
-                      PlacesEventCallback listener);
+  undefined removeListener(sequence<PlacesEventType> eventTypes,
+                           PlacesEventCallback listener);
   [Throws]
-  void removeListener(sequence<PlacesEventType> eventTypes,
-                      PlacesWeakCallbackWrapper listener);
+  undefined removeListener(sequence<PlacesEventType> eventTypes,
+                           PlacesWeakCallbackWrapper listener);
   [Throws]
-  void notifyListeners(sequence<PlacesEvent> events);
-};
+  undefined notifyListeners(sequence<PlacesEvent> events);
 
+  readonly attribute PlacesEventCounts counts;
+};

@@ -7,65 +7,77 @@
 const {
   createFactory,
   createElement,
-} = require("devtools/client/shared/vendor/react");
-const { Provider } = require("devtools/client/shared/vendor/react-redux");
-
-const compatibilityReducer = require("devtools/client/inspector/compatibility/reducers/compatibility");
+} = require("resource://devtools/client/shared/vendor/react.js");
 const {
+  Provider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
+
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
+const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
+
+const compatibilityReducer = require("resource://devtools/client/inspector/compatibility/reducers/compatibility.js");
+const {
+  appendNode,
+  clearDestroyedNodes,
   initUserSettings,
+  removeNode,
   updateNodes,
   updateSelectedNode,
   updateTopLevelTarget,
-} = require("devtools/client/inspector/compatibility/actions/compatibility");
+  updateNode,
+} = require("resource://devtools/client/inspector/compatibility/actions/compatibility.js");
 
 const CompatibilityApp = createFactory(
-  require("devtools/client/inspector/compatibility/components/CompatibilityApp")
+  require("resource://devtools/client/inspector/compatibility/components/CompatibilityApp.js")
 );
 
 class CompatibilityView {
-  constructor(inspector, window) {
+  constructor(inspector) {
     this.inspector = inspector;
 
     this.inspector.store.injectReducer("compatibility", compatibilityReducer);
 
+    this._parseMarkup = this._parseMarkup.bind(this);
     this._onChangeAdded = this._onChangeAdded.bind(this);
     this._onPanelSelected = this._onPanelSelected.bind(this);
     this._onSelectedNodeChanged = this._onSelectedNodeChanged.bind(this);
     this._onTopLevelTargetChanged = this._onTopLevelTargetChanged.bind(this);
+    this._onResourceAvailable = this._onResourceAvailable.bind(this);
+    this._onMarkupMutation = this._onMarkupMutation.bind(this);
 
     this._init();
   }
 
   destroy() {
+    try {
+      this.resourceCommand.unwatchResources(
+        [this.resourceCommand.TYPES.CSS_CHANGE],
+        {
+          onAvailable: this._onResourceAvailable,
+        }
+      );
+    } catch (e) {
+      // If unwatchResources is called before finishing process of watchResources,
+      // unwatchResources throws an error during stopping listener.
+    }
+
     this.inspector.off("new-root", this._onTopLevelTargetChanged);
+    this.inspector.off("markupmutation", this._onMarkupMutation);
     this.inspector.selection.off("new-node-front", this._onSelectedNodeChanged);
     this.inspector.sidebar.off(
       "compatibilityview-selected",
       this._onPanelSelected
     );
-
-    const changesFront = this.inspector.toolbox.target.getCachedFront(
-      "changes"
-    );
-    if (changesFront) {
-      changesFront.off("add-change", this._onChangeAdded);
-    }
-
     this.inspector = null;
   }
 
-  _init() {
-    const {
-      onShowBoxModelHighlighterForNode: showBoxModelHighlighterForNode,
-      setSelectedNode,
-    } = this.inspector.getCommonComponentProps();
-    const {
-      onHideBoxModelHighlighter: hideBoxModelHighlighter,
-    } = this.inspector.getPanel("boxmodel").getComponentProps();
+  get resourceCommand() {
+    return this.inspector.toolbox.resourceCommand;
+  }
 
+  async _init() {
+    const { setSelectedNode } = this.inspector.getCommonComponentProps();
     const compatibilityApp = new CompatibilityApp({
-      hideBoxModelHighlighter,
-      showBoxModelHighlighterForNode,
       setSelectedNode,
     });
 
@@ -75,17 +87,40 @@ class CompatibilityView {
         id: "compatibilityview",
         store: this.inspector.store,
       },
-      compatibilityApp
+      LocalizationProvider(
+        {
+          bundles: this.inspector.fluentL10n.getBundles(),
+          parseMarkup: this._parseMarkup,
+        },
+        compatibilityApp
+      )
     );
 
-    this.inspector.store.dispatch(initUserSettings());
+    await this.inspector.store.dispatch(initUserSettings());
+    // awaiting for `initUserSettings` makes us miss the initial "compatibilityview-selected"
+    // event, so we need to manually call _onPanelSelected to fetch compatibility issues
+    // for the selected node (and the whole page).
+    this._onPanelSelected();
 
     this.inspector.on("new-root", this._onTopLevelTargetChanged);
+    this.inspector.on("markupmutation", this._onMarkupMutation);
     this.inspector.selection.on("new-node-front", this._onSelectedNodeChanged);
     this.inspector.sidebar.on(
       "compatibilityview-selected",
       this._onPanelSelected
     );
+
+    await this.resourceCommand.watchResources(
+      [this.resourceCommand.TYPES.CSS_CHANGE],
+      {
+        onAvailable: this._onResourceAvailable,
+        // CSS changes made before opening Compatibility View are already applied to
+        // corresponding DOM at this point, so existing resources can be ignored here.
+        ignoreExistingResources: true,
+      }
+    );
+
+    this.inspector.emitForTests("compatibilityview-initialized");
   }
 
   _isAvailable() {
@@ -95,6 +130,14 @@ class CompatibilityView {
       this.inspector.sidebar.getCurrentTabID() === "compatibilityview" &&
       this.inspector.selection &&
       this.inspector.selection.isConnected()
+    );
+  }
+
+  _parseMarkup() {
+    // Using a BrowserLoader for the inspector is currently blocked on performance regressions,
+    // see Bug 1471853.
+    throw new Error(
+      "The inspector cannot use tags in ftl strings because it does not run in a BrowserLoader"
     );
   }
 
@@ -122,11 +165,62 @@ class CompatibilityView {
     }, 500);
   }
 
+  _onMarkupMutation(mutations) {
+    const attributeMutation = mutations.filter(
+      mutation =>
+        mutation.type === "attributes" &&
+        (mutation.attributeName === "style" ||
+          mutation.attributeName === "class")
+    );
+    const childListMutation = mutations.filter(
+      mutation => mutation.type === "childList"
+    );
+
+    if (attributeMutation.length === 0 && childListMutation.length === 0) {
+      return;
+    }
+
+    if (!this._isAvailable()) {
+      // In order to update this panel if a change is added while hiding this panel.
+      this._isChangeAddedWhileHidden = true;
+      return;
+    }
+
+    this._isChangeAddedWhileHidden = false;
+
+    // Resource Watcher doesn't respond to programmatic inline CSS
+    // change. This check can be removed once the following bug is resolved
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1506160
+    for (const { target } of attributeMutation) {
+      this.inspector.store.dispatch(updateNode(target));
+    }
+
+    // Destroyed nodes can be cleaned up
+    // once at the end if necessary
+    let cleanupDestroyedNodes = false;
+    for (const { removed, target } of childListMutation) {
+      if (!removed.length) {
+        this.inspector.store.dispatch(appendNode(target));
+        continue;
+      }
+
+      const retainedNodes = removed.filter(node => node && !node.isDestroyed());
+      cleanupDestroyedNodes =
+        cleanupDestroyedNodes || retainedNodes.length !== removed.length;
+
+      for (const retainedNode of retainedNodes) {
+        this.inspector.store.dispatch(removeNode(retainedNode));
+      }
+    }
+
+    if (cleanupDestroyedNodes) {
+      this.inspector.store.dispatch(clearDestroyedNodes());
+    }
+  }
+
   _onPanelSelected() {
-    const {
-      selectedNode,
-      topLevelTarget,
-    } = this.inspector.store.getState().compatibility;
+    const { selectedNode, topLevelTarget } =
+      this.inspector.store.getState().compatibility;
 
     // Update if the selected node is changed or new change is added while the panel was hidden.
     if (
@@ -157,7 +251,19 @@ class CompatibilityView {
     );
   }
 
-  async _onTopLevelTargetChanged() {
+  _onResourceAvailable(resources) {
+    for (const resource of resources) {
+      // Style changes applied inline directly to
+      // the element and its changes are monitored by
+      // _onMarkupMutation via markupmutation events.
+      // Hence those changes can be ignored here
+      if (resource.source?.type !== "element") {
+        this._onChangeAdded(resource);
+      }
+    }
+  }
+
+  _onTopLevelTargetChanged() {
     if (!this._isAvailable()) {
       return;
     }
@@ -165,20 +271,6 @@ class CompatibilityView {
     this.inspector.store.dispatch(
       updateTopLevelTarget(this.inspector.toolbox.target)
     );
-
-    const changesFront = await this.inspector.toolbox.target.getFront(
-      "changes"
-    );
-
-    try {
-      // Call allChanges() in order to get the add-change qevent.
-      await changesFront.allChanges();
-    } catch (e) {
-      // The connection to the server may have been cut, for example during test teardown.
-      // Here we just catch the error and silently ignore it.
-    }
-
-    changesFront.on("add-change", this._onChangeAdded);
   }
 }
 

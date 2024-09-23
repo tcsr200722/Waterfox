@@ -8,25 +8,28 @@
 #define mozilla_css_StreamLoader_h
 
 #include "nsIStreamListener.h"
+#include "nsIThreadRetargetableStreamListener.h"
+#include "nsIChannelEventSink.h"
+#include "nsIInterfaceRequestor.h"
+#include "nsIURI.h"
 #include "nsString.h"
 #include "mozilla/css/SheetLoadData.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/PreloaderBase.h"
 
 class nsIInputStream;
 
-namespace mozilla {
-namespace css {
+namespace mozilla::css {
 
-class StreamLoader : public PreloaderBase, public nsIStreamListener {
+class StreamLoader : public nsIThreadRetargetableStreamListener,
+                     public nsIChannelEventSink,
+                     public nsIInterfaceRequestor {
  public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSISTREAMLISTENER
-
-  // PreloaderBase
-  static void PrioritizeAsPreload(nsIChannel* aChannel);
-  virtual void PrioritizeAsPreload() override;
+  NS_DECL_NSICHANNELEVENTSINK
+  NS_DECL_NSIINTERFACEREQUESTOR
+  NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
   explicit StreamLoader(SheetLoadData&);
 
@@ -34,8 +37,6 @@ class StreamLoader : public PreloaderBase, public nsIStreamListener {
 #ifdef NIGHTLY_BUILD
     mChannelOpenFailed = true;
 #endif
-    NotifyStart(Channel());
-    NotifyStop(Channel(), rv);
   }
 
  private:
@@ -58,14 +59,20 @@ class StreamLoader : public PreloaderBase, public nsIStreamListener {
   // mBytes, and store all subsequent data in that buffer.
   nsCString mBytes;
   nsAutoCStringN<3> mBOMBytes;
+  nsCOMPtr<nsIRequest> mRequest;
+  nsCOMPtr<nsIURI> mFinalChannelURI;
+  nsCOMPtr<nsIPrincipal> mChannelResultPrincipal;
+  // flag to indicate that we can skip processing of data in OnStopRequest
+  bool mOnStopProcessingDone{false};
+  RefPtr<SheetLoadDataHolder> mMainThreadSheetLoadData;
+
+  mozilla::TimeStamp mOnDataFinishedTime;
 
 #ifdef NIGHTLY_BUILD
   bool mChannelOpenFailed = false;
-  bool mOnStopRequestCalled = false;
 #endif
 };
 
-}  // namespace css
-}  // namespace mozilla
+}  // namespace mozilla::css
 
 #endif  // mozilla_css_StreamLoader_h

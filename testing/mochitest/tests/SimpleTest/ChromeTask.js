@@ -6,21 +6,16 @@
 
 "use strict";
 
-/* eslint-env mozilla/frame-script */
-
 function ChromeTask_ChromeScript() {
+  /* eslint-env mozilla/chrome-script */
+
   "use strict";
 
-  const { Task } = ChromeUtils.import("resource://testing-common/Task.jsm");
-  // eslint-disable-next-line no-unused-vars
-  const { Services } = ChromeUtils.import(
-    "resource://gre/modules/Services.jsm"
-  );
-  const { Assert: AssertCls } = ChromeUtils.import(
-    "resource://testing-common/Assert.jsm"
+  const { Assert: AssertCls } = ChromeUtils.importESModule(
+    "resource://testing-common/Assert.sys.mjs"
   );
 
-  addMessageListener("chrome-task:spawn", function(aData) {
+  addMessageListener("chrome-task:spawn", async function (aData) {
     let id = aData.id;
     let source = aData.runnable || "()=>{}";
 
@@ -67,25 +62,15 @@ function ChromeTask_ChromeScript() {
 
       // eslint-disable-next-line no-eval
       let runnable = eval(runnablestr);
-      let iterator = runnable.call(this, aData.arg);
-      Task.spawn(iterator).then(
-        val => {
-          sendAsyncMessage("chrome-task:complete", {
-            id,
-            result: val,
-          });
-        },
-        e => {
-          sendAsyncMessage("chrome-task:complete", {
-            id,
-            error: e.toString(),
-          });
-        }
-      );
-    } catch (e) {
+      let result = await runnable.call(this, aData.arg);
       sendAsyncMessage("chrome-task:complete", {
         id,
-        error: e.toString(),
+        result,
+      });
+    } catch (ex) {
+      sendAsyncMessage("chrome-task:complete", {
+        id,
+        error: ex.toString(),
       });
     }
   });

@@ -4,6 +4,11 @@
 
 // given an array of strings, finds the longest common prefix
 function findCommonPrefixLength(strs) {
+  if (strs.every(str => str.includes("/pdfs/"))) {
+    // In all cases for pdfpaint PDFs, return the full file name
+    return strs[0].lastIndexOf("/") + 1;
+  }
+
   if (strs.length < 2) {
     // only one page in the manifest
     // i.e. http://localhost/tests/perf-reftest/bloom-basic.html
@@ -50,7 +55,7 @@ function Report() {
   this.showTotalCCTime = false;
 }
 
-Report.prototype.pageNames = function() {
+Report.prototype.pageNames = function () {
   var retval = [];
   for (var page in this.timeVals) {
     retval.push(page);
@@ -58,7 +63,7 @@ Report.prototype.pageNames = function() {
   return retval;
 };
 
-Report.prototype.getReport = function() {
+Report.prototype.getReport = function () {
   var report;
   var pages = this.pageNames();
   var prefixLen = findCommonPrefixLength(pages);
@@ -90,13 +95,13 @@ Report.prototype.getReport = function() {
     report += "_x_x_mozilla_cycle_collect," + this.totalCCTime + "\n";
     report += "__end_cc_report\n";
   }
-  var now = new Date().getTime(); // eslint-disable-line mozilla/avoid-Date-timing
+  var now = window.performance.now();
   report += "__startTimestamp" + now + "__endTimestamp\n"; // timestamp for determning shutdown time, used by talos
 
   return report;
 };
 
-Report.prototype.getReportSummary = function() {
+Report.prototype.getReportSummary = function () {
   function average(arr) {
     var sum = 0;
     for (var i in arr) {
@@ -128,10 +133,10 @@ Report.prototype.getReportSummary = function() {
     }
     var avg = average(arr);
 
-    var squareDiffArr = arr.map(function(v) {
+    var squareDiffArr = arr.map(function (v) {
       return Math.pow(v - avg, 2);
     });
-    var sum = squareDiffArr.reduce(function(a, b) {
+    var sum = squareDiffArr.reduce(function (a, b) {
       return a + b;
     });
     var rv = Math.sqrt(sum / (arr.length - 1));
@@ -146,7 +151,7 @@ Report.prototype.getReportSummary = function() {
   report += "Number of tests: " + pages.length + "\n";
 
   for (var i = 0; i < pages.length; i++) {
-    var results = this.timeVals[pages[i]].map(function(v) {
+    var results = this.timeVals[pages[i]].map(function (v) {
       return Number(v);
     });
 
@@ -171,7 +176,7 @@ Report.prototype.getReportSummary = function() {
         : "  stddev-sans-first:" + stddev(results.slice(1)).toFixed(2)) +
       "\nValues: " +
       results
-        .map(function(v) {
+        .map(function (v) {
           return v.toFixed(1);
         })
         .join("  ") +
@@ -182,14 +187,14 @@ Report.prototype.getReportSummary = function() {
   return report;
 };
 
-Report.prototype.recordTime = function(pageName, ms) {
+Report.prototype.recordTime = function (pageName, ms) {
   if (this.timeVals[pageName] == undefined) {
     this.timeVals[pageName] = [];
   }
   this.timeVals[pageName].push(ms);
 };
 
-Report.prototype.recordCCTime = function(ms) {
+Report.prototype.recordCCTime = function (ms) {
   this.totalCCTime += ms;
   this.showTotalCCTime = true;
 };

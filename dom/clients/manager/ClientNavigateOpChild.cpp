@@ -7,6 +7,9 @@
 #include "ClientNavigateOpChild.h"
 
 #include "ClientState.h"
+#include "ClientSource.h"
+#include "ClientSourceChild.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/Unused.h"
 #include "nsIDocShell.h"
 #include "nsDocShellLoadState.h"
@@ -18,8 +21,7 @@
 #include "nsURLHelper.h"
 #include "ReferrerInfo.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -160,7 +162,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
   // access the ClientSource again.
   {
     ClientSourceChild* targetActor =
-        static_cast<ClientSourceChild*>(aArgs.targetChild());
+        static_cast<ClientSourceChild*>(aArgs.target().AsChild().get());
     MOZ_DIAGNOSTIC_ASSERT(targetActor);
 
     ClientSource* target = targetActor->GetSource();
@@ -180,7 +182,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
 
   MOZ_ASSERT(NS_IsMainThread());
 
-  mSerialEventTarget = window->EventTargetFor(TaskCategory::Other);
+  mSerialEventTarget = GetMainThreadSerialEventTarget();
 
   // In theory we could do the URL work before paying the IPC overhead
   // cost, but in practice its easier to do it here.  The ClientHandle
@@ -222,7 +224,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
     return ClientOpPromise::CreateAndReject(result, __func__);
   }
 
-  if (url->GetSpecOrDefault().EqualsLiteral("about:blank")) {
+  if (NS_IsAboutBlankAllowQueryAndFragment(url)) {
     CopyableErrorResult result;
     result.ThrowTypeError("Navigation to \"about:blank\" is not allowed");
     return ClientOpPromise::CreateAndReject(result, __func__);
@@ -248,7 +250,7 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
 
   RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(url);
   loadState->SetTriggeringPrincipal(principal);
-
+  loadState->SetTriggeringSandboxFlags(doc->GetSandboxFlags());
   loadState->SetCsp(doc->GetCsp());
 
   auto referrerInfo = MakeRefPtr<ReferrerInfo>(*doc);
@@ -266,6 +268,10 @@ RefPtr<ClientOpPromise> ClientNavigateOpChild::DoNavigate(
     /// the spec, but does match the current behavior of both us and Chrome.
     /// https://github.com/w3c/ServiceWorker/issues/1500 tracks sorting that
     /// out.
+    /// We now run security checks asynchronously, so these tests now
+    /// just fail to load rather than hitting this failure path. I've
+    /// marked them as failing for now until they get fixed to match the
+    /// spec.
     nsPrintfCString err("Invalid URL \"%s\"", aArgs.url().get());
     CopyableErrorResult result;
     result.ThrowTypeError(err);
@@ -306,7 +312,7 @@ void ClientNavigateOpChild::Init(const ClientNavigateOpConstructorArgs& aArgs) {
   // failure occurred, though, we may need to fall back to the current thread
   // target.
   if (!mSerialEventTarget) {
-    mSerialEventTarget = GetCurrentThreadSerialEventTarget();
+    mSerialEventTarget = GetCurrentSerialEventTarget();
   }
 
   // Capturing `this` is safe here since we clear the mPromiseRequestHolder in
@@ -325,5 +331,4 @@ void ClientNavigateOpChild::Init(const ClientNavigateOpConstructorArgs& aArgs) {
       ->Track(mPromiseRequestHolder);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

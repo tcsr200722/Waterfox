@@ -18,6 +18,7 @@ class BrowserParent;
 
 namespace layers {
 
+struct DoubleTapToZoomMetrics;
 /**
  * RemoteContentController implements PAPZChild and is used to access a
  * GeckoContentController that lives in a different process.
@@ -38,17 +39,18 @@ class RemoteContentController : public GeckoContentController,
 
   virtual ~RemoteContentController();
 
-  void NotifyLayerTransforms(
-      const nsTArray<MatrixMessage>& aTransforms) override;
+  void NotifyLayerTransforms(nsTArray<MatrixMessage>&& aTransforms) override;
 
   void RequestContentRepaint(const RepaintRequest& aRequest) override;
 
-  void HandleTap(TapType aTapType, const LayoutDevicePoint& aPoint,
-                 Modifiers aModifiers, const ScrollableLayerGuid& aGuid,
-                 uint64_t aInputBlockId) override;
+  void HandleTap(
+      TapType aTapType, const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+      const ScrollableLayerGuid& aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics) override;
 
   void NotifyPinchGesture(PinchGestureInput::PinchGestureType aType,
                           const ScrollableLayerGuid& aGuid,
+                          const LayoutDevicePoint& aFocusPoint,
                           LayoutDeviceCoord aSpanChange,
                           Modifiers aModifiers) override;
 
@@ -57,12 +59,14 @@ class RemoteContentController : public GeckoContentController,
   void DispatchToRepaintThread(already_AddRefed<Runnable> aTask) override;
 
   void NotifyAPZStateChange(const ScrollableLayerGuid& aGuid,
-                            APZStateChange aChange, int aArg) override;
+                            APZStateChange aChange, int aArg,
+                            Maybe<uint64_t> aInputBlockId) override;
 
-  void UpdateOverscrollVelocity(float aX, float aY,
-                                bool aIsRootContent) override;
+  void UpdateOverscrollVelocity(const ScrollableLayerGuid& aGuid, float aX,
+                                float aY, bool aIsRootContent) override;
 
-  void UpdateOverscrollOffset(float aX, float aY, bool aIsRootContent) override;
+  void UpdateOverscrollOffset(const ScrollableLayerGuid& aGuid, float aX,
+                              float aY, bool aIsRootContent) override;
 
   void NotifyMozMouseScrollEvent(const ScrollableLayerGuid::ViewID& aScrollId,
                                  const nsString& aEvent) override;
@@ -80,6 +84,9 @@ class RemoteContentController : public GeckoContentController,
 
   void CancelAutoscroll(const ScrollableLayerGuid& aScrollId) override;
 
+  void NotifyScaleGestureComplete(const ScrollableLayerGuid& aGuid,
+                                  float aScale) override;
+
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   void Destroy() override;
@@ -91,20 +98,25 @@ class RemoteContentController : public GeckoContentController,
   nsCOMPtr<nsISerialEventTarget> mCompositorThread;
   bool mCanSend;
 
-  void HandleTapOnMainThread(TapType aType, LayoutDevicePoint aPoint,
-                             Modifiers aModifiers, ScrollableLayerGuid aGuid,
-                             uint64_t aInputBlockId);
-  void HandleTapOnCompositorThread(TapType aType, LayoutDevicePoint aPoint,
-                                   Modifiers aModifiers,
-                                   ScrollableLayerGuid aGuid,
-                                   uint64_t aInputBlockId);
+  void HandleTapOnParentProcessMainThread(
+      TapType aTapType, LayoutDevicePoint aPoint, Modifiers aModifiers,
+      ScrollableLayerGuid aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
+  void HandleTapOnGPUProcessMainThread(
+      TapType aTapType, LayoutDevicePoint aPoint, Modifiers aModifiers,
+      ScrollableLayerGuid aGuid, uint64_t aInputBlockId,
+      const Maybe<DoubleTapToZoomMetrics>& aDoubleTapToZoomMetrics);
   void NotifyPinchGestureOnCompositorThread(
       PinchGestureInput::PinchGestureType aType,
-      const ScrollableLayerGuid& aGuid, LayoutDeviceCoord aSpanChange,
-      Modifiers aModifiers);
+      const ScrollableLayerGuid& aGuid, const LayoutDevicePoint& aFocusPoint,
+      LayoutDeviceCoord aSpanChange, Modifiers aModifiers);
 
   void CancelAutoscrollInProcess(const ScrollableLayerGuid& aScrollId);
   void CancelAutoscrollCrossProcess(const ScrollableLayerGuid& aScrollId);
+  void NotifyScaleGestureCompleteInProcess(const ScrollableLayerGuid& aGuid,
+                                           float aScale);
+  void NotifyScaleGestureCompleteCrossProcess(const ScrollableLayerGuid& aGuid,
+                                              float aScale);
 };
 
 }  // namespace layers

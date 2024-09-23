@@ -6,22 +6,54 @@
 
 #include "mozilla/dom/RTCCertificate.h"
 
-#include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <new>
 #include <utility>
-
+#include "ErrorList.h"
+#include "MainThreadUtils.h"
 #include "cert.h"
-#include "jsapi.h"
-#include "mozilla/Sprintf.h"
+#include "cryptohi.h"
+#include "js/StructuredClone.h"
+#include "js/TypeDecls.h"
+#include "js/Value.h"
+#include "keyhi.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/OwningNonNull.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/CryptoBuffer.h"
 #include "mozilla/dom/CryptoKey.h"
+#include "mozilla/dom/KeyAlgorithmBinding.h"
+#include "mozilla/dom/KeyAlgorithmProxy.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/RTCCertificateBinding.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
+#include "mozilla/dom/SubtleCryptoBinding.h"
+#include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/WebCryptoCommon.h"
 #include "mozilla/dom/WebCryptoTask.h"
-#include "mtransport/dtlsidentity.h"
+#include "mozilla/fallible.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsLiteralString.h"
+#include "nsStringFlags.h"
+#include "nsStringFwd.h"
+#include "nsTLiteralString.h"
+#include "pk11pub.h"
+#include "plarena.h"
+#include "secasn1.h"
+#include "secasn1t.h"
+#include "seccomon.h"
+#include "secmodt.h"
+#include "secoid.h"
+#include "secoidt.h"
+#include "transport/dtlsidentity.h"
+#include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 #define RTCCERTIFICATE_SC_VERSION 0x00000001
 
@@ -55,7 +87,14 @@ class GenerateRTCCertificateTask : public GenerateAsymmetricKeyTask {
         mExpires(aExpires),
         mAuthType(ssl_kea_null),
         mCertificate(nullptr),
-        mSignatureAlg(SEC_OID_UNKNOWN) {}
+        mSignatureAlg(SEC_OID_UNKNOWN) {
+    if (NS_FAILED(mEarlyRv)) {
+      // webrtc-pc says to throw NotSupportedError if we have passed "an
+      // algorithm that the user agent cannot or will not use to generate a
+      // certificate". This catches these cases.
+      mEarlyRv = NS_ERROR_DOM_NOT_SUPPORTED_ERR;
+    }
+  }
 
  private:
   PRTime mExpires;
@@ -72,7 +111,7 @@ class GenerateRTCCertificateTask : public GenerateAsymmetricKeyTask {
     }
 
     char buf[sizeof(randomName) * 2 + 4];
-    PL_strncpy(buf, "CN=", 3);
+    strncpy(buf, "CN=", 4);
     for (size_t i = 0; i < sizeof(randomName); ++i) {
       snprintf(&buf[i * 2 + 3], 3, "%.2x", randomName[i]);
     }
@@ -121,47 +160,53 @@ class GenerateRTCCertificateTask : public GenerateAsymmetricKeyTask {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
 
-    CERTCertificate* cert = CERT_CreateCertificate(
-        serial, subjectName.get(), validity.get(), certreq.get());
-    if (!cert) {
+    // NB: CERTCertificates created with CERT_CreateCertificate are not safe to
+    // use with other NSS functions like CERT_DupCertificate.  The strategy
+    // here is to create a tbsCertificate ("to-be-signed certificate"), encode
+    // it, and sign it, resulting in a signed DER certificate that can be
+    // decoded into a CERTCertificate.
+    UniqueCERTCertificate tbsCertificate(CERT_CreateCertificate(
+        serial, subjectName.get(), validity.get(), certreq.get()));
+    if (!tbsCertificate) {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
-    mCertificate.reset(cert);
-    return NS_OK;
-  }
 
-  nsresult SignCertificate() {
     MOZ_ASSERT(mSignatureAlg != SEC_OID_UNKNOWN);
-    PLArenaPool* arena = mCertificate->arena;
+    PLArenaPool* arena = tbsCertificate->arena;
 
-    SECStatus rv = SECOID_SetAlgorithmID(arena, &mCertificate->signature,
-                                         mSignatureAlg, nullptr);
+    rv = SECOID_SetAlgorithmID(arena, &tbsCertificate->signature, mSignatureAlg,
+                               nullptr);
     if (rv != SECSuccess) {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
 
     // Set version to X509v3.
-    *(mCertificate->version.data) = SEC_CERTIFICATE_VERSION_3;
-    mCertificate->version.len = 1;
+    *(tbsCertificate->version.data) = SEC_CERTIFICATE_VERSION_3;
+    tbsCertificate->version.len = 1;
 
     SECItem innerDER = {siBuffer, nullptr, 0};
-    if (!SEC_ASN1EncodeItem(arena, &innerDER, mCertificate.get(),
+    if (!SEC_ASN1EncodeItem(arena, &innerDER, tbsCertificate.get(),
                             SEC_ASN1_GET(CERT_CertificateTemplate))) {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
 
-    SECItem* signedCert = PORT_ArenaZNew(arena, SECItem);
-    if (!signedCert) {
+    SECItem* certDer = PORT_ArenaZNew(arena, SECItem);
+    if (!certDer) {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
 
     UniqueSECKEYPrivateKey privateKey(mKeyPair->mPrivateKey->GetPrivateKey());
-    rv = SEC_DerSignData(arena, signedCert, innerDER.data, innerDER.len,
+    rv = SEC_DerSignData(arena, certDer, innerDER.data, innerDER.len,
                          privateKey.get(), mSignatureAlg);
     if (rv != SECSuccess) {
       return NS_ERROR_DOM_UNKNOWN_ERR;
     }
-    mCertificate->derCert = *signedCert;
+
+    mCertificate.reset(CERT_NewTempCertificate(CERT_GetDefaultCertDB(), certDer,
+                                               nullptr, false, true));
+    if (!mCertificate) {
+      return NS_ERROR_DOM_UNKNOWN_ERR;
+    }
     return NS_OK;
   }
 
@@ -201,9 +246,6 @@ class GenerateRTCCertificateTask : public GenerateAsymmetricKeyTask {
     rv = GenerateCertificate();
     NS_ENSURE_SUCCESS(rv, rv);
 
-    rv = SignCertificate();
-    NS_ENSURE_SUCCESS(rv, rv);
-
     return NS_OK;
   }
 
@@ -228,7 +270,7 @@ static PRTime ReadExpires(JSContext* aCx, const ObjectOrString& aOptions,
   if (!aOptions.IsObject()) {
     return EXPIRATION_DEFAULT;
   }
-  JS::RootedValue value(aCx, JS::ObjectValue(*aOptions.GetAsObject()));
+  JS::Rooted<JS::Value> value(aCx, JS::ObjectValue(*aOptions.GetAsObject()));
   if (!expiration.Init(aCx, value)) {
     aRv.NoteJSContextException(aCx);
     return 0;
@@ -254,7 +296,7 @@ already_AddRefed<Promise> RTCCertificate::GenerateCertificate(
     return nullptr;
   }
   Sequence<nsString> usages;
-  if (!usages.AppendElement(NS_LITERAL_STRING("sign"), fallible)) {
+  if (!usages.AppendElement(u"sign"_ns, fallible)) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return nullptr;
   }
@@ -393,5 +435,4 @@ already_AddRefed<RTCCertificate> RTCCertificate::ReadStructuredClone(
   return cert.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

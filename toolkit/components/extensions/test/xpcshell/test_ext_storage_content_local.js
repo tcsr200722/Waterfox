@@ -1,10 +1,12 @@
 "use strict";
 
-const { ExtensionStorageIDB } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionStorageIDB.jsm"
+const { ExtensionStorageIDB } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionStorageIDB.sys.mjs"
 );
 
-PromiseTestUtils.whitelistRejectionsGlobally(/WebExtension context not found/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /WebExtension context not found/
+);
 
 const server = createHttpServer({ hosts: ["example.com"] });
 server.registerDirectory("/data/", do_get_file("data"));

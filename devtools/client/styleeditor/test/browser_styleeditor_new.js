@@ -8,7 +8,7 @@ const TESTCASE_URI = TEST_BASE_HTTP + "simple.html";
 
 const TESTCASE_CSS_SOURCE = "body{background-color:red;";
 
-add_task(async function() {
+add_task(async function () {
   const { panel, ui } = await openStyleEditorForURL(TESTCASE_URI);
 
   const editor = await createNewStyleSheet(ui, panel.panelWindow);
@@ -21,16 +21,16 @@ add_task(async function() {
 
   await waitForPropertyChange;
 
-  testUpdated(editor, originalHref);
+  await testUpdated(editor, originalHref);
 });
 
 function onPropertyChange(editor) {
   return new Promise(resolve => {
-    editor.styleSheet.on("property-change", function onProp(property) {
+    editor.on("property-change", function onProp(property) {
       // wait for text to be entered fully
       const text = editor.sourceEditor.getText();
       if (property == "ruleCount" && text == TESTCASE_CSS_SOURCE + "}") {
-        editor.styleSheet.off("property-change", onProp);
+        editor.off("property-change", onProp);
         resolve();
       }
     });
@@ -39,8 +39,6 @@ function onPropertyChange(editor) {
 
 async function testInitialState(editor) {
   info("Testing the initial state of the new editor");
-
-  let summary = editor.summary;
 
   ok(editor.sourceLoaded, "new editor is loaded when attached");
   ok(editor.isNew, "new editor has isNew flag");
@@ -51,9 +49,7 @@ async function testInitialState(editor) {
   }
   ok(editor.sourceEditor.hasFocus(), "new editor has focus");
 
-  summary = editor.summary;
-  const ruleCount = summary.querySelector(".stylesheet-rule-count").textContent;
-  is(parseInt(ruleCount, 10), 0, "new editor initially shows 0 rules");
+  await assertRuleCount(editor, 0);
 
   const color = await getComputedStyleProperty({
     selector: "body",
@@ -68,7 +64,7 @@ async function testInitialState(editor) {
 
 function typeInEditor(editor, panelWindow) {
   return new Promise(resolve => {
-    waitForFocus(function() {
+    waitForFocus(function () {
       for (const c of TESTCASE_CSS_SOURCE) {
         EventUtils.synthesizeKey(c, {}, panelWindow);
       }
@@ -79,7 +75,7 @@ function typeInEditor(editor, panelWindow) {
   });
 }
 
-function testUpdated(editor, originalHref) {
+async function testUpdated(editor, originalHref) {
   info("Testing the state of the new editor after editing it");
 
   is(
@@ -88,9 +84,7 @@ function testUpdated(editor, originalHref) {
     "rule bracket has been auto-closed"
   );
 
-  const ruleCount = editor.summary.querySelector(".stylesheet-rule-count")
-    .textContent;
-  is(parseInt(ruleCount, 10), 1, "new editor shows 1 rule after modification");
+  await assertRuleCount(editor, 1);
 
   is(editor.styleSheet.href, originalHref, "style sheet href did not change");
 }

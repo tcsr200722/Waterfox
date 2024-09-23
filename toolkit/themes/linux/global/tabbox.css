@@ -19,7 +19,8 @@ tabs {
 /* ::::: tabpanels ::::: */
 
 tabpanels {
-  -moz-appearance: tabpanels;
+  appearance: auto;
+  -moz-default-appearance: tabpanels;
   padding: 8px;
   color: -moz-DialogText;
 }
@@ -28,13 +29,14 @@ tabpanels {
 
 tab {
   position: relative;
-  -moz-appearance: tab;
+  appearance: auto;
+  -moz-default-appearance: tab;
   margin-top: 2px;
   padding: 3px 4px;
   color: -moz-DialogText;
 }
 
-tab[visuallyselected="true"] {
+tab:where([visuallyselected]) {
   z-index: 1;
   margin-top: 0;
   margin-bottom: -2px;
@@ -42,7 +44,7 @@ tab[visuallyselected="true"] {
   padding-bottom: 6px;
 }
 
-tab + tab {
+tab:where(:not(:first-of-type)) {
   margin-inline-start: -2px;
 }
 

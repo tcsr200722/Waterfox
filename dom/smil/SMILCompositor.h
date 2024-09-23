@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILCompositor_h
-#define mozilla_SMILCompositor_h
+#ifndef DOM_SMIL_SMILCOMPOSITOR_H_
+#define DOM_SMIL_SMILCOMPOSITOR_H_
 
 #include <utility>
 
@@ -14,10 +14,13 @@
 #include "mozilla/SMILAnimationFunction.h"
 #include "mozilla/SMILCompositorTable.h"
 #include "mozilla/UniquePtr.h"
+#include "nsCSSPropertyID.h"
 #include "nsString.h"
 #include "nsTHashtable.h"
 
 namespace mozilla {
+
+class ComputedStyle;
 
 //----------------------------------------------------------------------
 // SMILCompositor
@@ -28,9 +31,9 @@ namespace mozilla {
 
 class SMILCompositor : public PLDHashEntryHdr {
  public:
-  typedef SMILTargetIdentifier KeyType;
-  typedef const KeyType& KeyTypeRef;
-  typedef const KeyType* KeyTypePointer;
+  using KeyType = SMILTargetIdentifier;
+  using KeyTypeRef = const KeyType&;
+  using KeyTypePointer = const KeyType*;
 
   explicit SMILCompositor(KeyTypePointer aKey)
       : mKey(*aKey), mForceCompositing(false) {}
@@ -71,12 +74,16 @@ class SMILCompositor : public PLDHashEntryHdr {
     mCachedBaseValue = std::move(aOther->mCachedBaseValue);
   }
 
+  bool HasSameNumberOfAnimationFunctionsAs(const SMILCompositor& aOther) const {
+    return mAnimationFunctions.Length() == aOther.mAnimationFunctions.Length();
+  }
+
  private:
   // Create a SMILAttr for my target, on the heap.
   //
   // @param aBaseComputedStyle  An optional ComputedStyle which, if set, will be
   //                           used when fetching the base style.
-  UniquePtr<SMILAttr> CreateSMILAttr(ComputedStyle* aBaseComputedStyle);
+  UniquePtr<SMILAttr> CreateSMILAttr(const ComputedStyle* aBaseComputedStyle);
 
   // Returns the CSS property this compositor should animate, or
   // eCSSProperty_UNKNOWN if this compositor does not animate a CSS property.
@@ -122,4 +129,4 @@ class SMILCompositor : public PLDHashEntryHdr {
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILCompositor_h
+#endif  // DOM_SMIL_SMILCOMPOSITOR_H_

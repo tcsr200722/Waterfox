@@ -6,8 +6,10 @@
 
 #include "nsIDocShell.h"
 #include "mozilla/dom/Document.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIDocumentLoader.h"
 #include "nsIObserverService.h"
+#include "nsITimer.h"
 #include "nsIXULRuntime.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
@@ -39,11 +41,14 @@ static StaticRefPtr<RequestContextService> gSingleton;
 static bool sShutdown = false;
 
 // nsIRequestContext
-class RequestContext final : public nsIRequestContext, public nsITimerCallback {
+class RequestContext final : public nsIRequestContext,
+                             public nsITimerCallback,
+                             public nsINamed {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIREQUESTCONTEXT
   NS_DECL_NSITIMERCALLBACK
+  NS_DECL_NSINAMED
 
   explicit RequestContext(const uint64_t id);
 
@@ -60,7 +65,7 @@ class RequestContext final : public nsIRequestContext, public nsITimerCallback {
   Atomic<uint32_t> mBlockingTransactionCount;
   UniquePtr<SpdyPushCache> mSpdyCache;
 
-  typedef nsCOMPtr<nsIRequestTailUnblockCallback> PendingTailRequest;
+  using PendingTailRequest = nsCOMPtr<nsIRequestTailUnblockCallback>;
   // Number of known opened non-tailed requets
   uint32_t mNonTailRequests;
   // Queue of requests that have been tailed, when conditions are met
@@ -89,7 +94,7 @@ class RequestContext final : public nsIRequestContext, public nsITimerCallback {
   bool mAfterDOMContentLoaded;
 };
 
-NS_IMPL_ISUPPORTS(RequestContext, nsIRequestContext, nsITimerCallback)
+NS_IMPL_ISUPPORTS(RequestContext, nsIRequestContext, nsITimerCallback, nsINamed)
 
 RequestContext::RequestContext(const uint64_t aID)
     : mID(aID),
@@ -293,8 +298,12 @@ void RequestContext::RescheduleUntailTimer(TimeStamp const& now) {
   }
 
   uint32_t delay = interval.ToMilliseconds();
-  mUntailTimer = do_CreateInstance("@mozilla.org/timer;1");
-  mUntailTimer->InitWithCallback(this, delay, nsITimer::TYPE_ONE_SHOT);
+  nsresult rv =
+      NS_NewTimerWithCallback(getter_AddRefs(mUntailTimer), this, delay,
+                              nsITimer::TYPE_ONE_SHOT, nullptr);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Could not reschedule untail timer");
+  }
 
   LOG(("RequestContext::RescheduleUntailTimer %p in %d", this, delay));
 }
@@ -320,6 +329,12 @@ RequestContext::Notify(nsITimer* timer) {
 
   ProcessTailQueue(NS_OK);
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+RequestContext::GetName(nsACString& aName) {
+  aName.AssignLiteral("RequestContext");
   return NS_OK;
 }
 
@@ -400,8 +415,7 @@ void RequestContext::ProcessTailQueue(nsresult aResult) {
   // Must drop to stop tailing requests
   mUntailAt = TimeStamp();
 
-  nsTArray<PendingTailRequest> queue;
-  queue.SwapElements(mTailQueue);
+  nsTArray<PendingTailRequest> queue = std::move(mTailQueue);
 
   for (const auto& request : queue) {
     LOG(("  untailing %p", request.get()));
@@ -423,8 +437,7 @@ RequestContextService* RequestContextService::sSelf = nullptr;
 
 NS_IMPL_ISUPPORTS(RequestContextService, nsIRequestContextService, nsIObserver)
 
-RequestContextService::RequestContextService()
-    : mRCIDNamespace(0), mNextRCID(1) {
+RequestContextService::RequestContextService() {
   MOZ_ASSERT(!sSelf, "multiple rcs instances!");
   MOZ_ASSERT(NS_IsMainThread());
   sSelf = this;
@@ -464,8 +477,8 @@ void RequestContextService::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
   // We need to do this to prevent the requests from being scheduled after
   // shutdown.
-  for (auto iter = mTable.Iter(); !iter.Done(); iter.Next()) {
-    iter.Data()->CancelTailPendingRequests(NS_ERROR_ABORT);
+  for (const auto& data : mTable.Values()) {
+    data->CancelTailPendingRequests(NS_ERROR_ABORT);
   }
   mTable.Clear();
   sShutdown = true;
@@ -509,11 +522,10 @@ RequestContextService::GetRequestContext(const uint64_t rcID,
     return NS_ERROR_INVALID_ARG;
   }
 
-  if (!mTable.Get(rcID, rc)) {
-    nsCOMPtr<nsIRequestContext> newSC = new RequestContext(rcID);
-    mTable.Put(rcID, newSC);
-    newSC.swap(*rc);
-  }
+  *rc = do_AddRef(mTable.LookupOrInsertWith(rcID, [&] {
+          nsCOMPtr<nsIRequestContext> newSC = new RequestContext(rcID);
+          return newSC;
+        })).take();
 
   return NS_OK;
 }
@@ -547,7 +559,7 @@ RequestContextService::NewRequestContext(nsIRequestContext** rc) {
       mNextRCID++;
 
   nsCOMPtr<nsIRequestContext> newSC = new RequestContext(rcID);
-  mTable.Put(rcID, newSC);
+  mTable.InsertOrUpdate(rcID, newSC);
   newSC.swap(*rc);
 
   return NS_OK;

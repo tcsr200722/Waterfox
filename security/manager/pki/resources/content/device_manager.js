@@ -3,9 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
 var secmoddb;
@@ -326,7 +325,7 @@ function doLogout() {
 
 // load a new device
 function doLoad() {
-  window.docShell.rootTreeItem.domWindow.open(
+  window.browsingContext.topChromeWindow.open(
     "load_device.xhtml",
     "loaddevice",
     "chrome,centerscreen,modal"
@@ -365,7 +364,7 @@ function changePassword() {
   let objects = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
   objects.appendElement(selected_slot.getToken());
   params.objects = objects;
-  window.docShell.rootTreeItem.domWindow.openDialog(
+  window.browsingContext.topChromeWindow.openDialog(
     "changepassword.xhtml",
     "",
     "chrome,centerscreen,modal",
@@ -414,7 +413,7 @@ function toggleFIPS() {
     var internal_token = tokendb.getInternalKeyToken(); // nsIPK11Token
     if (!internal_token.hasPassword) {
       // Token has either no or an empty password.
-      doPrompt("fips-nonempty-password-required");
+      doPrompt("fips-nonempty-primary-password-required");
       return;
     }
   }

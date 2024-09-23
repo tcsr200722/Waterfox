@@ -6,6 +6,7 @@
 
 #include "VRDisplayPresentation.h"
 #include "mozilla/dom/DocGroup.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/XRWebGLLayer.h"
 #include "mozilla/Unused.h"
 #include "VRDisplayClient.h"
@@ -39,14 +40,12 @@ void VRDisplayPresentation::UpdateXRWebGLLayer(dom::XRWebGLLayer* aLayer) {
   }
 
   dom::HTMLCanvasElement* canvasElement = aLayer->GetCanvas();
-  nsCOMPtr<nsIEventTarget> target =
-      canvasElement->OwnerDoc()->EventTargetFor(TaskCategory::Other);
 
   if (mLayers.Length() == 0) {
     // WebXR uses a single layer for now.
     RefPtr<VRLayerChild> vrLayer =
         static_cast<VRLayerChild*>(manager->CreateVRLayer(
-            mDisplayClient->GetDisplayInfo().GetDisplayID(), target, mGroup));
+            mDisplayClient->GetDisplayInfo().GetDisplayID(), mGroup));
     mLayers.AppendElement(vrLayer);
   }
   RefPtr<VRLayerChild> vrLayer = mLayers[0];
@@ -103,14 +102,11 @@ void VRDisplayPresentation::CreateLayers() {
       continue;
     }
 
-    nsCOMPtr<nsIEventTarget> target =
-        canvasElement->OwnerDoc()->EventTargetFor(TaskCategory::Other);
-
     if (mLayers.Length() <= iLayer) {
       // Not enough layers, let's add one
       RefPtr<VRLayerChild> vrLayer =
           static_cast<VRLayerChild*>(manager->CreateVRLayer(
-              mDisplayClient->GetDisplayInfo().GetDisplayID(), target, mGroup));
+              mDisplayClient->GetDisplayInfo().GetDisplayID(), mGroup));
       if (!vrLayer) {
         NS_WARNING("CreateVRLayer returned null!");
         continue;
@@ -147,8 +143,9 @@ VRDisplayPresentation::~VRDisplayPresentation() {
 }
 
 void VRDisplayPresentation::SubmitFrame() {
-  for (VRLayerChild* layer : mLayers) {
+  // Currently only one layer supported, submit only the first
+  if (mLayers.Length() >= 1) {
+    VRLayerChild* layer = mLayers.ElementAt(0);
     layer->SubmitFrame(mDisplayClient->GetDisplayInfo());
-    break;  // Currently only one layer supported, submit only the first
   }
 }

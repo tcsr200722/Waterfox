@@ -6,38 +6,130 @@
 
 #include "CanvasRenderer.h"
 
-#include "AsyncCanvasRenderer.h"
-#include "GLContext.h"
-#include "OOPCanvasRenderer.h"
+#include "BuildConstants.h"
+#include "ipc/KnowsCompositor.h"
+#include "mozilla/gfx/gfxVars.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "nsICanvasRenderingContextInternal.h"
 #include "PersistentBufferProvider.h"
+#include "WebGLTypes.h"
+
+#ifdef MOZ_WIDGET_GTK
+#  include "mozilla/widget/DMABufSurface.h"
+#  include "mozilla/widget/DMABufLibWrapper.h"
+#endif
 
 namespace mozilla {
 namespace layers {
 
-CanvasInitializeData::CanvasInitializeData() = default;
-CanvasInitializeData::~CanvasInitializeData() = default;
+CanvasRendererData::CanvasRendererData() = default;
+CanvasRendererData::~CanvasRendererData() = default;
 
-CanvasRenderer::CanvasRenderer()
-    : mPreTransCallback(nullptr),
-      mPreTransCallbackData(nullptr),
-      mDidTransCallback(nullptr),
-      mDidTransCallbackData(nullptr),
-      mDirty(false) {
-  MOZ_COUNT_CTOR(CanvasRenderer);
+// -
+
+BorrowedSourceSurface::BorrowedSourceSurface(
+    PersistentBufferProvider* const returnTo,
+    const RefPtr<gfx::SourceSurface> surf)
+    : mReturnTo(returnTo), mSurf(surf) {}
+
+BorrowedSourceSurface::~BorrowedSourceSurface() {
+  if (mReturnTo) {
+    auto forgettable = mSurf;
+    mReturnTo->ReturnSnapshot(forgettable.forget());
+  }
 }
 
-CanvasRenderer::~CanvasRenderer() {
-  Destroy();
-  MOZ_COUNT_DTOR(CanvasRenderer);
+// -
+
+CanvasRenderer::CanvasRenderer() { MOZ_COUNT_CTOR(CanvasRenderer); }
+
+CanvasRenderer::~CanvasRenderer() { MOZ_COUNT_DTOR(CanvasRenderer); }
+
+void CanvasRenderer::Initialize(const CanvasRendererData& aData) {
+  mData = aData;
 }
 
-void CanvasRenderer::Initialize(const CanvasInitializeData& aData) {
-  mPreTransCallback = aData.mPreTransCallback;
-  mPreTransCallbackData = aData.mPreTransCallbackData;
-  mDidTransCallback = aData.mDidTransCallback;
-  mDidTransCallbackData = aData.mDidTransCallbackData;
+bool CanvasRenderer::IsDataValid(const CanvasRendererData& aData) const {
+  return mData.GetContext() == aData.GetContext();
+}
 
-  mSize = aData.mSize;
+std::shared_ptr<BorrowedSourceSurface> CanvasRenderer::BorrowSnapshot(
+    const bool requireAlphaPremult) const {
+  const auto context = mData.GetContext();
+  if (!context) return nullptr;
+  RefPtr<PersistentBufferProvider> provider = context->GetBufferProvider();
+
+  RefPtr<gfx::SourceSurface> ss;
+
+  if (provider) {
+    ss = provider->BorrowSnapshot();
+  }
+  if (!ss) {
+    provider = nullptr;
+    ss = context->GetFrontBufferSnapshot(requireAlphaPremult);
+  }
+  if (!ss) return nullptr;
+
+  return std::make_shared<BorrowedSourceSurface>(provider, ss);
+}
+
+void CanvasRenderer::FirePreTransactionCallback() const {
+  if (!mData.mDoPaintCallbacks) return;
+  const auto context = mData.GetContext();
+  if (!context) return;
+  context->OnBeforePaintTransaction();
+}
+
+void CanvasRenderer::FireDidTransactionCallback() const {
+  if (!mData.mDoPaintCallbacks) return;
+  const auto context = mData.GetContext();
+  if (!context) return;
+  context->OnDidPaintTransaction();
+}
+
+TextureType TexTypeForWebgl(KnowsCompositor* const knowsCompositor) {
+  if (!knowsCompositor) return TextureType::Unknown;
+  const auto layersBackend = knowsCompositor->GetCompositorBackendType();
+
+  switch (layersBackend) {
+    case LayersBackend::LAYERS_LAST:
+      MOZ_CRASH("Unexpected LayersBackend::LAYERS_LAST");
+
+    case LayersBackend::LAYERS_NONE:
+      return TextureType::Unknown;
+
+    case LayersBackend::LAYERS_WR:
+      break;
+  }
+
+  if (kIsWindows) {
+    if (knowsCompositor->SupportsD3D11()) {
+      return TextureType::D3D11;
+    }
+  }
+  if (kIsMacOS) {
+    return TextureType::MacIOSurface;
+  }
+
+#ifdef MOZ_WIDGET_GTK
+  if (kIsLinux) {
+    if (!knowsCompositor->UsingSoftwareWebRender() &&
+        widget::DMABufDevice::IsDMABufWebGLEnabled()) {
+      return TextureType::DMABUF;
+    }
+  }
+#endif
+
+  if (kIsAndroid) {
+    if (gfx::gfxVars::UseAHardwareBufferSharedSurfaceWebglOop()) {
+      return TextureType::AndroidHardwareBuffer;
+    }
+    if (StaticPrefs::webgl_enable_surface_texture()) {
+      return TextureType::AndroidNativeWindow;
+    }
+  }
+
+  return TextureType::Unknown;
 }
 
 }  // namespace layers

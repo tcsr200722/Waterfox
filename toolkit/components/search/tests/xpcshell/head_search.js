@@ -1,44 +1,40 @@
 /* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  FileUtils: "resource://gre/modules/FileUtils.jsm",
-  NetUtil: "resource://gre/modules/NetUtil.jsm",
-  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
-  Region: "resource://gre/modules/Region.jsm",
-  RemoteSettings: "resource://services-settings/remote-settings.js",
-  RemoteSettingsClient: "resource://services-settings/RemoteSettingsClient.jsm",
-  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  Services: "resource://gre/modules/Services.jsm",
-  setTimeout: "resource://gre/modules/Timer.jsm",
-  TestUtils: "resource://testing-common/TestUtils.jsm",
-  SearchUtils: "resource://gre/modules/SearchUtils.jsm",
-  sinon: "resource://testing-common/Sinon.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  Region: "resource://gre/modules/Region.sys.mjs",
+  RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
+  RemoteSettingsClient:
+    "resource://services-settings/RemoteSettingsClient.sys.mjs",
+  SearchEngineSelector: "resource://gre/modules/SearchEngineSelector.sys.mjs",
+  SearchService: "resource://gre/modules/SearchService.sys.mjs",
+  SearchSettings: "resource://gre/modules/SearchSettings.sys.mjs",
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
+  SearchUtils: "resource://gre/modules/SearchUtils.sys.mjs",
+  TestUtils: "resource://testing-common/TestUtils.sys.mjs",
+  clearTimeout: "resource://gre/modules/Timer.sys.mjs",
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
+  sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
-var { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-var { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-var { AddonTestUtils } = ChromeUtils.import(
-  "resource://testing-common/AddonTestUtils.jsm"
+var { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
 );
-const { ExtensionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/ExtensionXPCShellUtils.jsm"
+var { AddonTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/AddonTestUtils.sys.mjs"
+);
+const { ExtensionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/ExtensionXPCShellUtils.sys.mjs"
 );
 
-const PREF_SEARCH_URL = "geoSpecificDefaults.url";
-const NS_APP_SEARCH_DIR = "SrchPlugns";
+SearchTestUtils.init(this);
 
-const MODE_RDONLY = FileUtils.MODE_RDONLY;
-const MODE_WRONLY = FileUtils.MODE_WRONLY;
-const MODE_CREATE = FileUtils.MODE_CREATE;
-const MODE_TRUNCATE = FileUtils.MODE_TRUNCATE;
-
-const CACHE_FILENAME = "search.json.mozlz4";
+const SETTINGS_FILENAME = "search.json.mozlz4";
 
 // nsSearchService.js uses Services.appinfo.name to build a salt for a hash.
 // eslint-disable-next-line mozilla/use-services
@@ -47,13 +43,6 @@ var XULRuntime = Cc["@mozilla.org/xre/runtime;1"].getService(Ci.nsIXULRuntime);
 // Expand the amount of information available in error logs
 Services.prefs.setBoolPref("browser.search.log", true);
 Services.prefs.setBoolPref("browser.region.log", true);
-
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gModernConfig",
-  SearchUtils.BROWSER_SEARCH_PREF + "modernConfig",
-  false
-);
 
 AddonTestUtils.init(this, false);
 AddonTestUtils.createAppInfo(
@@ -69,86 +58,40 @@ Services.prefs.setBoolPref(
   true
 );
 
-/**
- * Load engines from test data located in particular folders.
- *
- * @param {string} [folder]
- *   The folder name to use.
- * @param {string} [subFolder]
- *   The subfolder to use, if any.
- * @param {array} [config]
- *   An array which contains the configuration to set.
- * @returns {object|null}
- *   If this is the modern configuration, returns a stub for the method
- *   that the configuration is obtained from.
- */
-async function useTestEngines(
-  folder = "data",
-  subFolder = null,
-  config = null
-) {
-  let url = `resource://test/${folder}/`;
-  if (subFolder) {
-    url += `${subFolder}/`;
-  }
-  let resProt = Services.io
-    .getProtocolHandler("resource")
-    .QueryInterface(Ci.nsIResProtocolHandler);
-  resProt.setSubstitution("search-extensions", Services.io.newURI(url));
-  if (gModernConfig) {
-    const settings = await RemoteSettings(SearchUtils.SETTINGS_KEY);
-    if (config) {
-      return sinon.stub(settings, "get").returns(config);
-    }
-    let chan = NetUtil.newChannel({
-      uri: "resource://search-extensions/engines.json",
-      loadUsingSystemPrincipal: true,
-    });
-    let json = parseJsonFromStream(chan.open());
-    return sinon.stub(settings, "get").returns(json.data);
-  }
-  return null;
+// For tests, allow the settings to write sooner than it would do normally so that
+// the tests that need to wait for it can run a bit faster.
+SearchSettings.SETTNGS_INVALIDATION_DELAY = 250;
+
+async function promiseSettingsData() {
+  let path = PathUtils.join(PathUtils.profileDir, SETTINGS_FILENAME);
+  return IOUtils.readJSON(path, { decompress: true });
 }
 
-async function promiseCacheData() {
-  let path = OS.Path.join(OS.Constants.Path.profileDir, CACHE_FILENAME);
-  let bytes = await OS.File.read(path, { compression: "lz4" });
-  return JSON.parse(new TextDecoder().decode(bytes));
-}
-
-function promiseSaveCacheData(data) {
-  return OS.File.writeAtomic(
-    OS.Path.join(OS.Constants.Path.profileDir, CACHE_FILENAME),
-    new TextEncoder().encode(JSON.stringify(data)),
-    { compression: "lz4" }
+function promiseSaveSettingsData(data) {
+  return IOUtils.writeJSON(
+    PathUtils.join(PathUtils.profileDir, SETTINGS_FILENAME),
+    data,
+    { compress: true }
   );
 }
 
 async function promiseEngineMetadata() {
-  let cache = await promiseCacheData();
+  let settings = await promiseSettingsData();
   let data = {};
-  for (let engine of cache.engines) {
-    data[engine._shortName] = engine._metaData;
+  for (let engine of settings.engines) {
+    data[engine._name] = engine._metaData;
   }
   return data;
 }
 
 async function promiseGlobalMetadata() {
-  return (await promiseCacheData()).metaData;
+  return (await promiseSettingsData()).metaData;
 }
 
 async function promiseSaveGlobalMetadata(globalData) {
-  let data = await promiseCacheData();
+  let data = await promiseSettingsData();
   data.metaData = globalData;
-  await promiseSaveCacheData(data);
-}
-
-async function forceExpiration() {
-  let metadata = await promiseGlobalMetadata();
-
-  // Make the current geodefaults expire 1s ago.
-  metadata.searchDefaultExpir = Date.now() - 1000;
-  await promiseSaveGlobalMetadata(metadata);
+  await promiseSaveSettingsData(data);
 }
 
 function promiseDefaultNotification(type = "normal") {
@@ -161,14 +104,14 @@ function promiseDefaultNotification(type = "normal") {
 }
 
 /**
- * Clean the profile of any cache file left from a previous run.
+ * Clean the profile of any settings file left from a previous run.
  *
  * @returns {boolean}
- *   Indicates if the cache file existed.
+ *   Indicates if the settings file existed.
  */
-function removeCacheFile() {
+function removeSettingsFile() {
   let file = do_get_profile().clone();
-  file.append(CACHE_FILENAME);
+  file.append(SETTINGS_FILENAME);
   if (file.exists()) {
     file.remove(false);
     return true;
@@ -198,115 +141,61 @@ function isUSTimezone() {
   return UTCOffset >= 150 && UTCOffset <= 600;
 }
 
-const kDefaultenginenamePref = "browser.search.defaultenginename";
 const kTestEngineName = "Test search engine";
-const TOPIC_LOCALES_CHANGE = "intl:app-locales-changed";
 
 /**
- * Loads the current default engine list.json via parsing the json manually.
+ * Waits for the settings file to be saved.
  *
- * @param {boolean} isUS
- *   If this is false, the requested locale will be checked, otherwise the
- *   US region will be used if it exists.
- * @param {boolean} privateMode
- *   If this is true, then the engine for private mode is returned.
- * @returns {string}
- *   Returns the name of the private engine.
+ * @returns {Promise} Resolved when the settings file is saved.
  */
-function getDefaultEngineName(isUS = false, privateMode = false) {
-  // The list of visibleDefaultEngines needs to match or the cache will be ignored.
-  let chan = NetUtil.newChannel({
-    uri: "resource://search-extensions/list.json",
-    loadUsingSystemPrincipal: true,
-  });
-  const settingName = privateMode ? "searchPrivateDefault" : "searchDefault";
-  let searchSettings = parseJsonFromStream(chan.open());
-  let defaultEngineName = searchSettings.default[settingName];
-
-  if (!isUS) {
-    isUS = Services.locale.requestedLocale == "en-US" && isUSTimezone();
-  }
-
-  if (isUS && "US" in searchSettings && settingName in searchSettings.US) {
-    defaultEngineName = searchSettings.US[settingName];
-  }
-  return defaultEngineName;
-}
-
-function getDefaultEngineList(isUS) {
-  // The list of visibleDefaultEngines needs to match or the cache will be ignored.
-  let chan = NetUtil.newChannel({
-    uri: "resource://search-extensions/list.json",
-    loadUsingSystemPrincipal: true,
-  });
-  let json = parseJsonFromStream(chan.open());
-  let visibleDefaultEngines = json.default.visibleDefaultEngines;
-
-  if (isUS === undefined) {
-    isUS = Services.locale.requestedLocale == "en-US" && isUSTimezone();
-  }
-
-  if (isUS) {
-    let searchSettings = json.locales["en-US"];
-    if (
-      "US" in searchSettings &&
-      "visibleDefaultEngines" in searchSettings.US
-    ) {
-      visibleDefaultEngines = searchSettings.US.visibleDefaultEngines;
-    }
-    // From nsSearchService.js
-    let searchRegion = "US";
-    if ("regionOverrides" in json && searchRegion in json.regionOverrides) {
-      for (let engine in json.regionOverrides[searchRegion]) {
-        let index = visibleDefaultEngines.indexOf(engine);
-        if (index > -1) {
-          visibleDefaultEngines[index] =
-            json.regionOverrides[searchRegion][engine];
-        }
-      }
-    }
-  }
-
-  return visibleDefaultEngines;
-}
-
-/**
- * Waits for the cache file to be saved.
- * @returns {Promise} Resolved when the cache file is saved.
- */
-function promiseAfterCache() {
+function promiseAfterSettings() {
   return SearchTestUtils.promiseSearchNotification(
-    "write-cache-to-disk-complete"
+    "write-settings-to-disk-complete"
   );
 }
 
-function parseJsonFromStream(aInputStream) {
-  let bytes = NetUtil.readInputStream(aInputStream, aInputStream.available());
-  return JSON.parse(new TextDecoder().decode(bytes));
+/**
+ * Sets the home region, and waits for the search service to reload the engines.
+ *
+ * @param {string} region
+ *   The region to set.
+ */
+async function promiseSetHomeRegion(region) {
+  let promise = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Region._setHomeRegion(region);
+  await promise;
+}
+
+/**
+ * Sets the requested/available locales and waits for the search service to
+ * reload the engines.
+ *
+ * @param {string} locale
+ *   The locale to set.
+ */
+async function promiseSetLocale(locale) {
+  if (!Services.locale.availableLocales.includes(locale)) {
+    throw new Error(
+      `"${locale}" needs to be included in Services.locales.availableLocales at the start of the test.`
+    );
+  }
+
+  let promise = SearchTestUtils.promiseSearchNotification("engines-reloaded");
+  Services.locale.requestedLocales = [locale];
+  await promise;
 }
 
 /**
  * Read a JSON file and return the JS object
  *
- * @param {nsIFile} aFile
+ * @param {nsIFile} file
  *   The file to read.
- * @returns {object|false}
+ * @returns {object}
  *   Returns the JSON object if the file was successfully read,
  *   false otherwise.
  */
-function readJSONFile(aFile) {
-  let stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(
-    Ci.nsIFileInputStream
-  );
-  try {
-    stream.init(aFile, MODE_RDONLY, FileUtils.PERMS_FILE, 0);
-    return parseJsonFromStream(stream, stream.available());
-  } catch (ex) {
-    dump("search test: readJSONFile: Error reading JSON file: " + ex + "\n");
-  } finally {
-    stream.close();
-  }
-  return false;
+async function readJSONFile(file) {
+  return JSON.parse(await IOUtils.readUTF8(file.path));
 }
 
 /**
@@ -314,8 +203,10 @@ function readJSONFile(aFile) {
  * on actualObj.
  *
  * @param {object} expectedObj
+ *   The source object that we expect to match
  * @param {object} actualObj
- * @param {function} skipProp
+ *   The object to check against the source
+ * @param {Function} skipProp
  *   A function that is called with the property name and its value, to see if
  *   testing that property should be skipped or not.
  */
@@ -326,7 +217,7 @@ function isSubObjectOf(expectedObj, actualObj, skipProp) {
     }
     if (expectedObj[prop] instanceof Object) {
       Assert.equal(
-        actualObj[prop].length,
+        actualObj[prop]?.length,
         expectedObj[prop].length,
         `Should have the correct length for property ${prop}`
       );
@@ -350,198 +241,22 @@ var gDataUrl;
 /**
  * Initializes the HTTP server and ensures that it is terminated when tests end.
  *
+ * @param {string} dir
+ *   The test sub-directory to use for the engines.
  * @returns {HttpServer}
  *   The HttpServer object in case further customization is needed.
  */
-function useHttpServer() {
+function useHttpServer(dir = "data") {
   let httpServer = new HttpServer();
   httpServer.start(-1);
   httpServer.registerDirectory("/", do_get_cwd());
-  gDataUrl = "http://localhost:" + httpServer.identity.primaryPort + "/data/";
+  gDataUrl = `http://localhost:${httpServer.identity.primaryPort}/${dir}/`;
   registerCleanupFunction(async function cleanup_httpServer() {
     await new Promise(resolve => {
       httpServer.stop(resolve);
     });
   });
   return httpServer;
-}
-
-async function withGeoServer(
-  testFn,
-  {
-    visibleDefaultEngines = null,
-    searchDefault = null,
-    geoLookupData = null,
-    preGeolookupPromise = Promise.resolve,
-    cohort = null,
-    intval200 = 86400 * 365,
-    intval503 = 86400,
-    delay = 0,
-    path = "lookup_defaults",
-  } = {}
-) {
-  let srv = new HttpServer();
-  let gRequests = [];
-  srv.registerPathHandler("/lookup_defaults", (metadata, response) => {
-    let data = {
-      interval: intval200,
-      settings: { searchDefault: searchDefault ?? kTestEngineName },
-    };
-    if (cohort) {
-      data.cohort = cohort;
-    }
-    if (visibleDefaultEngines) {
-      data.settings.visibleDefaultEngines = visibleDefaultEngines;
-    }
-    response.processAsync();
-    setTimeout(() => {
-      response.setStatusLine("1.1", 200, "OK");
-      response.write(JSON.stringify(data));
-      response.finish();
-      gRequests.push(metadata);
-    }, delay);
-  });
-
-  srv.registerPathHandler("/lookup_fail", (metadata, response) => {
-    response.processAsync();
-    setTimeout(() => {
-      response.setStatusLine("1.1", 404, "Not Found");
-      response.finish();
-      gRequests.push(metadata);
-    }, delay);
-  });
-
-  srv.registerPathHandler("/lookup_unavailable", (metadata, response) => {
-    response.processAsync();
-    setTimeout(() => {
-      response.setStatusLine("1.1", 503, "Service Unavailable");
-      response.setHeader("Retry-After", intval503.toString());
-      response.finish();
-      gRequests.push(metadata);
-    }, delay);
-  });
-
-  srv.registerPathHandler("/lookup_geoip", async (metadata, response) => {
-    response.processAsync();
-    await preGeolookupPromise;
-    response.setStatusLine("1.1", 200, "OK");
-    response.write(JSON.stringify(geoLookupData));
-    response.finish();
-    gRequests.push(metadata);
-  });
-
-  srv.start(-1);
-
-  let url = `http://localhost:${srv.identity.primaryPort}/${path}?`;
-  let defaultBranch = Services.prefs.getDefaultBranch(
-    SearchUtils.BROWSER_SEARCH_PREF
-  );
-  let originalURL = defaultBranch.getCharPref(PREF_SEARCH_URL, "");
-  defaultBranch.setCharPref(PREF_SEARCH_URL, url);
-  // Set a bogus user value so that running the test ensures we ignore it.
-  Services.prefs.setCharPref(
-    SearchUtils.BROWSER_SEARCH_PREF + PREF_SEARCH_URL,
-    "about:blank"
-  );
-
-  let geoLookupUrl = geoLookupData
-    ? `http://localhost:${srv.identity.primaryPort}/lookup_geoip`
-    : 'data:application/json,{"country_code": "FR"}';
-  Services.prefs.setCharPref("browser.region.network.url", geoLookupUrl);
-
-  try {
-    await testFn(gRequests);
-  } finally {
-    srv.stop(() => {});
-    defaultBranch.setCharPref(PREF_SEARCH_URL, originalURL);
-    Services.prefs.clearUserPref(
-      SearchUtils.BROWSER_SEARCH_PREF + PREF_SEARCH_URL
-    );
-    Services.prefs.clearUserPref("browser.region.network.url");
-  }
-}
-
-function checkNoRequest(requests) {
-  Assert.equal(requests.length, 0);
-}
-
-function checkRequest(requests, cohort = "") {
-  Assert.equal(requests.length, 1);
-  let req = requests.pop();
-  Assert.equal(req._method, "GET");
-  Assert.equal(req._queryString, cohort ? "/" + cohort : "");
-}
-
-/**
- * Adds test engines and returns a promise resolved when they are installed.
- *
- * The engines are added in the given order.
- *
- * @param {Array<object>} aItems
- *   Array of objects with the following properties:
- *   {
- *     name: Engine name, used to wait for it to be loaded.
- *     xmlFileName: Name of the XML file in the "data" folder.
- *     details: Object containing the parameters of addEngineWithDetails,
- *              except for the engine name.  Alternative to xmlFileName.
- *   }
- */
-var addTestEngines = async function(aItems) {
-  if (!gDataUrl) {
-    do_throw("useHttpServer must be called before addTestEngines.");
-  }
-
-  let engines = [];
-
-  for (let item of aItems) {
-    info("Adding engine: " + item.name);
-    await new Promise((resolve, reject) => {
-      Services.obs.addObserver(function obs(subject, topic, data) {
-        try {
-          let engine = subject.QueryInterface(Ci.nsISearchEngine);
-          info("Observed " + data + " for " + engine.name);
-          if (data != "engine-added" || engine.name != item.name) {
-            return;
-          }
-
-          Services.obs.removeObserver(obs, "browser-search-engine-modified");
-          engines.push(engine);
-          resolve();
-        } catch (ex) {
-          reject(ex);
-        }
-      }, "browser-search-engine-modified");
-
-      if (item.xmlFileName) {
-        Services.search.addEngine(gDataUrl + item.xmlFileName, null, false);
-      } else {
-        Services.search.addEngineWithDetails(item.name, item.details);
-      }
-    });
-  }
-
-  return engines;
-};
-
-/**
- * Installs a test engine into the test profile.
- *
- * @returns {Array<SearchEngine>}
- */
-function installTestEngine() {
-  useHttpServer();
-  return addTestEngines([{ name: kTestEngineName, xmlFileName: "engine.xml" }]);
-}
-
-async function asyncReInit({ awaitRegionFetch = false } = {}) {
-  let promises = [
-    SearchTestUtils.promiseSearchNotification("reinit-complete"),
-    SearchTestUtils.promiseSearchNotification("ensure-known-region-done"),
-  ];
-
-  Services.search.reInit();
-
-  return Promise.all(promises);
 }
 
 // This "enum" from nsSearchService.js
@@ -580,7 +295,7 @@ async function setupRemoteSettings() {
   sinon.stub(settings, "get").returns([
     {
       id: "load-paths",
-      matches: ["[other]addEngineWithDetails:searchignore@mozilla.com"],
+      matches: ["[addon]searchignore@mozilla.com"],
       _status: "synced",
     },
     {
@@ -592,8 +307,113 @@ async function setupRemoteSettings() {
 }
 
 /**
+ * Reads the specified file from the data directory and returns its contents as
+ * an Uint8Array.
+ *
+ * @param {string} filename
+ *   The name of the file to read.
+ * @returns {Promise<Uint8Array>}
+ *   The contents of the file in an Uint8Array.
+ */
+async function getFileDataBuffer(filename) {
+  return IOUtils.read(PathUtils.join(do_get_cwd().path, "data", filename));
+}
+
+/**
+ * Creates a mock attachment record for use in remote settings related tests.
+ *
+ * @param {object} item
+ *   An object containing the details of the attachment.
+ * @param {string} item.filename
+ *   The name of the attachmnet file in the data directory.
+ * @param {string[]} item.engineIdentifiers
+ *  The engine identifiers for the attachment.
+ * @param {number} item.imageSize
+ *  The size of the image.
+ * @param {string} [item.id]
+ *   The ID to use for the record. If not provided, a new UUID will be generated.
+ * @param {number} [item.lastModified]
+ *   The last modified time for the record. Defaults to the current time.
+ */
+async function mockRecordWithAttachment({
+  filename,
+  engineIdentifiers,
+  imageSize,
+  id = Services.uuid.generateUUID().toString(),
+  lastModified = Date.now(),
+}) {
+  let buffer = await getFileDataBuffer(filename);
+
+  // Generate a hash.
+  let hasher = Cc["@mozilla.org/security/hash;1"].createInstance(
+    Ci.nsICryptoHash
+  );
+  hasher.init(Ci.nsICryptoHash.SHA256);
+  hasher.update(buffer, buffer.length);
+
+  let hash = hasher.finish(false);
+  hash = Array.from(hash, (_, i) =>
+    ("0" + hash.charCodeAt(i).toString(16)).slice(-2)
+  ).join("");
+
+  // Mapping file extensions to corresponding MIME types.
+  const mimetypeFromExtension = {
+    ico: "image/x-icon",
+    svg: "image/svg+xml",
+    png: "image/png",
+  };
+
+  const extension = filename.split(".").pop().toLowerCase();
+
+  let record = {
+    id,
+    engineIdentifiers,
+    imageSize,
+    attachment: {
+      hash,
+      location: `${filename}`,
+      filename,
+      size: buffer.byteLength,
+      mimetype: mimetypeFromExtension[extension] || "",
+    },
+    last_modified: lastModified,
+  };
+
+  let attachment = {
+    record,
+    blob: new Blob([buffer]),
+  };
+
+  return { record, attachment };
+}
+
+/**
+ * Inserts an attachment record into the remote settings collection.
+ *
+ * @param {RemoteSettingsClient} client
+ *   The remote settings client to use.
+ * @param {object} item
+ *   An object containing the details of the attachment - see mockRecordWithAttachment.
+ * @param {boolean} [addAttachmentToCache]
+ *   Whether to add the attachment file to the cache. Defaults to true.
+ */
+async function insertRecordIntoCollection(
+  client,
+  item,
+  addAttachmentToCache = true
+) {
+  let { record, attachment } = await mockRecordWithAttachment(item);
+  await client.db.create(record);
+  if (addAttachmentToCache) {
+    await client.attachments.cacheImpl.set(record.id, attachment);
+  }
+  await client.db.importChanges({}, record.last_modified);
+}
+
+/**
  * Helper function that sets up a server and respnds to region
  * fetch requests.
+ *
  * @param {string} region
  *   The region that the server will respond with.
  * @param {Promise|null} waitToRespond
@@ -617,6 +437,130 @@ function useCustomGeoServer(region, waitToRespond = Promise.resolve()) {
 }
 
 /**
+ * @typedef {object} TelemetryDetails
+ * @property {string} engineId
+ *   The telemetry ID for the search engine.
+ * @property {string} [displayName]
+ *   The search engine's display name.
+ * @property {string} [loadPath]
+ *   The load path for the search engine.
+ * @property {string} [submissionUrl]
+ *   The submission URL for the search engine.
+ * @property {string} [verified]
+ *   Whether the search engine is verified.
+ */
+
+/**
+ * Asserts that default search engine telemetry has been correctly reported
+ * to Glean.
+ *
+ * @param {object} expected
+ *   An object containing telemetry details for normal and private engines.
+ * @param {TelemetryDetails} expected.normal
+ *   An object with the expected details for the normal search engine.
+ * @param {TelemetryDetails} [expected.private]
+ *   An object with the expected details for the private search engine.
+ */
+async function assertGleanDefaultEngine(expected) {
+  await TestUtils.waitForCondition(
+    () =>
+      Glean.searchEngineDefault.engineId.testGetValue() ==
+      (expected.normal.engineId ?? ""),
+    "Should have set the correct telemetry id for the normal engine"
+  );
+
+  await TestUtils.waitForCondition(
+    () =>
+      Glean.searchEnginePrivate.engineId.testGetValue() ==
+      (expected.private?.engineId ?? ""),
+    "Should have set the correct telemetry id for the private engine"
+  );
+
+  for (let property of [
+    "displayName",
+    "loadPath",
+    "submissionUrl",
+    "verified",
+  ]) {
+    if (property in expected.normal) {
+      Assert.equal(
+        Glean.searchEngineDefault[property].testGetValue(),
+        expected.normal[property] ?? "",
+        `Should have set ${property} correctly`
+      );
+    }
+    if (expected.private && property in expected.private) {
+      Assert.equal(
+        Glean.searchEnginePrivate[property].testGetValue(),
+        expected.private[property] ?? "",
+        `Should have set ${property} correctly`
+      );
+    }
+  }
+}
+
+/**
+ * A simple observer to ensure we get only the expected notifications.
+ */
+class SearchObserver {
+  constructor(expectedNotifications, returnEngineForNotification = false) {
+    this.observer = this.observer.bind(this);
+    this.deferred = Promise.withResolvers();
+    this.expectedNotifications = expectedNotifications;
+    this.returnEngineForNotification = returnEngineForNotification;
+
+    Services.obs.addObserver(this.observer, SearchUtils.TOPIC_ENGINE_MODIFIED);
+
+    this.timeout = setTimeout(this.handleTimeout.bind(this), 5000);
+  }
+
+  get promise() {
+    return this.deferred.promise;
+  }
+
+  handleTimeout() {
+    this.deferred.reject(
+      new Error(
+        "Waiting for Notifications timed out, only received: " +
+          this.expectedNotifications.join(",")
+      )
+    );
+  }
+
+  observer(subject, topic, data) {
+    Assert.greater(
+      this.expectedNotifications.length,
+      0,
+      "Should be expecting a notification"
+    );
+    Assert.equal(
+      data,
+      this.expectedNotifications[0],
+      "Should have received the next expected notification"
+    );
+
+    if (
+      this.returnEngineForNotification &&
+      data == this.returnEngineForNotification
+    ) {
+      this.engineToReturn = subject.QueryInterface(Ci.nsISearchEngine);
+    }
+
+    this.expectedNotifications.shift();
+
+    if (!this.expectedNotifications.length) {
+      clearTimeout(this.timeout);
+      delete this.timeout;
+      this.deferred.resolve(this.engineToReturn);
+      Services.obs.removeObserver(
+        this.observer,
+        SearchUtils.TOPIC_ENGINE_MODIFIED
+      );
+    }
+  }
+}
+
+/**
  * Some tests might trigger initialisation which will trigger the search settings
  * update. We need to make sure we wait for that to finish before we exit, otherwise
  * it may cause shutdown issues.
@@ -628,5 +572,41 @@ let updatePromise = SearchTestUtils.promiseSearchNotification(
 registerCleanupFunction(async () => {
   if (Services.search.isInitialized) {
     await updatePromise;
+  }
+});
+
+let consoleAllowList = [
+  // Harness issues.
+  'property "localProfileDir" is non-configurable and can\'t be deleted',
+  'property "profileDir" is non-configurable and can\'t be deleted',
+];
+
+let endConsoleListening = TestUtils.listenForConsoleMessages();
+
+registerCleanupFunction(async () => {
+  let msgs = await endConsoleListening();
+  for (let msg of msgs) {
+    msg = msg.wrappedJSObject;
+    if (msg.level != "error") {
+      continue;
+    }
+
+    if (!msg.arguments?.length) {
+      Assert.ok(
+        false,
+        "Unexpected console message received during test: " + msg
+      );
+    } else {
+      let firstArg = msg.arguments[0];
+      // Use the appropriate message depending on the object supplied to
+      // the first argument.
+      let message = firstArg.messageContents ?? firstArg.message ?? firstArg;
+      if (!consoleAllowList.some(e => message.includes(e))) {
+        Assert.ok(
+          false,
+          "Unexpected console message received during test: " + message
+        );
+      }
+    }
   }
 });

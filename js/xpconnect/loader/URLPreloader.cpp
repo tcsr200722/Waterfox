@@ -11,18 +11,21 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/FileUtils.h"
+#include "mozilla/IOBuffers.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
+#include "mozilla/Try.h"
 #include "mozilla/Unused.h"
 #include "mozilla/Vector.h"
+#include "mozilla/scache/StartupCache.h"
 
+#include "crc32c.h"
 #include "MainThreadUtils.h"
 #include "nsPrintfCString.h"
 #include "nsDebug.h"
 #include "nsIFile.h"
 #include "nsIFileURL.h"
-#include "nsIObserverService.h"
 #include "nsNetUtil.h"
 #include "nsPromiseFlatString.h"
 #include "nsProxyRelease.h"
@@ -30,9 +33,6 @@
 #include "nsXULAppAPI.h"
 #include "nsZipArchive.h"
 #include "xpcpublic.h"
-
-#undef DELAYED_STARTUP_TOPIC
-#define DELAYED_STARTUP_TOPIC "sessionstore-windows-restored"
 
 namespace mozilla {
 namespace {
@@ -47,6 +47,7 @@ bool StartsWith(const T& haystack, const T& needle) {
 }  // anonymous namespace
 
 using namespace mozilla::loader;
+using mozilla::scache::StartupCache;
 
 nsresult URLPreloader::CollectReports(nsIHandleReportCallback* aHandleReport,
                                       nsISupports* aData, bool aAnonymize) {
@@ -54,7 +55,7 @@ nsresult URLPreloader::CollectReports(nsIHandleReportCallback* aHandleReport,
                      ShallowSizeOfIncludingThis(MallocSizeOf),
                      "Memory used by the URL preloader service itself.");
 
-  for (const auto& elem : IterHash(mCachedURLs)) {
+  for (const auto& elem : mCachedURLs.Values()) {
     nsAutoCString pathName;
     pathName.Append(elem->mPath);
     // The backslashes will automatically be replaced with slashes in
@@ -66,19 +67,37 @@ nsresult URLPreloader::CollectReports(nsIHandleReportCallback* aHandleReport,
                          elem->TypeString(), pathName.get());
 
     aHandleReport->Callback(
-        EmptyCString(), path, KIND_HEAP, UNITS_BYTES,
+        ""_ns, path, KIND_HEAP, UNITS_BYTES,
         elem->SizeOfIncludingThis(MallocSizeOf),
-        NS_LITERAL_CSTRING("Memory used to hold cache data for files which "
-                           "have been read or pre-loaded during this session."),
+        nsLiteralCString("Memory used to hold cache data for files which "
+                         "have been read or pre-loaded during this session."),
         aData);
   }
 
   return NS_OK;
 }
 
+// static
+already_AddRefed<URLPreloader> URLPreloader::Create(bool* aInitialized) {
+  // The static APIs like URLPreloader::Read work in the child process because
+  // they fall back to a synchronous read. The actual preloader must be
+  // explicitly initialized, and this should only be done in the parent.
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
+
+  RefPtr<URLPreloader> preloader = new URLPreloader();
+  if (preloader->InitInternal().isOk()) {
+    *aInitialized = true;
+    RegisterWeakMemoryReporter(preloader);
+  } else {
+    *aInitialized = false;
+  }
+
+  return preloader.forget();
+}
+
 URLPreloader& URLPreloader::GetSingleton() {
   if (!sSingleton) {
-    sSingleton = new URLPreloader();
+    sSingleton = Create(&sInitialized);
     ClearOnShutdown(&sSingleton);
   }
 
@@ -89,16 +108,10 @@ bool URLPreloader::sInitialized = false;
 
 StaticRefPtr<URLPreloader> URLPreloader::sSingleton;
 
-URLPreloader::URLPreloader() {
-  if (InitInternal().isOk()) {
-    sInitialized = true;
-    RegisterWeakMemoryReporter(this);
-  }
-}
-
 URLPreloader::~URLPreloader() {
   if (sInitialized) {
     UnregisterWeakMemoryReporter(this);
+    sInitialized = false;
   }
 }
 
@@ -122,28 +135,20 @@ Result<Ok, nsresult> URLPreloader::InitInternal() {
   mResProto = do_QueryInterface(ph, &rv);
   MOZ_TRY(rv);
 
-  mChromeReg = services::GetChromeRegistryService();
+  mChromeReg = services::GetChromeRegistry();
   if (!mChromeReg) {
     return Err(NS_ERROR_UNEXPECTED);
   }
 
-  if (XRE_IsParentProcess()) {
-    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
-
-    obs->AddObserver(this, DELAYED_STARTUP_TOPIC, false);
-
-    MOZ_TRY(NS_GetSpecialDirectory("ProfLDS", getter_AddRefs(mProfD)));
-  } else {
-    mStartupFinished = true;
-    mReaderInitialized = true;
-  }
+  MOZ_TRY(NS_GetSpecialDirectory("ProfLDS", getter_AddRefs(mProfD)));
 
   return Ok();
 }
 
 URLPreloader& URLPreloader::ReInitialize() {
-  sSingleton = new URLPreloader();
-
+  MOZ_ASSERT(sSingleton);
+  sSingleton = nullptr;
+  sSingleton = Create(&sInitialized);
   return *sSingleton;
 }
 
@@ -156,27 +161,30 @@ Result<nsCOMPtr<nsIFile>, nsresult> URLPreloader::GetCacheFile(
   nsCOMPtr<nsIFile> cacheFile;
   MOZ_TRY(mProfD->Clone(getter_AddRefs(cacheFile)));
 
-  MOZ_TRY(cacheFile->AppendNative(NS_LITERAL_CSTRING("startupCache")));
+  MOZ_TRY(cacheFile->AppendNative("startupCache"_ns));
   Unused << cacheFile->Create(nsIFile::DIRECTORY_TYPE, 0777);
 
-  MOZ_TRY(cacheFile->Append(NS_LITERAL_STRING("urlCache") + suffix));
+  MOZ_TRY(cacheFile->Append(u"urlCache"_ns + suffix));
 
   return std::move(cacheFile);
 }
 
-static const uint8_t URL_MAGIC[] = "mozURLcachev002";
+static const uint8_t URL_MAGIC[] = "mozURLcachev003";
 
 Result<nsCOMPtr<nsIFile>, nsresult> URLPreloader::FindCacheFile() {
+  if (StartupCache::GetIgnoreDiskCache()) {
+    return Err(NS_ERROR_ABORT);
+  }
+
   nsCOMPtr<nsIFile> cacheFile;
-  MOZ_TRY_VAR(cacheFile, GetCacheFile(NS_LITERAL_STRING(".bin")));
+  MOZ_TRY_VAR(cacheFile, GetCacheFile(u".bin"_ns));
 
   bool exists;
   MOZ_TRY(cacheFile->Exists(&exists));
   if (exists) {
-    MOZ_TRY(
-        cacheFile->MoveTo(nullptr, NS_LITERAL_STRING("urlCache-current.bin")));
+    MOZ_TRY(cacheFile->MoveTo(nullptr, u"urlCache-current.bin"_ns));
   } else {
-    MOZ_TRY(cacheFile->SetLeafName(NS_LITERAL_STRING("urlCache-current.bin")));
+    MOZ_TRY(cacheFile->SetLeafName(u"urlCache-current.bin"_ns));
     MOZ_TRY(cacheFile->Exists(&exists));
     if (!exists) {
       return Err(NS_ERROR_FILE_NOT_FOUND);
@@ -188,6 +196,7 @@ Result<nsCOMPtr<nsIFile>, nsresult> URLPreloader::FindCacheFile() {
 
 Result<Ok, nsresult> URLPreloader::WriteCache() {
   MOZ_ASSERT(!NS_IsMainThread());
+  MOZ_DIAGNOSTIC_ASSERT(mStartupFinished);
 
   // The script preloader might call us a second time, if it has to re-write
   // its cache after a cache flush. We don't care about cache flushes, since
@@ -204,7 +213,7 @@ Result<Ok, nsresult> URLPreloader::WriteCache() {
   LOG(Debug, "Writing cache...");
 
   nsCOMPtr<nsIFile> cacheFile;
-  MOZ_TRY_VAR(cacheFile, GetCacheFile(NS_LITERAL_STRING("-new.bin")));
+  MOZ_TRY_VAR(cacheFile, GetCacheFile(u"-new.bin"_ns));
 
   bool exists;
   MOZ_TRY(cacheFile->Exists(&exists));
@@ -213,14 +222,15 @@ Result<Ok, nsresult> URLPreloader::WriteCache() {
   }
 
   {
-    AutoFDClose fd;
+    AutoFDClose raiiFd;
     MOZ_TRY(cacheFile->OpenNSPRFileDesc(PR_WRONLY | PR_CREATE_FILE, 0644,
-                                        &fd.rwget()));
+                                        getter_Transfers(raiiFd)));
+    const auto fd = raiiFd.get();
 
     nsTArray<URLEntry*> entries;
-    for (auto& entry : IterHash(mCachedURLs)) {
+    for (const auto& entry : mCachedURLs.Values()) {
       if (entry->mReadTime) {
-        entries.AppendElement(entry);
+        entries.AppendElement(entry.get());
       }
     }
 
@@ -234,12 +244,16 @@ Result<Ok, nsresult> URLPreloader::WriteCache() {
     uint8_t headerSize[4];
     LittleEndian::writeUint32(headerSize, buf.cursor());
 
+    uint8_t crc[4];
+    LittleEndian::writeUint32(crc, ComputeCrc32c(~0, buf.Get(), buf.cursor()));
+
     MOZ_TRY(Write(fd, URL_MAGIC, sizeof(URL_MAGIC)));
     MOZ_TRY(Write(fd, headerSize, sizeof(headerSize)));
+    MOZ_TRY(Write(fd, crc, sizeof(crc)));
     MOZ_TRY(Write(fd, buf.Get(), buf.cursor()));
   }
 
-  MOZ_TRY(cacheFile->MoveTo(nullptr, NS_LITERAL_STRING("urlCache.bin")));
+  MOZ_TRY(cacheFile->MoveTo(nullptr, u"urlCache.bin"_ns));
 
   NS_DispatchToMainThread(
       NewRunnableMethod("URLPreloader::Cleanup", this, &URLPreloader::Cleanup));
@@ -262,7 +276,8 @@ Result<Ok, nsresult> URLPreloader::ReadCache(
   auto size = cache.size();
 
   uint32_t headerSize;
-  if (size < sizeof(URL_MAGIC) + sizeof(headerSize)) {
+  uint32_t crc;
+  if (size < sizeof(URL_MAGIC) + sizeof(headerSize) + sizeof(crc)) {
     return Err(NS_ERROR_UNEXPECTED);
   }
 
@@ -277,7 +292,14 @@ Result<Ok, nsresult> URLPreloader::ReadCache(
   headerSize = LittleEndian::readUint32(data.get());
   data += sizeof(headerSize);
 
+  crc = LittleEndian::readUint32(data.get());
+  data += sizeof(crc);
+
   if (data + headerSize > end) {
+    return Err(NS_ERROR_UNEXPECTED);
+  }
+
+  if (crc != ComputeCrc32c(~0, data.get(), headerSize)) {
     return Err(NS_ERROR_UNEXPECTED);
   }
 
@@ -300,15 +322,32 @@ Result<Ok, nsresult> URLPreloader::ReadCache(
 
       LOG(Debug, "Cached file: %s %s", key.TypeString(), key.mPath.get());
 
-      auto entry = mCachedURLs.LookupOrAdd(key, key);
+      // Don't bother doing anything else if the key didn't load correctly.
+      // We're going to throw it out right away, and it is possible that this
+      // leads to pendingURLs getting into a weird state.
+      if (buf.error()) {
+        return Err(NS_ERROR_UNEXPECTED);
+      }
+
+      auto entry = mCachedURLs.GetOrInsertNew(key, key);
       entry->mResultCode = NS_ERROR_NOT_INITIALIZED;
+
+      if (entry->isInList()) {
+#ifdef NIGHTLY_BUILD
+        MOZ_DIAGNOSTIC_ASSERT(pendingURLs.contains(entry),
+                              "Entry should be in pendingURLs");
+        MOZ_DIAGNOSTIC_ASSERT(key.mPath.Length() > 0,
+                              "Path should be non-empty");
+        MOZ_DIAGNOSTIC_ASSERT(false, "Entry should be new and not in any list");
+#endif
+        return Err(NS_ERROR_UNEXPECTED);
+      }
 
       pendingURLs.insertBack(entry);
     }
 
-    if (buf.error()) {
-      return Err(NS_ERROR_UNEXPECTED);
-    }
+    MOZ_RELEASE_ASSERT(!buf.error(),
+                       "We should have already bailed on an error");
 
     cleanup.release();
   }
@@ -318,9 +357,12 @@ Result<Ok, nsresult> URLPreloader::ReadCache(
 
 void URLPreloader::BackgroundReadFiles() {
   auto cleanup = MakeScopeExit([&]() {
+    auto lock = mReaderThread.Lock();
+    auto& readerThread = lock.ref();
     NS_DispatchToMainThread(NewRunnableMethod(
-        "nsIThread::AsyncShutdown", mReaderThread, &nsIThread::AsyncShutdown));
-    mReaderThread = nullptr;
+        "nsIThread::AsyncShutdown", readerThread, &nsIThread::AsyncShutdown));
+
+    readerThread = nullptr;
   });
 
   Vector<nsZipCursor> cursors;
@@ -420,41 +462,52 @@ void URLPreloader::BackgroundReadFiles() {
 }
 
 void URLPreloader::BeginBackgroundRead() {
-  if (!mReaderThread && !mReaderInitialized && sInitialized) {
+  auto lock = mReaderThread.Lock();
+  auto& readerThread = lock.ref();
+  if (!readerThread && !mReaderInitialized && sInitialized) {
+    nsresult rv;
+    rv = NS_NewNamedThread("BGReadURLs", getter_AddRefs(readerThread));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return;
+    }
+
     nsCOMPtr<nsIRunnable> runnable =
         NewRunnableMethod("URLPreloader::BackgroundReadFiles", this,
                           &URLPreloader::BackgroundReadFiles);
-
-    Unused << NS_NewNamedThread("BGReadURLs", getter_AddRefs(mReaderThread),
-                                runnable);
+    rv = readerThread->Dispatch(runnable.forget(), NS_DISPATCH_NORMAL);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      // If we can't launch the task, just destroy the thread
+      readerThread = nullptr;
+      return;
+    }
   }
 }
 
-Result<const nsCString, nsresult> URLPreloader::ReadInternal(
-    const CacheKey& key, ReadType readType) {
-  if (mStartupFinished) {
+Result<nsCString, nsresult> URLPreloader::ReadInternal(const CacheKey& key,
+                                                       ReadType readType) {
+  if (mStartupFinished || !mReaderInitialized) {
     URLEntry entry(key);
 
     return entry.Read();
   }
 
-  auto entry = mCachedURLs.LookupOrAdd(key, key);
+  auto entry = mCachedURLs.GetOrInsertNew(key, key);
 
   entry->UpdateUsedTime();
 
   return entry->ReadOrWait(readType);
 }
 
-Result<const nsCString, nsresult> URLPreloader::ReadURIInternal(
-    nsIURI* uri, ReadType readType) {
+Result<nsCString, nsresult> URLPreloader::ReadURIInternal(nsIURI* uri,
+                                                          ReadType readType) {
   CacheKey key;
   MOZ_TRY_VAR(key, ResolveURI(uri));
 
   return ReadInternal(key, readType);
 }
 
-/* static */ Result<const nsCString, nsresult> URLPreloader::Read(
-    const CacheKey& key, ReadType readType) {
+/* static */ Result<nsCString, nsresult> URLPreloader::Read(const CacheKey& key,
+                                                            ReadType readType) {
   // If we're being called before the preloader has been initialized (i.e.,
   // before the profile has been initialized), just fall back to a synchronous
   // read. This happens when we're reading .ini and preference files that are
@@ -466,7 +519,7 @@ Result<const nsCString, nsresult> URLPreloader::ReadURIInternal(
   return GetSingleton().ReadInternal(key, readType);
 }
 
-/* static */ Result<const nsCString, nsresult> URLPreloader::ReadURI(
+/* static */ Result<nsCString, nsresult> URLPreloader::ReadURI(
     nsIURI* uri, ReadType readType) {
   if (!sInitialized) {
     return Err(NS_ERROR_NOT_INITIALIZED);
@@ -475,12 +528,12 @@ Result<const nsCString, nsresult> URLPreloader::ReadURIInternal(
   return GetSingleton().ReadURIInternal(uri, readType);
 }
 
-/* static */ Result<const nsCString, nsresult> URLPreloader::ReadFile(
+/* static */ Result<nsCString, nsresult> URLPreloader::ReadFile(
     nsIFile* file, ReadType readType) {
   return Read(CacheKey(file), readType);
 }
 
-/* static */ Result<const nsCString, nsresult> URLPreloader::Read(
+/* static */ Result<nsCString, nsresult> URLPreloader::Read(
     FileLocation& location, ReadType readType) {
   if (location.IsZip()) {
     if (location.GetBaseZip()) {
@@ -495,7 +548,7 @@ Result<const nsCString, nsresult> URLPreloader::ReadURIInternal(
   return ReadFile(file, readType);
 }
 
-/* static */ Result<const nsCString, nsresult> URLPreloader::ReadZip(
+/* static */ Result<nsCString, nsresult> URLPreloader::ReadZip(
     nsZipArchive* zip, const nsACString& path, ReadType readType) {
   // If the zip archive belongs to an Omnijar location, map it to a cache
   // entry, and cache it as normal. Otherwise, simply read the entry
@@ -586,7 +639,7 @@ Result<FileLocation, nsresult> URLPreloader::CacheKey::ToFileLocation() {
   return FileLocation(zip, mPath.get());
 }
 
-Result<const nsCString, nsresult> URLPreloader::URLEntry::Read() {
+Result<nsCString, nsresult> URLPreloader::URLEntry::Read() {
   FileLocation location;
   MOZ_TRY_VAR(location, ToFileLocation());
 
@@ -594,8 +647,8 @@ Result<const nsCString, nsresult> URLPreloader::URLEntry::Read() {
   return mData;
 }
 
-/* static */ Result<const nsCString, nsresult>
-URLPreloader::URLEntry::ReadLocation(FileLocation& location) {
+/* static */ Result<nsCString, nsresult> URLPreloader::URLEntry::ReadLocation(
+    FileLocation& location) {
   FileLocation::Data data;
   MOZ_TRY(location.GetData(data));
 
@@ -609,7 +662,7 @@ URLPreloader::URLEntry::ReadLocation(FileLocation& location) {
   return std::move(result);
 }
 
-Result<const nsCString, nsresult> URLPreloader::URLEntry::ReadOrWait(
+Result<nsCString, nsresult> URLPreloader::URLEntry::ReadOrWait(
     ReadType readType) {
   auto now = TimeStamp::Now();
   LOG(Info, "Reading %s\n", mPath.get());
@@ -642,20 +695,14 @@ Result<const nsCString, nsresult> URLPreloader::URLEntry::ReadOrWait(
   return res;
 }
 
-inline URLPreloader::CacheKey::CacheKey(InputBuffer& buffer) { Code(buffer); }
-
-nsresult URLPreloader::Observe(nsISupports* subject, const char* topic,
-                               const char16_t* data) {
-  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
-  if (!strcmp(topic, DELAYED_STARTUP_TOPIC)) {
-    obs->RemoveObserver(this, DELAYED_STARTUP_TOPIC);
-    mStartupFinished = true;
-  }
-
-  return NS_OK;
+inline URLPreloader::CacheKey::CacheKey(InputBuffer& buffer) {
+  Code(buffer);
+  MOZ_DIAGNOSTIC_ASSERT(
+      mType == TypeAppJar || mType == TypeGREJar || mType == TypeFile,
+      "mType should be valid");
 }
 
-NS_IMPL_ISUPPORTS(URLPreloader, nsIObserver, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(URLPreloader, nsIMemoryReporter)
 
 #undef LOG
 

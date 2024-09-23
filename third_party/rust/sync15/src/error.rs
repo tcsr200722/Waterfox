@@ -2,14 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use failure::Fail;
 use interrupt_support::Interrupted;
-use rc_crypto::hawk;
-use std::string;
-use std::time::SystemTime;
-use sync15_traits::request::UnacceptableBaseUrl;
 
 /// This enum is to discriminate `StorageHttpError`, and not used as an error.
+#[cfg(feature = "sync-client")]
 #[derive(Debug, Clone)]
 pub enum ErrorResponse {
     NotFound { route: String },
@@ -23,123 +19,117 @@ pub enum ErrorResponse {
     RequestFailed { route: String, status: u16 },
 }
 
-#[derive(Debug, Fail)]
-pub enum ErrorKind {
-    #[fail(display = "Key {} had wrong length, got {}, expected {}", _0, _1, _2)]
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[cfg(feature = "crypto")]
+    #[error("Key {0} had wrong length, got {1}, expected {2}")]
     BadKeyLength(&'static str, usize, usize),
 
-    #[fail(display = "SHA256 HMAC Mismatch error")]
+    #[cfg(feature = "crypto")]
+    #[error("SHA256 HMAC Mismatch error")]
     HmacMismatch,
 
-    #[fail(
-        display = "HTTP status {} when requesting a token from the tokenserver",
-        _0
-    )]
+    #[cfg(feature = "crypto")]
+    #[error("Crypto/NSS error: {0}")]
+    CryptoError(#[from] rc_crypto::Error),
+
+    #[cfg(feature = "crypto")]
+    #[error("Base64 decode error: {0}")]
+    Base64Decode(#[from] base64::DecodeError),
+
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
+
+    #[error("Bad cleartext UTF8: {0}")]
+    BadCleartextUtf8(#[from] std::string::FromUtf8Error),
+
+    #[cfg(feature = "crypto")]
+    #[error("HAWK error: {0}")]
+    HawkError(#[from] rc_crypto::hawk::Error),
+
+    //
+    // Errors specific to this module.
+    //
+    #[cfg(feature = "sync-client")]
+    #[error("HTTP status {0} when requesting a token from the tokenserver")]
     TokenserverHttpError(u16),
 
-    #[fail(display = "HTTP storage error: {:?}", _0)]
+    #[cfg(feature = "sync-client")]
+    #[error("HTTP storage error: {0:?}")]
     StorageHttpError(ErrorResponse),
 
-    #[fail(display = "Server requested backoff. Retry after {:?}", _0)]
-    BackoffError(SystemTime),
+    #[cfg(feature = "sync-client")]
+    #[error("Server requested backoff. Retry after {0:?}")]
+    BackoffError(std::time::SystemTime),
 
-    #[fail(display = "Outgoing record is too large to upload")]
+    #[cfg(feature = "sync-client")]
+    #[error("Outgoing record is too large to upload")]
     RecordTooLargeError,
 
     // Do we want to record the concrete problems?
-    #[fail(display = "Not all records were successfully uploaded")]
+    #[cfg(feature = "sync-client")]
+    #[error("Not all records were successfully uploaded")]
     RecordUploadFailed,
 
     /// Used for things like a node reassignment or an unexpected syncId
     /// implying the app needs to "reset" its understanding of remote storage.
-    #[fail(display = "The server has reset the storage for this account")]
+    #[cfg(feature = "sync-client")]
+    #[error("The server has reset the storage for this account")]
     StorageResetError,
 
-    #[fail(display = "Unacceptable URL: {}", _0)]
+    #[cfg(feature = "sync-client")]
+    #[error("Unacceptable URL: {0}")]
     UnacceptableUrl(String),
 
-    #[fail(display = "Missing server timestamp header in request")]
+    #[cfg(feature = "sync-client")]
+    #[error("Missing server timestamp header in request")]
     MissingServerTimestamp,
 
-    #[fail(display = "Unexpected server behavior during batch upload: {}", _0)]
+    #[cfg(feature = "sync-client")]
+    #[error("Unexpected server behavior during batch upload: {0}")]
     ServerBatchProblem(&'static str),
 
-    #[fail(
-        display = "It appears some other client is also trying to setup storage; try again later"
-    )]
+    #[cfg(feature = "sync-client")]
+    #[error("It appears some other client is also trying to setup storage; try again later")]
     SetupRace,
 
-    #[fail(display = "Client upgrade required; server storage version too new")]
+    #[cfg(feature = "sync-client")]
+    #[error("Client upgrade required; server storage version too new")]
     ClientUpgradeRequired,
 
     // This means that our global state machine needs to enter a state (such as
     // "FreshStartNeeded", but the allowed_states don't include that state.)
     // It typically means we are trying to do a "fast" or "read-only" sync.
-    #[fail(display = "Our storage needs setting up and we can't currently do it")]
+    #[cfg(feature = "sync-client")]
+    #[error("Our storage needs setting up and we can't currently do it")]
     SetupRequired,
 
-    #[fail(display = "Store error: {}", _0)]
-    StoreError(#[fail(cause)] failure::Error),
+    #[cfg(feature = "sync-client")]
+    #[error("Store error: {0}")]
+    StoreError(#[from] anyhow::Error),
 
-    #[fail(display = "Crypto/NSS error: {}", _0)]
-    CryptoError(#[fail(cause)] rc_crypto::Error),
+    #[cfg(feature = "sync-client")]
+    #[error("Network error: {0}")]
+    RequestError(#[from] viaduct::Error),
 
-    #[fail(display = "Base64 decode error: {}", _0)]
-    Base64Decode(#[fail(cause)] base64::DecodeError),
+    #[cfg(feature = "sync-client")]
+    #[error("Unexpected HTTP status: {0}")]
+    UnexpectedStatus(#[from] viaduct::UnexpectedStatus),
 
-    #[fail(display = "JSON error: {}", _0)]
-    JsonError(#[fail(cause)] serde_json::Error),
+    #[cfg(feature = "sync-client")]
+    #[error("URL parse error: {0}")]
+    MalformedUrl(#[from] url::ParseError),
 
-    #[fail(display = "Bad cleartext UTF8: {}", _0)]
-    BadCleartextUtf8(#[fail(cause)] string::FromUtf8Error),
-
-    #[fail(display = "Network error: {}", _0)]
-    RequestError(#[fail(cause)] viaduct::Error),
-
-    #[fail(display = "Unexpected HTTP status: {}", _0)]
-    UnexpectedStatus(#[fail(cause)] viaduct::UnexpectedStatus),
-
-    #[fail(display = "HAWK error: {}", _0)]
-    HawkError(#[fail(cause)] hawk::Error),
-
-    #[fail(display = "URL parse error: {}", _0)]
-    MalformedUrl(#[fail(cause)] url::ParseError),
-
-    #[fail(display = "The operation was interrupted.")]
-    Interrupted(#[fail(cause)] Interrupted),
+    #[error("The operation was interrupted.")]
+    Interrupted(#[from] Interrupted),
 }
 
-error_support::define_error! {
-    ErrorKind {
-        (CryptoError, rc_crypto::Error),
-        (Base64Decode, base64::DecodeError),
-        (JsonError, serde_json::Error),
-        (BadCleartextUtf8, std::string::FromUtf8Error),
-        (RequestError, viaduct::Error),
-        (UnexpectedStatus, viaduct::UnexpectedStatus),
-        (MalformedUrl, url::ParseError),
-        // A bit dubious, since we only want this to happen inside `synchronize`
-        (StoreError, failure::Error),
-        (Interrupted, Interrupted),
-        (HawkError, hawk::Error),
-    }
-}
-
-impl From<UnacceptableBaseUrl> for ErrorKind {
-    fn from(e: UnacceptableBaseUrl) -> ErrorKind {
-        ErrorKind::UnacceptableUrl(e.to_string())
-    }
-}
-
-impl From<UnacceptableBaseUrl> for Error {
-    fn from(e: UnacceptableBaseUrl) -> Self {
-        Error::from(ErrorKind::from(e))
-    }
-}
-
+#[cfg(feature = "sync-client")]
 impl Error {
-    pub(crate) fn get_backoff(&self) -> Option<SystemTime> {
-        if let ErrorKind::BackoffError(time) = self.kind() {
+    pub(crate) fn get_backoff(&self) -> Option<std::time::SystemTime> {
+        if let Error::BackoffError(time) = self {
             Some(*time)
         } else {
             None

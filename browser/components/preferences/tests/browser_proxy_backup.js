@@ -3,19 +3,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function test() {
   waitForExplicitFinish();
 
   // network.proxy.type needs to be backed up and restored because mochitest
   // changes this setting from the default
   let oldNetworkProxyType = Services.prefs.getIntPref("network.proxy.type");
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.setIntPref("network.proxy.type", oldNetworkProxyType);
-    Services.prefs.clearUserPref("browser.preferences.instantApply");
     Services.prefs.clearUserPref("network.proxy.share_proxy_settings");
-    for (let proxyType of ["http", "ssl", "ftp", "socks"]) {
+    for (let proxyType of ["http", "ssl", "socks"]) {
       Services.prefs.clearUserPref("network.proxy." + proxyType);
       Services.prefs.clearUserPref("network.proxy." + proxyType + "_port");
       if (proxyType == "http") {
@@ -26,6 +23,10 @@ function test() {
         "network.proxy.backup." + proxyType + "_port"
       );
     }
+    // On accepting the dialog, we also write TRR values, so we need to clear
+    // them. They are tested separately in browser_privacy_dnsoverhttps.js.
+    Services.prefs.clearUserPref("network.trr.mode");
+    Services.prefs.clearUserPref("network.trr.uri");
   });
 
   let connectionURL =
@@ -46,7 +47,7 @@ function test() {
   so it has to be opened as a sub dialog of the main pref tab.
   Open the main tab here.
   */
-  open_preferences(async function tabOpened(aContentWindow) {
+  open_preferences(async function tabOpened() {
     is(
       gBrowser.currentURI.spec,
       "about:preferences",

@@ -2,73 +2,46 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-import React, { Component } from "react";
-import { connect } from "../../utils/connect";
-import classnames from "classnames";
+import React, { Component } from "devtools/client/shared/vendor/react";
+import {
+  div,
+  input,
+  li,
+  ul,
+  form,
+  datalist,
+  option,
+  span,
+} from "devtools/client/shared/vendor/react-dom-factories";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
+import { connect } from "devtools/client/shared/vendor/react-redux";
 import { features } from "../../utils/prefs";
+import AccessibleImage from "../shared/AccessibleImage";
 
-// eslint-disable-next-line import/named
-import { objectInspector } from "devtools-reps";
+import { objectInspector } from "devtools/client/shared/components/reps/index";
 
-import actions from "../../actions";
+import actions from "../../actions/index";
 import {
   getExpressions,
-  getExpressionError,
   getAutocompleteMatchset,
-  getThreadContext,
-} from "../../selectors";
-import { getValue } from "../../utils/expressions";
-import { getGrip, getFront } from "../../utils/evaluation-result";
+  getSelectedSource,
+  isMapScopesEnabled,
+  getIsCurrentThreadPaused,
+  getSelectedFrame,
+  getOriginalFrameScope,
+  getCurrentThread,
+} from "../../selectors/index";
+import { getExpressionResultGripAndFront } from "../../utils/expressions";
 
-import { CloseButton } from "../shared/Button";
-import { debounce } from "lodash";
+import { CloseButton } from "../shared/Button/index";
 
-import type { List } from "immutable";
-import type { Expression, ThreadContext } from "../../types";
-
-import "./Expressions.css";
+const { debounce } = require("resource://devtools/shared/debounce.js");
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
 const { ObjectInspector } = objectInspector;
 
-type State = {
-  editing: boolean,
-  editIndex: number,
-  inputValue: string,
-  focused: boolean,
-};
-
-type OwnProps = {|
-  showInput: boolean,
-  onExpressionAdded: () => void,
-|};
-type Props = {
-  cx: ThreadContext,
-  expressions: List<Expression>,
-  expressionError: boolean,
-  showInput: boolean,
-  autocompleteMatches: ?(string[]),
-  onExpressionAdded: () => void,
-  autocomplete: typeof actions.autocomplete,
-  clearAutocomplete: typeof actions.clearAutocomplete,
-  addExpression: typeof actions.addExpression,
-  clearExpressionError: typeof actions.clearExpressionError,
-  updateExpression: typeof actions.updateExpression,
-  deleteExpression: typeof actions.deleteExpression,
-  openLink: typeof actions.openLink,
-  openElementInInspector: typeof actions.openElementInInspectorCommand,
-  highlightDomElement: typeof actions.highlightDomElement,
-  unHighlightDomElement: typeof actions.unHighlightDomElement,
-};
-
-class Expressions extends Component<Props, State> {
-  _input: ?HTMLInputElement;
-  renderExpression: (
-    expression: Expression,
-    index: number
-  ) => React$Element<"li">;
-
-  constructor(props: Props) {
+class Expressions extends Component {
+  constructor(props) {
     super(props);
 
     this.state = {
@@ -76,6 +49,26 @@ class Expressions extends Component<Props, State> {
       editIndex: -1,
       inputValue: "",
       focused: false,
+    };
+  }
+
+  static get propTypes() {
+    return {
+      addExpression: PropTypes.func.isRequired,
+      autocomplete: PropTypes.func.isRequired,
+      autocompleteMatches: PropTypes.array,
+      clearAutocomplete: PropTypes.func.isRequired,
+      deleteExpression: PropTypes.func.isRequired,
+      expressions: PropTypes.array.isRequired,
+      highlightDomElement: PropTypes.func.isRequired,
+      onExpressionAdded: PropTypes.func.isRequired,
+      openElementInInspector: PropTypes.func.isRequired,
+      openLink: PropTypes.any.isRequired,
+      showInput: PropTypes.bool.isRequired,
+      unHighlightDomElement: PropTypes.func.isRequired,
+      updateExpression: PropTypes.func.isRequired,
+      isOriginalVariableMappingDisabled: PropTypes.bool,
+      isLoadingOriginalVariables: PropTypes.bool,
     };
   }
 
@@ -90,31 +83,43 @@ class Expressions extends Component<Props, State> {
   }
 
   clear = () => {
-    this.setState(() => {
-      this.props.clearExpressionError();
-      return { editing: false, editIndex: -1, inputValue: "", focused: false };
-    });
+    this.setState(() => ({
+      editing: false,
+      editIndex: -1,
+      inputValue: "",
+      focused: false,
+    }));
   };
 
-  componentWillReceiveProps(nextProps: Props) {
-    if (this.state.editing && !nextProps.expressionError) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
+    if (this.state.editing) {
       this.clear();
+    }
+
+    // Ensures that the add watch expression input
+    // is no longer visible when the new watch expression is rendered
+    if (this.props.expressions.length < nextProps.expressions.length) {
+      this.hideInput();
     }
   }
 
-  shouldComponentUpdate(nextProps: Props, nextState: State) {
+  shouldComponentUpdate(nextProps, nextState) {
     const { editing, inputValue, focused } = this.state;
     const {
       expressions,
-      expressionError,
       showInput,
       autocompleteMatches,
+      isLoadingOriginalVariables,
+      isOriginalVariableMappingDisabled,
     } = this.props;
 
     return (
       autocompleteMatches !== nextProps.autocompleteMatches ||
       expressions !== nextProps.expressions ||
-      expressionError !== nextProps.expressionError ||
+      isLoadingOriginalVariables !== nextProps.isLoadingOriginalVariables ||
+      isOriginalVariableMappingDisabled !==
+        nextProps.isOriginalVariableMappingDisabled ||
       editing !== nextState.editing ||
       inputValue !== nextState.inputValue ||
       nextProps.showInput !== showInput ||
@@ -122,22 +127,22 @@ class Expressions extends Component<Props, State> {
     );
   }
 
-  componentDidUpdate(prevProps: Props, prevState: State) {
-    const input = this._input;
+  componentDidUpdate(prevProps, prevState) {
+    const _input = this._input;
 
-    if (!input) {
+    if (!_input) {
       return;
     }
 
     if (!prevState.editing && this.state.editing) {
-      input.setSelectionRange(0, input.value.length);
-      input.focus();
+      _input.setSelectionRange(0, _input.value.length);
+      _input.focus();
     } else if (this.props.showInput && !this.state.focused) {
-      input.focus();
+      _input.focus();
     }
   }
 
-  editExpression(expression: Expression, index: number) {
+  editExpression(expression, index) {
     this.setState({
       inputValue: expression.input,
       editing: true,
@@ -145,16 +150,13 @@ class Expressions extends Component<Props, State> {
     });
   }
 
-  deleteExpression(
-    e: SyntheticMouseEvent<HTMLDivElement>,
-    expression: Expression
-  ) {
+  deleteExpression(e, expression) {
     e.stopPropagation();
     const { deleteExpression } = this.props;
     deleteExpression(expression);
   }
 
-  handleChange = (e: SyntheticInputEvent<HTMLInputElement>) => {
+  handleChange = e => {
     const { target } = e;
     if (features.autocompleteExpression) {
       this.findAutocompleteMatches(target.value, target.selectionStart);
@@ -162,15 +164,12 @@ class Expressions extends Component<Props, State> {
     this.setState({ inputValue: target.value });
   };
 
-  findAutocompleteMatches = debounce(
-    (value: string, selectionStart: number) => {
-      const { autocomplete } = this.props;
-      autocomplete(this.props.cx, value, selectionStart);
-    },
-    250
-  );
+  findAutocompleteMatches = debounce((value, selectionStart) => {
+    const { autocomplete } = this.props;
+    autocomplete(value, selectionStart);
+  }, 250);
 
-  handleKeyDown = (e: SyntheticKeyboardEvent<HTMLInputElement>) => {
+  handleKeyDown = e => {
     if (e.key === "Escape") {
       this.clear();
     }
@@ -179,7 +178,10 @@ class Expressions extends Component<Props, State> {
   hideInput = () => {
     this.setState({ focused: false });
     this.props.onExpressionAdded();
-    this.props.clearExpressionError();
+  };
+
+  createElement = element => {
+    return document.createElement(element);
   };
 
   onFocus = () => {
@@ -191,44 +193,66 @@ class Expressions extends Component<Props, State> {
     this.hideInput();
   }
 
-  handleExistingSubmit = async (
-    e: SyntheticEvent<HTMLFormElement>,
-    expression: Expression
-  ) => {
+  handleExistingSubmit = async (e, expression) => {
     e.preventDefault();
     e.stopPropagation();
 
-    this.props.updateExpression(
-      this.props.cx,
-      this.state.inputValue,
-      expression
-    );
-    this.hideInput();
+    this.props.updateExpression(this.state.inputValue, expression);
   };
 
-  handleNewSubmit = async (e: SyntheticEvent<HTMLFormElement>) => {
-    const { inputValue } = this.state;
+  handleNewSubmit = async e => {
     e.preventDefault();
     e.stopPropagation();
 
-    this.props.clearExpressionError();
-    await this.props.addExpression(this.props.cx, this.state.inputValue);
+    await this.props.addExpression(this.state.inputValue);
     this.setState({
       editing: false,
       editIndex: -1,
-      inputValue: this.props.expressionError ? inputValue : "",
+      inputValue: "",
     });
-
-    if (!this.props.expressionError) {
-      this.hideInput();
-    }
 
     this.props.clearAutocomplete();
   };
 
-  renderExpression = (expression: Expression, index: number) => {
+  renderExpressionsNotification() {
+    const { isOriginalVariableMappingDisabled, isLoadingOriginalVariables } =
+      this.props;
+
+    if (isOriginalVariableMappingDisabled) {
+      return div(
+        {
+          className: "pane-info no-original-scopes-info",
+          "aria-role": "status",
+        },
+        span(
+          { className: "info icon" },
+          React.createElement(AccessibleImage, { className: "sourcemap" })
+        ),
+        span(
+          { className: "message" },
+          L10N.getStr("expressions.noOriginalScopes")
+        )
+      );
+    }
+
+    if (isLoadingOriginalVariables) {
+      return div(
+        { className: "pane-info" },
+        span(
+          { className: "info icon" },
+          React.createElement(AccessibleImage, { className: "loader" })
+        ),
+        span(
+          { className: "message" },
+          L10N.getStr("scopes.loadingOriginalScopes")
+        )
+      );
+    }
+    return null;
+  }
+
+  renderExpression = (expression, index) => {
     const {
-      expressionError,
       openLink,
       openElementInInspector,
       highlightDomElement,
@@ -236,60 +260,83 @@ class Expressions extends Component<Props, State> {
     } = this.props;
 
     const { editing, editIndex } = this.state;
-    const { input, updating } = expression;
+    const { input: _input, updating } = expression;
     const isEditingExpr = editing && editIndex === index;
-    if (isEditingExpr || (isEditingExpr && expressionError)) {
+    if (isEditingExpr) {
       return this.renderExpressionEditInput(expression);
     }
 
     if (updating) {
-      return;
+      return null;
     }
 
-    let value = getValue(expression);
-    let front = null;
-    if (value && value.unavailable !== true) {
-      value = getGrip(value);
-      front = getFront(value);
-    }
+    const { expressionResultGrip, expressionResultFront } =
+      getExpressionResultGripAndFront(expression);
 
     const root = {
       name: expression.input,
-      path: input,
+      path: _input,
       contents: {
-        value,
-        front,
+        value: expressionResultGrip,
+        front: expressionResultFront,
       },
     };
 
-    return (
-      <li className="expression-container" key={input} title={expression.input}>
-        <div className="expression-content">
-          <ObjectInspector
-            roots={[root]}
-            autoExpandDepth={0}
-            disableWrap={true}
-            openLink={openLink}
-            onDoubleClick={(items, { depth }) => {
-              if (depth === 0) {
-                this.editExpression(expression, index);
-              }
-            }}
-            onDOMNodeClick={grip => openElementInInspector(grip)}
-            onInspectIconClick={grip => openElementInInspector(grip)}
-            onDOMNodeMouseOver={grip => highlightDomElement(grip)}
-            onDOMNodeMouseOut={grip => unHighlightDomElement(grip)}
-          />
-          <div className="expression-container__close-btn">
-            <CloseButton
-              handleClick={e => this.deleteExpression(e, expression)}
-              tooltip={L10N.getStr("expressions.remove.tooltip")}
-            />
-          </div>
-        </div>
-      </li>
+    return li(
+      {
+        className: "expression-container",
+        key: _input,
+        title: expression.input,
+      },
+      div(
+        {
+          className: "expression-content",
+        },
+        React.createElement(ObjectInspector, {
+          roots: [root],
+          autoExpandDepth: 0,
+          disableWrap: true,
+          openLink,
+          createElement: this.createElement,
+          onDoubleClick: (items, { depth }) => {
+            if (depth === 0) {
+              this.editExpression(expression, index);
+            }
+          },
+          onDOMNodeClick: grip => openElementInInspector(grip),
+          onInspectIconClick: grip => openElementInInspector(grip),
+          onDOMNodeMouseOver: grip => highlightDomElement(grip),
+          onDOMNodeMouseOut: grip => unHighlightDomElement(grip),
+          shouldRenderTooltip: true,
+          mayUseCustomFormatter: true,
+        }),
+        div(
+          {
+            className: "expression-container__close-btn",
+          },
+          React.createElement(CloseButton, {
+            handleClick: e => this.deleteExpression(e, expression),
+            tooltip: L10N.getStr("expressions.remove.tooltip"),
+          })
+        )
+      )
     );
   };
+
+  renderExpressions() {
+    const { expressions, showInput } = this.props;
+    return React.createElement(
+      React.Fragment,
+      null,
+      ul(
+        {
+          className: "pane expressions-list",
+        },
+        expressions.map(this.renderExpression)
+      ),
+      showInput && this.renderNewExpressionInput()
+    );
+  }
 
   renderAutoCompleteMatches() {
     if (!features.autocompleteExpression) {
@@ -297,111 +344,139 @@ class Expressions extends Component<Props, State> {
     }
     const { autocompleteMatches } = this.props;
     if (autocompleteMatches) {
-      return (
-        <datalist id="autocomplete-matches">
-          {autocompleteMatches.map((match, index) => {
-            return <option key={index} value={match} />;
-          })}
-        </datalist>
+      return datalist(
+        {
+          id: "autocomplete-matches",
+        },
+        autocompleteMatches.map((match, index) => {
+          return option({
+            key: index,
+            value: match,
+          });
+        })
       );
     }
-    return <datalist id="autocomplete-matches" />;
+    return datalist({
+      id: "autocomplete-matches",
+    });
   }
 
   renderNewExpressionInput() {
-    const { expressionError } = this.props;
     const { editing, inputValue, focused } = this.state;
-    const error = editing === false && expressionError === true;
-    const placeholder: string = error
-      ? L10N.getStr("expressions.errorMsg")
-      : L10N.getStr("expressions.placeholder");
-
-    return (
-      <li
-        className={classnames("expression-input-container", { focused, error })}
-      >
-        <form className="expression-input-form" onSubmit={this.handleNewSubmit}>
-          <input
-            className="input-expression"
-            type="text"
-            placeholder={placeholder}
-            onChange={this.handleChange}
-            onBlur={this.hideInput}
-            onKeyDown={this.handleKeyDown}
-            onFocus={this.onFocus}
-            value={!editing ? inputValue : ""}
-            ref={c => (this._input = c)}
-            {...(features.autocompleteExpression && {
-              list: "autocomplete-matches",
-            })}
-          />
-          {this.renderAutoCompleteMatches()}
-          <input type="submit" style={{ display: "none" }} />
-        </form>
-      </li>
+    return form(
+      {
+        className: classnames(
+          "expression-input-container expression-input-form",
+          { focused }
+        ),
+        onSubmit: this.handleNewSubmit,
+      },
+      input({
+        className: "input-expression",
+        type: "text",
+        placeholder: L10N.getStr("expressions.placeholder2"),
+        onChange: this.handleChange,
+        onBlur: this.hideInput,
+        onKeyDown: this.handleKeyDown,
+        onFocus: this.onFocus,
+        value: !editing ? inputValue : "",
+        ref: c => (this._input = c),
+        ...(features.autocompleteExpression && {
+          list: "autocomplete-matches",
+        }),
+      }),
+      this.renderAutoCompleteMatches(),
+      input({
+        type: "submit",
+        style: {
+          display: "none",
+        },
+      })
     );
   }
 
-  renderExpressionEditInput(expression: Expression) {
-    const { expressionError } = this.props;
+  renderExpressionEditInput(expression) {
     const { inputValue, editing, focused } = this.state;
-    const error = editing === true && expressionError === true;
-
-    return (
-      <span
-        className={classnames("expression-input-container", { focused, error })}
-        key={expression.input}
-      >
-        <form
-          className="expression-input-form"
-          onSubmit={(e: SyntheticEvent<HTMLFormElement>) =>
-            this.handleExistingSubmit(e, expression)
+    return form(
+      {
+        key: expression.input,
+        className: classnames(
+          "expression-input-container expression-input-form",
+          {
+            focused,
           }
-        >
-          <input
-            className={classnames("input-expression", { error })}
-            type="text"
-            onChange={this.handleChange}
-            onBlur={this.clear}
-            onKeyDown={this.handleKeyDown}
-            onFocus={this.onFocus}
-            value={editing ? inputValue : expression.input}
-            ref={c => (this._input = c)}
-            {...(features.autocompleteExpression && {
-              list: "autocomplete-matches",
-            })}
-          />
-          {this.renderAutoCompleteMatches()}
-          <input type="submit" style={{ display: "none" }} />
-        </form>
-      </span>
+        ),
+        onSubmit: e => this.handleExistingSubmit(e, expression),
+      },
+      input({
+        className: "input-expression",
+        type: "text",
+        onChange: this.handleChange,
+        onBlur: this.clear,
+        onKeyDown: this.handleKeyDown,
+        onFocus: this.onFocus,
+        value: editing ? inputValue : expression.input,
+        ref: c => (this._input = c),
+        ...(features.autocompleteExpression && {
+          list: "autocomplete-matches",
+        }),
+      }),
+      this.renderAutoCompleteMatches(),
+      input({
+        type: "submit",
+        style: {
+          display: "none",
+        },
+      })
     );
   }
 
   render() {
-    const { expressions, showInput } = this.props;
+    const { expressions } = this.props;
 
-    return (
-      <ul className="pane expressions-list">
-        {expressions.map(this.renderExpression)}
-        {(showInput || !expressions.length) && this.renderNewExpressionInput()}
-      </ul>
+    return div(
+      { className: "pane" },
+      this.renderExpressionsNotification(),
+      expressions.length === 0
+        ? this.renderNewExpressionInput()
+        : this.renderExpressions()
     );
   }
 }
 
-const mapStateToProps = state => ({
-  cx: getThreadContext(state),
-  autocompleteMatches: (getAutocompleteMatchset(state): ?(string[])),
-  expressions: getExpressions(state),
-  expressionError: getExpressionError(state),
-});
+const mapStateToProps = state => {
+  const selectedFrame = getSelectedFrame(state, getCurrentThread(state));
+  const selectedSource = getSelectedSource(state);
+  const isPaused = getIsCurrentThreadPaused(state);
+  const mapScopesEnabled = isMapScopesEnabled(state);
+  const expressions = getExpressions(state);
 
-export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+  const selectedSourceIsNonPrettyPrintedOriginal =
+    selectedSource?.isOriginal && !selectedSource?.isPrettyPrinted;
+
+  let isOriginalVariableMappingDisabled, isLoadingOriginalVariables;
+
+  if (selectedSourceIsNonPrettyPrintedOriginal) {
+    isOriginalVariableMappingDisabled = isPaused && !mapScopesEnabled;
+    isLoadingOriginalVariables =
+      isPaused &&
+      mapScopesEnabled &&
+      !expressions.length &&
+      !getOriginalFrameScope(state, selectedFrame)?.scope;
+  }
+
+  return {
+    isOriginalVariableMappingDisabled,
+    isLoadingOriginalVariables,
+    autocompleteMatches: getAutocompleteMatchset(state),
+    expressions,
+  };
+};
+
+export default connect(mapStateToProps, {
   autocomplete: actions.autocomplete,
   clearAutocomplete: actions.clearAutocomplete,
   addExpression: actions.addExpression,
-  clearExpressionError: actions.clearExpressionError,
   updateExpression: actions.updateExpression,
   deleteExpression: actions.deleteExpression,
   openLink: actions.openLink,

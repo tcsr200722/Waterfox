@@ -15,10 +15,12 @@
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PaymentRequestChild;
+class IPCMethodChangeDetails;
+class IPCPaymentAddress;
+class IPCPaymentActionResponse;
 class IPCPaymentActionRequest;
 
 /*
@@ -89,12 +91,11 @@ class PaymentRequestManager final {
   void NotifyRequestDone(PaymentRequest* aRequest);
 
   // Strong pointer to requests with ongoing IPC messages to the parent.
-  nsDataHashtable<nsRefPtrHashKey<PaymentRequest>, uint32_t> mActivePayments;
+  nsTHashMap<nsRefPtrHashKey<PaymentRequest>, uint32_t> mActivePayments;
 
   nsTArray<nsString> mSupportedRegions;
 };
 
-}  // end of namespace dom
-}  // end of namespace mozilla
+}  // namespace mozilla::dom
 
 #endif

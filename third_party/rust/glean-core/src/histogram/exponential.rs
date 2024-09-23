@@ -56,7 +56,7 @@ fn exponential_range(min: u64, max: u64, bucket_count: usize) -> Vec<u64> {
 ///
 /// Buckets are pre-computed at instantiation with an exponential distribution from `min` to `max`
 /// and `bucket_count` buckets.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrecomputedExponential {
     // Don't serialize the (potentially large) array of ranges, instead compute them on first
     // access.
@@ -91,7 +91,7 @@ impl Bucketing for PrecomputedExponential {
 }
 
 impl Histogram<PrecomputedExponential> {
-    /// Create a histogram with `count` exponential buckets in the range `min` to `max`.
+    /// Creates a histogram with `count` exponential buckets in the range `min` to `max`.
     pub fn exponential(
         min: u64,
         max: u64,
@@ -195,12 +195,12 @@ mod test {
     fn accumulate_large_numbers() {
         let mut hist = Histogram::exponential(1, 500, 10);
 
-        hist.accumulate(u64::max_value());
-        hist.accumulate(u64::max_value());
+        hist.accumulate(u64::MAX);
+        hist.accumulate(u64::MAX);
 
         assert_eq!(2, hist.count());
         // Saturate before overflowing
-        assert_eq!(u64::max_value(), hist.sum());
+        assert_eq!(u64::MAX, hist.sum());
         assert_eq!(2, hist.values[&500]);
     }
 }

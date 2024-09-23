@@ -15,7 +15,7 @@ const TEST_PAGE = `<html>
   <body></body>
 </html>`;
 
-add_task(async function() {
+add_task(async function () {
   info("Setup preferences for testing");
   // Disable rcwn to make cache behavior deterministic.
   await pushPref("network.http.rcwn.enabled", false);
@@ -46,8 +46,8 @@ add_task(async function() {
 
 async function getInspectorContent(inspector) {
   const ruleView = inspector.getPanel("ruleview").view;
-  const valueEl = ruleView.styleDocument.querySelector(
-    ".ruleview-propertyvalue"
+  const valueEl = await waitFor(() =>
+    ruleView.styleDocument.querySelector(".ruleview-propertyvalue")
   );
   return valueEl.textContent;
 }

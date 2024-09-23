@@ -14,17 +14,16 @@ function test() {
   let windowsToClose = [];
   let testURI = "about:blank";
   let pbMenuItem;
-  let cmd;
 
   function doTest(aIsPrivateMode, aWindow, aCallback) {
     BrowserTestUtils.browserLoaded(aWindow.gBrowser.selectedBrowser).then(
-      function() {
+      function () {
         ok(aWindow.gPrivateBrowsingUI, "The gPrivateBrowsingUI object exists");
 
         pbMenuItem = aWindow.document.getElementById("menu_newPrivateWindow");
         ok(pbMenuItem, "The Private Browsing menu item exists");
 
-        cmd = aWindow.document.getElementById("Tools:PrivateBrowsing");
+        let cmd = aWindow.document.getElementById("Tools:PrivateBrowsing");
         isnot(
           cmd,
           null,
@@ -48,14 +47,17 @@ function test() {
       }
     );
 
-    BrowserTestUtils.loadURI(aWindow.gBrowser.selectedBrowser, testURI);
+    BrowserTestUtils.startLoadingURIString(
+      aWindow.gBrowser.selectedBrowser,
+      testURI
+    );
   }
 
   function openPrivateBrowsingModeByUI(aWindow, aCallback) {
-    Services.obs.addObserver(function observer(aSubject, aTopic, aData) {
+    Services.obs.addObserver(function observer(aSubject) {
       aSubject.addEventListener(
         "load",
-        function() {
+        function () {
           Services.obs.removeObserver(observer, "domwindowopened");
           windowsToClose.push(aSubject);
           aCallback(aSubject);
@@ -64,13 +66,14 @@ function test() {
       );
     }, "domwindowopened");
 
-    cmd = aWindow.document.getElementById("Tools:PrivateBrowsing");
-    var func = new Function("", cmd.getAttribute("oncommand"));
-    func.call(cmd);
+    let cmdEvent = aWindow.document.createEvent("xulcommandevent");
+    cmdEvent.initCommandEvent("command", true, true);
+    let cmd = aWindow.document.getElementById("Tools:PrivateBrowsing");
+    cmd.dispatchEvent(cmdEvent);
   }
 
   function testOnWindow(aOptions, aCallback) {
-    whenNewWindowLoaded(aOptions, function(aWin) {
+    whenNewWindowLoaded(aOptions, function (aWin) {
       windowsToClose.push(aWin);
       // execute should only be called when need, like when you are opening
       // web pages on the test. If calling executeSoon() is not necesary, then
@@ -80,18 +83,18 @@ function test() {
   }
 
   // this function is called after calling finish() on the test.
-  registerCleanupFunction(function() {
-    windowsToClose.forEach(function(aWin) {
+  registerCleanupFunction(function () {
+    windowsToClose.forEach(function (aWin) {
       aWin.close();
     });
   });
 
   // test first when not on private mode
-  testOnWindow({}, function(aWin) {
-    doTest(false, aWin, function() {
+  testOnWindow({}, function (aWin) {
+    doTest(false, aWin, function () {
       // then test when on private mode, opening a new private window from the
       // user interface.
-      openPrivateBrowsingModeByUI(aWin, function(aPrivateWin) {
+      openPrivateBrowsingModeByUI(aWin, function (aPrivateWin) {
         doTest(true, aPrivateWin, finish);
       });
     });

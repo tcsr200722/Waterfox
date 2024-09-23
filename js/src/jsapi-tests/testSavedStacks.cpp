@@ -4,17 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"  // mozilla::ArrayLength
-#include "mozilla/Utf8.h"        // mozilla::Utf8Unit
-
-#include "jsfriendapi.h"
+#include "mozilla/Utf8.h"  // mozilla::Utf8Unit
 
 #include "builtin/TestingFunctions.h"
+#include "js/ColumnNumber.h"  // JS::LimitedColumnNumberOneOrigin, JS::TaggedColumnNumberOneOrigin
 #include "js/CompilationAndEvaluation.h"  // JS::Evaluate
 #include "js/Exception.h"
 #include "js/SavedFrameAPI.h"
 #include "js/SourceText.h"  // JS::Source{Ownership,Text}
+#include "js/Stack.h"
 #include "jsapi-tests/tests.h"
+#include "util/Text.h"
 #include "vm/ArrayObject.h"
 #include "vm/Realm.h"
 #include "vm/SavedStacks.h"
@@ -29,7 +29,7 @@ BEGIN_TEST(testSavedStacks_withNoStack) {
 END_TEST(testSavedStacks_withNoStack)
 
 BEGIN_TEST(testSavedStacks_ApiDefaultValues) {
-  js::RootedSavedFrame savedFrame(cx, nullptr);
+  JS::Rooted<js::SavedFrame*> savedFrame(cx, nullptr);
 
   JSPrincipals* principals = cx->realm()->principals();
 
@@ -47,10 +47,10 @@ BEGIN_TEST(testSavedStacks_ApiDefaultValues) {
   CHECK(line == 0);
 
   // Column
-  uint32_t column = 123;
+  JS::TaggedColumnNumberOneOrigin column(JS::LimitedColumnNumberOneOrigin(123));
   result = JS::GetSavedFrameColumn(cx, principals, savedFrame, &column);
   CHECK(result == JS::SavedFrameResult::AccessDenied);
-  CHECK(column == 0);
+  CHECK(column == JS::TaggedColumnNumberOneOrigin());
 
   // Function display name
   result =
@@ -257,11 +257,11 @@ BEGIN_TEST(testSavedStacks_selfHostedFrames) {
   CHECK_EQUAL(line, 3U);
 
   // Column
-  uint32_t column = 123;
+  JS::TaggedColumnNumberOneOrigin column(JS::LimitedColumnNumberOneOrigin(123));
   result = JS::GetSavedFrameColumn(cx, principals, selfHostedFrame, &column,
                                    JS::SavedFrameSelfHosted::Exclude);
   CHECK(result == JS::SavedFrameResult::Ok);
-  CHECK_EQUAL(column, 9U);
+  CHECK_EQUAL(column.oneOriginValue(), 9U);
 
   // Function display name
   result = JS::GetSavedFrameFunctionDisplayName(
@@ -318,7 +318,7 @@ BEGIN_TEST(test_GetPendingExceptionStack) {
   opts.setFileAndLine("filename.js", 1U);
 
   JS::SourceText<mozilla::Utf8Unit> srcBuf;
-  CHECK(srcBuf.init(cx, sourceText, mozilla::ArrayLength(sourceText) - 1,
+  CHECK(srcBuf.init(cx, sourceText, js_strlen(sourceText),
                     JS::SourceOwnership::Borrowed));
 
   JS::RootedValue val(cx);
@@ -361,11 +361,12 @@ BEGIN_TEST(test_GetPendingExceptionStack) {
     CHECK_EQUAL(line, expected[i].line);
 
     // Column
-    uint32_t column = 123;
+    JS::TaggedColumnNumberOneOrigin column(
+        JS::LimitedColumnNumberOneOrigin(123));
     result = JS::GetSavedFrameColumn(cx, principals, frame, &column,
                                      JS::SavedFrameSelfHosted::Exclude);
     CHECK(result == JS::SavedFrameResult::Ok);
-    CHECK_EQUAL(column, expected[i].column);
+    CHECK_EQUAL(column.oneOriginValue(), expected[i].column);
 
     // Source
     JS::RootedString str(cx);

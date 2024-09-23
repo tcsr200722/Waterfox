@@ -8,36 +8,37 @@
 #define mozilla_dom_serviceworkerchild_h__
 
 #include "mozilla/dom/PServiceWorkerChild.h"
+#include "mozilla/dom/WorkerRef.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IPCWorkerRef;
-class RemoteServiceWorkerImpl;
+class ServiceWorker;
 
 class ServiceWorkerChild final : public PServiceWorkerChild {
   RefPtr<IPCWorkerRef> mIPCWorkerRef;
-  RemoteServiceWorkerImpl* mOwner;
+  ServiceWorker* mOwner;
   bool mTeardownStarted;
 
   ServiceWorkerChild();
+
+  ~ServiceWorkerChild() = default;
 
   // PServiceWorkerChild
   void ActorDestroy(ActorDestroyReason aReason) override;
 
  public:
-  static ServiceWorkerChild* Create();
+  NS_INLINE_DECL_REFCOUNTING(ServiceWorkerChild, override);
 
-  ~ServiceWorkerChild() = default;
+  static RefPtr<ServiceWorkerChild> Create();
 
-  void SetOwner(RemoteServiceWorkerImpl* aOwner);
+  void SetOwner(ServiceWorker* aOwner);
 
-  void RevokeOwner(RemoteServiceWorkerImpl* aOwner);
+  void RevokeOwner(ServiceWorker* aOwner);
 
   void MaybeStartTeardown();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerchild_h__

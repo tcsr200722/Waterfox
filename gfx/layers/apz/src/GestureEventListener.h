@@ -7,6 +7,7 @@
 #ifndef mozilla_layers_GestureEventListener_h
 #define mozilla_layers_GestureEventListener_h
 
+#include <iosfwd>
 #include "InputData.h"  // for MultiTouchInput, etc
 #include "Units.h"
 #include "mozilla/EventForwards.h"  // for nsEventStatus
@@ -66,6 +67,7 @@ class GestureEventListener final {
    * as a long tap. This allows tests to disable long tap gesture detection.
    */
   static void SetLongTapEnabled(bool aLongTapEnabled);
+  static bool IsLongTapEnabled();
 
  private:
   // Private destructor, to discourage deletion outside of Release():
@@ -133,6 +135,8 @@ class GestureEventListener final {
     // Allowed next states: GESTURE_NONE.
     GESTURE_ONE_TOUCH_PINCH
   };
+
+  friend std::ostream& operator<<(std::ostream& os, GestureState aState);
 
   /**
    * These HandleInput* functions comprise input alphabet of the GEL

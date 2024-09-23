@@ -7,23 +7,22 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const AnimationItem = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationItem")
+  require("resource://devtools/client/inspector/animation/components/AnimationItem.js")
 );
 
 class AnimationList extends PureComponent {
   static get propTypes() {
     return {
       animations: PropTypes.arrayOf(PropTypes.object).isRequired,
-      emitEventForTest: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
+      displayableRange: PropTypes.object.isRequired,
       getAnimatedPropertyMap: PropTypes.func.isRequired,
       getNodeFromActor: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
       selectAnimation: PropTypes.func.isRequired,
       setHighlightedNode: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
@@ -35,11 +34,10 @@ class AnimationList extends PureComponent {
   render() {
     const {
       animations,
-      emitEventForTest,
+      dispatch,
+      displayableRange,
       getAnimatedPropertyMap,
       getNodeFromActor,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
       selectAnimation,
       setHighlightedNode,
       setSelectedNode,
@@ -47,18 +45,19 @@ class AnimationList extends PureComponent {
       timeScale,
     } = this.props;
 
+    const { startIndex, endIndex } = displayableRange;
+
     return dom.ul(
       {
         className: "animation-list",
       },
-      animations.map(animation =>
+      animations.map((animation, index) =>
         AnimationItem({
           animation,
-          emitEventForTest,
+          dispatch,
           getAnimatedPropertyMap,
           getNodeFromActor,
-          onHideBoxModelHighlighter,
-          onShowBoxModelHighlighterForNode,
+          isDisplayable: startIndex <= index && index <= endIndex,
           selectAnimation,
           setHighlightedNode,
           setSelectedNode,

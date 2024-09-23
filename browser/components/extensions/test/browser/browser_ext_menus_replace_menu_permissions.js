@@ -20,7 +20,8 @@ add_task(async function overrideContext_permissions() {
     const CONTEXT_OPTIONS_BOOKMARK = { context: "bookmark", bookmarkId: "x" };
 
     const E_PERM_TAB = /The "tab" context requires the "tabs" permission/;
-    const E_PERM_BOOKMARK = /The "bookmark" context requires the "bookmarks" permission/;
+    const E_PERM_BOOKMARK =
+      /The "bookmark" context requires the "bookmarks" permission/;
 
     function assertAllowed(contextOptions) {
       try {
@@ -69,7 +70,7 @@ add_task(async function overrideContext_permissions() {
     // The menus.overrideContext method can only be called during a
     // "contextmenu" event. So we use a generator to run tests, and yield
     // before we call overrideContext after an asynchronous operation.
-    let testGenerator = (async function*() {
+    let testGenerator = (async function* () {
       browser.test.assertEq(
         undefined,
         browser.menus.overrideContext,
@@ -188,16 +189,17 @@ add_task(async function overrideContext_permissions() {
 
   // permissions.request requires user input, export helper.
   await SpecialPowers.spawn(
-    SidebarUI.browser.contentDocument.getElementById("webext-panels-browser"),
+    SidebarController.browser.contentDocument.getElementById(
+      "webext-panels-browser"
+    ),
     [],
     () => {
-      let { withHandlingUserInput } = ChromeUtils.import(
-        "resource://gre/modules/ExtensionCommon.jsm",
-        {}
-      ).ExtensionCommon;
+      const { ExtensionCommon } = ChromeUtils.importESModule(
+        "resource://gre/modules/ExtensionCommon.sys.mjs"
+      );
       Cu.exportFunction(
         fn => {
-          return withHandlingUserInput(content, fn);
+          return ExtensionCommon.withHandlingUserInput(content, fn);
         },
         content,
         {
@@ -209,8 +211,13 @@ add_task(async function overrideContext_permissions() {
 
   do {
     info(`Going to trigger "contextmenu" event.`);
-    // The menu is never shown, so don't await the returned promise.
-    openContextMenuInSidebar("a");
+    await BrowserTestUtils.synthesizeMouseAtCenter(
+      "a",
+      { type: "contextmenu" },
+      SidebarController.browser.contentDocument.getElementById(
+        "webext-panels-browser"
+      )
+    );
   } while (await extension.awaitMessage("continue_test"));
 
   await extension.unload();

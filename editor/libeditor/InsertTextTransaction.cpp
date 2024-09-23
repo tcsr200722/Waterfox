@@ -5,14 +5,18 @@
 
 #include "InsertTextTransaction.h"
 
-#include "mozilla/EditorBase.h"      // mEditorBase
+#include "ErrorList.h"
+#include "mozilla/EditorBase.h"  // mEditorBase
+#include "mozilla/Logging.h"
 #include "mozilla/SelectionState.h"  // RangeUpdater
-#include "mozilla/dom/Selection.h"   // Selection local var
-#include "mozilla/dom/Text.h"        // mTextNode
-#include "nsAString.h"               // nsAString parameter
-#include "nsDebug.h"                 // for NS_ASSERTION, etc.
-#include "nsError.h"                 // for NS_OK, etc.
-#include "nsQueryObject.h"           // for do_QueryObject
+#include "mozilla/ToString.h"
+#include "mozilla/dom/Selection.h"  // Selection local var
+#include "mozilla/dom/Text.h"       // mTextNode
+
+#include "nsAString.h"      // nsAString parameter
+#include "nsDebug.h"        // for NS_ASSERTION, etc.
+#include "nsError.h"        // for NS_OK, etc.
+#include "nsQueryObject.h"  // for do_QueryObject
 
 namespace mozilla {
 
@@ -31,10 +35,22 @@ already_AddRefed<InsertTextTransaction> InsertTextTransaction::Create(
 InsertTextTransaction::InsertTextTransaction(
     EditorBase& aEditorBase, const nsAString& aStringToInsert,
     const EditorDOMPointInText& aPointToInsert)
-    : mTextNode(aPointToInsert.ContainerAsText()),
+    : mTextNode(aPointToInsert.ContainerAs<Text>()),
       mOffset(aPointToInsert.Offset()),
       mStringToInsert(aStringToInsert),
       mEditorBase(&aEditorBase) {}
+
+std::ostream& operator<<(std::ostream& aStream,
+                         const InsertTextTransaction& aTransaction) {
+  aStream << "{ mTextNode=" << aTransaction.mTextNode.get();
+  if (aTransaction.mTextNode) {
+    aStream << " (" << *aTransaction.mTextNode << ")";
+  }
+  aStream << ", mOffset=" << aTransaction.mOffset << ", mStringToInsert=\""
+          << NS_ConvertUTF16toUTF8(aTransaction.mStringToInsert).get() << "\""
+          << ", mEditorBase=" << aTransaction.mEditorBase.get() << " }";
+  return aStream;
+}
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(InsertTextTransaction, EditTransactionBase,
                                    mEditorBase, mTextNode)
@@ -45,6 +61,10 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(InsertTextTransaction)
 NS_INTERFACE_MAP_END_INHERITING(EditTransactionBase)
 
 NS_IMETHODIMP InsertTextTransaction::DoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p InsertTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
@@ -59,28 +79,16 @@ NS_IMETHODIMP InsertTextTransaction::DoTransaction() {
     return error.StealNSResult();
   }
 
-  // Only set selection to insertion point if editor gives permission
-  if (editorBase->AllowsTransactionsToChangeSelection()) {
-    RefPtr<Selection> selection = editorBase->GetSelection();
-    if (NS_WARN_IF(!selection)) {
-      return NS_ERROR_FAILURE;
-    }
-    DebugOnly<nsresult> rvIgnored =
-        selection->Collapse(textNode, mOffset + mStringToInsert.Length());
-    NS_ASSERTION(NS_SUCCEEDED(rvIgnored),
-                 "Selection::Collapse() failed, but ignored");
-  } else {
-    // Do nothing - DOM Range gravity will adjust selection
-  }
-  // XXX Other transactions do not do this but its callers do.
-  //     Why do this transaction do this by itself?
   editorBase->RangeUpdaterRef().SelAdjInsertText(textNode, mOffset,
                                                  mStringToInsert.Length());
-
   return NS_OK;
 }
 
 NS_IMETHODIMP InsertTextTransaction::UndoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p InsertTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+
   if (NS_WARN_IF(!mEditorBase) || NS_WARN_IF(!mTextNode)) {
     return NS_ERROR_NOT_INITIALIZED;
   }
@@ -92,8 +100,34 @@ NS_IMETHODIMP InsertTextTransaction::UndoTransaction() {
   return error.StealNSResult();
 }
 
+NS_IMETHODIMP InsertTextTransaction::RedoTransaction() {
+  MOZ_LOG(GetLogModule(), LogLevel::Info,
+          ("%p InsertTextTransaction::%s this=%s", this, __FUNCTION__,
+           ToString(*this).c_str()));
+  nsresult rv = DoTransaction();
+  if (NS_FAILED(rv)) {
+    NS_WARNING("InsertTextTransaction::DoTransaction() failed");
+    return rv;
+  }
+  if (RefPtr<EditorBase> editorBase = mEditorBase) {
+    nsresult rv = editorBase->CollapseSelectionTo(
+        SuggestPointToPutCaret<EditorRawDOMPoint>());
+    if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
+      return NS_ERROR_EDITOR_DESTROYED;
+    }
+    NS_WARNING_ASSERTION(
+        NS_SUCCEEDED(rv),
+        "EditorBase::CollapseSelectionTo() failed, but ignored");
+  }
+  return NS_OK;
+}
+
 NS_IMETHODIMP InsertTextTransaction::Merge(nsITransaction* aOtherTransaction,
                                            bool* aDidMerge) {
+  MOZ_LOG(GetLogModule(), LogLevel::Debug,
+          ("%p InsertTextTransaction::%s(aOtherTransaction=%p) this=%s", this,
+           __FUNCTION__, aOtherTransaction, ToString(*this).c_str()));
+
   if (NS_WARN_IF(!aOtherTransaction) || NS_WARN_IF(!aDidMerge)) {
     return NS_ERROR_INVALID_ARG;
   }
@@ -103,6 +137,10 @@ NS_IMETHODIMP InsertTextTransaction::Merge(nsITransaction* aOtherTransaction,
   RefPtr<EditTransactionBase> otherTransactionBase =
       aOtherTransaction->GetAsEditTransactionBase();
   if (!otherTransactionBase) {
+    MOZ_LOG(
+        GetLogModule(), LogLevel::Debug,
+        ("%p InsertTextTransaction::%s(aOtherTransaction=%p) returned false",
+         this, __FUNCTION__, aOtherTransaction));
     return NS_OK;
   }
 
@@ -112,24 +150,25 @@ NS_IMETHODIMP InsertTextTransaction::Merge(nsITransaction* aOtherTransaction,
       otherTransactionBase->GetAsInsertTextTransaction();
   if (!otherInsertTextTransaction ||
       !IsSequentialInsert(*otherInsertTextTransaction)) {
+    MOZ_LOG(
+        GetLogModule(), LogLevel::Debug,
+        ("%p InsertTextTransaction::%s(aOtherTransaction=%p) returned false",
+         this, __FUNCTION__, aOtherTransaction));
     return NS_OK;
   }
 
-  nsAutoString otherData;
-  otherInsertTextTransaction->GetData(otherData);
-  mStringToInsert += otherData;
+  mStringToInsert += otherInsertTextTransaction->GetData();
   *aDidMerge = true;
+  MOZ_LOG(GetLogModule(), LogLevel::Debug,
+          ("%p InsertTextTransaction::%s(aOtherTransaction=%p) returned true",
+           this, __FUNCTION__, aOtherTransaction));
   return NS_OK;
 }
 
 /* ============ private methods ================== */
 
-void InsertTextTransaction::GetData(nsString& aResult) {
-  aResult = mStringToInsert;
-}
-
 bool InsertTextTransaction::IsSequentialInsert(
-    InsertTextTransaction& aOtherTransaction) {
+    InsertTextTransaction& aOtherTransaction) const {
   return aOtherTransaction.mTextNode == mTextNode &&
          aOtherTransaction.mOffset == mOffset + mStringToInsert.Length();
 }

@@ -10,20 +10,13 @@
 
 use std::marker::PhantomData;
 
-use crate::backend::{
-    BackendDatabase,
-    BackendFlags,
-    BackendIter,
-    BackendRoCursor,
-    BackendRwTransaction,
+use crate::{
+    backend::{BackendDatabase, BackendFlags, BackendIter, BackendRoCursor, BackendRwTransaction},
+    error::StoreError,
+    helpers::read_transform,
+    readwrite::{Readable, Writer},
+    value::Value,
 };
-use crate::error::StoreError;
-use crate::helpers::read_transform;
-use crate::readwrite::{
-    Readable,
-    Writer,
-};
-use crate::value::Value;
 
 type EmptyResult = Result<(), StoreError>;
 
@@ -42,9 +35,7 @@ where
     D: BackendDatabase,
 {
     pub(crate) fn new(db: D) -> SingleStore<D> {
-        SingleStore {
-            db,
-        }
+        SingleStore { db }
     }
 
     pub fn get<'r, R, K>(&self, reader: &'r R, k: K) -> Result<Option<Value<'r>>, StoreError>
@@ -126,7 +117,7 @@ impl<'i, I> Iterator for Iter<'i, I>
 where
     I: BackendIter<'i>,
 {
-    type Item = Result<(&'i [u8], Option<Value<'i>>), StoreError>;
+    type Item = Result<(&'i [u8], Value<'i>), StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {

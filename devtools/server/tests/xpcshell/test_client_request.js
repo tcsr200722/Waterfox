@@ -7,13 +7,12 @@
 
 var gClient, gActorId;
 
-const { Actor } = require("devtools/shared/protocol/Actor");
+const { Actor } = require("resource://devtools/shared/protocol/Actor.js");
 
 class TestActor extends Actor {
   constructor(conn) {
-    super(conn);
+    super(conn, { typeName: "test", methods: [] });
 
-    this.typeName = "test";
     this.requestTypes = {
       hello: this.hello,
       error: this.error,
@@ -42,13 +41,11 @@ function run_test() {
   DevToolsServer.registerAllActors();
 
   add_test(init);
-  add_test(test_client_request_callback);
   add_test(test_client_request_promise);
   add_test(test_client_request_promise_error);
   add_test(test_client_request_event_emitter);
   add_test(test_close_client_while_sending_requests);
   add_test(test_client_request_after_close);
-  add_test(test_client_request_after_close_callback);
   run_next_test();
 }
 
@@ -64,11 +61,6 @@ function init() {
 }
 
 function checkStack(expectedName) {
-  if (!Services.prefs.getBoolPref("javascript.options.asyncstack")) {
-    info("Async stacks are disabled.");
-    return;
-  }
-
   let stack = Components.stack;
   while (stack) {
     info(stack.name);
@@ -80,22 +72,6 @@ function checkStack(expectedName) {
     stack = stack.asyncCaller || stack.caller;
   }
   ok(false, "Incomplete stack");
-}
-
-function test_client_request_callback() {
-  // Test that DevToolsClient.request accepts a `onResponse` callback as 2nd argument
-  gClient.request(
-    {
-      to: gActorId,
-      type: "hello",
-    },
-    response => {
-      Assert.equal(response.from, gActorId);
-      Assert.equal(response.hello, "world");
-      checkStack("test_client_request_callback");
-      run_next_test();
-    }
-  );
 }
 
 function test_client_request_promise() {
@@ -165,14 +141,15 @@ function test_close_client_while_sending_requests() {
     type: "hello",
   });
 
-  const expectReply = defer();
-  gClient.expectReply("root", function(response) {
-    Assert.equal(response.error, "connectionClosed");
-    Assert.equal(
-      response.message,
-      "server side packet can't be received as the connection just closed."
-    );
-    expectReply.resolve();
+  const expectReply = new Promise(resolve => {
+    gClient.expectReply("root", function (response) {
+      Assert.equal(response.error, "connectionClosed");
+      Assert.equal(
+        response.message,
+        "server side packet can't be received as the connection just closed."
+      );
+      resolve();
+    });
   });
 
   gClient.close().then(() => {
@@ -212,7 +189,7 @@ function test_close_client_while_sending_requests() {
           );
         }
       )
-      .then(() => expectReply.promise)
+      .then(() => expectReply)
       .then(run_next_test);
   });
 }
@@ -226,7 +203,7 @@ function test_client_request_after_close() {
   });
 
   request.then(
-    response => {
+    () => {
       ok(false, "Request succeed even after client.close");
     },
     response => {
@@ -240,27 +217,4 @@ function test_client_request_after_close() {
       run_next_test();
     }
   );
-}
-
-function test_client_request_after_close_callback() {
-  // Test that DevToolsClient.request fails after we called client.close()
-  // (with callback API)
-  gClient
-    .request(
-      {
-        to: gActorId,
-        type: "hello",
-      },
-      response => {
-        ok(true, "Request failed after client.close");
-        Assert.equal(response.error, "connectionClosed");
-        ok(
-          response.message.match(
-            /'hello' request packet to '.*' can't be sent as the connection is closed./
-          )
-        );
-        run_next_test();
-      }
-    )
-    .catch(() => info("Caught rejected promise as expected"));
 }

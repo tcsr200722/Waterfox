@@ -3,23 +3,15 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionSettingsStore",
-  "resource://gre/modules/ExtensionSettingsStore.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "AboutNewTab",
-  "resource:///modules/AboutNewTab.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionControlledPopup",
-  "resource:///modules/ExtensionControlledPopup.jsm"
-);
+requestLongerTimeout(4);
 
-const NEWTAB_URI_1 = "webext-newtab-1.html";
+ChromeUtils.defineESModuleGetters(this, {
+  AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  ExtensionControlledPopup:
+    "resource:///modules/ExtensionControlledPopup.sys.mjs",
+  ExtensionSettingsStore:
+    "resource://gre/modules/ExtensionSettingsStore.sys.mjs",
+});
 
 function getNotificationSetting(extensionId) {
   return ExtensionSettingsStore.getSetting("newTabNotification", extensionId);
@@ -34,19 +26,37 @@ function clickKeepChanges(notification) {
   notification.button.click();
 }
 
-function clickRestoreSettings(notification) {
+function clickManage(notification) {
   notification.secondaryButton.click();
 }
 
-function waitForNewTab() {
+async function promiseNewTab(expectUrl = AboutNewTab.newTabURL, win = window) {
   let eventName = "browser-open-newtab-start";
-  return new Promise(resolve => {
-    function observer() {
+  let newTabStartPromise = new Promise(resolve => {
+    async function observer(subject) {
       Services.obs.removeObserver(observer, eventName);
-      resolve();
+      resolve(subject.wrappedJSObject);
     }
     Services.obs.addObserver(observer, eventName);
   });
+
+  let newtabShown = TestUtils.waitForCondition(
+    () => win.gBrowser.currentURI.spec == expectUrl,
+    `Should open correct new tab url ${expectUrl}.`
+  );
+
+  win.BrowserCommands.openTab();
+  const newTabCreatedPromise = newTabStartPromise;
+  const browser = await newTabCreatedPromise;
+  await newtabShown;
+  const tab = win.gBrowser.selectedTab;
+
+  Assert.deepEqual(
+    browser,
+    tab.linkedBrowser,
+    "browser-open-newtab-start notified with the created browser"
+  );
+  return tab;
 }
 
 function waitForAddonDisabled(addon) {
@@ -77,51 +87,42 @@ function waitForAddonEnabled(addon) {
   });
 }
 
+// Default test extension data for newtab.
+const extensionData = {
+  manifest: {
+    browser_specific_settings: {
+      gecko: {
+        id: "newtaburl@mochi.test",
+      },
+    },
+    chrome_url_overrides: {
+      newtab: "newtab.html",
+    },
+  },
+  files: {
+    "newtab.html": "<h1>New tab!</h1>",
+  },
+  useAddonManager: "temporary",
+};
+
 add_task(async function test_new_tab_opens() {
   let panel = getNewTabDoorhanger().closest("panel");
-  let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      chrome_url_overrides: {
-        newtab: NEWTAB_URI_1,
-      },
-    },
-    useAddonManager: "temporary",
-    files: {
-      [NEWTAB_URI_1]: `
-        <!DOCTYPE html>
-        <head>
-          <meta charset="utf-8"/></head>
-        <html>
-          <body>
-            <script src="newtab.js"></script>
-          </body>
-        </html>
-      `,
-
-      "newtab.js": function() {
-        window.onload = () => {
-          browser.test.sendMessage("from-newtab-page", window.location.href);
-        };
-      },
-    },
-  });
+  let extension = ExtensionTestUtils.loadExtension(extensionData);
 
   await extension.startup();
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
 
   // Simulate opening the newtab open as a user would.
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
+  let tab = await promiseNewTab(extensionNewTabUrl);
   await popupShown;
-
-  let url = await extension.awaitMessage("from-newtab-page");
-  ok(url.endsWith(NEWTAB_URI_1), "Newtab url is overridden by the extension.");
 
   // This will show a confirmation doorhanger, make sure we don't leave it open.
   let popupHidden = promisePopupHidden(panel);
   panel.hidePopup();
   await popupHidden;
 
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  BrowserTestUtils.removeTab(tab);
   await extension.unload();
 });
 
@@ -132,16 +133,20 @@ add_task(async function test_new_tab_ignore_settings() {
   let extensionId = "newtabignore@mochi.test";
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id: extensionId } },
-      browser_action: { default_popup: "ignore.html" },
+      browser_specific_settings: { gecko: { id: extensionId } },
+      browser_action: {
+        default_popup: "ignore.html",
+        default_area: "navbar",
+      },
       chrome_url_overrides: { newtab: "ignore.html" },
     },
     files: { "ignore.html": '<h1 id="extension-new-tab">New Tab!</h1>' },
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
 
@@ -149,7 +154,7 @@ add_task(async function test_new_tab_ignore_settings() {
 
   // Simulate opening the New Tab as a user would.
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
+  let tab = await promiseNewTab();
   await popupShown;
 
   // Ensure the doorhanger is shown and the setting isn't set yet.
@@ -166,7 +171,7 @@ add_task(async function test_new_tab_ignore_settings() {
   );
   is(
     panel.anchorNode.closest("toolbarbutton").id,
-    "newtabignore_mochi_test-browser-action",
+    "newtabignore_mochi_test-BAP",
     "The doorhanger is anchored to the browser action"
   );
 
@@ -176,8 +181,9 @@ add_task(async function test_new_tab_ignore_settings() {
   await popupHidden;
 
   // Ensure panel is closed and the setting still isn't set.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed"
   );
   is(
@@ -187,19 +193,18 @@ add_task(async function test_new_tab_ignore_settings() {
   );
 
   // Close the first tab and open another new tab.
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  let newTabOpened = waitForNewTab();
-  BrowserOpenTab();
-  await newTabOpened;
+  BrowserTestUtils.removeTab(tab);
+  tab = await promiseNewTab();
 
   // Verify the doorhanger is not shown a second time.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel doesn't open after ignoring the doorhanger"
   );
   is(gURLBar.focused, true, "The URL bar is focused with no doorhanger");
 
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  BrowserTestUtils.removeTab(tab);
   await extension.unload();
 });
 
@@ -211,33 +216,27 @@ add_task(async function test_new_tab_keep_settings() {
   let manifest = {
     version: "1.0",
     name: "New Tab Add-on",
-    applications: { gecko: { id: extensionId } },
-    chrome_url_overrides: { newtab: "keep.html" },
-  };
-  let files = {
-    "keep.html":
-      '<script src="newtab.js"></script><h1 id="extension-new-tab">New Tab!</h1>',
-    "newtab.js": () => {
-      window.onload = browser.test.sendMessage("newtab");
-    },
+    browser_specific_settings: { gecko: { id: extensionId } },
+    chrome_url_overrides: { newtab: "newtab.html" },
   };
   let extension = ExtensionTestUtils.loadExtension({
+    ...extensionData,
     manifest,
-    files,
     useAddonManager: "permanent",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
 
   await extension.startup();
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
 
   // Simulate opening the New Tab as a user would.
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
-  await extension.awaitMessage("newtab");
+  let tab = await promiseNewTab(extensionNewTabUrl);
   await popupShown;
 
   // Ensure the panel is open and the setting isn't saved yet.
@@ -275,8 +274,9 @@ add_task(async function test_new_tab_keep_settings() {
   await confirmationSaved;
 
   // Ensure panel is closed and setting is updated.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
   is(
@@ -286,32 +286,33 @@ add_task(async function test_new_tab_keep_settings() {
   );
 
   // Close the first tab and open another new tab.
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  BrowserOpenTab();
-  await extension.awaitMessage("newtab");
+  BrowserTestUtils.removeTab(tab);
+  tab = await promiseNewTab(extensionNewTabUrl);
 
   // Verify the doorhanger is not shown a second time.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
 
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  BrowserTestUtils.removeTab(tab);
 
   let upgradedExtension = ExtensionTestUtils.loadExtension({
+    ...extensionData,
     manifest: Object.assign({}, manifest, { version: "2.0" }),
-    files,
     useAddonManager: "permanent",
   });
 
   await upgradedExtension.startup();
+  extensionNewTabUrl = `moz-extension://${upgradedExtension.uuid}/newtab.html`;
 
-  BrowserOpenTab();
-  await upgradedExtension.awaitMessage("newtab");
+  tab = await promiseNewTab(extensionNewTabUrl);
 
   // Ensure panel is closed and setting is still set.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
   is(
@@ -320,7 +321,7 @@ add_task(async function test_new_tab_keep_settings() {
     "The New Tab notification is set after keeping the changes"
   );
 
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  BrowserTestUtils.removeTab(tab);
   await upgradedExtension.unload();
   await extension.unload();
 
@@ -339,15 +340,16 @@ add_task(async function test_new_tab_restore_settings() {
   let extensionId = "newtabrestore@mochi.test";
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id: extensionId } },
+      browser_specific_settings: { gecko: { id: extensionId } },
       chrome_url_overrides: { newtab: "restore.html" },
     },
     files: { "restore.html": '<h1 id="extension-new-tab">New Tab!</h1>' },
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
   is(
@@ -360,7 +362,7 @@ add_task(async function test_new_tab_restore_settings() {
 
   // Simulate opening the newtab open as a user would.
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
+  let tab = await promiseNewTab();
   await popupShown;
 
   // Verify that the panel is open and add-on is enabled.
@@ -377,67 +379,41 @@ add_task(async function test_new_tab_restore_settings() {
     "The New Tab notification is not set for this extension"
   );
 
-  // Click the Restore Changes button.
-  let addonDisabled = waitForAddonDisabled(addon);
-  let popupHidden = promisePopupHidden(panel);
-  let locationChanged = BrowserTestUtils.waitForLocationChange(
-    gBrowser,
-    "about:newtab"
+  // Click the Manage button.
+  let preferencesShown = TestUtils.waitForCondition(
+    () => gBrowser.currentURI.spec == "about:preferences#home",
+    "Should open about:preferences."
   );
-  clickRestoreSettings(notification);
+
+  let popupHidden = promisePopupHidden(panel);
+  clickManage(notification);
   await popupHidden;
-  await addonDisabled;
-  await locationChanged;
+  await preferencesShown;
 
   // Ensure panel is closed, settings haven't changed and add-on is disabled.
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after click"
   );
+
   is(
     getNotificationSetting(extensionId),
     null,
-    "The New Tab notification is not set after restoring the settings"
+    "The New Tab notification is not set after clicking manage"
   );
-  is(addon.userDisabled, true, "The extension is now disabled");
-  is(
-    gBrowser.currentURI.spec,
-    "about:newtab",
-    "The user has been redirected to about:newtab"
-  );
-
-  // Wait for the next event tick to make sure the remaining part of the test
-  // is not executed inside tabbrowser's onLocationChange.
-  // See bug 1416153 for more details.
-  await TestUtils.waitForTick();
 
   // Reopen a browser tab and verify that there's no doorhanger.
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  let newTabOpened = waitForNewTab();
-  BrowserOpenTab();
-  await newTabOpened;
+  BrowserTestUtils.removeTab(tab);
+  tab = await promiseNewTab();
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
 
-  // FIXME: We need to enable the add-on so it gets cleared from the
-  // ExtensionSettingsStore for now. See bug 1408226.
-  let addonEnabled = new Promise(resolve => {
-    let listener = {
-      onEnabled(enabledAddon) {
-        if (enabledAddon.id == addon.id) {
-          AddonManager.removeAddonListener(listener);
-          resolve();
-        }
-      },
-    };
-    AddonManager.addAddonListener(listener);
-  });
-  await addon.enable();
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  await addonEnabled;
+  BrowserTestUtils.removeTab(tab);
   await extension.unload();
 });
 
@@ -448,32 +424,29 @@ add_task(async function test_new_tab_restore_settings_multiple() {
   let extensionOneId = "newtabrestoreone@mochi.test";
   let extensionOne = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id: extensionOneId } },
+      browser_specific_settings: { gecko: { id: extensionOneId } },
       chrome_url_overrides: { newtab: "restore-one.html" },
     },
     files: {
       "restore-one.html": `
         <h1 id="extension-new-tab">New Tab!</h1>
-        <script src="newtab.js"></script>
       `,
-      "newtab.js": function() {
-        browser.test.sendMessage("from-newtab-page", window.location.href);
-      },
     },
     useAddonManager: "temporary",
   });
   let extensionTwoId = "newtabrestoretwo@mochi.test";
   let extensionTwo = ExtensionTestUtils.loadExtension({
     manifest: {
-      applications: { gecko: { id: extensionTwoId } },
+      browser_specific_settings: { gecko: { id: extensionTwoId } },
       chrome_url_overrides: { newtab: "restore-two.html" },
     },
     files: { "restore-two.html": '<h1 id="extension-new-tab">New Tab!</h1>' },
     useAddonManager: "temporary",
   });
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is initially closed"
   );
   is(
@@ -492,7 +465,7 @@ add_task(async function test_new_tab_restore_settings_multiple() {
 
   // Simulate opening the newtab open as a user would.
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
+  let tab1 = await promiseNewTab();
   await popupShown;
 
   // Verify that the panel is open and add-on is enabled.
@@ -509,23 +482,36 @@ add_task(async function test_new_tab_restore_settings_multiple() {
     "The New Tab notification is not set for this extension"
   );
 
-  // Click the Restore Changes button.
-  let addonDisabled = waitForAddonDisabled(addonTwo);
+  // Click the Manage button.
   let popupHidden = promisePopupHidden(panel);
-  let newTabUrlPromise = extensionOne.awaitMessage("from-newtab-page");
-  clickRestoreSettings(notification);
+  let preferencesShown = TestUtils.waitForCondition(
+    () => gBrowser.currentURI.spec == "about:preferences#home",
+    "Should open about:preferences."
+  );
+  clickManage(notification);
   await popupHidden;
+  await preferencesShown;
+
+  // Disable the second addon then refresh the new tab expect to see a new addon dropdown.
+  let addonDisabled = waitForAddonDisabled(addonTwo);
+  addonTwo.disable();
   await addonDisabled;
-  await promisePopupShown(panel);
-  let newTabUrl = await newTabUrlPromise;
 
   // Ensure the panel opens again for the next add-on.
+  popupShown = promisePopupShown(panel);
+  let newtabShown = TestUtils.waitForCondition(
+    () => gBrowser.currentURI.spec == AboutNewTab.newTabURL,
+    "Should open correct new tab url."
+  );
+  let tab2 = await promiseNewTab();
+  await newtabShown;
+  await popupShown;
+
   is(
     getNotificationSetting(extensionTwoId),
     null,
     "The New Tab notification is not set after restoring the settings"
   );
-  is(addonTwo.userDisabled, true, "The extension is now disabled");
   let addonOne = await AddonManager.getAddonByID(extensionOneId);
   is(
     addonOne.userDisabled,
@@ -544,23 +530,29 @@ add_task(async function test_new_tab_restore_settings_multiple() {
   );
   is(
     gBrowser.currentURI.spec,
-    newTabUrl,
+    AboutNewTab.newTabURL,
     "The user is now on the next extension's New Tab page"
   );
 
-  addonDisabled = waitForAddonDisabled(addonOne);
-  popupHidden = promisePopupHidden(panel);
-  let locationChanged = BrowserTestUtils.waitForLocationChange(
-    gBrowser,
-    "about:newtab"
+  preferencesShown = TestUtils.waitForCondition(
+    () => gBrowser.currentURI.spec == "about:preferences#home",
+    "Should open about:preferences."
   );
-  clickRestoreSettings(notification);
+  popupHidden = promisePopupHidden(panel);
+  clickManage(notification);
   await popupHidden;
-  await addonDisabled;
-  await locationChanged;
+  await preferencesShown;
+  // remove the extra preferences tab.
+  BrowserTestUtils.removeTab(tab2);
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  addonDisabled = waitForAddonDisabled(addonOne);
+  addonOne.disable();
+  await addonDisabled;
+  tab2 = await promiseNewTab();
+
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is closed after restoring the second time"
   );
   is(
@@ -568,30 +560,21 @@ add_task(async function test_new_tab_restore_settings_multiple() {
     null,
     "The New Tab notification is not set after restoring the settings"
   );
-  is(addonOne.userDisabled, true, "The extension is now disabled");
   is(
     gBrowser.currentURI.spec,
     "about:newtab",
     "The user is now on the original New Tab URL since all extensions are disabled"
   );
 
-  // Wait for the next event tick to make sure the remaining part of the test
-  // is not executed inside tabbrowser's onLocationChange.
-  // See bug 1416153 for more details.
-  await TestUtils.waitForTick();
-
   // Reopen a browser tab and verify that there's no doorhanger.
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  let newTabOpened = waitForNewTab();
-  BrowserOpenTab();
-  await newTabOpened;
+  BrowserTestUtils.removeTab(tab2);
+  tab2 = await promiseNewTab();
 
-  ok(
-    panel.getAttribute("panelopen") != "true",
+  Assert.notEqual(
+    panel.getAttribute("panelopen"),
+    "true",
     "The notification panel is not opened after keeping the changes"
   );
-
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
 
   // FIXME: We need to enable the add-on so it gets cleared from the
   // ExtensionSettingsStore for now. See bug 1408226.
@@ -602,6 +585,9 @@ add_task(async function test_new_tab_restore_settings_multiple() {
   await addonOne.enable();
   await addonTwo.enable();
   await addonsEnabled;
+  BrowserTestUtils.removeTab(tab1);
+  BrowserTestUtils.removeTab(tab2);
+
   await extensionOne.unload();
   await extensionTwo.unload();
 });
@@ -613,29 +599,10 @@ add_task(async function test_new_tab_restore_settings_multiple() {
  */
 add_task(async function dontTemporarilyShowAboutExtensionPath() {
   await ExtensionSettingsStore.initialize();
-  let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      name: "Test Extension",
-      applications: {
-        gecko: {
-          id: "newtaburl@mochi.test",
-        },
-      },
-      chrome_url_overrides: {
-        newtab: "newtab.html",
-      },
-    },
-    background() {
-      browser.test.sendMessage("url", browser.runtime.getURL("newtab.html"));
-    },
-    files: {
-      "newtab.html": "<h1>New tab!</h1>",
-    },
-    useAddonManager: "temporary",
-  });
+  let extension = ExtensionTestUtils.loadExtension(extensionData);
 
   await extension.startup();
-  let url = await extension.awaitMessage("url");
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
 
   let wpl = {
     onLocationChange() {
@@ -644,11 +611,14 @@ add_task(async function dontTemporarilyShowAboutExtensionPath() {
   };
   gBrowser.addProgressListener(wpl);
 
-  let tab = await BrowserTestUtils.openNewForegroundTab({ gBrowser, url });
+  let tab = await BrowserTestUtils.openNewForegroundTab({
+    gBrowser,
+    url: extensionNewTabUrl,
+  });
 
   gBrowser.removeProgressListener(wpl);
   is(gURLBar.value, "", "URL bar value should be empty.");
-  await SpecialPowers.spawn(tab.linkedBrowser, [], function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], function () {
     is(
       content.document.body.textContent,
       "New tab!",
@@ -661,56 +631,26 @@ add_task(async function dontTemporarilyShowAboutExtensionPath() {
 });
 
 add_task(async function test_overriding_newtab_incognito_not_allowed() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let panel = getNewTabDoorhanger().closest("panel");
 
   let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      chrome_url_overrides: { newtab: "newtab.html" },
-      name: "extension",
-      applications: {
-        gecko: { id: "@not-allowed-newtab" },
-      },
-    },
-    files: {
-      "newtab.html": `
-        <!DOCTYPE html>
-        <head>
-          <meta charset="utf-8"/></head>
-        <html>
-          <body>
-            <script src="newtab.js"></script>
-          </body>
-        </html>
-      `,
-
-      "newtab.js": function() {
-        window.onload = () => {
-          browser.test.sendMessage("from-newtab-page", window.location.href);
-        };
-      },
-    },
+    ...extensionData,
     useAddonManager: "permanent",
   });
 
   await extension.startup();
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
 
   let popupShown = promisePopupShown(panel);
-  BrowserOpenTab();
+  let tab = await promiseNewTab(extensionNewTabUrl);
   await popupShown;
-
-  let url = await extension.awaitMessage("from-newtab-page");
-  ok(url.endsWith("newtab.html"), "Newtab url is overridden by the extension.");
 
   // This will show a confirmation doorhanger, make sure we don't leave it open.
   let popupHidden = promisePopupHidden(panel);
   panel.hidePopup();
   await popupHidden;
 
-  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+  BrowserTestUtils.removeTab(tab);
 
   // Verify a private window does not open the extension page.  We would
   // get an extra notification that we don't listen for if it gets loaded.
@@ -718,18 +658,14 @@ add_task(async function test_overriding_newtab_incognito_not_allowed() {
   let win = OpenBrowserWindow({ private: true });
   await windowOpenedPromise;
 
-  let newTabOpened = waitForNewTab();
-  win.BrowserOpenTab();
-  await newTabOpened;
+  await promiseNewTab("about:privatebrowsing", win);
 
   is(win.gURLBar.value, "", "newtab not used in private window");
 
   // Verify setting the pref directly doesn't bypass permissions.
   let origUrl = AboutNewTab.newTabURL;
-  AboutNewTab.newTabURL = url;
-  newTabOpened = waitForNewTab();
-  win.BrowserOpenTab();
-  await newTabOpened;
+  AboutNewTab.newTabURL = extensionNewTabUrl;
+  await promiseNewTab("about:privatebrowsing", win);
 
   is(win.gURLBar.value, "", "directly set newtab not used in private window");
 
@@ -740,52 +676,22 @@ add_task(async function test_overriding_newtab_incognito_not_allowed() {
 });
 
 add_task(async function test_overriding_newtab_incognito_spanning() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["extensions.allowPrivateBrowsingByDefault", false]],
-  });
-
   let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      chrome_url_overrides: { newtab: "newtab.html" },
-      name: "extension",
-      applications: {
-        gecko: { id: "@spanning-newtab" },
-      },
-    },
-    files: {
-      "newtab.html": `
-        <!DOCTYPE html>
-        <head>
-          <meta charset="utf-8"/></head>
-        <html>
-          <body>
-            <script src="newtab.js"></script>
-          </body>
-        </html>
-      `,
-
-      "newtab.js": function() {
-        window.onload = () => {
-          browser.test.sendMessage("from-newtab-page", window.location.href);
-        };
-      },
-    },
+    ...extensionData,
     useAddonManager: "permanent",
     incognitoOverride: "spanning",
   });
 
   await extension.startup();
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
 
   let windowOpenedPromise = BrowserTestUtils.waitForNewWindow();
   let win = OpenBrowserWindow({ private: true });
   await windowOpenedPromise;
   let panel = ExtensionControlledPopup._getAndMaybeCreatePanel(win.document);
   let popupShown = promisePopupShown(panel);
-  win.BrowserOpenTab();
+  await promiseNewTab(extensionNewTabUrl, win);
   await popupShown;
-
-  let url = await extension.awaitMessage("from-newtab-page");
-  ok(url.endsWith("newtab.html"), "Newtab url is overridden by the extension.");
 
   // This will show a confirmation doorhanger, make sure we don't leave it open.
   let popupHidden = promisePopupHidden(panel);
@@ -816,4 +722,73 @@ add_task(async function testNewTabPrefsReset() {
     isUndefinedPref("browser.newtab.privateAllowed"),
     "privateAllowed pref is not set"
   );
+});
+
+// This test ensures that an extension provided newtab
+// can be opened by another extension (e.g. tab manager)
+// regardless of whether the newtab url is made available
+// in web_accessible_resources.
+add_task(async function test_newtab_from_extension() {
+  let panel = getNewTabDoorhanger().closest("panel");
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      browser_specific_settings: {
+        gecko: {
+          id: "newtaburl@mochi.test",
+        },
+      },
+      chrome_url_overrides: {
+        newtab: "newtab.html",
+      },
+    },
+    files: {
+      "newtab.html": `<h1>New tab!</h1><script src="newtab.js"></script>`,
+      "newtab.js": () => {
+        browser.test.sendMessage("newtab-loaded");
+      },
+    },
+    useAddonManager: "temporary",
+  });
+
+  await extension.startup();
+  let extensionNewTabUrl = `moz-extension://${extension.uuid}/newtab.html`;
+
+  let popupShown = promisePopupShown(panel);
+  let tab = await promiseNewTab(extensionNewTabUrl);
+  await popupShown;
+
+  // This will show a confirmation doorhanger, make sure we don't leave it open.
+  let popupHidden = promisePopupHidden(panel);
+  panel.hidePopup();
+  await popupHidden;
+
+  BrowserTestUtils.removeTab(tab);
+
+  // extension to open the newtab
+  let opener = ExtensionTestUtils.loadExtension({
+    async background() {
+      let newtab = await browser.tabs.create({});
+      browser.test.assertTrue(
+        newtab.id !== browser.tabs.TAB_ID_NONE,
+        "New tab was created."
+      );
+      await browser.tabs.remove(newtab.id);
+      browser.test.sendMessage("complete");
+    },
+  });
+
+  function listener(msg) {
+    Assert.ok(!/may not load or link to moz-extension/.test(msg.message));
+  }
+  Services.console.registerListener(listener);
+  registerCleanupFunction(() => {
+    Services.console.unregisterListener(listener);
+  });
+
+  await opener.startup();
+  await opener.awaitMessage("complete");
+  await extension.awaitMessage("newtab-loaded");
+  await opener.unload();
+  await extension.unload();
 });

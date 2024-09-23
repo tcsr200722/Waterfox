@@ -8,7 +8,7 @@
 #define dom_ipc_StringTable_h
 
 #include "mozilla/RangedPtr.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 
 /**
  * This file contains helper classes for creating and accessing compact string
@@ -19,9 +19,7 @@
  * read-only shared memory or memory mapped files.
  */
 
-namespace mozilla {
-namespace dom {
-namespace ipc {
+namespace mozilla::dom::ipc {
 
 /**
  * Contains the character offset and character length of an entry in a string
@@ -72,21 +70,24 @@ class StringTableBuilder {
   using ElemType = typename StringType::char_type;
 
   StringTableEntry Add(const StringType& aKey) {
-    const auto& entry = mEntries.LookupForAdd(aKey).OrInsert([&]() {
-      Entry newEntry{mSize, aKey};
-      mSize += aKey.Length() + 1;
+    return mEntries.WithEntryHandle(aKey,
+                                    [&](auto&& entry) -> StringTableEntry {
+                                      auto length = uint32_t(aKey.Length());
+                                      entry.OrInsertWith([&]() {
+                                        Entry newEntry{mSize, aKey};
+                                        mSize += length + 1;
 
-      return newEntry;
-    });
+                                        return newEntry;
+                                      });
 
-    return {entry.mOffset, aKey.Length()};
+                                      return {entry->mOffset, length};
+                                    });
   }
 
   void Write(const RangedPtr<uint8_t>& aBuffer) {
     auto buffer = aBuffer.ReinterpretCast<ElemType>();
 
-    for (auto iter = mEntries.Iter(); !iter.Done(); iter.Next()) {
-      auto& entry = iter.Data();
+    for (const auto& entry : mEntries.Values()) {
       memcpy(&buffer[entry.mOffset], entry.mValue.BeginReading(),
              sizeof(ElemType) * (entry.mValue.Length() + 1));
     }
@@ -106,12 +107,10 @@ class StringTableBuilder {
     StringType mValue;
   };
 
-  nsDataHashtable<KeyType, Entry> mEntries;
+  nsTHashMap<KeyType, Entry> mEntries;
   uint32_t mSize = 0;
 };
 
-}  // namespace ipc
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::ipc
 
 #endif

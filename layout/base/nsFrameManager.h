@@ -9,8 +9,8 @@
 #ifndef _nsFrameManager_h_
 #define _nsFrameManager_h_
 
-#include "nsDebug.h"
 #include "mozilla/Attributes.h"
+#include "nsDebug.h"
 #include "nsFrameList.h"
 
 class nsContainerFrame;
@@ -20,7 +20,9 @@ class nsPlaceholderFrame;
 class nsWindowSizes;
 
 namespace mozilla {
+struct FrameDestroyContext;
 class PresShell;
+class ViewportFrame;
 }  // namespace mozilla
 
 /**
@@ -30,26 +32,22 @@ class PresShell;
  * frame.
  */
 class nsFrameManager {
-  typedef mozilla::PresShell PresShell;
-  typedef mozilla::layout::FrameChildListID ChildListID;
-
  public:
-  explicit nsFrameManager(PresShell* aPresShell)
-      : mPresShell(aPresShell), mRootFrame(nullptr) {
+  using DestroyContext = mozilla::FrameDestroyContext;
+
+  explicit nsFrameManager(mozilla::PresShell* aPresShell)
+      : mPresShell(aPresShell) {
     MOZ_ASSERT(mPresShell, "need a pres shell");
   }
   ~nsFrameManager();
 
   /*
-   * Gets and sets the root frame (typically the viewport). The lifetime of the
+   * Gets and sets the root frame (i.e. ViewportFrame). The lifetime of the
    * root frame is controlled by the frame manager. When the frame manager is
    * destroyed, it destroys the entire frame hierarchy.
    */
   nsIFrame* GetRootFrame() const { return mRootFrame; }
-  void SetRootFrame(nsIFrame* aRootFrame) {
-    NS_ASSERTION(!mRootFrame, "already have a root frame");
-    mRootFrame = aRootFrame;
-  }
+  void SetRootFrame(mozilla::ViewportFrame* aRootFrame);
 
   /*
    * After Destroy is called, it is an error to call any FrameManager methods.
@@ -59,13 +57,15 @@ class nsFrameManager {
   void Destroy();
 
   // Functions for manipulating the frame model
-  void AppendFrames(nsContainerFrame* aParentFrame, ChildListID aListID,
-                    nsFrameList& aFrameList);
+  void AppendFrames(nsContainerFrame* aParentFrame,
+                    mozilla::FrameChildListID aListID,
+                    nsFrameList&& aFrameList);
 
-  void InsertFrames(nsContainerFrame* aParentFrame, ChildListID aListID,
-                    nsIFrame* aPrevFrame, nsFrameList& aFrameList);
+  void InsertFrames(nsContainerFrame* aParentFrame,
+                    mozilla::FrameChildListID aListID, nsIFrame* aPrevFrame,
+                    nsFrameList&& aFrameList);
 
-  void RemoveFrame(ChildListID aListID, nsIFrame* aOldFrame);
+  void RemoveFrame(DestroyContext&, mozilla::FrameChildListID, nsIFrame*);
 
   /*
    * Capture/restore frame state for the frame subtree rooted at aFrame.
@@ -91,8 +91,12 @@ class nsFrameManager {
 
  protected:
   // weak link, because the pres shell owns us
-  PresShell* MOZ_NON_OWNING_REF mPresShell;
-  nsIFrame* mRootFrame;
+  mozilla::PresShell* MOZ_NON_OWNING_REF mPresShell;
+
+  // Note: We use nsIFrame* instead of ViewportFrame* for mRootFrame to avoid
+  // exposing ViewportFrame to the callers via GetRootFrame(), since they do not
+  // depend on any ViewportFrame-specific APIs or details.
+  nsIFrame* mRootFrame = nullptr;
 };
 
 #endif

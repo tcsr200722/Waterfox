@@ -15,8 +15,6 @@ interface MutationEvent : Event
   const unsigned short MODIFICATION = 1;
   const unsigned short ADDITION     = 2;
   const unsigned short REMOVAL      = 3;
-  [ChromeOnly]
-  const unsigned short SMIL         = 4;
 
   readonly attribute Node?          relatedNode;
   readonly attribute DOMString      prevValue;
@@ -25,12 +23,12 @@ interface MutationEvent : Event
   readonly attribute unsigned short attrChange;
 
   [Throws]
-  void initMutationEvent(DOMString type,
-                         optional boolean canBubble = false,
-                         optional boolean cancelable = false,
-                         optional Node? relatedNode = null,
-                         optional DOMString prevValue = "",
-                         optional DOMString newValue = "",
-                         optional DOMString attrName = "",
-                         optional unsigned short attrChange = 0);
+  undefined initMutationEvent(DOMString type,
+                              optional boolean canBubble = false,
+                              optional boolean cancelable = false,
+                              optional Node? relatedNode = null,
+                              optional DOMString prevValue = "",
+                              optional DOMString newValue = "",
+                              optional DOMString attrName = "",
+                              optional unsigned short attrChange = 0);
 };

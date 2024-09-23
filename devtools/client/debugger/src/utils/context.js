@@ -1,12 +1,16 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
-// @flow
 
-import type { ThreadId } from "../types";
-import type { State } from "../reducers/types";
-
-import { getThreadContext } from "../selectors";
+import {
+  getThreadContext,
+  getSelectedFrame,
+  getCurrentThread,
+  hasSource,
+  hasSourceActor,
+  getCurrentlyFetchedTopFrame,
+  hasFrame,
+} from "../selectors/index";
 
 // Context encapsulates the main parameters of the current redux state, which
 // impact most other information tracked by the debugger.
@@ -27,34 +31,19 @@ import { getThreadContext } from "../selectors";
 // of the pause state.
 
 // A normal Context is invalidated if the target navigates.
-export type NavigateContext = {|
-  // Counter reflecting how many times the debugger has navigated to a new page
-  // and reset most of its state.
-  +navigateCounter: number,
-|};
 
 // A ThreadContext is invalidated if the target navigates, or if the current
 // thread changes, pauses, or resumes.
-export type ThreadContext = {|
-  +navigateCounter: number,
 
-  // The currently selected thread.
-  +thread: ThreadId,
+export class ContextError extends Error {
+  constructor(msg) {
+    // Use a prefix string to help `PromiseTestUtils.allowMatchingRejectionsGlobally`
+    // ignore all these exceptions as this is based on error strings.
+    super(`DebuggerContextError: ${msg}`);
+  }
+}
 
-  // Counter reflecting how many times the selected thread has paused or
-  // resumed.
-  +pauseCounter: number,
-
-  // Whether the current thread is paused. This is determined from the other
-  // Context properties and is here for convenient access.
-  +isPaused: boolean,
-|};
-
-export type Context = NavigateContext | ThreadContext;
-
-export class ContextError extends Error {}
-
-export function validateNavigateContext(state: State, cx: Context): void {
+export function validateNavigateContext(state, cx) {
   const newcx = getThreadContext(state);
 
   if (newcx.navigateCounter != cx.navigateCounter) {
@@ -62,7 +51,7 @@ export function validateNavigateContext(state: State, cx: Context): void {
   }
 }
 
-export function validateThreadContext(state: State, cx: ThreadContext): void {
+export function validateThreadContext(state, cx) {
   const newcx = getThreadContext(state);
 
   if (cx.thread != newcx.thread) {
@@ -74,15 +63,81 @@ export function validateThreadContext(state: State, cx: ThreadContext): void {
   }
 }
 
-export function validateContext(state: State, cx: Context): void {
+export function validateContext(state, cx) {
   validateNavigateContext(state, cx);
 
   if ("thread" in cx) {
-    validateThreadContext(state, (cx: any));
+    validateThreadContext(state, cx);
   }
 }
 
-export function isValidThreadContext(state: State, cx: ThreadContext): boolean {
+export function validateSelectedFrame(state, selectedFrame) {
+  const newThread = getCurrentThread(state);
+  if (selectedFrame.thread != newThread) {
+    throw new ContextError("Selected thread has changed");
+  }
+
+  const newSelectedFrame = getSelectedFrame(state, newThread);
+  // Compare frame's IDs as frame objects are cloned during mapping
+  if (selectedFrame.id != newSelectedFrame?.id) {
+    throw new ContextError("Selected frame changed");
+  }
+}
+
+export function validateBreakpoint(state, breakpoint) {
+  // XHR breakpoint don't use any location and are always valid
+  if (!breakpoint.location) {
+    return;
+  }
+
+  if (!hasSource(state, breakpoint.location.source.id)) {
+    throw new ContextError(
+      `Breakpoint's location is obsolete (source '${breakpoint.location.source.id}' no longer exists)`
+    );
+  }
+  if (!hasSource(state, breakpoint.generatedLocation.source.id)) {
+    throw new ContextError(
+      `Breakpoint's generated location is obsolete (source '${breakpoint.generatedLocation.source.id}' no longer exists)`
+    );
+  }
+}
+
+export function validateSource(state, source) {
+  if (!hasSource(state, source.id)) {
+    throw new ContextError(
+      `Obsolete source (source '${source.id}' no longer exists)`
+    );
+  }
+}
+
+export function validateSourceActor(state, sourceActor) {
+  if (!hasSourceActor(state, sourceActor.id)) {
+    throw new ContextError(
+      `Obsolete source actor (source '${sourceActor.id}' no longer exists)`
+    );
+  }
+}
+
+export function validateThreadFrames(state, thread, frames) {
+  const newThread = getCurrentThread(state);
+  if (thread != newThread) {
+    throw new ContextError("Selected thread has changed");
+  }
+  const newTopFrame = getCurrentlyFetchedTopFrame(state, newThread);
+  if (newTopFrame?.id != frames[0].id) {
+    throw new ContextError("Thread moved to another location");
+  }
+}
+
+export function validateFrame(state, frame) {
+  if (!hasFrame(state, frame)) {
+    throw new ContextError(
+      `Obsolete frame (frame '${frame.id}' no longer exists)`
+    );
+  }
+}
+
+export function isValidThreadContext(state, cx) {
   const newcx = getThreadContext(state);
   return cx.thread == newcx.thread && cx.pauseCounter == newcx.pauseCounter;
 }

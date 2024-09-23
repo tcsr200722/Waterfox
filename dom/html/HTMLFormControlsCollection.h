@@ -7,19 +7,20 @@
 #ifndef mozilla_dom_HTMLFormControlsCollection_h
 #define mozilla_dom_HTMLFormControlsCollection_h
 
-#include "mozilla/dom/Element.h"  // DOMProxyHandler::getOwnPropertyDescriptor
 #include "nsIHTMLCollection.h"
 #include "nsInterfaceHashtable.h"
+#include "mozilla/dom/TreeOrderedArray.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
 class nsGenericHTMLFormElement;
+class nsIContent;
 class nsIFormControl;
 template <class T>
 class RefPtr;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+class Element;
 class HTMLFormElement;
 class HTMLImageElement;
 class OwningRadioNodeListOrElement;
@@ -57,9 +58,9 @@ class HTMLFormControlsCollection final : public nsIHTMLCollection,
                                   const nsAString& aName);
   nsresult RemoveElementFromTable(nsGenericHTMLFormElement* aChild,
                                   const nsAString& aName);
-  nsresult IndexOfControl(nsIFormControl* aControl, int32_t* aIndex);
+  nsresult IndexOfContent(nsIContent* aContent, int32_t* aIndex);
 
-  nsISupports* NamedItemInternal(const nsAString& aName, bool aFlushContent);
+  nsISupports* NamedItemInternal(const nsAString& aName);
 
   /**
    * Create a sorted list of form control elements. This list is sorted
@@ -74,6 +75,7 @@ class HTMLFormControlsCollection final : public nsIHTMLCollection,
       nsTArray<RefPtr<nsGenericHTMLFormElement>>& aControls) const;
 
   // nsWrapperCache
+  using nsWrapperCache::GetWrapper;
   using nsWrapperCache::GetWrapperPreserveColor;
   using nsWrapperCache::PreserveWrapper;
   virtual JSObject* WrapObject(JSContext* aCx,
@@ -94,24 +96,22 @@ class HTMLFormControlsCollection final : public nsIHTMLCollection,
 
   HTMLFormElement* mForm;  // WEAK - the form owns me
 
-  nsTArray<nsGenericHTMLFormElement*>
-      mElements;  // Holds WEAK references - bug 36639
+  // Holds WEAK references - bug 36639
+  // NOTE(emilio): These are not guaranteed to be descendants of mForm, because
+  // of the form attribute, though that's likely.
+  TreeOrderedArray<nsGenericHTMLFormElement*> mElements;
 
   // This array holds on to all form controls that are not contained
   // in mElements (form.elements in JS, see ShouldBeInFormControl()).
   // This is needed to properly clean up the bi-directional references
   // (both weak and strong) between the form and its form controls.
-
-  nsTArray<nsGenericHTMLFormElement*> mNotInElements;  // Holds WEAK references
+  TreeOrderedArray<nsGenericHTMLFormElement*> mNotInElements;
 
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(HTMLFormControlsCollection)
 
  protected:
   // Drop all our references to the form elements
   void Clear();
-
-  // Flush out the content model so it's up to date.
-  void FlushPendingNotifications();
 
   // A map from an ID or NAME attribute to the form control(s), this
   // hash holds strong references either to the named form control, or
@@ -122,7 +122,6 @@ class HTMLFormControlsCollection final : public nsIHTMLCollection,
   nsInterfaceHashtable<nsStringHashKey, nsISupports> mNameLookupTable;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_HTMLFormControlsCollection_h

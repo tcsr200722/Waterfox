@@ -4,13 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDTRANSFORMLIST_H__
-#define MOZILLA_SVGANIMATEDTRANSFORMLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDTRANSFORMLIST_H_
+#define DOM_SVG_SVGANIMATEDTRANSFORMLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILAttr.h"
 #include "mozilla/UniquePtr.h"
-#include "SVGTransformList.h"
+#include "mozilla/dom/SVGTransformList.h"
 
 class nsAtom;
 
@@ -45,7 +45,17 @@ class SVGAnimatedTransformList {
 
  public:
   SVGAnimatedTransformList()
-      : mIsAttrSet(false), mCreatedOrRemovedOnLastChange(true) {}
+      : mIsBaseSet(false), mCreatedOrRemovedOnLastChange(true) {}
+
+  SVGAnimatedTransformList& operator=(const SVGAnimatedTransformList& aOther) {
+    mBaseVal = aOther.mBaseVal;
+    if (aOther.mAnimVal) {
+      mAnimVal = MakeUnique<SVGTransformList>(*aOther.mAnimVal);
+    }
+    mIsBaseSet = aOther.mIsBaseSet;
+    mCreatedOrRemovedOnLastChange = aOther.mCreatedOrRemovedOnLastChange;
+    return *this;
+  }
 
   /**
    * Because it's so important that mBaseVal and its DOMSVGTransformList wrapper
@@ -107,7 +117,7 @@ class SVGAnimatedTransformList {
     return mCreatedOrRemovedOnLastChange;
   }
 
-  mozilla::UniquePtr<SMILAttr> ToSMILAttr(dom::SVGElement* aSVGElement);
+  UniquePtr<SMILAttr> ToSMILAttr(dom::SVGElement* aSVGElement);
 
  private:
   // mAnimVal is a pointer to allow us to determine if we're being animated or
@@ -117,7 +127,7 @@ class SVGAnimatedTransformList {
 
   SVGTransformList mBaseVal;
   UniquePtr<SVGTransformList> mAnimVal;
-  bool mIsAttrSet;
+  bool mIsBaseSet;
   // See documentation for accessor.
   bool mCreatedOrRemovedOnLastChange;
 
@@ -128,12 +138,13 @@ class SVGAnimatedTransformList {
         : mVal(aVal), mElement(aSVGElement) {}
 
     // SMILAttr methods
-    virtual nsresult ValueFromString(
-        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
-        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
-    virtual SMILValue GetBaseValue() const override;
-    virtual void ClearAnimValue() override;
-    virtual nsresult SetAnimValue(const SMILValue& aNewAnimValue) override;
+    nsresult ValueFromString(const nsAString& aStr,
+                             const dom::SVGAnimationElement* aSrcElement,
+                             SMILValue& aValue,
+                             bool& aPreventCachingOfSandwich) const override;
+    SMILValue GetBaseValue() const override;
+    void ClearAnimValue() override;
+    nsresult SetAnimValue(const SMILValue& aNewAnimValue) override;
 
    protected:
     static void ParseValue(const nsAString& aSpec, const nsAtom* aTransformType,
@@ -151,4 +162,4 @@ class SVGAnimatedTransformList {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDTRANSFORMLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDTRANSFORMLIST_H_

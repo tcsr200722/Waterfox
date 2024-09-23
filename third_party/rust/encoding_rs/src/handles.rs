@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Mozilla Foundation. See the COPYRIGHT
+// Copyright Mozilla Foundation. See the COPYRIGHT
 // file at the top-level directory of this distribution.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
@@ -24,7 +24,7 @@
         all(target_endian = "little", target_feature = "neon")
     )
 ))]
-use simd_funcs::*;
+use crate::simd_funcs::*;
 
 #[cfg(all(
     feature = "simd-accel",
@@ -34,13 +34,13 @@ use simd_funcs::*;
         all(target_endian = "little", target_feature = "neon")
     )
 ))]
-use packed_simd::u16x8;
+use core::simd::u16x8;
 
 use super::DecoderResult;
 use super::EncoderResult;
-use ascii::*;
-use utf_8::convert_utf8_to_utf16_up_to_invalid;
-use utf_8::utf8_valid_up_to;
+use crate::ascii::*;
+use crate::utf_8::convert_utf8_to_utf16_up_to_invalid;
+use crate::utf_8::utf8_valid_up_to;
 
 pub enum Space<T> {
     Available(T),
@@ -90,37 +90,50 @@ impl Endian for LittleEndian {
 
 #[derive(Debug, Copy, Clone)]
 struct UnalignedU16Slice {
+    // Safety invariant: ptr must be valid for reading 2*len bytes
     ptr: *const u8,
     len: usize,
 }
 
 impl UnalignedU16Slice {
+    /// Safety: ptr must be valid for reading 2*len bytes
     #[inline(always)]
     pub unsafe fn new(ptr: *const u8, len: usize) -> UnalignedU16Slice {
+        // Safety: field invariant passed up to caller here
         UnalignedU16Slice { ptr, len }
     }
 
     #[inline(always)]
     pub fn trim_last(&mut self) {
         assert!(self.len > 0);
+        // Safety: invariant upheld here: a slice is still valid with a shorter len
         self.len -= 1;
     }
 
     #[inline(always)]
     pub fn at(&self, i: usize) -> u16 {
+        use core::mem::MaybeUninit;
+
         assert!(i < self.len);
         unsafe {
-            let mut u: u16 = ::std::mem::uninitialized();
-            ::std::ptr::copy_nonoverlapping(self.ptr.add(i * 2), &mut u as *mut u16 as *mut u8, 2);
-            u
+            let mut u: MaybeUninit<u16> = MaybeUninit::uninit();
+            // Safety: i is at most len - 1, which works here
+            ::core::ptr::copy_nonoverlapping(self.ptr.add(i * 2), u.as_mut_ptr() as *mut u8, 2);
+            // Safety: valid read above lets us do this
+            u.assume_init()
         }
     }
 
     #[cfg(feature = "simd-accel")]
     #[inline(always)]
     pub fn simd_at(&self, i: usize) -> u16x8 {
+        // Safety: i/len are on the scale of u16s, each one corresponds to 2 u8s
         assert!(i + SIMD_STRIDE_SIZE / 2 <= self.len);
         let byte_index = i * 2;
+        // Safety: load16_unaligned needs SIMD_STRIDE_SIZE=16 u8 elements to read,
+        // or 16/2 = 8 u16 elements to read.
+        // We have checked that we have at least that many above.
+
         unsafe { to_u16_lanes(load16_unaligned(self.ptr.add(byte_index))) }
     }
 
@@ -134,6 +147,7 @@ impl UnalignedU16Slice {
         // XXX the return value should be restricted not to
         // outlive self.
         assert!(from <= self.len);
+        // Safety: This upholds the same invariant: `from` is in bounds and we're returning a shorter slice
         unsafe { UnalignedU16Slice::new(self.ptr.add(from * 2), self.len - from) }
     }
 
@@ -142,6 +156,8 @@ impl UnalignedU16Slice {
     pub fn copy_bmp_to<E: Endian>(&self, other: &mut [u16]) -> Option<(u16, usize)> {
         assert!(self.len <= other.len());
         let mut offset = 0;
+        // Safety: SIMD_STRIDE_SIZE is measured in bytes, whereas len is in u16s. We check we can
+        // munch SIMD_STRIDE_SIZE / 2 u16s which means we can write SIMD_STRIDE_SIZE u8s
         if SIMD_STRIDE_SIZE / 2 <= self.len {
             let len_minus_stride = self.len - SIMD_STRIDE_SIZE / 2;
             loop {
@@ -149,6 +165,7 @@ impl UnalignedU16Slice {
                 if E::OPPOSITE_ENDIAN {
                     simd = simd_byte_swap(simd);
                 }
+                // Safety: we have enough space on the other side to write this
                 unsafe {
                     store8_unaligned(other.as_mut_ptr().add(offset), simd);
                 }
@@ -156,6 +173,7 @@ impl UnalignedU16Slice {
                     break;
                 }
                 offset += SIMD_STRIDE_SIZE / 2;
+                // Safety: This ensures we still have space for writing SIMD_STRIDE_SIZE u8s
                 if offset > len_minus_stride {
                     break;
                 }
@@ -193,7 +211,7 @@ fn copy_unaligned_basic_latin_to_ascii_alu<E: Endian>(
     dst: &mut [u8],
     offset: usize,
 ) -> CopyAsciiResult<usize, (u16, usize)> {
-    let len = ::std::cmp::min(src.len(), dst.len());
+    let len = ::core::cmp::min(src.len(), dst.len());
     let mut i = 0usize;
     loop {
         if i == len {
@@ -232,8 +250,9 @@ fn copy_unaligned_basic_latin_to_ascii<E: Endian>(
     src: UnalignedU16Slice,
     dst: &mut [u8],
 ) -> CopyAsciiResult<usize, (u16, usize)> {
-    let len = ::std::cmp::min(src.len(), dst.len());
+    let len = ::core::cmp::min(src.len(), dst.len());
     let mut offset = 0;
+    // Safety: This check ensures we are able to read/write at least SIMD_STRIDE_SIZE elements
     if SIMD_STRIDE_SIZE <= len {
         let len_minus_stride = len - SIMD_STRIDE_SIZE;
         loop {
@@ -247,10 +266,13 @@ fn copy_unaligned_basic_latin_to_ascii<E: Endian>(
                 break;
             }
             let packed = simd_pack(first, second);
+            // Safety: We are able to write SIMD_STRIDE_SIZE elements in this iteration
             unsafe {
                 store16_unaligned(dst.as_mut_ptr().add(offset), packed);
             }
             offset += SIMD_STRIDE_SIZE;
+            // Safety: This is `offset > len - SIMD_STRIDE_SIZE`, which ensures that we can write at least SIMD_STRIDE_SIZE elements
+            // in the next iteration
             if offset > len_minus_stride {
                 break;
             }
@@ -635,7 +657,7 @@ impl<'a> Utf16Destination<'a> {
         self.write_code_unit((0xDC00 + (astral & 0x3FF)) as u16);
     }
     #[inline(always)]
-    pub fn write_surrogate_pair(&mut self, high: u16, low: u16) {
+    fn write_surrogate_pair(&mut self, high: u16, low: u16) {
         self.write_code_unit(high);
         self.write_code_unit(low);
     }
@@ -644,6 +666,7 @@ impl<'a> Utf16Destination<'a> {
         self.write_bmp_excl_ascii(combined);
         self.write_bmp_excl_ascii(combining);
     }
+    // Safety-usable invariant: CopyAsciiResult::GoOn will only contain bytes >=0x80
     #[inline(always)]
     pub fn copy_ascii_from_check_space_bmp<'b>(
         &'b mut self,
@@ -657,6 +680,8 @@ impl<'a> Utf16Destination<'a> {
             } else {
                 (DecoderResult::InputEmpty, src_remaining.len())
             };
+            // Safety: This function is documented as needing valid pointers for src/dest and len, which
+            // is true since we've passed the minumum length of the two
             match unsafe {
                 ascii_to_basic_latin(src_remaining.as_ptr(), dst_remaining.as_mut_ptr(), length)
             } {
@@ -665,16 +690,20 @@ impl<'a> Utf16Destination<'a> {
                     self.pos += length;
                     return CopyAsciiResult::Stop((pending, source.pos, self.pos));
                 }
+                // Safety: the function is documented as returning bytes >=0x80 in the Some
                 Some((non_ascii, consumed)) => {
                     source.pos += consumed;
                     self.pos += consumed;
                     source.pos += 1; // +1 for non_ascii
+                                     // Safety: non-ascii bubbled out here
                     non_ascii
                 }
             }
         };
+        // Safety: non-ascii returned here
         CopyAsciiResult::GoOn((non_ascii_ret, Utf16BmpHandle::new(self)))
     }
+    // Safety-usable invariant: CopyAsciiResult::GoOn will only contain bytes >=0x80
     #[inline(always)]
     pub fn copy_ascii_from_check_space_astral<'b>(
         &'b mut self,
@@ -689,6 +718,8 @@ impl<'a> Utf16Destination<'a> {
             } else {
                 (DecoderResult::InputEmpty, src_remaining.len())
             };
+            // Safety: This function is documented as needing valid pointers for src/dest and len, which
+            // is true since we've passed the minumum length of the two
             match unsafe {
                 ascii_to_basic_latin(src_remaining.as_ptr(), dst_remaining.as_mut_ptr(), length)
             } {
@@ -697,11 +728,13 @@ impl<'a> Utf16Destination<'a> {
                     self.pos += length;
                     return CopyAsciiResult::Stop((pending, source.pos, self.pos));
                 }
+                // Safety: the function is documented as returning bytes >=0x80 in the Some
                 Some((non_ascii, consumed)) => {
                     source.pos += consumed;
                     self.pos += consumed;
                     if self.pos + 1 < dst_len {
                         source.pos += 1; // +1 for non_ascii
+                                         // Safety: non-ascii bubbled out here
                         non_ascii
                     } else {
                         return CopyAsciiResult::Stop((
@@ -713,6 +746,7 @@ impl<'a> Utf16Destination<'a> {
                 }
             }
         };
+        // Safety: non-ascii returned here
         CopyAsciiResult::GoOn((non_ascii_ret, Utf16AstralHandle::new(self)))
     }
     #[inline(always)]
@@ -734,7 +768,7 @@ impl<'a> Utf16Destination<'a> {
         let mut src_unaligned = unsafe {
             UnalignedU16Slice::new(
                 src_remaining.as_ptr(),
-                ::std::cmp::min(src_remaining.len() / 2, dst_remaining.len()),
+                ::core::cmp::min(src_remaining.len() / 2, dst_remaining.len()),
             )
         };
         if src_unaligned.len() == 0 {
@@ -1078,7 +1112,7 @@ impl<'a> Utf8Destination<'a> {
     pub fn copy_utf8_up_to_invalid_from(&mut self, source: &mut ByteSource) {
         let src_remaining = &source.slice[source.pos..];
         let dst_remaining = &mut self.slice[self.pos..];
-        let min_len = ::std::cmp::min(src_remaining.len(), dst_remaining.len());
+        let min_len = ::core::cmp::min(src_remaining.len(), dst_remaining.len());
         // Validate first, then memcpy to let memcpy do its thing even for
         // non-ASCII. (And potentially do something better than SSE2 for ASCII.)
         let valid_len = utf8_valid_up_to(&src_remaining[..min_len]);
@@ -1154,7 +1188,7 @@ impl<'a> Utf16Source<'a> {
         self.pos += 1;
         let unit_minus_surrogate_start = unit.wrapping_sub(0xD800);
         if unit_minus_surrogate_start > (0xDFFF - 0xD800) {
-            return unsafe { ::std::char::from_u32_unchecked(u32::from(unit)) };
+            return unsafe { ::core::char::from_u32_unchecked(u32::from(unit)) };
         }
         if unit_minus_surrogate_start <= (0xDBFF - 0xD800) {
             // high surrogate
@@ -1165,7 +1199,7 @@ impl<'a> Utf16Source<'a> {
                     // The next code unit is a low surrogate. Advance position.
                     self.pos += 1;
                     return unsafe {
-                        ::std::char::from_u32_unchecked(
+                        ::core::char::from_u32_unchecked(
                             (u32::from(unit) << 10) + u32::from(second)
                                 - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
                         )
@@ -1202,7 +1236,7 @@ impl<'a> Utf16Source<'a> {
                     // The next code unit is a low surrogate. Advance position.
                     self.pos += 1;
                     return Unicode::NonAscii(NonAscii::Astral(unsafe {
-                        ::std::char::from_u32_unchecked(
+                        ::core::char::from_u32_unchecked(
                             (u32::from(unit) << 10) + u32::from(second)
                                 - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
                         )
@@ -1266,7 +1300,7 @@ impl<'a> Utf16Source<'a> {
                                     // The next code unit is a low surrogate. Advance position.
                                     self.pos += 1;
                                     NonAscii::Astral(unsafe {
-                                        ::std::char::from_u32_unchecked(
+                                        ::core::char::from_u32_unchecked(
                                             (u32::from(unit) << 10) + u32::from(second)
                                                 - (((0xD800u32 << 10) - 0x10000u32) + 0xDC00u32),
                                         )
@@ -1339,7 +1373,7 @@ impl<'a> Utf16Source<'a> {
                                     // The next code unit is a low surrogate. Advance position.
                                     self.pos += 1;
                                     NonAscii::Astral(unsafe {
-                                        ::std::char::from_u32_unchecked(
+                                        ::core::char::from_u32_unchecked(
                                             (u32::from(unit) << 10) + u32::from(second)
                                                 - (((0xD800u32 << 10) - 0x1_0000u32) + 0xDC00u32),
                                         )
@@ -1467,21 +1501,21 @@ impl<'a> Utf8Source<'a> {
             let point =
                 ((u32::from(unit) & 0x1F) << 6) | (u32::from(self.slice[self.pos + 1]) & 0x3F);
             self.pos += 2;
-            return unsafe { ::std::char::from_u32_unchecked(point) };
+            return unsafe { ::core::char::from_u32_unchecked(point) };
         }
         if unit < 0xF0 {
             let point = ((u32::from(unit) & 0xF) << 12)
                 | ((u32::from(self.slice[self.pos + 1]) & 0x3F) << 6)
                 | (u32::from(self.slice[self.pos + 2]) & 0x3F);
             self.pos += 3;
-            return unsafe { ::std::char::from_u32_unchecked(point) };
+            return unsafe { ::core::char::from_u32_unchecked(point) };
         }
         let point = ((u32::from(unit) & 0x7) << 18)
             | ((u32::from(self.slice[self.pos + 1]) & 0x3F) << 12)
             | ((u32::from(self.slice[self.pos + 2]) & 0x3F) << 6)
             | (u32::from(self.slice[self.pos + 3]) & 0x3F);
         self.pos += 4;
-        unsafe { ::std::char::from_u32_unchecked(point) }
+        unsafe { ::core::char::from_u32_unchecked(point) }
     }
     #[inline(always)]
     fn read_enum(&mut self) -> Unicode {
@@ -1510,7 +1544,7 @@ impl<'a> Utf8Source<'a> {
             | (u32::from(self.slice[self.pos + 3]) & 0x3F);
         self.pos += 4;
         Unicode::NonAscii(NonAscii::Astral(unsafe {
-            ::std::char::from_u32_unchecked(point)
+            ::core::char::from_u32_unchecked(point)
         }))
     }
     #[inline(always)]
@@ -1565,7 +1599,7 @@ impl<'a> Utf8Source<'a> {
                             | ((u32::from(self.slice[self.pos + 2]) & 0x3F) << 6)
                             | (u32::from(self.slice[self.pos + 3]) & 0x3F);
                         self.pos += 4;
-                        NonAscii::Astral(unsafe { ::std::char::from_u32_unchecked(point) })
+                        NonAscii::Astral(unsafe { ::core::char::from_u32_unchecked(point) })
                     }
                 }
             }
@@ -1615,7 +1649,7 @@ impl<'a> Utf8Source<'a> {
                                 | ((u32::from(self.slice[self.pos + 2]) & 0x3F) << 6)
                                 | (u32::from(self.slice[self.pos + 3]) & 0x3F);
                             self.pos += 4;
-                            NonAscii::Astral(unsafe { ::std::char::from_u32_unchecked(point) })
+                            NonAscii::Astral(unsafe { ::core::char::from_u32_unchecked(point) })
                         }
                     } else {
                         return CopyAsciiResult::Stop((
@@ -1672,7 +1706,7 @@ impl<'a> Utf8Source<'a> {
                                 | ((u32::from(self.slice[self.pos + 2]) & 0x3F) << 6)
                                 | (u32::from(self.slice[self.pos + 3]) & 0x3F);
                             self.pos += 4;
-                            NonAscii::Astral(unsafe { ::std::char::from_u32_unchecked(point) })
+                            NonAscii::Astral(unsafe { ::core::char::from_u32_unchecked(point) })
                         }
                     } else {
                         return CopyAsciiResult::Stop((

@@ -15,19 +15,18 @@
  * We have to use macros here because our leak analysis tool things we are
  * leaking strings when we have |static const nsString|. Sad :(
  */
-#define CHANGE_EVENT_NAME NS_LITERAL_STRING("typechange")
+#define CHANGE_EVENT_NAME u"typechange"_ns
 
-namespace mozilla {
-namespace dom {
-
-namespace network {
+namespace mozilla::dom::network {
 
 // Don't use |Connection| alone, since that confuses nsTraceRefcnt since
 // we're not the only class with that name.
 NS_IMPL_ISUPPORTS_INHERITED0(dom::network::Connection, DOMEventTargetHelper)
 
-Connection::Connection(nsPIDOMWindowInner* aWindow)
+Connection::Connection(nsPIDOMWindowInner* aWindow,
+                       bool aShouldResistFingerprinting)
     : DOMEventTargetHelper(aWindow),
+      mShouldResistFingerprinting(aShouldResistFingerprinting),
       mType(static_cast<ConnectionType>(kDefaultType)),
       mIsWifi(kDefaultIsWifi),
       mDHCPGateway(kDefaultDHCPGateway),
@@ -66,16 +65,16 @@ void Connection::Update(ConnectionType aType, bool aIsWifi,
   mIsWifi = aIsWifi;
   mDHCPGateway = aDHCPGateway;
 
-  if (aNotify && previousType != aType &&
-      !nsContentUtils::ShouldResistFingerprinting()) {
+  if (aNotify && previousType != aType && !mShouldResistFingerprinting) {
     DispatchTrustedEvent(CHANGE_EVENT_NAME);
   }
 }
 
 /* static */
-Connection* Connection::CreateForWindow(nsPIDOMWindowInner* aWindow) {
+Connection* Connection::CreateForWindow(nsPIDOMWindowInner* aWindow,
+                                        bool aShouldResistFingerprinting) {
   MOZ_ASSERT(aWindow);
-  return new ConnectionMainThread(aWindow);
+  return new ConnectionMainThread(aWindow, aShouldResistFingerprinting);
 }
 
 /* static */
@@ -86,6 +85,4 @@ already_AddRefed<Connection> Connection::CreateForWorker(
   return ConnectionWorker::Create(aWorkerPrivate, aRv);
 }
 
-}  // namespace network
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::network

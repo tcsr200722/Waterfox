@@ -35,18 +35,18 @@ try {
       configurable: true
     }
   });
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
   verifyEqualTo(arg, "0", get_func());
 
-  verifyEnumerable(arg, "0");
-
-  verifyNotConfigurable(arg, "0");
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(arg, "0", {
+  enumerable: true,
+  configurable: false,
+});
 
 reportCompare(0, 0);

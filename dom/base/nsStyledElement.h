@@ -14,11 +14,12 @@
 #define __NS_STYLEDELEMENT_H_
 
 #include "mozilla/Attributes.h"
-#include "nsString.h"
 #include "mozilla/dom/Element.h"
+#include "nsString.h"
 
 namespace mozilla {
 class DeclarationBlock;
+struct MutationClosureData;
 }  // namespace mozilla
 
 // IID for nsStyledElement interface
@@ -29,7 +30,7 @@ class DeclarationBlock;
     }                                                \
   }
 
-typedef mozilla::dom::Element nsStyledElementBase;
+using nsStyledElementBase = mozilla::dom::Element;
 
 class nsStyledElement : public nsStyledElementBase {
  protected:
@@ -49,10 +50,14 @@ class nsStyledElement : public nsStyledElementBase {
   virtual nsresult SetInlineStyleDeclaration(
       mozilla::DeclarationBlock& aDeclaration,
       mozilla::MutationClosureData& aData) override;
+  virtual nsresult BindToTree(BindContext& aContext, nsINode& aParent) override;
 
   nsICSSDeclaration* Style();
 
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_STYLED_ELEMENT_IID)
+  NS_IMPL_FROMNODE_HELPER(nsStyledElement, IsStyledElement());
+
+  bool IsStyledElement() const final { return true; }
 
  protected:
   nsICSSDeclaration* GetExistingStyle();
@@ -71,10 +76,10 @@ class nsStyledElement : public nsStyledElementBase {
                            nsIPrincipal* aMaybeScriptedPrincipal,
                            nsAttrValue& aResult, bool aForceInDataDoc);
 
-  virtual bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
-                              const nsAString& aValue,
-                              nsIPrincipal* aMaybeScriptedPrincipal,
-                              nsAttrValue& aResult) override;
+  bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                      const nsAString& aValue,
+                      nsIPrincipal* aMaybeScriptedPrincipal,
+                      nsAttrValue& aResult) override;
 
   friend class mozilla::dom::Element;
 
@@ -86,9 +91,8 @@ class nsStyledElement : public nsStyledElementBase {
    */
   nsresult ReparseStyleAttribute(bool aForceInDataDoc);
 
-  virtual nsresult BeforeSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                 const nsAttrValueOrString* aValue,
-                                 bool aNotify) override;
+  void BeforeSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                     const nsAttrValue* aValue, bool aNotify) override;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsStyledElement, NS_STYLED_ELEMENT_IID)

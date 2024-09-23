@@ -1,9 +1,8 @@
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormHistory",
-  "resource://gre/modules/FormHistory.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  FormHistoryTestUtils:
+    "resource://testing-common/FormHistoryTestUtils.sys.mjs",
+});
 
 function expectedURL(aSearchTerms) {
   const ENGINE_HTML_BASE =
@@ -60,89 +59,15 @@ function getMenuEntries() {
   );
 }
 
-function countEntries(name, value) {
-  return new Promise(resolve => {
-    let count = 0;
-    let obj = name && value ? { fieldname: name, value } : {};
-    FormHistory.count(obj, {
-      handleResult(result) {
-        count = result;
-      },
-      handleError(error) {
-        throw error;
-      },
-      handleCompletion(reason) {
-        if (!reason) {
-          resolve(count);
-        }
-      },
-    });
-  });
-}
-
 var searchBar;
 var searchButton;
 var searchEntries = ["test"];
-function promiseSetEngine() {
-  return new Promise(resolve => {
-    let ss = Services.search;
-
-    function observer(aSub, aTopic, aData) {
-      switch (aData) {
-        case "engine-added":
-          let engine = ss.getEngineByName("Bug 426329");
-          ok(engine, "Engine was added.");
-          ss.defaultEngine = engine;
-          break;
-        case "engine-default":
-          ok(ss.defaultEngine.name == "Bug 426329", "defaultEngine set");
-          searchBar = BrowserSearch.searchBar;
-          searchButton = searchBar.querySelector(".search-go-button");
-          ok(searchButton, "got search-go-button");
-
-          Services.obs.removeObserver(
-            observer,
-            "browser-search-engine-modified"
-          );
-          resolve();
-          break;
-      }
-    }
-
-    Services.obs.addObserver(observer, "browser-search-engine-modified");
-    ss.addEngine(
-      "http://mochi.test:8888/browser/browser/components/search/test/browser/426329.xml",
-      "data:image/x-icon,%00",
-      false
-    );
-  });
-}
-
-function promiseRemoveEngine() {
-  return new Promise(resolve => {
-    let ss = Services.search;
-
-    function observer(aSub, aTopic, aData) {
-      if (aData == "engine-removed") {
-        Services.obs.removeObserver(observer, "browser-search-engine-modified");
-        resolve();
-      }
-    }
-
-    Services.obs.addObserver(observer, "browser-search-engine-modified");
-    let engine = ss.getEngineByName("Bug 426329");
-    ss.removeEngine(engine);
-  });
-}
-
 var preSelectedBrowser;
 var preTabNo;
-async function prepareTest() {
-  await Services.search.init();
 
+async function prepareTest() {
   preSelectedBrowser = gBrowser.selectedBrowser;
   preTabNo = gBrowser.tabs.length;
-  searchBar = BrowserSearch.searchBar;
 
   await SimpleTest.promiseFocus();
 
@@ -156,16 +81,36 @@ async function prepareTest() {
   await focusPromise;
 }
 
-add_task(async function testSetup() {
+add_setup(async function () {
+  await Services.search.init();
+
   await gCUITestUtils.addSearchBar();
+
+  await SearchTestUtils.installOpenSearchEngine({
+    url: "http://mochi.test:8888/browser/browser/components/search/test/browser/426329.xml",
+    setAsDefault: true,
+  });
+
+  searchBar = BrowserSearch.searchBar;
+  searchBar.value = "test";
+  searchButton = searchBar.querySelector(".search-go-button");
+
   registerCleanupFunction(() => {
+    searchBar.value = "";
+    while (gBrowser.tabs.length != 1) {
+      gBrowser.removeTab(gBrowser.tabs[0], { animate: false });
+    }
+    BrowserTestUtils.startLoadingURIString(
+      gBrowser.selectedBrowser,
+      "about:blank",
+      {
+        triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
+          {}
+        ),
+      }
+    );
     gCUITestUtils.removeSearchBar();
   });
-});
-
-add_task(async function testSetupEngine() {
-  await promiseSetEngine();
-  searchBar.value = "test";
 });
 
 add_task(async function testReturn() {
@@ -269,15 +214,21 @@ add_task(async function testShiftMiddleClick() {
 
 add_task(async function testRightClick() {
   preTabNo = gBrowser.tabs.length;
-  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, "about:blank", {
-    triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
-  });
+  BrowserTestUtils.startLoadingURIString(
+    gBrowser.selectedBrowser,
+    "about:blank",
+    {
+      triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
+        {}
+      ),
+    }
+  );
   await new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       is(gBrowser.tabs.length, preTabNo, "RightClick did not open new tab");
       is(gBrowser.currentURI.spec, "about:blank", "RightClick did nothing");
       resolve();
-    }, 5000);
+    }, 2000);
     simulateClick({ button: 2 }, searchButton);
   });
   // The click in the searchbox focuses it, which opens the suggestion
@@ -288,11 +239,15 @@ add_task(async function testRightClick() {
 add_task(async function testSearchHistory() {
   let textbox = searchBar._textbox;
   for (let i = 0; i < searchEntries.length; i++) {
-    let count = await countEntries(
+    let count = await FormHistoryTestUtils.count(
       textbox.getAttribute("autocompletesearchparam"),
-      searchEntries[i]
+      { value: searchEntries[i], source: "Bug 426329" }
     );
-    ok(count > 0, "form history entry '" + searchEntries[i] + "' should exist");
+    Assert.greater(
+      count,
+      0,
+      "form history entry '" + searchEntries[i] + "' should exist"
+    );
   }
 });
 
@@ -320,32 +275,24 @@ add_task(async function testClearHistory() {
   });
   await popupShownPromise;
   // Close the context menu.
-  EventUtils.synthesizeKey("KEY_Escape");
+  let contextMenu = document.querySelector(".textbox-contextmenu");
+  contextMenu.hidePopup();
 
   let menuitem = searchBar._menupopup.querySelector(".searchbar-clear-history");
   ok(!menuitem.disabled, "Clear history menuitem enabled");
 
   let historyCleared = promiseObserver("satchel-storage-changed");
-  menuitem.click();
+  searchBar._menupopup.activateItem(menuitem);
   await historyCleared;
-  let count = await countEntries();
-  ok(count == 0, "History cleared");
-});
-
-add_task(async function asyncCleanup() {
-  searchBar.value = "";
-  while (gBrowser.tabs.length != 1) {
-    gBrowser.removeTab(gBrowser.tabs[0], { animate: false });
-  }
-  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, "about:blank", {
-    triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
-  });
-  await promiseRemoveEngine();
+  let count = await FormHistoryTestUtils.count(
+    textbox.getAttribute("autocompletesearchparam")
+  );
+  Assert.equal(count, 0, "History cleared");
 });
 
 function promiseObserver(topic) {
   return new Promise(resolve => {
-    let obs = (aSubject, aTopic, aData) => {
+    let obs = (aSubject, aTopic) => {
       Services.obs.removeObserver(obs, aTopic);
       resolve(aSubject);
     };

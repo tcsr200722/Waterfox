@@ -7,17 +7,19 @@
 #ifndef nsWindowMemoryReporter_h__
 #define nsWindowMemoryReporter_h__
 
-#include "nsGlobalWindow.h"
 #include "nsIMemoryReporter.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
+#include "nsTHashSet.h"
 #include "nsWeakReference.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/TimeStamp.h"
+
+class nsGlobalWindowInner;
 
 /**
  * nsWindowMemoryReporter is responsible for the 'explicit/window-objects'
@@ -132,8 +134,7 @@ class nsWindowMemoryReporter final : public nsIMemoryReporter,
    * This is called asynchronously after we observe a DOM window being detached
    * from its docshell, and also right before we generate a memory report.
    */
-  void CheckForGhostWindows(
-      nsTHashtable<nsUint64HashKey>* aOutGhostIDs = nullptr);
+  void CheckForGhostWindows(nsTHashSet<uint64_t>* aOutGhostIDs = nullptr);
 
   /**
    * Eventually do a check for ghost windows, if we haven't done one recently
@@ -158,7 +159,7 @@ class nsWindowMemoryReporter final : public nsIMemoryReporter,
    * possible for a detached window to become non-detached, and we won't
    * remove it from the table until CheckForGhostWindows runs.)
    */
-  nsDataHashtable<nsISupportsHashKey, mozilla::TimeStamp> mDetachedWindows;
+  nsTHashMap<nsISupportsHashKey, mozilla::TimeStamp> mDetachedWindows;
 
   /**
    * Track the last time we ran CheckForGhostWindows(), to avoid running it

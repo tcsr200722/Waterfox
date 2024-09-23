@@ -3,8 +3,9 @@
 const PAGE =
   "data:text/html,<html><body>A%20regular,%20everyday,%20normal%20page.";
 
-function assertIsAtRestartRequiredPage(browser) {
+async function assertIsAtRestartRequiredPage(browser) {
   let doc = browser.contentDocument;
+
   // Since about:restartRequired will run in the parent process, we can safely
   // manipulate its DOM nodes directly
   let title = doc.getElementById("title");
@@ -32,12 +33,20 @@ function crashTabTestHelper() {
       gBrowser,
       url: PAGE,
     },
-    async function(browser) {
+    async function (browser) {
       // Simulate buildID mismatch.
       TabCrashHandler.testBuildIDMismatch = true;
 
+      let restartRequiredLoaded = BrowserTestUtils.waitForContentEvent(
+        browser,
+        "AboutRestartRequiredLoad",
+        false,
+        null,
+        true
+      );
       await BrowserTestUtils.crashFrame(browser, false);
-      assertIsAtRestartRequiredPage(browser);
+      await restartRequiredLoaded;
+      await assertIsAtRestartRequiredPage(browser);
 
       // Reset
       TabCrashHandler.testBuildIDMismatch = false;
@@ -59,6 +68,7 @@ add_task(async function test_default() {
  * attempt to wait for a crash dump for it (which will never come).
  */
 add_task(async function test_restart_required_foreground() {
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   await BrowserTestUtils.withNewTab("http://example.com", async browser => {
     let loaded = BrowserTestUtils.browserLoaded(browser, false, null, true);
     await BrowserTestUtils.simulateProcessLaunchFail(
@@ -71,7 +81,7 @@ add_task(async function test_restart_required_foreground() {
       "No crashed browsers should be queued."
     );
     await loaded;
-    assertIsAtRestartRequiredPage(browser);
+    await assertIsAtRestartRequiredPage(browser);
   });
 });
 
@@ -83,6 +93,7 @@ add_task(async function test_restart_required_foreground() {
  */
 add_task(async function test_launchfail_background() {
   let originalTab = gBrowser.selectedTab;
+  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
   await BrowserTestUtils.withNewTab("http://example.com", async browser => {
     let tab = gBrowser.getTabForBrowser(browser);
     await BrowserTestUtils.switchTab(gBrowser, originalTab);
@@ -95,10 +106,16 @@ add_task(async function test_launchfail_background() {
       TabCrashHandler.queuedCrashedBrowsers,
       "No crashed browsers should be queued."
     );
-    let loaded = BrowserTestUtils.browserLoaded(browser, false, null, true);
+    let loaded = BrowserTestUtils.waitForContentEvent(
+      browser,
+      "AboutRestartRequiredLoad",
+      false,
+      null,
+      true
+    );
     await BrowserTestUtils.switchTab(gBrowser, tab);
     await loaded;
 
-    assertIsAtRestartRequiredPage(browser);
+    await assertIsAtRestartRequiredPage(browser);
   });
 });

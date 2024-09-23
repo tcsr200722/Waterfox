@@ -10,42 +10,35 @@
 <body>
 Login Manager test: form with JS submit action
 <script>
-runChecksAfterCommonInit(() => startTest());
 
-runInParent(function setup() {
-  const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-  let jslogin = Cc["@mozilla.org/login-manager/loginInfo;1"].createInstance(Ci.nsILoginInfo);
-  jslogin.init("http://mochi.test:8888", "javascript:", null,
-               "jsuser", "jspass123", "uname", "pword");
-  Services.logins.addLogin(jslogin);
+add_setup(async () => {
+  await setStoredLoginsAsync(
+    [location.origin, "javascript:", null, "jsuser", "jspass123", "uname", "pword"]
+  );
 });
 
 /** Test for Login Manager: JS action URL **/
+add_task(async function startTest() {
+  const win = window.open("about:blank");
+  SimpleTest.registerCleanupFunction(() => win.close());
+  await loadFormIntoWindow(location.origin, `
+    <form id='form1' action='javascript:alert("never shows")'> 1
+      <input name="uname">
+      <input name="pword" type="password">
 
-function startTest() {
-  checkForm(1, "jsuser", "jspass123");
+      <button type='submit'>Submit</button>
+      <button type='reset'> Reset </button>
+    </form>`, win);
 
-  SimpleTest.finish();
-}
+  await checkLoginFormInFrameWithElementValues(win, 1, "jsuser", "jspass123");
+});
 </script>
 
 <p id="display"></p>
 
 <div id="content" style="display: none">
-
-
-<form id='form1' action='javascript:alert("never shows")'> 1
-    <input name="uname">
-    <input name="pword" type="password">
-
-    <button type='submit'>Submit</button>
-    <button type='reset'> Reset </button>
-</form>
-
 </div>
 
 <pre id="test"></pre>
 </body>
 </html>
-

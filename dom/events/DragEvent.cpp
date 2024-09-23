@@ -10,8 +10,7 @@
 #include "nsContentUtils.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 DragEvent::DragEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                      WidgetDragEvent* aEvent)
@@ -22,7 +21,6 @@ DragEvent::DragEvent(EventTarget* aOwner, nsPresContext* aPresContext,
     mEventIsInternal = false;
   } else {
     mEventIsInternal = true;
-    mEvent->mTime = PR_Now();
     mEvent->mRefPoint = LayoutDeviceIntPoint(0, 0);
     mEvent->AsMouseEvent()->mInputSource =
         MouseEvent_Binding::MOZ_SOURCE_UNKNOWN;
@@ -87,8 +85,7 @@ already_AddRefed<DragEvent> DragEvent::Constructor(
   return e.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

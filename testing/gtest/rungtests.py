@@ -4,8 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import with_statement
-
 import argparse
 import os
 import sys
@@ -16,17 +14,28 @@ import mozlog
 import mozprocess
 from mozrunner.utils import get_stack_fixer_function
 
-log = mozlog.unstructured.getLogger('gtest')
+log = mozlog.unstructured.getLogger("gtest")
 
 
 class GTests(object):
-    # Time (seconds) to wait for test process to complete
-    TEST_PROC_TIMEOUT = 2400
     # Time (seconds) in which process will be killed if it produces no output.
     TEST_PROC_NO_OUTPUT_TIMEOUT = 300
 
-    def run_gtest(self, prog, xre_path, cwd, symbols_path=None,
-                  utility_path=None, enable_webrender=False):
+    def gtest_timeout_value(self):
+        # Time (seconds) to wait for test process to complete
+        if mozinfo.info["tsan"]:
+            return 3600
+        else:
+            return 2400
+
+    def run_gtest(
+        self,
+        prog,
+        xre_path,
+        cwd,
+        symbols_path=None,
+        utility_path=None,
+    ):
         """
         Run a single C++ unit test program.
 
@@ -44,45 +53,59 @@ class GTests(object):
         Return True if the program exits with a zero status, False otherwise.
         """
         self.xre_path = xre_path
-        env = self.build_environment(enable_webrender)
+        env = self.build_environment()
         log.info("Running gtest")
 
         if cwd and not os.path.isdir(cwd):
             os.makedirs(cwd)
 
-        stream_output = mozprocess.StreamOutput(sys.stdout)
-        process_output = stream_output
+        stack_fixer = None
         if utility_path:
             stack_fixer = get_stack_fixer_function(utility_path, symbols_path)
-            if stack_fixer:
-                def f(line): return stream_output(stack_fixer(line))
-                process_output = f
 
-        proc = mozprocess.ProcessHandler([prog, "-unittest",
-                                         "--gtest_death_test_style=threadsafe"],
-                                         cwd=cwd,
-                                         env=env,
-                                         processOutputLine=process_output)
-        # TODO: After bug 811320 is fixed, don't let .run() kill the process,
-        # instead use a timeout in .wait() and then kill to get a stack.
-        proc.run(timeout=GTests.TEST_PROC_TIMEOUT,
-                 outputTimeout=GTests.TEST_PROC_NO_OUTPUT_TIMEOUT)
-        proc.wait()
-        log.info("gtest | process wait complete, returncode=%s" % proc.proc.returncode)
-        if proc.timedOut:
-            if proc.outputTimedOut:
-                log.testFail("gtest | timed out after %d seconds without output",
-                             GTests.TEST_PROC_NO_OUTPUT_TIMEOUT)
+        GTests.run_gtest.timed_out = False
+
+        def output_line_handler(proc, line):
+            if stack_fixer:
+                print(stack_fixer(line))
             else:
-                log.testFail("gtest | timed out after %d seconds",
-                             GTests.TEST_PROC_TIMEOUT)
-            return False
+                print(line)
+
+        def proc_timeout_handler(proc):
+            GTests.run_gtest.timed_out = True
+            log.testFail(
+                "gtest | timed out after %d seconds", self.gtest_timeout_value()
+            )
+            mozcrash.kill_and_get_minidump(proc.pid, cwd, utility_path)
+
+        def output_timeout_handler(proc):
+            GTests.run_gtest.timed_out = True
+            log.testFail(
+                "gtest | timed out after %d seconds without output",
+                GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
+            )
+            mozcrash.kill_and_get_minidump(proc.pid, cwd, utility_path)
+
+        proc = mozprocess.run_and_wait(
+            [prog, "-unittest", "--gtest_death_test_style=threadsafe"],
+            cwd=cwd,
+            env=env,
+            output_line_handler=output_line_handler,
+            timeout=self.gtest_timeout_value(),
+            timeout_handler=proc_timeout_handler,
+            output_timeout=GTests.TEST_PROC_NO_OUTPUT_TIMEOUT,
+            output_timeout_handler=output_timeout_handler,
+        )
+
+        log.info("gtest | process wait complete, returncode=%s" % proc.returncode)
         if mozcrash.check_for_crashes(cwd, symbols_path, test_name="gtest"):
             # mozcrash will output the log failure line for us.
             return False
-        result = proc.proc.returncode == 0
+        if GTests.run_gtest.timed_out:
+            return False
+        result = proc.returncode == 0
         if not result:
-            log.testFail("gtest | test failed with return code %d", proc.proc.returncode)
+            log.testFail("gtest | test failed with return code %d", proc.returncode)
         return result
 
     def build_core_environment(self, env={}):
@@ -92,7 +115,7 @@ class GTests(object):
         env["MOZ_XRE_DIR"] = self.xre_path
         env["MOZ_GMP_PATH"] = os.pathsep.join(
             os.path.join(self.xre_path, p, "1.0")
-            for p in ('gmp-fake', 'gmp-fakeopenh264')
+            for p in ("gmp-fake", "gmp-fakeopenh264")
         )
         env["XPCOM_DEBUG_BREAK"] = "stack-and-abort"
         env["MOZ_CRASHREPORTER_NO_REPORT"] = "1"
@@ -111,7 +134,7 @@ class GTests(object):
 
         return env
 
-    def build_environment(self, enable_webrender):
+    def build_environment(self):
         """
         Create and return a dictionary of all the appropriate env variables
         and values. On a remote system, we overload this to set different
@@ -137,24 +160,30 @@ class GTests(object):
             else:
                 env[pathvar] = self.xre_path
 
-        # ASan specific environment stuff
+        symbolizer_path = None
         if mozinfo.info["asan"]:
-            # Symbolizer support
-            llvmsym = os.path.join(
-                self.xre_path,
-                "llvm-symbolizer" + mozinfo.info["bin_suffix"].encode('ascii'))
+            symbolizer_path = "ASAN_SYMBOLIZER_PATH"
+        elif mozinfo.info["tsan"]:
+            symbolizer_path = "TSAN_SYMBOLIZER_PATH"
+
+        if symbolizer_path is not None:
+            # Use llvm-symbolizer for ASan/TSan if available/required
+            if symbolizer_path in env and os.path.isfile(env[symbolizer_path]):
+                llvmsym = env[symbolizer_path]
+            else:
+                llvmsym = os.path.join(
+                    self.xre_path, "llvm-symbolizer" + mozinfo.info["bin_suffix"]
+                )
             if os.path.isfile(llvmsym):
-                env["ASAN_SYMBOLIZER_PATH"] = llvmsym
-                log.info("gtest | ASan using symbolizer at %s", llvmsym)
+                env[symbolizer_path] = llvmsym
+                log.info("Using LLVM symbolizer at %s", llvmsym)
             else:
                 # This should be |testFail| instead of |info|. See bug 1050891.
-                log.info("gtest | Failed to find ASan symbolizer at %s", llvmsym)
+                log.info("Failed to find LLVM symbolizer at %s", llvmsym)
 
-        if enable_webrender:
-            env["MOZ_WEBRENDER"] = "1"
-            env["MOZ_ACCELERATED"] = "1"
-        else:
-            env["MOZ_WEBRENDER"] = "0"
+        # webrender needs gfx.webrender.all=true, gtest doesn't use prefs
+        env["MOZ_WEBRENDER"] = "1"
+        env["MOZ_ACCELERATED"] = "1"
 
         return env
 
@@ -163,31 +192,32 @@ class gtestOptions(argparse.ArgumentParser):
     def __init__(self):
         super(gtestOptions, self).__init__()
 
-        self.add_argument("--cwd",
-                          dest="cwd",
-                          default=os.getcwd(),
-                          help="absolute path to directory from which "
-                               "to run the binary")
-        self.add_argument("--xre-path",
-                          dest="xre_path",
-                          default=None,
-                          help="absolute path to directory containing XRE "
-                               "(probably xulrunner)")
-        self.add_argument("--symbols-path",
-                          dest="symbols_path",
-                          default=None,
-                          help="absolute path to directory containing breakpad "
-                               "symbols, or the URL of a zip file containing "
-                               "symbols")
-        self.add_argument("--utility-path",
-                          dest="utility_path",
-                          default=None,
-                          help="path to a directory containing utility program binaries")
-        self.add_argument("--enable-webrender",
-                          action="store_true",
-                          dest="enable_webrender",
-                          default=False,
-                          help="Enable the WebRender compositor in Gecko.")
+        self.add_argument(
+            "--cwd",
+            dest="cwd",
+            default=os.getcwd(),
+            help="absolute path to directory from which " "to run the binary",
+        )
+        self.add_argument(
+            "--xre-path",
+            dest="xre_path",
+            default=None,
+            help="absolute path to directory containing XRE " "(probably xulrunner)",
+        )
+        self.add_argument(
+            "--symbols-path",
+            dest="symbols_path",
+            default=None,
+            help="absolute path to directory containing breakpad "
+            "symbols, or the URL of a zip file containing "
+            "symbols",
+        )
+        self.add_argument(
+            "--utility-path",
+            dest="utility_path",
+            default=None,
+            help="path to a directory containing utility program binaries",
+        )
         self.add_argument("args", nargs=argparse.REMAINDER)
 
 
@@ -195,7 +225,7 @@ def update_mozinfo():
     """walk up directories to find mozinfo.json update the info"""
     path = os.path.abspath(os.path.realpath(os.path.dirname(__file__)))
     dirs = set()
-    while path != os.path.expanduser('~'):
+    while path != os.path.expanduser("~"):
         if path in dirs:
             break
         dirs.add(path)
@@ -208,24 +238,26 @@ def main():
     options = parser.parse_args()
     args = options.args
     if not args:
-        print >>sys.stderr, """Usage: %s <binary>""" % sys.argv[0]
+        print("Usage: %s <binary>" % sys.argv[0])
         sys.exit(1)
     if not options.xre_path:
-        print >>sys.stderr, """Error: --xre-path is required"""
+        print("Error: --xre-path is required")
         sys.exit(1)
     if not options.utility_path:
-        print >>sys.stderr, """Warning: --utility-path is required to process assertion stacks"""
+        print("Warning: --utility-path is required to process assertion stacks")
 
     update_mozinfo()
     prog = os.path.abspath(args[0])
     options.xre_path = os.path.abspath(options.xre_path)
     tester = GTests()
     try:
-        result = tester.run_gtest(prog, options.xre_path,
-                                  options.cwd,
-                                  symbols_path=options.symbols_path,
-                                  utility_path=options.utility_path,
-                                  enable_webrender=options.enable_webrender)
+        result = tester.run_gtest(
+            prog,
+            options.xre_path,
+            options.cwd,
+            symbols_path=options.symbols_path,
+            utility_path=options.utility_path,
+        )
     except Exception as e:
         log.error(str(e))
         result = False
@@ -234,5 +266,5 @@ def main():
     sys.exit(exit_code)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

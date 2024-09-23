@@ -6,17 +6,26 @@
 
 #include "mozilla/dom/WindowGlobalActor.h"
 
+#include "AutoplayPolicy.h"
 #include "nsContentUtils.h"
-#include "mozJSComponentLoader.h"
+#include "mozilla/Components.h"
 #include "mozilla/ContentBlockingAllowList.h"
 #include "mozilla/Logging.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/JSActorService.h"
 #include "mozilla/dom/JSWindowActorParent.h"
 #include "mozilla/dom/JSWindowActorChild.h"
+#include "mozilla/dom/JSWindowActorProtocol.h"
+#include "mozilla/dom/PopupBlocker.h"
 #include "mozilla/net/CookieJarSettings.h"
+#include "mozilla/dom/WindowContext.h"
+#include "mozilla/dom/WindowGlobalChild.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 
-namespace mozilla {
-namespace dom {
+#include "nsGlobalWindowInner.h"
+#include "nsNetUtil.h"
+
+namespace mozilla::dom {
 
 // CORPP 3.1.3 https://mikewest.github.io/corpp/#integration-html
 static nsILoadInfo::CrossOriginEmbedderPolicy InheritedPolicy(
@@ -26,19 +35,7 @@ static nsILoadInfo::CrossOriginEmbedderPolicy InheritedPolicy(
     return inherit->GetEmbedderPolicy();
   }
 
-  RefPtr<dom::BrowsingContext> opener = aBrowsingContext->GetOpener();
-  if (!opener) {
-    return nsILoadInfo::EMBEDDER_POLICY_NULL;
-  }
-  // Bug 1637035: make sure we don't inherit a COEP for non-http,
-  // non-initial-about:blank documents when we shouldn't be.
-  inherit = opener->GetCurrentWindowContext();
-
-  if (!inherit) {
-    return nsILoadInfo::EMBEDDER_POLICY_NULL;
-  }
-
-  return inherit->GetEmbedderPolicy();
+  return nsILoadInfo::EMBEDDER_POLICY_NULL;
 }
 
 // Common WindowGlobalInit creation code used by both `AboutBlankInitializer`
@@ -48,6 +45,8 @@ WindowGlobalInit WindowGlobalActor::BaseInitializer(
     uint64_t aOuterWindowId) {
   MOZ_DIAGNOSTIC_ASSERT(aBrowsingContext);
 
+  using Indexes = WindowContext::FieldIndexes;
+
   WindowGlobalInit init;
   auto& ctx = init.context();
   ctx.mInnerWindowId = aInnerWindowId;
@@ -56,8 +55,11 @@ WindowGlobalInit WindowGlobalActor::BaseInitializer(
 
   // If any synced fields need to be initialized from our BrowsingContext, we
   // can initialize them here.
-  mozilla::Get<WindowContext::IDX_EmbedderPolicy>(ctx.mFields) =
-      InheritedPolicy(aBrowsingContext);
+  auto& fields = ctx.mFields;
+  fields.Get<Indexes::IDX_EmbedderPolicy>() = InheritedPolicy(aBrowsingContext);
+  fields.Get<Indexes::IDX_AutoplayPermission>() =
+      nsIPermissionManager::UNKNOWN_ACTION;
+  fields.Get<Indexes::IDX_AllowJavascript>() = true;
   return init;
 }
 
@@ -68,9 +70,9 @@ WindowGlobalInit WindowGlobalActor::AboutBlankInitializer(
                       nsContentUtils::GenerateWindowId());
 
   init.principal() = aPrincipal;
+  init.storagePrincipal() = aPrincipal;
   Unused << NS_NewURI(getter_AddRefs(init.documentURI()), "about:blank");
-  ContentBlockingAllowList::ComputePrincipal(
-      aPrincipal, getter_AddRefs(init.contentBlockingAllowListPrincipal()));
+  init.isInitialDocument() = true;
 
   return init;
 }
@@ -82,12 +84,12 @@ WindowGlobalInit WindowGlobalActor::WindowInitializer(
                       aWindow->GetOuterWindow()->WindowID());
 
   init.principal() = aWindow->GetPrincipal();
-  init.contentBlockingAllowListPrincipal() =
-      aWindow->GetDocumentContentBlockingAllowListPrincipal();
+  init.storagePrincipal() = aWindow->GetEffectiveStoragePrincipal();
   init.documentURI() = aWindow->GetDocumentURI();
 
   Document* doc = aWindow->GetDocument();
 
+  init.isInitialDocument() = doc->IsInitialDocument();
   init.blockAllMixedContent() = doc->GetBlockAllMixedContent(false);
   init.upgradeInsecureRequests() = doc->GetUpgradeInsecureRequests(false);
   init.sandboxFlags() = doc->GetSandboxFlags();
@@ -95,48 +97,70 @@ WindowGlobalInit WindowGlobalActor::WindowInitializer(
       ->Serialize(init.cookieJarSettings());
   init.httpsOnlyStatus() = doc->HttpsOnlyStatus();
 
-  mozilla::Get<WindowContext::IDX_CookieBehavior>(init.context().mFields) =
-      Some(doc->CookieJarSettings()->GetCookieBehavior());
-  mozilla::Get<WindowContext::IDX_IsOnContentBlockingAllowList>(
-      init.context().mFields) =
-      doc->CookieJarSettings()->GetIsOnContentBlockingAllowList();
-  mozilla::Get<WindowContext::IDX_IsThirdPartyWindow>(init.context().mFields) =
-      nsContentUtils::IsThirdPartyWindowOrChannel(aWindow, nullptr, nullptr);
-  mozilla::Get<WindowContext::IDX_IsThirdPartyTrackingResourceWindow>(
-      init.context().mFields) =
-      nsContentUtils::IsThirdPartyTrackingResourceWindow(aWindow);
-  mozilla::Get<WindowContext::IDX_IsSecureContext>(init.context().mFields) =
-      aWindow->IsSecureContext();
+  using Indexes = WindowContext::FieldIndexes;
 
-  auto policy = doc->GetEmbedderPolicyFromHTTP();
-  if (policy.isSome()) {
-    mozilla::Get<WindowContext::IDX_EmbedderPolicy>(init.context().mFields) =
-        policy.ref();
+  auto& fields = init.context().mFields;
+  fields.Get<Indexes::IDX_CookieBehavior>() =
+      Some(doc->CookieJarSettings()->GetCookieBehavior());
+  fields.Get<Indexes::IDX_IsOnContentBlockingAllowList>() =
+      doc->CookieJarSettings()->GetIsOnContentBlockingAllowList();
+  fields.Get<Indexes::IDX_IsThirdPartyWindow>() = doc->HasThirdPartyChannel();
+  fields.Get<Indexes::IDX_IsThirdPartyTrackingResourceWindow>() =
+      nsContentUtils::IsThirdPartyTrackingResourceWindow(aWindow);
+  fields.Get<Indexes::IDX_ShouldResistFingerprinting>() =
+      doc->ShouldResistFingerprinting(RFPTarget::IsAlwaysEnabledForPrecompute);
+  fields.Get<Indexes::IDX_OverriddenFingerprintingSettings>() =
+      doc->GetOverriddenFingerprintingSettings();
+  fields.Get<Indexes::IDX_IsSecureContext>() = aWindow->IsSecureContext();
+
+  // Initialze permission fields
+  fields.Get<Indexes::IDX_AutoplayPermission>() =
+      media::AutoplayPolicy::GetSiteAutoplayPermission(init.principal());
+  fields.Get<Indexes::IDX_PopupPermission>() =
+      PopupBlocker::GetPopupPermission(init.principal());
+
+  // Initialize top level permission fields
+  if (aWindow->GetBrowsingContext()->IsTop()) {
+    fields.Get<Indexes::IDX_AllowMixedContent>() = [&] {
+      uint32_t permit = nsIPermissionManager::UNKNOWN_ACTION;
+      nsCOMPtr<nsIPermissionManager> permissionManager =
+          components::PermissionManager::Service();
+
+      if (permissionManager) {
+        permissionManager->TestPermissionFromPrincipal(
+            init.principal(), "mixed-content"_ns, &permit);
+      }
+
+      return permit == nsIPermissionManager::ALLOW_ACTION;
+    }();
+
+    fields.Get<Indexes::IDX_ShortcutsPermission>() =
+        nsGlobalWindowInner::GetShortcutsPermission(init.principal());
+  }
+
+  if (auto policy = doc->GetEmbedderPolicy()) {
+    fields.Get<Indexes::IDX_EmbedderPolicy>() = *policy;
   }
 
   // Init Mixed Content Fields
   nsCOMPtr<nsIURI> innerDocURI = NS_GetInnermostURI(doc->GetDocumentURI());
-  if (innerDocURI) {
-    mozilla::Get<WindowContext::IDX_IsSecure>(init.context().mFields) =
-        innerDocURI->SchemeIs("https");
-  }
-  nsCOMPtr<nsIChannel> mixedChannel;
-  aWindow->GetDocShell()->GetMixedContentChannel(getter_AddRefs(mixedChannel));
-  // A non null mixedContent channel on the docshell indicates,
-  // that the user has overriden mixed content to allow mixed
-  // content loads to happen.
-  if (mixedChannel && (mixedChannel == doc->GetChannel())) {
-    mozilla::Get<WindowContext::IDX_AllowMixedContent>(init.context().mFields) =
-        true;
-  }
+  fields.Get<Indexes::IDX_IsSecure>() =
+      innerDocURI && innerDocURI->SchemeIs("https");
 
   nsCOMPtr<nsITransportSecurityInfo> securityInfo;
   if (nsCOMPtr<nsIChannel> channel = doc->GetChannel()) {
-    nsCOMPtr<nsISupports> securityInfoSupports;
-    channel->GetSecurityInfo(getter_AddRefs(securityInfoSupports));
-    securityInfo = do_QueryInterface(securityInfoSupports);
+    nsCOMPtr<nsILoadInfo> loadInfo(channel->LoadInfo());
+    fields.Get<Indexes::IDX_IsOriginalFrameSource>() =
+        loadInfo->GetOriginalFrameSrcLoad();
+    fields.Get<Indexes::IDX_UsingStorageAccess>() =
+        loadInfo->GetStoragePermission() != nsILoadInfo::NoStoragePermission;
+
+    channel->GetSecurityInfo(getter_AddRefs(securityInfo));
   }
   init.securityInfo() = securityInfo;
+
+  fields.Get<Indexes::IDX_IsLocalIP>() =
+      init.principal()->GetIsLocalIpAddress();
 
   // Most data here is specific to the Document, which can change without
   // creating a new WindowGlobal. Anything new added here which fits that
@@ -145,106 +169,23 @@ WindowGlobalInit WindowGlobalActor::WindowInitializer(
   return init;
 }
 
-void WindowGlobalActor::ConstructActor(const nsACString& aName,
-                                       JS::MutableHandleObject aActor,
-                                       ErrorResult& aRv) {
-  MOZ_ASSERT(nsContentUtils::IsSafeToRunScript());
-
-  JSActor::Type actorType = GetSide();
-  MOZ_ASSERT_IF(actorType == JSActor::Type::Parent, XRE_IsParentProcess());
-
-  // Constructing an actor requires a running script, so push an AutoEntryScript
-  // onto the stack.
-  AutoEntryScript aes(xpc::PrivilegedJunkScope(),
-                      "WindowGlobalActor construction");
-  JSContext* cx = aes.cx();
-
-  RefPtr<JSActorService> actorSvc = JSActorService::GetSingleton();
-  if (!actorSvc) {
-    aRv.ThrowNotSupportedError("Could not acquire actor service");
-    return;
-  }
-
+already_AddRefed<JSActorProtocol> WindowGlobalActor::MatchingJSActorProtocol(
+    JSActorService* aActorSvc, const nsACString& aName, ErrorResult& aRv) {
   RefPtr<JSWindowActorProtocol> proto =
-      actorSvc->GetJSWindowActorProtocol(aName);
+      aActorSvc->GetJSWindowActorProtocol(aName);
   if (!proto) {
-    aRv.ThrowNotSupportedError(nsPrintfCString(
-        "Could not get JSWindowActorProtocol: %s is not registered",
-        PromiseFlatCString(aName).get()));
-    return;
+    aRv.ThrowNotFoundError(nsPrintfCString("No such JSWindowActor '%s'",
+                                           PromiseFlatCString(aName).get()));
+    return nullptr;
   }
 
-  if (!proto->Matches(BrowsingContext(), GetDocumentURI(), GetRemoteType())) {
-    aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return;
+  if (!proto->Matches(BrowsingContext(), GetDocumentURI(), GetRemoteType(),
+                      aRv)) {
+    MOZ_ASSERT(aRv.Failed());
+    return nullptr;
   }
-
-  // Load the module using mozJSComponentLoader.
-  RefPtr<mozJSComponentLoader> loader = mozJSComponentLoader::Get();
-  MOZ_ASSERT(loader);
-
-  JS::RootedObject global(cx);
-  JS::RootedObject exports(cx);
-
-  const JSWindowActorProtocol::Sided* side;
-  if (actorType == JSActor::Type::Parent) {
-    side = &proto->Parent();
-  } else {
-    side = &proto->Child();
-  }
-
-  // Support basic functionally such as SendAsyncMessage and SendQuery for
-  // unspecified moduleURI.
-  if (!side->mModuleURI) {
-    RefPtr<JSActor> actor;
-    if (actorType == JSActor::Type::Parent) {
-      actor = new JSWindowActorParent();
-    } else {
-      actor = new JSWindowActorChild();
-    }
-
-    JS::Rooted<JS::Value> wrapper(cx);
-    if (!ToJSValue(cx, actor, &wrapper)) {
-      aRv.NoteJSContextException(cx);
-      return;
-    }
-
-    MOZ_ASSERT(wrapper.isObject());
-    aActor.set(&wrapper.toObject());
-    return;
-  }
-
-  aRv = loader->Import(cx, side->mModuleURI.ref(), &global, &exports);
-  if (aRv.Failed()) {
-    return;
-  }
-
-  MOZ_ASSERT(exports, "null exports!");
-
-  // Load the specific property from our module.
-  JS::RootedValue ctor(cx);
-  nsAutoCString ctorName(aName);
-  ctorName.Append(actorType == JSActor::Type::Parent
-                      ? NS_LITERAL_CSTRING("Parent")
-                      : NS_LITERAL_CSTRING("Child"));
-  if (!JS_GetProperty(cx, exports, ctorName.get(), &ctor)) {
-    aRv.NoteJSContextException(cx);
-    return;
-  }
-
-  if (NS_WARN_IF(!ctor.isObject())) {
-    nsPrintfCString message("Could not find actor constructor '%s'",
-                            ctorName.get());
-    aRv.ThrowNotFoundError(message);
-    return;
-  }
-
-  // Invoke the constructor loaded from the module.
-  if (!JS::Construct(cx, ctor, JS::HandleValueArray::empty(), aActor)) {
-    aRv.NoteJSContextException(cx);
-    return;
-  }
+  MOZ_ASSERT(!aRv.Failed());
+  return proto.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

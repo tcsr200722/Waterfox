@@ -1,5 +1,5 @@
-commit 4a8e49b3ca7f9f74a4cafe6621ff9ba548ccc353
-Author: Alexey Shvayka <shvaikalesh@gmail.com>
-Date:   Sat Apr 11 01:41:59 2020 +0300
+commit 79e9b39f3a576154b1bc39f9dbd95d25addc4ebf
+Author: Emmanuel Ferdman <emmanuelferdman@gmail.com>
+Date:   Sun Apr 14 01:49:16 2024 +0300
 
-    Add test for \0 in Unicode patterns (#2569)
+    Update the location of `2nd-param-non-object.js`

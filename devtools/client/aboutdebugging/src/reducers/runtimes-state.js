@@ -13,19 +13,18 @@ const {
   DISCONNECT_RUNTIME_SUCCESS,
   RUNTIMES,
   UPDATE_CONNECTION_PROMPT_SETTING_SUCCESS,
-  UPDATE_RUNTIME_CANDEBUGSW_SUCCESS,
   REMOTE_RUNTIMES_UPDATED,
   SELECTED_RUNTIME_ID_UPDATED,
   THIS_FIREFOX_RUNTIME_CREATED,
-} = require("devtools/client/aboutdebugging/src/constants");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
 
 const {
   findRuntimeById,
-} = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
+} = require("resource://devtools/client/aboutdebugging/src/modules/runtimes-state-helper.js");
 
 const {
   remoteClientManager,
-} = require("devtools/client/shared/remote-debugging/remote-client-manager");
+} = require("resource://devtools/client/shared/remote-debugging/remote-client-manager.js");
 
 // Map between known runtime types and nodes in the runtimes state.
 const TYPE_TO_RUNTIMES_KEY = {
@@ -149,16 +148,6 @@ function runtimesReducer(state = RuntimesState(), action) {
       const runtime = findRuntimeById(runtimeId, state);
       const runtimeDetails = Object.assign({}, runtime.runtimeDetails, {
         connectionPromptEnabled,
-      });
-      return _updateRuntimeById(runtimeId, { runtimeDetails }, state);
-    }
-
-    case UPDATE_RUNTIME_CANDEBUGSW_SUCCESS: {
-      const { canDebugServiceWorkers } = action;
-      const { id: runtimeId } = action.runtime;
-      const runtime = findRuntimeById(runtimeId, state);
-      const runtimeDetails = Object.assign({}, runtime.runtimeDetails, {
-        canDebugServiceWorkers,
       });
       return _updateRuntimeById(runtimeId, { runtimeDetails }, state);
     }

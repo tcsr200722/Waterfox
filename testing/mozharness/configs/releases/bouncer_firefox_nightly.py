@@ -1,12 +1,16 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 # lint_ignore=E501
 config = {
     "products": {
         "installer-latest": {
             "product-name": "Firefox-nightly-latest",
-            "check_uptake": True,
             "platforms": [
                 "linux",
                 "linux64",
+                "linux64-aarch64",
                 "osx",
                 "win",
                 "win64",
@@ -15,10 +19,10 @@ config = {
         },
         "installer-latest-ssl": {
             "product-name": "Firefox-nightly-latest-SSL",
-            "check_uptake": True,
             "platforms": [
                 "linux",
                 "linux64",
+                "linux64-aarch64",
                 "osx",
                 "win",
                 "win64",
@@ -27,10 +31,10 @@ config = {
         },
         "installer-latest-l10n-ssl": {
             "product-name": "Firefox-nightly-latest-l10n-SSL",
-            "check_uptake": True,
             "platforms": [
                 "linux",
                 "linux64",
+                "linux64-aarch64",
                 "osx",
                 "win",
                 "win64",
@@ -39,7 +43,6 @@ config = {
         },
         "msi-latest": {
             "product-name": "Firefox-nightly-msi-latest-SSL",
-            "check_uptake": True,
             "platforms": [
                 "win",
                 "win64",
@@ -47,7 +50,6 @@ config = {
         },
         "msi-latest-l10n": {
             "product-name": "Firefox-nightly-msi-latest-l10n-SSL",
-            "check_uptake": True,
             "platforms": [
                 "win",
                 "win64",
@@ -55,7 +57,6 @@ config = {
         },
         "stub-installer": {
             "product-name": "Firefox-nightly-stub",
-            "check_uptake": True,
             "platforms": [
                 "win",
                 "win64",
@@ -64,12 +65,19 @@ config = {
         },
         "stub-installer-l10n": {
             "product-name": "Firefox-nightly-stub-l10n",
-            "check_uptake": True,
             "platforms": [
                 "win",
                 "win64",
                 "win64-aarch64",
             ],
+        },
+        "pkg-latest": {
+            "product-name": "Firefox-nightly-pkg-latest-ssl",
+            "platforms": ["osx"],
+        },
+        "pkg-latest-l10n": {
+            "product-name": "Firefox-nightly-pkg-latest-l10n-ssl",
+            "platforms": ["osx"],
         },
     },
 }

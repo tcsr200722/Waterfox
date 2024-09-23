@@ -6,7 +6,7 @@
  * expected URL for the engine.
  */
 
-add_task(async function setup() {
+add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.search.separatePrivateDefault.ui.enabled", true],
@@ -14,24 +14,16 @@ add_task(async function setup() {
     ],
   });
 
-  const engine = await Services.search.addEngineWithDetails("MozSearch", {
-    method: "GET",
-    template: "http://example.com/?q={searchTerms}",
-  });
-  const engine2 = await Services.search.addEngineWithDetails(
-    "MozSearchPrivate",
-    {
-      method: "GET",
-      template: "http://example.com/private?q={searchTerms}",
-    }
+  await SearchTestUtils.installSearchExtension(
+    { name: "MozSearch" },
+    { setAsDefault: true }
   );
-  let originalEngine = await Services.search.getDefault();
-  await Services.search.setDefault(engine);
+  await SearchTestUtils.installSearchExtension({
+    name: "MozSearchPrivate",
+    search_url: "https://example.com/private",
+  });
 
-  registerCleanupFunction(async function() {
-    await Services.search.setDefault(originalEngine);
-    await Services.search.removeEngine(engine);
-    await Services.search.removeEngine(engine2);
+  registerCleanupFunction(async function () {
     await PlacesUtils.history.clear();
     await UrlbarTestUtils.formHistory.clear();
   });
@@ -40,7 +32,6 @@ add_task(async function setup() {
 async function testSearch(win, expectedName, expectedBaseUrl) {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window: win,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "open a search",
   });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
@@ -57,7 +48,6 @@ async function testSearch(win, expectedName, expectedBaseUrl) {
       keyword: undefined,
       query: "open a search",
       suggestion: undefined,
-      isSearchHistory: false,
       inPrivateWindow: undefined,
       isPrivateEngine: undefined,
     },
@@ -88,7 +78,7 @@ add_task(async function test_search_normal_window() {
     "about:mozilla"
   );
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     try {
       BrowserTestUtils.removeTab(tab);
     } catch (ex) {
@@ -96,17 +86,17 @@ add_task(async function test_search_normal_window() {
     }
   });
 
-  await testSearch(window, "MozSearch", "http://example.com/");
+  await testSearch(window, "MozSearch", "https://example.com/");
 });
 
 add_task(async function test_search_private_window_no_separate_default() {
   const win = await BrowserTestUtils.openNewBrowserWindow({ private: true });
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await BrowserTestUtils.closeWindow(win);
   });
 
-  await testSearch(win, "MozSearch", "http://example.com/");
+  await testSearch(win, "MozSearch", "https://example.com/");
 });
 
 add_task(async function test_search_private_window() {
@@ -116,14 +106,20 @@ add_task(async function test_search_private_window() {
 
   let engine = Services.search.getEngineByName("MozSearchPrivate");
   let originalEngine = await Services.search.getDefaultPrivate();
-  await Services.search.setDefaultPrivate(engine);
+  await Services.search.setDefaultPrivate(
+    engine,
+    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+  );
 
   registerCleanupFunction(async () => {
     await BrowserTestUtils.closeWindow(win);
-    await Services.search.setDefaultPrivate(originalEngine);
+    await Services.search.setDefaultPrivate(
+      originalEngine,
+      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+    );
   });
 
   const win = await BrowserTestUtils.openNewBrowserWindow({ private: true });
 
-  await testSearch(win, "MozSearchPrivate", "http://example.com/private");
+  await testSearch(win, "MozSearchPrivate", "https://example.com/private");
 });

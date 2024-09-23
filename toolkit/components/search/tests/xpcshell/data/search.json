@@ -5,21 +5,24 @@
   "metaData": {},
   "engines": [
     {
+      "id": "engine1@search.mozilla.orgdefault",
       "_name": "engine1",
       "_metaData": {
         "alias": "testAlias"
       },
-      "_isBuiltin": true
+      "_isAppProvided": true
     },
     {
+      "id": "engine2@search.mozilla.orgdefault",
       "_name": "engine2",
       "_metaData": {
         "alias": null,
         "hidden": true
       },
-      "_isBuiltin": true
+      "_isAppProvided": true
     },
     {
+      "id": "test-addon-id@mozilla.orgdefault",
       "_name": "Test search engine",
       "_shortName": "test-search-engine",
       "description": "A test search engine (based on Google search)",
@@ -28,7 +31,7 @@
       "_metaData": {},
       "_urls": [
         {
-          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl={moz:locale}&q={searchTerms}",
+          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
           "rels": [],
           "resultDomain": "suggestqueries.google.com",
           "type": "application/x-suggestions+json",
@@ -46,29 +49,7 @@
             {
               "name": "channel",
               "value": "fflb",
-              "purpose": "keyword"
-            },
-            {
-              "name": "channel",
-              "value": "rcs",
-              "purpose": "contextmenu"
-            }
-          ]
-        },
-        {
-          "template": "http://www.google.com/search",
-          "rels": [],
-          "resultDomain": "purpose.google.com",
-          "type": "application/x-moz-default-purpose",
-          "params": [
-            {
-              "name": "q",
-              "value": "{searchTerms}"
-            },
-            {
-              "name": "channel",
-              "value": "fflb",
-              "purpose": "keyword"
+              "purpose": "searchbar"
             },
             {
               "name": "channel",
@@ -79,7 +60,7 @@
         }
       ],
       "queryCharset": "UTF-8",
-      "extensionID": "test-addon-id@mozilla.org"
+      "_extensionID": "test-addon-id@mozilla.org"
     }
   ]
 }

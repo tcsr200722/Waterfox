@@ -1,21 +1,17 @@
-from __future__ import absolute_import
-
 import json
 import os
 import sys
+from argparse import Namespace
 
 import pytest
-
-from argparse import Namespace
 
 # need this so the raptor unit tests can find raptor/raptor classes
 here = os.path.abspath(os.path.dirname(__file__))
 raptor_dir = os.path.join(os.path.dirname(here), "raptor")
 sys.path.insert(0, raptor_dir)
 
-from perftest import Perftest
-from webextension import WebExtensionFirefox
 from browsertime import Browsertime
+from perftest import Perftest
 
 
 @pytest.fixture
@@ -23,7 +19,8 @@ def options(request):
     opts = {
         "app": "firefox",
         "binary": "path/to/dummy/browser",
-        "no_conditioned_profile": True,
+        "browsertime_visualmetrics": False,
+        "extra_prefs": {},
     }
 
     if hasattr(request.module, "OPTIONS"):
@@ -39,17 +36,18 @@ def browsertime_options(options):
     options["browsertime_geckodriver"] = "browsertime_geckodriver"
     options["browsertime_chromedriver"] = "browsertime_chromedriver"
     options["browsertime_video"] = "browsertime_video"
+    options["browsertime_visualmetrics"] = "browsertime_visualmetrics"
+    options["browsertime_no_ffwindowrecorder"] = "browsertime_no_ffwindowrecorder"
     return options
 
 
 @pytest.fixture
-def raptor(options):
-    return WebExtensionFirefox(**options)
-
-
-@pytest.fixture
 def mock_test():
-    return {"name": "raptor-firefox-tp6", "test_url": "/dummy/url"}
+    return {
+        "name": "raptor-firefox-tp6",
+        "test_url": "/dummy/url",
+        "secondary_url": "/dummy/url-2",
+    }
 
 
 @pytest.fixture(scope="session")
@@ -87,9 +85,10 @@ def get_binary():
 def create_args():
     args = Namespace(
         app="firefox",
-        test="raptor-tp6-unittest",
+        test="browsertime-tp6-unittest",
         binary="path/to/binary",
         gecko_profile=False,
+        extra_profiler_run=False,
         debug_mode=False,
         page_cycles=None,
         page_timeout=None,
@@ -99,6 +98,9 @@ def create_args():
         browsertime=True,
         cold=False,
         live_sites=False,
+        enable_marionette_trace=False,
+        collect_perfstats=False,
+        chimera=False,
     )
 
     def inner(**kwargs):

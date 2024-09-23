@@ -1,16 +1,12 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-add_task(async function() {
-  gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-
+add_task(async function () {
   const tab = await addTab("about:blank");
-  const target = await TargetFactory.forTab(tab);
-  await target.attach();
+  const target = await createAndAttachTargetForTab(tab);
 
   const tab2 = await addTab("about:blank");
-  const target2 = await TargetFactory.forTab(tab2);
-  await target2.attach();
+  const target2 = await createAndAttachTargetForTab(tab2);
 
   info("Test the targetFront attribute for the root");
   const { client } = target;
@@ -75,8 +71,8 @@ add_task(async function() {
 
   info("Test async front retrieval");
   // use two fronts that are initialized one after the other.
-  const asyncFront1 = target.getFront("performance");
-  const asyncFront2 = target.getFront("performance");
+  const asyncFront1 = target.getFront("accessibility");
+  const asyncFront2 = target.getFront("accessibility");
 
   info("waiting on async fronts returns a real front");
   const awaitedAsyncFront1 = await asyncFront1;
@@ -96,11 +92,10 @@ add_task(async function() {
 async function testDestroy() {
   // initialize a clean target
   const tab = await addTab("about:blank");
-  const target = await TargetFactory.forTab(tab);
-  await target.attach();
+  const target = await createAndAttachTargetForTab(tab);
 
   // do not wait for the front to finish loading
-  target.getFront("performance");
+  target.getFront("accessibility");
 
   try {
     await target.destroy();

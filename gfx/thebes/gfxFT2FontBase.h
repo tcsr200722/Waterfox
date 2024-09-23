@@ -11,12 +11,23 @@
 #include "gfxFontEntry.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/UnscaledFontFreeType.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
+
+class gfxFT2FontBase;
 
 class gfxFT2FontEntryBase : public gfxFontEntry {
  public:
   explicit gfxFT2FontEntryBase(const nsACString& aName) : gfxFontEntry(aName) {}
+
+  uint32_t GetGlyph(uint32_t aCharCode, gfxFT2FontBase* aFont);
+
+  static bool FaceHasTable(mozilla::gfx::SharedFTFace*, uint32_t aTableTag);
+  static nsresult CopyFaceTable(mozilla::gfx::SharedFTFace*, uint32_t aTableTag,
+                                nsTArray<uint8_t>&);
+
+ private:
+  enum { kNumCmapCacheSlots = 256 };
 
   struct CmapCacheSlot {
     CmapCacheSlot() : mCharCode(0), mGlyphIndex(0) {}
@@ -25,12 +36,7 @@ class gfxFT2FontEntryBase : public gfxFontEntry {
     uint32_t mGlyphIndex;
   };
 
-  CmapCacheSlot* GetCmapCacheSlot(uint32_t aCharCode);
-
- private:
-  enum { kNumCmapCacheSlots = 256 };
-
-  mozilla::UniquePtr<CmapCacheSlot[]> mCmapCache;
+  mozilla::UniquePtr<CmapCacheSlot[]> mCmapCache MOZ_GUARDED_BY(mLock);
 };
 
 class gfxFT2FontBase : public gfxFont {
@@ -39,14 +45,21 @@ class gfxFT2FontBase : public gfxFont {
       const RefPtr<mozilla::gfx::UnscaledFontFreeType>& aUnscaledFont,
       RefPtr<mozilla::gfx::SharedFTFace>&& aFTFace, gfxFontEntry* aFontEntry,
       const gfxFontStyle* aFontStyle, int aLoadFlags, bool aEmbolden);
-  virtual ~gfxFT2FontBase();
 
-  uint32_t GetGlyph(uint32_t aCharCode);
+  uint32_t GetGlyph(uint32_t aCharCode) {
+    auto* entry = static_cast<gfxFT2FontEntryBase*>(mFontEntry.get());
+    return entry->GetGlyph(aCharCode, this);
+  }
+
   bool ProvidesGetGlyph() const override { return true; }
   virtual uint32_t GetGlyph(uint32_t unicode,
                             uint32_t variation_selector) override;
+
   bool ProvidesGlyphWidths() const override { return true; }
-  int32_t GetGlyphWidth(uint16_t aGID) override;
+  int32_t GetGlyphWidth(uint16_t aGID) override {
+    return GetCachedGlyphMetrics(aGID).mAdvance;
+  }
+
   bool GetGlyphBounds(uint16_t aGID, gfxRect* aBounds, bool aTight) override;
 
   FontType GetType() const override { return FONT_TYPE_FT2; }
@@ -57,11 +70,11 @@ class gfxFT2FontBase : public gfxFont {
                              const nsTArray<gfxFontVariation>& aVariations,
                              FT_Face aFTFace);
 
-  FT_Face LockFTFace();
-  void UnlockFTFace();
+  FT_Face LockFTFace() const;
+  void UnlockFTFace() const;
 
  private:
-  uint32_t GetCharExtents(char aChar, gfxFloat* aWidth,
+  uint32_t GetCharExtents(uint32_t aChar, gfxFloat* aWidth,
                           gfxRect* aBounds = nullptr);
 
   // Get advance (and optionally bounds) of a single glyph from FreeType,
@@ -70,9 +83,10 @@ class gfxFT2FontBase : public gfxFont {
                          mozilla::gfx::IntRect* aBounds = nullptr);
 
  protected:
+  ~gfxFT2FontBase() override;
   void InitMetrics();
-  const Metrics& GetHorizontalMetrics() override;
-  FT_Vector GetEmboldenStrength(FT_Face aFace);
+  const Metrics& GetHorizontalMetrics() const override { return mMetrics; }
+  FT_Vector GetEmboldenStrength(FT_Face aFace) const;
 
   RefPtr<mozilla::gfx::SharedFTFace> mFTFace;
 
@@ -131,39 +145,8 @@ class gfxFT2FontBase : public gfxFont {
   const GlyphMetrics& GetCachedGlyphMetrics(
       uint16_t aGID, mozilla::gfx::IntRect* aBounds = nullptr);
 
-  mozilla::UniquePtr<nsDataHashtable<nsUint32HashKey, GlyphMetrics>>
-      mGlyphMetrics;
-};
-
-// Helper classes used for clearing out user font data when FT font
-// face is destroyed. Since multiple faces may use the same data, be
-// careful to assure that the data is only cleared out when all uses
-// expire. The font entry object contains a refptr to FTUserFontData and
-// each FT face created from that font entry contains a refptr to that
-// same FTUserFontData object.
-
-class FTUserFontData final
-    : public mozilla::gfx::SharedFTFaceRefCountedData<FTUserFontData> {
- public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(FTUserFontData)
-
-  FTUserFontData(const uint8_t* aData, uint32_t aLength)
-      : mFontData(aData), mLength(aLength) {}
-
-  const uint8_t* FontData() const { return mFontData; }
-
-  already_AddRefed<mozilla::gfx::SharedFTFace> CloneFace(
-      int aFaceIndex = 0) override;
-
- private:
-  ~FTUserFontData() {
-    if (mFontData) {
-      free((void*)mFontData);
-    }
-  }
-
-  const uint8_t* mFontData;
-  uint32_t mLength;
+  mozilla::UniquePtr<nsTHashMap<nsUint32HashKey, GlyphMetrics>> mGlyphMetrics
+      MOZ_GUARDED_BY(mLock);
 };
 
 #endif /* GFX_FT2FONTBASE_H */

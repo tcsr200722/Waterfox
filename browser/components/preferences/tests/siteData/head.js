@@ -26,21 +26,9 @@ const TEST_SERVICE_WORKER_URL =
 const REMOVE_DIALOG_URL =
   "chrome://browser/content/preferences/dialogs/siteDataRemoveSelected.xhtml";
 
-const { DownloadUtils } = ChromeUtils.import(
-  "resource://gre/modules/DownloadUtils.jsm"
-);
-const { SiteDataManager } = ChromeUtils.import(
-  "resource:///modules/SiteDataManager.jsm"
-);
-const { OfflineAppCacheHelper } = ChromeUtils.import(
-  "resource://gre/modules/offlineAppCache.jsm"
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "SiteDataTestUtils",
-  "resource://testing-common/SiteDataTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  SiteDataTestUtils: "resource://testing-common/SiteDataTestUtils.sys.mjs",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -55,16 +43,16 @@ function promiseSiteDataManagerSitesUpdated() {
 
 function is_element_visible(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null, when checking visibility");
-  ok(!BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(!BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 function is_element_hidden(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null, when checking visibility");
-  ok(BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 function promiseLoadSubDialog(aURL) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     content.gSubDialog._dialogStack.addEventListener(
       "dialogopen",
       function dialogopen(aEvent) {
@@ -88,9 +76,8 @@ function promiseLoadSubDialog(aURL) {
         is_element_visible(aEvent.detail.dialog._overlay, "Overlay is visible");
 
         // Check that stylesheets were injected
-        let expectedStyleSheetURLs = aEvent.detail.dialog._injectedStyleSheets.slice(
-          0
-        );
+        let expectedStyleSheetURLs =
+          aEvent.detail.dialog._injectedStyleSheets.slice(0);
         for (let styleSheet of aEvent.detail.dialog._frame.contentDocument
           .styleSheets) {
           let i = expectedStyleSheetURLs.indexOf(styleSheet.href);
@@ -125,10 +112,10 @@ function openPreferencesViaOpenPreferencesAPI(aPane, aOptions) {
 
     newTabBrowser.addEventListener(
       "Initialized",
-      function() {
+      function () {
         newTabBrowser.contentWindow.addEventListener(
           "load",
-          async function() {
+          async function () {
             let win = gBrowser.contentWindow;
             let selectedPane = win.history.state;
             await finalPrefPaneLoaded;
@@ -160,11 +147,7 @@ function openSiteDataSettingsDialog() {
     dialogLoadPromise,
     dialogInitPromise,
   ]).then(() => {
-    is(
-      dialogOverlay.style.visibility,
-      "visible",
-      "The Settings dialog should be visible"
-    );
+    is_element_visible(dialogOverlay, "The Settings dialog should be visible");
   });
   settingsBtn.doCommand();
   return fullyLoadPromise;
@@ -182,9 +165,8 @@ function promiseSettingsDialogClose() {
           dialogWin.document.documentURI ===
           "chrome://browser/content/preferences/dialogs/siteDataSettings.xhtml"
         ) {
-          isnot(
-            dialogOverlay.style.visibility,
-            "visible",
+          is_element_hidden(
+            dialogOverlay,
             "The Settings dialog should be hidden"
           );
           resolve();
@@ -208,8 +190,12 @@ function assertSitesListed(doc, hosts) {
   is(removeAllBtn.disabled, false, "Should enable the removeAllBtn button");
 }
 
+// Counter used by addTestData to generate unique cookie names across function
+// calls.
+let cookieID = 0;
+
 async function addTestData(data) {
-  let hosts = [];
+  let hosts = new Set();
 
   for (let site of data) {
     is(
@@ -226,27 +212,35 @@ async function addTestData(data) {
     }
 
     for (let i = 0; i < (site.cookies || 0); i++) {
-      SiteDataTestUtils.addToCookies(site.origin, Cu.now());
+      SiteDataTestUtils.addToCookies({
+        origin: site.origin,
+        name: `cookie${cookieID++}`,
+      });
     }
 
-    let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-      site.origin
-    );
-    hosts.push(principal.URI.host);
+    let principal =
+      Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+        site.origin
+      );
+
+    hosts.add(principal.baseDomain || principal.host);
   }
 
-  return hosts;
+  return Array.from(hosts);
 }
 
 function promiseCookiesCleared() {
-  return TestUtils.topicObserved("cookie-changed", (subj, data) => {
-    return data === "cleared";
+  return TestUtils.topicObserved("cookie-changed", subj => {
+    return (
+      subj.QueryInterface(Ci.nsICookieNotification).action ==
+      Ci.nsICookieNotification.ALL_COOKIES_CLEARED
+    );
   });
 }
 
 async function loadServiceWorkerTestPage(url) {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     return SpecialPowers.spawn(
       tab.linkedBrowser,
       [],
@@ -260,7 +254,7 @@ async function loadServiceWorkerTestPage(url) {
 }
 
 function promiseServiceWorkersCleared() {
-  return BrowserTestUtils.waitForCondition(() => {
+  return TestUtils.waitForCondition(() => {
     let serviceWorkers = serviceWorkerManager.getAllRegistrations();
     if (!serviceWorkers.length) {
       ok(true, "Cleared all service workers");
@@ -271,14 +265,13 @@ function promiseServiceWorkersCleared() {
 }
 
 function promiseServiceWorkerRegisteredFor(url) {
-  return BrowserTestUtils.waitForCondition(() => {
+  return TestUtils.waitForCondition(() => {
     try {
-      let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-        url
-      );
+      let principal =
+        Services.scriptSecurityManager.createContentPrincipalFromOrigin(url);
       let sw = serviceWorkerManager.getRegistrationByPrincipal(
         principal,
-        principal.URI.spec
+        principal.spec
       );
       if (sw) {
         ok(true, `Found the service worker registered for ${url}`);

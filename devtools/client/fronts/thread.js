@@ -4,25 +4,29 @@
 
 "use strict";
 
-const { ThreadStateTypes } = require("devtools/client/constants");
+const { ThreadStateTypes } = require("resource://devtools/client/constants.js");
 const {
   FrontClassWithSpec,
   registerFront,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
-const { threadSpec } = require("devtools/shared/specs/thread");
+const { threadSpec } = require("resource://devtools/shared/specs/thread.js");
 
 loader.lazyRequireGetter(
   this,
   "ObjectFront",
-  "devtools/client/fronts/object",
+  "resource://devtools/client/fronts/object.js",
   true
 );
-loader.lazyRequireGetter(this, "FrameFront", "devtools/client/fronts/frame");
+loader.lazyRequireGetter(
+  this,
+  "FrameFront",
+  "resource://devtools/client/fronts/frame.js"
+);
 loader.lazyRequireGetter(
   this,
   "SourceFront",
-  "devtools/client/fronts/source",
+  "resource://devtools/client/fronts/source.js",
   true
 );
 
@@ -41,13 +45,14 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     this.client = client;
     this._pauseGrips = {};
     this._threadGrips = {};
-    this._state = "paused";
+    // Note that this isn't matching ThreadActor state field.
+    // ThreadFront is only using two values: paused or attached.
+    this._state = "attached";
+
     this._beforePaused = this._beforePaused.bind(this);
     this._beforeResumed = this._beforeResumed.bind(this);
-    this._beforeDetached = this._beforeDetached.bind(this);
     this.before("paused", this._beforePaused);
     this.before("resumed", this._beforeResumed);
-    this.before("detached", this._beforeDetached);
     this.targetFront.on("will-navigate", this._onWillNavigate.bind(this));
     // Attribute name from which to retrieve the actorID out of the target actor's form
     this.formAttributeName = "threadActor";
@@ -63,10 +68,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
 
   get actor() {
     return this.actorID;
-  }
-
-  getWebconsoleFront() {
-    return this.targetFront.getFront("console");
   }
 
   _assertPaused(command) {
@@ -152,6 +153,13 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   }
 
   /**
+   * Restart selected frame.
+   */
+  restart(frameActorID) {
+    return this._doResume({ type: "restart" }, frameActorID);
+  }
+
+  /**
    * Immediately interrupt a running thread.
    */
   interrupt() {
@@ -178,31 +186,12 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   async getSources() {
     let sources = [];
     try {
-      ({ sources } = await super.sources());
+      sources = await super.sources();
     } catch (e) {
       // we may have closed the connection
       console.log(`getSources failed. Connection may have closed: ${e}`);
     }
     return { sources };
-  }
-
-  /**
-   * attach to the thread actor.
-   */
-  async attach(options) {
-    const onPaused = this.once("paused");
-    await super.attach(options);
-    await onPaused;
-  }
-
-  /**
-   * Detach from the thread actor.
-   */
-  async detach() {
-    const onDetached = this.once("detached");
-    await super.detach();
-    await onDetached;
-    await this.destroy();
   }
 
   /**
@@ -247,14 +236,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     this._clearObjectFronts("_pauseGrips");
   }
 
-  /**
-   * Invalidate thread-lifetime grip clients and clear the list of current grip
-   * clients.
-   */
-  _clearThreadGrips() {
-    this._clearObjectFronts("_threadGrips");
-  }
-
   _beforePaused(packet) {
     this._state = "paused";
     this._onThreadState(packet);
@@ -263,13 +244,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   _beforeResumed() {
     this._state = "attached";
     this._onThreadState(null);
-    this.unmanageChildren(FrameFront);
-  }
-
-  _beforeDetached(packet) {
-    this._state = "detached";
-    this._onThreadState(packet);
-    this._clearThreadGrips();
     this.unmanageChildren(FrameFront);
   }
 

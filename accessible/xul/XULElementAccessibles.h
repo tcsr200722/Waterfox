@@ -6,8 +6,8 @@
 #ifndef mozilla_a11y_XULElementAccessibles_h__
 #define mozilla_a11y_XULElementAccessibles_h__
 
-#include "HyperTextAccessibleWrap.h"
-#include "TextLeafAccessibleWrap.h"
+#include "HyperTextAccessible.h"
+#include "TextLeafAccessible.h"
 
 namespace mozilla {
 namespace a11y {
@@ -17,11 +17,11 @@ class XULLabelTextLeafAccessible;
 /**
  * Used for XUL description and label elements.
  */
-class XULLabelAccessible : public HyperTextAccessibleWrap {
+class XULLabelAccessible : public HyperTextAccessible {
  public:
   XULLabelAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual void Shutdown() override;
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
@@ -30,7 +30,7 @@ class XULLabelAccessible : public HyperTextAccessibleWrap {
   void UpdateLabelValue(const nsString& aValue);
 
  protected:
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
   virtual void DispatchClickEvent(nsIContent* aContent,
                                   uint32_t aActionIndex) const override;
@@ -39,7 +39,7 @@ class XULLabelAccessible : public HyperTextAccessibleWrap {
   RefPtr<XULLabelTextLeafAccessible> mValueTextLeaf;
 };
 
-inline XULLabelAccessible* Accessible::AsXULLabel() {
+inline XULLabelAccessible* LocalAccessible::AsXULLabel() {
   return IsXULLabel() ? static_cast<XULLabelAccessible*>(this) : nullptr;
 }
 
@@ -47,16 +47,16 @@ inline XULLabelAccessible* Accessible::AsXULLabel() {
  * Used to implement text interface on XUL label accessible in case when text
  * is provided by @value attribute (no underlying text frame).
  */
-class XULLabelTextLeafAccessible final : public TextLeafAccessibleWrap {
+class XULLabelTextLeafAccessible final : public TextLeafAccessible {
  public:
   XULLabelTextLeafAccessible(nsIContent* aContent, DocAccessible* aDoc)
-      : TextLeafAccessibleWrap(aContent, aDoc) {
+      : TextLeafAccessible(aContent, aDoc) {
     mStateFlags |= eSharedNode;
   }
 
   virtual ~XULLabelTextLeafAccessible() {}
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
 };
@@ -68,7 +68,7 @@ class XULTooltipAccessible : public LeafAccessible {
  public:
   XULTooltipAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
 };
@@ -77,15 +77,14 @@ class XULLinkAccessible : public XULLabelAccessible {
  public:
   XULLinkAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
-  // Accessible
+  // LocalAccessible
   virtual void Value(nsString& aValue) const override;
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeLinkState() const override;
 
   // ActionAccessible
-  virtual uint8_t ActionCount() const override;
+  virtual bool HasPrimaryAction() const override;
   virtual void ActionNameAt(uint8_t aIndex, nsAString& aName) override;
-  virtual bool DoAction(uint8_t aIndex) const override;
 
   // HyperLinkAccessible
   virtual bool IsLink() const override;
@@ -97,7 +96,7 @@ class XULLinkAccessible : public XULLabelAccessible {
  protected:
   virtual ~XULLinkAccessible();
 
-  // Accessible
+  // LocalAccessible
   virtual ENameValueFlag NativeName(nsString& aName) const override;
 
   enum { eAction_Jump = 0 };

@@ -6,15 +6,27 @@
  */
 
 #include "include/core/SkData.h"
-#include "include/core/SkMath.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPathTypes.h"
+#include "include/core/SkRRect.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkScalar.h"
 #include "include/private/SkPathRef.h"
-#include "include/private/SkTo.h"
-#include "src/core/SkBuffer.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkPoint_impl.h"
+#include "include/private/base/SkTPin.h"
+#include "include/private/base/SkTo.h"
+#include "src/base/SkAutoMalloc.h"
+#include "src/base/SkBuffer.h"
+#include "src/base/SkSafeMath.h"
+#include "src/core/SkPathEnums.h"
 #include "src/core/SkPathPriv.h"
 #include "src/core/SkRRectPriv.h"
-#include "src/core/SkSafeMath.h"
 
-#include <cmath>
+#include <cstddef>
+#include <cstdint>
 
 enum SerializationOffsets {
     kType_SerializationShift = 28,       // requires 4 bits
@@ -44,8 +56,8 @@ static unsigned extract_version(uint32_t packed) {
     return packed & kVersion_SerializationMask;
 }
 
-static SkPath::FillType extract_filltype(uint32_t packed) {
-    return static_cast<SkPath::FillType>((packed >> kFillType_SerializationShift) & 0x3);
+static SkPathFillType extract_filltype(uint32_t packed) {
+    return static_cast<SkPathFillType>((packed >> kFillType_SerializationShift) & 0x3);
 }
 
 static SerializationType extract_serializationtype(uint32_t packed) {
@@ -73,7 +85,7 @@ size_t SkPath::writeToMemoryAsRRect(void* storage) const {
         return sizeNeeded;
     }
 
-    int firstDir = isCCW ? SkPathPriv::kCCW_FirstDirection : SkPathPriv::kCW_FirstDirection;
+    int firstDir = isCCW ? (int)SkPathFirstDirection::kCCW : (int)SkPathFirstDirection::kCW;
     int32_t packed = (fFillType << kFillType_SerializationShift) |
                      (firstDir << kDirection_SerializationShift) |
                      (SerializationType::kRRect << kType_SerializationShift) |
@@ -167,17 +179,17 @@ size_t SkPath::readAsRRect(const void* storage, size_t length) {
     SkASSERT(extract_serializationtype(packed) == SerializationType::kRRect);
 
     uint8_t dir = (packed >> kDirection_SerializationShift) & 0x3;
-    FillType fillType = extract_filltype(packed);
+    SkPathFillType fillType = extract_filltype(packed);
 
-    Direction rrectDir;
+    SkPathDirection rrectDir;
     SkRRect rrect;
     int32_t start;
     switch (dir) {
-        case SkPathPriv::kCW_FirstDirection:
-            rrectDir = kCW_Direction;
+        case (int)SkPathFirstDirection::kCW:
+            rrectDir = SkPathDirection::kCW;
             break;
-        case SkPathPriv::kCCW_FirstDirection:
-            rrectDir = kCCW_Direction;
+        case (int)SkPathFirstDirection::kCCW:
+            rrectDir = SkPathDirection::kCCW;
             break;
         default:
             return 0;
@@ -211,7 +223,7 @@ size_t SkPath::readFromMemory_EQ4Or5(const void* storage, size_t length) {
         case SerializationType::kRRect:
             return this->readAsRRect(storage, length);
         case SerializationType::kGeneral:
-            break;  // fall through
+            break;  // fall out
         default:
             return 0;
     }
@@ -230,63 +242,30 @@ size_t SkPath::readFromMemory_EQ4Or5(const void* storage, size_t length) {
     }
     SkASSERT(buffer.pos() <= length);
 
-#define CHECK_POINTS_CONICS(p, c)       \
-    do {                                \
-        if (p && ((pts -= p) < 0)) {    \
-            return 0;                   \
-        }                               \
-        if (c && ((cnx -= c) < 0)) {    \
-            return 0;                   \
-        }                               \
-    } while (0)
-
-    int verbsStep = 1;
-    if (verbsAreReversed) {
-        verbs += vbs - 1;
-        verbsStep = -1;
-    }
-
-    SkPath tmp;
-    tmp.setFillType(extract_filltype(packed));
-    tmp.incReserve(pts);
-    for (int i = 0; i < vbs; ++i) {
-        switch (*verbs) {
-            case kMove_Verb:
-                CHECK_POINTS_CONICS(1, 0);
-                tmp.moveTo(*points++);
-                break;
-            case kLine_Verb:
-                CHECK_POINTS_CONICS(1, 0);
-                tmp.lineTo(*points++);
-                break;
-            case kQuad_Verb:
-                CHECK_POINTS_CONICS(2, 0);
-                tmp.quadTo(points[0], points[1]);
-                points += 2;
-                break;
-            case kConic_Verb:
-                CHECK_POINTS_CONICS(2, 1);
-                tmp.conicTo(points[0], points[1], *conics++);
-                points += 2;
-                break;
-            case kCubic_Verb:
-                CHECK_POINTS_CONICS(3, 0);
-                tmp.cubicTo(points[0], points[1], points[2]);
-                points += 3;
-                break;
-            case kClose_Verb:
-                tmp.close();
-                break;
-            default:
-                return 0;   // bad verb
+    if (vbs == 0) {
+        if (pts == 0 && cnx == 0) {
+            reset();
+            setFillType(extract_filltype(packed));
+            return buffer.pos();
         }
-        verbs += verbsStep;
-    }
-#undef CHECK_POINTS_CONICS
-    if (pts || cnx) {
-        return 0;   // leftover points and/or conics
+        // No verbs but points and/or conic weights is a not a valid path.
+        return 0;
     }
 
-    *this = std::move(tmp);
+    SkAutoMalloc reversedStorage;
+    if (verbsAreReversed) {
+      uint8_t* tmpVerbs = (uint8_t*)reversedStorage.reset(vbs);
+        for (int i = 0; i < vbs; ++i) {
+            tmpVerbs[i] = verbs[vbs - i - 1];
+        }
+        verbs = tmpVerbs;
+    }
+
+    SkPathVerbAnalysis analysis = sk_path_analyze_verbs(verbs, vbs);
+    if (!analysis.valid || analysis.points != pts || analysis.weights != cnx) {
+        return 0;
+    }
+    *this = SkPathPriv::MakePath(analysis, points, verbs, vbs, conics,
+                                 extract_filltype(packed), false);
     return buffer.pos();
 }

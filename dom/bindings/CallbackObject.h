@@ -17,27 +17,49 @@
 #ifndef mozilla_dom_CallbackObject_h
 #define mozilla_dom_CallbackObject_h
 
-#include "nsISupports.h"
-#include "nsISupportsImpl.h"
-#include "nsCycleCollectionParticipant.h"
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include "js/Exception.h"
+#include "js/RootingAPI.h"
 #include "js/Wrapper.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/ErrorResult.h"
-#include "mozilla/HoldDropJSObjects.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/OwningNonNull.h"
-#include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/dom/BindingCallContext.h"
-#include "nsWrapperCache.h"
-#include "nsJSEnvironment.h"
-#include "xpcpublic.h"
 #include "jsapi.h"
-#include "js/ContextOptions.h"
-#include "js/TracingAPI.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/HoldDropJSObjects.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/AutoEntryScript.h"
+#include "mozilla/dom/BindingCallContext.h"
+#include "mozilla/dom/ScriptSettings.h"
+#include "nsCOMPtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsID.h"
+#include "nsIGlobalObject.h"
+#include "nsISupports.h"
+#include "nsISupportsUtils.h"
+#include "nsStringFwd.h"
+
+class JSAutoRealm;
+class JSObject;
+class JSTracer;
+class nsCycleCollectionTraversalCallback;
+struct JSContext;
+
+namespace JS {
+class AutoSetAsyncStackForNewCalls;
+class Realm;
+class Value;
+}  // namespace JS
 
 namespace mozilla {
 
+class ErrorResult;
 class PromiseJobRunnable;
+template <class T>
+class OwningNonNull;
 
 namespace dom {
 
@@ -65,8 +87,8 @@ class CallbackObject : public nsISupports {
   explicit CallbackObject(JSContext* aCx, JS::Handle<JSObject*> aCallback,
                           JS::Handle<JSObject*> aCallbackGlobal,
                           nsIGlobalObject* aIncumbentGlobal) {
-    if (aCx && JS::ContextOptionsRef(aCx).asyncStack()) {
-      JS::RootedObject stack(aCx);
+    if (aCx && JS::IsAsyncStackCaptureEnabledForRealm(aCx)) {
+      JS::Rooted<JSObject*> stack(aCx);
       if (!JS::CaptureCurrentStack(aCx, &stack)) {
         JS_ClearPendingException(aCx);
       }
@@ -140,14 +162,12 @@ class CallbackObject : public nsISupports {
   enum ExceptionHandling {
     // Report any exception and don't throw it to the caller code.
     eReportExceptions,
+    // Throw any exception to the caller code and don't report it.
+    eRethrowExceptions,
     // Throw an exception to the caller code if the thrown exception is a
     // binding object for a DOMException from the caller's scope, otherwise
     // report it.
-    eRethrowContentExceptions,
-    // Throw exceptions to the caller code, unless the caller realm is
-    // provided, the exception is not a DOMException from the caller
-    // realm, and the caller realm does not subsume our unwrapped callback.
-    eRethrowExceptions
+    eRethrowContentExceptions
   };
 
   // Append a UTF-8 string to aOutString that describes the callback function,
@@ -215,8 +235,8 @@ class CallbackObject : public nsISupports {
                          nsIGlobalObject* aIncumbentGlobal) {
     MOZ_ASSERT(aCallback && !mCallback);
     MOZ_ASSERT(aCallbackGlobal);
-    MOZ_DIAGNOSTIC_ASSERT(js::GetObjectCompartment(aCallback) ==
-                          js::GetObjectCompartment(aCallbackGlobal));
+    MOZ_DIAGNOSTIC_ASSERT(JS::GetCompartment(aCallback) ==
+                          JS::GetCompartment(aCallbackGlobal));
     MOZ_ASSERT(JS_IsGlobalObject(aCallbackGlobal));
     mCallback = aCallback;
     mCallbackGlobal = aCallbackGlobal;
@@ -351,7 +371,7 @@ class CallbackObject : public nsISupports {
     JSContext* mCx;
 
     // Caller's realm. This will only have a sensible value if
-    // mExceptionHandling == eRethrowContentExceptions or eRethrowExceptions.
+    // mExceptionHandling == eRethrowContentExceptions.
     JS::Realm* mRealm;
 
     // And now members whose construction/destruction order we need to control.

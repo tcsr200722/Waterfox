@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -40,7 +39,7 @@ add_task(
       // in the first global.
       let pausedOne = false;
       let onResumed = null;
-      threadFront.once("paused", function(packet) {
+      threadFront.once("paused", function () {
         pausedOne = true;
         onResumed = resume(threadFront);
       });
@@ -62,7 +61,7 @@ add_task(
       // Ensure that the breakpoint was properly applied to the JSScipt loaded
       // in the second global.
       let pausedTwo = false;
-      threadFront.once("paused", function(packet) {
+      threadFront.once("paused", function () {
         pausedTwo = true;
         onResumed = resume(threadFront);
       });

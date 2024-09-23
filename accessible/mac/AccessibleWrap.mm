@@ -1,17 +1,26 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format off */
+/* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "DocAccessible.h"
+#include "DocAccessibleWrap.h"
 #include "nsObjCExceptions.h"
+#include "nsCocoaUtils.h"
+#include "nsUnicharUtils.h"
 
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
 #include "nsAccUtils.h"
-#include "Role.h"
+#include "mozilla/a11y/Role.h"
+#include "TextRange.h"
 #include "gfxPlatform.h"
 
+#import "MOXLandmarkAccessibles.h"
 #import "MOXMathAccessibles.h"
+#import "MOXOuterDoc.h"
+#import "MOXTextMarkerDelegate.h"
+#import "MOXWebAreaAccessible.h"
 #import "mozAccessible.h"
 #import "mozActionElements.h"
 #import "mozHTMLAccessible.h"
@@ -23,27 +32,53 @@ using namespace mozilla;
 using namespace mozilla::a11y;
 
 AccessibleWrap::AccessibleWrap(nsIContent* aContent, DocAccessible* aDoc)
-    : Accessible(aContent, aDoc), mNativeObject(nil), mNativeInited(false) {}
+    : LocalAccessible(aContent, aDoc),
+      mNativeObject(nil),
+      mNativeInited(false) {
+  if (aContent && aContent->IsElement() && aDoc) {
+    // Check if this accessible is a live region and queue it
+    // it for dispatching an event after it has been inserted.
+    DocAccessibleWrap* doc = static_cast<DocAccessibleWrap*>(aDoc);
+    static const dom::Element::AttrValuesArray sLiveRegionValues[] = {
+        nsGkAtoms::OFF, nsGkAtoms::polite, nsGkAtoms::assertive, nullptr};
+    int32_t attrValue = nsAccUtils::FindARIAAttrValueIn(
+        aContent->AsElement(), nsGkAtoms::aria_live, sLiveRegionValues,
+        eIgnoreCase);
+    if (attrValue == 0) {
+      // aria-live is "off", do nothing.
+    } else if (attrValue > 0) {
+      // aria-live attribute is polite or assertive. It's live!
+      doc->QueueNewLiveRegion(this);
+    } else if (const nsRoleMapEntry* roleMap =
+                   aria::GetRoleMap(aContent->AsElement())) {
+      // aria role defines it as a live region. It's live!
+      if (roleMap->liveAttRule == ePoliteLiveAttr ||
+          roleMap->liveAttRule == eAssertiveLiveAttr) {
+        doc->QueueNewLiveRegion(this);
+      }
+    } else if (nsStaticAtom* value = GetAccService()->MarkupAttribute(
+                   aContent, nsGkAtoms::aria_live)) {
+      // HTML element defines it as a live region. It's live!
+      if (value == nsGkAtoms::polite || value == nsGkAtoms::assertive) {
+        doc->QueueNewLiveRegion(this);
+      }
+    }
+  }
+}
 
 AccessibleWrap::~AccessibleWrap() {}
 
 mozAccessible* AccessibleWrap::GetNativeObject() {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   if (!mNativeInited && !mNativeObject) {
     // We don't creat OSX accessibles for xul tooltips, defunct accessibles,
-    // or pruned children.
-    //
-    // We also don't create a native object if we're child of a "flat" accessible;
-    // for example, on OS X buttons shouldn't have any children, because that
-    // makes the OS confused.
+    // <br> (whitespace) elements, or pruned children.
     //
     // To maintain a scripting environment where the XPCOM accessible hierarchy
     // look the same on all platforms, we still let the C++ objects be created
     // though.
-    Accessible* parent = Parent();
-    bool mustBePruned = parent && nsAccUtils::MustPrune(parent);
-    if (!IsXULTooltip() && !IsDefunct() && !mustBePruned) {
+    if (!IsXULTooltip() && !IsDefunct() && Role() != roles::WHITESPACE) {
       mNativeObject = [[GetNativeType() alloc] initWithAccessible:this];
     }
   }
@@ -52,34 +87,50 @@ mozAccessible* AccessibleWrap::GetNativeObject() {
 
   return mNativeObject;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
 }
 
 void AccessibleWrap::GetNativeInterface(void** aOutInterface) {
   *aOutInterface = static_cast<void*>(GetNativeObject());
 }
 
-// overridden in subclasses to create the right kind of object. by default we create a generic
-// 'mozAccessible' node.
+// overridden in subclasses to create the right kind of object. by default we
+// create a generic 'mozAccessible' node.
 Class AccessibleWrap::GetNativeType() {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  if (IsXULTabpanels()) return [mozPaneAccessible class];
+  if (IsXULTabpanels()) {
+    return [mozPaneAccessible class];
+  }
 
-  if (IsTable()) return [mozTableAccessible class];
+  if (IsTable()) {
+    return [mozTableAccessible class];
+  }
 
-  if (IsTableRow()) return [mozTableRowAccessible class];
+  if (IsTableRow()) {
+    return [mozTableRowAccessible class];
+  }
 
-  if (IsTableCell()) return [mozTableCellAccessible class];
+  if (IsTableCell()) {
+    return [mozTableCellAccessible class];
+  }
+
+  if (IsDoc()) {
+    return [MOXWebAreaAccessible class];
+  }
+
+  if (IsOuterDoc()) {
+    return [MOXOuterDoc class];
+  }
 
   return GetTypeFromRole(Role());
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
 }
 
-// this method is very important. it is fired when an accessible object "dies". after this point
-// the object might still be around (because some 3rd party still has a ref to it), but it is
-// in fact 'dead'.
+// this method is very important. it is fired when an accessible object "dies".
+// after this point the object might still be around (because some 3rd party
+// still has a ref to it), but it is in fact 'dead'.
 void AccessibleWrap::Shutdown() {
   // this ensure we will not try to re-create the native object.
   mNativeInited = true;
@@ -91,84 +142,37 @@ void AccessibleWrap::Shutdown() {
     mNativeObject = nil;
   }
 
-  Accessible::Shutdown();
+  LocalAccessible::Shutdown();
 }
 
 nsresult AccessibleWrap::HandleAccEvent(AccEvent* aEvent) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  nsresult rv = Accessible::HandleAccEvent(aEvent);
+  nsresult rv = LocalAccessible::HandleAccEvent(aEvent);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (IPCAccessibilityActive()) {
+  if (IsDefunct()) {
+    // The accessible can become defunct after their events are handled.
     return NS_OK;
   }
 
   uint32_t eventType = aEvent->GetEventType();
 
-  mozAccessible* nativeAcc = nil;
-
-  switch (eventType) {
-    case nsIAccessibleEvent::EVENT_FOCUS:
-    case nsIAccessibleEvent::EVENT_VALUE_CHANGE:
-    case nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE:
-    case nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED:
-    case nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED:
-    case nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_COMPLETE:
-    case nsIAccessibleEvent::EVENT_MENUPOPUP_START:
-    case nsIAccessibleEvent::EVENT_MENUPOPUP_END:
-    case nsIAccessibleEvent::EVENT_REORDER:
-      if (Accessible* accessible = aEvent->GetAccessible()) {
-        accessible->GetNativeInterface((void**)&nativeAcc);
-        if (!nativeAcc) {
-          return NS_ERROR_FAILURE;
-        }
-      }
-      break;
-    case nsIAccessibleEvent::EVENT_SELECTION:
-    case nsIAccessibleEvent::EVENT_SELECTION_ADD:
-    case nsIAccessibleEvent::EVENT_SELECTION_REMOVE: {
-      AccSelChangeEvent* selEvent = downcast_accEvent(aEvent);
-      // The "widget" is the selected widget's container. In OSX
-      // it is the target of the selection changed event.
-      if (Accessible* accessible = selEvent->Widget()) {
-        accessible->GetNativeInterface((void**)&nativeAcc);
-        if (!nativeAcc) {
-          return NS_ERROR_FAILURE;
-        }
-      }
-      break;
-    }
-    case nsIAccessibleEvent::EVENT_STATE_CHANGE:
-      if (Accessible* accessible = aEvent->GetAccessible()) {
-        accessible->GetNativeInterface((void**)&nativeAcc);
-        if (nativeAcc) {
-          AccStateChangeEvent* event = downcast_accEvent(aEvent);
-          [nativeAcc stateChanged:event->GetState() isEnabled:event->IsStateEnabled()];
-          return NS_OK;
-        } else {
-          return NS_ERROR_FAILURE;
-        }
-      }
-      break;
-    default:
-      break;
-  }
-
-  if (nativeAcc) {
-    [nativeAcc handleAccessibleEvent:eventType];
+  if (eventType == nsIAccessibleEvent::EVENT_SHOW) {
+    DocAccessibleWrap* doc = static_cast<DocAccessibleWrap*>(Document());
+    doc->ProcessNewLiveRegions();
   }
 
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // AccessibleWrap protected
 
 Class a11y::GetTypeFromRole(roles::Role aRole) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   switch (aRole) {
     case roles::COMBOBOX:
@@ -180,12 +184,24 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
     case roles::PAGETAB:
       return [mozTabAccessible class];
 
+    case roles::DATE_EDITOR:
+      return [mozDatePickerAccessible class];
+
     case roles::CHECKBUTTON:
     case roles::TOGGLE_BUTTON:
+    case roles::SWITCH:
+    case roles::CHECK_MENU_ITEM:
       return [mozCheckboxAccessible class];
 
     case roles::RADIOBUTTON:
+    case roles::RADIO_MENU_ITEM:
       return [mozRadioButtonAccessible class];
+
+    case roles::PROGRESSBAR:
+      return [mozRangeAccessible class];
+
+    case roles::METER:
+      return [mozMeterAccessible class];
 
     case roles::SPINBUTTON:
     case roles::SLIDER:
@@ -199,7 +215,7 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
 
     case roles::ENTRY:
     case roles::CAPTION:
-    case roles::ACCEL_LABEL:
+    case roles::EDITCOMBOBOX:
     case roles::PASSWORD_TEXT:
       // normal textfield (static or editable)
       return [mozTextAccessible class];
@@ -208,14 +224,24 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
     case roles::STATICTEXT:
       return [mozTextLeafAccessible class];
 
+    case roles::LANDMARK:
+      return [MOXLandmarkAccessible class];
+
     case roles::LINK:
       return [mozLinkAccessible class];
 
     case roles::LISTBOX:
       return [mozListboxAccessible class];
 
+    case roles::LISTITEM:
+      return [MOXListItemAccessible class];
+
     case roles::OPTION: {
       return [mozOptionAccessible class];
+    }
+
+    case roles::RICH_OPTION: {
+      return [mozSelectableChildAccessible class];
     }
 
     case roles::COMBOBOX_LIST:
@@ -249,8 +275,12 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
     case roles::MATHML_UNDER_OVER:
       return [MOXMathUnderOverAccessible class];
 
-    case roles::SUMMARY:
-      return [MOXSummaryAccessible class];
+    case roles::OUTLINE:
+    case roles::TREE_TABLE:
+      return [mozOutlineAccessible class];
+
+    case roles::OUTLINEITEM:
+      return [mozOutlineRowAccessible class];
 
     default:
       return [mozAccessible class];
@@ -258,5 +288,5 @@ Class a11y::GetTypeFromRole(roles::Role aRole) {
 
   return nil;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
 }

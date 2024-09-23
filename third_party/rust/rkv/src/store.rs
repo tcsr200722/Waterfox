@@ -39,3 +39,14 @@ where
         }
     }
 }
+
+#[derive(Default, Debug, Copy, Clone)]
+pub struct CloseOptions {
+    pub delete: bool,
+}
+
+impl CloseOptions {
+    pub fn delete_files_on_disk() -> CloseOptions {
+        CloseOptions { delete: true }
+    }
+}

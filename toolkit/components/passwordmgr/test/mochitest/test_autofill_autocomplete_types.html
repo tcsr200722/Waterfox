@@ -10,22 +10,16 @@
 <body>
 Test autofilling with autocomplete types (username, off, cc-type, etc.)
 
-<script>
-let readyPromise = registerRunTests();
-
-runInParent(function setup() {
-  const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-  let login1 = Cc["@mozilla.org/login-manager/loginInfo;1"].
-               createInstance(Ci.nsILoginInfo);
-  login1.init("https://example.com", "https://autocomplete", null,
-              "testuser@example.com", "testpass1", "", "");
-  Services.logins.addLogin(login1);
-});
-</script>
-
 <p id="display"></p>
-<div id="content">
+<div id="content"></div>
+<pre id="test">
+<script class="testbody" type="text/javascript">
+/*
+  Test for Login Manager: Skip over inappropriate autcomplete types when finding username field
+ */
 
+const win = window.open("about:blank");
+const loadPromise = loadFormIntoWindow(location.origin, `
   <form id="form0" action="https://autocomplete">
     <input  type="text" name="uname">
     <input  type="text" autocomplete="">
@@ -89,31 +83,27 @@ runInParent(function setup() {
     <input  type="text" autocomplete="cc-number" name="acfield">
     <input  type="password" name="pword">
     <button type="submit">Submit</button>
-  </form>
+  </form>`, win, 8);
 
-</div>
-<pre id="test">
-<script class="testbody" type="text/javascript">
-/*
-  Test for Login Manager: Skip over inappropriate autcomplete types when finding username field
- */
-
-add_task(async function setup() {
-  ok(readyPromise, "check promise is available");
-  await readyPromise;
+add_setup(async () => {
+  await setStoredLoginsAsync(
+    [window.location.origin, "https://autocomplete", null, "testuser@example.com", "testpass1", "", ""]
+  );
+  SimpleTest.registerCleanupFunction(() => win.close());
 });
 
 /* Tests for autofill of single-user forms with various autocomplete types */
 add_task(async function test_autofill_autocomplete_types() {
-  checkForm(0, null, "testuser@example.com", "testpass1");
-  checkForm(1, null, "testuser@example.com", "testpass1");
-  checkForm(2, null, "testuser@example.com", "testpass1");
-  checkForm(3, null, "testuser@example.com", "testpass1");
-  checkForm(4, null, "testuser@example.com", "testpass1");
-  checkForm(5, null, "testuser@example.com", "testpass1");
-  checkForm(6, null, "testuser@example.com", "testpass1");
-  checkForm(7, null, "testuser@example.com", "testpass1");
-  checkForm(101, "testuser@example.com", null, "testpass1");
+  await loadPromise;
+  await checkLoginFormInFrameWithElementValues(win, 0, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 1, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 2, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 3, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 4, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 5, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 6, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 7, null, "testuser@example.com", "testpass1");
+  await checkLoginFormInFrameWithElementValues(win, 101, "testuser@example.com", null, "testpass1");
 });
 
 </script>

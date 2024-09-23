@@ -6,12 +6,12 @@
     "message": "Amazon.nl Search"
   },
   "searchUrl": {
-    "message": "https://www.amazon.nl/exec/obidos/external-search/"
+    "message": "https://www.amazon.nl/s"
   },
   "searchForm": {
-    "message": "https://www.amazon.nl/exec/obidos/external-search/?field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "https://www.amazon.nl/"
   },
   "searchUrlGetParams": {
-    "message": "field-keywords={searchTerms}&ie={inputEncoding}&mode=blended"
+    "message": "k={searchTerms}"
   }
 }

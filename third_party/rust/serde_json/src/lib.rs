@@ -40,7 +40,7 @@
 //! Any valid JSON data can be manipulated in the following recursive enum
 //! representation. This data structure is [`serde_json::Value`][value].
 //!
-//! ```edition2018
+//! ```
 //! # use serde_json::{Number, Map};
 //! #
 //! # #[allow(dead_code)]
@@ -55,12 +55,11 @@
 //! ```
 //!
 //! A string of JSON data can be parsed into a `serde_json::Value` by the
-//! [`serde_json::from_str`][from_str] function. There is also
-//! [`from_slice`][from_slice] for parsing from a byte slice &[u8] and
-//! [`from_reader`][from_reader] for parsing from any `io::Read` like a File or
-//! a TCP stream.
+//! [`serde_json::from_str`][from_str] function. There is also [`from_slice`]
+//! for parsing from a byte slice `&[u8]` and [`from_reader`] for parsing from
+//! any `io::Read` like a File or a TCP stream.
 //!
-//! ```edition2018
+//! ```
 //! use serde_json::{Result, Value};
 //!
 //! fn untyped_example() -> Result<()> {
@@ -104,7 +103,7 @@
 //! a JSON string to a Rust string with [`as_str()`] or avoiding the use of
 //! `Value` as described in the following section.
 //!
-//! [`as_str()`]: https://docs.serde.rs/serde_json/enum.Value.html#method.as_str
+//! [`as_str()`]: crate::Value::as_str
 //!
 //! The `Value` representation is sufficient for very basic tasks but can be
 //! tedious to work with for anything more significant. Error handling is
@@ -118,7 +117,7 @@
 //! Serde provides a powerful way of mapping JSON data into Rust data structures
 //! largely automatically.
 //!
-//! ```edition2018
+//! ```
 //! use serde::{Deserialize, Serialize};
 //! use serde_json::Result;
 //!
@@ -180,7 +179,7 @@
 //! Serde JSON provides a [`json!` macro][macro] to build `serde_json::Value`
 //! objects with very natural JSON syntax.
 //!
-//! ```edition2018
+//! ```
 //! use serde_json::json;
 //!
 //! fn main() {
@@ -209,7 +208,7 @@
 //! will check at compile time that the value you are interpolating is able to
 //! be represented as JSON.
 //!
-//! ```edition2018
+//! ```
 //! # use serde_json::json;
 //! #
 //! # fn random_phone() -> u16 { 0 }
@@ -227,10 +226,10 @@
 //! });
 //! ```
 //!
-//! This is amazingly convenient but we have the problem we had before with
-//! `Value` which is that the IDE and Rust compiler cannot help us if we get it
-//! wrong. Serde JSON provides a better way of serializing strongly-typed data
-//! structures into JSON text.
+//! This is amazingly convenient, but we have the problem we had before with
+//! `Value`: the IDE and Rust compiler cannot help us if we get it wrong. Serde
+//! JSON provides a better way of serializing strongly-typed data structures
+//! into JSON text.
 //!
 //! # Creating JSON by serializing data structures
 //!
@@ -240,7 +239,7 @@
 //! [`serde_json::to_writer`][to_writer] which serializes to any `io::Write`
 //! such as a File or a TCP stream.
 //!
-//! ```edition2018
+//! ```
 //! use serde::{Deserialize, Serialize};
 //! use serde_json::Result;
 //!
@@ -278,79 +277,126 @@
 //!
 //! # No-std support
 //!
-//! This crate currently requires the Rust standard library. For JSON support in
-//! Serde without a standard library, please see the [`serde-json-core`] crate.
+//! As long as there is a memory allocator, it is possible to use serde_json
+//! without the rest of the Rust standard library. Disable the default "std"
+//! feature and enable the "alloc" feature:
 //!
-//! [value]: https://docs.serde.rs/serde_json/value/enum.Value.html
-//! [from_str]: https://docs.serde.rs/serde_json/de/fn.from_str.html
-//! [from_slice]: https://docs.serde.rs/serde_json/de/fn.from_slice.html
-//! [from_reader]: https://docs.serde.rs/serde_json/de/fn.from_reader.html
-//! [to_string]: https://docs.serde.rs/serde_json/ser/fn.to_string.html
-//! [to_vec]: https://docs.serde.rs/serde_json/ser/fn.to_vec.html
-//! [to_writer]: https://docs.serde.rs/serde_json/ser/fn.to_writer.html
-//! [macro]: https://docs.serde.rs/serde_json/macro.json.html
-//! [`serde-json-core`]: https://japaric.github.io/serde-json-core/serde_json_core/
+//! ```toml
+//! [dependencies]
+//! serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+//! ```
+//!
+//! For JSON support in Serde without a memory allocator, please see the
+//! [`serde-json-core`] crate.
+//!
+//! [value]: crate::value::Value
+//! [from_str]: crate::de::from_str
+//! [from_slice]: crate::de::from_slice
+//! [from_reader]: crate::de::from_reader
+//! [to_string]: crate::ser::to_string
+//! [to_vec]: crate::ser::to_vec
+//! [to_writer]: crate::ser::to_writer
+//! [macro]: crate::json
+//! [`serde-json-core`]: https://github.com/rust-embedded-community/serde-json-core
 
-#![doc(html_root_url = "https://docs.rs/serde_json/1.0.44")]
-#![allow(unknown_lints, bare_trait_objects, ellipsis_inclusive_range_patterns)]
-#![cfg_attr(feature = "cargo-clippy", allow(renamed_and_removed_lints))]
-#![cfg_attr(feature = "cargo-clippy", deny(clippy, clippy_pedantic))]
+#![doc(html_root_url = "https://docs.rs/serde_json/1.0.116")]
 // Ignored clippy lints
-#![cfg_attr(
-    feature = "cargo-clippy",
-    allow(deprecated_cfg_attr, doc_markdown, needless_doctest_main)
+#![allow(
+    clippy::collapsible_else_if,
+    clippy::comparison_chain,
+    clippy::deprecated_cfg_attr,
+    clippy::doc_markdown,
+    clippy::excessive_precision,
+    clippy::explicit_auto_deref,
+    clippy::float_cmp,
+    clippy::manual_range_contains,
+    clippy::match_like_matches_macro,
+    clippy::match_single_binding,
+    clippy::needless_doctest_main,
+    clippy::needless_late_init,
+    clippy::return_self_not_must_use,
+    clippy::transmute_ptr_to_ptr,
+    clippy::unconditional_recursion, // https://github.com/rust-lang/rust-clippy/issues/12133
+    clippy::unnecessary_wraps
 )]
 // Ignored clippy_pedantic lints
-#![cfg_attr(feature = "cargo-clippy", allow(
+#![allow(
     // Deserializer::from_str, into_iter
-    should_implement_trait,
+    clippy::should_implement_trait,
     // integer and float ser/de requires these sorts of casts
-    cast_possible_wrap,
-    cast_precision_loss,
-    cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     // correctly used
-    integer_division,
+    clippy::enum_glob_use,
+    clippy::if_not_else,
+    clippy::integer_division,
+    clippy::let_underscore_untyped,
+    clippy::map_err_ignore,
+    clippy::match_same_arms,
+    clippy::similar_names,
+    clippy::unused_self,
+    clippy::wildcard_imports,
     // things are often more readable this way
-    cast_lossless,
-    module_name_repetitions,
-    shadow_unrelated,
-    single_match_else,
-    too_many_lines,
-    use_self,
-    zero_prefixed_literal,
+    clippy::cast_lossless,
+    clippy::module_name_repetitions,
+    clippy::redundant_else,
+    clippy::shadow_unrelated,
+    clippy::single_match_else,
+    clippy::too_many_lines,
+    clippy::unreadable_literal,
+    clippy::unseparated_literal_suffix,
+    clippy::use_self,
+    clippy::zero_prefixed_literal,
     // we support older compilers
-    checked_conversions,
-    redundant_field_names,
+    clippy::checked_conversions,
+    clippy::mem_replace_with_default,
     // noisy
-    must_use_candidate,
-))]
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+)]
+// Restrictions
+#![deny(clippy::question_mark_used)]
+#![allow(non_upper_case_globals)]
 #![deny(missing_docs)]
+#![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[macro_use]
-extern crate serde;
-#[cfg(feature = "preserve_order")]
-extern crate indexmap;
-extern crate itoa;
-extern crate ryu;
+#[cfg(not(any(feature = "std", feature = "alloc")))]
+compile_error! {
+    "serde_json requires that either `std` (default) or `alloc` feature is enabled"
+}
 
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 #[doc(inline)]
-pub use self::de::{from_reader, from_slice, from_str, Deserializer, StreamDeserializer};
+pub use crate::de::from_reader;
 #[doc(inline)]
-pub use self::error::{Error, Result};
+pub use crate::de::{from_slice, from_str, Deserializer, StreamDeserializer};
 #[doc(inline)]
-pub use self::ser::{
-    to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty, Serializer,
-};
+pub use crate::error::{Error, Result};
 #[doc(inline)]
-pub use self::value::{from_value, to_value, Map, Number, Value};
+pub use crate::ser::{to_string, to_string_pretty, to_vec, to_vec_pretty};
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[doc(inline)]
+pub use crate::ser::{to_writer, to_writer_pretty, Serializer};
+#[doc(inline)]
+pub use crate::value::{from_value, to_value, Map, Number, Value};
 
 // We only use our own error type; no need for From conversions provided by the
 // standard library's try! macro. This reduces lines of LLVM IR by 4%.
-macro_rules! try {
-    ($e:expr) => {
+macro_rules! tri {
+    ($e:expr $(,)?) => {
         match $e {
-            ::std::result::Result::Ok(val) => val,
-            ::std::result::Result::Err(err) => return ::std::result::Result::Err(err),
+            core::result::Result::Ok(val) => val,
+            core::result::Result::Err(err) => return core::result::Result::Err(err),
         }
     };
 }
@@ -361,10 +407,18 @@ mod macros;
 pub mod de;
 pub mod error;
 pub mod map;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod ser;
+#[cfg(not(feature = "std"))]
+mod ser;
 pub mod value;
 
+mod io;
+#[cfg(feature = "std")]
 mod iter;
+#[cfg(feature = "float_roundtrip")]
+mod lexical;
 mod number;
 mod read;
 

@@ -8,10 +8,13 @@
 #ifndef SkMallocPixelRef_DEFINED
 #define SkMallocPixelRef_DEFINED
 
-#include "include/core/SkPixelRef.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkTypes.h"
+
+#include <cstddef>
+
 class SkData;
+class SkPixelRef;
 struct SkImageInfo;
 
 /** We explicitly use the same allocator for our pixels that SkMask does,
@@ -38,5 +41,5 @@ namespace SkMallocPixelRef {
      *  Returns NULL on failure.
      */
     SK_API sk_sp<SkPixelRef> MakeWithData(const SkImageInfo&, size_t rowBytes, sk_sp<SkData> data);
-}
+}  // namespace SkMallocPixelRef
 #endif

@@ -57,27 +57,29 @@ async function testSteps() {
     createUnknownFileIn(repoRelativePath);
   }
 
-  // Unknown file in the origin directory
+  // Unknown file and unknown directory in the origin directory
   {
-    const request = initStorageAndOrigin(principal, "default");
+    let request = init();
     await requestFinished(request);
 
-    ok(request.result === true, "The origin directory was created");
+    request = initTemporaryStorage();
+    await requestFinished(request);
+
+    request = initTemporaryOrigin("default", principal);
+    await requestFinished(request);
+
+    Assert.strictEqual(
+      request.result,
+      true,
+      "The origin directory was created"
+    );
 
     createUnknownFileIn(originRelativePath);
-  }
-
-  // Unknown directory in the origin directory
-  {
-    const request = initStorageAndOrigin(principal, "default");
-    await requestFinished(request);
-
-    ok(request.result === false, "The origin directory was not created");
-
     createUnknownDirectoryIn(originRelativePath);
   }
 
-  // Unknown file in idb client directory
+  // Unknown files in idb client directory and its subdirectories and unknown
+  // directory in .files directory
   {
     const request = indexedDB.openForPrincipal(principal, "myIndexedDB");
     await openDBRequestUpgradeNeeded(request);
@@ -96,12 +98,15 @@ async function testSteps() {
     createUnknownFileIn(
       `${originRelativePath}/idb/2320029346mByDIdnedxe.files`
     );
+    createUnknownDirectoryIn(
+      `${originRelativePath}/idb/2320029346mByDIdnedxe.files`
+    );
     createUnknownFileIn(
       `${originRelativePath}/idb/2320029346mByDIdnedxe.files/journals`
     );
   }
 
-  // Unknown file in cache client directory
+  // Unknown files in cache client directory and its subdirectories
   {
     async function sandboxScript() {
       const cache = await caches.open("myCache");
@@ -114,7 +119,7 @@ async function testSteps() {
       wantGlobalProperties: ["caches", "fetch"],
     });
 
-    const promise = new Promise(function(resolve, reject) {
+    const promise = new Promise(function (resolve, reject) {
       sandbox.resolve = resolve;
       sandbox.reject = reject;
     });
@@ -132,7 +137,7 @@ async function testSteps() {
     );
   }
 
-  // Unknown file in sdb client directory
+  // Unknown file and unknown directory in sdb client directory
   {
     const database = getSimpleDatabase(principal);
 
@@ -146,9 +151,10 @@ async function testSteps() {
     await requestFinished(request);
 
     createUnknownFileIn(`${originRelativePath}/sdb`);
+    createUnknownDirectoryIn(`${originRelativePath}/sdb`);
   }
 
-  // Unknown file in ls client directory
+  // Unknown file and unknown directory in ls client directory
   {
     Services.prefs.setBoolPref("dom.storage.testing", true);
     Services.prefs.setBoolPref("dom.storage.client_validation", false);
@@ -165,5 +171,6 @@ async function testSteps() {
     storage.close();
 
     createUnknownFileIn(`${originRelativePath}/ls`);
+    createUnknownDirectoryIn(`${originRelativePath}/ls`);
   }
 }

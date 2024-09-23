@@ -6,34 +6,20 @@
 
 #include "nsColorPicker.h"
 
+#include <algorithm>
 #include <shlwapi.h>
 
+#include "mozilla/ArrayUtils.h"
 #include "mozilla/AutoRestore.h"
 #include "nsIWidget.h"
 #include "nsString.h"
 #include "WidgetUtils.h"
+#include "WinUtils.h"
 #include "nsPIDOMWindow.h"
 
 using namespace mozilla::widget;
 
 namespace {
-// Manages NS_NATIVE_TMP_WINDOW child windows. NS_NATIVE_TMP_WINDOWs are
-// temporary child windows of mParentWidget created to address RTL issues
-// in picker dialogs. We are responsible for destroying these.
-class AutoDestroyTmpWindow {
- public:
-  explicit AutoDestroyTmpWindow(HWND aTmpWnd) : mWnd(aTmpWnd) {}
-
-  ~AutoDestroyTmpWindow() {
-    if (mWnd) DestroyWindow(mWnd);
-  }
-
-  inline HWND get() const { return mWnd; }
-
- private:
-  HWND mWnd;
-};
-
 static DWORD ColorStringToRGB(const nsAString& aColor) {
   DWORD result = 0;
 
@@ -86,20 +72,29 @@ static void BGRIntToRGBString(DWORD color, nsAString& aResult) {
 static AsyncColorChooser* gColorChooser;
 
 AsyncColorChooser::AsyncColorChooser(COLORREF aInitialColor,
+                                     const nsTArray<nsString>& aDefaultColors,
                                      nsIWidget* aParentWidget,
                                      nsIColorPickerShownCallback* aCallback)
     : mozilla::Runnable("AsyncColorChooser"),
       mInitialColor(aInitialColor),
+      mDefaultColors(aDefaultColors.Clone()),
       mColor(aInitialColor),
       mParentWidget(aParentWidget),
       mCallback(aCallback) {}
 
 NS_IMETHODIMP
 AsyncColorChooser::Run() {
-  static COLORREF sCustomColors[16] = {0};
-
   MOZ_ASSERT(NS_IsMainThread(),
              "Color pickers can only be opened from main thread currently");
+
+  // Static to preserve the custom colors between different ChooseColor calls.
+  static COLORREF sCustomColors[16];
+  static bool sInitialized = false;
+  if (!sInitialized) {
+    // Initialize to white instead of black.
+    std::fill(std::begin(sCustomColors), std::end(sCustomColors), 0x00FFFFFF);
+    sInitialized = true;
+  }
 
   // Allow only one color picker to be opened at a time, to workaround bug
   // 944737
@@ -107,13 +102,18 @@ AsyncColorChooser::Run() {
     mozilla::AutoRestore<AsyncColorChooser*> restoreColorChooser(gColorChooser);
     gColorChooser = this;
 
-    AutoDestroyTmpWindow adtw((HWND)(
-        mParentWidget.get() ? mParentWidget->GetNativeData(NS_NATIVE_TMP_WINDOW)
-                            : nullptr));
+    ScopedRtlShimWindow shim(mParentWidget.get());
+
+    // This will overwrite custom colors if default colors were defined.
+    for (size_t i = 0; i < std::min(mozilla::ArrayLength(sCustomColors),
+                                    mDefaultColors.Length());
+         i++) {
+      sCustomColors[i] = ColorStringToRGB(mDefaultColors[i]);
+    }
 
     CHOOSECOLOR options;
     options.lStructSize = sizeof(options);
-    options.hwndOwner = adtw.get();
+    options.hwndOwner = shim.get();
     options.Flags = CC_RGBINIT | CC_FULLOPEN | CC_ENABLEHOOK;
     options.rgbResult = mInitialColor;
     options.lpCustColors = sCustomColors;
@@ -154,6 +154,17 @@ void AsyncColorChooser::Update(COLORREF aColor) {
     return 0;
   }
 
+  if (aMsg == WM_INITDIALOG) {
+    // "The default dialog box procedure processes the WM_INITDIALOG message
+    // before passing it to the hook procedure.
+    // For all other messages, the hook procedure receives the message first."
+    // https://docs.microsoft.com/en-us/windows/win32/api/commdlg/nc-commdlg-lpcchookproc
+    // "The dialog box procedure should return TRUE to direct the system to
+    // set the keyboard focus to the control specified by wParam."
+    // https://docs.microsoft.com/en-us/windows/win32/dlgbox/wm-initdialog
+    return 1;
+  }
+
   if (aMsg == WM_CTLCOLORSTATIC) {
     // The color picker does not expose a proper way to retrieve the current
     // color, so we need to obtain it from the static control displaying the
@@ -164,6 +175,7 @@ void AsyncColorChooser::Update(COLORREF aColor) {
     }
   }
 
+  // Let the default dialog box procedure processes the message.
   return 0;
 }
 
@@ -178,19 +190,21 @@ NS_IMPL_ISUPPORTS(nsColorPicker, nsIColorPicker)
 
 NS_IMETHODIMP
 nsColorPicker::Init(mozIDOMWindowProxy* parent, const nsAString& title,
-                    const nsAString& aInitialColor) {
+                    const nsAString& aInitialColor,
+                    const nsTArray<nsString>& aDefaultColors) {
   MOZ_ASSERT(parent,
              "Null parent passed to colorpicker, no color picker for you!");
   mParentWidget =
       WidgetUtils::DOMWindowToWidget(nsPIDOMWindowOuter::From(parent));
   mInitialColor = ColorStringToRGB(aInitialColor);
+  mDefaultColors.Assign(aDefaultColors);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsColorPicker::Open(nsIColorPickerShownCallback* aCallback) {
   NS_ENSURE_ARG(aCallback);
-  nsCOMPtr<nsIRunnable> event =
-      new AsyncColorChooser(mInitialColor, mParentWidget, aCallback);
+  nsCOMPtr<nsIRunnable> event = new AsyncColorChooser(
+      mInitialColor, mDefaultColors, mParentWidget, aCallback);
   return NS_DispatchToMainThread(event);
 }

@@ -3,15 +3,11 @@
 
 "use strict";
 
-const { PlacesUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesUtils.jsm"
-);
-
 const FAVICON_DATA =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3gwMDAsTBZbkNwAAAB1pVFh0Q29tbWVudAAAAAAAQ3JlYXRlZCB3aXRoIEdJTVBkLmUHAAABNElEQVQ4y8WSsU0DURBE3yyWIaAJaqAAN4DPSL6AlIACKIEOyJEgRsIgOOkiInJqgAKowNg7BHdn7MOksNl+zZ//dvbDf5cAiklp22BdVtXdeTEpDYDB9m1VzU6OJuVp2NdEQCaI96fH2YHG4+mDduKYNMYINTcjcGbXzQVDEAphG0k48zUsajIbnAiMIXThpW8EICE0RAK4dvoKg9NIcTiQ589otyHOZLnwqK5nLwBFUZ4igc3iM0d1ff8CMC6mZ6Ihiaqq3gi1aUAnArD00SW1fq5OLBg0ymYmSZsR2/t4e/rGyCLW0sbp3oq+yTYqVgytQWui2FS7XYF7GFprY921T4CNQt8zr47dNzCkIX7y/jBtH+v+RGMQrc828W8pApnZbmEVQp/Ae7BlOy2ttib81/UFc+WRWEbjckIAAAAASUVORK5CYII=";
 
-const { BookmarksPolicies } = ChromeUtils.import(
-  "resource:///modules/policies/BookmarksPolicies.jsm"
+const { BookmarksPolicies } = ChromeUtils.importESModule(
+  "resource:///modules/policies/BookmarksPolicies.sys.mjs"
 );
 
 let CURRENT_POLICY;
@@ -83,40 +79,31 @@ function findBookmarkInPolicy(bookmark) {
 async function promiseAllChangesMade({ itemsToAdd, itemsToRemove }) {
   return new Promise(resolve => {
     let listener = events => {
-      is(events.length, 1, "Should only have 1 event.");
-      switch (events[0].type) {
-        case "bookmark-added":
-          itemsToAdd--;
-          if (itemsToAdd == 0 && itemsToRemove == 0) {
-            PlacesUtils.bookmarks.removeObserver(bmObserver);
-            PlacesUtils.observers.removeListener(
-              ["bookmark-added", "bookmark-removed"],
-              listener
-            );
-            resolve();
-          }
-          break;
-        case "bookmark-removed":
-          itemsToRemove--;
-          if (itemsToAdd == 0 && itemsToRemove == 0) {
-            PlacesUtils.bookmarks.removeObserver(bmObserver);
-            PlacesUtils.observers.removeListener(
-              ["bookmark-added", "bookmark-removed"],
-              listener
-            );
-            resolve();
-          }
-          break;
+      for (const event of events) {
+        switch (event.type) {
+          case "bookmark-added":
+            itemsToAdd--;
+            if (itemsToAdd == 0 && itemsToRemove == 0) {
+              PlacesUtils.observers.removeListener(
+                ["bookmark-added", "bookmark-removed"],
+                listener
+              );
+              resolve();
+            }
+            break;
+          case "bookmark-removed":
+            itemsToRemove--;
+            if (itemsToAdd == 0 && itemsToRemove == 0) {
+              PlacesUtils.observers.removeListener(
+                ["bookmark-added", "bookmark-removed"],
+                listener
+              );
+              resolve();
+            }
+            break;
+        }
       }
     };
-    let bmObserver = {
-      onBeginUpdateBatch() {},
-      onEndUpdateBatch() {},
-      onItemChanged() {},
-      onItemVisited() {},
-      onItemMoved() {},
-    };
-    PlacesUtils.bookmarks.addObserver(bmObserver);
     PlacesUtils.observers.addListener(
       ["bookmark-added", "bookmark-removed"],
       listener

@@ -28,6 +28,8 @@
   display: flex;
   flex-direction: column;
   flex-grow: 1;
+  height: 100%;
+  overflow: auto;
 }
 
 .network-monitor .properties-view .searchbox-section {
@@ -94,11 +96,6 @@
   background: none;
   color: inherit;
   width: 100%;
-}
-
-.network-monitor .textbox-input:focus {
-  outline: 0;
-  box-shadow: var(--theme-focus-box-shadow-textbox);
 }
 
 /* Tree table in tab panels */
@@ -185,7 +182,7 @@
 /* If there is a source editor shows up in the last row of TreeView,
  * it should occupy the available vertical space.
  */
-.network-monitor .accordion .editor-row-container,
+.network-monitor .editor-row-container,
 .network-monitor .tree-container .treeTable tr:last-child td[colspan="2"] {
   display: block;
   height: 100%;
@@ -193,7 +190,7 @@
   overflow-x: auto;
 }
 
-.network-monitor .accordion .responseTextContainer {
+.network-monitor .responseTextContainer {
   overflow-x: auto;
   width: 100%;
   height: 100%;
@@ -235,36 +232,6 @@
 }
 
 /* Response tabpanel */
-/* Supports the single expand mode used for the accordion in the response panel */
-.network-monitor #response-panel .panel-container {
-  overflow-y: hidden;
-}
-.network-monitor #response-panel .accordion {
-  position: relative;
-  overflow: hidden;
-}
-
-.network-monitor #response-panel .accordion-item .accordion-content {
-  position: absolute;
-  top: calc(var(--theme-toolbar-height) + 1px);
-  bottom: 0;
-  left: 0;
-  right: 0;
-  overflow: hidden;
-}
-
-.network-monitor #response-panel .properties-view {
-  height: 100%;
-}
-
-.network-monitor #response-panel .accordion-item {
-  position: relative;
-  height: auto;
-}
-
-.network-monitor #response-panel .accordion-item.accordion-open {
-  height: 100%;
-}
 
 .network-monitor .response-image-box {
   display: flex;
@@ -281,6 +248,21 @@
   margin-bottom: 10px;
   max-width: 300px;
   max-height: 100px;
+}
+
+.network-monitor #response-panel .response-font-box {
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.network-monitor .response-font {
+  margin-bottom: 10px;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .network-monitor .tree-container .treeTable tr.response-preview-container {
@@ -311,6 +293,69 @@
 .network-monitor .contains-html-preview .editor-row-container {
   flex: 1;
   min-height: 0;
+}
+
+/* Request and response data */
+
+.network-monitor #response-panel .panel-container {
+  overflow-y: hidden;
+}
+
+.network-monitor .data-header {
+  background: var(--theme-toolbar-background);
+  border-bottom: 1px solid var(--theme-splitter-color);
+  color: var(--theme-toolbar-color);
+  font-size: inherit;
+  font-weight: normal;
+  line-height: 16px;
+  margin: 0;
+  padding: 2px 4px;
+  width: 100%;
+  align-items: center;
+  display: flex;
+  user-select: none;
+}
+
+.network-monitor .data-label {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: inherit;
+  line-height: 20px;
+  color: var(--theme-toolbar-color);
+}
+
+.network-monitor .raw-data-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 50%;
+  margin-inline-start: auto;
+  padding-inline-start: 4px;
+}
+
+.network-monitor .raw-data-toggle-label {
+  white-space: nowrap;
+  color: var(--theme-toolbar-color);
+}
+
+.network-monitor .raw-data-toggle-input > input {
+  display: inline-block;
+  width: 2em;
+  vertical-align: bottom;
+  font-size: 12px;
+}
+
+.network-monitor #response-panel .notificationbox .notification[data-key="CORS-error"].notification[data-type="info"] {
+  background-color: var(--theme-body-alternate-emphasized-background);
+}
+
+.network-monitor #response-panel .notification[data-key="CORS-error"] .notificationInner .messageText {
+  white-space: normal;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 /* Timings tabpanel */
@@ -345,6 +390,13 @@
   display: flex;
   flex: 1;
   align-items: center;
+  padding-inline-end: 20px;
+  --total-timings-width-percentage: 90%;
+
+}
+
+.network-monitor .requests-list-timings-total {
+  width: calc(100% - var(--total-timings-width-percentage));
 }
 
 .network-monitor .requests-list-timings-offset {
@@ -355,6 +407,8 @@
   border: none;
   min-width: 1px;
   transition: width 0.2s ease-out;
+  margin-inline-start: calc(var(--current-timing-offset, 0) * var(--total-timings-width-percentage));
+  width: calc(var(--current-timing-width, 0) * var(--total-timings-width-percentage));
 }
 
 .network-monitor .label-separator {
@@ -395,6 +449,19 @@
 }
 
 
+.network-monitor .serviceworker-timings-color-launch {
+  background: var(--timing-server-color-1);
+}
+
+.network-monitor .serviceworker-timings-color-requestTo {
+  background: var(--timing-server-color-2);
+}
+
+.network-monitor .serviceworker-timings-color-handledBy {
+  background: var(--timing-server-color-3);
+}
+
+
 /* Stack trace panel */
 
 .network-monitor .stack-trace {
@@ -406,21 +473,14 @@
   direction: ltr;
 }
 
-.network-monitor .stack-trace .frame-link-source,
-.network-monitor .message-location .frame-link-source {
+.network-monitor .stack-trace .frame-link-source {
   /* Makes the file name truncated (and ellipsis shown) on the left side */
   direction: rtl;
+  unicode-bidi: embed;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: end;
-}
-
-.network-monitor .stack-trace .frame-link-source-inner,
-.network-monitor .message-location .frame-link-source-inner {
-  /* Enforce LTR direction for the file name - fixes bug 1290056 */
-  direction: ltr;
-  unicode-bidi: embed;
 }
 
 .network-monitor .stack-trace .frame-link-function-display-name {
@@ -448,7 +508,7 @@
   height: 12px;
   vertical-align: -1px;
   margin-inline-start: 5px;
-  background-image: url(chrome://devtools/skin/images/alert-small.svg);
+  background-image: url(resource://devtools-shared-images/alert-small.svg);
   background-size: cover;
   -moz-context-properties: fill;
   fill: var(--yellow-60);
@@ -456,12 +516,12 @@
 
 /* Custom request panel */
 
-.network-monitor .custom-request-panel {
+.network-monitor .custom-request-panel, .http-custom-request-panel {
   height: 100%;
   background-color: var(--theme-sidebar-background);
 }
 
-.theme-dark .network-monitor .custom-request-panel {
+.theme-dark .network-monitor .custom-request-panel, .http-custom-request-panel {
   color: var(--theme-selection-color);
 }
 
@@ -469,7 +529,7 @@
   font-weight: 600;
 }
 
-.network-monitor .custom-request-panel textarea {
+.network-monitor .custom-request-panel, .http-custom-request-panel textarea {
   resize: none;
   font: message-box;
   font-size: var(--theme-body-font-size);
@@ -478,11 +538,16 @@
 .network-monitor .custom-header,
 .network-monitor .custom-method-and-url,
 .network-monitor .custom-request,
-.network-monitor .custom-section {
+.network-monitor .custom-section,
+.network-monitor .http-custom-header,
+.network-monitor .http-custom-method-and-url,
+.network-monitor .http-custom-request,
+.network-monitor .http-custom-section {
   display: flex;
 }
 
-.network-monitor .custom-header {
+.network-monitor .custom-header,
+.network-monitor .http-custom-header {
   flex-grow: 1;
   font-size: 1.1em;
   padding-top: 4px;
@@ -493,13 +558,32 @@
   margin-top: 0.5em;
 }
 
+.network-monitor .http-custom-section {
+  flex-direction: column;
+}
+
 .network-monitor .custom-method-value {
   width: 4.5em;
 }
 
-.network-monitor .custom-url-value {
+.network-monitor .http-custom-method-value{
+  width: 6.0em;
+}
+
+.network-monitor .custom-url-value,
+.network-monitor .http-custom-url-value {
   flex-grow: 1;
   margin-inline-start: 6px;
+}
+
+.network-monitor #response-panel .notification[data-key="xssi-string-removed-info-box"] {
+  background-color: var(--theme-body-alternate-emphasized-background);
+}
+
+.network-monitor #response-panel .notification[data-key="xssi-string-removed-info-box"] .notificationInner .messageText {
+  white-space: normal;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 
 #timings-panel .learn-more-link {

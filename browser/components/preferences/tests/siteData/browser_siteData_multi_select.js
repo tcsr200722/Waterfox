@@ -1,7 +1,7 @@
 "use strict";
 
 // Test selecting and removing partial sites
-add_task(async function() {
+add_task(async function () {
   await SiteDataTestUtils.clear();
 
   let hosts = await addTestData([
@@ -35,7 +35,20 @@ add_task(async function() {
       origin: "https://shopping.xyz.com",
       persisted: false,
     },
+    {
+      usage: 1024 * 5,
+      origin: "https://example.com",
+      persisted: false,
+    },
+    {
+      usage: 1024 * 5,
+      origin: "https://example.net",
+      persisted: false,
+    },
   ]);
+
+  // Align the order of test hosts with the order of the site data table.
+  hosts.sort();
 
   let updatePromise = promiseSiteDataManagerSitesUpdated();
   await openPreferencesViaOpenPreferencesAPI("privacy", { leaveOpen: true });
@@ -83,12 +96,14 @@ add_task(async function() {
   });
 
   is(removeBtn.disabled, false, "Should enable the removeSelected button");
+  // Move the focus from the search box to the list
+  sitesList.focus();
   EventUtils.synthesizeKey("VK_DELETE");
   is(sitesList.selectedIndex, 0, "Should select next item");
   assertSitesListed(doc, hosts.slice(4));
 
   updatePromise = promiseSiteDataManagerSitesUpdated();
-  let saveBtn = frameDoc.getElementById("save");
+  let saveBtn = frameDoc.querySelector("dialog").getButton("accept");
   saveBtn.doCommand();
 
   await removeDialogOpenPromise;

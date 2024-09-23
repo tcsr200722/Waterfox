@@ -11,8 +11,13 @@
 
 #include "AccessibleWrap.h"
 #include "IUnknownImpl.h"
+#include "MsaaAccessible.h"
 
 using namespace mozilla::a11y;
+
+Accessible* ia2AccessibleAction::Acc() {
+  return static_cast<MsaaAccessible*>(this)->Acc();
+}
 
 // IUnknown
 
@@ -22,8 +27,7 @@ ia2AccessibleAction::QueryInterface(REFIID iid, void** ppv) {
 
   *ppv = nullptr;
 
-  if (IID_IAccessibleAction == iid &&
-      !static_cast<AccessibleWrap*>(this)->IsProxy()) {
+  if (IID_IAccessibleAction == iid) {
     *ppv = static_cast<IAccessibleAction*>(this);
     (reinterpret_cast<IUnknown*>(*ppv))->AddRef();
     return S_OK;
@@ -40,8 +44,8 @@ ia2AccessibleAction::nActions(long* aActionCount) {
 
   *aActionCount = 0;
 
-  AccessibleWrap* acc = static_cast<AccessibleWrap*>(this);
-  if (acc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* acc = Acc();
+  if (!acc) return CO_E_OBJNOTCONNECTED;
 
   *aActionCount = acc->ActionCount();
   return S_OK;
@@ -49,8 +53,8 @@ ia2AccessibleAction::nActions(long* aActionCount) {
 
 STDMETHODIMP
 ia2AccessibleAction::doAction(long aActionIndex) {
-  AccessibleWrap* acc = static_cast<AccessibleWrap*>(this);
-  if (acc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* acc = Acc();
+  if (!acc) return CO_E_OBJNOTCONNECTED;
 
   uint8_t index = static_cast<uint8_t>(aActionIndex);
   return acc->DoAction(index) ? S_OK : E_INVALIDARG;
@@ -61,8 +65,8 @@ ia2AccessibleAction::get_description(long aActionIndex, BSTR* aDescription) {
   if (!aDescription) return E_INVALIDARG;
   *aDescription = nullptr;
 
-  AccessibleWrap* acc = static_cast<AccessibleWrap*>(this);
-  if (acc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* acc = Acc();
+  if (!acc) return CO_E_OBJNOTCONNECTED;
 
   nsAutoString description;
   uint8_t index = static_cast<uint8_t>(aActionIndex);
@@ -84,14 +88,25 @@ ia2AccessibleAction::get_keyBinding(long aActionIndex, long aNumMaxBinding,
 
   if (aActionIndex != 0 || aNumMaxBinding < 1) return E_INVALIDARG;
 
-  AccessibleWrap* acc = static_cast<AccessibleWrap*>(this);
-  if (acc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* acc = Acc();
+  if (!acc) return CO_E_OBJNOTCONNECTED;
 
-  // Expose keyboard shortcut if it's not exposed via MSAA keyboard shortcut.
+  // Expose KeyboardShortcut if it's not exposed via MSAA accKeyboardShortcut.
+  LocalAccessible* localAcc = acc->AsLocal();
+  if (!localAcc) {
+    // RemoteAccessibles can't have a KeyboardShortcut.
+    return S_FALSE;
+  }
+
   KeyBinding keyBinding = acc->AccessKey();
-  if (keyBinding.IsEmpty()) return S_FALSE;
+  if (keyBinding.IsEmpty()) {
+    // In this case, KeyboardShortcut will be exposed via MSAA
+    // accKeyboardShortcut.
+    return S_FALSE;
+  }
 
-  keyBinding = acc->KeyboardShortcut();
+  // MSAA accKeyboardShortcut will expose AccessKey.
+  keyBinding = localAcc->KeyboardShortcut();
   if (keyBinding.IsEmpty()) return S_FALSE;
 
   nsAutoString keyStr;
@@ -116,8 +131,8 @@ ia2AccessibleAction::get_name(long aActionIndex, BSTR* aName) {
 
   *aName = nullptr;
 
-  AccessibleWrap* acc = static_cast<AccessibleWrap*>(this);
-  if (acc->IsDefunct()) return CO_E_OBJNOTCONNECTED;
+  Accessible* acc = Acc();
+  if (!acc) return CO_E_OBJNOTCONNECTED;
 
   nsAutoString name;
   uint8_t index = static_cast<uint8_t>(aActionIndex);

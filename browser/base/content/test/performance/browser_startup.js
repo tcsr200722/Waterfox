@@ -1,8 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-/* This test records at which phase of startup the JS components and modules
- * are first loaded.
+/* This test records at which phase of startup the JS modules are first
+ * loaded.
  * If you made changes that cause this test to fail, it's likely because you
  * are loading more JS code during startup.
  * Most code has no reason to run off of the app-startup notification
@@ -20,31 +20,32 @@
 const kDumpAllStacks = false;
 
 const startupPhases = {
-  // For app-startup, we have a whitelist of acceptable JS files.
+  // For app-startup, we have an allowlist of acceptable JS files.
   // Anything loaded during app-startup must have a compelling reason
   // to run before we have even selected the user profile.
   // Consider loading your code after first paint instead,
-  // eg. from BrowserGlue.jsm' _onFirstWindowLoaded method).
+  // eg. from BrowserGlue.sys.mjs' _onFirstWindowLoaded method).
   "before profile selection": {
-    whitelist: {
+    allowlist: {
       modules: new Set([
-        "resource:///modules/BrowserGlue.jsm",
-        "resource://gre/modules/AppConstants.jsm",
-        "resource://gre/modules/ActorManagerParent.jsm",
-        "resource://gre/modules/CustomElementsListener.jsm",
-        "resource://gre/modules/ExtensionUtils.jsm",
-        "resource://gre/modules/MainProcessSingleton.jsm",
-        "resource://gre/modules/XPCOMUtils.jsm",
-        "resource://gre/modules/Services.jsm",
+        "resource:///modules/BrowserGlue.sys.mjs",
+        "resource:///modules/StartupRecorder.sys.mjs",
+        "resource://gre/modules/AppConstants.sys.mjs",
+        "resource://gre/modules/ActorManagerParent.sys.mjs",
+        "resource://gre/modules/CustomElementsListener.sys.mjs",
+        "resource://gre/modules/MainProcessSingleton.sys.mjs",
+        "resource://gre/modules/XPCOMUtils.sys.mjs",
       ]),
     },
   },
 
-  // For the following phases of startup we have only a black list for now
+  // For the following phases of startup we have only a list of files that
+  // are **not** allowed to load in this phase, as too many other scripts
+  // load during this time.
 
   // We are at this phase after creating the first browser window (ie. after final-ui-startup).
   "before opening first browser window": {
-    blacklist: {
+    denylist: {
       modules: new Set([]),
     },
   },
@@ -53,21 +54,19 @@ const startupPhases = {
   // This means that anything already loaded at this point has been loaded
   // before first paint and delayed it.
   "before first paint": {
-    blacklist: {
-      components: new Set(["nsSearchService.js"]),
+    denylist: {
       modules: new Set([
-        "chrome://webcompat/content/data/ua_overrides.jsm",
-        "chrome://webcompat/content/lib/ua_overrider.jsm",
-        "resource:///modules/AboutNewTab.jsm",
-        "resource:///modules/BrowserUsageTelemetry.jsm",
-        "resource:///modules/ContentCrashHandlers.jsm",
-        "resource:///modules/ShellService.jsm",
-        "resource://gre/modules/NewTabUtils.jsm",
-        "resource://gre/modules/PageThumbs.jsm",
-        "resource://gre/modules/PlacesUtils.jsm",
-        "resource://gre/modules/Promise.jsm", // imported by devtools during _delayedStartup
-        "resource://gre/modules/Preferences.jsm",
-        "resource://gre/modules/Sqlite.jsm",
+        "resource:///modules/AboutNewTab.sys.mjs",
+        "resource:///modules/BrowserUsageTelemetry.sys.mjs",
+        "resource:///modules/ContentCrashHandlers.sys.mjs",
+        "resource:///modules/ShellService.sys.mjs",
+        "resource://gre/modules/NewTabUtils.sys.mjs",
+        "resource://gre/modules/PageThumbs.sys.mjs",
+        "resource://gre/modules/PlacesUtils.sys.mjs",
+        "resource://gre/modules/Preferences.sys.mjs",
+        "resource://gre/modules/SearchService.sys.mjs",
+        // Sqlite.sys.mjs commented out because of bug 1828735.
+        // "resource://gre/modules/Sqlite.sys.mjs"
       ]),
       services: new Set(["@mozilla.org/browser/search-service;1"]),
     },
@@ -77,43 +76,34 @@ const startupPhases = {
   // Anything loaded at this phase or before gets in the way of the user
   // interacting with the first browser window.
   "before handling user events": {
-    blacklist: {
-      components: new Set([
-        "PageIconProtocolHandler.js",
-        "PlacesCategoriesStarter.js",
-        "nsPlacesExpiration.js",
-      ]),
+    denylist: {
       modules: new Set([
-        "resource://gre/modules/Blocklist.jsm",
-        // Bug 1391495 - BrowserWindowTracker.jsm is intermittently used.
-        // "resource:///modules/BrowserWindowTracker.jsm",
-        "resource://gre/modules/BookmarkHTMLUtils.jsm",
-        "resource://gre/modules/Bookmarks.jsm",
-        "resource://gre/modules/ContextualIdentityService.jsm",
-        "resource://gre/modules/CrashSubmit.jsm",
-        "resource://gre/modules/FxAccounts.jsm",
-        "resource://gre/modules/FxAccountsStorage.jsm",
-        "resource://gre/modules/PlacesBackups.jsm",
-        "resource://gre/modules/PlacesSyncUtils.jsm",
-        "resource://gre/modules/PushComponents.jsm",
+        "resource://gre/modules/Blocklist.sys.mjs",
+        // Bug 1391495 - BrowserWindowTracker.sys.mjs is intermittently used.
+        // "resource:///modules/BrowserWindowTracker.sys.mjs",
+        "resource://gre/modules/BookmarkHTMLUtils.sys.mjs",
+        "resource://gre/modules/Bookmarks.sys.mjs",
+        "resource://gre/modules/ContextualIdentityService.sys.mjs",
+        "resource://gre/modules/FxAccounts.sys.mjs",
+        "resource://gre/modules/FxAccountsStorage.sys.mjs",
+        "resource://gre/modules/PlacesBackups.sys.mjs",
+        "resource://gre/modules/PlacesExpiration.sys.mjs",
+        "resource://gre/modules/PlacesSyncUtils.sys.mjs",
+        "resource://gre/modules/PushComponents.sys.mjs",
       ]),
-      services: new Set([
-        "@mozilla.org/browser/annotation-service;1",
-        "@mozilla.org/browser/nav-bookmarks-service;1",
-      ]),
+      services: new Set(["@mozilla.org/browser/nav-bookmarks-service;1"]),
     },
   },
 
   // Things that are expected to be completely out of the startup path
   // and loaded lazily when used for the first time by the user should
-  // be blacklisted here.
+  // be listed here.
   "before becoming idle": {
-    blacklist: {
-      components: new Set(["UnifiedComplete.js"]),
+    denylist: {
       modules: new Set([
-        "resource://gre/modules/AsyncPrefs.jsm",
-        "resource://gre/modules/LoginManagerContextMenu.jsm",
-        "resource://pdf.js/PdfStreamConverter.jsm",
+        "resource://gre/modules/AsyncPrefs.sys.mjs",
+        "resource://gre/modules/LoginManagerContextMenu.sys.mjs",
+        "resource://pdf.js/PdfStreamConverter.sys.mjs",
       ]),
     },
   },
@@ -126,35 +116,18 @@ if (
     "default-theme@mozilla.org"
   ) == "default-theme@mozilla.org"
 ) {
-  startupPhases["before profile selection"].whitelist.modules.add(
-    "resource://gre/modules/XULStore.jsm"
+  startupPhases["before profile selection"].allowlist.modules.add(
+    "resource://gre/modules/XULStore.sys.mjs"
   );
 }
 
-if (!gBrowser.selectedBrowser.isRemoteBrowser) {
-  // With e10s disabled, Places and BrowserWindowTracker.jsm (from a
-  // SessionSaver.jsm timer) intermittently get loaded earlier. Likely
-  // due to messages from the 'content' process arriving synchronously
-  // instead of crossing a process boundary.
-  info(
-    "merging the 'before handling user events' blacklist into the " +
-      "'before first paint' one when e10s is disabled."
+if (AppConstants.MOZ_CRASHREPORTER) {
+  startupPhases["before handling user events"].denylist.modules.add(
+    "resource://gre/modules/CrashSubmit.sys.mjs"
   );
-  let from = startupPhases["before handling user events"].blacklist;
-  let to = startupPhases["before first paint"].blacklist;
-  for (let scriptType in from) {
-    if (!(scriptType in to)) {
-      to[scriptType] = from[scriptType];
-    } else {
-      for (let item of from[scriptType]) {
-        to[scriptType].add(item);
-      }
-    }
-  }
-  startupPhases["before handling user events"].blacklist = null;
 }
 
-add_task(async function() {
+add_task(async function () {
   if (
     !AppConstants.NIGHTLY_BUILD &&
     !AppConstants.MOZ_DEV_EDITION &&
@@ -168,30 +141,14 @@ add_task(async function() {
     return;
   }
 
-  let startupRecorder = Cc["@mozilla.org/test/startuprecorder;1"].getService()
-    .wrappedJSObject;
+  let startupRecorder =
+    Cc["@mozilla.org/test/startuprecorder;1"].getService().wrappedJSObject;
   await startupRecorder.done;
 
-  let componentStacks = new Map();
   let data = Cu.cloneInto(startupRecorder.data.code, {});
-  // Keep only the file name for components, as the path is an absolute file
-  // URL rather than a resource:// URL like for modules.
-  for (let phase in data) {
-    data[phase].components = data[phase].components
-      .map(uri => {
-        let fileName = uri.replace(/.*\//, "");
-        componentStacks.set(fileName, Cu.getComponentLoadStack(uri));
-        return fileName;
-      })
-      .filter(c => c != "startupRecorder.js");
-  }
-
   function getStack(scriptType, name) {
     if (scriptType == "modules") {
       return Cu.getModuleImportStack(name);
-    }
-    if (scriptType == "components") {
-      return componentStacks.get(name);
     }
     return "";
   }
@@ -219,14 +176,14 @@ add_task(async function() {
 
   for (let phase in startupPhases) {
     let loadedList = data[phase];
-    let whitelist = startupPhases[phase].whitelist || null;
-    if (whitelist) {
-      for (let scriptType in whitelist) {
+    let allowlist = startupPhases[phase].allowlist || null;
+    if (allowlist) {
+      for (let scriptType in allowlist) {
         loadedList[scriptType] = loadedList[scriptType].filter(c => {
-          if (!whitelist[scriptType].has(c)) {
+          if (!allowlist[scriptType].has(c)) {
             return true;
           }
-          whitelist[scriptType].delete(c);
+          allowlist[scriptType].delete(c);
           return false;
         });
         is(
@@ -239,19 +196,19 @@ add_task(async function() {
           record(false, message, undefined, getStack(scriptType, script));
         }
         is(
-          whitelist[scriptType].size,
+          allowlist[scriptType].size,
           0,
-          `all ${scriptType} whitelist entries should have been used`
+          `all ${scriptType} allowlist entries should have been used`
         );
-        for (let script of whitelist[scriptType]) {
-          ok(false, `unused ${scriptType} whitelist entry: ${script}`);
+        for (let script of allowlist[scriptType]) {
+          ok(false, `unused ${scriptType} allowlist entry: ${script}`);
         }
       }
     }
-    let blacklist = startupPhases[phase].blacklist || null;
-    if (blacklist) {
-      for (let scriptType in blacklist) {
-        for (let file of blacklist[scriptType]) {
+    let denylist = startupPhases[phase].denylist || null;
+    if (denylist) {
+      for (let scriptType in denylist) {
+        for (let file of denylist[scriptType]) {
           let loaded = loadedList[scriptType].includes(file);
           let message = `${file} is not allowed ${phase}`;
           if (!loaded) {
@@ -259,6 +216,29 @@ add_task(async function() {
           } else {
             record(false, message, undefined, getStack(scriptType, file));
           }
+        }
+      }
+
+      if (denylist.modules) {
+        let results = await PerfTestHelpers.throttledMapPromises(
+          denylist.modules,
+          async uri => ({
+            uri,
+            exists: await PerfTestHelpers.checkURIExists(uri),
+          })
+        );
+
+        for (let { uri, exists } of results) {
+          ok(exists, `denylist entry ${uri} for phase "${phase}" must exist`);
+        }
+      }
+
+      if (denylist.services) {
+        for (let contract of denylist.services) {
+          ok(
+            contract in Cc,
+            `denylist entry ${contract} for phase "${phase}" must exist`
+          );
         }
       }
     }

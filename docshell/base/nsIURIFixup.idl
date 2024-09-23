@@ -8,6 +8,7 @@
 
 interface nsIURI;
 interface nsIInputStream;
+interface nsIDNSListener;
 webidl BrowsingContext;
 
 /**
@@ -49,6 +50,11 @@ interface nsIURIFixupInfo : nsISupports
   attribute AString keywordAsSent;
 
   /**
+   * Whether there was no protocol at all and we had to add one in the first place.
+   */
+  attribute boolean wasSchemelessInput;
+
+  /**
    * Whether we changed the protocol instead of using one from the input as-is.
    */
   attribute boolean fixupChangedProtocol;
@@ -65,6 +71,11 @@ interface nsIURIFixupInfo : nsISupports
    * The original input
    */
   attribute AUTF8String originalInput;
+
+  /**
+   * The POST data to submit with the returned URI (see nsISearchSubmission).
+   */
+  attribute nsIInputStream postData;
 };
 
 
@@ -103,35 +114,22 @@ interface nsIURIFixup : nsISupports
     const unsigned long FIXUP_FLAG_FIX_SCHEME_TYPOS = 8;
 
     /**
-     * Converts the specified string into a URI, first attempting
-     * to correct any errors in the syntax or other vagaries. Returns
-     * a wellformed URI or nullptr if it can't.
-     *
-     * @param aURIText    Candidate URI.
-     * @param aFixupFlags Flags that govern ways the URI may be fixed up.
-     * @param aPostData   The POST data to submit with the returned
-     *                    URI (see nsISearchSubmission).
-     */
-    nsIURI createFixupURI(in AUTF8String aURIText, in unsigned long aFixupFlags,
-                          [optional] out nsIInputStream aPostData);
-
-    /**
-     * Same as createFixupURI, but returns information about what it corrected
+     * Tries to converts the specified string into a URI, first attempting
+     * to correct any errors in the syntax or other vagaries.
+     * It returns information about what it corrected
      * (e.g. whether we could rescue the URI or "just" generated a keyword
      * search URI instead).
      *
      * @param aURIText    Candidate URI.
      * @param aFixupFlags Flags that govern ways the URI may be fixed up.
-     * @param aPostData   The POST data to submit with the returned
-     *                    URI (see nsISearchSubmission).
+     *                    Defaults to FIXUP_FLAG_NONE.
      */
     nsIURIFixupInfo getFixupURIInfo(in AUTF8String aURIText,
-                                    in unsigned long aFixupFlags,
-                                    [optional] out nsIInputStream aPostData);
+                                    [optional] in unsigned long aFixupFlags);
 
     /**
      * Convert load flags from nsIWebNavigation to URI fixup flags for use in
-     * createFixupURI or getFixupURIInfo.
+     * getFixupURIInfo.
      *
      * @param aURIText       Candidate URI; used for determining whether to
      *                       allow keyword lookups.
@@ -147,24 +145,60 @@ interface nsIURIFixup : nsISupports
      *
      * @param aKeyword  The keyword string to convert into a URI
      * @param aIsPrivateContext Whether this is invoked from a private context.
-     * @param aPostData The POST data to submit to the returned URI
-     *                  (see nsISearchSubmission).
-     *
-     * @throws NS_ERROR_FAILURE if the resulting URI requires submission of POST
-     *         data and aPostData is null.
      */
     nsIURIFixupInfo keywordToURI(in AUTF8String aKeyword,
-                                 [optional] in boolean aIsPrivateContext,
-                                 [optional] out nsIInputStream aPostData);
+                                 [optional] in boolean aIsPrivateContext);
 
     /**
-     * Returns true if the specified domain is whitelisted and false otherwise.
-     * A whitelisted domain is relevant when we have a single word and can't be
+     * Given a uri-like string with a protocol, attempt to fix and convert it
+     * into an instance of nsIURIFixupInfo.
+     *
+     * Differently from getFixupURIInfo, this assumes the input string is an
+     * http/https uri, and can add a prefix and/or suffix to its hostname.
+     *
+     * The scheme will be changed to the scheme defined in
+     * "browser.fixup.alternate.protocol", which is by default, https.
+     *
+     * If the prefix and suffix of the host are missing, it will add them to
+     * the host using the preferences "browser.fixup.alternate.prefix" and
+     * "browser.fixup.alternate.suffix" as references.
+     *
+     * If a hostname suffix is present, but the URI doesn't contain a prefix,
+     * it will add the prefix via "browser.fixup.alternate.prefix"
+     *
+     * @param aUriString The URI to fixup and convert.
+     * @returns nsIURIFixupInfo
+     *                   A nsIURIFixupInfo object with the property fixedURI
+     *                   which contains the modified URI.
+     * @throws NS_ERROR_FAILURE
+     *                   If aUriString is undefined, or the scheme is not
+     *                   http/https.
+     */
+    nsIURIFixupInfo forceHttpFixup(in AUTF8String aUriString);
+
+    /**
+     * With the host associated with the URI, use nsIDNSService to determine
+     * if an IP address can be found for this host. This method will ignore checking
+     * hosts that are IP addresses. If the host does not contain any periods, depending
+     * on the browser.urlbar.dnsResolveFullyQualifiedNames preference value, a period
+     * may be appended in order to make it a fully qualified domain name.
+     *
+     * @param aURI The URI to parse and pass into the DNS lookup.
+     * @param aListener The listener when the result from the lookup is available.
+     * @param aOriginAttributes The originAttributes to pass the DNS lookup.
+     * @throws NS_ERROR_FAILURE if aURI does not have a displayHost or asciiHost.
+     */
+    void checkHost(in nsIURI aURI,
+                    in nsIDNSListener aListener,
+                    [optional] in jsval aOriginAttributes);
+
+    /**
+     * Returns true if the specified domain is known and false otherwise.
+     * A known domain is relevant when we have a single word and can't be
      * sure whether to treat the word as a host name or should instead be
      * treated as a search term.
      *
      * @param aDomain A domain name to query.
      */
-    bool isDomainWhitelisted(in AUTF8String aDomain);
+    boolean isDomainKnown(in AUTF8String aDomain);
 };
-

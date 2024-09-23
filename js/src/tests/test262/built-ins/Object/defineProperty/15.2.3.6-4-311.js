@@ -25,19 +25,19 @@ includes: [propertyHelper.js]
     Object.defineProperty(arguments, "0", {
       enumerable: false
     });
-    $ERROR("Expected an exception.");
+    throw new Test262Error("Expected an exception.");
   } catch (e) {
     verifyEqualTo(arguments, "0", getFunc());
 
-    verifyEnumerable(arguments, "0");
-
-    verifyNotConfigurable(arguments, "0");
-
     if (!(e instanceof TypeError)) {
-      $ERROR("Expected TypeError, got " + e);
+      throw new Test262Error("Expected TypeError, got " + e);
     }
-
   }
+
+  verifyProperty(arguments, "0", {
+    enumerable: true,
+    configurable: false,
+  });
 }());
 
 reportCompare(0, 0);

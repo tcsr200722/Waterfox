@@ -27,7 +27,7 @@ var tests = [
       checkPopup(popup, this.notifyObj);
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         !this.notifyObj.dismissalCallbackTriggered,
         "dismissal callback wasn't triggered"
@@ -70,7 +70,7 @@ var tests = [
 
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       this.notification1.remove();
       ok(
         this.notifyObj1.removedCallbackTriggered,
@@ -97,6 +97,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
 
@@ -126,7 +127,7 @@ var tests = [
 
       dismissNotification(popup);
     },
-    onHidden(popup) {
+    onHidden() {
       this.notificationNew.remove();
       gBrowser.removeTab(gBrowser.selectedTab);
 
@@ -137,9 +138,11 @@ var tests = [
   // test security delay - too early
   {
     id: "Test#4",
-    run() {
+    async run() {
       // Set the security delay to 100s
-      PopupNotifications.buttonDelay = 100000;
+      await SpecialPowers.pushPrefEnv({
+        set: [["security.notification_enable_delay", 100000]],
+      });
 
       this.notifyObj = new BasicNotification(this.id);
       showNotification(this.notifyObj);
@@ -153,7 +156,7 @@ var tests = [
         dismissNotification(popup);
       });
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         !this.notifyObj.mainActionClicked,
         "mainAction was not clicked because it was too soon"
@@ -167,9 +170,12 @@ var tests = [
   // test security delay - after delay
   {
     id: "Test#5",
-    run() {
+    async run() {
       // Set the security delay to 10ms
-      PopupNotifications.buttonDelay = 10;
+
+      await SpecialPowers.pushPrefEnv({
+        set: [["security.notification_enable_delay", 10]],
+      });
 
       this.notifyObj = new BasicNotification(this.id);
       showNotification(this.notifyObj);
@@ -182,7 +188,7 @@ var tests = [
         triggerMainCommand(popup);
       }, 500);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.notifyObj.mainActionClicked,
         "mainAction was clicked after the delay"
@@ -191,23 +197,23 @@ var tests = [
         !this.notifyObj.dismissalCallbackTriggered,
         "dismissal callback was not triggered"
       );
-      PopupNotifications.buttonDelay = PREF_SECURITY_DELAY_INITIAL;
     },
   },
   // reload removes notification
   {
     id: "Test#6",
     async run() {
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
       let notifyObj = new BasicNotification(this.id);
-      notifyObj.options.eventCallback = function(eventName) {
+      notifyObj.options.eventCallback = function (eventName) {
         if (eventName == "removed") {
           ok(true, "Notification removed in background tab after reloading");
           goNext();
         }
       };
       showNotification(notifyObj);
-      executeSoon(function() {
+      executeSoon(function () {
         gBrowser.selectedBrowser.reload();
       });
     },
@@ -219,6 +225,7 @@ var tests = [
       let oldSelectedTab = gBrowser.selectedTab;
       let newTab = await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       gBrowser.selectedTab = oldSelectedTab;
@@ -226,17 +233,17 @@ var tests = [
 
       let notifyObj = new BasicNotification(this.id);
       notifyObj.browser = browser;
-      notifyObj.options.eventCallback = function(eventName) {
+      notifyObj.options.eventCallback = function (eventName) {
         if (eventName == "removed") {
           ok(true, "Notification removed in background tab after reloading");
-          executeSoon(function() {
+          executeSoon(function () {
             gBrowser.removeTab(newTab);
             goNext();
           });
         }
       };
       showNotification(notifyObj);
-      executeSoon(function() {
+      executeSoon(function () {
         browser.reload();
       });
     },
@@ -245,10 +252,12 @@ var tests = [
   {
     id: "Test#8",
     async run() {
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
       let originalTab = gBrowser.selectedTab;
       let bgTab = await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       let anchor = document.createXULElement("box");
@@ -289,7 +298,7 @@ var tests = [
         "data:text/html;charset=utf8,<iframe%20id='iframe'%20src='http://example.com/'>"
       );
       this.notifyObj = new BasicNotification(this.id);
-      this.notifyObj.options.eventCallback = function(eventName) {
+      this.notifyObj.options.eventCallback = function (eventName) {
         if (eventName == "removed") {
           ok(
             false,
@@ -299,34 +308,35 @@ var tests = [
       };
       showNotification(this.notifyObj);
     },
-    onShown(popup) {
-      let self = this;
-      let progressListener = {
-        onLocationChange: function onLocationChange() {
-          gBrowser.removeProgressListener(progressListener);
+    async onShown() {
+      info("Adding observer and performing navigation");
 
-          executeSoon(() => {
-            let notification = PopupNotifications.getNotification(
-              self.notifyObj.id,
-              self.notifyObj.browser
-            );
-            ok(
-              notification != null,
-              "Notification remained when subframe navigated"
-            );
-            self.notifyObj.options.eventCallback = undefined;
+      await Promise.all([
+        BrowserUtils.promiseObserved("window-global-created", wgp =>
+          // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+          wgp.documentURI.spec.startsWith("http://example.org/")
+        ),
+        SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
+          content.document
+            .getElementById("iframe")
+            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            .setAttribute("src", "http://example.org/");
+        }),
+      ]);
 
-            notification.remove();
-          });
-        },
-      };
+      executeSoon(() => {
+        let notification = PopupNotifications.getNotification(
+          this.notifyObj.id,
+          this.notifyObj.browser
+        );
+        Assert.notEqual(
+          notification,
+          null,
+          "Notification remained when subframe navigated"
+        );
+        this.notifyObj.options.eventCallback = undefined;
 
-      info("Adding progress listener and performing navigation");
-      gBrowser.addProgressListener(progressListener);
-      SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
-        content.document
-          .getElementById("iframe")
-          .setAttribute("src", "http://example.org/");
+        notification.remove();
       });
     },
     onHidden() {},
@@ -338,7 +348,7 @@ var tests = [
       this.testNotif1 = new BasicNotification(this.id);
       this.testNotif1.message += " 1";
       this.notification1 = showNotification(this.testNotif1);
-      this.testNotif1.options.eventCallback = function(eventName) {
+      this.testNotif1.options.eventCallback = function (eventName) {
         info("notifyObj1.options.eventCallback: " + eventName);
         if (eventName == "dismissed") {
           throw new Error("Oops 1!");
@@ -348,7 +358,7 @@ var tests = [
       this.testNotif2 = new BasicNotification(this.id);
       this.testNotif2.message += " 2";
       this.testNotif2.id += "-2";
-      this.testNotif2.options.eventCallback = function(eventName) {
+      this.testNotif2.options.eventCallback = function (eventName) {
         info("notifyObj2.options.eventCallback: " + eventName);
         if (eventName == "dismissed") {
           throw new Error("Oops 2!");

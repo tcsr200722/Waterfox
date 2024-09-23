@@ -14,13 +14,14 @@ using mozilla::ipc::IPCResult;
 
 class RemoteAudioDecoderChild final : public RemoteDecoderChild {
  public:
-  explicit RemoteAudioDecoderChild();
+  explicit RemoteAudioDecoderChild(RemoteDecodeIn aLocation);
 
   MOZ_IS_CLASS_INIT
   MediaResult InitIPDL(const AudioInfo& aAudioInfo,
-                       const CreateDecoderParams::OptionSet& aOptions);
+                       const CreateDecoderParams::OptionSet& aOptions,
+                       const Maybe<uint64_t>& aMediaEngineId);
 
-  MediaResult ProcessOutput(const DecodedOutputIPDL& aDecodedData) override;
+  MediaResult ProcessOutput(DecodedOutputIPDL&& aDecodedData) override;
 };
 
 class RemoteAudioDecoderParent final : public RemoteDecoderParent {
@@ -28,12 +29,13 @@ class RemoteAudioDecoderParent final : public RemoteDecoderParent {
   RemoteAudioDecoderParent(RemoteDecoderManagerParent* aParent,
                            const AudioInfo& aAudioInfo,
                            const CreateDecoderParams::OptionSet& aOptions,
-                           TaskQueue* aManagerTaskQueue,
-                           TaskQueue* aDecodeTaskQueue, bool* aSuccess,
-                           nsCString* aErrorDescription);
+                           nsISerialEventTarget* aManagerThread,
+                           TaskQueue* aDecodeTaskQueue,
+                           Maybe<uint64_t> aMediaEngineId);
 
  protected:
-  MediaResult ProcessDecodedData(const MediaDataDecoder::DecodedData& aData,
+  IPCResult RecvConstruct(ConstructResolver&& aResolver) override;
+  MediaResult ProcessDecodedData(MediaDataDecoder::DecodedData&& aData,
                                  DecodedOutputIPDL& aDecodedData) override;
 
  private:
@@ -43,6 +45,7 @@ class RemoteAudioDecoderParent final : public RemoteDecoderParent {
   // passed a deserialized AudioInfo from RecvPRemoteDecoderConstructor
   // which is destroyed when RecvPRemoteDecoderConstructor returns.
   const AudioInfo mAudioInfo;
+  const CreateDecoderParams::OptionSet mOptions;
 };
 
 }  // namespace mozilla

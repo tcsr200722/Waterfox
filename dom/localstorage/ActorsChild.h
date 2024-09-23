@@ -7,11 +7,19 @@
 #ifndef mozilla_dom_localstorage_ActorsChild_h
 #define mozilla_dom_localstorage_ActorsChild_h
 
+#include <cstdint>
+#include "mozilla/RefPtr.h"
 #include "mozilla/dom/PBackgroundLSDatabaseChild.h"
 #include "mozilla/dom/PBackgroundLSObserverChild.h"
+#include "mozilla/dom/PBackgroundLSRequest.h"
 #include "mozilla/dom/PBackgroundLSRequestChild.h"
+#include "mozilla/dom/PBackgroundLSSimpleRequest.h"
 #include "mozilla/dom/PBackgroundLSSimpleRequestChild.h"
 #include "mozilla/dom/PBackgroundLSSnapshotChild.h"
+#include "mozilla/ipc/ProtocolUtils.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nscore.h"
 
 namespace mozilla {
 
@@ -56,7 +64,7 @@ class LSDatabaseChild final : public PBackgroundLSDatabaseChild {
 
   LSDatabase* mDatabase;
 
-  NS_DECL_OWNINGTHREAD
+  NS_INLINE_DECL_REFCOUNTING(LSDatabaseChild, override)
 
  public:
   void AssertIsOnOwningThread() const {
@@ -67,7 +75,6 @@ class LSDatabaseChild final : public PBackgroundLSDatabaseChild {
   // Only created by LSObject.
   explicit LSDatabaseChild(LSDatabase* aDatabase);
 
-  // Only destroyed by mozilla::ipc::BackgroundChildImpl.
   ~LSDatabaseChild();
 
   void SendDeleteMeInternal();
@@ -78,9 +85,9 @@ class LSDatabaseChild final : public PBackgroundLSDatabaseChild {
   mozilla::ipc::IPCResult RecvRequestAllowToClose() override;
 
   PBackgroundLSSnapshotChild* AllocPBackgroundLSSnapshotChild(
-      const nsString& aDocumentURI, const nsString& aKey,
-      const bool& aIncreasePeakUsage, const int64_t& aRequestedSize,
-      const int64_t& aMinSize, LSSnapshotInitInfo* aInitInfo) override;
+      const nsAString& aDocumentURI, const nsAString& aKey,
+      const bool& aIncreasePeakUsage, const int64_t& aMinSize,
+      LSSnapshotInitInfo* aInitInfo) override;
 
   bool DeallocPBackgroundLSSnapshotChild(
       PBackgroundLSSnapshotChild* aActor) override;
@@ -122,8 +129,8 @@ class LSObserverChild final : public PBackgroundLSObserverChild {
 
   mozilla::ipc::IPCResult RecvObserve(const PrincipalInfo& aPrinciplaInfo,
                                       const uint32_t& aPrivateBrowsingId,
-                                      const nsString& aDocumentURI,
-                                      const nsString& aKey,
+                                      const nsAString& aDocumentURI,
+                                      const nsAString& aKey,
                                       const LSValue& aOldValue,
                                       const LSValue& aNewValue) override;
 };

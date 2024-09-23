@@ -10,7 +10,7 @@
 
 const TEST_URL = "about:mozilla";
 
-add_task(async function setup() {
+add_setup(async function () {
   await PlacesUtils.bookmarks.eraseEverything();
 
   let toolbar = document.getElementById("PersonalToolbar");
@@ -51,15 +51,16 @@ add_task(async function test_remove_bookmark_from_toolbar() {
   });
   await popupShownPromise;
 
-  let contextMenuDeleteItem = document.getElementById("placesContext_delete");
+  let contextMenuDeleteBookmark = document.getElementById(
+    "placesContext_deleteBookmark"
+  );
 
   let removePromise = PlacesTestUtils.waitForNotification(
     "bookmark-removed",
-    events => events.some(event => event.url == TEST_URL),
-    "places"
+    events => events.some(event => event.url == TEST_URL)
   );
 
-  EventUtils.synthesizeMouseAtCenter(contextMenuDeleteItem, {});
+  contextMenu.activateItem(contextMenuDeleteBookmark, {});
 
   await removePromise;
 
@@ -93,7 +94,7 @@ add_task(async function test_remove_bookmark_from_library() {
   // Open the Library and select the "UnfiledBookmarks".
   let library = await promiseLibrary("UnfiledBookmarks");
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await promiseLibraryClosed(library);
   });
 
@@ -106,8 +107,8 @@ add_task(async function test_remove_bookmark_from_library() {
   );
 
   let contextMenu = library.document.getElementById("placesContext");
-  let contextMenuDeleteItem = library.document.getElementById(
-    "placesContext_delete"
+  let contextMenuDeleteBookmark = library.document.getElementById(
+    "placesContext_deleteBookmark"
   );
 
   let popupShownPromise = BrowserTestUtils.waitForEvent(
@@ -140,10 +141,9 @@ add_task(async function test_remove_bookmark_from_library() {
 
   let removePromise = PlacesTestUtils.waitForNotification(
     "bookmark-removed",
-    events => events.some(event => event.url == uris[0]),
-    "places"
+    events => events.some(event => event.url == uris[0])
   );
-  EventUtils.synthesizeMouseAtCenter(contextMenuDeleteItem, {}, library);
+  contextMenu.activateItem(contextMenuDeleteBookmark, {});
 
   await removePromise;
 

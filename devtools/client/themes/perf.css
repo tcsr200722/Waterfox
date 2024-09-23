@@ -2,17 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-:root {
-  --highlight-color: var(--blue-55);
-  --slider-thumb-color: var(--grey-50);
-  --slider-track-color: var(--grey-30);
-}
-
-:root.theme-dark {
-  --slider-thumb-color: var(--grey-40);
-  --slider-track-color: var(--grey-60);
-}
-
 .perf {
   display: flex;
   flex-direction: column;
@@ -20,9 +9,11 @@
 }
 
 .perf-devtools {
+  box-sizing: border-box;
   width: 100%;
-  height: 100%;
   position: absolute;
+  margin-top: 10vh;
+  padding-inline: 5vh;
 }
 
 .perf-button-image {
@@ -37,10 +28,6 @@
   display: flex;
   flex-flow: column;
   align-items: center;
-}
-
-.perf-devtools .perf-button-container {
-  margin-top: 65px;
 }
 
 .perf-additional-message {
@@ -63,7 +50,7 @@
   padding: 0;
   background: none;
   border: none;
-  color: var(--blue-60);
+  color: var(--theme-link-color);
   text-decoration: underline;
   white-space: nowrap;
   cursor: pointer;
@@ -109,6 +96,11 @@
   color: #fff;
 }
 
+.perf-photon-button-primary:focus-visible {
+  /* Avoid the outline to conflict with the blue background */
+  outline-offset: 2px;
+}
+
 .perf-photon-button-primary:hover:not([disabled]) {
   background-color: var(--blue-70);
 }
@@ -125,16 +117,18 @@
   margin: 10px;
 }
 
-button.perf-photon-button:focus,
-.perf-presets-select:focus {
-  box-shadow: 0 0 0 1px var(--blue-50) inset, 0 0 0 1px var(--blue-50),
-    0 0 0 4px var(--blue-50-a30);
-  outline: 0;
+.perf-photon-button-ghost {
+  width: 32px;
+  height: 32px;
+  background-color: transparent;
 }
 
-a.perf-photon-button:focus {
-  box-shadow: 0 0 0 2px var(--blue-50), 0 0 0 6px var(--blue-50-a30);
-  outline: 0;
+.perf-photon-button-ghost:hover:enabled {
+  background-color: var(--theme-toolbarbutton-hover-background);
+}
+
+.perf-photon-button-ghost:hover:active:enabled {
+  background-color: var(--theme-toolbarbutton-active-background);
 }
 
 .perf-photon-button-micro {
@@ -143,7 +137,7 @@ a.perf-photon-button:focus {
 
 .perf-presets-hr {
   width: 100%;
-  border: 1px solid var(--grey-30);
+  border: 1px solid var(--theme-splitter-color);
   border-left: 0;
   border-right: 0;
   border-bottom: 0;
@@ -151,6 +145,8 @@ a.perf-photon-button:focus {
 
 .perf-presets {
   display: flex;
+  flex-direction: column;
+  row-gap: 10px;
   width: 100%;
   margin-block: 12px;
 }
@@ -172,31 +168,28 @@ a.perf-photon-button:focus {
   min-width: 186px;
   padding-block: 3px;
   padding-inline: 5px;
-  border: 1px solid transparent;
 
   /* Presentational: */
-  -moz-appearance: none;
-  background-color: var(--grey-20);
-  background-image: url('chrome://global/skin/icons/arrow-dropdown-12.svg');
+  appearance: none;
+  color: var(--theme-select-color);
+  background-color: var(--theme-select-background);
+  background-image: url('chrome://devtools/skin/images/arrow-dropdown-12.svg');
   background-position: right 4px center;
   background-repeat: no-repeat;
+
+  /* adapt the SVG color using the text color */
+  -moz-context-properties: fill;
+  fill: currentColor;
+
   border-radius: 2px;
   border: 1px solid transparent;
-  color: inherit !important;
   font-size: 12px;
   font-weight: 400;
   text-decoration: none;
 }
 
 .perf-presets-select:hover {
-  border: 1px solid var(--grey-30);
-}
-
-.perf-presets-select:focus {
-  box-shadow:
-    0 0 0 2px var(--blue-50),
-    0 0 0 6px var(--blue-50-a30);
-  outline: 0;
+  border: 1px solid var(--theme-select-hover-border-color);
 }
 
 .perf-presets-custom {
@@ -207,4 +200,55 @@ a.perf-photon-button:focus {
 
 .perf-presets-custom-bold {
   font-weight: bold;
+}
+
+/* OnboardingMessage component styles */
+
+/*
+ * The grid layout of the onboarding message is:
+ *
+ *  +-----------------------------+---+
+ *  |     onboarding message      | X |
+ *  +-----------------------------+---+
+ */
+.perf-onboarding {
+  background-color: var(--theme-body-alternate-emphasized-background);
+  border-bottom: 1px solid var(--theme-splitter-color);
+  display: grid;
+  font-size: 13px;
+  grid-template-columns: auto 36px;
+  /* Override the max-width set on ".perf > *" */
+  max-width: unset;
+  width: 100%;
+}
+
+.perf-onboarding + .perf-devtools {
+  margin-top: 15px;
+}
+
+.perf-onboarding-message {
+  background-image: url(chrome://devtools/skin/images/fox-smiling.svg);
+  background-position: 12px center;
+  background-repeat: no-repeat;
+  background-size: 22px;
+  justify-self: center;
+  margin: 12px 0;
+  padding-inline-start: 46px;
+}
+
+.perf-onboarding-message:dir(rtl) {
+  background-position-x: right 12px;
+}
+
+.perf-onboarding-message-row {
+  margin: 6px 0;
+}
+
+.perf-onboarding-close-button {
+  background-image: url("chrome://devtools/skin/images/close.svg");
+  background-repeat: no-repeat;
+  background-position: center;
+  -moz-context-properties: fill;
+  fill: currentColor;
+  margin-top: 4px;
 }

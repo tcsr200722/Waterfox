@@ -11,19 +11,21 @@
   <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"/>
   <script src="chrome://mochikit/content/tests/SimpleTest/NativeKeyCodes.js"/>
 
-  <tabbox id="tabbox" flex="100%">
+  <tabbox id="tabbox" style="-moz-box-flex: 100">
     <tabs>
       <tab label="Tab 1"/>
       <tab label="Tab 2"/>
     </tabs>
-    <tabpanels flex="100%">
-      <browser onload="configureFirstTab();" id="tab1browser" flex="100%"/>
-      <browser onload="configureSecondTab();" id="tab2browser" flex="100%"/>
+    <tabpanels style="-moz-box-flex: 100">
+      <browser onload="configureFirstTab();" id="tab1browser" style="-moz-box-flex: 100"/>
+      <browser onload="configureSecondTab();" id="tab2browser" style="-moz-box-flex: 100"/>
     </tabpanels>
   </tabbox>
 
   <script type="application/javascript"><![CDATA[
-    const {BrowserTestUtils} = ChromeUtils.import("resource://testing-common/BrowserTestUtils.jsm");
+    const {BrowserTestUtils} = ChromeUtils.importESModule(
+      "resource://testing-common/BrowserTestUtils.sys.mjs"
+    );
 
     SimpleTest.waitForExplicitFinish();
 
@@ -40,9 +42,7 @@
     }
 
     function setGlobals() {
-      var wm = Cc["@mozilla.org/appshell/window-mediator;1"].
-                  getService(Ci.nsIWindowMediator);
-      gChromeWindow = wm.getMostRecentWindow("navigator:browser");
+      let chromeWindow = Services.wm.getMostRecentWindow("navigator:browser");
       // For some reason, a global <key> element's oncommand handler only gets
       // invoked if the focus is outside both of the <browser> elements
       // (tab1browser and tab2browser).  So, to make sure we can see a
@@ -50,20 +50,20 @@
       // the focus is in this window, we need to add a "keypress" event
       // listener to gChromeWindow, and then check (in onKeyPress()) to see if
       // it's a cmd-opt-y event.
-      gChromeWindow.addEventListener("keypress", onKeyPress, false);
+      chromeWindow.addEventListener("keypress", onKeyPress);
     }
 
     // 1) Start loading first tab.
     // 6) Start reloading first tab.
     function loadFirstTab() {
       var browser = document.getElementById("tab1browser");
-      BrowserTestUtils.loadURI(browser, "data:text/html;charset=utf-8,<body><h2>First Tab</h2><p><input type='submit' value='Button' id='button1'/></body>");
+      BrowserTestUtils.startLoadingURIString(browser, "data:text/html;charset=utf-8,<body><h2>First Tab</h2><p><input type='submit' value='Button' id='button1'/></body>");
     }
 
     function configureFirstTab() {
       try {
         var button = document.getElementById("tab1browser").contentDocument.getElementById("button1");
-        button.addEventListener("click", onFirstTabButtonClicked, false);
+        button.addEventListener("click", onFirstTabButtonClicked);
         button.focus();
         if (document.getElementById("tabbox").selectedIndex == 0) {
           // 2) When first tab has finished loading (while first tab is
@@ -82,13 +82,13 @@
     // 8) Start loading second tab.
     function loadSecondTab() {
       var browser = document.getElementById("tab2browser");
-      BrowserTestUtils.loadURI(browser, "data:text/html;charset=utf-8,<body><h2>Second Tab</h2><p><input type='submit' value='Button' id='button1'/></body>");
+      BrowserTestUtils.startLoadingURIString(browser, "data:text/html;charset=utf-8,<body><h2>Second Tab</h2><p><input type='submit' value='Button' id='button1'/></body>");
     }
 
     function configureSecondTab() {
       try {
         var button = document.getElementById("tab2browser").contentDocument.getElementById("button1");
-        button.addEventListener("click", onSecondTabButtonClicked, false);
+        button.addEventListener("click", onSecondTabButtonClicked);
         button.focus();
         if (document.getElementById("tabbox").selectedIndex == 1) {
           // 9) When second tab has finished loading (while second tab is

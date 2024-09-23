@@ -7,12 +7,16 @@
 #ifndef frontend_ParseNodeVerify_h
 #define frontend_ParseNodeVerify_h
 
-#include "ds/LifoAlloc.h"                 // LifoAlloc
-#include "frontend/ParseNode.h"           // ParseNode
 #include "frontend/SyntaxParseHandler.h"  // SyntaxParseHandler::Node
 
 namespace js {
+
+class FrontendContext;
+class LifoAlloc;
+
 namespace frontend {
+
+class ParseNode;
 
 // In most builds, examine the given ParseNode and crash if it's not
 // well-formed. (In late beta and shipping builds of Firefox, this does
@@ -22,17 +26,19 @@ namespace frontend {
 // If the ParseNode is actually bad, we crash.
 
 #ifdef DEBUG
-extern MOZ_MUST_USE bool CheckParseTree(JSContext* cx, const LifoAlloc& alloc,
-                                        ParseNode* pn);
+[[nodiscard]] extern bool CheckParseTree(FrontendContext* fc,
+                                         const LifoAlloc& alloc, ParseNode* pn);
 #else
-inline MOZ_MUST_USE bool CheckParseTree(JSContext* cx, const LifoAlloc& alloc,
-                                        ParseNode* pn) {
+[[nodiscard]] inline bool CheckParseTree(FrontendContext* fc,
+                                         const LifoAlloc& alloc,
+                                         ParseNode* pn) {
   return true;
 }
 #endif
 
-inline MOZ_MUST_USE bool CheckParseTree(JSContext* cx, const LifoAlloc& alloc,
-                                        SyntaxParseHandler::Node pn) {
+[[nodiscard]] inline bool CheckParseTree(FrontendContext* fc,
+                                         const LifoAlloc& alloc,
+                                         SyntaxParseHandler::Node pn) {
   return true;
 }
 

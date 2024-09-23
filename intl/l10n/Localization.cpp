@@ -5,116 +5,214 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Localization.h"
-#include "nsImportModule.h"
-#include "nsContentUtils.h"
+#include "nsIObserverService.h"
+#include "xpcpublic.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/PromiseNativeHandler.h"
 
 #define INTL_APP_LOCALES_CHANGED "intl:app-locales-changed"
 #define L10N_PSEUDO_PREF "intl.l10n.pseudo"
-#define INTL_UI_DIRECTION_PREF "intl.uidirection"
 
-static const char* kObservedPrefs[] = {L10N_PSEUDO_PREF, INTL_UI_DIRECTION_PREF,
-                                       nullptr};
-
-using namespace mozilla::intl;
+using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::intl;
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(Localization)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(Localization)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mLocalization)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
-  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Localization)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mLocalization)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(Localization)
+static const char* kObservedPrefs[] = {L10N_PSEUDO_PREF, nullptr};
+
+static nsTArray<ffi::L10nKey> ConvertFromL10nKeys(
+    const Sequence<OwningUTF8StringOrL10nIdArgs>& aKeys) {
+  nsTArray<ffi::L10nKey> l10nKeys(aKeys.Length());
+
+  for (const auto& entry : aKeys) {
+    if (entry.IsUTF8String()) {
+      const auto& id = entry.GetAsUTF8String();
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &id;
+    } else {
+      const auto& e = entry.GetAsL10nIdArgs();
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &e.mId;
+      if (!e.mArgs.IsNull()) {
+        FluentBundle::ConvertArgs(e.mArgs.Value(), key->args);
+      }
+    }
+  }
+
+  return l10nKeys;
+}
+
+[[nodiscard]] static bool ConvertToAttributeNameValue(
+    const nsTArray<ffi::L10nAttribute>& aAttributes,
+    FallibleTArray<AttributeNameValue>& aValues) {
+  if (!aValues.SetCapacity(aAttributes.Length(), fallible)) {
+    return false;
+  }
+  for (const auto& attr : aAttributes) {
+    auto* cvtAttr = aValues.AppendElement(fallible);
+    MOZ_ASSERT(cvtAttr, "SetCapacity didn't set enough capacity somehow?");
+    cvtAttr->mName = attr.name;
+    cvtAttr->mValue = attr.value;
+  }
+  return true;
+}
+
+[[nodiscard]] static bool ConvertToL10nMessages(
+    const nsTArray<ffi::OptionalL10nMessage>& aMessages,
+    nsTArray<Nullable<L10nMessage>>& aOut) {
+  if (!aOut.SetCapacity(aMessages.Length(), fallible)) {
+    return false;
+  }
+
+  for (const auto& entry : aMessages) {
+    Nullable<L10nMessage>* msg = aOut.AppendElement(fallible);
+    MOZ_ASSERT(msg, "SetCapacity didn't set enough capacity somehow?");
+
+    if (!entry.is_present) {
+      continue;
+    }
+
+    L10nMessage& m = msg->SetValue();
+    if (!entry.message.value.IsVoid()) {
+      m.mValue = entry.message.value;
+    }
+    if (!entry.message.attributes.IsEmpty()) {
+      auto& value = m.mAttributes.SetValue();
+      if (!ConvertToAttributeNameValue(entry.message.attributes, value)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Localization)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Localization)
-
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Localization)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIObserver)
 NS_INTERFACE_MAP_END
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK(Localization, mGlobal)
 
-Localization::Localization(nsIGlobalObject* aGlobal)
-    : mGlobal(aGlobal), mIsSync(false) {
-  nsCOMPtr<mozILocalizationJSM> jsm =
-      do_ImportModule("resource://gre/modules/Localization.jsm");
-  MOZ_RELEASE_ASSERT(jsm);
-
-  Unused << jsm->GetLocalization(getter_AddRefs(mLocalization));
-  MOZ_RELEASE_ASSERT(mLocalization);
+/* static */
+already_AddRefed<Localization> Localization::Create(
+    const nsTArray<nsCString>& aResourceIds, bool aIsSync) {
+  return MakeAndAddRef<Localization>(aResourceIds, aIsSync);
 }
 
-void Localization::Activate(const bool aSync, const bool aEager,
-                            const BundleGenerator& aBundleGenerator) {
-  AutoJSContext cx;
-  JS::Rooted<JS::Value> generateBundlesJS(cx);
-  JS::Rooted<JS::Value> generateBundlesSyncJS(cx);
+/* static */
+already_AddRefed<Localization> Localization::Create(
+    const nsTArray<ffi::GeckoResourceId>& aResourceIds, bool aIsSync) {
+  return MakeAndAddRef<Localization>(aResourceIds, aIsSync);
+}
 
-  if (aBundleGenerator.mGenerateBundles.WasPassed()) {
-    GenerateBundles& generateBundles =
-        aBundleGenerator.mGenerateBundles.Value();
-    generateBundlesJS.set(JS::ObjectValue(*generateBundles.CallbackOrNull()));
-  }
-  if (aBundleGenerator.mGenerateBundlesSync.WasPassed()) {
-    GenerateBundlesSync& generateBundlesSync =
-        aBundleGenerator.mGenerateBundlesSync.Value();
-    generateBundlesSyncJS.set(
-        JS::ObjectValue(*generateBundlesSync.CallbackOrNull()));
-  }
-  mIsSync = aSync;
-
-  mLocalization->Activate(aSync, aEager, generateBundlesJS,
-                          generateBundlesSyncJS);
+Localization::Localization(const nsTArray<nsCString>& aResIds, bool aIsSync) {
+  auto ffiResourceIds{L10nRegistry::ResourceIdsToFFI(aResIds)};
+  ffi::localization_new(&ffiResourceIds, aIsSync, nullptr,
+                        getter_AddRefs(mRaw));
 
   RegisterObservers();
 }
 
+Localization::Localization(const nsTArray<ffi::GeckoResourceId>& aResIds,
+                           bool aIsSync) {
+  ffi::localization_new(&aResIds, aIsSync, nullptr, getter_AddRefs(mRaw));
+
+  RegisterObservers();
+}
+
+Localization::Localization(nsIGlobalObject* aGlobal,
+                           const nsTArray<nsCString>& aResIds, bool aIsSync)
+    : mGlobal(aGlobal) {
+  nsTArray<ffi::GeckoResourceId> resourceIds{
+      L10nRegistry::ResourceIdsToFFI(aResIds)};
+  ffi::localization_new(&resourceIds, aIsSync, nullptr, getter_AddRefs(mRaw));
+
+  RegisterObservers();
+}
+
+Localization::Localization(nsIGlobalObject* aGlobal, bool aIsSync)
+    : mGlobal(aGlobal) {
+  nsTArray<ffi::GeckoResourceId> resIds;
+  ffi::localization_new(&resIds, aIsSync, nullptr, getter_AddRefs(mRaw));
+
+  RegisterObservers();
+}
+
+Localization::Localization(nsIGlobalObject* aGlobal, bool aIsSync,
+                           const ffi::LocalizationRc* aRaw)
+    : mGlobal(aGlobal), mRaw(aRaw) {
+  RegisterObservers();
+}
+
+/* static */
+bool Localization::IsAPIEnabled(JSContext* aCx, JSObject* aObject) {
+  JS::Rooted<JSObject*> obj(aCx, aObject);
+  return Document::DocumentSupportsL10n(aCx, obj) ||
+         IsChromeOrUAWidget(aCx, obj);
+}
+
 already_AddRefed<Localization> Localization::Constructor(
-    const GlobalObject& aGlobal, const Sequence<nsString>& aResourceIds,
-    const bool aSync, const BundleGenerator& aBundleGenerator,
-    ErrorResult& aRv) {
-  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
-  if (!global) {
-    aRv.Throw(NS_ERROR_FAILURE);
+    const GlobalObject& aGlobal,
+    const Sequence<OwningUTF8StringOrResourceId>& aResourceIds, bool aIsSync,
+    const Optional<NonNull<L10nRegistry>>& aRegistry,
+    const Optional<Sequence<nsCString>>& aLocales, ErrorResult& aRv) {
+  auto ffiResourceIds{L10nRegistry::ResourceIdsToFFI(aResourceIds)};
+  Maybe<nsTArray<nsCString>> locales;
+
+  if (aLocales.WasPassed()) {
+    locales.emplace();
+    locales->SetCapacity(aLocales.Value().Length());
+    for (const auto& locale : aLocales.Value()) {
+      locales->AppendElement(locale);
+    }
+  }
+
+  RefPtr<const ffi::LocalizationRc> raw;
+
+  bool result = ffi::localization_new_with_locales(
+      &ffiResourceIds, aIsSync,
+      aRegistry.WasPassed() ? aRegistry.Value().Raw() : nullptr,
+      locales.ptrOr(nullptr), getter_AddRefs(raw));
+
+  if (!result) {
+    aRv.ThrowInvalidStateError(
+        "Failed to create the Localization. Check the locales arguments.");
     return nullptr;
   }
 
-  RefPtr<Localization> loc = new Localization(global);
+  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
 
-  if (aResourceIds.Length()) {
-    loc->AddResourceIds(aResourceIds);
-  }
-
-  loc->Activate(aSync, true, aBundleGenerator);
-
-  return loc.forget();
+  return do_AddRef(new Localization(global, aIsSync, raw));
 }
-
-nsIGlobalObject* Localization::GetParentObject() const { return mGlobal; }
 
 JSObject* Localization::WrapObject(JSContext* aCx,
                                    JS::Handle<JSObject*> aGivenProto) {
   return Localization_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-Localization::~Localization() {
-  nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-  if (obs) {
-    obs->RemoveObserver(this, INTL_APP_LOCALES_CHANGED);
+Localization::~Localization() = default;
+
+NS_IMETHODIMP
+Localization::Observe(nsISupports* aSubject, const char* aTopic,
+                      const char16_t* aData) {
+  if (!strcmp(aTopic, INTL_APP_LOCALES_CHANGED)) {
+    OnChange();
+  } else {
+    MOZ_ASSERT(!strcmp("nsPref:changed", aTopic));
+    nsDependentString pref(aData);
+    if (pref.EqualsLiteral(L10N_PSEUDO_PREF)) {
+      OnChange();
+    }
   }
 
-  Preferences::RemoveObservers(this, kObservedPrefs);
+  return NS_OK;
 }
-
-/* Protected */
 
 void Localization::RegisterObservers() {
   DebugOnly<nsresult> rv = Preferences::AddWeakObservers(this, kObservedPrefs);
@@ -126,220 +224,239 @@ void Localization::RegisterObservers() {
   }
 }
 
-NS_IMETHODIMP
-Localization::Observe(nsISupports* aSubject, const char* aTopic,
-                      const char16_t* aData) {
-  if (!strcmp(aTopic, INTL_APP_LOCALES_CHANGED)) {
-    OnChange();
-  } else {
-    MOZ_ASSERT(!strcmp("nsPref:changed", aTopic));
-    nsDependentString pref(aData);
-    if (pref.EqualsLiteral(L10N_PSEUDO_PREF) ||
-        pref.EqualsLiteral(INTL_UI_DIRECTION_PREF)) {
-      OnChange();
-    }
-  }
+void Localization::OnChange() { ffi::localization_on_change(mRaw.get()); }
 
-  return NS_OK;
+void Localization::AddResourceId(const ffi::GeckoResourceId& aResourceId) {
+  ffi::localization_add_res_id(mRaw.get(), &aResourceId);
+}
+void Localization::AddResourceId(const nsCString& aResourceId) {
+  auto ffiResourceId{L10nRegistry::ResourceIdToFFI(aResourceId)};
+  AddResourceId(ffiResourceId);
+}
+void Localization::AddResourceId(
+    const dom::OwningUTF8StringOrResourceId& aResourceId) {
+  auto ffiResourceId{L10nRegistry::ResourceIdToFFI(aResourceId)};
+  AddResourceId(ffiResourceId);
 }
 
-void Localization::OnChange() {
-  if (mLocalization) {
-    mLocalization->OnChange();
-  }
+uint32_t Localization::RemoveResourceId(
+    const ffi::GeckoResourceId& aResourceId) {
+  return ffi::localization_remove_res_id(mRaw.get(), &aResourceId);
+}
+uint32_t Localization::RemoveResourceId(const nsCString& aResourceId) {
+  auto ffiResourceId{L10nRegistry::ResourceIdToFFI(aResourceId)};
+  return RemoveResourceId(ffiResourceId);
+}
+uint32_t Localization::RemoveResourceId(
+    const dom::OwningUTF8StringOrResourceId& aResourceId) {
+  auto ffiResourceId{L10nRegistry::ResourceIdToFFI(aResourceId)};
+  return RemoveResourceId(ffiResourceId);
 }
 
-uint32_t Localization::AddResourceId(const nsAString& aResourceId) {
-  uint32_t ret = 0;
-  mLocalization->AddResourceId(aResourceId, &ret);
-  return ret;
-}
-
-uint32_t Localization::RemoveResourceId(const nsAString& aResourceId) {
-  // We need to guard against a scenario where the
-  // mLocalization has been unlinked, but the elements
-  // are only now removed from DOM.
-  if (!mLocalization) {
-    return 0;
-  }
-  uint32_t ret = 0;
-  mLocalization->RemoveResourceId(aResourceId, &ret);
-  return ret;
-}
-
-/**
- * Localization API
- */
-
-uint32_t Localization::AddResourceIds(const nsTArray<nsString>& aResourceIds) {
-  uint32_t ret = 0;
-  mLocalization->AddResourceIds(aResourceIds, &ret);
-  return ret;
+void Localization::AddResourceIds(
+    const nsTArray<dom::OwningUTF8StringOrResourceId>& aResourceIds) {
+  auto ffiResourceIds{L10nRegistry::ResourceIdsToFFI(aResourceIds)};
+  ffi::localization_add_res_ids(mRaw.get(), &ffiResourceIds);
 }
 
 uint32_t Localization::RemoveResourceIds(
-    const nsTArray<nsString>& aResourceIds) {
-  // We need to guard against a scenario where the
-  // mLocalization has been unlinked, but the elements
-  // are only now removed from DOM.
-  if (!mLocalization) {
-    return 0;
-  }
-  uint32_t ret = 0;
-  mLocalization->RemoveResourceIds(aResourceIds, &ret);
-  return ret;
+    const nsTArray<dom::OwningUTF8StringOrResourceId>& aResourceIds) {
+  auto ffiResourceIds{L10nRegistry::ResourceIdsToFFI(aResourceIds)};
+  return ffi::localization_remove_res_ids(mRaw.get(), &ffiResourceIds);
 }
 
 already_AddRefed<Promise> Localization::FormatValue(
-    JSContext* aCx, const nsACString& aId, const Optional<L10nArgs>& aArgs,
-    ErrorResult& aRv) {
-  JS::Rooted<JS::Value> args(aCx);
+    const nsACString& aId, const Optional<L10nArgs>& aArgs, ErrorResult& aRv) {
+  nsTArray<ffi::L10nArg> l10nArgs;
+  nsTArray<nsCString> errors;
 
   if (aArgs.WasPassed()) {
-    ConvertL10nArgsToJSValue(aCx, aArgs.Value(), &args, aRv);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return nullptr;
-    }
-  } else {
-    args = JS::UndefinedValue();
+    const L10nArgs& args = aArgs.Value();
+    FluentBundle::ConvertArgs(args, l10nArgs);
   }
+  RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
 
-  RefPtr<Promise> promise;
-  nsresult rv = mLocalization->FormatValue(aId, args, getter_AddRefs(promise));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    aRv.Throw(rv);
-    return nullptr;
-  }
+  ffi::localization_format_value(
+      mRaw.get(), &aId, &l10nArgs, promise,
+      [](const Promise* aPromise, const nsACString* aValue,
+         const nsTArray<nsCString>* aErrors) {
+        Promise* promise = const_cast<Promise*>(aPromise);
+
+        ErrorResult rv;
+        if (MaybeReportErrorsToGecko(*aErrors, rv,
+                                     promise->GetParentObject())) {
+          promise->MaybeReject(std::move(rv));
+        } else {
+          promise->MaybeResolve(aValue);
+        }
+      });
+
   return MaybeWrapPromise(promise);
 }
 
-void Localization::SetIsSync(const bool aIsSync) {
-  mIsSync = aIsSync;
-  mLocalization->SetIsSync(aIsSync);
-}
-
 already_AddRefed<Promise> Localization::FormatValues(
-    JSContext* aCx, const Sequence<L10nKey>& aKeys, ErrorResult& aRv) {
-  nsTArray<JS::Value> jsKeys;
-  SequenceRooter<JS::Value> rooter(aCx, &jsKeys);
-  for (auto& key : aKeys) {
-    JS::RootedValue jsKey(aCx);
-    if (!ToJSValue(aCx, key, &jsKey)) {
-      aRv.NoteJSContextException(aCx);
-      return nullptr;
-    }
-    jsKeys.AppendElement(jsKey);
-  }
+    const Sequence<OwningUTF8StringOrL10nIdArgs>& aKeys, ErrorResult& aRv) {
+  nsTArray<ffi::L10nKey> l10nKeys = ConvertFromL10nKeys(aKeys);
 
-  RefPtr<Promise> promise;
-  aRv = mLocalization->FormatValues(jsKeys, getter_AddRefs(promise));
-  if (NS_WARN_IF(aRv.Failed())) {
+  RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
+  if (aRv.Failed()) {
     return nullptr;
   }
+
+  ffi::localization_format_values(
+      mRaw.get(), &l10nKeys, promise,
+      // callback function which will be invoked by the rust code, passing the
+      // promise back in.
+      [](const Promise* aPromise, const nsTArray<nsCString>* aValues,
+         const nsTArray<nsCString>* aErrors) {
+        Promise* promise = const_cast<Promise*>(aPromise);
+
+        ErrorResult rv;
+        if (MaybeReportErrorsToGecko(*aErrors, rv,
+                                     promise->GetParentObject())) {
+          promise->MaybeReject(std::move(rv));
+        } else {
+          promise->MaybeResolve(*aValues);
+        }
+      });
 
   return MaybeWrapPromise(promise);
 }
 
 already_AddRefed<Promise> Localization::FormatMessages(
-    JSContext* aCx, const Sequence<L10nKey>& aKeys, ErrorResult& aRv) {
-  nsTArray<JS::Value> jsKeys;
-  SequenceRooter<JS::Value> rooter(aCx, &jsKeys);
-  for (auto& key : aKeys) {
-    JS::RootedValue jsKey(aCx);
-    if (!ToJSValue(aCx, key, &jsKey)) {
-      aRv.NoteJSContextException(aCx);
-      return nullptr;
-    }
-    jsKeys.AppendElement(jsKey);
-  }
+    const Sequence<OwningUTF8StringOrL10nIdArgs>& aKeys, ErrorResult& aRv) {
+  auto l10nKeys = ConvertFromL10nKeys(aKeys);
 
-  RefPtr<Promise> promise;
-  aRv = mLocalization->FormatMessages(jsKeys, getter_AddRefs(promise));
-  if (NS_WARN_IF(aRv.Failed())) {
+  RefPtr<Promise> promise = Promise::Create(mGlobal, aRv);
+  if (aRv.Failed()) {
     return nullptr;
   }
+
+  ffi::localization_format_messages(
+      mRaw.get(), &l10nKeys, promise,
+      // callback function which will be invoked by the rust code, passing the
+      // promise back in.
+      [](const Promise* aPromise,
+         const nsTArray<ffi::OptionalL10nMessage>* aRaw,
+         const nsTArray<nsCString>* aErrors) {
+        Promise* promise = const_cast<Promise*>(aPromise);
+
+        ErrorResult rv;
+        if (MaybeReportErrorsToGecko(*aErrors, rv,
+                                     promise->GetParentObject())) {
+          promise->MaybeReject(std::move(rv));
+        } else {
+          nsTArray<Nullable<L10nMessage>> messages;
+          if (!ConvertToL10nMessages(*aRaw, messages)) {
+            promise->MaybeReject(NS_ERROR_OUT_OF_MEMORY);
+          } else {
+            promise->MaybeResolve(std::move(messages));
+          }
+        }
+      });
 
   return MaybeWrapPromise(promise);
 }
 
-void Localization::FormatValueSync(JSContext* aCx, const nsACString& aId,
+void Localization::FormatValueSync(const nsACString& aId,
                                    const Optional<L10nArgs>& aArgs,
                                    nsACString& aRetVal, ErrorResult& aRv) {
-  JS::Rooted<JS::Value> args(aCx);
+  nsTArray<ffi::L10nArg> l10nArgs;
+  nsTArray<nsCString> errors;
 
   if (aArgs.WasPassed()) {
-    ConvertL10nArgsToJSValue(aCx, aArgs.Value(), &args, aRv);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return;
-    }
+    const L10nArgs& args = aArgs.Value();
+    FluentBundle::ConvertArgs(args, l10nArgs);
+  }
+
+  bool rv = ffi::localization_format_value_sync(mRaw.get(), &aId, &l10nArgs,
+                                                &aRetVal, &errors);
+
+  if (rv) {
+    MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
   } else {
-    args = JS::UndefinedValue();
+    aRv.ThrowInvalidStateError(
+        "Can't use formatValueSync when state is async.");
   }
-
-  aRv = mLocalization->FormatValueSync(aId, args, aRetVal);
 }
 
-void Localization::FormatValuesSync(JSContext* aCx,
-                                    const Sequence<L10nKey>& aKeys,
-                                    nsTArray<nsCString>& aRetVal,
-                                    ErrorResult& aRv) {
-  nsTArray<JS::Value> jsKeys;
-  SequenceRooter<JS::Value> rooter(aCx, &jsKeys);
-  for (auto& key : aKeys) {
-    JS::RootedValue jsKey(aCx);
-    if (!ToJSValue(aCx, key, &jsKey)) {
-      aRv.NoteJSContextException(aCx);
-      return;
-    }
-    jsKeys.AppendElement(jsKey);
-  }
+void Localization::FormatValuesSync(
+    const Sequence<OwningUTF8StringOrL10nIdArgs>& aKeys,
+    nsTArray<nsCString>& aRetVal, ErrorResult& aRv) {
+  nsTArray<ffi::L10nKey> l10nKeys(aKeys.Length());
+  nsTArray<nsCString> errors;
 
-  aRv = mLocalization->FormatValuesSync(jsKeys, aRetVal);
-}
-
-void Localization::FormatMessagesSync(JSContext* aCx,
-                                      const Sequence<L10nKey>& aKeys,
-                                      nsTArray<Nullable<L10nMessage>>& aRetVal,
-                                      ErrorResult& aRv) {
-  nsTArray<JS::Value> jsKeys;
-  SequenceRooter<JS::Value> rooter(aCx, &jsKeys);
-  for (auto& key : aKeys) {
-    JS::RootedValue jsKey(aCx);
-    if (!ToJSValue(aCx, key, &jsKey)) {
-      aRv.NoteJSContextException(aCx);
-      return;
-    }
-    jsKeys.AppendElement(jsKey);
-  }
-
-  nsTArray<JS::Value> messages;
-
-  SequenceRooter<JS::Value> messagesRooter(aCx, &messages);
-  aRv = mLocalization->FormatMessagesSync(jsKeys, messages);
-  if (NS_WARN_IF(aRv.Failed())) {
-    return;
-  }
-
-  JS::Rooted<JS::Value> rootedMsg(aCx);
-  for (auto& msg : messages) {
-    rootedMsg.set(msg);
-    Nullable<L10nMessage>* slotPtr = aRetVal.AppendElement(mozilla::fallible);
-    if (!slotPtr) {
-      aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return;
-    }
-
-    if (rootedMsg.isNull()) {
-      slotPtr->SetNull();
+  for (const auto& entry : aKeys) {
+    if (entry.IsUTF8String()) {
+      const auto& id = entry.GetAsUTF8String();
+      nsTArray<ffi::L10nArg> l10nArgs;
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &id;
     } else {
-      JS_WrapValue(aCx, &rootedMsg);
-      if (!slotPtr->SetValue().Init(aCx, rootedMsg)) {
-        aRv.NoteJSContextException(aCx);
-        return;
+      const auto& e = entry.GetAsL10nIdArgs();
+      nsTArray<ffi::L10nArg> l10nArgs;
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &e.mId;
+      if (!e.mArgs.IsNull()) {
+        FluentBundle::ConvertArgs(e.mArgs.Value(), key->args);
       }
     }
   }
+
+  bool rv = ffi::localization_format_values_sync(mRaw.get(), &l10nKeys,
+                                                 &aRetVal, &errors);
+
+  if (rv) {
+    MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
+  } else {
+    aRv.ThrowInvalidStateError(
+        "Can't use formatValuesSync when state is async.");
+  }
 }
+
+void Localization::FormatMessagesSync(
+    const Sequence<OwningUTF8StringOrL10nIdArgs>& aKeys,
+    nsTArray<Nullable<L10nMessage>>& aRetVal, ErrorResult& aRv) {
+  nsTArray<ffi::L10nKey> l10nKeys(aKeys.Length());
+  nsTArray<nsCString> errors;
+
+  for (const auto& entry : aKeys) {
+    if (entry.IsUTF8String()) {
+      const auto& id = entry.GetAsUTF8String();
+      nsTArray<ffi::L10nArg> l10nArgs;
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &id;
+    } else {
+      const auto& e = entry.GetAsL10nIdArgs();
+      nsTArray<ffi::L10nArg> l10nArgs;
+      ffi::L10nKey* key = l10nKeys.AppendElement();
+      key->id = &e.mId;
+      if (!e.mArgs.IsNull()) {
+        FluentBundle::ConvertArgs(e.mArgs.Value(), key->args);
+      }
+    }
+  }
+
+  nsTArray<ffi::OptionalL10nMessage> result(l10nKeys.Length());
+
+  bool rv = ffi::localization_format_messages_sync(mRaw.get(), &l10nKeys,
+                                                   &result, &errors);
+
+  if (!rv) {
+    return aRv.ThrowInvalidStateError(
+        "Can't use formatMessagesSync when state is async.");
+  }
+  MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
+  if (aRv.Failed()) {
+    return;
+  }
+  if (!ConvertToL10nMessages(result, aRetVal)) {
+    return aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+void Localization::SetAsync() { ffi::localization_set_async(mRaw.get()); }
+bool Localization::IsSync() { return ffi::localization_is_sync(mRaw.get()); }
 
 /**
  * PromiseResolver is a PromiseNativeHandler used
@@ -349,9 +466,11 @@ class PromiseResolver final : public PromiseNativeHandler {
  public:
   NS_DECL_ISUPPORTS
 
-  explicit PromiseResolver(Promise* aPromise);
-  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
-  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue) override;
+  explicit PromiseResolver(Promise* aPromise) : mPromise(aPromise) {}
+  void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
+  void RejectedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
+                        ErrorResult& aRv) override;
 
  protected:
   virtual ~PromiseResolver();
@@ -366,15 +485,15 @@ NS_INTERFACE_MAP_END
 NS_IMPL_ADDREF(PromiseResolver)
 NS_IMPL_RELEASE(PromiseResolver)
 
-PromiseResolver::PromiseResolver(Promise* aPromise) { mPromise = aPromise; }
-
 void PromiseResolver::ResolvedCallback(JSContext* aCx,
-                                       JS::Handle<JS::Value> aValue) {
+                                       JS::Handle<JS::Value> aValue,
+                                       ErrorResult& aRv) {
   mPromise->MaybeResolveWithClone(aCx, aValue);
 }
 
 void PromiseResolver::RejectedCallback(JSContext* aCx,
-                                       JS::Handle<JS::Value> aValue) {
+                                       JS::Handle<JS::Value> aValue,
+                                       ErrorResult& aRv) {
   mPromise->MaybeRejectWithClone(aCx, aValue);
 }
 
@@ -392,50 +511,21 @@ PromiseResolver::~PromiseResolver() { mPromise = nullptr; }
  */
 already_AddRefed<Promise> Localization::MaybeWrapPromise(
     Promise* aInnerPromise) {
+  MOZ_ASSERT(aInnerPromise->State() == Promise::PromiseState::Pending);
   // For system principal we don't need to wrap the
   // result promise at all.
   nsIPrincipal* principal = mGlobal->PrincipalOrNull();
   if (principal && principal->IsSystemPrincipal()) {
-    return RefPtr<Promise>(aInnerPromise).forget();
+    return do_AddRef(aInnerPromise);
   }
 
-  ErrorResult result;
+  IgnoredErrorResult result;
   RefPtr<Promise> docPromise = Promise::Create(mGlobal, result);
   if (NS_WARN_IF(result.Failed())) {
     return nullptr;
   }
 
-  RefPtr<PromiseResolver> resolver = new PromiseResolver(docPromise);
+  auto resolver = MakeRefPtr<PromiseResolver>(docPromise);
   aInnerPromise->AppendNativeHandler(resolver);
   return docPromise.forget();
-}
-
-void Localization::ConvertL10nArgsToJSValue(
-    JSContext* aCx, const L10nArgs& aArgs, JS::MutableHandle<JS::Value> aRetVal,
-    ErrorResult& aRv) {
-  // This method uses a temporary dictionary to automate
-  // converting an IDL Record to a JS Value via a dictionary.
-  //
-  // Once we get ToJSValue for Record, we'll switch to that.
-  L10nArgsHelperDict helperDict;
-  for (auto& entry : aArgs.Entries()) {
-    L10nArgs::EntryType* newEntry =
-        helperDict.mArgs.Entries().AppendElement(fallible);
-    if (!newEntry) {
-      aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return;
-    }
-    newEntry->mKey = entry.mKey;
-    newEntry->mValue = entry.mValue;
-  }
-  JS::Rooted<JS::Value> jsVal(aCx);
-  if (!ToJSValue(aCx, helperDict, &jsVal)) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
-    return;
-  }
-  JS::Rooted<JSObject*> jsObj(aCx, &jsVal.toObject());
-  if (!JS_GetProperty(aCx, jsObj, "args", aRetVal)) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
-    return;
-  }
 }

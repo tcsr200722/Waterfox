@@ -7,25 +7,23 @@
 #include "URLWorker.h"
 
 #include "mozilla/dom/Blob.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
-#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/dom/WorkerScope.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // This class creates an URL from a DOM Blob on the main thread.
 class CreateURLRunnable : public WorkerMainThreadRunnable {
  private:
   BlobImpl* mBlobImpl;
-  nsAString& mURL;
+  nsACString& mURL;
 
  public:
   CreateURLRunnable(WorkerPrivate* aWorkerPrivate, BlobImpl* aBlobImpl,
-                    nsAString& aURL)
-      : WorkerMainThreadRunnable(aWorkerPrivate,
-                                 NS_LITERAL_CSTRING("URL :: CreateURL")),
+                    nsACString& aURL)
+      : WorkerMainThreadRunnable(aWorkerPrivate, "URL :: CreateURL"_ns),
         mBlobImpl(aBlobImpl),
         mURL(aURL) {
     MOZ_ASSERT(aBlobImpl);
@@ -38,17 +36,19 @@ class CreateURLRunnable : public WorkerMainThreadRunnable {
 
     nsCOMPtr<nsIPrincipal> principal = mWorkerPrivate->GetPrincipal();
 
-    nsAutoCString url;
-    nsresult rv =
-        BlobURLProtocolHandler::AddDataEntry(mBlobImpl, principal, url);
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+        mWorkerPrivate->CookieJarSettings();
 
+    nsAutoString partKey;
+    cookieJarSettings->GetPartitionKey(partKey);
+
+    nsresult rv = BlobURLProtocolHandler::AddDataEntry(
+        mBlobImpl, principal, NS_ConvertUTF16toUTF8(partKey), mURL);
     if (NS_FAILED(rv)) {
       NS_WARNING("Failed to add data entry for the blob!");
-      SetDOMStringToNull(mURL);
+      mURL.SetIsVoid(true);
       return false;
     }
-
-    mURL = NS_ConvertUTF8toUTF16(url);
     return true;
   }
 };
@@ -56,31 +56,24 @@ class CreateURLRunnable : public WorkerMainThreadRunnable {
 // This class revokes an URL on the main thread.
 class RevokeURLRunnable : public WorkerMainThreadRunnable {
  private:
-  const nsString mURL;
+  const nsCString mURL;
 
  public:
-  RevokeURLRunnable(WorkerPrivate* aWorkerPrivate, const nsAString& aURL)
-      : WorkerMainThreadRunnable(aWorkerPrivate,
-                                 NS_LITERAL_CSTRING("URL :: RevokeURL")),
+  RevokeURLRunnable(WorkerPrivate* aWorkerPrivate, const nsACString& aURL)
+      : WorkerMainThreadRunnable(aWorkerPrivate, "URL :: RevokeURL"_ns),
         mURL(aURL) {}
 
   bool MainThreadRun() override {
     AssertIsOnMainThread();
 
-    NS_ConvertUTF16toUTF8 url(mURL);
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+        mWorkerPrivate->CookieJarSettings();
 
-    nsIPrincipal* urlPrincipal =
-        BlobURLProtocolHandler::GetDataEntryPrincipal(url);
+    nsAutoString partKey;
+    cookieJarSettings->GetPartitionKey(partKey);
 
-    nsCOMPtr<nsIPrincipal> principal = mWorkerPrivate->GetPrincipal();
-
-    bool subsumes;
-    if (urlPrincipal &&
-        NS_SUCCEEDED(principal->Subsumes(urlPrincipal, &subsumes)) &&
-        subsumes) {
-      BlobURLProtocolHandler::RemoveDataEntry(url);
-    }
-
+    BlobURLProtocolHandler::RemoveDataEntry(
+        mURL, mWorkerPrivate->GetPrincipal(), NS_ConvertUTF16toUTF8(partKey));
     return true;
   }
 };
@@ -88,21 +81,19 @@ class RevokeURLRunnable : public WorkerMainThreadRunnable {
 // This class checks if an URL is valid on the main thread.
 class IsValidURLRunnable : public WorkerMainThreadRunnable {
  private:
-  const nsString mURL;
+  const nsCString mURL;
   bool mValid;
 
  public:
-  IsValidURLRunnable(WorkerPrivate* aWorkerPrivate, const nsAString& aURL)
-      : WorkerMainThreadRunnable(aWorkerPrivate,
-                                 NS_LITERAL_CSTRING("URL :: IsValidURL")),
+  IsValidURLRunnable(WorkerPrivate* aWorkerPrivate, const nsACString& aURL)
+      : WorkerMainThreadRunnable(aWorkerPrivate, "URL :: IsValidURL"_ns),
         mURL(aURL),
         mValid(false) {}
 
   bool MainThreadRun() override {
     AssertIsOnMainThread();
 
-    NS_ConvertUTF16toUTF8 url(mURL);
-    mValid = BlobURLProtocolHandler::HasDataEntry(url);
+    mValid = BlobURLProtocolHandler::HasDataEntry(mURL);
 
     return true;
   }
@@ -112,7 +103,8 @@ class IsValidURLRunnable : public WorkerMainThreadRunnable {
 
 /* static */
 void URLWorker::CreateObjectURL(const GlobalObject& aGlobal, Blob& aBlob,
-                                nsAString& aResult, mozilla::ErrorResult& aRv) {
+                                nsACString& aResult,
+                                mozilla::ErrorResult& aRv) {
   JSContext* cx = aGlobal.Context();
   WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(cx);
 
@@ -130,12 +122,12 @@ void URLWorker::CreateObjectURL(const GlobalObject& aGlobal, Blob& aBlob,
   WorkerGlobalScope* scope = workerPrivate->GlobalScope();
   MOZ_ASSERT(scope);
 
-  scope->RegisterHostObjectURI(NS_ConvertUTF16toUTF8(aResult));
+  scope->RegisterHostObjectURI(aResult);
 }
 
 /* static */
 void URLWorker::RevokeObjectURL(const GlobalObject& aGlobal,
-                                const nsAString& aUrl, ErrorResult& aRv) {
+                                const nsACString& aUrl, ErrorResult& aRv) {
   JSContext* cx = aGlobal.Context();
   WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(cx);
 
@@ -150,12 +142,12 @@ void URLWorker::RevokeObjectURL(const GlobalObject& aGlobal,
   WorkerGlobalScope* scope = workerPrivate->GlobalScope();
   MOZ_ASSERT(scope);
 
-  scope->UnregisterHostObjectURI(NS_ConvertUTF16toUTF8(aUrl));
+  scope->UnregisterHostObjectURI(aUrl);
 }
 
 /* static */
-bool URLWorker::IsValidURL(const GlobalObject& aGlobal, const nsAString& aUrl,
-                           ErrorResult& aRv) {
+bool URLWorker::IsValidObjectURL(const GlobalObject& aGlobal,
+                                 const nsACString& aUrl, ErrorResult& aRv) {
   JSContext* cx = aGlobal.Context();
   WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(cx);
 
@@ -170,5 +162,4 @@ bool URLWorker::IsValidURL(const GlobalObject& aGlobal, const nsAString& aUrl,
   return runnable->IsValidURL();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

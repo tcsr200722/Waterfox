@@ -8,10 +8,7 @@ const ACTION = "previoustrack";
 
 add_task(async function setupTestingPref() {
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["dom.media.mediasession.enabled", true],
-      ["media.mediacontrol.testingevents.enabled", true],
-    ],
+    set: [["media.mediacontrol.testingevents.enabled", true]],
   });
 });
 
@@ -23,21 +20,21 @@ add_task(async function setupTestingPref() {
  */
 add_task(async function testActiveSessionWhenClosingTab() {
   info(`open tab1 and load media session test page`);
-  const tab1 = await createTabAndLoad(PAGE);
-  await startMediaPlayback(tab1);
+  const tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+  await startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab1);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab1 should become active session`);
   await checkIfActionReceived(tab1, ACTION);
 
   info(`open tab2 and load media session test page`);
-  const tab2 = await createTabAndLoad(PAGE);
-  await startMediaPlayback(tab2);
+  const tab2 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+  await startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab2);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab2 should become active session`);
   await checkIfActionReceived(tab2, ACTION);
@@ -49,7 +46,7 @@ add_task(async function testActiveSessionWhenClosingTab() {
   await controllerChanged;
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab1 should become active session again`);
   await checkIfActionReceived(tab1, ACTION);
@@ -65,21 +62,21 @@ add_task(async function testActiveSessionWhenClosingTab() {
  */
 add_task(async function testActiveSessionWhenNavigatingTab() {
   info(`open tab1 and load media session test page`);
-  const tab1 = await createTabAndLoad(PAGE);
-  await startMediaPlayback(tab1);
+  const tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+  await startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab1);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab1 should become active session`);
   await checkIfActionReceived(tab1, ACTION);
 
   info(`open tab2 and load media session test page`);
-  const tab2 = await createTabAndLoad(PAGE);
-  await startMediaPlayback(tab2);
+  const tab2 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+  await startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab2);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab2 should become active session`);
   await checkIfActionReceived(tab2, ACTION);
@@ -87,11 +84,11 @@ add_task(async function testActiveSessionWhenNavigatingTab() {
 
   info(`navigate tab2 to blank page`);
   const controllerChanged = waitUntilMainMediaControllerChanged();
-  BrowserTestUtils.loadURI(tab2.linkedBrowser, "about:blank");
+  BrowserTestUtils.startLoadingURIString(tab2.linkedBrowser, "about:blank");
   await controllerChanged;
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab1 should become active session`);
   await checkIfActionReceived(tab1, ACTION);
@@ -108,20 +105,20 @@ add_task(async function testActiveSessionWhenNavigatingTab() {
  */
 add_task(async function testCreatingSessionWithoutPlayingMedia() {
   info(`open tab1 and load media session test page`);
-  const tab1 = await createTabAndLoad(PAGE);
-  await startMediaPlayback(tab1);
+  const tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
+  await startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab1);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(`session in tab1 should become active session`);
   await checkIfActionReceived(tab1, ACTION);
 
   info(`open tab2 and load media session test page`);
-  const tab2 = await createTabAndLoad(PAGE);
+  const tab2 = await BrowserTestUtils.openNewForegroundTab(gBrowser, PAGE);
 
   info(`pressing '${ACTION}' key`);
-  ChromeUtils.generateMediaControlKeysTestEvent(ACTION);
+  MediaControlService.generateMediaControlKey(ACTION);
 
   info(
     `session in tab1 is still an active session because there is no media playing in tab2`
@@ -137,16 +134,17 @@ add_task(async function testCreatingSessionWithoutPlayingMedia() {
 /**
  * The following are helper functions
  */
-async function startMediaPlayback(tab) {
-  const controllerChanged = waitUntilMainMediaControllerChanged();
-  await SpecialPowers.spawn(tab.linkedBrowser, [], () => {
-    const video = content.document.getElementById("testVideo");
-    if (!video) {
-      ok(false, `can't get the media element!`);
-    }
-    video.play();
-  });
-  await controllerChanged;
+async function startMediaPlaybackAndWaitMedisSessionBecomeActiveSession(tab) {
+  await Promise.all([
+    BrowserUtils.promiseObserved("active-media-session-changed"),
+    SpecialPowers.spawn(tab.linkedBrowser, [], () => {
+      const video = content.document.getElementById("testVideo");
+      if (!video) {
+        ok(false, `can't get the media element!`);
+      }
+      video.play();
+    }),
+  ]);
 }
 
 async function checkIfActionReceived(tab, action) {

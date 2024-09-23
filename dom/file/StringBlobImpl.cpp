@@ -7,8 +7,7 @@
 #include "StringBlobImpl.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS_INHERITED(StringBlobImpl, BlobImpl, nsIMemoryReporter)
 
@@ -28,14 +27,14 @@ StringBlobImpl::~StringBlobImpl() { UnregisterWeakMemoryReporter(this); }
 
 already_AddRefed<BlobImpl> StringBlobImpl::CreateSlice(
     uint64_t aStart, uint64_t aLength, const nsAString& aContentType,
-    ErrorResult& aRv) {
+    ErrorResult& aRv) const {
   RefPtr<BlobImpl> impl =
       new StringBlobImpl(Substring(mData, aStart, aLength), aContentType);
   return impl.forget();
 }
 
 void StringBlobImpl::CreateInputStream(nsIInputStream** aStream,
-                                       ErrorResult& aRv) {
+                                       ErrorResult& aRv) const {
   aRv = NS_NewCStringInputStream(aStream, mData);
 }
 
@@ -49,5 +48,4 @@ StringBlobImpl::CollectReports(nsIHandleReportCallback* aHandleReport,
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -1,12 +1,21 @@
 "use strict";
 
-ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
-ChromeUtils.import("resource://normandy/actions/ShowHeartbeatAction.jsm", this);
-ChromeUtils.import("resource://normandy/lib/ClientEnvironment.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Heartbeat.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Storage.jsm", this);
-ChromeUtils.import("resource://normandy/lib/Uptake.jsm", this);
-ChromeUtils.import("resource://testing-common/NormandyTestUtils.jsm", this);
+const { BaseAction } = ChromeUtils.importESModule(
+  "resource://normandy/actions/BaseAction.sys.mjs"
+);
+const { ClientEnvironment } = ChromeUtils.importESModule(
+  "resource://normandy/lib/ClientEnvironment.sys.mjs"
+);
+const { Heartbeat } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Heartbeat.sys.mjs"
+);
+
+const { Uptake } = ChromeUtils.importESModule(
+  "resource://normandy/lib/Uptake.sys.mjs"
+);
+const { NormandyTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/NormandyTestUtils.sys.mjs"
+);
 
 const HOUR_IN_MS = 60 * 60 * 1000;
 
@@ -35,56 +44,10 @@ function heartbeatRecipeFactory(overrides = {}) {
   return recipeFactory(Object.assign(defaults, overrides));
 }
 
-class MockHeartbeat {
-  constructor() {
-    this.eventEmitter = new MockEventEmitter();
-  }
-}
-
-class MockEventEmitter {
-  constructor() {
-    this.once = sinon.stub();
-  }
-}
-
-function withStubbedHeartbeat(testFunction) {
-  return async function wrappedTestFunction(...args) {
-    const backstage = ChromeUtils.import(
-      "resource://normandy/actions/ShowHeartbeatAction.jsm",
-      null
-    );
-    const originalHeartbeat = backstage.Heartbeat;
-    const heartbeatInstanceStub = new MockHeartbeat();
-    const heartbeatClassStub = sinon.stub();
-    heartbeatClassStub.returns(heartbeatInstanceStub);
-    backstage.Heartbeat = heartbeatClassStub;
-
-    try {
-      await testFunction(
-        { heartbeatClassStub, heartbeatInstanceStub },
-        ...args
-      );
-    } finally {
-      backstage.Heartbeat = originalHeartbeat;
-    }
-  };
-}
-
-function withClearStorage(testFunction) {
-  return async function wrappedTestFunction(...args) {
-    Storage.clearAllStorage();
-    try {
-      await testFunction(...args);
-    } finally {
-      Storage.clearAllStorage();
-    }
-  };
-}
-
 // Test that a normal heartbeat works as expected
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testHappyPath({ heartbeatClassStub, heartbeatInstanceStub }) {
     const recipe = heartbeatRecipeFactory();
     const action = new ShowHeartbeatAction();
@@ -137,8 +100,8 @@ decorate_task(
 
 /* Test that heartbeat doesn't show if an unrelated heartbeat has shown recently. */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testRepeatGeneral({ heartbeatClassStub }) {
     const allHeartbeatStorage = new Storage("normandy-heartbeat");
     await allHeartbeatStorage.setItem("lastShown", Date.now());
@@ -158,8 +121,8 @@ decorate_task(
 
 /* Test that a heartbeat shows if an unrelated heartbeat showed more than 24 hours ago. */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testRepeatUnrelated({ heartbeatClassStub }) {
     const allHeartbeatStorage = new Storage("normandy-heartbeat");
     await allHeartbeatStorage.setItem(
@@ -178,8 +141,8 @@ decorate_task(
 
 /* Test that a repeat=once recipe is not shown again, even more than 24 hours ago. */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testRepeatTypeOnce({ heartbeatClassStub }) {
     const recipe = heartbeatRecipeFactory({
       arguments: { repeatOption: "once" },
@@ -197,8 +160,8 @@ decorate_task(
 
 /* Test that a repeat=xdays recipe is shown again, only after the expected number of days. */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testRepeatTypeXdays({ heartbeatClassStub }) {
     const recipe = heartbeatRecipeFactory({
       arguments: {
@@ -236,8 +199,8 @@ decorate_task(
 
 /* Test that a repeat=nag recipe is shown again until lastInteraction is set */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
+  withStubbedHeartbeat(),
+  withClearStorage(),
   async function testRepeatTypeNag({ heartbeatClassStub }) {
     const recipe = heartbeatRecipeFactory({
       arguments: { repeatOption: "nag" },
@@ -390,9 +353,9 @@ add_task(async function postAnswerUrlUserIdIfRequested() {
 
 /* generateSurveyId should include userId only if requested */
 decorate_task(
-  withStubbedHeartbeat,
-  withClearStorage,
-  async function testGenerateSurveyId({ heartbeatClassStub }) {
+  withStubbedHeartbeat(),
+  withClearStorage(),
+  async function testGenerateSurveyId() {
     const recipeWithoutId = heartbeatRecipeFactory({
       arguments: { surveyId: "test-id", includeTelemetryUUID: false },
     });

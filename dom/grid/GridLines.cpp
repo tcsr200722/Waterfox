@@ -12,8 +12,7 @@
 #include "mozilla/dom/GridArea.h"
 #include "nsGridContainerFrame.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(GridLines, mParent, mLines)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(GridLines)
@@ -117,8 +116,9 @@ void GridLines::SetLineInfo(const ComputedGridTrackInfo* aTrackInfo,
       // problem. We do the work here since this is only run when
       // requested by devtools, and slowness here will not affect
       // normal browsing.
+      nsTArray<RefPtr<nsAtom>> empty{};
       const nsTArray<RefPtr<nsAtom>>& possiblyDuplicateLineNames(
-          aLineInfo->mNames.SafeElementAt(i, nsTArray<RefPtr<nsAtom>>()));
+          aLineInfo->mNames.SafeElementAt(i, empty));
 
       nsTArray<RefPtr<nsAtom>> lineNames;
       AddLineNamesIfNotPresent(lineNames, possiblyDuplicateLineNames);
@@ -369,5 +369,4 @@ uint32_t GridLines::AppendRemovedAutoFits(
   return linesAdded;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

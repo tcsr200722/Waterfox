@@ -14,9 +14,13 @@
 
 #include "nsAtom.h"
 #include "nsIContent.h"
-#include "mozilla/dom/Element.h"
+#include "nsTHashSet.h"
 
 class nsINode;
+
+namespace mozilla::dom {
+class Element;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Value constants
@@ -71,7 +75,12 @@ enum EActionRule {
 /**
  * Used to define if role exposes default value of aria-live attribute.
  */
-enum ELiveAttrRule { eNoLiveAttr, eOffLiveAttr, ePoliteLiveAttr };
+enum ELiveAttrRule {
+  eNoLiveAttr,
+  eOffLiveAttr,
+  ePoliteLiveAttr,
+  eAssertiveLiveAttr
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Role constants
@@ -109,6 +118,11 @@ const uint8_t ATTR_VALTOKEN = 0x1 << 2;
  * http://www.w3.org/TR/wai-aria/states_and_properties#global_states).
  */
 const uint8_t ATTR_GLOBAL = 0x1 << 3;
+
+/**
+ * Indicates that the attribute should have an integer value.
+ */
+const uint8_t ATTR_VALINT = 0x1 << 4;
 
 ////////////////////////////////////////////////////////////////////////////////
 // State map entry
@@ -164,7 +178,7 @@ struct nsRoleMapEntry {
   // these object attributes if ARIA 'live' attribute is missed.
   ELiveAttrRule liveAttRule;
 
-  // Accessible types this role belongs to.
+  // LocalAccessible types this role belongs to.
   uint32_t accTypes;
 
   // Automatic state mapping rule: always include in states
@@ -190,6 +204,8 @@ struct nsRoleMapEntry {
  */
 namespace mozilla {
 namespace a11y {
+class AccAttributes;
+
 namespace aria {
 
 /**
@@ -217,6 +233,19 @@ const uint8_t LANDMARK_ROLE_MAP_ENTRY_INDEX = UINT8_MAX;
  *                if none
  */
 const nsRoleMapEntry* GetRoleMap(dom::Element* aEl);
+
+/*
+ * Get the role map entry pointer's index for a given DOM node, skipping any
+ * given roles. This will use the first valid ARIA role if the role attribute
+ * provides a space delimited list of roles, excluding any given roles.
+ *
+ * @param aEl          [in] the DOM node to get the role map entry for
+ * @param aRolesToSkip [in] the roles to skip when searching the role string
+ * @return             the index of the pointer to the role map entry for the
+ *                     ARIA role, or NO_ROLE_MAP_ENTRY_INDEX if none
+ */
+uint8_t GetFirstValidRoleMapIndexExcluding(
+    dom::Element* aEl, std::initializer_list<nsStaticAtom*> aRolesToSkip);
 
 /**
  * Get the role map entry pointer's index for a given DOM node. This will use
@@ -251,6 +280,11 @@ const nsRoleMapEntry* GetRoleMapFromIndex(uint8_t aRoleMapIndex);
 uint8_t GetIndexFromRoleMap(const nsRoleMapEntry* aRoleMap);
 
 /**
+ * Determine whether a role map entry index is valid.
+ */
+bool IsRoleMapIndexValid(uint8_t aRoleMapIndex);
+
+/**
  * Return accessible state from ARIA universal states applied to the given
  * element.
  */
@@ -271,17 +305,29 @@ uint8_t AttrCharacteristicsFor(nsAtom* aAtom);
 bool HasDefinedARIAHidden(nsIContent* aContent);
 
 /**
+ * Get the role map entry for a given ARIA role.
+ */
+const nsRoleMapEntry* GetRoleMap(const nsStaticAtom* aAriaRole);
+
+/**
  * Represents a simple enumerator for iterating through ARIA attributes
  * exposed as object attributes on a given accessible.
  */
 class AttrIterator {
  public:
-  explicit AttrIterator(nsIContent* aContent)
-      : mElement(dom::Element::FromNode(aContent)), mAttrIdx(0) {
-    mAttrCount = mElement ? mElement->GetAttrCount() : 0;
-  }
+  explicit AttrIterator(nsIContent* aContent);
 
-  bool Next(nsAString& aAttrName, nsAString& aAttrValue);
+  bool Next();
+
+  nsAtom* AttrName() const;
+
+  void AttrValue(nsAString& aAttrValue) const;
+
+  /**
+   * Expose this ARIA attribute in a specified AccAttributes. The appropriate
+   * type will be used for the attribute; e.g. an atom for a token value.
+   */
+  bool ExposeAttr(AccAttributes* aTargetAttrs) const;
 
  private:
   AttrIterator() = delete;
@@ -289,8 +335,15 @@ class AttrIterator {
   AttrIterator& operator=(const AttrIterator&) = delete;
 
   dom::Element* mElement;
+
+  bool mIteratingDefaults;
+  nsTHashSet<RefPtr<nsAtom>> mOverriddenAttrs;
+
+  const AttrArray* mAttrs;
   uint32_t mAttrIdx;
   uint32_t mAttrCount;
+  RefPtr<nsAtom> mAttrAtom;
+  uint8_t mAttrCharacteristics;
 };
 
 }  // namespace aria

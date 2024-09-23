@@ -4,7 +4,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://dvcs.w3.org/hg/IndexedDB/raw-file/tip/Overview.html#idl-def-IDBFactory
+ * https://w3c.github.io/IndexedDB/#factory-interface
  *
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
@@ -15,51 +15,52 @@ interface Principal;
 dictionary IDBOpenDBOptions
 {
   [EnforceRange] unsigned long long version;
-  StorageType storage;
 };
 
 /**
  * Interface that defines the indexedDB property on a window.  See
- * http://dvcs.w3.org/hg/IndexedDB/raw-file/tip/Overview.html#idl-def-IDBFactory
+ * https://w3c.github.io/IndexedDB/#idbfactory
  * for more information.
  */
 [Exposed=(Window,Worker)]
 interface IDBFactory {
-  [Throws, NeedsCallerType]
+  [NewObject, Throws, NeedsCallerType]
   IDBOpenDBRequest
   open(DOMString name,
-       [EnforceRange] unsigned long long version);
+       optional [EnforceRange] unsigned long long version);
 
-  [Throws, NeedsCallerType]
+  [NewObject, Throws, NeedsCallerType]
   IDBOpenDBRequest
-  open(DOMString name,
-       optional IDBOpenDBOptions options = {});
+  deleteDatabase(DOMString name);
 
-  [Throws, NeedsCallerType]
-  IDBOpenDBRequest
-  deleteDatabase(DOMString name,
-                 optional IDBOpenDBOptions options = {});
+  [Throws]
+  Promise<sequence<IDBDatabaseInfo>> databases();
 
   [Throws]
   short
   cmp(any first,
       any second);
 
-  [Throws, ChromeOnly, NeedsCallerType]
+  [NewObject, Throws, ChromeOnly, NeedsCallerType]
   IDBOpenDBRequest
   openForPrincipal(Principal principal,
                    DOMString name,
                    [EnforceRange] unsigned long long version);
 
-  [Throws, ChromeOnly, NeedsCallerType]
+  [NewObject, Throws, ChromeOnly, NeedsCallerType]
   IDBOpenDBRequest
   openForPrincipal(Principal principal,
                    DOMString name,
                    optional IDBOpenDBOptions options = {});
 
-  [Throws, ChromeOnly, NeedsCallerType]
+  [NewObject, Throws, ChromeOnly, NeedsCallerType]
   IDBOpenDBRequest
   deleteForPrincipal(Principal principal,
                      DOMString name,
                      optional IDBOpenDBOptions options = {});
+};
+
+dictionary IDBDatabaseInfo {
+  DOMString name;
+  unsigned long long version;
 };

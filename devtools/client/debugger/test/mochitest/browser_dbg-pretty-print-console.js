@@ -4,15 +4,22 @@
 
 // The test has a lot of interactions between debugger and console panels which
 // might take more than 30s to complete on a slow machine.
+
+"use strict";
+
 requestLongerTimeout(2);
 
 // Tests that pretty-printing updates console messages.
-add_task(async function() {
+add_task(async function () {
   const dbg = await initDebugger("doc-minified.html");
   invokeInTab("arithmetic");
 
   info("Switch to console and check message");
-  const minifiedLink = await waitForConsoleLink(dbg, "math.min.js:3:73");
+  const minifiedLink = await waitForConsoleLink(
+    dbg,
+    "arithmetic",
+    "math.min.js:3:73"
+  );
 
   info("Click on the link to open the debugger");
   minifiedLink.click();
@@ -26,7 +33,8 @@ add_task(async function() {
   info("Switch back to console and check message");
   const formattedLink = await waitForConsoleLink(
     dbg,
-    "math.min.js:formatted:22"
+    "arithmetic",
+    "math.min.js:formatted:31:24"
   );
   ok(true, "Message location was updated as expected");
 
@@ -35,22 +43,24 @@ add_task(async function() {
   );
   formattedLink.click();
   await selectSource(dbg, "math.min.js:formatted");
-  await waitForSelectedLocation(dbg, 22);
+  await waitForSelectedLocation(dbg, 31);
 });
 
-async function waitForConsoleLink(dbg, text) {
-  const toolbox = dbg.toolbox;
-  const console = await toolbox.selectTool("webconsole");
-  const hud = console.hud;
+async function waitForConsoleLink(dbg, messageText, linkText) {
+  const { toolbox } = dbg;
+  await toolbox.selectTool("webconsole");
 
-  return waitFor(() => {
+  return waitFor(async () => {
     // Wait until the message updates.
-    const linkEl = hud.ui.outputNode.querySelector(".frame-link-source");
+    const [message] = await findConsoleMessages(toolbox, messageText);
+    if (!message) {
+      return false;
+    }
+    const linkEl = message.querySelector(".frame-link-source");
     if (!linkEl) {
       return false;
     }
 
-    const linkText = linkEl.textContent;
-    return linkText == text ? linkEl : null;
+    return linkEl.textContent == linkText ? linkEl : false;
   });
 }

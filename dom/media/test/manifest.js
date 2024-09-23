@@ -1,3 +1,7 @@
+const { AppConstants } = SpecialPowers.ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
 // In each list of tests below, test file types that are not supported should
 // be ignored. To make sure tests respect that, we include a file of type
 // "bogus/duh" in each list.
@@ -48,13 +52,6 @@ var gSmallTests = [
   { name: "small-shot.flac", type: "audio/flac", duration: 0.197 },
   { name: "r11025_s16_c1-short.wav", type: "audio/x-wav", duration: 0.37 },
   {
-    name: "320x240.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 0.266,
-  },
-  {
     name: "seek-short.webm",
     type: "video/webm",
     width: 320,
@@ -89,7 +86,6 @@ var gFrameCountTests = [
   { name: "gizmo.mp4", type: "video/mp4", totalFrameCount: 166 },
   { name: "seek-short.webm", type: "video/webm", totalFrameCount: 8 },
   { name: "seek.webm", type: "video/webm", totalFrameCount: 120 },
-  { name: "320x240.ogv", type: "video/ogg", totalFrameCount: 8 },
   { name: "av1.mp4", type: "video/mp4", totalFrameCount: 24 },
 ];
 
@@ -100,13 +96,6 @@ gSmallTests = gSmallTests.concat([
 
 // Used by test_bug654550.html, for videoStats preference
 var gVideoTests = [
-  {
-    name: "320x240.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 0.266,
-  },
   {
     name: "seek-short.webm",
     type: "video/webm",
@@ -140,15 +129,6 @@ var gLongerTests = [
 var gProgressTests = [
   { name: "r11025_u8_c1.wav", type: "audio/x-wav", duration: 1.0, size: 11069 },
   { name: "big-short.wav", type: "audio/x-wav", duration: 1.11, size: 12366 },
-  { name: "seek-short.ogv", type: "video/ogg", duration: 1.03, size: 79921 },
-  {
-    name: "320x240.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 0.266,
-    size: 28942,
-  },
   { name: "seek-short.webm", type: "video/webm", duration: 0.23, size: 19267 },
   { name: "gizmo-short.mp4", type: "video/mp4", duration: 0.27, size: 29905 },
   { name: "bogus.duh", type: "bogus/duh" },
@@ -157,7 +137,6 @@ var gProgressTests = [
 // Used by test_played.html
 var gPlayedTests = [
   { name: "big-short.wav", type: "audio/x-wav", duration: 1.11 },
-  { name: "seek-short.ogv", type: "video/ogg", duration: 1.03 },
   { name: "seek-short.webm", type: "video/webm", duration: 0.23 },
   { name: "gizmo-short.mp4", type: "video/mp4", duration: 0.27 },
   { name: "owl-short.mp3", type: "audio/mpeg", duration: 0.52 },
@@ -170,7 +149,7 @@ var gPlayedTests = [
 
 if (
   manifestNavigator().userAgent.includes("Windows") &&
-  manifestVideo().canPlayType('video/mp4; codecs="avc1.42E01E"')
+  manifestVideo().canPlayType('video/mp4; codecs="avc1.64000c"')
 ) {
   gPlayedTests = gPlayedTests.concat(
     { name: "red-46x48.mp4", type: "video/mp4", duration: 1.0 },
@@ -182,14 +161,14 @@ if (
 // anything for testing clone-specific bugs.
 var cloneKey = Math.floor(Math.random() * 100000000);
 var gCloneTests = [
-  // short-video is more like 1s, so if you load this twice you'll get an unexpected duration
+  // vp9.webm is more like 4s, so if you load this twice you'll get an unexpected duration
   {
     name:
       "dynamic_resource.sjs?key=" +
       cloneKey +
-      "&res1=320x240.ogv&res2=short-video.ogv",
-    type: "video/ogg",
-    duration: 0.266,
+      "&res1=seek-short.webm&res2=vp9.webm",
+    type: "video/webm",
+    duration: 0.23,
   },
 ];
 
@@ -218,23 +197,6 @@ var gTrackTests = [
     hasVideo: false,
   },
   {
-    name: "320x240.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 0.266,
-    size: 28942,
-    hasAudio: false,
-    hasVideo: true,
-  },
-  {
-    name: "short-video.ogv",
-    type: "video/ogg",
-    duration: 1.081,
-    hasAudio: true,
-    hasVideo: true,
-  },
-  {
     name: "seek-short.webm",
     type: "video/webm",
     duration: 0.23,
@@ -250,10 +212,6 @@ var gTrackTests = [
     hasVideo: false,
   },
   { name: "bogus.duh", type: "bogus/duh" },
-];
-
-var gClosingConnectionsTest = [
-  { name: "seek-short.ogv", type: "video/ogg", duration: 1.03 },
 ];
 
 // Used by any media recorder test. Need one test file per decoder backend
@@ -313,36 +271,6 @@ var gPlayTests = [
   // Data length 0xFFFFFFFF and odd chunk lengths.
   { name: "bug1301226-odd.wav", type: "audio/x-wav", duration: 0.003673 },
 
-  // Ogg stream without eof marker
-  { name: "bug461281.ogg", type: "application/ogg", duration: 2.208 },
-
-  // oggz-chop stream
-  { name: "bug482461.ogv", type: "video/ogg", duration: 4.34 },
-  // Theora only oggz-chop stream
-  { name: "bug482461-theora.ogv", type: "video/ogg", duration: 4.138 },
-  // With first frame a "duplicate" (empty) frame.
-  {
-    name: "bug500311.ogv",
-    type: "video/ogg",
-    duration: 1.96,
-    contentDuration: 1.958,
-  },
-  // Small audio file
-  { name: "small-shot.ogg", type: "audio/ogg", duration: 0.276 },
-  // More audio in file than video.
-  { name: "short-video.ogv", type: "video/ogg", duration: 1.081 },
-  // First Theora data packet is zero bytes.
-  { name: "bug504613.ogv", type: "video/ogg", duration: Number.NaN },
-  // Multiple audio streams.
-  { name: "bug516323.ogv", type: "video/ogg", duration: 4.208 },
-  // oggz-chop with non-keyframe as first frame
-  {
-    name: "bug556821.ogv",
-    type: "video/ogg",
-    duration: 2.936,
-    contentDuration: 2.903,
-  },
-
   // Encoded with vorbis beta1, includes unusually sized codebooks
   { name: "beta-phrasebook.ogg", type: "audio/ogg", duration: 4.01 },
   // Small file, only 1 frame with audio only.
@@ -350,45 +278,7 @@ var gPlayTests = [
   // Small file with vorbis comments with 0 length values and names.
   { name: "bug520500.ogg", type: "audio/ogg", duration: 0.123 },
 
-  // Various weirdly formed Ogg files
-  {
-    name: "bug499519.ogv",
-    type: "video/ogg",
-    duration: 0.24,
-    contentDuration: 0.22,
-  },
-  { name: "bug506094.ogv", type: "video/ogg", duration: 0 },
-  { name: "bug498855-1.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "bug498855-2.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "bug498855-3.ogv", type: "video/ogg", duration: 0.24 },
-  {
-    name: "bug504644.ogv",
-    type: "video/ogg",
-    duration: 1.6,
-    contentDuration: 1.52,
-  },
-  {
-    name: "chain.ogv",
-    type: "video/ogg",
-    duration: Number.NaN,
-    contentDuration: 0.266,
-  },
-  {
-    name: "bug523816.ogv",
-    type: "video/ogg",
-    duration: 0.766,
-    contentDuration: 0,
-  },
-  { name: "bug495129.ogv", type: "video/ogg", duration: 2.41 },
-  {
-    name: "bug498380.ogv",
-    type: "video/ogg",
-    duration: 0.7663,
-    contentDuration: 0,
-  },
   { name: "bug495794.ogg", type: "audio/ogg", duration: 0.3 },
-  { name: "bug557094.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "multiple-bos.ogg", type: "video/ogg", duration: 0.431 },
   { name: "audio-overhang.ogg", type: "video/ogg", duration: 2.3 },
   { name: "video-overhang.ogg", type: "video/ogg", duration: 3.966 },
 
@@ -397,9 +287,8 @@ var gPlayTests = [
 
   // Test playback/metadata work after a redirect
   {
-    name: "redirect.sjs?domain=mochi.test:8888&file=320x240.ogv",
-    type: "video/ogg",
-    duration: 0.266,
+    name: "redirect.sjs?domain=mochi.test:8888&file=vp9.webm",
+    type: "video/webm",
   },
 
   // Test playback of a webm file
@@ -413,6 +302,39 @@ var gPlayTests = [
 
   // Test playback of a WebM file with resolution changes.
   { name: "resolution-change.webm", type: "video/webm", duration: 6.533 },
+
+  // The following webm files test cases where the webm metadata dimensions do
+  // not match those in the stream. See bug 1695033 for more info.
+
+  // Reference file with correct dimensions (webm metadata matches stream
+  // resolution).
+  { name: "bipbop_short_vp8.webm", type: "video/webm", duration: 1.011 },
+
+  // The webm resolution is greater in both dimensions than the in stream
+  // resolution.
+  {
+    name: "bipbop_short_pixel_metadata_bigger_than_in_stream_vp8.webm",
+    type: "video/webm",
+    duration: 1.011,
+  },
+
+  // The webm resolution is correct for height, but is narrower than the stream
+  // resolution.
+  {
+    name: "bipbop_short_pixel_metadata_narrower_than_in_stream_vp8.webm",
+    type: "video/webm",
+    duration: 1.011,
+  },
+
+  // The webm resolution is smaller in both dimensions than the in stream
+  // resolution.
+  {
+    name: "bipbop_short_pixel_metadata_smaller_than_in_stream_vp8.webm",
+    type: "video/webm",
+    duration: 1.011,
+  },
+
+  // End of webm dimension clashing files.
 
   // A really short, low sample rate, single channel file. This tests whether
   // we can handle playing files when only push very little audio data to the
@@ -465,9 +387,6 @@ var gPlayTests = [
   // Test playback of a MP4 file with a non-zero start time (and audio starting
   // a second later).
   { name: "bipbop-lateaudio.mp4", type: "video/mp4" },
-  // Ambisonics AAC, requires AAC extradata to be set when creating decoder (see bug 1431169)
-  // Also test 4.0 decoding.
-  { name: "ambisonics.mp4", type: "audio/mp4", duration: 16.48 },
   // Opus in MP4 channel mapping=0 sample file (content shorter due to preskip)
   {
     name: "opus-sample.mp4",
@@ -492,6 +411,17 @@ var gPlayTests = [
   // and report that the stream is not MP3. However, it does not count ID3 tags
   // in that offset. This test case makes sure that ID3 exclusion holds.
   { name: "huge-id3.mp3", type: "audio/mpeg", duration: 1.0 },
+  // Half a second file of a sine with a large ID3v2 tag, followed by an ID3v1
+  // tag. The ID3v1 tags should be at the end of the file, but software usually
+  // play it anyway.
+  { name: "id3v1afterlongid3v2.mp3", type: "audio/mpeg", duration: 0.5 },
+  // An VBR file with a padding value that is greater than an mp3 packet, and
+  // also subsequent packets after the theoretical EOF computed from metadata,
+  // to test padding trimming edge cases.
+  {
+    name: "padding-spanning-multiple-packets.mp3",
+    type: "audio/mpeg",
+  },
   // A truncated VBR MP3 with just enough frames to keep most decoders happy.
   // The Xing header reports the length of the file to be around 10 seconds, but
   // there is really only one second worth of data. We want MP3FrameParser to
@@ -513,14 +443,15 @@ var gPlayTests = [
     duration: 4.95,
     contentDuration: 5.03,
   },
-  // Ogg with theora video and flac audio.
+  // A file that has no codec delay at the container level, but has a delay at
+  // the codec level.
   {
-    name: "A4.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 3.13,
+    name: "no-container-codec-delay.webm",
+    type: "video/webm",
   },
+  // A file that has a codec delay at a container level of 0, but as a delay at
+  // the codec level that is non-zero.
+  { name: "invalid-preskip.webm", type: "audio/webm; codecs=opus" },
 
   // Invalid file
   { name: "bogus.duh", type: "bogus/duh", duration: Number.NaN },
@@ -533,41 +464,74 @@ if (!win32) {
   gPlayTests.push({ name: "av1.mp4", type: "video/mp4", duration: 1.0 });
 }
 
+// AAC files with different sample rates. We add these here as some are added
+// conditionally.
+gPlayTests.push(
+  {
+    name: "bipbop_audio_aac_8k.mp4",
+    type: "audio/mp4",
+    duration: 1.06,
+  },
+  {
+    name: "bipbop_audio_aac_22.05k.mp4",
+    type: "audio/mp4",
+    duration: 1.06,
+  },
+  {
+    name: "bipbop_audio_aac_44.1k.mp4",
+    type: "audio/mp4",
+    duration: 1.06,
+  },
+  {
+    name: "bipbop_audio_aac_48k.mp4",
+    type: "audio/mp4",
+    duration: 1.06,
+  }
+);
+if (AppConstants.platform != "win") {
+  // Windows WMF decoder doesn't do >48K everywhere. See bug 1698639.
+  gPlayTests.push(
+    {
+      name: "bipbop_audio_aac_88.2k.mp4",
+      type: "audio/mp4",
+      duration: 1.06,
+    },
+    {
+      name: "bipbop_audio_aac_96k.mp4",
+      type: "audio/mp4",
+      duration: 1.06,
+    }
+  );
+}
+
+// ambisonics.mp4 causes intermittents, so we conditionally add it until we fix
+// the root cause.
+const skipAmbisonics =
+  // Bug 1484451 - skip on mac debug
+  (AppConstants.platform == "macosx" && AppConstants.DEBUG) ||
+  // Bug 1483259 - skip on linux64 opt
+  (AppConstants.platform == "linux" &&
+    !AppConstants.DEBUG &&
+    SpecialPowers.Services.appinfo.is64Bit);
+if (!skipAmbisonics) {
+  // Ambisonics AAC, requires AAC extradata to be set when creating decoder (see bug 1431169)
+  // Also test 4.0 decoding.
+  gPlayTests.push({
+    name: "ambisonics.mp4",
+    type: "audio/mp4",
+    duration: 16.48,
+  });
+}
+
 var gSeekToNextFrameTests = [
   // Test playback of a WebM file with vp9 video
   { name: "vp9-short.webm", type: "video/webm", duration: 0.2 },
   { name: "vp9cake-short.webm", type: "video/webm", duration: 1.0 },
-  // oggz-chop stream
-  { name: "bug482461.ogv", type: "video/ogg", duration: 4.34 },
-  // Theora only oggz-chop stream
-  { name: "bug482461-theora.ogv", type: "video/ogg", duration: 4.138 },
-  // With first frame a "duplicate" (empty) frame.
-  { name: "bug500311.ogv", type: "video/ogg", duration: 1.96 },
 
-  // More audio in file than video.
-  { name: "short-video.ogv", type: "video/ogg", duration: 1.081 },
-  // First Theora data packet is zero bytes.
-  { name: "bug504613.ogv", type: "video/ogg", duration: Number.NaN },
-  // Multiple audio streams.
-  { name: "bug516323.ogv", type: "video/ogg", duration: 4.208 },
-  // oggz-chop with non-keyframe as first frame
-  { name: "bug556821.ogv", type: "video/ogg", duration: 2.936 },
-  // Various weirdly formed Ogg files
-  { name: "bug498855-1.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "bug498855-2.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "bug498855-3.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "bug504644.ogv", type: "video/ogg", duration: 1.6 },
-
-  { name: "bug523816.ogv", type: "video/ogg", duration: 0.766 },
-
-  { name: "bug498380.ogv", type: "video/ogg", duration: 0.2 },
-  { name: "bug557094.ogv", type: "video/ogg", duration: 0.24 },
-  { name: "multiple-bos.ogg", type: "video/ogg", duration: 0.431 },
   // Test playback/metadata work after a redirect
   {
-    name: "redirect.sjs?domain=mochi.test:8888&file=320x240.ogv",
-    type: "video/ogg",
-    duration: 0.266,
+    name: "redirect.sjs?domain=mochi.test:8888&file=vp9.webm",
+    type: "video/webm",
   },
   // Test playback of a webm file
   { name: "seek-short.webm", type: "video/webm", duration: 0.23 },
@@ -584,14 +548,6 @@ var gSeekToNextFrameTests = [
 // A file for each type we can support.
 var gSnifferTests = [
   { name: "big.wav", type: "audio/x-wav", duration: 9.278982, size: 102444 },
-  {
-    name: "320x240.ogv",
-    type: "video/ogg",
-    width: 320,
-    height: 240,
-    duration: 0.233,
-    size: 28942,
-  },
   { name: "seek.webm", type: "video/webm", duration: 3.966, size: 215529 },
   { name: "gizmo.mp4", type: "video/mp4", duration: 5.56, size: 383631 },
   // A mp3 file with id3 tags.
@@ -616,7 +572,6 @@ var gInvalidTests = [
   { name: "invalid-cmap-s0c0.opus", type: "audio/ogg; codecs=opus" },
   { name: "invalid-cmap-s0c2.opus", type: "audio/ogg; codecs=opus" },
   { name: "invalid-cmap-s1c2.opus", type: "audio/ogg; codecs=opus" },
-  { name: "invalid-preskip.webm", type: "audio/webm; codecs=opus" },
 ];
 
 var gInvalidPlayTests = [
@@ -630,60 +585,25 @@ var gInvalidPlayTests = [
 ];
 
 // Files to check different cases of ogg skeleton information.
-// sample-fisbone-skeleton4.ogv
-// - Skeleton v4, w/ Content-Type,Role,Name,Language,Title for both theora/vorbis
-// sample-fisbone-wrong-header.ogv
-// - Skeleton v4, wrong message field sequence for vorbis
 // multiple-bos-more-header-fields.ogg
 // - Skeleton v3, w/ Content-Type,Role,Name,Language,Title for both theora/vorbis
-// seek-short.ogv
-// - No skeleton, but theora
 // audio-gaps-short.ogg
 // - No skeleton, but vorbis
 var gMultitrackInfoOggPlayList = [
-  { name: "sample-fisbone-skeleton4.ogv", type: "video/ogg", duration: 1.0 },
-  { name: "sample-fisbone-wrong-header.ogv", type: "video/ogg", duration: 1.0 },
   {
     name: "multiple-bos-more-header-fileds.ogg",
     type: "video/ogg",
     duration: 0.431,
   },
-  { name: "seek-short.ogv", type: "video/ogg", duration: 1.03 },
   { name: "audio-gaps-short.ogg", type: "audio/ogg", duration: 0.5 },
 ];
 // Pre-parsed results of gMultitrackInfoOggPlayList.
 var gOggTrackInfoResults = {
-  "sample-fisbone-skeleton4.ogv": {
-    audio_id: " audio_1",
-    audio_kind: "main",
-    audio_language: " en-US",
-    audio_label: " Audio track for test",
-    video_id: " video_1",
-    video_kind: "main",
-    video_language: " fr",
-    video_label: " Video track for test",
-  },
-  "sample-fisbone-wrong-header.ogv": {
-    audio_id: "1",
-    audio_kind: "main",
-    audio_language: "",
-    audio_label: "",
-    video_id: " video_1",
-    video_kind: "main",
-    video_language: " fr",
-    video_label: " Video track for test",
-  },
   "multiple-bos-more-header-fileds.ogg": {
     audio_id: "1",
     audio_kind: "main",
     audio_language: "",
     audio_label: "",
-    video_id: "2",
-    video_kind: "main",
-    video_language: "",
-    video_label: "",
-  },
-  "seek-short.ogv": {
     video_id: "2",
     video_kind: "main",
     video_language: "",
@@ -704,7 +624,7 @@ var gOggTrackInfoResults = {
 function makeAbsolutePathConverter() {
   const url = SimpleTest.getTestFileURL("chromeHelper.js");
   const script = SpecialPowers.loadChromeScript(url);
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     script.addMessageListener("media-test:cwd", cwd => {
       if (!cwd) {
         ok(false, "Failed to find path to test files");
@@ -752,24 +672,12 @@ function range_equals(r1, r2) {
 function makeInfoLeakTests() {
   return makeAbsolutePathConverter().then(fileUriToSrc => [
     {
-      type: "video/ogg",
-      src: fileUriToSrc("tests/dom/media/test/320x240.ogv", true),
-    },
-    {
-      type: "video/ogg",
-      src: fileUriToSrc("tests/dom/media/test/404.ogv", false),
-    },
-    {
       type: "audio/x-wav",
       src: fileUriToSrc("tests/dom/media/test/r11025_s16_c1.wav", true),
     },
     {
       type: "audio/x-wav",
       src: fileUriToSrc("tests/dom/media/test/404.wav", false),
-    },
-    {
-      type: "audio/ogg",
-      src: fileUriToSrc("tests/dom/media/test/bug461281.ogg", true),
     },
     {
       type: "audio/ogg",
@@ -782,10 +690,6 @@ function makeInfoLeakTests() {
     {
       type: "video/webm",
       src: fileUriToSrc("tests/dom/media/test/404.webm", false),
-    },
-    {
-      type: "video/ogg",
-      src: "http://localhost/404.ogv",
     },
     {
       type: "audio/x-wav",
@@ -812,39 +716,33 @@ function makeInfoLeakTests() {
 // something crashes we have some idea of which backend is responsible.
 var gErrorTests = [
   { name: "bogus.wav", type: "audio/x-wav" },
-  { name: "bogus.ogv", type: "video/ogg" },
-  { name: "448636.ogv", type: "video/ogg" },
-  { name: "bug504843.ogv", type: "video/ogg" },
   { name: "bug501279.ogg", type: "audio/ogg" },
-  { name: "bug603918.webm", type: "video/webm" },
   { name: "bug604067.webm", type: "video/webm" },
+  { name: "bug1535980.webm", type: "video/webm" },
+  { name: "bug1799787.webm", type: "video/webm" },
   { name: "bogus.duh", type: "bogus/duh" },
 ];
 
-// These files would get error after receiving "loadedmetadata", we would like
-// to check duration in "onerror" and make sure the duration is still available.
-var gDurationTests = [
-  { name: "bug603918.webm", duration: 6.076 },
-  { name: "bug604067.webm", duration: 6.076 },
-];
+// Playing this file errors out after receiving "loadedmetadata", we still want
+// to check the duration in "onerror" and make sure it is still available.
+var gDurationTests = [{ name: "bug604067.webm", duration: 6.076 }];
 
 // These are files that have nontrivial duration and are useful for seeking within.
 var gSeekTests = [
   { name: "r11025_s16_c1.wav", type: "audio/x-wav", duration: 1.0 },
   { name: "audio.wav", type: "audio/x-wav", duration: 0.031247 },
-  { name: "seek.ogv", type: "video/ogg", duration: 3.966 },
-  { name: "320x240.ogv", type: "video/ogg", duration: 0.266 },
   { name: "seek.webm", type: "video/webm", duration: 3.966 },
   { name: "sine.webm", type: "audio/webm", duration: 4.001 },
-  { name: "bug516323.indexed.ogv", type: "video/ogg", duration: 4.208333 },
   { name: "split.webm", type: "video/webm", duration: 1.967 },
   { name: "detodos.opus", type: "audio/ogg; codecs=opus", duration: 2.9135 },
   { name: "gizmo.mp4", type: "video/mp4", duration: 5.56 },
+  {
+    name: "/tests/dom/media/webaudio/test/half-a-second-1ch-44100-aac-afconvert.mp4",
+    type: 'audio/mp4; codecs="mp4a.40.2"',
+    duration: 0.5,
+  },
   { name: "owl.mp3", type: "audio/mpeg", duration: 3.343 },
   { name: "bogus.duh", type: "bogus/duh", duration: 123 },
-
-  // Bug 1242338: hit a numerical problem while seeking to the duration.
-  { name: "bug482461-theora.ogv", type: "video/ogg", duration: 4.138 },
 ];
 
 var gFastSeekTests = [
@@ -855,14 +753,6 @@ var gFastSeekTests = [
   },
   // Note: Not all keyframes in the file are actually referenced in the Cues in this file.
   { name: "seek.webm", type: "video/webm", keyframes: [0, 0.8, 1.6, 2.4, 3.2] },
-  // Note: the sync points are the points on both the audio and video streams
-  // before the keyframes. You can't just assume that the keyframes are the sync
-  // points, as the audio required for that sync point may be before the keyframe.
-  {
-    name: "bug516323.indexed.ogv",
-    type: "video/ogg",
-    keyframes: [0, 0.46, 3.06],
-  },
 ];
 
 // These files are WebMs without cues. They're seekable within their buffered
@@ -881,9 +771,7 @@ if (
   manifestNavigator().userAgent.includes("Mobile") ||
   manifestNavigator().userAgent.includes("Tablet")
 ) {
-  androidVersion = SpecialPowers.Cc["@mozilla.org/system-info;1"]
-    .getService(SpecialPowers.Ci.nsIPropertyBag2)
-    .getProperty("version");
+  androidVersion = SpecialPowers.Services.sysinfo.getProperty("version");
 }
 
 function getAndroidVersion() {
@@ -892,6 +780,7 @@ function getAndroidVersion() {
 
 // These are files suitable for using with a "new Audio" constructor.
 var gAudioTests = [
+  { name: "adts.aac", type: "audio/mp4", duration: 1.37 },
   { name: "r11025_s16_c1.wav", type: "audio/x-wav", duration: 1.0 },
   { name: "sound.ogg", type: "audio/ogg" },
   { name: "owl.mp3", type: "audio/mpeg", duration: 3.343 },
@@ -904,7 +793,6 @@ var gAudioTests = [
 // various backends.
 var g404Tests = [
   { name: "404.wav", type: "audio/x-wav" },
-  { name: "404.ogv", type: "video/ogg" },
   { name: "404.oga", type: "audio/ogg" },
   { name: "404.webm", type: "video/webm" },
   { name: "bogus.duh", type: "bogus/duh" },
@@ -919,7 +807,6 @@ var gDecodeErrorTests = [
   { name: "dirac.ogg", type: "video/ogg" },
   // Invalid files
   { name: "bogus.wav", type: "audio/x-wav" },
-  { name: "bogus.ogv", type: "video/ogg" },
 
   { name: "bogus.duh", type: "bogus/duh" },
 ];
@@ -947,12 +834,6 @@ var gChainingTests = [
   // original sample rate, so we can safely play Opus chained media that have
   // different samplerate accross links.
   { name: "variable-samplerate.opus", type: "audio/ogg; codec=opus", links: 2 },
-  // A chained video file. We don't support those, so only one link should be
-  // reported.
-  { name: "chained-video.ogv", type: "video/ogg", links: 1 },
-  // A file that consist in 4 links of audio, then another link that has video.
-  // We should stop right after the 4 audio links.
-  { name: "chained-audio-video.ogg", type: "video/ogg", links: 4 },
   // An opus file that has two links, with a different preskip value for each
   // link. We should be able to play both links.
   { name: "variable-preskip.opus", type: "audio/ogg; codec=opus", links: 2 },
@@ -970,36 +851,6 @@ var gAspectRatioTests = [
 // Used by test_metadata.html.
 var gMetadataTests = [
   // Ogg Vorbis files
-  {
-    name: "short-video.ogv",
-    tags: {
-      TITLE: "Lepidoptera",
-      ARTIST: "Epoq",
-      ALBUM: "Kahvi Collective",
-      DATE: "2002",
-      COMMENT: "http://www.kahvi.org",
-    },
-  },
-  {
-    name: "bug516323.ogv",
-    tags: {
-      GENRE: "Open Movie",
-      ENCODER: "Audacity",
-      TITLE: "Elephants Dream",
-      ARTIST: "Silvia Pfeiffer",
-      COMMENTS: "Audio Description",
-    },
-  },
-  {
-    name: "bug516323.indexed.ogv",
-    tags: {
-      GENRE: "Open Movie",
-      ENCODER: "Audacity",
-      TITLE: "Elephants Dream",
-      ARTIST: "Silvia Pfeiffer",
-      COMMENTS: "Audio Description",
-    },
-  },
   {
     name: "detodos.opus",
     tags: {
@@ -1125,7 +976,7 @@ var gEMETests = [
     tracks: [
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1147,7 +998,7 @@ var gEMETests = [
     tracks: [
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1180,7 +1031,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1212,7 +1063,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop-cenc-videoinit.mp4",
           "bipbop-cenc-video1.m4s",
@@ -1246,7 +1097,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1279,7 +1130,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1312,7 +1163,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_959kbps-cenc-video-key1-init.mp4",
           "bipbop_480_959kbps-cenc-video-key1-1.m4s",
@@ -1345,7 +1196,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1379,7 +1230,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key2-init.mp4",
           "bipbop_480_624kbps-cenc-video-key2-1.m4s",
@@ -1413,7 +1264,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e,avc1.4d4015"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1448,7 +1299,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015,avc1.4d401e"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1483,7 +1334,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_959kbps-cenc-video-key1-init.mp4",
           "bipbop_480_959kbps-cenc-video-key1-1.m4s",
@@ -1518,7 +1369,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d401e"',
         fragments: [
           "bipbop_480_624kbps-cenc-video-key1-init.mp4",
           "bipbop_480_624kbps-cenc-video-key1-1.m4s",
@@ -1553,7 +1404,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300wp_227kbps-cenc-video-key1-init.mp4",
           "bipbop_300wp_227kbps-cenc-video-key1-1.m4s",
@@ -1586,7 +1437,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.4d4015"',
         fragments: [
           "bipbop_300_215kbps-cenc-video-key1-init.mp4",
           "bipbop_300_215kbps-cenc-video-key1-1.m4s",
@@ -1652,7 +1503,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64001e"',
         fragments: [
           "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
           "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
@@ -1684,7 +1535,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64000d,avc1.64001e"',
         fragments: [
           "bipbop_225w_175kbps-cenc-video-key1-init.mp4",
           "bipbop_225w_175kbps-cenc-video-key1-1.m4s",
@@ -1719,7 +1570,7 @@ var gEMETests = [
       },
       {
         name: "video",
-        type: 'video/mp4; codecs="avc1.64000d"',
+        type: 'video/mp4; codecs="avc1.64001e,avc1.4d401e"',
         fragments: [
           "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
           "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
@@ -1775,6 +1626,46 @@ var gEMETests = [
     sessionType: "temporary",
     sessionCount: 1,
     duration: 1.98,
+  },
+  // ffmpeg -i bipbop.mp4 -t 00:00:02 -c:v libaom-av1 bipbop_av1.mp4
+  // packager-linux-x64 in=bipbop_av1.mp4,stream=video,out=bipbop-clearkey-video-av1.mp4 --enable_raw_key_encryption --keys label=:key_id=8b5df745ad84145b5617c33116e35a67:key=bddfd35dd9be033ee73bc18bc1885056 --clear_lead 0
+  {
+    name: "MP4 av1 video clearkey",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="av1"',
+        fragments: ["bipbop-clearkey-video-av1.mp4"],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "8b5df745ad84145b5617c33116e35a67": "bddfd35dd9be033ee73bc18bc1885056",
+    },
+    sessionType: "temporary",
+    sessionCount: 1,
+    duration: 2.0,
+    skipTests: ["waitingforkey"],
+  },
+  // ffmpeg -i bipbop.mp4 -t 00:00:02 -c:v libaom-av1 bipbop_av1.webm
+  // packager-linux-x64 in=bipbop_av1.webm,stream=video,out=bipbop-clearkey-video-av1.webm --enable_raw_key_encryption --keys label=:key_id=8b5df745ad84145b5617c33116e35a67:key=bddfd35dd9be033ee73bc18bc1885056 --clear_lead 0
+  {
+    name: "WebM av1 video clearkey",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/webm; codecs="av1"',
+        fragments: ["bipbop-clearkey-video-av1.webm"],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "8b5df745ad84145b5617c33116e35a67": "bddfd35dd9be033ee73bc18bc1885056",
+    },
+    sessionType: "temporary",
+    sessionCount: 1,
+    duration: 2.0,
+    skipTests: ["waitingforkey"],
   },
   {
     name: "WebM vorbis audio & vp8 video clearkey",
@@ -1866,6 +1757,152 @@ var gEMETests = [
     sessionCount: 1,
     duration: 2.08,
   },
+  // The following cbcs files are created using shaka-packager using commands like
+  // ./packager-win.exe 'in=bipbop_2s.mp4,stream=audio,init_segment=bipbop_cbcs_1_9_audio_init.mp4,segment_template=bipbop_cbcs_1_9_audio_$Number$.m4s' \
+  // 'in=bipbop_2s.mp4,stream=video,init_segment=bipbop_cbcs_1_9_video_init.mp4,segment_template=bipbop_cbcs_1_9_video_$Number$.m4s' --protection_scheme cbcs \
+  // --enable_raw_key_encryption --keys label=:key_id=7e571d047e571d047e571d047e571d21:key=7e5744447e5744447e5744447e574421 --iv 11223344556677889900112233445566 \
+  // --clear_lead 0 --crypt_byte_block 1 --skip_byte_block 9
+  // See bug 1726202 for more details on their creation.
+  {
+    name: "mp4 h264 + aac clearkey cbcs 1:9 pattern",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="avc1.4d4015"',
+        fragments: [
+          "bipbop_cbcs_1_9_video_init.mp4",
+          "bipbop_cbcs_1_9_video_1.m4s",
+        ],
+      },
+      {
+        name: "audio",
+        type: 'audio/mp4; codecs="mp4a.40.2"',
+        fragments: [
+          "bipbop_cbcs_1_9_audio_init.mp4",
+          "bipbop_cbcs_1_9_audio_1.m4s",
+        ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d047e571d047e571d047e571d21": "7e5744447e5744447e5744447e574421",
+    },
+    sessionType: "temporary",
+    sessionCount: 2,
+    duration: 2.04,
+  },
+  {
+    name: "mp4 h264 + aac clearkey cbcs 5:5 pattern",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="avc1.4d4015"',
+        fragments: [
+          "bipbop_cbcs_5_5_video_init.mp4",
+          "bipbop_cbcs_5_5_video_1.m4s",
+        ],
+      },
+      {
+        name: "audio",
+        type: 'audio/mp4; codecs="mp4a.40.2"',
+        fragments: [
+          "bipbop_cbcs_5_5_audio_init.mp4",
+          "bipbop_cbcs_5_5_audio_1.m4s",
+        ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d047e571d047e571d047e571d21": "7e5744447e5744447e5744447e574421",
+    },
+    sessionType: "temporary",
+    sessionCount: 2,
+    duration: 2.04,
+  },
+  {
+    name: "mp4 h264 + aac clearkey cbcs 10:0 pattern",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="avc1.4d4015"',
+        fragments: [
+          "bipbop_cbcs_10_0_video_init.mp4",
+          "bipbop_cbcs_10_0_video_1.m4s",
+        ],
+      },
+      {
+        name: "audio",
+        type: 'audio/mp4; codecs="mp4a.40.2"',
+        fragments: [
+          "bipbop_cbcs_10_0_audio_init.mp4",
+          "bipbop_cbcs_10_0_audio_1.m4s",
+        ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d047e571d047e571d047e571d21": "7e5744447e5744447e5744447e574421",
+    },
+    sessionType: "temporary",
+    sessionCount: 2,
+    duration: 2.04,
+  },
+  {
+    name: "mp4 h264 + aac clearkey cbcs 7:7 pattern",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="avc1.4d4015"',
+        fragments: [
+          "bipbop_cbcs_7_7_video_init.mp4",
+          "bipbop_cbcs_7_7_video_1.m4s",
+        ],
+      },
+      {
+        name: "audio",
+        type: 'audio/mp4; codecs="mp4a.40.2"',
+        fragments: [
+          "bipbop_cbcs_7_7_audio_init.mp4",
+          "bipbop_cbcs_7_7_audio_1.m4s",
+        ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d047e571d047e571d047e571d21": "7e5744447e5744447e5744447e574421",
+    },
+    sessionType: "temporary",
+    sessionCount: 2,
+    duration: 2.04,
+  },
+  {
+    name: "mp4 h264 + aac clearkey cbcs 9:8 pattern",
+    tracks: [
+      {
+        name: "video",
+        type: 'video/mp4; codecs="avc1.4d4015"',
+        fragments: [
+          "bipbop_cbcs_9_8_video_init.mp4",
+          "bipbop_cbcs_9_8_video_1.m4s",
+        ],
+      },
+      {
+        name: "audio",
+        type: 'audio/mp4; codecs="mp4a.40.2"',
+        fragments: [
+          "bipbop_cbcs_9_8_audio_init.mp4",
+          "bipbop_cbcs_9_8_audio_1.m4s",
+        ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d047e571d047e571d047e571d21": "7e5744447e5744447e5744447e574421",
+    },
+    sessionType: "temporary",
+    sessionCount: 2,
+    duration: 2.04,
+  },
 ];
 
 var gEMENonMSEFailTests = [
@@ -1875,6 +1912,19 @@ var gEMENonMSEFailTests = [
     videoType: 'video/mp4; codecs="avc1.64000d"',
     duration: 0.47,
   },
+];
+
+// Test files that are supposed to loop seamlessly when played back.
+var gSeamlessLoopingTests = [
+  // MP4 files dont't loop seamlessly yet, the seeking logic seeks to 0, not the
+  // actual first packet, resulting in incorrect decoding.
+  // See bug 1817989
+  // { name: "sin-441-1s-44100-fdk_aac.mp4", type: "audio/mp4" },
+  // { name: "sin-441-1s-44100-afconvert.mp4", type: "audio/mp4" },
+  // { name: "sin-441-1s-44100.ogg", type: "audio/vorbis" },
+  // { name: "sin-441-1s-44100.opus", type: "audio/opus" },
+  { name: "sin-441-1s-44100-lame.mp3", type: "audio/mpeg" },
+  { name: "sin-441-1s-44100.flac", type: "audio/flac" },
 ];
 
 // These are files that are used for video decode suspend in
@@ -1888,6 +1938,13 @@ var gDecodeSuspendTests = [
     type: 'video/webm; codecs="vp9"',
     duration: 5.56,
   },
+];
+
+// These are video files with hardware-decodable formats and longer
+// durations that are looped while we check telemetry for macOS video
+// low power mode.
+var gVideoLowPowerTests = [
+  { name: "gizmo.mp4", type: "video/mp4", duration: 5.56 },
 ];
 
 function checkMetadata(msg, e, test) {
@@ -1914,7 +1971,7 @@ function checkMetadata(msg, e, test) {
 // installed video backends.
 function getPlayableVideo(candidates) {
   var resources = getPlayableVideos(candidates);
-  if (resources.length > 0) {
+  if (resources.length) {
     return resources[0];
   }
   return null;
@@ -1922,17 +1979,17 @@ function getPlayableVideo(candidates) {
 
 function getPlayableVideos(candidates) {
   var v = manifestVideo();
-  return candidates.filter(function(x) {
+  return candidates.filter(function (x) {
     return /^video/.test(x.type) && v.canPlayType(x.type);
   });
 }
 
 function getPlayableAudio(candidates) {
   var v = manifestVideo();
-  var resources = candidates.filter(function(x) {
+  var resources = candidates.filter(function (x) {
     return /^audio/.test(x.type) && v.canPlayType(x.type);
   });
-  if (resources.length > 0) {
+  if (resources.length) {
     return resources[0];
   }
   return null;
@@ -1959,10 +2016,10 @@ function removeNodeAndSource(n) {
 }
 
 function once(target, name, cb) {
-  var p = new Promise(function(resolve, reject) {
+  var p = new Promise(function (resolve) {
     target.addEventListener(
       name,
-      function() {
+      function () {
         resolve();
       },
       { once: true }
@@ -1980,8 +2037,8 @@ function once(target, name, cb) {
  * @returns {Promise} A promise that is resolved when event happens.
  */
 function nextEvent(video, eventName) {
-  return new Promise(function(resolve, reject) {
-    let f = function(event) {
+  return new Promise(function (resolve) {
+    let f = function (event) {
       video.removeEventListener(eventName, f);
       resolve(event);
     };
@@ -2016,6 +2073,13 @@ function Log(token, msg) {
 
 // Number of tests to run in parallel.
 var PARALLEL_TESTS = 2;
+
+// Disable parallel test for media engine tests, see more info in bug 1840914.
+if (
+  SpecialPowers.Services.prefs.getIntPref("media.wmf.media-engine.enabled", 0)
+) {
+  PARALLEL_TESTS = 1;
+}
 
 // Prefs to set before running tests.  Use this to improve coverage of
 // conditions that might not otherwise be encountered on the test data.
@@ -2062,7 +2126,7 @@ function MediaTestManager() {
   // and MediaTestManager.finished(token) when the test finishes. You don't have
   // to start every test, but if you call started() you *must* call finish()
   // else you'll timeout.
-  this.runTests = function(tests, startTest) {
+  this.runTests = function (tests, startTest) {
     this.startTime = new Date();
     SimpleTest.info(
       "Started " +
@@ -2087,7 +2151,7 @@ function MediaTestManager() {
     });
 
     SimpleTest.registerCleanupFunction(() => {
-      if (this.tokens.length > 0) {
+      if (this.tokens.length) {
         info("Test timed out. Remaining tests=" + this.tokens);
       }
       for (var token of this.tokens) {
@@ -2101,7 +2165,7 @@ function MediaTestManager() {
 
   // Registers that the test corresponding to 'token' has been started.
   // Don't call more than once per token.
-  this.started = function(token, handler) {
+  this.started = function (token, handler) {
     this.tokens.push(token);
     this.numTestsRunning++;
     this.handlers[token] = handler;
@@ -2135,7 +2199,7 @@ function MediaTestManager() {
   // you've finished your test. If all tests are complete this will finish the
   // run, otherwise it may start up the next run. It's ok to call multiple times
   // per token.
-  this.finished = function(token) {
+  this.finished = function (token) {
     var i = this.tokens.indexOf(token);
     if (i != -1) {
       // Remove the element from the list of running tests.
@@ -2166,7 +2230,7 @@ function MediaTestManager() {
 
   // Starts the next batch of tests, or finishes if they're all done.
   // Don't call this directly, call finished(token) when you're done.
-  this.nextTest = function() {
+  this.nextTest = function () {
     while (
       this.testNum < this.tests.length &&
       this.tokens.length < PARALLEL_TESTS
@@ -2194,7 +2258,7 @@ function MediaTestManager() {
     if (
       this.testNum == this.tests.length &&
       !DEBUG_TEST_LOOP_FOREVER &&
-      this.tokens.length == 0 &&
+      !this.tokens.length &&
       !this.isShutdown
     ) {
       this.isShutdown = true;
@@ -2252,7 +2316,7 @@ if ("SimpleTest" in window) {
   SimpleTest.requestFlakyTimeout("untriaged");
 
   // Register timeout function to dump debugging logs.
-  SimpleTest.registerTimeoutFunction(async function() {
+  SimpleTest.registerTimeoutFunction(async function () {
     for (const v of document.getElementsByTagName("video")) {
       SimpleTest.info(
         JSON.stringify(await SpecialPowers.wrap(v).mozRequestDebugInfo())

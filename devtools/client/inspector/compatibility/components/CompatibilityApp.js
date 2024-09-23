@@ -4,53 +4,58 @@
 
 "use strict";
 
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
-const Types = require("devtools/client/inspector/compatibility/types");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
+
+const Types = require("resource://devtools/client/inspector/compatibility/types.js");
 
 const Accordion = createFactory(
-  require("devtools/client/shared/components/Accordion")
+  require("resource://devtools/client/shared/components/Accordion.js")
 );
 const Footer = createFactory(
-  require("devtools/client/inspector/compatibility/components/Footer")
+  require("resource://devtools/client/inspector/compatibility/components/Footer.js")
 );
 const IssuePane = createFactory(
-  require("devtools/client/inspector/compatibility/components/IssuePane")
+  require("resource://devtools/client/inspector/compatibility/components/IssuePane.js")
 );
 const Settings = createFactory(
-  require("devtools/client/inspector/compatibility/components/Settings")
+  require("resource://devtools/client/inspector/compatibility/components/Settings.js")
 );
 
 class CompatibilityApp extends PureComponent {
   static get propTypes() {
     return {
-      isSettingsVisibile: PropTypes.bool.isRequired,
+      dispatch: PropTypes.func.isRequired,
+      // getString prop is injected by the withLocalization wrapper
+      getString: PropTypes.func.isRequired,
+      isSettingsVisible: PropTypes.bool.isRequired,
       isTopLevelTargetProcessing: PropTypes.bool.isRequired,
       selectedNodeIssues: PropTypes.arrayOf(PropTypes.shape(Types.issue))
         .isRequired,
       topLevelTargetIssues: PropTypes.arrayOf(PropTypes.shape(Types.issue))
         .isRequired,
-      hideBoxModelHighlighter: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
-      showBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
   render() {
     const {
-      isSettingsVisibile,
+      dispatch,
+      getString,
+      isSettingsVisible,
       isTopLevelTargetProcessing,
       selectedNodeIssues,
       topLevelTargetIssues,
-      hideBoxModelHighlighter,
       setSelectedNode,
-      showBoxModelHighlighterForNode,
     } = this.props;
 
     const selectedNodeIssuePane = IssuePane({
@@ -58,12 +63,11 @@ class CompatibilityApp extends PureComponent {
     });
 
     const topLevelTargetIssuePane =
-      topLevelTargetIssues.length > 0 || !isTopLevelTargetProcessing
+      topLevelTargetIssues.length || !isTopLevelTargetProcessing
         ? IssuePane({
+            dispatch,
             issues: topLevelTargetIssues,
-            hideBoxModelHighlighter,
             setSelectedNode,
-            showBoxModelHighlighterForNode,
           })
         : null;
 
@@ -81,20 +85,20 @@ class CompatibilityApp extends PureComponent {
         {
           className:
             "compatibility-app__container" +
-            (isSettingsVisibile ? " compatibility-app__container-hidden" : ""),
+            (isSettingsVisible ? " compatibility-app__container-hidden" : ""),
         },
         Accordion({
           className: "compatibility-app__main",
           items: [
             {
               id: "compatibility-app--selected-element-pane",
-              header: "Selected Element",
+              header: getString("compatibility-selected-element-header"),
               component: selectedNodeIssuePane,
               opened: true,
             },
             {
               id: "compatibility-app--all-elements-pane",
-              header: "All Issues",
+              header: getString("compatibility-all-elements-header"),
               component: [topLevelTargetIssuePane, throbber],
               opened: true,
             },
@@ -104,17 +108,19 @@ class CompatibilityApp extends PureComponent {
           className: "compatibility-app__footer",
         })
       ),
-      isSettingsVisibile ? Settings() : null
+      isSettingsVisible ? Settings() : null
     );
   }
 }
 
 const mapStateToProps = state => {
   return {
-    isSettingsVisibile: state.compatibility.isSettingsVisibile,
+    isSettingsVisible: state.compatibility.isSettingsVisible,
     isTopLevelTargetProcessing: state.compatibility.isTopLevelTargetProcessing,
     selectedNodeIssues: state.compatibility.selectedNodeIssues,
     topLevelTargetIssues: state.compatibility.topLevelTargetIssues,
   };
 };
-module.exports = connect(mapStateToProps)(CompatibilityApp);
+module.exports = FluentReact.withLocalization(
+  connect(mapStateToProps)(CompatibilityApp)
+);

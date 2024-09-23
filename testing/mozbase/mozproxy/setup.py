@@ -2,15 +2,13 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from setuptools import setup
 
 PACKAGE_NAME = "mozproxy"
 PACKAGE_VERSION = "1.0"
 
 # dependencies
-deps = ["redo"]
+deps = ["redo", "mozinfo", "mozlog >= 6.0"]
 
 setup(
     name=PACKAGE_NAME,
@@ -28,7 +26,12 @@ setup(
     url="https://wiki.mozilla.org/Auto-tools/Projects/Mozbase",
     license="MPL",
     packages=["mozproxy"],
+    install_requires=deps,
+    entry_points={
+        "console_scripts": [
+            "mozproxy=mozproxy.driver:main",
+        ],
+    },
     include_package_data=True,
     zip_safe=False,
-    install_requires=deps,
 )

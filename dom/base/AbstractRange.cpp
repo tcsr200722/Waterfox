@@ -6,11 +6,15 @@
 
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/AbstractRangeBinding.h"
+#include "mozilla/dom/ShadowIncludingTreeIterator.h"
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/RangeUtils.h"
+#include "mozilla/dom/ChildIterator.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/StaticRange.h"
+#include "mozilla/dom/Selection.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsGkAtoms.h"
@@ -18,8 +22,7 @@
 #include "nsRange.h"
 #include "nsTArray.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 template nsresult AbstractRange::SetStartAndEndInternal(
     const RangeBoundary& aStartBoundary, const RangeBoundary& aEndBoundary,
@@ -47,6 +50,8 @@ template nsresult AbstractRange::SetStartAndEndInternal(
     const RawRangeBoundary& aEndBoundary, StaticRange* aRange);
 template bool AbstractRange::MaybeCacheToReuse(nsRange& aInstance);
 template bool AbstractRange::MaybeCacheToReuse(StaticRange& aInstance);
+template bool AbstractRange::MaybeCacheToReuse(
+    CrossShadowBoundaryRange& aInstance);
 
 bool AbstractRange::sHasShutDown = false;
 
@@ -58,29 +63,137 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(AbstractRange)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(AbstractRange)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(AbstractRange)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AbstractRange)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner);
   // mStart and mEnd may depend on or be depended on some other members in
   // concrete classes so that they should be unlinked in sub classes.
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
+  tmp->mSelections.Clear();
+  // Unregistering of the common inclusive ancestors would by design
+  // also happen when the actual implementations unlink `mStart`/`mEnd`.
+  // This may introduce additional overhead which is not needed when unlinking,
+  // therefore this is done here beforehand.
+  if (tmp->mRegisteredClosestCommonInclusiveAncestor) {
+    tmp->UnregisterClosestCommonInclusiveAncestor(
+        tmp->mRegisteredClosestCommonInclusiveAncestor, true);
+  }
+  MOZ_DIAGNOSTIC_ASSERT(!tmp->isInList(),
+                        "Shouldn't be registered now that we're unlinking");
+
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(AbstractRange)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStart)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mEnd)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRegisteredClosestCommonInclusiveAncestor)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(AbstractRange)
+// When aMarkDesendants is true, Set
+// DescendantOfClosestCommonInclusiveAncestorForRangeInSelection flag for the
+// shadow including children of aNode. When aMarkDesendants is false, unset that
+// flag for the shadow including children of aNode.
+void UpdateDescendantsByShadowIncludingOrder(const nsIContent& aNode,
+                                             bool aMarkDesendants) {
+  ShadowIncludingTreeIterator iter(*const_cast<nsIContent*>(&aNode));
+  ++iter;  // We don't want to mark the root node
+
+  while (iter) {
+    nsINode* node = *iter;
+    if (aMarkDesendants) {
+      node->SetDescendantOfClosestCommonInclusiveAncestorForRangeInSelection();
+    } else {
+      node->ClearDescendantOfClosestCommonInclusiveAncestorForRangeInSelection();
+    }
+
+    if (node->IsClosestCommonInclusiveAncestorForRangeInSelection()) {
+      iter.SkipChildren();
+      continue;
+    }
+    ++iter;
+  }
+}
+
+void AbstractRange::MarkDescendants(const nsINode& aNode) {
+  // Set NodeIsDescendantOfClosestCommonInclusiveAncestorForRangeInSelection on
+  // aNode's descendants unless aNode is already marked as a range common
+  // ancestor or a descendant of one, in which case all of our descendants have
+  // the bit set already.
+  if (!aNode.IsMaybeSelected()) {
+    // If aNode has a web-exposed shadow root, use this shadow tree and ignore
+    // the children of aNode.
+    if (aNode.GetShadowRootForSelection()) {
+      UpdateDescendantsByShadowIncludingOrder(*aNode.AsContent(), true);
+      return;
+    }
+    // don't set the Descendant bit on |aNode| itself
+    nsINode* node = aNode.GetNextNode(&aNode);
+    while (node) {
+      node->SetDescendantOfClosestCommonInclusiveAncestorForRangeInSelection();
+      if (!node->IsClosestCommonInclusiveAncestorForRangeInSelection()) {
+        if (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled()) {
+          UpdateDescendantsByShadowIncludingOrder(*node->AsContent(), true);
+          // sub-tree of node has been marked already
+          node = node->GetNextNonChildNode(&aNode);
+        } else {
+          node = node->GetNextNode(&aNode);
+        }
+      } else {
+        // optimize: skip this sub-tree since it's marked already.
+        node = node->GetNextNonChildNode(&aNode);
+      }
+    }
+  }
+}
+
+void AbstractRange::UnmarkDescendants(const nsINode& aNode) {
+  // Unset NodeIsDescendantOfClosestCommonInclusiveAncestorForRangeInSelection
+  // on aNode's descendants unless aNode is a descendant of another range common
+  // ancestor. Also, exclude descendants of range common ancestors (but not the
+  // common ancestor itself).
+  if (!aNode
+           .IsDescendantOfClosestCommonInclusiveAncestorForRangeInSelection()) {
+    // If aNode has a web-exposed shadow root, use this shadow tree and ignore
+    // the children of aNode.
+    if (aNode.GetShadowRootForSelection()) {
+      UpdateDescendantsByShadowIncludingOrder(*aNode.AsContent(), false);
+      return;
+    }
+    // we know |aNode| doesn't have any bit set
+    nsINode* node = aNode.GetNextNode(&aNode);
+    while (node) {
+      node->ClearDescendantOfClosestCommonInclusiveAncestorForRangeInSelection();
+      if (!node->IsClosestCommonInclusiveAncestorForRangeInSelection()) {
+        if (StaticPrefs::dom_shadowdom_selection_across_boundary_enabled()) {
+          UpdateDescendantsByShadowIncludingOrder(*node->AsContent(), false);
+          // sub-tree has been marked already
+          node = node->GetNextNonChildNode(&aNode);
+        } else {
+          node = node->GetNextNode(&aNode);
+        }
+      } else {
+        // We found an ancestor of an overlapping range, skip its descendants.
+        node = node->GetNextNonChildNode(&aNode);
+      }
+    }
+  }
+}
 
 // NOTE: If you need to change default value of members of AbstractRange,
 //       update nsRange::Create(nsINode* aNode) and ClearForReuse() too.
-AbstractRange::AbstractRange(nsINode* aNode)
-    : mIsPositioned(false), mIsGenerated(false), mCalledByJS(false) {
+AbstractRange::AbstractRange(nsINode* aNode, bool aIsDynamicRange)
+    : mRegisteredClosestCommonInclusiveAncestor(nullptr),
+      mIsPositioned(false),
+      mIsGenerated(false),
+      mCalledByJS(false),
+      mIsDynamicRange(aIsDynamicRange) {
+  mRefCnt.SetIsOnMainThread();
   Init(aNode);
 }
+
+AbstractRange::~AbstractRange() = default;
 
 void AbstractRange::Init(nsINode* aNode) {
   MOZ_ASSERT(aNode, "range isn't in a document!");
@@ -98,6 +211,12 @@ void AbstractRange::Shutdown() {
   if (nsTArray<RefPtr<StaticRange>>* cachedRanges =
           StaticRange::sCachedRanges) {
     StaticRange::sCachedRanges = nullptr;
+    cachedRanges->Clear();
+    delete cachedRanges;
+  }
+  if (nsTArray<RefPtr<CrossShadowBoundaryRange>>* cachedRanges =
+          CrossShadowBoundaryRange::sCachedRanges) {
+    CrossShadowBoundaryRange::sCachedRanges = nullptr;
     cachedRanges->Clear();
     delete cachedRanges;
   }
@@ -125,10 +244,62 @@ bool AbstractRange::MaybeCacheToReuse(RangeType& aInstance) {
   return true;
 }
 
-nsINode* AbstractRange::GetClosestCommonInclusiveAncestor() const {
-  return mIsPositioned ? nsContentUtils::GetClosestCommonInclusiveAncestor(
-                             mStart.Container(), mEnd.Container())
-                       : nullptr;
+nsINode* AbstractRange::GetClosestCommonInclusiveAncestor(
+    AllowRangeCrossShadowBoundary aAllowCrossShadowBoundary) const {
+  if (!mIsPositioned) {
+    return nullptr;
+  }
+  nsINode* startContainer =
+      aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes
+          ? GetMayCrossShadowBoundaryStartContainer()
+          : GetStartContainer();
+  nsINode* endContainer =
+      aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes
+          ? GetMayCrossShadowBoundaryEndContainer()
+          : GetEndContainer();
+
+  if (MayCrossShadowBoundary() &&
+      aAllowCrossShadowBoundary == AllowRangeCrossShadowBoundary::Yes) {
+    // Since both the start container and the end container are
+    // guaranteed to be in the same composed document.
+    // If one of the boundary is a document, use that document
+    // as the common ancestor since both nodes.
+    const bool oneBoundaryIsDocument =
+        (startContainer && startContainer->IsDocument()) ||
+        (endContainer && endContainer->IsDocument());
+    if (oneBoundaryIsDocument) {
+      MOZ_ASSERT_IF(
+          startContainer && startContainer->IsDocument(),
+          !endContainer || endContainer->GetComposedDoc() == startContainer);
+      MOZ_ASSERT_IF(
+          endContainer && endContainer->IsDocument(),
+          !startContainer || startContainer->GetComposedDoc() == endContainer);
+
+      return startContainer ? startContainer->GetComposedDoc()
+                            : endContainer->GetComposedDoc();
+    }
+
+    const auto rescope = [](nsINode*& aContainer) {
+      if (!aContainer) {
+        return;
+      }
+      // RangeBoundary allows the container to be shadow roots; When
+      // this happens, we should use the shadow host here.
+      if (auto* shadowRoot = ShadowRoot::FromNode(aContainer)) {
+        aContainer = shadowRoot->GetHost();
+        return;
+      }
+    };
+
+    rescope(startContainer);
+    rescope(endContainer);
+
+    return nsContentUtils::GetCommonFlattenedTreeAncestorForSelection(
+        startContainer ? startContainer->AsContent() : nullptr,
+        endContainer ? endContainer->AsContent() : nullptr);
+  }
+  return nsContentUtils::GetClosestCommonInclusiveAncestor(startContainer,
+                                                           endContainer);
 }
 
 // static
@@ -177,9 +348,28 @@ nsresult AbstractRange::SetStartAndEndInternal(
     return NS_ERROR_DOM_INDEX_SIZE_ERR;
   }
 
-  // If they have different root, this should be collapsed at the end point.
+  // Different root
   if (newStartRoot != newEndRoot) {
-    aRange->DoSetRange(aEndBoundary, aEndBoundary, newEndRoot);
+    if (aRange->IsStaticRange()) {
+      // StaticRange allows nodes in different trees, so set start and end
+      // accordingly
+      aRange->DoSetRange(aStartBoundary, aEndBoundary, newEndRoot);
+    } else {
+      MOZ_ASSERT(aRange->IsDynamicRange());
+      // In contrast, nsRange keeps both. It has a pair of start and end
+      // which they have been collapsed to one end, and it also may have a pair
+      // of start and end which are the original value.
+      aRange->DoSetRange(aEndBoundary, aEndBoundary, newEndRoot);
+
+      // Don't create the cross shadow bounday range if the one of the roots is
+      // an UA widget regardless whether the boundaries are allowed to cross
+      // shadow boundary or not.
+      if (!IsRootUAWidget(newStartRoot) && !IsRootUAWidget(newEndRoot)) {
+        aRange->AsDynamicRange()
+            ->CreateOrUpdateCrossShadowBoundaryRangeIfNeeded(aStartBoundary,
+                                                             aEndBoundary);
+      }
+    }
     return NS_OK;
   }
 
@@ -203,10 +393,201 @@ nsresult AbstractRange::SetStartAndEndInternal(
   return NS_OK;
 }
 
+bool AbstractRange::IsInSelection(const Selection& aSelection) const {
+  return mSelections.Contains(&aSelection);
+}
+
+void AbstractRange::RegisterSelection(Selection& aSelection) {
+  if (IsInSelection(aSelection)) {
+    return;
+  }
+  bool isFirstSelection = mSelections.IsEmpty();
+  mSelections.AppendElement(&aSelection);
+  if (isFirstSelection && !mRegisteredClosestCommonInclusiveAncestor) {
+    nsINode* commonAncestor = GetClosestCommonInclusiveAncestor(
+        StaticPrefs::dom_shadowdom_selection_across_boundary_enabled()
+            ? AllowRangeCrossShadowBoundary::Yes
+            : AllowRangeCrossShadowBoundary::No);
+    MOZ_ASSERT(commonAncestor, "unexpected disconnected nodes");
+    RegisterClosestCommonInclusiveAncestor(commonAncestor);
+  }
+}
+
+const nsTArray<WeakPtr<Selection>>& AbstractRange::GetSelections() const {
+  return mSelections;
+}
+
+void AbstractRange::UnregisterSelection(const Selection& aSelection) {
+  mSelections.RemoveElement(&aSelection);
+  if (mSelections.IsEmpty() && mRegisteredClosestCommonInclusiveAncestor) {
+    UnregisterClosestCommonInclusiveAncestor(
+        mRegisteredClosestCommonInclusiveAncestor, false);
+    MOZ_DIAGNOSTIC_ASSERT(
+        !mRegisteredClosestCommonInclusiveAncestor,
+        "How can we have a registered common ancestor when we "
+        "just unregistered?");
+    MOZ_DIAGNOSTIC_ASSERT(
+        !isInList(),
+        "Shouldn't be registered if we have no "
+        "mRegisteredClosestCommonInclusiveAncestor after unregistering");
+  }
+}
+
+void AbstractRange::RegisterClosestCommonInclusiveAncestor(nsINode* aNode) {
+  MOZ_ASSERT(aNode, "bad arg");
+
+  MOZ_DIAGNOSTIC_ASSERT(IsInAnySelection(),
+                        "registering range not in selection");
+
+  mRegisteredClosestCommonInclusiveAncestor = aNode;
+
+  MarkDescendants(*aNode);
+
+  UniquePtr<LinkedList<AbstractRange>>& ranges =
+      aNode->GetClosestCommonInclusiveAncestorRangesPtr();
+  if (!ranges) {
+    ranges = MakeUnique<LinkedList<AbstractRange>>();
+  }
+
+  MOZ_DIAGNOSTIC_ASSERT(!isInList());
+  ranges->insertBack(this);
+  aNode->SetClosestCommonInclusiveAncestorForRangeInSelection();
+}
+
+void AbstractRange::UnregisterClosestCommonInclusiveAncestor(
+    nsINode* aNode, bool aIsUnlinking) {
+  MOZ_ASSERT(aNode, "bad arg");
+  NS_ASSERTION(aNode->IsClosestCommonInclusiveAncestorForRangeInSelection(),
+               "wrong node");
+  MOZ_DIAGNOSTIC_ASSERT(aNode == mRegisteredClosestCommonInclusiveAncestor,
+                        "wrong node");
+  LinkedList<AbstractRange>* ranges =
+      aNode->GetExistingClosestCommonInclusiveAncestorRanges();
+  MOZ_ASSERT(ranges);
+
+  mRegisteredClosestCommonInclusiveAncestor = nullptr;
+
+#ifdef DEBUG
+  bool found = false;
+  for (AbstractRange* range : *ranges) {
+    if (range == this) {
+      found = true;
+      break;
+    }
+  }
+  MOZ_ASSERT(found,
+             "We should be in the list on our registered common ancestor");
+#endif  // DEBUG
+
+  remove();
+
+  // We don't want to waste time unmarking flags on nodes that are
+  // being unlinked anyway.
+  if (!aIsUnlinking && ranges->isEmpty()) {
+    aNode->ClearClosestCommonInclusiveAncestorForRangeInSelection();
+    UnmarkDescendants(*aNode);
+  }
+}
+
+void AbstractRange::UpdateCommonAncestorIfNecessary() {
+  nsINode* oldCommonAncestor = mRegisteredClosestCommonInclusiveAncestor;
+  nsINode* newCommonAncestor =
+      GetClosestCommonInclusiveAncestor(AllowRangeCrossShadowBoundary::Yes);
+  if (newCommonAncestor != oldCommonAncestor) {
+    if (oldCommonAncestor) {
+      UnregisterClosestCommonInclusiveAncestor(oldCommonAncestor, false);
+    }
+    if (newCommonAncestor) {
+      RegisterClosestCommonInclusiveAncestor(newCommonAncestor);
+    } else {
+      MOZ_DIAGNOSTIC_ASSERT(!mIsPositioned, "unexpected disconnected nodes");
+      mSelections.Clear();
+      MOZ_DIAGNOSTIC_ASSERT(
+          !mRegisteredClosestCommonInclusiveAncestor,
+          "How can we have a registered common ancestor when we "
+          "didn't register ourselves?");
+      MOZ_DIAGNOSTIC_ASSERT(!isInList(),
+                            "Shouldn't be registered if we have no "
+                            "mRegisteredClosestCommonInclusiveAncestor");
+    }
+  }
+}
+
+const RangeBoundary& AbstractRange::MayCrossShadowBoundaryStartRef() const {
+  return IsDynamicRange() ? AsDynamicRange()->MayCrossShadowBoundaryStartRef()
+                          : mStart;
+}
+
+const RangeBoundary& AbstractRange::MayCrossShadowBoundaryEndRef() const {
+  return IsDynamicRange() ? AsDynamicRange()->MayCrossShadowBoundaryEndRef()
+                          : mEnd;
+}
+
+nsIContent* AbstractRange::GetMayCrossShadowBoundaryChildAtStartOffset() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->GetMayCrossShadowBoundaryChildAtStartOffset()
+             : mStart.GetChildAtOffset();
+}
+
+nsIContent* AbstractRange::GetMayCrossShadowBoundaryChildAtEndOffset() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->GetMayCrossShadowBoundaryChildAtEndOffset()
+             : mEnd.GetChildAtOffset();
+}
+
+nsINode* AbstractRange::GetMayCrossShadowBoundaryStartContainer() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->GetMayCrossShadowBoundaryStartContainer()
+             : mStart.Container();
+}
+
+nsINode* AbstractRange::GetMayCrossShadowBoundaryEndContainer() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->GetMayCrossShadowBoundaryEndContainer()
+             : mEnd.Container();
+}
+
+bool AbstractRange::MayCrossShadowBoundary() const {
+  return IsDynamicRange() ? !!AsDynamicRange()->GetCrossShadowBoundaryRange()
+                          : false;
+}
+
+uint32_t AbstractRange::MayCrossShadowBoundaryStartOffset() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->MayCrossShadowBoundaryStartOffset()
+             : static_cast<uint32_t>(*mStart.Offset(
+                   RangeBoundary::OffsetFilter::kValidOrInvalidOffsets));
+}
+
+uint32_t AbstractRange::MayCrossShadowBoundaryEndOffset() const {
+  return IsDynamicRange()
+             ? AsDynamicRange()->MayCrossShadowBoundaryEndOffset()
+             : static_cast<uint32_t>(*mEnd.Offset(
+                   RangeBoundary::OffsetFilter::kValidOrInvalidOffsets));
+}
+
+nsINode* AbstractRange::GetParentObject() const { return mOwner; }
+
 JSObject* AbstractRange::WrapObject(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {
   MOZ_CRASH("Must be overridden");
 }
 
-}  // namespace dom
-}  // namespace mozilla
+void AbstractRange::ClearForReuse() {
+  mOwner = nullptr;
+  mStart = RangeBoundary();
+  mEnd = RangeBoundary();
+  mIsPositioned = false;
+  mIsGenerated = false;
+  mCalledByJS = false;
+}
+
+/*static*/
+bool AbstractRange::IsRootUAWidget(const nsINode* aRoot) {
+  MOZ_ASSERT(aRoot);
+  if (const ShadowRoot* shadowRoot = ShadowRoot::FromNode(aRoot)) {
+    return shadowRoot->IsUAWidget();
+  }
+  return false;
+}
+}  // namespace mozilla::dom

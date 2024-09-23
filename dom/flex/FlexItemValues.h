@@ -13,8 +13,11 @@
 
 struct ComputedFlexItemInfo;
 
-namespace mozilla {
-namespace dom {
+class nsINode;
+
+namespace mozilla::dom {
+
+class DOMRectReadOnly;
 
 class FlexLineValues;
 
@@ -28,7 +31,7 @@ class FlexItemValues : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(FlexItemValues)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(FlexItemValues)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -59,7 +62,6 @@ class FlexItemValues : public nsISupports, public nsWrapperCache {
   FlexItemClampState mClampState;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_FlexItemValues_h */

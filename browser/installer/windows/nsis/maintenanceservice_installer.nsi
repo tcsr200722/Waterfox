@@ -37,20 +37,20 @@ Var BrandFullName
 !insertmacro GetParameters
 !insertmacro GetSize
 
-; The test slaves use this fallback key to run tests.
+; The test machines use this fallback key to run tests.
 ; And anyone that wants to run tests themselves should already have 
 ; this installed.
 !define FallbackKey \
-  "SOFTWARE\Mozilla\MaintenanceService\3932ecacee736d366d6436db0f55bce4"
+  "Software\BrowserWorks\MaintenanceService\3932ecacee736d366d6436db0f55bce4"
 
-!define CompanyName "Mozilla Corporation"
+!define CompanyName "BrowserWorks"
 !define BrandFullNameInternal ""
 
 ; The following includes are custom.
 !include defines.nsi
-; We keep defines.nsi defined so that we get other things like 
+; We keep defines.nsi defined so that we get other things like
 ; the version number, but we redefine BrandFullName
-!define MaintFullName "Mozilla Maintenance Service"
+!define MaintFullName "Waterfox Maintenance Service"
 !ifdef BrandFullName
 !undef BrandFullName
 !endif
@@ -66,14 +66,14 @@ Name "${MaintFullName}"
 OutFile "maintenanceservice_installer.exe"
 
 ; Get installation folder from registry if available
-InstallDirRegKey HKLM "Software\Mozilla\MaintenanceService" ""
+InstallDirRegKey HKLM "Software\BrowserWorks\MaintenanceService" ""
 
 SetOverwrite on
 
 ; serviceinstall.cpp also uses this key, in case the path is changed, update
 ; there too.
 !define MaintUninstallKey \
- "Software\Microsoft\Windows\CurrentVersion\Uninstall\MozillaMaintenanceService"
+ "Software\Microsoft\Windows\CurrentVersion\Uninstall\WaterfoxMaintenanceService"
 
 ; Always install into the 32-bit location even if we have a 64-bit build.
 ; This is because we use only 1 service for all Firefox channels.
@@ -118,7 +118,7 @@ Function .onInit
 
   SetSilent silent
 
-  ${Unless} ${AtLeastWin7}
+  ${Unless} ${AtLeastWin10}
     Abort
   ${EndUnless}
 FunctionEnd
@@ -198,7 +198,7 @@ Section "MaintenanceService"
   WriteRegStr HKLM "${MaintUninstallKey}" "DisplayIcon" \
                    "$INSTDIR\Uninstall.exe,0"
   WriteRegStr HKLM "${MaintUninstallKey}" "DisplayVersion" "${AppVersion}"
-  WriteRegStr HKLM "${MaintUninstallKey}" "Publisher" "Mozilla"
+  WriteRegStr HKLM "${MaintUninstallKey}" "Publisher" "BrowserWorks"
   WriteRegStr HKLM "${MaintUninstallKey}" "Comments" "${BrandFullName}"
   WriteRegDWORD HKLM "${MaintUninstallKey}" "NoModify" 1
   ${GetSize} "$INSTDIR" "/S=0K" $R2 $R3 $R4
@@ -209,15 +209,15 @@ Section "MaintenanceService"
   ; want to install once on the first upgrade to maintenance service.
   ; Also write out that we are currently installed, preferences will check
   ; this value to determine if we should show the service update pref.
-  WriteRegDWORD HKLM "Software\Mozilla\MaintenanceService" "Attempted" 1
-  WriteRegDWORD HKLM "Software\Mozilla\MaintenanceService" "Installed" 1
-  DeleteRegValue HKLM "Software\Mozilla\MaintenanceService" "FFPrefetchDisabled"
+  WriteRegDWORD HKLM "Software\BrowserWorks\MaintenanceService" "Attempted" 1
+  WriteRegDWORD HKLM "Software\BrowserWorks\MaintenanceService" "Installed" 1
+  DeleteRegValue HKLM "Software\BrowserWorks\MaintenanceService" "FFPrefetchDisabled"
 
   ; Included here for debug purposes only.  
   ; These keys are used to bypass the installation dir is a valid installation
   ; check from the service so that tests can be run.
   ; WriteRegStr HKLM "${FallbackKey}\0" "name" "Mozilla Corporation"
-  ; WriteRegStr HKLM "${FallbackKey}\0" "issuer" "DigiCert SHA2 Assured ID Code Signing CA"
+  ; WriteRegStr HKLM "${FallbackKey}\0" "issuer" "DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1"
   ${If} ${RunningX64}
   ${OrIf} ${IsNativeARM64}
     SetRegView lastused
@@ -242,6 +242,14 @@ Function un.RenameDelete
   ClearErrors
 FunctionEnd
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; NOTE: The maintenance service uninstaller does not currently get updated when
+; the service itself does during application updates. Under normal use, only
+; running the Firefox installer will generate a new maintenance service
+; uninstaller. That means anything added here will not be seen by users until
+; they run a new Firefox installer. Fixing this is tracked in
+; https://bugzilla.mozilla.org/show_bug.cgi?id=1665193
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 Section "Uninstall"
   ; Delete the service so that no updates will be attempted
   ExecWait '"$INSTDIR\maintenanceservice.exe" uninstall'
@@ -287,36 +295,37 @@ Section "Uninstall"
   Push "$INSTDIR\logs\maintenanceservice-uninstall.log"
   Call un.RenameDelete
   SetShellVarContext all
-  Push "$APPDATA\Mozilla\logs\maintenanceservice.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-1.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-1.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-2.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-2.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-3.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-3.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-4.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-4.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-5.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-5.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-6.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-6.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-7.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-7.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-8.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-8.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-9.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-9.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-10.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-10.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-install.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-install.log"
   Call un.RenameDelete
-  Push "$APPDATA\Mozilla\logs\maintenanceservice-uninstall.log"
+  Push "$APPDATA\BrowserWorks\logs\maintenanceservice-uninstall.log"
   Call un.RenameDelete
-  RMDir /REBOOTOK "$APPDATA\Mozilla\logs"
-  RMDir /REBOOTOK "$APPDATA\Mozilla"
+  RMDir /REBOOTOK "$APPDATA\BrowserWorks\logs"
+  RMDir /REBOOTOK "$APPDATA\BrowserWorks"
   RMDir /REBOOTOK "$INSTDIR\logs"
   RMDir /REBOOTOK "$INSTDIR\update"
+  RMDir /REBOOTOK "$INSTDIR\UpdateLogs"
   RMDir /REBOOTOK "$INSTDIR"
 
   ${If} ${RunningX64}
@@ -324,8 +333,8 @@ Section "Uninstall"
     SetRegView 64
   ${EndIf}
   DeleteRegKey HKLM "${MaintUninstallKey}"
-  DeleteRegValue HKLM "Software\Mozilla\MaintenanceService" "Installed"
-  DeleteRegValue HKLM "Software\Mozilla\MaintenanceService" "FFPrefetchDisabled"
+  DeleteRegValue HKLM "Software\BrowserWorks\MaintenanceService" "Installed"
+  DeleteRegValue HKLM "Software\BrowserWorks\MaintenanceService" "FFPrefetchDisabled"
   DeleteRegKey HKLM "${FallbackKey}\"
   ${If} ${RunningX64}
   ${OrIf} ${IsNativeARM64}

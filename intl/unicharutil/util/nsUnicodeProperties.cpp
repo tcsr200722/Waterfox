@@ -9,10 +9,10 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/HashTable.h"
-#include "nsCharTraits.h"
+#include "mozilla/intl/Segmenter.h"
 
-#include "unicode/uchar.h"
-#include "unicode/unorm2.h"
+#include "BaseChars.h"
+#include "IsCombiningDiacritic.h"
 
 #define UNICODE_BMP_LIMIT 0x10000
 #define UNICODE_LIMIT 0x110000
@@ -167,219 +167,48 @@ bool IsClusterExtender(uint32_t aCh, uint8_t aCategory) {
       (aCh >= 0xe0020 && aCh <= 0xe007f));   // emoji (flag) tag characters
 }
 
-enum HSType {
-  HST_NONE = U_HST_NOT_APPLICABLE,
-  HST_L = U_HST_LEADING_JAMO,
-  HST_V = U_HST_VOWEL_JAMO,
-  HST_T = U_HST_TRAILING_JAMO,
-  HST_LV = U_HST_LV_SYLLABLE,
-  HST_LVT = U_HST_LVT_SYLLABLE
-};
-
-static HSType GetHangulSyllableType(uint32_t aCh) {
-  return HSType(u_getIntPropertyValue(aCh, UCHAR_HANGUL_SYLLABLE_TYPE));
+bool IsClusterExtenderExcludingJoiners(uint32_t aCh, uint8_t aCategory) {
+  return (
+      (aCategory >= HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK &&
+       aCategory <= HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK) ||
+      (aCh >= 0xff9e && aCh <= 0xff9f) ||    // katakana sound marks
+      (aCh >= 0x1F3FB && aCh <= 0x1F3FF) ||  // fitzpatrick skin tone modifiers
+      (aCh >= 0xe0020 && aCh <= 0xe007f));   // emoji (flag) tag characters
 }
 
-void ClusterIterator::Next() {
-  if (AtEnd()) {
-    NS_WARNING("ClusterIterator has already reached the end");
-    return;
+uint32_t CountGraphemeClusters(Span<const char16_t> aText) {
+  if (aText.IsEmpty()) {
+    // Fast path for empty text.
+    return 0;
   }
-
-  uint32_t ch = *mPos++;
-
-  if (mPos < mLimit && NS_IS_SURROGATE_PAIR(ch, *mPos)) {
-    ch = SURROGATE_TO_UCS4(ch, *mPos++);
-  } else if ((ch & ~0xff) == 0x1100 || (ch >= 0xa960 && ch <= 0xa97f) ||
-             (ch >= 0xac00 && ch <= 0xd7ff)) {
-    // Handle conjoining Jamo that make Hangul syllables
-    HSType hangulState = GetHangulSyllableType(ch);
-    while (mPos < mLimit) {
-      ch = *mPos;
-      HSType hangulType = GetHangulSyllableType(ch);
-      switch (hangulType) {
-        case HST_L:
-        case HST_LV:
-        case HST_LVT:
-          if (hangulState == HST_L) {
-            hangulState = hangulType;
-            mPos++;
-            continue;
-          }
-          break;
-        case HST_V:
-          if ((hangulState != HST_NONE) && (hangulState != HST_T) &&
-              (hangulState != HST_LVT)) {
-            hangulState = hangulType;
-            mPos++;
-            continue;
-          }
-          break;
-        case HST_T:
-          if (hangulState != HST_NONE && hangulState != HST_L) {
-            hangulState = hangulType;
-            mPos++;
-            continue;
-          }
-          break;
-        default:
-          break;
-      }
-      break;
-    }
-  }
-
-  const uint32_t kVS16 = 0xfe0f;
-  const uint32_t kZWJ = 0x200d;
-  // UTF-16 surrogate values for Fitzpatrick type modifiers
-  const uint32_t kFitzpatrickHigh = 0xD83C;
-  const uint32_t kFitzpatrickLowFirst = 0xDFFB;
-  const uint32_t kFitzpatrickLowLast = 0xDFFF;
-
-  bool baseIsEmoji = (GetEmojiPresentation(ch) == EmojiDefault) ||
-                     (GetEmojiPresentation(ch) == TextDefault &&
-                      ((mPos < mLimit && *mPos == kVS16) ||
-                       (mPos + 1 < mLimit && *mPos == kFitzpatrickHigh &&
-                        *(mPos + 1) >= kFitzpatrickLowFirst &&
-                        *(mPos + 1) <= kFitzpatrickLowLast)));
-  bool prevWasZwj = false;
-
-  while (mPos < mLimit) {
-    ch = *mPos;
-    size_t chLen = 1;
-
-    // Check for surrogate pairs; note that isolated surrogates will just
-    // be treated as generic (non-cluster-extending) characters here,
-    // which is fine for cluster-iterating purposes
-    if (mPos < mLimit - 1 && NS_IS_SURROGATE_PAIR(ch, *(mPos + 1))) {
-      ch = SURROGATE_TO_UCS4(ch, *(mPos + 1));
-      chLen = 2;
-    }
-
-    bool extendCluster =
-        IsClusterExtender(ch) ||
-        (baseIsEmoji && prevWasZwj &&
-         ((GetEmojiPresentation(ch) == EmojiDefault) ||
-          (GetEmojiPresentation(ch) == TextDefault && mPos + chLen < mLimit &&
-           *(mPos + chLen) == kVS16)));
-    if (!extendCluster) {
-      break;
-    }
-
-    prevWasZwj = (ch == kZWJ);
-    mPos += chLen;
-  }
-
-  NS_ASSERTION(mText < mPos && mPos <= mLimit,
-               "ClusterIterator::Next has overshot the string!");
-}
-
-void ClusterReverseIterator::Next() {
-  if (AtEnd()) {
-    NS_WARNING("ClusterReverseIterator has already reached the end");
-    return;
-  }
-
-  uint32_t ch;
-  do {
-    ch = *--mPos;
-
-    if (mPos > mLimit && NS_IS_SURROGATE_PAIR(*(mPos - 1), ch)) {
-      ch = SURROGATE_TO_UCS4(*--mPos, ch);
-    }
-
-    if (!IsClusterExtender(ch)) {
-      break;
-    }
-  } while (mPos > mLimit);
-
-  // XXX May need to handle conjoining Jamo
-
-  NS_ASSERTION(mPos >= mLimit,
-               "ClusterReverseIterator::Next has overshot the string!");
-}
-
-uint32_t CountGraphemeClusters(const char16_t* aText, uint32_t aLength) {
-  ClusterIterator iter(aText, aLength);
+  intl::GraphemeClusterBreakIteratorUtf16 iter(aText);
   uint32_t result = 0;
-  while (!iter.AtEnd()) {
+  while (iter.Next()) {
     ++result;
-    iter.Next();
   }
   return result;
 }
 
 uint32_t GetNaked(uint32_t aCh) {
-  using namespace mozilla;
-
-  static const UNormalizer2* normalizer;
-  static HashMap<uint32_t, uint32_t> nakedCharCache;
-
-  NS_ASSERTION(!IsCombiningDiacritic(aCh),
-               "This character needs to be skipped");
-
-  HashMap<uint32_t, uint32_t>::Ptr entry = nakedCharCache.lookup(aCh);
-  if (entry.found()) {
-    return entry->value();
-  }
-
-  UErrorCode error = U_ZERO_ERROR;
-  if (!normalizer) {
-    normalizer = unorm2_getNFDInstance(&error);
-    if (U_FAILURE(error)) {
-      return aCh;
-    }
-  }
-
-  static const size_t MAX_DECOMPOSITION_SIZE = 16;
-  UChar decomposition[MAX_DECOMPOSITION_SIZE];
-  UChar* combiners;
-  int32_t decompositionLen;
-  uint32_t baseChar, nextChar;
-  decompositionLen = unorm2_getDecomposition(normalizer, aCh, decomposition,
-                                             MAX_DECOMPOSITION_SIZE, &error);
-  if (decompositionLen < 1) {
-    // The character does not decompose.
+  uint32_t index = aCh >> 8;
+  if (index >= MOZ_ARRAY_LENGTH(BASE_CHAR_MAPPING_BLOCK_INDEX)) {
     return aCh;
   }
-
-  if (NS_IS_HIGH_SURROGATE(decomposition[0])) {
-    baseChar = SURROGATE_TO_UCS4(decomposition[0], decomposition[1]);
-    combiners = decomposition + 2;
-  } else {
-    baseChar = decomposition[0];
-    combiners = decomposition + 1;
+  index = BASE_CHAR_MAPPING_BLOCK_INDEX[index];
+  if (index == 0xff) {
+    return aCh;
   }
-
-  if (IS_IN_BMP(baseChar) != IS_IN_BMP(aCh)) {
-    // Mappings that would change the length of a UTF-16 string are not
-    // currently supported.
-    baseChar = aCh;
-    goto cache;
+  const BaseCharMappingBlock& block = BASE_CHAR_MAPPING_BLOCKS[index];
+  uint8_t lo = aCh & 0xff;
+  if (lo < block.mFirst || lo > block.mLast) {
+    return aCh;
   }
+  return (aCh & 0xffff0000) |
+         BASE_CHAR_MAPPING_LIST[block.mMappingStartOffset + lo - block.mFirst];
+}
 
-  if (decompositionLen > 1) {
-    if (NS_IS_HIGH_SURROGATE(combiners[0])) {
-      nextChar = SURROGATE_TO_UCS4(combiners[0], combiners[1]);
-    } else {
-      nextChar = combiners[0];
-    }
-    if (!IsCombiningDiacritic(nextChar)) {
-      // Hangul syllables decompose but do not actually have diacritics.
-      // This also excludes decompositions with the Japanese marks U+3099 and
-      // U+309A (COMBINING KATAKANA-HIRAGANA [SEMI-]VOICED SOUND MARK), which
-      // we should not ignore for searching (bug 1624244).
-      baseChar = aCh;
-    }
-  }
-
-cache:
-  if (!nakedCharCache.putNew(aCh, baseChar)) {
-    // We're out of memory, so delete the cache to free some up.
-    nakedCharCache.clearAndCompact();
-  }
-
-  return baseChar;
+bool IsCombiningDiacritic(uint32_t aCh) {
+  return sCombiningDiacriticsSet->test(aCh);
 }
 
 }  // end namespace unicode

@@ -12,8 +12,7 @@
 #include "nsContentUtils.h"
 #include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 template <typename>
 struct Nullable;
@@ -40,7 +39,6 @@ class ContentFrameMessageManager : public DOMEventTargetHelper,
   virtual Nullable<WindowProxyHolder> GetContent(ErrorResult& aError) = 0;
   virtual already_AddRefed<nsIDocShell> GetDocShell(ErrorResult& aError) = 0;
   virtual already_AddRefed<nsIEventTarget> GetTabEventTarget() = 0;
-  virtual uint64_t ChromeOuterWindowID() = 0;
 
   nsFrameMessageManager* GetMessageManager() { return mMessageManager; }
   void DisconnectMessageManager() {
@@ -59,7 +57,6 @@ class ContentFrameMessageManager : public DOMEventTargetHelper,
 NS_DEFINE_STATIC_IID_ACCESSOR(ContentFrameMessageManager,
                               NS_CONTENTFRAMEMESSAGEMANAGER_IID)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ContentFrameMessageManager_h

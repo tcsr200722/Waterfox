@@ -7,22 +7,29 @@
 #ifndef mozilla_dom_workers_WorkerLoadInfo_h
 #define mozilla_dom_workers_WorkerLoadInfo_h
 
+#include "mozilla/OriginAttributes.h"
 #include "mozilla/StorageAccess.h"
+#include "mozilla/OriginTrials.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/ChannelInfo.h"
+#include "mozilla/net/NeckoChannelParams.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
 #include "mozilla/dom/WorkerCommon.h"
 
 #include "nsIInterfaceRequestor.h"
 #include "nsILoadContext.h"
+#include "nsIRequest.h"
 #include "nsISupportsImpl.h"
 #include "nsIWeakReferenceUtils.h"
+#include "nsRFPService.h"
+#include "nsTArray.h"
 
 class nsIChannel;
 class nsIContentSecurityPolicy;
 class nsICookieJarSettings;
 class nsILoadGroup;
 class nsIPrincipal;
+class nsIReferrerInfo;
 class nsIRunnable;
 class nsIScriptContext;
 class nsIBrowserChild;
@@ -52,10 +59,14 @@ struct WorkerLoadInfoData {
   // If we load a data: URL, mPrincipal will be a null principal.
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
   nsCOMPtr<nsIPrincipal> mPrincipal;
-  nsCOMPtr<nsIPrincipal> mStoragePrincipal;
+  nsCOMPtr<nsIPrincipal> mPartitionedPrincipal;
 
   // Taken from the parent context.
   nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
+
+  // The CookieJarSettingsArgs of mCookieJarSettings.
+  // This is specific for accessing on worker thread.
+  net::CookieJarSettingsArgs mCookieJarSettingsArgs;
 
   nsCOMPtr<nsIScriptContext> mScriptContext;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
@@ -102,9 +113,8 @@ struct WorkerLoadInfoData {
   RefPtr<InterfaceRequestor> mInterfaceRequestor;
 
   UniquePtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
-  UniquePtr<mozilla::ipc::PrincipalInfo> mStoragePrincipalInfo;
+  UniquePtr<mozilla::ipc::PrincipalInfo> mPartitionedPrincipalInfo;
   nsCString mDomain;
-  nsString mOrigin;  // Derived from mPrincipal; can be used on worker thread.
 
   nsString mServiceWorkerCacheName;
   Maybe<ServiceWorkerDescriptor> mServiceWorkerDescriptor;
@@ -119,19 +129,25 @@ struct WorkerLoadInfoData {
   nsLoadFlags mLoadFlags;
 
   uint64_t mWindowID;
+  uint64_t mAssociatedBrowsingContextID;
 
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
+  OriginTrials mTrials;
   bool mFromWindow;
   bool mEvalAllowed;
-  bool mReportCSPViolations;
+  bool mReportEvalCSPViolations;
+  bool mWasmEvalAllowed;
+  bool mReportWasmEvalCSPViolations;
   bool mXHRParamsAllowed;
-  bool mPrincipalIsSystem;
-  bool mPrincipalIsAddonOrExpandedAddon;
   bool mWatchedByDevTools;
   StorageAccess mStorageAccess;
-  bool mFirstPartyStorageAccessGranted;
+  bool mUseRegularPrincipal;
+  bool mUsingStorageAccess;
   bool mServiceWorkersTestingInWindow;
+  bool mShouldResistFingerprinting;
+  Maybe<RFPTarget> mOverriddenFingerprintingSettings;
   OriginAttributes mOriginAttributes;
+  bool mIsThirdPartyContext;
 
   enum {
     eNotSet,
@@ -153,13 +169,13 @@ struct WorkerLoadInfo : WorkerLoadInfoData {
   WorkerLoadInfo& operator=(WorkerLoadInfo&& aOther) = default;
 
   nsresult SetPrincipalsAndCSPOnMainThread(nsIPrincipal* aPrincipal,
-                                           nsIPrincipal* aStoragePrincipal,
+                                           nsIPrincipal* aPartitionedPrincipal,
                                            nsILoadGroup* aLoadGroup,
                                            nsIContentSecurityPolicy* aCSP);
 
   nsresult GetPrincipalsAndLoadGroupFromChannel(
       nsIChannel* aChannel, nsIPrincipal** aPrincipalOut,
-      nsIPrincipal** aStoragePrincipalOut, nsILoadGroup** aLoadGroupOut);
+      nsIPrincipal** aPartitionedPrincipalOut, nsILoadGroup** aLoadGroupOut);
 
   nsresult SetPrincipalsAndCSPFromChannel(nsIChannel* aChannel);
 
@@ -175,7 +191,7 @@ struct WorkerLoadInfo : WorkerLoadInfoData {
 
   bool ProxyReleaseMainThreadObjects(
       WorkerPrivate* aWorkerPrivate,
-      nsCOMPtr<nsILoadGroup>& aLoadGroupToCancel);
+      nsCOMPtr<nsILoadGroup>&& aLoadGroupToCancel);
 };
 
 }  // namespace dom

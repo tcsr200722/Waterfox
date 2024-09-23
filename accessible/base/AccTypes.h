@@ -25,6 +25,7 @@ enum AccType {
   eHTMLCaptionType,
   eHTMLCheckboxType,
   eHTMLComboboxType,
+  eHTMLDateTimeFieldType,
   eHTMLFileInputType,
   eHTMLGroupboxType,
   eHTMLHRType,
@@ -43,7 +44,6 @@ enum AccType {
   eHyperTextType,
   eImageType,
   eOuterDocType,
-  ePluginType,
   eTextLeafType,
 
   /**
@@ -54,7 +54,6 @@ enum AccType {
   eHTMLOptGroupType,
   eImageMapType,
   eMenuPopupType,
-  eProxyType,
   eProgressType,
   eRootType,
   eXULLabelType,
@@ -72,23 +71,26 @@ enum AccType {
  */
 enum AccGenericType {
   eAlert = 1 << 0,
-  eAutoComplete = 1 << 1,
-  eAutoCompletePopup = 1 << 2,
-  eButton = 1 << 3,
-  eCombobox = 1 << 4,
-  eDocument = 1 << 5,
-  eHyperText = 1 << 6,
-  eLandmark = 1 << 7,
-  eList = 1 << 8,
-  eListControl = 1 << 9,
-  eMenuButton = 1 << 10,
-  eSelect = 1 << 11,
-  eTable = 1 << 12,
-  eTableCell = 1 << 13,
-  eTableRow = 1 << 14,
-  eText = 1 << 15,
+  eAutoCompletePopup = 1 << 1,
+  eButton = 1 << 2,
+  eCombobox = 1 << 3,
+  eDocument = 1 << 4,
+  eHyperText = 1 << 5,
+  eLandmark = 1 << 6,
+  eList = 1 << 7,
+  eListControl = 1 << 8,
+  eMenuButton = 1 << 9,
+  eSelect = 1 << 10,
+  eTable = 1 << 11,
+  eTableCell = 1 << 12,
+  eTableRow = 1 << 13,
+  eText = 1 << 14,
+  eNumericValue = 1 << 15,
+  eActionable = 1 << 16,  // This is for remote accessibles
+  eDPub = 1 << 17,
 
-  eLastAccGenericType = eText
+  eLastAccGenericType = eActionable,
+  eAllGenericTypes = (eLastAccGenericType << 1) - 1
 };
 
 }  // namespace a11y

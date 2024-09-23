@@ -6,10 +6,11 @@
 
 #include "BackgroundChannelRegistrar.h"
 
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/StaticPtr.h"
 #include "HttpBackgroundChannelParent.h"
 #include "HttpChannelParent.h"
 #include "nsXULAppAPI.h"
-#include "mozilla/StaticPtr.h"
 
 namespace {
 mozilla::StaticRefPtr<mozilla::net::BackgroundChannelRegistrar> gSingleton;
@@ -37,14 +38,9 @@ already_AddRefed<nsIBackgroundChannelRegistrar>
 BackgroundChannelRegistrar::GetOrCreate() {
   if (!gSingleton) {
     gSingleton = new BackgroundChannelRegistrar();
+    ClearOnShutdown(&gSingleton);
   }
   return do_AddRef(gSingleton);
-}
-
-// static
-void BackgroundChannelRegistrar::Shutdown() {
-  MOZ_ASSERT(NS_IsMainThread());
-  gSingleton = nullptr;
 }
 
 void BackgroundChannelRegistrar::NotifyChannelLinked(
@@ -74,7 +70,7 @@ void BackgroundChannelRegistrar::LinkHttpChannel(uint64_t aKey,
   bool found = mBgChannels.Remove(aKey, getter_AddRefs(bgParent));
 
   if (!found) {
-    mChannels.Put(aKey, RefPtr{aChannel});
+    mChannels.InsertOrUpdate(aKey, RefPtr{aChannel});
     return;
   }
 
@@ -91,7 +87,7 @@ void BackgroundChannelRegistrar::LinkBackgroundChannel(
   bool found = mChannels.Remove(aKey, getter_AddRefs(parent));
 
   if (!found) {
-    mBgChannels.Put(aKey, RefPtr{aBgChannel});
+    mBgChannels.InsertOrUpdate(aKey, RefPtr{aBgChannel});
     return;
   }
 

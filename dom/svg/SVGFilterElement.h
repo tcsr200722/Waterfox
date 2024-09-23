@@ -4,29 +4,29 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFilterElement_h
-#define mozilla_dom_SVGFilterElement_h
+#ifndef DOM_SVG_SVGFILTERELEMENT_H_
+#define DOM_SVG_SVGFILTERELEMENT_H_
 
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedString.h"
 #include "mozilla/dom/SVGElement.h"
 
-class nsSVGFilterFrame;
-class nsSVGFilterInstance;
-
 nsresult NS_NewSVGFilterElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+class SVGFilterFrame;
+class SVGFilterInstance;
+
 namespace dom {
 class DOMSVGAnimatedLength;
 
-typedef SVGElement SVGFilterElementBase;
+using SVGFilterElementBase = SVGElement;
 
-class SVGFilterElement : public SVGFilterElementBase {
-  friend class ::nsSVGFilterFrame;
-  friend class ::nsSVGFilterInstance;
+class SVGFilterElement final : public SVGFilterElementBase {
+  friend class mozilla::SVGFilterFrame;
+  friend class mozilla::SVGFilterInstance;
 
  protected:
   friend nsresult(::NS_NewSVGFilterElement(
@@ -34,16 +34,16 @@ class SVGFilterElement : public SVGFilterElementBase {
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
   explicit SVGFilterElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  // nsIContent
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  NS_IMPL_FROMNODE_WITH_TAG(SVGFilterElement, kNameSpaceID_SVG, filter)
 
-  // nsSVGSVGElement methods:
-  virtual bool HasValidDimensions() const override;
+  // nsIContent
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+
+  // SVGSVGElement methods:
+  bool HasValidDimensions() const override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedLength> X();
@@ -55,9 +55,9 @@ class SVGFilterElement : public SVGFilterElementBase {
   already_AddRefed<DOMSVGAnimatedString> Href();
 
  protected:
-  virtual LengthAttributesInfo GetLengthInfo() override;
-  virtual EnumAttributesInfo GetEnumInfo() override;
-  virtual StringAttributesInfo GetStringInfo() override;
+  LengthAttributesInfo GetLengthInfo() override;
+  EnumAttributesInfo GetEnumInfo() override;
+  StringAttributesInfo GetStringInfo() override;
 
   enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
   SVGAnimatedLength mLengthAttributes[4];
@@ -75,4 +75,4 @@ class SVGFilterElement : public SVGFilterElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGFilterElement_h
+#endif  // DOM_SVG_SVGFILTERELEMENT_H_

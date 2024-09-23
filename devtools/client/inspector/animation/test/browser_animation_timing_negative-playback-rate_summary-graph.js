@@ -149,7 +149,7 @@ const TEST_DATA = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_negative_playback_rate.html");
   const { panel } = await openAnimationInspector();
 
@@ -162,7 +162,7 @@ add_task(async function() {
       expectedViewboxWidth,
     } = testData;
 
-    const animationItemEl = findAnimationItemElementsByTargetSelector(
+    const animationItemEl = await findAnimationItemByTargetSelector(
       panel,
       targetSelector
     );

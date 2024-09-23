@@ -17,7 +17,6 @@ const TOOLS = [
   "webconsole",
   "jsdebugger",
   "styleeditor",
-  "performance",
   "memory",
   "netmonitor",
   "storage",
@@ -27,7 +26,7 @@ const TOOLS = [
 /**
  * Test whether about:devtools-toolbox display correctly after reloading.
  */
-add_task(async function() {
+add_task(async function () {
   info("Force all debug target panes to be expanded");
   prepareCollapsibilitiesTest();
 
@@ -39,18 +38,18 @@ add_task(async function() {
 async function testReloadAboutDevToolsToolbox(toolId) {
   const { document, tab, window } = await openAboutDebugging();
   await selectThisFirefoxPage(document, window.AboutDebugging.store);
-  const {
-    devtoolsBrowser,
-    devtoolsTab,
-    devtoolsWindow,
-  } = await openAboutDevtoolsToolbox(document, tab, window);
+  // We set the options panel to be the default one because slower panels might lead to
+  // race conditions which create leaks in debug mode.
+  await pushPref("devtools.toolbox.selectedTool", "options");
+  const { devtoolsBrowser, devtoolsTab, devtoolsWindow } =
+    await openAboutDevtoolsToolbox(document, tab, window);
 
   info(`Select tool: ${toolId}`);
   const toolbox = getToolbox(devtoolsWindow);
   await toolbox.selectTool(toolId);
 
   info("Wait for requests to settle before reloading");
-  await toolbox.target.client.waitForRequestsToSettle();
+  await toolbox.commands.client.waitForRequestsToSettle();
 
   info("Reload about:devtools-toolbox page");
   devtoolsBrowser.reload();

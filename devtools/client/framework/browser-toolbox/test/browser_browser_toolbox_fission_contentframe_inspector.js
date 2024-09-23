@@ -3,18 +3,17 @@
 
 // There are shutdown issues for which multiple rejections are left uncaught.
 // See bug 1018184 for resolving these issues.
-const { PromiseTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm"
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/File closed/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/File closed/);
 
-/* import-globals-from ../../../inspector/test/shared-head.js */
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/inspector/test/shared-head.js",
   this
 );
 
-// On debug test slave, it takes about 50s to run the test.
+// On debug test machine, it takes about 50s to run the test.
 requestLongerTimeout(4);
 
 /**
@@ -23,16 +22,19 @@ requestLongerTimeout(4);
  * Pass --enable-fission to ./mach test to enable fission when running this
  * test locally.
  */
-add_task(async function() {
-  const ToolboxTask = await initBrowserToolboxTask({
-    enableBrowserToolboxFission: true,
-  });
+add_task(async function () {
+  await pushPref("devtools.browsertoolbox.scope", "everything");
+  const ToolboxTask = await initBrowserToolboxTask();
   await ToolboxTask.importFunctions({
-    selectNodeFront,
+    getNodeFront,
+    getNodeFrontInFrames,
+    selectNode,
+    // selectNodeInFrames depends on selectNode, getNodeFront, getNodeFrontInFrames.
+    selectNodeInFrames,
   });
 
   const tab = await addTab(
-    `http://example.com/browser/devtools/client/framework/browser-toolbox/test/doc_browser_toolbox_fission_contentframe_inspector_page.html`
+    `https://example.com/browser/devtools/client/framework/browser-toolbox/test/doc_browser_toolbox_fission_contentframe_inspector_page.html`
   );
 
   // Set a custom attribute on the tab's browser, in order to easily select it in the markup view
@@ -45,44 +47,12 @@ add_task(async function() {
     inspector.sidebar.select("computedview");
     await onSidebarSelect;
 
-    info("Select the browser element for the content page");
-    const browserFront = await selectNodeFront(
-      inspector,
-      inspector.walker,
-      'browser[remote="true"][test-tab]'
-    );
-    const browserTarget = await browserFront.connectToRemoteFrame();
-    const browserWalker = (await browserTarget.getFront("inspector")).walker;
-
-    info("Select the iframe element in the content page");
-    const iframeFront = await selectNodeFront(
-      inspector,
-      browserWalker,
-      "iframe"
-    );
-
-    // With Fission, the iframe is a remoteFrame and will have a new dedicated
-    // target front. Without Fission, the iframe is in scope of the browser
-    // target front, so we will simply reuse browserTarget.
-    const iframeTarget = iframeFront.remoteFrame
-      ? await iframeFront.connectToRemoteFrame()
-      : browserTarget;
-    const iframeWalker = (await iframeTarget.getFront("inspector")).walker;
-
-    // We need to use the iframe's document node front as the root node of the
-    // next query, because in non-fission mode "iframeWalker" is actually the
-    // browserWalker and the simple selector "#inside-iframe" is not enough to
-    // find the node across iframes.
-    const { nodes } = await iframeWalker.children(iframeFront);
-    const iframeDocFront = nodes.find(n => n.nodeType === Node.DOCUMENT_NODE);
-
     info("Select the test element nested in the remote iframe");
-    const nodeFront = await selectNodeFront(
-      inspector,
-      iframeWalker,
-      "#inside-iframe",
-      iframeDocFront
+    const nodeFront = await selectNodeInFrames(
+      ['browser[remote="true"][test-tab]', "iframe", "#inside-iframe"],
+      inspector
     );
+
     return nodeFront.getAttribute("test-attribute");
   });
 

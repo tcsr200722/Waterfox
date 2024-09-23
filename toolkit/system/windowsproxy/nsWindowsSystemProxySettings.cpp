@@ -11,10 +11,10 @@
 #include "mozilla/Attributes.h"
 #include "nsISystemProxySettings.h"
 #include "mozilla/Components.h"
+#include "mozilla/ProfilerLabels.h"
 #include "nsPrintfCString.h"
 #include "nsNetCID.h"
 #include "nsThreadUtils.h"
-#include "GeckoProfiler.h"
 #include "prnetdb.h"
 #include "ProxyUtils.h"
 
@@ -187,7 +187,7 @@ nsresult nsWindowsSystemProxySettings::GetProxyForURI(const nsACString& aSpec,
 
   NS_ConvertUTF16toUTF8 cbuf(buf);
 
-  NS_NAMED_LITERAL_CSTRING(kSocksPrefix, "socks=");
+  constexpr auto kSocksPrefix = "socks="_ns;
   nsAutoCString prefix;
   ToLowerCase(aScheme, prefix);
 
@@ -239,6 +239,19 @@ nsresult nsWindowsSystemProxySettings::GetProxyForURI(const nsACString& aSpec,
     SetProxyResultDirect(aResult);  // Direct connection.
 
   return NS_OK;
+}
+
+NS_IMETHODIMP nsWindowsSystemProxySettings::GetSystemWPADSetting(
+    bool* aSystemWPADSetting) {
+  nsresult rv;
+  uint32_t flags = 0;
+  nsAutoString buf;
+
+  rv = ReadInternetOption(INTERNET_PER_CONN_AUTOCONFIG_URL, flags, buf);
+  *aSystemWPADSetting =
+      (flags & (PROXY_TYPE_AUTO_PROXY_URL | PROXY_TYPE_AUTO_DETECT)) ==
+      PROXY_TYPE_AUTO_DETECT;
+  return rv;
 }
 
 NS_IMPL_COMPONENT_FACTORY(nsWindowsSystemProxySettings) {

@@ -14,6 +14,7 @@
 #include "nsThreadUtils.h"
 #include "nsProxyRelease.h"
 #include "imgLoader.h"
+#include "PlacesCompletionCallback.h"
 
 class nsIPrincipal;
 
@@ -34,16 +35,13 @@ class nsIPrincipal;
 #define PNG_MIME_TYPE "image/png"
 #define SVG_MIME_TYPE "image/svg+xml"
 
-/**
- * The maximum time we will keep a favicon around.  We always ask the cache, if
- * we can, but default to this value if we do not get a time back, or the time
- * is more in the future than this.
- * Currently set to one week from now.
- */
+// Always ensure a minimum expiration time, so icons are not already expired
+// on addition.
+#define MIN_FAVICON_EXPIRATION ((PRTime)1 * 24 * 60 * 60 * PR_USEC_PER_SEC)
+// The maximum time we will keep a favicon around.  We always ask the cache
+// first and default to this value if we can't get a time, or the time we get
+// is far in the future.
 #define MAX_FAVICON_EXPIRATION ((PRTime)7 * 24 * 60 * 60 * PR_USEC_PER_SEC)
-
-// Whether there are unsupported payloads to convert yet.
-#define PREF_CONVERT_PAYLOADS "places.favicons.convertPayloads"
 
 namespace mozilla {
 namespace places {
@@ -195,6 +193,33 @@ class AsyncAssociateIconToPage final : public Runnable {
 };
 
 /**
+ * Set favicon for the page, finally dispatches an event to the
+ * main thread to notify the change to observers.
+ */
+class AsyncSetIconForPage final : public Runnable {
+ public:
+  NS_DECL_NSIRUNNABLE
+
+  /**
+   * Constructor.
+   *
+   * @param aIcon
+   *        Icon to be associated.
+   * @param aPage
+   *        Page to which associate the icon.
+   * @param aCallback
+   *        Function to be called when the associate process finishes.
+   */
+  AsyncSetIconForPage(const IconData& aIcon, const PageData& aPage,
+                      PlacesCompletionCallback* aCallback);
+
+ private:
+  nsMainThreadPtrHandle<PlacesCompletionCallback> mCallback;
+  IconData mIcon;
+  PageData mPage;
+};
+
+/**
  * Asynchronously tries to get the URL of a page's favicon, then notifies the
  * given observer.
  */
@@ -259,18 +284,6 @@ class AsyncGetFaviconDataForPage final : public Runnable {
   nsCString mPageHost;
 };
 
-class AsyncReplaceFaviconData final : public Runnable {
- public:
-  NS_DECL_NSIRUNNABLE
-
-  explicit AsyncReplaceFaviconData(const IconData& aIcon);
-
- private:
-  nsresult RemoveIconDataCacheEntry();
-
-  IconData mIcon;
-};
-
 /**
  * Notifies the icon change to favicon observers.
  */
@@ -279,7 +292,7 @@ class NotifyIconObservers final : public Runnable {
   NS_DECL_NSIRUNNABLE
 
   /**
-   * Constructor.
+   * Constructor for nsIFaviconDataCallback.
    *
    * @param aIcon
    *        Icon information. Can be empty if no icon is associated to the page.
@@ -296,30 +309,6 @@ class NotifyIconObservers final : public Runnable {
   nsMainThreadPtrHandle<nsIFaviconDataCallback> mCallback;
   IconData mIcon;
   PageData mPage;
-};
-
-/**
- * Fetches and converts unsupported payloads. This is used during the initial
- * migration of icons from the old to the new store.
- */
-class FetchAndConvertUnsupportedPayloads final : public Runnable {
- public:
-  NS_DECL_NSIRUNNABLE
-
-  /**
-   * Constructor.
-   *
-   * @param aDBConn
-   *        The database connection to use.
-   */
-  explicit FetchAndConvertUnsupportedPayloads(mozIStorageConnection* aDBConn);
-
- private:
-  nsresult ConvertPayload(int64_t aId, const nsACString& aMimeType,
-                          nsCString& aPayload, int32_t* aWidth);
-  nsresult StorePayload(int64_t aId, int32_t aWidth, const nsCString& aPayload);
-
-  nsCOMPtr<mozIStorageConnection> mDB;
 };
 
 /**

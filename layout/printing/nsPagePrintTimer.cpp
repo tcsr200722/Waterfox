@@ -6,17 +6,44 @@
 
 #include "nsPagePrintTimer.h"
 
+#include "mozilla/dom/Document.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/Unused.h"
 #include "nsPrintJob.h"
+#include "nsPrintObject.h"
 
 using namespace mozilla;
 
 NS_IMPL_ISUPPORTS_INHERITED(nsPagePrintTimer, mozilla::Runnable,
                             nsITimerCallback)
 
-nsPagePrintTimer::~nsPagePrintTimer() {
-  // This matches the IncrementDestroyBlockedCount call in the constructor.
-  mDocViewerPrint->DecrementDestroyBlockedCount();
+nsPagePrintTimer::nsPagePrintTimer(nsPrintJob* aPrintJob,
+                                   nsIDocumentViewerPrint* aDocViewerPrint,
+                                   mozilla::dom::Document* aDocument,
+                                   uint32_t aDelay)
+    : Runnable("nsPagePrintTimer"),
+      mPrintJob(aPrintJob),
+      mDocViewerPrint(aDocViewerPrint),
+      mDocument(aDocument),
+      mDelay(aDelay),
+      mFiringCount(0),
+      mPrintObj(nullptr),
+      mWatchDogCount(0),
+      mDone(false) {
+  MOZ_ASSERT(aDocViewerPrint && aDocument);
+  mDocViewerPrint->IncrementDestroyBlockedCount();
+}
+
+nsPagePrintTimer::~nsPagePrintTimer() { Disconnect(); }
+
+void nsPagePrintTimer::Disconnect() {
+  mPrintJob = nullptr;
+  mPrintObj = nullptr;
+  if (mDocViewerPrint) {
+    // This matches the IncrementDestroyBlockedCount call in the constructor.
+    mDocViewerPrint->DecrementDestroyBlockedCount();
+    mDocViewerPrint = nullptr;
+  }
 }
 
 nsresult nsPagePrintTimer::StartTimer(bool aUseDelay) {
@@ -29,9 +56,9 @@ nsresult nsPagePrintTimer::StartTimer(bool aUseDelay) {
       delay = mDelay;
     }
   }
-  return NS_NewTimerWithCallback(
-      getter_AddRefs(mTimer), this, delay, nsITimer::TYPE_ONE_SHOT,
-      mDocument->EventTargetFor(TaskCategory::Other));
+  return NS_NewTimerWithCallback(getter_AddRefs(mTimer), this, delay,
+                                 nsITimer::TYPE_ONE_SHOT,
+                                 GetMainThreadSerialEventTarget());
 }
 
 nsresult nsPagePrintTimer::StartWatchDogTimer() {
@@ -40,9 +67,9 @@ nsresult nsPagePrintTimer::StartWatchDogTimer() {
   }
   // Instead of just doing one timer for a long period do multiple so we
   // can check if the user cancelled the printing.
-  return NS_NewTimerWithCallback(
-      getter_AddRefs(mWatchDogTimer), this, WATCH_DOG_INTERVAL,
-      nsITimer::TYPE_ONE_SHOT, mDocument->EventTargetFor(TaskCategory::Other));
+  return NS_NewTimerWithCallback(getter_AddRefs(mWatchDogTimer), this,
+                                 WATCH_DOG_INTERVAL, nsITimer::TYPE_ONE_SHOT,
+                                 GetMainThreadSerialEventTarget());
 }
 
 void nsPagePrintTimer::StopWatchDogTimer() {
@@ -56,31 +83,28 @@ void nsPagePrintTimer::StopWatchDogTimer() {
 NS_IMETHODIMP
 nsPagePrintTimer::Run() {
   bool initNewTimer = true;
-  // Check to see if we are done
-  // inRange will be true if a page is actually printed
-  bool inRange;
   bool donePrinting;
 
   // donePrinting will be true if it completed successfully or
   // if the printing was cancelled
-  donePrinting = !mPrintJob || mPrintJob->PrintPage(mPrintObj, inRange);
+  donePrinting = !mPrintJob || mPrintJob->PrintSheet(mPrintObj);
   if (donePrinting) {
     if (mWaitingForRemotePrint ||
         // If we are not waiting for the remote printing, it is the time to
-        // end printing task by calling DonePrintingPages.
-        (!mPrintJob || mPrintJob->DonePrintingPages(mPrintObj, NS_OK))) {
+        // end printing task by calling DonePrintingSheets.
+        (!mPrintJob || mPrintJob->DonePrintingSheets(mPrintObj, NS_OK))) {
       initNewTimer = false;
       mDone = true;
     }
   }
 
   // Note that the Stop() destroys this after the print job finishes
-  // (The nsPrintJob stops holding a reference when DonePrintingPages
+  // (The nsPrintJob stops holding a reference when DonePrintingSheets
   // returns true.)
   Stop();
   if (initNewTimer) {
     ++mFiringCount;
-    nsresult result = StartTimer(inRange);
+    nsresult result = StartTimer(/*aUseDelay*/ true);
     if (NS_FAILED(result)) {
       mDone = true;  // had a failure.. we are finished..
       if (mPrintJob) {
@@ -101,7 +125,7 @@ nsPagePrintTimer::Notify(nsITimer* timer) {
   }
 
   // There are four things that call Notify with different values for timer:
-  // 1) the delay between pages (timer == mTimer)
+  // 1) the delay between sheets (timer == mTimer)
   // 2) canvasPrintState done (timer == null)
   // 3) the watch dog timer (timer == mWatchDogTimer)
   // 4) the waiting for remote print "timer" (timer == mWaitingForRemotePrint)
@@ -109,19 +133,23 @@ nsPagePrintTimer::Notify(nsITimer* timer) {
     // Reset the counter since a mozPrintCallback has finished.
     mWatchDogCount = 0;
   } else if (timer == mTimer) {
-    // Reset the watchdog timer before the start of every page.
+    // Reset the watchdog timer before the start of every sheet.
     mWatchDogCount = 0;
     mTimer = nullptr;
   } else if (timer == mWaitingForRemotePrint) {
     mWaitingForRemotePrint = nullptr;
 
-    // If we are still waiting for the page delay timer, don't let the
-    // notification from the remote print job trigger the next page.
+    // If we are still waiting for the sheet delay timer, don't let the
+    // notification from the remote print job trigger the next sheet.
     if (mTimer) {
       return NS_OK;
     }
   } else if (timer == mWatchDogTimer) {
     mWatchDogCount++;
+    PROFILER_MARKER_TEXT(
+        "nsPagePrintTimer::Notify", LAYOUT_Printing, {},
+        nsPrintfCString("Watchdog Timer Count %d", mWatchDogCount));
+
     if (mWatchDogCount > WATCH_DOG_MAX_COUNT) {
       Fail();
       return NS_OK;
@@ -131,13 +159,13 @@ nsPagePrintTimer::Notify(nsITimer* timer) {
   bool donePrePrint = true;
   // Don't start to pre-print if we're waiting on the parent still.
   if (mPrintJob && !mWaitingForRemotePrint) {
-    donePrePrint = mPrintJob->PrePrintPage();
+    donePrePrint = mPrintJob->PrePrintSheet();
   }
 
   if (donePrePrint && !mWaitingForRemotePrint) {
     StopWatchDogTimer();
     // Pass nullptr here since name already was set in constructor.
-    mDocument->Dispatch(TaskCategory::Other, do_AddRef(this));
+    mDocument->Dispatch(do_AddRef(this));
   } else {
     // Start the watch dog if we're waiting for preprint to ensure that if any
     // mozPrintCallbacks take to long we error out.
@@ -161,11 +189,10 @@ void nsPagePrintTimer::RemotePrintFinished() {
 
   // now clean up print or print the next webshell
   if (mDone && mPrintJob) {
-    mDone = mPrintJob->DonePrintingPages(mPrintObj, NS_OK);
+    mDone = mPrintJob->DonePrintingSheets(mPrintObj, NS_OK);
   }
 
-  mWaitingForRemotePrint->SetTarget(
-      mDocument->EventTargetFor(mozilla::TaskCategory::Other));
+  mWaitingForRemotePrint->SetTarget(GetMainThreadSerialEventTarget());
   mozilla::Unused << mWaitingForRemotePrint->InitWithCallback(
       this, 0, nsITimer::TYPE_ONE_SHOT);
 }
@@ -186,6 +213,8 @@ void nsPagePrintTimer::Stop() {
 
 void nsPagePrintTimer::Fail() {
   NS_WARNING("nsPagePrintTimer::Fail called");
+  PROFILER_MARKER_TEXT("nsPagePrintTimer", LAYOUT_Printing, {},
+                       "nsPagePrintTimer::Fail aborting print operation"_ns);
 
   mDone = true;
   Stop();

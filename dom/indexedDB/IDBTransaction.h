@@ -63,6 +63,15 @@ class IDBTransaction final
     Invalid
   };
 
+  enum struct Durability {
+    Default = 0,
+    Strict,
+    Relaxed,
+
+    // Only needed for IPC serialization helper, should never be used in code.
+    Invalid
+  };
+
   enum struct ReadyState { Active, Inactive, Committing, Finished };
 
  private:
@@ -73,7 +82,7 @@ class IDBTransaction final
   nsTArray<RefPtr<IDBObjectStore>> mObjectStores;
   nsTArray<RefPtr<IDBObjectStore>> mDeletedObjectStores;
   RefPtr<StrongWorkerRef> mWorkerRef;
-  nsTArray<IDBCursor*> mCursors;
+  nsTArray<NotNull<IDBCursor*>> mCursors;
 
   // Tagged with mMode. If mMode is Mode::VersionChange then mBackgroundActor
   // will be a BackgroundVersionChangeTransactionChild. Otherwise it will be a
@@ -89,6 +98,11 @@ class IDBTransaction final
   // Only used for Mode::VersionChange transactions.
   int64_t mNextObjectStoreId;
   int64_t mNextIndexId;
+
+  // Request ids are issued starting from 0 and incremented by one as we send
+  // actor creation messages to the parent process. Used to support the
+  // explicit commit() request.
+  int64_t mNextRequestId;
 
   nsresult mAbortCode;  ///< The result that caused the transaction to be
                         ///< aborted, or NS_OK if not aborted.
@@ -108,6 +122,7 @@ class IDBTransaction final
   ReadyState mReadyState = ReadyState::Active;
   FlippedOnce<false> mStarted;
   const Mode mMode;
+  const Durability mDurability;
 
   bool mRegistered;  ///< Whether mDatabase->RegisterTransaction() has been
                      ///< called (which may not be the case if construction was
@@ -125,12 +140,13 @@ class IDBTransaction final
   [[nodiscard]] static SafeRefPtr<IDBTransaction> CreateVersionChange(
       IDBDatabase* aDatabase,
       indexedDB::BackgroundVersionChangeTransactionChild* aActor,
-      IDBOpenDBRequest* aOpenRequest, int64_t aNextObjectStoreId,
+      NotNull<IDBOpenDBRequest*> aOpenRequest, int64_t aNextObjectStoreId,
       int64_t aNextIndexId);
 
   [[nodiscard]] static SafeRefPtr<IDBTransaction> Create(
       JSContext* aCx, IDBDatabase* aDatabase,
-      const nsTArray<nsString>& aObjectStoreNames, Mode aMode);
+      const nsTArray<nsString>& aObjectStoreNames, Mode aMode,
+      Durability aDurability);
 
   static Maybe<IDBTransaction&> MaybeCurrent();
 
@@ -160,9 +176,10 @@ class IDBTransaction final
   }
 
   indexedDB::BackgroundRequestChild* StartRequest(
-      IDBRequest* aRequest, const indexedDB::RequestParams& aParams);
+      MovingNotNull<RefPtr<mozilla::dom::IDBRequest>> aRequest,
+      const indexedDB::RequestParams& aParams);
 
-  void OpenCursor(indexedDB::PBackgroundIDBCursorChild* aBackgroundActor,
+  void OpenCursor(indexedDB::PBackgroundIDBCursorChild& aBackgroundActor,
                   const indexedDB::OpenCursorParams& aParams);
 
   void RefreshSpec(bool aMayDelete);
@@ -207,39 +224,6 @@ class IDBTransaction final
   bool WasExplicitlyCommitted() const { return mWasExplicitlyCommitted; }
 #endif
 
-  template <ReadyState OriginalState, ReadyState TemporaryState>
-  class AutoRestoreState {
-   public:
-    explicit AutoRestoreState(IDBTransaction& aOwner) : mOwner { aOwner }
-#ifdef DEBUG
-    , mSavedPendingRequestCount { mOwner.mPendingRequestCount }
-#endif
-    {
-      mOwner.AssertIsOnOwningThread();
-      MOZ_ASSERT(mOwner.mReadyState == OriginalState);
-      mOwner.mReadyState = TemporaryState;
-    }
-
-    ~AutoRestoreState() {
-      mOwner.AssertIsOnOwningThread();
-      MOZ_ASSERT(mOwner.mReadyState == TemporaryState);
-      MOZ_ASSERT(mOwner.mPendingRequestCount == mSavedPendingRequestCount);
-
-      mOwner.mReadyState = OriginalState;
-    }
-
-   private:
-    IDBTransaction& mOwner;
-#ifdef DEBUG
-    const uint32_t mSavedPendingRequestCount;
-#endif
-  };
-
-  AutoRestoreState<ReadyState::Inactive, ReadyState::Active>
-  TemporarilyTransitionToActive();
-  AutoRestoreState<ReadyState::Active, ReadyState::Inactive>
-  TemporarilyTransitionToInactive();
-
   void TransitionToActive() {
     MOZ_ASSERT(mReadyState == ReadyState::Inactive);
     mReadyState = ReadyState::Active;
@@ -264,6 +248,13 @@ class IDBTransaction final
     return mMode;
   }
 
+  Durability GetDurability() const {
+    AssertIsOnOwningThread();
+    return mDurability;
+  }
+
+  uint32_t GetPendingRequestCount() const { return mPendingRequestCount; }
+
   IDBDatabase* Database() const {
     AssertIsOnOwningThread();
     return mDatabase;
@@ -280,15 +271,15 @@ class IDBTransaction final
 
   void DeleteObjectStore(int64_t aObjectStoreId);
 
-  void RenameObjectStore(int64_t aObjectStoreId, const nsAString& aName);
+  void RenameObjectStore(int64_t aObjectStoreId, const nsAString& aName) const;
 
   void CreateIndex(IDBObjectStore* aObjectStore,
-                   const indexedDB::IndexMetadata& aMetadata);
+                   const indexedDB::IndexMetadata& aMetadata) const;
 
-  void DeleteIndex(IDBObjectStore* aObjectStore, int64_t aIndexId);
+  void DeleteIndex(IDBObjectStore* aObjectStore, int64_t aIndexId) const;
 
   void RenameIndex(IDBObjectStore* aObjectStore, int64_t aIndexId,
-                   const nsAString& aName);
+                   const nsAString& aName) const;
 
   void Abort(IDBRequest* aRequest);
 
@@ -310,9 +301,12 @@ class IDBTransaction final
   // Only for Mode::VersionChange transactions.
   int64_t NextIndexId();
 
+  // See the comment for mNextRequestId.
+  int64_t NextRequestId();
+
   void InvalidateCursorCaches();
-  void RegisterCursor(IDBCursor* aCursor);
-  void UnregisterCursor(IDBCursor* aCursor);
+  void RegisterCursor(IDBCursor& aCursor);
+  void UnregisterCursor(IDBCursor& aCursor);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIRUNNABLE
@@ -328,6 +322,8 @@ class IDBTransaction final
   IDBDatabase* Db() const { return Database(); }
 
   IDBTransactionMode GetMode(ErrorResult& aRv) const;
+
+  IDBTransactionDurability GetDurability(ErrorResult& aRv) const;
 
   DOMException* GetError() const;
 
@@ -353,8 +349,8 @@ class IDBTransaction final
  public:
   IDBTransaction(IDBDatabase* aDatabase,
                  const nsTArray<nsString>& aObjectStoreNames, Mode aMode,
-                 nsString aFilename, uint32_t aLineNo, uint32_t aColumn,
-                 CreatedFromFactoryFunction aDummy);
+                 Durability aDurability, nsString aFilename, uint32_t aLineNo,
+                 uint32_t aColumn, CreatedFromFactoryFunction aDummy);
 
  private:
   ~IDBTransaction();

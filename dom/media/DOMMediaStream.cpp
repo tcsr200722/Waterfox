@@ -8,10 +8,10 @@
 #include "AudioCaptureTrack.h"
 #include "AudioChannelAgent.h"
 #include "AudioStreamTrack.h"
-#include "Layers.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
 #include "MediaTrackListener.h"
+#include "Tracing.h"
 #include "VideoStreamTrack.h"
 #include "mozilla/dom/AudioTrack.h"
 #include "mozilla/dom/AudioTrackList.h"
@@ -68,14 +68,12 @@ static bool ContainsLiveAudioTracks(
 
 class DOMMediaStream::PlaybackTrackListener : public MediaStreamTrackConsumer {
  public:
-  explicit PlaybackTrackListener(DOMMediaStream* aStream) : mStream(aStream) {}
+  NS_INLINE_DECL_REFCOUNTING(PlaybackTrackListener)
 
-  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(PlaybackTrackListener)
-  NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(PlaybackTrackListener)
+  explicit PlaybackTrackListener(DOMMediaStream* aStream) : mStream(aStream) {}
 
   void NotifyEnded(MediaStreamTrack* aTrack) override {
     if (!mStream) {
-      MOZ_ASSERT(false);
       return;
     }
 
@@ -91,44 +89,43 @@ class DOMMediaStream::PlaybackTrackListener : public MediaStreamTrackConsumer {
  protected:
   virtual ~PlaybackTrackListener() = default;
 
-  RefPtr<DOMMediaStream> mStream;
+  WeakPtr<DOMMediaStream> mStream;
 };
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(DOMMediaStream::PlaybackTrackListener,
-                                     AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(DOMMediaStream::PlaybackTrackListener,
-                                       Release)
-NS_IMPL_CYCLE_COLLECTION(DOMMediaStream::PlaybackTrackListener, mStream)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(DOMMediaStream)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(DOMMediaStream,
                                                 DOMEventTargetHelper)
   tmp->Destroy();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTracks)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsumersToKeepAlive)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPlaybackTrackListener)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mTrackListeners)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(DOMMediaStream,
                                                   DOMEventTargetHelper)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mWindow)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTracks)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsumersToKeepAlive)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPlaybackTrackListener)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTrackListeners)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_ADDREF_INHERITED(DOMMediaStream, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(DOMMediaStream, DOMEventTargetHelper)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream)
-  NS_INTERFACE_MAP_ENTRY(DOMMediaStream)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(DOMMediaStream)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
+NS_IMPL_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMMediaStream::TrackListener)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMMediaStream::TrackListener)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMMediaStream::TrackListener)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
+
 DOMMediaStream::DOMMediaStream(nsPIDOMWindowInner* aWindow)
-    : mWindow(aWindow),
+    : DOMEventTargetHelper(aWindow),
       mPlaybackTrackListener(MakeAndAddRef<PlaybackTrackListener>(this)) {
   nsresult rv;
   nsCOMPtr<nsIUUIDGenerator> uuidgen =
@@ -250,6 +247,7 @@ already_AddRefed<Promise> DOMMediaStream::CountUnderlyingStreams(
     }
 
     void Run() override {
+      TRACE("DOMMediaStream::Counter")
       uint32_t streams =
           mGraph->mTracks.Length() + mGraph->mSuspendedTracks.Length();
       mGraph->DispatchToMainThreadStableState(NS_NewRunnableFunction(
@@ -338,12 +336,23 @@ void DOMMediaStream::AddTrack(MediaStreamTrack& aTrack) {
   }
 
   mTracks.AppendElement(&aTrack);
-  NotifyTrackAdded(&aTrack);
+
+  if (!aTrack.Ended()) {
+    NotifyTrackAdded(&aTrack);
+  }
 }
 
 void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
-  LOG(LogLevel::Info, ("DOMMediaStream %p Removing track %p (from track %p)",
-                       this, &aTrack, aTrack.GetTrack()));
+  if (static_cast<LogModule*>(gMediaStreamLog)->ShouldLog(LogLevel::Info)) {
+    if (aTrack.Ended()) {
+      LOG(LogLevel::Info,
+          ("DOMMediaStream %p Removing (ended) track %p", this, &aTrack));
+    } else {
+      LOG(LogLevel::Info,
+          ("DOMMediaStream %p Removing track %p (from track %p)", this, &aTrack,
+           aTrack.GetTrack()));
+    }
+  }
 
   if (!mTracks.RemoveElement(&aTrack)) {
     LOG(LogLevel::Debug,
@@ -357,7 +366,7 @@ void DOMMediaStream::RemoveTrack(MediaStreamTrack& aTrack) {
 }
 
 already_AddRefed<DOMMediaStream> DOMMediaStream::Clone() {
-  auto newStream = MakeRefPtr<DOMMediaStream>(GetParentObject());
+  auto newStream = MakeRefPtr<DOMMediaStream>(GetOwner());
 
   LOG(LogLevel::Info,
       ("DOMMediaStream %p created clone %p", this, newStream.get()));
@@ -395,7 +404,7 @@ void DOMMediaStream::AddTrackInternal(MediaStreamTrack* aTrack) {
   LOG(LogLevel::Debug,
       ("DOMMediaStream %p Adding owned track %p", this, aTrack));
   AddTrack(*aTrack);
-  DispatchTrackEvent(NS_LITERAL_STRING("addtrack"), aTrack);
+  DispatchTrackEvent(u"addtrack"_ns, aTrack);
 }
 
 void DOMMediaStream::RemoveTrackInternal(MediaStreamTrack* aTrack) {
@@ -405,12 +414,15 @@ void DOMMediaStream::RemoveTrackInternal(MediaStreamTrack* aTrack) {
     return;
   }
   RemoveTrack(*aTrack);
-  DispatchTrackEvent(NS_LITERAL_STRING("removetrack"), aTrack);
+  DispatchTrackEvent(u"removetrack"_ns, aTrack);
 }
 
 already_AddRefed<nsIPrincipal> DOMMediaStream::GetPrincipal() {
+  if (!GetOwner()) {
+    return nullptr;
+  }
   nsCOMPtr<nsIPrincipal> principal =
-      nsGlobalWindowInner::Cast(mWindow)->GetPrincipal();
+      nsGlobalWindowInner::Cast(GetOwner())->GetPrincipal();
   for (const auto& t : mTracks) {
     if (t->Ended()) {
       continue;

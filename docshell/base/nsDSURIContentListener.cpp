@@ -17,7 +17,6 @@
 #include "nsError.h"
 #include "nsContentSecurityManager.h"
 #include "nsDocShellLoadTypes.h"
-#include "nsGlobalWindowOuter.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIMultiPartChannel.h"
 #include "nsWebNavigationInfo.h"
@@ -29,7 +28,9 @@ NS_IMPL_ADDREF(MaybeCloseWindowHelper)
 NS_IMPL_RELEASE(MaybeCloseWindowHelper)
 
 NS_INTERFACE_MAP_BEGIN(MaybeCloseWindowHelper)
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsITimerCallback)
+  NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
+  NS_INTERFACE_MAP_ENTRY(nsINamed)
 NS_INTERFACE_MAP_END
 
 MaybeCloseWindowHelper::MaybeCloseWindowHelper(BrowsingContext* aContentContext)
@@ -72,24 +73,20 @@ BrowsingContext* MaybeCloseWindowHelper::MaybeCloseWindow() {
 
 already_AddRefed<BrowsingContext>
 MaybeCloseWindowHelper::ChooseNewBrowsingContext(BrowsingContext* aBC) {
-  RefPtr<BrowsingContext> bc = aBC;
-
-  RefPtr<BrowsingContext> opener = bc->GetOpener();
+  RefPtr<BrowsingContext> opener = aBC->GetOpener();
   if (opener && !opener->IsDiscarded()) {
     return opener.forget();
   }
 
   if (!XRE_IsParentProcess()) {
-    return bc.forget();
+    return nullptr;
   }
 
-  CanonicalBrowsingContext* cbc = CanonicalBrowsingContext::Cast(aBC);
-  RefPtr<WindowGlobalParent> wgp = cbc->GetEmbedderWindowGlobal();
-  if (!wgp) {
-    return bc.forget();
+  opener = BrowsingContext::Get(aBC->Canonical()->GetCrossGroupOpenerId());
+  if (!opener || opener->IsDiscarded()) {
+    return nullptr;
   }
-
-  return do_AddRef(wgp->BrowsingContext());
+  return opener.forget();
 }
 
 NS_IMETHODIMP
@@ -100,6 +97,12 @@ MaybeCloseWindowHelper::Notify(nsITimer* timer) {
   mBCToClose = nullptr;
   mTimer = nullptr;
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+MaybeCloseWindowHelper::GetName(nsACString& aName) {
+  aName.AssignLiteral("MaybeCloseWindowHelper");
   return NS_OK;
 }
 
@@ -128,38 +131,21 @@ nsDSURIContentListener::DoContent(const nsACString& aContentType,
   nsresult rv;
   NS_ENSURE_ARG_POINTER(aContentHandler);
   NS_ENSURE_TRUE(mDocShell, NS_ERROR_FAILURE);
+  RefPtr<nsDocShell> docShell = mDocShell;
 
   *aAbortProcess = false;
 
   // determine if the channel has just been retargeted to us...
   nsLoadFlags loadFlags = 0;
-  nsCOMPtr<nsIChannel> aOpenedChannel = do_QueryInterface(aRequest);
-
-  if (aOpenedChannel) {
-    aOpenedChannel->GetLoadFlags(&loadFlags);
-
-    // block top-level data URI navigations if triggered by the web
-    if (!nsContentSecurityManager::AllowTopLevelNavigationToDataURI(
-            aOpenedChannel)) {
-      // logging to console happens within AllowTopLevelNavigationToDataURI
-      aRequest->Cancel(NS_ERROR_DOM_BAD_URI);
-      *aAbortProcess = true;
-      // close the window since the navigation to a data URI was blocked
-      if (mDocShell && mDocShell->GetBrowsingContext()) {
-        RefPtr<MaybeCloseWindowHelper> maybeCloseWindowHelper =
-            new MaybeCloseWindowHelper(mDocShell->GetBrowsingContext());
-        maybeCloseWindowHelper->SetShouldCloseWindow(true);
-        Unused << maybeCloseWindowHelper->MaybeCloseWindow();
-      }
-      return NS_OK;
-    }
+  if (nsCOMPtr<nsIChannel> openedChannel = do_QueryInterface(aRequest)) {
+    openedChannel->GetLoadFlags(&loadFlags);
   }
 
   if (loadFlags & nsIChannel::LOAD_RETARGETED_DOCUMENT_URI) {
     // XXX: Why does this not stop the content too?
-    mDocShell->Stop(nsIWebNavigation::STOP_NETWORK);
-
-    mDocShell->SetLoadType(aIsContentPreferred ? LOAD_LINK : LOAD_NORMAL);
+    docShell->Stop(nsIWebNavigation::STOP_NETWORK);
+    NS_ENSURE_TRUE(mDocShell, NS_ERROR_FAILURE);
+    docShell->SetLoadType(aIsContentPreferred ? LOAD_LINK : LOAD_NORMAL);
   }
 
   // In case of multipart jpeg request (mjpeg) we don't really want to
@@ -179,7 +165,7 @@ nsDSURIContentListener::DoContent(const nsACString& aContentType,
     rv = NS_OK;
   } else {
     rv =
-        mDocShell->CreateContentViewer(aContentType, aRequest, aContentHandler);
+        docShell->CreateDocumentViewer(aContentType, aRequest, aContentHandler);
     if (NS_SUCCEEDED(rv) && reuseCV) {
       mExistingJPEGStreamListener = *aContentHandler;
     } else {
@@ -188,7 +174,7 @@ nsDSURIContentListener::DoContent(const nsACString& aContentType,
     mExistingJPEGRequest = baseChannel;
   }
 
-  if (rv == NS_ERROR_REMOTE_XUL || rv == NS_ERROR_DOCSHELL_DYING) {
+  if (rv == NS_ERROR_DOCSHELL_DYING) {
     aRequest->Cancel(rv);
     *aAbortProcess = true;
     return NS_OK;
@@ -252,8 +238,8 @@ nsDSURIContentListener::CanHandleContent(const char* aContentType,
   *aDesiredContentType = nullptr;
 
   if (aContentType) {
-    uint32_t canHandle = nsWebNavigationInfo::IsTypeSupported(
-        nsDependentCString(aContentType), mDocShell);
+    uint32_t canHandle =
+        nsWebNavigationInfo::IsTypeSupported(nsDependentCString(aContentType));
     *aCanHandleContent = (canHandle != nsIWebNavigationInfo::UNSUPPORTED);
   }
 

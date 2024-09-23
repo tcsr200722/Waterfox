@@ -7,12 +7,14 @@
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
-const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const {
+  div,
+} = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
-const Types = require("devtools/client/application/src/types/index");
+const Types = require("resource://devtools/client/application/src/types/index.js");
 const ManifestItem = createFactory(
-  require("devtools/client/application/src/components/manifest/ManifestItem")
+  require("resource://devtools/client/application/src/components/manifest/ManifestItem.js")
 );
 
 /**
@@ -26,16 +28,24 @@ class ManifestColorItem extends PureComponent {
   }
 
   renderColor() {
-    const { value } = this.props;
-    return value
-      ? span(
-          {
-            className: "manifest-item__color",
-            style: { "--color-value": value },
-          },
-          value
-        )
-      : null;
+    let { value } = this.props;
+    if (!value) {
+      return null;
+    }
+
+    // Truncate colors in #rrggbbaa format to #rrggbb
+    if (value.length === 9 && value.toLowerCase().endsWith("ff")) {
+      value = value.slice(0, 7);
+    }
+
+    /* div instead of span because CSS `direction` works with block elements */
+    return div(
+      {
+        className: "manifest-item__color",
+        style: { "--color-value": value },
+      },
+      value
+    );
   }
 
   render() {

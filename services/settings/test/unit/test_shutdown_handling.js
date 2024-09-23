@@ -3,22 +3,6 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm"
-);
-
-const { Database } = ChromeUtils.import(
-  "resource://services-settings/Database.jsm"
-);
-const { RemoteSettingsWorker } = ChromeUtils.import(
-  "resource://services-settings/RemoteSettingsWorker.jsm"
-);
-const { RemoteSettingsClient } = ChromeUtils.import(
-  "resource://services-settings/RemoteSettingsClient.jsm"
-);
-
 add_task(async function test_shutdown_abort_after_start() {
   // Start a forever transaction:
   let counter = 0;
@@ -43,7 +27,7 @@ add_task(async function test_shutdown_abort_after_start() {
         const request = store
           .index("cid")
           .openCursor(IDBKeyRange.only("foopydoo/foo"));
-        request.onsuccess = event => {
+        request.onsuccess = () => {
           makeRequest();
         };
       }
@@ -76,7 +60,7 @@ add_task(async function test_shutdown_immediate_abort() {
       let request = store
         .index("cid")
         .openCursor(IDBKeyRange.only("foopydoo/foo"));
-      request.onsuccess = event => {
+      request.onsuccess = () => {
         // Abort immediately.
         Database._shutdownHandler();
         request = store
@@ -99,16 +83,14 @@ add_task(async function test_shutdown_immediate_abort() {
 });
 
 add_task(async function test_shutdown_worker() {
-  let client = new RemoteSettingsClient("language-dictionaries", {
-    bucketNamePref: "services.settings.default_bucket",
-  });
+  let client = new RemoteSettingsClient("language-dictionaries");
   const before = await client.get({ syncIfEmpty: false });
   Assert.equal(before.length, 0);
 
   let records = [{}];
   let importPromise = RemoteSettingsWorker._execute(
     "_test_only_import",
-    ["main", "language-dictionaries", records],
+    ["main", "language-dictionaries", records, 0],
     { mustComplete: true }
   );
   let stringifyPromise = RemoteSettingsWorker.canonicalStringify(

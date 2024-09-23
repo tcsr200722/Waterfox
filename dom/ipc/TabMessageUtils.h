@@ -7,70 +7,23 @@
 #ifndef TABMESSAGE_UTILS_H
 #define TABMESSAGE_UTILS_H
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/Event.h"
-#include "nsExceptionHandler.h"
 #include "nsIRemoteTab.h"
 #include "nsPIDOMWindow.h"
 #include "nsCOMPtr.h"
 #include "mozilla/dom/EffectsInfo.h"
 #include "mozilla/layers/LayersMessageUtils.h"
-#include "ipc/IPCMessageUtils.h"
+#include "TabMessageTypes.h"
 #include "X11UndefineNone.h"
 
-namespace mozilla {
-namespace dom {
-class Event;
-
-struct RemoteDOMEvent {
-  // Make sure to set the owner after deserializing.
-  RefPtr<Event> mEvent;
-};
-
-bool ReadRemoteEvent(const IPC::Message* aMsg, PickleIterator* aIter,
-                     mozilla::dom::RemoteDOMEvent* aResult);
-
-typedef CrashReporter::ThreadId NativeThreadId;
-
-enum class EmbedderElementEventType {
-  NoEvent,
-  LoadEvent,
-  ErrorEvent,
-  EndGuard_,
-};
-
-}  // namespace dom
-}  // namespace mozilla
-
 namespace IPC {
-
-template <>
-struct ParamTraits<mozilla::dom::RemoteDOMEvent> {
-  typedef mozilla::dom::RemoteDOMEvent paramType;
-
-  static void Write(Message* aMsg, const paramType& aParam) {
-    aParam.mEvent->Serialize(aMsg, true);
-  }
-
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return mozilla::dom::ReadRemoteEvent(aMsg, aIter, aResult);
-  }
-
-  static void Log(const paramType& aParam, std::wstring* aLog) {}
-};
 
 template <>
 struct ParamTraits<nsSizeMode>
     : public ContiguousEnumSerializer<nsSizeMode, nsSizeMode_Normal,
                                       nsSizeMode_Invalid> {};
-
-template <>
-struct ParamTraits<UIStateChangeType>
-    : public ContiguousEnumSerializer<UIStateChangeType,
-                                      UIStateChangeType_NoChange,
-                                      UIStateChangeType_Invalid> {};
 
 template <>
 struct ParamTraits<nsIRemoteTab::NavigationType>
@@ -83,17 +36,16 @@ template <>
 struct ParamTraits<mozilla::dom::EffectsInfo> {
   typedef mozilla::dom::EffectsInfo paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mVisibleRect);
-    WriteParam(aMsg, aParam.mScaleX);
-    WriteParam(aMsg, aParam.mScaleY);
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mVisibleRect);
+    WriteParam(aWriter, aParam.mRasterScale);
+    WriteParam(aWriter, aParam.mTransformToAncestorScale);
   }
 
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mVisibleRect) &&
-           ReadParam(aMsg, aIter, &aResult->mScaleX) &&
-           ReadParam(aMsg, aIter, &aResult->mScaleY);
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    return ReadParam(aReader, &aResult->mVisibleRect) &&
+           ReadParam(aReader, &aResult->mRasterScale) &&
+           ReadParam(aReader, &aResult->mTransformToAncestorScale);
   }
 };
 
@@ -109,28 +61,40 @@ struct ParamTraits<mozilla::ScrollFlags>
                                     mozilla::ScrollFlags::ALL_BITS> {};
 
 template <>
+struct ParamTraits<mozilla::WhereToScroll> {
+  using paramType = mozilla::WhereToScroll;
+
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mPercentage);
+  }
+
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    return ReadParam(aReader, &aResult->mPercentage);
+  }
+};
+
+template <>
 struct ParamTraits<mozilla::ScrollAxis> {
   typedef mozilla::ScrollAxis paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mWhereToScroll);
-    WriteParam(aMsg, aParam.mWhenToScroll);
-    WriteParam(aMsg, aParam.mOnlyIfPerceivedScrollableDirection);
+  static void Write(MessageWriter* aWriter, const paramType& aParam) {
+    WriteParam(aWriter, aParam.mWhereToScroll);
+    WriteParam(aWriter, aParam.mWhenToScroll);
+    WriteParam(aWriter, aParam.mOnlyIfPerceivedScrollableDirection);
   }
 
-  static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    if (!ReadParam(aMsg, aIter, &aResult->mWhereToScroll)) {
+  static bool Read(MessageReader* aReader, paramType* aResult) {
+    if (!ReadParam(aReader, &aResult->mWhereToScroll)) {
       return false;
     }
-    if (!ReadParam(aMsg, aIter, &aResult->mWhenToScroll)) {
+    if (!ReadParam(aReader, &aResult->mWhenToScroll)) {
       return false;
     }
 
     // We can't set mOnlyIfPerceivedScrollableDirection directly since it's
     // a bitfield.
     bool value;
-    if (!ReadParam(aMsg, aIter, &value)) {
+    if (!ReadParam(aReader, &value)) {
       return false;
     }
     aResult->mOnlyIfPerceivedScrollableDirection = value;

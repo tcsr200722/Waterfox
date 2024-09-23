@@ -9,8 +9,7 @@
 
 #include "mozilla/dom/DOMJSProxyHandler.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class WindowNamedPropertiesHandler : public BaseDOMProxyHandler {
  public:
@@ -19,7 +18,7 @@ class WindowNamedPropertiesHandler : public BaseDOMProxyHandler {
   virtual bool getOwnPropDescriptor(
       JSContext* aCx, JS::Handle<JSObject*> aProxy, JS::Handle<jsid> aId,
       bool /* unused */,
-      JS::MutableHandle<JS::PropertyDescriptor> aDesc) const override;
+      JS::MutableHandle<Maybe<JS::PropertyDescriptor>> aDesc) const override;
   virtual bool defineProperty(JSContext* aCx, JS::Handle<JSObject*> aProxy,
                               JS::Handle<jsid> aId,
                               JS::Handle<JS::PropertyDescriptor> aDesc,
@@ -59,7 +58,6 @@ class WindowNamedPropertiesHandler : public BaseDOMProxyHandler {
   static JSObject* Create(JSContext* aCx, JS::Handle<JSObject*> aProto);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_WindowNamedPropertiesHandler_h */

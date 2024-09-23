@@ -8,7 +8,7 @@
  * presses the override button.
  */
 
-add_task(async function() {
+add_task(async function () {
   let bm = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
     url: "http://example.com/?q=%s",
@@ -19,13 +19,12 @@ add_task(async function() {
     url: "http://example.com/?q=%s",
   });
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.remove(bm);
   });
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "keyword search",
   });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);

@@ -5,7 +5,6 @@ load 199379-1.html
 load 206561-1.html
 load 248518-1.html
 load 306649-1.xml
-load 306902-1.xml
 load 333861-1.html
 load 334735-1.html
 load 345576-1.html
@@ -24,7 +23,6 @@ load 383473-1.html
 load 383872-1.svg
 load 385228-1.svg
 skip load 385228-2.svg  # bug 523255 / bug 385228
-load 385289-1.xhtml
 load 385417-1.html
 load 385417-2.html
 load 385423-1.html
@@ -32,7 +30,7 @@ load 385423-2.html
 load 385719-1.html
 load 389326-1.html
 load 390476.html
-load 393746-1.xhtml
+load 393746-1.xhtml  # Bug 1727925
 load 393749-1.html
 load 393822-1.html
 load 394384-1.html
@@ -53,7 +51,6 @@ load 405268-1.xhtml
 load 407761-1.html
 load 407842.html
 load 408754-1.html
-load 410728-1.xml
 load 416637-1.html
 load 419095-1.html
 load 419255-1.html
@@ -123,7 +120,7 @@ load 783041-3.html
 load 783041-4.html
 load 798853.html # bug 868792
 load 805760-1.html
-load 815489.html
+skip-if(ThreadSanitizer) load 815489.html
 load 812826.html
 load 836225-1.html
 load 839745-1.html
@@ -157,11 +154,12 @@ load 1242822.html
 load 1248222.html
 load 1278305.html
 load 1308394.html
-skip-if(geckoview&&webrender) load 1317403-1.html # bug 1331533, 1630774
-skip-if(geckoview&&webrender) load 1325159-1.html # bug 1630774
-skip-if(geckoview&&webrender) load 1331683.html # bug 1630774
+skip-if(geckoview) load 1317403-1.html # bug 1331533, 1630774
+skip-if(geckoview) load 1325159-1.html # bug 1630774
+skip-if(geckoview) load 1331683.html # bug 1630774
 skip-if(Android) pref(dom.disable_open_during_load,false) load 1343666.html
-skip-if(geckoview&&webrender) load 1408078-1.html # bug 1630774
+load 1346601-1.html
+skip-if(geckoview) load 1408078-1.html # bug 1630774
 load 1464243.html
 load 1467847-1.html
 load 1468020.html
@@ -182,12 +180,49 @@ load 1509123.html
 load 1494062-blob-image-wraplist-clip.html
 load texture-allocator-zero-region.html
 load 1524418.html
-pref(layout.css.individual-transform.enabled,true) load 1529149.html
+load 1529149.html
 load 1541113.html
-pref(layout.css.individual-transform.enabled,true) load 1547169.html
+load 1547169.html
 load 1535657.html
 load 1566206.html
 load 1615141.html
 load 1615091.html
 load 1620125.html
 load 1640401-1.html
+load 1647862.html
+load 1647940.html
+load 1650989-very-large-mask.html
+load 1650990.html
+skip-if(AddressSanitizer) load 1652750-deep-scene-stack.html
+load 1651882.html
+skip-if(Android&&swgl) load 1678938-1.html
+load 1679477-1.html
+skip-if(Android) pref(dom.disable_open_during_load,false) load 1685009-1.html
+load 1694783-1.html
+load 1695782-1.html
+load 1699013.html
+load 1700232.html
+load 1704321-1.html
+load 1702638.html
+load 1730695.html
+load 1745775.html
+load 1757002.html
+load 1758127-1.html
+load 1762973-1.html
+pref(layout.css.backdrop-filter.enabled,true) load 1765667.html
+load 1768096-1.html
+pref(layout.css.backdrop-filter.enabled,true) load 1771294.html
+pref(layout.css.backdrop-filter.enabled,true) load 1771293.html
+pref(layout.css.backdrop-filter.enabled,true) load 1771556.html
+pref(layout.css.backdrop-filter.enabled,true) load 1771561.html
+load 1780567.html
+load 1681955.html
+load 1797099-1.html
+load 1799495-1.html
+load 1802382-1.html
+load 1808830.html
+load 1825450.html
+load 1683679.html
+load 1843622.html
+load 1898569.html
+

@@ -5,6 +5,7 @@
 #include "gtest/gtest.h"
 
 #include "Common.h"
+#include "mozilla/Monitor.h"
 #include "AnimationSurfaceProvider.h"
 #include "DecodePool.h"
 #include "Decoder.h"
@@ -14,6 +15,7 @@
 #include "ImageOps.h"
 #include "imgIContainer.h"
 #include "ImageFactory.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/gfx/2D.h"
 #include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
@@ -57,7 +59,7 @@ static already_AddRefed<SourceSurface> CheckDecoderState(
             bool(progress & FLAG_IS_ANIMATED));
 
   // The decoder should get the correct size.
-  IntSize size = aDecoder->Size();
+  OrientedIntSize size = aDecoder->Size();
   EXPECT_EQ(aTestCase.mSize.width, size.width);
   EXPECT_EQ(aTestCase.mSize.height, size.height);
 
@@ -121,6 +123,67 @@ static void CheckDecoderBadBuffer(const ImageTestCase& aTestCase) {
   });
 }
 
+/**
+ * AnonymousDecodingTask but with a monitor so we can wait for it to finish
+ * safely.
+ */
+class MonitorAnonymousDecodingTask final : public AnonymousDecodingTask {
+ public:
+  explicit MonitorAnonymousDecodingTask(NotNull<Decoder*> aDecoder,
+                                        bool aResumable);
+
+  void Run() override;
+
+  void WaitUntilFinished();
+
+ private:
+  virtual ~MonitorAnonymousDecodingTask() = default;
+
+  Monitor mMonitor MOZ_UNANNOTATED;
+};
+
+MonitorAnonymousDecodingTask::MonitorAnonymousDecodingTask(
+    NotNull<Decoder*> aDecoder, bool aResumable)
+    : AnonymousDecodingTask(aDecoder, aResumable),
+      mMonitor("MonitorAnonymousDecodingTask") {}
+
+void MonitorAnonymousDecodingTask::Run() {
+  MonitorAutoLock lock(mMonitor);
+
+  while (true) {
+    LexerResult result = mDecoder->Decode(WrapNotNull(this));
+
+    if (result.is<TerminalState>()) {
+      mMonitor.NotifyAll();
+      return;  // We're done.
+    }
+
+    if (result == LexerResult(Yield::NEED_MORE_DATA)) {
+      // We can't make any more progress right now. Let the caller decide how to
+      // handle it.
+      mMonitor.NotifyAll();
+      return;
+    }
+
+    // Right now we don't do anything special for other kinds of yields, so just
+    // keep working.
+    MOZ_ASSERT(result.is<Yield>());
+  }
+}
+
+void MonitorAnonymousDecodingTask::WaitUntilFinished() {
+  MonitorAutoLock lock(mMonitor);
+
+  while (true) {
+    if (mDecoder->GetDecodeDone()) {
+      return;
+    }
+
+    // Not done yet, so we'll have to wait.
+    mMonitor.Wait();
+  }
+}
+
 template <typename Func>
 void WithSingleChunkDecode(const ImageTestCase& aTestCase,
                            const Maybe<IntSize>& aOutputSize,
@@ -131,30 +194,31 @@ void WithSingleChunkDecode(const ImageTestCase& aTestCase,
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Write the data into a SourceBuffer.
   auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
   sourceBuffer->ExpectLength(length);
   rv = sourceBuffer->AppendFromInputStream(inputStream, length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
   sourceBuffer->Complete(NS_OK);
 
   // Create a decoder.
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
+  DecoderFlags decoderFlags =
+      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType) |
+      DecoderFlags::FIRST_FRAME_ONLY;
   RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
-      decoderType, sourceBuffer, aOutputSize, DecoderFlags::FIRST_FRAME_ONLY,
+      decoderType, sourceBuffer, aOutputSize, decoderFlags,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
-  RefPtr<IDecodingTask> task =
-      new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ false);
+  RefPtr<MonitorAnonymousDecodingTask> task = new MonitorAnonymousDecodingTask(
+      WrapNotNull(decoder), /* aResumable */ false);
 
   if (aUseDecodePool) {
     DecodePool::Singleton()->AsyncRun(task.get());
 
-    while (!decoder->GetDecodeDone()) {
-      task->Resume();
-    }
+    task->WaitUntilFinished();
   } else {  // Run the full decoder synchronously on the main thread.
     task->Run();
   }
@@ -181,7 +245,7 @@ void WithDelayedChunkDecode(const ImageTestCase& aTestCase,
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Prepare an empty SourceBuffer.
   auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
@@ -202,7 +266,7 @@ void WithDelayedChunkDecode(const ImageTestCase& aTestCase,
   // Writing all of the data should wake up the decoder to complete.
   sourceBuffer->ExpectLength(length);
   rv = sourceBuffer->AppendFromInputStream(inputStream, length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
   sourceBuffer->Complete(NS_OK);
 
   // It would have gotten posted to the main thread to avoid mutex contention.
@@ -226,14 +290,17 @@ static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Create a SourceBuffer and a decoder.
   auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
   sourceBuffer->ExpectLength(length);
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
+  DecoderFlags decoderFlags =
+      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType) |
+      DecoderFlags::FIRST_FRAME_ONLY;
   RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
-      decoderType, sourceBuffer, Nothing(), DecoderFlags::FIRST_FRAME_ONLY,
+      decoderType, sourceBuffer, Nothing(), decoderFlags,
       aTestCase.mSurfaceFlags);
   ASSERT_TRUE(decoder != nullptr);
   RefPtr<IDecodingTask> task =
@@ -250,11 +317,11 @@ static void CheckDecoderMultiChunk(const ImageTestCase& aTestCase,
     uint64_t available = 0;
     rv = inputStream->Available(&available);
     ASSERT_TRUE(available >= read);
-    ASSERT_TRUE(NS_SUCCEEDED(rv));
+    ASSERT_NS_SUCCEEDED(rv);
 
     // Writing any data should wake up the decoder to complete.
     rv = sourceBuffer->AppendFromInputStream(inputStream, read);
-    ASSERT_TRUE(NS_SUCCEEDED(rv));
+    ASSERT_NS_SUCCEEDED(rv);
 
     // It would have gotten posted to the main thread to avoid mutex contention.
     SpinPendingEvents();
@@ -315,7 +382,7 @@ static void CheckAnimationDecoderResults(const ImageTestCase& aTestCase,
   }
 
   // The decoder should get the correct size.
-  IntSize size = aDecoder->Size();
+  OrientedIntSize size = aDecoder->Size();
   EXPECT_EQ(aTestCase.mSize.width, size.width);
   EXPECT_EQ(aTestCase.mSize.height, size.height);
 
@@ -332,7 +399,7 @@ static void CheckAnimationDecoderResults(const ImageTestCase& aTestCase,
   DrawableSurface drawableSurface(WrapNotNull(aProvider));
   for (size_t i = 0; i < framePixels.Length(); ++i) {
     nsresult rv = drawableSurface.Seek(i);
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    EXPECT_NS_SUCCEEDED(rv);
 
     // Check the first frame, all green.
     RawAccessFrameRef rawFrame = drawableSurface->RawAccessRef();
@@ -348,7 +415,7 @@ static void CheckAnimationDecoderResults(const ImageTestCase& aTestCase,
 
   // Should be no more frames.
   nsresult rv = drawableSurface.Seek(framePixels.Length());
-  EXPECT_TRUE(NS_FAILED(rv));
+  EXPECT_NS_FAILED(rv);
 }
 
 template <typename Func>
@@ -368,27 +435,28 @@ static void WithSingleChunkAnimationDecode(const ImageTestCase& aTestCase,
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Write the data into a SourceBuffer.
   NotNull<RefPtr<SourceBuffer>> sourceBuffer = WrapNotNull(new SourceBuffer());
   sourceBuffer->ExpectLength(length);
   rv = sourceBuffer->AppendFromInputStream(inputStream, length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
   sourceBuffer->Complete(NS_OK);
 
   // Create a metadata decoder first, because otherwise RasterImage will get
   // unhappy about finding out the image is animated during a full decode.
   DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
+  DecoderFlags decoderFlags =
+      DecoderFactory::GetDefaultDecoderFlagsForType(decoderType);
   RefPtr<IDecodingTask> task = DecoderFactory::CreateMetadataDecoder(
-      decoderType, rasterImage, sourceBuffer);
+      decoderType, rasterImage, decoderFlags, sourceBuffer);
   ASSERT_TRUE(task != nullptr);
 
   // Run the metadata decoder synchronously.
   task->Run();
 
   // Create a decoder.
-  DecoderFlags decoderFlags = DefaultDecoderFlags();
   SurfaceFlags surfaceFlags = aTestCase.mSurfaceFlags;
   RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
       decoderType, sourceBuffer, Nothing(), decoderFlags, surfaceFlags);
@@ -434,16 +502,16 @@ static void CheckDecoderFrameFirst(const ImageTestCase& aTestCase) {
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Write the data into the image.
-  rv = image->OnImageDataAvailable(nullptr, nullptr, inputStream, 0,
+  rv = image->OnImageDataAvailable(nullptr, inputStream, 0,
                                    static_cast<uint32_t>(length));
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Let the image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  rv = image->OnImageDataComplete(nullptr, NS_OK, true);
+  ASSERT_NS_SUCCEEDED(rv);
 
   RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
   tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
@@ -461,9 +529,9 @@ static void CheckDecoderFrameFirst(const ImageTestCase& aTestCase) {
   // Ensure that the image's metadata meets our expectations.
   IntSize imageSize(0, 0);
   rv = image->GetWidth(&imageSize.width);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   rv = image->GetHeight(&imageSize.height);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
 
   EXPECT_EQ(aTestCase.mSize.width, imageSize.width);
   EXPECT_EQ(aTestCase.mSize.height, imageSize.height);
@@ -508,7 +576,7 @@ static void CheckDecoderFrameFirst(const ImageTestCase& aTestCase) {
         /* aMarkUsed = */ true);
     ASSERT_EQ(MatchType::EXACT, result.Type());
 
-    EXPECT_TRUE(NS_SUCCEEDED(result.Surface().Seek(0)));
+    EXPECT_NS_SUCCEEDED(result.Surface().Seek(0));
     EXPECT_TRUE(bool(result.Surface()));
 
     RefPtr<imgFrame> partialFrame = result.Surface().GetFrame(1);
@@ -544,16 +612,16 @@ static void CheckDecoderFrameCurrent(const ImageTestCase& aTestCase) {
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Write the data into the image.
-  rv = image->OnImageDataAvailable(nullptr, nullptr, inputStream, 0,
+  rv = image->OnImageDataAvailable(nullptr, inputStream, 0,
                                    static_cast<uint32_t>(length));
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Let the image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  rv = image->OnImageDataComplete(nullptr, NS_OK, true);
+  ASSERT_NS_SUCCEEDED(rv);
 
   RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
   tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
@@ -569,9 +637,9 @@ static void CheckDecoderFrameCurrent(const ImageTestCase& aTestCase) {
   // Ensure that the image's metadata meets our expectations.
   IntSize imageSize(0, 0);
   rv = image->GetWidth(&imageSize.width);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   rv = image->GetHeight(&imageSize.height);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
 
   EXPECT_EQ(aTestCase.mSize.width, imageSize.width);
   EXPECT_EQ(aTestCase.mSize.height, imageSize.height);
@@ -590,7 +658,7 @@ static void CheckDecoderFrameCurrent(const ImageTestCase& aTestCase) {
         /* aMarkUsed = */ true);
     ASSERT_EQ(MatchType::EXACT, result.Type());
 
-    EXPECT_TRUE(NS_SUCCEEDED(result.Surface().Seek(0)));
+    EXPECT_NS_SUCCEEDED(result.Surface().Seek(0));
     EXPECT_TRUE(bool(result.Surface()));
 
     RefPtr<imgFrame> partialFrame = result.Surface().GetFrame(1);
@@ -632,7 +700,7 @@ static void CheckDecoderFrameCurrent(const ImageTestCase& aTestCase) {
         /* aMarkUsed = */ true);
     ASSERT_EQ(MatchType::EXACT, result.Type());
 
-    EXPECT_TRUE(NS_SUCCEEDED(result.Surface().Seek(0)));
+    EXPECT_NS_SUCCEEDED(result.Surface().Seek(0));
     EXPECT_TRUE(bool(result.Surface()));
 
     RefPtr<imgFrame> partialFrame = result.Surface().GetFrame(1);
@@ -679,6 +747,9 @@ IMAGE_GTEST_DECODER_BASE_F(BMP)
 IMAGE_GTEST_DECODER_BASE_F(ICO)
 IMAGE_GTEST_DECODER_BASE_F(Icon)
 IMAGE_GTEST_DECODER_BASE_F(WebP)
+#ifdef MOZ_JXL
+IMAGE_GTEST_DECODER_BASE_F(JXL)
+#endif
 
 TEST_F(ImageDecoders, ICOWithANDMaskDownscaleDuringDecode) {
   CheckDownscaleDuringDecode(DownscaledTransparentICOWithANDMaskTestCase());
@@ -704,6 +775,150 @@ TEST_F(ImageDecoders, AVIFSingleChunk) {
   CheckDecoderSingleChunk(GreenAVIFTestCase());
 }
 
+TEST_F(ImageDecoders, AVIFSingleChunkNonzeroReserved) {
+  CheckDecoderSingleChunk(NonzeroReservedAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkMultipleColr) {
+  CheckDecoderSingleChunk(MultipleColrAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent10bit420) {
+  CheckDecoderSingleChunk(Transparent10bit420AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent10bit422) {
+  CheckDecoderSingleChunk(Transparent10bit422AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent10bit444) {
+  CheckDecoderSingleChunk(Transparent10bit444AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent12bit420) {
+  CheckDecoderSingleChunk(Transparent12bit420AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent12bit422) {
+  CheckDecoderSingleChunk(Transparent12bit422AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent12bit444) {
+  CheckDecoderSingleChunk(Transparent12bit444AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent8bit420) {
+  CheckDecoderSingleChunk(Transparent8bit420AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent8bit422) {
+  CheckDecoderSingleChunk(Transparent8bit422AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkTransparent8bit444) {
+  CheckDecoderSingleChunk(Transparent8bit444AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitLimitedRangeBT601) {
+  CheckDecoderSingleChunk(Gray8bitLimitedRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitLimitedRangeBT709) {
+  CheckDecoderSingleChunk(Gray8bitLimitedRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitLimitedRangeBT2020) {
+  CheckDecoderSingleChunk(Gray8bitLimitedRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitFullRangeBT601) {
+  CheckDecoderSingleChunk(Gray8bitFullRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitFullRangeBT709) {
+  CheckDecoderSingleChunk(Gray8bitFullRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitFullRangeBT2020) {
+  CheckDecoderSingleChunk(Gray8bitFullRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitLimitedRangeBT601) {
+  CheckDecoderSingleChunk(Gray10bitLimitedRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitLimitedRangeBT709) {
+  CheckDecoderSingleChunk(Gray10bitLimitedRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitLimitedRangeBT2020) {
+  CheckDecoderSingleChunk(Gray10bitLimitedRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitFullRangeBT601) {
+  CheckDecoderSingleChunk(Gray10bitFullRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitFullRangeBT709) {
+  CheckDecoderSingleChunk(Gray10bitFullRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitFullRangeBT2020) {
+  CheckDecoderSingleChunk(Gray10bitFullRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitLimitedRangeBT601) {
+  CheckDecoderSingleChunk(Gray12bitLimitedRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitLimitedRangeBT709) {
+  CheckDecoderSingleChunk(Gray12bitLimitedRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitLimitedRangeBT2020) {
+  CheckDecoderSingleChunk(Gray12bitLimitedRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitFullRangeBT601) {
+  CheckDecoderSingleChunk(Gray12bitFullRangeBT601AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitFullRangeBT709) {
+  CheckDecoderSingleChunk(Gray12bitFullRangeBT709AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitFullRangeBT2020) {
+  CheckDecoderSingleChunk(Gray12bitFullRangeBT2020AVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitLimitedRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray8bitLimitedRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray8bitFullRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray8bitFullRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitLimitedRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray10bitLimitedRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray10bitFullRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray10bitFullRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitLimitedRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray12bitLimitedRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunkGray12bitFullRangeGrayscale) {
+  CheckDecoderSingleChunk(Gray12bitFullRangeGrayscaleAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFMultiLayerSingleChunk) {
+  CheckDecoderSingleChunk(MultiLayerAVIFTestCase());
+}
+
 // This test must use the decode pool in order to check for regressions
 // of crashing the dav1d decoder when the ImgDecoder threads have a standard-
 // sized stack.
@@ -726,6 +941,12 @@ TEST_F(ImageDecoders, AVIFLargeMultiChunk) {
 TEST_F(ImageDecoders, AVIFDownscaleDuringDecode) {
   CheckDownscaleDuringDecode(DownscaledAVIFTestCase());
 }
+
+#ifdef MOZ_JXL
+TEST_F(ImageDecoders, JXLLargeMultiChunk) {
+  CheckDecoderMultiChunk(LargeJXLTestCase(), /* aChunkSize */ 64);
+}
+#endif
 
 TEST_F(ImageDecoders, AnimatedGIFSingleChunk) {
   CheckDecoderSingleChunk(GreenFirstFrameAnimatedGIFTestCase());
@@ -761,6 +982,18 @@ TEST_F(ImageDecoders, AnimatedWebPMultiChunk) {
 
 TEST_F(ImageDecoders, AnimatedWebPWithBlendedFrames) {
   CheckAnimationDecoderSingleChunk(GreenFirstFrameAnimatedWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIFSingleChunk) {
+  CheckDecoderSingleChunk(GreenFirstFrameAnimatedAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIFMultiChunk) {
+  CheckDecoderMultiChunk(GreenFirstFrameAnimatedAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AnimatedAVIFWithBlendedFrames) {
+  CheckAnimationDecoderSingleChunk(GreenFirstFrameAnimatedAVIFTestCase());
 }
 
 TEST_F(ImageDecoders, CorruptSingleChunk) {
@@ -799,6 +1032,16 @@ TEST_F(ImageDecoders, CorruptICOWithBadBppSingleChunk) {
   CheckDecoderSingleChunk(CorruptICOWithBadBppTestCase());
 }
 
+// Running this test under emulation for Android 7 on x86_64 seems to result
+// in the large allocation succeeding, but leaving so little memory left the
+// system falls over and it kills the test run, so we skip it instead.
+// See bug 1655846 for more details.
+#ifndef ANDROID
+TEST_F(ImageDecoders, CorruptAVIFSingleChunk) {
+  CheckDecoderSingleChunk(CorruptAVIFTestCase());
+}
+#endif
+
 TEST_F(ImageDecoders, AnimatedGIFWithFRAME_FIRST) {
   CheckDecoderFrameFirst(GreenFirstFrameAnimatedGIFTestCase());
 }
@@ -815,44 +1058,19 @@ TEST_F(ImageDecoders, AnimatedGIFWithExtraImageSubBlocks) {
   // extra data shouldn't confuse the decoder or cause the decode to fail.
 
   // Create an image.
-  RefPtr<Image> image = ImageFactory::CreateAnonymousImage(
-      nsDependentCString(testCase.mMimeType));
-  ASSERT_TRUE(!image->HasError());
-
-  nsCOMPtr<nsIInputStream> inputStream = LoadFile(testCase.mPath);
-  ASSERT_TRUE(inputStream);
-
-  // Figure out how much data we have.
-  uint64_t length;
-  nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
-
-  // Write the data into the image.
-  rv = image->OnImageDataAvailable(nullptr, nullptr, inputStream, 0,
-                                   static_cast<uint32_t>(length));
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
-
-  // Let the image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
-
-  RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
-  tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
-
-  // Use GetFrame() to force a sync decode of the image.
-  RefPtr<SourceSurface> surface = image->GetFrame(
-      imgIContainer::FRAME_CURRENT, imgIContainer::FLAG_SYNC_DECODE);
+  RefPtr<Image> image = TestCaseToDecodedImage(testCase);
 
   // Ensure that the image's metadata meets our expectations.
   IntSize imageSize(0, 0);
-  rv = image->GetWidth(&imageSize.width);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  nsresult rv = image->GetWidth(&imageSize.width);
+  EXPECT_NS_SUCCEEDED(rv);
   rv = image->GetHeight(&imageSize.height);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
 
   EXPECT_EQ(testCase.mSize.width, imageSize.width);
   EXPECT_EQ(testCase.mSize.height, imageSize.height);
 
+  RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
   Progress imageProgress = tracker->GetProgress();
 
   EXPECT_TRUE(bool(imageProgress & FLAG_HAS_TRANSPARENCY) == false);
@@ -866,7 +1084,7 @@ TEST_F(ImageDecoders, AnimatedGIFWithExtraImageSubBlocks) {
                            /* aMarkUsed = */ true);
   ASSERT_EQ(MatchType::EXACT, result.Type());
 
-  EXPECT_TRUE(NS_SUCCEEDED(result.Surface().Seek(0)));
+  EXPECT_NS_SUCCEEDED(result.Surface().Seek(0));
   EXPECT_TRUE(bool(result.Surface()));
 
   RefPtr<imgFrame> partialFrame = result.Surface().GetFrame(1);
@@ -915,16 +1133,16 @@ TEST_F(ImageDecoders, MultipleSizesICOSingleChunk) {
   // Figure out how much data we have.
   uint64_t length;
   nsresult rv = inputStream->Available(&length);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Write the data into the image.
-  rv = image->OnImageDataAvailable(nullptr, nullptr, inputStream, 0,
+  rv = image->OnImageDataAvailable(nullptr, inputStream, 0,
                                    static_cast<uint32_t>(length));
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  ASSERT_NS_SUCCEEDED(rv);
 
   // Let the image know we've sent all the data.
-  rv = image->OnImageDataComplete(nullptr, nullptr, NS_OK, true);
-  ASSERT_TRUE(NS_SUCCEEDED(rv));
+  rv = image->OnImageDataComplete(nullptr, NS_OK, true);
+  ASSERT_NS_SUCCEEDED(rv);
 
   RefPtr<ProgressTracker> tracker = image->GetProgressTracker();
   tracker->SyncNotifyProgress(FLAG_LOAD_COMPLETE);
@@ -936,16 +1154,16 @@ TEST_F(ImageDecoders, MultipleSizesICOSingleChunk) {
   // Ensure that the image's metadata meets our expectations.
   IntSize imageSize(0, 0);
   rv = image->GetWidth(&imageSize.width);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   rv = image->GetHeight(&imageSize.height);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
 
   EXPECT_EQ(testCase.mSize.width, imageSize.width);
   EXPECT_EQ(testCase.mSize.height, imageSize.height);
 
   nsTArray<IntSize> nativeSizes;
   rv = image->GetNativeSizes(nativeSizes);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   ASSERT_EQ(6u, nativeSizes.Length());
 
   IntSize expectedSizes[] = {IntSize(16, 16),   IntSize(32, 32),
@@ -959,7 +1177,7 @@ TEST_F(ImageDecoders, MultipleSizesICOSingleChunk) {
   RefPtr<Image> image90 =
       ImageOps::Orient(image, Orientation(Angle::D90, Flip::Unflipped));
   rv = image90->GetNativeSizes(nativeSizes);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   ASSERT_EQ(6u, nativeSizes.Length());
 
   for (int i = 0; i < 5; ++i) {
@@ -970,10 +1188,15 @@ TEST_F(ImageDecoders, MultipleSizesICOSingleChunk) {
   RefPtr<Image> image180 =
       ImageOps::Orient(image, Orientation(Angle::D180, Flip::Unflipped));
   rv = image180->GetNativeSizes(nativeSizes);
-  EXPECT_TRUE(NS_SUCCEEDED(rv));
+  EXPECT_NS_SUCCEEDED(rv);
   ASSERT_EQ(6u, nativeSizes.Length());
 
   for (int i = 0; i < 6; ++i) {
     EXPECT_EQ(expectedSizes[i], nativeSizes[i]);
   }
+}
+
+TEST_F(ImageDecoders, ExifResolutionEven) {
+  RefPtr<Image> image = TestCaseToDecodedImage(ExifResolutionTestCase());
+  EXPECT_EQ(image->GetResolution(), Resolution(2.0, 2.0));
 }

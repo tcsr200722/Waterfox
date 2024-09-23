@@ -14,17 +14,44 @@
 
 .browserContainer.responsive-mode {
   background-color: var(--rdm-browser-container-background);
+  --rdm-toolbar-height: 30px;
+  --rdm-toolbar-accomodate-ua-height: 60px;
 }
 
-.browserContainer.responsive-mode .browserStack > .rdm-toolbar {
+.browserContainer.responsive-mode > .rdm-toolbar {
   border: none;
-  position: fixed;
-  z-index: 1;
-  height: 30px;
+  position: absolute;
+  z-index: var(--browser-stack-z-index-rdm-toolbar);
+  height: var(--rdm-toolbar-height);
+  top: 0;
+  left: 0;
+  width: 100%;
+
+  /**
+   * The .rdm-toolbar will be above the .dialogBox in RDM so we shift the
+   * .dialogBox down by the height of the .rdm-toolbar so both are visible
+   */
+  + .browserStack > .dialogStack > .dialogTemplate > .dialogBox {
+    margin-top: var(--rdm-toolbar-height);
+  }
 }
 
-.browserContainer.responsive-mode .browserStack > .rdm-toolbar.accomodate-ua {
-  height: 60px;
+.browserContainer.responsive-mode > .rdm-toolbar.accomodate-ua {
+  height: var(--rdm-toolbar-accomodate-ua-height);
+
+  /**
+   * When the browser window is less than 520 pixels wide, the RDM toolbar
+   * needs extra space to accomdate for the UA input so the .rdm-toolbar is
+   * set to a larger height of --rdm-toolbar-accomodate-ua-height. We also need
+   * to shift the .dialogBox down by the same height so both are visible.
+   */
+  + .browserStack > .dialogStack > .dialogTemplate > .dialogBox {
+    margin-top: var(--rdm-toolbar-accomodate-ua-height);
+  }
+}
+
+.browserContainer.responsive-mode > .rdm-toolbar.device-modal-opened {
+  height: 100%;
 }
 
 .browserContainer.responsive-mode > .browserStack {
@@ -36,24 +63,17 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
+  contain: size;
   grid-template-columns: 15px 1fr [center-align] var(--browser-viewport-width) 1fr;
   grid-template-rows: 65px [margin-top-offset] var(--browser-viewport-height);
 }
 
-.browserContainer.responsive-mode > .browserStack > * {
-  box-sizing: content-box; /* This is important to ensure that the pane has the
-                              precise number of pixels defined by --rdm-width
-                              and --rdm-height. */
-  height: var(--rdm-height);
-  width: var(--rdm-width);
-}
-
-.browserContainer.responsive-mode > .browserStack > *:not(.rdm-toolbar) {
+.browserContainer.responsive-mode > .browserStack > :is(browser, .rdm-viewport-resize-handle) {
   grid-column: center-align;
   grid-row: margin-top-offset;
 }
 
-.browserContainer.responsive-mode.left-aligned > .browserStack > *:not(.rdm-toolbar) {
+.browserContainer.responsive-mode.left-aligned > .browserStack > :is(browser, .rdm-viewport-resize-handle) {
   grid-column: left-align;
 }
 
@@ -70,6 +90,12 @@ html[dir="rtl"] .browserContainer.responsive-mode.left-aligned > .browserStack {
   box-shadow: var(--rdm-browser-box-shadow);
   transform-origin: 50% 0;
   transform: scale(var(--rdm-zoom), var(--rdm-zoom));
+
+  box-sizing: content-box; /* This is important to ensure that the pane has the
+                              precise number of pixels defined by --rdm-width
+                              and --rdm-height. */
+  height: var(--rdm-height);
+  width: var(--rdm-width);
 }
 
 .browserContainer.responsive-mode.left-aligned > .browserStack > browser {

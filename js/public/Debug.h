@@ -13,8 +13,9 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 
-#include "jsapi.h"
-#include "jspubtd.h"
+#include <utility>
+
+#include "jstypes.h"
 
 #include "js/GCAPI.h"
 #include "js/RootingAPI.h"
@@ -23,6 +24,10 @@
 namespace js {
 class Debugger;
 }  // namespace js
+
+/* Defined in vm/Debugger.cpp. */
+extern JS_PUBLIC_API bool JS_DefineDebuggerObject(JSContext* cx,
+                                                  JS::HandleObject obj);
 
 namespace JS {
 namespace dbg {
@@ -134,7 +139,7 @@ class Builder {
   // Check that |thing| is in the same compartment as our debuggerObject. Used
   // for assertions when constructing BuiltThings. We can overload this as we
   // add more instantiations of BuiltThing.
-#if DEBUG
+#ifdef DEBUG
   void assertBuilt(JSObject* obj);
 #else
   void assertBuilt(JSObject* obj) {}
@@ -155,7 +160,7 @@ class Builder {
     PersistentRooted<T> value;
 
     BuiltThing(JSContext* cx, Builder& owner_,
-               T value_ = SafelyInitialized<T>())
+               T value_ = SafelyInitialized<T>::create())
         : owner(owner_), value(cx, value_) {
       owner.assertBuilt(value_);
     }
@@ -342,6 +347,36 @@ class MOZ_STACK_CLASS JS_PUBLIC_API AutoEntryMonitor {
   // Execution of the function or script has ended.
   virtual void Exit(JSContext* cx) {}
 };
+
+// Returns true if there's any debugger attached to the given context where
+// the debugger's "shouldAvoidSideEffects" property is true.
+//
+// This is supposed to be used by native code that performs side-effectful
+// operations where the debugger cannot hook it.
+//
+// If this function returns true, the native function should throw an
+// uncatchable exception by returning `false` without setting any pending
+// exception. The debugger will handle this exception by aborting the eager
+// evaluation.
+//
+// The native code can opt into this behavior to help the debugger performing
+// the side-effect-free evaluation.
+//
+// Expected consumers of this API include JSClassOps.resolve hooks which have
+// any side-effect other than just resolving the property.
+//
+// Example:
+//   static bool ResolveHook(JSContext* cx, HandleObject obj, HandleId id,
+//                           bool* resolvedp) {
+//     *resolvedp = false;
+//     if (JS::dbg::ShouldAvoidSideEffects()) {
+//       return false;
+//     }
+//     // Resolve the property with the side-effect.
+//     ...
+//     return true;
+//   }
+bool ShouldAvoidSideEffects(JSContext* cx);
 
 }  // namespace dbg
 }  // namespace JS

@@ -12,11 +12,14 @@
 #include <stdlib.h>
 #include <utility>
 
+#include "jsapi.h"
+
 #include "builtin/MapObject.h"
 #include "debugger/Debugger.h"
 #include "gc/Marking.h"
 #include "js/AllocPolicy.h"
 #include "js/Debug.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/PropertySpec.h"
 #include "js/TracingAPI.h"
 #include "js/UbiNode.h"
@@ -29,6 +32,7 @@
 #include "vm/SavedStacks.h"
 
 #include "debugger/Debugger-inl.h"
+#include "gc/StableCellHasher-inl.h"
 #include "vm/NativeObject-inl.h"
 
 using namespace js;
@@ -67,7 +71,7 @@ bool DebuggerMemory::construct(JSContext* cx, unsigned argc, Value* vp) {
 }
 
 /* static */ const JSClass DebuggerMemory::class_ = {
-    "Memory", JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(JSSLOT_COUNT)};
+    "Memory", JSCLASS_HAS_RESERVED_SLOTS(JSSLOT_COUNT)};
 
 /* static */
 DebuggerMemory* DebuggerMemory::checkThis(JSContext* cx, CallArgs& args) {
@@ -85,19 +89,6 @@ DebuggerMemory* DebuggerMemory::checkThis(JSContext* cx, CallArgs& args) {
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_INCOMPATIBLE_PROTO, class_.name, "method",
                               thisObject.getClass()->name);
-    return nullptr;
-  }
-
-  // Check for Debugger.Memory.prototype, which has the same class as
-  // Debugger.Memory instances, however doesn't actually represent an instance
-  // of Debugger.Memory. It is the only object that is<DebuggerMemory>() but
-  // doesn't have a Debugger instance.
-  if (thisObject.as<DebuggerMemory>()
-          .getReservedSlot(JSSLOT_DEBUGGER)
-          .isUndefined()) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_INCOMPATIBLE_PROTO, class_.name, "method",
-                              "prototype object");
     return nullptr;
   }
 
@@ -199,14 +190,14 @@ bool DebuggerMemory::CallData::drainAllocationsLog() {
 
   size_t length = dbg->allocationsLog.length();
 
-  RootedArrayObject result(cx, NewDenseFullyAllocatedArray(cx, length));
+  Rooted<ArrayObject*> result(cx, NewDenseFullyAllocatedArray(cx, length));
   if (!result) {
     return false;
   }
-  result->ensureDenseInitializedLength(cx, 0, length);
+  result->ensureDenseInitializedLength(0, length);
 
   for (size_t i = 0; i < length; i++) {
-    RootedPlainObject obj(cx, NewBuiltinClassInstance<PlainObject>(cx));
+    Rooted<PlainObject*> obj(cx, NewPlainObject(cx));
     if (!obj) {
       return false;
     }
@@ -236,14 +227,6 @@ bool DebuggerMemory::CallData::drainAllocationsLog() {
     }
     RootedValue classNameValue(cx, StringValue(className));
     if (!DefineDataProperty(cx, obj, cx->names().class_, classNameValue)) {
-      return false;
-    }
-
-    RootedValue ctorName(cx, NullValue());
-    if (entry.ctorName) {
-      ctorName.setString(entry.ctorName);
-    }
-    if (!DefineDataProperty(cx, obj, cx->names().constructor, ctorName)) {
       return false;
     }
 
@@ -350,13 +333,11 @@ bool DebuggerMemory::CallData::getAllocationsLogOverflowed() {
 }
 
 bool DebuggerMemory::CallData::getOnGarbageCollection() {
-  return Debugger::getHookImpl(cx, args, *memory->getDebugger(),
-                               Debugger::OnGarbageCollection);
+  return Debugger::getGarbageCollectionHook(cx, args, *memory->getDebugger());
 }
 
 bool DebuggerMemory::CallData::setOnGarbageCollection() {
-  return Debugger::setHookImpl(cx, args, *memory->getDebugger(),
-                               Debugger::OnGarbageCollection);
+  return Debugger::setGarbageCollectionHook(cx, args, *memory->getDebugger());
 }
 
 /* Debugger.Memory.prototype.takeCensus */
@@ -401,6 +382,7 @@ bool DebuggerMemory::CallData::takeCensus() {
 
   JS::ubi::RootedCount rootCount(cx, rootType->makeCount());
   if (!rootCount) {
+    ReportOutOfMemory(cx);
     return false;
   }
   JS::ubi::CensusHandler handler(census, rootCount,
@@ -413,19 +395,20 @@ bool DebuggerMemory::CallData::takeCensus() {
   for (WeakGlobalObjectSet::Range r = dbg->allDebuggees(); !r.empty();
        r.popFront()) {
     if (!census.targetZones.put(r.front()->zone())) {
+      ReportOutOfMemory(cx);
       return false;
     }
   }
 
   {
-    Maybe<JS::AutoCheckCannotGC> maybeNoGC;
-    JS::ubi::RootList rootList(cx, maybeNoGC);
-    if (!rootList.init(dbgObj)) {
+    JS::ubi::RootList rootList(cx);
+    auto [ok, nogc] = rootList.init(dbgObj);
+    if (!ok) {
       ReportOutOfMemory(cx);
       return false;
     }
 
-    JS::ubi::CensusTraversal traversal(cx, handler, maybeNoGC.ref());
+    JS::ubi::CensusTraversal traversal(cx, handler, nogc);
     traversal.wantNames = false;
 
     if (!traversal.addStart(JS::ubi::Node(&rootList)) ||

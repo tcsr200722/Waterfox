@@ -12,12 +12,11 @@ namespace ClearOnShutdown_Internal {
 Array<StaticAutoPtr<ShutdownList>,
       static_cast<size_t>(ShutdownPhase::ShutdownPhase_Length)>
     sShutdownObservers;
-ShutdownPhase sCurrentShutdownPhase = ShutdownPhase::NotInShutdown;
+ShutdownPhase sCurrentClearOnShutdownPhase = ShutdownPhase::NotInShutdown;
 
 void InsertIntoShutdownList(ShutdownObserver* aObserver, ShutdownPhase aPhase) {
   // Adding a ClearOnShutdown for a "past" phase is an error.
-  if (!(static_cast<size_t>(sCurrentShutdownPhase) <
-        static_cast<size_t>(aPhase))) {
+  if (PastShutdownPhase(aPhase)) {
     MOZ_ASSERT(false, "ClearOnShutdown for phase that already was cleared");
     aObserver->Shutdown();
     delete aObserver;
@@ -32,15 +31,18 @@ void InsertIntoShutdownList(ShutdownObserver* aObserver, ShutdownPhase aPhase) {
 
 }  // namespace ClearOnShutdown_Internal
 
-// Called when XPCOM is shutting down, after all shutdown notifications have
-// been sent and after all threads' event loops have been purged.
+// Called by AdvanceShutdownPhase each time we switch a phase. Will null out
+// pointers added by ClearOnShutdown for all phases up to and including aPhase.
 void KillClearOnShutdown(ShutdownPhase aPhase) {
   using namespace ClearOnShutdown_Internal;
 
   MOZ_ASSERT(NS_IsMainThread());
   // Shutdown only goes one direction...
-  MOZ_ASSERT(static_cast<size_t>(sCurrentShutdownPhase) <
-             static_cast<size_t>(aPhase));
+  MOZ_ASSERT(!PastShutdownPhase(aPhase));
+
+  // Set the phase before notifying observers to make sure that they can't run
+  // any code which isn't allowed to run after the start of this phase.
+  sCurrentClearOnShutdownPhase = aPhase;
 
   // It's impossible to add an entry for a "past" phase; this is blocked in
   // ClearOnShutdown, but clear them out anyways in case there are phases

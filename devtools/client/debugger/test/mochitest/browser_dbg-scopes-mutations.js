@@ -2,14 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-add_task(async function() {
+"use strict";
+
+add_task(async function () {
   const dbg = await initDebugger("doc-script-mutate.html");
 
-  let onPaused = waitForPaused(dbg);
+  const onPaused = waitForPaused(dbg);
   invokeInTab("mutate");
   await onPaused;
   await waitForSelectedSource(dbg, "script-mutate");
-  await waitForDispatch(dbg, "ADD_INLINE_PREVIEW");
+  await waitForDispatch(dbg.store, "ADD_INLINE_PREVIEW");
 
   is(
     getScopeNodeLabel(dbg, 2),
@@ -58,7 +60,7 @@ add_task(async function() {
 
   await resume(dbg);
   await waitForPaused(dbg);
-  await waitForDispatch(dbg, "ADD_INLINE_PREVIEW");
+  await waitForDispatch(dbg.store, "ADD_INLINE_PREVIEW");
 
   is(
     getScopeNodeLabel(dbg, 2),
@@ -71,14 +73,6 @@ add_task(async function() {
     'The fourth element in the scope panel is "phonebook"'
   );
 });
-
-function getScopeNodeLabel(dbg, index) {
-  return findElement(dbg, "scopeNode", index).innerText;
-}
-
-function getScopeNodeValue(dbg, index) {
-  return findElement(dbg, "scopeValue", index).innerText;
-}
 
 function expandNode(dbg, index) {
   const node = findElement(dbg, "scopeNode", index);

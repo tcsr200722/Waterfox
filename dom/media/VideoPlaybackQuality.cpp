@@ -11,8 +11,7 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 VideoPlaybackQuality::VideoPlaybackQuality(HTMLMediaElement* aElement,
                                            DOMHighResTimeStamp aCreationTime,
@@ -32,10 +31,6 @@ JSObject* VideoPlaybackQuality::WrapObject(JSContext* aCx,
   return VideoPlaybackQuality_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(VideoPlaybackQuality, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(VideoPlaybackQuality, Release)
-
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(VideoPlaybackQuality, mElement)
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

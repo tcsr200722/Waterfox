@@ -5,7 +5,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf8,
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html>
   <script>
     console.log({
       a:1,
@@ -13,15 +13,14 @@ const TEST_URI = `data:text/html;charset=utf8,
       c: Array.from({length: 100}, (_, i) => i)
     });
   </script>`;
-const { ELLIPSIS } = require("devtools/shared/l10n");
 
-add_task(async function() {
+add_task(async function () {
   // Should be removed when sidebar work is complete
   await pushPref("devtools.webconsole.sidebarToggle", true);
 
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const message = await waitFor(() => findMessage(hud, "Object"));
+  const message = await waitFor(() => findConsoleAPIMessage(hud, "Object"));
   const object = message.querySelector(".object-inspector .objectBox-object");
 
   const onSideBarVisible = waitFor(() =>
@@ -66,7 +65,7 @@ add_task(async function() {
   ok(true, "`b` node is focused again");
 
   info("Select another object in the console output");
-  const onArrayMessage = waitForMessage(hud, "Array");
+  const onArrayMessage = waitForMessageByType(hud, "Array", ".console-api");
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.console.log([4, 5, 6]);
   });
@@ -80,7 +79,7 @@ add_task(async function() {
   await waitFor(() =>
     sidebarContents
       .querySelector(".tree-node")
-      .textContent.includes(`(3) [${ELLIPSIS}]`)
+      .textContent.includes("Array(3) [ 4, 5, 6 ]")
   );
   ok(
     sidebarContents.querySelector(".tree-node").classList.contains("focused"),

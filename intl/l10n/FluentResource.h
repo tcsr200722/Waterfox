@@ -7,25 +7,34 @@
 #ifndef mozilla_intl_l10n_FluentResource_h
 #define mozilla_intl_l10n_FluentResource_h
 
-#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 #include "mozilla/dom/FluentBinding.h"
 #include "mozilla/intl/FluentBindings.h"
 
 namespace mozilla {
+
+namespace dom {
+struct FluentTextElementItem;
+}  // namespace dom
+
 namespace intl {
 
 class FluentResource : public nsWrapperCache {
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(FluentResource)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(FluentResource)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(FluentResource)
 
-  explicit FluentResource(nsISupports* aParent, const nsACString& aSource);
+  FluentResource(nsISupports* aParent, const ffi::FluentResource* aRaw);
+  FluentResource(nsISupports* aParent, const nsACString& aSource);
 
   static already_AddRefed<FluentResource> Constructor(
       const dom::GlobalObject& aGlobal, const nsACString& aSource);
+
+  void TextElements(nsTArray<dom::FluentTextElementItem>& aElements,
+                    ErrorResult& aRv);
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -34,10 +43,10 @@ class FluentResource : public nsWrapperCache {
   const ffi::FluentResource* Raw() const { return mRaw; }
 
  protected:
-  virtual ~FluentResource();
+  virtual ~FluentResource() = default;
 
   nsCOMPtr<nsISupports> mParent;
-  const RefPtr<const ffi::FluentResource> mRaw;
+  RefPtr<const ffi::FluentResource> mRaw;
   bool mHasErrors;
 };
 

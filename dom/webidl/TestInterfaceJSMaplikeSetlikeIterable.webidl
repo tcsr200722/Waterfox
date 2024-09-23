@@ -11,10 +11,12 @@ interface TestInterfaceMaplike {
   constructor();
 
   maplike<DOMString, long>;
-  void setInternal(DOMString aKey, long aValue);
-  void clearInternal();
+  undefined setInternal(DOMString aKey, long aValue);
+  undefined clearInternal();
   boolean deleteInternal(DOMString aKey);
   boolean hasInternal(DOMString aKey);
+  [Throws]
+  long getInternal(DOMString aKey);
 };
 
 [Pref="dom.expose_test_interfaces",
@@ -24,23 +26,27 @@ interface TestInterfaceMaplikeObject {
   constructor();
 
   readonly maplike<DOMString, TestInterfaceMaplike>;
-  void setInternal(DOMString aKey);
-  void clearInternal();
+  undefined setInternal(DOMString aKey);
+  undefined clearInternal();
   boolean deleteInternal(DOMString aKey);
   boolean hasInternal(DOMString aKey);
+  [Throws]
+  TestInterfaceMaplike? getInternal(DOMString aKey);
 };
 
 [Pref="dom.expose_test_interfaces",
- JSImplementation="@mozilla.org/dom/test-interface-js-maplike;1",
  Exposed=Window]
-interface TestInterfaceJSMaplike {
+interface TestInterfaceMaplikeJSObject {
   [Throws]
   constructor();
 
-  readonly maplike<DOMString, long>;
-  void setInternal(DOMString aKey, long aValue);
-  void clearInternal();
+  readonly maplike<DOMString, object>;
+  undefined setInternal(DOMString aKey, object aObject);
+  undefined clearInternal();
   boolean deleteInternal(DOMString aKey);
+  boolean hasInternal(DOMString aKey);
+  [Throws]
+  object? getInternal(DOMString aKey);
 };
 
 [Pref="dom.expose_test_interfaces",
@@ -90,3 +96,57 @@ interface TestInterfaceIterableDoubleUnion {
   iterable<DOMString, (DOMString or long)>;
 };
 
+dictionary TestInterfaceAsyncIterableSingleOptions {
+  boolean failToInit = false;
+};
+
+[Pref="dom.expose_test_interfaces",
+ Exposed=Window]
+interface TestInterfaceAsyncIterableSingle {
+  [Throws]
+  constructor(optional TestInterfaceAsyncIterableSingleOptions options = {});
+
+  async iterable<long>;
+};
+
+callback TestThrowingCallback = undefined();
+
+dictionary TestInterfaceAsyncIteratorOptions {
+  unsigned long multiplier = 1;
+  sequence<Promise<any>> blockingPromises = [];
+  unsigned long failNextAfter = 4294967295;
+  boolean throwFromNext = false;
+  TestThrowingCallback throwFromReturn;
+};
+
+[Pref="dom.expose_test_interfaces",
+ Exposed=Window]
+interface TestInterfaceAsyncIterableSingleWithArgs {
+  [Throws]
+  constructor();
+
+  [GenerateReturnMethod]
+  async iterable<long>(optional TestInterfaceAsyncIteratorOptions options = {});
+
+  readonly attribute long returnCallCount;
+
+  readonly attribute any returnLastCalledWith;
+};
+
+[Pref="dom.expose_test_interfaces",
+ Exposed=Window]
+interface TestInterfaceAsyncIterableDouble {
+  [Throws]
+  constructor();
+
+  async iterable<DOMString, DOMString>;
+};
+
+[Pref="dom.expose_test_interfaces",
+ Exposed=Window]
+interface TestInterfaceAsyncIterableDoubleUnion {
+  [Throws]
+  constructor();
+
+  async iterable<DOMString, (DOMString or long)>;
+};

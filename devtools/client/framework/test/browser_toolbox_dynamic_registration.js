@@ -8,8 +8,7 @@ var toolbox;
 
 function test() {
   addTab(TEST_URL).then(async tab => {
-    const target = await TargetFactory.forTab(tab);
-    gDevTools.showToolbox(target).then(testRegister);
+    gDevTools.showToolboxForTab(tab).then(testRegister);
   });
 }
 
@@ -21,8 +20,8 @@ function testRegister(aToolbox) {
     id: "testTool",
     label: "Test Tool",
     inMenu: true,
-    isTargetSupported: () => true,
-    build: function() {},
+    isToolSupported: () => true,
+    build() {},
   });
 }
 

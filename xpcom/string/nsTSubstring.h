@@ -10,14 +10,13 @@
 
 #include <type_traits>
 
-#include "mozilla/Casting.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/UniquePtr.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/IntegerTypeTraits.h"
-#include "mozilla/Result.h"
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/Span.h"
+#include "mozilla/Try.h"
 #include "mozilla/Unused.h"
 
 #include "nsTStringRepr.h"
@@ -138,9 +137,7 @@ class BulkWriteHandle final {
    *  2) RestartBulkWrite() is called
    *  3) BulkWriteHandle goes out of scope
    */
-  mozilla::Span<T> AsSpan() const {
-    return mozilla::MakeSpan(Elements(), Length());
-  }
+  auto AsSpan() const { return mozilla::Span<T>{Elements(), Length()}; }
 
   /**
    * Autoconvert to the buffer as writable Span.
@@ -174,16 +171,8 @@ class BulkWriteHandle final {
   mozilla::Result<mozilla::Ok, nsresult> RestartBulkWrite(
       size_type aCapacity, size_type aPrefixToPreserve, bool aAllowShrinking) {
     MOZ_ASSERT(mString);
-    auto r = mString->StartBulkWriteImpl(aCapacity, aPrefixToPreserve,
-                                         aAllowShrinking);
-    if (MOZ_UNLIKELY(r.isErr())) {
-      nsresult rv = r.unwrapErr();
-      // MOZ_TRY or manual unwrapErr() without the intermediate
-      // assignment complains about an incomplete type.
-      // andThen() is not enabled on r.
-      return mozilla::Err(rv);
-    }
-    mCapacity = r.unwrap();
+    MOZ_TRY_VAR(mCapacity, mString->StartBulkWriteImpl(
+                               aCapacity, aPrefixToPreserve, aAllowShrinking));
     return mozilla::Ok();
   }
 
@@ -292,6 +281,7 @@ class BulkWriteHandle final {
 template <typename T>
 class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   friend class mozilla::BulkWriteHandle<T>;
+  friend class mozilla::StringBuffer;
 
  public:
   typedef nsTSubstring<T> self_type;
@@ -317,12 +307,15 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
 
   typedef typename base_string_type::const_char_iterator const_char_iterator;
 
+  typedef typename base_string_type::string_view string_view;
+
   typedef typename base_string_type::index_type index_type;
   typedef typename base_string_type::size_type size_type;
 
   // These are only for internal use within the string classes:
   typedef typename base_string_type::DataFlags DataFlags;
   typedef typename base_string_type::ClassFlags ClassFlags;
+  typedef typename base_string_type::LengthStorage LengthStorage;
 
   // this acts like a virtual destructor
   ~nsTSubstring() { Finalize(); }
@@ -385,6 +378,14 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   int32_t ToInteger(nsresult* aErrorCode, uint32_t aRadix = 10) const;
 
   /**
+   * Perform string to uint conversion.
+   * @param   aErrorCode will contain error if one occurs
+   * @param   aRadix is the radix to use. Only 10 and 16 are supported.
+   * @return  int rep of string value, and possible (out) error code
+   */
+  uint32_t ToUnsignedInteger(nsresult* aErrorCode, uint32_t aRadix = 10) const;
+
+  /**
    * Perform string to 64-bit int conversion.
    * @param   aErrorCode will contain error if one occurs
    * @param   aRadix is the radix to use. Only 10 and 16 are supported.
@@ -416,6 +417,20 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   [[nodiscard]] bool NS_FASTCALL Assign(const substring_tuple_type&,
                                         const fallible_t&);
 
+  void Assign(mozilla::StringBuffer* aBuffer, size_type aLength) {
+    aBuffer->AddRef();
+    Assign(already_AddRefed<mozilla::StringBuffer>(aBuffer), aLength);
+  }
+  void NS_FASTCALL Assign(already_AddRefed<mozilla::StringBuffer> aBuffer,
+                          size_type aLength) {
+    mozilla::StringBuffer* buffer = aBuffer.take();
+    auto* data = reinterpret_cast<char_type*>(buffer->Data());
+    MOZ_DIAGNOSTIC_ASSERT(data[aLength] == char_type(0),
+                          "data should be null terminated");
+    Finalize();
+    SetData(data, aLength, DataFlags::REFCOUNTED | DataFlags::TERMINATED);
+  }
+
 #if defined(MOZ_USE_CHAR16_WRAPPER)
   template <typename Q = T, typename EnableIfChar16 = mozilla::Char16OnlyT<Q>>
   void Assign(char16ptr_t aData) {
@@ -440,13 +455,11 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
                                              const fallible_t&);
 
   void NS_FASTCALL AssignASCII(const char* aData) {
-    AssignASCII(aData, mozilla::AssertedCast<size_type, size_t>(strlen(aData)));
+    AssignASCII(aData, strlen(aData));
   }
   [[nodiscard]] bool NS_FASTCALL AssignASCII(const char* aData,
                                              const fallible_t& aFallible) {
-    return AssignASCII(aData,
-                       mozilla::AssertedCast<size_type, size_t>(strlen(aData)),
-                       aFallible);
+    return AssignASCII(aData, strlen(aData), aFallible);
   }
 
   // AssignLiteral must ONLY be called with an actual literal string, or
@@ -558,6 +571,128 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
     ReplaceLiteral(aCutStart, aCutLength, aStr, N - 1);
   }
 
+  /**
+   * |Left|, |Mid|, and |Right| are annoying signatures that seem better almost
+   * any _other_ way than they are now.  Consider these alternatives
+   *
+   * // ...a member function that returns a |Substring|
+   * aWritable = aReadable.Left(17);
+   * // ...a global function that returns a |Substring|
+   * aWritable = Left(aReadable, 17);
+   * // ...a global function that does the assignment
+   * Left(aReadable, 17, aWritable);
+   *
+   * as opposed to the current signature
+   *
+   * // ...a member function that does the assignment
+   * aReadable.Left(aWritable, 17);
+   *
+   * or maybe just stamping them out in favor of |Substring|, they are just
+   * duplicate functionality
+   *
+   * aWritable = Substring(aReadable, 0, 17);
+   */
+  size_type Mid(self_type& aResult, index_type aStartPos,
+                size_type aCount) const;
+
+  size_type Left(self_type& aResult, size_type aCount) const {
+    return Mid(aResult, 0, aCount);
+  }
+
+  size_type Right(self_type& aResult, size_type aCount) const {
+    aCount = XPCOM_MIN(this->Length(), aCount);
+    return Mid(aResult, this->mLength - aCount, aCount);
+  }
+
+  /**
+   *  This method strips whitespace throughout the string.
+   */
+  void StripWhitespace();
+  bool StripWhitespace(const fallible_t&);
+
+  /**
+   *  This method is used to remove all occurrences of aChar from this
+   * string.
+   *
+   *  @param  aChar -- char to be stripped
+   */
+  void StripChar(char_type aChar);
+
+  /**
+   *  This method is used to remove all occurrences of aChars from this
+   * string.
+   *
+   *  @param  aChars -- chars to be stripped
+   */
+  void StripChars(const char_type* aChars);
+
+  /**
+   * This method is used to remove all occurrences of some characters this
+   * from this string.  The characters removed have the corresponding
+   * entries in the bool array set to true; we retain all characters
+   * with code beyond 127.
+   * THE CALLER IS RESPONSIBLE for making sure the complete boolean
+   * array, 128 entries, is properly initialized.
+   *
+   * See also: ASCIIMask class.
+   *
+   *  @param  aToStrip -- Array where each entry is true if the
+   *          corresponding ASCII character is to be stripped.  All
+   *          characters beyond code 127 are retained.  Note that this
+   *          parameter is of ASCIIMaskArray type, but we expand the typedef
+   *          to avoid having to include nsASCIIMask.h in this include file
+   *          as it brings other includes.
+   */
+  void StripTaggedASCII(const std::array<bool, 128>& aToStrip);
+
+  /**
+   * A shortcut to strip \r and \n.
+   */
+  void StripCRLF();
+
+  /**
+   * swaps occurence of 1 string for another
+   */
+  void ReplaceChar(char_type aOldChar, char_type aNewChar);
+  void ReplaceChar(const string_view& aSet, char_type aNewChar);
+
+  /**
+   * Replace all occurrences of aTarget with aNewValue.
+   * The complexity of this function is O(n+m), n being the length of the string
+   * and m being the length of aNewValue.
+   */
+  void ReplaceSubstring(const self_type& aTarget, const self_type& aNewValue);
+  void ReplaceSubstring(const char_type* aTarget, const char_type* aNewValue);
+  [[nodiscard]] bool ReplaceSubstring(const self_type& aTarget,
+                                      const self_type& aNewValue,
+                                      const fallible_t&);
+  [[nodiscard]] bool ReplaceSubstring(const char_type* aTarget,
+                                      const char_type* aNewValue,
+                                      const fallible_t&);
+
+  /**
+   *  This method trims characters found in aSet from either end of the
+   *  underlying string.
+   *
+   *  @param   aSet -- contains chars to be trimmed from both ends
+   *  @param   aTrimLeading
+   *  @param   aTrimTrailing
+   *  @param   aIgnoreQuotes -- if true, causes surrounding quotes to be ignored
+   *  @return  this
+   */
+  void Trim(const std::string_view& aSet, bool aTrimLeading = true,
+            bool aTrimTrailing = true, bool aIgnoreQuotes = false);
+
+  /**
+   *  This method strips whitespace from string.
+   *  You can control whether whitespace is yanked from start and end of
+   *  string as well.
+   *
+   *  @param   aTrimLeading controls stripping of leading ws
+   *  @param   aTrimTrailing controls stripping of trailing ws
+   */
+  void CompressWhitespace(bool aTrimLeading = true, bool aTrimTrailing = true);
+
   void Append(char_type aChar);
 
   [[nodiscard]] bool Append(char_type aChar, const fallible_t& aFallible);
@@ -648,7 +783,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    * this with floating-point values as a result.
    */
   void AppendPrintf(const char* aFormat, ...) MOZ_FORMAT_PRINTF(2, 3);
-  void AppendPrintf(const char* aFormat, va_list aAp) MOZ_FORMAT_PRINTF(2, 0);
+  void AppendVprintf(const char* aFormat, va_list aAp) MOZ_FORMAT_PRINTF(2, 0);
   void AppendInt(int32_t aInteger) { AppendIntDec(aInteger); }
   void AppendInt(int32_t aInteger, int aRadix) {
     if (aRadix == 10) {
@@ -900,12 +1035,12 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   size_type GetMutableData(char_type** aData,
                            size_type aNewLen = size_type(-1)) {
     if (!EnsureMutable(aNewLen)) {
-      AllocFailed(aNewLen == size_type(-1) ? base_string_type::mLength
+      AllocFailed(aNewLen == size_type(-1) ? base_string_type::Length()
                                            : aNewLen);
     }
 
     *aData = base_string_type::mData;
-    return base_string_type::mLength;
+    return base_string_type::Length();
   }
 
   size_type GetMutableData(char_type** aData, size_type aNewLen,
@@ -933,32 +1068,40 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   }
 #endif
 
+  mozilla::Span<char_type> GetMutableData(size_type aNewLen = size_type(-1)) {
+    if (!EnsureMutable(aNewLen)) {
+      AllocFailed(aNewLen == size_type(-1) ? base_string_type::Length()
+                                           : aNewLen);
+    }
+
+    return mozilla::Span{base_string_type::mData, base_string_type::Length()};
+  }
+
+  mozilla::Maybe<mozilla::Span<char_type>> GetMutableData(size_type aNewLen,
+                                                          const fallible_t&) {
+    if (!EnsureMutable(aNewLen)) {
+      return mozilla::Nothing();
+    }
+    return Some(
+        mozilla::Span{base_string_type::mData, base_string_type::Length()});
+  }
+
   /**
    * Span integration
    */
 
-  operator mozilla::Span<char_type>() {
-    return mozilla::MakeSpan(BeginWriting(), base_string_type::Length());
-  }
-
   operator mozilla::Span<const char_type>() const {
-    return mozilla::MakeSpan(base_string_type::BeginReading(),
-                             base_string_type::Length());
+    return mozilla::Span{base_string_type::BeginReading(),
+                         base_string_type::Length()};
   }
 
   void Append(mozilla::Span<const char_type> aSpan) {
-    auto len = aSpan.Length();
-    MOZ_RELEASE_ASSERT(len <= std::numeric_limits<size_type>::max());
-    Append(aSpan.Elements(), len);
+    Append(aSpan.Elements(), aSpan.Length());
   }
 
   [[nodiscard]] bool Append(mozilla::Span<const char_type> aSpan,
                             const fallible_t& aFallible) {
-    auto len = aSpan.Length();
-    if (len > std::numeric_limits<size_type>::max()) {
-      return false;
-    }
-    return Append(aSpan.Elements(), len, aFallible);
+    return Append(aSpan.Elements(), aSpan.Length(), aFallible);
   }
 
   void NS_FASTCALL AssignASCII(mozilla::Span<const char> aData) {
@@ -974,34 +1117,26 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   }
 
   template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
-  operator mozilla::Span<uint8_t>() {
-    return mozilla::MakeSpan(reinterpret_cast<uint8_t*>(BeginWriting()),
-                             base_string_type::Length());
-  }
-
-  template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
   operator mozilla::Span<const uint8_t>() const {
-    return mozilla::MakeSpan(
+    return mozilla::Span{
         reinterpret_cast<const uint8_t*>(base_string_type::BeginReading()),
-        base_string_type::Length());
+        base_string_type::Length()};
   }
 
   template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
   void Append(mozilla::Span<const uint8_t> aSpan) {
-    auto len = aSpan.Length();
-    MOZ_RELEASE_ASSERT(len <= std::numeric_limits<size_type>::max());
-    Append(reinterpret_cast<const char*>(aSpan.Elements()), len);
+    Append(reinterpret_cast<const char*>(aSpan.Elements()), aSpan.Length());
   }
 
   template <typename Q = T, typename EnableIfChar = mozilla::CharOnlyT<Q>>
   [[nodiscard]] bool Append(mozilla::Span<const uint8_t> aSpan,
                             const fallible_t& aFallible) {
-    auto len = aSpan.Length();
-    if (len > std::numeric_limits<size_type>::max()) {
-      return false;
-    }
-    return Append(reinterpret_cast<const char*>(aSpan.Elements()), len,
-                  aFallible);
+    return Append(reinterpret_cast<const char*>(aSpan.Elements()),
+                  aSpan.Length(), aFallible);
+  }
+
+  void Insert(mozilla::Span<const char_type> aSpan, index_type aPos) {
+    Insert(aSpan.Elements(), aPos, aSpan.Length());
   }
 
   /**
@@ -1012,59 +1147,30 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   void NS_FASTCALL SetIsVoid(bool);
 
   /**
-   *  This method is used to remove all occurrences of aChar from this
-   * string.
-   *
-   *  @param  aChar -- char to be stripped
-   */
-
-  void StripChar(char_type aChar);
-
-  /**
-   *  This method is used to remove all occurrences of aChars from this
-   * string.
-   *
-   *  @param  aChars -- chars to be stripped
-   */
-
-  void StripChars(const char_type* aChars);
-
-  /**
-   * This method is used to remove all occurrences of some characters this
-   * from this string.  The characters removed have the corresponding
-   * entries in the bool array set to true; we retain all characters
-   * with code beyond 127.
-   * THE CALLER IS RESPONSIBLE for making sure the complete boolean
-   * array, 128 entries, is properly initialized.
-   *
-   * See also: ASCIIMask class.
-   *
-   *  @param  aToStrip -- Array where each entry is true if the
-   *          corresponding ASCII character is to be stripped.  All
-   *          characters beyond code 127 are retained.  Note that this
-   *          parameter is of ASCIIMaskArray type, but we expand the typedef
-   *          to avoid having to include nsASCIIMask.h in this include file
-   *          as it brings other includes.
-   */
-  void StripTaggedASCII(const std::array<bool, 128>& aToStrip);
-
-  /**
-   * A shortcut to strip \r and \n.
-   */
-  void StripCRLF();
-
-  /**
    * If the string uses a shared buffer, this method
    * clears the pointer without releasing the buffer.
    */
   void ForgetSharedBuffer() {
-    if (base_string_type::mDataFlags & DataFlags::REFCOUNTED) {
+    if (this->mDataFlags & DataFlags::REFCOUNTED) {
       SetToEmptyBuffer();
     }
   }
 
+  /**
+   * If the string uses a reference-counted buffer, this method returns a
+   * pointer to it without incrementing the buffer's refcount.
+   */
+  mozilla::StringBuffer* GetStringBuffer() const {
+    if (this->mDataFlags & DataFlags::REFCOUNTED) {
+      return mozilla::StringBuffer::FromData(this->mData);
+    }
+    return nullptr;
+  }
+
  protected:
   void AssertValid() {
+    MOZ_DIAGNOSTIC_ASSERT(!(this->mClassFlags & ClassFlags::INVALID_MASK));
+    MOZ_DIAGNOSTIC_ASSERT(!(this->mDataFlags & DataFlags::INVALID_MASK));
     MOZ_ASSERT(!(this->mClassFlags & ClassFlags::NULL_TERMINATED) ||
                    (this->mDataFlags & DataFlags::TERMINATED),
                "String classes whose static type guarantees a null-terminated "
@@ -1142,17 +1248,15 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    */
   nsTSubstring(char_type* aData, size_type aLength, DataFlags aDataFlags,
                ClassFlags aClassFlags)
-// XXXbz or can I just include nscore.h and use NS_BUILD_REFCNT_LOGGING?
-#if defined(DEBUG) || defined(FORCE_BUILD_REFCNT_LOGGING)
+#if defined(NS_BUILD_REFCNT_LOGGING)
 #  define XPCOM_STRING_CONSTRUCTOR_OUT_OF_LINE
       ;
 #else
 #  undef XPCOM_STRING_CONSTRUCTOR_OUT_OF_LINE
       : base_string_type(aData, aLength, aDataFlags, aClassFlags) {
     AssertValid();
-    MOZ_RELEASE_ASSERT(CheckCapacity(aLength), "String is too large.");
   }
-#endif /* DEBUG || FORCE_BUILD_REFCNT_LOGGING */
+#endif /* NS_BUILD_REFCNT_LOGGING */
 
   void SetToEmptyBuffer() {
     base_string_type::mData = char_traits::sEmptyBuffer;
@@ -1161,7 +1265,7 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
     AssertValid();
   }
 
-  void SetData(char_type* aData, size_type aLength, DataFlags aDataFlags) {
+  void SetData(char_type* aData, LengthStorage aLength, DataFlags aDataFlags) {
     base_string_type::mData = aData;
     base_string_type::mLength = aLength;
     base_string_type::mDataFlags = aDataFlags;
@@ -1193,11 +1297,6 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    * performed when the string is already mutable and the requested
    * capacity is smaller than the current capacity.
    *
-   * aRv takes a reference to an nsresult that will be set to
-   * NS_OK on success or to NS_ERROR_OUT_OF_MEMORY on failure,
-   * because mozilla::Result cannot wrap move-only types at
-   * this time.
-   *
    * If this method returns successfully, you must not access
    * the string except through the returned BulkWriteHandle
    * until either the BulkWriteHandle goes out of scope or
@@ -1213,10 +1312,8 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    *     content has been written, which results in a
    *     cache-friendly linear write pattern.
    */
-  mozilla::BulkWriteHandle<T> NS_FASTCALL BulkWrite(size_type aCapacity,
-                                                    size_type aPrefixToPreserve,
-                                                    bool aAllowShrinking,
-                                                    nsresult& aRv);
+  mozilla::Result<mozilla::BulkWriteHandle<T>, nsresult> NS_FASTCALL BulkWrite(
+      size_type aCapacity, size_type aPrefixToPreserve, bool aAllowShrinking);
 
   /**
    * THIS IS NOT REALLY A PUBLIC METHOD! DO NOT CALL FROM OUTSIDE
@@ -1265,18 +1362,23 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
    *                        move.
    *
    */
-  mozilla::Result<uint32_t, nsresult> NS_FASTCALL StartBulkWriteImpl(
+  mozilla::Result<size_type, nsresult> NS_FASTCALL StartBulkWriteImpl(
       size_type aCapacity, size_type aPrefixToPreserve = 0,
       bool aAllowShrinking = true, size_type aSuffixLength = 0,
       size_type aOldSuffixStart = 0, size_type aNewSuffixStart = 0);
 
  private:
+  void AssignOwned(self_type&& aStr);
+  bool AssignNonDependent(const substring_tuple_type& aTuple,
+                          size_type aTupleLength,
+                          const mozilla::fallible_t& aFallible);
+
   /**
    * Do not call this except from within FinishBulkWriteImpl() and
    * SetCapacity().
    */
   MOZ_ALWAYS_INLINE void NS_FASTCALL
-  FinishBulkWriteImplImpl(size_type aLength) {
+  FinishBulkWriteImplImpl(LengthStorage aLength) {
     base_string_type::mData[aLength] = char_type(0);
     base_string_type::mLength = aLength;
 #ifdef DEBUG
@@ -1348,24 +1450,8 @@ class nsTSubstring : public mozilla::detail::nsTStringRepr<T> {
   [[nodiscard]] bool NS_FASTCALL
   EnsureMutable(size_type aNewLen = size_type(-1));
 
-  /**
-   * Checks if the given capacity is valid for this string type.
-   */
-  [[nodiscard]] static bool CheckCapacity(size_type aCapacity) {
-    if (aCapacity > kMaxCapacity) {
-      // Also assert for |aCapacity| equal to |size_type(-1)|, since we used to
-      // use that value to flag immutability.
-      NS_ASSERTION(aCapacity != size_type(-1), "Bogus capacity");
-      return false;
-    }
-
-    return true;
-  }
-
   void NS_FASTCALL ReplaceLiteral(index_type aCutStart, size_type aCutLength,
                                   const char_type* aData, size_type aLength);
-
-  static const size_type kMaxCapacity;
 
  public:
   // NOTE: this method is declared public _only_ for convenience for
@@ -1381,82 +1467,15 @@ static_assert(sizeof(nsTSubstring<char>) ==
               "Don't add new data fields to nsTSubstring_CharT. "
               "Add to nsTStringRepr<T> instead.");
 
-// You should not need to instantiate this class directly.
-// Use nsTSubstring::Split instead.
-template <typename T>
-class nsTSubstringSplitter {
-  typedef typename nsTSubstring<T>::size_type size_type;
-  typedef typename nsTSubstring<T>::char_type char_type;
-
-  class nsTSubstringSplit_Iter {
-   public:
-    nsTSubstringSplit_Iter(const nsTSubstringSplitter<T>& aObj, size_type aPos)
-        : mObj(aObj), mPos(aPos) {}
-
-    bool operator!=(const nsTSubstringSplit_Iter& other) const {
-      return mPos != other.mPos;
-    }
-
-    const nsTDependentSubstring<T>& operator*() const;
-
-    const nsTSubstringSplit_Iter& operator++() {
-      ++mPos;
-      return *this;
-    }
-
-   private:
-    const nsTSubstringSplitter<T>& mObj;
-    size_type mPos;
-  };
-
- private:
-  const nsTSubstring<T>* const mStr;
-  mozilla::UniquePtr<nsTDependentSubstring<T>[]> mArray;
-  size_type mArraySize;
-  const char_type mDelim;
-
- public:
-  nsTSubstringSplitter(const nsTSubstring<T>* aStr, char_type aDelim);
-
-  nsTSubstringSplit_Iter begin() const {
-    return nsTSubstringSplit_Iter(*this, 0);
-  }
-
-  nsTSubstringSplit_Iter end() const {
-    return nsTSubstringSplit_Iter(*this, mArraySize);
-  }
-
-  const nsTDependentSubstring<T>& Get(const size_type index) const {
-    MOZ_ASSERT(index < mArraySize);
-    return mArray[index];
-  }
-};
-
-extern template class nsTSubstringSplitter<char>;
-extern template class nsTSubstringSplitter<char16_t>;
+#include "nsCharSeparatedTokenizer.h"
+#include "nsTDependentSubstring.h"
 
 /**
  * Span integration
  */
 namespace mozilla {
-Span(nsTSubstring<char>&)->Span<char>;
-Span(const nsTSubstring<char>&)->Span<const char>;
-Span(nsTSubstring<char16_t>&)->Span<char16_t>;
-Span(const nsTSubstring<char16_t>&)->Span<const char16_t>;
-
-inline Span<char> MakeSpan(nsTSubstring<char>& aString) { return aString; }
-
-inline Span<const char> MakeSpan(const nsTSubstring<char>& aString) {
-  return aString;
-}
-
-inline Span<char16_t> MakeSpan(nsTSubstring<char16_t>& aString) {
-  return aString;
-}
-
-inline Span<const char16_t> MakeSpan(const nsTSubstring<char16_t>& aString) {
-  return aString;
-}
+Span(const nsTSubstring<char>&) -> Span<const char>;
+Span(const nsTSubstring<char16_t>&) -> Span<const char16_t>;
 
 }  // namespace mozilla
 

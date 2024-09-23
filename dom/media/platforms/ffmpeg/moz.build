@@ -5,22 +5,27 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 EXPORTS += [
-    'FFmpegRuntimeLinker.h',
+    "FFmpegRuntimeLinker.h",
 ]
 
 DIRS += [
-    'libav53',
-    'libav54',
-    'libav55',
-    'ffmpeg57',
-    'ffmpeg58',
+    "libav53",
+    "libav54",
+    "libav55",
+    "ffmpeg57",
+    "ffmpeg58",
+    "ffmpeg59",
+    "ffmpeg60",
+    "ffmpeg61",
 ]
 
-UNIFIED_SOURCES += [
-    'FFmpegRuntimeLinker.cpp',
+UNIFIED_SOURCES += ["FFmpegRuntimeLinker.cpp"]
+
+if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+    include("/ipc/chromium/chromium-config.mozbuild")
+
+LOCAL_INCLUDES += [
+    "/media/libyuv/libyuv/include",
 ]
 
-if CONFIG['MOZ_WAYLAND']:
-  include('/ipc/chromium/chromium-config.mozbuild')
-
-FINAL_LIBRARY = 'xul'
+FINAL_LIBRARY = "xul"

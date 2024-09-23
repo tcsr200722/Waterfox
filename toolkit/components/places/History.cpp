@@ -20,11 +20,13 @@
 #include "PlaceInfo.h"
 #include "VisitInfo.h"
 #include "nsPlacesMacros.h"
+#include "NotifyRankingChanged.h"
 
 #include "mozilla/storage.h"
 #include "mozilla/dom/Link.h"
 #include "nsDocShellCID.h"
-#include "mozilla/Services.h"
+#include "mozilla/Components.h"
+#include "nsAppDirectoryServiceDefs.h"
 #include "nsThreadUtils.h"
 #include "nsNetUtil.h"
 #include "nsIWidget.h"
@@ -33,36 +35,38 @@
 #include "mozilla/Unused.h"
 #include "nsContentUtils.h"  // for nsAutoScriptBlocker
 #include "nsJSUtils.h"
+#include "nsStandardURL.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "nsPrintfCString.h"
 #include "nsTHashtable.h"
 #include "jsapi.h"
 #include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject, JS::NewArrayObject
+#include "js/PropertyAndElement.h"  // JS_DefineElement, JS_GetElement, JS_GetProperty
 #include "mozilla/StaticPrefs_layout.h"
+#include "mozilla/StaticPrefs_places.h"
 #include "mozilla/dom/ContentProcessMessageManager.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/PlacesObservers.h"
 #include "mozilla/dom/PlacesVisit.h"
+#include "mozilla/dom/PlacesVisitTitle.h"
 #include "mozilla/dom/ScriptSettings.h"
+
+#include "nsIBrowserWindowTracker.h"
+#include "nsImportModule.h"
+#include "mozilla/StaticPrefs_browser.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::ipc;
-using mozilla::Unused;
 
-namespace mozilla {
-namespace places {
+namespace mozilla::places {
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Global Defines
 
-#define URI_VISITED "visited"
-#define URI_NOT_VISITED "not visited"
-#define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
 // Observer event fired after a visit has been registered in the DB.
 #define URI_VISIT_SAVED "uri-visit-saved"
 
-#define DESTINATIONFILEURI_ANNO \
-  NS_LITERAL_CSTRING("downloads/destinationFileURI")
+#define DESTINATIONFILEURI_ANNO "downloads/destinationFileURI"_ns
 
 ////////////////////////////////////////////////////////////////////////////////
 //// VisitData
@@ -72,7 +76,6 @@ struct VisitData {
       : placeId(0),
         visitId(0),
         hidden(true),
-        shouldUpdateHidden(true),
         typed(false),
         transitionType(UINT32_MAX),
         visitTime(0),
@@ -82,17 +85,24 @@ struct VisitData {
         visitCount(0),
         referrerVisitId(0),
         titleChanged(false),
-        shouldUpdateFrecency(true),
-        useFrecencyRedirectBonus(false) {
+        isUnrecoverableError(false),
+        useFrecencyRedirectBonus(false),
+        source(nsINavHistoryService::VISIT_SOURCE_ORGANIC),
+        triggeringPlaceId(0),
+        triggeringSponsoredURLVisitTimeMS(0),
+        bookmarked(false) {
     guid.SetIsVoid(true);
     title.SetIsVoid(true);
+    baseDomain.SetIsVoid(true);
+    triggeringSearchEngine.SetIsVoid(true);
+    triggeringSponsoredURL.SetIsVoid(true);
+    triggeringSponsoredURLBaseDomain.SetIsVoid(true);
   }
 
   explicit VisitData(nsIURI* aURI, nsIURI* aReferrer = nullptr)
       : placeId(0),
         visitId(0),
         hidden(true),
-        shouldUpdateHidden(true),
         typed(false),
         transitionType(UINT32_MAX),
         visitTime(0),
@@ -102,8 +112,12 @@ struct VisitData {
         visitCount(0),
         referrerVisitId(0),
         titleChanged(false),
-        shouldUpdateFrecency(true),
-        useFrecencyRedirectBonus(false) {
+        isUnrecoverableError(false),
+        useFrecencyRedirectBonus(false),
+        source(nsINavHistoryService::VISIT_SOURCE_ORGANIC),
+        triggeringPlaceId(0),
+        triggeringSponsoredURLVisitTimeMS(0),
+        bookmarked(false) {
     MOZ_ASSERT(aURI);
     if (aURI) {
       (void)aURI->GetSpec(spec);
@@ -114,6 +128,10 @@ struct VisitData {
     }
     guid.SetIsVoid(true);
     title.SetIsVoid(true);
+    baseDomain.SetIsVoid(true);
+    triggeringSearchEngine.SetIsVoid(true);
+    triggeringSponsoredURL.SetIsVoid(true);
+    triggeringSponsoredURLBaseDomain.SetIsVoid(true);
   }
 
   /**
@@ -132,9 +150,9 @@ struct VisitData {
   nsCString guid;
   int64_t visitId;
   nsCString spec;
+  nsCString baseDomain;
   nsString revHost;
   bool hidden;
-  bool shouldUpdateHidden;
   bool typed;
   uint32_t transitionType;
   PRTime visitTime;
@@ -157,12 +175,20 @@ struct VisitData {
   // TODO bug 626836 hook up hidden and typed change tracking too!
   bool titleChanged;
 
-  // Indicates whether frecency should be updated for this visit.
-  bool shouldUpdateFrecency;
+  // Indicates whether the visit ended up in an unrecoverable error.
+  bool isUnrecoverableError;
 
   // Whether to override the visit type bonus with a redirect bonus when
   // calculating frecency on the most recent visit.
   bool useFrecencyRedirectBonus;
+
+  uint16_t source;
+  nsCString triggeringSearchEngine;
+  int64_t triggeringPlaceId;
+  nsCString triggeringSponsoredURL;
+  nsCString triggeringSponsoredURLBaseDomain;
+  int64_t triggeringSponsoredURLVisitTimeMS;
+  bool bookmarked;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -300,9 +326,8 @@ void GetStringFromJSObject(JSContext* aCtx, JS::Handle<JSObject*> aObject,
   if (!rc) {
     _string.SetIsVoid(true);
     return;
-  } else {
-    GetJSValueAsString(aCtx, val, _string);
   }
+  GetJSValueAsString(aCtx, val, _string);
 }
 
 /**
@@ -370,6 +395,18 @@ class VisitedQuery final : public AsyncStatementCallback {
   NS_DECL_ISUPPORTS_INHERITED
 
   static nsresult Start(nsIURI* aURI,
+                        History::ContentParentSet&& aContentProcessesToNotify) {
+    MOZ_ASSERT(aURI, "Null URI");
+    MOZ_ASSERT(XRE_IsParentProcess());
+
+    History* history = History::GetService();
+    NS_ENSURE_STATE(history);
+    RefPtr<VisitedQuery> query =
+        new VisitedQuery(aURI, std::move(aContentProcessesToNotify));
+    return history->QueueVisitedStatement(std::move(query));
+  }
+
+  static nsresult Start(nsIURI* aURI,
                         mozIVisitedStatusCallback* aCallback = nullptr) {
     MOZ_ASSERT(aURI, "Null URI");
     MOZ_ASSERT(XRE_IsParentProcess());
@@ -427,17 +464,7 @@ class VisitedQuery final : public AsyncStatementCallback {
     if (History* history = History::GetService()) {
       auto status = mIsVisited ? IHistory::VisitedStatus::Visited
                                : IHistory::VisitedStatus::Unvisited;
-      history->NotifyVisited(mURI, status);
-    }
-
-    nsCOMPtr<nsIObserverService> observerService =
-        mozilla::services::GetObserverService();
-    if (observerService) {
-      static const char16_t visited[] = u"" URI_VISITED;
-      static const char16_t notVisited[] = u"" URI_NOT_VISITED;
-      const char16_t* status = mIsVisited ? visited : notVisited;
-      (void)observerService->NotifyObservers(mURI, URI_VISITED_RESOLUTION_TOPIC,
-                                             status);
+      history->NotifyVisited(mURI, status, &mContentProcessesToNotify);
     }
   }
 
@@ -445,13 +472,19 @@ class VisitedQuery final : public AsyncStatementCallback {
   explicit VisitedQuery(
       nsIURI* aURI,
       const nsMainThreadPtrHandle<mozIVisitedStatusCallback>& aCallback)
-      : mURI(aURI), mCallback(aCallback), mIsVisited(false) {}
+      : mURI(aURI), mCallback(aCallback) {}
+
+  explicit VisitedQuery(nsIURI* aURI,
+                        History::ContentParentSet&& aContentProcessesToNotify)
+      : mURI(aURI),
+        mContentProcessesToNotify(std::move(aContentProcessesToNotify)) {}
 
   ~VisitedQuery() = default;
 
   nsCOMPtr<nsIURI> mURI;
   nsMainThreadPtrHandle<mozIVisitedStatusCallback> mCallback;
-  bool mIsVisited;
+  History::ContentParentSet mContentProcessesToNotify;
+  bool mIsVisited = false;
 };
 
 NS_IMPL_ISUPPORTS_INHERITED0(VisitedQuery, AsyncStatementCallback)
@@ -463,14 +496,13 @@ class NotifyManyVisitsObservers : public Runnable {
  public:
   explicit NotifyManyVisitsObservers(const VisitData& aPlace)
       : Runnable("places::NotifyManyVisitsObservers"),
-        mPlace(aPlace),
+        mPlaces({aPlace}),
         mHistory(History::GetService()) {}
 
-  explicit NotifyManyVisitsObservers(nsTArray<VisitData>& aPlaces)
+  explicit NotifyManyVisitsObservers(nsTArray<VisitData>&& aPlaces)
       : Runnable("places::NotifyManyVisitsObservers"),
-        mHistory(History::GetService()) {
-    aPlaces.SwapElements(mPlaces);
-  }
+        mPlaces(std::move(aPlaces)),
+        mHistory(History::GetService()) {}
 
   nsresult NotifyVisit(nsNavHistory* aNavHistory,
                        nsCOMPtr<nsIObserverService>& aObsService, PRTime aNow,
@@ -486,30 +518,39 @@ class NotifyManyVisitsObservers : public Runnable {
     }
     mHistory->NotifyVisited(aURI, IHistory::VisitedStatus::Visited);
 
-    if (aPlace.titleChanged) {
-      aNavHistory->NotifyTitleChange(aURI, aPlace.title, aPlace.guid);
-    }
-
     aNavHistory->UpdateDaysOfHistory(aPlace.visitTime);
 
     return NS_OK;
   }
 
-  void AddPlaceForNotify(const VisitData& aPlace, nsIURI* aURI,
+  void AddPlaceForNotify(const VisitData& aPlace,
                          Sequence<OwningNonNull<PlacesEvent>>& aEvents) {
-    if (aPlace.transitionType != nsINavHistoryService::TRANSITION_EMBED) {
-      RefPtr<PlacesVisit> vd = new PlacesVisit();
-      vd->mVisitId = aPlace.visitId;
-      vd->mUrl.Assign(NS_ConvertUTF8toUTF16(aPlace.spec));
-      vd->mVisitTime = aPlace.visitTime / 1000;
-      vd->mReferringVisitId = aPlace.referrerVisitId;
-      vd->mTransitionType = aPlace.transitionType;
-      vd->mPageGuid.Assign(aPlace.guid);
-      vd->mHidden = aPlace.hidden;
-      vd->mVisitCount = aPlace.visitCount + 1;  // Add current visit
-      vd->mTypedCount = static_cast<uint32_t>(aPlace.typed);
-      vd->mLastKnownTitle.Assign(aPlace.title);
-      bool success = !!aEvents.AppendElement(vd.forget(), fallible);
+    if (aPlace.transitionType == nsINavHistoryService::TRANSITION_EMBED) {
+      return;
+    }
+
+    RefPtr<PlacesVisit> visitEvent = new PlacesVisit();
+    visitEvent->mVisitId = aPlace.visitId;
+    visitEvent->mUrl.Assign(NS_ConvertUTF8toUTF16(aPlace.spec));
+    visitEvent->mVisitTime = aPlace.visitTime / 1000;
+    visitEvent->mReferringVisitId = aPlace.referrerVisitId;
+    visitEvent->mTransitionType = aPlace.transitionType;
+    visitEvent->mPageGuid.Assign(aPlace.guid);
+    visitEvent->mFrecency = aPlace.frecency;
+    visitEvent->mHidden = aPlace.hidden;
+    visitEvent->mVisitCount = aPlace.visitCount + 1;  // Add current visit
+    visitEvent->mTypedCount = static_cast<uint32_t>(aPlace.typed);
+    visitEvent->mLastKnownTitle.Assign(aPlace.title);
+
+    bool success = !!aEvents.AppendElement(visitEvent.forget(), fallible);
+    MOZ_RELEASE_ASSERT(success);
+
+    if (aPlace.titleChanged) {
+      RefPtr<PlacesVisitTitle> titleEvent = new PlacesVisitTitle();
+      titleEvent->mUrl.Assign(NS_ConvertUTF8toUTF16(aPlace.spec));
+      titleEvent->mPageGuid.Assign(aPlace.guid);
+      titleEvent->mTitle.Assign(aPlace.title);
+      bool success = !!aEvents.AppendElement(titleEvent.forget(), fallible);
       MOZ_RELEASE_ASSERT(success);
     }
   }
@@ -538,49 +579,28 @@ class NotifyManyVisitsObservers : public Runnable {
         mozilla::services::GetObserverService();
 
     Sequence<OwningNonNull<PlacesEvent>> events;
-    nsCOMArray<nsIURI> uris;
-    if (mPlaces.Length() > 0) {
-      for (uint32_t i = 0; i < mPlaces.Length(); ++i) {
-        nsCOMPtr<nsIURI> uri;
-        MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(uri), mPlaces[i].spec));
-        if (!uri) {
-          return NS_ERROR_UNEXPECTED;
-        }
-        AddPlaceForNotify(mPlaces[i], uri, events);
-        uris.AppendElement(uri.forget());
-      }
-    } else {
+    PRTime now = PR_Now();
+    for (uint32_t i = 0; i < mPlaces.Length(); ++i) {
       nsCOMPtr<nsIURI> uri;
-      MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(uri), mPlace.spec));
-      if (!uri) {
+      if (NS_WARN_IF(
+              NS_FAILED(NS_NewURI(getter_AddRefs(uri), mPlaces[i].spec)))) {
         return NS_ERROR_UNEXPECTED;
       }
-      AddPlaceForNotify(mPlace, uri, events);
-      uris.AppendElement(uri.forget());
+      AddPlaceForNotify(mPlaces[i], events);
+
+      nsresult rv = NotifyVisit(navHistory, obsService, now, uri, mPlaces[i]);
+      NS_ENSURE_SUCCESS(rv, rv);
     }
 
     if (events.Length() > 0) {
       PlacesObservers::NotifyListeners(events);
     }
 
-    PRTime now = PR_Now();
-    if (!mPlaces.IsEmpty()) {
-      for (uint32_t i = 0; i < mPlaces.Length(); ++i) {
-        nsresult rv =
-            NotifyVisit(navHistory, obsService, now, uris[i], mPlaces[i]);
-        NS_ENSURE_SUCCESS(rv, rv);
-      }
-    } else {
-      nsresult rv = NotifyVisit(navHistory, obsService, now, uris[0], mPlace);
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
-
     return NS_OK;
   }
 
  private:
-  nsTArray<VisitData> mPlaces;
-  VisitData mPlace;
+  AutoTArray<VisitData, 1> mPlaces;
   RefPtr<History> mHistory;
 };
 
@@ -604,18 +624,22 @@ class NotifyTitleObservers : public Runnable {
         mTitle(aTitle),
         mGUID(aGUID) {}
 
+  // MOZ_CAN_RUN_SCRIPT_BOUNDARY until Runnable::Run is marked
+  // MOZ_CAN_RUN_SCRIPT.  See bug 1535398.
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
   NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread(), "This should be called on the main thread");
 
-    nsNavHistory* navHistory = nsNavHistory::GetHistoryService();
-    NS_ENSURE_TRUE(navHistory, NS_ERROR_OUT_OF_MEMORY);
-    nsCOMPtr<nsIURI> uri;
-    MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(uri), mSpec));
-    if (!uri) {
-      return NS_ERROR_UNEXPECTED;
-    }
+    RefPtr<PlacesVisitTitle> titleEvent = new PlacesVisitTitle();
+    titleEvent->mUrl.Assign(NS_ConvertUTF8toUTF16(mSpec));
+    titleEvent->mPageGuid.Assign(mGUID);
+    titleEvent->mTitle.Assign(mTitle);
 
-    navHistory->NotifyTitleChange(uri, mTitle, mGUID);
+    Sequence<OwningNonNull<PlacesEvent>> events;
+    bool success = !!events.AppendElement(titleEvent.forget(), fallible);
+    MOZ_RELEASE_ASSERT(success);
+
+    PlacesObservers::NotifyListeners(events);
 
     return NS_OK;
   }
@@ -649,14 +673,14 @@ class NotifyPlaceInfoCallback : public Runnable {
     bool hasValidURIs = true;
     nsCOMPtr<nsIURI> referrerURI;
     if (!mPlace.referrerSpec.IsEmpty()) {
-      MOZ_ALWAYS_SUCCEEDS(
-          NS_NewURI(getter_AddRefs(referrerURI), mPlace.referrerSpec));
-      hasValidURIs = !!referrerURI;
+      hasValidURIs = !NS_WARN_IF(NS_FAILED(
+          NS_NewURI(getter_AddRefs(referrerURI), mPlace.referrerSpec)));
     }
 
     nsCOMPtr<nsIURI> uri;
-    MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(uri), mPlace.spec));
-    hasValidURIs = hasValidURIs && !!uri;
+    hasValidURIs =
+        hasValidURIs &&
+        !NS_WARN_IF(NS_FAILED(NS_NewURI(getter_AddRefs(uri), mPlace.spec)));
 
     nsCOMPtr<mozIPlaceInfo> place;
     if (mIsSingleVisit) {
@@ -732,7 +756,7 @@ class NotifyCompletion : public Runnable {
  *        The callback to notify if the URI cannot be added to history.
  * @return true if the URI can be added to history, false otherwise.
  */
-bool CanAddURI(nsIURI* aURI, const nsCString& aGUID = EmptyCString(),
+bool CanAddURI(nsIURI* aURI, const nsCString& aGUID = ""_ns,
                mozIVisitInfoCallback* aCallback = nullptr) {
   MOZ_ASSERT(NS_IsMainThread());
   nsNavHistory* navHistory = nsNavHistory::GetHistoryService();
@@ -759,20 +783,6 @@ bool CanAddURI(nsIURI* aURI, const nsCString& aGUID = EmptyCString(),
   return false;
 }
 
-class NotifyManyFrecenciesChanged final : public Runnable {
- public:
-  NotifyManyFrecenciesChanged()
-      : Runnable("places::NotifyManyFrecenciesChanged") {}
-
-  NS_IMETHOD Run() override {
-    MOZ_ASSERT(NS_IsMainThread(), "This should be called on the main thread");
-    nsNavHistory* navHistory = nsNavHistory::GetHistoryService();
-    NS_ENSURE_STATE(navHistory);
-    navHistory->NotifyManyFrecenciesChanged();
-    return NS_OK;
-  }
-};
-
 /**
  * Adds a visit to the database.
  */
@@ -787,14 +797,10 @@ class InsertVisitedURIs final : public Runnable {
    *        The locations to record visits.
    * @param [optional] aCallback
    *        The callback to notify about the visit.
-   * @param [optional] aGroupNotifications
-   *        Whether to group any observer notifications rather than
-   *        sending them out individually.
    */
   static nsresult Start(mozIStorageConnection* aConnection,
-                        nsTArray<VisitData>& aPlaces,
+                        nsTArray<VisitData>&& aPlaces,
                         mozIVisitInfoCallback* aCallback = nullptr,
-                        bool aGroupNotifications = false,
                         uint32_t aInitialUpdatedCount = 0) {
     MOZ_ASSERT(NS_IsMainThread(), "This should be called on the main thread");
     MOZ_ASSERT(aPlaces.Length() > 0, "Must pass a non-empty array!");
@@ -818,8 +824,8 @@ class InsertVisitedURIs final : public Runnable {
       Unused << aCallback->GetIgnoreResults(&ignoreResults);
     }
     RefPtr<InsertVisitedURIs> event = new InsertVisitedURIs(
-        aConnection, aPlaces, callback, aGroupNotifications, ignoreErrors,
-        ignoreResults, aInitialUpdatedCount);
+        aConnection, std::move(aPlaces), callback, ignoreErrors, ignoreResults,
+        aInitialUpdatedCount);
 
     // Get the target thread, and then start the work!
     nsCOMPtr<nsIEventTarget> target = do_GetInterface(aConnection);
@@ -838,9 +844,6 @@ class InsertVisitedURIs final : public Runnable {
     // whatever we can and then notify the main thread we're done.
     nsresult rv = InnerRun();
 
-    if (mSuccessfulUpdatedCount > 0 && mGroupNotifications) {
-      NS_DispatchToMainThread(new NotifyManyFrecenciesChanged());
-    }
     if (!!mCallback) {
       NS_DispatchToMainThread(
           new NotifyCompletion(mCallback, mSuccessfulUpdatedCount));
@@ -849,15 +852,19 @@ class InsertVisitedURIs final : public Runnable {
   }
 
   nsresult InnerRun() {
-    // Prevent the main thread from shutting down while this is running.
-    MutexAutoLock lockedScope(mHistory->GetShutdownMutex());
+    MOZ_ASSERT(!NS_IsMainThread());
+    // Prevent Shutdown() from proceeding while this is running.
+    MutexAutoLock lockedScope(mHistory->mBlockShutdownMutex);
+    // Check if we were already shutting down.
     if (mHistory->IsShuttingDown()) {
-      // If we were already shutting down, we cannot insert the URIs.
       return NS_OK;
     }
 
     mozStorageTransaction transaction(
         mDBConn, false, mozIStorageConnection::TRANSACTION_IMMEDIATE);
+
+    // XXX Handle the error, bug 1696133.
+    Unused << NS_WARN_IF(NS_FAILED(transaction.Start()));
 
     const VisitData* lastFetchedPlace = nullptr;
     uint32_t lastFetchedVisitCount = 0;
@@ -866,9 +873,28 @@ class InsertVisitedURIs final : public Runnable {
     if (shouldChunkNotifications) {
       notificationChunk.SetCapacity(NOTIFY_VISITS_CHUNK_SIZE);
     }
+
+    // This is an optimization for frecency updating, if all the entries point
+    // to the same URL (inserting multiple visits for the same url), then we can
+    // update frecency once at the end of the loop. Otherwise, if there's
+    // multiple pages, we'll delay frecency recalculation to a later time.
+    bool shouldUpdateFrecency = false;
+
     for (nsTArray<VisitData>::size_type i = 0; i < mPlaces.Length(); i++) {
       VisitData& place = mPlaces.ElementAt(i);
 
+      if (i == 0) {
+        // isUnrecoverableError can only be defined when this is invoked by
+        // VisitURI, to insert a single visit. When it's defined, the page
+        // will be hidden, thus it's not worth updating.
+        shouldUpdateFrecency = !place.isUnrecoverableError;
+      } else if (shouldUpdateFrecency &&
+                 (!place.spec.Equals(mPlaces.ElementAt(i - 1).spec))) {
+        // We have multiple entries with different URLs, delay recalculation.
+        // A SQL trigger will set recalc_frecency automatically when a visit
+        // is added.
+        shouldUpdateFrecency = false;
+      }
       // Fetching from the database can overwrite this information, so save it
       // apart.
       bool typed = place.typed;
@@ -914,13 +940,8 @@ class InsertVisitedURIs final : public Runnable {
         place.hidden = false;
       }
 
-      // If this is a new page, or the existing page was already visible,
-      // there's no need to try to unhide it.
-      if (!known || !lastFetchedPlace->hidden) {
-        place.shouldUpdateHidden = false;
-      }
-
       FetchReferrerInfo(place);
+      UpdateVisitSource(place, mHistory);
 
       nsresult rv = DoDatabaseInserts(known, place);
       if (!!mCallback) {
@@ -937,13 +958,12 @@ class InsertVisitedURIs final : public Runnable {
       NS_ENSURE_SUCCESS(rv, rv);
 
       if (shouldChunkNotifications) {
-        int32_t numRemaining = mPlaces.Length() - (i + 1);
+        int32_t numRemaining = (int32_t)(mPlaces.Length() - (i + 1));
         notificationChunk.AppendElement(place);
         if (notificationChunk.Length() == NOTIFY_VISITS_CHUNK_SIZE ||
             numRemaining == 0) {
-          // This will SwapElements on notificationChunk with an empty nsTArray
           nsCOMPtr<nsIRunnable> event =
-              new NotifyManyVisitsObservers(notificationChunk);
+              new NotifyManyVisitsObservers(std::move(notificationChunk));
           rv = NS_DispatchToMainThread(event);
           NS_ENSURE_SUCCESS(rv, rv);
 
@@ -958,24 +978,16 @@ class InsertVisitedURIs final : public Runnable {
       mSuccessfulUpdatedCount++;
     }
 
-    {
-      // Trigger insertions for all the new origins of the places we inserted.
-      nsAutoCString query("DELETE FROM moz_updateoriginsinsert_temp");
-      nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(query);
-      NS_ENSURE_STATE(stmt);
-      mozStorageStatementScoper scoper(stmt);
-      nsresult rv = stmt->Execute();
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
-
-    {
-      // Trigger frecency updates for all those origins.
-      nsAutoCString query("DELETE FROM moz_updateoriginsupdate_temp");
-      nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(query);
-      NS_ENSURE_STATE(stmt);
-      mozStorageStatementScoper scoper(stmt);
-      nsresult rv = stmt->Execute();
-      NS_ENSURE_SUCCESS(rv, rv);
+    if (shouldUpdateFrecency) {
+      VisitData& place = mPlaces.ElementAt(0);
+      if (NS_SUCCEEDED(UpdateFrecency(
+              place.placeId,
+              place.useFrecencyRedirectBonus && mPlaces.Length() == 1))) {
+        // Notifying a new visit should be sufficient to know that frecency
+        // changed, but since historically we notified a frecency change, for
+        // now we'll continue doing it, and re-evaluate in the future.
+        NS_DispatchToMainThread(new NotifyRankingChanged());
+      }
     }
 
     nsresult rv = transaction.Commit();
@@ -984,7 +996,8 @@ class InsertVisitedURIs final : public Runnable {
     // If we don't need to chunk the notifications, just notify using the
     // original mPlaces array.
     if (!shouldChunkNotifications) {
-      nsCOMPtr<nsIRunnable> event = new NotifyManyVisitsObservers(mPlaces);
+      nsCOMPtr<nsIRunnable> event =
+          new NotifyManyVisitsObservers(std::move(mPlaces));
       rv = NS_DispatchToMainThread(event);
       NS_ENSURE_SUCCESS(rv, rv);
     }
@@ -994,21 +1007,18 @@ class InsertVisitedURIs final : public Runnable {
 
  private:
   InsertVisitedURIs(
-      mozIStorageConnection* aConnection, nsTArray<VisitData>& aPlaces,
+      mozIStorageConnection* aConnection, nsTArray<VisitData>&& aPlaces,
       const nsMainThreadPtrHandle<mozIVisitInfoCallback>& aCallback,
-      bool aGroupNotifications, bool aIgnoreErrors, bool aIgnoreResults,
-      uint32_t aInitialUpdatedCount)
+      bool aIgnoreErrors, bool aIgnoreResults, uint32_t aInitialUpdatedCount)
       : Runnable("places::InsertVisitedURIs"),
         mDBConn(aConnection),
+        mPlaces(std::move(aPlaces)),
         mCallback(aCallback),
-        mGroupNotifications(aGroupNotifications),
         mIgnoreErrors(aIgnoreErrors),
         mIgnoreResults(aIgnoreResults),
         mSuccessfulUpdatedCount(aInitialUpdatedCount),
         mHistory(History::GetService()) {
     MOZ_ASSERT(NS_IsMainThread(), "This should be called on the main thread");
-
-    mPlaces.SwapElements(aPlaces);
 
 #ifdef DEBUG
     for (nsTArray<VisitData>::size_type i = 0; i < mPlaces.Length(); i++) {
@@ -1024,10 +1034,10 @@ class InsertVisitedURIs final : public Runnable {
    * Inserts or updates the entry in moz_places for this visit, adds the visit,
    * and updates the frecency of the place.
    *
-   * @param aKnown
+   * @param {boolean} aKnown
    *        True if we already have an entry for this place in moz_places, false
    *        otherwise.
-   * @param aPlace
+   * @param {VisitData} aPlace
    *        The place we are adding a visit for.
    */
   nsresult DoDatabaseInserts(bool aKnown, VisitData& aPlace) {
@@ -1042,7 +1052,7 @@ class InsertVisitedURIs final : public Runnable {
     }
     // Otherwise, the page was not in moz_places, so now we have to add it.
     else {
-      rv = mHistory->InsertPlace(aPlace, !mGroupNotifications);
+      rv = mHistory->InsertPlace(aPlace);
       NS_ENSURE_SUCCESS(rv, rv);
       aPlace.placeId = nsNavHistory::sLastInsertedPlaceId;
     }
@@ -1051,12 +1061,21 @@ class InsertVisitedURIs final : public Runnable {
     rv = AddVisit(aPlace);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    // TODO (bug 623969) we shouldn't update this after each visit, but
-    // rather only for each unique place to save disk I/O.
-
-    // Don't update frecency if the page should not appear in autocomplete.
-    if (aPlace.shouldUpdateFrecency) {
-      rv = UpdateFrecency(aPlace);
+    // Adding a visit sets the recalculation flags through a trigger, but for
+    // error pages we don't want that, because recalculation considers this a
+    // normal successful visit. In the future we should store the error state
+    // along with the visit, so that recalculation can do a better job and
+    // we can remove this workaround update. See Bug 1842008.
+    if (aPlace.isUnrecoverableError) {
+      nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(
+          "UPDATE moz_places "
+          "SET recalc_frecency = 0, recalc_alt_frecency = 0 "
+          "WHERE id = :page_id");
+      NS_ENSURE_STATE(stmt);
+      mozStorageStatementScoper scoper(stmt);
+      rv = stmt->BindInt64ByName("page_id"_ns, aPlace.placeId);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = stmt->Execute();
       NS_ENSURE_SUCCESS(rv, rv);
     }
 
@@ -1114,25 +1133,33 @@ class InsertVisitedURIs final : public Runnable {
     nsCOMPtr<mozIStorageStatement> stmt;
     stmt = mHistory->GetStatement(
         "INSERT INTO moz_historyvisits "
-        "(from_visit, place_id, visit_date, visit_type, session) "
-        "VALUES (:from_visit, :page_id, :visit_date, :visit_type, 0) ");
+        "(from_visit, place_id, visit_date, visit_type, session, source, "
+        "triggeringPlaceId) "
+        "VALUES (:from_visit, :page_id, :visit_date, :visit_type, 0, :source, "
+        ":triggeringPlaceId) ");
     NS_ENSURE_STATE(stmt);
     mozStorageStatementScoper scoper(stmt);
 
-    rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), _place.placeId);
+    rv = stmt->BindInt64ByName("page_id"_ns, _place.placeId);
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("from_visit"),
-                               _place.referrerVisitId);
+    rv = stmt->BindInt64ByName("from_visit"_ns, _place.referrerVisitId);
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("visit_date"),
-                               _place.visitTime);
+    rv = stmt->BindInt64ByName("visit_date"_ns, _place.visitTime);
     NS_ENSURE_SUCCESS(rv, rv);
     uint32_t transitionType = _place.transitionType;
     MOZ_ASSERT(transitionType >= nsINavHistoryService::TRANSITION_LINK &&
                    transitionType <= nsINavHistoryService::TRANSITION_RELOAD,
                "Invalid transition type!");
-    rv =
-        stmt->BindInt32ByName(NS_LITERAL_CSTRING("visit_type"), transitionType);
+    rv = stmt->BindInt32ByName("visit_type"_ns, (int32_t)transitionType);
+    NS_ENSURE_SUCCESS(rv, rv);
+    rv = stmt->BindInt32ByName("source"_ns, _place.source);
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (_place.triggeringPlaceId != 0) {
+      rv = stmt->BindInt64ByName("triggeringPlaceId"_ns,
+                                 _place.triggeringPlaceId);
+    } else {
+      rv = stmt->BindNullByName("triggeringPlaceId"_ns);
+    }
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = stmt->Execute();
@@ -1150,59 +1177,102 @@ class InsertVisitedURIs final : public Runnable {
    * @param aPlace
    *        The VisitData for the place we want to update.
    */
-  nsresult UpdateFrecency(const VisitData& aPlace) {
-    MOZ_ASSERT(aPlace.shouldUpdateFrecency);
-    MOZ_ASSERT(aPlace.placeId > 0);
-
+  nsresult UpdateFrecency(const int64_t aPlaceId, bool aIsRedirect) {
     nsresult rv;
     {  // First, set our frecency to the proper value.
-      nsCOMPtr<mozIStorageStatement> stmt;
-      if (!mGroupNotifications) {
-        // If we're notifying for individual frecency updates, use
-        // the notify_frecency sql function which will call us back.
-        stmt = mHistory->GetStatement(
-            "UPDATE moz_places "
-            "SET frecency = NOTIFY_FRECENCY("
-            "CALCULATE_FRECENCY(:page_id, :redirect), "
-            "url, guid, hidden, last_visit_date"
-            ") "
-            "WHERE id = :page_id");
-      } else {
-        // otherwise, just update the frecency without notifying.
-        stmt = mHistory->GetStatement(
-            "UPDATE moz_places "
-            "SET frecency = CALCULATE_FRECENCY(:page_id, :redirect) "
-            "WHERE id = :page_id");
-      }
-      NS_ENSURE_STATE(stmt);
-      mozStorageStatementScoper scoper(stmt);
-
-      rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), aPlace.placeId);
-      NS_ENSURE_SUCCESS(rv, rv);
-      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("redirect"),
-                                 aPlace.useFrecencyRedirectBonus);
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      rv = stmt->Execute();
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
-
-    if (!aPlace.hidden && aPlace.shouldUpdateHidden) {
-      // Mark the page as not hidden if the frecency is now nonzero.
-      nsCOMPtr<mozIStorageStatement> stmt;
-      stmt = mHistory->GetStatement(
+      nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(
           "UPDATE moz_places "
-          "SET hidden = 0 "
-          "WHERE id = :page_id AND frecency <> 0");
+          "SET frecency = CALCULATE_FRECENCY(:page_id, :redirect) "
+          "WHERE id = :page_id");
       NS_ENSURE_STATE(stmt);
       mozStorageStatementScoper scoper(stmt);
 
-      rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), aPlace.placeId);
+      rv = stmt->BindInt64ByName("page_id"_ns, aPlaceId);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = stmt->BindInt32ByName("redirect"_ns, aIsRedirect);
       NS_ENSURE_SUCCESS(rv, rv);
 
       rv = stmt->Execute();
       NS_ENSURE_SUCCESS(rv, rv);
     }
+
+    if (StaticPrefs::
+            places_frecency_pages_alternative_featureGate_AtStartup()) {
+      nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(
+          "UPDATE moz_places "
+          "SET alt_frecency = CALCULATE_ALT_FRECENCY(id, :redirect), "
+          "recalc_alt_frecency = 0 "
+          "WHERE id = :page_id");
+      NS_ENSURE_STATE(stmt);
+      mozStorageStatementScoper scoper(stmt);
+      rv = stmt->BindInt64ByName("page_id"_ns, aPlaceId);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = stmt->BindInt32ByName("redirect"_ns, aIsRedirect);
+      NS_ENSURE_SUCCESS(rv, rv);
+      rv = stmt->Execute();
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
+    return NS_OK;
+  }
+
+  nsresult UpdateVisitSource(VisitData& aPlace, History* aHistory) {
+    if (aPlace.bookmarked) {
+      aPlace.source = nsINavHistoryService::VISIT_SOURCE_BOOKMARKED;
+    } else if (!aPlace.triggeringSearchEngine.IsEmpty()) {
+      aPlace.source = nsINavHistoryService::VISIT_SOURCE_SEARCHED;
+    } else {
+      aPlace.source = nsINavHistoryService::VISIT_SOURCE_ORGANIC;
+    }
+
+    if (aPlace.triggeringSponsoredURL.IsEmpty()) {
+      // No triggeringSponsoredURL.
+      return NS_OK;
+    }
+
+    if ((aPlace.visitTime -
+         aPlace.triggeringSponsoredURLVisitTimeMS * PR_USEC_PER_MSEC) >
+        StaticPrefs::browser_places_sponsoredSession_timeoutSecs() *
+            PR_USEC_PER_SEC) {
+      // Sponsored session timeout.
+      return NS_OK;
+    }
+
+    if (aPlace.spec.Equals(aPlace.triggeringSponsoredURL)) {
+      // This place is the triggeringSponsoredURL.
+      aPlace.source = nsINavHistoryService::VISIT_SOURCE_SPONSORED;
+      return NS_OK;
+    }
+
+    if (!aPlace.baseDomain.Equals(aPlace.triggeringSponsoredURLBaseDomain)) {
+      // The base domain is not same.
+      return NS_OK;
+    }
+
+    nsCOMPtr<mozIStorageStatement> stmt;
+    stmt = aHistory->GetStatement(
+        "SELECT id FROM moz_places h "
+        "WHERE url_hash = hash(:url) AND url = :url");
+    NS_ENSURE_STATE(stmt);
+    nsresult rv =
+        URIBinder::Bind(stmt, "url"_ns, aPlace.triggeringSponsoredURL);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    mozStorageStatementScoper scoper(stmt);
+
+    bool exists;
+    rv = stmt->ExecuteStep(&exists);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    if (exists) {
+      rv = stmt->GetInt64(0, &aPlace.triggeringPlaceId);
+      NS_ENSURE_SUCCESS(rv, rv);
+    } else {
+      Telemetry::ScalarAdd(
+          Telemetry::ScalarID::PLACES_SPONSORED_VISIT_NO_TRIGGERING_URL, 1);
+    }
+
+    aPlace.source = nsINavHistoryService::VISIT_SOURCE_SPONSORED;
 
     return NS_OK;
   }
@@ -1212,8 +1282,6 @@ class InsertVisitedURIs final : public Runnable {
   nsTArray<VisitData> mPlaces;
 
   nsMainThreadPtrHandle<mozIVisitInfoCallback> mCallback;
-
-  bool mGroupNotifications;
 
   bool mIgnoreErrors;
 
@@ -1289,14 +1357,14 @@ class SetPageTitle : public Runnable {
 
     {
       mozStorageStatementScoper scoper(stmt);
-      rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), mPlace.placeId);
+      rv = stmt->BindInt64ByName("page_id"_ns, mPlace.placeId);
       NS_ENSURE_SUCCESS(rv, rv);
       // Empty strings should clear the title, just like
       // nsNavHistory::SetPageTitle.
       if (mPlace.title.IsEmpty()) {
-        rv = stmt->BindNullByName(NS_LITERAL_CSTRING("page_title"));
+        rv = stmt->BindNullByName("page_title"_ns);
       } else {
-        rv = stmt->BindStringByName(NS_LITERAL_CSTRING("page_title"),
+        rv = stmt->BindStringByName("page_title"_ns,
                                     StringHead(mPlace.title, TITLE_LENGTH_MAX));
       }
       NS_ENSURE_SUCCESS(rv, rv);
@@ -1345,9 +1413,7 @@ void NotifyEmbedVisit(VisitData& aPlace,
   MOZ_ASSERT(NS_IsMainThread(), "Must be called on the main thread!");
 
   nsCOMPtr<nsIURI> uri;
-  MOZ_ALWAYS_SUCCEEDS(NS_NewURI(getter_AddRefs(uri), aPlace.spec));
-
-  if (!uri) {
+  if (NS_WARN_IF(NS_FAILED(NS_NewURI(getter_AddRefs(uri), aPlace.spec)))) {
     return;
   }
 
@@ -1368,6 +1434,24 @@ void NotifyEmbedVisit(VisitData& aPlace,
   (void)NS_DispatchToMainThread(event);
 }
 
+void NotifyOriginRestrictedVisit(nsIURI* aURI) {
+  MOZ_ASSERT(NS_IsMainThread(), "Must be called on the main thread!");
+
+  nsCOMPtr<nsIRunnable> event = new NotifyManyVisitsObservers(VisitData(aURI));
+  (void)NS_DispatchToMainThread(event);
+}
+
+void NotifyVisitIfHavingUserPass(nsIURI* aURI) {
+  MOZ_ASSERT(NS_IsMainThread(), "Must be called on the main thread!");
+
+  bool hasUserPass;
+  if (NS_SUCCEEDED(aURI->GetHasUserPass(&hasUserPass)) && hasUserPass) {
+    nsCOMPtr<nsIRunnable> event =
+        new NotifyManyVisitsObservers(VisitData(aURI));
+    (void)NS_DispatchToMainThread(event);
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //// History
 
@@ -1375,11 +1459,12 @@ History* History::gService = nullptr;
 
 History::History()
     : mShuttingDown(false),
-      mShutdownMutex("History::mShutdownMutex"),
+      mShuttingDownMutex("History::mShuttingDownMutex"),
+      mBlockShutdownMutex("History::mBlockShutdownMutex"),
       mRecentlyVisitedURIs(RECENTLY_VISITED_URIS_SIZE) {
   NS_ASSERTION(!gService, "Ruh-roh!  This service has already been created!");
   if (XRE_IsParentProcess()) {
-    nsCOMPtr<nsIProperties> dirsvc = services::GetDirectoryService();
+    nsCOMPtr<nsIProperties> dirsvc = components::Directory::Service();
     bool haveProfile = false;
     MOZ_RELEASE_ASSERT(
         dirsvc &&
@@ -1410,10 +1495,17 @@ class ConcurrentStatementsHolder final : public mozIStorageCompletionCallback {
  public:
   NS_DECL_ISUPPORTS
 
-  explicit ConcurrentStatementsHolder(mozIStorageConnection* aDBConn)
-      : mShutdownWasInvoked(false) {
-    DebugOnly<nsresult> rv = aDBConn->AsyncClone(true, this);
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
+  ConcurrentStatementsHolder() : mShutdownWasInvoked(false) {}
+
+  static RefPtr<ConcurrentStatementsHolder> Create(
+      mozIStorageConnection* aDBConn) {
+    RefPtr<ConcurrentStatementsHolder> holder =
+        new ConcurrentStatementsHolder();
+    nsresult rv = aDBConn->AsyncClone(true, holder);
+    if (NS_FAILED(rv)) {
+      return nullptr;
+    }
+    return holder;
   }
 
   NS_IMETHOD Complete(nsresult aStatus, nsISupports* aConnection) override {
@@ -1432,9 +1524,9 @@ class ConcurrentStatementsHolder final : public mozIStorageCompletionCallback {
 
     if (!mIsVisitedStatement) {
       (void)mReadOnlyDBConn->CreateAsyncStatement(
-          NS_LITERAL_CSTRING("SELECT 1 FROM moz_places h "
-                             "WHERE url_hash = hash(?1) AND url = ?1 AND "
-                             "last_visit_date NOTNULL "),
+          nsLiteralCString("SELECT 1 FROM moz_places h "
+                           "WHERE url_hash = hash(?1) AND url = ?1 AND "
+                           "last_visit_date NOTNULL "),
           getter_AddRefs(mIsVisitedStatement));
       MOZ_ASSERT(mIsVisitedStatement);
       auto queries = std::move(mVisitedQueries);
@@ -1484,23 +1576,24 @@ NS_IMPL_ISUPPORTS(ConcurrentStatementsHolder, mozIStorageCompletionCallback)
 
 nsresult History::QueueVisitedStatement(RefPtr<VisitedQuery> aQuery) {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mShuttingDown) {
+  if (IsShuttingDown()) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
   if (!mConcurrentStatementsHolder) {
     mozIStorageConnection* dbConn = GetDBConn();
     NS_ENSURE_STATE(dbConn);
-    mConcurrentStatementsHolder = new ConcurrentStatementsHolder(dbConn);
+    mConcurrentStatementsHolder = ConcurrentStatementsHolder::Create(dbConn);
+    if (!mConcurrentStatementsHolder) {
+      return NS_ERROR_NOT_AVAILABLE;
+    }
   }
   mConcurrentStatementsHolder->QueueVisitedStatement(std::move(aQuery));
   return NS_OK;
 }
 
-nsresult History::InsertPlace(VisitData& aPlace,
-                              bool aShouldNotifyFrecencyChanged) {
+nsresult History::InsertPlace(VisitData& aPlace) {
   MOZ_ASSERT(aPlace.placeId == 0, "should not have a valid place id!");
-  MOZ_ASSERT(!aPlace.shouldUpdateHidden, "We should not need to update hidden");
   MOZ_ASSERT(!NS_IsMainThread(), "must be called off of the main thread!");
 
   nsCOMPtr<mozIStorageStatement> stmt = GetStatement(
@@ -1511,45 +1604,36 @@ nsresult History::InsertPlace(VisitData& aPlace,
   NS_ENSURE_STATE(stmt);
   mozStorageStatementScoper scoper(stmt);
 
-  nsresult rv =
-      stmt->BindStringByName(NS_LITERAL_CSTRING("rev_host"), aPlace.revHost);
+  nsresult rv = stmt->BindStringByName("rev_host"_ns, aPlace.revHost);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("url"), aPlace.spec);
+  rv = URIBinder::Bind(stmt, "url"_ns, aPlace.spec);
   NS_ENSURE_SUCCESS(rv, rv);
   nsString title = aPlace.title;
   // Empty strings should have no title, just like nsNavHistory::SetPageTitle.
   if (title.IsEmpty()) {
-    rv = stmt->BindNullByName(NS_LITERAL_CSTRING("title"));
+    rv = stmt->BindNullByName("title"_ns);
   } else {
     title.Assign(StringHead(aPlace.title, TITLE_LENGTH_MAX));
-    rv = stmt->BindStringByName(NS_LITERAL_CSTRING("title"), title);
+    rv = stmt->BindStringByName("title"_ns, title);
   }
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("typed"), aPlace.typed);
+  rv = stmt->BindInt32ByName("typed"_ns, aPlace.typed);
   NS_ENSURE_SUCCESS(rv, rv);
   // When inserting a page for a first visit that should not appear in
   // autocomplete, for example an error page, use a zero frecency.
-  int32_t frecency = aPlace.shouldUpdateFrecency ? aPlace.frecency : 0;
-  rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("frecency"), frecency);
+  int32_t frecency = aPlace.isUnrecoverableError ? 0 : aPlace.frecency;
+  rv = stmt->BindInt32ByName("frecency"_ns, frecency);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("hidden"), aPlace.hidden);
+  rv = stmt->BindInt32ByName("hidden"_ns, aPlace.hidden);
   NS_ENSURE_SUCCESS(rv, rv);
   if (aPlace.guid.IsVoid()) {
     rv = GenerateGUID(aPlace.guid);
     NS_ENSURE_SUCCESS(rv, rv);
   }
-  rv = stmt->BindUTF8StringByName(NS_LITERAL_CSTRING("guid"), aPlace.guid);
+  rv = stmt->BindUTF8StringByName("guid"_ns, aPlace.guid);
   NS_ENSURE_SUCCESS(rv, rv);
   rv = stmt->Execute();
   NS_ENSURE_SUCCESS(rv, rv);
-
-  // Post an onFrecencyChanged observer notification.
-  if (aShouldNotifyFrecencyChanged) {
-    const nsNavHistory* navHistory = nsNavHistory::GetConstHistoryService();
-    NS_ENSURE_STATE(navHistory);
-    navHistory->DispatchFrecencyChangedNotification(
-        aPlace.spec, frecency, aPlace.guid, aPlace.hidden, aPlace.visitTime);
-  }
 
   return NS_OK;
 }
@@ -1585,20 +1669,20 @@ nsresult History::UpdatePlace(const VisitData& aPlace) {
   if (!titleIsVoid) {
     // An empty string clears the title.
     if (aPlace.title.IsEmpty()) {
-      rv = stmt->BindNullByName(NS_LITERAL_CSTRING("title"));
+      rv = stmt->BindNullByName("title"_ns);
     } else {
-      rv = stmt->BindStringByName(NS_LITERAL_CSTRING("title"),
+      rv = stmt->BindStringByName("title"_ns,
                                   StringHead(aPlace.title, TITLE_LENGTH_MAX));
     }
     NS_ENSURE_SUCCESS(rv, rv);
   }
-  rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("typed"), aPlace.typed);
+  rv = stmt->BindInt32ByName("typed"_ns, aPlace.typed);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("hidden"), aPlace.hidden);
+  rv = stmt->BindInt32ByName("hidden"_ns, aPlace.hidden);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = stmt->BindUTF8StringByName(NS_LITERAL_CSTRING("guid"), aPlace.guid);
+  rv = stmt->BindUTF8StringByName("guid"_ns, aPlace.guid);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), aPlace.placeId);
+  rv = stmt->BindInt64ByName("page_id"_ns, aPlace.placeId);
   NS_ENSURE_SUCCESS(rv, rv);
   rv = stmt->Execute();
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1622,12 +1706,13 @@ nsresult History::FetchPageInfo(VisitData& _place, bool* _exists) {
         "last_visit_date, "
         "(SELECT id FROM moz_historyvisits "
         "WHERE place_id = h.id AND visit_date = h.last_visit_date) AS "
-        "last_visit_id "
+        "last_visit_id, "
+        "EXISTS(SELECT 1 FROM moz_bookmarks WHERE fk = h.id) AS bookmarked "
         "FROM moz_places h "
         "WHERE url_hash = hash(:page_url) AND url = :page_url ");
     NS_ENSURE_STATE(stmt);
 
-    rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), _place.spec);
+    rv = URIBinder::Bind(stmt, "page_url"_ns, _place.spec);
     NS_ENSURE_SUCCESS(rv, rv);
   } else {
     stmt = GetStatement(
@@ -1635,12 +1720,13 @@ nsresult History::FetchPageInfo(VisitData& _place, bool* _exists) {
         "last_visit_date, "
         "(SELECT id FROM moz_historyvisits "
         "WHERE place_id = h.id AND visit_date = h.last_visit_date) AS "
-        "last_visit_id "
+        "last_visit_id, "
+        "EXISTS(SELECT 1 FROM moz_bookmarks WHERE fk = h.id) AS bookmarked "
         "FROM moz_places h "
         "WHERE guid = :guid ");
     NS_ENSURE_STATE(stmt);
 
-    rv = stmt->BindUTF8StringByName(NS_LITERAL_CSTRING("guid"), _place.guid);
+    rv = stmt->BindUTF8StringByName("guid"_ns, _place.guid);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -1705,6 +1791,10 @@ nsresult History::FetchPageInfo(VisitData& _place, bool* _exists) {
   NS_ENSURE_SUCCESS(rv, rv);
   rv = stmt->GetInt64(8, &_place.lastVisitId);
   NS_ENSURE_SUCCESS(rv, rv);
+  int32_t bookmarked;
+  rv = stmt->GetInt32(9, &bookmarked);
+  NS_ENSURE_SUCCESS(rv, rv);
+  _place.bookmarked = bookmarked == 1;
 
   return NS_OK;
 }
@@ -1726,8 +1816,8 @@ History::CollectReports(nsIHandleReportCallback* aHandleReport,
 size_t History::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) {
   size_t size = aMallocSizeOf(this);
   size += mTrackedURIs.ShallowSizeOfExcludingThis(aMallocSizeOf);
-  for (const auto& entry : mTrackedURIs) {
-    size += entry.GetData().SizeOfExcludingThis(aMallocSizeOf);
+  for (const auto& entry : mTrackedURIs.Values()) {
+    size += entry.SizeOfExcludingThis(aMallocSizeOf);
   }
   return size;
 }
@@ -1738,7 +1828,7 @@ History* History::GetService() {
     return gService;
   }
 
-  nsCOMPtr<IHistory> service = services::GetHistoryService();
+  nsCOMPtr<IHistory> service = components::History::Service();
   if (service) {
     NS_ASSERTION(gService, "Our constructor was not run?!");
   }
@@ -1760,7 +1850,9 @@ already_AddRefed<History> History::GetSingleton() {
 
 mozIStorageConnection* History::GetDBConn() {
   MOZ_ASSERT(NS_IsMainThread());
-  if (mShuttingDown) return nullptr;
+  if (IsShuttingDown()) {
+    return nullptr;
+  }
   if (!mDB) {
     mDB = Database::GetDatabase();
     NS_ENSURE_TRUE(mDB, nullptr);
@@ -1773,23 +1865,82 @@ mozIStorageConnection* History::GetDBConn() {
 }
 
 const mozIStorageConnection* History::GetConstDBConn() {
-  MOZ_ASSERT(mDB || mShuttingDown);
-  if (mShuttingDown || !mDB) {
-    return nullptr;
+  MOZ_ASSERT(!NS_IsMainThread());
+  {
+    MOZ_ASSERT(mDB || IsShuttingDown());
+    if (IsShuttingDown() || !mDB) {
+      return nullptr;
+    }
   }
   return mDB->MainConn();
 }
 
-void History::Shutdown() {
+void History::UpdateOriginFloodingRestriction(nsACString& aOrigin) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  // Prevent other threads from scheduling uses of the DB while we mark
-  // ourselves as shutting down.
-  MutexAutoLock lockedScope(mShutdownMutex);
-  MOZ_ASSERT(!mShuttingDown && "Shutdown was called more than once!");
+  TimeStamp latestInputTimeStamp = UserActivation::LatestUserInputStart();
+  if (latestInputTimeStamp.IsNull()) {
+    // Probably just after browser initialization.
+    return;
+  }
 
-  mShuttingDown = true;
+  TimeStamp now = TimeStamp::Now();
 
+  // Remove expired flooding resrictions.
+  for (auto iter = mOriginFloodingRestrictions.Iter(); !iter.Done();
+       iter.Next()) {
+    if ((now - iter.Data().mLastVisitTimeStamp).ToSeconds() >
+        iter.Data().mExpireIntervalSeconds) {
+      iter.Remove();
+    }
+  }
+
+  // If not long enough time elapsed sincer last user interaction, this visit
+  // can be stored.
+  if ((now - latestInputTimeStamp).ToSeconds() <
+      StaticPrefs::
+          places_history_floodingPrevention_maxSecondsFromLastUserInteraction()) {
+    mOriginFloodingRestrictions.Remove(aOrigin);
+    return;
+  }
+
+  // Otherwise, update the flooding restriction for the origin.
+  auto restriction = mOriginFloodingRestrictions.Lookup(aOrigin);
+  if (restriction) {
+    if (restriction->mAllowedVisitCount) {
+      // Count down to 0. If 0, the origin should be restricted.
+      restriction->mAllowedVisitCount -= 1;
+    } else {
+      // Since the origin is marked as restricted make its expiration time
+      // longer.
+      restriction->mExpireIntervalSeconds *= 2;
+    }
+  } else {
+    // Initialize OriginFloodingRestriction to store the origin restriction.
+    mOriginFloodingRestrictions.InsertOrUpdate(
+        aOrigin,
+        OriginFloodingRestriction{
+            now,
+            StaticPrefs::
+                places_history_floodingPrevention_restrictionExpireSeconds(),
+            StaticPrefs::places_history_floodingPrevention_restrictionCount()});
+  }
+}
+
+bool History::IsRestrictedOrigin(nsACString& aOrigin) {
+  auto restriction = mOriginFloodingRestrictions.Lookup(aOrigin);
+  // If the count is 0, need to restrict the origin.
+  return restriction && !restriction->mAllowedVisitCount;
+}
+
+void History::Shutdown() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MutexAutoLock lockedScope(mBlockShutdownMutex);
+  {
+    MutexAutoLock lockedScope(mShuttingDownMutex);
+    MOZ_ASSERT(!mShuttingDown && "Shutdown was called more than once!");
+    mShuttingDown = true;
+  }
   if (mConcurrentStatementsHolder) {
     mConcurrentStatementsHolder->Shutdown();
   }
@@ -1798,15 +1949,7 @@ void History::Shutdown() {
 void History::AppendToRecentlyVisitedURIs(nsIURI* aURI, bool aHidden) {
   PRTime now = PR_Now();
 
-  {
-    RecentURIVisit& visit =
-        mRecentlyVisitedURIs.LookupForAdd(aURI).OrInsert([] {
-          return RecentURIVisit{0, false};
-        });
-
-    visit.mTime = now;
-    visit.mHidden = aHidden;
-  }
+  mRecentlyVisitedURIs.InsertOrUpdate(aURI, RecentURIVisit{now, aHidden});
 
   // Remove entries older than RECENTLY_VISITED_URIS_MAX_AGE.
   for (auto iter = mRecentlyVisitedURIs.Iter(); !iter.Done(); iter.Next()) {
@@ -1821,27 +1964,23 @@ void History::AppendToRecentlyVisitedURIs(nsIURI* aURI, bool aHidden) {
 
 NS_IMETHODIMP
 History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
-                  uint32_t aFlags) {
+                  uint32_t aFlags, uint64_t aBrowserId) {
   MOZ_ASSERT(NS_IsMainThread());
   NS_ENSURE_ARG(aURI);
 
-  if (mShuttingDown) {
+  if (IsShuttingDown()) {
     return NS_OK;
   }
 
-  nsresult rv;
   if (XRE_IsContentProcess()) {
-    bool canAddURI = false;
-    rv = nsNavHistory::CanAddURIToHistory(aURI, &canAddURI);
-    NS_ENSURE_SUCCESS(rv, rv);
-    if (!canAddURI) {
+    if (!BaseHistory::CanStore(aURI)) {
       return NS_OK;
     }
 
     NS_ENSURE_ARG(aWidget);
     BrowserChild* browserChild = aWidget->GetOwningBrowserChild();
     NS_ENSURE_TRUE(browserChild, NS_ERROR_FAILURE);
-    (void)browserChild->SendVisitURI(aURI, aLastVisitedURI, aFlags);
+    (void)browserChild->SendVisitURI(aURI, aLastVisitedURI, aFlags, aBrowserId);
     return NS_OK;
   }
 
@@ -1850,7 +1989,7 @@ History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
 
   // Silently return if URI is something we shouldn't add to DB.
   bool canAdd;
-  rv = navHistory->CanAddURI(aURI, &canAdd);
+  nsresult rv = navHistory->CanAddURI(aURI, &canAdd);
   NS_ENSURE_SUCCESS(rv, rv);
   if (!canAdd) {
     return NS_OK;
@@ -1861,13 +2000,6 @@ History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
     rv = aURI->Equals(aLastVisitedURI, &reload);
     NS_ENSURE_SUCCESS(rv, rv);
   }
-
-  nsTArray<VisitData> placeArray(1);
-  placeArray.AppendElement(VisitData(aURI, aLastVisitedURI));
-  VisitData& place = placeArray.ElementAt(0);
-  NS_ENSURE_FALSE(place.spec.IsEmpty(), NS_ERROR_INVALID_ARG);
-
-  place.visitTime = PR_Now();
 
   // Assigns a type to the edge in the visit linked list. Each type will be
   // considered differently when weighting the frecency of a location.
@@ -1903,52 +2035,150 @@ History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
     transitionType = nsINavHistoryService::TRANSITION_FRAMED_LINK;
   }
 
-  place.SetTransitionType(transitionType);
   bool isRedirect = aFlags & IHistory::REDIRECT_SOURCE;
-  if (isRedirect) {
-    place.useFrecencyRedirectBonus =
-        (aFlags & IHistory::REDIRECT_SOURCE_PERMANENT) ||
-        transitionType != nsINavHistoryService::TRANSITION_TYPED;
-  }
-  place.hidden = GetHiddenState(isRedirect, place.transitionType);
-
-  // Error pages should never be autocompleted.
-  if (aFlags & IHistory::UNRECOVERABLE_ERROR) {
-    place.shouldUpdateFrecency = false;
-  }
+  bool isHidden = GetHiddenState(isRedirect, transitionType);
 
   // Do not save a reloaded uri if we have visited the same URI recently.
   if (reload) {
     auto entry = mRecentlyVisitedURIs.Lookup(aURI);
     // Check if the entry exists and is younger than
     // RECENTLY_VISITED_URIS_MAX_AGE.
-    if (entry &&
-        (PR_Now() - entry.Data().mTime) < RECENTLY_VISITED_URIS_MAX_AGE) {
-      bool wasHidden = entry.Data().mHidden;
+    if (entry && (PR_Now() - entry->mTime) < RECENTLY_VISITED_URIS_MAX_AGE) {
+      bool wasHidden = entry->mHidden;
       // Regardless of whether we store the visit or not, we must update the
       // stored visit time.
-      AppendToRecentlyVisitedURIs(aURI, place.hidden);
+      AppendToRecentlyVisitedURIs(aURI, isHidden);
       // We always want to store an unhidden visit, if the previous visits were
       // hidden, because otherwise the page may not appear in the history UI.
       // This can happen for example at a page redirecting to itself.
-      if (!wasHidden || place.hidden) {
+      if (!wasHidden || isHidden) {
         // We can skip this visit.
         return NS_OK;
       }
     }
   }
 
+  // Never store the URL having userpass to database.
+  nsCOMPtr<nsIURI> visitedURI = GetExposableURI(aURI);
+  nsCOMPtr<nsIURI> lastVisitedURI;
+  if (aLastVisitedURI) {
+    lastVisitedURI = GetExposableURI(aLastVisitedURI);
+  }
+
+  nsTArray<VisitData> placeArray(1);
+  placeArray.AppendElement(VisitData(visitedURI, lastVisitedURI));
+  VisitData& place = placeArray.ElementAt(0);
+  NS_ENSURE_FALSE(place.spec.IsEmpty(), NS_ERROR_INVALID_ARG);
+
+  place.visitTime = PR_Now();
+  place.SetTransitionType(transitionType);
+  place.hidden = isHidden;
+
+  if (isRedirect) {
+    place.useFrecencyRedirectBonus =
+        (aFlags & (IHistory::REDIRECT_SOURCE_PERMANENT |
+                   IHistory::REDIRECT_SOURCE_UPGRADED)) ||
+        transitionType != nsINavHistoryService::TRANSITION_TYPED;
+  }
+
+  // Error pages should never be autocompleted.
+  place.isUnrecoverableError = aFlags & IHistory::UNRECOVERABLE_ERROR;
+
   // EMBED visits should not go through the database.
   // They exist only to keep track of isVisited status during the session.
   if (place.transitionType == nsINavHistoryService::TRANSITION_EMBED) {
     NotifyEmbedVisit(place);
-  } else {
-    mozIStorageConnection* dbConn = GetDBConn();
-    NS_ENSURE_STATE(dbConn);
-
-    rv = InsertVisitedURIs::Start(dbConn, placeArray);
-    NS_ENSURE_SUCCESS(rv, rv);
+    return NS_OK;
   }
+
+  if (StaticPrefs::places_history_floodingPrevention_enabled()) {
+    // If the origin is restricted, make isVisited status available during the
+    // session but not stored in the database.
+    nsAutoCString origin;
+    Unused << visitedURI->GetHost(origin);
+    if (StringBeginsWith(origin, "www."_ns)) {
+      origin.Cut(0, 4);
+    }
+
+    UpdateOriginFloodingRestriction(origin);
+
+    if (IsRestrictedOrigin(origin)) {
+      NotifyOriginRestrictedVisit(visitedURI);
+      NotifyVisitIfHavingUserPass(aURI);
+      return NS_OK;
+    }
+  }
+
+  nsCOMPtr<nsIBrowserWindowTracker> bwt =
+      do_ImportESModule("resource:///modules/BrowserWindowTracker.sys.mjs",
+                        "BrowserWindowTracker", &rv);
+  if (NS_SUCCEEDED(rv)) {
+    // Only if it is running on Firefox, continue to process the followings.
+    nsCOMPtr<nsISupports> browser;
+    rv = bwt->GetBrowserById(aBrowserId, getter_AddRefs(browser));
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (browser) {
+      RefPtr<Element> browserElement = static_cast<Element*>(browser.get());
+
+      nsAutoString triggeringSearchEngineURL;
+      browserElement->GetAttribute(u"triggeringSearchEngineURL"_ns,
+                                   triggeringSearchEngineURL);
+      if (!triggeringSearchEngineURL.IsEmpty() &&
+          place.spec.Equals(NS_ConvertUTF16toUTF8(triggeringSearchEngineURL))) {
+        nsAutoString triggeringSearchEngine;
+        browserElement->GetAttribute(u"triggeringSearchEngine"_ns,
+                                     triggeringSearchEngine);
+        place.triggeringSearchEngine.Assign(
+            NS_ConvertUTF16toUTF8(triggeringSearchEngine));
+      }
+
+      nsAutoString triggeringSponsoredURL;
+      browserElement->GetAttribute(u"triggeringSponsoredURL"_ns,
+                                   triggeringSponsoredURL);
+      if (!triggeringSponsoredURL.IsEmpty()) {
+        place.triggeringSponsoredURL.Assign(
+            NS_ConvertUTF16toUTF8(triggeringSponsoredURL));
+
+        nsAutoString triggeringSponsoredURLVisitTimeMS;
+        browserElement->GetAttribute(u"triggeringSponsoredURLVisitTimeMS"_ns,
+                                     triggeringSponsoredURLVisitTimeMS);
+        place.triggeringSponsoredURLVisitTimeMS =
+            triggeringSponsoredURLVisitTimeMS.ToInteger64(&rv);
+        NS_ENSURE_SUCCESS(rv, rv);
+
+        // Get base domain. We need to get it here since nsIEffectiveTLDService
+        // referred in DomainNameFromURI should access on main thread.
+        nsCOMPtr<nsIURI> currentURL;
+        rv = NS_MutateURI(new net::nsStandardURL::Mutator())
+                 .SetSpec(place.spec)
+                 .Finalize(currentURL);
+        NS_ENSURE_SUCCESS(rv, rv);
+        nsCOMPtr<nsIURI> sponsoredURL;
+        rv = NS_MutateURI(new net::nsStandardURL::Mutator())
+                 .SetSpec(place.triggeringSponsoredURL)
+                 .Finalize(sponsoredURL);
+        NS_ENSURE_SUCCESS(rv, rv);
+        navHistory->DomainNameFromURI(currentURL, place.baseDomain);
+        navHistory->DomainNameFromURI(sponsoredURL,
+                                      place.triggeringSponsoredURLBaseDomain);
+      }
+    }
+  }
+
+  mozIStorageConnection* dbConn = GetDBConn();
+  NS_ENSURE_STATE(dbConn);
+
+  rv = InsertVisitedURIs::Start(dbConn, std::move(placeArray));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // URIs with a userpass component are not stored in the database for security
+  // reasons, we store the exposable URI version of them instead.
+  // The original link pointing at the URI with userpass must still be marked as
+  // visited, to properly react to the user interaction, so we notify a visit.
+  // The visited status is not going to survive a reload of course, though the
+  // alternative of marking any userpass URI as visited if the exposable URI is
+  // visited also feels wrong from the user point of view.
+  NotifyVisitIfHavingUserPass(aURI);
 
   return NS_OK;
 }
@@ -1958,7 +2188,7 @@ History::SetURITitle(nsIURI* aURI, const nsAString& aTitle) {
   MOZ_ASSERT(NS_IsMainThread());
   NS_ENSURE_ARG(aURI);
 
-  if (mShuttingDown) {
+  if (IsShuttingDown()) {
     return NS_OK;
   }
 
@@ -1982,8 +2212,9 @@ History::SetURITitle(nsIURI* aURI, const nsAString& aTitle) {
   //
   NS_ENSURE_TRUE(navHistory, NS_ERROR_FAILURE);
 
+  nsCOMPtr<nsIURI> uri = GetExposableURI(aURI);
   bool canAdd;
-  nsresult rv = navHistory->CanAddURI(aURI, &canAdd);
+  nsresult rv = navHistory->CanAddURI(uri, &canAdd);
   NS_ENSURE_SUCCESS(rv, rv);
   if (!canAdd) {
     return NS_OK;
@@ -1992,7 +2223,7 @@ History::SetURITitle(nsIURI* aURI, const nsAString& aTitle) {
   mozIStorageConnection* dbConn = GetDBConn();
   NS_ENSURE_STATE(dbConn);
 
-  return SetPageTitle::Start(dbConn, aURI, aTitle);
+  return SetPageTitle::Start(dbConn, uri, aTitle);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2000,8 +2231,7 @@ History::SetURITitle(nsIURI* aURI, const nsAString& aTitle) {
 
 NS_IMETHODIMP
 History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
-                      mozIVisitInfoCallback* aCallback,
-                      bool aGroupNotifications, JSContext* aCtx) {
+                      mozIVisitInfoCallback* aCallback, JSContext* aCtx) {
   NS_ENSURE_TRUE(NS_IsMainThread(), NS_ERROR_UNEXPECTED);
   NS_ENSURE_TRUE(!aPlaceInfos.isPrimitive(), NS_ERROR_INVALID_ARG);
 
@@ -2019,6 +2249,10 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsCOMPtr<nsIURI> uri = GetURIFromJSObject(aCtx, info, "uri");
+    if (uri) {
+      uri = GetExposableURI(uri);
+    }
+
     nsCString guid;
     {
       nsString fatGUID;
@@ -2026,7 +2260,7 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
       if (fatGUID.IsVoid()) {
         guid.SetIsVoid(true);
       } else {
-        guid = NS_ConvertUTF16toUTF8(fatGUID);
+        CopyUTF16toUTF8(fatGUID, guid);
       }
     }
 
@@ -2139,8 +2373,8 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
   // CanAddURI, which isn't an error.  If we have no visits to add, however,
   // we should not call InsertVisitedURIs::Start.
   if (visitData.Length()) {
-    nsresult rv = InsertVisitedURIs::Start(
-        dbConn, visitData, callback, aGroupNotifications, initialUpdatedCount);
+    nsresult rv = InsertVisitedURIs::Start(dbConn, std::move(visitData),
+                                           callback, initialUpdatedCount);
     NS_ENSURE_SUCCESS(rv, rv);
   } else if (aCallback) {
     // Be sure to notify that all of our operations are complete.  This
@@ -2170,21 +2404,44 @@ History::IsURIVisited(nsIURI* aURI, mozIVisitedStatusCallback* aCallback) {
   return VisitedQuery::Start(aURI, aCallback);
 }
 
-void History::StartPendingVisitedQueries(
-    const PendingVisitedQueries& aQueries) {
+NS_IMETHODIMP
+History::ClearCache() {
+  mRecentlyVisitedURIs.Clear();
+  mOriginFloodingRestrictions.Clear();
+  return NS_OK;
+}
+
+void History::StartPendingVisitedQueries(PendingVisitedQueries&& aQueries) {
   if (XRE_IsContentProcess()) {
-    nsTArray<RefPtr<nsIURI>> uris(aQueries.Count());
-    for (auto iter = aQueries.ConstIter(); !iter.Done(); iter.Next()) {
-      uris.AppendElement(iter.Get()->GetKey());
-    }
-    auto* cpc = mozilla::dom::ContentChild::GetSingleton();
+    auto* cpc = dom::ContentChild::GetSingleton();
     MOZ_ASSERT(cpc, "Content Protocol is NULL!");
-    Unused << cpc->SendStartVisitedQueries(uris);
+
+    // Fairly arbitrary limit on the number of URLs we send at a time, to avoid
+    // going over the IPC message size limit... Note that this is imperfect (we
+    // could have very long URIs), so this is a best-effort kind of thing. See
+    // bug 1775265.
+    constexpr size_t kBatchLimit = 4000;
+
+    nsTArray<RefPtr<nsIURI>> uris(aQueries.Count());
+    for (const auto& entry : aQueries) {
+      uris.AppendElement(entry.GetKey());
+      MOZ_ASSERT(entry.GetData().IsEmpty(),
+                 "Child process shouldn't have parent requests");
+      if (uris.Length() == kBatchLimit) {
+        Unused << cpc->SendStartVisitedQueries(uris);
+        uris.ClearAndRetainStorage();
+      }
+    }
+
+    if (!uris.IsEmpty()) {
+      Unused << cpc->SendStartVisitedQueries(uris);
+    }
   } else {
     // TODO(bug 1594368): We could do a single query, as long as we can
     // then notify each URI individually.
-    for (auto iter = aQueries.ConstIter(); !iter.Done(); iter.Next()) {
-      nsresult queryStatus = VisitedQuery::Start(iter.Get()->GetKey());
+    for (auto& entry : aQueries) {
+      nsresult queryStatus = VisitedQuery::Start(
+          entry.GetKey(), std::move(*entry.GetModifiableData()));
       Unused << NS_WARN_IF(NS_FAILED(queryStatus));
     }
   }
@@ -2214,5 +2471,4 @@ History::Observe(nsISupports* aSubject, const char* aTopic,
 NS_IMPL_ISUPPORTS(History, IHistory, mozIAsyncHistory, nsIObserver,
                   nsIMemoryReporter)
 
-}  // namespace places
-}  // namespace mozilla
+}  // namespace mozilla::places

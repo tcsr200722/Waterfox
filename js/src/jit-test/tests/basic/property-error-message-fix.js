@@ -1,6 +1,4 @@
-// |jit-test| --no-warp
-// Disable WarpBuilder because the expression decompiler is not used for Ion
-// frames currently. See bug 831120.
+// |jit-test| --setpref=property_error_message_fix=true; skip-if: getBuildConfiguration('pbl')
 
 function check(f, message) {
   let caught = false;

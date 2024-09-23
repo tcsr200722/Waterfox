@@ -14,6 +14,8 @@
 #include "mozilla/RefPtr.h"      // for RefPtr
 #include "mozilla/TimeStamp.h"   // for TimeStamp
 #include "mozilla/gfx/Point.h"   // for IntSize
+#include "mozilla/layers/SampleTime.h"
+#include "mozilla/webrender/webrender_ffi.h"
 #include "mozilla/VsyncDispatcher.h"
 #include "mozilla/widget/CompositorWidget.h"
 #include "nsISupportsImpl.h"
@@ -47,7 +49,7 @@ class CompositorVsyncScheduler {
    * Notify this class of a vsync. This will trigger a composite if one is
    * needed. This must be called from the vsync dispatch thread.
    */
-  bool NotifyVsync(const VsyncEvent& aVsync);
+  void NotifyVsync(const VsyncEvent& aVsync);
 
   /**
    * Do cleanup. This must be called on the compositor thread.
@@ -59,12 +61,14 @@ class CompositorVsyncScheduler {
    * composition soon (likely at the next vsync). This must be called on the
    * compositor thread.
    */
-  void ScheduleComposition();
+  void ScheduleComposition(wr::RenderReasons aReasons);
 
   /**
    * Cancel any composite task that has been scheduled but hasn't run yet.
+   *
+   * Returns the render reasons of the canceled task if any.
    */
-  void CancelCurrentCompositeTask();
+  wr::RenderReasons CancelCurrentCompositeTask();
 
   /**
    * Check if a composite is pending. This is generally true between a call
@@ -76,7 +80,8 @@ class CompositorVsyncScheduler {
    * Force a composite to happen right away, without waiting for the next vsync.
    * This must be called on the compositor thread.
    */
-  void ForceComposeToTarget(gfx::DrawTarget* aTarget,
+  void ForceComposeToTarget(wr::RenderReasons aReasons,
+                            gfx::DrawTarget* aTarget,
                             const gfx::IntRect* aRect);
 
   /**
@@ -90,13 +95,14 @@ class CompositorVsyncScheduler {
    * Return the vsync timestamp of the last or ongoing composite. Must be called
    * on the compositor thread.
    */
-  const TimeStamp& GetLastComposeTime() const;
+  const SampleTime& GetLastComposeTime() const;
 
   /**
    * Return the vsync timestamp and id of the most recently received
    * vsync event. Must be called on the compositor thread.
    */
   const TimeStamp& GetLastVsyncTime() const;
+  const TimeStamp& GetLastVsyncOutputTime() const;
   const VsyncId& GetLastVsyncId() const;
 
   /**
@@ -111,7 +117,8 @@ class CompositorVsyncScheduler {
 
   // Post a task to run Composite() on the compositor thread, if there isn't
   // such a task already queued. Can be called from any thread.
-  void PostCompositeTask(VsyncId aId, TimeStamp aCompositeTimestamp);
+  void PostCompositeTask(const VsyncEvent& aVsyncEvent,
+                         wr::RenderReasons aReasons);
 
   // Post a task to run DispatchVREvents() on the VR thread, if there isn't
   // such a task already queued. Can be called from any thread.
@@ -124,7 +131,7 @@ class CompositorVsyncScheduler {
 
   // This gets run at vsync time and "does" a composite (which really means
   // update internal state and call the owner to do the composite).
-  void Composite(VsyncId aId, TimeStamp aVsyncTimestamp);
+  void Composite(const VsyncEvent& aVsyncEvent, wr::RenderReasons aReasons);
 
   void ObserveVsync();
   void UnobserveVsync();
@@ -132,9 +139,12 @@ class CompositorVsyncScheduler {
   void DispatchVREvents(TimeStamp aVsyncTimestamp);
 
   class Observer final : public VsyncObserver {
+    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CompositorVsyncScheduler::Observer,
+                                          override)
+
    public:
     explicit Observer(CompositorVsyncScheduler* aOwner);
-    bool NotifyVsync(const VsyncEvent& aVsync) override;
+    void NotifyVsync(const VsyncEvent& aVsync) override;
     void Destroy();
 
    private:
@@ -146,24 +156,31 @@ class CompositorVsyncScheduler {
   };
 
   CompositorVsyncSchedulerOwner* mVsyncSchedulerOwner;
-  TimeStamp mLastCompose;
-  TimeStamp mLastVsync;
+  SampleTime mLastComposeTime;
+  TimeStamp mLastVsyncTime;
+  TimeStamp mLastVsyncOutputTime;
   VsyncId mLastVsyncId;
 
   bool mAsapScheduling;
   bool mIsObservingVsync;
+  // Accessed on the compositor thread.
+  wr::RenderReasons mRendersDelayedByVsyncReasons;
   TimeStamp mCompositeRequestedAt;
   int32_t mVsyncNotificationsSkipped;
   widget::CompositorWidget* mWidget;
   RefPtr<CompositorVsyncScheduler::Observer> mVsyncObserver;
 
   mozilla::Monitor mCurrentCompositeTaskMonitor;
-  RefPtr<CancelableRunnable> mCurrentCompositeTask;
+  RefPtr<CancelableRunnable> mCurrentCompositeTask
+      MOZ_GUARDED_BY(mCurrentCompositeTaskMonitor);
+  // Accessed on multiple threads, guarded by mCurrentCompositeTaskMonitor.
+  wr::RenderReasons mCurrentCompositeTaskReasons
+      MOZ_GUARDED_BY(mCurrentCompositeTaskMonitor);
 
   mozilla::Monitor mCurrentVRTaskMonitor;
-  RefPtr<CancelableRunnable> mCurrentVRTask;
+  RefPtr<CancelableRunnable> mCurrentVRTask
+      MOZ_GUARDED_BY(mCurrentVRTaskMonitor);
 };
-
 }  // namespace layers
 }  // namespace mozilla
 

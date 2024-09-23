@@ -4,7 +4,9 @@
 
 requestLongerTimeout(2);
 
-let { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+let { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const NUM_ISOLATION_LOADS = 2;
 const NUM_CACHED_LOADS = 1;
@@ -38,8 +40,9 @@ function imageHandler(metadata, response) {
   response.setHeader("Cache-Control", "max-age=10000", false);
   response.setStatusLine(metadata.httpVersion, 200, "OK");
   response.setHeader("Content-Type", "image/png", false);
-  var body =
-    "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAEUlEQVQImWP4z8AAQTAamQkAhpcI+DeMzFcAAAAASUVORK5CYII=";
+  var body = atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAEUlEQVQImWP4z8AAQTAamQkAhpcI+DeMzFcAAAAASUVORK5CYII="
+  );
   response.bodyOutputStream.write(body, body.length);
 }
 
@@ -69,12 +72,12 @@ async function doBefore() {
 }
 
 // the test function does nothing on purpose.
-function doTest(aBrowser) {
+function doTest() {
   return 0;
 }
 
 // the check function
-function doCheck(shouldIsolate, a, b) {
+function doCheck(shouldIsolate) {
   // if we're doing first party isolation and the image cache isolation is
   // working, then gHits should be 2 because the image would have been loaded
   // one per first party domain.  if first party isolation is disabled, then

@@ -6,13 +6,14 @@
 
 #include "ContentFrameMessageManager.h"
 #include "js/RootingAPI.h"
+#include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ScriptSettings.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 
 JSObject* ContentFrameMessageManager::GetOrCreateWrapper() {
-  JS::RootedValue val(RootingCx());
+  JS::Rooted<JS::Value> val(RootingCx());
   {
     // Scope to run ~AutoJSAPI before working with a raw JSObject*.
     AutoJSAPI jsapi;

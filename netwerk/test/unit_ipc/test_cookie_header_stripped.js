@@ -1,10 +1,11 @@
 "use strict";
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const TEST_DOMAIN = "www.example.com";
-XPCOMUtils.defineLazyGetter(this, "URL", function() {
+ChromeUtils.defineLazyGetter(this, "URL", function () {
   return (
     "http://" + TEST_DOMAIN + ":" + httpserv.identity.primaryPort + "/path"
   );
@@ -82,7 +83,8 @@ function run_test() {
       false,
       expiry,
       {},
-      Ci.nsICookie.SAMESITE_NONE
+      Ci.nsICookie.SAMESITE_NONE,
+      Ci.nsICookie.SCHEME_HTTPS
     );
     do_send_remote_message("set-cookie-done");
   });

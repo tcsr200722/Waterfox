@@ -5,7 +5,12 @@ const NS_OSX_PICTURE_DOCUMENTS_DIR = "Pct";
 // 1) check the desktop background image matches what we set it to via
 //    nsIShellService::setDesktopBackground() and
 // 2) revert the desktop background image to the OS default
-const kPythonPath = "/usr/bin/python";
+
+let kPythonPath = "/usr/bin/python";
+if (AppConstants.isPlatformAndVersionAtLeast("macosx", 23.0)) {
+  kPythonPath = "/usr/local/bin/python3";
+}
+
 const kDesktopCheckerScriptPath =
   "browser/browser/components/shell/test/mac_desktop_image.py";
 const kDefaultBackgroundImage_10_14 =
@@ -13,12 +18,13 @@ const kDefaultBackgroundImage_10_14 =
 const kDefaultBackgroundImage_10_15 =
   "/System/Library/Desktop Pictures/Solid Colors/Teal.png";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  FileUtils: "resource://gre/modules/FileUtils.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
 });
 
 function getPythonExecutableFile() {
   let python = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+  info(`Using python at location ${kPythonPath}`);
   python.initWithPath(kPythonPath);
   return python;
 }
@@ -95,19 +101,17 @@ function restoreDefaultBackground() {
  * validate that the current desktop background is in fact set to the
  * downloaded logo.
  */
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: "about:logo",
     },
-    async browser => {
+    async () => {
       let dirSvc = Cc["@mozilla.org/file/directory_service;1"].getService(
         Ci.nsIDirectoryServiceProvider
       );
-      let uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(
-        Ci.nsIUUIDGenerator
-      );
+      let uuidGenerator = Services.uuid;
       let shellSvc = Cc["@mozilla.org/browser/shell-service;1"].getService(
         Ci.nsIShellService
       );
@@ -122,10 +126,7 @@ add_task(async function() {
       // up a filename for the desktop background. Use a UUID to distinguish
       // between runs so we won't be confused by images that were not properly
       // cleaned up after previous runs.
-      let uuid = uuidGenerator
-        .generateUUID()
-        .toString()
-        .replace(/\W/g, "");
+      let uuid = uuidGenerator.generateUUID().toString().replace(/\W/g, "");
 
       // Set the background image path to be $HOME/Pictures/<UUID>.png.
       // nsIShellService.setDesktopBackground() downloads the image to this

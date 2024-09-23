@@ -6,11 +6,11 @@
 
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  AboutNewTab: "resource:///modules/AboutNewTab.jsm",
-  NewTabUtils: "resource://gre/modules/NewTabUtils.jsm",
-  shortURL: "resource://activity-stream/lib/ShortURL.jsm",
-  getSearchProvider: "resource://activity-stream/lib/SearchShortcuts.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
+  getSearchProvider: "resource://activity-stream/lib/SearchShortcuts.sys.mjs",
+  shortURL: "resource://activity-stream/lib/ShortURL.sys.mjs",
 });
 
 const SHORTCUTS_PREF =
@@ -19,10 +19,10 @@ const TOPSITES_FEED_PREF =
   "browser.newtabpage.activity-stream.feeds.system.topsites";
 
 this.topSites = class extends ExtensionAPI {
-  getAPI(context) {
+  getAPI() {
     return {
       topSites: {
-        get: async function(options) {
+        get: async function (options) {
           // We fallback to newtab = false behavior if the user disabled their
           // Top Sites feed.
           let getNewtabSites =
@@ -40,11 +40,12 @@ this.topSites = class extends ExtensionAPI {
           if (options.includePinned && !getNewtabSites) {
             let pinnedLinks = NewTabUtils.pinnedLinks.links;
             if (options.includeFavicon) {
-              pinnedLinks = NewTabUtils.activityStreamProvider._faviconBytesToDataURI(
-                await NewTabUtils.activityStreamProvider._addFavicons(
-                  pinnedLinks
-                )
-              );
+              pinnedLinks =
+                NewTabUtils.activityStreamProvider._faviconBytesToDataURI(
+                  await NewTabUtils.activityStreamProvider._addFavicons(
+                    pinnedLinks
+                  )
+                );
             }
             pinnedLinks.forEach((pinnedLink, index) => {
               if (
@@ -89,22 +90,26 @@ this.topSites = class extends ExtensionAPI {
             links = links.slice(0, options.limit);
           }
 
-          return links.map(link => ({
-            type: link.searchTopSite ? "search" : "url",
-            url: link.url,
-            // The newtab page allows the user to set custom site titles, which
-            // are stored in `label`, so prefer it.  Search top sites currently
-            // don't have titles but `hostname` instead.
-            title: link.label || link.title || link.hostname || "",
-            // Default top sites don't have a favicon property.  Instead they
-            // have tippyTopIcon, a 96x96pt image used on the newtab page.
-            // We'll use it as the favicon for now, but ideally default top
-            // sites would have real favicons.  Non-default top sites (i.e.,
-            // those from the user's history) will have favicons.
-            favicon: options.includeFavicon
-              ? link.favicon || link.tippyTopIcon || null
-              : null,
-          }));
+          const makeDataURI = url => url && ExtensionUtils.makeDataURI(url);
+
+          return Promise.all(
+            links.map(async link => ({
+              type: link.searchTopSite ? "search" : "url",
+              url: link.url,
+              // The newtab page allows the user to set custom site titles, which
+              // are stored in `label`, so prefer it.  Search top sites currently
+              // don't have titles but `hostname` instead.
+              title: link.label || link.title || link.hostname || "",
+              // Default top sites don't have a favicon property.  Instead they
+              // have tippyTopIcon, a 96x96pt image used on the newtab page.
+              // We'll use it as the favicon for now, but ideally default top
+              // sites would have real favicons.  Non-default top sites (i.e.,
+              // those from the user's history) will have favicons.
+              favicon: options.includeFavicon
+                ? link.favicon || (await makeDataURI(link.tippyTopIcon)) || null
+                : null,
+            }))
+          );
         },
       },
     };

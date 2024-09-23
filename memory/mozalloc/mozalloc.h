@@ -8,21 +8,6 @@
 #ifndef mozilla_mozalloc_h
 #define mozilla_mozalloc_h
 
-#if defined(MOZ_MEMORY) && defined(IMPL_MFBT)
-#  define MOZ_MEMORY_IMPL
-#  include "mozmemory_wrap.h"
-#  define MALLOC_FUNCS MALLOC_FUNCS_MALLOC
-// See mozmemory_wrap.h for more details. Files that are part of libmozglue,
-// need to use _impl suffixes, which is becoming cumbersome. We'll have to use
-// something like a malloc.h wrapper and allow the use of the functions without
-// a _impl suffix. In the meanwhile, this is enough to get by for C++ code.
-#  define NOTHROW_MALLOC_DECL(name, return_type, ...) \
-    MOZ_MEMORY_API return_type name##_impl(__VA_ARGS__) noexcept(true);
-#  define MALLOC_DECL(name, return_type, ...) \
-    MOZ_MEMORY_API return_type name##_impl(__VA_ARGS__);
-#  include "malloc_decls.h"
-#endif
-
 /*
  * https://bugzilla.mozilla.org/show_bug.cgi?id=427099
  */
@@ -36,6 +21,21 @@
 #  include <cstdlib>
 #else
 #  include <stdlib.h>
+#endif
+
+#if defined(MOZ_MEMORY) && defined(IMPL_MFBT)
+#  define MOZ_MEMORY_IMPL
+#  include "mozmemory_wrap.h"
+#  define MALLOC_FUNCS MALLOC_FUNCS_MALLOC
+// See mozmemory_wrap.h for more details. Files that are part of libmozglue,
+// need to use _impl suffixes, which is becoming cumbersome. We'll have to use
+// something like a malloc.h wrapper and allow the use of the functions without
+// a _impl suffix. In the meanwhile, this is enough to get by for C++ code.
+#  define NOTHROW_MALLOC_DECL(name, return_type, ...) \
+    MOZ_MEMORY_API return_type name##_impl(__VA_ARGS__) noexcept(true);
+#  define MALLOC_DECL(name, return_type, ...) \
+    MOZ_MEMORY_API return_type name##_impl(__VA_ARGS__);
+#  include "malloc_decls.h"
 #endif
 
 #if defined(__cplusplus)
@@ -108,9 +108,18 @@ MOZ_END_EXTERN_C
 
 #ifdef __cplusplus
 
-/* NB: This is defined just to silence vacuous warnings about symbol
- * visibility on OS X/gcc. These symbols are force-inline and not
- * exported. */
+/* NB: This is defined with MFBT_API just to silence vacuous warnings
+ * about symbol visibility on OS X/gcc.
+ * These symbols are force-inline mainly for performance reasons, and
+ * not exported. While the standard doesn't allow that, we are in a
+ * controlled environment where the issues the standard tries to
+ * prevent don't apply, and we can't end up in situations where
+ * operator new and operator delete are inconsistent. */
+#  ifdef __clang__
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Winline-new-delete"
+#  endif
+
 #  if defined(XP_MACOSX)
 #    define MOZALLOC_EXPORT_NEW MFBT_API MOZ_ALWAYS_INLINE_EVEN_DEBUG
 #  else
@@ -118,6 +127,9 @@ MOZ_END_EXTERN_C
 #  endif
 
 #  include "mozilla/cxxalloc.h"
+#  ifdef __clang__
+#    pragma clang diagnostic pop
+#  endif
 
 /*
  * This policy is identical to MallocAllocPolicy, except it uses

@@ -7,25 +7,27 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { connect } = require("devtools/client/shared/vendor/react-redux");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  connect,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 const AnimationDetailContainer = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationDetailContainer")
+  require("resource://devtools/client/inspector/animation/components/AnimationDetailContainer.js")
 );
 const AnimationListContainer = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationListContainer")
+  require("resource://devtools/client/inspector/animation/components/AnimationListContainer.js")
 );
 const AnimationToolbar = createFactory(
-  require("devtools/client/inspector/animation/components/AnimationToolbar")
+  require("resource://devtools/client/inspector/animation/components/AnimationToolbar.js")
 );
 const NoAnimationPanel = createFactory(
-  require("devtools/client/inspector/animation/components/NoAnimationPanel")
+  require("resource://devtools/client/inspector/animation/components/NoAnimationPanel.js")
 );
 const SplitBox = createFactory(
-  require("devtools/client/shared/components/splitter/SplitBox")
+  require("resource://devtools/client/shared/components/splitter/SplitBox.js")
 );
 
 class App extends Component {
@@ -35,13 +37,12 @@ class App extends Component {
       animations: PropTypes.arrayOf(PropTypes.object).isRequired,
       detailVisibility: PropTypes.bool.isRequired,
       direction: PropTypes.string.isRequired,
+      dispatch: PropTypes.func.isRequired,
       emitEventForTest: PropTypes.func.isRequired,
       getAnimatedPropertyMap: PropTypes.func.isRequired,
       getAnimationsCurrentTime: PropTypes.func.isRequired,
       getComputedStyle: PropTypes.func.isRequired,
       getNodeFromActor: PropTypes.func.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
       removeAnimationsCurrentTimeListener: PropTypes.func.isRequired,
       rewindAnimationsCurrentTime: PropTypes.func.isRequired,
       selectAnimation: PropTypes.func.isRequired,
@@ -59,7 +60,7 @@ class App extends Component {
     };
   }
 
-  shouldComponentUpdate(nextProps, nextState) {
+  shouldComponentUpdate(nextProps) {
     return (
       this.props.animations.length !== 0 || nextProps.animations.length !== 0
     );
@@ -71,13 +72,12 @@ class App extends Component {
       animations,
       detailVisibility,
       direction,
+      dispatch,
       emitEventForTest,
       getAnimatedPropertyMap,
       getAnimationsCurrentTime,
       getComputedStyle,
       getNodeFromActor,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
       removeAnimationsCurrentTimeListener,
       rewindAnimationsCurrentTime,
       selectAnimation,
@@ -132,11 +132,9 @@ class App extends Component {
                 addAnimationsCurrentTimeListener,
                 animations,
                 direction,
-                emitEventForTest,
+                dispatch,
                 getAnimatedPropertyMap,
                 getNodeFromActor,
-                onHideBoxModelHighlighter,
-                onShowBoxModelHighlighterForNode,
                 removeAnimationsCurrentTimeListener,
                 selectAnimation,
                 setAnimationsCurrentTime,

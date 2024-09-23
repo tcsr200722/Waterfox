@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -35,7 +34,7 @@ add_task(
     }
     Assert.ok(objectFront.valid);
 
-    threadFront.resume();
+    await threadFront.resume();
 
     // Now that we've resumed, should get no-such-actor for the
     // same request.
@@ -54,7 +53,9 @@ add_task(
 function evaluateTestCode(debuggee) {
   debuggee.eval(
     "(" +
-      function() {
+      function () {
+        // These arguments are tested.
+        // eslint-disable-next-line no-unused-vars
         function stopMe(obj) {
           debugger;
         }

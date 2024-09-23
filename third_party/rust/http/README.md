@@ -2,7 +2,7 @@
 
 A general purpose library of common HTTP types
 
-[![Build Status](https://travis-ci.org/hyperium/http.svg?branch=master)](https://travis-ci.org/hyperium/http)
+[![CI](https://github.com/hyperium/http/workflows/CI/badge.svg)](https://github.com/hyperium/http/actions?query=workflow%3ACI)
 [![Crates.io](https://img.shields.io/crates/v/http.svg)](https://crates.io/crates/http)
 [![Documentation](https://docs.rs/http/badge.svg)][dox]
 
@@ -17,14 +17,12 @@ To use `http`, first add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-http = "0.1"
+http = "0.2"
 ```
 
 Next, add this to your crate:
 
 ```rust
-extern crate http;
-
 use http::{Request, Response};
 
 fn main() {
@@ -37,8 +35,6 @@ fn main() {
 Create an HTTP request:
 
 ```rust
-extern crate http;
-
 use http::Request;
 
 fn main() {
@@ -53,8 +49,6 @@ fn main() {
 Create an HTTP response:
 
 ```rust
-extern crate http;
-
 use http::{Response, StatusCode};
 
 fn main() {
@@ -66,12 +60,18 @@ fn main() {
 }
 ```
 
+# Supported Rust Versions
+
+This project follows the [Tokio MSRV][msrv] and is currently set to `1.49`.
+
+[msrv]: https://github.com/tokio-rs/tokio/#supported-rust-versions
+
 # License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or https://apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
 
 # Contribution
 

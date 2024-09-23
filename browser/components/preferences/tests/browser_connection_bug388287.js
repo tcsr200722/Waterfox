@@ -2,8 +2,6 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 function test() {
   waitForExplicitFinish();
   const connectionURL =
@@ -14,10 +12,10 @@ function test() {
   // The changed preferences need to be backed up and restored because this mochitest
   // changes them setting from the default
   let oldNetworkProxyType = Services.prefs.getIntPref("network.proxy.type");
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     Services.prefs.setIntPref("network.proxy.type", oldNetworkProxyType);
     Services.prefs.clearUserPref("network.proxy.share_proxy_settings");
-    for (let proxyType of ["http", "ssl", "ftp", "socks"]) {
+    for (let proxyType of ["http", "ssl", "socks"]) {
       Services.prefs.clearUserPref("network.proxy." + proxyType);
       Services.prefs.clearUserPref("network.proxy." + proxyType + "_port");
       if (proxyType == "http") {
@@ -28,6 +26,10 @@ function test() {
         "network.proxy.backup." + proxyType + "_port"
       );
     }
+    // On accepting the dialog, we also write TRR values, so we need to clear
+    // them. They are tested separately in browser_privacy_dnsoverhttps.js.
+    Services.prefs.clearUserPref("network.trr.mode");
+    Services.prefs.clearUserPref("network.trr.uri");
   });
 
   /*
@@ -35,9 +37,9 @@ function test() {
    so it has to be opened as a sub dialog of the main pref tab.
    Open the main tab here.
    */
-  open_preferences(async function tabOpened(aContentWindow) {
+  open_preferences(async function tabOpened() {
     let dialog, dialogClosingPromise, dialogElement;
-    let proxyTypePref, sharePref, httpPref, httpPortPref, ftpPref, ftpPortPref;
+    let proxyTypePref, sharePref, httpPref, httpPortPref;
 
     // Convenient function to reset the variables for the new window
     async function setDoc() {
@@ -63,8 +65,6 @@ function test() {
       sharePref = dialog.Preferences.get("network.proxy.share_proxy_settings");
       httpPref = dialog.Preferences.get("network.proxy.http");
       httpPortPref = dialog.Preferences.get("network.proxy.http_port");
-      ftpPref = dialog.Preferences.get("network.proxy.ftp");
-      ftpPortPref = dialog.Preferences.get("network.proxy.ftp_port");
     }
 
     // This batch of tests should not close the dialog
@@ -79,13 +79,10 @@ function test() {
 
     // Testing HTTP port 0 + FTP port 80 with share off
     sharePref.value = false;
-    ftpPref.value = "localhost";
-    ftpPortPref.value = 80;
     dialogElement.acceptDialog();
 
     // Testing HTTP port 80 + FTP port 0 with share off
     httpPortPref.value = 80;
-    ftpPortPref.value = 0;
     dialogElement.acceptDialog();
 
     // From now on, the dialog should close since we are giving it legitimate inputs.
@@ -94,17 +91,14 @@ function test() {
 
     // Both ports 80, share on
     httpPortPref.value = 80;
-    ftpPortPref.value = 80;
     dialogElement.acceptDialog();
 
     // HTTP 80, FTP 0, with share on
     await setDoc();
     proxyTypePref.value = 1;
     sharePref.value = true;
-    ftpPref.value = "localhost";
     httpPref.value = "localhost";
     httpPortPref.value = 80;
-    ftpPortPref.value = 0;
     dialogElement.acceptDialog();
 
     // HTTP host empty, port 0 with share on

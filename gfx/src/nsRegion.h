@@ -7,18 +7,15 @@
 #ifndef nsRegion_h__
 #define nsRegion_h__
 
-#include <stddef.h>     // for size_t
-#include <stdint.h>     // for uint32_t, uint64_t
-#include <sys/types.h>  // for int32_t
+#include <stddef.h>  // for size_t
+#include <stdint.h>  // for uint32_t, uint64_t
 
 #include <ostream>  // for std::ostream
 #include <utility>  // for mozilla::Move
 
-#include "mozilla/ArrayView.h"  // for ArrayView
-#include "mozilla/gfx/Logging.h"
+#include "mozilla/ArrayView.h"      // for ArrayView
 #include "mozilla/gfx/MatrixFwd.h"  // for mozilla::gfx::Matrix4x4
 #include "nsCoord.h"                // for nscoord
-#include "nsError.h"                // for nsresult
 #include "nsMargin.h"               // for nsIntMargin
 #include "nsPoint.h"                // for nsIntPoint, nsPoint
 #include "nsRect.h"                 // for mozilla::gfx::IntRect, nsRect
@@ -29,7 +26,7 @@
 #include "pixman.h"
 
 // Uncomment this line to get additional integrity checking.
-//#define DEBUG_REGIONS
+// #define DEBUG_REGIONS
 #ifdef DEBUG_REGIONS
 #  include <sstream>
 #endif
@@ -504,13 +501,12 @@ class nsRegion {
   }
 
   nsRegion(const nsRegion& aRegion) { Copy(aRegion); }
-  nsRegion(nsRegion&& aRegion) {
-    mBands.SwapElements(aRegion.mBands);
-    mBounds = aRegion.mBounds;
+  nsRegion(nsRegion&& aRegion)
+      : mBands(std::move(aRegion.mBands)), mBounds(aRegion.mBounds) {
     aRegion.SetEmpty();
   }
   nsRegion& operator=(nsRegion&& aRegion) {
-    mBands.SwapElements(aRegion.mBands);
+    mBands = std::move(aRegion.mBands);
     mBounds = aRegion.mBounds;
     aRegion.SetEmpty();
     return *this;
@@ -1646,6 +1642,11 @@ class nsRegion {
     }
     return false;
   }
+
+  bool Contains(const nsPoint& aPoint) const {
+    return Contains(aPoint.x, aPoint.y);
+  }
+
   bool Contains(const nsRectAbsolute& aRect) const {
     if (aRect.IsEmpty()) {
       return false;
@@ -2324,6 +2325,9 @@ class BaseIntRegion {
    * the point x=100, y=100.
    */
   bool Contains(int aX, int aY) const { return mImpl.Contains(aX, aY); }
+  bool Contains(const Point& aPoint) const {
+    return mImpl.Contains(aPoint.x, aPoint.y);
+  }
   bool Contains(const Rect& aRect) const {
     return mImpl.Contains(ToRect(aRect));
   }

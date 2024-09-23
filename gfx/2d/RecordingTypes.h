@@ -24,6 +24,28 @@ struct ElementStreamFormat {
     aStream.read(reinterpret_cast<char*>(&aElement), sizeof(T));
   }
 };
+template <class S>
+struct ElementStreamFormat<S, bool> {
+  static void Write(S& aStream, const bool& aElement) {
+    char boolChar = aElement ? '\x01' : '\x00';
+    aStream.write(&boolChar, sizeof(boolChar));
+  }
+  static void Read(S& aStream, bool& aElement) {
+    char boolChar;
+    aStream.read(&boolChar, sizeof(boolChar));
+    switch (boolChar) {
+      case '\x00':
+        aElement = false;
+        break;
+      case '\x01':
+        aElement = true;
+        break;
+      default:
+        aStream.SetIsBad();
+        break;
+    }
+  }
+};
 
 template <class S, class T>
 void WriteElement(S& aStream, const T& aElement) {
@@ -49,14 +71,7 @@ template <class S, class T>
 void ReadElementConstrained(S& aStream, T& aElement, const T& aMinValue,
                             const T& aMaxValue) {
   ElementStreamFormat<S, T>::Read(aStream, aElement);
-  if (!aStream.good()) {
-    return;
-  }
-
   if (aElement < aMinValue || aElement > aMaxValue) {
-    gfxDevCrash(LogReason::InvalidConstrainedValueRead)
-        << "Invalid constrained value read: value: " << int(aElement)
-        << ", min: " << int(aMinValue) << ", max: " << int(aMaxValue);
     aStream.SetIsBad();
   }
 }

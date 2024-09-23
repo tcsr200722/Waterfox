@@ -9,14 +9,9 @@
 
 #include "base/thread.h"
 #include "base/message_loop.h"
-#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
+#include "mozilla/Monitor.h"
 
 namespace mozilla {
-
-namespace layers {
-class SynchronousTask;
-}
-
 namespace widget {
 
 struct WinCompositorWnds {
@@ -27,7 +22,7 @@ struct WinCompositorWnds {
 };
 
 class WinCompositorWindowThread final {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_MAIN_THREAD_DESTRUCTION(
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DELETE_ON_MAIN_THREAD(
       WinCompositorWindowThread)
 
  public:
@@ -54,11 +49,16 @@ class WinCompositorWindowThread final {
 
  private:
   explicit WinCompositorWindowThread(base::Thread* aThread);
-  ~WinCompositorWindowThread();
+  ~WinCompositorWindowThread() {}
 
-  void ShutDownTask(layers::SynchronousTask* aTask);
+  void ShutDownTask();
 
-  base::Thread* const mThread;
+  UniquePtr<base::Thread> const mThread;
+  Monitor mMonitor;
+
+  // Has ShutDown been called on us? We might have survived if our thread join
+  // timed out.
+  bool mHasAttemptedShutdown = false;
 };
 
 }  // namespace widget

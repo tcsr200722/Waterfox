@@ -6,10 +6,13 @@
 #include "BackgroundVideoDecodingPermissionObserver.h"
 
 #include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "MediaDecoder.h"
 #include "nsContentUtils.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/Services.h"
+#include "nsIObserverService.h"
 
 namespace mozilla {
 
@@ -23,7 +26,7 @@ NS_IMETHODIMP
 BackgroundVideoDecodingPermissionObserver::Observe(nsISupports* aSubject,
                                                    const char* aTopic,
                                                    const char16_t* aData) {
-  if (!StaticPrefs::media_resume_bkgnd_video_on_tabhover()) {
+  if (!StaticPrefs::media_resume_background_video_on_tabhover()) {
     return NS_OK;
   }
 
@@ -48,12 +51,9 @@ void BackgroundVideoDecodingPermissionObserver::RegisterEvent() {
       // Events shall not be fired synchronously to prevent anything visible
       // from the scripts while we are in stable state.
       if (nsCOMPtr<dom::Document> doc = GetOwnerDoc()) {
-        doc->Dispatch(
-            TaskCategory::Other,
-            NewRunnableMethod(
-                "BackgroundVideoDecodingPermissionObserver::"
-                "EnableEvent",
-                this, &BackgroundVideoDecodingPermissionObserver::EnableEvent));
+        doc->Dispatch(NewRunnableMethod(
+            "BackgroundVideoDecodingPermissionObserver::EnableEvent", this,
+            &BackgroundVideoDecodingPermissionObserver::EnableEvent));
       }
     } else {
       EnableEvent();
@@ -72,13 +72,9 @@ void BackgroundVideoDecodingPermissionObserver::UnregisterEvent() {
       // Events shall not be fired synchronously to prevent anything visible
       // from the scripts while we are in stable state.
       if (nsCOMPtr<dom::Document> doc = GetOwnerDoc()) {
-        doc->Dispatch(
-            TaskCategory::Other,
-            NewRunnableMethod(
-                "BackgroundVideoDecodingPermissionObserver::"
-                "DisableEvent",
-                this,
-                &BackgroundVideoDecodingPermissionObserver::DisableEvent));
+        doc->Dispatch(NewRunnableMethod(
+            "BackgroundVideoDecodingPermissionObserver::DisableEvent", this,
+            &BackgroundVideoDecodingPermissionObserver::DisableEvent));
       }
     } else {
       DisableEvent();
@@ -92,58 +88,37 @@ BackgroundVideoDecodingPermissionObserver::
 }
 
 void BackgroundVideoDecodingPermissionObserver::EnableEvent() const {
+  // If we can't get document or outer window, then you can't reach the chrome
+  // <browser> either, so we don't need want to dispatch the event.
   dom::Document* doc = GetOwnerDoc();
-  if (!doc) {
+  if (!doc || !doc->GetWindow()) {
     return;
   }
 
-  nsCOMPtr<nsPIDOMWindowOuter> ownerTop = GetOwnerWindow();
-  if (!ownerTop) {
-    return;
-  }
-
-  RefPtr<AsyncEventDispatcher> asyncDispatcher = new AsyncEventDispatcher(
-      doc, NS_LITERAL_STRING("UnselectedTabHover:Enable"), CanBubble::eYes,
-      ChromeOnlyDispatch::eYes);
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncEventDispatcher(doc, u"UnselectedTabHover:Enable"_ns,
+                               CanBubble::eYes, ChromeOnlyDispatch::eYes);
   asyncDispatcher->PostDOMEvent();
 }
 
 void BackgroundVideoDecodingPermissionObserver::DisableEvent() const {
+  // If we can't get document or outer window, then you can't reach the chrome
+  // <browser> either, so we don't need want to dispatch the event.
   dom::Document* doc = GetOwnerDoc();
-  if (!doc) {
+  if (!doc || !doc->GetWindow()) {
     return;
   }
 
-  nsCOMPtr<nsPIDOMWindowOuter> ownerTop = GetOwnerWindow();
-  if (!ownerTop) {
-    return;
-  }
-
-  RefPtr<AsyncEventDispatcher> asyncDispatcher = new AsyncEventDispatcher(
-      doc, NS_LITERAL_STRING("UnselectedTabHover:Disable"), CanBubble::eYes,
-      ChromeOnlyDispatch::eYes);
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncEventDispatcher(doc, u"UnselectedTabHover:Disable"_ns,
+                               CanBubble::eYes, ChromeOnlyDispatch::eYes);
   asyncDispatcher->PostDOMEvent();
 }
 
-already_AddRefed<nsPIDOMWindowOuter>
-BackgroundVideoDecodingPermissionObserver::GetOwnerWindow() const {
+dom::BrowsingContext* BackgroundVideoDecodingPermissionObserver::GetOwnerBC()
+    const {
   dom::Document* doc = GetOwnerDoc();
-  if (!doc) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsPIDOMWindowInner> innerWin = doc->GetInnerWindow();
-  if (!innerWin) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsPIDOMWindowOuter> outerWin = innerWin->GetOuterWindow();
-  if (!outerWin) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsPIDOMWindowOuter> topWin = outerWin->GetInProcessTop();
-  return topWin.forget();
+  return doc ? doc->GetBrowsingContext() : nullptr;
 }
 
 dom::Document* BackgroundVideoDecodingPermissionObserver::GetOwnerDoc() const {
@@ -161,22 +136,12 @@ bool BackgroundVideoDecodingPermissionObserver::IsValidEventSender(
     return false;
   }
 
-  nsCOMPtr<nsPIDOMWindowOuter> senderOuter = senderInner->GetOuterWindow();
-  if (!senderOuter) {
+  RefPtr<dom::BrowsingContext> senderBC = senderInner->GetBrowsingContext();
+  if (!senderBC) {
     return false;
   }
-
-  nsCOMPtr<nsPIDOMWindowOuter> senderTop = senderOuter->GetInProcessTop();
-  if (!senderTop) {
-    return false;
-  }
-
-  nsCOMPtr<nsPIDOMWindowOuter> ownerTop = GetOwnerWindow();
-  if (!ownerTop) {
-    return false;
-  }
-
-  return ownerTop == senderTop;
+  // Valid sender should be in the same browsing context tree as where owner is.
+  return GetOwnerBC() ? GetOwnerBC()->Top() == senderBC->Top() : false;
 }
 
 NS_IMPL_ISUPPORTS(BackgroundVideoDecodingPermissionObserver, nsIObserver)

@@ -4,32 +4,36 @@
 
 ignoreAllUncaughtExceptions();
 
-add_task(async function() {
+add_task(async function () {
   info(
     "Check that performing a search fires a search event and records to Telemetry."
   );
 
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      [
+        "browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar",
+        false,
+      ],
+    ],
+  });
+
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: "about:home" },
-    async function(browser) {
-      let currEngine = await Services.search.getDefault();
-
+    async function (browser) {
       let engine;
       await promiseContentSearchChange(browser, async () => {
-        engine = await promiseNewEngine("searchSuggestionEngine.xml");
-        await Services.search.setDefault(engine);
+        engine = await SearchTestUtils.installOpenSearchEngine({
+          url: getRootDirectory(gTestPath) + "searchSuggestionEngine.xml",
+          setAsDefault: true,
+        });
         return engine.name;
-      });
-
-      // Make this actually work in healthreport by giving it an ID:
-      Object.defineProperty(engine.wrappedJSObject, "identifier", {
-        value: "org.mozilla.testsearchsuggestions",
       });
 
       await SpecialPowers.spawn(
         browser,
         [{ expectedName: engine.name }],
-        async function(args) {
+        async function (args) {
           let engineName =
             content.wrappedJSObject.gContentSearchController.defaultEngine.name;
           is(
@@ -42,7 +46,7 @@ add_task(async function() {
 
       let numSearchesBefore = 0;
       // Get the current number of recorded searches.
-      let histogramKey = engine.identifier + ".abouthome";
+      let histogramKey = `other-${engine.name}.abouthome`;
       try {
         let hs = Services.telemetry
           .getKeyedHistogramById("SEARCH_COUNTS")
@@ -67,13 +71,17 @@ add_task(async function() {
       );
 
       // Perform a search to increase the SEARCH_COUNT histogram.
-      await SpecialPowers.spawn(browser, [{ searchStr }], async function(args) {
-        let doc = content.document;
-        info("Perform a search.");
-        let el = doc.querySelector(["#searchText", "#newtab-search-text"]);
-        el.value = args.searchStr;
-        doc.getElementById("searchSubmit").click();
-      });
+      await SpecialPowers.spawn(
+        browser,
+        [{ searchStr }],
+        async function (args) {
+          let doc = content.document;
+          info("Perform a search.");
+          let el = doc.querySelector(["#searchText", "#newtab-search-text"]);
+          el.value = args.searchStr;
+          doc.getElementById("searchSubmit").click();
+        }
+      );
 
       await promise;
 
@@ -87,11 +95,7 @@ add_task(async function() {
         numSearchesBefore + 1,
         "histogram sum should be incremented"
       );
-
-      await Services.search.setDefault(currEngine);
-      try {
-        await Services.search.removeEngine(engine);
-      } catch (ex) {}
     }
   );
+  await SpecialPowers.popPrefEnv();
 });

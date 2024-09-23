@@ -4,41 +4,31 @@
 
 "use strict";
 
-const { BrowserUtils } = ChromeUtils.import(
-  "resource://gre/modules/BrowserUtils.jsm"
+const { BrowserUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/BrowserUtils.sys.mjs"
 );
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { TelemetryTimestamps } = ChromeUtils.import(
-  "resource://gre/modules/TelemetryTimestamps.jsm"
+const { TelemetryTimestamps } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryTimestamps.sys.mjs"
 );
-const { TelemetryController } = ChromeUtils.import(
-  "resource://gre/modules/TelemetryController.jsm"
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
 );
-const { TelemetryArchive } = ChromeUtils.import(
-  "resource://gre/modules/TelemetryArchive.jsm"
+const { TelemetryArchive } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryArchive.sys.mjs"
 );
-const { TelemetrySend } = ChromeUtils.import(
-  "resource://gre/modules/TelemetrySend.jsm"
+const { TelemetrySend } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetrySend.sys.mjs"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AppConstants",
-  "resource://gre/modules/AppConstants.jsm"
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "Preferences",
-  "resource://gre/modules/Preferences.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  ObjectUtils: "resource://gre/modules/ObjectUtils.sys.mjs",
+  Preferences: "resource://gre/modules/Preferences.sys.mjs",
+});
 
 const Telemetry = Services.telemetry;
-const bundle = Services.strings.createBundle(
-  "chrome://global/locale/aboutTelemetry.properties"
-);
-const brandBundle = Services.strings.createBundle(
-  "chrome://branding/locale/brand.properties"
-);
 
 // Maximum height of a histogram bar (in em for html, in chars for text)
 const MAX_BAR_HEIGHT = 8;
@@ -47,7 +37,8 @@ const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
 const PREF_DEBUG_SLOW_SQL = "toolkit.telemetry.debugSlowSql";
 const PREF_SYMBOL_SERVER_URI = "profiler.symbolicationUrl";
-const DEFAULT_SYMBOL_SERVER_URI = "https://symbols.mozilla.org/symbolicate/v4";
+const DEFAULT_SYMBOL_SERVER_URI =
+  "https://symbolication.services.mozilla.com/symbolicate/v4";
 const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
 
 // ms idle before applying the filter (allow uninterrupted typing)
@@ -145,7 +136,7 @@ function sectionalizeObject(obj) {
  * Obtain the main DOMWindow for the current context.
  */
 function getMainWindow() {
-  return window.docShell.rootTreeItem.domWindow;
+  return window.browsingContext.topChromeWindow;
 }
 
 /**
@@ -175,32 +166,14 @@ function removeAllChildNodes(node) {
 }
 
 var Settings = {
-  SETTINGS: [
-    // data upload
-    {
-      pref: PREF_FHR_UPLOAD_ENABLED,
-      defaultPrefValue: false,
-    },
-    // extended "Telemetry" recording
-    {
-      pref: PREF_TELEMETRY_ENABLED,
-      defaultPrefValue: false,
-    },
-  ],
-
   attachObservers() {
-    for (let s of this.SETTINGS) {
-      let setting = s;
-      Preferences.observe(setting.pref, this.render, this);
-    }
-
     let elements = document.getElementsByClassName("change-data-choices-link");
     for (let el of elements) {
-      el.parentElement.addEventListener("click", function(event) {
+      el.parentElement.addEventListener("click", function (event) {
         if (event.target.localName === "a") {
           if (AppConstants.platform == "android") {
-            var { EventDispatcher } = ChromeUtils.import(
-              "resource://gre/modules/Messaging.jsm"
+            var { EventDispatcher } = ChromeUtils.importESModule(
+              "resource://gre/modules/Messaging.sys.mjs"
             );
             EventDispatcher.instance.sendRequest({
               type: "Settings:Show",
@@ -213,12 +186,6 @@ var Settings = {
           }
         }
       });
-    }
-  },
-
-  detachObservers() {
-    for (let setting of this.SETTINGS) {
-      Preferences.ignore(setting.pref, this.render, this);
     }
   },
 
@@ -290,7 +257,7 @@ var PingPicker = {
       "mouseleave",
       () => (pingPickerNeedHide = true)
     );
-    document.addEventListener("click", ev => {
+    document.addEventListener("click", () => {
       if (pingPickerNeedHide) {
         pingPicker.classList.add("hidden");
       }
@@ -385,6 +352,12 @@ var PingPicker = {
   },
 
   _updateCurrentPingData() {
+    TelemetryController.ensureInitialized().then(() =>
+      this._doUpdateCurrentPingData()
+    );
+  },
+
+  _doUpdateCurrentPingData() {
     const subsession = document.getElementById("show-subsession-data").checked;
     let ping = TelemetryController.getCurrentPingData(subsession);
     if (!ping) {
@@ -442,10 +415,6 @@ var PingPicker = {
         );
       }
     }
-
-    // augment "current ping payload" with origin telemetry
-    const originSnapshot = Telemetry.getOriginSnapshot(false /* clear */);
-    ping.payload.origins = originSnapshot;
 
     displayPingData(ping, true);
   },
@@ -663,31 +632,6 @@ var EnvironmentData = {
     this.createAddonSection(dataDiv, ping);
   },
 
-  renderPersona(addonObj, addonSection, sectionTitle) {
-    let table = document.createElement("table");
-    table.setAttribute("id", sectionTitle);
-    this.appendAddonSubsectionTitle(sectionTitle, table);
-    this.appendRow(table, "persona", addonObj.persona);
-    addonSection.appendChild(table);
-  },
-
-  renderActivePlugins(addonObj, addonSection, sectionTitle) {
-    let table = document.createElement("table");
-    table.setAttribute("id", sectionTitle);
-    this.appendAddonSubsectionTitle(sectionTitle, table);
-
-    for (let plugin of addonObj) {
-      let data = explodeObject(plugin);
-      this.appendHeadingName(table, data.get("name"));
-
-      for (let [key, value] of data) {
-        this.appendRow(table, key, value);
-      }
-    }
-
-    addonSection.appendChild(table);
-  },
-
   renderAddonsObject(addonObj, addonSection, sectionTitle) {
     let table = document.createElement("table");
     table.setAttribute("id", sectionTitle);
@@ -740,18 +684,12 @@ var EnvironmentData = {
     addonSection.setAttribute("class", "subsection-data subdata");
     let addons = ping.environment.addons;
     this.renderAddonsObject(addons.activeAddons, addonSection, "activeAddons");
-    this.renderActivePlugins(
-      addons.activePlugins,
-      addonSection,
-      "activePlugins"
-    );
     this.renderKeyValueObject(addons.theme, addonSection, "theme");
     this.renderAddonsObject(
       addons.activeGMPlugins,
       addonSection,
       "activeGMPlugins"
     );
-    this.renderPersona(addons, addonSection, "persona");
 
     let hasAddonData = !!Object.keys(ping.environment.addons).length;
     let s = GenericSubsection.renderSubsectionHeader(
@@ -1000,19 +938,21 @@ var StackRenderer = {
    * Renders the title of the stack: e.g. "Late Write #1" or
    * "Hang Report #1 (6 seconds)".
    *
-   * @param aFormatArgs formating args to be passed to formatStringFromName.
+   * @param aDivId The id of the div to append the header to.
+   * @param aL10nId The l10n id of the message to use for the title.
+   * @param aL10nArgs The l10n args for the provided message id.
    */
-  renderHeader: function StackRenderer_renderHeader(aPrefix, aFormatArgs) {
-    let div = document.getElementById(aPrefix);
+  renderHeader: function StackRenderer_renderHeader(
+    aDivId,
+    aL10nId,
+    aL10nArgs
+  ) {
+    let div = document.getElementById(aDivId);
 
     let titleElement = document.createElement("span");
     titleElement.className = "stack-title";
 
-    let titleText = bundle.formatStringFromName(
-      aPrefix + "-title",
-      aFormatArgs
-    );
-    titleElement.appendChild(document.createTextNode(titleText));
+    document.l10n.setAttributes(titleElement, aL10nId, aL10nArgs);
 
     div.appendChild(titleElement);
     div.appendChild(document.createElement("br"));
@@ -1032,7 +972,7 @@ var RawPayloadData = {
   attachObservers() {
     document
       .getElementById("payload-json-viewer")
-      .addEventListener("click", e => {
+      .addEventListener("click", () => {
         openJsonInFirefoxJsonViewer(JSON.stringify(gPingData.payload, null, 2));
       });
   },
@@ -1055,99 +995,71 @@ function SymbolicationRequest(
  * A callback for onreadystatechange. It replaces the numeric stack with
  * the symbolicated one returned by the symbolication server.
  */
-SymbolicationRequest.prototype.handleSymbolResponse = async function SymbolicationRequest_handleSymbolResponse() {
-  if (this.symbolRequest.readyState != 4) {
-    return;
-  }
-
-  let fetchElement = document.getElementById(this.prefix + "-fetch-symbols");
-  fetchElement.hidden = true;
-  let hideElement = document.getElementById(this.prefix + "-hide-symbols");
-  hideElement.hidden = false;
-  let div = document.getElementById(this.prefix);
-  removeAllChildNodes(div);
-  let errorMessage = await document.l10n.formatValue(
-    "about-telemetry-error-fetching-symbols"
-  );
-
-  if (this.symbolRequest.status != 200) {
-    div.appendChild(document.createTextNode(errorMessage));
-    return;
-  }
-
-  let jsonResponse = {};
-  try {
-    jsonResponse = JSON.parse(this.symbolRequest.responseText);
-  } catch (e) {
-    div.appendChild(document.createTextNode(errorMessage));
-    return;
-  }
-
-  for (let i = 0; i < jsonResponse.length; ++i) {
-    let stack = jsonResponse[i];
-    this.renderHeader(i, this.durations);
-
-    for (let symbol of stack) {
-      div.appendChild(document.createTextNode(symbol));
-      div.appendChild(document.createElement("br"));
-    }
-    div.appendChild(document.createElement("br"));
-  }
-};
-/**
- * Send a request to the symbolication server to symbolicate this stack.
- */
-SymbolicationRequest.prototype.fetchSymbols = function SymbolicationRequest_fetchSymbols() {
-  let symbolServerURI = Preferences.get(
-    PREF_SYMBOL_SERVER_URI,
-    DEFAULT_SYMBOL_SERVER_URI
-  );
-  let request = { memoryMap: this.memoryMap, stacks: this.stacks, version: 3 };
-  let requestJSON = JSON.stringify(request);
-
-  this.symbolRequest = new XMLHttpRequest();
-  this.symbolRequest.open("POST", symbolServerURI, true);
-  this.symbolRequest.setRequestHeader("Content-type", "application/json");
-  this.symbolRequest.setRequestHeader("Content-length", requestJSON.length);
-  this.symbolRequest.setRequestHeader("Connection", "close");
-  this.symbolRequest.onreadystatechange = this.handleSymbolResponse.bind(this);
-  this.symbolRequest.send(requestJSON);
-};
-
-var CapturedStacks = {
-  symbolRequest: null,
-
-  render: function CapturedStacks_render(payload) {
-    // Retrieve captured stacks from telemetry payload.
-    let capturedStacks =
-      "processes" in payload && "parent" in payload.processes
-        ? payload.processes.parent.capturedStacks
-        : false;
-    let hasData =
-      capturedStacks && capturedStacks.stacks && !!capturedStacks.stacks.length;
-    setHasData("captured-stacks-section", hasData);
-    if (!hasData) {
+SymbolicationRequest.prototype.handleSymbolResponse =
+  async function SymbolicationRequest_handleSymbolResponse() {
+    if (this.symbolRequest.readyState != 4) {
       return;
     }
 
-    let stacks = capturedStacks.stacks;
-    let memoryMap = capturedStacks.memoryMap;
-    let captures = capturedStacks.captures;
-
-    StackRenderer.renderStacks("captured-stacks", stacks, memoryMap, index =>
-      this.renderCaptureHeader(index, captures)
+    let fetchElement = document.getElementById(this.prefix + "-fetch-symbols");
+    fetchElement.hidden = true;
+    let hideElement = document.getElementById(this.prefix + "-hide-symbols");
+    hideElement.hidden = false;
+    let div = document.getElementById(this.prefix);
+    removeAllChildNodes(div);
+    let errorMessage = await document.l10n.formatValue(
+      "about-telemetry-error-fetching-symbols"
     );
-  },
 
-  renderCaptureHeader: function CaptureStacks_renderCaptureHeader(
-    index,
-    captures
-  ) {
-    let key = captures[index][0];
-    let cardinality = captures[index][2];
-    StackRenderer.renderHeader("captured-stacks", [key, cardinality]);
-  },
-};
+    if (this.symbolRequest.status != 200) {
+      div.appendChild(document.createTextNode(errorMessage));
+      return;
+    }
+
+    let jsonResponse = {};
+    try {
+      jsonResponse = JSON.parse(this.symbolRequest.responseText);
+    } catch (e) {
+      div.appendChild(document.createTextNode(errorMessage));
+      return;
+    }
+
+    for (let i = 0; i < jsonResponse.length; ++i) {
+      let stack = jsonResponse[i];
+      this.renderHeader(i, this.durations);
+
+      for (let symbol of stack) {
+        div.appendChild(document.createTextNode(symbol));
+        div.appendChild(document.createElement("br"));
+      }
+      div.appendChild(document.createElement("br"));
+    }
+  };
+/**
+ * Send a request to the symbolication server to symbolicate this stack.
+ */
+SymbolicationRequest.prototype.fetchSymbols =
+  function SymbolicationRequest_fetchSymbols() {
+    let symbolServerURI = Preferences.get(
+      PREF_SYMBOL_SERVER_URI,
+      DEFAULT_SYMBOL_SERVER_URI
+    );
+    let request = {
+      memoryMap: this.memoryMap,
+      stacks: this.stacks,
+      version: 3,
+    };
+    let requestJSON = JSON.stringify(request);
+
+    this.symbolRequest = new XMLHttpRequest();
+    this.symbolRequest.open("POST", symbolServerURI, true);
+    this.symbolRequest.setRequestHeader("Content-type", "application/json");
+    this.symbolRequest.setRequestHeader("Content-length", requestJSON.length);
+    this.symbolRequest.setRequestHeader("Connection", "close");
+    this.symbolRequest.onreadystatechange =
+      this.handleSymbolResponse.bind(this);
+    this.symbolRequest.send(requestJSON);
+  };
 
 var Histogram = {
   /**
@@ -1198,7 +1110,7 @@ var Histogram = {
     copyButton.className = "copy-node";
     document.l10n.setAttributes(copyButton, "about-telemetry-histogram-copy");
 
-    copyButton.addEventListener("click", async function() {
+    copyButton.addEventListener("click", async function () {
       let divStatsString = await document.l10n.formatValue(
         "about-telemetry-histogram-stats",
         histogramStatsArgs
@@ -1215,7 +1127,7 @@ var Histogram = {
     return outerDiv;
   },
 
-  processHistogram(aHgram, aName) {
+  processHistogram(aHgram) {
     const values = Object.keys(aHgram.values).map(k => aHgram.values[k]);
     if (!values.length) {
       // If we have no values collected for this histogram, just return
@@ -1364,12 +1276,43 @@ var Search = {
         filter = RegExp(r[1], r[2]);
       } catch (e) {
         // Incomplete or bad RegExp - always no match
-        isPassFunc = function() {
+        isPassFunc = function () {
           return false;
         };
       }
     }
     return [isPassFunc, filter];
+  },
+
+  filterTextRows(table, filterText) {
+    let [isPassFunc, filter] = this.chooseFilter(filterText);
+    let allElementHidden = true;
+
+    let needLowerCase = isPassFunc === this.isPassText;
+    let elements = table.rows;
+    for (let element of elements) {
+      if (element.firstChild.nodeName == "th") {
+        continue;
+      }
+      for (let cell of element.children) {
+        let subject = needLowerCase
+          ? cell.textContent.toLowerCase()
+          : cell.textContent;
+        element.hidden = !isPassFunc(subject, filter);
+        if (!element.hidden) {
+          if (allElementHidden) {
+            allElementHidden = false;
+          }
+          // Don't need to check the rest of this row.
+          break;
+        }
+      }
+    }
+    // Unhide the first row:
+    if (!allElementHidden) {
+      table.rows[0].hidden = false;
+    }
+    return allElementHidden;
   },
 
   filterElements(elements, filterText) {
@@ -1445,9 +1388,12 @@ var Search = {
       return false;
     }
     let noSearchResults = true;
+    // In the home section, we search all other sections:
     if (section.id === "home-section") {
       return this.homeSearch(text);
-    } else if (section.id === "histograms-section") {
+    }
+
+    if (section.id === "histograms-section") {
       let histograms = section.getElementsByClassName("histogram");
       noSearchResults = this.filterElements(histograms, text);
     } else if (section.id === "keyed-histograms-section") {
@@ -1466,6 +1412,15 @@ var Search = {
         keyedElements.push({ key, datas });
       }
       noSearchResults = this.filterKeyedElements(keyedElements, text);
+    } else if (section.matches(".text-search")) {
+      let tables = section.querySelectorAll("table");
+      for (let table of tables) {
+        // If we unhide anything, flip noSearchResults to
+        // false so we don't show the "no results" bits.
+        if (!this.filterTextRows(table, text)) {
+          noSearchResults = false;
+        }
+      }
     } else if (section.querySelector(".sub-section")) {
       let keyedSubSections = [];
       let subsections = section.querySelectorAll(".sub-section");
@@ -1849,7 +1804,7 @@ class Section {
       data = isCurrentPayload
         ? this.dataFiltering(payload, selectedStore, process)
         : this.archivePingDataFiltering(aPayload, process);
-      hasData = hasData || data !== {};
+      hasData = hasData || !ObjectUtils.isEmpty(data);
       this.renderContent(data, process, div, section, this.renderData);
     }
     setHasData(section, hasData);
@@ -1965,8 +1920,8 @@ var Events = {
     if (payload) {
       for (const process of Object.keys(aPayload.processes)) {
         let data = aPayload.processes[process].events;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,
@@ -1987,8 +1942,8 @@ var Events = {
       // handle archived ping
       for (const process of Object.keys(aPayload.events)) {
         let data = process;
-        hasData = hasData || data !== {};
         if (data && Object.keys(data).length) {
+          hasData = true;
           let s = GenericSubsection.renderSubsectionHeader(
             process,
             true,
@@ -2006,34 +1961,6 @@ var Events = {
       }
     }
     setHasData("events-section", hasData);
-  },
-};
-
-var Origins = {
-  render(aOrigins) {
-    let originSection = document.getElementById("origins");
-    removeAllChildNodes(originSection);
-
-    const headings = [
-      "about-telemetry-origin-origin",
-      "about-telemetry-origin-count",
-    ];
-
-    let hasData = false;
-    for (let [metric, origins] of Object.entries(aOrigins || {})) {
-      if (!Object.entries(origins).length) {
-        continue;
-      }
-      hasData = true;
-      const metricHeader = document.createElement("caption");
-      metricHeader.appendChild(document.createTextNode(metric));
-
-      const table = GenericTable.render(Object.entries(origins), headings);
-      table.appendChild(metricHeader);
-      originSection.appendChild(table);
-    }
-
-    setHasData("origin-telemetry-section", hasData);
   },
 };
 
@@ -2061,10 +1988,6 @@ function setupServerOwnerBranding() {
   let serverOwner = Preferences.get(PREF_TELEMETRY_SERVER_OWNER, "Mozilla");
   const elements = [
     [document.getElementById("page-subtitle"), "about-telemetry-page-subtitle"],
-    [
-      document.getElementById("origins-explanation"),
-      "about-telemetry-origins-explanation",
-    ],
   ];
   for (const [elt, l10nName] of elements) {
     document.l10n.setAttributes(elt, l10nName, {
@@ -2250,8 +2173,8 @@ function showSubSection(selected) {
   });
   section.hidden = false;
 
-  let title = selected.parentElement.querySelector(".category-name")
-    .textContent;
+  let title =
+    selected.parentElement.querySelector(".category-name").textContent;
   let subsection = selected.textContent;
   document.getElementById("sectionTitle").textContent =
     title + " - " + subsection;
@@ -2276,43 +2199,9 @@ function setupListeners() {
   let search = document.getElementById("search");
   search.addEventListener("input", Search.searchHandler);
 
-  // Clean up observers when page is closed
-  window.addEventListener(
-    "unload",
-    function(aEvent) {
-      Settings.detachObservers();
-    },
-    { once: true }
-  );
-
-  document
-    .getElementById("captured-stacks-fetch-symbols")
-    .addEventListener("click", function() {
-      if (!gPingData) {
-        return;
-      }
-      let capturedStacks = gPingData.payload.processes.parent.capturedStacks;
-      let req = new SymbolicationRequest(
-        "captured-stacks",
-        CapturedStacks.renderCaptureHeader,
-        capturedStacks.memoryMap,
-        capturedStacks.stacks,
-        capturedStacks.captures
-      );
-      req.fetchSymbols();
-    });
-
-  document
-    .getElementById("captured-stacks-hide-symbols")
-    .addEventListener("click", function() {
-      if (gPingData) {
-        CapturedStacks.render(gPingData.payload);
-      }
-    });
-
   document
     .getElementById("late-writes-fetch-symbols")
-    .addEventListener("click", function() {
+    .addEventListener("click", function () {
       if (!gPingData) {
         return;
       }
@@ -2329,7 +2218,7 @@ function setupListeners() {
 
   document
     .getElementById("late-writes-hide-symbols")
-    .addEventListener("click", function() {
+    .addEventListener("click", function () {
       if (!gPingData) {
         return;
       }
@@ -2386,8 +2275,6 @@ function openJsonInFirefoxJsonViewer(json) {
 
 function onLoad() {
   window.removeEventListener("load", onLoad);
-  Telemetry.scalarAdd("telemetry.about_telemetry_pageload", 1);
-
   // Set the text in the page header and elsewhere that needs the server owner.
   setupServerOwnerBranding();
 
@@ -2409,7 +2296,11 @@ function onLoad() {
 
 var LateWritesSingleton = {
   renderHeader: function LateWritesSingleton_renderHeader(aIndex) {
-    StackRenderer.renderHeader("late-writes", [aIndex + 1]);
+    StackRenderer.renderHeader(
+      "late-writes",
+      "about-telemetry-late-writes-title",
+      { lateWriteCount: aIndex + 1 }
+    );
   },
 
   renderLateWrites: function LateWritesSingleton_renderLateWrites(lateWrites) {
@@ -2724,13 +2615,7 @@ function displayRichPingData(ping, updatePayloadList) {
   // Show event data.
   Events.render(payload);
 
-  // Show captured stacks.
-  CapturedStacks.render(payload);
-
   LateWritesSingleton.renderLateWrites(payload.lateWrites);
-
-  // Show origin telemetry.
-  Origins.render(payload.origins);
 
   // Show simple measurements
   SimpleMeasurements.render(payload);

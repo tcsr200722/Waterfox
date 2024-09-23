@@ -28,6 +28,8 @@ class Text;
 class nsTextFrameUtils {
  public:
   // These constants are used as textrun flags for textframe textruns.
+  //
+  // If you add a flag, please add support for it in gfxTextRun::Dump.
   enum class Flags : uint16_t {
     // The following flags are set by TransformText
 
@@ -35,7 +37,8 @@ class nsTextFrameUtils {
     HasTab = 0x01,
     // the original text has at least one soft hyphen character
     HasShy = 0x02,
-    UnusedFlags = 0x04,
+    // the text has at least one untransformed newline character
+    HasNewline = 0x04,
 
     // Flag used in textrun construction to *prevent* hiding of fallback text
     // for pending user-fonts (used for Canvas2d text).
@@ -144,7 +147,9 @@ class nsTextFrameUtils {
   }
 
   static uint32_t ComputeApproximateLengthWithWhitespaceCompression(
-      mozilla::dom::Text* aText, const nsStyleText* aStyleText);
+      mozilla::dom::Text*, const nsStyleText*);
+  static uint32_t ComputeApproximateLengthWithWhitespaceCompression(
+      const nsAString&, const nsStyleText*);
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(nsTextFrameUtils::Flags)

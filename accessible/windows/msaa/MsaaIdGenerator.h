@@ -9,48 +9,36 @@
 
 #include "mozilla/a11y/IDSet.h"
 
-#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/NotNull.h"
+#include "nsITimer.h"
 
 namespace mozilla {
 namespace a11y {
 
-class AccessibleWrap;
+class MsaaAccessible;
 class sdnAccessible;
 
 /**
  * This class is responsible for generating child IDs used by our MSAA
- * implementation. Since e10s requires us to differentiate IDs based on the
- * originating process of the accessible, a portion of the ID's bits are
- * allocated to storing that information. The remaining bits represent the
- * unique ID of the accessible, within that content process.
- *
- * The constants kNumContentProcessIDBits and kNumUniqueIDBits in the
- * implementation are responsible for determining the proportion of bits that
- * are allocated for each purpose.
+ * implementation.
  */
 class MsaaIdGenerator {
  public:
-  constexpr MsaaIdGenerator();
-
   uint32_t GetID();
-  void ReleaseID(NotNull<AccessibleWrap*> aAccWrap);
+  void ReleaseID(NotNull<MsaaAccessible*> aMsaaAcc);
   void ReleaseID(NotNull<sdnAccessible*> aSdnAcc);
-  bool IsChromeID(uint32_t aID);
-  bool IsIDForThisContentProcess(uint32_t aID);
-  bool IsIDForContentProcess(uint32_t aID,
-                             dom::ContentParentId aIPCContentProcessId);
-  bool IsSameContentProcessFor(uint32_t aFirstID, uint32_t aSecondID);
-
-  uint32_t GetContentProcessIDFor(dom::ContentParentId aIPCContentProcessID);
-  void ReleaseContentProcessIDFor(dom::ContentParentId aIPCContentProcessID);
 
  private:
   bool ReleaseID(uint32_t aID);
-  uint32_t ResolveContentProcessID();
+  void ReleasePendingIDs();
 
  private:
-  IDSet mIDSet;
+  static constexpr uint32_t kNumFullIDBits = 31UL;
+  IDSet mIDSet{kNumFullIDBits};
+  nsTArray<uint32_t> mIDsToRelease;
+  nsCOMPtr<nsITimer> mReleaseIDTimer;
+  // Whether GetID has been called yet this session.
+  bool mGetIDCalled = false;
 };
 
 }  // namespace a11y

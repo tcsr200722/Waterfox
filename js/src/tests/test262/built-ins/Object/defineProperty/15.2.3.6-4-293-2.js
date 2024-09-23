@@ -25,27 +25,24 @@ flags: [noStrict]
     Object.defineProperty(arguments, "0", {
       value: 20
     });
-    $ERROR("Expected an exception.");
+    throw new Test262Error("Expected an exception.");
 
   } catch (e) {
-
     if (!(e instanceof TypeError)) {
-      $ERROR("Expected TypeError, got " + e);
+      throw new Test262Error("Expected TypeError, got " + e);
     }
-
-    verifyEqualTo(arguments, "0", 10);
-
-    verifyNotWritable(arguments, "0");
-
-    verifyNotEnumerable(arguments, "0");
-
-    verifyNotConfigurable(arguments, "0");
 
     if (a !== 10) {
-      $ERROR('Expected "a === 10", actually ' + a);
+      throw new Test262Error('Expected "a === 10", actually ' + a);
     }
-
   }
+
+  verifyProperty(arguments, "0", {
+    value: 10,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
 }(0, 1, 2));
 
 reportCompare(0, 0);

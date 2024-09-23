@@ -2,14 +2,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from setuptools import setup
 
 PACKAGE_NAME = "mozperftest"
-PACKAGE_VERSION = "0.1"
+PACKAGE_VERSION = "0.2"
 
-deps = ["jsonschema", "mozlog >= 6.0", "mozdevice >= 3.0.2", "mozproxy", "mozinfo"]
+deps = [
+    "regex",
+    "jsonschema",
+    "attr",
+    "mozlog >= 6.0",
+    "mozdevice >= 4.0.0",
+    "mozproxy",
+    "mozinfo",
+    "mozfile",
+    "mozperftest-tools",
+]
 
 setup(
     name=PACKAGE_NAME,

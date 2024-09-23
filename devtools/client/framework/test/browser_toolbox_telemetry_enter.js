@@ -92,7 +92,7 @@ const DATA = [
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   // Let's reset the counts.
   Services.telemetry.clearEvents();
 
@@ -101,7 +101,6 @@ add_task(async function() {
   ok(!snapshot.parent, "No events have been logged for the main process");
 
   const tab = await addTab(URL);
-  const target = await TargetFactory.forTab(tab);
 
   // Set up some cached messages for the web console.
   await SpecialPowers.spawn(tab.linkedBrowser, [], () => {
@@ -113,14 +112,14 @@ add_task(async function() {
   });
 
   // Open the toolbox
-  await gDevTools.showToolbox(target, "inspector");
+  await gDevTools.showToolboxForTab(tab, { toolId: "inspector" });
 
   // Switch between a few tools
-  await gDevTools.showToolbox(target, "jsdebugger");
-  await gDevTools.showToolbox(target, "styleeditor");
-  await gDevTools.showToolbox(target, "netmonitor");
-  await gDevTools.showToolbox(target, "storage");
-  await gDevTools.showToolbox(target, "netmonitor");
+  await gDevTools.showToolboxForTab(tab, { toolId: "jsdebugger" });
+  await gDevTools.showToolboxForTab(tab, { toolId: "styleeditor" });
+  await gDevTools.showToolboxForTab(tab, { toolId: "netmonitor" });
+  await gDevTools.showToolboxForTab(tab, { toolId: "storage" });
+  await gDevTools.showToolboxForTab(tab, { toolId: "netmonitor" });
 
   await checkResults();
 });
@@ -137,7 +136,7 @@ async function checkResults() {
     const expected = DATA[i];
 
     // ignore timestamp
-    ok(timestamp > 0, "timestamp is greater than 0");
+    Assert.greater(timestamp, 0, "timestamp is greater than 0");
     is(category, expected.category, "category is correct");
     is(method, expected.method, "method is correct");
     is(object, expected.object, "object is correct");
@@ -145,7 +144,7 @@ async function checkResults() {
 
     // extras
     is(extra.host, expected.extra.host, "host is correct");
-    ok(extra.width > 0, "width is greater than 0");
+    Assert.greater(Number(extra.width), 0, "width is greater than 0");
     is(extra.start_state, expected.extra.start_state, "start_state is correct");
     is(extra.panel_name, expected.extra.panel_name, "panel_name is correct");
     is(extra.cold, expected.extra.cold, "cold is correct");

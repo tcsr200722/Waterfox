@@ -1,6 +1,3 @@
-extern crate jobserver;
-extern crate tempdir;
-
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
@@ -11,7 +8,6 @@ use std::sync::Arc;
 use std::thread;
 
 use jobserver::Client;
-use tempdir::TempDir;
 
 macro_rules! t {
     ($e:expr) => {
@@ -38,6 +34,30 @@ fn server_multiple() {
 }
 
 #[test]
+fn server_available() {
+    let c = t!(Client::new(10));
+    assert_eq!(c.available().unwrap(), 10);
+    let a = c.acquire().unwrap();
+    assert_eq!(c.available().unwrap(), 9);
+    drop(a);
+    assert_eq!(c.available().unwrap(), 10);
+}
+
+#[test]
+fn server_none_available() {
+    let c = t!(Client::new(2));
+    assert_eq!(c.available().unwrap(), 2);
+    let a = c.acquire().unwrap();
+    assert_eq!(c.available().unwrap(), 1);
+    let b = c.acquire().unwrap();
+    assert_eq!(c.available().unwrap(), 0);
+    drop(a);
+    assert_eq!(c.available().unwrap(), 1);
+    drop(b);
+    assert_eq!(c.available().unwrap(), 2);
+}
+
+#[test]
 fn server_blocks() {
     let c = t!(Client::new(1));
     let a = c.acquire().unwrap();
@@ -59,9 +79,9 @@ fn server_blocks() {
 #[test]
 fn make_as_a_single_thread_client() {
     let c = t!(Client::new(1));
-    let td = TempDir::new("foo").unwrap();
+    let td = tempfile::tempdir().unwrap();
 
-    let prog = env::var("MAKE").unwrap_or("make".to_string());
+    let prog = env::var("MAKE").unwrap_or_else(|_| "make".to_string());
     let mut cmd = Command::new(prog);
     cmd.current_dir(td.path());
 
@@ -113,9 +133,9 @@ foo
 #[test]
 fn make_as_a_multi_thread_client() {
     let c = t!(Client::new(1));
-    let td = TempDir::new("foo").unwrap();
+    let td = tempfile::tempdir().unwrap();
 
-    let prog = env::var("MAKE").unwrap_or("make".to_string());
+    let prog = env::var("MAKE").unwrap_or_else(|_| "make".to_string());
     let mut cmd = Command::new(prog);
     cmd.current_dir(td.path());
 

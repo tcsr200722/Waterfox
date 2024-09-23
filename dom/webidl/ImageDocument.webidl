@@ -4,7 +4,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-[ChromeOnly, OverrideBuiltins,
+[ChromeOnly, LegacyOverrideBuiltIns,
  Exposed=Window]
 interface ImageDocument : HTMLDocument {
   /* Whether the image is overflowing visible area. */
@@ -14,8 +14,8 @@ interface ImageDocument : HTMLDocument {
   readonly attribute boolean imageIsResized;
 
   /* Resize the image to fit visible area. */
-  void shrinkToFit();
+  undefined shrinkToFit();
 
   /* Restore image original size. */
-  void restoreImage();
+  undefined restoreImage();
 };

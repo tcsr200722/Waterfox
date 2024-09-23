@@ -1,7 +1,7 @@
 "use strict";
 
-const { Preferences } = ChromeUtils.import(
-  "resource://gre/modules/Preferences.jsm"
+const { Preferences } = ChromeUtils.importESModule(
+  "resource://gre/modules/Preferences.sys.mjs"
 );
 
 const server = createHttpServer();
@@ -9,11 +9,8 @@ server.registerDirectory("/data/", do_get_file("data"));
 
 const BASE_URL = `http://localhost:${server.identity.primaryPort}/data`;
 
-const {
-  createAppInfo,
-  promiseShutdownManager,
-  promiseStartupManager,
-} = AddonTestUtils;
+const { createAppInfo, promiseShutdownManager, promiseStartupManager } =
+  AddonTestUtils;
 
 AddonTestUtils.init(this);
 
@@ -24,7 +21,7 @@ const MULTIBYTE_STRING = "z\xA2\u6C34\uD834\uDD1E\uF8FF\uDBFF\uDFFD\uFFFE";
 let getCSS = (a, b) => `a { content: '${a}'; } b { content: '${b}'; }`;
 
 let extensionData = {
-  background: function() {
+  background: function () {
     function backgroundFetch(url) {
       return new Promise((resolve, reject) => {
         let xhr = new XMLHttpRequest();
@@ -67,7 +64,7 @@ let extensionData = {
   },
 
   manifest: {
-    applications: {
+    browser_specific_settings: {
       gecko: {
         id: "i18n_css@mochi.test",
       },
@@ -106,7 +103,7 @@ let extensionData = {
       },
     }),
 
-    "content.js": function() {
+    "content.js": function () {
       let style = getComputedStyle(document.body);
       browser.test.sendMessage("content-maxWidth", style.maxWidth);
     },
@@ -161,14 +158,14 @@ async function test_i18n_css(options = {}) {
 
   // We don't currently have a good way to mock this.
   if (false) {
-    const DIR = "intl.uidirection";
+    const DIR = "intl.l10n.pseudo";
 
     // We don't wind up actually switching the chrome registry locale, since we
     // don't have a chrome package for Hebrew. So just override it, and force
     // RTL directionality.
     const origReqLocales = Services.locale.requestedLocales;
     Services.locale.requestedLocales = ["he"];
-    Preferences.set(DIR, 1);
+    Preferences.set(DIR, "bidi");
 
     css = await fetch(baseURL + "locale.css");
     equal(

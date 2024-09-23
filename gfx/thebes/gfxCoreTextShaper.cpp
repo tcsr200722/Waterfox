@@ -9,6 +9,7 @@
 #include "gfxFontUtils.h"
 #include "gfxTextRun.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/ScaledFontMac.h"
 #include "mozilla/UniquePtrExtensions.h"
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <dlfcn.h>
 
 using namespace mozilla;
+using namespace mozilla::gfx;
 
 // standard font descriptors that we construct the first time they're needed
 CTFontDescriptorRef gfxCoreTextShaper::sFeaturesDescriptor[kMaxFontInstances];
@@ -69,16 +71,16 @@ gfxCoreTextShaper::~gfxCoreTextShaper() {
   }
 }
 
-static bool IsBuggyIndicScript(unicode::Script aScript) {
-  return aScript == unicode::Script::BENGALI ||
-         aScript == unicode::Script::KANNADA ||
-         aScript == unicode::Script::ORIYA || aScript == unicode::Script::KHMER;
+static bool IsBuggyIndicScript(intl::Script aScript) {
+  return aScript == intl::Script::BENGALI || aScript == intl::Script::KANNADA ||
+         aScript == intl::Script::ORIYA || aScript == intl::Script::KHMER;
 }
 
 bool gfxCoreTextShaper::ShapeText(DrawTarget* aDrawTarget,
                                   const char16_t* aText, uint32_t aOffset,
                                   uint32_t aLength, Script aScript,
-                                  bool aVertical, RoundingFlags aRounding,
+                                  nsAtom* aLanguage, bool aVertical,
+                                  RoundingFlags aRounding,
                                   gfxShapedText* aShapedText) {
   // Create a CFAttributedString with text and style info, so we can use
   // CoreText to lay it out.
@@ -93,7 +95,7 @@ bool gfxCoreTextShaper::ShapeText(DrawTarget* aDrawTarget,
   // among them.
   const gfxFontStyle* style = mFont->GetStyle();
   gfxFontEntry* entry = mFont->GetFontEntry();
-  auto handleFeatureTag = [](const uint32_t& aTag, uint32_t& aValue,
+  auto handleFeatureTag = [](uint32_t aTag, uint32_t aValue,
                              void* aUserArg) -> void {
     if (aTag == HB_TAG('s', 'm', 'c', 'p') && aValue) {
       *static_cast<bool*>(aUserArg) = true;
@@ -517,11 +519,9 @@ nsresult gfxCoreTextShaper::SetGlyphsFromRun(gfxShapedText* aShapedText,
         advance = int32_t(toNextGlyph * appUnitsPerDevUnit);
       }
 
-      bool isClusterStart = charGlyphs[baseCharIndex].IsClusterStart();
-      aShapedText->SetGlyphs(aOffset + baseCharIndex,
-                             CompressedGlyph::MakeComplex(
-                                 isClusterStart, true, detailedGlyphs.Length()),
-                             detailedGlyphs.Elements());
+      aShapedText->SetDetailedGlyphs(aOffset + baseCharIndex,
+                                     detailedGlyphs.Length(),
+                                     detailedGlyphs.Elements());
 
       detailedGlyphs.Clear();
     }
@@ -533,7 +533,7 @@ nsresult gfxCoreTextShaper::SetGlyphsFromRun(gfxShapedText* aShapedText,
       NS_ASSERTION(!shapedTextGlyph.IsSimpleGlyph(),
                    "overwriting a simple glyph");
       shapedTextGlyph.SetComplex(inOrder && shapedTextGlyph.IsClusterStart(),
-                                 false, 0);
+                                 false);
     }
 
     glyphStart = glyphEnd;
@@ -636,8 +636,8 @@ CTFontRef gfxCoreTextShaper::CreateCTFontWithFeatures(
   const gfxFontEntry* fe = mFont->GetFontEntry();
   bool isInstalledFont = !fe->IsUserFont() || fe->IsLocalUserFont();
   CGFontRef cgFont = static_cast<gfxMacFont*>(mFont)->GetCGFontRef();
-  return gfxMacFont::CreateCTFontFromCGFontWithVariations(
-      cgFont, aSize, isInstalledFont, aDescriptor);
+  return CreateCTFontFromCGFontWithVariations(cgFont, aSize, isInstalledFont,
+                                              aDescriptor);
 }
 
 void gfxCoreTextShaper::Shutdown()  // [static]

@@ -9,34 +9,39 @@
 
 #include "mozilla/dom/PServiceWorkerContainerChild.h"
 
-namespace mozilla {
-namespace dom {
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "mozilla/dom/WorkerRef.h"
+
+namespace mozilla::dom {
+
+class ServiceWorkerContainer;
 
 class IPCWorkerRef;
 
 class ServiceWorkerContainerChild final : public PServiceWorkerContainerChild {
   RefPtr<IPCWorkerRef> mIPCWorkerRef;
-  RemoteServiceWorkerContainerImpl* mOwner;
+  ServiceWorkerContainer* mOwner;
   bool mTeardownStarted;
 
   ServiceWorkerContainerChild();
+
+  ~ServiceWorkerContainerChild() = default;
 
   // PServiceWorkerContainerChild
   void ActorDestroy(ActorDestroyReason aReason) override;
 
  public:
-  static ServiceWorkerContainerChild* Create();
+  NS_INLINE_DECL_REFCOUNTING(ServiceWorkerContainerChild, override);
 
-  ~ServiceWorkerContainerChild() = default;
+  static already_AddRefed<ServiceWorkerContainerChild> Create();
 
-  void SetOwner(RemoteServiceWorkerContainerImpl* aOwner);
+  void SetOwner(ServiceWorkerContainer* aOwner);
 
-  void RevokeOwner(RemoteServiceWorkerContainerImpl* aOwner);
+  void RevokeOwner(ServiceWorkerContainer* aOwner);
 
   void MaybeStartTeardown();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkercontainerchild_h__

@@ -2,6 +2,9 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
+// useMLBF=true only supports hard blocks, not soft blocks.
+enable_blocklist_v2_instead_of_useMLBF();
+
 // Tests that an appDisabled add-on that becomes softBlocked remains disabled
 // when becoming appEnabled
 add_task(async function test_softblock() {
@@ -12,7 +15,7 @@ add_task(async function test_softblock() {
     manifest: {
       name: "Softblocked add-on",
       version: "1.0",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: "softblock1@tests.mozilla.org",
           strict_min_version: "2",

@@ -4,11 +4,9 @@
 
 //! `list` specified values.
 
+#[cfg(feature = "gecko")]
+use crate::counter_style::{CounterStyle, CounterStyleParsingFlags};
 use crate::parser::{Parse, ParserContext};
-#[cfg(feature = "gecko")]
-use crate::values::generics::CounterStyle;
-#[cfg(feature = "gecko")]
-use crate::values::CustomIdent;
 use cssparser::{Parser, Token};
 use style_traits::{ParseError, StyleParseErrorKind};
 
@@ -26,46 +24,52 @@ use style_traits::{ParseError, StyleParseErrorKind};
     ToResolvedValue,
     ToShmem,
 )]
-pub enum ListStyleType {
-    /// `none`
-    None,
-    /// <counter-style>
-    CounterStyle(CounterStyle),
-    /// <string>
-    String(String),
-}
+#[repr(transparent)]
+pub struct ListStyleType(pub CounterStyle);
 
 #[cfg(feature = "gecko")]
 impl ListStyleType {
     /// Initial specified value for `list-style-type`.
     #[inline]
     pub fn disc() -> Self {
-        ListStyleType::CounterStyle(CounterStyle::disc())
+        Self(CounterStyle::disc())
+    }
+
+    /// none value.
+    #[inline]
+    pub fn none() -> Self {
+        Self(CounterStyle::None)
     }
 
     /// Convert from gecko keyword to list-style-type.
     ///
-    /// This should only be used for mapping type attribute to
-    /// list-style-type, and thus only values possible in that
-    /// attribute is considered here.
+    /// This should only be used for mapping type attribute to list-style-type, and thus only
+    /// values possible in that attribute is considered here.
     pub fn from_gecko_keyword(value: u32) -> Self {
         use crate::gecko_bindings::structs;
-
-        if value == structs::NS_STYLE_LIST_STYLE_NONE {
-            return ListStyleType::None;
+        use crate::values::CustomIdent;
+        let v8 = value as u8;
+        if v8 == structs::ListStyle_None {
+            return Self::none();
         }
 
-        ListStyleType::CounterStyle(CounterStyle::Name(CustomIdent(match value {
-            structs::NS_STYLE_LIST_STYLE_DISC => atom!("disc"),
-            structs::NS_STYLE_LIST_STYLE_CIRCLE => atom!("circle"),
-            structs::NS_STYLE_LIST_STYLE_SQUARE => atom!("square"),
-            structs::NS_STYLE_LIST_STYLE_DECIMAL => atom!("decimal"),
-            structs::NS_STYLE_LIST_STYLE_LOWER_ROMAN => atom!("lower-roman"),
-            structs::NS_STYLE_LIST_STYLE_UPPER_ROMAN => atom!("upper-roman"),
-            structs::NS_STYLE_LIST_STYLE_LOWER_ALPHA => atom!("lower-alpha"),
-            structs::NS_STYLE_LIST_STYLE_UPPER_ALPHA => atom!("upper-alpha"),
+        Self(CounterStyle::Name(CustomIdent(match v8 {
+            structs::ListStyle_Disc => atom!("disc"),
+            structs::ListStyle_Circle => atom!("circle"),
+            structs::ListStyle_Square => atom!("square"),
+            structs::ListStyle_Decimal => atom!("decimal"),
+            structs::ListStyle_LowerRoman => atom!("lower-roman"),
+            structs::ListStyle_UpperRoman => atom!("upper-roman"),
+            structs::ListStyle_LowerAlpha => atom!("lower-alpha"),
+            structs::ListStyle_UpperAlpha => atom!("upper-alpha"),
             _ => unreachable!("Unknown counter style keyword value"),
         })))
+    }
+
+    /// Is this a bullet? (i.e. `list-style-type: disc|circle|square|disclosure-closed|disclosure-open`)
+    #[inline]
+    pub fn is_bullet(&self) -> bool {
+        self.0.is_bullet()
     }
 }
 
@@ -75,15 +79,8 @@ impl Parse for ListStyleType {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(style) = input.try(|i| CounterStyle::parse(context, i)) {
-            return Ok(ListStyleType::CounterStyle(style));
-        }
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
-            return Ok(ListStyleType::None);
-        }
-        Ok(ListStyleType::String(
-            input.expect_string()?.as_ref().to_owned(),
-        ))
+        let flags = CounterStyleParsingFlags::ALLOW_NONE | CounterStyleParsingFlags::ALLOW_STRING;
+        Ok(Self(CounterStyle::parse(context, input, flags)?))
     }
 }
 
@@ -155,14 +152,14 @@ impl Parse for Quotes {
         input: &mut Parser<'i, 't>,
     ) -> Result<Quotes, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("auto"))
+            .try_parse(|input| input.expect_ident_matching("auto"))
             .is_ok()
         {
             return Ok(Quotes::Auto);
         }
 
         if input
-            .try(|input| input.expect_ident_matching("none"))
+            .try_parse(|input| input.expect_ident_matching("none"))
             .is_ok()
         {
             return Ok(Quotes::QuoteList(QuoteList::default()));
@@ -189,28 +186,4 @@ impl Parse for Quotes {
             Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
         }
     }
-}
-
-/// Specified and computed `-moz-list-reversed` property (for UA sheets only).
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    MallocSizeOf,
-    Parse,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(u8)]
-pub enum MozListReversed {
-    /// the initial value
-    False,
-    /// exclusively used for <ol reversed> in our html.css UA sheet
-    True,
 }

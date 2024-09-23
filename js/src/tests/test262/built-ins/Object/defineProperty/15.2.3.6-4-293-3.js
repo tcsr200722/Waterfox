@@ -23,16 +23,15 @@ flags: [noStrict]
     value: 20
   });
   if (a !== 10) {
-    $ERROR('Expected "a === 10", actually ' + a);
+    throw new Test262Error('Expected "a === 10", actually ' + a);
   }
 
-  verifyEqualTo(arguments, "0", 20);
-
-  verifyNotWritable(arguments, "0");
-
-  verifyEnumerable(arguments, "0");
-
-  verifyConfigurable(arguments, "0");
+  verifyProperty(arguments, "0", {
+    value: 20,
+    writable: false,
+    enumerable: true,
+    configurable: true,
+  });
 }(0, 1, 2));
 
 reportCompare(0, 0);

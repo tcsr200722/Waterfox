@@ -7,9 +7,11 @@
 #ifndef mozilla_CSSStyleRule_h
 #define mozilla_CSSStyleRule_h
 
-#include "mozilla/BindingStyleRule.h"
+#include "mozilla/css/GroupRule.h"
 #include "mozilla/ServoBindingTypes.h"
+#include "mozilla/NotNull.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/dom/CSSStyleRuleBinding.h"
 
 #include "nsDOMCSSDeclaration.h"
 
@@ -26,14 +28,14 @@ class CSSStyleRuleDeclaration final : public nsDOMCSSDeclaration {
   NS_DECL_ISUPPORTS_INHERITED
 
   css::Rule* GetParentRule() final;
-  nsINode* GetParentObject() final;
+  nsINode* GetAssociatedNode() const final;
+  nsISupports* GetParentObject() const final;
 
  protected:
   mozilla::DeclarationBlock* GetOrCreateCSSDeclaration(
       Operation aOperation, mozilla::DeclarationBlock** aCreated) final;
   nsresult SetCSSDeclaration(DeclarationBlock* aDecl,
                              MutationClosureData* aClosureData) final;
-  Document* DocToUpdate() final;
   ParsingEnvironment GetParsingEnvironment(
       nsIPrincipal* aSubjectPrincipal) const final;
 
@@ -42,47 +44,49 @@ class CSSStyleRuleDeclaration final : public nsDOMCSSDeclaration {
   friend class CSSStyleRule;
 
   explicit CSSStyleRuleDeclaration(
-      already_AddRefed<RawServoDeclarationBlock> aDecls);
+      already_AddRefed<StyleLockedDeclarationBlock> aDecls);
   ~CSSStyleRuleDeclaration();
 
   inline CSSStyleRule* Rule();
   inline const CSSStyleRule* Rule() const;
 
+  void SetRawAfterClone(RefPtr<StyleLockedDeclarationBlock>);
+
   RefPtr<DeclarationBlock> mDecls;
 };
 
-class CSSStyleRule final : public BindingStyleRule,
-                           public SupportsWeakPtr<CSSStyleRule> {
+class CSSStyleRule final : public css::GroupRule, public SupportsWeakPtr {
  public:
-  CSSStyleRule(already_AddRefed<RawServoStyleRule> aRawRule, StyleSheet* aSheet,
-               css::Rule* aParentRule, uint32_t aLine, uint32_t aColumn);
+  CSSStyleRule(already_AddRefed<StyleLockedStyleRule> aRawRule,
+               StyleSheet* aSheet, css::Rule* aParentRule, uint32_t aLine,
+               uint32_t aColumn);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(CSSStyleRule,
-                                                         css::Rule)
+                                                         css::GroupRule)
   bool IsCCLeaf() const final MOZ_MUST_OVERRIDE;
 
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(CSSStyleRule)
-
-  uint32_t GetSelectorCount() override;
-  nsresult GetSelectorText(uint32_t aSelectorIndex, nsAString& aText) override;
-  nsresult GetSpecificity(uint32_t aSelectorIndex,
-                          uint64_t* aSpecificity) override;
-  nsresult SelectorMatchesElement(dom::Element* aElement,
-                                  uint32_t aSelectorIndex,
-                                  const nsAString& aPseudo,
-                                  bool aRelevantLinkVisited,
-                                  bool* aMatches) override;
-  NotNull<DeclarationBlock*> GetDeclarationBlock() const override;
+  uint32_t SelectorCount() const;
+  void SelectorTextAt(uint32_t aSelectorIndex, bool aDesugared,
+                      nsACString& aText);
+  uint64_t SelectorSpecificityAt(uint32_t aSelectorIndex, bool aDesugared);
+  bool SelectorMatchesElement(uint32_t aSelectorIndex, dom::Element&,
+                              const nsAString& aPseudo,
+                              bool aRelevantLinkVisited);
+  NotNull<DeclarationBlock*> GetDeclarationBlock() const;
+  void GetSelectorWarnings(nsTArray<SelectorWarning>& aResult) const;
+  already_AddRefed<nsINodeList> QuerySelectorAll(nsINode& aRoot);
 
   // WebIDL interface
-  uint16_t Type() const final { return dom::CSSRule_Binding::STYLE_RULE; }
-  void GetCssText(nsAString& aCssText) const final;
-  void GetSelectorText(nsAString& aSelectorText) final;
-  void SetSelectorText(const nsAString& aSelectorText) final;
-  nsICSSDeclaration* Style() final;
+  StyleCssRuleType Type() const final;
+  void GetCssText(nsACString& aCssText) const final;
+  void GetSelectorText(nsACString& aSelectorText);
+  void SetSelectorText(const nsACString& aSelectorText);
+  nsICSSDeclaration* Style();
 
-  RawServoStyleRule* Raw() const { return mRawRule; }
+  StyleLockedStyleRule* Raw() const { return mRawRule; }
+  void SetRawAfterClone(RefPtr<StyleLockedStyleRule>);
+  already_AddRefed<StyleLockedCssRules> GetOrCreateRawRules() final;
 
   // Methods of mozilla::css::Rule
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const final;
@@ -90,13 +94,18 @@ class CSSStyleRule final : public BindingStyleRule,
   void List(FILE* out = stdout, int32_t aIndent = 0) const final;
 #endif
 
+  JSObject* WrapObject(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
+
  private:
   ~CSSStyleRule() = default;
+
+  void GetSelectorDataAtIndex(uint32_t aSelectorIndex, bool aDesugared,
+                              nsACString* aText, uint64_t* aSpecificity);
 
   // For computing the offset of mDecls.
   friend class CSSStyleRuleDeclaration;
 
-  RefPtr<RawServoStyleRule> mRawRule;
+  RefPtr<StyleLockedStyleRule> mRawRule;
   CSSStyleRuleDeclaration mDecls;
 };
 

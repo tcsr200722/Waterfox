@@ -4,8 +4,6 @@ set -x -e
 
 echo "running as" $(id)
 
-. /builds/worker/scripts/xvfb.sh
-
 ####
 # Taskcluster friendly wrapper for performing fx desktop l10n repacks via mozharness.
 # Based on ./build-linux.sh
@@ -23,11 +21,10 @@ echo "running as" $(id)
 
 : MOZ_SCM_LEVEL                 ${MOZ_SCM_LEVEL:=1}
 
-: NEED_XVFB                     ${NEED_XVFB:=false}
-
 : MOZ_SCM_LEVEL                 ${MOZ_SCM_LEVEL:=1}
 
 : WORKSPACE                     ${WORKSPACE:=/builds/worker/workspace}
+: MOZ_OBJDIR                    ${MOZ_OBJDIR:=$WORKSPACE/obj-build}
 
 set -v
 
@@ -40,24 +37,9 @@ fail() {
 export MOZ_CRASHREPORTER_NO_REPORT=1
 export TINDERBOX_OUTPUT=1
 
-# Ensure that in tree libraries can be found
-export LIBRARY_PATH=$LIBRARY_PATH:$WORKSPACE/obj-build:$WORKSPACE/src/gcc/lib64
-
 # test required parameters are supplied
 if [[ -z ${MOZHARNESS_SCRIPT} ]]; then fail "MOZHARNESS_SCRIPT is not set"; fi
 if [[ -z "${MOZHARNESS_CONFIG}" && -z "${EXTRA_MOZHARNESS_CONFIG}" ]]; then fail "MOZHARNESS_CONFIG or EXTRA_MOZHARNESS_CONFIG is not set"; fi
-
-cleanup() {
-    local rv=$?
-    cleanup_xvfb
-    exit $rv
-}
-trap cleanup EXIT INT
-
-# run XVfb in the background, if necessary
-if $NEED_XVFB; then
-    start_xvfb '1024x768x24' 2
-fi
 
 # set up mozharness configuration, via command line, env, etc.
 
@@ -65,6 +47,8 @@ fi
 # cache.  However, only some mozharness scripts use tooltool_wrapper.sh, so this may not be
 # entirely effective.
 export TOOLTOOL_CACHE
+
+export MOZ_OBJDIR
 
 config_path_cmds=""
 for path in ${MOZHARNESS_CONFIG_PATHS}; do
@@ -96,7 +80,8 @@ fi
 
 cd /builds/worker
 
-$GECKO_PATH/mach python $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
+$GECKO_PATH/mach python -- \
+  $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
   ${config_path_cmds} \
   ${config_cmds} \
   $actions \

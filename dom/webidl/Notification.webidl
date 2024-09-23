@@ -20,11 +20,8 @@ interface Notification : EventTarget {
   [GetterThrows]
   static readonly attribute NotificationPermission permission;
 
-  [Throws, Func="mozilla::dom::Notification::RequestPermissionEnabledForScope"]
+  [NewObject, Func="mozilla::dom::Notification::RequestPermissionEnabledForScope"]
   static Promise<NotificationPermission> requestPermission(optional NotificationPermissionCallback permissionCallback);
-
-  [Throws, Func="mozilla::dom::Notification::IsGetEnabled"]
-  static Promise<sequence<Notification>> get(optional GetNotificationOptions filter = {});
 
   attribute EventHandler onclick;
 
@@ -55,11 +52,19 @@ interface Notification : EventTarget {
   [Constant, Pref="dom.webnotifications.requireinteraction.enabled"]
   readonly attribute boolean requireInteraction;
 
+  [Constant, Pref="dom.webnotifications.silent.enabled"]
+  readonly attribute boolean silent;
+
+  [Cached, Frozen, Pure, Pref="dom.webnotifications.vibrate.enabled"]
+  readonly attribute sequence<unsigned long> vibrate;
+
   [Constant]
   readonly attribute any data;
 
-  void close();
+  undefined close();
 };
+
+typedef (unsigned long or sequence<unsigned long>) VibratePattern;
 
 dictionary NotificationOptions {
   NotificationDirection dir = "auto";
@@ -68,6 +73,8 @@ dictionary NotificationOptions {
   DOMString tag = "";
   DOMString icon = "";
   boolean requireInteraction = false;
+  boolean silent = false;
+  VibratePattern vibrate;
   any data = null;
   NotificationBehavior mozbehavior = {};
 };
@@ -91,7 +98,7 @@ enum NotificationPermission {
   "granted"
 };
 
-callback NotificationPermissionCallback = void (NotificationPermission permission);
+callback NotificationPermissionCallback = undefined (NotificationPermission permission);
 
 enum NotificationDirection {
   "auto",

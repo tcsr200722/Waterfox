@@ -11,6 +11,7 @@
 
 #include "nsCOMPtr.h"
 #include "nsIWeakReferenceUtils.h"
+#include "nsPIDOMWindow.h"
 
 #include "nsString.h"
 
@@ -49,17 +50,18 @@ class nsWebBrowserFind : public nsIWebBrowserFind,
 
   bool CanFindNext() { return mSearchString.Length() != 0; }
 
-  nsresult SearchInFrame(nsPIDOMWindowOuter* aWindow, bool aWrapping,
-                         bool* aDidFind);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
+  SearchInFrame(nsPIDOMWindowOuter* aWindow, bool aWrapping, bool* aDidFind);
 
   nsresult OnStartSearchFrame(nsPIDOMWindowOuter* aWindow);
   nsresult OnEndSearchFrame(nsPIDOMWindowOuter* aWindow);
 
   already_AddRefed<mozilla::dom::Selection> GetFrameSelection(
       nsPIDOMWindowOuter* aWindow);
-  nsresult ClearFrameSelection(nsPIDOMWindowOuter* aWindow);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult
+  ClearFrameSelection(nsPIDOMWindowOuter* aWindow);
 
-  nsresult OnFind(nsPIDOMWindowOuter* aFoundWindow);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult OnFind(nsPIDOMWindowOuter* aFoundWindow);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void SetSelectionAndScroll(
       nsPIDOMWindowOuter* aWindow, nsRange* aRange);

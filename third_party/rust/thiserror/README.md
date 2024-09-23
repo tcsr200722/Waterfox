@@ -1,9 +1,10 @@
 derive(Error)
 =============
 
-[![Build Status](https://api.travis-ci.com/dtolnay/thiserror.svg?branch=master)](https://travis-ci.com/dtolnay/thiserror)
-[![Latest Version](https://img.shields.io/crates/v/thiserror.svg)](https://crates.io/crates/thiserror)
-[![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)](https://docs.rs/thiserror)
+[<img alt="github" src="https://img.shields.io/badge/github-dtolnay/thiserror-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/dtolnay/thiserror)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/thiserror.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/thiserror)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-thiserror-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/thiserror)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/dtolnay/thiserror/ci.yml?branch=master&style=for-the-badge" height="20">](https://github.com/dtolnay/thiserror/actions?query=branch%3Amaster)
 
 This library provides a convenient derive macro for the standard library's
 [`std::error::Error`] trait.
@@ -15,7 +16,7 @@ This library provides a convenient derive macro for the standard library's
 thiserror = "1.0"
 ```
 
-*Compiler support: requires rustc 1.31+*
+*Compiler support: requires rustc 1.56+*
 
 <br>
 
@@ -63,18 +64,27 @@ pub enum DataStoreError {
     - `#[error("{var:?}")]`&ensp;⟶&ensp;`write!("{:?}", self.var)`
     - `#[error("{0:?}")]`&ensp;⟶&ensp;`write!("{:?}", self.0)`
 
-  You may alternatively write out the full format args yourself, using arbitrary
-  expressions.
-
-  When providing your own format args, the shorthand does not kick in so you
-  need to specify `.var` in the argument list to refer to named fields and `.0`
-  to refer to tuple fields.
+  These shorthands can be used together with any additional format args, which
+  may be arbitrary expressions. For example:
 
   ```rust
   #[derive(Error, Debug)]
   pub enum Error {
-      #[error("invalid rdo_lookahead_frames {} (expected < {})", .0, i32::max_value())]
-      InvalidLookahead(i32),
+      #[error("invalid rdo_lookahead_frames {0} (expected < {})", i32::MAX)]
+      InvalidLookahead(u32),
+  }
+  ```
+
+  If one of the additional expression arguments needs to refer to a field of the
+  struct or enum, then refer to named fields as `.var` and tuple fields as `.0`.
+
+  ```rust
+  #[derive(Error, Debug)]
+  pub enum Error {
+      #[error("first letter must be lowercase but was {:?}", first_char(.0))]
+      WrongCase(String),
+      #[error("invalid index {idx}, expected at least {} and at most {}", .limits.lo, .limits.hi)]
+      OutOfBounds { idx: usize, limits: Limits },
   }
   ```
 
@@ -109,13 +119,13 @@ pub enum DataStoreError {
   #[derive(Error, Debug)]
   pub struct MyError {
       msg: String,
-      #[source] // optional if field name is `source`
+      #[source]  // optional if field name is `source`
       source: anyhow::Error,
   }
   ```
 
-- The Error trait's `backtrace()` method is implemented to return whichever
-  field has a type named `Backtrace`, if any.
+- The Error trait's `provide()` method is implemented to provide whichever field
+  has a type named `Backtrace`, if any, as a `std::backtrace::Backtrace`.
 
   ```rust
   use std::backtrace::Backtrace;
@@ -123,7 +133,57 @@ pub enum DataStoreError {
   #[derive(Error, Debug)]
   pub struct MyError {
       msg: String,
-      backtrace: Backtrace, // automatically detected
+      backtrace: Backtrace,  // automatically detected
+  }
+  ```
+
+- If a field is both a source (named `source`, or has `#[source]` or `#[from]`
+  attribute) *and* is marked `#[backtrace]`, then the Error trait's `provide()`
+  method is forwarded to the source's `provide` so that both layers of the error
+  share the same backtrace.
+
+  ```rust
+  #[derive(Error, Debug)]
+  pub enum MyError {
+      Io {
+          #[backtrace]
+          source: io::Error,
+      },
+  }
+  ```
+
+- Errors may use `error(transparent)` to forward the source and Display methods
+  straight through to an underlying error without adding an additional message.
+  This would be appropriate for enums that need an "anything else" variant.
+
+  ```rust
+  #[derive(Error, Debug)]
+  pub enum MyError {
+      ...
+
+      #[error(transparent)]
+      Other(#[from] anyhow::Error),  // source and Display delegate to anyhow::Error
+  }
+  ```
+
+  Another use case is hiding implementation details of an error representation
+  behind an opaque error type, so that the representation is able to evolve
+  without breaking the crate's public API.
+
+  ```rust
+  // PublicError is public, but opaque and easy to keep compatible.
+  #[derive(Error, Debug)]
+  #[error(transparent)]
+  pub struct PublicError(#[from] ErrorRepr);
+
+  impl PublicError {
+      // Accessors for anything we do want to expose publicly.
+  }
+
+  // Private and free to change across minor version of the crate.
+  #[derive(Error, Debug)]
+  enum ErrorRepr {
+      ...
   }
   ```
 

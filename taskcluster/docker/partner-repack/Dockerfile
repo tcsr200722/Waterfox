@@ -1,4 +1,3 @@
-# %ARG DOCKER_IMAGE_PARENT
 FROM $DOCKER_IMAGE_PARENT
 MAINTAINER Ben Hearsum <bhearsum@mozilla.com>
 
@@ -15,11 +14,6 @@ RUN apt-get update && \
       gzip \
       openssh-client \
       unzip \
-      zip && \
-    apt-get clean
-
-# Add wrapper scripts for xvfb for repackage.sh, and interactive sessions
-# %include taskcluster/docker/recipes/xvfb.sh
-COPY topsrcdir/taskcluster/docker/recipes/xvfb.sh /builds/worker/scripts/xvfb.sh
+      zip
 
 COPY known_hosts /etc/ssh/ssh_known_hosts

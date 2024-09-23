@@ -6,20 +6,30 @@
 
 #include "PersistenceType.h"
 
-namespace mozilla {
-namespace dom {
-namespace quota {
+#include <utility>
+#include "nsIFile.h"
+#include "nsLiteralString.h"
+#include "nsString.h"
+
+namespace mozilla::dom::quota {
 
 namespace {
 
-constexpr auto kPersistentCString = NS_LITERAL_CSTRING("persistent");
-constexpr auto kTemporaryCString = NS_LITERAL_CSTRING("temporary");
-constexpr auto kDefaultCString = NS_LITERAL_CSTRING("default");
+constexpr auto kPersistentCString = "persistent"_ns;
+constexpr auto kTemporaryCString = "temporary"_ns;
+constexpr auto kDefaultCString = "default"_ns;
+constexpr auto kPrivateCString = "private"_ns;
+
+constexpr auto kPermanentString = u"permanent"_ns;
+constexpr auto kTemporaryString = u"temporary"_ns;
+constexpr auto kDefaultString = u"default"_ns;
+constexpr auto kPrivateString = u"private"_ns;
 
 static_assert(PERSISTENCE_TYPE_PERSISTENT == 0 &&
                   PERSISTENCE_TYPE_TEMPORARY == 1 &&
                   PERSISTENCE_TYPE_DEFAULT == 2 &&
-                  PERSISTENCE_TYPE_INVALID == 3,
+                  PERSISTENCE_TYPE_PRIVATE == 3 &&
+                  PERSISTENCE_TYPE_INVALID == 4,
               "Incorrect enum values!");
 
 template <PersistenceType type>
@@ -34,23 +44,19 @@ struct PersistenceTypeTraits<PERSISTENCE_TYPE_PERSISTENT> {
     return aString == kPersistentCString;
   }
 
-  static bool From(const StorageType aStorageType) {
-    return aStorageType == StorageType::Persistent;
-  }
-
   static bool From(const int32_t aInt32) { return aInt32 == 0; }
+
+  static bool From(nsIFile& aFile) {
+    nsAutoString leafName;
+    MOZ_ALWAYS_SUCCEEDS(aFile.GetLeafName(leafName));
+    return leafName == kPermanentString;
+  }
 };
 
 template <>
 nsLiteralCString
 PersistenceTypeTraits<PERSISTENCE_TYPE_PERSISTENT>::To<nsLiteralCString>() {
   return kPersistentCString;
-}
-
-template <>
-StorageType
-PersistenceTypeTraits<PERSISTENCE_TYPE_PERSISTENT>::To<StorageType>() {
-  return StorageType::Persistent;
 }
 
 template <>
@@ -62,23 +68,19 @@ struct PersistenceTypeTraits<PERSISTENCE_TYPE_TEMPORARY> {
     return aString == kTemporaryCString;
   }
 
-  static bool From(const StorageType aStorageType) {
-    return aStorageType == StorageType::Temporary;
-  }
-
   static bool From(const int32_t aInt32) { return aInt32 == 1; }
+
+  static bool From(nsIFile& aFile) {
+    nsAutoString leafName;
+    MOZ_ALWAYS_SUCCEEDS(aFile.GetLeafName(leafName));
+    return leafName == kTemporaryString;
+  }
 };
 
 template <>
 nsLiteralCString
 PersistenceTypeTraits<PERSISTENCE_TYPE_TEMPORARY>::To<nsLiteralCString>() {
   return kTemporaryCString;
-}
-
-template <>
-StorageType
-PersistenceTypeTraits<PERSISTENCE_TYPE_TEMPORARY>::To<StorageType>() {
-  return StorageType::Temporary;
 }
 
 template <>
@@ -90,11 +92,13 @@ struct PersistenceTypeTraits<PERSISTENCE_TYPE_DEFAULT> {
     return aString == kDefaultCString;
   }
 
-  static bool From(const StorageType aStorageType) {
-    return aStorageType == StorageType::Default;
-  }
-
   static bool From(const int32_t aInt32) { return aInt32 == 2; }
+
+  static bool From(nsIFile& aFile) {
+    nsAutoString leafName;
+    MOZ_ALWAYS_SUCCEEDS(aFile.GetLeafName(leafName));
+    return leafName == kDefaultString;
+  }
 };
 
 template <>
@@ -104,8 +108,27 @@ PersistenceTypeTraits<PERSISTENCE_TYPE_DEFAULT>::To<nsLiteralCString>() {
 }
 
 template <>
-StorageType PersistenceTypeTraits<PERSISTENCE_TYPE_DEFAULT>::To<StorageType>() {
-  return StorageType::Default;
+struct PersistenceTypeTraits<PERSISTENCE_TYPE_PRIVATE> {
+  template <typename T>
+  static T To();
+
+  static bool From(const nsACString& aString) {
+    return aString == kPrivateCString;
+  }
+
+  static bool From(const int32_t aInt32) { return aInt32 == 3; }
+
+  static bool From(nsIFile& aFile) {
+    nsAutoString leafName;
+    MOZ_ALWAYS_SUCCEEDS(aFile.GetLeafName(leafName));
+    return leafName == kPrivateString;
+  }
+};
+
+template <>
+nsLiteralCString
+PersistenceTypeTraits<PERSISTENCE_TYPE_PRIVATE>::To<nsLiteralCString>() {
+  return kPrivateCString;
 }
 
 template <typename T>
@@ -120,13 +143,16 @@ Maybe<T> TypeTo_impl(const PersistenceType aPersistenceType) {
     case PERSISTENCE_TYPE_DEFAULT:
       return Some(PersistenceTypeTraits<PERSISTENCE_TYPE_DEFAULT>::To<T>());
 
+    case PERSISTENCE_TYPE_PRIVATE:
+      return Some(PersistenceTypeTraits<PERSISTENCE_TYPE_PRIVATE>::To<T>());
+
     default:
       return Nothing();
   }
 }
 
 template <typename T>
-Maybe<PersistenceType> TypeFrom_impl(const T& aData) {
+Maybe<PersistenceType> TypeFrom_impl(T& aData) {
   if (PersistenceTypeTraits<PERSISTENCE_TYPE_PERSISTENT>::From(aData)) {
     return Some(PERSISTENCE_TYPE_PERSISTENT);
   }
@@ -137,6 +163,10 @@ Maybe<PersistenceType> TypeFrom_impl(const T& aData) {
 
   if (PersistenceTypeTraits<PERSISTENCE_TYPE_DEFAULT>::From(aData)) {
     return Some(PERSISTENCE_TYPE_DEFAULT);
+  }
+
+  if (PersistenceTypeTraits<PERSISTENCE_TYPE_PRIVATE>::From(aData)) {
+    return Some(PERSISTENCE_TYPE_PRIVATE);
   }
 
   return Nothing();
@@ -151,8 +181,23 @@ bool IsValidPersistenceType(const PersistenceType aPersistenceType) {
     case PERSISTENCE_TYPE_PERSISTENT:
     case PERSISTENCE_TYPE_TEMPORARY:
     case PERSISTENCE_TYPE_DEFAULT:
+    case PERSISTENCE_TYPE_PRIVATE:
       return true;
 
+    default:
+      return false;
+  }
+}
+
+bool IsBestEffortPersistenceType(const PersistenceType aPersistenceType) {
+  switch (aPersistenceType) {
+    case PERSISTENCE_TYPE_TEMPORARY:
+    case PERSISTENCE_TYPE_DEFAULT:
+    case PERSISTENCE_TYPE_PRIVATE:
+      return true;
+
+    case PERSISTENCE_TYPE_PERSISTENT:
+    case PERSISTENCE_TYPE_INVALID:
     default:
       return false;
   }
@@ -180,28 +225,31 @@ PersistenceType PersistenceTypeFromString(const nsACString& aString) {
   return maybePersistenceType.value();
 }
 
-StorageType PersistenceTypeToStorageType(
-    const PersistenceType aPersistenceType) {
-  const auto maybeStorageType = TypeTo_impl<StorageType>(aPersistenceType);
-  if (maybeStorageType.isNothing()) {
-    BadPersistenceType();
-  }
-  return maybeStorageType.value();
-}
-
-PersistenceType PersistenceTypeFromStorageType(const StorageType aStorageType) {
-  const auto maybePersistenceType = TypeFrom_impl(aStorageType);
-  if (maybePersistenceType.isNothing()) {
-    BadPersistenceType();
-  }
-  return maybePersistenceType.value();
-}
-
 Maybe<PersistenceType> PersistenceTypeFromInt32(const int32_t aInt32,
                                                 const fallible_t&) {
   return TypeFrom_impl(aInt32);
 }
 
-}  // namespace quota
-}  // namespace dom
-}  // namespace mozilla
+Maybe<PersistenceType> PersistenceTypeFromFile(nsIFile& aFile,
+                                               const fallible_t&) {
+  return TypeFrom_impl(aFile);
+}
+
+std::array<PersistenceType, 2> ComplementaryPersistenceTypes(
+    const PersistenceType aPersistenceType) {
+  MOZ_ASSERT(aPersistenceType == PERSISTENCE_TYPE_DEFAULT ||
+             aPersistenceType == PERSISTENCE_TYPE_TEMPORARY ||
+             aPersistenceType == PERSISTENCE_TYPE_PRIVATE);
+
+  if (aPersistenceType == PERSISTENCE_TYPE_TEMPORARY) {
+    return {PERSISTENCE_TYPE_DEFAULT, PERSISTENCE_TYPE_PRIVATE};
+  }
+
+  if (aPersistenceType == PERSISTENCE_TYPE_DEFAULT) {
+    return {PERSISTENCE_TYPE_TEMPORARY, PERSISTENCE_TYPE_PRIVATE};
+  }
+
+  return {PERSISTENCE_TYPE_DEFAULT, PERSISTENCE_TYPE_TEMPORARY};
+}
+
+}  // namespace mozilla::dom::quota

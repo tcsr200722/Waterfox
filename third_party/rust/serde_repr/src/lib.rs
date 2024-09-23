@@ -1,3 +1,11 @@
+//! [![github]](https://github.com/dtolnay/serde-repr)&ensp;[![crates-io]](https://crates.io/crates/serde_repr)&ensp;[![docs-rs]](https://docs.rs/serde_repr)
+//!
+//! [github]: https://img.shields.io/badge/github-8da0cb?style=for-the-badge&labelColor=555555&logo=github
+//! [crates-io]: https://img.shields.io/badge/crates.io-fc8d62?style=for-the-badge&labelColor=555555&logo=rust
+//! [docs-rs]: https://img.shields.io/badge/docs.rs-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs
+//!
+//! <br>
+//!
 //! Derive `Serialize` and `Deserialize` that delegates to the underlying repr
 //! of a C-like enum.
 //!
@@ -26,7 +34,8 @@
 //! }
 //! ```
 
-#![recursion_limit = "128"]
+#![doc(html_root_url = "https://docs.rs/serde_repr/0.1.12")]
+#![allow(clippy::single_match_else)]
 
 extern crate proc_macro;
 
@@ -37,8 +46,6 @@ use quote::quote;
 use syn::parse_macro_input;
 
 use crate::parse::Input;
-
-use std::iter;
 
 #[proc_macro_derive(Serialize_repr)]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {
@@ -55,6 +62,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
 
     TokenStream::from(quote! {
         impl serde::Serialize for #ident {
+            #[allow(clippy::use_self)]
             fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
             where
                 S: serde::Serializer
@@ -78,7 +86,6 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let declare_discriminants = input.variants.iter().map(|variant| {
         let variant = &variant.ident;
         quote! {
-            #[allow(non_upper_case_globals)]
             const #variant: #repr = #ident::#variant as #repr;
         }
     });
@@ -93,10 +100,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let error_format = match input.variants.len() {
         1 => "invalid value: {}, expected {}".to_owned(),
         2 => "invalid value: {}, expected {} or {}".to_owned(),
-        n => {
-            "invalid value: {}, expected one of: {}".to_owned()
-                + &iter::repeat(", {}").take(n - 1).collect::<String>()
-        }
+        n => "invalid value: {}, expected one of: {}".to_owned() + &", {}".repeat(n - 1),
     };
 
     let other_arm = match input.default_variant {
@@ -115,12 +119,14 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
 
     TokenStream::from(quote! {
         impl<'de> serde::Deserialize<'de> for #ident {
+            #[allow(clippy::use_self)]
             fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
             where
                 D: serde::Deserializer<'de>,
             {
                 struct discriminant;
 
+                #[allow(non_upper_case_globals)]
                 impl discriminant {
                     #(#declare_discriminants)*
                 }

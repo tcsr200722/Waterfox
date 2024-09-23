@@ -5,10 +5,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/PaymentRequestUpdateEvent.h"
+#include "mozilla/dom/PaymentRequest.h"
 #include "mozilla/dom/RootedDictionary.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(PaymentRequestUpdateEvent, Event, mRequest)
 
@@ -50,7 +50,8 @@ PaymentRequestUpdateEvent::PaymentRequestUpdateEvent(EventTarget* aOwner)
 }
 
 void PaymentRequestUpdateEvent::ResolvedCallback(JSContext* aCx,
-                                                 JS::Handle<JS::Value> aValue) {
+                                                 JS::Handle<JS::Value> aValue,
+                                                 ErrorResult& aRv) {
   MOZ_ASSERT(aCx);
   MOZ_ASSERT(mRequest);
   if (!mRequest->InFullyActiveDocument()) {
@@ -93,7 +94,8 @@ void PaymentRequestUpdateEvent::ResolvedCallback(JSContext* aCx,
 }
 
 void PaymentRequestUpdateEvent::RejectedCallback(JSContext* aCx,
-                                                 JS::Handle<JS::Value> aValue) {
+                                                 JS::Handle<JS::Value> aValue,
+                                                 ErrorResult& aRv) {
   MOZ_ASSERT(mRequest);
   if (!mRequest->InFullyActiveDocument()) {
     return;
@@ -156,5 +158,4 @@ JSObject* PaymentRequestUpdateEvent::WrapObjectInternal(
   return PaymentRequestUpdateEvent_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

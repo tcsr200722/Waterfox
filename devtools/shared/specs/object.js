@@ -9,7 +9,7 @@ const {
   Arg,
   RetVal,
   types,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 
 types.addDictType("object.descriptor", {
   configurable: "boolean",
@@ -27,12 +27,6 @@ types.addDictType("object.descriptor", {
 types.addDictType("object.completion", {
   return: "nullable:json",
   throw: "nullable:json",
-});
-
-types.addDictType("object.definitionSite", {
-  source: "source",
-  line: "number",
-  column: "number",
 });
 
 types.addDictType("object.prototypeproperties", {
@@ -63,32 +57,12 @@ types.addDictType("object.bindings", {
   variables: "json",
 });
 
-types.addDictType("object.scope", {
-  scope: "environment",
-});
-
 types.addDictType("object.enumProperties.Options", {
   enumEntries: "nullable:boolean",
   ignoreNonIndexedProperties: "nullable:boolean",
   ignoreIndexedProperties: "nullable:boolean",
   query: "nullable:string",
   sort: "nullable:boolean",
-});
-
-types.addDictType("object.ownPropertyNames", {
-  ownPropertyNames: "array:string",
-});
-
-types.addDictType("object.displayString", {
-  displayString: "string",
-});
-
-types.addDictType("object.decompile", {
-  decompiledCode: "string",
-});
-
-types.addDictType("object.parameterNames", {
-  parameterNames: "nullable:array:string",
 });
 
 types.addDictType("object.dependentPromises", {
@@ -102,9 +76,21 @@ types.addDictType("object.originalSourceLocation", {
   functionDisplayName: "string",
 });
 
+types.addDictType("object.promiseState", {
+  state: "string",
+  value: "nullable:object.descriptor",
+  reason: "nullable:object.descriptor",
+  creationTimestamp: "number",
+  timeToSettle: "nullable:number",
+});
+
 types.addDictType("object.proxySlots", {
   proxyTarget: "object.descriptor",
   proxyHandler: "object.descriptor",
+});
+
+types.addDictType("object.customFormatterBody", {
+  customFormatterBody: "json",
 });
 
 const objectSpec = generateActorSpec({
@@ -116,23 +102,9 @@ const objectSpec = generateActorSpec({
         allocationStack: RetVal("array:object.originalSourceLocation"),
       },
     },
-    decompile: {
-      request: {
-        pretty: Arg(0, "boolean"),
-      },
-      response: RetVal("object.decompile"),
-    },
-    definitionSite: {
-      request: {},
-      response: RetVal("object.definitionSite"),
-    },
     dependentPromises: {
       request: {},
       response: RetVal("object.dependentPromises"),
-    },
-    displayString: {
-      request: {},
-      response: RetVal("object.displayString"),
     },
     enumEntries: {
       request: {},
@@ -148,6 +120,12 @@ const objectSpec = generateActorSpec({
         iterator: RetVal("propertyIterator"),
       },
     },
+    enumPrivateProperties: {
+      request: {},
+      response: {
+        iterator: RetVal("privatePropertiesIterator"),
+      },
+    },
     enumSymbols: {
       request: {},
       response: {
@@ -159,14 +137,6 @@ const objectSpec = generateActorSpec({
       response: {
         fulfillmentStack: RetVal("array:object.originalSourceLocation"),
       },
-    },
-    ownPropertyNames: {
-      request: {},
-      response: RetVal("object.ownPropertyNames"),
-    },
-    parameterNames: {
-      request: {},
-      response: RetVal("object.parameterNames"),
     },
     prototypeAndProperties: {
       request: {},
@@ -202,9 +172,17 @@ const objectSpec = generateActorSpec({
         rejectionStack: RetVal("array:object.originalSourceLocation"),
       },
     },
+    promiseState: {
+      request: {},
+      response: RetVal("object.promiseState"),
+    },
     proxySlots: {
       request: {},
       response: RetVal("object.proxySlots"),
+    },
+    customFormatterBody: {
+      request: {},
+      response: RetVal("object.customFormatterBody"),
     },
     addWatchpoint: {
       request: {
@@ -225,10 +203,6 @@ const objectSpec = generateActorSpec({
       oneway: true,
     },
     release: { release: true },
-    scope: {
-      request: {},
-      response: RetVal("object.scope"),
-    },
     // Needed for the PauseScopedObjectActor which extends the ObjectActor.
     threadGrip: {
       request: {},

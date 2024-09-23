@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (c) 2017 Rick Waldron.  All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -24,7 +25,7 @@ try {
 }
 
 if (threw === false) {
-  $ERROR('Expected a TypeError, but no error was thrown.');
+  throw new Error('Expected a TypeError, but no error was thrown.');
 }
 
 

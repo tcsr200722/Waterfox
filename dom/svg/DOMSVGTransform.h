@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGTransform_h
-#define mozilla_dom_SVGTransform_h
+#ifndef DOM_SVG_DOMSVGTRANSFORM_H_
+#define DOM_SVG_DOMSVGTRANSFORM_H_
 
 #include "DOMSVGTransformList.h"
 #include "gfxMatrix.h"
@@ -19,9 +19,9 @@
 
 #define MOZ_SVG_LIST_INDEX_BIT_COUNT 31  // supports > 2 billion list items
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+struct DOMMatrix2DInit;
 class SVGElement;
 class SVGMatrix;
 
@@ -29,7 +29,8 @@ class SVGMatrix;
  * DOM wrapper for an SVG transform. See DOMSVGLength.h.
  */
 class DOMSVGTransform final : public nsWrapperCache {
-  friend class AutoChangeTransformNotifier;
+  template <class T>
+  friend class AutoChangeTransformListNotifier;
 
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMSVGTransform)
@@ -44,12 +45,13 @@ class DOMSVGTransform final : public nsWrapperCache {
   /**
    * Ctors for creating the objects returned by:
    *   SVGSVGElement.createSVGTransform(),
-   *   SVGSVGElement.createSVGTransformFromMatrix(in SVGMatrix matrix),
-   *   SVGTransformList.createSVGTransformFromMatrix(in SVGMatrix matrix)
+   *   SVGSVGElement.createSVGTransformFromMatrix(in DOMMatrix2DInit  matrix),
+   *   SVGTransformList.createSVGTransformFromMatrix(in DOMMatrix2DInit  matrix)
    * which do not initially belong to an attribute.
    */
-  explicit DOMSVGTransform();
+  DOMSVGTransform();
   explicit DOMSVGTransform(const gfxMatrix& aMatrix);
+  DOMSVGTransform(const DOMMatrix2DInit& aMatrix, ErrorResult& rv);
 
   /**
    * Ctor for creating an unowned copy. Used with Clone().
@@ -66,6 +68,12 @@ class DOMSVGTransform final : public nsWrapperCache {
   }
 
   bool IsInList() const { return !!mList; }
+
+  /**
+   * Returns true if our attribute is animating (in which case our animVal is
+   * not simply a mirror of our baseVal).
+   */
+  bool IsAnimating() const { return mList && mList->IsAnimating(); }
 
   /**
    * In future, if this class is used for non-list transforms, this will be
@@ -105,12 +113,12 @@ class DOMSVGTransform final : public nsWrapperCache {
 
   // WebIDL
   DOMSVGTransformList* GetParentObject() const { return mList; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override;
   uint16_t Type() const;
   dom::SVGMatrix* GetMatrix();
   float Angle() const;
-  void SetMatrix(dom::SVGMatrix& matrix, ErrorResult& rv);
+  void SetMatrix(const DOMMatrix2DInit& matrix, ErrorResult& rv);
   void SetTranslate(float tx, float ty, ErrorResult& rv);
   void SetScale(float sx, float sy, ErrorResult& rv);
   void SetRotate(float angle, float cx, float cy, ErrorResult& rv);
@@ -165,9 +173,8 @@ class DOMSVGTransform final : public nsWrapperCache {
   UniquePtr<SVGTransform> mTransform;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #undef MOZ_SVG_LIST_INDEX_BIT_COUNT
 
-#endif  // mozilla_dom_SVGTransform_h
+#endif  // DOM_SVG_DOMSVGTRANSFORM_H_

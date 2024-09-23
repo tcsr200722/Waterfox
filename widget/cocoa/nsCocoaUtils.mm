@@ -9,13 +9,14 @@
 
 #include "AppleUtils.h"
 #include "gfx2DGlue.h"
+#include "gfxContext.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "ImageRegion.h"
+#include "nsClipboard.h"
 #include "nsCocoaUtils.h"
 #include "nsChildView.h"
 #include "nsMenuBarX.h"
-#include "nsCocoaFeatures.h"
 #include "nsCocoaWindow.h"
 #include "nsCOMPtr.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -24,36 +25,37 @@
 #include "nsIRunnable.h"
 #include "nsIAppWindow.h"
 #include "nsIBaseWindow.h"
+#include "nsITransferable.h"
 #include "nsMenuUtilsX.h"
+#include "nsNetUtil.h"
+#include "nsPrimitiveHelpers.h"
 #include "nsToolkit.h"
 #include "nsCRT.h"
-#include "SVGImageContext.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Telemetry.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/gfx/2D.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
 
 using mozilla::dom::Promise;
-using mozilla::gfx::BackendType;
 using mozilla::gfx::DataSourceSurface;
 using mozilla::gfx::DrawTarget;
-using mozilla::gfx::Factory;
-using mozilla::gfx::SamplingFilter;
 using mozilla::gfx::IntPoint;
 using mozilla::gfx::IntRect;
 using mozilla::gfx::IntSize;
-using mozilla::gfx::SurfaceFormat;
+using mozilla::gfx::SamplingFilter;
 using mozilla::gfx::SourceSurface;
+using mozilla::gfx::SurfaceFormat;
 using mozilla::image::ImageRegion;
-using std::ceil;
 
 LazyLogModule gCocoaUtilsLog("nsCocoaUtils");
 #undef LOG
@@ -70,8 +72,48 @@ nsCocoaUtils::PromiseArray nsCocoaUtils::sVideoCapturePromises;
 nsCocoaUtils::PromiseArray nsCocoaUtils::sAudioCapturePromises;
 StaticMutex nsCocoaUtils::sMediaCaptureMutex;
 
+/**
+ * Pasteboard types
+ */
+NSString* const kPublicUrlPboardType = @"public.url";
+NSString* const kPublicUrlNamePboardType = @"public.url-name";
+NSString* const kPasteboardConcealedType = @"org.nspasteboard.ConcealedType";
+NSString* const kUrlsWithTitlesPboardType = @"WebURLsWithTitlesPboardType";
+NSString* const kMozWildcardPboardType = @"org.mozilla.MozillaWildcard";
+NSString* const kMozCustomTypesPboardType = @"org.mozilla.custom-clipdata";
+NSString* const kMozFileUrlsPboardType = @"org.mozilla.file-urls";
+
+@implementation UTIHelper
+
++ (NSString*)stringFromPboardType:(NSString*)aType {
+  if ([aType isEqualToString:kMozWildcardPboardType] ||
+      [aType isEqualToString:kMozCustomTypesPboardType] ||
+      [aType isEqualToString:kPasteboardConcealedType] ||
+      [aType isEqualToString:kPublicUrlPboardType] ||
+      [aType isEqualToString:kPublicUrlNamePboardType] ||
+      [aType isEqualToString:kMozFileUrlsPboardType] ||
+      [aType isEqualToString:(NSString*)kPasteboardTypeFileURLPromise] ||
+      [aType isEqualToString:(NSString*)kPasteboardTypeFilePromiseContent] ||
+      [aType isEqualToString:(NSString*)kUTTypeFileURL] ||
+      [aType isEqualToString:NSStringPboardType] ||
+      [aType isEqualToString:NSPasteboardTypeString] ||
+      [aType isEqualToString:NSPasteboardTypeHTML] ||
+      [aType isEqualToString:NSPasteboardTypeRTF] ||
+      [aType isEqualToString:NSPasteboardTypeTIFF] ||
+      [aType isEqualToString:NSPasteboardTypePNG]) {
+    return [NSString stringWithString:aType];
+  }
+  NSString* dynamicType = (NSString*)UTTypeCreatePreferredIdentifierForTag(
+      kUTTagClassNSPboardType, (CFStringRef)aType, kUTTypeData);
+  NSString* result = [NSString stringWithString:dynamicType];
+  [dynamicType release];
+  return result;
+}
+
+@end  // UTIHelper
+
 static float MenuBarScreenHeight() {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   NSArray* allScreens = [NSScreen screens];
   if ([allScreens count]) {
@@ -80,23 +122,31 @@ static float MenuBarScreenHeight() {
 
   return 0.0;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_RETURN(0.0);
+  NS_OBJC_END_TRY_BLOCK_RETURN(0.0);
 }
 
-float nsCocoaUtils::FlippedScreenY(float y) { return MenuBarScreenHeight() - y; }
+float nsCocoaUtils::FlippedScreenY(float y) {
+  return MenuBarScreenHeight() - y;
+}
 
 NSRect nsCocoaUtils::GeckoRectToCocoaRect(const DesktopIntRect& geckoRect) {
   // We only need to change the Y coordinate by starting with the primary screen
   // height and subtracting the gecko Y coordinate of the bottom of the rect.
-  return NSMakeRect(geckoRect.x, MenuBarScreenHeight() - geckoRect.YMost(), geckoRect.width,
-                    geckoRect.height);
+  return NSMakeRect(geckoRect.x, MenuBarScreenHeight() - geckoRect.YMost(),
+                    geckoRect.width, geckoRect.height);
 }
 
-NSRect nsCocoaUtils::GeckoRectToCocoaRectDevPix(const LayoutDeviceIntRect& aGeckoRect,
-                                                CGFloat aBackingScale) {
+NSPoint nsCocoaUtils::GeckoPointToCocoaPoint(
+    const mozilla::DesktopPoint& aPoint) {
+  return NSMakePoint(aPoint.x, MenuBarScreenHeight() - aPoint.y);
+}
+
+NSRect nsCocoaUtils::GeckoRectToCocoaRectDevPix(
+    const LayoutDeviceIntRect& aGeckoRect, CGFloat aBackingScale) {
   return NSMakeRect(aGeckoRect.x / aBackingScale,
                     MenuBarScreenHeight() - aGeckoRect.YMost() / aBackingScale,
-                    aGeckoRect.width / aBackingScale, aGeckoRect.height / aBackingScale);
+                    aGeckoRect.width / aBackingScale,
+                    aGeckoRect.height / aBackingScale);
 }
 
 DesktopIntRect nsCocoaUtils::CocoaRectToGeckoRect(const NSRect& cocoaRect) {
@@ -105,151 +155,77 @@ DesktopIntRect nsCocoaUtils::CocoaRectToGeckoRect(const NSRect& cocoaRect) {
   // cocoa rect.
   DesktopIntRect rect;
   rect.x = NSToIntRound(cocoaRect.origin.x);
-  rect.y = NSToIntRound(FlippedScreenY(cocoaRect.origin.y + cocoaRect.size.height));
+  rect.y =
+      NSToIntRound(FlippedScreenY(cocoaRect.origin.y + cocoaRect.size.height));
   rect.width = NSToIntRound(cocoaRect.origin.x + cocoaRect.size.width) - rect.x;
   rect.height = NSToIntRound(FlippedScreenY(cocoaRect.origin.y)) - rect.y;
   return rect;
 }
 
-LayoutDeviceIntRect nsCocoaUtils::CocoaRectToGeckoRectDevPix(const NSRect& aCocoaRect,
-                                                             CGFloat aBackingScale) {
+LayoutDeviceIntRect nsCocoaUtils::CocoaRectToGeckoRectDevPix(
+    const NSRect& aCocoaRect, CGFloat aBackingScale) {
   LayoutDeviceIntRect rect;
   rect.x = NSToIntRound(aCocoaRect.origin.x * aBackingScale);
-  rect.y =
-      NSToIntRound(FlippedScreenY(aCocoaRect.origin.y + aCocoaRect.size.height) * aBackingScale);
-  rect.width = NSToIntRound((aCocoaRect.origin.x + aCocoaRect.size.width) * aBackingScale) - rect.x;
-  rect.height = NSToIntRound(FlippedScreenY(aCocoaRect.origin.y) * aBackingScale) - rect.y;
+  rect.y = NSToIntRound(
+      FlippedScreenY(aCocoaRect.origin.y + aCocoaRect.size.height) *
+      aBackingScale);
+  rect.width = NSToIntRound((aCocoaRect.origin.x + aCocoaRect.size.width) *
+                            aBackingScale) -
+               rect.x;
+  rect.height =
+      NSToIntRound(FlippedScreenY(aCocoaRect.origin.y) * aBackingScale) -
+      rect.y;
   return rect;
 }
 
 NSPoint nsCocoaUtils::ScreenLocationForEvent(NSEvent* anEvent) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   // Don't trust mouse locations of mouse move events, see bug 443178.
-  if (!anEvent || [anEvent type] == NSMouseMoved) return [NSEvent mouseLocation];
+  if (!anEvent || [anEvent type] == NSEventTypeMouseMoved)
+    return [NSEvent mouseLocation];
 
   // Pin momentum scroll events to the location of the last user-controlled
   // scroll event.
-  if (IsMomentumScrollEvent(anEvent)) return ChildViewMouseTracker::sLastScrollEventScreenLocation;
+  if (IsMomentumScrollEvent(anEvent))
+    return ChildViewMouseTracker::sLastScrollEventScreenLocation;
 
-  return nsCocoaUtils::ConvertPointToScreen([anEvent window], [anEvent locationInWindow]);
+  return nsCocoaUtils::ConvertPointToScreen([anEvent window],
+                                            [anEvent locationInWindow]);
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_RETURN(NSMakePoint(0.0, 0.0));
+  NS_OBJC_END_TRY_BLOCK_RETURN(NSMakePoint(0.0, 0.0));
 }
 
 BOOL nsCocoaUtils::IsEventOverWindow(NSEvent* anEvent, NSWindow* aWindow) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN;
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   return NSPointInRect(ScreenLocationForEvent(anEvent), [aWindow frame]);
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_RETURN(NO);
+  NS_OBJC_END_TRY_BLOCK_RETURN(NO);
 }
 
-NSPoint nsCocoaUtils::EventLocationForWindow(NSEvent* anEvent, NSWindow* aWindow) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_RETURN;
+NSPoint nsCocoaUtils::EventLocationForWindow(NSEvent* anEvent,
+                                             NSWindow* aWindow) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  return nsCocoaUtils::ConvertPointFromScreen(aWindow, ScreenLocationForEvent(anEvent));
+  return nsCocoaUtils::ConvertPointFromScreen(aWindow,
+                                              ScreenLocationForEvent(anEvent));
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_RETURN(NSMakePoint(0.0, 0.0));
-}
-
-@interface NSEvent (ScrollPhase)
-// 10.5 and 10.6
-- (long long)_scrollPhase;
-// 10.7 and above
-- (NSEventPhase)phase;
-- (NSEventPhase)momentumPhase;
-@end
-
-NSEventPhase nsCocoaUtils::EventPhase(NSEvent* aEvent) {
-  if ([aEvent respondsToSelector:@selector(phase)]) {
-    return [aEvent phase];
-  }
-  return NSEventPhaseNone;
-}
-
-NSEventPhase nsCocoaUtils::EventMomentumPhase(NSEvent* aEvent) {
-  if ([aEvent respondsToSelector:@selector(momentumPhase)]) {
-    return [aEvent momentumPhase];
-  }
-  if ([aEvent respondsToSelector:@selector(_scrollPhase)]) {
-    switch ([aEvent _scrollPhase]) {
-      case 1:
-        return NSEventPhaseBegan;
-      case 2:
-        return NSEventPhaseChanged;
-      case 3:
-        return NSEventPhaseEnded;
-      default:
-        return NSEventPhaseNone;
-    }
-  }
-  return NSEventPhaseNone;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NSMakePoint(0.0, 0.0));
 }
 
 BOOL nsCocoaUtils::IsMomentumScrollEvent(NSEvent* aEvent) {
-  return [aEvent type] == NSScrollWheel && EventMomentumPhase(aEvent) != NSEventPhaseNone;
-}
-
-@interface NSEvent (HasPreciseScrollingDeltas)
-// 10.7 and above
-- (BOOL)hasPreciseScrollingDeltas;
-// For 10.6 and below, see the comment in nsChildView.h about _eventRef
-- (EventRef)_eventRef;
-@end
-
-BOOL nsCocoaUtils::HasPreciseScrollingDeltas(NSEvent* aEvent) {
-  if ([aEvent respondsToSelector:@selector(hasPreciseScrollingDeltas)]) {
-    return [aEvent hasPreciseScrollingDeltas];
-  }
-
-  // For events that don't contain pixel scrolling information, the event
-  // kind of their underlaying carbon event is kEventMouseWheelMoved instead
-  // of kEventMouseScroll.
-  EventRef carbonEvent = [aEvent _eventRef];
-  return carbonEvent && ::GetEventKind(carbonEvent) == kEventMouseScroll;
-}
-
-@interface NSEvent (ScrollingDeltas)
-// 10.6 and below
-- (CGFloat)deviceDeltaX;
-- (CGFloat)deviceDeltaY;
-// 10.7 and above
-- (CGFloat)scrollingDeltaX;
-- (CGFloat)scrollingDeltaY;
-@end
-
-void nsCocoaUtils::GetScrollingDeltas(NSEvent* aEvent, CGFloat* aOutDeltaX, CGFloat* aOutDeltaY) {
-  if ([aEvent respondsToSelector:@selector(scrollingDeltaX)]) {
-    *aOutDeltaX = [aEvent scrollingDeltaX];
-    *aOutDeltaY = [aEvent scrollingDeltaY];
-    return;
-  }
-  if ([aEvent respondsToSelector:@selector(deviceDeltaX)] && HasPreciseScrollingDeltas(aEvent)) {
-    // Calling deviceDeltaX/Y on those events that do not contain pixel
-    // scrolling information triggers a Cocoa assertion and an
-    // Objective-C NSInternalInconsistencyException.
-    *aOutDeltaX = [aEvent deviceDeltaX];
-    *aOutDeltaY = [aEvent deviceDeltaY];
-    return;
-  }
-
-  // This is only hit pre-10.7 when we are called on a scroll event that does
-  // not contain pixel scrolling information.
-  CGFloat lineDeltaPixels = 12;
-  *aOutDeltaX = [aEvent deltaX] * lineDeltaPixels;
-  *aOutDeltaY = [aEvent deltaY] * lineDeltaPixels;
+  return [aEvent type] == NSEventTypeScrollWheel &&
+         [aEvent momentumPhase] != NSEventPhaseNone;
 }
 
 BOOL nsCocoaUtils::EventHasPhaseInformation(NSEvent* aEvent) {
-  if (![aEvent respondsToSelector:@selector(phase)]) {
-    return NO;
-  }
-  return EventPhase(aEvent) != NSEventPhaseNone || EventMomentumPhase(aEvent) != NSEventPhaseNone;
+  return [aEvent phase] != NSEventPhaseNone ||
+         [aEvent momentumPhase] != NSEventPhaseNone;
 }
 
 void nsCocoaUtils::HideOSChromeOnScreen(bool aShouldHide) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
   // Keep track of how many hiding requests have been made, so that they can
   // be nested.
@@ -260,17 +236,20 @@ void nsCocoaUtils::HideOSChromeOnScreen(bool aShouldHide) {
 
   NSApplicationPresentationOptions options =
       sHiddenCount <= 0 ? NSApplicationPresentationDefault
-                        : NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
+                        : NSApplicationPresentationHideDock |
+                              NSApplicationPresentationHideMenuBar;
   [NSApp setPresentationOptions:options];
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
 #define NS_APPSHELLSERVICE_CONTRACTID "@mozilla.org/appshell/appShellService;1"
 nsIWidget* nsCocoaUtils::GetHiddenWindowWidget() {
-  nsCOMPtr<nsIAppShellService> appShell(do_GetService(NS_APPSHELLSERVICE_CONTRACTID));
+  nsCOMPtr<nsIAppShellService> appShell(
+      do_GetService(NS_APPSHELLSERVICE_CONTRACTID));
   if (!appShell) {
-    NS_WARNING("Couldn't get AppShellService in order to get hidden window ref");
+    NS_WARNING(
+        "Couldn't get AppShellService in order to get hidden window ref");
     return nullptr;
   }
 
@@ -289,7 +268,8 @@ nsIWidget* nsCocoaUtils::GetHiddenWindowWidget() {
   }
 
   nsCOMPtr<nsIWidget> hiddenWindowWidget;
-  if (NS_FAILED(baseHiddenWindow->GetMainWidget(getter_AddRefs(hiddenWindowWidget)))) {
+  if (NS_FAILED(baseHiddenWindow->GetMainWidget(
+          getter_AddRefs(hiddenWindowWidget)))) {
     NS_WARNING("Couldn't get nsIWidget from hidden window (nsIBaseWindow)");
     return nullptr;
   }
@@ -297,26 +277,80 @@ nsIWidget* nsCocoaUtils::GetHiddenWindowWidget() {
   return hiddenWindowWidget;
 }
 
-void nsCocoaUtils::PrepareForNativeAppModalDialog() {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+BOOL nsCocoaUtils::WasLaunchedAtLogin() {
+  ProcessSerialNumber processSerialNumber = {0, kCurrentProcess};
+  ProcessInfoRec processInfoRec = {};
+  processInfoRec.processInfoLength = sizeof(processInfoRec);
 
-  // Don't do anything if this is embedding. We'll assume that if there is no hidden
-  // window we shouldn't do anything, and that should cover the embedding case.
+  // There is currently no replacement for ::GetProcessInformation, which has
+  // been deprecated since macOS 10.9.
+  if (::GetProcessInformation(&processSerialNumber, &processInfoRec) == noErr) {
+    ProcessInfoRec parentProcessInfo = {};
+    parentProcessInfo.processInfoLength = sizeof(parentProcessInfo);
+    if (::GetProcessInformation(&processInfoRec.processLauncher,
+                                &parentProcessInfo) == noErr) {
+      return parentProcessInfo.processSignature == 'lgnw';
+    }
+  }
+  return NO;
+}
+
+BOOL nsCocoaUtils::ShouldRestoreStateDueToLaunchAtLoginImpl() {
+  // Check if we were launched by macOS as a result of having
+  // "Reopen windows..." selected during a restart.
+  if (!WasLaunchedAtLogin()) {
+    return NO;
+  }
+
+  CFStringRef lgnwPlistName = CFSTR("com.apple.loginwindow");
+  CFStringRef saveStateKey = CFSTR("TALLogoutSavesState");
+  CFPropertyListRef lgnwPlist = (CFPropertyListRef)(::CFPreferencesCopyAppValue(
+      saveStateKey, lgnwPlistName));
+  // The .plist doesn't exist unless the user changed the "Reopen windows..."
+  // preference. If it doesn't exist, restore by default (as this is the macOS
+  // default).
+  // https://developer.apple.com/library/mac/documentation/macosx/conceptual/bpsystemstartup/chapters/CustomLogin.html
+  if (!lgnwPlist) {
+    return YES;
+  }
+
+  if (CFBooleanRef shouldRestoreState = static_cast<CFBooleanRef>(lgnwPlist)) {
+    return ::CFBooleanGetValue(shouldRestoreState);
+  }
+
+  return NO;
+}
+
+BOOL nsCocoaUtils::ShouldRestoreStateDueToLaunchAtLogin() {
+  BOOL shouldRestore = ShouldRestoreStateDueToLaunchAtLoginImpl();
+  Telemetry::ScalarSet(Telemetry::ScalarID::STARTUP_IS_RESTORED_BY_MACOS,
+                       !!shouldRestore);
+  return shouldRestore;
+}
+
+void nsCocoaUtils::PrepareForNativeAppModalDialog() {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
+
+  // Don't do anything if this is embedding. We'll assume that if there is no
+  // hidden window we shouldn't do anything, and that should cover the embedding
+  // case.
   nsMenuBarX* hiddenWindowMenuBar = nsMenuUtilsX::GetHiddenWindowMenuBar();
   if (!hiddenWindowMenuBar) return;
 
-  // First put up the hidden window menu bar so that app menu event handling is correct.
+  // First put up the hidden window menu bar so that app menu event handling is
+  // correct.
   hiddenWindowMenuBar->Paint();
 
   NSMenu* mainMenu = [NSApp mainMenu];
-  NS_ASSERTION([mainMenu numberOfItems] > 0,
-               "Main menu does not have any items, something is terribly wrong!");
+  NS_ASSERTION(
+      [mainMenu numberOfItems] > 0,
+      "Main menu does not have any items, something is terribly wrong!");
 
   // Create new menu bar for use with modal dialog
   NSMenu* newMenuBar = [[NSMenu alloc] initWithTitle:@""];
 
-  // Swap in our app menu. Note that the event target is whatever window is up when
-  // the app modal dialog goes up.
+  // Swap in our app menu. Note that the event target is whatever window is up
+  // when the app modal dialog goes up.
   NSMenuItem* firstMenuItem = [[mainMenu itemAtIndex:0] retain];
   [mainMenu removeItemAtIndex:0];
   [newMenuBar insertItem:firstMenuItem atIndex:0];
@@ -329,14 +363,15 @@ void nsCocoaUtils::PrepareForNativeAppModalDialog() {
   [NSApp setMainMenu:newMenuBar];
   [newMenuBar release];
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
 void nsCocoaUtils::CleanUpAfterNativeAppModalDialog() {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
-  // Don't do anything if this is embedding. We'll assume that if there is no hidden
-  // window we shouldn't do anything, and that should cover the embedding case.
+  // Don't do anything if this is embedding. We'll assume that if there is no
+  // hidden window we shouldn't do anything, and that should cover the embedding
+  // case.
   nsMenuBarX* hiddenWindowMenuBar = nsMenuUtilsX::GetHiddenWindowMenuBar();
   if (!hiddenWindowMenuBar) return;
 
@@ -346,10 +381,11 @@ void nsCocoaUtils::CleanUpAfterNativeAppModalDialog() {
   else
     [WindowDelegate paintMenubarForWindow:mainWindow];
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
-static void data_ss_release_callback(void* aDataSourceSurface, const void* data, size_t size) {
+static void data_ss_release_callback(void* aDataSourceSurface, const void* data,
+                                     size_t size) {
   if (aDataSourceSurface) {
     static_cast<DataSourceSurface*>(aDataSourceSurface)->Unmap();
     static_cast<DataSourceSurface*>(aDataSourceSurface)->Release();
@@ -363,7 +399,8 @@ static bool ComputeIsEntirelyBlack(const DataSourceSurface::MappedSurface& aMap,
     size_t rowStart = y * aMap.mStride;
     for (int32_t x = 0; x < aSize.width; x++) {
       size_t index = rowStart + x * 4;
-      if (aMap.mData[index + 0] != 0 || aMap.mData[index + 1] != 0 || aMap.mData[index + 2] != 0) {
+      if (aMap.mData[index + 0] != 0 || aMap.mData[index + 1] != 0 ||
+          aMap.mData[index + 2] != 0) {
         return false;
       }
     }
@@ -371,7 +408,8 @@ static bool ComputeIsEntirelyBlack(const DataSourceSurface::MappedSurface& aMap,
   return true;
 }
 
-nsresult nsCocoaUtils::CreateCGImageFromSurface(SourceSurface* aSurface, CGImageRef* aResult,
+nsresult nsCocoaUtils::CreateCGImageFromSurface(SourceSurface* aSurface,
+                                                CGImageRef* aResult,
                                                 bool* aIsEntirelyBlack) {
   RefPtr<DataSourceSurface> dataSurface;
 
@@ -380,8 +418,8 @@ nsresult nsCocoaUtils::CreateCGImageFromSurface(SourceSurface* aSurface, CGImage
   } else {
     // CGImageCreate only supports 16- and 32-bit bit-depth
     // Convert format to SurfaceFormat::B8G8R8A8
-    dataSurface =
-        gfxUtils::CopySurfaceToDataSourceSurfaceWithFormat(aSurface, SurfaceFormat::B8G8R8A8);
+    dataSurface = gfxUtils::CopySurfaceToDataSourceSurfaceWithFormat(
+        aSurface, SurfaceFormat::B8G8R8A8);
   }
 
   NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
@@ -406,18 +444,22 @@ nsresult nsCocoaUtils::CreateCGImageFromSurface(SourceSurface* aSurface, CGImage
   // the alpha ordering and endianness of the machine so we don't have to
   // touch the bits ourselves.
   CGDataProviderRef dataProvider = ::CGDataProviderCreateWithData(
-      dataSurface.forget().take(), map.mData, map.mStride * height, data_ss_release_callback);
-  CGColorSpaceRef colorSpace = ::CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
-  *aResult = ::CGImageCreate(width, height, 8, 32, map.mStride, colorSpace,
-                             kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst,
-                             dataProvider, NULL, 0, kCGRenderingIntentDefault);
+      dataSurface.forget().take(), map.mData, map.mStride * height,
+      data_ss_release_callback);
+  CGColorSpaceRef colorSpace =
+      ::CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
+  *aResult = ::CGImageCreate(
+      width, height, 8, 32, map.mStride, colorSpace,
+      kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst, dataProvider,
+      NULL, 0, kCGRenderingIntentDefault);
   ::CGColorSpaceRelease(colorSpace);
   ::CGDataProviderRelease(dataProvider);
   return *aResult ? NS_OK : NS_ERROR_FAILURE;
 }
 
-nsresult nsCocoaUtils::CreateNSImageFromCGImage(CGImageRef aInputImage, NSImage** aResult) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+nsresult nsCocoaUtils::CreateNSImageFromCGImage(CGImageRef aInputImage,
+                                                NSImage** aResult) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   // Be very careful when creating the NSImage that the backing NSImageRep is
   // exactly 1:1 with the input image. On a retina display, both [NSImage
@@ -438,25 +480,26 @@ nsresult nsCocoaUtils::CreateNSImageFromCGImage(CGImageRef aInputImage, NSImage*
   int32_t height = ::CGImageGetHeight(aInputImage);
   NSRect imageRect = ::NSMakeRect(0.0, 0.0, width, height);
 
-  NSBitmapImageRep* offscreenRep =
-      [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
-                                              pixelsWide:width
-                                              pixelsHigh:height
-                                           bitsPerSample:8
-                                         samplesPerPixel:4
-                                                hasAlpha:YES
-                                                isPlanar:NO
-                                          colorSpaceName:NSDeviceRGBColorSpace
-                                            bitmapFormat:NSAlphaFirstBitmapFormat
-                                             bytesPerRow:0
-                                            bitsPerPixel:0];
+  NSBitmapImageRep* offscreenRep = [[NSBitmapImageRep alloc]
+      initWithBitmapDataPlanes:NULL
+                    pixelsWide:width
+                    pixelsHigh:height
+                 bitsPerSample:8
+               samplesPerPixel:4
+                      hasAlpha:YES
+                      isPlanar:NO
+                colorSpaceName:NSDeviceRGBColorSpace
+                  bitmapFormat:NSBitmapFormatAlphaFirst
+                   bytesPerRow:0
+                  bitsPerPixel:0];
 
-  NSGraphicsContext* context = [NSGraphicsContext graphicsContextWithBitmapImageRep:offscreenRep];
+  NSGraphicsContext* context =
+      [NSGraphicsContext graphicsContextWithBitmapImageRep:offscreenRep];
   [NSGraphicsContext saveGraphicsState];
   [NSGraphicsContext setCurrentContext:context];
 
   // Get the Quartz context and draw.
-  CGContextRef imageContext = (CGContextRef)[[NSGraphicsContext currentContext] graphicsPort];
+  CGContextRef imageContext = [[NSGraphicsContext currentContext] CGContext];
   ::CGContextDrawImage(imageContext, *(CGRect*)&imageRect, aInputImage);
 
   [NSGraphicsContext restoreGraphicsState];
@@ -466,34 +509,58 @@ nsresult nsCocoaUtils::CreateNSImageFromCGImage(CGImageRef aInputImage, NSImage*
   [offscreenRep release];
   return NS_OK;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+  NS_OBJC_END_TRY_BLOCK_RETURN(NS_ERROR_FAILURE);
 }
 
-nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer* aImage, uint32_t aWhichFrame,
-                                                       NSImage** aResult, CGFloat scaleFactor,
-                                                       bool* aIsEntirelyBlack) {
+nsresult nsCocoaUtils::CreateNSImageFromImageContainer(
+    imgIContainer* aImage, uint32_t aWhichFrame,
+    const nsPresContext* aPresContext, const ComputedStyle* aComputedStyle,
+    const NSSize& aPreferredSize, NSImage** aResult, CGFloat scaleFactor,
+    bool* aIsEntirelyBlack) {
   RefPtr<SourceSurface> surface;
-  int32_t width = 0, height = 0;
-  aImage->GetWidth(&width);
-  aImage->GetHeight(&height);
+  int32_t width = 0;
+  int32_t height = 0;
+  {
+    const bool gotWidth = NS_SUCCEEDED(aImage->GetWidth(&width));
+    const bool gotHeight = NS_SUCCEEDED(aImage->GetHeight(&height));
+    if (auto ratio = aImage->GetIntrinsicRatio()) {
+      if (gotWidth != gotHeight) {
+        if (gotWidth) {
+          height = ratio->Inverted().ApplyTo(width);
+        } else {
+          width = ratio->ApplyTo(height);
+        }
+      } else if (!gotWidth) {
+        height = std::ceil(aPreferredSize.height);
+        width = ratio->ApplyTo(height);
+      }
+    }
+  }
 
   // Render a vector image at the correct resolution on a retina display
-  if (aImage->GetType() == imgIContainer::TYPE_VECTOR && scaleFactor != 1.0f) {
-    IntSize scaledSize = IntSize::Ceil(width * scaleFactor, height * scaleFactor);
+  if (aImage->GetType() == imgIContainer::TYPE_VECTOR) {
+    IntSize scaledSize =
+        IntSize::Ceil(width * scaleFactor, height * scaleFactor);
 
-    RefPtr<DrawTarget> drawTarget = gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
-        scaledSize, SurfaceFormat::B8G8R8A8);
+    RefPtr<DrawTarget> drawTarget =
+        gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
+            scaledSize, SurfaceFormat::B8G8R8A8);
     if (!drawTarget || !drawTarget->IsValid()) {
       NS_ERROR("Failed to create valid DrawTarget");
       return NS_ERROR_FAILURE;
     }
 
-    RefPtr<gfxContext> context = gfxContext::CreateOrNull(drawTarget);
-    MOZ_ASSERT(context);
+    gfxContext context(drawTarget);
 
-    mozilla::image::ImgDrawResult res = aImage->Draw(
-        context, scaledSize, ImageRegion::Create(scaledSize), aWhichFrame, SamplingFilter::POINT,
-        /* no SVGImageContext */ Nothing(), imgIContainer::FLAG_SYNC_DECODE, 1.0);
+    SVGImageContext svgContext;
+    if (aPresContext && aComputedStyle) {
+      SVGImageContext::MaybeStoreContextPaint(svgContext, *aPresContext,
+                                              *aComputedStyle, aImage);
+    }
+    mozilla::image::ImgDrawResult res =
+        aImage->Draw(&context, scaledSize, ImageRegion::Create(scaledSize),
+                     aWhichFrame, SamplingFilter::POINT, svgContext,
+                     imgIContainer::FLAG_SYNC_DECODE, 1.0);
 
     if (res != mozilla::image::ImgDrawResult::SUCCESS) {
       return NS_ERROR_FAILURE;
@@ -501,14 +568,16 @@ nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer* aImage, ui
 
     surface = drawTarget->Snapshot();
   } else {
-    surface = aImage->GetFrame(aWhichFrame,
-                               imgIContainer::FLAG_SYNC_DECODE | imgIContainer::FLAG_ASYNC_NOTIFY);
+    surface =
+        aImage->GetFrame(aWhichFrame, imgIContainer::FLAG_SYNC_DECODE |
+                                          imgIContainer::FLAG_ASYNC_NOTIFY);
   }
 
   NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
 
   CGImageRef imageRef = NULL;
-  nsresult rv = nsCocoaUtils::CreateCGImageFromSurface(surface, &imageRef, aIsEntirelyBlack);
+  nsresult rv = nsCocoaUtils::CreateCGImageFromSurface(surface, &imageRef,
+                                                       aIsEntirelyBlack);
   if (NS_FAILED(rv) || !imageRef) {
     return NS_ERROR_FAILURE;
   }
@@ -526,78 +595,60 @@ nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer* aImage, ui
   return NS_OK;
 }
 
-nsresult nsCocoaUtils::CreateDualRepresentationNSImageFromImageContainer(imgIContainer* aImage,
-                                                                         uint32_t aWhichFrame,
-                                                                         NSImage** aResult,
-                                                                         bool* aIsEntirelyBlack) {
-  int32_t width = 0, height = 0;
-  aImage->GetWidth(&width);
-  aImage->GetHeight(&height);
-  NSSize size = NSMakeSize(width, height);
+nsresult nsCocoaUtils::CreateDualRepresentationNSImageFromImageContainer(
+    imgIContainer* aImage, uint32_t aWhichFrame,
+    const nsPresContext* aPresContext, const ComputedStyle* aComputedStyle,
+    const NSSize& aPreferredSize, NSImage** aResult, bool* aIsEntirelyBlack) {
+  NSImage* newRepresentation = nil;
+  nsresult rv = CreateNSImageFromImageContainer(
+      aImage, aWhichFrame, aPresContext, aComputedStyle, aPreferredSize,
+      &newRepresentation, 1.0f, aIsEntirelyBlack);
+  if (NS_FAILED(rv) || !newRepresentation) {
+    return NS_ERROR_FAILURE;
+  }
+
+  NSSize size = newRepresentation.size;
   *aResult = [[NSImage alloc] init];
   [*aResult setSize:size];
 
-  NSImage* newRepresentation = nil;
-  nsresult rv = nsCocoaUtils::CreateNSImageFromImageContainer(
-      aImage, aWhichFrame, &newRepresentation, 1.0f, aIsEntirelyBlack);
-  if (NS_FAILED(rv) || !newRepresentation) {
-    return NS_ERROR_FAILURE;
-  }
-
   [[[newRepresentation representations] objectAtIndex:0] setSize:size];
-  [*aResult addRepresentation:[[newRepresentation representations] objectAtIndex:0]];
+  [*aResult
+      addRepresentation:[[newRepresentation representations] objectAtIndex:0]];
   [newRepresentation release];
   newRepresentation = nil;
 
-  rv = nsCocoaUtils::CreateNSImageFromImageContainer(aImage, aWhichFrame, &newRepresentation, 2.0f,
-                                                     aIsEntirelyBlack);
+  rv = CreateNSImageFromImageContainer(
+      aImage, aWhichFrame, aPresContext, aComputedStyle, aPreferredSize,
+      &newRepresentation, 2.0f, aIsEntirelyBlack);
   if (NS_FAILED(rv) || !newRepresentation) {
     return NS_ERROR_FAILURE;
   }
 
   [[[newRepresentation representations] objectAtIndex:0] setSize:size];
-  [*aResult addRepresentation:[[newRepresentation representations] objectAtIndex:0]];
+  [*aResult
+      addRepresentation:[[newRepresentation representations] objectAtIndex:0]];
   [newRepresentation release];
   return NS_OK;
 }
 
 // static
-void nsCocoaUtils::GetStringForNSString(const NSString* aSrc, nsAString& aDist) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+NSURL* nsCocoaUtils::ToNSURL(const nsAString& aURLString) {
+  nsAutoCString encodedURLString;
+  nsresult rv = NS_GetSpecWithNSURLEncoding(encodedURLString,
+                                            NS_ConvertUTF16toUTF8(aURLString));
+  NS_ENSURE_SUCCESS(rv, nullptr);
 
-  if (!aSrc) {
-    aDist.Truncate();
-    return;
+  NSString* encodedURLNSString = ToNSString(encodedURLString);
+  if (!encodedURLNSString) {
+    return nullptr;
   }
 
-  aDist.SetLength([aSrc length]);
-  [aSrc getCharacters:reinterpret_cast<unichar*>(aDist.BeginWriting())
-                range:NSMakeRange(0, [aSrc length])];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  return [NSURL URLWithString:encodedURLNSString];
 }
 
 // static
-NSString* nsCocoaUtils::ToNSString(const nsAString& aString) {
-  if (aString.IsEmpty()) {
-    return [NSString string];
-  }
-  return [NSString stringWithCharacters:reinterpret_cast<const unichar*>(aString.BeginReading())
-                                 length:aString.Length()];
-}
-
-// static
-NSString* nsCocoaUtils::ToNSString(const nsACString& aCString) {
-  if (aCString.IsEmpty()) {
-    return [NSString string];
-  }
-  return [[[NSString alloc] initWithBytes:aCString.BeginReading()
-                                   length:aCString.Length()
-                                 encoding:NSUTF8StringEncoding] autorelease];
-}
-
-// static
-void nsCocoaUtils::GeckoRectToNSRect(const nsIntRect& aGeckoRect, NSRect& aOutCocoaRect) {
+void nsCocoaUtils::GeckoRectToNSRect(const nsIntRect& aGeckoRect,
+                                     NSRect& aOutCocoaRect) {
   aOutCocoaRect.origin.x = aGeckoRect.x;
   aOutCocoaRect.origin.y = aGeckoRect.y;
   aOutCocoaRect.size.width = aGeckoRect.width;
@@ -605,51 +656,60 @@ void nsCocoaUtils::GeckoRectToNSRect(const nsIntRect& aGeckoRect, NSRect& aOutCo
 }
 
 // static
-void nsCocoaUtils::NSRectToGeckoRect(const NSRect& aCocoaRect, nsIntRect& aOutGeckoRect) {
+void nsCocoaUtils::NSRectToGeckoRect(const NSRect& aCocoaRect,
+                                     nsIntRect& aOutGeckoRect) {
   aOutGeckoRect.x = NSToIntRound(aCocoaRect.origin.x);
   aOutGeckoRect.y = NSToIntRound(aCocoaRect.origin.y);
-  aOutGeckoRect.width = NSToIntRound(aCocoaRect.origin.x + aCocoaRect.size.width) - aOutGeckoRect.x;
+  aOutGeckoRect.width =
+      NSToIntRound(aCocoaRect.origin.x + aCocoaRect.size.width) -
+      aOutGeckoRect.x;
   aOutGeckoRect.height =
-      NSToIntRound(aCocoaRect.origin.y + aCocoaRect.size.height) - aOutGeckoRect.y;
+      NSToIntRound(aCocoaRect.origin.y + aCocoaRect.size.height) -
+      aOutGeckoRect.y;
 }
 
 // static
-NSEvent* nsCocoaUtils::MakeNewCocoaEventWithType(NSEventType aEventType, NSEvent* aEvent) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+NSEvent* nsCocoaUtils::MakeNewCocoaEventWithType(NSEventType aEventType,
+                                                 NSEvent* aEvent) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
-  NSEvent* newEvent = [NSEvent keyEventWithType:aEventType
-                                       location:[aEvent locationInWindow]
-                                  modifierFlags:[aEvent modifierFlags]
-                                      timestamp:[aEvent timestamp]
-                                   windowNumber:[aEvent windowNumber]
-                                        context:[aEvent context]
-                                     characters:[aEvent characters]
-                    charactersIgnoringModifiers:[aEvent charactersIgnoringModifiers]
-                                      isARepeat:[aEvent isARepeat]
-                                        keyCode:[aEvent keyCode]];
+  NSEvent* newEvent =
+      [NSEvent keyEventWithType:aEventType
+                             location:[aEvent locationInWindow]
+                        modifierFlags:[aEvent modifierFlags]
+                            timestamp:[aEvent timestamp]
+                         windowNumber:[aEvent windowNumber]
+                              context:nil
+                           characters:[aEvent characters]
+          charactersIgnoringModifiers:[aEvent charactersIgnoringModifiers]
+                            isARepeat:[aEvent isARepeat]
+                              keyCode:[aEvent keyCode]];
   return newEvent;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
 }
 
 // static
-NSEvent* nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(const WidgetKeyboardEvent& aKeyEvent,
-                                                         NSInteger aWindowNumber,
-                                                         NSGraphicsContext* aContext) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+NSEvent* nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(
+    const WidgetKeyboardEvent& aKeyEvent, NSInteger aWindowNumber,
+    NSGraphicsContext* aContext) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
 
   NSEventType eventType;
   if (aKeyEvent.mMessage == eKeyUp) {
-    eventType = NSKeyUp;
+    eventType = NSEventTypeKeyUp;
   } else {
-    eventType = NSKeyDown;
+    eventType = NSEventTypeKeyDown;
   }
 
   static const uint32_t sModifierFlagMap[][2] = {
-      {MODIFIER_SHIFT, NSShiftKeyMask},       {MODIFIER_CONTROL, NSControlKeyMask},
-      {MODIFIER_ALT, NSAlternateKeyMask},     {MODIFIER_ALTGRAPH, NSAlternateKeyMask},
-      {MODIFIER_META, NSCommandKeyMask},      {MODIFIER_CAPSLOCK, NSAlphaShiftKeyMask},
-      {MODIFIER_NUMLOCK, NSNumericPadKeyMask}};
+      {MODIFIER_SHIFT, NSEventModifierFlagShift},
+      {MODIFIER_CONTROL, NSEventModifierFlagControl},
+      {MODIFIER_ALT, NSEventModifierFlagOption},
+      {MODIFIER_ALTGRAPH, NSEventModifierFlagOption},
+      {MODIFIER_META, NSEventModifierFlagCommand},
+      {MODIFIER_CAPSLOCK, NSEventModifierFlagCapsLock},
+      {MODIFIER_NUMLOCK, NSEventModifierFlagNumericPad}};
 
   NSUInteger modifierFlags = 0;
   for (uint32_t i = 0; i < ArrayLength(sModifierFlagMap); ++i) {
@@ -661,12 +721,15 @@ NSEvent* nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(const WidgetKeyboardEve
   NSString* characters;
   if (aKeyEvent.mCharCode) {
     characters =
-        [NSString stringWithCharacters:reinterpret_cast<const unichar*>(&(aKeyEvent.mCharCode))
+        [NSString stringWithCharacters:reinterpret_cast<const unichar*>(
+                                           &(aKeyEvent.mCharCode))
                                 length:1];
   } else {
-    uint32_t cocoaCharCode = nsCocoaUtils::ConvertGeckoKeyCodeToMacCharCode(aKeyEvent.mKeyCode);
-    characters = [NSString stringWithCharacters:reinterpret_cast<const unichar*>(&cocoaCharCode)
-                                         length:1];
+    uint32_t cocoaCharCode =
+        nsCocoaUtils::ConvertGeckoKeyCodeToMacCharCode(aKeyEvent.mKeyCode);
+    characters = [NSString
+        stringWithCharacters:reinterpret_cast<const unichar*>(&cocoaCharCode)
+                      length:1];
   }
 
   return [NSEvent keyEventWithType:eventType
@@ -680,47 +743,43 @@ NSEvent* nsCocoaUtils::MakeNewCococaEventFromWidgetEvent(const WidgetKeyboardEve
                          isARepeat:NO
                            keyCode:0];  // Native key code not currently needed
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
 }
 
 // static
-void nsCocoaUtils::InitNPCocoaEvent(NPCocoaEvent* aNPCocoaEvent) {
-  memset(aNPCocoaEvent, 0, sizeof(NPCocoaEvent));
-}
-
-// static
-void nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent, NSEvent* aNativeEvent) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+void nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent,
+                                  NSEvent* aNativeEvent) {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
   aInputEvent.mModifiers = ModifiersForEvent(aNativeEvent);
-  aInputEvent.mTime = PR_IntervalNow();
   aInputEvent.mTimeStamp = GetEventTimeStamp([aNativeEvent timestamp]);
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
 // static
 Modifiers nsCocoaUtils::ModifiersForEvent(NSEvent* aNativeEvent) {
-  NSUInteger modifiers = aNativeEvent ? [aNativeEvent modifierFlags] : [NSEvent modifierFlags];
+  NSUInteger modifiers =
+      aNativeEvent ? [aNativeEvent modifierFlags] : [NSEvent modifierFlags];
   Modifiers result = 0;
-  if (modifiers & NSShiftKeyMask) {
+  if (modifiers & NSEventModifierFlagShift) {
     result |= MODIFIER_SHIFT;
   }
-  if (modifiers & NSControlKeyMask) {
+  if (modifiers & NSEventModifierFlagControl) {
     result |= MODIFIER_CONTROL;
   }
-  if (modifiers & NSAlternateKeyMask) {
+  if (modifiers & NSEventModifierFlagOption) {
     result |= MODIFIER_ALT;
     // Mac's option key is similar to other platforms' AltGr key.
     // Let's set AltGr flag when option key is pressed for consistency with
     // other platforms.
     result |= MODIFIER_ALTGRAPH;
   }
-  if (modifiers & NSCommandKeyMask) {
+  if (modifiers & NSEventModifierFlagCommand) {
     result |= MODIFIER_META;
   }
 
-  if (modifiers & NSAlphaShiftKeyMask) {
+  if (modifiers & NSEventModifierFlagCapsLock) {
     result |= MODIFIER_CAPSLOCK;
   }
   // Mac doesn't have NumLock key.  We can assume that NumLock is always locked
@@ -731,13 +790,13 @@ Modifiers nsCocoaUtils::ModifiersForEvent(NSEvent* aNativeEvent) {
   // We should notify locked state only when keys in numpad are pressed.
   // By this, web applications may not be confused by unexpected numpad key's
   // key event with unlocked state.
-  if (modifiers & NSNumericPadKeyMask) {
+  if (modifiers & NSEventModifierFlagNumericPad) {
     result |= MODIFIER_NUMLOCK;
   }
 
-  // Be aware, NSFunctionKeyMask is included when arrow keys, home key or some
-  // other keys are pressed. We cannot check whether 'fn' key is pressed or
-  // not by the flag.
+  // Be aware, NSEventModifierFlagFunction is included when arrow keys, home key
+  // or some other keys are pressed. We cannot check whether 'fn' key is pressed
+  // or not by the flag.
 
   return result;
 }
@@ -745,25 +804,25 @@ Modifiers nsCocoaUtils::ModifiersForEvent(NSEvent* aNativeEvent) {
 // static
 UInt32 nsCocoaUtils::ConvertToCarbonModifier(NSUInteger aCocoaModifier) {
   UInt32 carbonModifier = 0;
-  if (aCocoaModifier & NSAlphaShiftKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagCapsLock) {
     carbonModifier |= alphaLock;
   }
-  if (aCocoaModifier & NSControlKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagControl) {
     carbonModifier |= controlKey;
   }
-  if (aCocoaModifier & NSAlternateKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagOption) {
     carbonModifier |= optionKey;
   }
-  if (aCocoaModifier & NSShiftKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagShift) {
     carbonModifier |= shiftKey;
   }
-  if (aCocoaModifier & NSCommandKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagCommand) {
     carbonModifier |= cmdKey;
   }
-  if (aCocoaModifier & NSNumericPadKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagNumericPad) {
     carbonModifier |= kEventKeyModifierNumLockMask;
   }
-  if (aCocoaModifier & NSFunctionKeyMask) {
+  if (aCocoaModifier & NSEventModifierFlagFunction) {
     carbonModifier |= kEventKeyModifierFnMask;
   }
   return carbonModifier;
@@ -801,12 +860,9 @@ bool nsCocoaUtils::HiDPIEnabled() {
       if ([desc objectForKey:NSDeviceIsScreen] == nil) {
         continue;
       }
-      CGFloat scale = [screen respondsToSelector:@selector(backingScaleFactor)]
-                          ? [screen backingScaleFactor]
-                          : 1.0;
       // Currently, we only care about differentiating "1.0" and "2.0",
       // so we set one of the two low bits to record which.
-      if (scale > 1.0) {
+      if ([screen backingScaleFactor] > 1.0) {
         scaleFactors |= 2;
       } else {
         scaleFactors |= 1;
@@ -826,9 +882,12 @@ bool nsCocoaUtils::HiDPIEnabled() {
   return sHiDPIEnabled;
 }
 
-void nsCocoaUtils::GetCommandsFromKeyEvent(NSEvent* aEvent,
-                                           nsTArray<KeyBindingsCommand>& aCommands) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+// static
+void nsCocoaUtils::InvalidateHiDPIState() { sHiDPIPrefInitialized = false; }
+
+void nsCocoaUtils::GetCommandsFromKeyEvent(
+    NSEvent* aEvent, nsTArray<KeyBindingsCommand>& aCommands) {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
 
   MOZ_ASSERT(aEvent);
 
@@ -840,9 +899,10 @@ void nsCocoaUtils::GetCommandsFromKeyEvent(NSEvent* aEvent,
   [sNativeKeyBindingsRecorder startRecording:aCommands];
 
   // This will trigger 0 - N calls to doCommandBySelector: and insertText:
-  [sNativeKeyBindingsRecorder interpretKeyEvents:[NSArray arrayWithObject:aEvent]];
+  [sNativeKeyBindingsRecorder
+      interpretKeyEvents:[NSArray arrayWithObject:aEvent]];
 
-  NS_OBJC_END_TRY_ABORT_BLOCK;
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }
 
 @implementation NativeKeyBindingsRecorder
@@ -1001,7 +1061,8 @@ static const KeyConversionData gKeyConversions[] = {
 
 };
 
-uint32_t nsCocoaUtils::ConvertGeckoNameToMacCharCode(const nsAString& aKeyCodeName) {
+uint32_t nsCocoaUtils::ConvertGeckoNameToMacCharCode(
+    const nsAString& aKeyCodeName) {
   if (aKeyCodeName.IsEmpty()) {
     return 0;
   }
@@ -1037,14 +1098,78 @@ uint32_t nsCocoaUtils::ConvertGeckoKeyCodeToMacCharCode(uint32_t aKeyCode) {
   return 0;
 }
 
+NSEventModifierFlags nsCocoaUtils::ConvertWidgetModifiersToMacModifierFlags(
+    nsIWidget::Modifiers aNativeModifiers) {
+  if (!aNativeModifiers) {
+    return 0;
+  }
+  struct ModifierFlagMapEntry {
+    nsIWidget::Modifiers mWidgetModifier;
+    NSEventModifierFlags mModifierFlags;
+  };
+  static constexpr ModifierFlagMapEntry sModifierFlagMap[] = {
+      {nsIWidget::CAPS_LOCK, NSEventModifierFlagCapsLock},
+      {nsIWidget::SHIFT_L, NSEventModifierFlagShift | 0x0002},
+      {nsIWidget::SHIFT_R, NSEventModifierFlagShift | 0x0004},
+      {nsIWidget::CTRL_L, NSEventModifierFlagControl | 0x0001},
+      {nsIWidget::CTRL_R, NSEventModifierFlagControl | 0x2000},
+      {nsIWidget::ALT_L, NSEventModifierFlagOption | 0x0020},
+      {nsIWidget::ALT_R, NSEventModifierFlagOption | 0x0040},
+      {nsIWidget::COMMAND_L, NSEventModifierFlagCommand | 0x0008},
+      {nsIWidget::COMMAND_R, NSEventModifierFlagCommand | 0x0010},
+      {nsIWidget::NUMERIC_KEY_PAD, NSEventModifierFlagNumericPad},
+      {nsIWidget::HELP, NSEventModifierFlagHelp},
+      {nsIWidget::FUNCTION, NSEventModifierFlagFunction}};
+
+  NSEventModifierFlags modifierFlags = 0;
+  for (const ModifierFlagMapEntry& entry : sModifierFlagMap) {
+    if (aNativeModifiers & entry.mWidgetModifier) {
+      modifierFlags |= entry.mModifierFlags;
+    }
+  }
+  return modifierFlags;
+}
+
+mozilla::MouseButton nsCocoaUtils::ButtonForEvent(NSEvent* aEvent) {
+  switch (aEvent.type) {
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeLeftMouseDragged:
+    case NSEventTypeLeftMouseUp:
+      return MouseButton::ePrimary;
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeRightMouseDragged:
+    case NSEventTypeRightMouseUp:
+      return MouseButton::eSecondary;
+    case NSEventTypeOtherMouseDown:
+    case NSEventTypeOtherMouseDragged:
+    case NSEventTypeOtherMouseUp:
+      switch (aEvent.buttonNumber) {
+        case 3:
+          return MouseButton::eX1;
+        case 4:
+          return MouseButton::eX2;
+        default:
+          // The middle button usually has button 2, but if this is a
+          // synthesized event (for which you cannot specify a buttonNumber),
+          // then the button will be 0. Treat all remaining OtherMouse events as
+          // the middle button.
+          return MouseButton::eMiddle;
+      }
+    default:
+      // Treat non-mouse events as the primary mouse button.
+      return MouseButton::ePrimary;
+  }
+}
+
 NSMutableAttributedString* nsCocoaUtils::GetNSMutableAttributedString(
-    const nsAString& aText, const nsTArray<mozilla::FontRange>& aFontRanges, const bool aIsVertical,
-    const CGFloat aBackingScaleFactor) {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL
+    const nsAString& aText, const nsTArray<mozilla::FontRange>& aFontRanges,
+    const bool aIsVertical, const CGFloat aBackingScaleFactor) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN
 
   NSString* nsstr = nsCocoaUtils::ToNSString(aText);
   NSMutableAttributedString* attrStr =
-      [[[NSMutableAttributedString alloc] initWithString:nsstr attributes:nil] autorelease];
+      [[[NSMutableAttributedString alloc] initWithString:nsstr
+                                              attributes:nil] autorelease];
 
   int32_t lastOffset = aText.Length();
   for (auto i = aFontRanges.Length(); i > 0; --i) {
@@ -1057,7 +1182,8 @@ NSMutableAttributedString* nsCocoaUtils::GetNSMutableAttributedString(
     }
 
     NSDictionary* attrs = @{NSFontAttributeName : font};
-    NSRange range = NSMakeRange(fontRange.mStartOffset, lastOffset - fontRange.mStartOffset);
+    NSRange range = NSMakeRange(fontRange.mStartOffset,
+                                lastOffset - fontRange.mStartOffset);
     [attrStr setAttributes:attrs range:range];
     lastOffset = fontRange.mStartOffset;
   }
@@ -1070,7 +1196,7 @@ NSMutableAttributedString* nsCocoaUtils::GetNSMutableAttributedString(
 
   return attrStr;
 
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil)
 }
 
 TimeStamp nsCocoaUtils::GetEventTimeStamp(NSTimeInterval aEventTime) {
@@ -1085,7 +1211,8 @@ TimeStamp nsCocoaUtils::GetEventTimeStamp(NSTimeInterval aEventTime) {
   // Event timestamps are NSTimeIntervals (seconds) since boot. So the two time
   // representations already have the same base; we only need to convert
   // seconds into ticks.
-  int64_t tick = BaseTimeDurationPlatformUtils::TicksFromMilliseconds(aEventTime * 1000.0);
+  int64_t tick =
+      BaseTimeDurationPlatformUtils::TicksFromMilliseconds(aEventTime * 1000.0);
   return TimeStamp::FromSystemTime(tick);
 }
 
@@ -1107,53 +1234,15 @@ bool nsCocoaUtils::ShouldZoomOnTitlebarDoubleClick() {
   if ([NSWindow respondsToSelector:@selector(_shouldZoomOnDoubleClick)]) {
     return [NSWindow _shouldZoomOnDoubleClick];
   }
-  if (nsCocoaFeatures::OnElCapitanOrLater()) {
-    return [ActionOnDoubleClickSystemPref() isEqualToString:@"Maximize"];
-  }
-  return false;
+  return [ActionOnDoubleClickSystemPref() isEqualToString:@"Maximize"];
 }
 
 bool nsCocoaUtils::ShouldMinimizeOnTitlebarDoubleClick() {
   // Check the system preferences.
-  // We could also check -[NSWindow _shouldMiniaturizeOnDoubleClick]. It's not clear to me which
-  // approach would be preferable; neither is public API.
-  if (nsCocoaFeatures::OnElCapitanOrLater()) {
-    return [ActionOnDoubleClickSystemPref() isEqualToString:@"Minimize"];
-  }
-
-  // Pre-10.11:
-  NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
-  NSString* kAppleMiniaturizeOnDoubleClickKey = @"AppleMiniaturizeOnDoubleClick";
-  id value1 = [userDefaults objectForKey:kAppleMiniaturizeOnDoubleClickKey];
-  return [value1 isKindOfClass:[NSValue class]] && [value1 boolValue];
+  // We could also check -[NSWindow _shouldMiniaturizeOnDoubleClick]. It's not
+  // clear to me which approach would be preferable; neither is public API.
+  return [ActionOnDoubleClickSystemPref() isEqualToString:@"Minimize"];
 }
-
-// AVAuthorizationStatus is not needed unless we are running on 10.14.
-// However, on pre-10.14 SDK's, AVAuthorizationStatus and its enum values
-// are both defined and prohibited from use by compile-time checks. We
-// define a copy of AVAuthorizationStatus to allow compilation on pre-10.14
-// SDK's. The enum values must match what is defined in the 10.14 SDK.
-// We use ASSERTS for 10.14 SDK builds to check the enum values match.
-enum GeckoAVAuthorizationStatus : NSInteger {
-  GeckoAVAuthorizationStatusNotDetermined = 0,
-  GeckoAVAuthorizationStatusRestricted = 1,
-  GeckoAVAuthorizationStatusDenied = 2,
-  GeckoAVAuthorizationStatusAuthorized = 3
-};
-
-#if !defined(MAC_OS_X_VERSION_10_14) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_14
-// Define authorizationStatusForMediaType: as returning
-// GeckoAVAuthorizationStatus instead of AVAuthorizationStatus to allow
-// compilation on pre-10.14 SDK's.
-@interface AVCaptureDevice (GeckoAVAuthorizationStatus)
-+ (GeckoAVAuthorizationStatus)authorizationStatusForMediaType:(AVMediaType)mediaType;
-@end
-
-@interface AVCaptureDevice (WithCompletionHandler)
-+ (void)requestAccessForMediaType:(AVMediaType)mediaType
-                completionHandler:(void (^)(BOOL granted))handler;
-@end
-#endif
 
 static const char* AVMediaTypeToString(AVMediaType aType) {
   if (aType == AVMediaTypeVideo) {
@@ -1171,16 +1260,16 @@ static void LogAuthorizationStatus(AVMediaType aType, int aState) {
   const char* stateString;
 
   switch (aState) {
-    case GeckoAVAuthorizationStatusAuthorized:
+    case AVAuthorizationStatusAuthorized:
       stateString = "AVAuthorizationStatusAuthorized";
       break;
-    case GeckoAVAuthorizationStatusDenied:
+    case AVAuthorizationStatusDenied:
       stateString = "AVAuthorizationStatusDenied";
       break;
-    case GeckoAVAuthorizationStatusNotDetermined:
+    case AVAuthorizationStatusNotDetermined:
       stateString = "AVAuthorizationStatusNotDetermined";
       break;
-    case GeckoAVAuthorizationStatusRestricted:
+    case AVAuthorizationStatusRestricted:
       stateString = "AVAuthorizationStatusRestricted";
       break;
     default:
@@ -1193,39 +1282,37 @@ static void LogAuthorizationStatus(AVMediaType aType, int aState) {
 static nsresult GetPermissionState(AVMediaType aMediaType, uint16_t& aState) {
   MOZ_ASSERT(aMediaType == AVMediaTypeVideo || aMediaType == AVMediaTypeAudio);
 
-  // Only attempt to check authorization status on 10.14+.
-  if (@available(macOS 10.14, *)) {
-    GeckoAVAuthorizationStatus authStatus = static_cast<GeckoAVAuthorizationStatus>(
-        [AVCaptureDevice authorizationStatusForMediaType:aMediaType]);
-    LogAuthorizationStatus(aMediaType, authStatus);
+  AVAuthorizationStatus authStatus = static_cast<AVAuthorizationStatus>(
+      [AVCaptureDevice authorizationStatusForMediaType:aMediaType]);
+  LogAuthorizationStatus(aMediaType, authStatus);
 
-    // Convert GeckoAVAuthorizationStatus to nsIOSPermissionRequest const
-    switch (authStatus) {
-      case GeckoAVAuthorizationStatusAuthorized:
-        aState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
-        return NS_OK;
-      case GeckoAVAuthorizationStatusDenied:
-        aState = nsIOSPermissionRequest::PERMISSION_STATE_DENIED;
-        return NS_OK;
-      case GeckoAVAuthorizationStatusNotDetermined:
-        aState = nsIOSPermissionRequest::PERMISSION_STATE_NOTDETERMINED;
-        return NS_OK;
-      case GeckoAVAuthorizationStatusRestricted:
-        aState = nsIOSPermissionRequest::PERMISSION_STATE_RESTRICTED;
-        return NS_OK;
-      default:
-        MOZ_ASSERT(false, "Invalid authorization status");
-        return NS_ERROR_UNEXPECTED;
-    }
+  // Convert AVAuthorizationStatus to nsIOSPermissionRequest const
+  switch (authStatus) {
+    case AVAuthorizationStatusAuthorized:
+      aState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
+      return NS_OK;
+    case AVAuthorizationStatusDenied:
+      aState = nsIOSPermissionRequest::PERMISSION_STATE_DENIED;
+      return NS_OK;
+    case AVAuthorizationStatusNotDetermined:
+      aState = nsIOSPermissionRequest::PERMISSION_STATE_NOTDETERMINED;
+      return NS_OK;
+    case AVAuthorizationStatusRestricted:
+      aState = nsIOSPermissionRequest::PERMISSION_STATE_RESTRICTED;
+      return NS_OK;
+    default:
+      MOZ_ASSERT(false, "Invalid authorization status");
+      return NS_ERROR_UNEXPECTED;
   }
-  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
-nsresult nsCocoaUtils::GetVideoCapturePermissionState(uint16_t& aPermissionState) {
+nsresult nsCocoaUtils::GetVideoCapturePermissionState(
+    uint16_t& aPermissionState) {
   return GetPermissionState(AVMediaTypeVideo, aPermissionState);
 }
 
-nsresult nsCocoaUtils::GetAudioCapturePermissionState(uint16_t& aPermissionState) {
+nsresult nsCocoaUtils::GetAudioCapturePermissionState(
+    uint16_t& aPermissionState) {
   return GetPermissionState(AVMediaTypeAudio, aPermissionState);
 }
 
@@ -1235,107 +1322,108 @@ nsresult nsCocoaUtils::GetAudioCapturePermissionState(uint16_t& aPermissionState
 // hasn't yet been asked yet or the user previously denied the prompt), use
 // PERMISSION_STATE_DENIED. Returns NS_ERROR_NOT_IMPLEMENTED on macOS 10.14
 // and earlier.
-nsresult nsCocoaUtils::GetScreenCapturePermissionState(uint16_t& aPermissionState) {
+nsresult nsCocoaUtils::GetScreenCapturePermissionState(
+    uint16_t& aPermissionState) {
   aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_NOTDETERMINED;
 
-  // Only attempt to check screen recording authorization status on 10.15+.
-  // On earlier macOS versions, screen recording is allowed by default.
-  if (@available(macOS 10.15, *)) {
-    if (!StaticPrefs::media_macos_screenrecording_oscheck_enabled()) {
-      aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
-      LOG("screen authorization status: authorized (test disabled via pref)");
-      return NS_OK;
-    }
-
-    // Unlike with camera and microphone capture, there is no support for
-    // checking the screen recording permission status. Instead, an application
-    // can use the presence of window names (which are privacy sensitive) in
-    // the window info list as an indication. The list only includes window
-    // names if the calling application has been authorized to record the
-    // screen. We use the window name, window level, and owning PID as
-    // heuristics to determine if we have screen recording permission.
-    AutoCFRelease<CFArrayRef> windowArray =
-        CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
-    if (!windowArray) {
-      LOG("GetScreenCapturePermissionState() ERROR: got NULL window info list");
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    int32_t windowLevelDock = CGWindowLevelForKey(kCGDockWindowLevelKey);
-    int32_t windowLevelNormal = CGWindowLevelForKey(kCGNormalWindowLevelKey);
-    LOG("GetScreenCapturePermissionState(): DockWindowLevel: %d, "
-        "NormalWindowLevel: %d",
-        windowLevelDock, windowLevelNormal);
-
-    int32_t thisPid = [[NSProcessInfo processInfo] processIdentifier];
-
-    CFIndex windowCount = CFArrayGetCount(windowArray);
-    LOG("GetScreenCapturePermissionState() returned %ld windows", windowCount);
-    if (windowCount == 0) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    for (CFIndex i = 0; i < windowCount; i++) {
-      CFDictionaryRef windowDict =
-          reinterpret_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(windowArray, i));
-
-      // Get the window owner's PID
-      int32_t windowOwnerPid = -1;
-      CFNumberRef windowPidRef =
-          reinterpret_cast<CFNumberRef>(CFDictionaryGetValue(windowDict, kCGWindowOwnerPID));
-      if (!windowPidRef || !CFNumberGetValue(windowPidRef, kCFNumberIntType, &windowOwnerPid)) {
-        LOG("GetScreenCapturePermissionState() ERROR: failed to get window owner");
-        continue;
-      }
-
-      // Our own window names are always readable and
-      // therefore not relevant to the heuristic.
-      if (thisPid == windowOwnerPid) {
-        continue;
-      }
-
-      CFStringRef windowName =
-          reinterpret_cast<CFStringRef>(CFDictionaryGetValue(windowDict, kCGWindowName));
-      if (!windowName) {
-        continue;
-      }
-
-      CFNumberRef windowLayerRef =
-          reinterpret_cast<CFNumberRef>(CFDictionaryGetValue(windowDict, kCGWindowLayer));
-      int32_t windowLayer;
-      if (!windowLayerRef || !CFNumberGetValue(windowLayerRef, kCFNumberIntType, &windowLayer)) {
-        LOG("GetScreenCapturePermissionState() ERROR: failed to get layer");
-        continue;
-      }
-
-      // If we have a window name and the window is in the dock or normal window
-      // level, and for another process, assume we have screen recording access.
-      LOG("GetScreenCapturePermissionState(): windowLayer: %d", windowLayer);
-      if (windowLayer == windowLevelDock || windowLayer == windowLevelNormal) {
-        aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
-        LOG("screen authorization status: authorized");
-        return NS_OK;
-      }
-    }
-
-    aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_DENIED;
-    LOG("screen authorization status: not authorized");
+  if (!StaticPrefs::media_macos_screenrecording_oscheck_enabled()) {
+    aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
+    LOG("screen authorization status: authorized (test disabled via pref)");
     return NS_OK;
   }
 
-  LOG("GetScreenCapturePermissionState(): nothing to do, not on 10.15+");
-  return NS_ERROR_NOT_IMPLEMENTED;
+  // Unlike with camera and microphone capture, there is no support for
+  // checking the screen recording permission status. Instead, an application
+  // can use the presence of window names (which are privacy sensitive) in
+  // the window info list as an indication. The list only includes window
+  // names if the calling application has been authorized to record the
+  // screen. We use the window name, window level, and owning PID as
+  // heuristics to determine if we have screen recording permission.
+  AutoCFRelease<CFArrayRef> windowArray =
+      CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+  if (!windowArray) {
+    LOG("GetScreenCapturePermissionState() ERROR: got NULL window info list");
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  int32_t windowLevelDock = CGWindowLevelForKey(kCGDockWindowLevelKey);
+  int32_t windowLevelNormal = CGWindowLevelForKey(kCGNormalWindowLevelKey);
+  LOG("GetScreenCapturePermissionState(): DockWindowLevel: %d, "
+      "NormalWindowLevel: %d",
+      windowLevelDock, windowLevelNormal);
+
+  int32_t thisPid = [[NSProcessInfo processInfo] processIdentifier];
+
+  CFIndex windowCount = CFArrayGetCount(windowArray);
+  LOG("GetScreenCapturePermissionState() returned %ld windows", windowCount);
+  if (windowCount == 0) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  for (CFIndex i = 0; i < windowCount; i++) {
+    CFDictionaryRef windowDict = reinterpret_cast<CFDictionaryRef>(
+        CFArrayGetValueAtIndex(windowArray, i));
+
+    // Get the window owner's PID
+    int32_t windowOwnerPid = -1;
+    CFNumberRef windowPidRef = reinterpret_cast<CFNumberRef>(
+        CFDictionaryGetValue(windowDict, kCGWindowOwnerPID));
+    if (!windowPidRef ||
+        !CFNumberGetValue(windowPidRef, kCFNumberIntType, &windowOwnerPid)) {
+      LOG("GetScreenCapturePermissionState() ERROR: failed to get window "
+          "owner");
+      continue;
+    }
+
+    // Our own window names are always readable and
+    // therefore not relevant to the heuristic.
+    if (thisPid == windowOwnerPid) {
+      continue;
+    }
+
+    CFStringRef windowName = reinterpret_cast<CFStringRef>(
+        CFDictionaryGetValue(windowDict, kCGWindowName));
+    if (!windowName) {
+      continue;
+    }
+
+    CFNumberRef windowLayerRef = reinterpret_cast<CFNumberRef>(
+        CFDictionaryGetValue(windowDict, kCGWindowLayer));
+    int32_t windowLayer;
+    if (!windowLayerRef ||
+        !CFNumberGetValue(windowLayerRef, kCFNumberIntType, &windowLayer)) {
+      LOG("GetScreenCapturePermissionState() ERROR: failed to get layer");
+      continue;
+    }
+
+    // If we have a window name and the window is in the dock or normal window
+    // level, and for another process, assume we have screen recording access.
+    LOG("GetScreenCapturePermissionState(): windowLayer: %d", windowLayer);
+    if (windowLayer == windowLevelDock || windowLayer == windowLevelNormal) {
+      aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
+      LOG("screen authorization status: authorized");
+      return NS_OK;
+    }
+  }
+
+  aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_DENIED;
+  LOG("screen authorization status: not authorized");
+  return NS_OK;
 }
 
-nsresult nsCocoaUtils::RequestVideoCapturePermission(RefPtr<Promise>& aPromise) {
+nsresult nsCocoaUtils::RequestVideoCapturePermission(
+    RefPtr<Promise>& aPromise) {
   MOZ_ASSERT(NS_IsMainThread());
-  return nsCocoaUtils::RequestCapturePermission(AVMediaTypeVideo, aPromise, sVideoCapturePromises,
+  return nsCocoaUtils::RequestCapturePermission(AVMediaTypeVideo, aPromise,
+                                                sVideoCapturePromises,
                                                 VideoCompletionHandler);
 }
 
-nsresult nsCocoaUtils::RequestAudioCapturePermission(RefPtr<Promise>& aPromise) {
+nsresult nsCocoaUtils::RequestAudioCapturePermission(
+    RefPtr<Promise>& aPromise) {
   MOZ_ASSERT(NS_IsMainThread());
-  return nsCocoaUtils::RequestCapturePermission(AVMediaTypeAudio, aPromise, sAudioCapturePromises,
+  return nsCocoaUtils::RequestCapturePermission(AVMediaTypeAudio, aPromise,
+                                                sAudioCapturePromises,
                                                 AudioCompletionHandler);
 }
 
@@ -1347,57 +1435,37 @@ nsresult nsCocoaUtils::RequestAudioCapturePermission(RefPtr<Promise>& aPromise) 
 // request completes and must resolve any waiting Promises on the main
 // thread.
 //
-nsresult nsCocoaUtils::RequestCapturePermission(AVMediaType aType, RefPtr<Promise>& aPromise,
-                                                PromiseArray& aPromiseList,
-                                                void (^aHandler)(BOOL granted)) {
+nsresult nsCocoaUtils::RequestCapturePermission(
+    AVMediaType aType, RefPtr<Promise>& aPromise, PromiseArray& aPromiseList,
+    void (^aHandler)(BOOL granted)) {
   MOZ_ASSERT(aType == AVMediaTypeVideo || aType == AVMediaTypeAudio);
-#if defined(MAC_OS_X_VERSION_10_14)
-  // Ensure our enum constants match. We can only do this when
-  // compiling on 10.14+ because AVAuthorizationStatus is
-  // prohibited by preprocessor checks on earlier OS versions.
-  if (@available(macOS 10.14, *)) {
-    static_assert(
-        (int)GeckoAVAuthorizationStatusNotDetermined == (int)AVAuthorizationStatusNotDetermined,
-        "GeckoAVAuthorizationStatusNotDetermined  does not match");
-    static_assert((int)GeckoAVAuthorizationStatusRestricted == (int)AVAuthorizationStatusRestricted,
-                  "GeckoAVAuthorizationStatusRestricted does not match");
-    static_assert((int)GeckoAVAuthorizationStatusDenied == (int)AVAuthorizationStatusDenied,
-                  "GeckoAVAuthorizationStatusDenied does not match");
-    static_assert((int)GeckoAVAuthorizationStatusAuthorized == (int)AVAuthorizationStatusAuthorized,
-                  "GeckoAVAuthorizationStatusAuthorized does not match");
-  }
-#endif
   LOG("RequestCapturePermission(%s)", AVMediaTypeToString(aType));
 
-  // Only attempt to request authorization on 10.14+.
-  if (@available(macOS 10.14, *)) {
-    sMediaCaptureMutex.Lock();
+  sMediaCaptureMutex.Lock();
 
-    // Initialize our list of promises on first invocation
-    if (aPromiseList == nullptr) {
-      aPromiseList = new nsTArray<RefPtr<Promise>>;
-      ClearOnShutdown(&aPromiseList);
-    }
+  // Initialize our list of promises on first invocation
+  if (aPromiseList == nullptr) {
+    aPromiseList = new nsTArray<RefPtr<Promise>>;
+    ClearOnShutdown(&aPromiseList);
+  }
 
-    aPromiseList->AppendElement(aPromise);
-    size_t nPromises = aPromiseList->Length();
+  aPromiseList->AppendElement(aPromise);
+  size_t nPromises = aPromiseList->Length();
 
-    sMediaCaptureMutex.Unlock();
+  sMediaCaptureMutex.Unlock();
 
-    LOG("RequestCapturePermission(%s): %ld promise(s) unresolved", AVMediaTypeToString(aType),
-        nPromises);
+  LOG("RequestCapturePermission(%s): %ld promise(s) unresolved",
+      AVMediaTypeToString(aType), nPromises);
 
-    // If we had one or more more existing promises waiting to be resolved
-    // by the completion handler, we don't need to start another request.
-    if (nPromises > 1) {
-      return NS_OK;
-    }
-
-    // Start the request
-    [AVCaptureDevice requestAccessForMediaType:aType completionHandler:aHandler];
+  // If we had one or more more existing promises waiting to be resolved
+  // by the completion handler, we don't need to start another request.
+  if (nPromises > 1) {
     return NS_OK;
   }
-  return NS_ERROR_NOT_IMPLEMENTED;
+
+  // Start the request
+  [AVCaptureDevice requestAccessForMediaType:aType completionHandler:aHandler];
+  return NS_OK;
 }
 
 //
@@ -1416,27 +1484,30 @@ void (^nsCocoaUtils::VideoCompletionHandler)(BOOL) = ^void(BOOL granted) {
   nsCocoaUtils::ResolveVideoCapturePromises(granted);
 };
 
-void nsCocoaUtils::ResolveMediaCapturePromises(bool aGranted, PromiseArray& aPromiseList) {
+void nsCocoaUtils::ResolveMediaCapturePromises(bool aGranted,
+                                               PromiseArray& aPromiseList) {
   StaticMutexAutoLock lock(sMediaCaptureMutex);
 
   // Remove each promise from the list and resolve it.
   while (aPromiseList->Length() > 0) {
-    RefPtr<Promise> promise = aPromiseList->LastElement();
-    aPromiseList->RemoveLastElement();
+    RefPtr<Promise> promise = aPromiseList->PopLastElement();
 
     // Resolve on main thread
-    nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-        "ResolveMediaAccessPromise",
-        [aGranted, aPromise = std::move(promise)]() { aPromise->MaybeResolve(aGranted); }));
+    nsCOMPtr<nsIRunnable> runnable(
+        NS_NewRunnableFunction("ResolveMediaAccessPromise",
+                               [aGranted, aPromise = std::move(promise)]() {
+                                 aPromise->MaybeResolve(aGranted);
+                               }));
     NS_DispatchToMainThread(runnable.forget());
   }
 }
 
 void nsCocoaUtils::ResolveAudioCapturePromises(bool aGranted) {
   // Resolve on main thread
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction("ResolveAudioCapturePromise", [aGranted]() {
-    ResolveMediaCapturePromises(aGranted, sAudioCapturePromises);
-  }));
+  nsCOMPtr<nsIRunnable> runnable(
+      NS_NewRunnableFunction("ResolveAudioCapturePromise", [aGranted]() {
+        ResolveMediaCapturePromises(aGranted, sAudioCapturePromises);
+      }));
   NS_DispatchToMainThread(runnable.forget());
 }
 
@@ -1458,8 +1529,305 @@ nsresult nsCocoaUtils::MaybeRequestScreenCapturePermission() {
 
 void nsCocoaUtils::ResolveVideoCapturePromises(bool aGranted) {
   // Resolve on main thread
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction("ResolveVideoCapturePromise", [aGranted]() {
-    ResolveMediaCapturePromises(aGranted, sVideoCapturePromises);
-  }));
+  nsCOMPtr<nsIRunnable> runnable(
+      NS_NewRunnableFunction("ResolveVideoCapturePromise", [aGranted]() {
+        ResolveMediaCapturePromises(aGranted, sVideoCapturePromises);
+      }));
   NS_DispatchToMainThread(runnable.forget());
+}
+
+static PanGestureInput::PanGestureType PanGestureTypeForEvent(NSEvent* aEvent) {
+  switch ([aEvent phase]) {
+    case NSEventPhaseMayBegin:
+      return PanGestureInput::PANGESTURE_MAYSTART;
+    case NSEventPhaseCancelled:
+      return PanGestureInput::PANGESTURE_CANCELLED;
+    case NSEventPhaseBegan:
+      return PanGestureInput::PANGESTURE_START;
+    case NSEventPhaseChanged:
+      return PanGestureInput::PANGESTURE_PAN;
+    case NSEventPhaseEnded:
+      return PanGestureInput::PANGESTURE_END;
+    case NSEventPhaseNone:
+      switch ([aEvent momentumPhase]) {
+        case NSEventPhaseBegan:
+          return PanGestureInput::PANGESTURE_MOMENTUMSTART;
+        case NSEventPhaseChanged:
+          return PanGestureInput::PANGESTURE_MOMENTUMPAN;
+        case NSEventPhaseEnded:
+          return PanGestureInput::PANGESTURE_MOMENTUMEND;
+        default:
+          NS_ERROR("unexpected event phase");
+          return PanGestureInput::PANGESTURE_PAN;
+      }
+    default:
+      NS_ERROR("unexpected event phase");
+      return PanGestureInput::PANGESTURE_PAN;
+  }
+}
+
+bool static ShouldConsiderStartingSwipeFromEvent(NSEvent* anEvent) {
+  // Only initiate horizontal tracking for gestures that have just begun --
+  // otherwise a scroll to one side of the page can have a swipe tacked on
+  // to it.
+  // [NSEvent isSwipeTrackingFromScrollEventsEnabled] checks whether the
+  // AppleEnableSwipeNavigateWithScrolls global preference is set.  If it isn't,
+  // fluid swipe tracking is disabled, and a horizontal two-finger gesture is
+  // always a scroll (even in Safari).  This preference can't (currently) be set
+  // from the Preferences UI -- only using 'defaults write'.
+  NSEventPhase eventPhase = [anEvent phase];
+  return [anEvent type] == NSEventTypeScrollWheel &&
+         eventPhase == NSEventPhaseBegan &&
+         [anEvent hasPreciseScrollingDeltas] &&
+         [NSEvent isSwipeTrackingFromScrollEventsEnabled];
+}
+
+PanGestureInput nsCocoaUtils::CreatePanGestureEvent(
+    NSEvent* aNativeEvent, TimeStamp aTimeStamp,
+    const ScreenPoint& aPanStartPoint, const ScreenPoint& aPreciseDelta,
+    const gfx::IntPoint& aLineOrPageDelta, Modifiers aModifiers) {
+  PanGestureInput::PanGestureType type = PanGestureTypeForEvent(aNativeEvent);
+  // Always force zero deltas on event types that shouldn't cause any scrolling,
+  // so that we don't dispatch DOM wheel events for them.
+  bool shouldIgnoreDeltas = type == PanGestureInput::PANGESTURE_MAYSTART ||
+                            type == PanGestureInput::PANGESTURE_CANCELLED;
+
+  PanGestureInput panEvent(
+      type, aTimeStamp, aPanStartPoint,
+      !shouldIgnoreDeltas ? aPreciseDelta : ScreenPoint(), aModifiers,
+      PanGestureInput::IsEligibleForSwipe(
+          ShouldConsiderStartingSwipeFromEvent(aNativeEvent)));
+
+  if (!shouldIgnoreDeltas) {
+    panEvent.SetLineOrPageDeltas(aLineOrPageDelta.x, aLineOrPageDelta.y);
+  }
+
+  return panEvent;
+}
+
+bool nsCocoaUtils::IsValidPasteboardType(NSString* aAvailableType,
+                                         bool aAllowFileURL) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  // Prevent exposing fileURL for non-fileURL type.
+  // We need URL provided by dropped webloc file, but don't need file's URL.
+  // kUTTypeFileURL is returned by [NSPasteboard availableTypeFromArray:] for
+  // kPublicUrlPboardType, since it conforms to kPublicUrlPboardType.
+  bool isValid = true;
+  if (!aAllowFileURL &&
+      [aAvailableType
+          isEqualToString:[UTIHelper
+                              stringFromPboardType:(NSString*)
+                                                       kUTTypeFileURL]]) {
+    isValid = false;
+  }
+
+  return isValid;
+
+  NS_OBJC_END_TRY_BLOCK_RETURN(false);
+}
+
+NSString* nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+    NSPasteboardItem* aItem, const NSString* aType, bool aAllowFileURL) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  NSString* availableType =
+      [aItem availableTypeFromArray:[NSArray arrayWithObjects:(id)aType, nil]];
+  if (availableType && IsValidPasteboardType(availableType, aAllowFileURL)) {
+    return [aItem stringForType:(id)availableType];
+  }
+
+  return nil;
+
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
+}
+
+NSString* nsCocoaUtils::GetFilePathFromPasteboardItem(NSPasteboardItem* aItem) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  NSString* urlString = GetStringForTypeFromPasteboardItem(
+      aItem, [UTIHelper stringFromPboardType:(NSString*)kUTTypeFileURL], true);
+  if (urlString) {
+    NSURL* url = [NSURL URLWithString:urlString];
+    if (url) {
+      return [url path];
+    }
+  }
+
+  return nil;
+
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
+}
+
+NSString* nsCocoaUtils::GetTitleForURLFromPasteboardItem(
+    NSPasteboardItem* item) {
+  NS_OBJC_BEGIN_TRY_BLOCK_RETURN;
+
+  NSString* name = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+      item, [UTIHelper stringFromPboardType:kPublicUrlNamePboardType]);
+  if (name) {
+    return name;
+  }
+
+  NSString* filePath = nsCocoaUtils::GetFilePathFromPasteboardItem(item);
+  if (filePath) {
+    return [filePath lastPathComponent];
+  }
+
+  return nil;
+
+  NS_OBJC_END_TRY_BLOCK_RETURN(nil);
+}
+
+void nsCocoaUtils::SetTransferDataForTypeFromPasteboardItem(
+    nsITransferable* aTransferable, const nsCString& aFlavor,
+    NSPasteboardItem* aItem) {
+  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
+
+  if (!aTransferable || !aItem) {
+    return;
+  }
+
+  MOZ_LOG(gCocoaUtilsLog, LogLevel::Info,
+          ("nsCocoaUtils::SetTransferDataForTypeFromPasteboardItem: looking "
+           "for pasteboard data of "
+           "type %s\n",
+           aFlavor.get()));
+
+  if (aFlavor.EqualsLiteral(kFileMime)) {
+    NSString* filePath = nsCocoaUtils::GetFilePathFromPasteboardItem(aItem);
+    if (!filePath) {
+      return;
+    }
+
+    unsigned int stringLength = [filePath length];
+    unsigned int dataLength =
+        (stringLength + 1) * sizeof(char16_t);  // in bytes
+    char16_t* clipboardDataPtr = (char16_t*)malloc(dataLength);
+    if (!clipboardDataPtr) {
+      return;
+    }
+
+    [filePath getCharacters:reinterpret_cast<unichar*>(clipboardDataPtr)];
+    clipboardDataPtr[stringLength] = 0;  // null terminate
+
+    nsCOMPtr<nsIFile> file;
+    nsresult rv = NS_NewLocalFile(nsDependentString(clipboardDataPtr), true,
+                                  getter_AddRefs(file));
+    free(clipboardDataPtr);
+    if (NS_FAILED(rv)) {
+      return;
+    }
+
+    aTransferable->SetTransferData(aFlavor.get(), file);
+    return;
+  }
+
+  if (aFlavor.EqualsLiteral(kCustomTypesMime)) {
+    NSString* availableType = [aItem
+        availableTypeFromArray:[NSArray
+                                   arrayWithObject:kMozCustomTypesPboardType]];
+    if (!availableType ||
+        !nsCocoaUtils::IsValidPasteboardType(availableType, false)) {
+      return;
+    }
+    NSData* pasteboardData = [aItem dataForType:availableType];
+    if (!pasteboardData) {
+      return;
+    }
+
+    unsigned int dataLength = [pasteboardData length];
+    void* clipboardDataPtr = malloc(dataLength);
+    if (!clipboardDataPtr) {
+      return;
+    }
+    [pasteboardData getBytes:clipboardDataPtr length:dataLength];
+
+    nsCOMPtr<nsISupports> genericDataWrapper;
+    nsPrimitiveHelpers::CreatePrimitiveForData(
+        aFlavor, clipboardDataPtr, dataLength,
+        getter_AddRefs(genericDataWrapper));
+
+    aTransferable->SetTransferData(aFlavor.get(), genericDataWrapper);
+    free(clipboardDataPtr);
+    return;
+  }
+
+  NSString* pString = nil;
+  if (aFlavor.EqualsLiteral(kTextMime)) {
+    pString = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+        aItem, [UTIHelper stringFromPboardType:NSPasteboardTypeString]);
+  } else if (aFlavor.EqualsLiteral(kHTMLMime)) {
+    pString = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+        aItem, [UTIHelper stringFromPboardType:NSPasteboardTypeHTML]);
+  } else if (aFlavor.EqualsLiteral(kURLMime)) {
+    pString = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+        aItem, [UTIHelper stringFromPboardType:kPublicUrlPboardType]);
+    if (pString) {
+      NSString* title = GetTitleForURLFromPasteboardItem(aItem);
+      if (!title) {
+        title = pString;
+      }
+      pString = [NSString stringWithFormat:@"%@\n%@", pString, title];
+    }
+  } else if (aFlavor.EqualsLiteral(kURLDataMime)) {
+    pString = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+        aItem, [UTIHelper stringFromPboardType:kPublicUrlPboardType]);
+  } else if (aFlavor.EqualsLiteral(kURLDescriptionMime)) {
+    pString = GetTitleForURLFromPasteboardItem(aItem);
+  } else if (aFlavor.EqualsLiteral(kRTFMime)) {
+    pString = nsCocoaUtils::GetStringForTypeFromPasteboardItem(
+        aItem, [UTIHelper stringFromPboardType:NSPasteboardTypeRTF]);
+  }
+  if (pString) {
+    NSData* stringData;
+    bool isRTF = aFlavor.EqualsLiteral(kRTFMime);
+    if (isRTF) {
+      stringData = [pString dataUsingEncoding:NSASCIIStringEncoding];
+    } else {
+      stringData = [pString dataUsingEncoding:NSUnicodeStringEncoding];
+    }
+    unsigned int dataLength = [stringData length];
+    void* clipboardDataPtr = malloc(dataLength);
+    if (!clipboardDataPtr) {
+      return;
+    }
+    [stringData getBytes:clipboardDataPtr length:dataLength];
+
+    // The DOM only wants LF, so convert from MacOS line endings to DOM line
+    // endings.
+    int32_t signedDataLength = dataLength;
+    nsLinebreakHelpers::ConvertPlatformToDOMLinebreaks(isRTF, &clipboardDataPtr,
+                                                       &signedDataLength);
+    dataLength = signedDataLength;
+
+    // skip BOM (Byte Order Mark to distinguish little or big endian)
+    char16_t* clipboardDataPtrNoBOM = (char16_t*)clipboardDataPtr;
+    if ((dataLength > 2) && ((clipboardDataPtrNoBOM[0] == 0xFEFF) ||
+                             (clipboardDataPtrNoBOM[0] == 0xFFFE))) {
+      dataLength -= sizeof(char16_t);
+      clipboardDataPtrNoBOM += 1;
+    }
+
+    nsCOMPtr<nsISupports> genericDataWrapper;
+    nsPrimitiveHelpers::CreatePrimitiveForData(
+        aFlavor, clipboardDataPtrNoBOM, dataLength,
+        getter_AddRefs(genericDataWrapper));
+    aTransferable->SetTransferData(aFlavor.get(), genericDataWrapper);
+    free(clipboardDataPtr);
+    return;
+  }
+
+  // We have never supported this on Mac OS X, we should someday. Normally
+  // dragging images in is accomplished with a file path drag instead of the
+  // image data itself.
+  /*
+  if (aFlavor.EqualsLiteral(kPNGImageMime) ||
+  aFlavor.EqualsLiteral(kJPEGImageMime) || aFlavor.EqualsLiteral(kJPGImageMime)
+  || aFlavor.EqualsLiteral(kGIFImageMime)) {
+
+  }
+  */
+
+  NS_OBJC_END_TRY_IGNORE_BLOCK;
 }

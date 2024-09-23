@@ -4,7 +4,6 @@
 
 "use strict";
 
-var { Ci } = require("chrome");
 var gRegisteredModules = Object.create(null);
 
 const ActorRegistry = {
@@ -27,8 +26,7 @@ const ActorRegistry = {
    *        An object with 3 mandatory attributes:
    *        - prefix (string):
    *          The prefix of an actor is used to compute:
-   *          - the `actorID` of each new actor instance (ex: prefix1).
-   *            (See ActorPool.addActor)
+   *          - the `actorID` of each new actor instance (ex: prefix1). (See Pool.manage)
    *          - the actor name in the listTabs request. Sending a listTabs
    *            request to the root actor returns actor IDs. IDs are in
    *            dictionaries, with actor names as keys and actor IDs as values.
@@ -164,6 +162,12 @@ const ActorRegistry = {
         type: { global: true },
       }
     );
+
+    this.registerModule("devtools/server/actors/screenshot", {
+      prefix: "screenshot",
+      constructor: "ScreenshotActor",
+      type: { global: true },
+    });
   },
 
   /**
@@ -180,24 +184,14 @@ const ActorRegistry = {
       constructor: "InspectorActor",
       type: { target: true },
     });
-    this.registerModule("devtools/server/actors/stylesheets", {
+    this.registerModule("devtools/server/actors/style-sheets", {
       prefix: "styleSheets",
       constructor: "StyleSheetsActor",
-      type: { target: true },
-    });
-    this.registerModule("devtools/server/actors/storage", {
-      prefix: "storage",
-      constructor: "StorageActor",
       type: { target: true },
     });
     this.registerModule("devtools/server/actors/memory", {
       prefix: "memory",
       constructor: "MemoryActor",
-      type: { target: true },
-    });
-    this.registerModule("devtools/server/actors/framerate", {
-      prefix: "framerate",
-      constructor: "FramerateActor",
       type: { target: true },
     });
     this.registerModule("devtools/server/actors/reflow", {
@@ -210,13 +204,6 @@ const ActorRegistry = {
       constructor: "CssPropertiesActor",
       type: { target: true },
     });
-    if ("nsIProfiler" in Ci) {
-      this.registerModule("devtools/server/actors/performance", {
-        prefix: "performance",
-        constructor: "PerformanceActor",
-        type: { target: true },
-      });
-    }
     this.registerModule("devtools/server/actors/animation", {
       prefix: "animations",
       constructor: "AnimationsActor",
@@ -225,11 +212,6 @@ const ActorRegistry = {
     this.registerModule("devtools/server/actors/emulation/responsive", {
       prefix: "responsive",
       constructor: "ResponsiveActor",
-      type: { target: true },
-    });
-    this.registerModule("devtools/server/actors/emulation/content-viewer", {
-      prefix: "contentViewer",
-      constructor: "ContentViewerActor",
       type: { target: true },
     });
     this.registerModule(
@@ -245,35 +227,37 @@ const ActorRegistry = {
       constructor: "AccessibilityActor",
       type: { target: true },
     });
-    this.registerModule("devtools/server/actors/screenshot", {
-      prefix: "screenshot",
-      constructor: "ScreenshotActor",
-      type: { target: true },
-    });
     this.registerModule("devtools/server/actors/changes", {
       prefix: "changes",
       constructor: "ChangesActor",
       type: { target: true },
     });
-    this.registerModule(
-      "devtools/server/actors/network-monitor/websocket-actor",
-      {
-        prefix: "webSocket",
-        constructor: "WebSocketActor",
-        type: { target: true },
-      }
-    );
-    this.registerModule(
-      "devtools/server/actors/network-monitor/eventsource-actor",
-      {
-        prefix: "eventSource",
-        constructor: "EventSourceActor",
-        type: { target: true },
-      }
-    );
     this.registerModule("devtools/server/actors/manifest", {
       prefix: "manifest",
       constructor: "ManifestActor",
+      type: { target: true },
+    });
+    this.registerModule(
+      "devtools/server/actors/network-monitor/network-content",
+      {
+        prefix: "networkContent",
+        constructor: "NetworkContentActor",
+        type: { target: true },
+      }
+    );
+    this.registerModule("devtools/server/actors/screenshot-content", {
+      prefix: "screenshotContent",
+      constructor: "ScreenshotContentActor",
+      type: { target: true },
+    });
+    this.registerModule("devtools/server/actors/tracer", {
+      prefix: "tracer",
+      constructor: "TracerActor",
+      type: { target: true },
+    });
+    this.registerModule("devtools/server/actors/objects-manager", {
+      prefix: "objectsManager",
+      constructor: "ObjectsManagerActor",
       type: { target: true },
     });
   },

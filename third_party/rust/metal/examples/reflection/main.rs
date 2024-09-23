@@ -5,79 +5,71 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#[macro_use]
-extern crate objc;
-
 use metal::*;
+use objc::rc::autoreleasepool;
 
-use cocoa::foundation::NSAutoreleasePool;
+const PROGRAM: &'static str = r"
+    #include <metal_stdlib>
 
-const PROGRAM: &'static str = "
-    #include <metal_stdlib>\n\
+    using namespace metal;
 
-    using namespace metal;\n\
+    typedef struct {
+        float2 position;
+        float3 color;
+    } vertex_t;
 
-    typedef struct {\n\
-        float2 position;\n\
-        float3 color;\n\
-    } vertex_t;\n\
+    struct ColorInOut {
+        float4 position [[position]];
+        float4 color;
+    };
 
-    struct ColorInOut {\n\
-        float4 position [[position]];\n\
-        float4 color;\n\
-    };\n\
+    vertex ColorInOut vs(device vertex_t* vertex_array [[ buffer(0) ]],
+                                      unsigned int vid [[ vertex_id ]])
+    {
+        ColorInOut out;
 
-    vertex ColorInOut vs(device vertex_t* vertex_array [[ buffer(0) ]],\n\
-                                      unsigned int vid [[ vertex_id ]])\n\
-    {\n\
-        ColorInOut out;\n\
+        out.position = float4(float2(vertex_array[vid].position), 0.0, 1.0);
+        out.color = float4(float3(vertex_array[vid].color), 1.0);
 
-        out.position = float4(float2(vertex_array[vid].position), 0.0, 1.0);\n\
-        out.color = float4(float3(vertex_array[vid].color), 1.0);\n\
+        return out;
+    }
 
-        return out;\n\
-    }\n\
-
-    fragment float4 ps(ColorInOut in [[stage_in]])\n\
-    {\n\
-        return in.color;\n\
-    };\n\
+    fragment float4 ps(ColorInOut in [[stage_in]])
+    {
+        return in.color;
+    };
 ";
 
 fn main() {
-    let pool = unsafe { NSAutoreleasePool::new(cocoa::base::nil) };
+    autoreleasepool(|| {
+        let device = Device::system_default().expect("no device found");
 
-    let device = Device::system_default().expect("no device found");
+        let options = CompileOptions::new();
+        let library = device.new_library_with_source(PROGRAM, &options).unwrap();
+        let (vs, ps) = (
+            library.get_function("vs", None).unwrap(),
+            library.get_function("ps", None).unwrap(),
+        );
 
-    let options = CompileOptions::new();
-    let library = device.new_library_with_source(PROGRAM, &options).unwrap();
-    let (vs, ps) = (
-        library.get_function("vs", None).unwrap(),
-        library.get_function("ps", None).unwrap(),
-    );
+        let vertex_desc = VertexDescriptor::new();
 
-    let vertex_desc = VertexDescriptor::new();
+        let desc = RenderPipelineDescriptor::new();
+        desc.set_vertex_function(Some(&vs));
+        desc.set_fragment_function(Some(&ps));
+        desc.set_vertex_descriptor(Some(vertex_desc));
 
-    let desc = RenderPipelineDescriptor::new();
-    desc.set_vertex_function(Some(&vs));
-    desc.set_fragment_function(Some(&ps));
-    desc.set_vertex_descriptor(Some(vertex_desc));
+        println!("{:?}", desc);
 
-    println!("{:?}", desc);
+        let reflect_options = MTLPipelineOption::ArgumentInfo | MTLPipelineOption::BufferTypeInfo;
+        let (_, reflection) = device
+            .new_render_pipeline_state_with_reflection(&desc, reflect_options)
+            .unwrap();
 
-    #[cfg(features = "private")]
-    let _reflection = unsafe {
-        RenderPipelineReflection::new(
-            desc.serialize_vertex_data(),
-            desc.serialize_fragment_data(),
-            vertex_desc.serialize_descriptor(),
-            &device,
-            0x8,
-            0x0,
-        )
-    };
-
-    unsafe {
-        let () = msg_send![pool, release];
-    }
+        println!("Vertex arguments: ");
+        let vertex_arguments = reflection.vertex_arguments();
+        for index in 0..vertex_arguments.count() {
+            let argument = vertex_arguments.object_at(index).unwrap();
+            println!("{:?}", argument);
+        }
+    });
 }

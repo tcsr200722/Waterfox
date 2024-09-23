@@ -10,8 +10,7 @@
 #include "Storage.h"
 #include "nsWeakReference.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class LocalStorageCache;
 class LocalStorageManager;
@@ -60,8 +59,6 @@ class LocalStorage final : public Storage, public nsSupportsWeakReference {
 
   void Clear(nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) override;
 
-  bool IsPrivate() const { return mIsPrivate; }
-
   void ApplyEvent(StorageEvent* aStorageEvent);
 
  private:
@@ -81,7 +78,6 @@ class LocalStorage final : public Storage, public nsSupportsWeakReference {
                 const nsAString& aNewValue);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_LocalStorage_h

@@ -5,33 +5,20 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/HTMLDialogElement.h"
+#include "mozilla/dom/ElementBinding.h"
 #include "mozilla/dom/HTMLDialogElementBinding.h"
-#include "mozilla/dom/HTMLUnknownElement.h"
-#include "mozilla/StaticPrefs_dom.h"
 
-// Expand NS_IMPL_NS_NEW_HTML_ELEMENT(Dialog) with pref check
-nsGenericHTMLElement* NS_NewHTMLDialogElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
-    mozilla::dom::FromParser aFromParser) {
-  RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
-  auto* nim = nodeInfo->NodeInfoManager();
-  if (!mozilla::dom::HTMLDialogElement::IsDialogEnabled()) {
-    return new (nim) mozilla::dom::HTMLUnknownElement(nodeInfo.forget());
-  }
+#include "nsContentUtils.h"
+#include "nsFocusManager.h"
+#include "nsIFrame.h"
 
-  return new (nim) mozilla::dom::HTMLDialogElement(nodeInfo.forget());
-}
+NS_IMPL_NS_NEW_HTML_ELEMENT(Dialog)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLDialogElement::~HTMLDialogElement() = default;
 
 NS_IMPL_ELEMENT_CLONE(HTMLDialogElement)
-
-bool HTMLDialogElement::IsDialogEnabled() {
-  return StaticPrefs::dom_dialog_element_enabled();
-}
 
 void HTMLDialogElement::Close(
     const mozilla::dom::Optional<nsAString>& aReturnValue) {
@@ -46,56 +33,114 @@ void HTMLDialogElement::Close(
 
   RemoveFromTopLayerIfNeeded();
 
-  RefPtr<AsyncEventDispatcher> eventDispatcher = new AsyncEventDispatcher(
-      this, NS_LITERAL_STRING("close"), CanBubble::eNo);
+  RefPtr<Element> previouslyFocusedElement =
+      do_QueryReferent(mPreviouslyFocusedElement);
+
+  if (previouslyFocusedElement) {
+    mPreviouslyFocusedElement = nullptr;
+
+    FocusOptions options;
+    options.mPreventScroll = true;
+    previouslyFocusedElement->Focus(options, CallerType::NonSystem,
+                                    IgnoredErrorResult());
+  }
+
+  RefPtr<AsyncEventDispatcher> eventDispatcher =
+      new AsyncEventDispatcher(this, u"close"_ns, CanBubble::eNo);
   eventDispatcher->PostDOMEvent();
 }
 
-void HTMLDialogElement::Show() {
+void HTMLDialogElement::Show(ErrorResult& aError) {
   if (Open()) {
-    return;
+    if (!IsInTopLayer()) {
+      return;
+    }
+    return aError.ThrowInvalidStateError(
+        "Cannot call show() on an open modal dialog.");
   }
+
   SetOpen(true, IgnoreErrors());
+
+  StorePreviouslyFocusedElement();
+
+  RefPtr<nsINode> hideUntil = GetTopmostPopoverAncestor(nullptr, false);
+  if (!hideUntil) {
+    hideUntil = OwnerDoc();
+  }
+
+  OwnerDoc()->HideAllPopoversUntil(*hideUntil, false, true);
   FocusDialog();
 }
 
 bool HTMLDialogElement::IsInTopLayer() const {
-  return State().HasState(NS_EVENT_STATE_MODAL_DIALOG);
+  return State().HasState(ElementState::MODAL);
+}
+
+void HTMLDialogElement::AddToTopLayerIfNeeded() {
+  MOZ_ASSERT(IsInComposedDoc());
+  if (IsInTopLayer()) {
+    return;
+  }
+
+  OwnerDoc()->AddModalDialog(*this);
 }
 
 void HTMLDialogElement::RemoveFromTopLayerIfNeeded() {
   if (!IsInTopLayer()) {
     return;
   }
-  auto predictFunc = [&](Element* element) { return element == this; };
-
-  DebugOnly<Element*> removedElement = OwnerDoc()->TopLayerPop(predictFunc);
-  MOZ_ASSERT(removedElement == this);
-  RemoveStates(NS_EVENT_STATE_MODAL_DIALOG);
+  OwnerDoc()->RemoveModalDialog(*this);
 }
 
-void HTMLDialogElement::UnbindFromTree(bool aNullParent) {
+void HTMLDialogElement::StorePreviouslyFocusedElement() {
+  if (Element* element = nsFocusManager::GetFocusedElementStatic()) {
+    if (NS_SUCCEEDED(nsContentUtils::CheckSameOrigin(this, element))) {
+      mPreviouslyFocusedElement = do_GetWeakReference(element);
+    }
+  } else if (Document* doc = GetComposedDoc()) {
+    // Looks like there's a discrepancy sometimes when focus is moved
+    // to a different in-process window.
+    if (nsIContent* unretargetedFocus = doc->GetUnretargetedFocusedContent()) {
+      mPreviouslyFocusedElement = do_GetWeakReference(unretargetedFocus);
+    }
+  }
+}
+
+void HTMLDialogElement::UnbindFromTree(UnbindContext& aContext) {
   RemoveFromTopLayerIfNeeded();
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 void HTMLDialogElement::ShowModal(ErrorResult& aError) {
-  if (!IsInComposedDoc()) {
-    aError.ThrowInvalidStateError("Dialog element is not connected");
-    return;
-  }
-
   if (Open()) {
-    aError.ThrowInvalidStateError(
-        "Dialog element already has an 'open' attribute");
-    return;
+    if (IsInTopLayer()) {
+      return;
+    }
+    return aError.ThrowInvalidStateError(
+        "Cannot call showModal() on an open non-modal dialog.");
   }
 
-  if (!IsInTopLayer() && OwnerDoc()->TopLayerPush(this)) {
-    AddStates(NS_EVENT_STATE_MODAL_DIALOG);
+  if (!IsInComposedDoc()) {
+    return aError.ThrowInvalidStateError("Dialog element is not connected");
   }
+
+  if (IsPopoverOpen()) {
+    return aError.ThrowInvalidStateError(
+        "Dialog element is already an open popover.");
+  }
+
+  AddToTopLayerIfNeeded();
 
   SetOpen(true, aError);
+
+  StorePreviouslyFocusedElement();
+
+  RefPtr<nsINode> hideUntil = GetTopmostPopoverAncestor(nullptr, false);
+  if (!hideUntil) {
+    hideUntil = OwnerDoc();
+  }
+
+  OwnerDoc()->HideAllPopoversUntil(*hideUntil, false, true);
   FocusDialog();
 
   aError.SuppressException();
@@ -105,87 +150,39 @@ void HTMLDialogElement::FocusDialog() {
   // 1) If subject is inert, return.
   // 2) Let control be the first descendant element of subject, in tree
   // order, that is not inert and has the autofocus attribute specified.
-  if (RefPtr<Document> doc = GetComposedDoc()) {
+  RefPtr<Document> doc = OwnerDoc();
+  if (IsInComposedDoc()) {
     doc->FlushPendingNotifications(FlushType::Frames);
   }
 
-  Element* control = nullptr;
-  nsIContent* child = GetFirstChild();
-  while (child) {
-    if (child->IsElement()) {
-      nsIFrame* frame = child->GetPrimaryFrame();
-      if (frame && frame->IsFocusable()) {
-        if (child->AsElement()->HasAttr(kNameSpaceID_None,
-                                        nsGkAtoms::autofocus)) {
-          // Find the first descendant of element of subject that this
-          // not inert and has autofucus attribute
-          // inert bug: https://bugzilla.mozilla.org/show_bug.cgi?id=921504
-          control = child->AsElement();
-          break;
-        }
-        // If there isn't one, then let control be the first non-inert
-        // descendant element of subject, in tree order.
-        if (!control) {
-          control = child->AsElement();
-        }
-      }
-    }
-    child = child->GetNextNode(this);
-  }
+  RefPtr<Element> control = HasAttr(nsGkAtoms::autofocus)
+                                ? this
+                                : GetFocusDelegate(IsFocusableFlags(0));
+
   // If there isn't one of those either, then let control be subject.
   if (!control) {
     control = this;
   }
 
-  // 3) Run the focusing steps for control.
-  ErrorResult rv;
-  nsIFrame* frame = control->GetPrimaryFrame();
-  if (frame && frame->IsFocusable()) {
-    control->Focus(FocusOptions(), CallerType::NonSystem, rv);
-    if (rv.Failed()) {
-      return;
-    }
-  } else {
-    nsIFocusManager* fm = nsFocusManager::GetFocusManager();
-    if (fm) {
-      // Clear the focus which ends up making the body gets focused
-      fm->ClearFocus(OwnerDoc()->GetWindow());
-    }
-  }
-
-  // 4) Let topDocument be the active document of control's node document's
-  // browsing context's top-level browsing context.
-  // 5) If control's node document's origin is not the same as the origin of
-  // topDocument, then return.
-  BrowsingContext* bc = control->OwnerDoc()->GetBrowsingContext();
-  if (bc && bc->SameOriginWithTop()) {
-    nsCOMPtr<nsIDocShell> docShell = bc->Top()->GetDocShell();
-    if (docShell) {
-      if (Document* topDocument = docShell->GetDocument()) {
-        // 6) Empty topDocument's autofocus candidates.
-        // 7) Set topDocument's autofocus processed flag to true.
-        topDocument->SetAutoFocusFired();
-      }
-    }
-  }
+  FocusCandidate(control, IsInTopLayer());
 }
+
+int32_t HTMLDialogElement::TabIndexDefault() { return 0; }
 
 void HTMLDialogElement::QueueCancelDialog() {
   // queues an element task on the user interaction task source
-  OwnerDoc()
-      ->EventTargetFor(TaskCategory::UI)
-      ->Dispatch(NewRunnableMethod("HTMLDialogElement::RunCancelDialogSteps",
-                                   this,
-                                   &HTMLDialogElement::RunCancelDialogSteps));
+  OwnerDoc()->Dispatch(
+      NewRunnableMethod("HTMLDialogElement::RunCancelDialogSteps", this,
+                        &HTMLDialogElement::RunCancelDialogSteps));
 }
 
 void HTMLDialogElement::RunCancelDialogSteps() {
   // 1) Let close be the result of firing an event named cancel at dialog, with
   // the cancelable attribute initialized to true.
   bool defaultAction = true;
-  nsContentUtils::DispatchTrustedEvent(
-      OwnerDoc(), this, NS_LITERAL_STRING("cancel"), CanBubble::eNo,
-      Cancelable::eYes, &defaultAction);
+  nsContentUtils::DispatchTrustedEvent(OwnerDoc(), this, u"cancel"_ns,
+                                       CanBubble::eNo, Cancelable::eYes,
+                                       &defaultAction);
 
   // 2) If close is true and dialog has an open attribute, then close the dialog
   // with no return value.
@@ -195,10 +192,42 @@ void HTMLDialogElement::RunCancelDialogSteps() {
   }
 }
 
+bool HTMLDialogElement::IsValidInvokeAction(InvokeAction aAction) const {
+  return nsGenericHTMLElement::IsValidInvokeAction(aAction) ||
+         aAction == InvokeAction::ShowModal || aAction == InvokeAction::Close;
+}
+
+bool HTMLDialogElement::HandleInvokeInternal(Element* aInvoker,
+                                             InvokeAction aAction,
+                                             ErrorResult& aRv) {
+  if (nsGenericHTMLElement::HandleInvokeInternal(aInvoker, aAction, aRv)) {
+    return true;
+  }
+
+  MOZ_ASSERT(IsValidInvokeAction(aAction));
+
+  const bool actionMayClose =
+      aAction == InvokeAction::Auto || aAction == InvokeAction::Close;
+  const bool actionMayOpen =
+      aAction == InvokeAction::Auto || aAction == InvokeAction::ShowModal;
+
+  if (actionMayClose && Open()) {
+    Optional<nsAString> retValue;
+    Close(retValue);
+    return true;
+  }
+
+  if (IsInComposedDoc() && !Open() && actionMayOpen) {
+    ShowModal(aRv);
+    return true;
+  }
+
+  return false;
+}
+
 JSObject* HTMLDialogElement::WrapNode(JSContext* aCx,
                                       JS::Handle<JSObject*> aGivenProto) {
   return HTMLDialogElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

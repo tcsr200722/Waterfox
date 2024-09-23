@@ -19,16 +19,21 @@
   }
 
   a {
-    color: var(--newtab-link-primary-color);
+    color: var(--newtab-primary-action-background);
   }
 }
 
 main {
-  margin: auto;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   width: $wrapper-default-width;
-  // Offset the snippets container so things at the bottom of the page are still
-  // visible when snippets are visible. Adjust for other spacing.
-  padding-bottom: $snippets-container-height - $section-spacing - $base-gutter;
+  padding: 0;
+
+  .vertical-center-wrapper {
+    margin: auto 0;
+  }
 
   section {
     margin-bottom: $section-spacing;
@@ -50,12 +55,6 @@ main {
   @media (min-width: $break-point-widest) {
     width: $wrapper-max-width-widest;
   }
-
-}
-
-.below-search-snippet.withButton {
-  margin: auto;
-  width: 100%;
 }
 
 .ds-outer-wrapper-search-alignment {
@@ -69,7 +68,7 @@ main {
 .ds-outer-wrapper-breakpoint-override {
   main {
     width: 266px;
-    padding-bottom: 68px;
+    padding-bottom: 0;
 
     @media (min-width: $break-point-medium) {
       width: 510px;
@@ -93,11 +92,7 @@ main {
 .body-wrapper {
   // Hide certain elements so the page structure is fixed, e.g., placeholders,
   // while avoiding flashes of changing content, e.g., icons and text
-  $selectors-to-hide: '
-    .section-title,
-    .sections-list .section:last-of-type,
-    .topics
-  ';
+  $selectors-to-hide: '.section-title, .sections-list .section:last-of-type, .topics';
 
   #{$selectors-to-hide} {
     opacity: 0;
@@ -118,8 +113,8 @@ main {
   button {
     background-color: transparent;
     border: 0;
+    border-radius: 2px;
     cursor: pointer;
-    fill: var(--newtab-icon-primary-color);
     inset-inline-end: 15px;
     padding: 15px;
     position: fixed;
@@ -133,6 +128,39 @@ main {
 
     &:active {
       background-color: var(--newtab-element-active-color);
+    }
+  }
+}
+
+.wallpaper-attribution {
+  padding: 0 $section-horizontal-padding;
+  font-size: 14px;
+  color: var(--newtab-contextual-text-primary-color);
+
+  // Contrast fix for users who have wallpapers set
+  @include wallpaper-contrast-fix;
+
+  &.theme-light {
+    display: inline-block;
+
+    @include dark-theme-only {
+      display: none;
+    }
+  }
+
+  &.theme-dark {
+    display: none;
+
+    @include dark-theme-only {
+      display: inline-block;
+    }
+  }
+
+  a {
+    color: inherit;
+
+    &:hover {
+      text-decoration: none;
     }
   }
 }

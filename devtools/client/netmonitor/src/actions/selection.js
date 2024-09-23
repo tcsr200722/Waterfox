@@ -4,22 +4,24 @@
 
 "use strict";
 
-const { SELECT_REQUEST } = require("devtools/client/netmonitor/src/constants");
+const {
+  SELECT_REQUEST,
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 const {
   getDisplayedRequests,
   getSortedRequests,
-} = require("devtools/client/netmonitor/src/selectors/index");
+} = require("resource://devtools/client/netmonitor/src/selectors/index.js");
 
 const PAGE_SIZE_ITEM_COUNT_RATIO = 5;
 
 /**
  * Select request with a given id.
  */
-function selectRequest(id, httpChannelId) {
+function selectRequest(id, request) {
   return {
     type: SELECT_REQUEST,
     id,
-    httpChannelId,
+    request,
   };
 }
 
@@ -27,7 +29,7 @@ function selectRequest(id, httpChannelId) {
  * Select request with a given index (sorted order)
  */
 function selectRequestByIndex(index) {
-  return (dispatch, getState) => {
+  return ({ dispatch, getState }) => {
     const requests = getSortedRequests(getState());
     let itemId;
     if (index >= 0 && index < requests.length) {
@@ -44,7 +46,7 @@ function selectRequestByIndex(index) {
  * - +Infinity | -Infinity: move to the start or end of the list
  */
 function selectDelta(delta) {
-  return (dispatch, getState) => {
+  return ({ dispatch, getState }) => {
     const state = getState();
     const requests = getDisplayedRequests(state);
 
@@ -67,7 +69,7 @@ function selectDelta(delta) {
       requests.length - 1
     );
     const newItem = requests[newIndex];
-    dispatch(selectRequest(newItem.id, newItem.channelId));
+    dispatch(selectRequest(newItem.id, newItem));
   };
 }
 

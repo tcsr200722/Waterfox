@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGAnimationElement_h
-#define mozilla_dom_SVGAnimationElement_h
+#ifndef DOM_SVG_SVGANIMATIONELEMENT_H_
+#define DOM_SVG_SVGANIMATIONELEMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILTimedElement.h"
@@ -13,10 +13,9 @@
 #include "mozilla/dom/SVGElement.h"
 #include "mozilla/dom/SVGTests.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGElement SVGAnimationElementBase;
+using SVGAnimationElementBase = SVGElement;
 
 class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
  protected:
@@ -29,27 +28,29 @@ class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
   // interfaces:
   NS_DECL_ISUPPORTS_INHERITED
 
+  NS_IMPL_FROMNODE_HELPER(SVGAnimationElement, IsSVGAnimationElement())
+
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(SVGAnimationElement,
                                            SVGAnimationElementBase)
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override = 0;
+  bool IsSVGAnimationElement() const final { return true; }
+  bool PassesConditionalProcessingTests() const final {
+    return SVGTests::PassesConditionalProcessingTests();
+  }
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override = 0;
 
   // nsIContent specializations
-  virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  virtual void UnbindFromTree(bool aNullParent) override;
-
-  virtual bool IsNodeOfType(uint32_t aFlags) const override;
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  void UnbindFromTree(UnbindContext&) override;
 
   // Element specializations
-  virtual bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
-                              const nsAString& aValue,
-                              nsIPrincipal* aMaybeScriptedPrincipal,
-                              nsAttrValue& aResult) override;
-  virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
+  bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                      const nsAString& aValue,
+                      nsIPrincipal* aMaybeScriptedPrincipal,
+                      nsAttrValue& aResult) override;
+  void AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
 
   Element* GetTargetElementContent();
   virtual bool GetTargetAttributeName(int32_t* aNamespaceID,
@@ -58,7 +59,7 @@ class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
   mozilla::SMILTimeContainer* GetTimeContainer();
   virtual SMILAnimationFunction& AnimationFunction() = 0;
 
-  virtual bool IsEventAttributeNameInternal(nsAtom* aName) override;
+  bool IsEventAttributeNameInternal(nsAtom* aName) override;
 
   // Utility methods for within SVG
   void ActivateByHyperlink();
@@ -72,6 +73,33 @@ class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
   void BeginElementAt(float offset, ErrorResult& rv);
   void EndElement(ErrorResult& rv) { EndElementAt(0.f, rv); }
   void EndElementAt(float offset, ErrorResult& rv);
+
+  // Manually implement onbegin/onrepeat/onend IDL property getters/setters.
+  // We don't autogenerate these methods because the property name differs
+  // from the event type atom - the event type atom has an extra 'Event' tacked
+  // on at the end. (i.e. 'onbegin' corresponds to an event whose name is
+  // literally 'beginEvent' rather than 'begin')
+
+  EventHandlerNonNull* GetOnbegin() {
+    return GetEventHandler(nsGkAtoms::onbeginEvent);
+  }
+  void SetOnbegin(EventHandlerNonNull* handler) {
+    EventTarget::SetEventHandler(nsGkAtoms::onbeginEvent, handler);
+  }
+
+  EventHandlerNonNull* GetOnrepeat() {
+    return GetEventHandler(nsGkAtoms::onrepeatEvent);
+  }
+  void SetOnrepeat(EventHandlerNonNull* handler) {
+    EventTarget::SetEventHandler(nsGkAtoms::onrepeatEvent, handler);
+  }
+
+  EventHandlerNonNull* GetOnend() {
+    return GetEventHandler(nsGkAtoms::onendEvent);
+  }
+  void SetOnend(EventHandlerNonNull* handler) {
+    EventTarget::SetEventHandler(nsGkAtoms::onendEvent, handler);
+  }
 
   // SVGTests
   SVGElement* AsSVGElement() final { return this; }
@@ -99,14 +127,14 @@ class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
     // We need to be notified when target changes, in order to request a
     // sample (which will clear animation effects from old target and apply
     // them to the new target) and update any event registrations.
-    virtual void ElementChanged(Element* aFrom, Element* aTo) override {
+    void ElementChanged(Element* aFrom, Element* aTo) override {
       IDTracker::ElementChanged(aFrom, aTo);
       mAnimationElement->AnimationTargetChanged();
     }
 
     // We need to override IsPersistent to get persistent tracking (beyond the
     // first time the target changes)
-    virtual bool IsPersistent() override { return true; }
+    bool IsPersistent() override { return true; }
 
    private:
     SVGAnimationElement* const mAnimationElement;
@@ -116,7 +144,6 @@ class SVGAnimationElement : public SVGAnimationElementBase, public SVGTests {
   mozilla::SMILTimedElement mTimedElement;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGAnimationElement_h
+#endif  // DOM_SVG_SVGANIMATIONELEMENT_H_

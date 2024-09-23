@@ -24,6 +24,10 @@ test(() => {
 [
   '%s',
   'foo/%s',
+  `%s${location.href}`,
+  location.href.replace(location.protocol,
+    `${location.protocol[0]}%s${location.protocol.substring(1)}`),
+  location.href.replace(location.protocol, `${location.protocol}%s`),
   location.href + '/%s',
   location.href + '#%s',
   location.href + '?foo=%s',
@@ -45,6 +49,10 @@ test(() => {
 [
   '',
   '%S',
+  'http://%s.com',
+  'http://%s.example.com',
+  location.href.replace(location.hostname, `%s${location.hostname}`),
+  location.href.replace(location.port, `%s${location.port}`),
   location.href + '',
   location.href + '/%',
   location.href + '/%a',
@@ -64,14 +72,11 @@ test(() => {
 });
 
 [
-  'http://%s.com',
-  'http://%s.example.com',
   'http://example.com/%s',
   'https://example.com/%s',
   'http://foobar.example.com/%s',
   'mailto:%s@example.com',
   'mailto:%s',
-  `ftp://${location.host}/%s`,
   `chrome://${location.host}/%s`,
   `foo://${location.host}/%s`,
   URL.createObjectURL(new Blob()) + "#%s",
@@ -98,7 +103,6 @@ test(() => {
   'cid',
   'data',
   'file',
-  'ftp',
   'http',
   'https',
   'javascript',
@@ -134,8 +138,16 @@ test(() => {
   /* web+ prefixed schemes must be followed by 1+ ascii alphas */
   'web+',
   'web+1',
+  'web+namewithid123',
+  'web+namewithtrailingspace ',
+  'web+préfixewithaccent',     // é is not ascii alpha
+  'web+Kelvinsign',            // ASCII-lower KELVIN SIGN is not k
+  'web+latinsmallletterlongſ', // ASCII-lower LATIN SMALL LETTER LONG S is not s
   'web+dots.are.forbidden',
   'web+dashes-are-forbidden',
+  'web+underscores_are_forbidden',
+  'web+spaces are forbidden',
+  'web+non*alpha*are*forbidden',
   'web+digits123areforbidden',
 ].forEach(scheme => {
   test(() => {
@@ -156,16 +168,20 @@ test(() => {
   /* safelisted schemes listed in
    * https://html.spec.whatwg.org/multipage/system-state.html#safelisted-scheme */
   'bitcoin',
+  'ftp',
+  'ftps',
   'geo',
   'im',
   'irc',
   'ircs',
   'magnet',
   'mailto',
+  'matrix',
   'mms',
   'news',
   'nntp',
   'openpgp4fpr',
+  'sftp',
   'sip',
   'sms',
   'smsto',
@@ -179,12 +195,14 @@ test(() => {
   'BitcoIn',
   'Irc',
   'MagneT',
+  'Matrix',
   'SmsTo',
   'TEL',
   'teL',
   'WebCAL',
   'WTAI',
   'web+myprotocol',
+  'web+abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', // all alphas
   'web+UpperCasedIsLowercased',
   'WEB+seeabove',
   'WeB+SeEaBoVe'

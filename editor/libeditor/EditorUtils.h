@@ -6,688 +6,291 @@
 #ifndef mozilla_EditorUtils_h
 #define mozilla_EditorUtils_h
 
-#include "mozilla/ContentIterator.h"
-#include "mozilla/EditAction.h"
-#include "mozilla/EditorBase.h"
-#include "mozilla/EditorDOMPoint.h"
-#include "mozilla/GuardObjects.h"
-#include "mozilla/RangeBoundary.h"
-#include "mozilla/dom/HTMLBRElement.h"
-#include "mozilla/dom/Selection.h"
-#include "mozilla/dom/StaticRange.h"
-#include "nsAtom.h"
-#include "nsCOMPtr.h"
-#include "nsContentUtils.h"
-#include "nscore.h"
-#include "nsDebug.h"
-#include "nsRange.h"
-#include "nsString.h"
+#include "mozilla/EditorBase.h"      // for EditorBase
+#include "mozilla/EditorDOMPoint.h"  // for EditorDOMPoint, EditorDOMRange, etc
+#include "mozilla/EditorForwards.h"
+#include "mozilla/IntegerRange.h"       // for IntegerRange
+#include "mozilla/Maybe.h"              // for Maybe
+#include "mozilla/Result.h"             // for Result<>
+#include "mozilla/dom/Element.h"        // for dom::Element
+#include "mozilla/dom/HTMLBRElement.h"  // for dom::HTMLBRElement
+#include "mozilla/dom/Selection.h"      // for dom::Selection
+#include "mozilla/dom/Text.h"           // for dom::Text
 
-class nsISimpleEnumerator;
+#include "nsAtom.h"          // for nsStaticAtom
+#include "nsCOMPtr.h"        // for nsCOMPtr
+#include "nsContentUtils.h"  // for nsContentUtils
+#include "nsDebug.h"         // for NS_WARNING, etc
+#include "nsError.h"         // for NS_SUCCESS_* and NS_ERROR_*
+#include "nsRange.h"         // for nsRange
+#include "nsString.h"        // for nsAString, nsString, etc
+
 class nsITransferable;
 
 namespace mozilla {
-class MoveNodeResult;
-template <class T>
-class OwningNonNull;
 
-namespace dom {
-class Element;
-class Text;
-}  // namespace dom
+enum class StyleWhiteSpace : uint8_t;
 
-/***************************************************************************
- * EditResult returns nsresult and preferred point where selection should be
- * collapsed or the range where selection should select.
- *
- * NOTE: If we stop modifying selection at every DOM tree change, perhaps,
- *       the following classes need to inherit this class.
- */
-class MOZ_STACK_CLASS EditResult final {
+enum class SuggestCaret {
+  // If specified, the method returns NS_OK when there is no recommended caret
+  // position.
+  OnlyIfHasSuggestion,
+  // If specified and if EditorBase::AllowsTransactionsToChangeSelection
+  // returns false, the method does nothing and returns NS_OK.
+  OnlyIfTransactionsAllowedToDoIt,
+  // If specified, the method returns
+  // NS_SUCCESS_EDITOR_BUT_IGNORED_TRIVIAL_ERROR even if
+  // EditorBase::CollapseSelectionTo returns an error except when
+  // NS_ERROR_EDITOR_DESTROYED.
+  AndIgnoreTrivialError,
+};
+
+/******************************************************************************
+ * CaretPoint is a wrapper of EditorDOMPoint and provides a helper method to
+ * collapse Selection there, or move it to a local variable.  This is typically
+ * used as the ok type of Result or a base class of DoSomethingResult classes.
+ ******************************************************************************/
+class MOZ_STACK_CLASS CaretPoint {
  public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
-  const EditorDOMPoint& PointRefToCollapseSelection() const {
-    MOZ_DIAGNOSTIC_ASSERT(mStartPoint.IsSet());
-    MOZ_DIAGNOSTIC_ASSERT(mStartPoint == mEndPoint);
-    return mStartPoint;
+  explicit CaretPoint(const EditorDOMPoint& aPointToPutCaret)
+      : mCaretPoint(aPointToPutCaret) {}
+  explicit CaretPoint(EditorDOMPoint&& aPointToPutCaret)
+      : mCaretPoint(std::move(aPointToPutCaret)) {}
+
+  CaretPoint(const CaretPoint&) = delete;
+  CaretPoint& operator=(const CaretPoint&) = delete;
+  CaretPoint(CaretPoint&&) = default;
+  CaretPoint& operator=(CaretPoint&&) = default;
+
+  /**
+   * Suggest caret position to aEditorBase.
+   */
+  [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult SuggestCaretPointTo(
+      EditorBase& aEditorBase, const SuggestCaretOptions& aOptions) const;
+
+  /**
+   * IgnoreCaretPointSuggestion() should be called if the method does not want
+   * to use caret position recommended by this instance.
+   */
+  void IgnoreCaretPointSuggestion() const { mHandledCaretPoint = true; }
+
+  /**
+   * When propagating the result, it may not want to the caller modify
+   * selection.  In such case, this can clear the caret point.  Use
+   * IgnoreCaretPointSuggestion() in the caller side instead.
+   */
+  void ForgetCaretPointSuggestion() { mCaretPoint.Clear(); }
+
+  bool HasCaretPointSuggestion() const { return mCaretPoint.IsSet(); }
+  constexpr const EditorDOMPoint& CaretPointRef() const { return mCaretPoint; }
+  constexpr EditorDOMPoint&& UnwrapCaretPoint() {
+    mHandledCaretPoint = true;
+    return std::move(mCaretPoint);
   }
-  const EditorDOMPoint& StartPointRef() const { return mStartPoint; }
-  const EditorDOMPoint& EndPointRef() const { return mEndPoint; }
-  already_AddRefed<dom::StaticRange> CreateStaticRange() const {
-    return dom::StaticRange::Create(mStartPoint.ToRawRangeBoundary(),
-                                    mEndPoint.ToRawRangeBoundary(),
-                                    IgnoreErrors());
+  bool CopyCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                        const SuggestCaretOptions& aOptions) const {
+    MOZ_ASSERT(!aOptions.contains(SuggestCaret::AndIgnoreTrivialError));
+    MOZ_ASSERT(
+        !aOptions.contains(SuggestCaret::OnlyIfTransactionsAllowedToDoIt));
+    mHandledCaretPoint = true;
+    if (aOptions.contains(SuggestCaret::OnlyIfHasSuggestion) &&
+        !mCaretPoint.IsSet()) {
+      return false;
+    }
+    aPointToPutCaret = mCaretPoint;
+    return true;
   }
-  already_AddRefed<nsRange> CreateRange() const {
-    return nsRange::Create(mStartPoint.ToRawRangeBoundary(),
-                           mEndPoint.ToRawRangeBoundary(), IgnoreErrors());
+  bool MoveCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                        const SuggestCaretOptions& aOptions) {
+    MOZ_ASSERT(!aOptions.contains(SuggestCaret::AndIgnoreTrivialError));
+    MOZ_ASSERT(
+        !aOptions.contains(SuggestCaret::OnlyIfTransactionsAllowedToDoIt));
+    if (aOptions.contains(SuggestCaret::OnlyIfHasSuggestion) &&
+        !mCaretPoint.IsSet()) {
+      return false;
+    }
+    aPointToPutCaret = UnwrapCaretPoint();
+    return true;
+  }
+  bool CopyCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                        const EditorBase& aEditorBase,
+                        const SuggestCaretOptions& aOptions) const;
+  bool MoveCaretPointTo(EditorDOMPoint& aPointToPutCaret,
+                        const EditorBase& aEditorBase,
+                        const SuggestCaretOptions& aOptions);
+
+ protected:
+  constexpr bool CaretPointHandled() const { return mHandledCaretPoint; }
+
+  void SetCaretPoint(const EditorDOMPoint& aCaretPoint) {
+    mHandledCaretPoint = false;
+    mCaretPoint = aCaretPoint;
+  }
+  void SetCaretPoint(EditorDOMPoint&& aCaretPoint) {
+    mHandledCaretPoint = false;
+    mCaretPoint = std::move(aCaretPoint);
   }
 
-  EditResult() = delete;
-  explicit EditResult(nsresult aRv) : mRv(aRv) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
-  }
-  template <typename PT, typename CT>
-  explicit EditResult(const EditorDOMPointBase<PT, CT>& aPointToPutCaret)
-      : mRv(aPointToPutCaret.IsSet() ? NS_OK : NS_ERROR_FAILURE),
-        mStartPoint(aPointToPutCaret),
-        mEndPoint(aPointToPutCaret) {}
+  void UnmarkAsHandledCaretPoint() { mHandledCaretPoint = true; }
 
-  template <typename SPT, typename SCT, typename EPT, typename ECT>
-  EditResult(const EditorDOMPointBase<SPT, SCT>& aStartPoint,
-             const EditorDOMPointBase<EPT, ECT>& aEndPoint)
-      : mRv(aStartPoint.IsSet() && aEndPoint.IsSet() ? NS_OK
-                                                     : NS_ERROR_FAILURE),
-        mStartPoint(aStartPoint),
-        mEndPoint(aEndPoint) {}
-
-  EditResult(const EditResult& aOther) = delete;
-  EditResult& operator=(const EditResult& aOther) = delete;
-  EditResult(EditResult&& aOther) = default;
-  EditResult& operator=(EditResult&& aOther) = default;
+  CaretPoint() = default;
 
  private:
-  nsresult mRv;
-  EditorDOMPoint mStartPoint;
-  EditorDOMPoint mEndPoint;
+  EditorDOMPoint mCaretPoint;
+  bool mutable mHandledCaretPoint = false;
 };
 
 /***************************************************************************
- * EditActionResult is useful to return multiple results of an editor
- * action handler without out params.
- * Note that when you return an anonymous instance from a method, you should
- * use EditActionIgnored(), EditActionHandled() or EditActionCanceled() for
- * easier to read.  In other words, EditActionResult should be used when
- * declaring return type of a method, being an argument or defined as a local
- * variable.
+ * EditActionResult is useful to return the handling state of edit sub actions
+ * without out params.
  */
 class MOZ_STACK_CLASS EditActionResult final {
  public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
   bool Canceled() const { return mCanceled; }
   bool Handled() const { return mHandled; }
   bool Ignored() const { return !mCanceled && !mHandled; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
 
-  EditActionResult SetResult(nsresult aRv) {
-    mRv = aRv;
-    return *this;
-  }
-  EditActionResult MarkAsCanceled() {
-    mCanceled = true;
-    return *this;
-  }
-  EditActionResult MarkAsHandled() {
-    mHandled = true;
-    return *this;
-  }
-
-  explicit EditActionResult(nsresult aRv)
-      : mRv(aRv), mCanceled(false), mHandled(false) {}
+  void MarkAsCanceled() { mCanceled = true; }
+  void MarkAsHandled() { mHandled = true; }
 
   EditActionResult& operator|=(const EditActionResult& aOther) {
     mCanceled |= aOther.mCanceled;
     mHandled |= aOther.mHandled;
-    // When both result are same, keep the result.
-    if (mRv == aOther.mRv) {
-      return *this;
-    }
-    // If one of the result is NS_ERROR_EDITOR_DESTROYED, use it since it's
-    // the most important error code for editor.
-    if (EditorDestroyed() || aOther.EditorDestroyed()) {
-      mRv = NS_ERROR_EDITOR_DESTROYED;
-    }
-    // If one of the results is error, use NS_ERROR_FAILURE.
-    else if (Failed() || aOther.Failed()) {
-      mRv = NS_ERROR_FAILURE;
-    } else {
-      // Otherwise, use generic success code, NS_OK.
-      mRv = NS_OK;
-    }
     return *this;
   }
 
   EditActionResult& operator|=(const MoveNodeResult& aMoveNodeResult);
 
+  static EditActionResult IgnoredResult() {
+    return EditActionResult(false, false);
+  }
+  static EditActionResult HandledResult() {
+    return EditActionResult(false, true);
+  }
+  static EditActionResult CanceledResult() {
+    return EditActionResult(true, true);
+  }
+
+  EditActionResult(const EditActionResult&) = delete;
+  EditActionResult& operator=(const EditActionResult&) = delete;
+  EditActionResult(EditActionResult&&) = default;
+  EditActionResult& operator=(EditActionResult&&) = default;
+
  private:
-  nsresult mRv;
-  bool mCanceled;
-  bool mHandled;
+  bool mCanceled = false;
+  bool mHandled = false;
 
-  EditActionResult(nsresult aRv, bool aCanceled, bool aHandled)
-      : mRv(aRv), mCanceled(aCanceled), mHandled(aHandled) {}
+  EditActionResult(bool aCanceled, bool aHandled)
+      : mCanceled(aCanceled), mHandled(aHandled) {}
 
-  EditActionResult()
-      : mRv(NS_ERROR_NOT_INITIALIZED), mCanceled(false), mHandled(false) {}
-
-  friend EditActionResult EditActionIgnored(nsresult aRv);
-  friend EditActionResult EditActionHandled(nsresult aRv);
-  friend EditActionResult EditActionCanceled(nsresult aRv);
+  EditActionResult() : mCanceled(false), mHandled(false) {}
 };
-
-/***************************************************************************
- * When an edit action handler (or its helper) does nothing,
- * EditActionIgnored should be returned.
- */
-inline EditActionResult EditActionIgnored(nsresult aRv = NS_OK) {
-  return EditActionResult(aRv, false, false);
-}
-
-/***************************************************************************
- * When an edit action handler (or its helper) handled and not canceled,
- * EditActionHandled should be returned.
- */
-inline EditActionResult EditActionHandled(nsresult aRv = NS_OK) {
-  return EditActionResult(aRv, false, true);
-}
-
-/***************************************************************************
- * When an edit action handler (or its helper) handled and canceled,
- * EditActionHandled should be returned.
- */
-inline EditActionResult EditActionCanceled(nsresult aRv = NS_OK) {
-  return EditActionResult(aRv, true, true);
-}
 
 /***************************************************************************
  * CreateNodeResultBase is a simple class for CreateSomething() methods
  * which want to return new node.
  */
 template <typename NodeType>
-class CreateNodeResultBase;
-
-typedef CreateNodeResultBase<dom::Element> CreateElementResult;
-
-template <typename NodeType>
-class MOZ_STACK_CLASS CreateNodeResultBase final {
-  typedef CreateNodeResultBase<NodeType> SelfType;
+class MOZ_STACK_CLASS CreateNodeResultBase final : public CaretPoint {
+  using SelfType = CreateNodeResultBase<NodeType>;
 
  public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
+  bool Handled() const { return mNode; }
   NodeType* GetNewNode() const { return mNode; }
+  RefPtr<NodeType> UnwrapNewNode() { return std::move(mNode); }
 
   CreateNodeResultBase() = delete;
-
-  explicit CreateNodeResultBase(nsresult aRv) : mRv(aRv) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
-  }
-
-  explicit CreateNodeResultBase(NodeType* aNode)
-      : mNode(aNode), mRv(aNode ? NS_OK : NS_ERROR_FAILURE) {}
+  explicit CreateNodeResultBase(NodeType& aNode) : mNode(&aNode) {}
+  explicit CreateNodeResultBase(NodeType& aNode,
+                                const EditorDOMPoint& aCandidateCaretPoint)
+      : CaretPoint(aCandidateCaretPoint), mNode(&aNode) {}
+  explicit CreateNodeResultBase(NodeType& aNode,
+                                EditorDOMPoint&& aCandidateCaretPoint)
+      : CaretPoint(std::move(aCandidateCaretPoint)), mNode(&aNode) {}
 
   explicit CreateNodeResultBase(RefPtr<NodeType>&& aNode)
-      : mNode(std::move(aNode)), mRv(mNode.get() ? NS_OK : NS_ERROR_FAILURE) {}
+      : mNode(std::move(aNode)) {}
+  explicit CreateNodeResultBase(RefPtr<NodeType>&& aNode,
+                                const EditorDOMPoint& aCandidateCaretPoint)
+      : CaretPoint(aCandidateCaretPoint), mNode(std::move(aNode)) {
+    MOZ_ASSERT(mNode);
+  }
+  explicit CreateNodeResultBase(RefPtr<NodeType>&& aNode,
+                                EditorDOMPoint&& aCandidateCaretPoint)
+      : CaretPoint(std::move(aCandidateCaretPoint)), mNode(std::move(aNode)) {
+    MOZ_ASSERT(mNode);
+  }
+
+  [[nodiscard]] static SelfType NotHandled() {
+    return SelfType(EditorDOMPoint());
+  }
+  [[nodiscard]] static SelfType NotHandled(
+      const EditorDOMPoint& aPointToPutCaret) {
+    SelfType result(aPointToPutCaret);
+    return result;
+  }
+  [[nodiscard]] static SelfType NotHandled(EditorDOMPoint&& aPointToPutCaret) {
+    SelfType result(std::move(aPointToPutCaret));
+    return result;
+  }
+
+#ifdef DEBUG
+  ~CreateNodeResultBase() {
+    MOZ_ASSERT(!HasCaretPointSuggestion() || CaretPointHandled());
+  }
+#endif
 
   CreateNodeResultBase(const SelfType& aOther) = delete;
   SelfType& operator=(const SelfType& aOther) = delete;
   CreateNodeResultBase(SelfType&& aOther) = default;
   SelfType& operator=(SelfType&& aOther) = default;
 
-  already_AddRefed<NodeType> forget() {
-    mRv = NS_ERROR_NOT_INITIALIZED;
-    return mNode.forget();
-  }
-
  private:
+  explicit CreateNodeResultBase(const EditorDOMPoint& aCandidateCaretPoint)
+      : CaretPoint(aCandidateCaretPoint) {}
+  explicit CreateNodeResultBase(EditorDOMPoint&& aCandidateCaretPoint)
+      : CaretPoint(std::move(aCandidateCaretPoint)) {}
+
   RefPtr<NodeType> mNode;
-  nsresult mRv;
 };
 
-/***************************************************************************
- * MoveNodeResult is a simple class for MoveSomething() methods.
- * This holds error code and next insertion point if moving contents succeeded.
+/**
+ * This is a result of inserting text.  If the text inserted as a part of
+ * composition, this does not return CaretPoint.  Otherwise, must return
+ * CaretPoint which is typically same as end of inserted text.
  */
-class MOZ_STACK_CLASS MoveNodeResult final {
+class MOZ_STACK_CLASS InsertTextResult final : public CaretPoint {
  public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  bool Handled() const { return mHandled; }
-  bool Ignored() const { return !mHandled; }
-  nsresult Rv() const { return mRv; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
-  const EditorDOMPoint& NextInsertionPointRef() const {
-    return mNextInsertionPoint;
-  }
-  EditorDOMPoint NextInsertionPoint() const { return mNextInsertionPoint; }
-
-  void MarkAsHandled() { mHandled = true; }
-
-  MoveNodeResult() : mRv(NS_ERROR_NOT_INITIALIZED), mHandled(false) {}
-
-  explicit MoveNodeResult(nsresult aRv) : mRv(aRv), mHandled(false) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
-  }
-
-  MoveNodeResult(const MoveNodeResult& aOther) = delete;
-  MoveNodeResult& operator=(const MoveNodeResult& aOther) = delete;
-  MoveNodeResult(MoveNodeResult&& aOther) = default;
-  MoveNodeResult& operator=(MoveNodeResult&& aOther) = default;
-
-  MoveNodeResult& operator|=(const MoveNodeResult& aOther) {
-    mHandled |= aOther.mHandled;
-    // When both result are same, keep the result but use newer point.
-    if (mRv == aOther.mRv) {
-      mNextInsertionPoint = aOther.mNextInsertionPoint;
-      return *this;
-    }
-    // If one of the result is NS_ERROR_EDITOR_DESTROYED, use it since it's
-    // the most important error code for editor.
-    if (EditorDestroyed() || aOther.EditorDestroyed()) {
-      mRv = NS_ERROR_EDITOR_DESTROYED;
-      mNextInsertionPoint.Clear();
-      return *this;
-    }
-    // If the other one has not been set explicit nsresult, keep current
-    // value.
-    if (aOther.mRv == NS_ERROR_NOT_INITIALIZED) {
-      return *this;
-    }
-    // If this one has not been set explicit nsresult, copy the other one's.
-    if (mRv == NS_ERROR_NOT_INITIALIZED) {
-      mRv = aOther.mRv;
-      mNextInsertionPoint = aOther.mNextInsertionPoint;
-      return *this;
-    }
-    // If one of the results is error, use NS_ERROR_FAILURE.
-    if (Failed() || aOther.Failed()) {
-      mRv = NS_ERROR_FAILURE;
-      mNextInsertionPoint.Clear();
-      return *this;
-    }
-    // Otherwise, use generic success code, NS_OK, and use newer point.
-    mRv = NS_OK;
-    mNextInsertionPoint = aOther.mNextInsertionPoint;
-    return *this;
-  }
-
- private:
+  InsertTextResult() : CaretPoint(EditorDOMPoint()) {}
+  template <typename EditorDOMPointType>
+  explicit InsertTextResult(const EditorDOMPointType& aEndOfInsertedText)
+      : CaretPoint(EditorDOMPoint()),
+        mEndOfInsertedText(aEndOfInsertedText.template To<EditorDOMPoint>()) {}
+  explicit InsertTextResult(EditorDOMPointInText&& aEndOfInsertedText)
+      : CaretPoint(EditorDOMPoint()),
+        mEndOfInsertedText(std::move(aEndOfInsertedText)) {}
   template <typename PT, typename CT>
-  explicit MoveNodeResult(const EditorDOMPointBase<PT, CT>& aNextInsertionPoint,
-                          bool aHandled)
-      : mNextInsertionPoint(aNextInsertionPoint),
-        mRv(aNextInsertionPoint.IsSet() ? NS_OK : NS_ERROR_FAILURE),
-        mHandled(aHandled && aNextInsertionPoint.IsSet()) {
-    if (mNextInsertionPoint.IsSet()) {
-      AutoEditorDOMPointChildInvalidator computeOffsetAndForgetChild(
-          mNextInsertionPoint);
-    }
+  InsertTextResult(EditorDOMPointInText&& aEndOfInsertedText,
+                   const EditorDOMPointBase<PT, CT>& aCaretPoint)
+      : CaretPoint(aCaretPoint.template To<EditorDOMPoint>()),
+        mEndOfInsertedText(std::move(aEndOfInsertedText)) {}
+  InsertTextResult(EditorDOMPointInText&& aEndOfInsertedText,
+                   CaretPoint&& aCaretPoint)
+      : CaretPoint(std::move(aCaretPoint)),
+        mEndOfInsertedText(std::move(aEndOfInsertedText)) {
+    UnmarkAsHandledCaretPoint();
   }
+  InsertTextResult(InsertTextResult&& aOther, EditorDOMPoint&& aCaretPoint)
+      : CaretPoint(std::move(aCaretPoint)),
+        mEndOfInsertedText(std::move(aOther.mEndOfInsertedText)) {}
 
-  MoveNodeResult(nsINode* aParentNode, uint32_t aOffsetOfNextInsertionPoint,
-                 bool aHandled) {
-    if (!aParentNode) {
-      mRv = NS_ERROR_FAILURE;
-      mHandled = false;
-      return;
-    }
-    aOffsetOfNextInsertionPoint =
-        std::min(aOffsetOfNextInsertionPoint, aParentNode->Length());
-    mNextInsertionPoint.Set(aParentNode, aOffsetOfNextInsertionPoint);
-    mRv = mNextInsertionPoint.IsSet() ? NS_OK : NS_ERROR_FAILURE;
-    mHandled = aHandled && mNextInsertionPoint.IsSet();
-  }
-
-  EditorDOMPoint mNextInsertionPoint;
-  nsresult mRv;
-  bool mHandled;
-
-  friend MoveNodeResult MoveNodeIgnored(nsINode* aParentNode,
-                                        uint32_t aOffsetOfNextInsertionPoint);
-  friend MoveNodeResult MoveNodeHandled(nsINode* aParentNode,
-                                        uint32_t aOffsetOfNextInsertionPoint);
-  template <typename PT, typename CT>
-  friend MoveNodeResult MoveNodeIgnored(
-      const EditorDOMPointBase<PT, CT>& aNextInsertionPoint);
-  template <typename PT, typename CT>
-  friend MoveNodeResult MoveNodeHandled(
-      const EditorDOMPointBase<PT, CT>& aNextInsertionPoint);
-};
-
-/***************************************************************************
- * When a move node handler (or its helper) does nothing,
- * MoveNodeIgnored should be returned.
- */
-inline MoveNodeResult MoveNodeIgnored(nsINode* aParentNode,
-                                      uint32_t aOffsetOfNextInsertionPoint) {
-  return MoveNodeResult(aParentNode, aOffsetOfNextInsertionPoint, false);
-}
-
-template <typename PT, typename CT>
-inline MoveNodeResult MoveNodeIgnored(
-    const EditorDOMPointBase<PT, CT>& aNextInsertionPoint) {
-  return MoveNodeResult(aNextInsertionPoint, false);
-}
-
-/***************************************************************************
- * When a move node handler (or its helper) handled and not canceled,
- * MoveNodeHandled should be returned.
- */
-inline MoveNodeResult MoveNodeHandled(nsINode* aParentNode,
-                                      uint32_t aOffsetOfNextInsertionPoint) {
-  return MoveNodeResult(aParentNode, aOffsetOfNextInsertionPoint, true);
-}
-
-template <typename PT, typename CT>
-inline MoveNodeResult MoveNodeHandled(
-    const EditorDOMPointBase<PT, CT>& aNextInsertionPoint) {
-  return MoveNodeResult(aNextInsertionPoint, true);
-}
-
-/***************************************************************************
- * SplitNodeResult is a simple class for
- * HTMLEditor::SplitNodeDeepWithTransaction().
- * This makes the callers' code easier to read.
- */
-class MOZ_STACK_CLASS SplitNodeResult final {
- public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
-  bool Handled() const { return mPreviousNode || mNextNode; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
-
-  /**
-   * DidSplit() returns true if a node was actually split.
-   */
-  bool DidSplit() const { return mPreviousNode && mNextNode; }
-
-  /**
-   * GetLeftNode() simply returns the left node which was created at splitting.
-   * This returns nullptr if the node wasn't split.
-   */
-  nsIContent* GetLeftNode() const {
-    return mPreviousNode && mNextNode ? mPreviousNode.get() : nullptr;
-  }
-
-  /**
-   * GetRightNode() simply returns the right node which was split.
-   * This won't return nullptr unless failed to split due to invalid arguments.
-   */
-  nsIContent* GetRightNode() const {
-    if (mGivenSplitPoint.IsSet()) {
-      return mGivenSplitPoint.GetChild();
-    }
-    return mPreviousNode && !mNextNode ? mPreviousNode : mNextNode;
-  }
-
-  /**
-   * GetPreviousNode() returns previous node at the split point.
-   */
-  nsIContent* GetPreviousNode() const {
-    if (mGivenSplitPoint.IsSet()) {
-      return mGivenSplitPoint.IsEndOfContainer() ? mGivenSplitPoint.GetChild()
-                                                 : nullptr;
-    }
-    return mPreviousNode;
-  }
-
-  /**
-   * GetNextNode() returns next node at the split point.
-   */
-  nsIContent* GetNextNode() const {
-    if (mGivenSplitPoint.IsSet()) {
-      return !mGivenSplitPoint.IsEndOfContainer() ? mGivenSplitPoint.GetChild()
-                                                  : nullptr;
-    }
-    return mNextNode;
-  }
-
-  /**
-   * SplitPoint() returns the split point in the container.
-   * This is useful when callers insert an element at split point with
-   * EditorBase::CreateNodeWithTransaction() or something similar methods.
-   *
-   * Note that the result is EditorRawDOMPoint but the nodes are grabbed
-   * by this instance.  Therefore, the life time of both container node
-   * and child node are guaranteed while using the result temporarily.
-   */
-  EditorDOMPoint SplitPoint() const {
-    if (Failed()) {
-      return EditorDOMPoint();
-    }
-    if (mGivenSplitPoint.IsSet()) {
-      return EditorDOMPoint(mGivenSplitPoint);
-    }
-    if (!mPreviousNode) {
-      return EditorDOMPoint(mNextNode);
-    }
-    EditorDOMPoint point(mPreviousNode);
-    DebugOnly<bool> advanced = point.AdvanceOffset();
-    NS_WARNING_ASSERTION(advanced,
-                         "Failed to advance offset to after previous node");
-    return point;
-  }
-
-  /**
-   * This constructor shouldn't be used by anybody except methods which
-   * use this as result when it succeeds.
-   *
-   * @param aPreviousNodeOfSplitPoint   Previous node immediately before
-   *                                    split point.
-   * @param aNextNodeOfSplitPoint       Next node immediately after split
-   *                                    point.
-   */
-  SplitNodeResult(nsIContent* aPreviousNodeOfSplitPoint,
-                  nsIContent* aNextNodeOfSplitPoint)
-      : mPreviousNode(aPreviousNodeOfSplitPoint),
-        mNextNode(aNextNodeOfSplitPoint),
-        mRv(NS_OK) {
-    MOZ_DIAGNOSTIC_ASSERT(mPreviousNode || mNextNode);
-  }
-
-  /**
-   * This constructor should be used when the method didn't split any nodes
-   * but want to return given split point as right point.
-   */
-  explicit SplitNodeResult(const EditorRawDOMPoint& aGivenSplitPoint)
-      : mGivenSplitPoint(aGivenSplitPoint), mRv(NS_OK) {
-    MOZ_DIAGNOSTIC_ASSERT(mGivenSplitPoint.IsSet());
-  }
-
-  /**
-   * This constructor shouldn't be used by anybody except methods which
-   * use this as error result when it fails.
-   */
-  explicit SplitNodeResult(nsresult aRv) : mRv(aRv) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
+  [[nodiscard]] bool Handled() const { return mEndOfInsertedText.IsSet(); }
+  const EditorDOMPointInText& EndOfInsertedTextRef() const {
+    return mEndOfInsertedText;
   }
 
  private:
-  // When methods which return this class split some nodes actually, they
-  // need to set a set of left node and right node to this class.  However,
-  // one or both of them may be moved or removed by mutation observer.
-  // In such case, we cannot represent the point with EditorDOMPoint since
-  // it requires current container node.  Therefore, we need to use
-  // nsCOMPtr<nsIContent> here instead.
-  nsCOMPtr<nsIContent> mPreviousNode;
-  nsCOMPtr<nsIContent> mNextNode;
-
-  // Methods which return this class may not split any nodes actually.  Then,
-  // they may want to return given split point as is since such behavior makes
-  // their callers simpler.  In this case, the point may be in a text node
-  // which cannot be represented as a node.  Therefore, we need EditorDOMPoint
-  // for representing the point.
-  EditorDOMPoint mGivenSplitPoint;
-
-  nsresult mRv;
-
-  SplitNodeResult() = delete;
-};
-
-/***************************************************************************
- * SplitRangeOffFromNodeResult class is a simple class for methods which split a
- * node at 2 points for making part of the node split off from the node.
- */
-class MOZ_STACK_CLASS SplitRangeOffFromNodeResult final {
- public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
-
-  /**
-   * GetLeftContent() returns new created node before the part of quarried out.
-   * This may return nullptr if the method didn't split at start edge of
-   * the node.
-   */
-  nsIContent* GetLeftContent() const { return mLeftContent; }
-  dom::Element* GetLeftContentAsElement() const {
-    return dom::Element::FromNodeOrNull(mLeftContent);
-  }
-
-  /**
-   * GetMiddleContent() returns new created node between left node and right
-   * node.  I.e., this is quarried out from the node.  This may return nullptr
-   * if the method unwrapped the middle node.
-   */
-  nsIContent* GetMiddleContent() const { return mMiddleContent; }
-  dom::Element* GetMiddleContentAsElement() const {
-    return dom::Element::FromNodeOrNull(mMiddleContent);
-  }
-
-  /**
-   * GetRightContent() returns the right node after the part of quarried out.
-   * This may return nullptr it the method didn't split at end edge of the
-   * node.
-   */
-  nsIContent* GetRightContent() const { return mRightContent; }
-  dom::Element* GetRightContentAsElement() const {
-    return dom::Element::FromNodeOrNull(mRightContent);
-  }
-
-  SplitRangeOffFromNodeResult(nsIContent* aLeftContent,
-                              nsIContent* aMiddleContent,
-                              nsIContent* aRightContent)
-      : mLeftContent(aLeftContent),
-        mMiddleContent(aMiddleContent),
-        mRightContent(aRightContent),
-        mRv(NS_OK) {}
-
-  SplitRangeOffFromNodeResult(SplitNodeResult& aSplitResultAtLeftOfMiddleNode,
-                              SplitNodeResult& aSplitResultAtRightOfMiddleNode)
-      : mRv(NS_OK) {
-    if (aSplitResultAtLeftOfMiddleNode.Succeeded()) {
-      mLeftContent = aSplitResultAtLeftOfMiddleNode.GetPreviousNode();
-    }
-    if (aSplitResultAtRightOfMiddleNode.Succeeded()) {
-      mRightContent = aSplitResultAtRightOfMiddleNode.GetNextNode();
-      mMiddleContent = aSplitResultAtRightOfMiddleNode.GetPreviousNode();
-    }
-    if (!mMiddleContent && aSplitResultAtLeftOfMiddleNode.Succeeded()) {
-      mMiddleContent = aSplitResultAtLeftOfMiddleNode.GetNextNode();
-    }
-  }
-
-  explicit SplitRangeOffFromNodeResult(nsresult aRv) : mRv(aRv) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
-  }
-
-  SplitRangeOffFromNodeResult(const SplitRangeOffFromNodeResult& aOther) =
-      delete;
-  SplitRangeOffFromNodeResult& operator=(
-      const SplitRangeOffFromNodeResult& aOther) = delete;
-  SplitRangeOffFromNodeResult(SplitRangeOffFromNodeResult&& aOther) = default;
-  SplitRangeOffFromNodeResult& operator=(SplitRangeOffFromNodeResult&& aOther) =
-      default;
-
- private:
-  nsCOMPtr<nsIContent> mLeftContent;
-  nsCOMPtr<nsIContent> mMiddleContent;
-  nsCOMPtr<nsIContent> mRightContent;
-
-  nsresult mRv;
-
-  SplitRangeOffFromNodeResult() = delete;
-};
-
-/***************************************************************************
- * SplitRangeOffResult class is a simple class for methods which splits
- * specific ancestor elements at 2 DOM points.
- */
-class MOZ_STACK_CLASS SplitRangeOffResult final {
- public:
-  bool Succeeded() const { return NS_SUCCEEDED(mRv); }
-  bool Failed() const { return NS_FAILED(mRv); }
-  nsresult Rv() const { return mRv; }
-  bool Handled() const { return mHandled; }
-  bool EditorDestroyed() const { return mRv == NS_ERROR_EDITOR_DESTROYED; }
-
-  /**
-   * This is at right node of split at start point.
-   */
-  const EditorDOMPoint& SplitPointAtStart() const { return mSplitPointAtStart; }
-  /**
-   * This is at right node of split at end point.  I.e., not in the range.
-   * This is after the range.
-   */
-  const EditorDOMPoint& SplitPointAtEnd() const { return mSplitPointAtEnd; }
-
-  SplitRangeOffResult() = delete;
-
-  /**
-   * Constructor for success case.
-   *
-   * @param aTrackedRangeStart          This should be at topmost right node
-   *                                    child at start point if actually split
-   *                                    there, or at start point to be tried
-   *                                    to split.  Note that if the method
-   *                                    allows to run script after splitting
-   *                                    at start point, the point should be
-   *                                    tracked with AutoTrackDOMPoint.
-   * @param aSplitNodeResultAtStart     Raw split node result at start point.
-   * @param aTrackedRangeEnd            This should be at topmost right node
-   *                                    child at end point if actually split
-   *                                    here, or at end point to be tried to
-   *                                    split.  As same as aTrackedRangeStart,
-   *                                    this value should be tracked while
-   *                                    running some script.
-   * @param aSplitNodeResultAtEnd       Raw split node result at start point.
-   */
-  SplitRangeOffResult(const EditorDOMPoint& aTrackedRangeStart,
-                      const SplitNodeResult& aSplitNodeResultAtStart,
-                      const EditorDOMPoint& aTrackedRangeEnd,
-                      const SplitNodeResult& aSplitNodeResultAtEnd)
-      : mSplitPointAtStart(aTrackedRangeStart),
-        mSplitPointAtEnd(aTrackedRangeEnd),
-        mRv(NS_OK),
-        mHandled(aSplitNodeResultAtStart.Handled() ||
-                 aSplitNodeResultAtEnd.Handled()) {
-    MOZ_ASSERT(mSplitPointAtStart.IsSet());
-    MOZ_ASSERT(mSplitPointAtEnd.IsSet());
-    MOZ_ASSERT(aSplitNodeResultAtStart.Succeeded());
-    MOZ_ASSERT(aSplitNodeResultAtEnd.Succeeded());
-  }
-
-  explicit SplitRangeOffResult(nsresult aRv) : mRv(aRv), mHandled(false) {
-    MOZ_DIAGNOSTIC_ASSERT(NS_FAILED(mRv));
-  }
-
-  SplitRangeOffResult(const SplitRangeOffResult& aOther) = delete;
-  SplitRangeOffResult& operator=(const SplitRangeOffResult& aOther) = delete;
-  SplitRangeOffResult(SplitRangeOffResult&& aOther) = default;
-  SplitRangeOffResult& operator=(SplitRangeOffResult&& aOther) = default;
-
- private:
-  EditorDOMPoint mSplitPointAtStart;
-  EditorDOMPoint mSplitPointAtEnd;
-
-  // If you need to store previous and/or next node at start/end point,
-  // you might be able to use `SplitNodeResult::GetPreviousNode()` etc in the
-  // constructor only when `SplitNodeResult::Handled()` returns true.  But
-  // the node might have gone with another DOM tree mutation.  So, be careful
-  // if you do it.
-
-  nsresult mRv;
-
-  bool mHandled;
+  EditorDOMPointInText mEndOfInsertedText;
 };
 
 /***************************************************************************
@@ -700,9 +303,8 @@ class MOZ_STACK_CLASS SplitRangeOffResult final {
 class MOZ_RAII AutoTransactionBatchExternal final {
  public:
   MOZ_CAN_RUN_SCRIPT explicit AutoTransactionBatchExternal(
-      EditorBase& aEditorBase MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+      EditorBase& aEditorBase)
       : mEditorBase(aEditorBase) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     MOZ_KnownLive(mEditorBase).BeginTransaction();
   }
 
@@ -712,74 +314,22 @@ class MOZ_RAII AutoTransactionBatchExternal final {
 
  private:
   EditorBase& mEditorBase;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class MOZ_STACK_CLASS AutoRangeArray final {
+/******************************************************************************
+ * AutoSelectionRangeArray stores all ranges in `aSelection`.
+ * Note that modifying the ranges means modifing the selection ranges.
+ *****************************************************************************/
+class MOZ_STACK_CLASS AutoSelectionRangeArray final {
  public:
-  explicit AutoRangeArray(dom::Selection* aSelection) {
-    if (!aSelection) {
-      return;
-    }
-    uint32_t rangeCount = aSelection->RangeCount();
-    for (uint32_t i = 0; i < rangeCount; i++) {
-      mRanges.AppendElement(*aSelection->GetRangeAt(i));
+  explicit AutoSelectionRangeArray(dom::Selection& aSelection) {
+    for (const uint32_t i : IntegerRange(aSelection.RangeCount())) {
+      MOZ_ASSERT(aSelection.GetRangeAt(i));
+      mRanges.AppendElement(*aSelection.GetRangeAt(i));
     }
   }
 
   AutoTArray<mozilla::OwningNonNull<nsRange>, 8> mRanges;
-};
-
-/******************************************************************************
- * some helper classes for iterating the dom tree
- *****************************************************************************/
-
-class MOZ_RAII DOMIterator {
- public:
-  explicit DOMIterator(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
-  explicit DOMIterator(nsINode& aNode MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
-  virtual ~DOMIterator() = default;
-
-  nsresult Init(nsRange& aRange);
-  nsresult Init(const RawRangeBoundary& aStartRef,
-                const RawRangeBoundary& aEndRef);
-
-  template <class NodeClass>
-  void AppendAllNodesToArray(
-      nsTArray<OwningNonNull<NodeClass>>& aArrayOfNodes) const;
-
-  /**
-   * AppendNodesToArray() calls aFunctor before appending found node to
-   * aArrayOfNodes.  If aFunctor returns false, the node will be ignored.
-   * You can use aClosure instead of capturing something with lambda.
-   * Note that aNode is guaranteed that it's an instance of NodeClass
-   * or its sub-class.
-   * XXX If we can make type of aNode templated without std::function,
-   *     it'd be better, though.
-   */
-  typedef bool (*BoolFunctor)(nsINode& aNode, void* aClosure);
-  template <class NodeClass>
-  void AppendNodesToArray(BoolFunctor aFunctor,
-                          nsTArray<OwningNonNull<NodeClass>>& aArrayOfNodes,
-                          void* aClosure = nullptr) const;
-
- protected:
-  ContentIteratorBase* mIter;
-  PostContentIterator mPostOrderIter;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-};
-
-class MOZ_RAII DOMSubtreeIterator final : public DOMIterator {
- public:
-  explicit DOMSubtreeIterator(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
-  virtual ~DOMSubtreeIterator() = default;
-
-  nsresult Init(nsRange& aRange);
-
- private:
-  ContentSubtreeIterator mSubtreeIter;
-  explicit DOMSubtreeIterator(nsINode& aNode MOZ_GUARD_OBJECT_NOTIFIER_PARAM) =
-      delete;
 };
 
 class EditorUtils final {
@@ -828,18 +378,14 @@ class EditorUtils final {
    */
   static bool IsEditableContent(const nsIContent& aContent,
                                 EditorType aEditorType) {
-    if ((aEditorType == EditorType::HTML && !aContent.IsEditable()) ||
-        EditorUtils::IsPaddingBRElementForEmptyEditor(aContent)) {
+    if (aEditorType == EditorType::HTML &&
+        (!aContent.IsEditable() || !aContent.IsInComposedDoc())) {
+      // FIXME(emilio): Why only for HTML editors? All content from the root
+      // content in text editors is also editable, so afaict we can remove the
+      // special-case.
       return false;
     }
-
-    // In HTML editors, if we're dealing with an element, then ask it
-    // whether it's editable.
-    if (aContent.IsElement()) {
-      return aEditorType == EditorType::HTML ? aContent.IsEditable() : true;
-    }
-    // Text nodes are considered to be editable by both typed of editors.
-    return aContent.IsText();
+    return IsElementOrText(aContent);
   }
 
   /**
@@ -851,26 +397,33 @@ class EditorUtils final {
     if (aContent.IsText()) {
       return true;
     }
-    return aContent.IsElement() &&
-           !EditorUtils::IsPaddingBRElementForEmptyEditor(aContent);
+    return aContent.IsElement() && !IsPaddingBRElementForEmptyEditor(aContent);
   }
 
   /**
-   * IsContentPreformatted() checks the style info for the node for the
-   * preformatted text style.  This does NOT flush layout.
+   * Get the two longhands that make up computed white-space style of aContent.
    */
-  static bool IsContentPreformatted(nsIContent& aContent);
+  static Maybe<std::pair<StyleWhiteSpaceCollapse, StyleTextWrapMode>>
+  GetComputedWhiteSpaceStyles(const nsIContent& aContent);
 
   /**
-   * Helper method for `AppendString()` and `AppendSubString()`.  This should
-   * be called only when `aText` is in a password field.  This method masks
-   * A part of or all of `aText` (`aStartOffsetInText` and later) should've
-   * been copied (apppended) to `aString`.  `aStartOffsetInString` is where
-   * the password was appended into `aString`.
+   * IsWhiteSpacePreformatted() checks the style info for the node for the
+   * preformatted text style.  This does NOT flush layout.
    */
-  static void MaskString(nsString& aString, dom::Text* aText,
-                         uint32_t aStartOffsetInString,
-                         uint32_t aStartOffsetInText);
+  static bool IsWhiteSpacePreformatted(const nsIContent& aContent);
+
+  /**
+   * IsNewLinePreformatted() checks whether the linefeed characters are
+   * preformatted or collapsible white-spaces.  This does NOT flush layout.
+   */
+  static bool IsNewLinePreformatted(const nsIContent& aContent);
+
+  /**
+   * IsOnlyNewLinePreformatted() checks whether the linefeed characters are
+   * preformated but white-spaces are collapsed, or otherwise.  I.e., this
+   * returns true only when `white-space-collapse:pre-line`.
+   */
+  static bool IsOnlyNewLinePreformatted(const nsIContent& aContent);
 
   static nsStaticAtom* GetTagNameAtom(const nsAString& aTagName) {
     if (aTagName.IsEmpty()) {
@@ -893,8 +446,10 @@ class EditorUtils final {
    * computed with nsFrameSelection that also requires flushed layout
    * information.
    */
+  template <typename SelectionOrAutoRangeArray>
   static bool IsFrameSelectionRequiredToExtendSelection(
-      nsIEditor::EDirection aDirectionAndAmount, Selection& aSelection) {
+      nsIEditor::EDirection aDirectionAndAmount,
+      SelectionOrAutoRangeArray& aSelectionOrAutoRangeArray) {
     switch (aDirectionAndAmount) {
       case nsIEditor::eNextWord:
       case nsIEditor::ePreviousWord:
@@ -903,11 +458,18 @@ class EditorUtils final {
         return true;
       case nsIEditor::ePrevious:
       case nsIEditor::eNext:
-        return aSelection.IsCollapsed();
+        return aSelectionOrAutoRangeArray.IsCollapsed();
       default:
         return false;
     }
   }
+
+  /**
+   * Create an nsITransferable instance which has kTextMime and
+   * kMozTextInternal flavors.
+   */
+  static Result<nsCOMPtr<nsITransferable>, nsresult>
+  CreateTransferableForPlainText(const dom::Document& aDocument);
 };
 
 }  // namespace mozilla

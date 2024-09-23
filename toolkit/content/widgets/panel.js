@@ -9,28 +9,15 @@
 {
   class MozPanel extends MozElements.MozElementMixin(XULPopupElement) {
     static get markup() {
-      return `
-      <html:link rel="stylesheet" href="chrome://global/skin/global.css"/>
-      <html:style>
-        :host([orient=vertical]) .panel-arrowcontent {
-          -moz-box-orient: vertical;
-        }
-      </html:style>
-      <vbox class="panel-arrowcontainer" flex="1">
-        <box class="panel-arrowbox" part="arrowbox">
-          <image class="panel-arrow" part="arrow"/>
-        </box>
-        <box class="panel-arrowcontent" flex="1" part="arrowcontent"><html:slot/></box>
-      </vbox>
-      `;
+      return `<html:slot part="content" style="display: none !important"/>`;
     }
     constructor() {
       super();
 
-      this.attachShadow({ mode: "open" });
-
       this._prevFocus = 0;
       this._fadeTimer = null;
+
+      this.attachShadow({ mode: "open" });
 
       this.addEventListener("popupshowing", this);
       this.addEventListener("popupshown", this);
@@ -43,7 +30,7 @@
       // Create shadow DOM lazily if a panel is hidden. It helps to reduce
       // cycles on startup.
       if (!this.hidden) {
-        this.initialize();
+        this.ensureInitialized();
       }
 
       if (this.isArrowPanel) {
@@ -54,7 +41,7 @@
           this.setAttribute("side", "top");
         }
         if (!this.hasAttribute("position")) {
-          this.setAttribute("position", "bottomcenter topleft");
+          this.setAttribute("position", "bottomleft topleft");
         }
         if (!this.hasAttribute("consumeoutsideclicks")) {
           this.setAttribute("consumeoutsideclicks", "false");
@@ -62,36 +49,40 @@
       }
     }
 
-    initialize() {
+    ensureInitialized() {
       // As an optimization, we don't slot contents if the panel is [hidden] in
-      // connecetedCallack this means we can avoid running this code at startup
-      // and only need to do it when a panel is about to be shown.
-      // We then override the `hidden` setter and `removeAttribute` and call this
+      // connectedCallback this means we can avoid running this code at startup
+      // and only need to do it when a panel is about to be shown.  We then
+      // override the `hidden` setter and `removeAttribute` and call this
       // function if the node is about to be shown.
       if (this.shadowRoot.firstChild) {
         return;
       }
 
-      if (!this.isArrowPanel) {
-        this.shadowRoot.appendChild(document.createElement("slot"));
-      } else {
-        this.shadowRoot.appendChild(this.constructor.fragment);
+      this.shadowRoot.appendChild(this.constructor.fragment);
+      if (this.hasAttribute("neverhidden")) {
+        this.panelContent.style.display = "";
       }
+    }
+
+    get panelContent() {
+      return this.shadowRoot.querySelector("[part=content]");
     }
 
     get hidden() {
       return super.hidden;
     }
+
     set hidden(v) {
       if (!v) {
-        this.initialize();
+        this.ensureInitialized();
       }
-      return (super.hidden = v);
+      super.hidden = v;
     }
 
     removeAttribute(name) {
       if (name == "hidden") {
-        this.initialize();
+        this.ensureInitialized();
       }
       super.removeAttribute(name);
     }
@@ -100,74 +91,52 @@
       return this.getAttribute("type") == "arrow";
     }
 
-    adjustArrowPosition() {
-      if (!this.isArrowPanel) {
+    get noOpenOnAnchor() {
+      return this.hasAttribute("no-open-on-anchor");
+    }
+
+    _setSideAttribute(event) {
+      if (!this.isArrowPanel || !event.isAnchored) {
         return;
       }
 
-      var anchor = this.anchorNode;
-      if (!anchor) {
-        return;
-      }
-
-      var container = this.shadowRoot.querySelector(".panel-arrowcontainer");
-      var arrowbox = this.shadowRoot.querySelector(".panel-arrowbox");
-
-      var position = this.alignmentPosition;
-      var offset = this.alignmentOffset;
-
-      this.setAttribute("arrowposition", position);
-
+      let position = event.alignmentPosition;
       if (position.indexOf("start_") == 0 || position.indexOf("end_") == 0) {
-        container.setAttribute("orient", "horizontal");
-        arrowbox.setAttribute("orient", "vertical");
-        if (position.indexOf("_after") > 0) {
-          arrowbox.setAttribute("pack", "end");
-        } else {
-          arrowbox.setAttribute("pack", "start");
-        }
-        arrowbox.style.transform = "translate(0, " + -offset + "px)";
-
         // The assigned side stays the same regardless of direction.
-        var isRTL = window.getComputedStyle(this).direction == "rtl";
+        let isRTL = window.getComputedStyle(this).direction == "rtl";
 
         if (position.indexOf("start_") == 0) {
-          container.style.MozBoxDirection = "reverse";
           this.setAttribute("side", isRTL ? "left" : "right");
         } else {
-          container.style.removeProperty("-moz-box-direction");
           this.setAttribute("side", isRTL ? "right" : "left");
         }
       } else if (
         position.indexOf("before_") == 0 ||
         position.indexOf("after_") == 0
       ) {
-        container.removeAttribute("orient");
-        arrowbox.removeAttribute("orient");
-        if (position.indexOf("_end") > 0) {
-          arrowbox.setAttribute("pack", "end");
-        } else {
-          arrowbox.setAttribute("pack", "start");
-        }
-        arrowbox.style.transform = "translate(" + -offset + "px, 0)";
-
         if (position.indexOf("before_") == 0) {
-          container.style.MozBoxDirection = "reverse";
           this.setAttribute("side", "bottom");
         } else {
-          container.style.removeProperty("-moz-box-direction");
           this.setAttribute("side", "top");
         }
       }
+
+      // This method isn't implemented by panel.js, but it can be added to
+      // individual instances that need to show an arrow.
+      this.setArrowPosition?.(event);
     }
 
     on_popupshowing(event) {
+      if (event.target == this) {
+        this.panelContent.style.display = "";
+      }
       if (this.isArrowPanel && event.target == this) {
-        var arrow = this.shadowRoot.querySelector(".panel-arrow");
-        arrow.hidden = this.anchorNode == null;
-        this.shadowRoot
-          .querySelector(".panel-arrowbox")
-          .style.removeProperty("transform");
+        if (this.anchorNode && !this.noOpenOnAnchor) {
+          let anchorRoot =
+            this.anchorNode.closest("toolbarbutton, .anchor-root") ||
+            this.anchorNode;
+          anchorRoot.setAttribute("open", "true");
+        }
 
         if (this.getAttribute("animate") != "false") {
           this.setAttribute("animate", "open");
@@ -201,7 +170,6 @@
         );
         if (!this._prevFocus.get()) {
           this._prevFocus = Cu.getWeakReference(document.activeElement);
-          return;
         }
       } catch (ex) {
         this._prevFocus = Cu.getWeakReference(document.activeElement);
@@ -232,6 +200,13 @@
         } else if (animate) {
           this.setAttribute("animate", "cancel");
         }
+
+        if (this.anchorNode && !this.noOpenOnAnchor) {
+          let anchorRoot =
+            this.anchorNode.closest("toolbarbutton, .anchor-root") ||
+            this.anchorNode;
+          anchorRoot.removeAttribute("open");
+        }
       }
 
       try {
@@ -242,6 +217,9 @@
     }
 
     on_popuphidden(event) {
+      if (event.target == this && !this.hasAttribute("neverhidden")) {
+        this.panelContent.style.setProperty("display", "none", "important");
+      }
       if (this.isArrowPanel && event.target == this) {
         this.removeAttribute("panelopen");
         if (this.getAttribute("animate") != "false") {
@@ -306,7 +284,7 @@
 
     on_popuppositioned(event) {
       if (event.target == this) {
-        this.adjustArrowPosition();
+        this._setSideAttribute(event);
       }
     }
   }

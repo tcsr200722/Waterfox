@@ -7,7 +7,9 @@
 #ifndef mozilla_LoadInfo_h
 #define mozilla_LoadInfo_h
 
+#include "mozilla/dom/FeaturePolicy.h"
 #include "nsIContentSecurityPolicy.h"
+#include "nsIInterceptionInfo.h"
 #include "nsILoadInfo.h"
 #include "nsIPrincipal.h"
 #include "nsIWeakReferenceUtils.h"  // for nsWeakPtr
@@ -20,6 +22,7 @@
 #include "mozilla/dom/ClientInfo.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
 
+class nsDocShell;
 class nsICookieJarSettings;
 class nsINode;
 class nsPIDOMWindowOuter;
@@ -34,30 +37,55 @@ class WindowGlobalParent;
 }  // namespace dom
 
 namespace net {
+class EarlyHintPreloader;
 class LoadInfoArgs;
 class LoadInfo;
 }  // namespace net
 
 namespace ipc {
 // we have to forward declare that function so we can use it as a friend.
-nsresult LoadInfoArgsToLoadInfo(
-    const Maybe<mozilla::net::LoadInfoArgs>& aLoadInfoArgs,
-    nsINode* aCspToInheritLoadingContext, net::LoadInfo** outLoadInfo);
+nsresult LoadInfoArgsToLoadInfo(const mozilla::net::LoadInfoArgs& aLoadInfoArgs,
+                                const nsACString& aOriginRemoteType,
+                                nsINode* aCspToInheritLoadingContext,
+                                net::LoadInfo** outLoadInfo);
 }  // namespace ipc
 
 namespace net {
 
-typedef nsTArray<nsCOMPtr<nsIRedirectHistoryEntry>> RedirectHistoryArray;
+using RedirectHistoryArray = nsTArray<nsCOMPtr<nsIRedirectHistoryEntry>>;
 
 /**
  * Class that provides an nsILoadInfo implementation.
  */
 class LoadInfo final : public nsILoadInfo {
+  template <typename T, typename... Args>
+  friend already_AddRefed<T> mozilla::MakeAndAddRef(Args&&... aArgs);
+
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSILOADINFO
 
-  // Used for TYPE_SUBDOCUMENT load.
+  // Used for TYPE_DOCUMENT load.
+  static already_AddRefed<LoadInfo> CreateForDocument(
+      dom::CanonicalBrowsingContext* aBrowsingContext, nsIURI* aURI,
+      nsIPrincipal* aTriggeringPrincipal,
+      const nsACString& aTriggeringRemoteType,
+      const OriginAttributes& aOriginAttributes, nsSecurityFlags aSecurityFlags,
+      uint32_t aSandboxFlags);
+
+  // Used for TYPE_FRAME or TYPE_IFRAME load.
+  static already_AddRefed<LoadInfo> CreateForFrame(
+      dom::CanonicalBrowsingContext* aBrowsingContext,
+      nsIPrincipal* aTriggeringPrincipal,
+      const nsACString& aTriggeringRemoteType, nsSecurityFlags aSecurityFlags,
+      uint32_t aSandboxFlags);
+
+  // Use for non-{TYPE_DOCUMENT|TYPE_FRAME|TYPE_IFRAME} load.
+  static already_AddRefed<LoadInfo> CreateForNonDocument(
+      dom::WindowGlobalParent* aParentWGP, nsIPrincipal* aTriggeringPrincipal,
+      nsContentPolicyType aContentPolicyType, nsSecurityFlags aSecurityFlags,
+      uint32_t aSandboxFlags);
+
   // aLoadingPrincipal MUST NOT BE NULL.
   LoadInfo(nsIPrincipal* aLoadingPrincipal, nsIPrincipal* aTriggeringPrincipal,
            nsINode* aLoadingContext, nsSecurityFlags aSecurityFlags,
@@ -66,22 +94,49 @@ class LoadInfo final : public nsILoadInfo {
                Maybe<mozilla::dom::ClientInfo>(),
            const Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController =
                Maybe<mozilla::dom::ServiceWorkerDescriptor>(),
-           uint32_t aSandboxFlags = 0);
-  // Used for TYPE_SUBDOCUMENT load.
-  LoadInfo(dom::CanonicalBrowsingContext* aBrowsingContext,
-           nsIPrincipal* aTriggeringPrincipal, uint64_t aFrameOuterWindowID,
-           nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags);
+           uint32_t aSandboxFlags = 0,
+           bool aSkipCheckForBrokenURLOrZeroSized = 0);
 
   // Constructor used for TYPE_DOCUMENT loads which have a different
   // loadingContext than other loads. This ContextForTopLevelLoad is
   // only used for content policy checks.
-  LoadInfo(nsPIDOMWindowOuter* aOuterWindow, nsIPrincipal* aTriggeringPrincipal,
+  LoadInfo(nsPIDOMWindowOuter* aOuterWindow, nsIURI* aURI,
+           nsIPrincipal* aTriggeringPrincipal,
            nsISupports* aContextForTopLevelLoad, nsSecurityFlags aSecurityFlags,
            uint32_t aSandboxFlags);
+
+ private:
+  // Use factory function CreateForDocument
+  // Used for TYPE_DOCUMENT load.
+  LoadInfo(dom::CanonicalBrowsingContext* aBrowsingContext, nsIURI* aURI,
+           nsIPrincipal* aTriggeringPrincipal,
+           const nsACString& aTriggeringRemoteType,
+           const OriginAttributes& aOriginAttributes,
+           nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags);
+
+  // Use factory function CreateForFrame
+  // Used for TYPE_FRAME or TYPE_IFRAME load.
   LoadInfo(dom::CanonicalBrowsingContext* aBrowsingContext,
            nsIPrincipal* aTriggeringPrincipal,
-           const OriginAttributes& aOriginAttributes, uint64_t aOuterWindowID,
+           const nsACString& aTriggeringRemoteType,
            nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags);
+
+  // Used for loads initiated by DocumentLoadListener that are not TYPE_DOCUMENT
+  // | TYPE_FRAME | TYPE_FRAME.
+  LoadInfo(dom::WindowGlobalParent* aParentWGP,
+           nsIPrincipal* aTriggeringPrincipal,
+           const nsACString& aTriggeringRemoteType,
+           nsContentPolicyType aContentPolicyType,
+           nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags);
+
+ public:
+  // Compute a list of ancestor principals and BrowsingContext IDs.
+  // See methods AncestorPrincipals and AncestorBrowsingContextIDs
+  // in nsILoadInfo.idl for details.
+  static void ComputeAncestors(
+      dom::CanonicalBrowsingContext* aBC,
+      nsTArray<nsCOMPtr<nsIPrincipal>>& aAncestorPrincipals,
+      nsTArray<uint64_t>& aBrowsingContextIDs);
 
   // create an exact copy of the loadinfo
   already_AddRefed<nsILoadInfo> Clone() const;
@@ -95,6 +150,12 @@ class LoadInfo final : public nsILoadInfo {
   // separate request. I.e. not for a redirect or an inner channel, but
   // when a separate request is made with the same security properties.
   already_AddRefed<nsILoadInfo> CloneForNewRequest() const;
+
+  // The `nsContentPolicyType GetExternalContentPolicyType()` version in the
+  // base class is hidden by the implementation of
+  // `GetExternalContentPolicyType(nsContentPolicyType* aResult)` in
+  // LoadInfo.cpp. Explicit mark it visible.
+  using nsILoadInfo::GetExternalContentPolicyType;
 
   void SetIsPreflight();
   void SetUpgradeInsecureRequests(bool aValue);
@@ -123,58 +184,83 @@ class LoadInfo final : public nsILoadInfo {
   // note that any additonal Meta CSP in that document will be merged
   // into that CSP. Any subresource loads within that document
   // subesquently will receive the correct CSP by querying
-  // loadinfo->GetCSP() from that point on.
+  // loadinfo->GetCsp() from that point on.
   void SetCSPToInherit(nsIContentSecurityPolicy* aCspToInherit) {
     mCspToInherit = aCspToInherit;
   }
+
+  bool HasIsThirdPartyContextToTopWindowSet() {
+    return mIsThirdPartyContextToTopWindow.isSome();
+  }
+  void ClearIsThirdPartyContextToTopWindow() {
+    mIsThirdPartyContextToTopWindow.reset();
+  }
+
+  void SetContinerFeaturePolicy(
+      const Maybe<dom::FeaturePolicyInfo>& aContainerFeaturePolicy) {
+    mContainerFeaturePolicyInfo = aContainerFeaturePolicy;
+  }
+
+#ifdef DEBUG
+  void MarkOverriddenFingerprintingSettingsAsSet() {
+    mOverriddenFingerprintingSettingsIsSet = true;
+  }
+#endif
 
  private:
   // private constructor that is only allowed to be called from within
   // HttpChannelParent and FTPChannelParent declared as friends undeneath.
   // In e10s we can not serialize nsINode, hence we store the innerWindowID.
   // Please note that aRedirectChain uses swapElements.
-  LoadInfo(nsIPrincipal* aLoadingPrincipal, nsIPrincipal* aTriggeringPrincipal,
-           nsIPrincipal* aPrincipalToInherit,
-           nsIPrincipal* aSandboxedLoadingPrincipal,
-           nsIPrincipal* aTopLevelPrincipal,
-           nsIPrincipal* aTopLevelStorageAreaPrincipal,
-           nsIURI* aResultPrincipalURI,
-           nsICookieJarSettings* aCookieJarSettings,
-           nsIContentSecurityPolicy* aCspToInherit,
-           const Maybe<mozilla::dom::ClientInfo>& aClientInfo,
-           const Maybe<mozilla::dom::ClientInfo>& aReservedClientInfo,
-           const Maybe<mozilla::dom::ClientInfo>& aInitialClientInfo,
-           const Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController,
-           nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags,
-           nsContentPolicyType aContentPolicyType, LoadTainting aTainting,
-           bool aBlockAllMixedContent, bool aUpgradeInsecureRequests,
-           bool aBrowserUpgradeInsecureRequests,
-           bool aBrowserWouldUpgradeInsecureRequests, bool aForceAllowDataURI,
-           bool aAllowInsecureRedirectToDataURI, bool aBypassCORSChecks,
-           bool aSkipContentPolicyCheckForWebRequest,
-           bool aForceInheritPrincipalDropped, uint64_t aInnerWindowID,
-           uint64_t aOuterWindowID, uint64_t aParentOuterWindowID,
-           uint64_t aTopOuterWindowID, uint64_t aFrameOuterWindowID,
-           uint64_t aBrowsingContextID, uint64_t aFrameBrowsingContextID,
-           bool aInitialSecurityCheckDone, bool aIsThirdPartyRequest,
-           bool aIsThirdPartyContextToTopWindow, bool aIsFormSubmission,
-           bool aSendCSPViolationEvents,
-           const OriginAttributes& aOriginAttributes,
-           RedirectHistoryArray& aRedirectChainIncludingInternalRedirects,
-           RedirectHistoryArray& aRedirectChain,
-           nsTArray<nsCOMPtr<nsIPrincipal>>&& aAncestorPrincipals,
-           const nsTArray<uint64_t>& aAncestorOuterWindowIDs,
-           const nsTArray<nsCString>& aUnsafeHeaders, bool aForcePreflight,
-           bool aIsPreflight, bool aLoadTriggeredFromExternal,
-           bool aServiceWorkerTaintingSynthesized,
-           bool aDocumentHasUserInteracted, bool aDocumentHasLoaded,
-           bool aAllowListFutureDocumentsCreatedFromThisRedirectChain,
-           const nsAString& aCspNonce, bool aSkipContentSniffing,
-           uint32_t aHttpsOnlyStatus, bool aHasValidUserGestureActivation,
-           bool aAllowDeprecatedSystemRequests, bool aParserCreatedScript,
-           bool aHasStoragePermission, uint32_t aRequestBlockingReason,
-           nsINode* aLoadingContext,
-           nsILoadInfo::CrossOriginEmbedderPolicy aLoadingEmbedderPolicy);
+  LoadInfo(
+      nsIPrincipal* aLoadingPrincipal, nsIPrincipal* aTriggeringPrincipal,
+      nsIPrincipal* aPrincipalToInherit, nsIPrincipal* aTopLevelPrincipal,
+      nsIURI* aResultPrincipalURI, nsICookieJarSettings* aCookieJarSettings,
+      nsIContentSecurityPolicy* aCspToInherit,
+      const nsACString& aTriggeringRemoteType,
+      const nsID& aSandboxedNullPrincipalID,
+      const Maybe<mozilla::dom::ClientInfo>& aClientInfo,
+      const Maybe<mozilla::dom::ClientInfo>& aReservedClientInfo,
+      const Maybe<mozilla::dom::ClientInfo>& aInitialClientInfo,
+      const Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController,
+      nsSecurityFlags aSecurityFlags, uint32_t aSandboxFlags,
+      uint32_t aTriggeringSandboxFlags, uint64_t aTriggeringWindowId,
+      bool aTriggeringStorageAccess, nsContentPolicyType aContentPolicyType,
+      LoadTainting aTainting, bool aBlockAllMixedContent,
+      bool aUpgradeInsecureRequests, bool aBrowserUpgradeInsecureRequests,
+      bool aBrowserDidUpgradeInsecureRequests,
+      bool aBrowserWouldUpgradeInsecureRequests, bool aForceAllowDataURI,
+      bool aAllowInsecureRedirectToDataURI,
+      bool aSkipContentPolicyCheckForWebRequest, bool aOriginalFrameSrcLoad,
+      bool aForceInheritPrincipalDropped, uint64_t aInnerWindowID,
+      uint64_t aBrowsingContextID, uint64_t aFrameBrowsingContextID,
+      bool aInitialSecurityCheckDone, bool aIsThirdPartyContext,
+      const Maybe<bool>& aIsThirdPartyContextToTopWindow,
+      bool aIsFormSubmission, bool aSendCSPViolationEvents,
+      const OriginAttributes& aOriginAttributes,
+      RedirectHistoryArray&& aRedirectChainIncludingInternalRedirects,
+      RedirectHistoryArray&& aRedirectChain,
+      nsTArray<nsCOMPtr<nsIPrincipal>>&& aAncestorPrincipals,
+      const nsTArray<uint64_t>& aAncestorBrowsingContextIDs,
+      const nsTArray<nsCString>& aCorsUnsafeHeaders, bool aForcePreflight,
+      bool aIsPreflight, bool aLoadTriggeredFromExternal,
+      bool aServiceWorkerTaintingSynthesized, bool aDocumentHasUserInteracted,
+      bool aAllowListFutureDocumentsCreatedFromThisRedirectChain,
+      bool aNeedForCheckingAntiTrackingHeuristic, const nsAString& aCspNonce,
+      const nsAString& aIntegrityMetadata, bool aSkipContentSniffing,
+      uint32_t aHttpsOnlyStatus, bool aHstsStatus,
+      bool aHasValidUserGestureActivation, bool aAllowDeprecatedSystemRequests,
+      bool aIsInDevToolsContext, bool aParserCreatedScript,
+      nsILoadInfo::StoragePermissionState aStoragePermission,
+      const Maybe<RFPTarget>& aOverriddenFingerprintingSettings,
+      bool aIsMetaRefresh, uint32_t aRequestBlockingReason,
+      nsINode* aLoadingContext,
+      nsILoadInfo::CrossOriginEmbedderPolicy aLoadingEmbedderPolicy,
+      bool aIsOriginTrialCoepCredentiallessEnabledForTopLevel,
+      nsIURI* aUnstrippedURI, nsIInterceptionInfo* aInterceptionInfo,
+      bool aHasInjectedCookieForCookieBannerHandling, bool aWasSchemelessInput,
+      bool aIsNewWindowTarget);
+
   LoadInfo(const LoadInfo& rhs);
 
   NS_IMETHOD GetRedirects(JSContext* aCx,
@@ -182,10 +268,11 @@ class LoadInfo final : public nsILoadInfo {
                           const RedirectHistoryArray& aArra);
 
   friend nsresult mozilla::ipc::LoadInfoArgsToLoadInfo(
-      const Maybe<mozilla::net::LoadInfoArgs>& aLoadInfoArgs,
-      nsINode* aCspToInheritLoadingContext, net::LoadInfo** outLoadInfo);
+      const mozilla::net::LoadInfoArgs& aLoadInfoArgs,
+      const nsACString& aOriginRemoteType, nsINode* aCspToInheritLoadingContext,
+      net::LoadInfo** outLoadInfo);
 
-  ~LoadInfo() = default;
+  ~LoadInfo();
 
   void ComputeIsThirdPartyContext(nsPIDOMWindowOuter* aOuterWindow);
   void ComputeIsThirdPartyContext(dom::WindowGlobalParent* aGlobal);
@@ -196,15 +283,17 @@ class LoadInfo final : public nsILoadInfo {
   void SetIncludeCookiesSecFlag();
   friend class mozilla::dom::XMLHttpRequestMainThread;
 
-  // nsDocShell::OpenInitializedChannel needs to update the loadInfo with
-  // the correct browsingContext.
+  // nsDocShell::OpenInitializedChannel and EarlyHintPreloader::OpenChannel
+  // needs to update the loadInfo with the correct browsingContext.
   friend class ::nsDocShell;
+  friend class mozilla::net::EarlyHintPreloader;
   void UpdateBrowsingContextID(uint64_t aBrowsingContextID) {
     mBrowsingContextID = aBrowsingContextID;
   }
   void UpdateFrameBrowsingContextID(uint64_t aFrameBrowsingContextID) {
     mFrameBrowsingContextID = aFrameBrowsingContextID;
   }
+  MOZ_NEVER_INLINE void ReleaseMembers();
 
   // if you add a member, please also update the copy constructor and consider
   // if it should be merged from parent channel through
@@ -212,13 +301,15 @@ class LoadInfo final : public nsILoadInfo {
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
   nsCOMPtr<nsIPrincipal> mTriggeringPrincipal;
   nsCOMPtr<nsIPrincipal> mPrincipalToInherit;
-  nsCOMPtr<nsIPrincipal> mSandboxedLoadingPrincipal;
   nsCOMPtr<nsIPrincipal> mTopLevelPrincipal;
-  nsCOMPtr<nsIPrincipal> mTopLevelStorageAreaPrincipal;
   nsCOMPtr<nsIURI> mResultPrincipalURI;
+  nsCOMPtr<nsIURI> mChannelCreationOriginalURI;
   nsCOMPtr<nsICSPEventListener> mCSPEventListener;
   nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
   nsCOMPtr<nsIContentSecurityPolicy> mCspToInherit;
+  Maybe<dom::FeaturePolicyInfo> mContainerFeaturePolicyInfo;
+  nsCString mTriggeringRemoteType;
+  nsID mSandboxedNullPrincipalID;
 
   Maybe<mozilla::dom::ClientInfo> mClientInfo;
   UniquePtr<mozilla::dom::ClientSource> mReservedClientSource;
@@ -231,63 +322,101 @@ class LoadInfo final : public nsILoadInfo {
   nsWeakPtr mContextForTopLevelLoad;
   nsSecurityFlags mSecurityFlags;
   uint32_t mSandboxFlags;
+  uint32_t mTriggeringSandboxFlags = 0;
+  uint64_t mTriggeringWindowId = 0;
+  bool mTriggeringStorageAccess = false;
   nsContentPolicyType mInternalContentPolicyType;
-  LoadTainting mTainting;
-  bool mBlockAllMixedContent;
-  bool mUpgradeInsecureRequests;
-  bool mBrowserUpgradeInsecureRequests;
-  bool mBrowserWouldUpgradeInsecureRequests;
-  bool mForceAllowDataURI;
-  bool mAllowInsecureRedirectToDataURI;
-  bool mBypassCORSChecks;
-  bool mSkipContentPolicyCheckForWebRequest;
-  bool mOriginalFrameSrcLoad;
-  bool mForceInheritPrincipalDropped;
-  uint64_t mInnerWindowID;
-  uint64_t mOuterWindowID;
-  uint64_t mParentOuterWindowID;
-  uint64_t mTopOuterWindowID;
-  uint64_t mFrameOuterWindowID;
-  uint64_t mBrowsingContextID;
-  uint64_t mFrameBrowsingContextID;
-  bool mInitialSecurityCheckDone;
-  bool mIsThirdPartyContext;
-  bool mIsThirdPartyContextToTopWindow;
-  bool mIsFormSubmission;
-  bool mSendCSPViolationEvents;
+  LoadTainting mTainting = LoadTainting::Basic;
+  bool mBlockAllMixedContent = false;
+  bool mUpgradeInsecureRequests = false;
+  bool mBrowserUpgradeInsecureRequests = false;
+  bool mBrowserDidUpgradeInsecureRequests = false;
+  bool mBrowserWouldUpgradeInsecureRequests = false;
+  bool mForceAllowDataURI = false;
+  bool mAllowInsecureRedirectToDataURI = false;
+  bool mSkipContentPolicyCheckForWebRequest = false;
+  bool mOriginalFrameSrcLoad = false;
+  bool mForceInheritPrincipalDropped = false;
+  uint64_t mInnerWindowID = 0;
+  uint64_t mBrowsingContextID = 0;
+  uint64_t mWorkerAssociatedBrowsingContextID = 0;
+  uint64_t mFrameBrowsingContextID = 0;
+  bool mInitialSecurityCheckDone = false;
+  // NB: TYPE_DOCUMENT implies !third-party.
+  bool mIsThirdPartyContext = false;
+  Maybe<bool> mIsThirdPartyContextToTopWindow;
+  bool mIsFormSubmission = false;
+  bool mSendCSPViolationEvents = true;
   OriginAttributes mOriginAttributes;
   RedirectHistoryArray mRedirectChainIncludingInternalRedirects;
   RedirectHistoryArray mRedirectChain;
   nsTArray<nsCOMPtr<nsIPrincipal>> mAncestorPrincipals;
-  nsTArray<uint64_t> mAncestorOuterWindowIDs;
+  nsTArray<uint64_t> mAncestorBrowsingContextIDs;
   nsTArray<nsCString> mCorsUnsafeHeaders;
-  uint32_t mRequestBlockingReason;
-  bool mForcePreflight;
-  bool mIsPreflight;
-  bool mLoadTriggeredFromExternal;
-  bool mServiceWorkerTaintingSynthesized;
-  bool mDocumentHasUserInteracted;
-  bool mDocumentHasLoaded;
-  bool mAllowListFutureDocumentsCreatedFromThisRedirectChain;
+  uint32_t mRequestBlockingReason = BLOCKING_REASON_NONE;
+  bool mForcePreflight = false;
+  bool mIsPreflight = false;
+  bool mLoadTriggeredFromExternal = false;
+  bool mServiceWorkerTaintingSynthesized = false;
+  bool mDocumentHasUserInteracted = false;
+  bool mAllowListFutureDocumentsCreatedFromThisRedirectChain = false;
+  bool mNeedForCheckingAntiTrackingHeuristic = false;
   nsString mCspNonce;
-  bool mSkipContentSniffing;
-  uint32_t mHttpsOnlyStatus;
-  bool mHasValidUserGestureActivation;
-  bool mAllowDeprecatedSystemRequests;
-  bool mParserCreatedScript;
-  bool mHasStoragePermission;
+  nsString mIntegrityMetadata;
+  bool mSkipContentSniffing = false;
+  uint32_t mHttpsOnlyStatus = nsILoadInfo::HTTPS_ONLY_UNINITIALIZED;
+  bool mHstsStatus = false;
+  bool mHasValidUserGestureActivation = false;
+  bool mAllowDeprecatedSystemRequests = false;
+  bool mIsUserTriggeredSave = false;
+  bool mIsInDevToolsContext = false;
+  bool mParserCreatedScript = false;
+  nsILoadInfo::StoragePermissionState mStoragePermission =
+      nsILoadInfo::NoStoragePermission;
+  Maybe<RFPTarget> mOverriddenFingerprintingSettings;
+#ifdef DEBUG
+  // A boolean used to ensure the mOverriddenFingerprintingSettings is set
+  // before use it.
+  bool mOverriddenFingerprintingSettingsIsSet = false;
+#endif
+  bool mIsMetaRefresh = false;
 
   // Is true if this load was triggered by processing the attributes of the
   // browsing context container.
   // See nsILoadInfo.isFromProcessingFrameAttributes
-  bool mIsFromProcessingFrameAttributes;
+  bool mIsFromProcessingFrameAttributes = false;
+
+  // See nsILoadInfo.isMediaRequest and nsILoadInfo.isMediaInitialRequest.
+  bool mIsMediaRequest = false;
+  bool mIsMediaInitialRequest = false;
+
+  // See nsILoadInfo.isFromObjectOrEmbed
+  bool mIsFromObjectOrEmbed = false;
+
+  bool mSkipCheckForBrokenURLOrZeroSized = false;
 
   // The cross origin embedder policy that the loading need to respect.
   // If the value is nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP, CORP checking
   // must be performed for the loading.
   // See https://wicg.github.io/cross-origin-embedder-policy/#corp-check.
-  nsILoadInfo::CrossOriginEmbedderPolicy mLoadingEmbedderPolicy;
+  nsILoadInfo::CrossOriginEmbedderPolicy mLoadingEmbedderPolicy =
+      nsILoadInfo::EMBEDDER_POLICY_NULL;
+
+  bool mIsOriginTrialCoepCredentiallessEnabledForTopLevel = false;
+
+  nsCOMPtr<nsIURI> mUnstrippedURI;
+
+  nsCOMPtr<nsIInterceptionInfo> mInterceptionInfo;
+
+  bool mHasInjectedCookieForCookieBannerHandling = false;
+  bool mWasSchemelessInput = false;
+
+  bool mIsNewWindowTarget = false;
 };
+
+// This is exposed solely for testing purposes and should not be used outside of
+// LoadInfo
+already_AddRefed<nsIPrincipal> CreateTruncatedPrincipal(nsIPrincipal*);
 
 }  // namespace net
 }  // namespace mozilla

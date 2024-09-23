@@ -79,8 +79,6 @@ static const HashNumber kGoldenRatioU32 = 0x9E3779B9U;
  * Since the leftmost bits of the result are best, the hash bucket index is
  * computed by doing ScrambleHashCode(h) / (2^32/N) or the equivalent
  * right-shift, not ScrambleHashCode(h) % N or the equivalent bit-mask.
- *
- * FIXME: OrderedHashTable uses a bit-mask; see bug 775896.
  */
 constexpr HashNumber ScrambleHashCode(HashNumber h) {
   /*
@@ -155,17 +153,20 @@ constexpr HashNumber AddU32ToHash(HashNumber aHash, uint32_t aValue) {
 }
 
 /**
- * AddUintptrToHash takes sizeof(uintptr_t) as a template parameter.
+ * AddUintNToHash takes sizeof(int_type) as a template parameter.
+ * Changes to these functions need to be propagated to
+ * MacroAssembler::prepareHashNonGCThing, which inlines them manually for
+ * the JIT.
  */
-template <size_t PtrSize>
-constexpr HashNumber AddUintptrToHash(HashNumber aHash, uintptr_t aValue) {
+template <size_t Size>
+constexpr HashNumber AddUintNToHash(HashNumber aHash, uint64_t aValue) {
   return AddU32ToHash(aHash, static_cast<uint32_t>(aValue));
 }
 
 template <>
-inline HashNumber AddUintptrToHash<8>(HashNumber aHash, uintptr_t aValue) {
+inline HashNumber AddUintNToHash<8>(HashNumber aHash, uint64_t aValue) {
   uint32_t v1 = static_cast<uint32_t>(aValue);
-  uint32_t v2 = static_cast<uint32_t>(static_cast<uint64_t>(aValue) >> 32);
+  uint32_t v2 = static_cast<uint32_t>(aValue >> 32);
   return AddU32ToHash(AddU32ToHash(aHash, v1), v2);
 }
 
@@ -181,7 +182,7 @@ inline HashNumber AddUintptrToHash<8>(HashNumber aHash, uintptr_t aValue) {
 template <typename T, bool TypeIsNotIntegral = !std::is_integral_v<T>,
           bool TypeIsNotEnum = !std::is_enum_v<T>,
           std::enable_if_t<TypeIsNotIntegral && TypeIsNotEnum, int> = 0>
-MOZ_MUST_USE inline HashNumber AddToHash(HashNumber aHash, T aA) {
+[[nodiscard]] inline HashNumber AddToHash(HashNumber aHash, T aA) {
   /*
    * Try to convert |A| to uint32_t implicitly.  If this works, great.  If not,
    * we'll error out.
@@ -190,7 +191,7 @@ MOZ_MUST_USE inline HashNumber AddToHash(HashNumber aHash, T aA) {
 }
 
 template <typename A>
-MOZ_MUST_USE inline HashNumber AddToHash(HashNumber aHash, A* aA) {
+[[nodiscard]] inline HashNumber AddToHash(HashNumber aHash, A* aA) {
   /*
    * You might think this function should just take a void*.  But then we'd only
    * catch data pointers and couldn't handle function pointers.
@@ -198,28 +199,28 @@ MOZ_MUST_USE inline HashNumber AddToHash(HashNumber aHash, A* aA) {
 
   static_assert(sizeof(aA) == sizeof(uintptr_t), "Strange pointer!");
 
-  return detail::AddUintptrToHash<sizeof(uintptr_t)>(aHash, uintptr_t(aA));
+  return detail::AddUintNToHash<sizeof(uintptr_t)>(aHash, uintptr_t(aA));
 }
 
-// We use AddUintptrToHash() for hashing all integral types.  8-byte integral
+// We use AddUintNToHash() for hashing all integral types.  8-byte integral
 // types are treated the same as 64-bit pointers, and smaller integral types are
-// first implicitly converted to 32 bits and then passed to AddUintptrToHash()
+// first implicitly converted to 32 bits and then passed to AddUintNToHash()
 // to be hashed.
 template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-MOZ_MUST_USE constexpr HashNumber AddToHash(HashNumber aHash, T aA) {
-  return detail::AddUintptrToHash<sizeof(T)>(aHash, aA);
+[[nodiscard]] constexpr HashNumber AddToHash(HashNumber aHash, T aA) {
+  return detail::AddUintNToHash<sizeof(T)>(aHash, aA);
 }
 
 template <typename T, std::enable_if_t<std::is_enum_v<T>, int> = 0>
-MOZ_MUST_USE constexpr HashNumber AddToHash(HashNumber aHash, T aA) {
-  // Hash using AddUintptrToHash with the underlying type of the enum type
+[[nodiscard]] constexpr HashNumber AddToHash(HashNumber aHash, T aA) {
+  // Hash using AddUintNToHash with the underlying type of the enum type
   using UnderlyingType = typename std::underlying_type<T>::type;
-  return detail::AddUintptrToHash<sizeof(UnderlyingType)>(
+  return detail::AddUintNToHash<sizeof(UnderlyingType)>(
       aHash, static_cast<UnderlyingType>(aA));
 }
 
 template <typename A, typename... Args>
-MOZ_MUST_USE HashNumber AddToHash(HashNumber aHash, A aArg, Args... aArgs) {
+[[nodiscard]] HashNumber AddToHash(HashNumber aHash, A aArg, Args... aArgs) {
   return AddToHash(AddToHash(aHash, aArg), aArgs...);
 }
 
@@ -231,7 +232,7 @@ MOZ_MUST_USE HashNumber AddToHash(HashNumber aHash, A aArg, Args... aArgs) {
  * that x has already been hashed.
  */
 template <typename... Args>
-MOZ_MUST_USE inline HashNumber HashGeneric(Args... aArgs) {
+[[nodiscard]] inline HashNumber HashGeneric(Args... aArgs) {
   return AddToHash(0, aArgs...);
 }
 
@@ -248,7 +249,7 @@ MOZ_MUST_USE inline HashNumber HashGeneric(Args... aArgs) {
  * marginally faster.
  */
 template <typename Iterator>
-MOZ_MUST_USE constexpr HashNumber HashStringUntilZero(Iterator aIter) {
+[[nodiscard]] constexpr HashNumber HashStringUntilZero(Iterator aIter) {
   HashNumber hash = 0;
   for (; auto c = *aIter; ++aIter) {
     hash = AddToHash(hash, c);
@@ -260,8 +261,8 @@ MOZ_MUST_USE constexpr HashNumber HashStringUntilZero(Iterator aIter) {
  * Hash successive |aIter[i]| up to |i == aLength|.
  */
 template <typename Iterator>
-MOZ_MUST_USE constexpr HashNumber HashStringKnownLength(Iterator aIter,
-                                                        size_t aLength) {
+[[nodiscard]] constexpr HashNumber HashStringKnownLength(Iterator aIter,
+                                                         size_t aLength) {
   HashNumber hash = 0;
   for (size_t i = 0; i < aLength; i++) {
     hash = AddToHash(hash, aIter[i]);
@@ -275,30 +276,30 @@ MOZ_MUST_USE constexpr HashNumber HashStringKnownLength(Iterator aIter,
  * These functions are non-template functions so that users can 1) overload them
  * with their own types 2) in a way that allows implicit conversions to happen.
  */
-MOZ_MUST_USE inline HashNumber HashString(const char* aStr) {
+[[nodiscard]] inline HashNumber HashString(const char* aStr) {
   // Use the |const unsigned char*| version of the above so that all ordinary
   // character data hashes identically.
   return HashStringUntilZero(reinterpret_cast<const unsigned char*>(aStr));
 }
 
-MOZ_MUST_USE inline HashNumber HashString(const char* aStr, size_t aLength) {
+[[nodiscard]] inline HashNumber HashString(const char* aStr, size_t aLength) {
   // Delegate to the |const unsigned char*| version of the above to share
   // template instantiations.
   return HashStringKnownLength(reinterpret_cast<const unsigned char*>(aStr),
                                aLength);
 }
 
-MOZ_MUST_USE
-inline HashNumber HashString(const unsigned char* aStr, size_t aLength) {
+[[nodiscard]] inline HashNumber HashString(const unsigned char* aStr,
+                                           size_t aLength) {
   return HashStringKnownLength(aStr, aLength);
 }
 
-MOZ_MUST_USE constexpr HashNumber HashString(const char16_t* aStr) {
+[[nodiscard]] constexpr HashNumber HashString(const char16_t* aStr) {
   return HashStringUntilZero(aStr);
 }
 
-MOZ_MUST_USE inline HashNumber HashString(const char16_t* aStr,
-                                          size_t aLength) {
+[[nodiscard]] inline HashNumber HashString(const char16_t* aStr,
+                                           size_t aLength) {
   return HashStringKnownLength(aStr, aLength);
 }
 
@@ -308,14 +309,14 @@ MOZ_MUST_USE inline HashNumber HashString(const char16_t* aStr,
 template <typename WCharT, typename = typename std::enable_if<
                                std::is_same<WCharT, wchar_t>::value &&
                                !std::is_same<wchar_t, char16_t>::value>::type>
-MOZ_MUST_USE inline HashNumber HashString(const WCharT* aStr) {
+[[nodiscard]] inline HashNumber HashString(const WCharT* aStr) {
   return HashStringUntilZero(aStr);
 }
 
 template <typename WCharT, typename = typename std::enable_if<
                                std::is_same<WCharT, wchar_t>::value &&
                                !std::is_same<wchar_t, char16_t>::value>::type>
-MOZ_MUST_USE inline HashNumber HashString(const WCharT* aStr, size_t aLength) {
+[[nodiscard]] inline HashNumber HashString(const WCharT* aStr, size_t aLength) {
   return HashStringKnownLength(aStr, aLength);
 }
 
@@ -325,8 +326,8 @@ MOZ_MUST_USE inline HashNumber HashString(const WCharT* aStr, size_t aLength) {
  * This hash walks word-by-word, rather than byte-by-byte, so you won't get the
  * same result out of HashBytes as you would out of HashString.
  */
-MOZ_MUST_USE extern MFBT_API HashNumber HashBytes(const void* bytes,
-                                                  size_t aLength);
+[[nodiscard]] extern MFBT_API HashNumber HashBytes(const void* bytes,
+                                                   size_t aLength);
 
 /**
  * A pseudorandom function mapping 32-bit integers to 32-bit integers.
@@ -361,6 +362,14 @@ class HashCodeScrambler {
   HashNumber scramble(HashNumber aHashCode) const {
     SipHasher hasher(mK0, mK1);
     return HashNumber(hasher.sipHash(aHashCode));
+  }
+
+  static constexpr size_t offsetOfMK0() {
+    return offsetof(HashCodeScrambler, mK0);
+  }
+
+  static constexpr size_t offsetOfMK1() {
+    return offsetof(HashCodeScrambler, mK1);
   }
 
  private:

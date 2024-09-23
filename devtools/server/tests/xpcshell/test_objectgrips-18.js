@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -32,6 +31,8 @@ add_task(
 
     function eval_code() {
       debuggee.eval(
+        // These arguments are tested.
+        // eslint-disable-next-line no-unused-vars
         function stopMe(arg1) {
           debugger;
         }.toString()

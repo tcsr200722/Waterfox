@@ -1,10 +1,14 @@
-extern crate proc_macro2;
-extern crate ref_cast;
+#![allow(
+    clippy::no_effect_underscore_binding,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding
+)]
 
+#[rustfmt::skip]
 mod gen;
 
-use self::proc_macro2::{Ident, Literal, TokenStream};
-use self::ref_cast::RefCast;
+use proc_macro2::{Ident, Literal, TokenStream};
+use ref_cast::RefCast;
 use std::fmt::{self, Debug};
 use std::ops::Deref;
 use syn::punctuated::Punctuated;
@@ -66,7 +70,15 @@ impl Debug for Lite<Literal> {
 
 impl Debug for Lite<TokenStream> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "`{}`", self.value)
+        let string = self.value.to_string();
+        if string.len() <= 80 {
+            write!(formatter, "TokenStream(`{}`)", self.value)
+        } else {
+            formatter
+                .debug_tuple("TokenStream")
+                .field(&format_args!("`{}`", string))
+                .finish()
+        }
     }
 }
 
@@ -75,7 +87,7 @@ where
     Lite<T>: Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        Debug::fmt(Lite(&*self.value), formatter)
+        Debug::fmt(Lite(self.value), formatter)
     }
 }
 
@@ -103,11 +115,33 @@ where
 impl<T, P> Debug for Lite<Punctuated<T, P>>
 where
     Lite<T>: Debug,
+    Lite<P>: Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter
-            .debug_list()
-            .entries(self.value.iter().map(Lite))
-            .finish()
+        let mut list = formatter.debug_list();
+        for pair in self.pairs() {
+            let (node, punct) = pair.into_tuple();
+            list.entry(Lite(node));
+            list.entries(punct.map(Lite));
+        }
+        list.finish()
+    }
+}
+
+struct Present;
+
+impl Debug for Present {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Some")
+    }
+}
+
+struct Option {
+    present: bool,
+}
+
+impl Debug for Option {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str(if self.present { "Some" } else { "None" })
     }
 }

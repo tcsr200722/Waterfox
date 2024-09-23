@@ -1,112 +1,288 @@
+/**
+ * @license
+ * Copyright 2023 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+const {readdirSync} = require('fs');
+const {join} = require('path');
+
+const rulesDirPlugin = require('eslint-plugin-rulesdir');
+
+rulesDirPlugin.RULES_DIR = 'tools/eslint/lib';
+
+function getThirdPartyPackages() {
+  return readdirSync(join(__dirname, 'packages/puppeteer-core/third_party'), {
+    withFileTypes: true,
+  })
+    .filter(dirent => {
+      return dirent.isDirectory();
+    })
+    .map(({name}) => {
+      return {
+        name,
+        message: `Import \`${name}\` from the vendored location: third_party/${name}/index.js`,
+      };
+    });
+}
+
 module.exports = {
-    "root": true,
+  root: true,
+  env: {
+    node: true,
+    es6: true,
+  },
 
-    "env": {
-        "node": true,
-        "es6": true
+  parser: '@typescript-eslint/parser',
+
+  plugins: ['mocha', '@typescript-eslint', 'import', 'rulesdir'],
+
+  extends: ['plugin:prettier/recommended', 'plugin:import/typescript'],
+
+  settings: {
+    'import/resolver': {
+      typescript: true,
     },
+  },
 
-    "parserOptions": {
-        "ecmaVersion": 9
-    },
+  rules: {
+    // Brackets keep code readable.
+    curly: ['error', 'all'],
+    // Brackets keep code readable and `return` intentions clear.
+    'arrow-body-style': ['error', 'always'],
+    // Error if files are not formatted with Prettier correctly.
+    'prettier/prettier': 'error',
+    // syntax preferences
+    'spaced-comment': [
+      'error',
+      'always',
+      {
+        markers: ['*'],
+      },
+    ],
+    eqeqeq: ['error'],
+    'accessor-pairs': [
+      'error',
+      {
+        getWithoutSet: false,
+        setWithoutGet: false,
+      },
+    ],
+    'new-parens': 'error',
+    'func-call-spacing': 'error',
+    'prefer-const': 'error',
 
-    /**
-     * ESLint rules
-     *
-     * All available rules: http://eslint.org/docs/rules/
-     *
-     * Rules take the following form:
-     *   "rule-name", [severity, { opts }]
-     * Severity: 2 == error, 1 == warning, 0 == off.
-     */
-    "rules": {
-        /**
-         * Enforced rules
+    'max-len': [
+      'error',
+      {
+        /* this setting doesn't impact things as we use Prettier to format
+         * our code and hence dictate the line length.
+         * Prettier aims for 80 but sometimes makes the decision to go just
+         * over 80 chars as it decides that's better than wrapping. ESLint's
+         * rule defaults to 80 but therefore conflicts with Prettier. So we
+         * set it to something far higher than Prettier would allow to avoid
+         * it causing issues and conflicting with Prettier.
          */
+        code: 200,
+        comments: 90,
+        ignoreTemplateLiterals: true,
+        ignoreUrls: true,
+        ignoreStrings: true,
+        ignoreRegExpLiterals: true,
+      },
+    ],
+    // anti-patterns
+    'no-var': 'error',
+    'no-with': 'error',
+    'no-multi-str': 'error',
+    'no-caller': 'error',
+    'no-implied-eval': 'error',
+    'no-labels': 'error',
+    'no-new-object': 'error',
+    'no-octal-escape': 'error',
+    'no-self-compare': 'error',
+    'no-shadow-restricted-names': 'error',
+    'no-cond-assign': 'error',
+    'no-debugger': 'error',
+    'no-dupe-keys': 'error',
+    'no-duplicate-case': 'error',
+    'no-empty-character-class': 'error',
+    'no-unreachable': 'error',
+    'no-unsafe-negation': 'error',
+    radix: 'error',
+    'valid-typeof': 'error',
+    'no-unused-vars': [
+      'error',
+      {
+        args: 'none',
+        vars: 'local',
+        varsIgnorePattern:
+          '([fx]?describe|[fx]?it|beforeAll|beforeEach|afterAll|afterEach)',
+      },
+    ],
+    'no-implicit-globals': ['error'],
 
+    // es2015 features
+    'require-yield': 'error',
+    'template-curly-spacing': ['error', 'never'],
 
-        // syntax preferences
-        "quotes": [2, "single", {
-            "avoidEscape": true,
-            "allowTemplateLiterals": true
-        }],
-        "semi": 2,
-        "no-extra-semi": 2,
-        "comma-style": [2, "last"],
-        "wrap-iife": [2, "inside"],
-        "spaced-comment": [2, "always", {
-            "markers": ["*"]
-        }],
-        "eqeqeq": [2],
-        "arrow-body-style": [2, "as-needed"],
-        "accessor-pairs": [2, {
-            "getWithoutSet": false,
-            "setWithoutGet": false
-        }],
-        "brace-style": [2, "1tbs", {"allowSingleLine": true}],
-        "curly": [2, "multi-or-nest", "consistent"],
-        "new-parens": 2,
-        "func-call-spacing": 2,
-        "arrow-parens": [2, "as-needed"],
-        "prefer-const": 2,
-        "quote-props": [2, "consistent"],
+    // ensure we don't have any it.only or describe.only in prod
+    'mocha/no-exclusive-tests': 'error',
 
-        // anti-patterns
-        "no-var": 2,
-        "no-with": 2,
-        "no-multi-str": 2,
-        "no-caller": 2,
-        "no-implied-eval": 2,
-        "no-labels": 2,
-        "no-new-object": 2,
-        "no-octal-escape": 2,
-        "no-self-compare": 2,
-        "no-shadow-restricted-names": 2,
-        "no-cond-assign": 2,
-        "no-debugger": 2,
-        "no-dupe-keys": 2,
-        "no-duplicate-case": 2,
-        "no-empty-character-class": 2,
-        "no-unreachable": 2,
-        "no-unsafe-negation": 2,
-        "radix": 2,
-        "valid-typeof": 2,
-        "no-unused-vars": [2, { "args": "none", "vars": "local", "varsIgnorePattern": "([fx]?describe|[fx]?it|beforeAll|beforeEach|afterAll|afterEach)" }],
-        "no-implicit-globals": [2],
+    'import/order': [
+      'error',
+      {
+        'newlines-between': 'always',
+        alphabetize: {order: 'asc', caseInsensitive: true},
+      },
+    ],
 
-        // es2015 features
-        "require-yield": 2,
-        "template-curly-spacing": [2, "never"],
+    'import/no-cycle': ['error', {maxDepth: Infinity}],
 
-        // spacing details
-        "space-infix-ops": 2,
-        "space-in-parens": [2, "never"],
-        "space-before-function-paren": [2, "never"],
-        "no-whitespace-before-property": 2,
-        "keyword-spacing": [2, {
-            "overrides": {
-                "if": {"after": true},
-                "else": {"after": true},
-                "for": {"after": true},
-                "while": {"after": true},
-                "do": {"after": true},
-                "switch": {"after": true},
-                "return": {"after": true}
-            }
-        }],
-        "arrow-spacing": [2, {
-            "after": true,
-            "before": true
-        }],
+    'no-restricted-syntax': [
+      'error',
+      // Don't allow underscored declarations on camelCased variables/properties.
+      // ...RESTRICTED_UNDERSCORED_IDENTIFIERS,
+    ],
 
-        // file whitespace
-        "no-multiple-empty-lines": [2, {"max": 2}],
-        "no-mixed-spaces-and-tabs": 2,
-        "no-trailing-spaces": 2,
-        "linebreak-style": [ process.platform === "win32" ? 0 : 2, "unix" ],
-        "indent": [2, 2, { "SwitchCase": 1, "CallExpression": {"arguments": 2}, "MemberExpression": 2 }],
-        "key-spacing": [2, {
-            "beforeColon": false
-        }]
-    }
+    // Keeps comments formatted.
+    'rulesdir/prettier-comments': 'error',
+    // Enforces consistent file extension
+    'rulesdir/extensions': 'error',
+    // Enforces license headers on files
+    'rulesdir/check-license': 'error',
+  },
+  overrides: [
+    {
+      files: ['*.ts'],
+      parserOptions: {
+        allowAutomaticSingleRunInference: true,
+        project: './tsconfig.base.json',
+      },
+      extends: [
+        'plugin:@typescript-eslint/eslint-recommended',
+        'plugin:@typescript-eslint/recommended',
+        'plugin:@typescript-eslint/stylistic',
+      ],
+      plugins: ['eslint-plugin-tsdoc'],
+      rules: {
+        // Enforces clean up of used resources.
+        'rulesdir/use-using': 'error',
+        // Brackets keep code readable.
+        curly: ['error', 'all'],
+        // Brackets keep code readable and `return` intentions clear.
+        'arrow-body-style': ['error', 'always'],
+        // Keeps array types simple only when they are simple for readability.
+        '@typescript-eslint/array-type': ['error', {default: 'array-simple'}],
+        'no-unused-vars': 'off',
+        '@typescript-eslint/no-unused-vars': [
+          'error',
+          {argsIgnorePattern: '^_', varsIgnorePattern: '^_'},
+        ],
+        'func-call-spacing': 'off',
+        '@typescript-eslint/func-call-spacing': 'error',
+        semi: 'off',
+        '@typescript-eslint/semi': 'error',
+        '@typescript-eslint/no-empty-function': 'off',
+        '@typescript-eslint/no-use-before-define': 'off',
+        // We have to use any on some types so the warning isn't valuable.
+        '@typescript-eslint/no-explicit-any': 'off',
+        // We don't require explicit return types on basic functions or
+        // dummy functions in tests, for example
+        '@typescript-eslint/explicit-function-return-type': 'off',
+        // We allow non-null assertions if the value was asserted using `assert` API.
+        '@typescript-eslint/no-non-null-assertion': 'off',
+        '@typescript-eslint/no-useless-template-literals': 'error',
+        /**
+         * This is the default options (as per
+         * https://github.com/typescript-eslint/typescript-eslint/blob/HEAD/packages/eslint-plugin/docs/rules/ban-types.md),
+         *
+         * Unfortunately there's no way to
+         */
+        '@typescript-eslint/ban-types': [
+          'error',
+          {
+            extendDefaults: true,
+            types: {
+              /*
+               * Puppeteer's API accepts generic functions in many places so it's
+               * not a useful linting rule to ban the `Function` type. This turns off
+               * the banning of the `Function` type which is a default rule.
+               */
+              Function: false,
+            },
+          },
+        ],
+        // By default this is a warning but we want it to error.
+        '@typescript-eslint/explicit-module-boundary-types': 'error',
+        'no-restricted-syntax': [
+          'error',
+          {
+            // Never use `require` in TypeScript since they are transpiled out.
+            selector: "CallExpression[callee.name='require']",
+            message: '`require` statements are not allowed. Use `import`.',
+          },
+          {
+            // We need this as NodeJS will run until all the timers have resolved
+            message: 'Use method `Deferred.race()` instead.',
+            selector:
+              'MemberExpression[object.name="Promise"][property.name="race"]',
+          },
+          {
+            message:
+              'Deferred `valueOrThrow` should not be called in `Deferred.race()` pass deferred directly',
+            selector:
+              'CallExpression[callee.object.name="Deferred"][callee.property.name="race"] > ArrayExpression > CallExpression[callee.property.name="valueOrThrow"]',
+          },
+        ],
+        '@typescript-eslint/no-floating-promises': [
+          'error',
+          {ignoreVoid: true, ignoreIIFE: true},
+        ],
+        '@typescript-eslint/prefer-ts-expect-error': 'error',
+        // This is more performant; see https://v8.dev/blog/fast-async.
+        '@typescript-eslint/return-await': ['error', 'always'],
+        // This optimizes the dependency tracking for type-only files.
+        '@typescript-eslint/consistent-type-imports': 'error',
+        // So type-only exports get elided.
+        '@typescript-eslint/consistent-type-exports': 'error',
+        // Don't want to trigger unintended side-effects.
+        '@typescript-eslint/no-import-type-side-effects': 'error',
+      },
+      overrides: [
+        {
+          files: 'packages/puppeteer-core/src/**/*.ts',
+          rules: {
+            'no-restricted-imports': [
+              'error',
+              {
+                patterns: ['*Events', '*.test.js'],
+                paths: [...getThirdPartyPackages()],
+              },
+            ],
+          },
+        },
+        {
+          files: [
+            'packages/puppeteer-core/src/**/*.test.ts',
+            'tools/mocha-runner/src/test.ts',
+          ],
+          rules: {
+            // With the Node.js test runner, `describe` and `it` are technically
+            // promises, but we don't need to await them.
+            '@typescript-eslint/no-floating-promises': 'off',
+          },
+        },
+      ],
+    },
+
+    {
+      // Applies to only published packages
+      files: ['packages/**/*.ts'],
+      rules: {
+        // Error if comments do not adhere to `tsdoc`.
+        'tsdoc/syntax': 'error',
+      },
+    },
+  ],
 };

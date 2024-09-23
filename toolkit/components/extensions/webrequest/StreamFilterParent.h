@@ -39,7 +39,6 @@ using namespace mozilla::dom;
 using mozilla::ipc::IPCResult;
 
 class StreamFilterParent final : public PStreamFilterParent,
-                                 public nsIStreamListener,
                                  public nsIThreadRetargetableStreamListener,
                                  public nsIRequest,
                                  public StreamFilterBase {
@@ -59,7 +58,7 @@ class StreamFilterParent final : public PStreamFilterParent,
 
   using ChildEndpointPromise = MozPromise<ChildEndpoint, bool, true>;
 
-  static MOZ_MUST_USE RefPtr<ChildEndpointPromise> Create(
+  [[nodiscard]] static RefPtr<ChildEndpointPromise> Create(
       ContentParent* aContentParent, uint64_t aChannelId,
       const nsAString& aAddonId);
 
@@ -87,6 +86,10 @@ class StreamFilterParent final : public PStreamFilterParent,
     Disconnected,
   };
 
+  // This method makes StreamFilterParent to disconnect from channel.
+  // Notice that this method can only be called before OnStartRequest().
+  void Disconnect(const nsACString& aReason);
+
  protected:
   virtual ~StreamFilterParent();
 
@@ -97,8 +100,6 @@ class StreamFilterParent final : public PStreamFilterParent,
   IPCResult RecvClose();
   IPCResult RecvDisconnect();
   IPCResult RecvDestroy();
-
-  virtual void ActorDealloc() override;
 
  private:
   bool IPCActive() {
@@ -135,7 +136,7 @@ class StreamFilterParent final : public PStreamFilterParent,
 
   inline nsIEventTarget* ActorThread();
 
-  inline nsIEventTarget* IOThread();
+  inline nsISerialEventTarget* IOThread();
 
   inline bool IsIOThread();
 
@@ -164,21 +165,31 @@ class StreamFilterParent final : public PStreamFilterParent,
   nsCOMPtr<nsILoadGroup> mLoadGroup;
   nsCOMPtr<nsIStreamListener> mOrigListener;
 
-  nsCOMPtr<nsIEventTarget> mMainThread;
-  nsCOMPtr<nsIEventTarget> mIOThread;
+  nsCOMPtr<nsISerialEventTarget> mMainThread;
+  nsCOMPtr<nsISerialEventTarget> mIOThread;
 
   RefPtr<net::ChannelEventQueue> mQueue;
 
-  Mutex mBufferMutex;
+  Mutex mBufferMutex MOZ_UNANNOTATED;
 
   bool mReceivedStop;
   bool mSentStop;
   bool mDisconnected = false;
 
+  // If redirection happens or alterate cached data is being sent, the stream
+  // filter is disconnected in OnStartRequest and the following ODA would not
+  // be filtered. Using mDisconnected causes race condition. mState is possible
+  // to late to be set, which leads out of sync.
+  bool mDisconnectedByOnStartRequest = false;
+
+  bool mBeforeOnStartRequest = true;
+
   nsCOMPtr<nsISupports> mContext;
   uint64_t mOffset;
 
-  volatile State mState;
+  // Use Release-Acquire ordering to ensure the OMT ODA is not sent while
+  // the channel is disconnecting or closed.
+  Atomic<State, ReleaseAcquire> mState;
 };
 
 }  // namespace extensions

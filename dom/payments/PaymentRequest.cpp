@@ -5,27 +5,33 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BasicCardPayment.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
+#include "mozilla/dom/PaymentMethodChangeEvent.h"
 #include "mozilla/dom/PaymentRequest.h"
 #include "mozilla/dom/PaymentRequestChild.h"
 #include "mozilla/dom/PaymentRequestManager.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/UserActivation.h"
+#include "mozilla/dom/WindowContext.h"
+#include "mozilla/intl/Locale.h"
 #include "mozilla/intl/LocaleService.h"
-#include "mozilla/intl/MozLocale.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "nsContentUtils.h"
+#include "nsIDUtils.h"
+#include "nsImportModule.h"
+#include "nsIRegion.h"
 #include "nsIScriptError.h"
 #include "nsIURLParser.h"
 #include "nsNetCID.h"
+#include "nsServiceManagerUtils.h"
 #include "mozilla/dom/MerchantValidationEvent.h"
 #include "PaymentResponse.h"
 
 using mozilla::intl::LocaleService;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(PaymentRequest)
 
@@ -75,15 +81,24 @@ bool PaymentRequest::PrefEnabled(JSContext* aCx, JSObject* aObj) {
   }
   RefPtr<PaymentRequestManager> manager = PaymentRequestManager::GetSingleton();
   MOZ_ASSERT(manager);
+
+  nsCOMPtr<nsIRegion> regionJsm =
+      do_ImportESModule("resource://gre/modules/Region.sys.mjs", "Region");
   nsAutoString region;
-  Preferences::GetString("browser.search.region", region);
+  nsresult rv = regionJsm->GetHome(region);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
   if (!manager->IsRegionSupported(region)) {
     return false;
   }
   nsAutoCString locale;
   LocaleService::GetInstance()->GetAppLocaleAsBCP47(locale);
-  mozilla::intl::Locale loc = mozilla::intl::Locale(locale);
-  if (!(loc.GetLanguage() == "en" && loc.GetRegion() == "US")) {
+  mozilla::intl::Locale loc;
+  auto result = mozilla::intl::LocaleParser::TryParse(locale, loc);
+  if (!(result.isOk() && loc.Canonicalize().isOk() &&
+        loc.Language().EqualTo("en") && loc.Region().EqualTo("US"))) {
     return false;
   }
 
@@ -468,8 +483,7 @@ void PaymentRequest::IsValidDetailsInit(const PaymentDetailsInit& aDetails,
                                         const bool aRequestShipping,
                                         ErrorResult& aRv) {
   // Check the amount.value and amount.currency of detail.total
-  IsValidCurrencyAmount(NS_LITERAL_STRING("details.total"),
-                        aDetails.mTotal.mAmount,
+  IsValidCurrencyAmount(u"details.total"_ns, aDetails.mTotal.mAmount,
                         true,  // isTotalItem
                         aRv);
   if (aRv.Failed()) {
@@ -483,8 +497,7 @@ void PaymentRequest::IsValidDetailsUpdate(const PaymentDetailsUpdate& aDetails,
                                           ErrorResult& aRv) {
   // Check the amount.value and amount.currency of detail.total
   if (aDetails.mTotal.WasPassed()) {
-    IsValidCurrencyAmount(NS_LITERAL_STRING("details.total"),
-                          aDetails.mTotal.Value().mAmount,
+    IsValidCurrencyAmount(u"details.total"_ns, aDetails.mTotal.Value().mAmount,
                           true,  // isTotalItem
                           aRv);
     if (aRv.Failed()) {
@@ -516,7 +529,7 @@ void PaymentRequest::IsValidDetailsBase(const PaymentDetailsBase& aDetails,
         aDetails.mShippingOptions.Value();
     nsTArray<nsString> seenIDs;
     for (const PaymentShippingOption& shippingOption : shippingOptions) {
-      IsValidCurrencyAmount(NS_LITERAL_STRING("details.shippingOptions"),
+      IsValidCurrencyAmount(u"details.shippingOptions"_ns,
                             shippingOption.mAmount,
                             false,  // isTotalItem
                             aRv);
@@ -545,7 +558,7 @@ void PaymentRequest::IsValidDetailsBase(const PaymentDetailsBase& aDetails,
         return;
       }
       if (modifier.mTotal.WasPassed()) {
-        IsValidCurrencyAmount(NS_LITERAL_STRING("details.modifiers.total"),
+        IsValidCurrencyAmount(u"details.modifiers.total"_ns,
                               modifier.mTotal.Value().mAmount,
                               true,  // isTotalItem
                               aRv);
@@ -593,25 +606,23 @@ already_AddRefed<PaymentRequest> PaymentRequest::Constructor(
     return nullptr;
   }
 
-  if (!FeaturePolicyUtils::IsFeatureAllowed(doc,
-                                            NS_LITERAL_STRING("payment"))) {
+  if (!FeaturePolicyUtils::IsFeatureAllowed(doc, u"payment"_ns)) {
     aRv.ThrowSecurityError(
         "Document's Feature Policy does not allow to create a PaymentRequest");
     return nullptr;
   }
 
-  // Check if AllowPaymentRequest on the owner document
-  if (!doc->AllowPaymentRequest()) {
-    aRv.ThrowSecurityError(
-        "The PaymentRequest API is not enabled in this document, since "
-        "allowPaymentRequest property is false");
-    return nullptr;
+  // Get the top same process document
+  nsCOMPtr<Document> topSameProcessDoc = doc;
+  topSameProcessDoc = doc;
+  while (topSameProcessDoc) {
+    nsCOMPtr<Document> parent = topSameProcessDoc->GetInProcessParentDocument();
+    if (!parent || !parent->IsContentDocument()) {
+      break;
+    }
+    topSameProcessDoc = parent;
   }
-
-  // Get the top level principal
-  nsCOMPtr<Document> topLevelDoc = doc->GetTopLevelContentDocument();
-  MOZ_ASSERT(topLevelDoc);
-  nsCOMPtr<nsIPrincipal> topLevelPrincipal = topLevelDoc->NodePrincipal();
+  nsCOMPtr<nsIPrincipal> topLevelPrincipal = topSameProcessDoc->NodePrincipal();
 
   // Check payment methods and details
   IsValidMethodData(aGlobal.Context(), aMethodData, aRv);
@@ -643,19 +654,13 @@ already_AddRefed<PaymentRequest> PaymentRequest::CreatePaymentRequest(
     nsPIDOMWindowInner* aWindow, ErrorResult& aRv) {
   // Generate a unique id for identification
   nsID uuid;
-  if (NS_WARN_IF(NS_FAILED(nsContentUtils::GenerateUUIDInPlace(uuid)))) {
+  if (NS_WARN_IF(NS_FAILED(nsID::GenerateUUIDInPlace(uuid)))) {
     aRv.ThrowAbortError(
         "Failed to create an internal UUID for the PaymentRequest");
     return nullptr;
   }
 
-  // Build a string in {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx} format
-  char buffer[NSID_LENGTH];
-  uuid.ToProvidedString(buffer);
-
-  // Remove {} and the null terminator
-  nsAutoString id;
-  id.AssignASCII(&buffer[1], NSID_LENGTH - 3);
+  NSID_TrimBracketsUTF16 id(uuid);
 
   // Create payment request with generated id
   RefPtr<PaymentRequest> request = new PaymentRequest(aWindow, id);
@@ -728,10 +733,10 @@ already_AddRefed<Promise> PaymentRequest::Show(
   Document* doc = win->GetExtantDoc();
 
   if (!UserActivation::IsHandlingUserInput()) {
-    nsString msg = NS_LITERAL_STRING(
-        "User activation is now required to call PaymentRequest.show()");
+    nsString msg = nsLiteralString(
+        u"User activation is now required to call PaymentRequest.show()");
     nsContentUtils::ReportToConsoleNonLocalized(
-        msg, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Security"), doc);
+        msg, nsIScriptError::warningFlag, "Security"_ns, doc);
     if (StaticPrefs::dom_payments_request_user_interaction_required()) {
       aRv.ThrowSecurityError(NS_ConvertUTF16toUTF8(msg));
       return nullptr;
@@ -787,7 +792,6 @@ void PaymentRequest::RespondShowPayment(const nsAString& aMethodName,
                                         const nsAString& aPayerEmail,
                                         const nsAString& aPayerPhone,
                                         ErrorResult&& aResult) {
-  MOZ_ASSERT(mAcceptPromise || mResponse);
   MOZ_ASSERT(mState == eInteractive);
 
   if (aResult.Failed()) {
@@ -802,12 +806,17 @@ void PaymentRequest::RespondShowPayment(const nsAString& aMethodName,
   if (mResponse) {
     mResponse->RespondRetry(aMethodName, mShippingOption, mShippingAddress,
                             aDetails, aPayerName, aPayerEmail, aPayerPhone);
-  } else {
+  } else if (mAcceptPromise) {
     RefPtr<PaymentResponse> paymentResponse = new PaymentResponse(
         GetOwner(), this, mId, aMethodName, mShippingOption, mShippingAddress,
         aDetails, aPayerName, aPayerEmail, aPayerPhone);
     mResponse = paymentResponse;
     mAcceptPromise->MaybeResolve(paymentResponse);
+  } else {
+    // mAccpetPromise could be nulled through document activity changed. And
+    // there is nothing to do here.
+    mState = eClosed;
+    return;
   }
 
   mState = eClosed;
@@ -867,23 +876,26 @@ void PaymentRequest::RespondAbortPayment(bool aSuccess) {
   if (mUpdateError.Failed()) {
     // Respond show with mUpdateError, set mUpdating to false.
     mUpdating = false;
-    RespondShowPayment(EmptyString(), ResponseData(), EmptyString(),
-                       EmptyString(), EmptyString(), std::move(mUpdateError));
+    RespondShowPayment(u""_ns, ResponseData(), u""_ns, u""_ns, u""_ns,
+                       std::move(mUpdateError));
     return;
   }
 
-  MOZ_ASSERT(mAbortPromise);
-  MOZ_ASSERT(mState == eInteractive);
+  if (mState != eInteractive) {
+    return;
+  }
 
-  if (aSuccess) {
-    mAbortPromise->MaybeResolve(JS::UndefinedHandleValue);
-    mAbortPromise = nullptr;
-    ErrorResult abortResult;
-    abortResult.ThrowAbortError("The PaymentRequest is aborted");
-    RejectShowPayment(std::move(abortResult));
-  } else {
-    mAbortPromise->MaybeReject(NS_ERROR_DOM_INVALID_STATE_ERR);
-    mAbortPromise = nullptr;
+  if (mAbortPromise) {
+    if (aSuccess) {
+      mAbortPromise->MaybeResolve(JS::UndefinedHandleValue);
+      mAbortPromise = nullptr;
+      ErrorResult abortResult;
+      abortResult.ThrowAbortError("The PaymentRequest is aborted");
+      RejectShowPayment(std::move(abortResult));
+    } else {
+      mAbortPromise->MaybeReject(NS_ERROR_DOM_INVALID_STATE_ERR);
+      mAbortPromise = nullptr;
+    }
   }
 }
 
@@ -1003,7 +1015,7 @@ nsresult PaymentRequest::DispatchMerchantValidationEvent(
   MerchantValidationEventInit init;
   init.mBubbles = false;
   init.mCancelable = false;
-  init.mValidationURL = EmptyString();
+  init.mValidationURL.Truncate();
 
   ErrorResult rv;
   RefPtr<MerchantValidationEvent> event =
@@ -1027,9 +1039,8 @@ nsresult PaymentRequest::DispatchPaymentMethodChangeEvent(
   init.mCancelable = false;
 
   RefPtr<PaymentMethodChangeEvent> event =
-      PaymentMethodChangeEvent::Constructor(
-          this, NS_LITERAL_STRING("paymentmethodchange"), init, aMethodName,
-          aMethodDetails);
+      PaymentMethodChangeEvent::Constructor(this, u"paymentmethodchange"_ns,
+                                            init, aMethodName, aMethodDetails);
   event->SetTrusted(true);
   event->SetRequest(this);
 
@@ -1051,16 +1062,15 @@ nsresult PaymentRequest::UpdateShippingAddress(
     const nsAString& aOrganization, const nsAString& aRecipient,
     const nsAString& aPhone) {
   nsTArray<nsString> emptyArray;
-  mShippingAddress =
-      new PaymentAddress(GetOwner(), aCountry, emptyArray, aRegion, aRegionCode,
-                         aCity, aDependentLocality, aPostalCode, aSortingCode,
-                         EmptyString(), EmptyString(), EmptyString());
+  mShippingAddress = new PaymentAddress(
+      GetOwner(), aCountry, emptyArray, aRegion, aRegionCode, aCity,
+      aDependentLocality, aPostalCode, aSortingCode, u""_ns, u""_ns, u""_ns);
   mFullShippingAddress =
       new PaymentAddress(GetOwner(), aCountry, aAddressLine, aRegion,
                          aRegionCode, aCity, aDependentLocality, aPostalCode,
                          aSortingCode, aOrganization, aRecipient, aPhone);
   // Fire shippingaddresschange event
-  return DispatchUpdateEvent(NS_LITERAL_STRING("shippingaddresschange"));
+  return DispatchUpdateEvent(u"shippingaddresschange"_ns);
 }
 
 void PaymentRequest::SetShippingOption(const nsAString& aShippingOption) {
@@ -1076,7 +1086,7 @@ nsresult PaymentRequest::UpdateShippingOption(
   mShippingOption = aShippingOption;
 
   // Fire shippingaddresschange event
-  return DispatchUpdateEvent(NS_LITERAL_STRING("shippingoptionchange"));
+  return DispatchUpdateEvent(u"shippingoptionchange"_ns);
 }
 
 nsresult PaymentRequest::UpdatePaymentMethod(
@@ -1102,7 +1112,8 @@ void PaymentRequest::SetOptions(const PaymentOptions& aOptions) {
 }
 
 void PaymentRequest::ResolvedCallback(JSContext* aCx,
-                                      JS::Handle<JS::Value> aValue) {
+                                      JS::Handle<JS::Value> aValue,
+                                      ErrorResult& aRv) {
   if (!InFullyActiveDocument()) {
     return;
   }
@@ -1137,7 +1148,8 @@ void PaymentRequest::ResolvedCallback(JSContext* aCx,
 }
 
 void PaymentRequest::RejectedCallback(JSContext* aCx,
-                                      JS::Handle<JS::Value> aValue) {
+                                      JS::Handle<JS::Value> aValue,
+                                      ErrorResult& aRv) {
   if (!InFullyActiveDocument()) {
     return;
   }
@@ -1156,20 +1168,24 @@ bool PaymentRequest::InFullyActiveDocument() {
   }
 
   nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(global);
+
   Document* doc = win->GetExtantDoc();
   if (!doc || !doc->IsCurrentActiveDocument()) {
     return false;
   }
 
-  // According to the definition of the fully active document, recursive
-  // checking the parent document are all IsCurrentActiveDocument
-  Document* parentDoc = doc->GetInProcessParentDocument();
-  while (parentDoc) {
-    if (parentDoc && !parentDoc->IsCurrentActiveDocument()) {
+  WindowContext* winContext = win->GetWindowContext();
+  if (!winContext) {
+    return false;
+  }
+
+  while (winContext) {
+    if (!winContext->IsCurrent()) {
       return false;
     }
-    parentDoc = parentDoc->GetInProcessParentDocument();
+    winContext = winContext->GetParentWindowContext();
   }
+
   return true;
 }
 
@@ -1242,5 +1258,4 @@ JSObject* PaymentRequest::WrapObject(JSContext* aCx,
   return PaymentRequest_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

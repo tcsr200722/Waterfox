@@ -7,9 +7,9 @@ const {
   MESSAGE_SOURCE,
   MESSAGE_TYPE,
   MESSAGE_LEVEL,
-} = require("devtools/client/webconsole/constants");
+} = require("resource://devtools/client/webconsole/constants.js");
 
-exports.ConsoleCommand = function(props) {
+exports.ConsoleCommand = function (props) {
   return Object.assign(
     {
       id: null,
@@ -27,7 +27,7 @@ exports.ConsoleCommand = function(props) {
   );
 };
 
-exports.ConsoleMessage = function(props) {
+exports.ConsoleMessage = function (props) {
   return Object.assign(
     {
       id: null,
@@ -54,7 +54,6 @@ exports.ConsoleMessage = function(props) {
       indent: 0,
       prefix: "",
       private: false,
-      logpointId: undefined,
       chromeContext: false,
       hasException: false,
       isPromiseRejection: false,
@@ -63,7 +62,7 @@ exports.ConsoleMessage = function(props) {
   );
 };
 
-exports.NetworkEventMessage = function(props) {
+exports.NetworkEventMessage = function (props) {
   return Object.assign(
     {
       id: null,
@@ -80,11 +79,11 @@ exports.NetworkEventMessage = function(props) {
       totalTime: null,
       indent: 0,
       updates: null,
-      openedOnce: false,
       securityState: null,
       securityInfo: null,
       requestHeadersFromUploadStream: null,
       private: false,
+      blockedReason: null,
     },
     props
   );

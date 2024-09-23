@@ -9,19 +9,22 @@
  * https://notifications.spec.whatwg.org/
  */
 
-[Pref="dom.serviceWorkers.enabled",
+[Func="ServiceWorkerVisible",
  Exposed=(Window,Worker)]
 interface ServiceWorkerRegistration : EventTarget {
   readonly attribute ServiceWorker? installing;
   readonly attribute ServiceWorker? waiting;
   readonly attribute ServiceWorker? active;
 
+  [Pref="dom.serviceWorkers.navigationPreload.enabled", SameObject]
+  readonly attribute NavigationPreloadManager navigationPreload;
+
   readonly attribute USVString scope;
   [Throws]
   readonly attribute ServiceWorkerUpdateViaCache updateViaCache;
 
   [Throws, NewObject]
-  Promise<void> update();
+  Promise<undefined> update();
 
   [Throws, NewObject]
   Promise<boolean> unregister();
@@ -44,8 +47,8 @@ partial interface ServiceWorkerRegistration {
 
 // https://notifications.spec.whatwg.org/
 partial interface ServiceWorkerRegistration {
-  [Throws, Pref="dom.webnotifications.serviceworker.enabled"]
-  Promise<void> showNotification(DOMString title, optional NotificationOptions options = {});
-  [Throws, Pref="dom.webnotifications.serviceworker.enabled"]
+  [NewObject, Func="mozilla::dom::Notification::PrefEnabled"]
+  Promise<undefined> showNotification(DOMString title, optional NotificationOptions options = {});
+  [NewObject, Func="mozilla::dom::Notification::PrefEnabled"]
   Promise<sequence<Notification>> getNotifications(optional GetNotificationOptions filter = {});
 };

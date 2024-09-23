@@ -11,16 +11,15 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 ClientSource* ClientSourceOpChild::GetSource() const {
   auto actor = static_cast<ClientSourceChild*>(Manager());
   return actor->GetSource();
 }
 
-template <typename Method, typename Args>
-void ClientSourceOpChild::DoSourceOp(Method aMethod, const Args& aArgs) {
+template <typename Method, typename... Args>
+void ClientSourceOpChild::DoSourceOp(Method aMethod, Args&&... aArgs) {
   RefPtr<ClientOpPromise> promise;
   nsCOMPtr<nsISerialEventTarget> target;
 
@@ -41,7 +40,7 @@ void ClientSourceOpChild::DoSourceOp(Method aMethod, const Args& aArgs) {
 
     // This may cause the ClientSource object to be destroyed.  Do not
     // use the source variable after this call.
-    promise = (source->*aMethod)(aArgs);
+    promise = (source->*aMethod)(std::forward<Args>(aArgs)...);
   }
 
   // The ClientSource methods are required to always return a promise.  If
@@ -90,12 +89,16 @@ void ClientSourceOpChild::Init(const ClientOpConstructorArgs& aArgs) {
       break;
     }
     case ClientOpConstructorArgs::TClientClaimArgs: {
-      DoSourceOp(&ClientSource::Claim, aArgs.get_ClientClaimArgs());
+      MOZ_ASSERT_UNREACHABLE("shouldn't happen with parent intercept");
       break;
     }
     case ClientOpConstructorArgs::TClientGetInfoAndStateArgs: {
       DoSourceOp(&ClientSource::GetInfoAndState,
                  aArgs.get_ClientGetInfoAndStateArgs());
+      break;
+    }
+    case ClientOpConstructorArgs::TClientEvictBFCacheArgs: {
+      DoSourceOp(&ClientSource::EvictFromBFCacheOp);
       break;
     }
     default: {
@@ -130,5 +133,4 @@ void ClientSourceOpChild::Cleanup() {
   mPromiseRequestHolder.DisconnectIfExists();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

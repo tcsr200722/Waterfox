@@ -16,7 +16,7 @@ namespace mozilla {
 // ID3 header parser state machine used by FrameParser.
 // The header contains the following format (one byte per term):
 // 'I' 'D' '3' MajorVersion MinorVersion Flags Size1 Size2 Size3 Size4
-// For more details see http://id3.org/id3v2.3.0.
+// For more details see https://id3.org/id3v2.4.0-structure
 class ID3Parser {
  public:
   // Holds the ID3 header and its parsing state.
@@ -24,6 +24,7 @@ class ID3Parser {
    public:
     // The header size is static, see class comment.
     static const int SIZE = 10;
+    static const int ID3v1_SIZE = 128;
 
     // Constructor.
     ID3Header();
@@ -68,7 +69,7 @@ class ID3Parser {
     bool Update(uint8_t c);
 
     // The currently parsed byte sequence.
-    uint8_t mRaw[SIZE];
+    uint8_t mRaw[SIZE] = {};
 
     // The derived size as provided by the size fields.
     // The header size fields holds a 4 byte sequence with each MSB set to 0,
@@ -77,22 +78,36 @@ class ID3Parser {
 
     // The current byte position in the parsed sequence. Reset via Reset and
     // incremented via Update.
-    int mPos;
+    int mPos = 0;
   };
+
+  // Check if the buffer is starting with ID3v2 tag.
+  static bool IsBufferStartingWithID3Tag(BufferReader* aReader);
+  // Similarly, if the buffer is starting with ID3v1 tag.
+  static bool IsBufferStartingWithID3v1Tag(BufferReader* aReader);
 
   // Returns the parsed ID3 header. Note: check for validity.
   const ID3Header& Header() const;
 
+  // Returns the size of all parsed ID3 headers.
+  uint32_t TotalHeadersSize() const;
+
   // Parses contents of given BufferReader for a valid ID3v2 header.
-  // Returns the total ID3v2 tag size if successful and zero otherwise.
-  Result<uint32_t, nsresult> Parse(BufferReader* aReader);
+  // Returns the parsed ID3v2 tag size if successful and zero otherwise.
+  uint32_t Parse(BufferReader* aReader);
 
   // Resets the state to allow for a new parsing session.
   void Reset();
 
  private:
+  uint32_t ParseInternal(BufferReader* aReader);
+
   // The currently parsed ID3 header. Reset via Reset, updated via Parse.
   ID3Header mHeader;
+  // If a file contains multiple ID3 headers, then we would only select the
+  // latest one, but keep the size of former abandoned in order to return the
+  // correct size offset.
+  uint32_t mFormerID3Size = 0;
 };
 
 // MPEG audio frame parser.
@@ -136,22 +151,22 @@ class FrameParser {
     uint8_t RawChannelMode() const;
 
     // Sampling rate frequency in Hz.
-    int32_t SampleRate() const;
+    uint32_t SampleRate() const;
 
     // Number of audio channels.
-    int32_t Channels() const;
+    uint32_t Channels() const;
 
     // Samples per frames, static depending on MPEG version and layer.
-    int32_t SamplesPerFrame() const;
+    uint32_t SamplesPerFrame() const;
 
     // Slot size used for padding, static depending on MPEG layer.
-    int32_t SlotSize() const;
+    uint32_t SlotSize() const;
 
     // Bitrate in kbps, can vary between frames.
-    int32_t Bitrate() const;
+    uint32_t Bitrate() const;
 
     // MPEG layer (0->invalid, 1->I, 2->II, 3->III).
-    int32_t Layer() const;
+    uint32_t Layer() const;
 
     // Returns whether the parsed data is a valid frame header up to the given
     // byte position.
@@ -173,11 +188,11 @@ class FrameParser {
     bool Update(const uint8_t c);
 
     // The currently parsed byte sequence.
-    uint8_t mRaw[SIZE];
+    uint8_t mRaw[SIZE] = {};
 
     // The current byte position in the parsed sequence. Reset via Reset and
     // incremented via Update.
-    int mPos;
+    int mPos = 0;
   };
 
   // VBR frames may contain Xing or VBRI headers for additional info, we use
@@ -215,19 +230,22 @@ class FrameParser {
 
     // Returns the byte offset for the given duration percentage as a factor
     // (0: begin, 1.0: end).
-    int64_t Offset(float aDurationFac) const;
+    int64_t Offset(media::TimeUnit aTime, media::TimeUnit aDuration) const;
 
     // Parses contents of given ByteReader for a valid VBR header.
     // The offset of the passed ByteReader needs to point to an MPEG frame
     // begin, as a VBRI-style header is searched at a fixed offset relative to
     // frame begin. Returns whether a valid VBR header was found in the range.
-    bool Parse(BufferReader* aReader);
+    bool Parse(BufferReader* aReader, size_t aFrameSize);
+
+    uint32_t EncoderDelay() const { return mEncoderDelay; }
+    uint32_t EncoderPadding() const { return mEncoderPadding; }
 
    private:
     // Parses contents of given ByteReader for a valid Xing header.
     // The initial ByteReader offset will be preserved.
     // Returns whether a valid Xing header was found in the range.
-    Result<bool, nsresult> ParseXing(BufferReader* aReader);
+    Result<bool, nsresult> ParseXing(BufferReader* aReader, size_t aFrameSize);
 
     // Parses contents of given ByteReader for a valid VBRI header.
     // The initial ByteReader offset will be preserved. It also needs to point
@@ -250,13 +268,22 @@ class FrameParser {
 
     // The detected VBR header type.
     VBRHeaderType mType;
+
+    uint16_t mVBRISeekOffsetsFramesPerEntry = 0;
+
+    // Delay and padding values found in the LAME header. The encoder delay is a
+    // number of frames that has to be skipped at the beginning of the stream,
+    // encoder padding is a number of frames that needs to be ignored in the
+    // last packet.
+    uint16_t mEncoderDelay = 0;
+    uint16_t mEncoderPadding = 0;
   };
 
   // Frame meta container used to parse and hold a frame header and side info.
   class Frame {
    public:
     // Returns the length of the frame excluding the header in bytes.
-    int32_t Length() const;
+    uint32_t Length() const;
 
     // Returns the parsed frame header.
     const FrameHeader& Header() const;
@@ -287,6 +314,12 @@ class FrameParser {
 
   // Returns the parsed ID3 header. Note: check for validity.
   const ID3Parser::ID3Header& ID3Header() const;
+
+  // Returns whether ID3 metadata have been found, at the end of the file.
+  bool ID3v1MetadataFound() const;
+
+  // Returns the size of all parsed ID3 headers.
+  uint32_t TotalID3HeaderSize() const;
 
   // Returns the parsed VBR header info. Note: check for validity by type.
   const VBRHeader& VBRInfo() const;
@@ -328,6 +361,12 @@ class FrameParser {
   Frame mFirstFrame;
   Frame mFrame;
   Frame mPrevFrame;
+  // If this is true, ID3v1 metadata have been found at the end of the file, and
+  // must be sustracted from the stream size in order to compute the stream
+  // duration, when computing the duration of a CBR file based on its length in
+  // bytes. This means that the duration can change at the moment we reach the
+  // end of the file.
+  bool mID3v1MetadataFound = false;
 };
 
 }  // namespace mozilla

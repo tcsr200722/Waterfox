@@ -9,7 +9,7 @@
 
 TEST(TextFormatter, Tests)
 {
-  nsAutoString fmt(NS_LITERAL_STRING("%3$s %4$S %1$d %2$d %2$d %3$s"));
+  nsAutoString fmt(u"%3$s %4$S %1$d %2$d %2$d %3$s"_ns);
   char utf8[] = "Hello";
   char16_t ucs2[] = {'W',    'o',    'r',    'l',    'd',
                      0x4e00, 0xAc00, 0xFF45, 0x0103, 0x00};
@@ -228,7 +228,7 @@ TEST(TextFormatterTestResults, Tests)
   EXPECT_EQ(
       nsTextFormatter::snprintf(buf, 10, u"%s", "more than 10 characters"), 9u);
   EXPECT_EQ(buf[9], '\0');
-  EXPECT_STREQ("more than", NS_ConvertUTF16toUTF8(buf).get());
+  EXPECT_STREQ("more than", NS_ConvertUTF16toUTF8(&buf[0]).get());
 
   nsString out;
   nsTextFormatter::ssprintf(out, u"%s", "more than 10 characters");

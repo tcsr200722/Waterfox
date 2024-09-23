@@ -1,7 +1,7 @@
 "use strict";
 
-const { ProductAddonChecker } = ChromeUtils.import(
-  "resource://gre/modules/addons/ProductAddonChecker.jsm"
+const { ProductAddonChecker } = ChromeUtils.importESModule(
+  "resource://gre/modules/addons/ProductAddonChecker.sys.mjs"
 );
 
 const LocalFile = new Components.Constructor(
@@ -80,23 +80,31 @@ function compareFiles(file1, file2) {
 }
 
 add_task(async function test_404() {
-  let res = await ProductAddonChecker.getProductAddonList(root + "404.xml");
-  Assert.ok(res.usedFallback);
+  await Assert.rejects(
+    ProductAddonChecker.getProductAddonList(root + "404.xml"),
+    /got node name: html/
+  );
 });
 
 add_task(async function test_not_xml() {
-  let res = await ProductAddonChecker.getProductAddonList(root + "bad.txt");
-  Assert.ok(res.usedFallback);
+  await Assert.rejects(
+    ProductAddonChecker.getProductAddonList(root + "bad.txt"),
+    /got node name: parsererror/
+  );
 });
 
 add_task(async function test_invalid_xml() {
-  let res = await ProductAddonChecker.getProductAddonList(root + "bad.xml");
-  Assert.ok(res.usedFallback);
+  await Assert.rejects(
+    ProductAddonChecker.getProductAddonList(root + "bad.xml"),
+    /got node name: parsererror/
+  );
 });
 
 add_task(async function test_wrong_xml() {
-  let res = await ProductAddonChecker.getProductAddonList(root + "bad2.xml");
-  Assert.ok(res.usedFallback);
+  await Assert.rejects(
+    ProductAddonChecker.getProductAddonList(root + "bad2.xml"),
+    /got node name: test/
+  );
 });
 
 add_task(async function test_missing() {
@@ -108,18 +116,18 @@ add_task(async function test_missing() {
 
 add_task(async function test_empty() {
   let res = await ProductAddonChecker.getProductAddonList(root + "empty.xml");
-  Assert.ok(Array.isArray(res.gmpAddons));
-  Assert.equal(res.gmpAddons.length, 0);
+  Assert.ok(Array.isArray(res.addons));
+  Assert.equal(res.addons.length, 0);
 });
 
 add_task(async function test_good_xml() {
   let res = await ProductAddonChecker.getProductAddonList(root + "good.xml");
-  Assert.ok(Array.isArray(res.gmpAddons));
+  Assert.ok(Array.isArray(res.addons));
 
   // There are three valid entries in the XML
-  Assert.equal(res.gmpAddons.length, 5);
+  Assert.equal(res.addons.length, 5);
 
-  let addon = res.gmpAddons[0];
+  let addon = res.addons[0];
   Assert.equal(addon.id, "test1");
   Assert.equal(addon.URL, "http://example.com/test1.xpi");
   Assert.equal(addon.hashFunction, undefined);
@@ -127,7 +135,7 @@ add_task(async function test_good_xml() {
   Assert.equal(addon.version, undefined);
   Assert.equal(addon.size, undefined);
 
-  addon = res.gmpAddons[1];
+  addon = res.addons[1];
   Assert.equal(addon.id, "test2");
   Assert.equal(addon.URL, "http://example.com/test2.xpi");
   Assert.equal(addon.hashFunction, "md5");
@@ -135,7 +143,7 @@ add_task(async function test_good_xml() {
   Assert.equal(addon.version, undefined);
   Assert.equal(addon.size, undefined);
 
-  addon = res.gmpAddons[2];
+  addon = res.addons[2];
   Assert.equal(addon.id, "test3");
   Assert.equal(addon.URL, "http://example.com/test3.xpi");
   Assert.equal(addon.hashFunction, undefined);
@@ -143,7 +151,7 @@ add_task(async function test_good_xml() {
   Assert.equal(addon.version, "1.0");
   Assert.equal(addon.size, 45);
 
-  addon = res.gmpAddons[3];
+  addon = res.addons[3];
   Assert.equal(addon.id, "test4");
   Assert.equal(addon.URL, undefined);
   Assert.equal(addon.hashFunction, undefined);
@@ -151,7 +159,7 @@ add_task(async function test_good_xml() {
   Assert.equal(addon.version, undefined);
   Assert.equal(addon.size, undefined);
 
-  addon = res.gmpAddons[4];
+  addon = res.addons[4];
   Assert.equal(addon.id, undefined);
   Assert.equal(addon.URL, "http://example.com/test5.xpi");
   Assert.equal(addon.hashFunction, undefined);
@@ -164,7 +172,7 @@ add_task(async function test_download_nourl() {
   try {
     let path = await ProductAddonChecker.downloadAddon({});
 
-    await OS.File.remove(path);
+    await IOUtils.remove(path);
     do_throw("Should not have downloaded a file with a missing url");
   } catch (e) {
     Assert.ok(
@@ -180,7 +188,7 @@ add_task(async function test_download_missing() {
       URL: root + "nofile.xpi",
     });
 
-    await OS.File.remove(path);
+    await IOUtils.remove(path);
     do_throw("Should not have downloaded a missing file");
   } catch (e) {
     Assert.ok(true, "Should have thrown when downloading a missing file.");
@@ -192,8 +200,8 @@ add_task(async function test_download_noverify() {
     URL: root + "unsigned.xpi",
   });
 
-  let stat = await OS.File.stat(path);
-  Assert.ok(!stat.isDir);
+  let stat = await IOUtils.stat(path);
+  Assert.ok(!stat.type !== "directory");
   Assert.equal(stat.size, 452);
 
   Assert.ok(
@@ -203,7 +211,7 @@ add_task(async function test_download_noverify() {
     )
   );
 
-  await OS.File.remove(path);
+  await IOUtils.remove(path);
 });
 
 add_task(async function test_download_badsize() {
@@ -213,7 +221,7 @@ add_task(async function test_download_badsize() {
       size: 400,
     });
 
-    await OS.File.remove(path);
+    await IOUtils.remove(path);
     do_throw("Should not have downloaded a file with a bad size");
   } catch (e) {
     Assert.ok(
@@ -232,7 +240,25 @@ add_task(async function test_download_badhashfn() {
         "9b9abf7ddfc1a6d7ffc7e0247481dcc202363e4445ad3494fb22036f1698c7f3",
     });
 
-    await OS.File.remove(path);
+    await IOUtils.remove(path);
+    do_throw("Should not have downloaded a file with a bad hash function");
+  } catch (e) {
+    Assert.ok(
+      true,
+      "Should have thrown when downloading a file with a bad hash function."
+    );
+  }
+});
+
+add_task(async function test_download_sha1_unsupported() {
+  try {
+    let path = await ProductAddonChecker.downloadAddon({
+      URL: root + "unsigned.xpi",
+      hashFunction: "sha1",
+      hashValue: "3d0dc22e1f394e159b08aaf5f0f97de4d5c65f4f",
+    });
+
+    await IOUtils.remove(path);
     do_throw("Should not have downloaded a file with a bad hash function");
   } catch (e) {
     Assert.ok(
@@ -251,7 +277,7 @@ add_task(async function test_download_badhash() {
         "8b9abf7ddfc1a6d7ffc7e0247481dcc202363e4445ad3494fb22036f1698c7f3",
     });
 
-    await OS.File.remove(path);
+    await IOUtils.remove(path);
     do_throw("Should not have downloaded a file with a bad hash");
   } catch (e) {
     Assert.ok(
@@ -270,8 +296,8 @@ add_task(async function test_download_works() {
       "9b9abf7ddfc1a6d7ffc7e0247481dcc202363e4445ad3494fb22036f1698c7f3",
   });
 
-  let stat = await OS.File.stat(path);
-  Assert.ok(!stat.isDir);
+  let stat = await IOUtils.stat(path);
+  Assert.ok(stat.type !== "directory");
 
   Assert.ok(
     compareFiles(
@@ -280,5 +306,5 @@ add_task(async function test_download_works() {
     )
   );
 
-  await OS.File.remove(path);
+  await IOUtils.remove(path);
 });

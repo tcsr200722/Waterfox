@@ -9,9 +9,9 @@
 
 #include "mozilla/dom/SyncMessageSender.h"
 #include "mozilla/dom/MessageManagerBinding.h"
+#include "mozilla/HoldDropJSObjects.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class ChildProcessMessageManager final : public SyncMessageSender {
  public:
@@ -30,7 +30,6 @@ class ChildProcessMessageManager final : public SyncMessageSender {
   virtual ~ChildProcessMessageManager() { mozilla::DropJSObjects(this); }
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ChildProcessMessageManager_h

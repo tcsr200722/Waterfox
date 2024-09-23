@@ -6,18 +6,13 @@
 
 #include <string.h>
 #include "prprf.h"
-#include "plstr.h"
 #include "prmem.h"
 #include "plbase64.h"
 #include "nsCRT.h"
-#include "nsMemory.h"
 #include "nsTArray.h"
-#include "nsCOMPtr.h"
 #include "nsEscape.h"
 #include "nsMIMEHeaderParamImpl.h"
-#include "nsReadableUtils.h"
 #include "nsNativeCharsetUtils.h"
-#include "nsError.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/TextUtils.h"
 #include "mozilla/Utf8.h"
@@ -44,7 +39,7 @@ static nsresult ToUTF8(const nsACString& aString, const nsACString& aCharset,
     return NS_ERROR_INVALID_ARG;
   }
 
-  auto encoding = Encoding::ForLabelNoReplacement(aCharset);
+  const auto* encoding = Encoding::ForLabelNoReplacement(aCharset);
   if (!encoding) {
     return NS_ERROR_UCONV_NOCONV;
   }
@@ -121,8 +116,29 @@ nsMIMEHeaderParamImpl::GetParameterHTTP(const nsACString& aHeaderVal,
 nsresult nsMIMEHeaderParamImpl::GetParameterHTTP(const nsACString& aHeaderVal,
                                                  const char* aParamName,
                                                  nsAString& aResult) {
-  return DoGetParameter(aHeaderVal, aParamName, HTTP_FIELD_ENCODING,
-                        EmptyCString(), false, nullptr, aResult);
+  return DoGetParameter(aHeaderVal, aParamName, HTTP_FIELD_ENCODING, ""_ns,
+                        false, nullptr, aResult);
+}
+
+/* static */
+// detects any non-null characters pass null
+bool nsMIMEHeaderParamImpl::ContainsTrailingCharPastNull(
+    const nsACString& aVal) {
+  nsACString::const_iterator first;
+  aVal.BeginReading(first);
+  nsACString::const_iterator end;
+  aVal.EndReading(end);
+
+  if (FindCharInReadable(L'\0', first, end)) {
+    while (first != end) {
+      if (*first != '\0') {
+        // contains trailing characters past the null character
+        return true;
+      }
+      ++first;
+    }
+  }
+  return false;
 }
 
 // XXX : aTryLocaleCharset is not yet effective.
@@ -138,16 +154,15 @@ nsresult nsMIMEHeaderParamImpl::DoGetParameter(
   // aDecoding (5987 being a subset of 2231) and return charset.)
   nsCString med;
   nsCString charset;
-  rv = DoParameterInternal(PromiseFlatCString(aHeaderVal).get(), aParamName,
-                           aDecoding, getter_Copies(charset), aLang,
-                           getter_Copies(med));
+  rv = DoParameterInternal(aHeaderVal, aParamName, aDecoding,
+                           getter_Copies(charset), aLang, getter_Copies(med));
   if (NS_FAILED(rv)) return rv;
 
   // convert to UTF-8 after charset conversion and RFC 2047 decoding
   // if necessary.
 
   nsAutoCString str1;
-  rv = internalDecodeParameter(med, charset, EmptyCString(), false,
+  rv = internalDecodeParameter(med, charset, ""_ns, false,
                                // was aDecoding == MIME_FIELD_ENCODING
                                // see bug 875615
                                true, str1);
@@ -168,8 +183,9 @@ nsresult nsMIMEHeaderParamImpl::DoGetParameter(
     return NS_OK;
   }
 
-  if (aTryLocaleCharset && !NS_IsNativeUTF8())
+  if (aTryLocaleCharset && !NS_IsNativeUTF8()) {
     return NS_CopyNativeToUnicode(str1, aResult);
+  }
 
   CopyASCIItoUTF16(str1, aResult);
   return NS_OK;
@@ -374,7 +390,7 @@ bool IsValidOctetSequenceForCharset(const nsACString& aCharset,
 // The format of these header lines  is
 // <token> [ ';' <token> '=' <token-or-quoted-string> ]*
 NS_IMETHODIMP
-nsMIMEHeaderParamImpl::GetParameterInternal(const char* aHeaderValue,
+nsMIMEHeaderParamImpl::GetParameterInternal(const nsACString& aHeaderValue,
                                             const char* aParamName,
                                             char** aCharset, char** aLang,
                                             char** aResult) {
@@ -384,9 +400,23 @@ nsMIMEHeaderParamImpl::GetParameterInternal(const char* aHeaderValue,
 
 /* static */
 nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
-    const char* aHeaderValue, const char* aParamName, ParamDecoding aDecoding,
-    char** aCharset, char** aLang, char** aResult) {
-  if (!aHeaderValue || !*aHeaderValue || !aResult) return NS_ERROR_INVALID_ARG;
+    const nsACString& aHeaderValue, const char* aParamName,
+    ParamDecoding aDecoding, char** aCharset, char** aLang, char** aResult) {
+  if (aHeaderValue.IsEmpty() || !aResult) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  if (ContainsTrailingCharPastNull(aHeaderValue)) {
+    // See Bug 1784348
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  const nsCString& flat = PromiseFlatCString(aHeaderValue);
+  const char* str = flat.get();
+
+  if (!*str) {
+    return NS_ERROR_INVALID_ARG;
+  }
 
   *aResult = nullptr;
 
@@ -399,19 +429,19 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
   // them for HTTP header fields later on, see bug 776324
   bool acceptContinuations = true;
 
-  const char* str = aHeaderValue;
-
   // skip leading white space.
-  for (; *str && nsCRT::IsAsciiSpace(*str); ++str)
+  for (; *str && nsCRT::IsAsciiSpace(*str); ++str) {
     ;
+  }
   const char* start = str;
 
   // aParamName is empty. return the first (possibly) _unnamed_ 'parameter'
   // For instance, return 'inline' in the following case:
   // Content-Disposition: inline; filename=.....
   if (!aParamName || !*aParamName) {
-    for (; *str && *str != ';' && !nsCRT::IsAsciiSpace(*str); ++str)
+    for (; *str && *str != ';' && !nsCRT::IsAsciiSpace(*str); ++str) {
       ;
+    }
     if (str == start) return NS_ERROR_FIRST_HEADER_FIELD_COMPONENT_EMPTY;
 
     *aResult = (char*)moz_xmemdup(start, (str - start) + 1);
@@ -420,12 +450,14 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
   }
 
   /* Skip forward to first ';' */
-  for (; *str && *str != ';' && *str != ','; ++str)
+  for (; *str && *str != ';' && *str != ','; ++str) {
     ;
+  }
   if (*str) str++;
   /* Skip over following whitespace */
-  for (; *str && nsCRT::IsAsciiSpace(*str); ++str)
+  for (; *str && nsCRT::IsAsciiSpace(*str); ++str) {
     ;
+  }
 
   // Some broken http servers just specify parameters
   // like 'filename' without specifying disposition
@@ -475,8 +507,9 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
 
     // Skip forward to the end of this token.
     for (; *str && !nsCRT::IsAsciiSpace(*str) && *str != '=' && *str != ';';
-         str++)
+         str++) {
       ;
+    }
     nameEnd = str;
 
     int32_t nameLen = nameEnd - nameStart;
@@ -497,10 +530,13 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
     if (*str != '"') {
       // The value is a token, not a quoted string.
       valueStart = str;
-      for (valueEnd = str;
-           *valueEnd && !nsCRT::IsAsciiSpace(*valueEnd) && *valueEnd != ';';
-           valueEnd++)
+      for (valueEnd = str; *valueEnd && *valueEnd != ';'; valueEnd++) {
         ;
+      }
+      // ignore trailing whitespace:
+      while (valueEnd > valueStart && nsCRT::IsAsciiSpace(*(valueEnd - 1))) {
+        valueEnd--;
+      }
       str = valueEnd;
     } else {
       isQuotedString = true;
@@ -508,10 +544,11 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
       ++str;
       valueStart = str;
       for (valueEnd = str; *valueEnd; ++valueEnd) {
-        if (*valueEnd == '\\' && *(valueEnd + 1))
+        if (*valueEnd == '\\' && *(valueEnd + 1)) {
           ++valueEnd;
-        else if (*valueEnd == '"')
+        } else if (*valueEnd == '"') {
           break;
+        }
       }
       str = valueEnd;
       // *valueEnd != null means that *valueEnd is quote character.
@@ -569,8 +606,8 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
       // in quotes (quotes required even if lang is blank)
       if (caseB || (caseCStart && acceptContinuations)) {
         // look for single quotation mark(')
-        const char* sQuote1 = PL_strchr(valueStart, 0x27);
-        const char* sQuote2 = sQuote1 ? PL_strchr(sQuote1 + 1, 0x27) : nullptr;
+        const char* sQuote1 = strchr(valueStart, 0x27);
+        const char* sQuote2 = sQuote1 ? strchr(sQuote1 + 1, 0x27) : nullptr;
 
         // Two single quotation marks must be present even in
         // absence of charset and lang.
@@ -681,15 +718,19 @@ nsresult nsMIMEHeaderParamImpl::DoParameterInternal(
   if (caseBResult && !charsetB.IsEmpty()) {
     // check that the 2231/5987 result decodes properly given the
     // specified character set
-    if (!IsValidOctetSequenceForCharset(charsetB, caseBResult))
+    if (!IsValidOctetSequenceForCharset(charsetB, caseBResult)) {
+      free(caseBResult);
       caseBResult = nullptr;
+    }
   }
 
   if (caseCDResult && !charsetCD.IsEmpty()) {
     // check that the 2231/5987 result decodes properly given the
     // specified character set
-    if (!IsValidOctetSequenceForCharset(charsetCD, caseCDResult))
+    if (!IsValidOctetSequenceForCharset(charsetCD, caseCDResult)) {
+      free(caseCDResult);
       caseCDResult = nullptr;
+    }
   }
 
   if (caseBResult) {
@@ -742,13 +783,13 @@ nsresult internalDecodeRFC2047Header(const char* aHeaderVal,
   // If aHeaderVal is RFC 2047 encoded or is not a UTF-8 string  but
   // aDefaultCharset is specified, decodes RFC 2047 encoding and converts
   // to UTF-8. Otherwise, just strips away CRLF.
-  if (PL_strstr(aHeaderVal, "=?") ||
+  if (strstr(aHeaderVal, "=?") ||
       (!aDefaultCharset.IsEmpty() &&
        (!IsUtf8(nsDependentCString(aHeaderVal)) ||
         Is7bitNonAsciiString(aHeaderVal, strlen(aHeaderVal))))) {
     DecodeRFC2047Str(aHeaderVal, aDefaultCharset, aOverrideCharset, aResult);
   } else if (aEatContinuations &&
-             (PL_strchr(aHeaderVal, '\n') || PL_strchr(aHeaderVal, '\r'))) {
+             (strchr(aHeaderVal, '\n') || strchr(aHeaderVal, '\r'))) {
     aResult = aHeaderVal;
   } else {
     aEatContinuations = false;
@@ -960,8 +1001,9 @@ char* DecodeQ(const char* in, uint32_t length) {
     switch (*in) {
       case '=':
         // check if |in| in the form of '=hh'  where h is [0-9a-fA-F].
-        if (length < 3 || !ISHEXCHAR(in[1]) || !ISHEXCHAR(in[2]))
+        if (length < 3 || !ISHEXCHAR(in[1]) || !ISHEXCHAR(in[2])) {
           goto badsyntax;
+        }
         PR_sscanf(in + 1, "%2X", &c);
         *out++ = (char)c;
         in += 3;
@@ -1085,10 +1127,11 @@ void CopyRawHeader(const char* aInput, uint32_t aLen,
   } else {  // replace each octet with Unicode replacement char in UTF-8.
     for (uint32_t i = 0; i < aLen; i++) {
       c = uint8_t(*aInput++);
-      if (c & 0x80)
+      if (c & 0x80) {
         aOutput.Append(REPLACEMENT_CHAR);
-      else
+      } else {
         aOutput.Append(char(c));
+      }
     }
   }
 }
@@ -1098,9 +1141,9 @@ nsresult DecodeQOrBase64Str(const char* aEncoded, size_t aLen, char aQOrBase64,
   char* decodedText;
   bool b64alloc = false;
   NS_ASSERTION(aQOrBase64 == 'Q' || aQOrBase64 == 'B', "Should be 'Q' or 'B'");
-  if (aQOrBase64 == 'Q')
+  if (aQOrBase64 == 'Q') {
     decodedText = DecodeQ(aEncoded, aLen);
-  else if (aQOrBase64 == 'B') {
+  } else if (aQOrBase64 == 'B') {
     decodedText = PL_Base64Decode(aEncoded, aLen, nullptr);
     b64alloc = true;
   } else {
@@ -1160,11 +1203,13 @@ nsresult DecodeRFC2047Str(const char* aHeader,
   // safe because we don't use a raw *char any more.
   aResult.SetCapacity(3 * strlen(aHeader));
 
-  while ((p = PL_strstr(begin, "=?")) != nullptr) {
+  while ((p = strstr(begin, "=?")) != nullptr) {
     if (isLastEncodedWord) {
       // See if it's all whitespace.
       for (q = begin; q < p; ++q) {
-        if (!PL_strchr(" \t\r\n", *q)) break;
+        if (!strchr(" \t\r\n", *q)) {
+          break;
+        }
       }
     }
 
@@ -1190,7 +1235,7 @@ nsresult DecodeRFC2047Str(const char* aHeader,
     charsetStart = p;
     charsetEnd = nullptr;
     for (q = p; *q != '?'; q++) {
-      if (*q <= ' ' || PL_strchr(especials, *q)) {
+      if (*q <= ' ' || strchr(especials, *q)) {
         goto badsyntax;
       }
 
@@ -1239,7 +1284,7 @@ nsresult DecodeRFC2047Str(const char* aHeader,
       // bug 227290. ignore an extraneous '=' at the end.
       // (# of characters in B-encoded part has to be a multiple of 4)
       int32_t n = r - (q + 2);
-      R -= (n % 4 == 1 && !PL_strncmp(r - 3, "===", 3)) ? 1 : 0;
+      R -= (n % 4 == 1 && !strncmp(r - 3, "===", 3)) ? 1 : 0;
     }
     // Bug 493544. Don't decode the encoded text until it ends
     if (R[-1] != '=' &&

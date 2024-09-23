@@ -25,7 +25,7 @@
 
       // ////////////////////////////////////////////////////////////////////////
       // aria-labelledby
-    
+
       // Single relation. The value of 'aria-labelledby' contains the ID of
       // an element. Gets the name from text node of that element.
       testName("btn_labelledby_text", "text");
@@ -41,7 +41,7 @@
 
       // ////////////////////////////////////////////////////////////////////////
       // Name from subtree (single relation labelled_by).
-    
+
       // Gets the name from text nodes contained by nested elements
       testName("btn_labelledby_mixed", "nomore text");
 
@@ -58,10 +58,9 @@
       // spaces)
       testName("btn_labelledby_mixed_block", "text more text");
 
-      // Gets the name from text nodes contained by html:td (every text node
-      // value in the name should be devided by spaces).
-      // XXX: this case is rather a feature than strong wanted behaviour.
-      testName("btn_labelledby_mixed_table", "text space text");
+      // Gets the name from text nodes contained by html:td. The text nodes
+      // should not be divided by spaces.
+      testName("btn_labelledby_mixed_table", "textTEXTtext");
 
       // Gets the name from image accessible.
       testName("btn_labelledby_mixed_img", "text image");
@@ -103,10 +102,10 @@
       // ////////////////////////////////////////////////////////////////////////
       // label element
 
-      // The label element contains the button. The name is calculated from
-      // this button.
-      // Note: the name contains the content of the button.
-      testName("btn_label_inside", "text10text");
+      // The label element contains the button. The name of the button is
+      // calculated from the content of the label.
+      // Note: the name does not contain the content of the button.
+      testName("btn_label_inside", "texttext");
 
       // The label element and the button are placed in the same form. Gets
       // the name from the label subtree.
@@ -121,7 +120,7 @@
       testName("btn_label_indocument", "in document");
 
       // Multiple label elements for single button
-      testName("btn_label_multi", "label1label2");
+      testName("btn_label_multi", "label1 label2");
 
       // Multiple controls inside a label element
       testName("ctrl_in_label_1", "Enable a button control");
@@ -164,15 +163,15 @@
       // ////////////////////////////////////////////////////////////////////////
       // textarea name
 
-      // textarea's name should have the value, which initially is specified by
-      // a text child.
-      testName("textareawithchild", "Story Foo is ended.");
+      // textarea's name should not have the value, which initially is specified
+      // by a text child.
+      testName("textareawithchild", "Story is ended.");
 
-      // new textarea name should reflect the value change.
+      // new textarea name should not reflect the value change.
       var elem = document.getElementById("textareawithchild");
       elem.value = "Bar";
 
-      testName("textareawithchild", "Story Bar is ended.");
+      testName("textareawithchild", "Story is ended.");
 
       // ////////////////////////////////////////////////////////////////////////
       // controls having a value used as a part of computed name
@@ -182,6 +181,7 @@
       testName("ctrlvalue_slider:input", "foo 5 baz");
       testName("ctrlvalue_spinbutton:input", "foo 5 baz");
       testName("ctrlvalue_combobox:input", "foo 5 baz");
+      testName("ctrlvalue_meter:input", "foo 5 baz");
 
 
       // ///////////////////////////////////////////////////////////////////////
@@ -194,13 +194,13 @@
       testName("textbox1", "days.");
 
       testName("comboinmiddle", "Subscribe to ATOM feed.");
-      testName("combo4", "Subscribe to ATOM feed.");
+      testName("combo4", "Subscribe to feed.");
 
       testName("comboinmiddle2", "Play the Haliluya sound when new mail arrives");
       testName("combo5", null); // label isn't used as a name for control
       testName("checkbox", "Play the Haliluya sound when new mail arrives");
       testName("comboinmiddle3", "Play the Haliluya sound when new mail arrives");
-      testName("combo6", "Play the Haliluya sound when new mail arrives");
+      testName("combo6", "Play the sound when new mail arrives");
 
       testName("comboinend", "This day was sunny");
       testName("combo7", "This day was");
@@ -243,9 +243,35 @@
       testName("grouping", null);
       testName("requested_name_from_grouping", "label");
       testName("listitem_containing_block_tbody", "label");
+      // Groupings shouldn't be included when calculating from the subtree of
+      // a treeitem.
+      testName("treeitem_containing_grouping", "root");
 
       // Name from subtree of grouping labelled by an ancestor.
       testName("grouping_labelledby_ancestor", "label");
+
+      // Name from subtree of a container containing text nodes and inline
+      // elements. There should be no spaces because everyhing is inline.
+      testName("container_text_inline", "abc");
+      // Name from subtree of a container containing text nodes and block
+      // elements. There should be a space on both sides of the block.
+      testName("container_text_block", "a b c");
+      // Name from subtree of a container containing text nodes and empty
+      // block elements. There should be space on either side of the blocks, but
+      // not a double space.
+      testName("container_text_emptyblock", "a b");
+
+      const shadowRoot = getNode("shadowHost").shadowRoot;
+      const shadowButtonVisibleText = shadowRoot.getElementById("shadowButtonVisibleText");
+      testName(shadowButtonVisibleText, "shadowButtonVisibleText");
+      const shadowButtonHiddenText = shadowRoot.getElementById("shadowButtonHiddenText");
+      testName(shadowButtonHiddenText, "shadowButtonHiddenText");
+
+      // Label from a hidden element containing script and style elements.
+      testName("buttonScriptStyle", "content");
+
+      // Name from subtree on a link containing <code>, etc.
+      testName("linkWithCodeSupSubInsDel", "before code sup sub ins del after");
 
       SimpleTest.finish();
     }
@@ -358,7 +384,7 @@
 
   <!-- the name from subtree, mixed/hidden content -->
   <span id="labelledby_mixed_hidden_child">
-    no<span>more 
+    no<span>more
       <span style="display: none;">hidden</span>
       text2
       <span style="visibility: hidden">hidden2</span>
@@ -383,7 +409,7 @@
 
   <!-- the name from subtree, mixed content, table structure -->
   <table><tr>
-    <td id="labelledby_mixed_table">text<span>space</span>text</td>
+    <td id="labelledby_mixed_table">text<span>TEXT</span>text</td>
   </tr></table>
   <button id="btn_labelledby_mixed_table"
           aria-labelledby="labelledby_mixed_table">5</button>
@@ -580,6 +606,14 @@
     baz
   </label>
 
+  <input type="checkbox" id="ctrlvalue_meter:input">
+  <label for="ctrlvalue_meter:input">
+    foo
+    <meter>5</meter>
+    </div>
+    baz
+  </label>
+
   <!-- a label with a nested control in the start, middle and end -->
   <form>
     <!-- at the start (without and with whitespaces) -->
@@ -639,23 +673,23 @@
   <!-- placeholder  -->
   <input id="ph_password" type="password" value="" placeholder="a placeholder" />
   <input id="ph_text" type="text" placeholder="a placeholder" />
-  <textarea id="ph_textarea" cols="5" placeholder="a placeholder"></textarea>  
+  <textarea id="ph_textarea" cols="5" placeholder="a placeholder"></textarea>
 
   <!-- placeholder does not win -->
   <input id="ph_text2" type="text" aria-label="a label" placeholder="meh" />
-  <textarea id="ph_textarea2" cols="5" aria-labelledby="ph_text2" 
+  <textarea id="ph_textarea2" cols="5" aria-labelledby="ph_text2"
             placeholder="meh"></textarea>
 
   <label for="ph_text3">a label</label>
   <input id="ph_text3" placeholder="meh" />
 
-  <p>Image: 
+  <p>Image:
     <img id="img_eq" role="math" src="foo" alt="x^2 + y^2 + z^2">
     <input type="image"  id="input_img_eq" src="foo" alt="x^2 + y^2 + z^2">
   </p>
 
-  <p>Text: 
-    <span id="txt_eq" role="math" title="x^2 + y^2 + z^2">x<sup>2</sup> + 
+  <p>Text:
+    <span id="txt_eq" role="math" title="x^2 + y^2 + z^2">x<sup>2</sup> +
       y<sup>2</sup> + z<sup>2</sup></span>
 
   <!-- duplicate announcement -->
@@ -679,12 +713,22 @@
   <div id="grouping" role="group">label</div>
   <button id="requested_name_from_grouping"aria-labelledby="grouping"></button>
   <!-- Name from sub tree of tbody marked as display:block;, which is also a grouping -->
-  <div id="listitem_containing_block_tbody" role="listitem">
-    <table>
-      <tbody style="display: block;">
-        <tr><td>label</td></tr>
-      </tbody>
-    </table>
+  <div role="list">
+    <div id="listitem_containing_block_tbody" role="listitem">
+      <table>
+        <tbody style="display: block;">
+          <tr><td>label</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <!-- Name from subtree of treeitem containing grouping -->
+  <div role="tree">
+    <div id="treeitem_containing_grouping" role="treeitem" aria-level="1" aria-expanded="true">root
+      <div role="group">
+        <div role="treeitem" aria-level="2">sub</div>
+      </div>
+    </div>
   </div>
 
   <!-- Name from subtree of grouping labelled by an ancestor. -->
@@ -693,5 +737,50 @@
       This content should not be included in the grouping's label.
     </div>
   </div>
+
+  <!-- Text nodes and inline elements. -->
+  <div role="listbox">
+    <div id="container_text_inline" role="option">a<strong>b</strong>c</div>
+    <!-- Text nodes and block elements. -->
+    <div id="container_text_block" role="option">a<p>b</p>c</div>
+    <!-- Text nodes and empty block elements. -->
+    <div id="container_text_emptyblock" role="option">a<p></p><p></p>b</div>
+  </div>
+
+  <!-- aria-labelledby referring to a slot -->
+  <div id="shadowHost">
+    shadowButtonVisibleText
+    <span slot="hiddenSlot">shadowButtonHiddenText</span>
+  </div>
+  <template id="shadowTemplate">
+    <input type="button" id="shadowButtonVisibleText" aria-labelledby="visibleSlot">
+    <slot id="visibleSlot"></slot>
+    <input type="button" id="shadowButtonHiddenText" aria-labelledby="hiddenSlot">
+    <slot id="hiddenSlot" name="hiddenSlot" hidden></slot>
+  </template>
+  <script>
+    const shadowHost = document.getElementById("shadowHost");
+    const shadowRoot = shadowHost.attachShadow({ mode: "open" });
+    shadowRoot.append(document.getElementById("shadowTemplate").content.cloneNode(true));
+  </script>
+
+  <!-- aria-labelledby referring to a hidden container with script/style -->
+  <button id="buttonScriptStyle" aria-labelledby="hiddenScriptStyle"></button>
+  <div id="hiddenScriptStyle" hidden>
+    <script> 42; </script>
+    <style> .noOp {} </style>
+    <span>content</span>
+  </div>
+
+  <!-- Name from subtree on link including <code>, etc. -->
+  <a id="linkWithCodeSupSubInsDel" href="#">
+    before
+    <code>code</code>
+    <sup>sup</sup>
+    <sub>sub</sub>
+    <ins>ins</ins>
+    <del>del</del>
+    after
+  </a>
 </body>
 </html>

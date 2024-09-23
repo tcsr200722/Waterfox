@@ -6,15 +6,16 @@
 
 #include "nsGenericHTMLFrameElement.h"
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLIFrameElement.h"
 #include "mozilla/dom/XULFrameElement.h"
 #include "mozilla/dom/BrowserBridgeChild.h"
 #include "mozilla/dom/WindowProxyHolder.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/ProfilerLabels.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/ErrorResult.h"
-#include "GeckoProfiler.h"
 #include "nsAttrValueInlines.h"
 #include "nsContentUtils.h"
 #include "nsIDocShell.h"
@@ -34,7 +35,6 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(nsGenericHTMLFrameElement)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsGenericHTMLFrameElement,
                                                   nsGenericHTMLElement)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFrameLoader)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mBrowserElementAPI)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(nsGenericHTMLFrameElement,
@@ -44,22 +44,12 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(nsGenericHTMLFrameElement,
   }
 
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFrameLoader)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mBrowserElementAPI)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
-NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(
-    nsGenericHTMLFrameElement, nsGenericHTMLElement, nsFrameLoaderOwner,
-    nsIDOMMozBrowserFrame, nsIMozBrowserFrame, nsGenericHTMLFrameElement)
-
-NS_IMETHODIMP
-nsGenericHTMLFrameElement::GetMozbrowser(bool* aValue) {
-  *aValue = GetBoolAttr(nsGkAtoms::mozbrowser);
-  return NS_OK;
-}
-NS_IMETHODIMP
-nsGenericHTMLFrameElement::SetMozbrowser(bool aValue) {
-  return SetBoolAttr(nsGkAtoms::mozbrowser, aValue);
-}
+NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(nsGenericHTMLFrameElement,
+                                             nsGenericHTMLElement,
+                                             nsFrameLoaderOwner,
+                                             nsGenericHTMLFrameElement)
 
 int32_t nsGenericHTMLFrameElement::TabIndexDefault() { return 0; }
 
@@ -164,6 +154,11 @@ void nsGenericHTMLFrameElement::SwapFrameLoaders(
 }
 
 void nsGenericHTMLFrameElement::LoadSrc() {
+  // Waiting for lazy load, do nothing.
+  if (mLazyLoading) {
+    return;
+  }
+
   EnsureFrameLoader();
 
   if (!mFrameLoader) {
@@ -196,7 +191,7 @@ nsresult nsGenericHTMLFrameElement::BindToTree(BindContext& aContext,
   return rv;
 }
 
-void nsGenericHTMLFrameElement::UnbindFromTree(bool aNullParent) {
+void nsGenericHTMLFrameElement::UnbindFromTree(UnbindContext& aContext) {
   if (mFrameLoader) {
     // This iframe is being taken out of the document, destroy the
     // iframe's frame loader (doing that will tear down the window in
@@ -208,25 +203,25 @@ void nsGenericHTMLFrameElement::UnbindFromTree(bool aNullParent) {
     mFrameLoader = nullptr;
   }
 
-  nsGenericHTMLElement::UnbindFromTree(aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aContext);
 }
 
 /* static */
 ScrollbarPreference nsGenericHTMLFrameElement::MapScrollingAttribute(
     const nsAttrValue* aValue) {
   if (aValue && aValue->Type() == nsAttrValue::eEnum) {
-    switch (aValue->GetEnumValue()) {
-      case NS_STYLE_FRAME_OFF:
-      case NS_STYLE_FRAME_NOSCROLL:
-      case NS_STYLE_FRAME_NO:
-        return ScrollbarPreference::Never;
+    auto scrolling = static_cast<ScrollingAttribute>(aValue->GetEnumValue());
+    if (scrolling == ScrollingAttribute::Off ||
+        scrolling == ScrollingAttribute::Noscroll ||
+        scrolling == ScrollingAttribute::No) {
+      return ScrollbarPreference::Never;
     }
   }
   return ScrollbarPreference::Auto;
 }
 
 /* virtual */
-nsresult nsGenericHTMLFrameElement::AfterSetAttr(
+void nsGenericHTMLFrameElement::AfterSetAttr(
     int32_t aNameSpaceID, nsAtom* aName, const nsAttrValue* aValue,
     const nsAttrValue* aOldValue, nsIPrincipal* aMaybeScriptedPrincipal,
     bool aNotify) {
@@ -243,8 +238,8 @@ nsresult nsGenericHTMLFrameElement::AfterSetAttr(
     if (aName == nsGkAtoms::scrolling) {
       if (mFrameLoader) {
         ScrollbarPreference pref = MapScrollingAttribute(aValue);
-        if (nsIDocShell* docshell = mFrameLoader->GetExistingDocShell()) {
-          nsDocShell::Cast(docshell)->SetScrollbarPreference(pref);
+        if (nsDocShell* docshell = mFrameLoader->GetExistingDocShell()) {
+          docshell->SetScrollbarPreference(pref);
         } else if (auto* child = mFrameLoader->GetBrowserBridgeChild()) {
           // NOTE(emilio): We intentionally don't deal with the
           // GetBrowserParent() case, and only deal with the fission iframe
@@ -254,9 +249,6 @@ nsresult nsGenericHTMLFrameElement::AfterSetAttr(
           child->SendScrollbarPreferenceChanged(pref);
         }
       }
-    } else if (aName == nsGkAtoms::mozbrowser) {
-      mReallyIsBrowser = !!aValue && XRE_IsParentProcess() &&
-                         NodePrincipal()->IsSystemPrincipal();
     }
   }
 
@@ -264,7 +256,7 @@ nsresult nsGenericHTMLFrameElement::AfterSetAttr(
       aNameSpaceID, aName, aValue, aOldValue, aMaybeScriptedPrincipal, aNotify);
 }
 
-nsresult nsGenericHTMLFrameElement::OnAttrSetButNotChanged(
+void nsGenericHTMLFrameElement::OnAttrSetButNotChanged(
     int32_t aNamespaceID, nsAtom* aName, const nsAttrValueOrString& aValue,
     bool aNotify) {
   AfterMaybeChangeAttr(aNamespaceID, aName, &aValue, nullptr, aNotify);
@@ -279,10 +271,8 @@ void nsGenericHTMLFrameElement::AfterMaybeChangeAttr(
   if (aNamespaceID == kNameSpaceID_None) {
     if (aName == nsGkAtoms::src) {
       mSrcTriggeringPrincipal = nsContentUtils::GetAttrTriggeringPrincipal(
-          this, aValue ? aValue->String() : EmptyString(),
-          aMaybeScriptedPrincipal);
-      if (!IsHTMLElement(nsGkAtoms::iframe) ||
-          !HasAttr(kNameSpaceID_None, nsGkAtoms::srcdoc)) {
+          this, aValue ? aValue->String() : u""_ns, aMaybeScriptedPrincipal);
+      if (!IsHTMLElement(nsGkAtoms::iframe) || !HasAttr(nsGkAtoms::srcdoc)) {
         // Don't propagate error here. The attribute was successfully
         // set or removed; that's what we should reflect.
         LoadSrc();
@@ -292,11 +282,7 @@ void nsGenericHTMLFrameElement::AfterMaybeChangeAttr(
       RefPtr<BrowsingContext> bc =
           mFrameLoader ? mFrameLoader->GetExtantBrowsingContext() : nullptr;
       if (bc) {
-        if (aValue) {
-          bc->SetName(aValue->String());
-        } else {
-          bc->SetName(EmptyString());
-        }
+        MOZ_ALWAYS_SUCCEEDS(bc->SetName(aValue ? aValue->String() : u""_ns));
       }
     }
   }
@@ -325,44 +311,13 @@ nsresult nsGenericHTMLFrameElement::CopyInnerTo(Element* aDest) {
   return rv;
 }
 
-bool nsGenericHTMLFrameElement::IsHTMLFocusable(bool aWithMouse,
+bool nsGenericHTMLFrameElement::IsHTMLFocusable(IsFocusableFlags aFlags,
                                                 bool* aIsFocusable,
                                                 int32_t* aTabIndex) {
-  if (nsGenericHTMLElement::IsHTMLFocusable(aWithMouse, aIsFocusable,
-                                            aTabIndex)) {
+  if (nsGenericHTMLElement::IsHTMLFocusable(aFlags, aIsFocusable, aTabIndex)) {
     return true;
   }
 
-  *aIsFocusable = nsContentUtils::IsSubDocumentTabbable(this);
-
-  if (!*aIsFocusable && aTabIndex) {
-    *aTabIndex = -1;
-  }
-
+  *aIsFocusable = true;
   return false;
-}
-
-/**
- * Return true if this frame element really is a mozbrowser.  (It
- * needs to have the right attributes, and its creator must have the right
- * permissions.)
- */
-/* [infallible] */
-nsresult nsGenericHTMLFrameElement::GetReallyIsBrowser(bool* aOut) {
-  *aOut = mReallyIsBrowser;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsGenericHTMLFrameElement::InitializeBrowserAPI() {
-  MOZ_ASSERT(mFrameLoader);
-  InitBrowserElementAPI();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsGenericHTMLFrameElement::DestroyBrowserFrameScripts() {
-  MOZ_ASSERT(mFrameLoader);
-  DestroyBrowserElementFrameScripts();
-  return NS_OK;
 }

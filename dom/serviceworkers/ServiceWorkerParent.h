@@ -9,8 +9,7 @@
 
 #include "mozilla/dom/PServiceWorkerParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IPCServiceWorkerDescriptor;
 class ServiceWorkerProxy;
@@ -19,25 +18,27 @@ class ServiceWorkerParent final : public PServiceWorkerParent {
   RefPtr<ServiceWorkerProxy> mProxy;
   bool mDeleteSent;
 
+  ~ServiceWorkerParent();
+
   // PServiceWorkerParent
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   mozilla::ipc::IPCResult RecvTeardown() override;
 
   mozilla::ipc::IPCResult RecvPostMessage(
-      const ClonedMessageData& aClonedData,
+      const ClonedOrErrorMessageData& aClonedData,
       const ClientInfoAndState& aSource) override;
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(ServiceWorkerParent, override);
+
   ServiceWorkerParent();
-  ~ServiceWorkerParent();
 
   void Init(const IPCServiceWorkerDescriptor& aDescriptor);
 
   void MaybeSendDelete();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerparent_h__

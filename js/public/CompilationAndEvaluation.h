@@ -8,24 +8,27 @@
 #ifndef js_CompilationAndEvaluation_h
 #define js_CompilationAndEvaluation_h
 
-#include "mozilla/Utf8.h"  // mozilla::Utf8Unit
-
 #include <stddef.h>  // size_t
 #include <stdio.h>   // FILE
 
-#include "jsapi.h"    // JSGetElementCallback
 #include "jstypes.h"  // JS_PUBLIC_API
 
-#include "js/CompileOptions.h"  // JS::CompileOptions, JS::ReadOnlyCompileOptions
-#include "js/RootingAPI.h"      // JS::Handle, JS::MutableHandle
-#include "js/Value.h"  // JS::Value and specializations of JS::*Handle-related types
+#include "js/RootingAPI.h"  // JS::Handle, JS::MutableHandle
+#include "js/TypeDecls.h"
 
 struct JS_PUBLIC_API JSContext;
 class JS_PUBLIC_API JSFunction;
 class JS_PUBLIC_API JSObject;
 class JS_PUBLIC_API JSScript;
 
+namespace mozilla {
+union Utf8Unit;
+}
+
 namespace JS {
+
+class JS_PUBLIC_API InstantiateOptions;
+class JS_PUBLIC_API ReadOnlyCompileOptions;
 
 template <typename UnitT>
 class SourceText;
@@ -42,8 +45,8 @@ class SourceText;
  * lines in a buffer until JS_Utf8BufferIsCompilableUnit is true, then pass it
  * to the compiler.
  *
- * The provided buffer is interpreted as UTF-8 data.  An error is reported if
- * a UTF-8 encoding error is encountered.
+ * The provided buffer is interpreted as UTF-8 data.  If a UTF-8 encoding error
+ * is encountered, reports an error to JSContext and returns *true*.
  */
 extern JS_PUBLIC_API bool JS_Utf8BufferIsCompilableUnit(
     JSContext* cx, JS::Handle<JSObject*> obj, const char* utf8, size_t length);
@@ -92,24 +95,6 @@ extern JS_PUBLIC_API bool JS_ExecuteScript(JSContext* cx,
 namespace JS {
 
 /**
- * Like the above, but handles a cross-compartment script. If the script is
- * cross-compartment, it is cloned into the current compartment before
- * executing.
- */
-extern JS_PUBLIC_API bool CloneAndExecuteScript(JSContext* cx,
-                                                Handle<JSScript*> script,
-                                                MutableHandle<Value> rval);
-
-/**
- * Like CloneAndExecuteScript above, but allows executing under a non-syntactic
- * environment chain.
- */
-extern JS_PUBLIC_API bool CloneAndExecuteScript(JSContext* cx,
-                                                HandleObjectVector envChain,
-                                                Handle<JSScript*> script,
-                                                MutableHandle<Value> rval);
-
-/**
  * Evaluate the given source buffer in the scope of the current global of cx,
  * and return the completion value in |rval|.
  */
@@ -140,9 +125,8 @@ extern JS_PUBLIC_API bool Evaluate(JSContext* cx,
 
 /**
  * Evaluate the UTF-8 contents of the file at the given path, and return the
- * completion value in |rval|.  (The path itself is in the system encoding, not
- * [necessarily] UTF-8.)  If the contents contain any malformed UTF-8, an error
- * is reported.
+ * completion value in |rval|.  (The path itself is UTF-8 encoded, too.)  If
+ * the contents contain any malformed UTF-8, an error is reported.
  */
 extern JS_PUBLIC_API bool EvaluateUtf8Path(
     JSContext* cx, const ReadOnlyCompileOptions& options, const char* filename,
@@ -181,19 +165,6 @@ extern JS_PUBLIC_API JSScript* CompileUtf8File(
 extern JS_PUBLIC_API JSScript* CompileUtf8Path(
     JSContext* cx, const ReadOnlyCompileOptions& options, const char* filename);
 
-extern JS_PUBLIC_API JSScript* CompileForNonSyntacticScope(
-    JSContext* cx, const ReadOnlyCompileOptions& options,
-    SourceText<char16_t>& srcBuf);
-
-/**
- * Compile the provided UTF-8 data into a script in a non-syntactic scope.  It
- * is an error if the data contains invalid UTF-8.  Return the script on
- * success, or return null on failure (usually with an error reported).
- */
-extern JS_PUBLIC_API JSScript* CompileForNonSyntacticScope(
-    JSContext* cx, const ReadOnlyCompileOptions& options,
-    SourceText<mozilla::Utf8Unit>& srcBuf);
-
 /**
  * Compile a function with envChain plus the global as its scope chain.
  * envChain must contain objects in the current compartment of cx.  The actual
@@ -228,23 +199,34 @@ extern JS_PUBLIC_API JSFunction* CompileFunctionUtf8(
     const char* const* argnames, const char* utf8, size_t length);
 
 /*
- * Associate an element wrapper and attribute name with a previously compiled
- * script, for debugging purposes. Calling this function is optional, but should
- * be done before script execution if it is required.
- */
-extern JS_PUBLIC_API bool InitScriptSourceElement(
-    JSContext* cx, Handle<JSScript*> script, Handle<JSObject*> element,
-    Handle<JSString*> elementAttrName = nullptr);
-
-/*
  * For a script compiled with the hideScriptFromDebugger option, expose the
  * script to the debugger by calling the debugger's onNewScript hook.
  */
 extern JS_PUBLIC_API void ExposeScriptToDebugger(JSContext* cx,
                                                  Handle<JSScript*> script);
 
-extern JS_PUBLIC_API void SetGetElementCallback(JSContext* cx,
-                                                JSGetElementCallback callback);
+/*
+ * JSScripts have associated with them (via their ScriptSourceObjects) some
+ * metadata used by the debugger. The following API functions are used to set
+ * that metadata on scripts, functions and modules.
+ *
+ * The metadata consists of:
+ * - A privateValue, which is used to keep some object value associated
+ *   with the script.
+ * - The elementAttributeName is used by Gecko
+ * - The introductionScript is used by the debugger to identify which
+ *   script created which. Only set for dynamicaly generated scripts.
+ * - scriptOrModule is used to transfer private value metadata from
+ *   script to script
+ *
+ * Callers using UpdateDebugMetaData need to have set deferDebugMetadata
+ * in the compile options; this hides the script from the debugger until
+ * the debug metadata is provided by the UpdateDebugMetadata call.
+ */
+extern JS_PUBLIC_API bool UpdateDebugMetadata(
+    JSContext* cx, Handle<JSScript*> script, const InstantiateOptions& options,
+    HandleValue privateValue, HandleString elementAttributeName,
+    HandleScript introScript, HandleScript scriptOrModule);
 
 } /* namespace JS */
 

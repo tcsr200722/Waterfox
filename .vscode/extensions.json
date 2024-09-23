@@ -8,15 +8,19 @@
     "dbaeumer.vscode-eslint",
     // Prettier support.
     "esbenp.prettier-vscode",
-    // C/C++ language support.
-    "ms-vscode.cpptools",
-    // Rust language support.
-    "rust-lang.rust",
+    // C/C++ language support with clangd
+    "llvm-vs-code-extensions.vscode-clangd",
+    // Provides support for rust-analyzer: novel LSP server for the Rust programming language.
+    "rust-lang.rust-analyzer",
     // CSS support for HTML documents.
     "ecmel.vscode-html-css",
     // Web app and extension debugging.
     "firefox-devtools.vscode-firefox-debug",
     // IDL language support
-    "mythmon.idl"
+    "mythmon.idl",
+    // Mercurial support
+    "mrcrowl.hg",
+    // VSCode Remote Development over SSH
+    "ms-vscode-remote.remote-ssh",
   ]
 }

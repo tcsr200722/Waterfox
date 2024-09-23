@@ -6,14 +6,11 @@
 // Test that temporary permissions are removed on user initiated reload only.
 add_task(async function testTempPermissionOnReload() {
   let origin = "https://example.com/";
-  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    origin
-  );
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(origin);
   let id = "geo";
 
-  await BrowserTestUtils.withNewTab(origin, async function(browser) {
-    let reloadButton = document.getElementById("reload-button");
-
+  await BrowserTestUtils.withNewTab(origin, async function (browser) {
     SitePermissions.setForPrincipal(
       principal,
       id,
@@ -35,9 +32,6 @@ add_task(async function testTempPermissionOnReload() {
     );
 
     await reloaded;
-    await TestUtils.waitForCondition(() => {
-      return !reloadButton.disabled;
-    });
 
     Assert.deepEqual(SitePermissions.getForPrincipal(principal, id, browser), {
       state: SitePermissions.BLOCK,
@@ -47,7 +41,7 @@ add_task(async function testTempPermissionOnReload() {
     reloaded = BrowserTestUtils.browserLoaded(browser, false, origin);
 
     // Reload as a user (should remove the temp permission).
-    EventUtils.synthesizeMouseAtCenter(reloadButton, {});
+    BrowserCommands.reload();
 
     await reloaded;
 
@@ -85,7 +79,7 @@ add_task(async function testTempPermissionOnReload() {
     reloaded = BrowserTestUtils.browserLoaded(browser, false, origin);
 
     // Reload as a user through the context menu (should remove the temp permission).
-    EventUtils.synthesizeMouseAtCenter(reloadMenuItem, {});
+    contextMenu.activateItem(reloadMenuItem);
 
     await reloaded;
 
@@ -104,7 +98,7 @@ add_task(async function testTempPermissionOnReload() {
     );
 
     // Reload as user via return key in urlbar (should remove the temp permission)
-    let urlBarInput = document.getElementById("urlbar-input");
+    let urlBarInput = gURLBar.inputField;
     await EventUtils.synthesizeMouseAtCenter(urlBarInput, {});
 
     reloaded = BrowserTestUtils.browserLoaded(browser, false, origin);
@@ -125,12 +119,11 @@ add_task(async function testTempPermissionOnReload() {
 // Test that temporary permissions are not removed when reloading all tabs.
 add_task(async function testTempPermissionOnReloadAllTabs() {
   let origin = "https://example.com/";
-  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    origin
-  );
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(origin);
   let id = "geo";
 
-  await BrowserTestUtils.withNewTab(origin, async function(browser) {
+  await BrowserTestUtils.withNewTab(origin, async function (browser) {
     SitePermissions.setForPrincipal(
       principal,
       id,
@@ -164,7 +157,7 @@ add_task(async function testTempPermissionOnReloadAllTabs() {
         BrowserTestUtils.browserLoaded(gBrowser.getBrowserForTab(tab))
       )
     );
-    EventUtils.synthesizeMouseAtCenter(reloadMenuItem, {});
+    contextMenu.activateItem(reloadMenuItem);
     await reloaded;
 
     Assert.deepEqual(SitePermissions.getForPrincipal(principal, id, browser), {
@@ -179,12 +172,11 @@ add_task(async function testTempPermissionOnReloadAllTabs() {
 // Test that temporary permissions are persisted through navigation in a tab.
 add_task(async function testTempPermissionOnNavigation() {
   let origin = "https://example.com/";
-  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-    origin
-  );
+  let principal =
+    Services.scriptSecurityManager.createContentPrincipalFromOrigin(origin);
   let id = "geo";
 
-  await BrowserTestUtils.withNewTab(origin, async function(browser) {
+  await BrowserTestUtils.withNewTab(origin, async function (browser) {
     SitePermissions.setForPrincipal(
       principal,
       id,

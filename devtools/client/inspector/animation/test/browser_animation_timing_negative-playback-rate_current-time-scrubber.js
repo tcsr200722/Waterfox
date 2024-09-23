@@ -5,28 +5,34 @@
 
 // Test whether the scrubber was working in case of negative playback rate.
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_negative_playback_rate.html");
   await removeAnimatedElementsExcept([".normal"]);
   const { animationInspector, panel } = await openAnimationInspector();
 
   info("Set initial state");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
   const initialCurrentTime =
     animationInspector.state.animations[0].state.currentTime;
   const initialProgressBarX = getProgressBarX(panel);
 
   info("Check whether the animation currentTime was decreased");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
-  ok(
-    initialCurrentTime >
-      animationInspector.state.animations[0].state.currentTime,
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
+  await waitUntilCurrentTimeChangedAt(
+    animationInspector,
+    animationInspector.state.timeScale.getDuration() * 0.5
+  );
+  Assert.greater(
+    initialCurrentTime,
+    animationInspector.state.animations[0].state.currentTime,
     "currentTime should be decreased"
   );
 
   info("Check whether the progress bar was moved to left");
-  ok(
-    initialProgressBarX > getProgressBarX(panel),
+  Assert.greater(
+    initialProgressBarX,
+    getProgressBarX(panel),
     "Progress bar should be moved to left"
   );
 });

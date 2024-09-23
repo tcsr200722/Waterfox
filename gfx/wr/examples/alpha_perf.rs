@@ -14,6 +14,7 @@ mod boilerplate;
 use crate::boilerplate::{Example, HandyDandyRectBuilder};
 use std::cmp;
 use webrender::api::*;
+use webrender::render_api::*;
 use webrender::api::units::DeviceIntSize;
 
 
@@ -35,7 +36,7 @@ impl Example for App {
         let space_and_clip = SpaceAndClipInfo::root_scroll(pipeline_id);
 
         builder.push_simple_stacking_context(
-            bounds.origin,
+            bounds.min,
             space_and_clip.spatial_id,
             PrimitiveFlags::IS_BACKFACE_VISIBLE,
         );
@@ -53,25 +54,26 @@ impl Example for App {
 
     fn on_event(
         &mut self,
-        event: winit::WindowEvent,
+        event: winit::event::WindowEvent,
+        _window: &winit::window::Window,
         _api: &mut RenderApi,
-        _document_id: DocumentId
+        _document_id: DocumentId,
     ) -> bool {
         match event {
-            winit::WindowEvent::KeyboardInput {
-                input: winit::KeyboardInput {
-                    state: winit::ElementState::Pressed,
+            winit::event::WindowEvent::KeyboardInput {
+                input: winit::event::KeyboardInput {
+                    state: winit::event::ElementState::Pressed,
                     virtual_keycode: Some(key),
                     ..
                 },
                 ..
             } => {
                 match key {
-                    winit::VirtualKeyCode::Right => {
+                    winit::event::VirtualKeyCode::Right => {
                         self.rect_count += 1;
                         println!("rects = {}", self.rect_count);
                     }
-                    winit::VirtualKeyCode::Left => {
+                    winit::event::VirtualKeyCode::Left => {
                         self.rect_count = cmp::max(self.rect_count, 1) - 1;
                         println!("rects = {}", self.rect_count);
                     }

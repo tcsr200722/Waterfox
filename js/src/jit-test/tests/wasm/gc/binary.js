@@ -1,15 +1,17 @@
-// |jit-test| skip-if: !wasmReftypesEnabled()
+// |jit-test| skip-if: !wasmGcEnabled()
 
 load(libdir + "wasm-binary.js");
 
-const v2vSig = {args:[], ret:VoidCode};
-const v2vSigSection = sigSection([v2vSig]);
-
 function checkInvalid(body, errorMessage) {
     assertErrorMessage(() => new WebAssembly.Module(
-        moduleWithSections([v2vSigSection, declSection([0]), bodySection([body])])),
-                       WebAssembly.CompileError,
-                       errorMessage);
+        moduleWithSections([
+            typeSection([
+                { kind: FuncCode, args: [], ret: [] },
+            ]),
+            declSection([0]),
+            bodySection([body]),
+        ])
+    ), WebAssembly.CompileError, errorMessage);
 }
 
 const invalidRefBlockType = funcBody({locals:[], body:[
@@ -18,12 +20,12 @@ const invalidRefBlockType = funcBody({locals:[], body:[
     0x42,
     EndCode,
 ]});
-checkInvalid(invalidRefBlockType, /ref/);
+checkInvalid(invalidRefBlockType, /heap type/);
 
 const invalidTooBigRefType = funcBody({locals:[], body:[
     BlockCode,
     OptRefCode,
-    varU32(1000000),
+    ...varU32(1000000),
     EndCode,
 ]});
-checkInvalid(invalidTooBigRefType, /ref/);
+checkInvalid(invalidTooBigRefType, /heap type/);

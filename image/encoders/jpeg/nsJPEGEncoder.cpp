@@ -8,6 +8,8 @@
 #include "nsString.h"
 #include "nsStreamUtils.h"
 #include "gfxColor.h"
+#include "mozilla/CheckedInt.h"
+#include "mozilla/UniquePtrExtensions.h"
 
 extern "C" {
 #include "jpeglib.h"
@@ -122,7 +124,7 @@ nsJPEGEncoder::InitFromData(const uint8_t* aData,
   int quality = 92;
   if (aOutputOptions.Length() > 0) {
     // have options string
-    const nsString qualityPrefix(NS_LITERAL_STRING("quality="));
+    const nsString qualityPrefix(u"quality="_ns);
     if (aOutputOptions.Length() > qualityPrefix.Length() &&
         StringBeginsWith(aOutputOptions, qualityPrefix)) {
       // have quality string
@@ -144,6 +146,15 @@ nsJPEGEncoder::InitFromData(const uint8_t* aData,
       }
     } else {
       return NS_ERROR_INVALID_ARG;
+    }
+  }
+
+  UniquePtr<uint8_t[]> rowptr;
+  if (aInputFormat == INPUT_FORMAT_RGBA ||
+      aInputFormat == INPUT_FORMAT_HOSTARGB) {
+    rowptr = MakeUniqueFallible<uint8_t[]>(aWidth * 3);
+    if (NS_WARN_IF(!rowptr)) {
+      return NS_ERROR_OUT_OF_MEMORY;
     }
   }
 
@@ -195,14 +206,14 @@ nsJPEGEncoder::InitFromData(const uint8_t* aData,
       jpeg_write_scanlines(&cinfo, const_cast<uint8_t**>(&row), 1);
     }
   } else if (aInputFormat == INPUT_FORMAT_RGBA) {
-    UniquePtr<uint8_t[]> rowptr = MakeUnique<uint8_t[]>(aWidth * 3);
+    MOZ_ASSERT(rowptr);
     uint8_t* row = rowptr.get();
     while (cinfo.next_scanline < cinfo.image_height) {
       ConvertRGBARow(&aData[cinfo.next_scanline * aStride], row, aWidth);
       jpeg_write_scanlines(&cinfo, &row, 1);
     }
   } else if (aInputFormat == INPUT_FORMAT_HOSTARGB) {
-    UniquePtr<uint8_t[]> rowptr = MakeUnique<uint8_t[]>(aWidth * 3);
+    MOZ_ASSERT(rowptr);
     uint8_t* row = rowptr.get();
     while (cinfo.next_scanline < cinfo.image_height) {
       ConvertHostARGBRow(&aData[cinfo.next_scanline * aStride], row, aWidth);
@@ -278,6 +289,11 @@ nsJPEGEncoder::Available(uint64_t* _retval) {
 
   *_retval = mImageBufferUsed - mImageBufferReadPoint;
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJPEGEncoder::StreamStatus() {
+  return mImageBuffer ? NS_OK : NS_BASE_STREAM_CLOSED;
 }
 
 NS_IMETHODIMP
@@ -443,10 +459,14 @@ boolean nsJPEGEncoderInternal::emptyOutputBuffer(jpeg_compress_struct* cinfo) {
   that->mImageBufferUsed = that->mImageBufferSize;
 
   // expand buffer, just double size each time
-  that->mImageBufferSize *= 2;
+  uint8_t* newBuf = nullptr;
+  CheckedInt<uint32_t> bufSize =
+      CheckedInt<uint32_t>(that->mImageBufferSize) * 2;
+  if (bufSize.isValid()) {
+    that->mImageBufferSize = bufSize.value();
+    newBuf = (uint8_t*)realloc(that->mImageBuffer, that->mImageBufferSize);
+  }
 
-  uint8_t* newBuf =
-      (uint8_t*)realloc(that->mImageBuffer, that->mImageBufferSize);
   if (!newBuf) {
     // can't resize, just zero (this will keep us from writing more)
     free(that->mImageBuffer);

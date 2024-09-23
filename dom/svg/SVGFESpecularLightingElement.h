@@ -4,22 +4,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFESpecularLightingElement_h
-#define mozilla_dom_SVGFESpecularLightingElement_h
+#ifndef DOM_SVG_SVGFESPECULARLIGHTINGELEMENT_H_
+#define DOM_SVG_SVGFESPECULARLIGHTINGELEMENT_H_
 
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFESpecularLightingElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 //---------------------SpecularLighting------------------------
 
-typedef SVGFELightingElement SVGFESpecularLightingElementBase;
+using SVGFESpecularLightingElementBase = SVGFELightingElement;
 
-class SVGFESpecularLightingElement : public SVGFESpecularLightingElementBase {
+class SVGFESpecularLightingElement final
+    : public SVGFESpecularLightingElementBase {
   friend nsresult(::NS_NewSVGFESpecularLightingElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -28,18 +28,20 @@ class SVGFESpecularLightingElement : public SVGFESpecularLightingElementBase {
   explicit SVGFESpecularLightingElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFESpecularLightingElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual FilterPrimitiveDescription GetPrimitiveDescription(
-      nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+  nsresult BindToTree(BindContext&, nsINode& aParent) override;
+
+  FilterPrimitiveDescription GetPrimitiveDescription(
+      SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
       const nsTArray<bool>& aInputsAreTainted,
       nsTArray<RefPtr<SourceSurface>>& aInputImages) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedString> In1();
@@ -50,7 +52,6 @@ class SVGFESpecularLightingElement : public SVGFESpecularLightingElementBase {
   already_AddRefed<DOMSVGAnimatedNumber> KernelUnitLengthY();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFESpecularLightingElement_h
+#endif  // DOM_SVG_SVGFESPECULARLIGHTINGELEMENT_H_

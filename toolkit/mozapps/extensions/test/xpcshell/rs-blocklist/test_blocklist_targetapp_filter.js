@@ -1,9 +1,8 @@
-const BlocklistGlobal = ChromeUtils.import(
-  "resource://gre/modules/Blocklist.jsm",
-  null
+const { BlocklistPrivate } = ChromeUtils.importESModule(
+  "resource://gre/modules/Blocklist.sys.mjs"
 );
-const { RemoteSettings } = ChromeUtils.import(
-  "resource://services-settings/remote-settings.js"
+const { RemoteSettings } = ChromeUtils.importESModule(
+  "resource://services-settings/remote-settings.sys.mjs"
 );
 
 const APP_ID = "xpcshell@tests.mozilla.org";
@@ -17,10 +16,12 @@ async function clear_state() {
 }
 
 async function createRecords(records) {
-  for (const record of records) {
-    await client.db.create(record);
-  }
-  client.db.saveLastModified(42); // Simulate sync (and prevent load dump).
+  const withId = records.map((record, i) => ({
+    id: `record-${i}`,
+    ...record,
+  }));
+  // Prevent packaged dump to be loaded with high collection timestamp
+  return client.db.importChanges({}, Date.now(), withId);
 }
 
 function run_test() {
@@ -32,45 +33,59 @@ function run_test() {
   );
   // This will initialize the remote settings clients for blocklists,
   // with their specific options etc.
-  BlocklistGlobal.PluginBlocklistRS.ensureInitialized();
+  BlocklistPrivate.ExtensionBlocklistRS.ensureInitialized();
   // Obtain one of the instantiated client for our tests.
-  client = RemoteSettings("plugins", { bucketName: "blocklists" });
+  client = RemoteSettings("addons", { bucketName: "blocklists" });
 
   run_next_test();
 }
 
+add_task(async function test_supports_filter_expressions() {
+  await createRecords([
+    {
+      name: "My Extension",
+      filter_expression: 'env.appinfo.ID == "xpcshell@tests.mozilla.org"',
+    },
+    {
+      name: "My Extension",
+      filter_expression: "1 == 2",
+    },
+  ]);
+
+  const list = await client.get();
+  equal(list.length, 1);
+});
+add_task(clear_state);
+
 add_task(async function test_returns_all_without_target() {
   await createRecords([
     {
-      matchName: "Adobe Flex",
+      name: "My Extension",
     },
     {
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [],
     },
     {
-      matchName: "PDF reader",
+      name: "My Other Extension",
       versionRange: [
         {
           severity: 0,
-          vulnerabilityStatus: 1,
           targetApplication: [],
         },
       ],
     },
     {
-      matchName:
-        "Java(\\(TM\\))? Plug-in 11\\.(7[6-9]|[8-9]\\d|1([0-6]\\d|70))(\\.\\d+)?([^\\d\\._]|$)",
+      name: "Java(\\(TM\\))? Plug-in 11\\.(7[6-9]|[8-9]\\d|1([0-6]\\d|70))(\\.\\d+)?([^\\d\\._]|$)",
       versionRange: [
         {
           severity: 0,
-          vulnerabilityStatus: 1,
         },
       ],
       matchFilename: "libnpjp2\\.so",
     },
     {
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [],
@@ -91,7 +106,7 @@ add_task(async function test_returns_without_guid_or_with_matching_guid() {
   await createRecords([
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [{}],
@@ -100,7 +115,7 @@ add_task(async function test_returns_without_guid_or_with_matching_guid() {
     },
     {
       willMatch: false,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -113,7 +128,7 @@ add_task(async function test_returns_without_guid_or_with_matching_guid() {
     },
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -126,7 +141,7 @@ add_task(async function test_returns_without_guid_or_with_matching_guid() {
     },
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -151,7 +166,7 @@ add_task(
     await createRecords([
       {
         willMatch: true,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -164,7 +179,7 @@ add_task(
       },
       {
         willMatch: true,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -178,7 +193,7 @@ add_task(
       },
       {
         willMatch: true,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -193,7 +208,7 @@ add_task(
       },
       {
         willMatch: false,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -208,7 +223,7 @@ add_task(
       },
       {
         willMatch: true,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -222,7 +237,7 @@ add_task(
       },
       {
         willMatch: true,
-        matchName: "foopydoo",
+        name: "foopydoo",
         versionRange: [
           {
             targetApplication: [
@@ -250,7 +265,7 @@ add_task(async function test_multiple_version_and_target_applications() {
   await createRecords([
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -272,7 +287,7 @@ add_task(async function test_multiple_version_and_target_applications() {
     },
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -293,7 +308,7 @@ add_task(async function test_multiple_version_and_target_applications() {
     },
     {
       willMatch: false,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -329,7 +344,7 @@ add_task(async function test_complex_version() {
   await createRecords([
     {
       willMatch: false,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -343,7 +358,7 @@ add_task(async function test_complex_version() {
     },
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [
@@ -357,7 +372,7 @@ add_task(async function test_complex_version() {
     },
     {
       willMatch: true,
-      matchName: "foopydoo",
+      name: "foopydoo",
       versionRange: [
         {
           targetApplication: [

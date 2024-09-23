@@ -28,12 +28,15 @@
 #include "prnetdb.h"
 #include "prtime.h"
 #include "ssl.h"
+#include "sslexp.h"
 #include "sslproto.h"
 
 namespace mozilla {
 namespace test {
 
 static const uint16_t LISTEN_PORT = 8443;
+
+SSLAntiReplayContext* antiReplay = nullptr;
 
 DebugLevel gDebugLevel = DEBUG_ERRORS;
 uint16_t gCallbackPort = 0;
@@ -290,9 +293,21 @@ nsresult SetupTLS(Connection* aConn, PRFileDesc* aModelSocket) {
   }
   aConn->mSocket = sslSocket;
 
+  /* anti-replay must be configured to accept 0RTT */
+  if (antiReplay) {
+    SECStatus rv = SSL_SetAntiReplayContext(sslSocket, antiReplay);
+    if (rv != SECSuccess) {
+      PrintPRError("error configuring anti-replay ");
+      return NS_ERROR_FAILURE;
+    }
+  }
+
   SSL_OptionSet(sslSocket, SSL_SECURITY, true);
   SSL_OptionSet(sslSocket, SSL_HANDSHAKE_AS_CLIENT, false);
   SSL_OptionSet(sslSocket, SSL_HANDSHAKE_AS_SERVER, true);
+  // Unconditionally enabling 0RTT makes test_session_resumption.js fail
+  SSL_OptionSet(sslSocket, SSL_ENABLE_0RTT_DATA,
+                !!PR_GetEnv("MOZ_TLS_SERVER_0RTT"));
 
   SSL_ResetHandshake(sslSocket, /* asServer */ 1);
 
@@ -467,6 +482,8 @@ SECStatus ConfigSecureServerWithNamedCert(
 
   SSL_OptionSet(fd, SSL_NO_CACHE, false);
   SSL_OptionSet(fd, SSL_ENABLE_SESSION_TICKETS, true);
+  // Unconditionally enabling 0RTT makes test_session_resumption.js fail
+  SSL_OptionSet(fd, SSL_ENABLE_0RTT_DATA, !!PR_GetEnv("MOZ_TLS_SERVER_0RTT"));
 
   return SECSuccess;
 }
@@ -494,7 +511,7 @@ PidType ConvertPid(const char* pidStr) {
 }
 
 int StartServer(int argc, char* argv[], SSLSNISocketConfig sniSocketConfig,
-                void* sniSocketConfigArg) {
+                void* sniSocketConfigArg, ServerConfigFunc configFunc) {
   if (argc != 3) {
     fprintf(stderr, "usage: %s <NSS DB directory> <ppid>\n", argv[0]);
     return 1;
@@ -535,6 +552,8 @@ int StartServer(int argc, char* argv[], SSLSNISocketConfig sniSocketConfig,
     PrintPRError("NSS_SetDomesticPolicy failed");
     return 1;
   }
+
+  NSS_SetAlgorithmPolicy(SEC_OID_XYBER768D00, NSS_USE_ALG_IN_SSL_KX, 0);
 
   if (SSL_ConfigServerSessionIDCache(0, 0, 0, nullptr) != SECSuccess) {
     PrintPRError("SSL_ConfigServerSessionIDCache failed");
@@ -590,6 +609,14 @@ int StartServer(int argc, char* argv[], SSLSNISocketConfig sniSocketConfig,
     }
   }
 
+  if (PR_GetEnv("MOZ_TLS_SERVER_0RTT")) {
+    if (SSL_CreateAntiReplayContext(PR_Now(), 1L * PR_USEC_PER_SEC, 7, 14,
+                                    &antiReplay) != SECSuccess) {
+      PrintPRError("Unable to create anti-replay context for 0-RTT.");
+      return 1;
+    }
+  }
+
   if (SSL_SNISocketConfigHook(modelSocket.get(), sniSocketConfig,
                               sniSocketConfigArg) != SECSuccess) {
     PrintPRError("SSL_SNISocketConfigHook failed");
@@ -611,6 +638,14 @@ int StartServer(int argc, char* argv[], SSLSNISocketConfig sniSocketConfig,
                                       nullptr, nullptr,
                                       &extra_data) != SECSuccess) {
     return 1;
+  }
+
+  // Call back to implementation-defined configuration func, if provided.
+  if (configFunc) {
+    if (((configFunc)(modelSocket.get())) != SECSuccess) {
+      PrintPRError("configFunc failed");
+      return 1;
+    }
   }
 
   if (gCallbackPort != 0) {
@@ -653,8 +688,6 @@ int StartServer(int argc, char* argv[], SSLSNISocketConfig sniSocketConfig,
         PR_Accept(serverSocket.get(), &clientAddr, PR_INTERVAL_NO_TIMEOUT);
     HandleConnection(clientSocket, modelSocket);
   }
-
-  return 0;
 }
 
 }  // namespace test

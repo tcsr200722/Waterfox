@@ -4,17 +4,21 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::constants::*;
-use crate::err::{Error, Res};
-use crate::p11::{PK11SymKey, SymKey};
-use crate::ssl;
-use crate::ssl::{PRUint16, PRUint64, PRUint8, SSLAeadContext};
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+    os::raw::{c_char, c_uint},
+    ptr::null_mut,
+};
 
-use std::convert::{TryFrom, TryInto};
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::os::raw::{c_char, c_uint};
-use std::ptr::{null_mut, NonNull};
+use crate::{
+    constants::{Cipher, Version},
+    err::Res,
+    experimental_api,
+    p11::{PK11SymKey, SymKey},
+    scoped_ptr,
+    ssl::{self, PRUint16, PRUint64, PRUint8, SSLAeadContext},
+};
 
 experimental_api!(SSL_MakeAead(
     version: PRUint16,
@@ -49,16 +53,15 @@ experimental_api!(SSL_AeadDecrypt(
 experimental_api!(SSL_DestroyAead(ctx: *mut SSLAeadContext));
 scoped_ptr!(AeadContext, SSLAeadContext, SSL_DestroyAead);
 
-pub struct Aead {
+pub struct RealAead {
     ctx: AeadContext,
 }
 
-// TODO(mt) move unused_self once https://github.com/rust-lang/rust-clippy/issues/5053 is fixed
-#[allow(clippy::unused_self)]
-impl Aead {
+impl RealAead {
     /// Create a new AEAD based on the indicated TLS version and cipher suite.
     ///
     /// # Errors
+    ///
     /// Returns `Error` when the supporting NSS functions fail.
     pub fn new(version: Version, cipher: Cipher, secret: &SymKey, prefix: &str) -> Res<Self> {
         let s: *mut PK11SymKey = **secret;
@@ -66,6 +69,7 @@ impl Aead {
     }
 
     #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn expansion(&self) -> usize {
         16
     }
@@ -82,24 +86,22 @@ impl Aead {
             version,
             cipher,
             secret,
-            p.as_ptr() as *const c_char,
+            p.as_ptr().cast(),
             c_uint::try_from(p.len())?,
             &mut ctx,
         )?;
-        match NonNull::new(ctx) {
-            Some(ctx_ptr) => Ok(Self {
-                ctx: AeadContext::new(ctx_ptr),
-            }),
-            None => Err(Error::InternalError),
-        }
+        Ok(Self {
+            ctx: AeadContext::from_ptr(ctx)?,
+        })
     }
 
-    /// Decrypt a plaintext.
+    /// Encrypt a plaintext.
     ///
     /// The space provided in `output` needs to be larger than `input` by
     /// the value provided in `Aead::expansion`.
     ///
     /// # Errors
+    ///
     /// If the input can't be protected or any input is too large for NSS.
     pub fn encrypt<'a>(
         &self,
@@ -111,7 +113,7 @@ impl Aead {
         let mut l: c_uint = 0;
         unsafe {
             SSL_AeadEncrypt(
-                *self.ctx.deref(),
+                *self.ctx,
                 count,
                 aad.as_ptr(),
                 c_uint::try_from(aad.len())?,
@@ -132,6 +134,7 @@ impl Aead {
     /// the final result will be shorter.
     ///
     /// # Errors
+    ///
     /// If the input isn't authenticated or any input is too large for NSS.
     pub fn decrypt<'a>(
         &self,
@@ -143,7 +146,7 @@ impl Aead {
         let mut l: c_uint = 0;
         unsafe {
             SSL_AeadDecrypt(
-                *self.ctx.deref(),
+                *self.ctx,
                 count,
                 aad.as_ptr(),
                 c_uint::try_from(aad.len())?,
@@ -158,7 +161,7 @@ impl Aead {
     }
 }
 
-impl fmt::Debug for Aead {
+impl fmt::Debug for RealAead {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[AEAD Context]")
     }

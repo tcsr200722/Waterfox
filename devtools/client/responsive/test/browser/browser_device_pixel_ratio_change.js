@@ -8,7 +8,7 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 const TEST_URL = "data:text/html;charset=utf-8,DevicePixelRatio list test";
 const DEFAULT_DPPX = window.devicePixelRatio;
 const VIEWPORT_DPPX = DEFAULT_DPPX + 1;
-const Types = require("devtools/client/responsive/types");
+const Types = require("resource://devtools/client/responsive/types.js");
 
 const testDevice = {
   name: "Fake Phone RDM Test",
@@ -27,7 +27,7 @@ addDeviceForTest(testDevice);
 
 addRDMTask(
   TEST_URL,
-  async function({ ui, manager }) {
+  async function ({ ui }) {
     await waitStartup(ui);
 
     await testDefaults(ui);
@@ -35,7 +35,7 @@ addRDMTask(
     await testResetWhenResizingViewport(ui);
     await testChangingDevicePixelRatio(ui);
   },
-  { usingBrowserUI: true, waitForDeviceList: true }
+  { waitForDeviceList: true }
 );
 
 async function waitStartup(ui) {
@@ -79,16 +79,15 @@ async function testChangingDevice(ui) {
 async function testResetWhenResizingViewport(ui) {
   info("Test reset when resizing the viewport");
 
-  const deviceRemoved = once(ui, "device-association-removed");
   await testViewportResize(
     ui,
     ".viewport-vertical-resize-handle",
     [-10, -10],
-    [testDevice.width, testDevice.height - 10],
     [0, -10],
-    ui
+    {
+      hasDevice: true,
+    }
   );
-  await deviceRemoved;
 
   const dppx = await waitForDevicePixelRatio(ui, DEFAULT_DPPX);
   is(dppx, DEFAULT_DPPX, "Content has expected devicePixelRatio");
@@ -134,29 +133,4 @@ function testViewportDevicePixelRatioSelect(ui, expected) {
       expected.disabled ? "disabled" : "enabled"
     }.`
   );
-}
-
-function waitForDevicePixelRatio(ui, expected) {
-  return SpecialPowers.spawn(ui.getViewportBrowser(), [{ expected }], function(
-    args
-  ) {
-    const initial = content.devicePixelRatio;
-    info(
-      `Listening for pixel ratio change ` +
-        `(current: ${initial}, expected: ${args.expected})`
-    );
-    return new Promise(resolve => {
-      const mql = content.matchMedia(`(resolution: ${args.expected}dppx)`);
-      if (mql.matches) {
-        info(`Ratio already changed to ${args.expected}dppx`);
-        resolve(content.devicePixelRatio);
-        return;
-      }
-      mql.addListener(function listener() {
-        info(`Ratio changed to ${args.expected}dppx`);
-        mql.removeListener(listener);
-        resolve(content.devicePixelRatio);
-      });
-    });
-  });
 }

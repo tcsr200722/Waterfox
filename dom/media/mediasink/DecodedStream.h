@@ -7,6 +7,7 @@
 #ifndef DecodedStream_h_
 #define DecodedStream_h_
 
+#include "AudibilityMonitor.h"
 #include "MediaEventSource.h"
 #include "MediaInfo.h"
 #include "MediaSegment.h"
@@ -27,6 +28,7 @@ class AudioData;
 class VideoData;
 struct PlaybackInfoInit;
 class ProcessedMediaTrack;
+struct SharedDummyTrack;
 class TimeStamp;
 
 template <class T>
@@ -35,23 +37,32 @@ class MediaQueue;
 class DecodedStream : public MediaSink {
  public:
   DecodedStream(MediaDecoderStateMachine* aStateMachine,
+                nsMainThreadPtrHandle<SharedDummyTrack> aDummyTrack,
                 CopyableTArray<RefPtr<ProcessedMediaTrack>> aOutputTracks,
                 double aVolume, double aPlaybackRate, bool aPreservesPitch,
                 MediaQueue<AudioData>& aAudioQueue,
-                MediaQueue<VideoData>& aVideoQueue);
+                MediaQueue<VideoData>& aVideoQueue,
+                RefPtr<AudioDeviceInfo> aAudioDevice);
 
   RefPtr<EndedPromise> OnEnded(TrackType aType) override;
   media::TimeUnit GetEndTime(TrackType aType) const override;
-  media::TimeUnit GetPosition(TimeStamp* aTimeStamp = nullptr) const override;
+  media::TimeUnit GetPosition(TimeStamp* aTimeStamp = nullptr) override;
   bool HasUnplayedFrames(TrackType aType) const override {
-    // TODO: implement this.
+    // TODO: bug 1755026
     return false;
+  }
+
+  media::TimeUnit UnplayedDuration(TrackType aType) const override {
+    // TODO: bug 1755026
+    return media::TimeUnit::Zero();
   }
 
   void SetVolume(double aVolume) override;
   void SetPlaybackRate(double aPlaybackRate) override;
   void SetPreservesPitch(bool aPreservesPitch) override;
   void SetPlaying(bool aPlaying) override;
+  RefPtr<GenericPromise> SetAudioDevice(
+      RefPtr<AudioDeviceInfo> aDevice) override;
 
   double PlaybackRate() const override;
 
@@ -70,7 +81,7 @@ class DecodedStream : public MediaSink {
 
  private:
   void DestroyData(UniquePtr<DecodedStreamData>&& aData);
-  void SendAudio(double aVolume, const PrincipalHandle& aPrincipalHandle);
+  void SendAudio(const PrincipalHandle& aPrincipalHandle);
   void SendVideo(const PrincipalHandle& aPrincipalHandle);
   void ResetAudio();
   void ResetVideo(const PrincipalHandle& aPrincipalHandle);
@@ -87,7 +98,17 @@ class DecodedStream : public MediaSink {
   void ConnectListener();
   void DisconnectListener();
 
+  // Give the audio that is going to be appended next as an input, if there is
+  // a gap between audio's time and the frames that we've written, then return
+  // a silence data that has same amount of frames and can be used to fill the
+  // gap. If no gap exists, return nullptr.
+  already_AddRefed<AudioData> CreateSilenceDataIfGapExists(
+      RefPtr<AudioData>& aNextAudio);
+
   const RefPtr<AbstractThread> mOwnerThread;
+
+  // Used to access the graph.
+  const nsMainThreadPtrHandle<SharedDummyTrack> mDummyTrack;
 
   /*
    * Worker thread only members.
@@ -111,6 +132,7 @@ class DecodedStream : public MediaSink {
   MediaInfo mInfo;
   // True when stream is producing audible sound, false when stream is silent.
   bool mIsAudioDataAudible = false;
+  Maybe<AudibilityMonitor> mAudibilityMonitor;
   MediaEventProducer<bool> mAudibleEvent;
 
   MediaQueue<AudioData>& mAudioQueue;

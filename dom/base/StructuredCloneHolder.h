@@ -7,24 +7,36 @@
 #ifndef mozilla_dom_StructuredCloneHolder_h
 #define mozilla_dom_StructuredCloneHolder_h
 
+#include <cstddef>
+#include <cstdint>
 #include <utility>
-
 #include "js/StructuredClone.h"
-#include "jsapi.h"
+#include "js/TypeDecls.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/dom/BindingDeclarations.h"
+#include "nsCOMPtr.h"
+#include "nsString.h"
 #include "nsTArray.h"
 
-#ifdef DEBUG
-#  include "nsIThread.h"
-#endif
-
+class nsIEventTarget;
 class nsIGlobalObject;
 class nsIInputStream;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
+
+namespace JS {
+class Value;
+struct WasmModule;
+}  // namespace JS
 
 namespace mozilla {
 class ErrorResult;
+template <class T>
+class OwningNonNull;
+
 namespace layers {
 class Image;
 }
@@ -34,6 +46,12 @@ class DataSourceSurface;
 }
 
 namespace dom {
+
+class BlobImpl;
+class MessagePort;
+class MessagePortIdentifier;
+template <typename T>
+class Sequence;
 
 class StructuredCloneHolderBase {
  public:
@@ -70,11 +88,11 @@ class StructuredCloneHolderBase {
   // If these 3 methods are not implement, transfering objects will not be
   // allowed. Otherwise only arrayBuffers will be transferred.
 
-  virtual bool CustomReadTransferHandler(JSContext* aCx,
-                                         JSStructuredCloneReader* aReader,
-                                         uint32_t aTag, void* aContent,
-                                         uint64_t aExtraData,
-                                         JS::MutableHandleObject aReturnObject);
+  virtual bool CustomReadTransferHandler(
+      JSContext* aCx, JSStructuredCloneReader* aReader,
+      const JS::CloneDataPolicy& aCloneDataPolicy, uint32_t aTag,
+      void* aContent, uint64_t aExtraData,
+      JS::MutableHandle<JSObject*> aReturnObject);
 
   virtual bool CustomWriteTransferHandler(JSContext* aCx,
                                           JS::Handle<JSObject*> aObj,
@@ -147,8 +165,12 @@ class StructuredCloneHolderBase {
 };
 
 class BlobImpl;
+class EncodedAudioChunkData;
+class EncodedVideoChunkData;
 class MessagePort;
 class MessagePortIdentifier;
+struct VideoFrameSerializedData;
+struct AudioDataSerializedData;
 
 class StructuredCloneHolder : public StructuredCloneHolderBase {
  public:
@@ -191,7 +213,8 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
   // Call this method to know if this object is keeping some DOM object alive.
   bool HasClonedDOMObjects() const {
     return !mBlobImplArray.IsEmpty() || !mWasmModuleArray.IsEmpty() ||
-           !mClonedSurfaces.IsEmpty() || !mInputStreamArray.IsEmpty();
+           !mClonedSurfaces.IsEmpty() || !mInputStreamArray.IsEmpty() ||
+           !mVideoFrames.IsEmpty() || !mEncodedVideoChunks.IsEmpty();
   }
 
   nsTArray<RefPtr<BlobImpl>>& BlobImpls() {
@@ -247,6 +270,18 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
     return mClonedSurfaces;
   }
 
+  nsTArray<VideoFrameSerializedData>& VideoFrames() { return mVideoFrames; }
+
+  nsTArray<AudioDataSerializedData>& AudioData() { return mAudioData; }
+
+  nsTArray<EncodedVideoChunkData>& EncodedVideoChunks() {
+    return mEncodedVideoChunks;
+  }
+
+  nsTArray<EncodedAudioChunkData>& EncodedAudioChunks() {
+    return mEncodedAudioChunks;
+  }
+
   // Implementations of the virtual methods to allow cloning of objects which
   // JS engine itself doesn't clone.
 
@@ -261,9 +296,10 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
                                   bool* aSameProcessScopeRequired) override;
 
   virtual bool CustomReadTransferHandler(
-      JSContext* aCx, JSStructuredCloneReader* aReader, uint32_t aTag,
+      JSContext* aCx, JSStructuredCloneReader* aReader,
+      const JS::CloneDataPolicy& aCloneDataPolicy, uint32_t aTag,
       void* aContent, uint64_t aExtraData,
-      JS::MutableHandleObject aReturnObject) override;
+      JS::MutableHandle<JSObject*> aReturnObject) override;
 
   virtual bool CustomWriteTransferHandler(JSContext* aCx,
                                           JS::Handle<JSObject*> aObj,
@@ -286,7 +322,8 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
   // serialize objects such as ImageData, CryptoKey, RTCCertificate, etc.
 
   static JSObject* ReadFullySerializableObjects(
-      JSContext* aCx, JSStructuredCloneReader* aReader, uint32_t aTag);
+      JSContext* aCx, JSStructuredCloneReader* aReader, uint32_t aTag,
+      bool aIsForIndexedDB);
 
   static bool WriteFullySerializableObjects(JSContext* aCx,
                                             JSStructuredCloneWriter* aWriter,
@@ -295,7 +332,10 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
   // Helper functions for reading and writing strings.
   static bool ReadString(JSStructuredCloneReader* aReader, nsString& aString);
   static bool WriteString(JSStructuredCloneWriter* aWriter,
-                          const nsString& aString);
+                          const nsAString& aString);
+  static bool ReadCString(JSStructuredCloneReader* aReader, nsCString& aString);
+  static bool WriteCString(JSStructuredCloneWriter* aWriter,
+                           const nsACString& aString);
 
   static const JSStructuredCloneCallbacks sCallbacks;
 
@@ -317,6 +357,8 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
                       ErrorResult& aRv);
 
   void SameProcessScopeRequired(bool* aSameProcessScopeRequired);
+
+  already_AddRefed<MessagePort> ReceiveMessagePort(uint64_t aIndex);
 
   bool mSupportsCloning;
   bool mSupportsTransferring;
@@ -341,6 +383,18 @@ class StructuredCloneHolder : public StructuredCloneHolderBase {
   // The DataSourceSurface object will not be written ever via any ImageBitmap
   // instance, so no race condition will occur.
   nsTArray<RefPtr<gfx::DataSourceSurface>> mClonedSurfaces;
+
+  // Used for cloning VideoFrame in the structured cloning algorithm.
+  nsTArray<VideoFrameSerializedData> mVideoFrames;
+
+  // Used for cloning AudioData in the structured cloning algorithm.
+  nsTArray<AudioDataSerializedData> mAudioData;
+
+  // Used for cloning EncodedVideoChunk in the structured cloning algorithm.
+  nsTArray<EncodedVideoChunkData> mEncodedVideoChunks;
+
+  // Used for cloning EncodedAudioChunk in the structured cloning algorithm.
+  nsTArray<EncodedAudioChunkData> mEncodedAudioChunks;
 
   // This raw pointer is only set within ::Read() and is unset by the end.
   nsIGlobalObject* MOZ_NON_OWNING_REF mGlobal;

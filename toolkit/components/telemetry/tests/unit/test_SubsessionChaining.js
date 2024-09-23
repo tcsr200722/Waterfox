@@ -2,12 +2,15 @@
    http://creativecommons.org/publicdomain/zero/1.0/
 */
 
-ChromeUtils.import("resource://gre/modules/Preferences.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryArchive.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", this);
-ChromeUtils.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
-ChromeUtils.import("resource://gre/modules/osfile.jsm", this);
-ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm", this);
+const { TelemetryArchive } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryArchive.sys.mjs"
+);
+const { TelemetryController } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryController.sys.mjs"
+);
+const { TelemetryEnvironment } = ChromeUtils.importESModule(
+  "resource://gre/modules/TelemetryEnvironment.sys.mjs"
+);
 
 const MS_IN_ONE_HOUR = 60 * 60 * 1000;
 const MS_IN_ONE_DAY = 24 * MS_IN_ONE_HOUR;
@@ -19,11 +22,7 @@ const REASON_DAILY = "daily";
 const REASON_ENVIRONMENT_CHANGE = "environment-change";
 const REASON_SHUTDOWN = "shutdown";
 
-XPCOMUtils.defineLazyGetter(this, "DATAREPORTING_PATH", function() {
-  return OS.Path.join(OS.Constants.Path.profileDir, "datareporting");
-});
-
-var promiseValidateArchivedPings = async function(aExpectedReasons) {
+var promiseValidateArchivedPings = async function (aExpectedReasons) {
   // The list of ping reasons which mark the session end (and must reset the subsession
   // count).
   const SESSION_END_PING_REASONS = new Set([
@@ -132,7 +131,12 @@ add_task(async function test_setup() {
 
   // Addon manager needs a profile directory
   do_get_profile();
-  loadAddonManager("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
+  await loadAddonManager(
+    "xpcshell@tests.mozilla.org",
+    "XPCShell",
+    "1",
+    "1.9.2"
+  );
   finishAddonManagerStartup();
   fakeIntlReady();
   // Make sure we don't generate unexpected pings due to pref changes.
@@ -149,7 +153,7 @@ add_task(async function test_subsessionsChaining() {
   const PREFS_TO_WATCH = new Map([
     [PREF_TEST, { what: TelemetryEnvironment.RECORD_PREF_VALUE }],
   ]);
-  Preferences.reset(PREF_TEST);
+  Services.prefs.clearUserPref(PREF_TEST);
 
   // Fake the clock data to manually trigger an aborted-session ping and a daily ping.
   // This is also helpful to make sure we get the archived pings in an expected order.
@@ -203,7 +207,7 @@ add_task(async function test_subsessionsChaining() {
   await TelemetryController.testReset();
   await TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   moveClockForward(30);
-  Preferences.set(PREF_TEST, 1);
+  Services.prefs.setIntPref(PREF_TEST, 1);
   expectedReasons.push(REASON_ENVIRONMENT_CHANGE);
 
   // Shut down Telemetry. We expect a shutdown ping with profileSubsessionCounter: 5,
@@ -228,7 +232,7 @@ add_task(async function test_subsessionsChaining() {
   // profileSubsessionCounter: 7, subsessionCounter: 2, subsessionId: G and
   // previousSubsessionId: F to be archived.
   moveClockForward(30);
-  Preferences.set(PREF_TEST, 0);
+  Services.prefs.setIntPref(PREF_TEST, 0);
   expectedReasons.push(REASON_ENVIRONMENT_CHANGE);
 
   // Shut down Telemetry and trigger a shutdown ping.
@@ -240,7 +244,7 @@ add_task(async function test_subsessionsChaining() {
   await TelemetryController.testReset();
   await TelemetryEnvironment.testWatchPreferences(PREFS_TO_WATCH);
   moveClockForward(30);
-  Preferences.set(PREF_TEST, 1);
+  Services.prefs.setIntPref(PREF_TEST, 1);
   expectedReasons.push(REASON_ENVIRONMENT_CHANGE);
 
   // Don't shut down, instead trigger an aborted-session ping.
@@ -261,7 +265,7 @@ add_task(async function test_subsessionsChaining() {
 
   // Trigger an environment change.
   moveClockForward(30);
-  Preferences.set(PREF_TEST, 0);
+  Services.prefs.setIntPref(PREF_TEST, 0);
   expectedReasons.push(REASON_ENVIRONMENT_CHANGE);
 
   // And an aborted-session ping again.
@@ -276,7 +280,7 @@ add_task(async function test_subsessionsChaining() {
   await promiseValidateArchivedPings(expectedReasons);
 });
 
-add_task(async function() {
+add_task(async function () {
   await TelemetryController.testShutdown();
   do_test_finished();
 });

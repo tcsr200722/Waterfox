@@ -11,23 +11,15 @@
 use std::fmt;
 
 use arrayref::array_ref;
-use bincode::{
-    deserialize,
-    serialize,
-    serialized_size,
-};
+use bincode::{deserialize, serialize, serialized_size};
 use ordered_float::OrderedFloat;
-use uuid::{
-    Bytes,
-    Uuid,
-};
+use uuid::{Bytes, Uuid};
 
 use crate::error::DataError;
 
-/// We define a set of types, associated with simple integers, to annotate values
-/// stored in LMDB. This is to avoid an accidental 'cast' from a value of one type
-/// to another. For this reason we don't simply use `deserialize` from the `bincode`
-/// crate.
+/// We define a set of types, associated with simple integers, to annotate values stored
+/// in LMDB. This is to avoid an accidental 'cast' from a value of one type to another.
+/// For this reason we don't simply use `deserialize` from the `bincode` crate.
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum Type {
@@ -45,6 +37,7 @@ pub enum Type {
 /// We use manual tagging, because <https://github.com/serde-rs/serde/issues/610>.
 impl Type {
     pub fn from_tag(tag: u8) -> Result<Type, DataError> {
+        #![allow(clippy::unnecessary_lazy_evaluations)]
         Type::from_primitive(tag).ok_or_else(|| DataError::UnknownType(tag))
     }
 
@@ -148,7 +141,7 @@ impl<'v> Value<'v> {
             Type::Uuid => {
                 // Processed above to avoid verbose duplication of error transforms.
                 unreachable!()
-            },
+            }
         }
         .map_err(|e| DataError::DecodingError {
             value_type: t,
@@ -221,8 +214,6 @@ impl<'v> From<&'v OwnedValue> for Value<'v> {
 
 #[cfg(test)]
 mod tests {
-    use ordered_float::OrderedFloat;
-
     use super::*;
 
     #[test]
@@ -239,8 +230,14 @@ mod tests {
         assert_eq!(Value::I64(-1000).serialized_size().unwrap(), 9);
         assert_eq!(Value::U64(1000u64).serialized_size().unwrap(), 9);
         assert_eq!(Value::Bool(true).serialized_size().unwrap(), 2);
-        assert_eq!(Value::Instant(1_558_020_865_224).serialized_size().unwrap(), 9);
-        assert_eq!(Value::F64(OrderedFloat(10000.1)).serialized_size().unwrap(), 9);
+        assert_eq!(
+            Value::Instant(1_558_020_865_224).serialized_size().unwrap(),
+            9
+        );
+        assert_eq!(
+            Value::F64(OrderedFloat(10000.1)).serialized_size().unwrap(),
+            9
+        );
         assert_eq!(Value::Str("hello!").serialized_size().unwrap(), 15);
         assert_eq!(Value::Str("¡Hola").serialized_size().unwrap(), 15);
         assert_eq!(Value::Blob(b"hello!").serialized_size().unwrap(), 15);

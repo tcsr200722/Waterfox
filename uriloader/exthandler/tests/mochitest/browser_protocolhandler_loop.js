@@ -44,11 +44,9 @@ add_task(async function test_helperapp() {
     // infinite tabs. We definitely don't want that. Avoid it by stubbing
     // our external URL handling bits:
     let oldAddTab = gBrowser.addTab;
-    registerCleanupFunction(
-      () => (gBrowser.addTab = gBrowser.loadOneTab = oldAddTab)
-    );
+    registerCleanupFunction(() => (gBrowser.addTab = oldAddTab));
     let wrongThingHappenedPromise = new Promise(resolve => {
-      gBrowser.addTab = gBrowser.loadOneTab = function(aURI) {
+      gBrowser.addTab = function (aURI) {
         ok(false, "Tried to open unexpected URL in a tab: " + aURI);
         resolve(null);
         // Pass a dummy object to avoid upsetting BrowserContentHandler -
@@ -58,25 +56,22 @@ add_task(async function test_helperapp() {
         return {};
       };
     });
-    // We can't use TestUtils.topicObserved because it leaks.
-    let askedUserPromise = new Promise(r => {
-      let obs = () => {
-        r("yes");
-        Services.obs.removeObserver(obs, "domwindowopened");
-      };
-      Services.obs.addObserver(obs, "domwindowopened");
+
+    let askedUserPromise = waitForProtocolAppChooserDialog(browser, true);
+
+    gBrowser.fixupAndLoadURIString(kProt + ":test", {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_FROM_EXTERNAL,
     });
-    BrowserTestUtils.loadURI(browser, kProt + ":test");
-    let win = await Promise.race([wrongThingHappenedPromise, askedUserPromise]);
-    ok(win, "Should have gotten a window");
-    // This is really annoying. Hanging on to the window from the observer
-    // leaks for some reason. Just close it now. It has no window type, so use
-    // the lack of one to distinguish it from the browser and the harness.
-    for (let openWin of Services.wm.getEnumerator("")) {
-      if (!openWin.document.documentElement.getAttribute("windowtype")) {
-        openWin.close();
-      }
-    }
+    let dialog = await Promise.race([
+      wrongThingHappenedPromise,
+      askedUserPromise,
+    ]);
+    ok(dialog, "Should have gotten a dialog");
+
+    let closePromise = waitForProtocolAppChooserDialog(browser, false);
+    dialog.close();
+    await closePromise;
     askedUserPromise = null;
   });
 });

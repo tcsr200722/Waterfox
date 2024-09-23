@@ -9,16 +9,14 @@
 #include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/EventForwards.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/dom/Notification.h"
-#include "mozilla/Unused.h"
 #include "nsISupportsPrimitives.h"
 #include "nsPIDOMWindow.h"
 #include "nsIWindowWatcher.h"
 
 using namespace mozilla;
-
-#define ALERT_CHROME_URL "chrome://global/content/alerts/alert.xhtml"
 
 namespace {
 StaticRefPtr<nsXULAlerts> gXULAlerts;
@@ -100,10 +98,12 @@ nsXULAlerts::ShowAlertNotification(
   nsCOMPtr<nsIAlertNotification> alert =
       do_CreateInstance(ALERT_NOTIFICATION_CONTRACTID);
   NS_ENSURE_TRUE(alert, NS_ERROR_FAILURE);
-  nsresult rv =
-      alert->Init(aAlertName, aImageUrl, aAlertTitle, aAlertText,
-                  aAlertTextClickable, aAlertCookie, aBidi, aLang, aData,
-                  aPrincipal, aInPrivateBrowsing, aRequireInteraction);
+  // vibrate is unused for now
+  nsTArray<uint32_t> vibrate;
+  nsresult rv = alert->Init(aAlertName, aImageUrl, aAlertTitle, aAlertText,
+                            aAlertTextClickable, aAlertCookie, aBidi, aLang,
+                            aData, aPrincipal, aInPrivateBrowsing,
+                            aRequireInteraction, false, vibrate);
   NS_ENSURE_SUCCESS(rv, rv);
   return ShowAlert(alert, aAlertListener);
 }
@@ -160,9 +160,8 @@ nsXULAlerts::ShowAlert(nsIAlertNotification* aAlert,
     PendingAlert* pa = mPendingPersistentAlerts.AppendElement();
     pa->Init(aAlert, aAlertListener);
     return NS_OK;
-  } else {
-    return ShowAlertWithIconURI(aAlert, aAlertListener, nullptr);
   }
+  return ShowAlertWithIconURI(aAlert, aAlertListener, nullptr);
 }
 
 NS_IMETHODIMP
@@ -178,8 +177,9 @@ nsXULAlerts::ShowAlertWithIconURI(nsIAlertNotification* aAlert,
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (mDoNotDisturb) {
-    if (aAlertListener)
+    if (aAlertListener) {
       aAlertListener->Observe(nullptr, "alertfinished", cookie.get());
+    }
     return NS_OK;
   }
 
@@ -270,7 +270,7 @@ nsXULAlerts::ShowAlertWithIconURI(nsIAlertNotification* aAlert,
   NS_ENSURE_TRUE(scriptableOrigin, NS_ERROR_FAILURE);
 
   int32_t origin =
-      LookAndFeel::GetInt(LookAndFeel::eIntID_AlertNotificationOrigin);
+      LookAndFeel::GetInt(LookAndFeel::IntID::AlertNotificationOrigin);
   scriptableOrigin->SetData(origin);
 
   rv = argsArray->AppendElement(scriptableOrigin);
@@ -351,15 +351,16 @@ nsXULAlerts::ShowAlertWithIconURI(nsIAlertNotification* aAlert,
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<mozIDOMWindowProxy> newWindow;
-  nsAutoCString features("chrome,dialog=yes,titlebar=no,popup=yes");
+  nsAutoCString features("chrome,dialog=yes,alert=yes,titlebar=no");
   if (inPrivateBrowsing) {
     features.AppendLiteral(",private");
   }
-  rv = wwatch->OpenWindow(nullptr, ALERT_CHROME_URL, "_blank", features.get(),
-                          argsArray, getter_AddRefs(newWindow));
+  rv = wwatch->OpenWindow(
+      nullptr, "chrome://global/content/alerts/alert.xhtml"_ns, "_blank"_ns,
+      features, argsArray, getter_AddRefs(newWindow));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mNamedWindows.Put(name, newWindow);
+  mNamedWindows.InsertOrUpdate(name, newWindow);
   alertObserver->SetAlertWindow(newWindow);
 
   return NS_OK;
@@ -391,11 +392,12 @@ nsXULAlerts::SetSuppressForScreenSharing(bool aSuppress) {
 }
 
 NS_IMETHODIMP
-nsXULAlerts::CloseAlert(const nsAString& aAlertName, nsIPrincipal* aPrincipal) {
+nsXULAlerts::CloseAlert(const nsAString& aAlertName, bool aContextClosed) {
   mozIDOMWindowProxy* alert = mNamedWindows.GetWeak(aAlertName);
   if (nsCOMPtr<nsPIDOMWindowOuter> domWindow =
           nsPIDOMWindowOuter::From(alert)) {
-    domWindow->DispatchCustomEvent(NS_LITERAL_STRING("XULAlertClose"));
+    domWindow->DispatchCustomEvent(u"XULAlertClose"_ns,
+                                   ChromeOnlyDispatch::eYes);
   }
   return NS_OK;
 }

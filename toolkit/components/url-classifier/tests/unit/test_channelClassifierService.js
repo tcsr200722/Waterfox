@@ -8,13 +8,11 @@
 
 var httpserver = new HttpServer();
 
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { UrlClassifierTestUtils } = ChromeUtils.import(
-  "resource://testing-common/UrlClassifierTestUtils.jsm"
+const { NetUtil } = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
 );
-
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { UrlClassifierTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
 );
 
 const FEATURE_STP_PREF = "privacy.trackingprotection.socialtracking.enabled";
@@ -31,7 +29,7 @@ function setupChannel(uri, topUri = TOP_LEVEL_DOMAIN) {
       NetUtil.newURI(topUri),
       {}
     ),
-    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
     contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
   });
 
@@ -42,9 +40,9 @@ function setupChannel(uri, topUri = TOP_LEVEL_DOMAIN) {
   return channel;
 }
 
-function waitForBeforeBlockEvent(expected, unblock = false) {
-  return new Promise(function(resolve) {
-    let observer = function observe(aSubject, aTopic, aData) {
+function waitForBeforeBlockEvent(expected, callback) {
+  return new Promise(function (resolve) {
+    let observer = function observe(aSubject, aTopic) {
       switch (aTopic) {
         case "urlclassifier-before-block-channel":
           let channel = aSubject.QueryInterface(
@@ -61,8 +59,8 @@ function waitForBeforeBlockEvent(expected, unblock = false) {
             "verify url of blocked channel"
           );
 
-          if (unblock) {
-            channel.unblock();
+          if (callback) {
+            callback(channel);
           }
 
           service.removeListener(observer);
@@ -84,15 +82,18 @@ add_task(async function test_block_channel() {
 
   let channel = setupChannel(TRACKER_DOMAIN);
 
-  let blockPromise = waitForBeforeBlockEvent({
-    reason: Ci.nsIUrlClassifierBlockedChannel.SOCIAL_TRACKING_PROTECTION,
-    url: channel.URI.spec,
-  });
+  let blockPromise = waitForBeforeBlockEvent(
+    {
+      reason: Ci.nsIUrlClassifierBlockedChannel.SOCIAL_TRACKING_PROTECTION,
+      url: channel.URI.spec,
+    },
+    null
+  );
 
-  let openPromise = new Promise((resolve, reject) => {
+  let openPromise = new Promise(resolve => {
     channel.asyncOpen({
-      onStartRequest: (request, context) => {},
-      onDataAvailable: (request, context, stream, offset, count) => {},
+      onStartRequest: () => {},
+      onDataAvailable: () => {},
       onStopRequest: (request, status) => {
         dump("status = " + status + "\n");
         if (status == 200) {
@@ -134,20 +135,77 @@ add_task(async function test_unblock_channel() {
       reason: Ci.nsIUrlClassifierBlockedChannel.SOCIAL_TRACKING_PROTECTION,
       url: channel.URI.spec,
     },
-    true //unblock
+    ch => {
+      ch.replace();
+    }
   );
 
-  let openPromise = new Promise((resolve, reject) => {
+  let openPromise = new Promise(resolve => {
     channel.asyncOpen({
-      onStartRequest: (request, context) => {},
-      onDataAvailable: (request, context, stream, offset, count) => {},
+      onStartRequest: () => {},
+      onDataAvailable: () => {},
       onStopRequest: (request, status) => {
         if (status == Cr.NS_ERROR_SOCIALTRACKING_URI) {
           Assert.ok(false, "Classifier should not cancel this channel");
         } else {
           // This request is supposed to fail, but we need to ensure it
           // is not canceled by url-classifier
-          Assert.ok(true, "Not cancel by classifier");
+          Assert.equal(
+            status,
+            Cr.NS_ERROR_UNKNOWN_HOST,
+            "Not cancel by classifier"
+          );
+        }
+        resolve();
+      },
+    });
+  });
+
+  // wait for block event from url-classifier
+  await blockPromise;
+
+  // wait for onStopRequest callback from AsyncOpen
+  await openPromise;
+
+  // clean up
+  UrlClassifierTestUtils.cleanupTestTrackers();
+  Services.prefs.clearUserPref(FEATURE_STP_PREF);
+  httpserver.stop();
+});
+
+add_task(async function test_allow_channel() {
+  Services.prefs.setBoolPref(FEATURE_STP_PREF, true);
+  //Services.prefs.setBoolPref("network.dns.native-is-localhost", true);
+
+  await UrlClassifierTestUtils.addTestTrackers();
+
+  let channel = setupChannel(TRACKER_DOMAIN);
+
+  let blockPromise = waitForBeforeBlockEvent(
+    {
+      reason: Ci.nsIUrlClassifierBlockedChannel.SOCIAL_TRACKING_PROTECTION,
+      url: channel.URI.spec,
+    },
+    ch => {
+      ch.allow();
+    }
+  );
+
+  let openPromise = new Promise(resolve => {
+    channel.asyncOpen({
+      onStartRequest: () => {},
+      onDataAvailable: () => {},
+      onStopRequest: (request, status) => {
+        if (status == Cr.NS_ERROR_SOCIALTRACKING_URI) {
+          Assert.ok(false, "Classifier should not cancel this channel");
+        } else {
+          // This request is supposed to fail, but we need to ensure it
+          // is not canceled by url-classifier
+          Assert.equal(
+            status,
+            Cr.NS_ERROR_UNKNOWN_HOST,
+            "Not cancel by classifier"
+          );
         }
         resolve();
       },

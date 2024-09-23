@@ -1,5 +1,6 @@
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 var httpserver = null;
 var geolocation = null;
@@ -11,10 +12,10 @@ function terminate(succ) {
   geolocation.clearWatch(watchID);
 }
 
-function successCallback(pos) {
+function successCallback() {
   terminate(true);
 }
-function errorCallback(pos) {
+function errorCallback() {
   terminate(false);
 }
 
@@ -26,7 +27,7 @@ var observer = {
       Assert.ok(1);
       this._numProviders--;
       if (!this._numProviders) {
-        httpserver.stop(function() {
+        httpserver.stop(function () {
           Assert.ok(success);
           do_test_finished();
         });
@@ -73,7 +74,6 @@ function run_test() {
     "geo.provider.network.url",
     "http://localhost:" + httpserver.identity.primaryPort + "/geo"
   );
-  Services.prefs.setBoolPref("dom.testing.ignore_ipc_principal", true);
   Services.prefs.setBoolPref("geo.provider.network.scan", false);
 
   var obs = Cc["@mozilla.org/observer-service;1"].getService();

@@ -11,12 +11,12 @@
 const TEST_URIS = ["https://example1.com/", "https://example2.com/"];
 let library;
 
-add_task(async function setup() {
+add_setup(async function () {
   await PlacesTestUtils.addVisits(TEST_URIS);
 
   library = await promiseLibrary("History");
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await promiseLibraryClosed(library);
     await PlacesUtils.history.clear();
   });
@@ -43,7 +43,7 @@ add_task(async function test_bookmark_page() {
       let properties = library.document.getElementById(
         "placesContext_createBookmark"
       );
-      EventUtils.synthesizeMouseAtCenter(properties, {}, library);
+      placesContext.activateItem(properties);
     },
     async dialogWin => {
       Assert.strictEqual(
@@ -81,7 +81,7 @@ add_task(async function test_bookmark_pages() {
       let properties = library.document.getElementById(
         "placesContext_createBookmark"
       );
-      EventUtils.synthesizeMouseAtCenter(properties, {}, library);
+      placesContext.activateItem(properties);
     },
     async dialogWin => {
       Assert.strictEqual(

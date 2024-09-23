@@ -15,7 +15,12 @@ interface nsIGfxInfo : nsISupports
    */
   readonly attribute boolean D2DEnabled;
   readonly attribute boolean DWriteEnabled;
+  readonly attribute boolean EmbeddedInFirefoxReality;
+  readonly attribute AString AzureCanvasBackend;
+  readonly attribute AString AzureContentBackend;
   readonly attribute boolean usingGPUProcess;
+  readonly attribute boolean usingRemoteCanvas;
+  readonly attribute boolean usingAcceleratedCanvas;
   readonly attribute boolean hasBattery;
   readonly attribute AString DWriteVersion;
   readonly attribute AString cleartypeParameters;
@@ -24,21 +29,43 @@ interface nsIGfxInfo : nsISupports
    * These are non-Android linux-specific
    */
   readonly attribute AString windowProtocol;
-  readonly attribute AString desktopEnvironment;
+  readonly attribute AString testType;
 
   /*
    * These are valid across all platforms.
    */
   readonly attribute AString ContentBackend;
-  readonly attribute boolean WebRenderEnabled;
   readonly attribute boolean isHeadless;
-  readonly attribute boolean UsesTiling;
-  readonly attribute boolean ContentUsesTiling;
-  readonly attribute boolean OffMainThreadPaintEnabled;
-  readonly attribute long OffMainThreadPaintWorkerCount;
   readonly attribute unsigned long TargetFrameRate;
+  readonly attribute ACString CodecSupportInfo;
 
   // XXX: Switch to a list of devices, rather than explicitly numbering them.
+
+  // Present on all platforms, but only useful on Android
+  cenum FontVisibilityDeviceDetermination : 8 {
+    Unassigned = 0,
+    Unknown_Platform = 1,
+    Windows_Platform = 2,
+    MacOS_Platform = 3,
+    Android_Unknown_Release_Version = 4,
+    Android_Unknown_Peloton = 5,
+    Android_Unknown_vbox = 6,
+    Android_Unknown_mitv = 7,
+    Android_Chromebook = 8,
+    Android_Amazon = 9,
+    Android_sub_9 = 10,
+    Android_9_11 = 11,
+    Android_12_plus = 12,
+    Linux_Unknown = 13,
+    Linux_Ubuntu_any = 14,
+    Linux_Ubuntu_20 = 15,
+    Linux_Ubuntu_22 = 16,
+    Linux_Fedora_any = 17,
+    Linux_Fedora_38 = 18,
+    Linux_Fedora_39 = 19
+  };
+  readonly attribute nsIGfxInfo_FontVisibilityDeviceDetermination fontVisibilityDetermination;
+  readonly attribute AString fontVisibilityDeterminationStr;
 
   /**
    * The name of the display adapter.
@@ -76,12 +103,7 @@ interface nsIGfxInfo : nsISupports
 
   readonly attribute boolean isGPU2Active;
 
-  /**
-   * Information about display devices
-   */
-  readonly attribute Array<AString> displayInfo;
-  readonly attribute Array<unsigned long> displayWidth;
-  readonly attribute Array<unsigned long> displayHeight;
+  readonly attribute ACString drmRenderDevice;
 
   /**
    * Returns an array of objects describing each monitor. Guaranteed properties
@@ -102,6 +124,7 @@ interface nsIGfxInfo : nsISupports
    * about via GetFeatureStatus
    */
   /* Don't assign any value <= 0 */
+  /* Values must be contiguous */
   /* Whether Direct2D is supported for content rendering. */
   const long FEATURE_DIRECT2D = 1;
   /* Whether Direct3D 9 is supported for layers. */
@@ -116,8 +139,8 @@ interface nsIGfxInfo : nsISupports
   const long FEATURE_WEBGL_OPENGL = 6;
   /* Whether WebGL is supported via ANGLE (D3D9 -- does not check for the presence of ANGLE libs). */
   const long FEATURE_WEBGL_ANGLE = 7;
-  /* Whether WebGL antialiasing is supported. */
-  const long FEATURE_WEBGL_MSAA = 8;
+  /* (Unused) Whether WebGL antialiasing is supported. */
+  const long UNUSED_FEATURE_WEBGL_MSAA = 8;
   /* Whether Stagefright is supported, starting in 17. */
   const long FEATURE_STAGEFRIGHT = 9;
   /* Whether Webrtc Hardware H.264 acceleration is supported, starting in 71. */
@@ -144,22 +167,62 @@ interface nsIGfxInfo : nsISupports
   const long FEATURE_GPU_PROCESS = 20;
   /* Whether the WebGL2 is supported, starting in 54 */
   const long FEATURE_WEBGL2 = 21;
-  /* Whether Advanced Layers is supported, starting in 56 */
-  const long FEATURE_ADVANCED_LAYERS = 22;
   /* Whether D3D11 keyed mutex is supported, starting in 56 */
-  const long FEATURE_D3D11_KEYED_MUTEX = 23;
+  const long FEATURE_D3D11_KEYED_MUTEX = 22;
   /* Whether WebRender is supported, starting in 62 */
-  const long FEATURE_WEBRENDER = 24;
+  const long FEATURE_WEBRENDER = 23;
   /* Whether WebRender is supported, starting in 62 */
-  const long FEATURE_DX_NV12 = 25;
-  const long FEATURE_DX_P010 = 26;
-  const long FEATURE_DX_P016 = 27;
+  const long FEATURE_DX_NV12 = 24;
+  const long FEATURE_DX_P010 = 25;
+  const long FEATURE_DX_P016 = 26;
   /* Whether OpenGL swizzle configuration of texture units is supported, starting in 70 */
-  const long FEATURE_GL_SWIZZLE = 28;
+  const long FEATURE_GL_SWIZZLE = 27;
   /* Whether WebRender native compositor is supported, starting in 73 */
-  const long FEATURE_WEBRENDER_COMPOSITOR = 29;
+  const long FEATURE_WEBRENDER_COMPOSITOR = 28;
+  /* Whether WebRender can use scissored clears for cached surfaces, staring in 79 */
+  const long FEATURE_WEBRENDER_SCISSORED_CACHE_CLEARS = 29;
+  /* Support webgl.out-of-process: true (starting in 83) */
+  const long FEATURE_ALLOW_WEBGL_OUT_OF_PROCESS = 30;
+  /* Is OpenGL threadsafe (starting in 83) */
+  const long FEATURE_THREADSAFE_GL = 31;
+  /* Whether webrender uses pre-optimized shaders, starting in 87. */
+  const long FEATURE_WEBRENDER_OPTIMIZED_SHADERS = 32;
+  /* Whether we prefer EGL over GLX with X11, starting in 88. */
+  const long FEATURE_X11_EGL = 33;
+  /* Whether DMABUF is supported, starting in 88. */
+  const long FEATURE_DMABUF = 34;
+  /* Whether webrender caches shader program binaries to disk, starting in 89. */
+  const long FEATURE_WEBRENDER_SHADER_CACHE = 35;
+  /* Whether partial present is allowed with WebRender, starting in 98. */
+  const long FEATURE_WEBRENDER_PARTIAL_PRESENT = 36;
+  /* Whether WebGPU is supported, starting in 100. */
+  const long FEATURE_WEBGPU = 37;
+  /* Whether video overlay of hardware decoded video is supported, starting in 100. */
+  const long FEATURE_VIDEO_OVERLAY = 38;
+  /* Whether hardware decoded video zero copy is supported, starting in 101. */
+  const long FEATURE_HW_DECODED_VIDEO_ZERO_COPY = 39;
+  /* Whether DMABUF export is supported, starting in 103. */
+  const long FEATURE_DMABUF_SURFACE_EXPORT = 40;
+  /* Whether reuse decoder device is supported, starting in 104. */
+  const long FEATURE_REUSE_DECODER_DEVICE = 41;
+  /* Whether to allow backdrop filter, starting in 105. */
+  const long FEATURE_BACKDROP_FILTER = 42;
+  /* Whether to use Accelerated Canvas2D, starting in 110. */
+  const long FEATURE_ACCELERATED_CANVAS2D = 43;
+  /* Whether hardware H264 decoding is supported, starting in 114; not for downloadable blocking. */
+  const long FEATURE_H264_HW_DECODE = 44;
+  /* Whether hardware AV1 decoding is supported, starting in 114; not for downloadable blocking. */
+  const long FEATURE_AV1_HW_DECODE = 45;
+  /* Whether video overlay of software decoded video is supported, starting in 116. */
+  const long FEATURE_VIDEO_SOFTWARE_OVERLAY = 46;
+  /* Whether WebGL is allowed to use hardware rendering, otherwise software fallbacks. */
+  const long FEATURE_WEBGL_USE_HARDWARE = 47;
+  /* Whether overlay is allowed to VideoProcessor-HDR on SDR content */
+  const long FEATURE_OVERLAY_VP_AUTO_HDR = 48;
+  /* Whether overlay is allowed to VideoProcessor Super Resolution */
+  const long FEATURE_OVERLAY_VP_SUPER_RESOLUTION = 49;
   /* the maximum feature value. */
-  const long FEATURE_MAX_VALUE = FEATURE_WEBRENDER_COMPOSITOR;
+  const long FEATURE_MAX_VALUE = FEATURE_OVERLAY_VP_SUPER_RESOLUTION;
 
   /*
    * A set of return values from GetFeatureStatus
@@ -187,6 +250,8 @@ interface nsIGfxInfo : nsISupports
   const long FEATURE_ALLOW_ALWAYS = 9;
   /* This feature is safe to be on this device due to the allowlist, depending on qualified/experiment status. */
   const long FEATURE_ALLOW_QUALIFIED = 10;
+  /* This feature failed in a startup test, e.g. due to a crashing driver. */
+  const long FEATURE_BLOCKED_PLATFORM_TEST = 11;
 
   /**
    * Ask about a feature, and return the status of that feature.
@@ -205,9 +270,11 @@ interface nsIGfxInfo : nsISupports
   [noscript, notxpcom] void GetData();
 
   /**
-   * Maximum refresh rate among detected monitors. -1 if unknown.
+   * Maximum refresh rate among detected monitors. -1 if unknown. aMixed is set
+   * to true if we know there are multiple displays and they have different
+   * refresh rates, else false. The returned value is in Hz.
    */
-  [noscript, notxpcom] long GetMaxRefreshRate();
+  [noscript, notxpcom] long GetMaxRefreshRate(out boolean aMixed);
 
   [implicit_jscontext]
   jsval getInfo();
@@ -264,7 +331,7 @@ interface nsIGfxInfo : nsISupports
   //       //   "unused"      - This feature has not been requested.
   //       //   "unavailable" - OS version or restriction prevents use.
   //       //   "blocked"     - An internal condition (such as safe mode) prevents use.
-  //       //   "blacklisted" - Blocked due to a blacklist restriction.
+  //       //   "blocklisted" - Blocked due to a blocklist restriction.
   //       //   "denied"      - Blocked due to allowlist restrictions.
   //       //   "disabled"    - User explicitly disabled this default feature.
   //       //   "failed"      - Feature failed to initialize.
@@ -282,8 +349,7 @@ interface nsIGfxInfo : nsISupports
   //
   //   [
   //     {
-  //       // Type is one of "d3d11layers", "d3d9video", "glcontext",
-  //       // or "d3d11video".
+  //       // Type is one of "d3d11layers", or "glcontext".
   //       "type":        "<identifier>",
   //
   //       // Preference that must be deleted/reset to retrigger the guard.
@@ -296,6 +362,11 @@ interface nsIGfxInfo : nsISupports
   // Forces the GPU process to start or shutdown. This is intended only for
   // xpcshell-tests.
   boolean controlGPUProcessForXPCShell(in boolean aEnable);
+
+  // Kills the GPU process cleanly, without generating a crash dump.
+  // This is intended only for use by tests.
+  void killGPUProcessForTests();
+
+  // Causes the GPU process to crash. This is intended only for use by tests.
+  void crashGPUProcessForTests();
 };
-
-

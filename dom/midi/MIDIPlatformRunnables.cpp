@@ -9,12 +9,11 @@
 #include "mozilla/dom/MIDIPortParent.h"
 #include "mozilla/ipc/BackgroundParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMETHODIMP
 MIDIBackgroundRunnable::Run() {
-  AssertIsOnBackgroundThread();
+  MIDIPlatformService::AssertThread();
   if (!MIDIPlatformService::IsRunning()) {
     return NS_OK;
   }
@@ -35,7 +34,7 @@ void RemovePortRunnable::RunInternal() {
 }
 
 void SetStatusRunnable::RunInternal() {
-  MIDIPlatformService::Get()->UpdateStatus(mPortId, mState, mConnection);
+  MIDIPlatformService::Get()->UpdateStatus(mPort, mState, mConnection);
 }
 
 void SendPortListRunnable::RunInternal() {
@@ -47,5 +46,4 @@ void SendPortListRunnable::RunInternal() {
   MIDIPlatformService::Get()->SendPortList();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

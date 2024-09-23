@@ -7,14 +7,36 @@
 #ifndef mozilla_dom_RefMessageBodyService_h
 #define mozilla_dom_RefMessageBodyService_h
 
-#include "mozilla/ErrorResult.h"
-#include "mozilla/dom/StructuredCloneHolder.h"
+#include <cstdint>
+#include "js/TypeDecls.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/UniquePtr.h"
+#include "nsHashKeys.h"
+#include "nsID.h"
+#include "nsISupports.h"
 #include "nsRefPtrHashtable.h"
 
+namespace JS {
+class CloneDataPolicy;
+}  // namespace JS
+
 namespace mozilla {
+
+class ErrorResult;
+template <class T>
+class OwningNonNull;
+
 namespace dom {
+
+class MessagePort;
+template <typename T>
+class Sequence;
+
+namespace ipc {
+class StructuredCloneData;
+}
 
 /**
  * At the time a BroadcastChannel or MessagePort sends messages, we don't know
@@ -54,20 +76,28 @@ class RefMessageBody final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RefMessageBody)
 
   RefMessageBody(const nsID& aPortID,
-                 UniquePtr<ipc::StructuredCloneData>&& aCloneData)
-      : mPortID(aPortID),
-        mCloneData(std::move(aCloneData)),
-        mMaxCount(Nothing()),
-        mCount(0) {}
+                 UniquePtr<ipc::StructuredCloneData>&& aCloneData);
 
   const nsID& PortID() const { return mPortID; }
 
-  ipc::StructuredCloneData* CloneData() { return mCloneData.get(); }
+  void Read(JSContext* aCx, JS::MutableHandle<JS::Value> aValue,
+            const JS::CloneDataPolicy& aCloneDataPolicy, ErrorResult& aRv);
+
+  // This method can be called only if the RefMessageBody is not supposed to be
+  // ref-counted (see mMaxCount).
+  bool TakeTransferredPortsAsSequence(
+      Sequence<OwningNonNull<mozilla::dom::MessagePort>>& aPorts);
 
  private:
-  ~RefMessageBody() = default;
+  ~RefMessageBody();
 
   const nsID mPortID;
+
+  // In case the RefMessageBody is shared and refcounted (see mCount/mMaxCount),
+  // we must enforce that the reading does not happen simultaneously on
+  // different threads.
+  Mutex mMutex MOZ_UNANNOTATED;
+
   UniquePtr<ipc::StructuredCloneData> mCloneData;
 
   // When mCount reaches mMaxCount, this object is released by the service.
@@ -92,7 +122,7 @@ class RefMessageBodyService final {
   void SetMaxCount(const nsID& aID, uint32_t aMaxCount);
 
  private:
-  RefMessageBodyService();
+  explicit RefMessageBodyService(const StaticMutexAutoLock& aProofOfLock);
   ~RefMessageBodyService();
 
   static RefMessageBodyService* GetOrCreateInternal(

@@ -7,28 +7,39 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 const {
   connect,
-} = require("devtools/client/shared/redux/visibility-handler-connect");
+} = require("resource://devtools/client/shared/redux/visibility-handler-connect.js");
 
 // Components
-loader.lazyGetter(this, "MonitorPanel", function() {
+loader.lazyGetter(this, "AppErrorBoundary", function () {
   return createFactory(
-    require("devtools/client/netmonitor/src/components/MonitorPanel")
+    require("resource://devtools/client/shared/components/AppErrorBoundary.js")
   );
 });
-loader.lazyGetter(this, "StatisticsPanel", function() {
+loader.lazyGetter(this, "MonitorPanel", function () {
   return createFactory(
-    require("devtools/client/netmonitor/src/components/StatisticsPanel")
+    require("resource://devtools/client/netmonitor/src/components/MonitorPanel.js")
   );
 });
-loader.lazyGetter(this, "DropHarHandler", function() {
+loader.lazyGetter(this, "StatisticsPanel", function () {
   return createFactory(
-    require("devtools/client/netmonitor/src/components/DropHarHandler")
+    require("resource://devtools/client/netmonitor/src/components/StatisticsPanel.js")
   );
+});
+loader.lazyGetter(this, "DropHarHandler", function () {
+  return createFactory(
+    require("resource://devtools/client/netmonitor/src/components/DropHarHandler.js")
+  );
+});
+
+// Localized strings for (devtools/client/locales/en-US/startup.properties)
+loader.lazyGetter(this, "L10N", function () {
+  const { LocalizationHelper } = require("resource://devtools/shared/l10n.js");
+  return new LocalizationHelper("devtools/client/locales/startup.properties");
 });
 
 const { div } = dom;
@@ -49,14 +60,15 @@ class App extends Component {
       // Callback for opening split console.
       openSplitConsole: PropTypes.func,
       // Service to enable the source map feature.
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       // True if the stats panel is opened.
       statisticsOpen: PropTypes.bool.isRequired,
       // Document which settings menu will be injected to
       toolboxDoc: PropTypes.object.isRequired,
+      // Syncing blocked requests
+      addBlockedUrl: PropTypes.func,
     };
   }
-
   // Rendering
 
   render() {
@@ -65,31 +77,37 @@ class App extends Component {
       connector,
       openLink,
       openSplitConsole,
-      sourceMapService,
+      sourceMapURLService,
       statisticsOpen,
       toolboxDoc,
     } = this.props;
 
     return div(
       { className: "network-monitor" },
-      !statisticsOpen
-        ? DropHarHandler(
-            {
-              actions,
-              openSplitConsole,
-            },
-            MonitorPanel({
-              actions,
+      AppErrorBoundary(
+        {
+          componentName: "Netmonitor",
+          panel: L10N.getStr("netmonitor.label"),
+        },
+        !statisticsOpen
+          ? DropHarHandler(
+              {
+                actions,
+                openSplitConsole,
+              },
+              MonitorPanel({
+                actions,
+                connector,
+                openSplitConsole,
+                sourceMapURLService,
+                openLink,
+                toolboxDoc,
+              })
+            )
+          : StatisticsPanel({
               connector,
-              openSplitConsole,
-              sourceMapService,
-              openLink,
-              toolboxDoc,
             })
-          )
-        : StatisticsPanel({
-            connector,
-          })
+      )
     );
   }
 }

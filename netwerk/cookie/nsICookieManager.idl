@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsISupports.idl"
+#include "nsICookie.idl"
 
 %{ C++
 namespace mozilla {
@@ -12,9 +13,6 @@ class OriginAttributes;
 %}
 
 [ptr] native OriginAttributesPtr(mozilla::OriginAttributes);
-
-interface nsICookie;
-interface nsIFile;
 
 /**
  * An optional interface for accessing or removing the cookies
@@ -47,11 +45,14 @@ interface nsICookieManager : nsISupports
   readonly attribute Array<nsICookie> sessionCookies;
 
   /**
-   * Returns current effective value of the "network.cookie.cookieBehavior".
+   * Returns current effective value of the cookieBehavior. It will return the
+   * different pref according to the aIsPrivate. If aIsPrivate is true, it will
+   * return the pref "network.cookie.cookieBehavior". Otherwise, it will return
+   * the pref "network.cookie.cookieBehavior.pbmode"
    */
-  readonly attribute uint32_t cookieBehavior;
+  uint32_t getCookieBehavior(in boolean aIsPrivate);
   %{C++
-    static uint32_t GetCookieBehavior();
+    static uint32_t GetCookieBehavior(bool aIsPrivate);
   %}
 
   /**
@@ -127,7 +128,8 @@ interface nsICookieManager : nsISupports
            in boolean     aIsSession,
            in int64_t     aExpiry,
            in jsval aOriginAttributes,
-           in int32_t aSameSite);
+           in int32_t aSameSite,
+           in nsICookie_schemeType aSchemeMap);
 
   [notxpcom]
   nsresult addNative(in AUTF8String aHost,
@@ -139,7 +141,8 @@ interface nsICookieManager : nsISupports
                      in boolean     aIsSession,
                      in int64_t     aExpiry,
                      in OriginAttributesPtr aOriginAttributes,
-                     in int32_t aSameSite);
+                     in int32_t aSameSite,
+                     in nsICookie_schemeType aSchemeMap);
 
   /**
    * Find whether a given cookie already exists.
@@ -168,6 +171,27 @@ interface nsICookieManager : nsISupports
                               in ACString    aName,
                               in OriginAttributesPtr aOriginAttributes,
                               out boolean aExists);
+
+  /**
+   * Get a specific cookie by host, path, name and OriginAttributes.
+   *
+   * @param aHost
+   *        the cookie's host to look for
+   * @param aPath
+   *        the cookie's path to look for
+   * @param aName
+   *        the cookie's name to look for
+   * @param aOriginAttributes
+   *        the cookie's originAttributes to look for
+   *
+   * @return cookie matching the arguments or nullptr if not existing.
+   */
+  [notxpcom]
+  nsresult getCookieNative(in AUTF8String aHost,
+                           in AUTF8String aPath,
+                           in ACString    aName,
+                           in OriginAttributesPtr aOriginAttributes,
+                           out nsICookie aCookie);
 
   /**
    * Count how many cookies exist within the base domain of 'aHost'.

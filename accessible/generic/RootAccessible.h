@@ -17,6 +17,13 @@ class PresShell;
 
 namespace a11y {
 
+/**
+ * The node at a root of the accessibility tree. This node originated in the
+ * current process. If this is the parent process, RootAccessible is the
+ * Accessible for the top-level window. If this is a content process,
+ * RootAccessible is a top-level content document in this process, which is
+ * either a tab document or an out-of-process iframe.
+ */
 class RootAccessible : public DocAccessibleWrap, public nsIDOMEventListener {
   NS_DECL_ISUPPORTS_INHERITED
 
@@ -26,7 +33,7 @@ class RootAccessible : public DocAccessibleWrap, public nsIDOMEventListener {
   // nsIDOMEventListener
   NS_DECL_NSIDOMEVENTLISTENER
 
-  // Accessible
+  // LocalAccessible
   virtual void Shutdown() override;
   virtual mozilla::a11y::ENameValueFlag Name(nsString& aName) const override;
   virtual Relation RelationByType(RelationType aType) const override;
@@ -42,7 +49,7 @@ class RootAccessible : public DocAccessibleWrap, public nsIDOMEventListener {
   /**
    * Return the primary remote top level document if any.
    */
-  ProxyAccessible* GetPrimaryRemoteTopLevelContentDoc() const;
+  RemoteAccessible* GetPrimaryRemoteTopLevelContentDoc() const;
 
  protected:
   virtual ~RootAccessible();
@@ -61,24 +68,22 @@ class RootAccessible : public DocAccessibleWrap, public nsIDOMEventListener {
   /**
    * Process "popupshown" event. Used by HandleEvent().
    */
-  void HandlePopupShownEvent(Accessible* aAccessible);
+  void HandlePopupShownEvent(LocalAccessible* aAccessible);
 
   /*
    * Process "popuphiding" event. Used by HandleEvent().
    */
   void HandlePopupHidingEvent(nsINode* aNode);
 
-#ifdef MOZ_XUL
   void HandleTreeRowCountChangedEvent(dom::Event* aEvent,
                                       XULTreeAccessible* aAccessible);
   void HandleTreeInvalidatedEvent(dom::Event* aEvent,
                                   XULTreeAccessible* aAccessible);
 
   uint32_t GetChromeFlags() const;
-#endif
 };
 
-inline RootAccessible* Accessible::AsRoot() {
+inline RootAccessible* LocalAccessible::AsRoot() {
   return IsRoot() ? static_cast<mozilla::a11y::RootAccessible*>(this) : nullptr;
 }
 

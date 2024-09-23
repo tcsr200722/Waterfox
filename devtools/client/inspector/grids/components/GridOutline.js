@@ -4,17 +4,20 @@
 
 "use strict";
 
-const Services = require("Services");
-const { PureComponent } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { getStr } = require("devtools/client/inspector/layout/utils/l10n");
+const {
+  PureComponent,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const {
+  getStr,
+} = require("resource://devtools/client/inspector/layout/utils/l10n.js");
 const {
   getWritingModeMatrix,
   getCSSMatrixTransform,
-} = require("devtools/shared/layout/dom-matrix-2d");
+} = require("resource://devtools/shared/layout/dom-matrix-2d.js");
 
-const Types = require("devtools/client/inspector/grids/types");
+const Types = require("resource://devtools/client/inspector/grids/types.js");
 
 // The delay prior to executing the grid cell highlighting.
 const GRID_HIGHLIGHTING_DEBOUNCE = 50;
@@ -38,11 +41,15 @@ const GRID_CELL_SCALE_FACTOR = 50;
 const VIEWPORT_MIN_HEIGHT = 100;
 const VIEWPORT_MAX_HEIGHT = 150;
 
+const {
+  showGridHighlighter,
+} = require("resource://devtools/client/inspector/grids/actions/grid-highlighter.js");
+
 class GridOutline extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       grids: PropTypes.arrayOf(PropTypes.shape(Types.grid)).isRequired,
-      onShowGridOutlineHighlight: PropTypes.func.isRequired,
     };
   }
 
@@ -84,9 +91,8 @@ class GridOutline extends PureComponent {
     this.getGridAreaName = this.getGridAreaName.bind(this);
     this.getHeight = this.getHeight.bind(this);
     this.onHighlightCell = this.onHighlightCell.bind(this);
-    this.renderCannotShowOutlineText = this.renderCannotShowOutlineText.bind(
-      this
-    );
+    this.renderCannotShowOutlineText =
+      this.renderCannotShowOutlineText.bind(this);
     this.renderGrid = this.renderGrid.bind(this);
     this.renderGridCell = this.renderGridCell.bind(this);
     this.renderGridOutline = this.renderGridOutline.bind(this);
@@ -95,27 +101,40 @@ class GridOutline extends PureComponent {
   }
 
   doHighlightCell(target, hide) {
-    const { grids, onShowGridOutlineHighlight } = this.props;
+    const { dispatch, grids } = this.props;
     const name = target.dataset.gridAreaName;
     const id = target.dataset.gridId;
     const gridFragmentIndex = target.dataset.gridFragmentIndex;
     const rowNumber = target.dataset.gridRow;
     const columnNumber = target.dataset.gridColumn;
+    const nodeFront = grids[id].nodeFront;
 
-    onShowGridOutlineHighlight(grids[id].nodeFront);
-
-    if (hide) {
-      return;
-    }
-
-    onShowGridOutlineHighlight(grids[id].nodeFront, {
+    // The options object has the following properties which corresponds to the
+    // required parameters for showing the grid cell or area highlights.
+    // See devtools/server/actors/highlighters/css-grid.js
+    // {
+    //   showGridArea: String,
+    //   showGridCell: {
+    //     gridFragmentIndex: Number,
+    //     rowNumber: Number,
+    //     columnNumber: Number,
+    //   },
+    // }
+    const options = {
       showGridArea: name,
       showGridCell: {
         gridFragmentIndex,
         rowNumber,
         columnNumber,
       },
-    });
+    };
+
+    if (hide) {
+      // Reset the grid highlighter to default state; no options = hide cell/area outline.
+      dispatch(showGridHighlighter(nodeFront));
+    } else {
+      dispatch(showGridHighlighter(nodeFront, options));
+    }
   }
 
   /**
@@ -325,7 +344,7 @@ class GridOutline extends PureComponent {
     );
   }
 
-  renderGridOutlineBorder(borderWidth, borderHeight, color) {
+  renderGridOutlineBorder(borderWidth, borderHeight) {
     return dom.rect({
       key: "border",
       className: "grid-outline-border",

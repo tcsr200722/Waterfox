@@ -1,3 +1,4 @@
+// |reftest| shell-option(--enable-float16array)
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -11,11 +12,10 @@ info: |
     a. Let numericIndex be ! CanonicalNumericIndexString(P).
     b. If numericIndex is not undefined, then
       ...
-      vi. If numericIndex ≥ the value of O's [[ArrayLength]] internal slot,
-      return false.
+      iii. If ! IsValidIntegerIndex(O, numericIndex) is false, return false.
   ...
 includes: [testTypedArray.js]
-features: [Reflect, TypedArray]
+features: [align-detached-buffer-semantics-with-web-reality, Reflect, TypedArray]
 ---*/
 
 // Prevents false positives using OrdinaryHasProperty
@@ -24,7 +24,7 @@ TypedArray.prototype[1] = "test262";
 testWithTypedArrayConstructors(function(TA) {
   var sample = new TA(1);
 
-  assert.sameValue(Reflect.has(sample, "1"), false, "1");
+  assert.sameValue(Reflect.has(sample, "1"), false, 'Reflect.has(sample, "1") must return false');
 });
 
 reportCompare(0, 0);

@@ -11,6 +11,15 @@
 
 // Globals
 
+const { TelemetryTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TelemetryTestUtils.sys.mjs"
+);
+
+Services.prefs.setBoolPref(
+  "toolkit.telemetry.testing.overrideProductsCheck",
+  true
+);
+
 /**
  * Returns a Date in the past usable to add expirable visits.
  *
@@ -310,10 +319,10 @@ add_task(async function test_history_expiration() {
   let downloadOne = await promiseNewDownload();
   let downloadTwo = await promiseNewDownload(httpUrl("interruptible.txt"));
 
-  let deferred = Promise.defer();
+  let deferred = Promise.withResolvers();
   let removeNotifications = 0;
   let downloadView = {
-    onDownloadRemoved(aDownload) {
+    onDownloadRemoved() {
       if (++removeNotifications == 2) {
         deferred.resolve();
       }
@@ -357,10 +366,10 @@ add_task(async function test_history_clear() {
   await list.add(downloadOne);
   await list.add(downloadTwo);
 
-  let deferred = Promise.defer();
+  let deferred = Promise.withResolvers();
   let removeNotifications = 0;
   let downloadView = {
-    onDownloadRemoved(aDownload) {
+    onDownloadRemoved() {
       if (++removeNotifications == 2) {
         deferred.resolve();
       }
@@ -392,7 +401,7 @@ add_task(async function test_removeFinished() {
   await list.add(downloadThree);
   await list.add(downloadFour);
 
-  let deferred = Promise.defer();
+  let deferred = Promise.withResolvers();
   let removeNotifications = 0;
   let downloadView = {
     onDownloadRemoved(aDownload) {
@@ -422,6 +431,59 @@ add_task(async function test_removeFinished() {
 
   let downloads = await list.getAll();
   Assert.equal(downloads.length, 1);
+});
+
+/**
+ * Tests that removeFinished method keeps the file that is currently downloading,
+ * even if it needs to remove failed download of the same file.
+ */
+add_task(async function test_removeFinished_keepsDownloadingFile() {
+  let targetFile = getTempFile(TEST_TARGET_FILE_NAME);
+
+  let oneDownload = await Downloads.createDownload({
+    source: httpUrl("empty.txt"),
+    target: targetFile.path,
+  });
+
+  let otherDownload = await Downloads.createDownload({
+    source: httpUrl("empty.txt"),
+    target: targetFile.path,
+  });
+
+  let list = await promiseNewList();
+  await list.add(oneDownload);
+  await list.add(otherDownload);
+
+  let deferred = Promise.withResolvers();
+  let downloadView = {
+    async onDownloadRemoved(aDownload) {
+      Assert.equal(aDownload, oneDownload);
+      await TestUtils.waitForCondition(() => oneDownload._finalizeExecuted);
+      deferred.resolve();
+    },
+  };
+  await list.addView(downloadView);
+
+  await oneDownload.start();
+  await otherDownload.start();
+
+  oneDownload.hasPartialData = otherDownload.hasPartialData = true;
+  oneDownload.error = "Download failed";
+
+  list.removeFinished();
+  await deferred.promise;
+
+  let downloads = await list.getAll();
+  Assert.equal(
+    downloads.length,
+    1,
+    "Failed download should be removed, active download should be kept"
+  );
+
+  Assert.ok(
+    await IOUtils.exists(otherDownload.target.path),
+    "The file should not have been deleted."
+  );
 });
 
 /**
@@ -583,4 +645,33 @@ add_task(async function test_DownloadSummary_notifications() {
   });
   await download.start();
   Assert.ok(receivedOnSummaryChanged);
+});
+
+/**
+ * Tests that if a new download is added, telemetry records the event and type of the file.
+ */
+add_task(async function test_downloadAddedTelemetry() {
+  Services.telemetry.clearEvents();
+  Services.telemetry.setEventRecordingEnabled("downloads", true);
+
+  let targetFile = getTempFile(TEST_TARGET_FILE_NAME);
+
+  let download = await Downloads.createDownload({
+    source: httpUrl("empty.txt"),
+    target: targetFile.path,
+  });
+
+  let list = await Downloads.getList(Downloads.ALL);
+  await list.add(download);
+  download.start();
+  await promiseDownloadFinished(download);
+
+  TelemetryTestUtils.assertEvents([
+    {
+      category: "downloads",
+      method: "added",
+      object: "fileExtension",
+      value: "txt",
+    },
+  ]);
 });

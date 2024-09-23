@@ -1,11 +1,11 @@
 "use strict";
 
-var { WebRequest } = ChromeUtils.import(
-  "resource://gre/modules/WebRequest.jsm"
+var { WebRequest } = ChromeUtils.importESModule(
+  "resource://gre/modules/WebRequest.sys.mjs"
 );
 
-var { ExtensionParent } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionParent.jsm"
+var { ExtensionParent } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionParent.sys.mjs"
 );
 
 const server = createHttpServer({ hosts: ["example.com"] });
@@ -75,7 +75,7 @@ function onResponseStarted(details) {
 }
 
 add_task(async function setup() {
-  // When WebRequest.jsm is used directly instead of through ext-webRequest.js,
+  // When WebRequest.sys.mjs is used directly instead of through ext-webRequest.js,
   // ExtensionParent.apiManager is not automatically initialized. Do it here.
   await ExtensionParent.apiManager.lazyInit();
 });

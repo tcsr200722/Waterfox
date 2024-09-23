@@ -1,32 +1,15 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-// Note: All tests in this directory are expected to have a runTests function
-// which TestRunner will use.
-/* global runTests */
-
-var tmp = {};
-ChromeUtils.import("resource://gre/modules/PageThumbs.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/BackgroundPageThumbs.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/NewTabUtils.jsm", tmp);
-ChromeUtils.import("resource:///modules/sessionstore/SessionStore.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/FileUtils.jsm", tmp);
-ChromeUtils.import("resource://gre/modules/osfile.jsm", tmp);
-var {
-  PageThumbs,
-  BackgroundPageThumbs,
-  NewTabUtils,
-  PageThumbsStorage,
-  SessionStore,
-  FileUtils,
-  OS,
-} = tmp;
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesTestUtils",
-  "resource://testing-common/PlacesTestUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  BackgroundPageThumbs: "resource://gre/modules/BackgroundPageThumbs.sys.mjs",
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
+  PageThumbs: "resource://gre/modules/PageThumbs.sys.mjs",
+  PageThumbsStorage: "resource://gre/modules/PageThumbs.sys.mjs",
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -40,7 +23,7 @@ var oldEnabledPref = Services.prefs.getBoolPref(
 );
 Services.prefs.setBoolPref("browser.pagethumbnails.capturing_disabled", false);
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   while (gBrowser.tabs.length > 1) {
     gBrowser.removeTab(gBrowser.tabs[1]);
   }
@@ -179,7 +162,7 @@ function dontExpireThumbnailURLs(aURLs) {
   let dontExpireURLs = cb => cb(aURLs);
   PageThumbs.addExpirationFilter(dontExpireURLs);
 
-  registerCleanupFunction(function() {
+  registerCleanupFunction(function () {
     PageThumbs.removeExpirationFilter(dontExpireURLs);
   });
 }
@@ -233,7 +216,6 @@ function bgTestPageURL(aOpts = {}) {
 function bgAddPageThumbObserver(url) {
   return new Promise((resolve, reject) => {
     function observe(subject, topic, data) {
-      // jshint ignore:line
       if (data === url) {
         switch (topic) {
           case "page-thumbnail:create":

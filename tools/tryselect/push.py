@@ -2,21 +2,23 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, print_function
 
 import json
 import os
 import sys
+import traceback
 
 import six
-from mozboot.util import get_state_dir
+from mach.util import get_state_dir
 from mozbuild.base import MozbuildObject
-from mozversioncontrol import get_repository_object, MissingVCSExtension
+from mozversioncontrol import MissingVCSExtension, get_repository_object
+
+from .lando import push_to_lando_try
+from .util.estimates import duration_summary
 from .util.manage_estimates import (
     download_task_history_data,
-    make_trimmed_taskgraph_cache
+    make_trimmed_taskgraph_cache,
 )
-from .util.estimates import duration_summary
 
 GIT_CINNABAR_NOT_FOUND = """
 Could not detect `git-cinnabar`.
@@ -50,14 +52,16 @@ here = os.path.abspath(os.path.dirname(__file__))
 build = MozbuildObject.from_environment(cwd=here)
 vcs = get_repository_object(build.topsrcdir)
 
-history_path = os.path.join(get_state_dir(srcdir=True), 'history', 'try_task_configs.json')
+history_path = os.path.join(
+    get_state_dir(specific_to_topsrcdir=True), "history", "try_task_configs.json"
+)
 
 
 def write_task_config(try_task_config):
-    config_path = os.path.join(vcs.path, 'try_task_config.json')
-    with open(config_path, 'w') as fh:
-        json.dump(try_task_config, fh, indent=4, separators=(',', ': '), sort_keys=True)
-        fh.write('\n')
+    config_path = os.path.join(vcs.path, "try_task_config.json")
+    with open(config_path, "w") as fh:
+        json.dump(try_task_config, fh, indent=4, separators=(",", ": "), sort_keys=True)
+        fh.write("\n")
     return config_path
 
 
@@ -67,13 +71,13 @@ def write_task_config_history(msg, try_task_config):
             os.makedirs(os.path.dirname(history_path))
         history = []
     else:
-        with open(history_path, 'r') as fh:
+        with open(history_path) as fh:
             history = fh.read().strip().splitlines()
 
     history.insert(0, json.dumps([msg, try_task_config]))
     history = history[:MAX_HISTORY]
-    with open(history_path, 'w') as fh:
-        fh.write('\n'.join(history))
+    with open(history_path, "w") as fh:
+        fh.write("\n".join(history))
 
 
 def check_working_directory(push=True):
@@ -85,25 +89,55 @@ def check_working_directory(push=True):
         sys.exit(1)
 
 
-def generate_try_task_config(method, labels, try_config=None, routes=None):
-    try_task_config = try_config or {}
-    try_task_config.setdefault('env', {})['TRY_SELECTOR'] = method
-    try_task_config.update({
-        'version': 1,
-        'tasks': sorted(labels),
-    })
-    if routes:
-        try_task_config["routes"] = routes
+def generate_try_task_config(method, labels, params=None, routes=None):
+    params = params or {}
 
+    # The user has explicitly requested a set of jobs, so run them all
+    # regardless of optimization (unless the selector explicitly sets this to
+    # True). Their dependencies can be optimized though.
+    params.setdefault("optimize_target_tasks", False)
+
+    # Remove selected labels from 'existing_tasks' parameter if present
+    if "existing_tasks" in params:
+        params["existing_tasks"] = {
+            label: tid
+            for label, tid in params["existing_tasks"].items()
+            if label not in labels
+        }
+
+    try_config = params.setdefault("try_task_config", {})
+    try_config.setdefault("env", {})["TRY_SELECTOR"] = method
+
+    try_config["tasks"] = sorted(labels)
+
+    if routes:
+        try_config["routes"] = routes
+
+    try_task_config = {"version": 2, "parameters": params}
     return try_task_config
 
 
 def task_labels_from_try_config(try_task_config):
-    return try_task_config.get("tasks", list())
+    if try_task_config["version"] == 2:
+        parameters = try_task_config.get("parameters", {})
+        if "try_task_config" in parameters:
+            return parameters["try_task_config"].get("tasks")
+        else:
+            return None
+    elif try_task_config["version"] == 1:
+        return try_task_config.get("tasks", list())
+    else:
+        return None
 
 
 def display_push_estimates(try_task_config):
-    cache_dir = os.path.join(get_state_dir(srcdir=True), 'cache', 'taskgraph')
+    task_labels = task_labels_from_try_config(try_task_config)
+    if task_labels is None:
+        return
+
+    cache_dir = os.path.join(
+        get_state_dir(specific_to_topsrcdir=True), "cache", "taskgraph"
+    )
 
     graph_cache = None
     dep_cache = None
@@ -121,48 +155,93 @@ def display_push_estimates(try_task_config):
     download_task_history_data(cache_dir=cache_dir)
     make_trimmed_taskgraph_cache(graph_cache, dep_cache, target_file=target_file)
 
-    durations = duration_summary(
-        dep_cache, task_labels_from_try_config(try_task_config), cache_dir)
+    durations = duration_summary(dep_cache, task_labels, cache_dir)
 
-    print("estimates: Runs {} tasks ({} selected, {} dependencies)".format(
-        durations["dependency_count"] + durations["selected_count"],
-        durations["selected_count"],
-        durations["dependency_count"])
+    print(
+        "estimates: Runs {} tasks ({} selected, {} dependencies)".format(
+            durations["dependency_count"] + durations["selected_count"],
+            durations["selected_count"],
+            durations["dependency_count"],
+        )
     )
-    print("estimates: Total task duration {}".format(
-        durations["dependency_duration"] + durations["selected_duration"]
-    ))
-    print("estimates: In the {}% percentile".format(durations["quantile"]))
-    print("estimates: Should take about {} (Finished around {})".format(
-        durations["wall_duration_seconds"],
-        durations["eta_datetime"].strftime("%Y-%m-%d %H:%M"))
+    print(
+        "estimates: Total task duration {}".format(
+            durations["dependency_duration"] + durations["selected_duration"]
+        )
+    )
+    if "percentile" in durations:
+        percentile = durations["percentile"]
+        if percentile > 50:
+            print("estimates: In the longest {}% of durations".format(100 - percentile))
+        else:
+            print("estimates: In the shortest {}% of durations".format(percentile))
+    print(
+        "estimates: Should take about {} (Finished around {})".format(
+            durations["wall_duration_seconds"],
+            durations["eta_datetime"].strftime("%Y-%m-%d %H:%M"),
+        )
     )
 
 
-def push_to_try(method, msg, try_task_config=None,
-                push=True, closed_tree=False, files_to_change=None):
+# improves on `" ".join(sys.argv[:])` by requoting argv items containing spaces or single quotes
+def get_sys_argv(injected_argv=None):
+    argv_to_use = injected_argv or sys.argv[:]
+
+    formatted_argv = []
+    for item in argv_to_use:
+        if " " in item or "'" in item:
+            formatted_item = f'"{item}"'
+        else:
+            formatted_item = item
+        formatted_argv.append(formatted_item)
+
+    return " ".join(formatted_argv)
+
+
+def push_to_try(
+    method,
+    msg,
+    try_task_config=None,
+    stage_changes=False,
+    dry_run=False,
+    closed_tree=False,
+    files_to_change=None,
+    allow_log_capture=False,
+    push_to_lando=False,
+):
+    push = not stage_changes and not dry_run
     check_working_directory(push)
 
-    if try_task_config and method not in ('auto', 'empty', 'release'):
-        display_push_estimates(try_task_config)
+    if try_task_config and method not in ("auto", "empty"):
+        try:
+            display_push_estimates(try_task_config)
+        except Exception:
+            traceback.print_exc()
+            print("warning: unable to display push estimates")
 
     # Format the commit message
     closed_tree_string = " ON A CLOSED TREE" if closed_tree else ""
-    commit_message = ('%s%s\n\nPushed via `mach try %s`' %
-                      (msg, closed_tree_string, method))
+    the_cmdline = get_sys_argv()
+    full_commandline_entry = f"mach try command: `{the_cmdline}`"
+    commit_message = "{}{}\n\n{}\n\nPushed via `mach try {}`".format(
+        msg,
+        closed_tree_string,
+        full_commandline_entry,
+        method,
+    )
 
     config_path = None
     changed_files = []
     if try_task_config:
-        if push and method not in ('again', 'auto', 'empty'):
+        if push and method not in ("again", "auto", "empty"):
             write_task_config_history(msg, try_task_config)
         config_path = write_task_config(try_task_config)
         changed_files.append(config_path)
 
-    if files_to_change:
+    if (push or stage_changes) and files_to_change:
         for path, content in files_to_change.items():
             path = os.path.join(vcs.path, path)
-            with open(path, 'wb') as fh:
+            with open(path, "wb") as fh:
                 fh.write(six.ensure_binary(content))
             changed_files.append(path)
 
@@ -179,11 +258,14 @@ def push_to_try(method, msg, try_task_config=None,
         vcs.add_remove_files(*changed_files)
 
         try:
-            vcs.push_to_try(commit_message)
+            if push_to_lando:
+                push_to_lando_try(vcs, commit_message)
+            else:
+                vcs.push_to_try(commit_message, allow_log_capture=allow_log_capture)
         except MissingVCSExtension as e:
-            if e.ext == 'push-to-try':
+            if e.ext == "push-to-try":
                 print(HG_PUSH_TO_TRY_NOT_FOUND)
-            elif e.ext == 'cinnabar':
+            elif e.ext == "cinnabar":
                 print(GIT_CINNABAR_NOT_FOUND)
             else:
                 raise

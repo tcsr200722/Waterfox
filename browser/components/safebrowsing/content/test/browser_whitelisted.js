@@ -4,7 +4,7 @@ const PREF_WHITELISTED_HOSTNAMES = "urlclassifier.skipHostnames";
 const TEST_PAGE = "http://www.itisatrap.org/firefox/its-an-attack.html";
 var tabbrowser = null;
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   tabbrowser = null;
   Services.prefs.clearUserPref(PREF_WHITELISTED_HOSTNAMES);
   while (gBrowser.tabs.length > 1) {
@@ -12,7 +12,7 @@ registerCleanupFunction(function() {
   }
 });
 
-function testBlockedPage(window) {
+function testBlockedPage() {
   info("Non-whitelisted pages must be blocked");
   ok(true, "about:blocked was shown");
 }

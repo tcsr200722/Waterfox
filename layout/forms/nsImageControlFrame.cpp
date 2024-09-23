@@ -12,7 +12,6 @@
 #include "nsPresContext.h"
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
-#include "nsCheckboxRadioFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsIContent.h"
 
@@ -25,7 +24,6 @@ class nsImageControlFrame final : public nsImageFrame,
                                nsPresContext* aPresContext);
   ~nsImageControlFrame() final;
 
-  void DestroyFrom(nsIFrame* aDestructRoot, PostDestroyData&) final;
   void Init(nsIContent* aContent, nsContainerFrame* aParent,
             nsIFrame* aPrevInFlow) final;
 
@@ -43,11 +41,11 @@ class nsImageControlFrame final : public nsImageFrame,
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const final {
-    return MakeFrameName(NS_LITERAL_STRING("ImageControl"), aResult);
+    return MakeFrameName(u"ImageControl"_ns, aResult);
   }
 #endif
 
-  Maybe<Cursor> GetCursor(const nsPoint&) final;
+  Cursor GetCursor(const nsPoint&) final;
 
   // nsIFormContromFrame
   void SetFocus(bool aOn, bool aRepaint) final;
@@ -59,14 +57,6 @@ nsImageControlFrame::nsImageControlFrame(ComputedStyle* aStyle,
     : nsImageFrame(aStyle, aPresContext, kClassID) {}
 
 nsImageControlFrame::~nsImageControlFrame() = default;
-
-void nsImageControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
-                                      PostDestroyData& aPostDestroyData) {
-  if (!GetPrevInFlow()) {
-    nsCheckboxRadioFrame::RegUnRegAccessKey(this, false);
-  }
-  nsImageFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
-}
 
 nsIFrame* NS_NewImageControlFrame(PresShell* aPresShell,
                                   ComputedStyle* aStyle) {
@@ -84,8 +74,8 @@ void nsImageControlFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
     return;
   }
 
-  mContent->SetProperty(nsGkAtoms::imageClickedPoint, new nsIntPoint(0, 0),
-                        nsINode::DeleteProperty<nsIntPoint>);
+  mContent->SetProperty(nsGkAtoms::imageClickedPoint, new CSSIntPoint(0, 0),
+                        nsINode::DeleteProperty<CSSIntPoint>);
 }
 
 NS_QUERYFRAME_HEAD(nsImageControlFrame)
@@ -107,11 +97,7 @@ void nsImageControlFrame::Reflow(nsPresContext* aPresContext,
                                  const ReflowInput& aReflowInput,
                                  nsReflowStatus& aStatus) {
   DO_GLOBAL_REFLOW_COUNT("nsImageControlFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
-  if (!GetPrevInFlow() && (mState & NS_FRAME_FIRST_REFLOW)) {
-    nsCheckboxRadioFrame::RegUnRegAccessKey(this, true);
-  }
   return nsImageFrame::Reflow(aPresContext, aDesiredSize, aReflowInput,
                               aStatus);
 }
@@ -127,22 +113,22 @@ nsresult nsImageControlFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
   if (IsContentDisabled()) {
-    return nsFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+    return nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
   }
 
   *aEventStatus = nsEventStatus_eIgnore;
 
   if (aEvent->mMessage == eMouseUp &&
-      aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+      aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
     // Store click point for HTMLInputElement::SubmitNamesValues
     // Do this on MouseUp because the specs don't say and that's what IE does
-    nsIntPoint* lastClickPoint = static_cast<nsIntPoint*>(
+    auto* lastClickedPoint = static_cast<CSSIntPoint*>(
         mContent->GetProperty(nsGkAtoms::imageClickedPoint));
-    if (lastClickPoint) {
+    if (lastClickedPoint) {
       // normally lastClickedPoint is not null, as it's allocated in Init()
       nsPoint pt = nsLayoutUtils::GetEventCoordinatesRelativeTo(
           aEvent, RelativeTo{this});
-      TranslateEventCoords(pt, *lastClickPoint);
+      *lastClickedPoint = TranslateEventCoords(pt);
     }
   }
   return nsImageFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
@@ -150,12 +136,12 @@ nsresult nsImageControlFrame::HandleEvent(nsPresContext* aPresContext,
 
 void nsImageControlFrame::SetFocus(bool aOn, bool aRepaint) {}
 
-Maybe<nsIFrame::Cursor> nsImageControlFrame::GetCursor(const nsPoint&) {
-  StyleCursorKind kind = StyleUI()->mCursor.keyword;
+nsIFrame::Cursor nsImageControlFrame::GetCursor(const nsPoint&) {
+  StyleCursorKind kind = StyleUI()->Cursor().keyword;
   if (kind == StyleCursorKind::Auto) {
     kind = StyleCursorKind::Pointer;
   }
-  return Some(Cursor{kind, AllowCustomCursorImage::Yes});
+  return Cursor{kind, AllowCustomCursorImage::Yes};
 }
 
 nsresult nsImageControlFrame::SetFormProperty(nsAtom* aName,

@@ -6,35 +6,70 @@
 
 #include "WorkerError.h"
 
+#include <stdio.h>
+#include <algorithm>
+#include <utility>
+#include "MainThreadUtils.h"
+#include "WorkerPrivate.h"
+#include "WorkerRunnable.h"
+#include "WorkerScope.h"
+#include "js/ComparisonOperators.h"
+#include "js/UniquePtr.h"
+#include "js/friend/ErrorMessages.h"
+#include "jsapi.h"
+#include "mozilla/ArrayAlgorithm.h"
+#include "mozilla/ArrayIterator.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/BasicEvents.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/EventDispatcher.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Span.h"
+#include "mozilla/ThreadSafeWeakPtr.h"
+#include "mozilla/Unused.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ErrorEvent.h"
 #include "mozilla/dom/ErrorEventBinding.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/EventBinding.h"
+#include "mozilla/dom/EventTarget.h"
 #include "mozilla/dom/RemoteWorkerChild.h"
+#include "mozilla/dom/RemoteWorkerTypes.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/dom/SimpleGlobalObject.h"
+#include "mozilla/dom/Worker.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerDebuggerGlobalScopeBinding.h"
 #include "mozilla/dom/WorkerGlobalScopeBinding.h"
-#include "mozilla/EventDispatcher.h"
+#include "mozilla/fallible.h"
+#include "nsCOMPtr.h"
+#include "nsDebug.h"
 #include "nsGlobalWindowInner.h"
 #include "nsIConsoleService.h"
+#include "nsIScriptError.h"
 #include "nsScriptError.h"
-#include "WorkerRunnable.h"
-#include "WorkerPrivate.h"
-#include "WorkerScope.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
+#include "nsWrapperCacheInlines.h"
+#include "nscore.h"
+#include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
-class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
+class ReportErrorRunnable final : public WorkerParentDebuggeeRunnable {
   UniquePtr<WorkerErrorReport> mReport;
 
  public:
   ReportErrorRunnable(WorkerPrivate* aWorkerPrivate,
                       UniquePtr<WorkerErrorReport> aReport)
-      : WorkerDebuggeeRunnable(aWorkerPrivate), mReport(std::move(aReport)) {}
+      : WorkerParentDebuggeeRunnable("ReportErrorRunnable"),
+        mReport(std::move(aReport)) {}
 
  private:
   virtual void PostDispatch(WorkerPrivate* aWorkerPrivate,
@@ -58,18 +93,6 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
     } else {
       AssertIsOnMainThread();
 
-      // Once a window has frozen its workers, their
-      // mMainThreadDebuggeeEventTargets should be paused, and their
-      // WorkerDebuggeeRunnables should not be being executed. The same goes for
-      // WorkerDebuggeeRunnables sent from child to parent workers, but since a
-      // frozen parent worker runs only control runnables anyway, that is taken
-      // care of naturally.
-      MOZ_ASSERT(!aWorkerPrivate->IsFrozen());
-
-      // Similarly for paused windows; all its workers should have been
-      // informed. (Subworkers are unaffected by paused windows.)
-      MOZ_ASSERT(!aWorkerPrivate->IsParentWindowPaused());
-
       if (aWorkerPrivate->IsSharedWorker()) {
         aWorkerPrivate->GetRemoteWorkerController()
             ->ErrorPropagationOnMainThread(mReport.get(),
@@ -81,26 +104,13 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
       // worker error reporting will crash.  Instead, pass the error to
       // the ServiceWorkerManager to report on any controlled documents.
       if (aWorkerPrivate->IsServiceWorker()) {
-        if (ServiceWorkerParentInterceptEnabled()) {
-          RefPtr<RemoteWorkerChild> actor(
-              aWorkerPrivate->GetRemoteWorkerControllerWeakRef());
+        RefPtr<RemoteWorkerChild> actor(
+            aWorkerPrivate->GetRemoteWorkerController());
 
-          Unused << NS_WARN_IF(!actor);
+        Unused << NS_WARN_IF(!actor);
 
-          if (actor) {
-            actor->ErrorPropagationOnMainThread(nullptr, false);
-          }
-
-        } else {
-          RefPtr<ServiceWorkerManager> swm =
-              ServiceWorkerManager::GetInstance();
-          if (swm) {
-            swm->HandleError(aCx, aWorkerPrivate->GetPrincipal(),
-                             aWorkerPrivate->ServiceWorkerScope(),
-                             aWorkerPrivate->ScriptURL(), EmptyString(),
-                             EmptyString(), EmptyString(), 0, 0,
-                             nsIScriptError::errorFlag, JSEXN_ERR);
-          }
+        if (actor) {
+          actor->ErrorPropagationOnMainThread(nullptr, false);
         }
 
         return true;
@@ -128,7 +138,7 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
   }
 };
 
-class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
+class ReportGenericErrorRunnable final : public WorkerParentDebuggeeRunnable {
  public:
   static void CreateAndDispatch(WorkerPrivate* aWorkerPrivate) {
     MOZ_ASSERT(aWorkerPrivate);
@@ -136,12 +146,12 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 
     RefPtr<ReportGenericErrorRunnable> runnable =
         new ReportGenericErrorRunnable(aWorkerPrivate);
-    runnable->Dispatch();
+    runnable->Dispatch(aWorkerPrivate);
   }
 
  private:
   explicit ReportGenericErrorRunnable(WorkerPrivate* aWorkerPrivate)
-      : WorkerDebuggeeRunnable(aWorkerPrivate) {
+      : WorkerParentDebuggeeRunnable("ReportGenericErrorRunnable") {
     aWorkerPrivate->AssertIsOnWorkerThread();
   }
 
@@ -154,17 +164,9 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
   }
 
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
-    // Once a window has frozen its workers, their
-    // mMainThreadDebuggeeEventTargets should be paused, and their
-    // WorkerDebuggeeRunnables should not be being executed. The same goes for
-    // WorkerDebuggeeRunnables sent from child to parent workers, but since a
-    // frozen parent worker runs only control runnables anyway, that is taken
-    // care of naturally.
-    MOZ_ASSERT(!aWorkerPrivate->IsFrozen());
-
-    // Similarly for paused windows; all its workers should have been informed.
-    // (Subworkers are unaffected by paused windows.)
-    MOZ_ASSERT(!aWorkerPrivate->IsParentWindowPaused());
+    if (!aWorkerPrivate->IsAcceptingEvents()) {
+      return true;
+    }
 
     if (aWorkerPrivate->IsSharedWorker()) {
       aWorkerPrivate->GetRemoteWorkerController()->ErrorPropagationOnMainThread(
@@ -173,38 +175,22 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
     }
 
     if (aWorkerPrivate->IsServiceWorker()) {
-      if (ServiceWorkerParentInterceptEnabled()) {
-        RefPtr<RemoteWorkerChild> actor(
-            aWorkerPrivate->GetRemoteWorkerControllerWeakRef());
+      RefPtr<RemoteWorkerChild> actor(
+          aWorkerPrivate->GetRemoteWorkerController());
 
-        Unused << NS_WARN_IF(!actor);
+      Unused << NS_WARN_IF(!actor);
 
-        if (actor) {
-          actor->ErrorPropagationOnMainThread(nullptr, false);
-        }
-
-      } else {
-        RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
-        if (swm) {
-          swm->HandleError(aCx, aWorkerPrivate->GetPrincipal(),
-                           aWorkerPrivate->ServiceWorkerScope(),
-                           aWorkerPrivate->ScriptURL(), EmptyString(),
-                           EmptyString(), EmptyString(), 0, 0,
-                           nsIScriptError::errorFlag, JSEXN_ERR);
-        }
+      if (actor) {
+        actor->ErrorPropagationOnMainThread(nullptr, false);
       }
 
       return true;
     }
 
-    if (!aWorkerPrivate->IsAcceptingEvents()) {
-      return true;
-    }
-
     RefPtr<mozilla::dom::EventTarget> parentEventTarget =
         aWorkerPrivate->ParentEventTargetRef();
-    RefPtr<Event> event = Event::Constructor(
-        parentEventTarget, NS_LITERAL_STRING("error"), EventInit());
+    RefPtr<Event> event =
+        Event::Constructor(parentEventTarget, u"error"_ns, EventInit());
     event->SetTrusted(true);
 
     parentEventTarget->DispatchEvent(*event);
@@ -215,9 +201,9 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 }  // namespace
 
 void WorkerErrorBase::AssignErrorBase(JSErrorBase* aReport) {
-  mFilename = NS_ConvertUTF8toUTF16(aReport->filename);
+  CopyUTF8toUTF16(MakeStringSpan(aReport->filename.c_str()), mFilename);
   mLineNumber = aReport->lineno;
-  mColumnNumber = aReport->column;
+  mColumnNumber = aReport->column.oneOriginValue();
   mErrorNumber = aReport->errorNumber;
 }
 
@@ -278,6 +264,7 @@ void WorkerErrorReport::ReportError(
       init.mMessage = aReport->mMessage;
       init.mFilename = aReport->mFilename;
       init.mLineno = aReport->mLineNumber;
+      init.mColno = aReport->mColumnNumber;
       init.mError = aException;
     }
 
@@ -286,7 +273,7 @@ void WorkerErrorReport::ReportError(
 
     if (aTarget) {
       RefPtr<ErrorEvent> event =
-          ErrorEvent::Constructor(aTarget, NS_LITERAL_STRING("error"), init);
+          ErrorEvent::Constructor(aTarget, u"error"_ns, init);
       event->SetTrusted(true);
 
       bool defaultActionEnabled =
@@ -311,7 +298,7 @@ void WorkerErrorReport::ReportError(
       nsEventStatus status = nsEventStatus_eIgnore;
 
       if (aWorkerPrivate) {
-        WorkerGlobalScope* globalScope = nullptr;
+        RefPtr<WorkerGlobalScope> globalScope;
         UNWRAP_OBJECT(WorkerGlobalScope, &global, globalScope);
 
         if (!globalScope) {
@@ -339,11 +326,11 @@ void WorkerErrorReport::ReportError(
         MOZ_ASSERT(globalScope->GetWrapperPreserveColor() == global);
 
         RefPtr<ErrorEvent> event =
-            ErrorEvent::Constructor(aTarget, NS_LITERAL_STRING("error"), init);
+            ErrorEvent::Constructor(aTarget, u"error"_ns, init);
         event->SetTrusted(true);
 
         if (NS_FAILED(EventDispatcher::DispatchDOMEvent(
-                ToSupports(globalScope), nullptr, event, nullptr, &status))) {
+                globalScope, nullptr, event, nullptr, &status))) {
           NS_WARNING("Failed to dispatch worker thread error event!");
           status = nsEventStatus_eIgnore;
         }
@@ -367,7 +354,7 @@ void WorkerErrorReport::ReportError(
   if (aWorkerPrivate) {
     RefPtr<ReportErrorRunnable> runnable =
         new ReportErrorRunnable(aWorkerPrivate, std::move(aReport));
-    runnable->Dispatch();
+    runnable->Dispatch(aWorkerPrivate);
     return;
   }
 
@@ -379,27 +366,24 @@ void WorkerErrorReport::ReportError(
 void WorkerErrorReport::LogErrorToConsole(JSContext* aCx,
                                           WorkerErrorReport& aReport,
                                           uint64_t aInnerWindowId) {
-  nsTArray<ErrorDataNote> notes;
-  for (size_t i = 0, len = aReport.mNotes.Length(); i < len; i++) {
-    const WorkerErrorNote& note = aReport.mNotes.ElementAt(i);
-    notes.AppendElement(ErrorDataNote(note.mLineNumber, note.mColumnNumber,
-                                      note.mMessage, note.mFilename));
-  }
+  JS::Rooted<JSObject*> stack(aCx, aReport.ReadStack(aCx));
+  JS::Rooted<JSObject*> stackGlobal(aCx, JS::CurrentGlobalOrNull(aCx));
 
-  JS::RootedObject stack(aCx, aReport.ReadStack(aCx));
-  JS::RootedObject stackGlobal(aCx, JS::CurrentGlobalOrNull(aCx));
-
-  ErrorData errorData(aReport.mIsWarning, aReport.mLineNumber,
-                      aReport.mColumnNumber, aReport.mMessage,
-                      aReport.mFilename, aReport.mLine, notes);
+  ErrorData errorData(
+      aReport.mIsWarning, aReport.mLineNumber, aReport.mColumnNumber,
+      aReport.mMessage, aReport.mFilename, aReport.mLine,
+      TransformIntoNewArray(aReport.mNotes, [](const WorkerErrorNote& note) {
+        return ErrorDataNote(note.mLineNumber, note.mColumnNumber,
+                             note.mMessage, note.mFilename);
+      }));
   LogErrorToConsole(errorData, aInnerWindowId, stack, stackGlobal);
 }
 
 /* static */
 void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
                                           uint64_t aInnerWindowId,
-                                          JS::HandleObject aStack,
-                                          JS::HandleObject aStackGlobal) {
+                                          JS::Handle<JSObject*> aStack,
+                                          JS::Handle<JSObject*> aStackGlobal) {
   AssertIsOnMainThread();
 
   RefPtr<nsScriptErrorBase> scriptError =
@@ -419,9 +403,7 @@ void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
       scriptError = nullptr;
     }
 
-    for (size_t i = 0, len = aReport.notes().Length(); i < len; i++) {
-      const ErrorDataNote& note = aReport.notes().ElementAt(i);
-
+    for (const ErrorDataNote& note : aReport.notes()) {
       nsScriptErrorNote* noteObject = new nsScriptErrorNote();
       noteObject->Init(note.message(), note.filename(), 0, note.lineNumber(),
                        note.columnNumber());
@@ -467,5 +449,4 @@ void WorkerErrorReport::CreateAndDispatchGenericErrorRunnableToParent(
   ReportGenericErrorRunnable::CreateAndDispatch(aWorkerPrivate);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

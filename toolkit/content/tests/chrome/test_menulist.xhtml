@@ -6,11 +6,11 @@
         onload="setTimeout(testtag_menulists, 0);"
         xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
 
-  <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"></script>      
-  <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"></script>      
-  <script type="application/javascript" src="xul_selectcontrol.js"></script>      
+  <script src="chrome://mochikit/content/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="chrome://mochikit/content/tests/SimpleTest/EventUtils.js"></script>
+  <script type="application/javascript" src="xul_selectcontrol.js"></script>
 
-<vbox id="scroller" style="overflow: auto" height="60">
+<vbox id="scroller" style="overflow: auto; height: 60px">
   <menulist id="menulist" onpopupshown="test_menulist_open(this, this.parentNode)"
             onpopuphidden="$('menulist-in-listbox').open = true;">
     <menupopup id="menulist-popup"/>
@@ -18,7 +18,7 @@
   <button label="Two"/>
   <button label="Three"/>
 </vbox>
-<richlistbox id="scroller-in-listbox" style="overflow: auto" height="60">
+<richlistbox id="scroller-in-listbox" style="overflow: auto; height: 60px">
   <richlistitem allowevents="true">
     <menulist id="menulist-in-listbox" onpopupshown="test_menulist_open(this, this.parentNode.parentNode)"
               onpopuphidden="SimpleTest.executeSoon(() => checkScrollAndFinish().catch(ex => ok(false, ex)));">
@@ -38,7 +38,7 @@
 <hbox>
   <menulist id="menulist-size">
     <menupopup>
-      <menuitem label="Menuitem Label" width="200"/>
+      <menuitem label="Menuitem Label" style="width: 200px"/>
     </menupopup>
   </menulist>
 </hbox>
@@ -59,7 +59,7 @@
 </menulist>
 
 <menulist id="menulist-clipped">
-  <menupopup height="65">
+  <menupopup style="height: 65px">
     <menuitem label="One" value="one"/>
     <menuitem label="Two" value="two"/>
     <menuitem label="Three" value="three"/>
@@ -110,10 +110,6 @@ function testtag_menulist_UI_finish(element)
 
   test_nsIDOMXULSelectControlElement(element, "menuitem", null);
 
-  // bug 566154, the menulist width should account for vertical scrollbar
-  ok(document.getElementById("menulist-size").getBoundingClientRect().width >= 210,
-     "menulist popup width includes scrollbar width");
-
   $("menulist").open = true;
 }
 
@@ -153,7 +149,7 @@ function test_nsIDOMXULMenuListElement(element)
 function test_nsIDOMXULMenuListElement_properties(element, thirditem, properties)
 {
   let {attr, value} = properties.shift();
-  let last = (properties.length == 0);
+  let last = !properties.length;
 
   let mutObserver = new MutationObserver(() => {
     is(element.getAttribute(attr), value, `${attr} modified`);
@@ -273,11 +269,12 @@ async function dragScroll()
   is(getScrollPos(), scrollPos, "scroll position after mousemove over button should not change");
 
   synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top + 10, { type: "mousemove" });
+  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top + 10, { type: "mousedown", buttons: 1 });
 
   // Dragging above the popup scrolls it up.
   let scrolledPromise = waitForEvent(popup, "scroll", false,
     () => getScrollPos() < scrollPos - 5);
-  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top - 20, { type: "mousemove" });
+  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top - 20, { type: "mousemove", buttons: 1 });
   await scrolledPromise;
   ok(true, "scroll position at drag up");
 
@@ -285,7 +282,7 @@ async function dragScroll()
   scrollPos = getScrollPos();
   scrolledPromise = waitForEvent(popup, "scroll", false,
     () => getScrollPos() > scrollPos + 5);
-  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.bottom + 20, { type: "mousemove" });
+  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.bottom + 20, { type: "mousemove", buttons: 1 });
   await scrolledPromise;
   ok(true, "scroll position at drag down");
 
@@ -301,12 +298,12 @@ async function dragScroll()
   // visible, as the asynchronous scrolling may have moved it out of view.
   popup.childNodes[4].scrollIntoView({ block: "nearest", behavior: "instant" });
   let menuRect = popup.childNodes[4].getBoundingClientRect();
-  synthesizeMouseAtPoint(menuRect.left + 5, menuRect.top + 5, { type: "mousedown" });
+  synthesizeMouseAtPoint(menuRect.left + 5, menuRect.top + 5, { type: "mousedown", buttons: 1 });
 
   // Dragging below the popup scrolls it down.
   scrolledPromise = waitForEvent(popup, "scroll", false,
     () => getScrollPos() > scrollPos + 5);
-  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.bottom + 20, { type: "mousemove" });
+  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.bottom + 20, { type: "mousemove", buttons: 1 });
   await scrolledPromise;
   ok(true, "scroll position at drag down from item");
 
@@ -314,7 +311,7 @@ async function dragScroll()
   scrollPos = getScrollPos();
   scrolledPromise = waitForEvent(popup, "scroll", false,
     () => getScrollPos() < scrollPos - 5);
-  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top - 20, { type: "mousemove" });
+  synthesizeMouseAtPoint(popupRect.left + 20, popupRect.top - 20, { type: "mousemove", buttons: 1 });
   await scrolledPromise;
   ok(true, "scroll position at drag up from item");
 

@@ -24,7 +24,6 @@ var { getScriptGlobals } = require("./utils");
 // but via other includes.
 const EXTRA_SCRIPTS = [
   "browser/base/content/nsContextMenu.js",
-  "browser/components/places/content/editBookmark.js",
   "browser/components/downloads/content/downloads.js",
   "browser/components/downloads/content/indicator.js",
   "toolkit/content/customElements.js",
@@ -38,20 +37,31 @@ const extraDefinitions = [
   { name: "XPCOMUtils", writable: false },
   { name: "Task", writable: false },
   { name: "windowGlobalChild", writable: false },
+  // structuredClone is a new global that would be defined for the `browser`
+  // environment in ESLint, but only Firefox has implemented it currently and so
+  // it isn't in ESLint's globals yet.
+  // https://developer.mozilla.org/docs/Web/API/structuredClone
+  { name: "structuredClone", writable: false },
 ];
 
 // Some files in global-scripts.inc need mapping to specific locations.
 const MAPPINGS = {
-  "printUtils.js": "toolkit/components/printing/content/printUtils.js",
+  "browserPlacesViews.js":
+    "browser/components/places/content/browserPlacesViews.js",
+  "browser-sidebar.js": "browser/components/sidebar/browser-sidebar.js",
   "panelUI.js": "browser/components/customizableui/content/panelUI.js",
-  "viewSourceUtils.js":
-    "toolkit/components/viewsource/content/viewSourceUtils.js",
+  "printUtils.js": "toolkit/components/printing/content/printUtils.js",
   "places-tree.js": "browser/components/places/content/places-tree.js",
   "places-menupopup.js":
     "browser/components/places/content/places-menupopup.js",
+  "shopping-sidebar.js":
+    "browser/components/shopping/content/shopping-sidebar.js",
+  "viewSourceUtils.js":
+    "toolkit/components/viewsource/content/viewSourceUtils.js",
 };
 
-const globalScriptsRegExp = /^\s*Services.scriptloader.loadSubScript\(\"(.*?)\", this\);$/;
+const globalScriptsRegExp =
+  /^\s*Services.scriptloader.loadSubScript\(\"(.*?)\", this\);$/;
 
 function getGlobalScriptIncludes(scriptPath) {
   let fileData;
@@ -73,6 +83,14 @@ function getGlobalScriptIncludes(scriptPath) {
         .replace(
           "chrome://browser/content/search/",
           "browser/components/search/content/"
+        )
+        .replace(
+          "chrome://browser/content/screenshots/",
+          "browser/components/screenshots/content/"
+        )
+        .replace(
+          "chrome://browser/content/tabbrowser/",
+          "browser/components/tabbrowser/content/"
         )
         .replace("chrome://browser/content/", "browser/base/content/")
         .replace("chrome://global/content/", "toolkit/content/");

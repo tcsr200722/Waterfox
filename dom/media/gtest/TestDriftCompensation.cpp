@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 #include "DriftCompensation.h"
+#include "mozilla/SpinEventLoopUntil.h"
 
 using namespace mozilla;
 
@@ -17,7 +18,7 @@ class DriftCompensatorTest : public ::testing::Test {
 
   DriftCompensatorTest()
       : mStart(TimeStamp::Now()),
-        mComp(MakeRefPtr<DriftCompensator>(GetCurrentThreadEventTarget(),
+        mComp(MakeRefPtr<DriftCompensator>(GetCurrentSerialEventTarget(),
                                            mRate)) {
     mComp->NotifyAudioStart(mStart);
     // NotifyAudioStart dispatched a runnable to update the audio mStart time on
@@ -27,7 +28,8 @@ class DriftCompensatorTest : public ::testing::Test {
       bool updated = false;
       NS_DispatchToCurrentThread(
           NS_NewRunnableFunction(__func__, [&] { updated = true; }));
-      SpinEventLoopUntil([&] { return updated; });
+      SpinEventLoopUntil("DriftCompensatorTest::DriftCompensatorTest"_ns,
+                         [&] { return updated; });
     }
   }
 

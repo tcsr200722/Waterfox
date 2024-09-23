@@ -10,6 +10,7 @@
 #include "imgITools.h"
 #include "ImageOps.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/Preferences.h"
 #include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
 #include "nsIInputStream.h"
@@ -32,6 +33,7 @@ using namespace mozilla::image;
   if (x) {          \
     volatile int v; \
     v = 0;          \
+    (void)v;        \
   }
 
 class DecodeToSurfaceRunnableFuzzing : public Runnable {
@@ -77,17 +79,21 @@ static int RunDecodeToSurfaceFuzzing(nsCOMPtr<nsIInputStream> inputStream,
     return 0;
   }
 
+  // Ensure CMS state is initialized on the main thread.
+  gfxPlatform::GetCMSMode();
+
   nsCOMPtr<nsIThread> thread;
   nsresult rv =
       NS_NewNamedThread("Decoder Test", getter_AddRefs(thread), nullptr);
   MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   // We run the DecodeToSurface tests off-main-thread to ensure that
-  // DecodeToSurface doesn't require any main-thread-only code.
+  // DecodeToSurface doesn't require any other main-thread-only code.
   RefPtr<SourceSurface> surface;
   nsCOMPtr<nsIRunnable> runnable =
       new DecodeToSurfaceRunnableFuzzing(surface, inputStream, mimeType);
-  thread->Dispatch(runnable, nsIThread::DISPATCH_SYNC);
+  NS_DispatchAndSpinEventLoopUntilComplete("RunDecodeToSurfaceFuzzing"_ns,
+                                           thread, runnable.forget());
 
   thread->Shutdown();
 
@@ -121,7 +127,23 @@ static int RunDecodeToSurfaceFuzzingWebP(nsCOMPtr<nsIInputStream> inputStream) {
   return RunDecodeToSurfaceFuzzing(inputStream, "image/webp");
 }
 
+static int RunDecodeToSurfaceFuzzingAVIF(nsCOMPtr<nsIInputStream> inputStream) {
+  return RunDecodeToSurfaceFuzzing(inputStream, "image/avif");
+}
+
+#ifdef MOZ_JXL
+static int RunDecodeToSurfaceFuzzingJXL(nsCOMPtr<nsIInputStream> inputStream) {
+  return RunDecodeToSurfaceFuzzing(inputStream, "image/jxl");
+}
+#endif
+
 int FuzzingInitImage(int* argc, char*** argv) {
+  Preferences::SetBool("image.avif.sequence.enabled", true);
+  Preferences::SetInt("image.mem.max_legal_imgframe_size_kb", 65536);
+#ifdef MOZ_JXL
+  Preferences::SetBool("image.jxl.enabled", true);
+#endif
+
   nsCOMPtr<imgITools> imgTools =
       do_CreateInstance("@mozilla.org/image/tools;1");
   if (imgTools == nullptr) {
@@ -149,3 +171,11 @@ MOZ_FUZZING_INTERFACE_STREAM(FuzzingInitImage, RunDecodeToSurfaceFuzzingPNG,
 
 MOZ_FUZZING_INTERFACE_STREAM(FuzzingInitImage, RunDecodeToSurfaceFuzzingWebP,
                              ImageWebP);
+
+MOZ_FUZZING_INTERFACE_STREAM(FuzzingInitImage, RunDecodeToSurfaceFuzzingAVIF,
+                             ImageAVIF);
+
+#ifdef MOZ_JXL
+MOZ_FUZZING_INTERFACE_STREAM(FuzzingInitImage, RunDecodeToSurfaceFuzzingJXL,
+                             ImageJXL);
+#endif

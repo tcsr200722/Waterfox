@@ -7,21 +7,23 @@
 #ifndef mozilla_dom_DataTransferItem_h
 #define mozilla_dom_DataTransferItem_h
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/DataTransfer.h"
 #include "mozilla/dom/DOMString.h"
 #include "mozilla/dom/File.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
+class DataTransfer;
 class FileSystemEntry;
 class FunctionStringCallback;
 
 class DataTransferItem final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DataTransferItem);
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(DataTransferItem);
 
  public:
   // The spec only talks about the "file" and "string" kinds. Due to the Moz*
@@ -40,6 +42,7 @@ class DataTransferItem final : public nsISupports, public nsWrapperCache {
         mChromeOnly(false),
         mKind(aKind),
         mType(aType),
+        mDoNotAttemptToLoadData(false),
         mDataTransfer(aDataTransfer) {
     MOZ_ASSERT(mDataTransfer, "Must be associated with a DataTransfer");
   }
@@ -55,13 +58,13 @@ class DataTransferItem final : public nsISupports, public nsWrapperCache {
   void GetKind(nsAString& aKind) const {
     switch (mKind) {
       case KIND_FILE:
-        aKind = NS_LITERAL_STRING("file");
+        aKind = u"file"_ns;
         return;
       case KIND_STRING:
-        aKind = NS_LITERAL_STRING("string");
+        aKind = u"string"_ns;
         return;
       default:
-        aKind = NS_LITERAL_STRING("other");
+        aKind = u"other"_ns;
         return;
     }
   }
@@ -84,6 +87,10 @@ class DataTransferItem final : public nsISupports, public nsWrapperCache {
   nsIPrincipal* Principal() const { return mPrincipal; }
   void SetPrincipal(nsIPrincipal* aPrincipal) { mPrincipal = aPrincipal; }
 
+  // @return cached data, if available.
+  //         otherwise: if available, `mDataTransfer`'s transferable data.
+  //                    otherwise the data is retrieved from the clipboard (for
+  //                    paste events) or the drag session.
   already_AddRefed<nsIVariant> DataNoSecurityCheck();
   // Data may return null if the clipboard state has changed since the type was
   // detected.
@@ -105,8 +112,9 @@ class DataTransferItem final : public nsISupports, public nsWrapperCache {
  private:
   ~DataTransferItem() = default;
   already_AddRefed<File> CreateFileFromInputStream(nsIInputStream* aStream);
-
-  already_AddRefed<nsIGlobalObject> GetGlobalFromDataTransfer();
+  already_AddRefed<File> CreateFileFromInputStream(
+      nsIInputStream* aStream, const char* aFileNameKey,
+      const nsAString& aContentType);
 
   // The index in the 2d mIndexedItems array
   uint32_t mIndex;
@@ -115,6 +123,7 @@ class DataTransferItem final : public nsISupports, public nsWrapperCache {
   eKind mKind;
   const nsString mType;
   nsCOMPtr<nsIVariant> mData;
+  bool mDoNotAttemptToLoadData;
   nsCOMPtr<nsIPrincipal> mPrincipal;
   RefPtr<DataTransfer> mDataTransfer;
 

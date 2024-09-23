@@ -15,6 +15,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/HelpersCairo.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsUTF8Utils.h"
@@ -47,13 +48,11 @@ PrintTarget::PrintTarget(cairo_surface_t* aCairoSurface, const IntSize& aSize)
   // so we don't call cairo_surface_reference(aSurface) here.
 
   // This code was copied from gfxASurface::Init:
-#ifdef MOZ_TREE_CAIRO
   if (mCairoSurface &&
       cairo_surface_get_content(mCairoSurface) != CAIRO_CONTENT_COLOR) {
     cairo_surface_set_subpixel_antialiasing(
         mCairoSurface, CAIRO_SUBPIXEL_ANTIALIASING_DISABLED);
   }
-#endif
 }
 
 PrintTarget::~PrintTarget() {
@@ -85,7 +84,7 @@ already_AddRefed<DrawTarget> PrintTarget::MakeDrawTarget(
   }
 
   if (aRecorder) {
-    dt = CreateWrapAndRecordDrawTarget(aRecorder, dt);
+    dt = CreateRecordingDrawTarget(aRecorder, dt);
     if (!dt || !dt->IsValid()) {
       return nullptr;
     }
@@ -105,13 +104,6 @@ already_AddRefed<DrawTarget> PrintTarget::GetReferenceDrawTarget() {
         similar = cairo_win32_surface_create_with_dib(
             CairoContentToCairoFormat(cairo_surface_get_content(mCairoSurface)),
             size.width, size.height);
-        break;
-#endif
-#ifdef CAIRO_HAS_QUARTZ_SURFACE
-      case CAIRO_SURFACE_TYPE_QUARTZ:
-        similar = cairo_quartz_surface_create_cg_layer(
-            mCairoSurface, cairo_surface_get_content(mCairoSurface), size.width,
-            size.height);
         break;
 #endif
       default:
@@ -163,7 +155,7 @@ void PrintTarget::AdjustPrintJobNameForIPP(const nsAString& aJobName,
 }
 
 /* static */
-already_AddRefed<DrawTarget> PrintTarget::CreateWrapAndRecordDrawTarget(
+already_AddRefed<DrawTarget> PrintTarget::CreateRecordingDrawTarget(
     DrawEventRecorder* aRecorder, DrawTarget* aDrawTarget) {
   MOZ_ASSERT(aRecorder);
   MOZ_ASSERT(aDrawTarget);
@@ -172,7 +164,8 @@ already_AddRefed<DrawTarget> PrintTarget::CreateWrapAndRecordDrawTarget(
 
   if (aRecorder) {
     // It doesn't really matter what we pass as the DrawTarget here.
-    dt = gfx::Factory::CreateWrapAndRecordDrawTarget(aRecorder, aDrawTarget);
+    dt = gfx::Factory::CreateRecordingDrawTarget(aRecorder, aDrawTarget,
+                                                 aDrawTarget->GetRect());
   }
 
   if (!dt || !dt->IsValid()) {
@@ -193,12 +186,5 @@ void PrintTarget::Finish() {
   // null surfaces are allowed here
   cairo_surface_finish(mCairoSurface);
 }
-
-void PrintTarget::RegisterPageDoneCallback(PageDoneCallback&& aCallback) {
-  MOZ_ASSERT(aCallback && !IsSyncPagePrinting());
-  mPageDoneCallback = std::move(aCallback);
-}
-
-void PrintTarget::UnregisterPageDoneCallback() { mPageDoneCallback = nullptr; }
 
 }  // namespace mozilla::gfx

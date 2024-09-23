@@ -1,5 +1,6 @@
-use serde::Serialize;
 use std::collections::HashMap;
+
+use serde::Serialize;
 
 #[derive(Serialize)]
 struct Config {
@@ -26,12 +27,12 @@ struct Nested {
 }
 
 const EXPECTED: &str = "(
-    float: (2.18,-1.1,),
-    tuple: ((),false,),
-    map: {8:'1',},
-    nested: (a:\"a\",b:'b',),
-    var: A(255,\"\",),
-    array: [(),(),(),],
+    float: (2.18, -1.1),
+    tuple: ((), false),
+    map: {8: '1'},
+    nested: (a: \"a\", b: 'b'),
+    var: A(255, \"\"),
+    array: [(), (), ()],
 )";
 
 #[test]
@@ -48,12 +49,11 @@ fn depth_limit() {
         array: vec![(); 3],
     };
 
-    let pretty = ron::ser::PrettyConfig {
-        depth_limit: 2,
-        separate_tuple_members: true,
-        enumerate_arrays: true,
-        ..Default::default()
-    };
+    let pretty = ron::ser::PrettyConfig::new()
+        .depth_limit(1)
+        .separate_tuple_members(true)
+        .enumerate_arrays(true)
+        .new_line("\n".to_string());
     let s = ron::ser::to_string_pretty(&data, pretty);
 
     assert_eq!(s, Ok(EXPECTED.to_string()));

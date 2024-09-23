@@ -11,6 +11,7 @@
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Unused.h"
+#include "nsExceptionHandler.h"
 
 namespace mozilla {
 namespace ipc {
@@ -40,7 +41,8 @@ class CrashReporterClient {
 
  private:
   static StaticMutex sLock;
-  static StaticRefPtr<CrashReporterClient> sClientSingleton;
+  static StaticRefPtr<CrashReporterClient> sClientSingleton
+      MOZ_GUARDED_BY(sLock);
 };
 
 }  // namespace ipc

@@ -4,25 +4,26 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-XPCSHELL_TESTS_MANIFESTS += ['tests/unit/xpcshell.ini']
+XPCSHELL_TESTS_MANIFESTS += ["tests/unit/xpcshell.toml"]
 
 XPIDL_SOURCES += [
-    'nsIStringBundle.idl',
+    "nsIStringBundle.idl",
 ]
 
-XPIDL_MODULE = 'intl'
+XPIDL_MODULE = "intl"
 
 UNIFIED_SOURCES += [
-    'nsStringBundle.cpp',
+    "nsStringBundle.cpp",
 ]
 
 LOCAL_INCLUDES += [
-    '/xpcom/ds',
+    "/xpcom/ds",
 ]
 
-include('/ipc/chromium/chromium-config.mozbuild')
+EXPORTS += [
+    "nsStringBundle.h",
+]
 
-FINAL_LIBRARY = 'xul'
+include("/ipc/chromium/chromium-config.mozbuild")
 
-if CONFIG['CC_TYPE'] in ('clang', 'gcc'):
-    CXXFLAGS += ['-Wno-error=shadow']
+FINAL_LIBRARY = "xul"

@@ -9,6 +9,7 @@ loadScripts({ name: "role.js", dir: MOCHITESTS_DIR });
 
 const NESTED_IFRAME_DOC_BODY_ID = "nested-iframe-body";
 const NESTED_IFRAME_ID = "nested-iframe";
+// eslint-disable-next-line @microsoft/sdl/no-insecure-url
 const nestedURL = new URL(`http://example.com/document-builder.sjs`);
 nestedURL.searchParams.append(
   "html",
@@ -37,18 +38,28 @@ function getOsPid(browsingContext) {
 
 addAccessibleTask(
   `<iframe id="${NESTED_IFRAME_ID}" src="${nestedURL.href}"/>`,
-  async function(browser, iframeDocAcc, contentDocAcc) {
+  async function (browser, iframeDocAcc, contentDocAcc) {
+    ok(iframeDocAcc, "IFRAME document accessible is present");
     let nestedDocAcc = findAccessibleChildByID(
       iframeDocAcc,
       NESTED_IFRAME_DOC_BODY_ID
     );
-
-    ok(iframeDocAcc, "IFRAME document accessible is present");
-    ok(nestedDocAcc, "Nested IFRAME document accessible is present");
-
-    const state = {};
-    nestedDocAcc.getState(state, {});
-    if (state.value & STATE_BUSY) {
+    let waitForNestedDocLoad = false;
+    if (nestedDocAcc) {
+      const state = {};
+      nestedDocAcc.getState(state, {});
+      if (state.value & STATE_BUSY) {
+        info("Nested IFRAME document accessible is present but busy");
+        waitForNestedDocLoad = true;
+      } else {
+        ok(true, "Nested IFRAME document accessible is present and ready");
+      }
+    } else {
+      info("Nested IFRAME document accessible is not present yet");
+      waitForNestedDocLoad = true;
+    }
+    if (waitForNestedDocLoad) {
+      info("Waiting for doc load complete on nested iframe document");
       nestedDocAcc = (
         await waitForEvent(
           EVENT_DOCUMENT_LOAD_COMPLETE,
@@ -117,7 +128,10 @@ addAccessibleTask(
                         {
                           LIST: [
                             {
-                              LISTITEM: [{ STATICTEXT: [] }, { TEXT_LEAF: [] }],
+                              LISTITEM: [
+                                { LISTITEM_MARKER: [] },
+                                { TEXT_LEAF: [] },
+                              ],
                             },
                           ],
                         },

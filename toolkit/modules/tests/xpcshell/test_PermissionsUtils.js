@@ -2,7 +2,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/
  */
 
-// Tests that PerrmissionsUtils.jsm works as expected, including:
+// Tests that PerrmissionsUtils.sys.mjs works as expected, including:
 // * PermissionsUtils.importfromPrefs()
 //      <ROOT>.[whitelist|blacklist].add preferences are emptied when
 //       converted into permissions on startup.
@@ -10,11 +10,11 @@
 const PREF_ROOT = "testpermissions.";
 const TEST_PERM = "test-permission";
 
-const { PermissionsUtils } = ChromeUtils.import(
-  "resource://gre/modules/PermissionsUtils.jsm"
+const { PermissionsUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/PermissionsUtils.sys.mjs"
 );
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
 );
 
 function run_test() {

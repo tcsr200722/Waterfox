@@ -1,10 +1,9 @@
-from __future__ import unicode_literals
+# mypy: allow-untyped-defs
 
+import io
 import os
 import sys
-
-import mock
-import six
+from unittest import mock
 
 from ...localpaths import repo_root
 from .. import lint as lint_mod
@@ -54,7 +53,7 @@ def test_filter_ignorelist_errors():
 
 
 def test_parse_ignorelist():
-    input_buffer = six.StringIO("""
+    input_buffer = io.StringIO("""
 # Comment
 CR AT EOL: svg/import/*
 CR AT EOL: streams/resources/test-utils.js
@@ -278,126 +277,6 @@ def test_lint_passing_and_failing(caplog):
     assert "okay.html" not in caplog.text
 
 
-def test_check_css_globally_unique_identical_test(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/match/a.html", "css/css-unique/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_different_test(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/not-match/a.html", "css/css-unique/a.html"], "normal")
-            assert rv == 2
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert "CSS-COLLIDING-TEST-NAME" in caplog.text
-
-
-def test_check_css_globally_unique_different_spec_test(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/selectors/a.html", "css/css-unique/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_support_ignored(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/support/a.html", "css/css-unique/support/tools/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_support_identical(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/support/a.html", "css/css-unique/match/support/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_support_different(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/not-match/support/a.html", "css/css-unique/support/a.html"], "normal")
-            assert rv == 2
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert "CSS-COLLIDING-SUPPORT-NAME" in caplog.text
-
-
-def test_check_css_globally_unique_test_support(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/support/a.html", "css/css-unique/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_ref_identical(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/a-ref.html", "css/css-unique/match/a-ref.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_ref_different(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/not-match/a-ref.html", "css/css-unique/a-ref.html"], "normal")
-            assert rv == 2
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert "CSS-COLLIDING-REF-NAME" in caplog.text
-
-
-def test_check_css_globally_unique_test_ref(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/a-ref.html", "css/css-unique/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_ignored(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/tools/a.html", "css/css-unique/not-match/tools/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
-    assert caplog.text == ""
-
-
-def test_check_css_globally_unique_ignored_dir(caplog):
-    with _mock_lint("check_path") as mocked_check_path:
-        with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["css/css-unique/support/a.html"], "normal")
-            assert rv == 0
-            assert mocked_check_path.call_count == 1
-            assert mocked_check_file_contents.call_count == 1
-    assert caplog.text == ""
-
-
 def test_check_unique_testharness_basename_same_basename(caplog):
     # Precondition: There are testharness files with conflicting basename paths.
     assert os.path.exists(os.path.join(_dummy_repo, 'tests', 'dir1', 'a.html'))
@@ -464,7 +343,10 @@ def test_ignore_glob(caplog):
     # clean.
     with _mock_lint("check_path") as mocked_check_path:
         with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["ref/absolute.html", "ref/existent_relative.html"], "normal", "*solu*")
+            rv = lint(_dummy_repo,
+                      ["broken.html", "ref/absolute.html", "ref/existent_relative.html"],
+                      "normal",
+                      ["broken*", "*solu*"])
             assert rv == 0
             # Also confirm that only one file is checked
             assert mocked_check_path.call_count == 1
@@ -473,22 +355,23 @@ def test_ignore_glob(caplog):
     # However, linting the same two files without ignore_glob yields lint errors.
     with _mock_lint("check_path") as mocked_check_path:
         with _mock_lint("check_file_contents") as mocked_check_file_contents:
-            rv = lint(_dummy_repo, ["ref/absolute.html", "ref/existent_relative.html"], "normal")
-            assert rv == 1
-            assert mocked_check_path.call_count == 2
-            assert mocked_check_file_contents.call_count == 2
+            rv = lint(_dummy_repo, ["broken.html", "ref/absolute.html", "ref/existent_relative.html"], "normal")
+            assert rv == 2
+            assert mocked_check_path.call_count == 3
+            assert mocked_check_file_contents.call_count == 3
+            assert "TRAILING WHITESPACE" in caplog.text
             assert "ABSOLUTE-URL-REF" in caplog.text
 
 
 def test_all_filesystem_paths():
     with mock.patch(
             'tools.lint.lint.walk',
-            return_value=[('',
-                           [('dir_a', None), ('dir_b', None)],
-                           [('file_a', None), ('file_b', None)]),
-                          ('dir_a',
+            return_value=[(b'',
+                           [(b'dir_a', None), (b'dir_b', None)],
+                           [(b'file_a', None), (b'file_b', None)]),
+                          (b'dir_a',
                            [],
-                           [('file_c', None), ('file_d', None)])]
+                           [(b'file_c', None), (b'file_d', None)])]
     ):
         got = list(lint_mod.all_filesystem_paths('.'))
         assert got == ['file_a',
@@ -500,12 +383,12 @@ def test_all_filesystem_paths():
 def test_filesystem_paths_subdir():
     with mock.patch(
             'tools.lint.lint.walk',
-            return_value=[('',
-                           [('dir_a', None), ('dir_b', None)],
-                           [('file_a', None), ('file_b', None)]),
-                          ('dir_a',
+            return_value=[(b'',
+                           [(b'dir_a', None), (b'dir_b', None)],
+                           [(b'file_a', None), (b'file_b', None)]),
+                          (b'dir_a',
                            [],
-                           [('file_c', None), ('file_d', None)])]
+                           [(b'file_c', None), (b'file_d', None)])]
     ):
         got = list(lint_mod.all_filesystem_paths('.', 'dir'))
         assert got == [os.path.join('dir', 'file_a'),
@@ -526,7 +409,9 @@ def test_main_with_args():
                                           [os.path.relpath(os.path.join(os.getcwd(), x), repo_root)
                                            for x in ['a', 'b', 'c']],
                                           "normal",
-                                          str())
+                                          None,
+                                          None,
+                                          0)
     finally:
         sys.argv = orig_argv
 
@@ -538,7 +423,7 @@ def test_main_no_args():
         with _mock_lint('lint', return_value=True) as m:
             with _mock_lint('changed_files', return_value=['foo', 'bar']):
                 lint_mod.main(**vars(create_parser().parse_args()))
-                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", str())
+                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None, None, 0)
     finally:
         sys.argv = orig_argv
 
@@ -550,6 +435,6 @@ def test_main_all():
         with _mock_lint('lint', return_value=True) as m:
             with _mock_lint('all_filesystem_paths', return_value=['foo', 'bar']):
                 lint_mod.main(**vars(create_parser().parse_args()))
-                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", str())
+                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None, None, 0)
     finally:
         sys.argv = orig_argv

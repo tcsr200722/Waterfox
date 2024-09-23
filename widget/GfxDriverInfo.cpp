@@ -11,33 +11,24 @@
 
 using namespace mozilla::widget;
 
-int32_t GfxDriverInfo::allFeatures = 0;
-uint64_t GfxDriverInfo::allDriverVersions = ~(uint64_t(0));
-
 GfxDeviceFamily*
     GfxDriverInfo::sDeviceFamilies[static_cast<size_t>(DeviceFamily::Max)];
-nsAString* GfxDriverInfo::sDesktopEnvironment[static_cast<size_t>(
-    DesktopEnvironment::Max)];
-nsAString*
+nsString*
     GfxDriverInfo::sWindowProtocol[static_cast<size_t>(WindowProtocol::Max)];
-nsAString*
-    GfxDriverInfo::sDeviceVendors[static_cast<size_t>(DeviceVendor::Max)];
-nsAString*
-    GfxDriverInfo::sDriverVendors[static_cast<size_t>(DriverVendor::Max)];
+nsString* GfxDriverInfo::sDeviceVendors[static_cast<size_t>(DeviceVendor::Max)];
+nsString* GfxDriverInfo::sDriverVendors[static_cast<size_t>(DriverVendor::Max)];
 
 GfxDriverInfo::GfxDriverInfo()
     : mOperatingSystem(OperatingSystem::Unknown),
       mOperatingSystemVersion(0),
       mScreen(ScreenSizeStatus::All),
       mBattery(BatteryStatus::All),
-      mDesktopEnvironment(
-          GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment::All)),
       mWindowProtocol(GfxDriverInfo::GetWindowProtocol(WindowProtocol::All)),
       mAdapterVendor(GfxDriverInfo::GetDeviceVendor(DeviceFamily::All)),
       mDriverVendor(GfxDriverInfo::GetDriverVendor(DriverVendor::All)),
       mDevices(GfxDriverInfo::GetDeviceFamily(DeviceFamily::All)),
       mDeleteDevices(false),
-      mFeature(allFeatures),
+      mFeature(optionalFeatures),
       mFeatureStatus(nsIGfxInfo::FEATURE_STATUS_OK),
       mComparisonOp(DRIVER_COMPARISON_IGNORED),
       mDriverVersion(0),
@@ -48,17 +39,15 @@ GfxDriverInfo::GfxDriverInfo()
 
 GfxDriverInfo::GfxDriverInfo(
     OperatingSystem os, ScreenSizeStatus screen, BatteryStatus battery,
-    const nsAString& desktopEnv, const nsAString& windowProtocol,
-    const nsAString& vendor, const nsAString& driverVendor,
-    GfxDeviceFamily* devices, int32_t feature, int32_t featureStatus,
-    VersionComparisonOp op, uint64_t driverVersion, const char* ruleId,
-    const char* suggestedVersion /* = nullptr */, bool ownDevices /* = false */,
-    bool gpu2 /* = false */)
+    const nsAString& windowProtocol, const nsAString& vendor,
+    const nsAString& driverVendor, GfxDeviceFamily* devices, int32_t feature,
+    int32_t featureStatus, VersionComparisonOp op, uint64_t driverVersion,
+    const char* ruleId, const char* suggestedVersion /* = nullptr */,
+    bool ownDevices /* = false */, bool gpu2 /* = false */)
     : mOperatingSystem(os),
       mOperatingSystemVersion(0),
       mScreen(screen),
       mBattery(battery),
-      mDesktopEnvironment(desktopEnv),
       mWindowProtocol(windowProtocol),
       mAdapterVendor(vendor),
       mDriverVendor(driverVendor),
@@ -78,7 +67,6 @@ GfxDriverInfo::GfxDriverInfo(const GfxDriverInfo& aOrig)
       mOperatingSystemVersion(aOrig.mOperatingSystemVersion),
       mScreen(aOrig.mScreen),
       mBattery(aOrig.mBattery),
-      mDesktopEnvironment(aOrig.mDesktopEnvironment),
       mWindowProtocol(aOrig.mWindowProtocol),
       mAdapterVendor(aOrig.mAdapterVendor),
       mDriverVendor(aOrig.mDriverVendor),
@@ -147,7 +135,8 @@ nsresult GfxDeviceFamily::Contains(nsAString& aDeviceId) const {
 
 // Macros for appending a device to the DeviceFamily.
 #define APPEND_DEVICE(device) APPEND_DEVICE2(#device)
-#define APPEND_DEVICE2(device) deviceFamily->Append(NS_LITERAL_STRING(device))
+#define APPEND_DEVICE2(device) \
+  deviceFamily->Append(NS_LITERAL_STRING_FROM_CSTRING(device))
 #define APPEND_RANGE(start, end) deviceFamily->AppendRange(start, end)
 
 const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
@@ -165,6 +154,8 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
     case DeviceFamily::MicrosoftAll:
     case DeviceFamily::ParallelsAll:
     case DeviceFamily::QualcommAll:
+    case DeviceFamily::AppleAll:
+    case DeviceFamily::AmazonAll:
       return nullptr;
     default:
       break;
@@ -257,7 +248,7 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
       APPEND_DEVICE(0x0126); /* IntelSandyBridge_6 */
       APPEND_DEVICE(0x010a); /* IntelSandyBridge_7 */
       break;
-    case DeviceFamily::IntelHDGraphicsToHaswell:
+    case DeviceFamily::IntelHaswell:
       APPEND_DEVICE(0x0402); /* IntelHaswell_GT1_1 */
       APPEND_DEVICE(0x0406); /* IntelHaswell_GT1_2 */
       APPEND_DEVICE(0x040A); /* IntelHaswell_GT1_3 */
@@ -294,14 +285,149 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
       APPEND_DEVICE(0x0D2B); /* IntelHaswell_GT3e_4 */
       APPEND_DEVICE(0x0D2E); /* IntelHaswell_GT3e_5 */
       break;
-    case DeviceFamily::IntelHD3000:
+    case DeviceFamily::IntelSandyBridge:
+      APPEND_DEVICE(0x0102);
+      APPEND_DEVICE(0x0106);
+      APPEND_DEVICE(0x010a);
+      APPEND_DEVICE(0x0112);
+      APPEND_DEVICE(0x0116);
+      APPEND_DEVICE(0x0122);
       APPEND_DEVICE(0x0126);
+      break;
+    case DeviceFamily::IntelGen7Baytrail:
+      APPEND_DEVICE(0x0f30);
+      APPEND_DEVICE(0x0f31);
+      APPEND_DEVICE(0x0f33);
+      APPEND_DEVICE(0x0155);
+      APPEND_DEVICE(0x0157);
+      break;
+    case DeviceFamily::IntelSkylake:
+      APPEND_DEVICE(0x1902);
+      APPEND_DEVICE(0x1906);
+      APPEND_DEVICE(0x190a);
+      APPEND_DEVICE(0x190B);
+      APPEND_DEVICE(0x190e);
+      APPEND_DEVICE(0x1912);
+      APPEND_DEVICE(0x1913);
+      APPEND_DEVICE(0x1915);
+      APPEND_DEVICE(0x1916);
+      APPEND_DEVICE(0x1917);
+      APPEND_DEVICE(0x191a);
+      APPEND_DEVICE(0x191b);
+      APPEND_DEVICE(0x191d);
+      APPEND_DEVICE(0x191e);
+      APPEND_DEVICE(0x1921);
+      APPEND_DEVICE(0x1923);
+      APPEND_DEVICE(0x1926);
+      APPEND_DEVICE(0x1927);
+      APPEND_DEVICE(0x192a);
+      APPEND_DEVICE(0x192b);
+      APPEND_DEVICE(0x192d);
+      APPEND_DEVICE(0x1932);
+      APPEND_DEVICE(0x193a);
+      APPEND_DEVICE(0x193b);
+      APPEND_DEVICE(0x193d);
+      break;
+    case DeviceFamily::IntelKabyLake:
+      APPEND_DEVICE(0x5902);
+      APPEND_DEVICE(0x5906);
+      APPEND_DEVICE(0x5908);
+      APPEND_DEVICE(0x590A);
+      APPEND_DEVICE(0x590B);
+      APPEND_DEVICE(0x590E);
+      APPEND_DEVICE(0x5913);
+      APPEND_DEVICE(0x5915);
+      APPEND_DEVICE(0x5912);
+      APPEND_DEVICE(0x5916);
+      APPEND_DEVICE(0x5917);
+      APPEND_DEVICE(0x591A);
+      APPEND_DEVICE(0x591B);
+      APPEND_DEVICE(0x591D);
+      APPEND_DEVICE(0x591E);
+      APPEND_DEVICE(0x5921);
+      APPEND_DEVICE(0x5923);
+      APPEND_DEVICE(0x5926);
+      APPEND_DEVICE(0x5927);
+      APPEND_DEVICE(0x593B);
+      APPEND_DEVICE(0x591C);
+      APPEND_DEVICE(0x87C0);
       break;
     case DeviceFamily::IntelHD520:
       APPEND_DEVICE(0x1916);
       break;
     case DeviceFamily::IntelMobileHDGraphics:
       APPEND_DEVICE(0x0046); /* IntelMobileHDGraphics */
+      break;
+    case DeviceFamily::IntelGen12:
+      // Rocket Lake
+      APPEND_DEVICE(0x4C8C);  // rkl_gt05
+      APPEND_DEVICE(0x4C8A);  // rkl_gt1
+      APPEND_DEVICE(0x4C8B);  // rkl_gt1
+      APPEND_DEVICE(0x4C90);  // rkl_gt1
+      APPEND_DEVICE(0x4C9A);  // rkl_gt1
+      // Alder Lake
+      APPEND_DEVICE(0x4683);  // adl_gt05
+      APPEND_DEVICE(0x4693);  // adl_gt05
+      APPEND_DEVICE(0x4680);  // adl_gt1
+      APPEND_DEVICE(0x4681);  // adl_gt1
+      APPEND_DEVICE(0x4682);  // adl_gt1
+      APPEND_DEVICE(0x4688);  // adl_gt1
+      APPEND_DEVICE(0x4689);  // adl_gt1
+      APPEND_DEVICE(0x4690);  // adl_gt1
+      APPEND_DEVICE(0x4691);  // adl_gt1
+      APPEND_DEVICE(0x4692);  // adl_gt1
+      APPEND_DEVICE(0x4626);  // adl_gt2
+      APPEND_DEVICE(0x4628);  // adl_gt2
+      APPEND_DEVICE(0x462A);  // adl_gt2
+      APPEND_DEVICE(0x46A0);  // adl_gt2
+      APPEND_DEVICE(0x46A1);  // adl_gt2
+      APPEND_DEVICE(0x46A2);  // adl_gt2
+      APPEND_DEVICE(0x46A3);  // adl_gt2
+      APPEND_DEVICE(0x46A6);  // adl_gt2
+      APPEND_DEVICE(0x46A8);  // adl_gt2
+      APPEND_DEVICE(0x46AA);  // adl_gt2
+      APPEND_DEVICE(0x46B0);  // adl_gt2
+      APPEND_DEVICE(0x46B1);  // adl_gt2
+      APPEND_DEVICE(0x46B2);  // adl_gt2
+      APPEND_DEVICE(0x46B3);  // adl_gt2
+      APPEND_DEVICE(0x46C0);  // adl_gt2
+      APPEND_DEVICE(0x46C1);  // adl_gt2
+      APPEND_DEVICE(0x46C2);  // adl_gt2
+      APPEND_DEVICE(0x46C3);  // adl_gt2
+      APPEND_DEVICE(0x46D0);  // adl_n
+      APPEND_DEVICE(0x46D1);  // adl_n
+      APPEND_DEVICE(0x46D2);  // adl_n
+      // Tiger Lake
+      APPEND_DEVICE(0x9A60);  // tgl_gt1
+      APPEND_DEVICE(0x9A68);  // tgl_gt1
+      APPEND_DEVICE(0x9A70);  // tgl_gt1
+      APPEND_DEVICE(0x9A40);  // tgl_gt2
+      APPEND_DEVICE(0x9A49);  // tgl_gt2
+      APPEND_DEVICE(0x9A59);  // tgl_gt2
+      APPEND_DEVICE(0x9A78);  // tgl_gt2
+      APPEND_DEVICE(0x9AC0);  // tgl_gt2
+      APPEND_DEVICE(0x9AC9);  // tgl_gt2
+      APPEND_DEVICE(0x9AD9);  // tgl_gt2
+      APPEND_DEVICE(0x9AF8);  // tgl_gt2
+      // Raptop Lake
+      APPEND_DEVICE(0xA780);  // rpl
+      APPEND_DEVICE(0xA781);  // rpl
+      APPEND_DEVICE(0xA782);  // rpl
+      APPEND_DEVICE(0xA783);  // rpl
+      APPEND_DEVICE(0xA788);  // rpl
+      APPEND_DEVICE(0xA789);  // rpl
+      APPEND_DEVICE(0xA720);  // rpl_p
+      APPEND_DEVICE(0xA721);  // rpl_p
+      APPEND_DEVICE(0xA7A0);  // rpl_p
+      APPEND_DEVICE(0xA7A1);  // rpl_p
+      APPEND_DEVICE(0xA7A8);  // rpl_p
+      APPEND_DEVICE(0xA7A9);  // rpl_p
+      // DG1
+      APPEND_DEVICE(0x4905);
+      APPEND_DEVICE(0x4906);
+      APPEND_DEVICE(0x4907);
+      APPEND_DEVICE(0x4908);
+      APPEND_DEVICE(0x4909);
       break;
     case DeviceFamily::NvidiaBlockD3D9Layers:
       // Glitches whilst scrolling (see bugs 612007, 644787, 645872)
@@ -350,6 +476,12 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
       APPEND_DEVICE(0x6778);
       APPEND_DEVICE(0x6779);
       APPEND_DEVICE(0x677b);
+      break;
+    case DeviceFamily::RadeonBlockZeroVideoCopy:
+      // Stoney
+      APPEND_DEVICE(0x98e4);
+      // Carrizo
+      APPEND_RANGE(0x9870, 0x9877);
       break;
     case DeviceFamily::Geforce7300GT:
       APPEND_DEVICE(0x0393);
@@ -417,277 +549,97 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
       APPEND_DEVICE(0xa011);
       APPEND_DEVICE(0xa012);
       break;
-    case DeviceFamily::NvidiaBlockWebRender:
-      /* GT218 */
-      APPEND_DEVICE(0x0a60);
-      APPEND_DEVICE(0x0a62);
-      APPEND_DEVICE(0x0a63);
-      APPEND_DEVICE(0x0a64);
-      APPEND_DEVICE(0x0a65);
-      APPEND_DEVICE(0x0a66);
-      APPEND_DEVICE(0x0a67);
-      APPEND_DEVICE(0x0a7b);
-      APPEND_DEVICE(0x10c0);
-      APPEND_DEVICE(0x10c3);
-      APPEND_DEVICE(0x10c5);
-      APPEND_DEVICE(0x10d8);
-      /* GT218M */
-      APPEND_DEVICE(0x0a68);
-      APPEND_DEVICE(0x0a69);
-      APPEND_DEVICE(0x0a6a);
-      APPEND_DEVICE(0x0a6c);
-      APPEND_DEVICE(0x0a6e);
-      APPEND_DEVICE(0x0a6f);
-      APPEND_DEVICE(0x0a70);
-      APPEND_DEVICE(0x0a71);
-      APPEND_DEVICE(0x0a72);
-      APPEND_DEVICE(0x0a73);
-      APPEND_DEVICE(0x0a74);
-      APPEND_DEVICE(0x0a75);
-      APPEND_DEVICE(0x0a76);
-      APPEND_DEVICE(0x0a7a);
-      /* GT218GL */
-      APPEND_DEVICE(0x0a78);
-      /* GT218GLM */
-      APPEND_DEVICE(0x0a7c);
+    case DeviceFamily::AmdR600:
+      // AMD R600 generation GPUs
+      // R600
+      APPEND_RANGE(0x9400, 0x9403);
+      APPEND_DEVICE(0x9405);
+      APPEND_RANGE(0x940a, 0x940b);
+      APPEND_DEVICE(0x940f);
+      // RV610
+      APPEND_RANGE(0x94c0, 0x94c1);
+      APPEND_RANGE(0x94c3, 0x94c9);
+      APPEND_RANGE(0x94cb, 0x94cd);
+      // RV630
+      APPEND_RANGE(0x9580, 0x9581);
+      APPEND_DEVICE(0x9583);
+      APPEND_RANGE(0x9586, 0x958f);
+      // RV670
+      APPEND_RANGE(0x9500, 0x9501);
+      APPEND_RANGE(0x9504, 0x9509);
+      APPEND_DEVICE(0x950f);
+      APPEND_DEVICE(0x9511);
+      APPEND_DEVICE(0x9515);
+      APPEND_DEVICE(0x9517);
+      APPEND_DEVICE(0x9519);
+      // RV620
+      APPEND_DEVICE(0x95c0);
+      APPEND_DEVICE(0x95c2);
+      APPEND_RANGE(0x95c4, 0x95c7);
+      APPEND_DEVICE(0x95c9);
+      APPEND_RANGE(0x95cc, 0x95cf);
+      // RV635
+      APPEND_RANGE(0x9590, 0x9591);
+      APPEND_DEVICE(0x9593);
+      APPEND_RANGE(0x9595, 0x9599);
+      APPEND_DEVICE(0x959b);
+      // RS780
+      APPEND_RANGE(0x9610, 0x9616);
+      // RS880
+      APPEND_RANGE(0x9710, 0x9715);
       break;
-    case DeviceFamily::NvidiaRolloutWebRender:
-      APPEND_RANGE(0x06c0, INT32_MAX);
+    case DeviceFamily::NvidiaWebRenderBlocked:
+      APPEND_RANGE(0x0190, 0x019e);  // early tesla
+      APPEND_RANGE(0x0500, 0x05df);  // C67-C68
       break;
-    case DeviceFamily::IntelRolloutWebRender:
-      // broadwell gt1 (gen8)
-      APPEND_DEVICE(0x1602);
-      APPEND_DEVICE(0x1606);
-      APPEND_DEVICE(0x160a);
-      APPEND_DEVICE(0x160b);
-      APPEND_DEVICE(0x160d);
-      APPEND_DEVICE(0x160e);
+    case DeviceFamily::IntelWebRenderBlocked:
+      // powervr
+      // sgx535
+      APPEND_DEVICE(0x2e5b);
+      APPEND_DEVICE(0x8108);
+      APPEND_DEVICE(0x8109);
+      APPEND_DEVICE(0x4102);
+      // sgx545
+      APPEND_DEVICE(0x0be0);
+      APPEND_DEVICE(0x0be1);
+      APPEND_DEVICE(0x0be3);
+      APPEND_RANGE(0x08c7, 0x08cf);
 
-      // broadwell gt2+ (gen8)
-      APPEND_DEVICE(0x1612);
-      APPEND_DEVICE(0x1616);
-      APPEND_DEVICE(0x161a);
-      APPEND_DEVICE(0x161b);
-      APPEND_DEVICE(0x161d);
-      APPEND_DEVICE(0x161e);
-      APPEND_DEVICE(0x1622);
-      APPEND_DEVICE(0x1626);
-      APPEND_DEVICE(0x162a);
-      APPEND_DEVICE(0x162b);
-      APPEND_DEVICE(0x162d);
-      APPEND_DEVICE(0x162e);
-      APPEND_DEVICE(0x1632);
-      APPEND_DEVICE(0x1636);
-      APPEND_DEVICE(0x163a);
-      APPEND_DEVICE(0x163b);
-      APPEND_DEVICE(0x163d);
-      APPEND_DEVICE(0x163e);
+      // gen4
+      APPEND_DEVICE(0x2972);
+      APPEND_DEVICE(0x2973);
+      APPEND_DEVICE(0x2992);
+      APPEND_DEVICE(0x2993);
+      APPEND_DEVICE(0x29a2);
+      APPEND_DEVICE(0x29a3);
 
-#ifdef EARLY_BETA_OR_EARLIER
-      // gen7.5 gt2
-      APPEND_DEVICE(0x0412);
-      APPEND_DEVICE(0x0416);
-      APPEND_DEVICE(0x041a);
-      APPEND_DEVICE(0x041b);
-      APPEND_DEVICE(0x041e);
-      APPEND_DEVICE(0x0a12);
-      APPEND_DEVICE(0x0a16);
-      APPEND_DEVICE(0x0a1a);
-      APPEND_DEVICE(0x0a1b);
-      APPEND_DEVICE(0x0a1e);
+      APPEND_DEVICE(0x2982);
+      APPEND_DEVICE(0x2983);
 
-      // gen7.5 gt3
-      APPEND_DEVICE(0x0422);
-      APPEND_DEVICE(0x0426);
-      APPEND_DEVICE(0x042a);
-      APPEND_DEVICE(0x042b);
-      APPEND_DEVICE(0x042e);
-      APPEND_DEVICE(0x0a22);
-      APPEND_DEVICE(0x0a26);
-      APPEND_DEVICE(0x0a0a);
-      APPEND_DEVICE(0x0a1a);
-      APPEND_DEVICE(0x0a2a);
-      APPEND_DEVICE(0x0a2b);
-      APPEND_DEVICE(0x0a2e);
-      APPEND_DEVICE(0x0c22);
-      APPEND_DEVICE(0x0c26);
-      APPEND_DEVICE(0x0c2c);
-      APPEND_DEVICE(0x0c2b);
-      APPEND_DEVICE(0x0c2e);
-      APPEND_DEVICE(0x0d22);
-      APPEND_DEVICE(0x0d26);
-      APPEND_DEVICE(0x0d2b);
-      APPEND_DEVICE(0x0d2e);
-#endif
+      APPEND_DEVICE(0x2a02);
+      APPEND_DEVICE(0x2a03);
+      APPEND_DEVICE(0x2a12);
+      APPEND_DEVICE(0x2a13);
 
-#if defined(MOZ_WIDGET_GTK) || defined(NIGHTLY_BUILD)
-      // Gen7.5 not allowed until bug 1576637 is resolved.
-      // gen7.5 gt1
-      APPEND_DEVICE(0x0402);
-      APPEND_DEVICE(0x0406);
-      APPEND_DEVICE(0x040a);
-      APPEND_DEVICE(0x040b);
-      APPEND_DEVICE(0x040e);
-      APPEND_DEVICE(0x0a02);
-      APPEND_DEVICE(0x0a06);
-      APPEND_DEVICE(0x0a0a);
-      APPEND_DEVICE(0x0a0b);
-      APPEND_DEVICE(0x0a0e);
-      APPEND_DEVICE(0x0c02);
-      APPEND_DEVICE(0x0c06);
-      APPEND_DEVICE(0x0c0c);
-      APPEND_DEVICE(0x0c0b);
-      APPEND_DEVICE(0x0c0e);
-      APPEND_DEVICE(0x0d02);
-      APPEND_DEVICE(0x0d06);
-      APPEND_DEVICE(0x0d0a);
-      APPEND_DEVICE(0x0d0b);
-      APPEND_DEVICE(0x0d0e);
+      // gen4.5
+      APPEND_DEVICE(0x2e02);
+      APPEND_DEVICE(0x2e42); /* IntelB43_1 */
+      APPEND_DEVICE(0x2e43); /* IntelB43_2 */
+      APPEND_DEVICE(0x2e92); /* IntelB43_3 */
+      APPEND_DEVICE(0x2e93); /* IntelB43_4 */
+      APPEND_DEVICE(0x2e12); /* IntelQ45_1 */
+      APPEND_DEVICE(0x2e13); /* IntelQ45_2 */
+      APPEND_DEVICE(0x2e32); /* IntelG41_1 */
+      APPEND_DEVICE(0x2e33); /* IntelG41_2 */
+      APPEND_DEVICE(0x2e22); /* IntelG45_1 */
 
-      // gen7 gt1
-      APPEND_DEVICE(0x0152);
-      APPEND_DEVICE(0x0156);
-      APPEND_DEVICE(0x015a);
+      APPEND_DEVICE(0x2e23); /* IntelG45_2 */
+      APPEND_DEVICE(0x2a42); /* IntelGMA4500MHD_1 */
+      APPEND_DEVICE(0x2a43); /* IntelGMA4500MHD_2 */
 
-      // gen7 gt2
-      APPEND_DEVICE(0x0162);
-      APPEND_DEVICE(0x0166);
-      APPEND_DEVICE(0x016a);
-
-      // gen6 gt2
-      APPEND_DEVICE(0x0112);
-      APPEND_DEVICE(0x0116);
-      APPEND_DEVICE(0x0122);
-      APPEND_DEVICE(0x0126);
-#endif
-      [[fallthrough]];
-    case DeviceFamily::IntelModernRolloutWebRender:
-#ifdef NIGHTLY_BUILD
-      // broxton (apollolake)
-      APPEND_DEVICE(0x0a84);
-      APPEND_DEVICE(0x1a84);
-      APPEND_DEVICE(0x1a85);
-      APPEND_DEVICE(0x5a84);
-      APPEND_DEVICE(0x5a85);
-
-      // geminilake
-      APPEND_DEVICE(0x3184);
-      APPEND_DEVICE(0x3185);
-#endif
-
-      // skylake gt1
-      APPEND_DEVICE(0x1902);
-      APPEND_DEVICE(0x1906);
-      APPEND_DEVICE(0x190a);
-      APPEND_DEVICE(0x190e);
-
-      // skylake gt2+
-      APPEND_DEVICE(0x1912);
-      APPEND_DEVICE(0x1913);
-      APPEND_DEVICE(0x1915);
-      APPEND_DEVICE(0x1916);
-      APPEND_DEVICE(0x1917);
-      APPEND_DEVICE(0x191a);
-      APPEND_DEVICE(0x191b);
-      APPEND_DEVICE(0x191d);
-      APPEND_DEVICE(0x191e);
-      APPEND_DEVICE(0x1921);
-      APPEND_DEVICE(0x1923);
-      APPEND_DEVICE(0x1926);
-      APPEND_DEVICE(0x1927);
-      APPEND_DEVICE(0x192b);
-      APPEND_DEVICE(0x1932);
-      APPEND_DEVICE(0x193b);
-      APPEND_DEVICE(0x193d);
-
-      // kabylake gt1
-      APPEND_DEVICE(0x5902);
-      APPEND_DEVICE(0x5906);
-      APPEND_DEVICE(0x5908);
-      APPEND_DEVICE(0x590a);
-      APPEND_DEVICE(0x590b);
-      APPEND_DEVICE(0x590e);
-
-      // kabylake gt1.5
-      APPEND_DEVICE(0x5913);
-      APPEND_DEVICE(0x5915);
-      APPEND_DEVICE(0x5917);
-
-      // kabylake gt2
-      APPEND_DEVICE(0x5912);
-      APPEND_DEVICE(0x5916);
-      APPEND_DEVICE(0x591a);
-      APPEND_DEVICE(0x591b);
-      APPEND_DEVICE(0x591c);
-      APPEND_DEVICE(0x591d);
-      APPEND_DEVICE(0x591e);
-      APPEND_DEVICE(0x5921);
-      APPEND_DEVICE(0x5926);
-      APPEND_DEVICE(0x5923);
-      APPEND_DEVICE(0x5927);
-      APPEND_DEVICE(0x593b);
-
-      // coffeelake gt1
-      APPEND_DEVICE(0x3e90);
-      APPEND_DEVICE(0x3e93);
-      APPEND_DEVICE(0x3e99);
-      APPEND_DEVICE(0x3e9c);
-      APPEND_DEVICE(0x3ea1);
-      APPEND_DEVICE(0x3ea4);
-      APPEND_DEVICE(0x9b21);
-      APPEND_DEVICE(0x9ba0);
-      APPEND_DEVICE(0x9ba2);
-      APPEND_DEVICE(0x9ba4);
-      APPEND_DEVICE(0x9ba5);
-      APPEND_DEVICE(0x9ba8);
-      APPEND_DEVICE(0x9baa);
-      APPEND_DEVICE(0x9bab);
-      APPEND_DEVICE(0x9bac);
-
-      // coffeelake gt2+
-      APPEND_RANGE(0x3e91, 0x3e92);
-      APPEND_DEVICE(0x3e94);
-      APPEND_DEVICE(0x3e96);
-      APPEND_DEVICE(0x3e98);
-      APPEND_RANGE(0x3e9a, 0x3e9b);
-      APPEND_DEVICE(0x3ea0);
-      APPEND_DEVICE(0x3ea2);
-      APPEND_RANGE(0x3ea5, 0x3ea9);
-      APPEND_DEVICE(0x87ca);
-      APPEND_DEVICE(0x9b41);
-      APPEND_DEVICE(0x9bc0);
-      APPEND_DEVICE(0x9bc2);
-      APPEND_RANGE(0x9bc4, 0x9bc5);
-      APPEND_DEVICE(0x9bc8);
-      APPEND_RANGE(0x9bca, 0x9bcc);
-
-      // icelake gt1,gt1.5,gt2
-      APPEND_RANGE(0x8a50, 0x8a5d);
-      break;
-    case DeviceFamily::AtiRolloutWebRender:
-      APPEND_RANGE(0x6600, 0x66af);
-      APPEND_RANGE(0x6700, 0x671f);
-      APPEND_RANGE(0x6780, 0x683f);
-      APPEND_RANGE(0x6860, 0x687f);
-      APPEND_RANGE(0x6900, 0x69ff);
-      APPEND_DEVICE(0x7300);
-      APPEND_RANGE(0x7310, 0x731f);
-      APPEND_RANGE(0x9830, 0x986f);
-      APPEND_RANGE(0x9900, 0x99ff);
-      // Raven
-      APPEND_DEVICE(0x15dd);
-      APPEND_DEVICE(0x15d8);
-
-#if defined(NIGHTLY_BUILD)
-      // Evergreen
-      APPEND_RANGE(0x6840, 0x684b);
-      APPEND_RANGE(0x6850, 0x685f);
-      APPEND_RANGE(0x6880, 0x68ff);
-      APPEND_RANGE(0x9800, 0x980a);
-      APPEND_RANGE(0x9640, 0x964f);
-      APPEND_RANGE(0x6720, 0x677f);
-#endif
-
+      // gen5 (ironlake)
+      APPEND_DEVICE(0x0042);
+      APPEND_DEVICE(0x0046);
       break;
     // This should never happen, but we get a warning if we don't handle this.
     case DeviceFamily::Max:
@@ -698,52 +650,13 @@ const GfxDeviceFamily* GfxDriverInfo::GetDeviceFamily(DeviceFamily id) {
     case DeviceFamily::MicrosoftAll:
     case DeviceFamily::ParallelsAll:
     case DeviceFamily::QualcommAll:
+    case DeviceFamily::AppleAll:
+    case DeviceFamily::AmazonAll:
       NS_WARNING("Invalid DeviceFamily id");
       break;
   }
 
   return deviceFamily;
-}
-
-// Macro for assigning a desktop environment to a string.
-#define DECLARE_DESKTOP_ENVIRONMENT_ID(name, desktopEnvId) \
-  case DesktopEnvironment::name:                           \
-    sDesktopEnvironment[idx]->AssignLiteral(desktopEnvId); \
-    break;
-
-const nsAString& GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment id) {
-  if (id >= DesktopEnvironment::Max) {
-    MOZ_ASSERT_UNREACHABLE("DesktopEnvironment id is out of range");
-    id = DesktopEnvironment::All;
-  }
-
-  auto idx = static_cast<size_t>(id);
-  if (sDesktopEnvironment[idx]) {
-    return *sDesktopEnvironment[idx];
-  }
-
-  sDesktopEnvironment[idx] = new nsString();
-
-  switch (id) {
-    DECLARE_DESKTOP_ENVIRONMENT_ID(GNOME, "gnome");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(KDE, "kde");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(XFCE, "xfce");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Cinnamon, "cinnamon");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Enlightenment, "enlightment");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(LXDE, "lxde");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Openbox, "openbox");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(i3, "i3");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Mate, "mate");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Unity, "unity");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Pantheon, "pantheon");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(LXQT, "lxqt");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Deepin, "deepin");
-    DECLARE_DESKTOP_ENVIRONMENT_ID(Unknown, "unknown");
-    case DesktopEnvironment::Max:  // Suppress a warning.
-      DECLARE_DESKTOP_ENVIRONMENT_ID(All, "");
-  }
-
-  return *sDesktopEnvironment[idx];
 }
 
 // Macro for assigning a window protocol id to a string.
@@ -767,9 +680,11 @@ const nsAString& GfxDriverInfo::GetWindowProtocol(WindowProtocol id) {
 
   switch (id) {
     DECLARE_WINDOW_PROTOCOL_ID(X11, "x11");
+    DECLARE_WINDOW_PROTOCOL_ID(XWayland, "xwayland");
     DECLARE_WINDOW_PROTOCOL_ID(Wayland, "wayland");
     DECLARE_WINDOW_PROTOCOL_ID(WaylandDRM, "wayland/drm");
     DECLARE_WINDOW_PROTOCOL_ID(WaylandAll, "wayland/all");
+    DECLARE_WINDOW_PROTOCOL_ID(X11All, "x11/all");
     case WindowProtocol::Max:  // Suppress a warning.
       DECLARE_WINDOW_PROTOCOL_ID(All, "");
   }
@@ -800,12 +715,15 @@ const nsAString& GfxDriverInfo::GetDeviceVendor(DeviceFamily id) {
     case DeviceFamily::IntelGMAX4500HD:
     case DeviceFamily::IntelHDGraphicsToIvyBridge:
     case DeviceFamily::IntelHDGraphicsToSandyBridge:
-    case DeviceFamily::IntelHDGraphicsToHaswell:
-    case DeviceFamily::IntelHD3000:
+    case DeviceFamily::IntelHaswell:
+    case DeviceFamily::IntelSandyBridge:
+    case DeviceFamily::IntelGen7Baytrail:
+    case DeviceFamily::IntelSkylake:
+    case DeviceFamily::IntelKabyLake:
     case DeviceFamily::IntelHD520:
     case DeviceFamily::IntelMobileHDGraphics:
-    case DeviceFamily::IntelRolloutWebRender:
-    case DeviceFamily::IntelModernRolloutWebRender:
+    case DeviceFamily::IntelGen12:
+    case DeviceFamily::IntelWebRenderBlocked:
     case DeviceFamily::Bug1116812:
     case DeviceFamily::Bug1155608:
     case DeviceFamily::Bug1207665:
@@ -813,8 +731,7 @@ const nsAString& GfxDriverInfo::GetDeviceVendor(DeviceFamily id) {
       break;
     case DeviceFamily::NvidiaAll:
     case DeviceFamily::NvidiaBlockD3D9Layers:
-    case DeviceFamily::NvidiaBlockWebRender:
-    case DeviceFamily::NvidiaRolloutWebRender:
+    case DeviceFamily::NvidiaWebRenderBlocked:
     case DeviceFamily::Geforce7300GT:
     case DeviceFamily::Nvidia310M:
     case DeviceFamily::Nvidia8800GTS:
@@ -822,10 +739,11 @@ const nsAString& GfxDriverInfo::GetDeviceVendor(DeviceFamily id) {
       vendor = DeviceVendor::NVIDIA;
       break;
     case DeviceFamily::AtiAll:
+    case DeviceFamily::RadeonBlockZeroVideoCopy:
     case DeviceFamily::RadeonCaicos:
     case DeviceFamily::RadeonX1000:
     case DeviceFamily::Bug1447141:
-    case DeviceFamily::AtiRolloutWebRender:
+    case DeviceFamily::AmdR600:
       vendor = DeviceVendor::ATI;
       break;
     case DeviceFamily::MicrosoftAll:
@@ -833,6 +751,12 @@ const nsAString& GfxDriverInfo::GetDeviceVendor(DeviceFamily id) {
       break;
     case DeviceFamily::ParallelsAll:
       vendor = DeviceVendor::Parallels;
+      break;
+    case DeviceFamily::AppleAll:
+      vendor = DeviceVendor::Apple;
+      break;
+    case DeviceFamily::AmazonAll:
+      vendor = DeviceVendor::Amazon;
       break;
     case DeviceFamily::QualcommAll:
       // Choose an arbitrary Qualcomm PCI VENdor ID for now.
@@ -866,7 +790,13 @@ const nsAString& GfxDriverInfo::GetDeviceVendor(DeviceVendor id) {
     DECLARE_VENDOR_ID(ATI, "0x1002");
     // AMD has 0x1022 but continues to release GPU hardware under ATI.
     DECLARE_VENDOR_ID(Microsoft, "0x1414");
+    DECLARE_VENDOR_ID(MicrosoftBasic, "0x00ba");
+    DECLARE_VENDOR_ID(MicrosoftHyperV, "0x000b");
     DECLARE_VENDOR_ID(Parallels, "0x1ab8");
+    DECLARE_VENDOR_ID(VMWare, "0x15ad");
+    DECLARE_VENDOR_ID(VirtualBox, "0x80ee");
+    DECLARE_VENDOR_ID(Apple, "0x106b");
+    DECLARE_VENDOR_ID(Amazon, "0x1d0f");
     // Choose an arbitrary Qualcomm PCI VENdor ID for now.
     // TODO: This should be "QCOM" when Windows device ID parsing is reworked.
     DECLARE_VENDOR_ID(Qualcomm, "0x5143");
@@ -901,8 +831,16 @@ const nsAString& GfxDriverInfo::GetDriverVendor(DriverVendor id) {
     DECLARE_DRIVER_VENDOR_ID(MesaLLVMPipe, "mesa/llvmpipe");
     DECLARE_DRIVER_VENDOR_ID(MesaSoftPipe, "mesa/softpipe");
     DECLARE_DRIVER_VENDOR_ID(MesaSWRast, "mesa/swrast");
+    DECLARE_DRIVER_VENDOR_ID(MesaSWUnknown, "mesa/software-unknown");
     DECLARE_DRIVER_VENDOR_ID(MesaUnknown, "mesa/unknown");
+    DECLARE_DRIVER_VENDOR_ID(MesaR600, "mesa/r600");
+    DECLARE_DRIVER_VENDOR_ID(MesaNouveau, "mesa/nouveau");
     DECLARE_DRIVER_VENDOR_ID(NonMesaAll, "non-mesa/all");
+    DECLARE_DRIVER_VENDOR_ID(HardwareMesaAll, "mesa/hw-all");
+    DECLARE_DRIVER_VENDOR_ID(SoftwareMesaAll, "mesa/sw-all");
+    DECLARE_DRIVER_VENDOR_ID(MesaNonIntelNvidiaAtiAll,
+                             "mesa/non-intel-nvidia-ati-all");
+    DECLARE_DRIVER_VENDOR_ID(MesaVM, "mesa/vmwgfx");
     case DriverVendor::Max:  // Suppress a warning.
       DECLARE_DRIVER_VENDOR_ID(All, "");
   }

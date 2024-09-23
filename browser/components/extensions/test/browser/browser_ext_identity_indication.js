@@ -12,15 +12,26 @@ function confirmDefaults() {
   } else {
     is(
       getComputedStyle(document.getElementById("identity-icon")).listStyleImage,
-      'url("chrome://browser/skin/search-glass.svg")',
+      'url("chrome://global/skin/icons/search-glass.svg")',
       "Identity icon should be the search icon"
     );
   }
 
   let label = document.getElementById("identity-icon-label");
   ok(
-    BrowserTestUtils.is_hidden(label),
+    BrowserTestUtils.isHidden(label),
     "No label should be used before the extension is started"
+  );
+}
+
+async function waitForIndentityBoxMutation({ expectExtensionIcon }) {
+  const el = document.getElementById("identity-box");
+  await BrowserTestUtils.waitForMutationCondition(
+    el,
+    {
+      attributeFilter: ["class"],
+    },
+    () => el.classList.contains("extensionPage") == expectExtensionIcon
   );
 }
 
@@ -45,13 +56,13 @@ function confirmExtensionPage() {
     "Extension (Test Extension)",
     "The correct label should be used"
   );
-  ok(BrowserTestUtils.is_visible(label), "No label should be visible");
+  ok(BrowserTestUtils.isVisible(label), "No label should be visible");
 }
 
 add_task(async function testIdentityIndication() {
   let extension = ExtensionTestUtils.loadExtension({
     background() {
-      browser.test.sendMessage("url", browser.extension.getURL("icon.png"));
+      browser.test.sendMessage("url", browser.runtime.getURL("icon.png"));
     },
     manifest: {
       name: "Test Extension",
@@ -66,11 +77,20 @@ add_task(async function testIdentityIndication() {
   confirmDefaults();
 
   let url = await extension.awaitMessage("url");
-  await BrowserTestUtils.withNewTab({ gBrowser, url }, async function() {
+
+  const promiseIdentityBoxExtension = waitForIndentityBoxMutation({
+    expectExtensionIcon: true,
+  });
+  await BrowserTestUtils.withNewTab({ gBrowser, url }, async function () {
+    await promiseIdentityBoxExtension;
     confirmExtensionPage();
   });
 
+  const promiseIdentityBoxDefault = waitForIndentityBoxMutation({
+    expectExtensionIcon: false,
+  });
   await extension.unload();
+  await promiseIdentityBoxDefault;
 
   confirmDefaults();
 });
@@ -78,11 +98,11 @@ add_task(async function testIdentityIndication() {
 add_task(async function testIdentityIndicationNewTab() {
   let extension = ExtensionTestUtils.loadExtension({
     background() {
-      browser.test.sendMessage("url", browser.extension.getURL("newtab.html"));
+      browser.test.sendMessage("url", browser.runtime.getURL("newtab.html"));
     },
     manifest: {
       name: "Test Extension",
-      applications: {
+      browser_specific_settings: {
         gecko: {
           id: "@newtab",
         },
@@ -102,12 +122,20 @@ add_task(async function testIdentityIndicationNewTab() {
   confirmDefaults();
 
   let url = await extension.awaitMessage("url");
-  await BrowserTestUtils.withNewTab({ gBrowser, url }, async function() {
+  const promiseIdentityBoxExtension = waitForIndentityBoxMutation({
+    expectExtensionIcon: true,
+  });
+  await BrowserTestUtils.withNewTab({ gBrowser, url }, async function () {
+    await promiseIdentityBoxExtension;
     confirmExtensionPage();
     is(gURLBar.value, "", "The URL bar is blank");
   });
 
+  const promiseIdentityBoxDefault = waitForIndentityBoxMutation({
+    expectExtensionIcon: false,
+  });
   await extension.unload();
+  await promiseIdentityBoxDefault;
 
   confirmDefaults();
 });

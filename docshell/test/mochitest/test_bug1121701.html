@@ -10,51 +10,88 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1121701
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
   <script type="application/javascript">
 
-  /** Test for Bug 1121701 **/
+  /** Test for Bug 1121701 */
+  SimpleTest.waitForExplicitFinish();
 
   var testUrl1 = "file_bug1121701_1.html";
   var testUrl2 = "file_bug1121701_2.html";
-  var testWin;
 
   var page1LoadCount = 0;
-  function child1PageShow(e) {
-    ++page1LoadCount;
-    if (page1LoadCount == 1) {
-      SimpleTest.executeSoon(function() {
-        is(e.persisted, false, "Initial page load shouldn't be persisted.");
-        testWin.document.body.innerHTML = "modified";
-        testWin.onpagehide = function(event) {
-          testWin.onpagehide = null;
-          ok(event.persisted, "test page 1 should have been persisted");
-          is(testWin.document.body.innerHTML, "modified");
-        };
-        testWin.location.href = testUrl2;
+  let page1Done = {};
+  page1Done.promise = new Promise(resolve => {
+    page1Done.resolve = resolve;
+  });
+  let page2Done = {};
+  page2Done.promise = new Promise(resolve => {
+    page2Done.resolve = resolve;
+  });
+
+  addLoadEvent(async function() {
+
+    // Bug 1746646: Make mochitests work with TCP enabled (cookieBehavior = 5)
+    // Acquire storage access permission here so that the BroadcastChannel used to
+    // communicate with the opened windows works in xorigin tests. Otherwise,
+    // the iframe containing this page is isolated from first-party storage access,
+    // which isolates BroadcastChannel communication.
+    if (isXOrigin) {
+      await SpecialPowers.pushPrefEnv({
+        set: [["privacy.partition.always_partition_third_party_non_cookie_storage", false]],
       });
-    } else if (page1LoadCount == 2) {
-      is(e.persisted, true, "Page load from bfcache should be persisted.");
-      is(testWin.document.body.innerHTML, "modified");
-      testWin.close();
+      SpecialPowers.wrap(document).notifyUserGestureActivation();
+      await SpecialPowers.addPermission("storageAccessAPI", true, window.location.href);
+      await SpecialPowers.wrap(document).requestStorageAccess();
+    }
+
+    var bc = new BroadcastChannel("file_bug1121701_1");
+    var bc2 = new BroadcastChannel("file_bug1121701_2");
+
+    async function scheduleFinish() {
+      await Promise.all([page1Done.promise, page2Done.promise]);
+      bc2.close();
+      bc.close();
       SimpleTest.finish();
     }
-  }
 
-  function child2PageShow(e) {
-    testWin.document.body.innerHTML = "<img>";
-    SimpleTest.executeSoon(function() {
-      testWin.onmessage = function() {
-        ok(true, "Got message");
-        testWin.document.body.firstChild.src = location.href;
-      };
-      testWin.onbeforeunload = function() {
-        testWin.postMessage("foo", "*");
-      };
-      testWin.history.back();
+    bc.onmessage = (msgEvent) => {
+      var msg = msgEvent.data;
+      var command = msg.command;
+      if (command == "child1PageShow") {
+        ++page1LoadCount;
+        var persisted = msg.persisted;
+        var pageHideAsserts = msg.pageHideAsserts;
+        if (pageHideAsserts) {
+          ok(pageHideAsserts.persisted, "onpagehide: test page 1 should get persisted");
+          is(pageHideAsserts.innerHTML, "modified",  "onpagehide: innerHTML text is 'modified'");
+        }
+        if (page1LoadCount == 1) {
+          SimpleTest.executeSoon(function() {
+            is(persisted, false, "Initial page load shouldn't be persisted.");
+            bc.postMessage({command: "setInnerHTML", testUrl2});
+          });
+        } else if (page1LoadCount == 2) {
+          is(persisted, true, "Page load from bfcache should be persisted.");
+          is(msg.innerHTML, "modified", "innerHTML text is 'modified'");
+          bc.postMessage({command: "close"});
+        }
+      } else if (command == "closed") {
+        page1Done.resolve();
+      }
+    }
+    bc2.onmessage = (msgEvent) => {
+      var msg = msgEvent.data;
+      var command = msg.command;
+      if (command == "child2PageShow") {
+        bc2.postMessage({command: "setInnerHTML", location: location.href});
+      } else if (command == "onmessage") {
+        page2Done.resolve();
+      }
+    }
+
+    scheduleFinish();
+    // If Fission is disabled, the pref is no-op.
+    SpecialPowers.pushPrefEnv({set: [["fission.bfcacheInParent", true]]}, () => {
+      window.open(testUrl1, "", "noopener");
     });
-  }
-
-  SimpleTest.waitForExplicitFinish();
-  addLoadEvent(function() {
-    testWin = window.open(testUrl1);
   });
 
   </script>

@@ -32,7 +32,7 @@ function _getPixel(canvas, x,y)
     return [ imgdata.data[0], imgdata.data[1], imgdata.data[2], imgdata.data[3] ];
 }
 
-function _assertPixel(canvas, x,y, r,g,b,a, pos, colour)
+function _assertPixel(canvas, x, y, r, g, b, a)
 {
     var c = _getPixel(canvas, x,y);
     assert_equals(c[0], r, 'Red channel of the pixel at (' + x + ', ' + y + ')');
@@ -41,7 +41,7 @@ function _assertPixel(canvas, x,y, r,g,b,a, pos, colour)
     assert_equals(c[3], a, 'Alpha channel of the pixel at (' + x + ', ' + y + ')');
 }
 
-function _assertPixelApprox(canvas, x,y, r,g,b,a, pos, colour, tolerance)
+function _assertPixelApprox(canvas, x, y, r, g, b, a, tolerance)
 {
     var c = _getPixel(canvas, x,y);
     assert_approx_equals(c[0], r, tolerance, 'Red channel of the pixel at (' + x + ', ' + y + ')');
@@ -50,19 +50,37 @@ function _assertPixelApprox(canvas, x,y, r,g,b,a, pos, colour, tolerance)
     assert_approx_equals(c[3], a, tolerance, 'Alpha channel of the pixel at (' + x + ', ' + y + ')');
 }
 
+function _assertMatricesApproxEqual(matA, matB)
+{
+  A = matA.toFloat32Array();
+  B = matB.toFloat32Array();
+  assert_equals(A.length, B.length);
+  for (var i = 0; i < A.length; i++) {
+    assert_approx_equals(A[i], B[i], 10e-6);
+  }
+}
+
+function rad2deg(angle_in_radians) {
+  return angle_in_radians / Math.PI * 180;
+}
+
+function deg2rad(angle_in_degrees) {
+  return angle_in_degrees / 180 * Math.PI;
+}
+
 let _deferred = false;
 
 function deferTest() {
   _deferred = true;
 }
 
-function _addTest(testFn)
+function _addTest(testFn, attributes={})
 {
     on_event(window, "load", function()
     {
         t.step(function() {
             var canvas = document.getElementById('c');
-            var ctx = canvas.getContext('2d');
+            var ctx = canvas.getContext('2d', attributes);
             t.step(testFn, window, canvas, ctx);
         });
 
@@ -144,6 +162,7 @@ function forEachCanvasSource(crossOriginUrl, sameOriginUrl, callback) {
         return new Promise((resolve, reject) => {
           const video = document.createElement("video");
           video.oncanplaythrough = () => resolve(video);
+          video.preload = "auto";
           video.onerror = reject;
           video.src = getVideoURI(crossOriginUrl + "/media/movie_300");
         });
@@ -156,6 +175,7 @@ function forEachCanvasSource(crossOriginUrl, sameOriginUrl, callback) {
         return new Promise((resolve, reject) => {
           const video = document.createElement("video");
           video.oncanplaythrough = () => resolve(video);
+          video.preload = "auto";
           video.onerror = reject;
           video.src = "/common/redirect.py?location=" + getVideoURI(crossOriginUrl + "/media/movie_300");
         });
@@ -168,6 +188,7 @@ function forEachCanvasSource(crossOriginUrl, sameOriginUrl, callback) {
         return new Promise((resolve, reject) => {
           const video = document.createElement("video");
           video.oncanplaythrough = () => resolve(video);
+          video.preload = "auto";
           video.onerror = reject;
           video.src = crossOriginUrl + "/common/redirect.py?location=" + getVideoURI(sameOriginUrl + "/media/movie_300");
         });

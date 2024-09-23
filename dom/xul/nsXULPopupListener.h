@@ -12,15 +12,15 @@
 
 #include "nsCOMPtr.h"
 
-#include "mozilla/dom/Element.h"
 #include "nsIDOMEventListener.h"
 #include "nsCycleCollectionParticipant.h"
 
-namespace mozilla {
-namespace dom {
+class nsIContent;
+
+namespace mozilla::dom {
+class Element;
 class MouseEvent;
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 class nsXULPopupListener : public nsIDOMEventListener {
  public:
@@ -46,11 +46,6 @@ class nsXULPopupListener : public nsIDOMEventListener {
   virtual void ClosePopup();
 
  private:
-#ifndef NS_CONTEXT_MENU_IS_MOUSEUP
-  // When a context menu is opened, focus the target of the contextmenu event.
-  nsresult FireFocusOnTargetContent(nsIContent* aTargetContent, bool aIsTouch);
-#endif
-
   // |mElement| is the node to which this listener is attached.
   RefPtr<mozilla::dom::Element> mElement;
 

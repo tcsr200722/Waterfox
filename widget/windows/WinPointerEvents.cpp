@@ -8,10 +8,11 @@
  */
 
 #include "nscore.h"
+#include "nsWindowDefs.h"
 #include "WinPointerEvents.h"
+#include "WinUtils.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/WindowsVersion.h"
 #include "mozilla/dom/MouseEventBinding.h"
 
 using namespace mozilla;
@@ -29,10 +30,6 @@ WinPointerEvents::WinPointerEvents() { InitLibrary(); }
 /* Load and shutdown */
 void WinPointerEvents::InitLibrary() {
   MOZ_ASSERT(XRE_IsParentProcess());
-  if (!IsWin8OrLater()) {
-    // Only Win8 or later supports WM_POINTER*
-    return;
-  }
   if (getPointerType) {
     // Return if we already initialized the PointerEvent related interfaces
     return;
@@ -61,7 +58,7 @@ bool WinPointerEvents::ShouldHandleWinPointerMessages(UINT aMsg,
                                                       WPARAM aWParam) {
   MOZ_ASSERT(aMsg == WM_POINTERDOWN || aMsg == WM_POINTERUP ||
              aMsg == WM_POINTERUPDATE || aMsg == WM_POINTERLEAVE);
-  if (!sLibraryHandle || !StaticPrefs::dom_w3c_pointer_events_enabled()) {
+  if (!sLibraryHandle) {
     return false;
   }
 
@@ -108,12 +105,6 @@ bool WinPointerEvents::GetPointerPenInfo(uint32_t aPointerId,
   return getPointerPenInfo(aPointerId, aPenInfo);
 }
 
-bool WinPointerEvents::ShouldEnableInkCollector() {
-  // We need InkCollector on Win7. For Win8 or later, we handle WM_POINTER* for
-  // pen.
-  return !IsWin8OrLater();
-}
-
 bool WinPointerEvents::ShouldRollupOnPointerEvent(UINT aMsg, WPARAM aWParam) {
   MOZ_ASSERT(aMsg == WM_POINTERDOWN);
   // Only roll up popups when we handling WM_POINTER* to fire Gecko
@@ -123,13 +114,13 @@ bool WinPointerEvents::ShouldRollupOnPointerEvent(UINT aMsg, WPARAM aWParam) {
 }
 
 bool WinPointerEvents::ShouldFirePointerEventByWinPointerMessages() {
-  MOZ_ASSERT(sLibraryHandle && StaticPrefs::dom_w3c_pointer_events_enabled());
+  MOZ_ASSERT(sLibraryHandle);
   return StaticPrefs::dom_w3c_pointer_events_dispatch_by_pointer_messages();
 }
 
 WinPointerInfo* WinPointerEvents::GetCachedPointerInfo(UINT aMsg,
                                                        WPARAM aWParam) {
-  if (!sLibraryHandle || !StaticPrefs::dom_w3c_pointer_events_enabled() ||
+  if (!sLibraryHandle ||
       MOUSE_INPUT_SOURCE() != dom::MouseEvent_Binding::MOZ_SOURCE_PEN ||
       ShouldFirePointerEventByWinPointerMessages()) {
     return nullptr;

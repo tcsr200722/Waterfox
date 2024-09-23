@@ -11,8 +11,12 @@
 
 #include "nsIContentSecurityPolicy.h"
 #include "nsNetUtil.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/nsCSPContext.h"
+#include "mozilla/gtest/MozAssertions.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsStringFwd.h"
 
 /*
@@ -89,8 +93,7 @@ nsresult runTest(
 
   // for testing the parser we only need to set a principal which is needed
   // to translate the keyword 'self' into an actual URI.
-  rv = csp->SetRequestContextWithPrincipal(selfURIPrincipal, selfURI,
-                                           EmptyString(), 0);
+  rv = csp->SetRequestContextWithPrincipal(selfURIPrincipal, selfURI, ""_ns, 0);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // append a policy
@@ -146,20 +149,17 @@ nsresult runTestSuite(const PolicyTest* aPolicies, uint32_t aPolicyCount,
                       uint32_t aExpectedPolicyCount) {
   nsresult rv;
   nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
-  bool experimentalEnabledCache = false;
-  bool strictDynamicEnabledCache = false;
-  bool navigateTo = false;
+
+  // Add prefs you need to set to parse CSP here, see comments for example
+  // bool examplePref = false;
+  bool trustedTypesEnabled = false;
+  constexpr auto kTrustedTypesEnabledPrefName =
+      "dom.security.trusted_types.enabled";
   if (prefs) {
-    prefs->GetBoolPref("security.csp.experimentalEnabled",
-                       &experimentalEnabledCache);
-    prefs->SetBoolPref("security.csp.experimentalEnabled", true);
-
-    prefs->GetBoolPref("security.csp.enableStrictDynamic",
-                       &strictDynamicEnabledCache);
-    prefs->SetBoolPref("security.csp.enableStrictDynamic", true);
-
-    prefs->GetBoolPref("security.csp.enableNavigateTo", &navigateTo);
-    prefs->SetBoolPref("security.csp.enableNavigateTo", true);
+    // prefs->GetBoolPref("security.csp.examplePref", &examplePref);
+    // prefs->SetBoolPref("security.csp.examplePref", true);
+    prefs->GetBoolPref(kTrustedTypesEnabledPrefName, &trustedTypesEnabled);
+    prefs->SetBoolPref(kTrustedTypesEnabledPrefName, true);
   }
 
   for (uint32_t i = 0; i < aPolicyCount; i++) {
@@ -169,11 +169,8 @@ nsresult runTestSuite(const PolicyTest* aPolicies, uint32_t aPolicyCount,
   }
 
   if (prefs) {
-    prefs->SetBoolPref("security.csp.experimentalEnabled",
-                       experimentalEnabledCache);
-    prefs->SetBoolPref("security.csp.enableStrictDynamic",
-                       strictDynamicEnabledCache);
-    prefs->SetBoolPref("security.csp.enableNavigateTo", navigateTo);
+    // prefs->SetBoolPref("security.csp.examplePref", examplePref);
+    prefs->SetBoolPref(kTrustedTypesEnabledPrefName, trustedTypesEnabled);
   }
 
   return NS_OK;
@@ -222,22 +219,23 @@ TEST(CSPParser, Directives)
     { "script-src 'nonce-foo' 'strict-dynamic' 'unsafe-inline' 'report-sample' https:  ",
       "script-src 'nonce-foo' 'strict-dynamic' 'unsafe-inline' 'report-sample' https:" },
     { "default-src 'sha256-siVR8' 'strict-dynamic' 'unsafe-inline' https:  ",
-      "default-src 'sha256-siVR8' 'unsafe-inline' https:" },
+      "default-src 'sha256-siVR8' 'strict-dynamic' 'unsafe-inline' https:" },
     { "worker-src https://example.com",
       "worker-src https://example.com" },
     { "worker-src http://worker.com; frame-src http://frame.com; child-src http://child.com",
       "worker-src http://worker.com; frame-src http://frame.com; child-src http://child.com" },
-    { "navigate-to http://example.com",
-      "navigate-to http://example.com"},
-    { "navigate-to 'unsafe-allow-redirects' http://example.com",
-      "navigate-to 'unsafe-allow-redirects' http://example.com"},
     { "script-src 'unsafe-allow-redirects' http://example.com",
       "script-src http://example.com"},
+    { "require-trusted-types-for 'script'",
+      "require-trusted-types-for 'script'" },
+    { "trusted-types somePolicyName", "trusted-types somePolicyName" },
+    { "trusted-types somePolicyName anotherPolicyName 1 - # = _ / @ . % *",
+      "trusted-types somePolicyName anotherPolicyName 1 - # = _ / @ . % *" },
       // clang-format on
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ============================= TestKeywords ========================
@@ -256,13 +254,20 @@ TEST(CSPParser, Keywords)
       "script-src 'unsafe-inline' 'unsafe-eval'" },
     { "script-src 'none'",
       "script-src 'none'" },
+    { "script-src 'wasm-unsafe-eval'",
+      "script-src 'wasm-unsafe-eval'" },
     { "img-src 'none'; script-src 'unsafe-eval' 'unsafe-inline'; default-src 'self'",
       "img-src 'none'; script-src 'unsafe-eval' 'unsafe-inline'; default-src 'self'" },
+    { "trusted-types somePolicyName 'allow-duplicates'",
+      "trusted-types somePolicyName 'allow-duplicates'" },
+    { "trusted-types 'none'", "trusted-types 'none'" },
+    { "trusted-types", "trusted-types 'none'" },
+    { "trusted-types *", "trusted-types *" },
       // clang-format on
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // =================== TestIgnoreUpperLowerCasePolicies ==============
@@ -305,7 +310,7 @@ TEST(CSPParser, IgnoreUpperLowerCasePolicies)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ========================= TestPaths ===============================
@@ -404,7 +409,7 @@ TEST(CSPParser, Paths)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ======================== TestSimplePolicies =======================
@@ -413,6 +418,12 @@ TEST(CSPParser, SimplePolicies)
 {
   static const PolicyTest policies[] = {
       // clang-format off
+    { "frame-src intent:",
+      "frame-src intent:" },
+    { "frame-src intent://host.name",
+      "frame-src intent://host.name" },
+    { "frame-src intent://my.host.link/",
+      "frame-src intent://my.host.link/" },
     { "default-src *",
       "default-src *" },
     { "default-src https:",
@@ -481,7 +492,7 @@ TEST(CSPParser, SimplePolicies)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // =================== TestPoliciesWithInvalidSrc ====================
@@ -575,7 +586,7 @@ TEST(CSPParser, PoliciesWithInvalidSrc)
 
   // amount of tests - 1, because the latest should be ignored.
   uint32_t policyCount = (sizeof(policies) / sizeof(PolicyTest)) - 1;
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ============================= TestBadPolicies =======================
@@ -594,11 +605,12 @@ TEST(CSPParser, BadPolicies)
     { "report-uri http://:foo", ""},
     { "require-sri-for", ""},
     { "require-sri-for style", ""},
+    { "trusted-types $", ""},
       // clang-format on
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 0)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 0));
 }
 
 // ======================= TestGoodGeneratedPolicies =================
@@ -827,7 +839,7 @@ TEST(CSPParser, GoodGeneratedPolicies)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ==================== TestBadGeneratedPolicies ====================
@@ -854,7 +866,7 @@ TEST(CSPParser, BadGeneratedPolicies)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 0)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 0));
 }
 
 // ============ TestGoodGeneratedPoliciesForPathHandling =============
@@ -978,7 +990,7 @@ TEST(CSPParser, GoodGeneratedPoliciesForPathHandling)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ============== TestBadGeneratedPoliciesForPathHandling ============
@@ -1005,7 +1017,7 @@ TEST(CSPParser, BadGeneratedPoliciesForPathHandling)
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);
-  ASSERT_TRUE(NS_SUCCEEDED(runTestSuite(policies, policyCount, 1)));
+  ASSERT_NS_SUCCEEDED(runTestSuite(policies, policyCount, 1));
 }
 
 // ======================== TestFuzzyPolicies ========================

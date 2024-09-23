@@ -9,10 +9,9 @@
 
 #include "XULPopupElement.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-nsXULElement* NS_NewXULPopupElement(
+nsXULElement* NS_NewXULTooltipElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 class XULTooltipElement final : public XULPopupElement {
@@ -22,18 +21,15 @@ class XULTooltipElement final : public XULPopupElement {
       : XULPopupElement(std::move(aNodeInfo)) {}
   nsresult Init();
 
-  virtual nsresult AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
-  virtual nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
+  void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aSubjectPrincipal, bool aNotify) override;
+  nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
 
  protected:
   virtual ~XULTooltipElement() = default;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // XULPopupElement_h

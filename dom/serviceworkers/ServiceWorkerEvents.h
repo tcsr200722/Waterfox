@@ -22,8 +22,7 @@
 
 class nsIInterceptedChannel;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Blob;
 class Client;
@@ -138,6 +137,8 @@ class FetchEvent final : public ExtendableEvent {
   nsMainThreadPtrHandle<nsIInterceptedChannel> mChannel;
   nsMainThreadPtrHandle<ServiceWorkerRegistrationInfo> mRegistration;
   RefPtr<Request> mRequest;
+  RefPtr<Promise> mHandled;
+  RefPtr<Promise> mPreloadResponse;
   nsCString mScriptSpec;
   nsCString mPreventDefaultScriptSpec;
   nsString mClientId;
@@ -184,6 +185,10 @@ class FetchEvent final : public ExtendableEvent {
     aResultingClientId = mResultingClientId;
   }
 
+  Promise* Handled() const { return mHandled; }
+
+  Promise* PreloadResponse() const { return mPreloadResponse; }
+
   void RespondWith(JSContext* aCx, Promise& aArg, ErrorResult& aRv);
 
   // Pull in the Event version of PreventDefault so we don't get
@@ -197,7 +202,7 @@ class FetchEvent final : public ExtendableEvent {
 class PushMessageData final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(PushMessageData)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PushMessageData)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -210,6 +215,8 @@ class PushMessageData final : public nsISupports, public nsWrapperCache {
   void ArrayBuffer(JSContext* cx, JS::MutableHandle<JSObject*> aRetval,
                    ErrorResult& aRv);
   already_AddRefed<mozilla::dom::Blob> Blob(ErrorResult& aRv);
+  void Bytes(JSContext* cx, JS::MutableHandle<JSObject*> aRetval,
+             ErrorResult& aRv);
 
   PushMessageData(nsIGlobalObject* aOwner, nsTArray<uint8_t>&& aBytes);
 
@@ -299,7 +306,6 @@ class ExtendableMessageEvent final : public ExtendableEvent {
   void GetPorts(nsTArray<RefPtr<MessagePort>>& aPorts);
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_serviceworkerevents_h__ */

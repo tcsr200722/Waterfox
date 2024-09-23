@@ -7,8 +7,6 @@
 #ifndef gc_Memory_h
 #define gc_Memory_h
 
-#include "mozilla/Attributes.h"
-
 #include <stddef.h>
 
 namespace js {
@@ -39,6 +37,10 @@ bool UsingScattershotAllocator();
 void* MapAlignedPages(size_t length, size_t alignment);
 void UnmapPages(void* region, size_t length);
 
+// We can only decommit unused pages if the page size is less than or equal to
+// the hardcoded Arena size for the running process.
+bool DecommitEnabled();
+
 // Tell the OS that the given pages are not in use, so they should not be
 // written to a paging file. This may be a no-op on some platforms.
 bool MarkPagesUnusedSoft(void* region, size_t length);
@@ -57,7 +59,7 @@ void MarkPagesInUseSoft(void* region, size_t length);
 // and should be paged in and out normally. This may be a no-op on some
 // platforms. Callers must check the result, false could mean that the pages
 // are not available.  May make pages read/write.
-MOZ_MUST_USE bool MarkPagesInUseHard(void* region, size_t length);
+[[nodiscard]] bool MarkPagesInUseHard(void* region, size_t length);
 
 // Returns #(hard faults) + #(soft faults)
 size_t GetPageFaultCount();
@@ -70,7 +72,7 @@ void* AllocateMappedContent(int fd, size_t offset, size_t length,
 // Deallocate memory mapped content.
 void DeallocateMappedContent(void* region, size_t length);
 
-void* TestMapAlignedPagesLastDitch(size_t size, size_t alignment);
+void* TestMapAlignedPagesLastDitch(size_t length, size_t alignment);
 
 void ProtectPages(void* region, size_t length);
 void MakePagesReadOnly(void* region, size_t length);

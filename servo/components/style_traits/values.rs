@@ -7,6 +7,7 @@
 use app_units::Au;
 use cssparser::ToCss as CssparserToCss;
 use cssparser::{serialize_string, ParseError, Parser, Token, UnicodeRange};
+use nsstring::nsCString;
 use servo_arc::Arc;
 use std::fmt::{self, Write};
 
@@ -44,6 +45,38 @@ use std::fmt::{self, Write};
 /// * `#[css(represents_keyword)]` can be used on bool fields in order to
 ///   serialize the field name if the field is true, or nothing otherwise.  It
 ///   also collects those keywords for `SpecifiedValueInfo`.
+/// * `#[css(bitflags(single="", mixed="", validate_mixed="", overlapping_bits)]` can
+///   be used to derive parse / serialize / etc on bitflags. The rules for parsing
+///   bitflags are the following:
+///
+///     * `single` flags can only appear on their own. It's common that bitflags
+///       properties at least have one such value like `none` or `auto`.
+///     * `mixed` properties can appear mixed together, but not along any other
+///       flag that shares a bit with itself. For example, if you have three
+///       bitflags like:
+///
+///         FOO = 1 << 0;
+///         BAR = 1 << 1;
+///         BAZ = 1 << 2;
+///         BAZZ = BAR | BAZ;
+///
+///       Then the following combinations won't be valid:
+///
+///         * foo foo: (every flag shares a bit with itself)
+///         * bar bazz: (bazz shares a bit with bar)
+///
+///       But `bar baz` will be valid, as they don't share bits, and so would
+///       `foo` with any other flag, or `bazz` on its own.
+///    * `validate_mixed` can be used to reject invalid mixed combinations, and also to simplify
+///      the type or add default ones if needed.
+///    * `overlapping_bits` enables some tracking during serialization of mixed flags to avoid
+///       serializing variants that can subsume other variants.
+///       In the example above, you could do:
+///         mixed="foo,bazz,bar,baz", overlapping_bits
+///       to ensure that if bazz is serialized, bar and baz aren't, even though
+///       their bits are set. Note that the serialization order is canonical,
+///       and thus depends on the order you specify the flags in.
+///
 /// * finally, one can put `#[css(derive_debug)]` on the whole type, to
 ///   implement `Debug` by a single call to `ToCss::to_css`.
 pub trait ToCss {
@@ -58,6 +91,16 @@ pub trait ToCss {
     #[inline]
     fn to_css_string(&self) -> String {
         let mut s = String::new();
+        self.to_css(&mut CssWriter::new(&mut s)).unwrap();
+        s
+    }
+
+    /// Serialize `self` in CSS syntax and return a nsCString.
+    ///
+    /// (This is a convenience wrapper for `to_css` and probably should not be overridden.)
+    #[inline]
+    fn to_css_nscstring(&self) -> nsCString {
+        let mut s = nsCString::new();
         self.to_css(&mut CssWriter::new(&mut s)).unwrap();
         s
     }
@@ -115,6 +158,16 @@ where
         W: Write,
     {
         self.as_ref().map_or(Ok(()), |value| value.to_css(dest))
+    }
+}
+
+impl ToCss for () {
+    #[inline]
+    fn to_css<W>(&self, _: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        Ok(())
     }
 }
 
@@ -192,38 +245,57 @@ where
         Self { inner, separator }
     }
 
+    /// Serialize the CSS Value with the specific serialization function.
     #[inline]
-    fn write_item<F>(&mut self, f: F) -> fmt::Result
+    pub fn write_item<F>(&mut self, f: F) -> fmt::Result
     where
         F: FnOnce(&mut CssWriter<'b, W>) -> fmt::Result,
     {
-        let old_prefix = self.inner.prefix;
-        if old_prefix.is_none() {
-            // If there is no prefix in the inner writer, a previous
-            // call to this method produced output, which means we need
-            // to write the separator next time we produce output again.
-            self.inner.prefix = Some(self.separator);
+        // Separate non-generic functions so that this code is not repeated
+        // in every monomorphization with a different type `F` or `W`.
+        // https://github.com/servo/servo/issues/26713
+        fn before(
+            prefix: &mut Option<&'static str>,
+            separator: &'static str,
+        ) -> Option<&'static str> {
+            let old_prefix = *prefix;
+            if old_prefix.is_none() {
+                // If there is no prefix in the inner writer, a previous
+                // call to this method produced output, which means we need
+                // to write the separator next time we produce output again.
+                *prefix = Some(separator);
+            }
+            old_prefix
         }
+        fn after(
+            old_prefix: Option<&'static str>,
+            prefix: &mut Option<&'static str>,
+            separator: &'static str,
+        ) {
+            match (old_prefix, *prefix) {
+                (_, None) => {
+                    // This call produced output and cleaned up after itself.
+                },
+                (None, Some(p)) => {
+                    // Some previous call to `item` produced output,
+                    // but this one did not, prefix should be the same as
+                    // the one we set.
+                    debug_assert_eq!(separator, p);
+                    // We clean up here even though it's not necessary just
+                    // to be able to do all these assertion checks.
+                    *prefix = None;
+                },
+                (Some(old), Some(new)) => {
+                    // No previous call to `item` produced output, and this one
+                    // either.
+                    debug_assert_eq!(old, new);
+                },
+            }
+        }
+
+        let old_prefix = before(&mut self.inner.prefix, self.separator);
         f(self.inner)?;
-        match (old_prefix, self.inner.prefix) {
-            (_, None) => {
-                // This call produced output and cleaned up after itself.
-            },
-            (None, Some(p)) => {
-                // Some previous call to `item` produced output,
-                // but this one did not, prefix should be the same as
-                // the one we set.
-                debug_assert_eq!(self.separator, p);
-                // We clean up here even though it's not necessary just
-                // to be able to do all these assertion checks.
-                self.inner.prefix = None;
-            },
-            (Some(old), Some(new)) => {
-                // No previous call to `item` produced output, and this one
-                // either.
-                debug_assert_eq!(old, new);
-            },
-        }
+        after(old_prefix, &mut self.inner.prefix, self.separator);
         Ok(())
     }
 
@@ -316,11 +388,11 @@ impl Separator for Space {
     where
         F: for<'tt> FnMut(&mut Parser<'i, 'tt>) -> Result<T, ParseError<'i, E>>,
     {
-        input.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
+        input.skip_whitespace(); // Unnecessary for correctness, but may help try_parse() rewind less.
         let mut results = vec![parse_one(input)?];
         loop {
-            input.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
-            if let Ok(item) = input.try(&mut parse_one) {
+            input.skip_whitespace(); // Unnecessary for correctness, but may help try_parse() rewind less.
+            if let Ok(item) = input.try_parse(&mut parse_one) {
                 results.push(item);
             } else {
                 return Ok(results);
@@ -341,14 +413,14 @@ impl Separator for CommaWithSpace {
     where
         F: for<'tt> FnMut(&mut Parser<'i, 'tt>) -> Result<T, ParseError<'i, E>>,
     {
-        input.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
+        input.skip_whitespace(); // Unnecessary for correctness, but may help try_parse() rewind less.
         let mut results = vec![parse_one(input)?];
         loop {
-            input.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
+            input.skip_whitespace(); // Unnecessary for correctness, but may help try_parse() rewind less.
             let comma_location = input.current_source_location();
-            let comma = input.try(|i| i.expect_comma()).is_ok();
-            input.skip_whitespace(); // Unnecessary for correctness, but may help try() rewind less.
-            if let Ok(item) = input.try(&mut parse_one) {
+            let comma = input.try_parse(|i| i.expect_comma()).is_ok();
+            input.skip_whitespace(); // Unnecessary for correctness, but may help try_parse() rewind less.
+            if let Ok(item) = input.try_parse(&mut parse_one) {
                 results.push(item);
             } else if comma {
                 return Err(comma_location.new_unexpected_token_error(Token::Comma));
@@ -439,67 +511,11 @@ macro_rules! impl_to_css_for_predefined_type {
 impl_to_css_for_predefined_type!(f32);
 impl_to_css_for_predefined_type!(i8);
 impl_to_css_for_predefined_type!(i32);
+impl_to_css_for_predefined_type!(u8);
 impl_to_css_for_predefined_type!(u16);
 impl_to_css_for_predefined_type!(u32);
 impl_to_css_for_predefined_type!(::cssparser::Token<'a>);
-impl_to_css_for_predefined_type!(::cssparser::RGBA);
-impl_to_css_for_predefined_type!(::cssparser::Color);
 impl_to_css_for_predefined_type!(::cssparser::UnicodeRange);
-
-/// Define an enum type with unit variants that each correspond to a CSS keyword.
-macro_rules! define_css_keyword_enum {
-    (pub enum $name:ident { $($variant:ident = $css:expr,)+ }) => {
-        #[allow(missing_docs)]
-        #[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
-        #[derive(Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
-        pub enum $name {
-            $($variant),+
-        }
-
-        impl $name {
-            /// Parse this property from a CSS input stream.
-            pub fn parse<'i, 't>(input: &mut ::cssparser::Parser<'i, 't>)
-                                 -> Result<$name, $crate::ParseError<'i>> {
-                use cssparser::Token;
-                let location = input.current_source_location();
-                match *input.next()? {
-                    Token::Ident(ref ident) => {
-                        Self::from_ident(ident).map_err(|()| {
-                            location.new_unexpected_token_error(
-                                Token::Ident(ident.clone()),
-                            )
-                        })
-                    }
-                    ref token => {
-                        Err(location.new_unexpected_token_error(token.clone()))
-                    }
-                }
-            }
-
-            /// Parse this property from an already-tokenized identifier.
-            pub fn from_ident(ident: &str) -> Result<$name, ()> {
-                match_ignore_ascii_case! { ident,
-                    $($css => Ok($name::$variant),)+
-                    _ => Err(())
-                }
-            }
-        }
-
-        impl $crate::ToCss for $name {
-            fn to_css<W>(
-                &self,
-                dest: &mut $crate::CssWriter<W>,
-            ) -> ::std::fmt::Result
-            where
-                W: ::std::fmt::Write,
-            {
-                match *self {
-                    $( $name::$variant => ::std::fmt::Write::write_str(dest, $css) ),+
-                }
-            }
-        }
-    };
-}
 
 /// Helper types for the handling of specified values.
 pub mod specified {
@@ -517,6 +533,8 @@ pub mod specified {
         NonNegative,
         /// Allow only numeric values greater or equal to 1.0.
         AtLeastOne,
+        /// Allow only numeric values from 0 to 1.0.
+        ZeroToOne,
     }
 
     impl Default for AllowedNumericType {
@@ -537,6 +555,7 @@ pub mod specified {
                 AllowedNumericType::All => true,
                 AllowedNumericType::NonNegative => val >= 0.0,
                 AllowedNumericType::AtLeastOne => val >= 1.0,
+                AllowedNumericType::ZeroToOne => val >= 0.0 && val <= 1.0,
             }
         }
 
@@ -544,9 +563,10 @@ pub mod specified {
         #[inline]
         pub fn clamp(&self, val: f32) -> f32 {
             match *self {
-                AllowedNumericType::NonNegative if val < 0. => 0.,
-                AllowedNumericType::AtLeastOne if val < 1. => 1.,
-                _ => val,
+                AllowedNumericType::All => val,
+                AllowedNumericType::NonNegative => val.max(0.),
+                AllowedNumericType::AtLeastOne => val.max(1.),
+                AllowedNumericType::ZeroToOne => val.max(0.).min(1.),
             }
         }
     }

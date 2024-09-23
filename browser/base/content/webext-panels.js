@@ -7,14 +7,12 @@
 /* import-globals-from browser.js */
 /* import-globals-from nsContextMenu.js */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionParent",
-  "resource://gre/modules/ExtensionParent.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  ExtensionParent: "resource://gre/modules/ExtensionParent.sys.mjs",
+});
 
-const { ExtensionUtils } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionUtils.jsm"
+const { ExtensionUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionUtils.sys.mjs"
 );
 
 var { promiseEvent } = ExtensionUtils;
@@ -38,28 +36,36 @@ function getBrowser(panel) {
   browser.setAttribute("type", "content");
   browser.setAttribute("flex", "1");
   browser.setAttribute("disableglobalhistory", "true");
+  browser.setAttribute("messagemanagergroup", "webext-browsers");
   browser.setAttribute("webextension-view-type", panel.viewType);
   browser.setAttribute("context", "contentAreaContextMenu");
   browser.setAttribute("tooltip", "aHTMLTooltip");
   browser.setAttribute("autocompletepopup", "PopupAutoComplete");
-  browser.setAttribute("selectmenulist", "ContentSelectDropdown");
 
-  // Ensure that the browser is going to run in the same process of the other
+  // Ensure that the browser is going to run in the same bc group as the other
   // extension pages from the same addon.
-  browser.sameProcessAsFrameLoader = panel.extension.groupFrameLoader;
+  browser.setAttribute(
+    "initialBrowsingContextGroupId",
+    panel.extension.policy.browsingContextGroupId
+  );
 
   let readyPromise;
   if (panel.extension.remote) {
     browser.setAttribute("remote", "true");
+    let oa = E10SUtils.predictOriginAttributes({ browser });
     browser.setAttribute(
       "remoteType",
       E10SUtils.getRemoteTypeForURI(
         panel.uri,
         /* remote */ true,
         /* fission */ false,
-        E10SUtils.EXTENSION_REMOTE_TYPE
+        E10SUtils.EXTENSION_REMOTE_TYPE,
+        null,
+        oa
       )
     );
+    browser.setAttribute("maychangeremoteness", "true");
+
     readyPromise = promiseEvent(browser, "XULFrameLoaderCreated");
   } else {
     readyPromise = Promise.resolve();
@@ -67,7 +73,34 @@ function getBrowser(panel) {
 
   stack.appendChild(browser);
 
-  return readyPromise.then(() => {
+  browser.addEventListener(
+    "DoZoomEnlargeBy10",
+    () => {
+      let { ZoomManager } = browser.ownerGlobal;
+      let zoom = browser.fullZoom;
+      zoom += 0.1;
+      if (zoom > ZoomManager.MAX) {
+        zoom = ZoomManager.MAX;
+      }
+      browser.fullZoom = zoom;
+    },
+    true
+  );
+  browser.addEventListener(
+    "DoZoomReduceBy10",
+    () => {
+      let { ZoomManager } = browser.ownerGlobal;
+      let zoom = browser.fullZoom;
+      zoom -= 0.1;
+      if (zoom < ZoomManager.MIN) {
+        zoom = ZoomManager.MIN;
+      }
+      browser.fullZoom = zoom;
+    },
+    true
+  );
+
+  const initBrowser = () => {
     ExtensionParent.apiManager.emit(
       "extension-browser-inserted",
       browser,
@@ -80,30 +113,27 @@ function getBrowser(panel) {
       true
     );
 
-    let options =
-      panel.browserStyle !== false
-        ? { stylesheets: ExtensionParent.extensionStylesheets }
-        : {};
+    let options = {};
+    if (panel.browserStyle) {
+      options.stylesheets = ["chrome://browser/content/extension.css"];
+    }
     browser.messageManager.sendAsyncMessage("Extension:InitBrowser", options);
     return browser;
-  });
+  };
+
+  browser.addEventListener("DidChangeBrowserRemoteness", initBrowser);
+  return readyPromise.then(initBrowser);
 }
 
-// Stub tabbrowser implementation for use by the tab-modal alert code.
+// Stub tabbrowser implementation to make sure that links from inside
+// extension sidebar panels open in new tabs, see bug 1488055.
 var gBrowser = {
   get selectedBrowser() {
     return document.getElementById("webext-panels-browser");
   },
 
-  getTabForBrowser(browser) {
+  getTabForBrowser() {
     return null;
-  },
-
-  getTabModalPromptBox(browser) {
-    if (!browser.tabModalPromptBox) {
-      browser.tabModalPromptBox = new TabModalPromptBox(browser);
-    }
-    return browser.tabModalPromptBox;
   },
 };
 
@@ -141,10 +171,8 @@ function loadPanel(extensionId, extensionUrl, browserStyle) {
 
   getBrowser(sidebar).then(browser => {
     let uri = Services.io.newURI(policy.getURL());
-    let triggeringPrincipal = Services.scriptSecurityManager.createContentPrincipal(
-      uri,
-      {}
-    );
-    browser.loadURI(extensionUrl, { triggeringPrincipal });
+    let triggeringPrincipal =
+      Services.scriptSecurityManager.createContentPrincipal(uri, {});
+    browser.fixupAndLoadURIString(extensionUrl, { triggeringPrincipal });
   });
 }

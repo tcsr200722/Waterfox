@@ -5,41 +5,38 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "KeyPath.h"
+
 #include "IDBObjectStore.h"
+#include "IndexedDBCommon.h"
 #include "Key.h"
 #include "ReportInternalError.h"
-
-#include "nsCharSeparatedTokenizer.h"
-#include "nsJSUtils.h"
-#include "nsPrintfCString.h"
-#include "xpcpublic.h"
-
 #include "js/Array.h"  // JS::NewArrayObject
+#include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineUCProperty, JS_DeleteUCProperty
+#include "js/PropertyDescriptor.h"  // JS::PropertyDescriptor, JS_GetOwnUCPropertyDescriptor
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/IDBObjectStoreBinding.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsJSUtils.h"
+#include "nsPrintfCString.h"
+#include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
-namespace indexedDB {
+namespace mozilla::dom::indexedDB {
 
 namespace {
 
-inline bool IgnoreWhitespace(char16_t c) { return false; }
-
-typedef nsCharSeparatedTokenizerTemplate<IgnoreWhitespace> KeyPathTokenizer;
+using KeyPathTokenizer =
+    nsCharSeparatedTokenizerTemplate<NS_TokenizerIgnoreNothing>;
 
 bool IsValidKeyPathString(const nsAString& aKeyPath) {
   NS_ASSERTION(!aKeyPath.IsVoid(), "What?");
 
-  KeyPathTokenizer tokenizer(aKeyPath, '.');
-
-  while (tokenizer.hasMoreTokens()) {
-    const auto& token = tokenizer.nextToken();
-
-    if (!token.Length()) {
+  for (const auto& token : KeyPathTokenizer(aKeyPath, '.').ToRange()) {
+    if (token.IsEmpty()) {
       return false;
     }
 
@@ -90,7 +87,7 @@ nsresult GetJSValFromKeyPathString(
       // step 4 substep 1: check for .length on a String value.
       if (currentVal.isString() && !tokenizer.hasMoreTokens() &&
           token.EqualsLiteral("length")) {
-        aKeyJSVal->setNumber(double(JS_GetStringLength(currentVal.toString())));
+        aKeyJSVal->setNumber(JS_GetStringLength(currentVal.toString()));
         break;
       }
 
@@ -101,16 +98,17 @@ nsresult GetJSValFromKeyPathString(
 
       // We call JS_GetOwnUCPropertyDescriptor on purpose (as opposed to
       // JS_GetUCPropertyDescriptor) to avoid searching the prototype chain.
-      JS::Rooted<JS::PropertyDescriptor> desc(aCx);
-      bool ok = JS_GetOwnUCPropertyDescriptor(aCx, obj, keyPathChars,
-                                              keyPathLen, &desc);
-      IDB_ENSURE_TRUE(ok, NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+      JS::Rooted<mozilla::Maybe<JS::PropertyDescriptor>> desc(aCx);
+      QM_TRY(OkIf(JS_GetOwnUCPropertyDescriptor(aCx, obj, keyPathChars,
+                                                keyPathLen, &desc)),
+             NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR,
+             IDB_REPORT_INTERNAL_ERR_LAMBDA);
 
       JS::Rooted<JS::Value> intermediate(aCx);
       bool hasProp = false;
 
-      if (desc.object()) {
-        intermediate = desc.value();
+      if (desc.isSome() && desc->isDataDescriptor()) {
+        intermediate = desc->value();
         hasProp = true;
       } else {
         // If we get here it means the object doesn't have the property or the
@@ -248,66 +246,62 @@ nsresult GetJSValFromKeyPathString(
       IDB_REPORT_INTERNAL_ERR();
       return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
     }
-    IDB_ENSURE_TRUE(succeeded, NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+    QM_TRY(OkIf(succeeded.ok()), NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR,
+           IDB_REPORT_INTERNAL_ERR_LAMBDA);
   }
 
-  NS_ENSURE_SUCCESS(rv, rv);
-  return rv;
+  // TODO: It would be nicer to do the cleanup using a RAII class or something.
+  //       This last QM_TRY could be removed then.
+  QM_TRY(MOZ_TO_RESULT(rv));
+  return NS_OK;
 }
 
 }  // namespace
 
 // static
-nsresult KeyPath::Parse(const nsAString& aString, KeyPath* aKeyPath) {
+Result<KeyPath, nsresult> KeyPath::Parse(const nsAString& aString) {
   KeyPath keyPath(0);
-  keyPath.SetType(STRING);
+  keyPath.SetType(KeyPathType::String);
 
   if (!keyPath.AppendStringWithValidation(aString)) {
-    return NS_ERROR_FAILURE;
+    return Err(NS_ERROR_FAILURE);
   }
 
-  *aKeyPath = keyPath;
-  return NS_OK;
+  return keyPath;
 }
 
 // static
-nsresult KeyPath::Parse(const Sequence<nsString>& aStrings, KeyPath* aKeyPath) {
+Result<KeyPath, nsresult> KeyPath::Parse(const Sequence<nsString>& aStrings) {
   KeyPath keyPath(0);
-  keyPath.SetType(ARRAY);
+  keyPath.SetType(KeyPathType::Array);
 
   for (uint32_t i = 0; i < aStrings.Length(); ++i) {
     if (!keyPath.AppendStringWithValidation(aStrings[i])) {
-      return NS_ERROR_FAILURE;
+      return Err(NS_ERROR_FAILURE);
     }
   }
 
-  *aKeyPath = keyPath;
-  return NS_OK;
+  return keyPath;
 }
 
 // static
-nsresult KeyPath::Parse(const Nullable<OwningStringOrStringSequence>& aValue,
-                        KeyPath* aKeyPath) {
-  KeyPath keyPath(0);
-
-  aKeyPath->SetType(NONEXISTENT);
-
+Result<KeyPath, nsresult> KeyPath::Parse(
+    const Nullable<OwningStringOrStringSequence>& aValue) {
   if (aValue.IsNull()) {
-    *aKeyPath = keyPath;
-    return NS_OK;
+    return KeyPath{0};
   }
 
   if (aValue.Value().IsString()) {
-    return Parse(aValue.Value().GetAsString(), aKeyPath);
+    return Parse(aValue.Value().GetAsString());
   }
 
   MOZ_ASSERT(aValue.Value().IsStringSequence());
 
   const Sequence<nsString>& seq = aValue.Value().GetAsStringSequence();
   if (seq.Length() == 0) {
-    return NS_ERROR_FAILURE;
+    return Err(NS_ERROR_FAILURE);
   }
-  return Parse(seq, aKeyPath);
+  return Parse(seq);
 }
 
 void KeyPath::SetType(KeyPathType aType) {
@@ -335,8 +329,9 @@ bool KeyPath::AppendStringWithValidation(const nsAString& aString) {
   return false;
 }
 
-nsresult KeyPath::ExtractKey(JSContext* aCx, const JS::Value& aValue,
-                             Key& aKey) const {
+nsresult KeyPath::ExtractKey(JSContext* aCx, const JS::Value& aValue, Key& aKey,
+                             const VoidOrObjectStoreKeyPathString&
+                                 aAutoIncrementedObjectStoreKeyPath) const {
   uint32_t len = mStrings.Length();
   JS::Rooted<JS::Value> value(aCx);
 
@@ -347,14 +342,26 @@ nsresult KeyPath::ExtractKey(JSContext* aCx, const JS::Value& aValue,
         GetJSValFromKeyPathString(aCx, aValue, mStrings[i], value.address(),
                                   DoNotCreateProperties, nullptr, nullptr);
     if (NS_FAILED(rv)) {
+      if (!aAutoIncrementedObjectStoreKeyPath.IsVoid() &&
+          mStrings[i].Equals(aAutoIncrementedObjectStoreKeyPath)) {
+        // We are extracting index keys of an object to be added if
+        // object store key path for a string key is provided.
+        // Because the autoIncrement primary key is part of
+        // this index key but is not defined in |aValue|, so we reserve
+        // the space here to update the key later in parent.
+        aKey.ReserveAutoIncrementKey(IsArray() && i == 0);
+        continue;
+      }
+
       return rv;
     }
 
-    ErrorResult errorResult;
-    auto result = aKey.AppendItem(aCx, IsArray() && i == 0, value, errorResult);
-    if (!result.Is(Ok, errorResult)) {
+    auto result = aKey.AppendItem(aCx, IsArray() && i == 0, value);
+    if (result.isErr()) {
       NS_ASSERTION(aKey.IsUnset(), "Encoding error should unset");
-      errorResult.SuppressException();
+      if (result.inspectErr().Is(SpecialValues::Exception)) {
+        result.unwrapErr().AsException().SuppressException();
+      }
       return NS_ERROR_DOM_INDEXEDDB_DATA_ERR;
     }
   }
@@ -415,11 +422,12 @@ nsresult KeyPath::ExtractOrCreateKey(JSContext* aCx, const JS::Value& aValue,
     return rv;
   }
 
-  ErrorResult errorResult;
-  auto result = aKey.AppendItem(aCx, false, value, errorResult);
-  if (!result.Is(Ok, errorResult)) {
+  auto result = aKey.AppendItem(aCx, false, value);
+  if (result.isErr()) {
     NS_ASSERTION(aKey.IsUnset(), "Should be unset");
-    errorResult.SuppressException();
+    if (result.inspectErr().Is(SpecialValues::Exception)) {
+      result.unwrapErr().AsException().SuppressException();
+    }
     return value.isUndefined() ? NS_OK : NS_ERROR_DOM_INDEXEDDB_DATA_ERR;
   }
 
@@ -428,29 +436,31 @@ nsresult KeyPath::ExtractOrCreateKey(JSContext* aCx, const JS::Value& aValue,
   return NS_OK;
 }
 
-void KeyPath::SerializeToString(nsAString& aString) const {
+nsAutoString KeyPath::SerializeToString() const {
   NS_ASSERTION(IsValid(), "Check to see if I'm valid first!");
 
   if (IsString()) {
-    aString = mStrings[0];
-    return;
+    return nsAutoString{mStrings[0]};
   }
 
   if (IsArray()) {
+    nsAutoString res;
+
     // We use a comma in the beginning to indicate that it's an array of
     // key paths. This is to be able to tell a string-keypath from an
     // array-keypath which contains only one item.
     // It also makes serializing easier :-)
-    uint32_t len = mStrings.Length();
+    const uint32_t len = mStrings.Length();
     for (uint32_t i = 0; i < len; ++i) {
-      aString.Append(',');
-      aString.Append(mStrings[i]);
+      res.Append(',');
+      res.Append(mStrings[i]);
     }
 
-    return;
+    return res;
   }
 
   MOZ_ASSERT_UNREACHABLE("What?");
+  return {};
 }
 
 // static
@@ -458,12 +468,13 @@ KeyPath KeyPath::DeserializeFromString(const nsAString& aString) {
   KeyPath keyPath(0);
 
   if (!aString.IsEmpty() && aString.First() == ',') {
-    keyPath.SetType(ARRAY);
+    keyPath.SetType(KeyPathType::Array);
 
     // We use a comma in the beginning to indicate that it's an array of
     // key paths. This is to be able to tell a string-keypath from an
     // array-keypath which contains only one item.
-    nsCharSeparatedTokenizerTemplate<IgnoreWhitespace> tokenizer(aString, ',');
+    nsCharSeparatedTokenizerTemplate<NS_TokenizerIgnoreNothing> tokenizer(
+        aString, ',');
     tokenizer.nextToken();
     while (tokenizer.hasMoreTokens()) {
       keyPath.mStrings.AppendElement(tokenizer.nextToken());
@@ -479,7 +490,7 @@ KeyPath KeyPath::DeserializeFromString(const nsAString& aString) {
     return keyPath;
   }
 
-  keyPath.SetType(STRING);
+  keyPath.SetType(KeyPathType::String);
   keyPath.mStrings.AppendElement(aString);
 
   return keyPath;
@@ -556,6 +567,4 @@ bool KeyPath::IsAllowedForObjectStore(bool aAutoIncrement) const {
   return true;
 }
 
-}  // namespace indexedDB
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::indexedDB

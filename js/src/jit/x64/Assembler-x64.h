@@ -7,10 +7,9 @@
 #ifndef jit_x64_Assembler_x64_h
 #define jit_x64_Assembler_x64_h
 
-#include "mozilla/ArrayUtils.h"
+#include <iterator>
 
 #include "jit/JitCode.h"
-#include "jit/JitRealm.h"
 #include "jit/shared/Assembler-shared.h"
 
 namespace js {
@@ -66,6 +65,10 @@ static constexpr FloatRegister xmm14 =
 static constexpr FloatRegister xmm15 =
     FloatRegister(X86Encoding::xmm15, FloatRegisters::Double);
 
+// Vector registers fixed for use with some instructions, e.g. PBLENDVB.
+static constexpr FloatRegister vmm0 =
+    FloatRegister(X86Encoding::xmm0, FloatRegisters::Simd128);
+
 // X86-common synonyms.
 static constexpr Register eax = rax;
 static constexpr Register ebx = rbx;
@@ -104,9 +107,9 @@ static constexpr FloatRegister ReturnDoubleReg =
     FloatRegister(X86Encoding::xmm0, FloatRegisters::Double);
 static constexpr FloatRegister ReturnSimd128Reg =
     FloatRegister(X86Encoding::xmm0, FloatRegisters::Simd128);
-static constexpr FloatRegister ScratchFloat32Reg =
+static constexpr FloatRegister ScratchFloat32Reg_ =
     FloatRegister(X86Encoding::xmm15, FloatRegisters::Single);
-static constexpr FloatRegister ScratchDoubleReg =
+static constexpr FloatRegister ScratchDoubleReg_ =
     FloatRegister(X86Encoding::xmm15, FloatRegisters::Double);
 static constexpr FloatRegister ScratchSimd128Reg =
     FloatRegister(X86Encoding::xmm15, FloatRegisters::Simd128);
@@ -129,8 +132,7 @@ static constexpr uint32_t NumIntArgRegs = 4;
 static constexpr Register IntArgRegs[NumIntArgRegs] = {rcx, rdx, r8, r9};
 
 static constexpr Register CallTempNonArgRegs[] = {rax, rdi, rbx, rsi};
-static constexpr uint32_t NumCallTempNonArgRegs =
-    mozilla::ArrayLength(CallTempNonArgRegs);
+static constexpr uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
 
 static constexpr FloatRegister FloatArgReg0 = xmm0;
 static constexpr FloatRegister FloatArgReg1 = xmm1;
@@ -151,8 +153,7 @@ static constexpr Register IntArgRegs[NumIntArgRegs] = {rdi, rsi, rdx,
                                                        rcx, r8,  r9};
 
 static constexpr Register CallTempNonArgRegs[] = {rax, rbx};
-static constexpr uint32_t NumCallTempNonArgRegs =
-    mozilla::ArrayLength(CallTempNonArgRegs);
+static constexpr uint32_t NumCallTempNonArgRegs = std::size(CallTempNonArgRegs);
 
 static constexpr FloatRegister FloatArgReg0 = xmm0;
 static constexpr FloatRegister FloatArgReg1 = xmm1;
@@ -167,15 +168,20 @@ static constexpr FloatRegister FloatArgRegs[NumFloatArgRegs] = {
     xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7};
 #endif
 
-// Registerd used in RegExpMatcher instruction (do not use JSReturnOperand).
+// Registers used by RegExpMatcher and RegExpExecMatch stubs (do not use
+// JSReturnOperand).
 static constexpr Register RegExpMatcherRegExpReg = CallTempReg0;
 static constexpr Register RegExpMatcherStringReg = CallTempReg1;
 static constexpr Register RegExpMatcherLastIndexReg = CallTempReg2;
 
-// Registerd used in RegExpTester instruction (do not use ReturnReg).
-static constexpr Register RegExpTesterRegExpReg = CallTempReg1;
-static constexpr Register RegExpTesterStringReg = CallTempReg2;
-static constexpr Register RegExpTesterLastIndexReg = CallTempReg3;
+// Registers used by RegExpExecTest stub (do not use ReturnReg).
+static constexpr Register RegExpExecTestRegExpReg = CallTempReg1;
+static constexpr Register RegExpExecTestStringReg = CallTempReg2;
+
+// Registers used by RegExpSearcher stub (do not use ReturnReg).
+static constexpr Register RegExpSearcherRegExpReg = CallTempReg1;
+static constexpr Register RegExpSearcherStringReg = CallTempReg2;
+static constexpr Register RegExpSearcherLastIndexReg = CallTempReg3;
 
 class ABIArgGenerator {
 #if defined(XP_WIN)
@@ -192,6 +198,7 @@ class ABIArgGenerator {
   ABIArg next(MIRType argType);
   ABIArg& current() { return current_; }
   uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
+  void increaseStackOffset(uint32_t bytes) { stackOffset_ += bytes; }
 };
 
 // These registers may be volatile or nonvolatile.
@@ -217,21 +224,31 @@ static constexpr Register ABINonVolatileReg = r13;
 // and non-volatile registers.
 static constexpr Register ABINonArgReturnVolatileReg = r10;
 
-// TLS pointer argument register for WebAssembly functions. This must not alias
-// any other register used for passing function arguments or return values.
-// Preserved by WebAssembly functions.
-static constexpr Register WasmTlsReg = r14;
+// Instance pointer argument register for WebAssembly functions. This must not
+// alias any other register used for passing function arguments or return
+// values. Preserved by WebAssembly functions.
+static constexpr Register InstanceReg = r14;
 
 // Registers used for asm.js/wasm table calls. These registers must be disjoint
-// from the ABI argument registers, WasmTlsReg and each other.
+// from the ABI argument registers, InstanceReg and each other.
 static constexpr Register WasmTableCallScratchReg0 = ABINonArgReg0;
 static constexpr Register WasmTableCallScratchReg1 = ABINonArgReg1;
 static constexpr Register WasmTableCallSigReg = ABINonArgReg2;
 static constexpr Register WasmTableCallIndexReg = ABINonArgReg3;
 
+// Registers used for ref calls.
+static constexpr Register WasmCallRefCallScratchReg0 = ABINonArgReg0;
+static constexpr Register WasmCallRefCallScratchReg1 = ABINonArgReg1;
+static constexpr Register WasmCallRefReg = ABINonArgReg3;
+
+// Registers used for wasm tail calls operations.
+static constexpr Register WasmTailCallInstanceScratchReg = ABINonArgReg1;
+static constexpr Register WasmTailCallRAScratchReg = ABINonArgReg2;
+static constexpr Register WasmTailCallFPScratchReg = ABINonArgReg3;
+
 // Register used as a scratch along the return path in the fast js -> wasm stub
-// code.  This must not overlap ReturnReg, JSReturnOperand, or WasmTlsReg.  It
-// must be a volatile register.
+// code.  This must not overlap ReturnReg, JSReturnOperand, or InstanceReg.
+// It must be a volatile register.
 static constexpr Register WasmJitEntryReturnScratch = rbx;
 
 static constexpr Register OsrFrameReg = IntArgReg3;
@@ -268,6 +285,10 @@ static_assert(JitStackAlignment % SimdMemoryAlignment == 0,
 static constexpr uint32_t WasmStackAlignment = SimdMemoryAlignment;
 static constexpr uint32_t WasmTrapInstructionLength = 2;
 
+// See comments in wasm::GenerateFunctionPrologue.  The difference between these
+// is the size of the largest callable prologue on the platform.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
+
 static constexpr Scale ScalePointer = TimesEight;
 
 }  // namespace jit
@@ -287,16 +308,6 @@ class Assembler : public AssemblerX86Shared {
   // jump table at the bottom of the instruction stream, and if a jump
   // overflows its range, it will redirect here.
   //
-  // In our relocation table, we store two offsets instead of one: the offset
-  // to the original jump, and an offset to the extended jump if we will need
-  // to use it instead. The offsets are stored as:
-  //    [unsigned] Unsigned offset to short jump, from the start of the code.
-  //    [unsigned] Unsigned offset to the extended jump, from the start of
-  //               the jump table, in units of SizeOfJumpTableEntry.
-  //
-  // The start of the relocation table contains the offset from the code
-  // buffer to the start of the extended jump table.
-  //
   // Each entry in this table is a jmp [rip], followed by a ud2 to hint to the
   // hardware branch predictor that there is no fallthrough, followed by the
   // eight bytes containing an immediate address. This comes out to 16 bytes.
@@ -309,16 +320,25 @@ class Assembler : public AssemblerX86Shared {
   static const uint32_t SizeOfExtendedJump = 1 + 1 + 4 + 2 + 8;
   static const uint32_t SizeOfJumpTableEntry = 16;
 
+  // Two kinds of jumps on x64:
+  //
+  // * codeJumps_ tracks jumps with target within the executable code region
+  //   for the process. These jumps don't need entries in the extended jump
+  //   table because source and target must be within 2 GB of each other.
+  //
+  // * extendedJumps_ tracks jumps with target outside the executable code
+  //   region. These jumps need entries in the extended jump table described
+  //   above.
+  using PendingJumpVector = Vector<RelativePatch, 8, SystemAllocPolicy>;
+  PendingJumpVector codeJumps_;
+  PendingJumpVector extendedJumps_;
+
   uint32_t extendedJumpTable_;
 
   static JitCode* CodeFromJump(JitCode* code, uint8_t* jump);
 
  private:
-  void writeRelocation(JmpSrc src, RelocationKind reloc);
   void addPendingJump(JmpSrc src, ImmPtr target, RelocationKind reloc);
-
- protected:
-  size_t addPatchableJump(JmpSrc src, RelocationKind reloc);
 
  public:
   using AssemblerX86Shared::j;
@@ -339,6 +359,18 @@ class Assembler : public AssemblerX86Shared {
   // Copy the assembly code to the given buffer, and perform any pending
   // relocations relying on the target address.
   void executableCopy(uint8_t* buffer);
+
+  void assertNoGCThings() const {
+#ifdef DEBUG
+    MOZ_ASSERT(dataRelocations_.length() == 0);
+    for (auto& j : codeJumps_) {
+      MOZ_ASSERT(j.kind == RelocationKind::HARDCODED);
+    }
+    for (auto& j : extendedJumps_) {
+      MOZ_ASSERT(j.kind == RelocationKind::HARDCODED);
+    }
+#endif
+  }
 
   // Actual assembly emitting functions.
 
@@ -496,6 +528,11 @@ class Assembler : public AssemblerX86Shared {
         MOZ_CRASH("unexpected operand kind");
     }
   }
+  void cmovCCq(Condition cond, Register src, Register dest) {
+    X86Encoding::Condition cc = static_cast<X86Encoding::Condition>(cond);
+    masm.cmovCCq_rr(cc, src.encoding(), dest.encoding());
+  }
+
   void cmovzq(const Operand& src, Register dest) {
     cmovCCq(Condition::Zero, src, dest);
   }
@@ -794,6 +831,18 @@ class Assembler : public AssemblerX86Shared {
   void shlq_cl(Register dest) { masm.shlq_CLr(dest.encoding()); }
   void shrq_cl(Register dest) { masm.shrq_CLr(dest.encoding()); }
   void sarq_cl(Register dest) { masm.sarq_CLr(dest.encoding()); }
+  void sarxq(Register src, Register shift, Register dest) {
+    MOZ_ASSERT(HasBMI2());
+    masm.sarxq_rrr(src.encoding(), shift.encoding(), dest.encoding());
+  }
+  void shlxq(Register src, Register shift, Register dest) {
+    MOZ_ASSERT(HasBMI2());
+    masm.shlxq_rrr(src.encoding(), shift.encoding(), dest.encoding());
+  }
+  void shrxq(Register src, Register shift, Register dest) {
+    MOZ_ASSERT(HasBMI2());
+    masm.shrxq_rrr(src.encoding(), shift.encoding(), dest.encoding());
+  }
   void rolq(Imm32 imm, Register dest) {
     masm.rolq_ir(imm.value, dest.encoding());
   }
@@ -888,10 +937,19 @@ class Assembler : public AssemblerX86Shared {
     masm.bsfq_rr(src.encoding(), dest.encoding());
   }
   void bswapq(const Register& reg) { masm.bswapq_r(reg.encoding()); }
+  void lzcntq(const Register& src, const Register& dest) {
+    masm.lzcntq_rr(src.encoding(), dest.encoding());
+  }
+  void tzcntq(const Register& src, const Register& dest) {
+    masm.tzcntq_rr(src.encoding(), dest.encoding());
+  }
   void popcntq(const Register& src, const Register& dest) {
     masm.popcntq_rr(src.encoding(), dest.encoding());
   }
 
+  void imulq(Imm32 imm, Register src, Register dest) {
+    masm.imulq_ir(imm.value, src.encoding(), dest.encoding());
+  }
   void imulq(Register src, Register dest) {
     masm.imulq_rr(src.encoding(), dest.encoding());
   }
@@ -931,6 +989,8 @@ class Assembler : public AssemblerX86Shared {
   }
 
   void negq(Register reg) { masm.negq_r(reg.encoding()); }
+
+  void notq(Register reg) { masm.notq_r(reg.encoding()); }
 
   void mov(ImmWord word, Register dest) {
     // Use xor for setting registers to zero, as it is specially optimized
@@ -994,24 +1054,6 @@ class Assembler : public AssemblerX86Shared {
   CodeOffset loadRipRelativeFloat32x4(FloatRegister dest) {
     return CodeOffset(masm.vmovaps_ripr(dest.encoding()).offset());
   }
-  CodeOffset storeRipRelativeInt32(Register dest) {
-    return CodeOffset(masm.movl_rrip(dest.encoding()).offset());
-  }
-  CodeOffset storeRipRelativeInt64(Register dest) {
-    return CodeOffset(masm.movq_rrip(dest.encoding()).offset());
-  }
-  CodeOffset storeRipRelativeDouble(FloatRegister dest) {
-    return CodeOffset(masm.vmovsd_rrip(dest.encoding()).offset());
-  }
-  CodeOffset storeRipRelativeFloat32(FloatRegister dest) {
-    return CodeOffset(masm.vmovss_rrip(dest.encoding()).offset());
-  }
-  CodeOffset storeRipRelativeInt32x4(FloatRegister dest) {
-    return CodeOffset(masm.vmovdqa_rrip(dest.encoding()).offset());
-  }
-  CodeOffset storeRipRelativeFloat32x4(FloatRegister dest) {
-    return CodeOffset(masm.vmovaps_rrip(dest.encoding()).offset());
-  }
   CodeOffset leaRipRelative(Register dest) {
     return CodeOffset(masm.leaq_rip(dest.encoding()).offset());
   }
@@ -1026,6 +1068,10 @@ class Assembler : public AssemblerX86Shared {
         break;
       case Operand::MEM_REG_DISP:
         masm.cmpq_rm(rhs.encoding(), lhs.disp(), lhs.base());
+        break;
+      case Operand::MEM_SCALE:
+        masm.cmpq_rm(rhs.encoding(), lhs.disp(), lhs.base(), lhs.index(),
+                     lhs.scale());
         break;
       case Operand::MEM_ADDRESS32:
         masm.cmpq_rm(rhs.encoding(), lhs.address());
@@ -1090,6 +1136,7 @@ class Assembler : public AssemblerX86Shared {
   }
 
   void jmp(ImmPtr target, RelocationKind reloc = RelocationKind::HARDCODED) {
+    MOZ_ASSERT(hasCreator());
     JmpSrc src = masm.jmp();
     addPendingJump(src, target, reloc);
   }

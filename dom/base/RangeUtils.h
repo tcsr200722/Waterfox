@@ -7,7 +7,7 @@
 #ifndef mozilla_RangeUtils_h
 #define mozilla_RangeUtils_h
 
-#include "Element.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RangeBoundary.h"
 #include "nsIContent.h"
 #include "nsINode.h"
@@ -62,11 +62,11 @@ class RangeUtils final {
     // If aNode isn't in the child nodes of its parent node, we hit this case.
     // This may occur when we're called by a mutation observer while aNode is
     // removed from the parent node.
-    int32_t indexInParent = parentNode->ComputeIndexOf(aNode);
-    if (NS_WARN_IF(indexInParent < 0)) {
+    const Maybe<uint32_t> indexInParent = parentNode->ComputeIndexOf(aNode);
+    if (MOZ_UNLIKELY(NS_WARN_IF(indexInParent.isNothing()))) {
       return RawRangeBoundary();
     }
-    return RawRangeBoundary(parentNode, indexInParent);
+    return RawRangeBoundary(parentNode, *indexInParent);
   }
 
   /**
@@ -81,7 +81,7 @@ class RangeUtils final {
   /**
    * XXX nsRange should accept 0 - UINT32_MAX as offset.  However, users of
    *     nsRange treat offset as int32_t.  Additionally, some other internal
-   *     APIs like nsINode::ComputeIndexOf() use int32_t.  Therefore,
+   *     APIs like nsINode::ComputeIndexOf_Deprecated() use int32_t.  Therefore,
    *     nsRange should accept only 0 - INT32_MAX as valid offset for now.
    */
   static bool IsValidOffset(uint32_t aOffset) { return aOffset <= INT32_MAX; }
@@ -100,6 +100,12 @@ class RangeUtils final {
                             const RangeBoundaryBase<EPT, ERT>& aEndBoundary);
 
   /**
+   * The caller needs to ensure aNode is in the same doc like aAbstractRange.
+   */
+  static Maybe<bool> IsNodeContainedInRange(nsINode& aNode,
+                                            AbstractRange* aAbstractRange);
+
+  /**
    * Utility routine to detect if a content node starts before a range and/or
    * ends after a range.  If neither it is contained inside the range.
    * Note that callers responsibility to ensure node in same doc as range.
@@ -108,6 +114,12 @@ class RangeUtils final {
                                      AbstractRange* aAbstractRange,
                                      bool* aNodeIsBeforeRange,
                                      bool* aNodeIsAfterRange);
+
+  template <typename SPT, typename SRT, typename EPT, typename ERT>
+  static nsresult CompareNodeToRangeBoundaries(
+      nsINode* aNode, const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
+      const RangeBoundaryBase<EPT, ERT>& aEndBoundary, bool* aNodeIsBeforeRange,
+      bool* aNodeIsAfterRange);
 };
 
 }  // namespace mozilla

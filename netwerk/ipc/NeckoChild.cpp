@@ -10,20 +10,21 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/net/HttpChannelChild.h"
+#include "mozilla/net/ChildDNSService.h"
 #include "mozilla/net/CookieServiceChild.h"
-#include "mozilla/net/FTPChannelChild.h"
 #include "mozilla/net/DataChannelChild.h"
+#ifdef MOZ_WIDGET_GTK
+#  include "mozilla/net/GIOChannelChild.h"
+#endif
 #include "mozilla/net/FileChannelChild.h"
 #include "mozilla/net/WebSocketChannelChild.h"
 #include "mozilla/net/WebSocketEventListenerChild.h"
 #include "mozilla/net/DNSRequestChild.h"
-#include "mozilla/net/ChannelDiverterChild.h"
 #include "mozilla/net/IPCTransportProvider.h"
 #include "mozilla/dom/network/TCPSocketChild.h"
 #include "mozilla/dom/network/TCPServerSocketChild.h"
 #include "mozilla/dom/network/UDPSocketChild.h"
 #include "mozilla/net/AltDataOutputStreamChild.h"
-#include "mozilla/net/ClassifierDummyChannelChild.h"
 #include "mozilla/net/SocketProcessBridgeChild.h"
 #ifdef MOZ_WEBRTC
 #  include "mozilla/net/StunAddrsRequestChild.h"
@@ -31,13 +32,14 @@
 #endif
 
 #include "SerializedLoadContext.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIOService.h"
 #include "nsINetworkPredictor.h"
 #include "nsINetworkPredictorVerifier.h"
 #include "nsINetworkLinkService.h"
 #include "nsQueryObject.h"
 #include "mozilla/ipc/URIUtils.h"
+#include "mozilla/Components.h"
 #include "nsNetUtil.h"
 #include "SimpleChannel.h"
 
@@ -70,9 +72,9 @@ void NeckoChild::InitNeckoChild() {
     if (NS_WARN_IF(cpc->IsShuttingDown())) {
       return;
     }
-    gNeckoChild = cpc->SendPNeckoConstructor();
+    RefPtr<NeckoChild> child = new NeckoChild();
+    gNeckoChild = cpc->SendPNeckoConstructor(child);
     NS_ASSERTION(gNeckoChild, "PNecko Protocol init failed!");
-    SocketProcessBridgeChild::GetSocketProcessBridge();
   }
 }
 
@@ -112,7 +114,7 @@ bool NeckoChild::DeallocPWebrtcTCPSocketChild(PWebrtcTCPSocketChild* aActor) {
 }
 
 PAltDataOutputStreamChild* NeckoChild::AllocPAltDataOutputStreamChild(
-    const nsCString& type, const int64_t& predictedSize,
+    const nsACString& type, const int64_t& predictedSize,
     PHttpChannelChild* channel) {
   // We don't allocate here: see HttpChannelChild::OpenAlternativeOutputStream()
   MOZ_ASSERT_UNREACHABLE("AllocPAltDataOutputStreamChild should not be called");
@@ -127,21 +129,23 @@ bool NeckoChild::DeallocPAltDataOutputStreamChild(
   return true;
 }
 
-PFTPChannelChild* NeckoChild::AllocPFTPChannelChild(
+#ifdef MOZ_WIDGET_GTK
+PGIOChannelChild* NeckoChild::AllocPGIOChannelChild(
     PBrowserChild* aBrowser, const SerializedLoadContext& aSerialized,
-    const FTPChannelCreationArgs& aOpenArgs) {
-  // We don't allocate here: see FTPChannelChild::AsyncOpen()
-  MOZ_CRASH("AllocPFTPChannelChild should not be called");
+    const GIOChannelCreationArgs& aOpenArgs) {
+  // We don't allocate here: see GIOChannelChild::AsyncOpen()
+  MOZ_CRASH("AllocPGIOChannelChild should not be called");
   return nullptr;
 }
 
-bool NeckoChild::DeallocPFTPChannelChild(PFTPChannelChild* channel) {
-  MOZ_ASSERT(IsNeckoChild(), "DeallocPFTPChannelChild called by non-child!");
+bool NeckoChild::DeallocPGIOChannelChild(PGIOChannelChild* channel) {
+  MOZ_ASSERT(IsNeckoChild(), "DeallocPGIOChannelChild called by non-child!");
 
-  FTPChannelChild* child = static_cast<FTPChannelChild*>(channel);
+  GIOChannelChild* child = static_cast<GIOChannelChild*>(channel);
   child->ReleaseIPDLReference();
   return true;
 }
+#endif
 
 PCookieServiceChild* NeckoChild::AllocPCookieServiceChild() {
   // We don't allocate here: see CookieService::GetSingleton()
@@ -173,19 +177,8 @@ bool NeckoChild::DeallocPWebSocketChild(PWebSocketChild* child) {
 
 PWebSocketEventListenerChild* NeckoChild::AllocPWebSocketEventListenerChild(
     const uint64_t& aInnerWindowID) {
-  nsCOMPtr<nsIEventTarget> target;
-  if (nsGlobalWindowInner* win =
-          nsGlobalWindowInner::GetInnerWindowWithId(aInnerWindowID)) {
-    target = win->EventTargetFor(TaskCategory::Other);
-  }
-
-  RefPtr<WebSocketEventListenerChild> c =
-      new WebSocketEventListenerChild(aInnerWindowID, target);
-
-  if (target) {
-    gNeckoChild->SetEventTargetForActor(c, target);
-  }
-
+  RefPtr<WebSocketEventListenerChild> c = new WebSocketEventListenerChild(
+      aInnerWindowID, GetMainThreadSerialEventTarget());
   return c.forget().take();
 }
 
@@ -208,7 +201,7 @@ bool NeckoChild::DeallocPSimpleChannelChild(PSimpleChannelChild* child) {
   return true;
 }
 
-PTCPSocketChild* NeckoChild::AllocPTCPSocketChild(const nsString& host,
+PTCPSocketChild* NeckoChild::AllocPTCPSocketChild(const nsAString& host,
                                                   const uint16_t& port) {
   TCPSocketChild* p = new TCPSocketChild(host, port, nullptr);
   p->AddIPDLReference();
@@ -235,7 +228,7 @@ bool NeckoChild::DeallocPTCPServerSocketChild(PTCPServerSocketChild* child) {
 }
 
 PUDPSocketChild* NeckoChild::AllocPUDPSocketChild(nsIPrincipal* aPrincipal,
-                                                  const nsCString& aFilter) {
+                                                  const nsACString& aFilter) {
   MOZ_ASSERT_UNREACHABLE("AllocPUDPSocket should not be called");
   return nullptr;
 }
@@ -243,17 +236,6 @@ PUDPSocketChild* NeckoChild::AllocPUDPSocketChild(nsIPrincipal* aPrincipal,
 bool NeckoChild::DeallocPUDPSocketChild(PUDPSocketChild* child) {
   UDPSocketChild* p = static_cast<UDPSocketChild*>(child);
   p->ReleaseIPDLReference();
-  return true;
-}
-
-PChannelDiverterChild* NeckoChild::AllocPChannelDiverterChild(
-    const ChannelDiverterArgs& channel) {
-  return new ChannelDiverterChild();
-  ;
-}
-
-bool NeckoChild::DeallocPChannelDiverterChild(PChannelDiverterChild* child) {
-  delete static_cast<ChannelDiverterChild*>(child);
   return true;
 }
 
@@ -270,19 +252,6 @@ bool NeckoChild::DeallocPTransportProviderChild(
   return true;
 }
 
-mozilla::ipc::IPCResult NeckoChild::RecvAsyncAuthPromptForNestedFrame(
-    const TabId& aNestedFrameId, const nsCString& aUri, const nsString& aRealm,
-    const uint64_t& aCallbackId) {
-  RefPtr<dom::BrowserChild> browserChild =
-      dom::BrowserChild::FindBrowserChild(aNestedFrameId);
-  if (!browserChild) {
-    MOZ_CRASH();
-    return IPC_FAIL_NO_REASON(this);
-  }
-  browserChild->SendAsyncAuthPrompt(aUri, aRealm, aCallbackId);
-  return IPC_OK();
-}
-
 /* Predictor Messages */
 mozilla::ipc::IPCResult NeckoChild::RecvPredOnPredictPrefetch(
     nsIURI* aURI, const uint32_t& aHttpStatus) {
@@ -295,8 +264,8 @@ mozilla::ipc::IPCResult NeckoChild::RecvPredOnPredictPrefetch(
 
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictorVerifier> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictorVerifier> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_FAIL_NO_REASON(this));
 
   predictor->OnPredictPrefetch(aURI, aHttpStatus);
@@ -312,8 +281,8 @@ mozilla::ipc::IPCResult NeckoChild::RecvPredOnPredictPreconnect(nsIURI* aURI) {
   }
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictorVerifier> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictorVerifier> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_FAIL_NO_REASON(this));
 
   predictor->OnPredictPreconnect(aURI);
@@ -329,8 +298,8 @@ mozilla::ipc::IPCResult NeckoChild::RecvPredOnPredictDNS(nsIURI* aURI) {
   }
   // Get the current predictor
   nsresult rv = NS_OK;
-  nsCOMPtr<nsINetworkPredictorVerifier> predictor =
-      do_GetService("@mozilla.org/network/predictor;1", &rv);
+  nsCOMPtr<nsINetworkPredictorVerifier> predictor;
+  predictor = mozilla::components::Predictor::Service(&rv);
   NS_ENSURE_SUCCESS(rv, IPC_FAIL_NO_REASON(this));
 
   predictor->OnPredictDNS(aURI);
@@ -356,16 +325,13 @@ mozilla::ipc::IPCResult NeckoChild::RecvNetworkChangeNotification(
   return IPC_OK();
 }
 
-PClassifierDummyChannelChild* NeckoChild::AllocPClassifierDummyChannelChild(
-    nsIURI* aURI, nsIURI* aTopWindowURI, const nsresult& aTopWindowURIResult,
-    const Maybe<LoadInfoArgs>& aLoadInfo) {
-  return new ClassifierDummyChannelChild();
-}
-
-bool NeckoChild::DeallocPClassifierDummyChannelChild(
-    PClassifierDummyChannelChild* aActor) {
-  delete static_cast<ClassifierDummyChannelChild*>(aActor);
-  return true;
+mozilla::ipc::IPCResult NeckoChild::RecvSetTRRDomain(const nsCString& domain) {
+  RefPtr<net::ChildDNSService> dnsServiceChild =
+      dont_AddRef(net::ChildDNSService::GetSingleton());
+  if (dnsServiceChild) {
+    dnsServiceChild->SetTRRDomain(domain);
+  }
+  return IPC_OK();
 }
 
 }  // namespace net

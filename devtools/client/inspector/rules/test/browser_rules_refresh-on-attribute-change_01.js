@@ -19,9 +19,9 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  const { inspector, view, testActor } = await openRuleView();
+  const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
 
   info(
@@ -35,7 +35,7 @@ add_task(async function() {
       "rule-view refresh"
   );
   let ruleViewRefreshed = inspector.once("rule-view-refreshed");
-  await testActor.setAttribute("#testid", "id", "differentid");
+  await setContentPageElementAttribute("#testid", "id", "differentid");
   await ruleViewRefreshed;
 
   info("Checking that the rule-view doesn't have the #testid selector anymore");
@@ -43,7 +43,7 @@ add_task(async function() {
 
   info("Reverting the ID attribute change");
   ruleViewRefreshed = inspector.once("rule-view-refreshed");
-  await testActor.setAttribute("#differentid", "id", "testid");
+  await setContentPageElementAttribute("#differentid", "id", "testid");
   await ruleViewRefreshed;
 
   info("Checking that the rule-view has all the selectors again");
@@ -52,7 +52,7 @@ add_task(async function() {
 
 function checkRuleViewContent(view, expectedSelectors) {
   const selectors = view.styleDocument.querySelectorAll(
-    ".ruleview-selectorcontainer"
+    ".ruleview-selectors-container"
   );
 
   is(

@@ -7,8 +7,32 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
-  const { AppConstants } = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm"
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
+  );
+
+  document.addEventListener(
+    "popupshowing",
+    function (e) {
+      // For the non-native context menu styling, we need to know if we need
+      // a gutter for checkboxes. To do this, check whether there are any
+      // radio/checkbox type menuitems in a menupopup when showing it.
+      if (e.target.nodeName == "menupopup") {
+        let haveCheckableChild = e.target.querySelector(
+          `:scope > menuitem:not([hidden]):is(${
+            // On macOS, selected menuitems are checked regardless of type
+            AppConstants.platform == "macosx"
+              ? "[checked=true],[selected=true]"
+              : "[type=checkbox],[type=radio]"
+          })`
+        );
+        e.target.toggleAttribute("needsgutter", haveCheckableChild);
+      }
+    },
+    // we use a system bubbling event listener to ensure we run *after* the
+    // "normal" popupshowing listeners, so (visibility) changes they make to
+    // their items take effect first, before we check for checkable menuitems.
+    { mozSystemGroup: true }
   );
 
   class MozMenuPopup extends MozElements.MozElementMixin(XULPopupElement) {
@@ -22,16 +46,18 @@
       this._draggingState = this.NOT_DRAGGING;
       this._scrollTimer = 0;
 
+      this.attachShadow({ mode: "open" });
+
       this.addEventListener("popupshowing", event => {
         if (event.target != this) {
           return;
         }
 
         // Make sure we generated shadow DOM to place menuitems into.
-        this.shadowRoot;
+        this.ensureInitialized();
       });
 
-      this.attachShadow({ mode: "open" });
+      this.addEventListener("DOMMenuItemActive", this);
     }
 
     connectedCallback() {
@@ -40,28 +66,32 @@
       }
 
       this.hasConnected = true;
-      if (this.parentNode && this.parentNode.localName == "menulist") {
+      if (this.parentNode?.localName == "menulist") {
         this._setUpMenulistPopup();
       }
     }
 
     initShadowDOM() {
       // Retarget events from shadow DOM arrowscrollbox to the host.
-      this.scrollBox.addEventListener("scroll", ev =>
+      this.scrollBox.addEventListener("scroll", () =>
         this.dispatchEvent(new Event("scroll"))
       );
-      this.scrollBox.addEventListener("overflow", ev =>
+      this.scrollBox.addEventListener("overflow", () =>
         this.dispatchEvent(new Event("overflow"))
       );
-      this.scrollBox.addEventListener("underflow", ev =>
+      this.scrollBox.addEventListener("underflow", () =>
         this.dispatchEvent(new Event("underflow"))
       );
     }
 
+    ensureInitialized() {
+      this.shadowRoot;
+    }
+
     get shadowRoot() {
-      // We generate shadow DOM lazily on popupshowing event to avoid extra load
-      // on the system during browser startup.
-      if (!super.shadowRoot.firstElementChild) {
+      if (!super.shadowRoot.firstChild) {
+        // We generate shadow DOM lazily on popupshowing event to avoid extra
+        // load on the system during browser startup.
         super.shadowRoot.appendChild(this.fragment);
         this.initShadowDOM();
       }
@@ -82,6 +112,8 @@
         <html:link rel="stylesheet" href="chrome://global/skin/global.css"/>
         <html:style>${this.styles}</html:style>
         <arrowscrollbox class="menupopup-arrowscrollbox"
+                        part="arrowscrollbox content"
+                        exportparts="scrollbox: arrowscrollbox-scrollbox"
                         flex="1"
                         orient="vertical"
                         smoothscroll="false">
@@ -91,30 +123,19 @@
     }
 
     get styles() {
-      let s = `
+      return `
         :host(.in-menulist) arrowscrollbox::part(scrollbutton-up),
         :host(.in-menulist) arrowscrollbox::part(scrollbutton-down) {
           display: none;
         }
         :host(.in-menulist) arrowscrollbox::part(scrollbox) {
           overflow: auto;
+          margin: 0;
+        }
+        :host(.in-menulist) arrowscrollbox::part(scrollbox-clip) {
+          overflow: visible;
         }
       `;
-
-      switch (AppConstants.platform) {
-        case "macosx":
-          s += `
-            :host(.in-menulist) arrowscrollbox {
-              padding: 0;
-            }
-          `;
-          break;
-
-        default:
-          break;
-      }
-
-      return s;
     }
 
     get scrollBox() {
@@ -132,7 +153,7 @@
       // shadow DOM on popupshowing, but it doesn't work for HTML:selects,
       // which are implemented via menulist elements living in the main process.
       // So make them a special case then.
-      this.shadowRoot;
+      this.ensureInitialized();
       this.classList.add("in-menulist");
 
       this.addEventListener("popupshown", () => {
@@ -240,6 +261,31 @@
       if (this._scrollTimer) {
         this.ownerGlobal.clearInterval(this._scrollTimer);
         this._scrollTimer = 0;
+      }
+    }
+
+    on_DOMMenuItemActive(event) {
+      // Scroll buttons may overlap the active item. In that case, scroll
+      // further to stay clear of the buttons.
+      if (
+        this.parentNode?.localName == "menulist" ||
+        !this.scrollBox.hasAttribute("overflowing")
+      ) {
+        return;
+      }
+      let item = event.target;
+      if (item.parentNode != this) {
+        return;
+      }
+      let itemRect = item.getBoundingClientRect();
+      let buttonRect = this.scrollBox._scrollButtonUp.getBoundingClientRect();
+      if (buttonRect.bottom > itemRect.top) {
+        this.scrollBox.scrollByPixels(itemRect.top - buttonRect.bottom, true);
+      } else {
+        buttonRect = this.scrollBox._scrollButtonDown.getBoundingClientRect();
+        if (buttonRect.top < itemRect.bottom) {
+          this.scrollBox.scrollByPixels(itemRect.bottom - buttonRect.top, true);
+        }
       }
     }
   }

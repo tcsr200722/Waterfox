@@ -4,9 +4,8 @@
 
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  ExtensionPermissions: "resource://gre/modules/ExtensionPermissions.jsm",
-  Services: "resource://gre/modules/Services.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  ExtensionPermissions: "resource://gre/modules/ExtensionPermissions.sys.mjs",
 });
 
 var { ExtensionError } = ExtensionUtils;
@@ -20,12 +19,57 @@ XPCOMUtils.defineLazyPreferenceGetter(
 function normalizePermissions(perms) {
   perms = { ...perms };
   perms.permissions = perms.permissions.filter(
-    perm => !perm.startsWith("internal:")
+    perm => !perm.startsWith("internal:") && perm !== "<all_urls>"
   );
   return perms;
 }
 
-this.permissions = class extends ExtensionAPI {
+this.permissions = class extends ExtensionAPIPersistent {
+  PERSISTENT_EVENTS = {
+    onAdded({ fire }) {
+      let { extension } = this;
+      let callback = (event, change) => {
+        if (change.extensionId == extension.id && change.added) {
+          let perms = normalizePermissions(change.added);
+          if (perms.permissions.length || perms.origins.length) {
+            fire.async(perms);
+          }
+        }
+      };
+
+      extensions.on("change-permissions", callback);
+      return {
+        unregister() {
+          extensions.off("change-permissions", callback);
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+    onRemoved({ fire }) {
+      let { extension } = this;
+      let callback = (event, change) => {
+        if (change.extensionId == extension.id && change.removed) {
+          let perms = normalizePermissions(change.removed);
+          if (perms.permissions.length || perms.origins.length) {
+            fire.async(perms);
+          }
+        }
+      };
+
+      extensions.on("change-permissions", callback);
+      return {
+        unregister() {
+          extensions.off("change-permissions", callback);
+        },
+        convert(_fire) {
+          fire = _fire;
+        },
+      };
+    },
+  };
+
   getAPI(context) {
     let { extension } = context;
 
@@ -34,10 +78,9 @@ this.permissions = class extends ExtensionAPI {
         async request(perms) {
           let { permissions, origins } = perms;
 
-          let manifestPermissions =
-            context.extension.manifest.optional_permissions;
+          let { optionalPermissions } = context.extension;
           for (let perm of permissions) {
-            if (!manifestPermissions.includes(perm)) {
+            if (!optionalPermissions.includes(perm)) {
               throw new ExtensionError(
                 `Cannot request permission ${perm} since it was not declared in optional_permissions`
               );
@@ -48,7 +91,7 @@ this.permissions = class extends ExtensionAPI {
           for (let origin of origins) {
             if (!optionalOrigins.subsumes(new MatchPattern(origin))) {
               throw new ExtensionError(
-                `Cannot request origin permission for ${origin} since it was not declared in optional_permissions`
+                `Cannot request origin permission for ${origin} since it was not declared in the manifest`
               );
             }
           }
@@ -59,7 +102,7 @@ this.permissions = class extends ExtensionAPI {
             );
             origins = origins.filter(
               origin =>
-                !context.extension.whiteListedHosts.subsumes(
+                !context.extension.allowedOrigins.subsumes(
                   new MatchPattern(origin)
                 )
             );
@@ -69,12 +112,13 @@ this.permissions = class extends ExtensionAPI {
             }
 
             let browser = context.pendingEventBrowser || context.xulBrowser;
-            let allow = await new Promise(resolve => {
+            let allowPromise = new Promise(resolve => {
               let subject = {
                 wrappedJSObject: {
                   browser,
                   name: context.extension.name,
-                  icon: context.extension.iconURL,
+                  id: context.extension.id,
+                  icon: context.extension.getPreferredIcon(32),
                   permissions: { permissions, origins },
                   resolve,
                 },
@@ -84,14 +128,15 @@ this.permissions = class extends ExtensionAPI {
                 "webextension-optional-permission-prompt"
               );
             });
-            if (!allow) {
+            if (context.isBackgroundContext) {
+              extension.emit("background-script-idle-waituntil", {
+                promise: allowPromise,
+                reason: "permissions_request",
+              });
+            }
+            if (!(await allowPromise)) {
               return false;
             }
-          }
-
-          // Unfortunately, we treat <all_urls> as an API permission as well.
-          if (origins.includes("<all_urls>")) {
-            perms.permissions.push("<all_urls>");
           }
 
           await ExtensionPermissions.add(extension.id, perms, extension);
@@ -113,7 +158,7 @@ this.permissions = class extends ExtensionAPI {
 
           for (let origin of permissions.origins) {
             if (
-              !context.extension.whiteListedHosts.subsumes(
+              !context.extension.allowedOrigins.subsumes(
                 new MatchPattern(origin)
               )
             ) {
@@ -135,42 +180,16 @@ this.permissions = class extends ExtensionAPI {
 
         onAdded: new EventManager({
           context,
-          name: "permissions.onAdded",
-          register: fire => {
-            let callback = (event, change) => {
-              if (change.extensionId == extension.id && change.added) {
-                let perms = normalizePermissions(change.added);
-                if (perms.permissions.length || perms.origins.length) {
-                  fire.async(perms);
-                }
-              }
-            };
-
-            extensions.on("change-permissions", callback);
-            return () => {
-              extensions.off("change-permissions", callback);
-            };
-          },
+          module: "permissions",
+          event: "onAdded",
+          extensionApi: this,
         }).api(),
 
         onRemoved: new EventManager({
           context,
-          name: "permissions.onRemoved",
-          register: fire => {
-            let callback = (event, change) => {
-              if (change.extensionId == extension.id && change.removed) {
-                let perms = normalizePermissions(change.removed);
-                if (perms.permissions.length || perms.origins.length) {
-                  fire.async(perms);
-                }
-              }
-            };
-
-            extensions.on("change-permissions", callback);
-            return () => {
-              extensions.off("change-permissions", callback);
-            };
-          },
+          module: "permissions",
+          event: "onRemoved",
+          extensionApi: this,
         }).api(),
       },
     };

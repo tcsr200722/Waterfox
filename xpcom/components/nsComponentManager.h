@@ -9,7 +9,6 @@
 
 #include "nsXPCOM.h"
 
-#include "xpcom-private.h"
 #include "nsIComponentManager.h"
 #include "nsIComponentRegistrar.h"
 #include "nsIMemoryReporter.h"
@@ -19,7 +18,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Module.h"
-#include "mozilla/Mutex.h"
+#include "mozilla/Monitor.h"
 #include "mozilla/UniquePtr.h"
 #include "nsXULAppAPI.h"
 #include "nsIFactory.h"
@@ -30,7 +29,7 @@
 #include "nsCOMPtr.h"
 #include "nsWeakReference.h"
 #include "nsCOMArray.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsInterfaceHashtable.h"
 #include "nsClassHashtable.h"
 #include "nsTArray.h"
@@ -52,11 +51,8 @@ struct PRThread;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-extern const mozilla::Module kXPCOMModule;
-
 namespace {
 class EntryWrapper;
-class MutexLock;
 }  // namespace
 
 namespace mozilla {
@@ -67,52 +63,6 @@ bool FastProcessSelectorMatches(Module::ProcessSelector aSelector);
 
 }  // namespace xpcom
 }  // namespace mozilla
-
-/**
- * This is a wrapper around mozilla::Mutex which provides runtime
- * checking for a deadlock where the same thread tries to lock a mutex while
- * it is already locked. This checking is present in both debug and release
- * builds.
- */
-class SafeMutex {
- public:
-  explicit SafeMutex(const char* aName)
-      : mMutex(aName), mOwnerThread(nullptr) {}
-
-  ~SafeMutex() = default;
-
-  void Lock() {
-    AssertNotCurrentThreadOwns();
-    mMutex.Lock();
-    MOZ_ASSERT(mOwnerThread == nullptr);
-    mOwnerThread = PR_GetCurrentThread();
-  }
-
-  void Unlock() {
-    MOZ_ASSERT(mOwnerThread == PR_GetCurrentThread());
-    mOwnerThread = nullptr;
-    mMutex.Unlock();
-  }
-
-  void AssertCurrentThreadOwns() const {
-    // This method is a debug-only check
-    MOZ_ASSERT(mOwnerThread == PR_GetCurrentThread());
-  }
-
-  MOZ_NEVER_INLINE void AssertNotCurrentThreadOwns() const {
-    // This method is a release-mode check
-    if (PR_GetCurrentThread() == mOwnerThread) {
-      MOZ_CRASH();
-    }
-  }
-
- private:
-  mozilla::Mutex mMutex;
-  mozilla::Atomic<PRThread*, mozilla::Relaxed> mOwnerThread;
-};
-
-typedef mozilla::detail::BaseAutoLock<SafeMutex&> SafeMutexAutoLock;
-typedef mozilla::detail::BaseAutoUnlock<SafeMutex&> SafeMutexAutoUnlock;
 
 class nsComponentManagerImpl final : public nsIComponentManager,
                                      public nsIServiceManager,
@@ -127,7 +77,7 @@ class nsComponentManagerImpl final : public nsIComponentManager,
   NS_DECL_NSICOMPONENTREGISTRAR
   NS_DECL_NSIMEMORYREPORTER
 
-  static nsresult Create(nsISupports* aOuter, REFNSIID aIID, void** aResult);
+  static nsresult Create(REFNSIID aIID, void** aResult);
 
   nsresult RegistryLocationForFile(nsIFile* aFile, nsCString& aResult);
   nsresult FileForRegistryLocation(const nsCString& aLocation, nsIFile** aSpec);
@@ -150,18 +100,19 @@ class nsComponentManagerImpl final : public nsIComponentManager,
 
   already_AddRefed<nsIFactory> LoadFactory(nsFactoryEntry* aEntry);
 
-  nsDataHashtable<nsIDPointerHashKey, nsFactoryEntry*> mFactories;
-  nsDataHashtable<nsCStringHashKey, nsFactoryEntry*> mContractIDs;
+  nsTHashMap<nsIDPointerHashKey, nsFactoryEntry*> mFactories;
+  nsTHashMap<nsCStringHashKey, nsFactoryEntry*> mContractIDs;
 
-  SafeMutex mLock;
+  mozilla::Monitor mLock MOZ_UNANNOTATED;
 
   mozilla::Maybe<EntryWrapper> LookupByCID(const nsID& aCID);
-  mozilla::Maybe<EntryWrapper> LookupByCID(const MutexLock&, const nsID& aCID);
+  mozilla::Maybe<EntryWrapper> LookupByCID(const mozilla::MonitorAutoLock&,
+                                           const nsID& aCID);
 
   mozilla::Maybe<EntryWrapper> LookupByContractID(
       const nsACString& aContractID);
   mozilla::Maybe<EntryWrapper> LookupByContractID(
-      const MutexLock&, const nsACString& aContractID);
+      const mozilla::MonitorAutoLock&, const nsACString& aContractID);
 
   nsresult GetService(mozilla::xpcom::ModuleID, const nsIID& aIID,
                       void** aResult);
@@ -186,54 +137,6 @@ class nsComponentManagerImpl final : public nsIComponentManager,
 
   static nsTArray<ComponentLocation>* sModuleLocations;
 
-  class KnownModule {
-   public:
-    /**
-     * Static or binary module.
-     */
-    explicit KnownModule(const mozilla::Module* aModule)
-        : mModule(aModule), mLoaded(false), mFailed(false) {}
-
-    explicit KnownModule(mozilla::FileLocation& aFile)
-        : mModule(nullptr), mFile(aFile), mLoaded(false), mFailed(false) {}
-
-    ~KnownModule() {
-      if (mLoaded && mModule->unloadProc) {
-        mModule->unloadProc();
-      }
-    }
-
-    bool Load();
-
-    const mozilla::Module* Module() const { return mModule; }
-
-    /**
-     * For error logging, get a description of this module, either the
-     * file path, or <static module>.
-     */
-    nsCString Description() const;
-
-   private:
-    const mozilla::Module* mModule;
-    mozilla::FileLocation mFile;
-    bool mLoaded;
-    bool mFailed;
-  };
-
-  // The KnownModule is kept alive by these members, it is
-  // referenced by pointer from the factory entries.
-  nsTArray<mozilla::UniquePtr<KnownModule>> mKnownStaticModules;
-  // The key is the URI string of the module
-  nsClassHashtable<nsCStringHashKey, KnownModule> mKnownModules;
-
-  // Mutex not held
-  void RegisterModule(const mozilla::Module* aModule);
-
-  // Mutex held
-  void RegisterCIDEntryLocked(const mozilla::Module::CIDEntry* aEntry,
-                              KnownModule* aModule);
-  void RegisterContractIDLocked(const mozilla::Module::ContractIDEntry* aEntry);
-
   // Mutex not held
   void RegisterManifest(NSLocationType aType, mozilla::FileLocation& aFile,
                         bool aChromeOnly);
@@ -252,10 +155,6 @@ class nsComponentManagerImpl final : public nsIComponentManager,
 
   void ManifestManifest(ManifestProcessingContext& aCx, int aLineNo,
                         char* const* aArgv);
-  void ManifestComponent(ManifestProcessingContext& aCx, int aLineNo,
-                         char* const* aArgv);
-  void ManifestContract(ManifestProcessingContext& aCx, int aLineNo,
-                        char* const* aArgv);
   void ManifestCategory(ManifestProcessingContext& aCx, int aLineNo,
                         char* const* aArgv);
 
@@ -269,8 +168,6 @@ class nsComponentManagerImpl final : public nsIComponentManager,
     SHUTDOWN_COMPLETE
   } mStatus;
 
-  mozilla::ArenaAllocator<1024 * 1, 8> mArena;
-
   struct PendingServiceInfo {
     const nsCID* cid;
     PRThread* thread;
@@ -278,7 +175,8 @@ class nsComponentManagerImpl final : public nsIComponentManager,
 
   inline PendingServiceInfo* AddPendingService(const nsCID& aServiceCID,
                                                PRThread* aThread);
-  inline void RemovePendingService(const nsCID& aServiceCID);
+  inline void RemovePendingService(mozilla::MonitorAutoLock& aLock,
+                                   const nsCID& aServiceCID);
   inline PRThread* GetPendingServiceThread(const nsCID& aServiceCID) const;
 
   nsTArray<PendingServiceInfo> mPendingServices;
@@ -290,8 +188,9 @@ class nsComponentManagerImpl final : public nsIComponentManager,
  private:
   ~nsComponentManagerImpl();
 
-  nsresult GetServiceLocked(MutexLock& aLock, EntryWrapper& aEntry,
-                            const nsIID& aIID, void** aResult);
+  nsresult GetServiceLocked(mozilla::Maybe<mozilla::MonitorAutoLock>& aLock,
+                            EntryWrapper& aEntry, const nsIID& aIID,
+                            void** aResult);
 };
 
 #define NS_MAX_FILENAME_LEN 1024
@@ -299,23 +198,18 @@ class nsComponentManagerImpl final : public nsIComponentManager,
 #define NS_ERROR_IS_DIR NS_ERROR_GENERATE_FAILURE(NS_ERROR_MODULE_XPCOM, 24)
 
 struct nsFactoryEntry {
-  nsFactoryEntry(const mozilla::Module::CIDEntry* aEntry,
-                 nsComponentManagerImpl::KnownModule* aModule);
-
   // nsIComponentRegistrar.registerFactory support
   nsFactoryEntry(const nsCID& aClass, nsIFactory* aFactory);
 
-  ~nsFactoryEntry();
+  ~nsFactoryEntry() = default;
 
   already_AddRefed<nsIFactory> GetFactory();
 
-  nsresult CreateInstance(nsISupports* aOuter, const nsIID& aIID,
-                          void** aResult);
+  nsresult CreateInstance(const nsIID& aIID, void** aResult);
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf);
 
-  const mozilla::Module::CIDEntry* mCIDEntry;
-  nsComponentManagerImpl::KnownModule* mModule;
+  const nsCID mCID;
 
   nsCOMPtr<nsIFactory> mFactory;
   nsCOMPtr<nsISupports> mServiceObject;

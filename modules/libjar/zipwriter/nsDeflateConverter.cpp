@@ -4,10 +4,12 @@
  */
 
 #include "StreamFunctions.h"
+#include "MainThreadUtils.h"
 #include "nsDeflateConverter.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #include "nsStringStream.h"
 #include "nsComponentManagerUtils.h"
-#include "nsMemory.h"
+#include "nsCRT.h"
 #include "plstr.h"
 #include "mozilla/UniquePtr.h"
 
@@ -22,7 +24,7 @@ using namespace mozilla;
  * method to the data.
  */
 NS_IMPL_ISUPPORTS(nsDeflateConverter, nsIStreamConverter, nsIStreamListener,
-                  nsIRequestObserver)
+                  nsIThreadRetargetableStreamListener, nsIRequestObserver)
 
 nsresult nsDeflateConverter::Init() {
   int zerr;
@@ -75,13 +77,14 @@ NS_IMETHODIMP nsDeflateConverter::AsyncConvertData(const char* aFromType,
 
   NS_ENSURE_ARG_POINTER(aListener);
 
-  if (!PL_strncasecmp(aToType, ZLIB_TYPE, sizeof(ZLIB_TYPE) - 1))
+  if (!PL_strncasecmp(aToType, ZLIB_TYPE, sizeof(ZLIB_TYPE) - 1)) {
     mWrapMode = WRAP_ZLIB;
-  else if (!PL_strcasecmp(aToType, GZIP_TYPE) ||
-           !PL_strcasecmp(aToType, X_GZIP_TYPE))
+  } else if (!nsCRT::strcasecmp(aToType, GZIP_TYPE) ||
+             !nsCRT::strcasecmp(aToType, X_GZIP_TYPE)) {
     mWrapMode = WRAP_GZIP;
-  else
+  } else {
     mWrapMode = WRAP_NONE;
+  }
 
   nsresult rv = Init();
   NS_ENSURE_SUCCESS(rv, rv);
@@ -121,7 +124,7 @@ NS_IMETHODIMP nsDeflateConverter::OnDataAvailable(nsIRequest* aRequest,
 
     while (mZstream.avail_out == 0) {
       // buffer is full, push the data out to the listener
-      rv = PushAvailableData(aRequest, nullptr);
+      rv = PushAvailableData(aRequest);
       NS_ENSURE_SUCCESS(rv, rv);
       zerr = deflate(&mZstream, Z_NO_FLUSH);
     }
@@ -130,11 +133,31 @@ NS_IMETHODIMP nsDeflateConverter::OnDataAvailable(nsIRequest* aRequest,
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsDeflateConverter::MaybeRetarget(nsIRequest* request) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 NS_IMETHODIMP nsDeflateConverter::OnStartRequest(nsIRequest* aRequest) {
   if (!mListener) return NS_ERROR_NOT_INITIALIZED;
 
   return mListener->OnStartRequest(aRequest);
 }
+
+NS_IMETHODIMP
+nsDeflateConverter::OnDataFinished(nsresult aStatus) {
+  nsCOMPtr<nsIThreadRetargetableStreamListener> retargetable =
+      do_QueryInterface(mListener);
+
+  if (retargetable) {
+    return retargetable->OnDataFinished(aStatus);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsDeflateConverter::CheckListenerChain() { return NS_ERROR_NO_INTERFACE; }
 
 NS_IMETHODIMP nsDeflateConverter::OnStopRequest(nsIRequest* aRequest,
                                                 nsresult aStatusCode) {
@@ -145,7 +168,7 @@ NS_IMETHODIMP nsDeflateConverter::OnStopRequest(nsIRequest* aRequest,
   int zerr;
   do {
     zerr = deflate(&mZstream, Z_FINISH);
-    rv = PushAvailableData(aRequest, nullptr);
+    rv = PushAvailableData(aRequest);
     NS_ENSURE_SUCCESS(rv, rv);
   } while (zerr == Z_OK);
 
@@ -154,17 +177,16 @@ NS_IMETHODIMP nsDeflateConverter::OnStopRequest(nsIRequest* aRequest,
   return mListener->OnStopRequest(aRequest, aStatusCode);
 }
 
-nsresult nsDeflateConverter::PushAvailableData(nsIRequest* aRequest,
-                                               nsISupports* aContext) {
+nsresult nsDeflateConverter::PushAvailableData(nsIRequest* aRequest) {
   uint32_t bytesToWrite = sizeof(mWriteBuffer) - mZstream.avail_out;
   // We don't need to do anything if there isn't any data
   if (bytesToWrite == 0) return NS_OK;
 
   MOZ_ASSERT(bytesToWrite <= INT32_MAX);
   nsCOMPtr<nsIInputStream> stream;
-  nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(stream), MakeSpan((char*)mWriteBuffer, bytesToWrite),
-      NS_ASSIGNMENT_DEPEND);
+  nsresult rv = NS_NewByteInputStream(getter_AddRefs(stream),
+                                      Span((char*)mWriteBuffer, bytesToWrite),
+                                      NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = mListener->OnDataAvailable(aRequest, stream, mOffset, bytesToWrite);

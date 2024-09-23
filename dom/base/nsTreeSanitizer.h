@@ -5,16 +5,40 @@
 #ifndef nsTreeSanitizer_h_
 #define nsTreeSanitizer_h_
 
+#include "nsAtom.h"
+#include "nsHashKeys.h"
+#include "nsHashtablesFwd.h"
 #include "nsIPrincipal.h"
-#include "mozilla/dom/Element.h"
+#include "nsTArray.h"
+#include "nsTHashSet.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/dom/NameSpaceConstants.h"
+#include "mozilla/dom/SanitizerBinding.h"
 
 class nsIContent;
+class nsIGlobalObject;
+class nsINode;
+
+namespace mozilla {
+class DeclarationBlock;
+class ErrorResult;
+enum class StyleSanitizationKind : uint8_t;
+}  // namespace mozilla
+
+namespace mozilla::dom {
+class DocumentFragment;
+class Element;
+
+class OwningStringOrSanitizerAttributeNamespace;
+class OwningStringOrSanitizerElementNamespace;
+class OwningStringOrSanitizerElementNamespaceWithAttributes;
+}  // namespace mozilla::dom
 
 /**
  * See the documentation of nsIParserUtils::sanitize for documentation
  * about the default behavior and the configuration options of this sanitizer.
  */
-class MOZ_STACK_CLASS nsTreeSanitizer {
+class nsTreeSanitizer {
  public:
   /**
    * The constructor.
@@ -40,6 +64,19 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    * The root element must be <html>.
    */
   void Sanitize(mozilla::dom::Document* aDocument);
+
+  /**
+   * Provides additional options for usage from the Web Sanitizer API
+   * which allows modifying the allow-list from above
+   */
+  void WithWebSanitizerOptions(nsIGlobalObject* aGlobal,
+                               const mozilla::dom::SanitizerConfig& aOptions,
+                               mozilla::ErrorResult& aRv);
+
+  /**
+   * Removes conditional CSS from this subtree.
+   */
+  static void RemoveConditionalCSSFromSubtree(nsINode* aRoot);
 
  private:
   /**
@@ -82,18 +119,16 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    */
   bool mLogRemovals;
 
-  /**
-   * Whether we should remove CSS conditional rules, no other changes.
-   */
-  bool mOnlyConditionalCSS;
+  // WindowID used for logging removals.
+  uint64_t mInnerWindowID = 0;
 
   /**
    * We have various tables of static atoms for elements and attributes.
    */
-  class AtomsTable : public nsTHashtable<nsPtrHashKey<const nsStaticAtom>> {
+  class AtomsTable : public nsTHashSet<const nsStaticAtom*> {
    public:
     explicit AtomsTable(uint32_t aLength)
-        : nsTHashtable<nsPtrHashKey<const nsStaticAtom>>(aLength) {}
+        : nsTHashSet<const nsStaticAtom*>(aLength) {}
 
     bool Contains(nsAtom* aAtom) {
       // Because this table only contains static atoms, if aAtom isn't
@@ -101,6 +136,55 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
       return aAtom->IsStatic() && GetEntry(aAtom->AsStatic());
     }
   };
+
+  // The name of an element combined with its namespace.
+  class NamespaceAtom : public PLDHashEntryHdr {
+   public:
+    using KeyType = const NamespaceAtom&;
+    using KeyTypePointer = const NamespaceAtom*;
+
+    explicit NamespaceAtom(KeyTypePointer aKey)
+        : mNamespaceID(aKey->mNamespaceID), mLocalName(aKey->mLocalName) {}
+    NamespaceAtom(int32_t aNamespaceID, RefPtr<nsAtom> aLocalName)
+        : mNamespaceID(aNamespaceID), mLocalName(std::move(aLocalName)) {}
+    NamespaceAtom(NamespaceAtom&&) = default;
+    ~NamespaceAtom() = default;
+
+    bool KeyEquals(KeyTypePointer aKey) const {
+      return mNamespaceID == aKey->mNamespaceID &&
+             mLocalName == aKey->mLocalName;
+    }
+
+    static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
+    static PLDHashNumber HashKey(KeyTypePointer aKey) {
+      if (!aKey) {
+        return 0;
+      }
+
+      return mozilla::HashGeneric(aKey->mNamespaceID, aKey->mLocalName.get());
+    }
+
+    enum { ALLOW_MEMMOVE = true };
+
+   private:
+    int32_t mNamespaceID = kNameSpaceID_None;
+    RefPtr<nsAtom> mLocalName;
+  };
+
+  using ElementName = NamespaceAtom;
+  using AttributeName = NamespaceAtom;
+
+  using ElementNameSet = nsTHashSet<ElementName>;
+  using AttributeNameSet = nsTHashSet<AttributeName>;
+
+  class ElementWithAttributes {
+   public:
+    mozilla::Maybe<AttributeNameSet> mAttributes;
+    mozilla::Maybe<AttributeNameSet> mRemoveAttributes;
+  };
+
+  using ElementsToAttributesMap =
+      nsTHashMap<ElementName, ElementWithAttributes>;
 
   void SanitizeChildren(nsINode* aRoot);
 
@@ -112,6 +196,7 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    *         false if the element is to be kept
    */
   bool MustFlatten(int32_t aNamespace, nsAtom* aLocal);
+  bool MustFlattenForSanitizerAPI(int32_t aNamespace, nsAtom* aLocal);
 
   /**
    * Queries if an element including its children must be removed.
@@ -123,6 +208,8 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    */
   bool MustPrune(int32_t aNamespace, nsAtom* aLocal,
                  mozilla::dom::Element* aElement);
+  bool MustPruneForSanitizerAPI(int32_t aNamespace, nsAtom* aLocal,
+                                mozilla::dom::Element* aElement);
 
   /**
    * Checks if a given local name (for an attribute) is on the given list
@@ -160,6 +247,11 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    */
   void SanitizeAttributes(mozilla::dom::Element* aElement,
                           AllowedAttributes aAllowed);
+  // Currently only used for the Sanitizer API.
+  bool MustDropAttribute(mozilla::dom::Element* aElement,
+                         int32_t aAttrNamespace, nsAtom* aAttrLocalName);
+  bool MustDropFunkyAttribute(mozilla::dom::Element* aElement,
+                              int32_t aAttrNamespace, nsAtom* aAttrLocalName);
 
   /**
    * Remove the named URL attribute from the element if the URL fails a
@@ -168,10 +260,11 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    * @param aElement the element whose attribute to possibly modify
    * @param aNamespace the namespace of the URL attribute
    * @param aLocalName the local name of the URL attribute
+   * @param aFragmentsOnly allows same-document references only
    * @return true if the attribute was removed and false otherwise
    */
   bool SanitizeURL(mozilla::dom::Element* aElement, int32_t aNamespace,
-                   nsAtom* aLocalName);
+                   nsAtom* aLocalName, bool aFragmentsOnly = false);
 
   /**
    * Checks a style rule for the presence of the 'binding' CSS property and
@@ -183,21 +276,44 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
   bool SanitizeStyleDeclaration(mozilla::DeclarationBlock* aDeclaration);
 
   /**
-   * Parses a style sheet and reserializes it with the 'binding' property
-   * removed if it was present.
+   * Sanitizes an inline style element (an HTML or SVG <style>).
    *
-   * @param aOriginal the original style sheet source
-   * @param aSanitized the reserialization without dangerous CSS.
-   * @param aDocument the document the style sheet belongs to
-   * @param aBaseURI the base URI to use
+   * Returns whether the style has changed.
    */
-  void SanitizeStyleSheet(const nsAString& aOriginal, nsAString& aSanitized,
-                          mozilla::dom::Document* aDocument, nsIURI* aBaseURI);
+  static bool SanitizeInlineStyle(mozilla::dom::Element*,
+                                  mozilla::StyleSanitizationKind);
 
   /**
    * Removes all attributes from an element node.
    */
-  void RemoveAllAttributes(mozilla::dom::Element* aElement);
+  static void RemoveAllAttributes(mozilla::dom::Element* aElement);
+
+  /**
+   * Removes all attributes from the descendants of an element but not from
+   * the element itself.
+   */
+  static void RemoveAllAttributesFromDescendants(mozilla::dom::Element*);
+
+  static bool MatchesElementName(ElementNameSet& aNames, int32_t aNamespace,
+                                 nsAtom* aLocalName);
+  static bool MatchesAttributeName(AttributeNameSet& aNames, int32_t aNamespace,
+                                   nsAtom* aLocalName);
+
+  static ElementNameSet ConvertElements(
+      const nsTArray<mozilla::dom::OwningStringOrSanitizerElementNamespace>&
+          aElements,
+      mozilla::ErrorResult& aRv);
+
+  static ElementsToAttributesMap ConvertElementsWithAttributes(
+      const nsTArray<
+          mozilla::dom::OwningStringOrSanitizerElementNamespaceWithAttributes>&
+          aElements,
+      mozilla::ErrorResult& aRv);
+
+  static AttributeNameSet ConvertAttributes(
+      const nsTArray<mozilla::dom::OwningStringOrSanitizerAttributeNamespace>&
+          aAttributes,
+      mozilla::ErrorResult& aRv);
 
   /**
    * Log a Console Service message to indicate we removed something.
@@ -250,9 +366,53 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
   static AtomsTable* sAttributesMathML;
 
   /**
+   * The built-in baseline attribute allow list used by the Sanitizer API.
+   */
+  static AtomsTable* sBaselineAttributeAllowlist;
+
+  /**
+   * The built-in baseline element allow list used by the Sanitizer API.
+   */
+  static AtomsTable* sBaselineElementAllowlist;
+
+  /**
+   * The default configuration's attribute allow list used by the Sanitizer API.
+   */
+  static AtomsTable* sDefaultConfigurationAttributeAllowlist;
+
+  /**
+   * The default configuration's element allow list used by the Sanitizer API.
+   */
+  static AtomsTable* sDefaultConfigurationElementAllowlist;
+
+  /**
    * Reusable null principal for URL checks.
    */
   static nsIPrincipal* sNullPrincipal;
+
+  // === Variables used to implement HTML Sanitizer API. ==
+
+  // This nsTreeSanitizer instance should behave like the Sanitizer API.
+  bool mIsForSanitizerAPI = false;
+
+  bool mAllowCustomElements = false;
+  bool mAllowUnknownMarkup = false;
+
+  // An allow-list of elements to keep, with potentially associated lists of
+  // attributes to keep/remove.
+  mozilla::Maybe<ElementsToAttributesMap> mElements;
+
+  // A deny-list of elements to remove. (aka prune)
+  mozilla::Maybe<ElementNameSet> mRemoveElements;
+
+  // A deny-list of elements to replace with children. (aka flatten)
+  mozilla::Maybe<ElementNameSet> mReplaceWithChildrenElements;
+
+  // An allow-list of attributes to keep.
+  mozilla::Maybe<AttributeNameSet> mAttributes;
+
+  // A deny-list of attributes to remove.
+  mozilla::Maybe<AttributeNameSet> mRemoveAttributes;
 };
 
 #endif  // nsTreeSanitizer_h_

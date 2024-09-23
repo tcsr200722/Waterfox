@@ -1,21 +1,20 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-ChromeUtils.import("resource://gre/modules/Promise.jsm", this);
-const { PermissionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PermissionTestUtils.jsm"
+const { PermissionTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PermissionTestUtils.sys.mjs"
 );
 
 const kDefaultWait = 2000;
 
 function is_element_visible(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null, when checking visibility");
-  ok(!BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(!BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 function is_element_hidden(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null, when checking visibility");
-  ok(BrowserTestUtils.is_hidden(aElement), aMsg);
+  ok(BrowserTestUtils.isHidden(aElement), aMsg);
 }
 
 function open_preferences(aCallback) {
@@ -23,7 +22,7 @@ function open_preferences(aCallback) {
   let newTabBrowser = gBrowser.getBrowserForTab(gBrowser.selectedTab);
   newTabBrowser.addEventListener(
     "Initialized",
-    function() {
+    function () {
       aCallback(gBrowser.contentWindow);
     },
     { capture: true, once: true }
@@ -37,12 +36,16 @@ function openAndLoadSubDialog(
   aClosingCallback = null
 ) {
   let promise = promiseLoadSubDialog(aURL);
-  content.gSubDialog.open(aURL, aFeatures, aParams, aClosingCallback);
+  content.gSubDialog.open(
+    aURL,
+    { features: aFeatures, closingCallback: aClosingCallback },
+    aParams
+  );
   return promise;
 }
 
 function promiseLoadSubDialog(aURL) {
-  return new Promise((resolve, reject) => {
+  return new Promise(resolve => {
     content.gSubDialog._dialogStack.addEventListener(
       "dialogopen",
       function dialogopen(aEvent) {
@@ -66,9 +69,8 @@ function promiseLoadSubDialog(aURL) {
         is_element_visible(aEvent.detail.dialog._overlay, "Overlay is visible");
 
         // Check that stylesheets were injected
-        let expectedStyleSheetURLs = aEvent.detail.dialog._injectedStyleSheets.slice(
-          0
-        );
+        let expectedStyleSheetURLs =
+          aEvent.detail.dialog._injectedStyleSheets.slice(0);
         for (let styleSheet of aEvent.detail.dialog._frame.contentDocument
           .styleSheets) {
           let i = expectedStyleSheetURLs.indexOf(styleSheet.href);
@@ -91,109 +93,60 @@ function promiseLoadSubDialog(aURL) {
   });
 }
 
-/**
- * Waits a specified number of miliseconds for a specified event to be
- * fired on a specified element.
- *
- * Usage:
- *    let receivedEvent = waitForEvent(element, "eventName");
- *    // Do some processing here that will cause the event to be fired
- *    // ...
- *    // Now yield until the Promise is fulfilled
- *    yield receivedEvent;
- *    if (receivedEvent && !(receivedEvent instanceof Error)) {
- *      receivedEvent.msg == "eventName";
- *      // ...
- *    }
- *
- * @param aSubject the element that should receive the event
- * @param aEventName the event to wait for
- * @param aTimeoutMs the number of miliseconds to wait before giving up
- * @returns a Promise that resolves to the received event, or to an Error
- */
-function waitForEvent(aSubject, aEventName, aTimeoutMs, aTarget) {
-  let eventDeferred = Promise.defer();
-  let timeoutMs = aTimeoutMs || kDefaultWait;
-  let stack = new Error().stack;
-  let timerID = setTimeout(function wfe_canceller() {
-    aSubject.removeEventListener(aEventName, listener);
-    eventDeferred.reject(new Error(aEventName + " event timeout at " + stack));
-  }, timeoutMs);
+async function openPreferencesViaOpenPreferencesAPI(aPane, aOptions) {
+  let finalPaneEvent = Services.prefs.getBoolPref("identity.fxaccounts.enabled")
+    ? "sync-pane-loaded"
+    : "privacy-pane-loaded";
+  let finalPrefPaneLoaded = TestUtils.topicObserved(finalPaneEvent, () => true);
+  gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  openPreferences(aPane, aOptions);
+  let newTabBrowser = gBrowser.selectedBrowser;
 
-  var listener = function(aEvent) {
-    if (aTarget && aTarget !== aEvent.target) {
-      return;
-    }
-
-    // stop the timeout clock and resume
-    clearTimeout(timerID);
-    eventDeferred.resolve(aEvent);
-  };
-
-  function cleanup(aEventOrError) {
-    // unhook listener in case of success or failure
-    aSubject.removeEventListener(aEventName, listener);
-    return aEventOrError;
+  if (!newTabBrowser.contentWindow) {
+    await BrowserTestUtils.waitForEvent(newTabBrowser, "Initialized", true);
+    await BrowserTestUtils.waitForEvent(newTabBrowser.contentWindow, "load");
+    await finalPrefPaneLoaded;
   }
-  aSubject.addEventListener(aEventName, listener);
-  return eventDeferred.promise.then(cleanup, cleanup);
+
+  let win = gBrowser.contentWindow;
+  let selectedPane = win.history.state;
+  if (!aOptions || !aOptions.leaveOpen) {
+    gBrowser.removeCurrentTab();
+  }
+  return { selectedPane };
 }
 
-function openPreferencesViaOpenPreferencesAPI(aPane, aOptions) {
-  return new Promise(resolve => {
-    let finalPaneEvent = Services.prefs.getBoolPref(
-      "identity.fxaccounts.enabled"
-    )
-      ? "sync-pane-loaded"
-      : "privacy-pane-loaded";
-    let finalPrefPaneLoaded = TestUtils.topicObserved(
-      finalPaneEvent,
-      () => true
-    );
-    gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser, "about:blank");
-    openPreferences(aPane);
-    let newTabBrowser = gBrowser.selectedBrowser;
-
-    newTabBrowser.addEventListener(
-      "Initialized",
-      function() {
-        newTabBrowser.contentWindow.addEventListener(
-          "load",
-          async function() {
-            let win = gBrowser.contentWindow;
-            let selectedPane = win.history.state;
-            await finalPrefPaneLoaded;
-            if (!aOptions || !aOptions.leaveOpen) {
-              gBrowser.removeCurrentTab();
-            }
-            resolve({ selectedPane });
-          },
-          { once: true }
-        );
-      },
-      { capture: true, once: true }
-    );
-  });
-}
-
-async function evaluateSearchResults(keyword, searchReults) {
-  searchReults = Array.isArray(searchReults) ? searchReults : [searchReults];
-  searchReults.push("header-searchResults");
-
+async function runSearchInput(input) {
   let searchInput = gBrowser.contentDocument.getElementById("searchInput");
   searchInput.focus();
   let searchCompletedPromise = BrowserTestUtils.waitForEvent(
     gBrowser.contentWindow,
     "PreferencesSearchCompleted",
-    evt => evt.detail == keyword
+    evt => evt.detail == input
   );
-  EventUtils.sendString(keyword);
+  EventUtils.sendString(input);
   await searchCompletedPromise;
+}
+
+async function evaluateSearchResults(
+  keyword,
+  searchResults,
+  includeExperiments = false
+) {
+  searchResults = Array.isArray(searchResults)
+    ? searchResults
+    : [searchResults];
+  searchResults.push("header-searchResults");
+
+  await runSearchInput(keyword);
 
   let mainPrefTag = gBrowser.contentDocument.getElementById("mainPrefPane");
   for (let i = 0; i < mainPrefTag.childElementCount; i++) {
     let child = mainPrefTag.children[i];
-    if (searchReults.includes(child.id)) {
+    if (!includeExperiments && child.id?.startsWith("pane-experimental")) {
+      continue;
+    }
+    if (searchResults.includes(child.id)) {
       is_element_visible(child, `${child.id} should be in search results`);
     } else if (child.id) {
       is_element_hidden(child, `${child.id} should not be in search results`);
@@ -211,4 +164,171 @@ function waitForMutation(target, opts, cb) {
     });
     observer.observe(target, opts);
   });
+}
+
+// Used to add sample experimental features for testing. To use, create
+// a DefinitionServer, then call addDefinition as needed.
+class DefinitionServer {
+  constructor(definitionOverrides = []) {
+    let { HttpServer } = ChromeUtils.importESModule(
+      "resource://testing-common/httpd.sys.mjs"
+    );
+
+    this.server = new HttpServer();
+    this.server.registerPathHandler("/definitions.json", this);
+    this.definitions = {};
+
+    for (const override of definitionOverrides) {
+      this.addDefinition(override);
+    }
+
+    this.server.start();
+    registerCleanupFunction(
+      () => new Promise(resolve => this.server.stop(resolve))
+    );
+  }
+
+  // for nsIHttpRequestHandler
+  handle(request, response) {
+    response.write(JSON.stringify(this.definitions));
+  }
+
+  get definitionsUrl() {
+    const { primaryScheme, primaryHost, primaryPort } = this.server.identity;
+    return `${primaryScheme}://${primaryHost}:${primaryPort}/definitions.json`;
+  }
+
+  addDefinition(overrides = {}) {
+    const definition = {
+      id: "test-feature",
+      // These l10n IDs are just random so we have some text to display
+      title: "experimental-features-media-jxl",
+      description: "pane-experimental-description2",
+      restartRequired: false,
+      type: "boolean",
+      preference: "test.feature",
+      defaultValue: false,
+      isPublic: false,
+      ...overrides,
+    };
+    // convert targeted values, used by fromId
+    definition.isPublic = { default: definition.isPublic };
+    definition.defaultValue = { default: definition.defaultValue };
+    this.definitions[definition.id] = definition;
+    return definition;
+  }
+}
+
+/**
+ * Creates observer that waits for and then compares all perm-changes with the observances in order.
+ * @param {Array} observances permission changes to observe (order is important)
+ * @returns {Promise} Promise object that resolves once all permission changes have been observed
+ */
+function createObserveAllPromise(observances) {
+  // Create new promise that resolves once all items
+  // in observances array have been observed.
+  return new Promise(resolve => {
+    let permObserver = {
+      observe(aSubject, aTopic, aData) {
+        if (aTopic != "perm-changed") {
+          return;
+        }
+
+        if (!observances.length) {
+          // See bug 1063410
+          return;
+        }
+
+        let permission = aSubject.QueryInterface(Ci.nsIPermission);
+        let expected = observances.shift();
+
+        info(
+          `observed perm-changed for ${permission.principal.origin} (remaining ${observances.length})`
+        );
+
+        is(aData, expected.data, "type of message should be the same");
+        for (let prop of ["type", "capability", "expireType"]) {
+          if (expected[prop]) {
+            is(
+              permission[prop],
+              expected[prop],
+              `property: "${prop}" should be equal (${permission.principal.origin})`
+            );
+          }
+        }
+
+        if (expected.origin) {
+          is(
+            permission.principal.origin,
+            expected.origin,
+            `property: "origin" should be equal (${permission.principal.origin})`
+          );
+        }
+
+        if (!observances.length) {
+          Services.obs.removeObserver(permObserver, "perm-changed");
+          executeSoon(resolve);
+        }
+      },
+    };
+    Services.obs.addObserver(permObserver, "perm-changed");
+  });
+}
+
+/**
+ * Waits for preference to be set and asserts the value.
+ * @param {string} pref - Preference key.
+ * @param {*} expectedValue - Expected value of the preference.
+ * @param {string} message - Assertion message.
+ */
+async function waitForAndAssertPrefState(pref, expectedValue, message) {
+  await TestUtils.waitForPrefChange(pref, value => {
+    if (value != expectedValue) {
+      return false;
+    }
+    is(value, expectedValue, message);
+    return true;
+  });
+}
+
+/**
+ * The Relay promo is not shown for distributions with a custom FxA instance,
+ * since Relay requires an account on our own server. These prefs are set to a
+ * dummy address by the test harness, filling the prefs with a "user value."
+ * This temporarily sets the default value equal to the dummy value, so that
+ * Firefox thinks we've configured the correct FxA server.
+ * @returns {Promise<MockFxAUtilityFunctions>} { mock, unmock }
+ */
+async function mockDefaultFxAInstance() {
+  /**
+   * @typedef {Object} MockFxAUtilityFunctions
+   * @property {function():void} mock - Makes the dummy values default, creating
+   *                             the illusion of a production FxA instance.
+   * @property {function():void} unmock - Restores the true defaults, creating
+   *                             the illusion of a custom FxA instance.
+   */
+
+  const defaultPrefs = Services.prefs.getDefaultBranch("");
+  const userPrefs = Services.prefs.getBranch("");
+  const realAuth = defaultPrefs.getCharPref("identity.fxaccounts.auth.uri");
+  const realRoot = defaultPrefs.getCharPref("identity.fxaccounts.remote.root");
+  const mockAuth = userPrefs.getCharPref("identity.fxaccounts.auth.uri");
+  const mockRoot = userPrefs.getCharPref("identity.fxaccounts.remote.root");
+  const mock = () => {
+    defaultPrefs.setCharPref("identity.fxaccounts.auth.uri", mockAuth);
+    defaultPrefs.setCharPref("identity.fxaccounts.remote.root", mockRoot);
+    userPrefs.clearUserPref("identity.fxaccounts.auth.uri");
+    userPrefs.clearUserPref("identity.fxaccounts.remote.root");
+  };
+  const unmock = () => {
+    defaultPrefs.setCharPref("identity.fxaccounts.auth.uri", realAuth);
+    defaultPrefs.setCharPref("identity.fxaccounts.remote.root", realRoot);
+    userPrefs.setCharPref("identity.fxaccounts.auth.uri", mockAuth);
+    userPrefs.setCharPref("identity.fxaccounts.remote.root", mockRoot);
+  };
+
+  mock();
+  registerCleanupFunction(unmock);
+
+  return { mock, unmock };
 }

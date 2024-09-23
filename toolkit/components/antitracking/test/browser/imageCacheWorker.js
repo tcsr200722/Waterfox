@@ -67,11 +67,11 @@ add_task(async _ => {
   )
     .then(r => r.text())
     .then(text => {
-      is(text, 2, "The image should be loaded correctly.");
+      is(text, "2", "The image should be loaded correctly.");
     });
 
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

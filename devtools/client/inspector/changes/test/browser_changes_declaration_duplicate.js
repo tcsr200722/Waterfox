@@ -13,7 +13,7 @@ const TEST_URI = `
   <div></div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view: ruleView } = await openRuleView();
   const { document: doc, store } = selectChangesView(inspector);
@@ -28,20 +28,23 @@ async function testAddDuplicateDeclarations(ruleView, store, doc) {
   info(`Test that adding declarations with the same property name and value
         are both tracked.`);
 
-  let onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  let onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Add CSS declaration");
   await addProperty(ruleView, 1, "color", "red");
   info("Wait for the change to be tracked");
   await onTrackChange;
 
-  onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   info("Add duplicate CSS declaration");
   await addProperty(ruleView, 1, "color", "red");
   info("Wait for the change to be tracked");
   await onTrackChange;
 
+  await waitFor(() => {
+    const decls = getAddedDeclarations(doc);
+    return decls.length == 2 && decls[1].value == "red";
+  }, "Two declarations were tracked as added");
   const addDecl = getAddedDeclarations(doc);
-  is(addDecl.length, 2, "Two declarations were tracked as added");
   is(addDecl[0].value, "red", "First declaration has correct property value");
   is(
     addDecl[0].value,
@@ -57,11 +60,15 @@ async function testChangeDuplicateDeclarations(ruleView, store, doc) {
   const prop = getTextProperty(ruleView, 1, { color: "red" });
 
   info("Change the value of the first of the duplicate declarations");
-  const onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  const onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   await setProperty(ruleView, prop, "black");
   info("Wait for the change to be tracked");
   await onTrackChange;
 
+  await waitFor(
+    () => getAddedDeclarations(doc).length == 2,
+    "Two declarations were tracked as added"
+  );
   const addDecl = getAddedDeclarations(doc);
   is(addDecl[0].value, "black", "First declaration has changed property value");
   is(
@@ -78,11 +85,15 @@ async function testRemoveDuplicateDeclarations(ruleView, store, doc) {
   const prop = getTextProperty(ruleView, 1, { color: "black" });
 
   info("Remove first declaration");
-  const onTrackChange = waitUntilAction(store, "TRACK_CHANGE");
+  const onTrackChange = waitForDispatch(store, "TRACK_CHANGE");
   await removeProperty(ruleView, prop);
   info("Wait for the change to be tracked");
   await onTrackChange;
 
+  await waitFor(
+    () => getAddedDeclarations(doc).length == 1,
+    "One declaration was tracked as added"
+  );
   const addDecl = getAddedDeclarations(doc);
   const removeDecl = getRemovedDeclarations(doc);
   // Expect no remove operation tracked because it cancels out the original add operation.

@@ -6,11 +6,11 @@
 #include "RootAccessible.h"
 
 #include "mozilla/ArrayUtils.h"
-#include "mozilla/PresShell.h"  // for nsAccUtils::GetDocAccessibleFor()
+#include "nsXULPopupManager.h"
 
 #define CreateEvent CreateEventA
 
-#include "Accessible-inl.h"
+#include "LocalAccessible-inl.h"
 #include "DocAccessible-inl.h"
 #include "mozilla/a11y/DocAccessibleParent.h"
 #include "nsAccessibilityService.h"
@@ -18,11 +18,9 @@
 #include "nsCoreUtils.h"
 #include "nsEventShell.h"
 #include "Relation.h"
-#include "Role.h"
+#include "mozilla/a11y/Role.h"
 #include "States.h"
-#ifdef MOZ_XUL
-#  include "XULTreeAccessible.h"
-#endif
+#include "XULTreeAccessible.h"
 
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/CustomEvent.h"
@@ -39,13 +37,9 @@
 #include "nsIPropertyBag2.h"
 #include "nsPIDOMWindow.h"
 #include "nsIWebBrowserChrome.h"
-#include "nsReadableUtils.h"
 #include "nsFocusManager.h"
-#include "nsGlobalWindow.h"
 
-#ifdef MOZ_XUL
-#  include "nsIAppWindow.h"
-#endif
+#include "nsIAppWindow.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -67,13 +61,13 @@ RootAccessible::RootAccessible(Document* aDocument, PresShell* aPresShell)
 RootAccessible::~RootAccessible() {}
 
 ////////////////////////////////////////////////////////////////////////////////
-// Accessible
+// LocalAccessible
 
 ENameValueFlag RootAccessible::Name(nsString& aName) const {
   aName.Truncate();
 
   if (ARIARoleMap()) {
-    Accessible::Name(aName);
+    LocalAccessible::Name(aName);
     if (!aName.IsEmpty()) return eNameOK;
   }
 
@@ -82,7 +76,6 @@ ENameValueFlag RootAccessible::Name(nsString& aName) const {
 }
 
 // RootAccessible protected member
-#ifdef MOZ_XUL
 uint32_t RootAccessible::GetChromeFlags() const {
   // Return the flag set for the top level window as defined
   // by nsIWebBrowserChrome::CHROME_WINDOW_[FLAGNAME]
@@ -100,27 +93,27 @@ uint32_t RootAccessible::GetChromeFlags() const {
   appWin->GetChromeFlags(&chromeFlags);
   return chromeFlags;
 }
-#endif
 
 uint64_t RootAccessible::NativeState() const {
   uint64_t state = DocAccessibleWrap::NativeState();
   if (state & states::DEFUNCT) return state;
 
-#ifdef MOZ_XUL
   uint32_t chromeFlags = GetChromeFlags();
-  if (chromeFlags & nsIWebBrowserChrome::CHROME_WINDOW_RESIZE)
+  if (chromeFlags & nsIWebBrowserChrome::CHROME_WINDOW_RESIZE) {
     state |= states::SIZEABLE;
+  }
   // If it has a titlebar it's movable
   // XXX unless it's minimized or maximized, but not sure
   //     how to detect that
-  if (chromeFlags & nsIWebBrowserChrome::CHROME_TITLEBAR)
+  if (chromeFlags & nsIWebBrowserChrome::CHROME_TITLEBAR) {
     state |= states::MOVEABLE;
+  }
   if (chromeFlags & nsIWebBrowserChrome::CHROME_MODAL) state |= states::MODAL;
-#endif
 
   nsFocusManager* fm = nsFocusManager::GetFocusManager();
-  if (fm && fm->GetActiveWindow() == mDocumentNode->GetWindow())
+  if (fm && fm->GetActiveWindow() == mDocumentNode->GetWindow()) {
     state |= states::ACTIVE;
+  }
 
   return state;
 }
@@ -145,7 +138,7 @@ const char* const kEventTypes[] = {
     // HTMLInputElement.cpp & radio.js)
     "RadioStateChange", "popupshown", "popuphiding", "DOMMenuInactive",
     "DOMMenuItemActive", "DOMMenuItemInactive", "DOMMenuBarActive",
-    "DOMMenuBarInactive", "scroll"};
+    "DOMMenuBarInactive", "scroll", "DOMTitleChanged"};
 
 nsresult RootAccessible::AddEventListeners() {
   // EventTarget interface allows to register event listeners to
@@ -254,8 +247,9 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
   aDOMEvent->GetType(eventType);
 
 #ifdef A11Y_LOG
-  if (logging::IsEnabled(logging::eDOMEvents))
+  if (logging::IsEnabled(logging::eDOMEvents)) {
     logging::DOMEvent("processed", aTarget, eventType);
+  }
 #endif
 
   if (eventType.EqualsLiteral("popuphiding")) {
@@ -270,10 +264,23 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
     return;
   }
 
-  Accessible* accessible = targetDocument->GetAccessibleOrContainer(aTarget);
+  if (eventType.EqualsLiteral("popupshown") &&
+      aTarget->IsAnyOfXULElements(nsGkAtoms::tooltip, nsGkAtoms::panel)) {
+    targetDocument->ContentInserted(aTarget->AsContent(),
+                                    aTarget->GetNextSibling());
+    return;
+  }
+
+  LocalAccessible* accessible =
+      targetDocument->GetAccessibleOrContainer(aTarget);
   if (!accessible) return;
 
-#ifdef MOZ_XUL
+  if (accessible->IsDoc() && eventType.EqualsLiteral("DOMTitleChanged")) {
+    targetDocument->FireDelayedEvent(nsIAccessibleEvent::EVENT_NAME_CHANGE,
+                                     accessible);
+    return;
+  }
+
   XULTreeAccessible* treeAcc = accessible->AsXULTree();
   if (treeAcc) {
     if (eventType.EqualsLiteral("TreeRowCountChanged")) {
@@ -286,7 +293,6 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
       return;
     }
   }
-#endif
 
   if (eventType.EqualsLiteral("RadioStateChange")) {
     uint64_t state = accessible->State();
@@ -301,8 +307,9 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
     if (isEnabled) {
       FocusMgr()->ActiveItemChanged(accessible);
 #ifdef A11Y_LOG
-      if (logging::IsEnabled(logging::eFocus))
+      if (logging::IsEnabled(logging::eFocus)) {
         logging::ActiveItemChangeCausedBy("RadioStateChange", accessible);
+      }
 #endif
     }
 
@@ -321,8 +328,7 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
     return;
   }
 
-  Accessible* treeItemAcc = nullptr;
-#ifdef MOZ_XUL
+  LocalAccessible* treeItemAcc = nullptr;
   // If it's a tree element, need the currently selected item.
   if (treeAcc) {
     treeItemAcc = accessible->CurrentItem();
@@ -373,9 +379,7 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
       nsEventShell::FireEvent(selChangeEvent);
       return;
     }
-  } else
-#endif
-      if (eventType.EqualsLiteral("AlertActive")) {
+  } else if (eventType.EqualsLiteral("AlertActive")) {
     nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_ALERT, accessible);
   } else if (eventType.EqualsLiteral("popupshown")) {
     HandlePopupShownEvent(accessible);
@@ -384,24 +388,58 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
       nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_MENUPOPUP_END,
                               accessible);
     }
+    if (auto* focus = FocusMgr()->FocusedLocalAccessible()) {
+      // Intentionally use the content tree, because Linux strips menupopups
+      // from the a11y tree so accessible might be an arbitrary ancestor.
+      if (focus->GetContent() &&
+          focus->GetContent()->IsShadowIncludingInclusiveDescendantOf(
+              aTarget)) {
+        // Move the focus to the topmost menu active content if any. The
+        // menu item in the parent menu will not fire a DOMMenuItemActive
+        // event if it's already active.
+        LocalAccessible* newActiveAccessible = nullptr;
+        if (auto* pm = nsXULPopupManager::GetInstance()) {
+          if (auto* content = pm->GetTopActiveMenuItemContent()) {
+            newActiveAccessible =
+                accessible->Document()->GetAccessible(content);
+          }
+        }
+        FocusMgr()->ActiveItemChanged(newActiveAccessible);
+#ifdef A11Y_LOG
+        if (logging::IsEnabled(logging::eFocus)) {
+          logging::ActiveItemChangeCausedBy("DOMMenuInactive",
+                                            newActiveAccessible);
+        }
+#endif
+      }
+    }
   } else if (eventType.EqualsLiteral("DOMMenuItemActive")) {
+    RefPtr<AccEvent> event =
+        new AccStateChangeEvent(accessible, states::ACTIVE, true);
+    nsEventShell::FireEvent(event);
     FocusMgr()->ActiveItemChanged(accessible);
 #ifdef A11Y_LOG
-    if (logging::IsEnabled(logging::eFocus))
+    if (logging::IsEnabled(logging::eFocus)) {
       logging::ActiveItemChangeCausedBy("DOMMenuItemActive", accessible);
+    }
 #endif
   } else if (eventType.EqualsLiteral("DOMMenuItemInactive")) {
+    RefPtr<AccEvent> event =
+        new AccStateChangeEvent(accessible, states::ACTIVE, false);
+    nsEventShell::FireEvent(event);
+
     // Process DOMMenuItemInactive event for autocomplete only because this is
     // unique widget that may acquire focus from autocomplete popup while popup
     // stays open and has no active item. In case of XUL tree autocomplete
     // popup this event is fired for tree accessible.
-    Accessible* widget =
+    LocalAccessible* widget =
         accessible->IsWidget() ? accessible : accessible->ContainerWidget();
     if (widget && widget->IsAutoCompletePopup()) {
       FocusMgr()->ActiveItemChanged(nullptr);
 #ifdef A11Y_LOG
-      if (logging::IsEnabled(logging::eFocus))
+      if (logging::IsEnabled(logging::eFocus)) {
         logging::ActiveItemChangeCausedBy("DOMMenuItemInactive", accessible);
+      }
 #endif
     }
   } else if (eventType.EqualsLiteral(
@@ -415,12 +453,13 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
     // (can be a case of menubar activation from keyboard) then ignore this
     // notification because later we'll receive DOMMenuItemActive event after
     // current menuitem is set.
-    Accessible* activeItem = accessible->CurrentItem();
+    LocalAccessible* activeItem = accessible->CurrentItem();
     if (activeItem) {
       FocusMgr()->ActiveItemChanged(activeItem);
 #ifdef A11Y_LOG
-      if (logging::IsEnabled(logging::eFocus))
+      if (logging::IsEnabled(logging::eFocus)) {
         logging::ActiveItemChangeCausedBy("DOMMenuBarActive", accessible);
+      }
 #endif
     }
   } else if (eventType.EqualsLiteral(
@@ -430,8 +469,9 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
 
     FocusMgr()->ActiveItemChanged(nullptr);
 #ifdef A11Y_LOG
-    if (logging::IsEnabled(logging::eFocus))
+    if (logging::IsEnabled(logging::eFocus)) {
       logging::ActiveItemChangeCausedBy("DOMMenuBarInactive", accessible);
+    }
 #endif
   } else if (accessible->NeedsDOMUIEvent() &&
              eventType.EqualsLiteral("ValueChange")) {
@@ -449,10 +489,10 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Accessible
+// LocalAccessible
 
 void RootAccessible::Shutdown() {
-  // Called manually or by Accessible::LastRelease()
+  // Called manually or by LocalAccessible::LastRelease()
   if (HasShutdown()) {
     return;
   }
@@ -460,18 +500,22 @@ void RootAccessible::Shutdown() {
 }
 
 Relation RootAccessible::RelationByType(RelationType aType) const {
-  if (!mDocumentNode || aType != RelationType::EMBEDS)
+  if (!mDocumentNode || aType != RelationType::EMBEDS) {
     return DocAccessibleWrap::RelationByType(aType);
+  }
 
-  if (nsPIDOMWindowOuter* rootWindow = mDocumentNode->GetWindow()) {
-    nsCOMPtr<nsPIDOMWindowOuter> contentWindow =
-        nsGlobalWindowOuter::Cast(rootWindow)->GetContent();
-    if (contentWindow) {
-      RefPtr<Document> contentDocumentNode = contentWindow->GetDoc();
-      if (contentDocumentNode) {
-        DocAccessible* contentDocument =
-            GetAccService()->GetDocAccessible(contentDocumentNode);
-        if (contentDocument) return Relation(contentDocument);
+  if (RemoteAccessible* remoteDoc = GetPrimaryRemoteTopLevelContentDoc()) {
+    return Relation(remoteDoc);
+  }
+
+  if (nsIDocShell* docShell = mDocumentNode->GetDocShell()) {
+    nsCOMPtr<nsIDocShellTreeOwner> owner;
+    docShell->GetTreeOwner(getter_AddRefs(owner));
+    if (owner) {
+      nsCOMPtr<nsIDocShellTreeItem> contentShell;
+      owner->GetPrimaryContentShell(getter_AddRefs(contentShell));
+      if (contentShell) {
+        return Relation(nsAccUtils::GetDocAccessibleFor(contentShell));
       }
     }
   }
@@ -482,7 +526,7 @@ Relation RootAccessible::RelationByType(RelationType aType) const {
 ////////////////////////////////////////////////////////////////////////////////
 // Protected members
 
-void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
+void RootAccessible::HandlePopupShownEvent(LocalAccessible* aAccessible) {
   roles::Role role = aAccessible->Role();
 
   if (role == roles::MENUPOPUP) {
@@ -492,24 +536,15 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
     return;
   }
 
-  if (role == roles::TOOLTIP) {
-    // There is a single <xul:tooltip> node which Mozilla moves around.
-    // The accessible for it stays the same no matter where it moves.
-    // AT's expect to get an EVENT_SHOW for the tooltip.
-    // In event callback the tooltip's accessible will be ready.
-    nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_SHOW, aAccessible);
-    return;
-  }
-
   if (role == roles::COMBOBOX_LIST) {
     // Fire expanded state change event for comboboxes and autocompeletes.
-    Accessible* combobox = aAccessible->Parent();
+    LocalAccessible* combobox = aAccessible->LocalParent();
     if (!combobox) return;
 
-    if (combobox->IsCombobox() || combobox->IsAutoComplete()) {
+    if (combobox->IsCombobox()) {
       RefPtr<AccEvent> event =
           new AccStateChangeEvent(combobox, states::EXPANDED, true);
-      if (event) nsEventShell::FireEvent(event);
+      nsEventShell::FireEvent(event);
     }
 
     // If aria-activedescendant is present, redirect focus.
@@ -517,9 +552,8 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
     // menulist containing div elements instead of XUL menuitems. XUL menuitems
     // fire DOMMenuItemActive events from layout instead.
     MOZ_ASSERT(aAccessible->Elm());
-    if (aAccessible->Elm()->HasAttr(kNameSpaceID_None,
-                                    nsGkAtoms::aria_activedescendant)) {
-      Accessible* activeDescendant = aAccessible->CurrentItem();
+    if (aAccessible->Elm()->HasAttr(nsGkAtoms::aria_activedescendant)) {
+      LocalAccessible* activeDescendant = aAccessible->CurrentItem();
       if (activeDescendant) {
         FocusMgr()->ActiveItemChanged(activeDescendant, false);
 #ifdef A11Y_LOG
@@ -534,20 +568,30 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
 }
 
 void RootAccessible::HandlePopupHidingEvent(nsINode* aPopupNode) {
+  DocAccessible* document = nsAccUtils::GetDocAccessibleFor(aPopupNode);
+  if (!document) {
+    return;
+  }
+
+  if (aPopupNode->IsAnyOfXULElements(nsGkAtoms::tooltip, nsGkAtoms::panel)) {
+    document->ContentRemoved(aPopupNode->AsContent());
+    return;
+  }
+
   // Get popup accessible. There are cases when popup element isn't accessible
   // but an underlying widget is and behaves like popup, an example is
   // autocomplete popups.
-  DocAccessible* document = nsAccUtils::GetDocAccessibleFor(aPopupNode);
-  if (!document) return;
-
-  Accessible* popup = document->GetAccessible(aPopupNode);
+  LocalAccessible* popup = document->GetAccessible(aPopupNode);
   if (!popup) {
-    Accessible* popupContainer = document->GetContainerAccessible(aPopupNode);
-    if (!popupContainer) return;
+    LocalAccessible* popupContainer =
+        document->GetContainerAccessible(aPopupNode);
+    if (!popupContainer) {
+      return;
+    }
 
     uint32_t childCount = popupContainer->ChildCount();
     for (uint32_t idx = 0; idx < childCount; idx++) {
-      Accessible* child = popupContainer->GetChildAt(idx);
+      LocalAccessible* child = popupContainer->LocalChildAt(idx);
       if (child->IsAutoCompletePopup()) {
         popup = child;
         break;
@@ -556,84 +600,39 @@ void RootAccessible::HandlePopupHidingEvent(nsINode* aPopupNode) {
 
     // No popup no events. Focus is managed by DOM. This is a case for
     // menupopups of menus on Linux since there are no accessible for popups.
-    if (!popup) return;
+    if (!popup) {
+      return;
+    }
   }
 
   // In case of autocompletes and comboboxes fire state change event for
   // expanded state. Note, HTML form autocomplete isn't a subject of state
   // change event because they aren't autocompletes strictly speaking.
-  // When popup closes (except nested popups and menus) then fire focus event to
-  // where it was. The focus event is expected even if popup didn't take a
-  // focus.
-
-  static const uint32_t kNotifyOfFocus = 1;
-  static const uint32_t kNotifyOfState = 2;
-  uint32_t notifyOf = 0;
 
   // HTML select is target of popuphidding event. Otherwise get container
   // widget. No container widget means this is either tooltip or menupopup.
   // No events in the former case.
-  Accessible* widget = nullptr;
+  LocalAccessible* widget = nullptr;
   if (popup->IsCombobox()) {
     widget = popup;
   } else {
     widget = popup->ContainerWidget();
     if (!widget) {
-      if (!popup->IsMenuPopup()) return;
-
+      if (!popup->IsMenuPopup()) {
+        return;
+      }
       widget = popup;
     }
   }
 
-  if (popup->IsAutoCompletePopup()) {
-    // No focus event for autocomplete because it's managed by
-    // DOMMenuItemInactive events.
-    if (widget->IsAutoComplete()) notifyOf = kNotifyOfState;
-
-  } else if (widget->IsCombobox()) {
-    // Fire focus for active combobox, otherwise the focus is managed by DOM
-    // focus notifications. Always fire state change event.
-    if (widget->IsActiveWidget()) notifyOf = kNotifyOfFocus;
-    notifyOf |= kNotifyOfState;
-
-  } else if (widget->IsMenuButton()) {
-    // Can be a part of autocomplete.
-    Accessible* compositeWidget = widget->ContainerWidget();
-    if (compositeWidget && compositeWidget->IsAutoComplete()) {
-      widget = compositeWidget;
-      notifyOf = kNotifyOfState;
-    }
-
-    // Autocomplete (like searchbar) can be inactive when popup hiddens
-    notifyOf |= kNotifyOfFocus;
-
-  } else if (widget == popup) {
-    // Top level context menus and alerts.
-    // Ignore submenus and menubar. When submenu is closed then sumbenu
-    // container menuitem takes a focus via DOMMenuItemActive notification.
-    // For menubars processing we listen DOMMenubarActive/Inactive
-    // notifications.
-    notifyOf = kNotifyOfFocus;
-  }
-
-  // Restore focus to where it was.
-  if (notifyOf & kNotifyOfFocus) {
-    FocusMgr()->ActiveItemChanged(nullptr);
-#ifdef A11Y_LOG
-    if (logging::IsEnabled(logging::eFocus))
-      logging::ActiveItemChangeCausedBy("popuphiding", popup);
-#endif
-  }
-
   // Fire expanded state change event.
-  if (notifyOf & kNotifyOfState) {
+  if (widget->IsCombobox()) {
     RefPtr<AccEvent> event =
         new AccStateChangeEvent(widget, states::EXPANDED, false);
     document->FireDelayedEvent(event);
   }
 }
 
-#ifdef MOZ_XUL
 static void GetPropertyBagFromEvent(Event* aEvent,
                                     nsIPropertyBag2** aPropertyBag) {
   *aPropertyBag = nullptr;
@@ -667,10 +666,10 @@ void RootAccessible::HandleTreeRowCountChangedEvent(
 
   nsresult rv;
   int32_t index, count;
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("index"), &index);
+  rv = propBag->GetPropertyAsInt32(u"index"_ns, &index);
   if (NS_FAILED(rv)) return;
 
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("count"), &count);
+  rv = propBag->GetPropertyAsInt32(u"count"_ns, &count);
   if (NS_FAILED(rv)) return;
 
   aAccessible->InvalidateCache(index, count);
@@ -683,16 +682,15 @@ void RootAccessible::HandleTreeInvalidatedEvent(
   if (!propBag) return;
 
   int32_t startRow = 0, endRow = -1, startCol = 0, endCol = -1;
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startrow"), &startRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endrow"), &endRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startcolumn"), &startCol);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endcolumn"), &endCol);
+  propBag->GetPropertyAsInt32(u"startrow"_ns, &startRow);
+  propBag->GetPropertyAsInt32(u"endrow"_ns, &endRow);
+  propBag->GetPropertyAsInt32(u"startcolumn"_ns, &startCol);
+  propBag->GetPropertyAsInt32(u"endcolumn"_ns, &endCol);
 
   aAccessible->TreeViewInvalidated(startRow, endRow, startCol, endCol);
 }
-#endif
 
-ProxyAccessible* RootAccessible::GetPrimaryRemoteTopLevelContentDoc() const {
+RemoteAccessible* RootAccessible::GetPrimaryRemoteTopLevelContentDoc() const {
   nsCOMPtr<nsIDocShellTreeOwner> owner;
   mDocumentNode->GetDocShell()->GetTreeOwner(getter_AddRefs(owner));
   NS_ENSURE_TRUE(owner, nullptr);

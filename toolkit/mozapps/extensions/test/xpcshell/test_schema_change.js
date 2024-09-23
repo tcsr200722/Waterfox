@@ -6,7 +6,6 @@ const PREF_DB_SCHEMA = "extensions.databaseSchema";
 const PREF_IS_EMBEDDED = "extensions.isembedded";
 
 registerCleanupFunction(() => {
-  Services.prefs.clearUserPref(PREF_DISABLE_SECURITY);
   Services.prefs.clearUserPref(PREF_IS_EMBEDDED);
 });
 
@@ -16,7 +15,6 @@ profileDir.append("extensions");
 createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "49");
 
 add_task(async function test_setup() {
-  Services.prefs.setBoolPref(PREF_DISABLE_SECURITY, true);
   await promiseStartupManager();
 });
 
@@ -32,7 +30,7 @@ add_task(async function run_tests() {
     manifest: {
       name: "Test Add-on",
       version: "1.0",
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 
@@ -40,11 +38,11 @@ add_task(async function run_tests() {
     manifest: {
       name: "Test Add-on 2",
       version: "2.0",
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 
-  let xpiPath = OS.Path.join(profileDir.path, `${ID}.xpi`);
+  let xpiPath = PathUtils.join(profileDir.path, `${ID}.xpi`);
 
   const TESTS = [
     {
@@ -55,8 +53,7 @@ add_task(async function run_tests() {
       },
     },
     {
-      what:
-        "Application update with no schema change does not reload metadata.",
+      what: "Application update with no schema change does not reload metadata.",
       expectedVersion: "1.0",
       action() {
         gAppInfo.version = "2";
@@ -79,12 +76,9 @@ add_task(async function run_tests() {
       what: "Modified timestamp on the XPI causes a reload of the manifest.",
       expectedVersion: "2.0",
       async action() {
-        let stat = await OS.File.stat(xpiPath);
-        await OS.File.setDates(
-          xpiPath,
-          stat.lastAccessDate,
-          stat.lastModificationDate.valueOf() + 60 * 1000
-        );
+        let stat = await IOUtils.stat(xpiPath);
+        let newLastModTime = stat.lastModified + 60 * 1000;
+        await IOUtils.setModificationTime(xpiPath, newLastModTime);
       },
     },
   ];
@@ -104,16 +98,13 @@ add_task(async function run_tests() {
 
     await promiseShutdownManager();
 
-    let orig = await OS.File.stat(xpiPath);
+    let fileInfo = await IOUtils.stat(xpiPath);
 
     xpi2.copyTo(profileDir, `${ID}.xpi`);
 
-    // Make sure the timestamp is unchanged, so it is not re-scanned for that reason.
-    await OS.File.setDates(
-      xpiPath,
-      orig.lastAccessDate,
-      orig.lastModificationDate
-    );
+    // Make sure the timestamp of the extension is unchanged, so it is not
+    // re-scanned for that reason.
+    await IOUtils.setModificationTime(xpiPath, fileInfo.lastModified);
 
     await test.action();
 
@@ -141,7 +132,7 @@ add_task(async function embedder_disabled_stays_disabled() {
     manifest: {
       name: "Test Add-on",
       version: "1.0",
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 

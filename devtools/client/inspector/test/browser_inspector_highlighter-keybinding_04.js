@@ -8,27 +8,21 @@
 
 const TEST_URL = "data:text/html;charset=utf8,<div></div>";
 
-add_task(async function() {
-  const { inspector, toolbox, testActor } = await openInspectorForURL(TEST_URL);
+add_task(async function () {
+  const { inspector, toolbox } = await openInspectorForURL(TEST_URL);
 
   await startPicker(toolbox);
 
   info("Start using the picker by hovering over nodes");
   const onHover = toolbox.nodePicker.once("picker-node-hovered");
-  testActor.synthesizeMouse({
-    options: { type: "mousemove" },
-    center: true,
-    selector: "div",
+  await safeSynthesizeMouseEventAtCenterInContentPage("div", {
+    type: "mousemove",
   });
+
   await onHover;
 
   info("Press escape and wait for the picker to stop");
-  const onPickerStopped = toolbox.nodePicker.once("picker-node-canceled");
-  testActor.synthesizeKey({
-    key: "VK_ESCAPE",
-    options: {},
-  });
-  await onPickerStopped;
+  await stopPickerWithEscapeKey(toolbox);
 
   info("Press escape again and wait for the split console to open");
   const onSplitConsole = toolbox.once("split-console");

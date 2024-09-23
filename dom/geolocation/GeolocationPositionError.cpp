@@ -9,11 +9,11 @@
 #include "mozilla/CycleCollectedJSContext.h"  // for nsAutoMicroTask
 #include "Geolocation.h"
 
+extern mozilla::LazyLogModule gGeolocationLog;
+
 namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(GeolocationPositionError, mParent)
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(GeolocationPositionError, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(GeolocationPositionError, Release)
 
 GeolocationPositionError::GeolocationPositionError(Geolocation* aParent,
                                                    int16_t aCode)
@@ -24,13 +24,13 @@ GeolocationPositionError::~GeolocationPositionError() = default;
 void GeolocationPositionError::GetMessage(nsAString& aMessage) const {
   switch (mCode) {
     case GeolocationPositionError_Binding::PERMISSION_DENIED:
-      aMessage = NS_LITERAL_STRING("User denied geolocation prompt");
+      aMessage = u"User denied geolocation prompt"_ns;
       break;
     case GeolocationPositionError_Binding::POSITION_UNAVAILABLE:
-      aMessage = NS_LITERAL_STRING("Unknown error acquiring position");
+      aMessage = u"Unknown error acquiring position"_ns;
       break;
     case GeolocationPositionError_Binding::TIMEOUT:
-      aMessage = NS_LITERAL_STRING("Position acquisition timed out");
+      aMessage = u"Position acquisition timed out"_ns;
       break;
     default:
       break;
@@ -48,6 +48,8 @@ JSObject* GeolocationPositionError::WrapObject(
 
 void GeolocationPositionError::NotifyCallback(
     const GeoPositionErrorCallback& aCallback) {
+  MOZ_LOG(gGeolocationLog, LogLevel::Debug,
+          ("GeolocationPositionError::NotifyCallback"));
   nsAutoMicroTask mt;
   if (aCallback.HasWebIDLCallback()) {
     RefPtr<PositionErrorCallback> callback = aCallback.GetWebIDLCallback();

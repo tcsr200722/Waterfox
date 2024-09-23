@@ -4,11 +4,10 @@
 
 "use strict";
 
-const { extend } = require("devtools/shared/extend");
 const { Pool } = require("devtools/shared/protocol");
 
 /**
- * A Special Pool for RootActor and BrowsingContextTargetActor, which allows lazy loaded
+ * A Special Pool for RootActor and WindowGlobalTargetActor, which allows lazy loaded
  * actors to be added to the pool.
  *
  * Like the Pool, this is a protocol object that can manage the lifetime of other protocol
@@ -19,13 +18,13 @@ const { Pool } = require("devtools/shared/protocol");
  *   addActorPool, removeActorPool, and poolFor.
  * @constructor
  */
-function LazyPool(conn) {
-  this.conn = conn;
-}
+class LazyPool extends Pool {
+  constructor(conn) {
+    super(conn);
+  }
 
-LazyPool.prototype = extend(Pool.prototype, {
   // The actor for a given actor id stored in this pool
-  actor: function(actorID) {
+  getActorByID(actorID) {
     if (this.__poolMap) {
       const entry = this._poolMap.get(actorID);
       if (entry instanceof LazyActor) {
@@ -34,14 +33,8 @@ LazyPool.prototype = extend(Pool.prototype, {
       return entry;
     }
     return null;
-  },
-
-  // Same as actor, should update debugger connection to use 'actor'
-  // and then remove this.
-  get: function(actorID) {
-    return this.actor(actorID);
-  },
-});
+  }
+}
 
 exports.LazyPool = LazyPool;
 
@@ -69,7 +62,7 @@ exports.LazyPool = LazyPool;
  *     - _extraActors
  *        An object whose own property names are factory table (and packet)
  *        property names, and whose values are no-argument actor constructors,
- *        of the sort that one can add to an ActorPool.
+ *        of the sort that one can add to a Pool.
  *
  *     - conn
  *        The DevToolsServerConnection in which the new actors will participate.
@@ -130,7 +123,7 @@ exports.createExtraActors = createExtraActors;
  *     - _extraActors
  *        An object whose own property names are factory table (and packet)
  *        property names, and whose values are no-argument actor constructors,
- *        of the sort that one can add to an ActorPool.
+ *        of the sort that one can add to a Pool.
  *
  *     - conn
  *        The DevToolsServerConnection in which the new actors will participate.
@@ -192,7 +185,7 @@ LazyActor.prototype = {
   /**
    * Return the parent pool for this lazy actor.
    */
-  getParent: function() {
+  getParent() {
     return this.conn && this.conn.poolFor(this.actorID);
   },
 

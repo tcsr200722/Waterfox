@@ -7,6 +7,9 @@
 // This is loaded into all XUL windows. Wrap in a block to prevent
 // leaking to window scope.
 {
+  const { AppConstants } = ChromeUtils.importESModule(
+    "resource://gre/modules/AppConstants.sys.mjs"
+  );
   const MozXULMenuElement = MozElements.MozElementMixin(XULMenuElement);
   const MenuBaseControl = MozElements.BaseControlMixin(MozXULMenuElement);
 
@@ -38,20 +41,35 @@
       this.addEventListener(
         "keypress",
         event => {
-          if (event.altKey || event.ctrlKey || event.metaKey) {
+          if (
+            event.defaultPrevented ||
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey
+          ) {
             return;
           }
 
           if (
-            !event.defaultPrevented &&
+            AppConstants.platform === "macosx" &&
+            !this.open &&
             (event.keyCode == KeyEvent.DOM_VK_UP ||
-              event.keyCode == KeyEvent.DOM_VK_DOWN ||
-              event.keyCode == KeyEvent.DOM_VK_PAGE_UP ||
-              event.keyCode == KeyEvent.DOM_VK_PAGE_DOWN ||
-              event.keyCode == KeyEvent.DOM_VK_HOME ||
-              event.keyCode == KeyEvent.DOM_VK_END ||
-              event.keyCode == KeyEvent.DOM_VK_BACK_SPACE ||
-              event.charCode > 0)
+              event.keyCode == KeyEvent.DOM_VK_DOWN)
+          ) {
+            // This should open the menulist on macOS, see
+            // XULButtonElement::PostHandleEvent.
+            return;
+          }
+
+          if (
+            event.keyCode == KeyEvent.DOM_VK_UP ||
+            event.keyCode == KeyEvent.DOM_VK_DOWN ||
+            event.keyCode == KeyEvent.DOM_VK_PAGE_UP ||
+            event.keyCode == KeyEvent.DOM_VK_PAGE_DOWN ||
+            event.keyCode == KeyEvent.DOM_VK_HOME ||
+            event.keyCode == KeyEvent.DOM_VK_END ||
+            event.keyCode == KeyEvent.DOM_VK_BACK_SPACE ||
+            event.charCode > 0
           ) {
             // Moving relative to an item: start from the currently selected item
             this.activeChild = this.mSelectedInternal;
@@ -70,8 +88,8 @@
     static get inheritedAttributes() {
       return {
         image: "src=image",
-        "#label": "value=label,crop,accesskey,highlightable",
-        "#highlightable-label": "text=label,crop,accesskey,highlightable",
+        "#label": "value=label,crop,accesskey",
+        "#highlightable-label": "text=label,crop,accesskey",
         dropmarker: "disabled,open",
       };
     }
@@ -84,10 +102,10 @@
         <html:link href="chrome://global/skin/menulist.css" rel="stylesheet"/>
         <hbox id="label-box" part="label-box" flex="1" role="none">
           <image part="icon" role="none"/>
-          <label id="label" part="label" crop="right" flex="1" role="none"/>
-          <label id="highlightable-label" part="label" crop="right" flex="1" role="none"/>
+          <label id="label" part="label" crop="end" flex="1" role="none"/>
+          <label id="highlightable-label" part="label" crop="end" flex="1" role="none"/>
         </hbox>
-        <dropmarker part="dropmarker" exportparts="icon: dropmarker-icon" type="menu" role="none"/>
+        <dropmarker part="dropmarker" type="menu" role="none"/>
         <html:slot/>
     `;
     }
@@ -97,17 +115,25 @@
         return;
       }
 
+      // Append and track children so they can be removed in disconnectedCallback.
       if (!this.hasAttribute("popuponly")) {
         this.shadowRoot.appendChild(this.constructor.fragment);
-        this._labelBox = this.shadowRoot.getElementById("label-box");
-        this._dropmarker = this.shadowRoot.querySelector("dropmarker");
-        this.initializeAttributeInheritance();
       } else {
         this.shadowRoot.appendChild(document.createElement("slot"));
       }
 
-      this.mSelectedInternal = null;
-      this.mAttributeObserver = null;
+      this._managedNodes = [];
+      if (this.shadowRoot.children) {
+        let childElements = Array.from(this.shadowRoot.children);
+        childElements.forEach(child => {
+          this._managedNodes.push(child);
+        });
+      }
+
+      if (!this.hasAttribute("popuponly")) {
+        this.initializeAttributeInheritance();
+      }
+
       this.setInitialSelection();
     }
 
@@ -115,7 +141,8 @@
     set value(val) {
       // if the new value is null, we still need to remove the old value
       if (val == null) {
-        return (this.selectedItem = val);
+        this.selectedItem = val;
+        return;
       }
 
       var arr = null;
@@ -130,54 +157,39 @@
         this.selectedItem = null;
         this.setAttribute("value", val);
       }
-
-      return val;
     }
 
     // nsIDOMXULSelectControlElement
     get value() {
-      return this.getAttribute("value");
-    }
-
-    // nsIDOMXULMenuListElement
-    set crop(val) {
-      this.setAttribute("crop", val);
-    }
-
-    // nsIDOMXULMenuListElement
-    get crop() {
-      return this.getAttribute("crop");
+      return this.getAttribute("value") || "";
     }
 
     // nsIDOMXULMenuListElement
     set image(val) {
       this.setAttribute("image", val);
-      return val;
     }
 
     // nsIDOMXULMenuListElement
     get image() {
-      return this.getAttribute("image");
+      return this.getAttribute("image") || "";
     }
 
     // nsIDOMXULMenuListElement
     get label() {
-      return this.getAttribute("label");
+      return this.getAttribute("label") || "";
     }
 
     set description(val) {
       this.setAttribute("description", val);
-      return val;
     }
 
     get description() {
-      return this.getAttribute("description");
+      return this.getAttribute("description") || "";
     }
 
     // nsIDOMXULMenuListElement
     set open(val) {
       this.openMenu(val);
-      return val;
     }
 
     // nsIDOMXULMenuListElement
@@ -208,7 +220,6 @@
       } else {
         this.selectedItem = null;
       }
-      return val;
     }
 
     // nsIDOMXULSelectControlElement
@@ -237,11 +248,11 @@
     set selectedItem(val) {
       var oldval = this.mSelectedInternal;
       if (oldval == val) {
-        return val;
+        return;
       }
 
       if (val && !this.contains(val)) {
-        return val;
+        return;
       }
 
       if (oldval) {
@@ -278,8 +289,6 @@
       event = document.createEvent("Events");
       event.initEvent("ValueChange", true, true);
       this.dispatchEvent(event);
-
-      return val;
     }
 
     // nsIDOMXULSelectControlElement
@@ -288,6 +297,13 @@
     }
 
     setInitialSelection() {
+      if (this.getAttribute("noinitialselection") === "true") {
+        return;
+      }
+
+      this.mSelectedInternal = null;
+      this.mAttributeObserver = null;
+
       var popup = this.menupopup;
       if (popup) {
         var arr = popup.getElementsByAttribute("selected", "true");
@@ -398,11 +414,9 @@
         this.mAttributeObserver.disconnect();
       }
 
-      if (this._labelBox) {
-        this._labelBox.remove();
-        this._dropmarker.remove();
-        this._labelBox = null;
-        this._dropmarker = null;
+      if (this._managedNodes) {
+        this._managedNodes.forEach(node => node.remove());
+        this._managedNodes = null;
       }
     }
   }

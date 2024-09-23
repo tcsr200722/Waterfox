@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XMLDocument.h"
-#include "nsParserCIID.h"
 #include "nsCharsetSource.h"
 #include "nsIXMLContentSink.h"
 #include "nsPresContext.h"
@@ -18,7 +17,6 @@
 #include "nsNetUtil.h"
 #include "nsError.h"
 #include "nsIPrincipal.h"
-#include "nsLayoutCID.h"
 #include "mozilla/dom/Attr.h"
 #include "nsCExternalHandlerService.h"
 #include "nsMimeTypes.h"
@@ -26,11 +24,13 @@
 #include "nsThreadUtils.h"
 #include "nsJSUtils.h"
 #include "nsCRT.h"
+#include "nsComponentManagerUtils.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentPolicyUtils.h"
 #include "nsIConsoleService.h"
 #include "nsIScriptError.h"
 #include "nsHTMLDocument.h"
+#include "nsParser.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/Encoding.h"
@@ -66,14 +66,15 @@ nsresult NS_NewDOMDocument(Document** aInstancePtrResult,
   bool isHTML = false;
   bool isXHTML = false;
   if (aFlavor == DocumentFlavorSVG) {
-    rv = NS_NewSVGDocument(getter_AddRefs(d));
+    rv = NS_NewSVGDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
   } else if (aFlavor == DocumentFlavorHTML) {
-    rv = NS_NewHTMLDocument(getter_AddRefs(d));
+    rv = NS_NewHTMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
     isHTML = true;
   } else if (aFlavor == DocumentFlavorXML) {
-    rv = NS_NewXMLDocument(getter_AddRefs(d));
+    rv = NS_NewXMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
   } else if (aFlavor == DocumentFlavorPlain) {
-    rv = NS_NewXMLDocument(getter_AddRefs(d), aLoadedAsData, true);
+    rv = NS_NewXMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal,
+                           aLoadedAsData, true);
   } else if (aDoctype) {
     MOZ_ASSERT(aFlavor == DocumentFlavorLegacyGuess);
     nsAutoString publicId, name;
@@ -88,25 +89,25 @@ nsresult NS_NewDOMDocument(Document** aInstancePtrResult,
         publicId.EqualsLiteral("-//W3C//DTD HTML 4.0//EN") ||
         publicId.EqualsLiteral("-//W3C//DTD HTML 4.0 Frameset//EN") ||
         publicId.EqualsLiteral("-//W3C//DTD HTML 4.0 Transitional//EN")) {
-      rv = NS_NewHTMLDocument(getter_AddRefs(d));
+      rv = NS_NewHTMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
       isHTML = true;
     } else if (publicId.EqualsLiteral("-//W3C//DTD XHTML 1.0 Strict//EN") ||
                publicId.EqualsLiteral(
                    "-//W3C//DTD XHTML 1.0 Transitional//EN") ||
                publicId.EqualsLiteral("-//W3C//DTD XHTML 1.0 Frameset//EN")) {
-      rv = NS_NewHTMLDocument(getter_AddRefs(d));
+      rv = NS_NewHTMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
       isHTML = true;
       isXHTML = true;
     } else if (publicId.EqualsLiteral("-//W3C//DTD SVG 1.1//EN")) {
-      rv = NS_NewSVGDocument(getter_AddRefs(d));
+      rv = NS_NewSVGDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
     }
     // XXX Add support for XUL documents.
     else {
-      rv = NS_NewXMLDocument(getter_AddRefs(d));
+      rv = NS_NewXMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
     }
   } else {
     MOZ_ASSERT(aFlavor == DocumentFlavorLegacyGuess);
-    rv = NS_NewXMLDocument(getter_AddRefs(d));
+    rv = NS_NewXMLDocument(getter_AddRefs(d), aPrincipal, aPrincipal);
   }
 
   if (NS_FAILED(rv)) {
@@ -117,10 +118,8 @@ nsresult NS_NewDOMDocument(Document** aInstancePtrResult,
     d->SetCompatibilityMode(eCompatibility_FullStandards);
     d->AsHTMLDocument()->SetIsXHTML(isXHTML);
   }
-  d->SetLoadedAsData(aLoadedAsData);
+  d->SetLoadedAsData(aLoadedAsData, /* aConsiderForMemoryReporting */ true);
   d->SetDocumentURI(aDocumentURI);
-  // Must set the principal first, since SetBaseURI checks it.
-  d->SetPrincipals(aPrincipal, aPrincipal);
   d->SetBaseURI(aBaseURI);
 
   // We need to set the script handling object after we set the principal such
@@ -150,7 +149,7 @@ nsresult NS_NewDOMDocument(Document** aInstancePtrResult,
   if (!aQualifiedName.IsEmpty()) {
     ErrorResult result;
     ElementCreationOptionsOrString options;
-    options.SetAsString();
+    Unused << options.SetAsString();
 
     nsCOMPtr<Element> root =
         d->CreateElementNS(aNamespaceURI, aQualifiedName, options, result);
@@ -173,26 +172,27 @@ nsresult NS_NewDOMDocument(Document** aInstancePtrResult,
   return NS_OK;
 }
 
-nsresult NS_NewXMLDocument(Document** aInstancePtrResult, bool aLoadedAsData,
-                           bool aIsPlainDocument) {
+nsresult NS_NewXMLDocument(Document** aInstancePtrResult,
+                           nsIPrincipal* aPrincipal,
+                           nsIPrincipal* aPartitionedPrincipal,
+                           bool aLoadedAsData, bool aIsPlainDocument) {
   RefPtr<XMLDocument> doc = new XMLDocument();
 
-  nsresult rv = doc->Init();
+  nsresult rv = doc->Init(aPrincipal, aPartitionedPrincipal);
 
   if (NS_FAILED(rv)) {
     *aInstancePtrResult = nullptr;
     return rv;
   }
 
-  doc->SetLoadedAsData(aLoadedAsData);
+  doc->SetLoadedAsData(aLoadedAsData, /* aConsiderForMemoryReporting */ true);
   doc->mIsPlainDocument = aIsPlainDocument;
   doc.forget(aInstancePtrResult);
 
   return NS_OK;
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 XMLDocument::XMLDocument(const char* aContentType)
     : Document(aContentType),
@@ -203,8 +203,9 @@ XMLDocument::XMLDocument(const char* aContentType)
   mType = eGenericXML;
 }
 
-nsresult XMLDocument::Init() {
-  nsresult rv = Document::Init();
+nsresult XMLDocument::Init(nsIPrincipal* aPrincipal,
+                           nsIPrincipal* aPartitionedPrincipal) {
+  nsresult rv = Document::Init(aPrincipal, aPartitionedPrincipal);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return rv;
@@ -216,14 +217,15 @@ void XMLDocument::Reset(nsIChannel* aChannel, nsILoadGroup* aLoadGroup) {
 
 void XMLDocument::ResetToURI(nsIURI* aURI, nsILoadGroup* aLoadGroup,
                              nsIPrincipal* aPrincipal,
-                             nsIPrincipal* aStoragePrincipal) {
+                             nsIPrincipal* aPartitionedPrincipal) {
   if (mChannelIsPending) {
     StopDocumentLoad();
-    mChannel->Cancel(NS_BINDING_ABORTED);
+    mChannel->CancelWithReason(NS_BINDING_ABORTED,
+                               "XMLDocument::ResetToURI"_ns);
     mChannelIsPending = false;
   }
 
-  Document::ResetToURI(aURI, aLoadGroup, aPrincipal, aStoragePrincipal);
+  Document::ResetToURI(aURI, aLoadGroup, aPrincipal, aPartitionedPrincipal);
 }
 
 void XMLDocument::SetSuppressParserErrorElement(bool aSuppress) {
@@ -242,14 +244,11 @@ bool XMLDocument::SuppressParserErrorConsoleMessages() {
   return mSuppressParserErrorConsoleMessages;
 }
 
-nsresult XMLDocument::StartDocumentLoad(const char* aCommand,
-                                        nsIChannel* aChannel,
-                                        nsILoadGroup* aLoadGroup,
-                                        nsISupports* aContainer,
-                                        nsIStreamListener** aDocListener,
-                                        bool aReset, nsIContentSink* aSink) {
-  nsresult rv = Document::StartDocumentLoad(
-      aCommand, aChannel, aLoadGroup, aContainer, aDocListener, aReset, aSink);
+nsresult XMLDocument::StartDocumentLoad(
+    const char* aCommand, nsIChannel* aChannel, nsILoadGroup* aLoadGroup,
+    nsISupports* aContainer, nsIStreamListener** aDocListener, bool aReset) {
+  nsresult rv = Document::StartDocumentLoad(aCommand, aChannel, aLoadGroup,
+                                            aContainer, aDocListener, aReset);
   if (NS_FAILED(rv)) return rv;
 
   int32_t charsetSource = kCharsetFromDocTypeDefault;
@@ -260,25 +259,18 @@ nsresult XMLDocument::StartDocumentLoad(const char* aCommand,
   rv = aChannel->GetURI(getter_AddRefs(aUrl));
   if (NS_FAILED(rv)) return rv;
 
-  static NS_DEFINE_CID(kCParserCID, NS_PARSER_CID);
-
-  mParser = do_CreateInstance(kCParserCID, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
+  mParser = new nsParser();
 
   nsCOMPtr<nsIXMLContentSink> sink;
 
-  if (aSink) {
-    sink = do_QueryInterface(aSink);
-  } else {
-    nsCOMPtr<nsIDocShell> docShell;
-    if (aContainer) {
-      docShell = do_QueryInterface(aContainer);
-      NS_ENSURE_TRUE(docShell, NS_ERROR_FAILURE);
-    }
-    rv = NS_NewXMLContentSink(getter_AddRefs(sink), this, aUrl, docShell,
-                              aChannel);
-    NS_ENSURE_SUCCESS(rv, rv);
+  nsCOMPtr<nsIDocShell> docShell;
+  if (aContainer) {
+    docShell = do_QueryInterface(aContainer);
+    NS_ENSURE_TRUE(docShell, NS_ERROR_FAILURE);
   }
+  rv = NS_NewXMLContentSink(getter_AddRefs(sink), this, aUrl, docShell,
+                            aChannel);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   // Set the parser as the stream listener for the document loader...
   rv = CallQueryInterface(mParser, aDocListener);
@@ -291,7 +283,7 @@ nsresult XMLDocument::StartDocumentLoad(const char* aCommand,
   mParser->SetDocumentCharset(encoding, charsetSource);
   mParser->SetCommand(aCommand);
   mParser->SetContentSink(sink);
-  mParser->Parse(aUrl, nullptr, (void*)this);
+  mParser->Parse(aUrl);
 
   return NS_OK;
 }
@@ -308,7 +300,7 @@ void XMLDocument::EndLoad() {
     // document was loaded as pure data without any presentation
     // attached to it.
     WidgetEvent event(true, eLoad);
-    EventDispatcher::Dispatch(ToSupports(this), nullptr, &event);
+    EventDispatcher::Dispatch(this, nullptr, &event);
   }
 }
 
@@ -343,5 +335,4 @@ JSObject* XMLDocument::WrapNode(JSContext* aCx,
   return XMLDocument_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

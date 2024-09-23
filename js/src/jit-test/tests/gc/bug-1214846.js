@@ -1,6 +1,7 @@
-// |jit-test| skip-if: !('oomTest' in this) || helperThreadCount() === 0
+// |jit-test| skip-if: !hasFunction.oomTest || helperThreadCount() === 0
 
 enableGeckoProfiling();
 var s = newGlobal();
-s.offThreadCompileScript('oomTest(() => {});');
-s.runOffThreadScript();
+s.offThreadCompileToStencil('oomTest(() => {});');
+var stencil = s.finishOffThreadStencil();
+s.evalStencil(stencil);

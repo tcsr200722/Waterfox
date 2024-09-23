@@ -41,7 +41,7 @@ already_AddRefed<DrawTarget> PrintTargetThebes::MakeDrawTarget(
   }
 
   if (aRecorder) {
-    dt = CreateWrapAndRecordDrawTarget(aRecorder, dt);
+    dt = CreateRecordingDrawTarget(aRecorder, dt);
     if (!dt || !dt->IsValid()) {
       return nullptr;
     }
@@ -79,7 +79,7 @@ nsresult PrintTargetThebes::AbortPrinting() {
   return mGfxSurface->AbortPrinting();
 }
 
-nsresult PrintTargetThebes::BeginPage() {
+nsresult PrintTargetThebes::BeginPage(const IntSize& aSizeInPoints) {
 #ifdef DEBUG
   mHasActivePage = true;
 #endif

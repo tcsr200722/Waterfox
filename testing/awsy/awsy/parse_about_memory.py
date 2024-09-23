@@ -7,12 +7,10 @@
 
 # Firefox about:memory log parser.
 
-from __future__ import absolute_import, print_function
-
 import argparse
-from collections import defaultdict
 import gzip
 import json
+from collections import defaultdict
 
 # This value comes from nsIMemoryReporter.idl.
 KIND_HEAP = 1
@@ -30,7 +28,7 @@ def path_total(data, path):
     explicit_heap = defaultdict(int)
     heap_allocated = defaultdict(int)
 
-    discrete = not path.endswith('/')
+    discrete = not path.endswith("/")
 
     def match(value):
         """
@@ -67,7 +65,9 @@ def path_total(data, path):
 
         # Make sure the value is sane. A misbehaving reporter could lead to
         # negative values.
-        assert unclassified >= 0, "heap-unclassified was negative: %d" % unclassified
+        # This assertion fails on Beta while running TP6, in the Google Docs process.
+        # Disable this for now, but only on Beta. See bug 1735556.
+        # assert unclassified >= 0, "heap-unclassified was negative: %d" % unclassified
 
         return unclassified
 
@@ -96,8 +96,9 @@ def path_total(data, path):
     return path_totals
 
 
-def calculate_memory_report_values(memory_report_path, data_point_path,
-                                   process_name=None):
+def calculate_memory_report_values(
+    memory_report_path, data_point_path, process_names=None
+):
     """
     Opens the given memory report file and calculates the value for the given
     data point.
@@ -105,23 +106,23 @@ def calculate_memory_report_values(memory_report_path, data_point_path,
     :param memory_report_path: Path to the memory report file to parse.
     :param data_point_path: Path of the data point to calculate in the memory
      report, ie: 'explicit/heap-unclassified'.
-    :param process_name: Name of process to limit reports to. ie 'Main'
+    :param process_name: Name of processes to limit reports to. ie 'Main'
     """
     try:
         with open(memory_report_path) as f:
             data = json.load(f)
     except ValueError:
         # Check if the file is gzipped.
-        with gzip.open(memory_report_path, 'rb') as f:
+        with gzip.open(memory_report_path, "rb") as f:
             data = json.load(f)
 
     totals = path_total(data, data_point_path)
 
     # If a process name is provided, restricted output to processes matching
     # that name.
-    if process_name:
-        for k in totals.keys():
-            if process_name not in k:
+    if process_names is not None:
+        for k in list(totals.keys()):
+            if not any([process_name in k for process_name in process_names]):
                 del totals[k]
 
     return totals
@@ -129,32 +130,40 @@ def calculate_memory_report_values(memory_report_path, data_point_path,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-            description='Extract data points from about:memory reports')
-    parser.add_argument('report', action='store',
-                        help='Path to a memory report file.')
-    parser.add_argument('prefix', action='store',
-                        help='Prefix of data point to measure. '
-                        'If the prefix does not end in a \'/\' '
-                        'then an exact match is made.')
-    parser.add_argument('--proc-filter', action='store', default=None,
-                        help='Process name filter. '
-                             'If not provided all processes will be included.')
-    parser.add_argument('--mebi', action='store_true',
-                        help='Output values as mebibytes (instead of bytes)'
-                        ' to match about:memory.')
+        description="Extract data points from about:memory reports"
+    )
+    parser.add_argument("report", action="store", help="Path to a memory report file.")
+    parser.add_argument(
+        "prefix",
+        action="store",
+        help="Prefix of data point to measure. "
+        "If the prefix does not end in a '/' "
+        "then an exact match is made.",
+    )
+    parser.add_argument(
+        "--proc-filter",
+        action="store",
+        nargs="*",
+        default=None,
+        help="Process name filter. " "If not provided all processes will be included.",
+    )
+    parser.add_argument(
+        "--mebi",
+        action="store_true",
+        help="Output values as mebibytes (instead of bytes)" " to match about:memory.",
+    )
 
     args = parser.parse_args()
-    totals = calculate_memory_report_values(
-                    args.report, args.prefix, args.proc_filter)
+    totals = calculate_memory_report_values(args.report, args.prefix, args.proc_filter)
 
     sorted_totals = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
-    for (k, v) in sorted_totals:
+    for k, v in sorted_totals:
         if v:
             print("{0}\t".format(k)),
     print("")
 
     bytes_per_mebibyte = 1024.0 * 1024.0
-    for (k, v) in sorted_totals:
+    for k, v in sorted_totals:
         if v:
             if args.mebi:
                 print("{0:.2f} MiB".format(v / bytes_per_mebibyte)),

@@ -12,22 +12,25 @@ import logging
 
 import attr
 from arsenic.services import Geckodriver, free_port, subprocess_based_service
-from mozdevice import ADBDevice, ADBError
+from mozdevice import ADBDeviceFactory, ADBError
 
 from condprof.util import write_yml_file, logger, DEFAULT_PREFS, BaseEnv
 
 
 # XXX most of this code should migrate into mozdevice - see Bug 1574849
 class AndroidDevice:
-    def __init__(self, app_name, marionette_port=2828, verbose=False):
+    def __init__(
+        self,
+        app_name,
+        marionette_port=2828,
+        verbose=False,
+        remote_test_root="/sdcard/test_root/",
+    ):
         self.app_name = app_name
-        self.fennec = "firefox" in app_name
 
         # XXX make that an option
         if "fenix" in app_name:
             self.activity = "org.mozilla.fenix.IntentReceiverActivity"
-        elif self.fennec:
-            self.activity = None
         else:
             self.activity = "org.mozilla.geckoview_example.GeckoViewActivity"
         self.verbose = verbose
@@ -36,6 +39,7 @@ class AndroidDevice:
         self.profile = None
         self.remote_profile = None
         self.log_file = None
+        self.remote_test_root = remote_test_root
         self._adb_fh = None
 
     def _set_adb_logger(self, log_file):
@@ -77,10 +81,10 @@ class AndroidDevice:
         self._set_adb_logger(logfile)
         try:
             # See android_emulator_pgo.py run_tests for more
-            # details on why test_root must be /sdcard/tests
+            # details on why test_root must be /sdcard/test_root
             # for android pgo due to Android 4.3.
-            self.device = ADBDevice(
-                verbose=self.verbose, logger_name="adb", test_root="/sdcard/tests"
+            self.device = ADBDeviceFactory(
+                verbose=self.verbose, logger_name="adb", test_root=self.remote_test_root
             )
         except Exception:
             logger.error("Cannot initialize device")
@@ -101,17 +105,14 @@ class AndroidDevice:
 
         # creating the profile on the device
         logger.info("Creating the profile on the device")
-        remote_test_root = posixpath.join(device.test_root, "condprof")
-        remote_profile = posixpath.join(remote_test_root, "profile")
+
+        remote_profile = posixpath.join(self.remote_test_root, "profile")
         logger.info("The profile on the phone will be at %s" % remote_profile)
-        device.rm(remote_test_root, force=True, recursive=True)
-        device.mkdir(remote_test_root)
-        device.chmod(remote_test_root, recursive=True, root=True)
 
         device.rm(remote_profile, force=True, recursive=True)
         logger.info("Pushing %s on the phone" % self.profile)
         device.push(profile, remote_profile)
-        device.chmod(remote_profile, recursive=True, root=True)
+        device.chmod(remote_profile, recursive=True)
         self.profile = profile
         self.remote_profile = remote_profile
 
@@ -132,7 +133,7 @@ class AndroidDevice:
         try:
             device.rm(yml_on_device, force=True, recursive=True)
             device.push(yml_on_host, yml_on_device)
-            device.chmod(yml_on_device, recursive=True, root=True)
+            device.chmod(yml_on_device, recursive=True)
         except Exception:
             logger.info("could not create the yaml file on device. Permission issue?")
             raise
@@ -141,32 +142,9 @@ class AndroidDevice:
         # an on-device config.yml file
         intent = "android.intent.action.VIEW"
         device.stop_application(self.app_name)
-        if self.fennec:
-            # XXX does the Fennec app picks up the YML file ?
-            extra_args = [
-                "-profile",
-                self.remote_profile,
-                "--es",
-                "env0",
-                "LOG_VERBOSE=1",
-                "--es",
-                "env1",
-                "R_LOG_LEVEL=6",
-                "--es",
-                "env2",
-                "MOZ_WEBRENDER=0",
-            ]
-
-            device.launch_fennec(
-                self.app_name,
-                extra_args=extra_args,
-                url="about:blank",
-                fail_if_running=False,
-            )
-        else:
-            device.launch_application(
-                self.app_name, self.activity, intent, extras=None, url="about:blank"
-            )
+        device.launch_application(
+            self.app_name, self.activity, intent, extras=None, url="about:blank"
+        )
         if not device.process_exist(self.app_name):
             raise Exception("Could not start %s" % self.app_name)
 
@@ -184,7 +162,7 @@ class AndroidDevice:
     def stop_browser(self):
         logger.info("Stopping %s" % self.app_name)
         try:
-            self.device.stop_application(self.app_name, root=True)
+            self.device.stop_application(self.app_name)
         except ADBError:
             logger.info("Could not stop the application using force-stop")
 
@@ -194,7 +172,7 @@ class AndroidDevice:
             num_tries = 0
             while self.device.process_exist(self.app_name) and num_tries < 5:
                 try:
-                    self.device.pkill(self.app_name, root=True)
+                    self.device.pkill(self.app_name)
                 except ADBError:
                     pass
                 num_tries += 1
@@ -217,8 +195,12 @@ class AndroidDevice:
 
 # XXX redundant, remove
 @contextlib.contextmanager
-def device(app_name, marionette_port=2828, verbose=True):
-    device_ = AndroidDevice(app_name, marionette_port, verbose)
+def device(
+    app_name, marionette_port=2828, verbose=True, remote_test_root="/sdcard/test_root/"
+):
+    device_ = AndroidDevice(
+        app_name, marionette_port, verbose, remote_test_root=remote_test_root
+    )
     try:
         yield device_
     finally:

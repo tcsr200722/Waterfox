@@ -14,6 +14,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/CORSMode.h"
+#include "mozilla/css/StylePreloadKind.h"
 #include "mozilla/dom/LinkStyle.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/UniquePtr.h"
@@ -22,6 +23,8 @@
 #include "nsStringFwd.h"
 #include "nsTArray.h"
 #include "nsTObserverArray.h"
+#include "nsURIHashKey.h"
+#include "nsRefPtrHashtable.h"
 
 class nsICSSLoaderObserver;
 class nsIConsoleReportCollector;
@@ -30,17 +33,129 @@ class nsIPrincipal;
 
 namespace mozilla {
 
+class PreloadHashKey;
+class SharedStyleSheetCache;
+class SheetLoadDataHashKey;
 class StyleSheet;
 
 namespace dom {
 class DocGroup;
 class Element;
+enum class FetchPriority : uint8_t;
 }  // namespace dom
+
+// The load data for a <link> or @import style-sheet.
+//
+// This must contain all the state that affects CSS parsing.
+class SheetLoadDataHashKey : public PLDHashEntryHdr {
+ public:
+  using KeyType = const SheetLoadDataHashKey&;
+  using KeyTypePointer = const SheetLoadDataHashKey*;
+
+  explicit SheetLoadDataHashKey(const SheetLoadDataHashKey* aKey)
+      : mURI(aKey->mURI),
+        mPrincipal(aKey->mPrincipal),
+        mLoaderPrincipal(aKey->mLoaderPrincipal),
+        mPartitionPrincipal(aKey->mPartitionPrincipal),
+        mEncodingGuess(aKey->mEncodingGuess),
+        mCORSMode(aKey->mCORSMode),
+        mParsingMode(aKey->mParsingMode),
+        mCompatMode(aKey->mCompatMode),
+        mSRIMetadata(aKey->mSRIMetadata),
+        mIsLinkRelPreload(aKey->mIsLinkRelPreload) {
+    MOZ_COUNT_CTOR(SheetLoadDataHashKey);
+  }
+
+  SheetLoadDataHashKey(nsIURI* aURI, nsIPrincipal* aPrincipal,
+                       nsIPrincipal* aLoaderPrincipal,
+                       nsIPrincipal* aPartitionPrincipal,
+                       NotNull<const Encoding*> aEncodingGuess,
+                       CORSMode aCORSMode, css::SheetParsingMode aParsingMode,
+                       nsCompatibility aCompatMode,
+                       const dom::SRIMetadata& aSRIMetadata,
+                       css::StylePreloadKind aPreloadKind)
+      : mURI(aURI),
+        mPrincipal(aPrincipal),
+        mLoaderPrincipal(aLoaderPrincipal),
+        mPartitionPrincipal(aPartitionPrincipal),
+        mEncodingGuess(aEncodingGuess),
+        mCORSMode(aCORSMode),
+        mParsingMode(aParsingMode),
+        mCompatMode(aCompatMode),
+        mSRIMetadata(aSRIMetadata),
+        mIsLinkRelPreload(IsLinkRelPreload(aPreloadKind)) {
+    MOZ_ASSERT(aURI);
+    MOZ_ASSERT(aPrincipal);
+    MOZ_ASSERT(aLoaderPrincipal);
+    MOZ_COUNT_CTOR(SheetLoadDataHashKey);
+  }
+
+  SheetLoadDataHashKey(SheetLoadDataHashKey&& toMove)
+      : mURI(std::move(toMove.mURI)),
+        mPrincipal(std::move(toMove.mPrincipal)),
+        mLoaderPrincipal(std::move(toMove.mLoaderPrincipal)),
+        mPartitionPrincipal(std::move(toMove.mPartitionPrincipal)),
+        mEncodingGuess(std::move(toMove.mEncodingGuess)),
+        mCORSMode(std::move(toMove.mCORSMode)),
+        mParsingMode(std::move(toMove.mParsingMode)),
+        mCompatMode(std::move(toMove.mCompatMode)),
+        mSRIMetadata(std::move(toMove.mSRIMetadata)),
+        mIsLinkRelPreload(std::move(toMove.mIsLinkRelPreload)) {
+    MOZ_COUNT_CTOR(SheetLoadDataHashKey);
+  }
+
+  explicit SheetLoadDataHashKey(const css::SheetLoadData&);
+
+  MOZ_COUNTED_DTOR(SheetLoadDataHashKey)
+
+  const SheetLoadDataHashKey& GetKey() const { return *this; }
+  const SheetLoadDataHashKey* GetKeyPointer() const { return this; }
+
+  bool KeyEquals(const SheetLoadDataHashKey* aKey) const {
+    return KeyEquals(*aKey);
+  }
+
+  bool KeyEquals(const SheetLoadDataHashKey&) const;
+
+  static const SheetLoadDataHashKey* KeyToPointer(
+      const SheetLoadDataHashKey& aKey) {
+    return &aKey;
+  }
+  static PLDHashNumber HashKey(const SheetLoadDataHashKey* aKey) {
+    return nsURIHashKey::HashKey(aKey->mURI);
+  }
+
+  nsIURI* URI() const { return mURI; }
+
+  nsIPrincipal* Principal() const { return mPrincipal; }
+
+  nsIPrincipal* LoaderPrincipal() const { return mLoaderPrincipal; }
+
+  nsIPrincipal* PartitionPrincipal() const { return mPartitionPrincipal; }
+
+  css::SheetParsingMode ParsingMode() const { return mParsingMode; }
+
+  enum { ALLOW_MEMMOVE = true };
+
+ protected:
+  const nsCOMPtr<nsIURI> mURI;
+  const nsCOMPtr<nsIPrincipal> mPrincipal;
+  const nsCOMPtr<nsIPrincipal> mLoaderPrincipal;
+  const nsCOMPtr<nsIPrincipal> mPartitionPrincipal;
+  // The encoding guess is the encoding the sheet would get if the request
+  // didn't have any encoding information like @charset or a Content-Encoding
+  // header.
+  const NotNull<const Encoding*> mEncodingGuess;
+  const CORSMode mCORSMode;
+  const css::SheetParsingMode mParsingMode;
+  const nsCompatibility mCompatMode;
+  dom::SRIMetadata mSRIMetadata;
+  const bool mIsLinkRelPreload;
+};
 
 namespace css {
 
 class SheetLoadData;
-class SheetCache;
 class ImportRule;
 
 /*********************
@@ -112,10 +227,35 @@ class Loader final {
 
   void DropDocumentReference();  // notification that doc is going away
 
+  void DeregisterFromSheetCache();
+  void RegisterInSheetCache();
+
   void SetCompatibilityMode(nsCompatibility aCompatMode) {
-    mCompatMode = aCompatMode;
+    mDocumentCompatMode = aCompatMode;
   }
-  nsCompatibility GetCompatibilityMode() { return mCompatMode; }
+
+  using StylePreloadKind = css::StylePreloadKind;
+
+  bool HasLoaded(const SheetLoadDataHashKey& aKey) const {
+    return mLoadsPerformed.Contains(aKey);
+  }
+
+  void WillStartPendingLoad() {
+    MOZ_DIAGNOSTIC_ASSERT(mPendingLoadCount, "Where did this load come from?");
+    mPendingLoadCount--;
+  }
+
+  nsCompatibility CompatMode(StylePreloadKind aPreloadKind) const {
+    // For Link header preload, we guess non-quirks, because otherwise it is
+    // useless for modern pages.
+    //
+    // Link element preload is generally good because the speculative html
+    // parser deals with quirks mode properly.
+    if (aPreloadKind == StylePreloadKind::FromLinkRelPreloadHeader) {
+      return eCompatibility_FullStandards;
+    }
+    return mDocumentCompatMode;
+  }
 
   // TODO(emilio): Is the complexity of this method and carrying the titles
   // around worth it? The alternate sheets will load anyhow eventually...
@@ -133,10 +273,9 @@ class Loader final {
    * @param aObserver the observer to notify when the load completes.
    *        May be null.
    * @param aBuffer the stylesheet data
-   * @param aLineNumber the line number at which the stylesheet data started.
    */
   Result<LoadSheetResult, nsresult> LoadInlineStyle(
-      const SheetInfo&, const nsAString& aBuffer, uint32_t aLineNumber,
+      const SheetInfo&, const nsAString& aBuffer,
       nsICSSLoaderObserver* aObserver);
 
   /**
@@ -175,6 +314,12 @@ class Loader final {
                           nsIURI* aURL, dom::MediaList* aMedia,
                           LoaderReusableStyleSheets* aSavedSheets);
 
+  /**
+   * Called when we hit the internal memory cache with a complete stylesheet.
+   */
+  void DidHitCompleteSheetCache(const SheetLoadDataHashKey&,
+                                const StyleUseCounters* aCounters);
+
   enum class UseSystemPrincipal { No, Yes };
 
   /**
@@ -202,16 +347,6 @@ class Loader final {
       nsIURI*, SheetParsingMode = eAuthorSheetFeatures,
       UseSystemPrincipal = UseSystemPrincipal::No);
 
-  enum class IsPreload : uint8_t {
-    No,
-    // This is a speculative load initiated by a <link rel=stylesheet> tag
-    // scanned by the parser, or @import rules found in a <style> tag.
-    FromParser,
-    // This is a speculative load as well, but initiated by
-    // <link rel="preload" as="style">
-    FromLink,
-  };
-
   /**
    * Asynchronously load the stylesheet at aURL.  If a successful result is
    * returned, aObserver is guaranteed to be notified asynchronously once the
@@ -226,6 +361,8 @@ class Loader final {
    * @param aReferrerInfo referrer information of the sheet.
    * @param aObserver the observer to notify when the load completes.
    *                  Must not be null.
+   * @param aEarlyHintPreloaderId to connect back to the early hint preload
+   * channel. Null means no connect back should happen
    * @return the sheet to load. Note that the sheet may well not be loaded by
    * the time this method returns.
    *
@@ -234,12 +371,15 @@ class Loader final {
    * non-UTF8 sheets being treated as UTF-8 by this method.
    */
   Result<RefPtr<StyleSheet>, nsresult> LoadSheet(
-      nsIURI* aURI, IsPreload, const Encoding* aPreloadEncoding,
+      nsIURI* aURI, StylePreloadKind, const Encoding* aPreloadEncoding,
       nsIReferrerInfo* aReferrerInfo, nsICSSLoaderObserver* aObserver,
-      CORSMode = CORS_NONE, const nsAString& aIntegrity = EmptyString());
+      uint64_t aEarlyHintPreloaderId, CORSMode aCORSMode,
+      const nsAString& aNonce, const nsAString& aIntegrity,
+      dom::FetchPriority aFetchPriority);
 
   /**
    * As above, but without caring for a couple things.
+   * Only to be called by `PreloadedStyleSheet::PreloadAsync`.
    */
   Result<RefPtr<StyleSheet>, nsresult> LoadSheet(nsIURI*, SheetParsingMode,
                                                  UseSystemPrincipal,
@@ -267,10 +407,14 @@ class Loader final {
   bool GetEnabled() { return mEnabled; }
   void SetEnabled(bool aEnabled) { mEnabled = aEnabled; }
 
+  uint32_t ParsedSheetCount() const { return mParsedSheetCount; }
+
   /**
    * Get the document we live for. May return null.
    */
   dom::Document* GetDocument() const { return mDocument; }
+
+  bool IsDocumentAssociated() const { return mIsDocumentAssociated; }
 
   /**
    * Return true if this loader has pending loads (ones that would send
@@ -307,43 +451,89 @@ class Loader final {
   // selected and aHasAlternateRel is false.
   IsAlternate IsAlternateSheet(const nsAString& aTitle, bool aHasAlternateRel);
 
-  typedef nsTArray<RefPtr<SheetLoadData>> LoadDataArray;
-
   // Measure our size.
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
 
- private:
-  friend class SheetLoadData;
-  friend class StreamLoader;
-
-  // Helpers to conditionally block onload if mDocument is non-null.
-  void BlockOnload();
-  void UnblockOnload(bool aFireSync);
-
-  // Helper to select the correct dispatch target for asynchronous events for
-  // this loader.
-  already_AddRefed<nsISerialEventTarget> DispatchTarget();
-
-  nsresult CheckContentPolicy(nsIPrincipal* aLoadingPrincipal,
-                              nsIPrincipal* aTriggeringPrincipal,
-                              nsIURI* aTargetURI, nsINode* aRequestingNode,
-                              const nsAString& aNonce, IsPreload);
-
   enum class SheetState : uint8_t {
-    Unknown = 0,
-    NeedsParser,
+    NeedsParser = 0,
     Pending,
     Loading,
     Complete
   };
 
+  // The loader principal is the document's node principal, if this loader is
+  // owned by a document, or the system principal otherwise.
+  nsIPrincipal* LoaderPrincipal() const;
+
+  // The partitioned principal is the document's partitioned principal, if this
+  // loader is owned by a document, or the system principal otherwise.
+  nsIPrincipal* PartitionedPrincipal() const;
+
+  bool ShouldBypassCache() const;
+
+  enum class PendingLoad { No, Yes };
+
+ private:
+  friend class mozilla::SharedStyleSheetCache;
+  friend class SheetLoadData;
+  friend class StreamLoader;
+
+  // Only to be called by `LoadSheet`.
+  [[nodiscard]] bool MaybeDeferLoad(SheetLoadData& aLoadData,
+                                    SheetState aSheetState,
+                                    PendingLoad aPendingLoad,
+                                    const SheetLoadDataHashKey& aKey);
+
+  // Only to be called by `LoadSheet`.
+  bool MaybeCoalesceLoadAndNotifyOpen(SheetLoadData& aLoadData,
+                                      SheetState aSheetState,
+                                      const SheetLoadDataHashKey& aKey,
+                                      const PreloadHashKey& aPreloadKey);
+
+  // Only to be called by `LoadSheet`.
+  [[nodiscard]] nsresult LoadSheetSyncInternal(SheetLoadData& aLoadData,
+                                               SheetState aSheetState);
+
+  void AdjustPriority(const SheetLoadData& aLoadData, nsIChannel* aChannel);
+
+  // Only to be called by `LoadSheet`.
+  [[nodiscard]] nsresult LoadSheetAsyncInternal(
+      SheetLoadData& aLoadData, uint64_t aEarlyHintPreloaderId,
+      const SheetLoadDataHashKey& aKey);
+
+  // Helpers to conditionally block onload if mDocument is non-null.
+  void IncrementOngoingLoadCountAndMaybeBlockOnload() {
+    if (!mOngoingLoadCount++) {
+      BlockOnload();
+    }
+  }
+
+  void DecrementOngoingLoadCountAndMaybeUnblockOnload() {
+    MOZ_DIAGNOSTIC_ASSERT(mOngoingLoadCount);
+    MOZ_DIAGNOSTIC_ASSERT(mOngoingLoadCount > mPendingLoadCount);
+    if (!--mOngoingLoadCount) {
+      UnblockOnload(false);
+    }
+  }
+
+  void BlockOnload();
+  void UnblockOnload(bool aFireSync);
+
+  nsresult CheckContentPolicy(nsIPrincipal* aLoadingPrincipal,
+                              nsIPrincipal* aTriggeringPrincipal,
+                              nsIURI* aTargetURI, nsINode* aRequestingNode,
+                              const nsAString& aNonce, StylePreloadKind);
+
   std::tuple<RefPtr<StyleSheet>, SheetState> CreateSheet(
-      const SheetInfo& aInfo, nsIPrincipal* aTriggeringPrincipal,
-      css::SheetParsingMode aParsingMode, bool aSyncLoad,
-      IsPreload aIsPreload) {
-    return CreateSheet(aInfo.mURI, aInfo.mContent, aTriggeringPrincipal,
-                       aParsingMode, aInfo.mCORSMode, aInfo.mReferrerInfo,
-                       aInfo.mIntegrity, aSyncLoad, aIsPreload);
+      const SheetInfo& aInfo, css::SheetParsingMode aParsingMode,
+      bool aSyncLoad, css::StylePreloadKind aPreloadKind) {
+    nsIPrincipal* triggeringPrincipal = aInfo.mTriggeringPrincipal
+                                            ? aInfo.mTriggeringPrincipal.get()
+                                            : LoaderPrincipal();
+    return CreateSheet(aInfo.mURI, aInfo.mContent, triggeringPrincipal,
+                       aParsingMode, aInfo.mCORSMode,
+                       /* aPreloadOrParentDataEncoding = */ nullptr,
+                       aInfo.mIntegrity, aSyncLoad, aPreloadKind);
   }
 
   // For inline style, the aURI param is null, but the aLinkingContent
@@ -352,8 +542,8 @@ class Loader final {
   std::tuple<RefPtr<StyleSheet>, SheetState> CreateSheet(
       nsIURI* aURI, nsIContent* aLinkingContent,
       nsIPrincipal* aTriggeringPrincipal, css::SheetParsingMode, CORSMode,
-      nsIReferrerInfo* aLoadingReferrerInfo, const nsAString& aIntegrity,
-      bool aSyncLoad, IsPreload aIsPreload);
+      const Encoding* aPreloadOrParentDataEncoding, const nsAString& aIntegrity,
+      bool aSyncLoad, StylePreloadKind);
 
   // Pass in either a media string or the MediaList from the CSSParser.  Don't
   // pass both.
@@ -364,30 +554,29 @@ class Loader final {
                             IsAlternate, IsExplicitlyEnabled);
 
   // Inserts a style sheet in a document or a ShadowRoot.
-  void InsertSheetInTree(StyleSheet& aSheet, nsIContent* aLinkingContent);
+  void InsertSheetInTree(StyleSheet& aSheet);
   // Inserts a style sheet into a parent style sheet.
   void InsertChildSheet(StyleSheet& aSheet, StyleSheet& aParentSheet);
 
   Result<RefPtr<StyleSheet>, nsresult> InternalLoadNonDocumentSheet(
-      nsIURI* aURL, IsPreload, SheetParsingMode aParsingMode,
+      nsIURI* aURL, StylePreloadKind, SheetParsingMode aParsingMode,
       UseSystemPrincipal, const Encoding* aPreloadEncoding,
       nsIReferrerInfo* aReferrerInfo, nsICSSLoaderObserver* aObserver,
-      CORSMode aCORSMode, const nsAString& aIntegrity);
+      CORSMode aCORSMode, const nsAString& aNonce, const nsAString& aIntegrity,
+      uint64_t aEarlyHintPreloaderId, dom::FetchPriority aFetchPriority);
 
-  // Post a load event for aObserver to be notified about aSheet.  The
-  // notification will be sent with status NS_OK unless the load event is
-  // canceled at some point (in which case it will be sent with
-  // NS_BINDING_ABORTED).
-  nsresult PostLoadEvent(RefPtr<SheetLoadData>);
+  RefPtr<StyleSheet> LookupInlineSheetInCache(const nsAString&, nsIPrincipal*);
+
+  // Synchronously notify of a cached load data.
+  void NotifyOfCachedLoad(RefPtr<SheetLoadData>);
 
   // Start the loads of all the sheets in mPendingDatas
   void StartDeferredLoads();
 
-  void HandleLoadEvent(SheetLoadData&);
-
   // Note: LoadSheet is responsible for setting the sheet to complete on
   // failure.
-  nsresult LoadSheet(SheetLoadData&, SheetState);
+  nsresult LoadSheet(SheetLoadData&, SheetState, uint64_t aEarlyHintPreloaderId,
+                     PendingLoad = PendingLoad::No);
 
   enum class AllowAsyncParse {
     Yes,
@@ -401,28 +590,38 @@ class Loader final {
   //
   // If this function returns Completed::Yes, then ParseSheet also called
   // SheetComplete on aLoadData.
-  Completed ParseSheet(const nsACString&, SheetLoadData&, AllowAsyncParse);
+  Completed ParseSheet(const nsACString&, const RefPtr<SheetLoadDataHolder>&,
+                       AllowAsyncParse);
 
   // The load of the sheet in the load data is done, one way or another.
   // Do final cleanup.
-  void SheetComplete(SheetLoadData&, nsresult aStatus);
+  void SheetComplete(SheetLoadData&, nsresult);
 
-  // The guts of SheetComplete.  This may be called recursively on parent datas
-  // or datas that had glommed on to a single load.  The array is there so load
-  // datas whose observers need to be notified can be added to it.
-  void DoSheetComplete(SheetLoadData&, LoadDataArray& aDatasToNotify);
+  // Notify observers on an individual data. This is different from
+  // SheetComplete for loads that are shared.
+  void NotifyObservers(SheetLoadData&, nsresult);
 
   // Mark the given SheetLoadData, as well as any of its siblings, parents, etc
   // transitively, as failed.  The idea is to mark as failed any load that was
   // directly or indirectly @importing the sheet this SheetLoadData represents.
-  void MarkLoadTreeFailed(SheetLoadData&);
+  //
+  // if aOnlyForLoader is non-null, then only loads for a given loader will be
+  // marked as failing. This is useful to only cancel loads associated to a
+  // given loader, in case they were marked as canceled.
+  static void MarkLoadTreeFailed(SheetLoadData&,
+                                 Loader* aOnlyForLoader = nullptr);
 
-  struct Sheets;
-  UniquePtr<Sheets> mSheets;
+  // A shorthand to mark a possible link preload as used to supress "unused"
+  // warning in the console.
+  void MaybeNotifyPreloadUsed(SheetLoadData&);
 
-  // The array of posted stylesheet loaded events (SheetLoadDatas) we have.
-  // Note that these are rare.
-  LoadDataArray mPostedEvents;
+  nsRefPtrHashtable<nsStringHashKey, StyleSheet> mInlineSheets;
+
+  // A set with all the different loads we've done in a given document, for the
+  // purpose of not posting duplicate performance entries for them.
+  nsTHashtable<const SheetLoadDataHashKey> mLoadsPerformed;
+
+  RefPtr<SharedStyleSheetCache> mSheets;
 
   // Our array of "global" observers
   nsTObserverArray<nsCOMPtr<nsICSSLoaderObserver>> mObservers;
@@ -434,17 +633,26 @@ class Loader final {
   // For dispatching events via DocGroup::Dispatch() when mDocument is nullptr.
   RefPtr<dom::DocGroup> mDocGroup;
 
-  // Number of datas still waiting to be notified on if we're notifying on a
-  // whole bunch at once (e.g. in one of the stop methods).  This is used to
-  // make sure that HasPendingLoads() won't return false until we're notifying
-  // on the last data we're working with.
-  uint32_t mDatasToNotifyOn;
-
-  nsCompatibility mCompatMode;
-
-  bool mEnabled;  // is enabled to load new styles
+  nsCompatibility mDocumentCompatMode;
 
   nsCOMPtr<nsIConsoleReportCollector> mReporter;
+
+  // Number of datas for asynchronous sheet loads still waiting to be notified.
+  // This includes pending stylesheets whose load hasn't started yet but which
+  // we need to, but not inline or constructable stylesheets, though the
+  // constructable stylesheets bit may change, see bug 1642227.
+  uint32_t mOngoingLoadCount = 0;
+
+  // The number of sheets that have been deferred / are in a pending state.
+  uint32_t mPendingLoadCount = 0;
+
+  // The number of stylesheets that we have parsed, for testing purposes.
+  Atomic<uint32_t, MemoryOrdering::Relaxed> mParsedSheetCount{0};
+
+  bool mEnabled = true;
+
+  // Whether we had a document at the point of creation.
+  bool mIsDocumentAssociated = false;
 
 #ifdef DEBUG
   // Whether we're in a necko callback atm.

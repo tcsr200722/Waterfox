@@ -2,9 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-import sys
 import os
+import sys
 
 
 def path_join(*args):
@@ -26,8 +25,7 @@ else:
 
 
 def get_playback(config):
-    """ Returns an instance of the right Playback class
-    """
+    """Returns an instance of the right Playback class"""
     sys.path.insert(0, mozharness_dir)
     sys.path.insert(0, mozproxy_dir)
     sys.path.insert(0, mozproxy_src_dir)

@@ -2,27 +2,48 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-add_task(async function test_clickData() {
+add_setup(async function () {
+  // The page action button is hidden by default.
+  // This tests the use of pageAction when the button is visible.
+  //
+  // TODO(Bug 1704171): this should technically be removed in a follow up
+  // and the tests in this file adapted to keep into account that:
+  // - The pageAction is pinned on the urlbar by default
+  //   when shown, and hidden when is not available (same for the
+  //   overflow menu when enabled)
+  BrowserPageActions.mainButtonNode.style.visibility = "visible";
+  registerCleanupFunction(() => {
+    BrowserPageActions.mainButtonNode.style.removeProperty("visibility");
+  });
+});
+
+async function test_clickData(testAsNonPersistent = false) {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
       page_action: {},
+      background: {
+        persistent: !testAsNonPersistent,
+        scripts: ["background.js"],
+      },
     },
 
-    async background() {
-      function onClicked(tab, info) {
-        let button = info.button;
-        let modifiers = info.modifiers;
-        browser.test.sendMessage("onClick", { button, modifiers });
-      }
+    files: {
+      "background.js": async function background() {
+        function onClicked(_tab, info) {
+          let button = info.button;
+          let modifiers = info.modifiers;
+          browser.test.sendMessage("onClick", { button, modifiers });
+        }
 
-      browser.pageAction.onClicked.addListener(onClicked);
+        browser.pageAction.onClicked.addListener(onClicked);
 
-      let [tab] = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      await browser.pageAction.show(tab.id);
-      browser.test.sendMessage("ready");
+        let [tab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        await browser.pageAction.show(tab.id);
+        browser.test.sendMessage("ready");
+      },
     },
   });
 
@@ -59,16 +80,6 @@ add_task(async function test_clickData() {
   async function testClickPageAction(doClick, doEnterKey) {
     for (let modifier of Object.keys(map)) {
       for (let i = 0; i < 2; i++) {
-        // On Mac, ctrl-click will send a context menu event from the widget,
-        // we won't send xul command event and won't have onClick message, either.
-        if (
-          AppConstants.platform == "macosx" &&
-          i == 0 &&
-          modifier == "ctrlKey"
-        ) {
-          continue;
-        }
-
         let clickEventData = { button: i };
         clickEventData[modifier] = true;
         await doClick(extension, window, clickEventData);
@@ -91,41 +102,69 @@ add_task(async function test_clickData() {
   await extension.startup();
   await extension.awaitMessage("ready");
 
+  if (testAsNonPersistent) {
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: false,
+    });
+    info("Terminating the background event page");
+    await extension.terminateBackground();
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: true,
+    });
+  }
+
+  info("Clicking the pageAction");
   await testClickPageAction(clickPageAction, triggerPageActionWithKeyboard);
+
+  if (testAsNonPersistent) {
+    await extension.awaitMessage("ready");
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: false,
+    });
+  }
+
   await testClickPageAction(
     clickPageActionInPanel,
     triggerPageActionWithKeyboardInPanel
   );
 
   await extension.unload();
-});
+}
 
-add_task(async function test_clickData_reset() {
+async function test_clickData_reset(testAsNonPersistent = false) {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: {
-      browser_action: {},
+      browser_action: {
+        default_area: "navbar",
+      },
       page_action: {},
+      background: {
+        persistent: !testAsNonPersistent,
+        scripts: ["background.js"],
+      },
     },
 
-    async background() {
-      function onBrowserActionClicked(tab, info) {
-        // openPopup requires user interaction, such as a browser action click.
-        browser.pageAction.openPopup();
-      }
+    files: {
+      "background.js": async function background() {
+        function onBrowserActionClicked() {
+          // openPopup requires user interaction, such as a browser action click.
+          browser.pageAction.openPopup();
+        }
 
-      function onPageActionClicked(tab, info) {
-        browser.test.sendMessage("onClick", info);
-      }
+        function onPageActionClicked(tab, info) {
+          browser.test.sendMessage("onClick", info);
+        }
 
-      browser.browserAction.onClicked.addListener(onBrowserActionClicked);
-      browser.pageAction.onClicked.addListener(onPageActionClicked);
+        browser.browserAction.onClicked.addListener(onBrowserActionClicked);
+        browser.pageAction.onClicked.addListener(onPageActionClicked);
 
-      let [tab] = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      await browser.pageAction.show(tab.id);
-      browser.test.sendMessage("ready");
+        let [tab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        await browser.pageAction.show(tab.id);
+        browser.test.sendMessage("ready");
+      },
     },
   });
 
@@ -144,7 +183,26 @@ add_task(async function test_clickData_reset() {
   await extension.startup();
   await extension.awaitMessage("ready");
 
+  if (testAsNonPersistent) {
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: false,
+    });
+    info("Terminating the background event page");
+    await extension.terminateBackground();
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: true,
+    });
+  }
+
+  info("Clicking the pageAction");
   await clickPageActionWithModifiers();
+
+  if (testAsNonPersistent) {
+    await extension.awaitMessage("ready");
+    assertPersistentListeners(extension, "pageAction", "onClicked", {
+      primed: false,
+    });
+  }
 
   await clickBrowserAction(extension);
   assertInfoReset(await extension.awaitMessage("onClick"));
@@ -155,67 +213,28 @@ add_task(async function test_clickData_reset() {
   assertInfoReset(await extension.awaitMessage("onClick"));
 
   await extension.unload();
+}
+
+add_task(function test_clickData_MV2() {
+  return test_clickData(/* testAsNonPersistent */ false);
 });
 
-add_task(async function test_click_disabled() {
-  let extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      page_action: {},
-    },
-
-    background() {
-      let expectClick = false;
-      function onClicked(tab, info) {
-        if (expectClick) {
-          browser.test.sendMessage("onClick");
-        } else {
-          browser.test.fail(
-            `Unexpected click on disabled page action, button=${info.button}`
-          );
-        }
-      }
-
-      async function onMessage(msg, toggle) {
-        if (msg == "hide" || msg == "show") {
-          expectClick = msg == "show";
-
-          let [tab] = await browser.tabs.query({
-            active: true,
-            currentWindow: true,
-          });
-          if (expectClick) {
-            await browser.pageAction.show(tab.id);
-          } else {
-            await browser.pageAction.hide(tab.id);
-          }
-          browser.test.sendMessage("visibilitySet");
-        } else {
-          browser.test.fail("Unexpected message");
-        }
-      }
-
-      browser.pageAction.onClicked.addListener(onClicked);
-      browser.test.onMessage.addListener(onMessage);
-      browser.test.sendMessage("ready");
-    },
+add_task(async function test_clickData_MV2_eventPage() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["extensions.eventPages.enabled", true]],
   });
+  await test_clickData(/* testAsNonPersistent */ true);
+  await SpecialPowers.popPrefEnv();
+});
 
-  await extension.startup();
-  await extension.awaitMessage("ready");
+add_task(function test_clickData_reset_MV2() {
+  return test_clickData_reset(/* testAsNonPersistent */ false);
+});
 
-  extension.sendMessage("hide");
-  await extension.awaitMessage("visibilitySet");
-
-  await clickPageActionInPanel(extension, window, { button: 0 });
-  await clickPageActionInPanel(extension, window, { button: 1 });
-
-  extension.sendMessage("show");
-  await extension.awaitMessage("visibilitySet");
-
-  await clickPageActionInPanel(extension, window, { button: 0 });
-  await extension.awaitMessage("onClick");
-  await clickPageActionInPanel(extension, window, { button: 1 });
-  await extension.awaitMessage("onClick");
-
-  await extension.unload();
+add_task(async function test_clickData_reset_MV2_eventPage() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["extensions.eventPages.enabled", true]],
+  });
+  await test_clickData_reset(/* testAsNonPersistent */ true);
+  await SpecialPowers.popPrefEnv();
 });

@@ -14,19 +14,15 @@ function resetPassword() {
   token.reset();
 
   try {
-    Services.logins.removeAllLogins();
+    Services.logins.removeAllUserFacingLogins();
   } catch (e) {}
 
-  var bundle = document.getElementById("pippki_bundle");
-  var promptService = Cc[
-    "@mozilla.org/embedcomp/prompt-service;1"
-  ].getService();
-  promptService = promptService.QueryInterface(Ci.nsIPromptService);
-  if (promptService && bundle) {
-    promptService.alert(
+  let l10n = new Localization(["security/pippki/pippki.ftl"], true);
+  if (l10n) {
+    Services.prompt.alert(
       window,
-      bundle.getString("resetPasswordConfirmationTitle"),
-      bundle.getString("resetPasswordConfirmationMessage")
+      l10n.formatValueSync("pippki-reset-password-confirmation-title"),
+      l10n.formatValueSync("pippki-reset-password-confirmation-message")
     );
   }
 }

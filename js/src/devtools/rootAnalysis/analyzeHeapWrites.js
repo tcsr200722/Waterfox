@@ -99,7 +99,6 @@ function checkOverridableVirtualCall(entry, location, callee)
         "Gecko_AddRefAtom",
         "Gecko_ReleaseAtom",
         /nsPrincipal::Get/,
-        /CounterStylePtr::Reset/,
     ];
     if (entry.matches(whitelist))
         return;
@@ -146,21 +145,9 @@ function treatAsSafeArgument(entry, varName, csuName)
         [/^Gecko_/, null, "nsStyleImageLayers"],
         [/^Gecko_/, null, /FontFamilyList/],
 
-        // RawGeckoBorrowedNode thread-mutable parameters.
-        ["Gecko_SetNodeFlags", "aNode", null],
-        ["Gecko_UnsetNodeFlags", "aNode", null],
-
         // Various Servo binding out parameters. This is a mess and there needs
         // to be a way to indicate which params are out parameters, either using
         // an attribute or a naming convention.
-        ["Gecko_CopyAnimationNames", "aDest", null],
-        ["Gecko_CopyFontFamilyFrom", "dst", null],
-        ["Gecko_SetAnimationName", "aStyleAnimation", null],
-        ["Gecko_SetCounterStyleToName", "aPtr", null],
-        ["Gecko_SetCounterStyleToSymbols", "aPtr", null],
-        ["Gecko_SetCounterStyleToString", "aPtr", null],
-        ["Gecko_CopyCounterStyle", "aDst", null],
-        ["Gecko_SetMozBinding", "aDisplay", null],
         [/ClassOrClassList/, /aClass/, null],
         ["Gecko_GetAtomAsUTF16", "aLength", null],
         ["Gecko_CopyMozBindingFrom", "aDest", null],
@@ -182,7 +169,6 @@ function treatAsSafeArgument(entry, varName, csuName)
         ["Gecko_CopyClipPathValueFrom", "aDst", null],
         ["Gecko_DestroyClipPath", "aClip", null],
         ["Gecko_ResetFilters", "effects", null],
-        ["Gecko_CopyFiltersFrom", "aDest", null],
         [/Gecko_CSSValue_Set/, "aCSSValue", null],
         ["Gecko_CSSValue_Drop", "aCSSValue", null],
         ["Gecko_CSSFontFaceRule_GetCssText", "aResult", null],
@@ -231,8 +217,6 @@ function treatAsSafeArgument(entry, varName, csuName)
         ["Gecko_ClearAlternateValues", "aFont", null],
         ["Gecko_AppendAlternateValues", "aFont", null],
         ["Gecko_CopyAlternateValuesFrom", "aDest", null],
-        ["Gecko_CounterStyle_GetName", "aResult", null],
-        ["Gecko_CounterStyle_GetSingleString", "aResult", null],
         ["Gecko_nsTArray_FontFamilyName_AppendNamed", "aNames", null],
         ["Gecko_nsTArray_FontFamilyName_AppendGeneric", "aNames", null],
     ];
@@ -294,10 +278,6 @@ function checkFieldWrite(entry, location, fields)
 
         if (/\bThreadLocal<\b/.test(field))
             return;
-
-        // Debugging check for string corruption.
-        if (field == "nsStringBuffer.mCanary")
-            return;
     }
 
     var str = "";
@@ -356,12 +336,6 @@ function ignoreCallEdge(entry, callee)
     {
         return true;
     }
-
-    // This function has an explicit test for being on the main thread if the
-    // style has non-threadsafe refcounts, but the analysis isn't smart enough
-    // to understand what the actual styles that can be involved are.
-    if (/nsStyleList::SetCounterStyle/.test(callee))
-        return true;
 
     // CachedBorderImageData is exclusively owned by nsStyleImage, but the
     // analysis is not smart enough to know this.
@@ -547,7 +521,7 @@ function ignoreContents(entry)
 
     if (entry.isSafeArgument(2)) {
         var secondArgWhitelist = [
-            /nsStringBuffer::ToString/,
+            /StringBuffer::ToString/,
             /AppendUTF\d+toUTF\d+/,
             /AppendASCIItoUTF\d+/,
         ];

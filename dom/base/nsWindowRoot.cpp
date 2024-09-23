@@ -13,13 +13,11 @@
 #include "nsWindowRoot.h"
 #include "nsPIDOMWindow.h"
 #include "nsPresContext.h"
-#include "nsLayoutCID.h"
-#include "nsContentCID.h"
 #include "nsString.h"
 #include "nsFrameLoaderOwner.h"
 #include "nsFrameLoader.h"
 #include "nsQueryActor.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsFocusManager.h"
 #include "nsIContent.h"
 #include "nsIControllers.h"
@@ -28,20 +26,20 @@
 #include "xpcpublic.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/HTMLTextAreaElement.h"
 #include "mozilla/dom/HTMLInputElement.h"
 #include "mozilla/dom/JSActorService.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 
-#ifdef MOZ_XUL
-#  include "nsXULElement.h"
-#endif
+#include "nsXULElement.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 
 nsWindowRoot::nsWindowRoot(nsPIDOMWindowOuter* aWindow) {
+  SetIsOnMainThread();
   mWindow = aWindow;
-  mShowFocusRings = StaticPrefs::browser_display_show_focus_rings();
 }
 
 nsWindowRoot::~nsWindowRoot() {
@@ -49,17 +47,13 @@ nsWindowRoot::~nsWindowRoot() {
     mListenerManager->Disconnect();
   }
 
-  if (XRE_IsContentProcess()) {
-    JSActorService::UnregisterChromeEventTarget(this);
-  }
+  JSActorService::UnregisterChromeEventTarget(this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsWindowRoot)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsWindowRoot)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsWindowRoot)
-  if (XRE_IsContentProcess()) {
-    JSActorService::UnregisterChromeEventTarget(tmp);
-  }
+  JSActorService::UnregisterChromeEventTarget(tmp);
 
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mListenerManager)
@@ -72,8 +66,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsWindowRoot)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mListenerManager)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mParent)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(nsWindowRoot)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsWindowRoot)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -154,7 +146,6 @@ nsresult nsWindowRoot::GetControllers(bool aForVisibleWindow,
   nsIContent* focusedContent = nsFocusManager::GetFocusedDescendant(
       mWindow, searchRange, getter_AddRefs(focusedWindow));
   if (focusedContent) {
-#ifdef MOZ_XUL
     RefPtr<nsXULElement> xulElement = nsXULElement::FromNode(focusedContent);
     if (xulElement) {
       ErrorResult rv;
@@ -162,7 +153,6 @@ nsresult nsWindowRoot::GetControllers(bool aForVisibleWindow,
       NS_IF_ADDREF(*aResult);
       return rv.StealNSResult();
     }
-#endif
 
     HTMLTextAreaElement* htmlTextArea =
         HTMLTextAreaElement::FromNode(focusedContent);
@@ -218,13 +208,11 @@ nsresult nsWindowRoot::GetControllerForCommand(const char* aCommand,
             fm->GetActiveBrowsingContextInChrome()
                 ? fm->GetFocusedBrowsingContextInChrome()
                 : nullptr;
-        CanonicalBrowsingContext* canonicalFocusedBC =
-            CanonicalBrowsingContext::Cast(focusedBC);
-        if (canonicalFocusedBC) {
+        if (focusedBC) {
           // At this point, it is known that a child process is focused, so ask
           // its Controllers actor if the command is supported.
-          nsCOMPtr<nsIController> controller =
-              do_QueryActor("Controllers", canonicalFocusedBC);
+          nsCOMPtr<nsIController> controller = do_QueryActor(
+              "Controllers", focusedBC->Canonical()->GetCurrentWindowGlobal());
           if (controller) {
             bool supported;
             controller->SupportsCommand(aCommand, &supported);
@@ -280,8 +268,7 @@ nsresult nsWindowRoot::GetControllerForCommand(const char* aCommand,
 }
 
 void nsWindowRoot::GetEnabledDisabledCommandsForControllers(
-    nsIControllers* aControllers,
-    nsTHashtable<nsCStringHashKey>& aCommandsHandled,
+    nsIControllers* aControllers, nsTHashSet<nsCString>& aCommandsHandled,
     nsTArray<nsCString>& aEnabledCommands,
     nsTArray<nsCString>& aDisabledCommands) {
   uint32_t controllerCount;
@@ -322,7 +309,7 @@ void nsWindowRoot::GetEnabledDisabledCommandsForControllers(
 void nsWindowRoot::GetEnabledDisabledCommands(
     nsTArray<nsCString>& aEnabledCommands,
     nsTArray<nsCString>& aDisabledCommands) {
-  nsTHashtable<nsCStringHashKey> commandsHandled;
+  nsTHashSet<nsCString> commandsHandled;
 
   nsCOMPtr<nsIControllers> controllers;
   GetControllers(false, getter_AddRefs(controllers));
@@ -367,20 +354,20 @@ JSObject* nsWindowRoot::WrapObject(JSContext* aCx,
 
 void nsWindowRoot::AddBrowser(nsIRemoteTab* aBrowser) {
   nsWeakPtr weakBrowser = do_GetWeakReference(aBrowser);
-  mWeakBrowsers.PutEntry(weakBrowser);
+  mWeakBrowsers.Insert(weakBrowser);
 }
 
 void nsWindowRoot::RemoveBrowser(nsIRemoteTab* aBrowser) {
   nsWeakPtr weakBrowser = do_GetWeakReference(aBrowser);
-  mWeakBrowsers.RemoveEntry(weakBrowser);
+  mWeakBrowsers.Remove(weakBrowser);
 }
 
 void nsWindowRoot::EnumerateBrowsers(BrowserEnumerator aEnumFunc, void* aArg) {
   // Collect strong references to all browsers in a separate array in
   // case aEnumFunc alters mWeakBrowsers.
   nsTArray<nsCOMPtr<nsIRemoteTab>> remoteTabs;
-  for (auto iter = mWeakBrowsers.ConstIter(); !iter.Done(); iter.Next()) {
-    nsCOMPtr<nsIRemoteTab> remoteTab(do_QueryReferent(iter.Get()->GetKey()));
+  for (const auto& key : mWeakBrowsers) {
+    nsCOMPtr<nsIRemoteTab> remoteTab(do_QueryReferent(key));
     if (remoteTab) {
       remoteTabs.AppendElement(remoteTab);
     }
@@ -396,10 +383,8 @@ void nsWindowRoot::EnumerateBrowsers(BrowserEnumerator aEnumFunc, void* aArg) {
 already_AddRefed<EventTarget> NS_NewWindowRoot(nsPIDOMWindowOuter* aWindow) {
   nsCOMPtr<EventTarget> result = new nsWindowRoot(aWindow);
 
-  if (XRE_IsContentProcess()) {
-    RefPtr<JSActorService> wasvc = JSActorService::GetSingleton();
-    wasvc->RegisterChromeEventTarget(result);
-  }
+  RefPtr<JSActorService> wasvc = JSActorService::GetSingleton();
+  wasvc->RegisterChromeEventTarget(result);
 
   return result.forget();
 }

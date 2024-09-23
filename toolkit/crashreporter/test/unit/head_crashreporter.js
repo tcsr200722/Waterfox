@@ -1,12 +1,12 @@
-var { OS, require } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-ChromeUtils.import("resource://testing-common/AppData.jsm", this);
-var { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+const { makeFakeAppDir } = ChromeUtils.importESModule(
+  "resource://testing-common/AppData.sys.mjs"
+);
+var { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
 
 function getEventDir() {
-  return OS.Path.join(do_get_tempdir().path, "crash-events");
+  return PathUtils.join(do_get_tempdir().path, "crash-events");
 }
 
 function sendCommandAsync(command) {
@@ -67,24 +67,20 @@ async function do_crash(setup, callback, canReturnZero) {
   }
   args.push("-f", tailfile.path);
 
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-
   let crashD = do_get_tempdir();
   crashD.append("crash-events");
   if (!crashD.exists()) {
     crashD.create(crashD.DIRECTORY_TYPE, 0o700);
   }
 
-  env.set("CRASHES_EVENTS_DIR", crashD.path);
+  Services.env.set("CRASHES_EVENTS_DIR", crashD.path);
 
   try {
     process.run(true, args, args.length);
   } catch (ex) {
     // on Windows we exit with a -1 status when crashing.
   } finally {
-    env.set("CRASHES_EVENTS_DIR", "");
+    Services.env.set("CRASHES_EVENTS_DIR", "");
   }
 
   if (!canReturnZero) {
@@ -107,19 +103,18 @@ function getMinidump() {
   return null;
 }
 
+function getMinidumpAnalyzerPath() {
+  const binSuffix = AppConstants.platform === "win" ? ".exe" : "";
+  const exeName = "minidump-analyzer" + binSuffix;
+
+  let exe = Services.dirsvc.get("GreBinD", Ci.nsIFile);
+  exe.append(exeName);
+
+  return exe;
+}
+
 function runMinidumpAnalyzer(dumpFile, additionalArgs) {
-  if (AppConstants.platform !== "win") {
-    return;
-  }
-
-  // find minidump-analyzer executable.
-  let bin = Services.dirsvc.get("XREExeF", Ci.nsIFile);
-  ok(bin && bin.exists());
-  bin = bin.parent;
-  ok(bin && bin.exists());
-  bin.append("minidump-analyzer.exe");
-  ok(bin.exists());
-
+  let bin = getMinidumpAnalyzerPath();
   let process = Cc["@mozilla.org/process/util;1"].createInstance(Ci.nsIProcess);
   process.init(bin);
   let args = [];
@@ -144,27 +139,30 @@ async function handleMinidump(callback) {
   let memoryfile = minidump.clone();
   memoryfile.leafName = memoryfile.leafName.slice(0, -4) + ".memory.json.gz";
 
-  let cleanup = function() {
-    [minidump, extrafile, memoryfile].forEach(file => {
-      if (file.exists()) {
-        file.remove(false);
+  let cleanup = async function () {
+    for (let file of [minidump, extrafile, memoryfile]) {
+      while (file.exists()) {
+        try {
+          file.remove(false);
+        } catch (e) {
+          // On Windows the file may be locked, wait briefly and try again
+          await new Promise(resolve => do_timeout(50, resolve));
+        }
       }
-    });
+    }
   };
 
   // Just in case, don't let these files linger.
   registerCleanupFunction(cleanup);
 
   Assert.ok(extrafile.exists());
-  let data = await OS.File.read(extrafile.path);
-  let decoder = new TextDecoder();
-  let extra = JSON.parse(decoder.decode(data));
+  let extra = await IOUtils.readJSON(extrafile.path);
 
   if (callback) {
-    await callback(minidump, extra, extrafile);
+    await callback(minidump, extra, extrafile, memoryfile);
   }
 
-  cleanup();
+  await cleanup();
 }
 
 function spinEventLoop() {
@@ -185,10 +183,7 @@ async function do_content_crash(setup, callback) {
 
   // Setting the minidump path won't work in the child, so we need to do
   // that here.
-  let crashReporter = Cc["@mozilla.org/toolkit/crash-reporter;1"].getService(
-    Ci.nsICrashReporter
-  );
-  crashReporter.minidumpPath = do_get_tempdir();
+  Services.appinfo.minidumpPath = do_get_tempdir();
 
   /* import-globals-from ../unit/crasher_subprocess_head.js */
   /* import-globals-from ../unit/crasher_subprocess_tail.js */
@@ -205,10 +200,14 @@ async function do_content_crash(setup, callback) {
   do_get_profile();
   await makeFakeAppDir();
   await sendCommandAsync('load("' + headfile.path.replace(/\\/g, "/") + '");');
-  await sendCommandAsync(setup);
+  if (setup) {
+    await sendCommandAsync(setup);
+  }
   await sendCommandAsync('load("' + tailfile.path.replace(/\\/g, "/") + '");');
   await spinEventLoop();
-  let id = getMinidump().leafName.slice(0, -4);
+
+  let minidump = getMinidump();
+  let id = minidump.leafName.slice(0, -4);
   await Services.crashmanager.ensureCrashIsPresent(id);
   try {
     await handleMinidump(callback);
@@ -228,10 +227,7 @@ async function do_triggered_content_crash(trigger, callback) {
 
   // Setting the minidump path won't work in the child, so we need to do
   // that here.
-  let crashReporter = Cc["@mozilla.org/toolkit/crash-reporter;1"].getService(
-    Ci.nsICrashReporter
-  );
-  crashReporter.minidumpPath = do_get_tempdir();
+  Services.appinfo.minidumpPath = do_get_tempdir();
 
   /* import-globals-from ../unit/crasher_subprocess_head.js */
 
@@ -257,7 +253,95 @@ async function do_triggered_content_crash(trigger, callback) {
   }
 }
 
+/*
+ * Run the `crash` backgroundtask subprocess, crashing it in the
+ * specified manner.
+ *
+ * @param crashType Integer `CrashTestUtils.CRASH_...` code.
+ * @param crashExtras Dictionary of key-value pairs to include in
+ *                    minidump extras.
+ *
+ * @param callback
+ *        A JavaScript function to be called after the subprocess
+ *        crashes. It will be passed (minidump, extra, extrafile), where
+ *         - minidump is an nsIFile of the minidump file produced,
+ *         - extra is an object containing the key,value pairs from
+ *           the .extra file.
+ *         - extrafile is an nsIFile of the extra file
+ *
+ * @param canReturnZero
+ *       If true, the subprocess may return with a zero exit code.
+ *       Certain types of crashes may not cause the process to
+ *       exit with an error.
+ *
+ */
+async function do_backgroundtask_crash(
+  crashType,
+  crashExtras,
+  callback,
+  canReturnZero
+) {
+  Assert.ok(AppConstants.MOZ_BACKGROUNDTASKS);
+
+  // Get full path to application (not xpcshell)
+  let bin = Services.dirsvc.get("GreBinD", Ci.nsIFile);
+  if (AppConstants.platform === "win") {
+    bin.append(AppConstants.MOZ_APP_NAME + ".exe");
+  } else {
+    bin.append(AppConstants.MOZ_APP_NAME);
+  }
+
+  // run `application --backgroundtask crash ...`.
+  let process = Cc["@mozilla.org/process/util;1"].createInstance(Ci.nsIProcess);
+  process.init(bin);
+
+  let args = ["--backgroundtask", "crash"];
+  args.push(crashType.toString());
+
+  // Sorted to be deterministic.
+  let sorted = Object.entries(crashExtras).sort((a, b) => a[0] < b[0]);
+  for (let [key, value] of sorted) {
+    args.push(key);
+    args.push(value);
+  }
+
+  let crashD = do_get_tempdir();
+  crashD.append("crash-events");
+  if (!crashD.exists()) {
+    crashD.create(crashD.DIRECTORY_TYPE, 0o700);
+  }
+
+  Services.env.set("CRASHES_EVENTS_DIR", crashD.path);
+
+  // Ensure `resource://testing-common` gets mapped.
+  let protocolHandler = Services.io
+    .getProtocolHandler("resource")
+    .QueryInterface(Ci.nsIResProtocolHandler);
+
+  let uri = protocolHandler.getSubstitution("testing-common");
+  Assert.ok(uri, "resource://testing-common is not substituted");
+
+  // The equivalent of _TESTING_MODULES_DIR in xpcshell.
+  Services.env.set("XPCSHELL_TESTING_MODULES_URI", uri.spec);
+
+  try {
+    process.run(true, args, args.length);
+  } catch (ex) {
+    // on Windows we exit with a -1 status when crashing.
+  } finally {
+    Services.env.set("CRASHES_EVENTS_DIR", "");
+    Services.env.set("XPCSHELL_TESTING_MODULES_URI", "");
+  }
+
+  if (!canReturnZero) {
+    // should exit with an error (should have crashed)
+    Assert.notEqual(process.exitValue, 0);
+  }
+
+  await handleMinidump(callback);
+}
+
 // Import binary APIs via js-ctypes.
-var { CrashTestUtils } = ChromeUtils.import(
-  "resource://test/CrashTestUtils.jsm"
+var { CrashTestUtils } = ChromeUtils.importESModule(
+  "resource://test/CrashTestUtils.sys.mjs"
 );

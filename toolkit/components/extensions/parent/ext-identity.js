@@ -6,19 +6,13 @@
 
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
-
 XPCOMUtils.defineLazyGlobalGetters(this, ["XMLHttpRequest", "ChannelWrapper"]);
 
 var { promiseDocumentLoaded } = ExtensionUtils;
 
 const checkRedirected = (url, redirectURI) => {
   return new Promise((resolve, reject) => {
-    let xhr = new XMLHttpRequest();
+    let xhr = new XMLHttpRequest({ mozAnon: false });
     xhr.open("GET", url);
     // We expect this if the user has not authenticated.
     xhr.onload = () => {
@@ -31,11 +25,11 @@ const checkRedirected = (url, redirectURI) => {
     // Catch redirect to our redirect_uri before a new request is made.
     xhr.channel.notificationCallbacks = {
       QueryInterface: ChromeUtils.generateQI([
-        Ci.nsIInterfaceRequestor,
-        Ci.nsIChannelEventSync,
+        "nsIInterfaceRequestor",
+        "nsIChannelEventSync",
       ]),
 
-      getInterface: ChromeUtils.generateQI([Ci.nsIChannelEventSink]),
+      getInterface: ChromeUtils.generateQI(["nsIChannelEventSink"]),
 
       asyncOnChannelRedirect(oldChannel, newChannel, flags, callback) {
         let responseURL = newChannel.URI.spec;
@@ -100,7 +94,7 @@ const openOAuthWindow = (details, redirectURI) => {
     };
 
     httpObserver = {
-      observeActivity(channel, type, subtype, timestamp, sizeData, stringData) {
+      observeActivity(channel) {
         try {
           channel.QueryInterface(Ci.nsIChannel);
         } catch {
@@ -132,10 +126,10 @@ this.identity = class extends ExtensionAPI {
   getAPI(context) {
     return {
       identity: {
-        launchWebAuthFlowInParent: function(details, redirectURI) {
+        launchWebAuthFlowInParent: function (details, redirectURI) {
           // If the request is automatically redirected the user has already
           // authorized and we do not want to show the window.
-          return checkRedirected(details.url, redirectURI).catch(
+          let promise = checkRedirected(details.url, redirectURI).catch(
             requestError => {
               // requestError is zero or xhr.status
               if (requestError !== 0) {
@@ -151,6 +145,13 @@ this.identity = class extends ExtensionAPI {
               return openOAuthWindow(details, redirectURI);
             }
           );
+          if (context.isBackgroundContext) {
+            context.extension.emit("background-script-idle-waituntil", {
+              promise,
+              reason: "launchWebAuthFlow",
+            });
+          }
+          return promise;
         },
       },
     };

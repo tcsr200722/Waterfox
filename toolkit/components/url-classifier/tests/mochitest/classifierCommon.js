@@ -1,9 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-/* eslint-env mozilla/frame-script */
-
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+/* eslint-env mozilla/chrome-script */
 
 var dbService = Cc["@mozilla.org/url-classifier/dbservice;1"].getService(
   Ci.nsIUrlClassifierDBService
@@ -25,12 +23,12 @@ function setTimeout(callback, delay) {
 function doUpdate(update) {
   let listener = {
     QueryInterface: ChromeUtils.generateQI(["nsIUrlClassifierUpdateObserver"]),
-    updateUrlRequested(url) {},
-    streamFinished(status) {},
+    updateUrlRequested() {},
+    streamFinished() {},
     updateError(errorCode) {
       sendAsyncMessage("updateError", errorCode);
     },
-    updateSuccess(requestedTimeout) {
+    updateSuccess() {
       sendAsyncMessage("updateSuccess");
     },
   };
@@ -65,7 +63,7 @@ function doReload() {
   }
 }
 
-// SafeBrowsing.jsm is initialized after mozEntries are added. Add observer
+// SafeBrowsing.sys.mjs is initialized after mozEntries are added. Add observer
 // to receive "finished" event. For the case when this function is called
 // after the event had already been notified, we lookup entries to see if
 // they are already added to database.
@@ -75,6 +73,20 @@ function waitForInit() {
   } else {
     setTimeout(() => {
       waitForInit();
+    }, 1000);
+  }
+}
+
+function doGetTables() {
+  const callback = tables => {
+    sendAsyncMessage("GetTableSuccess", tables);
+  };
+
+  try {
+    dbService.getTables(callback);
+  } catch (e) {
+    setTimeout(() => {
+      doGetTables();
     }, 1000);
   }
 }
@@ -89,4 +101,8 @@ addMessageListener("doReload", () => {
 
 addMessageListener("waitForInit", () => {
   waitForInit();
+});
+
+addMessageListener("doGetTables", () => {
+  doGetTables();
 });

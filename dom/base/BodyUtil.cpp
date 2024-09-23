@@ -10,13 +10,15 @@
 #include "nsString.h"
 #include "nsIGlobalObject.h"
 #include "mozilla/Encoding.h"
-
+#include "mozilla/dom/MimeType.h"
+#include "nsCRT.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsDOMString.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
+#include "nsURLHelper.h"
 
 #include "js/ArrayBuffer.h"  // JS::NewArrayBufferWithContents
 #include "js/JSON.h"
@@ -27,10 +29,8 @@
 #include "mozilla/dom/FormData.h"
 #include "mozilla/dom/Headers.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/URLSearchParams.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -44,25 +44,6 @@ static bool PushOverLine(nsACString::const_iterator& aStart,
 
   return false;
 }
-
-class MOZ_STACK_CLASS FillFormIterator final
-    : public URLParams::ForEachIterator {
- public:
-  explicit FillFormIterator(FormData* aFormData) : mFormData(aFormData) {
-    MOZ_ASSERT(aFormData);
-  }
-
-  bool URLParamsIterator(const nsAString& aName,
-                         const nsAString& aValue) override {
-    ErrorResult rv;
-    mFormData->Append(aName, aValue, rv);
-    MOZ_ASSERT(!rv.Failed());
-    return true;
-  }
-
- private:
-  FormData* mFormData;
-};
 
 /**
  * A simple multipart/form-data parser as defined in RFC 2388 and RFC 2046.
@@ -87,6 +68,7 @@ class MOZ_STACK_CLASS FormDataParser {
  private:
   RefPtr<FormData> mFormData;
   nsCString mMimeType;
+  nsCString mMixedCaseMimeType;
   nsCString mData;
 
   // Entry state, reset in START_PART.
@@ -142,10 +124,9 @@ class MOZ_STACK_CLASS FormDataParser {
     }
 
     if (headerName.LowerCaseEqualsLiteral("content-disposition")) {
-      nsCCharSeparatedTokenizer tokenizer(headerValue, ';');
       bool seenFormData = false;
-      while (tokenizer.hasMoreTokens()) {
-        const nsDependentCSubstring& token = tokenizer.nextToken();
+      for (const nsACString& token :
+           nsCCharSeparatedTokenizer(headerValue, ';').ToRange()) {
         if (token.IsEmpty()) {
           continue;
         }
@@ -155,15 +136,13 @@ class MOZ_STACK_CLASS FormDataParser {
           continue;
         }
 
-        if (seenFormData &&
-            StringBeginsWith(token, NS_LITERAL_CSTRING("name="))) {
+        if (seenFormData && StringBeginsWith(token, "name="_ns)) {
           mName = StringTail(token, token.Length() - 5);
           mName.Trim(" \"");
           continue;
         }
 
-        if (seenFormData &&
-            StringBeginsWith(token, NS_LITERAL_CSTRING("filename="))) {
+        if (seenFormData && StringBeginsWith(token, "filename="_ns)) {
           mFilename = StringTail(token, token.Length() - 9);
           mFilename.Trim(" \"");
           continue;
@@ -273,9 +252,11 @@ class MOZ_STACK_CLASS FormDataParser {
   }
 
  public:
-  FormDataParser(const nsACString& aMimeType, const nsACString& aData,
+  FormDataParser(const nsACString& aMimeType,
+                 const nsACString& aMixedCaseMimeType, const nsACString& aData,
                  nsIGlobalObject* aParent)
       : mMimeType(aMimeType),
+        mMixedCaseMimeType(aMixedCaseMimeType),
         mData(aData),
         mState(START_PART),
         mParentObject(aParent) {}
@@ -286,29 +267,13 @@ class MOZ_STACK_CLASS FormDataParser {
     }
 
     // Determine boundary from mimetype.
-    const char* boundaryId = nullptr;
-    boundaryId = strstr(mMimeType.BeginWriting(), "boundary");
-    if (!boundaryId) {
+    RefPtr<CMimeType> parsed = CMimeType::Parse(mMixedCaseMimeType);
+    if (!parsed) {
       return false;
     }
 
-    boundaryId = strchr(boundaryId, '=');
-    if (!boundaryId) {
-      return false;
-    }
-
-    // Skip over '='.
-    boundaryId++;
-
-    char* attrib = (char*)strchr(boundaryId, ';');
-    if (attrib) *attrib = '\0';
-
-    nsAutoCString boundaryString(boundaryId);
-    if (attrib) *attrib = ';';
-
-    boundaryString.Trim(" \"");
-
-    if (boundaryString.Length() == 0) {
+    nsAutoCString boundaryString;
+    if (!parsed->GetParameterValue("boundary"_ns, boundaryString)) {
       return false;
     }
 
@@ -323,7 +288,7 @@ class MOZ_STACK_CLASS FormDataParser {
         case START_PART:
           mName.SetIsVoid(true);
           mFilename.SetIsVoid(true);
-          mContentType = NS_LITERAL_CSTRING("text/plain");
+          mContentType = "text/plain"_ns;
 
           // MUST start with boundary.
           if (!PushOverBoundary(boundaryString, start, end)) {
@@ -388,14 +353,16 @@ class MOZ_STACK_CLASS FormDataParser {
 // static
 void BodyUtil::ConsumeArrayBuffer(JSContext* aCx,
                                   JS::MutableHandle<JSObject*> aValue,
-                                  uint32_t aInputLength, uint8_t* aInput,
+                                  uint32_t aInputLength,
+                                  UniquePtr<uint8_t[], JS::FreePolicy> aInput,
                                   ErrorResult& aRv) {
+  aRv.MightThrowJSException();
+
   JS::Rooted<JSObject*> arrayBuffer(aCx);
-  arrayBuffer = JS::NewArrayBufferWithContents(aCx, aInputLength,
-                                               reinterpret_cast<void*>(aInput));
+  arrayBuffer =
+      JS::NewArrayBufferWithContents(aCx, aInputLength, std::move(aInput));
   if (!arrayBuffer) {
-    JS_ClearPendingException(aCx);
-    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+    aRv.StealExceptionFromJSContext(aCx);
     return;
   }
   aValue.set(arrayBuffer);
@@ -418,11 +385,33 @@ already_AddRefed<Blob> BodyUtil::ConsumeBlob(nsIGlobalObject* aParent,
 }
 
 // static
-already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
-                                                     const nsCString& aMimeType,
-                                                     const nsCString& aStr,
-                                                     ErrorResult& aRv) {
-  NS_NAMED_LITERAL_CSTRING(formDataMimeType, "multipart/form-data");
+void BodyUtil::ConsumeBytes(JSContext* aCx, JS::MutableHandle<JSObject*> aValue,
+                            uint32_t aInputLength,
+                            UniquePtr<uint8_t[], JS::FreePolicy> aInput,
+                            ErrorResult& aRv) {
+  aRv.MightThrowJSException();
+
+  JS::Rooted<JSObject*> arrayBuffer(aCx);
+  ConsumeArrayBuffer(aCx, &arrayBuffer, aInputLength, std::move(aInput), aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  JS::Rooted<JSObject*> bytes(
+      aCx, JS_NewUint8ArrayWithBuffer(aCx, arrayBuffer, 0, aInputLength));
+  if (!bytes) {
+    aRv.StealExceptionFromJSContext(aCx);
+    return;
+  }
+  aValue.set(bytes);
+}
+
+// static
+already_AddRefed<FormData> BodyUtil::ConsumeFormData(
+    nsIGlobalObject* aParent, const nsCString& aMimeType,
+    const nsACString& aMixedCaseMimeType, const nsCString& aStr,
+    ErrorResult& aRv) {
+  constexpr auto formDataMimeType = "multipart/form-data"_ns;
 
   // Allow semicolon separated boundary/encoding suffix like
   // multipart/form-data; boundary= but disallow multipart/form-datafoobar.
@@ -434,7 +423,7 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
   }
 
   if (isValidFormDataMimeType) {
-    FormDataParser parser(aMimeType, aStr, aParent);
+    FormDataParser parser(aMimeType, aMixedCaseMimeType, aStr, aParent);
     if (!parser.Parse()) {
       aRv.ThrowTypeError<MSG_BAD_FORMDATA>();
       return nullptr;
@@ -445,8 +434,7 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
     return fd.forget();
   }
 
-  NS_NAMED_LITERAL_CSTRING(urlDataMimeType,
-                           "application/x-www-form-urlencoded");
+  constexpr auto urlDataMimeType = "application/x-www-form-urlencoded"_ns;
   bool isValidUrlEncodedMimeType = StringBeginsWith(aMimeType, urlDataMimeType);
 
   if (isValidUrlEncodedMimeType &&
@@ -456,8 +444,14 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
 
   if (isValidUrlEncodedMimeType) {
     RefPtr<FormData> fd = new FormData(aParent);
-    FillFormIterator iterator(fd);
-    DebugOnly<bool> status = URLParams::Parse(aStr, iterator);
+    DebugOnly<bool> status = URLParams::Parse(
+        aStr, true, [&fd](const nsACString& aName, const nsACString& aValue) {
+          IgnoredErrorResult rv;
+          fd->Append(NS_ConvertUTF8toUTF16(aName),
+                     NS_ConvertUTF8toUTF16(aValue), rv);
+          MOZ_ASSERT(!rv.Failed());
+          return true;
+        });
     MOZ_ASSERT(status);
 
     return fd.forget();
@@ -470,8 +464,8 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
 // static
 nsresult BodyUtil::ConsumeText(uint32_t aInputLength, uint8_t* aInput,
                                nsString& aText) {
-  nsresult rv = UTF_8_ENCODING->DecodeWithBOMRemoval(
-      MakeSpan(aInput, aInputLength), aText);
+  nsresult rv =
+      UTF_8_ENCODING->DecodeWithBOMRemoval(Span(aInput, aInputLength), aText);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -502,5 +496,4 @@ void BodyUtil::ConsumeJson(JSContext* aCx, JS::MutableHandle<JS::Value> aValue,
   aValue.set(json);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

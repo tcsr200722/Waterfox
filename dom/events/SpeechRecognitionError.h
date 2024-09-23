@@ -10,8 +10,7 @@
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/SpeechRecognitionErrorBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class SpeechRecognitionError : public Event {
  public:
@@ -29,21 +28,21 @@ class SpeechRecognitionError : public Event {
                                                               aGivenProto);
   }
 
-  void GetMessage(nsAString& aString) { aString = mMessage; }
+  void GetMessage(nsAString& aString);
 
   SpeechRecognitionErrorCode Error() { return mError; }
-
+  // aMessage should be valid UTF-8, but invalid UTF-8 byte sequences are
+  // replaced with the REPLACEMENT CHARACTER on conversion to UTF-16.
   void InitSpeechRecognitionError(const nsAString& aType, bool aCanBubble,
                                   bool aCancelable,
                                   SpeechRecognitionErrorCode aError,
-                                  const nsAString& aMessage);
+                                  const nsACString& aMessage);
 
  protected:
   SpeechRecognitionErrorCode mError;
-  nsString mMessage;
+  nsCString mMessage;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // SpeechRecognitionError_h__

@@ -6,30 +6,10 @@
 
 #include "nsIURI.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS(RemoteWebProgressRequest, nsIRequest, nsIChannel,
-                  nsIClassifiedChannel, nsIRemoteWebProgressRequest)
-
-NS_IMETHODIMP RemoteWebProgressRequest::Init(nsIURI* aURI,
-                                             nsIURI* aOriginalURI) {
-  mURI = aURI;
-  mOriginalURI = aOriginalURI;
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP RemoteWebProgressRequest::GetElapsedLoadTimeMS(
-    uint64_t* aElapsedLoadTimeMS) {
-  NS_ENSURE_ARG_POINTER(aElapsedLoadTimeMS);
-  if (mMaybeElapsedLoadTimeMS) {
-    *aElapsedLoadTimeMS = *mMaybeElapsedLoadTimeMS;
-    return NS_OK;
-  }
-  *aElapsedLoadTimeMS = 0;
-  return NS_ERROR_NOT_AVAILABLE;
-}
+                  nsIClassifiedChannel)
 
 // nsIChannel methods
 
@@ -68,7 +48,7 @@ NS_IMETHODIMP RemoteWebProgressRequest::SetNotificationCallbacks(
 }
 
 NS_IMETHODIMP RemoteWebProgressRequest::GetSecurityInfo(
-    nsISupports** aSecurityInfo) {
+    nsITransportSecurityInfo** aSecurityInfo) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -200,6 +180,20 @@ NS_IMETHODIMP RemoteWebProgressRequest::GetStatus(nsresult* aStatus) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+NS_IMETHODIMP RemoteWebProgressRequest::SetCanceledReason(
+    const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP RemoteWebProgressRequest::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP RemoteWebProgressRequest::CancelWithReason(
+    nsresult aStatus, const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
+}
+
 NS_IMETHODIMP RemoteWebProgressRequest::Cancel(nsresult aStatus) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -273,5 +267,4 @@ RemoteWebProgressRequest::GetThirdPartyClassificationFlags(
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

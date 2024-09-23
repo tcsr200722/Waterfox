@@ -8,10 +8,12 @@
 #ifndef _ACCESSIBLE_VALUE_H
 #define _ACCESSIBLE_VALUE_H
 
+#include "mozilla/a11y/Accessible.h"
 #include "AccessibleValue.h"
 
 namespace mozilla {
 namespace a11y {
+class AccessibleWrap;
 
 class ia2AccessibleValue : public IAccessibleValue {
  public:
@@ -30,6 +32,10 @@ class ia2AccessibleValue : public IAccessibleValue {
 
   virtual /* [propget] */ HRESULT STDMETHODCALLTYPE get_minimumValue(
       /* [retval][out] */ VARIANT* minimumValue);
+
+ private:
+  Accessible* Acc();
+  AccessibleWrap* LocalAcc();
 };
 
 }  // namespace a11y

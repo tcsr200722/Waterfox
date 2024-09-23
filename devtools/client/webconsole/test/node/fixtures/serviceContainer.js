@@ -6,20 +6,19 @@
 module.exports = {
   attachRefToWebConsoleUI: () => {},
   emitForTests: () => {},
-  proxy: {
-    client: {},
-    releaseActor: actor => console.log("Release actor", actor),
-  },
   onViewSourceInDebugger: () => {},
   onViewSourceInStyleEditor: () => {},
   openNetworkPanel: () => {},
   resendNetworkRequest: () => {},
-  sourceMapService: {
-    subscribe: () => {},
-    originalPositionFor: () => {
-      return new Promise(resolve => {
-        resolve();
-      });
+  sourceMapURLService: {
+    subscribeByURL: () => {
+      return () => {};
+    },
+    subscribeByID: () => {
+      return () => {};
+    },
+    subscribeByLocation: () => {
+      return () => {};
     },
   },
   openLink: () => {},

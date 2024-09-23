@@ -9,18 +9,20 @@
 #include "IDBEvents.h"
 #include "IDBFactory.h"
 #include "IDBIndex.h"
-#include "IDBMutableFile.h"
 #include "IDBObjectStore.h"
 #include "IDBRequest.h"
 #include "IDBTransaction.h"
-#include "IDBFactory.h"
 #include "IndexedDatabaseInlines.h"
 #include "IndexedDatabaseManager.h"
+#include "IndexedDBCommon.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/EventDispatcher.h"
 #include "MainThreadUtils.h"
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/Services.h"
+#include "mozilla/dom/IDBTransactionBinding.h"
 #include "mozilla/storage.h"
+#include "mozilla/Telemetry.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/DOMStringListBinding.h"
 #include "mozilla/dom/Exceptions.h"
@@ -31,6 +33,7 @@
 #include "mozilla/dom/indexedDB/PBackgroundIDBSharedTypes.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/dom/quota/QuotaManager.h"
+#include "mozilla/dom/quota/ResultExtensions.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/FileDescriptor.h"
@@ -52,8 +55,7 @@
 // Include this last to avoid path problems on Windows.
 #include "ActorsChild.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::indexedDB;
 using namespace mozilla::dom::quota;
@@ -154,7 +156,6 @@ IDBDatabase::IDBDatabase(IDBOpenDBRequest* aRequest,
       mFactory(std::move(aFactory)),
       mSpec(std::move(aSpec)),
       mBackgroundActor(aActor),
-      mFileHandleDisabled(aRequest->IsFileHandleDisabled()),
       mClosed(false),
       mInvalidated(false),
       mQuotaExceeded(false),
@@ -187,8 +188,7 @@ RefPtr<IDBDatabase> IDBDatabase::Create(IDBOpenDBRequest* aRequest,
       new IDBDatabase(aRequest, aFactory.clonePtr(), aActor, std::move(aSpec));
 
   if (NS_IsMainThread()) {
-    nsCOMPtr<nsPIDOMWindowInner> window =
-        do_QueryInterface(aFactory->GetParentObject());
+    nsCOMPtr<nsPIDOMWindowInner> window = aFactory->GetOwner();
     if (window) {
       uint64_t windowId = window->WindowID();
 
@@ -202,12 +202,10 @@ RefPtr<IDBDatabase> IDBDatabase::Create(IDBOpenDBRequest* aRequest,
           obsSvc->AddObserver(observer, kWindowObserverTopic, false));
 
       // These topics are not crucial.
-      if (NS_FAILED(obsSvc->AddObserver(observer, kCycleCollectionObserverTopic,
-                                        false)) ||
-          NS_FAILED(obsSvc->AddObserver(observer, kMemoryPressureObserverTopic,
-                                        false))) {
-        NS_WARNING("Failed to add additional memory observers!");
-      }
+      QM_WARNONLY_TRY(QM_TO_RESULT(
+          obsSvc->AddObserver(observer, kCycleCollectionObserverTopic, false)));
+      QM_WARNONLY_TRY(QM_TO_RESULT(
+          obsSvc->AddObserver(observer, kMemoryPressureObserverTopic, false)));
 
       db->mObserver = std::move(observer);
     }
@@ -269,7 +267,6 @@ void IDBDatabase::CloseInternal() {
 void IDBDatabase::InvalidateInternal() {
   AssertIsOnOwningThread();
 
-  InvalidateMutableFiles();
   AbortTransactions(/* aShouldWarn */ true);
 
   CloseInternal();
@@ -312,9 +309,9 @@ void IDBDatabase::RevertToPreviousState() {
 void IDBDatabase::RefreshSpec(bool aMayDelete) {
   AssertIsOnOwningThread();
 
-  for (auto iter = mTransactions.Iter(); !iter.Done(); iter.Next()) {
+  for (auto* weakTransaction : mTransactions) {
     const auto transaction =
-        SafeRefPtr{iter.Get()->GetKey(), AcquireStrongRefFromRawPtr{}};
+        SafeRefPtr{weakTransaction, AcquireStrongRefFromRawPtr{}};
     MOZ_ASSERT(transaction);
     transaction->AssertIsOnOwningThread();
     transaction->RefreshSpec(aMayDelete);
@@ -368,11 +365,14 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
     return nullptr;
   }
 
-  KeyPath keyPath(0);
-  if (NS_FAILED(KeyPath::Parse(aOptionalParameters.mKeyPath, &keyPath))) {
+  QM_INFOONLY_TRY_UNWRAP(const auto maybeKeyPath,
+                         KeyPath::Parse(aOptionalParameters.mKeyPath));
+  if (!maybeKeyPath) {
     aRv.Throw(NS_ERROR_DOM_SYNTAX_ERR);
     return nullptr;
   }
+
+  const auto& keyPath = maybeKeyPath.ref();
 
   auto& objectStores = mSpec->objectStores();
   const auto end = objectStores.cend();
@@ -417,9 +417,10 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
 
   IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
       "database(%s).transaction(%s).createObjectStore(%s)",
-      "IDBDatabase.createObjectStore()", transaction->LoggingSerialNumber(),
-      requestSerialNumber, IDB_LOG_STRINGIFY(this),
-      IDB_LOG_STRINGIFY(*transaction), IDB_LOG_STRINGIFY(objectStore));
+      "IDBDatabase.createObjectStore(%.0s%.0s%.0s)",
+      transaction->LoggingSerialNumber(), requestSerialNumber,
+      IDB_LOG_STRINGIFY(this), IDB_LOG_STRINGIFY(*transaction),
+      IDB_LOG_STRINGIFY(objectStore));
 
   return objectStore;
 }
@@ -466,19 +467,21 @@ void IDBDatabase::DeleteObjectStore(const nsAString& aName, ErrorResult& aRv) {
 
   IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
       "database(%s).transaction(%s).deleteObjectStore(\"%s\")",
-      "IDBDatabase.deleteObjectStore()", transaction->LoggingSerialNumber(),
-      requestSerialNumber, IDB_LOG_STRINGIFY(this),
-      IDB_LOG_STRINGIFY(*transaction), NS_ConvertUTF16toUTF8(aName).get());
+      "IDBDatabase.deleteObjectStore(%.0s%.0s%.0s)",
+      transaction->LoggingSerialNumber(), requestSerialNumber,
+      IDB_LOG_STRINGIFY(this), IDB_LOG_STRINGIFY(*transaction),
+      NS_ConvertUTF16toUTF8(aName).get());
 }
 
 RefPtr<IDBTransaction> IDBDatabase::Transaction(
     JSContext* aCx, const StringOrStringSequence& aStoreNames,
-    IDBTransactionMode aMode, ErrorResult& aRv) {
+    IDBTransactionMode aMode, const IDBTransactionOptions& aOptions,
+    ErrorResult& aRv) {
   AssertIsOnOwningThread();
 
   if ((aMode == IDBTransactionMode::Readwriteflush ||
        aMode == IDBTransactionMode::Cleanup) &&
-      !IndexedDatabaseManager::ExperimentalFeaturesEnabled()) {
+      !StaticPrefs::dom_indexedDB_experimental()) {
     // Pretend that this mode doesn't exist. We don't have a way to annotate
     // certain enum values as depending on preferences so we just duplicate the
     // normal exception generation here.
@@ -546,10 +549,17 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
           return objectStore.metadata().name() == name;
         });
     if (foundIt == end) {
+      Telemetry::ScalarAdd(
+          storeNames.IsEmpty()
+              ? Telemetry::ScalarID::
+                    IDB_FAILURE_UNKNOWN_OBJECTSTORE_EMPTY_DATABASE
+              : Telemetry::ScalarID::
+                    IDB_FAILURE_UNKNOWN_OBJECTSTORE_NON_EMPTY_DATABASE,
+          1);
+
       // Not using nsPrintfCString in case "name" has embedded nulls.
-      aRv.ThrowNotFoundError(
-          NS_LITERAL_CSTRING("'") + NS_ConvertUTF16toUTF8(name) +
-          NS_LITERAL_CSTRING("' is not a known object store name"));
+      aRv.ThrowNotFoundError("'"_ns + NS_ConvertUTF16toUTF8(name) +
+                             "' is not a known object store name"_ns);
       return nullptr;
     }
 
@@ -590,8 +600,26 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
       MOZ_CRASH("Unknown mode!");
   }
 
+  auto durability = IDBTransaction::Durability::Default;
+  if (aOptions.IsAnyMemberPresent()) {
+    switch (aOptions.mDurability) {
+      case mozilla::dom::IDBTransactionDurability::Default:
+        durability = IDBTransaction::Durability::Default;
+        break;
+      case mozilla::dom::IDBTransactionDurability::Strict:
+        durability = IDBTransaction::Durability::Strict;
+        break;
+      case mozilla::dom::IDBTransactionDurability::Relaxed:
+        durability = IDBTransaction::Durability::Relaxed;
+        break;
+
+      default:
+        MOZ_CRASH("Unknown durability hint!");
+    }
+  }
+
   SafeRefPtr<IDBTransaction> transaction =
-      IDBTransaction::Create(aCx, this, sortedStoreNames, mode);
+      IDBTransaction::Create(aCx, this, sortedStoreNames, mode, durability);
   if (NS_WARN_IF(!transaction)) {
     IDB_REPORT_INTERNAL_ERR();
     MOZ_ASSERT(!NS_IsMainThread(),
@@ -600,18 +628,20 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
     return nullptr;
   }
 
-  BackgroundTransactionChild* actor =
+  RefPtr<BackgroundTransactionChild> actor =
       new BackgroundTransactionChild(transaction.clonePtr());
 
   IDB_LOG_MARK_CHILD_TRANSACTION(
-      "database(%s).transaction(%s)", "IDBDatabase.transaction()",
+      "database(%s).transaction(%s)", "IDBDatabase.transaction(%.0s%.0s)",
       transaction->LoggingSerialNumber(), IDB_LOG_STRINGIFY(this),
       IDB_LOG_STRINGIFY(*transaction));
 
-  MOZ_ALWAYS_TRUE(mBackgroundActor->SendPBackgroundIDBTransactionConstructor(
-      actor, sortedStoreNames, mode));
-  MOZ_ASSERT(actor->GetActorEventTarget(),
-             "The event target shall be inherited from it manager actor.");
+  if (!mBackgroundActor->SendPBackgroundIDBTransactionConstructor(
+          actor, sortedStoreNames, mode, durability)) {
+    IDB_REPORT_INTERNAL_ERR();
+    aRv.ThrowUnknownError("Failed to create IndexedDB transaction");
+    return nullptr;
+  }
 
   transaction->SetBackgroundActor(actor);
 
@@ -622,66 +652,12 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
   return AsRefPtr(std::move(transaction));
 }
 
-StorageType IDBDatabase::Storage() const {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(mSpec);
-
-  return PersistenceTypeToStorageType(mSpec->metadata().persistenceType());
-}
-
-RefPtr<IDBRequest> IDBDatabase::CreateMutableFile(
-    JSContext* aCx, const nsAString& aName, const Optional<nsAString>& aType,
-    ErrorResult& aRv) {
-  AssertIsOnOwningThread();
-
-  if (aName.IsEmpty()) {
-    aRv.Throw(NS_ERROR_DOM_SYNTAX_ERR);
-    return nullptr;
-  }
-
-  if (QuotaManager::IsShuttingDown()) {
-    IDB_REPORT_INTERNAL_ERR();
-    aRv.Throw(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
-    return nullptr;
-  }
-
-  if (mClosed || mFileHandleDisabled) {
-    aRv.Throw(NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR);
-    return nullptr;
-  }
-
-  nsString type;
-  if (aType.WasPassed()) {
-    type = aType.Value();
-  }
-
-  CreateFileParams params(nsString(aName), type);
-
-  auto request = IDBRequest::Create(aCx, this, nullptr);
-  MOZ_ASSERT(request);
-
-  BackgroundDatabaseRequestChild* actor =
-      new BackgroundDatabaseRequestChild(this, request);
-
-  IDB_LOG_MARK_CHILD_REQUEST(
-      "database(%s).createMutableFile(%s)", "IDBDatabase.createMutableFile()",
-      request->LoggingSerialNumber(), IDB_LOG_STRINGIFY(this),
-      NS_ConvertUTF16toUTF8(aName).get());
-
-  mBackgroundActor->SendPBackgroundIDBDatabaseRequestConstructor(actor, params);
-
-  MOZ_ASSERT(actor->GetActorEventTarget(),
-             "The event target shall be inherited from its manager actor.");
-
-  return request;
-}
-
 void IDBDatabase::RegisterTransaction(IDBTransaction& aTransaction) {
   AssertIsOnOwningThread();
   aTransaction.AssertIsOnOwningThread();
   MOZ_ASSERT(!mTransactions.Contains(&aTransaction));
 
-  mTransactions.PutEntry(&aTransaction);
+  mTransactions.Insert(&aTransaction);
 }
 
 void IDBDatabase::UnregisterTransaction(IDBTransaction& aTransaction) {
@@ -689,7 +665,7 @@ void IDBDatabase::UnregisterTransaction(IDBTransaction& aTransaction) {
   aTransaction.AssertIsOnOwningThread();
   MOZ_ASSERT(mTransactions.Contains(&aTransaction));
 
-  mTransactions.RemoveEntry(&aTransaction);
+  mTransactions.Remove(&aTransaction);
 }
 
 void IDBDatabase::AbortTransactions(bool aShouldWarn) {
@@ -712,8 +688,7 @@ void IDBDatabase::AbortTransactions(bool aShouldWarn) {
   StrongTransactionArray transactionsToAbort;
   transactionsToAbort.SetCapacity(mTransactions.Count());
 
-  for (const auto& entry : mTransactions) {
-    IDBTransaction* transaction = entry.GetKey();
+  for (IDBTransaction* const transaction : mTransactions) {
     MOZ_ASSERT(transaction);
 
     transaction->AssertIsOnOwningThread();
@@ -785,12 +760,8 @@ PBackgroundIDBDatabaseFileChild* IDBDatabase::GetOrCreateFileActorForBlob(
     BlobImpl* blobImpl = aBlob.Impl();
     MOZ_ASSERT(blobImpl);
 
-    PBackgroundChild* backgroundManager =
-        mBackgroundActor->Manager()->Manager();
-    MOZ_ASSERT(backgroundManager);
-
     IPCBlob ipcBlob;
-    nsresult rv = IPCBlobUtils::Serialize(blobImpl, backgroundManager, ipcBlob);
+    nsresult rv = IPCBlobUtils::Serialize(blobImpl, ipcBlob);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return nullptr;
     }
@@ -803,9 +774,7 @@ PBackgroundIDBDatabaseFileChild* IDBDatabase::GetOrCreateFileActorForBlob(
       return nullptr;
     }
 
-    MOZ_ASSERT(actor->GetActorEventTarget(),
-               "The event target shall be inherited from its manager actor.");
-    mFileActors.Put(weakRef, actor);
+    mFileActors.InsertOrUpdate(weakRef, actor);
   }
 
   MOZ_ASSERT(actor);
@@ -858,51 +827,6 @@ void IDBDatabase::NoteInactiveTransaction() {
       EventTarget()->Dispatch(runnable.forget(), NS_DISPATCH_NORMAL));
 }
 
-nsresult IDBDatabase::GetQuotaInfo(nsACString& aOrigin,
-                                   PersistenceType* aPersistenceType) {
-  using mozilla::dom::quota::QuotaManager;
-
-  MOZ_ASSERT(NS_IsMainThread(), "This can't work off the main thread!");
-
-  if (aPersistenceType) {
-    *aPersistenceType = mSpec->metadata().persistenceType();
-    MOZ_ASSERT(*aPersistenceType != PERSISTENCE_TYPE_INVALID);
-  }
-
-  PrincipalInfo* principalInfo = mFactory->GetPrincipalInfo();
-  MOZ_ASSERT(principalInfo);
-
-  switch (principalInfo->type()) {
-    case PrincipalInfo::TNullPrincipalInfo:
-      MOZ_CRASH("Is this needed?!");
-
-    case PrincipalInfo::TSystemPrincipalInfo:
-      QuotaManager::GetInfoForChrome(nullptr, nullptr, &aOrigin);
-      return NS_OK;
-
-    case PrincipalInfo::TContentPrincipalInfo: {
-      auto principalOrErr = PrincipalInfoToPrincipal(*principalInfo);
-      if (NS_WARN_IF(principalOrErr.isErr())) {
-        return principalOrErr.unwrapErr();
-      }
-
-      nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
-      nsresult rv = QuotaManager::GetInfoFromPrincipal(principal, nullptr,
-                                                       nullptr, &aOrigin);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return rv;
-      }
-
-      return NS_OK;
-    }
-
-    default:
-      MOZ_CRASH("Unknown PrincipalInfo type!");
-  }
-
-  MOZ_CRASH("Should never get here!");
-}
-
 void IDBDatabase::ExpireFileActors(bool aExpireAll) {
   AssertIsOnOwningThread();
 
@@ -935,39 +859,6 @@ void IDBDatabase::ExpireFileActors(bool aExpireAll) {
     }
   } else {
     MOZ_ASSERT(!mFileActors.Count());
-  }
-}
-
-void IDBDatabase::NoteLiveMutableFile(IDBMutableFile* aMutableFile) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(aMutableFile);
-  aMutableFile->AssertIsOnOwningThread();
-  MOZ_ASSERT(!mLiveMutableFiles.Contains(aMutableFile));
-
-  mLiveMutableFiles.AppendElement(aMutableFile);
-}
-
-void IDBDatabase::NoteFinishedMutableFile(IDBMutableFile* aMutableFile) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(aMutableFile);
-  aMutableFile->AssertIsOnOwningThread();
-
-  // It's ok if this is called after we cleared the array, so don't assert that
-  // aMutableFile is in the list.
-
-  mLiveMutableFiles.RemoveElement(aMutableFile);
-}
-
-void IDBDatabase::InvalidateMutableFiles() {
-  AssertIsOnOwningThread();
-
-  if (!mLiveMutableFiles.IsEmpty()) {
-    for (uint32_t count = mLiveMutableFiles.Length(), index = 0; index < count;
-         index++) {
-      mLiveMutableFiles[index]->Invalidate();
-    }
-
-    mLiveMutableFiles.Clear();
   }
 }
 
@@ -1041,16 +932,6 @@ void IDBDatabase::LastRelease() {
     mBackgroundActor->SendDeleteMeInternal();
     MOZ_ASSERT(!mBackgroundActor, "SendDeleteMeInternal should have cleared!");
   }
-}
-
-nsresult IDBDatabase::PostHandleEvent(EventChainPostVisitor& aVisitor) {
-  nsresult rv =
-      IndexedDatabaseManager::CommonPostHandleEvent(aVisitor, *mFactory);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  return NS_OK;
 }
 
 JSObject* IDBDatabase::WrapObject(JSContext* aCx,
@@ -1217,5 +1098,4 @@ void IDBDatabase::MaybeDecreaseActiveDatabaseCount() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

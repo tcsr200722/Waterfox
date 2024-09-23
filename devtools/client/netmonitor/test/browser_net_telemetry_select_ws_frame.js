@@ -6,12 +6,11 @@
 /**
  * Tests the select_ws_frame telemetry event.
  */
-const { TelemetryTestUtils } = ChromeUtils.import(
-  "resource://testing-common/TelemetryTestUtils.jsm"
+const { TelemetryTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TelemetryTestUtils.sys.mjs"
 );
 
-add_task(async function() {
-  await pushPref("devtools.netmonitor.features.webSockets", true);
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(WS_PAGE_URL, {
     requestCount: 1,
   });
@@ -29,9 +28,11 @@ add_task(async function() {
   TelemetryTestUtils.assertNumberOfEvents(0);
 
   // Wait for WS connection to be established + send messages.
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
     await content.wrappedJSObject.openConnection(1);
   });
+  await onNetworkEvents;
 
   const requests = document.querySelectorAll(".request-list-item");
   is(requests.length, 1, "There should be one request");
@@ -42,20 +43,17 @@ add_task(async function() {
   // Wait for all sent/received messages to be displayed in DevTools.
   const wait = waitForDOM(
     document,
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item",
+    "#messages-view .message-list-table .message-list-item",
     2
   );
 
-  // Click on the "Messages" panel.
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#messages-tab")
-  );
+  // Click on the "Response" panel.
+  clickOnSidebarTab(document, "response");
   await wait;
 
-  // Get all messages present in the "Messages" panel.
+  // Get all messages present in the "Response" panel.
   const frames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
 
   // Check expected results.
@@ -65,8 +63,7 @@ add_task(async function() {
   await waitForTick();
 
   // Wait for the payload to be resolved (LongString)
-  const payloadResolved = waitFor(
-    monitor.panelWin.api,
+  const payloadResolved = monitor.panelWin.api.once(
     TEST_EVENTS.LONGSTRING_RESOLVED
   );
 

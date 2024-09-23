@@ -2,12 +2,12 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import json
 import os
 import types
-import urllib2
+
+import six
+from six.moves.urllib_request import urlopen
 
 import mozunit
 import pytest
@@ -21,7 +21,7 @@ parent = os.path.dirname(here)
 default_doc_root = os.path.join(os.path.dirname(parent), "www")
 
 
-@pytest.yield_fixture
+@pytest.fixture
 def server():
     server = httpd.FixtureServer(default_doc_root)
     yield server
@@ -42,7 +42,7 @@ def test_start_stop(server):
 def test_get_url(server):
     server.start()
     url = server.get_url("/")
-    assert isinstance(url, types.StringTypes)
+    assert isinstance(url, six.string_types)
     assert "http://" in url
 
     server.stop()
@@ -52,9 +52,9 @@ def test_get_url(server):
 
 def test_doc_root(server):
     server.start()
-    assert isinstance(server.doc_root, types.StringTypes)
+    assert isinstance(server.doc_root, six.string_types)
     server.stop()
-    assert isinstance(server.doc_root, types.StringTypes)
+    assert isinstance(server.doc_root, six.string_types)
 
 
 def test_router(server):
@@ -83,10 +83,10 @@ def test_handler(server):
     server.start()
 
     url = server.get_url("/httpd/test_handler")
-    body = urllib2.urlopen(url).read()
+    body = urlopen(url).read()
     res = json.loads(body)
     assert res["count"] == counter
 
 
 if __name__ == "__main__":
-    mozunit.main('-p', 'no:terminalreporter', '--log-tbpl=-', '--capture', 'no')
+    mozunit.main("-p", "no:terminalreporter", "--log-tbpl=-", "--capture", "no")

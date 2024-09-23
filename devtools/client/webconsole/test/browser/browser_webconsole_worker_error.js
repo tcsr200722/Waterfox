@@ -10,8 +10,9 @@ const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/" +
   "test/browser/test-error-worker.html";
 
-add_task(async function() {
-  await pushPref("javascript.options.asyncstack", true);
+add_task(async function () {
+  await pushPref("javascript.options.asyncstack_capture_debuggee_only", false);
+
   const hud = await openNewTabAndConsole(TEST_URI);
 
   await checkMessageStack(hud, "hello", [13, 4, 3]);

@@ -12,8 +12,8 @@
 #include "base/win/windows_version.h"
 #include "sandbox/win/src/crosscall_client.h"
 #include "sandbox/win/src/handle_closer_agent.h"
-#include "sandbox/win/src/handle_interception.h"
 #include "sandbox/win/src/heap_helper.h"
+#include "sandbox/win/src/line_break_interception.h"
 #include "sandbox/win/src/ipc_tags.h"
 #include "sandbox/win/src/process_mitigations.h"
 #include "sandbox/win/src/restricted_token_utils.h"
@@ -165,7 +165,7 @@ TargetServicesBase* TargetServicesBase::GetInstance() {
   return g_target_services;
 }
 
-// The broker services a 'test' IPC service with the IPC_PING_TAG tag.
+// The broker services a 'test' IPC service with the PING tag.
 bool TargetServicesBase::TestIPCPing(int version) {
   void* memory = GetGlobalIPCMemory();
   if (!memory)
@@ -176,7 +176,7 @@ bool TargetServicesBase::TestIPCPing(int version) {
   if (1 == version) {
     uint32_t tick1 = ::GetTickCount();
     uint32_t cookie = 717115;
-    ResultCode code = CrossCall(ipc, IPC_PING1_TAG, cookie, &answer);
+    ResultCode code = CrossCall(ipc, IpcTag::PING1, cookie, &answer);
 
     if (SBOX_ALL_OK != code) {
       return false;
@@ -202,7 +202,7 @@ bool TargetServicesBase::TestIPCPing(int version) {
   } else if (2 == version) {
     uint32_t cookie = 717111;
     InOutCountedBuffer counted_buffer(&cookie, sizeof(cookie));
-    ResultCode code = CrossCall(ipc, IPC_PING2_TAG, counted_buffer, &answer);
+    ResultCode code = CrossCall(ipc, IpcTag::PING2, counted_buffer, &answer);
 
     if (SBOX_ALL_OK != code) {
       return false;
@@ -216,51 +216,39 @@ bool TargetServicesBase::TestIPCPing(int version) {
   return true;
 }
 
-ProcessState::ProcessState() : process_state_(0), csrss_connected_(true) {}
-
-bool ProcessState::IsKernel32Loaded() const {
-  return process_state_ != 0;
-}
+ProcessState::ProcessState()
+    : process_state_(ProcessStateInternal::NONE), csrss_connected_(true) {}
 
 bool ProcessState::InitCalled() const {
-  return process_state_ > 1;
+  return process_state_ >= ProcessStateInternal::INIT_CALLED;
 }
 
 bool ProcessState::RevertedToSelf() const {
-  return process_state_ > 2;
+  return process_state_ >= ProcessStateInternal::REVERTED_TO_SELF;
 }
 
 bool ProcessState::IsCsrssConnected() const {
   return csrss_connected_;
 }
 
-void ProcessState::SetKernel32Loaded() {
-  if (!process_state_)
-    process_state_ = 1;
-}
-
 void ProcessState::SetInitCalled() {
-  if (process_state_ < 2)
-    process_state_ = 2;
+  if (process_state_ < ProcessStateInternal::INIT_CALLED)
+    process_state_ = ProcessStateInternal::INIT_CALLED;
 }
 
 void ProcessState::SetRevertedToSelf() {
-  if (process_state_ < 3)
-    process_state_ = 3;
+  if (process_state_ < ProcessStateInternal::REVERTED_TO_SELF)
+    process_state_ = ProcessStateInternal::REVERTED_TO_SELF;
 }
 
 void ProcessState::SetCsrssConnected(bool csrss_connected) {
   csrss_connected_ = csrss_connected;
 }
 
-
-ResultCode TargetServicesBase::DuplicateHandle(HANDLE source_handle,
-                                               DWORD target_process_id,
-                                               HANDLE* target_handle,
-                                               DWORD desired_access,
-                                               DWORD options) {
-  return sandbox::DuplicateHandleProxy(source_handle, target_process_id,
-                                       target_handle, desired_access, options);
+ResultCode TargetServicesBase::GetComplexLineBreaks(const WCHAR* text,
+                                                    uint32_t length,
+                                                    uint8_t* break_before) {
+  return sandbox::GetComplexLineBreaksProxy(text, length, break_before);
 }
 
 }  // namespace sandbox

@@ -6,29 +6,24 @@
 
 const {
   AutoRefreshHighlighter,
-} = require("devtools/server/actors/highlighters/auto-refresh");
+} = require("resource://devtools/server/actors/highlighters/auto-refresh.js");
 const {
   CanvasFrameAnonymousContentHelper,
-  createNode,
-  createSVGNode,
   isNodeValid,
-} = require("devtools/server/actors/highlighters/utils/markup");
+} = require("resource://devtools/server/actors/highlighters/utils/markup.js");
 const {
   TEXT_NODE,
   DOCUMENT_NODE,
-} = require("devtools/shared/dom-node-constants");
-const { setIgnoreLayoutChanges } = require("devtools/shared/layout/utils");
+} = require("resource://devtools/shared/dom-node-constants.js");
+const {
+  getCurrentZoom,
+  setIgnoreLayoutChanges,
+} = require("resource://devtools/shared/layout/utils.js");
 
 loader.lazyRequireGetter(
   this,
-  "getBounds",
-  "devtools/server/actors/highlighters/utils/accessibility",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "Infobar",
-  "devtools/server/actors/highlighters/utils/accessibility",
+  ["getBounds", "getBoundsXUL", "Infobar"],
+  "resource://devtools/server/actors/highlighters/utils/accessibility.js",
   true
 );
 
@@ -84,6 +79,7 @@ class AccessibleHighlighter extends AutoRefreshHighlighter {
       this.highlighterEnv,
       this._buildMarkup.bind(this)
     );
+    this.isReady = this.markup.initialize();
 
     this.onPageHide = this.onPageHide.bind(this);
     this.onWillNavigate = this.onWillNavigate.bind(this);
@@ -95,29 +91,45 @@ class AccessibleHighlighter extends AutoRefreshHighlighter {
   }
 
   /**
+   * Static getter that indicates that AccessibleHighlighter supports
+   * highlighting in XUL windows.
+   */
+  static get XULSupported() {
+    return true;
+  }
+
+  get supportsSimpleHighlighters() {
+    return true;
+  }
+
+  /**
    * Build highlighter markup.
    *
    * @return {Object} Container element for the highlighter markup.
    */
   _buildMarkup() {
-    const container = createNode(this.win, {
+    const container = this.markup.createNode({
       attributes: {
         class: "highlighter-container",
         "aria-hidden": "true",
       },
     });
 
-    const root = createNode(this.win, {
+    const root = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
-        class: "root",
+        class:
+          "root" +
+          (this.highlighterEnv.useSimpleHighlightersForReducedMotion
+            ? " use-simple-highlighters"
+            : ""),
       },
       prefix: this.ID_CLASS_PREFIX,
     });
 
     // Build the SVG element.
-    const svg = createSVGNode(this.win, {
+    const svg = this.markup.createSVGNode({
       nodeType: "svg",
       parent: root,
       attributes: {
@@ -129,7 +141,7 @@ class AccessibleHighlighter extends AutoRefreshHighlighter {
       prefix: this.ID_CLASS_PREFIX,
     });
 
-    createSVGNode(this.win, {
+    this.markup.createSVGNode({
       nodeType: "path",
       parent: svg,
       attributes: {
@@ -318,7 +330,20 @@ class AccessibleHighlighter extends AutoRefreshHighlighter {
    *                       information for the accessible object.
    */
   get _bounds() {
-    return getBounds(this.win, this.options);
+    let { win, options } = this;
+    let getBoundsFn = getBounds;
+    if (this.options.isXUL) {
+      // Zoom level for the top level browser window does not change and only
+      // inner frames do. So we need to get the zoom level of the current node's
+      // parent window.
+      let zoom = getCurrentZoom(this.currentNode);
+      zoom *= zoom;
+      options = { ...options, zoom };
+      getBoundsFn = getBoundsXUL;
+      win = this.win.parent.ownerGlobal;
+    }
+
+    return getBoundsFn(win, options);
   }
 
   /**
@@ -336,7 +361,7 @@ class AccessibleHighlighter extends AutoRefreshHighlighter {
 
     const boundsEl = this.getElement("bounds");
     const { left, right, top, bottom } = bounds;
-    const path = `M${left},${top} L${right},${top} L${right},${bottom} L${left},${bottom}`;
+    const path = `M${left},${top} L${right},${top} L${right},${bottom} L${left},${bottom} L${left},${top}`;
     boundsEl.setAttribute("d", path);
 
     // Un-zoom the root wrapper if the page was zoomed.

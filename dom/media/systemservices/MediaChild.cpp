@@ -6,8 +6,6 @@
 
 #include "MediaChild.h"
 #include "MediaParent.h"
-
-#include "nsGlobalWindow.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/MediaManager.h"
 #include "mozilla/Logging.h"
@@ -17,8 +15,7 @@
 mozilla::LazyLogModule gMediaChildLog("MediaChild");
 #define LOG(args) MOZ_LOG(gMediaChildLog, mozilla::LogLevel::Debug, args)
 
-namespace mozilla {
-namespace media {
+namespace mozilla::media {
 
 RefPtr<PrincipalKeyPromise> GetPrincipalKey(
     const ipc::PrincipalInfo& aPrincipalInfo, bool aPersist) {
@@ -30,7 +27,7 @@ RefPtr<PrincipalKeyPromise> GetPrincipalKey(
 
     mgr->GetNonE10sParent()->RecvGetPrincipalKey(
         aPrincipalInfo, aPersist,
-        [p](const nsCString& aKey) { p->Resolve(aKey, __func__); });
+        [p](const nsACString& aKey) { p->Resolve(aKey, __func__); });
     return p;
   }
   return Child::Get()
@@ -93,5 +90,4 @@ bool DeallocPMediaChild(media::PMediaChild* aActor) {
   return true;
 }
 
-}  // namespace media
-}  // namespace mozilla
+}  // namespace mozilla::media

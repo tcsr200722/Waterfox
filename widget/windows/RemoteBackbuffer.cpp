@@ -4,10 +4,29 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RemoteBackbuffer.h"
+#include "GeckoProfiler.h"
+#include "nsThreadUtils.h"
+#include "mozilla/Span.h"
+#include "mozilla/gfx/Point.h"
+#include "WinUtils.h"
+#include <algorithm>
+#include <type_traits>
 
 namespace mozilla {
 namespace widget {
 namespace remote_backbuffer {
+
+// This number can be adjusted as a time-memory tradeoff
+constexpr uint8_t kMaxDirtyRects = 8;
+
+struct IpcSafeRect {
+  explicit IpcSafeRect(const gfx::IntRect& aRect)
+      : x(aRect.x), y(aRect.y), width(aRect.width), height(aRect.height) {}
+  int32_t x;
+  int32_t y;
+  int32_t width;
+  int32_t height;
+};
 
 enum class ResponseResult {
   Unknown,
@@ -32,6 +51,11 @@ struct BorrowResponseData {
   HANDLE fileMapping;
 };
 
+struct PresentRequestData {
+  uint8_t lenDirtyRects;
+  IpcSafeRect dirtyRects[kMaxDirtyRects];
+};
+
 struct PresentResponseData {
   ResponseResult result;
 };
@@ -40,9 +64,14 @@ struct SharedData {
   SharedDataType dataType;
   union {
     BorrowResponseData borrowResponse;
+    PresentRequestData presentRequest;
     PresentResponseData presentResponse;
   } data;
 };
+
+static_assert(std::is_trivially_copyable<SharedData>::value &&
+                  std::is_standard_layout<SharedData>::value,
+              "SharedData must be safe to pass over IPC boundaries");
 
 class SharedImage {
  public:
@@ -62,6 +91,8 @@ class SharedImage {
   bool Initialize(int32_t aWidth, int32_t aHeight) {
     MOZ_ASSERT(aWidth);
     MOZ_ASSERT(aHeight);
+    MOZ_ASSERT(aWidth > 0);
+    MOZ_ASSERT(aHeight > 0);
 
     mWidth = aWidth;
     mHeight = aHeight;
@@ -88,8 +119,8 @@ class SharedImage {
   }
 
   bool InitializeRemote(int32_t aWidth, int32_t aHeight, HANDLE aFileMapping) {
-    MOZ_ASSERT(aWidth);
-    MOZ_ASSERT(aHeight);
+    MOZ_ASSERT(aWidth > 0);
+    MOZ_ASSERT(aHeight > 0);
     MOZ_ASSERT(aFileMapping);
 
     mWidth = aWidth;
@@ -122,12 +153,13 @@ class SharedImage {
                               0 /*offset*/);
   }
 
-  HANDLE CreateRemoteFileMapping(DWORD aTargetProcessId) {
-    MOZ_ASSERT(aTargetProcessId);
+  HANDLE CreateRemoteFileMapping(HANDLE aTargetProcess) {
+    MOZ_ASSERT(aTargetProcess);
 
     HANDLE fileMapping = nullptr;
-    if (!ipc::DuplicateHandle(mFileMapping, aTargetProcessId, &fileMapping,
-                              0 /*desiredAccess*/, DUPLICATE_SAME_ACCESS)) {
+    if (!::DuplicateHandle(GetCurrentProcess(), mFileMapping, aTargetProcess,
+                           &fileMapping, 0 /*desiredAccess*/,
+                           FALSE /*inheritHandle*/, DUPLICATE_SAME_ACCESS)) {
       return nullptr;
     }
     return fileMapping;
@@ -135,13 +167,27 @@ class SharedImage {
 
   already_AddRefed<gfx::DrawTarget> CreateDrawTarget() {
     return gfx::Factory::CreateDrawTargetForData(
-        gfx::BackendType::CAIRO, mPixelData, IntSize(mWidth, mHeight),
+        gfx::BackendType::CAIRO, mPixelData, gfx::IntSize(mWidth, mHeight),
         GetStride(), gfx::SurfaceFormat::B8G8R8A8);
   }
 
-  int32_t GetWidth() { return mWidth; }
+  void CopyPixelsFrom(const SharedImage& other) {
+    const unsigned char* src = other.mPixelData;
+    unsigned char* dst = mPixelData;
 
-  int32_t GetHeight() { return mHeight; }
+    int32_t width = std::min(mWidth, other.mWidth);
+    int32_t height = std::min(mHeight, other.mHeight);
+
+    for (int32_t row = 0; row < height; ++row) {
+      memcpy(dst, src, static_cast<uint32_t>(width * kBytesPerPixel));
+      src += other.GetStride();
+      dst += GetStride();
+    }
+  }
+
+  int32_t GetWidth() const { return mWidth; }
+
+  int32_t GetHeight() const { return mHeight; }
 
   SharedImage(const SharedImage&) = delete;
   SharedImage(SharedImage&&) = delete;
@@ -149,9 +195,9 @@ class SharedImage {
   SharedImage& operator=(SharedImage&&) = delete;
 
  private:
-  int32_t GetStride() {
-    constexpr int32_t kBytesPerPixel = 4;
+  static constexpr int32_t kBytesPerPixel = 4;
 
+  int32_t GetStride() const {
     // DIB requires 32-bit row alignment
     return (((mWidth * kBytesPerPixel) + 3) / 4) * 4;
   }
@@ -207,9 +253,9 @@ class PresentableSharedImage {
     return true;
   }
 
-  bool PresentToWindow(HWND aWindowHandle,
-                       nsTransparencyMode aTransparencyMode) {
-    if (aTransparencyMode == eTransparencyTransparent) {
+  bool PresentToWindow(HWND aWindowHandle, TransparencyMode aTransparencyMode,
+                       Span<const IpcSafeRect> aDirtyRects) {
+    if (aTransparencyMode == TransparencyMode::Transparent) {
       // If our window is a child window or a child-of-a-child, the window
       // that needs to be updated is the top level ancestor of the tree
       HWND topLevelWindow = WinUtils::GetTopLevelHWND(aWindowHandle, true);
@@ -217,33 +263,72 @@ class PresentableSharedImage {
                  WS_EX_LAYERED);
 
       BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-      SIZE winSize = {mSharedImage.GetWidth(), mSharedImage.GetHeight()};
       POINT srcPos = {0, 0};
+      RECT clientRect = {};
+      if (!::GetClientRect(aWindowHandle, &clientRect)) {
+        return false;
+      }
+      MOZ_ASSERT(clientRect.left == 0);
+      MOZ_ASSERT(clientRect.top == 0);
+      int32_t width = clientRect.right;
+      int32_t height = clientRect.bottom;
+      SIZE winSize = {width, height};
+      // Window resize could cause the client area to be different than
+      // mSharedImage's size. If the client area doesn't match,
+      // PresentToWindow() returns false without calling UpdateLayeredWindow().
+      // Another call to UpdateLayeredWindow() will follow shortly, since the
+      // resize will eventually force the backbuffer to repaint itself again.
+      // When client area is larger than mSharedImage's size,
+      // UpdateLayeredWindow() draws the window completely invisible. But it
+      // does not return false.
+      if (width != mSharedImage.GetWidth() ||
+          height != mSharedImage.GetHeight()) {
+        return false;
+      }
+
       return !!::UpdateLayeredWindow(
           topLevelWindow, nullptr /*paletteDC*/, nullptr /*newPos*/, &winSize,
           mDeviceContext, &srcPos, 0 /*colorKey*/, &bf, ULW_ALPHA);
     }
+
+    gfx::IntRect sharedImageRect{0, 0, mSharedImage.GetWidth(),
+                                 mSharedImage.GetHeight()};
+
+    bool result = true;
 
     HDC windowDC = ::GetDC(aWindowHandle);
     if (!windowDC) {
       return false;
     }
 
-    bool result = ::BitBlt(windowDC, 0 /*dstX*/, 0 /*dstY*/,
-                           mSharedImage.GetWidth(), mSharedImage.GetHeight(),
-                           mDeviceContext, 0 /*srcX*/, 0 /*srcY*/, SRCCOPY);
+    for (auto& ipcDirtyRect : aDirtyRects) {
+      gfx::IntRect dirtyRect{ipcDirtyRect.x, ipcDirtyRect.y, ipcDirtyRect.width,
+                             ipcDirtyRect.height};
+      gfx::IntRect bltRect = dirtyRect.Intersect(sharedImageRect);
+
+      if (!::BitBlt(windowDC, bltRect.x /*dstX*/, bltRect.y /*dstY*/,
+                    bltRect.width, bltRect.height, mDeviceContext,
+                    bltRect.x /*srcX*/, bltRect.y /*srcY*/, SRCCOPY)) {
+        result = false;
+        break;
+      }
+    }
 
     MOZ_ALWAYS_TRUE(::ReleaseDC(aWindowHandle, windowDC));
 
     return result;
   }
 
-  HANDLE CreateRemoteFileMapping(DWORD aTargetProcessId) {
-    return mSharedImage.CreateRemoteFileMapping(aTargetProcessId);
+  HANDLE CreateRemoteFileMapping(HANDLE aTargetProcess) {
+    return mSharedImage.CreateRemoteFileMapping(aTargetProcess);
   }
 
   already_AddRefed<gfx::DrawTarget> CreateDrawTarget() {
     return mSharedImage.CreateDrawTarget();
+  }
+
+  void CopyPixelsFrom(const PresentableSharedImage& other) {
+    mSharedImage.CopyPixelsFrom(other.mSharedImage);
   }
 
   int32_t GetWidth() { return mSharedImage.GetWidth(); }
@@ -264,22 +349,22 @@ class PresentableSharedImage {
 
 Provider::Provider()
     : mWindowHandle(nullptr),
-      mTargetProcessId(0),
+      mTargetProcess(nullptr),
       mFileMapping(nullptr),
       mRequestReadyEvent(nullptr),
       mResponseReadyEvent(nullptr),
       mSharedDataPtr(nullptr),
       mStopServiceThread(false),
-      mServiceThread(),
+      mServiceThread(nullptr),
       mBackbuffer() {}
 
 Provider::~Provider() {
   mBackbuffer.reset();
 
-  if (mServiceThread.joinable()) {
+  if (mServiceThread) {
     mStopServiceThread = true;
     MOZ_ALWAYS_TRUE(::SetEvent(mRequestReadyEvent));
-    mServiceThread.join();
+    MOZ_ALWAYS_TRUE(PR_JoinThread(mServiceThread) == PR_SUCCESS);
   }
 
   if (mSharedDataPtr) {
@@ -297,15 +382,24 @@ Provider::~Provider() {
   if (mFileMapping) {
     MOZ_ALWAYS_TRUE(::CloseHandle(mFileMapping));
   }
+
+  if (mTargetProcess) {
+    MOZ_ALWAYS_TRUE(::CloseHandle(mTargetProcess));
+  }
 }
 
 bool Provider::Initialize(HWND aWindowHandle, DWORD aTargetProcessId,
-                          nsTransparencyMode aTransparencyMode) {
+                          TransparencyMode aTransparencyMode) {
   MOZ_ASSERT(aWindowHandle);
   MOZ_ASSERT(aTargetProcessId);
 
   mWindowHandle = aWindowHandle;
-  mTargetProcessId = aTargetProcessId;
+
+  mTargetProcess = ::OpenProcess(PROCESS_DUP_HANDLE, FALSE /*inheritHandle*/,
+                                 aTargetProcessId);
+  if (!mTargetProcess) {
+    return false;
+  }
 
   mFileMapping = ::CreateFileMappingW(
       INVALID_HANDLE_VALUE, nullptr /*secattr*/, PAGE_READWRITE, 0 /*sizeHigh*/,
@@ -339,48 +433,44 @@ bool Provider::Initialize(HWND aWindowHandle, DWORD aTargetProcessId,
 
   mStopServiceThread = false;
 
-  mServiceThread = std::thread([this] { this->ThreadMain(); });
+  // Use a raw NSPR OS-level thread here instead of nsThread because we are
+  // performing low-level synchronization across processes using Win32 Events,
+  // and nsThread is designed around an incompatible "in-process task queue"
+  // model
+  mServiceThread = PR_CreateThread(
+      PR_USER_THREAD, [](void* p) { static_cast<Provider*>(p)->ThreadMain(); },
+      this, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD, PR_JOINABLE_THREAD,
+      0 /*default stack size*/);
+  if (!mServiceThread) {
+    return false;
+  }
 
-  mTransparencyMode = aTransparencyMode;
+  mTransparencyMode = uint32_t(aTransparencyMode);
 
   return true;
 }
 
 Maybe<RemoteBackbufferHandles> Provider::CreateRemoteHandles() {
-  HANDLE fileMapping = nullptr;
-  if (!ipc::DuplicateHandle(mFileMapping, mTargetProcessId, &fileMapping,
-                            0 /*desiredAccess*/, DUPLICATE_SAME_ACCESS)) {
-    return Nothing();
-  }
-
-  HANDLE requestReadyEvent = nullptr;
-  if (!ipc::DuplicateHandle(mRequestReadyEvent, mTargetProcessId,
-                            &requestReadyEvent, 0 /*desiredAccess*/,
-                            DUPLICATE_SAME_ACCESS)) {
-    return Nothing();
-  }
-
-  HANDLE responseReadyEvent = nullptr;
-  if (!ipc::DuplicateHandle(mResponseReadyEvent, mTargetProcessId,
-                            &responseReadyEvent, 0 /*desiredAccess*/,
-                            DUPLICATE_SAME_ACCESS)) {
-    return Nothing();
-  }
-
-  return Some(RemoteBackbufferHandles(
-      reinterpret_cast<WindowsHandle>(fileMapping),
-      reinterpret_cast<WindowsHandle>(requestReadyEvent),
-      reinterpret_cast<WindowsHandle>(responseReadyEvent)));
+  return Some(
+      RemoteBackbufferHandles(ipc::FileDescriptor(mFileMapping),
+                              ipc::FileDescriptor(mRequestReadyEvent),
+                              ipc::FileDescriptor(mResponseReadyEvent)));
 }
 
-void Provider::UpdateTransparencyMode(nsTransparencyMode aTransparencyMode) {
-  mTransparencyMode = aTransparencyMode;
+void Provider::UpdateTransparencyMode(TransparencyMode aTransparencyMode) {
+  mTransparencyMode = uint32_t(aTransparencyMode);
 }
 
 void Provider::ThreadMain() {
+  AUTO_PROFILER_REGISTER_THREAD("RemoteBackbuffer");
+  NS_SetCurrentThreadName("RemoteBackbuffer");
+
   while (true) {
-    MOZ_ALWAYS_TRUE(::WaitForSingleObject(mRequestReadyEvent, INFINITE) ==
-                    WAIT_OBJECT_0);
+    {
+      AUTO_PROFILER_THREAD_SLEEP;
+      MOZ_ALWAYS_TRUE(::WaitForSingleObject(mRequestReadyEvent, INFINITE) ==
+                      WAIT_OBJECT_0);
+    }
 
     if (mStopServiceThread) {
       break;
@@ -403,9 +493,10 @@ void Provider::ThreadMain() {
         break;
       }
       case SharedDataType::PresentRequest: {
+        PresentRequestData requestData = mSharedDataPtr->data.presentRequest;
         PresentResponseData responseData = {};
 
-        HandlePresentRequest(&responseData);
+        HandlePresentRequest(requestData, &responseData);
 
         mSharedDataPtr->dataType = SharedDataType::PresentResponse;
         mSharedDataPtr->data.presentResponse = responseData;
@@ -426,7 +517,7 @@ void Provider::HandleBorrowRequest(BorrowResponseData* aResponseData,
 
   aResponseData->result = ResponseResult::Error;
 
-  RECT clientRect = {};
+  RECT clientRect{};
   if (!::GetClientRect(mWindowHandle, &clientRect)) {
     return;
   }
@@ -434,27 +525,31 @@ void Provider::HandleBorrowRequest(BorrowResponseData* aResponseData,
   MOZ_ASSERT(clientRect.left == 0);
   MOZ_ASSERT(clientRect.top == 0);
 
-  int32_t width = clientRect.right ? clientRect.right : 1;
-  int32_t height = clientRect.bottom ? clientRect.bottom : 1;
+  const int32_t width = std::max(int32_t(clientRect.right), 1);
+  const int32_t height = std::max(int32_t(clientRect.bottom), 1);
 
   bool needNewBackbuffer = !aAllowSameBuffer || !mBackbuffer ||
-                           (mBackbuffer->GetWidth() != width) ||
-                           (mBackbuffer->GetHeight() != height);
+                           mBackbuffer->GetWidth() != width ||
+                           mBackbuffer->GetHeight() != height;
 
   if (!needNewBackbuffer) {
     aResponseData->result = ResponseResult::BorrowSameBuffer;
     return;
   }
 
-  mBackbuffer.reset();
-
   auto newBackbuffer = std::make_unique<PresentableSharedImage>();
   if (!newBackbuffer->Initialize(width, height)) {
     return;
   }
 
+  // Preserve the contents of the old backbuffer (if it exists)
+  if (mBackbuffer) {
+    newBackbuffer->CopyPixelsFrom(*mBackbuffer);
+    mBackbuffer.reset();
+  }
+
   HANDLE remoteFileMapping =
-      newBackbuffer->CreateRemoteFileMapping(mTargetProcessId);
+      newBackbuffer->CreateRemoteFileMapping(mTargetProcess);
   if (!remoteFileMapping) {
     return;
   }
@@ -467,8 +562,11 @@ void Provider::HandleBorrowRequest(BorrowResponseData* aResponseData,
   mBackbuffer = std::move(newBackbuffer);
 }
 
-void Provider::HandlePresentRequest(PresentResponseData* aResponseData) {
+void Provider::HandlePresentRequest(const PresentRequestData& aRequestData,
+                                    PresentResponseData* aResponseData) {
   MOZ_ASSERT(aResponseData);
+
+  Span rectSpan(aRequestData.dirtyRects, kMaxDirtyRects);
 
   aResponseData->result = ResponseResult::Error;
 
@@ -476,7 +574,9 @@ void Provider::HandlePresentRequest(PresentResponseData* aResponseData) {
     return;
   }
 
-  if (!mBackbuffer->PresentToWindow(mWindowHandle, mTransparencyMode)) {
+  if (!mBackbuffer->PresentToWindow(
+          mWindowHandle, GetTransparencyMode(),
+          rectSpan.First(aRequestData.lenDirtyRects))) {
     return;
   }
 
@@ -511,15 +611,22 @@ Client::~Client() {
 }
 
 bool Client::Initialize(const RemoteBackbufferHandles& aRemoteHandles) {
-  MOZ_ASSERT(aRemoteHandles.fileMapping());
-  MOZ_ASSERT(aRemoteHandles.requestReadyEvent());
-  MOZ_ASSERT(aRemoteHandles.responseReadyEvent());
+  MOZ_ASSERT(aRemoteHandles.fileMapping().IsValid());
+  MOZ_ASSERT(aRemoteHandles.requestReadyEvent().IsValid());
+  MOZ_ASSERT(aRemoteHandles.responseReadyEvent().IsValid());
 
-  mFileMapping = reinterpret_cast<HANDLE>(aRemoteHandles.fileMapping());
+  // FIXME: Due to PCompositorWidget using virtual Recv methods,
+  // RemoteBackbufferHandles is passed by const reference, and cannot have its
+  // signature customized, meaning that we need to clone the handles here.
+  //
+  // Once PCompositorWidget is migrated to use direct call semantics, the
+  // signature can be changed to accept RemoteBackbufferHandles by rvalue
+  // reference or value, and the DuplicateHandle calls here can be avoided.
+  mFileMapping = aRemoteHandles.fileMapping().ClonePlatformHandle().release();
   mRequestReadyEvent =
-      reinterpret_cast<HANDLE>(aRemoteHandles.requestReadyEvent());
+      aRemoteHandles.requestReadyEvent().ClonePlatformHandle().release();
   mResponseReadyEvent =
-      reinterpret_cast<HANDLE>(aRemoteHandles.responseReadyEvent());
+      aRemoteHandles.responseReadyEvent().ClonePlatformHandle().release();
 
   void* mappedFilePtr =
       ::MapViewOfFile(mFileMapping, FILE_MAP_ALL_ACCESS, 0 /*offsetHigh*/,
@@ -571,8 +678,22 @@ already_AddRefed<gfx::DrawTarget> Client::BorrowDrawTarget() {
   return mBackbuffer->CreateDrawTarget();
 }
 
-bool Client::PresentDrawTarget() {
+bool Client::PresentDrawTarget(gfx::IntRegion aDirtyRegion) {
   mSharedDataPtr->dataType = SharedDataType::PresentRequest;
+
+  // Simplify the region until it has <= kMaxDirtyRects
+  aDirtyRegion.SimplifyOutward(kMaxDirtyRects);
+
+  Span rectSpan(mSharedDataPtr->data.presentRequest.dirtyRects, kMaxDirtyRects);
+
+  uint8_t rectIndex = 0;
+  for (auto iter = aDirtyRegion.RectIter(); !iter.Done(); iter.Next()) {
+    rectSpan[rectIndex] = IpcSafeRect(iter.Get());
+    ++rectIndex;
+  }
+
+  mSharedDataPtr->data.presentRequest.lenDirtyRects = rectIndex;
+
   MOZ_ALWAYS_TRUE(::SetEvent(mRequestReadyEvent));
   MOZ_ALWAYS_TRUE(::WaitForSingleObject(mResponseReadyEvent, INFINITE) ==
                   WAIT_OBJECT_0);

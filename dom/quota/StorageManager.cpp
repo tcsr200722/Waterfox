@@ -5,23 +5,64 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "StorageManager.h"
+#include "fs/FileSystemRequestHandler.h"
 
-#include "mozilla/dom/PromiseWorkerProxy.h"
-#include "mozilla/dom/quota/QuotaManagerService.h"
-#include "mozilla/dom/StorageManagerBinding.h"
-#include "mozilla/dom/WorkerPrivate.h"
+#include <cstdint>
+#include <cstdlib>
+#include <utility>
+#include "ErrorList.h"
+#include "fs/FileSystemRequestHandler.h"
+#include "MainThreadUtils.h"
+#include "js/CallArgs.h"
+#include "js/TypeDecls.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/EventStateManager.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TelemetryScalarEnums.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/FileSystemManager.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/PromiseWorkerProxy.h"
+#include "mozilla/dom/StorageManagerBinding.h"
+#include "mozilla/dom/WorkerCommon.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRunnable.h"
+#include "mozilla/dom/WorkerStatus.h"
+#include "mozilla/dom/quota/QuotaManagerService.h"
 #include "nsContentPermissionHelper.h"
+#include "nsContentUtils.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsIGlobalObject.h"
+#include "nsIPrincipal.h"
 #include "nsIQuotaCallbacks.h"
+#include "nsIQuotaManagerService.h"
 #include "nsIQuotaRequests.h"
+#include "nsIQuotaResults.h"
+#include "nsIVariant.h"
+#include "nsLiteralString.h"
 #include "nsPIDOMWindow.h"
+#include "nsString.h"
+#include "nsStringFlags.h"
+#include "nsTLiteralString.h"
+#include "nscore.h"
+
+class JSObject;
+struct JSContext;
+struct nsID;
+
+namespace mozilla {
+class Runnable;
+}
 
 using namespace mozilla::dom::quota;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -78,12 +119,13 @@ class RequestResolver final : public nsIQuotaCallback {
 };
 
 // This class is used to return promise on worker thread.
-class RequestResolver::FinishWorkerRunnable final : public WorkerRunnable {
+class RequestResolver::FinishWorkerRunnable final
+    : public WorkerThreadRunnable {
   RefPtr<RequestResolver> mResolver;
 
  public:
   explicit FinishWorkerRunnable(RequestResolver* aResolver)
-      : WorkerRunnable(aResolver->mProxy->GetWorkerPrivate()),
+      : WorkerThreadRunnable("RequestResolver::FinishWorkerRunnable"),
         mResolver(aResolver) {
     MOZ_ASSERT(NS_IsMainThread());
     MOZ_ASSERT(aResolver);
@@ -98,8 +140,8 @@ class EstimateWorkerMainThreadRunnable final : public WorkerMainThreadRunnable {
  public:
   EstimateWorkerMainThreadRunnable(WorkerPrivate* aWorkerPrivate,
                                    PromiseWorkerProxy* aProxy)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate, NS_LITERAL_CSTRING("StorageManager :: Estimate")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "StorageManager :: Estimate"_ns),
         mProxy(aProxy) {
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -116,8 +158,8 @@ class PersistedWorkerMainThreadRunnable final
  public:
   PersistedWorkerMainThreadRunnable(WorkerPrivate* aWorkerPrivate,
                                     PromiseWorkerProxy* aProxy)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate, NS_LITERAL_CSTRING("StorageManager :: Persisted")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "StorageManager :: Persisted"_ns),
         mProxy(aProxy) {
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -140,8 +182,8 @@ class PersistentStoragePermissionRequest final
                                      nsPIDOMWindowInner* aWindow,
                                      Promise* aPromise)
       : ContentPermissionRequestBase(aPrincipal, aWindow,
-                                     NS_LITERAL_CSTRING("dom.storageManager"),
-                                     NS_LITERAL_CSTRING("persistent-storage")),
+                                     "dom.storageManager"_ns,
+                                     "persistent-storage"_ns),
         mPromise(aPromise) {
     MOZ_ASSERT(aWindow);
     MOZ_ASSERT(aPromise);
@@ -155,7 +197,7 @@ class PersistentStoragePermissionRequest final
 
   // nsIContentPermissionRequest
   NS_IMETHOD Cancel(void) override;
-  NS_IMETHOD Allow(JS::HandleValue choices) override;
+  NS_IMETHOD Allow(JS::Handle<JS::Value> choices) override;
 
  private:
   ~PersistentStoragePermissionRequest() = default;
@@ -322,6 +364,7 @@ already_AddRefed<Promise> ExecuteOpOnMainOrWorkerThread(
   RefPtr<PromiseWorkerProxy> promiseProxy =
       PromiseWorkerProxy::Create(workerPrivate, promise);
   if (NS_WARN_IF(!promiseProxy)) {
+    aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
 
@@ -384,9 +427,10 @@ void RequestResolver::ResolveOrReject() {
     promise = mPromise;
   } else {
     MOZ_ASSERT(mProxy);
-
-    promise = mProxy->WorkerPromise();
-
+    promise = mProxy->GetWorkerPromise();
+    if (!promise) {
+      return;
+    }
     // Only clean up for worker case.
     autoCleanup.emplace(mProxy);
   }
@@ -521,7 +565,7 @@ nsresult RequestResolver::Finish() {
     }
 
     RefPtr<FinishWorkerRunnable> runnable = new FinishWorkerRunnable(this);
-    if (NS_WARN_IF(!runnable->Dispatch())) {
+    if (NS_WARN_IF(!runnable->Dispatch(mProxy->GetWorkerPrivate()))) {
       return NS_ERROR_FAILURE;
     }
   }
@@ -657,7 +701,7 @@ PersistentStoragePermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-PersistentStoragePermissionRequest::Allow(JS::HandleValue aChoices) {
+PersistentStoragePermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<RequestResolver> resolver =
@@ -688,7 +732,52 @@ StorageManager::StorageManager(nsIGlobalObject* aGlobal) : mOwner(aGlobal) {
   MOZ_ASSERT(aGlobal);
 }
 
-StorageManager::~StorageManager() = default;
+StorageManager::~StorageManager() { Shutdown(); }
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(StorageManager)
+  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(StorageManager)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(StorageManager)
+
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(StorageManager)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(StorageManager)
+  tmp->Shutdown();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(StorageManager)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFileSystemManager)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+void StorageManager::Shutdown() {
+  if (mFileSystemManager) {
+    mFileSystemManager->Shutdown();
+    mFileSystemManager = nullptr;
+  }
+}
+
+already_AddRefed<FileSystemManager> StorageManager::GetFileSystemManager() {
+  if (!mFileSystemManager) {
+    MOZ_ASSERT(mOwner);
+
+    mFileSystemManager = MakeRefPtr<FileSystemManager>(mOwner, this);
+  }
+
+  return do_AddRef(mFileSystemManager);
+}
+
+// WebIDL Boilerplate
+
+JSObject* StorageManager::WrapObject(JSContext* aCx,
+                                     JS::Handle<JSObject*> aGivenProto) {
+  return StorageManager_Binding::Wrap(aCx, this, aGivenProto);
+}
+
+// WebIDL Interface
 
 already_AddRefed<Promise> StorageManager::Persisted(ErrorResult& aRv) {
   MOZ_ASSERT(mOwner);
@@ -714,20 +803,8 @@ already_AddRefed<Promise> StorageManager::Estimate(ErrorResult& aRv) {
                                        aRv);
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(StorageManager, mOwner)
-
-NS_IMPL_CYCLE_COLLECTING_ADDREF(StorageManager)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(StorageManager)
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(StorageManager)
-  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-NS_INTERFACE_MAP_END
-
-JSObject* StorageManager::WrapObject(JSContext* aCx,
-                                     JS::Handle<JSObject*> aGivenProto) {
-  return StorageManager_Binding::Wrap(aCx, this, aGivenProto);
+already_AddRefed<Promise> StorageManager::GetDirectory(ErrorResult& aRv) {
+  return RefPtr(GetFileSystemManager())->GetDirectory(aRv);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

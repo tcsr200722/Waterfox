@@ -30,7 +30,7 @@ const TEST_DATA = [
   { escape: true, value: "inline", expected: "block" },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
@@ -60,6 +60,15 @@ async function testLivePreviewData(data, ruleView, selector) {
 
   const onValueDone = ruleView.once("ruleview-changed");
   if (data.escape) {
+    // First, close the popup
+    await waitFor(() => ruleView.popup && ruleView.popup.isOpen);
+    ok(true, "Popup was opened");
+    const onPopupClosed = once(ruleView.popup, "popup-closed");
+    EventUtils.synthesizeKey("VK_ESCAPE", {}, ruleView.styleWindow);
+    await onPopupClosed;
+    ok(true, "Popup was closed");
+
+    // Then hit escape a second time to cancel the change
     EventUtils.synthesizeKey("KEY_Escape");
   } else {
     EventUtils.synthesizeKey("KEY_Enter");

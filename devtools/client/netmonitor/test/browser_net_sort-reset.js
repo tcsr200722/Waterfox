@@ -7,8 +7,10 @@
  * Test if sorting columns in the network table works correctly.
  */
 
-add_task(async function() {
-  const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
+add_task(async function () {
+  const {
+    L10N,
+  } = require("resource://devtools/client/netmonitor/src/utils/l10n.js");
 
   const { monitor } = await initNetMonitor(SORTING_URL, { requestCount: 1 });
   info("Starting test... ");
@@ -19,17 +21,13 @@ add_task(async function() {
 
   const { document, store, windowRequire } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
-  const {
-    getDisplayedRequests,
-    getSelectedRequest,
-    getSortedRequests,
-  } = windowRequire("devtools/client/netmonitor/src/selectors/index");
+  const { getDisplayedRequests, getSelectedRequest, getSortedRequests } =
+    windowRequire("devtools/client/netmonitor/src/selectors/index");
 
   store.dispatch(Actions.batchEnable(false));
 
   // Loading the frame script and preparing the xhr request URLs so we can
   // generate some requests later.
-  loadFrameScriptUtils();
   const requests = [
     {
       url: "sjs_sorting-test-server.sjs?index=1&" + Math.random(),
@@ -83,7 +81,7 @@ add_task(async function() {
     { type: "contextmenu" },
     document.querySelector("#requests-list-contentSize-button")
   );
-  getContextMenuItem(monitor, "request-list-header-reset-sorting").click();
+  await selectContextMenuItem(monitor, "request-list-header-reset-sorting");
   testHeaders();
   await testContents([0, 2, 4, 3, 1]);
 
@@ -96,14 +94,14 @@ add_task(async function() {
     { type: "contextmenu" },
     document.querySelector("#requests-list-contentSize-button")
   );
-  getContextMenuItem(monitor, "request-list-header-reset-columns").click();
+  await selectContextMenuItem(monitor, "request-list-header-reset-columns");
   testHeaders();
   // add columns because verifyRequestItemTarget expects some extra columns
-  showColumn(monitor, "protocol");
-  showColumn(monitor, "remoteip");
-  showColumn(monitor, "scheme");
-  showColumn(monitor, "duration");
-  showColumn(monitor, "latency");
+  await showColumn(monitor, "protocol");
+  await showColumn(monitor, "remoteip");
+  await showColumn(monitor, "scheme");
+  await showColumn(monitor, "duration");
+  await showColumn(monitor, "latency");
   await testContents([0, 2, 4, 3, 1]);
 
   return teardown(monitor);

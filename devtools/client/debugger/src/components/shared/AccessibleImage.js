@@ -2,19 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
+import React from "devtools/client/shared/vendor/react";
+import PropTypes from "devtools/client/shared/vendor/react-prop-types";
 
-import React from "react";
-import classnames from "classnames";
+const classnames = require("resource://devtools/client/shared/classnames.js");
 
-import "./AccessibleImage.css";
-
-const AccessibleImage = (props: Object) => {
-  props = {
+const AccessibleImage = props => {
+  return React.createElement("span", {
     ...props,
     className: classnames("img", props.className),
-  };
-  return <span {...props} />;
+  });
+};
+
+AccessibleImage.propTypes = {
+  className: PropTypes.string.isRequired,
 };
 
 export default AccessibleImage;

@@ -8,8 +8,8 @@ if (SpecialPowers.useRemoteSubframes) {
 
 const CC = Components.Constructor;
 
-const { PlacesUtils } = ChromeUtils.import(
-  "resource://gre/modules/PlacesUtils.jsm"
+const { PlacesTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PlacesTestUtils.sys.mjs"
 );
 
 let EventUtils = {};
@@ -20,11 +20,11 @@ Services.scriptloader.loadSubScript(
 
 const FIRST_PARTY_ONE = "example.com";
 const FIRST_PARTY_TWO = "example.org";
-const THIRD_PARTY = "mochi.test:8888";
+const THIRD_PARTY = "example.net";
 
-const TEST_SITE_ONE = "http://" + FIRST_PARTY_ONE;
-const TEST_SITE_TWO = "http://" + FIRST_PARTY_TWO;
-const THIRD_PARTY_SITE = "http://" + THIRD_PARTY;
+const TEST_SITE_ONE = "https://" + FIRST_PARTY_ONE;
+const TEST_SITE_TWO = "https://" + FIRST_PARTY_TWO;
+const THIRD_PARTY_SITE = "https://" + THIRD_PARTY;
 const TEST_DIRECTORY =
   "/browser/browser/components/originattributes/test/browser/";
 
@@ -39,8 +39,6 @@ const ICON_DATA =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABH0lEQVRYw2P8////f4YBBEwMAwxGHcBCUMX/91DGOSj/BpT/DkpzQChGBSjfBErLQsVZhmoI/L8LpRdD6X1QietQGhYy7FB5aAgwmkLpBKi4BZTPMThDgBGjHIDF+f9mKD0fKvGBRKNdoF7sgPL1saaJwZgGDkJ9vpZMn8PAHqg5G9FyifBgD4H/W9HyOWrU/f+DIzHhkoeZxxgzZEIAVtJ9RxX+Q6DAxCmP3byhXxkxshAs5odqbcioAY3UC1CBLyTGOTqAmsfAOWRCwBvqxV0oIUB2OQAzDy3/D+a6wB7q8mCU2vD/nw94GziYIQOtDRn9oXz+IZMGBKGMbCjNh9Ii+v8HR4uIAUeLiEEbb9twELaIRlqrmHG0bzjiHQAA1LVfww8jwM4AAAAASUVORK5CYII=";
 
 let systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
-let makeURI = ChromeUtils.import("resource://gre/modules/BrowserUtils.jsm", {})
-  .BrowserUtils.makeURI;
 
 function clearAllImageCaches() {
   let tools = SpecialPowers.Cc["@mozilla.org/image/tools;1"].getService(
@@ -58,7 +56,7 @@ function clearAllPlacesFavicons() {
 
   return new Promise(resolve => {
     let observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         if (aTopic === "places-favicons-expired") {
           resolve();
           Services.obs.removeObserver(observer, "places-favicons-expired");
@@ -79,7 +77,7 @@ function observeFavicon(aFirstPartyDomain, aExpectedCookie, aPageURI) {
 
   return new Promise(resolve => {
     let observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         // Make sure that the topic is 'http-on-modify-request'.
         if (aTopic === "http-on-modify-request") {
           // We check the firstPartyDomain for the originAttributes of the loading
@@ -138,7 +136,7 @@ function observeFavicon(aFirstPartyDomain, aExpectedCookie, aPageURI) {
 function waitOnFaviconResponse(aFaviconURL) {
   return new Promise(resolve => {
     let observer = {
-      observe(aSubject, aTopic, aData) {
+      observe(aSubject, aTopic) {
         if (
           aTopic === "http-on-examine-response" ||
           aTopic === "http-on-examine-cached-response"
@@ -171,21 +169,9 @@ function waitOnFaviconResponse(aFaviconURL) {
 }
 
 function waitOnFaviconLoaded(aFaviconURL) {
-  return new Promise(resolve => {
-    let observer = {
-      onPageChanged(uri, attr, value, id) {
-        if (
-          attr === Ci.nsINavHistoryObserver.ATTRIBUTE_FAVICON &&
-          value === aFaviconURL
-        ) {
-          resolve();
-          PlacesUtils.history.removeObserver(observer, false);
-        }
-      },
-    };
-
-    PlacesUtils.history.addObserver(observer);
-  });
+  return PlacesTestUtils.waitForNotification("favicon-changed", events =>
+    events.some(e => e.faviconUrl == aFaviconURL)
+  );
 }
 
 async function openTab(aURL) {
@@ -206,11 +192,13 @@ async function assignCookiesUnderFirstParty(aURL, aFirstParty, aCookieValue) {
   let tabInfo = await openTabInFirstParty(aURL, aFirstParty);
 
   // Add cookies into the iframe.
-  await SpecialPowers.spawn(tabInfo.browser, [aCookieValue], async function(
-    value
-  ) {
-    content.document.cookie = value;
-  });
+  await SpecialPowers.spawn(
+    tabInfo.browser,
+    [aCookieValue],
+    async function (value) {
+      content.document.cookie = value + "; SameSite=None; Secure;";
+    }
+  );
 
   BrowserTestUtils.removeTab(tabInfo.tab);
 }
@@ -251,8 +239,8 @@ function assertIconIsData(item) {
 }
 
 async function doTest(aTestPage, aExpectedCookies, aFaviconURL) {
-  let firstPageURI = makeURI(TEST_SITE_ONE + aTestPage);
-  let secondPageURI = makeURI(TEST_SITE_TWO + aTestPage);
+  let firstPageURI = Services.io.newURI(TEST_SITE_ONE + aTestPage);
+  let secondPageURI = Services.io.newURI(TEST_SITE_TWO + aTestPage);
 
   // Start to observe the event of that favicon has been fully loaded.
   let promiseFaviconLoaded = waitOnFaviconLoaded(aFaviconURL);
@@ -388,7 +376,7 @@ async function doTestForAllTabsFavicon(
   tabBrowser.removeAttribute("overflow");
 }
 
-add_task(async function setup() {
+add_setup(async function () {
   // Make sure first party isolation is enabled.
   await SpecialPowers.pushPrefEnv({
     set: [["privacy.firstparty.isolate", true]],

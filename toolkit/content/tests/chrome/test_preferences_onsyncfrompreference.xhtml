@@ -11,8 +11,6 @@
 
   <script type="application/javascript">
   <![CDATA[
-    const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
     const PREFS = ['tests.onsyncfrompreference.pref1',
                    'tests.onsyncfrompreference.pref2',
                    'tests.onsyncfrompreference.pref3'];
@@ -24,7 +22,7 @@
     }
 
     let counter = 0;
-    let prefWindow = window.docShell.rootTreeItem.domWindow.openDialog("window_preferences_onsyncfrompreference.xhtml", "", "", onSync);
+    let prefWindow = window.browsingContext.topChromeWindow.openDialog("window_preferences_onsyncfrompreference.xhtml", "", "", onSync);
 
     SimpleTest.registerCleanupFunction(() => {
       for (let pref of PREFS) {

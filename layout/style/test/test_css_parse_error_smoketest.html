@@ -24,6 +24,10 @@
       error: "Expected ‘none’, URL, or filter function but found ‘alpha(’.  Error in parsing value for ‘filter’.  Declaration dropped.",
       cssSelectors: "x",
     }, {
+      css: "x { color: red; abc; }",
+      error: "Unknown property ‘abc;’.  Declaration dropped.",
+      cssSelectors: "x",
+    }, {
       css: "x { filter: 5; }",
       error: "Expected ‘none’, URL, or filter function but found ‘5’.  Error in parsing value for ‘filter’.  Declaration dropped.",
       cssSelectors: "x",
@@ -74,7 +78,7 @@
       error: "Expected identifier for class selector but found ‘ ’.  Ruleset ignored due to bad selector.",
     }, {
       css: ":not() {}",
-      error: "Missing argument in negation pseudo-class ‘)’.  Ruleset ignored due to bad selector.",
+      error: "Selector expected.  Ruleset ignored due to bad selector.",
     }, {
       css: "* { -webkit-text-size-adjust: 100% }",
       error: "Error in parsing value for ‘-webkit-text-size-adjust’.  Declaration dropped.",
@@ -92,10 +96,10 @@
       css: "@media (min-width >= 3px) {}",
       error: "Unexpected operator in media list.",
     }, {
-      css: "@media (device-height: -1px) {}",
+      css: "@media (device-height: three) {}",
       error: "Found invalid value for media feature.",
     }, {
-      css: "@media (min-width: -1px) {}",
+      css: "@media (min-width: foo) {}",
       error: "Found invalid value for media feature.",
     }, {
       css: "@media (min-resolution: 2) {}",
@@ -116,6 +120,10 @@
       css: "a, .b, #c { unknown: invalid; }",
       error: "Unknown property ‘unknown’.  Declaration dropped.",
       cssSelectors: "a, .b, #c"
+    },
+    {
+      css: ":host:hover { color: red; }",
+      error: ":host selector in ‘:host:hover’ is not featureless and will never match. Maybe you intended to use :host()?"
     },
   ];
 

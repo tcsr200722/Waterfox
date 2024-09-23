@@ -2,29 +2,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import { getSymbols } from "../getSymbols";
 import { populateOriginalSource } from "./helpers";
 import cases from "jest-in-case";
 
 cases(
   "Parser.getFramework",
-  ({ name, file, value }) => {
+  () => {
     const source = populateOriginalSource("frameworks/plainJavascript");
     const symbols = getSymbols(source.id);
-    expect(symbols.framework).toBeUndefined();
+    expect(symbols.framework).toBeNull();
   },
   [
     {
       name: "is undefined when no framework",
       file: "frameworks/plainJavascript",
-      value: undefined,
+      value: null,
     },
     {
       name: "does not get confused with angular (#6833)",
       file: "frameworks/angular1FalsePositive",
-      value: undefined,
+      value: null,
     },
     {
       name: "recognizes ES6 React component",

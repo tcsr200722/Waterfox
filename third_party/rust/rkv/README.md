@@ -1,15 +1,12 @@
 # rkv
 
-[![Travis CI Build Status](https://travis-ci.org/mozilla/rkv.svg?branch=master)](https://travis-ci.org/mozilla/rkv)
-[![Appveyor Build Status](https://ci.appveyor.com/api/projects/status/lk936u5y5bi6qafb/branch/master?svg=true)](https://ci.appveyor.com/project/mykmelez/rkv/branch/master)
+[![CI Build Status](https://github.com/mozilla/rkv/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mozilla/rkv/actions/workflows/ci.yml)
 [![Documentation](https://docs.rs/rkv/badge.svg)](https://docs.rs/rkv/)
 [![Crate](https://img.shields.io/crates/v/rkv.svg)](https://crates.io/crates/rkv)
 
 The [rkv Rust crate](https://crates.io/crates/rkv) is a simple, humane, typed key-value storage solution. It supports multiple backend engines with varying guarantees, such as [LMDB](http://www.lmdb.tech/doc/) for performance, or "SafeMode" for reliability.
 
 ## ⚠️ Warning ⚠️
-
-The LMDB backend is currently unstable and crash-prone. We're attempting to fix these crashes in bugs [1538539](https://bugzilla.mozilla.org/show_bug.cgi?id=1538539), [1538541](https://bugzilla.mozilla.org/show_bug.cgi?id=1538541) and [1550174](https://bugzilla.mozilla.org/show_bug.cgi?id=1550174).
 
 To use rkv in production/release environments at Mozilla, you may do so with the "SafeMode" backend, for example:
 
@@ -23,9 +20,9 @@ let shared_rkv = manager.get_or_create(path, Rkv::new::<SafeMode>).unwrap();
 ...
 ```
 
-The "SafeMode` backend performs well, with two caveats: the entire database is stored in memory, and write transactions are synchronously written to disk on commit.
+The "SafeMode" backend performs well, with two caveats: the entire database is stored in memory, and write transactions are synchronously written to disk (only on commit).
 
-In the future, it will be advisable to switch to a different backend with better performance guarantees. We're working on either fixing the LMDB crashes, or offering more choices of backend engines (e.g. SQLite).
+In the future, it will be advisable to switch to a different backend with better performance guarantees. We're working on either fixing some LMDB crashes, or offering more choices of backend engines (e.g. SQLite).
 
 ## Use
 
@@ -48,9 +45,6 @@ cargo build
 There are several features that you can opt-in and out of when using rkv:
 
 By default, `db-dup-sort` and `db-int-key` features offer high level database APIs which allow multiple values per key, and optimizations around integer-based keys respectively. Opt out of these default features when specifying the rkv dependency in your Cargo.toml file to disable them; doing so avoids a certain amount of overhead required to support them.
-
-If you specify the `backtrace` feature, backtraces will be enabled in "failure"
-errors. This feature is disabled by default.
 
 To aid fuzzing efforts, `with-asan`, `with-fuzzer`, and `with-fuzzer-no-link` configure the build scripts responsible with compiling the underlying backing engines (e.g. LMDB) to build with these LLMV features enabled. Please refer to the official LLVM/Clang documentation on them for more informatiuon. These features are also disabled by default.
 

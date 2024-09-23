@@ -2,78 +2,47 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React from "react";
-import { bindActionCreators, combineReducers } from "redux";
-import ReactDOM from "react-dom";
-const { Provider } = require("react-redux");
+import React from "devtools/client/shared/vendor/react";
+import {
+  bindActionCreators,
+  combineReducers,
+} from "devtools/client/shared/vendor/redux";
+import ReactDOM from "devtools/client/shared/vendor/react-dom";
+const {
+  Provider,
+} = require("resource://devtools/client/shared/vendor/react-redux.js");
 
 import ToolboxProvider from "devtools/client/framework/store-provider";
-import { isFirefoxPanel, isDevelopment, isTesting } from "devtools-environment";
-import { AppConstants } from "devtools-modules";
+import flags from "devtools/shared/flags";
+const {
+  registerStoreObserver,
+} = require("resource://devtools/client/shared/redux/subscriber.js");
 
-import SourceMaps, {
-  startSourceMapWorker,
-  stopSourceMapWorker,
-} from "devtools-source-map";
-import * as search from "../workers/search";
-import * as prettyPrint from "../workers/pretty-print";
-import { ParserDispatcher } from "../workers/parser";
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
+import { SearchDispatcher } from "../workers/search/index";
+import { PrettyPrintDispatcher } from "../workers/pretty-print/index";
 
 import configureStore from "../actions/utils/create-store";
-import reducers from "../reducers";
-import * as selectors from "../selectors";
+import reducers from "../reducers/index";
+import * as selectors from "../selectors/index";
 import App from "../components/App";
 import { asyncStore, prefs } from "./prefs";
 import { persistTabs } from "../utils/tabs";
+const {
+  sanitizeBreakpoints,
+} = require("resource://devtools/client/shared/thread-utils.js");
 
-import type { Panel } from "../client/firefox/types";
+let gWorkers;
 
-let parser;
-
-function renderPanel(component, store, panel: Panel) {
-  const root = document.createElement("div");
-  root.className = "launchpad-root theme-body";
-  root.style.setProperty("flex", "1");
-  const mount = document.querySelector("#mount");
-  if (!mount) {
-    return;
-  }
-  mount.appendChild(root);
-
-  const toolboxDoc = panel.panelWin.parent.document;
-
-  ReactDOM.render(
-    React.createElement(
-      Provider,
-      { store },
-      React.createElement(
-        ToolboxProvider,
-        { store: panel.getToolboxStore() },
-        React.createElement(component, { toolboxDoc })
-      )
-    ),
-    root
-  );
-}
-
-type Workers = {
-  sourceMaps: typeof SourceMaps,
-  evaluationsParser: typeof ParserDispatcher,
-};
-
-export function bootstrapStore(
-  client: any,
-  workers: Workers,
-  panel: Panel,
-  initialState: Object
-): any {
-  const debugJsModules = AppConstants.AppConstants.DEBUG_JS_MODULES == "1";
+export function bootstrapStore(client, workers, panel, initialState) {
+  const debugJsModules = AppConstants.DEBUG_JS_MODULES == "1";
   const createStore = configureStore({
-    log: prefs.logging || isTesting(),
-    timing: debugJsModules || isDevelopment(),
-    makeThunkArgs: (args, state) => {
+    log: prefs.logging || flags.testing,
+    timing: debugJsModules,
+    makeThunkArgs: args => {
       return { ...args, client, ...workers, panel };
     },
   });
@@ -82,69 +51,74 @@ export function bootstrapStore(
   registerStoreObserver(store, updatePrefs);
 
   const actions = bindActionCreators(
-    require("../actions").default,
+    require("../actions/index").default,
     store.dispatch
   );
 
   return { store, actions, selectors };
 }
 
-export function bootstrapWorkers(panelWorkers: Workers): Object {
-  const workerPath = isDevelopment()
-    ? "assets/build"
-    : "resource://devtools/client/debugger/dist";
+export function bootstrapWorkers(panelWorkers) {
+  // The panel worker will typically be the source map and parser workers.
+  // Both will be managed by the toolbox.
+  gWorkers = {
+    prettyPrintWorker: new PrettyPrintDispatcher(),
+    searchWorker: new SearchDispatcher(),
+  };
+  return { ...panelWorkers, ...gWorkers };
+}
 
-  if (isDevelopment()) {
-    // When used in Firefox, the toolbox manages the source map worker.
-    startSourceMapWorker(
-      `${workerPath}/source-map-worker.js`,
-      // This is relative to the worker itself.
-      "./source-map-worker-assets/"
-    );
+export function teardownWorkers() {
+  gWorkers.prettyPrintWorker.stop();
+  gWorkers.searchWorker.stop();
+}
+
+/**
+ * Create and mount the root App component.
+ *
+ * @param {ReduxStore} store
+ * @param {ReduxStore} toolboxStore
+ * @param {Object} appComponentAttributes
+ * @param {Array} appComponentAttributes.fluentBundles
+ * @param {Document} appComponentAttributes.toolboxDoc
+ */
+export function bootstrapApp(store, toolboxStore, appComponentAttributes = {}) {
+  const mount = getMountElement();
+  if (!mount) {
+    return;
   }
 
-  prettyPrint.start(`${workerPath}/pretty-print-worker.js`);
-  parser = new ParserDispatcher();
-
-  parser.start(`${workerPath}/parser-worker.js`);
-  search.start(`${workerPath}/search-worker.js`);
-  return { ...panelWorkers, prettyPrint, parser, search };
+  ReactDOM.render(
+    React.createElement(
+      Provider,
+      { store },
+      React.createElement(
+        ToolboxProvider,
+        { store: toolboxStore },
+        React.createElement(App, appComponentAttributes)
+      )
+    ),
+    mount
+  );
 }
 
-export function teardownWorkers(): void {
-  if (!isFirefoxPanel()) {
-    // When used in Firefox, the toolbox manages the source map worker.
-    stopSourceMapWorker();
-  }
-  prettyPrint.stop();
-  parser.stop();
-  search.stop();
+function getMountElement() {
+  return document.querySelector("#mount");
 }
 
-export function bootstrapApp(store: any, panel: Panel): void {
-  if (isFirefoxPanel()) {
-    renderPanel(App, store, panel);
-  } else {
-    const { renderRoot } = require("devtools-launchpad");
-    renderRoot(React, ReactDOM, App, store);
-  }
+// This is the opposite of bootstrapApp
+export function unmountRoot() {
+  ReactDOM.unmountComponentAtNode(getMountElement());
 }
 
-function registerStoreObserver(store, subscriber) {
-  let oldState = store.getState();
-  store.subscribe(() => {
-    const state = store.getState();
-    subscriber(state, oldState);
-    oldState = state;
-  });
-}
-
-function updatePrefs(state: any, oldState: any): void {
+function updatePrefs(state, oldState) {
   const hasChanged = selector =>
     selector(oldState) && selector(oldState) !== selector(state);
 
   if (hasChanged(selectors.getPendingBreakpoints)) {
-    asyncStore.pendingBreakpoints = selectors.getPendingBreakpoints(state);
+    asyncStore.pendingBreakpoints = sanitizeBreakpoints(
+      selectors.getPendingBreakpoints(state)
+    );
   }
 
   if (
@@ -162,7 +136,7 @@ function updatePrefs(state: any, oldState: any): void {
     asyncStore.xhrBreakpoints = selectors.getXHRBreakpoints(state);
   }
 
-  if (hasChanged(selectors.getBlackBoxList)) {
-    asyncStore.tabsBlackBoxed = selectors.getBlackBoxList(state);
+  if (hasChanged(selectors.getBlackBoxRanges)) {
+    asyncStore.blackboxedRanges = selectors.getBlackBoxRanges(state);
   }
 }

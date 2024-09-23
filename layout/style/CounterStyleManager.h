@@ -6,10 +6,9 @@
 #ifndef mozilla_CounterStyleManager_h_
 #define mozilla_CounterStyleManager_h_
 
-#include "nsAtom.h"
 #include "nsGkAtoms.h"
 #include "nsStringFwd.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 
 #include "nsStyleConsts.h"
@@ -40,16 +39,16 @@ struct PadType;
 
 class CounterStyle {
  protected:
-  explicit constexpr CounterStyle(int32_t aStyle) : mStyle(aStyle) {}
+  explicit constexpr CounterStyle(ListStyle aStyle) : mStyle(aStyle) {}
 
  private:
   CounterStyle(const CounterStyle& aOther) = delete;
   void operator=(const CounterStyle& other) = delete;
 
  public:
-  constexpr int32_t GetStyle() const { return mStyle; }
-  bool IsNone() const { return mStyle == NS_STYLE_LIST_STYLE_NONE; }
-  bool IsCustomStyle() const { return mStyle == NS_STYLE_LIST_STYLE_CUSTOM; }
+  constexpr ListStyle GetStyle() const { return mStyle; }
+  bool IsNone() const { return mStyle == ListStyle::None; }
+  bool IsCustomStyle() const { return mStyle == ListStyle::Custom; }
   // A style is dependent if it depends on the counter style manager.
   // Custom styles are certainly dependent. In addition, some builtin
   // styles are dependent for fallback.
@@ -95,198 +94,39 @@ class CounterStyle {
   virtual AnonymousCounterStyle* AsAnonymous() { return nullptr; }
 
  protected:
-  const int32_t mStyle;
+  const ListStyle mStyle;
 };
 
-class AnonymousCounterStyle final : public CounterStyle {
+class MOZ_STACK_CLASS AnonymousCounterStyle final : public CounterStyle {
  public:
   explicit AnonymousCounterStyle(const nsAString& aContent);
-  AnonymousCounterStyle(StyleSymbolsType, nsTArray<nsString> aSymbols);
+  AnonymousCounterStyle(StyleSymbolsType, Span<const StyleSymbol> aSymbols);
 
-  virtual void GetPrefix(nsAString& aResult) override;
-  virtual void GetSuffix(nsAString& aResult) override;
-  virtual bool IsBullet() override;
+  void GetPrefix(nsAString& aResult) override;
+  void GetSuffix(nsAString& aResult) override;
+  bool IsBullet() override;
 
-  virtual void GetNegative(NegativeType& aResult) override;
-  virtual bool IsOrdinalInRange(CounterValue aOrdinal) override;
-  virtual bool IsOrdinalInAutoRange(CounterValue aOrdinal) override;
-  virtual void GetPad(PadType& aResult) override;
-  virtual CounterStyle* GetFallback() override;
-  virtual SpeakAs GetSpeakAs() override;
-  virtual bool UseNegativeSign() override;
+  void GetNegative(NegativeType& aResult) override;
+  bool IsOrdinalInRange(CounterValue aOrdinal) override;
+  bool IsOrdinalInAutoRange(CounterValue aOrdinal) override;
+  void GetPad(PadType& aResult) override;
+  CounterStyle* GetFallback() override;
+  SpeakAs GetSpeakAs() override;
+  bool UseNegativeSign() override;
 
-  virtual bool GetInitialCounterText(CounterValue aOrdinal,
-                                     WritingMode aWritingMode,
-                                     nsAString& aResult, bool& aIsRTL) override;
+  bool GetInitialCounterText(CounterValue aOrdinal, WritingMode aWritingMode,
+                             nsAString& aResult, bool& aIsRTL) override;
 
-  virtual AnonymousCounterStyle* AsAnonymous() override { return this; }
+  AnonymousCounterStyle* AsAnonymous() override { return this; }
 
-  bool IsSingleString() const { return mSingleString; }
-  Span<const nsString> GetSymbols() const { return MakeSpan(mSymbols); }
+  auto GetSymbols() const { return mSymbols; }
 
   StyleCounterSystem GetSystem() const;
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AnonymousCounterStyle)
-
- private:
   ~AnonymousCounterStyle() = default;
 
-  bool mSingleString;
   StyleSymbolsType mSymbolsType;
-  nsTArray<nsString> mSymbols;
-};
-
-// A smart pointer to CounterStyle. It either owns a reference to an
-// anonymous counter style, or weakly refers to a named counter style
-// managed by counter style manager.
-class CounterStylePtr {
- public:
-  CounterStylePtr() : mRaw(0) {}
-  CounterStylePtr(const CounterStylePtr& aOther) : mRaw(aOther.mRaw) {
-    if (!mRaw) {
-      return;
-    }
-    switch (GetType()) {
-      case eAnonymousCounterStyle:
-        AsAnonymous()->AddRef();
-        break;
-      case eAtom:
-        AsAtom()->AddRef();
-        break;
-      default:
-        MOZ_ASSERT_UNREACHABLE("Unknown type");
-        break;
-    }
-  }
-  CounterStylePtr(CounterStylePtr&& aOther) : mRaw(aOther.mRaw) {
-    aOther.mRaw = 0;
-  }
-  ~CounterStylePtr() { Reset(); }
-
-  CounterStylePtr& operator=(const CounterStylePtr& aOther) {
-    if (this != &aOther) {
-      Reset();
-      new (this) CounterStylePtr(aOther);
-    }
-    return *this;
-  }
-  CounterStylePtr& operator=(CounterStylePtr&& aOther) {
-    if (this != &aOther) {
-      Reset();
-      mRaw = aOther.mRaw;
-      aOther.mRaw = 0;
-    }
-    return *this;
-  }
-  CounterStylePtr& operator=(decltype(nullptr)) {
-    Reset();
-    return *this;
-  }
-  CounterStylePtr& operator=(nsStaticAtom* aStaticAtom) {
-    Reset();
-    mRaw = reinterpret_cast<uintptr_t>(aStaticAtom) | eAtom;
-    return *this;
-  }
-  CounterStylePtr& operator=(already_AddRefed<nsAtom> aAtom) {
-    Reset();
-    mRaw = reinterpret_cast<uintptr_t>(aAtom.take()) | eAtom;
-    return *this;
-  }
-  CounterStylePtr& operator=(AnonymousCounterStyle* aCounterStyle) {
-    Reset();
-    if (aCounterStyle) {
-      CounterStyle* raw = do_AddRef(aCounterStyle).take();
-      mRaw = reinterpret_cast<uintptr_t>(raw) | eAnonymousCounterStyle;
-    }
-    return *this;
-  }
-
-  // TODO(emilio): Make CounterStyle have a single representation, either by
-  // removing CounterStylePtr or by moving this representation to Rust.
-  static CounterStylePtr FromStyle(const StyleCounterStyle& aStyle) {
-    CounterStylePtr ret;
-    if (aStyle.IsName()) {
-      ret = do_AddRef(aStyle.AsName().AsAtom());
-    } else {
-      StyleSymbolsType type = aStyle.AsSymbols()._0;
-      Span<const StyleSymbol> symbols = aStyle.AsSymbols()._1._0.AsSpan();
-      nsTArray<nsString> transcoded(symbols.Length());
-      for (const auto& symbol : symbols) {
-        MOZ_ASSERT(symbol.IsString(), "Should not have <ident> in symbols()");
-        transcoded.AppendElement(
-            NS_ConvertUTF8toUTF16(symbol.AsString().AsString()));
-      }
-      ret = new AnonymousCounterStyle(type, std::move(transcoded));
-    }
-    return ret;
-  }
-
-  explicit operator bool() const { return !!mRaw; }
-  bool operator!() const { return !mRaw; }
-  bool operator==(const CounterStylePtr& aOther) const {
-    // FIXME(emilio): For atoms this is all right, but for symbols doesn't this
-    // cause us to compare as unequal all the time, even if the specified
-    // symbols didn't change?
-    return mRaw == aOther.mRaw;
-  }
-  bool operator!=(const CounterStylePtr& aOther) const {
-    return mRaw != aOther.mRaw;
-  }
-
-  nsAtom* AsAtom() const {
-    MOZ_ASSERT(IsAtom());
-    return reinterpret_cast<nsAtom*>(mRaw & ~eMask);
-  }
-  AnonymousCounterStyle* AsAnonymous() const {
-    MOZ_ASSERT(IsAnonymous());
-    return static_cast<AnonymousCounterStyle*>(
-        reinterpret_cast<CounterStyle*>(mRaw & ~eMask));
-  }
-
-  bool IsAtom() const { return GetType() == eAtom; }
-  bool IsAnonymous() const { return GetType() == eAnonymousCounterStyle; }
-
-  bool IsNone() const { return IsAtom() && AsAtom() == nsGkAtoms::none; }
-
- private:
-  enum Type : uintptr_t {
-    eAnonymousCounterStyle = 0,
-    eAtom = 1,
-    eMask = 1,
-  };
-
-  static_assert(alignof(CounterStyle) >= 1 << eMask,
-                "We're gonna tag the pointer, so it better fit");
-  static_assert(alignof(nsAtom) >= 1 << eMask,
-                "We're gonna tag the pointer, so it better fit");
-
-  Type GetType() const { return static_cast<Type>(mRaw & eMask); }
-
-  void Reset() {
-    if (!mRaw) {
-      return;
-    }
-    switch (GetType()) {
-      case eAnonymousCounterStyle:
-        AsAnonymous()->Release();
-        break;
-      case eAtom:
-        AsAtom()->Release();
-        break;
-      default:
-        MOZ_ASSERT_UNREACHABLE("Unknown type");
-        break;
-    }
-    mRaw = 0;
-  }
-
-  // mRaw contains the pointer, and its last bit is used to store the type of
-  // the pointer.
-  // If the type is eAtom, the pointer owns a reference to an nsAtom
-  // (potentially null).
-  // If the type is eAnonymousCounterStyle, it owns a reference to an
-  // anonymous counter style (never null).
-  uintptr_t mRaw;
+  Span<const StyleSymbol> mSymbols;
 };
 
 class CounterStyleManager final {
@@ -311,22 +151,34 @@ class CounterStyleManager final {
   // Same as GetCounterStyle but try to build the counter style object
   // rather than returning nullptr if that hasn't been built.
   CounterStyle* ResolveCounterStyle(nsAtom* aName);
-  CounterStyle* ResolveCounterStyle(const CounterStylePtr& aPtr) {
-    if (aPtr.IsAtom()) {
-      return ResolveCounterStyle(aPtr.AsAtom());
+  template <typename F>
+  void WithCounterStyleNameOrSymbols(const StyleCounterStyle& aStyle,
+                                     F&& aCallback) {
+    using Tag = StyleCounterStyle::Tag;
+    switch (aStyle.tag) {
+      case Tag::None:
+      case Tag::String:
+        MOZ_CRASH("Unexpected counter style");
+      case Tag::Symbols: {
+        AnonymousCounterStyle s(aStyle.AsSymbols().ty,
+                                aStyle.AsSymbols().symbols._0.AsSpan());
+        return aCallback(&s);
+      }
+      case Tag::Name: {
+        return aCallback(ResolveCounterStyle(aStyle.AsName().AsAtom()));
+      }
     }
-    return aPtr.AsAnonymous();
   }
 
-  static CounterStyle* GetBuiltinStyle(int32_t aStyle);
+  static CounterStyle* GetBuiltinStyle(ListStyle aStyle);
   static CounterStyle* GetNoneStyle() {
-    return GetBuiltinStyle(NS_STYLE_LIST_STYLE_NONE);
+    return GetBuiltinStyle(ListStyle::None);
   }
   static CounterStyle* GetDecimalStyle() {
-    return GetBuiltinStyle(NS_STYLE_LIST_STYLE_DECIMAL);
+    return GetBuiltinStyle(ListStyle::Decimal);
   }
   static CounterStyle* GetDiscStyle() {
-    return GetBuiltinStyle(NS_STYLE_LIST_STYLE_DISC);
+    return GetBuiltinStyle(ListStyle::Disc);
   }
 
   // This method will scan all existing counter styles generated by this
@@ -347,7 +199,7 @@ class CounterStyleManager final {
   void DestroyCounterStyle(CounterStyle* aCounterStyle);
 
   nsPresContext* mPresContext;
-  nsDataHashtable<nsRefPtrHashKey<nsAtom>, CounterStyle*> mStyles;
+  nsTHashMap<RefPtr<nsAtom>, CounterStyle*> mStyles;
   nsTArray<CounterStyle*> mRetiredStyles;
 };
 

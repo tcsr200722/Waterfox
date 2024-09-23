@@ -10,7 +10,9 @@
 
 #include "mozilla/Likely.h"
 
+#include "nsIChannel.h"
 #include "nsIFileChannel.h"
+#include "nsIObserverService.h"
 #include "nsIFile.h"
 #include "nsMimeTypes.h"
 #include "nsIRequest.h"
@@ -24,6 +26,7 @@
 
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_image.h"
+#include "mozilla/ProfilerMarkers.h"
 
 namespace mozilla {
 namespace image {
@@ -81,7 +84,7 @@ static void NotifyImageLoading(nsIURI* aURI) {
     nsCOMPtr<nsIURI> uri(aURI);
     nsCOMPtr<nsIRunnable> ev = NS_NewRunnableFunction(
         "NotifyImageLoading", [uri]() -> void { NotifyImageLoading(uri); });
-    SchedulerGroup::Dispatch(TaskCategory::Other, ev.forget());
+    NS_DispatchToMainThread(ev.forget());
     return;
   }
 
@@ -100,7 +103,7 @@ static void NotifyImageLoading(nsIURI* aURI) {
 already_AddRefed<Image> ImageFactory::CreateImage(
     nsIRequest* aRequest, ProgressTracker* aProgressTracker,
     const nsCString& aMimeType, nsIURI* aURI, bool aIsMultiPart,
-    uint32_t aInnerWindowId) {
+    uint64_t aInnerWindowId) {
   // Compute the image's initialization flags.
   uint32_t imageFlags = ComputeImageFlags(aURI, aMimeType, aIsMultiPart);
 
@@ -110,6 +113,13 @@ already_AddRefed<Image> ImageFactory::CreateImage(
     NotifyImageLoading(aURI);
   }
 #endif
+
+  if (profiler_thread_is_being_profiled_for_markers()) {
+    static const size_t sMaxTruncatedLength = 1024;
+    PROFILER_MARKER_TEXT(
+        "Image Load", GRAPHICS, MarkerInnerWindowId(aInnerWindowId),
+        nsContentUtils::TruncatedURLForDisplay(aURI, sMaxTruncatedLength));
+  }
 
   // Select the type of image to create based on MIME type.
   if (aMimeType.EqualsLiteral(IMAGE_SVG_XML)) {
@@ -211,7 +221,7 @@ uint32_t GetContentSize(nsIRequest* aRequest) {
 already_AddRefed<Image> ImageFactory::CreateRasterImage(
     nsIRequest* aRequest, ProgressTracker* aProgressTracker,
     const nsCString& aMimeType, nsIURI* aURI, uint32_t aImageFlags,
-    uint32_t aInnerWindowId) {
+    uint64_t aInnerWindowId) {
   MOZ_ASSERT(aProgressTracker);
 
   nsresult rv;
@@ -239,7 +249,7 @@ already_AddRefed<Image> ImageFactory::CreateRasterImage(
 already_AddRefed<Image> ImageFactory::CreateVectorImage(
     nsIRequest* aRequest, ProgressTracker* aProgressTracker,
     const nsCString& aMimeType, nsIURI* aURI, uint32_t aImageFlags,
-    uint32_t aInnerWindowId) {
+    uint64_t aInnerWindowId) {
   MOZ_ASSERT(aProgressTracker);
 
   nsresult rv;

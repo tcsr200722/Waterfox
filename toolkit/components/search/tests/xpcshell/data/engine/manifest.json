@@ -2,7 +2,7 @@
   "name": "Test search engine",
   "manifest_version": 2,
   "version": "1.0",
-  "applications": {
+  "browser_specific_settings": {
     "gecko": {
       "id": "engine@search.mozilla.org"
     }
@@ -34,7 +34,7 @@
           "value": "fflb"
         }
       ],
-      "suggest_url": "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl={moz:locale}&q={searchTerms}"
+      "suggest_url": "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}"
     }
   }
 }

@@ -8,13 +8,14 @@
 #define mozilla_dom_Directory_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/File.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class FileSystemBase;
@@ -24,7 +25,7 @@ class StringOrFileOrDirectory;
 class Directory final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Directory)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Directory)
 
   static already_AddRefed<Directory> Constructor(const GlobalObject& aGlobal,
                                                  const nsAString& aRealPath,

@@ -2,19 +2,20 @@
 
 /**
  * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * list should slowly go away as we improve the performance of the front-end.
+ * Instead of adding more reflows to the list, you should be modifying your code
+ * to avoid the reflow.
  *
- * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
+ * See https://firefox-source-docs.mozilla.org/performance/bestpractices.html
  * for tips on how to do that.
  */
 const EXPECTED_REFLOWS = [
   {
     stack: [
-      "clientX@chrome://browser/content/tabbrowser-tabs.js",
-      "on_dragstart@chrome://browser/content/tabbrowser-tabs.js",
-      "handleEvent@chrome://browser/content/tabbrowser-tabs.js",
+      "clientX@chrome://browser/content/tabbrowser/tabs.js",
+      "startTabDrag@chrome://browser/content/tabbrowser/tabs.js",
+      "on_dragstart@chrome://browser/content/tabbrowser/tabs.js",
+      "handleEvent@chrome://browser/content/tabbrowser/tabs.js",
       "synthesizeMouseAtPoint@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
       "synthesizeMouse@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
       "synthesizePlainDragAndDrop@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
@@ -24,8 +25,9 @@ const EXPECTED_REFLOWS = [
 
   {
     stack: [
-      "on_dragstart@chrome://browser/content/tabbrowser-tabs.js",
-      "handleEvent@chrome://browser/content/tabbrowser-tabs.js",
+      "startTabDrag@chrome://browser/content/tabbrowser/tabs.js",
+      "on_dragstart@chrome://browser/content/tabbrowser/tabs.js",
+      "handleEvent@chrome://browser/content/tabbrowser/tabs.js",
       "synthesizeMouseAtPoint@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
       "synthesizeMouse@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
       "synthesizePlainDragAndDrop@chrome://mochikit/content/tests/SimpleTest/EventUtils.js",
@@ -50,14 +52,14 @@ add_task(async function test_detach_not_overflowed() {
 
   let win;
   await withPerfObserver(
-    async function() {
+    async function () {
       win = await detachTab(gBrowser.tabs[1]);
     },
     {
       expectedReflows: EXPECTED_REFLOWS,
       // we are opening a whole new window, so there's no point in tracking
       // rects being painted
-      frames: { filter: rects => [] },
+      frames: { filter: () => [] },
     }
   );
 
@@ -76,7 +78,7 @@ add_task(async function test_detach_overflowed() {
 
   let win;
   await withPerfObserver(
-    async function() {
+    async function () {
       win = await detachTab(
         gBrowser.tabs[Math.floor(TAB_COUNT_FOR_OVERFLOW / 2)]
       );
@@ -85,7 +87,7 @@ add_task(async function test_detach_overflowed() {
       expectedReflows: EXPECTED_REFLOWS,
       // we are opening a whole new window, so there's no point in tracking
       // rects being painted
-      frames: { filter: rects => [] },
+      frames: { filter: () => [] },
     }
   );
 

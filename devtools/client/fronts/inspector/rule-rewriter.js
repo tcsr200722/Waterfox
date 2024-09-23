@@ -12,14 +12,22 @@
 
 "use strict";
 
-const promise = require("promise");
-const { getCSSLexer } = require("devtools/shared/css/lexer");
+const {
+  InspectorCSSParserWrapper,
+} = require("resource://devtools/shared/css/lexer.js");
 const {
   COMMENT_PARSING_HEURISTIC_BYPASS_CHAR,
   escapeCSSComment,
   parseNamedDeclarations,
   unescapeCSSComment,
-} = require("devtools/shared/css/parsing-utils");
+} = require("resource://devtools/shared/css/parsing-utils.js");
+
+loader.lazyRequireGetter(
+  this,
+  ["getIndentationFromPrefs", "getIndentationFromString"],
+  "resource://devtools/shared/indentation.js",
+  true
+);
 
 // Used to test whether a newline appears anywhere in some text.
 const NEWLINE_RX = /[\r\n]/;
@@ -102,7 +110,7 @@ RuleRewriter.prototype = {
    *
    * @param {String} inputString the input to use
    */
-  startInitialization: function(inputString) {
+  startInitialization(inputString) {
     this.inputString = inputString;
     // Whether there are any newlines in the input text.
     this.hasNewLine = /[\r\n]/.test(this.inputString);
@@ -122,7 +130,7 @@ RuleRewriter.prototype = {
    *
    * @param {Number} index The index of the property to modify
    */
-  completeInitialization: function(index) {
+  completeInitialization(index) {
     if (index < 0) {
       throw new Error("Invalid index " + index + ". Expected positive integer");
     }
@@ -148,7 +156,7 @@ RuleRewriter.prototype = {
    * @param {Number} offset the offset at which to compute the indentation
    * @return {String} the indentation at the indicated position
    */
-  getIndentation: function(string, offset) {
+  getIndentation(string, offset) {
     let originalOffset = offset;
     for (--offset; offset >= 0; --offset) {
       const c = string[offset];
@@ -181,14 +189,14 @@ RuleRewriter.prototype = {
    *                  where |text| is the text that has been rewritten
    *                  to be "lexically safe".
    */
-  sanitizePropertyValue: function(text) {
+  sanitizePropertyValue(text) {
     // Start by stripping any trailing ";".  This is done here to
     // avoid the case where the user types "url(" (which is turned
     // into "url(;" by the rule view before coming here), being turned
     // into "url(;)" by this code -- due to the way "url(...)" is
     // parsed as a single token.
     text = text.replace(/;$/, "");
-    const lexer = getCSSLexer(text);
+    const lexer = new InspectorCSSParserWrapper(text, { trackEOFChars: true });
 
     let result = "";
     let previousOffset = 0;
@@ -204,16 +212,28 @@ RuleRewriter.prototype = {
       // We set the location of the paren in a funny way, to handle
       // the case where we've seen a function token, where the paren
       // appears at the end.
-      parenStack.push({ closer, offset: result.length - 1 });
+      parenStack.push({ closer, offset: result.length - 1, token });
       previousOffset = token.endOffset;
     };
 
     // Pop a closing paren from the stack.
     const popSomeParens = closer => {
-      while (parenStack.length > 0) {
+      while (parenStack.length) {
         const paren = parenStack.pop();
 
         if (paren.closer === closer) {
+          return true;
+        }
+
+        // We need to handle non-closed url function differently, as performEOFFixup will
+        // only automatically close missing parenthesis `url`.
+        // In such case, don't do anything here.
+        if (
+          paren.closer === ")" &&
+          closer == null &&
+          paren.token.tokenType === "Function" &&
+          paren.token.value === "url"
+        ) {
           return true;
         }
 
@@ -228,50 +248,43 @@ RuleRewriter.prototype = {
       return false;
     };
 
-    while (true) {
-      const token = lexer.nextToken();
-      if (!token) {
-        break;
-      }
+    let token;
+    while ((token = lexer.nextToken())) {
+      switch (token.tokenType) {
+        case "Semicolon":
+          // We simply drop the ";" here.  This lets us cope with
+          // declarations that don't have a ";" and also other
+          // termination.  The caller handles adding the ";" again.
+          result += text.substring(previousOffset, token.startOffset);
+          previousOffset = token.endOffset;
+          break;
 
-      if (token.tokenType === "symbol") {
-        switch (token.text) {
-          case ";":
-            // We simply drop the ";" here.  This lets us cope with
-            // declarations that don't have a ";" and also other
-            // termination.  The caller handles adding the ";" again.
+        case "CurlyBracketBlock":
+          pushParen(token, "}");
+          break;
+
+        case "ParenthesisBlock":
+        case "Function":
+          pushParen(token, ")");
+          break;
+
+        case "SquareBracketBlock":
+          pushParen(token, "]");
+          break;
+
+        case "CloseCurlyBracket":
+        case "CloseParenthesis":
+        case "CloseSquareBracket":
+          // Did we find an unmatched close bracket?
+          if (!popSomeParens(token.text)) {
+            // Copy out text from |previousOffset|.
             result += text.substring(previousOffset, token.startOffset);
+            // Quote the offending symbol.
+            result += "\\" + token.text;
             previousOffset = token.endOffset;
-            break;
-
-          case "{":
-            pushParen(token, "}");
-            break;
-
-          case "(":
-            pushParen(token, ")");
-            break;
-
-          case "[":
-            pushParen(token, "]");
-            break;
-
-          case "}":
-          case ")":
-          case "]":
-            // Did we find an unmatched close bracket?
-            if (!popSomeParens(token.text)) {
-              // Copy out text from |previousOffset|.
-              result += text.substring(previousOffset, token.startOffset);
-              // Quote the offending symbol.
-              result += "\\" + token.text;
-              previousOffset = token.endOffset;
-              anySanitized = true;
-            }
-            break;
-        }
-      } else if (token.tokenType === "function") {
-        pushParen(token, ")");
+            anySanitized = true;
+          }
+          break;
       }
     }
 
@@ -280,7 +293,8 @@ RuleRewriter.prototype = {
 
     // Copy out any remaining text, then any needed terminators.
     result += text.substring(previousOffset, text.length);
-    const eofFixup = lexer.performEOFFixup("", true);
+
+    const eofFixup = lexer.performEOFFixup("");
     if (eofFixup) {
       anySanitized = true;
       result += eofFixup;
@@ -297,7 +311,7 @@ RuleRewriter.prototype = {
    * @param {Number} index the index at which to start
    * @return {Number} index of the first non-whitespace character, or -1
    */
-  skipWhitespaceBackward: function(string, index) {
+  skipWhitespaceBackward(string, index) {
     for (
       --index;
       index >= 0 && (string[index] === " " || string[index] === "\t");
@@ -315,7 +329,7 @@ RuleRewriter.prototype = {
    *                       terminate.  It might be invalid, so this
    *                       function must check for that.
    */
-  maybeTerminateDecl: function(index) {
+  maybeTerminateDecl(index) {
     if (
       index < 0 ||
       index >= this.declarations.length ||
@@ -366,7 +380,7 @@ RuleRewriter.prototype = {
    * @param {Number} index The index of the property.
    * @return {String} The sanitized text.
    */
-  sanitizeText: function(text, index) {
+  sanitizeText(text, index) {
     const [anySanitized, sanitizedText] = this.sanitizePropertyValue(text);
     if (anySanitized) {
       this.changedDeclarations[index] = sanitizedText;
@@ -381,7 +395,7 @@ RuleRewriter.prototype = {
    * @param {String} name current name of the property
    * @param {String} newName new name of the property
    */
-  renameProperty: function(index, name, newName) {
+  renameProperty(index, name, newName) {
     this.completeInitialization(index);
     this.result += CSS.escape(newName);
     // We could conceivably compute the name offsets instead so we
@@ -398,7 +412,7 @@ RuleRewriter.prototype = {
    * @param {Boolean} isEnabled true if the property should be enabled;
    *                        false if it should be disabled
    */
-  setPropertyEnabled: function(index, name, isEnabled) {
+  setPropertyEnabled(index, name, isEnabled) {
     this.completeInitialization(index);
     const decl = this.decl;
     const priority = decl.priority;
@@ -474,8 +488,25 @@ RuleRewriter.prototype = {
    *         that holds the default indentation that should be used
    *         for edits to the rule.
    */
-  getDefaultIndentation: function() {
-    return this.rule.parentStyleSheet.guessIndentation();
+  async getDefaultIndentation() {
+    if (!this.rule.parentStyleSheet) {
+      return null;
+    }
+
+    const prefIndent = getIndentationFromPrefs();
+    if (prefIndent) {
+      const { indentUnit, indentWithTabs } = prefIndent;
+      return indentWithTabs ? "\t" : " ".repeat(indentUnit);
+    }
+
+    const styleSheetsFront = await this.rule.targetFront.getFront(
+      "stylesheets"
+    );
+    const { str: source } = await styleSheetsFront.getText(
+      this.rule.parentStyleSheet.resourceId
+    );
+    const { indentUnit, indentWithTabs } = getIndentationFromString(source);
+    return indentWithTabs ? "\t" : " ".repeat(indentUnit);
   },
 
   /**
@@ -496,7 +527,7 @@ RuleRewriter.prototype = {
     this.completeInitialization(index);
     let newIndentation = "";
     if (this.hasNewLine) {
-      if (this.declarations.length > 0) {
+      if (this.declarations.length) {
         newIndentation = this.getIndentation(
           this.inputString,
           this.declarations[0].offsets[0]
@@ -565,7 +596,7 @@ RuleRewriter.prototype = {
    * @param {Boolean} enabled True if the new property should be
    *                          enabled, false if disabled
    */
-  createProperty: function(index, name, value, priority, enabled) {
+  createProperty(index, name, value, priority, enabled) {
     this.editPromise = this.internalCreateProperty(
       index,
       name,
@@ -592,7 +623,7 @@ RuleRewriter.prototype = {
    * @param {String} priority the property's priority, either the empty
    *                          string or "important"
    */
-  setProperty: function(index, name, value, priority) {
+  setProperty(index, name, value, priority) {
     this.completeInitialization(index);
     // We might see a "set" on a previously non-existent property; in
     // that case, act like "create".
@@ -623,7 +654,7 @@ RuleRewriter.prototype = {
    * @param {Number} index index of the property in the rule.
    * @param {String} name the name of the property to remove
    */
-  removeProperty: function(index, name) {
+  removeProperty(index, name) {
     this.completeInitialization(index);
 
     // If asked to remove a property that does not exist, bail out.
@@ -676,7 +707,7 @@ RuleRewriter.prototype = {
    * @param {Number} copyOffset Offset into |inputString| of the
    *        final text to copy to the output string.
    */
-  completeCopying: function(copyOffset) {
+  completeCopying(copyOffset) {
     // Add the trailing text.
     this.result += this.inputString.substring(copyOffset);
   },
@@ -687,8 +718,8 @@ RuleRewriter.prototype = {
    * @return {Promise} A promise which will be resolved when the modifications
    *         are complete.
    */
-  apply: function() {
-    return promise.resolve(this.editPromise).then(() => {
+  apply() {
+    return Promise.resolve(this.editPromise).then(() => {
       return this.rule.setRuleText(this.result, this.modifications);
     });
   },
@@ -703,7 +734,7 @@ RuleRewriter.prototype = {
    *                  whose value is the new text of the property.
    *                  |text| is the rewritten text of the rule.
    */
-  getResult: function() {
+  getResult() {
     return { changed: this.changedDeclarations, text: this.result };
   },
 };

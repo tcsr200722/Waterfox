@@ -67,25 +67,11 @@ Maybe<double> WebGL2Context::GetParameter(GLenum pname) {
     case LOCAL_GL_MAX_VERTEX_OUTPUT_COMPONENTS:
     case LOCAL_GL_MAX_VERTEX_UNIFORM_BLOCKS:
     case LOCAL_GL_MAX_VERTEX_UNIFORM_COMPONENTS:
-    case LOCAL_GL_MIN_PROGRAM_TEXEL_OFFSET:
-    case LOCAL_GL_PACK_ROW_LENGTH:
-    case LOCAL_GL_PACK_SKIP_PIXELS:
-    case LOCAL_GL_PACK_SKIP_ROWS:
-    case LOCAL_GL_UNPACK_IMAGE_HEIGHT:
-    case LOCAL_GL_UNPACK_ROW_LENGTH: {
+    case LOCAL_GL_MIN_PROGRAM_TEXEL_OFFSET: {
       GLint val;
       gl->fGetIntegerv(pname, &val);
       return Some(val);
     }
-
-    case LOCAL_GL_UNPACK_SKIP_IMAGES:
-      return Some(mPixelStore.mUnpackSkipImages);
-
-    case LOCAL_GL_UNPACK_SKIP_PIXELS:
-      return Some(mPixelStore.mUnpackSkipPixels);
-
-    case LOCAL_GL_UNPACK_SKIP_ROWS:
-      return Some(mPixelStore.mUnpackSkipRows);
 
     case LOCAL_GL_MAX_VARYING_COMPONENTS: {
       // On OS X Core Profile this is buggy.  The spec says that the
@@ -94,10 +80,6 @@ Maybe<double> WebGL2Context::GetParameter(GLenum pname) {
       gl->fGetIntegerv(LOCAL_GL_MAX_VARYING_VECTORS, &val);
       return Some(4 * val);
     }
-
-    /* GLint64 */
-    case LOCAL_GL_MAX_CLIENT_WAIT_TIMEOUT_WEBGL:
-      return Some(kMaxClientWaitSyncTimeoutNS);
 
     case LOCAL_GL_MAX_ELEMENT_INDEX:
       // GL_MAX_ELEMENT_INDEX becomes available in GL 4.3 or via ES3

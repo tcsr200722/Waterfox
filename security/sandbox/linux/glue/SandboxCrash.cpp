@@ -58,13 +58,12 @@ static void SandboxLogJSStack(void) {
     frame->GetName(cx, funName);
 
     if (!funName.IsVoid() || !fileName.IsVoid()) {
-      SANDBOX_LOG_ERROR("JS frame %d: %s %s line %d", i,
-                        funName.IsVoid() ? "(anonymous)"
-                                         : NS_ConvertUTF16toUTF8(funName).get(),
-                        fileName.IsVoid()
-                            ? "(no file)"
-                            : NS_ConvertUTF16toUTF8(fileName).get(),
-                        lineNumber);
+      SANDBOX_LOG("JS frame %d: %s %s line %d", i,
+                  funName.IsVoid() ? "(anonymous)"
+                                   : NS_ConvertUTF16toUTF8(funName).get(),
+                  fileName.IsVoid() ? "(no file)"
+                                    : NS_ConvertUTF16toUTF8(fileName).get(),
+                  lineNumber);
     }
 
     frame = frame->GetCaller(cx);
@@ -78,30 +77,28 @@ static void SandboxPrintStackFrame(uint32_t aFrameNumber, void* aPC, void* aSP,
 
   MozDescribeCodeAddress(aPC, &details);
   MozFormatCodeAddressDetails(buf, sizeof(buf), aFrameNumber, aPC, &details);
-  SANDBOX_LOG_ERROR("frame %s", buf);
+  SANDBOX_LOG("frame %s", buf);
 }
 
-static void SandboxLogCStack() {
-  // Skip 3 frames: one for this module, one for the signal handler in
-  // libmozsandbox, and one for the signal trampoline.
-  //
+static void SandboxLogCStack(const void* aFirstFramePC) {
   // Warning: this might not print any stack frames.  MozStackWalk
   // can't walk past the signal trampoline on ARM (bug 968531), and
   // x86 frame pointer walking may or may not work (bug 1082276).
 
-  MozStackWalk(SandboxPrintStackFrame, /* skip */ 3, /* max */ 0, nullptr);
-  SANDBOX_LOG_ERROR("end of stack.");
+  MozStackWalk(SandboxPrintStackFrame, aFirstFramePC, /* max */ 0, nullptr);
+  SANDBOX_LOG("end of stack.");
 }
 
-static void SandboxCrash(int nr, siginfo_t* info, void* void_context) {
+static void SandboxCrash(int nr, siginfo_t* info, void* void_context,
+                         const void* aFirstFramePC) {
   pid_t pid = getpid(), tid = syscall(__NR_gettid);
   bool dumped = CrashReporter::WriteMinidumpForSigInfo(nr, info, void_context);
 
   if (!dumped) {
-    SANDBOX_LOG_ERROR(
+    SANDBOX_LOG(
         "crash reporter is disabled (or failed);"
         " trying stack trace:");
-    SandboxLogCStack();
+    SandboxLogCStack(aFirstFramePC);
   }
 
   // Do this last, in case it crashes or deadlocks.

@@ -4,20 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if !defined(AbstractThread_h_)
-#  define AbstractThread_h_
+#ifndef XPCOM_THREADS_ABSTRACTTHREAD_H_
+#define XPCOM_THREADS_ABSTRACTTHREAD_H_
 
-#  include "mozilla/RefPtr.h"
-#  include "mozilla/ThreadLocal.h"
-#  include "nscore.h"
-#  include "nsIRunnable.h"
-#  include "nsISerialEventTarget.h"
-#  include "nsISupportsImpl.h"
-#  include "nsIThread.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/ThreadLocal.h"
+#include "nscore.h"
+#include "nsISerialEventTarget.h"
+#include "nsISupports.h"
+
+class nsIEventTarget;
+class nsIRunnable;
+class nsIThread;
 
 namespace mozilla {
 
-class TaskQueue;
 class TaskDispatcher;
 
 /*
@@ -50,15 +51,10 @@ class AbstractThread : public nsISerialEventTarget {
   AbstractThread(bool aSupportsTailDispatch)
       : mSupportsTailDispatch(aSupportsTailDispatch) {}
 
-  // Returns an AbstractThread wrapper of a nsIThread.
-  static already_AddRefed<AbstractThread> CreateXPCOMThreadWrapper(
-      nsIThread* aThread, bool aRequireTailDispatch, bool aOnThread = false);
-
-  NS_DECL_THREADSAFE_ISUPPORTS
-
   // We don't use NS_DECL_NSIEVENTTARGET so that we can remove the default
   // |flags| parameter from Dispatch. Otherwise, a single-argument Dispatch call
   // would be ambiguous.
+  using nsISerialEventTarget::IsOnCurrentThread;
   NS_IMETHOD_(bool) IsOnCurrentThreadInfallible(void) override;
   NS_IMETHOD IsOnCurrentThread(bool* _retval) override;
   NS_IMETHOD Dispatch(already_AddRefed<nsIRunnable> event,

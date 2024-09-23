@@ -14,9 +14,12 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=786347
 
 SimpleTest.waitForExplicitFinish();
 
-const {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const {NetUtil} = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const {HttpServer} = ChromeUtils.import("resource://testing-common/httpd.js");
+const {NetUtil} = ChromeUtils.importESModule(
+  "resource://gre/modules/NetUtil.sys.mjs"
+);
+const {HttpServer} = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 addLoadEvent(function () {
   (async function run_tests() {
@@ -262,7 +265,8 @@ function createPingPathHandler(server, path, lazyHeaders) {
       }
 
       if ("referrer" in headers) {
-        is(request.getHeader("Referer"), headers.referrer, "valid referer header");
+        let expectedReferrer = headers.referrer.match(/https?:\/\/[^\/]+\/?/i)[0];
+        is(request.getHeader("Referer"), expectedReferrer, "valid referer header");
       } else {
         ok(!request.hasHeader("Referer"), "no referer header");
       }

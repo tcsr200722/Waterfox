@@ -1,7 +1,8 @@
-extern crate quote;
-extern crate syn;
-
-mod features;
+#![allow(
+    clippy::manual_let_else,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args
+)]
 
 #[macro_use]
 mod macros;
@@ -16,90 +17,87 @@ fn test_split_for_impl() {
     };
 
     snapshot!(input as DeriveInput, @r###"
-   ⋮DeriveInput {
-   ⋮    vis: Inherited,
-   ⋮    ident: "S",
-   ⋮    generics: Generics {
-   ⋮        lt_token: Some,
-   ⋮        params: [
-   ⋮            Lifetime(LifetimeDef {
-   ⋮                lifetime: Lifetime {
-   ⋮                    ident: "a",
-   ⋮                },
-   ⋮            }),
-   ⋮            Lifetime(LifetimeDef {
-   ⋮                lifetime: Lifetime {
-   ⋮                    ident: "b",
-   ⋮                },
-   ⋮                colon_token: Some,
-   ⋮                bounds: [
-   ⋮                    Lifetime {
-   ⋮                        ident: "a",
-   ⋮                    },
-   ⋮                ],
-   ⋮            }),
-   ⋮            Type(TypeParam {
-   ⋮                attrs: [
-   ⋮                    Attribute {
-   ⋮                        style: Outer,
-   ⋮                        path: Path {
-   ⋮                            segments: [
-   ⋮                                PathSegment {
-   ⋮                                    ident: "may_dangle",
-   ⋮                                    arguments: None,
-   ⋮                                },
-   ⋮                            ],
-   ⋮                        },
-   ⋮                        tokens: ``,
-   ⋮                    },
-   ⋮                ],
-   ⋮                ident: "T",
-   ⋮                colon_token: Some,
-   ⋮                bounds: [
-   ⋮                    Lifetime(Lifetime {
-   ⋮                        ident: "a",
-   ⋮                    }),
-   ⋮                ],
-   ⋮                eq_token: Some,
-   ⋮                default: Some(Type::Tuple),
-   ⋮            }),
-   ⋮        ],
-   ⋮        gt_token: Some,
-   ⋮        where_clause: Some(WhereClause {
-   ⋮            predicates: [
-   ⋮                Type(PredicateType {
-   ⋮                    bounded_ty: Type::Path {
-   ⋮                        path: Path {
-   ⋮                            segments: [
-   ⋮                                PathSegment {
-   ⋮                                    ident: "T",
-   ⋮                                    arguments: None,
-   ⋮                                },
-   ⋮                            ],
-   ⋮                        },
-   ⋮                    },
-   ⋮                    bounds: [
-   ⋮                        Trait(TraitBound {
-   ⋮                            modifier: None,
-   ⋮                            path: Path {
-   ⋮                                segments: [
-   ⋮                                    PathSegment {
-   ⋮                                        ident: "Debug",
-   ⋮                                        arguments: None,
-   ⋮                                    },
-   ⋮                                ],
-   ⋮                            },
-   ⋮                        }),
-   ⋮                    ],
-   ⋮                }),
-   ⋮            ],
-   ⋮        }),
-   ⋮    },
-   ⋮    data: Data::Struct {
-   ⋮        fields: Unit,
-   ⋮        semi_token: Some,
-   ⋮    },
-   ⋮}
+    DeriveInput {
+        vis: Visibility::Inherited,
+        ident: "S",
+        generics: Generics {
+            lt_token: Some,
+            params: [
+                GenericParam::Lifetime(LifetimeParam {
+                    lifetime: Lifetime {
+                        ident: "a",
+                    },
+                }),
+                Token![,],
+                GenericParam::Lifetime(LifetimeParam {
+                    lifetime: Lifetime {
+                        ident: "b",
+                    },
+                    colon_token: Some,
+                    bounds: [
+                        Lifetime {
+                            ident: "a",
+                        },
+                    ],
+                }),
+                Token![,],
+                GenericParam::Type(TypeParam {
+                    attrs: [
+                        Attribute {
+                            style: AttrStyle::Outer,
+                            meta: Meta::Path {
+                                segments: [
+                                    PathSegment {
+                                        ident: "may_dangle",
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    ident: "T",
+                    colon_token: Some,
+                    bounds: [
+                        TypeParamBound::Lifetime {
+                            ident: "a",
+                        },
+                    ],
+                    eq_token: Some,
+                    default: Some(Type::Tuple),
+                }),
+            ],
+            gt_token: Some,
+            where_clause: Some(WhereClause {
+                predicates: [
+                    WherePredicate::Type(PredicateType {
+                        bounded_ty: Type::Path {
+                            path: Path {
+                                segments: [
+                                    PathSegment {
+                                        ident: "T",
+                                    },
+                                ],
+                            },
+                        },
+                        bounds: [
+                            TypeParamBound::Trait(TraitBound {
+                                path: Path {
+                                    segments: [
+                                        PathSegment {
+                                            ident: "Debug",
+                                        },
+                                    ],
+                                },
+                            }),
+                        ],
+                    }),
+                ],
+            }),
+        },
+        data: Data::Struct {
+            fields: Fields::Unit,
+            semi_token: Some,
+        },
+    }
     "###);
 
     let generics = input.generics;
@@ -131,46 +129,43 @@ fn test_split_for_impl() {
 fn test_ty_param_bound() {
     let tokens = quote!('a);
     snapshot!(tokens as TypeParamBound, @r###"
-   ⋮Lifetime(Lifetime {
-   ⋮    ident: "a",
-   ⋮})
+    TypeParamBound::Lifetime {
+        ident: "a",
+    }
     "###);
 
     let tokens = quote!('_);
     snapshot!(tokens as TypeParamBound, @r###"
-   ⋮Lifetime(Lifetime {
-   ⋮    ident: "_",
-   ⋮})
+    TypeParamBound::Lifetime {
+        ident: "_",
+    }
     "###);
 
     let tokens = quote!(Debug);
     snapshot!(tokens as TypeParamBound, @r###"
-   ⋮Trait(TraitBound {
-   ⋮    modifier: None,
-   ⋮    path: Path {
-   ⋮        segments: [
-   ⋮            PathSegment {
-   ⋮                ident: "Debug",
-   ⋮                arguments: None,
-   ⋮            },
-   ⋮        ],
-   ⋮    },
-   ⋮})
+    TypeParamBound::Trait(TraitBound {
+        path: Path {
+            segments: [
+                PathSegment {
+                    ident: "Debug",
+                },
+            ],
+        },
+    })
     "###);
 
     let tokens = quote!(?Sized);
     snapshot!(tokens as TypeParamBound, @r###"
-   ⋮Trait(TraitBound {
-   ⋮    modifier: Maybe,
-   ⋮    path: Path {
-   ⋮        segments: [
-   ⋮            PathSegment {
-   ⋮                ident: "Sized",
-   ⋮                arguments: None,
-   ⋮            },
-   ⋮        ],
-   ⋮    },
-   ⋮})
+    TypeParamBound::Trait(TraitBound {
+        modifier: TraitBoundModifier::Maybe,
+        path: Path {
+            segments: [
+                PathSegment {
+                    ident: "Sized",
+                },
+            ],
+        },
+    })
     "###);
 }
 
@@ -187,76 +182,75 @@ fn test_fn_precedence_in_where_clause() {
     };
 
     snapshot!(input as ItemFn, @r###"
-   ⋮ItemFn {
-   ⋮    vis: Inherited,
-   ⋮    sig: Signature {
-   ⋮        ident: "f",
-   ⋮        generics: Generics {
-   ⋮            lt_token: Some,
-   ⋮            params: [
-   ⋮                Type(TypeParam {
-   ⋮                    ident: "G",
-   ⋮                }),
-   ⋮            ],
-   ⋮            gt_token: Some,
-   ⋮            where_clause: Some(WhereClause {
-   ⋮                predicates: [
-   ⋮                    Type(PredicateType {
-   ⋮                        bounded_ty: Type::Path {
-   ⋮                            path: Path {
-   ⋮                                segments: [
-   ⋮                                    PathSegment {
-   ⋮                                        ident: "G",
-   ⋮                                        arguments: None,
-   ⋮                                    },
-   ⋮                                ],
-   ⋮                            },
-   ⋮                        },
-   ⋮                        bounds: [
-   ⋮                            Trait(TraitBound {
-   ⋮                                modifier: None,
-   ⋮                                path: Path {
-   ⋮                                    segments: [
-   ⋮                                        PathSegment {
-   ⋮                                            ident: "FnOnce",
-   ⋮                                            arguments: PathArguments::Parenthesized {
-   ⋮                                                output: Type(
-   ⋮                                                    Type::Path {
-   ⋮                                                        path: Path {
-   ⋮                                                            segments: [
-   ⋮                                                                PathSegment {
-   ⋮                                                                    ident: "i32",
-   ⋮                                                                    arguments: None,
-   ⋮                                                                },
-   ⋮                                                            ],
-   ⋮                                                        },
-   ⋮                                                    },
-   ⋮                                                ),
-   ⋮                                            },
-   ⋮                                        },
-   ⋮                                    ],
-   ⋮                                },
-   ⋮                            }),
-   ⋮                            Trait(TraitBound {
-   ⋮                                modifier: None,
-   ⋮                                path: Path {
-   ⋮                                    segments: [
-   ⋮                                        PathSegment {
-   ⋮                                            ident: "Send",
-   ⋮                                            arguments: None,
-   ⋮                                        },
-   ⋮                                    ],
-   ⋮                                },
-   ⋮                            }),
-   ⋮                        ],
-   ⋮                    }),
-   ⋮                ],
-   ⋮            }),
-   ⋮        },
-   ⋮        output: Default,
-   ⋮    },
-   ⋮    block: Block,
-   ⋮}
+    ItemFn {
+        vis: Visibility::Inherited,
+        sig: Signature {
+            ident: "f",
+            generics: Generics {
+                lt_token: Some,
+                params: [
+                    GenericParam::Type(TypeParam {
+                        ident: "G",
+                    }),
+                ],
+                gt_token: Some,
+                where_clause: Some(WhereClause {
+                    predicates: [
+                        WherePredicate::Type(PredicateType {
+                            bounded_ty: Type::Path {
+                                path: Path {
+                                    segments: [
+                                        PathSegment {
+                                            ident: "G",
+                                        },
+                                    ],
+                                },
+                            },
+                            bounds: [
+                                TypeParamBound::Trait(TraitBound {
+                                    path: Path {
+                                        segments: [
+                                            PathSegment {
+                                                ident: "FnOnce",
+                                                arguments: PathArguments::Parenthesized {
+                                                    output: ReturnType::Type(
+                                                        Type::Path {
+                                                            path: Path {
+                                                                segments: [
+                                                                    PathSegment {
+                                                                        ident: "i32",
+                                                                    },
+                                                                ],
+                                                            },
+                                                        },
+                                                    ),
+                                                },
+                                            },
+                                        ],
+                                    },
+                                }),
+                                Token![+],
+                                TypeParamBound::Trait(TraitBound {
+                                    path: Path {
+                                        segments: [
+                                            PathSegment {
+                                                ident: "Send",
+                                            },
+                                        ],
+                                    },
+                                }),
+                            ],
+                        }),
+                        Token![,],
+                    ],
+                }),
+            },
+            output: ReturnType::Default,
+        },
+        block: Block {
+            stmts: [],
+        },
+    }
     "###);
 
     let where_clause = input.sig.generics.where_clause.as_ref().unwrap();
@@ -270,7 +264,7 @@ fn test_fn_precedence_in_where_clause() {
     assert_eq!(predicate.bounds.len(), 2, "{:#?}", predicate.bounds);
 
     let first_bound = &predicate.bounds[0];
-    assert_eq!(quote!(#first_bound).to_string(), "FnOnce ( ) -> i32");
+    assert_eq!(quote!(#first_bound).to_string(), "FnOnce () -> i32");
 
     let second_bound = &predicate.bounds[1];
     assert_eq!(quote!(#second_bound).to_string(), "Send");

@@ -9,8 +9,7 @@
 #include "mozilla/StaticPrefs_dom.h"
 #include <cstdlib>
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(StorageAccessPermissionRequest,
                                    ContentPermissionRequestBase)
@@ -20,15 +19,23 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(StorageAccessPermissionRequest,
 
 StorageAccessPermissionRequest::StorageAccessPermissionRequest(
     nsPIDOMWindowInner* aWindow, nsIPrincipal* aNodePrincipal,
+    const Maybe<nsCString>& aTopLevelBaseDomain, bool aFrameOnly,
     AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback)
     : ContentPermissionRequestBase(aNodePrincipal, aWindow,
-                                   NS_LITERAL_CSTRING("dom.storage_access"),
-                                   NS_LITERAL_CSTRING("storage-access")),
+                                   "dom.storage_access"_ns,
+                                   "storage-access"_ns),
       mAllowCallback(std::move(aAllowCallback)),
       mCancelCallback(std::move(aCancelCallback)),
       mCallbackCalled(false) {
-  mPermissionRequests.AppendElement(
-      PermissionRequest(mType, nsTArray<nsString>()));
+  mOptions.SetLength(2);
+  if (aTopLevelBaseDomain.isSome()) {
+    nsCString option = aTopLevelBaseDomain.value();
+    mOptions.ElementAt(0) = NS_ConvertUTF8toUTF16(option);
+  }
+  if (aFrameOnly) {
+    mOptions.ElementAt(1) = u"1"_ns;
+  }
+  mPermissionRequests.AppendElement(PermissionRequest(mType, mOptions));
 }
 
 NS_IMETHODIMP
@@ -41,7 +48,7 @@ StorageAccessPermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-StorageAccessPermissionRequest::Allow(JS::HandleValue aChoices) {
+StorageAccessPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   nsTArray<PermissionChoice> choices;
   nsresult rv = TranslateChoices(aChoices, mPermissionRequests, choices);
   if (NS_FAILED(rv)) {
@@ -58,6 +65,12 @@ StorageAccessPermissionRequest::Allow(JS::HandleValue aChoices) {
     }
   }
   return NS_OK;
+}
+
+NS_IMETHODIMP
+StorageAccessPermissionRequest::GetTypes(nsIArray** aTypes) {
+  return nsContentPermissionUtils::CreatePermissionArray(mType, mOptions,
+                                                         aTypes);
 }
 
 RefPtr<StorageAccessPermissionRequest::AutoGrantDelayPromise>
@@ -101,13 +114,37 @@ StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
     return nullptr;
   }
   nsGlobalWindowInner* win = nsGlobalWindowInner::Cast(aWindow);
-  if (!win->GetPrincipal()) {
+
+  return Create(aWindow, win->GetPrincipal(), std::move(aAllowCallback),
+                std::move(aCancelCallback));
+}
+
+already_AddRefed<StorageAccessPermissionRequest>
+StorageAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow,
+                                       nsIPrincipal* aPrincipal,
+                                       AllowCallback&& aAllowCallback,
+                                       CancelCallback&& aCancelCallback) {
+  return Create(aWindow, aPrincipal, Nothing(), true, std::move(aAllowCallback),
+                std::move(aCancelCallback));
+}
+
+already_AddRefed<StorageAccessPermissionRequest>
+StorageAccessPermissionRequest::Create(
+    nsPIDOMWindowInner* aWindow, nsIPrincipal* aPrincipal,
+    const Maybe<nsCString>& aTopLevelBaseDomain, bool aFrameOnly,
+    AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback) {
+  if (!aWindow) {
     return nullptr;
   }
+
+  if (!aPrincipal) {
+    return nullptr;
+  }
+
   RefPtr<StorageAccessPermissionRequest> request =
-      new StorageAccessPermissionRequest(aWindow, win->GetPrincipal(),
-                                         std::move(aAllowCallback),
-                                         std::move(aCancelCallback));
+      new StorageAccessPermissionRequest(
+          aWindow, aPrincipal, aTopLevelBaseDomain, aFrameOnly,
+          std::move(aAllowCallback), std::move(aCancelCallback));
   return request.forget();
 }
 
@@ -126,5 +163,4 @@ unsigned StorageAccessPermissionRequest::CalculateSimulatedDelay() {
   return kMin + random % (kMax - kMin);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

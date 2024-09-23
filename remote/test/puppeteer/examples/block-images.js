@@ -18,19 +18,19 @@
 
 const puppeteer = require('puppeteer');
 
-(async() => {
+(async () => {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.setRequestInterception(true);
   page.on('request', request => {
-    if (request.resourceType() === 'image')
+    if (request.resourceType() === 'image') {
       request.abort();
-    else
+    } else {
       request.continue();
+    }
   });
   await page.goto('https://news.google.com/news/');
   await page.screenshot({path: 'news.png', fullPage: true});
 
   await browser.close();
 })();
-

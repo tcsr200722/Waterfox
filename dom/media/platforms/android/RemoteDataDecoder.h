@@ -8,9 +8,8 @@
 #include "AndroidDecoderModule.h"
 #include "SurfaceTexture.h"
 #include "TimeUnits.h"
-#include "mozilla/java/CodecProxyWrappers.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/java/CodecProxyWrappers.h"
 
 namespace mozilla {
 
@@ -19,6 +18,8 @@ DDLoggedTypeDeclNameAndBase(RemoteDataDecoder, MediaDataDecoder);
 class RemoteDataDecoder : public MediaDataDecoder,
                           public DecoderDoctorLifeLogger<RemoteDataDecoder> {
  public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteDataDecoder, final);
+
   static already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
       const CreateDecoderParams& aParams, const nsString& aDrmStubId,
       CDMProxy* aProxy);
@@ -32,35 +33,33 @@ class RemoteDataDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("android decoder (remote)");
+    return "android decoder (remote)"_ns;
   }
 
  protected:
-  virtual ~RemoteDataDecoder() {}
+  virtual ~RemoteDataDecoder() = default;
   RemoteDataDecoder(MediaData::Type aType, const nsACString& aMimeType,
                     java::sdk::MediaFormat::Param aFormat,
-                    const nsString& aDrmStubId, TaskQueue* aTaskQueue);
+                    const nsString& aDrmStubId);
 
-  // Methods only called on mTaskQueue.
-  RefPtr<FlushPromise> ProcessFlush();
-  RefPtr<DecodePromise> ProcessDecode(MediaRawData* aSample);
-  RefPtr<ShutdownPromise> ProcessShutdown();
+  // Methods only called on mThread.
   void UpdateInputStatus(int64_t aTimestamp, bool aProcessed);
   void UpdateOutputStatus(RefPtr<MediaData>&& aSample);
   void ReturnDecodedData();
   void DrainComplete();
   void Error(const MediaResult& aError);
-  void AssertOnTaskQueue() const {
-    MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  void AssertOnThread() const {
+    // mThread may not be set if Init hasn't been called first.
+    MOZ_ASSERT(!mThread || mThread->IsOnCurrentThread());
   }
 
   enum class State { DRAINED, DRAINABLE, DRAINING, SHUTDOWN };
   void SetState(State aState) {
-    AssertOnTaskQueue();
+    AssertOnThread();
     mState = aState;
   }
   State GetState() const {
-    AssertOnTaskQueue();
+    AssertOnThread();
     return mState;
   }
 
@@ -76,25 +75,31 @@ class RemoteDataDecoder : public MediaDataDecoder,
   java::CodecProxy::NativeCallbacks::GlobalRef mJavaCallbacks;
   nsString mDrmStubId;
 
-  RefPtr<TaskQueue> mTaskQueue;
+  nsCOMPtr<nsISerialEventTarget> mThread;
 
   // Preallocated Java object used as a reusable storage for input buffer
-  // information. Contents must be changed only on mTaskQueue.
-  java::sdk::BufferInfo::GlobalRef mInputBufferInfo;
+  // information. Contents must be changed only on mThread.
+  java::sdk::MediaCodec::BufferInfo::GlobalRef mInputBufferInfo;
 
   // Session ID attached to samples. It is returned by CodecProxy::Input().
-  // Accessed on mTaskqueue only.
+  // Accessed on mThread only.
   int64_t mSession;
 
  private:
   enum class PendingOp { INCREASE, DECREASE, CLEAR };
   void UpdatePendingInputStatus(PendingOp aOp);
   size_t HasPendingInputs() {
-    AssertOnTaskQueue();
+    AssertOnThread();
     return mNumPendingInputs > 0;
   }
 
-  // The following members must only be accessed on mTaskqueue.
+  // Returns true if we are in a state which requires a new decoder to be
+  // created. In this case all errors will be reported as
+  // NS_ERROR_DOM_MEDIA_NEED_NEW_DECODER to avoid reporting errors as fatal when
+  // they can be fixed with a new decoder.
+  virtual bool NeedsNewDecoder() const { return false; }
+
+  // The following members must only be accessed on mThread.
   MozPromiseHolder<DecodePromise> mDecodePromise;
   MozPromiseHolder<DecodePromise> mDrainPromise;
   DecodedData mDecodedData;

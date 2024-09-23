@@ -4,12 +4,6 @@
 
 requestLongerTimeout(2);
 
-const EVENTUTILS_URL =
-  "chrome://mochikit/content/tests/SimpleTest/EventUtils.js";
-var EventUtils = {};
-
-Services.scriptloader.loadSubScript(EVENTUTILS_URL, EventUtils);
-
 /**
  * Tests that tabs from Private Browsing windows cannot be dragged
  * into non-private windows, and vice-versa.
@@ -385,12 +379,13 @@ add_task(async function test_dragging_zoom_handling() {
   let tab1 = await BrowserTestUtils.openNewForegroundTab(win1.gBrowser);
   let tab2 = await BrowserTestUtils.openNewForegroundTab(
     win2.gBrowser,
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example.com/"
   );
 
   win2.FullZoom.setZoom(ZOOM_FACTOR);
-  FullZoomHelper.zoomTest(
-    tab2,
+  is(
+    ZoomManager.getZoomForBrowser(tab2.linkedBrowser),
     ZOOM_FACTOR,
     "Original tab should have correct zoom factor"
   );
@@ -409,8 +404,8 @@ add_task(async function test_dragging_zoom_handling() {
   // chains in the zoom code.
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  FullZoomHelper.zoomTest(
-    win1.gBrowser.selectedTab,
+  is(
+    ZoomManager.getZoomForBrowser(win1.gBrowser.selectedBrowser),
     ZOOM_FACTOR,
     "Dragged tab should have correct zoom factor"
   );

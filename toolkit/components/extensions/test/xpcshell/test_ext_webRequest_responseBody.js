@@ -3,9 +3,8 @@
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
 /* eslint-disable no-shadow */
 
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
-const { ExtensionTestCommon } = ChromeUtils.import(
-  "resource://testing-common/ExtensionTestCommon.jsm"
+const { ExtensionTestCommon } = ChromeUtils.importESModule(
+  "resource://testing-common/ExtensionTestCommon.sys.mjs"
 );
 
 const HOSTS = new Set(["example.com"]);
@@ -75,8 +74,42 @@ server.registerPathHandler("/lorem.html.gz", async (request, response) => {
   );
   response.setHeader("Content-Encoding", "gzip", false);
 
-  let data = await OS.File.read(do_get_file("data/lorem.html.gz").path);
-  response.write(String.fromCharCode(...new Uint8Array(data)));
+  let data = await IOUtils.read(do_get_file("data/lorem.html.gz").path);
+  response.write(String.fromCharCode(...data));
+
+  response.finish();
+});
+
+server.registerPathHandler("/multipart", async (request, response) => {
+  response.processAsync();
+
+  response.setHeader(
+    "Content-Type",
+    'Content-Type: multipart/x-mixed-replace; boundary="testingtesting"',
+    false
+  );
+
+  response.write("--testingtesting\n");
+  response.write(PARTS.join(""));
+  response.write("--testingtesting--\n");
+
+  response.finish();
+});
+
+server.registerPathHandler("/multipart2", async (request, response) => {
+  response.processAsync();
+
+  response.setHeader(
+    "Content-Type",
+    'Content-Type: multipart/x-mixed-replace; boundary="testingtesting"',
+    false
+  );
+
+  response.write("--testingtesting\n");
+  response.write(PARTS.join(""));
+  response.write("--testingtesting\n");
+  response.write(PARTS.join(""));
+  response.write("--testingtesting--\n");
 
   response.finish();
 });
@@ -95,7 +128,7 @@ const TASKS = [
         `(${num}): Got expected initial status`
       );
 
-      filter.onstart = event => {
+      filter.onstart = () => {
         browser.test.assertEq(
           "transferringdata",
           filter.status,
@@ -103,7 +136,7 @@ const TASKS = [
         );
       };
 
-      filter.onstop = event => {
+      filter.onstop = () => {
         browser.test.fail(
           `(${num}): Got unexpected onStop event while disconnected`
         );
@@ -174,7 +207,7 @@ const TASKS = [
         }
       };
 
-      filter.onerror = event => {
+      filter.onerror = () => {
         browser.test.fail(
           `(${num}): Got unexpected error event: ${filter.error}`
         );
@@ -189,7 +222,7 @@ const TASKS = [
     task(filter, resolve, num) {
       let decoder = new TextDecoder("utf-8");
 
-      filter.onstop = event => {
+      filter.onstop = () => {
         browser.test.fail(
           `(${num}): Got unexpected onStop event while disconnected`
         );
@@ -221,7 +254,7 @@ const TASKS = [
         }
       };
 
-      filter.onerror = event => {
+      filter.onerror = () => {
         browser.test.fail(
           `(${num}): Got unexpected error event: ${filter.error}`
         );
@@ -234,9 +267,9 @@ const TASKS = [
   {
     url: "slow_response.sjs",
     task(filter, resolve, num) {
-      let encoder = new TextEncoder("utf-8");
+      let encoder = new TextEncoder();
 
-      filter.onstop = event => {
+      filter.onstop = () => {
         browser.test.fail(
           `(${num}): Got unexpected onStop event while disconnected`
         );
@@ -297,7 +330,7 @@ const TASKS = [
         }
       };
 
-      filter.onerror = event => {
+      filter.onerror = () => {
         browser.test.fail(
           `(${num}): Got unexpected error event: ${filter.error}`
         );
@@ -310,10 +343,10 @@ const TASKS = [
   {
     url: "slow_response.sjs",
     task(filter, resolve, num) {
-      let encoder = new TextEncoder("utf-8");
+      let encoder = new TextEncoder();
       let decoder = new TextDecoder("utf-8");
 
-      filter.onstop = event => {
+      filter.onstop = () => {
         browser.test.fail(`(${num}): Got unexpected onStop event while closed`);
       };
 
@@ -373,7 +406,7 @@ const TASKS = [
         }
       };
 
-      filter.onerror = event => {
+      filter.onerror = () => {
         browser.test.fail(
           `(${num}): Got unexpected error event: ${filter.error}`
         );
@@ -389,11 +422,11 @@ const TASKS = [
       let response = "";
       let decoder = new TextDecoder("utf-8");
 
-      filter.onstart = event => {
+      filter.onstart = () => {
         browser.test.log(`(${num}): Request start`);
       };
 
-      filter.onstop = event => {
+      filter.onstop = () => {
         browser.test.assertEq(
           "finishedtransferringdata",
           filter.status,
@@ -423,7 +456,7 @@ const TASKS = [
         filter.write(event.data);
       };
 
-      filter.onerror = event => {
+      filter.onerror = () => {
         browser.test.fail(
           `(${num}): Got unexpected error event: ${filter.error}`
         );
@@ -431,6 +464,70 @@ const TASKS = [
     },
     verify(response) {
       equal(response, PARTS.join(""), "Got expected final HTML");
+    },
+  },
+  {
+    url: "multipart",
+    task(filter, resolve, num) {
+      filter.onstart = () => {
+        browser.test.log(`(${num}): Request start`);
+      };
+
+      filter.onstop = () => {
+        filter.disconnect();
+        resolve();
+      };
+
+      filter.ondata = event => {
+        filter.write(event.data);
+      };
+
+      filter.onerror = () => {
+        browser.test.fail(
+          `(${num}): Got unexpected error event: ${filter.error}`
+        );
+      };
+    },
+    verify(response) {
+      equal(
+        response,
+        "--testingtesting\n" + PARTS.join("") + "--testingtesting--\n",
+        "Got expected final HTML"
+      );
+    },
+  },
+  {
+    url: "multipart2",
+    task(filter, resolve, num) {
+      filter.onstart = () => {
+        browser.test.log(`(${num}): Request start`);
+      };
+
+      filter.onstop = () => {
+        filter.disconnect();
+        resolve();
+      };
+
+      filter.ondata = event => {
+        filter.write(event.data);
+      };
+
+      filter.onerror = () => {
+        browser.test.fail(
+          `(${num}): Got unexpected error event: ${filter.error}`
+        );
+      };
+    },
+    verify(response) {
+      equal(
+        response,
+        "--testingtesting\n" +
+          PARTS.join("") +
+          "--testingtesting\n" +
+          PARTS.join("") +
+          "--testingtesting--\n",
+        "Got expected final HTML"
+      );
     },
   },
 ];
@@ -442,7 +539,7 @@ function serializeTest(test, num) {
   return `{url: ${JSON.stringify(url)}, task: ${task}}`;
 }
 
-add_task(async function() {
+add_task(async function () {
   function background(TASKS) {
     async function runTest(test, num, details) {
       browser.test.log(`Running test #${num}: ${details.url}`);
@@ -531,7 +628,7 @@ add_task(async function test_cachedResponse() {
         data => {
           let filter = browser.webRequest.filterResponseData(data.requestId);
 
-          filter.onstop = event => {
+          filter.onstop = () => {
             filter.close();
           };
           filter.ondata = event => {
@@ -572,7 +669,7 @@ add_task(async function test_late_close() {
         data => {
           let filter = browser.webRequest.filterResponseData(data.requestId);
 
-          filter.onstop = event => {
+          filter.onstop = () => {
             browser.test.fail("Should not receive onstop after close()");
             browser.test.assertEq(
               "closed",

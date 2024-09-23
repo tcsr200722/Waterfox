@@ -8,18 +8,15 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use std::fmt::{
-    Debug,
-    Display,
+use std::{
+    fmt::{Debug, Display},
+    path::{Path, PathBuf},
 };
-use std::path::Path;
 
-use crate::backend::common::{
-    DatabaseFlags,
-    EnvironmentFlags,
-    WriteFlags,
+use crate::{
+    backend::common::{DatabaseFlags, EnvironmentFlags, RecoveryStrategy, WriteFlags},
+    error::StoreError,
 };
-use crate::error::StoreError;
 
 pub trait BackendError: Debug + Display + Into<StoreError> {}
 
@@ -84,6 +81,11 @@ pub trait BackendEnvironmentBuilder<'b>: Debug + Eq + PartialEq + Copy + Clone {
 
     fn set_map_size(&mut self, size: usize) -> &mut Self;
 
+    fn set_make_dir_if_needed(&mut self, make_dir_if_needed: bool) -> &mut Self;
+
+    /// Set the corruption recovery strategy. See [`RecoveryStrategy`] for details.
+    fn set_corruption_recovery_strategy(&mut self, strategy: RecoveryStrategy) -> &mut Self;
+
     fn open(&self, path: &Path) -> Result<Self::Environment, Self::Error>;
 }
 
@@ -96,9 +98,15 @@ pub trait BackendEnvironment<'e>: Debug {
     type RoTransaction: BackendRoCursorTransaction<'e, Database = Self::Database>;
     type RwTransaction: BackendRwCursorTransaction<'e, Database = Self::Database>;
 
+    fn get_dbs(&self) -> Result<Vec<Option<String>>, Self::Error>;
+
     fn open_db(&self, name: Option<&str>) -> Result<Self::Database, Self::Error>;
 
-    fn create_db(&self, name: Option<&str>, flags: Self::Flags) -> Result<Self::Database, Self::Error>;
+    fn create_db(
+        &self,
+        name: Option<&str>,
+        flags: Self::Flags,
+    ) -> Result<Self::Database, Self::Error>;
 
     fn begin_ro_txn(&'e self) -> Result<Self::RoTransaction, Self::Error>;
 
@@ -112,7 +120,11 @@ pub trait BackendEnvironment<'e>: Debug {
 
     fn freelist(&self) -> Result<usize, Self::Error>;
 
+    fn load_ratio(&self) -> Result<Option<f32>, Self::Error>;
+
     fn set_map_size(&self, size: usize) -> Result<(), Self::Error>;
+
+    fn get_files_on_disk(&self) -> Vec<PathBuf>;
 }
 
 pub trait BackendRoTransaction: Debug {
@@ -131,13 +143,24 @@ pub trait BackendRwTransaction: Debug {
 
     fn get(&self, db: &Self::Database, key: &[u8]) -> Result<&[u8], Self::Error>;
 
-    fn put(&mut self, db: &Self::Database, key: &[u8], value: &[u8], flags: Self::Flags) -> Result<(), Self::Error>;
+    fn put(
+        &mut self,
+        db: &Self::Database,
+        key: &[u8],
+        value: &[u8],
+        flags: Self::Flags,
+    ) -> Result<(), Self::Error>;
 
     #[cfg(not(feature = "db-dup-sort"))]
     fn del(&mut self, db: &Self::Database, key: &[u8]) -> Result<(), Self::Error>;
 
     #[cfg(feature = "db-dup-sort")]
-    fn del(&mut self, db: &Self::Database, key: &[u8], value: Option<&[u8]>) -> Result<(), Self::Error>;
+    fn del(
+        &mut self,
+        db: &Self::Database,
+        key: &[u8],
+        value: Option<&[u8]>,
+    ) -> Result<(), Self::Error>;
 
     fn clear_db(&mut self, db: &Self::Database) -> Result<(), Self::Error>;
 

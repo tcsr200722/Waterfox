@@ -7,7 +7,6 @@
 #ifndef mozilla_dom_MediaKeyStatuses_h
 #define mozilla_dom_MediaKeyStatuses_h
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Attributes.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
@@ -19,6 +18,8 @@
 class nsPIDOMWindowInner;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class ArrayBufferViewOrArrayBuffer;
@@ -29,7 +30,7 @@ class ArrayBufferViewOrArrayBuffer;
 class MediaKeyStatusMap final : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaKeyStatusMap)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(MediaKeyStatusMap)
 
  public:
   explicit MediaKeyStatusMap(nsPIDOMWindowInner* aParent);
@@ -43,8 +44,9 @@ class MediaKeyStatusMap final : public nsISupports, public nsWrapperCache {
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  void Get(JSContext* aCx, const ArrayBufferViewOrArrayBuffer& aKey,
-           JS::MutableHandle<JS::Value> aOutValue, ErrorResult& aOutRv) const;
+  void Get(const ArrayBufferViewOrArrayBuffer& aKey,
+           OwningMediaKeyStatusOrUndefined& aOutValue,
+           ErrorResult& aOutRv) const;
   bool Has(const ArrayBufferViewOrArrayBuffer& aKey) const;
   uint32_t Size() const;
 
@@ -80,6 +82,8 @@ class MediaKeyStatusMap final : public nsISupports, public nsWrapperCache {
     nsTArray<uint8_t> mKeyId;
     MediaKeyStatus mStatus;
   };
+
+  const KeyStatus* FindKey(const ArrayBufferViewOrArrayBuffer& aKey) const;
 
   nsTArray<KeyStatus> mStatuses;
 };

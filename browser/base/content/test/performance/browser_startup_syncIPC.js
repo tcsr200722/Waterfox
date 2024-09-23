@@ -9,31 +9,29 @@
 const LINUX = AppConstants.platform == "linux";
 const WIN = AppConstants.platform == "win";
 const MAC = AppConstants.platform == "macosx";
-const WEBRENDER = window.windowUtils.layerManagerType == "WebRender";
+const WEBRENDER = window.windowUtils.layerManagerType.startsWith("WebRender");
+const SKELETONUI = Services.prefs.getBoolPref(
+  "browser.startup.preXulSkeletonUI",
+  false
+);
 
 /*
  * Specifying 'ignoreIfUnused: true' will make the test ignore unused entries;
- * without this the test is strict and will fail if a whitelist entry isn't used.
+ * without this the test is strict and will fail if a list entry isn't used.
  */
 const startupPhases = {
   // Anything done before or during app-startup must have a compelling reason
   // to run before we have even selected the user profile.
   "before profile selection": [],
 
-  "before opening first browser window": [
-    {
-      name: "PLayerTransaction::Msg_GetTextureFactoryIdentifier",
-      condition: LINUX,
-      maxCount: 1,
-    },
-  ],
+  "before opening first browser window": [],
 
   // We reach this phase right after showing the first browser window.
   // This means that any I/O at this point delayed first paint.
   "before first paint": [
     {
       name: "PLayerTransaction::Msg_GetTextureFactoryIdentifier",
-      condition: MAC,
+      condition: (MAC || LINUX) && !WEBRENDER,
       maxCount: 1,
     },
     {
@@ -44,7 +42,12 @@ const startupPhases = {
     {
       name: "PWebRenderBridge::Msg_EnsureConnected",
       condition: WIN && WEBRENDER,
-      maxCount: 2,
+      maxCount: 3,
+    },
+    {
+      name: "PWebRenderBridge::Msg_EnsureConnected",
+      condition: (MAC || LINUX) && WEBRENDER,
+      maxCount: 1,
     },
     {
       // bug 1373773
@@ -115,14 +118,26 @@ const startupPhases = {
       name: "PAPZInputBridge::Msg_ProcessUnhandledEvent",
       condition: WIN,
       ignoreIfUnused: true, // Only on Win10 64
-      maxCount: 1,
+      maxCount: 2,
     },
     {
       name: "PGPU::Msg_GetDeviceStatus",
-      condition: WIN && WEBRENDER, // bug 1553740 might want to drop the WEBRENDER clause here
+      // bug 1553740 might want to drop the WEBRENDER clause here.
+      // Additionally, the skeleton UI causes us to attach "before first paint" to a
+      // later event, which lets this sneak in.
+      condition: WIN && (WEBRENDER || SKELETONUI),
       // If Init() completes before we call EnsureGPUReady we won't send GetDeviceStatus
       // so we can safely ignore if unused.
       ignoreIfUnused: true,
+      maxCount: 1,
+    },
+    {
+      // bug 1784869
+      // We use Resume signal to propagate correct XWindow/wl_surface
+      // to EGL compositor.
+      name: "PCompositorBridge::Msg_Resume",
+      condition: LINUX,
+      ignoreIfUnused: true, // intermittently occurs in "before handling user events"
       maxCount: 1,
     },
   ],
@@ -133,9 +148,15 @@ const startupPhases = {
   "before handling user events": [
     {
       name: "PCompositorBridge::Msg_FlushRendering",
-      condition: !WIN,
+      condition: MAC,
       ignoreIfUnused: true,
       maxCount: 1,
+    },
+    {
+      name: "PCompositorBridge::Msg_FlushRendering",
+      condition: LINUX,
+      ignoreIfUnused: true, // intermittently occurs in "before becoming idle"
+      maxCount: 2,
     },
     {
       name: "PLayerTransaction::Msg_GetTextureFactoryIdentifier",
@@ -191,11 +212,32 @@ const startupPhases = {
       ignoreIfUnused: true,
       maxCount: 1,
     },
+    {
+      name: "PContent::Reply_BeginDriverCrashGuard",
+      condition: WIN,
+      ignoreIfUnused: true, // Bug 1660590 - found while running test on windows hardware
+      maxCount: 1,
+    },
+    {
+      name: "PContent::Reply_EndDriverCrashGuard",
+      condition: WIN,
+      ignoreIfUnused: true, // Bug 1660590 - found while running test on windows hardware
+      maxCount: 1,
+    },
+    {
+      // bug 1784869
+      // We use Resume signal to propagate correct XWindow/wl_surface
+      // to EGL compositor.
+      name: "PCompositorBridge::Msg_Resume",
+      condition: LINUX,
+      ignoreIfUnused: true, // intermittently occurs in "before first paint"
+      maxCount: 1,
+    },
   ],
 
   // Things that are expected to be completely out of the startup path
   // and loaded lazily when used for the first time by the user should
-  // be blacklisted here.
+  // be listed here.
   "before becoming idle": [
     {
       // bug 1373773
@@ -218,13 +260,13 @@ const startupPhases = {
     {
       // bug 1554234
       name: "PLayerTransaction::Msg_GetTextureFactoryIdentifier",
-      condition: WIN,
+      condition: WIN || LINUX,
       ignoreIfUnused: true, // intermittently occurs in "before handling user events"
       maxCount: 1,
     },
     {
       name: "PWebRenderBridge::Msg_EnsureConnected",
-      condition: WIN && WEBRENDER,
+      condition: (WIN || LINUX) && WEBRENDER,
       ignoreIfUnused: true,
       maxCount: 1,
     },
@@ -248,8 +290,14 @@ const startupPhases = {
     },
     {
       name: "PCompositorBridge::Msg_FlushRendering",
-      condition: MAC || LINUX,
+      condition: MAC || SKELETONUI,
       ignoreIfUnused: true,
+      maxCount: 1,
+    },
+    {
+      name: "PCompositorBridge::Msg_FlushRendering",
+      condition: LINUX,
+      ignoreIfUnused: true, // intermittently occurs in "before handling user events"
       maxCount: 1,
     },
     {
@@ -259,15 +307,28 @@ const startupPhases = {
       maxCount: 1,
     },
     {
+      name: "PCompositorBridge::Msg_MakeSnapshot",
+      condition: WIN,
+      ignoreIfUnused: true,
+      maxCount: 1,
+    },
+    {
       name: "PCompositorBridge::Msg_WillClose",
       condition: WIN,
       ignoreIfUnused: true,
       maxCount: 2,
     },
+    // Added for the search-detection built-in add-on.
+    {
+      name: "PGPU::Msg_AddLayerTreeIdMapping",
+      condition: WIN,
+      ignoreIfUnused: true,
+      maxCount: 1,
+    },
   ],
 };
 
-add_task(async function() {
+add_task(async function () {
   if (
     !AppConstants.NIGHTLY_BUILD &&
     !AppConstants.MOZ_DEV_EDITION &&
@@ -281,8 +342,8 @@ add_task(async function() {
     return;
   }
 
-  let startupRecorder = Cc["@mozilla.org/test/startuprecorder;1"].getService()
-    .wrappedJSObject;
+  let startupRecorder =
+    Cc["@mozilla.org/test/startuprecorder;1"].getService().wrappedJSObject;
   await startupRecorder.done;
 
   // Check for sync IPC markers in the startup profile.
@@ -292,14 +353,14 @@ add_task(async function() {
   {
     const nameCol = profile.markers.schema.name;
     const dataCol = profile.markers.schema.data;
+    const startTimeCol = profile.markers.schema.startTime;
 
     let markersForCurrentPhase = [];
     for (let m of profile.markers.data) {
       let markerName = profile.stringTable[m[nameCol]];
       if (markerName.startsWith("startupRecorder:")) {
-        phases[
-          markerName.split("startupRecorder:")[1]
-        ] = markersForCurrentPhase;
+        phases[markerName.split("startupRecorder:")[1]] =
+          markersForCurrentPhase;
         markersForCurrentPhase = [];
         continue;
       }
@@ -307,14 +368,13 @@ add_task(async function() {
       let markerData = m[dataCol];
       if (
         !markerData ||
-        markerData.type != "IPC" ||
-        !markerData.sync ||
-        markerData.direction != "sending"
+        markerData.category != "Sync IPC" ||
+        !m[startTimeCol]
       ) {
         continue;
       }
 
-      markersForCurrentPhase.push(markerData.messageType);
+      markersForCurrentPhase.push(markerName);
     }
   }
 
@@ -326,11 +386,11 @@ add_task(async function() {
 
   let shouldPass = true;
   for (let phase in phases) {
-    let whitelist = startupPhases[phase];
-    if (whitelist.length) {
+    let knownIPCList = startupPhases[phase];
+    if (knownIPCList.length) {
       info(
-        `whitelisted sync IPC ${phase}:\n` +
-          whitelist
+        `known sync IPC ${phase}:\n` +
+          knownIPCList
             .map(e => `  ${e.name} - at most ${e.maxCount} times`)
             .join("\n")
       );
@@ -339,10 +399,9 @@ add_task(async function() {
     let markers = phases[phase];
     for (let marker of markers) {
       let expected = false;
-      for (let entry of whitelist) {
+      for (let entry of knownIPCList) {
         if (marker == entry.name) {
-          entry.maxCount = (entry.maxCount || 0) - 1;
-          entry._used = true;
+          entry.useCount = (entry.useCount || 0) + 1;
           expected = true;
           break;
         }
@@ -353,20 +412,22 @@ add_task(async function() {
       }
     }
 
-    for (let entry of whitelist) {
+    for (let entry of knownIPCList) {
+      // Make sure useCount has been defined.
+      entry.useCount = entry.useCount || 0;
       let message = `sync IPC ${entry.name} `;
-      if (entry.maxCount == 0) {
+      if (entry.useCount == entry.maxCount) {
         message += "happened as many times as expected";
-      } else if (entry.maxCount > 0) {
-        message += `allowed ${entry.maxCount} more times`;
+      } else if (entry.useCount < entry.maxCount) {
+        message += `allowed ${entry.maxCount} but only happened ${entry.useCount} times`;
       } else {
-        message += `${entry.maxCount * -1} more times than expected`;
+        message += `happened ${entry.useCount} but max is ${entry.maxCount}`;
         shouldPass = false;
       }
-      ok(entry.maxCount >= 0, `${message} ${phase}`);
+      Assert.lessOrEqual(entry.useCount, entry.maxCount, `${message} ${phase}`);
 
-      if (!("_used" in entry) && !entry.ignoreIfUnused) {
-        ok(false, `unused whitelist entry ${phase}: ${entry.name}`);
+      if (entry.useCount == 0 && !entry.ignoreIfUnused) {
+        ok(false, `unused known IPC entry ${phase}: ${entry.name}`);
         shouldPass = false;
       }
     }
@@ -376,15 +437,9 @@ add_task(async function() {
     ok(shouldPass, "No unexpected sync IPC during startup");
   } else {
     const filename = "profile_startup_syncIPC.json";
-    let path = Cc["@mozilla.org/process/environment;1"]
-      .getService(Ci.nsIEnvironment)
-      .get("MOZ_UPLOAD_DIR");
-    let encoder = new TextEncoder();
-    let profilePath = OS.Path.join(path, filename);
-    await OS.File.writeAtomic(
-      profilePath,
-      encoder.encode(JSON.stringify(startupRecorder.data.profile))
-    );
+    let path = Services.env.get("MOZ_UPLOAD_DIR");
+    let profilePath = PathUtils.join(path, filename);
+    await IOUtils.writeJSON(profilePath, startupRecorder.data.profile);
     ok(
       false,
       `Unexpected sync IPC behavior during startup; open the ${filename} ` +

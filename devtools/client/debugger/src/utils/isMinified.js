@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import type { SourceWithContent } from "../types";
 import { isFulfilled } from "./async-value";
 
 // Used to detect minification for automatic pretty printing
@@ -13,20 +10,20 @@ const INDENT_COUNT_THRESHOLD = 5;
 const CHARACTER_LIMIT = 250;
 const _minifiedCache = new Map();
 
-export function isMinified(source: SourceWithContent) {
+export function isMinified(source, sourceTextContent) {
   if (_minifiedCache.has(source.id)) {
     return _minifiedCache.get(source.id);
   }
 
   if (
-    !source.content ||
-    !isFulfilled(source.content) ||
-    source.content.value.type !== "text"
+    !sourceTextContent ||
+    !isFulfilled(sourceTextContent) ||
+    sourceTextContent.value.type !== "text"
   ) {
     return false;
   }
 
-  let text = source.content.value.value;
+  let text = sourceTextContent.value.value;
 
   let lineEndIndex = 0;
   let lineStartIndex = 0;

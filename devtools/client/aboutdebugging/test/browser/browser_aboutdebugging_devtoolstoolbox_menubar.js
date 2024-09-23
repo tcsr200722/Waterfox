@@ -12,7 +12,7 @@ Services.scriptloader.loadSubScript(
 /**
  * Test the status of menu items when open about:devtools-toolbox.
  */
-add_task(async function() {
+add_task(async function () {
   info("Force all debug target panes to be expanded");
   prepareCollapsibilitiesTest();
 
@@ -31,14 +31,6 @@ add_task(async function() {
   info("Select the inspector");
   const toolbox = getToolbox(devtoolsWindow);
   await toolbox.selectTool("inspector");
-
-  info("Click on the console item");
-  const onConsoleLoaded = toolbox.once("webconsole-ready");
-  const webconsoleMenuItem = rootDocument.getElementById("menuitem_webconsole");
-  webconsoleMenuItem.click();
-
-  info("Wait until about:devtools-toolbox switches to the console");
-  await onConsoleLoaded;
 
   info("Force to select about:debugging page");
   await updateSelectedTab(gBrowser, tab, window.AboutDebugging.store);

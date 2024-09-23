@@ -26,15 +26,15 @@ static StaticMutex sMutex;
 static bool sBlockUNCPaths = false;
 typedef nsTArray<nsString> WinPaths;
 
-static WinPaths& PathWhitelist() {
+static WinPaths& PathAllowlist() MOZ_REQUIRES(sMutex) {
   sMutex.AssertCurrentThreadOwns();
 
-  static WinPaths sPaths;
+  static WinPaths sPaths MOZ_GUARDED_BY(sMutex);
   return sPaths;
 }
 
 #ifdef XP_WIN
-const auto kDevicePathSpecifier = NS_LITERAL_STRING("\\\\?\\");
+const auto kDevicePathSpecifier = u"\\\\?\\"_ns;
 
 typedef char16_t char_path_t;
 #else
@@ -44,19 +44,19 @@ typedef char char_path_t;
 // Initially false to make concurrent consumers acquire the lock and sync.
 // The plain bool is synchronized with sMutex, the atomic one is for a quick
 // check w/o the need to acquire the lock on the hot path.
-static bool sBlacklistEmpty = false;
-static Atomic<bool, Relaxed> sBlacklistEmptyQuickCheck{false};
+static bool sForbiddenPathsEmpty = false;
+static Atomic<bool, Relaxed> sForbiddenPathsEmptyQuickCheck{false};
 
 typedef nsTArray<nsTString<char_path_t>> Paths;
-static StaticAutoPtr<Paths> sBlacklist;
+static StaticAutoPtr<Paths> sForbiddenPaths;
 
-static Paths& PathBlacklist() {
+static Paths& ForbiddenPaths() {
   sMutex.AssertCurrentThreadOwns();
-  if (!sBlacklist) {
-    sBlacklist = new nsTArray<nsTString<char_path_t>>();
-    ClearOnShutdown(&sBlacklist);
+  if (!sForbiddenPaths) {
+    sForbiddenPaths = new nsTArray<nsTString<char_path_t>>();
+    ClearOnShutdown(&sForbiddenPaths);
   }
-  return *sBlacklist;
+  return *sForbiddenPaths;
 }
 
 static void AllowUNCDirectory(char const* directory) {
@@ -71,17 +71,17 @@ static void AllowUNCDirectory(char const* directory) {
     return;
   }
 
-  // The whitelist makes sense only for UNC paths, because this code is used
+  // The allowlist makes sense only for UNC paths, because this code is used
   // to block only UNC paths, hence, no need to add non-UNC directories here
   // as those would never pass the check.
-  if (!StringBeginsWith(path, NS_LITERAL_STRING("\\\\"))) {
+  if (!StringBeginsWith(path, u"\\\\"_ns)) {
     return;
   }
 
   StaticMutexAutoLock lock(sMutex);
 
-  if (!PathWhitelist().Contains(path)) {
-    PathWhitelist().AppendElement(path);
+  if (!PathAllowlist().Contains(path)) {
+    PathAllowlist().AppendElement(path);
   }
 }
 
@@ -89,36 +89,37 @@ void InitPrefs() {
   sBlockUNCPaths =
       Preferences::GetBool("network.file.disable_unc_paths", false);
 
-  nsTAutoString<char_path_t> blacklist;
+  nsTAutoString<char_path_t> forbidden;
 #ifdef XP_WIN
-  Preferences::GetString("network.file.path_blacklist", blacklist);
+  Preferences::GetString("network.file.path_blacklist", forbidden);
 #else
-  Preferences::GetCString("network.file.path_blacklist", blacklist);
+  Preferences::GetCString("network.file.path_blacklist", forbidden);
 #endif
 
   StaticMutexAutoLock lock(sMutex);
 
-  if (blacklist.IsEmpty()) {
-    sBlacklistEmptyQuickCheck = (sBlacklistEmpty = true);
+  if (forbidden.IsEmpty()) {
+    sForbiddenPathsEmptyQuickCheck = (sForbiddenPathsEmpty = true);
     return;
   }
 
-  PathBlacklist().Clear();
-  TTokenizer<char_path_t> p(blacklist);
+  ForbiddenPaths().Clear();
+  TTokenizer<char_path_t> p(forbidden);
   while (!p.CheckEOF()) {
     nsTString<char_path_t> path;
     Unused << p.ReadUntil(TTokenizer<char_path_t>::Token::Char(','), path);
     path.Trim(" ");
     if (!path.IsEmpty()) {
-      PathBlacklist().AppendElement(path);
+      ForbiddenPaths().AppendElement(path);
     }
     Unused << p.CheckChar(',');
   }
 
-  sBlacklistEmptyQuickCheck = (sBlacklistEmpty = PathBlacklist().Length() == 0);
+  sForbiddenPathsEmptyQuickCheck =
+      (sForbiddenPathsEmpty = ForbiddenPaths().Length() == 0);
 }
 
-void InitDirectoriesWhitelist() {
+void InitDirectoriesAllowlist() {
   // NS_GRE_DIR is the installation path where the binary resides.
   AllowUNCDirectory(NS_GRE_DIR);
   // NS_APP_USER_PROFILE_50_DIR and NS_APP_USER_PROFILE_LOCAL_50_DIR are the two
@@ -256,7 +257,7 @@ bool IsBlockedUNCPath(const nsAString& aFilePath) {
     return false;
   }
 
-  if (!StringBeginsWith(aFilePath, NS_LITERAL_STRING("\\\\"))) {
+  if (!StringBeginsWith(aFilePath, u"\\\\"_ns)) {
     return false;
   }
 
@@ -277,7 +278,7 @@ bool IsBlockedUNCPath(const nsAString& aFilePath) {
 
   StaticMutexAutoLock lock(sMutex);
 
-  for (const auto& allowedPrefix : PathWhitelist()) {
+  for (const auto& allowedPrefix : PathAllowlist()) {
     if (StringBeginsWith(normalized, allowedPrefix)) {
       if (normalized.Length() == allowedPrefix.Length()) {
         return false;
@@ -307,19 +308,19 @@ bool IsAllowedPath(const nsTSubstring<char_path_t>& aFilePath) {
   typedef TNormalizer<char_path_t> Normalizer;
 
   // An atomic quick check out of the lock, because this is mostly `true`.
-  if (sBlacklistEmptyQuickCheck) {
+  if (sForbiddenPathsEmptyQuickCheck) {
     return true;
   }
 
   StaticMutexAutoLock lock(sMutex);
 
-  if (sBlacklistEmpty) {
+  if (sForbiddenPathsEmpty) {
     return true;
   }
 
-  // If sBlacklist has been cleared at shutdown, we must avoid calling
-  // PathBlacklist() again, as that will recreate the array and we will leak.
-  if (!sBlacklist) {
+  // If sForbidden has been cleared at shutdown, we must avoid calling
+  // ForbiddenPaths() again, as that will recreate the array and we will leak.
+  if (!sForbiddenPaths) {
     return true;
   }
 
@@ -330,7 +331,7 @@ bool IsAllowedPath(const nsTSubstring<char_path_t>& aFilePath) {
     return false;
   }
 
-  for (const auto& prefix : PathBlacklist()) {
+  for (const auto& prefix : ForbiddenPaths()) {
     if (StringBeginsWith(normalized, prefix)) {
       if (normalized.Length() > prefix.Length() &&
           normalized[prefix.Length()] != kPathSeparator) {
@@ -357,9 +358,9 @@ bool StartsWithDiskDesignatorAndBackslash(const nsAString& aAbsolutePath) {
 
 void testing::SetBlockUNCPaths(bool aBlock) { sBlockUNCPaths = aBlock; }
 
-void testing::AddDirectoryToWhitelist(nsAString const& aPath) {
+void testing::AddDirectoryToAllowlist(nsAString const& aPath) {
   StaticMutexAutoLock lock(sMutex);
-  PathWhitelist().AppendElement(aPath);
+  PathAllowlist().AppendElement(aPath);
 }
 
 bool testing::NormalizePath(nsAString const& aPath, nsAString& aNormalized) {

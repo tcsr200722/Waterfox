@@ -3,8 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-import mock
-import mozunit
 import os
 import shutil
 import struct
@@ -12,13 +10,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+from unittest.mock import patch
+
 import buildconfig
-
-from mock import patch
-from mozpack.manifests import InstallManifest
 import mozpack.path as mozpath
-
+import mozunit
 import symbolstore
+from mozpack.manifests import InstallManifest
 from symbolstore import realpath
 
 # Some simple functions to mock out files that the platform-specific dumpers will accept.
@@ -164,7 +163,7 @@ class TestCopyDebug(HelperMixin, unittest.TestCase):
 
         def mock_copy_debug(filename, debug_file, guid, code_file, code_id):
             copied.append(
-                filename[len(self.symbol_dir):]
+                filename[len(self.symbol_dir) :]
                 if filename.startswith(self.symbol_dir)
                 else filename
             )
@@ -192,7 +191,6 @@ class TestCopyDebug(HelperMixin, unittest.TestCase):
         d.Process(os.path.join(self.test_dir, add_extension(["foo"])[0]))
         self.assertEqual(1, len(copied))
 
-    @patch.dict("buildconfig.substs._dict", {"MAKECAB": "makecab"})
     def test_copy_debug_copies_binaries(self):
         """
         Test that CopyDebug copies binaries as well on Windows.
@@ -218,9 +216,7 @@ class TestCopyDebug(HelperMixin, unittest.TestCase):
         )
         d.Process(test_file)
         self.assertTrue(
-            os.path.isfile(
-                os.path.join(self.symbol_dir, code_file, code_id, code_file[:-1] + "_")
-            )
+            os.path.isfile(os.path.join(self.symbol_dir, code_file, code_id, code_file))
         )
 
 
@@ -314,9 +310,9 @@ if host_platform() == "WINNT":
     class TestRealpath(HelperMixin, unittest.TestCase):
         def test_realpath(self):
             # self.test_dir is going to be 8.3 paths...
-            junk = os.path.join(self.test_dir, 'x')
-            with open(junk, 'w') as o:
-                o.write('x')
+            junk = os.path.join(self.test_dir, "x")
+            with open(junk, "w") as o:
+                o.write("x")
             fixed_dir = os.path.dirname(realpath(junk))
             files = [
                 "one\\two.c",
@@ -327,8 +323,8 @@ if host_platform() == "WINNT":
             for rel_path in files:
                 full_path = os.path.normpath(os.path.join(self.test_dir, rel_path))
                 self.make_dirs(full_path)
-                with open(full_path, 'w') as o:
-                    o.write('x')
+                with open(full_path, "w") as o:
+                    o.write("x")
                 fixed_path = realpath(full_path.lower())
                 fixed_path = os.path.relpath(fixed_path, fixed_dir)
                 self.assertEqual(rel_path, fixed_path)
@@ -452,10 +448,10 @@ class TestInstallManifest(HelperMixin, unittest.TestCase):
         """
         Test that a bad manifest file give errors.
         """
-        bad_manifest = os.path.join(self.test_dir, 'bad-manifest')
-        with open(bad_manifest, 'w') as f:
-            f.write('junk\n')
-        arg = '%s,%s' % (bad_manifest, self.objdir)
+        bad_manifest = os.path.join(self.test_dir, "bad-manifest")
+        with open(bad_manifest, "w") as f:
+            f.write("junk\n")
+        arg = "%s,%s" % (bad_manifest, self.objdir)
         with self.assertRaises(IOError) as e:
             symbolstore.validate_install_manifests([arg])
             self.assertEqual(e.filename, bad_manifest)
@@ -508,10 +504,9 @@ class TestFileMapping(HelperMixin, unittest.TestCase):
         mock_Popen.return_value.stdout = mk_output(dumped_files)
         mock_Popen.return_value.wait.return_value = 0
 
-        d = symbolstore.Dumper('dump_syms', self.symboldir,
-                               file_mapping=file_mapping)
-        f = os.path.join(self.objdir, 'somefile')
-        open(f, 'w').write('blah')
+        d = symbolstore.Dumper("dump_syms", self.symboldir, file_mapping=file_mapping)
+        f = os.path.join(self.objdir, "somefile")
+        open(f, "w").write("blah")
         d.Process(f)
         expected_output = "".join(mk_output(expected_files))
         symbol_file = os.path.join(
@@ -543,16 +538,17 @@ class TestFunctional(HelperMixin, unittest.TestCase):
         self.script_path = os.path.join(
             self.topsrcdir, "toolkit", "crashreporter", "tools", "symbolstore.py"
         )
-        if target_platform() == "WINNT":
-            self.dump_syms = buildconfig.substs["DUMP_SYMS"]
-        else:
-            self.dump_syms = os.path.join(
-                buildconfig.topobjdir, "dist", "host", "bin", "dump_syms"
-            )
+        self.dump_syms = buildconfig.substs.get("DUMP_SYMS")
+        if not self.dump_syms:
+            self.skip_test = True
 
         if target_platform() == "WINNT":
             self.target_bin = os.path.join(
                 buildconfig.topobjdir, "dist", "bin", "firefox.exe"
+            )
+        elif target_platform() == "Darwin":
+            self.target_bin = os.path.join(
+                buildconfig.topobjdir, "dist", "bin", "firefox"
             )
         else:
             self.target_bin = os.path.join(
@@ -564,26 +560,34 @@ class TestFunctional(HelperMixin, unittest.TestCase):
 
     def testSymbolstore(self):
         if self.skip_test:
-            raise unittest.SkipTest('Skipping test in non-Firefox product')
-        dist_include_manifest = os.path.join(buildconfig.topobjdir,
-                                             '_build_manifests/install/dist_include')
-        dist_include = os.path.join(buildconfig.topobjdir, 'dist/include')
-        browser_app = os.path.join(buildconfig.topobjdir, 'browser/app')
-        output = subprocess.check_output([sys.executable,
-                                          self.script_path,
-                                          '--vcs-info',
-                                          '-s', self.topsrcdir,
-                                          '--install-manifest=%s,%s' % (dist_include_manifest,
-                                                                        dist_include),
-                                          self.dump_syms,
-                                          self.test_dir,
-                                          self.target_bin],
-                                         universal_newlines=True,
-                                         stderr=None,
-                                         cwd=browser_app)
+            raise unittest.SkipTest("Skipping test in non-Firefox product")
+        dist_include_manifest = os.path.join(
+            buildconfig.topobjdir, "_build_manifests/install/dist_include"
+        )
+        dist_include = os.path.join(buildconfig.topobjdir, "dist/include")
+        browser_app = os.path.join(buildconfig.topobjdir, "browser/app")
+        output = subprocess.check_output(
+            [
+                sys.executable,
+                self.script_path,
+                "--vcs-info",
+                "-s",
+                self.topsrcdir,
+                "--install-manifest=%s,%s" % (dist_include_manifest, dist_include),
+                self.dump_syms,
+                self.test_dir,
+                self.target_bin,
+            ],
+            universal_newlines=True,
+            stderr=None,
+            cwd=browser_app,
+        )
         lines = [l for l in output.splitlines() if l.strip()]
-        self.assertEqual(1, len(lines),
-                         'should have one filename in the output; got %s' % repr(output))
+        self.assertEqual(
+            1,
+            len(lines),
+            "should have one filename in the output; got %s" % repr(output),
+        )
         symbol_file = os.path.join(self.test_dir, lines[0])
         self.assertTrue(os.path.isfile(symbol_file))
         symlines = open(symbol_file, "r").readlines()

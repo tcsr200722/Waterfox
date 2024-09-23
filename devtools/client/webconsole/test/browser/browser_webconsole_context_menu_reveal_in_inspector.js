@@ -7,7 +7,7 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf-8,
+const TEST_URI = `data:text/html;charset=utf-8,<!DOCTYPE html>
   <!DOCTYPE html>
   <html>
     <body></body>
@@ -23,23 +23,39 @@ const TEST_URI = `data:text/html;charset=utf-8,
 `;
 const revealInInspectorMenuItemId = "#console-menu-open-node";
 
-add_task(async function() {
+add_task(async function () {
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const msgWithText = await waitFor(() => findMessage(hud, `foo`));
-  const msgWithObj = await waitFor(() => findMessage(hud, `Object`));
+  const msgWithText = await waitFor(() => findConsoleAPIMessage(hud, `foo`));
+  const msgWithObj = await waitFor(() => findConsoleAPIMessage(hud, `Object`));
   const nonDomEl = await waitFor(() =>
-    findMessage(hud, `<span>`, ".objectBox-node")
+    findMessagePartByType(hud, {
+      text: `<span>`,
+      typeSelector: ".console-api",
+      partSelector: ".objectBox-node",
+    })
   );
 
   const domEl = await waitFor(() =>
-    findMessage(hud, `<div>`, ".objectBox-node")
+    findMessagePartByType(hud, {
+      text: `<div>`,
+      typeSelector: ".console-api",
+      partSelector: ".objectBox-node",
+    })
   );
   const domTextEl = await waitFor(() =>
-    findMessage(hud, `test-text`, ".objectBox-textNode")
+    findMessagePartByType(hud, {
+      text: `test-text`,
+      typeSelector: ".console-api",
+      partSelector: ".objectBox-textNode",
+    })
   );
   const domElCollection = await waitFor(() =>
-    findMessage(hud, `html`, ".objectBox-node")
+    findMessagePartByType(hud, {
+      text: `html`,
+      typeSelector: ".console-api",
+      partSelector: ".objectBox-node",
+    })
   );
 
   info("Check `Reveal in Inspector` is not visible for strings");
@@ -65,6 +81,16 @@ add_task(async function() {
 });
 
 async function testRevealInInspector(hud, element, tag, accesskey) {
+  if (
+    !accesskey &&
+    AppConstants.platform == "macosx" &&
+    Services.prefs.getBoolPref("widget.macos.native-context-menus", false)
+  ) {
+    info(
+      "Not testing accesskey behaviour since we can't use synthesized keypresses in macOS native menus."
+    );
+    return;
+  }
   const toolbox = hud.toolbox;
 
   // Loading the inspector panel at first, to make it possible to listen for
@@ -76,8 +102,9 @@ async function testRevealInInspector(hud, element, tag, accesskey) {
   const revealInInspectorMenuItem = menuPopup.querySelector(
     revealInInspectorMenuItemId
   );
-  ok(
-    revealInInspectorMenuItem !== null,
+  Assert.notStrictEqual(
+    revealInInspectorMenuItem,
+    null,
     "There is the `Reveal in Inspector` menu item"
   );
 
@@ -87,7 +114,7 @@ async function testRevealInInspector(hud, element, tag, accesskey) {
 
   if (accesskey) {
     info("Clicking on `Reveal in Inspector` menu item");
-    await revealInInspectorMenuItem.click();
+    menuPopup.activateItem(revealInInspectorMenuItem);
   } else {
     info("Using access-key Q to `Reveal in Inspector`");
     await synthesizeKeyShortcut("Q");

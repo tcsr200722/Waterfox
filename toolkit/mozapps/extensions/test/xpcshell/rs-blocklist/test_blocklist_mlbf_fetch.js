@@ -9,8 +9,8 @@
 
 Services.prefs.setBoolPref("extensions.blocklist.useMLBF", true);
 
-const { Downloader } = ChromeUtils.import(
-  "resource://services-settings/Attachments.jsm"
+const { Downloader } = ChromeUtils.importESModule(
+  "resource://services-settings/Attachments.sys.mjs"
 );
 
 const ExtensionBlocklistMLBF = getExtensionBlocklistMLBF();
@@ -33,7 +33,7 @@ add_task(async function fetch_invalid_mlbf_record() {
   Downloader._RESOURCE_BASE_URL = "invalid://bogus";
   // NetworkError is expected here. The JSON.parse error could be triggered via
   // _baseAttachmentsURL < downloadAsBytes < download < download < _fetchMLBF if
-  // the request to  services.settings.server (http://localhost/dummy-kinto/v1)
+  // the request to  services.settings.server ("data:,#remote-settings-dummy/v1")
   // is fulfilled (but with invalid JSON). That request is not expected to be
   // fulfilled in the first place, but that is not a concern of this test.
   // This test passes if _fetchMLBF() rejects when given an invalid record.
@@ -79,11 +79,13 @@ add_task(async function public_api_uses_mlbf() {
     id: "@blocked",
     version: "1",
     signedDate: new Date(0), // a date in the past, before MLBF's generationTime.
+    signedState: AddonManager.SIGNEDSTATE_SIGNED,
   };
   const nonBlockedAddon = {
     id: "@unblocked",
     version: "2",
     signedDate: new Date(0), // a date in the past, before MLBF's generationTime.
+    signedState: AddonManager.SIGNEDSTATE_SIGNED,
   };
 
   await AddonTestUtils.loadBlocklistRawData({ extensionsMLBF: [MLBF_RECORD] });
@@ -92,8 +94,7 @@ add_task(async function public_api_uses_mlbf() {
     await Blocklist.getAddonBlocklistEntry(blockedAddon),
     {
       state: Ci.nsIBlocklistService.STATE_BLOCKED,
-      url:
-        "https://addons.mozilla.org/en-US/xpcshell/blocked-addon/@blocked/1/",
+      url: "https://addons.mozilla.org/en-US/firefox/blocked-addon/@blocked/1/",
     },
     "Blocked addon should have blocked entry"
   );
@@ -130,6 +131,7 @@ add_task(async function fetch_updated_mlbf_same_hash() {
     id: "@blocked",
     version: "1",
     signedDate: new Date(recordUpdate.generation_time),
+    signedState: AddonManager.SIGNEDSTATE_SIGNED,
   };
 
   // The blocklist already includes "@blocked:1", but the last specified
@@ -160,6 +162,7 @@ add_task(async function handle_database_corruption() {
     id: "@blocked",
     version: "1",
     signedDate: new Date(0), // a date in the past, before MLBF's generationTime.
+    signedState: AddonManager.SIGNEDSTATE_SIGNED,
   };
   async function checkBlocklistWorks() {
     Assert.equal(
@@ -169,6 +172,13 @@ add_task(async function handle_database_corruption() {
     );
   }
 
+  let fetchCount = 0;
+  const originalFetchMLBF = ExtensionBlocklistMLBF._fetchMLBF;
+  ExtensionBlocklistMLBF._fetchMLBF = function () {
+    ++fetchCount;
+    return originalFetchMLBF.apply(this, arguments);
+  };
+
   // In the fetch_invalid_mlbf_record we checked that a cached / packaged MLBF
   // attachment is used as a fallback when the record is invalid. Here we also
   // check that there is a fallback when there is no record at all.
@@ -176,28 +186,46 @@ add_task(async function handle_database_corruption() {
   // Include a dummy record in the list, to prevent RemoteSettings from
   // importing a JSON dump with unexpected records.
   await AddonTestUtils.loadBlocklistRawData({ extensionsMLBF: [{}] });
+  Assert.equal(fetchCount, 1, "MLBF read once despite bad record");
   // When the collection is empty, the last known MLBF should be used anyway.
   await checkBlocklistWorks();
+  Assert.equal(fetchCount, 1, "MLBF not read again by blocklist query");
 
   // Now we also remove the cached file...
   await ExtensionBlocklistMLBF._client.db.saveAttachment(
     ExtensionBlocklistMLBF.RS_ATTACHMENT_ID,
     null
   );
+  Assert.equal(fetchCount, 1, "MLBF not read again after attachment deletion");
   // Deleting the file shouldn't cause issues because the MLBF is loaded once
   // and then kept in memory.
   await checkBlocklistWorks();
+  Assert.equal(fetchCount, 1, "MLBF not read again by blocklist query 2");
 
   // Force an update while we don't have any blocklist data nor cache.
   await ExtensionBlocklistMLBF._onUpdate();
+  Assert.equal(fetchCount, 2, "MLBF read again at forced update");
   // As a fallback, continue to use the in-memory version of the blocklist.
   await checkBlocklistWorks();
+  Assert.equal(fetchCount, 2, "MLBF not read again by blocklist query 3");
 
   // Memory gone, e.g. after a browser restart.
   delete ExtensionBlocklistMLBF._mlbfData;
+  delete ExtensionBlocklistMLBF._stashes;
   Assert.equal(
     await Blocklist.getAddonBlocklistState(blockedAddon),
     Ci.nsIBlocklistService.STATE_NOT_BLOCKED,
     "Blocklist can't work if all blocklist data is gone"
   );
+  Assert.equal(fetchCount, 3, "MLBF read again after restart/cleared cache");
+  Assert.equal(
+    await Blocklist.getAddonBlocklistState(blockedAddon),
+    Ci.nsIBlocklistService.STATE_NOT_BLOCKED,
+    "Blocklist can still not work if all blocklist data is gone"
+  );
+  // Ideally, the client packages a dump. But if the client did not package the
+  // dump, then it should not be trying to read the data over and over again.
+  Assert.equal(fetchCount, 3, "MLBF not read again despite absence of MLBF");
+
+  ExtensionBlocklistMLBF._fetchMLBF = originalFetchMLBF;
 });

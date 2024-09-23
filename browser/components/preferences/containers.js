@@ -4,10 +4,6 @@
 
 /* import-globals-from preferences.js */
 
-var { ContextualIdentityService } = ChromeUtils.import(
-  "resource://gre/modules/ContextualIdentityService.jsm"
-);
-
 const defaultContainerIcon = "fingerprint";
 const defaultContainerColor = "blue";
 
@@ -17,13 +13,13 @@ let gContainersPane = {
 
     document
       .getElementById("backContainersButton")
-      .addEventListener("command", function() {
+      .addEventListener("command", function () {
         gotoPref("general");
       });
 
     document
       .getElementById("containersAdd")
-      .addEventListener("command", function() {
+      .addEventListener("command", function () {
         gContainersPane.onAddButtonCommand();
       });
 
@@ -45,19 +41,19 @@ let gContainersPane = {
 
       let userContextIcon = document.createXULElement("hbox");
       userContextIcon.className = "userContext-icon";
-      userContextIcon.setAttribute("width", 24);
-      userContextIcon.setAttribute("height", 24);
       userContextIcon.classList.add("userContext-icon-inprefs");
       userContextIcon.classList.add("identity-icon-" + container.icon);
       userContextIcon.classList.add("identity-color-" + container.color);
       outer.appendChild(userContextIcon);
 
       let label = document.createXULElement("label");
+      label.className = "userContext-label-inprefs";
       label.setAttribute("flex", 1);
-      label.setAttribute("crop", "end");
-      label.textContent = ContextualIdentityService.getUserContextLabel(
+      let containerName = ContextualIdentityService.getUserContextLabel(
         container.userContextId
       );
+      label.textContent = containerName;
+      label.setAttribute("tooltiptext", containerName);
       outer.appendChild(label);
 
       let containerButtons = document.createXULElement("hbox");
@@ -65,15 +61,15 @@ let gContainersPane = {
       item.appendChild(containerButtons);
 
       let prefsButton = document.createXULElement("button");
-      prefsButton.addEventListener("command", function(event) {
+      prefsButton.addEventListener("command", function (event) {
         gContainersPane.onPreferenceCommand(event.originalTarget);
       });
       prefsButton.setAttribute("value", container.userContextId);
-      document.l10n.setAttributes(prefsButton, "containers-preferences-button");
+      document.l10n.setAttributes(prefsButton, "containers-settings-button");
       containerButtons.appendChild(prefsButton);
 
       let removeButton = document.createXULElement("button");
-      removeButton.addEventListener("command", function(event) {
+      removeButton.addEventListener("command", function (event) {
         gContainersPane.onRemoveCommand(event.originalTarget);
       });
       removeButton.setAttribute("value", container.userContextId);
@@ -89,17 +85,13 @@ let gContainersPane = {
 
     let count = ContextualIdentityService.countContainerTabs(userContextId);
     if (count > 0) {
-      let [
-        title,
-        message,
-        okButton,
-        cancelButton,
-      ] = await document.l10n.formatValues([
-        { id: "containers-remove-alert-title" },
-        { id: "containers-remove-alert-msg", args: { count } },
-        { id: "containers-remove-ok-button" },
-        { id: "containers-remove-cancel-button" },
-      ]);
+      let [title, message, okButton, cancelButton] =
+        await document.l10n.formatValues([
+          { id: "containers-remove-alert-title" },
+          { id: "containers-remove-alert-msg", args: { count } },
+          { id: "containers-remove-ok-button" },
+          { id: "containers-remove-cancel-button" },
+        ]);
 
       let buttonFlags =
         Ci.nsIPrompt.BUTTON_TITLE_IS_STRING * Ci.nsIPrompt.BUTTON_POS_0 +
@@ -131,7 +123,7 @@ let gContainersPane = {
     this.openPreferenceDialog(button.getAttribute("value"));
   },
 
-  onAddButtonCommand(button) {
+  onAddButtonCommand() {
     this.openPreferenceDialog(null);
   },
 
@@ -142,9 +134,8 @@ let gContainersPane = {
       color: defaultContainerColor,
     };
     if (userContextId) {
-      identity = ContextualIdentityService.getPublicIdentityFromId(
-        userContextId
-      );
+      identity =
+        ContextualIdentityService.getPublicIdentityFromId(userContextId);
       identity.name = ContextualIdentityService.getUserContextLabel(
         identity.userContextId
       );
@@ -153,7 +144,7 @@ let gContainersPane = {
     const params = { userContextId, identity };
     gSubDialog.open(
       "chrome://browser/content/preferences/dialogs/containers.xhtml",
-      null,
+      undefined,
       params
     );
   },

@@ -23,25 +23,19 @@ class SurfaceDescriptor;
 // corresponding RenderXXXTextureHost used by RendererOGL at RenderThread.
 class WebRenderTextureHost : public TextureHost {
  public:
-  WebRenderTextureHost(const SurfaceDescriptor& aDesc, TextureFlags aFlags,
-                       TextureHost* aTexture,
-                       wr::ExternalImageId& aExternalImageId);
+  WebRenderTextureHost(TextureFlags aFlags, TextureHost* aTexture,
+                       const wr::ExternalImageId& aExternalImageId);
   virtual ~WebRenderTextureHost();
 
   void DeallocateDeviceData() override {}
 
-  bool Lock() override;
-
-  void Unlock() override;
-
-  void PrepareTextureSource(CompositableTextureSourceRef& aTexture) override;
-  bool BindTextureSource(CompositableTextureSourceRef& aTexture) override;
   void UnbindTextureSource() override;
-  void SetTextureSourceProvider(TextureSourceProvider* aProvider) override;
 
   gfx::SurfaceFormat GetFormat() const override;
 
   virtual void NotifyNotUsed() override;
+
+  virtual bool IsValid() override;
 
   // Return the format used for reading the texture. Some hardware specific
   // textureHosts use their special data representation internally, but we could
@@ -49,8 +43,10 @@ class WebRenderTextureHost : public TextureHost {
   // Please check TextureHost::GetReadFormat().
   gfx::SurfaceFormat GetReadFormat() const override;
 
-  already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override;
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface(
+      gfx::DataSourceSurface* aSurface) override;
 
+  gfx::ColorDepth GetColorDepth() const override;
   gfx::YUVColorSpace GetYUVColorSpace() const override;
   gfx::ColorRange GetColorRange() const override;
 
@@ -60,7 +56,19 @@ class WebRenderTextureHost : public TextureHost {
   const char* Name() override { return "WebRenderTextureHost"; }
 #endif
 
+  void MaybeDestroyRenderTexture() override;
+
   WebRenderTextureHost* AsWebRenderTextureHost() override { return this; }
+
+  RemoteTextureHostWrapper* AsRemoteTextureHostWrapper() override {
+    return mWrappedTextureHost->AsRemoteTextureHostWrapper();
+  }
+
+  BufferTextureHost* AsBufferTextureHost() override {
+    return mWrappedTextureHost->AsBufferTextureHost();
+  }
+
+  bool IsWrappingSurfaceTextureHost() override;
 
   virtual void PrepareForUse() override;
 
@@ -68,7 +76,7 @@ class WebRenderTextureHost : public TextureHost {
 
   int32_t GetRGBStride();
 
-  bool HasIntermediateBuffer() const override;
+  bool NeedsDeferredDeletion() const override;
 
   uint32_t NumSubTextures() override;
 
@@ -81,15 +89,23 @@ class WebRenderTextureHost : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
 
-  bool NeedsYFlip() const override;
+  bool SupportsExternalCompositing(WebRenderBackend aBackend) override;
 
-  void MaybeNofityForUse(wr::TransactionBuilder& aTxn);
+  void SetAcquireFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
 
- protected:
-  RefPtr<TextureHost> mWrappedTextureHost;
-  wr::ExternalImageId mExternalImageId;
+  void SetReleaseFence(mozilla::ipc::FileDescriptor&& aFenceFd) override;
+
+  mozilla::ipc::FileDescriptor GetAndResetReleaseFence() override;
+
+  AndroidHardwareBuffer* GetAndroidHardwareBuffer() const override;
+
+  void MaybeNotifyForUse(wr::TransactionBuilder& aTxn);
+
+  TextureHostType GetTextureHostType() override;
+
+  const RefPtr<TextureHost> mWrappedTextureHost;
 };
 
 }  // namespace layers

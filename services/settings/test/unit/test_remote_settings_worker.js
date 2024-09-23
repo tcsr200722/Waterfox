@@ -1,25 +1,3 @@
-/* import-globals-from ../../../common/tests/unit/head_helpers.js */
-
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { TestUtils } = ChromeUtils.import(
-  "resource://testing-common/TestUtils.jsm"
-);
-
-const { RemoteSettingsWorker } = ChromeUtils.import(
-  "resource://services-settings/RemoteSettingsWorker.jsm"
-);
-const { RemoteSettingsClient } = ChromeUtils.import(
-  "resource://services-settings/RemoteSettingsClient.jsm"
-);
-const { Database } = ChromeUtils.import(
-  "resource://services-settings/Database.jsm"
-);
-
-XPCOMUtils.defineLazyGlobalGetters(this, ["indexedDB"]);
-
 const IS_ANDROID = AppConstants.platform == "android";
 
 add_task(async function test_canonicaljson() {
@@ -45,16 +23,14 @@ add_task(async function test_import_json_dump_into_idb() {
     // Skip test: we don't ship remote settings dumps on Android (see package-manifest).
     return;
   }
-  const client = new RemoteSettingsClient("language-dictionaries", {
-    bucketNamePref: "services.settings.default_bucket",
-  });
+  const client = new RemoteSettingsClient("language-dictionaries");
   const before = await client.get({ syncIfEmpty: false });
   Assert.equal(before.length, 0);
 
   await RemoteSettingsWorker.importJSONDump("main", "language-dictionaries");
 
   const after = await client.get({ syncIfEmpty: false });
-  Assert.ok(after.length > 0);
+  Assert.ok(!!after.length);
   let lastModifiedStamp = await client.getLastModified();
 
   Assert.equal(
@@ -78,13 +54,17 @@ add_task(async function test_throws_error_if_worker_fails() {
 });
 
 add_task(async function test_throws_error_if_worker_fails_async() {
+  if (IS_ANDROID) {
+    // Skip test: we don't ship dump, so importJSONDump() is no-op.
+    return;
+  }
   // Delete the Remote Settings database, and try to import a dump.
   // This is not supported, and the error thrown asynchronously in the worker
   // should be reported to the caller.
   await new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase("remote-settings");
-    request.onsuccess = event => resolve();
-    request.onblocked = event => reject(new Error("Cannot delete DB"));
+    request.onsuccess = () => resolve();
+    request.onblocked = () => reject(new Error("Cannot delete DB"));
     request.onerror = event => reject(event.target.error);
   });
   let error;

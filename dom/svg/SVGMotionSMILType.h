@@ -6,8 +6,8 @@
 
 /* implementation of SMILType for use by <animateMotion> element */
 
-#ifndef MOZILLA_SVGMOTIONSMILTYPE_H_
-#define MOZILLA_SVGMOTIONSMILTYPE_H_
+#ifndef DOM_SVG_SVGMOTIONSMILTYPE_H_
+#define DOM_SVG_SVGMOTIONSMILTYPE_H_
 
 #include "mozilla/gfx/2D.h"
 #include "mozilla/Attributes.h"
@@ -34,7 +34,7 @@ enum RotateType {
  * many ways as if there were, for simplicity.
  */
 class SVGMotionSMILType : public SMILType {
-  typedef mozilla::gfx::Path Path;
+  using Path = mozilla::gfx::Path;
 
  public:
   // Singleton for SMILValue objects to hold onto.
@@ -43,21 +43,18 @@ class SVGMotionSMILType : public SMILType {
  protected:
   // SMILType Methods
   // -------------------
-  virtual void Init(SMILValue& aValue) const override;
-  virtual void Destroy(SMILValue& aValue) const override;
-  virtual nsresult Assign(SMILValue& aDest,
-                          const SMILValue& aSrc) const override;
-  virtual bool IsEqual(const SMILValue& aLeft,
-                       const SMILValue& aRight) const override;
-  virtual nsresult Add(SMILValue& aDest, const SMILValue& aValueToAdd,
-                       uint32_t aCount) const override;
-  virtual nsresult SandwichAdd(SMILValue& aDest,
-                               const SMILValue& aValueToAdd) const override;
-  virtual nsresult ComputeDistance(const SMILValue& aFrom, const SMILValue& aTo,
-                                   double& aDistance) const override;
-  virtual nsresult Interpolate(const SMILValue& aStartVal,
-                               const SMILValue& aEndVal, double aUnitDistance,
-                               SMILValue& aResult) const override;
+  void Init(SMILValue& aValue) const override;
+  void Destroy(SMILValue& aValue) const override;
+  nsresult Assign(SMILValue& aDest, const SMILValue& aSrc) const override;
+  bool IsEqual(const SMILValue& aLeft, const SMILValue& aRight) const override;
+  nsresult Add(SMILValue& aDest, const SMILValue& aValueToAdd,
+               uint32_t aCount) const override;
+  nsresult SandwichAdd(SMILValue& aDest,
+                       const SMILValue& aValueToAdd) const override;
+  nsresult ComputeDistance(const SMILValue& aFrom, const SMILValue& aTo,
+                           double& aDistance) const override;
+  nsresult Interpolate(const SMILValue& aStartVal, const SMILValue& aEndVal,
+                       double aUnitDistance, SMILValue& aResult) const override;
 
  public:
   // Used to generate a transform matrix from an <animateMotion> SMILValue.
@@ -76,4 +73,4 @@ class SVGMotionSMILType : public SMILType {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGMOTIONSMILTYPE_H_
+#endif  // DOM_SVG_SVGMOTIONSMILTYPE_H_

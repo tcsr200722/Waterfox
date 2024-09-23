@@ -15,16 +15,18 @@
 
 #include "imgINotificationObserver.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/EventStates.h"
 #include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
+#include "nsIContentPolicy.h"
 #include "nsIImageLoadingContent.h"
 #include "nsIRequest.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/RustTypes.h"
 #include "nsAttrValue.h"
+#include "Units.h"
 
+class nsINode;
 class nsIURI;
 class nsPresContext;
 class nsIContent;
@@ -32,10 +34,13 @@ class imgRequestProxy;
 
 namespace mozilla {
 class AsyncEventDispatcher;
+class ErrorResult;
+
 namespace dom {
 struct BindContext;
 class Document;
 class Element;
+enum class FetchPriority : uint8_t;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -61,22 +66,22 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   NS_DECL_NSIIMAGELOADINGCONTENT
 
   // Web IDL binding methods.
-  // Note that the XPCOM SetLoadingEnabled, ForceImageState methods are OK for
-  // Web IDL bindings to use as well, since none of them throw when called via
-  // the Web IDL bindings.
+  // Note that the XPCOM SetLoadingEnabled method is OK for Web IDL bindings
+  // to use as well, since it does not throw when called via the Web IDL
+  // bindings.
 
   bool LoadingEnabled() const { return mLoadingEnabled; }
-  int16_t ImageBlockingStatus() const { return mImageBlockingStatus; }
   void AddObserver(imgINotificationObserver* aObserver);
   void RemoveObserver(imgINotificationObserver* aObserver);
   already_AddRefed<imgIRequest> GetRequest(int32_t aRequestType,
                                            mozilla::ErrorResult& aError);
   int32_t GetRequestType(imgIRequest* aRequest, mozilla::ErrorResult& aError);
-  already_AddRefed<nsIURI> GetCurrentURI(mozilla::ErrorResult& aError);
+  already_AddRefed<nsIURI> GetCurrentURI();
   already_AddRefed<nsIURI> GetCurrentRequestFinalURI();
   void ForceReload(bool aNotify, mozilla::ErrorResult& aError);
 
   mozilla::dom::Element* FindImageMap();
+  static mozilla::dom::Element* FindImageMap(mozilla::dom::Element*);
 
   /**
    * Toggle whether or not to synchronously decode an image on draw.
@@ -88,6 +93,10 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * we may reject any promises which require the document to be active.
    */
   void NotifyOwnerDocumentActivityChanged();
+
+  // Trigger text recognition for the current image request.
+  already_AddRefed<mozilla::dom::Promise> RecognizeCurrentImageText(
+      mozilla::ErrorResult&);
 
  protected:
   enum ImageLoadType {
@@ -120,15 +129,15 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
 
   /**
    * ImageState is called by subclasses that are computing their content state.
-   * The return value will have the NS_EVENT_STATE_BROKEN,
-   * NS_EVENT_STATE_USERDISABLED, and NS_EVENT_STATE_SUPPRESSED bits set as
-   * needed.  Note that this state assumes that this node is "trying" to be an
+   * The return value will have the ElementState::BROKEN bit set as needed.
+   *
+   * Note that this state assumes that this node is "trying" to be an
    * image (so for example complete lack of attempt to load an image will lead
-   * to NS_EVENT_STATE_BROKEN being set).  Subclasses that are not "trying" to
+   * to ElementState::BROKEN being set).  Subclasses that are not "trying" to
    * be an image (eg an HTML <input> of type other than "image") should just
    * not call this method when computing their intrinsic state.
    */
-  mozilla::EventStates ImageState() const;
+  mozilla::dom::ElementState ImageState() const;
 
   /**
    * LoadImage is called by subclasses when the appropriate
@@ -141,7 +150,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * @param aNotify If true, nsIDocumentObserver state change notifications
    *                will be sent as needed.
    * @param aImageLoadType The ImageLoadType for this request
-   * @param aLoadStart If true, dispatch "loadstart" event.
    * @param aDocument Optional parameter giving the document this node is in.
    *        This is purely a performance optimization.
    * @param aLoadFlags Optional parameter specifying load flags to use for
@@ -151,7 +159,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   nsresult LoadImage(nsIURI* aNewURI, bool aForce, bool aNotify,
                      ImageLoadType aImageLoadType, nsLoadFlags aLoadFlags,
-                     bool aLoadStart = true,
                      mozilla::dom::Document* aDocument = nullptr,
                      nsIPrincipal* aTriggeringPrincipal = nullptr);
 
@@ -159,7 +166,7 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
                      ImageLoadType aImageLoadType,
                      nsIPrincipal* aTriggeringPrincipal) {
     return LoadImage(aNewURI, aForce, aNotify, aImageLoadType, LoadFlags(),
-                     true, nullptr, aTriggeringPrincipal);
+                     nullptr, aTriggeringPrincipal);
   }
 
   /**
@@ -176,9 +183,10 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * Helper function to get the frame associated with this content. Not named
    * GetPrimaryFrame to prevent ambiguous method names in subclasses.
    *
-   * @return The frame which we belong to, or nullptr if it doesn't exist.
+   * @return The frame we own, or nullptr if it doesn't exist, or isn't
+   * associated with any of our requests.
    */
-  nsIFrame* GetOurPrimaryFrame();
+  nsIFrame* GetOurPrimaryImageFrame();
 
   /**
    * Helper function to get the PresContext associated with this content's
@@ -198,14 +206,13 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   void CancelImageRequests(bool aNotify);
 
   /**
-   * Derived classes of nsImageLoadingContent MUST call
-   * DestroyImageLoadingContent from their destructor, or earlier.  It
-   * does things that cannot be done in ~nsImageLoadingContent because
-   * they rely on being able to QueryInterface to other derived classes,
-   * which cannot happen once the derived class destructor has started
-   * calling the base class destructors.
+   * Derived classes of nsImageLoadingContent MUST call Destroy from their
+   * destructor, or earlier.  It does things that cannot be done in
+   * ~nsImageLoadingContent because they rely on being able to QueryInterface to
+   * other derived classes, which cannot happen once the derived class
+   * destructor has started calling the base class destructors.
    */
-  void DestroyImageLoadingContent();
+  void Destroy();
 
   /**
    * Returns the CORS mode that will be used for all future image loads. The
@@ -215,7 +222,7 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
 
   // Subclasses are *required* to call BindToTree/UnbindFromTree.
   void BindToTree(mozilla::dom::BindContext&, nsINode& aParent);
-  void UnbindFromTree(bool aNullParent);
+  void UnbindFromTree();
 
   void OnLoadComplete(imgIRequest* aRequest, nsresult aStatus);
   void OnUnlockedDraw();
@@ -230,9 +237,13 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   // want a non-const nsIContent.
   virtual nsIContent* AsContent() = 0;
 
-  // Hooks for subclasses to call to get the intrinsic width and height.
-  uint32_t NaturalWidth();
-  uint32_t NaturalHeight();
+  virtual mozilla::dom::FetchPriority GetFetchPriorityForImage() const;
+
+  /**
+   * Get width and height of the current request, using given image request if
+   * attributes are unset.
+   */
+  MOZ_CAN_RUN_SCRIPT mozilla::CSSIntSize GetWidthHeightForImage();
 
   /**
    * Create a promise and queue a microtask which will ensure the current
@@ -341,8 +352,7 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   /**
    * Method to fire an event once we know what's going on with the image load.
    *
-   * @param aEventType "loadstart", "loadend", "load", or "error" depending on
-   *                   how things went
+   * @param aEventType "load", or "error" depending on how things went
    * @param aIsCancelable true if event is cancelable.
    */
   nsresult FireEvent(const nsAString& aEventType, bool aIsCancelable = false);
@@ -373,8 +383,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   nsresult StringToURI(const nsAString& aSpec,
                        mozilla::dom::Document* aDocument, nsIURI** aURI);
-
-  void CreateStaticImageClone(nsImageLoadingContent* aDest) const;
 
   /**
    * Prepare and returns a reference to the "next request". If there's already
@@ -417,16 +425,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
       const Maybe<OnNonvisible>& aNonvisibleAction = Nothing());
 
   /**
-   * Retrieve a pointer to the 'registered with the refresh driver' flag for
-   * which a particular image request corresponds.
-   *
-   * @returns A pointer to the boolean flag for a given image request, or
-   *          |nullptr| if the request is not either |mPendingRequest| or
-   *          |mCurrentRequest|.
-   */
-  bool* GetRegisteredFlagForRequest(imgIRequest* aRequest);
-
-  /**
    * Reset animation of the current request if
    * |mNewRequestsWillNeedAnimationReset| was true when the request was
    * prepared.
@@ -465,17 +463,17 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   /* MEMBERS */
   RefPtr<imgRequestProxy> mCurrentRequest;
   RefPtr<imgRequestProxy> mPendingRequest;
-  uint32_t mCurrentRequestFlags;
-  uint32_t mPendingRequestFlags;
+  uint8_t mCurrentRequestFlags = 0;
+  uint8_t mPendingRequestFlags = 0;
 
   enum {
     // Set if the request needs ResetAnimation called on it.
-    REQUEST_NEEDS_ANIMATION_RESET = 0x00000001U,
+    REQUEST_NEEDS_ANIMATION_RESET = 1 << 0,
     // Set if the request is currently tracked with the document.
-    REQUEST_IS_TRACKED = 0x00000004U,
+    REQUEST_IS_TRACKED = 1 << 1,
     // Set if this is an imageset request, such as from <img srcset> or
     // <picture>
-    REQUEST_IS_IMAGESET = 0x00000008U
+    REQUEST_IS_IMAGESET = 1 << 2,
   };
 
   // If the image was blocked or if there was an error loading, it's nice to
@@ -539,12 +537,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   nsTArray<RefPtr<mozilla::dom::Promise>> mDecodePromises;
 
-  /**
-   * When mIsImageStateForced is true, this holds the ImageState that we'll
-   * return in ImageState().
-   */
-  mozilla::EventStates mForcedImageState;
-
   mozilla::TimeStamp mMostRecentRequestChange;
 
   /**
@@ -564,24 +556,15 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   uint32_t mRequestGeneration;
 
-  int16_t mImageBlockingStatus;
   bool mLoadingEnabled : 1;
 
-  /**
-   * When true, we return mForcedImageState from ImageState().
-   */
-  bool mIsImageStateForced : 1;
-
+ protected:
   /**
    * The state we had the last time we checked whether we needed to notify the
    * document of a state change.  These are maintained by UpdateImageState.
    */
   bool mLoading : 1;
-  bool mBroken : 1;
-  bool mUserDisabled : 1;
-  bool mSuppressed : 1;
 
- protected:
   /**
    * A hack to get animations to reset, see bug 594771. On requests
    * that originate from setting .src, we mark them for needing their animation

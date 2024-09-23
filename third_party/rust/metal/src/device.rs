@@ -5,19 +5,20 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use block::{Block, ConcreteBlock};
-use cocoa::base::id;
-use cocoa::foundation::NSUInteger;
-use foreign_types::ForeignType;
-use objc::runtime::{Object, BOOL, NO, YES};
-
 use super::*;
 
-use std::ffi::CStr;
-use std::path::Path;
-use std::ptr;
+use block::{Block, ConcreteBlock};
+use objc::runtime::{NO, YES};
 
+use std::{ffi::CStr, os::raw::c_char, path::Path, ptr};
+
+/// Available on macOS 10.11+, iOS 8.0+, tvOS 9.0+
+///
+/// See <https://developer.apple.com/documentation/metal/mtlfeatureset>
 #[allow(non_camel_case_types)]
+#[deprecated(
+    note = "Since iOS 8.0–16.0 iPadOS 8.0–16.0 macOS 10.11–13.0 Mac Catalyst 13.1–16.0 tvOS 9.0–16.0"
+)]
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum MTLFeatureSet {
@@ -48,13 +49,51 @@ pub enum MTLFeatureSet {
 
     macOS_GPUFamily1_v1 = 10000,
     macOS_GPUFamily1_v2 = 10001,
-    //macOS_ReadWriteTextureTier2 = 10002, TODO: Uncomment when feature tables updated
+    // Available on macOS 10.12+
+    macOS_ReadWriteTextureTier2 = 10002,
     macOS_GPUFamily1_v3 = 10003,
     macOS_GPUFamily1_v4 = 10004,
     macOS_GPUFamily2_v1 = 10005,
 }
 
+/// Available on macOS 10.15+, iOS 13.0+
+///
+/// See <https://developer.apple.com/documentation/metal/mtlgpufamily>
+#[repr(i64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum MTLGPUFamily {
+    Common1 = 3001,
+    Common2 = 3002,
+    Common3 = 3003,
+    Apple1 = 1001,
+    Apple2 = 1002,
+    Apple3 = 1003,
+    Apple4 = 1004,
+    Apple5 = 1005,
+    Apple6 = 1006,
+    Apple7 = 1007,
+    Apple8 = 1008,
+    Apple9 = 1009,
+    Mac1 = 2001,
+    Mac2 = 2002,
+    MacCatalyst1 = 4001,
+    MacCatalyst2 = 4002,
+    Metal3 = 5001,
+}
+
+/// See <https://developer.apple.com/documentation/metal/mtldevicelocation>
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum MTLDeviceLocation {
+    BuiltIn = 0,
+    Slot = 1,
+    External = 2,
+    Unspecified = u64::MAX,
+}
+
 bitflags! {
+    #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
     pub struct PixelFormatCapabilities: u32 {
         const Filter = 1 << 0;
         const Write = 1 << 1;
@@ -106,7 +145,7 @@ impl MTLFeatureSet {
             tvOS_GPUFamily1_v3 | tvOS_GPUFamily2_v1 => 11,
             tvOS_GPUFamily1_v4 | tvOS_GPUFamily2_v2 => 12,
             macOS_GPUFamily1_v1 => 11,
-            macOS_GPUFamily1_v2 => 12,
+            macOS_GPUFamily1_v2 | macOS_ReadWriteTextureTier2 => 12,
             macOS_GPUFamily1_v3 => 13,
             macOS_GPUFamily1_v4 | macOS_GPUFamily2_v1 => 14,
         }
@@ -115,10 +154,20 @@ impl MTLFeatureSet {
     fn gpu_family(&self) -> u32 {
         use MTLFeatureSet::*;
         match self {
-            iOS_GPUFamily1_v1 | iOS_GPUFamily1_v2 | iOS_GPUFamily1_v3 | iOS_GPUFamily1_v4
-            | iOS_GPUFamily1_v5 | tvOS_GPUFamily1_v1 | tvOS_GPUFamily1_v2 | tvOS_GPUFamily1_v3
-            | tvOS_GPUFamily1_v4 | macOS_GPUFamily1_v1 | macOS_GPUFamily1_v2
-            | macOS_GPUFamily1_v3 | macOS_GPUFamily1_v4 => 1,
+            iOS_GPUFamily1_v1
+            | iOS_GPUFamily1_v2
+            | iOS_GPUFamily1_v3
+            | iOS_GPUFamily1_v4
+            | iOS_GPUFamily1_v5
+            | tvOS_GPUFamily1_v1
+            | tvOS_GPUFamily1_v2
+            | tvOS_GPUFamily1_v3
+            | tvOS_GPUFamily1_v4
+            | macOS_GPUFamily1_v1
+            | macOS_GPUFamily1_v2
+            | macOS_ReadWriteTextureTier2
+            | macOS_GPUFamily1_v3
+            | macOS_GPUFamily1_v4 => 1,
             iOS_GPUFamily2_v1 | iOS_GPUFamily2_v2 | iOS_GPUFamily2_v3 | iOS_GPUFamily2_v4
             | iOS_GPUFamily2_v5 | tvOS_GPUFamily2_v1 | tvOS_GPUFamily2_v2 | macOS_GPUFamily2_v1 => {
                 2
@@ -132,9 +181,16 @@ impl MTLFeatureSet {
     fn version(&self) -> u32 {
         use MTLFeatureSet::*;
         match self {
-            iOS_GPUFamily1_v1 | iOS_GPUFamily2_v1 | iOS_GPUFamily3_v1 | iOS_GPUFamily4_v1
-            | iOS_GPUFamily5_v1 | macOS_GPUFamily1_v1 | macOS_GPUFamily2_v1
-            | tvOS_GPUFamily1_v1 | tvOS_GPUFamily2_v1 => 1,
+            iOS_GPUFamily1_v1
+            | iOS_GPUFamily2_v1
+            | iOS_GPUFamily3_v1
+            | iOS_GPUFamily4_v1
+            | iOS_GPUFamily5_v1
+            | macOS_GPUFamily1_v1
+            | macOS_GPUFamily2_v1
+            | macOS_ReadWriteTextureTier2
+            | tvOS_GPUFamily1_v1
+            | tvOS_GPUFamily2_v1 => 1,
             iOS_GPUFamily1_v2 | iOS_GPUFamily2_v2 | iOS_GPUFamily3_v2 | iOS_GPUFamily4_v2
             | macOS_GPUFamily1_v2 | tvOS_GPUFamily1_v2 | tvOS_GPUFamily2_v2 => 2,
             iOS_GPUFamily1_v3 | iOS_GPUFamily2_v3 | iOS_GPUFamily3_v3 | macOS_GPUFamily1_v3
@@ -506,6 +562,14 @@ impl MTLFeatureSet {
             OS::iOS => self.gpu_family() >= 5,
             OS::tvOS => false,
             OS::macOS => self.gpu_family() >= 2,
+        }
+    }
+
+    pub fn supports_binary_archive(&self) -> bool {
+        match self.os() {
+            OS::iOS => self.gpu_family() >= 3,
+            OS::tvOS => self.gpu_family() >= 3,
+            OS::macOS => self.gpu_family() >= 1,
         }
     }
 
@@ -1325,22 +1389,75 @@ impl MTLFeatureSet {
     }
 }
 
-#[allow(non_camel_case_types)]
+/// See <https://developer.apple.com/documentation/metal/mtlargumentbufferstier>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum MTLArgumentBuffersTier {
-    tier1 = 0,
-    tier2 = 1,
+    Tier1 = 0,
+    Tier2 = 1,
+}
+
+/// See <https://developer.apple.com/documentation/metal/mtlreadwritetexturetier>
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum MTLReadWriteTextureTier {
+    TierNone = 0,
+    Tier1 = 1,
+    Tier2 = 2,
+}
+
+/// Only available on (macos(11.0), ios(14.0))
+///
+/// See <https://developer.apple.com/documentation/metal/mtlcountersamplingpoint>
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum MTLCounterSamplingPoint {
+    AtStageBoundary = 0,
+    AtDrawBoundary = 1,
+    AtDispatchBoundary = 2,
+    AtTileDispatchBoundary = 3,
+    AtBlitBoundary = 4,
+}
+
+/// Only available on (macos(11.0), macCatalyst(14.0), ios(13.0))
+/// Kinda a long name!
+///
+/// See <https://developer.apple.com/documentation/metal/mtlsparsetextureregionalignmentmode>
+#[repr(u64)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum MTLSparseTextureRegionAlignmentMode {
+    Outward = 0,
+    Inward = 1,
 }
 
 bitflags! {
-    struct MTLPipelineOption: NSUInteger {
-        const ArgumentInfo   = 1 << 0;
-        const BufferTypeInfo = 1 << 1;
+    /// Options that determine how Metal prepares the pipeline.
+    #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct MTLPipelineOption: NSUInteger {
+        /// Do not provide any reflection information.
+        const None                      = 0;
+        /// An option that requests argument information for buffers, textures, and threadgroup memory.
+        const ArgumentInfo              = 1 << 0;
+        /// An option that requests detailed buffer type information for buffer arguments.
+        const BufferTypeInfo            = 1 << 1;
+        /// An option that specifies that Metal should create the pipeline state object only if the
+        /// compiled shader is present inside the binary archive.
+        ///
+        /// Only available on (macos(11.0), ios(14.0))
+        const FailOnBinaryArchiveMiss   = 1 << 2;
     }
 }
 
-#[link(name = "Metal", kind = "framework")]
+/// See <https://developer.apple.com/documentation/metal/mtlaccelerationstructuresizes>
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(C)]
+pub struct MTLAccelerationStructureSizes {
+    pub acceleration_structure_size: NSUInteger,
+    pub build_scratch_buffer_size: NSUInteger,
+    pub refit_scratch_buffer_size: NSUInteger,
+}
+
+#[cfg_attr(feature = "link", link(name = "Metal", kind = "framework"))]
 extern "C" {
     fn MTLCreateSystemDefaultDevice() -> *mut MTLDevice;
     #[cfg(not(target_os = "ios"))]
@@ -1348,18 +1465,18 @@ extern "C" {
 }
 
 #[allow(non_camel_case_types)]
-type dispatch_data_t = id;
+type dispatch_data_t = *mut Object;
 #[allow(non_camel_case_types)]
-type dispatch_queue_t = id;
+pub type dispatch_queue_t = *mut Object;
 #[allow(non_camel_case_types)]
 type dispatch_block_t = *const Block<(), ()>;
 
 #[cfg_attr(
-    any(target_os = "macos", target_os = "ios"),
+    all(feature = "link", any(target_os = "macos", target_os = "ios")),
     link(name = "System", kind = "dylib")
 )]
 #[cfg_attr(
-    not(any(target_os = "macos", target_os = "ios")),
+    all(feature = "link", not(any(target_os = "macos", target_os = "ios"))),
     link(name = "dispatch", kind = "dylib")
 )]
 #[allow(improper_ctypes)]
@@ -1381,18 +1498,22 @@ type MTLNewRenderPipelineStateWithReflectionCompletionHandler = extern fn(render
 type MTLNewComputePipelineStateCompletionHandler = extern fn(computePipelineState: id, error: id);
 type MTLNewComputePipelineStateWithReflectionCompletionHandler = extern fn(computePipelineState: id, reflection: id, error: id);*/
 
+/// See <https://developer.apple.com/documentation/metal/mtldevice>
 pub enum MTLDevice {}
 
 foreign_obj_type! {
     type CType = MTLDevice;
     pub struct Device;
-    pub struct DeviceRef;
 }
 
 impl Device {
     pub fn system_default() -> Option<Self> {
         // `MTLCreateSystemDefaultDevice` may return null if Metal is not supported
-        unsafe { MTLCreateSystemDefaultDevice().as_mut().map(|x| Self(x)) }
+        unsafe {
+            MTLCreateSystemDefaultDevice()
+                .as_mut()
+                .map(|x| Self(x.into()))
+        }
     }
 
     pub fn all() -> Vec<Self> {
@@ -1441,68 +1562,91 @@ impl DeviceRef {
         unsafe { msg_send![self, registryID] }
     }
 
+    pub fn location(&self) -> MTLDeviceLocation {
+        unsafe { msg_send![self, location] }
+    }
+
+    pub fn location_number(&self) -> NSUInteger {
+        unsafe { msg_send![self, locationNumber] }
+    }
+
+    pub fn max_threadgroup_memory_length(&self) -> NSUInteger {
+        unsafe { msg_send![self, maxThreadgroupMemoryLength] }
+    }
+
     pub fn max_threads_per_threadgroup(&self) -> MTLSize {
         unsafe { msg_send![self, maxThreadsPerThreadgroup] }
     }
 
     pub fn is_low_power(&self) -> bool {
-        unsafe {
-            match msg_send![self, isLowPower] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isLowPower] }
     }
 
     pub fn is_headless(&self) -> bool {
-        unsafe {
-            match msg_send![self, isHeadless] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isHeadless] }
     }
 
     pub fn is_removable(&self) -> bool {
-        unsafe {
-            match msg_send![self, isRemovable] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isRemovable] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_raytracing(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsRaytracing] }
+    }
+
+    pub fn has_unified_memory(&self) -> bool {
+        unsafe { msg_send![self, hasUnifiedMemory] }
+    }
+
+    pub fn recommended_max_working_set_size(&self) -> u64 {
+        unsafe { msg_send![self, recommendedMaxWorkingSetSize] }
+    }
+
+    pub fn max_transfer_rate(&self) -> u64 {
+        unsafe { msg_send![self, maxTransferRate] }
     }
 
     pub fn supports_feature_set(&self, feature: MTLFeatureSet) -> bool {
-        unsafe {
-            match msg_send![self, supportsFeatureSet: feature] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, supportsFeatureSet: feature] }
     }
 
-    pub fn supports_sample_count(&self, count: NSUInteger) -> bool {
-        unsafe {
-            match msg_send![self, supportsTextureSampleCount: count] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+    pub fn supports_family(&self, family: MTLGPUFamily) -> bool {
+        unsafe { msg_send_bool![self, supportsFamily: family] }
+    }
+
+    pub fn supports_vertex_amplification_count(&self, count: NSUInteger) -> bool {
+        unsafe { msg_send_bool![self, supportsVertexAmplificationCount: count] }
+    }
+
+    pub fn supports_texture_sample_count(&self, count: NSUInteger) -> bool {
+        unsafe { msg_send_bool![self, supportsTextureSampleCount: count] }
+    }
+
+    pub fn supports_shader_barycentric_coordinates(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsShaderBarycentricCoordinates] }
+    }
+
+    pub fn supports_function_pointers(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsFunctionPointers] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_dynamic_libraries(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsDynamicLibraries] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_counter_sampling(&self, sampling_point: MTLCounterSamplingPoint) -> bool {
+        unsafe { msg_send_bool![self, supportsCounterSampling: sampling_point] }
     }
 
     pub fn d24_s8_supported(&self) -> bool {
-        unsafe {
-            match msg_send![self, isDepth24Stencil8PixelFormatSupported] {
-                YES => true,
-                NO => false,
-                _ => unreachable!(),
-            }
-        }
+        unsafe { msg_send_bool![self, isDepth24Stencil8PixelFormatSupported] }
+    }
+
+    pub fn new_fence(&self) -> Fence {
+        unsafe { msg_send![self, newFence] }
     }
 
     pub fn new_command_queue(&self) -> CommandQueue {
@@ -1525,22 +1669,17 @@ impl DeviceRef {
         src: &str,
         options: &CompileOptionsRef,
     ) -> Result<Library, String> {
-        use cocoa::base::nil as cocoa_nil;
-        use cocoa::foundation::NSString as cocoa_NSString;
-
+        let source = nsstring_from_str(src);
         unsafe {
-            let source = cocoa_NSString::alloc(cocoa_nil).init_str(src);
             let mut err: *mut Object = ptr::null_mut();
             let library: *mut MTLLibrary = msg_send![self, newLibraryWithSource:source
                                                                         options:options
                                                                           error:&mut err];
-            let () = msg_send![source, release];
             if !err.is_null() {
                 let desc: *mut Object = msg_send![err, localizedDescription];
-                let compile_error: *const std::os::raw::c_char = msg_send![desc, UTF8String];
+                let compile_error: *const c_char = msg_send![desc, UTF8String];
                 let message = CStr::from_ptr(compile_error).to_string_lossy().into_owned();
                 if library.is_null() {
-                    let () = msg_send![err, release];
                     return Err(message);
                 } else {
                     warn!("Shader warnings: {}", message);
@@ -1553,18 +1692,12 @@ impl DeviceRef {
     }
 
     pub fn new_library_with_file<P: AsRef<Path>>(&self, file: P) -> Result<Library, String> {
-        use cocoa::base::nil as cocoa_nil;
-        use cocoa::foundation::NSString as cocoa_NSString;
-
+        let filename = nsstring_from_str(file.as_ref().to_string_lossy().as_ref());
         unsafe {
-            let filename =
-                cocoa_NSString::alloc(cocoa_nil).init_str(file.as_ref().to_string_lossy().as_ref());
-
             let library: *mut MTLLibrary = try_objc! { err =>
                 msg_send![self, newLibraryWithFile:filename.as_ref()
                                              error:&mut err]
             };
-
             Ok(Library::from_ptr(library))
         }
     }
@@ -1588,23 +1721,84 @@ impl DeviceRef {
         }
     }
 
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn new_dynamic_library(&self, library: &LibraryRef) -> Result<DynamicLibrary, String> {
+        unsafe {
+            let mut err: *mut Object = ptr::null_mut();
+            let dynamic_library: *mut MTLDynamicLibrary = msg_send![self, newDynamicLibrary:library
+                                                                                      error:&mut err];
+            if !err.is_null() {
+                // FIXME: copy pasta
+                let desc: *mut Object = msg_send![err, localizedDescription];
+                let compile_error: *const c_char = msg_send![desc, UTF8String];
+                let message = CStr::from_ptr(compile_error).to_string_lossy().into_owned();
+                Err(message)
+            } else {
+                Ok(DynamicLibrary::from_ptr(dynamic_library))
+            }
+        }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn new_dynamic_library_with_url(&self, url: &URLRef) -> Result<DynamicLibrary, String> {
+        unsafe {
+            let mut err: *mut Object = ptr::null_mut();
+            let dynamic_library: *mut MTLDynamicLibrary = msg_send![self, newDynamicLibraryWithURL:url
+                                                                                             error:&mut err];
+            if !err.is_null() {
+                // FIXME: copy pasta
+                let desc: *mut Object = msg_send![err, localizedDescription];
+                let compile_error: *const c_char = msg_send![desc, UTF8String];
+                let message = CStr::from_ptr(compile_error).to_string_lossy().into_owned();
+                Err(message)
+            } else {
+                Ok(DynamicLibrary::from_ptr(dynamic_library))
+            }
+        }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn new_binary_archive_with_descriptor(
+        &self,
+        descriptor: &BinaryArchiveDescriptorRef,
+    ) -> Result<BinaryArchive, String> {
+        unsafe {
+            let mut err: *mut Object = ptr::null_mut();
+            let binary_archive: *mut MTLBinaryArchive = msg_send![self, newBinaryArchiveWithDescriptor:descriptor
+                                                     error:&mut err];
+            if !err.is_null() {
+                // TODO: copy pasta
+                let desc: *mut Object = msg_send![err, localizedDescription];
+                let c_msg: *const c_char = msg_send![desc, UTF8String];
+                let message = CStr::from_ptr(c_msg).to_string_lossy().into_owned();
+                Err(message)
+            } else {
+                Ok(BinaryArchive::from_ptr(binary_archive))
+            }
+        }
+    }
+
+    /// Synchronously creates a render pipeline state object and associated reflection information.
     pub fn new_render_pipeline_state_with_reflection(
         &self,
         descriptor: &RenderPipelineDescriptorRef,
-        reflection: &RenderPipelineReflectionRef,
-    ) -> Result<RenderPipelineState, String> {
+        reflection_options: MTLPipelineOption,
+    ) -> Result<(RenderPipelineState, RenderPipelineReflection), String> {
         unsafe {
-            let reflection_options =
-                MTLPipelineOption::ArgumentInfo | MTLPipelineOption::BufferTypeInfo;
-
+            let mut reflection: *mut Object = ptr::null_mut();
             let pipeline_state: *mut MTLRenderPipelineState = try_objc! { err =>
                 msg_send![self, newRenderPipelineStateWithDescriptor:descriptor
                                                              options:reflection_options
-                                                          reflection:reflection
+                                                          reflection:&mut reflection
                                                                error:&mut err]
             };
 
-            Ok(RenderPipelineState::from_ptr(pipeline_state))
+            let state = RenderPipelineState::from_ptr(pipeline_state);
+
+            let () = msg_send![reflection, retain];
+            let reflection = RenderPipelineReflection::from_ptr(reflection as _);
+
+            Ok((state, reflection))
         }
     }
 
@@ -1615,6 +1809,45 @@ impl DeviceRef {
         unsafe {
             let pipeline_state: *mut MTLRenderPipelineState = try_objc! { err =>
                 msg_send![self, newRenderPipelineStateWithDescriptor:descriptor
+                                                               error:&mut err]
+            };
+
+            Ok(RenderPipelineState::from_ptr(pipeline_state))
+        }
+    }
+
+    /// Only available on (macos(13.0), ios(16.0))
+    pub fn new_mesh_render_pipeline_state_with_reflection(
+        &self,
+        descriptor: &MeshRenderPipelineDescriptorRef,
+        reflection_options: MTLPipelineOption,
+    ) -> Result<(RenderPipelineState, RenderPipelineReflection), String> {
+        unsafe {
+            let mut reflection: *mut Object = ptr::null_mut();
+            let pipeline_state: *mut MTLRenderPipelineState = try_objc! { err =>
+                msg_send![self, newRenderPipelineStateWithMeshDescriptor:descriptor
+                                                             options:reflection_options
+                                                          reflection:&mut reflection
+                                                               error:&mut err]
+            };
+
+            let state = RenderPipelineState::from_ptr(pipeline_state);
+
+            let () = msg_send![reflection, retain];
+            let reflection = RenderPipelineReflection::from_ptr(reflection as _);
+
+            Ok((state, reflection))
+        }
+    }
+
+    /// Only available on (macos(13.0), ios(16.0))
+    pub fn new_mesh_render_pipeline_state(
+        &self,
+        descriptor: &MeshRenderPipelineDescriptorRef,
+    ) -> Result<RenderPipelineState, String> {
+        unsafe {
+            let pipeline_state: *mut MTLRenderPipelineState = try_objc! { err =>
+                msg_send![self, newRenderPipelineStateWithMeshDescriptor:descriptor
                                                                error:&mut err]
             };
 
@@ -1636,22 +1869,64 @@ impl DeviceRef {
         }
     }
 
-    pub unsafe fn new_compute_pipeline_state(
+    pub fn new_compute_pipeline_state(
         &self,
         descriptor: &ComputePipelineDescriptorRef,
     ) -> Result<ComputePipelineState, String> {
-        let pipeline_state: *mut MTLComputePipelineState = try_objc! { err =>
-            msg_send![self, newComputePipelineStateWithDescriptor:descriptor
-                                                            error:&mut err]
-        };
+        unsafe {
+            let pipeline_state: *mut MTLComputePipelineState = try_objc! { err =>
+                msg_send![self, newComputePipelineStateWithDescriptor:descriptor
+                                                                error:&mut err]
+            };
 
-        Ok(ComputePipelineState::from_ptr(pipeline_state))
+            Ok(ComputePipelineState::from_ptr(pipeline_state))
+        }
+    }
+
+    /// Synchronously creates a compute pipeline state object and associated reflection information,
+    /// using a compute pipeline descriptor.
+    pub fn new_compute_pipeline_state_with_reflection(
+        &self,
+        descriptor: &ComputePipelineDescriptorRef,
+        reflection_options: MTLPipelineOption,
+    ) -> Result<(ComputePipelineState, ComputePipelineReflection), String> {
+        unsafe {
+            let mut reflection: *mut Object = ptr::null_mut();
+            let pipeline_state: *mut MTLComputePipelineState = try_objc! { err =>
+                msg_send![self, newComputePipelineStateWithDescriptor:descriptor
+                                                             options:reflection_options
+                                                          reflection:&mut reflection
+                                                               error:&mut err]
+            };
+
+            let state = ComputePipelineState::from_ptr(pipeline_state);
+
+            let () = msg_send![reflection, retain];
+            let reflection = ComputePipelineReflection::from_ptr(reflection as _);
+
+            Ok((state, reflection))
+        }
     }
 
     pub fn new_buffer(&self, length: u64, options: MTLResourceOptions) -> Buffer {
         unsafe {
             msg_send![self, newBufferWithLength:length
                                         options:options]
+        }
+    }
+
+    pub fn new_buffer_with_bytes_no_copy(
+        &self,
+        bytes: *const std::ffi::c_void,
+        length: NSUInteger,
+        options: MTLResourceOptions,
+        deallocator: Option<&Block<(*const std::ffi::c_void, NSUInteger), ()>>,
+    ) -> Buffer {
+        unsafe {
+            msg_send![self, newBufferWithBytesNoCopy:bytes
+                length:length
+                options:options
+                deallocator:deallocator]
         }
     }
 
@@ -1665,6 +1940,33 @@ impl DeviceRef {
             msg_send![self, newBufferWithBytes:bytes
                                         length:length
                                        options:options]
+        }
+    }
+
+    pub fn new_counter_sample_buffer_with_descriptor(
+        &self,
+        descriptor: &CounterSampleBufferDescriptorRef,
+    ) -> Result<CounterSampleBuffer, String> {
+        unsafe {
+            let counter_sample_buffer: *mut MTLCounterSampleBuffer = try_objc! { err =>
+                msg_send![self, newCounterSampleBufferWithDescriptor: descriptor error:&mut err]
+            };
+
+            assert!(!counter_sample_buffer.is_null());
+            Ok(CounterSampleBuffer::from_ptr(counter_sample_buffer))
+        }
+    }
+
+    pub fn new_indirect_command_buffer_with_descriptor(
+        &self,
+        descriptor: &IndirectCommandBufferDescriptorRef,
+        max_command_count: NSUInteger,
+        options: MTLResourceOptions,
+    ) -> IndirectCommandBuffer {
+        unsafe {
+            msg_send![self, newIndirectCommandBufferWithDescriptor:descriptor
+                                                   maxCommandCount:max_command_count
+                                                           options:options]
         }
     }
 
@@ -1683,16 +1985,41 @@ impl DeviceRef {
         unsafe { msg_send![self, newDepthStencilStateWithDescriptor: descriptor] }
     }
 
-    pub fn argument_buffers_support(&self) -> Option<MTLArgumentBuffersTier> {
-        unsafe {
-            let has_arg_buffers: BOOL =
-                msg_send![self, respondsToSelector: sel!(argumentBuffersSupport)];
-            if has_arg_buffers == YES {
-                Some(msg_send![self, argumentBuffersSupport])
-            } else {
-                None
-            }
-        }
+    pub fn argument_buffers_support(&self) -> MTLArgumentBuffersTier {
+        unsafe { msg_send![self, argumentBuffersSupport] }
+    }
+
+    pub fn read_write_texture_support(&self) -> MTLReadWriteTextureTier {
+        unsafe { msg_send![self, readWriteTextureSupport] }
+    }
+
+    pub fn raster_order_groups_supported(&self) -> bool {
+        unsafe { msg_send_bool![self, rasterOrderGroupsSupported] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_32bit_float_filtering(&self) -> bool {
+        unsafe { msg_send_bool![self, supports32BitFloatFiltering] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_32bit_MSAA(&self) -> bool {
+        unsafe { msg_send_bool![self, supports32BitMSAA] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_query_texture_LOD(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsQueryTextureLOD] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_BC_texture_compression(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsBCTextureCompression] }
+    }
+
+    /// Only available on (macos(11.0), ios(14.0))
+    pub fn supports_pull_model_interpolation(&self) -> bool {
+        unsafe { msg_send_bool![self, supportsPullModelInterpolation] }
     }
 
     pub fn new_argument_encoder(
@@ -1704,6 +2031,14 @@ impl DeviceRef {
 
     pub fn new_heap(&self, descriptor: &HeapDescriptorRef) -> Heap {
         unsafe { msg_send![self, newHeapWithDescriptor: descriptor] }
+    }
+
+    pub fn new_event(&self) -> Event {
+        unsafe { msg_send![self, newEvent] }
+    }
+
+    pub fn new_shared_event(&self) -> SharedEvent {
+        unsafe { msg_send![self, newSharedEvent] }
     }
 
     pub fn heap_buffer_size_and_align(
@@ -1737,5 +2072,47 @@ impl DeviceRef {
 
     pub fn max_argument_buffer_sampler_count(&self) -> NSUInteger {
         unsafe { msg_send![self, maxArgumentBufferSamplerCount] }
+    }
+
+    pub fn current_allocated_size(&self) -> NSUInteger {
+        unsafe { msg_send![self, currentAllocatedSize] }
+    }
+
+    /// Only available on (macos(10.14), ios(12.0), tvos(12.0))
+    pub fn max_buffer_length(&self) -> NSUInteger {
+        unsafe { msg_send![self, maxBufferLength] }
+    }
+
+    pub fn acceleration_structure_sizes_with_descriptor(
+        &self,
+        desc: &AccelerationStructureDescriptorRef,
+    ) -> MTLAccelerationStructureSizes {
+        unsafe { msg_send![self, accelerationStructureSizesWithDescriptor: desc] }
+    }
+
+    pub fn new_acceleration_structure_with_size(
+        &self,
+        size: NSUInteger,
+    ) -> accelerator_structure::AccelerationStructure {
+        unsafe { msg_send![self, newAccelerationStructureWithSize: size] }
+    }
+
+    pub fn sample_timestamps(&self, cpu_timestamp: &mut u64, gpu_timestamp: &mut u64) {
+        unsafe { msg_send![self, sampleTimestamps: cpu_timestamp gpuTimestamp: gpu_timestamp] }
+    }
+
+    pub fn counter_sets(&self) -> Vec<CounterSet> {
+        unsafe {
+            let counter_sets: *mut Object = msg_send![self, counterSets];
+            let count: NSUInteger = msg_send![counter_sets, count];
+            let ret = (0..count)
+                .map(|i| {
+                    let csp: *mut MTLCounterSet = msg_send![counter_sets, objectAtIndex: i];
+                    let () = msg_send![csp, retain];
+                    CounterSet::from_ptr(csp)
+                })
+                .collect();
+            ret
+        }
     }
 }

@@ -2,11 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import getMatches from "./get-matches";
 import { findSourceMatches } from "./project-search";
-import { workerUtils } from "devtools-utils";
-const { workerHandler } = workerUtils;
+import { workerHandler } from "../../../../shared/worker-utils";
 
 self.onmessage = workerHandler({ getMatches, findSourceMatches });

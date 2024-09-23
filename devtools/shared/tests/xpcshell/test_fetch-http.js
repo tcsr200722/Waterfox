@@ -4,7 +4,9 @@
 
 // Tests for DevToolsUtils.fetch on http:// URI's.
 
-const { HttpServer } = ChromeUtils.import("resource://testing-common/httpd.js");
+const { HttpServer } = ChromeUtils.importESModule(
+  "resource://testing-common/httpd.sys.mjs"
+);
 
 const server = new HttpServer();
 server.registerDirectory("/", do_get_cwd());
@@ -25,6 +27,8 @@ function cacheRequestHandler(request, response) {
   const body = "[" + Math.random() + "]";
   response.bodyOutputStream.write(body, body.length);
 }
+
+do_get_profile();
 
 registerCleanupFunction(() => {
   return new Promise(resolve => server.stop(resolve));

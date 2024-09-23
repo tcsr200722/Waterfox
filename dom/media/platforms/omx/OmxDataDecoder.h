@@ -7,17 +7,15 @@
 #if !defined(OmxDataDecoder_h_)
 #  define OmxDataDecoder_h_
 
-#  include "mozilla/Monitor.h"
-#  include "mozilla/StateWatching.h"
-
 #  include "AudioCompactor.h"
 #  include "ImageContainer.h"
 #  include "MediaInfo.h"
-#  include "PlatformDecoderModule.h"
-
 #  include "OMX_Component.h"
-
 #  include "OmxPromiseLayer.h"
+#  include "PerformanceRecorder.h"
+#  include "PlatformDecoderModule.h"
+#  include "mozilla/Monitor.h"
+#  include "mozilla/StateWatching.h"
 
 namespace mozilla {
 
@@ -58,14 +56,17 @@ DDLoggedTypeDeclNameAndBase(OmxDataDecoder, MediaDataDecoder);
  *
  *   OmxPlatformLayer acts as the OpenMAX IL core.
  */
-class OmxDataDecoder : public MediaDataDecoder,
-                       public DecoderDoctorLifeLogger<OmxDataDecoder> {
+class OmxDataDecoder final : public MediaDataDecoder,
+                             public DecoderDoctorLifeLogger<OmxDataDecoder> {
  protected:
   virtual ~OmxDataDecoder();
 
  public:
-  OmxDataDecoder(const TrackInfo& aTrackInfo, TaskQueue* aTaskQueue,
-                 layers::ImageContainer* aImageContainer);
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(OmxDataDecoder, final);
+
+  OmxDataDecoder(const TrackInfo& aTrackInfo,
+                 layers::ImageContainer* aImageContainer,
+                 Maybe<TrackingId> aTrackingId);
 
   RefPtr<InitPromise> Init() override;
   RefPtr<DecodePromise> Decode(MediaRawData* aSample) override;
@@ -73,9 +74,9 @@ class OmxDataDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
 
-  nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("omx decoder");
-  }
+  nsCString GetDescriptionName() const override { return "omx decoder"_ns; }
+
+  nsCString GetCodecName() const override { return "unknown"_ns; }
 
   ConversionRequired NeedsConversion() const override {
     return ConversionRequired::kNeedAnnexB;
@@ -87,9 +88,9 @@ class OmxDataDecoder : public MediaDataDecoder,
  protected:
   void InitializationTask();
 
-  void ResolveInitPromise(const char* aMethodName);
+  void ResolveInitPromise(StaticString aMethodName);
 
-  void RejectInitPromise(MediaResult aError, const char* aMethodName);
+  void RejectInitPromise(MediaResult aError, StaticString aMethodName);
 
   void OmxStateRunner();
 
@@ -156,8 +157,7 @@ class OmxDataDecoder : public MediaDataDecoder,
   // The Omx TaskQueue.
   RefPtr<TaskQueue> mOmxTaskQueue;
 
-  RefPtr<TaskQueue> mTaskQueue;
-
+  nsCOMPtr<nsISerialEventTarget> mThread;
   RefPtr<layers::ImageContainer> mImageContainer;
 
   WatchManager<OmxDataDecoder> mWatchManager;
@@ -205,6 +205,11 @@ class OmxDataDecoder : public MediaDataDecoder,
   BUFFERLIST mOutPortBuffers;
 
   RefPtr<MediaDataHelper> mMediaDataHelper;
+
+  const Maybe<TrackingId> mTrackingId;
+
+  // Accessed on Omx TaskQueue
+  PerformanceRecorderMulti<DecodeStage> mPerformanceRecorder;
 };
 
 template <class T>

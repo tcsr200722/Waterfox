@@ -47,7 +47,7 @@ When the user closes the tab or navigates to a different URI, prompts associated
 with the given tab are closed.
 In this case an exception will be thrown:
 
-.. code-block::
+.. code-block:: JavaScript
 
     /*
     Exception: prompt aborted by user
@@ -90,6 +90,6 @@ content and is **not** intended to look like secure browser UI.
 
 Disabling tab/content modal prompts
 -----------------------------------
-You can disable tab and content modal prompts and get back window-modal prompts
-by setting the `prompts.tab_modal.enabled` preference to `false`.
-This pref might be removed in the future.
+You can disable tab and content modal prompts and get back window-modal for
+individual prompts by setting the `prompts.modalType.<promptName>` preference to
+`3`.

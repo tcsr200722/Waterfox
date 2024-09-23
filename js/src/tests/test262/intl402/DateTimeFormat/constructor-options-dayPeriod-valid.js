@@ -1,14 +1,13 @@
-// |reftest| skip-if(release_or_beta) -- Intl.DateTimeFormat-dayPeriod is not released yet
 // Copyright 2019 Google Inc. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
-esid: sec-initializedatetimeformat
+esid: sec-createdatetimeformat
 description: >
   Checks handling of the options argument to the DateTimeFormat constructor.
 info: |
   [[DayPeriod]]    `"dayPeriod"`    `"narrow"`, `"short"`, `"long"`
-  InitializeDateTimeFormat ( dateTimeFormat, locales, options )
+  CreateDateTimeFormat ( dateTimeFormat, locales, options, required, defaults )
 
   ...
 features: [Intl.DateTimeFormat-dayPeriod]

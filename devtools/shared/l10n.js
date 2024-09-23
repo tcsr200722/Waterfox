@@ -8,48 +8,9 @@ const { sprintf } = require("devtools/shared/sprintfjs/sprintf");
 
 const propertiesMap = {};
 
-// We need some special treatment here for webpack.
-//
-// Webpack doesn't always handle dynamic requires in the best way.  In
-// particular if it sees an unrestricted dynamic require, it will try
-// to put all the files it can find into the generated pack.  (It can
-// also try a bit to parse the expression passed to require, but in
-// our case this doesn't work, because our call below doesn't provide
-// enough information.)
-//
-// Webpack also provides a way around this: require.context.  The idea
-// here is to tell webpack some constraints so that it can include
-// fewer files in the pack.
-//
-// Here we introduce new require contexts for each possible locale
-// directory.  Then we use the correct context to load the property
-// file.  In the webpack case this results in just the locale property
-// files being included in the pack; and in the devtools case this is
-// a wordy no-op.
-const reqShared = require.context(
-  "raw!devtools/shared/locales/",
-  true,
-  /^.*\.properties$/
-);
-const reqClient = require.context(
-  "raw!devtools/client/locales/",
-  true,
-  /^.*\.properties$/
-);
-const reqStartup = require.context(
-  "raw!devtools/startup/locales/",
-  true,
-  /^.*\.properties$/
-);
-const reqGlobal = require.context(
-  "raw!toolkit/locales/",
-  true,
-  /^.*\.properties$/
-);
-
 // Map used to memoize Number formatters.
 const numberFormatters = new Map();
-const getNumberFormatter = function(decimals) {
+const getNumberFormatter = function (decimals) {
   let formatter = numberFormatters.get(decimals);
   if (!formatter) {
     // Create and memoize a formatter for the provided decimals
@@ -73,25 +34,35 @@ const getNumberFormatter = function(decimals) {
  */
 function getProperties(url) {
   if (!propertiesMap[url]) {
-    // See the comment above about webpack and require contexts.  Here
-    // we take an input like "devtools/shared/locales/debugger.properties"
-    // and decide which context require function to use.  Despite the
-    // string processing here, in the end a string identical to |url|
-    // ends up being passed to "require".
-    const index = url.lastIndexOf("/");
-    // Turn "mumble/locales/resource.properties" => "./resource.properties".
-    const baseName = "." + url.substr(index);
-    let reqFn;
-    if (/^toolkit/.test(url)) {
-      reqFn = reqGlobal;
-    } else if (/^devtools\/shared/.test(url)) {
-      reqFn = reqShared;
-    } else if (/^devtools\/startup/.test(url)) {
-      reqFn = reqStartup;
+    let propertiesFile;
+    let isNodeEnv = false;
+    try {
+      // eslint-disable-next-line no-undef
+      isNodeEnv = process?.release?.name == "node";
+    } catch (e) {}
+
+    if (isNodeEnv) {
+      // In Node environment (e.g. when running jest test), we need to prepend the en-US
+      // to the filename in order to have the actual location of the file in source.
+      const lastDelimIndex = url.lastIndexOf("/");
+      const defaultLocaleUrl =
+        url.substring(0, lastDelimIndex) +
+        "/en-US" +
+        url.substring(lastDelimIndex);
+
+      const path = require("path");
+      // eslint-disable-next-line no-undef
+      const rootPath = path.join(__dirname, "../../");
+      const absoluteUrl = path.join(rootPath, defaultLocaleUrl);
+      const { readFileSync } = require("fs");
+      // In Node environment we directly use readFileSync to get the file content instead
+      // of relying on custom raw loader, like we do in regular environment.
+      propertiesFile = readFileSync(absoluteUrl, { encoding: "utf8" });
     } else {
-      reqFn = reqClient;
+      propertiesFile = require("raw!" + url);
     }
-    propertiesMap[url] = parsePropertiesFile(reqFn(baseName));
+
+    propertiesMap[url] = parsePropertiesFile(propertiesFile);
   }
 
   return propertiesMap[url];
@@ -117,7 +88,7 @@ LocalizationHelper.prototype = {
    * @param string name
    * @return string
    */
-  getStr: function(name) {
+  getStr(name) {
     const properties = getProperties(this.stringBundleName);
     if (name in properties) {
       return properties[name];
@@ -138,7 +109,7 @@ LocalizationHelper.prototype = {
    * @param array args
    * @return string
    */
-  getFormatStr: function(name, ...args) {
+  getFormatStr(name, ...args) {
     return sprintf(this.getStr(name), ...args);
   },
 
@@ -151,7 +122,7 @@ LocalizationHelper.prototype = {
    * @param array args
    * @return string
    */
-  getFormatStrWithNumbers: function(name, ...args) {
+  getFormatStrWithNumbers(name, ...args) {
     const newArgs = args.map(x => {
       return typeof x == "number" ? this.numberWithDecimals(x, 2) : x;
     });
@@ -170,7 +141,7 @@ LocalizationHelper.prototype = {
    * @return string
    *         The localized number as a string.
    */
-  numberWithDecimals: function(number, decimals = 0) {
+  numberWithDecimals(number, decimals = 0) {
     // Do not show decimals for integers.
     if (number === (number | 0)) {
       return getNumberFormatter(0).format(number);
@@ -273,7 +244,7 @@ function MultiLocalizationHelper(...stringBundleNames) {
   // methods we've found to work on all given string bundles.
   Object.getOwnPropertyNames(LocalizationHelper.prototype)
     .map(name => ({
-      name: name,
+      name,
       descriptor: Object.getOwnPropertyDescriptor(
         LocalizationHelper.prototype,
         name

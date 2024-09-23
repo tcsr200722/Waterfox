@@ -17,14 +17,14 @@ using mozilla::Some;
 
 TDZCheckCache::TDZCheckCache(BytecodeEmitter* bce)
     : Nestable<TDZCheckCache>(&bce->innermostTDZCheckCache),
-      cache_(bce->cx->frontendCollectionPool()) {}
+      cache_(bce->fc->nameCollectionPool()) {}
 
 bool TDZCheckCache::ensureCache(BytecodeEmitter* bce) {
-  return cache_ || cache_.acquire(bce->cx);
+  return cache_ || cache_.acquire(bce->fc);
 }
 
 Maybe<MaybeCheckTDZ> TDZCheckCache::needsTDZCheck(BytecodeEmitter* bce,
-                                                  JSAtom* name) {
+                                                  TaggedParserAtomIndex name) {
   if (!ensureCache(bce)) {
     return Nothing();
   }
@@ -45,14 +45,15 @@ Maybe<MaybeCheckTDZ> TDZCheckCache::needsTDZCheck(BytecodeEmitter* bce,
   }
 
   if (!cache_->add(p, name, rv)) {
-    ReportOutOfMemory(bce->cx);
+    ReportOutOfMemory(bce->fc);
     return Nothing();
   }
 
   return Some(rv);
 }
 
-bool TDZCheckCache::noteTDZCheck(BytecodeEmitter* bce, JSAtom* name,
+bool TDZCheckCache::noteTDZCheck(BytecodeEmitter* bce,
+                                 TaggedParserAtomIndex name,
                                  MaybeCheckTDZ check) {
   if (!ensureCache(bce)) {
     return false;
@@ -66,7 +67,7 @@ bool TDZCheckCache::noteTDZCheck(BytecodeEmitter* bce, JSAtom* name,
     p->value() = check;
   } else {
     if (!cache_->add(p, name, check)) {
-      ReportOutOfMemory(bce->cx);
+      ReportOutOfMemory(bce->fc);
       return false;
     }
   }

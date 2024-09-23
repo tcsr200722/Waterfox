@@ -13,7 +13,7 @@ use std::ptr::NonNull;
 use unic_langid::LanguageIdentifier;
 
 pub struct NumberFormat {
-    raw: NonNull<ffi::RawNumberFormatter>,
+    raw: Option<NonNull<ffi::RawNumberFormatter>>,
 }
 
 /**
@@ -28,7 +28,7 @@ impl NumberFormat {
         let loc: String = locale.to_string();
         Self {
             raw: unsafe {
-                NonNull::new_unchecked(ffi::FluentBuiltInNumberFormatterCreate(
+                NonNull::new(ffi::FluentBuiltInNumberFormatterCreate(
                     &loc.into(),
                     &options.into(),
                 ))
@@ -37,21 +37,32 @@ impl NumberFormat {
     }
 
     pub fn format(&self, input: f64) -> String {
-        unsafe {
-            let mut byte_count = 0;
-            let buffer =
-                ffi::FluentBuiltInNumberFormatterFormat(self.raw.as_ptr(), input, &mut byte_count);
-            if buffer.is_null() {
-                return String::new();
+        if let Some(raw) = self.raw {
+            unsafe {
+                let mut byte_count = 0;
+                let mut capacity = 0;
+                let buffer = ffi::FluentBuiltInNumberFormatterFormat(
+                    raw.as_ptr(),
+                    input,
+                    &mut byte_count,
+                    &mut capacity,
+                );
+                if buffer.is_null() {
+                    return String::new();
+                }
+                String::from_raw_parts(buffer, byte_count, capacity)
             }
-            String::from_raw_parts(buffer, byte_count as usize, byte_count as usize)
+        } else {
+            String::new()
         }
     }
 }
 
 impl Drop for NumberFormat {
     fn drop(&mut self) {
-        unsafe { ffi::FluentBuiltInNumberFormatterDestroy(self.raw.as_ptr()) };
+        if let Some(raw) = self.raw {
+            unsafe { ffi::FluentBuiltInNumberFormatterDestroy(raw.as_ptr()) };
+        }
     }
 }
 
@@ -91,6 +102,7 @@ impl From<&str> for FluentDateTimeStyle {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum FluentDateTimeHourCycle {
     H24,
@@ -118,6 +130,7 @@ impl From<&str> for FluentDateTimeHourCycle {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum FluentDateTimeTextComponent {
     Long,
@@ -143,6 +156,7 @@ impl From<&str> for FluentDateTimeTextComponent {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum FluentDateTimeNumericComponent {
     Numeric,
@@ -166,6 +180,7 @@ impl From<&str> for FluentDateTimeNumericComponent {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum FluentDateTimeMonthComponent {
     Numeric,
@@ -195,6 +210,7 @@ impl From<&str> for FluentDateTimeMonthComponent {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum FluentDateTimeTimeZoneNameComponent {
     Long,
@@ -237,8 +253,8 @@ pub struct FluentDateTimeOptions {
 
 impl FluentDateTimeOptions {
     pub fn merge(&mut self, opts: &FluentArgs) {
-        for (key, value) in opts {
-            match (*key, value) {
+        for (key, value) in opts.iter() {
+            match (key, value) {
                 ("dateStyle", FluentValue::String(n)) => {
                     self.date_style = n.as_ref().into();
                 }
@@ -281,98 +297,6 @@ impl FluentDateTimeOptions {
     }
 }
 
-#[repr(C)]
-pub struct FluentDateTimeOptionsRaw {
-    pub date_style: FluentDateTimeStyle,
-    pub time_style: FluentDateTimeStyle,
-    pub skeleton: nsCString,
-}
-
-impl FluentDateTimeOptionsRaw {
-    fn convert_options_to_skeleton(input: &FluentDateTimeOptions) -> String {
-        let mut result = String::new();
-
-        match input.weekday {
-            FluentDateTimeTextComponent::Narrow => result.push_str("EEEEE"),
-            FluentDateTimeTextComponent::Short => result.push_str("E"),
-            FluentDateTimeTextComponent::Long => result.push_str("EEEE"),
-            FluentDateTimeTextComponent::None => {}
-        }
-        match input.era {
-            FluentDateTimeTextComponent::Narrow => result.push_str("GGGGG"),
-            FluentDateTimeTextComponent::Short => result.push_str("G"),
-            FluentDateTimeTextComponent::Long => result.push_str("GGGG"),
-            FluentDateTimeTextComponent::None => {}
-        }
-        match input.year {
-            FluentDateTimeNumericComponent::Numeric => result.push_str("y"),
-            FluentDateTimeNumericComponent::TwoDigit => result.push_str("yy"),
-            FluentDateTimeNumericComponent::None => {}
-        }
-        match input.month {
-            FluentDateTimeMonthComponent::Numeric => result.push_str("M"),
-            FluentDateTimeMonthComponent::TwoDigit => result.push_str("MM"),
-            FluentDateTimeMonthComponent::Narrow => result.push_str("MMMMM"),
-            FluentDateTimeMonthComponent::Short => result.push_str("MMM"),
-            FluentDateTimeMonthComponent::Long => result.push_str("MMMM"),
-            FluentDateTimeMonthComponent::None => {}
-        }
-        match input.day {
-            FluentDateTimeNumericComponent::Numeric => result.push_str("d"),
-            FluentDateTimeNumericComponent::TwoDigit => result.push_str("dd"),
-            FluentDateTimeNumericComponent::None => {}
-        }
-        let hour_skeleton_char = match input.hour_cycle {
-            FluentDateTimeHourCycle::H24 => 'H',
-            FluentDateTimeHourCycle::H23 => 'H',
-            FluentDateTimeHourCycle::H12 => 'h',
-            FluentDateTimeHourCycle::H11 => 'h',
-            FluentDateTimeHourCycle::None => 'j',
-        };
-        match input.hour {
-            FluentDateTimeNumericComponent::Numeric => result.push(hour_skeleton_char),
-            FluentDateTimeNumericComponent::TwoDigit => {
-                result.push(hour_skeleton_char);
-                result.push(hour_skeleton_char);
-            }
-            FluentDateTimeNumericComponent::None => {}
-        }
-        match input.minute {
-            FluentDateTimeNumericComponent::Numeric => result.push_str("m"),
-            FluentDateTimeNumericComponent::TwoDigit => result.push_str("mm"),
-            FluentDateTimeNumericComponent::None => {}
-        }
-        match input.second {
-            FluentDateTimeNumericComponent::Numeric => result.push_str("s"),
-            FluentDateTimeNumericComponent::TwoDigit => result.push_str("ss"),
-            FluentDateTimeNumericComponent::None => {}
-        }
-        match input.time_zone_name {
-            FluentDateTimeTimeZoneNameComponent::Short => result.push_str("z"),
-            FluentDateTimeTimeZoneNameComponent::Long => result.push_str("zzzz"),
-            FluentDateTimeTimeZoneNameComponent::None => {}
-        }
-        result
-    }
-}
-
-impl From<&FluentDateTimeOptions> for FluentDateTimeOptionsRaw {
-    fn from(input: &FluentDateTimeOptions) -> Self {
-        let skeleton = if input.date_style == FluentDateTimeStyle::None
-            && input.time_style == FluentDateTimeStyle::None
-        {
-            Self::convert_options_to_skeleton(&input).into()
-        } else {
-            nsCString::new()
-        };
-        Self {
-            date_style: input.date_style,
-            time_style: input.time_style,
-            skeleton,
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Clone)]
 pub struct FluentDateTime {
     epoch: f64,
@@ -380,7 +304,7 @@ pub struct FluentDateTime {
 }
 
 impl FluentType for FluentDateTime {
-    fn duplicate(&self) -> Box<dyn FluentType> {
+    fn duplicate(&self) -> Box<dyn FluentType + Send> {
         Box::new(self.clone())
     }
     fn as_string(&self, intls: &IntlLangMemoizer) -> Cow<'static, str> {
@@ -412,7 +336,7 @@ impl FluentDateTime {
 }
 
 pub struct DateTimeFormat {
-    raw: NonNull<ffi::RawDateTimeFormatter>,
+    raw: Option<NonNull<ffi::RawDateTimeFormatter>>,
 }
 
 /**
@@ -427,34 +351,32 @@ impl DateTimeFormat {
         // ICU needs null-termination here, otherwise we could use nsCStr.
         let loc: nsCString = locale.to_string().into();
         Self {
-            raw: unsafe {
-                NonNull::new_unchecked(ffi::FluentBuiltInDateTimeFormatterCreate(
-                    &loc,
-                    &(&options).into(),
-                ))
-            },
+            raw: unsafe { NonNull::new(ffi::FluentBuiltInDateTimeFormatterCreate(&loc, options)) },
         }
     }
 
     pub fn format(&self, input: f64) -> String {
-        unsafe {
-            let mut byte_count = 0;
-            let buffer = ffi::FluentBuiltInDateTimeFormatterFormat(
-                self.raw.as_ptr(),
-                input,
-                &mut byte_count,
-            );
-            if buffer.is_null() {
-                return String::new();
+        if let Some(raw) = self.raw {
+            unsafe {
+                let mut byte_count = 0;
+                let buffer =
+                    ffi::FluentBuiltInDateTimeFormatterFormat(raw.as_ptr(), input, &mut byte_count);
+                if buffer.is_null() {
+                    return String::new();
+                }
+                String::from_raw_parts(buffer, byte_count as usize, byte_count as usize)
             }
-            String::from_raw_parts(buffer, byte_count as usize, byte_count as usize)
+        } else {
+            String::new()
         }
     }
 }
 
 impl Drop for DateTimeFormat {
     fn drop(&mut self) {
-        unsafe { ffi::FluentBuiltInDateTimeFormatterDestroy(self.raw.as_ptr()) };
+        if let Some(raw) = self.raw {
+            unsafe { ffi::FluentBuiltInDateTimeFormatterDestroy(raw.as_ptr()) };
+        }
     }
 }
 

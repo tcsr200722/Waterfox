@@ -2,21 +2,23 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Preferences",
-  "resource://gre/modules/Preferences.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  AddonManager: "resource://gre/modules/AddonManager.sys.mjs",
+  Preferences: "resource://gre/modules/Preferences.sys.mjs",
+});
 
-const {
-  createAppInfo,
-  promiseShutdownManager,
-  promiseStartupManager,
-} = AddonTestUtils;
+// The test extension uses an insecure update url.
+Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
+
+const SETTINGS_ID = "test_settings_staged_restart_webext@tests.mozilla.org";
+
+const { createAppInfo, promiseShutdownManager, promiseStartupManager } =
+  AddonTestUtils;
 
 AddonTestUtils.init(this);
+AddonTestUtils.overrideCertDB();
 
-createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "42");
+createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "42", "42");
 
 add_task(async function test_browser_settings() {
   const PERM_DENY_ACTION = Services.perms.DENY_ACTION;
@@ -36,6 +38,7 @@ add_task(async function test_browser_settings() {
     "browser.tabs.insertRelatedAfterCurrent": true,
     "browser.tabs.insertAfterCurrent": false,
     "browser.display.document_color_use": 1,
+    "layout.css.prefers-color-scheme.content-override": 2,
     "browser.display.use_document_fonts": 1,
     "browser.zoom.full": true,
     "browser.zoom.siteSpecific": true,
@@ -44,7 +47,18 @@ add_task(async function test_browser_settings() {
   async function background() {
     let listeners = new Set([]);
     browser.test.onMessage.addListener(async (msg, apiName, value) => {
-      let apiObj = browser.browserSettings[apiName];
+      let apiObj = browser.browserSettings;
+      let apiNameSplit = apiName.split(".");
+      for (let apiPart of apiNameSplit) {
+        apiObj = apiObj[apiPart];
+      }
+      if (msg == "get") {
+        browser.test.sendMessage("settingData", await apiObj.get({}));
+        return;
+      }
+
+      // set and setNoOp
+
       // Don't add more than one listner per apiName.  We leave the
       // listener to ensure we do not get more calls than we expect.
       if (!listeners.has(apiName)) {
@@ -195,12 +209,14 @@ add_task(async function test_browser_settings() {
     });
   }
 
-  await testSetting("ftpProtocolEnabled", false, {
-    "network.ftp.enabled": false,
-  });
-  await testSetting("ftpProtocolEnabled", true, {
-    "network.ftp.enabled": true,
-  });
+  extension.sendMessage("get", "ftpProtocolEnabled");
+  let data = await extension.awaitMessage("settingData");
+  equal(data.value, false);
+  equal(
+    data.levelOfControl,
+    "not_controllable",
+    `ftpProtocolEnabled is not controllable.`
+  );
 
   await testSetting("newTabPosition", "afterCurrent", {
     "browser.tabs.insertRelatedAfterCurrent": false,
@@ -246,6 +262,16 @@ add_task(async function test_browser_settings() {
     "browser.display.document_color_use": 2,
   });
 
+  await testSetting("overrideContentColorScheme", "dark", {
+    "layout.css.prefers-color-scheme.content-override": 0,
+  });
+  await testSetting("overrideContentColorScheme", "light", {
+    "layout.css.prefers-color-scheme.content-override": 1,
+  });
+  await testSetting("overrideContentColorScheme", "auto", {
+    "layout.css.prefers-color-scheme.content-override": 2,
+  });
+
   await testSetting("useDocumentFonts", false, {
     "browser.display.use_document_fonts": 0,
   });
@@ -265,6 +291,30 @@ add_task(async function test_browser_settings() {
   });
   await testSetting("zoomSiteSpecific", false, {
     "browser.zoom.siteSpecific": false,
+  });
+
+  await testSetting("colorManagement.mode", "off", {
+    "gfx.color_management.mode": 0,
+  });
+  await testSetting("colorManagement.mode", "full", {
+    "gfx.color_management.mode": 1,
+  });
+  await testSetting("colorManagement.mode", "tagged_only", {
+    "gfx.color_management.mode": 2,
+  });
+
+  await testSetting("colorManagement.useNativeSRGB", false, {
+    "gfx.color_management.native_srgb": false,
+  });
+  await testSetting("colorManagement.useNativeSRGB", true, {
+    "gfx.color_management.native_srgb": true,
+  });
+
+  await testSetting("colorManagement.useWebRenderCompositor", false, {
+    "gfx.webrender.compositor": false,
+  });
+  await testSetting("colorManagement.useWebRenderCompositor", true, {
+    "gfx.webrender.compositor": true,
   });
 
   await extension.unload();
@@ -289,6 +339,42 @@ add_task(async function test_bad_value() {
       browser.browserSettings.overrideDocumentColors.set({ value: "bad" }),
       /bad is not a valid value for overrideDocumentColors/,
       "overrideDocumentColors.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.overrideContentColorScheme.set({ value: 0 }),
+      /0 is not a valid value for overrideContentColorScheme/,
+      "overrideContentColorScheme.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.overrideContentColorScheme.set({ value: "bad" }),
+      /bad is not a valid value for overrideContentColorScheme/,
+      "overrideContentColorScheme.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.zoomFullPage.set({ value: 0 }),
+      /0 is not a valid value for zoomFullPage/,
+      "zoomFullPage.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.zoomFullPage.set({ value: "bad" }),
+      /bad is not a valid value for zoomFullPage/,
+      "zoomFullPage.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.zoomSiteSpecific.set({ value: 0 }),
+      /0 is not a valid value for zoomSiteSpecific/,
+      "zoomSiteSpecific.set rejects with an invalid value."
+    );
+
+    await browser.test.assertRejects(
+      browser.browserSettings.zoomSiteSpecific.set({ value: "bad" }),
+      /bad is not a valid value for zoomSiteSpecific/,
+      "zoomSiteSpecific.set rejects with an invalid value."
     );
 
     browser.test.sendMessage("done");
@@ -343,4 +429,100 @@ add_task(async function test_bad_value_android() {
   await extension.startup();
   await extension.awaitMessage("done");
   await extension.unload();
+});
+
+// Verifies settings remain after a staged update on restart.
+add_task(async function delay_updates_settings_after_restart() {
+  let server = AddonTestUtils.createHttpServer({ hosts: ["example.com"] });
+  AddonTestUtils.registerJSON(server, "/test_update.json", {
+    addons: {
+      "test_settings_staged_restart_webext@tests.mozilla.org": {
+        updates: [
+          {
+            version: "2.0",
+            update_link:
+              "http://example.com/addons/test_settings_staged_restart_v2.xpi",
+          },
+        ],
+      },
+    },
+  });
+  const update_xpi = AddonTestUtils.createTempXPIFile({
+    "manifest.json": {
+      manifest_version: 2,
+      name: "Delay Upgrade",
+      version: "2.0",
+      browser_specific_settings: {
+        gecko: { id: SETTINGS_ID },
+      },
+      permissions: ["browserSettings"],
+    },
+  });
+  server.registerFile(
+    `/addons/test_settings_staged_restart_v2.xpi`,
+    update_xpi
+  );
+
+  await AddonTestUtils.promiseStartupManager();
+
+  let extension = ExtensionTestUtils.loadExtension({
+    useAddonManager: "permanent",
+    manifest: {
+      version: "1.0",
+      browser_specific_settings: {
+        gecko: {
+          id: SETTINGS_ID,
+          update_url: `http://example.com/test_update.json`,
+        },
+      },
+      permissions: ["browserSettings"],
+    },
+    background() {
+      browser.runtime.onUpdateAvailable.addListener(async details => {
+        if (details) {
+          await browser.browserSettings.webNotificationsDisabled.set({
+            value: true,
+          });
+          if (details.version) {
+            // This should be the version of the pending update.
+            browser.test.assertEq("2.0", details.version, "correct version");
+            browser.test.notifyPass("delay");
+          }
+        } else {
+          browser.test.fail("no details object passed");
+        }
+      });
+      browser.test.sendMessage("ready");
+    },
+  });
+
+  await Promise.all([extension.startup(), extension.awaitMessage("ready")]);
+
+  let prefname = "permissions.default.desktop-notification";
+  let val = Services.prefs.getIntPref(prefname);
+  Assert.notEqual(val, 2, "webNotificationsDisabled pref not set");
+
+  let update = await AddonTestUtils.promiseFindAddonUpdates(extension.addon);
+  let install = update.updateAvailable;
+  Assert.ok(install, `install is available ${update.error}`);
+
+  await AddonTestUtils.promiseCompleteAllInstalls([install]);
+
+  Assert.equal(install.state, AddonManager.STATE_POSTPONED);
+  await extension.awaitFinish("delay");
+
+  // restarting allows upgrade to proceed
+  await AddonTestUtils.promiseRestartManager();
+
+  await extension.awaitStartup();
+
+  // If an update is not handled correctly we would fail here.  Bug 1639705.
+  val = Services.prefs.getIntPref(prefname);
+  Assert.equal(val, 2, "webNotificationsDisabled pref set");
+
+  await extension.unload();
+  await AddonTestUtils.promiseShutdownManager();
+
+  val = Services.prefs.getIntPref(prefname);
+  Assert.notEqual(val, 2, "webNotificationsDisabled pref not set");
 });

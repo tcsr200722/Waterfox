@@ -1,18 +1,22 @@
 const { Cc, Ci, Cu: ChromeUtils } = SpecialPowers;
 
-const { propBagToObject } = ChromeUtils.import(
-  "resource://gre/modules/BrowserUtils.jsm"
-).BrowserUtils;
-
-function hasTabModalPrompts() {
-  var prefName = "prompts.tab_modal.enabled";
-  const Services = SpecialPowers.Services;
-  return (
-    Services.prefs.getPrefType(prefName) == Services.prefs.PREF_BOOL &&
-    Services.prefs.getBoolPref(prefName)
-  );
+/**
+ * Converts a property bag to object.
+ * @param {nsIPropertyBag} bag - The property bag to convert
+ * @returns {Object} - The object representation of the nsIPropertyBag
+ */
+function propBagToObject(bag) {
+  if (!(bag instanceof Ci.nsIPropertyBag)) {
+    throw new TypeError("Not a property bag");
+  }
+  let result = {};
+  for (let { name, value } of bag.enumerator) {
+    result[name] = value;
+  }
+  return result;
 }
-var isTabModal = hasTabModalPrompts();
+
+var modalType;
 var isSelectDialog = false;
 var isOSX = "nsILocalFileMac" in SpecialPowers.Ci;
 var isE10S = SpecialPowers.Services.appinfo.processType == 2;
@@ -26,7 +30,7 @@ async function runPromptCombinations(window, testFunc) {
   let util = new PromptTestUtil(window);
   let run = () => {
     info(
-      `Running tests (isTabModal=${isTabModal}, usePromptService=${util.usePromptService}, useBrowsingContext=${util.useBrowsingContext}, useAsync=${util.useAsync})`
+      `Running tests (modalType=${modalType}, usePromptService=${util.usePromptService}, useBrowsingContext=${util.useBrowsingContext}, useAsync=${util.useAsync})`
     );
     return testFunc(util);
   };
@@ -34,21 +38,20 @@ async function runPromptCombinations(window, testFunc) {
   // Prompt service with dom window parent only supports window prompts
   util.usePromptService = true;
   util.useBrowsingContext = false;
-  isTabModal = false;
   util.modalType = Ci.nsIPrompt.MODAL_TYPE_WINDOW;
+  modalType = util.modalType;
   util.useAsync = false;
   await run();
 
-  let modalTypes = [Ci.nsIPrompt.MODAL_TYPE_WINDOW];
-  // if tab/content prompts are disabled by pref, only test window prompts
-  if (SpecialPowers.getBoolPref("prompts.tab_modal.enabled")) {
-    modalTypes.push(Ci.nsIPrompt.MODAL_TYPE_TAB);
-    modalTypes.push(Ci.nsIPrompt.MODAL_TYPE_CONTENT);
-  }
+  let modalTypes = [
+    Ci.nsIPrompt.MODAL_TYPE_WINDOW,
+    Ci.nsIPrompt.MODAL_TYPE_TAB,
+    Ci.nsIPrompt.MODAL_TYPE_CONTENT,
+  ];
 
   for (let type of modalTypes) {
     util.modalType = type;
-    isTabModal = type !== Ci.nsIPrompt.MODAL_TYPE_WINDOW;
+    modalType = type;
 
     // Prompt service with browsing context sync
     util.usePromptService = true;
@@ -74,9 +77,8 @@ async function runPromptCombinations(window, testFunc) {
 class PromptTestUtil {
   constructor(window) {
     this.window = window;
-    this.browsingContext = SpecialPowers.wrap(
-      window
-    ).windowGlobalChild.browsingContext;
+    this.browsingContext =
+      SpecialPowers.wrap(window).windowGlobalChild.browsingContext;
     this.promptService = SpecialPowers.Services.prompt;
     this.nsPrompt = Cc["@mozilla.org/prompter;1"]
       .getService(Ci.nsIPromptFactory)
@@ -154,7 +156,7 @@ function onloadPromiseFor(id) {
   return new Promise(resolve => {
     iframe.addEventListener(
       "load",
-      function(e) {
+      function () {
         resolve(true);
       },
       { once: true }
@@ -176,7 +178,7 @@ function handlePromptWithoutChecks(action) {
       gChromeScript.removeMessageListener("promptHandled", handled);
       resolve(msg.promptState);
     });
-    gChromeScript.sendAsyncMessage("handlePrompt", { action, isTabModal });
+    gChromeScript.sendAsyncMessage("handlePrompt", { action, modalType });
   });
 }
 
@@ -189,8 +191,12 @@ function checkPromptState(promptState, expectedState) {
   info(`checkPromptState: Expected: ${expectedState.msg}`);
   // XXX check title? OS X has title in content
   is(promptState.msg, expectedState.msg, "Checking expected message");
-  if (isOSX && !isTabModal) {
-    ok(!promptState.titleHidden, "Checking title always visible on OS X");
+
+  if (isOSX || promptState.isSubDialogPrompt || promptState.showCallerOrigin) {
+    ok(
+      !promptState.titleHidden,
+      "Checking title always visible on OS X or when opened with common dialog"
+    );
   } else {
     is(
       promptState.titleHidden,
@@ -215,7 +221,10 @@ function checkPromptState(promptState, expectedState) {
   );
   is(promptState.checkMsg, expectedState.checkMsg, "Checking checkbox label");
   is(promptState.checked, expectedState.checked, "Checking checkbox checked");
-  if (!isTabModal) {
+  if (
+    modalType === Ci.nsIPrompt.MODAL_TYPE_WINDOW ||
+    modalType === Ci.nsIPrompt.MODAL_TYPE_TAB
+  ) {
     is(
       promptState.iconClass,
       expectedState.iconClass,
@@ -276,7 +285,8 @@ function checkPromptState(promptState, expectedState) {
   if (
     isOSX &&
     expectedState.focused &&
-    expectedState.focused.startsWith("button")
+    expectedState.focused.startsWith("button") &&
+    !promptState.infoRowHidden
   ) {
     is(
       promptState.focused,
@@ -352,7 +362,7 @@ function PrompterProxy(chromeScript) {
   return new Proxy(
     {},
     {
-      get(target, prop, receiver) {
+      get(target, prop) {
         return (...args) => {
           // Array of indices of out/inout params to copy from the parent back to the caller.
           let outParams = [];
@@ -366,11 +376,13 @@ function PrompterProxy(chromeScript) {
               outParams = [];
               break;
             }
-            case "promptPassword": {
+            case "promptPassword":
+            case "asyncPromptPassword": {
               outParams = [/* pwd */ 4];
               break;
             }
-            case "promptUsernameAndPassword": {
+            case "promptUsernameAndPassword":
+            case "asyncPromptUsernameAndPassword": {
               outParams = [/* user */ 4, /* pwd */ 5];
               break;
             }
@@ -388,7 +400,10 @@ function PrompterProxy(chromeScript) {
             .then(val => {
               result = val;
             });
-          SpecialPowers.Services.tm.spinEventLoopUntil(() => result);
+          SpecialPowers.Services.tm.spinEventLoopUntil(
+            "Test(prompt_common.js:get)",
+            () => result
+          );
 
           for (let outParam of outParams) {
             // Copy the out or inout param value over the original

@@ -11,12 +11,14 @@
 #include "nsIFile.h"
 #include "nsThreadUtils.h"
 #include "string.h"
+#include "LookupCacheV4.h"
+#include "nsUrlClassifierUtils.h"
 
 #include "Common.h"
 
-#define GTEST_SAFEBROWSING_DIR NS_LITERAL_CSTRING("safebrowsing")
-#define GTEST_TABLE NS_LITERAL_CSTRING("gtest-malware-proto")
-#define GTEST_PREFIXFILE NS_LITERAL_CSTRING("gtest-malware-proto.vlpset")
+#define GTEST_SAFEBROWSING_DIR "safebrowsing"_ns
+#define GTEST_TABLE "gtest-malware-proto"_ns
+#define GTEST_PREFIXFILE "gtest-malware-proto.vlpset"_ns
 
 // This function removes common elements of inArray and outArray from
 // outArray. This is used by partial update testcase to ensure partial update
@@ -114,9 +116,9 @@ static void GenerateUpdateData(bool fullUpdate, PrefixStringMap& add,
   RefPtr<TableUpdateV4> tableUpdate = new TableUpdateV4(GTEST_TABLE);
   tableUpdate->SetFullUpdate(fullUpdate);
 
-  for (auto iter = add.ConstIter(); !iter.Done(); iter.Next()) {
-    nsCString* pstring = iter.UserData();
-    tableUpdate->NewPrefixes(iter.Key(), *pstring);
+  for (const auto& entry : add) {
+    nsCString* pstring = entry.GetWeak();
+    tableUpdate->NewPrefixes(entry.GetKey(), *pstring);
   }
 
   if (removal) {
@@ -141,7 +143,7 @@ static void VerifyPrefixSet(PrefixStringMap& expected) {
   file->AppendNative(GTEST_SAFEBROWSING_DIR);
 
   RefPtr<LookupCacheV4> lookup =
-      new LookupCacheV4(GTEST_TABLE, NS_LITERAL_CSTRING("test"), file);
+      new LookupCacheV4(GTEST_TABLE, "test"_ns, file);
   lookup->Init();
 
   file->AppendNative(GTEST_PREFIXFILE);
@@ -150,9 +152,9 @@ static void VerifyPrefixSet(PrefixStringMap& expected) {
   PrefixStringMap prefixesInFile;
   lookup->GetPrefixes(prefixesInFile);
 
-  for (auto iter = expected.ConstIter(); !iter.Done(); iter.Next()) {
-    nsCString* expectedPrefix = iter.UserData();
-    nsCString* resultPrefix = prefixesInFile.Get(iter.Key());
+  for (const auto& entry : expected) {
+    nsCString* expectedPrefix = entry.GetWeak();
+    nsCString* resultPrefix = prefixesInFile.Get(entry.GetKey());
 
     ASSERT_TRUE(*resultPrefix == *expectedPrefix);
   }
@@ -169,7 +171,7 @@ static void Clear() {
 
 static void testUpdateFail(TableUpdateArray& tableUpdates) {
   nsresult rv = SyncApplyUpdates(tableUpdates);
-  ASSERT_TRUE(NS_FAILED(rv));
+  ASSERT_NS_FAILED(rv);
 }
 
 static void testUpdate(TableUpdateArray& tableUpdates,
@@ -207,7 +209,7 @@ static void testOpenLookupCache() {
 
   RunTestInNewThread([&]() -> void {
     RefPtr<LookupCacheV4> cache =
-        new LookupCacheV4(nsCString(GTEST_TABLE), EmptyCString(), file);
+        new LookupCacheV4(nsCString(GTEST_TABLE), ""_ns, file);
     nsresult rv = cache->Init();
     ASSERT_EQ(rv, NS_OK);
 

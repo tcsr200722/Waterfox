@@ -7,27 +7,25 @@
 #ifndef GFX_WEBRENDERCANVASRENDERER_H
 #define GFX_WEBRENDERCANVASRENDERER_H
 
+#include "mozilla/layers/RenderRootStateManager.h"
 #include "ShareableCanvasRenderer.h"
 
 namespace mozilla {
 namespace layers {
-
-class RenderRootStateManager;
 
 class WebRenderCanvasRenderer : public ShareableCanvasRenderer {
  public:
   explicit WebRenderCanvasRenderer(RenderRootStateManager* aManager)
       : mManager(aManager) {}
 
-  void Initialize(const CanvasInitializeData& aData) override;
-
   CompositableForwarder* GetForwarder() override;
+  RenderRootStateManager* GetRenderRootStateManager() { return mManager; }
 
  protected:
-  RenderRootStateManager* mManager;
+  RefPtr<RenderRootStateManager> mManager;
 };
 
-class WebRenderCanvasRendererAsync : public WebRenderCanvasRenderer {
+class WebRenderCanvasRendererAsync final : public WebRenderCanvasRenderer {
  public:
   explicit WebRenderCanvasRendererAsync(RenderRootStateManager* aManager)
       : WebRenderCanvasRenderer(aManager) {}
@@ -37,11 +35,12 @@ class WebRenderCanvasRendererAsync : public WebRenderCanvasRenderer {
     return this;
   }
 
-  void Initialize(const CanvasInitializeData& aData) override;
+  void Initialize(const CanvasRendererData& aData) override;
   bool CreateCompositable() override;
+  void EnsurePipeline() override;
+  bool HasPipeline() override;
 
   void ClearCachedResources() override;
-  void Destroy() override;
 
   void UpdateCompositableClientForEmptyTransaction();
 
@@ -49,6 +48,7 @@ class WebRenderCanvasRendererAsync : public WebRenderCanvasRenderer {
 
  protected:
   Maybe<wr::PipelineId> mPipelineId;
+  bool mIsAsync = false;
 };
 
 }  // namespace layers

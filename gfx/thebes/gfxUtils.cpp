@@ -14,6 +14,9 @@
 #include "gfxQuad.h"
 #include "imgIEncoder.h"
 #include "mozilla/Base64.h"
+#include "mozilla/StyleColorInlines.h"
+#include "mozilla/Components.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/ImageEncoder.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
@@ -30,12 +33,14 @@
 #include "mozilla/image/nsPNGEncoder.h"
 #include "mozilla/layers/SynchronousTask.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/ProfilerLabels.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/ServoStyleConsts.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/Unused.h"
-#include "mozilla/Vector.h"
 #include "mozilla/webrender/webrender_ffi.h"
 #include "nsAppRunner.h"
 #include "nsComponentManagerUtils.h"
@@ -46,7 +51,7 @@
 #include "nsPresContext.h"
 #include "nsRegion.h"
 #include "nsServiceManagerUtils.h"
-#include "GeckoProfiler.h"
+#include "nsRFPService.h"
 #include "ImageContainer.h"
 #include "ImageRegion.h"
 #include "gfx2DGlue.h"
@@ -286,7 +291,10 @@ static already_AddRefed<gfxDrawable> CreateSamplingRestrictedDrawable(
   AUTO_PROFILER_LABEL("CreateSamplingRestrictedDrawable", GRAPHICS);
 
   DrawTarget* destDrawTarget = aContext->GetDrawTarget();
-  if (destDrawTarget->GetBackendType() == BackendType::DIRECT2D1_1) {
+  // We've been not using CreateSamplingRestrictedDrawable in a bunch of places
+  // for a while. Let's disable it everywhere and confirm that it's ok to get
+  // rid of.
+  if (destDrawTarget->GetBackendType() == BackendType::DIRECT2D1_1 || (true)) {
     return nullptr;
   }
 
@@ -314,13 +322,12 @@ static already_AddRefed<gfxDrawable> CreateSamplingRestrictedDrawable(
     return nullptr;
   }
 
-  RefPtr<gfxContext> tmpCtx = gfxContext::CreateOrNull(target);
-  MOZ_ASSERT(tmpCtx);  // already checked the target above
+  gfxContext tmpCtx(target);
 
   if (aUseOptimalFillOp) {
-    tmpCtx->SetOp(OptimalFillOp());
+    tmpCtx.SetOp(OptimalFillOp());
   }
-  aDrawable->Draw(tmpCtx, needed - needed.TopLeft(), ExtendMode::REPEAT,
+  aDrawable->Draw(&tmpCtx, needed - needed.TopLeft(), ExtendMode::REPEAT,
                   SamplingFilter::LINEAR, 1.0,
                   gfxMatrix::Translation(needed.TopLeft()));
   RefPtr<SourceSurface> surface = target->Snapshot();
@@ -421,13 +428,14 @@ static bool PrescaleAndTileDrawable(gfxDrawable* aDrawable,
                                     const SamplingFilter aSamplingFilter,
                                     const SurfaceFormat aFormat,
                                     gfxFloat aOpacity, ExtendMode aExtendMode) {
-  Size scaleFactor = aContext->CurrentMatrix().ScaleFactors(true);
-  Matrix scaleMatrix = Matrix::Scaling(scaleFactor.width, scaleFactor.height);
+  MatrixScales scaleFactor =
+      aContext->CurrentMatrix().ScaleFactors().ConvertTo<float>();
+  Matrix scaleMatrix = Matrix::Scaling(scaleFactor.xScale, scaleFactor.yScale);
   const float fuzzFactor = 0.01;
 
   // If we aren't scaling or translating, don't go down this path
-  if ((FuzzyEqual(scaleFactor.width, 1.0, fuzzFactor) &&
-       FuzzyEqual(scaleFactor.width, 1.0, fuzzFactor)) ||
+  if ((FuzzyEqual(scaleFactor.xScale, 1.0f, fuzzFactor) &&
+       FuzzyEqual(scaleFactor.yScale, 1.0f, fuzzFactor)) ||
       aContext->CurrentMatrix().HasNonAxisAlignedTransform()) {
     return false;
   }
@@ -466,16 +474,15 @@ static bool PrescaleAndTileDrawable(gfxDrawable* aDrawable,
     return false;
   }
 
-  RefPtr<gfxContext> tmpCtx = gfxContext::CreateOrNull(scaledDT);
-  MOZ_ASSERT(tmpCtx);  // already checked the target above
+  gfxContext tmpCtx(scaledDT);
 
   scaledDT->SetTransform(scaleMatrix);
   gfxRect gfxImageRect(aImageRect.x, aImageRect.y, aImageRect.width,
                        aImageRect.height);
 
   // Since this is just the scaled image, we don't want to repeat anything yet.
-  aDrawable->Draw(tmpCtx, gfxImageRect, ExtendMode::CLAMP, aSamplingFilter, 1.0,
-                  gfxMatrix());
+  aDrawable->Draw(&tmpCtx, gfxImageRect, ExtendMode::CLAMP, aSamplingFilter,
+                  1.0, gfxMatrix());
 
   RefPtr<SourceSurface> scaledImage = scaledDT->Snapshot();
 
@@ -485,7 +492,7 @@ static bool PrescaleAndTileDrawable(gfxDrawable* aDrawable,
     DrawTarget* destDrawTarget = aContext->GetDrawTarget();
 
     // The translation still is in scaled units
-    withoutScale.PreScale(1.0 / scaleFactor.width, 1.0 / scaleFactor.height);
+    withoutScale.PreScale(1.0f / scaleFactor.xScale, 1.0f / scaleFactor.yScale);
     aContext->SetMatrix(withoutScale);
 
     DrawOptions drawOptions(aOpacity, aContext->CurrentOp(),
@@ -795,6 +802,157 @@ gfxQuad gfxUtils::TransformToQuad(const gfxRect& aRect,
   return gfxQuad(points[0], points[1], points[2], points[3]);
 }
 
+Matrix4x4 gfxUtils::SnapTransformTranslation(const Matrix4x4& aTransform,
+                                             Matrix* aResidualTransform) {
+  if (aResidualTransform) {
+    *aResidualTransform = Matrix();
+  }
+
+  Matrix matrix2D;
+  if (aTransform.CanDraw2D(&matrix2D) && !matrix2D.HasNonTranslation() &&
+      matrix2D.HasNonIntegerTranslation()) {
+    return Matrix4x4::From2D(
+        SnapTransformTranslation(matrix2D, aResidualTransform));
+  }
+
+  return SnapTransformTranslation3D(aTransform, aResidualTransform);
+}
+
+Matrix gfxUtils::SnapTransformTranslation(const Matrix& aTransform,
+                                          Matrix* aResidualTransform) {
+  if (aResidualTransform) {
+    *aResidualTransform = Matrix();
+  }
+
+  if (!aTransform.HasNonTranslation() &&
+      aTransform.HasNonIntegerTranslation()) {
+    auto snappedTranslation = IntPoint::Round(aTransform.GetTranslation());
+    Matrix snappedMatrix =
+        Matrix::Translation(snappedTranslation.x, snappedTranslation.y);
+    if (aResidualTransform) {
+      // set aResidualTransform so that aResidual * snappedMatrix == matrix2D.
+      // (I.e., appying snappedMatrix after aResidualTransform gives the
+      // ideal transform.)
+      *aResidualTransform =
+          Matrix::Translation(aTransform._31 - snappedTranslation.x,
+                              aTransform._32 - snappedTranslation.y);
+    }
+    return snappedMatrix;
+  }
+
+  return aTransform;
+}
+
+Matrix4x4 gfxUtils::SnapTransformTranslation3D(const Matrix4x4& aTransform,
+                                               Matrix* aResidualTransform) {
+  if (aTransform.IsSingular() || aTransform.HasPerspectiveComponent() ||
+      aTransform.HasNonTranslation() ||
+      !aTransform.HasNonIntegerTranslation()) {
+    // For a singular transform, there is no reversed matrix, so we
+    // don't snap it.
+    // For a perspective transform, the content is transformed in
+    // non-linear, so we don't snap it too.
+    return aTransform;
+  }
+
+  // Snap for 3D Transforms
+
+  Point3D transformedOrigin = aTransform.TransformPoint(Point3D());
+
+  // Compute the transformed snap by rounding the values of
+  // transformed origin.
+  auto transformedSnapXY =
+      IntPoint::Round(transformedOrigin.x, transformedOrigin.y);
+  Matrix4x4 inverse = aTransform;
+  inverse.Invert();
+  // see Matrix4x4::ProjectPoint()
+  Float transformedSnapZ =
+      inverse._33 == 0 ? 0
+                       : (-(transformedSnapXY.x * inverse._13 +
+                            transformedSnapXY.y * inverse._23 + inverse._43) /
+                          inverse._33);
+  Point3D transformedSnap =
+      Point3D(transformedSnapXY.x, transformedSnapXY.y, transformedSnapZ);
+  if (transformedOrigin == transformedSnap) {
+    return aTransform;
+  }
+
+  // Compute the snap from the transformed snap.
+  Point3D snap = inverse.TransformPoint(transformedSnap);
+  if (snap.z > 0.001 || snap.z < -0.001) {
+    // Allow some level of accumulated computation error.
+    MOZ_ASSERT(inverse._33 == 0.0);
+    return aTransform;
+  }
+
+  // The difference between the origin and snap is the residual transform.
+  if (aResidualTransform) {
+    // The residual transform is to translate the snap to the origin
+    // of the content buffer.
+    *aResidualTransform = Matrix::Translation(-snap.x, -snap.y);
+  }
+
+  // Translate transformed origin to transformed snap since the
+  // residual transform would trnslate the snap to the origin.
+  Point3D transformedShift = transformedSnap - transformedOrigin;
+  Matrix4x4 result = aTransform;
+  result.PostTranslate(transformedShift.x, transformedShift.y,
+                       transformedShift.z);
+
+  // For non-2d transform, residual translation could be more than
+  // 0.5 pixels for every axis.
+
+  return result;
+}
+
+Matrix4x4 gfxUtils::SnapTransform(const Matrix4x4& aTransform,
+                                  const gfxRect& aSnapRect,
+                                  Matrix* aResidualTransform) {
+  if (aResidualTransform) {
+    *aResidualTransform = Matrix();
+  }
+
+  Matrix matrix2D;
+  if (aTransform.Is2D(&matrix2D)) {
+    return Matrix4x4::From2D(
+        SnapTransform(matrix2D, aSnapRect, aResidualTransform));
+  }
+  return aTransform;
+}
+
+Matrix gfxUtils::SnapTransform(const Matrix& aTransform,
+                               const gfxRect& aSnapRect,
+                               Matrix* aResidualTransform) {
+  if (aResidualTransform) {
+    *aResidualTransform = Matrix();
+  }
+
+  if (gfxSize(1.0, 1.0) <= aSnapRect.Size() &&
+      aTransform.PreservesAxisAlignedRectangles()) {
+    auto transformedTopLeft = IntPoint::Round(
+        aTransform.TransformPoint(ToPoint(aSnapRect.TopLeft())));
+    auto transformedTopRight = IntPoint::Round(
+        aTransform.TransformPoint(ToPoint(aSnapRect.TopRight())));
+    auto transformedBottomRight = IntPoint::Round(
+        aTransform.TransformPoint(ToPoint(aSnapRect.BottomRight())));
+
+    Matrix snappedMatrix = gfxUtils::TransformRectToRect(
+        aSnapRect, transformedTopLeft, transformedTopRight,
+        transformedBottomRight);
+
+    if (aResidualTransform && !snappedMatrix.IsSingular()) {
+      // set aResidualTransform so that aResidual * snappedMatrix == matrix2D.
+      // (i.e., appying snappedMatrix after aResidualTransform gives the
+      // ideal transform.
+      Matrix snappedMatrixInverse = snappedMatrix;
+      snappedMatrixInverse.Invert();
+      *aResidualTransform = aTransform * snappedMatrixInverse;
+    }
+    return snappedMatrix;
+  }
+  return aTransform;
+}
+
 /* static */
 void gfxUtils::ClearThebesSurface(gfxASurface* aSurface) {
   if (aSurface->CairoStatus()) {
@@ -913,20 +1071,15 @@ const gfx::DeviceColor& gfxUtils::GetColorForFrameNumber(
   return colors[aFrameNumber % sNumFrameColors];
 }
 
-/* static */
-nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
-                                       const ImageType aImageType,
-                                       const nsAString& aOutputOptions,
-                                       BinaryOrData aBinaryOrData, FILE* aFile,
-                                       nsACString* aStrOut) {
-  MOZ_ASSERT(aBinaryOrData == gfxUtils::eDataURIEncode || aFile || aStrOut,
-             "Copying binary encoding to clipboard not currently supported");
-
+// static
+nsresult gfxUtils::EncodeSourceSurfaceAsStream(SourceSurface* aSurface,
+                                               const ImageType aImageType,
+                                               const nsAString& aOutputOptions,
+                                               nsIInputStream** aOutStream) {
   const IntSize size = aSurface->GetSize();
   if (size.IsEmpty()) {
-    return NS_ERROR_INVALID_ARG;
+    return NS_ERROR_FAILURE;
   }
-  const Size floatSize(size.width, size.height);
 
   RefPtr<DataSourceSurface> dataSurface;
   if (aSurface->GetFormat() != SurfaceFormat::B8G8R8A8) {
@@ -975,61 +1128,94 @@ nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
       size.width, size.height, map.mStride, imgIEncoder::INPUT_FORMAT_HOSTARGB,
       aOutputOptions);
   dataSurface->Unmap();
-  NS_ENSURE_SUCCESS(rv, rv);
+  if (NS_FAILED(rv)) {
+    return NS_ERROR_FAILURE;
+  }
 
   nsCOMPtr<nsIInputStream> imgStream(encoder);
   if (!imgStream) {
     return NS_ERROR_FAILURE;
   }
 
+  imgStream.forget(aOutStream);
+
+  return NS_OK;
+}
+
+// static
+Maybe<nsTArray<uint8_t>> gfxUtils::EncodeSourceSurfaceAsBytes(
+    SourceSurface* aSurface, const ImageType aImageType,
+    const nsAString& aOutputOptions) {
+  nsCOMPtr<nsIInputStream> imgStream;
+  nsresult rv = EncodeSourceSurfaceAsStream(
+      aSurface, aImageType, aOutputOptions, getter_AddRefs(imgStream));
+  if (NS_FAILED(rv)) {
+    return Nothing();
+  }
+
   uint64_t bufSize64;
   rv = imgStream->Available(&bufSize64);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  NS_ENSURE_TRUE(bufSize64 < UINT32_MAX - 16, NS_ERROR_FAILURE);
-
-  uint32_t bufSize = (uint32_t)bufSize64;
-
-  // ...leave a little extra room so we can call read again and make sure we
-  // got everything. 16 bytes for better padding (maybe)
-  bufSize += 16;
-  uint32_t imgSize = 0;
-  Vector<char> imgData;
-  if (!imgData.initCapacity(bufSize)) {
-    return NS_ERROR_OUT_OF_MEMORY;
+  if (NS_FAILED(rv) || bufSize64 > UINT32_MAX) {
+    return Nothing();
   }
-  uint32_t numReadThisTime = 0;
-  while ((rv = imgStream->Read(imgData.begin() + imgSize, bufSize - imgSize,
-                               &numReadThisTime)) == NS_OK &&
-         numReadThisTime > 0) {
-    // Update the length of the vector without overwriting the new data.
-    if (!imgData.growByUninitialized(numReadThisTime)) {
-      return NS_ERROR_OUT_OF_MEMORY;
+
+  uint32_t bytesLeft = static_cast<uint32_t>(bufSize64);
+
+  nsTArray<uint8_t> imgData;
+  imgData.SetLength(bytesLeft);
+  uint8_t* bytePtr = imgData.Elements();
+
+  while (bytesLeft > 0) {
+    uint32_t bytesRead = 0;
+    rv = imgStream->Read(reinterpret_cast<char*>(bytePtr), bytesLeft,
+                         &bytesRead);
+    if (NS_FAILED(rv) || bytesRead == 0) {
+      return Nothing();
     }
 
-    imgSize += numReadThisTime;
-    if (imgSize == bufSize) {
-      // need a bigger buffer, just double
-      bufSize *= 2;
-      if (!imgData.resizeUninitialized(bufSize)) {
-        return NS_ERROR_OUT_OF_MEMORY;
-      }
-    }
+    bytePtr += bytesRead;
+    bytesLeft -= bytesRead;
   }
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(!imgData.empty(), NS_ERROR_FAILURE);
+
+#ifdef DEBUG
+
+  // Currently, all implementers of imgIEncoder report their exact size through
+  // nsIInputStream::Available(), but let's explicitly state that we rely on
+  // that behavior for the algorithm above.
+
+  char dummy = 0;
+  uint32_t bytesRead = 0;
+  rv = imgStream->Read(&dummy, 1, &bytesRead);
+  MOZ_ASSERT(NS_SUCCEEDED(rv) && bytesRead == 0);
+
+#endif
+
+  return Some(std::move(imgData));
+}
+
+/* static */
+nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
+                                       const ImageType aImageType,
+                                       const nsAString& aOutputOptions,
+                                       BinaryOrData aBinaryOrData, FILE* aFile,
+                                       nsACString* aStrOut) {
+  MOZ_ASSERT(aBinaryOrData == gfxUtils::eDataURIEncode || aFile || aStrOut,
+             "Copying binary encoding to clipboard not currently supported");
+
+  auto maybeImgData =
+      EncodeSourceSurfaceAsBytes(aSurface, aImageType, aOutputOptions);
+  if (!maybeImgData) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsTArray<uint8_t>& imgData = *maybeImgData;
 
   if (aBinaryOrData == gfxUtils::eBinaryEncode) {
     if (aFile) {
-      Unused << fwrite(imgData.begin(), 1, imgSize, aFile);
+      Unused << fwrite(imgData.Elements(), 1, imgData.Length(), aFile);
     }
     return NS_OK;
   }
-
-  // base 64, result will be null-terminated
-  nsCString encodedImg;
-  rv = Base64Encode(Substring(imgData.begin(), imgSize), encodedImg);
-  NS_ENSURE_SUCCESS(rv, rv);
 
   nsCString stringBuf;
   nsACString& dataURI = aStrOut ? *aStrOut : stringBuf;
@@ -1056,7 +1242,9 @@ nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
   }
 
   dataURI.AppendLiteral(";base64,");
-  dataURI.Append(encodedImg);
+  nsresult rv = Base64EncodeAppend(reinterpret_cast<char*>(imgData.Elements()),
+                                   imgData.Length(), dataURI);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   if (aFile) {
 #ifdef ANDROID
@@ -1077,7 +1265,7 @@ nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
     nsCOMPtr<nsIClipboardHelper> clipboard(
         do_GetService("@mozilla.org/widget/clipboardhelper;1", &rv));
     if (clipboard) {
-      clipboard->CopyString(NS_ConvertASCIItoUTF16(dataURI));
+      clipboard->CopyString(NS_ConvertASCIItoUTF16(dataURI), nullptr);
     }
   }
   return NS_OK;
@@ -1085,7 +1273,7 @@ nsresult gfxUtils::EncodeSourceSurface(SourceSurface* aSurface,
 
 static nsCString EncodeSourceSurfaceAsPNGURI(SourceSurface* aSurface) {
   nsCString string;
-  gfxUtils::EncodeSourceSurface(aSurface, ImageType::PNG, EmptyString(),
+  gfxUtils::EncodeSourceSurface(aSurface, ImageType::PNG, u""_ns,
                                 gfxUtils::eDataURIEncode, nullptr, &string);
   return string;
 }
@@ -1103,6 +1291,10 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
     1.16438f,  0.00000f, 1.67867f, -0.91569f, 1.16438f, -0.18733f,
     -0.65042f, 0.34746f, 1.16438f, 2.14177f,  0.00000f, -1.14815f,
     0.00000f,  0.00000f, 0.00000f, 1.00000f};
+const float kIdentityNarrowYCbCrToRGB_RowMajor[16] = {
+    0.00000f, 0.00000f, 1.00000f, 0.00000f, 1.00000f, 0.00000f,
+    0.00000f, 0.00000f, 0.00000f, 1.00000f, 0.00000f, 0.00000f,
+    0.00000f, 0.00000f, 0.00000f, 1.00000f};
 
 /* static */ const float* gfxUtils::YuvToRgbMatrix4x3RowMajor(
     gfx::YUVColorSpace aYUVColorSpace) {
@@ -1112,6 +1304,7 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
   static const float rec601[12] = X(kBT601NarrowYCbCrToRGB_RowMajor);
   static const float rec709[12] = X(kBT709NarrowYCbCrToRGB_RowMajor);
   static const float rec2020[12] = X(kBT2020NarrowYCbCrToRGB_RowMajor);
+  static const float identity[12] = X(kIdentityNarrowYCbCrToRGB_RowMajor);
 
 #undef X
 
@@ -1122,9 +1315,10 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
       return rec709;
     case gfx::YUVColorSpace::BT2020:
       return rec2020;
-    default:  // YUVColorSpace::UNKNOWN
-      MOZ_ASSERT(false, "unknown aYUVColorSpace");
-      return rec601;
+    case gfx::YUVColorSpace::Identity:
+      return identity;
+    default:
+      MOZ_CRASH("Bad YUVColorSpace");
   }
 }
 
@@ -1136,6 +1330,7 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
   static const float rec601[9] = X(kBT601NarrowYCbCrToRGB_RowMajor);
   static const float rec709[9] = X(kBT709NarrowYCbCrToRGB_RowMajor);
   static const float rec2020[9] = X(kBT2020NarrowYCbCrToRGB_RowMajor);
+  static const float identity[9] = X(kIdentityNarrowYCbCrToRGB_RowMajor);
 
 #undef X
 
@@ -1146,9 +1341,10 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
       return rec709;
     case YUVColorSpace::BT2020:
       return rec2020;
-    default:  // YUVColorSpace::UNKNOWN
-      MOZ_ASSERT(false, "unknown aYUVColorSpace");
-      return rec601;
+    case YUVColorSpace::Identity:
+      return identity;
+    default:
+      MOZ_CRASH("Bad YUVColorSpace");
   }
 }
 
@@ -1163,6 +1359,7 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
   static const float rec601[16] = X(kBT601NarrowYCbCrToRGB_RowMajor);
   static const float rec709[16] = X(kBT709NarrowYCbCrToRGB_RowMajor);
   static const float rec2020[16] = X(kBT2020NarrowYCbCrToRGB_RowMajor);
+  static const float identity[16] = X(kIdentityNarrowYCbCrToRGB_RowMajor);
 
 #undef X
 
@@ -1173,9 +1370,93 @@ const float kBT2020NarrowYCbCrToRGB_RowMajor[16] = {
       return rec709;
     case YUVColorSpace::BT2020:
       return rec2020;
-    default:  // YUVColorSpace::UNKNOWN
-      MOZ_ASSERT(false, "unknown aYUVColorSpace");
-      return rec601;
+    case YUVColorSpace::Identity:
+      return identity;
+    default:
+      MOZ_CRASH("Bad YUVColorSpace");
+  }
+}
+
+// Translate from CICP values to the color spaces we support, or return
+// Nothing() if there is no appropriate match to let the caller choose
+// a default or generate an error.
+//
+// See Rec. ITU-T H.273 (12/2016) for details on CICP
+/* static */ Maybe<gfx::YUVColorSpace> gfxUtils::CicpToColorSpace(
+    const CICP::MatrixCoefficients aMatrixCoefficients,
+    const CICP::ColourPrimaries aColourPrimaries, LazyLogModule& aLogger) {
+  switch (aMatrixCoefficients) {
+    case CICP::MatrixCoefficients::MC_BT2020_NCL:
+    case CICP::MatrixCoefficients::MC_BT2020_CL:
+      return Some(gfx::YUVColorSpace::BT2020);
+    case CICP::MatrixCoefficients::MC_BT601:
+      return Some(gfx::YUVColorSpace::BT601);
+    case CICP::MatrixCoefficients::MC_BT709:
+      return Some(gfx::YUVColorSpace::BT709);
+    case CICP::MatrixCoefficients::MC_IDENTITY:
+      return Some(gfx::YUVColorSpace::Identity);
+    case CICP::MatrixCoefficients::MC_CHROMAT_NCL:
+    case CICP::MatrixCoefficients::MC_CHROMAT_CL:
+    case CICP::MatrixCoefficients::MC_UNSPECIFIED:
+      switch (aColourPrimaries) {
+        case CICP::ColourPrimaries::CP_BT601:
+          return Some(gfx::YUVColorSpace::BT601);
+        case CICP::ColourPrimaries::CP_BT709:
+          return Some(gfx::YUVColorSpace::BT709);
+        case CICP::ColourPrimaries::CP_BT2020:
+          return Some(gfx::YUVColorSpace::BT2020);
+        default:
+          MOZ_LOG(aLogger, LogLevel::Debug,
+                  ("Couldn't infer color matrix from primaries: %hhu",
+                   aColourPrimaries));
+          return {};
+      }
+    default:
+      MOZ_LOG(aLogger, LogLevel::Debug,
+              ("Unsupported color matrix value: %hhu", aMatrixCoefficients));
+      return {};
+  }
+}
+
+// Translate from CICP values to the color primaries we support, or return
+// Nothing() if there is no appropriate match to let the caller choose
+// a default or generate an error.
+//
+// See Rec. ITU-T H.273 (12/2016) for details on CICP
+/* static */ Maybe<gfx::ColorSpace2> gfxUtils::CicpToColorPrimaries(
+    const CICP::ColourPrimaries aColourPrimaries, LazyLogModule& aLogger) {
+  switch (aColourPrimaries) {
+    case CICP::ColourPrimaries::CP_BT709:
+      return Some(gfx::ColorSpace2::BT709);
+    case CICP::ColourPrimaries::CP_BT2020:
+      return Some(gfx::ColorSpace2::BT2020);
+    default:
+      MOZ_LOG(aLogger, LogLevel::Debug,
+              ("Unsupported color primaries value: %hhu", aColourPrimaries));
+      return {};
+  }
+}
+
+// Translate from CICP values to the transfer functions we support, or return
+// Nothing() if there is no appropriate match.
+//
+/* static */ Maybe<gfx::TransferFunction> gfxUtils::CicpToTransferFunction(
+    const CICP::TransferCharacteristics aTransferCharacteristics) {
+  switch (aTransferCharacteristics) {
+    case CICP::TransferCharacteristics::TC_BT709:
+      return Some(gfx::TransferFunction::BT709);
+
+    case CICP::TransferCharacteristics::TC_SRGB:
+      return Some(gfx::TransferFunction::SRGB);
+
+    case CICP::TransferCharacteristics::TC_SMPTE2084:
+      return Some(gfx::TransferFunction::PQ);
+
+    case CICP::TransferCharacteristics::TC_HLG:
+      return Some(gfx::TransferFunction::HLG);
+
+    default:
+      return {};
   }
 }
 
@@ -1212,8 +1493,7 @@ void gfxUtils::WriteAsPNG(SourceSurface* aSurface, const char* aFile) {
     }
   }
 
-  EncodeSourceSurface(aSurface, ImageType::PNG, EmptyString(), eBinaryEncode,
-                      file);
+  EncodeSourceSurface(aSurface, ImageType::PNG, u""_ns, eBinaryEncode, file);
   fclose(file);
 }
 
@@ -1234,8 +1514,7 @@ void gfxUtils::WriteAsPNG(DrawTarget* aDT, const char* aFile) {
 
 /* static */
 void gfxUtils::DumpAsDataURI(SourceSurface* aSurface, FILE* aFile) {
-  EncodeSourceSurface(aSurface, ImageType::PNG, EmptyString(), eDataURIEncode,
-                      aFile);
+  EncodeSourceSurface(aSurface, ImageType::PNG, u""_ns, eDataURIEncode, aFile);
 }
 
 /* static */
@@ -1262,20 +1541,17 @@ nsCString gfxUtils::GetAsLZ4Base64Str(DataSourceSurface* aSourceSurface) {
     int nDataSize =
         LZ4::compress((char*)map.GetData(), dataSize, compressedData.get());
     if (nDataSize > 0) {
-      nsCString encodedImg;
-      nsresult rv =
-          Base64Encode(Substring(compressedData.get(), nDataSize), encodedImg);
+      nsCString string;
+      string.AppendPrintf("data:image/lz4bgra;base64,%i,%i,%i,",
+                          aSourceSurface->GetSize().width, map.GetStride(),
+                          aSourceSurface->GetSize().height);
+      nsresult rv = Base64EncodeAppend(compressedData.get(), nDataSize, string);
       if (rv == NS_OK) {
-        nsCString string("");
-        string.AppendPrintf("data:image/lz4bgra;base64,%i,%i,%i,",
-                            aSourceSurface->GetSize().width, map.GetStride(),
-                            aSourceSurface->GetSize().height);
-        string.Append(encodedImg);
         return string;
       }
     }
   }
-  return nsCString("");
+  return {};
 }
 
 /* static */
@@ -1291,7 +1567,7 @@ nsCString gfxUtils::GetAsDataURI(DrawTarget* aDT) {
 
 /* static */
 void gfxUtils::CopyAsDataURI(SourceSurface* aSurface) {
-  EncodeSourceSurface(aSurface, ImageType::PNG, EmptyString(), eDataURIEncode,
+  EncodeSourceSurface(aSurface, ImageType::PNG, u""_ns, eDataURIEncode,
                       nullptr);
 }
 
@@ -1305,9 +1581,10 @@ void gfxUtils::CopyAsDataURI(DrawTarget* aDT) {
   }
 }
 
-/* static */ UniquePtr<uint8_t[]> gfxUtils::GetImageBuffer(
-    gfx::DataSourceSurface* aSurface, bool aIsAlphaPremultiplied,
-    int32_t* outFormat) {
+/* static */
+UniquePtr<uint8_t[]> gfxUtils::GetImageBuffer(gfx::DataSourceSurface* aSurface,
+                                              bool aIsAlphaPremultiplied,
+                                              int32_t* outFormat) {
   *outFormat = 0;
 
   DataSourceSurface::MappedSurface map;
@@ -1340,6 +1617,22 @@ void gfxUtils::CopyAsDataURI(DrawTarget* aDT) {
 }
 
 /* static */
+UniquePtr<uint8_t[]> gfxUtils::GetImageBufferWithRandomNoise(
+    gfx::DataSourceSurface* aSurface, bool aIsAlphaPremultiplied,
+    nsICookieJarSettings* aCookieJarSettings, int32_t* outFormat) {
+  UniquePtr<uint8_t[]> imageBuffer =
+      GetImageBuffer(aSurface, aIsAlphaPremultiplied, outFormat);
+
+  nsRFPService::RandomizePixels(
+      aCookieJarSettings, imageBuffer.get(), aSurface->GetSize().width,
+      aSurface->GetSize().height,
+      aSurface->GetSize().width * aSurface->GetSize().height * 4,
+      SurfaceFormat::A8R8G8B8_UINT32);
+
+  return imageBuffer;
+}
+
+/* static */
 nsresult gfxUtils::GetInputStream(gfx::DataSourceSurface* aSurface,
                                   bool aIsAlphaPremultiplied,
                                   const char* aMimeType,
@@ -1360,6 +1653,36 @@ nsresult gfxUtils::GetInputStream(gfx::DataSourceSurface* aSurface,
       format, encoder, aEncoderOptions, outStream);
 }
 
+/* static */
+nsresult gfxUtils::GetInputStreamWithRandomNoise(
+    gfx::DataSourceSurface* aSurface, bool aIsAlphaPremultiplied,
+    const char* aMimeType, const nsAString& aEncoderOptions,
+    nsICookieJarSettings* aCookieJarSettings, nsIInputStream** outStream) {
+  nsCString enccid("@mozilla.org/image/encoder;2?type=");
+  enccid += aMimeType;
+  nsCOMPtr<imgIEncoder> encoder = do_CreateInstance(enccid.get());
+  if (!encoder) {
+    return NS_ERROR_FAILURE;
+  }
+
+  int32_t format = 0;
+  UniquePtr<uint8_t[]> imageBuffer =
+      GetImageBuffer(aSurface, aIsAlphaPremultiplied, &format);
+  if (!imageBuffer) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsRFPService::RandomizePixels(
+      aCookieJarSettings, imageBuffer.get(), aSurface->GetSize().width,
+      aSurface->GetSize().height,
+      aSurface->GetSize().width * aSurface->GetSize().height * 4,
+      SurfaceFormat::A8R8G8B8_UINT32);
+
+  return dom::ImageEncoder::GetInputStream(
+      aSurface->GetSize().width, aSurface->GetSize().height, imageBuffer.get(),
+      format, encoder, aEncoderOptions, outStream);
+}
+
 class GetFeatureStatusWorkerRunnable final
     : public dom::WorkerMainThreadRunnable {
  public:
@@ -1367,8 +1690,7 @@ class GetFeatureStatusWorkerRunnable final
                                  const nsCOMPtr<nsIGfxInfo>& gfxInfo,
                                  int32_t feature, nsACString& failureId,
                                  int32_t* status)
-      : WorkerMainThreadRunnable(workerPrivate,
-                                 NS_LITERAL_CSTRING("GFX :: GetFeatureStatus")),
+      : WorkerMainThreadRunnable(workerPrivate, "GFX :: GetFeatureStatus"_ns),
         mGfxInfo(gfxInfo),
         mFeature(feature),
         mStatus(status),
@@ -1395,50 +1717,8 @@ class GetFeatureStatusWorkerRunnable final
   nsresult mNSResult;
 };
 
-/* static */
-nsresult gfxUtils::ThreadSafeGetFeatureStatus(
-    const nsCOMPtr<nsIGfxInfo>& gfxInfo, int32_t feature, nsACString& failureId,
-    int32_t* status) {
-  if (NS_IsMainThread()) {
-    return gfxInfo->GetFeatureStatus(feature, failureId, status);
-  }
-
-  // In a content process, we must call this on the main thread.
-  // In a composition process (parent or GPU), this needs to be called on the
-  // compositor thread.
-  bool isCompositionProcess = XRE_IsGPUProcess() || XRE_IsParentProcess();
-  MOZ_ASSERT(!isCompositionProcess || NS_IsInCompositorThread());
-
-  // Content-process non-main-thread case:
-  if (!isCompositionProcess) {
-    dom::WorkerPrivate* workerPrivate = dom::GetCurrentThreadWorkerPrivate();
-
-    RefPtr<GetFeatureStatusWorkerRunnable> runnable =
-        new GetFeatureStatusWorkerRunnable(workerPrivate, gfxInfo, feature,
-                                           failureId, status);
-
-    ErrorResult rv;
-    runnable->Dispatch(dom::WorkerStatus::Canceling, rv);
-    if (rv.Failed()) {
-      // XXXbz This is totally broken, since we're supposed to just abort
-      // everything up the callstack but the callers basically eat the
-      // exception.  Ah, well.
-      return rv.StealNSResult();
-    }
-    return runnable->GetNSResult();
-  }
-
-  nsresult rv;
-  SynchronousTask task("GetFeatureStatusSync");
-  NS_DispatchToMainThread(NS_NewRunnableFunction("GetFeatureStatusMain", [&]() {
-    AutoCompleteTask complete(&task);
-    rv = gfxInfo->GetFeatureStatus(feature, failureId, status);
-  }));
-  task.Wait();
-  return rv;
-}
-
 #define GFX_SHADER_CHECK_BUILD_VERSION_PREF "gfx-shader-check.build-version"
+#define GFX_SHADER_CHECK_PTR_SIZE_PREF "gfx-shader-check.ptr-size"
 #define GFX_SHADER_CHECK_DEVICE_ID_PREF "gfx-shader-check.device-id"
 #define GFX_SHADER_CHECK_DRIVER_VERSION_PREF "gfx-shader-check.driver-version"
 
@@ -1448,10 +1728,11 @@ void gfxUtils::RemoveShaderCacheFromDiskIfNecessary() {
     return;
   }
 
-  nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+  nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
 
   // Get current values
   nsCString buildID(mozilla::PlatformBuildID());
+  int ptrSize = sizeof(void*);
   nsString deviceID, driverVersion;
   gfxInfo->GetAdapterDeviceID(deviceID);
   gfxInfo->GetAdapterDriverVersion(driverVersion);
@@ -1459,13 +1740,14 @@ void gfxUtils::RemoveShaderCacheFromDiskIfNecessary() {
   // Get pref stored values
   nsAutoCString buildIDChecked;
   Preferences::GetCString(GFX_SHADER_CHECK_BUILD_VERSION_PREF, buildIDChecked);
+  int ptrSizeChecked = Preferences::GetInt(GFX_SHADER_CHECK_PTR_SIZE_PREF, 0);
   nsAutoString deviceIDChecked, driverVersionChecked;
   Preferences::GetString(GFX_SHADER_CHECK_DEVICE_ID_PREF, deviceIDChecked);
   Preferences::GetString(GFX_SHADER_CHECK_DRIVER_VERSION_PREF,
                          driverVersionChecked);
 
-  if (buildID == buildIDChecked && deviceID == deviceIDChecked &&
-      driverVersion == driverVersionChecked) {
+  if (buildID == buildIDChecked && ptrSize == ptrSizeChecked &&
+      deviceID == deviceIDChecked && driverVersion == driverVersionChecked) {
     return;
   }
 
@@ -1479,6 +1761,7 @@ void gfxUtils::RemoveShaderCacheFromDiskIfNecessary() {
   }
 
   Preferences::SetCString(GFX_SHADER_CHECK_BUILD_VERSION_PREF, buildID);
+  Preferences::SetInt(GFX_SHADER_CHECK_PTR_SIZE_PREF, ptrSize);
   Preferences::SetString(GFX_SHADER_CHECK_DEVICE_ID_PREF, deviceID);
   Preferences::SetString(GFX_SHADER_CHECK_DRIVER_VERSION_PREF, driverVersion);
 }
@@ -1502,7 +1785,7 @@ DeviceColor ToDeviceColor(const sRGBColor& aColor) {
   // need to return the same object from all return points in this function. We
   // could declare a local Color variable and use that, but we might as well
   // just use aColor.
-  if (gfxPlatform::GetCMSMode() == eCMSMode_All) {
+  if (gfxPlatform::GetCMSMode() == CMSMode::All) {
     qcms_transform* transform = gfxPlatform::GetCMSRGBTransform();
     if (transform) {
       return gfxPlatform::TransformPixel(aColor, transform);
@@ -1517,8 +1800,22 @@ DeviceColor ToDeviceColor(nscolor aColor) {
   return ToDeviceColor(sRGBColor::FromABGR(aColor));
 }
 
-DeviceColor ToDeviceColor(const StyleRGBA& aColor) {
+DeviceColor ToDeviceColor(const StyleAbsoluteColor& aColor) {
   return ToDeviceColor(aColor.ToColor());
+}
+
+sRGBColor ToSRGBColor(const StyleAbsoluteColor& aColor) {
+  auto srgb = aColor.ToColorSpace(StyleColorSpace::Srgb);
+
+  const auto ToComponent = [](float aF) -> float {
+    float component = std::min(std::max(0.0f, aF), 1.0f);
+    if (MOZ_UNLIKELY(!std::isfinite(component))) {
+      return 0.0f;
+    }
+    return component;
+  };
+  return {ToComponent(srgb.components._0), ToComponent(srgb.components._1),
+          ToComponent(srgb.components._2), ToComponent(srgb.alpha)};
 }
 
 }  // namespace gfx

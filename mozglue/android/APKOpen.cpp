@@ -35,8 +35,10 @@
 
 #include "mozilla/arm.h"
 #include "mozilla/Bootstrap.h"
+#include "mozilla/Printf.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Try.h"
 #include "mozilla/UniquePtr.h"
 #include "XREChildData.h"
 
@@ -58,6 +60,9 @@ __attribute__((constructor)) void make_dumpable() { prctl(PR_SET_DUMPABLE, 1); }
 
 typedef int mozglueresult;
 
+using LoadGeckoLibsResult =
+    mozilla::Result<mozilla::Ok, mozilla::BootstrapError>;
+
 enum StartupEvent {
 #define mozilla_StartupTimeline_Event(ev, z) ev,
 #include "StartupTimeline.h"
@@ -66,13 +71,6 @@ enum StartupEvent {
 };
 
 using namespace mozilla;
-
-static const int MAX_MAPPING_INFO = 32;
-static mapping_info lib_mapping[MAX_MAPPING_INFO];
-
-APKOPEN_EXPORT const struct mapping_info* getLibraryMapping() {
-  return lib_mapping;
-}
 
 void JNI_Throw(JNIEnv* jenv, const char* classname, const char* msg) {
   __android_log_print(ANDROID_LOG_ERROR, "GeckoLibLoad", "Throw\n");
@@ -148,32 +146,6 @@ static void* plc_handle = nullptr;
 #endif
 static void* nss_handle = nullptr;
 
-static int mapping_count = 0;
-
-extern "C" void report_mapping(char* name, void* base, uint32_t len,
-                               uint32_t offset) {
-  if (mapping_count >= MAX_MAPPING_INFO) return;
-
-  struct mapping_info* info = &lib_mapping[mapping_count++];
-  info->name = strdup(name);
-  info->base = (uintptr_t)base;
-  info->len = len;
-  info->offset = offset;
-}
-
-extern "C" void delete_mapping(const char* name) {
-  for (int pos = 0; pos < mapping_count; ++pos) {
-    struct mapping_info* info = &lib_mapping[pos];
-    if (!strcmp(info->name, name)) {
-      struct mapping_info* last = &lib_mapping[mapping_count - 1];
-      free(info->name);
-      *info = *last;
-      --mapping_count;
-      break;
-    }
-  }
-}
-
 static UniquePtr<char[]> getUnpackedLibraryName(const char* libraryName) {
   static const char* libdir = getenv("MOZ_ANDROID_LIBDIR");
 
@@ -202,34 +174,25 @@ static void EnsureBaseProfilerInitialized() {
     return;
   }
 
-#ifdef MOZ_GECKO_PROFILER
   // The stack depth we observe here will be determined by the stack of
   // whichever caller enters this code first. In practice this means that we may
   // miss some root-most frames, which hopefully shouldn't ruin profiling.
   int stackBase = 5;
   mozilla::baseprofiler::profiler_init(&stackBase);
-#endif
   sInitialized = true;
 }
 
-static mozglueresult loadGeckoLibs() {
+static LoadGeckoLibsResult loadGeckoLibs() {
   TimeStamp t0 = TimeStamp::Now();
   struct rusage usage1_thread, usage1;
   getrusage(RUSAGE_THREAD, &usage1_thread);
   getrusage(RUSAGE_SELF, &usage1);
 
   static const char* libxul = getenv("MOZ_ANDROID_LIBDIR_OVERRIDE");
-  if (libxul) {
-    gBootstrap = GetBootstrap(libxul, LibLoadingStrategy::ReadAhead);
-  } else {
-    gBootstrap = GetBootstrap(getUnpackedLibraryName("libxul.so").get(),
-                              LibLoadingStrategy::ReadAhead);
-  }
-  if (!gBootstrap) {
-    __android_log_print(ANDROID_LOG_ERROR, "GeckoLibLoad",
-                        "Couldn't get a handle to libxul!");
-    return FAILURE;
-  }
+  MOZ_TRY_VAR(
+      gBootstrap,
+      GetBootstrap(libxul ? libxul : getUnpackedLibraryName("libxul.so").get(),
+                   LibLoadingStrategy::ReadAhead));
 
   TimeStamp t1 = TimeStamp::Now();
   struct rusage usage2_thread, usage2;
@@ -253,7 +216,7 @@ static mozglueresult loadGeckoLibs() {
 
   gBootstrap->XRE_StartupTimelineRecord(LINKER_INITIALIZED, t0);
   gBootstrap->XRE_StartupTimelineRecord(LIBRARIES_LOADED, t1);
-  return SUCCESS;
+  return Ok();
 }
 
 static mozglueresult loadNSSLibs();
@@ -317,10 +280,23 @@ Java_org_mozilla_gecko_mozglue_GeckoLoader_loadGeckoLibsNative(
 
   jenv->GetJavaVM(&sJavaVM);
 
-  int res = loadGeckoLibs();
-  if (res != SUCCESS) {
-    JNI_Throw(jenv, "java/lang/Exception", "Error loading gecko libraries");
+  LoadGeckoLibsResult res = loadGeckoLibs();
+  if (res.isOk()) {
+    return;
   }
+
+  const BootstrapError& errorInfo = res.inspectErr();
+
+  auto msg = errorInfo.match(
+      [](const nsresult& aRv) {
+        return Smprintf("Error loading Gecko libraries: nsresult 0x%08X",
+                        uint32_t(aRv));
+      },
+      [](const DLErrorType& aErr) {
+        return Smprintf("Error loading Gecko libraries: %s", aErr.get());
+      });
+
+  JNI_Throw(jenv, "java/lang/Exception", msg.get());
 }
 
 extern "C" APKOPEN_EXPORT void MOZ_JNICALL
@@ -382,15 +358,13 @@ static void FreeArgv(char** argv, int argc) {
     // String was allocated with strndup, so need to use free to deallocate.
     free(argv[ix]);
   }
-  delete[](argv);
+  delete[] (argv);
 }
 
 extern "C" APKOPEN_EXPORT void MOZ_JNICALL
-Java_org_mozilla_gecko_mozglue_GeckoLoader_nativeRun(JNIEnv* jenv, jclass jc,
-                                                     jobjectArray jargs,
-                                                     int prefsFd, int prefMapFd,
-                                                     int ipcFd, int crashFd,
-                                                     int crashAnnotationFd) {
+Java_org_mozilla_gecko_mozglue_GeckoLoader_nativeRun(
+    JNIEnv* jenv, jclass jc, jobjectArray jargs, int prefsFd, int prefMapFd,
+    int ipcFd, int crashFd, bool xpcshell, jstring outFilePath) {
   EnsureBaseProfilerInitialized();
 
   int argc = 0;
@@ -405,13 +379,22 @@ Java_org_mozilla_gecko_mozglue_GeckoLoader_nativeRun(JNIEnv* jenv, jclass jc,
 #ifdef MOZ_LINKER
     ElfLoader::Singleton.ExpectShutdown(false);
 #endif
-    gBootstrap->GeckoStart(jenv, argv, argc, sAppData);
+    const char* outFilePathRaw = nullptr;
+    if (xpcshell) {
+      MOZ_ASSERT(outFilePath);
+      outFilePathRaw = jenv->GetStringUTFChars(outFilePath, nullptr);
+    }
+    gBootstrap->GeckoStart(jenv, argv, argc, sAppData, xpcshell,
+                           outFilePathRaw);
+    if (outFilePathRaw) {
+      jenv->ReleaseStringUTFChars(outFilePath, outFilePathRaw);
+    }
 #ifdef MOZ_LINKER
     ElfLoader::Singleton.ExpectShutdown(true);
 #endif
   } else {
-    gBootstrap->XRE_SetAndroidChildFds(
-        jenv, {prefsFd, prefMapFd, ipcFd, crashFd, crashAnnotationFd});
+    gBootstrap->XRE_SetAndroidChildFds(jenv,
+                                       {prefsFd, prefMapFd, ipcFd, crashFd});
     gBootstrap->XRE_SetProcessType(argv[argc - 1]);
 
     XREChildData childData;
@@ -437,7 +420,7 @@ extern "C" APKOPEN_EXPORT mozglueresult ChildProcessInit(int argc,
   if (loadSQLiteLibs() != SUCCESS) {
     return FAILURE;
   }
-  if (loadGeckoLibs() != SUCCESS) {
+  if (loadGeckoLibs().isErr()) {
     return FAILURE;
   }
 
@@ -445,16 +428,6 @@ extern "C" APKOPEN_EXPORT mozglueresult ChildProcessInit(int argc,
 
   XREChildData childData;
   return NS_FAILED(gBootstrap->XRE_InitChildProcess(argc, argv, &childData));
-}
-
-extern "C" APKOPEN_EXPORT jboolean MOZ_JNICALL
-Java_org_mozilla_gecko_mozglue_GeckoLoader_neonCompatible(JNIEnv* jenv,
-                                                          jclass jc) {
-#ifdef __ARM_EABI__
-  return mozilla::supports_neon();
-#else
-  return true;
-#endif  // __ARM_EABI__
 }
 
 // Does current process name end with ':media'?

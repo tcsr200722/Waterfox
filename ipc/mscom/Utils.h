@@ -13,20 +13,45 @@
 
 #include "mozilla/Attributes.h"
 #include <guiddef.h>
+#include <stdint.h>
 
 struct IStream;
 struct IUnknown;
 
 namespace mozilla {
 namespace mscom {
+namespace detail {
+
+enum class GuidType {
+  CLSID,
+  AppID,
+};
+
+long BuildRegGuidPath(REFGUID aGuid, const GuidType aGuidType, wchar_t* aBuf,
+                      const size_t aBufLen);
+
+}  // namespace detail
 
 bool IsCOMInitializedOnCurrentThread();
 bool IsCurrentThreadMTA();
 bool IsCurrentThreadExplicitMTA();
 bool IsCurrentThreadImplicitMTA();
+#if defined(MOZILLA_INTERNAL_API)
+bool IsCurrentThreadNonMainMTA();
+#endif  // defined(MOZILLA_INTERNAL_API)
 bool IsProxy(IUnknown* aUnknown);
 bool IsValidGUID(REFGUID aCheckGuid);
 uintptr_t GetContainingModuleHandle();
+
+template <size_t N>
+inline long BuildAppidPath(REFGUID aAppId, wchar_t (&aPath)[N]) {
+  return detail::BuildRegGuidPath(aAppId, detail::GuidType::AppID, aPath, N);
+}
+
+template <size_t N>
+inline long BuildClsidPath(REFCLSID aClsid, wchar_t (&aPath)[N]) {
+  return detail::BuildRegGuidPath(aClsid, detail::GuidType::CLSID, aPath, N);
+}
 
 /**
  * Given a buffer, create a new IStream object.
@@ -38,57 +63,30 @@ uintptr_t GetContainingModuleHandle();
  * @param aOutStream Outparam to receive the newly created stream.
  * @return HRESULT error code.
  */
-uint32_t CreateStream(const uint8_t* aBuf, const uint32_t aBufLen,
-                      IStream** aOutStream);
+long CreateStream(const uint8_t* aBuf, const uint32_t aBufLen,
+                  IStream** aOutStream);
 
 /**
- * Creates a deep copy of a proxy contained in a stream.
- * @param aInStream Stream containing the proxy to copy. Its seek pointer must
- *                  be positioned to point at the beginning of the proxy data.
- * @param aOutStream Outparam to receive the newly created stream.
- * @return HRESULT error code.
+ * Length of a stringified GUID as formatted for the registry, i.e. including
+ * curly-braces and dashes.
  */
-uint32_t CopySerializedProxy(IStream* aInStream, IStream** aOutStream);
+constexpr size_t kGuidRegFormatCharLenInclNul = 39;
 
 #if defined(MOZILLA_INTERNAL_API)
-/**
- * Checks the registry to see if |aClsid| is a thread-aware in-process server.
- *
- * In DCOM, an in-process server is a server that is implemented inside a DLL
- * that is loaded into the client's process for execution. If |aClsid| declares
- * itself to be a local server (that is, a server that resides in another
- * process), this function returns false.
- *
- * For the server to be thread-aware, its registry entry must declare a
- * ThreadingModel that is one of "Free", "Both", or "Neutral". If the threading
- * model is "Apartment" or some other, invalid value, the class is treated as
- * being single-threaded.
- *
- * NB: This function cannot check CLSIDs that were registered via manifests,
- * as unfortunately there is not a documented API available to query for those.
- * This should not be an issue for most CLSIDs that Gecko is interested in, as
- * we typically instantiate system CLSIDs which are available in the registry.
- *
- * @param aClsid The CLSID of the COM class to be checked.
- * @return true if the class meets the above criteria, otherwise false.
- */
-bool IsClassThreadAwareInprocServer(REFCLSID aClsid);
-
 void GUIDToString(REFGUID aGuid, nsAString& aOutString);
+
+/**
+ * Converts an IID to a human-readable string for the purposes of diagnostic
+ * tools such as the profiler. For some special cases, we output a friendly
+ * string that describes the purpose of the interface. If no such description
+ * exists, we simply fall back to outputting the IID as a string formatted by
+ * GUIDToString().
+ */
+void DiagnosticNameForIID(REFIID aIid, nsACString& aOutString);
+#else
+void GUIDToString(REFGUID aGuid,
+                  wchar_t (&aOutBuf)[kGuidRegFormatCharLenInclNul]);
 #endif  // defined(MOZILLA_INTERNAL_API)
-
-#if defined(ACCESSIBILITY)
-bool IsVtableIndexFromParentInterface(REFIID aInterface,
-                                      unsigned long aVtableIndex);
-
-#  if defined(MOZILLA_INTERNAL_API)
-bool IsCallerExternalProcess();
-
-bool IsInterfaceEqualToOrInheritedFrom(REFIID aInterface, REFIID aFrom,
-                                       unsigned long aVtableIndexHint);
-#  endif  // defined(MOZILLA_INTERNAL_API)
-
-#endif  // defined(ACCESSIBILITY)
 
 /**
  * Execute cleanup code when going out of scope if a condition is met.

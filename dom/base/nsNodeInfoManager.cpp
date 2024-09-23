@@ -17,6 +17,7 @@
 #include "mozilla/dom/NodeInfoInlines.h"
 #include "mozilla/dom/DocGroup.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsAtom.h"
@@ -39,9 +40,10 @@ using mozilla::dom::NodeInfo;
 static LazyLogModule gNodeInfoManagerLeakPRLog("NodeInfoManagerLeak");
 static const uint32_t kInitialNodeInfoHashSize = 32;
 
-nsNodeInfoManager::nsNodeInfoManager()
+nsNodeInfoManager::nsNodeInfoManager(mozilla::dom::Document* aDocument,
+                                     nsIPrincipal* aPrincipal)
     : mNodeInfoHash(kInitialNodeInfoHashSize),
-      mDocument(nullptr),
+      mDocument(aDocument),
       mNonDocumentNodeInfos(0),
       mTextNodeInfo(nullptr),
       mCommentNodeInfo(nullptr),
@@ -50,9 +52,17 @@ nsNodeInfoManager::nsNodeInfoManager()
       mArena(nullptr) {
   nsLayoutStatics::AddRef();
 
-  if (gNodeInfoManagerLeakPRLog)
+  if (aPrincipal) {
+    mPrincipal = aPrincipal;
+  } else {
+    mPrincipal = NullPrincipal::CreateWithoutOriginAttributes();
+  }
+  mDefaultPrincipal = mPrincipal;
+
+  if (gNodeInfoManagerLeakPRLog) {
     MOZ_LOG(gNodeInfoManagerLeakPRLog, LogLevel::Debug,
-            ("NODEINFOMANAGER %p created", this));
+            ("NODEINFOMANAGER %p created,  document=%p", this, aDocument));
+  }
 }
 
 nsNodeInfoManager::~nsNodeInfoManager() {
@@ -77,9 +87,6 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsNodeInfoManager)
   }
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(nsNodeInfoManager, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(nsNodeInfoManager, Release)
-
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(nsNodeInfoManager)
   if (tmp->mDocument) {
     return NS_CYCLE_COLLECTION_PARTICIPANT(mozilla::dom::Document)
@@ -101,26 +108,10 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_BEGIN(nsNodeInfoManager)
   }
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 
-nsresult nsNodeInfoManager::Init(mozilla::dom::Document* aDocument) {
-  MOZ_ASSERT(!mPrincipal, "Being inited when we already have a principal?");
-
-  mPrincipal = NullPrincipal::CreateWithoutOriginAttributes();
-
-  mDefaultPrincipal = mPrincipal;
-
-  mDocument = aDocument;
-
-  if (gNodeInfoManagerLeakPRLog)
-    MOZ_LOG(gNodeInfoManagerLeakPRLog, LogLevel::Debug,
-            ("NODEINFOMANAGER %p Init document=%p", this, aDocument));
-
-  return NS_OK;
-}
-
 void nsNodeInfoManager::DropDocumentReference() {
   // This is probably not needed anymore.
-  for (auto iter = mNodeInfoHash.Iter(); !iter.Done(); iter.Next()) {
-    iter.Data()->mDocument = nullptr;
+  for (const auto& entry : mNodeInfoHash.Values()) {
+    entry->mDocument = nullptr;
   }
 
   NS_ASSERTION(!mNonDocumentNodeInfos,
@@ -142,8 +133,8 @@ already_AddRefed<mozilla::dom::NodeInfo> nsNodeInfoManager::GetNodeInfo(
     return nodeInfo.forget();
   }
 
-  // We don't use LookupForAdd here as that would end up storing the temporary
-  // key instead of using `mInner`.
+  // We don't use WithEntryHandle here as that would end up storing the
+  // temporary key instead of using `mInner`.
   RefPtr<NodeInfo> nodeInfo = mNodeInfoHash.Get(&tmpKey);
   if (!nodeInfo) {
     ++mNonDocumentNodeInfos;
@@ -153,7 +144,7 @@ already_AddRefed<mozilla::dom::NodeInfo> nsNodeInfoManager::GetNodeInfo(
 
     nodeInfo =
         new NodeInfo(aName, aPrefix, aNamespaceID, aNodeType, aExtraName, this);
-    mNodeInfoHash.Put(&nodeInfo->mInner, nodeInfo);
+    mNodeInfoHash.InsertOrUpdate(&nodeInfo->mInner, nodeInfo);
   }
 
   // Have to do the swap thing, because already_AddRefed<nsNodeInfo>
@@ -193,7 +184,7 @@ nsresult nsNodeInfoManager::GetNodeInfo(const nsAString& aName, nsAtom* aPrefix,
     RefPtr<nsAtom> nameAtom = NS_Atomize(aName);
     nodeInfo =
         new NodeInfo(nameAtom, aPrefix, aNamespaceID, aNodeType, nullptr, this);
-    mNodeInfoHash.Put(&nodeInfo->mInner, nodeInfo);
+    mNodeInfoHash.InsertOrUpdate(&nodeInfo->mInner, nodeInfo);
   }
 
   p.Set(nodeInfo);
@@ -209,7 +200,7 @@ nsresult nsNodeInfoManager::GetNodeInfo(const nsAString& aName, nsAtom* aPrefix,
   int32_t nsid = kNameSpaceID_None;
 
   if (!aNamespaceURI.IsEmpty()) {
-    nsresult rv = nsContentUtils::NameSpaceManager()->RegisterNameSpace(
+    nsresult rv = nsNameSpaceManager::GetInstance()->RegisterNameSpace(
         aNamespaceURI, nsid);
     NS_ENSURE_SUCCESS(rv, rv);
   }
@@ -352,12 +343,17 @@ void nsNodeInfoManager::RemoveNodeInfo(NodeInfo* aNodeInfo) {
   MOZ_ASSERT(ret, "Can't find mozilla::dom::NodeInfo to remove!!!");
 }
 
-static bool IsSystemOrAddonPrincipal(nsIPrincipal* aPrincipal) {
+static bool IsSystemOrAddonOrAboutPrincipal(nsIPrincipal* aPrincipal) {
   return aPrincipal->IsSystemPrincipal() ||
-         BasePrincipal::Cast(aPrincipal)->AddonPolicy();
+         BasePrincipal::Cast(aPrincipal)->AddonPolicy() ||
+         // NOTE: about:blank and about:srcdoc inherit the principal of their
+         // parent, so aPrincipal->SchemeIs("about") returns false for them.
+         aPrincipal->SchemeIs("about");
 }
 
 bool nsNodeInfoManager::InternalSVGEnabled() {
+  MOZ_ASSERT(!mSVGEnabled, "Caller should use the cached mSVGEnabled!");
+
   // If the svg.disabled pref. is true, convert all SVG nodes into
   // disabled SVG nodes by swapping the namespace.
   nsNameSpaceManager* nsmgr = nsNameSpaceManager::GetInstance();
@@ -375,22 +371,25 @@ bool nsNodeInfoManager::InternalSVGEnabled() {
   }
 
   // We allow SVG (regardless of the pref) if this is a system or add-on
-  // principal, or if this load was requested for a system or add-on principal
-  // (e.g. a remote image being served as part of system or add-on UI)
+  // principal or about: page, or if this load was requested for a system or
+  // add-on principal or about: page (e.g. a remote image being served as part
+  // of system or add-on UI or about: page)
   bool conclusion =
-      (SVGEnabled || IsSystemOrAddonPrincipal(mPrincipal) ||
+      (SVGEnabled || IsSystemOrAddonOrAboutPrincipal(mPrincipal) ||
        (loadInfo &&
         (loadInfo->GetExternalContentPolicyType() ==
-             nsIContentPolicy::TYPE_IMAGE ||
+             ExtContentPolicy::TYPE_IMAGE ||
          loadInfo->GetExternalContentPolicyType() ==
-             nsIContentPolicy::TYPE_OTHER) &&
-        (IsSystemOrAddonPrincipal(loadInfo->GetLoadingPrincipal()) ||
-         IsSystemOrAddonPrincipal(loadInfo->TriggeringPrincipal()))));
+             ExtContentPolicy::TYPE_OTHER) &&
+        (IsSystemOrAddonOrAboutPrincipal(loadInfo->GetLoadingPrincipal()) ||
+         IsSystemOrAddonOrAboutPrincipal(loadInfo->TriggeringPrincipal()))));
   mSVGEnabled = Some(conclusion);
   return conclusion;
 }
 
 bool nsNodeInfoManager::InternalMathMLEnabled() {
+  MOZ_ASSERT(!mMathMLEnabled, "Caller should use the cached mMathMLEnabled!");
+
   // If the mathml.disabled pref. is true, convert all MathML nodes into
   // disabled MathML nodes by swapping the namespace.
   nsNameSpaceManager* nsmgr = nsNameSpaceManager::GetInstance();
@@ -401,7 +400,7 @@ bool nsNodeInfoManager::InternalMathMLEnabled() {
 }
 
 void nsNodeInfoManager::AddSizeOfIncludingThis(nsWindowSizes& aSizes) const {
-  aSizes.mDOMOtherSize += aSizes.mState.mMallocSizeOf(this);
+  aSizes.mDOMSizes.mDOMOtherSize += aSizes.mState.mMallocSizeOf(this);
 
   // Measurement of the following members may be added later if DMD finds it
   // is worthwhile:

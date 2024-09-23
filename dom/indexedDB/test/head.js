@@ -11,7 +11,7 @@ function registerPopupEventHandler(eventName, callback, win) {
   if (!win) {
     win = window;
   }
-  gActiveListeners[eventName] = function(event) {
+  gActiveListeners[eventName] = function (event) {
     if (event.target != win.PopupNotifications.panel) {
       return;
     }
@@ -56,24 +56,27 @@ function unregisterAllPopupEventHandlers(win) {
 function triggerMainCommand(popup) {
   info("triggering main command");
   let notifications = popup.childNodes;
-  ok(notifications.length > 0, "at least one notification displayed");
+  ok(notifications.length, "at least one notification displayed");
   let notification = notifications[0];
   info("triggering command: " + notification.getAttribute("buttonlabel"));
 
   EventUtils.synthesizeMouseAtCenter(notification.button, {});
 }
 
-function triggerSecondaryCommand(popup) {
+function triggerSecondaryCommand(popup, win) {
+  if (!win) {
+    win = window;
+  }
   info("triggering secondary command");
   let notifications = popup.childNodes;
-  ok(notifications.length > 0, "at least one notification displayed");
+  ok(notifications.length, "at least one notification displayed");
   let notification = notifications[0];
-  EventUtils.synthesizeMouseAtCenter(notification.secondaryButton, {});
+  EventUtils.synthesizeMouseAtCenter(notification.secondaryButton, {}, win);
 }
 
-function dismissNotification(popup) {
+function dismissNotification() {
   info("dismissing notification");
-  executeSoon(function() {
+  executeSoon(function () {
     EventUtils.synthesizeKey("KEY_Escape");
   });
 }
@@ -81,8 +84,8 @@ function dismissNotification(popup) {
 function waitForMessage(aMessage, browser) {
   // We cannot capture aMessage inside the checkFn, so we override the
   // checkFn.toSource to tunnel aMessage instead.
-  let checkFn = function() {};
-  checkFn.toSource = function() {
+  let checkFn = function () {};
+  checkFn.toSource = function () {
     return `function checkFn(event) {
       let message = ${aMessage.toSource()};
       if (event.data == message) {
@@ -115,11 +118,11 @@ function dispatchEvent(eventName) {
   gBrowser.selectedBrowser.contentWindow.dispatchEvent(event);
 }
 
-function setPermission(url, permission) {
+function setPermission(url, permission, originAttributes = {}) {
   let uri = Services.io.newURI(url);
   let principal = Services.scriptSecurityManager.createContentPrincipal(
     uri,
-    {}
+    originAttributes
   );
 
   Services.perms.addFromPrincipal(
@@ -129,21 +132,21 @@ function setPermission(url, permission) {
   );
 }
 
-function removePermission(url, permission) {
+function removePermission(url, permission, originAttributes = {}) {
   let uri = Services.io.newURI(url);
   let principal = Services.scriptSecurityManager.createContentPrincipal(
     uri,
-    {}
+    originAttributes
   );
 
   Services.perms.removeFromPrincipal(principal, permission);
 }
 
-function getPermission(url, permission) {
+function getPermission(url, permission, originAttributes = {}) {
   let uri = Services.io.newURI(url);
   let principal = Services.scriptSecurityManager.createContentPrincipal(
     uri,
-    {}
+    originAttributes
   );
 
   return Services.perms.testPermissionFromPrincipal(principal, permission);

@@ -8,6 +8,7 @@
 
 #include "ServoCSSParser.h"
 
+#include "mozilla/AnimatedPropertyID.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/ServoStyleSet.h"
 #include "mozilla/dom/Document.h"
@@ -26,26 +27,46 @@ bool ServoCSSParser::ComputeColor(ServoStyleSet* aStyleSet,
                                   const nsACString& aValue,
                                   nscolor* aResultColor, bool* aWasCurrentColor,
                                   css::Loader* aLoader) {
-  return Servo_ComputeColor(aStyleSet ? aStyleSet->RawSet() : nullptr,
+  return Servo_ComputeColor(aStyleSet ? aStyleSet->RawData() : nullptr,
                             aCurrentColor, &aValue, aResultColor,
                             aWasCurrentColor, aLoader);
 }
 
 /* static */
-already_AddRefed<RawServoDeclarationBlock> ServoCSSParser::ParseProperty(
-    nsCSSPropertyID aProperty, const nsAString& aValue,
-    const ParsingEnvironment& aParsingEnvironment, ParsingMode aParsingMode) {
-  NS_ConvertUTF16toUTF8 value(aValue);
+bool ServoCSSParser::ColorTo(const nsACString& aFromColor,
+                             const nsACString& aToColorSpace,
+                             nsACString* aResultColor,
+                             nsTArray<float>* aResultComponents,
+                             bool* aResultAdjusted, css::Loader* aLoader) {
+  return Servo_ColorTo(&aFromColor, &aToColorSpace, aResultColor,
+                       aResultComponents, aResultAdjusted, aLoader);
+}
+
+/* static */
+already_AddRefed<StyleLockedDeclarationBlock> ServoCSSParser::ParseProperty(
+    nsCSSPropertyID aProperty, const nsACString& aValue,
+    const ParsingEnvironment& aParsingEnvironment,
+    const StyleParsingMode& aParsingMode) {
+  AnimatedPropertyID property(aProperty);
+  return ParseProperty(property, aValue, aParsingEnvironment, aParsingMode);
+}
+
+/* static */
+already_AddRefed<StyleLockedDeclarationBlock> ServoCSSParser::ParseProperty(
+    const AnimatedPropertyID& aProperty, const nsACString& aValue,
+    const ParsingEnvironment& aParsingEnvironment,
+    const StyleParsingMode& aParsingMode) {
   return Servo_ParseProperty(
-             aProperty, &value, aParsingEnvironment.mUrlExtraData, aParsingMode,
-             aParsingEnvironment.mCompatMode, aParsingEnvironment.mLoader)
+             &aProperty, &aValue, aParsingEnvironment.mUrlExtraData,
+             aParsingMode, aParsingEnvironment.mCompatMode,
+             aParsingEnvironment.mLoader, aParsingEnvironment.mRuleType)
       .Consume();
 }
 
 /* static */
-bool ServoCSSParser::ParseEasing(const nsAString& aValue, URLExtraData* aUrl,
-                                 nsTimingFunction& aResult) {
-  return Servo_ParseEasing(&aValue, aUrl, &aResult);
+bool ServoCSSParser::ParseEasing(const nsACString& aValue,
+                                 StyleComputedTimingFunction& aResult) {
+  return Servo_ParseEasing(&aValue, &aResult);
 }
 
 /* static */
@@ -58,29 +79,22 @@ bool ServoCSSParser::ParseTransformIntoMatrix(const nsACString& aValue,
 
 /* static */
 bool ServoCSSParser::ParseFontShorthandForMatching(
-    const nsAString& aValue, URLExtraData* aUrl, RefPtr<SharedFontList>& aList,
-    StyleComputedFontStyleDescriptor& aStyle, float& aStretch, float& aWeight) {
-  return Servo_ParseFontShorthandForMatching(&aValue, aUrl, &aList, &aStyle,
-                                             &aStretch, &aWeight);
+    const nsACString& aValue, URLExtraData* aUrl, StyleFontFamilyList& aList,
+    StyleFontStyle& aStyle, StyleFontStretch& aStretch,
+    StyleFontWeight& aWeight, float* aSize, bool* aSmallCaps) {
+  return Servo_ParseFontShorthandForMatching(
+      &aValue, aUrl, &aList, &aStyle, &aStretch, &aWeight, aSize, aSmallCaps);
 }
 
 /* static */
 already_AddRefed<URLExtraData> ServoCSSParser::GetURLExtraData(
     Document* aDocument) {
   MOZ_ASSERT(aDocument);
-
-  nsCOMPtr<nsIReferrerInfo> referrerInfo =
-      ReferrerInfo::CreateForInternalCSSResources(aDocument);
-
-  // FIXME this is using the wrong base uri (bug 1343919)
-  RefPtr<URLExtraData> url = new URLExtraData(
-      aDocument->GetDocumentURI(), referrerInfo, aDocument->NodePrincipal());
-  return url.forget();
+  return do_AddRef(aDocument->DefaultStyleAttrURLData());
 }
 
 /* static */ ServoCSSParser::ParsingEnvironment
 ServoCSSParser::GetParsingEnvironment(Document* aDocument) {
-  return ParsingEnvironment(GetURLExtraData(aDocument),
-                            aDocument->GetCompatibilityMode(),
-                            aDocument->CSSLoader());
+  return {GetURLExtraData(aDocument), aDocument->GetCompatibilityMode(),
+          aDocument->CSSLoader()};
 }

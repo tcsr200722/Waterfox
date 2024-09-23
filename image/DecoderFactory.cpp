@@ -23,6 +23,9 @@
 #ifdef MOZ_AV1
 #  include "nsAVIFDecoder.h"
 #endif
+#ifdef MOZ_JXL
+#  include "nsJXLDecoder.h"
+#endif
 
 namespace mozilla {
 
@@ -76,8 +79,7 @@ DecoderType DecoderFactory::GetDecoderType(const char* aMimeType) {
     type = DecoderType::ICON;
 
     // WebP
-  } else if (!strcmp(aMimeType, IMAGE_WEBP) &&
-             StaticPrefs::image_webp_enabled()) {
+  } else if (!strcmp(aMimeType, IMAGE_WEBP)) {
     type = DecoderType::WEBP;
 
     // AVIF
@@ -88,8 +90,31 @@ DecoderType DecoderFactory::GetDecoderType(const char* aMimeType) {
     type = DecoderType::AVIF;
   }
 #endif
+#ifdef MOZ_JXL
+  else if (!strcmp(aMimeType, IMAGE_JXL) && StaticPrefs::image_jxl_enabled()) {
+    type = DecoderType::JXL;
+  }
+#endif
 
   return type;
+}
+
+/* static */
+DecoderFlags DecoderFactory::GetDefaultDecoderFlagsForType(DecoderType aType) {
+  auto flags = DefaultDecoderFlags();
+
+#ifdef MOZ_AV1
+  if (aType == DecoderType::AVIF) {
+    if (StaticPrefs::image_avif_sequence_enabled()) {
+      flags |= DecoderFlags::AVIF_SEQUENCES_ENABLED;
+    }
+    if (StaticPrefs::image_avif_sequence_animate_avif_major_branded_images()) {
+      flags |= DecoderFlags::AVIF_ANIMATE_AVIF_MAJOR;
+    }
+  }
+#endif
+
+  return flags;
 }
 
 /* static */
@@ -131,6 +156,11 @@ already_AddRefed<Decoder> DecoderFactory::GetDecoder(DecoderType aType,
       decoder = new nsAVIFDecoder(aImage);
       break;
 #endif
+#ifdef MOZ_JXL
+    case DecoderType::JXL:
+      decoder = new nsJXLDecoder(aImage);
+      break;
+#endif
     default:
       MOZ_ASSERT_UNREACHABLE("Unknown decoder type");
   }
@@ -157,7 +187,7 @@ nsresult DecoderFactory::CreateDecoder(
   // Initialize the decoder.
   decoder->SetMetadataDecode(false);
   decoder->SetIterator(aSourceBuffer->Iterator());
-  decoder->SetOutputSize(aOutputSize);
+  decoder->SetOutputSize(OrientedIntSize::FromUnknownSize(aOutputSize));
   decoder->SetDecoderFlags(aDecoderFlags | DecoderFlags::FIRST_FRAME_ONLY);
   decoder->SetSurfaceFlags(aSurfaceFlags);
 
@@ -204,7 +234,8 @@ nsresult DecoderFactory::CreateAnimationDecoder(
   }
 
   MOZ_ASSERT(aType == DecoderType::GIF || aType == DecoderType::PNG ||
-                 aType == DecoderType::WEBP,
+                 aType == DecoderType::WEBP || aType == DecoderType::AVIF  ||
+                 aType == DecoderType::JXL,
              "Calling CreateAnimationDecoder for non-animating DecoderType");
 
   // Create an anonymous decoder. Interaction with the SurfaceCache and the
@@ -259,7 +290,8 @@ already_AddRefed<Decoder> DecoderFactory::CloneAnimationDecoder(
   // rediscover it is animated).
   DecoderType type = aDecoder->GetType();
   MOZ_ASSERT(type == DecoderType::GIF || type == DecoderType::PNG ||
-                 type == DecoderType::WEBP,
+                 type == DecoderType::WEBP || type == DecoderType::AVIF  ||
+                 type == DecoderType::JXL,
              "Calling CloneAnimationDecoder for non-animating DecoderType");
 
   RefPtr<Decoder> decoder = GetDecoder(type, nullptr, /* aIsRedecode = */ true);
@@ -281,7 +313,7 @@ already_AddRefed<Decoder> DecoderFactory::CloneAnimationDecoder(
 
 /* static */
 already_AddRefed<IDecodingTask> DecoderFactory::CreateMetadataDecoder(
-    DecoderType aType, NotNull<RasterImage*> aImage,
+    DecoderType aType, NotNull<RasterImage*> aImage, DecoderFlags aFlags,
     NotNull<SourceBuffer*> aSourceBuffer) {
   if (aType == DecoderType::UNKNOWN) {
     return nullptr;
@@ -293,6 +325,7 @@ already_AddRefed<IDecodingTask> DecoderFactory::CreateMetadataDecoder(
 
   // Initialize the decoder.
   decoder->SetMetadataDecode(true);
+  decoder->SetDecoderFlags(aFlags);
   decoder->SetIterator(aSourceBuffer->Iterator());
 
   if (NS_FAILED(decoder->Init())) {
@@ -307,7 +340,8 @@ already_AddRefed<IDecodingTask> DecoderFactory::CreateMetadataDecoder(
 already_AddRefed<Decoder> DecoderFactory::CreateDecoderForICOResource(
     DecoderType aType, SourceBufferIterator&& aIterator,
     NotNull<nsICODecoder*> aICODecoder, bool aIsMetadataDecode,
-    const Maybe<IntSize>& aExpectedSize, const Maybe<uint32_t>& aDataOffset
+    const Maybe<OrientedIntSize>& aExpectedSize,
+    const Maybe<uint32_t>& aDataOffset
     /* = Nothing() */) {
   // Create the decoder.
   RefPtr<Decoder> decoder;
@@ -376,7 +410,7 @@ already_AddRefed<Decoder> DecoderFactory::CreateAnonymousDecoder(
 
   // Set an output size for downscale-during-decode if requested.
   if (aOutputSize) {
-    decoder->SetOutputSize(*aOutputSize);
+    decoder->SetOutputSize(OrientedIntSize::FromUnknownSize(*aOutputSize));
   }
 
   if (NS_FAILED(decoder->Init())) {

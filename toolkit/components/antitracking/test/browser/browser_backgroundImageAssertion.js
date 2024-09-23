@@ -1,4 +1,4 @@
-add_task(async function() {
+add_task(async function () {
   info("Starting subResources test");
 
   await SpecialPowers.flushPrefEnv();
@@ -6,6 +6,10 @@ add_task(async function() {
     set: [
       [
         "network.cookie.cookieBehavior",
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+      ],
+      [
+        "network.cookie.cookieBehavior.pbmode",
         Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
       ],
       ["privacy.trackingprotection.enabled", false],
@@ -29,7 +33,7 @@ add_task(async function() {
   await SpecialPowers.spawn(
     browser,
     [{ page: TEST_3RD_PARTY_PAGE_WITH_SVG }],
-    async function(obj) {
+    async function (obj) {
       await new content.Promise(resolve => {
         let ifr = content.document.createElement("iframe");
 
@@ -55,10 +59,10 @@ add_task(async function() {
   UrlClassifierTestUtils.cleanupTestTrackers();
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Cleaning up.");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

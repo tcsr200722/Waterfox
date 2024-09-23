@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include "mozilla/ArrayUtils.h"
 
+// Do not consider properties not valid in style rules
+#define CSS_PROP_LIST_EXCLUDE_NOT_IN_STYLE
+
 // Need an extra level of macro nesting to force expansion of method_
 // params before they get pasted.
 #define STRINGIFY_METHOD(method_) #method_
@@ -55,7 +58,7 @@ const PropertyInfo gShorthandProperties[] = {
 #define CSS_PROP_PUBLIC_OR_PRIVATE(publicname_, privatename_) publicname_
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, pref_) \
   {#name_, STRINGIFY_METHOD(method_), pref_},
-#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, pref_) \
+#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, flags_, pref_) \
   {#name_, #method_, pref_},
 
 #include "mozilla/ServoCSSPropList.h"
@@ -71,7 +74,7 @@ const char* gShorthandPropertiesWithDOMProp[] = {
 
 #define CSS_PROP_LIST_EXCLUDE_INTERNAL
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, pref_) #name_,
-#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, pref_) #name_,
+#define CSS_PROP_ALIAS(name_, aliasid_, id_, method_, flags_, pref_) #name_,
 
 #include "mozilla/ServoCSSPropList.h"
 
@@ -89,22 +92,23 @@ const char* gInaccessibleProperties[] = {
     "-x-cols",
     "-x-lang",
     "-x-span",
-    "-x-text-zoom",
-    "-moz-context-properties",
-    "-moz-control-character-visibility",
-    "-moz-list-reversed",  // parsed by UA sheets only
-    "-moz-script-level",   // parsed by UA sheets only
-    "-moz-script-size-multiplier",
-    "-moz-script-min-size",
+    "-x-text-scale",
+    "-moz-default-appearance",
+    "-moz-theme",
+    "-moz-inert",
+    "-moz-script-level",  // parsed by UA sheets only
     "-moz-math-variant",
-    "-moz-math-display",                     // parsed by UA sheets only
-    "-moz-top-layer",                        // parsed by UA sheets only
-    "-moz-min-font-size-ratio",              // parsed by UA sheets only
-    "-moz-font-smoothing-background-color",  // chrome-only internal properties
-    "-moz-window-opacity",                   // chrome-only internal properties
-    "-moz-window-transform",                 // chrome-only internal properties
-    "-moz-window-transform-origin",          // chrome-only internal properties
-    "-moz-window-shadow",                    // chrome-only internal properties
+    "-moz-math-display",                  // parsed by UA sheets only
+    "-moz-top-layer",                     // parsed by UA sheets only
+    "-moz-min-font-size-ratio",           // parsed by UA sheets only
+    "-moz-box-collapse",                  // chrome-only internal properties
+    "-moz-subtree-hidden-only-visually",  // chrome-only internal properties
+    "-moz-user-focus",                    // chrome-only internal properties
+    "-moz-window-input-region-margin",    // chrome-only internal properties
+    "-moz-window-opacity",                // chrome-only internal properties
+    "-moz-window-transform",              // chrome-only internal properties
+    "-moz-window-transform-origin",       // chrome-only internal properties
+    "-moz-window-shadow",                 // chrome-only internal properties
 };
 
 inline int is_inaccessible(const char* aPropName) {

@@ -6,6 +6,7 @@
 #ifndef mozilla_net_TLSServerSocket_h
 #define mozilla_net_TLSServerSocket_h
 
+#include "nsIInterfaceRequestor.h"
 #include "nsITLSServerSocket.h"
 #include "nsServerSocket.h"
 #include "nsString.h"
@@ -27,7 +28,7 @@ class TLSServerSocket final : public nsServerSocket, public nsITLSServerSocket {
   virtual nsresult SetSocketDefaults() override;
   virtual nsresult OnSocketListen() override;
 
-  TLSServerSocket();
+  TLSServerSocket() = default;
 
  private:
   virtual ~TLSServerSocket() = default;
@@ -39,15 +40,17 @@ class TLSServerSocket final : public nsServerSocket, public nsITLSServerSocket {
 };
 
 class TLSServerConnectionInfo : public nsITLSServerConnectionInfo,
-                                public nsITLSClientStatus {
+                                public nsITLSClientStatus,
+                                public nsIInterfaceRequestor {
   friend class TLSServerSocket;
 
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSITLSSERVERCONNECTIONINFO
   NS_DECL_NSITLSCLIENTSTATUS
+  NS_DECL_NSIINTERFACEREQUESTOR
 
-  TLSServerConnectionInfo();
+  TLSServerConnectionInfo() = default;
 
  private:
   virtual ~TLSServerConnectionInfo();
@@ -60,15 +63,16 @@ class TLSServerConnectionInfo : public nsITLSServerConnectionInfo,
   // reference to the TLSServerConnectionInfo object.  This is not handed out to
   // anyone, and is only used in HandshakeCallback to close the transport in
   // case of an error.  After this, it's set to nullptr.
-  nsISocketTransport* mTransport;
+  nsISocketTransport* mTransport{nullptr};
   nsCOMPtr<nsIX509Cert> mPeerCert;
-  int16_t mTlsVersionUsed;
+  int16_t mTlsVersionUsed{TLS_VERSION_UNKNOWN};
   nsCString mCipherName;
-  uint32_t mKeyLength;
-  uint32_t mMacLength;
+  uint32_t mKeyLength{0};
+  uint32_t mMacLength{0};
   // lock protects access to mSecurityObserver
-  mozilla::Mutex mLock;
-  nsCOMPtr<nsITLSServerSecurityObserver> mSecurityObserver;
+  mozilla::Mutex mLock{"TLSServerConnectionInfo.mLock"};
+  nsCOMPtr<nsITLSServerSecurityObserver> mSecurityObserver
+      MOZ_GUARDED_BY(mLock);
 };
 
 }  // namespace net

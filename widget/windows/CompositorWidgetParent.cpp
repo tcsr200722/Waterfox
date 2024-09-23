@@ -2,7 +2,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
 #include "CompositorWidgetParent.h"
 
 #include "mozilla/Unused.h"
@@ -35,9 +34,10 @@ CompositorWidgetParent::CompositorWidgetParent(
                           aOptions),
       mWnd(reinterpret_cast<HWND>(
           aInitData.get_WinCompositorWidgetInitData().hWnd())),
-      mTransparencyMode(
-          aInitData.get_WinCompositorWidgetInitData().transparencyMode()),
-      mLockedBackBufferData(nullptr),
+      mTransparencyMode(uint32_t(
+          aInitData.get_WinCompositorWidgetInitData().transparencyMode())),
+      mSizeMode(nsSizeMode_Normal),
+      mIsFullyOccluded(false),
       mRemoteBackbufferClient() {
   MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_GPU);
   MOZ_ASSERT(mWnd && ::IsWindow(mWnd));
@@ -76,16 +76,24 @@ LayoutDeviceIntSize CompositorWidgetParent::GetClientSize() {
   return LayoutDeviceIntSize(r.right - r.left, r.bottom - r.top);
 }
 
-already_AddRefed<gfx::DrawTarget> CompositorWidgetParent::StartRemoteDrawing() {
+already_AddRefed<gfx::DrawTarget>
+CompositorWidgetParent::StartRemoteDrawingInRegion(
+    const LayoutDeviceIntRegion& aInvalidRegion,
+    layers::BufferMode* aBufferMode) {
   MOZ_ASSERT(mRemoteBackbufferClient);
+  MOZ_ASSERT(aBufferMode);
+
+  // Because we use remote backbuffering, there is no need to use a local
+  // backbuffer too.
+  (*aBufferMode) = layers::BufferMode::BUFFER_NONE;
 
   return mRemoteBackbufferClient->BorrowDrawTarget();
 }
 
-void CompositorWidgetParent::EndRemoteDrawing() {
-  MOZ_ASSERT(!mLockedBackBufferData);
-
-  Unused << mRemoteBackbufferClient->PresentDrawTarget();
+void CompositorWidgetParent::EndRemoteDrawingInRegion(
+    gfx::DrawTarget* aDrawTarget, const LayoutDeviceIntRegion& aInvalidRegion) {
+  Unused << mRemoteBackbufferClient->PresentDrawTarget(
+      aInvalidRegion.ToUnknownRegion());
 }
 
 bool CompositorWidgetParent::NeedsToDeferEndRemoteDrawing() { return false; }
@@ -94,56 +102,20 @@ already_AddRefed<gfx::DrawTarget>
 CompositorWidgetParent::GetBackBufferDrawTarget(gfx::DrawTarget* aScreenTarget,
                                                 const gfx::IntRect& aRect,
                                                 bool* aOutIsCleared) {
-  MOZ_ASSERT(!mLockedBackBufferData);
-
-  RefPtr<gfx::DrawTarget> target = CompositorWidget::GetBackBufferDrawTarget(
-      aScreenTarget, aRect, aOutIsCleared);
-  if (!target) {
-    return nullptr;
-  }
-
-  MOZ_ASSERT(target->GetBackendType() == BackendType::CAIRO);
-
-  uint8_t* destData;
-  IntSize destSize;
-  int32_t destStride;
-  SurfaceFormat destFormat;
-  if (!target->LockBits(&destData, &destSize, &destStride, &destFormat)) {
-    // LockBits is not supported. Use original DrawTarget.
-    return target.forget();
-  }
-
-  RefPtr<gfx::DrawTarget> dataTarget = Factory::CreateDrawTargetForData(
-      BackendType::CAIRO, destData, destSize, destStride, destFormat);
-  mLockedBackBufferData = destData;
-
-  return dataTarget.forget();
+  MOZ_CRASH(
+      "Unexpected call to GetBackBufferDrawTarget() with remote "
+      "backbuffering in use");
 }
 
 already_AddRefed<gfx::SourceSurface>
 CompositorWidgetParent::EndBackBufferDrawing() {
-  if (mLockedBackBufferData) {
-    MOZ_ASSERT(mLastBackBuffer);
-    mLastBackBuffer->ReleaseBits(mLockedBackBufferData);
-    mLockedBackBufferData = nullptr;
-  }
-  return CompositorWidget::EndBackBufferDrawing();
+  MOZ_CRASH(
+      "Unexpected call to EndBackBufferDrawing() with remote "
+      "backbuffering in use");
 }
 
 bool CompositorWidgetParent::InitCompositor(layers::Compositor* aCompositor) {
-  if (aCompositor->GetBackendType() == layers::LayersBackend::LAYERS_BASIC) {
-    DeviceManagerDx::Get()->InitializeDirectDraw();
-  }
   return true;
-}
-
-bool CompositorWidgetParent::HasGlass() const {
-  MOZ_ASSERT(layers::CompositorThreadHolder::IsInCompositorThread() ||
-             wr::RenderThread::IsInRenderThread());
-
-  nsTransparencyMode transparencyMode = mTransparencyMode;
-  return transparencyMode == eTransparencyGlass ||
-         transparencyMode == eTransparencyBorderlessGlass;
 }
 
 bool CompositorWidgetParent::IsHidden() const { return ::IsIconic(mWnd); }
@@ -165,10 +137,24 @@ mozilla::ipc::IPCResult CompositorWidgetParent::RecvLeavePresentLock() {
 }
 
 mozilla::ipc::IPCResult CompositorWidgetParent::RecvUpdateTransparency(
-    const nsTransparencyMode& aMode) {
-  mTransparencyMode = aMode;
-
+    const TransparencyMode& aMode) {
+  mTransparencyMode = uint32_t(aMode);
   return IPC_OK();
+}
+
+mozilla::ipc::IPCResult CompositorWidgetParent::RecvNotifyVisibilityUpdated(
+    const nsSizeMode& aSizeMode, const bool& aIsFullyOccluded) {
+  mSizeMode = aSizeMode;
+  mIsFullyOccluded = aIsFullyOccluded;
+  return IPC_OK();
+}
+
+nsSizeMode CompositorWidgetParent::GetWindowSizeMode() const {
+  return mSizeMode;
+}
+
+bool CompositorWidgetParent::GetWindowIsFullyOccluded() const {
+  return mIsFullyOccluded;
 }
 
 mozilla::ipc::IPCResult CompositorWidgetParent::RecvClearTransparentWindow() {
@@ -186,7 +172,8 @@ mozilla::ipc::IPCResult CompositorWidgetParent::RecvClearTransparentWindow() {
 
   drawTarget->ClearRect(Rect(0, 0, size.width, size.height));
 
-  Unused << mRemoteBackbufferClient->PresentDrawTarget();
+  Unused << mRemoteBackbufferClient->PresentDrawTarget(
+      IntRect(0, 0, size.width, size.height));
 
   return IPC_OK();
 }
@@ -218,12 +205,13 @@ void CompositorWidgetParent::UpdateCompositorWnd(const HWND aCompositorWnd,
       ->Then(
           layers::CompositorThread(), __func__,
           [self](const bool& aSuccess) {
-            if (aSuccess && self->mRootLayerTreeID.isSome()) {
+            if (aSuccess && self->mRootLayerTreeID.isSome() &&
+                layers::CompositorThreadHolder::IsActive()) {
               self->mSetParentCompleted = true;
               // Schedule composition after ::SetParent() call in parent
               // process.
               layers::CompositorBridgeParent::ScheduleForcedComposition(
-                  self->mRootLayerTreeID.ref());
+                  self->mRootLayerTreeID.ref(), wr::RenderReasons::WIDGET);
             }
           },
           [self](const mozilla::ipc::ResponseRejectReason&) {});

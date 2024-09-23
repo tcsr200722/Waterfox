@@ -11,7 +11,8 @@
 
 #include "gfxFontUtils.h"
 #include "nsClassHashtable.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
+#include "nsXULAppAPI.h"
 #include "mozilla/UniquePtr.h"
 
 // This is split out from SharedFontList.h because that header is included
@@ -34,13 +35,15 @@ namespace fontlist {
  */
 struct AliasData {
   nsTArray<Pointer> mFaces;
+  nsCString mBaseFamily;
   uint32_t mIndex = 0;
   FontVisibility mVisibility = FontVisibility::Unknown;
   bool mBundled = false;
   bool mBadUnderline = false;
   bool mForceClassic = false;
 
-  void InitFromFamily(const Family* aFamily) {
+  void InitFromFamily(const Family* aFamily, const nsCString& aBaseFamily) {
+    mBaseFamily = aBaseFamily;
     mIndex = aFamily->Index();
     mVisibility = aFamily->Visibility();
     mBundled = aFamily->IsBundled();
@@ -91,6 +94,10 @@ class FontList {
    * appear in this list, although some may be marked as "hidden" so that
    * they are not exposed to the font-family property.
    *
+   * The passed-in array may be modified (to eliminate duplicates of bundled
+   * fonts, or restrict the available list to a specified subset), so if the
+   * caller intends to make further use of it this should be kept in mind.
+   *
    * Once initialized, the master family list is immutable; in the (rare)
    * event that the system's collection of installed fonts changes, we discard
    * the FontList and create a new one.
@@ -104,7 +111,7 @@ class FontList {
    *
    * Only used in the parent process.
    */
-  void SetFamilyNames(const nsTArray<Family::InitData>& aFamilies);
+  void SetFamilyNames(nsTArray<Family::InitData>& aFamilies);
 
   /**
    * Aliases are Family records whose Face entries are already part of another
@@ -132,14 +139,14 @@ class FontList {
    *
    * Only used in the parent process.
    */
-  void SetLocalNames(nsDataHashtable<nsCStringHashKey, LocalFaceRec::InitData>&
-                         aLocalNameTable);
+  void SetLocalNames(
+      nsTHashMap<nsCStringHashKey, LocalFaceRec::InitData>& aLocalNameTable);
 
   /**
    * Look up a Family record by name, typically to satisfy the font-family
    * property or a font family listed in preferences.
    */
-  Family* FindFamily(const nsCString& aName);
+  Family* FindFamily(const nsCString& aName, bool aPrimaryNameOnly = false);
 
   /**
    * Look up an individual Face by PostScript or Full name, for @font-face
@@ -156,21 +163,27 @@ class FontList {
   void SearchForLocalFace(const nsACString& aName, Family** aFamily,
                           Face** aFace);
 
+  /**
+   * Return the localized name for the given family in the current system
+   * locale (if multiple localizations are available).
+   */
+  nsCString LocalizedFamilyName(const Family* aFamily);
+
   bool Initialized() { return mBlocks.Length() > 0 && NumFamilies() > 0; }
 
   uint32_t NumFamilies() { return GetHeader().mFamilyCount; }
   Family* Families() {
-    return static_cast<Family*>(GetHeader().mFamilies.ToPtr(this));
+    return GetHeader().mFamilies.ToArray<Family>(this, NumFamilies());
   }
 
   uint32_t NumAliases() { return GetHeader().mAliasCount; }
   Family* AliasFamilies() {
-    return static_cast<Family*>(GetHeader().mAliases.ToPtr(this));
+    return GetHeader().mAliases.ToArray<Family>(this, NumAliases());
   }
 
   uint32_t NumLocalFaces() { return GetHeader().mLocalFaceCount; }
   LocalFaceRec* LocalFaces() {
-    return static_cast<LocalFaceRec*>(GetHeader().mLocalFaces.ToPtr(this));
+    return GetHeader().mLocalFaces.ToArray<LocalFaceRec>(this, NumLocalFaces());
   }
 
   /**
@@ -187,27 +200,31 @@ class FontList {
    */
   Pointer Alloc(uint32_t aSize);
 
-  /**
-   * Convert a native pointer to a shared-memory Pointer record that can be
-   * passed between processes.
-   */
-  Pointer ToSharedPointer(const void* aPtr);
-
   uint32_t GetGeneration() { return GetHeader().mGeneration; }
+
+  /**
+   * Header fields present in every shared-memory block. The mBlockSize field
+   * is not modified after initial block creation (before the block has been
+   * shared to any other process), so does not need to be std::atomic<>.
+   * The mAllocated field is checked during Pointer::ToPtr(), so we make that
+   * atomic to avoid data races.
+   */
+  struct BlockHeader {
+    std::atomic<uint32_t> mAllocated;  // Space allocated from this block.
+    uint32_t mBlockSize;               // Total size of this block.
+  };
 
   /**
    * Header info that is stored at the beginning of the first shared-memory
    * block for the font list.
-   * (Subsequent blocks have only the mAllocated field, accessed via the
-   * Block::Allocated() method.)
+   * (Subsequent blocks have only the mBlockHeader.)
    * The mGeneration and mFamilyCount fields are set by the parent process
    * during font-list construction, before the list has been shared with any
    * other process, and subsequently never change; therefore, we don't need
    * to use std::atomic<> for these.
    */
   struct Header {
-    std::atomic<uint32_t> mAllocated;   // Space allocated from this block;
-                                        // must be first field in Header
+    BlockHeader mBlockHeader;
     uint32_t mGeneration;               // Font-list generation ID
     uint32_t mFamilyCount;              // Number of font families in the list
     std::atomic<uint32_t> mBlockCount;  // Total number of blocks that exist
@@ -230,8 +247,10 @@ class FontList {
     if (aIndex >= mReadOnlyShmems.Length()) {
       // Block index out of range
       *aOut = base::SharedMemory::NULLHandle();
+      return;
     }
-    if (!mReadOnlyShmems[aIndex]->ShareToProcess(aPid, aOut)) {
+    *aOut = mReadOnlyShmems[aIndex]->CloneHandle();
+    if (!*aOut) {
       MOZ_CRASH("failed to share block");
     }
   }
@@ -244,62 +263,72 @@ class FontList {
   void ShareBlocksToProcess(nsTArray<base::SharedMemoryHandle>* aBlocks,
                             base::ProcessId aPid);
 
+  base::SharedMemoryHandle ShareBlockToProcess(uint32_t aIndex,
+                                               base::ProcessId aPid);
+
+  void ShmBlockAdded(uint32_t aGeneration, uint32_t aIndex,
+                     base::SharedMemoryHandle aHandle);
   /**
    * Support for memory reporter.
    */
-  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-    size_t result = mBlocks.ShallowSizeOfExcludingThis(aMallocSizeOf);
-    for (const auto& b : mBlocks) {
-      result += aMallocSizeOf(b.get()) + aMallocSizeOf(b->mShmem.get());
-    }
-    return result;
-  }
-
-  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-    return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
-  }
-
-  size_t AllocatedShmemSize() const {
-    return mBlocks.Length() * SHM_BLOCK_SIZE;
-  }
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+  size_t AllocatedShmemSize() const;
 
   /**
-   * This must be large enough that we can allocate the largest possible
-   * SharedBitSet (around 140K, see comments on SharedBitSet in gfxFontUtils.h)
-   * within a single ShmBlock.
    * Using a larger block size will speed up allocation, at the cost of more
    * wasted space in the shared memory (on average).
    */
-  static const size_t SHM_BLOCK_SIZE = 256 * 1024;
+#if ANDROID
+  // Android devices usually have a much smaller number of fonts than desktop
+  // systems, and memory is more constrained, so use a smaller default block
+  // size.
+  static constexpr uint32_t SHM_BLOCK_SIZE = 64 * 1024;
+#elif XP_LINUX
+  // On Linux, font face descriptors are rather large (serialized FcPatterns),
+  // so use a larger block size for efficiency.
+  static constexpr uint32_t SHM_BLOCK_SIZE = 1024 * 1024;
+#else
+  // Default block size for Windows and macOS.
+  static constexpr uint32_t SHM_BLOCK_SIZE = 256 * 1024;
+#endif
   static_assert(SHM_BLOCK_SIZE <= (1 << Pointer::kBlockShift),
                 "SHM_BLOCK_SIZE too large");
-  static_assert(SHM_BLOCK_SIZE >= SharedBitSet::kMaxSize + 4,
-                "SHM_BLOCK_SIZE too small");
 
  private:
   struct ShmBlock {
-    // Takes ownership of aShmem
+    // Takes ownership of aShmem. Note that in a child process, aShmem will be
+    // mapped as read-only.
     explicit ShmBlock(mozilla::UniquePtr<base::SharedMemory>&& aShmem)
         : mShmem(std::move(aShmem)) {}
 
     // Get pointer to the mapped memory.
     void* Memory() const { return mShmem->memory(); }
 
-    // The first 32-bit word of each block holds the current amount allocated
-    // in that block; this is updated whenever a new record is stored in the
-    // block.
-    std::atomic<uint32_t>& Allocated() const {
-      return *static_cast<std::atomic<uint32_t>*>(Memory());
+    // Only the parent process does allocation, so only it will update this
+    // field. Content processes read the value when checking Pointer validity.
+    uint32_t Allocated() const {
+      return static_cast<BlockHeader*>(Memory())->mAllocated;
+    }
+
+    void StoreAllocated(uint32_t aSize) {
+      MOZ_ASSERT(XRE_IsParentProcess());
+      static_cast<BlockHeader*>(Memory())->mAllocated.store(aSize);
+    }
+
+    // This is stored by the parent process during block creation and never
+    // changes, so does not need to be atomic.
+    // Note that some blocks may be larger than SHM_BLOCK_SIZE, if needed for
+    // individual large allocations.
+    uint32_t& BlockSize() const {
+      MOZ_ASSERT(XRE_IsParentProcess());
+      return static_cast<BlockHeader*>(Memory())->mBlockSize;
     }
 
     mozilla::UniquePtr<base::SharedMemory> mShmem;
   };
 
-  Header& GetHeader() {
-    // It's invalid to try and access this before the first block exists.
-    MOZ_ASSERT(mBlocks.Length() > 0);
-    return *static_cast<Header*>(Pointer(0, 0).ToPtr(this));
-  }
+  Header& GetHeader() const;
 
   /**
    * Create a new shared memory block and append to the FontList's list
@@ -307,13 +336,15 @@ class FontList {
    *
    * Only used in the parent process.
    */
-  bool AppendShmBlock();
+  bool AppendShmBlock(uint32_t aSizeNeeded);
 
   /**
    * Used by child processes to ensure all the blocks are registered.
    * Returns false on failure.
+   * Pass aMustLock=true to take the gfxPlatformFontList lock during the
+   * update (not required when calling from the constructor).
    */
-  [[nodiscard]] bool UpdateShmBlocks();
+  [[nodiscard]] bool UpdateShmBlocks(bool aMustLock);
 
   /**
    * This makes a *sync* IPC call to get a shared block from the parent.

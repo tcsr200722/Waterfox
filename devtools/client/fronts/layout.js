@@ -5,15 +5,18 @@
 "use strict";
 
 const {
+  safeAsyncMethod,
+} = require("resource://devtools/shared/async-utils.js");
+const {
   FrontClassWithSpec,
   registerFront,
-} = require("devtools/shared/protocol");
+} = require("resource://devtools/shared/protocol.js");
 const {
   flexboxSpec,
   flexItemSpec,
   gridSpec,
   layoutSpec,
-} = require("devtools/shared/specs/layout");
+} = require("resource://devtools/shared/specs/layout.js");
 
 class FlexboxFront extends FrontClassWithSpec(flexboxSpec) {
   form(form) {
@@ -119,13 +122,8 @@ class GridFront extends FrontClassWithSpec(gridSpec) {
 
   /**
    * Get the text direction of the grid container.
-   * Added in Firefox 60.
    */
   get direction() {
-    if (!this._form.direction) {
-      return "ltr";
-    }
-
     return this._form.direction;
   }
 
@@ -145,18 +143,22 @@ class GridFront extends FrontClassWithSpec(gridSpec) {
 
   /**
    * Get the writing mode of the grid container.
-   * Added in Firefox 60.
    */
   get writingMode() {
-    if (!this._form.writingMode) {
-      return "horizontal-tb";
-    }
-
     return this._form.writingMode;
   }
 }
 
 class LayoutFront extends FrontClassWithSpec(layoutSpec) {
+  constructor(client, targetFront, parentFront) {
+    super(client, targetFront, parentFront);
+
+    this.getAllGrids = safeAsyncMethod(
+      this.getAllGrids.bind(this),
+      () => this.isDestroyed(),
+      []
+    );
+  }
   /**
    * Get the WalkerFront instance that owns this LayoutFront.
    */
@@ -165,6 +167,9 @@ class LayoutFront extends FrontClassWithSpec(layoutSpec) {
   }
 
   getAllGrids() {
+    if (!this.walkerFront.rootNode) {
+      return [];
+    }
     return this.getGrids(this.walkerFront.rootNode);
   }
 }

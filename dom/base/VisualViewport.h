@@ -12,6 +12,8 @@
 #include "mozilla/dom/VisualViewportBinding.h"
 #include "Units.h"
 
+class nsPresContext;
+
 namespace mozilla {
 
 class PresShell;
@@ -43,7 +45,7 @@ class VisualViewport final : public mozilla::DOMEventTargetHelper {
                        const nsPoint& aPrevLayoutOffset);
 
   // These two events are modelled after the ScrollEvent class in
-  // nsGfxScrollFrame.h.
+  // ScrollContainerFrame.h.
   class VisualViewportResizeEvent : public Runnable {
    public:
     NS_DECL_NSIRUNNABLE
@@ -95,8 +97,8 @@ class VisualViewport final : public mozilla::DOMEventTargetHelper {
   PresShell* GetPresShell() const;
   nsPresContext* GetPresContext() const;
 
-  void FireResizeEvent();
-  void FireScrollEvent();
+  MOZ_CAN_RUN_SCRIPT void FireResizeEvent();
+  MOZ_CAN_RUN_SCRIPT void FireScrollEvent();
 
   RefPtr<VisualViewportResizeEvent> mResizeEvent;
   RefPtr<VisualViewportScrollEvent> mScrollEvent;

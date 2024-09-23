@@ -4,7 +4,6 @@
 
 "use strict";
 
-const Services = require("Services");
 const {
   ENABLE_REQUEST_FILTER_TYPE_ONLY,
   RESET_COLUMNS,
@@ -15,7 +14,7 @@ const {
   SET_COLUMNS_WIDTH,
   WS_TOGGLE_COLUMN,
   WS_RESET_COLUMNS,
-} = require("devtools/client/netmonitor/src/constants");
+} = require("resource://devtools/client/netmonitor/src/constants.js");
 
 /**
  * Update the relevant prefs when:
@@ -31,18 +30,16 @@ function prefsMiddleware(store) {
         const filters = Object.entries(
           store.getState().filters.requestFilterTypes
         )
-          .filter(([type, check]) => check)
-          .map(([type, check]) => type);
+          .filter(([, check]) => check)
+          .map(([type]) => type);
         Services.prefs.setCharPref(
           "devtools.netmonitor.filters",
           JSON.stringify(filters)
         );
         break;
       case ENABLE_PERSISTENT_LOGS:
-        Services.prefs.setBoolPref(
-          "devtools.netmonitor.persistlog",
-          store.getState().ui.persistentLogsEnabled
-        );
+        const enabled = store.getState().ui.persistentLogsEnabled;
+        Services.prefs.setBoolPref("devtools.netmonitor.persistlog", enabled);
         break;
       case DISABLE_BROWSER_CACHE:
         Services.prefs.setBoolPref(
@@ -88,11 +85,11 @@ function persistVisibleColumns(state) {
 }
 
 /**
- * Store list of visible WebSockets columns into preferences.
+ * Store list of visible columns into preferences.
  */
 function persistVisibleWebSocketsColumns(state) {
   const visibleColumns = [];
-  const { columns } = state.webSockets;
+  const { columns } = state.messages;
   for (const column in columns) {
     if (columns[column]) {
       visibleColumns.push(column);
@@ -100,7 +97,7 @@ function persistVisibleWebSocketsColumns(state) {
   }
 
   Services.prefs.setCharPref(
-    "devtools.netmonitor.ws.visibleColumns",
+    "devtools.netmonitor.msg.visibleColumns",
     JSON.stringify(visibleColumns)
   );
 }

@@ -6,15 +6,15 @@
 
 #include "mozilla/dom/SVGFEDiffuseLightingElement.h"
 #include "mozilla/dom/SVGFEDiffuseLightingElementBinding.h"
-#include "nsSVGUtils.h"
-#include "nsSVGFilterInstance.h"
+#include "mozilla/SVGFilterInstance.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FEDiffuseLighting)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGFEDiffuseLightingElement::WrapNode(
     JSContext* aCx, JS::Handle<JSObject*> aGivenProto) {
@@ -55,7 +55,7 @@ SVGFEDiffuseLightingElement::KernelUnitLengthY() {
 }
 
 FilterPrimitiveDescription SVGFEDiffuseLightingElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   float diffuseConstant = mNumberAttributes[DIFFUSE_CONSTANT].GetAnimValue();
@@ -77,5 +77,13 @@ bool SVGFEDiffuseLightingElement::AttributeAffectsRendering(
           aAttribute == nsGkAtoms::diffuseConstant);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+nsresult SVGFEDiffuseLightingElement::BindToTree(BindContext& aCtx,
+                                                 nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feDiffuseLighting);
+  }
+
+  return SVGFEDiffuseLightingElementBase::BindToTree(aCtx, aParent);
+}
+
+}  // namespace mozilla::dom

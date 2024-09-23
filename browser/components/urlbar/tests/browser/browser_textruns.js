@@ -7,22 +7,41 @@
  * This test ensures that we limit textruns in case of very long urls or titles.
  */
 
-add_task(async function() {
+add_task(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.urlbar.suggest.searches", true]],
+  });
+  await SearchTestUtils.installSearchExtension(
+    { name: "Test" },
+    { setAsDefault: true }
+  );
+
   let lotsOfSpaces = "%20".repeat(300);
   await PlacesTestUtils.addVisits({
     uri: `https://textruns.mozilla.org/${lotsOfSpaces}/test/`,
     title: `A long ${lotsOfSpaces} title`,
   });
-  registerCleanupFunction(async function() {
+  await UrlbarTestUtils.formHistory.add([
+    { value: `A long ${lotsOfSpaces} textruns suggestion` },
+  ]);
+
+  registerCleanupFunction(async function () {
     await PlacesUtils.history.clear();
+    await UrlbarTestUtils.formHistory.clear();
   });
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "textruns",
   });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
+  Assert.equal(result.searchParams.engine, "Test", "Sanity check engine");
+  Assert.equal(
+    result.displayed.title.length,
+    UrlbarUtils.MAX_TEXT_LENGTH,
+    "Result title should be limited"
+  );
+  result = await UrlbarTestUtils.getDetailsOfResultAt(window, 2);
   Assert.equal(
     result.displayed.title.length,
     UrlbarUtils.MAX_TEXT_LENGTH,

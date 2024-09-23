@@ -27,28 +27,27 @@ class VerifySSLServerCertChild : public PVerifySSLServerCertChild {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VerifySSLServerCertChild, override);
 
   explicit VerifySSLServerCertChild(
-      const UniqueCERTCertificate& aCert,
       SSLServerCertVerificationResult* aResultTask,
-      nsTArray<nsTArray<uint8_t>>&& aPeerCertChain);
+      nsTArray<nsTArray<uint8_t>>&& aPeerCertChain, uint32_t aProviderFlags);
 
-  ipc::IPCResult RecvOnVerifiedSSLServerCertSuccess(
+  ipc::IPCResult RecvOnVerifySSLServerCertFinished(
       nsTArray<ByteArray>&& aBuiltCertChain,
-      const uint16_t& aCertTransparencyStatus, const uint8_t& aEVStatus,
-      const bool& aIsBuiltCertChainRootBuiltInRoot);
-
-  ipc::IPCResult RecvOnVerifiedSSLServerCertFailure(
-      const uint32_t& aFinalError, const uint32_t& aCollectedErrors);
+      const uint16_t& aCertTransparencyStatus, const EVStatus& aEVStatus,
+      const bool& aSucceeded, int32_t aFinalError,
+      const nsITransportSecurityInfo::OverridableErrorCategory&
+          aOverridableErrorCategory,
+      const bool& aIsBuiltCertChainRootBuiltInRoot,
+      const bool& aMadeOCSPRequests);
 
  private:
   ~VerifySSLServerCertChild() = default;
 
-  UniqueCERTCertificate mCert;
   RefPtr<SSLServerCertVerificationResult> mResultTask;
   nsTArray<nsTArray<uint8_t>> mPeerCertChain;
+  uint32_t mProviderFlags;
 };
 
 SECStatus RemoteProcessCertVerification(
-    const UniqueCERTCertificate& aCert,
     nsTArray<nsTArray<uint8_t>>&& aPeerCertChain, const nsACString& aHostName,
     int32_t aPort, const OriginAttributes& aOriginAttributes,
     Maybe<nsTArray<uint8_t>>& aStapledOCSPResponse,

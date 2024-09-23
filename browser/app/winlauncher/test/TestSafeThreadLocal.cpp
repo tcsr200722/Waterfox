@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#define MOZ_USE_LAUNCHER_ERROR
+
 #include "freestanding/SafeThreadLocal.h"
 
 #include "mozilla/NativeNt.h"
@@ -23,10 +25,16 @@ MOZ_NEVER_INLINE PVOID SwapThreadLocalStoragePointer(PVOID aNewValue) {
 
 static mozilla::freestanding::SafeThreadLocal<int*> gTheStorage;
 
+// Need non-inline functions to bypass compiler optimization that the thread
+// local storage pointer is cached in a register before accessing a thread-local
+// variable. See bug 1803322 for a motivating example.
+MOZ_NEVER_INLINE int* getTheStorage() { return gTheStorage.get(); }
+MOZ_NEVER_INLINE void setTheStorage(int* p) { gTheStorage.set(p); }
+
 static unsigned int __stdcall TestNonMainThread(void* aArg) {
   for (int i = 0; i < 100; ++i) {
-    gTheStorage.set(&i);
-    if (gTheStorage.get() != &i) {
+    setTheStorage(&i);
+    if (getTheStorage() != &i) {
       printf(
           "TEST-FAILED | TestSafeThreadLocal | "
           "A value is not correctly stored in the thread-local storage.\n");
@@ -41,7 +49,7 @@ extern "C" int wmain(int argc, wchar_t* argv[]) {
 
   auto origHead = SwapThreadLocalStoragePointer(nullptr);
   // Setting gTheStorage when TLS is null.
-  gTheStorage.set(&dummy);
+  setTheStorage(&dummy);
   SwapThreadLocalStoragePointer(origHead);
 
   nsAutoHandle handles[8];
@@ -51,7 +59,7 @@ extern "C" int wmain(int argc, wchar_t* argv[]) {
   }
 
   for (int i = 0; i < 100; ++i) {
-    if (gTheStorage.get() != &dummy) {
+    if (getTheStorage() != &dummy) {
       printf(
           "TEST-FAILED | TestSafeThreadLocal | "
           "A value is not correctly stored in the global scope.\n");
@@ -62,10 +70,14 @@ extern "C" int wmain(int argc, wchar_t* argv[]) {
   for (auto& handle : handles) {
     ::WaitForSingleObject(handle, INFINITE);
 
+#if !defined(MOZ_ASAN)
+    // ASAN builds under Windows 11 can have unexpected thread exit codes.
+    // See bug 1798796
     DWORD exitCode;
     if (!::GetExitCodeThread(handle, &exitCode) || exitCode) {
       return 1;
     }
+#endif  // !defined(MOZ_ASAN)
   }
 
   return 0;

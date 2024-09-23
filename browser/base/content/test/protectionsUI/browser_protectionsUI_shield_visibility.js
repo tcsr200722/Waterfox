@@ -8,6 +8,7 @@
 const TEST_CASES = [
   {
     type: "http",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     testURL: "http://example.com",
     hidden: false,
   },
@@ -66,9 +67,15 @@ const TEST_CASES = [
     testURL: "view-source:https://example.com/",
     hidden: true,
   },
+  {
+    type: "top level sandbox",
+    testURL:
+      "https://example.com/browser/browser/base/content/test/protectionsUI/sandboxed.html",
+    hidden: false,
+  },
 ];
 
-add_task(async function setup() {
+add_task(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
       // By default, proxies don't apply to 127.0.0.1. We need them to for this test, though:
@@ -97,7 +104,7 @@ add_task(async function setup() {
         if (testData.type === "certificateError") {
           pageLoaded = BrowserTestUtils.waitForErrorPage(browser);
         } else {
-          pageLoaded = BrowserTestUtils.browserLoaded(browser);
+          pageLoaded = BrowserTestUtils.browserLoaded(browser, true);
         }
       },
       false
@@ -105,7 +112,7 @@ add_task(async function setup() {
     await pageLoaded;
 
     is(
-      BrowserTestUtils.is_hidden(
+      BrowserTestUtils.isHidden(
         gProtectionsHandler._trackingProtectionIconContainer
       ),
       testData.hidden,

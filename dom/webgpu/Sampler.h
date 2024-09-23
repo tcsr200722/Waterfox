@@ -6,11 +6,11 @@
 #ifndef GPU_SAMPLER_H_
 #define GPU_SAMPLER_H_
 
+#include "mozilla/webgpu/WebGPUTypes.h"
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 class Device;
 
@@ -28,7 +28,6 @@ class Sampler final : public ObjectBase, public ChildOf<Device> {
   void Cleanup();
 };
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu
 
 #endif  // GPU_SAMPLER_H_

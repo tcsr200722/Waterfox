@@ -4,51 +4,84 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
-#![warn(clippy::use_self)]
+#![allow(clippy::module_name_repetitions)] // This lint doesn't work here.
 
-use neqo_common::qinfo;
-use neqo_crypto;
+use neqo_common::qwarn;
+use neqo_crypto::Error as CryptoError;
 
+mod ackrate;
+mod addr_valid;
 mod cc;
 mod cid;
 mod connection;
 mod crypto;
-mod dump;
+mod ecn;
 mod events;
-mod flow_mgr;
+mod fc;
+#[cfg(fuzzing)]
+pub mod frame;
+#[cfg(not(fuzzing))]
 mod frame;
+mod pace;
+#[cfg(fuzzing)]
+pub mod packet;
+#[cfg(not(fuzzing))]
 mod packet;
 mod path;
+mod qlog;
+mod quic_datagrams;
 mod recovery;
+#[cfg(feature = "bench")]
+pub mod recv_stream;
+#[cfg(not(feature = "bench"))]
 mod recv_stream;
+mod rtt;
+#[cfg(feature = "bench")]
+pub mod send_stream;
+#[cfg(not(feature = "bench"))]
 mod send_stream;
+mod sender;
 pub mod server;
 mod stats;
-mod stream_id;
+pub mod stream_id;
+pub mod streams;
 pub mod tparams;
 mod tracking;
+pub mod version;
 
-pub use self::cid::ConnectionIdManager;
-pub use self::connection::{Connection, FixedConnectionIdManager, Output, Role, State};
-pub use self::events::{ConnectionEvent, ConnectionEvents};
-pub use self::frame::CloseError;
-pub use self::frame::StreamType;
+pub use self::{
+    cc::CongestionControlAlgorithm,
+    cid::{
+        ConnectionId, ConnectionIdDecoder, ConnectionIdGenerator, ConnectionIdRef,
+        EmptyConnectionIdGenerator, RandomConnectionIdGenerator,
+    },
+    connection::{
+        params::{ConnectionParameters, ACK_RATIO_SCALE},
+        Connection, Output, State, ZeroRttState,
+    },
+    events::{ConnectionEvent, ConnectionEvents},
+    frame::CloseError,
+    packet::MIN_INITIAL_PACKET_SIZE,
+    quic_datagrams::DatagramTracking,
+    recv_stream::{RecvStreamStats, RECV_BUFFER_SIZE},
+    send_stream::{SendStreamStats, SEND_BUFFER_SIZE},
+    stats::Stats,
+    stream_id::{StreamId, StreamType},
+    version::Version,
+};
 
-/// The supported version of the QUIC protocol.
-pub type Version = u32;
-pub const QUIC_VERSION: Version = 0xff00_0000 + 27;
-
-const LOCAL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60); // 1 minute
-
-type TransportError = u64;
+pub type TransportError = u64;
+const ERROR_APPLICATION_CLOSE: TransportError = 12;
+const ERROR_CRYPTO_BUFFER_EXCEEDED: TransportError = 13;
+const ERROR_AEAD_LIMIT_REACHED: TransportError = 15;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Ord, Eq)]
-#[allow(clippy::pub_enum_variant_names)]
 pub enum Error {
     NoError,
+    // Each time this error is returned a different parameter is supplied.
+    // This will be used to distinguish each occurance of this error.
     InternalError,
-    ServerBusy,
+    ConnectionRefused,
     FlowControlError,
     StreamLimitError,
     StreamStateError,
@@ -56,45 +89,65 @@ pub enum Error {
     FrameEncodingError,
     TransportParameterError,
     ProtocolViolation,
-    InvalidMigration,
-    CryptoError(neqo_crypto::Error),
+    InvalidToken,
+    ApplicationError,
+    CryptoBufferExceeded,
+    CryptoError(CryptoError),
+    QlogError,
     CryptoAlert(u8),
+    EchRetry(Vec<u8>),
 
-    // All internal errors from here.
+    // All internal errors from here.  Please keep these sorted.
     AckedUnsentPacket,
+    ConnectionIdLimitExceeded,
+    ConnectionIdsExhausted,
     ConnectionState,
     DecodingFrame,
     DecryptError,
+    DisabledVersion,
     HandshakeFailed,
     IdleTimeout,
     IntegerOverflow,
     InvalidInput,
+    InvalidMigration,
     InvalidPacket,
     InvalidResumptionToken,
     InvalidRetry,
     InvalidStreamId,
-    // Packet protection keys aren't available yet, or they have been discarded.
-    KeysNotFound,
-    // An attempt to update keys can be blocked if
-    // a packet sent with the current keys hasn't been acknowledged.
+    KeysDiscarded(crypto::CryptoSpace),
+    /// Packet protection keys are exhausted.
+    /// Also used when too many key updates have happened.
+    KeysExhausted,
+    /// Packet protection keys aren't available yet for the identified space.
+    KeysPending(crypto::CryptoSpace),
+    /// An attempt to update keys can be blocked if
+    /// a packet sent with the current keys hasn't been acknowledged.
     KeyUpdateBlocked,
+    NoAvailablePath,
     NoMoreData,
     NotConnected,
     PacketNumberOverlap,
+    PeerApplicationError(AppError),
     PeerError(TransportError),
+    StatelessReset,
     TooMuchData,
     UnexpectedMessage,
+    UnknownConnectionId,
     UnknownFrameType,
     VersionNegotiation,
     WrongRole,
-    KeysDiscarded,
+    NotAvailable,
 }
 
 impl Error {
+    #[must_use]
     pub fn code(&self) -> TransportError {
         match self {
-            Self::NoError | Self::IdleTimeout => 0,
-            Self::ServerBusy => 2,
+            Self::NoError
+            | Self::IdleTimeout
+            | Self::PeerError(_)
+            | Self::PeerApplicationError(_) => 0,
+            Self::ConnectionRefused => 2,
             Self::FlowControlError => 3,
             Self::StreamLimitError => 4,
             Self::StreamStateError => 5,
@@ -102,19 +155,35 @@ impl Error {
             Self::FrameEncodingError => 7,
             Self::TransportParameterError => 8,
             Self::ProtocolViolation => 10,
-            Self::InvalidMigration => 12,
+            Self::InvalidToken => 11,
+            Self::KeysExhausted => ERROR_AEAD_LIMIT_REACHED,
+            Self::ApplicationError => ERROR_APPLICATION_CLOSE,
+            Self::NoAvailablePath => 16,
+            Self::CryptoBufferExceeded => ERROR_CRYPTO_BUFFER_EXCEEDED,
             Self::CryptoAlert(a) => 0x100 + u64::from(*a),
-            Self::PeerError(a) => *a,
+            // As we have a special error code for ECH fallbacks, we lose the alert.
+            // Send the server "ech_required" directly.
+            Self::EchRetry(_) => 0x100 + 121,
+            Self::VersionNegotiation => 0x53f8,
             // All the rest are internal errors.
             _ => 1,
         }
     }
 }
 
-impl From<neqo_crypto::Error> for Error {
-    fn from(err: neqo_crypto::Error) -> Self {
-        qinfo!("Crypto operation failed {:?}", err);
-        Self::CryptoError(err)
+impl From<CryptoError> for Error {
+    fn from(err: CryptoError) -> Self {
+        qwarn!("Crypto operation failed {:?}", err);
+        match err {
+            CryptoError::EchRetry(config) => Self::EchRetry(config),
+            _ => Self::CryptoError(err),
+        }
+    }
+}
+
+impl From<::qlog::Error> for Error {
+    fn from(_err: ::qlog::Error) -> Self {
+        Self::QlogError
     }
 }
 
@@ -125,7 +194,7 @@ impl From<std::num::TryFromIntError> for Error {
 }
 
 impl ::std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn ::std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CryptoError(e) => Some(e),
             _ => None,
@@ -135,28 +204,43 @@ impl ::std::error::Error for Error {
 
 impl ::std::fmt::Display for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "Transport error: {:?}", self)
+        write!(f, "Transport error: {self:?}")
     }
 }
 
 pub type AppError = u64;
 
+#[deprecated(note = "use `CloseReason` instead")]
+pub type ConnectionError = CloseReason;
+
+/// Reason why a connection closed.
 #[derive(Clone, Debug, PartialEq, PartialOrd, Ord, Eq)]
-pub enum ConnectionError {
+pub enum CloseReason {
     Transport(Error),
     Application(AppError),
 }
 
-impl ConnectionError {
+impl CloseReason {
+    #[must_use]
     pub fn app_code(&self) -> Option<AppError> {
         match self {
             Self::Application(e) => Some(*e),
-            _ => None,
+            Self::Transport(_) => None,
         }
+    }
+
+    /// Checks enclosed error for [`Error::NoError`] and
+    /// [`CloseReason::Application(0)`].
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        !matches!(
+            self,
+            CloseReason::Transport(Error::NoError) | CloseReason::Application(0),
+        )
     }
 }
 
-impl From<CloseError> for ConnectionError {
+impl From<CloseError> for CloseReason {
     fn from(err: CloseError) -> Self {
         match err {
             CloseError::Transport(c) => Self::Transport(Error::PeerError(c)),

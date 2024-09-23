@@ -10,8 +10,9 @@
 #include "ServiceWorkerJob.h"
 #include "ServiceWorkerRegistration.h"
 
-namespace mozilla {
-namespace dom {
+#include "nsIRequest.h"
+
+namespace mozilla::dom {
 
 namespace serviceWorkerScriptCache {
 enum class OnFailure : uint8_t;
@@ -91,7 +92,6 @@ class ServiceWorkerUpdateJob : public ServiceWorkerJob {
   serviceWorkerScriptCache::OnFailure mOnFailure;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkerupdatejob_h

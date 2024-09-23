@@ -9,7 +9,6 @@
 
 #include "mozilla/CDMCaps.h"
 #include "mozilla/DataMutex.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/MozPromise.h"
 
 #include "mozilla/dom/MediaKeyMessageEvent.h"
@@ -18,8 +17,12 @@
 #include "nsIThread.h"
 
 namespace mozilla {
+class ErrorResult;
 class MediaRawData;
 class ChromiumCDMProxy;
+#ifdef MOZ_WMF_CDM
+class WMFCDMProxy;
+#endif
 
 namespace eme {
 enum DecryptStatus {
@@ -81,24 +84,11 @@ class CDMProxy {
   NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
 
   // Main thread only.
-  CDMProxy(dom::MediaKeys* aKeys, const nsAString& aKeySystem,
-           bool aDistinctiveIdentifierRequired, bool aPersistentStateRequired,
-           nsISerialEventTarget* aMainThread)
-      : mKeys(aKeys),
-        mKeySystem(aKeySystem),
-        mCapabilites("CDMProxy::mCDMCaps"),
-        mDistinctiveIdentifierRequired(aDistinctiveIdentifierRequired),
-        mPersistentStateRequired(aPersistentStateRequired),
-        mMainThread(aMainThread) {}
-
-  // Main thread only.
   // Loads the CDM corresponding to mKeySystem.
   // Calls MediaKeys::OnCDMCreated() when the CDM is created.
   virtual void Init(PromiseId aPromiseId, const nsAString& aOrigin,
                     const nsAString& aTopLevelOrigin,
                     const nsAString& aName) = 0;
-
-  virtual void OnSetDecryptorId(uint32_t aId) {}
 
   // Main thread only.
   // Uses the CDM to create a key session.
@@ -150,13 +140,50 @@ class CDMProxy {
                              PromiseId aPromiseId) = 0;
 
   // Main thread only.
+  // Called to signal a request for output protection information from the CDM.
+  // This should forward the call up the stack where the query should be
+  // performed and then responded to via `NotifyOutputProtectionStatus`.
+  virtual void QueryOutputProtectionStatus() = 0;
+
+  // NotifyOutputProtectionStatus enums. Explicit values are specified to make
+  // it easy to match values in logs.
+  enum class OutputProtectionCheckStatus : uint8_t {
+    CheckFailed = 0,
+    CheckSuccessful = 1,
+  };
+
+  enum class OutputProtectionCaptureStatus : uint8_t {
+    CapturePossilbe = 0,
+    CaptureNotPossible = 1,
+    Unused = 2,
+  };
+  // End NotifyOutputProtectionStatus enums
+
+  // Main thread only.
+  // Notifies this proxy of the protection status for the media the CDM is
+  // associated with. This can be called in response to
+  // `QueryOutputProtectionStatus`, but can also be called without an
+  // associated query. In both cases the information will be forwarded to
+  // the CDM host machinery and used to handle requests from the CDM.
+  // @param aCheckStatus did the check succeed or not.
+  // @param aCaptureStatus if the check succeeded, this reflects if capture
+  // of media could take place. This doesn't mean capture is taking place.
+  // Callers should be conservative with this value such that it's okay to pass
+  // CapturePossilbe even if capture is not happening, but should never pass
+  // CaptureNotPossible if it could happen. If the check failed, this value is
+  // not used, and callers should pass Unused to indicate this.
+  virtual void NotifyOutputProtectionStatus(
+      OutputProtectionCheckStatus aCheckStatus,
+      OutputProtectionCaptureStatus aCaptureStatus) = 0;
+
+  // Main thread only.
   virtual void Shutdown() = 0;
 
   // Main thread only.
   virtual void Terminated() = 0;
 
   // Threadsafe.
-  virtual const nsCString& GetNodeId() const = 0;
+  const nsCString& GetNodeId() const { return mNodeId; };
 
   // Main thread only.
   virtual void OnSetSessionId(uint32_t aCreateSessionToken,
@@ -203,9 +230,9 @@ class CDMProxy {
   virtual void ResolvePromise(PromiseId aId) = 0;
 
   // Threadsafe.
-  virtual const nsString& KeySystem() const = 0;
+  const nsString& KeySystem() const { return mKeySystem; };
 
-  virtual DataMutex<CDMCaps>& Capabilites() = 0;
+  DataMutex<CDMCaps>& Capabilites() { return mCapabilites; };
 
   // Main thread only.
   virtual void OnKeyStatusesChange(const nsAString& aSessionId) = 0;
@@ -214,17 +241,33 @@ class CDMProxy {
   // Calls MediaKeys->ResolvePromiseWithKeyStatus(aPromiseId, aKeyStatus) after
   // the CDM has processed the request.
   virtual void GetStatusForPolicy(PromiseId aPromiseId,
-                                  const nsAString& aMinHdcpVersion) = 0;
+                                  const dom::HDCPVersion& aMinHdcpVersion) = 0;
 
 #ifdef DEBUG
   virtual bool IsOnOwnerThread() = 0;
 #endif
 
-  virtual uint32_t GetDecryptorId() { return 0; }
-
   virtual ChromiumCDMProxy* AsChromiumCDMProxy() { return nullptr; }
 
+#ifdef MOZ_WMF_CDM
+  virtual WMFCDMProxy* AsWMFCDMProxy() { return nullptr; }
+#endif
+
+  virtual bool IsHardwareDecryptionSupported() const { return false; }
+
  protected:
+  // Main thread only.
+  CDMProxy(dom::MediaKeys* aKeys, const nsAString& aKeySystem,
+           bool aDistinctiveIdentifierRequired, bool aPersistentStateRequired)
+      : mKeys(aKeys),
+        mKeySystem(aKeySystem),
+        mCapabilites("CDMProxy::mCDMCaps"),
+        mDistinctiveIdentifierRequired(aDistinctiveIdentifierRequired),
+        mPersistentStateRequired(aPersistentStateRequired),
+        mMainThread(GetMainThreadSerialEventTarget()) {
+    MOZ_ASSERT(NS_IsMainThread());
+  }
+
   virtual ~CDMProxy() {}
 
   // Helper to enforce that a raw pointer is only accessed on the main thread.

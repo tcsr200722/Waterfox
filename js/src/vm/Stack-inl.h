@@ -9,20 +9,18 @@
 
 #include "vm/Stack.h"
 
-#include "mozilla/Maybe.h"
 #include "mozilla/PodOperations.h"
 
 #include "jit/BaselineFrame.h"
 #include "jit/RematerializedFrame.h"
-#include "js/Debug.h"
+#include "js/friend/StackLimits.h"  // js::ReportOverRecursed
 #include "vm/EnvironmentObject.h"
-#include "vm/FrameIter.h"  // js::FrameIter
+#include "vm/Interpreter.h"
 #include "vm/JSContext.h"
 #include "vm/JSScript.h"
 
 #include "jit/BaselineFrame-inl.h"
 #include "jit/RematerializedFrame-inl.h"  // js::jit::RematerializedFrame::unsetIsDebuggee
-#include "vm/JSObject-inl.h"
 #include "vm/JSScript-inl.h"
 #include "vm/NativeObject-inl.h"
 
@@ -36,7 +34,7 @@ inline GlobalObject& InterpreterFrame::global() const {
   return script()->global();
 }
 
-inline LexicalEnvironmentObject&
+inline ExtensibleLexicalEnvironmentObject&
 InterpreterFrame::extensibleLexicalEnvironment() const {
   return NearestEnclosingExtensibleLexicalEnvironment(environmentChain());
 }
@@ -107,21 +105,6 @@ inline void InterpreterFrame::unaliasedForEachActual(Op op) {
   }
 }
 
-struct CopyTo {
-  Value* dst;
-  explicit CopyTo(Value* dst) : dst(dst) {}
-  void operator()(const Value& src) { *dst++ = src; }
-};
-
-struct CopyToHeap {
-  GCPtrValue* dst;
-  explicit CopyToHeap(GCPtrValue* dst) : dst(dst) {}
-  void operator()(const Value& src) {
-    dst->init(src);
-    ++dst;
-  }
-};
-
 inline ArgumentsObject& InterpreterFrame::argsObj() const {
   MOZ_ASSERT(script()->needsArgsObj());
   MOZ_ASSERT(flags_ & HAS_ARGS_OBJ);
@@ -143,6 +126,22 @@ inline EnvironmentObject& InterpreterFrame::aliasedEnvironment(
   return env->as<EnvironmentObject>();
 }
 
+inline EnvironmentObject& InterpreterFrame::aliasedEnvironmentMaybeDebug(
+    EnvironmentCoordinate ec) const {
+  JSObject* env = environmentChain();
+  for (unsigned i = ec.hops(); i; i--) {
+    if (env->is<EnvironmentObject>()) {
+      env = &env->as<EnvironmentObject>().enclosingEnvironment();
+    } else {
+      MOZ_ASSERT(env->is<DebugEnvironmentProxy>());
+      env = &env->as<DebugEnvironmentProxy>().enclosingEnvironment();
+    }
+  }
+  return env->is<EnvironmentObject>()
+             ? env->as<EnvironmentObject>()
+             : env->as<DebugEnvironmentProxy>().environment();
+}
+
 template <typename SpecificEnvironment>
 inline void InterpreterFrame::pushOnEnvironmentChain(SpecificEnvironment& env) {
   MOZ_ASSERT(*environmentChain() == env.enclosingEnvironment());
@@ -159,9 +158,10 @@ inline void InterpreterFrame::popOffEnvironmentChain() {
 }
 
 inline void InterpreterFrame::replaceInnermostEnvironment(
-    EnvironmentObject& env) {
-  MOZ_ASSERT(env.enclosingEnvironment() ==
-             envChain_->as<EnvironmentObject>().enclosingEnvironment());
+    BlockLexicalEnvironmentObject& env) {
+  MOZ_ASSERT(
+      env.enclosingEnvironment() ==
+      envChain_->as<BlockLexicalEnvironmentObject>().enclosingEnvironment());
   envChain_ = &env;
 }
 
@@ -183,6 +183,19 @@ inline CallObject& InterpreterFrame::callObj() const {
 inline void InterpreterFrame::unsetIsDebuggee() {
   MOZ_ASSERT(!script()->isDebuggee());
   flags_ &= ~DEBUGGEE;
+}
+
+inline bool InterpreterFrame::saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                                 ArrayObject* dest) const {
+  return dest->initDenseElementsFromRange(cx, slots(), slots() + nslots);
+}
+
+inline void InterpreterFrame::restoreGeneratorSlots(ArrayObject* src) {
+  MOZ_ASSERT(script()->nfixed() <= src->length());
+  MOZ_ASSERT(src->length() <= script()->nslots());
+  MOZ_ASSERT(src->getDenseInitializedLength() == src->length());
+  const Value* srcElements = src->getDenseElements();
+  mozilla::PodCopy(slots(), srcElements, src->length());
 }
 
 /*****************************************************************************/
@@ -416,7 +429,7 @@ inline bool AbstractFramePtr::initFunctionEnvironmentObjects(JSContext* cx) {
 }
 
 inline bool AbstractFramePtr::pushVarEnvironment(JSContext* cx,
-                                                 HandleScope scope) {
+                                                 Handle<Scope*> scope) {
   return js::PushVarEnvironmentObject(cx, scope, *this);
 }
 
@@ -587,6 +600,19 @@ inline bool AbstractFramePtr::isConstructing() const {
   MOZ_CRASH("Unexpected frame");
 }
 
+inline bool AbstractFramePtr::hasCachedSavedFrame() const {
+  if (isInterpreterFrame()) {
+    return asInterpreterFrame()->hasCachedSavedFrame();
+  }
+  if (isBaselineFrame()) {
+    return asBaselineFrame()->framePrefix()->hasCachedSavedFrame();
+  }
+  if (isWasmDebugFrame()) {
+    return asWasmDebugFrame()->hasCachedSavedFrame();
+  }
+  return asRematerializedFrame()->hasCachedSavedFrame();
+}
+
 inline bool AbstractFramePtr::hasArgs() const { return isFunctionFrame(); }
 
 inline bool AbstractFramePtr::hasScript() const { return !isWasmDebugFrame(); }
@@ -653,11 +679,21 @@ inline bool AbstractFramePtr::isFunctionFrame() const {
 }
 
 inline bool AbstractFramePtr::isGeneratorFrame() const {
-  if (!isFunctionFrame()) {
+  if (!isFunctionFrame() && !isModuleFrame()) {
     return false;
   }
   JSScript* s = script();
   return s->isGenerator() || s->isAsync();
+}
+
+inline bool AbstractFramePtr::saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                                 ArrayObject* dest) const {
+  MOZ_ASSERT(isGeneratorFrame());
+  if (isInterpreterFrame()) {
+    return asInterpreterFrame()->saveGeneratorSlots(cx, nslots, dest);
+  }
+  MOZ_ASSERT(isBaselineFrame(), "unexpected generator frame in Ion");
+  return asBaselineFrame()->saveGeneratorSlots(cx, nslots, dest);
 }
 
 inline Value* AbstractFramePtr::argv() const {
@@ -751,16 +787,6 @@ inline Value& AbstractFramePtr::thisArgument() const {
     return asBaselineFrame()->thisArgument();
   }
   return asRematerializedFrame()->thisArgument();
-}
-
-inline Value AbstractFramePtr::newTarget() const {
-  if (isInterpreterFrame()) {
-    return asInterpreterFrame()->newTarget();
-  }
-  if (isBaselineFrame()) {
-    return asBaselineFrame()->newTarget();
-  }
-  return asRematerializedFrame()->newTarget();
 }
 
 inline bool AbstractFramePtr::debuggerNeedsCheckPrimitiveReturn() const {

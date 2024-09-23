@@ -7,16 +7,15 @@
 #ifndef mozilla_dom_Flex_h
 #define mozilla_dom_Flex_h
 
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/FlexBinding.h"
 #include "nsISupports.h"
 #include "nsWrapperCache.h"
 
 class nsFlexContainerFrame;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
+class Element;
 class FlexLineValues;
 
 class Flex : public nsISupports, public nsWrapperCache {
@@ -28,7 +27,7 @@ class Flex : public nsISupports, public nsWrapperCache {
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Flex)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Flex)
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
@@ -45,7 +44,6 @@ class Flex : public nsISupports, public nsWrapperCache {
   FlexPhysicalDirection mCrossAxisDirection;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_Flex_h */

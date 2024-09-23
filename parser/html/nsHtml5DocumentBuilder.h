@@ -7,10 +7,14 @@
 #ifndef nsHtml5DocumentBuilder_h
 #define nsHtml5DocumentBuilder_h
 
+#include "mozilla/dom/Document.h"
 #include "nsContentSink.h"
 #include "nsHtml5DocumentMode.h"
-#include "mozilla/dom/Document.h"
 #include "nsIContent.h"
+
+namespace mozilla::dom {
+class Document;
+}
 
 typedef nsIContent* nsIContentPtr;
 
@@ -88,9 +92,6 @@ class nsHtml5DocumentBuilder : public nsContentSink {
   inline bool IsInDocUpdate() { return mFlushState == eInDocUpdate; }
 
   inline bool IsInFlush() { return mFlushState == eInFlush; }
-
-  void SetDocumentCharsetAndSource(NotNull<const Encoding*> aEncoding,
-                                   int32_t aCharsetSource);
 
   /**
    * Sets up style sheet load / parse

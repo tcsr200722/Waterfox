@@ -24,8 +24,7 @@ using namespace mozilla::dom::SVGMarkerElement_Binding;
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(Marker)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace SVGAngle_Binding;
 
@@ -110,34 +109,10 @@ void SVGMarkerElement::SetOrientToAuto() {
   mOrient.SetBaseType(SVG_MARKER_ORIENT_AUTO, this, IgnoreErrors());
 }
 
-void SVGMarkerElement::SetOrientToAngle(DOMSVGAngle& angle, ErrorResult& rv) {
-  float f = angle.Value();
-  if (!IsFinite(f)) {
-    rv.Throw(NS_ERROR_DOM_SVG_WRONG_TYPE_ERR);
-    return;
-  }
-  mOrient.SetBaseValue(f, angle.UnitType(), this, true);
-}
-
-//----------------------------------------------------------------------
-// nsIContent methods
-
-NS_IMETHODIMP_(bool)
-SVGMarkerElement::IsAttributeMapped(const nsAtom* name) const {
-  static const MappedAttributeEntry* const map[] = {sFEFloodMap,
-                                                    sFiltersMap,
-                                                    sFontSpecificationMap,
-                                                    sGradientStopMap,
-                                                    sLightingEffectsMap,
-                                                    sMarkersMap,
-                                                    sTextContentElementsMap,
-                                                    sViewportsMap,
-                                                    sColorMap,
-                                                    sFillStrokeMap,
-                                                    sGraphicsMap};
-
-  return FindAttributeDependence(name, map) ||
-         SVGMarkerElementBase::IsAttributeMapped(name);
+void SVGMarkerElement::SetOrientToAngle(DOMSVGAngle& aAngle) {
+  nsAutoString angle;
+  aAngle.GetValueAsString(angle);
+  mOrient.SetBaseValueString(angle, this, true);
 }
 
 //----------------------------------------------------------------------
@@ -205,17 +180,17 @@ SVGViewBox SVGMarkerElement::GetViewBox() {
   if (mViewBox.HasRect()) {
     return mViewBox.GetAnimValue();
   }
-  return SVGViewBox(0, 0,
-                    mLengthAttributes[MARKERWIDTH].GetAnimValue(mCoordCtx),
-                    mLengthAttributes[MARKERHEIGHT].GetAnimValue(mCoordCtx));
+  return SVGViewBox(
+      0, 0, mLengthAttributes[MARKERWIDTH].GetAnimValueWithZoom(mCoordCtx),
+      mLengthAttributes[MARKERHEIGHT].GetAnimValueWithZoom(mCoordCtx));
 }
 
 gfx::Matrix SVGMarkerElement::GetViewBoxTransform() {
   if (!mViewBoxToViewportTransform) {
     float viewportWidth =
-        mLengthAttributes[MARKERWIDTH].GetAnimValue(mCoordCtx);
+        mLengthAttributes[MARKERWIDTH].GetAnimValueWithZoom(mCoordCtx);
     float viewportHeight =
-        mLengthAttributes[MARKERHEIGHT].GetAnimValue(mCoordCtx);
+        mLengthAttributes[MARKERHEIGHT].GetAnimValueWithZoom(mCoordCtx);
 
     SVGViewBox viewbox = GetViewBox();
 
@@ -226,8 +201,8 @@ gfx::Matrix SVGMarkerElement::GetViewBoxTransform() {
         viewportWidth, viewportHeight, viewbox.x, viewbox.y, viewbox.width,
         viewbox.height, mPreserveAspectRatio);
 
-    float refX = mLengthAttributes[REFX].GetAnimValue(mCoordCtx);
-    float refY = mLengthAttributes[REFY].GetAnimValue(mCoordCtx);
+    float refX = mLengthAttributes[REFX].GetAnimValueWithZoom(mCoordCtx);
+    float refY = mLengthAttributes[REFY].GetAnimValueWithZoom(mCoordCtx);
 
     gfx::Point ref = viewBoxTM.TransformPoint(gfx::Point(refX, refY));
 
@@ -240,5 +215,4 @@ gfx::Matrix SVGMarkerElement::GetViewBoxTransform() {
   return *mViewBoxToViewportTransform;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

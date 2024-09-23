@@ -1,5 +1,6 @@
 //! Code related to `sqlite3_context` common to `functions` and `vtab` modules.
 
+use libsqlite3_sys::sqlite3_value;
 use std::os::raw::{c_int, c_void};
 #[cfg(feature = "array")]
 use std::rc::Rc;
@@ -12,14 +13,27 @@ use crate::types::{ToSqlOutput, ValueRef};
 #[cfg(feature = "array")]
 use crate::vtab::array::{free_array, ARRAY_TYPE};
 
-pub(crate) unsafe fn set_result(ctx: *mut sqlite3_context, result: &ToSqlOutput<'_>) {
+// This function is inline despite it's size because what's in the ToSqlOutput
+// is often known to the compiler, and thus const prop/DCE can substantially
+// simplify the function.
+#[inline]
+pub(super) unsafe fn set_result(
+    ctx: *mut sqlite3_context,
+    args: &[*mut sqlite3_value],
+    result: &ToSqlOutput<'_>,
+) {
     let value = match *result {
         ToSqlOutput::Borrowed(v) => v,
         ToSqlOutput::Owned(ref v) => ValueRef::from(v),
 
         #[cfg(feature = "blob")]
         ToSqlOutput::ZeroBlob(len) => {
+            // TODO sqlite3_result_zeroblob64 // 3.8.11
             return ffi::sqlite3_result_zeroblob(ctx, len);
+        }
+        #[cfg(feature = "functions")]
+        ToSqlOutput::Arg(i) => {
+            return ffi::sqlite3_result_value(ctx, args[i]);
         }
         #[cfg(feature = "array")]
         ToSqlOutput::Array(ref a) => {
@@ -38,7 +52,7 @@ pub(crate) unsafe fn set_result(ctx: *mut sqlite3_context, result: &ToSqlOutput<
         ValueRef::Real(r) => ffi::sqlite3_result_double(ctx, r),
         ValueRef::Text(s) => {
             let length = s.len();
-            if length > c_int::max_value() as usize {
+            if length > c_int::MAX as usize {
                 ffi::sqlite3_result_error_toobig(ctx);
             } else {
                 let (c_str, len, destructor) = match str_for_sqlite(s) {
@@ -46,19 +60,21 @@ pub(crate) unsafe fn set_result(ctx: *mut sqlite3_context, result: &ToSqlOutput<
                     // TODO sqlite3_result_error
                     Err(_) => return ffi::sqlite3_result_error_code(ctx, ffi::SQLITE_MISUSE),
                 };
+                // TODO sqlite3_result_text64 // 3.8.7
                 ffi::sqlite3_result_text(ctx, c_str, len, destructor);
             }
         }
         ValueRef::Blob(b) => {
             let length = b.len();
-            if length > c_int::max_value() as usize {
+            if length > c_int::MAX as usize {
                 ffi::sqlite3_result_error_toobig(ctx);
             } else if length == 0 {
-                ffi::sqlite3_result_zeroblob(ctx, 0)
+                ffi::sqlite3_result_zeroblob(ctx, 0);
             } else {
+                // TODO sqlite3_result_blob64 // 3.8.7
                 ffi::sqlite3_result_blob(
                     ctx,
-                    b.as_ptr() as *const c_void,
+                    b.as_ptr().cast::<c_void>(),
                     length as c_int,
                     ffi::SQLITE_TRANSIENT(),
                 );

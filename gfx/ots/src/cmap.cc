@@ -400,8 +400,7 @@ bool OpenTypeCMAP::Parse31013(const uint8_t *data, size_t length,
   return true;
 }
 
-bool OpenTypeCMAP::Parse0514(const uint8_t *data, size_t length,
-                             uint16_t num_glyphs) {
+bool OpenTypeCMAP::Parse0514(const uint8_t *data, size_t length) {
   // Unicode Variation Selector table
   ots::Buffer subtable(data, length);
 
@@ -515,12 +514,15 @@ bool OpenTypeCMAP::Parse0514(const uint8_t *data, size_t length,
             !subtable.ReadU16(&mappings[j].glyph_id)) {
           return Error("Can't read mapping %d in variation selector record %d", j, i);
         }
-        if (mappings[j].glyph_id == 0 ||
-            mappings[j].unicode_value == 0 ||
-            mappings[j].unicode_value > kUnicodeUpperLimit ||
-            (last_unicode_value &&
-             mappings[j].unicode_value <= last_unicode_value)) {
+        if (mappings[j].glyph_id == 0 || mappings[j].unicode_value == 0) {
           return Error("Bad mapping (%04X -> %d) in mapping %d of variation selector %d", mappings[j].unicode_value, mappings[j].glyph_id, j, i);
+        }
+        if (mappings[j].unicode_value > kUnicodeUpperLimit) {
+          return Error("Invalid Unicode value (%04X > %04X) in mapping %d of variation selector %d", mappings[j].unicode_value, kUnicodeUpperLimit, j, i);
+        }
+        if (last_unicode_value &&
+            mappings[j].unicode_value <= last_unicode_value) {
+          return Error("Out of order Unicode value (%04X <= %04X) in mapping %d of variation selector %d", mappings[j].unicode_value, last_unicode_value, j, i);
         }
         last_unicode_value = mappings[j].unicode_value;
       }
@@ -782,7 +784,7 @@ bool OpenTypeCMAP::Parse(const uint8_t *data, size_t length) {
       } else if ((subtable_headers[i].encoding == 5) &&
                  (subtable_headers[i].format == 14)) {
         if (!Parse0514(data + subtable_headers[i].offset,
-                       subtable_headers[i].length, num_glyphs)) {
+                       subtable_headers[i].length)) {
           return Error("Failed to parse format 14 cmap subtable %d", i);
         }
       }

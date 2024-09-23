@@ -5,15 +5,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ImageDataSerializer.h"
+
+#include "YCbCrUtils.h"           // for YCbCr conversions
 #include "gfx2DGlue.h"            // for SurfaceFormatToImageFormat
-#include "mozilla/gfx/Point.h"    // for IntSize
 #include "mozilla/Assertions.h"   // for MOZ_ASSERT, etc
 #include "mozilla/gfx/2D.h"       // for DataSourceSurface, Factory
 #include "mozilla/gfx/Logging.h"  // for gfxDebug
 #include "mozilla/gfx/Tools.h"    // for GetAlignedStride, etc
 #include "mozilla/gfx/Types.h"
 #include "mozilla/mozalloc.h"  // for operator delete, etc
-#include "YCbCrUtils.h"        // for YCbCr conversions
 
 namespace mozilla {
 namespace layers {
@@ -139,10 +139,36 @@ gfx::IntSize SizeFromBufferDescriptor(const BufferDescriptor& aDescriptor) {
   switch (aDescriptor.type()) {
     case BufferDescriptor::TRGBDescriptor:
       return aDescriptor.get_RGBDescriptor().size();
-    case BufferDescriptor::TYCbCrDescriptor:
-      return aDescriptor.get_YCbCrDescriptor().ySize();
+    case BufferDescriptor::TYCbCrDescriptor: {
+      return aDescriptor.get_YCbCrDescriptor().display().Size();
+    }
     default:
       MOZ_CRASH("GFX: SizeFromBufferDescriptor");
+  }
+}
+
+gfx::IntRect RectFromBufferDescriptor(const BufferDescriptor& aDescriptor) {
+  switch (aDescriptor.type()) {
+    case BufferDescriptor::TRGBDescriptor: {
+      auto size = aDescriptor.get_RGBDescriptor().size();
+      return gfx::IntRect(0, 0, size.Width(), size.Height());
+    }
+    case BufferDescriptor::TYCbCrDescriptor:
+      return aDescriptor.get_YCbCrDescriptor().display();
+    default:
+      MOZ_CRASH("GFX: RectFromBufferDescriptor");
+  }
+}
+
+Maybe<gfx::IntSize> YSizeFromBufferDescriptor(
+    const BufferDescriptor& aDescriptor) {
+  switch (aDescriptor.type()) {
+    case BufferDescriptor::TRGBDescriptor:
+      return Nothing();
+    case BufferDescriptor::TYCbCrDescriptor:
+      return Some(aDescriptor.get_YCbCrDescriptor().ySize());
+    default:
+      MOZ_CRASH("GFX: YSizeFromBufferDescriptor");
   }
 }
 
@@ -230,6 +256,18 @@ Maybe<StereoMode> StereoModeFromBufferDescriptor(
   }
 }
 
+Maybe<gfx::ChromaSubsampling> ChromaSubsamplingFromBufferDescriptor(
+    const BufferDescriptor& aDescriptor) {
+  switch (aDescriptor.type()) {
+    case BufferDescriptor::TRGBDescriptor:
+      return Nothing();
+    case BufferDescriptor::TYCbCrDescriptor:
+      return Some(aDescriptor.get_YCbCrDescriptor().chromaSubsampling());
+    default:
+      MOZ_CRASH("GFX: ChromaSubsamplingFromBufferDescriptor");
+  }
+}
+
 uint8_t* GetYChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor) {
   return aBuffer + aDescriptor.yOffset();
 }
@@ -245,13 +283,13 @@ uint8_t* GetCrChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor) {
 already_AddRefed<DataSourceSurface> DataSourceSurfaceFromYCbCrDescriptor(
     uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor,
     gfx::DataSourceSurface* aSurface) {
-  gfx::IntSize ySize = aDescriptor.ySize();
-
+  const gfx::IntRect display = aDescriptor.display();
+  const gfx::IntSize size = display.Size();
   RefPtr<DataSourceSurface> result;
   if (aSurface) {
-    MOZ_ASSERT(aSurface->GetSize() == ySize);
+    MOZ_ASSERT(aSurface->GetSize() == size);
     MOZ_ASSERT(aSurface->GetFormat() == gfx::SurfaceFormat::B8G8R8X8);
-    if (aSurface->GetSize() == ySize &&
+    if (aSurface->GetSize() == size &&
         aSurface->GetFormat() == gfx::SurfaceFormat::B8G8R8X8) {
       result = aSurface;
     }
@@ -259,7 +297,7 @@ already_AddRefed<DataSourceSurface> DataSourceSurfaceFromYCbCrDescriptor(
 
   if (!result) {
     result =
-        Factory::CreateDataSourceSurface(ySize, gfx::SurfaceFormat::B8G8R8X8);
+        Factory::CreateDataSourceSurface(size, gfx::SurfaceFormat::B8G8R8X8);
   }
   if (NS_WARN_IF(!result)) {
     return nullptr;
@@ -273,16 +311,15 @@ already_AddRefed<DataSourceSurface> DataSourceSurfaceFromYCbCrDescriptor(
   layers::PlanarYCbCrData ycbcrData;
   ycbcrData.mYChannel = GetYChannel(aBuffer, aDescriptor);
   ycbcrData.mYStride = aDescriptor.yStride();
-  ycbcrData.mYSize = ySize;
   ycbcrData.mCbChannel = GetCbChannel(aBuffer, aDescriptor);
   ycbcrData.mCrChannel = GetCrChannel(aBuffer, aDescriptor);
   ycbcrData.mCbCrStride = aDescriptor.cbCrStride();
-  ycbcrData.mCbCrSize = aDescriptor.cbCrSize();
-  ycbcrData.mPicSize = ySize;
+  ycbcrData.mPictureRect = aDescriptor.display();
   ycbcrData.mYUVColorSpace = aDescriptor.yUVColorSpace();
   ycbcrData.mColorDepth = aDescriptor.colorDepth();
+  ycbcrData.mChromaSubsampling = aDescriptor.chromaSubsampling();
 
-  gfx::ConvertYCbCrToRGB(ycbcrData, gfx::SurfaceFormat::B8G8R8X8, ySize,
+  gfx::ConvertYCbCrToRGB(ycbcrData, gfx::SurfaceFormat::B8G8R8X8, size,
                          map.mData, map.mStride);
 
   result->Unmap();
@@ -300,18 +337,21 @@ void ConvertAndScaleFromYCbCrDescriptor(uint8_t* aBuffer,
   layers::PlanarYCbCrData ycbcrData;
   ycbcrData.mYChannel = GetYChannel(aBuffer, aDescriptor);
   ycbcrData.mYStride = aDescriptor.yStride();
-  ;
-  ycbcrData.mYSize = aDescriptor.ySize();
   ycbcrData.mCbChannel = GetCbChannel(aBuffer, aDescriptor);
   ycbcrData.mCrChannel = GetCrChannel(aBuffer, aDescriptor);
   ycbcrData.mCbCrStride = aDescriptor.cbCrStride();
-  ycbcrData.mCbCrSize = aDescriptor.cbCrSize();
-  ycbcrData.mPicSize = aDescriptor.ySize();
+  ycbcrData.mPictureRect = aDescriptor.display();
   ycbcrData.mYUVColorSpace = aDescriptor.yUVColorSpace();
   ycbcrData.mColorDepth = aDescriptor.colorDepth();
+  ycbcrData.mChromaSubsampling = aDescriptor.chromaSubsampling();
 
   gfx::ConvertYCbCrToRGB(ycbcrData, aDestFormat, aDestSize, aDestBuffer,
                          aStride);
+}
+
+gfx::IntSize GetCroppedCbCrSize(const YCbCrDescriptor& aDescriptor) {
+  return ChromaSize(aDescriptor.display().Size(),
+                    aDescriptor.chromaSubsampling());
 }
 
 }  // namespace ImageDataSerializer

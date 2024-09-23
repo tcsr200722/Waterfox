@@ -4,22 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGFEGaussianBlurElement_h
-#define mozilla_dom_SVGFEGaussianBlurElement_h
+#ifndef DOM_SVG_SVGFEGAUSSIANBLURELEMENT_H_
+#define DOM_SVG_SVGFEGAUSSIANBLURELEMENT_H_
 
 #include "SVGAnimatedNumberPair.h"
 #include "SVGAnimatedString.h"
-#include "SVGFilters.h"
+#include "mozilla/dom/SVGFilters.h"
 
 nsresult NS_NewSVGFEGaussianBlurElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-typedef SVGFE SVGFEGaussianBlurElementBase;
+using SVGFEGaussianBlurElementBase = SVGFilterPrimitiveElement;
 
-class SVGFEGaussianBlurElement : public SVGFEGaussianBlurElementBase {
+class SVGFEGaussianBlurElement final : public SVGFEGaussianBlurElementBase {
   friend nsresult(::NS_NewSVGFEGaussianBlurElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -28,22 +27,24 @@ class SVGFEGaussianBlurElement : public SVGFEGaussianBlurElementBase {
   explicit SVGFEGaussianBlurElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
       : SVGFEGaussianBlurElementBase(std::move(aNodeInfo)) {}
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* aCx,
+                     JS::Handle<JSObject*> aGivenProto) override;
 
  public:
-  virtual FilterPrimitiveDescription GetPrimitiveDescription(
-      nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+  FilterPrimitiveDescription GetPrimitiveDescription(
+      SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
       const nsTArray<bool>& aInputsAreTainted,
       nsTArray<RefPtr<SourceSurface>>& aInputImages) override;
-  virtual bool AttributeAffectsRendering(int32_t aNameSpaceID,
-                                         nsAtom* aAttribute) const override;
-  virtual SVGAnimatedString& GetResultImageName() override {
+  bool AttributeAffectsRendering(int32_t aNameSpaceID,
+                                 nsAtom* aAttribute) const override;
+  SVGAnimatedString& GetResultImageName() override {
     return mStringAttributes[RESULT];
   }
-  virtual void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
+  void GetSourceImageNames(nsTArray<SVGStringInfo>& aSources) override;
 
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
+
+  nsresult BindToTree(BindContext& aCtx, nsINode& aParent) override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedString> In1();
@@ -52,8 +53,8 @@ class SVGFEGaussianBlurElement : public SVGFEGaussianBlurElementBase {
   void SetStdDeviation(float stdDeviationX, float stdDeviationY);
 
  protected:
-  virtual NumberPairAttributesInfo GetNumberPairInfo() override;
-  virtual StringAttributesInfo GetStringInfo() override;
+  NumberPairAttributesInfo GetNumberPairInfo() override;
+  StringAttributesInfo GetStringInfo() override;
 
   enum { STD_DEV };
   SVGAnimatedNumberPair mNumberPairAttributes[1];
@@ -64,7 +65,6 @@ class SVGFEGaussianBlurElement : public SVGFEGaussianBlurElementBase {
   static StringInfo sStringInfo[2];
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
-#endif  // mozilla_dom_SVGFEGaussianBlurElement_h
+#endif  // DOM_SVG_SVGFEGAUSSIANBLURELEMENT_H_

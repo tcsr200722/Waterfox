@@ -4,14 +4,22 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
        <menubar id="main-menubar"
+# On macOS, we don't track whether activation of the native menubar happened
+# with the keyboard.
+#ifndef XP_MACOSX
                 onpopupshowing="if (event.target.parentNode.parentNode == this &amp;&amp;
-                                    !('@mozilla.org/widget/nativemenuservice;1' in Cc))
+#ifdef MOZ_WIDGET_GTK
+                                    document.documentElement.getAttribute('shellshowingmenubar') != 'true')
+#else
+                                    true)
+#endif
                                   this.setAttribute('openedwithkey',
-                                                    event.target.parentNode.openedWithKey);">
+                                                    event.target.parentNode.openedWithKey);"
+#endif
+                >
             <menu id="file-menu" data-l10n-id="menu-file">
               <menupopup id="menu_FilePopup"
-                         onpopupshowing="updateFileMenuUserContextUIVisibility('menu_newUserContext');
-                                         updateImportCommandEnabledState();">
+                         onpopupshowing="gFileMenu.onPopupShowing(event);">
                 <menuitem id="menu_newNavigatorTab"
                           command="cmd_newNavigatorTab"
                           key="key_newNavigatorTab" data-l10n-id="menu-file-new-tab"/>
@@ -25,14 +33,6 @@
                 <menuitem id="menu_newPrivateWindow"
                           command="Tools:PrivateBrowsing"
                           key="key_privatebrowsing" data-l10n-id="menu-file-new-private-window"/>
-#ifdef NIGHTLY_BUILD
-                <menuitem id="menu_newFissionWindow"
-                          command="Tools:FissionWindow"
-                          accesskey="s" label="New Fission Window"/>
-                <menuitem id="menu_newNonFissionWindow"
-                          command="Tools:NonFissionWindow"
-                          accesskey="s" label="New Non-Fission Window"/>
-#endif
                 <menuitem id="menu_openLocation"
                           hidden="true"
                           command="Browser:OpenLocation"
@@ -43,7 +43,7 @@
                 <menuitem id="menu_close"
                           class="show-only-for-keyboard"
                           key="key_close"
-                          command="cmd_close" data-l10n-id="menu-file-close"/>
+                          command="cmd_close" data-l10n-id="menu-file-close-tab" data-l10n-args='{"tabCount": 1}'/>
                 <menuitem id="menu_closeWindow"
                           class="show-only-for-keyboard"
                           hidden="true"
@@ -53,16 +53,14 @@
                 <menuitem id="menu_savePage"
                           key="key_savePage"
                           command="Browser:SavePage" data-l10n-id="menu-file-save-page"/>
+#if !defined(XP_MACOSX) || defined(MOZ_PROXY_BYPASS_PROTECTION)
                 <menuitem id="menu_sendLink"
                           command="Browser:SendLink" data-l10n-id="menu-file-email-link"/>
+#endif
                 <menuseparator/>
 #if !defined(MOZ_WIDGET_GTK)
                 <menuitem id="menu_printSetup"
-                          command="cmd_pageSetup" data-l10n-id="menu-file-print-setup"/>
-#endif
-#ifndef XP_MACOSX
-                <menuitem id="menu_printPreview"
-                          command="cmd_printPreview" data-l10n-id="menu-file-print-preview"/>
+                          command="cmd_pageSetup" data-l10n-id="menu-file-print-setup" hidden="true"/>
 #endif
                 <menuitem id="menu_print"
                           key="printKb"
@@ -74,16 +72,11 @@
                 <menuitem id="goOfflineMenuitem"
                           type="checkbox"
                           command="cmd_toggleOfflineStatus" data-l10n-id="menu-file-go-offline"/>
-<!-- We need to leave those strings in DTD until bug 1568133 is fixed. -->
                 <menuitem id="menu_FileQuitItem"
-#ifdef XP_WIN
-                          label="&quitApplicationCmdWin2.label;"
-                          accesskey="&quitApplicationCmdWin2.accesskey;"
-#elifdef XP_MACOSX
-                          label="&quitApplicationCmdMac2.label;"
+#ifdef XP_MACOSX
+                          data-l10n-id="menu-quit-mac"
 #else
-                          label="&quitApplicationCmd.label;"
-                          accesskey="&quitApplicationCmd.accesskey;"
+                          data-l10n-id="menu-quit"
 #endif
                           key="key_quitApplication"
                           command="cmd_quitApplication"/>
@@ -120,7 +113,7 @@
                 <menuseparator/>
                 <menuitem id="menu_find"
                           key="key_find"
-                          command="cmd_find" data-l10n-id="menu-edit-find-on"/>
+                          command="cmd_find" data-l10n-id="menu-edit-find-in-page"/>
                 <menuitem id="menu_findAgain"
                           class="show-only-for-keyboard"
                           key="key_findAgain"
@@ -134,41 +127,28 @@
 #ifndef XP_MACOSX
                 <menuseparator/>
                 <menuitem id="menu_preferences"
-                          oncommand="openPreferences(undefined);" data-l10n-id="menu-preferences"/>
+                          oncommand="openPreferences(undefined);"
+                          data-l10n-id="menu-settings"
+                          />
 #endif
 #endif
               </menupopup>
             </menu>
 
             <menu id="view-menu" data-l10n-id="menu-view">
-              <menupopup id="menu_viewPopup"
-                         onpopupshowing="updateCharacterEncodingMenuState();">
+              <menupopup id="menu_viewPopup">
                 <menu id="viewToolbarsMenu" data-l10n-id="menu-view-toolbars-menu">
-                  <menupopup onpopupshowing="onViewToolbarsPopupShowing(event);">
+                  <menupopup id="view-menu-popup" onpopupshowing="onViewToolbarsPopupShowing(event);">
                     <menuseparator/>
                     <menuitem id="menu_customizeToolbars"
-                              command="cmd_CustomizeToolbars" data-l10n-id="menu-view-customize-toolbar"/>
+                              command="cmd_CustomizeToolbars" data-l10n-id="menu-view-customize-toolbar2"/>
                   </menupopup>
                 </menu>
                 <menu id="viewSidebarMenuMenu" data-l10n-id="menu-view-sidebar">
-                  <menupopup id="viewSidebarMenu">
-                    <menuitem id="menu_bookmarksSidebar"
-                              type="checkbox"
-                              key="viewBookmarksSidebarKb"
-                              oncommand="SidebarUI.toggle('viewBookmarksSidebar');" data-l10n-id="menu-view-bookmarks"/>
-                    <menuitem id="menu_historySidebar"
-                              type="checkbox"
-                              key="key_gotoHistory"
-                              oncommand="SidebarUI.toggle('viewHistorySidebar');" data-l10n-id="menu-view-history-button"/>
-                    <menuitem id="menu_tabsSidebar"
-                              type="checkbox"
-                              class="sync-ui-item"
-                              oncommand="SidebarUI.toggle('viewTabsSidebar');" data-l10n-id="menu-view-synced-tabs-sidebar"/>
-                  </menupopup>
+                  <menupopup id="viewSidebarMenu"/>
                 </menu>
                 <menuseparator/>
-                <menu id="viewFullZoomMenu"
-                      onpopupshowing="FullZoom.updateMenu();" data-l10n-id="menu-view-full-zoom">
+                <menu id="viewFullZoomMenu" data-l10n-id="menu-view-full-zoom">
                   <menupopup>
                     <menuitem id="menu_zoomEnlarge"
                               key="key_fullZoomEnlarge"
@@ -193,40 +173,37 @@
                               oncommand="gPageStyleMenu.disableStyle();"
                               type="radio" data-l10n-id="menu-view-page-style-no-style"/>
                     <menuitem id="menu_pageStylePersistentOnly"
-                              oncommand="gPageStyleMenu.switchStyleSheet('');"
+                              oncommand="gPageStyleMenu.switchStyleSheet(null);"
                               type="radio"
                               checked="true" data-l10n-id="menu-view-page-basic-style"/>
                     <menuseparator/>
                   </menupopup>
                 </menu>
-                <menu id="charsetMenu"
-                    oncommand="BrowserSetForcedCharacterSet(event.target.getAttribute('charset'));"
-                    onpopupshowing="CharsetMenu.build(event.target); UpdateCurrentCharset(this);" data-l10n-id="menu-view-charset">
-                  <menupopup>
-                  </menupopup>
-                </menu>
+                <menuitem id="repair-text-encoding"
+                          disabled="true"
+                          oncommand="BrowserCommands.forceEncodingDetection();"
+                          data-l10n-id="menu-view-repair-text-encoding"/>
                 <menuseparator/>
 #ifdef XP_MACOSX
                 <menuitem id="enterFullScreenItem"
-                          key="key_fullScreen" data-l10n-id="menu-view-enter-full-screen">
+                          key="key_enterFullScreen" data-l10n-id="menu-view-enter-full-screen">
                   <observes element="View:FullScreen" attribute="oncommand"/>
-                  <observes element="View:FullScreen" attribute="disabled"/>
                 </menuitem>
                 <menuitem id="exitFullScreenItem"
-                          key="key_fullScreen"
+                          key="key_exitFullScreen"
                           hidden="true" data-l10n-id="menu-view-exit-full-screen">
                   <observes element="View:FullScreen" attribute="oncommand"/>
-                  <observes element="View:FullScreen" attribute="disabled"/>
                 </menuitem>
 #else
                 <menuitem id="fullScreenItem"
-                          key="key_fullScreen"
+                          key="key_enterFullScreen"
                           type="checkbox"
                           observes="View:FullScreen" data-l10n-id="menu-view-full-screen"/>
 #endif
                 <menuitem id="menu_readerModeItem"
                           observes="View:ReaderView"
                           key="key_toggleReaderMode"
+                          data-l10n-id="menu-view-enter-readerview"
                           hidden="true"/>
                 <menuitem id="menu_showAllTabs"
                           hidden="true"
@@ -240,21 +217,18 @@
             </menu>
 
             <menu id="history-menu" data-l10n-id="menu-history">
-              <menupopup id="goPopup"
+              <menupopup id="historyMenuPopup"
 #ifndef XP_MACOSX
                          placespopup="true"
                          is="places-popup"
 #endif
                          oncommand="this.parentNode._placesView._onCommand(event);"
-                         onclick="checkForMiddleClick(this, event);"
                          onpopupshowing="if (!this.parentNode._placesView)
                                            new HistoryMenu(event);"
                          tooltip="bhTooltip"
                          popupsinherittooltip="true">
                 <menuitem id="menu_showAllHistory"
-#ifndef XP_MACOSX
                           key="showAllHistoryKb"
-#endif
                           command="Browser:ShowAllHistory" data-l10n-id="menu-history-show-all-history"/>
                 <menuitem id="sanitizeItem"
                           key="key_sanitize"
@@ -266,8 +240,11 @@
                 <menuitem id="historyRestoreLastSession"
                           command="Browser:RestoreLastSession" data-l10n-id="menu-history-restore-last-session"/>
                 <menuitem id="hiddenTabsMenu"
-                          oncommand="gTabsPanel.showHiddenTabsPanel(event);"
+                          oncommand="gTabsPanel.showHiddenTabsPanel(event, 'hidden-tabs-menuitem');"
                           hidden="true" data-l10n-id="menu-history-hidden-tabs"/>
+                <menuitem id="menu_searchHistory"
+                          command="History:SearchHistory"
+                          data-l10n-id="menu-history-search"/>
                 <menu id="historyUndoMenu"
                       disabled="true" data-l10n-id="menu-history-undo-menu">
                   <menupopup id="historyUndoPopup"
@@ -284,7 +261,18 @@
                              placespopup="true"
                              is="places-popup"
 #endif
-                             onpopupshowing="document.getElementById('history-menu')._placesView.populateUndoWindowSubmenu();"/>
+                             onpopupshowing="document.getElementById('history-menu')._placesView.populateUndoWindowSubmenu();">
+#ifdef HIDDEN_WINDOW
+# This entry is never visible. It's here to make the cmd-shift-n
+# shortcut work in the hidden window when the last window is closed.
+# If the menu is actually opened, we'll clear this out and replace
+# it with a "real" entry.
+# See bug 492320 for the nasty details.
+                    <menuitem key="key_undoCloseWindow"
+                              oncommand="undoCloseWindow(0)"
+                              />
+#endif
+                  </menupopup>
                 </menu>
                 <menuseparator id="startHistorySeparator"
                                class="hide-if-empty-places-result"/>
@@ -313,12 +301,15 @@
       <menuitem id="bookmarksShowAll"
                 command="Browser:ShowAllBookmarks"
                 key="manBookmarkKb"
-                data-l10n-id="menu-bookmarks-show-all"/>
+                data-l10n-id="menu-bookmarks-manage"/>
       <menuseparator id="organizeBookmarksSeparator"/>
       <menuitem id="menu_bookmarkThisPage"
                 command="Browser:AddBookmarkAs"
                 key="addBookmarkAsKb"
-                data-l10n-id="menu-bookmark-this-page"/>
+                data-l10n-id="menu-bookmark-tab"/>
+      <menuitem id="menu_searchBookmarks"
+                command="Browser:SearchBookmarks"
+                data-l10n-id="menu-bookmarks-search"/>
       <menuitem id="menu_bookmarkAllTabs"
                 class="show-only-for-keyboard"
                 command="Browser:BookmarkAllTabs"
@@ -377,21 +368,21 @@
                         command="Tools:Downloads" data-l10n-id="menu-tools-downloads"/>
               <menuitem id="menu_openAddons"
                         key="key_openAddons"
-                        command="Tools:Addons" data-l10n-id="menu-tools-addons"/>
+                        command="Tools:Addons" data-l10n-id="menu-tools-addons-and-themes"/>
 
               <!-- only one of sync-setup, sync-enable, sync-unverifieditem, sync-syncnowitem or sync-reauthitem will be showing at once -->
               <menuitem id="sync-setup"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in"/>
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in2"/>
               <menuitem id="sync-enable"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-turn-on-sync"/>
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-turn-on-sync2"/>
               <menuitem id="sync-unverifieditem"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in"/>
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in2"/>
               <menuitem id="sync-syncnowitem"
                         class="sync-ui-item"
                         hidden="true"
@@ -400,9 +391,16 @@
                         class="sync-ui-item"
                         hidden="true"
                         oncommand="gSync.openSignInAgainPage('menubar');" data-l10n-id="menu-tools-fxa-re-auth"/>
+
+              <menuitem id="menu_openFirefoxView"
+                        oncommand="FirefoxViewHandler.openTab();" data-l10n-id="menu-tools-firefox-view"/>
               <menuseparator id="devToolsSeparator"/>
-              <menu id="webDeveloperMenu" data-l10n-id="menu-tools-web-developer">
+              <menu id="browserToolsMenu" data-l10n-id="menu-tools-browser-tools">
                 <menupopup id="menuWebDeveloperPopup">
+                  <menuitem id="menu_taskManager"
+                            key="key_aboutProcesses"
+                            command="View:AboutProcesses"
+                            data-l10n-id="menu-tools-task-manager"/>
                   <menuitem id="menu_pageSource"
                             key="key_viewSource"
                             command="View:PageSource" data-l10n-id="menu-tools-page-source"/>
@@ -414,7 +412,8 @@
 #ifndef XP_UNIX
               <menuseparator id="prefSep"/>
               <menuitem id="menu_preferences"
-                        oncommand="openPreferences(undefined);" data-l10n-id="menu-preferences"/>
+                        data-l10n-id="menu-settings"
+                        oncommand="openPreferences(undefined);"/>
 #endif
 #ifdef MOZ_DEBUG
               <menuitem id="menu_layout_debugger"
@@ -424,22 +423,25 @@
 #endif
 #ifdef XP_MACOSX
 <!-- nsMenuBarX hides these and uses them to build the Application menu. -->
-<!-- We need to leave those strings in DTD until bug 1568133 is fixed. -->
-              <menuitem id="menu_preferences" label="&preferencesCmdMac.label;" key="key_preferencesCmdMac" oncommand="openPreferences(undefined);"/>
-              <menuitem id="menu_mac_services" label="&servicesMenuMac.label;"/>
-              <menuitem id="menu_mac_hide_app" label="&hideThisAppCmdMac2.label;" key="key_hideThisAppCmdMac"/>
-              <menuitem id="menu_mac_hide_others" label="&hideOtherAppsCmdMac.label;" key="key_hideOtherAppsCmdMac"/>
-              <menuitem id="menu_mac_show_all" label="&showAllAppsCmdMac.label;"/>
-              <menuitem id="menu_mac_touch_bar" label="&touchBarCmdMac.label;"/>
+              <menuitem id="menu_preferences"
+                        data-l10n-id="menu-application-preferences"
+                        key="key_preferencesCmdMac" oncommand="openPreferences(undefined);"/>
+              <menuitem id="menu_mac_services" data-l10n-id="menu-application-services"/>
+              <menuitem id="menu_mac_hide_app" data-l10n-id="menu-application-hide-this" key="key_hideThisAppCmdMac"/>
+              <menuitem id="menu_mac_hide_others" data-l10n-id="menu-application-hide-other" key="key_hideOtherAppsCmdMac"/>
+              <menuitem id="menu_mac_show_all" data-l10n-id="menu-application-show-all"/>
+              <menuitem id="menu_mac_touch_bar" data-l10n-id="menu-application-touch-bar"/>
 #endif
               </menupopup>
             </menu>
 #ifdef XP_MACOSX
+<!-- Do not dynamically modify the Window menu and be careful when making static changes to it.
+     macOS adds extra functionality to this menu, such as a list of windows, which can break when
+     modifying this menu. See bug 1642138 and bug 1807697 for example. -->
             <menu id="windowMenu"
-                  onpopupshowing="macWindowMenuDidShow();"
-                  onpopuphidden="macWindowMenuDidHide();"
                    data-l10n-id="menu-window-menu">
                 <menupopup id="windowPopup">
+                    <menuseparator/>
                     <menuitem command="minimizeWindow" key="key_minimizeWindow"/>
                     <menuitem command="zoomWindow"/>
                     <!-- decomment when "BringAllToFront" is implemented
@@ -449,59 +451,67 @@
                 </menupopup>
             </menu>
 #endif
-            <menu id="helpMenu"
-#ifdef XP_WIN
-#else
-#endif
-                   data-l10n-id="menu-help">
+            <menu id="helpMenu" data-l10n-id="menu-help">
               <menupopup id="menu_HelpPopup" onpopupshowing="buildHelpMenu();">
+<!-- Note: Items under here are cloned to the AppMenu Help submenu. The cloned items
+     have their strings defined by appmenu-data-l10n-id. -->
                 <menuitem id="menu_openHelp"
                           oncommand="openHelpLink('firefox-help')"
-                          onclick="checkForMiddleClick(this, event);"
-                          data-l10n-id="menu-help-product"
+                          data-l10n-id="menu-get-help"
+                          appmenu-data-l10n-id="appmenu-get-help"
 #ifdef XP_MACOSX
                           key="key_openHelpMac"/>
 #else
                           />
 #endif
-                <menuitem id="menu_openTour"
-                          oncommand="openTourPage();" data-l10n-id="menu-help-show-tour"/>
-                <menuitem id="help_importFromAnotherBrowser"
-                          command="cmd_help_importFromAnotherBrowser" data-l10n-id="menu-help-import-from-another-browser"/>
-                <menuitem id="menu_keyboardShortcuts"
-                          oncommand="openHelpLink('keyboard-shortcuts')"
-                          onclick="checkForMiddleClick(this, event);" data-l10n-id="menu-help-keyboard-shortcuts"/>
-                <menuitem id="troubleShooting"
-                          oncommand="openTroubleshootingPage()"
-                          onclick="checkForMiddleClick(this, event);" data-l10n-id="menu-help-troubleshooting-info"/>
+                <menuitem id="help_reportBrokenSite"
+                          command="cmd_reportBrokenSite"
+                          data-l10n-id="menu-report-broken-site"
+                          hidden="true"
+                          appmenu-data-l10n-id="menu-report-broken-site"/>
                 <menuitem id="feedbackPage"
                           oncommand="openFeedbackPage()"
-                          onclick="checkForMiddleClick(this, event);" data-l10n-id="menu-help-feedback-page"/>
+                          data-l10n-id="menu-help-share-ideas"
+                          appmenu-data-l10n-id="appmenu-help-share-ideas"/>
                 <menuitem id="helpSafeMode"
-                          oncommand="safeModeRestart();" data-l10n-id="menu-help-safe-mode-without-addons"/>
+                          oncommand="safeModeRestart();"
+                          data-l10n-id="menu-help-enter-troubleshoot-mode2"
+                          appmenu-data-l10n-id="appmenu-help-enter-troubleshoot-mode2"/>
+                <menuitem id="troubleShooting"
+                          oncommand="openTroubleshootingPage()"
+                          data-l10n-id="menu-help-more-troubleshooting-info"
+                          appmenu-data-l10n-id="appmenu-help-more-troubleshooting-info"/>
+                <menuitem id="help_reportSiteIssue"
+                          oncommand="ReportSiteIssue();"
+                          data-l10n-id="menu-help-report-site-issue"
+                          appmenu-data-l10n-id="appmenu-help-report-site-issue"
+                          hidden="true"/>
                 <menuitem id="menu_HelpPopup_reportPhishingtoolmenu"
                           disabled="true"
                           oncommand="openUILink(gSafeBrowsing.getReportURL('Phish'), event, {triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({})});"
-                          onclick="checkForMiddleClick(this, event);"
-                          hidden="true" data-l10n-id="menu-help-report-deceptive-site"/>
+                          hidden="true"
+                          data-l10n-id="menu-help-report-deceptive-site"
+                          appmenu-data-l10n-id="appmenu-help-report-deceptive-site"/>
                 <menuitem id="menu_HelpPopup_reportPhishingErrortoolmenu"
                           disabled="true"
                           oncommand="ReportFalseDeceptiveSite();"
-                          onclick="checkForMiddleClick(this, event);"
                           data-l10n-id="menu-help-not-deceptive"
+                          appmenu-data-l10n-id="appmenu-help-not-deceptive"
                           hidden="true"/>
+                <menuitem id="helpSwitchDevice"
+                          oncommand="openSwitchingDevicesPage();"
+                          data-l10n-id="menu-help-switch-device"
+                          appmenu-data-l10n-id="appmenu-help-switch-device"/>
+                <menuseparator id="aboutSeparator"/>
+                <menuitem id="aboutName"
+                          oncommand="openAboutDialog();"
+                          data-l10n-id="menu-about"
+                          appmenu-data-l10n-id="appmenu-about"/>
                 <menuseparator id="helpPolicySeparator"
                           hidden="true"/>
                 <menuitem id="helpPolicySupport"
                           hidden="true"
-                          oncommand="openUILinkIn(Services.policies.getSupportMenu().URL.href, 'tab', {triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({})});"
-                          onclick="checkForMiddleClick(this, event);"/>
-                <menuseparator id="aboutSeparator"/>
-                <!-- We need to leave those strings in DTD until bug 1568133 is fixed. -->
-                <menuitem id="aboutName"
-                          accesskey="&aboutProduct2.accesskey;"
-                          label="&aboutProduct2.label;"
-                          oncommand="openAboutDialog();"/>
+                          oncommand="openTrustedLinkIn(Services.policies.getSupportMenu().URL.href, 'tab');"/>
               </menupopup>
           </menu>
         </menubar>

@@ -1,7 +1,8 @@
-// |jit-test| skip-if: helperThreadCount() === 0 || !('oomTest' in this)
+// |jit-test| skip-if: helperThreadCount() === 0
 
-offThreadCompileScript(`
+offThreadCompileToStencil(`
  oomTest(() => "".search(/d/));
  fullcompartmentchecks(3);
 `);
-runOffThreadScript();
+var stencil = finishOffThreadStencil();
+evalStencil(stencil);

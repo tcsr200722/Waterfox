@@ -5,17 +5,17 @@
 
 "use strict";
 
-const TEST_URI = `data:text/html;charset=utf8,Test sidebar scroll`;
+const TEST_URI = `data:text/html;charset=utf8,<!DOCTYPE html>Test sidebar scroll`;
 
-add_task(async function() {
+add_task(async function () {
   // Should be removed when sidebar work is complete
   await pushPref("devtools.webconsole.sidebarToggle", true);
   const isMacOS = Services.appinfo.OS === "Darwin";
 
   const hud = await openNewTabAndConsole(TEST_URI);
 
-  const onMessage = waitForMessage(hud, "Document");
-  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
+  const onMessage = waitForMessageByType(hud, "Document", ".console-api");
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function () {
     content.wrappedJSObject.console.log(content.wrappedJSObject.document);
   });
 
@@ -26,6 +26,13 @@ add_task(async function() {
   const onSidebarShown = waitFor(() =>
     hud.ui.document.querySelector(".sidebar")
   );
+  AccessibilityUtils.setEnv({
+    // Component that renders a node handles keyboard interactions on the
+    // container level.
+    focusableRule: false,
+    interactiveRule: false,
+    labelRule: false,
+  });
   EventUtils.sendMouseEvent(
     {
       type: "click",
@@ -34,13 +41,15 @@ add_task(async function() {
     object,
     hud.ui.window
   );
+  AccessibilityUtils.resetEnv();
   await onSidebarShown;
   const sidebarContents = hud.ui.document.querySelector(".sidebar-contents");
 
   // Let's wait until the object is fully expanded.
   await waitFor(() => sidebarContents.querySelectorAll(".node").length > 1);
-  ok(
-    sidebarContents.scrollHeight > sidebarContents.clientHeight,
+  Assert.greater(
+    sidebarContents.scrollHeight,
+    sidebarContents.clientHeight,
     "Sidebar overflows"
   );
 });

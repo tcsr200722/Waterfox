@@ -18,14 +18,14 @@ addAccessibleTask(
   <ul id="ul">
     <li id="li">item1</li>
   </ul>`,
-  async function(browser, accDoc) {
+  async function (browser, accDoc) {
     let li = findAccessibleChildByID(accDoc, "li");
     let bullet = li.firstChild;
     let accTree = {
       role: ROLE_LISTITEM,
       children: [
         {
-          role: ROLE_STATICTEXT,
+          role: ROLE_LISTITEM_MARKER,
           children: [],
         },
         {

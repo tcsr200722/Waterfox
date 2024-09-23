@@ -10,7 +10,7 @@
 #ifndef mozilla_dom_ImageTracker
 #define mozilla_dom_ImageTracker
 
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 
 class imgIRequest;
@@ -18,8 +18,7 @@ namespace mozilla {
 struct MediaFeatureChange;
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /*
  * Image Tracking
@@ -48,7 +47,8 @@ class ImageTracker {
 
   // Makes the images on this document locked/unlocked. By default, the locking
   // state is unlocked/false.
-  nsresult SetLockingState(bool aLocked);
+  void SetLockingState(bool aLocked);
+  bool GetLockingState() const { return mLocking; }
 
   // Makes the images on this document capable of having their animation
   // active or suspended. An Image will animate as long as at least one of its
@@ -61,12 +61,11 @@ class ImageTracker {
  private:
   ~ImageTracker();
 
-  nsDataHashtable<nsPtrHashKey<imgIRequest>, uint32_t> mImages;
-  bool mLocking;
-  bool mAnimating;
+  nsTHashMap<nsPtrHashKey<imgIRequest>, uint32_t> mImages;
+  bool mLocking = false;
+  bool mAnimating = true;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_ImageTracker

@@ -9,20 +9,19 @@
 // It is therefore quite long to run.
 
 requestLongerTimeout(10);
-const { PromiseTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm"
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
 );
 
-// whitelist a context error because it is harmless. This could likely be removed in the next patch because it is a symptom of events coming from the target-list and debugger targets module...
-PromiseTestUtils.whitelistRejectionsGlobally(/Page has navigated/);
+// allow a context error because it is harmless. This could likely be removed in the next patch because it is a symptom of events coming from the target-list and debugger targets module...
+PromiseTestUtils.allowMatchingRejectionsGlobally(/Page has navigated/);
 
 const TEST_URL =
   "data:text/html;charset=utf-8," +
   "<html><head><title>Test reload</title></head>" +
   "<body><h1>Testing reload from devtools</h1></body></html>";
 
-const { Toolbox } = require("devtools/client/framework/toolbox");
-const { LocalizationHelper } = require("devtools/shared/l10n");
+const { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
 );
@@ -30,32 +29,24 @@ const L10N = new LocalizationHelper(
 // Track how many page reloads we've sent to the page.
 var reloadsSent = 0;
 
-add_task(async function() {
+add_task(async function () {
   await addTab(TEST_URL);
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  // Load the frame-script-utils into the child.
-  loadFrameScriptUtils();
-
-  info("Getting the entire list of tools supported in this tab");
-  const toolIDs = gDevTools
-    .getToolDefinitionArray()
-    .filter(def => def.isTargetSupported(target))
-    .map(def => def.id);
+  const tab = gBrowser.selectedTab;
+  const toolIDs = await getSupportedToolIds(tab);
 
   info(
     "Display the toolbox, docked at the bottom, with the first tool selected"
   );
-  const toolbox = await gDevTools.showToolbox(
-    target,
-    toolIDs[0],
-    Toolbox.HostType.BOTTOM
-  );
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    toolId: toolIDs[0],
+    hostType: Toolbox.HostType.BOTTOM,
+  });
 
   info(
     "Listen to page reloads to check that they are indeed sent by the toolbox"
   );
   let reloadDetected = 0;
-  const reloadCounter = msg => {
+  const reloadCounter = () => {
     reloadDetected++;
     info("Detected reload #" + reloadDetected);
     is(
@@ -64,9 +55,12 @@ add_task(async function() {
       "Detected the right number of reloads in the page"
     );
   };
-  gBrowser.selectedBrowser.messageManager.addMessageListener(
-    "devtools:test:load",
-    reloadCounter
+
+  const removeLoadListener = BrowserTestUtils.addContentEventListener(
+    gBrowser.selectedBrowser,
+    "load",
+    reloadCounter,
+    {}
   );
 
   info("Start testing with the toolbox docked");
@@ -85,10 +79,7 @@ add_task(async function() {
   info("Switch back to docked mode");
   await toolbox.switchHost(Toolbox.HostType.BOTTOM);
 
-  gBrowser.selectedBrowser.messageManager.removeMessageListener(
-    "devtools:test:load",
-    reloadCounter
-  );
+  removeLoadListener();
 
   await toolbox.destroy();
   gBrowser.removeCurrentTab();
@@ -97,6 +88,8 @@ add_task(async function() {
 async function testOneTool(toolbox, toolID) {
   info(`Select tool ${toolID}`);
   await toolbox.selectTool(toolID);
+
+  assertThemeStyleSheet(toolbox, toolID);
 
   await testReload("toolbox.reload.key", toolbox);
   await testReload("toolbox.reload2.key", toolbox);
@@ -107,54 +100,31 @@ async function testOneTool(toolbox, toolID) {
 async function testReload(shortcut, toolbox) {
   info(`Reload with ${shortcut}`);
 
-  const mm = gBrowser.selectedBrowser.messageManager;
-  const walker = (await toolbox.target.getFront("inspector")).walker;
+  await sendToolboxReloadShortcut(L10N.getStr(shortcut), toolbox);
+  reloadsSent++;
+}
 
-  return new Promise(resolve => {
-    const observer = {
-      _isDocumentUnloaded: false,
-      _isNewRooted: false,
-      onMutation(mutations) {
-        for (const { type } of mutations) {
-          if (type === "documentUnload") {
-            this._isDocumentUnloaded = true;
-          }
-        }
-      },
-      onNewRootNode() {
-        this._isNewRooted = true;
-      },
-      isReady() {
-        return this._isDocumentUnloaded && this._isNewRooted;
-      },
-    };
+/**
+ * As opening all panels is an expensive operation, reuse this test in order
+ * to add a few assertions around panel's stylesheets.
+ * Ensure the proper ordering of the theme stylesheet. `global.css` should come
+ * first if it exists, then the theme.
+ */
+function assertThemeStyleSheet(toolbox, toolID) {
+  const iframe = toolbox.doc.getElementById("toolbox-panel-iframe-" + toolID);
+  const styleSheets = iframe.contentDocument.querySelectorAll(
+    `link[rel="stylesheet"]`
+  );
+  ok(
+    !!styleSheets.length,
+    `The panel ${toolID} should have at least have one stylesheet`
+  );
 
-    observer.onMutation = observer.onMutation.bind(observer);
-    observer.onNewRootNode = observer.onNewRootNode.bind(observer);
-    walker.on("mutations", observer.onMutation);
-    walker.watchRootNode(observer.onNewRootNode);
-
-    // If we have a jsdebugger panel, wait for it to complete its reload
-    const jsdebugger = toolbox.getPanel("jsdebugger");
-    let onReloaded = Promise.resolve;
-    if (jsdebugger) {
-      onReloaded = jsdebugger.once("reloaded");
-    }
-
-    const complete = async () => {
-      mm.removeMessageListener("devtools:test:load", complete);
-      // Wait for the documentUnload and newRoot were fired.
-      await waitUntil(() => observer.isReady());
-      walker.off("mutations", observer.onMutation);
-      walker.unwatchRootNode(observer.onNewRootNode);
-      await onReloaded;
-      resolve();
-    };
-
-    mm.addMessageListener("devtools:test:load", complete);
-
-    toolbox.win.focus();
-    synthesizeKeyShortcut(L10N.getStr(shortcut), toolbox.win);
-    reloadsSent++;
-  });
+  // In the web console, we have a special case where global.css is registered very first
+  if (styleSheets[0].href === "chrome://global/skin/global.css") {
+    is(styleSheets[1].href, "chrome://devtools/skin/light-theme.css");
+  } else {
+    // Otherwise, in all other panels, the theme file is registered very first
+    is(styleSheets[0].href, "chrome://devtools/skin/light-theme.css");
+  }
 }

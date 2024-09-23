@@ -3,7 +3,210 @@ All notable changes to this project will be documented in this file.
 
 Before 1.0, this project does not adhere to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-Goblin is now 0.1, which means we will try our best to ease breaking changes. Tracking issue is here: https://github.com/m4b/goblin/issues/97
+Goblin is now 0.8, which means we will try our best to ease breaking changes. Tracking issue is here: https://github.com/m4b/goblin/issues/97
+
+## [0.8.1]  - 2024-04-27
+### Docs
+pe: document pe header, thanks @JohnScience: https://github.com/m4b/goblin/pull/399
+pe, elf: fix doc warnings, thanks @5225225: https://github.com/m4b/goblin/pull/395
+pe: document dos header, thanks @JohnScience: https://github.com/m4b/goblin/pull/393
+### Added
+pe: add TE (terse executable) support, big thanks @Javagedes: https://github.com/m4b/goblin/pull/397
+elf: allow parsing section headers from raw bytes, thanks @lissyx: https://github.com/m4b/goblin/pull/391
+mach: add support for lossy parsing, thanks @h33p: https://github.com/m4b/goblin/pull/386
+elf: add convenience functions, thanks @tiann : https://github.com/m4b/goblin/pull/387
+### Fixed
+pe: read reserved dos headers, thanks @kkent030315: https://github.com/m4b/goblin/pull/405
+
+
+## [0.8.0]  - 2023-12-31 - Happy New Years!
+### Breaking
+msrv: bumped to 1.63.0 since scroll bumped as well
+pe: new field added to parse options: https://github.com/m4b/goblin/pull/377
+pe: attribute certs now non-exhaustive: https://github.com/m4b/goblin/pull/378
+goblin: hint and object enum is now non-exhaustive
+pe: write support introduced some breaking changes, e.g., data directories array adds a tuple of usize and data directory,
+    DosHeader has all the fields filled out, Header struct has a dos_stub field added,
+	symbols and strings fields is made optional in Coff struct, see: https://github.com/m4b/goblin/pull/361
+### Fixed
+elf: fix documentation, thanks @crzysdrs: https://github.com/m4b/goblin/pull/374
+pe: attribute certificates non-exhaustive, thanks @RaitoBezarius: https://github.com/m4b/goblin/pull/378
+pe: fix authenticode parsing, thanks @baloo: https://github.com/m4b/goblin/pull/383
+### Added
+strtab: len method added to return number of bytes of the strtab
+pe: absolutely epic pe write support PR, thanks @RaitoBezarius and @Baloo: https://github.com/m4b/goblin/pull/361
+pe: add coff object file support, thanks @vadimcn, https://github.com/m4b/goblin/pull/379
+pe: allow toggling parsing of attribute certs, thanks @suttonbradley: https://github.com/m4b/goblin/pull/377
+mach: add new mach-o constants, thanks @keith: https://github.com/m4b/goblin/pull/372
+
+## [0.7.1] - 2023-6-11
+### MSRV bump from log
+
+## [0.7.0] - 2023-6-11
+### Breaking
+mach: Implement `LC_NOTE`, (breakage=load commands are marked non-exhaustive), thanks @messense: https://github.com/m4b/goblin/pull/342
+### Fixed
+elf: fix is_lib detection, thanks @m-hilgendorf: https://github.com/m4b/goblin/pull/366
+pe: fix out of bounds access while parsing AttributeCertificate, thanks @anfedotoff: https://github.com/m4b/goblin/pull/368
+### Added
+pe: support basic certificates enumeration, thanks @RaitoBezarius: https://github.com/m4b/goblin/pull/354
+pe: fix certificate tables parsing, thanks @baloo: https://github.com/m4b/goblin/pull/359
+pe: add pe authenticode support, thanks @baloo: https://github.com/m4b/goblin/pull/362
+mach: implement `LC_FILESET_ENTRY`, thanks @mmaekr: https://github.com/m4b/goblin/pull/369
+build: add afl fuzzing support, thanks @anfedotoff: https://github.com/m4b/goblin/pull/351
+
+## [0.6.1] - 2023-2-26
+### Fixed
+elf.section_header: additional workaround for 0-length sections, thanks @Jhynjhiruu: https://github.com/m4b/goblin/pull/347
+pe.utils: file alignment check, thanks @anfedotoff: https://github.com/m4b/goblin/pull/340
+### Added
+elf: Add basic GNU PROPERTY note support, thanks @x64k: https://github.com/m4b/goblin/pull/352
+mach: Implement `LC_BUILD_VERSION`, thanks @messense: https://github.com/m4b/goblin/pull/341
+
+## [0.6.0] - 2022-10-23
+### Breaking
+macho: add support for archives in multi-arch binaries, big thanks to @nick96: https://github.com/m4b/goblin/pull/322
+### Changed
+elf: only consider loadable segments for VM translation (this may semantically break someone, if they depended on older behavior), thanks @lumag: https://github.com/m4b/goblin/pull/329
+### Fixed
+archive: fix potential panic in bsd filenames, thanks @nathaniel-daniel:  https://github.com/m4b/goblin/pull/335
+archive: fix subtract with overflow, thanks @anfedotoff: https://github.com/m4b/goblin/pull/333
+pe: fix oob access, thanks @anfedetoff: https://github.com/m4b/goblin/pull/330
+archive: fix oob access, thanks @anfedetoff: https://github.com/m4b/goblin/pull/329
+### Added
+pe: add machine_to_str utility function, thanks @cgzones: https://github.com/m4b/goblin/pull/338
+fuzz: add debug info for line numbers, thanks @SweetVishnya: https://github.com/m4b/goblin/pull/336
+
+## [0.5.4] - 2022-8-14
+### Fixed
+pe: fix regression in PE binary parsing, thanks @SquareMan: https://github.com/m4b/goblin/pull/321
+
+## [0.5.3] - 2022-7-16
+### Fixed
+elf: fix elf strtab parsing, thanks @tux3: https://github.com/m4b/goblin/pull/316
+### Added
+elf: implement plain for note headers, thanks @mkroening: https://github.com/m4b/goblin/pull/317
+
+## [0.5.2] - 2022-6-5
+### Fixed
+elf: fix arithmetic overflows in `file_range()` and `vm_range()`, thanks @alessandron: https://github.com/m4b/goblin/pull/306
+pe: fix string table containing empty strings, thanks @track-5: https://github.com/m4b/goblin/pull/310
+pe: remove check on debug directory size, thanks @lzybkr: https://github.com/m4b/goblin/pull/313
+### Added
+elf: expose more of programheader impl regardless of alloc feature flag, thanks @dancrossnyc: https://github.com/m4b/goblin/pull/308
+mach.parse: Handle DyldExportsTrie, thanks @apalm: https://github.com/m4b/goblin/pull/303
+
+## [0.5.1] - 2022-2-13
+### BREAKING
+goblin: guard all capacity allocations with bounds checks, this is breaking because we introduced a new error enum, which is now marked as non_exhaustive, thanks @Swatinem: https://github.com/m4b/goblin/pull/298
+pe: support exports without an offset, thanks @dureuill: https://github.com/m4b/goblin/pull/293
+### Fixed
+mach: fix overflow panics, thanks @Swatinem: https://github.com/m4b/goblin/pull/302
+pe: add signature header check, thanks @skdltmxn: https://github.com/m4b/goblin/pull/286
+elf: improve parsing `SHT_SYMTAB` complexity from O(N^2) to O(N), thanks @Lichsto: https://github.com/m4b/goblin/pull/297
+### Added
+elf: clarify documentation on strtab behavior better, and add nice doc example, thanks @n01e0: https://github.com/m4b/goblin/pull/301
+elf: add rpaths and runpath to elf, thanks @messense: https://github.com/m4b/goblin/pull/294
+elf: complete elf OSABI constants, thanks @messense: https://github.com/m4b/goblin/pull/295
+elf: fill out more elf constants, thanks @n01e0: https://github.com/m4b/goblin/pull/296
+
+## [0.5.0] - 2022-2-13
+YANKED, see 0.5.1
+
+## [0.4.3] - 2021-9-18
+### Added
+- elf: add initial versioned symbols support, thanks @johannst: https://github.com/m4b/goblin/pull/280
+- elf: add some missing constants, `PF_MASKOS` and `PF_MASKPROC`, thanks @npmccallum: https://github.com/m4b/goblin/pull/281
+
+## [0.4.2] - 2021-7-4
+### Added
+- strtab: preparses the string table to prevent certain class of DoS attacks, thanks @Lichtsto: https://github.com/m4b/goblin/pull/275
+
+## [0.4.1] - 2021-5-30
+### Fixed
+- elf: fix error when alloc, but not endian, thanks @dancrossnyc: https://github.com/m4b/goblin/pull/273
+
+## [0.4.0] - 2021-4-11
+### BREAKING
+- elf: fix returning invalid ranges for SH_NOBIT sections,
+  method changed to return optional range instead, thanks @Tiwalun: https://github.com/m4b/goblin/pull/253
+### Fixed
+  pe: pass parse opts correctly in pe parser in lookup table, fixes some issues loading and parsing pe libraries: https://github.com/m4b/goblin/pull/268
+  elf: remove unnecessary unsafe blocks, thanks @nico-abram: https://github.com/m4b/goblin/pull/261
+  elf: replace pub type with pub use, thanks @sollyucko: https://github.com/m4b/goblin/pull/259
+### Added
+  elf: add a lazy parse example, thanks @jesseui: https://github.com/m4b/goblin/pull/258
+  elf: add a new fuzzing harness + fix overflows in hash functions and note data iterator construction, thanks @Mrmaxmeier: https://github.com/m4b/goblin/pull/260
+
+## [0.3.4] - 2021-1-31
+### Added
+- elf: introduce "lazy" parsing of elf structure with new lazy_parse function, which allows user to fill in parts of the ELF struct they need later on; new example provided, as well as some tests, thanks @jessehui: https://github.com/m4b/goblin/pull/254
+- elf: also add new `Elf::parse_header` convenience function, which allows to parse elf header from bytes without e.g., explicitly depending on scroll, etc.
+
+## [0.3.3] - 2021-1-31
+### Fixed
+- mach: fix debug print panic, thanks @messense: https://github.com/m4b/goblin/pull/251
+### Added
+- pe: allow pe virtual memory resolve to be optional, allowing memory/process dump parsing, thanks @ko1n (as well as patience for very long time to merge PR!): https://github.com/m4b/goblin/pull/188
+
+## [0.3.2] - 2021-1-29
+### Fixed
+- elf: overflow panic when note name is 0, thanks @glandium: https://github.com/m4b/goblin/pull/256
+
+## [0.3.1] - 2021-1-18
+### Added
+- mach: add rpaths, thanks @keith: https://github.com/m4b/goblin/pull/248
+### Fixed
+- elf: fix regression parsing binaries like busybox (https://github.com/m4b/bingrep/issues/28), thanks @jan-auer: https://github.com/m4b/goblin/pull/249
+
+## [0.3.0] - 2020-11-26
+### BREAKING
+- mach: add missing load commands, and fixup minversion enum and api, thanks @woodruffw !: https://github.com/m4b/goblin/pull/240
+### Fixed
+- elf: prevent overflow in bad section sizes, thanks @jackcmay: https://github.com/m4b/goblin/pull/243
+- `Object::parse` no longer needs `std`! thanks @Evian-Zhang: https://github.com/m4b/goblin/pull/235
+-  test: remove hardcoded CommandLineTools path in macos test, thanks @quake: https://github.com/m4b/goblin/pull/238
+- build: Resolve clippy lints, thanks @connorkuehl: https://github.com/m4b/goblin/pull/225
+### Added
+- elf: add the x86-64 unwind processor specific section header type https://github.com/m4b/goblin/pull/224
+- elf: Add ability to get archive members by index https://github.com/m4b/goblin/pull/225
+
+## [0.2.3] - 2020-5-10
+### Fixed
+- pe: remove unwrap on coffheader strtab parsing, thanks @ExPixel: https://github.com/m4b/goblin/pull/222
+### Added
+- pe: add more machine constants, thanks @ExPixel: https://github.com/m4b/goblin/pull/223
+
+## [0.2.2] - 2020-5-08
+### Fixed
+- elf: protect against out of memory when parsing, thanks @jackcmay: https://github.com/m4b/goblin/pull/219
+- pe: fix panic when parsing unwind info, thanks @jan-auer: https://github.com/m4b/goblin/pull/218
+
+## [0.2.1] - 2020-3-14
+### Added
+- elf: add more robust debug printing to various elf data structures, thanks @connorkuehl, e.g.: https://github.com/m4b/goblin/pull/211
+- elf: derive PartialEq for DynamicInfo, thanks @connorkuehl: https://github.com/m4b/goblin/pull/209
+
+## [0.2.0] - 2020-1-20
+### Changed
+- BREAKING: Changes in `elf::gnu_hash::GnuHash`:
+  + `new(*const u32, usize, &[sym::Sym]) -> Self`
+    to `from_raw_table(&[u8], &[Sym]) -> Result<Self, &str>`
+  + `find(&self, &str, u32, &Strtab) -> Option<&Sym>`
+    to `find(&self, &str, &Strtab) -> Option<&Sym>`.
+- BREAKING: mach: fix generic relocation constants, @philipc: https://github.com/m4b/goblin/pull/204/files
+### Added
+- elf: add more elf note values, thanks @xcoldhandsx: https://github.com/m4b/goblin/pull/201
+- Finally rustfmt'd entire repo :D
+
+## [0.1.3] - 2019-12-28
+### Removed
+- alloc feature, stabilized in 1.36 @philipc https://github.com/m4b/goblin/pull/196
+### Added
+elf: support empty PT_DYNAMIC references, @jan-auer https://github.com/m4b/goblin/pull/193
+elf: move various elf::Sym impls out of alloc gate, @lzutao https://github.com/m4b/goblin/pull/198
+### Fixed
+elf: parsing 0 section header had regression introduced in 779d0ce, fixed by @philipc https://github.com/m4b/goblin/pull/200
 
 ## [0.1.2] - 2019-12-02
 ### Fixed
@@ -16,9 +219,11 @@ elf: Don't fail entire elf parse when interpreter is malformed string, @jsgf htt
 ## [0.1.0] - 2019-11-3
 ### Added
 - update to scroll 0.10 api
+
 ### Changed
 - BREAKING: rename export to lib in Reexport::DLLOrdinal from @lzybkr
 - pe: only parse ExceptionData for machine X86_64, thanks @wyxloading
+
 ### Fixed
 pe: Fix resolution of redirect unwind info, thanks @jan-auer https://github.com/m4b/goblin/pull/183
 pe: fix reexport dll and ordinal, thanks @lzybkr: d62889f469846af0cceb789b415f1e14f5f9e402

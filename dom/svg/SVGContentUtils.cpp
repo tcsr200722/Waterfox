@@ -17,6 +17,7 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SVGContextPaint.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/TextUtils.h"
 #include "nsComputedDOMStyle.h"
 #include "nsContainerFrame.h"
@@ -25,13 +26,10 @@
 #include "nsIScriptError.h"
 #include "nsLayoutUtils.h"
 #include "nsMathUtils.h"
-#include "nsSVGUtils.h"
 #include "nsWhitespaceTokenizer.h"
-#include "SVGAnimationElement.h"
 #include "SVGAnimatedPreserveAspectRatio.h"
 #include "SVGGeometryProperty.h"
 #include "nsContentUtils.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Types.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/ComputedStyle.h"
@@ -140,17 +138,7 @@ SVGSVGElement* SVGContentUtils::GetOuterSVGElement(SVGElement* aSVGElement) {
     ancestor = element->GetParentElementCrossingShadowRoot();
   }
 
-  if (element && element->IsSVGElement(nsGkAtoms::svg)) {
-    return static_cast<SVGSVGElement*>(element);
-  }
-  return nullptr;
-}
-
-void SVGContentUtils::ActivateByHyperlink(nsIContent* aContent) {
-  MOZ_ASSERT(aContent->IsNodeOfType(nsINode::eANIMATION),
-             "Expecting an animation element");
-
-  static_cast<SVGAnimationElement*>(aContent)->ActivateByHyperlink();
+  return SVGSVGElement::FromNodeOrNull(element);
 }
 
 enum DashState {
@@ -161,7 +149,7 @@ enum DashState {
 
 static DashState GetStrokeDashData(
     SVGContentUtils::AutoStrokeOptions* aStrokeOptions, SVGElement* aElement,
-    const nsStyleSVG* aStyleSVG, SVGContextPaint* aContextPaint) {
+    const nsStyleSVG* aStyleSVG, const SVGContextPaint* aContextPaint) {
   size_t dashArrayLength;
   Float totalLengthOfDashes = 0.0, totalLengthOfGaps = 0.0;
   Float pathScale = 1.0;
@@ -192,11 +180,10 @@ static DashState GetStrokeDashData(
     if (dashArrayLength <= 0) {
       return eContinuousStroke;
     }
-    if (aElement->IsNodeOfType(nsINode::eSHAPE)) {
+    if (auto* shapeElement = SVGGeometryElement::FromNode(aElement)) {
       pathScale =
-          static_cast<SVGGeometryElement*>(aElement)->GetPathLengthScale(
-              SVGGeometryElement::eForStroking);
-      if (pathScale <= 0) {
+          shapeElement->GetPathLengthScale(SVGGeometryElement::eForStroking);
+      if (pathScale <= 0 || !std::isfinite(pathScale)) {
         return eContinuousStroke;
       }
     }
@@ -262,7 +249,7 @@ static DashState GetStrokeDashData(
 void SVGContentUtils::GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
                                        SVGElement* aElement,
                                        const ComputedStyle* aComputedStyle,
-                                       SVGContextPaint* aContextPaint,
+                                       const SVGContextPaint* aContextPaint,
                                        StrokeOptionFlags aFlags) {
   auto doCompute = [&](const ComputedStyle* computedStyle) {
     const nsStyleSVG* styleSVG = computedStyle->StyleSVG();
@@ -329,19 +316,26 @@ void SVGContentUtils::GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
   }
 }
 
-Float SVGContentUtils::GetStrokeWidth(SVGElement* aElement,
+Float SVGContentUtils::GetStrokeWidth(const SVGElement* aElement,
                                       const ComputedStyle* aComputedStyle,
-                                      SVGContextPaint* aContextPaint) {
+                                      const SVGContextPaint* aContextPaint) {
   Float res = 0.0;
 
-  auto doCompute = [&](ComputedStyle const* computedStyle) {
+  auto doCompute = [&](const ComputedStyle* computedStyle) {
     const nsStyleSVG* styleSVG = computedStyle->StyleSVG();
 
     if (styleSVG->mStrokeWidth.IsContextValue()) {
       res = aContextPaint ? aContextPaint->GetStrokeWidth() : 1.0;
     } else {
-      res = SVGContentUtils::CoordToFloat(
-          aElement, styleSVG->mStrokeWidth.AsLengthPercentage());
+      auto& lp = styleSVG->mStrokeWidth.AsLengthPercentage();
+      if (lp.HasPercent() && aElement) {
+        auto counter =
+            aElement->IsSVGElement(nsGkAtoms::text)
+                ? UseCounter::eUseCounter_custom_PercentageStrokeWidthInSVGText
+                : UseCounter::eUseCounter_custom_PercentageStrokeWidthInSVG;
+        aElement->OwnerDoc()->SetUseCounter(counter);
+      }
+      res = SVGContentUtils::CoordToFloat(aElement, lp);
     }
   };
 
@@ -354,7 +348,7 @@ Float SVGContentUtils::GetStrokeWidth(SVGElement* aElement,
   return res;
 }
 
-float SVGContentUtils::GetFontSize(Element* aElement) {
+float SVGContentUtils::GetFontSize(const Element* aElement) {
   if (!aElement) {
     return 1.0f;
   }
@@ -368,8 +362,8 @@ float SVGContentUtils::GetFontSize(Element* aElement) {
     return GetFontSize(f->Style(), pc);
   }
 
-  if (RefPtr<ComputedStyle> style =
-          nsComputedDOMStyle::GetComputedStyleNoFlush(aElement, nullptr)) {
+  if (RefPtr<const ComputedStyle> style =
+          nsComputedDOMStyle::GetComputedStyleNoFlush(aElement)) {
     return GetFontSize(style, pc);
   }
 
@@ -378,22 +372,21 @@ float SVGContentUtils::GetFontSize(Element* aElement) {
   return 1.0f;
 }
 
-float SVGContentUtils::GetFontSize(nsIFrame* aFrame) {
+float SVGContentUtils::GetFontSize(const nsIFrame* aFrame) {
   MOZ_ASSERT(aFrame, "NULL frame in GetFontSize");
   return GetFontSize(aFrame->Style(), aFrame->PresContext());
 }
 
-float SVGContentUtils::GetFontSize(ComputedStyle* aComputedStyle,
+float SVGContentUtils::GetFontSize(const ComputedStyle* aComputedStyle,
                                    nsPresContext* aPresContext) {
   MOZ_ASSERT(aComputedStyle);
   MOZ_ASSERT(aPresContext);
 
-  nscoord fontSize = aComputedStyle->StyleFont()->mSize;
-  return nsPresContext::AppUnitsToFloatCSSPixels(fontSize) /
-         aPresContext->EffectiveTextZoom();
+  return aComputedStyle->StyleFont()->mSize.ToCSSPixels() /
+         aPresContext->TextZoom();
 }
 
-float SVGContentUtils::GetFontXHeight(Element* aElement) {
+float SVGContentUtils::GetFontXHeight(const Element* aElement) {
   if (!aElement) {
     return 1.0f;
   }
@@ -407,8 +400,8 @@ float SVGContentUtils::GetFontXHeight(Element* aElement) {
     return GetFontXHeight(f->Style(), pc);
   }
 
-  if (RefPtr<ComputedStyle> style =
-          nsComputedDOMStyle::GetComputedStyleNoFlush(aElement, nullptr)) {
+  if (RefPtr<const ComputedStyle> style =
+          nsComputedDOMStyle::GetComputedStyleNoFlush(aElement)) {
     return GetFontXHeight(style, pc);
   }
 
@@ -417,12 +410,12 @@ float SVGContentUtils::GetFontXHeight(Element* aElement) {
   return 1.0f;
 }
 
-float SVGContentUtils::GetFontXHeight(nsIFrame* aFrame) {
+float SVGContentUtils::GetFontXHeight(const nsIFrame* aFrame) {
   MOZ_ASSERT(aFrame, "NULL frame in GetFontXHeight");
   return GetFontXHeight(aFrame->Style(), aFrame->PresContext());
 }
 
-float SVGContentUtils::GetFontXHeight(ComputedStyle* aComputedStyle,
+float SVGContentUtils::GetFontXHeight(const ComputedStyle* aComputedStyle,
                                       nsPresContext* aPresContext) {
   MOZ_ASSERT(aComputedStyle && aPresContext);
 
@@ -438,16 +431,37 @@ float SVGContentUtils::GetFontXHeight(ComputedStyle* aComputedStyle,
 
   nscoord xHeight = fontMetrics->XHeight();
   return nsPresContext::AppUnitsToFloatCSSPixels(xHeight) /
-         aPresContext->EffectiveTextZoom();
-}
-nsresult SVGContentUtils::ReportToConsole(Document* doc, const char* aWarning,
-                                          const nsTArray<nsString>& aParams) {
-  return nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("SVG"), doc,
-      nsContentUtils::eSVG_PROPERTIES, aWarning, aParams);
+         aPresContext->TextZoom();
 }
 
-bool SVGContentUtils::EstablishesViewport(nsIContent* aContent) {
+float SVGContentUtils::GetLineHeight(const Element* aElement) {
+  float result = 16.0f * ReflowInput::kNormalLineHeightFactor;
+  if (!aElement) {
+    return result;
+  }
+  SVGGeometryProperty::DoForComputedStyle(
+      aElement, [&](const ComputedStyle* style) {
+        auto* context = nsContentUtils::GetContextForContent(aElement);
+        if (!context) {
+          return;
+        }
+        const auto lineHeightAu = ReflowInput::CalcLineHeight(
+            *style, context, aElement, NS_UNCONSTRAINEDSIZE, 1.0f);
+        result = CSSPixel::FromAppUnits(lineHeightAu);
+      });
+
+  return result;
+}
+
+nsresult SVGContentUtils::ReportToConsole(const Document* doc,
+                                          const char* aWarning,
+                                          const nsTArray<nsString>& aParams) {
+  return nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "SVG"_ns,
+                                         doc, nsContentUtils::eSVG_PROPERTIES,
+                                         aWarning, aParams);
+}
+
+bool SVGContentUtils::EstablishesViewport(const nsIContent* aContent) {
   // Although SVG 1.1 states that <image> is an element that establishes a
   // viewport, this is really only for the document it references, not
   // for any child content, which is what this function is used for.
@@ -482,7 +496,7 @@ static gfx::Matrix GetCTMInternal(SVGElement* aElement, bool aScreenCTM,
     gfxMatrix ret;
 
     if (auto* f = e->GetPrimaryFrame()) {
-      ret = nsSVGUtils::GetTransformMatrixInUserSpace(f);
+      ret = SVGUtils::GetTransformMatrixInUserSpace(f);
     } else {
       // FIXME: Ideally we should also return the correct matrix
       // for display:none, but currently transform related code relies
@@ -499,6 +513,14 @@ static gfx::Matrix GetCTMInternal(SVGElement* aElement, bool aScreenCTM,
     return ret;
   };
 
+  auto postTranslateFrameOffset = [](nsIFrame* aFrame, nsIFrame* aAncestorFrame,
+                                     gfx::Matrix& aMatrix) {
+    auto point = aFrame->GetOffsetTo(aAncestorFrame);
+    aMatrix =
+        aMatrix.PostTranslate(nsPresContext::AppUnitsToFloatCSSPixels(point.x),
+                              nsPresContext::AppUnitsToFloatCSSPixels(point.y));
+  };
+
   gfxMatrix matrix = getLocalTransformHelper(aElement, aHaveRecursed);
 
   SVGElement* element = aElement;
@@ -509,8 +531,7 @@ static gfx::Matrix GetCTMInternal(SVGElement* aElement, bool aScreenCTM,
     element = static_cast<SVGElement*>(ancestor);
     matrix *= getLocalTransformHelper(element, true);
     if (!aScreenCTM && SVGContentUtils::EstablishesViewport(element)) {
-      if (!element->NodeInfo()->Equals(nsGkAtoms::svg, kNameSpaceID_SVG) &&
-          !element->NodeInfo()->Equals(nsGkAtoms::symbol, kNameSpaceID_SVG)) {
+      if (!element->IsAnyOfSVGElements(nsGkAtoms::svg, nsGkAtoms::symbol)) {
         NS_ERROR("New (SVG > 1.1) SVG viewport establishing element?");
         return gfx::Matrix(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);  // singular
       }
@@ -537,45 +558,70 @@ static gfx::Matrix GetCTMInternal(SVGElement* aElement, bool aScreenCTM,
     matrix = getLocalTransformHelper(aElement, true);
   }
 
-  if (auto* f = element->GetPrimaryFrame()) {
-    if (f->IsSVGOuterSVGFrame()) {
-      nsMargin bp = f->GetUsedBorderAndPadding();
-      matrix.PostTranslate(
-          NSAppUnitsToFloatPixels(bp.left, AppUnitsPerCSSPixel()),
-          NSAppUnitsToFloatPixels(bp.top, AppUnitsPerCSSPixel()));
-    }
+  gfx::Matrix tm = gfx::ToMatrix(matrix);
+  nsIFrame* frame = element->GetPrimaryFrame();
+  if (!frame) {
+    return tm;
+  }
+  if (frame->IsSVGOuterSVGFrame()) {
+    nsMargin bp = frame->GetUsedBorderAndPadding();
+    int32_t appUnitsPerCSSPixel = AppUnitsPerCSSPixel();
+    tm.PostTranslate(NSAppUnitsToFloatPixels(bp.left, appUnitsPerCSSPixel),
+                     NSAppUnitsToFloatPixels(bp.top, appUnitsPerCSSPixel));
   }
 
   if (!ancestor || !ancestor->IsElement()) {
-    return gfx::ToMatrix(matrix);
+    return tm;
   }
-  if (ancestor->IsSVGElement()) {
-    return gfx::ToMatrix(matrix) *
-           GetCTMInternal(static_cast<SVGElement*>(ancestor), true, true);
+  if (auto* ancestorSVG = SVGElement::FromNode(ancestor)) {
+    return tm * GetCTMInternal(ancestorSVG, true, true);
+  }
+  nsIFrame* parentFrame = frame->GetParent();
+  if (!parentFrame) {
+    return tm;
+  }
+  postTranslateFrameOffset(frame, parentFrame, tm);
+
+  nsIContent* nearestSVGAncestor = ancestor;
+  while (nearestSVGAncestor && !nearestSVGAncestor->IsSVGElement()) {
+    nearestSVGAncestor = nearestSVGAncestor->GetFlattenedTreeParent();
   }
 
-  // XXX this does not take into account CSS transform, or that the non-SVG
-  // content that we've hit may itself be inside an SVG foreignObject higher up
-  Document* currentDoc = aElement->GetComposedDoc();
-  float x = 0.0f, y = 0.0f;
-  if (currentDoc &&
-      element->NodeInfo()->Equals(nsGkAtoms::svg, kNameSpaceID_SVG)) {
-    PresShell* presShell = currentDoc->GetPresShell();
-    if (presShell) {
-      nsIFrame* frame = element->GetPrimaryFrame();
-      nsIFrame* ancestorFrame = presShell->GetRootFrame();
-      if (frame && ancestorFrame) {
-        nsPoint point = frame->GetOffsetTo(ancestorFrame);
-        x = nsPresContext::AppUnitsToFloatCSSPixels(point.x);
-        y = nsPresContext::AppUnitsToFloatCSSPixels(point.y);
-      }
-    }
+  nsIFrame* ancestorFrame;
+  if (nearestSVGAncestor) {
+    ancestorFrame = nearestSVGAncestor->GetPrimaryFrame();
+  } else {
+    Document* currentDoc = aElement->GetComposedDoc();
+    PresShell* presShell = currentDoc ? currentDoc->GetPresShell() : nullptr;
+    ancestorFrame = presShell ? presShell->GetRootFrame() : nullptr;
   }
-  return ToMatrix(matrix).PostTranslate(x, y);
+  if (!ancestorFrame) {
+    return tm;
+  }
+  auto transformToAncestor = nsLayoutUtils::GetTransformToAncestor(
+      RelativeTo{parentFrame, ViewportType::Layout},
+      RelativeTo{ancestorFrame, ViewportType::Layout}, nsIFrame::IN_CSS_UNITS);
+  gfx::Matrix result2d;
+  if (transformToAncestor.CanDraw2D(&result2d)) {
+    tm = tm * result2d;
+  } else {
+    // The transform from our outer SVG matrix to the root is a 3D
+    // transform. We can't really process that so give up and just
+    // return the overall translation from the outer SVG to the root.
+    postTranslateFrameOffset(parentFrame, ancestorFrame, tm);
+  }
+  return nearestSVGAncestor
+             ? tm * GetCTMInternal(static_cast<SVGElement*>(nearestSVGAncestor),
+                                   true, true)
+             : tm;
 }
 
-gfx::Matrix SVGContentUtils::GetCTM(SVGElement* aElement, bool aScreenCTM) {
-  return GetCTMInternal(aElement, aScreenCTM, false);
+gfx::Matrix SVGContentUtils::GetCTM(SVGElement* aElement) {
+  return GetCTMInternal(aElement, false, false);
+}
+
+gfx::Matrix SVGContentUtils::GetScreenCTM(SVGElement* aElement) {
+  return GetCTMInternal(aElement, true, false);
 }
 
 void SVGContentUtils::RectilinearGetStrokeBounds(
@@ -729,7 +775,7 @@ bool SVGContentUtils::ParseNumber(RangedPtr<const char16_t>& aIter,
     return false;
   }
   floatType floatValue = floatType(value);
-  if (!IsFinite(floatValue)) {
+  if (!std::isfinite(floatValue)) {
     return false;
   }
   aValue = floatValue;
@@ -808,14 +854,15 @@ bool SVGContentUtils::ParseInteger(const nsAString& aString, int32_t& aValue) {
   return ParseInteger(iter, end, aValue) && iter == end;
 }
 
-float SVGContentUtils::CoordToFloat(SVGElement* aContent,
-                                    const LengthPercentage& aLength) {
+float SVGContentUtils::CoordToFloat(const SVGElement* aContent,
+                                    const LengthPercentage& aLength,
+                                    uint8_t aCtxType) {
   float result = aLength.ResolveToCSSPixelsWith([&] {
     SVGViewportElement* ctx = aContent->GetCtx();
-    return CSSCoord(ctx ? ctx->GetLength(SVGContentUtils::XY) : 0.0f);
+    return CSSCoord(ctx ? ctx->GetLength(aCtxType) : 0.0f);
   });
   if (aLength.IsCalc()) {
-    auto& calc = aLength.AsCalc();
+    const auto& calc = aLength.AsCalc();
     if (calc.clamping_mode == StyleAllowedNumericType::NonNegative) {
       result = std::max(result, 0.0f);
     } else {
@@ -834,7 +881,7 @@ already_AddRefed<gfx::Path> SVGContentUtils::GetPath(
   }
 
   RefPtr<DrawTarget> drawTarget =
-      gfxPlatform::GetPlatform()->ScreenReferenceDrawTarget();
+      gfxPlatform::ThreadLocalScreenReferenceDrawTarget();
   RefPtr<PathBuilder> builder =
       drawTarget->CreatePathBuilder(FillRule::FILL_WINDING);
 

@@ -16,10 +16,31 @@ function createWebExtensionXPI(id, version) {
   return createTempWebExtensionFile({
     manifest: {
       version,
-      applications: { gecko: { id } },
+      browser_specific_settings: { gecko: { id } },
     },
   });
 }
+
+// Bug 1554703: Verify that the extensions.lastAppBuildId pref is updated properly
+// to avoid a full scan on second startup in XPIStates.scanForChanges.
+add_task(async function test_scan_app_build_id_updated() {
+  const PREF_EM_LAST_APP_BUILD_ID = "extensions.lastAppBuildId";
+  Assert.equal(
+    Services.prefs.getCharPref(PREF_EM_LAST_APP_BUILD_ID, ""),
+    "",
+    "fresh version with no saved build ID"
+  );
+  Assert.ok(Services.appinfo.appBuildID, "build ID is set before a startup");
+
+  await promiseStartupManager();
+  Assert.equal(
+    Services.prefs.getCharPref(PREF_EM_LAST_APP_BUILD_ID, ""),
+    Services.appinfo.appBuildID,
+    "build ID is correct after a startup"
+  );
+
+  await promiseShutdownManager();
+});
 
 // Try to install all the items into the profile
 add_task(async function test_scan_profile() {
@@ -78,7 +99,7 @@ add_task(async function test_modify() {
   await createWebExtension(ID2, "2.2", globalDir);
   await createWebExtension(ID2, "2.3", userDir);
 
-  await OS.File.remove(OS.Path.join(profileDir.path, `${ID3}.xpi`));
+  await IOUtils.remove(PathUtils.join(profileDir.path, `${ID3}.xpi`));
 
   await promiseStartupManager();
   let addons = await AddonManager.getAddonsByTypes(["extension"]);
@@ -128,8 +149,8 @@ add_task(async function test_modify() {
 
 // Check that removing items from the profile reveals their hidden versions.
 add_task(async function test_reveal() {
-  await OS.File.remove(OS.Path.join(profileDir.path, `${ID1}.xpi`));
-  await OS.File.remove(OS.Path.join(profileDir.path, `${ID2}.xpi`));
+  await IOUtils.remove(PathUtils.join(profileDir.path, `${ID1}.xpi`));
+  await IOUtils.remove(PathUtils.join(profileDir.path, `${ID2}.xpi`));
 
   // XPI with wrong name (basename doesn't match the id)
   let xpi = await createWebExtensionXPI(ID3, "3.0");
@@ -183,8 +204,8 @@ add_task(async function test_reveal() {
   Assert.equal(a4, null);
   Assert.ok(!isExtensionInBootstrappedList(profileDir, ID4));
 
-  let addon4Exists = await OS.File.exists(
-    OS.Path.join(profileDir.path, `${ID4}.xpi`)
+  let addon4Exists = await IOUtils.exists(
+    PathUtils.join(profileDir.path, `${ID4}.xpi`)
   );
   Assert.ok(!addon4Exists, "Misnamed xpi should be removed from profile");
 
@@ -317,7 +338,7 @@ add_task(async function test_profile_hiding() {
   const VERSION1 = "1.2";
   await createWebExtension(ID1, VERSION1, profileDir);
 
-  await OS.File.remove(OS.Path.join(userDir.path, `${ID2}.xpi`));
+  await IOUtils.remove(PathUtils.join(userDir.path, `${ID2}.xpi`));
 
   await promiseStartupManager();
 
@@ -396,8 +417,8 @@ add_task(async function test_disable3() {
 add_task(async function test_reval() {
   Services.prefs.clearUserPref("extensions.enabledScopes");
 
-  await OS.File.remove(OS.Path.join(userDir.path, `${ID1}.xpi`));
-  await OS.File.remove(OS.Path.join(globalDir.path, `${ID2}.xpi`));
+  await IOUtils.remove(PathUtils.join(userDir.path, `${ID1}.xpi`));
+  await IOUtils.remove(PathUtils.join(globalDir.path, `${ID2}.xpi`));
 
   const VERSION2 = "2.4";
   await createWebExtension(ID2, VERSION2, profileDir);
@@ -442,7 +463,7 @@ add_task(async function test_reval() {
 // Checks that a removal from one location and an addition in another location
 // for the same item is handled
 add_task(async function test_move() {
-  await OS.File.remove(OS.Path.join(profileDir.path, `${ID1}.xpi`));
+  await IOUtils.remove(PathUtils.join(profileDir.path, `${ID1}.xpi`));
   const VERSION1 = "1.3";
   await createWebExtension(ID1, VERSION1, userDir);
 
@@ -481,8 +502,8 @@ add_task(async function test_move() {
 
 // This should remove any remaining items
 add_task(async function test_remove() {
-  await OS.File.remove(OS.Path.join(userDir.path, `${ID1}.xpi`));
-  await OS.File.remove(OS.Path.join(profileDir.path, `${ID2}.xpi`));
+  await IOUtils.remove(PathUtils.join(userDir.path, `${ID1}.xpi`));
+  await IOUtils.remove(PathUtils.join(profileDir.path, `${ID2}.xpi`));
 
   await promiseStartupManager();
 
@@ -533,9 +554,9 @@ add_task(async function test_autoDisable() {
 
   async function removeAll() {
     return Promise.all([
-      OS.File.remove(OS.Path.join(profileDir.path, `${ID1}.xpi`)),
-      OS.File.remove(OS.Path.join(userDir.path, `${ID2}.xpi`)),
-      OS.File.remove(OS.Path.join(globalDir.path, `${ID3}.xpi`)),
+      IOUtils.remove(PathUtils.join(profileDir.path, `${ID1}.xpi`)),
+      IOUtils.remove(PathUtils.join(userDir.path, `${ID2}.xpi`)),
+      IOUtils.remove(PathUtils.join(globalDir.path, `${ID3}.xpi`)),
     ]);
   }
 

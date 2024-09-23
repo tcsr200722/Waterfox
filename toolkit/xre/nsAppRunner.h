@@ -25,6 +25,7 @@
 #  endif
 #endif
 
+#include "nsCOMPtr.h"
 #include "nsStringFwd.h"
 #include "nsXULAppAPI.h"
 
@@ -41,6 +42,7 @@ extern nsXREDirProvider* gDirServiceProvider;
 // NOTE: gAppData will be null in embedded contexts.
 extern const mozilla::XREAppData* gAppData;
 extern bool gSafeMode;
+extern bool gFxREmbedded;
 
 extern int gArgc;
 extern char** gArgv;
@@ -52,9 +54,12 @@ extern nsString gAbsoluteArgv0Path;
 
 extern bool gIsGtest;
 
+extern bool gKioskMode;
+extern int gKioskMonitor;
+extern bool gAllowContentAnalysisArgPresent;
+
 namespace mozilla {
-nsresult AppInfoConstructor(nsISupports* aOuter, const nsID& aIID,
-                            void** aResult);
+nsresult AppInfoConstructor(const nsID& aIID, void** aResult);
 }  // namespace mozilla
 
 // Exported for gtests.
@@ -76,10 +81,6 @@ int32_t CompareCompatVersions(const nsACString& aOldCompatVersion,
  */
 nsresult NS_CreateNativeAppSupport(nsINativeAppSupport** aResult);
 already_AddRefed<nsINativeAppSupport> NS_GetNativeAppSupport();
-
-nsresult NS_NewToolkitProfileService(nsIToolkitProfileService** aResult);
-
-nsresult NS_NewToolkitProfileFactory(nsIFactory** aResult);
 
 /**
  * Try to acquire exclusive access to the specified profile directory.
@@ -104,8 +105,6 @@ nsresult NS_LockProfilePath(nsIFile* aPath, nsIFile* aTempPath,
 
 void WriteConsoleLog();
 
-void OverrideDefaultLocaleIfNeeded();
-
 /**
  * Allow exit() calls to complete. This should be done from a proper Gecko
  * shutdown path. Otherwise we aim to catch improper shutdowns.
@@ -113,7 +112,14 @@ void OverrideDefaultLocaleIfNeeded();
 void MozExpectedExit();
 
 class nsINativeAppSupport;
-nsresult LaunchChild(bool aBlankCommandLine);
+
+// If aBlankCommandLine is true, then the application will be launched with a
+// blank command line instead of being launched with the same command line that
+// it was initially started with.
+// If aTryExec is true then we use exec on platforms that support it to
+// remain in the foreground.
+nsresult LaunchChild(bool aBlankCommandLine, bool aTryExec = false);
+
 void UnlockProfile();
 
 #ifdef XP_WIN
@@ -121,8 +127,13 @@ void UnlockProfile();
 BOOL WinLaunchChild(const wchar_t* exePath, int argc, char** argv,
                     HANDLE userToken = nullptr, HANDLE* hProcess = nullptr);
 
+BOOL WinLaunchChild(const wchar_t* exePath, int argc, wchar_t** argv,
+                    HANDLE userToken = nullptr, HANDLE* hProcess = nullptr);
+
 #  define PREF_WIN_REGISTER_APPLICATION_RESTART \
     "toolkit.winRegisterApplicationRestart"
+
+#  define PREF_WIN_ALTERED_DLL_PREFETCH "startup.experiments.alteredDllPrefetch"
 
 #  if defined(MOZ_LAUNCHER_PROCESS)
 #    define PREF_WIN_LAUNCHER_PROCESS_ENABLED "browser.launcherProcess.enabled"
@@ -133,10 +144,12 @@ namespace mozilla {
 namespace startup {
 Result<nsCOMPtr<nsIFile>, nsresult> GetIncompleteStartupFile(nsIFile* aProfLD);
 
-extern GeckoProcessType sChildProcessType;
+void IncreaseDescriptorLimits();
 }  // namespace startup
 
 const char* PlatformBuildID();
+
+bool RunningGTest();
 
 }  // namespace mozilla
 
@@ -153,8 +166,6 @@ void MOZ_EXPORT __sanitizer_set_report_path(const char* path);
 void setASanReporterPath(nsIFile* aDir);
 #endif
 
-#ifdef MOZ_WAYLAND
-bool IsWaylandDisabled();
-#endif
+bool IsWaylandEnabled();
 
 #endif  // nsAppRunner_h__

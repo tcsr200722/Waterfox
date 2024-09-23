@@ -6,15 +6,15 @@
 
 #include "mozilla/dom/SVGFETurbulenceElement.h"
 #include "mozilla/dom/SVGFETurbulenceElementBinding.h"
-#include "nsSVGFilterInstance.h"
-#include "nsSVGUtils.h"
+#include "mozilla/SVGFilterInstance.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/BindContext.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(FETurbulence)
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Stitch Options
 static const unsigned short SVG_STITCHTYPE_STITCH = 1;
@@ -28,7 +28,7 @@ JSObject* SVGFETurbulenceElement::WrapNode(JSContext* aCx,
 }
 
 SVGElement::NumberInfo SVGFETurbulenceElement::sNumberInfo[1] = {
-    {nsGkAtoms::seed, 0, false}};
+    {nsGkAtoms::seed, 0}};
 
 SVGElement::NumberPairInfo SVGFETurbulenceElement::sNumberPairInfo[1] = {
     {nsGkAtoms::baseFrequency, 0, 0}};
@@ -90,7 +90,7 @@ already_AddRefed<DOMSVGAnimatedEnumeration> SVGFETurbulenceElement::Type() {
 }
 
 FilterPrimitiveDescription SVGFETurbulenceElement::GetPrimitiveDescription(
-    nsSVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
+    SVGFilterInstance* aInstance, const IntRect& aFilterSubregion,
     const nsTArray<bool>& aInputsAreTainted,
     nsTArray<RefPtr<SourceSurface>>& aInputImages) {
   float fX = mNumberPairAttributes[BASE_FREQ].GetAnimValue(
@@ -154,6 +154,15 @@ bool SVGFETurbulenceElement::AttributeAffectsRendering(
            aAttribute == nsGkAtoms::stitchTiles));
 }
 
+nsresult SVGFETurbulenceElement::BindToTree(BindContext& aCtx,
+                                            nsINode& aParent) {
+  if (aCtx.InComposedDoc()) {
+    aCtx.OwnerDoc().SetUseCounter(eUseCounter_custom_feTurbulence);
+  }
+
+  return SVGFETurbulenceElementBase::BindToTree(aCtx, aParent);
+}
+
 //----------------------------------------------------------------------
 // SVGElement methods
 
@@ -182,5 +191,4 @@ SVGElement::StringAttributesInfo SVGFETurbulenceElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -17,7 +17,7 @@ const TEST_URI = `
   <div id='testid'>Styled Node</div>
 `;
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
@@ -33,11 +33,7 @@ add_task(async function() {
   EventUtils.synthesizeKey("VK_TAB", { shiftKey: true }, view.styleWindow);
   await onValueDone;
 
-  let newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "color",
-  });
+  let newValue = await getRulePropertyValue(0, 0, "color");
   is(newValue, "", "color should have been unset.");
   is(
     prop.editor.valueSpan.textContent,
@@ -71,11 +67,7 @@ add_task(async function() {
   EventUtils.synthesizeKey("VK_TAB", { shiftKey: true }, view.styleWindow);
   await onNameDeleted;
 
-  newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "background-color",
-  });
+  newValue = await getRulePropertyValue(0, 0, "background-color");
   is(newValue, "", "background-color should have been unset.");
 
   editor = inplaceEditor(view.styleDocument.activeElement);

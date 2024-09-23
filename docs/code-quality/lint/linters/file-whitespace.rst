@@ -1,8 +1,12 @@
 Trailing whitespaces
 ====================
 
-This linter verifies if a file has unnecessary trailing whitespaces or Windows
-carriage return.
+This linter verifies if a file has:
+
+* unnecessary trailing whitespaces,
+* Windows carriage return,
+* empty lines at the end of file,
+* if file ends with a newline or not
 
 
 Run Locally
@@ -30,5 +34,5 @@ This linter provides a ``--fix`` option. The python script is doing the change i
 Sources
 -------
 
-* `Configuration (YAML) <https://searchfox.org/mozilla-central/source/tools/lint/file-whitespace.yml>`_
-* `Source <https://searchfox.org/mozilla-central/source/tools/lint/file-whitespace/__init__.py>`_
+* :searchfox:`Configuration (YAML) <tools/lint/file-whitespace.yml>`
+* :searchfox:`Source <tools/lint/file-whitespace/__init__.py>`

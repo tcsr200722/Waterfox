@@ -14,18 +14,15 @@
       "_metaData": {},
       "_urls": [
         {
-          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl={moz:locale}&q={searchTerms}",
-          "rels": [
-          ],
+          "template": "http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
+          "rels": [],
           "type": "application/x-suggestions+json",
-          "params": [
-          ]
+          "params": []
         },
         {
           "template": "http://www.google.com/search",
           "resultDomain": "google.com",
-          "rels": [
-          ],
+          "rels": [],
           "params": [
             {
               "name": "q",
@@ -34,29 +31,6 @@
             {
               "name": "ignore",
               "value": "true"
-            },
-            {
-              "name": "channel",
-              "value": "fflb",
-              "purpose": "keyword"
-            },
-            {
-              "name": "channel",
-              "value": "rcs",
-              "purpose": "contextmenu"
-            }
-          ]
-        },
-        {
-          "template": "http://www.google.com/search",
-          "resultDomain": "purpose.google.com",
-          "rels": [
-          ],
-          "type": "application/x-moz-default-purpose",
-          "params": [
-            {
-              "name": "q",
-              "value": "{searchTerms}"
             },
             {
               "name": "channel",

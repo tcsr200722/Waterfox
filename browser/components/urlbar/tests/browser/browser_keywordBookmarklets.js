@@ -3,37 +3,36 @@
 
 "use strict";
 
-add_task(async function setup() {
+add_task(async function () {
   let bm = await PlacesUtils.bookmarks.insert({
     parentGuid: PlacesUtils.bookmarks.unfiledGuid,
     title: "bookmarklet",
     url: "javascript:'%sx'%20",
   });
   await PlacesUtils.keywords.insert({ keyword: "bm", url: bm.url });
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await PlacesUtils.bookmarks.remove(bm);
   });
 
   let testFns = [
-    function() {
+    function () {
       info("Type keyword and immediately press enter");
       gURLBar.value = "bm";
       gURLBar.focus();
       EventUtils.synthesizeKey("KEY_Enter");
       return "x";
     },
-    function() {
+    function () {
       info("Type keyword with searchstring and immediately press enter");
       gURLBar.value = "bm a";
       gURLBar.focus();
       EventUtils.synthesizeKey("KEY_Enter");
       return "ax";
     },
-    async function() {
+    async function () {
       info("Search keyword, then press enter");
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "bm",
       });
       let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
@@ -41,11 +40,10 @@ add_task(async function setup() {
       EventUtils.synthesizeKey("KEY_Enter");
       return "x";
     },
-    async function() {
+    async function () {
       info("Search keyword with searchstring, then press enter");
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "bm a",
       });
       let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
@@ -53,10 +51,9 @@ add_task(async function setup() {
       EventUtils.synthesizeKey("KEY_Enter");
       return "ax";
     },
-    async function() {
+    async function () {
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "bm",
       });
       let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
@@ -65,11 +62,10 @@ add_task(async function setup() {
       EventUtils.synthesizeMouseAtCenter(element, {});
       return "x";
     },
-    async function() {
+    async function () {
       info("Search keyword with searchstring, then click");
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "bm a",
       });
       let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
@@ -99,7 +95,7 @@ async function do_test(loadFn) {
       await promise;
       // URI should not change when we run a javascript: URL.
       Assert.equal(gBrowser.currentURI.spec, "about:blank");
-      const textContent = await ContentTask.spawn(browser, [], function() {
+      const textContent = await ContentTask.spawn(browser, [], function () {
         return content.document.documentElement.textContent;
       });
       Assert.equal(textContent, expectedTextContent);
@@ -131,7 +127,7 @@ async function do_test(loadFn) {
 }
 
 function getPrincipalURI(browser) {
-  return SpecialPowers.spawn(browser, [], function() {
-    return content.document.nodePrincipal.URI.spec;
+  return SpecialPowers.spawn(browser, [], function () {
+    return content.document.nodePrincipal.spec;
   });
 }

@@ -4,8 +4,6 @@
 
 "use strict";
 
-ChromeUtils.import("resource:///modules/SitePermissions.jsm", this);
-
 function newPrincipal(origin) {
   return Services.scriptSecurityManager.createContentPrincipalFromOrigin(
     origin
@@ -38,14 +36,14 @@ add_task(async function testTemporaryPermissionTabURLs() {
 
   let id = "microphone";
 
-  await BrowserTestUtils.withNewTab("about:blank", async function(browser) {
+  await BrowserTestUtils.withNewTab("about:blank", async function (browser) {
     for (let principal of same) {
       let loaded = BrowserTestUtils.browserLoaded(
         browser,
         false,
-        principal.URI.spec
+        principal.spec
       );
-      BrowserTestUtils.loadURI(browser, principal.URI.spec);
+      BrowserTestUtils.startLoadingURIString(browser, principal.spec);
       await loaded;
 
       SitePermissions.setForPrincipal(
@@ -62,7 +60,7 @@ add_task(async function testTemporaryPermissionTabURLs() {
           false,
           principal2.URI.spec
         );
-        BrowserTestUtils.loadURI(browser, principal2.URI.spec);
+        BrowserTestUtils.startLoadingURIString(browser, principal2.URI.spec);
         await loaded2;
 
         Assert.deepEqual(
@@ -71,20 +69,20 @@ add_task(async function testTemporaryPermissionTabURLs() {
             state: SitePermissions.BLOCK,
             scope: SitePermissions.SCOPE_TEMPORARY,
           },
-          `${principal.URI.spec} should share tab permissions with ${principal2.URI.spec}`
+          `${principal.spec} should share tab permissions with ${principal2.spec}`
         );
       }
 
-      SitePermissions.clearTemporaryPermissions(browser);
+      SitePermissions.clearTemporaryBlockPermissions(browser);
     }
 
     for (let principal of different) {
       let loaded = BrowserTestUtils.browserLoaded(
         browser,
         false,
-        principal.URI.spec
+        principal.spec
       );
-      BrowserTestUtils.loadURI(browser, principal.URI.spec);
+      BrowserTestUtils.startLoadingURIString(browser, principal.spec);
       await loaded;
 
       SitePermissions.setForPrincipal(
@@ -109,7 +107,7 @@ add_task(async function testTemporaryPermissionTabURLs() {
           false,
           principal2.URI.spec
         );
-        BrowserTestUtils.loadURI(browser, principal2.URI.spec);
+        BrowserTestUtils.startLoadingURIString(browser, principal2.URI.spec);
         await loaded;
 
         if (principal2 != principal) {
@@ -119,12 +117,12 @@ add_task(async function testTemporaryPermissionTabURLs() {
               state: SitePermissions.UNKNOWN,
               scope: SitePermissions.SCOPE_PERSISTENT,
             },
-            `${principal.URI.spec} should not share tab permissions with ${principal2.URI.spec}`
+            `${principal.spec} should not share tab permissions with ${principal2.spec}`
           );
         }
       }
 
-      SitePermissions.clearTemporaryPermissions(browser);
+      SitePermissions.clearTemporaryBlockPermissions(browser);
     }
   });
 });

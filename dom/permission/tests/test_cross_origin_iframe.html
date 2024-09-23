@@ -29,13 +29,25 @@
     });
   }
 
-  function checkPermission(aWindow, aExpectedState, aName) {
-    return SpecialPowers.wrap(aWindow).navigator.permissions
-      .query({ name: aName })
-      .then(
-        result => is(SpecialPowers.wrap(result).state, aExpectedState, `correct state for '${aName}'`),
-        () => ok(false, `query should not have rejected for '${aName}'`)
-      );
+  function checkPermission(aIFrame, aExpectedState, aName) {
+    return SpecialPowers.spawn(
+      aIFrame,
+      [{name: aName, expectedState: aExpectedState}],
+      async aInput => {
+        try {
+          let result = await content.navigator
+                                    .permissions
+                                    .query({ name: aInput.name });
+          is(
+            SpecialPowers.wrap(result).state,
+            aInput.expectedState,
+            `correct state for '${aInput.name}'`
+          );
+        } catch (e) {
+          ok(false, `query should not have rejected for '${aInput.name}'`)
+        }
+      }
+    );
   }
 
   function createIframe(aId, aAllow) {
@@ -46,7 +58,7 @@
       if (aAllow) {
         iframe.allow = aAllow;
       }
-      iframe.onload = () => resolve(iframe.contentWindow);
+      iframe.onload = () => resolve(iframe);
       document.body.appendChild(iframe);
     });
   }
@@ -95,6 +107,13 @@
       expected: 'denied',
     },
     {
+      id: 'query storage-access unknown',
+      top: UNKNOWN_ACTION,
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
+    {
       id: 'query navigation top prompt',
       top: PROMPT_ACTION,
       name: 'geolocation',
@@ -121,6 +140,13 @@
       name: 'persistent-storage',
       type: 'persistent-storage',
       expected: 'denied',
+    },
+    {
+      id: 'query storage-access top prompt',
+      top: PROMPT_ACTION,
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
     },
     {
       id: 'query navigation top denied',
@@ -151,6 +177,13 @@
       expected: 'denied',
     },
     {
+      id: 'query storage-access top denied',
+      top: DENY_ACTION,
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
+    {
       id: 'query navigation top granted',
       top: ALLOW_ACTION,
       name: 'geolocation',
@@ -177,6 +210,13 @@
       name: 'persistent-storage',
       type: 'persistent-storage',
       expected: 'denied',
+    },
+    {
+      id: 'query storage-access top granted',
+      top: ALLOW_ACTION,
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'granted',
     },
     {
       id: 'query navigation top denied, iframe has allow attribute',
@@ -210,13 +250,44 @@
       type: 'geo',
       expected: 'prompt',
     },
-
+    {
+      id: 'query storage-access top denied, iframe has allow none attribute',
+      top: DENY_ACTION,
+      allow: "storage-access 'none'",
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
+    {
+      id: 'query storage-access top granted, iframe has allow none attribute',
+      top: ALLOW_ACTION,
+      allow: "storage-access 'none'",
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
+    {
+      id: 'query storage-access top prompt, iframe has allow none attribute',
+      top: PROMPT_ACTION,
+      allow: "storage-access 'none'",
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
+    {
+      id: 'query storage-access top unknown, iframe has allow none attribute',
+      top: UNKNOWN_ACTION,
+      allow: "storage-access 'none'",
+      name: 'storage-access',
+      type: '3rdPartyFrameStorage^https://example.org',
+      expected: 'prompt',
+    },
   ];
 
   SimpleTest.waitForExplicitFinish();
 
   async function nextTest() {
-    if (tests.length == 0) {
+    if (!tests.length) {
       SimpleTest.finish();
       return;
     }
@@ -224,15 +295,13 @@
     let test = tests.shift();
     await setPermission(test.type, test.top)
       .then(() => createIframe(test.id, test.allow))
-      .then(contentWindow => checkPermission(contentWindow, test.expected, test.name))
+      .then(iframe => checkPermission(iframe, test.expected, test.name))
       .then(() => removeIframe(test.id));
 
     SimpleTest.executeSoon(nextTest);
   }
 
-  SpecialPowers.pushPrefEnv({"set": [
-    ["permissions.delegation.enabled", true],
-  ]}).then(nextTest);
+  nextTest()
   </script>
 </body>
 

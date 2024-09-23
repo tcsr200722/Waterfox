@@ -12,7 +12,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/Animation.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/MutationEventBinding.h"
 #include "mozilla/dom/MutationObserverBinding.h"
 #include "mozilla/dom/Nullable.h"
@@ -20,23 +19,27 @@
 #include "nsClassHashtable.h"
 #include "nsContentList.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
 #include "nsIAnimationObserver.h"
-#include "nsIScriptContext.h"
-#include "nsIVariant.h"
 #include "nsPIDOMWindow.h"
 #include "nsStubAnimationObserver.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
+class nsIPrincipal;
+
 class nsDOMMutationObserver;
 using mozilla::dom::MutationObservingInfo;
+
+namespace mozilla::dom {
+class Element;
+}
 
 class nsDOMMutationRecord final : public nsISupports, public nsWrapperCache {
   virtual ~nsDOMMutationRecord() = default;
 
  public:
-  typedef nsTArray<RefPtr<mozilla::dom::Animation>> AnimationArray;
+  using AnimationArray = nsTArray<RefPtr<mozilla::dom::Animation>>;
 
   nsDOMMutationRecord(nsAtom* aType, nsISupports* aOwner)
       : mType(aType),
@@ -52,7 +55,7 @@ class nsDOMMutationRecord final : public nsISupports, public nsWrapperCache {
   }
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsDOMMutationRecord)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(nsDOMMutationRecord)
 
   void GetType(mozilla::dom::DOMString& aRetVal) const {
     aRetVal.SetKnownLiveAtom(mType, mozilla::dom::DOMString::eNullNotExpected);
@@ -140,7 +143,7 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
     mCharacterData = aCharacterData;
   }
 
-  bool CharacterDataOldValue() {
+  bool CharacterDataOldValue() const {
     return mParent ? mParent->CharacterDataOldValue() : mCharacterDataOldValue;
   }
   void SetCharacterDataOldValue(bool aOldValue) {
@@ -148,22 +151,15 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
     mCharacterDataOldValue = aOldValue;
   }
 
-  bool NativeAnonymousChildList() {
-    return mParent ? mParent->NativeAnonymousChildList()
-                   : mNativeAnonymousChildList;
+  bool Attributes() const {
+    return mParent ? mParent->Attributes() : mAttributes;
   }
-  void SetNativeAnonymousChildList(bool aOldValue) {
-    NS_ASSERTION(!mParent, "Shouldn't have parent");
-    mNativeAnonymousChildList = aOldValue;
-  }
-
-  bool Attributes() { return mParent ? mParent->Attributes() : mAttributes; }
   void SetAttributes(bool aAttributes) {
     NS_ASSERTION(!mParent, "Shouldn't have parent");
     mAttributes = aAttributes;
   }
 
-  bool AllAttributes() {
+  bool AllAttributes() const {
     return mParent ? mParent->AllAttributes() : mAllAttributes;
   }
   void SetAllAttributes(bool aAll) {
@@ -171,18 +167,29 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
     mAllAttributes = aAll;
   }
 
-  bool Animations() { return mParent ? mParent->Animations() : mAnimations; }
+  bool Animations() const {
+    return mParent ? mParent->Animations() : mAnimations;
+  }
   void SetAnimations(bool aAnimations) {
     NS_ASSERTION(!mParent, "Shouldn't have parent");
     mAnimations = aAnimations;
   }
 
-  bool AttributeOldValue() {
+  bool AttributeOldValue() const {
     return mParent ? mParent->AttributeOldValue() : mAttributeOldValue;
   }
   void SetAttributeOldValue(bool aOldValue) {
     NS_ASSERTION(!mParent, "Shouldn't have parent");
     mAttributeOldValue = aOldValue;
+  }
+
+  bool ChromeOnlyNodes() const {
+    return mParent ? mParent->ChromeOnlyNodes() : mChromeOnlyNodes;
+  }
+
+  void SetChromeOnlyNodes(bool aChromeOnlyNodes) {
+    NS_ASSERTION(!mParent, "Shouldn't have parent");
+    mChromeOnlyNodes = aChromeOnlyNodes;
   }
 
   nsTArray<RefPtr<nsAtom>>& AttributeFilter() { return mAttributeFilter; }
@@ -209,7 +216,6 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
         mChildList(false),
         mCharacterData(false),
         mCharacterDataOldValue(false),
-        mNativeAnonymousChildList(false),
         mAttributes(false),
         mAllAttributes(false),
         mAttributeOldValue(false),
@@ -226,11 +232,11 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
         mChildList(false),
         mCharacterData(false),
         mCharacterDataOldValue(false),
-        mNativeAnonymousChildList(false),
         mAttributes(false),
         mAllAttributes(false),
         mAttributeOldValue(false),
-        mAnimations(false) {
+        mAnimations(false),
+        mChromeOnlyNodes(false) {
     NS_ASSERTION(mParent->Subtree(), "Should clone a non-subtree observer!");
   }
 
@@ -245,33 +251,7 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
   bool IsObservable(nsIContent* aContent);
 
   bool ObservesAttr(nsINode* aRegisterTarget, mozilla::dom::Element* aElement,
-                    int32_t aNameSpaceID, nsAtom* aAttr) {
-    if (mParent) {
-      return mParent->ObservesAttr(aRegisterTarget, aElement, aNameSpaceID,
-                                   aAttr);
-    }
-    if (!Attributes() || (!Subtree() && aElement != Target()) ||
-        (Subtree() &&
-         aRegisterTarget->SubtreeRoot() != aElement->SubtreeRoot()) ||
-        !IsObservable(aElement)) {
-      return false;
-    }
-    if (AllAttributes()) {
-      return true;
-    }
-
-    if (aNameSpaceID != kNameSpaceID_None) {
-      return false;
-    }
-
-    nsTArray<RefPtr<nsAtom>>& filters = AttributeFilter();
-    for (size_t i = 0; i < filters.Length(); ++i) {
-      if (filters[i] == aAttr) {
-        return true;
-      }
-    }
-    return false;
-  }
+                    int32_t aNameSpaceID, nsAtom* aAttr);
 
   // The target for the MutationObserver.observe() method.
   nsINode* mTarget;
@@ -286,16 +266,16 @@ class nsMutationReceiverBase : public nsStubAnimationObserver {
   nsCOMPtr<nsINode> mKungFuDeathGrip;
 
  private:
-  bool mSubtree;
-  bool mChildList;
-  bool mCharacterData;
-  bool mCharacterDataOldValue;
-  bool mNativeAnonymousChildList;
-  bool mAttributes;
-  bool mAllAttributes;
-  bool mAttributeOldValue;
-  bool mAnimations;
   nsTArray<RefPtr<nsAtom>> mAttributeFilter;
+  bool mSubtree : 1;
+  bool mChildList : 1;
+  bool mCharacterData : 1;
+  bool mCharacterDataOldValue : 1;
+  bool mAttributes : 1;
+  bool mAllAttributes : 1;
+  bool mAttributeOldValue : 1;
+  bool mAnimations : 1;
+  bool mChromeOnlyNodes : 1;
 };
 
 class nsMutationReceiver : public nsMutationReceiverBase {
@@ -347,7 +327,6 @@ class nsMutationReceiver : public nsMutationReceiverBase {
   NS_DECL_ISUPPORTS
 
   NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTEWILLCHANGE
-  NS_DECL_NSIMUTATIONOBSERVER_NATIVEANONYMOUSCHILDLISTCHANGE
   NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATAWILLCHANGE
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
@@ -433,13 +412,12 @@ class nsAnimationReceiver : public nsMutationReceiver {
 class nsDOMMutationObserver final : public nsISupports, public nsWrapperCache {
  public:
   nsDOMMutationObserver(nsCOMPtr<nsPIDOMWindowInner>&& aOwner,
-                        mozilla::dom::MutationCallback& aCb, bool aChrome)
+                        mozilla::dom::MutationCallback& aCb)
       : mOwner(std::move(aOwner)),
         mLastPendingMutation(nullptr),
         mPendingMutationCount(0),
         mCallback(&aCb),
         mWaitingForRun(false),
-        mIsChrome(aChrome),
         mMergeAttributeRecords(false),
         mId(++sCount) {}
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -447,21 +425,19 @@ class nsDOMMutationObserver final : public nsISupports, public nsWrapperCache {
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_DOM_MUTATION_OBSERVER_IID)
 
   static already_AddRefed<nsDOMMutationObserver> Constructor(
-      const mozilla::dom::GlobalObject& aGlobal,
-      mozilla::dom::MutationCallback& aCb, mozilla::ErrorResult& aRv);
+      const mozilla::dom::GlobalObject&, mozilla::dom::MutationCallback&,
+      mozilla::ErrorResult&);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aGivenProto) override {
+  JSObject* WrapObject(JSContext* aCx,
+                       JS::Handle<JSObject*> aGivenProto) override {
     return mozilla::dom::MutationObserver_Binding::Wrap(aCx, this, aGivenProto);
   }
 
   nsISupports* GetParentObject() const { return mOwner; }
 
-  bool IsChrome() { return mIsChrome; }
-
   void Observe(nsINode& aTarget,
                const mozilla::dom::MutationObserverInit& aOptions,
-               mozilla::ErrorResult& aRv);
+               nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aRv);
 
   void Disconnect();
 
@@ -548,8 +524,6 @@ class nsDOMMutationObserver final : public nsISupports, public nsWrapperCache {
                                      bool aWantsAnimations);
   void RemoveReceiver(nsMutationReceiver* aReceiver);
 
-  already_AddRefed<nsIVariant> TakeRecords();
-
   void GetAllSubtreeObserversFor(nsINode* aNode,
                                  nsTArray<nsMutationReceiver*>& aObservers);
   void ScheduleForRun();
@@ -584,7 +558,6 @@ class nsDOMMutationObserver final : public nsISupports, public nsWrapperCache {
   RefPtr<mozilla::dom::MutationCallback> mCallback;
 
   bool mWaitingForRun;
-  bool mIsChrome;
   bool mMergeAttributeRecords;
 
   uint64_t mId;
@@ -836,7 +809,7 @@ class nsAutoAnimationMutationBatch {
   }
 
   Entry* AddEntry(mozilla::dom::Animation* aAnimation, nsINode* aTarget) {
-    EntryArray* entries = sCurrentBatch->mEntryTable.LookupOrAdd(aTarget);
+    EntryArray* entries = sCurrentBatch->mEntryTable.GetOrInsertNew(aTarget);
     if (entries->IsEmpty()) {
       sCurrentBatch->mBatchTargets.AppendElement(aTarget);
     }
@@ -860,7 +833,7 @@ class nsAutoAnimationMutationBatch {
 
   static nsAutoAnimationMutationBatch* sCurrentBatch;
   AutoTArray<nsDOMMutationObserver*, 2> mObservers;
-  typedef nsTArray<Entry> EntryArray;
+  using EntryArray = nsTArray<Entry>;
   nsClassHashtable<nsPtrHashKey<nsINode>, EntryArray> mEntryTable;
   // List of nodes referred to by mEntryTable so we can sort them
   // For a specific pseudo element, we use its parent element as the
@@ -872,5 +845,23 @@ inline nsDOMMutationObserver* nsMutationReceiverBase::Observer() {
   return mParent ? mParent->Observer()
                  : static_cast<nsDOMMutationObserver*>(mObserver);
 }
+
+class MOZ_RAII nsDOMMutationEnterLeave {
+ public:
+  explicit nsDOMMutationEnterLeave(mozilla::dom::Document* aDoc)
+      : mNeeded(aDoc->MayHaveDOMMutationObservers()) {
+    if (mNeeded) {
+      nsDOMMutationObserver::EnterMutationHandling();
+    }
+  }
+  ~nsDOMMutationEnterLeave() {
+    if (mNeeded) {
+      nsDOMMutationObserver::LeaveMutationHandling();
+    }
+  }
+
+ private:
+  const bool mNeeded;
+};
 
 #endif

@@ -5,6 +5,10 @@
 // Tests resetting of preferences in blocklist entry when an add-on is blocked.
 // See bug 802434.
 
+// useMLBF=true only supports blocking, not resetting prefs, since extensions
+// cannot set arbitrary prefs any more after the removal of legacy addons.
+enable_blocklist_v2_instead_of_useMLBF();
+
 const BLOCKLIST_DATA = [
   {
     guid: "block1@tests.mozilla.org",
@@ -50,14 +54,14 @@ add_task(async function setup() {
     manifest: {
       name: "Blocked add-on-1 with to-be-reset prefs",
       version: "1.0",
-      applications: { gecko: { id: "block1@tests.mozilla.org" } },
+      browser_specific_settings: { gecko: { id: "block1@tests.mozilla.org" } },
     },
   });
   await promiseInstallWebExtension({
     manifest: {
       name: "Blocked add-on-2 with to-be-reset prefs",
       version: "1.0",
-      applications: { gecko: { id: "block2@tests.mozilla.org" } },
+      browser_specific_settings: { gecko: { id: "block2@tests.mozilla.org" } },
     },
   });
 

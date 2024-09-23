@@ -2,9 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import React from "react";
+import React from "devtools/client/shared/vendor/react";
 import { shallow } from "enzyme";
 import Expressions from "../Expressions";
 
@@ -37,8 +35,9 @@ function generateDefaults(overrides) {
 
 function render(overrides = {}) {
   const props = generateDefaults(overrides);
-  // $FlowIgnore
-  const component = shallow(<Expressions.WrappedComponent {...props} />);
+  const component = shallow(
+    React.createElement(Expressions.WrappedComponent, props)
+  );
   return { component, props };
 }
 

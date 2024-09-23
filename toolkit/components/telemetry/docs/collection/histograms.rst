@@ -106,7 +106,7 @@ Note that when you need to record for a small set of known keys, using separate 
 Declaring a Histogram
 =====================
 
-Histograms should be declared in the `Histograms.json <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/Histograms.json>`_ file. These declarations are checked for correctness at `compile time <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/gen_histogram_data.py>`_ and used to generate C++ code.
+Histograms should be declared in the `Histograms.json <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/Histograms.json>`_ file. These declarations are checked for correctness at `compile time <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/gen_histogram_data.py>`_ and used to generate C++ code.
 
 The following is a sample histogram declaration from ``Histograms.json`` for a histogram named ``MEMORY_RESIDENT`` which tracks the amount of resident memory used by a process:
 
@@ -230,13 +230,14 @@ Optional. This is one of:
 
     Every new or changed data collection in Firefox needs a `data collection review <https://wiki.mozilla.org/Firefox/Data_Collection>`__ from a Data Steward.
 
+.. _histogram-products:
+
 ``products``
 -------------
 Required. This field is a list of products this histogram can be recorded on. Currently-supported values are:
 
 - ``firefox`` - Collected in Firefox Desktop for submission via Firefox Telemetry.
-- ``fennec`` - Collected in Firefox for Android for submission via Firefox Mobile Telemetry.
-- ``geckoview`` - *deprecated* Will be removed in Firefox 79. (see `bug 1620395 <https://bugzilla.mozilla.org/show_bug.cgi?id=1620395>`__)
+- ``thunderbird`` - Collected in Thunderbird for submission via Thunderbird Telemetry.
 
 ``record_into_store``
 ---------------------
@@ -274,7 +275,7 @@ Telemetry Histograms do not record values greater than 2^31, instead clamping th
 Adding a JavaScript Probe
 =========================
 
-A Telemetry probe is the code that measures and stores values in a histogram. Probes in privileged JavaScript code can make use of the `nsITelemetry <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/nsITelemetry.idl>`_ interface to get references to histogram objects. A new value is recorded in the histogram by calling ``add`` on the histogram object:
+A Telemetry probe is the code that measures and stores values in a histogram. Probes in privileged JavaScript code can make use of the `nsITelemetry <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/nsITelemetry.idl>`_ interface to get references to histogram objects. A new value is recorded in the histogram by calling ``add`` on the histogram object:
 
 .. code-block:: js
 
@@ -294,8 +295,8 @@ For histograms measuring time, TelemetryStopwatch can be used to avoid working w
 
 .. code-block:: js
 
-  TelemetryStopwatch.start("SEARCH_SERVICE_INIT_MS");
-  TelemetryStopwatch.finish("SEARCH_SERVICE_INIT_MS");
+  TelemetryStopwatch.start("SEARCH_SERVICE_INIT2_MS");
+  TelemetryStopwatch.finish("SEARCH_SERVICE_INIT2_MS");
 
   TelemetryStopwatch.start("FX_TAB_SWITCH_TOTAL_MS");
   TelemetryStopwatch.cancel("FX_TAB_SWITCH_TOTAL_MS");
@@ -303,7 +304,7 @@ For histograms measuring time, TelemetryStopwatch can be used to avoid working w
 Adding a C++ Probe
 ==================
 
-Probes in native code can also use the `nsITelemetry <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/nsITelemetry.idl>`_ interface, but the helper functions declared in `Telemetry.h <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/Telemetry.h>`_ are more convenient:
+Probes in native code can also use the `nsITelemetry <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/nsITelemetry.idl>`_ interface, but the helper functions declared in `Telemetry.h <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/Telemetry.h>`_ are more convenient:
 
 .. code-block:: cpp
 

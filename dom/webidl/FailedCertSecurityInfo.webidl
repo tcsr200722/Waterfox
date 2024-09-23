@@ -9,14 +9,18 @@
  * to about:certerror to display information.
  */
 
+enum OverridableErrorCategory {
+  "unset",
+  "trust-error",
+  "domain-mismatch",
+  "expired-or-not-yet-valid",
+};
+
 dictionary FailedCertSecurityInfo {
   DOMString errorCodeString = "";
-  boolean isUntrusted = false;
-  boolean isDomainMismatch = false;
-  boolean isNotValidAtThisTime = false;
+  OverridableErrorCategory overridableErrorCategory = "unset";
   DOMTimeStamp validNotBefore = 0;
   DOMTimeStamp validNotAfter = 0;
-  DOMString subjectAltNames = "";
   DOMString issuerCommonName = "";
   DOMTimeStamp certValidityRangeNotAfter = 0;
   DOMTimeStamp certValidityRangeNotBefore = 0;

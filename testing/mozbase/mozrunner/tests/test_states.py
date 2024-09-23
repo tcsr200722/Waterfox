@@ -1,10 +1,7 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import
-
 import mozunit
 import pytest
-
 from mozrunner import RunnerNotStartedError
 
 
@@ -21,5 +18,5 @@ def test_errors_before_start(runner):
         runner.wait()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

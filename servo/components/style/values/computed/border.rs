@@ -6,11 +6,10 @@
 
 use crate::values::computed::length::{NonNegativeLength, NonNegativeLengthPercentage};
 use crate::values::computed::{NonNegativeNumber, NonNegativeNumberOrPercentage};
-use crate::values::generics::border::BorderCornerRadius as GenericBorderCornerRadius;
-use crate::values::generics::border::BorderImageSlice as GenericBorderImageSlice;
-use crate::values::generics::border::BorderRadius as GenericBorderRadius;
-use crate::values::generics::border::BorderSpacing as GenericBorderSpacing;
-use crate::values::generics::border::GenericBorderImageSideWidth;
+use crate::values::generics::border::{
+    GenericBorderCornerRadius, GenericBorderImageSideWidth, GenericBorderImageSlice,
+    GenericBorderRadius, GenericBorderSpacing,
+};
 use crate::values::generics::rect::Rect;
 use crate::values::generics::size::Size2D;
 use crate::values::generics::NonNegative;
@@ -18,6 +17,12 @@ use crate::Zero;
 use app_units::Au;
 
 pub use crate::values::specified::border::BorderImageRepeat;
+
+/// A computed value for -webkit-text-stroke-width.
+pub type LineWidth = Au;
+
+/// A computed value for border-width (and the like).
+pub type BorderSideWidth = Au;
 
 /// A computed value for the `border-image-width` property.
 pub type BorderImageWidth = Rect<BorderImageSideWidth>;

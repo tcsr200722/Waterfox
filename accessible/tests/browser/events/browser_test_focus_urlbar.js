@@ -10,14 +10,14 @@ loadScripts(
   { name: "role.js", dir: MOCHITESTS_DIR }
 );
 
-XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.jsm",
-  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
-  UrlbarProvider: "resource:///modules/UrlbarUtils.jsm",
-  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
-  UrlbarResult: "resource:///modules/UrlbarResult.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  PlacesTestUtils: "resource://testing-common/PlacesTestUtils.sys.mjs",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  UrlbarProvider: "resource:///modules/UrlbarUtils.sys.mjs",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.sys.mjs",
+  UrlbarResult: "resource:///modules/UrlbarResult.sys.mjs",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.sys.mjs",
+  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
 });
 
 function isEventForAutocompleteItem(event) {
@@ -46,13 +46,11 @@ function isEventForMenuItem(event) {
   return event.accessible.role == ROLE_MENUITEM;
 }
 
-function isEventForTipButton(event) {
+function isEventForResultButton(event) {
   let parent = event.accessible.parent;
   return (
     event.accessible.role == ROLE_PUSHBUTTON &&
-    parent &&
-    parent.role == ROLE_GROUPING &&
-    parent.name
+    parent?.role == ROLE_COMBOBOX_LIST
   );
 }
 
@@ -70,10 +68,10 @@ class TipTestProvider extends UrlbarProvider {
   get type() {
     return UrlbarUtils.PROVIDER_TYPE.PROFILE;
   }
-  isActive(context) {
+  isActive() {
     return true;
   }
-  isRestricting(context) {
+  isRestricting() {
     return true;
   }
   async startQuery(context, addCallback) {
@@ -82,21 +80,23 @@ class TipTestProvider extends UrlbarProvider {
       addCallback(this, match);
     }
   }
-  cancelQuery(context) {}
-  pickResult(result, details) {}
 }
 
 // Check that the URL bar manages accessibility focus appropriately.
 async function runTests() {
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     await UrlbarTestUtils.promisePopupClose(window);
     await PlacesUtils.history.clear();
   });
 
   await PlacesTestUtils.addVisits([
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example1.com/blah",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example2.com/blah",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example1.com/",
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example2.com/",
   ]);
 
@@ -275,32 +275,50 @@ async function runTests() {
     testStates(event.accessible, STATE_FOCUSED);
   }
 
-  info(
-    "Ensuring context menu gets menu event on launch, item focus on down, and address bar focus on escape."
-  );
-  let menuEvent = waitForEvent(
-    nsIAccessibleEvent.EVENT_MENUPOPUP_START,
-    isEventForMenuPopup
-  );
-  EventUtils.sendMouseEvent(
-    { type: "contextmenu" },
-    gURLBar.querySelector("moz-input-box")
-  );
-  await menuEvent;
+  if (
+    AppConstants.platform == "macosx" &&
+    Services.prefs.getBoolPref("widget.macos.native-context-menus", false)
+  ) {
+    // With native context menus, we do not observe accessibility events and we
+    // cannot send synthetic key events to the menu.
+    info("Opening and closing context native context menu");
+    let contextMenu = gURLBar.querySelector("menupopup");
+    let popupshown = BrowserTestUtils.waitForEvent(contextMenu, "popupshown");
+    EventUtils.synthesizeMouseAtCenter(gURLBar.querySelector("moz-input-box"), {
+      type: "contextmenu",
+    });
+    await popupshown;
+    let popuphidden = BrowserTestUtils.waitForEvent(contextMenu, "popuphidden");
+    contextMenu.hidePopup();
+    await popuphidden;
+  } else {
+    info(
+      "Ensuring context menu gets menu event on launch, and item focus on down"
+    );
+    let menuEvent = waitForEvent(
+      nsIAccessibleEvent.EVENT_MENUPOPUP_START,
+      isEventForMenuPopup
+    );
+    EventUtils.synthesizeMouseAtCenter(gURLBar.querySelector("moz-input-box"), {
+      type: "contextmenu",
+    });
+    await menuEvent;
 
-  focused = waitForEvent(EVENT_FOCUS, isEventForMenuItem);
-  EventUtils.synthesizeKey("KEY_ArrowDown");
-  event = await focused;
-  testStates(event.accessible, STATE_FOCUSED);
+    focused = waitForEvent(EVENT_FOCUS, isEventForMenuItem);
+    EventUtils.synthesizeKey("KEY_ArrowDown");
+    event = await focused;
+    testStates(event.accessible, STATE_FOCUSED);
 
-  focused = waitForEvent(EVENT_FOCUS, textBox);
-  let closed = waitForEvent(
-    nsIAccessibleEvent.EVENT_MENUPOPUP_END,
-    isEventForMenuPopup
-  );
-  EventUtils.synthesizeKey("KEY_Escape");
-  await closed;
-  await focused;
+    focused = waitForEvent(EVENT_FOCUS, textBox);
+    let closed = waitForEvent(
+      nsIAccessibleEvent.EVENT_MENUPOPUP_END,
+      isEventForMenuPopup
+    );
+    EventUtils.synthesizeKey("KEY_Escape");
+    await closed;
+    await focused;
+  }
+  info("Ensuring address bar is focused after context menu is dismissed.");
   testStates(textBox, STATE_FOCUSED);
 }
 
@@ -311,36 +329,47 @@ async function runTipTests() {
     new UrlbarResult(
       UrlbarUtils.RESULT_TYPE.URL,
       UrlbarUtils.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       { url: "http://mozilla.org/a" }
     ),
     new UrlbarResult(
       UrlbarUtils.RESULT_TYPE.TIP,
       UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
       {
-        icon: "",
-        text: "This is a test intervention.",
-        buttonText: "Done",
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+        helpUrl: "http://example.com/",
         type: "test",
-        helpUrl: "about:blank",
-        buttonUrl: "about:mozilla",
+        titleL10n: { id: "urlbar-search-tips-confirm" },
+        buttons: [
+          {
+            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            url: "http://example.com/",
+            l10n: { id: "urlbar-search-tips-confirm" },
+          },
+        ],
       }
     ),
     new UrlbarResult(
       UrlbarUtils.RESULT_TYPE.URL,
       UrlbarUtils.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       { url: "http://mozilla.org/b" }
     ),
     new UrlbarResult(
       UrlbarUtils.RESULT_TYPE.URL,
       UrlbarUtils.RESULT_SOURCE.HISTORY,
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       { url: "http://mozilla.org/c" }
     ),
   ];
 
+  // Ensure the tip appears in the expected position.
+  matches[1].suggestedIndex = 2;
+
   let provider = new TipTestProvider(matches);
   UrlbarProvidersManager.registerProvider(provider);
 
-  registerCleanupFunction(async function() {
+  registerCleanupFunction(async function () {
     UrlbarProvidersManager.unregisterProvider(provider);
   });
 
@@ -374,15 +403,15 @@ async function runTipTests() {
 
   info("Ensuring the tip button is focused on down arrow");
   info("Also ensuring that the tip button is a part of a labelled group");
-  focused = waitForEvent(EVENT_FOCUS, isEventForTipButton);
+  focused = waitForEvent(EVENT_FOCUS, isEventForResultButton);
   EventUtils.synthesizeKey("KEY_ArrowDown");
   event = await focused;
   testStates(event.accessible, STATE_FOCUSED);
 
-  info("Ensuring the help button is focused on down arrow");
+  info("Ensuring the help button is focused on tab");
   info("Also ensuring that the help button is a part of a labelled group");
-  focused = waitForEvent(EVENT_FOCUS, isEventForTipButton);
-  EventUtils.synthesizeKey("KEY_ArrowDown");
+  focused = waitForEvent(EVENT_FOCUS, isEventForResultButton);
+  EventUtils.synthesizeKey("KEY_Tab");
   event = await focused;
   testStates(event.accessible, STATE_FOCUSED);
 
@@ -392,9 +421,9 @@ async function runTipTests() {
   event = await focused;
   testStates(event.accessible, STATE_FOCUSED);
 
-  info("Ensuring the help button is focused on up arrow");
-  focused = waitForEvent(EVENT_FOCUS, isEventForTipButton);
-  EventUtils.synthesizeKey("KEY_ArrowUp");
+  info("Ensuring the help button is focused on shift+tab");
+  focused = waitForEvent(EVENT_FOCUS, isEventForResultButton);
+  EventUtils.synthesizeKey("KEY_Tab", { shiftKey: true });
   event = await focused;
   testStates(event.accessible, STATE_FOCUSED);
 

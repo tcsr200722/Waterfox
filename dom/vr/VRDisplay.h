@@ -9,7 +9,6 @@
 
 #include <stdint.h>
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/VRDisplayBinding.h"
 #include "mozilla/DOMEventTargetHelper.h"
@@ -25,6 +24,8 @@
 #include "gfxVR.h"
 
 namespace mozilla {
+class ErrorResult;
+
 namespace gfx {
 class VRDisplayClient;
 class VRDisplayPresentation;
@@ -42,7 +43,7 @@ class VRFieldOfView final : public nsWrapperCache {
   VRFieldOfView(nsISupports* aParent, const gfx::VRFieldOfView& aSrc);
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(VRFieldOfView)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(VRFieldOfView)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(VRFieldOfView)
 
   double UpDegrees() const { return mUpDegrees; }
   double RightDegrees() const { return mRightDegrees; }
@@ -71,7 +72,7 @@ class VRDisplayCapabilities final : public nsWrapperCache {
       : mParent(aParent), mFlags(aFlags) {}
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(VRDisplayCapabilities)
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(VRDisplayCapabilities)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_WRAPPERCACHE_CLASS(VRDisplayCapabilities)
 
   nsISupports* GetParentObject() const { return mParent; }
 

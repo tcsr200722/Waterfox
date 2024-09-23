@@ -40,9 +40,8 @@ class AudioPacketizer {
       : mPacketSize(aPacketSize),
         mChannels(aChannels),
         mReadIndex(0),
-        mWriteIndex(0)
+        mWriteIndex(0),
         // Start off with a single packet
-        ,
         mStorage(new InputType[aPacketSize * aChannels]),
         mLength(aPacketSize * aChannels) {
     MOZ_ASSERT(aPacketSize > 0 && aChannels > 0,
@@ -101,11 +100,15 @@ class AudioPacketizer {
     return out;
   }
 
-  void Output(OutputType* aOutputBuffer) {
+  // Return the number of actual frames dequeued -- this can be lower than the
+  // packet size when underruning or draining.
+  size_t Output(OutputType* aOutputBuffer) {
     uint32_t samplesNeeded = mPacketSize * mChannels;
+    size_t rv = 0;
 
     // Under-run. Pad the end of the buffer with silence.
     if (AvailableSamples() < samplesNeeded) {
+      rv = AvailableSamples() / mChannels;
 #ifdef LOG_PACKETIZER_UNDERRUN
       char buf[256];
       snprintf(buf, 256,
@@ -116,6 +119,8 @@ class AudioPacketizer {
       uint32_t zeros = samplesNeeded - AvailableSamples();
       PodZero(aOutputBuffer + AvailableSamples(), zeros);
       samplesNeeded -= zeros;
+    } else {
+      rv = mPacketSize;
     }
     if (ReadIndex() + samplesNeeded <= mLength) {
       ConvertAudioSamples<InputType, OutputType>(mStorage.get() + ReadIndex(),
@@ -129,19 +134,28 @@ class AudioPacketizer {
           mStorage.get(), aOutputBuffer + firstPartLength, secondPartLength);
     }
     mReadIndex += samplesNeeded;
+    return rv;
+  }
+
+  void Clear() {
+    mReadIndex = 0;
+    mWriteIndex = 0;
   }
 
   uint32_t PacketsAvailable() const {
     return AvailableSamples() / mChannels / mPacketSize;
   }
 
+  uint32_t FramesAvailable() const { return AvailableSamples() / mChannels; }
+
   bool Empty() const { return mWriteIndex == mReadIndex; }
 
   bool Full() const { return mWriteIndex - mReadIndex == mLength; }
 
-  uint32_t PacketSize() const { return mPacketSize; }
-
-  uint32_t Channels() const { return mChannels; }
+  // Size of one packet of audio, in frames
+  const uint32_t mPacketSize;
+  // Number of channels of the stream flowing through this packetizer
+  const uint32_t mChannels;
 
  private:
   uint32_t ReadIndex() const { return mReadIndex % mLength; }
@@ -152,10 +166,6 @@ class AudioPacketizer {
 
   uint32_t EmptySlots() const { return mLength - AvailableSamples(); }
 
-  // Size of one packet of audio, in frames
-  uint32_t mPacketSize;
-  // Number of channels of the stream flowing through this packetizer
-  uint32_t mChannels;
   // Two virtual index into the buffer: the read position and the write
   // position.
   uint64_t mReadIndex;

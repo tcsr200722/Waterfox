@@ -12,10 +12,17 @@
 #include "nsIPrincipal.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIAppStartup.h"
+#include "nsJSPrincipals.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
+#include "nsGlobalWindowOuter.h"
 #include "xpcpublic.h"
+#include "mozilla/AppShutdown.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/Components.h"
+#include "mozilla/ProfilerLabels.h"
+#include "nsFocusManager.h"
 
 namespace mozilla {
 
@@ -49,6 +56,8 @@ NS_IMETHODIMP
 WindowDestroyedEvent::Run() {
   AUTO_PROFILER_LABEL("WindowDestroyedEvent::Run", OTHER);
 
+  nsCOMPtr<nsPIDOMWindowOuter> nukedOuter;
+
   nsCOMPtr<nsIObserverService> observerService = services::GetObserverService();
   if (!observerService) {
     return NS_OK;
@@ -65,11 +74,8 @@ WindowDestroyedEvent::Run() {
     case Phase::Destroying: {
       bool skipNukeCrossCompartment = false;
 #ifndef DEBUG
-      nsCOMPtr<nsIAppStartup> appStartup = components::AppStartup::Service();
-
-      if (appStartup) {
-        appStartup->GetShuttingDown(&skipNukeCrossCompartment);
-      }
+      skipNukeCrossCompartment =
+          AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed);
 #endif
 
       if (!skipNukeCrossCompartment) {
@@ -101,11 +107,15 @@ WindowDestroyedEvent::Run() {
         } else {
           nsGlobalWindowOuter* outer =
               nsGlobalWindowOuter::FromSupports(window);
-          currentInner = outer->GetCurrentInnerWindowInternal();
+          currentInner =
+              nsGlobalWindowInner::Cast(outer->GetCurrentInnerWindow());
+          nukedOuter = outer;
         }
         NS_ENSURE_TRUE(currentInner, NS_OK);
 
-        AutoSafeJSContext cx;
+        dom::AutoJSAPI jsapi;
+        jsapi.Init();
+        JSContext* cx = jsapi.cx();
         JS::Rooted<JSObject*> obj(cx, currentInner->GetGlobalJSObject());
         if (obj && !js::IsSystemRealm(js::GetNonCCWObjectRealm(obj))) {
           JS::Realm* realm = js::GetNonCCWObjectRealm(obj);
@@ -132,6 +142,13 @@ WindowDestroyedEvent::Run() {
         }
       }
     } break;
+  }
+
+  if (nukedOuter) {
+    nsFocusManager* fm = nsFocusManager::GetFocusManager();
+    if (fm) {
+      fm->WasNuked(nukedOuter);
+    }
   }
 
   return NS_OK;

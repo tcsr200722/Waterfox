@@ -17,13 +17,14 @@
 #include "nsString.h"
 #include "nsWeakReference.h"
 #include "nsCOMArray.h"
+#include "nsDocShell.h"
 #include "nsRect.h"
 #include "Units.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/Mutex.h"
 
 // Interfaces needed
 #include "nsIBaseWindow.h"
-#include "nsIDocShell.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -35,24 +36,21 @@
 #include "nsIRemoteTab.h"
 #include "nsIWebProgressListener.h"
 #include "nsITimer.h"
-
-#ifndef MOZ_NEW_XULSTORE
-#  include "nsIXULStore.h"
-#endif
-
-namespace mozilla {
-namespace dom {
-class Element;
-}  // namespace dom
-}  // namespace mozilla
+#include "nsIXULStore.h"
 
 class nsAtom;
 class nsXULTooltipListener;
-struct nsWidgetInitData;
 
 namespace mozilla {
 class PresShell;
 class AppWindowTimerCallback;
+class L10nReadyPromiseHandler;
+namespace dom {
+class Element;
+}  // namespace dom
+namespace widget {
+struct InitData;
+}  // namespace widget
 }  // namespace mozilla
 
 // AppWindow
@@ -90,7 +88,8 @@ class AppWindow final : public nsIBaseWindow,
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
     virtual mozilla::PresShell* GetPresShell() override;
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
-    virtual bool WindowMoved(nsIWidget* aWidget, int32_t x, int32_t y) override;
+    virtual bool WindowMoved(nsIWidget* aWidget, int32_t x, int32_t y,
+                             ByMoveToRect) override;
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
     virtual bool WindowResized(nsIWidget* aWidget, int32_t aWidth,
                                int32_t aHeight) override;
@@ -99,11 +98,8 @@ class AppWindow final : public nsIBaseWindow,
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
     virtual void SizeModeChanged(nsSizeMode sizeMode) override;
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
-    virtual void UIResolutionChanged() override;
-    MOZ_CAN_RUN_SCRIPT_BOUNDARY
-    virtual void FullscreenWillChange(bool aInFullscreen) override;
-    MOZ_CAN_RUN_SCRIPT_BOUNDARY
-    virtual void FullscreenChanged(bool aInFullscreen) override;
+    virtual void MacFullscreenMenubarOverlapChanged(
+        mozilla::DesktopCoord aOverlapAmount) override;
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
     virtual void OcclusionStateChanged(bool aIsFullyOccluded) override;
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
@@ -136,12 +132,15 @@ class AppWindow final : public nsIBaseWindow,
   void IgnoreXULSizeMode(bool aEnable) { mIgnoreXULSizeMode = aEnable; }
   void WasRegistered() { mRegistered = true; }
 
+  using nsIBaseWindow::GetPositionAndSize;
+  using nsIBaseWindow::GetSize;
+
   // AppWindow methods...
   nsresult Initialize(nsIAppWindow* aParent, nsIAppWindow* aOpener,
                       int32_t aInitialWidth, int32_t aInitialHeight,
-                      bool aIsHiddenWindow, nsWidgetInitData& widgetInitData);
+                      bool aIsHiddenWindow, widget::InitData& widgetInitData);
 
-  nsIDocShell* GetDocShell() { return mDocShell; }
+  nsDocShell* GetDocShell() { return mDocShell; }
 
   nsresult Toolbar();
 
@@ -157,10 +156,12 @@ class AppWindow final : public nsIBaseWindow,
   bool WindowResized(nsIWidget* aWidget, int32_t aWidth, int32_t aHeight);
   MOZ_CAN_RUN_SCRIPT bool RequestWindowClose(nsIWidget* aWidget);
   MOZ_CAN_RUN_SCRIPT void SizeModeChanged(nsSizeMode aSizeMode);
-  MOZ_CAN_RUN_SCRIPT void UIResolutionChanged();
   MOZ_CAN_RUN_SCRIPT void FullscreenWillChange(bool aInFullscreen);
   MOZ_CAN_RUN_SCRIPT void FullscreenChanged(bool aInFullscreen);
+  MOZ_CAN_RUN_SCRIPT void MacFullscreenMenubarOverlapChanged(
+      mozilla::DesktopCoord aOverlapAmount);
   MOZ_CAN_RUN_SCRIPT void OcclusionStateChanged(bool aIsFullyOccluded);
+  void RecomputeBrowsingContextVisibility();
   MOZ_CAN_RUN_SCRIPT void OSToolbarButtonPressed();
   MOZ_CAN_RUN_SCRIPT
   bool ZLevelChanged(bool aImmediate, nsWindowZ* aPlacement,
@@ -171,17 +172,23 @@ class AppWindow final : public nsIBaseWindow,
   explicit AppWindow(uint32_t aChromeFlags);
 
  protected:
-  enum persistentAttributes {
-    PAD_MISC = 0x1,
-    PAD_POSITION = 0x2,
-    PAD_SIZE = 0x4
+  enum class PersistentAttribute : uint8_t {
+    Position,
+    Size,
+    Misc,
   };
+  using PersistentAttributes = EnumSet<PersistentAttribute>;
+
+  static PersistentAttributes AllPersistentAttributes() {
+    return {PersistentAttribute::Position, PersistentAttribute::Size,
+            PersistentAttribute::Misc};
+  }
 
   virtual ~AppWindow();
 
   friend class mozilla::AppWindowTimerCallback;
 
-  bool ExecuteCloseHandler();
+  MOZ_CAN_RUN_SCRIPT bool ExecuteCloseHandler();
   void ConstrainToOpenerScreen(int32_t* aX, int32_t* aY);
 
   void SetPersistenceTimer(uint32_t aDirtyFlags);
@@ -195,6 +202,8 @@ class AppWindow final : public nsIBaseWindow,
   NS_IMETHOD ForceRoundedDimensions();
   NS_IMETHOD GetAvailScreenSize(int32_t* aAvailWidth, int32_t* aAvailHeight);
 
+  void FinishFullscreenChange(bool aInFullscreen);
+
   void ApplyChromeFlags();
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void SizeShell();
   void OnChromeLoaded();
@@ -205,7 +214,18 @@ class AppWindow final : public nsIBaseWindow,
   void SetSpecifiedSize(int32_t aSpecWidth, int32_t aSpecHeight);
   bool UpdateWindowStateFromMiscXULAttributes();
   void SyncAttributesToWidget();
-  NS_IMETHOD SavePersistentAttributes();
+  void SavePersistentAttributes(PersistentAttributes);
+  void MaybeSavePersistentPositionAndSize(PersistentAttributes,
+                                          dom::Element& aRootElement,
+                                          const nsAString& aPersistString,
+                                          bool aShouldPersist);
+  void MaybeSavePersistentMiscAttributes(PersistentAttributes,
+                                         dom::Element& aRootElement,
+                                         const nsAString& aPersistString,
+                                         bool aShouldPersist);
+  void SavePersistentAttributes() {
+    SavePersistentAttributes(mPersistentAttributesDirty);
+  }
 
   bool NeedsTooltipListener();
   void AddTooltipSupport();
@@ -238,18 +258,72 @@ class AppWindow final : public nsIBaseWindow,
   void PlaceWindowLayersBehind(uint32_t aLowLevel, uint32_t aHighLevel,
                                nsIAppWindow* aBehind);
   void SetContentScrollbarVisibility(bool aVisible);
-  void PersistentAttributesDirty(uint32_t aDirtyFlags);
+
+  enum PersistentAttributeUpdate { Sync, Async };
+  void PersistentAttributesDirty(PersistentAttributes,
+                                 PersistentAttributeUpdate);
   nsresult GetTabCount(uint32_t* aResult);
 
   void LoadPersistentWindowState();
   nsresult GetPersistentValue(const nsAtom* aAttr, nsAString& aValue);
   nsresult SetPersistentValue(const nsAtom* aAttr, const nsAString& aValue);
 
+  // Saves window size and positioning values in order to display a very early
+  // skeleton UI. This has to happen before we can reasonably initialize the
+  // xulstore (i.e., before even loading libxul), so they have to use a special
+  // purpose store to do so.
+  nsresult MaybeSaveEarlyWindowPersistentValues(
+      const LayoutDeviceIntRect& aRect);
+
+  // Gets the uri spec and the window element ID for this window.
+  nsresult GetDocXulStoreKeys(nsString& aUriSpec, nsString& aWindowElementId);
+
+  // Enum for the current state of a fullscreen change.
+  //
+  // It is used to ensure that fullscreen change is issued after both
+  // the window state change and the window size change at best effort.
+  // This is needed because some platforms can't guarantee the order
+  // between such two events.
+  //
+  // It's changed in the following way:
+  // +---------------------------+--------------------------------------+
+  // |                           |                                      |
+  // |                           v                                      |
+  // |                      NotChanging                                 |
+  // |                           +                                      |
+  // |                           | FullscreenWillChange                 |
+  // |                           v                                      |
+  // |        +-----------+ WillChange +------------------+             |
+  // |        | WindowResized           FullscreenChanged |             |
+  // |        v                                           v             |
+  // |  WidgetResized                         WidgetEnteredFullscreen   |
+  // |        +                              or WidgetExitedFullscreen  |
+  // |        | FullscreenChanged                         +             |
+  // |        v                          WindowResized or |             |
+  // +--------+                          delayed dispatch |             |
+  //                                                      v             |
+  //                                                      +-------------+
+  //
+  // The delayed dispatch serves as timeout, which is necessary because it's
+  // not even guaranteed that the widget will be resized at all.
+  enum class FullscreenChangeState : uint8_t {
+    // No current fullscreen change. Any previous change has finished.
+    NotChanging,
+    // Indicate there is going to be a fullscreen change.
+    WillChange,
+    // The widget has been resized since WillChange.
+    WidgetResized,
+    // The widget has entered fullscreen state since WillChange.
+    WidgetEnteredFullscreen,
+    // The widget has exited fullscreen state since WillChange.
+    WidgetExitedFullscreen,
+  };
+
   nsChromeTreeOwner* mChromeTreeOwner;
   nsContentTreeOwner* mContentTreeOwner;
   nsContentTreeOwner* mPrimaryContentTreeOwner;
   nsCOMPtr<nsIWidget> mWindow;
-  nsCOMPtr<nsIDocShell> mDocShell;
+  RefPtr<nsDocShell> mDocShell;
   nsCOMPtr<nsPIDOMWindowOuter> mDOMWindow;
   nsWeakPtr mParentWindow;
   nsCOMPtr<nsIPrompt> mPrompter;
@@ -257,6 +331,7 @@ class AppWindow final : public nsIBaseWindow,
   nsCOMPtr<nsIXULBrowserWindow> mXULBrowserWindow;
   nsCOMPtr<nsIDocShellTreeItem> mPrimaryContentShell;
   nsresult mModalStatus;
+  FullscreenChangeState mFullscreenChangeState;
   bool mContinueModalLoop;
   bool mDebuting;            // being made visible right now
   bool mChromeLoaded;        // True when chrome has loaded
@@ -274,20 +349,28 @@ class AppWindow final : public nsIBaseWindow,
   // otherwise happen due to script running as we tear down various things.
   bool mDestroying;
   bool mRegistered;
-  uint32_t mPersistentAttributesDirty;  // persistentAttributes
-  uint32_t mPersistentAttributesMask;
+  // Indicator for whether the client size, instead of the window size, should
+  // be maintained in case of a change in their relation.
+  bool mDominantClientSize;
+  PersistentAttributes mPersistentAttributesDirty;
+  PersistentAttributes mPersistentAttributesMask;
   uint32_t mChromeFlags;
   nsCOMPtr<nsIOpenWindowInfo> mInitialOpenWindowInfo;
   nsString mTitle;
-  nsIntRect mOpenerScreenRect;  // the screen rect of the opener
+
+  // The screen rect of the opener.
+  mozilla::DesktopIntRect mOpenerScreenRect;
 
   nsCOMPtr<nsIRemoteTab> mPrimaryBrowserParent;
 
   nsCOMPtr<nsITimer> mSPTimer;
-  mozilla::Mutex mSPTimerLock;
   WidgetListenerDelegate mWidgetListenerDelegate;
 
  private:
+  MOZ_CAN_RUN_SCRIPT void IntrinsicallySizeShell(const CSSIntSize& aWindowDiff,
+                                                 int32_t& aSpecWidth,
+                                                 int32_t& aSpecHeight);
+
   // GetPrimaryBrowserParentSize is called from xpidl methods and we don't have
   // a good way to annotate those with MOZ_CAN_RUN_SCRIPT yet.  It takes no
   // refcounted args other than "this", and the "this" uses seem ok.
@@ -295,9 +378,14 @@ class AppWindow final : public nsIBaseWindow,
   GetPrimaryRemoteTabSize(int32_t* aWidth, int32_t* aHeight);
   nsresult GetPrimaryContentShellSize(int32_t* aWidth, int32_t* aHeight);
   nsresult SetPrimaryRemoteTabSize(int32_t aWidth, int32_t aHeight);
-#ifndef MOZ_NEW_XULSTORE
+  void SizeShellToWithLimit(int32_t aDesiredWidth, int32_t aDesiredHeight,
+                            int32_t shellItemWidth, int32_t shellItemHeight);
+  nsresult MoveResize(const Maybe<LayoutDeviceIntPoint>& aPosition,
+                      const Maybe<LayoutDeviceIntSize>& aSize, bool aRepaint);
+  nsresult MoveResize(const Maybe<DesktopPoint>& aPosition,
+                      const Maybe<DesktopSize>& aSize, bool aRepaint);
   nsCOMPtr<nsIXULStore> mLocalStore;
-#endif
+  bool mIsWidgetInFullscreen = false;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(AppWindow, NS_APPWINDOW_IMPL_CID)

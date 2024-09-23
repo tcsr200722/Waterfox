@@ -1,4 +1,4 @@
-FROM debian:stretch-20181112
+FROM debian:bullseye-20221205
 
 COPY setup.sh /root
 RUN cd /root && ./setup.sh

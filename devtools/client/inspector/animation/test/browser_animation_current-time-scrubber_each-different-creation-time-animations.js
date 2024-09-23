@@ -7,7 +7,7 @@
 
 const WAIT_TIME = 3000;
 
-add_task(async function() {
+add_task(async function () {
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept([".animated", ".still"]);
   const { animationInspector, panel } = await openAnimationInspector();
@@ -17,15 +17,17 @@ add_task(async function() {
   );
   await wait(WAIT_TIME);
   await setClassAttribute(animationInspector, ".still", "ball compositor-all");
+  await waitUntil(() => panel.querySelectorAll(".animation-item").length === 2);
 
   info("Move the scrubber");
-  await clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
+  clickOnCurrentTimeScrubberController(animationInspector, panel, 0.5);
+  await waitUntilAnimationsPlayState(animationInspector, "paused");
 
   info("Check existed animations have different currentTime");
   const animations = animationInspector.state.animations;
-  ok(
-    animations[0].state.currentTime + WAIT_TIME >
-      animations[1].state.currentTime,
+  Assert.greater(
+    animations[0].state.currentTime + WAIT_TIME,
+    animations[1].state.currentTime,
     `The currentTime of added animation shold be ${WAIT_TIME}ms less than ` +
       "at least that currentTime of first animation"
   );

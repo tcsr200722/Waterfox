@@ -11,8 +11,8 @@ const BAD_CERT = "https://expired.example.com/";
 const UNKNOWN_ISSUER = "https://self-signed.example.com ";
 const BAD_STS_CERT =
   "https://badchain.include-subdomains.pinning.example.com:443";
-const { TabStateFlusher } = ChromeUtils.import(
-  "resource:///modules/sessionstore/TabStateFlusher.jsm"
+const { TabStateFlusher } = ChromeUtils.importESModule(
+  "resource:///modules/sessionstore/TabStateFlusher.sys.mjs"
 );
 
 add_task(async function checkReturnToAboutHome() {
@@ -45,14 +45,13 @@ add_task(async function checkReturnToAboutHome() {
       gBrowser,
       "about:home"
     );
-    await SpecialPowers.spawn(bc, [useFrame], async function(subFrame) {
+    await SpecialPowers.spawn(bc, [useFrame], async function (subFrame) {
       let returnButton = content.document.getElementById("returnButton");
       if (!subFrame) {
-        Assert.equal(
-          returnButton.getAttribute("autofocus"),
-          "true",
-          "returnButton has autofocus"
-        );
+        if (!Services.focus.focusedElement == returnButton) {
+          await ContentTaskUtils.waitForEvent(returnButton, "focus");
+        }
+        Assert.ok(true, "returnButton has focus");
       }
       // Note that going back to about:newtab might cause a process flip, if
       // the browser is configured to run about:newtab in its own special
@@ -85,7 +84,7 @@ add_task(async function checkReturnToPreviousPage() {
       tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, GOOD_PAGE);
       browser = tab.linkedBrowser;
 
-      BrowserTestUtils.loadURI(browser, GOOD_PAGE_2);
+      BrowserTestUtils.startLoadingURIString(browser, GOOD_PAGE_2);
       await BrowserTestUtils.browserLoaded(browser, false, GOOD_PAGE_2);
       await injectErrorPageFrame(tab, BAD_CERT);
     } else {
@@ -94,7 +93,7 @@ add_task(async function checkReturnToPreviousPage() {
 
       info("Loading and waiting for the cert error");
       let certErrorLoaded = BrowserTestUtils.waitForErrorPage(browser);
-      BrowserTestUtils.loadURI(browser, BAD_CERT);
+      BrowserTestUtils.startLoadingURIString(browser, BAD_CERT);
       await certErrorLoaded;
     }
 
@@ -122,7 +121,7 @@ add_task(async function checkReturnToPreviousPage() {
       "pageshow",
       true
     );
-    await SpecialPowers.spawn(bc, [useFrame], async function(subFrame) {
+    await SpecialPowers.spawn(bc, [useFrame], async function () {
       let returnButton = content.document.getElementById("returnButton");
       returnButton.click();
     });
@@ -162,12 +161,20 @@ add_task(async function checkAdvancedDetails() {
       bc = bc.children[0];
     }
 
-    let message = await SpecialPowers.spawn(bc, [], async function() {
+    let message = await SpecialPowers.spawn(bc, [], async function () {
       let doc = content.document;
-      let shortDescText = doc.getElementById("errorShortDescText");
-      Assert.ok(
-        shortDescText.textContent.includes("expired.example.com"),
+
+      const shortDesc = doc.getElementById("errorShortDesc");
+      const sdArgs = JSON.parse(shortDesc.dataset.l10nArgs);
+      is(
+        sdArgs.hostname,
+        "expired.example.com",
         "Should list hostname in error message."
+      );
+
+      Assert.ok(
+        doc.getElementById("certificateErrorDebugInformation").hidden,
+        "Debug info is initially hidden"
       );
 
       let exceptionButton = doc.getElementById("exceptionDialogButton");
@@ -180,13 +187,16 @@ add_task(async function checkAdvancedDetails() {
       advancedButton.click();
 
       // Wait until fluent sets the errorCode inner text.
-      let el;
+      let errorCode;
       await ContentTaskUtils.waitForCondition(() => {
-        el = doc.getElementById("errorCode");
-        return el.textContent != "";
+        errorCode = doc.getElementById("errorCode");
+        return errorCode && errorCode.textContent != "";
       }, "error code has been set inside the advanced button panel");
 
-      return { textContent: el.textContent, tagName: el.tagName };
+      return {
+        textContent: errorCode.textContent,
+        tagName: errorCode.tagName.toLowerCase(),
+      };
     });
     is(
       message.textContent,
@@ -195,24 +205,24 @@ add_task(async function checkAdvancedDetails() {
     );
     is(message.tagName, "a", "Error message is a link");
 
-    message = await SpecialPowers.spawn(bc, [], async function() {
+    message = await SpecialPowers.spawn(bc, [], async function () {
       let doc = content.document;
       let errorCode = doc.getElementById("errorCode");
       errorCode.click();
       let div = doc.getElementById("certificateErrorDebugInformation");
       let text = doc.getElementById("certificateErrorText");
-
-      let serhelper = Cc[
-        "@mozilla.org/network/serialization-helper;1"
-      ].getService(Ci.nsISerializationHelper);
-      let serializable = content.docShell.failedChannel.securityInfo
-        .QueryInterface(Ci.nsITransportSecurityInfo)
-        .QueryInterface(Ci.nsISerializable);
-      let serializedSecurityInfo = serhelper.serializeToString(serializable);
+      Assert.ok(
+        content.getComputedStyle(div).display !== "none",
+        "Debug information is visible"
+      );
+      let failedCertChain =
+        content.docShell.failedChannel.securityInfo.failedCertChain.map(cert =>
+          cert.getBase64DERString()
+        );
       return {
         divDisplay: content.getComputedStyle(div).display,
         text: text.textContent,
-        securityInfoAsString: serializedSecurityInfo,
+        failedCertChain,
       };
     });
     isnot(message.divDisplay, "none", "Debug information is visible");
@@ -229,7 +239,7 @@ add_task(async function checkAdvancedDetails() {
       message.text.includes("HTTP Public Key Pinning: false"),
       "Correct HPKP value found"
     );
-    let certChain = getCertChain(message.securityInfoAsString);
+    let certChain = getCertChainAsString(message.failedCertChain);
     ok(message.text.includes(certChain), "Found certificate chain");
 
     BrowserTestUtils.removeTab(gBrowser.selectedTab);
@@ -249,7 +259,7 @@ add_task(async function checkAdvancedDetailsForHSTS() {
       bc = bc.children[0];
     }
 
-    let message = await SpecialPowers.spawn(bc, [], async function() {
+    let message = await SpecialPowers.spawn(bc, [], async function () {
       let doc = content.document;
       let advancedButton = doc.getElementById("advancedButton");
       advancedButton.click();
@@ -264,9 +274,9 @@ add_task(async function checkAdvancedDetailsForHSTS() {
       let cdl = doc.getElementById("cert_domain_link");
       return {
         ecTextContent: ec.textContent,
-        ecTagName: ec.tagName,
+        ecTagName: ec.tagName.toLowerCase(),
         cdlTextContent: cdl.textContent,
-        cdlTagName: cdl.tagName,
+        cdlTagName: cdl.tagName.toLowerCase(),
       };
     });
 
@@ -281,25 +291,20 @@ add_task(async function checkAdvancedDetailsForHSTS() {
     is(message.cdlTextContent, url, "Correct cert_domain_link contents found");
     is(message.cdlTagName, "a", "cert_domain_link is a link");
 
-    message = await SpecialPowers.spawn(bc, [], async function() {
+    message = await SpecialPowers.spawn(bc, [], async function () {
       let doc = content.document;
-
       let errorCode = doc.getElementById("errorCode");
       errorCode.click();
       let div = doc.getElementById("certificateErrorDebugInformation");
       let text = doc.getElementById("certificateErrorText");
-
-      let serhelper = Cc[
-        "@mozilla.org/network/serialization-helper;1"
-      ].getService(Ci.nsISerializationHelper);
-      let serializable = content.docShell.failedChannel.securityInfo
-        .QueryInterface(Ci.nsITransportSecurityInfo)
-        .QueryInterface(Ci.nsISerializable);
-      let serializedSecurityInfo = serhelper.serializeToString(serializable);
+      let failedCertChain =
+        content.docShell.failedChannel.securityInfo.failedCertChain.map(cert =>
+          cert.getBase64DERString()
+        );
       return {
         divDisplay: content.getComputedStyle(div).display,
         text: text.textContent,
-        securityInfoAsString: serializedSecurityInfo,
+        failedCertChain,
       };
     });
     isnot(message.divDisplay, "none", "Debug information is visible");
@@ -318,7 +323,7 @@ add_task(async function checkAdvancedDetailsForHSTS() {
       message.text.includes("HTTP Public Key Pinning: true"),
       "Correct HPKP value found"
     );
-    let certChain = getCertChain(message.securityInfoAsString);
+    let certChain = getCertChainAsString(message.failedCertChain);
     ok(message.text.includes(certChain), "Found certificate chain");
 
     BrowserTestUtils.removeTab(gBrowser.selectedTab);
@@ -338,7 +343,7 @@ add_task(async function checkUnknownIssuerLearnMoreLink() {
       bc = bc.children[0];
     }
 
-    let href = await SpecialPowers.spawn(bc, [], async function() {
+    let href = await SpecialPowers.spawn(bc, [], async function () {
       let learnMoreLink = content.document.getElementById("learnMoreLink");
       return learnMoreLink.href;
     });
@@ -348,45 +353,8 @@ add_task(async function checkUnknownIssuerLearnMoreLink() {
   }
 });
 
-add_task(async function checkCautionClass() {
-  info("Checking that are potentially more dangerous get a 'caution' class");
-  for (let useFrame of [false, true]) {
-    let tab = await openErrorPage(UNKNOWN_ISSUER, useFrame);
-    let browser = tab.linkedBrowser;
-
-    let bc = browser.browsingContext;
-    if (useFrame) {
-      bc = bc.children[0];
-    }
-
-    await SpecialPowers.spawn(bc, [useFrame], async function(subFrame) {
-      Assert.equal(
-        content.document.body.classList.contains("caution"),
-        !subFrame,
-        `Cert error body has ${subFrame ? "no" : ""} caution class`
-      );
-    });
-
-    BrowserTestUtils.removeTab(gBrowser.selectedTab);
-
-    tab = await openErrorPage(BAD_STS_CERT, useFrame);
-    bc = tab.linkedBrowser.browsingContext;
-    await SpecialPowers.spawn(bc, [], async function() {
-      Assert.ok(
-        !content.document.body.classList.contains("caution"),
-        "Cert error body has no caution class"
-      );
-    });
-
-    BrowserTestUtils.removeTab(gBrowser.selectedTab);
-  }
-});
-
 add_task(async function checkViewCertificate() {
   info("Loading a cert error and checking that the certificate can be shown.");
-  SpecialPowers.pushPrefEnv({
-    set: [["security.aboutcertificate.enabled", true]],
-  });
   for (let useFrame of [true, false]) {
     if (useFrame) {
       // Bug #1573502
@@ -401,7 +369,7 @@ add_task(async function checkViewCertificate() {
     }
 
     let loaded = BrowserTestUtils.waitForNewTab(gBrowser, null, true);
-    await SpecialPowers.spawn(bc, [], async function() {
+    await SpecialPowers.spawn(bc, [], async function () {
       let viewCertificate = content.document.getElementById("viewCertificate");
       viewCertificate.click();
     });
@@ -416,15 +384,14 @@ add_task(async function checkViewCertificate() {
     await SpecialPowers.spawn(
       gBrowser.selectedTab.linkedBrowser,
       [],
-      async function() {
+      async function () {
         let doc = content.document;
         let certificateSection = await ContentTaskUtils.waitForCondition(() => {
           return doc.querySelector("certificate-section");
         }, "Certificate section found");
 
-        let infoGroup = certificateSection.shadowRoot.querySelector(
-          "info-group"
-        );
+        let infoGroup =
+          certificateSection.shadowRoot.querySelector("info-group");
         Assert.ok(infoGroup, "infoGroup found");
 
         let items = infoGroup.shadowRoot.querySelectorAll("info-item");
@@ -437,9 +404,8 @@ add_task(async function checkViewCertificate() {
           "The correct item was selected"
         );
 
-        let commonnameValue = items[items.length - 1].shadowRoot.querySelector(
-          ".info"
-        ).textContent;
+        let commonnameValue =
+          items[items.length - 1].shadowRoot.querySelector(".info").textContent;
         Assert.equal(
           commonnameValue,
           "self-signed.example.com",
@@ -466,23 +432,12 @@ add_task(async function checkBadStsCertHeadline() {
     }
 
     await SpecialPowers.spawn(bc, [useFrame], async _useFrame => {
-      let titleText = content.document.querySelector(".title-text");
-      await ContentTaskUtils.waitForCondition(
-        () => titleText.textContent,
-        "Error page title is initialized"
+      const titleText = content.document.querySelector(".title-text");
+      is(
+        titleText.dataset.l10nId,
+        _useFrame ? "nssBadCert-sts-title" : "nssBadCert-title",
+        "Error page title is set"
       );
-      let titleContent = titleText.textContent;
-      if (_useFrame) {
-        ok(
-          titleContent.endsWith("Security Issue"),
-          "Did Not Connect: Potential Security Issue"
-        );
-      } else {
-        ok(
-          titleContent.endsWith("Risk Ahead"),
-          "Warning: Potential Security Risk Ahead"
-        );
-      }
     });
     BrowserTestUtils.removeTab(gBrowser.selectedTab);
   }
@@ -498,27 +453,99 @@ add_task(async function checkSandboxedIframe() {
   let browser = tab.linkedBrowser;
 
   let bc = browser.browsingContext.children[0];
-  await SpecialPowers.spawn(bc, [], async function() {
+  await SpecialPowers.spawn(bc, [], async function () {
     let doc = content.document;
-    let titleText = doc.querySelector(".title-text");
-    Assert.ok(
-      titleText.textContent.endsWith("Security Issue"),
+
+    const titleText = doc.querySelector(".title-text");
+    is(
+      titleText.dataset.l10nId,
+      "nssBadCert-sts-title",
       "Title shows Did Not Connect: Potential Security Issue"
     );
 
-    // Wait until fluent sets the errorCode inner text.
-    let el;
-    await ContentTaskUtils.waitForCondition(() => {
-      el = doc.getElementById("errorCode");
-      return el.textContent != "";
-    }, "error code has been set inside the advanced button panel");
-
-    Assert.equal(
-      el.textContent,
+    const errorLabel = doc.querySelector(
+      '[data-l10n-id="cert-error-code-prefix-link"]'
+    );
+    const elArgs = JSON.parse(errorLabel.dataset.l10nArgs);
+    is(
+      elArgs.error,
       "SEC_ERROR_EXPIRED_CERTIFICATE",
       "Correct error message found"
     );
-    Assert.equal(el.tagName, "a", "Error message is a link");
+    is(
+      doc.getElementById("errorCode").tagName.toLowerCase(),
+      "a",
+      "Error message contains a link"
+    );
   });
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+});
+
+add_task(async function checkViewSource() {
+  info(
+    "Loading a bad sts cert error in a sandboxed iframe and check that the correct headline is shown"
+  );
+  let uri = "view-source:" + BAD_CERT;
+  let tab = await openErrorPage(uri);
+  let browser = tab.linkedBrowser;
+
+  await SpecialPowers.spawn(browser, [], async function () {
+    let doc = content.document;
+
+    const errorLabel = doc.querySelector(
+      '[data-l10n-id="cert-error-code-prefix-link"]'
+    );
+    const elArgs = JSON.parse(errorLabel.dataset.l10nArgs);
+    is(
+      elArgs.error,
+      "SEC_ERROR_EXPIRED_CERTIFICATE",
+      "Correct error message found"
+    );
+    is(
+      doc.getElementById("errorCode").tagName.toLowerCase(),
+      "a",
+      "Error message contains a link"
+    );
+
+    const titleText = doc.querySelector(".title-text");
+    is(titleText.dataset.l10nId, "nssBadCert-title", "Error page title is set");
+
+    const shortDesc = doc.getElementById("errorShortDesc");
+    const sdArgs = JSON.parse(shortDesc.dataset.l10nArgs);
+    is(
+      sdArgs.hostname,
+      "expired.example.com",
+      "Should list hostname in error message."
+    );
+  });
+
+  let loaded = BrowserTestUtils.browserLoaded(browser, false, uri);
+  info("Clicking the exceptionDialogButton in advanced panel");
+  await SpecialPowers.spawn(browser, [], async function () {
+    let doc = content.document;
+    let exceptionButton = doc.getElementById("exceptionDialogButton");
+    exceptionButton.click();
+  });
+
+  info("Loading the url after adding exception");
+  await loaded;
+
+  await SpecialPowers.spawn(browser, [], async function () {
+    let doc = content.document;
+    ok(
+      !doc.documentURI.startsWith("about:certerror"),
+      "Exception has been added"
+    );
+  });
+
+  let certOverrideService = Cc[
+    "@mozilla.org/security/certoverride;1"
+  ].getService(Ci.nsICertOverrideService);
+  certOverrideService.clearValidityOverride("expired.example.com", -1, {});
+
+  loaded = BrowserTestUtils.waitForErrorPage(browser);
+  BrowserCommands.reloadSkipCache();
+  await loaded;
+
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });

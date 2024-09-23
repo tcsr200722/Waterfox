@@ -5,27 +5,22 @@
 
 requestLongerTimeout(2);
 
-var { Toolbox } = require("devtools/client/framework/toolbox");
+var { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 
-const { LocalizationHelper } = require("devtools/shared/l10n");
 const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
 );
 
-add_task(async function() {
+add_task(async function () {
   const tab = await addTab("about:blank");
-  const target = await TargetFactory.forTab(tab);
 
-  const toolIDs = gDevTools
-    .getToolDefinitionArray()
-    .filter(def => def.isTargetSupported(target) && def.id !== "options")
-    .map(def => def.id);
-
-  const toolbox = await gDevTools.showToolbox(
-    target,
-    toolIDs[0],
-    Toolbox.HostType.BOTTOM
+  const toolIDs = (await getSupportedToolIds(tab)).filter(
+    id => id != "options"
   );
+  const toolbox = await gDevTools.showToolboxForTab(tab, {
+    hostType: Toolbox.HostType.BOTTOM,
+    toolId: toolIDs[0],
+  });
   const nextShortcut = L10N.getStr("toolbox.nextTool.key");
   const prevShortcut = L10N.getStr("toolbox.previousTool.key");
 

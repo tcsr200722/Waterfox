@@ -4,35 +4,48 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gfxUtils.h"
 #include "GLBlitHelper.h"
+
+#include "gfxEnv.h"
+#include "gfxUtils.h"
 #include "GLContext.h"
 #include "GLScreenBuffer.h"
-#include "ScopedGLHelpers.h"
-#include "mozilla/Preferences.h"
-#include "ImageContainer.h"
+#include "GPUVideoImage.h"
 #include "HeapCopyOfStackArray.h"
+#include "ImageContainer.h"
+#include "ScopedGLHelpers.h"
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/Casting.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/BuildConstants.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/Matrix.h"
-#include "mozilla/UniquePtr.h"
-#include "GPUVideoImage.h"
+#include "mozilla/layers/ImageDataSerializer.h"
+#include "mozilla/layers/LayersSurfaces.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "AndroidSurfaceTexture.h"
 #  include "GLImages.h"
 #  include "GLLibraryEGL.h"
-#  include "mozilla/java/GeckoSurfaceTextureWrappers.h"
 #endif
 
 #ifdef XP_MACOSX
-#  include "MacIOSurfaceImage.h"
 #  include "GLContextCGL.h"
+#  include "MacIOSurfaceImage.h"
 #endif
 
 #ifdef XP_WIN
 #  include "mozilla/layers/D3D11ShareHandleImage.h"
+#  include "mozilla/layers/D3D11TextureIMFSampleImage.h"
 #  include "mozilla/layers/D3D11YCbCrImage.h"
+#endif
+
+#ifdef MOZ_WIDGET_GTK
+#  include "mozilla/layers/DMABUFSurfaceImage.h"
+#  include "mozilla/widget/DMABufSurface.h"
+#  include "mozilla/widget/DMABufLibWrapper.h"
 #endif
 
 using mozilla::layers::PlanarYCbCrData;
@@ -43,130 +56,238 @@ namespace gl {
 
 // --
 
-const char* const kFragHeader_Tex2D =
-    "\
-    #define SAMPLER sampler2D                                                \n\
-    #if __VERSION__ >= 130                                                   \n\
-        #define TEXTURE texture                                              \n\
-    #else                                                                    \n\
-        #define TEXTURE texture2D                                            \n\
-    #endif                                                                   \n\
-";
-const char* const kFragHeader_Tex2DRect =
-    "\
-    #define SAMPLER sampler2DRect                                            \n\
-    #if __VERSION__ >= 130                                                   \n\
-        #define TEXTURE texture                                              \n\
-    #else                                                                    \n\
-        #define TEXTURE texture2DRect                                        \n\
-    #endif                                                                   \n\
-";
-const char* const kFragHeader_TexExt =
-    "\
-    #extension GL_OES_EGL_image_external : require                           \n\
-    #if __VERSION__ >= 130                                                   \n\
-        #define TEXTURE texture                                              \n\
-    #else                                                                    \n\
-        #define TEXTURE texture2D                                            \n\
-    #endif                                                                   \n\
-    #define SAMPLER samplerExternalOES                                       \n\
-";
+static const char kFragPreprocHeader[] = R"(
+  #ifdef GL_ES
+    #ifdef GL_FRAGMENT_PRECISION_HIGH
+      #define MAXP highp
+    #endif
+  #else
+    #define MAXP highp
+  #endif
+  #ifndef MAXP
+    #define MAXP mediump
+  #endif
 
-const char* const kFragBody_RGBA =
-    "\
-    VARYING vec2 vTexCoord0;                                                 \n\
-    uniform SAMPLER uTex0;                                                   \n\
-                                                                             \n\
-    void main(void)                                                          \n\
-    {                                                                        \n\
-        FRAG_COLOR = TEXTURE(uTex0, vTexCoord0);                             \n\
-    }                                                                        \n\
-";
-const char* const kFragBody_CrYCb =
-    "\
-    VARYING vec2 vTexCoord0;                                                 \n\
-    uniform SAMPLER uTex0;                                                   \n\
-    uniform MAT4X3 uColorMatrix;                                             \n\
-                                                                             \n\
-    void main(void)                                                          \n\
-    {                                                                        \n\
-        vec4 yuv = vec4(TEXTURE(uTex0, vTexCoord0).gbr,                      \n\
-                        1.0);                                                \n\
-        FRAG_COLOR = vec4((uColorMatrix * yuv).rgb, 1.0);                    \n\
-    }                                                                        \n\
-";
-const char* const kFragBody_NV12 =
-    "\
-    VARYING vec2 vTexCoord0;                                                 \n\
-    VARYING vec2 vTexCoord1;                                                 \n\
-    uniform SAMPLER uTex0;                                                   \n\
-    uniform SAMPLER uTex1;                                                   \n\
-    uniform MAT4X3 uColorMatrix;                                             \n\
-                                                                             \n\
-    void main(void)                                                          \n\
-    {                                                                        \n\
-        vec4 yuv = vec4(TEXTURE(uTex0, vTexCoord0).x,                        \n\
-                        TEXTURE(uTex1, vTexCoord1).xy,                       \n\
-                        1.0);                                                \n\
-        FRAG_COLOR = vec4((uColorMatrix * yuv).rgb, 1.0);                    \n\
-    }                                                                        \n\
-";
-const char* const kFragBody_PlanarYUV =
-    "\
-    VARYING vec2 vTexCoord0;                                                 \n\
-    VARYING vec2 vTexCoord1;                                                 \n\
-    uniform SAMPLER uTex0;                                                   \n\
-    uniform SAMPLER uTex1;                                                   \n\
-    uniform SAMPLER uTex2;                                                   \n\
-    uniform MAT4X3 uColorMatrix;                                             \n\
-                                                                             \n\
-    void main(void)                                                          \n\
-    {                                                                        \n\
-        vec4 yuv = vec4(TEXTURE(uTex0, vTexCoord0).x,                        \n\
-                        TEXTURE(uTex1, vTexCoord1).x,                        \n\
-                        TEXTURE(uTex2, vTexCoord1).x,                        \n\
-                        1.0);                                                \n\
-        FRAG_COLOR = vec4((uColorMatrix * yuv).rgb, 1.0);                    \n\
-    }                                                                        \n\
-";
+  #if __VERSION__ >= 130
+    #define VARYING in
+  #else
+    #define VARYING varying
+  #endif
+  #if __VERSION__ >= 120
+    #define MAT4X3 mat4x3
+  #else
+    #define MAT4X3 mat4
+  #endif
+)";
+
+// -
+
+const char* const kFragHeader_Tex2D = R"(
+    #define SAMPLER sampler2D
+    #if __VERSION__ >= 130
+        #define TEXTURE texture
+    #else
+        #define TEXTURE texture2D
+    #endif
+)";
+const char* const kFragHeader_Tex2DRect = R"(
+    #define SAMPLER sampler2DRect
+    #if __VERSION__ >= 130
+        #define TEXTURE texture
+    #else
+        #define TEXTURE texture2DRect
+    #endif
+)";
+const char* const kFragHeader_TexExt = R"(
+    #extension GL_OES_EGL_image_external : enable
+    #extension GL_OES_EGL_image_external_essl3 : enable
+    #if __VERSION__ >= 130
+        #define TEXTURE texture
+    #else
+        #define TEXTURE texture2D
+    #endif
+    #define SAMPLER samplerExternalOES
+)";
+
+// -
+
+static const char kFragDeclHeader[] = R"(
+  precision PRECISION float;
+  #if __VERSION__ >= 130
+    #define FRAG_COLOR oFragColor
+    out vec4 FRAG_COLOR;
+  #else
+    #define FRAG_COLOR gl_FragColor
+  #endif
+)";
+
+// -
+
+const char* const kFragSample_OnePlane = R"(
+  VARYING mediump vec2 vTexCoord0;
+  uniform PRECISION SAMPLER uTex0;
+
+  vec4 metaSample() {
+    vec4 src = TEXTURE(uTex0, vTexCoord0);
+    return src;
+  }
+)";
+// Ideally this would just change the color-matrix it uses, but this is
+// acceptable debt for now.
+// `extern` so that we don't get ifdef-dependent const-var-unused Werrors.
+extern const char* const kFragSample_OnePlane_YUV_via_GBR = R"(
+  VARYING mediump vec2 vTexCoord0;
+  uniform PRECISION SAMPLER uTex0;
+
+  vec4 metaSample() {
+    vec4 yuva = TEXTURE(uTex0, vTexCoord0).gbra;
+    return yuva;
+  }
+)";
+const char* const kFragSample_TwoPlane = R"(
+  VARYING mediump vec2 vTexCoord0;
+  VARYING mediump vec2 vTexCoord1;
+  uniform PRECISION SAMPLER uTex0;
+  uniform PRECISION SAMPLER uTex1;
+
+  vec4 metaSample() {
+    vec4 src = TEXTURE(uTex0, vTexCoord0); // Keep r and a.
+    src.gb = TEXTURE(uTex1, vTexCoord1).rg;
+    return src;
+  }
+)";
+const char* const kFragSample_ThreePlane = R"(
+  VARYING mediump vec2 vTexCoord0;
+  VARYING mediump vec2 vTexCoord1;
+  uniform PRECISION SAMPLER uTex0;
+  uniform PRECISION SAMPLER uTex1;
+  uniform PRECISION SAMPLER uTex2;
+
+  vec4 metaSample() {
+    vec4 src = TEXTURE(uTex0, vTexCoord0); // Keep r and a.
+    src.g = TEXTURE(uTex1, vTexCoord1).r;
+    src.b = TEXTURE(uTex2, vTexCoord1).r;
+    return src;
+  }
+)";
+
+// -
+
+const char* const kFragConvert_None = R"(
+  vec3 metaConvert(vec3 src) {
+    return src;
+  }
+)";
+const char* const kFragConvert_BGR = R"(
+  vec3 metaConvert(vec3 src) {
+    return src.bgr;
+  }
+)";
+const char* const kFragConvert_ColorMatrix = R"(
+  uniform mediump MAT4X3 uColorMatrix;
+
+  vec3 metaConvert(vec3 src) {
+    return (uColorMatrix * vec4(src, 1)).rgb;
+  }
+)";
+const char* const kFragConvert_ColorLut3d = R"(
+  uniform PRECISION sampler3D uColorLut;
+
+  vec3 metaConvert(vec3 src) {
+    // Half-texel filtering hazard!
+    // E.g. For texture size of 2,
+    // E.g. x=0.25 is still sampling 100% of texel x=0, 0% of texel x=1.
+    // For the LUT, we need r=0.25 to filter 75/25 from texel 0 and 1.
+    // That is, we need to adjust our sampling point such that it starts in the
+    // center of texel 0, and ends in the center of texel N-1.
+    // We need, for N=2:
+    // v=0.0|N=2 => v'=0.5/2
+    // v=1.0|N=2 => v'=1.5/2
+    // For N=3:
+    // v=0.0|N=3 => v'=0.5/3
+    // v=1.0|N=3 => v'=2.5/3
+    // => v' = ( 0.5 + v * (3 - 1) )/3
+    vec3 size = vec3(textureSize(uColorLut, 0));
+    src = (0.5 + src * (size - 1.0)) / size;
+    return texture(uColorLut, src).rgb;
+  }
+)";
+// Delete if unused after 2024-10-01:
+const char* const kFragConvert_ColorLut2d = R"(
+  uniform PRECISION sampler2D uColorLut;
+  uniform mediump vec3 uColorLut3dSize;
+
+  vec3 metaConvert(vec3 src) {
+    // Half-texel filtering hazard!
+    // E.g. For texture size of 2,
+    // E.g. x=0.25 is still sampling 100% of texel x=0, 0% of texel x=1.
+    // For the LUT, we need r=0.25 to filter 75/25 from texel 0 and 1.
+    // That is, we need to adjust our sampling point such that it starts in the
+    // center of texel 0, and ends in the center of texel N-1.
+    // We need, for N=2:
+    // v=0.0|N=2 => v'=0.5/2
+    // v=1.0|N=2 => v'=1.5/2
+    // For N=3:
+    // v=0.0|N=3 => v'=0.5/3
+    // v=1.0|N=3 => v'=2.5/3
+    // => v' = ( 0.5 + v * (3 - 1) )/3
+    src = clamp(src, vec3(0,0,0), vec3(1,1,1));
+    vec3 lut3dSize = uColorLut3dSize;
+    vec2 lut2dSize = vec2(lut3dSize.x, lut3dSize.y * lut3dSize.z);
+    vec3 texelSrc3d = 0.5 + src * (lut3dSize - 1.0);
+
+    vec3 texelSrc3d_zFloor = texelSrc3d;
+    texelSrc3d_zFloor.z = floor(texelSrc3d_zFloor.z);
+    vec3 texelSrc3d_zNext = texelSrc3d_zFloor + vec3(0,0,1);
+    texelSrc3d_zNext.z = min(texelSrc3d_zNext.z, lut3dSize.z - 1.0);
+
+    vec2 texelSrc2d_zFloor = texelSrc3d_zFloor.xy + vec2(0, texelSrc3d_zFloor.z * lut3dSize.y);
+    vec2 texelSrc2d_zNext  = texelSrc3d_zNext.xy  + vec2(0, texelSrc3d_zNext.z  * lut3dSize.y);
+
+    vec4 dst_zFloor = texture(uColorLut, texelSrc2d_zFloor / lut2dSize);
+    vec4 dst_zNext = texture(uColorLut, texelSrc2d_zNext / lut2dSize);
+
+    return mix(dst_zFloor, dst_zNext, texelSrc3d.z - texelSrc3d_zFloor.z);
+  }
+)";
+
+// -
+
+const char* const kFragMixin_AlphaMultColors = R"(
+  #define MIXIN_ALPHA_MULT_COLORS
+)";
+const char* const kFragMixin_AlphaClampColors = R"(
+  #define MIXIN_ALPHA_CLAMP_COLORS
+)";
+const char* const kFragMixin_AlphaOne = R"(
+  #define MIXIN_ALPHA_ONE
+)";
+
+// -
+
+static const char kFragBody[] = R"(
+  void main(void) {
+    vec4 src = metaSample();
+    vec4 dst = vec4(metaConvert(src.rgb), src.a);
+
+  #ifdef MIXIN_ALPHA_MULT_COLORS
+    dst.rgb *= dst.a;
+  #endif
+  #ifdef MIXIN_ALPHA_CLAMP_COLORS
+    dst.rgb = min(dst.rgb, vec3(dst.a)); // Ensure valid premult-alpha colors.
+  #endif
+  #ifdef MIXIN_ALPHA_ONE
+    dst.a = 1.0;
+  #endif
+
+    FRAG_COLOR = dst;
+  }
+)";
 
 // --
 
-template <uint8_t N>
-/*static*/ Mat<N> Mat<N>::Zero() {
-  Mat<N> ret;
-  for (auto& x : ret.m) {
-    x = 0.0f;
-  }
-  return ret;
-}
-
-template <uint8_t N>
-/*static*/ Mat<N> Mat<N>::I() {
-  auto ret = Mat<N>::Zero();
-  for (uint8_t i = 0; i < N; i++) {
-    ret.at(i, i) = 1.0f;
-  }
-  return ret;
-}
-
-template <uint8_t N>
-Mat<N> Mat<N>::operator*(const Mat<N>& r) const {
-  Mat<N> ret;
-  for (uint8_t x = 0; x < N; x++) {
-    for (uint8_t y = 0; y < N; y++) {
-      float sum = 0.0f;
-      for (uint8_t i = 0; i < N; i++) {
-        sum += at(i, y) * r.at(x, i);
-      }
-      ret.at(x, y) = sum;
-    }
-  }
-  return ret;
-}
-
 Mat3 SubRectMat3(const float x, const float y, const float w, const float h) {
-  auto ret = Mat3::Zero();
+  auto ret = Mat3{};
   ret.at(0, 0) = w;
   ret.at(1, 1) = h;
   ret.at(2, 0) = x;
@@ -195,16 +316,21 @@ Mat3 SubRectMat3(const gfx::IntRect& bigSubrect, const gfx::IntSize& smallSize,
 // --
 
 ScopedSaveMultiTex::ScopedSaveMultiTex(GLContext* const gl,
-                                       const uint8_t texCount,
+                                       const size_t texUnits,
                                        const GLenum texTarget)
     : mGL(*gl),
-      mTexCount(texCount),
+      mTexUnits(texUnits),
       mTexTarget(texTarget),
       mOldTexUnit(mGL.GetIntAs<GLenum>(LOCAL_GL_ACTIVE_TEXTURE)) {
+  MOZ_RELEASE_ASSERT(texUnits >= 1);
+
   GLenum texBinding;
   switch (mTexTarget) {
     case LOCAL_GL_TEXTURE_2D:
       texBinding = LOCAL_GL_TEXTURE_BINDING_2D;
+      break;
+    case LOCAL_GL_TEXTURE_3D:
+      texBinding = LOCAL_GL_TEXTURE_BINDING_3D;
       break;
     case LOCAL_GL_TEXTURE_RECTANGLE:
       texBinding = LOCAL_GL_TEXTURE_BINDING_RECTANGLE;
@@ -214,9 +340,10 @@ ScopedSaveMultiTex::ScopedSaveMultiTex(GLContext* const gl,
       break;
     default:
       gfxCriticalError() << "Unhandled texTarget: " << texTarget;
+      MOZ_CRASH();
   }
 
-  for (uint8_t i = 0; i < mTexCount; i++) {
+  for (const auto i : IntegerRange(mTexUnits)) {
     mGL.fActiveTexture(LOCAL_GL_TEXTURE0 + i);
     if (mGL.IsSupported(GLFeature::sampler_objects)) {
       mOldTexSampler[i] = mGL.GetIntAs<GLuint>(LOCAL_GL_SAMPLER_BINDING);
@@ -227,7 +354,10 @@ ScopedSaveMultiTex::ScopedSaveMultiTex(GLContext* const gl,
 }
 
 ScopedSaveMultiTex::~ScopedSaveMultiTex() {
-  for (uint8_t i = 0; i < mTexCount; i++) {
+  // Unbind in reverse order, in case we have repeats.
+  // Order matters because we unbound samplers during ctor, so now we have to
+  // make sure we rebind them in the right order.
+  for (const auto i : Reversed(IntegerRange(mTexUnits))) {
     mGL.fActiveTexture(LOCAL_GL_TEXTURE0 + i);
     if (mGL.IsSupported(GLFeature::sampler_objects)) {
       mGL.fBindSampler(i, mOldTexSampler[i]);
@@ -240,10 +370,10 @@ ScopedSaveMultiTex::~ScopedSaveMultiTex() {
 // --
 
 class ScopedBindArrayBuffer final {
+ public:
   GLContext& mGL;
   const GLuint mOldVBO;
 
- public:
   ScopedBindArrayBuffer(GLContext* const gl, const GLuint vbo)
       : mGL(*gl), mOldVBO(mGL.GetIntAs<GLuint>(LOCAL_GL_ARRAY_BUFFER_BINDING)) {
     mGL.fBindBuffer(LOCAL_GL_ARRAY_BUFFER, vbo);
@@ -319,7 +449,11 @@ class ScopedDrawBlitState final {
     }
 
     mGL.fGetBooleanv(LOCAL_GL_COLOR_WRITEMASK, colorMask);
-    mGL.fColorMask(true, true, true, true);
+    if (mGL.IsSupported(GLFeature::draw_buffers_indexed)) {
+      mGL.fColorMaski(0, true, true, true, true);
+    } else {
+      mGL.fColorMask(true, true, true, true);
+    }
 
     mGL.fGetIntegerv(LOCAL_GL_VIEWPORT, viewport);
     MOZ_ASSERT(destSize.width && destSize.height);
@@ -340,7 +474,12 @@ class ScopedDrawBlitState final {
       mGL.SetEnabled(LOCAL_GL_RASTERIZER_DISCARD, rasterizerDiscard.value());
     }
 
-    mGL.fColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+    if (mGL.IsSupported(GLFeature::draw_buffers_indexed)) {
+      mGL.fColorMaski(0, colorMask[0], colorMask[1], colorMask[2],
+                      colorMask[3]);
+    } else {
+      mGL.fColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+    }
     mGL.fViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
   }
 };
@@ -353,11 +492,12 @@ DrawBlitProg::DrawBlitProg(const GLBlitHelper* const parent, const GLuint prog)
       mLoc_uDestMatrix(mParent.mGL->fGetUniformLocation(mProg, "uDestMatrix")),
       mLoc_uTexMatrix0(mParent.mGL->fGetUniformLocation(mProg, "uTexMatrix0")),
       mLoc_uTexMatrix1(mParent.mGL->fGetUniformLocation(mProg, "uTexMatrix1")),
+      mLoc_uColorLut(mParent.mGL->fGetUniformLocation(mProg, "uColorLut")),
       mLoc_uColorMatrix(
           mParent.mGL->fGetUniformLocation(mProg, "uColorMatrix")) {
   const auto& gl = mParent.mGL;
-  MOZ_GL_ASSERT(gl, mLoc_uDestMatrix != -1);
-  MOZ_GL_ASSERT(gl, mLoc_uTexMatrix0 != -1);
+  MOZ_GL_ASSERT(gl, mLoc_uDestMatrix != -1);  // Required
+  MOZ_GL_ASSERT(gl, mLoc_uTexMatrix0 != -1);  // Required
   if (mLoc_uColorMatrix != -1) {
     MOZ_GL_ASSERT(gl, mLoc_uTexMatrix1 != -1);
 
@@ -421,24 +561,26 @@ void DrawBlitProg::Draw(const BaseArgs& args,
   if (argsYUV) {
     gl->fUniformMatrix3fv(mLoc_uTexMatrix1, 1, false, argsYUV->texMatrix1.m);
 
-    const auto& colorMatrix =
-        gfxUtils::YuvToRgbMatrix4x4ColumnMajor(argsYUV->colorSpace);
-    float mat4x3[4 * 3];
-    switch (mType_uColorMatrix) {
-      case LOCAL_GL_FLOAT_MAT4:
-        gl->fUniformMatrix4fv(mLoc_uColorMatrix, 1, false, colorMatrix);
-        break;
-      case LOCAL_GL_FLOAT_MAT4x3:
-        for (int x = 0; x < 4; x++) {
-          for (int y = 0; y < 3; y++) {
-            mat4x3[3 * x + y] = colorMatrix[4 * x + y];
+    if (mLoc_uColorMatrix != -1) {
+      const auto& colorMatrix =
+          gfxUtils::YuvToRgbMatrix4x4ColumnMajor(*argsYUV->colorSpaceForMatrix);
+      float mat4x3[4 * 3];
+      switch (mType_uColorMatrix) {
+        case LOCAL_GL_FLOAT_MAT4:
+          gl->fUniformMatrix4fv(mLoc_uColorMatrix, 1, false, colorMatrix);
+          break;
+        case LOCAL_GL_FLOAT_MAT4x3:
+          for (int x = 0; x < 4; x++) {
+            for (int y = 0; y < 3; y++) {
+              mat4x3[3 * x + y] = colorMatrix[4 * x + y];
+            }
           }
-        }
-        gl->fUniformMatrix4x3fv(mLoc_uColorMatrix, 1, false, mat4x3);
-        break;
-      default:
-        gfxCriticalError() << "Bad mType_uColorMatrix: "
-                           << gfx::hexa(mType_uColorMatrix);
+          gl->fUniformMatrix4x3fv(mLoc_uColorMatrix, 1, false, mat4x3);
+          break;
+        default:
+          gfxCriticalError()
+              << "Bad mType_uColorMatrix: " << gfx::hexa(mType_uColorMatrix);
+      }
     }
   }
 
@@ -453,17 +595,19 @@ void DrawBlitProg::Draw(const BaseArgs& args,
   GLint vaa0Normalized;
   GLsizei vaa0Stride;
   GLvoid* vaa0Pointer;
+  GLuint vaa0Buffer;
   if (mParent.mQuadVAO) {
     oldVAO = gl->GetIntAs<GLuint>(LOCAL_GL_VERTEX_ARRAY_BINDING);
     gl->fBindVertexArray(mParent.mQuadVAO);
   } else {
     // clang-format off
-        gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_ENABLED, &vaa0Enabled);
-        gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_SIZE, &vaa0Size);
-        gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_TYPE, (GLint*)&vaa0Type);
-        gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &vaa0Normalized);
-        gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_STRIDE, (GLint*)&vaa0Stride);
-        gl->fGetVertexAttribPointerv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_POINTER, &vaa0Pointer);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, (GLint*)&vaa0Buffer);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_ENABLED, &vaa0Enabled);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_SIZE, &vaa0Size);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_TYPE, (GLint*)&vaa0Type);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &vaa0Normalized);
+    gl->fGetVertexAttribiv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_STRIDE, (GLint*)&vaa0Stride);
+    gl->fGetVertexAttribPointerv(0, LOCAL_GL_VERTEX_ATTRIB_ARRAY_POINTER, &vaa0Pointer);
     // clang-format on
 
     gl->fEnableVertexAttribArray(0);
@@ -481,6 +625,9 @@ void DrawBlitProg::Draw(const BaseArgs& args,
     } else {
       gl->fDisableVertexAttribArray(0);
     }
+    // The current VERTEX_ARRAY_BINDING is not necessarily the same as the
+    // buffer set for vaa0Buffer.
+    const ScopedBindArrayBuffer bindVBO(gl, vaa0Buffer);
     gl->fVertexAttribPointer(0, vaa0Size, vaa0Type, bool(vaa0Normalized),
                              vaa0Stride, vaa0Pointer);
   }
@@ -519,11 +666,17 @@ GLBlitHelper::GLBlitHelper(GLContext* const gl)
 
   const auto glslVersion = mGL->ShadingLanguageVersion();
 
-  // Always use 100 on ES because some devices have OES_EGL_image_external but
-  // not OES_EGL_image_external_essl3. We could just use 100 in that particular
-  // case, but this is a lot easier and is not harmful to other usages.
   if (mGL->IsGLES()) {
-    mDrawBlitProg_VersionLine = nsCString("#version 100\n");
+    // If you run into problems on old android devices, it might be because some
+    // devices have OES_EGL_image_external but not OES_EGL_image_external_essl3.
+    // We could just use 100 in that particular case, but then we lose out on
+    // e.g. sampler3D. Let's just try 300 for now, and if we get regressions
+    // we'll add an essl100 fallback.
+    if (glslVersion >= 300) {
+      mDrawBlitProg_VersionLine = nsCString("#version 300 es\n");
+    } else {
+      mDrawBlitProg_VersionLine = nsCString("#version 100\n");
+    }
   } else if (glslVersion >= 130) {
     mDrawBlitProg_VersionLine = nsPrintfCString("#version %u\n", glslVersion);
   }
@@ -563,10 +716,6 @@ GLBlitHelper::GLBlitHelper(GLContext* const gl)
 }
 
 GLBlitHelper::~GLBlitHelper() {
-  for (const auto& pair : mDrawBlitProgs) {
-    const auto& ptr = pair.second;
-    delete ptr;
-  }
   mDrawBlitProgs.clear();
 
   if (!mGL->MakeCurrent()) return;
@@ -581,71 +730,93 @@ GLBlitHelper::~GLBlitHelper() {
 
 // --
 
-const DrawBlitProg* GLBlitHelper::GetDrawBlitProg(
+const DrawBlitProg& GLBlitHelper::GetDrawBlitProg(
     const DrawBlitProg::Key& key) const {
-  const auto& res = mDrawBlitProgs.insert({key, nullptr});
-  auto& pair = *(res.first);
-  const auto& didInsert = res.second;
-  if (didInsert) {
-    pair.second = CreateDrawBlitProg(pair.first);
+  auto& ret = mDrawBlitProgs[key];
+  if (!ret) {
+    ret = CreateDrawBlitProg(key);
   }
-  return pair.second;
+  return *ret;
 }
 
-const DrawBlitProg* GLBlitHelper::CreateDrawBlitProg(
+std::unique_ptr<const DrawBlitProg> GLBlitHelper::CreateDrawBlitProg(
     const DrawBlitProg::Key& key) const {
-  const char kFragHeader_Global[] =
-      "\
-        #ifdef GL_ES                                                         \n\
-            #ifdef GL_FRAGMENT_PRECISION_HIGH                                \n\
-                precision highp float;                                       \n\
-            #else                                                            \n\
-                precision mediump float;                                     \n\
-            #endif                                                           \n\
-        #endif                                                               \n\
-                                                                             \n\
-        #if __VERSION__ >= 130                                               \n\
-            #define VARYING in                                               \n\
-            #define FRAG_COLOR oFragColor                                    \n\
-            out vec4 FRAG_COLOR;                                             \n\
-        #else                                                                \n\
-            #define VARYING varying                                          \n\
-            #define FRAG_COLOR gl_FragColor                                  \n\
-        #endif                                                               \n\
-                                                                             \n\
-        #if __VERSION__ >= 120                                               \n\
-            #define MAT4X3 mat4x3                                            \n\
-        #else                                                                \n\
-            #define MAT4X3 mat4                                              \n\
-        #endif                                                               \n\
-    ";
+  const auto precisionPref = StaticPrefs::gfx_blithelper_precision();
+  const char* precision;
+  switch (precisionPref) {
+    case 0:
+      precision = "lowp";
+      break;
+    case 1:
+      precision = "mediump";
+      break;
+    default:
+      if (precisionPref != 2) {
+        NS_WARNING("gfx.blithelper.precision clamped to 2.");
+      }
+      precision = "MAXP";
+      break;
+  }
+
+  nsPrintfCString precisionLine("\n#define PRECISION %s\n", precision);
+
+  // -
 
   const ScopedShader fs(mGL, LOCAL_GL_FRAGMENT_SHADER);
-  const char* const parts[] = {mDrawBlitProg_VersionLine.get(), key.fragHeader,
-                               kFragHeader_Global, key.fragBody};
-  mGL->fShaderSource(fs, ArrayLength(parts), parts, nullptr);
+
+  std::vector<const char*> parts;
+  {
+    parts.push_back(mDrawBlitProg_VersionLine.get());
+    parts.push_back(kFragPreprocHeader);
+    if (key.fragHeader) {
+      parts.push_back(key.fragHeader);
+    }
+    parts.push_back(precisionLine.BeginReading());
+    parts.push_back(kFragDeclHeader);
+    for (const auto& part : key.fragParts) {
+      if (part) {
+        parts.push_back(part);
+      }
+    }
+    parts.push_back(kFragBody);
+  }
+
+  const auto PrintFragSource = [&]() {
+    printf_stderr("Frag source:\n");
+    int i = 0;
+    for (const auto& part : parts) {
+      printf_stderr("// parts[%i]:\n%s\n", i, part);
+      i += 1;
+    }
+  };
+  if (gfxEnv::MOZ_DUMP_GLBLITHELPER()) {
+    PrintFragSource();
+  }
+
+  mGL->fShaderSource(fs, AssertedCast<GLint>(parts.size()), parts.data(),
+                     nullptr);
   mGL->fCompileShader(fs);
 
   const auto prog = mGL->fCreateProgram();
   mGL->fAttachShader(prog, mDrawBlitProg_VertShader);
   mGL->fAttachShader(prog, fs);
 
-  mGL->fBindAttribLocation(prog, 0, "aPosition");
+  mGL->fBindAttribLocation(prog, 0, "aVert");
   mGL->fLinkProgram(prog);
 
   GLenum status = 0;
   mGL->fGetProgramiv(prog, LOCAL_GL_LINK_STATUS, (GLint*)&status);
-  if (status == LOCAL_GL_TRUE || !mGL->CheckContextLost()) {
+  if (status == LOCAL_GL_TRUE || mGL->CheckContextLost()) {
     const SaveRestoreCurrentProgram oldProg(mGL);
     mGL->fUseProgram(prog);
     const char* samplerNames[] = {"uTex0", "uTex1", "uTex2"};
     for (int i = 0; i < 3; i++) {
       const auto loc = mGL->fGetUniformLocation(prog, samplerNames[i]);
-      if (loc == -1) break;
+      if (loc == -1) continue;
       mGL->fUniform1i(loc, i);
     }
 
-    return new DrawBlitProg(this, prog);
+    return std::make_unique<DrawBlitProg>(this, prog);
   }
 
   GLuint progLogLen = 0;
@@ -667,32 +838,105 @@ const DrawBlitProg* GLBlitHelper::CreateDrawBlitProg(
   mGL->fGetShaderInfoLog(fs, fsLogLen, nullptr, fsLog.get());
   fsLog[fsLogLen] = 0;
 
-  gfxCriticalError() << "DrawBlitProg link failed:\n"
-                     << "progLog: " << progLog.get() << "\n"
-                     << "vsLog: " << vsLog.get() << "\n"
-                     << "fsLog: " << fsLog.get() << "\n";
-  MOZ_CRASH();
+  const auto logs =
+      std::string("DrawBlitProg link failed:\n") + "progLog: " + progLog.get() +
+      "\n" + "vsLog: " + vsLog.get() + "\n" + "fsLog: " + fsLog.get() + "\n";
+  gfxCriticalError() << logs;
+
+  PrintFragSource();
+
+  MOZ_CRASH("DrawBlitProg link failed");
 }
 
 // -----------------------------------------------------------------------------
+
+#ifdef XP_MACOSX
+static RefPtr<MacIOSurface> LookupSurface(
+    const layers::SurfaceDescriptorMacIOSurface& sd) {
+  return MacIOSurface::LookupSurface(sd.surfaceId(), !sd.isOpaque(),
+                                     sd.yUVColorSpace());
+}
+#endif
+
+bool GLBlitHelper::BlitSdToFramebuffer(const layers::SurfaceDescriptor& asd,
+                                       const gfx::IntSize& destSize,
+                                       const OriginPos destOrigin) {
+  const auto sdType = asd.type();
+  switch (sdType) {
+    case layers::SurfaceDescriptor::TSurfaceDescriptorBuffer: {
+      const auto& sd = asd.get_SurfaceDescriptorBuffer();
+      const auto yuvData = PlanarYCbCrData::From(sd);
+      if (!yuvData) {
+        gfxCriticalNote << "[GLBlitHelper::BlitSdToFramebuffer] "
+                           "PlanarYCbCrData::From failed";
+        return false;
+      }
+      return BlitPlanarYCbCr(*yuvData, destSize, destOrigin);
+    }
+#ifdef XP_WIN
+    case layers::SurfaceDescriptor::TSurfaceDescriptorD3D10: {
+      const auto& sd = asd.get_SurfaceDescriptorD3D10();
+      return BlitDescriptor(sd, destSize, destOrigin);
+    }
+    case layers::SurfaceDescriptor::TSurfaceDescriptorDXGIYCbCr: {
+      const auto& sd = asd.get_SurfaceDescriptorDXGIYCbCr();
+      return BlitDescriptor(sd, destSize, destOrigin);
+    }
+#endif
+#ifdef XP_MACOSX
+    case layers::SurfaceDescriptor::TSurfaceDescriptorMacIOSurface: {
+      const auto& sd = asd.get_SurfaceDescriptorMacIOSurface();
+      const auto surf = LookupSurface(sd);
+      if (!surf) {
+        NS_WARNING("LookupSurface(MacIOSurface) failed");
+        // Sometimes that frame for our handle gone already. That's life, for
+        // now.
+        return false;
+      }
+      return BlitImage(surf, destSize, destOrigin);
+    }
+#endif
+#ifdef MOZ_WIDGET_ANDROID
+    case layers::SurfaceDescriptor::TSurfaceTextureDescriptor: {
+      const auto& sd = asd.get_SurfaceTextureDescriptor();
+      auto surfaceTexture = java::GeckoSurfaceTexture::Lookup(sd.handle());
+      return Blit(surfaceTexture, destSize, destOrigin);
+    }
+#endif
+#ifdef MOZ_WIDGET_GTK
+    case layers::SurfaceDescriptor::TSurfaceDescriptorDMABuf: {
+      const auto& sd = asd.get_SurfaceDescriptorDMABuf();
+      RefPtr<DMABufSurface> surface = DMABufSurface::CreateDMABufSurface(sd);
+      return Blit(surface, destSize, destOrigin);
+    }
+#endif
+    default:
+      return false;
+  }
+}
 
 bool GLBlitHelper::BlitImageToFramebuffer(layers::Image* const srcImage,
                                           const gfx::IntSize& destSize,
                                           const OriginPos destOrigin) {
   switch (srcImage->GetFormat()) {
-    case ImageFormat::PLANAR_YCBCR:
-      return BlitImage(static_cast<PlanarYCbCrImage*>(srcImage), destSize,
-                       destOrigin);
+    case ImageFormat::PLANAR_YCBCR: {
+      const auto srcImage2 = static_cast<PlanarYCbCrImage*>(srcImage);
+      const auto data = srcImage2->GetData();
+      return BlitPlanarYCbCr(*data, destSize, destOrigin);
+    }
 
-    case ImageFormat::SURFACE_TEXTURE:
+    case ImageFormat::SURFACE_TEXTURE: {
 #ifdef MOZ_WIDGET_ANDROID
-      return BlitImage(static_cast<layers::SurfaceTextureImage*>(srcImage),
-                       destSize, destOrigin);
+      auto* image = srcImage->AsSurfaceTextureImage();
+      MOZ_ASSERT(image);
+      auto surfaceTexture =
+          java::GeckoSurfaceTexture::Lookup(image->GetHandle());
+      return Blit(surfaceTexture, destSize, destOrigin);
 #else
       MOZ_ASSERT(false);
       return false;
 #endif
-
+    }
     case ImageFormat::MAC_IOSURFACE:
 #ifdef XP_MACOSX
       return BlitImage(srcImage->AsMacIOSurfaceImage(), destSize, destOrigin);
@@ -701,32 +945,45 @@ bool GLBlitHelper::BlitImageToFramebuffer(layers::Image* const srcImage,
       return false;
 #endif
 
-#ifdef XP_WIN
     case ImageFormat::GPU_VIDEO:
       return BlitImage(static_cast<layers::GPUVideoImage*>(srcImage), destSize,
                        destOrigin);
+#ifdef XP_WIN
     case ImageFormat::D3D11_SHARE_HANDLE_TEXTURE:
       return BlitImage(static_cast<layers::D3D11ShareHandleImage*>(srcImage),
                        destSize, destOrigin);
+    case ImageFormat::D3D11_TEXTURE_IMF_SAMPLE:
+      return BlitImage(
+          static_cast<layers::D3D11TextureIMFSampleImage*>(srcImage), destSize,
+          destOrigin);
     case ImageFormat::D3D11_YCBCR_IMAGE:
       return BlitImage(static_cast<layers::D3D11YCbCrImage*>(srcImage),
                        destSize, destOrigin);
     case ImageFormat::D3D9_RGB32_TEXTURE:
       return false;  // todo
+    case ImageFormat::DCOMP_SURFACE:
+      return false;
 #else
-    case ImageFormat::GPU_VIDEO:
     case ImageFormat::D3D11_SHARE_HANDLE_TEXTURE:
+    case ImageFormat::D3D11_TEXTURE_IMF_SAMPLE:
     case ImageFormat::D3D11_YCBCR_IMAGE:
     case ImageFormat::D3D9_RGB32_TEXTURE:
+    case ImageFormat::DCOMP_SURFACE:
       MOZ_ASSERT(false);
       return false;
 #endif
-    case ImageFormat::CAIRO_SURFACE:
+    case ImageFormat::DMABUF:
+#ifdef MOZ_WIDGET_GTK
+      return BlitImage(static_cast<layers::DMABUFSurfaceImage*>(srcImage),
+                       destSize, destOrigin);
+#else
+      return false;
+#endif
+    case ImageFormat::MOZ2D_SURFACE:
     case ImageFormat::NV_IMAGE:
     case ImageFormat::OVERLAY_IMAGE:
     case ImageFormat::SHARED_RGB:
     case ImageFormat::TEXTURE_WRAPPER:
-    case ImageFormat::WAYLAND_DMABUF:
       return false;  // todo
   }
   return false;
@@ -735,12 +992,9 @@ bool GLBlitHelper::BlitImageToFramebuffer(layers::Image* const srcImage,
 // -------------------------------------
 
 #ifdef MOZ_WIDGET_ANDROID
-bool GLBlitHelper::BlitImage(layers::SurfaceTextureImage* srcImage,
-                             const gfx::IntSize& destSize,
-                             const OriginPos destOrigin) const {
-  AndroidSurfaceTextureHandle handle = srcImage->GetHandle();
-  const auto& surfaceTexture = java::GeckoSurfaceTexture::Lookup(handle);
-
+bool GLBlitHelper::Blit(const java::GeckoSurfaceTexture::Ref& surfaceTexture,
+                        const gfx::IntSize& destSize,
+                        const OriginPos destOrigin) const {
   if (!surfaceTexture) {
     return false;
   }
@@ -761,41 +1015,15 @@ bool GLBlitHelper::BlitImage(layers::SurfaceTextureImage* srcImage,
   const ScopedBindTexture savedTex(mGL, surfaceTexture->GetTexName(),
                                    LOCAL_GL_TEXTURE_EXTERNAL);
   surfaceTexture->UpdateTexImage();
-
-  gfx::Matrix4x4 transform4;
-  AndroidSurfaceTexture::GetTransformMatrix(
-      java::sdk::SurfaceTexture::Ref::From(surfaceTexture), &transform4);
-  Mat3 transform3;
-  transform3.at(0, 0) = transform4._11;
-  transform3.at(0, 1) = transform4._12;
-  transform3.at(0, 2) = transform4._14;
-  transform3.at(1, 0) = transform4._21;
-  transform3.at(1, 1) = transform4._22;
-  transform3.at(1, 2) = transform4._24;
-  transform3.at(2, 0) = transform4._41;
-  transform3.at(2, 1) = transform4._42;
-  transform3.at(2, 2) = transform4._44;
-
-  // We don't do w-divison, so if these aren't what we expect, we're probably
-  // doing something wrong.
-  MOZ_ASSERT(transform3.at(0, 2) == 0);
-  MOZ_ASSERT(transform3.at(1, 2) == 0);
-  MOZ_ASSERT(transform3.at(2, 2) == 1);
-
-  const auto& srcOrigin = srcImage->GetOriginPos();
-
-  // I honestly have no idea why this logic is flipped, but changing the
-  // source origin would mean we'd have to flip it in the compositor
-  // which makes just as little sense as this.
-  const bool yFlip = (srcOrigin == destOrigin);
-
-  const auto& prog = GetDrawBlitProg({kFragHeader_TexExt, kFragBody_RGBA});
-
-  // There is no padding on these images, so we can use the GetTransformMatrix
-  // directly.
+  const auto transform3 = Mat3::I();
+  // const auto srcOrigin = OriginPos::TopLeft;
+  const auto srcOrigin = OriginPos::BottomLeft;
+  const bool yFlip = (srcOrigin != destOrigin);
+  const auto& prog = GetDrawBlitProg(
+      {kFragHeader_TexExt, {kFragSample_OnePlane, kFragConvert_None}});
   const DrawBlitProg::BaseArgs baseArgs = {transform3, yFlip, destSize,
                                            Nothing()};
-  prog->Draw(baseArgs, nullptr);
+  prog.Draw(baseArgs, nullptr);
 
   if (surfaceTexture->IsSingleBuffer()) {
     surfaceTexture->ReleaseTexImage();
@@ -819,10 +1047,11 @@ bool GuessDivisors(const gfx::IntSize& ySize, const gfx::IntSize& uvSize,
   return true;
 }
 
-bool GLBlitHelper::BlitImage(layers::PlanarYCbCrImage* const yuvImage,
-                             const gfx::IntSize& destSize,
-                             const OriginPos destOrigin) {
-  const auto& prog = GetDrawBlitProg({kFragHeader_Tex2D, kFragBody_PlanarYUV});
+bool GLBlitHelper::BlitPlanarYCbCr(const PlanarYCbCrData& yuvData,
+                                   const gfx::IntSize& destSize,
+                                   const OriginPos destOrigin) {
+  const auto& prog = GetDrawBlitProg(
+      {kFragHeader_Tex2D, {kFragSample_ThreePlane, kFragConvert_ColorMatrix}});
 
   if (!mYuvUploads[0]) {
     mGL->fGenTextures(3, mYuvUploads);
@@ -836,28 +1065,34 @@ bool GLBlitHelper::BlitImage(layers::PlanarYCbCrImage* const yuvImage,
 
   // --
 
-  const PlanarYCbCrData* const yuvData = yuvImage->GetData();
-
-  if (yuvData->mYSkip || yuvData->mCbSkip || yuvData->mCrSkip ||
-      yuvData->mYSize.width < 0 || yuvData->mYSize.height < 0 ||
-      yuvData->mCbCrSize.width < 0 || yuvData->mCbCrSize.height < 0 ||
-      yuvData->mYStride < 0 || yuvData->mCbCrStride < 0) {
-    gfxCriticalError() << "Unusual PlanarYCbCrData: " << yuvData->mYSkip << ","
-                       << yuvData->mCbSkip << "," << yuvData->mCrSkip << ", "
-                       << yuvData->mYSize.width << "," << yuvData->mYSize.height
-                       << ", " << yuvData->mCbCrSize.width << ","
-                       << yuvData->mCbCrSize.height << ", " << yuvData->mYStride
-                       << "," << yuvData->mCbCrStride;
+  auto ySize = yuvData.YDataSize();
+  auto cbcrSize = yuvData.CbCrDataSize();
+  if (yuvData.mYSkip || yuvData.mCbSkip || yuvData.mCrSkip || ySize.width < 0 ||
+      ySize.height < 0 || cbcrSize.width < 0 || cbcrSize.height < 0 ||
+      yuvData.mYStride < 0 || yuvData.mCbCrStride < 0) {
+    gfxCriticalError() << "Unusual PlanarYCbCrData: " << yuvData.mYSkip << ","
+                       << yuvData.mCbSkip << "," << yuvData.mCrSkip << ", "
+                       << ySize.width << "," << ySize.height << ", "
+                       << cbcrSize.width << "," << cbcrSize.height << ", "
+                       << yuvData.mYStride << "," << yuvData.mCbCrStride;
     return false;
   }
 
   gfx::IntSize divisors;
-  if (!GuessDivisors(yuvData->mYSize, yuvData->mCbCrSize, &divisors)) {
-    gfxCriticalError() << "GuessDivisors failed:" << yuvData->mYSize.width
-                       << "," << yuvData->mYSize.height << ", "
-                       << yuvData->mCbCrSize.width << ","
-                       << yuvData->mCbCrSize.height;
-    return false;
+  switch (yuvData.mChromaSubsampling) {
+    case gfx::ChromaSubsampling::FULL:
+      divisors = gfx::IntSize(1, 1);
+      break;
+    case gfx::ChromaSubsampling::HALF_WIDTH:
+      divisors = gfx::IntSize(2, 1);
+      break;
+    case gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT:
+      divisors = gfx::IntSize(2, 2);
+      break;
+    default:
+      gfxCriticalError() << "Unknown chroma subsampling:"
+                         << int(yuvData.mChromaSubsampling);
+      return false;
   }
 
   // --
@@ -880,8 +1115,9 @@ bool GLBlitHelper::BlitImage(layers::PlanarYCbCrImage* const yuvImage,
 
   const ScopedSaveMultiTex saveTex(mGL, 3, LOCAL_GL_TEXTURE_2D);
   const ResetUnpackState reset(mGL);
-  const gfx::IntSize yTexSize(yuvData->mYStride, yuvData->mYSize.height);
-  const gfx::IntSize uvTexSize(yuvData->mCbCrStride, yuvData->mCbCrSize.height);
+  const gfx::IntSize yTexSize(yuvData.mYStride, yuvData.YDataSize().height);
+  const gfx::IntSize uvTexSize(yuvData.mCbCrStride,
+                               yuvData.CbCrDataSize().height);
 
   if (yTexSize != mYuvUploads_YSize || uvTexSize != mYuvUploads_UVSize) {
     mYuvUploads_YSize = yTexSize;
@@ -907,29 +1143,29 @@ bool GLBlitHelper::BlitImage(layers::PlanarYCbCrImage* const yuvImage,
   mGL->fBindTexture(LOCAL_GL_TEXTURE_2D, mYuvUploads[0]);
   mGL->fTexSubImage2D(LOCAL_GL_TEXTURE_2D, 0, 0, 0, yTexSize.width,
                       yTexSize.height, unpackFormat, LOCAL_GL_UNSIGNED_BYTE,
-                      yuvData->mYChannel);
+                      yuvData.mYChannel);
   mGL->fActiveTexture(LOCAL_GL_TEXTURE1);
   mGL->fBindTexture(LOCAL_GL_TEXTURE_2D, mYuvUploads[1]);
   mGL->fTexSubImage2D(LOCAL_GL_TEXTURE_2D, 0, 0, 0, uvTexSize.width,
                       uvTexSize.height, unpackFormat, LOCAL_GL_UNSIGNED_BYTE,
-                      yuvData->mCbChannel);
+                      yuvData.mCbChannel);
   mGL->fActiveTexture(LOCAL_GL_TEXTURE2);
   mGL->fBindTexture(LOCAL_GL_TEXTURE_2D, mYuvUploads[2]);
   mGL->fTexSubImage2D(LOCAL_GL_TEXTURE_2D, 0, 0, 0, uvTexSize.width,
                       uvTexSize.height, unpackFormat, LOCAL_GL_UNSIGNED_BYTE,
-                      yuvData->mCrChannel);
+                      yuvData.mCrChannel);
 
   // --
 
-  const auto& clipRect = yuvData->GetPictureRect();
+  const auto& clipRect = yuvData.mPictureRect;
   const auto srcOrigin = OriginPos::BottomLeft;
   const bool yFlip = (destOrigin != srcOrigin);
 
   const DrawBlitProg::BaseArgs baseArgs = {SubRectMat3(clipRect, yTexSize),
                                            yFlip, destSize, Nothing()};
   const DrawBlitProg::YUVArgs yuvArgs = {
-      SubRectMat3(clipRect, uvTexSize, divisors), yuvData->mYUVColorSpace};
-  prog->Draw(baseArgs, &yuvArgs);
+      SubRectMat3(clipRect, uvTexSize, divisors), Some(yuvData.mYUVColorSpace)};
+  prog.Draw(baseArgs, &yuvArgs);
   return true;
 }
 
@@ -939,13 +1175,33 @@ bool GLBlitHelper::BlitImage(layers::PlanarYCbCrImage* const yuvImage,
 bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
                              const gfx::IntSize& destSize,
                              const OriginPos destOrigin) const {
-  MacIOSurface* const iosurf = srcImage->GetSurface();
+  return BlitImage(srcImage->GetSurface(), destSize, destOrigin);
+}
+
+static std::string IntAsAscii(const int x) {
+  std::string str;
+  str.reserve(6);
+  auto u = static_cast<unsigned int>(x);
+  while (u) {
+    str.insert(str.begin(), u & 0xff);
+    u >>= 8;
+  }
+  str.insert(str.begin(), '\'');
+  str.push_back('\'');
+  return str;
+}
+
+bool GLBlitHelper::BlitImage(MacIOSurface* const iosurf,
+                             const gfx::IntSize& destSize,
+                             const OriginPos destOrigin) const {
+  if (!iosurf) {
+    gfxCriticalError() << "Null MacIOSurface for GLBlitHelper::BlitImage";
+    return false;
+  }
   if (mGL->GetContextType() != GLContextType::CGL) {
     MOZ_ASSERT(false);
     return false;
   }
-  const auto glCGL = static_cast<GLContextCGL*>(mGL);
-  const auto cglContext = glCGL->GetCGLContext();
 
   const auto& srcOrigin = OriginPos::BottomLeft;
 
@@ -953,8 +1209,10 @@ bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
   baseArgs.yFlip = (destOrigin != srcOrigin);
   baseArgs.destSize = destSize;
 
+  // TODO: The colorspace is known by the IOSurface, why override it?
+  // See GetYUVColorSpace/GetFullRange()
   DrawBlitProg::YUVArgs yuvArgs;
-  yuvArgs.colorSpace = gfx::YUVColorSpace::BT601;
+  yuvArgs.colorSpaceForMatrix = Some(iosurf->GetYUVColorSpace());
 
   const DrawBlitProg::YUVArgs* pYuvArgs = nullptr;
 
@@ -964,7 +1222,6 @@ bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
   }
 
   const GLenum texTarget = LOCAL_GL_TEXTURE_RECTANGLE;
-  const char* const fragHeader = kFragHeader_Tex2DRect;
 
   const ScopedSaveMultiTex saveTex(mGL, planes, texTarget);
   const ScopedTexture tex0(mGL);
@@ -973,53 +1230,52 @@ bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
   const GLuint texs[3] = {tex0, tex1, tex2};
 
   const auto pixelFormat = iosurf->GetPixelFormat();
-  const auto formatChars = (const char*)&pixelFormat;
-  const char formatStr[] = {formatChars[3], formatChars[2], formatChars[1],
-                            formatChars[0], 0};
   if (mGL->ShouldSpew()) {
-    printf_stderr("iosurf format: %s (0x%08x)\n", formatStr,
-                  uint32_t(pixelFormat));
+    const auto formatStr = IntAsAscii(pixelFormat);
+    printf_stderr("iosurf format: %s (0x%08x)\n", formatStr.c_str(),
+                  pixelFormat);
   }
 
-  const char* fragBody;
-  GLenum internalFormats[3] = {0, 0, 0};
-  GLenum unpackFormats[3] = {0, 0, 0};
-  GLenum unpackTypes[3] = {LOCAL_GL_UNSIGNED_BYTE, LOCAL_GL_UNSIGNED_BYTE,
-                           LOCAL_GL_UNSIGNED_BYTE};
+  const char* fragSample;
   switch (planes) {
     case 1:
-      fragBody = kFragBody_RGBA;
-      internalFormats[0] = LOCAL_GL_RGBA;
-      unpackFormats[0] = LOCAL_GL_RGBA;
+      switch (pixelFormat) {
+        case kCVPixelFormatType_24RGB:
+        case kCVPixelFormatType_24BGR:
+        case kCVPixelFormatType_32ARGB:
+        case kCVPixelFormatType_32BGRA:
+        case kCVPixelFormatType_32ABGR:
+        case kCVPixelFormatType_32RGBA:
+        case kCVPixelFormatType_64ARGB:
+        case kCVPixelFormatType_48RGB:
+          fragSample = kFragSample_OnePlane;
+          break;
+        case kCVPixelFormatType_422YpCbCr8:
+        case kCVPixelFormatType_422YpCbCr8_yuvs:
+          fragSample = kFragSample_OnePlane_YUV_via_GBR;
+          pYuvArgs = &yuvArgs;
+          break;
+        default: {
+          std::string str;
+          if (pixelFormat <= 0xff) {
+            str = std::to_string(pixelFormat);
+          } else {
+            str = IntAsAscii(pixelFormat);
+          }
+          gfxCriticalError() << "Unhandled kCVPixelFormatType_*: " << str;
+          // Probably YUV though
+          fragSample = kFragSample_OnePlane_YUV_via_GBR;
+          pYuvArgs = &yuvArgs;
+          break;
+        }
+      }
       break;
     case 2:
-      fragBody = kFragBody_NV12;
-      if (mGL->Version() >= 300) {
-        internalFormats[0] = LOCAL_GL_R8;
-        unpackFormats[0] = LOCAL_GL_RED;
-        internalFormats[1] = LOCAL_GL_RG8;
-        unpackFormats[1] = LOCAL_GL_RG;
-      } else {
-        internalFormats[0] = LOCAL_GL_LUMINANCE;
-        unpackFormats[0] = LOCAL_GL_LUMINANCE;
-        internalFormats[1] = LOCAL_GL_LUMINANCE_ALPHA;
-        unpackFormats[1] = LOCAL_GL_LUMINANCE_ALPHA;
-      }
+      fragSample = kFragSample_TwoPlane;
       pYuvArgs = &yuvArgs;
       break;
     case 3:
-      fragBody = kFragBody_PlanarYUV;
-      if (mGL->Version() >= 300) {
-        internalFormats[0] = LOCAL_GL_R8;
-        unpackFormats[0] = LOCAL_GL_RED;
-      } else {
-        internalFormats[0] = LOCAL_GL_LUMINANCE;
-        unpackFormats[0] = LOCAL_GL_LUMINANCE;
-      }
-      internalFormats[1] = internalFormats[0];
-      internalFormats[2] = internalFormats[0];
-      unpackFormats[1] = unpackFormats[0];
-      unpackFormats[2] = unpackFormats[0];
+      fragSample = kFragSample_ThreePlane;
       pYuvArgs = &yuvArgs;
       break;
     default:
@@ -1027,45 +1283,28 @@ bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
       return false;
   }
 
-  if (pixelFormat == kCVPixelFormatType_422YpCbCr8) {
-    fragBody = kFragBody_CrYCb;
-    // APPLE_rgb_422 adds RGB_RAW_422_APPLE for `internalFormat`, but only RGB
-    // seems to work?
-    internalFormats[0] = LOCAL_GL_RGB;
-    unpackFormats[0] = LOCAL_GL_RGB_422_APPLE;
-    unpackTypes[0] = LOCAL_GL_UNSIGNED_SHORT_8_8_APPLE;
-    pYuvArgs = &yuvArgs;
-  }
-
   for (uint32_t p = 0; p < planes; p++) {
     mGL->fActiveTexture(LOCAL_GL_TEXTURE0 + p);
     mGL->fBindTexture(texTarget, texs[p]);
     mGL->TexParams_SetClampNoMips(texTarget);
 
-    const auto width = iosurf->GetDevicePixelWidth(p);
-    const auto height = iosurf->GetDevicePixelHeight(p);
-    auto err = iosurf->CGLTexImageIOSurface2D(
-        cglContext, texTarget, internalFormats[p], width, height,
-        unpackFormats[p], unpackTypes[p], p);
-    if (err) {
-      const nsPrintfCString errStr(
-          "CGLTexImageIOSurface2D(context, target, 0x%04x,"
-          " %u, %u, 0x%04x, 0x%04x, iosurfPtr, %u) -> %i",
-          internalFormats[p], uint32_t(width), uint32_t(height),
-          unpackFormats[p], unpackTypes[p], p, err);
-      gfxCriticalError() << errStr.get() << " (iosurf format: " << formatStr
-                         << ")";
+    if (!iosurf->BindTexImage(mGL, p)) {
       return false;
     }
 
     if (p == 0) {
+      const auto width = iosurf->GetDevicePixelWidth(p);
+      const auto height = iosurf->GetDevicePixelHeight(p);
       baseArgs.texMatrix0 = SubRectMat3(0, 0, width, height);
       yuvArgs.texMatrix1 = SubRectMat3(0, 0, width / 2.0, height / 2.0);
     }
   }
 
-  const auto& prog = GetDrawBlitProg({fragHeader, fragBody});
-  prog->Draw(baseArgs, pYuvArgs);
+  const auto& prog = GetDrawBlitProg({
+      kFragHeader_Tex2DRect,
+      {fragSample, kFragConvert_ColorMatrix},
+  });
+  prog.Draw(baseArgs, pYuvArgs);
   return true;
 }
 #endif
@@ -1075,8 +1314,9 @@ bool GLBlitHelper::BlitImage(layers::MacIOSurfaceImage* const srcImage,
 void GLBlitHelper::DrawBlitTextureToFramebuffer(const GLuint srcTex,
                                                 const gfx::IntSize& srcSize,
                                                 const gfx::IntSize& destSize,
-                                                const GLenum srcTarget) const {
-  const char* fragHeader;
+                                                const GLenum srcTarget,
+                                                const bool srcIsBGRA) const {
+  const char* fragHeader = nullptr;
   Mat3 texMatrix0;
   switch (srcTarget) {
     case LOCAL_GL_TEXTURE_2D:
@@ -1091,15 +1331,20 @@ void GLBlitHelper::DrawBlitTextureToFramebuffer(const GLuint srcTex,
       gfxCriticalError() << "Unexpected srcTarget: " << srcTarget;
       return;
   }
-  const auto& prog = GetDrawBlitProg({fragHeader, kFragBody_RGBA});
+  const auto fragConvert = srcIsBGRA ? kFragConvert_BGR : kFragConvert_None;
+  const auto& prog = GetDrawBlitProg({
+      fragHeader,
+      {kFragSample_OnePlane, fragConvert},
+  });
 
   const ScopedSaveMultiTex saveTex(mGL, 1, srcTarget);
+  mGL->fActiveTexture(LOCAL_GL_TEXTURE0);
   mGL->fBindTexture(srcTarget, srcTex);
 
   const bool yFlip = false;
   const DrawBlitProg::BaseArgs baseArgs = {texMatrix0, yFlip, destSize,
                                            Nothing()};
-  prog->Draw(baseArgs);
+  prog.Draw(baseArgs);
 }
 
 // -----------------------------------------------------------------------------
@@ -1182,6 +1427,459 @@ void GLBlitHelper::BlitTextureToTexture(GLuint srcTex, GLuint destTex,
   const ScopedFramebufferForTexture srcWrapper(mGL, srcTex, srcTarget);
   const ScopedBindFramebuffer bindFB(mGL, srcWrapper.FB());
   BlitFramebufferToTexture(destTex, srcSize, destSize, destTarget);
+}
+
+// -------------------------------------
+
+bool GLBlitHelper::BlitImage(layers::GPUVideoImage* const srcImage,
+                             const gfx::IntSize& destSize,
+                             const OriginPos destOrigin) const {
+  const auto& data = srcImage->GetData();
+  if (!data) return false;
+
+  const auto& desc = data->SD();
+
+  MOZ_ASSERT(
+      desc.type() ==
+      layers::SurfaceDescriptorGPUVideo::TSurfaceDescriptorRemoteDecoder);
+  const auto& subdescUnion =
+      desc.get_SurfaceDescriptorRemoteDecoder().subdesc();
+  switch (subdescUnion.type()) {
+#ifdef MOZ_WIDGET_GTK
+    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorDMABuf: {
+      const auto& subdesc = subdescUnion.get_SurfaceDescriptorDMABuf();
+      RefPtr<DMABufSurface> surface =
+          DMABufSurface::CreateDMABufSurface(subdesc);
+      return Blit(surface, destSize, destOrigin);
+    }
+#endif
+#ifdef XP_WIN
+    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorD3D10: {
+      const auto& subdesc = subdescUnion.get_SurfaceDescriptorD3D10();
+      return BlitDescriptor(subdesc, destSize, destOrigin);
+    }
+    case layers::RemoteDecoderVideoSubDescriptor::TSurfaceDescriptorDXGIYCbCr: {
+      const auto& subdesc = subdescUnion.get_SurfaceDescriptorDXGIYCbCr();
+      return BlitDescriptor(subdesc, destSize, destOrigin);
+    }
+#endif
+#ifdef XP_MACOSX
+    case layers::RemoteDecoderVideoSubDescriptor::
+        TSurfaceDescriptorMacIOSurface: {
+      const auto& subdesc = subdescUnion.get_SurfaceDescriptorMacIOSurface();
+      RefPtr<MacIOSurface> surface = MacIOSurface::LookupSurface(
+          subdesc.surfaceId(), !subdesc.isOpaque(), subdesc.yUVColorSpace());
+      MOZ_ASSERT(surface);
+      if (!surface) {
+        return false;
+      }
+      return BlitImage(surface, destSize, destOrigin);
+    }
+#endif
+    case layers::RemoteDecoderVideoSubDescriptor::Tnull_t:
+      // This GPUVideoImage isn't directly readable outside the GPU process.
+      // Abort.
+      return false;
+    default:
+      gfxCriticalError() << "Unhandled subdesc type: "
+                         << uint32_t(subdescUnion.type());
+      return false;
+  }
+}
+
+// -------------------------------------
+#ifdef MOZ_WIDGET_GTK
+bool GLBlitHelper::Blit(DMABufSurface* surface, const gfx::IntSize& destSize,
+                        OriginPos destOrigin) const {
+  const auto& srcOrigin = OriginPos::BottomLeft;
+
+  DrawBlitProg::BaseArgs baseArgs;
+  baseArgs.yFlip = (destOrigin != srcOrigin);
+  baseArgs.destSize = destSize;
+
+  // TODO: The colorspace is known by the DMABUFSurface, why override it?
+  // See GetYUVColorSpace/GetFullRange()
+  DrawBlitProg::YUVArgs yuvArgs;
+  yuvArgs.colorSpaceForMatrix = Some(surface->GetYUVColorSpace());
+
+  const DrawBlitProg::YUVArgs* pYuvArgs = nullptr;
+  const auto planes = surface->GetTextureCount();
+
+  // -
+  // Ensure textures for all planes have been created.
+
+  const bool createTextures = [&]() {
+    for (int i = 0; i < planes; i++) {
+      if (!surface->GetTexture(i)) {
+        return true;
+      }
+    }
+    return false;
+  }();
+
+  bool didCreateTexture = false;
+  auto releaseTextures = mozilla::MakeScopeExit([&] {
+    if (didCreateTexture) {
+      surface->ReleaseTextures();
+    }
+  });
+
+  if (createTextures) {
+    for (int i = 0; i < planes; i++) {
+      if (surface->GetTexture(i)) {
+        continue;
+      }
+      if (!surface->CreateTexture(mGL, i)) {
+        LOGDMABUF(("GLBlitHelper::Blit(): Failed to create DMABuf textures."));
+        return false;
+      }
+      didCreateTexture = true;
+    }
+  }
+
+  // -
+
+  const GLenum texTarget = LOCAL_GL_TEXTURE_2D;
+
+  const ScopedSaveMultiTex saveTex(mGL, planes, texTarget);
+  const auto pixelFormat = surface->GetSurfaceType();
+
+  const char* fragSample;
+  auto fragConvert = kFragConvert_None;
+  switch (pixelFormat) {
+    case DMABufSurface::SURFACE_RGBA:
+      fragSample = kFragSample_OnePlane;
+      break;
+    case DMABufSurface::SURFACE_NV12:
+      fragSample = kFragSample_TwoPlane;
+      pYuvArgs = &yuvArgs;
+      fragConvert = kFragConvert_ColorMatrix;
+      break;
+    case DMABufSurface::SURFACE_YUV420:
+      fragSample = kFragSample_ThreePlane;
+      pYuvArgs = &yuvArgs;
+      fragConvert = kFragConvert_ColorMatrix;
+      break;
+    default:
+      gfxCriticalError() << "Unexpected pixel format: " << pixelFormat;
+      return false;
+  }
+
+  for (const auto p : IntegerRange(planes)) {
+    mGL->fActiveTexture(LOCAL_GL_TEXTURE0 + p);
+    mGL->fBindTexture(texTarget, surface->GetTexture(p));
+    mGL->TexParams_SetClampNoMips(texTarget);
+  }
+
+  // We support only NV12/YUV420 formats only with 1/2 texture scale.
+  // We don't set cliprect as DMABus textures are created without padding.
+  baseArgs.texMatrix0 = SubRectMat3(0, 0, 1, 1);
+  yuvArgs.texMatrix1 = SubRectMat3(0, 0, 1, 1);
+
+  const auto& prog =
+      GetDrawBlitProg({kFragHeader_Tex2D, {fragSample, fragConvert}});
+  prog.Draw(baseArgs, pYuvArgs);
+
+  return true;
+}
+
+bool GLBlitHelper::BlitImage(layers::DMABUFSurfaceImage* srcImage,
+                             const gfx::IntSize& destSize,
+                             OriginPos destOrigin) const {
+  DMABufSurface* surface = srcImage->GetSurface();
+  if (!surface) {
+    gfxCriticalError() << "Null DMABUFSurface for GLBlitHelper::BlitImage";
+    return false;
+  }
+  return Blit(surface, destSize, destOrigin);
+}
+#endif
+
+// -
+
+template <size_t N>
+static void PushUnorm(uint32_t* const out, const float inVal) {
+  const uint32_t mask = (1 << N) - 1;
+  auto fval = inVal;
+  fval = std::max(0.0f, std::min(fval, 1.0f));
+  fval *= mask;
+  fval = roundf(fval);
+  auto ival = static_cast<uint32_t>(fval);
+  ival &= mask;
+
+  *out <<= N;
+  *out |= ival;
+}
+
+static uint32_t toRgb10A2(const color::vec4& val) {
+  // R in LSB
+  uint32_t ret = 0;
+  PushUnorm<2>(&ret, val.w());
+  PushUnorm<10>(&ret, val.z());
+  PushUnorm<10>(&ret, val.y());
+  PushUnorm<10>(&ret, val.x());
+  return ret;
+}
+
+// -
+
+color::ColorspaceDesc ToColorspaceDesc(const gfx::YUVRangedColorSpace cs) {
+  switch (cs) {
+    case gfx::YUVRangedColorSpace::BT601_Narrow:
+      return {
+          .chrom = color::Chromaticities::Rec601_525_Ntsc(),
+          .tf = color::PiecewiseGammaDesc::Rec709(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec709(),
+                  .ycbcr = color::YcbcrDesc::Narrow8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::BT601_Full:
+      return {
+          .chrom = color::Chromaticities::Rec601_525_Ntsc(),
+          .tf = color::PiecewiseGammaDesc::Rec709(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec709(),
+                  .ycbcr = color::YcbcrDesc::Full8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::BT709_Narrow:
+      return {
+          .chrom = color::Chromaticities::Rec709(),
+          .tf = color::PiecewiseGammaDesc::Rec709(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec709(),
+                  .ycbcr = color::YcbcrDesc::Narrow8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::BT709_Full:
+      return {
+          .chrom = color::Chromaticities::Rec709(),
+          .tf = color::PiecewiseGammaDesc::Rec709(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec709(),
+                  .ycbcr = color::YcbcrDesc::Full8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::BT2020_Narrow:
+      return {
+          .chrom = color::Chromaticities::Rec2020(),
+          .tf = color::PiecewiseGammaDesc::Rec2020_12bit(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec709(),
+                  .ycbcr = color::YcbcrDesc::Narrow8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::BT2020_Full:
+      return {
+          .chrom = color::Chromaticities::Rec2020(),
+          .tf = color::PiecewiseGammaDesc::Rec2020_12bit(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Rec2020(),
+                  .ycbcr = color::YcbcrDesc::Full8(),
+              },
+      };
+    case gfx::YUVRangedColorSpace::GbrIdentity:
+      return {
+          .chrom = color::Chromaticities::Rec709(),
+          .tf = color::PiecewiseGammaDesc::Rec709(),
+          .yuv =
+              color::YuvDesc{
+                  .yCoeffs = color::YuvLumaCoeffs::Gbr(),
+                  .ycbcr = color::YcbcrDesc::Full8(),
+              },
+      };
+  }
+  MOZ_CRASH("Bad YUVRangedColorSpace.");
+}
+
+static std::optional<color::ColorProfileDesc> ToColorProfileDesc(
+    gfx::ColorSpace2);
+
+}  // namespace gl
+namespace gfx {
+
+color::ColorProfileDesc QueryOutputColorProfile();
+
+}  // namespace gfx
+namespace gl {
+
+// -
+
+static std::optional<color::ColorProfileDesc> ToColorProfileDesc(
+    const gfx::ColorSpace2 cspace) {
+  color::ColorspaceDesc cspaceDesc;
+  switch (cspace) {
+    case gfx::ColorSpace2::Display:
+      if (kIsWindows) {
+#ifdef XP_WIN
+        return gfx::QueryOutputColorProfile();
+#endif
+      }
+      return {};
+
+    case gfx::ColorSpace2::SRGB:
+      cspaceDesc = {.chrom = color::Chromaticities::Srgb(),
+                    .tf = color::PiecewiseGammaDesc::Srgb()};
+      break;
+    case gfx::ColorSpace2::DISPLAY_P3:
+      cspaceDesc = {.chrom = color::Chromaticities::DisplayP3(),
+                    .tf = color::PiecewiseGammaDesc::DisplayP3()};
+      break;
+    case gfx::ColorSpace2::BT601_525:  // aka smpte170m NTSC
+      cspaceDesc = {.chrom = color::Chromaticities::Rec601_525_Ntsc(),
+                    .tf = color::PiecewiseGammaDesc::Rec709()};
+      break;
+    case gfx::ColorSpace2::BT709:  // Same gamut as SRGB, but different gamma.
+      cspaceDesc = {.chrom = color::Chromaticities::Rec709(),
+                    .tf = color::PiecewiseGammaDesc::Rec709()};
+      break;
+    case gfx::ColorSpace2::BT2020:
+      cspaceDesc = {.chrom = color::Chromaticities::Rec2020(),
+                    .tf = color::PiecewiseGammaDesc::Rec2020_12bit()};
+      break;
+  }
+  const auto profileDesc = color::ColorProfileDesc::From(cspaceDesc);
+  return profileDesc;
+}
+
+// -
+
+// For std::visit
+template <class... Ts>
+struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+// explicit deduction guide (not needed as of C++20)
+template <class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+
+// -
+
+template <typename C, typename K>
+inline auto MaybeFind(C& container, const K& key)
+    -> decltype(&(container.find(key)->second)) {
+  const auto itr = container.find(key);
+  if (itr == container.end()) return nullptr;
+  return &(itr->second);
+}
+
+// -
+
+std::shared_ptr<gl::Texture> GLBlitHelper::GetColorLutTex(
+    const ColorLutKey& request) const {
+  if (const auto found = MaybeFind(mColorLutTexMap, request)) {
+    return *found;  // Might be *Some(nullptr) -> nullptr!
+  }
+
+  return mColorLutTexMap[request] = [&]() -> std::shared_ptr<gl::Texture> {
+    auto& gl = *mGL;
+    const auto tex = std::make_shared<gl::Texture>(gl);
+
+    // -
+
+    const std::optional<color::ColorProfileDesc> srcProfile =
+        std::visit(overloaded{
+                       [&](const gfx::ColorSpace2& cs)
+                           -> std::optional<color::ColorProfileDesc> {
+                         MOZ_ASSERT(cs != request.dst);
+                         const auto cpd = ToColorProfileDesc(cs);
+                         return cpd;
+                       },
+                       [&](const gfx::YUVRangedColorSpace& cs)
+                           -> std::optional<color::ColorProfileDesc> {
+                         const auto csd = ToColorspaceDesc(cs);
+                         const auto cpd = color::ColorProfileDesc::From(csd);
+                         return cpd;
+                       },
+                   },
+                   request.src);
+    MOZ_ASSERT(srcProfile);
+
+    const auto dstProfile = ToColorProfileDesc(request.dst);
+    if (kIsWindows) {
+      MOZ_ASSERT(dstProfile);
+    }
+    if (!srcProfile || !dstProfile) return nullptr;
+    const auto conversion = color::ColorProfileConversionDesc::From({
+        .src = *srcProfile,
+        .dst = *dstProfile,
+    });
+
+    // -
+
+    const auto minLutSize = color::ivec3{2};
+    const auto maxLutSize = color::ivec3{256};
+    auto lutSize = minLutSize;
+    const bool isYcbcr =
+        (conversion.srcRgbFromSrcYuv != color::mat4::Identity());
+    if (isYcbcr) {
+      lutSize.x(int(StaticPrefs::gfx_blithelper_lut_size_ycbcr_y()));
+      lutSize.y(int(StaticPrefs::gfx_blithelper_lut_size_ycbcr_cb()));
+      lutSize.z(int(StaticPrefs::gfx_blithelper_lut_size_ycbcr_cr()));
+    } else {
+      lutSize.x(int(StaticPrefs::gfx_blithelper_lut_size_rgb_r()));
+      lutSize.y(int(StaticPrefs::gfx_blithelper_lut_size_rgb_g()));
+      lutSize.z(int(StaticPrefs::gfx_blithelper_lut_size_rgb_b()));
+    }
+    lutSize = clamp(lutSize, minLutSize, maxLutSize);
+
+    const auto lut = [&]() {
+      auto lut = color::Lut3::Create(lutSize);
+      lut.SetMap(
+          [&](const color::vec3& src) { return conversion.DstFromSrc(src); });
+      return lut;
+    }();
+    const auto& size = lut.size;
+
+    // -
+
+    constexpr GLenum target = LOCAL_GL_TEXTURE_3D;
+    const auto bind = gl::ScopedBindTexture(&gl, tex->name, target);
+    gl.fTexParameteri(target, LOCAL_GL_TEXTURE_WRAP_S, LOCAL_GL_CLAMP_TO_EDGE);
+    gl.fTexParameteri(target, LOCAL_GL_TEXTURE_WRAP_T, LOCAL_GL_CLAMP_TO_EDGE);
+    gl.fTexParameteri(target, LOCAL_GL_TEXTURE_WRAP_R, LOCAL_GL_CLAMP_TO_EDGE);
+    gl.fTexParameteri(target, LOCAL_GL_TEXTURE_MAG_FILTER, LOCAL_GL_LINEAR);
+    gl.fTexParameteri(target, LOCAL_GL_TEXTURE_MIN_FILTER, LOCAL_GL_LINEAR);
+
+    bool useFloat16 = true;
+    if (useFloat16) {
+      // Use rgba16f, which we can thankfully upload as rgba32f
+      static_assert(sizeof(color::vec4) == sizeof(float) * 4);
+      std::vector<color::vec4> uploadData;
+      uploadData.reserve(lut.data.size());
+      for (const auto& src : lut.data) {
+        const auto dst = color::vec4{src, 1};
+        uploadData.push_back(dst);
+      }
+
+      gl.fTexStorage3D(target, 1, LOCAL_GL_RGBA16F, size.x(), size.y(),
+                       size.z());
+      gl.fTexSubImage3D(target, 0, 0, 0, 0, size.x(), size.y(), size.z(),
+                        LOCAL_GL_RGBA, LOCAL_GL_FLOAT, uploadData.data());
+    } else {
+      // Use Rgb10A2
+      std::vector<uint32_t> uploadData;
+      uploadData.reserve(lut.data.size());
+      for (const auto& src : lut.data) {
+        const auto dst = toRgb10A2({src, 1});
+        uploadData.push_back(dst);
+      }
+
+      gl.fTexStorage3D(target, 1, LOCAL_GL_RGB10_A2, size.x(), size.y(),
+                       size.z());
+      gl.fTexSubImage3D(target, 0, 0, 0, 0, size.x(), size.y(), size.z(),
+                        LOCAL_GL_RGBA, LOCAL_GL_UNSIGNED_INT_2_10_10_10_REV,
+                        uploadData.data());
+    }
+    return tex;
+  }();
 }
 
 }  // namespace gl

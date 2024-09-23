@@ -9,11 +9,7 @@
 
 "use strict";
 
-var ios = Cc["@mozilla.org/network/io-service;1"].getService(Ci.nsIIOService);
 var pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService();
-var prefs = Cc["@mozilla.org/preferences-service;1"].getService(
-  Ci.nsIPrefBranch
-);
 
 /**
  * Test nsIProtocolHandler that allows proxying, but doesn't allow HTTP
@@ -21,7 +17,7 @@ var prefs = Cc["@mozilla.org/preferences-service;1"].getService(
  */
 function TestProtocolHandler() {}
 TestProtocolHandler.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIProtocolHandler]),
+  QueryInterface: ChromeUtils.generateQI(["nsIProtocolHandler"]),
   scheme: "moz-test",
   defaultPort: -1,
   protocolFlags:
@@ -29,20 +25,19 @@ TestProtocolHandler.prototype = {
     Ci.nsIProtocolHandler.URI_NORELATIVE |
     Ci.nsIProtocolHandler.ALLOWS_PROXY |
     Ci.nsIProtocolHandler.URI_DANGEROUS_TO_LOAD,
-  newChannel(uri, aLoadInfo) {
+  newChannel() {
     throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   },
-  allowPort(port, scheme) {
+  allowPort() {
     return true;
   },
 };
 
 function TestProtocolHandlerFactory() {}
 TestProtocolHandlerFactory.prototype = {
-  createInstance(delegate, iid) {
+  createInstance(iid) {
     return new TestProtocolHandler().QueryInterface(iid);
   },
-  lockFactory(lock) {},
 };
 
 function register_test_protocol_handler() {
@@ -94,7 +89,7 @@ TestFilter.prototype = {
   _async: false,
   _throwing: false,
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIProtocolProxyFilter]),
+  QueryInterface: ChromeUtils.generateQI(["nsIProtocolProxyFilter"]),
 
   applyFilter(uri, pi, cb) {
     if (this._result == THROW) {
@@ -131,9 +126,9 @@ function resolveCallback() {}
 resolveCallback.prototype = {
   nextFunction: null,
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIProtocolProxyCallback]),
+  QueryInterface: ChromeUtils.generateQI(["nsIProtocolProxyCallback"]),
 
-  onProxyAvailable(req, channel, pi, status) {
+  onProxyAvailable(req, channel, pi) {
     this.nextFunction(pi);
   },
 };
@@ -156,7 +151,7 @@ function run_filter_test1() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test1_1(pi) {
@@ -171,7 +166,7 @@ function filter_test1_1(pi) {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test1_2(pi) {
@@ -185,7 +180,7 @@ function filter_test1_2(pi) {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test1_3(pi) {
@@ -205,7 +200,7 @@ function run_filter2_sync_async() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test2_1(pi) {
@@ -230,7 +225,7 @@ function run_filter3_async_sync() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test3_1(pi) {
@@ -257,7 +252,7 @@ function run_filter4_throwing_sync_sync() {
     uri: "http://www.mozilla2.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test4_1(pi) {
@@ -285,7 +280,7 @@ function run_filter5_sync_sync_throwing() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test5_1(pi) {
@@ -313,7 +308,7 @@ function run_filter5_2_throwing_async_async() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test5_2(pi) {
@@ -341,7 +336,7 @@ function run_filter6_async_async_throwing() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test6_1(pi) {
@@ -369,7 +364,7 @@ function run_filter7_async_throwing_async() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test7_1(pi) {
@@ -397,7 +392,7 @@ function run_filter8_sync_throwing_sync() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test8_1(pi) {
@@ -421,7 +416,7 @@ function run_filter9_throwing() {
     uri: "http://www.mozilla.org/",
     loadUsingSystemPrincipal: true,
   });
-  var req = pps.asyncResolve(channel, 0, cb);
+  pps.asyncResolve(channel, 0, cb);
 }
 
 function filter_test9_1(pi) {

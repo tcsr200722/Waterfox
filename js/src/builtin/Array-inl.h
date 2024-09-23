@@ -9,16 +9,16 @@
 
 #include "builtin/Array.h"
 
-#include "vm/ArgumentsObject.h"
 #include "vm/JSObject.h"
 
 #include "vm/ArgumentsObject-inl.h"
+#include "vm/ObjectOperations-inl.h"
 
 namespace js {
 
 inline bool GetElement(JSContext* cx, HandleObject obj, uint32_t index,
                        MutableHandleValue vp) {
-  if (obj->isNative() &&
+  if (obj->is<NativeObject>() &&
       index < obj->as<NativeObject>().getDenseInitializedLength()) {
     vp.set(obj->as<NativeObject>().getDenseElement(index));
     if (!vp.isMagic(JS_ELEMENTS_HOLE)) {

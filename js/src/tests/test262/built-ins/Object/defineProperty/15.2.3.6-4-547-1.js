@@ -34,16 +34,16 @@ try {
     value: 1001
   });
 
-  $ERROR("Expected an exception.");
+  throw new Test262Error("Expected an exception.");
 } catch (e) {
   var desc2 = Object.getOwnPropertyDescriptor(obj, "0");
 
   if (!desc1.hasOwnProperty("get")) {
-    $ERROR('Expected desc1.hasOwnProperty("get") to be true, actually ' + desc1.hasOwnProperty("get"));
+    throw new Test262Error('Expected desc1.hasOwnProperty("get") to be true, actually ' + desc1.hasOwnProperty("get"));
   }
 
   if (desc2.hasOwnProperty("value")) {
-    $ERROR('Expected !desc2.hasOwnProperty("value") to be true, actually ' + !desc2.hasOwnProperty("value"));
+    throw new Test262Error('Expected !desc2.hasOwnProperty("value") to be true, actually ' + !desc2.hasOwnProperty("value"));
   }
 
 
@@ -51,15 +51,14 @@ try {
 
   verifyWritable(obj, "0", "verifySetFunc");
 
-  verifyEnumerable(obj, "0");
-
-  verifyNotConfigurable(obj, "0");
-
-
   if (!(e instanceof TypeError)) {
-    $ERROR("Expected TypeError, got " + e);
+    throw new Test262Error("Expected TypeError, got " + e);
   }
-
 }
+
+verifyProperty(obj, "0", {
+  enumerable: true,
+  configurable: false,
+});
 
 reportCompare(0, 0);

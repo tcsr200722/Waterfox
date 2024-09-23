@@ -10,10 +10,12 @@
 #include "mozilla/layers/CompositorBridgeChild.h"
 #include "mozilla/layers/CompositorManagerParent.h"
 #include "mozilla/layers/CompositorThread.h"
+#include "mozilla/gfx/CanvasShutdownManager.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/dom/ContentChild.h"  // for ContentChild
 #include "mozilla/dom/BrowserChild.h"  // for BrowserChild
+#include "mozilla/ipc/Endpoint.h"
 #include "VsyncSource.h"
 
 namespace mozilla {
@@ -22,6 +24,7 @@ namespace layers {
 using gfx::GPUProcessManager;
 
 StaticRefPtr<CompositorManagerChild> CompositorManagerChild::sInstance;
+Atomic<base::ProcessId> CompositorManagerChild::sOtherPid(0);
 
 /* static */
 bool CompositorManagerChild::IsInitialized(uint64_t aProcessToken) {
@@ -40,7 +43,7 @@ void CompositorManagerChild::InitSameProcess(uint32_t aNamespace,
   }
 
   RefPtr<CompositorManagerParent> parent =
-      CompositorManagerParent::CreateSameProcess();
+      CompositorManagerParent::CreateSameProcess(aNamespace);
   RefPtr<CompositorManagerChild> child =
       new CompositorManagerChild(parent, aProcessToken, aNamespace);
   if (NS_WARN_IF(!child->CanSend())) {
@@ -50,6 +53,7 @@ void CompositorManagerChild::InitSameProcess(uint32_t aNamespace,
 
   parent->BindComplete(/* aIsRoot */ true);
   sInstance = std::move(child);
+  sOtherPid = sInstance->OtherPid();
 }
 
 /* static */
@@ -63,7 +67,16 @@ bool CompositorManagerChild::Init(Endpoint<PCompositorManagerChild>&& aEndpoint,
 
   sInstance = new CompositorManagerChild(std::move(aEndpoint), aProcessToken,
                                          aNamespace);
-  return sInstance->CanSend();
+  sOtherPid = sInstance->OtherPid();
+  if (!sInstance->CanSend()) {
+    return false;
+  }
+
+  // If there are any canvases waiting on the recreation of the GPUProcess or
+  // CompositorManagerChild, then we need to notify them so that they can
+  // restore their contexts.
+  gfx::CanvasShutdownManager::OnCompositorManagerRestored();
+  return true;
 }
 
 /* static */
@@ -77,6 +90,7 @@ void CompositorManagerChild::Shutdown() {
 
   sInstance->Close();
   sInstance = nullptr;
+  sOtherPid = 0;
 }
 
 /* static */
@@ -88,6 +102,7 @@ void CompositorManagerChild::OnGPUProcessLost(uint64_t aProcessToken) {
   // yet to be. As such, we want to pre-emptively set mCanSend to false.
   if (sInstance && sInstance->mProcessToken == aProcessToken) {
     sInstance->mCanSend = false;
+    sOtherPid = 0;
   }
 }
 
@@ -114,22 +129,22 @@ bool CompositorManagerChild::CreateContentCompositorBridge(
 /* static */
 already_AddRefed<CompositorBridgeChild>
 CompositorManagerChild::CreateWidgetCompositorBridge(
-    uint64_t aProcessToken, LayerManager* aLayerManager, uint32_t aNamespace,
-    CSSToLayoutDeviceScale aScale, const CompositorOptions& aOptions,
-    bool aUseExternalSurfaceSize, const gfx::IntSize& aSurfaceSize) {
+    uint64_t aProcessToken, WebRenderLayerManager* aLayerManager,
+    uint32_t aNamespace, CSSToLayoutDeviceScale aScale,
+    const CompositorOptions& aOptions, bool aUseExternalSurfaceSize,
+    const gfx::IntSize& aSurfaceSize, uint64_t aInnerWindowId) {
   MOZ_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(NS_IsMainThread());
   if (NS_WARN_IF(!sInstance || !sInstance->CanSend())) {
     return nullptr;
   }
 
-  TimeDuration vsyncRate = gfxPlatform::GetPlatform()
-                               ->GetHardwareVsync()
-                               ->GetGlobalDisplay()
-                               .GetVsyncRate();
+  TimeDuration vsyncRate =
+      gfxPlatform::GetPlatform()->GetGlobalVsyncDispatcher()->GetVsyncRate();
 
   CompositorBridgeOptions options = WidgetCompositorOptions(
-      aScale, vsyncRate, aOptions, aUseExternalSurfaceSize, aSurfaceSize);
+      aScale, vsyncRate, aOptions, aUseExternalSurfaceSize, aSurfaceSize,
+      aInnerWindowId);
 
   RefPtr<CompositorBridgeChild> bridge = new CompositorBridgeChild(sInstance);
   if (NS_WARN_IF(
@@ -144,7 +159,7 @@ CompositorManagerChild::CreateWidgetCompositorBridge(
 /* static */
 already_AddRefed<CompositorBridgeChild>
 CompositorManagerChild::CreateSameProcessWidgetCompositorBridge(
-    LayerManager* aLayerManager, uint32_t aNamespace) {
+    WebRenderLayerManager* aLayerManager, uint32_t aNamespace) {
   MOZ_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(NS_IsMainThread());
   if (NS_WARN_IF(!sInstance || !sInstance->CanSend())) {
@@ -169,17 +184,17 @@ CompositorManagerChild::CompositorManagerChild(CompositorManagerParent* aParent,
     : mProcessToken(aProcessToken),
       mNamespace(aNamespace),
       mResourceId(0),
-      mCanSend(false) {
+      mCanSend(false),
+      mSameProcess(true),
+      mFwdTransactionCounter(this) {
   MOZ_ASSERT(aParent);
 
   SetOtherProcessId(base::GetCurrentProcId());
-  ipc::MessageChannel* channel = aParent->GetIPCChannel();
-  if (NS_WARN_IF(!Open(channel, CompositorThread(), ipc::ChildSide))) {
+  if (NS_WARN_IF(!Open(aParent, CompositorThread(), ipc::ChildSide))) {
     return;
   }
 
   mCanSend = true;
-  AddRef();
   SetReplyTimeout();
 }
 
@@ -189,19 +204,15 @@ CompositorManagerChild::CompositorManagerChild(
     : mProcessToken(aProcessToken),
       mNamespace(aNamespace),
       mResourceId(0),
-      mCanSend(false) {
+      mCanSend(false),
+      mSameProcess(false),
+      mFwdTransactionCounter(this) {
   if (NS_WARN_IF(!aEndpoint.Bind(this))) {
     return;
   }
 
   mCanSend = true;
-  AddRef();
   SetReplyTimeout();
-}
-
-void CompositorManagerChild::ActorDealloc() {
-  MOZ_ASSERT(!mCanSend);
-  Release();
 }
 
 void CompositorManagerChild::ActorDestroy(ActorDestroyReason aReason) {
@@ -211,7 +222,7 @@ void CompositorManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   }
 }
 
-void CompositorManagerChild::HandleFatalError(const char* aMsg) const {
+void CompositorManagerChild::HandleFatalError(const char* aMsg) {
   dom::ContentChild::FatalErrorIfNotUsingGPUProcess(aMsg, OtherPid());
 }
 
@@ -238,7 +249,7 @@ bool CompositorManagerChild::ShouldContinueFromReplyTimeout() {
   if (XRE_IsParentProcess()) {
     gfxCriticalNote << "Killing GPU process due to IPC reply timeout";
     MOZ_DIAGNOSTIC_ASSERT(GPUProcessManager::Get()->GetGPUChild());
-    GPUProcessManager::Get()->KillProcess();
+    GPUProcessManager::Get()->KillProcess(/* aGenerateMinidump */ true);
   }
   return false;
 }

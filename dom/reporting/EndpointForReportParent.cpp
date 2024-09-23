@@ -8,10 +8,10 @@
 #include "mozilla/dom/ReportingHeader.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/Unused.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 EndpointForReportParent::EndpointForReportParent()
     : mPBackgroundThread(NS_GetCurrentThread()), mActive(true) {}
@@ -23,12 +23,13 @@ void EndpointForReportParent::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 void EndpointForReportParent::Run(
-    const nsString& aGroupName,
+    const nsAString& aGroupName,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo) {
   RefPtr<EndpointForReportParent> self = this;
 
   NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "EndpointForReportParent::Run", [self, aGroupName, aPrincipalInfo]() {
+      "EndpointForReportParent::Run",
+      [self, aGroupName = nsString(aGroupName), aPrincipalInfo]() {
         nsAutoCString uri;
         ReportingHeader::GetEndpointForReport(aGroupName, aPrincipalInfo, uri);
         self->mPBackgroundThread->Dispatch(NS_NewRunnableFunction(
@@ -40,5 +41,4 @@ void EndpointForReportParent::Run(
       }));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

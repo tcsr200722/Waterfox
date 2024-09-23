@@ -1,5 +1,5 @@
-use tinystr::{TinyStr4, TinyStr8};
 use unic_langid_impl::likelysubtags::{maximize, minimize, CLDR_VERSION};
+use unic_langid_impl::subtags;
 
 static STRINGS: &[(&str, Option<&str>)] = &[
     ("en-US", Some("en-Latn-US")),
@@ -32,10 +32,10 @@ static STRINGS: &[(&str, Option<&str>)] = &[
     ("en-Latn-DE", None),
     ("pl-FR", Some("pl-Latn-FR")),
     ("de-CH", Some("de-Latn-CH")),
-    ("tuq", Some("tuq-Latn")),
+    ("tuq", Some("tuq-Latn-TD")),
     ("sr-ME", Some("sr-Latn-ME")),
     ("ng", Some("ng-Latn-NA")),
-    ("klx", Some("klx-Latn")),
+    ("klx", Some("klx-Latn-PG")),
     ("kk-Arab", Some("kk-Arab-CN")),
     ("en-Cyrl", Some("en-Cyrl-US")),
     ("und-Cyrl-UK", Some("ru-Cyrl-UK")),
@@ -44,32 +44,40 @@ static STRINGS: &[(&str, Option<&str>)] = &[
     ("zh-TW", Some("zh-Hant-TW")),
 ];
 
-fn extract_input(s: &str) -> (Option<TinyStr8>, Option<TinyStr4>, Option<TinyStr4>) {
+fn extract_input(
+    s: &str,
+) -> (
+    subtags::Language,
+    Option<subtags::Script>,
+    Option<subtags::Region>,
+) {
     let chunks: Vec<&str> = s.split("-").collect();
-    let mut lang: Option<TinyStr8> = chunks.get(0).map(|s| s.parse().unwrap());
-    let mut script: Option<TinyStr4> = chunks.get(1).map(|s| s.parse().unwrap());
-    let mut region: Option<TinyStr4> = chunks.get(2).map(|s| s.parse().unwrap());
-    if let Some(l) = lang {
-        if l.as_str() == "und" {
-            lang = None;
+    let lang: subtags::Language = chunks[0].parse().unwrap();
+    let (script, region) = if let Some(s) = chunks.get(1) {
+        if let Ok(script) = s.parse() {
+            let region = chunks.get(2).map(|r| r.parse().unwrap());
+            (Some(script), region)
+        } else {
+            let region = s.parse().unwrap();
+            (None, Some(region))
         }
-    }
-    if let Some(s) = script {
-        if s.as_str().chars().count() == 2 {
-            region = script;
-            script = None;
-        }
-    }
+    } else {
+        (None, None)
+    };
     (lang, script, region)
 }
 
 fn extract_output(
     s: Option<&str>,
-) -> Option<(Option<TinyStr8>, Option<TinyStr4>, Option<TinyStr4>)> {
+) -> Option<(
+    subtags::Language,
+    Option<subtags::Script>,
+    Option<subtags::Region>,
+)> {
     s.map(|s| {
         let chunks: Vec<&str> = s.split("-").collect();
         (
-            chunks.get(0).map(|s| s.parse().unwrap()),
+            chunks[0].parse().unwrap(),
             chunks.get(1).map(|s| s.parse().unwrap()),
             chunks.get(2).map(|s| s.parse().unwrap()),
         )
@@ -87,19 +95,19 @@ fn maximize_test() {
 
 #[test]
 fn version_works() {
-    assert_eq!(CLDR_VERSION, "36");
+    assert_eq!(CLDR_VERSION, "44");
 }
 
 #[test]
 fn minimize_test() {
-    let lang: TinyStr8 = "zh".parse().unwrap();
-    let script: TinyStr4 = "Hant".parse().unwrap();
-    let result = minimize(Some(lang), Some(script), None);
+    let lang = "zh".parse().unwrap();
+    let script = "Hant".parse().unwrap();
+    let result = minimize(lang, Some(script), None);
     assert_eq!(result, Some(extract_input("zh-TW")));
 
-    let lang: TinyStr8 = "en".parse().unwrap();
-    let script: TinyStr4 = "Latn".parse().unwrap();
-    let region: TinyStr4 = "US".parse().unwrap();
-    let result = minimize(Some(lang), Some(script), Some(region));
+    let lang = "en".parse().unwrap();
+    let script = "Latn".parse().unwrap();
+    let region = "US".parse().unwrap();
+    let result = minimize(lang, Some(script), Some(region));
     assert_eq!(result, Some(extract_input("en")));
 }

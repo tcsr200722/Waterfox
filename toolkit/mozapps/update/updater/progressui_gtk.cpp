@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdio.h>
 #include <gtk/gtk.h>
 #include <unistd.h>
 #include "mozilla/Sprintf.h"
@@ -86,7 +85,7 @@ int ShowProgressUI() {
   g_signal_connect(G_OBJECT(sWin), "delete_event", G_CALLBACK(OnDeleteEvent),
                    nullptr);
 
-  gtk_window_set_title(GTK_WINDOW(sWin), sStrings.title);
+  gtk_window_set_title(GTK_WINDOW(sWin), sStrings.title.get());
   gtk_window_set_type_hint(GTK_WINDOW(sWin), GDK_WINDOW_TYPE_HINT_DIALOG);
   gtk_window_set_position(GTK_WINDOW(sWin), GTK_WIN_POS_CENTER_ALWAYS);
   gtk_window_set_resizable(GTK_WINDOW(sWin), FALSE);
@@ -96,7 +95,7 @@ int ShowProgressUI() {
   g_object_unref(sPixbuf);
 
   GtkWidget* vbox = gtk_vbox_new(TRUE, 6);
-  sLabel = gtk_label_new(sStrings.info);
+  sLabel = gtk_label_new(sStrings.info.get());
   gtk_misc_set_alignment(GTK_MISC(sLabel), 0.0f, 0.0f);
   sProgressBar = gtk_progress_bar_new();
 

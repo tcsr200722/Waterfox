@@ -4,17 +4,19 @@
 
 "use strict";
 
-const { PureComponent } = require("devtools/client/shared/vendor/react");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  PureComponent,
+} = require("resource://devtools/client/shared/vendor/react.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 
 const {
   ICON_LABEL_LEVEL,
-} = require("devtools/client/aboutdebugging/src/constants");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
 
 const ICONS = {
-  [ICON_LABEL_LEVEL.INFO]: "chrome://global/skin/icons/info.svg",
-  [ICON_LABEL_LEVEL.OK]: "chrome://global/skin/icons/check.svg",
+  [ICON_LABEL_LEVEL.INFO]: "chrome://devtools/skin/images/info.svg",
+  [ICON_LABEL_LEVEL.OK]: "chrome://devtools/skin/images/check.svg",
 };
 
 /* This component displays an icon accompanied by some content. It's similar

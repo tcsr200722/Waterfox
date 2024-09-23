@@ -6,45 +6,43 @@
 
 #include "chrome/common/child_thread.h"
 
-#include "base/string_util.h"
-#include "base/command_line.h"
 #include "chrome/common/child_process.h"
-#include "chrome/common/chrome_switches.h"
+#include "mozilla/ipc/NodeController.h"
 
-ChildThread::ChildThread(Thread::Options options)
-    : Thread("Chrome_ChildThread"),
+ChildThread::ChildThread(Thread::Options options, base::ProcessId parent_pid)
+    : Thread("IPC I/O Child"),
       owner_loop_(MessageLoop::current()),
-      options_(options) {
+      options_(options),
+      parent_pid_(parent_pid) {
   DCHECK(owner_loop_);
-  channel_name_ = CommandLine::ForCurrentProcess()->GetSwitchValue(
-      switches::kProcessChannelID);
 }
 
-ChildThread::~ChildThread() {}
+ChildThread::~ChildThread() = default;
 
 bool ChildThread::Run() {
   bool r = StartWithOptions(options_);
   return r;
 }
 
-void ChildThread::OnChannelError() {
-  RefPtr<mozilla::Runnable> task = new MessageLoop::QuitTask();
-  owner_loop_->PostTask(task.forget());
-}
-
-void ChildThread::OnMessageReceived(IPC::Message&& msg) {}
-
 ChildThread* ChildThread::current() {
   return ChildProcess::current()->child_thread();
 }
 
 void ChildThread::Init() {
-  channel_ = mozilla::MakeUnique<IPC::Channel>(channel_name_,
-                                               IPC::Channel::MODE_CLIENT, this);
+  // Take ownership of the client channel handle which we inherited, and use it
+  // to start the initial IPC connection to the parent process.
+  IPC::Channel::ChannelHandle client_handle(
+      IPC::Channel::GetClientChannelHandle());
+  auto channel = mozilla::MakeUnique<IPC::Channel>(
+      std::move(client_handle), IPC::Channel::MODE_CLIENT, parent_pid_);
+#if defined(XP_WIN)
+  channel->StartAcceptingHandles(IPC::Channel::MODE_CLIENT);
+#elif defined(XP_DARWIN)
+  channel->StartAcceptingMachPorts(IPC::Channel::MODE_CLIENT);
+#endif
+
+  initial_port_ = mozilla::ipc::NodeController::InitChildProcess(
+      std::move(channel), parent_pid_);
 }
 
-void ChildThread::CleanUp() {
-  // Need to destruct the SyncChannel to the browser before we go away because
-  // it caches a pointer to this thread.
-  channel_ = nullptr;
-}
+void ChildThread::CleanUp() { mozilla::ipc::NodeController::CleanUp(); }

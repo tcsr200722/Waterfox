@@ -10,8 +10,7 @@
 #include "nsFrameMessageManager.h"
 #include "mozilla/ErrorResult.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * Base class for implementing the WebIDL MessageManagerGlobal class.
@@ -75,7 +74,7 @@ class MessageManagerGlobal {
     return mMessageManager->GetProcessMessageManager(aError);
   }
 
-  void GetRemoteType(nsAString& aRemoteType, mozilla::ErrorResult& aError) {
+  void GetRemoteType(nsACString& aRemoteType, mozilla::ErrorResult& aError) {
     if (!mMessageManager) {
       aError.Throw(NS_ERROR_NOT_INITIALIZED);
       return;
@@ -114,7 +113,6 @@ class MessageManagerGlobal {
   RefPtr<nsFrameMessageManager> mMessageManager;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_MessageManagerGlobal_h

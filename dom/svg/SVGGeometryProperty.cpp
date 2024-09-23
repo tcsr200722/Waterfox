@@ -10,46 +10,9 @@
 #include "SVGForeignObjectElement.h"
 #include "SVGImageElement.h"
 #include "SVGRectElement.h"
+#include "SVGUseElement.h"
 
-namespace mozilla {
-namespace dom {
-namespace SVGGeometryProperty {
-
-nsCSSUnit SpecifiedUnitTypeToCSSUnit(uint8_t aSpecifiedUnit) {
-  switch (aSpecifiedUnit) {
-    case SVGLength_Binding::SVG_LENGTHTYPE_NUMBER:
-    case SVGLength_Binding::SVG_LENGTHTYPE_PX:
-      return nsCSSUnit::eCSSUnit_Pixel;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_MM:
-      return nsCSSUnit::eCSSUnit_Millimeter;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_CM:
-      return nsCSSUnit::eCSSUnit_Centimeter;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_IN:
-      return nsCSSUnit::eCSSUnit_Inch;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_PT:
-      return nsCSSUnit::eCSSUnit_Point;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_PC:
-      return nsCSSUnit::eCSSUnit_Pica;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_PERCENTAGE:
-      return nsCSSUnit::eCSSUnit_Percent;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_EMS:
-      return nsCSSUnit::eCSSUnit_EM;
-
-    case SVGLength_Binding::SVG_LENGTHTYPE_EXS:
-      return nsCSSUnit::eCSSUnit_XHeight;
-
-    default:
-      MOZ_ASSERT_UNREACHABLE("Unknown unit type");
-      return nsCSSUnit::eCSSUnit_Pixel;
-  }
-}
+namespace mozilla::dom::SVGGeometryProperty {
 
 nsCSSPropertyID AttrEnumToCSSPropId(const SVGElement* aElement,
                                     uint8_t aAttrEnum) {
@@ -70,6 +33,9 @@ nsCSSPropertyID AttrEnumToCSSPropId(const SVGElement* aElement,
   if (aElement->IsSVGElement(nsGkAtoms::foreignObject)) {
     return SVGForeignObjectElement::GetCSSPropertyIdForAttrEnum(aAttrEnum);
   }
+  if (aElement->IsSVGElement(nsGkAtoms::use)) {
+    return SVGUseElement::GetCSSPropertyIdForAttrEnum(aAttrEnum);
+  }
   return eCSSProperty_UNKNOWN;
 }
 
@@ -80,13 +46,9 @@ bool IsNonNegativeGeometryProperty(nsCSSPropertyID aProp) {
 }
 
 bool ElementMapsLengthsToStyle(SVGElement const* aElement) {
-  return aElement->IsSVGElement(nsGkAtoms::rect) ||
-         aElement->IsSVGElement(nsGkAtoms::circle) ||
-         aElement->IsSVGElement(nsGkAtoms::ellipse) ||
-         aElement->IsSVGElement(nsGkAtoms::image) ||
-         aElement->IsSVGElement(nsGkAtoms::foreignObject);
+  return aElement->IsAnyOfSVGElements(nsGkAtoms::rect, nsGkAtoms::circle,
+                                      nsGkAtoms::ellipse, nsGkAtoms::image,
+                                      nsGkAtoms::foreignObject, nsGkAtoms::use);
 }
 
-}  // namespace SVGGeometryProperty
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::SVGGeometryProperty

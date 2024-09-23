@@ -23,7 +23,7 @@ class EventTarget;
  * This is intended for production use (whereas TestMVMContext is intended for
  * testing.)
  */
-class GeckoMVMContext : public MVMContext {
+class GeckoMVMContext final : public MVMContext {
  public:
   explicit GeckoMVMContext(dom::Document* aDocument, PresShell* aPresShell);
   void AddEventListener(const nsAString& aType, nsIDOMEventListener* aListener,
@@ -45,7 +45,7 @@ class GeckoMVMContext : public MVMContext {
   bool IsResolutionUpdatedByApz() const override;
   LayoutDeviceMargin ScrollbarAreaToExcludeFromCompositionBounds()
       const override;
-  Maybe<LayoutDeviceIntSize> GetContentViewerSize() const override;
+  Maybe<LayoutDeviceIntSize> GetDocumentViewerSize() const override;
   bool AllowZoomingForDocument() const override;
   bool IsInReaderMode() const override;
   bool IsDocumentLoading() const override;
@@ -56,6 +56,7 @@ class GeckoMVMContext : public MVMContext {
   void PostVisualViewportResizeEventByDynamicToolbar() override;
   void UpdateDisplayPortMargins() override;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void Reflow(const CSSSize& aNewSize) override;
+  ScreenIntCoord GetDynamicToolbarOffset() override;
 
  private:
   RefPtr<dom::Document> mDocument;

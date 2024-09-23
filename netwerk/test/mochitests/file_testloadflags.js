@@ -1,5 +1,3 @@
-/* eslint-env mozilla/frame-script */
-
 "use strict";
 
 const SCRIPT_URL = SimpleTest.getTestFileURL(
@@ -18,10 +16,10 @@ var gHeaders = 0;
 var gLoads = 0;
 
 // setupTest() is run from 'onload='.
-function setupTest(uri, domain, cookies, loads, headers) {
+function setupTest(iframeUri, domain, cookies, loads, headers) {
   info(
     "setupTest uri: " +
-      uri +
+      iframeUri +
       " domain: " +
       domain +
       " cookies: " +
@@ -36,7 +34,12 @@ function setupTest(uri, domain, cookies, loads, headers) {
 
   var prefSet = new Promise(resolve => {
     SpecialPowers.pushPrefEnv(
-      { set: [["network.cookie.cookieBehavior", 1]] },
+      {
+        set: [
+          ["network.cookie.cookieBehavior", 1],
+          ["network.cookie.sameSite.schemeful", false],
+        ],
+      },
       resolve
     );
   });
@@ -68,7 +71,7 @@ function setupTest(uri, domain, cookies, loads, headers) {
   Promise.all([prefSet, scriptReady]).then(() => {
     // load a window which contains an iframe; each will attempt to set
     // cookies from their respective domains.
-    gPopup = window.open(uri, "hai", "width=100,height=100");
+    gPopup = window.open(iframeUri, "hai", "width=100,height=100");
   });
 }
 

@@ -52,30 +52,14 @@ nscoord CSSAlignUtils::AlignJustifySelf(const StyleAlignFlags& aAlignment,
     alignment = StyleAlignFlags::END;
   }
 
-  // XXX try to condense this code a bit by adding the necessary convenience
-  // methods? (bug 1209710)
-
   // Get the item's margin corresponding to the container's start/end side.
-  const LogicalMargin margin = aRI.ComputedLogicalMargin();
   WritingMode wm = aRI.GetWritingMode();
-  nscoord marginStart, marginEnd;
-  if (aAxis == eLogicalAxisBlock) {
-    if (MOZ_LIKELY(isSameSide)) {
-      marginStart = margin.BStart(wm);
-      marginEnd = margin.BEnd(wm);
-    } else {
-      marginStart = margin.BEnd(wm);
-      marginEnd = margin.BStart(wm);
-    }
-  } else {
-    if (MOZ_LIKELY(isSameSide)) {
-      marginStart = margin.IStart(wm);
-      marginEnd = margin.IEnd(wm);
-    } else {
-      marginStart = margin.IEnd(wm);
-      marginEnd = margin.IStart(wm);
-    }
-  }
+  const LogicalMargin margin = aRI.ComputedLogicalMargin(wm);
+  const auto startSide = MakeLogicalSide(
+      aAxis, MOZ_LIKELY(isSameSide) ? LogicalEdge::Start : LogicalEdge::End);
+  const nscoord marginStart = margin.Side(startSide, wm);
+  const auto endSide = GetOppositeSide(startSide);
+  const nscoord marginEnd = margin.Side(endSide, wm);
 
   const auto& styleMargin = aRI.mStyleMargin->mMargin;
   bool hasAutoMarginStart;
@@ -84,10 +68,10 @@ nscoord CSSAlignUtils::AlignJustifySelf(const StyleAlignFlags& aAlignment,
     // (Note: ReflowInput will have treated "auto" margins as 0, so we
     // don't need to do anything special to avoid expanding them.)
     hasAutoMarginStart = hasAutoMarginEnd = false;
-  } else if (aAxis == eLogicalAxisBlock) {
+  } else if (aAxis == LogicalAxis::Block) {
     hasAutoMarginStart = styleMargin.GetBStart(wm).IsAuto();
     hasAutoMarginEnd = styleMargin.GetBEnd(wm).IsAuto();
-  } else { /* aAxis == eLogicalAxisInline */
+  } else { /* aAxis == LogicalAxis::Inline */
     hasAutoMarginStart = styleMargin.GetIStart(wm).IsAuto();
     hasAutoMarginEnd = styleMargin.GetIEnd(wm).IsAuto();
   }

@@ -175,7 +175,7 @@ typedef nsresult (*vtable_func)(nsISupports *, uint32_t, uint32_t, uint32_t, uin
 // once the function is compiled with a version of ASan that has dynamic-alloca
 // instrumentation enabled.
 
-MOZ_ASAN_BLACKLIST
+MOZ_ASAN_IGNORE
 EXPORT_XPCOM_API(nsresult)
 NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
                  uint32_t paramCount, nsXPTCVariant* params)
@@ -192,4 +192,3 @@ NS_InvokeByIndex(nsISupports* that, uint32_t methodIndex,
 
     return method(that, d_gpr[0], d_gpr[1], d_gpr[2], d_gpr[3],  d_fpr[0], d_fpr[1]);
 }
-

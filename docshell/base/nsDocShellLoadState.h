@@ -11,6 +11,7 @@
 #include "mozilla/dom/SessionHistoryEntry.h"
 
 // Helper Classes
+#include "mozilla/Maybe.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsDocShellLoadTypes.h"
@@ -23,8 +24,11 @@ class nsIURI;
 class nsIDocShell;
 class nsIChannel;
 class nsIReferrerInfo;
-class OriginAttibutes;
+struct HTTPSFirstDowngradeData;
 namespace mozilla {
+class OriginAttributes;
+template <typename, class>
+class UniquePtr;
 namespace dom {
 class DocShellLoadStateInit;
 }  // namespace dom
@@ -44,14 +48,22 @@ class nsDocShellLoadState final {
 
   explicit nsDocShellLoadState(nsIURI* aURI);
   explicit nsDocShellLoadState(
-      const mozilla::dom::DocShellLoadStateInit& aLoadState);
+      const mozilla::dom::DocShellLoadStateInit& aLoadState,
+      mozilla::ipc::IProtocol* aActor, bool* aReadSuccess);
   explicit nsDocShellLoadState(const nsDocShellLoadState& aOther);
+  nsDocShellLoadState(nsIURI* aURI, uint64_t aLoadIdentifier);
 
   static nsresult CreateFromPendingChannel(nsIChannel* aPendingChannel,
+                                           uint64_t aLoadIdentifier,
+                                           uint64_t aRegistarId,
                                            nsDocShellLoadState** aResult);
 
   static nsresult CreateFromLoadURIOptions(
       BrowsingContext* aBrowsingContext, const nsAString& aURI,
+      const mozilla::dom::LoadURIOptions& aLoadURIOptions,
+      nsDocShellLoadState** aResult);
+  static nsresult CreateFromLoadURIOptions(
+      BrowsingContext* aBrowsingContext, nsIURI* aURI,
       const mozilla::dom::LoadURIOptions& aLoadURIOptions,
       nsDocShellLoadState** aResult);
 
@@ -85,9 +97,10 @@ class nsDocShellLoadState final {
 
   void SetPrincipalToInherit(nsIPrincipal* aPrincipalToInherit);
 
-  nsIPrincipal* StoragePrincipalToInherit() const;
+  nsIPrincipal* PartitionedPrincipalToInherit() const;
 
-  void SetStoragePrincipalToInherit(nsIPrincipal* aStoragePrincipalToInherit);
+  void SetPartitionedPrincipalToInherit(
+      nsIPrincipal* aPartitionedPrincipalToInherit);
 
   bool LoadReplace() const;
 
@@ -96,6 +109,18 @@ class nsDocShellLoadState final {
   nsIPrincipal* TriggeringPrincipal() const;
 
   void SetTriggeringPrincipal(nsIPrincipal* aTriggeringPrincipal);
+
+  uint32_t TriggeringSandboxFlags() const;
+
+  void SetTriggeringSandboxFlags(uint32_t aTriggeringSandboxFlags);
+
+  uint64_t TriggeringWindowId() const;
+
+  void SetTriggeringWindowId(uint64_t aTriggeringWindowId);
+
+  bool TriggeringStorageAccess() const;
+
+  void SetTriggeringStorageAccess(bool aTriggeringStorageAccess);
 
   nsIContentSecurityPolicy* Csp() const;
 
@@ -109,9 +134,25 @@ class nsDocShellLoadState final {
 
   void SetPrincipalIsExplicit(bool aPrincipalIsExplicit);
 
+  // If true, "beforeunload" event listeners were notified by the creater of the
+  // LoadState and given the chance to abort the navigation, and should not be
+  // notified again.
+  bool NotifiedBeforeUnloadListeners() const;
+
+  void SetNotifiedBeforeUnloadListeners(bool aNotifiedBeforeUnloadListeners);
+
   bool ForceAllowDataURI() const;
 
   void SetForceAllowDataURI(bool aForceAllowDataURI);
+
+  bool IsExemptFromHTTPSFirstMode() const;
+
+  void SetIsExemptFromHTTPSFirstMode(bool aIsExemptFromHTTPSFirstMode);
+
+  RefPtr<HTTPSFirstDowngradeData> GetHttpsFirstDowngradeData() const;
+
+  void SetHttpsFirstDowngradeData(
+      RefPtr<HTTPSFirstDowngradeData> const& aHttpsFirstTelemetryData);
 
   bool OriginalFrameSrc() const;
 
@@ -129,11 +170,18 @@ class nsDocShellLoadState final {
 
   void SetSHEntry(nsISHEntry* aSHEntry);
 
-  const mozilla::dom::SessionHistoryInfo& GetSessionHistoryInfo() const;
-  uint64_t GetSessionHistoryID() const;
+  const mozilla::dom::LoadingSessionHistoryInfo* GetLoadingSessionHistoryInfo()
+      const;
 
-  void SetSessionHistoryInfo(
-      const mozilla::dom::SessionHistoryInfoAndId& aIdAndInfo);
+  // Copies aLoadingInfo and stores the copy in this nsDocShellLoadState.
+  void SetLoadingSessionHistoryInfo(
+      const mozilla::dom::LoadingSessionHistoryInfo& aLoadingInfo);
+
+  // Stores aLoadingInfo in this nsDocShellLoadState.
+  void SetLoadingSessionHistoryInfo(
+      mozilla::UniquePtr<mozilla::dom::LoadingSessionHistoryInfo> aLoadingInfo);
+
+  bool LoadIsFromSessionHistory() const;
 
   const nsString& Target() const;
 
@@ -157,7 +205,17 @@ class nsDocShellLoadState final {
     return mSourceBrowsingContext;
   }
 
-  void SetSourceBrowsingContext(BrowsingContext* aSourceBrowsingContext);
+  void SetSourceBrowsingContext(BrowsingContext*);
+
+  void SetAllowFocusMove(bool aAllow) { mAllowFocusMove = aAllow; }
+
+  bool AllowFocusMove() const { return mAllowFocusMove; }
+
+  const MaybeDiscarded<BrowsingContext>& TargetBrowsingContext() const {
+    return mTargetBrowsingContext;
+  }
+
+  void SetTargetBrowsingContext(BrowsingContext* aTargetBrowsingContext);
 
   nsIURI* BaseURI() const;
 
@@ -182,6 +240,16 @@ class nsDocShellLoadState final {
 
   bool HasLoadFlags(uint32_t aFlag);
 
+  uint32_t InternalLoadFlags() const;
+
+  void SetInternalLoadFlags(uint32_t aFlags);
+
+  void SetInternalLoadFlag(uint32_t aFlag);
+
+  void UnsetInternalLoadFlag(uint32_t aFlag);
+
+  bool HasInternalLoadFlags(uint32_t aFlag);
+
   bool FirstParty() const;
 
   void SetFirstParty(bool aFirstParty);
@@ -198,9 +266,9 @@ class nsDocShellLoadState final {
 
   void SetFileName(const nsAString& aFileName);
 
-  bool IsHttpsOnlyModeUpgradeExempt() const;
+  nsIURI* GetUnstrippedURI() const;
 
-  void SetIsHttpsOnlyModeUpgradeExempt(bool aIsExempt);
+  void SetUnstrippedURI(nsIURI* aUnstrippedURI);
 
   // Give the type of DocShell we're loading into (chrome/content/etc) and
   // origin attributes for the URI we're loading, figure out if we should
@@ -227,6 +295,10 @@ class nsDocShellLoadState final {
     return mPendingRedirectedChannel;
   }
 
+  uint64_t GetPendingRedirectChannelRegistrarId() const {
+    return mChannelRegistrarId;
+  }
+
   void SetOriginalURIString(const nsCString& aOriginalURI) {
     mOriginalURIString.emplace(aOriginalURI);
   }
@@ -241,8 +313,52 @@ class nsDocShellLoadState final {
     return mCancelContentJSEpoch;
   }
 
-  void SetLoadIdentifier(uint32_t aIdent) { mLoadIdentifier = aIdent; }
-  uint32_t GetLoadIdentifier() const { return mLoadIdentifier; }
+  uint64_t GetLoadIdentifier() const { return mLoadIdentifier; }
+
+  void SetChannelInitialized(bool aInitilized) {
+    mChannelInitialized = aInitilized;
+  }
+
+  bool GetChannelInitialized() const { return mChannelInitialized; }
+
+  void SetIsMetaRefresh(bool aMetaRefresh) { mIsMetaRefresh = aMetaRefresh; }
+
+  bool IsMetaRefresh() const { return mIsMetaRefresh; }
+
+  const mozilla::Maybe<nsCString>& GetRemoteTypeOverride() const {
+    return mRemoteTypeOverride;
+  }
+
+  void SetRemoteTypeOverride(const nsCString& aRemoteTypeOverride);
+
+  void SetWasSchemelessInput(bool aWasSchemelessInput) {
+    mWasSchemelessInput = aWasSchemelessInput;
+  }
+
+  bool GetWasSchemelessInput() { return mWasSchemelessInput; }
+
+  // Determine the remote type of the process which should be considered
+  // responsible for this load for the purposes of security checks.
+  //
+  // This will generally be the process which created the nsDocShellLoadState
+  // originally, however non-errorpage history loads are always considered to be
+  // triggered by the parent process, as we can validate them against the
+  // history entry.
+  const nsCString& GetEffectiveTriggeringRemoteType() const;
+
+  void SetTriggeringRemoteType(const nsACString& aTriggeringRemoteType);
+
+  // Diagnostic assert if this is a system-principal triggered load, and it is
+  // trivial to determine that the effective triggering remote type would not be
+  // allowed to perform this load.
+  //
+  // This is called early during the load to crash as close to the cause as
+  // possible. See bug 1838686 for details.
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+  void AssertProcessCouldTriggerLoadIfSystem();
+#else
+  void AssertProcessCouldTriggerLoadIfSystem() {}
+#endif
 
   // When loading a document through nsDocShell::LoadURI(), a special set of
   // flags needs to be set based on other values in nsDocShellLoadState. This
@@ -251,19 +367,38 @@ class nsDocShellLoadState final {
   void CalculateLoadURIFlags();
 
   // Compute the load flags to be used by creating channel.  aUriModified and
-  // aIsXFOError are expected to be Nothing when called from Parent process.
+  // aIsEmbeddingBlockedError are expected to be Nothing when called from parent
+  // process.
   nsLoadFlags CalculateChannelLoadFlags(
-      mozilla::dom::BrowsingContext* aBrowsingContext, Maybe<bool> aUriModified,
-      Maybe<bool> aIsXFOError);
+      mozilla::dom::BrowsingContext* aBrowsingContext,
+      mozilla::Maybe<bool> aUriModified,
+      mozilla::Maybe<bool> aIsEmbeddingBlockedError);
 
-  mozilla::dom::DocShellLoadStateInit Serialize();
+  mozilla::dom::DocShellLoadStateInit Serialize(
+      mozilla::ipc::IProtocol* aActor);
+
+  void SetLoadIsFromSessionHistory(int32_t aOffset, bool aLoadingCurrentEntry);
+  void ClearLoadIsFromSessionHistory();
+
+  void MaybeStripTrackerQueryStrings(mozilla::dom::BrowsingContext* aContext);
 
  protected:
   // Destructor can't be defaulted or inlined, as header doesn't have all type
   // includes it needs to do so.
   ~nsDocShellLoadState();
 
- protected:
+  // Given the original `nsDocShellLoadState` which was sent to a content
+  // process, validate that they corespond to the same load.
+  // Returns a static (telemetry-safe) string naming what did not match, or
+  // nullptr if it succeeds.
+  const char* ValidateWithOriginalState(nsDocShellLoadState* aOriginalState);
+
+  static nsresult CreateFromLoadURIOptions(
+      BrowsingContext* aBrowsingContext, nsIURI* aURI,
+      const mozilla::dom::LoadURIOptions& aLoadURIOptions,
+      uint32_t aLoadFlagsOverride, nsIInputStream* aPostDataOverride,
+      nsDocShellLoadState** aResult);
+
   // This is the referrer for the load.
   nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
 
@@ -293,6 +428,17 @@ class nsDocShellLoadState final {
   // SystemPrincipal as the triggeringPrincipal.
   nsCOMPtr<nsIPrincipal> mTriggeringPrincipal;
 
+  // The SandboxFlags of the load, that are, the SandboxFlags of the entity
+  // responsible for causing the load to occur. Most likely this are the
+  // SandboxFlags of the document that started the load.
+  uint32_t mTriggeringSandboxFlags;
+
+  // The window ID and current "has storage access" value of the entity
+  // triggering the load. This allows the identification of self-initiated
+  // same-origin navigations that should propogate unpartitioned storage access.
+  uint64_t mTriggeringWindowId;
+  bool mTriggeringStorageAccess;
+
   // The CSP of the load, that is, the CSP of the entity responsible for causing
   // the load to occur. Most likely this is the CSP of the document that started
   // the load. In case the entity starting the load did not use a CSP, then mCsp
@@ -321,6 +467,8 @@ class nsDocShellLoadState final {
   // for a content docshell the load fails.
   bool mPrincipalIsExplicit;
 
+  bool mNotifiedBeforeUnloadListeners;
+
   // Principal we're inheriting. If null, this means the principal should be
   // inherited from the current document. If set to NullPrincipal, the channel
   // will fill in principal information later in the load. See internal comments
@@ -332,19 +480,26 @@ class nsDocShellLoadState final {
 
   nsCOMPtr<nsIPrincipal> mPrincipalToInherit;
 
-  nsCOMPtr<nsIPrincipal> mStoragePrincipalToInherit;
+  nsCOMPtr<nsIPrincipal> mPartitionedPrincipalToInherit;
 
   // If this attribute is true, then a top-level navigation
   // to a data URI will be allowed.
   bool mForceAllowDataURI;
+
+  // If this attribute is true, then the top-level navigaion
+  // will be exempt from HTTPS-Only-Mode upgrades.
+  bool mIsExemptFromHTTPSFirstMode;
+
+  // If set, this load is a HTTPS-First downgrade, and the downgrade data will
+  // be submitted to telemetry later if the load succeeds.
+  RefPtr<HTTPSFirstDowngradeData> mHttpsFirstDowngradeData;
 
   // If this attribute is true, this load corresponds to a frame
   // element loading its original src (or srcdoc) attribute.
   bool mOriginalFrameSrc;
 
   // If this attribute is true, then the load was initiated by a
-  // form submission. This is important to know for the CSP directive
-  // navigate-to.
+  // form submission.
   bool mIsFormSubmission;
 
   // Contains a load type as specified by the nsDocShellLoadTypes::load*
@@ -354,11 +509,16 @@ class nsDocShellLoadState final {
   // Active Session History entry (if loading from SH)
   nsCOMPtr<nsISHEntry> mSHEntry;
 
-  // Session history info for the load
-  mozilla::dom::SessionHistoryInfoAndId mSessionHistoryInfo;
+  // Loading session history info for the load
+  mozilla::UniquePtr<mozilla::dom::LoadingSessionHistoryInfo>
+      mLoadingSessionHistoryInfo;
 
   // Target for load, like _content, _blank etc.
   nsString mTarget;
+
+  // When set, this is the Target Browsing Context for the navigation
+  // after retargeting.
+  MaybeDiscarded<BrowsingContext> mTargetBrowsingContext;
 
   // Post data stream (if POSTing)
   nsCOMPtr<nsIInputStream> mPostDataStream;
@@ -381,11 +541,17 @@ class nsDocShellLoadState final {
   // Set of Load Flags, taken from nsDocShellLoadTypes.h and nsIWebNavigation
   uint32_t mLoadFlags;
 
+  // Set of internal load flags
+  uint32_t mInternalLoadFlags;
+
   // Is this a First Party Load?
   bool mFirstParty;
 
   // Is this load triggered by a user gesture?
   bool mHasValidUserGestureActivation;
+
+  // Whether this load can steal the focus from the source browsing context.
+  bool mAllowFocusMove;
 
   // A hint as to the content-type of the resulting data. If no hint, IsVoid()
   // should return true.
@@ -396,10 +562,6 @@ class nsDocShellLoadState final {
   // specified, but link should still trigger a download. If not a download,
   // mFileName.IsVoid() should return true.
   nsString mFileName;
-
-  // If the HTTPS-Only mode is enabled, every insecure request gets upgraded to
-  // HTTPS by default. The load is exempt from that if this flag is set to true.
-  bool mIsHttpsOnlyModeUpgradeExempt;
 
   // This will be true if this load is triggered by attribute changes.
   // See nsILoadInfo.isFromProcessingFrameAttributes
@@ -418,11 +580,38 @@ class nsDocShellLoadState final {
   // when initiating the load.
   mozilla::Maybe<int32_t> mCancelContentJSEpoch;
 
-  // An optional identifier that refers to a DocumentLoadListener
-  // created in the parent process for this loads. DocumentChannels
-  // created in the content process can use this to find and attach
-  // to the in progress load.
-  uint32_t mLoadIdentifier;
+  // If mPendingRedirectChannel is set, then this is the identifier
+  // that the parent-process equivalent channel has been registered
+  // with using RedirectChannelRegistrar.
+  uint64_t mChannelRegistrarId;
+
+  // An identifier to make it possible to examine if two loads are
+  // equal, and which browsing context they belong to (see
+  // BrowsingContext::{Get, Set}CurrentLoadIdentifier)
+  const uint64_t mLoadIdentifier;
+
+  // Optional value to indicate that a channel has been
+  // pre-initialized in the parent process.
+  bool mChannelInitialized;
+
+  // True if the load was triggered by a meta refresh.
+  bool mIsMetaRefresh;
+
+  // True if the nsDocShellLoadState was received over IPC.
+  bool mWasCreatedRemotely = false;
+
+  // The original URI before query stripping happened. If it's present, it shows
+  // the query stripping happened. Otherwise, it will be a nullptr.
+  nsCOMPtr<nsIURI> mUnstrippedURI;
+
+  // If set, the remote type which the load should be completed within.
+  mozilla::Maybe<nsCString> mRemoteTypeOverride;
+
+  // Remote type of the process which originally requested the load.
+  nsCString mTriggeringRemoteType;
+
+  // if the to-be-loaded address had it protocol added through a fixup
+  bool mWasSchemelessInput = false;
 };
 
 #endif /* nsDocShellLoadState_h__ */

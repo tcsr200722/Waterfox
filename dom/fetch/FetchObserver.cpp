@@ -6,20 +6,18 @@
 
 #include "FetchObserver.h"
 #include "mozilla/dom/Event.h"
+#include "mozilla/dom/EventBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(FetchObserver)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(FetchObserver,
                                                   DOMEventTargetHelper)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFollowingSignal)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(FetchObserver,
                                                 DOMEventTargetHelper)
-  tmp->Unfollow();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FetchObserver)
@@ -43,7 +41,7 @@ JSObject* FetchObserver::WrapObject(JSContext* aCx,
 
 FetchState FetchObserver::State() const { return mState; }
 
-void FetchObserver::Abort() { SetState(FetchState::Aborted); }
+void FetchObserver::RunAbortAlgorithm() { SetState(FetchState::Aborted); }
 
 void FetchObserver::SetState(FetchState aState) {
   MOZ_ASSERT(mState < aState);
@@ -72,12 +70,10 @@ void FetchObserver::SetState(FetchState aState) {
 
   // TODO which kind of event should we dispatch here?
 
-  RefPtr<Event> event =
-      Event::Constructor(this, NS_LITERAL_STRING("statechange"), init);
+  RefPtr<Event> event = Event::Constructor(this, u"statechange"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -2,15 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* globals ExtensionAPI */
+/* globals ExtensionAPI, Services, XPCOMUtils */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { FileUtils } = ChromeUtils.import(
-  "resource://gre/modules/FileUtils.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  SpecialPowersParent: "resource://testing-common/SpecialPowersParent.sys.mjs",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -21,36 +17,52 @@ XPCOMUtils.defineLazyServiceGetter(
 
 this.specialpowers = class extends ExtensionAPI {
   onStartup() {
-    let uri = Services.io.newURI("content/", null, this.extension.rootURI);
-    resProto.setSubstitutionWithFlags(
-      "specialpowers",
-      uri,
-      resProto.ALLOW_CONTENT_ACCESS
-    );
-
     // Register special testing modules.
+    let manifest = Services.dirsvc.get("ProfD", Ci.nsIFile);
+    manifest.append("tests.manifest");
     Components.manager
       .QueryInterface(Ci.nsIComponentRegistrar)
-      .autoRegister(FileUtils.getFile("ProfD", ["tests.manifest"]));
+      .autoRegister(manifest);
 
-    ChromeUtils.registerWindowActor("SpecialPowers", {
+    {
+      let uri = Services.io.newURI("content/", null, this.extension.rootURI);
+      resProto.setSubstitutionWithFlags(
+        "specialpowers",
+        uri,
+        resProto.ALLOW_CONTENT_ACCESS
+      );
+    }
+
+    if (!resProto.hasSubstitution("testing-common")) {
+      let uri = Services.io.newURI("modules/", null, this.extension.rootURI);
+      resProto.setSubstitution(
+        "testing-common",
+        uri,
+        resProto.ALLOW_CONTENT_ACCESS
+      );
+    }
+
+    SpecialPowersParent.registerActor();
+
+    ChromeUtils.registerWindowActor("AppTestDelegate", {
+      parent: {
+        esModuleURI: "resource://specialpowers/AppTestDelegateParent.sys.mjs",
+      },
+      child: {
+        esModuleURI: "resource://specialpowers/AppTestDelegateChild.sys.mjs",
+        events: {
+          DOMContentLoaded: { capture: true },
+          load: { capture: true },
+        },
+      },
       allFrames: true,
       includeChrome: true,
-      child: {
-        moduleURI: "resource://specialpowers/SpecialPowersChild.jsm",
-        observers: [
-          "chrome-document-global-created",
-          "content-document-global-created",
-        ],
-      },
-      parent: {
-        moduleURI: "resource://specialpowers/SpecialPowersParent.jsm",
-      },
     });
   }
 
   onShutdown() {
-    ChromeUtils.unregisterWindowActor("SpecialPowers");
+    SpecialPowersParent.unregisterActor();
+    ChromeUtils.unregisterWindowActor("AppTestDelegate");
     resProto.setSubstitution("specialpowers", null);
   }
 };

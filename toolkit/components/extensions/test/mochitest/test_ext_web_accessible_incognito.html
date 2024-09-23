@@ -17,7 +17,7 @@ let image = atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEUAA" +
 const IMAGE_ARRAYBUFFER = Uint8Array.from(image, byte => byte.charCodeAt(0)).buffer;
 
 async function testImageLoading(src, expectedAction) {
-  let imageLoadingPromise = new Promise((resolve, reject) => {
+  let imageLoadingPromise = new Promise((resolve) => {
     let cleanupListeners;
     let testImage = new window.Image();
     // Set the src via wrappedJSObject so the load is triggered with the
@@ -53,10 +53,6 @@ function testScript() {
 }
 
 add_task(async function test_web_accessible_resources_incognito() {
-  await SpecialPowers.pushPrefEnv({set: [
-    ["extensions.allowPrivateBrowsingByDefault", false],
-  ]});
-
   // This extension will not have access to private browsing so its
   // accessible resources should not be able to load in them.
   let extension = ExtensionTestUtils.loadExtension({
@@ -68,7 +64,7 @@ add_task(async function test_web_accessible_resources_incognito() {
       ],
     },
     background() {
-      browser.test.sendMessage("url", browser.extension.getURL(""));
+      browser.test.sendMessage("url", browser.runtime.getURL(""));
     },
     files: {
       "image.png": IMAGE_ARRAYBUFFER,

@@ -10,11 +10,9 @@
 #include "mozilla/AutoMemMap.h"
 #include "mozilla/Result.h"
 #include "mozilla/dom/ipc/StringTable.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 
-namespace mozilla {
-namespace dom {
-namespace ipc {
+namespace mozilla::dom::ipc {
 
 class SharedStringMapBuilder;
 
@@ -214,11 +212,9 @@ class MOZ_RAII SharedStringMapBuilder {
   StringTableBuilder<nsCStringHashKey, nsCString> mKeyTable;
   StringTableBuilder<nsStringHashKey, nsString> mValueTable;
 
-  nsDataHashtable<nsCStringHashKey, Entry> mEntries;
+  nsTHashMap<nsCStringHashKey, Entry> mEntries;
 };
 
-}  // namespace ipc
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::ipc
 
 #endif  // dom_ipc_SharedStringMap_h

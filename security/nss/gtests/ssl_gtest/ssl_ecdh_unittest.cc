@@ -72,6 +72,35 @@ TEST_P(TlsConnectGeneric, ConnectEcdheP384Client) {
             ssl_sig_rsa_pss_rsae_sha256);
 }
 
+// The bug https://bugzilla.mozilla.org/show_bug.cgi?id=1818487 updates the
+// generation of transcript for DTLS1.3
+// The following three tests are used to check the correctness of the
+// transcript.
+TEST_P(TlsConnectGeneric,
+       ClientOfferTls11_Tls13ServerNegotiateEachVersionOneByOne_HRR) {
+  EnsureTlsSetup();
+  auto hrr_capture = MakeTlsFilter<TlsHandshakeRecorder>(
+      server_, kTlsHandshakeHelloRetryRequest);
+  const std::vector<SSLNamedGroup> groups = {ssl_grp_ec_secp384r1,
+                                             ssl_grp_ffdhe_2048};
+  server_->ConfigNamedGroups(groups);
+  // DTLS does not support 1.0
+  if (variant_ == ssl_variant_datagram) {
+    client_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_1,
+                             SSL_LIBRARY_VERSION_TLS_1_3);
+  } else {
+    client_->SetVersionRange(SSL_LIBRARY_VERSION_TLS_1_0,
+                             SSL_LIBRARY_VERSION_TLS_1_3);
+  }
+  server_->SetVersionRange(version_, version_);
+  Connect();
+  CheckKeys(ssl_kea_ecdh, ssl_grp_ec_secp384r1, ssl_auth_rsa_sign,
+            ssl_sig_rsa_pss_rsae_sha256);
+
+  EXPECT_EQ(version_ == SSL_LIBRARY_VERSION_TLS_1_3,
+            hrr_capture->buffer().len() != 0);
+}
+
 // This causes a HelloRetryRequest in TLS 1.3.  Earlier versions don't care.
 TEST_P(TlsConnectGeneric, ConnectEcdheP384Server) {
   EnsureTlsSetup();
@@ -620,31 +649,6 @@ TEST_P(TlsConnectGenericPre13, ConnectUnsupportedPointFormat) {
   client_->CheckErrorCode(SEC_ERROR_UNSUPPORTED_EC_POINT_FORM);
 }
 
-// Replace SignatureAndHashAlgorithm of a SKE.
-class ECCServerKEXSigAlgReplacer : public TlsHandshakeFilter {
- public:
-  ECCServerKEXSigAlgReplacer(const std::shared_ptr<TlsAgent> &server,
-                             SSLSignatureScheme sig_scheme)
-      : TlsHandshakeFilter(server, {kTlsHandshakeServerKeyExchange}),
-        sig_scheme_(sig_scheme) {}
-
- protected:
-  virtual PacketFilter::Action FilterHandshake(const HandshakeHeader &header,
-                                               const DataBuffer &input,
-                                               DataBuffer *output) {
-    *output = input;
-
-    uint32_t point_len;
-    EXPECT_TRUE(output->Read(3, 1, &point_len));
-    output->Write(4 + point_len, sig_scheme_, 2);
-
-    return CHANGE;
-  }
-
- private:
-  SSLSignatureScheme sig_scheme_;
-};
-
 TEST_P(TlsConnectTls12, ConnectUnsupportedSigAlg) {
   EnsureTlsSetup();
   client_->DisableAllCiphers();
@@ -740,14 +744,14 @@ TEST_P(TlsConnectTls12, ConnectSigAlgDisabledByPolicy) {
   CheckSkeSigScheme(capture_ske, ssl_sig_rsa_pkcs1_sha384);
 }
 
-INSTANTIATE_TEST_CASE_P(KeyExchangeTest, TlsKeyExchangeTest,
-                        ::testing::Combine(TlsConnectTestBase::kTlsVariantsAll,
-                                           TlsConnectTestBase::kTlsV11Plus));
+INSTANTIATE_TEST_SUITE_P(KeyExchangeTest, TlsKeyExchangeTest,
+                         ::testing::Combine(TlsConnectTestBase::kTlsVariantsAll,
+                                            TlsConnectTestBase::kTlsV11Plus));
 
 #ifndef NSS_DISABLE_TLS_1_3
-INSTANTIATE_TEST_CASE_P(KeyExchangeTest, TlsKeyExchangeTest13,
-                        ::testing::Combine(TlsConnectTestBase::kTlsVariantsAll,
-                                           TlsConnectTestBase::kTlsV13));
+INSTANTIATE_TEST_SUITE_P(KeyExchangeTest, TlsKeyExchangeTest13,
+                         ::testing::Combine(TlsConnectTestBase::kTlsVariantsAll,
+                                            TlsConnectTestBase::kTlsV13));
 #endif
 
 }  // namespace nss_test

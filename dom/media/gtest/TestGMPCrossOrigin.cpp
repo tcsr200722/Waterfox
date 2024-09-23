@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gtest/gtest.h"
+#include "mozilla/gtest/MozAssertions.h"
 #include "mozilla/StaticPtr.h"
 #include "GMPTestMonitor.h"
 #include "GMPVideoDecoderProxy.h"
@@ -64,8 +65,8 @@ class RunTestGMPVideoCodec : public Base {
 
   static nsresult Get(const nsACString& aNodeId, UniquePtr<Base>&& aCallback) {
     nsTArray<nsCString> tags;
-    tags.AppendElement(NS_LITERAL_CSTRING("h264"));
-    tags.AppendElement(NS_LITERAL_CSTRING("fake"));
+    tags.AppendElement("h264"_ns);
+    tags.AppendElement("fake"_ns);
 
     RefPtr<GeckoMediaPluginService> service =
         GeckoMediaPluginService::GetGeckoMediaPluginService();
@@ -83,15 +84,15 @@ typedef RunTestGMPVideoCodec<GMPVideoEncoderProxy, GetGMPVideoEncoderCallback,
     RunTestGMPVideoEncoder;
 
 void GMPTestRunner::RunTestGMPTestCodec1(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoDecoder::Run(aMonitor, NS_LITERAL_CSTRING("o"));
+  RunTestGMPVideoDecoder::Run(aMonitor, "o"_ns);
 }
 
 void GMPTestRunner::RunTestGMPTestCodec2(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoDecoder::Run(aMonitor, NS_LITERAL_CSTRING(""));
+  RunTestGMPVideoDecoder::Run(aMonitor, ""_ns);
 }
 
 void GMPTestRunner::RunTestGMPTestCodec3(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoEncoder::Run(aMonitor, NS_LITERAL_CSTRING(""));
+  RunTestGMPVideoEncoder::Run(aMonitor, ""_ns);
 }
 
 template <class Base>
@@ -103,7 +104,7 @@ class RunTestGMPCrossOrigin : public Base {
     UniquePtr<typename Base::GMPCallbackType> callback(
         new Step2(Base::mMonitor, aGMP, mShouldBeEqual));
     nsresult rv = Base::Get(mOrigin2, std::move(callback));
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    EXPECT_NS_SUCCEEDED(rv);
     if (NS_FAILED(rv)) {
       Base::mMonitor.SetFinished();
     }
@@ -114,7 +115,7 @@ class RunTestGMPCrossOrigin : public Base {
     UniquePtr<typename Base::GMPCallbackType> callback(
         new RunTestGMPCrossOrigin<Base>(aMonitor, aOrigin1, aOrigin2));
     nsresult rv = Base::Get(aOrigin1, std::move(callback));
-    EXPECT_TRUE(NS_SUCCEEDED(rv));
+    EXPECT_NS_SUCCEEDED(rv);
     if (NS_FAILED(rv)) {
       aMonitor.SetFinished();
     }
@@ -161,23 +162,19 @@ typedef RunTestGMPCrossOrigin<RunTestGMPVideoEncoder>
     RunTestGMPVideoEncoderCrossOrigin;
 
 void GMPTestRunner::RunTestGMPCrossOrigin1(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoDecoderCrossOrigin::Run(
-      aMonitor, NS_LITERAL_CSTRING("origin1"), NS_LITERAL_CSTRING("origin2"));
+  RunTestGMPVideoDecoderCrossOrigin::Run(aMonitor, "origin1"_ns, "origin2"_ns);
 }
 
 void GMPTestRunner::RunTestGMPCrossOrigin2(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoEncoderCrossOrigin::Run(
-      aMonitor, NS_LITERAL_CSTRING("origin1"), NS_LITERAL_CSTRING("origin2"));
+  RunTestGMPVideoEncoderCrossOrigin::Run(aMonitor, "origin1"_ns, "origin2"_ns);
 }
 
 void GMPTestRunner::RunTestGMPCrossOrigin3(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoDecoderCrossOrigin::Run(
-      aMonitor, NS_LITERAL_CSTRING("origin1"), NS_LITERAL_CSTRING("origin1"));
+  RunTestGMPVideoDecoderCrossOrigin::Run(aMonitor, "origin1"_ns, "origin1"_ns);
 }
 
 void GMPTestRunner::RunTestGMPCrossOrigin4(GMPTestMonitor& aMonitor) {
-  RunTestGMPVideoEncoderCrossOrigin::Run(
-      aMonitor, NS_LITERAL_CSTRING("origin1"), NS_LITERAL_CSTRING("origin1"));
+  RunTestGMPVideoEncoderCrossOrigin::Run(aMonitor, "origin1"_ns, "origin1"_ns);
 }
 
 void GMPTestRunner::DoTest(
@@ -185,7 +182,7 @@ void GMPTestRunner::DoTest(
   RefPtr<GeckoMediaPluginService> service =
       GeckoMediaPluginService::GetGeckoMediaPluginService();
   nsCOMPtr<nsIThread> thread;
-  EXPECT_TRUE(NS_SUCCEEDED(service->GetThread(getter_AddRefs(thread))));
+  EXPECT_NS_SUCCEEDED(service->GetThread(getter_AddRefs(thread)));
 
   GMPTestMonitor monitor;
   thread->Dispatch(NewRunnableMethod<GMPTestMonitor&>(
@@ -194,6 +191,8 @@ void GMPTestRunner::DoTest(
   monitor.AwaitFinished();
 }
 
+// Bug 1776767 - Skip all GMP tests on Windows ASAN
+#if !(defined(XP_WIN) && defined(MOZ_ASAN))
 TEST(GeckoMediaPlugins, GMPTestCodec)
 {
   RefPtr<GMPTestRunner> runner = new GMPTestRunner();
@@ -210,3 +209,4 @@ TEST(GeckoMediaPlugins, GMPCrossOrigin)
   runner->DoTest(&GMPTestRunner::RunTestGMPCrossOrigin3);
   runner->DoTest(&GMPTestRunner::RunTestGMPCrossOrigin4);
 }
+#endif  // !(defined(XP_WIN) && defined(MOZ_ASAN))

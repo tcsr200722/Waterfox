@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow */
 
 "use strict";
 
@@ -10,25 +9,27 @@
  */
 
 add_task(
-  threadFrontTest(async ({ threadFront, debuggee }) => {
+  threadFrontTest(async ({ threadFront, debuggee, commands }) => {
     await executeOnNextTickAndWaitForPause(
       () => evaluateTestCode(debuggee),
       threadFront
     );
 
-    threadFront.pauseOnExceptions(true, false);
-    threadFront.resume();
-
-    const packet = await waitForPause(threadFront);
+    await commands.threadConfigurationCommand.updateConfiguration({
+      pauseOnExceptions: true,
+      ignoreCaughtExceptions: false,
+    });
+    const packet = await resumeAndWaitForPause(threadFront);
     Assert.equal(packet.why.type, "exception");
     Assert.equal(packet.why.exception, 42);
 
-    threadFront.resume();
+    await threadFront.resume();
   })
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
+  /* eslint-disable no-throw-literal */
+  // prettier-ignore
   debuggee.eval("(" + function () {
     function stopMe() {
       debugger;
@@ -38,5 +39,5 @@ function evaluateTestCode(debuggee) {
       stopMe();
     } catch (e) {}
   } + ")()");
-  /* eslint-enable */
+  /* eslint-enable no-throw-literal */
 }

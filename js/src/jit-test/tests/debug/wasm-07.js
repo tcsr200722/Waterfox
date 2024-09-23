@@ -1,4 +1,4 @@
-// |jit-test| test-also=--wasm-compiler=ion; skip-if: !wasmDebuggingIsSupported()
+// |jit-test| test-also=--wasm-compiler=optimizing; skip-if: !wasmDebuggingEnabled()
 
 // Checking existence of all frame.offset references during onEnterFrame,
 // onLeaveFrame and onStep events in the source code, and that we can
@@ -27,7 +27,7 @@ wasmRunWithDebugger(
     },
     function ({wasmScript, error}) {
         assertEq(error, undefined);
-        assertEq(offsets.length, 5);
+        assertEq(offsets.length, 4);
         offsets.forEach(offset => {
             var loc = wasmScript.getOffsetLocation(offset);
             assertEq(loc.isEntryPoint, true);

@@ -11,7 +11,7 @@ using nsIRemoteTab::NavigationType from "nsIRemoteTab.h";
 
 using base::ProcessId from "base/process.h";
 using mozilla::dom::TabId from "mozilla/dom/ipc/IdType.h";
-using mozilla::layers::LayersObserverEpoch from "mozilla/layers/LayersTypes.h";
+using nsIThread::QoSPriority from "nsIThread.h";
 
 namespace mozilla {
 
@@ -20,37 +20,33 @@ struct SlowScriptData
   TabId tabId;
   nsCString filename;
   nsString addonId;
+  double duration;
 };
 
-struct PluginHangData
-{
-  uint32_t pluginId;
-  ProcessId contentProcessId;
-};
-
-union HangData
-{
-  SlowScriptData;
-  PluginHangData;
-};
-
+[ChildImpl=virtual, ParentImpl=virtual, ChildProc=Content]
 protocol PProcessHangMonitor
 {
 parent:
-  async HangEvidence(HangData data);
+  async HangEvidence(SlowScriptData data);
   async ClearHang();
 
 child:
-  async TerminateScript(bool aTerminateGlobal);
+  async TerminateScript();
+  async RequestContentJSInterrupt();
 
   async BeginStartingDebugger();
   async EndStartingDebugger();
 
-  async PaintWhileInterruptingJS(TabId tabId, LayersObserverEpoch aEpoch);
+  async PaintWhileInterruptingJS(TabId tabId);
+  async UnloadLayersWhileInterruptingJS(TabId tabId);
 
   async CancelContentJSExecutionIfRunning(
       TabId tabId, NavigationType aNavigationType,
       int32_t aNavigationIndex, nsCString? aNavigationURI, int32_t aEpoch);
+
+ // For MacOS QoS use
+ async SetMainThreadQoSPriority(QoSPriority qosPriority);
+
 };
 
 } // namespace mozilla

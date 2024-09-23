@@ -7,9 +7,9 @@
 var originalWindowWidth;
 
 // Drag to overflow chevron should open the overflow panel.
-add_task(async function() {
+add_task(async function () {
   // Load a page so the identity box can be dragged.
-  BrowserTestUtils.loadURI(gBrowser, "http://mochi.test:8888/");
+  BrowserTestUtils.startLoadingURIString(gBrowser, "http://mochi.test:8888/");
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 
   originalWindowWidth = window.outerWidth;
@@ -20,12 +20,12 @@ add_task(async function() {
   );
   ok(CustomizableUI.inDefaultState, "Should start in default state.");
   window.resizeTo(kForceOverflowWidthPx, window.outerHeight);
-  await waitForCondition(() => navbar.hasAttribute("overflowing"));
+  await TestUtils.waitForCondition(() => navbar.hasAttribute("overflowing"));
   ok(navbar.hasAttribute("overflowing"), "Should have an overflowing toolbar.");
 
   let widgetOverflowPanel = document.getElementById("widget-overflow");
   let panelShownPromise = promisePanelElementShown(window, widgetOverflowPanel);
-  let identityBox = document.getElementById("identity-box");
+  let identityBox = document.getElementById("identity-icon-box");
   let overflowChevron = document.getElementById("nav-bar-overflow-button");
 
   // Listen for hiding immediately so we don't miss the event because of the
@@ -40,6 +40,7 @@ add_task(async function() {
   );
 
   ds.startDragSessionForTests(
+    window,
     Ci.nsIDragService.DRAGDROP_ACTION_MOVE |
       Ci.nsIDragService.DRAGDROP_ACTION_COPY |
       Ci.nsIDragService.DRAGDROP_ACTION_LINK
@@ -59,7 +60,7 @@ add_task(async function() {
       overflowChevron
     );
   } finally {
-    ds.endDragSession(true);
+    ds.getCurrentSession().endDragSession(true);
   }
 
   info("Overflow panel is shown.");
@@ -68,10 +69,10 @@ add_task(async function() {
   await panelHiddenPromise;
 });
 
-add_task(async function() {
+add_task(async function () {
   window.resizeTo(originalWindowWidth, window.outerHeight);
   let navbar = document.getElementById(CustomizableUI.AREA_NAVBAR);
-  await waitForCondition(() => !navbar.hasAttribute("overflowing"));
+  await TestUtils.waitForCondition(() => !navbar.hasAttribute("overflowing"));
   ok(
     !navbar.hasAttribute("overflowing"),
     "Should not have an overflowing toolbar."

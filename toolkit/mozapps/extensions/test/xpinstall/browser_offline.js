@@ -3,6 +3,9 @@ var proxyPrefValue;
 // ----------------------------------------------------------------------------
 // Tests that going offline cancels an in progress download.
 function test() {
+  // This test currently depends on InstallTrigger.install availability.
+  setInstallTriggerPrefs();
+
   Harness.downloadProgressCallback = download_progress;
   Harness.installsCompletedCallback = finish_test;
   Harness.setup();
@@ -19,13 +22,13 @@ function test() {
     })
   );
   gBrowser.selectedTab = BrowserTestUtils.addTab(gBrowser);
-  BrowserTestUtils.loadURI(
+  BrowserTestUtils.startLoadingURIString(
     gBrowser,
     TESTROOT + "installtrigger.html?" + triggers
   );
 }
 
-function download_progress(addon, value, maxValue) {
+function download_progress() {
   try {
     // Tests always connect to localhost, and per bug 87717, localhost is now
     // reachable in offline mode.  To avoid this, disable any proxy.
@@ -41,10 +44,18 @@ function finish_test(count) {
     info("Checking if the browser is still offline...");
 
     let tab = gBrowser.selectedTab;
-    ContentTask.spawn(tab.linkedBrowser, null, async function() {
-      await ContentTaskUtils.waitForEvent(this, "DOMContentLoaded", true);
-      return content.document.documentURI;
-    }).then(url => {
+    BrowserTestUtils.waitForContentEvent(
+      tab.linkedBrowser,
+      "DOMContentLoaded",
+      true
+    ).then(async function () {
+      let url = await ContentTask.spawn(
+        tab.linkedBrowser,
+        null,
+        async function () {
+          return content.document.documentURI;
+        }
+      );
       info("loaded: " + url);
       if (/^about:neterror\?e=netOffline/.test(url)) {
         wait_for_online();
@@ -53,7 +64,10 @@ function finish_test(count) {
         Harness.finish();
       }
     });
-    BrowserTestUtils.loadURI(tab.linkedBrowser, "http://example.com/");
+    BrowserTestUtils.startLoadingURIString(
+      tab.linkedBrowser,
+      "http://example.com/"
+    );
   }
 
   is(count, 0, "No add-ons should have been installed");

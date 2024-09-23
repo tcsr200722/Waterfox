@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsMultiMixedConv.h"
-#include "plstr.h"
 #include "nsIHttpChannel.h"
+#include "nsIThreadRetargetableStreamListener.h"
 #include "nsNetCID.h"
 #include "nsMimeTypes.h"
 #include "nsIStringStream.h"
@@ -20,20 +20,19 @@
 #include "nsIURI.h"
 #include "nsHttpHeaderArray.h"
 #include "mozilla/AutoRestore.h"
+#include "mozilla/Components.h"
+#include "mozilla/Tokenizer.h"
+#include "nsComponentManagerUtils.h"
+#include "mozilla/StaticPrefs_network.h"
+
+using namespace mozilla;
 
 nsPartChannel::nsPartChannel(nsIChannel* aMultipartChannel, uint32_t aPartID,
-                             nsIStreamListener* aListener)
+                             bool aIsFirstPart, nsIStreamListener* aListener)
     : mMultipartChannel(aMultipartChannel),
       mListener(aListener),
-      mStatus(NS_OK),
-      mLoadFlags(0),
-      mContentDisposition(0),
-      mContentLength(UINT64_MAX),
-      mIsByteRangeRequest(false),
-      mByteRangeStart(0),
-      mByteRangeEnd(0),
       mPartID(aPartID),
-      mIsLastPart(false) {
+      mIsFirstPart(aIsFirstPart) {
   // Inherit the load flags from the original channel...
   mMultipartChannel->GetLoadFlags(&mLoadFlags);
 
@@ -119,6 +118,19 @@ nsPartChannel::GetStatus(nsresult* aResult) {
   }
 
   return rv;
+}
+
+NS_IMETHODIMP nsPartChannel::SetCanceledReason(const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsPartChannel::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP nsPartChannel::CancelWithReason(nsresult aStatus,
+                                              const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
 }
 
 NS_IMETHODIMP
@@ -220,9 +232,7 @@ nsPartChannel::GetIsDocument(bool* aIsDocument) {
 
 NS_IMETHODIMP
 nsPartChannel::GetLoadGroup(nsILoadGroup** aLoadGroup) {
-  *aLoadGroup = mLoadGroup;
-  NS_IF_ADDREF(*aLoadGroup);
-
+  *aLoadGroup = do_AddRef(mLoadGroup).take();
   return NS_OK;
 }
 
@@ -265,7 +275,7 @@ nsPartChannel::SetNotificationCallbacks(nsIInterfaceRequestor* aCallbacks) {
 }
 
 NS_IMETHODIMP
-nsPartChannel::GetSecurityInfo(nsISupports** aSecurityInfo) {
+nsPartChannel::GetSecurityInfo(nsITransportSecurityInfo** aSecurityInfo) {
   return mMultipartChannel->GetSecurityInfo(aSecurityInfo);
 }
 
@@ -350,6 +360,12 @@ nsPartChannel::GetPartID(uint32_t* aPartID) {
 }
 
 NS_IMETHODIMP
+nsPartChannel::GetIsFirstPart(bool* aIsFirstPart) {
+  *aIsFirstPart = mIsFirstPart;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsPartChannel::GetIsLastPart(bool* aIsLastPart) {
   *aIsLastPart = mIsLastPart;
   return NS_OK;
@@ -383,14 +399,13 @@ NS_IMETHODIMP
 nsPartChannel::GetBaseChannel(nsIChannel** aReturn) {
   NS_ENSURE_ARG_POINTER(aReturn);
 
-  *aReturn = mMultipartChannel;
-  NS_IF_ADDREF(*aReturn);
+  *aReturn = do_AddRef(mMultipartChannel).take();
   return NS_OK;
 }
 
 // nsISupports implementation
 NS_IMPL_ISUPPORTS(nsMultiMixedConv, nsIStreamConverter, nsIStreamListener,
-                  nsIRequestObserver)
+                  nsIThreadRetargetableStreamListener, nsIRequestObserver)
 
 // nsIStreamConverter implementation
 
@@ -428,6 +443,11 @@ nsMultiMixedConv::GetConvertedType(const nsACString& aFromType,
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+NS_IMETHODIMP
+nsMultiMixedConv::MaybeRetarget(nsIRequest* request) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 // nsIRequestObserver implementation
 NS_IMETHODIMP
 nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
@@ -445,14 +465,12 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
   // ask the HTTP channel for the content-type and extract the boundary from it.
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(mChannel, &rv);
   if (NS_SUCCEEDED(rv)) {
-    rv = httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("content-type"),
-                                        contentType);
+    rv = httpChannel->GetResponseHeader("content-type"_ns, contentType);
     if (NS_FAILED(rv)) {
       return rv;
     }
     nsCString csp;
-    rv = httpChannel->GetResponseHeader(
-        NS_LITERAL_CSTRING("content-security-policy"), csp);
+    rv = httpChannel->GetResponseHeader("content-security-policy"_ns, csp);
     if (NS_SUCCEEDED(rv)) {
       mRootContentSecurityPolicy = csp;
     }
@@ -508,8 +526,8 @@ nsMultiMixedConv::OnStartRequest(nsIRequest* request) {
 
   mBoundaryToken =
       mTokenizer.AddCustomToken(mBoundary, mTokenizer.CASE_SENSITIVE);
-  mBoundaryTokenWithDashes = mTokenizer.AddCustomToken(
-      NS_LITERAL_CSTRING("--") + mBoundary, mTokenizer.CASE_SENSITIVE);
+  mBoundaryTokenWithDashes =
+      mTokenizer.AddCustomToken("--"_ns + mBoundary, mTokenizer.CASE_SENSITIVE);
 
   return NS_OK;
 }
@@ -544,12 +562,14 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest* request, nsIInputStream* inStr,
 }
 
 NS_IMETHODIMP
+nsMultiMixedConv::OnDataFinished(nsresult aStatus) { return NS_OK; }
+
+NS_IMETHODIMP
+nsMultiMixedConv::CheckListenerChain() { return NS_ERROR_NOT_IMPLEMENTED; }
+
+NS_IMETHODIMP
 nsMultiMixedConv::OnStopRequest(nsIRequest* request, nsresult aStatus) {
   nsresult rv;
-
-  if (mBoundary.IsEmpty()) {  // no token, no love.
-    return NS_ERROR_FAILURE;
-  }
 
   if (mPartChannel) {
     mPartChannel->SetIsLastPart();
@@ -777,27 +797,15 @@ void nsMultiMixedConv::SwitchToControlParsing() {
 
 // nsMultiMixedConv methods
 nsMultiMixedConv::nsMultiMixedConv()
-    : mCurrentPartID(0),
-      mInOnDataAvailable(false),
-      mResponseHeader(HEADER_UNKNOWN),
-      // XXX: This is a hack to bypass the raw pointer to refcounted object in
-      // lambda analysis. It should be removed and replaced when the
-      // IncrementalTokenizer API is improved to avoid the need for such
-      // workarounds.
-      //
-      // This is safe because `mTokenizer` will not outlive `this`, meaning that
-      // this std::bind object will be destroyed before `this` dies.
-      mTokenizer(std::bind(&nsMultiMixedConv::ConsumeToken, this,
-                           std::placeholders::_1)) {
-  mContentLength = UINT64_MAX;
-  mByteRangeStart = 0;
-  mByteRangeEnd = 0;
-  mTotalSent = 0;
-  mIsByteRangeRequest = false;
-  mParserState = INIT;
-  mRawData = nullptr;
-  mRequestListenerNotified = false;
-}
+    // XXX: This is a hack to bypass the raw pointer to refcounted object in
+    // lambda analysis. It should be removed and replaced when the
+    // IncrementalTokenizer API is improved to avoid the need for such
+    // workarounds.
+    //
+    // This is safe because `mTokenizer` will not outlive `this`, meaning
+    // that this std::bind object will be destroyed before `this` dies.
+    : mTokenizer(std::bind(&nsMultiMixedConv::ConsumeToken, this,
+                           std::placeholders::_1)) {}
 
 nsresult nsMultiMixedConv::SendStart() {
   nsresult rv = NS_OK;
@@ -805,8 +813,8 @@ nsresult nsMultiMixedConv::SendStart() {
   nsCOMPtr<nsIStreamListener> partListener(mFinalListener);
   if (mContentType.IsEmpty()) {
     mContentType.AssignLiteral(UNKNOWN_CONTENT_TYPE);
-    nsCOMPtr<nsIStreamConverterService> serv =
-        do_GetService(NS_STREAMCONVERTERSERVICE_CONTRACTID, &rv);
+    nsCOMPtr<nsIStreamConverterService> serv;
+    serv = mozilla::components::StreamConverter::Service(&rv);
     if (NS_SUCCEEDED(rv)) {
       nsCOMPtr<nsIStreamListener> converter;
       rv = serv->AsyncConvertData(UNKNOWN_CONTENT_TYPE, "*/*", mFinalListener,
@@ -822,8 +830,10 @@ nsresult nsMultiMixedConv::SendStart() {
   MOZ_ASSERT(!mPartChannel, "tisk tisk, shouldn't be overwriting a channel");
 
   nsPartChannel* newChannel;
-  newChannel = new nsPartChannel(mChannel, mCurrentPartID++, partListener);
-  if (!newChannel) return NS_ERROR_OUT_OF_MEMORY;
+  newChannel = new nsPartChannel(mChannel, mCurrentPartID, mCurrentPartID == 0,
+                                 partListener);
+
+  ++mCurrentPartID;
 
   if (mIsByteRangeRequest) {
     newChannel->InitializeByteRange(mByteRangeStart, mByteRangeEnd);
@@ -885,8 +895,9 @@ nsresult nsMultiMixedConv::SendStop(nsresult aStatus) {
     // Remove the channel from its load group (if any)
     nsCOMPtr<nsILoadGroup> loadGroup;
     (void)mPartChannel->GetLoadGroup(getter_AddRefs(loadGroup));
-    if (loadGroup)
+    if (loadGroup) {
       (void)loadGroup->RemoveRequest(mPartChannel, mContext, aStatus);
+    }
   }
 
   mPartChannel = nullptr;
@@ -928,8 +939,9 @@ nsresult nsMultiMixedConv::SendData() {
   if (mContentLength != UINT64_MAX) {
     // make sure that we don't send more than the mContentLength
     // XXX why? perhaps the Content-Length header was actually wrong!!
-    if ((uint64_t(mRawDataLength) + mTotalSent) > mContentLength)
+    if ((uint64_t(mRawDataLength) + mTotalSent) > mContentLength) {
       mRawDataLength = static_cast<uint32_t>(mContentLength - mTotalSent);
+    }
 
     if (mRawDataLength == 0) return NS_OK;
   }
@@ -979,7 +991,8 @@ nsresult nsMultiMixedConv::ProcessHeader() {
       nsCOMPtr<nsIHttpChannelInternal> httpInternal =
           do_QueryInterface(mChannel);
       mResponseHeaderValue.CompressWhitespace();
-      if (httpInternal) {
+      if (!StaticPrefs::network_cookie_prevent_set_cookie_from_multipart() &&
+          httpInternal) {
         DebugOnly<nsresult> rv = httpInternal->SetCookie(mResponseHeaderValue);
         MOZ_ASSERT(NS_SUCCEEDED(rv));
       }
@@ -1020,7 +1033,7 @@ nsresult nsMultiMixedConv::ProcessHeader() {
           resultCSP.Append(mContentSecurityPolicy);
         }
         nsresult rv = httpChannel->SetResponseHeader(
-            NS_LITERAL_CSTRING("Content-Security-Policy"), resultCSP, false);
+            "Content-Security-Policy"_ns, resultCSP, false);
         if (NS_FAILED(rv)) {
           return NS_ERROR_CORRUPTED_CONTENT;
         }

@@ -412,15 +412,17 @@ void VRShMem::PushBrowserState(VRBrowserState& aBrowserState,
   }
 #else
   bool status = true;
+
 #  if defined(XP_WIN)
   WaitForMutex lock(mMutex);
   status = lock.GetStatus();
 #  endif  // defined(XP_WIN)
+
   if (status) {
-    mExternalShmem->geckoGenerationA++;
+    mExternalShmem->geckoGenerationA = mExternalShmem->geckoGenerationA + 1;
     memcpy((void*)&(mExternalShmem->geckoState), (void*)&aBrowserState,
            sizeof(VRBrowserState));
-    mExternalShmem->geckoGenerationB++;
+    mExternalShmem->geckoGenerationB = mExternalShmem->geckoGenerationB + 1;
   }
 #endif    // defined(MOZ_WIDGET_ANDROID)
 }
@@ -503,6 +505,7 @@ void VRShMem::PushSystemState(const mozilla::gfx::VRSystemState& aState) {
   */
 #else
   bool lockState = true;
+
 #  if defined(XP_WIN)
   if (mRequiresMutex) {
     // TODO: Is this scoped lock okay? Seems like it should allow some
@@ -511,10 +514,11 @@ void VRShMem::PushSystemState(const mozilla::gfx::VRSystemState& aState) {
     lockState = lock.GetStatus();
   }
 #  endif  // defined(XP_WIN)
+
   if (lockState) {
-    mExternalShmem->generationA++;
+    mExternalShmem->generationA = mExternalShmem->generationA + 1;
     memcpy((void*)&mExternalShmem->state, &aState, sizeof(VRSystemState));
-    mExternalShmem->generationB++;
+    mExternalShmem->generationB = mExternalShmem->generationB + 1;
   }
 #endif    // defined(MOZ_WIDGET_ANDROID)
 }
@@ -522,7 +526,8 @@ void VRShMem::PushSystemState(const mozilla::gfx::VRSystemState& aState) {
 #if defined(MOZ_WIDGET_ANDROID)
 void VRShMem::PullSystemState(
     VRDisplayState& aDisplayState, VRHMDSensorState& aSensorState,
-    VRControllerState (&aControllerState)[kVRControllerMaxCount],
+    std::array<VRControllerState, kVRControllerMaxCount>* const
+        aControllerState,
     bool& aEnumerationCompleted,
     const std::function<bool()>& aWaitCondition /* = nullptr */) {
   if (!mExternalShmem) {
@@ -537,9 +542,9 @@ void VRShMem::PullSystemState(
                sizeof(VRDisplayState));
         memcpy(&aSensorState, (void*)&(mExternalShmem->state.sensorState),
                sizeof(VRHMDSensorState));
-        memcpy(aControllerState,
+        memcpy(aControllerState->data(),
                (void*)&(mExternalShmem->state.controllerState),
-               sizeof(VRControllerState) * kVRControllerMaxCount);
+               sizeof(aControllerState->at(0)) * aControllerState->size());
         aEnumerationCompleted = mExternalShmem->state.enumerationCompleted;
         if (!aWaitCondition || aWaitCondition()) {
           done = true;
@@ -561,7 +566,8 @@ void VRShMem::PullSystemState(
 #else
 void VRShMem::PullSystemState(
     VRDisplayState& aDisplayState, VRHMDSensorState& aSensorState,
-    VRControllerState (&aControllerState)[kVRControllerMaxCount],
+    std::array<VRControllerState, kVRControllerMaxCount>* const
+        aControllerState,
     bool& aEnumerationCompleted,
     const std::function<bool()>& aWaitCondition /* = nullptr */) {
   MOZ_ASSERT(mExternalShmem);
@@ -585,10 +591,8 @@ void VRShMem::PullSystemState(
                  sizeof(VRDisplayState));
           memcpy(&aSensorState, &tmp.state.sensorState,
                  sizeof(VRHMDSensorState));
-          memcpy(aControllerState,
-                 (void*)&(mExternalShmem->state.controllerState),
-                 sizeof(VRControllerState) * kVRControllerMaxCount);
-          aEnumerationCompleted = mExternalShmem->state.enumerationCompleted;
+          *aControllerState = tmp.state.controllerState;
+          aEnumerationCompleted = tmp.state.enumerationCompleted;
           // Check for wait condition
           if (!aWaitCondition || aWaitCondition()) {
             return;

@@ -8,42 +8,55 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 #![cfg(all(feature = "db-dup-sort", feature = "db-int-key"))]
+#![allow(clippy::many_single_char_names)]
 
 use std::fs;
 
 use serde_derive::Serialize;
 use tempfile::Builder;
 
-use rkv::backend::Lmdb;
-use rkv::{
-    PrimitiveInt,
-    Rkv,
-    StoreOptions,
-    Value,
-};
+use rkv::{backend::SafeMode, PrimitiveInt, Rkv, StoreOptions, Value};
 
 #[test]
 fn test_multi_integer_keys() {
-    let root = Builder::new().prefix("test_integer_keys").tempdir().expect("tempdir");
+    let root = Builder::new()
+        .prefix("test_integer_keys")
+        .tempdir()
+        .expect("tempdir");
     fs::create_dir_all(root.path()).expect("dir created");
 
-    let k = Rkv::new::<Lmdb>(root.path()).expect("new succeeded");
-    let s = k.open_multi_integer("s", StoreOptions::create()).expect("open");
+    let k = Rkv::new::<SafeMode>(root.path()).expect("new succeeded");
+    let s = k
+        .open_multi_integer("s", StoreOptions::create())
+        .expect("open");
 
     macro_rules! test_integer_keys {
         ($store:expr, $key:expr) => {{
             let mut writer = k.write().expect("writer");
 
-            $store.put(&mut writer, $key, &Value::Str("hello1")).expect("write");
-            $store.put(&mut writer, $key, &Value::Str("hello2")).expect("write");
-            $store.put(&mut writer, $key, &Value::Str("hello3")).expect("write");
+            $store
+                .put(&mut writer, $key, &Value::Str("hello1"))
+                .expect("write");
+            $store
+                .put(&mut writer, $key, &Value::Str("hello2"))
+                .expect("write");
+            $store
+                .put(&mut writer, $key, &Value::Str("hello3"))
+                .expect("write");
             let vals = $store
                 .get(&writer, $key)
                 .expect("read")
                 .map(|result| result.expect("ok"))
-                .map(|(_, v)| v.expect("multi read"))
+                .map(|(_, v)| v)
                 .collect::<Vec<Value>>();
-            assert_eq!(vals, vec![Value::Str("hello1"), Value::Str("hello2"), Value::Str("hello3")]);
+            assert_eq!(
+                vals,
+                vec![
+                    Value::Str("hello1"),
+                    Value::Str("hello2"),
+                    Value::Str("hello3")
+                ]
+            );
             writer.commit().expect("committed");
 
             let reader = k.read().expect("reader");
@@ -51,9 +64,16 @@ fn test_multi_integer_keys() {
                 .get(&reader, $key)
                 .expect("read")
                 .map(|result| result.expect("ok"))
-                .map(|(_, v)| v.expect("multi read"))
+                .map(|(_, v)| v)
                 .collect::<Vec<Value>>();
-            assert_eq!(vals, vec![Value::Str("hello1"), Value::Str("hello2"), Value::Str("hello3")]);
+            assert_eq!(
+                vals,
+                vec![
+                    Value::Str("hello1"),
+                    Value::Str("hello2"),
+                    Value::Str("hello3")
+                ]
+            );
         }};
     }
 
@@ -70,7 +90,9 @@ fn test_multi_integer_keys() {
     // different integer key types, which may result in unexpected behavior.
     // Make sure you know what you're doing!
 
-    let t = k.open_multi_integer("s", StoreOptions::create()).expect("open");
+    let t = k
+        .open_multi_integer("s", StoreOptions::create())
+        .expect("open");
 
     #[derive(Serialize)]
     struct I32(i32);
@@ -78,7 +100,9 @@ fn test_multi_integer_keys() {
     test_integer_keys!(t, I32(std::i32::MIN));
     test_integer_keys!(t, I32(std::i32::MAX));
 
-    let u = k.open_multi_integer("s", StoreOptions::create()).expect("open");
+    let u = k
+        .open_multi_integer("s", StoreOptions::create())
+        .expect("open");
 
     #[derive(Serialize)]
     struct U16(u16);
@@ -86,7 +110,9 @@ fn test_multi_integer_keys() {
     test_integer_keys!(u, U16(std::u16::MIN));
     test_integer_keys!(u, U16(std::u16::MAX));
 
-    let v = k.open_multi_integer("s", StoreOptions::create()).expect("open");
+    let v = k
+        .open_multi_integer("s", StoreOptions::create())
+        .expect("open");
 
     #[derive(Serialize)]
     struct U64(u64);

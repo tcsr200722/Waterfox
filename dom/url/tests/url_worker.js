@@ -1,9 +1,9 @@
 /* eslint-env worker */
 
-onmessage = function(event) {
+onmessage = function (event) {
   if (event.data != 0) {
     var worker = new Worker("url_worker.js");
-    worker.onmessage = function(ev) {
+    worker.onmessage = function (ev) {
       postMessage(ev.data);
     };
 
@@ -90,7 +90,7 @@ onmessage = function(event) {
   var u = new URL(uri);
   postMessage({
     type: "status",
-    status: u.origin == "http://mochi.test:8888",
+    status: u.origin == location.origin,
     msg: "The URL generated from a blob URI has an origin.",
   });
 

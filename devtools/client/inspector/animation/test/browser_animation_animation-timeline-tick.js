@@ -8,24 +8,21 @@
 // * tick labels elements existence
 // * count and text of tick label elements changing by the sidebar width
 
-const TimeScale = require("devtools/client/inspector/animation/utils/timescale");
+const TimeScale = require("resource://devtools/client/inspector/animation/utils/timescale.js");
 const {
   findOptimalTimeInterval,
-} = require("devtools/client/inspector/animation/utils/utils");
+} = require("resource://devtools/client/inspector/animation/utils/utils.js");
 
 // Should be kept in sync with TIME_GRADUATION_MIN_SPACING in
 // AnimationTimeTickList component.
 const TIME_GRADUATION_MIN_SPACING = 40;
 
-add_task(async function() {
+add_task(async function () {
   await pushPref("devtools.inspector.three-pane-enabled", false);
   await addTab(URL_ROOT + "doc_simple_animation.html");
   await removeAnimatedElementsExcept([".end-delay", ".negative-delay"]);
-  const {
-    animationInspector,
-    inspector,
-    panel,
-  } = await openAnimationInspector();
+  const { animationInspector, inspector, panel } =
+    await openAnimationInspector();
   const timeScale = new TimeScale(animationInspector.state.animations);
 
   info("Checking animation list header element existence");
@@ -37,16 +34,16 @@ add_task(async function() {
   );
 
   info("Checking time tick item elements existence");
-  assertTickLabels(timeScale, listContainerEl);
-  const timelineTickItemLength = listContainerEl.querySelectorAll(".tick-label")
-    .length;
+  await assertTickLabels(timeScale, listContainerEl);
+  const timelineTickItemLength =
+    listContainerEl.querySelectorAll(".tick-label").length;
 
   info("Checking timeline tick item elements after enlarge sidebar width");
   await setSidebarWidth("100%", inspector);
-  assertTickLabels(timeScale, listContainerEl);
-  ok(
-    timelineTickItemLength <
-      listContainerEl.querySelectorAll(".tick-label").length,
+  await assertTickLabels(timeScale, listContainerEl);
+  Assert.less(
+    timelineTickItemLength,
+    listContainerEl.querySelectorAll(".tick-label").length,
     "The timeline tick item elements should increase"
   );
 });
@@ -57,7 +54,7 @@ add_task(async function() {
  * @param {TimeScale} - timeScale
  * @param {Element} - listContainerEl
  */
-function assertTickLabels(timeScale, listContainerEl) {
+async function assertTickLabels(timeScale, listContainerEl) {
   const timelineTickListEl = listContainerEl.querySelector(".tick-labels");
   ok(
     timelineTickListEl,
@@ -73,14 +70,15 @@ function assertTickLabels(timeScale, listContainerEl) {
   const expectedTickItem =
     Math.ceil(animationDuration / interval) + (shiftWidth !== 0 ? 1 : 0);
 
-  const timelineTickItemEls = timelineTickListEl.querySelectorAll(
-    ".tick-label"
+  await waitUntil(
+    () =>
+      timelineTickListEl.querySelectorAll(".tick-label").length ===
+      expectedTickItem
   );
-  is(
-    timelineTickItemEls.length,
-    expectedTickItem,
-    "The expected number of timeline ticks were found"
-  );
+  ok(true, "The expected number of timeline ticks were found");
+
+  const timelineTickItemEls =
+    timelineTickListEl.querySelectorAll(".tick-label");
 
   info("Make sure graduations are evenly distributed and show the right times");
   for (const [index, tickEl] of timelineTickItemEls.entries()) {

@@ -12,17 +12,18 @@
 #define js_StableStringChars_h
 
 #include "mozilla/Assertions.h"  // MOZ_ASSERT
-#include "mozilla/Attributes.h"  // MOZ_INIT_OUTSIDE_CTOR, MOZ_STACK_CLASS, MOZ_MUST_USE
-#include "mozilla/Maybe.h"  // mozilla::Maybe
-#include "mozilla/Range.h"  // mozilla::Range
+#include "mozilla/Attributes.h"  // MOZ_INIT_OUTSIDE_CTOR, MOZ_STACK_CLASS
+#include "mozilla/Maybe.h"       // mozilla::Maybe
+#include "mozilla/Range.h"       // mozilla::Range
 
 #include <stddef.h>  // size_t
 #include <stdint.h>  // uint8_t
 
-#include "jstypes.h"  // JS_FRIEND_API
+#include "jstypes.h"  // JS_PUBLIC_API
 
-#include "js/HeapAPI.h"     // JS::shadow::String
+#include "js/AllocPolicy.h"
 #include "js/RootingAPI.h"  // JS::Handle, JS::Rooted
+#include "js/String.h"      // JS::GetStringLength
 #include "js/TypeDecls.h"   // JSContext, JS::Latin1Char, JSString
 #include "js/Vector.h"      // js::Vector
 
@@ -30,19 +31,15 @@ class JSLinearString;
 
 namespace JS {
 
-MOZ_ALWAYS_INLINE size_t GetStringLength(JSString* s) {
-  return reinterpret_cast<shadow::String*>(s)->length();
-}
-
 /**
- * This class provides safe access to a string's chars across a GC. If we ever
- * nursery allocate strings' out of line chars, this class will have to make a
+ * This class provides safe access to a string's chars across a GC. When it
+ * has nursery-allocated out of lines chars, this class will have to make a
  * copy, so it's best to avoid using this class unless you really need it. It's
  * usually more efficient to use the latin1Chars/twoByteChars JSString methods
  * and often the code can be rewritten so that only indexes instead of char
  * pointers are used in parts of the code that can GC.
  */
-class MOZ_STACK_CLASS JS_FRIEND_API AutoStableStringChars final {
+class MOZ_STACK_CLASS JS_PUBLIC_API AutoStableStringChars final {
   /*
    * When copying string char, use this many bytes of inline storage.  This is
    * chosen to allow the inline string types to be copied without allocating.
@@ -56,18 +53,23 @@ class MOZ_STACK_CLASS JS_FRIEND_API AutoStableStringChars final {
     const char16_t* twoByteChars_;
     const Latin1Char* latin1Chars_;
   };
+  MOZ_INIT_OUTSIDE_CTOR uint32_t length_;
   mozilla::Maybe<js::Vector<uint8_t, InlineCapacity>> ownChars_;
   enum State { Uninitialized, Latin1, TwoByte };
   State state_;
+
+  // Prevent the string that owns s's chars from being collected (by storing it
+  // in s_) or deduplicated.
+  void holdStableChars(JSLinearString* s);
 
  public:
   explicit AutoStableStringChars(JSContext* cx)
       : s_(cx), state_(Uninitialized) {}
 
-  MOZ_MUST_USE bool init(JSContext* cx, JSString* s);
+  [[nodiscard]] bool init(JSContext* cx, JSString* s);
 
   /* Like init(), but Latin1 chars are inflated to TwoByte. */
-  MOZ_MUST_USE bool initTwoByte(JSContext* cx, JSString* s);
+  [[nodiscard]] bool initTwoByte(JSContext* cx, JSString* s);
 
   bool isLatin1() const { return state_ == Latin1; }
   bool isTwoByte() const { return state_ == TwoByte; }
@@ -83,12 +85,12 @@ class MOZ_STACK_CLASS JS_FRIEND_API AutoStableStringChars final {
 
   mozilla::Range<const Latin1Char> latin1Range() const {
     MOZ_ASSERT(state_ == Latin1);
-    return mozilla::Range<const Latin1Char>(latin1Chars_, GetStringLength(s_));
+    return mozilla::Range<const Latin1Char>(latin1Chars_, length());
   }
 
   mozilla::Range<const char16_t> twoByteRange() const {
     MOZ_ASSERT(state_ == TwoByte);
-    return mozilla::Range<const char16_t>(twoByteChars_, GetStringLength(s_));
+    return mozilla::Range<const char16_t>(twoByteChars_, length());
   }
 
   /* If we own the chars, transfer ownership to the caller. */
@@ -102,11 +104,15 @@ class MOZ_STACK_CLASS JS_FRIEND_API AutoStableStringChars final {
     return true;
   }
 
+  size_t length() const {
+    MOZ_ASSERT(state_ != Uninitialized);
+    return length_;
+  }
+
  private:
   AutoStableStringChars(const AutoStableStringChars& other) = delete;
   void operator=(const AutoStableStringChars& other) = delete;
 
-  bool baseIsInline(Handle<JSLinearString*> linearString);
   template <typename T>
   T* allocOwnChars(JSContext* cx, size_t count);
   bool copyLatin1Chars(JSContext* cx, Handle<JSLinearString*> linearString);

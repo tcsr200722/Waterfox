@@ -1,10 +1,10 @@
 //! Building blocks for deserializing basic values using the `IntoDeserializer`
 //! trait.
 //!
-//! ```edition2018
+//! ```edition2021
+//! use serde::de::{value, Deserialize, IntoDeserializer};
+//! use serde_derive::Deserialize;
 //! use std::str::FromStr;
-//! use serde::Deserialize;
-//! use serde::de::{value, IntoDeserializer};
 //!
 //! #[derive(Deserialize)]
 //! enum Setting {
@@ -21,12 +21,11 @@
 //! }
 //! ```
 
-use lib::*;
+use crate::lib::*;
 
 use self::private::{First, Second};
-use de::{self, Expected, IntoDeserializer, SeqAccess};
-use private::de::size_hint;
-use ser;
+use crate::de::{self, size_hint, Deserializer, Expected, IntoDeserializer, SeqAccess, Visitor};
+use crate::ser;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -48,7 +47,7 @@ macro_rules! impl_copy_clone {
 
 /// A minimal representation of all possible errors that can occur using the
 /// `IntoDeserializer` trait.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Error {
     err: ErrorImpl,
 }
@@ -93,17 +92,27 @@ impl ser::Error for Error {
 
 impl Display for Error {
     #[cfg(any(feature = "std", feature = "alloc"))]
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str(&self.err)
     }
 
     #[cfg(not(any(feature = "std", feature = "alloc")))]
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("Serde deserialization error")
     }
 }
 
+impl Debug for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let mut debug = formatter.debug_tuple("Error");
+        #[cfg(any(feature = "std", feature = "alloc"))]
+        debug.field(&self.err);
+        debug.finish()
+    }
+}
+
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl error::Error for Error {
     fn description(&self) -> &str {
         &self.err
@@ -119,19 +128,25 @@ where
     type Deserializer = UnitDeserializer<E>;
 
     fn into_deserializer(self) -> UnitDeserializer<E> {
-        UnitDeserializer {
-            marker: PhantomData,
-        }
+        UnitDeserializer::new()
     }
 }
 
 /// A deserializer holding a `()`.
-#[derive(Debug)]
 pub struct UnitDeserializer<E> {
     marker: PhantomData<E>,
 }
 
 impl_copy_clone!(UnitDeserializer);
+
+impl<E> UnitDeserializer<E> {
+    #[allow(missing_docs)]
+    pub fn new() -> Self {
+        UnitDeserializer {
+            marker: PhantomData,
+        }
+    }
+}
 
 impl<'de, E> de::Deserializer<'de> for UnitDeserializer<E>
 where
@@ -160,16 +175,24 @@ where
     }
 }
 
+impl<E> Debug for UnitDeserializer<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.debug_struct("UnitDeserializer").finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer that cannot be instantiated.
 #[cfg(feature = "unstable")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub struct NeverDeserializer<E> {
     never: !,
     marker: PhantomData<E>,
 }
 
 #[cfg(feature = "unstable")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 impl<'de, E> IntoDeserializer<'de, E> for !
 where
     E: de::Error,
@@ -208,7 +231,6 @@ macro_rules! primitive_deserializer {
     ($ty:ty, $doc:tt, $name:ident, $method:ident $($cast:tt)*) => {
         #[doc = "A deserializer holding"]
         #[doc = $doc]
-        #[derive(Debug)]
         pub struct $name<E> {
             value: $ty,
             marker: PhantomData<E>
@@ -223,8 +245,15 @@ macro_rules! primitive_deserializer {
             type Deserializer = $name<E>;
 
             fn into_deserializer(self) -> $name<E> {
+                $name::new(self)
+            }
+        }
+
+        impl<E> $name<E> {
+            #[allow(missing_docs)]
+            pub fn new(value: $ty) -> Self {
                 $name {
-                    value: self,
+                    value,
                     marker: PhantomData,
                 }
             }
@@ -249,6 +278,15 @@ macro_rules! primitive_deserializer {
                 visitor.$method(self.value $($cast)*)
             }
         }
+
+        impl<E> Debug for $name<E> {
+            fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter
+                    .debug_struct(stringify!($name))
+                    .field("value", &self.value)
+                    .finish()
+            }
+        }
     }
 }
 
@@ -257,22 +295,18 @@ primitive_deserializer!(i8, "an `i8`.", I8Deserializer, visit_i8);
 primitive_deserializer!(i16, "an `i16`.", I16Deserializer, visit_i16);
 primitive_deserializer!(i32, "an `i32`.", I32Deserializer, visit_i32);
 primitive_deserializer!(i64, "an `i64`.", I64Deserializer, visit_i64);
+primitive_deserializer!(i128, "an `i128`.", I128Deserializer, visit_i128);
 primitive_deserializer!(isize, "an `isize`.", IsizeDeserializer, visit_i64 as i64);
 primitive_deserializer!(u8, "a `u8`.", U8Deserializer, visit_u8);
 primitive_deserializer!(u16, "a `u16`.", U16Deserializer, visit_u16);
 primitive_deserializer!(u64, "a `u64`.", U64Deserializer, visit_u64);
+primitive_deserializer!(u128, "a `u128`.", U128Deserializer, visit_u128);
 primitive_deserializer!(usize, "a `usize`.", UsizeDeserializer, visit_u64 as u64);
 primitive_deserializer!(f32, "an `f32`.", F32Deserializer, visit_f32);
 primitive_deserializer!(f64, "an `f64`.", F64Deserializer, visit_f64);
 primitive_deserializer!(char, "a `char`.", CharDeserializer, visit_char);
 
-serde_if_integer128! {
-    primitive_deserializer!(i128, "an `i128`.", I128Deserializer, visit_i128);
-    primitive_deserializer!(u128, "a `u128`.", U128Deserializer, visit_u128);
-}
-
 /// A deserializer holding a `u32`.
-#[derive(Debug)]
 pub struct U32Deserializer<E> {
     value: u32,
     marker: PhantomData<E>,
@@ -287,8 +321,15 @@ where
     type Deserializer = U32Deserializer<E>;
 
     fn into_deserializer(self) -> U32Deserializer<E> {
+        U32Deserializer::new(self)
+    }
+}
+
+impl<E> U32Deserializer<E> {
+    #[allow(missing_docs)]
+    pub fn new(value: u32) -> Self {
         U32Deserializer {
-            value: self,
+            value,
             marker: PhantomData,
         }
     }
@@ -343,10 +384,18 @@ where
     }
 }
 
+impl<E> Debug for U32Deserializer<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("U32Deserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer holding a `&str`.
-#[derive(Debug)]
 pub struct StrDeserializer<'a, E> {
     value: &'a str,
     marker: PhantomData<E>,
@@ -361,8 +410,15 @@ where
     type Deserializer = StrDeserializer<'a, E>;
 
     fn into_deserializer(self) -> StrDeserializer<'a, E> {
+        StrDeserializer::new(self)
+    }
+}
+
+impl<'a, E> StrDeserializer<'a, E> {
+    #[allow(missing_docs)]
+    pub fn new(value: &'a str) -> Self {
         StrDeserializer {
-            value: self,
+            value,
             marker: PhantomData,
         }
     }
@@ -417,11 +473,19 @@ where
     }
 }
 
+impl<'a, E> Debug for StrDeserializer<'a, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("StrDeserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer holding a `&str` with a lifetime tied to another
 /// deserializer.
-#[derive(Debug)]
 pub struct BorrowedStrDeserializer<'de, E> {
     value: &'de str,
     marker: PhantomData<E>,
@@ -433,7 +497,7 @@ impl<'de, E> BorrowedStrDeserializer<'de, E> {
     /// Create a new borrowed deserializer from the given string.
     pub fn new(value: &'de str) -> BorrowedStrDeserializer<'de, E> {
         BorrowedStrDeserializer {
-            value: value,
+            value,
             marker: PhantomData,
         }
     }
@@ -488,11 +552,20 @@ where
     }
 }
 
+impl<'de, E> Debug for BorrowedStrDeserializer<'de, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("BorrowedStrDeserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer holding a `String`.
 #[cfg(any(feature = "std", feature = "alloc"))]
-#[derive(Debug)]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 pub struct StringDeserializer<E> {
     value: String,
     marker: PhantomData<E>,
@@ -509,6 +582,7 @@ impl<E> Clone for StringDeserializer<E> {
 }
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl<'de, E> IntoDeserializer<'de, E> for String
 where
     E: de::Error,
@@ -516,8 +590,16 @@ where
     type Deserializer = StringDeserializer<E>;
 
     fn into_deserializer(self) -> StringDeserializer<E> {
+        StringDeserializer::new(self)
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<E> StringDeserializer<E> {
+    #[allow(missing_docs)]
+    pub fn new(value: String) -> Self {
         StringDeserializer {
-            value: self,
+            value,
             marker: PhantomData,
         }
     }
@@ -559,7 +641,7 @@ where
 }
 
 #[cfg(any(feature = "std", feature = "alloc"))]
-impl<'de, 'a, E> de::EnumAccess<'de> for StringDeserializer<E>
+impl<'de, E> de::EnumAccess<'de> for StringDeserializer<E>
 where
     E: de::Error,
 {
@@ -574,11 +656,21 @@ where
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<E> Debug for StringDeserializer<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("StringDeserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer holding a `Cow<str>`.
 #[cfg(any(feature = "std", feature = "alloc"))]
-#[derive(Debug)]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 pub struct CowStrDeserializer<'a, E> {
     value: Cow<'a, str>,
     marker: PhantomData<E>,
@@ -595,6 +687,7 @@ impl<'a, E> Clone for CowStrDeserializer<'a, E> {
 }
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl<'de, 'a, E> IntoDeserializer<'de, E> for Cow<'a, str>
 where
     E: de::Error,
@@ -602,8 +695,16 @@ where
     type Deserializer = CowStrDeserializer<'a, E>;
 
     fn into_deserializer(self) -> CowStrDeserializer<'a, E> {
+        CowStrDeserializer::new(self)
+    }
+}
+
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'a, E> CowStrDeserializer<'a, E> {
+    #[allow(missing_docs)]
+    pub fn new(value: Cow<'a, str>) -> Self {
         CowStrDeserializer {
-            value: self,
+            value,
             marker: PhantomData,
         }
     }
@@ -663,29 +764,48 @@ where
     }
 }
 
+#[cfg(any(feature = "std", feature = "alloc"))]
+impl<'a, E> Debug for CowStrDeserializer<'a, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("CowStrDeserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
-/// A deserializer holding a `&[u8]` with a lifetime tied to another
-/// deserializer.
-#[derive(Debug)]
-pub struct BorrowedBytesDeserializer<'de, E> {
-    value: &'de [u8],
+/// A deserializer holding a `&[u8]`. Always calls [`Visitor::visit_bytes`].
+pub struct BytesDeserializer<'a, E> {
+    value: &'a [u8],
     marker: PhantomData<E>,
 }
 
-impl_copy_clone!(BorrowedBytesDeserializer<'de>);
-
-impl<'de, E> BorrowedBytesDeserializer<'de, E> {
-    /// Create a new borrowed deserializer from the given byte slice.
-    pub fn new(value: &'de [u8]) -> BorrowedBytesDeserializer<'de, E> {
-        BorrowedBytesDeserializer {
-            value: value,
+impl<'a, E> BytesDeserializer<'a, E> {
+    /// Create a new deserializer from the given bytes.
+    pub fn new(value: &'a [u8]) -> Self {
+        BytesDeserializer {
+            value,
             marker: PhantomData,
         }
     }
 }
 
-impl<'de, E> de::Deserializer<'de> for BorrowedBytesDeserializer<'de, E>
+impl_copy_clone!(BytesDeserializer<'a>);
+
+impl<'de, 'a, E> IntoDeserializer<'de, E> for &'a [u8]
+where
+    E: de::Error,
+{
+    type Deserializer = BytesDeserializer<'a, E>;
+
+    fn into_deserializer(self) -> BytesDeserializer<'a, E> {
+        BytesDeserializer::new(self)
+    }
+}
+
+impl<'de, 'a, E> Deserializer<'de> for BytesDeserializer<'a, E>
 where
     E: de::Error,
 {
@@ -693,7 +813,55 @@ where
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
-        V: de::Visitor<'de>,
+        V: Visitor<'de>,
+    {
+        visitor.visit_bytes(self.value)
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'a, E> Debug for BytesDeserializer<'a, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("BytesDeserializer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+/// A deserializer holding a `&[u8]` with a lifetime tied to another
+/// deserializer. Always calls [`Visitor::visit_borrowed_bytes`].
+pub struct BorrowedBytesDeserializer<'de, E> {
+    value: &'de [u8],
+    marker: PhantomData<E>,
+}
+
+impl<'de, E> BorrowedBytesDeserializer<'de, E> {
+    /// Create a new borrowed deserializer from the given borrowed bytes.
+    pub fn new(value: &'de [u8]) -> Self {
+        BorrowedBytesDeserializer {
+            value,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl_copy_clone!(BorrowedBytesDeserializer<'de>);
+
+impl<'de, E> Deserializer<'de> for BorrowedBytesDeserializer<'de, E>
+where
+    E: de::Error,
+{
+    type Error = E;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
     {
         visitor.visit_borrowed_bytes(self.value)
     }
@@ -701,14 +869,23 @@ where
     forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct identifier ignored_any enum
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+impl<'de, E> Debug for BorrowedBytesDeserializer<'de, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("BorrowedBytesDeserializer")
+            .field("value", &self.value)
+            .finish()
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 /// A deserializer that iterates over a sequence.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SeqDeserializer<I, E> {
     iter: iter::Fuse<I>,
     count: usize,
@@ -763,8 +940,8 @@ where
     where
         V: de::Visitor<'de>,
     {
-        let v = try!(visitor.visit_seq(&mut self));
-        try!(self.end());
+        let v = tri!(visitor.visit_seq(&mut self));
+        tri!(self.end());
         Ok(v)
     }
 
@@ -806,16 +983,30 @@ struct ExpectedInSeq(usize);
 impl Expected for ExpectedInSeq {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         if self.0 == 1 {
-            write!(formatter, "1 element in sequence")
+            formatter.write_str("1 element in sequence")
         } else {
             write!(formatter, "{} elements in sequence", self.0)
         }
     }
 }
 
+impl<I, E> Debug for SeqDeserializer<I, E>
+where
+    I: Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("SeqDeserializer")
+            .field("iter", &self.iter)
+            .field("count", &self.count)
+            .finish()
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl<'de, T, E> IntoDeserializer<'de, E> for Vec<T>
 where
     T: IntoDeserializer<'de, E>,
@@ -829,6 +1020,7 @@ where
 }
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl<'de, T, E> IntoDeserializer<'de, E> for BTreeSet<T>
 where
     T: IntoDeserializer<'de, E> + Eq + Ord,
@@ -842,6 +1034,7 @@ where
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl<'de, T, S, E> IntoDeserializer<'de, E> for HashSet<T, S>
 where
     T: IntoDeserializer<'de, E> + Eq + Hash,
@@ -866,7 +1059,7 @@ pub struct SeqAccessDeserializer<A> {
 impl<A> SeqAccessDeserializer<A> {
     /// Construct a new `SeqAccessDeserializer<A>`.
     pub fn new(seq: A) -> Self {
-        SeqAccessDeserializer { seq: seq }
+        SeqAccessDeserializer { seq }
     }
 }
 
@@ -975,8 +1168,8 @@ where
     where
         V: de::Visitor<'de>,
     {
-        let value = try!(visitor.visit_map(&mut self));
-        try!(self.end());
+        let value = tri!(visitor.visit_map(&mut self));
+        tri!(self.end());
         Ok(value)
     }
 
@@ -984,8 +1177,8 @@ where
     where
         V: de::Visitor<'de>,
     {
-        let value = try!(visitor.visit_seq(&mut self));
-        try!(self.end());
+        let value = tri!(visitor.visit_seq(&mut self));
+        tri!(self.end());
         Ok(value)
     }
 
@@ -1034,7 +1227,7 @@ where
         let value = self.value.take();
         // Panic because this indicates a bug in the program rather than an
         // expected failure.
-        let value = value.expect("MapAccess::visit_value called before visit_key");
+        let value = value.expect("MapAccess::next_value called before next_key");
         seed.deserialize(value.into_deserializer())
     }
 
@@ -1049,8 +1242,8 @@ where
     {
         match self.next_pair() {
             Some((key, value)) => {
-                let key = try!(kseed.deserialize(key.into_deserializer()));
-                let value = try!(vseed.deserialize(value.into_deserializer()));
+                let key = tri!(kseed.deserialize(key.into_deserializer()));
+                let value = tri!(vseed.deserialize(value.into_deserializer()));
                 Ok(Some((key, value)))
             }
             None => Ok(None),
@@ -1108,7 +1301,6 @@ where
     }
 }
 
-// Cannot #[derive(Debug)] because of the bound `Second<I::Item>: Debug`.
 impl<'de, I, E> Debug for MapDeserializer<'de, I, E>
 where
     I: Iterator + Debug,
@@ -1121,8 +1313,6 @@ where
             .field("iter", &self.iter)
             .field("value", &self.value)
             .field("count", &self.count)
-            .field("lifetime", &self.lifetime)
-            .field("error", &self.error)
             .finish()
     }
 }
@@ -1157,7 +1347,7 @@ where
         V: de::Visitor<'de>,
     {
         let mut pair_visitor = PairVisitor(Some(self.0), Some(self.1), PhantomData);
-        let pair = try!(visitor.visit_seq(&mut pair_visitor));
+        let pair = tri!(visitor.visit_seq(&mut pair_visitor));
         if pair_visitor.1.is_none() {
             Ok(pair)
         } else {
@@ -1221,7 +1411,7 @@ struct ExpectedInMap(usize);
 impl Expected for ExpectedInMap {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         if self.0 == 1 {
-            write!(formatter, "1 element in map")
+            formatter.write_str("1 element in map")
         } else {
             write!(formatter, "{} elements in map", self.0)
         }
@@ -1231,6 +1421,7 @@ impl Expected for ExpectedInMap {
 ////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(any(feature = "std", feature = "alloc"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl<'de, K, V, E> IntoDeserializer<'de, E> for BTreeMap<K, V>
 where
     K: IntoDeserializer<'de, E> + Eq + Ord,
@@ -1245,6 +1436,7 @@ where
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl<'de, K, V, S, E> IntoDeserializer<'de, E> for HashMap<K, V, S>
 where
     K: IntoDeserializer<'de, E> + Eq + Hash,
@@ -1270,7 +1462,7 @@ pub struct MapAccessDeserializer<A> {
 impl<A> MapAccessDeserializer<A> {
     /// Construct a new `MapAccessDeserializer<A>`.
     pub fn new(map: A) -> Self {
-        MapAccessDeserializer { map: map }
+        MapAccessDeserializer { map }
     }
 }
 
@@ -1317,7 +1509,7 @@ where
     where
         T: de::DeserializeSeed<'de>,
     {
-        match self.map.next_key_seed(seed)? {
+        match tri!(self.map.next_key_seed(seed)) {
             Some(key) => Ok((key, private::map_as_enum(self.map))),
             None => Err(de::Error::invalid_type(de::Unexpected::Map, &"enum")),
         }
@@ -1326,12 +1518,48 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// A deserializer holding an `EnumAccess`.
+#[derive(Clone, Debug)]
+pub struct EnumAccessDeserializer<A> {
+    access: A,
+}
+
+impl<A> EnumAccessDeserializer<A> {
+    /// Construct a new `EnumAccessDeserializer<A>`.
+    pub fn new(access: A) -> Self {
+        EnumAccessDeserializer { access }
+    }
+}
+
+impl<'de, A> de::Deserializer<'de> for EnumAccessDeserializer<A>
+where
+    A: de::EnumAccess<'de>,
+{
+    type Error = A::Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        visitor.visit_enum(self.access)
+    }
+
+    forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 mod private {
-    use lib::*;
+    use crate::lib::*;
 
-    use de::{self, DeserializeSeed, Deserializer, MapAccess, Unexpected, VariantAccess, Visitor};
+    use crate::de::{
+        self, DeserializeSeed, Deserializer, MapAccess, Unexpected, VariantAccess, Visitor,
+    };
 
-    #[derive(Clone, Debug)]
     pub struct UnitOnly<E> {
         marker: PhantomData<E>,
     }
@@ -1390,13 +1618,12 @@ mod private {
         }
     }
 
-    #[derive(Clone, Debug)]
     pub struct MapAsEnum<A> {
         map: A,
     }
 
     pub fn map_as_enum<A>(map: A) -> MapAsEnum<A> {
-        MapAsEnum { map: map }
+        MapAsEnum { map }
     }
 
     impl<'de, A> VariantAccess<'de> for MapAsEnum<A>
@@ -1420,10 +1647,7 @@ mod private {
         where
             V: Visitor<'de>,
         {
-            self.map.next_value_seed(SeedTupleVariant {
-                len: len,
-                visitor: visitor,
-            })
+            self.map.next_value_seed(SeedTupleVariant { len, visitor })
         }
 
         fn struct_variant<V>(
@@ -1434,8 +1658,7 @@ mod private {
         where
             V: Visitor<'de>,
         {
-            self.map
-                .next_value_seed(SeedStructVariant { visitor: visitor })
+            self.map.next_value_seed(SeedStructVariant { visitor })
         }
     }
 

@@ -5,11 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/BaseBlobImpl.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "nsRFPService.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 void BaseBlobImpl::GetName(nsAString& aName) const {
   MOZ_ASSERT(mIsFile, "Should only be called on files");
@@ -51,7 +51,7 @@ int64_t BaseBlobImpl::GetLastModified(ErrorResult& aRv) {
   return mLastModificationDate / PR_USEC_PER_MSEC;
 }
 
-int64_t BaseBlobImpl::GetFileId() { return -1; }
+int64_t BaseBlobImpl::GetFileId() const { return -1; }
 
 /* static */
 uint64_t BaseBlobImpl::NextSerialNumber() {
@@ -64,15 +64,12 @@ void BaseBlobImpl::SetLastModificationDatePrecisely(int64_t aDate) {
   mLastModificationDate = aDate;
 }
 
-void BaseBlobImpl::SetLastModificationDate(bool aCrossOriginIsolated,
+void BaseBlobImpl::SetLastModificationDate(RTPCallerType aRTPCallerType,
                                            int64_t aDate) {
   return SetLastModificationDatePrecisely(
-      nsRFPService::ReduceTimePrecisionAsUSecs(aDate, 0,
-                                               /* aIsSystemPrincipal */ false,
-                                               aCrossOriginIsolated));
+      nsRFPService::ReduceTimePrecisionAsUSecs(aDate, 0, aRTPCallerType));
   // mLastModificationDate is an absolute timestamp so we supply a zero
   // context mix-in
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

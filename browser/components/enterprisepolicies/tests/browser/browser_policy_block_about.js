@@ -2,51 +2,49 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
-const policiesToTest = {
-  BlockAboutAddons: "about:addons",
-  BlockAboutConfig: "about:config",
-  BlockAboutProfiles: "about:profiles",
-  BlockAboutSupport: "about:support",
-};
+const ABOUT_CONTRACT = "@mozilla.org/network/protocol/about;1?what=";
+
+const policiesToTest = [
+  {
+    policies: {
+      BlockAboutAddons: true,
+    },
+    urls: ["about:addons", "about:ADDONS"],
+  },
+  {
+    policies: {
+      BlockAboutConfig: true,
+    },
+    urls: ["about:config", "about:Config"],
+  },
+  {
+    policies: {
+      BlockAboutProfiles: true,
+    },
+    urls: ["about:profiles", "about:pRofiles"],
+  },
+  {
+    policies: {
+      BlockAboutSupport: true,
+    },
+    urls: ["about:support", "about:suPPort"],
+  },
+];
 
 add_task(async function testAboutTask() {
-  for (let policy in policiesToTest) {
+  for (let policyToTest of policiesToTest) {
     let policyJSON = { policies: {} };
-    policyJSON.policies[policy] = true;
-    await testPageBlockedByPolicy(policyJSON, policiesToTest[policy]);
-  }
-  let policyJSON = { policies: {} };
-  policyJSON.policies.PasswordManagerEnabled = false;
-  await testPageBlockedByPolicy(policyJSON, "about:logins");
-});
-
-async function testPageBlockedByPolicy(policyJSON, page) {
-  await setupPolicyEngineWithJson(policyJSON);
-
-  await BrowserTestUtils.withNewTab(
-    { gBrowser, url: "about:blank" },
-    async browser => {
-      BrowserTestUtils.loadURI(browser, page);
-      await BrowserTestUtils.browserLoaded(browser, false, page, true);
-      await SpecialPowers.spawn(browser, [page], async function(innerPage) {
-        ok(
-          content.document.documentURI.startsWith(
-            "about:neterror?e=blockedByPolicy"
-          ),
-          content.document.documentURI +
-            " should start with about:neterror?e=blockedByPolicy"
+    policyJSON.policies = policyToTest.policies;
+    for (let url of policyToTest.urls) {
+      if (url.startsWith("about")) {
+        let feature = url.split(":")[1].toLowerCase();
+        let aboutModule = Cc[ABOUT_CONTRACT + feature].getService(
+          Ci.nsIAboutModule
         );
-
-        // There is currently a testing-specific race condition that causes this test
-        // to fail, but it is not a problem if we test after the first page load.
-        // Until the race condition is fixed, just make sure to test this *after*
-        // testing the page load.
-        is(
-          Services.policies.isAllowed(innerPage),
-          false,
-          `Policy Engine should report ${innerPage} as not allowed`
-        );
-      });
+        let chromeURL = aboutModule.getChromeURI(Services.io.newURI(url)).spec;
+        await testPageBlockedByPolicy(chromeURL, policyJSON);
+      }
+      await testPageBlockedByPolicy(url, policyJSON);
     }
-  );
-}
+  }
+});

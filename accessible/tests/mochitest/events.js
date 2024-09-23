@@ -51,8 +51,6 @@ const kFromUserInput = 1;
 // //////////////////////////////////////////////////////////////////////////////
 // General
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-
 /**
  * Set up this variable to dump events into DOM.
  */
@@ -129,7 +127,7 @@ function waitForEvent(
 
       unregisterA11yEventListener(aEventType, this);
 
-      window.setTimeout(function() {
+      window.setTimeout(function () {
         aFunc.call(aContext, aArg1, aArg2);
       }, 0);
     },
@@ -369,8 +367,8 @@ function eventQueue(aEventType) {
             if (idx == eventSeq.length) {
               if (
                 matchIdx != -1 &&
-                eventSeq.length > 0 &&
-                this.mScenarios[matchIdx].length > 0
+                !!eventSeq.length &&
+                this.mScenarios[matchIdx].length
               ) {
                 ok(
                   false,
@@ -380,7 +378,7 @@ function eventQueue(aEventType) {
                 );
               }
 
-              if (matchIdx == -1 || eventSeq.length > 0) {
+              if (matchIdx == -1 || eventSeq.length) {
                 matchIdx = scnIdx;
               }
 
@@ -495,31 +493,30 @@ function eventQueue(aEventType) {
     }
   };
 
-  this.processNextInvokerInTimeout = function eventQueue_processNextInvokerInTimeout(
-    aUncondProcess
-  ) {
-    this.setInvokerStatus(kInvokerPending, "Process next invoker in timeout");
+  this.processNextInvokerInTimeout =
+    function eventQueue_processNextInvokerInTimeout(aUncondProcess) {
+      this.setInvokerStatus(kInvokerPending, "Process next invoker in timeout");
 
-    // No need to wait extra timeout when a) we know we don't need to do that
-    // and b) there's no any single unexpected event.
-    if (!aUncondProcess && this.areAllEventsExpected()) {
-      // We need delay to avoid events coalesce from different invokers.
-      var queue = this;
-      SimpleTest.executeSoon(function() {
-        queue.processNextInvoker();
-      });
-      return;
-    }
+      // No need to wait extra timeout when a) we know we don't need to do that
+      // and b) there's no any single unexpected event.
+      if (!aUncondProcess && this.areAllEventsExpected()) {
+        // We need delay to avoid events coalesce from different invokers.
+        var queue = this;
+        SimpleTest.executeSoon(function () {
+          queue.processNextInvoker();
+        });
+        return;
+      }
 
-    // Check in timeout invoker didn't fire registered events.
-    window.setTimeout(
-      function(aQueue) {
-        aQueue.processNextInvoker();
-      },
-      300,
-      this
-    );
-  };
+      // Check in timeout invoker didn't fire registered events.
+      window.setTimeout(
+        function (aQueue) {
+          aQueue.processNextInvoker();
+        },
+        300,
+        this
+      );
+    };
 
   /**
    * Handle events for the current invoker.
@@ -566,7 +563,7 @@ function eventQueue(aEventType) {
           continue;
         }
 
-        // Report an error if we hanlded not expected event of unique type
+        // Report an error if we handled not expected event of unique type
         // (i.e. event types are matched, targets differs).
         if (
           !checker.unexpected &&
@@ -757,31 +754,31 @@ function eventQueue(aEventType) {
     return true;
   };
 
-  this.isUnexpectedEventScenario = function eventQueue_isUnexpectedEventsScenario(
-    aScenario
-  ) {
-    for (var idx = 0; idx < aScenario.length; idx++) {
-      if (!aScenario[idx].unexpected && !aScenario[idx].todo) {
-        break;
+  this.isUnexpectedEventScenario =
+    function eventQueue_isUnexpectedEventsScenario(aScenario) {
+      for (var idx = 0; idx < aScenario.length; idx++) {
+        if (!aScenario[idx].unexpected && !aScenario[idx].todo) {
+          break;
+        }
       }
-    }
 
-    return idx == aScenario.length;
-  };
+      return idx == aScenario.length;
+    };
 
-  this.hasUnexpectedEventsScenario = function eventQueue_hasUnexpectedEventsScenario() {
-    if (this.getInvoker().noEventsOnAction) {
-      return true;
-    }
-
-    for (var scnIdx = 0; scnIdx < this.mScenarios.length; scnIdx++) {
-      if (this.isUnexpectedEventScenario(this.mScenarios[scnIdx])) {
+  this.hasUnexpectedEventsScenario =
+    function eventQueue_hasUnexpectedEventsScenario() {
+      if (this.getInvoker().noEventsOnAction) {
         return true;
       }
-    }
 
-    return false;
-  };
+      for (var scnIdx = 0; scnIdx < this.mScenarios.length; scnIdx++) {
+        if (this.isUnexpectedEventScenario(this.mScenarios[scnIdx])) {
+          return true;
+        }
+      }
+
+      return false;
+    };
 
   this.hasMatchedScenario = function eventQueue_hasMatchedScenario() {
     for (var scnIdx = 0; scnIdx < this.mScenarios.length; scnIdx++) {
@@ -805,7 +802,7 @@ function eventQueue(aEventType) {
   };
 
   this.setEventHandler = function eventQueue_setEventHandler(aInvoker) {
-    if (!("scenarios" in aInvoker) || aInvoker.scenarios.length == 0) {
+    if (!("scenarios" in aInvoker) || !aInvoker.scenarios.length) {
       var eventSeq = aInvoker.eventSeq;
       var unexpectedEventSeq = aInvoker.unexpectedEventSeq;
       if (!eventSeq && !unexpectedEventSeq && this.mDefEventType) {
@@ -843,7 +840,7 @@ function eventQueue(aEventType) {
 
       // Do not warn about empty event sequances when more than one scenario
       // was registered.
-      if (this.mScenarios.length == 1 && eventSeq.length == 0) {
+      if (this.mScenarios.length == 1 && !eventSeq.length) {
         ok(
           false,
           "Broken scenario #" +
@@ -931,10 +928,7 @@ function eventQueue(aEventType) {
     return invoker.getID();
   };
 
-  this.setInvokerStatus = function eventQueue_setInvokerStatus(
-    aStatus,
-    aLogMsg
-  ) {
+  this.setInvokerStatus = function eventQueue_setInvokerStatus(aStatus) {
     this.mNextInvokerStatus = aStatus;
 
     // Uncomment it to debug invoker processing logic.
@@ -1251,11 +1245,21 @@ function synthClick(aNodeOrID, aCheckerOrEventSeq, aArgs) {
 
     var x = 1,
       y = 1;
-    if (aArgs && "where" in aArgs && aArgs.where == "right") {
-      if (isHTMLElement(targetNode)) {
-        x = targetNode.offsetWidth - 1;
-      } else if (isXULElement(targetNode)) {
-        x = targetNode.getBoundingClientRect().width - 1;
+    if (aArgs && "where" in aArgs) {
+      if (aArgs.where == "right") {
+        if (isHTMLElement(targetNode)) {
+          x = targetNode.offsetWidth - 1;
+        } else if (isXULElement(targetNode)) {
+          x = targetNode.getBoundingClientRect().width - 1;
+        }
+      } else if (aArgs.where == "center") {
+        if (isHTMLElement(targetNode)) {
+          x = targetNode.offsetWidth / 2;
+          y = targetNode.offsetHeight / 2;
+        } else if (isXULElement(targetNode)) {
+          x = targetNode.getBoundingClientRect().width / 2;
+          y = targetNode.getBoundingClientRect().height / 2;
+        }
       }
     }
     synthesizeMouse(targetNode, x, y, aArgs ? aArgs : {});
@@ -1272,14 +1276,35 @@ function synthClick(aNodeOrID, aCheckerOrEventSeq, aArgs) {
 }
 
 /**
+ * Scrolls the node into view.
+ */
+function scrollIntoView(aNodeOrID, aCheckerOrEventSeq) {
+  this.__proto__ = new synthAction(aNodeOrID, aCheckerOrEventSeq);
+
+  this.invoke = function scrollIntoView_invoke() {
+    var targetNode = this.DOMNode;
+    if (isHTMLElement(targetNode)) {
+      targetNode.scrollIntoView(true);
+    } else if (isXULElement(targetNode)) {
+      var targetAcc = getAccessible(targetNode);
+      targetAcc.scrollTo(SCROLL_TYPE_ANYWHERE);
+    }
+  };
+
+  this.getID = function scrollIntoView_getID() {
+    return prettyName(aNodeOrID) + " scrollIntoView";
+  };
+}
+
+/**
  * Mouse move invoker.
  */
 function synthMouseMove(aID, aCheckerOrEventSeq) {
   this.__proto__ = new synthAction(aID, aCheckerOrEventSeq);
 
   this.invoke = function synthMouseMove_invoke() {
-    synthesizeMouse(this.DOMNode, 1, 1, { type: "mousemove" });
-    synthesizeMouse(this.DOMNode, 2, 2, { type: "mousemove" });
+    synthesizeMouse(this.DOMNode, 5, 5, { type: "mousemove" });
+    synthesizeMouse(this.DOMNode, 6, 6, { type: "mousemove" });
   };
 
   this.getID = function synthMouseMove_getID() {
@@ -1454,7 +1479,7 @@ function synthOpenComboboxKey(aID, aCheckerOrEventSeq) {
   this.__proto__ = new synthDownKey(aID, aCheckerOrEventSeq, { altKey: true });
 
   this.getID = function synthOpenComboboxKey_getID() {
-    return "open combobox (atl + down arrow) " + prettyName(aID);
+    return "open combobox (alt + down arrow) " + prettyName(aID);
   };
 }
 
@@ -1469,7 +1494,8 @@ function synthFocus(aNodeOrID, aCheckerOrEventSeq) {
 
   this.invoke = function synthFocus_invoke() {
     if (this.DOMNode.editor) {
-      this.DOMNode.selectionStart = this.DOMNode.selectionEnd = this.DOMNode.value.length;
+      this.DOMNode.selectionStart = this.DOMNode.selectionEnd =
+        this.DOMNode.value.length;
     }
     this.DOMNode.focus();
   };
@@ -1659,12 +1685,12 @@ function moveToLineEnd(aID, aCaretOffset) {
       aID,
       "VK_RIGHT",
       { metaKey: true },
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   } else {
     this.__proto__ = new synthEndKey(
       aID,
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   }
 
@@ -1679,7 +1705,7 @@ function moveToLineEnd(aID, aCaretOffset) {
 function moveToPrevLineEnd(aID, aCaretOffset) {
   this.__proto__ = new synthAction(
     aID,
-    new caretMoveChecker(aCaretOffset, aID)
+    new caretMoveChecker(aCaretOffset, true, aID)
   );
 
   this.invoke = function moveToPrevLineEnd_invoke() {
@@ -1706,12 +1732,12 @@ function moveToLineStart(aID, aCaretOffset) {
       aID,
       "VK_LEFT",
       { metaKey: true },
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   } else {
     this.__proto__ = new synthHomeKey(
       aID,
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   }
 
@@ -1729,14 +1755,14 @@ function moveToTextStart(aID) {
       aID,
       "VK_UP",
       { metaKey: true },
-      new caretMoveChecker(0, aID)
+      new caretMoveChecker(0, true, aID)
     );
   } else {
     this.__proto__ = new synthKey(
       aID,
       "VK_HOME",
       { ctrlKey: true },
-      new caretMoveChecker(0, aID)
+      new caretMoveChecker(0, true, aID)
     );
   }
 
@@ -1792,7 +1818,7 @@ function moveCaretToDOMPoint(
     }
   };
 
-  this.eventSeq = [new caretMoveChecker(aExpectedOffset, this.target)];
+  this.eventSeq = [new caretMoveChecker(aExpectedOffset, true, this.target)];
 
   if (this.focus) {
     this.eventSeq.push(new asyncInvokerChecker(EVENT_FOCUS, this.focus));
@@ -1815,7 +1841,7 @@ function setCaretOffset(aID, aOffset, aFocusTargetID) {
     return "Set caretOffset on " + prettyName(aID) + " at " + this.offset;
   };
 
-  this.eventSeq = [new caretMoveChecker(this.offset, this.target)];
+  this.eventSeq = [new caretMoveChecker(this.offset, true, this.target)];
 
   if (this.focus) {
     this.eventSeq.push(new asyncInvokerChecker(EVENT_FOCUS, this.focus));
@@ -2013,6 +2039,7 @@ function textChangeChecker(
  */
 function caretMoveChecker(
   aCaretOffset,
+  aIsSelectionCollapsed,
   aTargetOrFunc,
   aTargetFuncArg,
   aIsAsync
@@ -2025,10 +2052,16 @@ function caretMoveChecker(
   );
 
   this.check = function caretMoveChecker_check(aEvent) {
+    let evt = aEvent.QueryInterface(nsIAccessibleCaretMoveEvent);
     is(
-      aEvent.QueryInterface(nsIAccessibleCaretMoveEvent).caretOffset,
+      evt.caretOffset,
       aCaretOffset,
       "Wrong caret offset for " + prettyName(aEvent.accessible)
+    );
+    is(
+      evt.isSelectionCollapsed,
+      aIsSelectionCollapsed,
+      "wrong collapsed value for  " + prettyName(aEvent.accessible)
     );
   };
 }
@@ -2036,6 +2069,7 @@ function caretMoveChecker(
 function asyncCaretMoveChecker(aCaretOffset, aTargetOrFunc, aTargetFuncArg) {
   this.__proto__ = new caretMoveChecker(
     aCaretOffset,
+    true, // Caret is collapsed
     aTargetOrFunc,
     aTargetFuncArg,
     true
@@ -2045,7 +2079,15 @@ function asyncCaretMoveChecker(aCaretOffset, aTargetOrFunc, aTargetFuncArg) {
 /**
  * Text selection change checker.
  */
-function textSelectionChecker(aID, aStartOffset, aEndOffset) {
+function textSelectionChecker(
+  aID,
+  aStartOffset,
+  aEndOffset,
+  aRangeStartContainer,
+  aRangeStartOffset,
+  aRangeEndContainer,
+  aRangeEndOffset
+) {
   this.__proto__ = new invokerChecker(EVENT_TEXT_SELECTION_CHANGED, aID);
 
   this.check = function textSelectionChecker_check(aEvent) {
@@ -2053,6 +2095,24 @@ function textSelectionChecker(aID, aStartOffset, aEndOffset) {
       ok(true, "Collapsed selection triggered text selection change event.");
     } else {
       testTextGetSelection(aID, aStartOffset, aEndOffset, 0);
+
+      // Test selection test range
+      let selectionRanges = aEvent.QueryInterface(
+        nsIAccessibleTextSelectionChangeEvent
+      ).selectionRanges;
+      let range = selectionRanges.queryElementAt(0, nsIAccessibleTextRange);
+      is(
+        range.startContainer,
+        getAccessible(aRangeStartContainer),
+        "correct range start container"
+      );
+      is(range.startOffset, aRangeStartOffset, "correct range start offset");
+      is(range.endOffset, aRangeEndOffset, "correct range end offset");
+      is(
+        range.endContainer,
+        getAccessible(aRangeEndContainer),
+        "correct range end container"
+      );
     }
   };
 }
@@ -2285,7 +2345,7 @@ var gA11yEventApplicantsCount = 0;
 
 var gA11yEventObserver = {
   // eslint-disable-next-line complexity
-  observe: function observe(aSubject, aTopic, aData) {
+  observe: function observe(aSubject, aTopic) {
     if (aTopic != "accessible-event") {
       return;
     }
@@ -2545,7 +2605,7 @@ function sequenceItem(aProcessor, aEventType, aTarget, aItemID) {
   };
 
   this.queue = new eventQueue();
-  this.queue.onFinish = function() {
+  this.queue.onFinish = function () {
     aProcessor.onProcessed();
     return DO_NOT_FINISH_TEST;
   };

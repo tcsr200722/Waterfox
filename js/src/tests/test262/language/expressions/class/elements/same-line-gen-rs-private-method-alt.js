@@ -1,4 +1,3 @@
-// |reftest| skip -- class-methods-private,class-fields-private is not supported
 // This file was procedurally generated from the following sources:
 // - src/class-elements/rs-private-method-alt.case
 // - src/class-elements/productions/cls-expr-same-line-generator.template
@@ -107,7 +106,10 @@ var c = new C();
 
 assert.sameValue(c.m().next().value, 42);
 assert.sameValue(c.m, C.prototype.m);
-assert.sameValue(Object.hasOwnProperty.call(c, "m"), false);
+assert(
+  !Object.prototype.hasOwnProperty.call(c, "m"),
+  "m doesn't appear as an own property on the C instance"
+);
 
 verifyProperty(C.prototype, "m", {
   enumerable: false,

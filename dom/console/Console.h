@@ -7,28 +7,26 @@
 #ifndef mozilla_dom_Console_h
 #define mozilla_dom_Console_h
 
+#include "domstubs.h"
 #include "mozilla/dom/ConsoleBinding.h"
-#include "mozilla/JSObjectHolder.h"
+#include "mozilla/dom/ConsoleInstanceBinding.h"
 #include "mozilla/TimeStamp.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
-#include "nsDOMNavigationTiming.h"
-#include "nsPIDOMWindow.h"
 
 class nsIConsoleAPIStorage;
-class nsIPrincipal;
+class nsIGlobalObject;
+class nsPIDOMWindowInner;
 class nsIStackFrame;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class AnyCallback;
 class ConsoleCallData;
 class ConsoleInstance;
-class ConsoleInstanceDumpCallback;
 class ConsoleRunnable;
 class ConsoleCallDataRunnable;
 class ConsoleProfileRunnable;
@@ -136,6 +134,7 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
   MOZ_CAN_RUN_SCRIPT
   static void Clear(const GlobalObject& aGlobal);
 
+  MOZ_CAN_RUN_SCRIPT
   static already_AddRefed<ConsoleInstance> CreateInstance(
       const GlobalObject& aGlobal, const ConsoleInstanceOptions& aOptions);
 
@@ -357,6 +356,8 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
                       const Sequence<JS::Value>& aData,
                       DOMHighResTimeStamp* aTimeStamp);
 
+  void StringifyElement(Element* aElement, nsAString& aOut);
+
   MOZ_CAN_RUN_SCRIPT
   void MaybeExecuteDumpFunction(JSContext* aCx, const nsAString& aMethodName,
                                 const Sequence<JS::Value>& aData,
@@ -370,8 +371,6 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
 
   MOZ_CAN_RUN_SCRIPT
   void ExecuteDumpFunction(const nsAString& aMessage);
-
-  bool IsEnabled(JSContext* aCx) const;
 
   bool ShouldProceed(MethodName aName) const;
 
@@ -400,8 +399,8 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
   nsCOMPtr<nsIGlobalObject> mGlobal;
 
   // Touched on the owner thread.
-  nsDataHashtable<nsStringHashKey, DOMHighResTimeStamp> mTimerRegistry;
-  nsDataHashtable<nsStringHashKey, uint32_t> mCounterRegistry;
+  nsTHashMap<nsStringHashKey, DOMHighResTimeStamp> mTimerRegistry;
+  nsTHashMap<nsStringHashKey, uint32_t> mCounterRegistry;
 
   nsTArray<RefPtr<ConsoleCallData>> mCallDataStorage;
   // These are references to the arguments we received in each call
@@ -428,7 +427,7 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
   bool mDumpToStdout;
   nsString mPrefix;
   bool mChromeInstance;
-  ConsoleLogLevel mMaxLogLevel;
+  uint32_t mCurrentLogLevel;
 
   enum { eUnknown, eInitialized, eShuttingDown } mStatus;
 
@@ -447,7 +446,6 @@ class Console final : public nsIObserver, public nsSupportsWeakReference {
   friend class MainThreadConsoleData;
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif /* mozilla_dom_Console_h */

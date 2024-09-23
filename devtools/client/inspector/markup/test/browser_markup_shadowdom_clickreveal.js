@@ -24,13 +24,13 @@ const TEST_URL = `data:text/html;charset=utf-8,
   </script>`;
 
 // Test reveal link with mouse navigation
-add_task(async function() {
+add_task(async function () {
   const checkWithMouse = checkRevealLink.bind(null, clickOnRevealLink);
   await testRevealLink(checkWithMouse, checkWithMouse);
 });
 
 // Test reveal link with keyboard navigation (Enter and Spacebar keys)
-add_task(async function() {
+add_task(async function () {
   const checkWithEnter = checkRevealLink.bind(
     null,
     keydownOnRevealLink.bind(null, "KEY_Enter")
@@ -96,6 +96,10 @@ async function checkRevealLink(actionFn, inspector, node) {
   ok(
     !inspector.selection.isSlotted(),
     "The selection is not the slotted version"
+  );
+  // wait until the selected container isn't the one we had before.
+  await waitFor(
+    () => inspector.markup.getSelectedContainer() !== slottedContainer
   );
   ok(
     !inspector.markup.getSelectedContainer().isSlotted(),

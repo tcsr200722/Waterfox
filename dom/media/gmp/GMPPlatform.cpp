@@ -13,10 +13,13 @@
 #include "base/time.h"
 #include "mozilla/ReentrantMonitor.h"
 
+#ifdef XP_WIN
+#  include "mozilla/UntrustedModulesProcessor.h"
+#endif
+
 #include <ctime>
 
-namespace mozilla {
-namespace gmp {
+namespace mozilla::gmp {
 
 static MessageLoop* sMainLoop = nullptr;
 static GMPChild* sChild = nullptr;
@@ -84,7 +87,7 @@ class GMPSyncRunnable final {
  private:
   ~GMPSyncRunnable() = default;
 
-  bool mDone;
+  bool mDone MOZ_GUARDED_BY(mMonitor);
   GMPTask* mTask;
   MessageLoop* mMessageLoop;
   Monitor mMonitor;
@@ -100,8 +103,8 @@ class GMPThreadImpl : public GMPThread {
   void Join() override;
 
  private:
-  Mutex mMutex;
-  base::Thread mThread;
+  Mutex mMutex MOZ_UNANNOTATED;
+  base::Thread mThread MOZ_GUARDED_BY(mMutex);
 };
 
 GMPErr CreateThread(GMPThread** aThread) {
@@ -138,18 +141,18 @@ GMPErr SyncRunOnMainThread(GMPTask* aTask) {
   return GMPNoErr;
 }
 
-class GMPMutexImpl : public GMPMutex {
+class MOZ_CAPABILITY("mutex") GMPMutexImpl : public GMPMutex {
  public:
   GMPMutexImpl();
   virtual ~GMPMutexImpl();
 
   // GMPMutex
-  void Acquire() override;
-  void Release() override;
+  void Acquire() override MOZ_CAPABILITY_ACQUIRE();
+  void Release() override MOZ_CAPABILITY_RELEASE();
   void Destroy() override;
 
  private:
-  ReentrantMonitor mMonitor;
+  ReentrantMonitor mMonitor MOZ_UNANNOTATED;
 };
 
 GMPErr CreateMutex(GMPMutex** aMutex) {
@@ -212,6 +215,23 @@ void InitPlatformAPI(GMPPlatformAPI& aPlatformAPI, GMPChild* aChild) {
   aPlatformAPI.getcurrenttime = &GetClock;
 }
 
+void SendFOGData(ipc::ByteBuf&& buf) {
+  if (sChild) {
+    sChild->SendFOGData(std::move(buf));
+  }
+}
+
+#ifdef XP_WIN
+RefPtr<PGMPChild::GetModulesTrustPromise> SendGetModulesTrust(
+    ModulePaths&& aModules, bool aRunAtNormalPriority) {
+  if (!sChild) {
+    return PGMPChild::GetModulesTrustPromise::CreateAndReject(
+        ipc::ResponseRejectReason::SendError, __func__);
+  }
+  return sChild->SendGetModulesTrust(std::move(aModules), aRunAtNormalPriority);
+}
+#endif
+
 GMPThreadImpl::GMPThreadImpl() : mMutex("GMPThreadImpl"), mThread("GMPThread") {
   MOZ_COUNT_CTOR(GMPThread);
 }
@@ -252,9 +272,11 @@ GMPMutexImpl::~GMPMutexImpl() { MOZ_COUNT_DTOR(GMPMutexImpl); }
 
 void GMPMutexImpl::Destroy() { delete this; }
 
+MOZ_PUSH_IGNORE_THREAD_SAFETY
 void GMPMutexImpl::Acquire() { mMonitor.Enter(); }
 
 void GMPMutexImpl::Release() { mMonitor.Exit(); }
+MOZ_POP_THREAD_SAFETY
 
 GMPTask* NewGMPTask(std::function<void()>&& aFunction) {
   class Task : public GMPTask {
@@ -271,5 +293,4 @@ GMPTask* NewGMPTask(std::function<void()>&& aFunction) {
   return new Task(std::move(aFunction));
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp

@@ -2,12 +2,11 @@
 //!
 //! For more details see
 
-use libc;
 use std::ffi::CStr;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsFd, AsRawFd};
 
-use errno::Errno;
-use Result;
+use crate::errno::Errno;
+use crate::Result;
 
 /// Loads a kernel module from a buffer.
 ///
@@ -42,7 +41,7 @@ use Result;
 /// init_module(&mut contents, &CString::new("who=Rust when=Now,12").unwrap()).unwrap();
 /// ```
 ///
-/// See [`man init_module(2)`](http://man7.org/linux/man-pages/man2/init_module.2.html) for more information.
+/// See [`man init_module(2)`](https://man7.org/linux/man-pages/man2/init_module.2.html) for more information.
 pub fn init_module(module_image: &[u8], param_values: &CStr) -> Result<()> {
     let res = unsafe {
         libc::syscall(
@@ -79,12 +78,16 @@ libc_bitflags!(
 /// finit_module(&f, &CString::new("").unwrap(), ModuleInitFlags::empty()).unwrap();
 /// ```
 ///
-/// See [`man init_module(2)`](http://man7.org/linux/man-pages/man2/init_module.2.html) for more information.
-pub fn finit_module<T: AsRawFd>(fd: &T, param_values: &CStr, flags: ModuleInitFlags) -> Result<()> {
+/// See [`man init_module(2)`](https://man7.org/linux/man-pages/man2/init_module.2.html) for more information.
+pub fn finit_module<Fd: AsFd>(
+    fd: Fd,
+    param_values: &CStr,
+    flags: ModuleInitFlags,
+) -> Result<()> {
     let res = unsafe {
         libc::syscall(
             libc::SYS_finit_module,
-            fd.as_raw_fd(),
+            fd.as_fd().as_raw_fd(),
             param_values.as_ptr(),
             flags.bits(),
         )
@@ -96,10 +99,14 @@ pub fn finit_module<T: AsRawFd>(fd: &T, param_values: &CStr, flags: ModuleInitFl
 libc_bitflags!(
     /// Flags used by `delete_module`.
     ///
-    /// See [`man delete_module(2)`](http://man7.org/linux/man-pages/man2/delete_module.2.html)
+    /// See [`man delete_module(2)`](https://man7.org/linux/man-pages/man2/delete_module.2.html)
     /// for a detailed description how these flags work.
     pub struct DeleteModuleFlags: libc::c_int {
+        /// `delete_module` will return immediately, with an error, if the module has a nonzero
+        /// reference count.
         O_NONBLOCK;
+        /// `delete_module` will unload the module immediately, regardless of whether it has a
+        /// nonzero reference count.
         O_TRUNC;
     }
 );
@@ -115,9 +122,11 @@ libc_bitflags!(
 /// delete_module(&CString::new("mymod").unwrap(), DeleteModuleFlags::O_NONBLOCK).unwrap();
 /// ```
 ///
-/// See [`man delete_module(2)`](http://man7.org/linux/man-pages/man2/delete_module.2.html) for more information.
+/// See [`man delete_module(2)`](https://man7.org/linux/man-pages/man2/delete_module.2.html) for more information.
 pub fn delete_module(name: &CStr, flags: DeleteModuleFlags) -> Result<()> {
-    let res = unsafe { libc::syscall(libc::SYS_delete_module, name.as_ptr(), flags.bits()) };
+    let res = unsafe {
+        libc::syscall(libc::SYS_delete_module, name.as_ptr(), flags.bits())
+    };
 
     Errno::result(res).map(drop)
 }

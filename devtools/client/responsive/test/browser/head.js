@@ -4,16 +4,9 @@
 "use strict";
 
 /* eslint no-unused-vars: [2, {"vars": "local"}] */
-/* import-globals-from ../../../shared/test/shared-head.js */
-/* import-globals-from ../../../shared/test/shared-redux-head.js */
-/* import-globals-from ../../../inspector/test/shared-head.js */
 
 Services.scriptloader.loadSubScript(
   "chrome://mochitests/content/browser/devtools/client/shared/test/shared-head.js",
-  this
-);
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/shared-redux-head.js",
   this
 );
 
@@ -23,31 +16,43 @@ Services.scriptloader.loadSubScript(
   this
 );
 
+// Load APZ test utils so we properly wait after resize
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/gfx/layers/apz/test/mochitest/apz_test_utils.js",
+  this
+);
+Services.scriptloader.loadSubScript(
+  "chrome://mochikit/content/tests/SimpleTest/paint_listener.js",
+  this
+);
+
 const {
   _loadPreferredDevices,
-} = require("devtools/client/responsive/actions/devices");
-const { getStr } = require("devtools/client/responsive/utils/l10n");
+} = require("resource://devtools/client/responsive/actions/devices.js");
+const {
+  getStr,
+} = require("resource://devtools/client/responsive/utils/l10n.js");
 const {
   getTopLevelWindow,
-} = require("devtools/client/responsive/utils/window");
+} = require("resource://devtools/client/responsive/utils/window.js");
 const {
   addDevice,
   removeDevice,
   removeLocalDevices,
-} = require("devtools/client/shared/devices");
-const { KeyCodes } = require("devtools/client/shared/keycodes");
-const asyncStorage = require("devtools/shared/async-storage");
-const localTypes = require("devtools/client/responsive/types");
+} = require("resource://devtools/client/shared/devices.js");
+const { KeyCodes } = require("resource://devtools/client/shared/keycodes.js");
+const asyncStorage = require("resource://devtools/shared/async-storage.js");
+const localTypes = require("resource://devtools/client/responsive/types.js");
 
 loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
-  "devtools/client/responsive/manager"
+  "resource://devtools/client/responsive/manager.js"
 );
 loader.lazyRequireGetter(
   this,
   "message",
-  "devtools/client/responsive/utils/message"
+  "resource://devtools/client/responsive/utils/message.js"
 );
 
 const E10S_MULTI_ENABLED =
@@ -67,10 +72,6 @@ SimpleTest.waitForExplicitFinish();
 // should be enough.
 requestLongerTimeout(2);
 
-Services.prefs.setCharPref(
-  "devtools.devices.url",
-  TEST_URI_ROOT + "devices.json"
-);
 // The appearance of this notification causes intermittent behavior in some tests that
 // send mouse events, since it causes the content to shift when it appears.
 Services.prefs.setBoolPref(
@@ -79,10 +80,8 @@ Services.prefs.setBoolPref(
 );
 // Don't show the setting onboarding tooltip in the test suites.
 Services.prefs.setBoolPref("devtools.responsive.show-setting-tooltip", false);
-Services.prefs.setBoolPref("devtools.responsive.showUserAgentInput", true);
 
 registerCleanupFunction(async () => {
-  Services.prefs.clearUserPref("devtools.devices.url");
   Services.prefs.clearUserPref(
     "devtools.responsive.reloadNotification.enabled"
   );
@@ -100,33 +99,13 @@ registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("devtools.responsive.viewport.height");
   Services.prefs.clearUserPref("devtools.responsive.viewport.pixelRatio");
   Services.prefs.clearUserPref("devtools.responsive.viewport.width");
-  await asyncStorage.removeItem("devtools.devices.url_cache");
   await asyncStorage.removeItem("devtools.responsive.deviceState");
   await removeLocalDevices();
+
+  delete window.waitForAllPaintsFlushed;
+  delete window.waitForAllPaints;
+  delete window.promiseAllPaintsDone;
 });
-
-/**
- * Open responsive design mode for the given tab.
- */
-var openRDM = async function(tab) {
-  info("Opening responsive design mode");
-  const manager = ResponsiveUIManager;
-  const ui = await manager.openIfNeeded(tab.ownerGlobal, tab, {
-    trigger: "test",
-  });
-  info("Responsive design mode opened");
-  return { ui, manager };
-};
-
-/**
- * Close responsive design mode for the given tab.
- */
-var closeRDM = async function(tab, options) {
-  info("Closing responsive design mode");
-  const manager = ResponsiveUIManager;
-  await manager.closeIfNeeded(tab.ownerGlobal, tab, options);
-  info("Responsive design mode closed");
-};
 
 /**
  * Adds a new test task that adds a tab with the given URL, awaits the
@@ -135,8 +114,6 @@ var closeRDM = async function(tab, options) {
  * removes the tab. The final argument is an options object, with these
  * optional properties:
  *
- * usingBrowserUI: the devtools.responsive.browserUI.enabled pref is set
- *   to the truthiness of this value (default false).
  * onlyPrefAndTask: if truthy, only the pref will be set and the task
  *   will be called, with none of the tab creation/teardown or open/close
  *   of RDM (default false).
@@ -147,36 +124,27 @@ var closeRDM = async function(tab, options) {
  *
  *   addRDMTaskWithPreAndPost(
  *     TEST_URL,
- *     async function preTask({ message, browser, usingBrowserUI }) {
+ *     async function preTask({ message, browser }) {
  *       // Your pre-task goes here...
  *     },
- *     async function task({ ui, manager, message, browser, usingBrowserUI,
- *                           preTaskValue }) {
+ *     async function task({ ui, manager, message, browser, preTaskValue, tab }) {
  *       // Your task goes here...
  *     },
- *     async function postTask({ message, browser, usingBrowserUI,
- *                               preTaskValue, taskValue }) {
+ *     async function postTask({ message, browser, preTaskValue, taskValue }) {
  *       // Your post-task goes here...
  *     },
- *     { usingBrowserUI: true, waitForDeviceList: true }
+ *     { waitForDeviceList: true }
  *   );
  */
 function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
-  // Interpret our options.
-  let usingBrowserUI = false;
   let onlyPrefAndTask = false;
   let waitForDeviceList = false;
   if (typeof options == "object") {
-    usingBrowserUI = !!options.usingBrowserUI;
     onlyPrefAndTask = !!options.onlyPrefAndTask;
     waitForDeviceList = !!options.waitForDeviceList;
   }
 
-  add_task(async function() {
-    await SpecialPowers.pushPrefEnv({
-      set: [["devtools.responsive.browserUI.enabled", usingBrowserUI]],
-    });
-
+  add_task(async function () {
     let tab;
     let browser;
     let preTaskValue = null;
@@ -189,27 +157,12 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
       browser = tab.linkedBrowser;
 
       if (preTask) {
-        preTaskValue = await preTask({ message, browser, usingBrowserUI });
+        preTaskValue = await preTask({ message, browser });
       }
 
-      const rdmValues = await openRDM(tab);
+      const rdmValues = await openRDM(tab, { waitForDeviceList });
       ui = rdmValues.ui;
       manager = rdmValues.manager;
-
-      // Always wait for the post-init message.
-      await message.wait(ui.toolWindow, "post-init");
-
-      // Always wait for the viewport to be added.
-      const { store } = ui.toolWindow;
-      await waitUntilState(store, state => state.viewports.length == 1);
-
-      if (waitForDeviceList) {
-        // Wait until the device list has been loaded.
-        await waitUntilState(
-          store,
-          state => state.devices.listState == localTypes.loadableState.LOADED
-        );
-      }
     }
 
     try {
@@ -218,17 +171,11 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
         manager,
         message,
         browser,
-        usingBrowserUI,
         preTaskValue,
+        tab,
       });
     } catch (err) {
-      ok(
-        false,
-        "Got an error with usingBrowserUI " +
-          usingBrowserUI +
-          ": " +
-          DevToolsUtils.safeErrorString(err)
-      );
+      ok(false, "Got an error: " + DevToolsUtils.safeErrorString(err));
     }
 
     if (!onlyPrefAndTask) {
@@ -237,7 +184,6 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
         await postTask({
           message,
           browser,
-          usingBrowserUI,
           preTaskValue,
           taskValue,
         });
@@ -254,18 +200,16 @@ function addRDMTaskWithPreAndPost(url, preTask, task, postTask, options) {
 /**
  * This is a simplified version of addRDMTaskWithPreAndPost. Adds a new test
  * task that adds a tab with the given URL, opens responsive design mode,
- * closes responsive design mode, and removes the tab. If
- * includeBrowserEmbeddedUI is truthy, the sequence will be repeated with the
- * devtools.responsive.browserUI.enabled pref set.
+ * closes responsive design mode, and removes the tab.
  *
  * Example usage:
  *
  *   addRDMTask(
  *     TEST_URL,
- *     async function task({ ui, manager, message, browser, usingBrowserUI }) {
+ *     async function task({ ui, manager, message, browser }) {
  *       // Your task goes here...
  *     },
- *     { usingBrowserUI: true, waitForDeviceList: true }
+ *     { waitForDeviceList: true }
  *   );
  */
 function addRDMTask(rdmURL, rdmTask, options) {
@@ -280,7 +224,7 @@ async function spawnViewportTask(ui, args, task) {
 }
 
 function waitForFrameLoad(ui, targetURL) {
-  return spawnViewportTask(ui, { targetURL }, async function(args) {
+  return spawnViewportTask(ui, { targetURL }, async function (args) {
     if (
       (content.document.readyState == "complete" ||
         content.document.readyState == "interactive") &&
@@ -293,7 +237,7 @@ function waitForFrameLoad(ui, targetURL) {
 }
 
 function waitForViewportResizeTo(ui, width, height) {
-  return new Promise(function(resolve) {
+  return new Promise(function (resolve) {
     const isSizeMatching = data => data.width == width && data.height == height;
 
     // If the viewport has already the expected size, we resolve the promise immediately.
@@ -321,7 +265,7 @@ function waitForViewportResizeTo(ui, width, height) {
       resolve();
     };
 
-    const onBrowserLoadEnd = async function() {
+    const onBrowserLoadEnd = async function () {
       const data = ui.getViewportSize(ui);
       onContentResize(data);
     };
@@ -337,7 +281,7 @@ function waitForViewportResizeTo(ui, width, height) {
   });
 }
 
-var setViewportSize = async function(ui, manager, width, height) {
+var setViewportSize = async function (ui, manager, width, height) {
   const size = ui.getViewportSize();
   info(
     `Current size: ${size.width} x ${size.height}, ` +
@@ -352,14 +296,22 @@ var setViewportSize = async function(ui, manager, width, height) {
 
 // This performs the same function as setViewportSize, but additionally
 // ensures that reflow of the viewport has completed.
-var setViewportSizeAndAwaitReflow = async function(ui, manager, width, height) {
+var setViewportSizeAndAwaitReflow = async function (
+  ui,
+  manager,
+  width,
+  height
+) {
   await setViewportSize(ui, manager, width, height);
   await promiseContentReflow(ui);
+  await promiseApzFlushedRepaints();
 };
 
 function getViewportDevicePixelRatio(ui) {
-  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function() {
-    return content.devicePixelRatio;
+  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function () {
+    // Note that devicePixelRatio doesn't return the override to privileged
+    // code, see bug 1759962.
+    return content.browsingContext.overrideDPPX || content.devicePixelRatio;
   });
 }
 
@@ -381,22 +333,12 @@ function dragElementBy(selector, x, y, ui) {
   };
   const endPoint = [startPoint.clientX + x, startPoint.clientY + y];
 
-  const elem = browserWindow.document.querySelector(selector);
-
-  if (!Services.prefs.getBoolPref("devtools.responsive.browserUI.enabled")) {
-    const { Simulate } = ui.toolWindow.require(
-      "devtools/client/shared/vendor/react-dom-test-utils"
-    );
-    // mousedown is a React listener, need to use its testing tools to avoid races
-    Simulate.mouseDown(elem, startPoint);
-  } else {
-    EventUtils.synthesizeMouseAtPoint(
-      startPoint.clientX,
-      startPoint.clientY,
-      { type: "mousedown" },
-      browserWindow
-    );
-  }
+  EventUtils.synthesizeMouseAtPoint(
+    startPoint.clientX,
+    startPoint.clientY,
+    { type: "mousedown" },
+    browserWindow
+  );
 
   // mousemove and mouseup are regular DOM listeners
   EventUtils.synthesizeMouseAtPoint(
@@ -413,21 +355,41 @@ function dragElementBy(selector, x, y, ui) {
   return rect;
 }
 
+/**
+ * Resize the viewport and check that the resize happened as expected.
+ *
+ * @param {ResponsiveUI} ui
+ *        The ResponsiveUI instance.
+ * @param {String} selector
+ *        The css selector of the resize handler, eg .viewport-horizontal-resize-handle.
+ * @param {Array<number>} moveBy
+ *        Array of 2 integers representing the x,y distance of the resize action.
+ * @param {Array<number>} moveBy
+ *        Array of 2 integers representing the actual resize performed.
+ * @param {Object} options
+ * @param {Boolean} options.hasDevice
+ *        Whether a device is currently set and will be overridden by the resize
+ */
 async function testViewportResize(
   ui,
   selector,
   moveBy,
-  expectedViewportSize,
-  expectedHandleMove
+  expectedHandleMove,
+  { hasDevice } = {}
 ) {
-  let resized;
-
-  if (!Services.prefs.getBoolPref("devtools.responsive.browserUI.enabled")) {
-    resized = waitForViewportResizeTo(ui, ...expectedViewportSize);
-  } else {
-    resized = ui.once("viewport-resize-dragend");
+  let deviceRemoved;
+  let waitForDevToolsReload;
+  if (hasDevice) {
+    // If a device was defined, a reload will be triggered by the resize,
+    // wait for devtools to reload completely.
+    waitForDevToolsReload = await watchForDevToolsReload(
+      ui.getViewportBrowser()
+    );
+    // and wait for the device-associaton-removed event.
+    deviceRemoved = once(ui, "device-association-removed");
   }
 
+  const resized = ui.once("viewport-resize-dragend");
   const startRect = dragElementBy(selector, ...moveBy, ui);
   await resized;
 
@@ -442,6 +404,13 @@ async function testViewportResize(
     expectedHandleMove[1],
     `The y move of ${selector} is as expected`
   );
+
+  if (hasDevice) {
+    const { reloadTriggered } = await deviceRemoved;
+    if (reloadTriggered) {
+      await waitForDevToolsReload();
+    }
+  }
 }
 
 async function openDeviceModal(ui) {
@@ -539,11 +508,17 @@ async function testMenuItems(toolWindow, button, testFn) {
   });
 }
 
-const selectDevice = (ui, value) =>
-  Promise.all([
-    once(ui, "device-changed"),
-    selectMenuItem(ui, "#device-selector", value),
-  ]);
+const selectDevice = async (ui, value) => {
+  const browser = ui.getViewportBrowser();
+  const waitForDevToolsReload = await watchForDevToolsReload(browser);
+
+  const onDeviceChanged = once(ui, "device-changed");
+  await selectMenuItem(ui, "#device-selector", value);
+  const { reloadTriggered } = await onDeviceChanged;
+  if (reloadTriggered) {
+    await waitForDevToolsReload();
+  }
+};
 
 const selectDevicePixelRatio = (ui, value) =>
   selectMenuItem(ui, "#device-pixel-ratio-menu", `DPR: ${value}`);
@@ -555,13 +530,33 @@ const selectNetworkThrottling = (ui, value) =>
   ]);
 
 function getSessionHistory(browser) {
-  return ContentTask.spawn(browser, null, function() {
-    /* eslint-disable no-undef */
-    const { SessionHistory } = ChromeUtils.import(
-      "resource://gre/modules/sessionstore/SessionHistory.jsm"
+  if (Services.appinfo.sessionHistoryInParent) {
+    const browsingContext = browser.browsingContext;
+    const uri = browsingContext.currentWindowGlobal.documentURI.displaySpec;
+    const history = browsingContext.sessionHistory;
+    const body = ContentTask.spawn(
+      browser,
+      browsingContext,
+      function (
+        // eslint-disable-next-line no-shadow
+        browsingContext
+      ) {
+        const docShell = browsingContext.docShell.QueryInterface(
+          Ci.nsIWebNavigation
+        );
+        return docShell.document.body;
+      }
+    );
+    const { SessionHistory } = ChromeUtils.importESModule(
+      "resource://gre/modules/sessionstore/SessionHistory.sys.mjs"
+    );
+    return SessionHistory.collectFromParent(uri, body, history);
+  }
+  return ContentTask.spawn(browser, null, function () {
+    const { SessionHistory } = ChromeUtils.importESModule(
+      "resource://gre/modules/sessionstore/SessionHistory.sys.mjs"
     );
     return SessionHistory.collect(docShell);
-    /* eslint-enable no-undef */
   });
 }
 
@@ -594,14 +589,6 @@ async function waitForPageShow(browser) {
   return waitForTick();
 }
 
-function waitForViewportLoad(ui) {
-  return BrowserTestUtils.waitForContentEvent(
-    ui.getViewportBrowser(),
-    "load",
-    true
-  );
-}
-
 function waitForViewportScroll(ui) {
   return BrowserTestUtils.waitForContentEvent(
     ui.getViewportBrowser(),
@@ -610,22 +597,24 @@ function waitForViewportScroll(ui) {
   );
 }
 
-async function load(browser, url) {
-  const loaded = BrowserTestUtils.browserLoaded(browser, false, null, false);
-  await BrowserTestUtils.loadURI(browser, url);
-  await loaded;
-}
+async function back(browser) {
+  const waitForDevToolsReload = await watchForDevToolsReload(browser);
+  const onPageShow = waitForPageShow(browser);
 
-function back(browser) {
-  const shown = waitForPageShow(browser);
   browser.goBack();
-  return shown;
+
+  await onPageShow;
+  await waitForDevToolsReload();
 }
 
-function forward(browser) {
-  const shown = waitForPageShow(browser);
+async function forward(browser) {
+  const waitForDevToolsReload = await watchForDevToolsReload(browser);
+  const onPageShow = waitForPageShow(browser);
+
   browser.goForward();
-  return shown;
+
+  await onPageShow;
+  await waitForDevToolsReload();
 }
 
 function addDeviceForTest(device) {
@@ -643,7 +632,7 @@ function addDeviceForTest(device) {
 
 async function waitForClientClose(ui) {
   info("Waiting for RDM devtools client to close");
-  await ui.client.once("closed");
+  await ui.commands.client.once("closed");
   info("RDM's devtools client is now closed");
 }
 
@@ -656,9 +645,10 @@ async function testTouchEventsOverride(ui, expected) {
   const { document } = ui.toolWindow;
   const touchButton = document.getElementById("touch-simulation-button");
 
-  const flag = await ui.responsiveFront.getTouchEventsOverride();
+  const flag = gBrowser.selectedBrowser.browsingContext.touchEventsOverride;
+
   is(
-    flag === Ci.nsIDocShell.TOUCHEVENTS_OVERRIDE_ENABLED,
+    flag === "enabled",
     expected,
     `Touch events override should be ${expected ? "enabled" : "disabled"}`
   );
@@ -681,11 +671,22 @@ function testViewportDeviceMenuLabel(ui, expectedDeviceName) {
 
 async function toggleTouchSimulation(ui) {
   const { document } = ui.toolWindow;
+  const browser = ui.getViewportBrowser();
+
   const touchButton = document.getElementById("touch-simulation-button");
-  const changed = once(ui, "touch-simulation-changed");
-  const loaded = waitForViewportLoad(ui);
+  const wasChecked = touchButton.classList.contains("checked");
+  const onTouchSimulationChanged = once(ui, "touch-simulation-changed");
+  const waitForDevToolsReload = await watchForDevToolsReload(browser);
+  const onTouchButtonStateChanged = waitFor(
+    () => touchButton.classList.contains("checked") !== wasChecked
+  );
+
   touchButton.click();
-  await Promise.all([changed, loaded]);
+  await Promise.all([
+    onTouchSimulationChanged,
+    onTouchButtonStateChanged,
+    waitForDevToolsReload(),
+  ]);
 }
 
 async function testUserAgent(ui, expected) {
@@ -702,7 +703,7 @@ async function testUserAgent(ui, expected) {
 }
 
 async function testUserAgentFromBrowser(browser, expected) {
-  const ua = await SpecialPowers.spawn(browser, [], async function() {
+  const ua = await SpecialPowers.spawn(browser, [], async function () {
     return content.navigator.userAgent;
   });
   is(ua, expected, `UA should be set to ${expected}`);
@@ -725,9 +726,10 @@ function testViewportDimensions(ui, w, h) {
 
 async function changeUserAgentInput(ui, value) {
   const { Simulate } = ui.toolWindow.require(
-    "devtools/client/shared/vendor/react-dom-test-utils"
+    "resource://devtools/client/shared/vendor/react-dom-test-utils.js"
   );
   const { document, store } = ui.toolWindow;
+  const browser = ui.getViewportBrowser();
 
   const userAgentInput = document.getElementById("user-agent-input");
   userAgentInput.value = value;
@@ -738,9 +740,10 @@ async function changeUserAgentInput(ui, value) {
     state => state.ui.userAgent === value
   );
   const changed = once(ui, "user-agent-changed");
-  const loaded = waitForViewportLoad(ui);
+
+  const waitForDevToolsReload = await watchForDevToolsReload(browser);
   Simulate.keyUp(userAgentInput, { keyCode: KeyCodes.DOM_VK_RETURN });
-  await Promise.all([changed, loaded, userAgentChanged]);
+  await Promise.all([changed, waitForDevToolsReload(), userAgentChanged]);
 }
 
 /**
@@ -749,7 +752,7 @@ async function changeUserAgentInput(ui, value) {
  */
 function addDeviceInModal(ui, device) {
   const { Simulate } = ui.toolWindow.require(
-    "devtools/client/shared/vendor/react-dom-test-utils"
+    "resource://devtools/client/shared/vendor/react-dom-test-utils.js"
   );
   const { document, store } = ui.toolWindow;
 
@@ -792,7 +795,7 @@ function addDeviceInModal(ui, device) {
 
 async function editDeviceInModal(ui, device, newDevice) {
   const { Simulate } = ui.toolWindow.require(
-    "devtools/client/shared/vendor/react-dom-test-utils"
+    "resource://devtools/client/shared/vendor/react-dom-test-utils.js"
   );
   const { document, store } = ui.toolWindow;
 
@@ -867,30 +870,25 @@ function rotateViewport(ui) {
 
 // Call this to switch between on/off support for meta viewports.
 async function setTouchAndMetaViewportSupport(ui, value) {
-  const reloadNeeded = await ui.updateTouchSimulation(value);
-  if (reloadNeeded) {
-    info("Reload is needed -- waiting for it.");
-    const reload = waitForViewportLoad(ui);
-    const browser = ui.getViewportBrowser();
-    browser.reload();
-    await reload;
-    await promiseContentReflow(ui);
-  }
-  return reloadNeeded;
+  await ui.updateTouchSimulation(value);
+  info("Reload so the new configuration applies cleanly to the page");
+  await reloadBrowser();
+
+  await promiseContentReflow(ui);
 }
 
 // This function checks that zoom, layout viewport width and height
 // are all as expected.
 async function testViewportZoomWidthAndHeight(msg, ui, zoom, width, height) {
   if (typeof zoom !== "undefined") {
-    const resolution = await spawnViewportTask(ui, {}, function() {
+    const resolution = await spawnViewportTask(ui, {}, function () {
       return content.windowUtils.getResolution();
     });
     is(resolution, zoom, msg + " should have expected zoom.");
   }
 
   if (typeof width !== "undefined" || typeof height !== "undefined") {
-    const innerSize = await spawnViewportTask(ui, {}, function() {
+    const innerSize = await spawnViewportTask(ui, {}, function () {
       return {
         width: content.innerWidth,
         height: content.innerHeight,
@@ -906,7 +904,7 @@ async function testViewportZoomWidthAndHeight(msg, ui, zoom, width, height) {
 }
 
 function promiseContentReflow(ui) {
-  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function() {
+  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function () {
     return new Promise(resolve => {
       content.window.requestAnimationFrame(() => {
         content.window.requestAnimationFrame(resolve);
@@ -932,7 +930,7 @@ async function promiseRDMZoom(ui, browser, zoom) {
   //
   // This also has the side effect of updating layout which ensures that any
   // remote frame dimension update message gets there in time.
-  await BrowserTestUtils.waitForCondition(function() {
+  await BrowserTestUtils.waitForCondition(function () {
     return browser.getBoundingClientRect().width != width;
   });
 }
@@ -950,19 +948,61 @@ async function waitForDeviceAndViewportState(ui) {
 }
 
 /**
- * Navigate the selected tab to a new URL and wait for the RDM UI to switch to a new
- * target. Until Bug 1627847 is fixed, this helper should only be called when we are
- * guaranteed the navigation will trigger a process change with or without fission.
+ * Wait for the content page to be rendered with the expected pixel ratio.
  *
- * @param  {String} uri
- *         The URL to navigate to.
- * @param  {ResponsiveUI} ui
- *         The selected tab's ResponsiveUI.
+ * @param {ResponsiveUI} ui
+ *        The ResponsiveUI instance.
+ * @param {Integer} expected
+ *        The expected dpr for the content page.
+ * @param {Object} options
+ * @param {Boolean} options.waitForTargetConfiguration
+ *        If set to true, the function will wait for the targetConfigurationCommand configuration
+ *        to reflect the ratio that was set. This can be used to prevent pending requests
+ *        to the actor.
  */
-async function navigateToNewDomain(uri, ui) {
-  // Store the current target tab before navigating.
-  const target = ui.currentTarget;
+async function waitForDevicePixelRatio(
+  ui,
+  expected,
+  { waitForTargetConfiguration } = {}
+) {
+  const dpx = await SpecialPowers.spawn(
+    ui.getViewportBrowser(),
+    [{ expected }],
+    function (args) {
+      const getDpr = function () {
+        return content.browsingContext.overrideDPPX || content.devicePixelRatio;
+      };
+      const initial = getDpr();
+      info(
+        `Listening for pixel ratio change ` +
+          `(current: ${initial}, expected: ${args.expected})`
+      );
+      return new Promise(resolve => {
+        const mql = content.matchMedia(`(resolution: ${args.expected}dppx)`);
+        if (mql.matches) {
+          info(`Ratio already changed to ${args.expected}dppx`);
+          resolve(getDpr());
+          return;
+        }
+        mql.addListener(function listener() {
+          info(`Ratio changed to ${args.expected}dppx`);
+          mql.removeListener(listener);
+          resolve(getDpr());
+        });
+      });
+    }
+  );
 
-  await load(ui.getViewportBrowser(), uri);
-  await waitUntil(() => ui.currentTarget !== target);
+  if (waitForTargetConfiguration) {
+    // Ensure the configuration was updated so we limit the risk of the client closing before
+    // the server sent back the result of the updateConfiguration call.
+    await waitFor(() => {
+      return (
+        ui.commands.targetConfigurationCommand.configuration.overrideDPPX ===
+        expected
+      );
+    });
+  }
+
+  return dpx;
 }

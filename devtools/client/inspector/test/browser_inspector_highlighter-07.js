@@ -2,9 +2,8 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
-/* import-globals-from ../../debugger/test/mochitest/helpers/context.js */
 Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/helpers/context.js",
+  "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/shared-head.js",
   this
 );
 
@@ -59,41 +58,33 @@ const DOCUMENT_SRC =
 
 const TEST_URI = "data:text/html;charset=utf-8," + DOCUMENT_SRC;
 
-add_task(async function() {
-  const { inspector, toolbox, testActor } = await openInspectorForURL(TEST_URI);
+add_task(async function () {
+  const { inspector, toolbox, highlighterTestFront, tab } =
+    await openInspectorForURL(TEST_URI);
 
-  const target = await TargetFactory.forTab(gBrowser.selectedTab);
-  await gDevTools.showToolbox(target, "jsdebugger");
+  await gDevTools.showToolboxForTab(tab, { toolId: "jsdebugger" });
   const dbg = await createDebuggerContext(toolbox);
 
   await waitForPaused(dbg);
 
-  await gDevTools.showToolbox(target, "inspector");
+  await gDevTools.showToolboxForTab(tab, { toolId: "inspector" });
 
   // Needed to get this test to pass consistently :(
   await waitForTime(1000);
 
   info("Waiting for box mode to show.");
   const body = await getNodeFront("body", inspector);
-  await inspector.highlighter.showBoxModel(body);
+  await inspector.highlighters.showHighlighterTypeForNode(
+    inspector.highlighters.TYPES.BOXMODEL,
+    body
+  );
 
   info("Waiting for element picker to become active.");
   await startPicker(toolbox);
 
   info("Moving mouse over iframe padding.");
-  await moveMouseOver("iframe", 1, 1);
+  await hoverElement(inspector, "iframe", 1, 1);
 
   info("Performing checks");
-  await testActor.isNodeCorrectlyHighlighted("iframe", is);
-
-  function moveMouseOver(selector, x, y) {
-    info("Waiting for element " + selector + " to be highlighted");
-    testActor.synthesizeMouse({
-      selector,
-      x,
-      y,
-      options: { type: "mousemove" },
-    });
-    return toolbox.nodePicker.once("picker-node-hovered");
-  }
+  await isNodeCorrectlyHighlighted(highlighterTestFront, "iframe");
 });

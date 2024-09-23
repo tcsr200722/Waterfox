@@ -44,24 +44,45 @@ function addInputField(form, className) {
   form.appendChild(newElem);
 }
 
+async function checkFieldsAutofilled(formId, profile) {
+  const elements = document.querySelectorAll(`#${formId} input`);
+  for (const element of elements) {
+    await SimpleTest.promiseWaitForCondition(() => {
+      return element.value == profile[element.name];
+    });
+    await checkFieldHighlighted(element, true);
+  }
+}
+
 async function checkFormChangeHappened(formId) {
   info("expecting form changed");
   await focusAndWaitForFieldsIdentified(`#${formId} input[name=tel]`);
   synthesizeKey("KEY_ArrowDown");
   await expectPopup();
-  checkMenuEntries(MOCK_STORAGE.map(address =>
-    JSON.stringify({primary: address.tel, secondary: address.name})
-  ));
+  synthesizeKey("KEY_ArrowDown");
+  checkMenuEntriesComment(MOCK_STORAGE.map(address =>
+    makeAddressComment({
+      primary: address.tel,
+      secondary: address.name,
+      status: "Also autofills name, organization"
+    })
+  ), 2);
 
+  // Click the first entry of the autocomplete popup and make sure all fields are autofilled
+  synthesizeKey("KEY_Enter");
+  await checkFieldsAutofilled(formId, MOCK_STORAGE[0]);
   // This is for checking the changes of element count.
   addInputField(document.querySelector(`#${formId}`), "address-level2");
 
   await focusAndWaitForFieldsIdentified(`#${formId} input[name=name]`);
   synthesizeKey("KEY_ArrowDown");
   await expectPopup();
-  checkMenuEntries(MOCK_STORAGE.map(address =>
-    JSON.stringify({primary: address.name, secondary: address["address-level2"]})
-  ));
+
+  // Click on an autofilled field would show an autocomplete popup with "clear form" entry
+  checkMenuEntries([
+    "Clear Autofill Form", // Clear Autofill Form
+    "Manage addresses"  // FormAutofill Preferemce
+  ], 0);
 
   // This is for checking the changes of element removed and added then.
   document.querySelector(`#${formId} input[name=address-level2]`).remove();
@@ -70,9 +91,18 @@ async function checkFormChangeHappened(formId) {
   await focusAndWaitForFieldsIdentified(`#${formId} input[name=address-level2]`, true);
   synthesizeKey("KEY_ArrowDown");
   await expectPopup();
-  checkMenuEntries(MOCK_STORAGE.map(address =>
-    JSON.stringify({primary: address["address-level2"], secondary: address.name})
-  ));
+  checkMenuEntriesComment(MOCK_STORAGE.map(address =>
+    makeAddressComment({
+      primary: address["address-level2"],
+      secondary: address.name,
+      status: "Also autofills name, organization, phone"
+    })
+  ), 2);
+
+  // Make sure everything is autofilled in the end
+  synthesizeKey("KEY_ArrowDown");
+  synthesizeKey("KEY_Enter");
+  await checkFieldsAutofilled(formId, MOCK_STORAGE[0]);
 }
 
 add_task(async function init_storage() {

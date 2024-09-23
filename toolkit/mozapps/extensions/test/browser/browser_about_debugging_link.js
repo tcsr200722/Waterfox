@@ -3,12 +3,12 @@
 
 "use strict";
 
-const { PromiseTestUtils } = ChromeUtils.import(
-  "resource://testing-common/PromiseTestUtils.jsm"
+const { PromiseTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromiseTestUtils.sys.mjs"
 );
-// Whitelist rejections related to closing an about:debugging too soon after it has been
+// Allow rejections related to closing an about:debugging too soon after it has been
 // just opened in a new tab and loaded.
-PromiseTestUtils.whitelistRejectionsGlobally(/Connection closed/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/Connection closed/);
 
 function waitForDispatch(store, type) {
   return new Promise(resolve => {

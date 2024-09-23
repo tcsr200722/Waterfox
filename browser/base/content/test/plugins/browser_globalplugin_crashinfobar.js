@@ -1,27 +1,30 @@
 "use strict";
 
-let { PluginManager } = ChromeUtils.import(
-  "resource:///actors/PluginParent.jsm"
+let { PluginManager } = ChromeUtils.importESModule(
+  "resource:///actors/PluginParent.sys.mjs"
 );
 
 /**
  * Test that the notification bar for crashed GMPs works.
  */
-add_task(async function() {
+add_task(async function () {
   await BrowserTestUtils.withNewTab(
     {
       gBrowser,
       url: "about:blank",
     },
-    async function(browser) {
+    async function (browser) {
       // Ensure the parent has heard before the client.
       // In practice, this is always true for GMP crashes (but not for NPAPI ones!)
-      PluginManager.gmpCrashes.set(1, {
-        pluginID: 1,
-        pluginName: "GlobalTestPlugin",
-      });
+      let props = Cc["@mozilla.org/hash-property-bag;1"].createInstance(
+        Ci.nsIWritablePropertyBag2
+      );
+      props.setPropertyAsUint32("pluginID", 1);
+      props.setPropertyAsACString("pluginName", "GlobalTestPlugin");
+      props.setPropertyAsACString("pluginDumpID", "1234");
+      Services.obs.notifyObservers(props, "gmp-plugin-crash");
 
-      await SpecialPowers.spawn(browser, [], async function() {
+      await SpecialPowers.spawn(browser, [], async function () {
         const GMP_CRASH_EVENT = {
           pluginID: 1,
           pluginName: "GlobalTestPlugin",
@@ -51,7 +54,7 @@ add_task(async function() {
         "Correct priority."
       );
       is(
-        notification.messageText.textContent,
+        notification.messageText.textContent.trim(),
         "The GlobalTestPlugin plugin has crashed.",
         "Correct message."
       );

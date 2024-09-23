@@ -4,8 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-var current_test = 0;
-
 function AutoCompleteInput(aSearches) {
   this.searches = aSearches;
 }
@@ -35,7 +33,7 @@ AutoCompleteInput.prototype = {
   popupOpen: false,
 
   popup: {
-    setSelectedIndex(aIndex) {},
+    setSelectedIndex() {},
     invalidate() {},
 
     // nsISupports implementation
@@ -80,7 +78,18 @@ async function ensure_tag_results(results, searchTerm) {
 
       Assert.equal(controller.matchCount, results.length);
       for (var i = 0; i < controller.matchCount; i++) {
-        Assert.equal(controller.getValueAt(i), results[i]);
+        // TODO (Bug 1910073): not using getValueAt because it returns the label.
+        Assert.equal(
+          controller.getFinalCompleteValueAt(i),
+          results[i],
+          "Value should be the list of all the set tags plus the suggested one"
+        );
+        Assert.strictEqual(controller.getCommentAt(i), null);
+        Assert.equal(
+          controller.getLabelAt(i),
+          results[i].split(/[,;]/).pop().trim(),
+          "Label should just be the suggested tag"
+        );
       }
 
       resolve();

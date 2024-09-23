@@ -11,15 +11,12 @@ const FORMATTED_HTML = `<body>
     div {
       color: red;
     }
+
     span {
       text-decoration: underline;
     }
   </style>
-  <div>
-    <span>
-      <em>Hello</em>
-    </span>
-  </div>
+  <div><span><em>Hello</em></span></div>
   <script>
     console.log("Hello!");
   </script>
@@ -28,7 +25,7 @@ const FORMATTED_HTML = `<body>
 // The inner HTML of the body node from the code above.
 const FORMATTED_INNER_HTML = FORMATTED_HTML.replace(/<\/*body>/g, "")
   .trim()
-  .replace(/^  /gm, "");
+  .replace(/^ {2}/gm, "");
 
 // The formatted outer HTML, using tabs rather than spaces.
 const TABS_FORMATTED_HTML = FORMATTED_HTML.replace(/[ ]{2}/g, "\t");
@@ -42,7 +39,7 @@ const UGLY_HTML = FORMATTED_HTML.replace(/[\r\n\s]+/g, "");
 // And here is the inner html of the body node from the ugly code above.
 const UGLY_INNER_HTML = UGLY_HTML.replace(/<\/*body>/g, "");
 
-add_task(async function() {
+add_task(async function () {
   // Load the ugly code in a new tab and open the inspector.
   const { inspector } = await openInspectorForURL(
     "data:text/html;charset=utf-8," + encodeURIComponent(UGLY_HTML)

@@ -9,29 +9,22 @@
 
 const TEST_URL = "data:text/html;charset=utf-8,custom highlighters";
 
-add_task(async function() {
+add_task(async function () {
   const { inspector } = await openInspectorForURL(TEST_URL);
 
-  await onlyOneInstanceOfMainHighlighter(inspector);
   await manyInstancesOfCustomHighlighters(inspector);
   await showHideMethodsAreAvailable(inspector);
   await unknownHighlighterTypeShouldntBeAccepted(inspector);
 });
 
-async function onlyOneInstanceOfMainHighlighter({ inspectorFront }) {
-  info("Check that the inspector always sends back the same main highlighter");
-
-  const h1 = await inspectorFront.getHighlighter(false);
-  const h2 = await inspectorFront.getHighlighter(false);
-  is(h1, h2, "The same highlighter front was returned");
-
-  is(h1.typeName, "highlighter", "The right front type was returned");
-}
-
 async function manyInstancesOfCustomHighlighters({ inspectorFront }) {
   const h1 = await inspectorFront.getHighlighterByType("BoxModelHighlighter");
   const h2 = await inspectorFront.getHighlighterByType("BoxModelHighlighter");
-  ok(h1 !== h2, "getHighlighterByType returns new instances every time (1)");
+  Assert.notStrictEqual(
+    h1,
+    h2,
+    "getHighlighterByType returns new instances every time (1)"
+  );
 
   const h3 = await inspectorFront.getHighlighterByType(
     "CssTransformHighlighter"
@@ -39,7 +32,11 @@ async function manyInstancesOfCustomHighlighters({ inspectorFront }) {
   const h4 = await inspectorFront.getHighlighterByType(
     "CssTransformHighlighter"
   );
-  ok(h3 !== h4, "getHighlighterByType returns new instances every time (2)");
+  Assert.notStrictEqual(
+    h3,
+    h4,
+    "getHighlighterByType returns new instances every time (2)"
+  );
   ok(
     h3 !== h1 && h3 !== h2,
     "getHighlighterByType returns new instances every time (3)"

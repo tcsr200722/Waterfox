@@ -4,8 +4,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from logger.logger import RaptorLogger
 from perftest import PerftestDesktop
 
@@ -23,9 +21,27 @@ class BrowsertimeDesktop(PerftestDesktop, Browsertime):
         binary_path = self.config["binary"]
         LOG.info("binary_path: {}".format(binary_path))
 
-        if self.config["app"] == "chrome":
-            return ["--browser", self.config["app"], "--chrome.binaryPath", binary_path]
-        return ["--browser", self.config["app"], "--firefox.binaryPath", binary_path]
+        args_list = ["--viewPort", "1280x1024"]
+        if self.config["app"] in (
+            "chrome",
+            "custom-car",
+        ):
+            return args_list + [
+                "--browser",
+                "chrome",
+                "--chrome.binaryPath",
+                binary_path,
+            ]
+
+        if self.config["app"] in ("safari-tp",):
+            return args_list + ["--browser", "safari", "--safari.useTechnologyPreview"]
+
+        return args_list + [
+            "--browser",
+            self.config["app"],
+            "--firefox.binaryPath",
+            binary_path,
+        ]
 
     def setup_chrome_args(self, test):
         # Setup required chrome arguments
@@ -33,7 +49,12 @@ class BrowsertimeDesktop(PerftestDesktop, Browsertime):
 
         # Add this argument here, it's added by mozrunner
         # for raptor
-        chrome_args.append("--no-first-run")
+        chrome_args.extend(
+            ["--no-first-run", "--no-experiments", "--disable-site-isolation-trials"]
+        )
+
+        # Disable finch experiments
+        chrome_args += ["--enable-benchmarking"]
 
         btime_chrome_args = []
         for arg in chrome_args:

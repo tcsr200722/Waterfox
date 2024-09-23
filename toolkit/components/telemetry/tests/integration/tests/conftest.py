@@ -2,15 +2,15 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import contextlib
-import mozinstall
 import os
-import pytest
 import re
 import sys
 import textwrap
 import time
 
-from marionette_driver import By, keys
+import mozinstall
+import pytest
+from marionette_driver import keys
 from marionette_driver.addons import Addons
 from marionette_driver.errors import MarionetteException
 from marionette_driver.marionette import Marionette
@@ -60,13 +60,14 @@ def fixture_marionette(binary, ping_server):
     """Start a marionette session with specific browser prefs"""
     server_url = "{url}pings".format(url=ping_server.get_url("/"))
     prefs = {
-        # Fake the geoip lookup to always return Germany to:
+        # Clear the region detection url to
         #   * avoid net access in tests
-        #   * stabilize browser.search.region to avoid an extra subsession (bug 1545207)
-        "browser.search.geoip.url": 'data:application/json,{"country_code": "DE"}',
+        #   * stabilize browser.search.region to avoid an extra subsession (bug 1579840#c40)
+        "browser.region.network.url": "",
         # Disable smart sizing because it changes prefs at startup. (bug 1547750)
         "browser.cache.disk.smart_size.enabled": False,
         "toolkit.telemetry.server": server_url,
+        "telemetry.fog.test.localhost_port": -1,
         "toolkit.telemetry.initDelay": 1,
         "toolkit.telemetry.minSubsessionLength": 0,
         "datareporting.healthreport.uploadEnabled": True,
@@ -109,7 +110,6 @@ class Browser(object):
         """
 
         script = """\
-        let {Services} = ChromeUtils.import("resource://gre/modules/Services.jsm");
         Services.telemetry.setEventRecordingEnabled("navigation", true);
         """
 
@@ -126,8 +126,12 @@ class Browser(object):
         """Return the ID of the current client."""
         with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
             return self.marionette.execute_script(
-                'Cu.import("resource://gre/modules/ClientID.jsm");'
-                "return ClientID.getCachedClientID();"
+                """\
+                const { ClientID } = ChromeUtils.importESModule(
+                  "resource://gre/modules/ClientID.sys.mjs"
+                );
+                return ClientID.getCachedClientID();
+            """
             )
 
     def get_default_search_engine(self):
@@ -161,7 +165,9 @@ class Browser(object):
             # triggers an "environment-change" ping.
             script = """\
                     let [resolve] = arguments;
-            Cu.import("resource://gre/modules/TelemetryEnvironment.jsm");
+            const { TelemetryEnvironment } = ChromeUtils.importESModule(
+              "resource://gre/modules/TelemetryEnvironment.sys.mjs"
+            );
             TelemetryEnvironment.onInitialized().then(resolve);
             """
 
@@ -171,7 +177,7 @@ class Browser(object):
             addons = Addons(self.marionette)
             addon_id = addons.install(addon_path, temp=True)
         except MarionetteException as e:
-            pytest.fail("{} - Error installing addon: {} - ".format(e.cause, e.message))
+            pytest.fail("{} - Error installing addon: {} - ".format(e.cause, e))
         else:
             self.addon_ids.append(addon_id)
 
@@ -216,7 +222,7 @@ class Browser(object):
 
             return new_tab
 
-    def quit(self, in_app=False):
+    def quit(self, in_app=True):
         self.marionette.quit(in_app=in_app)
 
     def restart(self):
@@ -227,7 +233,7 @@ class Browser(object):
 
         with self.marionette.using_context(self.marionette.CONTEXT_CHROME):
             self.marionette.execute_script("gURLBar.select();")
-            urlbar = self.marionette.find_element(By.ID, "urlbar-input")
+            urlbar = self.marionette.execute_script("return gURLBar.inputField")
             urlbar.send_keys(keys.Keys.DELETE)
             urlbar.send_keys(text + keys.Keys.ENTER)
 

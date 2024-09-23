@@ -46,15 +46,21 @@ class BlankAudioDataCreator : public DummyDataCreator {
 };
 
 class BlankDecoderModule : public PlatformDecoderModule {
+  template <typename T, typename... Args>
+  friend already_AddRefed<T> MakeAndAddRef(Args&&...);
+
  public:
+  static already_AddRefed<PlatformDecoderModule> Create();
+
   already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
       const CreateDecoderParams& aParams) override;
 
   already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
       const CreateDecoderParams& aParams) override;
 
-  bool SupportsMimeType(const nsACString& aMimeType,
-                        DecoderDoctorDiagnostics* aDiagnostics) const override;
+  media::DecodeSupportSet SupportsMimeType(
+      const nsACString& aMimeType,
+      DecoderDoctorDiagnostics* aDiagnostics) const override;
 };
 
 }  // namespace mozilla

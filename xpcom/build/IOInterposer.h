@@ -8,7 +8,6 @@
 #define mozilla_IOInterposer_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/GuardObjects.h"
 #include "mozilla/TimeStamp.h"
 #include "nsString.h"
 
@@ -92,6 +91,8 @@ class IOInterposeObserver {
      * I.e. typically the platform specific function that did the IO.
      */
     const char* Reference() const { return mReference; }
+
+    virtual const char* FileType() const { return "File"; }
 
     /** Request filename associated with the I/O operation, empty if unknown */
     virtual void Filename(nsAString& aString) { aString.Truncate(); }
@@ -209,10 +210,13 @@ bool IsObservedOperation(IOInterposeObserver::Operation aOp);
  * Register IOInterposeObserver, the observer object will receive all
  * observations for the given operation aOp.
  *
- * Remark: Init() must be called before observers are registered.
+ * Remarks:
+ * - Init() must be called before observers are registered.
+ * - The IOInterposeObserver object should be static, because it could still be
+ *   used on another thread shortly after Unregister().
  */
 void Register(IOInterposeObserver::Operation aOp,
-              IOInterposeObserver* aObserver);
+              IOInterposeObserver* aStaticObserver);
 
 /**
  * Unregister an IOInterposeObserver for a given operation
@@ -220,10 +224,13 @@ void Register(IOInterposeObserver::Operation aOp,
  * didn't register for them all.
  * I.e. IOInterposer::Unregister(IOInterposeObserver::OpAll, aObserver)
  *
- * Remark: Init() must be called before observers are unregistered.
+ * Remarks:
+ * - Init() must be called before observers are registered.
+ * - The IOInterposeObserver object should be static, because it could still be
+ *   used on another thread shortly after this Unregister() call.
  */
 void Unregister(IOInterposeObserver::Operation aOp,
-                IOInterposeObserver* aObserver);
+                IOInterposeObserver* aStaticObserver);
 
 /**
  * Registers the current thread with the IOInterposer. This must be done to
@@ -253,16 +260,18 @@ void EnteringNextStage();
 
 }  // namespace IOInterposer
 
-class IOInterposerInit {
+class MOZ_RAII AutoIOInterposer {
  public:
-  IOInterposerInit() {
-#if !defined(RELEASE_OR_BETA)
+  AutoIOInterposer() = default;
+
+  void Init() {
+#if defined(EARLY_BETA_OR_EARLIER)
     IOInterposer::Init();
 #endif
   }
 
-  ~IOInterposerInit() {
-#if !defined(RELEASE_OR_BETA)
+  ~AutoIOInterposer() {
+#if defined(EARLY_BETA_OR_EARLIER)
     IOInterposer::Clear();
 #endif
   }
@@ -270,14 +279,10 @@ class IOInterposerInit {
 
 class MOZ_RAII AutoIOInterposerDisable final {
  public:
-  explicit AutoIOInterposerDisable(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    IOInterposer::Disable();
-  }
+  explicit AutoIOInterposerDisable() { IOInterposer::Disable(); }
   ~AutoIOInterposerDisable() { IOInterposer::Enable(); }
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 }  // namespace mozilla

@@ -13,11 +13,11 @@
 #include "mozilla/dom/PFileSystemParams.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/IPCBlobUtils.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "nsIFile.h"
 #include "nsString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /**
  * GetFileOrDirectoryTaskChild
@@ -157,7 +157,7 @@ GetFileOrDirectoryTaskParent::Create(
     const FileSystemGetFileOrDirectoryParams& aParam,
     FileSystemRequestParent* aParent, ErrorResult& aRv) {
   MOZ_ASSERT(XRE_IsParentProcess(), "Only call from parent process!");
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aFileSystem);
 
   RefPtr<GetFileOrDirectoryTaskParent> task =
@@ -179,13 +179,13 @@ GetFileOrDirectoryTaskParent::GetFileOrDirectoryTaskParent(
     : FileSystemTaskParentBase(aFileSystem, aParam, aParent),
       mIsDirectory(false) {
   MOZ_ASSERT(XRE_IsParentProcess(), "Only call from parent process!");
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aFileSystem);
 }
 
 FileSystemResponseValue GetFileOrDirectoryTaskParent::GetSuccessRequestResult(
     ErrorResult& aRv) const {
-  AssertIsOnBackgroundThread();
+  mozilla::ipc::AssertIsOnBackgroundThread();
 
   nsAutoString path;
   aRv = mTargetPath->GetPath(path);
@@ -200,7 +200,7 @@ FileSystemResponseValue GetFileOrDirectoryTaskParent::GetSuccessRequestResult(
   RefPtr<BlobImpl> blobImpl = new FileBlobImpl(mTargetPath);
 
   IPCBlob ipcBlob;
-  aRv = IPCBlobUtils::Serialize(blobImpl, mRequestParent->Manager(), ipcBlob);
+  aRv = IPCBlobUtils::Serialize(blobImpl, ipcBlob);
   if (NS_WARN_IF(aRv.Failed())) {
     return FileSystemDirectoryResponse();
   }
@@ -267,5 +267,4 @@ nsresult GetFileOrDirectoryTaskParent::GetTargetPath(nsAString& aPath) const {
   return mTargetPath->GetPath(aPath);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

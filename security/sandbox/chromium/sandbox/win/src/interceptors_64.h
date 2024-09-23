@@ -36,6 +36,10 @@ SANDBOX_INTERCEPT NTSTATUS WINAPI TargetNtUnmapViewOfSection64(HANDLE process,
 // -----------------------------------------------------------------------
 // Interceptors without IPC.
 
+// Interception of NtImpersonateAnonymousToken on the child process.
+SANDBOX_INTERCEPT NTSTATUS WINAPI
+TargetNtImpersonateAnonymousToken64(HANDLE thread);
+
 // Interception of NtSetInformationThread on the child process.
 SANDBOX_INTERCEPT NTSTATUS WINAPI
 TargetNtSetInformationThread64(HANDLE thread,
@@ -309,6 +313,19 @@ SANDBOX_INTERCEPT NTSTATUS WINAPI TargetConfigureOPMProtectedOutput64(
     const DXGKMDT_OPM_CONFIGURE_PARAMETERS* parameters,
     ULONG additional_parameters_size,
     const BYTE* additional_parameters);
+
+// -----------------------------------------------------------------------
+// Interceptors handled by the signed process code.
+
+// Interception of NtCreateSection on the child process.
+SANDBOX_INTERCEPT NTSTATUS WINAPI
+TargetNtCreateSection64(PHANDLE section_handle,
+                        ACCESS_MASK desired_access,
+                        POBJECT_ATTRIBUTES object_attributes,
+                        PLARGE_INTEGER maximum_size,
+                        ULONG section_page_protection,
+                        ULONG allocation_attributes,
+                        HANDLE file_handle);
 
 }  // extern "C"
 

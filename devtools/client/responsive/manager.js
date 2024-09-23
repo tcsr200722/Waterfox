@@ -4,49 +4,53 @@
 
 "use strict";
 
-const Services = require("Services");
-const promise = require("promise");
-const EventEmitter = require("devtools/shared/event-emitter");
+const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 
-loader.lazyRequireGetter(this, "ResponsiveUI", "devtools/client/responsive/ui");
+loader.lazyRequireGetter(
+  this,
+  "ResponsiveUI",
+  "resource://devtools/client/responsive/ui.js"
+);
 loader.lazyRequireGetter(
   this,
   "startup",
-  "devtools/client/responsive/utils/window",
+  "resource://devtools/client/responsive/utils/window.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "showNotification",
-  "devtools/client/responsive/utils/notification",
+  "resource://devtools/client/responsive/utils/notification.js",
   true
 );
-loader.lazyRequireGetter(this, "l10n", "devtools/client/responsive/utils/l10n");
+loader.lazyRequireGetter(
+  this,
+  "l10n",
+  "resource://devtools/client/responsive/utils/l10n.js"
+);
 loader.lazyRequireGetter(
   this,
   "PriorityLevels",
-  "devtools/client/shared/components/NotificationBox",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "TargetFactory",
-  "devtools/client/framework/target",
+  "resource://devtools/client/shared/components/NotificationBox.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "gDevTools",
-  "devtools/client/framework/devtools",
+  "resource://devtools/client/framework/devtools.js",
   true
 );
 loader.lazyRequireGetter(
   this,
   "gDevToolsBrowser",
-  "devtools/client/framework/devtools-browser",
+  "resource://devtools/client/framework/devtools-browser.js",
   true
 );
-loader.lazyRequireGetter(this, "Telemetry", "devtools/client/shared/telemetry");
+loader.lazyRequireGetter(
+  this,
+  "Telemetry",
+  "resource://devtools/client/shared/telemetry.js"
+);
 
 /**
  * ResponsiveUIManager is the external API for the browser UI, etc. to use when
@@ -80,7 +84,7 @@ class ResponsiveUIManager {
    *        Other options associated with toggling.  Currently includes:
    *        - `trigger`: String denoting the UI entry point, such as:
    *          - `toolbox`:  Toolbox Button
-   *          - `menu`:     Web Developer menu item
+   *          - `menu`:     Browser Tools menu item
    *          - `shortcut`: Keyboard shortcut
    * @return Promise
    *         Resolved when the toggling has completed.  If the UI has opened,
@@ -88,10 +92,17 @@ class ResponsiveUIManager {
    *         the UI has closed, there is no resolution value.
    */
   toggle(window, tab, options = {}) {
-    const action = this.isActiveForTab(tab) ? "close" : "open";
-    const completed = this[action + "IfNeeded"](window, tab, options);
+    const completed = this._toggleForTab(window, tab, options);
     completed.catch(console.error);
     return completed;
+  }
+
+  _toggleForTab(window, tab, options) {
+    if (this.isActiveForTab(tab)) {
+      return this.closeIfNeeded(window, tab, options);
+    }
+
+    return this.openIfNeeded(window, tab, options);
   }
 
   /**
@@ -105,25 +116,14 @@ class ResponsiveUIManager {
    *        Other options associated with opening.  Currently includes:
    *        - `trigger`: String denoting the UI entry point, such as:
    *          - `toolbox`:  Toolbox Button
-   *          - `menu`:     Web Developer menu item
+   *          - `menu`:     Browser Tools menu item
    *          - `shortcut`: Keyboard shortcut
    * @return Promise
    *         Resolved to the ResponsiveUI instance for this tab when opening is
    *         complete.
    */
   async openIfNeeded(window, tab, options = {}) {
-    const newRDMEnabled = Services.prefs.getBoolPref(
-      "devtools.responsive.browserUI.enabled"
-    );
-    if (!tab.linkedBrowser.isRemoteBrowser && !newRDMEnabled) {
-      await this.showRemoteOnlyNotification(window, tab, options);
-      return promise.reject(new Error("RDM only available for remote tabs."));
-    }
     if (!this.isActiveForTab(tab)) {
-      if (newRDMEnabled) {
-        await gDevToolsBrowser.loadBrowserStyleSheet(window);
-      }
-
       this.initMenuCheckListenerFor(window);
 
       const ui = new ResponsiveUI(this, window, tab);
@@ -132,8 +132,9 @@ class ResponsiveUIManager {
       // Explicitly not await on telemetry to avoid delaying RDM opening
       this.recordTelemetryOpen(window, tab, options);
 
+      await gDevToolsBrowser.loadBrowserStyleSheet(window);
       await this.setMenuCheckFor(tab, window);
-      await ui.inited;
+      await ui.initialize();
       this.emit("on", { tab });
     }
 
@@ -143,14 +144,9 @@ class ResponsiveUIManager {
   /**
    * Record all telemetry probes related to RDM opening.
    */
-  async recordTelemetryOpen(window, tab, options) {
+  recordTelemetryOpen(window, tab, options) {
     // Track whether a toolbox was opened before RDM was opened.
-    const isKnownTab = TargetFactory.isKnownTab(tab);
-    let toolbox;
-    if (isKnownTab) {
-      const target = await TargetFactory.forTab(tab);
-      toolbox = gDevTools.getToolbox(target);
-    }
+    const toolbox = gDevTools.getToolboxForTab(tab);
     const hostType = toolbox ? toolbox.hostType : "none";
     const hasToolbox = !!toolbox;
 
@@ -161,7 +157,6 @@ class ResponsiveUIManager {
     this.telemetry.recordEvent("activate", "responsive_design", null, {
       host: hostType,
       width: Math.ceil(window.outerWidth / 50) * 50,
-      session_id: toolbox ? toolbox.sessionId : -1,
     });
 
     // Track opens keyed by the UI entry point used.
@@ -187,7 +182,7 @@ class ResponsiveUIManager {
    *        Other options associated with closing.  Currently includes:
    *        - `trigger`: String denoting the UI entry point, such as:
    *          - `toolbox`:  Toolbox Button
-   *          - `menu`:     Web Developer menu item
+   *          - `menu`:     Browser Tools menu item
    *          - `shortcut`: Keyboard shortcut
    *        - `reason`: String detailing the specific cause for closing
    * @return Promise
@@ -215,20 +210,14 @@ class ResponsiveUIManager {
     }
   }
 
-  async recordTelemetryClose(window, tab) {
-    const isKnownTab = TargetFactory.isKnownTab(tab);
-    let toolbox;
-    if (isKnownTab) {
-      const target = await TargetFactory.forTab(tab);
-      toolbox = gDevTools.getToolbox(target);
-    }
+  recordTelemetryClose(window, tab) {
+    const toolbox = gDevTools.getToolboxForTab(tab);
 
     const hostType = toolbox ? toolbox.hostType : "none";
 
     this.telemetry.recordEvent("deactivate", "responsive_design", null, {
       host: hostType,
       width: Math.ceil(window.outerWidth / 50) * 50,
-      session_id: toolbox ? toolbox.sessionId : -1,
     });
   }
 

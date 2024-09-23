@@ -114,8 +114,9 @@ add_task(async function test_sanitization_transparent() {
   await extension.startup();
 
   let navbar = document.querySelector("#nav-bar");
-  Assert.ok(
-    window.getComputedStyle(navbar).boxShadow.includes("rgba(0, 0, 0, 0)"),
+  Assert.equal(
+    window.getComputedStyle(navbar).borderTopColor,
+    "rgba(0, 0, 0, 0)",
     "Top separator should be transparent"
   );
 
@@ -137,9 +138,8 @@ add_task(async function test_sanitization_transparent_frame_color() {
 
   await extension.startup();
 
-  let docEl = document.documentElement;
   Assert.equal(
-    window.getComputedStyle(docEl).backgroundColor,
+    getToolboxBackgroundColor(),
     "rgb(255, 255, 255)",
     "Accent color should be white"
   );

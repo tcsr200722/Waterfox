@@ -6,13 +6,9 @@
 "use strict";
 
 // Tests that the SDR implementation is able to decrypt strings encrypted using
-// a preexisting NSS key database that a) has a password and b) is in the old
-// dbm format.
-// To create such a database, run a version Firefox (or xpcshell) where the
-// default database format is the old dbm format (i.e. pre-bug 783994), set a
-// master password, and then encrypt something using nsISecretDecoderRing.
-// This does not apply to Android as the dbm implementation was never enabled on
-// that platform.
+// a preexisting NSS key database that has a password.
+// To create such a database, run Firefox (or xpcshell), set a primary
+// password, and then encrypt something using nsISecretDecoderRing.
 
 var gMockPrompter = {
   passwordToTry: "password",
@@ -21,7 +17,7 @@ var gMockPrompter = {
   // This intentionally does not use arrow function syntax to avoid an issue
   // where in the context of the arrow function, |this != gMockPrompter| due to
   // how objects get wrapped when going across xpcom boundaries.
-  promptPassword(dialogTitle, text, password, checkMsg, checkValue) {
+  promptPassword(dialogTitle, text, password, checkMsg) {
     this.numPrompts++;
     if (this.numPrompts > 1) {
       // don't keep retrying a bad password
@@ -29,7 +25,7 @@ var gMockPrompter = {
     }
     equal(
       text,
-      "Please enter your master password.",
+      "Please enter your Primary Password.",
       "password prompt text should be as expected"
     );
     equal(checkMsg, null, "checkMsg should be null");
@@ -38,14 +34,14 @@ var gMockPrompter = {
     return true;
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPrompt]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPrompt"]),
 };
 
 // Mock nsIWindowWatcher. PSM calls getNewPrompter on this to get an nsIPrompt
 // to call promptPassword. We return the mock one, above.
 var gWindowWatcher = {
   getNewPrompter: () => gMockPrompter,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIWindowWatcher]),
+  QueryInterface: ChromeUtils.generateQI(["nsIWindowWatcher"]),
 };
 
 function run_test() {
@@ -58,14 +54,11 @@ function run_test() {
   });
 
   // Append a single quote and non-ASCII characters to the profile path.
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  let profd = env.get("XPCSHELL_TEST_PROFILE_DIR");
+  let profd = Services.env.get("XPCSHELL_TEST_PROFILE_DIR");
   let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
   file.initWithPath(profd);
   file.append("'÷1");
-  env.set("XPCSHELL_TEST_PROFILE_DIR", file.path);
+  Services.env.set("XPCSHELL_TEST_PROFILE_DIR", file.path);
 
   let profile = do_get_profile(); // must be called before getting nsIX509CertDB
   Assert.ok(
@@ -73,8 +66,6 @@ function run_test() {
     "the profile path should contain a non-ASCII character"
   );
 
-  let key3DBFile = do_get_file("test_sdr_preexisting_with_password/key3.db");
-  key3DBFile.copyTo(profile, "key3.db");
   let key4DBFile = do_get_file("test_sdr_preexisting_with_password/key4.db");
   key4DBFile.copyTo(profile, "key4.db");
 
@@ -140,12 +131,5 @@ function run_test() {
     gMockPrompter.numPrompts,
     1,
     "Should have been prompted for a password once"
-  );
-
-  let key3DBInProfile = do_get_profile();
-  key3DBInProfile.append("key3.db");
-  ok(
-    !key3DBInProfile.exists(),
-    "key3.db should not exist after running with key4.db with a password"
   );
 }

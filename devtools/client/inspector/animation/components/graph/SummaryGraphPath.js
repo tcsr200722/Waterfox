@@ -7,26 +7,26 @@
 const {
   Component,
   createFactory,
-} = require("devtools/client/shared/vendor/react");
-const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const dom = require("devtools/client/shared/vendor/react-dom-factories");
-const ReactDOM = require("devtools/client/shared/vendor/react-dom");
+} = require("resource://devtools/client/shared/vendor/react.js");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
+const dom = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
+const ReactDOM = require("resource://devtools/client/shared/vendor/react-dom.js");
 
 const ComputedTimingPath = createFactory(
-  require("devtools/client/inspector/animation/components/graph/ComputedTimingPath")
+  require("resource://devtools/client/inspector/animation/components/graph/ComputedTimingPath.js")
 );
 const EffectTimingPath = createFactory(
-  require("devtools/client/inspector/animation/components/graph/EffectTimingPath")
+  require("resource://devtools/client/inspector/animation/components/graph/EffectTimingPath.js")
 );
 const NegativeDelayPath = createFactory(
-  require("devtools/client/inspector/animation/components/graph/NegativeDelayPath")
+  require("resource://devtools/client/inspector/animation/components/graph/NegativeDelayPath.js")
 );
 const NegativeEndDelayPath = createFactory(
-  require("devtools/client/inspector/animation/components/graph/NegativeEndDelayPath")
+  require("resource://devtools/client/inspector/animation/components/graph/NegativeEndDelayPath.js")
 );
 const {
   DEFAULT_GRAPH_HEIGHT,
-} = require("devtools/client/inspector/animation/utils/graph-helper");
+} = require("resource://devtools/client/inspector/animation/utils/graph-helper.js");
 
 // Minimum opacity for semitransparent fill color for keyframes's easing graph.
 const MIN_KEYFRAMES_EASING_OPACITY = 0.5;
@@ -35,7 +35,6 @@ class SummaryGraphPath extends Component {
   static get propTypes() {
     return {
       animation: PropTypes.object.isRequired,
-      emitEventForTest: PropTypes.func.isRequired,
       getAnimatedPropertyMap: PropTypes.object.isRequired,
       simulateAnimation: PropTypes.func.isRequired,
       timeScale: PropTypes.object.isRequired,
@@ -61,7 +60,8 @@ class SummaryGraphPath extends Component {
     this.updateState(this.props);
   }
 
-  componentWillReceiveProps(nextProps) {
+  // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
+  UNSAFE_componentWillReceiveProps(nextProps) {
     this.setState({ isStateUpdating: true });
     this.updateState(nextProps);
   }
@@ -168,19 +168,14 @@ class SummaryGraphPath extends Component {
     return true;
   }
 
-  async updateState(props) {
-    const {
-      animation,
-      emitEventForTest,
-      getAnimatedPropertyMap,
-      timeScale,
-    } = props;
+  updateState(props) {
+    const { animation, getAnimatedPropertyMap, timeScale } = props;
 
     let animatedPropertyMap = null;
     let thisEl = null;
 
     try {
-      animatedPropertyMap = await getAnimatedPropertyMap(animation);
+      animatedPropertyMap = getAnimatedPropertyMap(animation);
       thisEl = ReactDOM.findDOMNode(this);
     } catch (e) {
       // Expected if we've already been destroyed or other node have been selected
@@ -189,9 +184,8 @@ class SummaryGraphPath extends Component {
       return;
     }
 
-    const keyframesList = this.getOffsetAndEasingOnlyKeyframes(
-      animatedPropertyMap
-    );
+    const keyframesList =
+      this.getOffsetAndEasingOnlyKeyframes(animatedPropertyMap);
     const totalDuration =
       timeScale.getDuration() * Math.abs(animation.state.playbackRate);
     const durationPerPixel = totalDuration / thisEl.parentNode.clientWidth;
@@ -201,8 +195,6 @@ class SummaryGraphPath extends Component {
       isStateUpdating: false,
       keyframesList,
     });
-
-    emitEventForTest("animation-summary-graph-rendered");
   }
 
   render() {

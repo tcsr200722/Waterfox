@@ -12,9 +12,11 @@
 #include <stddef.h>  // size_t
 #include <stdint.h>  // uint8_t
 
-#include "js/RootingAPI.h"  // JS::Handle
-#include "js/SourceText.h"  // JS::SourceText
-#include "vm/JSScript.h"    // JSScript
+#include "js/CompileOptions.h"  // JS::ReadOnlyCompileOptions
+#include "js/RootingAPI.h"      // JS::Handle
+#include "js/SourceText.h"      // JS::SourceText
+#include "js/UniquePtr.h"       // js::UniquePtr
+#include "vm/JSScript.h"        // JSScript
 
 struct JSContext;
 
@@ -23,18 +25,23 @@ struct SmooshResult;
 namespace js {
 
 class ScriptSourceObject;
+class FrontendContext;
 
 namespace frontend {
 
-class GlobalScriptInfo;
+struct CompilationInput;
+struct ExtensibleCompilationStencil;
+struct CompilationGCOutput;
+struct CompilationState;
 
 // This is declarated as a class mostly to solve dependency around `friend`
 // declarations in the simple way.
 class Smoosh {
  public:
-  static JSScript* compileGlobalScript(
-      CompilationInfo& compilationInfo,
-      JS::SourceText<mozilla::Utf8Unit>& srcBuf, bool* unimplemented);
+  [[nodiscard]] static bool tryCompileGlobalScriptToExtensibleStencil(
+      JSContext* cx, FrontendContext* fc, CompilationInput& input,
+      JS::SourceText<mozilla::Utf8Unit>& srcBuf,
+      UniquePtr<ExtensibleCompilationStencil>& stencilOut);
 };
 
 // Initialize SmooshMonkey globals, such as the logging system.
@@ -42,10 +49,10 @@ void InitSmoosh();
 
 // Use the SmooshMonkey frontend to parse and free the generated AST. Returns
 // true if no error were detected while parsing.
-MOZ_MUST_USE bool SmooshParseScript(JSContext* cx, const uint8_t* bytes,
-                                    size_t length);
-MOZ_MUST_USE bool SmooshParseModule(JSContext* cx, const uint8_t* bytes,
-                                    size_t length);
+[[nodiscard]] bool SmooshParseScript(JSContext* cx, const uint8_t* bytes,
+                                     size_t length);
+[[nodiscard]] bool SmooshParseModule(JSContext* cx, const uint8_t* bytes,
+                                     size_t length);
 
 }  // namespace frontend
 

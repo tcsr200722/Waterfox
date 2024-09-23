@@ -32,12 +32,15 @@ class AndroidContentController final
 
   // ChromeProcessController methods
   virtual void Destroy() override;
-  void UpdateOverscrollVelocity(const float aX, const float aY,
+  void UpdateOverscrollVelocity(const ScrollableLayerGuid& aGuid,
+                                const float aX, const float aY,
                                 const bool aIsRootContent) override;
-  void UpdateOverscrollOffset(const float aX, const float aY,
+  void UpdateOverscrollOffset(const ScrollableLayerGuid& aGuid, const float aX,
+                              const float aY,
                               const bool aIsRootContent) override;
   void NotifyAPZStateChange(const ScrollableLayerGuid& aGuid,
-                            APZStateChange aChange, int aArg) override;
+                            APZStateChange aChange, int aArg,
+                            Maybe<uint64_t> aInputBlockId) override;
 
  private:
   nsWindow* mAndroidWindow;

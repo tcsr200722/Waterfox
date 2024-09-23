@@ -7,11 +7,9 @@
  * Test that WS connection is established successfully and the truncated message notification displays correctly.
  */
 
-add_task(async function() {
-  await pushPref("devtools.netmonitor.features.webSockets", true);
-
-  // Set WS frames limit to a lower value for testing
-  await pushPref("devtools.netmonitor.ws.displayed-frames.limit", 30);
+add_task(async function () {
+  // Set WS messages limit to a lower value for testing
+  await pushPref("devtools.netmonitor.msg.displayed-messages.limit", 30);
 
   const { tab, monitor } = await initNetMonitor(WS_PAGE_URL, {
     requestCount: 1,
@@ -24,35 +22,34 @@ add_task(async function() {
   store.dispatch(Actions.batchEnable(false));
 
   // Wait for WS connections to be established + send messages
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
   await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
     await content.wrappedJSObject.openConnection(20);
   });
+  await onNetworkEvents;
 
   const requests = document.querySelectorAll(".request-list-item");
   is(requests.length, 1, "There should be one request");
 
   // Wait for truncated message notification to appear
-  const wait = waitForDOM(document, "#messages-panel .truncated-message");
+  const wait = waitForDOM(document, "#messages-view .truncated-message");
 
   // Select the first request
   EventUtils.sendMouseEvent({ type: "mousedown" }, requests[0]);
 
-  // Click on the "Messages" panel
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#messages-tab")
-  );
+  // Click on the "Response" panel
+  clickOnSidebarTab(document, "response");
   await wait;
 
-  // Get all messages present in the "Messages" panel
+  // Get all messages present in the "Response" panel
   const frames = document.querySelectorAll(
-    "#messages-panel .ws-frames-list-table .ws-frame-list-item"
+    "#messages-view .message-list-table .message-list-item"
   );
 
   // Check expected results
   is(frames.length, 30, "There should be thirty frames");
   is(
-    document.querySelectorAll("#messages-panel .truncated-message").length,
+    document.querySelectorAll("#messages-view .truncated-message").length,
     1,
     "Truncated message notification is shown"
   );

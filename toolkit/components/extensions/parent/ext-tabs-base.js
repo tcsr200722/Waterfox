@@ -7,28 +7,18 @@
 
 /* globals EventEmitter */
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "PrivateBrowsingUtils",
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
-);
+ChromeUtils.defineESModuleGetters(this, {
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+});
+
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "containersEnabled",
   "privacy.userContext.enabled"
 );
 
-var {
-  DefaultMap,
-  DefaultWeakMap,
-  ExtensionError,
-  getWinUtils,
-} = ExtensionUtils;
+var { DefaultMap, DefaultWeakMap, ExtensionError, parseMatchPatterns } =
+  ExtensionUtils;
 
 var { defineLazyGetter } = ExtensionCommon;
 
@@ -36,11 +26,11 @@ var { defineLazyGetter } = ExtensionCommon;
  * The platform-specific type of native tab objects, which are wrapped by
  * TabBase instances.
  *
- * @typedef {Object|XULElement} NativeTab
+ * @typedef {object | XULElement} NativeTab
  */
 
 /**
- * @typedef {Object} MutedInfo
+ * @typedef {object} MutedInfo
  * @property {boolean} muted
  *        True if the tab is currently muted, false otherwise.
  * @property {string} [reason]
@@ -80,43 +70,13 @@ class TabBase {
   }
 
   /**
-   * Sends a message, via the given context, to the ExtensionContent running in
-   * this tab. The tab's current innerWindowID is automatically added to the
-   * recipient filter for the message, and is used to ensure that the message is
-   * not processed if the content process navigates to a different content page
-   * before the message is received.
-   *
-   * @param {BaseContext} context
-   *        The context through which to send the message.
-   * @param {string} messageName
-   *        The name of the message to send.
-   * @param {object} [data = {}]
-   *        Arbitrary, structured-clonable message data to send.
-   * @param {object} [options]
-   *        An options object, as accepted by BaseContext.sendMessage.
-   *
-   * @returns {Promise}
-   */
-  sendMessage(context, messageName, data = {}, options = null) {
-    let { browser, innerWindowID } = this;
-
-    options = Object.assign({}, options);
-    options.recipient = Object.assign({ innerWindowID }, options.recipient);
-
-    return context.sendMessage(
-      browser.messageManager,
-      messageName,
-      data,
-      options
-    );
-  }
-
-  /**
-   * Capture the visible area of this tab, and return the result as a data: URL.
+   * Capture the visible area of this tab, and return the result as a data: URI.
    *
    * @param {BaseContext} context
    *        The extension context for which to perform the capture.
-   * @param {Object} [options]
+   * @param {number} zoom
+   *        The current zoom for the page.
+   * @param {object} [options]
    *        The options with which to perform the capture.
    * @param {string} [options.format = "png"]
    *        The image format in which to encode the captured data. May be one of
@@ -124,27 +84,43 @@ class TabBase {
    * @param {integer} [options.quality = 92]
    *        The quality at which to encode the captured image data, ranging from
    *        0 to 100. Has no effect for the "png" format.
-   *
+   * @param {DOMRectInit} [options.rect]
+   *        Area of the document to render, in CSS pixels, relative to the page.
+   *        If null, the currently visible viewport is rendered.
+   * @param {number} [options.scale]
+   *        The scale to render at, defaults to devicePixelRatio.
    * @returns {Promise<string>}
    */
-  capture(context, options = null) {
-    if (!options) {
-      options = {};
-    }
-    if (options.format == null) {
-      options.format = "png";
-    }
-    if (options.quality == null) {
-      options.quality = 92;
+  async capture(context, zoom, options) {
+    let win = this.browser.ownerGlobal;
+    let scale = options?.scale || win.devicePixelRatio;
+    let rect = options?.rect && win.DOMRect.fromRect(options.rect);
+
+    // We only allow mozilla addons to use the resetScrollPosition option,
+    // since it's not standardized.
+    let resetScrollPosition = false;
+    if (!context.extension.restrictSchemes) {
+      resetScrollPosition = !!options?.resetScrollPosition;
     }
 
-    let message = {
-      options,
-      width: this.width,
-      height: this.height,
-    };
+    let wgp = this.browsingContext.currentWindowGlobal;
+    let image = await wgp.drawSnapshot(
+      rect,
+      scale * zoom,
+      "white",
+      resetScrollPosition
+    );
 
-    return this.sendMessage(context, "Extension:Capture", message);
+    let doc = Services.appShell.hiddenDOMWindow.document;
+    let canvas = doc.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+
+    let ctx = canvas.getContext("2d", { alpha: false });
+    ctx.drawImage(image, 0, 0);
+    image.close();
+
+    return canvas.toDataURL(`image/${options?.format}`, options?.quality / 100);
   }
 
   /**
@@ -168,7 +144,11 @@ class TabBase {
    *        @readonly
    */
   get hasTabPermission() {
-    return this.extension.hasPermission("tabs") || this.hasActiveTabPermission;
+    return (
+      this.extension.hasPermission("tabs") ||
+      this.hasActiveTabPermission ||
+      this.matchesHostPermission
+    );
   }
 
   /**
@@ -183,10 +163,20 @@ class TabBase {
    */
   get hasActiveTabPermission() {
     return (
-      this.extension.hasPermission("activeTab") &&
+      (this.extension.originControls ||
+        this.extension.hasPermission("activeTab")) &&
       this.activeTabWindowID != null &&
       this.activeTabWindowID === this.innerWindowID
     );
+  }
+
+  /**
+   * @property {boolean} matchesHostPermission
+   *        Returns true if the extensions host permissions match the current tab url.
+   *        @readonly
+   */
+  get matchesHostPermission() {
+    return this.extension.allowedOrigins.matches(this._uri);
   }
 
   /**
@@ -209,27 +199,25 @@ class TabBase {
   }
 
   /**
-   * @property {string | null} url
+   * @property {string | undefined} url
    *        Returns the current URL of this tab if the extension has permission
-   *        to read it, or null otherwise.
+   *        to read it, or undefined otherwise.
    *        @readonly
    */
   get url() {
     if (this.hasTabPermission) {
       return this._url;
     }
+    return undefined;
   }
 
   /**
-   * @property {nsIURI | null} uri
-   *        Returns the current URI of this tab if the extension has permission
-   *        to read it, or null otherwise.
+   * @property {nsIURI} _uri
+   *        Returns the current URI of this tab.
    *        @readonly
    */
-  get uri() {
-    if (this.hasTabPermission) {
-      return this.browser.currentURI;
-    }
+  get _uri() {
+    return this.browser.currentURI;
   }
 
   /**
@@ -243,15 +231,16 @@ class TabBase {
   }
 
   /**
-   * @property {nsIURI | null} title
+   * @property {nsIURI | undefined} title
    *        Returns the current title of this tab if the extension has permission
-   *        to read it, or null otherwise.
+   *        to read it, or undefined otherwise.
    *        @readonly
    */
   get title() {
     if (this.hasTabPermission) {
       return this._title;
     }
+    return undefined;
   }
 
   /**
@@ -266,15 +255,16 @@ class TabBase {
   }
 
   /**
-   * @property {nsIURI | null} faviconUrl
+   * @property {nsIURI | undefined} faviconUrl
    *        Returns the current faviron URL of this tab if the extension has permission
-   *        to read it, or null otherwise.
+   *        to read it, or undefined otherwise.
    *        @readonly
    */
   get favIconUrl() {
     if (this.hasTabPermission) {
       return this._favIconUrl;
     }
+    return undefined;
   }
 
   /**
@@ -299,6 +289,16 @@ class TabBase {
   }
 
   /**
+   * @property {boolean} autoDiscardable
+   *        Returns true if the tab can be discarded on memory pressure, false otherwise.
+   *        @readonly
+   *        @abstract
+   */
+  get autoDiscardable() {
+    throw new Error("Not implemented");
+  }
+
+  /**
    * @property {XULElement} browser
    *        Returns the XUL browser for the given tab.
    *        @readonly
@@ -306,6 +306,15 @@ class TabBase {
    */
   get browser() {
     throw new Error("Not implemented");
+  }
+
+  /**
+   * @property {BrowsingContext} browsingContext
+   *        Returns the BrowsingContext for the given tab.
+   *        @readonly
+   */
+  get browsingContext() {
+    return this.browser?.browsingContext;
   }
 
   /**
@@ -428,16 +437,6 @@ class TabBase {
   }
 
   /**
-   * @property {boolean} selected
-   *        An alias for `active`.
-   *        @readonly
-   *        @abstract
-   */
-  get selected() {
-    throw new Error("Not implemented");
-  }
-
-  /**
    * @property {string} status
    *        Returns the current loading status of the tab. May be either
    *        "loading" or "complete".
@@ -529,6 +528,8 @@ class TabBase {
    *        Matches against the exact value of the tab's `active` attribute.
    * @param {boolean} [queryInfo.audible]
    *        Matches against the exact value of the tab's `audible` attribute.
+   * @param {boolean} [queryInfo.autoDiscardable]
+   *        Matches against the exact value of the tab's `autoDiscardable` attribute.
    * @param {string} [queryInfo.cookieStoreId]
    *        Matches against the exact value of the tab's `cookieStoreId` attribute.
    * @param {boolean} [queryInfo.discarded]
@@ -566,7 +567,7 @@ class TabBase {
     const PROPS = [
       "active",
       "audible",
-      "cookieStoreId",
+      "autoDiscardable",
       "discarded",
       "hidden",
       "highlighted",
@@ -603,11 +604,23 @@ class TabBase {
       }
     }
 
-    if (queryInfo.url && !queryInfo.url.matches(this.uri)) {
-      return false;
+    if (queryInfo.cookieStoreId) {
+      if (!queryInfo.cookieStoreId.includes(this.cookieStoreId)) {
+        return false;
+      }
     }
-    if (queryInfo.title && !queryInfo.title.matches(this.title)) {
-      return false;
+
+    if (queryInfo.url || queryInfo.title) {
+      if (!this.hasTabPermission) {
+        return false;
+      }
+      // Using _uri and _title instead of url/title to avoid repeated permission checks.
+      if (queryInfo.url && !queryInfo.url.matches(this._uri)) {
+        return false;
+      }
+      if (queryInfo.title && !queryInfo.title.matches(this._title)) {
+        return false;
+      }
     }
 
     return true;
@@ -618,7 +631,7 @@ class TabBase {
    * of its properties which the extension is permitted to access, in the format
    * required to be returned by WebExtension APIs.
    *
-   * @param {Object} [fallbackTabSize]
+   * @param {object} [fallbackTabSize]
    *        A geometry data if the lazy geometry data for this tab hasn't been
    *        initialized yet.
    * @returns {object}
@@ -640,11 +653,13 @@ class TabBase {
       height: this.height,
       lastAccessed: this.lastAccessed,
       audible: this.audible,
+      autoDiscardable: this.autoDiscardable,
       mutedInfo: this.mutedInfo,
       isArticle: this.isArticle,
       isInReaderMode: this.isInReaderMode,
       sharingState: this.sharingState,
       successorTabId: this.successorTabId,
+      cookieStoreId: this.cookieStoreId,
     };
 
     // If the tab has not been fully layed-out yet, fallback to the geometry
@@ -659,10 +674,6 @@ class TabBase {
       result.openerTabId = opener;
     }
 
-    if (this.extension.hasPermission("cookies")) {
-      result.cookieStoreId = this.cookieStoreId;
-    }
-
     if (this.hasTabPermission) {
       for (let prop of ["url", "title", "favIconUrl"]) {
         // We use the underscored variants here to avoid the redundant
@@ -675,6 +686,80 @@ class TabBase {
     }
 
     return result;
+  }
+
+  /**
+   * Query each content process hosting subframes of the tab, return results.
+   *
+   * @param {string} message
+   * @param {object} options
+   *        These options are also sent to the message handler in the
+   *        `ExtensionContentChild`.
+   * @param {number[]} options.frameIds
+   *        When omitted, all frames will be queried.
+   * @param {boolean} options.returnResultsWithFrameIds
+   * @returns {Promise[]}
+   */
+  async queryContent(message, options) {
+    let { frameIds } = options;
+
+    /** @type {Map<nsIDOMProcessParent, innerWindowId[]>} */
+    let byProcess = new DefaultMap(() => []);
+    // We use this set to know which frame IDs are potentially invalid (as in
+    // not found when visiting the tab's BC tree below) when frameIds is a
+    // non-empty list of frame IDs.
+    let frameIdsSet = new Set(frameIds);
+
+    // Recursively walk the tab's BC tree, find all frames, group by process.
+    function visit(bc) {
+      let win = bc.currentWindowGlobal;
+      let frameId = bc.parent ? bc.id : 0;
+
+      if (win?.domProcess && (!frameIds || frameIdsSet.has(frameId))) {
+        byProcess.get(win.domProcess).push(win.innerWindowId);
+        frameIdsSet.delete(frameId);
+      }
+
+      if (!frameIds || frameIdsSet.size > 0) {
+        bc.children.forEach(visit);
+      }
+    }
+    visit(this.browsingContext);
+
+    if (frameIdsSet.size > 0) {
+      throw new ExtensionError(
+        `Invalid frame IDs: [${Array.from(frameIdsSet).join(", ")}].`
+      );
+    }
+
+    let promises = Array.from(byProcess.entries(), ([proc, windows]) =>
+      proc.getActor("ExtensionContent").sendQuery(message, { windows, options })
+    );
+
+    let results = await Promise.all(promises).catch(err => {
+      if (err.name === "DataCloneError") {
+        let fileName = options.jsPaths.slice(-1)[0] || "<anonymous code>";
+        let message = `Script '${fileName}' result is non-structured-clonable data`;
+        return Promise.reject({ message, fileName });
+      }
+      throw err;
+    });
+    results = results.flat();
+
+    if (!results.length) {
+      let errorMessage = "Missing host permission for the tab";
+      if (!frameIds || frameIds.length > 1 || frameIds[0] !== 0) {
+        errorMessage += " or frames";
+      }
+
+      throw new ExtensionError(errorMessage);
+    }
+
+    if (frameIds && frameIds.length === 1 && results.length > 1) {
+      throw new ExtensionError("Internal error: multiple windows matched");
+    }
+
+    return results;
   }
 
   /**
@@ -701,6 +786,7 @@ class TabBase {
       jsPaths: [],
       cssPaths: [],
       removeCSS: method == "removeCSS",
+      extensionId: context.extension.id,
     };
 
     // We require a `code` or a `file` property, but we can't accept both.
@@ -717,7 +803,7 @@ class TabBase {
     }
 
     options.hasActiveTabPermission = this.hasActiveTabPermission;
-    options.matches = this.extension.whiteListedHosts.patterns.map(
+    options.matches = this.extension.allowedOrigins.patterns.map(
       host => host.pattern
     );
 
@@ -733,12 +819,15 @@ class TabBase {
       }
       options[`${kind}Paths`].push(url);
     }
+
     if (details.allFrames) {
-      options.allFrames = details.allFrames;
+      options.allFrames = true;
+    } else if (details.frameId !== null) {
+      options.frameIds = [details.frameId];
+    } else if (!details.allFrames) {
+      options.frameIds = [0];
     }
-    if (details.frameId !== null) {
-      options.frameID = details.frameId;
-    }
+
     if (details.matchAboutBlank) {
       options.matchAboutBlank = details.matchAboutBlank;
     }
@@ -755,7 +844,10 @@ class TabBase {
 
     options.wantReturnValue = true;
 
-    return this.sendMessage(context, "Extension:Execute", { options });
+    // The scripting API (defined in `parent/ext-scripting.js`) has its own
+    // `execute()` function that calls `queryContent()` as well. Make sure to
+    // keep both in sync when relevant.
+    return this.queryContent("Execute", options);
   }
 
   /**
@@ -812,7 +904,7 @@ class TabBase {
   }
 }
 
-defineLazyGetter(TabBase.prototype, "incognito", function() {
+defineLazyGetter(TabBase.prototype, "incognito", function () {
   return this._incognito;
 });
 
@@ -1076,9 +1168,9 @@ class WindowBase {
   }
 
   /**
-   * @property {nsIURI | null} title
+   * @property {nsIURI | undefined} title
    *        Returns the current title of this window if the extension has permission
-   *        to read it, or null otherwise.
+   *        to read it, or undefined otherwise.
    *        @readonly
    */
   get title() {
@@ -1087,6 +1179,7 @@ class WindowBase {
     if (this.activeTab && this.activeTab.hasTabPermission) {
       return this._title;
     }
+    return undefined;
   }
 
   // The JSDoc validator does not support @returns tags in abstract functions or
@@ -1095,7 +1188,7 @@ class WindowBase {
   /**
    * Returns the window state of the given window.
    *
-   * @param {DOMWindow} window
+   * @param {DOMWindow} _window
    *        The window for which to return a state.
    *
    * @returns {string}
@@ -1104,7 +1197,7 @@ class WindowBase {
    * @static
    * @abstract
    */
-  static getState(window) {
+  static getState(_window) {
     throw new Error("Not implemented");
   }
 
@@ -1136,12 +1229,12 @@ class WindowBase {
   /**
    * Returns the window's tab at the specified index.
    *
-   * @param {integer} index
+   * @param {integer} _index
    *        The index of the desired tab.
    *
    * @returns {TabBase|undefined}
    */
-  getTabAtIndex(index) {
+  getTabAtIndex(_index) {
     throw new Error("Not implemented");
   }
   /* eslint-enable valid-jsdoc */
@@ -1153,7 +1246,7 @@ Object.assign(WindowBase, { WINDOW_ID_NONE, WINDOW_ID_CURRENT });
  * The parameter type of "tab-attached" events, which are emitted when a
  * pre-existing tab is attached to a new window.
  *
- * @typedef {Object} TabAttachedEvent
+ * @typedef {object} TabAttachedEvent
  * @property {NativeTab} tab
  *        The native tab object in the window to which the tab is being
  *        attached. This may be a different object than was used to represent
@@ -1171,7 +1264,7 @@ Object.assign(WindowBase, { WINDOW_ID_NONE, WINDOW_ID_CURRENT });
  * pre-existing tab is detached from a window, in order to be attached to a new
  * window.
  *
- * @typedef {Object} TabDetachedEvent
+ * @typedef {object} TabDetachedEvent
  * @property {NativeTab} tab
  *        The native tab object in the window from which the tab is being
  *        detached. This may be a different object than will be used to
@@ -1193,7 +1286,7 @@ Object.assign(WindowBase, { WINDOW_ID_NONE, WINDOW_ID_CURRENT });
  * The parameter type of "tab-created" events, which are emitted when a
  * new tab is created.
  *
- * @typedef {Object} TabCreatedEvent
+ * @typedef {object} TabCreatedEvent
  * @property {NativeTab} tab
  *        The native tab object for the tab which is being created.
  */
@@ -1202,7 +1295,7 @@ Object.assign(WindowBase, { WINDOW_ID_NONE, WINDOW_ID_CURRENT });
  * The parameter type of "tab-removed" events, which are emitted when a
  * tab is removed and destroyed.
  *
- * @typedef {Object} TabRemovedEvent
+ * @typedef {object} TabRemovedEvent
  * @property {NativeTab} tab
  *        The native tab object for the tab which is being removed.
  * @property {integer} tabId
@@ -1217,7 +1310,7 @@ Object.assign(WindowBase, { WINDOW_ID_NONE, WINDOW_ID_CURRENT });
  * An object containing basic, extension-independent information about the window
  * and tab that a XUL <browser> belongs to.
  *
- * @typedef {Object} BrowserData
+ * @typedef {object} BrowserData
  * @property {integer} tabId
  *        The numeric ID of the tab that a <browser> belongs to, or -1 if it
  *        does not belong to a tab.
@@ -1265,23 +1358,23 @@ class TabTrackerBase extends EventEmitter {
   /**
    * Returns the numeric ID for the given native tab.
    *
-   * @param {NativeTab} nativeTab
+   * @param {NativeTab} _nativeTab
    *        The native tab for which to return an ID.
    *
    * @returns {integer}
    *        The tab's numeric ID.
    * @abstract
    */
-  getId(nativeTab) {
+  getId(_nativeTab) {
     throw new Error("Not implemented");
   }
 
   /**
    * Returns the native tab with the given numeric ID.
    *
-   * @param {integer} tabId
+   * @param {integer} _tabId
    *        The numeric ID of the tab to return.
-   * @param {*} default_
+   * @param {*} _default
    *        The value to return if no tab exists with the given ID.
    *
    * @returns {NativeTab}
@@ -1290,7 +1383,7 @@ class TabTrackerBase extends EventEmitter {
    *       provided.
    * @abstract
    */
-  getTab(tabId, default_ = undefined) {
+  getTab(_tabId, _default) {
     throw new Error("Not implemented");
   }
 
@@ -1305,7 +1398,7 @@ class TabTrackerBase extends EventEmitter {
    * @abstract
    */
   /* eslint-enable valid-jsdoc */
-  getBrowserData(browser) {
+  getBrowserData() {
     throw new Error("Not implemented");
   }
 
@@ -1325,7 +1418,7 @@ class TabTrackerBase extends EventEmitter {
  * A browser progress listener instance which calls a given listener function
  * whenever the status of the given browser changes.
  *
- * @param {function(Object)} listener
+ * @param {function(object): void} listener
  *        A function to be called whenever the status of a tab's top-level
  *        browser. It is passed an object with a `browser` property pointing to
  *        the XUL browser, and a `status` property with a string description of
@@ -1361,7 +1454,7 @@ class StatusListener {
     }
   }
 
-  onLocationChange(browser, webProgress, request, locationURI, flags) {
+  onLocationChange(browser, webProgress, request, locationURI) {
     if (webProgress.isTopLevel) {
       let status = webProgress.isLoadingDocument ? "loading" : "complete";
       this.listener({ browser, status, url: locationURI.spec });
@@ -1390,7 +1483,7 @@ class WindowTrackerBase extends EventEmitter {
     });
 
     this._windowIds = new DefaultWeakMap(window => {
-      return getWinUtils(window).outerWindowID;
+      return window.docShell.outerWindowID;
     });
   }
 
@@ -1550,7 +1643,7 @@ class WindowTrackerBase extends EventEmitter {
    * Register the given listener function to be called whenever a new browser
    * window is opened.
    *
-   * @param {function(DOMWindow)} listener
+   * @param {function(DOMWindow): void} listener
    *        The listener function to register.
    */
   addOpenListener(listener) {
@@ -1571,7 +1664,7 @@ class WindowTrackerBase extends EventEmitter {
    * Unregister a listener function registered in a previous addOpenListener
    * call.
    *
-   * @param {function(DOMWindow)} listener
+   * @param {function(DOMWindow): void} listener
    *        The listener function to unregister.
    */
   removeOpenListener(listener) {
@@ -1586,7 +1679,7 @@ class WindowTrackerBase extends EventEmitter {
    * Register the given listener function to be called whenever a browser
    * window is closed.
    *
-   * @param {function(DOMWindow)} listener
+   * @param {function(DOMWindow): void} listener
    *        The listener function to register.
    */
   addCloseListener(listener) {
@@ -1601,7 +1694,7 @@ class WindowTrackerBase extends EventEmitter {
    * Unregister a listener function registered in a previous addCloseListener
    * call.
    *
-   * @param {function(DOMWindow)} listener
+   * @param {function(DOMWindow): void} listener
    *        The listener function to unregister.
    */
   removeCloseListener(listener) {
@@ -1682,7 +1775,7 @@ class WindowTrackerBase extends EventEmitter {
    *           window.
    *        - "domwindowopened": Acts as an alias for addOpenListener.
    *        - "domwindowclosed": Acts as an alias for addCloseListener.
-   * @param {function|object} listener
+   * @param {Function | object} listener
    *        The listener to invoke in response to the given events.
    *
    * @returns {undefined}
@@ -1716,7 +1809,7 @@ class WindowTrackerBase extends EventEmitter {
    *
    * @param {string} type
    *        The type of event to stop listening for.
-   * @param {function|object} listener
+   * @param {Function | object} listener
    *        The listener to remove.
    *
    * @returns {undefined}
@@ -1762,7 +1855,7 @@ class WindowTrackerBase extends EventEmitter {
    * @param {string} eventType
    *        The type of DOM event to listen for, or "progress" to add a tab
    *        progress listener.
-   * @param {function|object} listener
+   * @param {Function | object} listener
    *        The listener to add.
    * @private
    */
@@ -1795,26 +1888,26 @@ class WindowTrackerBase extends EventEmitter {
   /**
    * Adds a tab progress listener to the given browser window.
    *
-   * @param {DOMWindow} window
+   * @param {DOMWindow} _window
    *        The browser window to which to add the listener.
-   * @param {object} listener
+   * @param {object} _listener
    *        The tab progress listener to add.
    * @abstract
    */
-  addProgressListener(window, listener) {
+  addProgressListener(_window, _listener) {
     throw new Error("Not implemented");
   }
 
   /**
    * Removes a tab progress listener from the given browser window.
    *
-   * @param {DOMWindow} window
+   * @param {DOMWindow} _window
    *        The browser window from which to remove the listener.
-   * @param {object} listener
+   * @param {object} _listener
    *        The tab progress listener to remove.
    * @abstract
    */
-  removeProgressListener(window, listener) {
+  removeProgressListener(_window, _listener) {
     throw new Error("Not implemented");
   }
 }
@@ -1841,12 +1934,16 @@ class TabManagerBase {
    *        The native tab for which to grant permissions.
    */
   addActiveTabPermission(nativeTab) {
-    if (this.extension.hasPermission("activeTab")) {
+    let tab = this.getWrapper(nativeTab);
+    if (
+      this.extension.hasPermission("activeTab") ||
+      (this.extension.originControls &&
+        this.extension.optionalOrigins.matches(tab._uri))
+    ) {
       // Note that, unlike Chrome, we don't currently clear this permission with
       // the tab navigates. If the inner window is revived from BFCache before
       // we've granted this permission to a new inner window, the extension
       // maintains its permissions for it.
-      let tab = this.getWrapper(nativeTab);
       tab.activeTabWindowID = tab.innerWindowID;
     }
   }
@@ -1873,6 +1970,26 @@ class TabManagerBase {
    */
   hasActiveTabPermission(nativeTab) {
     return this.getWrapper(nativeTab).hasActiveTabPermission;
+  }
+
+  /**
+   * Activate MV3 content scripts if the extension has activeTab or an
+   * (ungranted) host permission.
+   *
+   * @param {NativeTab} nativeTab
+   */
+  activateScripts(nativeTab) {
+    let tab = this.getWrapper(nativeTab);
+    if (
+      this.extension.originControls &&
+      !tab.matchesHostPermission &&
+      (this.extension.optionalOrigins.matches(tab._uri) ||
+        this.extension.hasPermission("activeTab")) &&
+      (this.extension.contentScripts.length ||
+        this.extension.registeredContentScripts.size)
+    ) {
+      tab.queryContent("ActivateScripts", { id: this.extension.id });
+    }
   }
 
   /**
@@ -1917,14 +2034,14 @@ class TabManagerBase {
   /**
    * Determines access using extension context.
    *
-   * @param {NativeTab} nativeTab
+   * @param {NativeTab} _nativeTab
    *        The tab to check access on.
    * @returns {boolean}
    *        True if the extension has permissions for this tab.
    * @protected
    * @abstract
    */
-  canAccessTab(nativeTab) {
+  canAccessTab(_nativeTab) {
     throw new Error("Not implemented");
   }
 
@@ -1935,11 +2052,11 @@ class TabManagerBase {
    *
    * @param {NativeTab} nativeTab
    *        The native tab to convert.
-   * @param {Object} [fallbackTabSize]
+   * @param {object} [fallbackTabSize]
    *        A geometry data if the lazy geometry data for this tab hasn't been
    *        initialized yet.
    *
-   * @returns {Object}
+   * @returns {object}
    */
   convert(nativeTab, fallbackTabSize = null) {
     return this.getWrapper(nativeTab).convert(fallbackTabSize);
@@ -1951,7 +2068,7 @@ class TabManagerBase {
   /**
    * Returns an iterator of TabBase objects which match the given query info.
    *
-   * @param {Object|null} [queryInfo = null]
+   * @param {object | null} [queryInfo = null]
    *        An object containing properties on which to filter. May contain any
    *        properties which are recognized by {@link TabBase#matches} or
    *        {@link WindowBase#matches}. Unknown properties will be ignored.
@@ -1962,11 +2079,33 @@ class TabManagerBase {
    * @returns {Iterator<TabBase>}
    */
   *query(queryInfo = null, context = null) {
+    if (queryInfo) {
+      if (queryInfo.url !== null) {
+        queryInfo.url = parseMatchPatterns([].concat(queryInfo.url), {
+          restrictSchemes: false,
+        });
+      }
+
+      if (queryInfo.cookieStoreId !== null) {
+        queryInfo.cookieStoreId = [].concat(queryInfo.cookieStoreId);
+      }
+
+      if (queryInfo.title !== null) {
+        try {
+          queryInfo.title = new MatchGlob(queryInfo.title);
+        } catch (e) {
+          throw new ExtensionError(`Invalid title: ${queryInfo.title}`);
+        }
+      }
+    }
     function* candidates(windowWrapper) {
       if (queryInfo) {
         let { active, highlighted, index } = queryInfo;
         if (active === true) {
-          yield windowWrapper.activeTab;
+          let { activeTab } = windowWrapper;
+          if (activeTab) {
+            yield activeTab;
+          }
           return;
         }
         if (index != null) {
@@ -1996,7 +2135,7 @@ class TabManagerBase {
   /**
    * Returns a TabBase wrapper for the tab with the given ID.
    *
-   * @param {integer} id
+   * @param {integer} _tabId
    *        The ID of the tab for which to return a wrapper.
    *
    * @returns {TabBase}
@@ -2004,22 +2143,21 @@ class TabManagerBase {
    *        If no tab exists with the given ID.
    * @abstract
    */
-  get(tabId) {
+  get(_tabId) {
     throw new Error("Not implemented");
   }
 
   /**
    * Returns a new TabBase instance wrapping the given native tab.
    *
-   * @param {NativeTab} nativeTab
+   * @param {NativeTab} _nativeTab
    *        The native tab for which to return a wrapper.
    *
    * @returns {TabBase}
    * @protected
    * @abstract
    */
-  /* eslint-enable valid-jsdoc */
-  wrapTab(nativeTab) {
+  wrapTab(_nativeTab) {
     throw new Error("Not implemented");
   }
 }
@@ -2047,7 +2185,7 @@ class WindowManagerBase {
    * @param {*} args
    *        Additional arguments to be passed to {@link WindowBase#convert}.
    *
-   * @returns {Object}
+   * @returns {object}
    */
   convert(window, ...args) {
     return this.getWrapper(window).convert(...args);
@@ -2093,7 +2231,7 @@ class WindowManagerBase {
   /**
    * Returns an iterator of WindowBase objects which match the given query info.
    *
-   * @param {Object|null} [queryInfo = null]
+   * @param {object | null} [queryInfo = null]
    *        An object containing properties on which to filter. May contain any
    *        properties which are recognized by {@link WindowBase#matches}.
    *        Unknown properties will be ignored.
@@ -2137,18 +2275,18 @@ class WindowManagerBase {
   /**
    * Returns a WindowBase wrapper for the browser window with the given ID.
    *
-   * @param {integer} id
+   * @param {integer} _windowId
    *        The ID of the browser window for which to return a wrapper.
-   * @param {BaseContext} context
+   * @param {BaseContext} _context
    *        The extension context for which the matching is being performed.
    *        Used to determine the current window for relevant properties.
    *
-   * @returns{WindowBase}
+   * @returns {WindowBase}
    * @throws {ExtensionError}
    *        If no window exists with the given ID.
    * @abstract
    */
-  get(windowId, context) {
+  get(_windowId, _context) {
     throw new Error("Not implemented");
   }
 
@@ -2166,14 +2304,14 @@ class WindowManagerBase {
   /**
    * Returns a new WindowBase instance wrapping the given browser window.
    *
-   * @param {DOMWindow} window
+   * @param {DOMWindow} _window
    *        The browser window for which to return a wrapper.
    *
    * @returns {WindowBase}
    * @protected
    * @abstract
    */
-  wrapWindow(window) {
+  wrapWindow(_window) {
     throw new Error("Not implemented");
   }
   /* eslint-enable valid-jsdoc */
@@ -2221,6 +2359,9 @@ function getUserContextIdForCookieStoreId(
       throw new ExtensionError(
         `No cookie store exists with ID ${cookieStoreId}`
       );
+    }
+    if (!extension.canAccessContainer(userContextId)) {
+      throw new ExtensionError(`Cannot access ${cookieStoreId}`);
     }
     return userContextId;
   }

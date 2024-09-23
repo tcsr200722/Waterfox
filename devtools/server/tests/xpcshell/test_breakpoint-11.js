@@ -1,6 +1,5 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
-/* eslint-disable no-shadow, max-nested-callbacks */
 
 "use strict";
 
@@ -10,7 +9,7 @@
  */
 
 add_task(
-  threadFrontTest(async ({ threadFront, client, debuggee }) => {
+  threadFrontTest(async ({ threadFront, debuggee }) => {
     const packet = await executeOnNextTickAndWaitForPause(
       () => evaluateTestCode(debuggee),
       threadFront
@@ -69,11 +68,10 @@ add_task(
 );
 
 function evaluateTestCode(debuggee) {
-  /* eslint-disable */
-      Cu.evalInSandbox("var line0 = Error().lineNumber;\n" +
-                       "debugger;\n" +                      // line0 + 1
-                       "var a = { b: 1, f: function() { return 2; } };\n" + // line0+2
-                       "var res = a.f();\n",               // line0 + 3
-                       debuggee);
-      /* eslint-enable */
+  // prettier-ignore
+  Cu.evalInSandbox("var line0 = Error().lineNumber;\n" +
+                   "debugger;\n" +                      // line0 + 1
+                   "var a = { b: 1, f: function() { return 2; } };\n" + // line0+2
+                   "var res = a.f();\n",               // line0 + 3
+                   debuggee);
 }

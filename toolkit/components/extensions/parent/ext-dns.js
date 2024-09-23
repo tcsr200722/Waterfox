@@ -25,13 +25,10 @@ function getErrorString(nsresult) {
 }
 
 this.dns = class extends ExtensionAPI {
-  getAPI(context) {
-    const dnss = Cc["@mozilla.org/network/dns-service;1"].getService(
-      Ci.nsIDNSService
-    );
+  getAPI() {
     return {
       dns: {
-        resolve: function(hostname, flags) {
+        resolve: function (hostname, flags) {
           let dnsFlags = flags.reduce(
             (mask, flag) => mask | dnssFlags[flag],
             0
@@ -43,11 +40,12 @@ this.dns = class extends ExtensionAPI {
               addresses: [],
             };
             let listener = {
-              onLookupComplete: function(inRequest, inRecord, inStatus) {
+              onLookupComplete: function (inRequest, inRecord, inStatus) {
                 if (inRequest === request) {
                   if (!Components.isSuccessCode(inStatus)) {
                     return reject({ message: getErrorString(inStatus) });
                   }
+                  inRecord.QueryInterface(Ci.nsIDNSAddrRecord);
                   if (dnsFlags & Ci.nsIDNSService.RESOLVE_CANONICAL_NAME) {
                     try {
                       response.canonicalName = inRecord.canonicalName;
@@ -68,9 +66,11 @@ this.dns = class extends ExtensionAPI {
               },
             };
             try {
-              request = dnss.asyncResolve(
+              request = Services.dns.asyncResolve(
                 hostname,
+                Ci.nsIDNSService.RESOLVE_TYPE_DEFAULT,
                 dnsFlags,
+                null, // AdditionalInfo
                 listener,
                 null,
                 {} /* defaultOriginAttributes */

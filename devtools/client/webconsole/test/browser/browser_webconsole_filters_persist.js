@@ -9,7 +9,7 @@ const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/" +
   "test/browser/test-console-filters.html";
 
-add_task(async function() {
+add_task(async function () {
   let hud = await openNewTabAndConsole(TEST_URI);
 
   let filterButtons = await getFilterButtons(hud);
@@ -32,7 +32,9 @@ add_task(async function() {
   });
 
   // Wait for the CSS warning to be displayed so we don't have a pending promise.
-  await waitFor(() => findMessage(hud, "Expected color but found ‘blouge’"));
+  await waitFor(() =>
+    findWarningMessage(hud, "Expected color but found ‘blouge’")
+  );
 
   info("Close and re-open the console");
   await closeTabAndToolbox();
@@ -43,6 +45,12 @@ add_task(async function() {
   filterButtons.forEach(filterButton => {
     ok(filterIsEnabled(filterButton), "filter is enabled");
   });
+
+  // Wait for the CSS warning to be displayed so we don't have a pending promise.
+  await waitFor(() =>
+    findWarningMessage(hud, "Expected color but found ‘blouge’")
+  );
+
   // Check that the ui settings were persisted.
   await closeTabAndToolbox();
 });

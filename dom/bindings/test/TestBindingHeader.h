@@ -15,6 +15,7 @@
 #include "nsCOMPtr.h"
 #include "nsGenericHTMLElement.h"
 #include "nsWrapperCache.h"
+#include "js/Object.h"  // JS::GetClass
 
 // Forward declare this before we include TestCodeGenBinding.h, because that
 // header relies on including this one for it, for ParentDict. Hopefully it
@@ -23,6 +24,7 @@ namespace mozilla {
 namespace dom {
 class DocGroup;
 class TestExternalInterface;
+class TestUnionArguments;
 class Promise;
 }  // namespace dom
 }  // namespace mozilla
@@ -128,29 +130,6 @@ class TestInterface : public nsISupports, public nsWrapperCache {
       JS::Handle<JSObject*>, JS::Handle<JSObject*>, const Sequence<Dict>&,
       JS::Handle<JS::Value>, const Optional<JS::Handle<JSObject*>>&,
       const Optional<JS::Handle<JSObject*>>&, ErrorResult&);
-
-  static already_AddRefed<TestInterface> Test3(const GlobalObject&,
-                                               const LongOrStringAnyRecord&,
-                                               ErrorResult&);
-
-  static already_AddRefed<TestInterface> Test4(
-      const GlobalObject&, const Record<nsString, Record<nsString, JS::Value>>&,
-      ErrorResult&);
-
-  static already_AddRefed<TestInterface> Test5(
-      const GlobalObject&,
-      const Record<
-          nsString,
-          Sequence<Record<nsString,
-                          Record<nsString, Sequence<Sequence<JS::Value>>>>>>&,
-      ErrorResult&);
-
-  static already_AddRefed<TestInterface> Test6(
-      const GlobalObject&,
-      const Sequence<Record<
-          nsCString,
-          Sequence<Sequence<Record<nsCString, Record<nsString, JS::Value>>>>>>&,
-      ErrorResult&);
 
   // Integer types
   int8_t ReadonlyByte();
@@ -581,12 +560,13 @@ class TestInterface : public nsISupports, public nsWrapperCache {
       TestNullableTypedArrayReturn&, TestSequenceReturn&,
       TestNullableSequenceReturn&, TestIntegerArguments&,
       TestInterfaceArguments&, TestStringEnumArguments&, TestObjectArguments&,
-      TestOptionalArguments&, TestVoidConstruction&, TestIntegerConstruction&,
-      TestBooleanConstruction&, TestFloatConstruction&, TestStringConstruction&,
-      TestEnumConstruction&, TestInterfaceConstruction&,
-      TestExternalInterfaceConstruction&, TestCallbackInterfaceConstruction&,
-      TestCallbackConstruction&, TestObjectConstruction&,
-      TestTypedArrayConstruction&, TestSequenceConstruction&);
+      TestOptionalArguments&, TestUnionArguments&, TestUndefinedConstruction&,
+      TestIntegerConstruction&, TestBooleanConstruction&,
+      TestFloatConstruction&, TestStringConstruction&, TestEnumConstruction&,
+      TestInterfaceConstruction&, TestExternalInterfaceConstruction&,
+      TestCallbackInterfaceConstruction&, TestCallbackConstruction&,
+      TestObjectConstruction&, TestTypedArrayConstruction&,
+      TestSequenceConstruction&);
 
   // Any types
   void PassAny(JSContext*, JS::Handle<JS::Value>);
@@ -673,7 +653,7 @@ class TestInterface : public nsISupports, public nsWrapperCache {
     if (arg.IsNull()) {
     } else if (arg.IsObject()) {
       JS::Rooted<JSObject*> obj(cx, arg.GetAsObject());
-      JS_GetClass(obj);
+      JS::GetClass(obj);
       returnValue.SetAsObject() = obj;
     } else {
       int32_t i = arg.GetAsLong();
@@ -728,7 +708,39 @@ class TestInterface : public nsISupports, public nsWrapperCache {
   // void PassUnionWithInterfaces(const TestInterfaceOrTestExternalInterface&
   // arg); void PassUnionWithInterfacesAndNullable(const
   // TestInterfaceOrNullOrTestExternalInterface& arg);
-  void PassUnionWithArrayBuffer(const ArrayBufferOrLong&);
+  void PassUnionWithArrayBuffer(const UTF8StringOrArrayBuffer& aArg) {
+    auto processor = [](const Span<uint8_t>& aData) -> int { return -1; };
+    static_assert(
+        std::is_same_v<decltype(ProcessTypedArraysFixed(aArg, processor)),
+                       Maybe<int>>,
+        "If the union can contain non-typedarray members we need to signal "
+        "that with a Maybe<…> rv.");
+  }
+  void PassUnionWithArrayBufferOrNull(
+      const UTF8StringOrArrayBufferOrNull& aArg) {
+    auto processor = [](const Span<uint8_t>& aData) -> int { return -1; };
+    static_assert(
+        std::is_same_v<decltype(ProcessTypedArraysFixed(aArg, processor)),
+                       Maybe<int>>,
+        "If the union can contain non-typedarray members or null we need to "
+        "signal that with a Maybe<…> rv.");
+  }
+  void PassUnionWithTypedArrays(const ArrayBufferViewOrArrayBuffer& aArg) {
+    auto processor = [](const Span<uint8_t>& aData) -> int { return -1; };
+    static_assert(
+        std::is_same_v<decltype(ProcessTypedArraysFixed(aArg, processor)), int>,
+        "If the union can't contain non-typedarray members or null we can just "
+        "return the result of calling the lambda.");
+  }
+  void PassUnionWithTypedArraysOrNull(
+      const ArrayBufferViewOrArrayBufferOrNull& aArg) {
+    auto processor = [](const Span<uint8_t>& aData) -> int { return -1; };
+    static_assert(
+        std::is_same_v<decltype(ProcessTypedArraysFixed(aArg, processor)),
+                       Maybe<int>>,
+        "If the union can contain non-typedarray members or null we need to "
+        "signal that with a Maybe<…> rv.");
+  }
   void PassUnionWithString(JSContext*, const StringOrObject&);
   void PassUnionWithEnum(JSContext*, const SupportedTypeOrObject&);
   // void PassUnionWithCallback(JSContext*, const TestCallbackOrLong&);
@@ -825,11 +837,24 @@ class TestInterface : public nsISupports, public nsWrapperCache {
   void PassRecordOfUnions2(JSContext*,
                            const Record<nsString, OwningObjectOrLong>&);
 
+  void PassUnionWithSequenceOfUnions(
+      const StringOrOnlyForUseInInnerUnionOrCanvasPatternSequence& arg);
+  void PassUnionWithRecordOfUnions(
+      const LongSequenceOrStringOnlyForUseInInnerUnionOrLongSequenceRecord&
+          arg);
+
   void ReceiveUnion(OwningCanvasPatternOrCanvasGradient&);
   void ReceiveUnion2(JSContext*, OwningObjectOrLong&);
   void ReceiveUnionContainingNull(OwningCanvasPatternOrNullOrCanvasGradient&);
   void ReceiveNullableUnion(Nullable<OwningCanvasPatternOrCanvasGradient>&);
   void ReceiveNullableUnion2(JSContext*, Nullable<OwningObjectOrLong>&);
+  void ReceiveUnionWithUndefined(OwningUndefinedOrCanvasPattern&);
+  void ReceiveUnionWithNullableUndefined(OwningUndefinedOrNullOrCanvasPattern&);
+  void ReceiveUnionWithUndefinedAndNullable(
+      OwningUndefinedOrCanvasPatternOrNull&);
+  void ReceiveNullableUnionWithUndefined(
+      Nullable<OwningUndefinedOrCanvasPattern>&);
+
   void GetWritableUnion(OwningCanvasPatternOrCanvasGradient&);
   void SetWritableUnion(const CanvasPatternOrCanvasGradient&);
   void GetWritableUnionContainingNull(
@@ -838,6 +863,20 @@ class TestInterface : public nsISupports, public nsWrapperCache {
       const CanvasPatternOrNullOrCanvasGradient&);
   void GetWritableNullableUnion(Nullable<OwningCanvasPatternOrCanvasGradient>&);
   void SetWritableNullableUnion(const Nullable<CanvasPatternOrCanvasGradient>&);
+  void GetWritableUnionWithUndefined(OwningUndefinedOrCanvasPattern&);
+  void SetWritableUnionWithUndefined(const UndefinedOrCanvasPattern&);
+  void GetWritableUnionWithNullableUndefined(
+      OwningUndefinedOrNullOrCanvasPattern&);
+  void SetWritableUnionWithNullableUndefined(
+      const UndefinedOrNullOrCanvasPattern&);
+  void GetWritableUnionWithUndefinedAndNullable(
+      OwningUndefinedOrCanvasPatternOrNull&);
+  void SetWritableUnionWithUndefinedAndNullable(
+      const UndefinedOrCanvasPatternOrNull&);
+  void GetWritableNullableUnionWithUndefined(
+      Nullable<OwningUndefinedOrCanvasPattern>&);
+  void SetWritableNullableUnionWithUndefined(
+      const Nullable<UndefinedOrCanvasPattern>&);
 
   // Promise types
   void PassPromise(Promise&);
@@ -846,6 +885,24 @@ class TestInterface : public nsISupports, public nsWrapperCache {
   void PassPromiseRecord(const Record<nsString, RefPtr<Promise>>&);
   Promise* ReceivePromise();
   already_AddRefed<Promise> ReceiveAddrefedPromise();
+
+  // ObservableArray types
+  void OnDeleteBooleanObservableArray(bool, uint32_t, ErrorResult&);
+  void OnSetBooleanObservableArray(bool, uint32_t, ErrorResult&);
+  void OnDeleteObjectObservableArray(JSContext*, JS::Handle<JSObject*>,
+                                     uint32_t, ErrorResult&);
+  void OnSetObjectObservableArray(JSContext*, JS::Handle<JSObject*>, uint32_t,
+                                  ErrorResult&);
+  void OnDeleteAnyObservableArray(JSContext*, JS::Handle<JS::Value>, uint32_t,
+                                  ErrorResult&);
+  void OnSetAnyObservableArray(JSContext*, JS::Handle<JS::Value>, uint32_t,
+                               ErrorResult&);
+  void OnDeleteInterfaceObservableArray(TestInterface*, uint32_t, ErrorResult&);
+  void OnSetInterfaceObservableArray(TestInterface*, uint32_t, ErrorResult&);
+  void OnDeleteNullableObservableArray(const Nullable<int>&, uint32_t,
+                                       ErrorResult&);
+  void OnSetNullableObservableArray(const Nullable<int>&, uint32_t,
+                                    ErrorResult&);
 
   // binaryNames tests
   void MethodRenamedTo();
@@ -988,6 +1045,9 @@ class TestInterface : public nsISupports, public nsWrapperCache {
   void ConditionalOnSecureContext6();
   void ConditionalOnSecureContext7();
   void ConditionalOnSecureContext8();
+
+  bool ConditionalOnSecureContext9();
+  void ConditionalOnSecureContext10();
 
   // Miscellania
   int32_t AttrWithLenientThis();
@@ -1311,6 +1371,48 @@ class TestInterface : public nsISupports, public nsWrapperCache {
   void PassString(OwningNonNull<nsAString>&) = delete;
 };
 
+class TestLegacyFactoryFunctionInterface : public nsISupports,
+                                           public nsWrapperCache {
+ public:
+  NS_DECL_ISUPPORTS
+
+  // We need a GetParentObject to make binding codegen happy
+  virtual nsISupports* GetParentObject();
+
+  // And now our actual WebIDL API
+  static already_AddRefed<TestLegacyFactoryFunctionInterface> Test3(
+      const GlobalObject&, const LongOrStringAnyRecord&, ErrorResult&);
+
+  static already_AddRefed<TestLegacyFactoryFunctionInterface> Test4(
+      const GlobalObject&, const Record<nsString, Record<nsString, JS::Value>>&,
+      ErrorResult&);
+};
+
+class TestLegacyFactoryFunctionInterface2 : public nsISupports,
+                                            public nsWrapperCache {
+ public:
+  NS_DECL_ISUPPORTS
+
+  // We need a GetParentObject to make binding codegen happy
+  virtual nsISupports* GetParentObject();
+
+  // And now our actual WebIDL API
+  static already_AddRefed<TestLegacyFactoryFunctionInterface2> Test5(
+      const GlobalObject&,
+      const Record<
+          nsString,
+          Sequence<Record<nsString,
+                          Record<nsString, Sequence<Sequence<JS::Value>>>>>>&,
+      ErrorResult&);
+
+  static already_AddRefed<TestLegacyFactoryFunctionInterface2> Test6(
+      const GlobalObject&,
+      const Sequence<Record<
+          nsCString,
+          Sequence<Sequence<Record<nsCString, Record<nsString, JS::Value>>>>>>&,
+      ErrorResult&);
+};
+
 class TestIndexedGetterInterface : public nsISupports, public nsWrapperCache {
  public:
   NS_DECL_ISUPPORTS
@@ -1531,15 +1633,15 @@ class TestWorkerExposedInterface : public nsISupports, public nsWrapperCache {
   // We need a GetParentObject to make binding codegen happy
   nsISupports* GetParentObject();
 
-  void NeedsSubjectPrincipalMethod(Maybe<nsIPrincipal*>);
-  bool NeedsSubjectPrincipalAttr(Maybe<nsIPrincipal*>);
-  void SetNeedsSubjectPrincipalAttr(bool, Maybe<nsIPrincipal*>);
+  void NeedsSubjectPrincipalMethod(nsIPrincipal&);
+  bool NeedsSubjectPrincipalAttr(nsIPrincipal&);
+  void SetNeedsSubjectPrincipalAttr(bool, nsIPrincipal&);
   void NeedsCallerTypeMethod(CallerType);
   bool NeedsCallerTypeAttr(CallerType);
   void SetNeedsCallerTypeAttr(bool, CallerType);
-  void NeedsNonSystemSubjectPrincipalMethod(Maybe<nsIPrincipal*>);
-  bool NeedsNonSystemSubjectPrincipalAttr(Maybe<nsIPrincipal*>);
-  void SetNeedsNonSystemSubjectPrincipalAttr(bool, Maybe<nsIPrincipal*>);
+  void NeedsNonSystemSubjectPrincipalMethod(nsIPrincipal*);
+  bool NeedsNonSystemSubjectPrincipalAttr(nsIPrincipal*);
+  void SetNeedsNonSystemSubjectPrincipalAttr(bool, nsIPrincipal*);
 };
 
 class TestHTMLConstructorInterface : public nsGenericHTMLElement {
@@ -1713,6 +1815,20 @@ class TestPrefChromeOnlySCFuncConstructorForInterface : public nsISupports,
   // in the generated constructor.
   static already_AddRefed<TestPrefChromeOnlySCFuncConstructorForInterface>
   Constructor(const GlobalObject&);
+};
+
+class TestCallbackDictUnionOverload : public nsISupports,
+                                      public nsWrapperCache {
+ public:
+  NS_DECL_ISUPPORTS
+  virtual nsISupports* GetParentObject();
+
+  void Overload1(bool);
+  void Overload1(TestCallback&);
+  void Overload1(const GrandparentDict&);
+  void Overload2(bool);
+  void Overload2(const GrandparentDict&);
+  void Overload2(TestCallback&);
 };
 
 }  // namespace dom

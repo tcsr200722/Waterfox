@@ -3,16 +3,15 @@
 
 "use strict";
 
-XPCOMUtils.defineLazyModuleGetters(this, {
+ChromeUtils.defineESModuleGetters(this, {
   UrlbarProviderInterventions:
-    "resource:///modules/UrlbarProviderInterventions.jsm",
+    "resource:///modules/UrlbarProviderInterventions.sys.mjs",
 });
 
-add_task(async function init() {
+add_setup(async function () {
+  Services.telemetry.clearEvents();
+  Services.telemetry.clearScalars();
   makeProfileResettable();
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.update1.interventions", true]],
-  });
 });
 
 // Tests the refresh tip.
@@ -26,10 +25,11 @@ add_task(async function refresh() {
       "Restore default settings and remove old add-ons for optimal performance.",
     button: /^Refresh .+…$/,
     awaitCallback() {
-      return promiseAlertDialog("cancel", [
+      return BrowserTestUtils.promiseAlertDialog(
+        "cancel",
         "chrome://global/content/resetProfile.xhtml",
-        "chrome://global/content/resetProfile.xul",
-      ]);
+        { isSubDialog: true }
+      );
     },
   });
 });
@@ -38,16 +38,21 @@ add_task(async function refresh() {
 add_task(async function clear() {
   // Pick the tip, which should open the refresh dialog.  Click its cancel
   // button.
+  let useOldClearHistoryDialog = Services.prefs.getBoolPref(
+    "privacy.sanitize.useOldClearHistoryDialog"
+  );
+  let dialogURL = useOldClearHistoryDialog
+    ? "chrome://browser/content/sanitize.xhtml"
+    : "chrome://browser/content/sanitize_v2.xhtml";
   await checkIntervention({
     searchString: SEARCH_STRINGS.CLEAR,
     tip: UrlbarProviderInterventions.TIP_TYPE.CLEAR,
     title: "Clear your cache, cookies, history and more.",
     button: "Choose What to Clear…",
     awaitCallback() {
-      return promiseAlertDialog("cancel", [
-        "chrome://browser/content/sanitize.xhtml",
-        "chrome://browser/content/sanitize.xul",
-      ]);
+      return BrowserTestUtils.promiseAlertDialog("cancel", dialogURL, {
+        isSubDialog: true,
+      });
     },
   });
 });
@@ -76,8 +81,8 @@ add_task(async function clear_private() {
   await BrowserTestUtils.closeWindow(win);
 });
 
-// Tests that if multiple interventions of the same type are seen in the same
-// engagement, only one instance is recorded in Telemetry.
+// Tests that only the intervention visible at the time of abandonment or
+// engagement is registered in Telemetry.
 add_task(async function multipleInterventionsInOneEngagement() {
   Services.telemetry.clearScalars();
   let result = (await awaitTip(SEARCH_STRINGS.REFRESH, window))[0];
@@ -97,7 +102,7 @@ add_task(async function multipleInterventionsInOneEngagement() {
   );
 
   // Blur the urlbar so that the engagement is ended.
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
 
   const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);
   // We should only record one impression for the Refresh tip. Although it was
@@ -108,12 +113,79 @@ add_task(async function multipleInterventionsInOneEngagement() {
     `${UrlbarProviderInterventions.TIP_TYPE.REFRESH}-shown`,
     1
   );
-  TelemetryTestUtils.assertKeyedScalar(
-    scalars,
-    "urlbar.tips",
-    `${UrlbarProviderInterventions.TIP_TYPE.CLEAR}-shown`,
-    1
+  Assert.ok(
+    !scalars["urlbar.tips"][
+      `${UrlbarProviderInterventions.TIP_TYPE.CLEAR}-shown`
+    ],
+    `${UrlbarProviderInterventions.TIP_TYPE.CLEAR}-shown is not recorded as an
+     impression`
   );
+});
+
+// Test the result of UrlbarProviderInterventions.isActive()
+// and whether or not the function calucates the score.
+add_task(async function testIsActive() {
+  const testData = [
+    {
+      description: "Test for search string that activates the intervention",
+      searchString: "firefox slow",
+      expectedActive: true,
+      expectedScoreCalculated: true,
+    },
+    {
+      description:
+        "Test for search string that does not activate the intervention",
+      searchString: "example slow",
+      expectedActive: false,
+      expectedScoreCalculated: true,
+    },
+    {
+      description: "Test for empty search string",
+      searchString: "",
+      expectedActive: false,
+      expectedScoreCalculated: false,
+    },
+    {
+      description: "Test for an URL",
+      searchString: "https://firefox/slow",
+      expectedActive: false,
+      expectedScoreCalculated: false,
+    },
+    {
+      description: "Test for a data URL",
+      searchString: "data:text/html,<div>firefox slow</div>",
+      expectedActive: false,
+      expectedScoreCalculated: false,
+    },
+    {
+      description: "Test for string like URL",
+      searchString: "firefox://slow",
+      expectedActive: false,
+      expectedScoreCalculated: false,
+    },
+  ];
+
+  for (const {
+    description,
+    searchString,
+    expectedActive,
+    expectedScoreCalculated,
+  } of testData) {
+    info(description);
+
+    // Set null to currentTip to know whether or not UrlbarProviderInterventions
+    // calculated the score.
+    UrlbarProviderInterventions.currentTip = null;
+
+    const isActive = UrlbarProviderInterventions.isActive({ searchString });
+    Assert.equal(isActive, expectedActive, "Result of isAcitive is correct");
+    const isScoreCalculated = UrlbarProviderInterventions.currentTip !== null;
+    Assert.equal(
+      isScoreCalculated,
+      expectedScoreCalculated,
+      "The score is calculated correctly"
+    );
+  }
 });
 
 add_task(async function tipsAreEnglishOnly() {
@@ -123,84 +195,74 @@ add_task(async function tipsAreEnglishOnly() {
     result.payload.type,
     UrlbarProviderInterventions.TIP_TYPE.REFRESH
   );
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
 
   // We will need to fetch new engines when we switch locales.
-  let searchReinit = SearchTestUtils.promiseSearchNotification(
-    "reinit-complete"
-  );
+  let enginesReloaded =
+    SearchTestUtils.promiseSearchNotification("engines-reloaded");
 
   const originalAvailable = Services.locale.availableLocales;
   const originalRequested = Services.locale.requestedLocales;
   Services.locale.availableLocales = ["en-US", "de"];
   Services.locale.requestedLocales = ["de"];
 
-  registerCleanupFunction(async () => {
-    let searchReinit2 = SearchTestUtils.promiseSearchNotification(
-      "reinit-complete"
-    );
+  let cleanup = async () => {
+    let reloadPromise =
+      SearchTestUtils.promiseSearchNotification("engines-reloaded");
     Services.locale.requestedLocales = originalRequested;
     Services.locale.availableLocales = originalAvailable;
-    await searchReinit2;
-  });
+    await reloadPromise;
+    cleanup = null;
+  };
+  registerCleanupFunction(() => cleanup?.());
 
   let appLocales = Services.locale.appLocalesAsBCP47;
   Assert.equal(appLocales[0], "de");
 
-  await searchReinit;
+  await enginesReloaded;
 
   // Interventions should no longer work in the new locale.
   await awaitNoTip(SEARCH_STRINGS.CLEAR, window);
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
+
+  await cleanup();
 });
 
-/**
- * Picks the help button from an Intervention. We spoof the Intervention in this
- * test because our withDNSRedirect helper cannot handle the HTTPS SUMO links.
- */
-add_task(async function pickHelpButton() {
-  const helpUrl = "http://example.com/";
-  let results = [
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.URL,
-      UrlbarUtils.RESULT_SOURCE.HISTORY,
-      { url: "http://mozilla.org/a" }
-    ),
-    new UrlbarResult(
-      UrlbarUtils.RESULT_TYPE.TIP,
-      UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
-      {
-        type: UrlbarProviderInterventions.TIP_TYPE.CLEAR,
-        text: "This is a test tip.",
-        buttonText: "Done",
-        helpUrl,
-      }
-    ),
-  ];
-  let interventionProvider = new UrlbarTestUtils.TestProvider({
-    results,
-    priority: 2,
-  });
-  UrlbarProvidersManager.registerProvider(interventionProvider);
-
-  registerCleanupFunction(() => {
-    UrlbarProvidersManager.unregisterProvider(interventionProvider);
-  });
-
+// Tests the help command (using the clear intervention). It should open the
+// help page and it should not trigger the primary intervention behavior.
+add_task(async function pickHelp() {
   await BrowserTestUtils.withNewTab("about:blank", async () => {
-    let [result, element] = await awaitTip(SEARCH_STRINGS.CLEAR);
+    // Do a search that triggers the clear tip.
+    let [result] = await awaitTip(SEARCH_STRINGS.CLEAR);
     Assert.strictEqual(
       result.payload.type,
       UrlbarProviderInterventions.TIP_TYPE.CLEAR
     );
 
-    let helpButton = element._elements.get("helpButton");
-    Assert.ok(BrowserTestUtils.is_visible(helpButton));
-    EventUtils.synthesizeMouseAtCenter(helpButton, {});
+    // Click the help command and wait for the help page to load.
+    Assert.ok(
+      !!result.payload.helpUrl,
+      "The result's helpUrl should be defined and non-empty: " +
+        JSON.stringify(result.payload.helpUrl)
+    );
+    let loadPromise = BrowserTestUtils.browserLoaded(
+      gBrowser.selectedBrowser,
+      false,
+      result.payload.helpUrl
+    );
+    await UrlbarTestUtils.openResultMenuAndPressAccesskey(window, "h", {
+      openByMouse: true,
+      resultIndex: 1,
+    });
+    info("Waiting for help URL to load in the current tab");
+    await loadPromise;
 
-    await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, helpUrl);
-    await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+    // Wait a bit and make sure the clear recent history dialog did not open.
+    // eslint-disable-next-line mozilla/no-arbitrary-setTimeout
+    await new Promise(r => setTimeout(r, 2000));
+    Assert.strictEqual(gDialogBox.isOpen, false, "No dialog should be open");
 
+    // Check telemetry.
     const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);
     TelemetryTestUtils.assertKeyedScalar(
       scalars,

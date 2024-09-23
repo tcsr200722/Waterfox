@@ -8,7 +8,6 @@
 #define vm_PromiseObject_h
 
 #include "mozilla/Assertions.h"  // MOZ_ASSERT
-#include "mozilla/Attributes.h"  // MOZ_MUST_USE
 
 #include <stdint.h>  // int32_t, uint64_t
 
@@ -21,6 +20,9 @@
 class JS_PUBLIC_API JSObject;
 
 namespace js {
+
+class JS_PUBLIC_API GenericPrinter;
+class JSONPrinter;
 
 class SavedFrame;
 
@@ -68,9 +70,17 @@ enum PromiseSlots {
 // The PromiseSlot_RejectFunction slot is not used.
 #define PROMISE_FLAG_DEFAULT_RESOLVING_FUNCTIONS 0x08
 
+// This promise's Promise Resolve Function's [[AlreadyResolved]].[[Value]] is
+// set to true.
+//
+// Valid only for promises with PROMISE_FLAG_DEFAULT_RESOLVING_FUNCTIONS.
+// For promises without PROMISE_FLAG_DEFAULT_RESOLVING_FUNCTIONS, Promise
+// Resolve/Reject Function's "Promise" slot represents the value.
+#define PROMISE_FLAG_DEFAULT_RESOLVING_FUNCTIONS_ALREADY_RESOLVED 0x10
+
 // This promise is either the return value of an async function invocation or
 // an async generator's method.
-#define PROMISE_FLAG_ASYNC 0x10
+#define PROMISE_FLAG_ASYNC 0x20
 
 // This promise knows how to propagate information required to keep track of
 // whether an activation behavior was in progress when the original promise in
@@ -79,7 +89,7 @@ enum PromiseSlots {
 // It is used by the embedder in order to request SpiderMonkey to keep track of
 // this information in a Promise, and also to propagate it to newly created
 // promises while processing Promise#then.
-#define PROMISE_FLAG_REQUIRES_USER_INTERACTION_HANDLING 0x20
+#define PROMISE_FLAG_REQUIRES_USER_INTERACTION_HANDLING 0x40
 
 // This flag indicates whether an activation behavior was in progress when the
 // original promise in the promise chain was created.  Activation behavior is a
@@ -87,7 +97,7 @@ enum PromiseSlots {
 // https://html.spec.whatwg.org/multipage/interaction.html#triggered-by-user-activation
 // This flag is only effective when the
 // PROMISE_FLAG_REQUIRES_USER_INTERACTION_HANDLING is set.
-#define PROMISE_FLAG_HAD_USER_INTERACTION_UPON_CREATION 0x40
+#define PROMISE_FLAG_HAD_USER_INTERACTION_UPON_CREATION 0x80
 
 struct PromiseReactionRecordBuilder;
 
@@ -128,14 +138,14 @@ class PromiseObject : public NativeObject {
   static PromiseObject* unforgeableResolveWithNonPromise(
       JSContext* cx, JS::Handle<JS::Value> value);
 
-  int32_t flags() { return getFixedSlot(PromiseSlot_Flags).toInt32(); }
+  int32_t flags() const { return getFixedSlot(PromiseSlot_Flags).toInt32(); }
 
   void setHandled() {
     setFixedSlot(PromiseSlot_Flags,
                  JS::Int32Value(flags() | PROMISE_FLAG_HANDLED));
   }
 
-  JS::PromiseState state() {
+  JS::PromiseState state() const {
     int32_t flags = this->flags();
     if (!(flags & PROMISE_FLAG_RESOLVED)) {
       MOZ_ASSERT(!(flags & PROMISE_FLAG_FULFILLED));
@@ -147,32 +157,32 @@ class PromiseObject : public NativeObject {
     return JS::PromiseState::Rejected;
   }
 
-  JS::Value reactions() {
+  JS::Value reactions() const {
     MOZ_ASSERT(state() == JS::PromiseState::Pending);
     return getFixedSlot(PromiseSlot_ReactionsOrResult);
   }
 
-  JS::Value value() {
+  JS::Value value() const {
     MOZ_ASSERT(state() == JS::PromiseState::Fulfilled);
     return getFixedSlot(PromiseSlot_ReactionsOrResult);
   }
 
-  JS::Value reason() {
+  JS::Value reason() const {
     MOZ_ASSERT(state() == JS::PromiseState::Rejected);
     return getFixedSlot(PromiseSlot_ReactionsOrResult);
   }
 
-  JS::Value valueOrReason() {
+  JS::Value valueOrReason() const {
     MOZ_ASSERT(state() != JS::PromiseState::Pending);
     return getFixedSlot(PromiseSlot_ReactionsOrResult);
   }
 
-  static MOZ_MUST_USE bool resolve(JSContext* cx,
+  [[nodiscard]] static bool resolve(JSContext* cx,
+                                    JS::Handle<PromiseObject*> promise,
+                                    JS::Handle<JS::Value> resolutionValue);
+  [[nodiscard]] static bool reject(JSContext* cx,
                                    JS::Handle<PromiseObject*> promise,
-                                   JS::Handle<JS::Value> resolutionValue);
-  static MOZ_MUST_USE bool reject(JSContext* cx,
-                                  JS::Handle<PromiseObject*> promise,
-                                  JS::Handle<JS::Value> rejectionValue);
+                                   JS::Handle<JS::Value> rejectionValue);
 
   static void onSettled(JSContext* cx, JS::Handle<PromiseObject*> promise,
                         JS::Handle<js::SavedFrame*> rejectionStack);
@@ -187,7 +197,7 @@ class PromiseObject : public NativeObject {
     return resolutionTime() - allocationTime();
   }
 
-  MOZ_MUST_USE bool dependentPromises(
+  [[nodiscard]] bool dependentPromises(
       JSContext* cx, JS::MutableHandle<GCVector<Value>> values);
 
   // Return the process-unique ID of this promise. Only used by the debugger.
@@ -206,7 +216,7 @@ class PromiseObject : public NativeObject {
   // false. If a builder call returns false, iteration stops, and this function
   // returns false; the build should set an error on 'cx' as appropriate.
   // Otherwise, this function returns true.
-  MOZ_MUST_USE bool forEachReactionRecord(
+  [[nodiscard]] bool forEachReactionRecord(
       JSContext* cx, PromiseReactionRecordBuilder& builder);
 
   bool isUnhandled() {
@@ -227,6 +237,11 @@ class PromiseObject : public NativeObject {
   void setHadUserInteractionUponCreation(bool state);
 
   void copyUserInteractionFlagsFrom(PromiseObject& rhs);
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dumpOwnFields(js::JSONPrinter& json) const;
+  void dumpOwnStringContent(js::GenericPrinter& out) const;
+#endif
 };
 
 /**

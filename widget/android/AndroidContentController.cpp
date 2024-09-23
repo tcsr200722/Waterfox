@@ -24,26 +24,30 @@ void AndroidContentController::Destroy() {
 }
 
 void AndroidContentController::UpdateOverscrollVelocity(
-    const float aX, const float aY, const bool aIsRootContent) {
+    const ScrollableLayerGuid& aGuid, const float aX, const float aY,
+    const bool aIsRootContent) {
   if (aIsRootContent && mAndroidWindow) {
     mAndroidWindow->UpdateOverscrollVelocity(aX, aY);
   }
 }
 
 void AndroidContentController::UpdateOverscrollOffset(
-    const float aX, const float aY, const bool aIsRootContent) {
+    const ScrollableLayerGuid& aGuid, const float aX, const float aY,
+    const bool aIsRootContent) {
   if (aIsRootContent && mAndroidWindow) {
     mAndroidWindow->UpdateOverscrollOffset(aX, aY);
   }
 }
 
 void AndroidContentController::NotifyAPZStateChange(
-    const ScrollableLayerGuid& aGuid, APZStateChange aChange, int aArg) {
+    const ScrollableLayerGuid& aGuid, APZStateChange aChange, int aArg,
+    Maybe<uint64_t> aInputBlockId) {
   // This function may get invoked twice, if the first invocation is not on
   // the main thread then the ChromeProcessController version of this function
   // will redispatch to the main thread. We want to make sure that our handling
   // only happens on the main thread.
-  ChromeProcessController::NotifyAPZStateChange(aGuid, aChange, aArg);
+  ChromeProcessController::NotifyAPZStateChange(aGuid, aChange, aArg,
+                                                aInputBlockId);
   if (NS_IsMainThread()) {
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();

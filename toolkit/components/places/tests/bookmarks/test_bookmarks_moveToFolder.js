@@ -3,6 +3,8 @@
 
 "use strict";
 
+const BOOKMARK_DATE_ADDED = new Date();
+
 function ensurePosition(info, parentGuid, index) {
   print(`Checking ${info.guid}`);
   checkBookmarkObject(info);
@@ -25,6 +27,7 @@ function insertChildren(folder, items) {
       children.push({
         title: `${i}`,
         url: "http://example.com",
+        dateAdded: BOOKMARK_DATE_ADDED,
       });
     } else {
       throw new Error(`Type ${items[i].type} is not supported.`);
@@ -198,7 +201,7 @@ async function testMoveToFolder(details) {
 
   let observer;
   if (details.notifications) {
-    observer = expectNotifications(true);
+    observer = expectPlacesObserverNotifications(["bookmark-moved"]);
   }
 
   let movedItems = await PlacesUtils.bookmarks.moveToFolder(
@@ -255,20 +258,24 @@ async function testMoveToFolder(details) {
       let newFolder = notification.newFolder == "folderA" ? folderA : folderB;
 
       expectedNotifications.push({
-        name: "onItemMoved",
-        arguments: [
-          await PlacesUtils.promiseItemId(origItem.guid),
-          await PlacesUtils.promiseItemId(origItem.parentGuid),
-          notification.originalIndex,
-          await PlacesUtils.promiseItemId(newFolder.guid),
-          notification.newIndex,
-          PlacesUtils.bookmarks.TYPE_BOOKMARK,
-          origItem.guid,
-          origItem.parentGuid,
-          newFolder.guid,
-          PlacesUtils.bookmarks.SOURCES.DEFAULT,
-          origItem.url,
-        ],
+        type: "bookmark-moved",
+        id: await PlacesTestUtils.promiseItemId(origItem.guid),
+        itemType: PlacesUtils.bookmarks.TYPE_BOOKMARK,
+        url: origItem.url,
+        guid: origItem.guid,
+        parentGuid: newFolder.guid,
+        source: PlacesUtils.bookmarks.SOURCES.DEFAULT,
+        index: notification.newIndex,
+        oldParentGuid: origItem.parentGuid,
+        oldIndex: notification.originalIndex,
+        isTagging: false,
+        title: origItem.title,
+        tags: "",
+        frecency: 1,
+        hidden: false,
+        visitCount: 0,
+        dateAdded: BOOKMARK_DATE_ADDED.getTime(),
+        lastVisitDate: null,
       });
     }
     observer.check(expectedNotifications);

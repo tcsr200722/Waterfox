@@ -1,25 +1,24 @@
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-var { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
-const { AddonManager } = ChromeUtils.import(
-  "resource://gre/modules/AddonManager.jsm"
-);
-const env = Cc["@mozilla.org/process/environment;1"].getService(
-  Ci.nsIEnvironment
-);
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-XPCOMUtils.defineLazyGetter(this, "require", function() {
-  let { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
-  return require;
-});
+"use strict";
+
+/* globals dampWindow */
+
+const { gBrowser, MozillaFileLogger, requestIdleCallback } = dampWindow;
+
+const { AddonManager } = require("resource://gre/modules/AddonManager.sys.mjs");
+
+const DampLoadParentModule = require("damp-test/actors/DampLoadParent.sys.mjs");
+const DAMP_TESTS = require("damp-test/damp-tests.js");
 
 // Record allocation count in new subtests if DEBUG_DEVTOOLS_ALLOCATIONS is set to
 // "normal". Print allocation sites to stdout if DEBUG_DEVTOOLS_ALLOCATIONS is set to
 // "verbose".
-const DEBUG_ALLOCATIONS = env.get("DEBUG_DEVTOOLS_ALLOCATIONS");
+const DEBUG_ALLOCATIONS = Services.env.get("DEBUG_DEVTOOLS_ALLOCATIONS");
 
-const DEBUG_SCREENSHOTS = env.get("DEBUG_DEVTOOLS_SCREENSHOTS");
+const DEBUG_SCREENSHOTS = Services.env.get("DEBUG_DEVTOOLS_SCREENSHOTS");
 
 // Maximum time spent in one test, in milliseconds
 const TEST_TIMEOUT = 5 * 60000;
@@ -28,73 +27,12 @@ function getMostRecentBrowserWindow() {
   return Services.wm.getMostRecentWindow("navigator:browser");
 }
 
-let gmm = window.getGroupMessageManager("browsers");
-
-const frameScript =
-  "data:," +
-  encodeURIComponent(
-    `(${function() {
-      addEventListener(
-        "load",
-        function(event) {
-          let subframe = event.target != content.document;
-          sendAsyncMessage("browser-test-utils:loadEvent", {
-            subframe,
-            url: event.target.documentURI,
-          });
-        },
-        true
-      );
-    }})()`
-  );
-
-gmm.loadFrameScript(frameScript, true);
-
-// This is duplicated from BrowserTestUtils.jsm
-function awaitBrowserLoaded(
-  browser,
-  includeSubFrames = false,
-  wantLoad = null
-) {
-  // If browser belongs to tabbrowser-tab, ensure it has been
-  // inserted into the document.
-  let tabbrowser = browser.ownerGlobal.gBrowser;
-  if (tabbrowser && tabbrowser.getTabForBrowser) {
-    tabbrowser._insertBrowser(tabbrowser.getTabForBrowser(browser));
-  }
-
-  function isWanted(url) {
-    if (!wantLoad) {
-      return true;
-    } else if (typeof wantLoad == "function") {
-      return wantLoad(url);
-    }
-    // It's a string.
-    return wantLoad == url;
-  }
-
-  return new Promise(resolve => {
-    let mm = browser.ownerGlobal.messageManager;
-    mm.addMessageListener("browser-test-utils:loadEvent", function onLoad(msg) {
-      if (
-        msg.target == browser &&
-        (!msg.data.subframe || includeSubFrames) &&
-        isWanted(msg.data.url)
-      ) {
-        mm.removeMessageListener("browser-test-utils:loadEvent", onLoad);
-        resolve(msg.data.url);
-      }
-    });
-  });
-}
-
-/* globals res:true */
-
 function Damp() {}
 
 Damp.prototype = {
   async garbageCollect() {
     dump("Garbage collect\n");
+    let startTime = Cu.now();
 
     // Minimize memory usage
     // mimic miminizeMemoryUsage, by only flushing JS objects via GC.
@@ -111,6 +49,11 @@ Damp.prototype = {
       Cu.forceGC();
       await new Promise(done => setTimeout(done, 0));
     }
+    ChromeUtils.addProfilerMarker(
+      "DAMP",
+      { startTime, category: "Test" },
+      "GC"
+    );
   },
 
   async ensureTalosParentProfiler() {
@@ -121,9 +64,9 @@ Damp.prototype = {
     // before continuing.
     async function getTalosParentProfiler() {
       try {
-        var { TalosParentProfiler } = ChromeUtils.import(
-          "resource://talos-powers/TalosParentProfiler.jsm"
-        );
+        const {
+          TalosParentProfiler,
+        } = require("resource://talos-powers/TalosParentProfiler.sys.mjs");
         return TalosParentProfiler;
       } catch (err) {
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -182,15 +125,17 @@ Damp.prototype = {
       this.allocationTracker.flushAllocations();
     }
 
-    let startLabel = label + ".start";
-    performance.mark(startLabel);
-    let start = performance.now();
+    let start = Cu.now();
 
     return {
       done: () => {
-        let end = performance.now();
+        let end = Cu.now();
         let duration = end - start;
-        performance.measure(label, startLabel);
+        ChromeUtils.addProfilerMarker(
+          "DAMP",
+          { startTime: start, category: "Test" },
+          label
+        );
         if (record) {
           this._results.push({
             name: label,
@@ -218,31 +163,37 @@ Damp.prototype = {
   async addTab(url) {
     // Disable opening animation to avoid intermittents and prevent having to wait for
     // animation's end. (See bug 1480953)
-    let tab = (this._win.gBrowser.selectedTab = this._win.gBrowser.addTrustedTab(
-      url,
-      { skipAnimation: true }
-    ));
+    let tab = (this._win.gBrowser.selectedTab =
+      this._win.gBrowser.addTrustedTab(url, { skipAnimation: true }));
     let browser = tab.linkedBrowser;
-    await awaitBrowserLoaded(browser);
+    await this._awaitBrowserLoaded(browser);
     return tab;
   },
 
   async waitForPendingPaints(window) {
     let utils = window.windowUtils;
-    window.performance.mark("pending paints.start");
+    let startTime = Cu.now();
     while (utils.isMozAfterPaintPending) {
       await new Promise(done => {
         window.addEventListener(
           "MozAfterPaint",
           function listener() {
-            window.performance.mark("pending paint");
+            ChromeUtils.addProfilerMarker(
+              "DAMP",
+              { category: "Test" },
+              "pending paint"
+            );
             done();
           },
           { once: true }
         );
       });
     }
-    window.performance.measure("pending paints", "pending paints.start");
+    ChromeUtils.addProfilerMarker(
+      "DAMP",
+      { startTime, category: "Test" },
+      "pending paints"
+    );
   },
 
   reloadPage(onReload) {
@@ -251,7 +202,7 @@ Damp.prototype = {
       if (typeof onReload == "function") {
         onReload().then(resolve);
       } else {
-        resolve(awaitBrowserLoaded(browser));
+        resolve(this._awaitBrowserLoaded(browser));
       }
       browser.reload();
     });
@@ -265,7 +216,7 @@ Damp.prototype = {
     return tab;
   },
 
-  async testTeardown(url) {
+  async testTeardown() {
     // Disable closing animation to avoid intermittents and prevent having to wait for
     // animation's end. (See bug 1480953)
     this._win.gBrowser.removeCurrentTab({ animate: false });
@@ -273,7 +224,7 @@ Damp.prototype = {
     // Force freeing memory now so that it doesn't happen during the next test
     await this.garbageCollect();
 
-    let duration = Math.round(performance.now() - this._startTime);
+    let duration = Math.round(Cu.now() - this._startTime);
     dump(`${this._currentTest} took ${duration}ms.\n`);
 
     this._runNextTest();
@@ -295,11 +246,8 @@ Damp.prototype = {
   // Name of the test currently executed (i.e. path from /tests folder)
   _currentTest: null,
 
-  // Is DAMP finished executing? Help preventing async execution when DAMP had an error
-  _done: false,
-
   _runNextTest() {
-    window.clearTimeout(this._timeout);
+    clearTimeout(this._timeout);
 
     if (this._nextTestIndex >= this._tests.length) {
       this._onSequenceComplete();
@@ -307,13 +255,13 @@ Damp.prototype = {
     }
 
     let test = this._tests[this._nextTestIndex++];
-    this._startTime = performance.now();
+    this._startTime = Cu.now();
     this._currentTest = test;
 
     dump(`Loading test '${test}'\n`);
-    let testMethod = require(this.rootURI.resolve(`content/tests/${test}`));
+    let testMethod = require(`damp-test/tests/${test}`);
 
-    this._timeout = window.setTimeout(() => {
+    this._timeout = setTimeout(() => {
       this.error("Test timed out");
     }, TEST_TIMEOUT);
 
@@ -338,11 +286,11 @@ Damp.prototype = {
   },
 
   _log(str) {
-    if (window.MozillaFileLogger && window.MozillaFileLogger.log) {
-      window.MozillaFileLogger.log(str);
+    if (MozillaFileLogger && MozillaFileLogger.log) {
+      MozillaFileLogger.log(str);
     }
 
-    window.dump(str);
+    dump(str);
   },
 
   _logLine(str) {
@@ -350,15 +298,15 @@ Damp.prototype = {
   },
 
   _reportAllResults() {
-    var testNames = [];
-    var testResults = [];
+    const testNames = [];
+    const testResults = [];
 
-    var out = "";
-    for (var i in this._results) {
-      res = this._results[i];
-      var disp = []
+    let out = "";
+    for (const i in this._results) {
+      const res = this._results[i];
+      const disp = []
         .concat(res.value)
-        .map(function(a) {
+        .map(function (a) {
           return isNaN(a) ? -1 : a.toFixed(1);
         })
         .join(" ");
@@ -390,6 +338,7 @@ Damp.prototype = {
 
   _doneInternal() {
     // Ignore any duplicated call to this method
+    // Call startTest() again in order to reset this flag.
     if (this._done) {
       return;
     }
@@ -406,7 +355,9 @@ Damp.prototype = {
       this._reportAllResults();
     }
 
-    this.TalosParentProfiler.pause("DAMP - end");
+    this.TalosParentProfiler.subtestEnd("DAMP");
+
+    this._unregisterDampLoadActors();
   },
 
   startAllocationTracker() {
@@ -435,8 +386,9 @@ Damp.prototype = {
   },
 
   exception(e) {
-    this.error(e);
-    dump(e.stack + "\n");
+    const str =
+      "Exception: " + (e?.message || e) + "\n" + (e?.stack || "No stack");
+    this.error(str);
   },
 
   // Waits for any pending operations that may execute on Firefox startup and that
@@ -475,15 +427,20 @@ Damp.prototype = {
     await this.garbageCollect();
   },
 
-  startTest(rootURI) {
+  /**
+   * This is the main entry point for DAMP, called from
+   * testing/talos/talos/tests/devtools/addon/api
+   */
+  startTest() {
     let promise = new Promise(resolve => {
       this.testDone = resolve;
     });
-    this.rootURI = rootURI;
+
     try {
-      dump("Initialize the head file with a reference to this DAMP instance\n");
-      let head = require(rootURI.resolve("content/tests/head.js"));
-      head.initialize(this);
+      // Is DAMP finished executing? Help preventing async execution when DAMP had an error
+      this._done = false;
+
+      this._registerDampLoadActors();
 
       this._win = Services.wm.getMostRecentWindow("navigator:browser");
       this._dampTab = this._win.gBrowser.selectedTab;
@@ -492,10 +449,20 @@ Damp.prototype = {
       // Filter tests via `./mach --subtests filter` command line argument
       let filter = Services.prefs.getCharPref("talos.subtests", "");
 
-      let DAMP_TESTS = require(rootURI.resolve("content/damp-tests.js"));
-      let tests = DAMP_TESTS.filter(test => !test.disabled).filter(test =>
-        test.name.includes(filter)
-      );
+      const suite = Services.prefs.getCharPref("talos.damp.suite", "");
+      let testSuite;
+      if (suite === "all") {
+        testSuite = Object.values(DAMP_TESTS).flat();
+      } else {
+        testSuite = DAMP_TESTS[suite];
+        if (!testSuite) {
+          this.error(`Unable to find any test suite matching '${suite}'`);
+        }
+      }
+
+      let tests = testSuite
+        .filter(test => !test.disabled)
+        .filter(test => test.name.includes(filter));
 
       if (tests.length === 0) {
         this.error(`Unable to find any test matching '${filter}'`);
@@ -517,7 +484,7 @@ Damp.prototype = {
 
       this.waitBeforeRunningTests()
         .then(() => {
-          this.TalosParentProfiler.resume("DAMP - start");
+          this.TalosParentProfiler.subtestStart("Begin DAMP");
           this._doSequence(sequenceArray, this._doneInternal);
         })
         .catch(e => {
@@ -529,4 +496,57 @@ Damp.prototype = {
 
     return promise;
   },
+
+  /**
+   * Wait for a page-show/load event on the provided browser element, using the
+   * JSWindowActor pair at content/actors/DampLoad.
+   */
+  _awaitBrowserLoaded(browser) {
+    dump(
+      `Wait for a pageshow event for browsing context ${browser.browsingContext.id}\n`
+    );
+    return new Promise(resolve => {
+      const eventDispatcher = DampLoadParentModule.EventDispatcher;
+      const onPageShow = (eventName, data) => {
+        dump(`Received pageshow event for ${data.browsingContext.id}\n`);
+        if (data.browsingContext !== browser.browsingContext) {
+          return;
+        }
+
+        eventDispatcher.off("DampLoadParent:PageShow", onPageShow);
+        resolve();
+      };
+
+      eventDispatcher.on("DampLoadParent:PageShow", onPageShow);
+    });
+  },
+
+  _registerDampLoadActors() {
+    dump(`[DampLoad helper] Register DampLoad actors\n`);
+    ChromeUtils.registerWindowActor("DampLoad", {
+      kind: "JSWindowActor",
+      parent: {
+        esModuleURI:
+          "resource://damp-test/content/actors/DampLoadParent.sys.mjs",
+      },
+      child: {
+        esModuleURI:
+          "resource://damp-test/content/actors/DampLoadChild.sys.mjs",
+        events: {
+          pageshow: { mozSystemGroup: true },
+        },
+      },
+
+      // Only listen to top level content frame load.
+      allFrames: false,
+      includeChrome: false,
+    });
+  },
+
+  _unregisterDampLoadActors() {
+    dump(`[DampLoad helper] Unregister DampLoad actors\n`);
+    ChromeUtils.unregisterWindowActor("DampLoad");
+  },
 };
+
+exports.damp = new Damp();

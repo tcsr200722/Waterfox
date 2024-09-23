@@ -2,17 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import buildQuery from "../build-query";
-
-import type { SearchModifiers } from "../../types";
+import { features } from "../prefs";
 
 /**
  * @memberof utils/source-search
  * @static
  */
-function getSearchCursor(cm, query: string, pos, modifiers: SearchModifiers) {
+function getSearchCursor(cm, query, pos, modifiers) {
   const regexQuery = buildQuery(query, modifiers, { isGlobal: true });
   return cm.getSearchCursor(regexQuery, pos);
 }
@@ -21,7 +18,7 @@ function getSearchCursor(cm, query: string, pos, modifiers: SearchModifiers) {
  * @memberof utils/source-search
  * @static
  */
-function SearchState(): void {
+function SearchState() {
   this.posFrom = this.posTo = this.query = null;
   this.overlay = null;
   this.results = [];
@@ -31,25 +28,22 @@ function SearchState(): void {
  * @memberof utils/source-search
  * @static
  */
-function getSearchState(cm: any, query: string) {
+function getSearchState(cm) {
   const state = cm.state.search || (cm.state.search = new SearchState());
   return state;
 }
 
-function isWhitespace(query): boolean {
+function isWhitespace(query) {
   return !query.match(/\S/);
 }
 
 /**
- * This returns a mode object used by CoeMirror's addOverlay function
+ * This returns a mode object used by CodeMirror's addOverlay function
  * to parse and style tokens in the file.
  * The mode object contains a tokenizer function (token) which takes
  * a character stream as input, advances it a character at a time,
  * and returns style(s) for that token. For more details see
- * https://codemirror.net/doc/manual.html#modeapi
- *
- * Also the token function code is mainly based of work done
- * by the chrome devtools team. Thanks guys! :)
+ * https://codemirror.net/5/doc/manual.html#modeapi
  *
  * @memberof utils/source-search
  * @static
@@ -62,7 +56,7 @@ function searchOverlay(query, modifiers) {
   });
 
   return {
-    token: function(stream, state) {
+    token(stream) {
       // set the last index to be the current stream position
       // this acts as an offset
       regexQuery.lastIndex = stream.pos;
@@ -72,7 +66,9 @@ function searchOverlay(query, modifiers) {
         // set the class for a match
         stream.pos += match[0].length || 1;
         return "highlight highlight-full";
-      } else if (match) {
+      }
+
+      if (match) {
         // if we have a match somewhere in the line, go to that point in the
         // stream
         stream.pos = match.index;
@@ -80,6 +76,8 @@ function searchOverlay(query, modifiers) {
         // if we have no matches in this line, skip to the end of the line
         stream.skipToEnd();
       }
+
+      return null;
     },
   };
 }
@@ -88,13 +86,13 @@ function searchOverlay(query, modifiers) {
  * @memberof utils/source-search
  * @static
  */
-function updateOverlay(cm, state, query, modifiers): void {
+function updateOverlay(cm, state, query, modifiers) {
   cm.removeOverlay(state.overlay);
   state.overlay = searchOverlay(query, modifiers);
   cm.addOverlay(state.overlay, { opaque: false });
 }
 
-function updateCursor(cm, state, keepSelection): void {
+function updateCursor(cm, state, keepSelection) {
   state.posTo = cm.getCursor("anchor");
   state.posFrom = cm.getCursor("head");
 
@@ -104,11 +102,7 @@ function updateCursor(cm, state, keepSelection): void {
   }
 }
 
-export function getMatchIndex(
-  count: number,
-  currentIndex: number,
-  rev: boolean
-): number {
+export function getMatchIndex(count, currentIndex, rev) {
   if (!rev) {
     if (currentIndex == count - 1) {
       return 0;
@@ -137,22 +131,50 @@ function doSearch(
   rev,
   query,
   keepSelection,
-  modifiers: SearchModifiers,
-  focusFirstResult?: boolean = true
+  modifiers,
+  focusFirstResult = true
 ) {
-  const { cm, ed } = ctx;
+  const { cm, editor } = ctx;
+
+  if (features.codemirrorNext) {
+    if (!query || isWhitespace(query)) {
+      editor.clearSearchMatches();
+      return null;
+    }
+    const regexQuery = buildQuery(query, modifiers, {
+      ignoreSpaces: true,
+      // regex must be global for the overlay
+      isGlobal: true,
+    });
+
+    if (editor.searchState.query?.toString() !== regexQuery.toString()) {
+      editor.highlightSearchMatches(regexQuery, "cm-highlight");
+    }
+    const cursor = editor.getNextSearchCursor(rev);
+    if (!cursor) {
+      return null;
+    }
+    editor.setPositionContentMarker({
+      id: "active-selection-marker",
+      positionClassName: "cm-matchhighlight",
+      positions: [{ from: cursor.from, to: cursor.to }],
+    });
+    editor.scrollToPosition(cursor.from);
+    return editor.getPositionFromSearchCursor(cursor);
+  }
+
   if (!cm) {
-    return;
+    return null;
   }
   const defaultIndex = { line: -1, ch: -1 };
 
-  return cm.operation(function() {
+  return cm.operation(function () {
     if (!query || isWhitespace(query)) {
-      clearSearch(cm, query);
-      return;
+      clearSearch(ctx);
+      return null;
     }
 
-    const state = getSearchState(cm, query);
+    const state = getSearchState(cm);
     const isNewQuery = state.query !== query;
     state.query = query;
 
@@ -163,7 +185,7 @@ function doSearch(
     // We don't want to jump the editor
     // when we're selecting text
     if (!cm.state.selectingText && searchLocation && focusFirstResult) {
-      ed.alignLine(searchLocation.from.line, "center");
+      editor.alignLine(searchLocation.from.line, "center");
       cm.setSelection(searchLocation.from, searchLocation.to);
     }
 
@@ -172,21 +194,40 @@ function doSearch(
 }
 
 export function searchSourceForHighlight(
-  ctx: Object,
-  rev: boolean,
-  query: string,
-  keepSelection: boolean,
-  modifiers: SearchModifiers,
-  line: number,
-  ch: number
+  ctx,
+  rev,
+  query,
+  keepSelection,
+  modifiers,
+  line,
+  ch
 ) {
-  const { cm } = ctx;
+  const { cm, editor } = ctx;
+
+  if (features.codemirrorNext) {
+    if (!query || isWhitespace(query)) {
+      editor.clearSearchMatches();
+      return;
+    }
+
+    const regexQuery = buildQuery(query, modifiers, {
+      ignoreSpaces: true,
+      // regex must be global for the overlay
+      isGlobal: true,
+    });
+
+    if (editor.searchState.query?.toString() !== regexQuery.toString()) {
+      editor.highlightSearchMatches(regexQuery, "cm-highlight");
+    }
+    return;
+  }
+
   if (!cm) {
     return;
   }
 
-  return cm.operation(function() {
-    const state = getSearchState(cm, query);
+  cm.operation(function () {
+    const state = getSearchState(cm);
     const isNewQuery = state.query !== query;
     state.query = query;
 
@@ -213,8 +254,8 @@ function getCursorPos(newQuery, rev, state) {
 function searchNext(ctx, rev, query, newQuery, modifiers) {
   const { cm } = ctx;
   let nextMatch;
-  cm.operation(function() {
-    const state = getSearchState(cm, query);
+  cm.operation(function () {
+    const state = getSearchState(cm);
     const pos = getCursorPos(newQuery, rev, state);
 
     if (!state.query) {
@@ -240,9 +281,9 @@ function searchNext(ctx, rev, query, newQuery, modifiers) {
   return nextMatch;
 }
 
-function findNextOnLine(ctx, rev, query, newQuery, modifiers, line, ch): void {
-  const { cm, ed } = ctx;
-  cm.operation(function() {
+function findNextOnLine(ctx, rev, query, newQuery, modifiers, line, ch) {
+  const { cm, editor } = ctx;
+  cm.operation(function () {
     const pos = { line: line - 1, ch };
     let cursor = getSearchCursor(cm, query, pos, modifiers);
 
@@ -256,7 +297,7 @@ function findNextOnLine(ctx, rev, query, newQuery, modifiers, line, ch): void {
     // We don't want to jump the editor
     // when we're selecting text
     if (!cm.state.selectingText) {
-      ed.alignLine(cursor.from().line, "center");
+      editor.alignLine(cursor.from().line, "center");
       cm.setSelection(cursor.from(), cursor.to());
     }
   });
@@ -268,8 +309,8 @@ function findNextOnLine(ctx, rev, query, newQuery, modifiers, line, ch): void {
  * @memberof utils/source-search
  * @static
  */
-export function removeOverlay(ctx: any, query: string): void {
-  const state = getSearchState(ctx.cm, query);
+export function removeOverlay(ctx) {
+  const state = getSearchState(ctx.cm);
   ctx.cm.removeOverlay(state.overlay);
   const { line, ch } = ctx.cm.getCursor();
   ctx.cm.doc.setSelection({ line, ch }, { line, ch }, { scroll: false });
@@ -281,9 +322,14 @@ export function removeOverlay(ctx: any, query: string): void {
  * @memberof utils/source-search
  * @static
  */
-export function clearSearch(cm: any, query: string): void {
-  const state = getSearchState(cm, query);
-
+export function clearSearch(ctx) {
+  const { cm, editor } = ctx;
+  if (features.codemirrorNext) {
+    editor.clearSearchMatches();
+    editor.removePositionContentMarker("active-selection-marker");
+    return;
+  }
+  const state = getSearchState(cm);
   state.results = [];
 
   if (!state.query) {
@@ -299,14 +345,8 @@ export function clearSearch(cm: any, query: string): void {
  * @memberof utils/source-search
  * @static
  */
-export function find(
-  ctx: any,
-  query: string,
-  keepSelection: boolean,
-  modifiers: SearchModifiers,
-  focusFirstResult?: boolean
-) {
-  clearSearch(ctx.cm, query);
+export function find(ctx, query, keepSelection, modifiers, focusFirstResult) {
+  clearSearch(ctx);
   return doSearch(
     ctx,
     false,
@@ -323,12 +363,7 @@ export function find(
  * @memberof utils/source-search
  * @static
  */
-export function findNext(
-  ctx: any,
-  query: string,
-  keepSelection: boolean,
-  modifiers: SearchModifiers
-) {
+export function findNext(ctx, query, keepSelection, modifiers) {
   return doSearch(ctx, false, query, keepSelection, modifiers);
 }
 
@@ -338,12 +373,7 @@ export function findNext(
  * @memberof utils/source-search
  * @static
  */
-export function findPrev(
-  ctx: any,
-  query: string,
-  keepSelection: boolean,
-  modifiers: SearchModifiers
-) {
+export function findPrev(ctx, query, keepSelection, modifiers) {
   return doSearch(ctx, true, query, keepSelection, modifiers);
 }
 

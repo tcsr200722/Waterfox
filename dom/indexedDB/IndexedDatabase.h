@@ -7,24 +7,20 @@
 #ifndef mozilla_dom_indexeddatabase_h__
 #define mozilla_dom_indexeddatabase_h__
 
+#include "DatabaseFileInfoFwd.h"
 #include "js/StructuredClone.h"
 #include "mozilla/InitializedOnce.h"
 #include "mozilla/Variant.h"
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
-#include "FileInfoFwd.h"
 #include "SafeRefPtr.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class Blob;
 class IDBDatabase;
-class IDBMutableFile;
 
 namespace indexedDB {
-
-class SerializedStructuredCloneReadInfo;
 
 struct StructuredCloneFileBase {
   enum FileType {
@@ -64,9 +60,6 @@ struct StructuredCloneFileChild : StructuredCloneFileBase {
   // In IndexedDatabaseInlines.h
   StructuredCloneFileChild(FileType aType, RefPtr<Blob> aBlob);
 
-  // In IndexedDatabaseInlines.h
-  explicit StructuredCloneFileChild(RefPtr<IDBMutableFile> aMutableFile);
-
   const dom::Blob& Blob() const { return *mContents->as<RefPtr<dom::Blob>>(); }
 
   // XXX This is currently used for a number of reasons. Bug 1620560 will remove
@@ -80,22 +73,8 @@ struct StructuredCloneFileChild : StructuredCloneFileBase {
 
   bool HasBlob() const { return mContents->is<RefPtr<dom::Blob>>(); }
 
-  const IDBMutableFile& MutableFile() const {
-    return *mContents->as<RefPtr<IDBMutableFile>>();
-  }
-
-  IDBMutableFile& MutableMutableFile() const {
-    return *mContents->as<RefPtr<IDBMutableFile>>();
-  }
-
-  bool HasMutableFile() const {
-    return mContents->is<RefPtr<IDBMutableFile>>();
-  }
-
  private:
-  InitializedOnce<
-      const Variant<Nothing, RefPtr<dom::Blob>, RefPtr<IDBMutableFile>>>
-      mContents;
+  InitializedOnce<const Variant<Nothing, RefPtr<dom::Blob>>> mContents;
 };
 
 struct StructuredCloneFileParent : StructuredCloneFileBase {
@@ -111,7 +90,8 @@ struct StructuredCloneFileParent : StructuredCloneFileBase {
   StructuredCloneFileParent& operator=(StructuredCloneFileParent&&) = delete;
 
   // In IndexedDatabaseInlines.h
-  StructuredCloneFileParent(FileType aType, SafeRefPtr<FileInfo> aFileInfo);
+  StructuredCloneFileParent(FileType aType,
+                            SafeRefPtr<DatabaseFileInfo> aFileInfo);
 
   // In IndexedDatabaseInlines.h
   ~StructuredCloneFileParent();
@@ -121,13 +101,13 @@ struct StructuredCloneFileParent : StructuredCloneFileBase {
   // can be declared const in the base class.
   void MutateType(FileType aNewType) { mType = aNewType; }
 
-  const indexedDB::FileInfo& FileInfo() const { return ***mContents; }
+  const DatabaseFileInfo& FileInfo() const { return ***mContents; }
 
   // In IndexedDatabaseInlines.h
-  SafeRefPtr<indexedDB::FileInfo> FileInfoPtr() const;
+  SafeRefPtr<DatabaseFileInfo> FileInfoPtr() const;
 
  private:
-  InitializedOnce<const Maybe<SafeRefPtr<indexedDB::FileInfo>>> mContents;
+  InitializedOnce<const Maybe<SafeRefPtr<DatabaseFileInfo>>> mContents;
 };
 
 struct StructuredCloneReadInfoBase {
@@ -236,8 +216,7 @@ JSObject* StructuredCloneReadCallback(
     void* aClosure);
 
 }  // namespace indexedDB
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 MOZ_DECLARE_RELOCATE_USING_MOVE_CONSTRUCTOR(
     mozilla::dom::indexedDB::StructuredCloneReadInfo<

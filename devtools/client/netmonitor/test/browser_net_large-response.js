@@ -9,7 +9,7 @@
 
 const HTML_LONG_URL = CONTENT_TYPE_SJS + "?fmt=html-long";
 
-add_task(async function() {
+add_task(async function () {
   const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL, {
     requestCount: 1,
   });
@@ -28,11 +28,13 @@ add_task(async function() {
   store.dispatch(Actions.batchEnable(false));
 
   let wait = waitForNetworkEvents(monitor, 1);
-  await SpecialPowers.spawn(tab.linkedBrowser, [HTML_LONG_URL], async function(
-    url
-  ) {
-    content.wrappedJSObject.performRequests(1, url);
-  });
+  await SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [HTML_LONG_URL],
+    async function (url) {
+      content.wrappedJSObject.performRequests(1, url);
+    }
+  );
   await wait;
 
   const requestItem = document.querySelector(".request-list-item");
@@ -54,17 +56,14 @@ add_task(async function() {
     }
   );
 
-  wait = waitForDOM(document, "#response-panel .accordion-item", 2);
+  wait = waitForDOM(document, "#response-panel .data-header");
   store.dispatch(Actions.toggleNetworkDetails());
-  EventUtils.sendMouseEvent(
-    { type: "click" },
-    document.querySelector("#response-tab")
-  );
+  clickOnSidebarTab(document, "response");
   await wait;
 
   wait = waitForDOM(document, "#response-panel .CodeMirror-code");
   const payloadHeader = document.querySelector(
-    "#response-panel .accordion-item:last-child .accordion-header"
+    "#response-panel .raw-data-toggle-input .devtools-checkbox-toggle"
   );
   clickElement(payloadHeader, monitor);
   await wait;
@@ -72,6 +71,18 @@ add_task(async function() {
   ok(
     getCodeMirrorValue(monitor).match(/^<p>/),
     "The text shown in the source editor is incorrect."
+  );
+
+  info("Check that search input can be displayed");
+  document.querySelector(".CodeMirror").CodeMirror.focus();
+  synthesizeKeyShortcut("CmdOrCtrl+F");
+  const searchInput = await waitFor(() =>
+    document.querySelector(".CodeMirror input[type=search]")
+  );
+  Assert.equal(
+    searchInput.ownerDocument.activeElement,
+    searchInput,
+    "search input is focused"
   );
 
   await teardown(monitor);

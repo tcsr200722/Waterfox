@@ -10,7 +10,7 @@ const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/" +
   "test/browser/test-console.html";
 
-add_task(async function() {
+add_task(async function () {
   const tab1 = await addTab(TEST_URI, { window });
 
   info("Open a second window");
@@ -27,8 +27,8 @@ add_task(async function() {
   info(
     "Close toolboxes in tabs located in different windows, one of them not focused"
   );
-  await closeToolboxForTab(tab1);
-  await closeToolboxForTab(tab2);
+  await gDevTools.closeToolboxForTab(tab1);
+  await gDevTools.closeToolboxForTab(tab2);
 
   info("Close the second window");
   win2.close();
@@ -38,8 +38,3 @@ add_task(async function() {
 
   ok(true, "No error was triggered during the test");
 });
-
-async function closeToolboxForTab(tab) {
-  const target = await TargetFactory.forTab(tab);
-  return gDevTools.closeToolbox(target);
-}

@@ -7,24 +7,30 @@
 #ifndef mozilla_dom_cache_Action_h
 #define mozilla_dom_cache_Action_h
 
+#include "CacheCipherKeyManager.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/dom/cache/Types.h"
+#include "mozilla/dom/SafeRefPtr.h"
 #include "nsISupportsImpl.h"
 
 class mozIStorageConnection;
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
-class Action {
+class Action : public SafeRefCounted<Action> {
  public:
   class Resolver {
    public:
+    Resolver& operator=(const Resolver& aRHS) = delete;
+
     // Note: Action must drop Resolver ref after calling Resolve()!
     // Note: Must be called on the same thread used to execute
     //       Action::RunOnTarget().
     virtual void Resolve(nsresult aRv) = 0;
+
+    inline SafeRefPtr<Action::Resolver> SafeRefPtrFromThis() {
+      return SafeRefPtr<Action::Resolver>{this, AcquireStrongRefFromRawPtr{}};
+    }
 
     NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
   };
@@ -40,13 +46,18 @@ class Action {
     virtual void SetConnection(mozIStorageConnection* aConn) = 0;
   };
 
+  // virtual because deleted through base class pointer
+  virtual ~Action();
+
   // Execute operations on the target thread.  Once complete call
   // Resolver::Resolve().  This can be done sync or async.
   // Note: Action should hold Resolver ref until its ready to call Resolve().
   // Note: The "target" thread is determined when the Action is scheduled on
   //       Context.  The Action should not assume any particular thread is used.
-  virtual void RunOnTarget(Resolver* aResolver, const QuotaInfo& aQuotaInfo,
-                           Data* aOptionalData) = 0;
+  virtual void RunOnTarget(
+      SafeRefPtr<Resolver> aResolver,
+      const Maybe<CacheDirectoryMetadata>& aDirectoryMetadata,
+      Data* aOptionalData, const Maybe<CipherKey>& aMaybeCipherKey) = 0;
 
   // Called on initiating thread when the Action is canceled.  The Action is
   // responsible for calling Resolver::Resolve() as normal; either with a
@@ -72,13 +83,11 @@ class Action {
   // given cache ID then override this to return true.
   virtual bool MatchesCacheId(CacheId aCacheId) const { return false; }
 
-  NS_INLINE_DECL_REFCOUNTING(cache::Action)
+  NS_DECL_OWNINGTHREAD
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(cache::Action)
 
  protected:
   Action();
-
-  // virtual because deleted through base class pointer
-  virtual ~Action();
 
   // Check if this Action has been canceled.  May be called from any thread,
   // but typically used from the target thread.
@@ -89,8 +98,6 @@ class Action {
   Atomic<bool> mCanceled;
 };
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_Action_h

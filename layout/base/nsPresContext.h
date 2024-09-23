@@ -9,40 +9,42 @@
 #ifndef nsPresContext_h___
 #define nsPresContext_h___
 
+#include "mozilla/intl/Bidi.h"
+#include "mozilla/AppUnits.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/DepthOrderedFrameList.h"
 #include "mozilla/EnumeratedArray.h"
+#include "mozilla/MediaEmulationData.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/NotNull.h"
-#include "mozilla/ScrollStyles.h"
 #include "mozilla/PreferenceSheet.h"
+#include "mozilla/PresShellForwards.h"
+#include "mozilla/ScrollStyles.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/widget/ThemeChangeKind.h"
 #include "nsColor.h"
+#include "nsCompatibility.h"
 #include "nsCoord.h"
 #include "nsCOMPtr.h"
+#include "nsFontMetrics.h"
+#include "nsHashKeys.h"
 #include "nsRect.h"
 #include "nsStringFwd.h"
-#include "gfxFontConstants.h"
+#include "nsTHashSet.h"
+#include "nsTHashtable.h"
 #include "nsAtom.h"
-#include "nsCRT.h"
 #include "nsIWidgetListener.h"  // for nsSizeMode
 #include "nsGkAtoms.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsChangeHint.h"
-#include <algorithm>
 #include "gfxTypes.h"
 #include "gfxRect.h"
 #include "nsTArray.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/TimeStamp.h"
-#include "mozilla/AppUnits.h"
-#include "mozilla/MediaEmulationData.h"
-#include "mozilla/PresShellForwards.h"
-#include "prclist.h"
 #include "nsThreadUtils.h"
 #include "Units.h"
-#include "prenv.h"
 
-class nsBidi;
 class nsIPrintSettings;
 class nsDocShell;
 class nsIDocShell;
@@ -53,22 +55,20 @@ class nsIFrame;
 class nsFrameManager;
 class nsAtom;
 class nsIRunnable;
+class gfxFontFamily;
 class gfxFontFeatureValueSet;
 class gfxUserFontEntry;
 class gfxUserFontSet;
 class gfxTextPerfMetrics;
 class nsCSSFontFeatureValuesRule;
 class nsCSSFrameConstructor;
-class nsDisplayList;
-class nsDisplayListBuilder;
-class nsPluginFrame;
+class nsFontCache;
 class nsTransitionManager;
 class nsAnimationManager;
 class nsRefreshDriver;
 class nsIWidget;
 class nsDeviceContext;
 class gfxMissingFontRecorder;
-struct FontMatchingStats;
 
 namespace mozilla {
 class AnimationEventDispatcher;
@@ -76,10 +76,15 @@ class EffectCompositor;
 class Encoding;
 class EventStateManager;
 class CounterStyleManager;
+class ManagedPostRefreshObserver;
 class PresShell;
 class RestyleManager;
+class ServoStyleSet;
 class StaticPresData;
+class TimelineManager;
 struct MediaFeatureChange;
+enum class MediaFeatureChangePropagation : uint8_t;
+enum class ColorScheme : uint8_t;
 namespace layers {
 class ContainerLayer;
 class LayerManager;
@@ -87,14 +92,14 @@ class LayerManager;
 namespace dom {
 class Document;
 class Element;
+class PerformanceMainThread;
+enum class PrefersColorSchemeOverride : uint8_t;
 }  // namespace dom
+namespace gfx {
+class FontPaletteValueSet;
+class PaletteCache;
+}  // namespace gfx
 }  // namespace mozilla
-
-// supported values for cached integer pref types
-enum nsPresContext_CachedIntPrefType {
-  kPresContext_ScrollbarSide = 1,
-  kPresContext_BidiDirection
-};
 
 // IDs for the default variable and fixed fonts (not to be changed, see
 // nsFont.h) To be used for Get/SetDefaultFont(). The other IDs in nsFont.h are
@@ -117,32 +122,27 @@ enum class nsLayoutPhase : uint8_t {
 };
 #endif
 
-/* Used by nsPresContext::HasAuthorSpecifiedRules */
-#define NS_AUTHOR_SPECIFIED_BORDER_OR_BACKGROUND (1 << 0)
-#define NS_AUTHOR_SPECIFIED_PADDING (1 << 1)
-
 class nsRootPresContext;
 
 // An interface for presentation contexts. Presentation contexts are
 // objects that provide an outer context for a presentation shell.
 
-class nsPresContext : public nsISupports,
-                      public mozilla::SupportsWeakPtr<nsPresContext> {
+class nsPresContext : public nsISupports, public mozilla::SupportsWeakPtr {
  public:
   using Encoding = mozilla::Encoding;
   template <typename T>
   using NotNull = mozilla::NotNull<T>;
+  template <typename T>
+  using Maybe = mozilla::Maybe<T>;
   using MediaEmulationData = mozilla::MediaEmulationData;
-  using StylePrefersColorScheme = mozilla::StylePrefersColorScheme;
 
   typedef mozilla::ScrollStyles ScrollStyles;
   using TransactionId = mozilla::layers::TransactionId;
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(nsPresContext)
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(nsPresContext)
 
-  enum nsPresContextType {
+  enum nsPresContextType : uint8_t {
     eContext_Galley,        // unpaginated screen presentation
     eContext_PrintPreview,  // paginated screen presentation
     eContext_Print,         // paginated printer presentation
@@ -155,6 +155,50 @@ class nsPresContext : public nsISupports,
    * Initialize the presentation context from a particular device.
    */
   nsresult Init(nsDeviceContext* aDeviceContext);
+
+  /**
+   * Initialize the font cache if it hasn't been initialized yet.
+   * (Needed for stylo)
+   */
+  void InitFontCache();
+
+  void UpdateFontCacheUserFonts(gfxUserFontSet* aUserFontSet);
+
+  /**
+   * Return the font visibility level to be applied to this context,
+   * potentially blocking user-installed or non-standard fonts from being
+   * used by web content.
+   * Note that depending on ResistFingerprinting options, the caller may
+   * override this value when resolving CSS <generic-family> keywords.
+   */
+  FontVisibility GetFontVisibility() const { return mFontVisibility; }
+
+  /**
+   * Log a message to the console about a font request being blocked.
+   */
+  void ReportBlockedFontFamily(const mozilla::fontlist::Family& aFamily);
+  void ReportBlockedFontFamily(const gfxFontFamily& aFamily);
+
+  /**
+   * Get the nsFontMetrics that describe the properties of
+   * an nsFont.
+   * @param aFont font description to obtain metrics for
+   */
+  already_AddRefed<nsFontMetrics> GetMetricsFor(
+      const nsFont& aFont, const nsFontMetrics::Params& aParams);
+
+  /**
+   * Notification when a font metrics instance created for this context is
+   * about to be deleted
+   */
+  nsresult FontMetricsDeleted(const nsFontMetrics* aFontMetrics);
+
+  /**
+   * Attempt to free up resources by flushing out any fonts no longer
+   * referenced by anything other than the font cache itself.
+   * @return error status
+   */
+  nsresult FlushFontCache();
 
   /**
    * Set and detach presentation shell that this context is bound to.
@@ -177,6 +221,7 @@ class nsPresContext : public nsISupports,
 
   void DocumentCharSetChanged(NotNull<const Encoding*> aCharSet);
 
+  mozilla::dom::PerformanceMainThread* GetPerformanceMainThread() const;
   /**
    * Returns the parent prescontext for this one. Returns null if this is a
    * root.
@@ -184,10 +229,10 @@ class nsPresContext : public nsISupports,
   nsPresContext* GetParentPresContext() const;
 
   /**
-   * Returns the prescontext of the toplevel content document that contains
-   * this presentation, or null if there isn't one.
+   * Returns the prescontext of the root content document in the same process
+   * that contains this presentation, or null if there isn't one.
    */
-  nsPresContext* GetToplevelContentDocumentPresContext();
+  nsPresContext* GetInProcessRootContentDocumentPresContext();
 
   /**
    * Returns the nearest widget for the root frame or view of this.
@@ -220,7 +265,7 @@ class nsPresContext : public nsISupports,
    */
   nsRootPresContext* GetRootPresContext() const;
 
-  virtual bool IsRoot() { return false; }
+  virtual bool IsRoot() const { return false; }
 
   mozilla::dom::Document* Document() const {
 #ifdef DEBUG
@@ -235,7 +280,7 @@ class nsPresContext : public nsISupports,
     return !!mPendingMediaFeatureValuesChange;
   }
 
-  inline nsCSSFrameConstructor* FrameConstructor();
+  inline nsCSSFrameConstructor* FrameConstructor() const;
 
   mozilla::AnimationEventDispatcher* AnimationEventDispatcher() {
     return mAnimationEventDispatcher;
@@ -247,6 +292,7 @@ class nsPresContext : public nsISupports,
   const nsAnimationManager* AnimationManager() const {
     return mAnimationManager.get();
   }
+  mozilla::TimelineManager* TimelineManager() { return mTimelineManager.get(); }
 
   nsRefreshDriver* RefreshDriver() { return mRefreshDriver; }
 
@@ -281,20 +327,15 @@ class nsPresContext : public nsISupports,
 
   void ContentLanguageChanged();
 
-  /**
-   * Handle changes in the values of media features (used in media queries).
-   */
-  void MediaFeatureValuesChanged(const mozilla::MediaFeatureChange& aChange);
-
-  void FlushPendingMediaFeatureValuesChanged();
+  /** Returns whether any media query changed. */
+  bool FlushPendingMediaFeatureValuesChanged();
 
   /**
-   * Calls MediaFeatureValuesChanged for this pres context and all descendant
-   * subdocuments that have a pres context. This should be used for media
-   * features that must be updated in all subdocuments e.g. display-mode.
+   * Schedule a media feature change for this document, and potentially for
+   * other subdocuments and images (depending on the arguments).
    */
-  void MediaFeatureValuesChangedAllDocuments(
-      const mozilla::MediaFeatureChange&);
+  void MediaFeatureValuesChanged(const mozilla::MediaFeatureChange&,
+                                 mozilla::MediaFeatureChangePropagation);
 
   /**
    * Updates the size mode on all remote children and recursively notifies this
@@ -318,7 +359,7 @@ class nsPresContext : public nsISupports,
   /**
    * Get medium of presentation
    */
-  const nsAtom* Medium() {
+  const nsAtom* Medium() const {
     MOZ_ASSERT(mMedium);
     return mMediaEmulationData.mMedium ? mMediaEmulationData.mMedium.get()
                                        : mMedium;
@@ -332,29 +373,17 @@ class nsPresContext : public nsISupports,
    */
   void EmulateMedium(nsAtom* aMediaType);
 
-  /** Get a cached integer pref, by its type */
-  // *  - initially created for bugs 30910, 61883, 74186, 84398
-  int32_t GetCachedIntPref(nsPresContext_CachedIntPrefType aPrefType) const {
-    // If called with a constant parameter, the compiler should optimize
-    // this switch statement away.
-    switch (aPrefType) {
-      case kPresContext_ScrollbarSide:
-        return mPrefScrollbarSide;
-      case kPresContext_BidiDirection:
-        return mPrefBidiDirection;
-      default:
-        NS_ERROR("invalid arg passed to GetCachedIntPref");
-    }
-
-    return false;
-  }
-
   const mozilla::PreferenceSheet::Prefs& PrefSheetPrefs() const {
     return mozilla::PreferenceSheet::PrefsFor(*mDocument);
   }
-  nscolor DefaultBackgroundColor() const {
-    return PrefSheetPrefs().mDefaultBackgroundColor;
+
+  bool ForcingColors() const {
+    return mozilla::PreferenceSheet::MayForceColors() &&
+           !PrefSheetPrefs().mUseDocumentColors;
   }
+
+  mozilla::ColorScheme DefaultBackgroundColorScheme() const;
+  nscolor DefaultBackgroundColor() const;
 
   nsISupports* GetContainerWeak() const;
 
@@ -430,7 +459,8 @@ class nsPresContext : public nsISupports,
   /**
    * Get/set the size of a page
    */
-  nsSize GetPageSize() { return mPageSize; }
+  const nsSize& GetPageSize() const { return mPageSize; }
+  const nsMargin& GetDefaultPageMargin() const { return mDefaultPageMargin; }
   void SetPageSize(nsSize aSize) { mPageSize = aSize; }
 
   /**
@@ -453,54 +483,40 @@ class nsPresContext : public nsISupports,
   void SetPageScale(float aScale) { mPageScale = aScale; }
 
   /**
-   * Get/set the scaling facor to use when rendering the pages for print
+   * Get/set the scaling factor to use when rendering the pages for print
    * preview. Only safe to get after print preview set up; safe to set anytime.
    * This is a scaling factor for the display of the print preview.  It
    * does not affect layout.  It only affects the size of the onscreen pages
    * in print preview.
+   *
+   * The getter should only be used by the page sequence frame, which is the
+   * frame responsible for applying the scaling. Other callers should use
+   * nsPageSequenceFrame::GetPrintPreviewScale() if needed, instead of this API.
+   *
    * XXX Temporary: see http://wiki.mozilla.org/Gecko:PrintPreview
    */
-  float GetPrintPreviewScale() { return mPPScale; }
+  float GetPrintPreviewScaleForSequenceFrameOrScrollbars() const {
+    return mPPScale;
+  }
   void SetPrintPreviewScale(float aScale) { mPPScale = aScale; }
 
   nsDeviceContext* DeviceContext() const { return mDeviceContext; }
   mozilla::EventStateManager* EventStateManager() { return mEventManager; }
 
-  /**
-   * Get/set a text zoom factor that is applied on top of the normal text zoom
-   * set by the front-end/user.
-   */
-  float GetSystemFontScale() const { return mSystemFontScale; }
-  void SetSystemFontScale(float aFontScale) {
-    MOZ_ASSERT(aFontScale > 0.0f, "invalid font scale");
-    if (aFontScale == mSystemFontScale || IsPrintingOrPrintPreview()) {
-      return;
-    }
+  bool UserInputEventsAllowed();
 
-    mSystemFontScale = aFontScale;
-    UpdateEffectiveTextZoom();
+  void MaybeIncreaseMeasuredTicksSinceLoading();
+
+  bool NeedsMoreTicksForUserInput() const;
+
+  void ResetUserInputEventsAllowed() {
+    MOZ_ASSERT(IsRoot());
+    mMeasuredTicksSinceLoading = 0;
+    mUserInputEventsAllowed = false;
   }
 
-  /**
-   * Get/set the text zoom factor in use.
-   * This value should be used if you're interested in the pure text zoom value
-   * controlled by the front-end, e.g. when transferring zoom levels to a new
-   * document.
-   * Code that wants to use this value for layouting and rendering purposes
-   * should consider using EffectiveTextZoom() instead, so as to take the system
-   * font scale into account as well.
-   */
+  // Get the text zoom factor in use.
   float TextZoom() const { return mTextZoom; }
-
-  /**
-   * Corresponds to the product of text zoom and system font scale, limited
-   * by zoom.maxPercent and minPercent.
-   * As the system font scale is automatically set by the PresShell, code that
-   * e.g. wants to transfer zoom levels to a new document should use TextZoom()
-   * instead, which corresponds to the text zoom level that was actually set by
-   * the front-end/user.
-   */
-  float EffectiveTextZoom() const { return mEffectiveTextZoom; }
 
   /**
    * Notify the pres context that the safe area insets have changed.
@@ -509,21 +525,22 @@ class nsPresContext : public nsISupports,
 
   mozilla::ScreenIntMargin GetSafeAreaInsets() const { return mSafeAreaInsets; }
 
+  void RegisterManagedPostRefreshObserver(mozilla::ManagedPostRefreshObserver*);
+  void UnregisterManagedPostRefreshObserver(
+      mozilla::ManagedPostRefreshObserver*);
+
  protected:
-  void UpdateEffectiveTextZoom();
+  void CancelManagedPostRefreshObservers();
 
 #ifdef DEBUG
   void ValidatePresShellAndDocumentReleation() const;
 #endif  // #ifdef DEBUG
 
-  void SetTextZoom(float aZoom) {
-    MOZ_ASSERT(aZoom > 0.0f, "invalid zoom factor");
-    if (aZoom == mTextZoom) return;
-
-    mTextZoom = aZoom;
-    UpdateEffectiveTextZoom();
-  }
+  void SetTextZoom(float aZoom);
   void SetFullZoom(float aZoom);
+  void SetOverrideDPPX(float);
+  void SetInRDMPane(bool aInRDMPane);
+  void UpdateTopInnerSizeForRFP();
 
  public:
   float GetFullZoom() { return mFullZoom; }
@@ -535,25 +552,23 @@ class nsPresContext : public nsISupports,
   float GetDeviceFullZoom();
 
   float GetOverrideDPPX() const { return mMediaEmulationData.mDPPX; }
-  void SetOverrideDPPX(float);
+
+  // Gets the forced color-scheme if any via either our embedder, or DevTools
+  // emulation, or printing.
+  //
+  // NOTE(emilio): This might be called from an stylo thread.
+  Maybe<mozilla::ColorScheme> GetOverriddenOrEmbedderColorScheme() const;
 
   /**
    * Recomputes the data dependent on the browsing context, like zoom and text
    * zoom.
-   *
-   * TODO(emilio): Eventually stuff like the media emulation data, overrideDPPX
-   * and such should also move here.
    */
   void RecomputeBrowsingContextDependentData();
 
-  Maybe<StylePrefersColorScheme> GetOverridePrefersColorScheme() const {
-    return mMediaEmulationData.mPrefersColorScheme;
-  }
-  void SetOverridePrefersColorScheme(const Maybe<StylePrefersColorScheme>&);
-
-  nscoord GetAutoQualityMinFontSize() {
-    return DevPixelsToAppUnits(mAutoQualityMinFontSizePixelsPref);
-  }
+  /**
+   * Sets the effective color scheme override, and invalidate stuff as needed.
+   */
+  void SetColorSchemeOverride(mozilla::dom::PrefersColorSchemeOverride);
 
   /**
    * Return the device's screen size in inches, for font size
@@ -616,6 +631,35 @@ class nsPresContext : public nsISupports,
 
   int32_t DevPixelsToIntCSSPixels(int32_t aPixels) {
     return AppUnitsToIntCSSPixels(DevPixelsToAppUnits(aPixels));
+  }
+
+  static nscoord RoundDownAppUnitsToCSSPixel(nscoord aAppUnits) {
+    return mozilla::RoundDownToMultiple(aAppUnits,
+                                        mozilla::AppUnitsPerCSSPixel());
+  }
+  static nscoord RoundUpAppUnitsToCSSPixel(nscoord aAppUnits) {
+    return mozilla::RoundUpToMultiple(aAppUnits,
+                                      mozilla::AppUnitsPerCSSPixel());
+  }
+  static nscoord RoundAppUnitsToCSSPixel(nscoord aAppUnits) {
+    return mozilla::RoundToMultiple(aAppUnits, mozilla::AppUnitsPerCSSPixel());
+  }
+
+  nscoord RoundDownAppUnitsToDevPixel(nscoord aAppUnits) const {
+    return mozilla::RoundDownToMultiple(aAppUnits, AppUnitsPerDevPixel());
+  }
+  nscoord RoundUpAppUnitsToDevPixel(nscoord aAppUnits) const {
+    return mozilla::RoundUpToMultiple(aAppUnits, AppUnitsPerDevPixel());
+  }
+  nscoord RoundAppUnitsToDevPixel(nscoord aAppUnits) const {
+    return mozilla::RoundToMultiple(aAppUnits, AppUnitsPerDevPixel());
+  }
+
+  mozilla::CSSIntPoint DevPixelsToIntCSSPixels(
+      const mozilla::LayoutDeviceIntPoint& aPoint) {
+    return mozilla::CSSIntPoint(
+        AppUnitsToIntCSSPixels(DevPixelsToAppUnits(aPoint.x)),
+        AppUnitsToIntCSSPixels(DevPixelsToAppUnits(aPoint.y)));
   }
 
   float DevPixelsToFloatCSSPixels(int32_t aPixels) const {
@@ -691,22 +735,15 @@ class nsPresContext : public nsISupports,
 
   /**
    * Check whether the given element would propagate its scrollbar styles to the
-   * viewport in non-paginated mode.  Must only be called if IsPaginated().
+   * viewport in non-paginated mode.
    */
   bool ElementWouldPropagateScrollStyles(const mozilla::dom::Element&);
 
   /**
-   * Set and get methods for controlling the background drawing
+   * Methods for controlling the background drawing.
    */
   bool GetBackgroundImageDraw() const { return mDrawImageBackground; }
-  void SetBackgroundImageDraw(bool aCanDraw) {
-    mDrawImageBackground = aCanDraw;
-  }
-
   bool GetBackgroundColorDraw() const { return mDrawColorBackground; }
-  void SetBackgroundColorDraw(bool aCanDraw) {
-    mDrawColorBackground = aCanDraw;
-  }
 
   /**
    *  Check if bidi enabled (set depending on the presence of RTL
@@ -773,18 +810,11 @@ class nsPresContext : public nsISupports,
    */
   uint32_t GetBidi() const;
 
-  /*
-   * Obtain a native theme for rendering our widgets (both form controls and
-   * html)
-   *
-   * Guaranteed to return non-null.
-   */
-  nsITheme* Theme() MOZ_NONNULL_RETURN {
-    if (MOZ_LIKELY(mTheme)) {
-      return mTheme;
-    }
-    return EnsureTheme();
-  }
+  nsITheme* Theme() const MOZ_NONNULL_RETURN;
+
+  void RecomputeTheme();
+
+  bool UseOverlayScrollbars() const;
 
   /*
    * Notify the pres context that the theme has changed.  An internal switch
@@ -792,7 +822,7 @@ class nsPresContext : public nsISupports,
    * Classic). Otherwise, the OS is telling us that the native theme for the
    * platform has changed.
    */
-  void ThemeChanged();
+  void ThemeChanged(mozilla::widget::ThemeChangeKind);
 
   /*
    * Notify the pres context that the resolution of the user interface has
@@ -806,11 +836,6 @@ class nsPresContext : public nsISupports,
    * Like UIResolutionChanged() but invalidates values immediately.
    */
   void UIResolutionChangedSync();
-
-  /*
-   * Notify the pres context that a system color has changed
-   */
-  void SysColorChanged();
 
   /** Printing methods below should only be used for Medium() == print **/
   void SetPrintSettings(nsIPrintSettings* aPrintSettings);
@@ -829,9 +854,13 @@ class nsPresContext : public nsISupports,
 
   void ConstructedFrame() { ++mFramesConstructed; }
   void ReflowedFrame() { ++mFramesReflowed; }
+  void TriggeredAnimationRestyle() { ++mAnimationTriggeredRestyles; }
 
-  uint64_t FramesConstructedCount() { return mFramesConstructed; }
-  uint64_t FramesReflowedCount() { return mFramesReflowed; }
+  uint64_t FramesConstructedCount() const { return mFramesConstructed; }
+  uint64_t FramesReflowedCount() const { return mFramesReflowed; }
+  uint64_t AnimationTriggeredRestylesCount() const {
+    return mAnimationTriggeredRestyles;
+  }
 
   static nscoord GetBorderWidthForKeyword(unsigned int aBorderWidthKeyword) {
     // This table maps border-width enums 'thin', 'medium', 'thick'
@@ -845,37 +874,22 @@ class nsPresContext : public nsISupports,
   }
 
   gfxTextPerfMetrics* GetTextPerfMetrics() { return mTextPerf.get(); }
-  FontMatchingStats* GetFontMatchingStats() { return mFontStats.get(); }
 
-  bool IsDynamic() {
-    return (mType == eContext_PageLayout || mType == eContext_Galley);
+  bool IsDynamic() const {
+    return mType == eContext_PageLayout || mType == eContext_Galley;
   }
-  bool IsScreen() {
-    return (mMedium == nsGkAtoms::screen || mType == eContext_PageLayout ||
-            mType == eContext_PrintPreview);
+  bool IsScreen() const {
+    return mMedium == nsGkAtoms::screen || mType == eContext_PageLayout ||
+           mType == eContext_PrintPreview;
   }
-  bool IsPrintingOrPrintPreview() {
-    return (mType == eContext_Print || mType == eContext_PrintPreview);
+  bool IsPrintingOrPrintPreview() const {
+    return mType == eContext_Print || mType == eContext_PrintPreview;
   }
+
+  bool IsPrintPreview() const { return mType == eContext_PrintPreview; }
 
   // Is this presentation in a chrome docshell?
   bool IsChrome() const;
-
-  // Public API for native theme code to get style internals.
-  bool HasAuthorSpecifiedRules(const nsIFrame* aFrame,
-                               uint32_t ruleTypeMask) const;
-
-  // Explicitly enable and disable paint flashing.
-  void SetPaintFlashing(bool aPaintFlashing) {
-    mPaintFlashing = aPaintFlashing;
-    mPaintFlashingInitialized = true;
-  }
-
-  // This method should be used instead of directly accessing mPaintFlashing,
-  // as that value may be out of date when mPaintFlashingInitialized is false.
-  bool GetPaintFlashing() const;
-
-  bool SuppressingResizeReflow() const { return mSuppressResizeReflow; }
 
   gfxUserFontSet* GetUserFontSet();
 
@@ -894,6 +908,11 @@ class nsPresContext : public nsISupports,
   void FlushFontFeatureValues();
   void MarkFontFeatureValuesDirty() { mFontFeatureValuesDirty = true; }
 
+  void FlushFontPaletteValues();
+  void MarkFontPaletteValuesDirty() { mFontPaletteValuesDirty = true; }
+
+  mozilla::gfx::PaletteCache& FontPaletteCache();
+
   // Ensure that it is safe to hand out CSS rules outside the layout
   // engine by ensuring that all CSS style sheets have unique inners
   // and, if necessary, synchronously rebuilding all style data.
@@ -910,17 +929,11 @@ class nsPresContext : public nsISupports,
       TransactionId aTransactionId = TransactionId{0},
       const mozilla::TimeStamp& aTimeStamp = mozilla::TimeStamp());
   void NotifyRevokingDidPaint(TransactionId aTransactionId);
-  void FireDOMPaintEvent(nsTArray<nsRect>* aList, TransactionId aTransactionId,
-                         mozilla::TimeStamp aTimeStamp = mozilla::TimeStamp());
+  // TODO: Convert this to MOZ_CAN_RUN_SCRIPT (bug 1415230)
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void FireDOMPaintEvent(
+      nsTArray<nsRect>* aList, TransactionId aTransactionId,
+      mozilla::TimeStamp aTimeStamp = mozilla::TimeStamp());
 
-  // Callback for catching invalidations in ContainerLayers
-  // Passed to LayerProperties::ComputeDifference
-  static void NotifySubDocInvalidation(
-      mozilla::layers::ContainerLayer* aContainer, const nsIntRegion* aRegion);
-  void SetNotifySubDocInvalidationData(
-      mozilla::layers::ContainerLayer* aContainer);
-  static void ClearNotifySubDocInvalidationData(
-      mozilla::layers::ContainerLayer* aContainer);
   bool IsDOMPaintEventPending();
 
   /**
@@ -928,11 +941,6 @@ class nsPresContext : public nsISupports,
    */
   uint64_t GetRestyleGeneration() const;
   uint64_t GetUndisplayedRestyleGeneration() const;
-
-  /**
-   * Returns whether there are any pending restyles or reflows.
-   */
-  bool HasPendingRestyleOrReflow();
 
   /**
    * Notify the prescontext that the presshell is about to reflow a reflow root.
@@ -1006,12 +1014,6 @@ class nsPresContext : public nsISupports,
   }
 
   /**
-   * Deprecated. Please use the InProcess or CrossProcess variants
-   * to specify which behaviour you want.
-   */
-  bool IsRootContentDocument() const;
-
-  /**
    * We are a root content document in process if: we are not a resource doc, we
    * are not chrome, and we either have no parent in the current process or our
    * parent is chrome.
@@ -1026,33 +1028,15 @@ class nsPresContext : public nsISupports,
   bool IsRootContentDocumentCrossProcess() const;
 
   bool HadNonBlankPaint() const { return mHadNonBlankPaint; }
-  bool HadContentfulPaint() const { return mHadContentfulPaint; }
+  bool HadFirstContentfulPaint() const { return mHadFirstContentfulPaint; }
+  bool HasStoppedGeneratingLCP() const;
   void NotifyNonBlankPaint();
   void NotifyContentfulPaint();
+  void NotifyPaintStatusReset();
   void NotifyDOMContentFlushed();
 
-  bool UsesExChUnits() const { return mUsesExChUnits; }
-
-  void SetUsesExChUnits(bool aValue) { mUsesExChUnits = aValue; }
-
-  // true if there are OMTA transition updates for the current document which
-  // have been throttled, and therefore some style information may not be up
-  // to date
-  bool ExistThrottledUpdates() const { return mExistThrottledUpdates; }
-
-  void SetExistThrottledUpdates(bool aExistThrottledUpdates) {
-    mExistThrottledUpdates = aExistThrottledUpdates;
-  }
-
-  bool IsDeviceSizePageSize();
-
-  bool HasWarnedAboutPositionedTableParts() const {
-    return mHasWarnedAboutPositionedTableParts;
-  }
-
-  void SetHasWarnedAboutPositionedTableParts() {
-    mHasWarnedAboutPositionedTableParts = true;
-  }
+  bool HasEverBuiltInvisibleText() const { return mHasEverBuiltInvisibleText; }
+  void SetBuiltInvisibleText() { mHasEverBuiltInvisibleText = true; }
 
   bool HasWarnedAboutTooLargeDashedOrDottedRadius() const {
     return mHasWarnedAboutTooLargeDashedOrDottedRadius;
@@ -1062,24 +1046,46 @@ class nsPresContext : public nsISupports,
     mHasWarnedAboutTooLargeDashedOrDottedRadius = true;
   }
 
-  nsBidi& GetBidiEngine();
+  void RegisterContainerQueryFrame(nsIFrame* aFrame);
+  void UnregisterContainerQueryFrame(nsIFrame* aFrame);
+  bool HasContainerQueryFrames() const {
+    return !mContainerQueryFrames.IsEmpty();
+  }
+
+  void FinishedContainerQueryUpdate();
+
+  bool UpdateContainerQueryStyles();
+
+  mozilla::intl::Bidi& BidiEngine();
 
   gfxFontFeatureValueSet* GetFontFeatureValuesLookup() const {
     return mFontFeatureValuesLookup;
   }
 
+  mozilla::gfx::FontPaletteValueSet* GetFontPaletteValueSet() const {
+    return mFontPaletteValueSet;
+  }
+
+  bool NeedsToUpdateHiddenByContentVisibilityForAnimations() const {
+    return mNeedsToUpdateHiddenByContentVisibilityForAnimations;
+  }
+  void SetNeedsToUpdateHiddenByContentVisibilityForAnimations() {
+    mNeedsToUpdateHiddenByContentVisibilityForAnimations = true;
+  }
+  void UpdateHiddenByContentVisibilityForAnimationsIfNeeded() {
+    if (mNeedsToUpdateHiddenByContentVisibilityForAnimations) {
+      DoUpdateHiddenByContentVisibilityForAnimations();
+    }
+  }
+
  protected:
+  void DoUpdateHiddenByContentVisibilityForAnimations();
   friend class nsRunnableMethod<nsPresContext>;
   void ThemeChangedInternal();
-  void SysColorChangedInternal();
   void RefreshSystemMetrics();
 
-  // update device context's resolution from the widget
+  // Update device context's resolution from the widget
   void UIResolutionChangedInternal();
-
-  // if aScale > 0.0, use it as resolution scale factor to the device context
-  // (otherwise get it from the widget)
-  void UIResolutionChangedInternalScale(double aScale);
 
   void SetImgAnimations(nsIContent* aParent, uint16_t aMode);
   void SetSMILAnimations(mozilla::dom::Document* aDoc, uint16_t aNewMode,
@@ -1088,29 +1094,22 @@ class nsPresContext : public nsISupports,
   static void PreferenceChanged(const char* aPrefName, void* aSelf);
   void PreferenceChanged(const char* aPrefName);
 
-  void UpdateAfterPreferencesChanged();
-  void DispatchPrefChangedRunnableIfNeeded();
-
   void GetUserPreferences();
 
   void UpdateCharSet(NotNull<const Encoding*> aCharSet);
 
+  void DoForceReflowForFontInfoUpdateFromStyle();
+
  public:
   // Used by the PresShell to force a reflow when some aspect of font info
   // has been updated, potentially affecting font selection and layout.
-  void ForceReflowForFontInfoUpdate();
+  void ForceReflowForFontInfoUpdate(bool aNeedsReframe);
+  void ForceReflowForFontInfoUpdateFromStyle();
 
   /**
    * Checks for MozAfterPaint listeners on the document
    */
   bool MayHavePaintEventListener();
-
-  /**
-   * Checks for MozAfterPaint listeners on the document and
-   * any subdocuments, except for subdocuments that are non-top-level
-   * content documents.
-   */
-  bool MayHavePaintEventListenerInSubDocument();
 
   void InvalidatePaintedLayers();
 
@@ -1119,11 +1118,15 @@ class nsPresContext : public nsISupports,
   }
 
   void DidUseFrameRateMultiplier() {
-    if (!mNextFrameRateMultiplier) {
-      mNextFrameRateMultiplier = 1;
-    } else if (mNextFrameRateMultiplier < 8) {
-      mNextFrameRateMultiplier = mNextFrameRateMultiplier * 2;
+    // This heuristic is used to reduce frame rate between fcp and the end of
+    // the page load.
+    if (mNextFrameRateMultiplier < 8) {
+      ++mNextFrameRateMultiplier;
     }
+  }
+
+  mozilla::TimeStamp GetMarkPaintTimingStart() const {
+    return mMarkPaintTimingStart;
   }
 
  protected:
@@ -1150,11 +1153,17 @@ class nsPresContext : public nsISupports,
   // mDynamicToolbarMaxHeight or `app units per device pixels` changes.
   void AdjustSizeForViewportUnits();
 
+  // Call in response to prefs changes that might affect what fonts should be
+  // visibile to CSS. Returns whether the current visibility value actually
+  // changed (in which case content should be reflowed).
+  bool UpdateFontVisibility();
+  void ReportBlockedFontFamilyName(const nsCString& aFamily,
+                                   FontVisibility aVisibility);
+
   // IMPORTANT: The ownership implicit in the following member variables
   // has been explicitly checked.  If you add any members to this class,
   // please make the ownership explicit (pinkerton, scc).
 
-  nsPresContextType mType;
   // the PresShell owns a strong reference to the nsPresContext, and is
   // responsible for nulling this pointer before it is destroyed
   mozilla::PresShell* MOZ_NON_OWNING_REF mPresShell;  // [WEAK]
@@ -1164,33 +1173,28 @@ class nsPresContext : public nsISupports,
                                            // Cannot reintroduce cycles
                                            // since there is no dependency
                                            // from gfx back to layout.
+  RefPtr<nsFontCache> mFontCache;
   RefPtr<mozilla::EventStateManager> mEventManager;
   RefPtr<nsRefreshDriver> mRefreshDriver;
   RefPtr<mozilla::AnimationEventDispatcher> mAnimationEventDispatcher;
   RefPtr<mozilla::EffectCompositor> mEffectCompositor;
   mozilla::UniquePtr<nsTransitionManager> mTransitionManager;
   mozilla::UniquePtr<nsAnimationManager> mAnimationManager;
+  mozilla::UniquePtr<mozilla::TimelineManager> mTimelineManager;
   mozilla::UniquePtr<mozilla::RestyleManager> mRestyleManager;
   RefPtr<mozilla::CounterStyleManager> mCounterStyleManager;
   const nsStaticAtom* mMedium;
   RefPtr<gfxFontFeatureValueSet> mFontFeatureValuesLookup;
+  RefPtr<mozilla::gfx::FontPaletteValueSet> mFontPaletteValueSet;
+
+  mozilla::UniquePtr<mozilla::gfx::PaletteCache> mFontPaletteCache;
+
   // TODO(emilio): Maybe lazily create and put under a UniquePtr if this grows a
   // lot?
   MediaEmulationData mMediaEmulationData;
 
- public:
-  // The following are public member variables so that we can use them
-  // with mozilla::AutoToggle or mozilla::AutoRestore.
-
-  // Should we disable font size inflation because we're inside of
-  // shrink-wrapping calculations on an inflation container?
-  bool mInflationDisabledForShrinkWrap;
-
- protected:
-  float mSystemFontScale;    // Internal text zoom factor, defaults to 1.0
-  float mTextZoom;           // Text zoom, defaults to 1.0
-  float mEffectiveTextZoom;  // Text zoom * system font scale
-  float mFullZoom;           // Page zoom, defaults to 1.0
+  float mTextZoom;  // Text zoom, defaults to 1.0
+  float mFullZoom;  // Page zoom, defaults to 1.0
   gfxSize mLastFontInflationScreenSize;
 
   int32_t mCurAppUnitsPerDevPixel;
@@ -1199,14 +1203,12 @@ class nsPresContext : public nsISupports,
   nsCOMPtr<nsITheme> mTheme;
   nsCOMPtr<nsIPrintSettings> mPrintSettings;
 
-  mozilla::UniquePtr<nsBidi> mBidiEngine;
+  mozilla::UniquePtr<mozilla::intl::Bidi> mBidiEngine;
 
   AutoTArray<TransactionInvalidations, 4> mTransactions;
 
   // text performance metrics
   mozilla::UniquePtr<gfxTextPerfMetrics> mTextPerf;
-
-  mozilla::UniquePtr<FontMatchingStats> mFontStats;
 
   mozilla::UniquePtr<gfxMissingFontRecorder> mMissingFonts;
 
@@ -1221,6 +1223,16 @@ class nsPresContext : public nsISupports,
   // Safe area insets support
   mozilla::ScreenIntMargin mSafeAreaInsets;
   nsSize mPageSize;
+
+  // The computed page margins from the print settings.
+  //
+  // This margin will be used for each page in the current print operation, by
+  // default (i.e. unless overridden by @page rules).
+  //
+  // FIXME(emilio): Maybe we could let a global @page rule do that, though it's
+  // sketchy at best, see https://github.com/w3c/csswg-drafts/issues/5437 for
+  // discussion.
+  nsMargin mDefaultPageMargin;
   float mPageScale;
   float mPPScale;
 
@@ -1232,27 +1244,23 @@ class nsPresContext : public nsISupports,
   // fullscreen elements, it happens in the fullscreen-specific cleanup invoked
   // by Element::UnbindFromTree().)
   mozilla::dom::Element* MOZ_NON_OWNING_REF mViewportScrollOverrideElement;
-  ScrollStyles mViewportScrollStyles;
-
-  bool mExistThrottledUpdates;
-
-  uint16_t mImageAnimationMode;
-  uint16_t mImageAnimationModePref;
-
-  uint32_t mInterruptChecksToSkip;
-
-  // During page load we use slower frame rate.
-  uint32_t mNextFrameRateMultiplier;
 
   // Counters for tests and tools that want to detect frame construction
   // or reflow.
   uint64_t mElementsRestyled;
   uint64_t mFramesConstructed;
   uint64_t mFramesReflowed;
+  uint64_t mAnimationTriggeredRestyles;
 
   mozilla::TimeStamp mReflowStartTime;
 
-  mozilla::Maybe<TransactionId> mFirstContentfulPaintTransactionId;
+  // Defined in https://w3c.github.io/paint-timing/#mark-paint-timing step 2.
+  mozilla::TimeStamp mMarkPaintTimingStart;
+
+  Maybe<TransactionId> mFirstContentfulPaintTransactionId;
+
+  mozilla::UniquePtr<mozilla::MediaFeatureChange>
+      mPendingMediaFeatureValuesChange;
 
   // Time of various first interaction types, used to report time from
   // first paint of the top level content pres shell to first interaction.
@@ -1262,15 +1270,59 @@ class nsPresContext : public nsISupports,
   mozilla::TimeStamp mFirstMouseMoveTime;
   mozilla::TimeStamp mFirstScrollTime;
 
-  bool mInteractionTimeEnabled;
-
   // last time we did a full style flush
   mozilla::TimeStamp mLastStyleUpdateForAllAnimations;
 
+  uint32_t mInterruptChecksToSkip;
+
+  // During page load we use slower frame rate.
+  uint32_t mNextFrameRateMultiplier;
+
+  uint32_t mMeasuredTicksSinceLoading;
+
+  nsTArray<RefPtr<mozilla::ManagedPostRefreshObserver>>
+      mManagedPostRefreshObservers;
+
+  // If we block the use of a font-family that is explicitly requested,
+  // due to font visibility settings, we log a message to the web console;
+  // this hash-set keeps track of names we've logged for this context, so
+  // that we can avoid repeatedly reporting the same font.
+  nsTHashSet<nsCString> mBlockedFonts;
+
+  // The set of container query boxes currently in the document, sorted by
+  // depth.
+  mozilla::DepthOrderedFrameList mContainerQueryFrames;
+  // The set of container query elements currently in the document that have
+  // been updated so far. This is necessary to avoid reentering on container
+  // query style changes which cause us to do frame reconstruction.
+  nsTHashSet<nsIContent*> mUpdatedContainerQueryContents;
+
+  ScrollStyles mViewportScrollStyles;
+
+  uint16_t mImageAnimationMode;
+  uint16_t mImageAnimationModePref;
+
+  nsPresContextType mType;
+
+ public:
+  // The following are public member variables so that we can use them
+  // with mozilla::AutoToggle or mozilla::AutoRestore.
+
+  // Should we disable font size inflation because we're inside of
+  // shrink-wrapping calculations on an inflation container?
+  bool mInflationDisabledForShrinkWrap;
+
+ protected:
+  static constexpr size_t kThemeChangeKindBits = 2;
+  static_assert(unsigned(mozilla::widget::ThemeChangeKind::AllBits) <=
+                    (1u << kThemeChangeKindBits) - 1,
+                "theme change kind doesn't fit");
+
+  unsigned mInteractionTimeEnabled : 1;
   unsigned mHasPendingInterrupt : 1;
+  unsigned mHasEverBuiltInvisibleText : 1;
   unsigned mPendingInterruptFromTest : 1;
   unsigned mInterruptsEnabled : 1;
-  unsigned mSendAfterPaintToContent : 1;
   unsigned mDrawImageBackground : 1;
   unsigned mDrawColorBackground : 1;
   unsigned mNeverAnimate : 1;
@@ -1278,22 +1330,14 @@ class nsPresContext : public nsISupports,
   unsigned mCanPaginatedScroll : 1;
   unsigned mDoScaledTwips : 1;
   unsigned mIsRootPaginatedDocument : 1;
-  unsigned mPrefBidiDirection : 1;
-  unsigned mPrefScrollbarSide : 2;
-  unsigned mPendingSysColorChanged : 1;
   unsigned mPendingThemeChanged : 1;
+  // widget::ThemeChangeKind
+  unsigned mPendingThemeChangeKind : kThemeChangeKindBits;
   unsigned mPendingUIResolutionChanged : 1;
-  unsigned mPrefChangePendingNeedsReflow : 1;
-  unsigned mPostedPrefChangedRunnable : 1;
+  unsigned mPendingFontInfoUpdateReflowFromStyle : 1;
 
   // Are we currently drawing an SVG glyph?
   unsigned mIsGlyph : 1;
-
-  // Does the associated document use ex or ch units?
-  //
-  // TODO(emilio): It's a bit weird that this lives here but all the other
-  // relevant bits live in Device on the rust side.
-  unsigned mUsesExChUnits : 1;
 
   // Is the current mCounterStyleManager valid?
   unsigned mCounterStylesDirty : 1;
@@ -1301,18 +1345,13 @@ class nsPresContext : public nsISupports,
   // Is the current mFontFeatureValuesLookup valid?
   unsigned mFontFeatureValuesDirty : 1;
 
-  // resize reflow is suppressed when the only change has been to zoom
-  // the document rather than to change the document's dimensions
-  unsigned mSuppressResizeReflow : 1;
+  // Is the current mFontFeatureValueSet valid?
+  unsigned mFontPaletteValuesDirty : 1;
 
   unsigned mIsVisual : 1;
 
-  // Should we paint flash in this context? Do not use this variable directly.
-  // Use GetPaintFlashing() method instead.
-  mutable unsigned mPaintFlashing : 1;
-  mutable unsigned mPaintFlashingInitialized : 1;
-
-  unsigned mHasWarnedAboutPositionedTableParts : 1;
+  // Are we in the RDM pane?
+  unsigned mInRDMPane : 1;
 
   unsigned mHasWarnedAboutTooLargeDashedOrDottedRadius : 1;
 
@@ -1322,28 +1361,40 @@ class nsPresContext : public nsISupports,
   // Has NotifyNonBlankPaint been called on this PresContext?
   unsigned mHadNonBlankPaint : 1;
   // Has NotifyContentfulPaint been called on this PresContext?
-  unsigned mHadContentfulPaint : 1;
+  unsigned mHadFirstContentfulPaint : 1;
+  // True when a contentful paint has happened and this paint doesn't
+  // come from the regular tick process. Usually this means a
+  // contentful paint was triggered manually.
+  unsigned mHadNonTickContentfulPaint : 1;
+
   // Has NotifyDidPaintForSubtree been called for a contentful paint?
   unsigned mHadContentfulPaintComposite : 1;
 
+  // Whether we might need to update c-v state for animations.
+  unsigned mNeedsToUpdateHiddenByContentVisibilityForAnimations : 1;
+
+  unsigned mUserInputEventsAllowed : 1;
 #ifdef DEBUG
   unsigned mInitialized : 1;
 #endif
 
-  mozilla::UniquePtr<mozilla::MediaFeatureChange>
-      mPendingMediaFeatureValuesChange;
+  // FIXME(emilio): These would be better packed on top of the bitfields, but
+  // that breaks bindgen in win32.
+  FontVisibility mFontVisibility = FontVisibility::Unknown;
+  mozilla::dom::PrefersColorSchemeOverride mOverriddenOrEmbedderColorScheme;
 
  protected:
   virtual ~nsPresContext();
 
   void LastRelease();
 
-  nsITheme* EnsureTheme();
+  void EnsureTheme();
 
 #ifdef DEBUG
  private:
   friend struct nsAutoLayoutPhase;
-  mozilla::EnumeratedArray<nsLayoutPhase, nsLayoutPhase::COUNT, uint32_t>
+  mozilla::EnumeratedArray<nsLayoutPhase, uint32_t,
+                           size_t(nsLayoutPhase::COUNT)>
       mLayoutPhaseCount;
 
  public:
@@ -1356,55 +1407,7 @@ class nsPresContext : public nsISupports,
 class nsRootPresContext final : public nsPresContext {
  public:
   nsRootPresContext(mozilla::dom::Document* aDocument, nsPresContextType aType);
-  virtual ~nsRootPresContext();
-
-  /**
-   * Registers a plugin to receive geometry updates (position and clip
-   * region) so it can update its widget.
-   * Callers must call UnregisterPluginForGeometryUpdates before
-   * the aPlugin frame is destroyed.
-   */
-  void RegisterPluginForGeometryUpdates(nsIContent* aPlugin);
-  /**
-   * Stops a plugin receiving geometry updates (position and clip
-   * region). If the plugin was not already registered, this does
-   * nothing.
-   */
-  void UnregisterPluginForGeometryUpdates(nsIContent* aPlugin);
-
-  bool NeedToComputePluginGeometryUpdates() {
-    return mRegisteredPlugins.Count() > 0;
-  }
-  /**
-   * Compute geometry updates for each plugin given that aList is the display
-   * list for aFrame. The updates are not yet applied;
-   * ApplyPluginGeometryUpdates is responsible for that. In the meantime they
-   * are stored on each nsPluginFrame.
-   * This needs to be called even when aFrame is a popup, since although
-   * windowed plugins aren't allowed in popups, windowless plugins are
-   * and ComputePluginGeometryUpdates needs to be called for them.
-   * aBuilder and aList can be null. This indicates that all plugins are
-   * hidden because we're in a background tab.
-   */
-  void ComputePluginGeometryUpdates(nsIFrame* aFrame,
-                                    nsDisplayListBuilder* aBuilder,
-                                    nsDisplayList* aList);
-
-  /**
-   * Apply the stored plugin geometry updates. This should normally be called
-   * in DidPaint so the plugins are moved/clipped immediately after we've
-   * updated our window, so they look in sync with our window.
-   */
-  void ApplyPluginGeometryUpdates();
-
-  /**
-   * Transfer stored plugin geometry updates to the compositor. Called during
-   * reflow, data is shipped over with layer updates. e10s specific.
-   */
-  void CollectPluginGeometryUpdates(
-      mozilla::layers::LayerManager* aLayerManager);
-
-  virtual bool IsRoot() override { return true; }
+  virtual bool IsRoot() const override { return true; }
 
   /**
    * Add a runnable that will get called before the next paint. They will get
@@ -1422,15 +1425,6 @@ class nsRootPresContext final : public nsPresContext {
       mozilla::MallocSizeOf aMallocSizeOf) const override;
 
  protected:
-  /**
-   * Start a timer to ensure we eventually run ApplyPluginGeometryUpdates.
-   */
-  void InitApplyPluginGeometryTimer();
-  /**
-   * Cancel the timer that ensures we eventually run ApplyPluginGeometryUpdates.
-   */
-  void CancelApplyPluginGeometryTimer();
-
   class RunWillPaintObservers : public mozilla::Runnable {
    public:
     explicit RunWillPaintObservers(nsRootPresContext* aPresContext)
@@ -1449,8 +1443,6 @@ class nsRootPresContext final : public nsPresContext {
 
   friend class nsPresContext;
 
-  nsCOMPtr<nsITimer> mApplyPluginGeometryTimer;
-  nsTHashtable<nsRefPtrHashKey<nsIContent>> mRegisteredPlugins;
   nsTArray<nsCOMPtr<nsIRunnable>> mWillPaintObservers;
   nsRevocableEventPtr<RunWillPaintObservers> mWillPaintFallbackEvent;
 };

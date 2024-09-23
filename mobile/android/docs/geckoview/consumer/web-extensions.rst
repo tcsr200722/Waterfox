@@ -36,7 +36,7 @@ and
 specified in the ``manifest.json`` file.
 
 To install a bundled extension in GeckoView, simply call
-`WebExtensionController.installBuiltIn <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.html>`_.
+`WebExtensionController.installBuiltIn <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtensionController.html#installBuiltIn(java.lang.String)>`_.
 
 .. code:: java
 
@@ -48,27 +48,17 @@ the
 `GeckoRuntime <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/GeckoRuntime.html>`_
 instance. The extension persists even when your app is restarted.
 Installing at every start up is fine, but it could be slow. To avoid
-installing multiple times you can query the list of installed extensions
-using ``WebExtensionRuntime.list``:
+installing multiple times you can use ``WebExtensionRuntime.ensureBuiltIn``,
+which will only install if the extension is not installed yet.
 
 .. code:: java
 
-   runtime.getWebExtensionController().list().then(extensionList -> {
-       for (WebExtension extension : extensionList) {
-           if (extension.id.equals("messaging@example.com")
-                   && extension.metaData.version.equals("1.0")) {
-               // Extension already installed, no need to install it again
-               return GeckoResult.fromValue(extension);
-           }
-       }
-
-       // Install if it's not already installed.
-       return runtime.getWebExtensionController()
-           .installBuiltIn("resource://android/assets/messaging/");
-   }).accept(
+   runtime.getWebExtensionController()
+     .ensureBuiltIn("resource://android/assets/messaging/", "messaging@example.com")
+     .accept(
            extension -> Log.i("MessageDelegate", "Extension installed: " + extension),
            e -> Log.e("MessageDelegate", "Error registering WebExtension", e)
-   );
+     );
 
 Communicating with Web Content
 ------------------------------
@@ -109,7 +99,7 @@ Messaging Example
 ~~~~~~~~~~~~~~~~~
 
 To receive messages from the background script, call
-`setMessageDelegate <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.html#setMessageDelegate-org.mozilla.geckoview.WebExtension.MessageDelegate-java.lang.String->`_
+`setMessageDelegate <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.html#setMessageDelegate(org.mozilla.geckoview.WebExtension.MessageDelegate,java.lang.String)>`_
 on the
 `WebExtension <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.html>`_
 object.
@@ -118,7 +108,7 @@ object.
 
    extension.setMessageDelegate(messageDelegate, "browser");
 
-`SessionController.setMessageDelegate <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/GeckoSession.html#setMessageDelegate-org.mozilla.geckoview.WebExtension.MessageDelegate-java.lang.String->`_
+`SessionController.setMessageDelegate <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.SessionController.html#setMessageDelegate(org.mozilla.geckoview.WebExtension,org.mozilla.geckoview.WebExtension.MessageDelegate,java.lang.String)>`_
 allows the app to receive messages from content scripts.
 
 .. code:: java
@@ -175,25 +165,16 @@ Activity.java
        }
    };
 
-   // Let's check if the extension is already installed first
-   runtime.getWebExtensionController().list().then(extensionList -> {
-       for (WebExtension extension : extensionList) {
-           if (extension.id.equals(EXTENSION_ID)
-                   && extension.metaData.version.equals(EXTENSION_VERSION)) {
-               // Extension already installed, no need to install it again
-               return GeckoResult.fromValue(extension);
-           }
-       }
+   // Let's make sure the extension is installed
+   runtime.getWebExtensionController()
+           .ensureBuiltIn(EXTENSION_LOCATION, "messaging@example.com").accept(
+               // Set delegate that will receive messages coming from this extension.
+               extension -> session.getWebExtensionController()
+                       .setMessageDelegate(extension, messageDelegate, "browser"),
+               // Something bad happened, let's log an error
+               e -> Log.e("MessageDelegate", "Error registering extension", e)
+           );
 
-       // Install if it's not already installed.
-       return runtime.getWebExtensionController().installBuiltIn(EXTENSION_LOCATION);
-   }).accept(
-           // Set the delegate that will receive messages coming from this WebExtension.
-           extension -> session.getWebExtensionController()
-                   .setMessageDelegate(extension, messageDelegate, "browser"),
-           // Something bad happened, let's log an error
-           e -> Log.e("MessageDelegate", "Error registering WebExtension", e)
-   );
 
 Now add the ``geckoViewAddons``, ``nativeMessaging`` and
 ``nativeMessagingFromContent`` permissions to your ``manifest.json``
@@ -238,7 +219,7 @@ found on the page. Note that our ``nativeApp`` identifier used for
 /assets/messaging/messaging.js
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code:: javascript
+.. code:: JavaScript
 
    let manifest = document.querySelector("head > link[rel=manifest]");
    if (manifest) {
@@ -283,7 +264,7 @@ the extension.
 
 The type of ``message`` will be ``JSONObject`` when the extension sends
 a javascript object, but could also be a primitive type if the extension
-sends one, e.g. for
+sends one, e.g. for
 
 .. code:: javascript
 
@@ -303,7 +284,7 @@ is the appropriate API to use.
 `runtime.Port <https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/runtime/Port>`_
 that can be used to send messages to the app. On the app side,
 implementing
-`MessageDelegate#onConnect <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.MessageDelegate.html#onConnect-org.mozilla.geckoview.WebExtension.Port->`_
+`MessageDelegate#onConnect <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.MessageDelegate.html#onConnect(org.mozilla.geckoview.WebExtension.Port)>`_
 will allow you to receive a
 `Port <https://mozilla.github.io/geckoview/javadoc/mozilla-central/org/mozilla/geckoview/WebExtension.Port.html>`_
 object that can be used to receive and send messages to the extension.
@@ -320,7 +301,7 @@ For this example, the extension side will do the following:
 /assets/messaging/background.js
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. code:: javascript
+.. code:: JavaScript
 
    // Establish connection with app
    let port = browser.runtime.connectNative("browser");
@@ -380,7 +361,7 @@ and then using it when needed.
        };
 
        runtime.getWebExtensionController()
-           .installBuiltIn("resource://android/assets/messaging/")
+           .ensureBuiltIn("resource://android/assets/messaging/", "messaging@example.com")
            .accept(
                // Register message delegate for background script
                extension -> extension.setMessageDelegate(messageDelegate, "browser"),
@@ -391,7 +372,7 @@ and then using it when needed.
    }
 
 For example, let’s send a message to the extension every time the user
-long presses on a key on the virtual keyboard, e.g. on the back button.
+long presses on a key on the virtual keyboard, e.g. on the back button.
 
 .. code:: java
 

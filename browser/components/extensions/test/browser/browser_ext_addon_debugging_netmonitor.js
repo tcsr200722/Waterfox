@@ -2,26 +2,14 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+const { require } = ChromeUtils.importESModule(
+  "resource://devtools/shared/loader/Loader.sys.mjs"
+);
 
-const { DevToolsClient } = require("devtools/client/devtools-client");
-const { DevToolsServer } = require("devtools/server/devtools-server");
 const { gDevTools } = require("devtools/client/framework/devtools");
-const { Toolbox } = require("devtools/client/framework/toolbox");
 
 async function setupToolboxTest(extensionId) {
-  DevToolsServer.init();
-  DevToolsServer.registerAllActors();
-  const transport = DevToolsServer.connectPipe();
-  const client = new DevToolsClient(transport);
-  await client.connect();
-  const addonFront = await client.mainRoot.getAddon({ id: extensionId });
-  const target = await addonFront.getTarget();
-  const toolbox = await gDevTools.showToolbox(
-    target,
-    null,
-    Toolbox.HostType.WINDOW
-  );
+  const toolbox = await gDevTools.showToolboxForWebExtension(extensionId);
 
   async function waitFor(condition) {
     while (!condition()) {
@@ -30,15 +18,15 @@ async function setupToolboxTest(extensionId) {
     }
   }
 
-  const consoleFront = await toolbox.target.getFront("console");
-
   const netmonitor = await toolbox.selectTool("netmonitor");
 
   const expectedURL = "http://mochi.test:8888/?test_netmonitor=1";
 
   // Call a function defined in the target extension to make it
   // fetch from an expected http url.
-  await consoleFront.evaluateJSAsync(`doFetchHTTPRequest("${expectedURL}");`);
+  await toolbox.commands.scriptCommand.execute(
+    `doFetchHTTPRequest("${expectedURL}");`
+  );
 
   await waitFor(() => {
     return !netmonitor.panelWin.document.querySelector(
@@ -68,13 +56,11 @@ async function setupToolboxTest(extensionId) {
 
   // Call a function defined in the target extension to make assertions
   // on the network requests collected by the netmonitor panel.
-  await consoleFront.evaluateJSAsync(
+  await toolbox.commands.scriptCommand.execute(
     `testNetworkRequestReceived(${JSON.stringify(requests)});`
   );
 
-  const onToolboxClosed = gDevTools.once("toolbox-destroyed");
   await toolbox.destroy();
-  return onToolboxClosed;
 }
 
 add_task(async function test_addon_debugging_netmonitor_panel() {
@@ -82,11 +68,11 @@ add_task(async function test_addon_debugging_netmonitor_panel() {
 
   function background() {
     let expectedURL;
-    window.doFetchHTTPRequest = async function(urlToFetch) {
+    window.doFetchHTTPRequest = async function (urlToFetch) {
       expectedURL = urlToFetch;
       await fetch(urlToFetch);
     };
-    window.testNetworkRequestReceived = async function(requests) {
+    window.testNetworkRequestReceived = async function (requests) {
       browser.test.log(
         "Addon Debugging Netmonitor panel collected requests: " +
           JSON.stringify(requests)
@@ -109,7 +95,7 @@ add_task(async function test_addon_debugging_netmonitor_panel() {
     useAddonManager: "temporary",
     manifest: {
       permissions: ["http://mochi.test/"],
-      applications: {
+      browser_specific_settings: {
         gecko: { id: EXTENSION_ID },
       },
     },

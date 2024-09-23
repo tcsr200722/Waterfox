@@ -1,29 +1,19 @@
-/* eslint-env mozilla/frame-script */
-
-XPCOMUtils.defineLazyModuleGetters(this, {
-  FormHistory: "resource://gre/modules/FormHistory.jsm",
+ChromeUtils.defineESModuleGetters(this, {
+  FormHistory: "resource://gre/modules/FormHistory.sys.mjs",
+  SearchTestUtils: "resource://testing-common/SearchTestUtils.sys.mjs",
 });
 
-function getSecurityInfo(securityInfoAsString) {
-  const serhelper = Cc[
-    "@mozilla.org/network/serialization-helper;1"
-  ].getService(Ci.nsISerializationHelper);
-  let securityInfo = serhelper.deserializeObject(securityInfoAsString);
-  securityInfo.QueryInterface(Ci.nsITransportSecurityInfo);
-  return securityInfo;
-}
+SearchTestUtils.init(this);
 
-function getCertChain(securityInfoAsString) {
+function getCertChainAsString(certBase64Array) {
   let certChain = "";
-  let securityInfo = getSecurityInfo(securityInfoAsString);
-  for (let cert of securityInfo.failedCertChain) {
+  for (let cert of certBase64Array) {
     certChain += getPEMString(cert);
   }
   return certChain;
 }
 
-function getPEMString(cert) {
-  var derb64 = cert.getBase64DERString();
+function getPEMString(derb64) {
   // Wrap the Base64 string into lines of 64 characters,
   // with CRLF line breaks (as specified in RFC 1421).
   var wrapped = derb64.replace(/(\S{64}(?!$))/g, "$1\r\n");
@@ -42,17 +32,18 @@ async function injectErrorPageFrame(tab, src, sandboxed) {
     true
   );
 
-  await SpecialPowers.spawn(tab.linkedBrowser, [src, sandboxed], async function(
-    frameSrc,
-    frameSandboxed
-  ) {
-    let iframe = content.document.createElement("iframe");
-    iframe.src = frameSrc;
-    if (frameSandboxed) {
-      iframe.setAttribute("sandbox", "allow-scripts");
+  await SpecialPowers.spawn(
+    tab.linkedBrowser,
+    [src, sandboxed],
+    async function (frameSrc, frameSandboxed) {
+      let iframe = content.document.createElement("iframe");
+      iframe.src = frameSrc;
+      if (frameSandboxed) {
+        iframe.setAttribute("sandbox", "allow-scripts");
+      }
+      content.document.body.appendChild(iframe);
     }
-    content.document.body.appendChild(iframe);
-  });
+  );
 
   await loadedPromise;
 }
@@ -90,7 +81,7 @@ async function openErrorPage(src, useFrame, sandboxed) {
 function waitForCondition(condition, nextTest, errorMsg, retryTimes) {
   retryTimes = typeof retryTimes !== "undefined" ? retryTimes : 30;
   var tries = 0;
-  var interval = setInterval(function() {
+  var interval = setInterval(function () {
     if (tries >= retryTimes) {
       ok(false, errorMsg);
       moveOn();
@@ -107,7 +98,7 @@ function waitForCondition(condition, nextTest, errorMsg, retryTimes) {
     }
     tries++;
   }, 100);
-  var moveOn = function() {
+  var moveOn = function () {
     clearInterval(interval);
     nextTest();
   };
@@ -151,15 +142,15 @@ function promiseTabLoadEvent(tab, url) {
   let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
 
   if (url) {
-    BrowserTestUtils.loadURI(tab.linkedBrowser, url);
+    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
   }
 
   return loaded;
 }
 
 /**
- * Wait for the search engine to change. searchEngineChangeFn is a function
- * that will be called to change the search engine.
+ * Wait for the user's default search engine to change. searchEngineChangeFn is
+ * a function that will be called to change the search engine.
  */
 async function promiseContentSearchChange(browser, searchEngineChangeFn) {
   // Add an event listener manually then perform the action, rather than using
@@ -170,7 +161,7 @@ async function promiseContentSearchChange(browser, searchEngineChangeFn) {
     content._searchDetails = {
       defaultEnginesList: [],
       listener: event => {
-        if (event.detail.type == "CurrentState") {
+        if (event.detail.type == "CurrentEngine") {
           content._searchDetails.defaultEnginesList.push(
             content.wrappedJSObject.gContentSearchController.defaultEngine.name
           );
@@ -198,7 +189,8 @@ async function promiseContentSearchChange(browser, searchEngineChangeFn) {
           content._searchDetails.defaultEnginesList &&
           content._searchDetails.defaultEnginesList[
             content._searchDetails.defaultEnginesList.length - 1
-          ] == expectedEngineNameChild
+          ] == expectedEngineNameChild,
+        `Waiting for ${expectedEngineNameChild} to be set`
       );
       content.removeEventListener(
         "ContentSearchService",
@@ -210,28 +202,20 @@ async function promiseContentSearchChange(browser, searchEngineChangeFn) {
   );
 }
 
-/**
- * Wait for the search engine to be added.
- */
-async function promiseNewEngine(basename) {
-  info("Waiting for engine to be added: " + basename);
-  let url = getRootDirectory(gTestPath) + basename;
-  let engine;
-  try {
-    engine = await Services.search.addEngine(url, "", false);
-  } catch (errCode) {
-    ok(false, "addEngine failed with error code " + errCode);
-    throw errCode;
-  }
+async function waitForBookmarksToolbarVisibility({
+  win = window,
+  visible,
+  message,
+}) {
+  let result = await TestUtils.waitForCondition(() => {
+    let toolbar = win.document.getElementById("PersonalToolbar");
+    return toolbar && (visible ? !toolbar.collapsed : toolbar.collapsed);
+  }, message || "waiting for toolbar to become " + (visible ? "visible" : "hidden"));
+  ok(result, message);
+  return result;
+}
 
-  info("Search engine added: " + basename);
-  registerCleanupFunction(async () => {
-    try {
-      await Services.search.removeEngine(engine);
-    } catch (ex) {
-      /* Can't remove the engine more than once */
-    }
-  });
-
-  return engine;
+function isBookmarksToolbarVisible(win = window) {
+  let toolbar = win.document.getElementById("PersonalToolbar");
+  return !toolbar.collapsed;
 }

@@ -6,11 +6,11 @@
 
 #include "XRPermissionRequest.h"
 #include "nsGlobalWindowInner.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/Preferences.h"
 #include "nsContentUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 //-------------------------------------------------
 // XR Permission Requests
@@ -25,8 +25,7 @@ NS_IMPL_CYCLE_COLLECTION_INHERITED(XRPermissionRequest,
 XRPermissionRequest::XRPermissionRequest(nsPIDOMWindowInner* aWindow,
                                          uint64_t aWindowId)
     : ContentPermissionRequestBase(aWindow->GetDoc()->NodePrincipal(), aWindow,
-                                   NS_LITERAL_CSTRING("dom.vr"),
-                                   NS_LITERAL_CSTRING("xr")),
+                                   "dom.vr"_ns, "xr"_ns),
       mWindowId(aWindowId) {
   MOZ_ASSERT(aWindow);
   MOZ_ASSERT(aWindow->GetDoc());
@@ -46,7 +45,7 @@ XRPermissionRequest::Cancel() {
 }
 
 NS_IMETHODIMP
-XRPermissionRequest::Allow(JS::HandleValue aChoices) {
+XRPermissionRequest::Allow(JS::Handle<JS::Value> aChoices) {
   MOZ_ASSERT(aChoices.isUndefined());
   nsGlobalWindowInner* window =
       nsGlobalWindowInner::GetInnerWindowWithId(mWindowId);
@@ -73,5 +72,4 @@ nsresult XRPermissionRequest::Start() {
   return nsContentPermissionUtils::AskPermission(this, mWindow);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

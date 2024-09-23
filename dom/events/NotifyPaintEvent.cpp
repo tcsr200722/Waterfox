@@ -12,8 +12,7 @@
 #include "mozilla/GfxMessageUtils.h"
 #include "nsContentUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NotifyPaintEvent::NotifyPaintEvent(
     EventTarget* aOwner, nsPresContext* aPresContext, WidgetEvent* aEvent,
@@ -60,7 +59,7 @@ already_AddRefed<DOMRectList> NotifyPaintEvent::ClientRects(
   for (auto iter = r.RectIter(); !iter.Done(); iter.Next()) {
     RefPtr<DOMRect> rect = new DOMRect(parent);
     rect->SetLayoutRect(iter.Get());
-    rectList->Append(rect);
+    rectList->Append(std::move(rect));
   }
 
   return rectList.forget();
@@ -74,37 +73,36 @@ already_AddRefed<PaintRequestList> NotifyPaintEvent::PaintRequests(
   for (uint32_t i = 0; i < mInvalidateRequests.Length(); ++i) {
     RefPtr<PaintRequest> r = new PaintRequest(parent);
     r->SetRequest(mInvalidateRequests[i]);
-    requests->Append(r);
+    requests->Append(std::move(r));
   }
 
   return requests.forget();
 }
 
-void NotifyPaintEvent::Serialize(IPC::Message* aMsg,
+void NotifyPaintEvent::Serialize(IPC::MessageWriter* aWriter,
                                  bool aSerializeInterfaceType) {
   if (aSerializeInterfaceType) {
-    IPC::WriteParam(aMsg, NS_LITERAL_STRING("notifypaintevent"));
+    IPC::WriteParam(aWriter, u"notifypaintevent"_ns);
   }
 
-  Event::Serialize(aMsg, false);
+  Event::Serialize(aWriter, false);
 
   uint32_t length = mInvalidateRequests.Length();
-  IPC::WriteParam(aMsg, length);
+  IPC::WriteParam(aWriter, length);
   for (uint32_t i = 0; i < length; ++i) {
-    IPC::WriteParam(aMsg, mInvalidateRequests[i]);
+    IPC::WriteParam(aWriter, mInvalidateRequests[i]);
   }
 }
 
-bool NotifyPaintEvent::Deserialize(const IPC::Message* aMsg,
-                                   PickleIterator* aIter) {
-  NS_ENSURE_TRUE(Event::Deserialize(aMsg, aIter), false);
+bool NotifyPaintEvent::Deserialize(IPC::MessageReader* aReader) {
+  NS_ENSURE_TRUE(Event::Deserialize(aReader), false);
 
   uint32_t length = 0;
-  NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &length), false);
+  NS_ENSURE_TRUE(IPC::ReadParam(aReader, &length), false);
   mInvalidateRequests.SetCapacity(length);
   for (uint32_t i = 0; i < length; ++i) {
     nsRect req;
-    NS_ENSURE_TRUE(IPC::ReadParam(aMsg, aIter, &req), false);
+    NS_ENSURE_TRUE(IPC::ReadParam(aReader, &req), false);
     mInvalidateRequests.AppendElement(req);
   }
 
@@ -119,8 +117,7 @@ DOMHighResTimeStamp NotifyPaintEvent::PaintTimeStamp(SystemCallerGuarantee) {
   return mTimeStamp;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

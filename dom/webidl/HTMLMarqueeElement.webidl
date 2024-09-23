@@ -28,11 +28,6 @@ interface HTMLMarqueeElement : HTMLElement {
   [CEReactions, SetterThrows] attribute unsigned long vspace;
   [CEReactions, SetterThrows] attribute DOMString width;
 
-  attribute EventHandler onbounce;
-  attribute EventHandler onfinish;
-  attribute EventHandler onstart;
-
-  void start();
-  void stop();
+  undefined start();
+  undefined stop();
 };
-

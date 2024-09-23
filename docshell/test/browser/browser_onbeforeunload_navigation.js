@@ -6,12 +6,16 @@ const TARGETED_PAGE =
   "data:text/html," +
   encodeURIComponent("<body>Shouldn't be seeing this</body>");
 
+const { PromptTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/PromptTestUtils.sys.mjs"
+);
+
 var loadStarted = false;
 var tabStateListener = {
   resolveLoad: null,
   expectLoad: null,
 
-  onStateChange(webprogress, request, flags, status) {
+  onStateChange(webprogress, request, flags) {
     const WPL = Ci.nsIWebProgressListener;
     if (flags & WPL.STATE_IS_WINDOW) {
       if (flags & WPL.STATE_START) {
@@ -26,8 +30,8 @@ var tabStateListener = {
     }
   },
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIWebProgressListener,
-    Ci.nsISupportsWeakReference,
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
   ]),
 };
 
@@ -47,21 +51,12 @@ function promiseLoaded(url, callback) {
   });
 }
 
-async function promiseStayOnPagePrompt(acceptNavigation) {
-  loadStarted = false;
-  let [dialog] = await TestUtils.topicObserved("tabmodal-dialog-loaded");
-
-  ok(!loadStarted, "No load should be started");
-
-  let button = dialog.querySelector(
-    acceptNavigation ? ".tabmodalprompt-button0" : ".tabmodalprompt-button1"
+function promiseStayOnPagePrompt(browser, acceptNavigation) {
+  return PromptTestUtils.handleNextPrompt(
+    browser,
+    { modalType: Services.prompt.MODAL_TYPE_CONTENT, promptType: "confirmEx" },
+    { buttonNumClick: acceptNavigation ? 0 : 1 }
   );
-  button.click();
-
-  // Make a trip through the event loop so that, if anything is going to
-  // happen after we deny the navigation, it has a chance to happen
-  // before we return to our caller.
-  await new Promise(executeSoon);
 }
 
 add_task(async function test() {
@@ -81,7 +76,7 @@ add_task(async function test() {
     Ci.nsIWebProgress.NOTIFY_STATE_WINDOW
   );
 
-  const NUM_TESTS = 6;
+  const NUM_TESTS = 7;
   await SpecialPowers.spawn(browser, [NUM_TESTS], testCount => {
     let { testFns } = this.content.wrappedJSObject;
     Assert.equal(
@@ -104,13 +99,13 @@ add_task(async function test() {
         // page after each test, since the tests will each navigate away
         // from it.
         await promiseLoaded(TEST_PAGE, () => {
-          browser.loadURI(TEST_PAGE, {
+          browser.loadURI(Services.io.newURI(TEST_PAGE), {
             triggeringPrincipal: document.nodePrincipal,
           });
         });
       }
 
-      let promptPromise = promiseStayOnPagePrompt(allowNavigation);
+      let promptPromise = promiseStayOnPagePrompt(browser, allowNavigation);
       let loadPromise;
       if (allowNavigation) {
         loadPromise = promiseLoaded(TARGETED_PAGE);
@@ -123,7 +118,7 @@ add_task(async function test() {
           let { testFns } = this.content.wrappedJSObject;
           this.content.onbeforeunload = testFns[testIdx];
           this.content.location = url;
-          return this.content.windowUtils.currentInnerWindowID;
+          return this.content.windowGlobalChild.innerWindowId;
         }
       );
 
@@ -142,7 +137,7 @@ add_task(async function test() {
               "Page should have navigated to the correct URL"
             );
             Assert.notEqual(
-              this.content.windowUtils.currentInnerWindowID,
+              this.content.windowGlobalChild.innerWindowId,
               winID,
               "Page should have a new inner window"
             );
@@ -157,7 +152,7 @@ add_task(async function test() {
             "Page should have the same URL"
           );
           Assert.equal(
-            this.content.windowUtils.currentInnerWindowID,
+            this.content.windowGlobalChild.innerWindowId,
             winID,
             "Page should have the same inner window"
           );

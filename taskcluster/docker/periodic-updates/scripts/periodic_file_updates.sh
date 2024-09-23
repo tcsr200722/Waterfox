@@ -14,7 +14,7 @@ Usage: $(basename "$0") [-p product]
            # Use archive.m.o instead of the taskcluster index to get xpcshell
            [--use-ftp-builds]
            # One (or more) of the following actions must be specified.
-           --hsts | --hpkp | --remote-settings | --suffix-list
+           --hsts | --hpkp | --remote-settings | --suffix-list | --mobile-experiments
            -b branch
 
 EOF
@@ -29,7 +29,6 @@ DONTBUILD=false
 APPROVAL=false
 COMMIT_AUTHOR='ffxbld <ffxbld@mozilla.com>'
 REPODIR=''
-APP_DIR=''
 HGHOST="hg.mozilla.org"
 STAGEHOST="archive.mozilla.org"
 WGET="wget -nv"
@@ -42,8 +41,6 @@ HG="$(command -v hg)"
 DATADIR="${BASEDIR}/data"
 mkdir -p "${DATADIR}"
 
-VERSION=''
-MCVERSION=''
 USE_MC=false
 USE_TC=true
 JQ="$(command -v jq)"
@@ -51,7 +48,8 @@ JQ="$(command -v jq)"
 DO_HSTS=false
 HSTS_PRELOAD_SCRIPT="${SCRIPTDIR}/getHSTSPreloadList.js"
 HSTS_PRELOAD_ERRORS="nsSTSPreloadList.errors"
-HSTS_PRELOAD_INC="${DATADIR}/nsSTSPreloadList.inc"
+HSTS_PRELOAD_INC_OLD="${DATADIR}/nsSTSPreloadList.inc"
+HSTS_PRELOAD_INC_NEW="${BASEDIR}/${PRODUCT}/nsSTSPreloadList.inc"
 HSTS_UPDATED=false
 
 DO_HPKP=false
@@ -65,7 +63,6 @@ HPKP_UPDATED=false
 
 DO_REMOTE_SETTINGS=false
 REMOTE_SETTINGS_SERVER=''
-REMOTE_SETTINGS_INPUT="${DATADIR}/remote-settings.in"
 REMOTE_SETTINGS_OUTPUT="${DATADIR}/remote-settings.out"
 REMOTE_SETTINGS_DIR="/services/settings/dumps"
 REMOTE_SETTINGS_UPDATED=false
@@ -77,36 +74,23 @@ HG_SUFFIX_LOCAL="effective_tld_names.dat"
 HG_SUFFIX_PATH="/netwerk/dns/${HG_SUFFIX_LOCAL}"
 SUFFIX_LIST_UPDATED=false
 
+DO_MOBILE_EXPERIMENTS=false
+EXPERIMENTER_URL="https://experimenter.services.mozilla.com/api/v6/experiments-first-run/"
+FENIX_INITIAL_EXPERIMENTS="mobile/android/fenix/app/src/main/res/raw/initial_experiments.json"
+FOCUS_INITIAL_EXPERIMENTS="mobile/android/focus-android/app/src/main/res/raw/initial_experiments.json"
+MOBILE_EXPERIMENTS_UPDATED=false
+
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-.}"
 # Defaults
 HSTS_DIFF_ARTIFACT="${ARTIFACTS_DIR}/${HSTS_DIFF_ARTIFACT:-"nsSTSPreloadList.diff"}"
 HPKP_DIFF_ARTIFACT="${ARTIFACTS_DIR}/${HPKP_DIFF_ARTIFACT:-"StaticHPKPins.h.diff"}"
 REMOTE_SETTINGS_DIFF_ARTIFACT="${ARTIFACTS_DIR}/${REMOTE_SETTINGS_DIFF_ARTIFACT:-"remote-settings.diff"}"
 SUFFIX_LIST_DIFF_ARTIFACT="${ARTIFACTS_DIR}/${SUFFIX_LIST_DIFF_ARTIFACT:-"effective_tld_names.diff"}"
+EXPERIMENTER_DIFF_ARTIFACT="${ARTIFACTS_DIR}/initial_experiments.diff"
 
 # duplicate the functionality of taskcluster-lib-urls, but in bash..
 queue_base="$TASKCLUSTER_ROOT_URL/api/queue/v1"
 index_base="$TASKCLUSTER_ROOT_URL/api/index/v1"
-
-# Get the current in-tree version for a code branch.
-function get_version {
-  VERSION_REPO=$1
-  VERSION_FILE='version.txt'
-
-  # TODO bypass temporary file
-
-  cd "${BASEDIR}"
-  VERSION_URL_HG="${VERSION_REPO}/raw-file/default/${APP_DIR}/config/version.txt"
-  rm -f ${VERSION_FILE}
-  ${WGET} -O "${VERSION_FILE}" "${VERSION_URL_HG}"
-  PARSED_VERSION=$(cat version.txt)
-  if [ "${PARSED_VERSION}" == "" ]; then
-    echo "ERROR: Unable to parse version from $VERSION_FILE" >&2
-    exit 21
-  fi
-  rm -f ${VERSION_FILE}
-  echo "${PARSED_VERSION}"
-}
 
 # Cleanup common artifacts.
 function preflight_cleanup {
@@ -193,34 +177,37 @@ function unpack_artifacts {
 function compare_hsts_files {
   cd "${BASEDIR}"
 
-  HSTS_PRELOAD_INC_HG="${HGREPO}/raw-file/default/security/manager/ssl/$(basename "${HSTS_PRELOAD_INC}")"
+  HSTS_PRELOAD_INC_HG="${HGREPO}/raw-file/default/security/manager/ssl/$(basename "${HSTS_PRELOAD_INC_OLD}")"
 
   echo "INFO: Downloading existing include file..."
-  rm -rf "${HSTS_PRELOAD_ERRORS}" "${HSTS_PRELOAD_INC}"
+  rm -rf "${HSTS_PRELOAD_ERRORS}" "${HSTS_PRELOAD_INC_OLD}"
   echo "INFO: ${WGET} ${HSTS_PRELOAD_INC_HG}"
-  ${WGET} -O "${HSTS_PRELOAD_INC}" "${HSTS_PRELOAD_INC_HG}"
+  ${WGET} -O "${HSTS_PRELOAD_INC_OLD}" "${HSTS_PRELOAD_INC_HG}"
 
-  if [ ! -f "${HSTS_PRELOAD_INC}" ]; then
-    echo "Downloaded file '${HSTS_PRELOAD_INC}' not found in directory '$(pwd)' - this should have been downloaded above from ${HSTS_PRELOAD_INC_HG}." >&2
+  if [ ! -f "${HSTS_PRELOAD_INC_OLD}" ]; then
+    echo "Downloaded file '${HSTS_PRELOAD_INC_OLD}' not found in directory '$(pwd)' - this should have been downloaded above from ${HSTS_PRELOAD_INC_HG}." >&2
     exit 41
   fi
 
   # Run the script to get an updated preload list.
   echo "INFO: Generating new HSTS preload list..."
   cd "${BASEDIR}/${PRODUCT}"
-  LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:. ./xpcshell "${HSTS_PRELOAD_SCRIPT}" "${HSTS_PRELOAD_INC}"
+  if ! LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:. ./xpcshell "${HSTS_PRELOAD_SCRIPT}" "${HSTS_PRELOAD_INC_OLD}"; then
+    echo "HSTS preload list generation failed" >&2
+    exit 43
+  fi
 
   # The created files should be non-empty.
   echo "INFO: Checking whether new HSTS preload list is valid..."
-  if [ ! -s "${HSTS_PRELOAD_INC}" ]; then
-    echo "New HSTS preload list ${HSTS_PRELOAD_INC} is empty. That's less good." >&2
+  if [ ! -s "${HSTS_PRELOAD_INC_NEW}" ]; then
+    echo "New HSTS preload list ${HSTS_PRELOAD_INC_NEW} is empty. That's less good." >&2
     exit 42
   fi
   cd "${BASEDIR}"
 
   # Check for differences
   echo "INFO: diffing old/new HSTS preload lists into ${HSTS_DIFF_ARTIFACT}"
-  ${DIFF} "${BASEDIR}/${PRODUCT}/$(basename "${HSTS_PRELOAD_INC}")" "${HSTS_PRELOAD_INC}" | tee "${HSTS_DIFF_ARTIFACT}"
+  ${DIFF} "${HSTS_PRELOAD_INC_OLD}" "${HSTS_PRELOAD_INC_NEW}" | tee "${HSTS_DIFF_ARTIFACT}"
   if [ -s "${HSTS_DIFF_ARTIFACT}" ]
   then
     return 0
@@ -244,7 +231,10 @@ function compare_hpkp_files {
   # Run the script to get an updated preload list.
   echo "INFO: Generating new HPKP preload list..."
   cd "${BASEDIR}/${PRODUCT}"
-  LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:. ./xpcshell "${HPKP_PRELOAD_SCRIPT}" "${HPKP_PRELOAD_JSON}" "${HPKP_PRELOAD_OUTPUT}" > "${HPKP_PRELOAD_ERRORS}"
+  if ! LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:. ./xpcshell "${HPKP_PRELOAD_SCRIPT}" "${HPKP_PRELOAD_JSON}" "${HPKP_PRELOAD_OUTPUT}" > "${HPKP_PRELOAD_ERRORS}"; then
+    echo "HPKP preload list generation failed" >&2
+    exit 54
+  fi
 
   # The created files should be non-empty.
   echo "INFO: Checking whether new HPKP preload list is valid..."
@@ -252,6 +242,10 @@ function compare_hpkp_files {
   if [ ! -s "${HPKP_PRELOAD_OUTPUT}" ]; then
     echo "${HPKP_PRELOAD_OUTPUT} is empty. That's less good." >&2
     exit 52
+  fi
+  if ! grep kPreloadPKPinsExpirationTime "${HPKP_PRELOAD_OUTPUT}"; then
+    echo "${HPKP_PRELOAD_OUTPUT} is missing an expiration time. Truncated?" >&2
+    exit 53
   fi
   cd "${BASEDIR}"
 
@@ -303,31 +297,32 @@ function compare_remote_settings_files {
   # 1. List remote settings collections from server.
   echo "INFO: fetch remote settings list from server"
   ${WGET} -qO- "${REMOTE_SETTINGS_SERVER}/buckets/monitor/collections/changes/records" |\
-    ${JQ} -r '.data[] | .bucket+"/"+.collection' |\
-    # 2. For each entry ${bucket, collection}
-  while IFS="/" read -r bucket collection; do
+    ${JQ} -r '.data[] | .bucket+"/"+.collection+"/"+(.last_modified|tostring)' |\
+    # 2. For each entry ${bucket, collection, last_modified}
+  while IFS="/" read -r bucket collection last_modified; do
 
-    # 3. Download the dump from HG into REMOTE_SETTINGS_INPUT folder
-    hg_dump_url="${HGREPO}/raw-file/default${REMOTE_SETTINGS_DIR}/${bucket}/${collection}.json"
-    local_location_input="$REMOTE_SETTINGS_INPUT/${bucket}/${collection}.json"
-    mkdir -p "$REMOTE_SETTINGS_INPUT/${bucket}"
-    ${WGET} -qO "$local_location_input" "$hg_dump_url"
-    if [ $? -eq 8 ]; then
-      # We don't keep any dump for this collection, skip it.
-      # Try to clean up in case no collection in this bucket has dump.
-      rmdir "$REMOTE_SETTINGS_INPUT/${bucket}" --ignore-fail-on-non-empty
+    # 3. Check to see if the collection exists in the dump directory of the repository,
+    #    if it does not then we aren't keeping the dump, and so we skip it.
+    local_dump_file="${REPODIR}${REMOTE_SETTINGS_DIR}/${bucket}/${collection}.json"
+    if [ ! -r "${local_dump_file}" ]; then
       continue
     fi
 
     # 4. Download server version into REMOTE_SETTINGS_OUTPUT folder
-    remote_records_url="$REMOTE_SETTINGS_SERVER/buckets/${bucket}/collections/${collection}/records"
+    remote_records_url="$REMOTE_SETTINGS_SERVER/buckets/${bucket}/collections/${collection}/changeset?_expected=${last_modified}"
     local_location_output="$REMOTE_SETTINGS_OUTPUT/${bucket}/${collection}.json"
     mkdir -p "$REMOTE_SETTINGS_OUTPUT/${bucket}"
-    ${WGET} -qO "$local_location_output" "$remote_records_url"
+    # We sort both the keys and the records in search-config-v2 to make it
+    # easier to read and to experiment with making changes via the dump file.
+    if [ "${collection}" = "search-config-v2" ]; then
+      ${WGET} -qO- "$remote_records_url" | ${JQ} --sort-keys '{"data": .changes | sort_by(.recordType, .identifier), "timestamp": .timestamp}' > "${local_location_output}"
+    else
+      ${WGET} -qO- "$remote_records_url" | ${JQ} '{"data": .changes, "timestamp": .timestamp}' > "${local_location_output}"
+    fi
 
     # 5. Download attachments if needed.
     if [ "${bucket}" = "blocklists" ] && [ "${collection}" = "addons-bloomfilters" ]; then
-      # Find the attachment with the most recent generation_time, like _updateMLBF in Blocklist.jsm.
+      # Find the attachment with the most recent generation_time, like _updateMLBF in Blocklist.sys.mjs.
       # The server should return one "bloomfilter-base" record, but in case it returns multiple,
       # return the most recent one. The server may send multiple entries if we ever decide to use
       # the "filter_expression" feature of Remote Settings to send different records to specific
@@ -337,13 +332,21 @@ function compare_remote_settings_files {
       update_remote_settings_attachment "${bucket}" "${collection}" addons-mlbf.bin \
         'map(select(.attachment_type == "bloomfilter-base")) | sort_by(.generation_time) | last'
     fi
-    # Here is an example to download an attachment with record identifier "ID":
-    # update_remote_settings_attachment "${bucket}" "${collection}" ID '.[] | select(.id == "ID")'
+    # TODO: Bug 1873448. This cannot handle new/removed files currently, due to the
+    # build system making it difficult.
+    if [ "${bucket}" = "main" ] && [ "${collection}" = "search-config-icons" ]; then
+      ${JQ} -r '.data[] | .id' < "${local_location_output}" |\
+      while read -r id; do
+        # We do not want quotes around ${id}
+        # shellcheck disable=SC2086
+        update_remote_settings_attachment "${bucket}" "${collection}" ${id} ".[] | select(.id == \"${id}\")"
+      done
+    fi
     # NOTE: The downloaded data is not validated. xpcshell should be used for that.
   done
 
   echo "INFO: diffing old/new remote settings dumps..."
-  ${DIFF} -r "${REMOTE_SETTINGS_INPUT}" "${REMOTE_SETTINGS_OUTPUT}" > "${REMOTE_SETTINGS_DIFF_ARTIFACT}"
+  ${DIFF} -r "${REPODIR}${REMOTE_SETTINGS_DIR}" "${REMOTE_SETTINGS_OUTPUT}" > "${REMOTE_SETTINGS_DIFF_ARTIFACT}"
   if [ -s "${REMOTE_SETTINGS_DIFF_ARTIFACT}" ]
   then
     return 0
@@ -361,19 +364,16 @@ function update_remote_settings_attachment() {
   # $4 is a jq filter on the arrays that should return one record with the attachment
   local jq_attachment_selector=".data | map(select(.attachment)) | $4"
 
-  # These paths match _readAttachmentDump in services/settings/Attachments.jsm.
+  # These paths match _readAttachmentDump in services/settings/Attachments.sys.mjs.
   local path_to_attachment="${bucket}/${collection}/${attachment_id}"
   local path_to_meta="${bucket}/${collection}/${attachment_id}.meta.json"
-  local old_meta="$REMOTE_SETTINGS_INPUT/${path_to_meta}"
+  local old_meta="${REPODIR}${REMOTE_SETTINGS_DIR}/${path_to_meta}"
   local new_meta="$REMOTE_SETTINGS_OUTPUT/${path_to_meta}"
 
   # Those files should have been created by compare_remote_settings_files before the function call.
-  local local_location_input="$REMOTE_SETTINGS_INPUT/${bucket}/${collection}.json"
   local local_location_output="$REMOTE_SETTINGS_OUTPUT/${bucket}/${collection}.json"
 
-  # Compute the metadata based on already-downloaded records.
-  mkdir -p "$REMOTE_SETTINGS_INPUT/${bucket}/${collection}"
-  ${JQ} -cj <"$local_location_input" "${jq_attachment_selector}" > "${old_meta}"
+  # Download the current meta data files.
   mkdir -p "$REMOTE_SETTINGS_OUTPUT/${bucket}/${collection}"
   ${JQ} -cj <"$local_location_output" "${jq_attachment_selector}" > "${new_meta}"
 
@@ -385,18 +385,31 @@ function update_remote_settings_attachment() {
 
   echo "INFO: Downloading updated remote settings dump: ${bucket}/${collection}/${attachment_id}"
 
-  # Overwrited old_meta with the actual file from the repo. The content should be equivalent,
-  # but can have minor differences (e.g. different line endings) if the checked in file was not
-  # generated by this script (e.g. manually checked in).
-  ${WGET} -qO "${old_meta}" "${HGREPO}/raw-file/default${REMOTE_SETTINGS_DIR}/${path_to_meta}"
-
-  ${WGET} -qO "${REMOTE_SETTINGS_INPUT}/${path_to_attachment}" "${HGREPO}/raw-file/default${REMOTE_SETTINGS_DIR}/${path_to_attachment}"
-
   if [ -z "${ATTACHMENT_BASE_URL}" ] ; then
     ATTACHMENT_BASE_URL=$(${WGET} -qO- "${REMOTE_SETTINGS_SERVER}" | ${JQ} -r .capabilities.attachments.base_url)
   fi
   attachment_path_from_meta=$(${JQ} -r < "${new_meta}" .attachment.location)
   ${WGET} -qO "${REMOTE_SETTINGS_OUTPUT}/${path_to_attachment}" "${ATTACHMENT_BASE_URL}${attachment_path_from_meta}"
+}
+
+function compare_mobile_experiments() {
+  echo "INFO ${WGET} ${EXPERIMENTER_URL}"
+  ${WGET} -O experiments.json "${EXPERIMENTER_URL}"
+  ${WGET} -O fenix-experiments-old.json "${HGREPO}/raw-file/default/${FENIX_INITIAL_EXPERIMENTS}"
+  ${WGET} -O focus-experiments-old.json "${HGREPO}/raw-file/default/${FOCUS_INITIAL_EXPERIMENTS}"
+
+  # shellcheck disable=SC2016
+  ${JQ} --arg APP_NAME fenix '{"data":map(select(.appName == $APP_NAME))}' < experiments.json > fenix-experiments-new.json
+  # shellcheck disable=SC2016
+  ${JQ} --arg APP_NAME focus_android '{"data":map(select(.appName == $APP_NAME))}' < experiments.json > focus-experiments-new.json
+
+  ( ${DIFF} fenix-experiments-old.json fenix-experiments-new.json; ${DIFF} focus-experiments-old.json focus-experiments-new.json ) > "${EXPERIMENTER_DIFF_ARTIFACT}"
+  if [ -s "${EXPERIMENTER_DIFF_ARTIFACT}" ]; then
+    return 0
+  else
+    # no change
+    return 1
+  fi
 }
 
 # Clones an hg repo
@@ -406,14 +419,14 @@ function clone_repo {
     ${HG} robustcheckout --sharebase /tmp/hg-store -b default "${HGREPO}" "${REPODIR}"
   fi
 
-  ${HG} -R ${REPODIR} pull
-  ${HG} -R ${REPODIR} update -C default
+  ${HG} -R "${REPODIR}" pull
+  ${HG} -R "${REPODIR}" update -C default
 }
 
 # Copies new HSTS files in place, and commits them.
 function stage_hsts_files {
   cd "${BASEDIR}"
-  cp -f "${BASEDIR}/${PRODUCT}/$(basename "${HSTS_PRELOAD_INC}")" "${REPODIR}/security/manager/ssl/"
+  cp -f "${HSTS_PRELOAD_INC_NEW}" "${REPODIR}/security/manager/ssl/"
 }
 
 function stage_hpkp_files {
@@ -431,6 +444,13 @@ function stage_tld_suffix_files {
   cp -a "${GITHUB_SUFFIX_LOCAL}" "${REPODIR}/${HG_SUFFIX_PATH}"
 }
 
+function stage_mobile_experiments_files {
+  cd "${BASEDIR}"
+
+  cp fenix-experiments-new.json "${REPODIR}/${FENIX_INITIAL_EXPERIMENTS}"
+  cp focus-experiments-new.json "${REPODIR}/${FOCUS_INITIAL_EXPERIMENTS}"
+}
+
 # Push all pending commits to Phabricator
 function push_repo {
   cd "${REPODIR}"
@@ -438,7 +458,7 @@ function push_repo {
   then
     return 1
   fi
-  if ! ARC=$(command -v arc)
+  if ! ARC=$(command -v arc) && ! ARC=$(command -v arcanist)
   then
     return 1
   fi
@@ -453,7 +473,7 @@ function push_repo {
   do
     echo "Removing old request $diff"
     # There is no 'arc abandon', see bug 1452082
-    echo '{"transactions": [{"type":"abandon"}], "objectIdentifier": "'"${diff}"'"}' | arc call-conduit differential.revision.edit
+    echo '{"transactions": [{"type":"abandon", "value": true}], "objectIdentifier": "'"${diff}"'"}' | $ARC call-conduit -- differential.revision.edit
   done
 
   $ARC diff --verbatim --reviewers "${REVIEWERS}"
@@ -478,6 +498,7 @@ while [ $# -gt 0 ]; do
     --hpkp) DO_HPKP=true ;;
     --remote-settings) DO_REMOTE_SETTINGS=true ;;
     --suffix-list) DO_SUFFIX_LIST=true ;;
+    --mobile-experiments) DO_MOBILE_EXPERIMENTS=true ;;
     -r) REPODIR="$2"; shift ;;
     --use-mozilla-central) USE_MC=true ;;
     --use-ftp-builds) USE_TC=false ;;
@@ -496,7 +517,7 @@ if [ "${BRANCH}" == "" ]; then
 fi
 
 # Must choose at least one update action.
-if [ "$DO_HSTS" == "false" ] && [ "$DO_HPKP" == "false" ] && [ "$DO_REMOTE_SETTINGS" == "false" ] && [ "$DO_SUFFIX_LIST" == "false" ]
+if [ "$DO_HSTS" == "false" ] && [ "$DO_HPKP" == "false" ] && [ "$DO_REMOTE_SETTINGS" == "false" ] && [ "$DO_SUFFIX_LIST" == "false" ] && [ "$DO_MOBILE_EXPERIMENTS" == false ]
 then
   echo "Error: you must specify at least one action from: --hsts, --hpkp, --remote-settings, or --suffix-list" >&2
   usage
@@ -506,11 +527,9 @@ fi
 # per-product constants
 case "${PRODUCT}" in
   thunderbird)
-    APP_DIR="mail"
     COMMIT_AUTHOR="tbirdbld <tbirdbld@thunderbird.net>"
     ;;
   firefox)
-    APP_DIR="browser"
     ;;
   *)
     echo "Error: Invalid product specified"
@@ -524,7 +543,7 @@ if [ "${REPODIR}" == "" ]; then
 fi
 
 case "${BRANCH}" in
-  mozilla-central|comm-central )
+  mozilla-central|comm-central|try )
     HGREPO="https://${HGHOST}/${BRANCH}"
     ;;
   mozilla-*|comm-* )
@@ -535,32 +554,15 @@ case "${BRANCH}" in
     ;;
 esac
 
-MCREPO="https://${HGHOST}/mozilla-central"
-
-# Remove once 52esr is off support
-VERSION=$(get_version "${HGREPO}")
-MAJOR_VERSION="${VERSION%%.*}"
-echo "INFO: parsed version is ${VERSION}"
-if [ "${USE_MC}" == "true" ]; then
-  MCVERSION=$(get_version "${MCREPO}")
-  echo "INFO: parsed mozilla-central version is ${MCVERSION}"
-  MAJOR_VERSION="${MCVERSION%%.*}"
-fi
-
-BROWSER_ARCHIVE="${PRODUCT}-${VERSION}.en-US.${PLATFORM}.${PLATFORM_EXT}"
-TESTS_ARCHIVE="${PRODUCT}-${VERSION}.en-US.${PLATFORM}.common.tests.tar.gz"
-if [ "${USE_MC}" == "true" ]; then
-  BROWSER_ARCHIVE="${PRODUCT}-${MCVERSION}.en-US.${PLATFORM}.${PLATFORM_EXT}"
-  TESTS_ARCHIVE="${PRODUCT}-${MCVERSION}.en-US.${PLATFORM}.common.tests.tar.gz"
-fi
-# Simple name builds on >=53.0.0
-if [ "${MAJOR_VERSION}" -ge 53 ] ; then
-  BROWSER_ARCHIVE="target.${PLATFORM_EXT}"
-  TESTS_ARCHIVE="target.common.tests.tar.gz"
-fi
-# End 'remove once 52esr is off support'
+BROWSER_ARCHIVE="target.${PLATFORM_EXT}"
+TESTS_ARCHIVE="target.common.tests.tar.gz"
 
 preflight_cleanup
+
+# Clone the repository here as some sections will use it for source data, and
+# we'll need it later anyway.
+clone_repo
+
 if [ "${DO_HSTS}" == "true" ] || [ "${DO_HPKP}" == "true" ] || [ "${DO_PRELOAD_PINSET}" == "true" ]
 then
   if [ "${USE_TC}" == "true" ]; then
@@ -595,9 +597,15 @@ if [ "${DO_SUFFIX_LIST}" == "true" ]; then
     SUFFIX_LIST_UPDATED=true
   fi
 fi
+if [ "${DO_MOBILE_EXPERIMENTS}" == "true" ]; then
+  if compare_mobile_experiments
+  then
+    MOBILE_EXPERIMENTS_UPDATED=true
+  fi
+fi
 
 
-if [ "${HSTS_UPDATED}" == "false" ] && [ "${HPKP_UPDATED}" == "false" ] && [ "${REMOTE_SETTINGS_UPDATED}" == "false" ] && [ "${SUFFIX_LIST_UPDATED}" == "false" ]; then
+if [ "${HSTS_UPDATED}" == "false" ] && [ "${HPKP_UPDATED}" == "false" ] && [ "${REMOTE_SETTINGS_UPDATED}" == "false" ] && [ "${SUFFIX_LIST_UPDATED}" == "false" ] && [ "${MOBILE_EXPERIMENTS_UPDATED}" == "false" ]; then
   echo "INFO: no updates required. Exiting."
   exit 0
 else
@@ -606,8 +614,6 @@ else
     exit 2
   fi
 fi
-
-clone_repo
 
 COMMIT_MESSAGE="No Bug, ${BRANCH} repo-update"
 if [ "${HSTS_UPDATED}" == "true" ]
@@ -634,6 +640,11 @@ then
   COMMIT_MESSAGE="${COMMIT_MESSAGE} tld-suffixes"
 fi
 
+if [ "${MOBILE_EXPERIMENTS_UPDATED}" == "true" ]
+then
+  stage_mobile_experiments_files
+  COMMIT_MESSAGE="${COMMIT_MESSAGE} mobile-experiments"
+fi
 
 if [ ${DONTBUILD} == true ]; then
   COMMIT_MESSAGE="${COMMIT_MESSAGE} - (DONTBUILD)"

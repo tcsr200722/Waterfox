@@ -36,14 +36,14 @@ static void getString(CacheAndIndex* cacheAndIndex) {
 
     auto deduped =
         cacheAndIndex->cache->getOrCreate(std::move(dupe), js_strlen(str));
-    MOZ_RELEASE_ASSERT(deduped.isSome());
+    MOZ_RELEASE_ASSERT(deduped);
     MOZ_RELEASE_ASSERT(
-        js::EqualChars(str, deduped->chars(), js_strlen(str) + 1));
+        js::EqualChars(str, deduped.chars(), js_strlen(str) + 1));
 
     {
-      auto cloned = deduped->clone();
+      auto cloned = deduped.clone();
       // We should be de-duplicating and giving back the same string.
-      MOZ_RELEASE_ASSERT(deduped->chars() == cloned.chars());
+      MOZ_RELEASE_ASSERT(deduped.chars() == cloned.chars());
     }
   }
 
@@ -51,9 +51,7 @@ static void getString(CacheAndIndex* cacheAndIndex) {
 }
 
 BEGIN_TEST(testSharedImmutableStringsCache) {
-  auto maybeCache = js::SharedImmutableStringsCache::Create();
-  CHECK(maybeCache.isSome());
-  auto& cache = *maybeCache;
+  auto& cache = js::SharedImmutableStringsCache::getSingleton();
 
   js::Vector<js::Thread> threads(cx);
   CHECK(threads.reserve(NUM_THREADS));

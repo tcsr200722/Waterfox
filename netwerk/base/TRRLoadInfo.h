@@ -38,12 +38,14 @@ class TRRLoadInfo final : public nsILoadInfo {
   OriginAttributes mOriginAttributes;
   nsTArray<nsCOMPtr<nsIRedirectHistoryEntry>> mEmptyRedirectChain;
   nsTArray<nsCOMPtr<nsIPrincipal>> mEmptyPrincipals;
-  nsTArray<uint64_t> mEmptyWindowIDs;
+  nsTArray<uint64_t> mEmptyBrowsingContextIDs;
   nsTArray<nsCString> mCorsUnsafeHeaders;
+  nsID mSandboxedNullPrincipalID;
   Maybe<mozilla::dom::ClientInfo> mClientInfo;
   Maybe<mozilla::dom::ClientInfo> mReservedClientInfo;
   Maybe<mozilla::dom::ClientInfo> mInitialClientInfo;
   Maybe<mozilla::dom::ServiceWorkerDescriptor> mController;
+  Maybe<RFPTarget> mOverriddenFingerprintingSettings;
 };
 
 }  // namespace net

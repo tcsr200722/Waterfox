@@ -10,16 +10,14 @@
 #include "LayersTypes.h"
 #include "Units.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/layers/APZUtils.h"
 #include "mozilla/layers/MatrixMessage.h"
-#include "mozilla/layers/RepaintRequest.h"
-#include "nsRefreshDriver.h"
+#include "nsRefreshObservers.h"
 
 #include <functional>
 
 class nsIContent;
-class nsIScrollableFrame;
 class nsIWidget;
+class nsPresContext;
 template <class T>
 struct already_AddRefed;
 template <class T>
@@ -28,27 +26,32 @@ class nsCOMPtr;
 namespace mozilla {
 
 class PresShell;
+class ScrollContainerFrame;
+enum class PreventDefaultResult : uint8_t;
 
 namespace layers {
 
-typedef std::function<void(uint64_t, const nsTArray<TouchBehaviorFlags>&)>
-    SetAllowedTouchBehaviorCallback;
+struct RepaintRequest;
+
+namespace apz {
+enum class PrecedingPointerDown : bool;
+}
 
 /* Refer to documentation on SendSetTargetAPZCNotification for this class */
-class DisplayportSetListener : public nsAPostRefreshObserver {
+class DisplayportSetListener : public ManagedPostRefreshObserver {
  public:
-  DisplayportSetListener(nsIWidget* aWidget, PresShell* aPresShell,
+  DisplayportSetListener(nsIWidget* aWidget, nsPresContext*,
                          const uint64_t& aInputBlockId,
-                         const nsTArray<ScrollableLayerGuid>& aTargets);
+                         nsTArray<ScrollableLayerGuid>&& aTargets);
   virtual ~DisplayportSetListener();
-  bool Register();
-  void DidRefresh() override;
+  void Register();
 
  private:
   RefPtr<nsIWidget> mWidget;
-  RefPtr<PresShell> mPresShell;
   uint64_t mInputBlockId;
   nsTArray<ScrollableLayerGuid> mTargets;
+
+  void OnPostRefresh();
 };
 
 /* This class contains some helper methods that facilitate implementing the
@@ -62,6 +65,8 @@ class APZCCallbackHelper {
   typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
 
  public:
+  using PrecedingPointerDown = apz::PrecedingPointerDown;
+
   static void NotifyLayerTransforms(const nsTArray<MatrixMessage>& aTransforms);
 
   /* Applies the scroll and zoom parameters from the given RepaintRequest object
@@ -105,9 +110,11 @@ class APZCCallbackHelper {
 
   /* Synthesize a mouse event with the given parameters, and dispatch it
    * via the given widget. */
+  MOZ_CAN_RUN_SCRIPT
   static nsEventStatus DispatchSynthesizedMouseEvent(
-      EventMessage aMsg, uint64_t aTime, const LayoutDevicePoint& aRefPoint,
-      Modifiers aModifiers, int32_t aClickCount, nsIWidget* aWidget);
+      EventMessage aMsg, const LayoutDevicePoint& aRefPoint,
+      Modifiers aModifiers, int32_t aClickCount,
+      PrecedingPointerDown aPrecedingPointerDownState, nsIWidget* aWidget);
 
   /* Dispatch a mouse event with the given parameters.
    * Return whether or not any listeners have called preventDefault on the
@@ -115,25 +122,26 @@ class APZCCallbackHelper {
    * This is a lightweight wrapper around nsContentUtils::SendMouseEvent()
    * and as such expects |aPoint| to be in layout coordinates. */
   MOZ_CAN_RUN_SCRIPT
-  static bool DispatchMouseEvent(PresShell* aPresShell, const nsString& aType,
-                                 const CSSPoint& aPoint, int32_t aButton,
-                                 int32_t aClickCount, int32_t aModifiers,
-                                 unsigned short aInputSourceArg,
-                                 uint32_t aPointerId);
+  static PreventDefaultResult DispatchMouseEvent(
+      PresShell* aPresShell, const nsString& aType, const CSSPoint& aPoint,
+      int32_t aButton, int32_t aClickCount, int32_t aModifiers,
+      unsigned short aInputSourceArg, uint32_t aPointerId);
 
   /* Fire a single-tap event at the given point. The event is dispatched
    * via the given widget. */
-  static void FireSingleTapEvent(const LayoutDevicePoint& aPoint,
-                                 Modifiers aModifiers, int32_t aClickCount,
-                                 nsIWidget* aWidget);
+  MOZ_CAN_RUN_SCRIPT
+  static void FireSingleTapEvent(
+      const LayoutDevicePoint& aPoint, Modifiers aModifiers,
+      int32_t aClickCount, PrecedingPointerDown aPrecedingPointerDownState,
+      nsIWidget* aWidget);
 
   /* Perform hit-testing on the touch points of |aEvent| to determine
    * which scrollable frames they target. If any of these frames don't have
    * a displayport, set one.
    *
    * If any displayports need to be set, this function returns a heap-allocated
-   * object. The caller is responsible for calling Register() on that object,
-   * and release()'ing the UniquePtr if that Register() call returns true.
+   * object. The caller is responsible for calling Register() on that object.
+   *
    * The object registers itself as a post-refresh observer on the presShell
    * and ensures that notifications get sent to APZ correctly after the
    * refresh.
@@ -143,17 +151,10 @@ class APZCCallbackHelper {
    * (b) register a post-refresh observer of their own that will run in
    *     a defined ordering relative to the APZ messages.
    */
-  static UniquePtr<DisplayportSetListener> SendSetTargetAPZCNotification(
+  static already_AddRefed<DisplayportSetListener> SendSetTargetAPZCNotification(
       nsIWidget* aWidget, mozilla::dom::Document* aDocument,
       const WidgetGUIEvent& aEvent, const LayersId& aLayersId,
       uint64_t aInputBlockId);
-
-  /* Figure out the allowed touch behaviors of each touch point in |aEvent|
-   * and send that information to the provided callback. */
-  static void SendSetAllowedTouchBehaviorNotification(
-      nsIWidget* aWidget, mozilla::dom::Document* aDocument,
-      const WidgetTouchEvent& aEvent, uint64_t aInputBlockId,
-      const SetAllowedTouchBehaviorCallback& aCallback);
 
   /* Notify content of a mouse scroll testing event. */
   static void NotifyMozMouseScrollEvent(
@@ -171,25 +172,25 @@ class APZCCallbackHelper {
       const ScrollableLayerGuid::ViewID& aScrollId);
 
   static void CancelAutoscroll(const ScrollableLayerGuid::ViewID& aScrollId);
-
-  /* Adjust the display-port margins by the difference between the requested
-   * scroll offset and the resulting scroll offset after setting the requested
-   * value. */
-  static ScreenMargin AdjustDisplayPortForScrollDelta(ScreenMargin aMargins,
-                                                      ScreenPoint aScrollDelta);
+  static void NotifyScaleGestureComplete(const nsCOMPtr<nsIWidget>& aWidget,
+                                         float aScale);
 
   /*
-   * Check if the scrollable frame is currently in the middle of an async
-   * or smooth scroll. We want to discard certain scroll input if this is
+   * Check if the scroll container frame is currently in the middle of a main
+   * thread async or smooth scroll, or has already requested some other apz
+   * scroll that hasn't been acknowledged by apz.
+   *
+   * We want to discard apz updates to the main-thread scroll offset if this is
    * true to prevent clobbering higher priority origins.
    */
-  static bool IsScrollInProgress(nsIScrollableFrame* aFrame);
+  static bool IsScrollInProgress(ScrollContainerFrame* aFrame);
 
   /* Notify content of the progress of a pinch gesture that APZ won't do
    * zooming for (because the apz.allow_zooming pref is false). This function
    * will dispatch appropriate WidgetSimpleGestureEvent events to gecko.
    */
   static void NotifyPinchGesture(PinchGestureInput::PinchGestureType aType,
+                                 const LayoutDevicePoint& aFocusPoint,
                                  LayoutDeviceCoord aSpanChange,
                                  Modifiers aModifiers,
                                  const nsCOMPtr<nsIWidget>& aWidget);

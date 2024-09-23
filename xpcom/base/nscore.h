@@ -7,14 +7,6 @@
 #ifndef nscore_h___
 #define nscore_h___
 
-/**
- * Make sure that we have the proper platform specific
- * c++ definitions needed by nscore.h
- */
-#ifndef _XPCOM_CONFIG_H_
-#  include "xpcom-config.h"
-#endif
-
 /* Definitions of functions and operators that allocate memory. */
 #if !defined(NS_NO_XPCOM) && !defined(MOZ_NO_MOZALLOC)
 #  include "mozilla/mozalloc.h"
@@ -23,10 +15,10 @@
 /**
  * Incorporate the integer data types which XPCOM uses.
  */
-#include <stddef.h>
-#include <stdint.h>
+#include <stddef.h>  // IWYU pragma: export
+#include <stdint.h>  // IWYU pragma: export
 
-#include "mozilla/HelperMacros.h"
+#include "mozilla/HelperMacros.h"  // IWYU pragma: export
 #include "mozilla/RefCountType.h"
 
 /* Core XPCOM declarations. */
@@ -151,19 +143,6 @@
 
 #define XPCOM_API(type) NS_EXTERN_C type
 
-#if (defined(DEBUG) || defined(FORCE_BUILD_REFCNT_LOGGING))
-/* Make refcnt logging part of the build. This doesn't mean that
- * actual logging will occur (that requires a separate enable; see
- * nsTraceRefcnt and nsISupportsImpl.h for more information).  */
-#  define NS_BUILD_REFCNT_LOGGING
-#endif
-
-/* If NO_BUILD_REFCNT_LOGGING is defined then disable refcnt logging
- * in the build. This overrides FORCE_BUILD_REFCNT_LOGGING. */
-#if defined(NO_BUILD_REFCNT_LOGGING)
-#  undef NS_BUILD_REFCNT_LOGGING
-#endif
-
 /* If a program allocates memory for the lifetime of the app, it doesn't make
  * sense to touch memory pages and free that memory at shutdown,
  * unless we are running leak stats.
@@ -174,9 +153,9 @@
  *
  */
 #ifndef NS_FREE_PERMANENT_DATA
-#  if defined(NS_BUILD_REFCNT_LOGGING) || defined(MOZ_VALGRIND) || \
-      defined(MOZ_ASAN) || defined(MOZ_CODE_COVERAGE) ||           \
-      defined(MOZ_PROFILE_GENERATE)
+#  if defined(NS_BUILD_REFCNT_LOGGING) || defined(MOZ_VALGRIND) ||            \
+      defined(MOZ_ASAN) || defined(MOZ_TSAN) || defined(MOZ_CODE_COVERAGE) || \
+      defined(MOZ_PROFILE_GENERATE) || defined(JS_STRUCTURED_SPEW)
 #    define NS_FREE_PERMANENT_DATA
 #  endif
 #endif
@@ -200,7 +179,7 @@
 /**
  * Generic XPCOM result data type
  */
-#include "nsError.h"
+#include "nsError.h"  // IWYU pragma: export
 
 typedef MozRefCountType nsrefcnt;
 
@@ -219,21 +198,32 @@ template <typename T>
 struct UnusedZero;
 template <>
 struct UnusedZero<nsresult> {
-  static const bool value = true;
+  using StorageType = nsresult;
+
+  static constexpr bool value = true;
+  static constexpr StorageType nullValue = NS_OK;
+
+  static constexpr void AssertValid(StorageType aValue) {}
+  static constexpr const nsresult& Inspect(const StorageType& aValue) {
+    return aValue;
+  }
+  static constexpr nsresult Unwrap(StorageType aValue) { return aValue; }
+  static constexpr StorageType Store(nsresult aValue) { return aValue; }
 };
 }  // namespace detail
 
 template <typename T>
-class MOZ_MUST_USE_TYPE GenericErrorResult;
+class GenericErrorResult;
 template <>
-class MOZ_MUST_USE_TYPE GenericErrorResult<nsresult>;
+class GenericErrorResult<nsresult>;
 
 struct Ok;
 template <typename V, typename E>
 class Result;
 
 // Allow MOZ_TRY to handle `nsresult` values.
-inline Result<Ok, nsresult> ToResult(nsresult aValue);
+template <typename E = nsresult>
+inline Result<Ok, E> ToResult(nsresult aValue);
 }  // namespace mozilla
 
 /*

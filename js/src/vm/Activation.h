@@ -15,14 +15,12 @@
 
 #include "jstypes.h"  // JS_PUBLIC_API
 
-#include "jit/JSJitFrameIter.h"  // js::jit::CalleeToken
-#include "js/CallArgs.h"         // JS::CallArgs
-#include "js/RootingAPI.h"       // JS::Handle, JS::Rooted
-#include "js/TypeDecls.h"        // jsbytecode
-#include "js/UniquePtr.h"        // js::UniquePtr
-#include "js/Value.h"            // JS::Value
-#include "vm/SavedFrame.h"       // js::SavedFrame
-#include "vm/Stack.h"            // js::InterpreterRegs
+#include "jit/CalleeToken.h"  // js::jit::CalleeToken
+#include "js/RootingAPI.h"    // JS::Handle, JS::Rooted
+#include "js/TypeDecls.h"     // jsbytecode
+#include "js/Value.h"         // JS::Value
+#include "vm/SavedFrame.h"    // js::SavedFrame
+#include "vm/Stack.h"         // js::InterpreterRegs
 
 struct JS_PUBLIC_API JSContext;
 
@@ -32,6 +30,7 @@ class JSScript;
 
 namespace JS {
 
+class CallArgs;
 class JS_PUBLIC_API Compartment;
 
 namespace dbg {
@@ -43,11 +42,9 @@ class JS_PUBLIC_API AutoEntryMonitor;
 namespace js {
 
 class InterpreterActivation;
-class InterpreterFrame;
 
 namespace jit {
 class JitActivation;
-class JitFrameLayout;
 }  // namespace jit
 
 // This class is separate from Activation, because it calls Compartment::wrap()
@@ -282,9 +279,6 @@ class LiveSavedFrameCache {
     // for its frame. Otherwise, return Nothing.
     static inline mozilla::Maybe<FramePtr> create(const FrameIter& iter);
 
-    // Construct a FramePtr from an AbstractFramePtr. This always succeeds.
-    static inline FramePtr create(AbstractFramePtr abstractFramePtr);
-
     inline bool hasCachedSavedFrame() const;
     inline void setHasCachedSavedFrame();
     inline void clearHasCachedSavedFrame();
@@ -379,21 +373,21 @@ class LiveSavedFrameCache {
   // SavedFrame objects for a different compartment than cx's current
   // compartment. In this case, the entire cache is flushed.
   void find(JSContext* cx, FramePtr& framePtr, const jsbytecode* pc,
-            MutableHandleSavedFrame frame) const;
+            MutableHandle<SavedFrame*> frame) const;
 
   // Search the cache for a frame matching |framePtr|, without removing any
   // entries. Return the matching saved frame, or nullptr if none is found.
   // This is used for resolving |evalInFramePrev| links.
   void findWithoutInvalidation(const FramePtr& framePtr,
-                               MutableHandleSavedFrame frame) const;
+                               MutableHandle<SavedFrame*> frame) const;
 
   // Push a cache entry mapping |framePtr| and |pc| to |savedFrame| on the top
   // of the cache's stack. You must insert entries for frames from oldest to
   // youngest. They must all be younger than the frame that the |find| method
   // found a hit for; or you must have cleared the entire cache with the
   // |clear| method.
-  bool insert(JSContext* cx, FramePtr& framePtr, const jsbytecode* pc,
-              HandleSavedFrame savedFrame);
+  bool insert(JSContext* cx, FramePtr&& framePtr, const jsbytecode* pc,
+              Handle<SavedFrame*> savedFrame);
 
   // Remove all entries from the cache.
   void clear() {
@@ -479,11 +473,6 @@ class Activation {
     hideScriptedCallerCount_--;
   }
   bool scriptedCallerIsHidden() const { return hideScriptedCallerCount_ > 0; }
-
-  static size_t offsetOfPrev() { return offsetof(Activation, prev_); }
-  static size_t offsetOfPrevProfiling() {
-    return offsetof(Activation, prevProfiling_);
-  }
 
   SavedFrame* asyncStack() { return asyncStack_; }
 

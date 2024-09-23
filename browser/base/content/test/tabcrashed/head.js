@@ -1,3 +1,9 @@
+"use strict";
+
+const { TelemetryTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/TelemetryTestUtils.sys.mjs"
+);
+
 /**
  * Returns a Promise that resolves once a crash report has
  * been submitted. This function will also test the crash
@@ -21,7 +27,7 @@
  * @returns Promise
  */
 function promiseCrashReport(expectedExtra = {}) {
-  return (async function() {
+  return (async function () {
     info("Starting wait on crash-report-status");
     let [subject] = await TestUtils.topicObserved(
       "crash-report-status",
@@ -72,6 +78,16 @@ function promiseCrashReport(expectedExtra = {}) {
   })();
 }
 
+function promiseCrashReportFail() {
+  return (async function () {
+    info("Starting wait on crash-report-status");
+    await TestUtils.topicObserved("crash-report-status", (unused, data) => {
+      return data == "failed";
+    });
+    info("Topic observed!");
+  })();
+}
+
 /**
  * For an nsIPropertyBag, returns the value for a given
  * key.
@@ -104,24 +120,22 @@ function getPropertyBagValue(bag, key) {
  */
 async function setupLocalCrashReportServer() {
   const SERVER_URL =
+    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
     "http://example.com/browser/toolkit/crashreporter/test/browser/crashreport.sjs";
 
   // The test harness sets MOZ_CRASHREPORTER_NO_REPORT, which disables crash
   // reports.  This test needs them enabled.  The test also needs a mock
   // report server, and fortunately one is already set up by toolkit/
   // crashreporter/test/Makefile.in.  Assign its URL to MOZ_CRASHREPORTER_URL,
-  // which CrashSubmit.jsm uses as a server override.
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
-  let noReport = env.get("MOZ_CRASHREPORTER_NO_REPORT");
-  let serverUrl = env.get("MOZ_CRASHREPORTER_URL");
-  env.set("MOZ_CRASHREPORTER_NO_REPORT", "");
-  env.set("MOZ_CRASHREPORTER_URL", SERVER_URL);
+  // which CrashSubmit.sys.mjs uses as a server override.
+  let noReport = Services.env.get("MOZ_CRASHREPORTER_NO_REPORT");
+  let serverUrl = Services.env.get("MOZ_CRASHREPORTER_URL");
+  Services.env.set("MOZ_CRASHREPORTER_NO_REPORT", "");
+  Services.env.set("MOZ_CRASHREPORTER_URL", SERVER_URL);
 
-  registerCleanupFunction(function() {
-    env.set("MOZ_CRASHREPORTER_NO_REPORT", noReport);
-    env.set("MOZ_CRASHREPORTER_URL", serverUrl);
+  registerCleanupFunction(function () {
+    Services.env.set("MOZ_CRASHREPORTER_NO_REPORT", noReport);
+    Services.env.set("MOZ_CRASHREPORTER_URL", serverUrl);
   });
 }
 
@@ -131,10 +145,99 @@ async function setupLocalCrashReportServer() {
  */
 function prepareNoDump() {
   let originalGetDumpID = TabCrashHandler.getDumpID;
-  TabCrashHandler.getDumpID = function(browser) {
+  TabCrashHandler.getDumpID = function () {
     return null;
   };
   registerCleanupFunction(() => {
     TabCrashHandler.getDumpID = originalGetDumpID;
   });
+}
+
+const kBuildidMatchEnv = "MOZ_BUILDID_MATCH_DONTSEND";
+
+function setBuildidMatchDontSendEnv() {
+  info("Setting " + kBuildidMatchEnv + "=1");
+  Services.env.set(kBuildidMatchEnv, "1");
+}
+
+function unsetBuildidMatchDontSendEnv() {
+  info("Setting " + kBuildidMatchEnv + "=0");
+  Services.env.set(kBuildidMatchEnv, "0");
+}
+
+function getEventPromise(eventName, eventKind) {
+  return new Promise(function (resolve) {
+    info("Installing event listener (" + eventKind + ")");
+    window.addEventListener(
+      eventName,
+      () => {
+        ok(true, "Received " + eventName + " (" + eventKind + ") event");
+        info("Call resolve() for " + eventKind + " event");
+        resolve();
+      },
+      { once: true }
+    );
+    info("Installed event listener (" + eventKind + ")");
+  });
+}
+
+async function openNewTab(forceCrash) {
+  const PAGE =
+    "data:text/html,<html><body>A%20regular,%20everyday,%20normal%20page.";
+
+  let options = {
+    gBrowser,
+    PAGE,
+    waitForLoad: false,
+    waitForStateStop: false,
+    forceNewProcess: true,
+  };
+
+  let tab = await BrowserTestUtils.openNewForegroundTab(options);
+  if (forceCrash === true) {
+    let browser = tab.linkedBrowser;
+    await BrowserTestUtils.crashFrame(
+      browser,
+      /* shouldShowTabCrashPage */ false,
+      /* shouldClearMinidumps */ true,
+      /* BrowsingContext */ null
+    );
+  }
+
+  return tab;
+}
+
+async function closeTab(tab) {
+  await TestUtils.waitForTick();
+  BrowserTestUtils.removeTab(tab);
+}
+
+function getFalsePositiveTelemetry() {
+  const scalars = TelemetryTestUtils.getProcessScalars("parent");
+  return scalars["dom.contentprocess.buildID_mismatch_false_positive"];
+}
+
+// The logic bound to dom.ipc.processPrelaunch.enabled will react to value
+// changes: https://searchfox.org/mozilla-central/rev/ecd91b104714a8b2584a4c03175be50ccb3a7c67/dom/ipc/PreallocatedProcessManager.cpp#171-195
+// So we force flip to ensure we have no dangling process.
+async function forceCleanProcesses() {
+  const origPrefValue = SpecialPowers.getBoolPref(
+    "dom.ipc.processPrelaunch.enabled"
+  );
+  await SpecialPowers.setBoolPref(
+    "dom.ipc.processPrelaunch.enabled",
+    !origPrefValue
+  );
+  await SpecialPowers.setBoolPref(
+    "dom.ipc.processPrelaunch.enabled",
+    origPrefValue
+  );
+  const currPrefValue = SpecialPowers.getBoolPref(
+    "dom.ipc.processPrelaunch.enabled"
+  );
+  Assert.strictEqual(
+    currPrefValue,
+    origPrefValue,
+    "processPrelaunch properly re-enabled"
+  );
 }

@@ -10,7 +10,7 @@
 #include "nsXPCOMPrivate.h"  // for MAXPATHLEN
 #ifdef XP_WIN
 #  include <windows.h>
-#elif defined(XP_MACOSX)
+#elif defined(XP_DARWIN)
 #  include <CoreFoundation/CoreFoundation.h>
 #elif defined(XP_UNIX)
 #  include <unistd.h>
@@ -94,7 +94,7 @@ class BinaryPath {
     return NS_OK;
   }
 
-#elif defined(XP_MACOSX)
+#elif defined(XP_DARWIN)
   static nsresult Get(char aResult[MAXPATHLEN]) {
     // Works even if we're not bundled.
     CFBundleRef appBundle = CFBundleGetMainBundle();
@@ -135,14 +135,14 @@ class BinaryPath {
 
 #elif defined(ANDROID)
   static nsresult Get(char aResult[MAXPATHLEN]) {
-    // On Android, we use the GRE_HOME variable that is set by the Java
-    // bootstrap code.
-    const char* greHome = getenv("GRE_HOME");
-    if (!greHome) {
+    // On Android, we use the MOZ_ANDROID_LIBDIR variable that is set by the
+    // Java bootstrap code.
+    const char* libDir = getenv("MOZ_ANDROID_LIBDIR");
+    if (!libDir) {
       return NS_ERROR_FAILURE;
     }
 
-    snprintf(aResult, MAXPATHLEN, "%s/%s", greHome, "dummy");
+    snprintf(aResult, MAXPATHLEN, "%s/%s", libDir, "dummy");
     aResult[MAXPATHLEN - 1] = '\0';
     return NS_OK;
   }
@@ -160,6 +160,17 @@ class BinaryPath {
       return NS_ERROR_FAILURE;
     }
     aResult[len] = '\0';
+#  if defined(XP_LINUX)
+    // Removing suffix " (deleted)" from the binary path
+    const char suffix[] = " (deleted)";
+    const ssize_t suffix_len = sizeof(suffix);
+    if (len >= suffix_len) {
+      char* result_end = &aResult[len - (suffix_len - 1)];
+      if (memcmp(result_end, suffix, suffix_len) == 0) {
+        *result_end = '\0';
+      }
+    }
+#  endif
     return NS_OK;
   }
 
@@ -188,7 +199,16 @@ class BinaryPath {
 
 #elif defined(__OpenBSD__)
   static nsresult Get(char aResult[MAXPATHLEN]) {
+    static bool cached = false;
+    static char cachedPath[MAXPATHLEN];
+    nsresult r;
     int mib[4];
+    if (cached) {
+      if (strlcpy(aResult, cachedPath, MAXPATHLEN) >= MAXPATHLEN) {
+        return NS_ERROR_FAILURE;
+      }
+      return NS_OK;
+    }
     mib[0] = CTL_KERN;
     mib[1] = KERN_PROC_ARGS;
     mib[2] = getpid();
@@ -204,7 +224,14 @@ class BinaryPath {
       return NS_ERROR_FAILURE;
     }
 
-    return GetFromArgv0(argv[0], aResult);
+    r = GetFromArgv0(argv[0], aResult);
+    if (NS_SUCCEEDED(r)) {
+      if (strlcpy(cachedPath, aResult, MAXPATHLEN) >= MAXPATHLEN) {
+        return NS_ERROR_FAILURE;
+      }
+      cached = true;
+    }
+    return r;
   }
 
   static nsresult GetFromArgv0(const char* aArgv0, char aResult[MAXPATHLEN]) {

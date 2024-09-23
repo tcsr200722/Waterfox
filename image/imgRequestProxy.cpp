@@ -14,6 +14,7 @@
 #include "ImageTypes.h"
 #include "imgINotificationObserver.h"
 #include "imgLoader.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/Telemetry.h"     // for Telemetry
 #include "mozilla/dom/DocGroup.h"  // for DocGroup
 #include "nsCRTGlue.h"
@@ -21,7 +22,6 @@
 
 using namespace mozilla;
 using namespace mozilla::image;
-using mozilla::dom::Document;
 
 // The split of imgRequestProxy and imgRequestProxyStatic means that
 // certain overridden functions need to be usable in the destructor.
@@ -108,6 +108,7 @@ imgRequestProxy::imgRequestProxy()
       mLoadFlags(nsIRequest::LOAD_NORMAL),
       mLockCount(0),
       mAnimationConsumers(0),
+      mCancelable(true),
       mCanceled(false),
       mIsInLoadGroup(false),
       mForceDispatchLoadGroup(false),
@@ -115,8 +116,7 @@ imgRequestProxy::imgRequestProxy()
       mDecodeRequested(false),
       mPendingNotify(false),
       mValidating(false),
-      mHadListener(false),
-      mHadDispatch(false) {
+      mHadListener(false) {
   /* member initializers and constructor code */
   LOG_FUNC(gImgLog, "imgRequestProxy::imgRequestProxy");
 }
@@ -124,22 +124,6 @@ imgRequestProxy::imgRequestProxy()
 imgRequestProxy::~imgRequestProxy() {
   /* destructor code */
   MOZ_ASSERT(!mListener, "Someone forgot to properly cancel this request!");
-
-  // If we had a listener, that means we would have issued notifications. With
-  // bug 1359833, we added support for main thread scheduler groups. Each
-  // imgRequestProxy may have its own associated listener, document and/or
-  // scheduler group. Typically most imgRequestProxy belong to the same
-  // document, or have no listener, which means we will want to execute all main
-  // thread code in that shared scheduler group. Less frequently, there may be
-  // multiple imgRequests and they have separate documents, which means that
-  // when we issue state notifications, some or all need to be dispatched to the
-  // appropriate scheduler group for each request. This should be rare, so we
-  // want to monitor the frequency of dispatching in the wild.
-  if (mHadListener) {
-    mozilla::Telemetry::Accumulate(mozilla::Telemetry::IMAGE_REQUEST_DISPATCHED,
-                                   mHadDispatch);
-  }
-
   MOZ_RELEASE_ASSERT(!mLockCount, "Someone forgot to unlock on time?");
 
   ClearAnimationConsumers();
@@ -163,7 +147,7 @@ imgRequestProxy::~imgRequestProxy() {
 }
 
 nsresult imgRequestProxy::Init(imgRequest* aOwner, nsILoadGroup* aLoadGroup,
-                               Document* aLoadingDocument, nsIURI* aURI,
+                               nsIURI* aURI,
                                imgINotificationObserver* aObserver) {
   MOZ_ASSERT(!GetOwner() && !mListener,
              "imgRequestProxy is already initialized");
@@ -186,7 +170,7 @@ nsresult imgRequestProxy::Init(imgRequest* aOwner, nsILoadGroup* aLoadGroup,
   mURI = aURI;
 
   // Note: AddToOwner won't send all the On* notifications immediately
-  AddToOwner(aLoadingDocument);
+  AddToOwner();
 
   return NS_OK;
 }
@@ -228,7 +212,16 @@ nsresult imgRequestProxy::ChangeOwner(imgRequest* aNewOwner) {
     IncrementAnimationConsumers();
   }
 
-  AddToOwner(nullptr);
+  AddToOwner();
+  return NS_OK;
+}
+
+NS_IMETHODIMP imgRequestProxy::GetTriggeringPrincipal(
+    nsIPrincipal** aTriggeringPrincipal) {
+  MOZ_ASSERT(GetOwner());
+  nsCOMPtr<nsIPrincipal> triggeringPrincipal =
+      GetOwner()->GetTriggeringPrincipal();
+  triggeringPrincipal.forget(aTriggeringPrincipal);
   return NS_OK;
 }
 
@@ -250,67 +243,27 @@ void imgRequestProxy::ClearValidating() {
   }
 }
 
-bool imgRequestProxy::IsOnEventTarget() const { return true; }
+bool imgRequestProxy::HasDecodedPixels() {
+  if (IsValidating()) {
+    return false;
+  }
 
-already_AddRefed<nsIEventTarget> imgRequestProxy::GetEventTarget() const {
-  nsCOMPtr<nsIEventTarget> target(mEventTarget);
-  return target.forget();
+  RefPtr<Image> image = GetImage();
+  if (image) {
+    return image->HasDecodedPixels();
+  }
+
+  return false;
 }
 
 nsresult imgRequestProxy::DispatchWithTargetIfAvailable(
     already_AddRefed<nsIRunnable> aEvent) {
   LOG_FUNC(gImgLog, "imgRequestProxy::DispatchWithTargetIfAvailable");
-
-  // This method should only be used when it is *expected* that we are
-  // dispatching an event (e.g. we want to handle an event asynchronously)
-  // rather we need to (e.g. we are in the wrong scheduler group context).
-  // As such, we do not set mHadDispatch for telemetry purposes.
-  if (mEventTarget) {
-    mEventTarget->Dispatch(CreateMediumHighRunnable(std::move(aEvent)),
-                           NS_DISPATCH_NORMAL);
-    return NS_OK;
-  }
-
-  return NS_DispatchToMainThread(CreateMediumHighRunnable(std::move(aEvent)));
+  return NS_DispatchToMainThread(
+      CreateRenderBlockingRunnable(std::move(aEvent)));
 }
 
-void imgRequestProxy::DispatchWithTarget(already_AddRefed<nsIRunnable> aEvent) {
-  LOG_FUNC(gImgLog, "imgRequestProxy::DispatchWithTarget");
-
-  MOZ_ASSERT(mListener);
-  MOZ_ASSERT(mEventTarget);
-
-  mHadDispatch = true;
-  mEventTarget->Dispatch(CreateMediumHighRunnable(std::move(aEvent)),
-                         NS_DISPATCH_NORMAL);
-}
-
-void imgRequestProxy::AddToOwner(Document* aLoadingDocument) {
-  // An imgRequestProxy can be initialized with neither a listener nor a
-  // document. The caller could follow up later by cloning the canonical
-  // imgRequestProxy with the actual listener. This is possible because
-  // imgLoader::LoadImage does not require a valid listener to be provided.
-  //
-  // Without a listener, we don't need to set our scheduler group, because
-  // we have nothing to signal. However if we were told what document this
-  // is for, it is likely that future listeners will belong to the same
-  // scheduler group.
-  //
-  // With a listener, we always need to update our scheduler group. A null
-  // scheduler group is valid with or without a document, but that means
-  // we will use the most generic event target possible on dispatch.
-  if (aLoadingDocument) {
-    RefPtr<mozilla::dom::DocGroup> docGroup = aLoadingDocument->GetDocGroup();
-    if (docGroup) {
-      mEventTarget = docGroup->EventTargetFor(mozilla::TaskCategory::Other);
-      MOZ_ASSERT(mEventTarget);
-    }
-  }
-
-  if (mListener && !mEventTarget) {
-    mEventTarget = do_GetMainThread();
-  }
-
+void imgRequestProxy::AddToOwner() {
   imgRequest* owner = GetOwner();
   if (!owner) {
     return;
@@ -438,9 +391,31 @@ imgRequestProxy::GetStatus(nsresult* aStatus) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
+NS_IMETHODIMP imgRequestProxy::SetCanceledReason(const nsACString& aReason) {
+  return SetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP imgRequestProxy::GetCanceledReason(nsACString& aReason) {
+  return GetCanceledReasonImpl(aReason);
+}
+
+NS_IMETHODIMP imgRequestProxy::CancelWithReason(nsresult aStatus,
+                                                const nsACString& aReason) {
+  return CancelWithReasonImpl(aStatus, aReason);
+}
+
+void imgRequestProxy::SetCancelable(bool aCancelable) {
+  MOZ_ASSERT(NS_IsMainThread());
+  mCancelable = aCancelable;
+}
+
 NS_IMETHODIMP
 imgRequestProxy::Cancel(nsresult status) {
   if (mCanceled) {
+    return NS_ERROR_FAILURE;
+  }
+
+  if (NS_WARN_IF(!mCancelable)) {
     return NS_ERROR_FAILURE;
   }
 
@@ -467,6 +442,13 @@ imgRequestProxy::CancelAndForgetObserver(nsresult aStatus) {
   // RemoveProxy call right now, because we need to deliver the
   // onStopRequest.
   if (mCanceled && !mListener) {
+    return NS_ERROR_FAILURE;
+  }
+
+  if (NS_WARN_IF(!mCancelable)) {
+    MOZ_ASSERT(mCancelable,
+               "Shouldn't try to cancel non-cancelable requests via "
+               "CancelAndForgetObserver");
     return NS_ERROR_FAILURE;
   }
 
@@ -678,15 +660,15 @@ imgRequestProxy::GetImage(imgIContainer** aImage) {
 }
 
 NS_IMETHODIMP
-imgRequestProxy::GetProducerId(uint32_t* aId) {
+imgRequestProxy::GetProviderId(uint32_t* aId) {
   NS_ENSURE_TRUE(aId, NS_ERROR_NULL_POINTER);
 
   nsCOMPtr<imgIContainer> image;
   nsresult rv = GetImage(getter_AddRefs(image));
   if (NS_SUCCEEDED(rv)) {
-    *aId = image->GetProducerId();
+    *aId = image->GetProviderId();
   } else {
-    *aId = layers::kContainerProducerID_Invalid;
+    *aId = 0;
   }
 
   return NS_OK;
@@ -758,6 +740,16 @@ imgRequestProxy::GetMimeType(char** aMimeType) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+imgRequestProxy::GetFileName(nsACString& aFileName) {
+  if (!GetOwner()) {
+    return NS_ERROR_FAILURE;
+  }
+
+  GetOwner()->GetFileName(aFileName);
+  return NS_OK;
+}
+
 imgRequestProxy* imgRequestProxy::NewClonedProxy() {
   return new imgRequestProxy();
 }
@@ -809,8 +801,7 @@ nsresult imgRequestProxy::PerformClone(imgINotificationObserver* aObserver,
   // XXXldb That's not true anymore.  Stuff from imgLoader adds the
   // request to the loadgroup.
   clone->SetLoadFlags(mLoadFlags);
-  nsresult rv = clone->Init(mBehaviour->GetOwner(), loadGroup, aLoadingDocument,
-                            mURI, aObserver);
+  nsresult rv = clone->Init(mBehaviour->GetOwner(), loadGroup, mURI, aObserver);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -901,7 +892,6 @@ imgRequestProxy::GetMultipart(bool* aMultipart) {
   }
 
   *aMultipart = GetOwner()->GetMultipart();
-
   return NS_OK;
 }
 
@@ -912,7 +902,17 @@ imgRequestProxy::GetCORSMode(int32_t* aCorsMode) {
   }
 
   *aCorsMode = GetOwner()->GetCORSMode();
+  return NS_OK;
+}
 
+NS_IMETHODIMP
+imgRequestProxy::GetReferrerInfo(nsIReferrerInfo** aReferrerInfo) {
+  if (!GetOwner()) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsCOMPtr<nsIReferrerInfo> referrerInfo = GetOwner()->GetReferrerInfo();
+  referrerInfo.forget(aReferrerInfo);
   return NS_OK;
 }
 
@@ -987,21 +987,6 @@ void imgRequestProxy::Notify(int32_t aType,
     return;
   }
 
-  if (!IsOnEventTarget()) {
-    RefPtr<imgRequestProxy> self(this);
-    if (aRect) {
-      const mozilla::gfx::IntRect rect = *aRect;
-      DispatchWithTarget(NS_NewRunnableFunction(
-          "imgRequestProxy::Notify",
-          [self, rect, aType]() -> void { self->Notify(aType, &rect); }));
-    } else {
-      DispatchWithTarget(NS_NewRunnableFunction(
-          "imgRequestProxy::Notify",
-          [self, aType]() -> void { self->Notify(aType, nullptr); }));
-    }
-    return;
-  }
-
   // Make sure the listener stays alive while we notify.
   nsCOMPtr<imgINotificationObserver> listener(mListener);
 
@@ -1015,13 +1000,6 @@ void imgRequestProxy::OnLoadComplete(bool aLastPart) {
   // on the listener, the removal from the loadgroup, the release of the
   // listener, etc).  Don't let them do it.
   RefPtr<imgRequestProxy> self(this);
-
-  if (!IsOnEventTarget()) {
-    DispatchWithTarget(NS_NewRunnableFunction(
-        "imgRequestProxy::OnLoadComplete",
-        [self, aLastPart]() -> void { self->OnLoadComplete(aLastPart); }));
-    return;
-  }
 
   if (mListener && !mCanceled) {
     // Hold a ref to the listener while we call it, just in case.
@@ -1088,29 +1066,30 @@ void imgRequestProxy::NullOutListener() {
 
 NS_IMETHODIMP
 imgRequestProxy::GetStaticRequest(imgIRequest** aReturn) {
-  imgRequestProxy* proxy;
-  nsresult result = GetStaticRequest(nullptr, &proxy);
-  *aReturn = proxy;
-  return result;
+  RefPtr<imgRequestProxy> proxy =
+      GetStaticRequest(static_cast<Document*>(nullptr));
+  if (proxy != this) {
+    RefPtr<Image> image = GetImage();
+    if (image && image->HasError()) {
+      // image/test/unit/test_async_notification_404.js needs this, but ideally
+      // this special case can be removed from the scripted codepath.
+      return NS_ERROR_FAILURE;
+    }
+  }
+  proxy.forget(aReturn);
+  return NS_OK;
 }
 
-nsresult imgRequestProxy::GetStaticRequest(Document* aLoadingDocument,
-                                           imgRequestProxy** aReturn) {
-  *aReturn = nullptr;
+already_AddRefed<imgRequestProxy> imgRequestProxy::GetStaticRequest(
+    Document* aLoadingDocument) {
+  MOZ_DIAGNOSTIC_ASSERT(!aLoadingDocument ||
+                        aLoadingDocument->IsStaticDocument());
   RefPtr<Image> image = GetImage();
 
   bool animated;
   if (!image || (NS_SUCCEEDED(image->GetAnimated(&animated)) && !animated)) {
     // Early exit - we're not animated, so we don't have to do anything.
-    NS_ADDREF(*aReturn = this);
-    return NS_OK;
-  }
-
-  // Check for errors in the image. Callers code rely on GetStaticRequest
-  // failing in this case, though with FrozenImage there's no technical reason
-  // for it anymore.
-  if (image->HasError()) {
-    return NS_ERROR_FAILURE;
+    return do_AddRef(this);
   }
 
   // We are animated. We need to create a frozen version of this image.
@@ -1121,13 +1100,13 @@ nsresult imgRequestProxy::GetStaticRequest(Document* aLoadingDocument,
   GetImagePrincipal(getter_AddRefs(currentPrincipal));
   bool hadCrossOriginRedirects = true;
   GetHadCrossOriginRedirects(&hadCrossOriginRedirects);
-  RefPtr<imgRequestProxy> req = new imgRequestProxyStatic(
-      frozenImage, currentPrincipal, hadCrossOriginRedirects);
-  req->Init(nullptr, nullptr, aLoadingDocument, mURI, nullptr);
+  nsCOMPtr<nsIPrincipal> triggeringPrincipal = GetTriggeringPrincipal();
+  RefPtr<imgRequestProxy> req =
+      new imgRequestProxyStatic(frozenImage, currentPrincipal,
+                                triggeringPrincipal, hadCrossOriginRedirects);
+  req->Init(nullptr, nullptr, mURI, nullptr);
 
-  NS_ADDREF(*aReturn = req);
-
-  return NS_OK;
+  return req.forget();
 }
 
 void imgRequestProxy::NotifyListener() {
@@ -1207,13 +1186,11 @@ imgCacheValidator* imgRequestProxy::GetValidator() const {
   return owner->GetValidator();
 }
 
-void imgRequestProxy::PrioritizeAsPreload() {
-  if (imgRequest* owner = GetOwner()) {
-    owner->PrioritizeAsPreload();
+nsITimedChannel* imgRequestProxy::TimedChannel() {
+  if (!GetOwner()) {
+    return nullptr;
   }
-  if (imgCacheValidator* validator = GetValidator()) {
-    validator->PrioritizeAsPreload();
-  }
+  return GetOwner()->GetTimedChannel();
 }
 
 ////////////////// imgRequestProxyStatic methods
@@ -1247,21 +1224,27 @@ class StaticBehaviour : public ProxyBehaviour {
 };
 
 imgRequestProxyStatic::imgRequestProxyStatic(mozilla::image::Image* aImage,
-                                             nsIPrincipal* aPrincipal,
+                                             nsIPrincipal* aImagePrincipal,
+                                             nsIPrincipal* aTriggeringPrincipal,
                                              bool aHadCrossOriginRedirects)
-    : mPrincipal(aPrincipal),
+    : mImagePrincipal(aImagePrincipal),
+      mTriggeringPrincipal(aTriggeringPrincipal),
       mHadCrossOriginRedirects(aHadCrossOriginRedirects) {
   mBehaviour = mozilla::MakeUnique<StaticBehaviour>(aImage);
 }
 
 NS_IMETHODIMP
 imgRequestProxyStatic::GetImagePrincipal(nsIPrincipal** aPrincipal) {
-  if (!mPrincipal) {
+  if (!mImagePrincipal) {
     return NS_ERROR_FAILURE;
   }
+  NS_ADDREF(*aPrincipal = mImagePrincipal);
+  return NS_OK;
+}
 
-  NS_ADDREF(*aPrincipal = mPrincipal);
-
+NS_IMETHODIMP
+imgRequestProxyStatic::GetTriggeringPrincipal(nsIPrincipal** aPrincipal) {
+  NS_IF_ADDREF(*aPrincipal = mTriggeringPrincipal);
   return NS_OK;
 }
 
@@ -1275,9 +1258,11 @@ imgRequestProxyStatic::GetHadCrossOriginRedirects(
 imgRequestProxy* imgRequestProxyStatic::NewClonedProxy() {
   nsCOMPtr<nsIPrincipal> currentPrincipal;
   GetImagePrincipal(getter_AddRefs(currentPrincipal));
+  nsCOMPtr<nsIPrincipal> triggeringPrincipal;
+  GetTriggeringPrincipal(getter_AddRefs(triggeringPrincipal));
   bool hadCrossOriginRedirects = true;
   GetHadCrossOriginRedirects(&hadCrossOriginRedirects);
   RefPtr<mozilla::image::Image> image = GetImage();
-  return new imgRequestProxyStatic(image, currentPrincipal,
+  return new imgRequestProxyStatic(image, currentPrincipal, triggeringPrincipal,
                                    hadCrossOriginRedirects);
 }

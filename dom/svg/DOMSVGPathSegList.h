@@ -4,25 +4,53 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGPATHSEGLIST_H__
-#define MOZILLA_DOMSVGPATHSEGLIST_H__
+#ifndef DOM_SVG_DOMSVGPATHSEGLIST_H_
+#define DOM_SVG_DOMSVGPATHSEGLIST_H_
 
+#include "mozAutoDocUpdate.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDebug.h"
-#include "SVGElement.h"
 #include "nsTArray.h"
 #include "SVGPathData.h"  // IWYU pragma: keep
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/SVGElement.h"
 
 namespace mozilla {
 
+class ErrorResult;
 class SVGAnimatedPathSegList;
 
 namespace dom {
 
 class DOMSVGPathSeg;
+class SVGPathElement;
+
+//----------------------------------------------------------------------
+// Helper class: AutoChangePathSegListNotifier
+// Stack-based helper class to pair calls to WillChangePathSegList and
+// DidChangePathSegList. Used by DOMSVGPathSeg and DOMSVGPathSegList.
+template <class T>
+class MOZ_RAII AutoChangePathSegListNotifier : public mozAutoDocUpdate {
+ public:
+  explicit AutoChangePathSegListNotifier(T* aValue)
+      : mozAutoDocUpdate(aValue->Element()->GetComposedDoc(), true),
+        mValue(aValue) {
+    MOZ_ASSERT(mValue, "Expecting non-null value");
+    mEmptyOrOldValue = mValue->Element()->WillChangePathSegList(*this);
+  }
+
+  ~AutoChangePathSegListNotifier() {
+    mValue->Element()->DidChangePathSegList(mEmptyOrOldValue, *this);
+    if (mValue->AttrIsAnimating()) {
+      mValue->Element()->AnimationNeedsResample();
+    }
+  }
+
+ private:
+  T* const mValue;
+  nsAttrValue mEmptyOrOldValue;
+};
 
 /**
  * Class DOMSVGPathSegList
@@ -50,6 +78,7 @@ class DOMSVGPathSeg;
  * Our DOM items are created lazily on demand as and when script requests them.
  */
 class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
+  template <class T>
   friend class AutoChangePathSegListNotifier;
   friend class DOMSVGPathSeg;
 
@@ -57,8 +86,8 @@ class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMSVGPathSegList)
 
-  virtual JSObject* WrapObject(JSContext* cx,
-                               JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapObject(JSContext* cx,
+                       JS::Handle<JSObject*> aGivenProto) override;
 
   nsISupports* GetParentObject() { return static_cast<nsIContent*>(mElement); }
 
@@ -80,7 +109,7 @@ class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
    * clearly SVGPathData* and a SVGPathData** are not the same type.
    */
   static already_AddRefed<DOMSVGPathSegList> GetDOMWrapper(
-      void* aList, dom::SVGElement* aElement, bool aIsAnimValList);
+      void* aList, dom::SVGPathElement* aElement);
 
   /**
    * This method returns the DOMSVGPathSegList wrapper for an internal
@@ -234,4 +263,4 @@ class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGPATHSEGLIST_H__
+#endif  // DOM_SVG_DOMSVGPATHSEGLIST_H_

@@ -2,22 +2,39 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
+"use strict";
+
 requestLongerTimeout(2);
 
 async function testCase(dbg, { name, steps }) {
-  invokeInTab(name);
-  const locations = [];
+  info(` ### Execute testCase "${name}"`);
 
   const {
-    selectors: { getTopFrame, getCurrentThread }
+    selectors: { getTopFrame, getCurrentThread },
   } = dbg;
+  const locations = [];
 
-  await stepOvers(dbg, steps.length, state => {
+  const recordFrame = () => {
     const { line, column } = getTopFrame(getCurrentThread()).location;
     locations.push([line, column]);
-  });
+    info(`Break on ${line}:${column}`);
+  };
+
+  info("Trigger the expected debugger statement");
+  const onPaused = waitForPaused(dbg);
+  invokeInTab(name);
+  await onPaused;
+  recordFrame();
+
+  info("Start stepping over");
+  for (let i = 0; i < steps.length - 1; i++) {
+    await dbg.actions.stepOver();
+    await waitForPaused(dbg);
+    recordFrame();
+  }
 
   is(formatSteps(locations), formatSteps(steps), name);
+
   await resume(dbg);
 }
 
@@ -35,18 +52,29 @@ add_task(async function test() {
       [11, 21],
       [12, 2],
       [12, 12],
-      [13, 0]
-    ]
+      [13, 0],
+    ],
   });
 
   await testCase(dbg, {
     name: "expressions",
-    steps: [[40, 2], [41, 2], [42, 12], [43, 0]]
+    steps: [
+      [40, 2],
+      [41, 2],
+      [42, 12],
+      [43, 0],
+    ],
   });
 
   await testCase(dbg, {
     name: "sequences",
-    steps: [[23, 2], [25, 12], [29, 12], [34, 2], [37, 0]]
+    steps: [
+      [23, 2],
+      [25, 12],
+      [29, 12],
+      [34, 2],
+      [37, 0],
+    ],
   });
 
   await testCase(dbg, {
@@ -59,18 +87,10 @@ add_task(async function test() {
       [19, 17],
       [19, 8],
       [19, 17],
-      [19, 8]
-    ]
+      [19, 8],
+    ],
   });
 });
-
-async function stepOvers(dbg, count, onStep = () => {}) {
-  for (let i = 0; i < count; i++) {
-    await dbg.actions.stepOver(getThreadContext(dbg));
-    await waitForPaused(dbg);
-    onStep();
-  }
-}
 
 function formatSteps(steps) {
   return steps.map(loc => `(${loc.join(",")})`).join(", ");

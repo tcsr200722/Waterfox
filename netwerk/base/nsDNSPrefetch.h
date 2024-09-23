@@ -6,6 +6,8 @@
 #ifndef nsDNSPrefetch_h___
 #define nsDNSPrefetch_h___
 
+#include <functional>
+
 #include "nsIWeakReferenceUtils.h"
 #include "nsString.h"
 #include "mozilla/TimeStamp.h"
@@ -14,9 +16,10 @@
 
 #include "nsIDNSListener.h"
 #include "nsIRequest.h"
+#include "nsIDNSService.h"
 
 class nsIURI;
-class nsIDNSService;
+class nsIDNSHTTPSSVCRecord;
 
 class nsDNSPrefetch final : public nsIDNSListener {
   ~nsDNSPrefetch() = default;
@@ -28,6 +31,9 @@ class nsDNSPrefetch final : public nsIDNSListener {
   nsDNSPrefetch(nsIURI* aURI, mozilla::OriginAttributes& aOriginAttributes,
                 nsIRequest::TRRMode aTRRMode, nsIDNSListener* aListener,
                 bool storeTiming);
+  // For fetching HTTPS RR.
+  nsDNSPrefetch(nsIURI* aURI, mozilla::OriginAttributes& aOriginAttributes,
+                nsIRequest::TRRMode aTRRMode);
   bool TimingsValid() const {
     return !mStartTimestamp.IsNull() && !mEndTimestamp.IsNull();
   }
@@ -39,15 +45,20 @@ class nsDNSPrefetch final : public nsIDNSListener {
   static nsresult Shutdown();
 
   // Call one of the following methods to start the Prefetch.
-  nsresult PrefetchHigh(bool refreshDNS = false);
-  nsresult PrefetchMedium(bool refreshDNS = false);
-  nsresult PrefetchLow(bool refreshDNS = false);
+  nsresult PrefetchHigh(
+      nsIDNSService::DNSFlags = nsIDNSService::RESOLVE_DEFAULT_FLAGS);
+  nsresult PrefetchMedium(
+      nsIDNSService::DNSFlags = nsIDNSService::RESOLVE_DEFAULT_FLAGS);
+  nsresult PrefetchLow(
+      nsIDNSService::DNSFlags = nsIDNSService::RESOLVE_DEFAULT_FLAGS);
 
-  static void PrefChanged(const char* aPref, void* aClosure);
+  nsresult FetchHTTPSSVC(
+      bool aRefreshDNS, bool aPrefetch,
+      std::function<void(nsIDNSHTTPSSVCRecord*)>&& aCallback);
 
  private:
   nsCString mHostname;
-  bool mIsHttps;
+  int32_t mPort{-1};
   mozilla::OriginAttributes mOriginAttributes;
   bool mStoreTiming;
   nsIRequest::TRRMode mTRRMode;
@@ -55,7 +66,7 @@ class nsDNSPrefetch final : public nsIDNSListener {
   mozilla::TimeStamp mEndTimestamp;
   nsWeakPtr mListener;
 
-  nsresult Prefetch(uint32_t flags);
+  nsresult Prefetch(nsIDNSService::DNSFlags flags);
 };
 
 #endif

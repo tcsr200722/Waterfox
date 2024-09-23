@@ -28,14 +28,14 @@
   function testValidTrack() {
     SpecialPowers.setBoolPref(PREF, true);
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
       var track = document.createElement("track");
       track.track.mode = "hidden";
       track.src = validtrack_url;
       video.appendChild(track);
 
       function onload() {
-        ok(true, "Track should be loaded when url is not in blacklist");
+        ok(true, "Track should be loaded when url is not in blocklist");
         finish();
       }
 
@@ -55,17 +55,17 @@
     });
   }
 
-  function testBlacklistTrackSafebrowsingOff() {
+  function testBlocklistTrackSafebrowsingOff() {
     SpecialPowers.setBoolPref(PREF, false);
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
       var track = document.createElement("track");
       track.track.mode = "hidden";
       track.src = malware_url;
       video.appendChild(track);
 
       function onload() {
-        ok(true, "Track should be loaded when url is in blacklist and safebrowsing is off");
+        ok(true, "Track should be loaded when url is in blocklist and safebrowsing is off");
         finish();
       }
 
@@ -85,10 +85,10 @@
     });
   }
 
-  function testBlacklistTrackSafebrowsingOn() {
+  function testBlocklistTrackSafebrowsingOn() {
     SpecialPowers.setBoolPref(PREF, true);
 
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
       var track = document.createElement("track");
       track.track.mode = "hidden";
       // Add a query string parameter here to avoid url classifier bypass classify
@@ -97,12 +97,12 @@
       video.appendChild(track);
 
       function onload() {
-        ok(false, "Unexpected result while loading track in blacklist");
+        ok(false, "Unexpected result while loading track in blocklist");
         finish();
       }
 
       function onerror() {
-        ok(true, "Track should not be loaded when url is in blacklist and safebrowsing is on");
+        ok(true, "Track should not be loaded when url is in blocklist and safebrowsing is on");
         finish();
       }
 
@@ -141,8 +141,8 @@
       .then(classifierHelper.waitForInit)
       .then(setup)
       .then(testValidTrack)
-      .then(testBlacklistTrackSafebrowsingOff)
-      .then(testBlacklistTrackSafebrowsingOn)
+      .then(testBlocklistTrackSafebrowsingOff)
+      .then(testBlocklistTrackSafebrowsingOn)
       .then(function() {
         SimpleTest.finish();
       }).catch(function(e) {
@@ -154,7 +154,6 @@
   SimpleTest.waitForExplicitFinish();
   SimpleTest.registerCleanupFunction(cleanup);
   SpecialPowers.pushPrefEnv({"set": [
-    ["media.webvtt.regions.enabled", true],
     ["urlclassifier.malwareTable", "test-malware-simple"],
   ]}, runTest);
 

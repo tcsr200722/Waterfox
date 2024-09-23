@@ -4,43 +4,41 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGMaskElement_h
-#define mozilla_dom_SVGMaskElement_h
+#ifndef DOM_SVG_SVGMASKELEMENT_H_
+#define DOM_SVG_SVGMASKELEMENT_H_
 
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "mozilla/dom/SVGElement.h"
 
-class nsSVGMaskFrame;
-
 nsresult NS_NewSVGMaskElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+class SVGMaskFrame;
+
 namespace dom {
 
 //--------------------- Masks ------------------------
 
-typedef SVGElement SVGMaskElementBase;
+using SVGMaskElementBase = SVGElement;
 
 class SVGMaskElement final : public SVGMaskElementBase {
-  friend class ::nsSVGMaskFrame;
+  friend class mozilla::SVGMaskFrame;
 
  protected:
   friend nsresult(::NS_NewSVGMaskElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
   explicit SVGMaskElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
-  virtual JSObject* WrapNode(JSContext* cx,
-                             JS::Handle<JSObject*> aGivenProto) override;
+  JSObject* WrapNode(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override;
 
  public:
   // nsIContent interface
-  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
-  NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
+  nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  // nsSVGSVGElement methods:
-  virtual bool HasValidDimensions() const override;
+  // SVGSVGElement methods:
+  bool HasValidDimensions() const override;
 
   // WebIDL
   already_AddRefed<DOMSVGAnimatedEnumeration> MaskUnits();
@@ -51,8 +49,8 @@ class SVGMaskElement final : public SVGMaskElementBase {
   already_AddRefed<DOMSVGAnimatedLength> Height();
 
  protected:
-  virtual LengthAttributesInfo GetLengthInfo() override;
-  virtual EnumAttributesInfo GetEnumInfo() override;
+  LengthAttributesInfo GetLengthInfo() override;
+  EnumAttributesInfo GetEnumInfo() override;
 
   enum { ATTR_X, ATTR_Y, ATTR_WIDTH, ATTR_HEIGHT };
   SVGAnimatedLength mLengthAttributes[4];
@@ -66,4 +64,4 @@ class SVGMaskElement final : public SVGMaskElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGMaskElement_h
+#endif  // DOM_SVG_SVGMASKELEMENT_H_

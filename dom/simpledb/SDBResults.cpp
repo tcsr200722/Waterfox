@@ -6,10 +6,22 @@
 
 #include "SDBResults.h"
 
-#include "nsContentUtils.h"
+#include <cstdint>
+#include <cstring>
+#include <new>
+#include <utility>
+#include "ErrorList.h"
+#include "js/RootingAPI.h"
+#include "js/TypeDecls.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/MacroForEach.h"
+#include "mozilla/dom/TypedArray.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsTArray.h"
+#include "nscore.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 SDBResult::SDBResult(const nsACString& aData) : mData(aData) {}
 
@@ -28,17 +40,14 @@ SDBResult::GetAsArray(nsTArray<uint8_t>& aData) {
 }
 
 NS_IMETHODIMP
-SDBResult::GetAsArrayBuffer(JSContext* aCx, JS::MutableHandleValue _retval) {
-  JS::Rooted<JSObject*> arrayBuffer(aCx);
-  nsresult rv =
-      nsContentUtils::CreateArrayBuffer(aCx, mData, arrayBuffer.address());
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
+SDBResult::GetAsArrayBuffer(JSContext* aCx,
+                            JS::MutableHandle<JS::Value> _retval) {
+  ErrorResult rv;
+  JS::Rooted<JSObject*> arrayBuffer(aCx, ArrayBuffer::Create(aCx, mData, rv));
+  ENSURE_SUCCESS(rv, rv.StealNSResult());
 
   _retval.setObject(*arrayBuffer);
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

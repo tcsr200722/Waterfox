@@ -11,9 +11,9 @@
 #include "AudioNodeEngine.h"
 #include "AudioNodeTrack.h"
 #include "mozilla/PodOperations.h"
+#include "Tracing.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WaveShaperNode)
 
@@ -153,8 +153,8 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
 
   enum Parameters { TYPE };
 
-  void SetRawArrayData(nsTArray<float>& aCurve) override {
-    mCurve.SwapElements(aCurve);
+  void SetRawArrayData(nsTArray<float>&& aCurve) override {
+    mCurve = std::move(aCurve);
   }
 
   void SetInt32Parameter(uint32_t aIndex, int32_t aValue) override {
@@ -193,6 +193,8 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override {
+    TRACE("WaveShaperNodeEngine::ProcessBlock");
+
     uint32_t channelCount = aInput.ChannelCount();
     if (!mCurve.Length()) {
       // Optimize the case where we don't have a curve buffer
@@ -328,17 +330,12 @@ void WaveShaperNode::SetCurve(const Nullable<Float32Array>& aCurve,
     return;
   }
 
-  const Float32Array& floats = aCurve.Value();
-  floats.ComputeState();
-
   nsTArray<float> curve;
-  uint32_t argLength = floats.Length();
-  if (!curve.SetLength(argLength, fallible)) {
+  if (!aCurve.Value().AppendDataTo(curve)) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return;
   }
 
-  PodCopy(curve.Elements(), floats.Data(), argLength);
   SetCurveInternal(curve, aRv);
 }
 
@@ -363,11 +360,12 @@ void WaveShaperNode::SendCurveToTrack() {
   MOZ_ASSERT(ns, "Why don't we have a track here?");
 
   nsTArray<float> copyCurve(mCurve.Clone());
-  ns->SetRawArrayData(copyCurve);
+  ns->SetRawArrayData(std::move(copyCurve));
 }
 
 void WaveShaperNode::GetCurve(JSContext* aCx,
-                              JS::MutableHandle<JSObject*> aRetval) {
+                              JS::MutableHandle<JSObject*> aRetval,
+                              ErrorResult& aError) {
   // Let's return a null value if the list is empty.
   if (mCurve.IsEmpty()) {
     aRetval.set(nullptr);
@@ -375,8 +373,11 @@ void WaveShaperNode::GetCurve(JSContext* aCx,
   }
 
   MOZ_ASSERT(mCurve.Length() >= 2);
-  aRetval.set(
-      Float32Array::Create(aCx, this, mCurve.Length(), mCurve.Elements()));
+  JSObject* curve = Float32Array::Create(aCx, this, mCurve, aError);
+  if (aError.Failed()) {
+    return;
+  }
+  aRetval.set(curve);
 }
 
 void WaveShaperNode::SetOversample(OverSampleType aType) {
@@ -385,5 +386,4 @@ void WaveShaperNode::SetOversample(OverSampleType aType) {
                             static_cast<int32_t>(aType));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -14,10 +14,10 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/gfx/ScaleFactors2D.h"
 #include "Types.h"
 
-namespace mozilla {
-namespace gfx {
+namespace mozilla::gfx {
 
 /**
  * Rectangles have two interpretations: a set of (zero-size) points,
@@ -66,10 +66,9 @@ struct BaseRect {
   bool IsFinite() const {
     using FloatType =
         std::conditional_t<std::is_same_v<T, float>, float, double>;
-    return (mozilla::IsFinite(FloatType(x)) &&
-            mozilla::IsFinite(FloatType(y)) &&
-            mozilla::IsFinite(FloatType(width)) &&
-            mozilla::IsFinite(FloatType(height)));
+    return (std::isfinite(FloatType(x)) && std::isfinite(FloatType(y)) &&
+            std::isfinite(FloatType(width)) &&
+            std::isfinite(FloatType(height)));
   }
 
   // Returns true if this rectangle contains the interior of aRect. Always
@@ -98,6 +97,14 @@ struct BaseRect {
     return Contains(aPoint.x, aPoint.y);
   }
 
+  // Returns true if this rectangle contains the point, considering points on
+  // all edges of the rectangle to be contained (as compared to Contains()
+  // which only includes points on the top & left but not bottom & right edges).
+  MOZ_ALWAYS_INLINE bool ContainsInclusively(const Point& aPoint) const {
+    return x <= aPoint.x && aPoint.x <= XMost() && y <= aPoint.y &&
+           aPoint.y <= YMost();
+  }
+
   // Intersection. Returns TRUE if the receiver's area has non-empty
   // intersection with aRect's area, and FALSE otherwise.
   // Always returns false if aRect is empty or 'this' is empty.
@@ -109,6 +116,10 @@ struct BaseRect {
   // (including edges) of *this and aRect. If there are no points in that
   // intersection, returns an empty rectangle with x/y set to the std::max of
   // the x/y of *this and aRect.
+  //
+  // Intersection with an empty Rect may not produce an empty Rect if overflow
+  // occurs. e.g. {INT_MIN, 0, 0, 20} Intersect { 5000, 0, 500, 20 } gives:
+  // the non-emtpy {5000, 0, 500, 20 } instead of {5000, 0, 0, 0}
   [[nodiscard]] Sub Intersect(const Sub& aRect) const {
     Sub result;
     result.x = std::max<T>(x, aRect.x);
@@ -124,6 +135,29 @@ struct BaseRect {
     }
     return result;
   }
+
+  // Gives the same results as Intersect() but handles integer overflow
+  // better. This comes at a tiny cost in performance.
+  // e.g. {INT_MIN, 0, 0, 20} Intersect { 5000, 0, 500, 20 } gives:
+  // {5000, 0, 0, 0}
+  [[nodiscard]] Sub SafeIntersect(const Sub& aRect) const {
+    Sub result;
+    result.x = std::max<T>(x, aRect.x);
+    result.y = std::max<T>(y, aRect.y);
+    T right = std::min<T>(x + width, aRect.x + aRect.width);
+    T bottom = std::min<T>(y + height, aRect.y + aRect.height);
+    // See bug 1457110, this function expects to -only- size to 0,0 if the
+    // width/height is explicitly negative.
+    if (right < result.x || bottom < result.y) {
+      result.width = 0;
+      result.height = 0;
+    } else {
+      result.width = right - result.x;
+      result.height = bottom - result.y;
+    }
+    return result;
+  }
+
   // Sets *this to be the rectangle containing the intersection of the points
   // (including edges) of *this and aRect. If there are no points in that
   // intersection, sets *this to be an empty rectangle with x/y set to the
@@ -147,9 +181,8 @@ struct BaseRect {
   }
 
   // Returns the smallest rectangle that contains both the area of both
-  // this and aRect2.
-  // Thus, empty input rectangles are ignored.
-  // If both rectangles are empty, returns this.
+  // this and aRect. Thus, empty input rectangles are ignored.
+  // Note: if both rectangles are empty, returns aRect.
   // WARNING! This is not safe against overflow, prefer using SafeUnion instead
   // when dealing with int-based rects.
   [[nodiscard]] Sub Union(const Sub& aRect) const {
@@ -285,6 +318,39 @@ struct BaseRect {
     width = aSize.width;
     height = aSize.height;
   }
+
+  // Variant of MoveBy that ensures that even after translation by a point that
+  // the rectangle coordinates will still fit within numeric limits. The origin
+  // and size will be clipped within numeric limits to ensure this.
+  void SafeMoveByX(T aDx) {
+    T x2 = XMost();
+    if (aDx >= T(0)) {
+      T limit = std::numeric_limits<T>::max();
+      x = limit - aDx < x ? limit : x + aDx;
+      width = (limit - aDx < x2 ? limit : x2 + aDx) - x;
+    } else {
+      T limit = std::numeric_limits<T>::min();
+      x = limit - aDx > x ? limit : x + aDx;
+      width = (limit - aDx > x2 ? limit : x2 + aDx) - x;
+    }
+  }
+  void SafeMoveByY(T aDy) {
+    T y2 = YMost();
+    if (aDy >= T(0)) {
+      T limit = std::numeric_limits<T>::max();
+      y = limit - aDy < y ? limit : y + aDy;
+      height = (limit - aDy < y2 ? limit : y2 + aDy) - y;
+    } else {
+      T limit = std::numeric_limits<T>::min();
+      y = limit - aDy > y ? limit : y + aDy;
+      height = (limit - aDy > y2 ? limit : y2 + aDy) - y;
+    }
+  }
+  void SafeMoveBy(T aDx, T aDy) {
+    SafeMoveByX(aDx);
+    SafeMoveByY(aDy);
+  }
+  void SafeMoveBy(const Point& aPoint) { SafeMoveBy(aPoint.x, aPoint.y); }
 
   void Inflate(T aD) { Inflate(aD, aD); }
   void Inflate(T aDx, T aDy) {
@@ -525,16 +591,19 @@ struct BaseRect {
     height = y1 - y0;
   }
 
+  // Scale 'this' by aScale.xScale and aScale.yScale without doing any rounding.
+  template <class Src, class Dst>
+  void Scale(const BaseScaleFactors2D<Src, Dst, T>& aScale) {
+    Scale(aScale.xScale, aScale.yScale);
+  }
   // Scale 'this' by aScale without doing any rounding.
   void Scale(T aScale) { Scale(aScale, aScale); }
   // Scale 'this' by aXScale and aYScale, without doing any rounding.
   void Scale(T aXScale, T aYScale) {
-    T right = XMost() * aXScale;
-    T bottom = YMost() * aYScale;
     x = x * aXScale;
     y = y * aYScale;
-    width = right - x;
-    height = bottom - y;
+    width = width * aXScale;
+    height = height * aYScale;
   }
   // Scale 'this' by aScale, converting coordinates to integers so that the
   // result is the smallest integer-coordinate rectangle containing the
@@ -610,8 +679,9 @@ struct BaseRect {
    * edge of the rectangle.
    */
   [[nodiscard]] Point ClampPoint(const Point& aPoint) const {
-    return Point(std::max(x, std::min(XMost(), aPoint.x)),
-                 std::max(y, std::min(YMost(), aPoint.y)));
+    using Coord = decltype(aPoint.x);
+    return Point(std::max(Coord(x), std::min(Coord(XMost()), aPoint.x)),
+                 std::max(Coord(y), std::min(Coord(YMost()), aPoint.y)));
   }
 
   /**
@@ -653,8 +723,8 @@ struct BaseRect {
   friend std::ostream& operator<<(
       std::ostream& stream,
       const BaseRect<T, Sub, Point, SizeT, MarginT>& aRect) {
-    return stream << '(' << aRect.x << ',' << aRect.y << ',' << aRect.width
-                  << ',' << aRect.height << ')';
+    return stream << "(x=" << aRect.x << ", y=" << aRect.y
+                  << ", w=" << aRect.width << ", h=" << aRect.height << ')';
   }
 
  private:
@@ -676,7 +746,6 @@ struct BaseRect {
   }
 };
 
-}  // namespace gfx
-}  // namespace mozilla
+}  // namespace mozilla::gfx
 
 #endif /* MOZILLA_GFX_BASERECT_H_ */

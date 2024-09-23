@@ -6,15 +6,16 @@
 
 #include "ClientManagerParent.h"
 
+#include "mozilla/ipc/BackgroundParent.h"
 #include "ClientHandleParent.h"
 #include "ClientManagerOpParent.h"
 #include "ClientManagerService.h"
 #include "ClientSourceParent.h"
+#include "ClientValidation.h"
 #include "mozilla/dom/PClientNavigateOpParent.h"
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::IPCResult;
 
@@ -23,17 +24,14 @@ IPCResult ClientManagerParent::RecvTeardown() {
   return IPC_OK();
 }
 
-void ClientManagerParent::ActorDestroy(ActorDestroyReason aReason) {}
-
-PClientHandleParent* ClientManagerParent::AllocPClientHandleParent(
-    const IPCClientInfo& aClientInfo) {
-  return new ClientHandleParent();
+void ClientManagerParent::ActorDestroy(ActorDestroyReason aReason) {
+  mService->RemoveManager(this);
 }
 
-bool ClientManagerParent::DeallocPClientHandleParent(
-    PClientHandleParent* aActor) {
-  delete aActor;
-  return true;
+already_AddRefed<PClientHandleParent>
+ClientManagerParent::AllocPClientHandleParent(
+    const IPCClientInfo& aClientInfo) {
+  return MakeAndAddRef<ClientHandleParent>();
 }
 
 IPCResult ClientManagerParent::RecvPClientHandleConstructor(
@@ -74,37 +72,51 @@ bool ClientManagerParent::DeallocPClientNavigateOpParent(
   return true;
 }
 
-PClientSourceParent* ClientManagerParent::AllocPClientSourceParent(
+already_AddRefed<PClientSourceParent>
+ClientManagerParent::AllocPClientSourceParent(
     const ClientSourceConstructorArgs& aArgs) {
   Maybe<ContentParentId> contentParentId;
 
-  uint64_t childID = BackgroundParent::GetChildID(Manager());
+  uint64_t childID = ::mozilla::ipc::BackgroundParent::GetChildID(Manager());
   if (childID) {
     contentParentId = Some(ContentParentId(childID));
   }
 
-  return new ClientSourceParent(aArgs, contentParentId);
-}
-
-bool ClientManagerParent::DeallocPClientSourceParent(
-    PClientSourceParent* aActor) {
-  delete aActor;
-  return true;
+  return MakeAndAddRef<ClientSourceParent>(aArgs, contentParentId);
 }
 
 IPCResult ClientManagerParent::RecvPClientSourceConstructor(
     PClientSourceParent* aActor, const ClientSourceConstructorArgs& aArgs) {
   ClientSourceParent* actor = static_cast<ClientSourceParent*>(aActor);
-  actor->Init();
+
+  IPCResult result = actor->Init();
+  if (!result) {
+    return result;
+  }
+
   return IPC_OK();
 }
 
 ClientManagerParent::ClientManagerParent()
     : mService(ClientManagerService::GetOrCreateInstance()) {}
 
-ClientManagerParent::~ClientManagerParent() { mService->RemoveManager(this); }
+ClientManagerParent::~ClientManagerParent() = default;
 
 void ClientManagerParent::Init() { mService->AddManager(this); }
 
-}  // namespace dom
-}  // namespace mozilla
+IPCResult ClientManagerParent::RecvExpectFutureClientSource(
+    const IPCClientInfo& aClientInfo) {
+  RefPtr<ClientManagerService> cms =
+      ClientManagerService::GetOrCreateInstance();
+  Unused << NS_WARN_IF(!cms->ExpectFutureSource(aClientInfo));
+  return IPC_OK();
+}
+
+IPCResult ClientManagerParent::RecvForgetFutureClientSource(
+    const IPCClientInfo& aClientInfo) {
+  RefPtr<ClientManagerService> cms = ClientManagerService::GetInstance();
+  cms->ForgetFutureSource(aClientInfo);
+  return IPC_OK();
+}
+
+}  // namespace mozilla::dom

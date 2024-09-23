@@ -18,7 +18,8 @@ class IShmemAllocator;
 }
 namespace layers {
 class TextureClient;
-}
+class WebRenderBridgeChild;
+}  // namespace layers
 
 namespace wr {
 
@@ -131,9 +132,6 @@ class IpcResourceUpdateQueue {
   bool AddBlobImage(wr::BlobImageKey aKey, const ImageDescriptor& aDescriptor,
                     Range<uint8_t> aBytes, ImageIntRect aVisibleRect);
 
-  void AddPrivateExternalImage(wr::ExternalImageId aExtId, wr::ImageKey aKey,
-                               wr::ImageDescriptor aDesc);
-
   void AddSharedExternalImage(wr::ExternalImageId aExtId, wr::ImageKey aKey);
 
   void PushExternalImageForTexture(wr::ExternalImageId aExtId,
@@ -149,9 +147,6 @@ class IpcResourceUpdateQueue {
                        Range<uint8_t> aBytes, ImageIntRect aVisibleRect,
                        ImageIntRect aDirtyRect);
 
-  void UpdatePrivateExternalImage(wr::ExternalImageId aExtId, wr::ImageKey aKey,
-                                  const wr::ImageDescriptor& aDesc,
-                                  ImageIntRect aDirtyRect);
   void UpdateSharedExternalImage(ExternalImageId aExtID, ImageKey aKey,
                                  ImageIntRect aDirtyRect);
 

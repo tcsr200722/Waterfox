@@ -2,27 +2,85 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-add_task(async function() {
+"use strict";
+
+const { asyncStore } = require("devtools/client/debugger/src/utils/prefs");
+
+add_task(async function () {
+  info("Test XHR requests done very early during page load");
+
+  const dbg = await initDebugger("doc-xhr.html", "fetch.js");
+
+  await addXHRBreakpoint(dbg, "doc", "GET");
+
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [`${EXAMPLE_REMOTE_URL}doc-early-xhr.html`],
+    remoteUrl => {
+      const firstIframe = content.document.createElement("iframe");
+      content.document.body.append(firstIframe);
+      firstIframe.src = remoteUrl;
+    }
+  );
+
+  await waitForPaused(dbg);
+  assertPausedAtSourceAndLine(
+    dbg,
+    findSource(dbg, "doc-early-xhr.html").id,
+    10
+  );
+
+  const whyPaused = await waitFor(
+    () => dbg.win.document.querySelector(".why-paused")?.innerText
+  );
+  is(whyPaused, `Paused on XMLHttpRequest`);
+
+  await resume(dbg);
+
+  await dbg.actions.removeXHRBreakpoint(0);
+
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [`${EXAMPLE_REMOTE_URL}doc-early-xhr.html`],
+    remoteUrl => {
+      const secondIframe = content.document.createElement("iframe");
+      content.document.body.append(secondIframe);
+      secondIframe.src = remoteUrl;
+    }
+  );
+
+  // Wait for some time, in order to wait for it to be paused
+  // in case we regress
+  await wait(1000);
+
+  assertNotPaused(dbg);
+});
+
+add_task(async function () {
+  info("Test simple XHR breakpoints set before doing the request");
+
   const dbg = await initDebugger("doc-xhr.html", "fetch.js");
 
   await addXHRBreakpoint(dbg, "doc", "GET");
 
   invokeInTab("main", "doc-xhr.html");
   await waitForPaused(dbg);
-  assertPausedLocation(dbg);
+  assertPausedAtSourceAndLine(dbg, findSource(dbg, "fetch.js").id, 4);
   await resume(dbg);
 
   await dbg.actions.removeXHRBreakpoint(0);
   await invokeInTab("main", "doc-xhr.html");
   assertNotPaused(dbg);
 
+  info("Test that we do not pause on different method type");
   await addXHRBreakpoint(dbg, "doc", "POST");
   await invokeInTab("main", "doc-xhr.html");
   assertNotPaused(dbg);
 });
 
 // Tests the "pause on any URL" checkbox works properly
-add_task(async function() {
+add_task(async function () {
+  info("Test 'pause on any URL'");
   const dbg = await initDebugger("doc-xhr.html", "fetch.js");
 
   // Enable pause on any URL
@@ -31,14 +89,17 @@ add_task(async function() {
   invokeInTab("main", "doc-xhr.html");
   await waitForPaused(dbg);
   await resume(dbg);
+  await assertDebuggerTabHighlight(dbg);
 
   invokeInTab("main", "fetch.js");
   await waitForPaused(dbg);
   await resume(dbg);
+  await assertDebuggerTabHighlight(dbg);
 
   invokeInTab("main", "README.md");
   await waitForPaused(dbg);
   await resume(dbg);
+  await assertDebuggerTabHighlight(dbg);
 
   // Disable pause on any URL
   await clickPauseOnAny(dbg, "DISABLE_XHR_BREAKPOINT");
@@ -50,7 +111,8 @@ add_task(async function() {
 });
 
 // Tests removal works properly
-add_task(async function() {
+add_task(async function () {
+  info("Assert the frontend state when removing breakpoints");
   const dbg = await initDebugger("doc-xhr.html");
 
   const pauseOnAnyCheckbox = getXHRBreakpointCheckbox(dbg);
@@ -74,6 +136,44 @@ add_task(async function() {
   );
 });
 
+add_task(async function () {
+  info("Assert that remove all the breakpoints work well");
+  const dbg = await initDebugger("doc-xhr.html");
+
+  await addXHRBreakpoint(dbg, "1");
+  await addXHRBreakpoint(dbg, "2");
+  await addXHRBreakpoint(dbg, "3");
+  await addXHRBreakpoint(dbg, "4");
+
+  is(
+    getXHRBreakpointsElements(dbg).length,
+    4,
+    "There a 4 items on the XHR breakpoints display list"
+  );
+
+  let persistedXHRBreakpoints = await asyncStore.xhrBreakpoints;
+  is(
+    persistedXHRBreakpoints.length,
+    4,
+    "Check that the persisted XHR breakpoints have 4 items"
+  );
+
+  await dbg.actions.removeAllXHRBreakpoints();
+
+  is(
+    getXHRBreakpointsElements(dbg).length,
+    0,
+    "XHR breakpoints display list is empty"
+  );
+
+  persistedXHRBreakpoints = await asyncStore.xhrBreakpoints;
+  is(
+    persistedXHRBreakpoints.length,
+    0,
+    "Check that there are no persisted XHR breakpoints"
+  );
+});
+
 async function addXHRBreakpoint(dbg, text, method) {
   info(`Adding a XHR breakpoint for pattern ${text} and method ${method}`);
 
@@ -90,7 +190,7 @@ async function addXHRBreakpoint(dbg, text, method) {
 
   pressKey(dbg, "Enter");
 
-  await waitForDispatch(dbg, "SET_XHR_BREAKPOINT");
+  await waitForDispatch(dbg.store, "SET_XHR_BREAKPOINT");
 }
 
 async function removeXHRBreakpoint(dbg, index) {
@@ -103,12 +203,14 @@ async function removeXHRBreakpoint(dbg, index) {
     closeButtons[index].click();
   }
 
-  await waitForDispatch(dbg, "REMOVE_XHR_BREAKPOINT");
+  await waitForDispatch(dbg.store, "REMOVE_XHR_BREAKPOINT");
 }
 
 function getXHRBreakpointsElements(dbg) {
   return [
-    ...dbg.win.document.querySelectorAll(".xhr-breakpoints-pane .xhr-container")
+    ...dbg.win.document.querySelectorAll(
+      ".xhr-breakpoints-pane .xhr-container"
+    ),
   ];
 }
 
@@ -125,5 +227,10 @@ function getXHRBreakpointCheckbox(dbg) {
 
 async function clickPauseOnAny(dbg, expectedEvent) {
   getXHRBreakpointCheckbox(dbg).click();
-  await waitForDispatch(dbg, expectedEvent);
+  await waitForDispatch(dbg.store, expectedEvent);
+}
+
+async function assertDebuggerTabHighlight(dbg) {
+  await waitUntil(() => !dbg.toolbox.isHighlighted("jsdebugger"));
+  ok(true, "Debugger is no longer highlighted after resume");
 }

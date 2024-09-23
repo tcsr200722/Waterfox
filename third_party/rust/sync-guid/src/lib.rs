@@ -19,6 +19,9 @@ use std::{
     ops, str,
 };
 
+#[cfg(feature = "random")]
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
 /// This is a type intended to be used to represent the guids used by sync. It
 /// has several benefits over using a `String`:
 ///
@@ -87,7 +90,7 @@ impl FastGuid {
 
     #[inline]
     fn as_str(&self) -> &str {
-        // Note: we only use debug_assert! to enusre valid utf8-ness, so this need
+        // Note: we only use debug_assert! to ensure valid utf8-ness, so this need
         str::from_utf8(self.bytes()).expect("Invalid fast guid bytes!")
     }
 
@@ -140,8 +143,9 @@ impl Guid {
         // build the FastGuid
         let mut output = [0u8; MAX_FAST_GUID_LEN];
 
-        let bytes_written =
-            base64::encode_config_slice(&bytes, base64::URL_SAFE_NO_PAD, &mut output[..12]);
+        let bytes_written = URL_SAFE_NO_PAD
+            .encode_slice(bytes, &mut output[..12])
+            .expect("Output buffer too small");
 
         debug_assert!(bytes_written == 12);
 
@@ -209,7 +213,9 @@ impl Guid {
     pub fn is_valid_for_sync_server(&self) -> bool {
         !self.is_empty()
             && self.len() <= 64
-            && self.bytes().all(|b| b >= b' ' && b <= b'~' && b != b',')
+            && self
+                .bytes()
+                .all(|b| (b' '..=b'~').contains(&b) && b != b',')
     }
 
     /// Returns true for Guids that are valid places guids, and false for all others.
@@ -250,7 +256,7 @@ const BASE64URL_BYTES: [u8; 256] = [
 
 impl Ord for Guid {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_bytes().cmp(&other.as_bytes())
+        self.as_bytes().cmp(other.as_bytes())
     }
 }
 
@@ -367,6 +373,8 @@ impl std::default::Default for Guid {
 
 macro_rules! impl_guid_eq {
     ($($other: ty),+) => {$(
+        // This macro is used for items with and without lifetimes.
+        #[allow(clippy::extra_unused_lifetimes)]
         impl<'a> PartialEq<$other> for Guid {
             #[inline]
             fn eq(&self, other: &$other) -> bool {
@@ -374,6 +382,7 @@ macro_rules! impl_guid_eq {
             }
         }
 
+        #[allow(clippy::extra_unused_lifetimes)]
         impl<'a> PartialEq<Guid> for $other {
             #[inline]
             fn eq(&self, other: &Guid) -> bool {
@@ -414,8 +423,15 @@ mod test {
         assert!(!Guid::from("aaaabbbbccccd").is_valid_for_places()); // too long
         assert!(!Guid::from("aaaabbbbccc").is_valid_for_places()); // too short
         assert!(!Guid::from("aaaabbbbccc=").is_valid_for_places()); // right length, bad character
+        assert!(!Guid::empty().is_valid_for_places()); // empty isn't valid to insert.
     }
 
+    #[test]
+    fn test_valid_for_sync_server() {
+        assert!(!Guid::empty().is_valid_for_sync_server()); // empty isn't valid remotely.
+    }
+
+    #[allow(clippy::cmp_owned)] // See clippy note below.
     #[test]
     fn test_comparison() {
         assert_eq!(Guid::from("abcdabcdabcd"), "abcdabcdabcd");
@@ -440,6 +456,10 @@ mod test {
         );
 
         // order by data instead of length
+        // hrmph - clippy in 1.54-nightly complains about the below:
+        // 'error: this creates an owned instance just for comparison'
+        // '... help: try: `*"aaaaaa"`'
+        // and suggests a change that's wrong - so we've ignored the lint above.
         assert!(Guid::from("zzz") > Guid::from("aaaaaa"));
         assert!(Guid::from("ThisIsASolowGuid") < Guid::from("zzz"));
         assert!(Guid::from("ThisIsASolowGuid") > Guid::from("AnotherSlowGuid"));
@@ -457,7 +477,7 @@ mod test {
             let g = Guid::random();
             assert_eq!(g.len(), 12);
             assert!(g.is_valid_for_places());
-            let decoded = base64::decode_config(&g, base64::URL_SAFE_NO_PAD).unwrap();
+            let decoded = URL_SAFE_NO_PAD.decode(&g).unwrap();
             assert_eq!(decoded.len(), 9);
             let no_collision = seen.insert(g.clone().into_string());
             assert!(no_collision, "{}", g);

@@ -5,6 +5,7 @@
 include "mozilla/dom/MediaIPCUtils.h";
 
 using mozilla::media::TimeUnit from "TimeUnits.h";
+using mozilla::CryptoScheme from "MediaData.h";
 
 namespace mozilla {
 
@@ -18,16 +19,12 @@ struct MediaDataIPDL
   bool keyframe;
 };
 
-// used for SendInput/RecvInput
-struct MediaRawDataIPDL
-{
-  MediaDataIPDL base;
-  bool eos;
-  uint32_t discardPadding;
-  // Pass along buffer size since we're using ShmemPool
-  // and we can receive buffers larger than requested size.
-  int64_t bufferSize;
-  Shmem buffer;
+struct CryptoInfo {
+  CryptoScheme mEncryptionScheme;
+  uint8_t[] mIV;
+  uint8_t[] mKeyId;
+  uint32_t[] mClearBytes;
+  uint32_t[] mCipherBytes;
 };
 
 } // namespace mozilla

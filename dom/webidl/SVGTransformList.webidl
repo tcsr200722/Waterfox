@@ -14,7 +14,7 @@
 interface SVGTransformList {
   readonly attribute unsigned long numberOfItems;
   [Throws]
-  void clear();
+  undefined clear();
   [Throws]
   SVGTransform initialize(SVGTransform newItem);
   [Throws]
@@ -27,7 +27,8 @@ interface SVGTransformList {
   SVGTransform removeItem(unsigned long index);
   [Throws]
   SVGTransform appendItem(SVGTransform newItem);
-  SVGTransform createSVGTransformFromMatrix(SVGMatrix matrix);
+  [Throws]
+  SVGTransform createSVGTransformFromMatrix(optional DOMMatrix2DInit matrix = {});
   [Throws]
   SVGTransform? consolidate();
 

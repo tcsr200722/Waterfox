@@ -2,7 +2,6 @@
 
 var gTestTab;
 var gContentAPI;
-var gContentWindow;
 var setDefaultBrowserCalled = false;
 
 Services.scriptloader.loadSubScript(
@@ -12,11 +11,11 @@ Services.scriptloader.loadSubScript(
 
 function MockShellService() {}
 MockShellService.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIShellService]),
-  isDefaultBrowser(aStartupCheck, aForAllTypes) {
+  QueryInterface: ChromeUtils.generateQI(["nsIShellService"]),
+  isDefaultBrowser() {
     return false;
   },
-  setDefaultBrowser(aClaimAllTypes, aForAllUsers) {
+  setDefaultBrowser() {
     setDefaultBrowserCalled = true;
   },
   shouldCheckDefaultBrowser: false,
@@ -27,7 +26,7 @@ MockShellService.prototype = {
   BACKGROUND_FILL: 4,
   BACKGROUND_FIT: 5,
   BACKGROUND_SPAN: 6,
-  setDesktopBackground(aElement, aPosition) {},
+  setDesktopBackground() {},
   desktopBackgroundColor: 0,
 };
 

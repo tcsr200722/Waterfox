@@ -8,8 +8,7 @@
 #include "mozilla/TextEvents.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 CompositionEvent::CompositionEvent(EventTarget* aOwner,
                                    nsPresContext* aPresContext,
@@ -23,7 +22,6 @@ CompositionEvent::CompositionEvent(EventTarget* aOwner,
     mEventIsInternal = false;
   } else {
     mEventIsInternal = true;
-    mEvent->mTime = PR_Now();
 
     // XXX compositionstart is cancelable in draft of DOM3 Events.
     //     However, it doesn't make sence for us, we cannot cancel composition
@@ -44,7 +42,7 @@ already_AddRefed<CompositionEvent> CompositionEvent::Constructor(
   RefPtr<CompositionEvent> e = new CompositionEvent(t, nullptr, nullptr);
   bool trusted = e->Init(t);
   e->InitCompositionEvent(aType, aParam.mBubbles, aParam.mCancelable,
-                          aParam.mView, aParam.mData, EmptyString());
+                          aParam.mView, aParam.mData, u""_ns);
   e->mDetail = aParam.mDetail;
   e->SetTrusted(trusted);
   e->SetComposed(aParam.mComposed);
@@ -96,8 +94,7 @@ void CompositionEvent::GetRanges(TextClauseArray& aRanges) {
   aRanges = mRanges.Clone();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

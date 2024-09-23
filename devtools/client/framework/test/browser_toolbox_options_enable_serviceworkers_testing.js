@@ -4,119 +4,73 @@
 // Test that enabling Service Workers testing option enables the
 // mServiceWorkersTestingEnabled attribute added to nsPIDOMWindow.
 
-const ROOT_TEST_DIR = getRootDirectory(gTestPath);
-const FRAME_SCRIPT_URL =
-  ROOT_TEST_DIR +
-  "browser_toolbox_options_enable_serviceworkers_testing_frame_script.js";
+// We explicitly want to test that service worker testing allows to use service
+// workers on non-https, so we use mochi.test:8888 to avoid the automatic upgrade
+// to https when dom.security.https_first is true.
 const TEST_URI =
-  URL_ROOT + "browser_toolbox_options_enable_serviceworkers_testing.html";
-
+  URL_ROOT_MOCHI_8888 +
+  "browser_toolbox_options_enable_serviceworkers_testing.html";
 const ELEMENT_ID = "devtools-enable-serviceWorkersTesting";
 
-var toolbox;
+add_task(async function () {
+  await pushPref("dom.serviceWorkers.exemptFromPerDomainMax", true);
+  await pushPref("dom.serviceWorkers.enabled", true);
+  await pushPref("dom.serviceWorkers.testing.enabled", false);
+  // Force the test to start without service worker testing enabled
+  await pushPref("devtools.serviceWorkers.testing.enabled", false);
 
-function test() {
-  // Note: Pref dom.serviceWorkers.testing.enabled is false since we are testing
-  // the same capabilities are enabled with the devtool pref.
-  SpecialPowers.pushPrefEnv(
-    {
-      set: [
-        ["dom.serviceWorkers.exemptFromPerDomainMax", true],
-        ["dom.serviceWorkers.enabled", true],
-        ["dom.serviceWorkers.testing.enabled", false],
-      ],
-    },
-    init
-  );
-}
+  const tab = await addTab(TEST_URI);
+  const toolbox = await openToolboxForTab(tab, "options");
 
-function init() {
-  addTab(TEST_URI).then(async tab => {
-    const target = await TargetFactory.forTab(tab);
-    const linkedBrowser = tab.linkedBrowser;
+  let data = await register();
+  is(data.success, false, "Register should fail with security error");
 
-    loadFrameScriptUtils(linkedBrowser);
-    linkedBrowser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
+  const panel = toolbox.getCurrentPanel();
+  const cbx = panel.panelDoc.getElementById(ELEMENT_ID);
+  is(cbx.checked, false, "The checkbox shouldn't be checked");
 
-    gDevTools.showToolbox(target).then(testSelectTool);
+  info(`Checking checkbox to enable service workers testing`);
+  cbx.scrollIntoView();
+  cbx.click();
+
+  await reloadBrowser();
+
+  data = await register();
+  is(data.success, true, "Register should success");
+
+  await unregister();
+  data = await registerAndUnregisterInFrame();
+  is(data.success, true, "Register should success");
+
+  info("Workers should be turned back off when we closes the toolbox");
+  await toolbox.destroy();
+
+  await reloadBrowser();
+  data = await register();
+  is(data.success, false, "Register should fail with security error");
+});
+
+function sendMessage(name) {
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [name], nameChild => {
+    return new Promise(resolve => {
+      const channel = new content.MessageChannel();
+      content.postMessage(nameChild, "*", [channel.port2]);
+      channel.port1.onmessage = function (msg) {
+        resolve(msg.data);
+        channel.port1.close();
+      };
+    });
   });
 }
 
-function testSelectTool(aToolbox) {
-  toolbox = aToolbox;
-  toolbox.once("options-selected", start);
-  toolbox.selectTool("options");
-}
-
 function register() {
-  return executeInContent("devtools:sw-test:register");
+  return sendMessage("devtools:sw-test:register");
 }
 
-function unregister(swr) {
-  return executeInContent("devtools:sw-test:unregister");
+function unregister() {
+  return sendMessage("devtools:sw-test:unregister");
 }
 
 function registerAndUnregisterInFrame() {
-  return executeInContent("devtools:sw-test:iframe:register-and-unregister");
-}
-
-function testRegisterFails(data) {
-  is(data.success, false, "Register should fail with security error");
-  return promise.resolve();
-}
-
-function toggleServiceWorkersTestingCheckbox() {
-  const panel = toolbox.getCurrentPanel();
-  const cbx = panel.panelDoc.getElementById(ELEMENT_ID);
-
-  cbx.scrollIntoView();
-
-  if (cbx.checked) {
-    info("Clearing checkbox to disable service workers testing");
-  } else {
-    info("Checking checkbox to enable service workers testing");
-  }
-
-  cbx.click();
-
-  return promise.resolve();
-}
-
-function reload() {
-  const promise = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
-
-  executeInContent("devtools:test:reload", {}, false);
-  return promise;
-}
-
-function testRegisterSuccesses(data) {
-  is(data.success, true, "Register should success");
-  return promise.resolve();
-}
-
-function start() {
-  register()
-    .then(testRegisterFails)
-    .then(toggleServiceWorkersTestingCheckbox)
-    .then(reload)
-    .then(register)
-    .then(testRegisterSuccesses)
-    .then(unregister)
-    .then(registerAndUnregisterInFrame)
-    .then(testRegisterSuccesses)
-    // Workers should be turned back off when we closes the toolbox
-    .then(toolbox.destroy.bind(toolbox))
-    .then(reload)
-    .then(register)
-    .then(testRegisterFails)
-    .catch(function(e) {
-      ok(false, "Some test failed with error " + e);
-    })
-    .then(finishUp);
-}
-
-function finishUp() {
-  gBrowser.removeCurrentTab();
-  toolbox = null;
-  finish();
+  return sendMessage("devtools:sw-test:iframe:register-and-unregister");
 }

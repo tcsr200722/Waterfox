@@ -7,11 +7,8 @@
 
 "use strict";
 
-const Cm = Components.manager;
-
-ChromeUtils.import("resource://gre/modules/Services.jsm", this);
-const { AppConstants } = ChromeUtils.import(
-  "resource://gre/modules/AppConstants.jsm"
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
 );
 
 const APP_TIMER_TIMEOUT_MS = 1000 * 15;
@@ -21,20 +18,17 @@ const TRY_COUNT = 50;
 // newVals AND return value is an array of { key: "", value: "" }
 function setEnvironmentVariables(newVals) {
   let oldVals = [];
-  let env = Cc["@mozilla.org/process/environment;1"].getService(
-    Ci.nsIEnvironment
-  );
   for (let i = 0; i < newVals.length; ++i) {
     let key = newVals[i].key;
     let value = newVals[i].value;
     let oldObj = { key };
-    if (env.exists(key)) {
-      oldObj.value = env.get(key);
+    if (Services.env.exists(key)) {
+      oldObj.value = Services.env.get(key);
     } else {
       oldObj.value = null;
     }
 
-    env.set(key, value);
+    Services.env.set(key, value);
     oldVals.push(oldObj);
   }
   return oldVals;
@@ -106,7 +100,7 @@ function terminateFirefox(completion) {
   process.init(file);
 
   let processObserver = {
-    observe: function PO_observe(aSubject, aTopic, aData) {
+    observe: function PO_observe(aSubject, aTopic) {
       info("topic: " + aTopic + ", process exitValue: " + process.exitValue);
 
       Assert.equal(
@@ -124,7 +118,7 @@ function terminateFirefox(completion) {
         completion();
       }
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+    QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
   };
 
   process.runAsync(args, args.length, processObserver);
@@ -141,7 +135,7 @@ function launchProcess(file, args, env, timeoutMS, handler, attemptCount) {
   state.attempt = attemptCount;
 
   state.processObserver = {
-    observe: function PO_observe(aSubject, aTopic, aData) {
+    observe: function PO_observe(aSubject, aTopic) {
       if (!state.appTimer) {
         // the app timer has been canceled; this process has timed out already so don't process further.
         handler(false);
@@ -171,12 +165,12 @@ function launchProcess(file, args, env, timeoutMS, handler, attemptCount) {
 
       handler(true);
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+    QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
   };
 
   // The timer callback to kill the process if it takes too long.
   state.appTimerCallback = {
-    notify: function TC_notify(aTimer) {
+    notify: function TC_notify() {
       state.appTimer = null;
 
       info("Restoring environment variables");
@@ -191,7 +185,7 @@ function launchProcess(file, args, env, timeoutMS, handler, attemptCount) {
         });
       }
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsITimerCallback]),
+    QueryInterface: ChromeUtils.generateQI(["nsITimerCallback"]),
   };
 
   info("launching application: " + file.path);

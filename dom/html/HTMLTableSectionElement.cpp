@@ -5,8 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/HTMLTableSectionElement.h"
-#include "mozilla/MappedDeclarations.h"
-#include "nsMappedAttributes.h"
+#include "mozilla/MappedDeclarationsBuilder.h"
 #include "nsAttrValueInlines.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/HTMLTableSectionElementBinding.h"
@@ -14,8 +13,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(TableSection)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // you will see the phrases "rowgroup" and "section" used interchangably
 
@@ -26,12 +24,8 @@ JSObject* HTMLTableSectionElement::WrapNode(JSContext* aCx,
   return HTMLTableSectionElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLTableSectionElement)
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(HTMLTableSectionElement,
-                                                  nsGenericHTMLElement)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRows)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLTableSectionElement,
+                                   nsGenericHTMLElement, mRows)
 
 NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(HTMLTableSectionElement,
                                                nsGenericHTMLElement)
@@ -146,18 +140,19 @@ bool HTMLTableSectionElement::ParseAttribute(
 }
 
 void HTMLTableSectionElement::MapAttributesIntoRule(
-    const nsMappedAttributes* aAttributes, MappedDeclarations& aDecls) {
+    MappedDeclarationsBuilder& aBuilder) {
   // height: value
-  if (!aDecls.PropertyIsSet(eCSSProperty_height)) {
-    const nsAttrValue* value = aAttributes->GetAttr(nsGkAtoms::height);
-    if (value && value->Type() == nsAttrValue::eInteger)
-      aDecls.SetPixelValue(eCSSProperty_height,
-                           (float)value->GetIntegerValue());
+  if (!aBuilder.PropertyIsSet(eCSSProperty_height)) {
+    const nsAttrValue* value = aBuilder.GetAttr(nsGkAtoms::height);
+    if (value && value->Type() == nsAttrValue::eInteger) {
+      aBuilder.SetPixelValue(eCSSProperty_height,
+                             (float)value->GetIntegerValue());
+    }
   }
-  nsGenericHTMLElement::MapDivAlignAttributeInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapVAlignAttributeInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapBackgroundAttributesInto(aAttributes, aDecls);
-  nsGenericHTMLElement::MapCommonAttributesInto(aAttributes, aDecls);
+  nsGenericHTMLElement::MapDivAlignAttributeInto(aBuilder);
+  nsGenericHTMLElement::MapVAlignAttributeInto(aBuilder);
+  nsGenericHTMLElement::MapBackgroundAttributesInto(aBuilder);
+  nsGenericHTMLElement::MapCommonAttributesInto(aBuilder);
 }
 
 NS_IMETHODIMP_(bool)
@@ -179,5 +174,4 @@ nsMapRuleToAttributesFunc HTMLTableSectionElement::GetAttributeMappingFunction()
   return &MapAttributesIntoRule;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

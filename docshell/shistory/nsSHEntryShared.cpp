@@ -7,15 +7,16 @@
 #include "nsSHEntryShared.h"
 
 #include "nsArray.h"
+#include "nsContentUtils.h"
 #include "nsDocShellEditorData.h"
-#include "nsIContentViewer.h"
+#include "nsIDocumentViewer.h"
 #include "nsISHistory.h"
 #include "mozilla/dom/Document.h"
 #include "nsILayoutHistoryState.h"
 #include "nsIWebNavigation.h"
 #include "nsSHistory.h"
 #include "nsThreadUtils.h"
-
+#include "nsFrameLoader.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Preferences.h"
 
@@ -23,35 +24,83 @@ namespace dom = mozilla::dom;
 
 namespace {
 uint64_t gSHEntrySharedID = 0;
+nsTHashMap<nsUint64HashKey, mozilla::dom::SHEntrySharedParentState*>*
+    sIdToSharedState = nullptr;
 }  // namespace
 
 namespace mozilla {
 namespace dom {
 
-SHEntrySharedParentState::SHEntrySharedParentState(nsISHistory* aSHistory)
-    : SHEntrySharedParentState(
-          nsWeakPtr(do_GetWeakReference(aSHistory)).get()) {}
+/* static */
+uint64_t SHEntrySharedState::GenerateId() {
+  return nsContentUtils::GenerateProcessSpecificId(++gSHEntrySharedID);
+}
 
-SHEntrySharedParentState::SHEntrySharedParentState(nsIWeakReference* aSHistory)
-    : mDocShellID({0}),
-      mViewerBounds(0, 0, 0, 0),
-      mCacheKey(0),
-      mLastTouched(0),
-      mID(++gSHEntrySharedID),
-      mSHistory(aSHistory),
-      mIsFrameNavigation(false),
-      mSticky(true),
-      mDynamicallyCreated(false),
-      mExpired(false),
-      mSaveLayoutState(true) {}
+/* static */
+SHEntrySharedParentState* SHEntrySharedParentState::Lookup(uint64_t aId) {
+  MOZ_ASSERT(aId != 0);
 
-SHEntrySharedParentState::~SHEntrySharedParentState() {}
+  return sIdToSharedState ? sIdToSharedState->Get(aId) : nullptr;
+}
+
+static void AddSHEntrySharedParentState(
+    SHEntrySharedParentState* aSharedState) {
+  MOZ_ASSERT(aSharedState->mId != 0);
+
+  if (!sIdToSharedState) {
+    sIdToSharedState =
+        new nsTHashMap<nsUint64HashKey, SHEntrySharedParentState*>();
+  }
+  sIdToSharedState->InsertOrUpdate(aSharedState->mId, aSharedState);
+}
+
+SHEntrySharedParentState::SHEntrySharedParentState() {
+  AddSHEntrySharedParentState(this);
+}
+
+SHEntrySharedParentState::SHEntrySharedParentState(
+    nsIPrincipal* aTriggeringPrincipal, nsIPrincipal* aPrincipalToInherit,
+    nsIPrincipal* aPartitionedPrincipalToInherit,
+    nsIContentSecurityPolicy* aCsp, const nsACString& aContentType)
+    : SHEntrySharedState(aTriggeringPrincipal, aPrincipalToInherit,
+                         aPartitionedPrincipalToInherit, aCsp, aContentType) {
+  AddSHEntrySharedParentState(this);
+}
+
+SHEntrySharedParentState::~SHEntrySharedParentState() {
+  MOZ_ASSERT(mId != 0);
+
+  RefPtr<nsFrameLoader> loader = mFrameLoader;
+  SetFrameLoader(nullptr);
+  if (loader) {
+    if (NS_FAILED(NS_DispatchToCurrentThread(NS_NewRunnableFunction(
+            "SHEntrySharedParentState::~SHEntrySharedParentState",
+            [loader]() -> void { loader->AsyncDestroy(); })))) {
+      // Trigger AsyncDestroy immediately during shutdown.
+      loader->AsyncDestroy();
+    }
+  }
+
+  sIdToSharedState->Remove(mId);
+  if (sIdToSharedState->IsEmpty()) {
+    delete sIdToSharedState;
+    sIdToSharedState = nullptr;
+  }
+}
+
+void SHEntrySharedParentState::ChangeId(uint64_t aId) {
+  MOZ_ASSERT(aId != 0);
+
+  sIdToSharedState->Remove(mId);
+  mId = aId;
+  sIdToSharedState->InsertOrUpdate(mId, this);
+}
 
 void SHEntrySharedParentState::CopyFrom(SHEntrySharedParentState* aEntry) {
   mDocShellID = aEntry->mDocShellID;
   mTriggeringPrincipal = aEntry->mTriggeringPrincipal;
   mPrincipalToInherit = aEntry->mPrincipalToInherit;
-  mStoragePrincipalToInherit = aEntry->mStoragePrincipalToInherit;
+  mPartitionedPrincipalToInherit = aEntry->mPartitionedPrincipalToInherit;
   mCsp = aEntry->mCsp;
   mSaveLayoutState = aEntry->mSaveLayoutState;
   mContentType.Assign(aEntry->mContentType);
@@ -62,15 +111,36 @@ void SHEntrySharedParentState::CopyFrom(SHEntrySharedParentState* aEntry) {
   mLastTouched = aEntry->mLastTouched;
 }
 
-void dom::SHEntrySharedParentState::NotifyListenersContentViewerEvicted() {
+void dom::SHEntrySharedParentState::NotifyListenersDocumentViewerEvicted() {
   if (nsCOMPtr<nsISHistory> shistory = do_QueryReferent(mSHistory)) {
     RefPtr<nsSHistory> nsshistory = static_cast<nsSHistory*>(shistory.get());
-    nsshistory->NotifyListenersContentViewerEvicted(1);
+    nsshistory->NotifyListenersDocumentViewerEvicted(1);
   }
 }
 
 void SHEntrySharedChildState::CopyFrom(SHEntrySharedChildState* aEntry) {
   mChildShells.AppendObjects(aEntry->mChildShells);
+}
+
+void SHEntrySharedParentState::SetFrameLoader(nsFrameLoader* aFrameLoader) {
+  // If expiration tracker is removing this object, IsTracked() returns false.
+  if (GetExpirationState()->IsTracked() && mFrameLoader) {
+    if (nsCOMPtr<nsISHistory> shistory = do_QueryReferent(mSHistory)) {
+      shistory->RemoveFromExpirationTracker(this);
+    }
+  }
+
+  mFrameLoader = aFrameLoader;
+
+  if (mFrameLoader) {
+    if (nsCOMPtr<nsISHistory> shistory = do_QueryReferent(mSHistory)) {
+      shistory->AddToExpirationTracker(this);
+    }
+  }
+}
+
+nsFrameLoader* SHEntrySharedParentState::GetFrameLoader() {
+  return mFrameLoader;
 }
 
 }  // namespace dom
@@ -91,7 +161,7 @@ nsSHEntryShared::~nsSHEntryShared() {
   // nsSHistory::Release can cause a crash, so set mSHistory to null explicitly
   // before RemoveFromBFCacheSync.
   mSHistory = nullptr;
-  if (mContentViewer) {
+  if (mDocumentViewer) {
     RemoveFromBFCacheSync();
   }
 }
@@ -101,7 +171,7 @@ NS_IMPL_ADDREF_INHERITED(nsSHEntryShared, dom::SHEntrySharedParentState)
 NS_IMPL_RELEASE_INHERITED(nsSHEntryShared, dom::SHEntrySharedParentState)
 
 already_AddRefed<nsSHEntryShared> nsSHEntryShared::Duplicate() {
-  RefPtr<nsSHEntryShared> newEntry = new nsSHEntryShared(this);
+  RefPtr<nsSHEntryShared> newEntry = new nsSHEntryShared();
 
   newEntry->dom::SHEntrySharedParentState::CopyFrom(this);
   newEntry->dom::SHEntrySharedChildState::CopyFrom(this);
@@ -117,7 +187,7 @@ void nsSHEntryShared::RemoveFromExpirationTracker() {
 }
 
 void nsSHEntryShared::SyncPresentationState() {
-  if (mContentViewer && mWindowState) {
+  if (mDocumentViewer && mWindowState) {
     // If we have a content viewer and a window state, we should be ok.
     return;
   }
@@ -133,12 +203,12 @@ void nsSHEntryShared::DropPresentationState() {
     mDocument->RemoveMutationObserver(this);
     mDocument = nullptr;
   }
-  if (mContentViewer) {
-    mContentViewer->ClearHistoryEntry();
+  if (mDocumentViewer) {
+    mDocumentViewer->ClearHistoryEntry();
   }
 
   RemoveFromExpirationTracker();
-  mContentViewer = nullptr;
+  mDocumentViewer = nullptr;
   mSticky = true;
   mWindowState = nullptr;
   mViewerBounds.SetRect(0, 0, 0, 0);
@@ -147,21 +217,21 @@ void nsSHEntryShared::DropPresentationState() {
   mEditorData = nullptr;
 }
 
-nsresult nsSHEntryShared::SetContentViewer(nsIContentViewer* aViewer) {
-  MOZ_ASSERT(!aViewer || !mContentViewer,
+nsresult nsSHEntryShared::SetDocumentViewer(nsIDocumentViewer* aViewer) {
+  MOZ_ASSERT(!aViewer || !mDocumentViewer,
              "SHEntryShared already contains viewer");
 
-  if (mContentViewer || !aViewer) {
+  if (mDocumentViewer || !aViewer) {
     DropPresentationState();
   }
 
-  // If we're setting mContentViewer to null, state should already be cleared
+  // If we're setting mDocumentViewer to null, state should already be cleared
   // in the DropPresentationState() call above; If we're setting it to a
   // non-null content viewer, the entry shouldn't have been tracked either.
   MOZ_ASSERT(!GetExpirationState()->IsTracked());
-  mContentViewer = aViewer;
+  mDocumentViewer = aViewer;
 
-  if (mContentViewer) {
+  if (mDocumentViewer) {
     // mSHistory is only set for root entries, but in general bfcache only
     // applies to root entries as well. BFCache for subframe navigation has been
     // disabled since 2005 in bug 304860.
@@ -171,7 +241,7 @@ nsresult nsSHEntryShared::SetContentViewer(nsIContentViewer* aViewer) {
 
     // Store observed document in strong pointer in case it is removed from
     // the contentviewer
-    mDocument = mContentViewer->GetDocument();
+    mDocument = mDocumentViewer->GetDocument();
     if (mDocument) {
       mDocument->SetBFCacheEntry(this);
       mDocument->AddMutationObserver(this);
@@ -182,14 +252,14 @@ nsresult nsSHEntryShared::SetContentViewer(nsIContentViewer* aViewer) {
 }
 
 nsresult nsSHEntryShared::RemoveFromBFCacheSync() {
-  MOZ_ASSERT(mContentViewer && mDocument, "we're not in the bfcache!");
+  MOZ_ASSERT(mDocumentViewer && mDocument, "we're not in the bfcache!");
 
   // The call to DropPresentationState could drop the last reference, so hold
   // |this| until RemoveDynEntriesForBFCacheEntry finishes.
   RefPtr<nsSHEntryShared> kungFuDeathGrip = this;
 
-  // DropPresentationState would clear mContentViewer.
-  nsCOMPtr<nsIContentViewer> viewer = mContentViewer;
+  // DropPresentationState would clear mDocumentViewer.
+  nsCOMPtr<nsIDocumentViewer> viewer = mDocumentViewer;
   DropPresentationState();
 
   if (viewer) {
@@ -207,33 +277,30 @@ nsresult nsSHEntryShared::RemoveFromBFCacheSync() {
 }
 
 nsresult nsSHEntryShared::RemoveFromBFCacheAsync() {
-  MOZ_ASSERT(mContentViewer && mDocument, "we're not in the bfcache!");
+  MOZ_ASSERT(mDocumentViewer && mDocument, "we're not in the bfcache!");
 
   // Check it again to play safe in release builds.
   if (!mDocument) {
     return NS_ERROR_UNEXPECTED;
   }
 
-  // DropPresentationState would clear mContentViewer & mDocument. Capture and
+  // DropPresentationState would clear mDocumentViewer & mDocument. Capture and
   // release the references asynchronously so that the document doesn't get
   // nuked mid-mutation.
-  nsCOMPtr<nsIContentViewer> viewer = mContentViewer;
+  nsCOMPtr<nsIDocumentViewer> viewer = mDocumentViewer;
   RefPtr<dom::Document> document = mDocument;
   RefPtr<nsSHEntryShared> self = this;
-  nsresult rv = mDocument->Dispatch(
-      mozilla::TaskCategory::Other,
-      NS_NewRunnableFunction(
-          "nsSHEntryShared::RemoveFromBFCacheAsync",
-          [self, viewer, document]() {
-            if (viewer) {
-              viewer->Destroy();
-            }
+  nsresult rv = mDocument->Dispatch(NS_NewRunnableFunction(
+      "nsSHEntryShared::RemoveFromBFCacheAsync", [self, viewer, document]() {
+        if (viewer) {
+          viewer->Destroy();
+        }
 
-            nsCOMPtr<nsISHistory> shistory = do_QueryReferent(self->mSHistory);
-            if (shistory) {
-              shistory->RemoveDynEntriesForBFCacheEntry(self);
-            }
-          }));
+        nsCOMPtr<nsISHistory> shistory = do_QueryReferent(self->mSHistory);
+        if (shistory) {
+          shistory->RemoveDynEntriesForBFCacheEntry(self);
+        }
+      }));
 
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch RemoveFromBFCacheAsync runnable.");
@@ -247,27 +314,52 @@ nsresult nsSHEntryShared::RemoveFromBFCacheAsync() {
   return NS_OK;
 }
 
+// Don't evict a page from bfcache for attribute mutations on NAC subtrees like
+// scrollbars.
+static bool IgnoreMutationForBfCache(const nsINode& aNode) {
+  for (const nsINode* node = &aNode; node; node = node->GetParentNode()) {
+    if (!node->ChromeOnlyAccess()) {
+      break;
+    }
+    // Make sure we find a scrollbar in the ancestor chain, to be safe.
+    if (node->IsXULElement(nsGkAtoms::scrollbar)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void nsSHEntryShared::CharacterDataChanged(nsIContent* aContent,
                                            const CharacterDataChangeInfo&) {
-  RemoveFromBFCacheAsync();
+  if (!IgnoreMutationForBfCache(*aContent)) {
+    RemoveFromBFCacheAsync();
+  }
 }
 
 void nsSHEntryShared::AttributeChanged(dom::Element* aElement,
                                        int32_t aNameSpaceID, nsAtom* aAttribute,
                                        int32_t aModType,
                                        const nsAttrValue* aOldValue) {
-  RemoveFromBFCacheAsync();
+  if (!IgnoreMutationForBfCache(*aElement)) {
+    RemoveFromBFCacheAsync();
+  }
 }
 
 void nsSHEntryShared::ContentAppended(nsIContent* aFirstNewContent) {
-  RemoveFromBFCacheAsync();
+  if (!IgnoreMutationForBfCache(*aFirstNewContent)) {
+    RemoveFromBFCacheAsync();
+  }
 }
 
 void nsSHEntryShared::ContentInserted(nsIContent* aChild) {
-  RemoveFromBFCacheAsync();
+  if (!IgnoreMutationForBfCache(*aChild)) {
+    RemoveFromBFCacheAsync();
+  }
 }
 
 void nsSHEntryShared::ContentRemoved(nsIContent* aChild,
                                      nsIContent* aPreviousSibling) {
-  RemoveFromBFCacheAsync();
+  if (!IgnoreMutationForBfCache(*aChild)) {
+    RemoveFromBFCacheAsync();
+  }
 }

@@ -5,12 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TemporaryIPCBlobChild.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/MutableBlobStorage.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include <private/pprio.h>
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 TemporaryIPCBlobChild::TemporaryIPCBlobChild(MutableBlobStorage* aStorage)
     : mMutableBlobStorage(aStorage), mActive(true) {
@@ -32,21 +32,22 @@ mozilla::ipc::IPCResult TemporaryIPCBlobChild::RecvFileDesc(
 }
 
 mozilla::ipc::IPCResult TemporaryIPCBlobChild::Recv__delete__(
-    const IPCBlobOrError& aData) {
+    const IPCBlobOrError& aBlobOrError) {
   mActive = false;
   mMutableBlobStorage = nullptr;
 
-  if (aData.type() == IPCBlobOrError::TIPCBlob) {
+  if (aBlobOrError.type() == IPCBlobOrError::TIPCBlob) {
     // This must be always deserialized.
-    RefPtr<BlobImpl> blobImpl = IPCBlobUtils::Deserialize(aData.get_IPCBlob());
+    RefPtr<BlobImpl> blobImpl =
+        IPCBlobUtils::Deserialize(aBlobOrError.get_IPCBlob());
     MOZ_ASSERT(blobImpl);
 
     if (mCallback) {
       mCallback->OperationSucceeded(blobImpl);
     }
   } else if (mCallback) {
-    MOZ_ASSERT(aData.type() == IPCBlobOrError::Tnsresult);
-    mCallback->OperationFailed(aData.get_nsresult());
+    MOZ_ASSERT(aBlobOrError.type() == IPCBlobOrError::Tnsresult);
+    mCallback->OperationFailed(aBlobOrError.get_nsresult());
   }
 
   mCallback = nullptr;
@@ -79,8 +80,7 @@ void TemporaryIPCBlobChild::AskForBlob(TemporaryIPCBlobChildCallback* aCallback,
       FileDescriptor::PlatformHandleType(PR_FileDesc2NativeHandle(aFD)));
 
   mCallback = aCallback;
-  SendOperationDone(nsCString(aContentType), fdd);
+  SendOperationDone(aContentType, fdd);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

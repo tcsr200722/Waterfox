@@ -5,10 +5,10 @@
 <%namespace name="helpers" file="/helpers.mako.rs" />
 
 <%helpers:shorthand name="flex-flow"
-                    engines="gecko servo-2013"
+                    engines="gecko servo",
+                    servo_pref="layout.flexbox.enabled",
                     sub_properties="flex-direction flex-wrap"
                     extra_prefixes="webkit"
-                    derive_serialize="True"
                     spec="https://drafts.csswg.org/css-flexbox/#flex-flow-property">
     use crate::properties::longhands::{flex_direction, flex_wrap};
 
@@ -20,13 +20,13 @@
         let mut wrap = None;
         loop {
             if direction.is_none() {
-                if let Ok(value) = input.try(|input| flex_direction::parse(context, input)) {
+                if let Ok(value) = input.try_parse(|input| flex_direction::parse(context, input)) {
                     direction = Some(value);
                     continue
                 }
             }
             if wrap.is_none() {
-                if let Ok(value) = input.try(|input| flex_wrap::parse(context, input)) {
+                if let Ok(value) = input.try_parse(|input| flex_wrap::parse(context, input)) {
                     wrap = Some(value);
                     continue
                 }
@@ -42,10 +42,26 @@
             flex_wrap: unwrap_or_initial!(flex_wrap, wrap),
         })
     }
+
+    impl<'a> ToCss for LonghandsToSerialize<'a> {
+        fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
+            if *self.flex_direction == flex_direction::get_initial_specified_value() &&
+               *self.flex_wrap != flex_wrap::get_initial_specified_value() {
+                return self.flex_wrap.to_css(dest)
+            }
+            self.flex_direction.to_css(dest)?;
+            if *self.flex_wrap != flex_wrap::get_initial_specified_value() {
+                dest.write_char(' ')?;
+                self.flex_wrap.to_css(dest)?;
+            }
+            Ok(())
+        }
+    }
 </%helpers:shorthand>
 
 <%helpers:shorthand name="flex"
-                    engines="gecko servo-2013"
+                    engines="gecko servo",
+                    servo_pref="layout.flexbox.enabled",
                     sub_properties="flex-grow flex-shrink flex-basis"
                     extra_prefixes="webkit"
                     derive_serialize="True"
@@ -59,7 +75,7 @@
         input: &mut Parser<'i, 't>,
     ) -> Result<(NonNegativeNumber, Option<NonNegativeNumber>),ParseError<'i>> {
         let grow = NonNegativeNumber::parse(context, input)?;
-        let shrink = input.try(|i| NonNegativeNumber::parse(context, i)).ok();
+        let shrink = input.try_parse(|i| NonNegativeNumber::parse(context, i)).ok();
         Ok((grow, shrink))
     }
 
@@ -71,7 +87,7 @@
         let mut shrink = None;
         let mut basis = None;
 
-        if input.try(|input| input.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|input| input.expect_ident_matching("none")).is_ok() {
             return Ok(expanded! {
                 flex_grow: NonNegativeNumber::new(0.0),
                 flex_shrink: NonNegativeNumber::new(0.0),
@@ -80,14 +96,14 @@
         }
         loop {
             if grow.is_none() {
-                if let Ok((flex_grow, flex_shrink)) = input.try(|i| parse_flexibility(context, i)) {
+                if let Ok((flex_grow, flex_shrink)) = input.try_parse(|i| parse_flexibility(context, i)) {
                     grow = Some(flex_grow);
                     shrink = flex_shrink;
                     continue
                 }
             }
             if basis.is_none() {
-                if let Ok(value) = input.try(|input| FlexBasis::parse(context, input)) {
+                if let Ok(value) = input.try_parse(|input| FlexBasis::parse(context, input)) {
                     basis = Some(value);
                     continue
                 }
@@ -113,7 +129,7 @@
 <%helpers:shorthand
     name="gap"
     engines="gecko"
-    alias="grid-gap"
+    aliases="grid-gap"
     sub_properties="row-gap column-gap"
     spec="https://drafts.csswg.org/css-align-3/#gap-shorthand"
 >
@@ -122,7 +138,7 @@
   pub fn parse_value<'i, 't>(context: &ParserContext, input: &mut Parser<'i, 't>)
                              -> Result<Longhands, ParseError<'i>> {
       let r_gap = row_gap::parse(context, input)?;
-      let c_gap = input.try(|input| column_gap::parse(context, input)).unwrap_or(r_gap.clone());
+      let c_gap = input.try_parse(|input| column_gap::parse(context, input)).unwrap_or(r_gap.clone());
 
       Ok(expanded! {
         row_gap: r_gap,
@@ -136,7 +152,7 @@
             self.row_gap.to_css(dest)
           } else {
             self.row_gap.to_css(dest)?;
-            dest.write_str(" ")?;
+            dest.write_char(' ')?;
             self.column_gap.to_css(dest)
           }
       }
@@ -162,8 +178,8 @@
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Longhands, ParseError<'i>> {
-        let start = input.try(|i| GridLine::parse(context, i))?;
-        let end = if input.try(|i| i.expect_delim('/')).is_ok() {
+        let start = input.try_parse(|i| GridLine::parse(context, i))?;
+        let end = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
             GridLine::parse(context, input)?
         } else {
             let mut line = GridLine::auto();
@@ -224,12 +240,12 @@
             this
         }
 
-        let row_start = input.try(|i| GridLine::parse(context, i))?;
-        let (column_start, row_end, column_end) = if input.try(|i| i.expect_delim('/')).is_ok() {
+        let row_start = input.try_parse(|i| GridLine::parse(context, i))?;
+        let (column_start, row_end, column_end) = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
             let column_start = GridLine::parse(context, input)?;
-            let (row_end, column_end) = if input.try(|i| i.expect_delim('/')).is_ok() {
+            let (row_end, column_end) = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
                 let row_end = GridLine::parse(context, input)?;
-                let column_end = if input.try(|i| i.expect_delim('/')).is_ok() {
+                let column_end = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
                     GridLine::parse(context, input)?
                 } else {        // grid-column-end has not been given
                     line_with_ident_from(&column_start)
@@ -307,7 +323,7 @@
     use crate::values::generics::grid::{TrackListValue, concat_serialize_idents};
     use crate::values::specified::{GridTemplateComponent, GenericGridTemplateComponent};
     use crate::values::specified::grid::parse_line_names;
-    use crate::values::specified::position::{GridTemplateAreas, TemplateAreas, TemplateAreasArc};
+    use crate::values::specified::position::{GridTemplateAreas, TemplateAreasParser, TemplateAreasArc};
 
     /// Parsing for `<grid-template>` shorthand (also used by `grid` shorthand).
     pub fn parse_grid_template<'i, 't>(
@@ -322,8 +338,8 @@
         }
         %>
         % for keyword, rust_type in keywords.items():
-            if let Ok(x) = input.try(|i| {
-                if i.try(|i| i.expect_ident_matching("${keyword}")).is_ok() {
+            if let Ok(x) = input.try_parse(|i| {
+                if i.try_parse(|i| i.expect_ident_matching("${keyword}")).is_ok() {
                     if !i.is_exhausted() {
                         return Err(());
                     }
@@ -335,22 +351,20 @@
             }
         % endfor
 
-        let first_line_names = input.try(parse_line_names).unwrap_or_default();
-        if let Ok(string) = input.try(|i| i.expect_string().map(|s| s.as_ref().to_owned().into())) {
-            let mut strings = vec![];
+        let first_line_names = input.try_parse(parse_line_names).unwrap_or_default();
+        let mut areas_parser = TemplateAreasParser::default();
+        if areas_parser.try_parse_string(input).is_ok() {
             let mut values = vec![];
             let mut line_names = vec![];
             line_names.push(first_line_names);
-            strings.push(string);
             loop {
-                let size = input.try(|i| TrackSize::parse(context, i)).unwrap_or_default();
+                let size = input.try_parse(|i| TrackSize::parse(context, i)).unwrap_or_default();
                 values.push(TrackListValue::TrackSize(size));
-                let mut names = input.try(parse_line_names).unwrap_or_default();
-                let more_names = input.try(parse_line_names);
+                let mut names = input.try_parse(parse_line_names).unwrap_or_default();
+                let more_names = input.try_parse(parse_line_names);
 
-                match input.try(|i| i.expect_string().map(|s| s.as_ref().to_owned().into())) {
-                    Ok(string) => {
-                        strings.push(string);
+                match areas_parser.try_parse_string(input) {
+                    Ok(()) => {
                         if let Ok(v) = more_names {
                             // We got `[names] [more_names] "string"` - merge the two name lists.
                             let mut names_vec = names.into_vec();
@@ -363,7 +377,7 @@
                         if more_names.is_ok() {
                             // We've parsed `"string" [names] [more_names]` but then failed to parse another `"string"`.
                             // The grammar doesn't allow two trailing `<line-names>` so this is an invalid value.
-                            return Err(e.into());
+                            return Err(e);
                         }
                         // only the named area determines whether we should bail out
                         line_names.push(names);
@@ -377,7 +391,7 @@
                 line_names.push(Default::default());
             }
 
-            let template_areas = TemplateAreas::from_vec(strings)
+            let template_areas = areas_parser.finish()
                 .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?;
             let template_rows = TrackList {
                 values: values.into(),
@@ -385,7 +399,7 @@
                 auto_repeat_index: std::usize::MAX,
             };
 
-            let template_cols = if input.try(|i| i.expect_delim('/')).is_ok() {
+            let template_cols = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
                 let value = GridTemplateComponent::parse_without_none(context, input)?;
                 if let GenericGridTemplateComponent::TrackList(ref list) = value {
                     if !list.is_explicit() {
@@ -495,7 +509,7 @@
                                                                   .zip(&mut names_iter)
                                                                   .zip(track_list.values.iter()) {
                     if i > 0 {
-                        dest.write_str(" ")?;
+                        dest.write_char(' ')?;
                     }
 
                     if !names.is_empty() {
@@ -506,7 +520,7 @@
 
                     // If the track size is the initial value then it's redundant here.
                     if !value.is_initial() {
-                        dest.write_str(" ")?;
+                        dest.write_char(' ')?;
                         value.to_css(dest)?;
                     }
                 }
@@ -570,13 +584,13 @@
             let mut dense = GridAutoFlow::empty();
 
             for _ in 0..2 {
-                if input.try(|i| i.expect_ident_matching("auto-flow")).is_ok() {
+                if input.try_parse(|i| i.expect_ident_matching("auto-flow")).is_ok() {
                     track = if is_row {
                         Some(GridAutoFlow::ROW)
                     } else {
                         Some(GridAutoFlow::COLUMN)
                     };
-                } else if input.try(|i| i.expect_ident_matching("dense")).is_ok() {
+                } else if input.try_parse(|i| i.expect_ident_matching("dense")).is_ok() {
                     dense = GridAutoFlow::DENSE
                 } else {
                     break
@@ -590,18 +604,18 @@
             }
         }
 
-        if let Ok((rows, cols, areas)) = input.try(|i| super::grid_template::parse_grid_template(context, i)) {
+        if let Ok((rows, cols, areas)) = input.try_parse(|i| super::grid_template::parse_grid_template(context, i)) {
             temp_rows = rows;
             temp_cols = cols;
             temp_areas = areas;
-        } else if let Ok(rows) = input.try(|i| GridTemplateComponent::parse(context, i)) {
+        } else if let Ok(rows) = input.try_parse(|i| GridTemplateComponent::parse(context, i)) {
             temp_rows = rows;
             input.expect_delim('/')?;
             flow = parse_auto_flow(input, false)?;
-            auto_cols = grid_auto_columns::parse(context, input).unwrap_or_default();
+            auto_cols = input.try_parse(|i| grid_auto_columns::parse(context, i)).unwrap_or_default();
         } else {
             flow = parse_auto_flow(input, true)?;
-            auto_rows = input.try(|i| grid_auto_rows::parse(context, i)).unwrap_or_default();
+            auto_rows = input.try_parse(|i| grid_auto_rows::parse(context, i)).unwrap_or_default();
             input.expect_delim('/')?;
             temp_cols = GridTemplateComponent::parse(context, input)?;
         }
@@ -619,7 +633,6 @@
     impl<'a> LonghandsToSerialize<'a> {
         /// Returns true if other sub properties except template-{rows,columns} are initial.
         fn is_grid_template(&self) -> bool {
-            *self.grid_template_areas == GridTemplateAreas::None &&
             self.grid_auto_rows.is_initial() &&
             self.grid_auto_columns.is_initial() &&
             *self.grid_auto_flow == grid_auto_flow::get_initial_value()
@@ -628,13 +641,19 @@
 
     impl<'a> ToCss for LonghandsToSerialize<'a> {
         fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
-            if *self.grid_template_areas != GridTemplateAreas::None ||
-               (!self.grid_template_rows.is_initial() &&
-                !self.grid_template_columns.is_initial()) ||
-               self.is_grid_template() {
-                return super::grid_template::serialize_grid_template(self.grid_template_rows,
-                                                                     self.grid_template_columns,
-                                                                     self.grid_template_areas, dest);
+            if self.is_grid_template() {
+                return super::grid_template::serialize_grid_template(
+                    self.grid_template_rows,
+                    self.grid_template_columns,
+                    self.grid_template_areas,
+                    dest
+                );
+            }
+
+            if *self.grid_template_areas != GridTemplateAreas::None {
+                // No other syntax can set the template areas, so fail to
+                // serialize.
+                return Ok(());
             }
 
             if self.grid_auto_flow.contains(GridAutoFlow::COLUMN) {
@@ -658,36 +677,38 @@
                 }
 
                 if !self.grid_auto_columns.is_initial() {
-                    dest.write_str(" ")?;
+                    dest.write_char(' ')?;
                     self.grid_auto_columns.to_css(dest)?;
                 }
-            } else {
-                // It should fail to serialize if other branch of the if condition's values are set.
-                if !self.grid_auto_columns.is_initial() ||
-                    !self.grid_template_rows.is_initial() {
+
+                return Ok(());
+            }
+
+            // It should fail to serialize if other branch of the if condition's values are set.
+            if !self.grid_auto_columns.is_initial() ||
+                !self.grid_template_rows.is_initial() {
+                return Ok(());
+            }
+
+            // It should fail to serialize if template-column value is not Explicit.
+            if let GenericGridTemplateComponent::TrackList(ref list) = *self.grid_template_columns {
+                if !list.is_explicit() {
                     return Ok(());
                 }
-
-                // It should fail to serialize if template-column value is not Explicit.
-                if let GenericGridTemplateComponent::TrackList(ref list) = *self.grid_template_columns {
-                    if !list.is_explicit() {
-                        return Ok(());
-                    }
-                }
-
-                dest.write_str("auto-flow")?;
-                if self.grid_auto_flow.contains(GridAutoFlow::DENSE) {
-                    dest.write_str(" dense")?;
-                }
-
-                if !self.grid_auto_rows.is_initial() {
-                    dest.write_str(" ")?;
-                    self.grid_auto_rows.to_css(dest)?;
-                }
-
-                dest.write_str(" / ")?;
-                self.grid_template_columns.to_css(dest)?;
             }
+
+            dest.write_str("auto-flow")?;
+            if self.grid_auto_flow.contains(GridAutoFlow::DENSE) {
+                dest.write_str(" dense")?;
+            }
+
+            if !self.grid_auto_rows.is_initial() {
+                dest.write_char(' ')?;
+                self.grid_auto_rows.to_css(dest)?;
+            }
+
+            dest.write_str(" / ")?;
+            self.grid_template_columns.to_css(dest)?;
             Ok(())
         }
     }
@@ -708,7 +729,7 @@
         let align_content =
             ContentDistribution::parse(input, AxisDirection::Block)?;
 
-        let justify_content = input.try(|input| {
+        let justify_content = input.try_parse(|input| {
             ContentDistribution::parse(input, AxisDirection::Inline)
         });
 
@@ -740,7 +761,7 @@
         fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
             self.align_content.to_css(dest)?;
             if self.align_content.0 != self.justify_content.0 {
-                dest.write_str(" ")?;
+                dest.write_char(' ')?;
                 self.justify_content.to_css(dest)?;
             }
             Ok(())
@@ -761,7 +782,7 @@
         input: &mut Parser<'i, 't>,
     ) -> Result<Longhands, ParseError<'i>> {
         let align = SelfAlignment::parse(input, AxisDirection::Block)?;
-        let justify = input.try(|input| SelfAlignment::parse(input, AxisDirection::Inline));
+        let justify = input.try_parse(|input| SelfAlignment::parse(input, AxisDirection::Inline));
 
         let justify = match justify {
             Ok(v) => v,
@@ -781,7 +802,7 @@
         fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
             self.align_self.to_css(dest)?;
             if self.align_self.0 != self.justify_self.0 {
-                dest.write_str(" ")?;
+                dest.write_char(' ')?;
                 self.justify_self.to_css(dest)?;
             }
             Ok(())
@@ -810,7 +831,7 @@
     ) -> Result<Longhands, ParseError<'i>> {
         let align = AlignItems::parse(context, input)?;
         let justify =
-            input.try(|input| JustifyItems::parse(context, input))
+            input.try_parse(|input| JustifyItems::parse(context, input))
                  .unwrap_or_else(|_| JustifyItems::from(align));
 
         Ok(expanded! {
@@ -823,7 +844,7 @@
         fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result where W: fmt::Write {
             self.align_items.to_css(dest)?;
             if self.align_items.0 != self.justify_items.0 {
-                dest.write_str(" ")?;
+                dest.write_char(' ')?;
                 self.justify_items.to_css(dest)?;
             }
 
@@ -837,7 +858,7 @@ ${helpers.four_sides_shorthand(
     "inset",
     "%s",
     "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
+    engines="gecko servo",
     spec="https://drafts.csswg.org/css-logical/#propdef-inset",
     allow_quirks="No",
 )}
@@ -847,7 +868,7 @@ ${helpers.two_properties_shorthand(
     "inset-block-start",
     "inset-block-end",
     "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
+    engines="gecko servo",
     spec="https://drafts.csswg.org/css-logical/#propdef-inset-block"
 )}
 
@@ -856,6 +877,15 @@ ${helpers.two_properties_shorthand(
     "inset-inline-start",
     "inset-inline-end",
     "specified::LengthPercentageOrAuto::parse",
-    engines="gecko servo-2013",
+    engines="gecko servo",
     spec="https://drafts.csswg.org/css-logical/#propdef-inset-inline"
+)}
+
+${helpers.two_properties_shorthand(
+    "contain-intrinsic-size",
+    "contain-intrinsic-width",
+    "contain-intrinsic-height",
+    engines="gecko",
+    gecko_pref="layout.css.contain-intrinsic-size.enabled",
+    spec="https://drafts.csswg.org/css-sizing-4/#intrinsic-size-override",
 )}

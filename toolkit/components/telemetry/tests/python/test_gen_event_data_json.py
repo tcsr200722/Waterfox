@@ -3,28 +3,30 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import json
-import mozunit
 import os
 import sys
 import tempfile
 import unittest
-from StringIO import StringIO
+from io import StringIO
 from os import path
 
-TELEMETRY_ROOT_PATH = path.abspath(path.join(path.dirname(__file__), path.pardir, path.pardir))
+import mozunit
+
+TELEMETRY_ROOT_PATH = path.abspath(
+    path.join(path.dirname(__file__), path.pardir, path.pardir)
+)
 sys.path.append(TELEMETRY_ROOT_PATH)
 # The generators live in "build_scripts", account for that.
 # NOTE: if the generators are moved, this logic will need to be updated.
 sys.path.append(path.join(TELEMETRY_ROOT_PATH, "build_scripts"))
-import gen_event_data   # noqa: E402
+import gen_event_data  # noqa: E402
 
 
 class TestEventDataJson(unittest.TestCase):
-
     maxDiff = None
 
     def test_JSON_definitions_generation(self):
-        EVENTS_YAML = """
+        EVENTS_YAML = b"""
 with.optout:
   testme1:
     objects: ["test1"]
@@ -47,7 +49,7 @@ with.optin:
     description: opt-in event
     release_channel_collection: opt-in
     expiry_version: never
-    products: ['firefox', 'fennec', 'geckoview']
+    products: ['firefox', 'fennec']
     extra_keys:
       message: a message 2
         """
@@ -72,7 +74,7 @@ with.optin:
                     "methods": ["testme2"],
                     "extra_keys": ["message"],
                     "record_on_release": False,
-                    "products": ["firefox", "fennec", "geckoview"],
+                    "products": ["firefox", "fennec"],
                 }
             },
         }
@@ -96,5 +98,5 @@ with.optin:
         self.assertEqual(EXPECTED_JSON, event_definitions)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

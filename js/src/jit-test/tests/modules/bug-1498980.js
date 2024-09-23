@@ -1,3 +1,4 @@
+// |jit-test|
 dbgGlobal = newGlobal({newCompartment: true});
 dbg = new dbgGlobal.Debugger;
 dbg.addDebuggee(this);
@@ -8,17 +9,21 @@ function f() {
 
 function execModule(source) {
     m = parseModule(source);
-    m.declarationInstantiation();
-    m.evaluation();
+    moduleLink(m);
+    return moduleEvaluate(m);
 }
 
-execModule("f();");
-gc();
+execModule("f();").then(() => {
+  gc();
 
-let caught;
-try {
-    execModule("throw 'foo'");
-} catch (e) {
-    caught = e;
-}
-assertEq(caught, 'foo');
+  execModule("throw 'foo'")
+    .then(r => {
+      // We should not reach here.
+      assertEq(false, true);
+    })
+    .catch(e => {
+      assertEq(e, 'foo');
+    });
+})
+
+drainJobQueue();

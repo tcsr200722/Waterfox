@@ -5,17 +5,24 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VPXDecoder.h"
-#include "BitReader.h"
-#include "TimeUnits.h"
-#include "gfx2DGlue.h"
-#include "mozilla/PodOperations.h"
-#include "mozilla/SyncRunnable.h"
-#include "mozilla/Unused.h"
-#include "ImageContainer.h"
-#include "nsError.h"
-#include "prsystem.h"
 
 #include <algorithm>
+#include <vpx/vpx_image.h>
+
+#include "BitReader.h"
+#include "BitWriter.h"
+#include "ImageContainer.h"
+#include "TimeUnits.h"
+#include "gfx2DGlue.h"
+#include "gfxUtils.h"
+#include "mozilla/PodOperations.h"
+#include "mozilla/SyncRunnable.h"
+#include "mozilla/TaskQueue.h"
+#include "mozilla/Unused.h"
+#include "nsError.h"
+#include "PerformanceRecorder.h"
+#include "prsystem.h"
+#include "VideoUtils.h"
 
 #undef LOG
 #define LOG(arg, ...)                                                  \
@@ -66,11 +73,13 @@ static nsresult InitContext(vpx_codec_ctx_t* aCtx, const VideoInfo& aInfo,
 VPXDecoder::VPXDecoder(const CreateDecoderParams& aParams)
     : mImageContainer(aParams.mImageContainer),
       mImageAllocator(aParams.mKnowsCompositor),
-      mTaskQueue(aParams.mTaskQueue),
+      mTaskQueue(TaskQueue::Create(
+          GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER), "VPXDecoder")),
       mInfo(aParams.VideoConfig()),
       mCodec(MimeTypeToCodec(aParams.VideoConfig().mMimeType)),
       mLowLatency(
-          aParams.mOptions.contains(CreateDecoderParams::Option::LowLatency)) {
+          aParams.mOptions.contains(CreateDecoderParams::Option::LowLatency)),
+      mTrackingId(aParams.mTrackingId) {
   MOZ_COUNT_CTOR(VPXDecoder);
   PodZero(&mVPX);
   PodZero(&mVPXAlpha);
@@ -83,7 +92,7 @@ RefPtr<ShutdownPromise> VPXDecoder::Shutdown() {
   return InvokeAsync(mTaskQueue, __func__, [self]() {
     vpx_codec_destroy(&self->mVPX);
     vpx_codec_destroy(&self->mVPXAlpha);
-    return ShutdownPromise::CreateAndResolve(true, __func__);
+    return self->mTaskQueue->BeginShutdown();
   });
 }
 
@@ -110,7 +119,26 @@ RefPtr<MediaDataDecoder::FlushPromise> VPXDecoder::Flush() {
 
 RefPtr<MediaDataDecoder::DecodePromise> VPXDecoder::ProcessDecode(
     MediaRawData* aSample) {
-  MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  MOZ_ASSERT(mTaskQueue->IsOnCurrentThread());
+
+  MediaInfoFlag flag = MediaInfoFlag::None;
+  flag |= (aSample->mKeyframe ? MediaInfoFlag::KeyFrame
+                              : MediaInfoFlag::NonKeyFrame);
+  flag |= MediaInfoFlag::SoftwareDecoding;
+  switch (mCodec) {
+    case Codec::VP8:
+      flag |= MediaInfoFlag::VIDEO_VP8;
+      break;
+    case Codec::VP9:
+      flag |= MediaInfoFlag::VIDEO_VP9;
+      break;
+    default:
+      break;
+  }
+  flag |= MediaInfoFlag::VIDEO_THEORA;
+  auto rec = mTrackingId.map([&](const auto& aId) {
+    return PerformanceRecorder<DecodeStage>("VPXDecoder"_ns, aId, flag);
+  });
 
   if (vpx_codec_err_t r = vpx_codec_decode(&mVPX, aSample->Data(),
                                            aSample->Size(), nullptr, 0)) {
@@ -148,17 +176,19 @@ RefPtr<MediaDataDecoder::DecodePromise> VPXDecoder::ProcessDecode(
     b.mPlanes[0].mStride = img->stride[0];
     b.mPlanes[0].mHeight = img->d_h;
     b.mPlanes[0].mWidth = img->d_w;
-    b.mPlanes[0].mOffset = b.mPlanes[0].mSkip = 0;
+    b.mPlanes[0].mSkip = 0;
 
     b.mPlanes[1].mData = img->planes[1];
     b.mPlanes[1].mStride = img->stride[1];
-    b.mPlanes[1].mOffset = b.mPlanes[1].mSkip = 0;
+    b.mPlanes[1].mSkip = 0;
 
     b.mPlanes[2].mData = img->planes[2];
     b.mPlanes[2].mStride = img->stride[2];
-    b.mPlanes[2].mOffset = b.mPlanes[2].mSkip = 0;
+    b.mPlanes[2].mSkip = 0;
 
     if (img->fmt == VPX_IMG_FMT_I420) {
+      b.mChromaSubsampling = gfx::ChromaSubsampling::HALF_WIDTH_AND_HEIGHT;
+
       b.mPlanes[1].mHeight = (img->d_h + 1) >> img->y_chroma_shift;
       b.mPlanes[1].mWidth = (img->d_w + 1) >> img->x_chroma_shift;
 
@@ -196,17 +226,20 @@ RefPtr<MediaDataDecoder::DecodePromise> VPXDecoder::ProcessDecode(
 
     RefPtr<VideoData> v;
     if (!img_alpha) {
-      v = VideoData::CreateAndCopyData(
-          mInfo, mImageContainer, aSample->mOffset, aSample->mTime,
-          aSample->mDuration, b, aSample->mKeyframe, aSample->mTimecode,
-          mInfo.ScaledImageRect(img->d_w, img->d_h), mImageAllocator);
+      Result<already_AddRefed<VideoData>, MediaResult> r =
+          VideoData::CreateAndCopyData(
+              mInfo, mImageContainer, aSample->mOffset, aSample->mTime,
+              aSample->mDuration, b, aSample->mKeyframe, aSample->mTimecode,
+              mInfo.ScaledImageRect(img->d_w, img->d_h), mImageAllocator);
+      // TODO: Reject DecodePromise below with r's error return.
+      v = r.unwrapOr(nullptr);
     } else {
       VideoData::YCbCrBuffer::Plane alpha_plane;
       alpha_plane.mData = img_alpha->planes[0];
       alpha_plane.mStride = img_alpha->stride[0];
       alpha_plane.mHeight = img_alpha->d_h;
       alpha_plane.mWidth = img_alpha->d_w;
-      alpha_plane.mOffset = alpha_plane.mSkip = 0;
+      alpha_plane.mSkip = 0;
       v = VideoData::CreateAndCopyData(
           mInfo, mImageContainer, aSample->mOffset, aSample->mTime,
           aSample->mDuration, b, alpha_plane, aSample->mKeyframe,
@@ -220,6 +253,30 @@ RefPtr<MediaDataDecoder::DecodePromise> VPXDecoder::ProcessDecode(
       return DecodePromise::CreateAndReject(
           MediaResult(NS_ERROR_OUT_OF_MEMORY, __func__), __func__);
     }
+
+    rec.apply([&](auto& aRec) {
+      return aRec.Record([&](DecodeStage& aStage) {
+        aStage.SetResolution(static_cast<int>(img->d_w),
+                             static_cast<int>(img->d_h));
+        auto format = [&]() -> Maybe<DecodeStage::ImageFormat> {
+          switch (img->fmt) {
+            case VPX_IMG_FMT_I420:
+              return Some(DecodeStage::YUV420P);
+            case VPX_IMG_FMT_I444:
+              return Some(DecodeStage::YUV444P);
+            default:
+              return Nothing();
+          }
+        }();
+        format.apply([&](auto& aFmt) { aStage.SetImageFormat(aFmt); });
+        aStage.SetYUVColorSpace(b.mYUVColorSpace);
+        aStage.SetColorRange(b.mColorRange);
+        aStage.SetColorDepth(b.mColorDepth);
+        aStage.SetStartTimeAndEndTime(v->mTime.ToMicroseconds(),
+                                      v->GetEndTime().ToMicroseconds());
+      });
+    });
+
     results.AppendElement(std::move(v));
   }
   return DecodePromise::CreateAndResolve(std::move(results), __func__);
@@ -256,6 +313,17 @@ MediaResult VPXDecoder::DecodeAlpha(vpx_image_t** aImgAlpha,
                "WebM image format not I420 or I444");
 
   return NS_OK;
+}
+
+nsCString VPXDecoder::GetCodecName() const {
+  switch (mCodec) {
+    case Codec::VP8:
+      return "vp8"_ns;
+    case Codec::VP9:
+      return "vp9"_ns;
+    default:
+      return "unknown"_ns;
+  }
 }
 
 /* static */
@@ -346,7 +414,9 @@ bool VPXDecoder::GetStreamInfo(Span<const uint8_t> aBuffer,
     uint16_t height = (aBuffer[8] | aBuffer[9] << 8) & 0x3fff;
 
     // aspect ratio isn't found in the VP8 frame header.
-    aInfo.mImage = aInfo.mDisplay = gfx::IntSize(width, height);
+    aInfo.mImage = gfx::IntSize(width, height);
+    aInfo.mDisplayAndImageDifferent = false;
+    aInfo.mDisplay = aInfo.mImage;
     return true;
   }
 
@@ -436,8 +506,9 @@ bool VPXDecoder::GetStreamInfo(Span<const uint8_t> aBuffer,
   };
 
   auto render_size = [&]() {
-    bool render_and_frame_size_different = br.ReadBits(1);
-    if (render_and_frame_size_different) {
+    // render_and_frame_size_different
+    aInfo.mDisplayAndImageDifferent = br.ReadBits(1);
+    if (aInfo.mDisplayAndImageDifferent) {
       int32_t width = static_cast<int32_t>(br.ReadBits(16)) + 1;
       int32_t height = static_cast<int32_t>(br.ReadBits(16)) + 1;
       aInfo.mDisplay = gfx::IntSize(width, height);
@@ -480,6 +551,130 @@ bool VPXDecoder::GetStreamInfo(Span<const uint8_t> aBuffer,
     }
   }
   return true;
+}
+
+// Ref: "VP Codec ISO Media File Format Binding, v1.0, 2017-03-31"
+// <https://www.webmproject.org/vp9/mp4/>
+//
+// class VPCodecConfigurationBox extends FullBox('vpcC', version = 1, 0)
+// {
+//     VPCodecConfigurationRecord() vpcConfig;
+// }
+//
+// aligned (8) class VPCodecConfigurationRecord {
+//     unsigned int (8)     profile;
+//     unsigned int (8)     level;
+//     unsigned int (4)     bitDepth;
+//     unsigned int (3)     chromaSubsampling;
+//     unsigned int (1)     videoFullRangeFlag;
+//     unsigned int (8)     colourPrimaries;
+//     unsigned int (8)     transferCharacteristics;
+//     unsigned int (8)     matrixCoefficients;
+//     unsigned int (16)    codecIntializationDataSize;
+//     unsigned int (8)[]   codecIntializationData;
+// }
+
+/* static */
+void VPXDecoder::GetVPCCBox(MediaByteBuffer* aDestBox,
+                            const VPXStreamInfo& aInfo) {
+  BitWriter writer(aDestBox);
+
+  int chroma = [&]() {
+    if (aInfo.mSubSampling_x && aInfo.mSubSampling_y) {
+      return 1;  // 420 Colocated;
+    }
+    if (aInfo.mSubSampling_x && !aInfo.mSubSampling_y) {
+      return 2;  // 422
+    }
+    if (!aInfo.mSubSampling_x && !aInfo.mSubSampling_y) {
+      return 3;  // 444
+    }
+    // This indicates 4:4:0 subsampling, which is not expressable in the
+    // 'vpcC' box. Default to 4:2:0.
+    return 1;
+  }();
+
+  writer.WriteU8(1);        // version
+  writer.WriteBits(0, 24);  // flags
+
+  writer.WriteU8(aInfo.mProfile);  // profile
+  writer.WriteU8(10);              // level set it to 1.0
+
+  writer.WriteBits(aInfo.mBitDepth, 4);  // bitdepth
+  writer.WriteBits(chroma, 3);           // chroma
+  writer.WriteBit(aInfo.mFullRange);     // full/restricted range
+
+  // See VPXDecoder::VPXStreamInfo enums
+  writer.WriteU8(aInfo.mColorPrimaries);    // color primaries
+  writer.WriteU8(aInfo.mTransferFunction);  // transfer characteristics
+  writer.WriteU8(2);                        // matrix coefficients: unspecified
+
+  writer.WriteBits(0,
+                   16);  // codecIntializationDataSize (must be 0 for VP8/VP9)
+}
+
+/* static */
+bool VPXDecoder::SetVideoInfo(VideoInfo* aDestInfo, const nsAString& aCodec) {
+  VPXDecoder::VPXStreamInfo info;
+  uint8_t level = 0;
+  uint8_t chroma = 1;
+  VideoColorSpace colorSpace;
+  if (!ExtractVPXCodecDetails(aCodec, info.mProfile, level, info.mBitDepth,
+                              chroma, colorSpace)) {
+    return false;
+  }
+
+  aDestInfo->mColorPrimaries =
+      gfxUtils::CicpToColorPrimaries(colorSpace.mPrimaries, sPDMLog);
+  aDestInfo->mTransferFunction =
+      gfxUtils::CicpToTransferFunction(colorSpace.mTransfer);
+  aDestInfo->mColorDepth = gfx::ColorDepthForBitDepth(info.mBitDepth);
+  VPXDecoder::SetChroma(info, chroma);
+  info.mFullRange = colorSpace.mRange == ColorRange::FULL;
+  RefPtr<MediaByteBuffer> extraData = new MediaByteBuffer();
+  VPXDecoder::GetVPCCBox(extraData, info);
+  aDestInfo->mExtraData = extraData;
+  return true;
+}
+
+/* static */
+void VPXDecoder::SetChroma(VPXStreamInfo& aDestInfo, uint8_t chroma) {
+  switch (chroma) {
+    case 0:
+    case 1:
+      aDestInfo.mSubSampling_x = true;
+      aDestInfo.mSubSampling_y = true;
+      break;
+    case 2:
+      aDestInfo.mSubSampling_x = true;
+      aDestInfo.mSubSampling_y = false;
+      break;
+    case 3:
+      aDestInfo.mSubSampling_x = false;
+      aDestInfo.mSubSampling_y = false;
+      break;
+  }
+}
+
+/* static */
+void VPXDecoder::ReadVPCCBox(VPXStreamInfo& aDestInfo, MediaByteBuffer* aBox) {
+  BitReader reader(aBox);
+
+  reader.ReadBits(8);   // version
+  reader.ReadBits(24);  // flags
+  aDestInfo.mProfile = reader.ReadBits(8);
+  reader.ReadBits(8);  // level
+
+  aDestInfo.mBitDepth = reader.ReadBits(4);
+  SetChroma(aDestInfo, reader.ReadBits(3));
+  aDestInfo.mFullRange = reader.ReadBit();
+
+  aDestInfo.mColorPrimaries = reader.ReadBits(8);    // color primaries
+  aDestInfo.mTransferFunction = reader.ReadBits(8);  // transfer characteristics
+  reader.ReadBits(8);                                // matrix coefficients
+
+  MOZ_ASSERT(reader.ReadBits(16) ==
+             0);  // codecInitializationDataSize (must be 0 for VP8/VP9)
 }
 
 }  // namespace mozilla

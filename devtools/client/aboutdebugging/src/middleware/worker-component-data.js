@@ -4,20 +4,18 @@
 
 "use strict";
 
-const { Ci } = require("chrome");
-
 const {
   DEBUG_TARGETS,
   REQUEST_WORKERS_SUCCESS,
   SERVICE_WORKER_FETCH_STATES,
   SERVICE_WORKER_STATUSES,
-} = require("devtools/client/aboutdebugging/src/constants");
+} = require("resource://devtools/client/aboutdebugging/src/constants.js");
 
 /**
  * This middleware converts workers object that get from DevToolsClient.listAllWorkers()
  * to data which is used in DebugTargetItem.
  */
-const workerComponentDataMiddleware = store => next => action => {
+const workerComponentDataMiddleware = () => next => action => {
   switch (action.type) {
     case REQUEST_WORKERS_SUCCESS: {
       action.otherWorkers = toComponentData(action.otherWorkers);
@@ -32,7 +30,7 @@ const workerComponentDataMiddleware = store => next => action => {
 
 function getServiceWorkerStatus(worker) {
   const isActive = worker.state === Ci.nsIServiceWorkerInfo.STATE_ACTIVATED;
-  const isRunning = !!worker.workerTargetFront;
+  const isRunning = !!worker.workerDescriptorFront;
 
   if (isActive && isRunning) {
     return SERVICE_WORKER_STATUSES.RUNNING;

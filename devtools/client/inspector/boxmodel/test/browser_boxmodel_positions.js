@@ -37,11 +37,11 @@ const res1 = [
   },
   {
     selector: ".boxmodel-position.boxmodel-left > span",
-    value: 0,
+    value: "0",
   },
 ];
 
-add_task(async function() {
+add_task(async function () {
   await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   const { inspector, boxmodel } = await openLayoutView();
   const node = await getNodeFront("div", inspector);

@@ -13,10 +13,11 @@
 #include "mozilla/dom/FileCreatorHelper.h"
 #include "mozilla/dom/FileSystemUtils.h"
 #include "mozilla/dom/Promise.h"
+#include "nsIFile.h"
+#include "nsContentUtils.h"
 #include "nsXULAppAPI.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 File::File(nsIGlobalObject* aGlobal, BlobImpl* aImpl) : Blob(aGlobal, aImpl) {
   MOZ_ASSERT(aImpl->IsFile());
@@ -58,8 +59,7 @@ already_AddRefed<File> File::CreateMemoryFileWithLastModifiedNow(
   MOZ_ASSERT(aGlobal);
 
   RefPtr<MemoryBlobImpl> blobImpl = MemoryBlobImpl::CreateWithLastModifiedNow(
-      aMemoryBuffer, aLength, aName, aContentType,
-      aGlobal->CrossOriginIsolated());
+      aMemoryBuffer, aLength, aName, aContentType, aGlobal->GetRTPCallerType());
   MOZ_ASSERT(blobImpl);
 
   RefPtr<File> file = File::Create(aGlobal, blobImpl);
@@ -135,11 +135,7 @@ already_AddRefed<File> File::Constructor(const GlobalObject& aGlobal,
                                          const nsAString& aName,
                                          const FilePropertyBag& aBag,
                                          ErrorResult& aRv) {
-  // Normalizing the filename
-  nsString name(aName);
-  name.ReplaceChar('/', ':');
-
-  RefPtr<MultipartBlobImpl> impl = new MultipartBlobImpl(name);
+  RefPtr<MultipartBlobImpl> impl = new MultipartBlobImpl(aName);
 
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
   MOZ_ASSERT(global);
@@ -147,7 +143,7 @@ already_AddRefed<File> File::Constructor(const GlobalObject& aGlobal,
   nsAutoString type(aBag.mType);
   MakeValidBlobType(type);
   impl->InitializeBlob(aData, type, aBag.mEndings == EndingType::Native,
-                       global->CrossOriginIsolated(), aRv);
+                       global->GetRTPCallerType(), aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -203,5 +199,4 @@ already_AddRefed<Promise> File::CreateFromFileName(
   return promise.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

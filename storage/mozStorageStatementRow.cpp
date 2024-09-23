@@ -4,15 +4,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsMemory.h"
 #include "nsString.h"
 
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/MozStorageStatementRowBinding.h"
 #include "mozStorageStatementRow.h"
 #include "mozStorageStatement.h"
 
 #include "jsapi.h"
-#include "js/Array.h"  // JS::NewArrayObject
+#include "js/Array.h"               // JS::NewArrayObject
+#include "js/PropertyAndElement.h"  // JS_DefineElement
+#include "js/Value.h"
 
 #include "xpc_make_class.h"
 

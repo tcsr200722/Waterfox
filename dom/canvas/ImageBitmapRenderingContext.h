@@ -5,6 +5,13 @@
 #ifndef ImageBitmapRenderingContext_h
 #define ImageBitmapRenderingContext_h
 
+#include "mozilla/dom/ImageBitmap.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/DataSurfaceHelpers.h"
+#include "mozilla/gfx/Point.h"
+#include "mozilla/layers/WebRenderUserData.h"
+#include "imgIEncoder.h"
+#include "ImageEncoder.h"
 #include "nsICanvasRenderingContextInternal.h"
 #include "nsWrapperCache.h"
 
@@ -45,10 +52,13 @@ class ImageBitmapRenderingContext final
   // nsISupports interface + CC
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ImageBitmapRenderingContext)
+  NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(ImageBitmapRenderingContext)
 
-  void TransferImageBitmap(ImageBitmap& aImageBitmap);
-  void TransferFromImageBitmap(ImageBitmap& aImageBitmap);
+  void GetCanvas(
+      Nullable<OwningHTMLCanvasElementOrOffscreenCanvas>& retval) const;
+
+  void TransferImageBitmap(ImageBitmap& aImageBitmap, ErrorResult& aRv);
+  void TransferFromImageBitmap(ImageBitmap* aImageBitmap, ErrorResult& aRv);
 
   // nsICanvasRenderingContextInternal
   virtual int32_t GetWidth() override { return mWidth; }
@@ -60,7 +70,7 @@ class ImageBitmapRenderingContext final
       nsIDocShell* aDocShell, NotNull<gfx::DrawTarget*> aTarget) override;
 
   virtual mozilla::UniquePtr<uint8_t[]> GetImageBuffer(
-      int32_t* aFormat) override;
+      int32_t* out_format, gfx::IntSize* out_imageSize) override;
   NS_IMETHOD GetInputStream(const char* aMimeType,
                             const nsAString& aEncoderOptions,
                             nsIInputStream** aStream) override;
@@ -70,21 +80,24 @@ class ImageBitmapRenderingContext final
 
   virtual void SetOpaqueValueFromOpaqueAttr(bool aOpaqueAttrValue) override;
   virtual bool GetIsOpaque() override;
-  NS_IMETHOD Reset() override;
-  virtual already_AddRefed<Layer> GetCanvasLayer(
-      nsDisplayListBuilder* aBuilder, Layer* aOldLayer,
-      LayerManager* aManager) override;
+  void ResetBitmap() override;
+  virtual already_AddRefed<layers::Image> GetAsImage() override {
+    return ClipToIntrinsicSize();
+  }
   bool UpdateWebRenderCanvasData(nsDisplayListBuilder* aBuilder,
                                  WebRenderCanvasData* aCanvasData) override;
   virtual void MarkContextClean() override;
 
   NS_IMETHOD Redraw(const gfxRect& aDirty) override;
-  NS_IMETHOD SetIsIPC(bool aIsIPC) override;
 
   virtual void DidRefresh() override;
 
-  virtual void MarkContextCleanForFrameCapture() override;
-  virtual bool IsContextCleanForFrameCapture() override;
+  void MarkContextCleanForFrameCapture() override {
+    mFrameCaptureState = FrameCaptureState::CLEAN;
+  }
+  Watchable<FrameCaptureState>* GetFrameCaptureState() override {
+    return &mFrameCaptureState;
+  }
 
  protected:
   already_AddRefed<gfx::DataSourceSurface> MatchWithIntrinsicSize();
@@ -99,7 +112,7 @@ class ImageBitmapRenderingContext final
    * case when the canvas is not currently being drawn into and not rendered
    * but canvas capturing is still ongoing.
    */
-  bool mIsCapturedFrameInvalid;
+  Watchable<FrameCaptureState> mFrameCaptureState;
 };
 
 }  // namespace dom

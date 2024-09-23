@@ -2,27 +2,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
 import {
   getSelectedSource,
   getSelectedFrame,
   getClosestBreakpointPosition,
   getBreakpoint,
-} from "../../selectors";
-import { addHiddenBreakpoint } from "../breakpoints";
+  getCurrentThread,
+} from "../../selectors/index";
+import { createLocation } from "../../utils/location";
+import { addHiddenBreakpoint } from "../breakpoints/index";
 import { setBreakpointPositions } from "../breakpoints/breakpointPositions";
 
 import { resume } from "./commands";
 
-import type { ThunkArgs } from "../types";
-import type { ThreadContext, SourceLocation } from "../../types";
-
-export function continueToHere(cx: ThreadContext, location: SourceLocation) {
-  return async function({ dispatch, getState }: ThunkArgs) {
-    const { line, column, sourceId } = location;
+export function continueToHere(location) {
+  return async function ({ dispatch, getState }) {
+    const { line, column } = location;
+    const thread = getCurrentThread(getState());
     const selectedSource = getSelectedSource(getState());
-    const selectedFrame = getSelectedFrame(getState(), cx.thread);
+    const selectedFrame = getSelectedFrame(getState(), thread);
 
     if (!selectedFrame || !selectedSource) {
       return;
@@ -35,7 +33,7 @@ export function continueToHere(cx: ThreadContext, location: SourceLocation) {
       return;
     }
 
-    await dispatch(setBreakpointPositions({ cx, sourceId, line }));
+    await dispatch(setBreakpointPositions(location));
     const position = getClosestBreakpointPosition(getState(), location);
 
     // If the user selects a location in the editor,
@@ -50,14 +48,16 @@ export function continueToHere(cx: ThreadContext, location: SourceLocation) {
     // at the closest position
     if (!getBreakpoint(getState(), pauseLocation)) {
       await dispatch(
-        addHiddenBreakpoint(cx, {
-          sourceId: selectedSource.id,
-          line: pauseLocation.line,
-          column: pauseLocation.column,
-        })
+        addHiddenBreakpoint(
+          createLocation({
+            source: selectedSource,
+            line: pauseLocation.line,
+            column: pauseLocation.column,
+          })
+        )
       );
     }
 
-    dispatch(resume(cx));
+    dispatch(resume());
   };
 }

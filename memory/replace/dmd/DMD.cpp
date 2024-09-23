@@ -211,8 +211,9 @@ void DMDFuncs::StatusMsg(const char* aFmt, va_list aAp) {
   __android_log_vprint(ANDROID_LOG_INFO, "DMD", aFmt, aAp);
 #else
   // The +64 is easily enough for the "DMD[<pid>] " prefix and the NUL.
-  char* fmt = (char*)InfallibleAllocPolicy::malloc_(strlen(aFmt) + 64);
-  sprintf(fmt, "DMD[%d] %s", getpid(), aFmt);
+  size_t size = strlen(aFmt) + 64;
+  char* fmt = (char*)InfallibleAllocPolicy::malloc_(size);
+  snprintf(fmt, size, "DMD[%d] %s", getpid(), aFmt);
   vfprintf(stderr, fmt, aAp);
   InfallibleAllocPolicy::free_(fmt);
 #endif
@@ -378,7 +379,9 @@ class MutexBase {
 class MutexBase {
   pthread_mutex_t mMutex;
 
-  DISALLOW_COPY_AND_ASSIGN(MutexBase);
+  MutexBase(const MutexBase&) = delete;
+
+  const MutexBase& operator=(const MutexBase&) = delete;
 
  public:
   MutexBase() { pthread_mutex_init(&mMutex, nullptr); }
@@ -392,7 +395,9 @@ class MutexBase {
 class Mutex : private MutexBase {
   bool mIsLocked;
 
-  DISALLOW_COPY_AND_ASSIGN(Mutex);
+  Mutex(const Mutex&) = delete;
+
+  const Mutex& operator=(const Mutex&) = delete;
 
  public:
   Mutex() : mIsLocked(false) {}
@@ -420,7 +425,9 @@ class Mutex : private MutexBase {
 static Mutex* gStateLock = nullptr;
 
 class AutoLockState {
-  DISALLOW_COPY_AND_ASSIGN(AutoLockState);
+  AutoLockState(const AutoLockState&) = delete;
+
+  const AutoLockState& operator=(const AutoLockState&) = delete;
 
  public:
   AutoLockState() { gStateLock->Lock(); }
@@ -428,7 +435,9 @@ class AutoLockState {
 };
 
 class AutoUnlockState {
-  DISALLOW_COPY_AND_ASSIGN(AutoUnlockState);
+  AutoUnlockState(const AutoUnlockState&) = delete;
+
+  const AutoUnlockState& operator=(const AutoUnlockState&) = delete;
 
  public:
   AutoUnlockState() { gStateLock->Unlock(); }
@@ -461,7 +470,9 @@ class Thread {
 
   Thread() : mBlockIntercepts(false) {}
 
-  DISALLOW_COPY_AND_ASSIGN(Thread);
+  Thread(const Thread&) = delete;
+
+  const Thread& operator=(const Thread&) = delete;
 
   static DMD_THREAD_LOCAL(Thread*) tlsThread;
 
@@ -504,7 +515,9 @@ DMD_THREAD_LOCAL(Thread*) Thread::tlsThread;
 class AutoBlockIntercepts {
   Thread* const mT;
 
-  DISALLOW_COPY_AND_ASSIGN(AutoBlockIntercepts);
+  AutoBlockIntercepts(const AutoBlockIntercepts&) = delete;
+
+  const AutoBlockIntercepts& operator=(const AutoBlockIntercepts&) = delete;
 
  public:
   explicit AutoBlockIntercepts(Thread* aT) : mT(aT) { mT->BlockIntercepts(); }
@@ -623,7 +636,7 @@ static uint32_t gGCStackTraceTableWhenSizeExceeds = 4 * 1024;
     // when it is called during static initialization (see bug 1241684).
     //
     // This code is cribbed from the Gecko Profiler, which also uses
-    // FramePointerStackWalk() on Win32: Registers::SyncPopulate() for the
+    // FramePointerStackWalk() on Win32: REGISTERS_SYNC_POPULATE() for the
     // frame pointer, and GetStackTop() for the stack end.
     CONTEXT context;
     RtlCaptureContext(&context);
@@ -631,30 +644,22 @@ static uint32_t gGCStackTraceTableWhenSizeExceeds = 4 * 1024;
 
     PNT_TIB pTib = reinterpret_cast<PNT_TIB>(NtCurrentTeb());
     void* stackEnd = static_cast<void*>(pTib->StackBase);
-    FramePointerStackWalk(StackWalkCallback, /* skipFrames = */ 0, MaxFrames,
-                          &tmp, fp, stackEnd);
+    FramePointerStackWalk(StackWalkCallback, MaxFrames, &tmp, fp, stackEnd);
 #elif defined(XP_MACOSX)
     // This avoids MozStackWalk(), which has become unusably slow on Mac due to
     // changes in libunwind.
     //
     // This code is cribbed from the Gecko Profiler, which also uses
-    // FramePointerStackWalk() on Mac: Registers::SyncPopulate() for the frame
+    // FramePointerStackWalk() on Mac: REGISTERS_SYNC_POPULATE() for the frame
     // pointer, and GetStackTop() for the stack end.
-    void** fp;
-    asm(
-        // Dereference %rbp to get previous %rbp
-        "movq (%%rbp), %0\n\t"
-        : "=r"(fp));
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wframe-address"
+    void** fp = reinterpret_cast<void**>(__builtin_frame_address(1));
+#  pragma GCC diagnostic pop
     void* stackEnd = pthread_get_stackaddr_np(pthread_self());
-    FramePointerStackWalk(StackWalkCallback, /* skipFrames = */ 0, MaxFrames,
-                          &tmp, fp, stackEnd);
+    FramePointerStackWalk(StackWalkCallback, MaxFrames, &tmp, fp, stackEnd);
 #else
-#  if defined(XP_WIN) && defined(_M_X64)
-    int skipFrames = 1;
-#  else
-    int skipFrames = 2;
-#  endif
-    MozStackWalk(StackWalkCallback, skipFrames, MaxFrames, &tmp);
+    MozStackWalk(StackWalkCallback, nullptr, MaxFrames, &tmp);
 #endif
   }
 
@@ -739,11 +744,7 @@ class LiveBlock {
  public:
   LiveBlock(const void* aPtr, size_t aReqSize,
             const StackTrace* aAllocStackTrace)
-      : mPtr(aPtr),
-        mReqSize(aReqSize),
-        mAllocStackTrace(aAllocStackTrace),
-        mReportStackTrace_mReportedOnAlloc()  // all fields get zeroed
-  {}
+      : mPtr(aPtr), mReqSize(aReqSize), mAllocStackTrace(aAllocStackTrace) {}
 
   const void* Address() const { return mPtr; }
 
@@ -893,7 +894,7 @@ class DeadBlock {
         mSlopSize(aLb.SlopSize()),
         mAllocStackTrace(aLb.AllocStackTrace()) {}
 
-  ~DeadBlock() {}
+  ~DeadBlock() = default;
 
   size_t ReqSize() const { return mReqSize; }
   size_t SlopSize() const { return mSlopSize; }
@@ -1018,7 +1019,24 @@ static void AllocCallback(void* aPtr, size_t aReqSize, Thread* aT) {
   // options and the outcome of a Bernoulli trial.
   bool getTrace = gOptions->DoFullStacks() || gBernoulli->trial(actualSize);
   LiveBlock b(aPtr, aReqSize, getTrace ? StackTrace::Get(aT) : nullptr);
-  MOZ_ALWAYS_TRUE(gLiveBlockTable->putNew(aPtr, b));
+  LiveBlockTable::AddPtr p = gLiveBlockTable->lookupForAdd(aPtr);
+  if (!p) {
+    // Most common case: there wasn't a record already.
+    MOZ_ALWAYS_TRUE(gLiveBlockTable->add(p, b));
+  } else {
+    // Edge-case: there was a record for the same address. We'll assume the
+    // allocator is not giving out a pointer to an existing allocation, so
+    // this means the previously recorded allocation was freed while we were
+    // blocking interceptions. This can happen while processing the data in
+    // e.g. AnalyzeImpl.
+    if (gOptions->IsCumulativeMode()) {
+      // Copy it out so it can be added to the dead block list later.
+      DeadBlock db(*p);
+      MaybeAddToDeadBlockTable(db);
+    }
+    gLiveBlockTable->remove(p);
+    MOZ_ALWAYS_TRUE(gLiveBlockTable->putNew(aPtr, b));
+  }
 }
 
 static void FreeCallback(void* aPtr, Thread* aT, DeadBlock* aDeadBlock) {
@@ -1559,7 +1577,7 @@ static void WriteBlockContents(JSONWriter& aWriter, const LiveBlock& aBlock) {
     const uintptr_t** block = (const uintptr_t**)aBlock.Address();
     ToStringConverter sc;
     for (size_t i = 0; i < numWords; ++i) {
-      aWriter.StringElement(sc.ToPtrString(block[i]));
+      aWriter.StringElement(MakeStringSpan(sc.ToPtrString(block[i])));
     }
   }
   aWriter.EndArray();
@@ -1597,12 +1615,12 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
     {
       const char* var = gOptions->DMDEnvVar();
       if (var) {
-        writer.StringProperty("dmdEnvVar", var);
+        writer.StringProperty("dmdEnvVar", MakeStringSpan(var));
       } else {
         writer.NullProperty("dmdEnvVar");
       }
 
-      writer.StringProperty("mode", gOptions->ModeString());
+      writer.StringProperty("mode", MakeStringSpan(gOptions->ModeString()));
     }
     writer.EndObject();
 
@@ -1622,7 +1640,8 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
         writer.StartObjectElement(writer.SingleLineStyle);
         {
           if (gOptions->IsScanMode()) {
-            writer.StringProperty("addr", sc.ToPtrString(aB.Address()));
+            writer.StringProperty("addr",
+                                  MakeStringSpan(sc.ToPtrString(aB.Address())));
             WriteBlockContents(writer, aB);
           }
           writer.IntProperty("req", aB.ReqSize());
@@ -1631,18 +1650,20 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
           }
 
           if (aB.AllocStackTrace()) {
-            writer.StringProperty("alloc",
-                                  isc.ToIdString(aB.AllocStackTrace()));
+            writer.StringProperty(
+                "alloc", MakeStringSpan(isc.ToIdString(aB.AllocStackTrace())));
           }
 
           if (gOptions->IsDarkMatterMode() && aB.NumReports() > 0) {
             writer.StartArrayProperty("reps");
             {
               if (aB.ReportStackTrace1()) {
-                writer.StringElement(isc.ToIdString(aB.ReportStackTrace1()));
+                writer.StringElement(
+                    MakeStringSpan(isc.ToIdString(aB.ReportStackTrace1())));
               }
               if (aB.ReportStackTrace2()) {
-                writer.StringElement(isc.ToIdString(aB.ReportStackTrace2()));
+                writer.StringElement(
+                    MakeStringSpan(isc.ToIdString(aB.ReportStackTrace2())));
               }
             }
             writer.EndArray();
@@ -1704,7 +1725,8 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
             writer.IntProperty("slop", b.SlopSize());
           }
           if (b.AllocStackTrace()) {
-            writer.StringProperty("alloc", isc.ToIdString(b.AllocStackTrace()));
+            writer.StringProperty(
+                "alloc", MakeStringSpan(isc.ToIdString(b.AllocStackTrace())));
           }
 
           if (num > 1) {
@@ -1722,11 +1744,12 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
     {
       for (auto iter = usedStackTraces.iter(); !iter.done(); iter.next()) {
         const StackTrace* const st = iter.get();
-        writer.StartArrayProperty(isc.ToIdString(st), writer.SingleLineStyle);
+        writer.StartArrayProperty(MakeStringSpan(isc.ToIdString(st)),
+                                  writer.SingleLineStyle);
         {
           for (uint32_t i = 0; i < st->Length(); i++) {
             const void* pc = st->Pc(i);
-            writer.StringElement(isc.ToIdString(pc));
+            writer.StringElement(MakeStringSpan(isc.ToIdString(pc)));
             MOZ_ALWAYS_TRUE(usedPcs.put(pc));
           }
         }
@@ -1748,7 +1771,8 @@ static void AnalyzeImpl(UniquePtr<JSONWriteFunc> aWriter) {
         // Use 0 for the frame number. See the JSON format description comment
         // in DMD.h to understand why.
         locService->GetLocation(0, pc, locBuf, locBufLen);
-        writer.StringProperty(isc.ToIdString(pc), locBuf);
+        writer.StringProperty(MakeStringSpan(isc.ToIdString(pc)),
+                              MakeStringSpan(locBuf));
       }
     }
     writer.EndObject();

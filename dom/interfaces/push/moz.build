@@ -5,12 +5,12 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 with Files("**"):
-    BUG_COMPONENT = ("Core", "DOM: Push Notifications")
+    BUG_COMPONENT = ("Core", "DOM: Push Subscriptions")
 
 XPIDL_SOURCES += [
-    'nsIPushErrorReporter.idl',
-    'nsIPushNotifier.idl',
-    'nsIPushService.idl',
+    "nsIPushErrorReporter.idl",
+    "nsIPushNotifier.idl",
+    "nsIPushService.idl",
 ]
 
-XPIDL_MODULE = 'dom_push'
+XPIDL_MODULE = "dom_push"

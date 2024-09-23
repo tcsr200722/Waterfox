@@ -23,7 +23,7 @@
 //   * accessibility
 //   * application
 
-const { Toolbox } = require("devtools/client/framework/toolbox");
+const { Toolbox } = require("resource://devtools/client/framework/toolbox.js");
 
 const TEST_STARTING_ORDER = [
   "inspector",
@@ -125,10 +125,7 @@ const TEST_DATA = [
   },
 ];
 
-add_task(async function() {
-  // Temporarily disable the panel added in Bug 1594885.
-  // Should be cleaned up when the panel is properly implemented.
-  await pushPref("devtools.whatsnew.enabled", false);
+add_task(async function () {
   // Enable the Application panel (atm it's only available on Nightly)
   await pushPref("devtools.application.enabled", true);
 
@@ -143,10 +140,8 @@ add_task(async function() {
     "devtools.toolbox.tabsOrder"
   );
   const win = getWindow(toolbox);
-  const {
-    outerWidth: originalWindowWidth,
-    outerHeight: originalWindowHeight,
-  } = win;
+  const { outerWidth: originalWindowWidth, outerHeight: originalWindowHeight } =
+    win;
   registerCleanupFunction(() => {
     Services.prefs.setCharPref(
       "devtools.toolbox.tabsOrder",

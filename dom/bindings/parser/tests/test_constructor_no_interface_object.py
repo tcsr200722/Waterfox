@@ -1,41 +1,50 @@
+import WebIDL
+
+
 def WebIDLTest(parser, harness):
     threw = False
     try:
-        parser.parse("""
-            [NoInterfaceObject]
-            interface TestConstructorNoInterfaceObject {
+        parser.parse(
+            """
+            [LegacyNoInterfaceObject]
+            interface TestConstructorLegacyNoInterfaceObject {
               constructor();
             };
-        """)
+        """
+        )
 
-        results = parser.finish()
-    except:
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
 
     harness.ok(threw, "Should have thrown.")
 
     parser = parser.reset()
 
-    parser.parse("""
-        [NoInterfaceObject, NamedConstructor=FooBar]
-        interface TestNamedConstructorNoInterfaceObject {
+    parser.parse(
+        """
+        [LegacyNoInterfaceObject, LegacyFactoryFunction=FooBar]
+        interface TestLegacyFactoryFunctionLegacyNoInterfaceObject {
         };
-    """)
+    """
+    )
 
-    # Test HTMLConstructor and NoInterfaceObject
+    # Test HTMLConstructor and LegacyNoInterfaceObject
     parser = parser.reset()
 
     threw = False
     try:
-        parser.parse("""
-            [NoInterfaceObject]
-            interface TestHTMLConstructorNoInterfaceObject {
+        parser.parse(
+            """
+            [LegacyNoInterfaceObject]
+            interface TestHTMLConstructorLegacyNoInterfaceObject {
               [HTMLConstructor] constructor();
             };
-        """)
+        """
+        )
 
-        results = parser.finish()
-    except:
+        parser.finish()
+    except WebIDL.WebIDLError:
         threw = True
 
     harness.ok(threw, "Should have thrown.")

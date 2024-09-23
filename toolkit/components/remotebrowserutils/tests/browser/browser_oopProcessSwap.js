@@ -1,9 +1,3 @@
-add_task(async function setupPrefs() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.tabs.documentchannel", true]],
-  });
-});
-
 add_task(async function oopProcessSwap() {
   const FILE = fileURL("dummy_page.html");
   const WEB = httpURL("file_postmsg_parent.html");
@@ -45,7 +39,7 @@ add_task(async function oopProcessSwap() {
           let data = await new Promise(resolve => {
             content.window.addEventListener(
               "message",
-              function(evt) {
+              function (evt) {
                 info("oop iframe loaded");
                 is(evt.source, iframe.contentWindow);
                 resolve(evt.data);
@@ -69,14 +63,11 @@ add_task(async function oopProcessSwap() {
       );
 
       is(browser.browsingContext.children.length, 1);
-
-      if (Services.prefs.getBoolPref("fission.preserve_browsing_contexts")) {
-        is(
-          frameId,
-          oopinfo.browsingContextId,
-          `BrowsingContext should not have changed (${frameId} != ${oopinfo.browsingContextId})`
-        );
-      }
+      is(
+        frameId,
+        oopinfo.browsingContextId,
+        `BrowsingContext should not have changed (${frameId} != ${oopinfo.browsingContextId})`
+      );
       is(oopinfo.location, WEB, "correct location");
     }
   );
@@ -128,7 +119,7 @@ add_task(async function oopOriginProcessSwap() {
           let data = await new Promise(resolve => {
             content.window.addEventListener(
               "message",
-              function(evt) {
+              function (evt) {
                 info("oop iframe loaded");
                 is(evt.source, iframe.contentWindow);
                 resolve(evt.data);
@@ -152,13 +143,11 @@ add_task(async function oopOriginProcessSwap() {
       );
 
       is(browser.browsingContext.children.length, 1);
-      if (Services.prefs.getBoolPref("fission.preserve_browsing_contexts")) {
-        is(
-          frameId,
-          oopinfo.browsingContextId,
-          `BrowsingContext should not have changed (${frameId} != ${oopinfo.browsingContextId})`
-        );
-      }
+      is(
+        frameId,
+        oopinfo.browsingContextId,
+        `BrowsingContext should not have changed (${frameId} != ${oopinfo.browsingContextId})`
+      );
       is(oopinfo.location, ORG_POSTMSG, "correct location");
     }
   );

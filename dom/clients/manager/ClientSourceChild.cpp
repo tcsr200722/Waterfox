@@ -11,8 +11,7 @@
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::IPCResult;
 
@@ -44,6 +43,14 @@ IPCResult ClientSourceChild::RecvPClientSourceOpConstructor(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult ClientSourceChild::RecvEvictFromBFCache() {
+  if (mSource) {
+    mSource->EvictFromBFCache();
+  }
+
+  return IPC_OK();
+}
+
 ClientSourceChild::ClientSourceChild(const ClientSourceConstructorArgs& aArgs)
     : mSource(nullptr), mTeardownStarted(false) {}
 
@@ -69,5 +76,4 @@ void ClientSourceChild::MaybeStartTeardown() {
   Unused << SendTeardown();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

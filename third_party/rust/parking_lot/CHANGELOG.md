@@ -1,3 +1,86 @@
+## parking_lot 0.12.1 (2022-05-31)
+
+- Fixed incorrect memory ordering in `RwLock`. (#344)
+- Added `Condvar::wait_while` convenience methods (#343)
+
+## parking_lot_core 0.9.3 (2022-04-30)
+
+- Bump windows-sys dependency to 0.36. (#339)
+
+## parking_lot_core 0.9.2, lock_api 0.4.7 (2022-03-25)
+
+- Enable const new() on lock types on stable. (#325)
+- Added `MutexGuard::leak` function. (#333)
+- Bump windows-sys dependency to 0.34. (#331)
+- Bump petgraph dependency to 0.6. (#326)
+- Don't use pthread attributes on the espidf platform. (#319)
+
+## parking_lot_core 0.9.1 (2022-02-06)
+
+- Bump windows-sys dependency to 0.32. (#316)
+
+## parking_lot 0.12.0, parking_lot_core 0.9.0, lock_api 0.4.6 (2022-01-28)
+
+- The MSRV is bumped to 1.49.0.
+- Disabled eventual fairness on wasm32-unknown-unknown. (#302)
+- Added a rwlock method to report if lock is held exclusively. (#303)
+- Use new `asm!` macro. (#304)
+- Use windows-rs instead of winapi for faster builds. (#311)
+- Moved hardware lock elision support to a separate Cargo feature. (#313)
+- Removed used of deprecated `spin_loop_hint`. (#314)
+
+## parking_lot 0.11.2, parking_lot_core 0.8.4, lock_api 0.4.5 (2021-08-28)
+
+- Fixed incorrect memory orderings on `RwLock` and `WordLock`. (#294, #292)
+- Added `Arc`-based lock guards. (#291)
+- Added workaround for TSan's lack of support for `fence`. (#292)
+
+## lock_api 0.4.4 (2021-05-01)
+
+- Update for latest nightly. (#281)
+
+## lock_api 0.4.3 (2021-04-03)
+
+- Added `[Raw]ReentrantMutex::is_owned`. (#280)
+
+## parking_lot_core 0.8.3 (2021-02-12)
+
+- Updated smallvec to 1.6. (#276)
+
+## parking_lot_core 0.8.2 (2020-12-21)
+
+- Fixed assertion failure on OpenBSD. (#270)
+
+## parking_lot_core 0.8.1 (2020-12-04)
+
+- Removed deprecated CloudABI support. (#263)
+- Fixed build on wasm32-unknown-unknown. (#265)
+- Relaxed dependency on `smallvec`. (#266)
+
+## parking_lot 0.11.1, lock_api 0.4.2 (2020-11-18)
+
+- Fix bounds on Send and Sync impls for lock guards. (#262)
+- Fix incorrect memory ordering in `RwLock`. (#260)
+
+## lock_api 0.4.1 (2020-07-06)
+
+- Add `data_ptr` method to lock types to allow unsafely accessing the inner data
+  without a guard. (#247)
+
+## parking_lot 0.11.0, parking_lot_core 0.8.0, lock_api 0.4.0 (2020-06-23)
+
+- Add `is_locked` method to mutex types. (#235)
+- Make `RawReentrantMutex` public. (#233)
+- Allow lock guard to be sent to another thread with the `send_guard` feature. (#240)
+- Use `Instant` type from the `instant` crate on wasm32-unknown-unknown. (#231)
+- Remove deprecated and unsound `MappedRwLockWriteGuard::downgrade`. (#244)
+- Most methods on the `Raw*` traits have been made unsafe since they assume
+  the current thread holds the lock. (#243)
+
+## parking_lot_core 0.7.2 (2020-04-21)
+
+- Add support for `wasm32-unknown-unknown` under the "nightly" feature. (#226)
+
 ## parking_lot 0.10.2 (2020-04-10)
 
 - Update minimum version of `lock_api`.

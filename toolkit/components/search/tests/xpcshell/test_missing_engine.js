@@ -2,21 +2,37 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // This test is designed to check the search service keeps working if there's
-// a built-in engine missing from the configuration.
+// an application provided WebExtension missing that is referenced from the
+// configuration. Only applies to the old search configuration.
 
 "use strict";
-
-const { MockRegistrar } = ChromeUtils.import(
-  "resource://testing-common/MockRegistrar.jsm"
-);
-
-const SEARCH_SERVICE_TOPIC = "browser-search-service";
-const SEARCH_ENGINE_TOPIC = "browser-search-engine-modified";
 
 const GOOD_CONFIG = [
   {
     webExtension: {
       id: "engine@search.mozilla.org",
+      name: "Test search engine",
+      search_url: "https://www.google.com/search",
+      params: [
+        {
+          name: "q",
+          value: "{searchTerms}",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "contextmenu",
+          value: "rcs",
+        },
+        {
+          name: "channel",
+          condition: "purpose",
+          purpose: "keyword",
+          value: "fflb",
+        },
+      ],
+      suggest_url:
+        "https://suggestqueries.google.com/complete/search?output=firefox&client=firefox&q={searchTerms}",
     },
     appliesTo: [
       {
@@ -40,63 +56,16 @@ const BAD_CONFIG = [
   },
 ];
 
-// The mock idle service.
-var idleService = {
-  _observers: new Set(),
-
-  _reset() {
-    this._observers.clear();
-  },
-
-  _fireObservers(state) {
-    for (let observer of this._observers.values()) {
-      observer.observe(observer, state, null);
-    }
-  },
-
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIIdleService]),
-  idleTime: 19999,
-
-  addIdleObserver(observer, time) {
-    this._observers.add(observer);
-  },
-
-  removeIdleObserver(observer, time) {
-    this._observers.delete(observer);
-  },
-};
-
-function listenFor(name, key) {
-  let notifyObserved = false;
-  let obs = (subject, topic, data) => {
-    if (data == key) {
-      notifyObserved = true;
-    }
-  };
-  Services.obs.addObserver(obs, name);
-
-  return () => {
-    Services.obs.removeObserver(obs, name);
-    return notifyObserved;
-  };
-}
-
-let configurationStub;
-
-add_task(async function setup() {
-  let fakeIdleService = MockRegistrar.register(
-    "@mozilla.org/widget/idleservice;1",
-    idleService
-  );
-  registerCleanupFunction(() => {
-    MockRegistrar.unregister(fakeIdleService);
-  });
-
+add_setup(async function () {
+  SearchTestUtils.useMockIdleService();
   await AddonTestUtils.promiseStartupManager();
+
+  // This test purposely attempts to load a missing engine.
+  consoleAllowList.push("Could not load engine");
 });
 
 add_task(async function test_startup_with_missing() {
-  configurationStub = await useTestEngines("data", null, BAD_CONFIG);
+  await SearchTestUtils.useTestEngines("data", null, BAD_CONFIG);
 
   const result = await Services.search.init();
   Assert.ok(
@@ -114,9 +83,18 @@ add_task(async function test_startup_with_missing() {
 });
 
 add_task(async function test_update_with_missing() {
-  configurationStub.returns(GOOD_CONFIG);
+  let reloadObserved =
+    SearchTestUtils.promiseSearchNotification("engines-reloaded");
 
-  await Services.search.reInit();
+  await RemoteSettings(SearchUtils.SETTINGS_KEY).emit("sync", {
+    data: {
+      current: GOOD_CONFIG,
+    },
+  });
+
+  SearchTestUtils.idleService._fireObservers("idle");
+
+  await reloadObserved;
 
   const engines = await Services.search.getEngines();
 
@@ -126,23 +104,18 @@ add_task(async function test_update_with_missing() {
     "Should have just the good engine"
   );
 
-  // TODO: Bug 1542269: When remote settings is enabled, remove the reInit
-  // and uncomment the code below.
-  await Services.search.reInit();
+  reloadObserved =
+    SearchTestUtils.promiseSearchNotification("engines-reloaded");
 
-  // const reloadObserved = SearchTestUtils.promiseSearchNotification(
-  //   "engines-reloaded"
-  // );
-  //
-  // await RemoteSettings(SearchUtils.SETTINGS_KEY).emit("sync", {
-  //   data: {
-  //     current: BAD_CONFIG,
-  //   },
-  // });
-  //
-  // idleService._fireObservers("idle");
-  //
-  // await reloadObserved;
+  await RemoteSettings(SearchUtils.SETTINGS_KEY).emit("sync", {
+    data: {
+      current: BAD_CONFIG,
+    },
+  });
+
+  SearchTestUtils.idleService._fireObservers("idle");
+
+  await reloadObserved;
 
   Assert.deepEqual(
     engines.map(e => e.name),

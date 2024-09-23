@@ -8,11 +8,18 @@
 #  define WMFPlatformDecoderModule_h_
 
 #  include "PlatformDecoderModule.h"
+#  include "WMF.h"
+#  include "WMFUtils.h"
+#  include "mozilla/Atomics.h"
 
 namespace mozilla {
 
+class MFTDecoder;
+
 class WMFDecoderModule : public PlatformDecoderModule {
  public:
+  static already_AddRefed<PlatformDecoderModule> Create();
+
   // Initializes the module, loads required dynamic libraries, etc.
   nsresult Startup() override;
 
@@ -22,29 +29,51 @@ class WMFDecoderModule : public PlatformDecoderModule {
   already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
       const CreateDecoderParams& aParams) override;
 
-  bool SupportsMimeType(const nsACString& aMimeType,
-                        DecoderDoctorDiagnostics* aDiagnostics) const override;
-  bool Supports(const TrackInfo& aTrackInfo,
-                DecoderDoctorDiagnostics* aDiagnostics) const override;
+  bool SupportsColorDepth(
+      gfx::ColorDepth aColorDepth,
+      DecoderDoctorDiagnostics* aDiagnostics) const override;
+  media::DecodeSupportSet SupportsMimeType(
+      const nsACString& aMimeType,
+      DecoderDoctorDiagnostics* aDiagnostics) const override;
+  media::DecodeSupportSet Supports(
+      const SupportDecoderParams& aParams,
+      DecoderDoctorDiagnostics* aDiagnostics) const override;
 
-  // Called on main thread.
-  static void Init();
+  enum class Config {
+    None,
+    ForceEnableHEVC,
+  };
+
+  // Can be called on any thread, but avoid calling this on the main thread
+  // because the initialization takes long time and we don't want to block the
+  // main thread.
+  static void Init(Config aConfig = Config::None);
 
   // Called from any thread, must call init first
   static int GetNumDecoderThreads();
 
-  // Accessors that report whether we have the required MFTs available
-  // on the system to play various codecs. Windows Vista doesn't have the
-  // H.264/AAC decoders if the "Platform Update Supplement for Windows Vista"
-  // is not installed, and Window N and KN variants also require a "Media
-  // Feature Pack" to be installed. Windows XP doesn't have WMF.
-  static bool HasAAC();
-  static bool HasH264();
+  static HRESULT CreateMFTDecoder(const WMFStreamType& aType,
+                                  RefPtr<MFTDecoder>& aDecoder);
+  static bool CanCreateMFTDecoder(const WMFStreamType& aType);
+
+  static void DisableForceEnableHEVC();
 
  private:
-  virtual ~WMFDecoderModule();
+  // This is used for GPU process only, where we can't set the preference
+  // directly (it can only set in the parent process) So we need a way to force
+  // enable the HEVC in order to report the support information via telemetry.
+  static inline Atomic<bool> sForceEnableHEVC{false};
 
-  bool mWMFInitialized = false;
+  static bool IsHEVCSupported();
+
+  WMFDecoderModule() = default;
+  virtual ~WMFDecoderModule() = default;
+
+  static inline StaticMutex sMutex;
+  static inline bool sSupportedTypesInitialized MOZ_GUARDED_BY(sMutex) = false;
+  static inline EnumSet<WMFStreamType> sSupportedTypes MOZ_GUARDED_BY(sMutex);
+  static inline EnumSet<WMFStreamType> sLackOfExtensionTypes
+      MOZ_GUARDED_BY(sMutex);
 };
 
 }  // namespace mozilla

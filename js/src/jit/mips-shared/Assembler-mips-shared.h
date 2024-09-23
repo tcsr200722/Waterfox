@@ -7,18 +7,17 @@
 #ifndef jit_mips_shared_Assembler_mips_shared_h
 #define jit_mips_shared_Assembler_mips_shared_h
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Sprintf.h"
 
 #include "jit/CompactBuffer.h"
 #include "jit/JitCode.h"
-#include "jit/JitRealm.h"
 #include "jit/JitSpewer.h"
 #include "jit/mips-shared/Architecture-mips-shared.h"
 #include "jit/shared/Assembler-shared.h"
 #include "jit/shared/IonAssemblerBuffer.h"
+#include "wasm/WasmTypeDecls.h"
 
 namespace js {
 namespace jit {
@@ -108,15 +107,20 @@ static constexpr FloatRegister ScratchSimd128Reg = InvalidFloatReg;
 // accessed with a single instruction.
 static const int32_t WasmGlobalRegBias = 32768;
 
-// Registerd used in RegExpMatcher instruction (do not use JSReturnOperand).
+// Registers used by RegExpMatcher and RegExpExecMatch stubs (do not use
+// JSReturnOperand).
 static constexpr Register RegExpMatcherRegExpReg = CallTempReg0;
 static constexpr Register RegExpMatcherStringReg = CallTempReg1;
 static constexpr Register RegExpMatcherLastIndexReg = CallTempReg2;
 
-// Registerd used in RegExpTester instruction (do not use ReturnReg).
-static constexpr Register RegExpTesterRegExpReg = CallTempReg0;
-static constexpr Register RegExpTesterStringReg = CallTempReg1;
-static constexpr Register RegExpTesterLastIndexReg = CallTempReg2;
+// Registers used by RegExpExecTest stub (do not use ReturnReg).
+static constexpr Register RegExpExecTestRegExpReg = CallTempReg0;
+static constexpr Register RegExpExecTestStringReg = CallTempReg1;
+
+// Registers used by RegExpSearcher stub (do not use ReturnReg).
+static constexpr Register RegExpSearcherRegExpReg = CallTempReg0;
+static constexpr Register RegExpSearcherStringReg = CallTempReg1;
+static constexpr Register RegExpSearcherLastIndexReg = CallTempReg2;
 
 static constexpr uint32_t CodeAlignment = 8;
 
@@ -419,6 +423,7 @@ enum FunctionField {
   ff_dinsu = 6,
   ff_dins = 7,
   ff_bshfl = 32,
+  ff_dbshfl = 36,
   ff_sc = 38,
   ff_scd = 39,
   ff_ll = 54,
@@ -819,10 +824,6 @@ class AssemblerMIPSShared : public AssemblerShared {
   static Condition InvertCondition(Condition cond);
   static DoubleCondition InvertCondition(DoubleCondition cond);
 
-  void writeRelocation(BufferOffset src) {
-    jumpRelocations_.writeUnsigned(src.getOffset());
-  }
-
   // As opposed to x86/x64 version, the data relocation has to be executed
   // before to recover the pointer, and not after.
   void writeDataRelocation(ImmGCPtr ptr) {
@@ -1066,6 +1067,9 @@ class AssemblerMIPSShared : public AssemblerShared {
   // Bit twiddling.
   BufferOffset as_clz(Register rd, Register rs);
   BufferOffset as_dclz(Register rd, Register rs);
+  BufferOffset as_wsbh(Register rd, Register rt);
+  BufferOffset as_dsbh(Register rd, Register rt);
+  BufferOffset as_dshd(Register rd, Register rt);
   BufferOffset as_ins(Register rt, Register rs, uint16_t pos, uint16_t size);
   BufferOffset as_dins(Register rt, Register rs, uint16_t pos, uint16_t size);
   BufferOffset as_dinsm(Register rt, Register rs, uint16_t pos, uint16_t size);
@@ -1230,7 +1234,7 @@ class AssemblerMIPSShared : public AssemblerShared {
 #endif
   }
   static bool SupportsUnalignedAccesses() { return true; }
-  static bool SupportsFastUnalignedAccesses() { return false; }
+  static bool SupportsFastUnalignedFPAccesses() { return false; }
 
   static bool HasRoundInstruction(RoundingMode mode) { return false; }
 
@@ -1239,7 +1243,7 @@ class AssemblerMIPSShared : public AssemblerShared {
   void addPendingJump(BufferOffset src, ImmPtr target, RelocationKind kind) {
     enoughMemory_ &= jumps_.append(RelativePatch(src, target.value, kind));
     if (kind == RelocationKind::JITCODE) {
-      writeRelocation(src);
+      jumpRelocations_.writeUnsigned(src.getOffset());
     }
   }
 

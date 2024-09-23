@@ -11,6 +11,7 @@
 #include "nsGenericHTMLElement.h"
 
 namespace mozilla {
+class ErrorResult;
 class EventChainPreVisitor;
 namespace dom {
 
@@ -26,8 +27,8 @@ class HTMLOptGroupElement final : public nsGenericHTMLElement {
                                        nsGenericHTMLElement)
 
   // nsINode
-  virtual nsresult InsertChildBefore(nsIContent* aKid, nsIContent* aBeforeThis,
-                                     bool aNotify) override;
+  virtual void InsertChildBefore(nsIContent* aKid, nsIContent* aBeforeThis,
+                                 bool aNotify, ErrorResult& aRv) override;
   virtual void RemoveChildNode(nsIContent* aKid, bool aNotify) override;
 
   // nsIContent
@@ -35,11 +36,11 @@ class HTMLOptGroupElement final : public nsGenericHTMLElement {
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  virtual nsresult AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                                const nsAttrValue* aValue,
-                                const nsAttrValue* aOldValue,
-                                nsIPrincipal* aSubjectPrincipal,
-                                bool aNotify) override;
+  virtual void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                            const nsAttrValue* aValue,
+                            const nsAttrValue* aOldValue,
+                            nsIPrincipal* aSubjectPrincipal,
+                            bool aNotify) override;
 
   bool Disabled() const { return GetBoolAttr(nsGkAtoms::disabled); }
   void SetDisabled(bool aValue, ErrorResult& aError) {

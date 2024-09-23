@@ -2,7 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Generated from the Linux kernel's syscall_32.tbl.
+/* Constructed by running:
+ * curl -vsSL https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/arch/x86/entry/syscalls/syscall_32.tbl?h=v6.8
+ *   | grep -vE '^#|^$'
+ *   | awk '{ if ($2 == "i386") { print "#if !defined(__NR_" $3 ")\n#define __NR_" $3 " " $1 "\n#endif\n"; } }'
+ * */
+
 #ifndef SANDBOX_LINUX_SYSTEM_HEADERS_X86_32_LINUX_SYSCALLS_H_
 #define SANDBOX_LINUX_SYSTEM_HEADERS_X86_32_LINUX_SYSCALLS_H_
 
@@ -1710,5 +1715,109 @@
 #define __NR_clone3 435
 #endif
 
-#endif  // SANDBOX_LINUX_SYSTEM_HEADERS_X86_32_LINUX_SYSCALLS_H_
+#if !defined(__NR_close_range)
+#define __NR_close_range 436
+#endif
 
+#if !defined(__NR_openat2)
+#define __NR_openat2 437
+#endif
+
+#if !defined(__NR_pidfd_getfd)
+#define __NR_pidfd_getfd 438
+#endif
+
+#if !defined(__NR_faccessat2)
+#define __NR_faccessat2 439
+#endif
+
+#if !defined(__NR_process_madvise)
+#define __NR_process_madvise 440
+#endif
+
+#if !defined(__NR_epoll_pwait2)
+#define __NR_epoll_pwait2 441
+#endif
+
+#if !defined(__NR_mount_setattr)
+#define __NR_mount_setattr 442
+#endif
+
+#if !defined(__NR_quotactl_fd)
+#define __NR_quotactl_fd 443
+#endif
+
+#if !defined(__NR_landlock_create_ruleset)
+#define __NR_landlock_create_ruleset 444
+#endif
+
+#if !defined(__NR_landlock_add_rule)
+#define __NR_landlock_add_rule 445
+#endif
+
+#if !defined(__NR_landlock_restrict_self)
+#define __NR_landlock_restrict_self 446
+#endif
+
+#if !defined(__NR_memfd_secret)
+#define __NR_memfd_secret 447
+#endif
+
+#if !defined(__NR_process_mrelease)
+#define __NR_process_mrelease 448
+#endif
+
+#if !defined(__NR_futex_waitv)
+#define __NR_futex_waitv 449
+#endif
+
+#if !defined(__NR_set_mempolicy_home_node)
+#define __NR_set_mempolicy_home_node 450
+#endif
+
+#if !defined(__NR_cachestat)
+#define __NR_cachestat 451
+#endif
+
+#if !defined(__NR_fchmodat2)
+#define __NR_fchmodat2 452
+#endif
+
+#if !defined(__NR_map_shadow_stack)
+#define __NR_map_shadow_stack 453
+#endif
+
+#if !defined(__NR_futex_wake)
+#define __NR_futex_wake 454
+#endif
+
+#if !defined(__NR_futex_wait)
+#define __NR_futex_wait 455
+#endif
+
+#if !defined(__NR_futex_requeue)
+#define __NR_futex_requeue 456
+#endif
+
+#if !defined(__NR_statmount)
+#define __NR_statmount 457
+#endif
+
+#if !defined(__NR_listmount)
+#define __NR_listmount 458
+#endif
+
+#if !defined(__NR_lsm_get_self_attr)
+#define __NR_lsm_get_self_attr 459
+#endif
+
+#if !defined(__NR_lsm_set_self_attr)
+#define __NR_lsm_set_self_attr 460
+#endif
+
+#if !defined(__NR_lsm_list_modules)
+#define __NR_lsm_list_modules 461
+#endif
+
+
+#endif  // SANDBOX_LINUX_SYSTEM_HEADERS_X86_32_LINUX_SYSCALLS_H_

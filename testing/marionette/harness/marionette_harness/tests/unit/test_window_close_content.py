@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 from six.moves.urllib.parse import quote
 
 from marionette_driver.by import By
@@ -15,7 +13,6 @@ def inline(doc):
 
 
 class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
-
     def tearDown(self):
         self.close_all_windows()
         self.close_all_tabs()
@@ -34,7 +31,9 @@ class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
         self.assertNotIn(new_window, self.marionette.window_handles)
 
     def test_close_chrome_window_for_non_browser_window(self):
-        new_window = self.open_chrome_window("chrome://marionette/content/test.xhtml")
+        new_window = self.open_chrome_window(
+            "chrome://remote/content/marionette/test.xhtml"
+        )
         self.marionette.switch_to_window(new_window)
 
         self.assertIn(new_window, self.marionette.chrome_window_handles)
@@ -59,22 +58,6 @@ class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
         window_handles = self.marionette.close()
         self.assertNotIn(new_tab, window_handles)
         self.assertListEqual(self.start_tabs, window_handles)
-
-    def test_close_window_with_dismissed_beforeunload_prompt(self):
-        new_tab = self.open_tab()
-        self.marionette.switch_to_window(new_tab)
-
-        self.marionette.navigate(inline("""
-          <input type="text">
-          <script>
-            window.addEventListener("beforeunload", function (event) {
-              event.preventDefault();
-            });
-          </script>
-        """))
-
-        self.marionette.find_element(By.TAG_NAME, "input").send_keys("foo")
-        self.marionette.close()
 
     def test_close_window_for_browser_window_with_single_tab(self):
         new_tab = self.open_window()
@@ -104,15 +87,19 @@ class TestCloseWindow(WindowManagerMixin, MarionetteTestCase):
         self.marionette.switch_to_window(self.start_tab)
 
         with self.marionette.using_context("chrome"):
-            self.marionette.execute_async_script("""
-              Components.utils.import("resource:///modules/BrowserWindowTracker.jsm");
+            self.marionette.execute_async_script(
+                """
+              const { BrowserWindowTracker } = ChromeUtils.importESModule(
+                "resource:///modules/BrowserWindowTracker.sys.mjs"
+              );
 
               let win = BrowserWindowTracker.getTopWindow();
               win.addEventListener("TabBrowserDiscarded", ev => {
                 arguments[0](true);
               }, { once: true});
               win.gBrowser.discardBrowser(win.gBrowser.tabs[1]);
-            """)
+            """
+            )
 
         window_handles = self.marionette.window_handles
         window_handles.remove(self.start_tab)

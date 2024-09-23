@@ -7,12 +7,12 @@
 #ifndef mozilla_dom_simpledb_SimpledbCommon_h
 #define mozilla_dom_simpledb_SimpledbCommon_h
 
-namespace mozilla {
-namespace dom {
+#include "mozilla/dom/quota/QuotaCommon.h"
+
+namespace mozilla::dom {
 
 extern const char* kPrefSimpleDBEnabled;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_simpledb_SimpledbCommon_h

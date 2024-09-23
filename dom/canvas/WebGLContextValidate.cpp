@@ -8,6 +8,7 @@
 #include <algorithm>
 #include "GLSLANG/ShaderLang.h"
 #include "CanvasUtils.h"
+#include "gfxEnv.h"
 #include "GLContext.h"
 #include "jsfriendapi.h"
 #include "mozilla/CheckedInt.h"
@@ -24,10 +25,6 @@
 #include "WebGLTexture.h"
 #include "WebGLValidateStrings.h"
 #include "WebGLVertexArray.h"
-
-#if defined(MOZ_WIDGET_COCOA)
-#  include "nsCocoaFeatures.h"
-#endif
 
 ////////////////////
 // Minimum value constants defined in GLES 2.0.25 $6.2 "State Tables":
@@ -184,12 +181,14 @@ bool WebGLContext::ValidateAttribArraySetter(uint32_t setterElemSize,
 static webgl::Limits MakeLimits(const WebGLContext& webgl) {
   webgl::Limits limits;
 
-  for (const auto i : IntegerRange(EnumValue(WebGLExtensionID::Max))) {
+  gl::GLContext& gl = *webgl.GL();
+
+  // -
+
+  for (const auto i : IntegerRange(UnderlyingValue(WebGLExtensionID::Max))) {
     const auto ext = WebGLExtensionID(i);
     limits.supportedExtensions[ext] = webgl.IsExtensionSupported(ext);
   }
-
-  gl::GLContext& gl = *webgl.GL();
 
   // -
   // WebGL 1
@@ -199,11 +198,16 @@ static webgl::Limits MakeLimits(const WebGLContext& webgl) {
   // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS value is the accurate value.
   gl.GetUIntegerv(LOCAL_GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
                   &limits.maxTexUnits);
+  limits.maxTexUnits = std::min(
+      limits.maxTexUnits, uint32_t{UINT8_MAX});  // We want to use uint8_t.
 
   gl.GetUIntegerv(LOCAL_GL_MAX_TEXTURE_SIZE, &limits.maxTex2dSize);
   gl.GetUIntegerv(LOCAL_GL_MAX_CUBE_MAP_TEXTURE_SIZE, &limits.maxTexCubeSize);
   gl.GetUIntegerv(LOCAL_GL_MAX_VERTEX_ATTRIBS, &limits.maxVertexAttribs);
-  gl.GetUIntegerv(LOCAL_GL_MAX_VIEWPORT_DIMS, limits.maxViewportDims.data());
+
+  auto dims = std::array<uint32_t, 2>{};
+  gl.GetUIntegerv(LOCAL_GL_MAX_VIEWPORT_DIMS, dims.data());
+  limits.maxViewportDim = std::min(dims[0], dims[1]);
 
   if (!gl.IsCoreProfile()) {
     gl.fGetFloatv(LOCAL_GL_ALIASED_LINE_WIDTH_RANGE,
@@ -221,8 +225,6 @@ static webgl::Limits MakeLimits(const WebGLContext& webgl) {
     gl.GetUIntegerv(LOCAL_GL_MAX_ARRAY_TEXTURE_LAYERS,
                     &limits.maxTexArrayLayers);
     gl.GetUIntegerv(LOCAL_GL_MAX_3D_TEXTURE_SIZE, &limits.maxTex3dSize);
-    gl.GetUIntegerv(LOCAL_GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS,
-                    &limits.maxTransformFeedbackSeparateAttribs);
     gl.GetUIntegerv(LOCAL_GL_MAX_UNIFORM_BUFFER_BINDINGS,
                     &limits.maxUniformBufferBindings);
     gl.GetUIntegerv(LOCAL_GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT,
@@ -282,21 +284,6 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
   mCanLoseContextInForeground =
       StaticPrefs::webgl_can_lose_context_in_foreground();
 
-  // These are the default values, see 6.2 State tables in the
-  // OpenGL ES 2.0.25 spec.
-  mDriverColorMask = mColorWriteMask;
-  mColorClearValue[0] = 0.f;
-  mColorClearValue[1] = 0.f;
-  mColorClearValue[2] = 0.f;
-  mColorClearValue[3] = 0.f;
-  mDepthWriteMask = true;
-  mDepthClearValue = 1.f;
-  mStencilClearValue = 0;
-  mStencilRefFront = 0;
-  mStencilRefBack = 0;
-
-  mLineWidth = 1.0;
-
   /*
   // Technically, we should be setting mStencil[...] values to
   // `allOnes`, but either ANGLE breaks or the SGX540s on Try break.
@@ -323,23 +310,7 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
   AssertUintParamCorrect(gl, LOCAL_GL_STENCIL_BACK_WRITEMASK,
                          mStencilWriteMaskBack);
 
-  mDitherEnabled = true;
-  mRasterizerDiscardEnabled = false;
-  mScissorTestEnabled = false;
-
-  mDepthTestEnabled = 0;
-  mDriverDepthTest = false;
-  mStencilTestEnabled = 0;
-  mDriverStencilTest = false;
-
-  mGenerateMipmapHint = LOCAL_GL_DONT_CARE;
-
   // Bindings, etc.
-  mActiveTexture = 0;
-  mDefaultFB_DrawBuffer0 = LOCAL_GL_BACK;
-  mDefaultFB_ReadBuffer = LOCAL_GL_BACK;
-
-  mWebGLError = LOCAL_GL_NO_ERROR;
 
   mBound2DTextures.Clear();
   mBoundCubeMapTextures.Clear();
@@ -492,8 +463,7 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
         RestrictCap(&limits.lineWidthRange[1], kCommonAliasedLineWidthRangeMax);
     ok &=
         RestrictCap(&limits.pointSizeRange[1], kCommonAliasedPointSizeRangeMax);
-    ok &= RestrictCap(&limits.maxViewportDims[0], kCommonMaxViewportDims);
-    ok &= RestrictCap(&limits.maxViewportDims[1], kCommonMaxViewportDims);
+    ok &= RestrictCap(&limits.maxViewportDim, kCommonMaxViewportDims);
 
     if (!ok) {
       GenerateWarning(
@@ -513,16 +483,6 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
   if (!gl->IsGLES()) {
     gl->fEnable(LOCAL_GL_PROGRAM_POINT_SIZE);
   }
-
-#ifdef XP_MACOSX
-  if (gl->WorkAroundDriverBugs() && gl->Vendor() == gl::GLVendor::ATI &&
-      !nsCocoaFeatures::IsAtLeastVersion(10, 9)) {
-    // The Mac ATI driver, in all known OSX version up to and including
-    // 10.8, renders points sprites upside-down. (Apple bug 11778921)
-    gl->fPointParameterf(LOCAL_GL_POINT_SPRITE_COORD_ORIGIN,
-                         LOCAL_GL_LOWER_LEFT);
-  }
-#endif
 
   if (gl->IsSupported(gl::GLFeature::seamless_cube_map_opt_in)) {
     gl->fEnable(LOCAL_GL_TEXTURE_CUBE_MAP_SEAMLESS);
@@ -558,12 +518,6 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
     return false;
   }
 
-  if (!gl->IsSupported(gl::GLFeature::vertex_array_object)) {
-    *out_failReason = {"FEATURE_FAILURE_WEBGL_VAOS",
-                       "Requires vertex_array_object."};
-    return false;
-  }
-
   // OpenGL core profiles remove the default VAO object from version
   // 4.0.0. We create a default VAO for all core profiles,
   // regardless of version.
@@ -575,20 +529,9 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
   mDefaultVertexArray = WebGLVertexArray::Create(this);
   mDefaultVertexArray->BindVertexArray();
 
-  mPixelStore.mFlipY = false;
-  mPixelStore.mPremultiplyAlpha = false;
-  mPixelStore.mColorspaceConversion = BROWSER_DEFAULT_WEBGL;
-  mPixelStore.mRequireFastPath = false;
-
-  // GLES 3.0.4, p259:
-  mPixelStore.mUnpackImageHeight = 0;
-  mPixelStore.mUnpackSkipImages = 0;
-  mPixelStore.mUnpackRowLength = 0;
-  mPixelStore.mUnpackSkipRows = 0;
-  mPixelStore.mUnpackSkipPixels = 0;
-  mPixelStore.mUnpackAlignment = 4;
-
   mPrimRestartTypeBytes = 0;
+
+  // -
 
   mGenericVertexAttribTypes.assign(limits.maxVertexAttribs,
                                    webgl::AttribBaseType::Float);
@@ -599,6 +542,33 @@ bool WebGLContext::InitAndValidateGL(FailureReason* const out_failReason) {
          sizeof(mGenericVertexAttrib0Data));
 
   mFakeVertexAttrib0BufferObject = 0;
+
+  mNeedsLegacyVertexAttrib0Handling = gl->IsCompatibilityProfile();
+  if (gl->WorkAroundDriverBugs() && kIsMacOS) {
+    // Failures in conformance/attribs/gl-disabled-vertex-attrib.
+    // Even in Core profiles on NV. Sigh.
+    mNeedsLegacyVertexAttrib0Handling |= (gl->Vendor() == gl::GLVendor::NVIDIA);
+
+    mBug_DrawArraysInstancedUserAttribFetchAffectedByFirst |=
+        (gl->Vendor() == gl::GLVendor::Intel);
+
+    // Failures for programs with no attribs:
+    // conformance/attribs/gl-vertex-attrib-unconsumed-out-of-bounds.html
+    mMaybeNeedsLegacyVertexAttrib0Handling = true;
+  }
+  mMaybeNeedsLegacyVertexAttrib0Handling |= mNeedsLegacyVertexAttrib0Handling;
+
+  if (const auto& env =
+          gfxEnv::MOZ_WEBGL_WORKAROUND_FIRST_AFFECTS_INSTANCE_ID()) {
+    const auto was = mBug_DrawArraysInstancedUserAttribFetchAffectedByFirst;
+    mBug_DrawArraysInstancedUserAttribFetchAffectedByFirst =
+        (env.as_str != "0");
+    printf_stderr(
+        "mBug_DrawArraysInstancedUserAttribFetchAffectedByFirst: %i -> %i\n",
+        int(was), int(mBug_DrawArraysInstancedUserAttribFetchAffectedByFirst));
+  }
+
+  // -
 
   mNeedsIndexValidation =
       !gl->IsSupported(gl::GLFeature::robust_buffer_access_behavior);

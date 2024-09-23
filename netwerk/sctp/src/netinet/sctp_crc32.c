@@ -32,20 +32,29 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) && !defined(__Userspace__)
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/sys/netinet/sctp_crc32.c 310590 2016-12-26 11:06:41Z tuexen $");
-#endif
+#include "opt_sctp.h"
 
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/gsb_crc32.h>
+#include <sys/mbuf.h>
+
+#include <netinet/sctp.h>
+#include <netinet/sctp_crc32.h>
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+#include <netinet/sctp_os.h>
+#include <netinet/sctp_pcb.h>
+#endif
+#else
 #include <netinet/sctp_os.h>
 #include <netinet/sctp.h>
 #include <netinet/sctp_crc32.h>
 #include <netinet/sctp_pcb.h>
+#endif
 
-
-#if !defined(SCTP_WITH_NO_CSUM)
-#if defined(__FreeBSD__) && __FreeBSD_version >= 800000
-#else
+#if !(defined(__FreeBSD__) && !defined(__Userspace__))
 /**
  *
  * Routine Description:
@@ -60,7 +69,7 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_crc32.c 310590 2016-12-26 11:06:41Z tu
  *				non-NULL if the mode argument is equal to CONT or END
  *		p_buf - the packet buffer where crc computations are being performed
  *		length - the length of p_buf in bytes
- *		init_bytes - the number of initial bytes that need to be processed before
+ *		init_bytes - the number of initial bytes that need to be procesed before
  *					 aligning p_buf to multiples of 4 bytes
  *		mode - can be any of the following: BEGIN, CONT, END, BODY, ALIGN
  *
@@ -713,8 +722,8 @@ calculate_crc32c(uint32_t crc32c,
 		return (multitable_crc32c(crc32c, buffer, length));
 	}
 }
-#endif /* FreeBSD < 80000 || other OS */
 
+#endif
 #if defined(__Userspace__)
 uint32_t
 #else
@@ -722,87 +731,70 @@ static uint32_t
 #endif
 sctp_finalize_crc32c(uint32_t crc32c)
 {
-	uint32_t result;
-
 #if BYTE_ORDER == BIG_ENDIAN
-	uint8_t byte0, byte1, byte2, byte3;
-
+	uint32_t byte0, byte1, byte2, byte3;
 #endif
-	/* Complement the result */
-	result = ~crc32c;
+
 #if BYTE_ORDER == BIG_ENDIAN
 	/*
-	 * For BIG-ENDIAN.. aka Motorola byte order the result is in
-	 * little-endian form. So we must manually swap the bytes. Then we
-	 * can call htonl() which does nothing...
+	 * For BIG-ENDIAN platforms, the result is in LITTLE-ENDIAN byte order.
+	 * For LITTLE-ENDIAN platforms, the result is in in BIG-ENDIAN byte
+	 * order. So for BIG-ENDIAN platforms the bytes must be swapped to
+	 * return the result always in network byte order (aka BIG-ENDIAN).
 	 */
-	byte0 = result & 0x000000ff;
-	byte1 = (result >> 8) & 0x000000ff;
-	byte2 = (result >> 16) & 0x000000ff;
-	byte3 = (result >> 24) & 0x000000ff;
+	byte0 = crc32c & 0x000000ff;
+	byte1 = (crc32c >> 8) & 0x000000ff;
+	byte2 = (crc32c >> 16) & 0x000000ff;
+	byte3 = (crc32c >> 24) & 0x000000ff;
 	crc32c = ((byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3);
-#else
-	/*
-	 * For INTEL platforms the result comes out in network order. No
-	 * htonl is required or the swap above. So we optimize out both the
-	 * htonl and the manual swap above.
-	 */
-	crc32c = result;
 #endif
-	return (crc32c);
+	return (~crc32c);
 }
 
-uint32_t
-sctp_calculate_cksum(struct mbuf *m, uint32_t offset)
+static int
+sctp_calculate_cksum_cb(void *arg, void *data, u_int len)
 {
-	/*
-	 * given a mbuf chain with a packetheader offset by 'offset'
-	 * pointing at a sctphdr (with csum set to 0) go through the chain
-	 * of SCTP_BUF_NEXT()'s and calculate the SCTP checksum. This also
-	 * has a side bonus as it will calculate the total length of the
-	 * mbuf chain. Note: if offset is greater than the total mbuf
-	 * length, checksum=1, pktlen=0 is returned (ie. no real error code)
-	 */
-	uint32_t base = 0xffffffff;
-	struct mbuf *at;
+	uint32_t *basep;
 
-	at = m;
-	/* find the correct mbuf and offset into mbuf */
-	while ((at != NULL) && (offset > (uint32_t) SCTP_BUF_LEN(at))) {
-		offset -= SCTP_BUF_LEN(at);	/* update remaining offset
-						 * left */
-		at = SCTP_BUF_NEXT(at);
-	}
-	while (at != NULL) {
-		if ((SCTP_BUF_LEN(at) - offset) > 0) {
-			base = calculate_crc32c(base,
-			    (unsigned char *)(SCTP_BUF_AT(at, offset)),
-			    (unsigned int)(SCTP_BUF_LEN(at) - offset));
-		}
-		if (offset) {
-			/* we only offset once into the first mbuf */
-			if (offset < (uint32_t) SCTP_BUF_LEN(at))
-				offset = 0;
-			else
-				offset -= SCTP_BUF_LEN(at);
-		}
-		at = SCTP_BUF_NEXT(at);
-	}
-	base = sctp_finalize_crc32c(base);
-	return (base);
+	basep = arg;
+	*basep = calculate_crc32c(*basep, data, len);
+	return (0);
 }
-#endif				/* !defined(SCTP_WITH_NO_CSUM) */
 
+/*
+ * Compute the SCTP checksum in network byte order for a given mbuf chain m
+ * which contains an SCTP packet starting at offset.
+ * Since this function is also called by ipfw, don't assume that
+ * it is compiled on a kernel with SCTP support.
+ */
+uint32_t
+sctp_calculate_cksum(struct mbuf *m, int32_t offset)
+{
+	uint32_t base;
+	int len;
 
-#if defined(__FreeBSD__)
+	M_ASSERTPKTHDR(m);
+	KASSERT(offset < m->m_pkthdr.len,
+	    ("%s: invalid offset %u into mbuf %p", __func__, offset, m));
+
+	base = 0xffffffff;
+	len = m->m_pkthdr.len - offset;
+	(void)m_apply(m, offset, len, sctp_calculate_cksum_cb, &base);
+	return (sctp_finalize_crc32c(base));
+}
+
+#if defined(__FreeBSD__) && !defined(__Userspace__)
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+
+VNET_DEFINE(struct sctp_base_info, system_base_info);
+
+/*
+ * Compute and insert the SCTP checksum in network byte order for a given
+ * mbuf chain m which contains an SCTP packet starting at offset.
+ */
 void
 sctp_delayed_cksum(struct mbuf *m, uint32_t offset)
 {
-#if defined(SCTP_WITH_NO_CSUM)
-#ifdef INVARIANTS
-	panic("sctp_delayed_cksum() called when using no SCTP CRC.");
-#endif
-#else
 	uint32_t checksum;
 
 	checksum = sctp_calculate_cksum(m, offset);
@@ -810,18 +802,18 @@ sctp_delayed_cksum(struct mbuf *m, uint32_t offset)
 	SCTP_STAT_INCR(sctps_sendswcrc);
 	offset += offsetof(struct sctphdr, checksum);
 
-	if (offset + sizeof(uint32_t) > (uint32_t) (m->m_len)) {
-		SCTP_PRINTF("sctp_delayed_cksum(): m->len: %d,  off: %d.\n",
-		            (uint32_t) m->m_len, offset);
-		/*
-		 * XXX this shouldn't happen, but if it does, the correct
-		 * behavior may be to insert the checksum in the appropriate
-		 * next mbuf in the chain.
-		 */
+	if (offset + sizeof(uint32_t) > (uint32_t)(m->m_pkthdr.len)) {
+#ifdef INVARIANTS
+		panic("sctp_delayed_cksum(): m->m_pkthdr.len: %d, offset: %u.",
+		      m->m_pkthdr.len, offset);
+#else
+		SCTP_PRINTF("sctp_delayed_cksum(): m->m_pkthdr.len: %d, offset: %u.\n",
+		            m->m_pkthdr.len, offset);
+#endif
 		return;
 	}
-	*(uint32_t *) (m->m_data + offset) = checksum;
-#endif
+	m_copyback(m, (int)offset, (int)sizeof(uint32_t), (caddr_t)&checksum);
 }
+#endif
 #endif
 

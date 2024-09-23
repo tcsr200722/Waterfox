@@ -9,8 +9,7 @@
 
 #include "SpeechRecognition.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(SpeechRecognitionResult, mParent)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(SpeechRecognitionResult)
@@ -31,7 +30,7 @@ JSObject* SpeechRecognitionResult::WrapObject(
 }
 
 nsISupports* SpeechRecognitionResult::GetParentObject() const {
-  return static_cast<DOMEventTargetHelper*>(mParent.get());
+  return static_cast<EventTarget*>(mParent.get());
 }
 
 already_AddRefed<SpeechRecognitionAlternative>
@@ -57,5 +56,4 @@ bool SpeechRecognitionResult::IsFinal() const {
   return true;  // TODO
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

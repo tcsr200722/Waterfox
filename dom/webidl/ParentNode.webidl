@@ -19,15 +19,20 @@ interface mixin ParentNode {
 
   [ChromeOnly]
   HTMLCollection getElementsByAttribute(DOMString name,
-                                        [TreatNullAs=EmptyString] DOMString value);
+                                        [LegacyNullToEmptyString] DOMString value);
   [ChromeOnly, Throws]
   HTMLCollection getElementsByAttributeNS(DOMString? namespaceURI, DOMString name,
-                                          [TreatNullAs=EmptyString] DOMString value);
+                                          [LegacyNullToEmptyString] DOMString value);
 
   [CEReactions, Throws, Unscopable]
-  void prepend((Node or DOMString)... nodes);
+  undefined prepend((Node or DOMString)... nodes);
   [CEReactions, Throws, Unscopable]
-  void append((Node or DOMString)... nodes);
+  undefined append((Node or DOMString)... nodes);
   [CEReactions, Throws, Unscopable]
-  void replaceChildren((Node or DOMString)... nodes);
+  undefined replaceChildren((Node or DOMString)... nodes);
+
+  [Throws, Pure]
+  Element?  querySelector(UTF8String selectors);
+  [Throws, Pure]
+  NodeList  querySelectorAll(UTF8String selectors);
 };

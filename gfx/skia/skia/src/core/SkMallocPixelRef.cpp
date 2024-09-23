@@ -7,28 +7,14 @@
 
 #include "include/core/SkMallocPixelRef.h"
 
+#include "include/core/SkAlphaType.h"
+#include "include/core/SkColorType.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
-#include "include/private/SkMalloc.h"
-#include "src/core/SkSafeMath.h"
+#include "include/core/SkPixelRef.h"
+#include "include/private/base/SkMalloc.h"
 
-void* sk_calloc_throw(size_t count, size_t elemSize) {
-    return sk_calloc_throw(SkSafeMath::Mul(count, elemSize));
-}
-
-void* sk_malloc_throw(size_t count, size_t elemSize) {
-    return sk_malloc_throw(SkSafeMath::Mul(count, elemSize));
-}
-
-void* sk_realloc_throw(void* buffer, size_t count, size_t elemSize) {
-    return sk_realloc_throw(buffer, SkSafeMath::Mul(count, elemSize));
-}
-
-void* sk_malloc_canfail(size_t count, size_t elemSize) {
-    return sk_malloc_canfail(SkSafeMath::Mul(count, elemSize));
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
+#include <utility>
 
 static bool is_valid(const SkImageInfo& info) {
     if (info.width() < 0 || info.height() < 0 ||
@@ -49,13 +35,15 @@ sk_sp<SkPixelRef> SkMallocPixelRef::MakeAllocate(const SkImageInfo& info, size_t
     if (!is_valid(info) || !info.validRowBytes(rowBytes)) {
         return nullptr;
     }
-    size_t size = 0;
-    if (!info.isEmpty() && rowBytes) {
-        size = info.computeByteSize(rowBytes);
-        if (SkImageInfo::ByteSizeOverflowed(size)) {
-            return nullptr;
-        }
+    size_t size = info.computeByteSize(rowBytes);
+    if (SkImageInfo::ByteSizeOverflowed(size)) {
+        return nullptr;
     }
+#if defined(SK_BUILD_FOR_FUZZER)
+    if (size > 10000000) {
+        return nullptr;
+    }
+#endif
     void* addr = sk_calloc_canfail(size);
     if (nullptr == addr) {
         return nullptr;

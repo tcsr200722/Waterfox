@@ -7,23 +7,97 @@
 
 use crate::context::StackLimitChecker;
 use crate::dom::{TElement, TNode, TShadowRoot};
-use crate::invalidation::element::invalidation_map::{Dependency, DependencyInvalidationKind};
+use crate::invalidation::element::invalidation_map::{
+    Dependency, DependencyInvalidationKind, NormalDependencyInvalidationKind,
+    RelativeDependencyInvalidationKind,
+};
 use selectors::matching::matches_compound_selector_from;
 use selectors::matching::{CompoundSelectorMatchingResult, MatchingContext};
 use selectors::parser::{Combinator, Component};
 use selectors::OpaqueElement;
 use smallvec::SmallVec;
 use std::fmt;
+use std::fmt::Write;
 
-/// A trait to abstract the collection of invalidations for a given pass.
-pub trait InvalidationProcessor<'a, E>
+struct SiblingInfo<E>
 where
     E: TElement,
 {
-    /// Whether an invalidation that contains only an eager pseudo-element
-    /// selector like ::before or ::after triggers invalidation of the element
-    /// that would originate it.
-    fn invalidates_on_eager_pseudo_element(&self) -> bool {
+    affected: E,
+    prev_sibling: Option<E>,
+    next_sibling: Option<E>,
+}
+
+/// Traversal mapping for elements under consideration. It acts like a snapshot map,
+/// though this only "maps" one element at most.
+/// For general invalidations, this has no effect, especially since when
+/// DOM mutates, the mutation's effect should not escape the subtree being mutated.
+/// This is not the case for relative selectors, unfortunately, so we may end up
+/// traversing a portion of the DOM tree that mutated. In case the mutation is removal,
+/// its sibling relation is severed by the time the invalidation happens. This structure
+/// recovers that relation. Note - it assumes that there is only one element under this
+/// effect.
+pub struct SiblingTraversalMap<E>
+where
+    E: TElement,
+{
+    info: Option<SiblingInfo<E>>,
+}
+
+impl<E> Default for SiblingTraversalMap<E>
+where
+    E: TElement,
+{
+    fn default() -> Self {
+        Self { info: None }
+    }
+}
+
+impl<E> SiblingTraversalMap<E>
+where
+    E: TElement,
+{
+    /// Create a new traversal map with the affected element.
+    pub fn new(affected: E, prev_sibling: Option<E>, next_sibling: Option<E>) -> Self {
+        Self {
+            info: Some(SiblingInfo {
+                affected,
+                prev_sibling,
+                next_sibling,
+            }),
+        }
+    }
+
+    /// Get the element's previous sibling element.
+    pub fn next_sibling_for(&self, element: &E) -> Option<E> {
+        if let Some(ref info) = self.info {
+            if *element == info.affected {
+                return info.next_sibling;
+            }
+        }
+        element.next_sibling_element()
+    }
+
+    /// Get the element's previous sibling element.
+    pub fn prev_sibling_for(&self, element: &E) -> Option<E> {
+        if let Some(ref info) = self.info {
+            if *element == info.affected {
+                return info.prev_sibling;
+            }
+        }
+        element.prev_sibling_element()
+    }
+}
+
+/// A trait to abstract the collection of invalidations for a given pass.
+pub trait InvalidationProcessor<'a, 'b, E>
+where
+    E: TElement,
+{
+    /// Whether an invalidation that contains only a pseudo-element selector
+    /// like ::before or ::after triggers invalidation of the element that would
+    /// originate it.
+    fn invalidates_on_pseudo_element(&self) -> bool {
         false
     }
 
@@ -56,7 +130,10 @@ where
     fn check_outer_dependency(&mut self, dependency: &Dependency, element: E) -> bool;
 
     /// The matching context that should be used to process invalidations.
-    fn matching_context(&mut self) -> &mut MatchingContext<'a, E::Impl>;
+    fn matching_context(&mut self) -> &mut MatchingContext<'b, E::Impl>;
+
+    /// The traversal map that should be used to process invalidations.
+    fn sibling_traversal_map(&self) -> &SiblingTraversalMap<E>;
 
     /// Collect invalidations for a given element's descendants and siblings.
     ///
@@ -80,8 +157,24 @@ where
     /// Executes an action when `Self` is invalidated.
     fn invalidated_self(&mut self, element: E);
 
+    /// Executes an action when `sibling` is invalidated as a sibling of
+    /// `of`.
+    fn invalidated_sibling(&mut self, sibling: E, of: E);
+
     /// Executes an action when any descendant of `Self` is invalidated.
     fn invalidated_descendants(&mut self, element: E, child: E);
+
+    /// Executes an action when an element in a relative selector is reached.
+    /// Lets the dependency to be borrowed for further processing out of the
+    /// invalidation traversal.
+    fn found_relative_selector_invalidation(
+        &mut self,
+        _element: E,
+        _kind: RelativeDependencyInvalidationKind,
+        _relative_dependency: &'a Dependency,
+    ) {
+        debug_assert!(false, "Reached relative selector dependency");
+    }
 }
 
 /// Different invalidation lists for descendants.
@@ -108,16 +201,16 @@ impl<'a> DescendantInvalidationLists<'a> {
 
 /// The struct that takes care of encapsulating all the logic on where and how
 /// element styles need to be invalidated.
-pub struct TreeStyleInvalidator<'a, 'b, E, P: 'a>
+pub struct TreeStyleInvalidator<'a, 'b, 'c, E, P: 'a>
 where
     'b: 'a,
     E: TElement,
-    P: InvalidationProcessor<'b, E>,
+    P: InvalidationProcessor<'b, 'c, E>,
 {
     element: E,
     stack_limit_checker: Option<&'a StackLimitChecker>,
     processor: &'a mut P,
-    _marker: ::std::marker::PhantomData<&'b ()>,
+    _marker: std::marker::PhantomData<(&'b (), &'c ())>,
 }
 
 /// A vector of invalidations, optimized for small invalidation sets.
@@ -177,13 +270,11 @@ pub struct Invalidation<'a> {
 
 impl<'a> Invalidation<'a> {
     /// Create a new invalidation for matching a dependency.
-    pub fn new(
-        dependency: &'a Dependency,
-        scope: Option<OpaqueElement>,
-    ) -> Self {
+    pub fn new(dependency: &'a Dependency, scope: Option<OpaqueElement>) -> Self {
         debug_assert!(
             dependency.selector_offset == dependency.selector.len() + 1 ||
-            dependency.invalidation_kind() != DependencyInvalidationKind::Element,
+                dependency.normal_invalidation_kind() !=
+                    NormalDependencyInvalidationKind::Element,
             "No point to this, if the dependency matched the element we should just invalidate it"
         );
         Self {
@@ -206,7 +297,11 @@ impl<'a> Invalidation<'a> {
         // for the weird pseudos in <input type="number">.
         //
         // We should be able to do better here!
-        match self.dependency.selector.combinator_at_parse_order(self.offset - 1) {
+        match self
+            .dependency
+            .selector
+            .combinator_at_parse_order(self.offset - 1)
+        {
             Combinator::Descendant | Combinator::LaterSibling | Combinator::PseudoElement => true,
             Combinator::Part |
             Combinator::SlotAssignment |
@@ -220,7 +315,11 @@ impl<'a> Invalidation<'a> {
             return InvalidationKind::Descendant(DescendantInvalidationKind::Dom);
         }
 
-        match self.dependency.selector.combinator_at_parse_order(self.offset - 1) {
+        match self
+            .dependency
+            .selector
+            .combinator_at_parse_order(self.offset - 1)
+        {
             Combinator::Child | Combinator::Descendant | Combinator::PseudoElement => {
                 InvalidationKind::Descendant(DescendantInvalidationKind::Dom)
             },
@@ -238,13 +337,17 @@ impl<'a> fmt::Debug for Invalidation<'a> {
         use cssparser::ToCss;
 
         f.write_str("Invalidation(")?;
-        for component in self.dependency.selector.iter_raw_parse_order_from(self.offset) {
+        for component in self
+            .dependency
+            .selector
+            .iter_raw_parse_order_from(self.offset)
+        {
             if matches!(*component, Component::Combinator(..)) {
                 break;
             }
             component.to_css(f)?;
         }
-        f.write_str(")")
+        f.write_char(')')
     }
 }
 
@@ -293,11 +396,11 @@ impl InvalidationResult {
     }
 }
 
-impl<'a, 'b, E, P: 'a> TreeStyleInvalidator<'a, 'b, E, P>
+impl<'a, 'b, 'c, E, P: 'a> TreeStyleInvalidator<'a, 'b, 'c, E, P>
 where
     'b: 'a,
     E: TElement,
-    P: InvalidationProcessor<'b, E>,
+    P: InvalidationProcessor<'b, 'c, E>,
 {
     /// Trivially constructs a new `TreeStyleInvalidator`.
     pub fn new(
@@ -309,7 +412,7 @@ where
             element,
             stack_limit_checker,
             processor,
-            _marker: ::std::marker::PhantomData,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -374,7 +477,10 @@ where
             return false;
         }
 
-        let mut current = self.element.next_sibling_element();
+        let mut current = self
+            .processor
+            .sibling_traversal_map()
+            .next_sibling_for(&self.element);
         let mut any_invalidated = false;
 
         while let Some(sibling) = current {
@@ -388,7 +494,9 @@ where
             );
 
             if invalidated_sibling {
-                sibling_invalidator.processor.invalidated_self(sibling);
+                sibling_invalidator
+                    .processor
+                    .invalidated_sibling(sibling, self.element);
             }
 
             any_invalidated |= invalidated_sibling;
@@ -400,7 +508,10 @@ where
                 break;
             }
 
-            current = sibling.next_sibling_element();
+            current = self
+                .processor
+                .sibling_traversal_map()
+                .next_sibling_for(&sibling);
         }
 
         any_invalidated
@@ -816,11 +927,29 @@ where
                 let mut cur_dependency = invalidation.dependency;
                 loop {
                     cur_dependency = match cur_dependency.parent {
-                        None => return SingleInvalidationResult {
-                            invalidated_self: true,
-                            matched: true,
+                        None => {
+                            return SingleInvalidationResult {
+                                invalidated_self: true,
+                                matched: true,
+                            }
                         },
-                        Some(ref p) => &**p,
+                        Some(ref p) => {
+                            let invalidation_kind = p.invalidation_kind();
+                            match invalidation_kind {
+                                DependencyInvalidationKind::Normal(_) => &**p,
+                                DependencyInvalidationKind::Relative(kind) => {
+                                    self.processor.found_relative_selector_invalidation(
+                                        self.element,
+                                        kind,
+                                        &**p,
+                                    );
+                                    return SingleInvalidationResult {
+                                        invalidated_self: false,
+                                        matched: true,
+                                    };
+                                },
+                            }
+                        },
                     };
 
                     debug!(" > Checking outer dependency {:?}", cur_dependency);
@@ -828,36 +957,38 @@ where
                     // The inner selector changed, now check if the full
                     // previous part of the selector did, before keeping
                     // checking for descendants.
-                    if !self.processor.check_outer_dependency(cur_dependency, self.element) {
+                    if !self
+                        .processor
+                        .check_outer_dependency(cur_dependency, self.element)
+                    {
                         return SingleInvalidationResult {
                             invalidated_self: false,
                             matched: false,
-                        }
+                        };
                     }
 
-                    if cur_dependency.invalidation_kind() == DependencyInvalidationKind::Element {
+                    if cur_dependency.normal_invalidation_kind() ==
+                        NormalDependencyInvalidationKind::Element
+                    {
                         continue;
                     }
 
                     debug!(" > Generating invalidation");
-                    break Invalidation::new(cur_dependency, invalidation.scope)
+                    break Invalidation::new(cur_dependency, invalidation.scope);
                 }
             },
             CompoundSelectorMatchingResult::Matched {
                 next_combinator_offset,
-            } => {
-                Invalidation {
-                    dependency: invalidation.dependency,
-                    scope: invalidation.scope,
-                    offset: next_combinator_offset + 1,
-                    matched_by_any_previous: false,
-                }
+            } => Invalidation {
+                dependency: invalidation.dependency,
+                scope: invalidation.scope,
+                offset: next_combinator_offset + 1,
+                matched_by_any_previous: false,
             },
         };
 
         debug_assert_ne!(
-            next_invalidation.offset,
-            0,
+            next_invalidation.offset, 0,
             "Rightmost selectors shouldn't generate more invalidations",
         );
 
@@ -867,74 +998,32 @@ where
             .selector
             .combinator_at_parse_order(next_invalidation.offset - 1);
 
-        if matches!(next_combinator, Combinator::PseudoElement) {
-            // This will usually be the very next component, except for
-            // the fact that we store compound selectors the other way
-            // around, so there could also be state pseudo-classes.
-            let pseudo = next_invalidation
-                .dependency
-                .selector
-                .iter_raw_parse_order_from(next_invalidation.offset)
-                .flat_map(|c| {
-                    if let Component::PseudoElement(ref pseudo) = *c {
-                        return Some(pseudo);
-                    }
-
-                    // TODO: Would be nice to make this a diagnostic_assert! of
-                    // sorts.
-                    debug_assert!(
-                        c.maybe_allowed_after_pseudo_element(),
-                        "Someone seriously messed up selector parsing: \
-                         {:?} at offset {:?}: {:?}",
-                        next_invalidation.dependency, next_invalidation.offset, c,
-                    );
-
-                    None
-                })
-                .next()
-                .unwrap();
-
-            // FIXME(emilio): This is not ideal, and could not be
-            // accurate if we ever have stateful element-backed eager
-            // pseudos.
+        if matches!(next_combinator, Combinator::PseudoElement) &&
+            self.processor.invalidates_on_pseudo_element()
+        {
+            // We need to invalidate the element whenever pseudos change, for
+            // two reasons:
             //
-            // Ideally, we'd just remove element-backed eager pseudos
-            // altogether, given they work fine without it. Only gotcha
-            // is that we wouldn't style them in parallel, which may or
-            // may not be an issue.
+            //  * Eager pseudo styles are stored as part of the originating
+            //    element's computed style.
             //
-            // Also, this could be more fine grained now (perhaps a
-            // RESTYLE_PSEUDOS hint?).
+            //  * Lazy pseudo-styles might be cached on the originating
+            //    element's pseudo-style cache.
             //
-            // Note that we'll also restyle the pseudo-element because
-            // it would match this invalidation.
-            if self.processor.invalidates_on_eager_pseudo_element() {
-                if pseudo.is_eager() {
-                    invalidated_self = true;
-                }
-                // If we start or stop matching some marker rules, and
-                // don't have a marker, then we need to restyle the
-                // element to potentially create one.
-                //
-                // Same caveats as for other eager pseudos apply, this
-                // could be more fine-grained.
-                if pseudo.is_marker() && self.element.marker_pseudo_element().is_none() {
-                    invalidated_self = true;
-                }
-
-                // FIXME: ::selection doesn't generate elements, so the
-                // regular invalidation doesn't work for it. We store
-                // the cached selection style holding off the originating
-                // element, so we need to restyle it in order to invalidate
-                // it. This is still not quite correct, since nothing
-                // triggers a repaint necessarily, but matches old Gecko
-                // behavior, and the ::selection implementation needs to
-                // change significantly anyway to implement
-                // https://github.com/w3c/csswg-drafts/issues/2474.
-                if pseudo.is_selection() {
-                    invalidated_self = true;
-                }
-            }
+            // This could be more fine-grained (perhaps with a RESTYLE_PSEUDOS
+            // hint?).
+            //
+            // Note that we'll also restyle the pseudo-element because it would
+            // match this invalidation.
+            //
+            // FIXME: For non-element-backed pseudos this is still not quite
+            // correct. For example for ::selection even though we invalidate
+            // the style properly there's nothing that triggers a repaint
+            // necessarily. Though this matches old Gecko behavior, and the
+            // ::selection implementation needs to change significantly anyway
+            // to implement https://github.com/w3c/csswg-drafts/issues/2474 for
+            // example.
+            invalidated_self = true;
         }
 
         debug!(

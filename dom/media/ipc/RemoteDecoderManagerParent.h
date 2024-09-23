@@ -5,28 +5,47 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef include_dom_media_ipc_RemoteDecoderManagerParent_h
 #define include_dom_media_ipc_RemoteDecoderManagerParent_h
+
+#include "GPUVideoImage.h"
 #include "mozilla/PRemoteDecoderManagerParent.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/layers/VideoBridgeChild.h"
 
 namespace mozilla {
 
-class RemoteDecoderManagerThreadHolder;
+class PDMFactory;
+class PMFCDMParent;
+class PMFMediaEngineParent;
 
-class RemoteDecoderManagerParent final : public PRemoteDecoderManagerParent {
+class RemoteDecoderManagerParent final
+    : public PRemoteDecoderManagerParent,
+      public layers::IGPUVideoSurfaceManager {
   friend class PRemoteDecoderManagerParent;
 
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteDecoderManagerParent)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteDecoderManagerParent, override)
 
   static bool CreateForContent(
-      Endpoint<PRemoteDecoderManagerParent>&& aEndpoint);
+      Endpoint<PRemoteDecoderManagerParent>&& aEndpoint,
+      dom::ContentParentId aContentId);
 
   static bool CreateVideoBridgeToOtherProcess(
       Endpoint<layers::PVideoBridgeChild>&& aEndpoint);
 
-  // Can be called from any thread
-  SurfaceDescriptorGPUVideo StoreImage(layers::Image* aImage,
-                                       layers::TextureClient* aTexture);
+  // Must be called on manager thread.
+  // Store the image so that it can be used out of process. Will be released
+  // when DeallocateSurfaceDescriptor is called.
+  void StoreImage(const SurfaceDescriptorGPUVideo& aSD, layers::Image* aImage,
+                  layers::TextureClient* aTexture);
+
+  // IGPUVideoSurfaceManager methods
+  already_AddRefed<gfx::SourceSurface> Readback(
+      const SurfaceDescriptorGPUVideo& aSD) override {
+    MOZ_ASSERT_UNREACHABLE("Not usable from the parent");
+    return nullptr;
+  }
+  void DeallocateSurfaceDescriptor(
+      const SurfaceDescriptorGPUVideo& aSD) override;
 
   static bool StartupThreads();
   static void ShutdownThreads();
@@ -35,13 +54,25 @@ class RemoteDecoderManagerParent final : public PRemoteDecoderManagerParent {
 
   bool OnManagerThread();
 
+  // Can be called from manager thread only
+  PDMFactory& EnsurePDMFactory();
+
+  const dom::ContentParentId& GetContentId() const { return mContentId; }
+
  protected:
   PRemoteDecoderParent* AllocPRemoteDecoderParent(
       const RemoteDecoderInfoIPDL& aRemoteDecoderInfo,
       const CreateDecoderParams::OptionSet& aOptions,
       const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
-      bool* aSuccess, nsCString* aErrorDescription);
+      const Maybe<uint64_t>& aMediaEngineId,
+      const Maybe<TrackingId>& aTrackingId);
   bool DeallocPRemoteDecoderParent(PRemoteDecoderParent* actor);
+
+  PMFMediaEngineParent* AllocPMFMediaEngineParent();
+  bool DeallocPMFMediaEngineParent(PMFMediaEngineParent* actor);
+
+  PMFCDMParent* AllocPMFCDMParent(const nsAString& aKeySystem);
+  bool DeallocPMFCDMParent(PMFCDMParent* actor);
 
   mozilla::ipc::IPCResult RecvReadback(const SurfaceDescriptorGPUVideo& aSD,
                                        SurfaceDescriptor* aResult);
@@ -50,11 +81,9 @@ class RemoteDecoderManagerParent final : public PRemoteDecoderManagerParent {
 
   void ActorDestroy(mozilla::ipc::IProtocol::ActorDestroyReason) override;
 
-  void ActorDealloc() override;
-
  private:
-  explicit RemoteDecoderManagerParent(
-      RemoteDecoderManagerThreadHolder* aThreadHolder);
+  RemoteDecoderManagerParent(nsISerialEventTarget* aThread,
+                             dom::ContentParentId aContentId);
   ~RemoteDecoderManagerParent();
 
   void Open(Endpoint<PRemoteDecoderManagerParent>&& aEndpoint);
@@ -62,7 +91,9 @@ class RemoteDecoderManagerParent final : public PRemoteDecoderManagerParent {
   std::map<uint64_t, RefPtr<layers::Image>> mImageMap;
   std::map<uint64_t, RefPtr<layers::TextureClient>> mTextureMap;
 
-  RefPtr<RemoteDecoderManagerThreadHolder> mThreadHolder;
+  nsCOMPtr<nsISerialEventTarget> mThread;
+  RefPtr<PDMFactory> mPDMFactory;
+  dom::ContentParentId mContentId;
 };
 
 }  // namespace mozilla

@@ -6,11 +6,15 @@
 
 #include "mozilla/dom/PushSubscriptionOptions.h"
 
+#include "MainThreadUtils.h"
 #include "mozilla/dom/PushSubscriptionOptionsBinding.h"
+#include "mozilla/dom/TypedArray.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/HoldDropJSObjects.h"
+#include "nsIGlobalObject.h"
+#include "nsWrapperCache.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 PushSubscriptionOptions::PushSubscriptionOptions(
     nsIGlobalObject* aGlobal, nsTArray<uint8_t>&& aRawAppServerKey)
@@ -24,23 +28,12 @@ PushSubscriptionOptions::PushSubscriptionOptions(
 }
 
 PushSubscriptionOptions::~PushSubscriptionOptions() {
-  mAppServerKey = nullptr;
   mozilla::DropJSObjects(this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(PushSubscriptionOptions)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(PushSubscriptionOptions)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
-  tmp->mAppServerKey = nullptr;
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(PushSubscriptionOptions)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(PushSubscriptionOptions)
-  NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
-  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mAppServerKey)
-NS_IMPL_CYCLE_COLLECTION_TRACE_END
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WITH_JS_MEMBERS(PushSubscriptionOptions,
+                                                      (mGlobal),
+                                                      (mAppServerKey))
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(PushSubscriptionOptions)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(PushSubscriptionOptions)
@@ -58,16 +51,12 @@ JSObject* PushSubscriptionOptions::WrapObject(
 void PushSubscriptionOptions::GetApplicationServerKey(
     JSContext* aCx, JS::MutableHandle<JSObject*> aKey, ErrorResult& aRv) {
   if (!mRawAppServerKey.IsEmpty() && !mAppServerKey) {
-    JS::Rooted<JSObject*> appServerKey(aCx);
-    PushUtil::CopyArrayToArrayBuffer(aCx, mRawAppServerKey, &appServerKey, aRv);
+    mAppServerKey = ArrayBuffer::Create(aCx, mRawAppServerKey, aRv);
     if (aRv.Failed()) {
       return;
     }
-    MOZ_ASSERT(appServerKey);
-    mAppServerKey = appServerKey;
   }
   aKey.set(mAppServerKey);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

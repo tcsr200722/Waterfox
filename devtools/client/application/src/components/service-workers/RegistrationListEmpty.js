@@ -4,26 +4,30 @@
 
 "use strict";
 
-const { openDocLink, openTrustedLink } = require("devtools/client/shared/link");
+const {
+  openDocLink,
+  openTrustedLink,
+} = require("resource://devtools/client/shared/link.js");
 const {
   createFactory,
   PureComponent,
-} = require("devtools/client/shared/vendor/react");
+} = require("resource://devtools/client/shared/vendor/react.js");
 const {
   a,
   article,
+  aside,
+  div,
   h1,
-  li,
+  img,
   p,
-  ul,
-} = require("devtools/client/shared/vendor/react-dom-factories");
+} = require("resource://devtools/client/shared/vendor/react-dom-factories.js");
 
-const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const FluentReact = require("resource://devtools/client/shared/vendor/fluent-react.js");
 const Localized = createFactory(FluentReact.Localized);
 
 const {
   services,
-} = require("devtools/client/application/src/modules/application-services");
+} = require("resource://devtools/client/application/src/modules/application-services.js");
 
 const DOC_URL =
   "https://developer.mozilla.org/docs/Web/API/Service_Worker_API/Using_Service_Workers" +
@@ -52,43 +56,62 @@ class RegistrationListEmpty extends PureComponent {
 
   render() {
     return article(
-      { className: "registration-list-empty js-registration-list-empty" },
-      Localized(
-        {
-          id: "serviceworker-empty-intro",
-          a: a({
-            className: "external-link",
-            onClick: () => this.openDocumentation(),
-          }),
-        },
-        h1({ className: "app-page__title" })
+      { className: "app-page__icon-container js-registration-list-empty" },
+      aside(
+        {},
+        Localized(
+          {
+            id: "sidebar-item-service-workers",
+            attrs: {
+              alt: true,
+            },
+          },
+          img({
+            className: "app-page__icon",
+            src: "chrome://devtools/skin/images/debugging-workers.svg",
+          })
+        )
       ),
-      Localized({ id: "serviceworker-empty-suggestions" }, p({})),
-      ul(
-        { className: "registration-list-empty__tips" },
+      div(
+        {},
         Localized(
           {
-            id: "serviceworker-empty-suggestions-console",
-            a: a({ className: "link", onClick: () => this.switchToConsole() }),
+            id: "serviceworker-empty-intro2",
           },
-          li({ className: "registration-list-empty__tips-item" })
+          h1({ className: "app-page__title" })
         ),
         Localized(
           {
-            id: "serviceworker-empty-suggestions-debugger",
-            a: a({ className: "link", onClick: () => this.switchToDebugger() }),
-          },
-          li({ className: "registration-list-empty__tips-item" })
-        ),
-        Localized(
-          {
-            id: "serviceworker-empty-suggestions-aboutdebugging",
+            id: "serviceworker-empty-suggestions2",
             a: a({
-              className: "link js-trusted-link",
-              onClick: () => this.openAboutDebugging(),
+              onClick: () => this.switchToConsole(),
+            }),
+            // NOTE: for <Localized> to parse the markup in the string, the
+            //       markup needs to be actual HTML elements
+            span: a({
+              onClick: () => this.switchToDebugger(),
             }),
           },
-          li({ className: "registration-list-empty__tips-item" })
+          p({})
+        ),
+        p(
+          {},
+          Localized(
+            { id: "serviceworker-empty-intro-link" },
+            a({
+              onClick: () => this.openDocumentation(),
+            })
+          )
+        ),
+        p(
+          {},
+          Localized(
+            { id: "serviceworker-empty-suggestions-aboutdebugging2" },
+            a({
+              className: "js-trusted-link",
+              onClick: () => this.openAboutDebugging(),
+            })
+          )
         )
       )
     );

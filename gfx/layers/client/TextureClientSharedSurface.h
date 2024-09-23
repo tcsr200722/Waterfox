@@ -30,14 +30,19 @@ namespace layers {
 class SharedSurfaceTextureClient;
 
 class SharedSurfaceTextureData : public TextureData {
- protected:
-  const UniquePtr<gl::SharedSurface> mSurf;
-
   friend class SharedSurfaceTextureClient;
 
-  explicit SharedSurfaceTextureData(UniquePtr<gl::SharedSurface> surf);
-
  public:
+  const SurfaceDescriptor mDesc;
+  const gfx::SurfaceFormat mFormat;
+  const gfx::IntSize mSize;
+
+  static already_AddRefed<TextureClient> CreateTextureClient(
+      const layers::SurfaceDescriptor& aDesc, const gfx::SurfaceFormat aFormat,
+      gfx::IntSize aSize, TextureFlags aFlags, LayersIPCChannel* aAllocator);
+
+  SharedSurfaceTextureData(const SurfaceDescriptor&, gfx::SurfaceFormat,
+                           gfx::IntSize);
   virtual ~SharedSurfaceTextureData();
 
   bool Lock(OpenMode) override { return false; }
@@ -50,24 +55,11 @@ class SharedSurfaceTextureData : public TextureData {
 
   void Deallocate(LayersIPCChannel*) override;
 
-  gl::SharedSurface* Surf() const { return mSurf.get(); }
-};
+  TextureFlags GetTextureFlags() const override;
 
-class SharedSurfaceTextureClient : public TextureClient {
- public:
-  SharedSurfaceTextureClient(SharedSurfaceTextureData* aData,
-                             TextureFlags aFlags, LayersIPCChannel* aAllocator);
+  Maybe<uint64_t> GetBufferId() const override;
 
-  ~SharedSurfaceTextureClient();
-
-  static already_AddRefed<SharedSurfaceTextureClient> Create(
-      UniquePtr<gl::SharedSurface> surf, gl::SurfaceFactory* factory,
-      LayersIPCChannel* aAllocator, TextureFlags aFlags);
-
-  gl::SharedSurface* Surf() const {
-    return static_cast<const SharedSurfaceTextureData*>(GetInternalData())
-        ->Surf();
-  }
+  mozilla::ipc::FileDescriptor GetAcquireFence() override;
 };
 
 }  // namespace layers

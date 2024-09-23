@@ -3,8 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 :host {
-  --in-content-box-background-hover: var(--in-content-page-background);
-  border-inline-end: 1px solid var(--in-content-box-border-color);
+  border-inline-end: 1px solid var(--in-content-border-color);
   background-color: var(--in-content-box-background);
   display: flex;
   flex-direction: column;
@@ -14,11 +13,9 @@
 .meta {
   display: flex;
   align-items: center;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--in-content-box-border-color);
+  padding: 0 16px 16px;
+  border-bottom: 1px solid var(--in-content-border-color);
   background-color: var(--in-content-box-background);
-  color: var(--in-content-deemphasized-text);
-  font-size: 0.8em;
 }
 
 .meta > label > span {
@@ -26,12 +23,9 @@
 }
 
 #login-sort {
-  background-color: transparent;
+  --logical-padding: 0px;
   margin: 0;
-  padding-inline: 0 16px;
-  min-height: initial;
-  font: inherit;
-  font-weight: 600;
+  background-color: transparent;
   color: var(--in-content-text-color) !important;
 }
 
@@ -40,13 +34,7 @@
 }
 
 #login-sort > option {
-  font-weight: normal;
-}
-
-#login-sort:-moz-focusring { /* This is a workaround due to Bug 1580935 */
-  color: transparent !important;
-  fill: var(--in-content-text-color);
-  text-shadow: 0 0 0 var(--in-content-text-color);
+  font-weight: var(--font-weight);
 }
 
 .count {
@@ -57,6 +45,14 @@
 
 .container {
   display: contents;
+}
+
+.listHeader {
+  display: flex;
+  justify-content: center;
+  align-content: center;
+  gap: 16px;
+  padding: 16px;
 }
 
 :host(.no-logins) .empty-search-message,
@@ -89,20 +85,12 @@
 }
 
 ol {
+  outline-offset: var(--in-content-focus-outline-inset);
   margin-block: 0;
   padding-inline-start: 0;
   overflow: hidden auto;
   flex-grow: 1;
-}
-
-.create-login-button {
-  margin: 16px;
-}
-
-.create-login-button-container {
-  box-shadow: 0 -1px var(--in-content-box-border-color);
-  display: flex;
-  flex-direction: column;
+  scroll-padding-top: 24px; /* there is the section header that is sticky to the top */
 }
 
 .login-list-item {
@@ -111,30 +99,44 @@ ol {
   padding-block: 10px;
   padding-inline: 12px 18px;
   border-inline-start: 4px solid transparent;
-  border-bottom: 1px solid var(--in-content-border-color);
   user-select: none;
 }
 
-.login-list-item:hover {
-  background-color: var(--in-content-box-background-hover);
+.login-list-header {
+  display: block;
+  position: sticky;
+  top: 0;
+  font-size: .85em;
+  font-weight: var(--font-weight-bold);
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--in-content-border-color);
+  background-color: var(--in-content-box-background);
+  margin-block-start: 2px;
+  margin-inline: 2px;
 }
 
-.login-list-item:hover:active {
-  background-color: var(--in-content-box-background-active);
+.login-list-item:not(.selected):hover {
+  background-color: var(--in-content-button-background-hover);
+  color: var(--in-content-button-text-color-hover);
+}
+
+.login-list-item:not(.selected):hover:active {
+  background-color: var(--in-content-button-background-active);
+  color: var(--in-content-button-text-color-active);
 }
 
 .login-list-item.keyboard-selected {
-  border-inline-start-color: var(--in-content-border-active-shadow);
-  background-color: var(--in-content-box-background-odd);
+  border-inline-start-color: var(--in-content-border-color);
+  background-color: var(--in-content-button-background-hover);
 }
 
 .login-list-item.selected {
-  border-inline-start-color: var(--in-content-border-highlight);
-  background-color: var(--in-content-box-background-hover);
+  border-inline-start-color: var(--in-content-accent-color);
+  background-color: var(--in-content-page-background);
 }
 
 .login-list-item.selected .title {
-  font-weight: 600;
+  font-weight: var(--font-weight-bold);
 }
 
 .labels {
@@ -146,48 +148,16 @@ ol {
   justify-content: center;
 }
 
-.title,
-.username {
-  display: block;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.favicon-wrapper {
+.favicon {
   height: 16px;
   width: 16px;
-  background-image: url("chrome://mozapps/skin/places/defaultFavicon.svg");
-  background-repeat: no-repeat;
   margin-inline-end: 12px;
   -moz-context-properties: fill, fill-opacity;
   fill: currentColor;
   fill-opacity: 0.8;
 }
 
-.favicon-wrapper.hide-default-favicon {
-  background-image: none;
-}
-
-.favicon {
-  width: 16px;
-}
-
 .username {
   font-size: 0.85em;
-  color: var(--in-content-deemphasized-text);
-}
-
-.alert-icon {
-  min-width: 16px;
-  width: 16px;
-  margin-inline-start: 12px;
-  -moz-context-properties: fill, fill-opacity;
-  fill: currentColor;
-  fill-opacity: 0.75;
-}
-
-.breached > .alert-icon {
-  fill: var(--red-60);
-  fill-opacity: 1;
+  color: var(--text-color-deemphasized);
 }

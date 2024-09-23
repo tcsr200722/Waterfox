@@ -6,17 +6,20 @@
 #ifndef nsCoreUtils_h_
 #define nsCoreUtils_h_
 
+#include "AttrArray.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/dom/Element.h"
+#include "nsCaseTreatment.h"
 #include "nsIAccessibleEvent.h"
 #include "nsIContent.h"
-#include "mozilla/dom/Document.h"  // for GetPresShell()
 #include "mozilla/FlushType.h"
 #include "mozilla/PresShellForwards.h"
 
 #include "nsPoint.h"
 #include "nsTArray.h"
+#include "Units.h"
 
+class nsAttrValue;
+class nsGenericHTMLElement;
 class nsRange;
 class nsTreeColumn;
 class nsIFrame;
@@ -26,8 +29,10 @@ class nsIWidget;
 namespace mozilla {
 class PresShell;
 namespace dom {
+class Document;
+class Element;
 class XULTreeElement;
-}
+}  // namespace dom
 }  // namespace mozilla
 
 /**
@@ -37,6 +42,7 @@ class nsCoreUtils {
  public:
   typedef mozilla::PresShell PresShell;
   typedef mozilla::dom::Document Document;
+  typedef mozilla::dom::Element Element;
 
   /**
    * Return true if the given node is a label of a control.
@@ -61,7 +67,7 @@ class nsCoreUtils {
   MOZ_CAN_RUN_SCRIPT
   static void DispatchClickEvent(mozilla::dom::XULTreeElement* aTree,
                                  int32_t aRowIndex, nsTreeColumn* aColumn,
-                                 const nsAString& aPseudoElt = EmptyString());
+                                 const nsAString& aPseudoElt = u""_ns);
 
   /**
    * Send mouse event to the given element.
@@ -166,12 +172,13 @@ class nsCoreUtils {
    * Scrolls the given frame to the point, used for implememntation of
    * nsIAccessible::scrollToPoint and nsIAccessibleText::scrollSubstringToPoint.
    *
-   * @param aScrollableFrame  the scrollable frame
+   * @param aScrollContainerFrame the scroll container frame
    * @param aFrame            the frame to scroll
-   * @param aPoint            the point scroll to
+   * @param aPoint            the point scroll to (in dev pixels)
    */
-  static void ScrollFrameToPoint(nsIFrame* aScrollableFrame, nsIFrame* aFrame,
-                                 const nsIntPoint& aPoint);
+  static void ScrollFrameToPoint(nsIFrame* aScrollContainerFrame,
+                                 nsIFrame* aFrame,
+                                 const mozilla::LayoutDeviceIntPoint& aPoint);
 
   /**
    * Converts scroll type constant defined in nsIAccessibleScrollType to
@@ -180,14 +187,6 @@ class nsCoreUtils {
   static void ConvertScrollTypeToPercents(uint32_t aScrollType,
                                           mozilla::ScrollAxis* aVertical,
                                           mozilla::ScrollAxis* aHorizontal);
-
-  /**
-   * Returns coordinates in device pixels relative screen for the top level
-   * window.
-   *
-   * @param aNode  the DOM node hosted in the window.
-   */
-  static nsIntPoint GetScreenCoordsForWindow(nsINode* aNode);
 
   /**
    * Return document shell for the given DOM node.
@@ -200,14 +199,11 @@ class nsCoreUtils {
   static bool IsRootDocument(Document* aDocument);
 
   /**
-   * Return true if the given document is content document (not chrome).
+   * Return true if the given document is a top level content document in this
+   * process.
+   * This will be true for tab documents and out-of-process iframe documents.
    */
-  static bool IsContentDocument(Document* aDocument);
-
-  /**
-   * Return true if the given document node is for tab document accessible.
-   */
-  static bool IsTabDocument(Document* aDocumentNode);
+  static bool IsTopLevelContentDocInProcess(Document* aDocumentNode);
 
   /**
    * Return true if the given document is an error page.
@@ -217,9 +213,7 @@ class nsCoreUtils {
   /**
    * Return presShell for the document containing the given DOM node.
    */
-  static PresShell* GetPresShellFor(nsINode* aNode) {
-    return aNode->OwnerDoc()->GetPresShell();
-  }
+  static PresShell* GetPresShellFor(nsINode* aNode);
 
   /**
    * Get the ID for an element, in some types of XML this may not be the ID
@@ -235,6 +229,7 @@ class nsCoreUtils {
    * attribute or wrong value then false is returned.
    */
   static bool GetUIntAttr(nsIContent* aContent, nsAtom* aAttr, int32_t* aUInt);
+  static bool GetUIntAttrValue(const nsAttrValue* aVal, int32_t* aUInt);
 
   /**
    * Returns language for the given node.
@@ -296,11 +291,7 @@ class nsCoreUtils {
   /**
    * Return true if the given node is table header element.
    */
-  static bool IsHTMLTableHeader(nsIContent* aContent) {
-    return aContent->NodeInfo()->Equals(nsGkAtoms::th) ||
-           (aContent->IsElement() && aContent->AsElement()->HasAttr(
-                                         kNameSpaceID_None, nsGkAtoms::scope));
-  }
+  static bool IsHTMLTableHeader(nsIContent* aContent);
 
   /**
    * Returns true if the given string is empty or contains whitespace symbols
@@ -328,6 +319,23 @@ class nsCoreUtils {
   static void DispatchAccEvent(RefPtr<nsIAccessibleEvent> aEvent);
 
   static bool IsDisplayContents(nsIContent* aContent);
+  static bool CanCreateAccessibleWithoutFrame(nsIContent* aContent);
+
+  /**
+   * Return whether the document and all its in-process ancestors are visible in
+   * the sense of pageshow / hide.
+   */
+  static bool IsDocumentVisibleConsideringInProcessAncestors(
+      const Document* aDocument);
+
+  /**
+   * Return true if `aDescendant` is a descendant of any of `aStartAncestor`'s
+   * shadow-including ancestors.
+   */
+  static bool IsDescendantOfAnyShadowIncludingAncestor(nsINode* aDescendant,
+                                                       nsINode* aStartAncestor);
+
+  static Element* GetAriaActiveDescendantElement(Element* aElement);
 };
 
 #endif

@@ -8,6 +8,7 @@
 #include "AudioSegment.h"
 #include "nsSpeechTask.h"
 #include "nsSynthVoiceRegistry.h"
+#include "nsXULAppAPI.h"
 #include "SharedBuffer.h"
 #include "SpeechSynthesis.h"
 
@@ -17,8 +18,7 @@ extern mozilla::LogModule* GetSpeechSynthLog();
 
 #define AUDIO_TRACK 1
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // nsSpeechTask
 
@@ -35,20 +35,21 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsSpeechTask)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsSpeechTask)
 
-nsSpeechTask::nsSpeechTask(SpeechSynthesisUtterance* aUtterance, bool aIsChrome)
+nsSpeechTask::nsSpeechTask(SpeechSynthesisUtterance* aUtterance,
+                           bool aShouldResistFingerprinting)
     : mUtterance(aUtterance),
       mInited(false),
       mPrePaused(false),
       mPreCanceled(false),
       mCallback(nullptr),
-      mIsChrome(aIsChrome),
+      mShouldResistFingerprinting(aShouldResistFingerprinting),
       mState(STATE_PENDING) {
   mText = aUtterance->mText;
   mVolume = aUtterance->Volume();
 }
 
 nsSpeechTask::nsSpeechTask(float aVolume, const nsAString& aText,
-                           bool aIsChrome)
+                           bool aShouldResistFingerprinting)
     : mUtterance(nullptr),
       mVolume(aVolume),
       mText(aText),
@@ -56,7 +57,7 @@ nsSpeechTask::nsSpeechTask(float aVolume, const nsAString& aText,
       mPrePaused(false),
       mPreCanceled(false),
       mCallback(nullptr),
-      mIsChrome(aIsChrome),
+      mShouldResistFingerprinting(aShouldResistFingerprinting),
       mState(STATE_PENDING) {}
 
 nsSpeechTask::~nsSpeechTask() { LOG(LogLevel::Debug, ("~nsSpeechTask")); }
@@ -100,8 +101,7 @@ nsresult nsSpeechTask::DispatchStartImpl(const nsAString& aUri) {
 
   mState = STATE_SPEAKING;
   mUtterance->mChosenVoiceURI = aUri;
-  mUtterance->DispatchSpeechSynthesisEvent(NS_LITERAL_STRING("start"), 0,
-                                           nullptr, 0, EmptyString());
+  mUtterance->DispatchSpeechSynthesisEvent(u"start"_ns, 0, nullptr, 0, u""_ns);
 
   return NS_OK;
 }
@@ -136,8 +136,8 @@ nsresult nsSpeechTask::DispatchEndImpl(float aElapsedTime,
   }
 
   mState = STATE_ENDED;
-  utterance->DispatchSpeechSynthesisEvent(NS_LITERAL_STRING("end"), aCharIndex,
-                                          nullptr, aElapsedTime, EmptyString());
+  utterance->DispatchSpeechSynthesisEvent(u"end"_ns, aCharIndex, nullptr,
+                                          aElapsedTime, u""_ns);
 
   return NS_OK;
 }
@@ -160,9 +160,8 @@ nsresult nsSpeechTask::DispatchPauseImpl(float aElapsedTime,
 
   mUtterance->mPaused = true;
   if (mState == STATE_SPEAKING) {
-    mUtterance->DispatchSpeechSynthesisEvent(NS_LITERAL_STRING("pause"),
-                                             aCharIndex, nullptr, aElapsedTime,
-                                             EmptyString());
+    mUtterance->DispatchSpeechSynthesisEvent(u"pause"_ns, aCharIndex, nullptr,
+                                             aElapsedTime, u""_ns);
   }
 
   return NS_OK;
@@ -186,9 +185,8 @@ nsresult nsSpeechTask::DispatchResumeImpl(float aElapsedTime,
 
   mUtterance->mPaused = false;
   if (mState == STATE_SPEAKING) {
-    mUtterance->DispatchSpeechSynthesisEvent(NS_LITERAL_STRING("resume"),
-                                             aCharIndex, nullptr, aElapsedTime,
-                                             EmptyString());
+    mUtterance->DispatchSpeechSynthesisEvent(u"resume"_ns, aCharIndex, nullptr,
+                                             aElapsedTime, u""_ns);
   }
 
   return NS_OK;
@@ -223,9 +221,8 @@ nsresult nsSpeechTask::DispatchErrorImpl(float aElapsedTime,
   }
 
   mState = STATE_ENDED;
-  mUtterance->DispatchSpeechSynthesisEvent(NS_LITERAL_STRING("error"),
-                                           aCharIndex, nullptr, aElapsedTime,
-                                           EmptyString());
+  mUtterance->DispatchSpeechSynthesisEvent(u"error"_ns, aCharIndex, nullptr,
+                                           aElapsedTime, u""_ns);
   return NS_OK;
 }
 
@@ -247,7 +244,7 @@ nsresult nsSpeechTask::DispatchBoundaryImpl(const nsAString& aName,
     return NS_ERROR_NOT_AVAILABLE;
   }
   mUtterance->DispatchSpeechSynthesisEvent(
-      NS_LITERAL_STRING("boundary"), aCharIndex,
+      u"boundary"_ns, aCharIndex,
       argc ? static_cast<Nullable<uint32_t> >(aCharLength) : nullptr,
       aElapsedTime, aName);
 
@@ -267,8 +264,8 @@ nsresult nsSpeechTask::DispatchMarkImpl(const nsAString& aName,
   if (NS_WARN_IF(mState != STATE_SPEAKING)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
-  mUtterance->DispatchSpeechSynthesisEvent(
-      NS_LITERAL_STRING("mark"), aCharIndex, nullptr, aElapsedTime, aName);
+  mUtterance->DispatchSpeechSynthesisEvent(u"mark"_ns, aCharIndex, nullptr,
+                                           aElapsedTime, aName);
   return NS_OK;
 }
 
@@ -389,5 +386,4 @@ void nsSpeechTask::SetAudioOutputVolume(float aVolume) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

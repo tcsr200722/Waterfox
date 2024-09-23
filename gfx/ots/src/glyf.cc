@@ -10,6 +10,7 @@
 #include "head.h"
 #include "loca.h"
 #include "maxp.h"
+#include "name.h"
 
 // glyf - Glyph Data
 // http://www.microsoft.com/typography/otspec/glyf.htm
@@ -18,6 +19,7 @@ namespace ots {
 
 bool OpenTypeGLYF::ParseFlagsForSimpleGlyph(Buffer &glyph,
                                             uint32_t num_flags,
+                                            std::vector<uint8_t>& flags,
                                             uint32_t *flag_index,
                                             uint32_t *coordinates_length) {
   uint8_t flag = 0;
@@ -48,6 +50,8 @@ bool OpenTypeGLYF::ParseFlagsForSimpleGlyph(Buffer &glyph,
                  "bit 6 must be set to zero for flag %d", flag, *flag_index);
   }
 
+  flags[*flag_index] = flag & ~(1u << 3);
+
   if (flag & (1u << 3)) {  // repeat
     if (*flag_index + 1 >= num_flags) {
       return Error("Count too high (%d + 1 >= %d)", *flag_index, num_flags);
@@ -61,9 +65,12 @@ bool OpenTypeGLYF::ParseFlagsForSimpleGlyph(Buffer &glyph,
     }
     delta += (delta * repeat);
 
-    *flag_index += repeat;
-    if (*flag_index >= num_flags) {
-      return Error("Count too high (%d >= %d)", *flag_index, num_flags);
+    if (*flag_index + repeat >= num_flags) {
+      return Error("Count too high (%d >= %d)", *flag_index + repeat, num_flags);
+    }
+
+    while (repeat--) {
+      flags[++*flag_index] = flag & ~(1u << 3);
     }
   }
 
@@ -80,23 +87,40 @@ bool OpenTypeGLYF::ParseFlagsForSimpleGlyph(Buffer &glyph,
   return true;
 }
 
+#define X_SHORT_VECTOR                        (1u << 1)
+#define Y_SHORT_VECTOR                        (1u << 2)
+#define X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR  (1u << 4)
+#define Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR  (1u << 5)
+
 bool OpenTypeGLYF::ParseSimpleGlyph(Buffer &glyph,
-                                    int16_t num_contours) {
+                                    unsigned gid,
+                                    int16_t num_contours,
+                                    int16_t xmin,
+                                    int16_t ymin,
+                                    int16_t xmax,
+                                    int16_t ymax,
+                                    bool is_tricky_font) {
   // read the end-points array
   uint16_t num_flags = 0;
   for (int i = 0; i < num_contours; ++i) {
     uint16_t tmp_index = 0;
     if (!glyph.ReadU16(&tmp_index)) {
-      return Error("Can't read contour index %d", i);
+      return Error("Can't read contour index %d (glyph %u)", i, gid);
     }
     if (tmp_index == 0xffffu) {
-      return Error("Bad contour index %d", i);
+      return Error("Bad contour index %d (glyph %u)", i, gid);
     }
     // check if the indices are monotonically increasing
     if (i && (tmp_index + 1 <= num_flags)) {
-      return Error("Decreasing contour index %d + 1 <= %d", tmp_index, num_flags);
+      return Error("Decreasing contour index %d + 1 <= %d (glyph %u)", tmp_index, num_flags, gid);
     }
     num_flags = tmp_index + 1;
+  }
+
+  if (this->maxp->version_1 &&
+      num_flags > this->maxp->max_points) {
+    Warning("Number of contour points exceeds maxp maxPoints, adjusting limit (glyph %u)", gid);
+    this->maxp->max_points = num_flags;
   }
 
   uint16_t bytecode_length = 0;
@@ -106,30 +130,119 @@ bool OpenTypeGLYF::ParseSimpleGlyph(Buffer &glyph,
 
   if (this->maxp->version_1 &&
       this->maxp->max_size_glyf_instructions < bytecode_length) {
+    Warning("Bytecode length is bigger than maxp.maxSizeOfInstructions %d: %d (glyph %u)",
+            this->maxp->max_size_glyf_instructions, bytecode_length, gid);
     this->maxp->max_size_glyf_instructions = bytecode_length;
-    Warning("Bytecode length is bigger than maxp.maxSizeOfInstructions %d: %d",
-            this->maxp->max_size_glyf_instructions, bytecode_length);
   }
 
   if (!glyph.Skip(bytecode_length)) {
-    return Error("Can't read bytecode of length %d", bytecode_length);
+    return Error("Can't read bytecode of length %d (glyph %u)", bytecode_length, gid);
   }
 
   uint32_t coordinates_length = 0;
+  std::vector<uint8_t> flags(num_flags);
   for (uint32_t i = 0; i < num_flags; ++i) {
-    if (!ParseFlagsForSimpleGlyph(glyph, num_flags, &i, &coordinates_length)) {
-      return Error("Failed to parse glyph flags %d", i);
+    if (!ParseFlagsForSimpleGlyph(glyph, num_flags, flags, &i, &coordinates_length)) {
+      return Error("Failed to parse glyph flags %d (glyph %u)", i, gid);
     }
   }
 
-  if (!glyph.Skip(coordinates_length)) {
-    return Error("Glyph too short %d", glyph.length());
+  bool adjusted_bbox = false;
+  int16_t x = 0, y = 0;
+
+  // Read and check x-coords
+  for (uint32_t i = 0; i < num_flags; ++i) {
+    uint8_t flag = flags[i];
+    if (flag & X_SHORT_VECTOR) {
+      uint8_t dx;
+      if (!glyph.ReadU8(&dx)) {
+        return Error("Glyph too short %d (glyph %u)", glyph.length(), gid);
+      }
+      if (flag & X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR) {
+        x += dx;
+      } else {
+        x -= dx;
+      }
+    } else if (flag & X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR) {
+      // x remains unchanged
+    } else {
+      int16_t dx;
+      if (!glyph.ReadS16(&dx)) {
+        return Error("Glyph too short %d (glyph %u)", glyph.length(), gid);
+      }
+      x += dx;
+    }
+    if (x < xmin) {
+      xmin = x;
+      adjusted_bbox = true;
+    }
+    if (x > xmax) {
+      xmax = x;
+      adjusted_bbox = true;
+    }
+  }
+
+  // Read and check y-coords
+  for (uint32_t i = 0; i < num_flags; ++i) {
+    uint8_t flag = flags[i];
+    if (flag & Y_SHORT_VECTOR) {
+      uint8_t dy;
+      if (!glyph.ReadU8(&dy)) {
+        return Error("Glyph too short %d (glyph %u)", glyph.length(), gid);
+      }
+      if (flag & Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR) {
+        y += dy;
+      } else {
+        y -= dy;
+      }
+    } else if (flag & Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR) {
+      // x remains unchanged
+    } else {
+      int16_t dy;
+      if (!glyph.ReadS16(&dy)) {
+        return Error("Glyph too short %d (glyph %u)", glyph.length(), gid);
+      }
+      y += dy;
+    }
+    if (y < ymin) {
+      ymin = y;
+      adjusted_bbox = true;
+    }
+    if (y > ymax) {
+      ymax = y;
+      adjusted_bbox = true;
+    }
   }
 
   if (glyph.remaining() > 3) {
     // We allow 0-3 bytes difference since gly_length is 4-bytes aligned,
     // zero-padded length.
-    Warning("Extra bytes at end of the glyph: %d", glyph.remaining());
+    Warning("Extra bytes at end of the glyph: %d (glyph %u)", glyph.remaining(), gid);
+  }
+
+  if (adjusted_bbox) {
+    if (is_tricky_font) {
+      Warning("Glyph bbox was incorrect; NOT adjusting tricky font (glyph %u)", gid);
+    } else {
+      Warning("Glyph bbox was incorrect; adjusting (glyph %u)", gid);
+      // copy the numberOfContours field
+      this->iov.push_back(std::make_pair(glyph.buffer(), 2));
+      // output a fixed-up version of the bounding box
+      uint8_t* fixed_bbox = new uint8_t[8];
+      fixed_bboxes.push_back(fixed_bbox);
+      xmin = ots_htons(xmin);
+      std::memcpy(fixed_bbox, &xmin, 2);
+      ymin = ots_htons(ymin);
+      std::memcpy(fixed_bbox + 2, &ymin, 2);
+      xmax = ots_htons(xmax);
+      std::memcpy(fixed_bbox + 4, &xmax, 2);
+      ymax = ots_htons(ymax);
+      std::memcpy(fixed_bbox + 6, &ymax, 2);
+      this->iov.push_back(std::make_pair(fixed_bbox, 8));
+      // copy the remainder of the glyph data
+      this->iov.push_back(std::make_pair(glyph.buffer() + 10, glyph.offset() - 10));
+      return true;
+    }
   }
 
   this->iov.push_back(std::make_pair(glyph.buffer(), glyph.offset()));
@@ -144,7 +257,9 @@ bool OpenTypeGLYF::ParseSimpleGlyph(Buffer &glyph,
 #define WE_HAVE_A_TWO_BY_TWO     (1u << 7)
 #define WE_HAVE_INSTRUCTIONS     (1u << 8)
 
-bool OpenTypeGLYF::ParseCompositeGlyph(Buffer &glyph) {
+bool OpenTypeGLYF::ParseCompositeGlyph(
+    Buffer &glyph,
+    ComponentPointCount* component_point_count) {
   uint16_t flags = 0;
   uint16_t gid = 0;
   do {
@@ -193,6 +308,10 @@ bool OpenTypeGLYF::ParseCompositeGlyph(Buffer &glyph) {
         return Error("Can't read transform");
       }
     }
+
+    // Push inital components on stack at level 1
+    // to traverse them in parent function.
+    component_point_count->gid_stack.push_back({gid, 1});
   } while (flags & MORE_COMPONENTS);
 
   if (flags & WE_HAVE_INSTRUCTIONS) {
@@ -203,10 +322,10 @@ bool OpenTypeGLYF::ParseCompositeGlyph(Buffer &glyph) {
 
     if (this->maxp->version_1 &&
         this->maxp->max_size_glyf_instructions < bytecode_length) {
-      this->maxp->max_size_glyf_instructions = bytecode_length;
       Warning("Bytecode length is bigger than maxp.maxSizeOfInstructions "
               "%d: %d",
               this->maxp->max_size_glyf_instructions, bytecode_length);
+      this->maxp->max_size_glyf_instructions = bytecode_length;
     }
 
     if (!glyph.Skip(bytecode_length)) {
@@ -230,41 +349,32 @@ bool OpenTypeGLYF::Parse(const uint8_t *data, size_t length) {
     return Error("Missing maxp or loca or head table needed by glyf table");
   }
 
+  OpenTypeNAME *name = static_cast<OpenTypeNAME*>(
+      GetFont()->GetTypedTable(OTS_TAG_NAME));
+  bool is_tricky = name->IsTrickyFont();
+
   this->maxp = maxp;
 
   const unsigned num_glyphs = maxp->num_glyphs;
   std::vector<uint32_t> &offsets = loca->offsets;
 
   if (offsets.size() != num_glyphs + 1) {
-    return Error("Invalide glyph offsets size %ld != %d", offsets.size(), num_glyphs + 1);
+    return Error("Invalid glyph offsets size %ld != %d", offsets.size(), num_glyphs + 1);
   }
 
   std::vector<uint32_t> resulting_offsets(num_glyphs + 1);
   uint32_t current_offset = 0;
 
   for (unsigned i = 0; i < num_glyphs; ++i) {
-    const unsigned gly_offset = offsets[i];
-    // The LOCA parser checks that these values are monotonic
-    const unsigned gly_length = offsets[i + 1] - offsets[i];
-    if (!gly_length) {
-      // this glyph has no outline (e.g. the space charactor)
+
+    Buffer glyph(GetGlyphBufferSection(data, length, offsets, i));
+    if (!glyph.buffer())
+      return false;
+
+    if (!glyph.length()) {
       resulting_offsets[i] = current_offset;
       continue;
     }
-
-    if (gly_offset >= length) {
-      return Error("Glyph %d offset %d too high %ld", i, gly_offset, length);
-    }
-    // Since these are unsigned types, the compiler is not allowed to assume
-    // that they never overflow.
-    if (gly_offset + gly_length < gly_offset) {
-      return Error("Glyph %d length (%d < 0)!", i, gly_length);
-    }
-    if (gly_offset + gly_length > length) {
-      return Error("Glyph %d length %d too high", i, gly_length);
-    }
-
-    Buffer glyph(data + gly_offset, gly_length);
 
     int16_t num_contours, xmin, ymin, xmax, ymax;
     if (!glyph.ReadS16(&num_contours) ||
@@ -298,12 +408,60 @@ bool OpenTypeGLYF::Parse(const uint8_t *data, size_t length) {
       // does we will simply ignore it.
       glyph.set_offset(0);
     } else if (num_contours > 0) {
-      if (!ParseSimpleGlyph(glyph, num_contours)) {
+      if (!ParseSimpleGlyph(glyph, i, num_contours, xmin, ymin, xmax, ymax, is_tricky)) {
         return Error("Failed to parse glyph %d", i);
       }
     } else {
-      if (!ParseCompositeGlyph(glyph)) {
+
+      ComponentPointCount component_point_count;
+      if (!ParseCompositeGlyph(glyph, &component_point_count)) {
         return Error("Failed to parse glyph %d", i);
+      }
+
+      // Check maxComponentDepth and validate maxComponentPoints.
+      // ParseCompositeGlyph placed the first set of component glyphs on the
+      // component_point_count.gid_stack, which we start to process below. If a
+      // nested glyph is in turn a component glyph, additional glyphs are placed
+      // on the stack.
+      while (component_point_count.gid_stack.size()) {
+        GidAtLevel stack_top_gid = component_point_count.gid_stack.back();
+        component_point_count.gid_stack.pop_back();
+
+        Buffer points_count_glyph(GetGlyphBufferSection(
+            data,
+            length,
+            offsets,
+            stack_top_gid.gid));
+
+        if (!points_count_glyph.buffer())
+          return false;
+
+        if (!points_count_glyph.length())
+          continue;
+
+        if (!TraverseComponentsCountingPoints(points_count_glyph,
+                                              i,
+                                              stack_top_gid.level,
+                                              &component_point_count)) {
+          return Error("Error validating component points and depth.");
+        }
+
+        if (component_point_count.accumulated_component_points >
+            std::numeric_limits<uint16_t>::max()) {
+          return Error("Illegal composite points value "
+                       "exceeding 0xFFFF for base glyph %d.", i);
+        } else if (this->maxp->version_1 &&
+                   component_point_count.accumulated_component_points >
+                   this->maxp->max_c_points) {
+          Warning("Number of composite points in glyph %d exceeds "
+                  "maxp maxCompositePoints: %d vs %d, adjusting limit.",
+                  i,
+                  component_point_count.accumulated_component_points,
+                  this->maxp->max_c_points
+                  );
+          this->maxp->max_c_points =
+              component_point_count.accumulated_component_points;
+        }
       }
     }
 
@@ -342,6 +500,123 @@ bool OpenTypeGLYF::Parse(const uint8_t *data, size_t length) {
   }
 
   return true;
+}
+
+bool OpenTypeGLYF::TraverseComponentsCountingPoints(
+    Buffer &glyph,
+    uint16_t base_glyph_id,
+    uint32_t level,
+    ComponentPointCount* component_point_count) {
+
+  int16_t num_contours;
+  if (!glyph.ReadS16(&num_contours) ||
+      !glyph.Skip(8)) {
+    return Error("Can't read glyph header.");
+  }
+
+  if (num_contours <= -2) {
+    return Error("Bad number of contours %d in glyph.", num_contours);
+  }
+
+  if (num_contours == 0)
+    return true;
+
+  // FontTools counts a component level for each traversed recursion. We start
+  // counting at level 0. If we reach a level that's deeper than
+  // maxComponentDepth, we expand maxComponentDepth unless it's larger than
+  // the maximum possible depth.
+  if (level > std::numeric_limits<uint16_t>::max()) {
+    return Error("Illegal component depth exceeding 0xFFFF in base glyph id %d.",
+                 base_glyph_id);
+  } else if (this->maxp->version_1 &&
+             level > this->maxp->max_c_depth) {
+    this->maxp->max_c_depth = level;
+    Warning("Component depth exceeds maxp maxComponentDepth "
+            "in glyph %d, adjust limit to %d.",
+            base_glyph_id, level);
+  }
+
+  if (num_contours > 0) {
+    uint16_t num_points = 0;
+    for (int i = 0; i < num_contours; ++i) {
+      // Simple glyph, add contour points.
+      uint16_t tmp_index = 0;
+      if (!glyph.ReadU16(&tmp_index)) {
+        return Error("Can't read contour index %d", i);
+      }
+      num_points = tmp_index + 1;
+    }
+
+    component_point_count->accumulated_component_points += num_points;
+    return true;
+  } else  {
+    assert(num_contours == -1);
+
+    // Composite glyph, add gid's to stack.
+    uint16_t flags = 0;
+    uint16_t gid = 0;
+    do {
+      if (!glyph.ReadU16(&flags) || !glyph.ReadU16(&gid)) {
+        return Error("Can't read composite glyph flags or glyphIndex");
+      }
+
+      size_t skip_bytes = 0;
+      skip_bytes += flags & ARG_1_AND_2_ARE_WORDS ? 4 : 2;
+
+      if (flags & WE_HAVE_A_SCALE) {
+        skip_bytes += 2;
+      } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE) {
+        skip_bytes += 4;
+      } else if (flags & WE_HAVE_A_TWO_BY_TWO) {
+        skip_bytes += 8;
+      }
+
+      if (!glyph.Skip(skip_bytes)) {
+        return Error("Failed to parse component glyph.");
+      }
+
+      if (gid >= this->maxp->num_glyphs) {
+        return Error("Invalid glyph id used in composite glyph: %d", gid);
+      }
+
+      component_point_count->gid_stack.push_back({gid, level + 1u});
+    } while (flags & MORE_COMPONENTS);
+    return true;
+  }
+}
+
+Buffer OpenTypeGLYF::GetGlyphBufferSection(
+    const uint8_t *data,
+    size_t length,
+    const std::vector<uint32_t>& loca_offsets,
+    unsigned glyph_id) {
+
+  Buffer null_buffer(nullptr, 0);
+
+  const unsigned gly_offset = loca_offsets[glyph_id];
+  // The LOCA parser checks that these values are monotonic
+  const unsigned gly_length = loca_offsets[glyph_id + 1] - loca_offsets[glyph_id];
+  if (!gly_length) {
+    // this glyph has no outline (e.g. the space character)
+    return Buffer(data + gly_offset, 0);
+  }
+
+  if (gly_offset >= length) {
+    Error("Glyph %d offset %d too high %ld", glyph_id, gly_offset, length);
+    return null_buffer;
+  }
+  // Since these are unsigned types, the compiler is not allowed to assume
+  // that they never overflow.
+  if (gly_offset + gly_length < gly_offset) {
+    Error("Glyph %d length (%d < 0)!", glyph_id, gly_length);
+    return null_buffer;
+  }
+  if (gly_offset + gly_length > length) {
+    Error("Glyph %d length %d too high", glyph_id, gly_length);
+    return null_buffer;
+  }
+
+  return Buffer(data + gly_offset, gly_length);
 }
 
 bool OpenTypeGLYF::Serialize(OTSStream *out) {

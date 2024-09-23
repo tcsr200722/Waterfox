@@ -19,6 +19,72 @@
   color: var(--theme-toolbar-color);
 }
 
+
+.toolbox-always-on-top {
+  display: flex;
+  padding: 6px;
+  margin-inline: 8px;
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  align-items: center;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.toolbox-always-on-top::after {
+  content: "";
+  display: block;
+  width: 18px;
+  height: 18px;
+  background-size: cover;
+  background-image: url("chrome://devtools/skin/images/command-always-on-top-window.svg");
+  -moz-context-properties: fill;
+  fill: currentColor;
+  margin-inline-start: 5px;
+}
+
+.toolbox-always-on-top:focus {
+  outline: none;
+  background-color: var(--theme-toolbar-hover);
+  box-shadow: var(--toolbox-button-box-shadow-focus);
+}
+:root {
+  --toolbox-button-box-shadow-focus: 0 0 0 1px #0a84ff inset, 0 0 0 1px #0a84ff, 0 0 0 4px rgba(10, 132, 255, 0.3);
+}
+
+.toolbox-always-on-top:hover {
+  background-color: var(--theme-toolbar-hover);
+  border-color: var(--tab-line-hover-color);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .toolbox-always-on-top.checked:not(.toolbox-is-focused) {
+    animation: 0.5s linear 0s 1 normal blink-always-on-top;
+  }
+
+  @keyframes blink-always-on-top {
+    from {
+      background-color: var(--theme-toolbar-background-highlighted);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+}
+
+.toolbox-always-on-top.checked:not(:active),
+.toolbox-always-on-top:not(.checked):active {
+  color: var(--theme-icon-checked-color);
+}
+
+.toolbox-always-on-top.checked:hover:not(:active),
+.toolbox-always-on-top:not(.checked):hover:active {
+  border-color: var(--tab-line-selected-color);
+}
+
 /*
  *  Debug Target labels with icon layout
  *  +------+------------------------+---------------+
@@ -28,11 +94,18 @@
  */
 .debug-target-info .iconized-label {
   display: grid;
-  grid-template-columns: 20px auto auto;
-  grid-column-gap: 8px;
   align-items: center;
-  padding: 0 var(--padding-inline-end-size);
   white-space: nowrap;
+  grid-column-gap: 8px;
+  grid-template-columns: 20px auto auto;
+  padding: 0 var(--padding-inline-end-size);
+}
+
+.debug-target-navigation {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  padding: 0 4px;
 }
 
 .debug-target-info .iconized-label:not(:last-child) {
@@ -49,39 +122,59 @@
   fill: var(--theme-toolbar-color);
 }
 
-.debug-target-info .reload-button {
+/*
+ * XXX: This was added to match the padding 8px used by the reload button.
+ * This padding makes the debug target component taller and also creates
+ * spacing with the debug-target-title separator.
+ * See Bug 1641920 for improving the CSS of the DebugTargetInfo component.
+ */
+.debug-target-info .debug-target-url-readonly {
   padding: 8px;
+}
+
+.debug-target-info .navigation-button {
+  padding: 8px;
+  margin: auto 2px;
   grid-column-gap: 0;
   border: 0;
   background: var(--theme-toolbarbutton-background);
   --border-inline-end-width: 0;
 }
 
-.debug-target-info .reload-button:hover {
+.debug-target-info .navigation-button > img:-moz-locale-dir(rtl) {
+  transform: scaleX(-1);
+}
+
+.debug-target-info .navigation-button:hover {
   background-color: var(--toolbarbutton-hover-background);
 }
 
-.debug-target-info .reload-button:focus {
-  box-shadow: 0 0 0 1px #0a84ff inset, 0 0 0 1px #0a84ff, 0 0 0 4px rgba(10, 132, 255, 0.3)
+.debug-target-info .navigation-button:focus {
+  box-shadow: var(--toolbox-button-box-shadow-focus);
 }
 
-.debug-target-info .reload-button:active {
+.debug-target-info .navigation-button:active {
   background-color: var(--theme-toolbarbutton-active-background);
 }
 
-.debug-target-info .reload-button img {
+.debug-target-info .navigation-button img {
   fill: var(--theme-toolbarbutton-color);
 }
 
-.debug-target-info .reload-button:active img {
+.debug-target-info .navigation-button:active img {
   fill: var(--theme-toolbarbutton-active-color);
 }
 
 .debug-target-info .debug-target-url {
   display: flex;
-  flex-grow: 1;
-  padding-inline-end: var(--padding-inline-end-size);
+  flex: 1;
   align-self: center;
+  min-width: 0;
+}
+
+/* Add some inline-end padding when the debug target url is the last child */
+.debug-target-info .debug-target-url:is(:last-child) {
+  padding-inline-end: var(--padding-inline-end-size);
 }
 
 .debug-target-info .debug-target-url-input {
@@ -89,6 +182,9 @@
   border-radius: 2px;
   height: 20px;
   padding-inline-start: 10px;
+  /* Ensure that the url is displayed correctly for RTL locales. */
+  unicode-bidi: plaintext;
+  text-align: match-parent;
 }
 
 .debug-target-info .debug-target-url-input,
@@ -99,7 +195,7 @@
 /* Toolbox tabbar */
 
 .devtools-tabbar {
-  -moz-appearance: none;
+  appearance: none;
   /* For narrow devtool width, we define the each column width of tabbar.
     Defined layout is as follow:
 
@@ -180,6 +276,8 @@
   text-overflow: ellipsis;
   color: var(--theme-toolbar-color);
   background-color: transparent;
+    /* adjust outline offset so it's not clipped */
+  --theme-outline-offset: -2px;
 }
 
 .devtools-tab-label {
@@ -205,8 +303,7 @@
   min-width: 26px;
 }
 
-.devtools-tab:hover,
-.devtools-tab:focus {
+.devtools-tab:hover {
   background-color: var(--theme-toolbar-hover);
 }
 
@@ -226,8 +323,7 @@
 .devtools-tab > img {
   border: none;
   margin: 0;
-  margin-inline-start: 8px;
-  margin-inline-end: 6px;
+  margin-inline: 8px 6px;
   height: 16px;
   width: 16px;
   vertical-align: text-top;
@@ -247,7 +343,7 @@
 /* Toolbox controls */
 
 .devtools-tabbar-button {
-  -moz-appearance: none;
+  appearance: none;
   position: relative;
   display: flex;
   align-items: center;
@@ -262,6 +358,8 @@
   line-height: 16px;
   color: var(--theme-icon-color);
   background-color: transparent;
+  /* adjust outline offset so it's not clipped */
+  --theme-outline-offset: -2px;
 }
 
 /* Button icon style */
@@ -280,11 +378,6 @@
 
 .devtools-tabbar-button::-moz-focus-inner {
   border: none;
-}
-
-.devtools-tabbar-button:focus {
-  outline: none;
-  background-color: var(--theme-toolbar-hover);
 }
 
 .devtools-tabbar-button:hover,
@@ -360,8 +453,30 @@
   --menuitem-icon-image: url("chrome://devtools/skin/images/command-noautohide.svg");
 }
 
+#toolbox-meatball-menu-pseudo-locale-accented {
+  --menuitem-icon-image: url("chrome://devtools/skin/images/command-accented.svg");
+}
+
+#toolbox-meatball-menu-pseudo-locale-bidi {
+  --menuitem-icon-image: url("chrome://devtools/skin/images/command-bidi.svg");
+}
+
 #toolbox-meatball-menu-settings {
   --menuitem-icon-image: url("chrome://devtools/skin/images/settings.svg");
+}
+
+.toolbox-error {
+  background-color: transparent !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbox-error::before {
+  background-image: url("resource://devtools-shared-images/error-small.svg");
+  fill: var(--theme-icon-error-color) !important;
+}
+
+.toolbox-error:hover {
+  background-color: var(--toolbarbutton-hover-background) !important;
 }
 
 /* Command buttons */
@@ -371,18 +486,18 @@
 }
 
 #command-button-pick::before {
-  background-image: url("chrome://devtools/skin/images/command-pick.svg");
+  background-image: url("resource://devtools-shared-images/command-pick.svg");
 }
 
 #command-button-pick.accessibility::before {
   background-image: url("chrome://devtools/skin/images/command-pick-accessibility.svg");
 }
 
-/* Command button images */
-
-#command-button-paintflashing::before {
-  background-image: url("chrome://devtools/skin/images/command-paintflashing.svg");
+#command-button-pick.remote-fenix::before {
+  background-image: url("resource://devtools-shared-images/command-pick-remote-touch.svg");
 }
+
+/* Command button images */
 
 #command-button-screenshot::before {
   background-image: url("chrome://devtools/skin/images/command-screenshot.svg");
@@ -402,13 +517,12 @@
   fill-opacity: 0.25;
 }
 
-#command-button-fission-prefs::before {
-  content: "FIS";
-  width: auto;
-  font-weight: 600;
+#command-button-experimental-prefs::before {
+  background-image: url("chrome://global/skin/icons/experiments.svg");
+  background-size: cover;
 }
 
-.fission-pref-icon::before {
+.experimental-pref-icon::before {
   content: "";
   background-image: url("chrome://devtools/skin/images/help.svg");
   -moz-context-properties: fill;
@@ -456,8 +570,8 @@
 /* Toolbox panels */
 
 .toolbox-panel {
-  display: -moz-box;
-  -moz-box-flex: 1;
+  display: flex;
+  flex: 1;
   visibility: collapse;
 }
 
@@ -476,17 +590,49 @@
   -moz-user-focus: ignore;
 }
 
+#toolbox-panel-webconsole {
+  min-height: 75px;
+  flex: 1 auto;
+}
+
+#toolbox-panel-webconsole[collapsed],
+#toolbox-deck[collapsed] {
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+#toolbox-deck:not([collapsed]),
+#toolbox-panel-webconsole[expanded] {
+  /* Override the splitter-set height and flex instead */
+  height: auto !important;
+}
+
 /**
- * Enrure that selected toolbox panel's contents are keyboard accessible as they
+ * Ensure that selected toolbox panel's contents are keyboard accessible as they
  * are explicitly made not to be when hidden (default).
  */
 .toolbox-panel[selected] * {
   -moz-user-focus: normal;
 }
 
-/* Let the component gain focus when a click hits an empty area */
+.toolbox-panel-iframe {
+  /* Allow toolbox frames to shrink under the default size and flex */
+  contain: size;
+}
+
 #toolbox-container {
+  flex: 1;
+  /* Let the component gain focus when a click hits an empty area */
   -moz-user-focus: normal;
+}
+
+#toolbox-deck {
+  min-height: 75px;
+  /* Set large flex to allow the toolbox-panel-webconsole to have a
+     height set to a small value without flexing to fill up extra
+     space. There must be a flex on both to ensure that the console
+     panel itself is sized properly */
+  flex: 10000 10000;
 }
 
 #toolbox-container:focus {

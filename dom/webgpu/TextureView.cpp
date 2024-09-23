@@ -6,31 +6,42 @@
 #include "TextureView.h"
 
 #include "Device.h"
+#include "mozilla/dom/WebGPUBinding.h"
+#include "mozilla/webgpu/CanvasContext.h"
+#include "ipc/WebGPUChild.h"
 
-namespace mozilla {
-namespace webgpu {
+namespace mozilla::webgpu {
 
 GPU_IMPL_CYCLE_COLLECTION(TextureView, mParent)
 GPU_IMPL_JS_WRAP(TextureView)
 
 TextureView::TextureView(Texture* const aParent, RawId aId)
-    : ChildOf(aParent), mId(aId) {}
+    : ChildOf(aParent), mId(aId) {
+  MOZ_RELEASE_ASSERT(aId);
+}
 
 TextureView::~TextureView() { Cleanup(); }
 
-dom::HTMLCanvasElement* TextureView::GetTargetCanvasElement() const {
-  return mParent->mTargetCanvasElement;
+CanvasContext* TextureView::GetTargetContext() const {
+  return mParent->mTargetContext;
 }  // namespace webgpu
 
 void TextureView::Cleanup() {
-  if (mValid && mParent && mParent->GetParentDevice()) {
-    mValid = false;
-    auto bridge = mParent->GetParentDevice()->GetBridge();
-    if (bridge && bridge->IsOpen()) {
-      bridge->SendTextureViewDestroy(mId);
-    }
+  if (!mValid || !mParent || !mParent->GetDevice()) {
+    return;
   }
+  mValid = false;
+
+  auto bridge = mParent->GetDevice()->GetBridge();
+  if (!bridge) {
+    return;
+  }
+
+  if (bridge->CanSend()) {
+    bridge->SendTextureViewDrop(mId);
+  }
+
+  wgpu_client_free_texture_view_id(bridge->GetClient(), mId);
 }
 
-}  // namespace webgpu
-}  // namespace mozilla
+}  // namespace mozilla::webgpu

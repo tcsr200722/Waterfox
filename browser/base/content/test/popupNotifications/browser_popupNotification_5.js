@@ -62,7 +62,7 @@ var tests = [
       this.notification1.remove();
       this.notification2.remove();
     },
-    onHidden(popup) {},
+    onHidden() {},
   },
   // The anchor icon should be shown for notifications in background windows.
   {
@@ -93,6 +93,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       this.notifyObj = new BasicNotification(this.id);
@@ -104,7 +105,9 @@ var tests = [
     async onShown(popup) {
       this.complete = false;
 
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.org/");
+      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
       await promiseTabLoadEvent(gBrowser.selectedTab, "http://example.com/");
 
       // This code should not be executed.
@@ -113,7 +116,7 @@ var tests = [
       this.complete = true;
       triggerSecondaryCommand(popup, 0);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         !this.complete,
         "Should have hidden the notification after navigation"
@@ -131,6 +134,7 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       this.notifyObj = new BasicNotification(this.id);
@@ -151,7 +155,7 @@ var tests = [
       this.complete = true;
       triggerSecondaryCommand(popup, 0);
     },
-    onHidden(popup) {
+    onHidden() {
       ok(
         this.complete,
         "Should have hidden the notification after clicking Not Now"
@@ -170,14 +174,15 @@ var tests = [
       this.notifyObj.options.persistent = true;
       gNotification = showNotification(this.notifyObj);
     },
-    async onShown(popup) {
+    async onShown() {
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
     },
-    onHidden(popup) {
+    onHidden() {
       ok(true, "Should have hidden the notification after tab switch");
       gBrowser.removeTab(gBrowser.selectedTab);
       gBrowser.selectedTab = this.oldSelectedTab;
@@ -188,9 +193,8 @@ var tests = [
   {
     id: "Test#6b",
     run() {
-      let id = PopupNotifications.panel.firstElementChild.getAttribute(
-        "popupid"
-      );
+      let id =
+        PopupNotifications.panel.firstElementChild.getAttribute("popupid");
       ok(
         id.endsWith("Test#6a"),
         "Should have found the notification from Test6a"
@@ -212,12 +216,14 @@ var tests = [
       this.oldSelectedTab = gBrowser.selectedTab;
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
       let firstTab = gBrowser.selectedTab;
 
       await BrowserTestUtils.openNewForegroundTab(
         gBrowser,
+        // eslint-disable-next-line @microsoft/sdl/no-insecure-url
         "http://example.com/"
       );
 
@@ -254,9 +260,8 @@ var tests = [
       await BrowserTestUtils.closeWindow(win);
       await waitForWindowReadyForPopupNotifications(window);
 
-      let id = PopupNotifications.panel.firstElementChild.getAttribute(
-        "popupid"
-      );
+      let id =
+        PopupNotifications.panel.firstElementChild.getAttribute("popupid");
       ok(
         id.endsWith("Test#7"),
         "Should have found the notification from Test7"
@@ -277,8 +282,9 @@ var tests = [
         !notifyObj.showingCallbackTriggered,
         "Should not have triggered a second showing event"
       );
-      ok(
-        this.notification.timeShown > timeShown,
+      Assert.greater(
+        this.notification.timeShown,
+        timeShown,
         "should have updated timeShown to restart the security delay"
       );
 
@@ -312,7 +318,7 @@ var tests = [
       this.notification1.remove();
       this.notification2.remove();
     },
-    onHidden(popup) {},
+    onHidden() {},
   },
   // Test that persistent notifications are shown stacked by anchor on update
   {
@@ -357,7 +363,7 @@ var tests = [
       this.notification2.remove();
       this.notification3.remove();
     },
-    onHidden(popup) {},
+    onHidden() {},
   },
   // Test that on closebutton click, only the persistent notification
   // that contained the closebutton loses its persistent status.

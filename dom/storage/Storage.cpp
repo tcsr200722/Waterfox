@@ -8,15 +8,18 @@
 #include "StorageNotifierService.h"
 
 #include "mozilla/dom/StorageBinding.h"
+#include "mozilla/dom/StorageEvent.h"
+#include "mozilla/dom/StorageEventBinding.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StorageAccess.h"
+#include "nsIObserverService.h"
 #include "nsPIDOMWindow.h"
 
-namespace mozilla {
-namespace dom {
-
-static const char kStorageEnabled[] = "dom.storage.enabled";
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Storage, mWindow, mPrincipal,
                                       mStoragePrincipal)
@@ -34,16 +37,19 @@ Storage::Storage(nsPIDOMWindowInner* aWindow, nsIPrincipal* aPrincipal,
     : mWindow(aWindow),
       mPrincipal(aPrincipal),
       mStoragePrincipal(aStoragePrincipal),
-      mIsSessionOnly(false) {
+      mPrivateBrowsing(false),
+      mPrivateBrowsingOrLess(false) {
   MOZ_ASSERT(aPrincipal);
 
   if (mPrincipal->IsSystemPrincipal()) {
-    mIsSessionOnly = false;
+    mPrivateBrowsing = false;
+    mPrivateBrowsingOrLess = false;
   } else if (mWindow) {
     uint32_t rejectedReason = 0;
     StorageAccess access = StorageAllowedForWindow(mWindow, &rejectedReason);
 
-    mIsSessionOnly = access <= StorageAccess::eSessionScoped;
+    mPrivateBrowsing = access == StorageAccess::ePrivateBrowsing;
+    mPrivateBrowsingOrLess = access <= StorageAccess::ePrivateBrowsing;
   }
 }
 
@@ -51,7 +57,13 @@ Storage::~Storage() = default;
 
 /* static */
 bool Storage::StoragePrefIsEnabled() {
-  return mozilla::Preferences::GetBool(kStorageEnabled);
+  return StaticPrefs::dom_storage_enabled();
+}
+
+int64_t Storage::GetSnapshotUsage(nsIPrincipal& aSubjectPrincipal,
+                                  ErrorResult& aRv) {
+  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+  return 0;
 }
 
 bool Storage::CanUseStorage(nsIPrincipal& aSubjectPrincipal) {
@@ -120,7 +132,7 @@ void Storage::NotifyChange(Storage* aStorage, nsIPrincipal* aPrincipal,
   // Note, this DOM event should never reach JS. It is cloned later in
   // nsGlobalWindow.
   RefPtr<StorageEvent> event =
-      StorageEvent::Constructor(nullptr, NS_LITERAL_STRING("storage"), dict);
+      StorageEvent::Constructor(nullptr, u"storage"_ns, dict);
 
   event->SetPrincipal(aPrincipal);
 
@@ -137,9 +149,8 @@ void Storage::NotifyChange(Storage* aStorage, nsIPrincipal* aPrincipal,
   if (aImmediateDispatch) {
     Unused << r->Run();
   } else {
-    SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
+    SchedulerGroup::Dispatch(r.forget());
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

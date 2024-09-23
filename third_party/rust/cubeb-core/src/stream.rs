@@ -3,10 +3,11 @@
 // This program is made available under an ISC-style license.  See the
 // accompanying file LICENSE for details.
 
-use {ChannelLayout, DeviceRef, Result, SampleFormat};
 use ffi;
-use std::os::raw::c_void;
+use std::ffi::CStr;
+use std::os::raw::{c_int, c_void};
 use std::ptr;
+use {ChannelLayout, DeviceRef, Result, SampleFormat};
 
 /// Stream states signaled via `state_callback`.
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
@@ -33,10 +34,10 @@ impl From<ffi::cubeb_state> for State {
     }
 }
 
-impl Into<ffi::cubeb_state> for State {
-    fn into(self) -> ffi::cubeb_state {
+impl From<State> for ffi::cubeb_state {
+    fn from(x: State) -> Self {
         use State::*;
-        match self {
+        match x {
             Started => ffi::CUBEB_STATE_STARTED,
             Stopped => ffi::CUBEB_STATE_STOPPED,
             Drained => ffi::CUBEB_STATE_DRAINED,
@@ -48,14 +49,31 @@ impl Into<ffi::cubeb_state> for State {
 bitflags! {
     /// Miscellaneous stream preferences.
     pub struct StreamPrefs: ffi::cubeb_stream_prefs {
-        const NONE = ffi::CUBEB_STREAM_PREF_NONE;
         const LOOPBACK = ffi::CUBEB_STREAM_PREF_LOOPBACK;
         const DISABLE_DEVICE_SWITCHING = ffi::CUBEB_STREAM_PREF_DISABLE_DEVICE_SWITCHING;
         const VOICE = ffi::CUBEB_STREAM_PREF_VOICE;
     }
 }
 
-ffi_type_stack!{
+impl StreamPrefs {
+    pub const NONE: Self = Self::empty();
+}
+
+bitflags! {
+    /// Input stream processing parameters.
+    pub struct InputProcessingParams: ffi::cubeb_input_processing_params {
+        const ECHO_CANCELLATION = ffi::CUBEB_INPUT_PROCESSING_PARAM_ECHO_CANCELLATION;
+        const NOISE_SUPPRESSION = ffi::CUBEB_INPUT_PROCESSING_PARAM_NOISE_SUPPRESSION;
+        const AUTOMATIC_GAIN_CONTROL = ffi::CUBEB_INPUT_PROCESSING_PARAM_AUTOMATIC_GAIN_CONTROL;
+        const VOICE_ISOLATION = ffi::CUBEB_INPUT_PROCESSING_PARAM_VOICE_ISOLATION;
+    }
+}
+
+impl InputProcessingParams {
+    pub const NONE: Self = Self::empty();
+}
+
+ffi_type_stack! {
     /// Stream format initialization parameters.
     type CType = ffi::cubeb_stream_params;
     #[derive(Debug)]
@@ -118,16 +136,11 @@ impl StreamRef {
         unsafe { call!(ffi::cubeb_stream_stop(self.as_ptr())) }
     }
 
-    /// Reset stream to the default device.
-    pub fn reset_default_device(&self) -> Result<()> {
-        unsafe { call!(ffi::cubeb_stream_reset_default_device(self.as_ptr())) }
-    }
-
     /// Get the current stream playback position.
     pub fn position(&self) -> Result<u64> {
         let mut position = 0u64;
         unsafe {
-            let _ = try_call!(ffi::cubeb_stream_get_position(self.as_ptr(), &mut position));
+            call!(ffi::cubeb_stream_get_position(self.as_ptr(), &mut position))?;
         }
         Ok(position)
     }
@@ -138,7 +151,7 @@ impl StreamRef {
     pub fn latency(&self) -> Result<u32> {
         let mut latency = 0u32;
         unsafe {
-            let _ = try_call!(ffi::cubeb_stream_get_latency(self.as_ptr(), &mut latency));
+            call!(ffi::cubeb_stream_get_latency(self.as_ptr(), &mut latency))?;
         }
         Ok(latency)
     }
@@ -149,7 +162,10 @@ impl StreamRef {
     pub fn input_latency(&self) -> Result<u32> {
         let mut latency = 0u32;
         unsafe {
-            let _ = try_call!(ffi::cubeb_stream_get_input_latency(self.as_ptr(), &mut latency));
+            call!(ffi::cubeb_stream_get_input_latency(
+                self.as_ptr(),
+                &mut latency
+            ))?;
         }
         Ok(latency)
     }
@@ -159,15 +175,36 @@ impl StreamRef {
         unsafe { call!(ffi::cubeb_stream_set_volume(self.as_ptr(), volume)) }
     }
 
+    /// Change a stream's name
+    pub fn set_name(&self, name: &CStr) -> Result<()> {
+        unsafe { call!(ffi::cubeb_stream_set_name(self.as_ptr(), name.as_ptr())) }
+    }
+
     /// Get the current output device for this stream.
     pub fn current_device(&self) -> Result<&DeviceRef> {
         let mut device: *mut ffi::cubeb_device = ptr::null_mut();
         unsafe {
-            let _ = try_call!(ffi::cubeb_stream_get_current_device(
+            call!(ffi::cubeb_stream_get_current_device(
                 self.as_ptr(),
                 &mut device
-            ));
+            ))?;
             Ok(DeviceRef::from_ptr(device))
+        }
+    }
+
+    /// Set the mute state for an input stream.
+    pub fn set_input_mute(&self, mute: bool) -> Result<()> {
+        let mute: c_int = if mute { 1 } else { 0 };
+        unsafe { call!(ffi::cubeb_stream_set_input_mute(self.as_ptr(), mute)) }
+    }
+
+    /// Set the processing parameters for an input stream.
+    pub fn set_input_processing_params(&self, params: InputProcessingParams) -> Result<()> {
+        unsafe {
+            call!(ffi::cubeb_stream_set_input_processing_params(
+                self.as_ptr(),
+                params.bits()
+            ))
         }
     }
 
@@ -201,8 +238,8 @@ impl StreamRef {
 
 #[cfg(test)]
 mod tests {
-    use {StreamParams, StreamParamsRef, StreamPrefs};
     use std::mem;
+    use {StreamParams, StreamParamsRef, StreamPrefs};
 
     #[test]
     fn stream_params_default() {

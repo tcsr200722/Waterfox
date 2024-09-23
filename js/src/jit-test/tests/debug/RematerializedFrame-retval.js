@@ -1,4 +1,4 @@
-// |jit-test| error: InternalError; --baseline-eager; --ion-eager
+// |jit-test| slow; error: InternalError; --baseline-eager; --ion-eager
 // Make sure that return values we store in RematerializedFrames via resumption
 // values get propagated to the BaselineFrames we build from them.
 //
@@ -32,8 +32,8 @@ loadFile(lfLogBuffer);
 function loadFile(lfVarx) {
     try {
          let m = parseModule(lfVarx);
-         m.declarationInstantiation();
-         m.evaluation();
+         moduleLink(m);
+         moduleEvaluate(m);
     } catch (lfVare) {}
 }
 

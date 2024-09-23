@@ -10,6 +10,7 @@
 
 #include <utility>
 
+#include "mozilla/AnimatedPropertyID.h"
 #include "mozilla/SMILCSSValueType.h"
 #include "mozilla/SMILValue.h"
 #include "mozilla/ServoBindings.h"
@@ -21,8 +22,9 @@
 namespace mozilla {
 
 // Class Methods
-SMILCSSProperty::SMILCSSProperty(nsCSSPropertyID aPropID, Element* aElement,
-                                 ComputedStyle* aBaseComputedStyle)
+SMILCSSProperty::SMILCSSProperty(nsCSSPropertyID aPropID,
+                                 dom::Element* aElement,
+                                 const ComputedStyle* aBaseComputedStyle)
     : mPropID(aPropID),
       mElement(aElement),
       mBaseComputedStyle(aBaseComputedStyle) {
@@ -61,8 +63,11 @@ SMILValue SMILCSSProperty::GetBaseValue() const {
   }
 
   AnimationValue computedValue;
+  AnimatedPropertyID property(mPropID);
+  MOZ_ASSERT(!property.IsCustom(),
+             "Cannot animate custom properties with SMIL");
   computedValue.mServo =
-      Servo_ComputedValues_ExtractAnimationValue(mBaseComputedStyle, mPropID)
+      Servo_ComputedValues_ExtractAnimationValue(mBaseComputedStyle, &property)
           .Consume();
   if (!computedValue.mServo) {
     return baseValue;
@@ -74,7 +79,7 @@ SMILValue SMILCSSProperty::GetBaseValue() const {
 }
 
 nsresult SMILCSSProperty::ValueFromString(
-    const nsAString& aStr, const SVGAnimationElement* aSrcElement,
+    const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
     SMILValue& aValue, bool& aPreventCachingOfSandwich) const {
   NS_ENSURE_TRUE(IsPropertyAnimatable(mPropID), NS_ERROR_FAILURE);
 
@@ -100,9 +105,7 @@ nsresult SMILCSSProperty::SetAnimValue(const SMILValue& aValue) {
 }
 
 void SMILCSSProperty::ClearAnimValue() {
-  // Put empty string in override style for our property
-  mElement->SMILOverrideStyle()->SetPropertyValue(mPropID, EmptyCString(),
-                                                  nullptr, IgnoreErrors());
+  mElement->SMILOverrideStyle()->ClearSMILValue(mPropID);
 }
 
 // Based on http://www.w3.org/TR/SVG/propidx.html

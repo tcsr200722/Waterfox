@@ -195,17 +195,22 @@ class EncryptDeriveTest
 
 TEST_P(EncryptDeriveTest, Test) { TestEncryptDerive(); }
 
-static const CK_MECHANISM_TYPE kEncryptDeriveMechanisms[] = {
-    CKM_DES3_ECB, CKM_DES3_CBC, CKM_AES_ECB, CKM_AES_ECB, CKM_AES_CBC,
-    CKM_CAMELLIA_ECB, CKM_CAMELLIA_CBC
+static const CK_MECHANISM_TYPE kEncryptDeriveMechanisms[] = {CKM_DES3_ECB,
+                                                             CKM_DES3_CBC,
+                                                             CKM_AES_ECB,
+                                                             CKM_AES_ECB,
+                                                             CKM_AES_CBC,
+                                                             CKM_CAMELLIA_ECB,
+                                                             CKM_CAMELLIA_CBC
 #ifndef NSS_DISABLE_DEPRECATED_SEED
-    ,
-    CKM_SEED_ECB, CKM_SEED_CBC
+                                                             ,
+                                                             CKM_SEED_ECB,
+                                                             CKM_SEED_CBC
 #endif
 };
 
-INSTANTIATE_TEST_CASE_P(EncryptDeriveTests, EncryptDeriveTest,
-                        ::testing::ValuesIn(kEncryptDeriveMechanisms));
+INSTANTIATE_TEST_SUITE_P(EncryptDeriveTests, EncryptDeriveTest,
+                         ::testing::ValuesIn(kEncryptDeriveMechanisms));
 
 // This class handles the case where 3DES takes a 192-bit key
 // where all 24 octets will be used.
@@ -219,7 +224,7 @@ TEST_P(EncryptDerive3Test, Test) { TestEncryptDerive(); }
 static const CK_MECHANISM_TYPE kDES3EncryptDeriveMechanisms[] = {CKM_DES3_ECB,
                                                                  CKM_DES3_CBC};
 
-INSTANTIATE_TEST_CASE_P(Encrypt3DeriveTests, EncryptDerive3Test,
-                        ::testing::ValuesIn(kDES3EncryptDeriveMechanisms));
+INSTANTIATE_TEST_SUITE_P(Encrypt3DeriveTests, EncryptDerive3Test,
+                         ::testing::ValuesIn(kDES3EncryptDeriveMechanisms));
 
 }  // namespace nss_test

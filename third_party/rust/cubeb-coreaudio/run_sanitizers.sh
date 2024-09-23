@@ -11,7 +11,14 @@ if [[ $toolchain != nightly* ]]; then
     exit
 fi
 
-sanitizers=("address" "leak" "memory" "thread")
+# Bail out once getting an error.
+set -e
+
+# Ideally, sanitizers should be ("address" "leak" "memory" "thread") but
+# - `memory`: It doesn't works with target x86_64-apple-darwin
+# - `leak`: Get some errors that are out of our control. See:
+#   https://github.com/mozilla/cubeb-coreaudio-rs/issues/45#issuecomment-591642931
+sanitizers=("address" "thread")
 for san in "${sanitizers[@]}"
 do
     San="$(tr '[:lower:]' '[:upper:]' <<< ${san:0:1})${san:1}"

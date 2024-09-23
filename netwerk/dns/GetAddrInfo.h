@@ -11,10 +11,13 @@
 #include "nscore.h"
 #include "nsINativeDNSResolverOverride.h"
 #include "nsHashKeys.h"
-#include "nsDataHashtable.h"
+#include "nsTHashMap.h"
 #include "mozilla/RWLock.h"
 #include "nsTArray.h"
 #include "prio.h"
+#include "mozilla/net/DNS.h"
+#include "nsIDNSByTypeRecord.h"
+#include "mozilla/Logging.h"
 
 #if defined(XP_WIN)
 #  define DNSQUERY_AVAILABLE 1
@@ -25,7 +28,9 @@
 namespace mozilla {
 namespace net {
 
+extern LazyLogModule gGetAddrInfoLog;
 class AddrInfo;
+class DNSPacket;
 
 /**
  * Look up a host by name. Mostly equivalent to getaddrinfo(host, NULL, ...) of
@@ -62,23 +67,44 @@ nsresult GetAddrInfoInit();
  */
 nsresult GetAddrInfoShutdown();
 
+void DNSThreadShutdown();
+
+/**
+ * Resolves a HTTPS record. Will check overrides before calling the
+ * native OS implementation.
+ */
+nsresult ResolveHTTPSRecord(const nsACString& aHost, uint16_t aFlags,
+                            TypeRecordResultType& aResult, uint32_t& aTTL);
+
+/**
+ * The platform specific implementation of HTTPS resolution.
+ */
+nsresult ResolveHTTPSRecordImpl(const nsACString& aHost, uint16_t aFlags,
+                                TypeRecordResultType& aResult, uint32_t& aTTL);
+
+nsresult ParseHTTPSRecord(nsCString& aHost, DNSPacket& aDNSPacket,
+                          TypeRecordResultType& aResult, uint32_t& aTTL);
+
 class NativeDNSResolverOverride : public nsINativeDNSResolverOverride {
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSINATIVEDNSRESOLVEROVERRIDE
  public:
-  NativeDNSResolverOverride() : mLock("NativeDNSResolverOverride") {}
+  NativeDNSResolverOverride() = default;
 
   static already_AddRefed<nsINativeDNSResolverOverride> GetSingleton();
 
  private:
   virtual ~NativeDNSResolverOverride() = default;
-  mozilla::RWLock mLock;
+  mozilla::RWLock mLock MOZ_UNANNOTATED{"NativeDNSResolverOverride"};
 
-  nsDataHashtable<nsCStringHashKey, nsTArray<PRNetAddr>> mOverrides;
-  nsDataHashtable<nsCStringHashKey, nsCString> mCnames;
+  nsTHashMap<nsCStringHashKey, nsTArray<NetAddr>> mOverrides;
+  nsTHashMap<nsCStringHashKey, nsCString> mCnames;
+  nsTHashMap<nsCStringHashKey, nsTArray<uint8_t>> mHTTPSRecordOverrides;
 
   friend bool FindAddrOverride(const nsACString& aHost, uint16_t aAddressFamily,
                                uint16_t aFlags, AddrInfo** aAddrInfo);
+  friend bool FindHTTPSRecordOverride(const nsACString& aHost,
+                                      TypeRecordResultType& aResult);
 };
 
 }  // namespace net

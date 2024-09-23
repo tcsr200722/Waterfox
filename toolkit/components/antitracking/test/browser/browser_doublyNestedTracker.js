@@ -1,4 +1,4 @@
-add_task(async function() {
+add_task(async function () {
   info("Starting doubly nested tracker test");
 
   await SpecialPowers.flushPrefEnv();
@@ -8,6 +8,10 @@ add_task(async function() {
         "network.cookie.cookieBehavior",
         Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
       ],
+      [
+        "network.cookie.cookieBehavior.pbmode",
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+      ],
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.pbmode.enabled", false],
       ["privacy.trackingprotection.annotate_channels", true],
@@ -15,6 +19,8 @@ add_task(async function() {
         "privacy.restrict3rdpartystorage.userInteractionRequiredForHosts",
         "tracking.example.com,tracking.example.org",
       ],
+      // Bug 1617611: Fix all the tests broken by "cookies SameSite=lax by default"
+      ["network.cookie.sameSite.laxByDefault", false],
     ],
   });
 
@@ -30,7 +36,7 @@ add_task(async function() {
     async function runChecks() {
       is(document.cookie, "", "No cookies for me");
       document.cookie = "name=value";
-      is(document.cookie, "name=value", "I have the cookies!");
+      is(document.cookie, "", "I don't have the cookies!");
     }
 
     await new Promise(resolve => {
@@ -74,7 +80,7 @@ add_task(async function() {
   await SpecialPowers.spawn(
     browser,
     [{ page: testAnotherThirdPartyPage, callback: loadSubpage.toString() }],
-    async function(obj) {
+    async function (obj) {
       await new content.Promise(resolve => {
         let ifr = content.document.createElement("iframe");
         ifr.onload = _ => {
@@ -113,10 +119,11 @@ add_task(async function() {
   UrlClassifierTestUtils.cleanupTestTrackers();
 });
 
-add_task(async function() {
+add_task(async function () {
   info("Cleaning up.");
+  SpecialPowers.clearUserPref("network.cookie.sameSite.laxByDefault");
   await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
       resolve()
     );
   });

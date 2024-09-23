@@ -6,25 +6,6 @@
 
 #include "EventLog.h"
 
-#include <stdio.h>
-
-void WriteEventLogError(HRESULT hr, const char* sourceFile, int sourceLine) {
-  HANDLE source = RegisterEventSourceW(
-      nullptr, L"" MOZ_APP_DISPLAYNAME " Default Browser Agent");
-  if (!source) {
-    // Not much we can do about this.
-    return;
-  }
-
-  // The size of this buffer is arbitrary, but it should easily be enough
-  // unless we come up with a really excessively long function name.
-  wchar_t errorStr[MAX_PATH + 1] = L"";
-  _snwprintf_s(errorStr, MAX_PATH + 1, _TRUNCATE, L"0x%X in %S:%d", hr,
-               sourceFile, sourceLine);
-
-  const wchar_t* stringsArray[] = {errorStr};
-  ReportEventW(source, EVENTLOG_ERROR_TYPE, 0, hr, nullptr, 1, 0, stringsArray,
-               nullptr);
-
-  DeregisterEventSource(source);
-}
+// This is an easy way to expose `MOZ_APP_DISPLAYNAME` to Rust code.
+const wchar_t* gWinEventLogSourceName =
+    L"" MOZ_APP_DISPLAYNAME " Default Browser Agent";

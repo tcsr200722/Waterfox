@@ -7,15 +7,17 @@
 #include "mozilla/dom/SVGStyleElement.h"
 
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/FetchPriority.h"
+#include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/SVGStyleElementBinding.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(Style)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 JSObject* SVGStyleElement::WrapNode(JSContext* aCx,
                                     JS::Handle<JSObject*> aGivenProto) {
@@ -48,6 +50,8 @@ SVGStyleElement::SVGStyleElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : SVGStyleElementBase(std::move(aNodeInfo)) {
   AddMutationObserver(this);
+  SetEnabledCallbacks(kCharacterDataChanged | kContentAppended |
+                      kContentInserted | kContentRemoved);
 }
 
 //----------------------------------------------------------------------
@@ -61,27 +65,22 @@ NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGStyleElement)
 nsresult SVGStyleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   nsresult rv = SVGStyleElementBase::BindToTree(aContext, aParent);
   NS_ENSURE_SUCCESS(rv, rv);
-
-  void (SVGStyleElement::*update)() =
-      &SVGStyleElement::UpdateStyleSheetInternal;
-  nsContentUtils::AddScriptRunner(
-      NewRunnableMethod("dom::SVGStyleElement::BindToTree", this, update));
-
+  LinkStyle::BindToTree();
   return rv;
 }
 
-void SVGStyleElement::UnbindFromTree(bool aNullParent) {
+void SVGStyleElement::UnbindFromTree(UnbindContext& aContext) {
   nsCOMPtr<Document> oldDoc = GetUncomposedDoc();
   ShadowRoot* oldShadow = GetContainingShadow();
-  SVGStyleElementBase::UnbindFromTree(aNullParent);
+  SVGStyleElementBase::UnbindFromTree(aContext);
   Unused << UpdateStyleSheetInternal(oldDoc, oldShadow);
 }
 
-nsresult SVGStyleElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                                       const nsAttrValue* aValue,
-                                       const nsAttrValue* aOldValue,
-                                       nsIPrincipal* aMaybeScriptedPrincipal,
-                                       bool aNotify) {
+void SVGStyleElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                                   const nsAttrValue* aValue,
+                                   const nsAttrValue* aOldValue,
+                                   nsIPrincipal* aMaybeScriptedPrincipal,
+                                   bool aNotify) {
   if (aNameSpaceID == kNameSpaceID_None) {
     if (aName == nsGkAtoms::title || aName == nsGkAtoms::media ||
         aName == nsGkAtoms::type) {
@@ -136,14 +135,6 @@ void SVGStyleElement::ContentChanged(nsIContent* aContent) {
 
 //----------------------------------------------------------------------
 
-void SVGStyleElement::GetXmlspace(nsAString& aXmlspace) {
-  GetAttr(kNameSpaceID_XML, nsGkAtoms::space, aXmlspace);
-}
-
-void SVGStyleElement::SetXmlspace(const nsAString& aXmlspace, ErrorResult& rv) {
-  rv = SetAttr(kNameSpaceID_XML, nsGkAtoms::space, aXmlspace, true);
-}
-
 void SVGStyleElement::GetMedia(nsAString& aMedia) {
   GetAttr(nsGkAtoms::media, aMedia);
 }
@@ -166,6 +157,17 @@ void SVGStyleElement::GetTitle(nsAString& aTitle) {
 
 void SVGStyleElement::SetTitle(const nsAString& aTitle, ErrorResult& rv) {
   SetAttr(nsGkAtoms::title, aTitle, rv);
+}
+
+bool SVGStyleElement::Disabled() const {
+  StyleSheet* ss = GetSheet();
+  return ss && ss->Disabled();
+}
+
+void SVGStyleElement::SetDisabled(bool aDisabled) {
+  if (StyleSheet* ss = GetSheet()) {
+    ss->SetDisabled(aDisabled);
+  }
 }
 
 //----------------------------------------------------------------------
@@ -193,15 +195,15 @@ Maybe<LinkStyle::SheetInfo> SVGStyleElement::GetStyleSheetInfo() {
       AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin)),
       title,
       media,
-      /* integrity = */ EmptyString(),
+      /* integrity = */ u""_ns,
       /* nsStyleUtil::CSPAllowsInlineStyle takes care of nonce checking for
          inline styles. Bug 1607011 */
-      /* nonce = */ EmptyString(),
+      /* nonce = */ u""_ns,
       HasAlternateRel::No,
       IsInline::Yes,
       IsExplicitlyEnabled::No,
+      FetchPriority::Auto,
   });
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

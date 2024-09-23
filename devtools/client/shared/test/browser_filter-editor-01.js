@@ -7,25 +7,24 @@
 
 const {
   CSSFilterEditorWidget,
-} = require("devtools/client/shared/widgets/FilterWidget");
+} = require("resource://devtools/client/shared/widgets/FilterWidget.js");
 
 const TEST_URI = CHROME_URL_ROOT + "doc_filter-editor-01.html";
-const { getCSSLexer } = require("devtools/shared/css/lexer");
 
 // Verify that the given string consists of a valid CSS URL token.
 // Return true on success, false on error.
 function verifyURL(string) {
-  const lexer = getCSSLexer(string);
+  const lexer = new InspectorCSSParser(string);
 
   const token = lexer.nextToken();
-  if (!token || token.tokenType !== "url") {
+  if (!token || token.tokenType !== "UnquotedUrl") {
     return false;
   }
 
   return lexer.nextToken() === null;
 }
 
-add_task(async function() {
+add_task(async function () {
   const { doc } = await createHost("bottom", TEST_URI);
 
   const container = doc.querySelector("#filter-container");
@@ -145,4 +144,6 @@ add_task(async function() {
   ok(verifyURL(dataurl), "data URL is valid");
   widget.setCssValue(dataurl);
   is(widget.getCssValue(), dataurl, "setCssValue should not mangle data urls");
+
+  widget.destroy();
 });

@@ -14,34 +14,28 @@ test "$(whoami)" == 'root'
 # Install stuff we need
 apt-get -y update
 apt-get install -y \
+    bison \
     bzip2 \
     cmake \
     curl \
+    flex \
     gcc \
     git \
     g++ \
     libfontconfig1-dev \
     libgl1-mesa-dev \
     libx11-dev \
-    openjdk-8-jdk \
+    llvm-dev \
+    ninja-build \
     pkg-config \
-    python \
-    python-mako \
-    python-pip \
-    python-setuptools \
-    python-voluptuous \
-    python-yaml \
-    software-properties-common
+    software-properties-common \
+    clang
 
-# Get freetype 2.8 with subpixel rendering enabled. The SNAPSHOT_ARCHIVE
-# variable is just to work around servo-tidy's moronic 80-char width limit
-# in shell scripts.
-SNAPSHOT_ARCHIVE=http://snapshot.debian.org/archive/debian/20180213T153535Z
-curl -sSfL -o libfreetype6.deb \
-  "${SNAPSHOT_ARCHIVE}/pool/main/f/freetype/libfreetype6_2.8.1-2_amd64.deb"
-curl -sSfL -o libfreetype6-dev.deb \
-  "${SNAPSHOT_ARCHIVE}/pool/main/f/freetype/libfreetype6-dev_2.8.1-2_amd64.deb"
-apt install -y ./libfreetype6.deb ./libfreetype6-dev.deb
+# some reftests fail with freetype >= 2.10, so downgrade to the version in
+# Debian buster. See bug 1804782.
+apt-get -y remove libfreetype-dev
+curl -LO http://snapshot.debian.org/archive/debian/20220718T031307Z/pool/main/f/freetype/libfreetype6_2.9.1-3%2Bdeb10u3_amd64.deb
+curl -LO http://snapshot.debian.org/archive/debian/20220718T031307Z/pool/main/f/freetype/libfreetype6-dev_2.9.1-3%2Bdeb10u3_amd64.deb
 
-# Other stuff we need
-pip install servo-tidy==0.3.0
+dpkg -i libfreetype6*.deb
+rm libfreetype6*.deb

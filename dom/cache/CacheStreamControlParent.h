@@ -12,14 +12,8 @@
 #include "mozilla/dom/cache/StreamControl.h"
 #include "nsTObserverArray.h"
 
-namespace mozilla {
-namespace ipc {
-class AutoIPCStream;
-}  // namespace ipc
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
-class ReadStream;
 class StreamList;
 
 class CacheStreamControlParent final : public PCacheStreamControlParent,
@@ -29,25 +23,31 @@ class CacheStreamControlParent final : public PCacheStreamControlParent,
 
  public:
   CacheStreamControlParent();
-  ~CacheStreamControlParent();
 
   void SetStreamList(SafeRefPtr<StreamList> aStreamList);
-  void Close(const nsID& aId);
+
+  // Will close all streams. May synchronously free our this, see
+  // inherited StreamControl::CloseAllReadStreams.
   void CloseAll();
+
+  // Implicitly called when the last stream goes away.
   void Shutdown();
 
   // StreamControl methods
   virtual void SerializeControl(CacheReadStream* aReadStreamOut) override;
 
   virtual void SerializeStream(CacheReadStream* aReadStreamOut,
-                               nsIInputStream* aStream,
-                               nsTArray<UniquePtr<mozilla::ipc::AutoIPCStream>>&
-                                   aStreamCleanupList) override;
+                               nsIInputStream* aStream) override;
 
   virtual void OpenStream(const nsID& aId,
                           InputStreamResolver&& aResolver) override;
 
+  void AssertWillDelete();
+
+  void LostIPCCleanup(SafeRefPtr<StreamList> aStreamList);
+
  private:
+  ~CacheStreamControlParent();
   virtual void NoteClosedAfterForget(const nsID& aId) override;
 
 #ifdef DEBUG
@@ -62,7 +62,6 @@ class CacheStreamControlParent final : public PCacheStreamControlParent,
 
   mozilla::ipc::IPCResult RecvNoteClosed(const nsID& aId);
 
-  void NotifyClose(const nsID& aId);
   void NotifyCloseAll();
 
   // Cycle with StreamList via a weak-ref to us.  Cleanup occurs when the actor
@@ -71,10 +70,9 @@ class CacheStreamControlParent final : public PCacheStreamControlParent,
   SafeRefPtr<StreamList> mStreamList;
 
   NS_DECL_OWNINGTHREAD
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CacheStreamControlParent, override)
 };
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache
 
 #endif  // mozilla_dom_cache_CacheStreamControlParent_h

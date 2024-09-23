@@ -1,6 +1,3 @@
-// turn on Cu.isInAutomation
-Services.prefs.setBoolPref(PREF_DISABLE_SECURITY, true);
-
 // Tests that when an extension manifest that was previously valid becomes
 // unparseable after an application update, the extension becomes
 // disabled.  (See bug 1439600 for a concrete example of a situation where
@@ -14,7 +11,7 @@ add_task(async function test_upgrade_incompatible() {
 
   let file = createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 
@@ -28,17 +25,17 @@ add_task(async function test_upgrade_incompatible() {
   // Create a new, incompatible extension
   let newfile = createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
       manifest_version: 1,
     },
   });
 
   // swap the incompatible extension in for the original
-  let path = OS.Path.join(gProfD.path, "extensions", `${ID}.xpi`);
-  let sb = await OS.File.stat(path);
-  let timestamp = sb.lastModificationDate.valueOf();
+  let path = PathUtils.join(gProfD.path, "extensions", `${ID}.xpi`);
+  let fileInfo = await IOUtils.stat(path);
+  let timestamp = fileInfo.lastModified;
 
-  await OS.File.move(newfile.path, path);
+  await IOUtils.move(newfile.path, path);
   await promiseSetExtensionModifiedTime(path, timestamp);
   Services.obs.notifyObservers(new FileUtils.File(path), "flush-cache-entry");
 
@@ -55,12 +52,12 @@ add_task(async function test_upgrade_incompatible() {
 
   file = createTempWebExtensionFile({
     manifest: {
-      applications: { gecko: { id: ID } },
+      browser_specific_settings: { gecko: { id: ID } },
     },
   });
 
   // swap the old extension back in and check that we don't persist the disabled state forever.
-  await OS.File.move(file.path, path);
+  await IOUtils.move(file.path, path);
   await promiseSetExtensionModifiedTime(path, timestamp);
   Services.obs.notifyObservers(new FileUtils.File(path), "flush-cache-entry");
 

@@ -62,8 +62,7 @@ NodeInfo::NodeInfo(nsAtom* aName, nsAtom* aPrefix, int32_t aNamespaceID,
   // Qualified name.  If we have no prefix, use ToString on
   // mInner.mName so that we get to share its buffer.
   if (aPrefix) {
-    mQualifiedName = nsDependentAtomString(mInner.mPrefix) +
-                     NS_LITERAL_STRING(":") +
+    mQualifiedName = nsDependentAtomString(mInner.mPrefix) + u":"_ns +
                      nsDependentAtomString(mInner.mName);
   } else {
     mInner.mName->ToString(mQualifiedName);
@@ -139,9 +138,6 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_BEGIN(NodeInfo)
   return nsCCUncollectableMarker::sGeneration && tmp->CanSkip();
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(NodeInfo, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(NodeInfo, Release)
-
 void NodeInfo::GetName(nsAString& aName) const {
   mInner.mName->ToString(aName);
 }
@@ -156,7 +152,7 @@ void NodeInfo::GetPrefix(nsAString& aPrefix) const {
 
 void NodeInfo::GetNamespaceURI(nsAString& aNameSpaceURI) const {
   if (mInner.mNamespaceID > 0) {
-    nsresult rv = nsContentUtils::NameSpaceManager()->GetNameSpaceURI(
+    nsresult rv = nsNameSpaceManager::GetInstance()->GetNameSpaceURI(
         mInner.mNamespaceID, aNameSpaceURI);
     // How can we possibly end up with a bogus namespace ID here?
     if (NS_FAILED(rv)) {
@@ -168,7 +164,7 @@ void NodeInfo::GetNamespaceURI(nsAString& aNameSpaceURI) const {
 }
 
 bool NodeInfo::NamespaceEquals(const nsAString& aNamespaceURI) const {
-  int32_t nsid = nsContentUtils::NameSpaceManager()->GetNameSpaceID(
+  int32_t nsid = nsNameSpaceManager::GetInstance()->GetNameSpaceID(
       aNamespaceURI, nsContentUtils::IsChromeDoc(mOwnerManager->GetDocument()));
 
   return mozilla::dom::NodeInfo::NamespaceEquals(nsid);

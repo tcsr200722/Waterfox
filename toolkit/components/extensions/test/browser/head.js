@@ -1,6 +1,6 @@
 /* exported ACCENT_COLOR, BACKGROUND, ENCODED_IMAGE_DATA, FRAME_COLOR, TAB_TEXT_COLOR,
    TEXT_COLOR, TAB_BACKGROUND_TEXT_COLOR, imageBufferFromDataURI, hexToCSS, hexToRGB, testBorderColor,
-   waitForTransition */
+   waitForTransition, loadTestSubscript, assertPersistentListeners, getToolboxBackgroundColor */
 
 "use strict";
 
@@ -74,6 +74,15 @@ function waitForTransition(element, propertyName) {
   );
 }
 
+function getToolboxBackgroundColor() {
+  let toolbox = document.getElementById("navigator-toolbox");
+  // Ignore any potentially ongoing transition.
+  toolbox.style.transitionProperty = "none";
+  let color = window.getComputedStyle(toolbox).backgroundColor;
+  toolbox.style.transitionProperty = "";
+  return color;
+}
+
 function testBorderColor(element, expected) {
   let computedStyle = window.getComputedStyle(element);
   Assert.equal(
@@ -97,3 +106,10 @@ function testBorderColor(element, expected) {
     "Element bottom border color should be set."
   );
 }
+
+function loadTestSubscript(filePath) {
+  Services.scriptloader.loadSubScript(new URL(filePath, gTestPath).href, this);
+}
+
+// Persistent Listener test functionality
+const { assertPersistentListeners } = ExtensionTestUtils.testAssertions;

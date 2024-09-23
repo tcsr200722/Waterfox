@@ -7,32 +7,41 @@
 #ifndef mozilla_dom_docshell_message_utils_h__
 #define mozilla_dom_docshell_message_utils_h__
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 #include "nsCOMPtr.h"
 #include "nsDocShellLoadState.h"
+#include "nsIDocumentViewer.h"
 #include "mozilla/ScrollbarPreferences.h"
-
-namespace mozilla {
-namespace ipc {
-
-template <>
-struct IPDLParamTraits<nsDocShellLoadState*> {
-  static void Write(IPC::Message* aMsg, IProtocol* aActor,
-                    nsDocShellLoadState* aParam);
-  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
-                   IProtocol* aActor, RefPtr<nsDocShellLoadState>* aResult);
-};
-
-}  // namespace ipc
-}  // namespace mozilla
+#include "mozilla/ipc/IPDLParamTraits.h"
 
 namespace IPC {
+
+template <>
+struct ParamTraits<nsDocShellLoadState*> {
+  static void Write(IPC::MessageWriter* aWriter, nsDocShellLoadState* aParam);
+  static bool Read(IPC::MessageReader* aReader,
+                   RefPtr<nsDocShellLoadState>* aResult);
+};
 
 template <>
 struct ParamTraits<mozilla::ScrollbarPreference>
     : public ContiguousEnumSerializerInclusive<
           mozilla::ScrollbarPreference, mozilla::ScrollbarPreference::Auto,
           mozilla::ScrollbarPreference::LAST> {};
+
+template <>
+struct ParamTraits<mozilla::dom::PermitUnloadResult>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::dom::PermitUnloadResult,
+          mozilla::dom::PermitUnloadResult::eAllowNavigation,
+          mozilla::dom::PermitUnloadResult::eRequestBlockNavigation> {};
+
+template <>
+struct ParamTraits<mozilla::dom::XPCOMPermitUnloadAction>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::dom::XPCOMPermitUnloadAction,
+          mozilla::dom::XPCOMPermitUnloadAction::ePrompt,
+          mozilla::dom::XPCOMPermitUnloadAction::eDontPromptAndUnload> {};
 
 }  // namespace IPC
 

@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/MerchantValidationEvent.h"
 #include "nsNetCID.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/PaymentRequest.h"
 #include "mozilla/dom/Location.h"
 #include "mozilla/dom/URL.h"
@@ -13,8 +14,7 @@
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(MerchantValidationEvent, Event,
                                    mValidationURL, mRequest)
@@ -72,7 +72,7 @@ void MerchantValidationEvent::init(
     return;
   }
 
-  Result<nsCOMPtr<nsIURI>, nsresult> rv =
+  Result<OwningNonNull<nsIURI>, nsresult> rv =
       doc->ResolveWithBaseURI(aEventInitDict.mValidationURL);
   if (rv.isErr()) {
     aRv.ThrowTypeError("validationURL cannot be parsed");
@@ -87,7 +87,8 @@ MerchantValidationEvent::MerchantValidationEvent(EventTarget* aOwner)
 }
 
 void MerchantValidationEvent::ResolvedCallback(JSContext* aCx,
-                                               JS::Handle<JS::Value> aValue) {
+                                               JS::Handle<JS::Value> aValue,
+                                               ErrorResult& aRv) {
   MOZ_ASSERT(aCx);
   MOZ_ASSERT(mRequest);
 
@@ -112,7 +113,8 @@ void MerchantValidationEvent::ResolvedCallback(JSContext* aCx,
 }
 
 void MerchantValidationEvent::RejectedCallback(JSContext* aCx,
-                                               JS::Handle<JS::Value> aValue) {
+                                               JS::Handle<JS::Value> aValue,
+                                               ErrorResult& aRv) {
   MOZ_ASSERT(mRequest);
   if (!mWaitForUpdate) {
     return;
@@ -185,5 +187,4 @@ JSObject* MerchantValidationEvent::WrapObjectInternal(
   return MerchantValidationEvent_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

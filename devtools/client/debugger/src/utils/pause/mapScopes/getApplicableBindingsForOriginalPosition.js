@@ -2,44 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-// @flow
-
-import typeof SourceMaps from "devtools-source-map";
-
-import type { BindingLocationType, BindingType } from "../../../workers/parser";
 import { positionCmp } from "./positionCmp";
 import { filterSortedArray } from "./filtering";
 import { mappingContains } from "./mappingContains";
+import { getGeneratedLocation } from "../../source-maps";
 
-import type { Source, SourceLocation, PartialPosition } from "../../../types";
-
-import type { GeneratedBindingLocation } from "./buildGeneratedBindingList";
-
-export type ApplicableBinding = {
-  binding: GeneratedBindingLocation,
-  range: GeneratedRange,
-  firstInRange: boolean,
-  firstOnLine: boolean,
-};
-
-type GeneratedRange = {
-  start: PartialPosition,
-  end: PartialPosition,
-};
-
-export async function originalRangeStartsInside(
-  source: Source,
-  {
-    start,
-    end,
-  }: {
-    start: SourceLocation,
-    end: SourceLocation,
-  },
-  sourceMaps: SourceMaps
-) {
-  const endPosition = await sourceMaps.getGeneratedLocation(end);
-  const startPosition = await sourceMaps.getGeneratedLocation(start);
+export async function originalRangeStartsInside({ start, end }, thunkArgs) {
+  const endPosition = await getGeneratedLocation(end, thunkArgs);
+  const startPosition = await getGeneratedLocation(start, thunkArgs);
 
   // If the start and end positions collapse into eachother, it means that
   // the range in the original content didn't _start_ at the start position.
@@ -49,22 +19,17 @@ export async function originalRangeStartsInside(
 }
 
 export async function getApplicableBindingsForOriginalPosition(
-  generatedAstBindings: Array<GeneratedBindingLocation>,
-  source: Source,
-  {
-    start,
-    end,
-  }: {
-    start: SourceLocation,
-    end: SourceLocation,
-  },
-  bindingType: BindingType,
-  locationType: BindingLocationType,
-  sourceMaps: SourceMaps
-): Promise<Array<ApplicableBinding>> {
-  const ranges = await sourceMaps.getGeneratedRanges(start);
+  generatedAstBindings,
+  source,
+  { start, end },
+  bindingType,
+  locationType,
+  thunkArgs
+) {
+  const { sourceMapLoader } = thunkArgs;
+  const ranges = await sourceMapLoader.getGeneratedRanges(start);
 
-  const resultRanges: GeneratedRange[] = ranges.map(mapRange => ({
+  const resultRanges = ranges.map(mapRange => ({
     start: {
       line: mapRange.line,
       column: mapRange.columnStart,
@@ -85,8 +50,8 @@ export async function getApplicableBindingsForOriginalPosition(
   // var _mod = require("mod"); // mapped from import statement
   // var _mod2 = interop(_mod); // entirely unmapped
   if (bindingType === "import" && locationType !== "ref") {
-    const endPosition = await sourceMaps.getGeneratedLocation(end);
-    const startPosition = await sourceMaps.getGeneratedLocation(start);
+    const endPosition = await getGeneratedLocation(end, thunkArgs);
+    const startPosition = await getGeneratedLocation(start, thunkArgs);
 
     for (const range of resultRanges) {
       if (
@@ -105,10 +70,7 @@ export async function getApplicableBindingsForOriginalPosition(
   return filterApplicableBindings(generatedAstBindings, resultRanges);
 }
 
-function filterApplicableBindings(
-  bindings: Array<GeneratedBindingLocation>,
-  ranges: Array<GeneratedRange>
-): Array<ApplicableBinding> {
+function filterApplicableBindings(bindings, ranges) {
   const result = [];
   for (const range of ranges) {
     // Any binding overlapping a part of the mapping range.

@@ -3,13 +3,12 @@ const { Instance, Module, LinkError } = WebAssembly;
 // Locally-defined globals
 assertErrorMessage(() => wasmEvalText(`(module (global))`), SyntaxError, /wasm text error/);
 // A global field in the text format is valid with an empty expression, but this produces an invalid module
-assertErrorMessage(() => wasmEvalText(`(module (global i32))`), WebAssembly.CompileError, /unexpected initializer expression/);
-assertErrorMessage(() => wasmEvalText(`(module (global (mut i32)))`), WebAssembly.CompileError, /unexpected initializer expression/);
+assertErrorMessage(() => wasmEvalText(`(module (global i32))`), WebAssembly.CompileError, /popping value/);
+assertErrorMessage(() => wasmEvalText(`(module (global (mut i32)))`), WebAssembly.CompileError, /popping value/);
 
 // Initializer expressions.
 wasmFailValidateText(`(module (global i32 (f32.const 13.37)))`, /type mismatch/);
 wasmFailValidateText(`(module (global f64 (f32.const 13.37)))`, /type mismatch/);
-wasmFailValidateText(`(module (global i32 (i32.add (i32.const 13) (i32.const 37))))`, /failed to read end/);
 
 wasmFailValidateText(`(module (global i32 (global.get 0)))`, /out of range/);
 wasmFailValidateText(`(module (global i32 (global.get 1)) (global i32 (i32.const 1)))`, /out of range/);
@@ -43,9 +42,70 @@ testInner('i32', 13, 37, x => x|0);
 testInner('f32', 13.37, 0.1989, Math.fround);
 testInner('f64', 13.37, 0.1989, x => +x);
 
+// Basic global shenanigans
+{
+    const module = wasmEvalText(`(module
+        ;; -2 * (5 - (-10 + 20)) = 10
+        (global i32 (i32.mul (i32.const -2) (i32.sub (i32.const 5) (i32.add (i32.const -10) (i32.const 20)))))
+        ;; ((1 + 2) - (3 * 4)) = -9
+        (global i64 (i64.sub (i64.add (i64.const 1) (i64.const 2)) (i64.mul (i64.const 3) (i64.const 4))))
+
+        (func (export "get0") (result i32) global.get 0)
+        (func (export "get1") (result i64) global.get 1)
+    )`).exports;
+
+    assertEq(module.get0(), 10);
+    assertEq(module.get1(), -9n);
+}
+
+// Example use of dynamic linking
+{
+    // Make a memory for two dynamically-linked modules to share. Each module gets five pages.
+    const mem = new WebAssembly.Memory({ initial: 15, maximum: 15 });
+
+    const mod1 = new WebAssembly.Module(wasmTextToBinary(`(module
+        (memory (import "env" "memory") 15 15)
+        (global $memBase (import "env" "__memory_base") i32)
+        (data (offset (global.get $memBase)) "Hello from module 1.")
+        (data (offset (i32.add (global.get $memBase) (i32.const 65536))) "Goodbye from module 1.")
+    )`));
+    const instance1 = new WebAssembly.Instance(mod1, {
+        env: {
+            memory: mem,
+            __memory_base: 65536 * 5, // this module's memory starts at page 5
+        },
+    });
+
+    const mod2 = new WebAssembly.Module(wasmTextToBinary(`(module
+        (memory (import "env" "memory") 15 15)
+        (global $memBase (import "env" "__memory_base") i32)
+        (data (offset (global.get $memBase)) "Hello from module 2.")
+        (data (offset (i32.add (global.get $memBase) (i32.const 65536))) "Goodbye from module 2.")
+    )`));
+    const instance2 = new WebAssembly.Instance(mod2, {
+        env: {
+            memory: mem,
+            __memory_base: 65536 * 10, // this module's memory starts at page 10
+        },
+    });
+
+    // All four strings should now be present in the memory.
+
+    function assertStringInMem(mem, str, addr) {
+        const bytes = new Uint8Array(mem.buffer).slice(addr, addr + str.length);
+        let memStr = String.fromCharCode(...bytes);
+        assertEq(memStr, str);
+    }
+
+    assertStringInMem(mem, "Hello from module 1.", 65536 * 5);
+    assertStringInMem(mem, "Goodbye from module 1.", 65536 * 6);
+    assertStringInMem(mem, "Hello from module 2.", 65536 * 10);
+    assertStringInMem(mem, "Goodbye from module 2.", 65536 * 11);
+}
+
 // Semantic errors.
-wasmFailValidateText(`(module (global (mut i32) (i32.const 1337)) (func (global.set 1 (i32.const 0))))`, /out of range/);
-wasmFailValidateText(`(module (global i32 (i32.const 1337)) (func (global.set 0 (i32.const 0))))`, /can't write an immutable global/);
+wasmFailValidateText(`(module (global (mut i32) (i32.const 1337)) (func (global.set 1 (i32.const 0))))`, /(out of range)|(global index out of bounds)/);
+wasmFailValidateText(`(module (global i32 (i32.const 1337)) (func (global.set 0 (i32.const 0))))`, /(can't write an immutable global)|(global is immutable)/);
 
 // Big module with many variables: test that setting one doesn't overwrite the
 // other ones.
@@ -176,10 +236,12 @@ module = wasmEvalText(`(module
 assertEq(Number(module.imported), 42);
 assertEq(Number(module.defined), 1337);
 
-// Initializer expressions can reference an imported immutable global.
-wasmFailValidateText(`(module (global f32 (f32.const 13.37)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
-wasmFailValidateText(`(module (global (mut f32) (f32.const 13.37)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
-wasmFailValidateText(`(module (global (mut i32) (i32.const 0)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
+if (!wasmGcEnabled()) {
+  // Initializer expressions can reference an imported immutable global.
+  wasmFailValidateText(`(module (global f32 (f32.const 13.37)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
+  wasmFailValidateText(`(module (global (mut f32) (f32.const 13.37)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
+  wasmFailValidateText(`(module (global (mut i32) (i32.const 0)) (global i32 (global.get 0)))`, /must reference a global immutable import/);
+}
 
 wasmFailValidateText(`(module (import "globals" "a" (global f32)) (global i32 (global.get 0)))`, /type mismatch/);
 
@@ -300,7 +362,11 @@ wasmAssert(`(module
         let s = "";
         for ( let i in x )
             s = s + i + ",";
-        assertEq(s, "valueOf,value,");
+        if (getBuildConfiguration("release_or_beta")) {
+            assertEq(s, "valueOf,value,");
+        } else {
+            assertEq(s, "type,valueOf,value,");
+        }
     }
 
     // "value" is defined on the prototype, not on the object

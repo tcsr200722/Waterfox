@@ -21,7 +21,6 @@ Test that the frame component reacts to source-map pref changse.
 
 window.onload = async function () {
   try {
-    const Services = browserRequire("Services");
     const ReactDOM = browserRequire("devtools/client/shared/vendor/react-dom");
     const React = browserRequire("devtools/client/shared/vendor/react");
     const Frame = React.createFactory(browserRequire("devtools/client/shared/components/Frame"));
@@ -31,28 +30,32 @@ window.onload = async function () {
       line: 23,
       sourceUrl: "https://bugzilla.mozilla.org/original.js",
     };
-    const mockSourceMapService = {
-      _update: function () {
-        this._callback(Services.prefs.getBoolPref(PREF),
-                       resolvedLocation.sourceUrl,
-                       resolvedLocation.line);
+    const mockSourceMapURLService = {
+      _update () {
+        this._callback(Services.prefs.getBoolPref(PREF)
+          ? {
+              url: resolvedLocation.sourceUrl,
+              line: resolvedLocation.line,
+              column: undefined,
+            }
+          : null);
       },
-      subscribe: function (url, line, column, callback) {
+      subscribeByLocation (loc, callback) {
         this._callback = callback;
-	// Resolve immediately.
+        // Resolve immediately.
         this._update();
-      },
-      unsubscribe: function (url, line, column, callback) {
+
+        return () => {};
       },
     };
 
     const props = {
       onClick: () => {},
       frame: {
-	line: 97,
-	source: "https://bugzilla.mozilla.org/bundle.js",
+        line: 97,
+        source: "https://bugzilla.mozilla.org/bundle.js",
       },
-      sourceMapService: mockSourceMapService,
+      sourceMapURLService: mockSourceMapURLService,
     };
 
     const PREF = "devtools.source-map.client-service.enabled";
@@ -80,11 +83,11 @@ window.onload = async function () {
     checkFrameString(Object.assign({ el, source }, expectedGenerated));
 
     Services.prefs.setBoolPref(PREF, true);
-    mockSourceMapService._update();
+    mockSourceMapURLService._update();
     checkFrameString(Object.assign({ el, source }, expectedOriginal));
 
     Services.prefs.setBoolPref(PREF, false);
-    mockSourceMapService._update();
+    mockSourceMapURLService._update();
     checkFrameString(Object.assign({ el, source }, expectedGenerated));
 
     Services.prefs.clearUserPref(PREF);

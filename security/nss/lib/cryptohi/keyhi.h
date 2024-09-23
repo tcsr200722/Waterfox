@@ -12,7 +12,7 @@
 #include "secdert.h"
 #include "keythi.h"
 #include "certt.h"
-/*#include "secpkcs5.h" */
+#include "secerr.h"
 
 SEC_BEGIN_PROTOS
 
@@ -51,6 +51,11 @@ extern unsigned SECKEY_PublicKeyStrength(const SECKEYPublicKey *pubk);
 ** Return the strength of the public key in bits
 */
 extern unsigned SECKEY_PublicKeyStrengthInBits(const SECKEYPublicKey *pubk);
+
+/*
+** Return the strength of the private key in bits
+*/
+extern unsigned SECKEY_PrivateKeyStrengthInBits(const SECKEYPrivateKey *privk);
 
 /*
 ** Return the length of the signature in bytes
@@ -265,6 +270,10 @@ extern int SECKEY_ECParamsToBasePointOrderLen(const SECItem *params);
  * Return 0 on failure (unknown EC domain parameters).
  */
 SECOidTag SECKEY_GetECCOid(const SECKEYECParams *params);
+
+/* make sure the key length matches the policy for keyType */
+SECStatus SECKEY_EnforceKeySize(KeyType keyType, unsigned keyLength,
+                                SECErrorCodes error);
 
 SEC_END_PROTOS
 

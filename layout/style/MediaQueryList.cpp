@@ -14,21 +14,18 @@
 #include "nsPresContext.h"
 #include "mozilla/dom/Document.h"
 
-#define ONCHANGE_STRING NS_LITERAL_STRING("change")
-
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 MediaQueryList::MediaQueryList(Document* aDocument,
-                               const nsAString& aMediaQueryList,
+                               const nsACString& aMediaQueryList,
                                CallerType aCallerType)
     : DOMEventTargetHelper(aDocument->GetInnerWindow()),
       mDocument(aDocument),
-      mMatches(false),
-      mMatchesValid(false) {
-  mMediaList = MediaList::Create(aMediaQueryList, aCallerType);
-
-  KeepAliveIfHasListenersFor(ONCHANGE_STRING);
+      mMediaList(MediaList::Create(aMediaQueryList, aCallerType)),
+      mViewportDependent(mMediaList->IsViewportDependent()),
+      mMatches(mMediaList->Matches(*aDocument)),
+      mMatchesOnRenderingUpdate(mMatches) {
+  KeepAliveIfHasListenersFor(nsGkAtoms::onchange);
 }
 
 MediaQueryList::~MediaQueryList() = default;
@@ -56,17 +53,18 @@ NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 NS_IMPL_ADDREF_INHERITED(MediaQueryList, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(MediaQueryList, DOMEventTargetHelper)
 
-void MediaQueryList::GetMedia(nsAString& aMedia) {
+void MediaQueryList::GetMedia(nsACString& aMedia) const {
   mMediaList->GetText(aMedia);
 }
 
 bool MediaQueryList::Matches() {
-  if (!mMatchesValid) {
-    MOZ_ASSERT(!HasListeners(),
-               "when listeners present, must keep mMatches current");
-    RecomputeMatches();
+  if (mViewportDependent &&
+      mDocument->StyleOrLayoutObservablyDependsOnParentDocumentLayout()) {
+    RefPtr<Document> doc = mDocument;
+    // This is enough to trigger media query updates in the current doc, and
+    // will flush the parent document layout if appropriate.
+    doc->FlushPendingNotifications(FlushType::Layout);
   }
-
   return mMatches;
 }
 
@@ -78,17 +76,7 @@ void MediaQueryList::AddListener(EventListener* aListener, ErrorResult& aRv) {
   AddEventListenerOptionsOrBoolean options;
   options.SetAsBoolean() = false;
 
-  AddEventListener(ONCHANGE_STRING, aListener, options, Nullable<bool>(), aRv);
-}
-
-void MediaQueryList::EventListenerAdded(nsAtom* aType) {
-  // HasListeners() might still be false if the added thing wasn't a
-  // listener we care about.
-  if (!mMatchesValid && HasListeners()) {
-    RecomputeMatches();
-  }
-
-  DOMEventTargetHelper::EventListenerAdded(aType);
+  AddEventListener(u"change"_ns, aListener, options, Nullable<bool>(), aRv);
 }
 
 void MediaQueryList::RemoveListener(EventListener* aListener,
@@ -100,26 +88,16 @@ void MediaQueryList::RemoveListener(EventListener* aListener,
   EventListenerOptionsOrBoolean options;
   options.SetAsBoolean() = false;
 
-  RemoveEventListener(ONCHANGE_STRING, aListener, options, aRv);
+  RemoveEventListener(u"change"_ns, aListener, options, aRv);
 }
 
-bool MediaQueryList::HasListeners() { return HasListenersFor(ONCHANGE_STRING); }
+bool MediaQueryList::HasListeners() const {
+  return HasListenersFor(nsGkAtoms::onchange);
+}
 
 void MediaQueryList::Disconnect() {
   DisconnectFromOwner();
-
-  IgnoreKeepAliveIfHasListenersFor(ONCHANGE_STRING);
-}
-
-void MediaQueryList::RecomputeMatches() {
-  mMatches = false;
-
-  if (!mDocument) {
-    return;
-  }
-
-  mMatches = mMediaList->Matches(*mDocument);
-  mMatchesValid = true;
+  IgnoreKeepAliveIfHasListenersFor(nsGkAtoms::onchange);
 }
 
 nsISupports* MediaQueryList::GetParentObject() const {
@@ -131,21 +109,21 @@ JSObject* MediaQueryList::WrapObject(JSContext* aCx,
   return MediaQueryList_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-void MediaQueryList::MaybeNotify() {
-  mMatchesValid = false;
+void MediaQueryList::MediaFeatureValuesChanged() {
+  mMatches = mDocument && mMediaList->Matches(*mDocument);
+  // Note that mMatchesOnRenderingUpdate remains with the old value here.
+  // That gets updated in EvaluateOnRenderingUpdate().
+}
 
-  if (!HasListeners()) {
-    return;
+bool MediaQueryList::EvaluateOnRenderingUpdate() {
+  if (mMatches == mMatchesOnRenderingUpdate) {
+    return false;
   }
+  mMatchesOnRenderingUpdate = mMatches;
+  return HasListeners();
+}
 
-  bool oldMatches = mMatches;
-  RecomputeMatches();
-
-  // No need to notify the change.
-  if (mMatches == oldMatches) {
-    return;
-  }
-
+void MediaQueryList::FireChangeEvent() {
   MediaQueryListEventInit init;
   init.mBubbles = false;
   init.mCancelable = false;
@@ -153,9 +131,8 @@ void MediaQueryList::MaybeNotify() {
   mMediaList->GetText(init.mMedia);
 
   RefPtr<MediaQueryListEvent> event =
-      MediaQueryListEvent::Constructor(this, ONCHANGE_STRING, init);
+      MediaQueryListEvent::Constructor(this, u"change"_ns, init);
   event->SetTrusted(true);
-
   DispatchEvent(*event);
 }
 
@@ -167,5 +144,4 @@ size_t MediaQueryList::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
   return n;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

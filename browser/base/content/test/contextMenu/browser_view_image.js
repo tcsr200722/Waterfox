@@ -15,25 +15,23 @@ const http_base = chrome_base.replace(
   "https://example.com"
 );
 
-async function test_view_image_works({ page, selector }) {
+async function test_view_image_works({ page, selector, urlChecker }) {
   let mainURL = http_base + page;
   let accel = AppConstants.platform == "macosx" ? "metaKey" : "ctrlKey";
   let tests = {
     tab: {
-      event: { [accel]: true },
+      modifiers: { [accel]: true },
       async loadedPromise() {
-        return BrowserTestUtils.waitForNewTab(
-          gBrowser,
-          url => url.startsWith("blob"),
-          true
-        ).then(t => t.linkedBrowser);
+        return BrowserTestUtils.waitForNewTab(gBrowser, urlChecker, true).then(
+          t => t.linkedBrowser
+        );
       },
       cleanup(browser) {
         BrowserTestUtils.removeTab(gBrowser.getTabForBrowser(browser));
       },
     },
     window: {
-      event: { shiftKey: true },
+      modifiers: { shiftKey: true },
       async loadedPromise() {
         // Unfortunately we can't predict the URL so can't just pass that to waitForNewWindow
         let w = await BrowserTestUtils.waitForNewWindow();
@@ -41,7 +39,7 @@ async function test_view_image_works({ page, selector }) {
         let getCx = () => browser.browsingContext;
         await TestUtils.waitForCondition(
           () =>
-            getCx() && getCx().currentWindowGlobal.documentURI.schemeIs("blob")
+            getCx() && urlChecker(getCx().currentWindowGlobal.documentURI.spec)
         );
         await SpecialPowers.spawn(browser, [], () => {
           return ContentTaskUtils.waitForCondition(
@@ -54,20 +52,37 @@ async function test_view_image_works({ page, selector }) {
         return BrowserTestUtils.closeWindow(browser.ownerGlobal);
       },
     },
-    self: {
-      event: {},
+    tab_default: {
+      modifiers: {},
       async loadedPromise() {
-        await BrowserTestUtils.browserLoaded(
-          gBrowser.selectedBrowser,
-          false,
-          url => url.startsWith("blob:")
+        return BrowserTestUtils.waitForNewTab(gBrowser, urlChecker, true).then(
+          t => {
+            is(t.selected, false, "Tab should not be selected.");
+            return t.linkedBrowser;
+          }
         );
-        return gBrowser.selectedBrowser;
       },
-      async cleanup() {},
+      cleanup(browser) {
+        is(gBrowser.tabs.length, 3, "number of tabs");
+        BrowserTestUtils.removeTab(gBrowser.getTabForBrowser(browser));
+      },
     },
-    // NOTE: If we ever add more tests here, add them above and not below `self`, as it replaces
-    // the test document.
+    tab_default_flip_bg_pref: {
+      prefs: [["browser.tabs.loadInBackground", false]],
+      modifiers: {},
+      async loadedPromise() {
+        return BrowserTestUtils.waitForNewTab(gBrowser, urlChecker, true).then(
+          t => {
+            is(t.selected, true, "Tab should be selected with pref flipped.");
+            return t.linkedBrowser;
+          }
+        );
+      },
+      cleanup(browser) {
+        is(gBrowser.tabs.length, 3, "number of tabs");
+        BrowserTestUtils.removeTab(gBrowser.getTabForBrowser(browser));
+      },
+    },
   };
   await BrowserTestUtils.withNewTab(mainURL, async browser => {
     await SpecialPowers.spawn(browser, [], () => {
@@ -76,6 +91,9 @@ async function test_view_image_works({ page, selector }) {
       );
     });
     for (let [testLabel, test] of Object.entries(tests)) {
+      if (test.prefs) {
+        await SpecialPowers.pushPrefEnv({ set: test.prefs });
+      }
       let contextMenu = document.getElementById("contentAreaContextMenu");
       is(
         contextMenu.state,
@@ -100,28 +118,41 @@ async function test_view_image_works({ page, selector }) {
         "popuphidden"
       );
       let browserPromise = test.loadedPromise();
-      EventUtils.synthesizeMouseAtCenter(
+      contextMenu.activateItem(
         document.getElementById("context-viewimage"),
-        test.event
+        test.modifiers
       );
       await promisePopupHidden;
 
       let newBrowser = await browserPromise;
-      await SpecialPowers.spawn(newBrowser, [testLabel], msgPrefix => {
-        let img = content.document.querySelector("img");
-        ok(
-          img instanceof Ci.nsIImageLoadingContent,
-          `${msgPrefix} - Image should have loaded content.`
-        );
-        const request = img.getRequest(
-          Ci.nsIImageLoadingContent.CURRENT_REQUEST
-        );
-        ok(
-          request.imageStatus & request.STATUS_LOAD_COMPLETE,
-          `${msgPrefix} - Should have loaded image.`
-        );
-      });
+      let { documentURI } = newBrowser.browsingContext.currentWindowGlobal;
+      if (documentURI.spec.startsWith("data:image/svg")) {
+        await SpecialPowers.spawn(newBrowser, [testLabel], msgPrefix => {
+          let svgEl = content.document.querySelector("svg");
+          ok(svgEl, `${msgPrefix} - should have loaded SVG.`);
+          is(svgEl.height.baseVal.value, 500, `${msgPrefix} - SVG has height`);
+          is(svgEl.width.baseVal.value, 500, `${msgPrefix} - SVG has height`);
+        });
+      } else {
+        await SpecialPowers.spawn(newBrowser, [testLabel], msgPrefix => {
+          let img = content.document.querySelector("img");
+          ok(
+            img instanceof Ci.nsIImageLoadingContent,
+            `${msgPrefix} - Image should have loaded content.`
+          );
+          const request = img.getRequest(
+            Ci.nsIImageLoadingContent.CURRENT_REQUEST
+          );
+          ok(
+            request.imageStatus & request.STATUS_LOAD_COMPLETE,
+            `${msgPrefix} - Should have loaded image.`
+          );
+        });
+      }
       await test.cleanup(newBrowser);
+      if (test.prefs) {
+        await SpecialPowers.popPrefEnv();
+      }
     }
   });
 }
@@ -134,6 +165,7 @@ add_task(async function test_view_image_canvas_works() {
   await test_view_image_works({
     page: "subtst_contextmenu.html",
     selector: "#test-canvas",
+    urlChecker: url => url.startsWith("blob:"),
   });
 });
 
@@ -144,5 +176,22 @@ add_task(async function test_view_image_revoked_cached_blob() {
   await test_view_image_works({
     page: "test_view_image_revoked_cached_blob.html",
     selector: "#second",
+    urlChecker: url => url.startsWith("blob:"),
+  });
+});
+
+/**
+ * Test for https://bugzilla.mozilla.org/show_bug.cgi?id=1738190
+ * Inline SVG data URIs as a background image should also open.
+ */
+add_task(async function test_view_image_inline_svg_bgimage() {
+  await SpecialPowers.pushPrefEnv({
+    // This is the default but we turn it off for unit tests.
+    set: [["security.data_uri.block_toplevel_data_uri_navigations", true]],
+  });
+  await test_view_image_works({
+    page: "test_view_image_inline_svg.html",
+    selector: "body",
+    urlChecker: url => url.startsWith("data:"),
   });
 });

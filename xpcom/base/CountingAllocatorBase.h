@@ -7,6 +7,7 @@
 #ifndef CountingAllocatorBase_h
 #define CountingAllocatorBase_h
 
+#include <cstdlib>
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/mozalloc.h"
@@ -146,7 +147,7 @@ class CountingAllocatorBase {
   // must be thread-safe. It may be written during GC, so accesses are not
   // recorded.
   typedef Atomic<size_t, SequentiallyConsistent> AmountType;
-  static AmountType sAmount;
+  static inline AmountType sAmount{0};
 
   MOZ_DEFINE_MALLOC_SIZE_OF_ON_ALLOC(MallocSizeOfOnAlloc)
   MOZ_DEFINE_MALLOC_SIZE_OF_ON_FREE(MallocSizeOfOnFree)

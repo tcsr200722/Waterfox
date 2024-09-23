@@ -9,8 +9,7 @@
 
 #include "mozilla/dom/PServiceWorkerContainerParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IPCServiceWorkerDescriptor;
 class ServiceWorkerContainerProxy;
@@ -19,19 +18,21 @@ class ServiceWorkerContainerParent final
     : public PServiceWorkerContainerParent {
   RefPtr<ServiceWorkerContainerProxy> mProxy;
 
+  ~ServiceWorkerContainerParent();
+
   // PServiceWorkerContainerParent
   void ActorDestroy(ActorDestroyReason aReason) override;
 
   mozilla::ipc::IPCResult RecvTeardown() override;
 
   mozilla::ipc::IPCResult RecvRegister(
-      const IPCClientInfo& aClientInfo, const nsCString& aScopeURL,
-      const nsCString& aScriptURL,
+      const IPCClientInfo& aClientInfo, const nsACString& aScopeURL,
+      const nsACString& aScriptURL,
       const ServiceWorkerUpdateViaCache& aUpdateViaCache,
       RegisterResolver&& aResolver) override;
 
   mozilla::ipc::IPCResult RecvGetRegistration(
-      const IPCClientInfo& aClientInfo, const nsCString& aURL,
+      const IPCClientInfo& aClientInfo, const nsACString& aURL,
       GetRegistrationResolver&& aResolver) override;
 
   mozilla::ipc::IPCResult RecvGetRegistrations(
@@ -42,13 +43,13 @@ class ServiceWorkerContainerParent final
                                        GetReadyResolver&& aResolver) override;
 
  public:
+  NS_INLINE_DECL_REFCOUNTING(ServiceWorkerContainerParent, override);
+
   ServiceWorkerContainerParent();
-  ~ServiceWorkerContainerParent();
 
   void Init();
 };
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #endif  // mozilla_dom_serviceworkercontainerparent_h__

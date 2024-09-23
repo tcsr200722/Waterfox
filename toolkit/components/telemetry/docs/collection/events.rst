@@ -80,7 +80,7 @@ The YAML definition file
 ========================
 
 Any event recorded into Firefox Telemetry must be registered before it can be recorded.
-For any code that ships as part of Firefox that happens in `Events.yaml <https://dxr.mozilla.org/mozilla-central/source/toolkit/components/telemetry/Events.yaml>`_.
+For any code that ships as part of Firefox that happens in `Events.yaml <https://searchfox.org/mozilla-central/source/toolkit/components/telemetry/Events.yaml>`_.
 
 The probes in the definition file are represented in a fixed-depth, three-level structure. The first level contains *category* names (grouping multiple events together), the second level contains *event* names, under which the events properties are listed. E.g.:
 
@@ -132,8 +132,7 @@ The following event properties are valid:
 - ``products`` *(required, list of strings)*: A list of products the event can be recorded on. Currently supported values are:
 
   - ``firefox`` - Collected in Firefox Desktop for submission via Firefox Telemetry.
-  - ``fennec`` - Collected in Firefox for Android for submission via Firefox Mobile Telemetry.
-  - ``geckoview`` - *deprecated* Will be removed in Firefox 79. (see `bug 1620395 <https://bugzilla.mozilla.org/show_bug.cgi?id=1620395>`__)
+  - ``thunderbird`` - Collected in Thunderbird for submission via Thunderbird Telemetry.
 
 - ``operating_systems`` *(optional, list of strings)*: This field restricts recording to certain operating systems only. It defaults to ``all``. Currently supported values are:
 
@@ -270,7 +269,7 @@ Internal API
 These functions are only supposed to be used by Telemetry internally or in tests.
 
 Also, the ``event-telemetry-storage-limit-reached`` topic is notified when the event ping event
-limit is reached (configurable via the ``toolkit.telemetry.eventping.eventLimit`` preference).
+limit is reached (1000 event records).
 This is intended only for use internally or in tests.
 
 .. _events.event-summary:
@@ -288,8 +287,7 @@ registered via ``registerEvents``). These are :ref:`keyed scalars <scalars.keyed
 the keys are of the form ``category#method#object`` and the values are counts of the number of
 times ``recordEvent`` was called with that combination of ``category``, ``method``, and ``object``.
 
-These two scalars have a default maximum key limit of 500 per process. This limit is configurable
-via the ``toolkit.telemetry.maxEventSummaryKeys`` preference.
+These two scalars have a default maximum key limit of 500 per process.
 
 Example:
 
@@ -329,12 +327,13 @@ Tests involving Event Telemetry often follow this four-step form:
    events recorded by Event Telemetry against your provided list of expected events.
    If you only need to check the number of events recorded, you can use
    ``TelemetryTestUtils.assertNumberOfEvents(expectedNum, filter, options);``.
-   Both utilities have `helpful inline documentation <https://hg.mozilla.org/mozilla-central/file/tip/toolkit/components/telemetry/tests/utils/TelemetryTestUtils.jsm>`_.
+   Both utilities have :searchfox:`helpful inline documentation <toolkit/components/telemetry/tests/utils/TelemetryTestUtils.sys.mjs>`.
 
 
 Version History
 ===============
 
+- Firefox 79:  ``geckoview`` support removed (see `bug 1620395 <https://bugzilla.mozilla.org/show_bug.cgi?id=1620395>`__).
 - Firefox 52: Initial event support (`bug 1302663 <https://bugzilla.mozilla.org/show_bug.cgi?id=1302663>`_).
 - Firefox 53: Event recording disabled by default (`bug 1329139 <https://bugzilla.mozilla.org/show_bug.cgi?id=1329139>`_).
 - Firefox 54: Added child process events (`bug 1313326 <https://bugzilla.mozilla.org/show_bug.cgi?id=1313326>`_).

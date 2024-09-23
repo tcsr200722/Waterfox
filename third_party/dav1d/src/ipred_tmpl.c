@@ -133,7 +133,7 @@ static void ipred_cfl_left_c(pixel *dst, const ptrdiff_t stride,
                              const int16_t *ac, const int alpha
                              HIGHBD_DECL_SUFFIX)
 {
-    unsigned dc = dc_gen_left(topleft, height);
+    const unsigned dc = dc_gen_left(topleft, height);
     cfl_pred(dst, stride, width, height, dc, ac, alpha HIGHBD_TAIL_SUFFIX);
 }
 
@@ -625,16 +625,12 @@ static void ipred_filter_c(pixel *dst, const ptrdiff_t stride,
     assert(filt_idx < 5);
 
     const int8_t *const filter = dav1d_filter_intra_taps[filt_idx];
-    int x, y;
-    ptrdiff_t left_stride;
-    const pixel *left, *topleft, *top;
-
-    top = &topleft_in[1];
-    for (y = 0; y < height; y += 2) {
-        topleft = &topleft_in[-y];
-        left = &topleft[-1];
-        left_stride = -1;
-        for (x = 0; x < width; x += 4) {
+    const pixel *top = &topleft_in[1];
+    for (int y = 0; y < height; y += 2) {
+        const pixel *topleft = &topleft_in[-y];
+        const pixel *left = &topleft[-1];
+        ptrdiff_t left_stride = -1;
+        for (int x = 0; x < width; x += 4) {
             const int p0 = *topleft;
             const int p1 = top[0], p2 = top[1], p3 = top[2], p4 = top[3];
             const int p5 = left[0 * left_stride], p6 = left[1 * left_stride];
@@ -643,7 +639,7 @@ static void ipred_filter_c(pixel *dst, const ptrdiff_t stride,
 
             for (int yy = 0; yy < 2; yy++) {
                 for (int xx = 0; xx < 4; xx++, flt_ptr += FLT_INCR) {
-                    int acc = FILTER(flt_ptr, p0, p1, p2, p3, p4, p5, p6);
+                    const int acc = FILTER(flt_ptr, p0, p1, p2, p3, p4, p5, p6);
                     ptr[xx] = iclip_pixel((acc + 8) >> 4);
                 }
                 ptr += PXSTRIDE(stride);
@@ -719,16 +715,27 @@ cfl_ac_fn(422, 1, 0)
 cfl_ac_fn(444, 0, 0)
 
 static void pal_pred_c(pixel *dst, const ptrdiff_t stride,
-                       const uint16_t *const pal, const uint8_t *idx,
+                       const pixel *const pal, const uint8_t *idx,
                        const int w, const int h)
 {
     for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++)
-            dst[x] = (pixel) pal[idx[x]];
-        idx += w;
+        for (int x = 0; x < w; x += 2) {
+            const int i = *idx++;
+            assert(!(i & 0x88));
+            dst[x + 0] = pal[i & 7];
+            dst[x + 1] = pal[i >> 4];
+        }
         dst += PXSTRIDE(stride);
     }
 }
+
+#if HAVE_ASM
+#if ARCH_AARCH64 || ARCH_ARM
+#include "src/arm/ipred.h"
+#elif ARCH_X86
+#include "src/x86/ipred.h"
+#endif
+#endif
 
 COLD void bitfn(dav1d_intra_pred_dsp_init)(Dav1dIntraPredDSPContext *const c) {
     c->intra_pred[DC_PRED      ] = ipred_dc_c;
@@ -759,9 +766,9 @@ COLD void bitfn(dav1d_intra_pred_dsp_init)(Dav1dIntraPredDSPContext *const c) {
 
 #if HAVE_ASM
 #if ARCH_AARCH64 || ARCH_ARM
-    bitfn(dav1d_intra_pred_dsp_init_arm)(c);
+    intra_pred_dsp_init_arm(c);
 #elif ARCH_X86
-    bitfn(dav1d_intra_pred_dsp_init_x86)(c);
+    intra_pred_dsp_init_x86(c);
 #endif
 #endif
 }

@@ -1,29 +1,20 @@
 #!/bin/bash
 set -ex
 
-SCRIPT_DIR=$(cd $(dirname "$0") && pwd -P)
+REL_DIR_NAME=$(dirname "$0")
+SCRIPT_DIR=$(cd "$REL_DIR_NAME" && pwd -P)
 WPT_ROOT=$SCRIPT_DIR/../..
-cd $WPT_ROOT
+cd "$WPT_ROOT"
 
-test_infrastructure() {
-    PY3_FLAG="$2"
-    TERM=dumb ./wpt $PY3_FLAG run --log-mach - --yes --manifest ~/meta/MANIFEST.json --metadata infrastructure/metadata/ --install-fonts $1 $PRODUCT infrastructure/
+run_infra_test() {
+    echo "### Running Infrastructure Tests for $1 ###"
+    ./tools/ci/taskcluster-run.py "$1" "$2" -- --log-tbpl=- --log-wptreport="../artifacts/wptreport-$1.json" --logcat-dir="../artifacts/" --metadata=infrastructure/metadata/ --include=infrastructure/
 }
 
 main() {
-    if [[ $# -eq 1 && "$1" = "--py3" ]]; then
-        PRODUCTS=( "chrome" )
-    else
-        PRODUCTS=( "firefox" "chrome" )
-    fi
-    ./wpt manifest --rebuild -p ~/meta/MANIFEST.json
-    for PRODUCT in "${PRODUCTS[@]}"; do
-        if [[ "$PRODUCT" == "chrome" ]]; then
-            test_infrastructure "--binary=$(which google-chrome-unstable) --channel dev" "$1"
-        else
-            test_infrastructure "--binary=~/build/firefox/firefox"
-        fi
-    done
+  run_infra_test "chrome" "dev"
+  run_infra_test "firefox" "nightly"
+  run_infra_test "firefox_android" "nightly"
 }
 
-main $1
+main

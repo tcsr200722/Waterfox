@@ -1,3 +1,12 @@
+add_setup(async function () {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["extensions.InstallTrigger.enabled", true],
+      ["extensions.InstallTriggerImpl.enabled", true],
+    ],
+  });
+});
+
 // ----------------------------------------------------------------------------
 // Test whether an install fails if the url is a local file when requested from
 // web content
@@ -25,34 +34,28 @@ add_task(async function test() {
     expectUncaughtException();
   }
 
-  let URI = TESTROOT + "installtrigger.html?" + triggers;
-  await BrowserTestUtils.withNewTab({ gBrowser, url: TESTROOT }, async function(
-    browser
-  ) {
-    await SpecialPowers.spawn(browser, [URI], async function(URI) {
-      content.location.href = URI;
-
-      let loaded = ContentTaskUtils.waitForEvent(
-        docShell.chromeEventHandler,
-        "load",
-        true
-      );
-      let installTriggered = ContentTaskUtils.waitForEvent(
-        docShell.chromeEventHandler,
-        "InstallTriggered",
-        true,
-        null,
-        true
-      );
-      await Promise.all([loaded, installTriggered]);
-
-      let doc = content.document;
-      is(
-        doc.getElementById("return").textContent,
-        "exception",
-        "installTrigger should have failed"
-      );
-    });
-  });
+  let URI = TESTROOT + "installtrigger.html?manualStartInstall" + triggers;
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: URI },
+    async function (browser) {
+      await SpecialPowers.spawn(browser, [], async function () {
+        let installTriggered = ContentTaskUtils.waitForEvent(
+          docShell.chromeEventHandler,
+          "InstallTriggered",
+          true,
+          null,
+          true
+        );
+        content.wrappedJSObject.startInstall();
+        await installTriggered;
+        let doc = content.document;
+        is(
+          doc.getElementById("return").textContent,
+          "exception",
+          "installTrigger should have failed"
+        );
+      });
+    }
+  );
 });
 // ----------------------------------------------------------------------------

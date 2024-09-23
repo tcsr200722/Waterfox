@@ -10,10 +10,8 @@
 nsresult ATTRIBUTE_USED
 PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
 {
-#define PARAM_BUFFER_COUNT     16
 
     nsXPTCMiniVariant paramBuffer[PARAM_BUFFER_COUNT];
-    nsXPTCMiniVariant* dispatchParams = nullptr;
     const nsXPTInterfaceInfo* iface_info = nullptr;
     const nsXPTMethodInfo* info;
     uint8_t paramCount;
@@ -27,21 +25,14 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
     iface_info->GetMethodInfo(uint16_t(methodIndex), &info);
     NS_ASSERTION(info,"no interface info");
 
-    paramCount = info->GetParamCount();
-
-    // setup variant array pointer
-    if(paramCount > PARAM_BUFFER_COUNT)
-        dispatchParams = new nsXPTCMiniVariant[paramCount];
-    else
-        dispatchParams = paramBuffer;
-    NS_ASSERTION(dispatchParams,"no place for params");
+    paramCount = info->ParamCount();
 
     uint32_t* ap = args;
     for(i = 0; i < paramCount; i++, ap++)
     {
-        const nsXPTParamInfo& param = info->GetParam(i);
+        const nsXPTParamInfo& param = info->Param(i);
         const nsXPTType& type = param.GetType();
-        nsXPTCMiniVariant* dp = &dispatchParams[i];
+        nsXPTCMiniVariant* dp = &paramBuffer[i];
 
         if(param.IsOut() || !type.IsArithmetic())
         {
@@ -71,10 +62,7 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
     }
 
     nsresult result = self->CallMethod((uint16_t)methodIndex, info,
-                                       dispatchParams);
-
-    if(dispatchParams != paramBuffer)
-        delete [] dispatchParams;
+                                       paramBuffer);
 
     return result;
 }

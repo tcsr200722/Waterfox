@@ -1,4 +1,4 @@
-// |jit-test| allow-oom; skip-if: !('oomAfterAllocations' in this) || helperThreadCount() === 0
+// |jit-test| allow-oom; skip-if: !hasFunction.oomAfterAllocations || helperThreadCount() === 0
 
 lfcode = new Array();
 dbg = Debugger();
@@ -16,6 +16,7 @@ function loadFile(lfVarx) {
   for (lfLocal in this)
       if (!(lfLocal in lfGlobal))
           lfGlobal[lfLocal] = this[lfLocal]
-  offThreadCompileScript(lfVarx)
-  lfGlobal.runOffThreadScript()
+  offThreadCompileToStencil(lfVarx);
+  var stencil = lfGlobal.finishOffThreadStencil();
+  lfGlobal.evalStencil(stencil);
 }

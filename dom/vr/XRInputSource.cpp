@@ -9,73 +9,72 @@
 #include "XRNativeOriginViewer.h"
 #include "XRNativeOriginTracker.h"
 #include "XRInputSpace.h"
+#include "VRDisplayClient.h"
 
 #include "mozilla/dom/Gamepad.h"
 #include "mozilla/dom/GamepadManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSource, mParent)
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(XRInputSource, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(XRInputSource, Release)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSource, mParent, mTargetRaySpace,
+                                      mGripSpace, mGamepad)
 
 // Follow the controller profile ids from
 // https://github.com/immersive-web/webxr-input-profiles.
-nsTArray<nsString> GetInputSourceProfile(VRControllerType aType) {
+nsTArray<nsString> GetInputSourceProfile(gfx::VRControllerType aType) {
   nsTArray<nsString> profile;
   nsString id;
 
   switch (aType) {
-    case VRControllerType::HTCVive:
+    case gfx::VRControllerType::HTCVive:
       id.AssignLiteral("htc-vive");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveCosmos:
+    case gfx::VRControllerType::HTCViveCosmos:
       id.AssignLiteral("htc-vive-cosmos");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveFocus:
+    case gfx::VRControllerType::HTCViveFocus:
       id.AssignLiteral("htc-vive-focus");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveFocusPlus:
+    case gfx::VRControllerType::HTCViveFocusPlus:
       id.AssignLiteral("htc-vive-focus-plus");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::MSMR:
+    case gfx::VRControllerType::MSMR:
       id.AssignLiteral("microsoft-mixed-reality");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::ValveIndex:
+    case gfx::VRControllerType::ValveIndex:
       id.AssignLiteral("valve-index");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusGo:
+    case gfx::VRControllerType::OculusGo:
       id.AssignLiteral("oculus-go");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusTouch:
+    case gfx::VRControllerType::OculusTouch:
       id.AssignLiteral("oculus-touch");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusTouch2:
+    case gfx::VRControllerType::OculusTouch2:
       id.AssignLiteral("oculus-touch-v2");
       profile.AppendElement(id);
       id.AssignLiteral("oculus-touch");
@@ -83,20 +82,30 @@ nsTArray<nsString> GetInputSourceProfile(VRControllerType aType) {
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoGaze:
+    case gfx::VRControllerType::OculusTouch3:
+      id.AssignLiteral("oculus-touch-v3");
+      profile.AppendElement(id);
+      id.AssignLiteral("oculus-touch-v2");
+      profile.AppendElement(id);
+      id.AssignLiteral("oculus-touch");
+      profile.AppendElement(id);
+      id.AssignLiteral("generic-trigger-squeeze-thumbstick");
+      profile.AppendElement(id);
+      break;
+    case gfx::VRControllerType::PicoGaze:
       id.AssignLiteral("pico-gaze");
       profile.AppendElement(id);
       id.AssignLiteral("generic-button");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoG2:
-      id.AssignLiteral("pico-g-v2");
+    case gfx::VRControllerType::PicoG2:
+      id.AssignLiteral("pico-g2");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoNeo2:
-      id.AssignLiteral("pico-neo-v2");
+    case gfx::VRControllerType::PicoNeo2:
+      id.AssignLiteral("pico-neo2");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
@@ -119,7 +128,6 @@ XRInputSource::~XRInputSource() {
   mTargetRaySpace = nullptr;
   mGripSpace = nullptr;
   mGamepad = nullptr;
-  mozilla::DropJSObjects(this);
 }
 
 JSObject* XRInputSource::WrapObject(JSContext* aCx,
@@ -195,12 +203,13 @@ void XRInputSource::Setup(XRSession* aSession, uint32_t aIndex) {
   mTargetRaySpace = new XRInputSpace(aSession->GetParentObject(), aSession,
                                      nativeOriginTargetRay, aIndex);
 
-  const uint32_t gamepadId =
-      displayInfo.mDisplayID * kVRControllerMaxCount + aIndex;
-  const uint32_t hashKey = GamepadManager::GetGamepadIndexWithServiceType(
-      gamepadId, GamepadServiceType::VR);
+  const uint32_t gamepadHandleValue =
+      displayInfo.mDisplayID * gfx::kVRControllerMaxCount + aIndex;
+
+  const GamepadHandle gamepadHandle{gamepadHandleValue, GamepadHandleKind::VR};
+
   mGamepad =
-      new Gamepad(mParent, NS_ConvertASCIItoUTF16(""), -1, hashKey,
+      new Gamepad(mParent, NS_ConvertASCIItoUTF16(""), -1, gamepadHandle,
                   GamepadMappingType::Xr_standard, controllerState.hand,
                   displayInfo.mDisplayID, controllerState.numButtons,
                   controllerState.numAxes, controllerState.numHaptics, 0, 0);
@@ -218,11 +227,11 @@ void XRInputSource::SetGamepadIsConnected(bool aConnected,
 
   if (!aConnected) {
     if (mSelectAction != ActionState::ActionState_Released) {
-      DispatchEvent(NS_LITERAL_STRING("selectend"), aSession);
+      DispatchEvent(u"selectend"_ns, aSession);
       mSelectAction = ActionState::ActionState_Released;
     }
     if (mSqueezeAction != ActionState::ActionState_Released) {
-      DispatchEvent(NS_LITERAL_STRING("squeezeend"), aSession);
+      DispatchEvent(u"squeezeend"_ns, aSession);
       mSqueezeAction = ActionState::ActionState_Released;
     }
   }
@@ -283,7 +292,7 @@ void XRInputSource::Update(XRSession* aSession) {
         controllerState.selectActionStopFrameId) {
       if (mSelectAction == ActionState::ActionState_Released &&
           controllerState.triggerValue[selectIndex] > endThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("selectstart"), aSession);
+        DispatchEvent(u"selectstart"_ns, aSession);
         mSelectAction = ActionState::ActionState_Pressing;
       } else if (mSelectAction == ActionState::ActionState_Pressing &&
                  controllerState.triggerValue[selectIndex] >
@@ -291,23 +300,23 @@ void XRInputSource::Update(XRSession* aSession) {
         mSelectAction = ActionState::ActionState_Pressed;
       } else if (mSelectAction == ActionState::ActionState_Pressed &&
                  controllerState.triggerValue[selectIndex] < startThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+        DispatchEvent(u"select"_ns, aSession);
         mSelectAction = ActionState::ActionState_Releasing;
       } else if (mSelectAction <= ActionState::ActionState_Releasing &&
                  controllerState.triggerValue[selectIndex] < endThreshold) {
         // For a select btn which only has pressed and unpressed status.
         if (mSelectAction == ActionState::ActionState_Pressed) {
-          DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+          DispatchEvent(u"select"_ns, aSession);
         }
-        DispatchEvent(NS_LITERAL_STRING("selectend"), aSession);
+        DispatchEvent(u"selectend"_ns, aSession);
         mSelectAction = ActionState::ActionState_Released;
       }
     } else if (mSelectAction <= ActionState::ActionState_Releasing) {
       // For a select btn which only has pressed and unpressed status.
       if (mSelectAction == ActionState::ActionState_Pressed) {
-        DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+        DispatchEvent(u"select"_ns, aSession);
       }
-      DispatchEvent(NS_LITERAL_STRING("selectend"), aSession);
+      DispatchEvent(u"selectend"_ns, aSession);
       mSelectAction = ActionState::ActionState_Released;
     }
   }
@@ -318,7 +327,7 @@ void XRInputSource::Update(XRSession* aSession) {
         controllerState.squeezeActionStopFrameId) {
       if (mSqueezeAction == ActionState::ActionState_Released &&
           controllerState.triggerValue[squeezeIndex] > endThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("squeezestart"), aSession);
+        DispatchEvent(u"squeezestart"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Pressing;
       } else if (mSqueezeAction == ActionState::ActionState_Pressing &&
                  controllerState.triggerValue[squeezeIndex] >
@@ -326,23 +335,23 @@ void XRInputSource::Update(XRSession* aSession) {
         mSqueezeAction = ActionState::ActionState_Pressed;
       } else if (mSqueezeAction == ActionState::ActionState_Pressed &&
                  controllerState.triggerValue[squeezeIndex] < startThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+        DispatchEvent(u"squeeze"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Releasing;
       } else if (mSqueezeAction <= ActionState::ActionState_Releasing &&
                  controllerState.triggerValue[squeezeIndex] < endThreshold) {
         // For a squeeze btn which only has pressed and unpressed status.
         if (mSqueezeAction == ActionState::ActionState_Pressed) {
-          DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+          DispatchEvent(u"squeeze"_ns, aSession);
         }
-        DispatchEvent(NS_LITERAL_STRING("squeezeend"), aSession);
+        DispatchEvent(u"squeezeend"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Released;
       }
     } else if (mSqueezeAction <= ActionState::ActionState_Releasing) {
       // For a squeeze btn which only has pressed and unpressed status.
       if (mSqueezeAction == ActionState::ActionState_Pressed) {
-        DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+        DispatchEvent(u"squeeze"_ns, aSession);
       }
-      DispatchEvent(NS_LITERAL_STRING("squeezeend"), aSession);
+      DispatchEvent(u"squeezeend"_ns, aSession);
       mSqueezeAction = ActionState::ActionState_Released;
     }
   }
@@ -388,5 +397,4 @@ void XRInputSource::CreateGripSpace(
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
